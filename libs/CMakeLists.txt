@@ -1,0 +1,3 @@
+# Add libraries
+ADD_SUBDIRECTORY(Common)
+ADD_SUBDIRECTORY(MVS)
