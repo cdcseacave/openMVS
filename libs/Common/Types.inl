@@ -9,12 +9,12 @@
 // D E F I N E S ///////////////////////////////////////////////////
 
 
+namespace SEACAVE {
+
 // S T R U C T S ///////////////////////////////////////////////////
 
 
 // G L O B A L S ///////////////////////////////////////////////////
-
-namespace SEACAVE {
 
 template <typename TYPE> const typename ColorType<TYPE>::value_type ColorType<TYPE>::ONE(1);
 template <typename TYPE> const typename ColorType<TYPE>::alt_type ColorType<TYPE>::ALTONE(1);
@@ -39,12 +39,8 @@ template <typename TYPE> const TColor<TYPE> TColor<TYPE>::YELLOW	(ColorType<TYPE
 template <typename TYPE> const TColor<TYPE> TColor<TYPE>::MAGENTA	(ColorType<TYPE>::ONE, 0.f, ColorType<TYPE>::ONE, ColorType<TYPE>::ONE);
 template <typename TYPE> const TColor<TYPE> TColor<TYPE>::CYAN		(0.f, ColorType<TYPE>::ONE, ColorType<TYPE>::ONE, ColorType<TYPE>::ONE);
 
-} // namespace SEACAVE
-
 
 // C L A S S  //////////////////////////////////////////////////////
-
-namespace SEACAVE {
 
 // square
 template <typename TYPE>
@@ -434,10 +430,6 @@ inline IDX MaxIndex(const TYPE* data, IDX size) {
 }
 /*----------------------------------------------------------------*/
 
-} // namespace SEACAVE
-
-
-namespace SEACAVE {
 
 // geometry
 template <typename TYPE, typename ACCTYPE>
@@ -1427,7 +1419,7 @@ DEFINE_GENERIC_CVDATATYPE(SEACAVE::DVector32U, uint8_t)
 DEFINE_GENERIC_CVDATATYPE(SEACAVE::DVector32F, uint8_t)
 DEFINE_GENERIC_CVDATATYPE(SEACAVE::DVector64F, uint8_t)
 /*----------------------------------------------------------------*/
-DEFINE_GENERIC_CVDATATYPE(SEACAVE::Image, uint8_t)
+DEFINE_GENERIC_CVDATATYPE(SEACAVE::Image8U, uint8_t)
 DEFINE_GENERIC_CVDATATYPE(SEACAVE::Image32F, uint8_t)
 DEFINE_GENERIC_CVDATATYPE(SEACAVE::Image64F, uint8_t)
 DEFINE_GENERIC_CVDATATYPE(SEACAVE::Image8U3, uint8_t)
@@ -1527,6 +1519,22 @@ inline bool TMatrix<TYPE,m,n>::IsEqual(const Base& rhs, TYPE eps) const
 		if (!equal(val[i], rhs.val[i], eps))
 			return false;
 	return true;
+}
+
+// calculate right null-vector of matrix A ([n,1])
+template <typename TYPE, int m, int n>
+inline TMatrix<TYPE,n,1> TMatrix<TYPE,m,n>::RightNullVector(int flags /*= 0*/) const
+{
+	const cv::SVD svd(*this, (m >= n ? flags : flags|cv::SVD::FULL_UV));
+	// the singular values could be checked for numerical stability
+	// return result (last row transposed)
+	return *svd.vt.ptr< const TMatrix<TYPE,n,1> >(m-1);
+}
+// calculate left null-vector of matrix A ([n,1])
+template <typename TYPE, int m, int n>
+inline TMatrix<TYPE,n,1> TMatrix<TYPE,m,n>::LeftNullVector(int flags /*= 0*/) const
+{
+	return TMatrix<TYPE,m,n>(t()).RightNullVector(flags);
 }
 /*----------------------------------------------------------------*/
 
@@ -2452,8 +2460,10 @@ bool TImage<TYPE>::Load(const String& fileName)
 		else if (img.channels() == 1 && Base::channels() == 4)
 			cv::cvtColor(img, img, cv::COLOR_GRAY2BGRA);
 	}
-	img.convertTo(*this, Base::type());
-	DEBUG_EXTRA("Image '%s' loaded", fileName.c_str());
+	if (img.type() == Base::type())
+		cv::swap(img, *this);
+	else
+		img.convertTo(*this, Base::type());
 	return true;
 }
 /*----------------------------------------------------------------*/
@@ -2487,7 +2497,7 @@ bool TImage<TYPE>::Save(const String& fileName) const
 		const size_t rowbytes = (size_t)size.p[1]*step.p[1];
 		for (int i=0; i<rows; ++i)
 			fImage.write(TImage::ptr<const float>(i), rowbytes);
-		goto ImageSaveEnd;
+		return true;
 	}
 
 	try {
@@ -2500,9 +2510,6 @@ bool TImage<TYPE>::Save(const String& fileName) const
 		VERBOSE("error: saving image '%s' (exception: %s)", fileName.c_str(), ex.what());
 		return false;
 	}
-
-	ImageSaveEnd:
-	DEBUG_EXTRA("Image '%s' saved", fileName.c_str());
 	return true;
 }
 /*----------------------------------------------------------------*/
@@ -4297,6 +4304,23 @@ bool SerializeLoad(TYPE& obj, const SEACAVE::String& fileName, ARCHIVE_TYPE type
 
 class MiniDumper {
 public:
+	static inline void Create(const SEACAVE::String& strAppNameANSI, SEACAVE::String strDumpPathANSI, MINIDUMP_TYPE dumpType=MiniDumpNormal, bool bOutOfProcess=true) {
+		static MiniDumper oMiniDumper(strAppNameANSI, strDumpPathANSI, dumpType, bOutOfProcess);
+	}
+	static inline void Create(const SEACAVE::String& strAppNameANSI, SEACAVE::String strDumpPathANSI, int verbosity, bool bOutOfProcess=true) {
+		MINIDUMP_TYPE dumpType;
+		switch (verbosity) {
+		case 1:
+			dumpType = MiniDumpWithDataSegs;
+			break;
+		case 2:
+			dumpType = MiniDumpWithFullMemory;
+			break;
+		default:
+			dumpType = MiniDumpNormal;
+		}
+		Create(strAppNameANSI, strDumpPathANSI, dumpType, bOutOfProcess);
+	}
 	MiniDumper(const SEACAVE::String& strAppNameANSI, SEACAVE::String strDumpPathANSI, MINIDUMP_TYPE dumpType=MiniDumpNormal, bool bOutOfProcess=true)
 		:
 		crash_server(NULL),

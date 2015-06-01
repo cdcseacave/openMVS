@@ -76,15 +76,16 @@ namespace SEACAVE {
  **************************************************************************************/
 
 typedef size_t IDX;
-#define NO_IDX ((IDX)-1)
+enum { NO_IDX = ((IDX)-1) };
 
-template <class TYPE, class ARG_TYPE=const TYPE&, int useConstruct=1, int grow=16>
+template <typename TYPE, typename ARG_TYPE=const TYPE&, int useConstruct=1, int grow=16, typename IDX_TYPE=IDX>
 class cList
 {
 public:
 	typedef TYPE Type;
 	typedef ARG_TYPE ArgType;
-	enum { NO_INDEX = NO_IDX };
+	typedef IDX_TYPE IDX;
+	enum { NO_INDEX = ((IDX)-1) };
 	typedef int (STCALL *TFncCompare)(const void* elem, const void* key); //returns 0 if equal, otherwise <0 or >0 respectively
 	typedef bool (STCALL *TFncCompareBool)(ARG_TYPE elem, ARG_TYPE key); //returns true if the two elements are strict in weak ordering
 
@@ -869,12 +870,51 @@ public:
 		return NO_INDEX;
 	}
 
-	inline	IDX	Find(const void* searchedKey, TFncCompare xCompare) const
+	inline	IDX		Find(const void* searchedKey, TFncCompare xCompare) const
 	{
 		for (IDX i = 0; i < size; i++)
 			if (xCompare(vector + i, searchedKey) == 0)
 				return i;
 		return NO_INDEX;
+	}
+
+	// call a function or lambda on each element
+	template <typename Functor>
+	inline	void	ForEach(const Functor& functor) const
+	{
+		FOREACH(i, *this)
+			functor(i);
+	}
+	template <typename Functor>
+	inline	void	ForEachPtr(const Functor& functor) const
+	{
+		FOREACHPTR(ptr, *this)
+			functor(ptr);
+	}
+	template <typename Functor>
+	inline	void	ForEachRef(const Functor& functor) const
+	{
+		FOREACHPTR(ptr, *this)
+			functor(*ptr);
+	}
+	// same, but in reverse order
+	template <typename Functor>
+	inline	void	RForEach(const Functor& functor) const
+	{
+		RFOREACH(i, *this)
+			functor(i);
+	}
+	template <typename Functor>
+	inline	void	RForEachPtr(const Functor& functor) const
+	{
+		RFOREACHPTR(ptr, *this)
+			functor(ptr);
+	}
+	template <typename Functor>
+	inline	void	RForEachRef(const Functor& functor) const
+	{
+		RFOREACHPTR(ptr, *this)
+			functor(*ptr);
 	}
 
 	// Erase each element matching "elem".

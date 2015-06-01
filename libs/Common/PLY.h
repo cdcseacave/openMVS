@@ -28,7 +28,7 @@ chars for red, green and blue.
 #define PLY_ERROR  -1           /* error in ply routine */
 
 
-// P R O T O T Y P E S /////////////////////////////////////////////
+// S T R U C T S ///////////////////////////////////////////////////
 
 class PLY
 {

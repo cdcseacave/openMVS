@@ -256,7 +256,8 @@ LogConsole::LogConsole()
 	m_fileOut(-1), m_fileIn(-1), m_fileErr(-1),
 	#endif
 	m_cout(NULL), m_coutOld(NULL),
-	m_cerr(NULL), m_cerrOld(NULL)
+	m_cerr(NULL), m_cerrOld(NULL),
+	bManageConsole(false)
 {
 }
 
@@ -280,7 +281,7 @@ void LogConsole::Open()
 	OpenStreambuf();
 
 	// allocate a console for this app
-	AllocConsole();
+	bManageConsole = (AllocConsole()!=FALSE?true:false);
 
 	// set the screen buffer to be big enough to let us scroll text
 	CONSOLE_SCREEN_BUFFER_INFO coninfo;
@@ -395,7 +396,8 @@ void LogConsole::Close()
 	m_fileErr = -1;
 	#endif
 	// close console
-	FreeConsole();
+	if (bManageConsole)
+		FreeConsole();
 	CloseStreambuf();
 	#ifndef _USE_COSOLEFILEHANDLES
 	std::ios::sync_with_stdio();

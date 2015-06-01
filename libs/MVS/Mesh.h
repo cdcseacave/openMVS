@@ -1,5 +1,5 @@
 /*
-* Common.cpp
+* Mesh.h
 *
 * Copyright (c) 2014-2015 FOXEL SA - http://foxel.ch
 * Please read <http://foxel.ch/license> for more information.
@@ -36,8 +36,44 @@
 *      Attribution" section of <http://foxel.ch/license>.
 */
 
-// Source file that includes just the standard includes
-// Common.pch will be the pre-compiled header
-// Common.obj will contain the pre-compiled type information
+#ifndef _MVS_MESH_H_
+#define _MVS_MESH_H_
 
-#include "Common.h"
+
+// I N C L U D E S /////////////////////////////////////////////////
+
+#include "Platform.h"
+
+
+// D E F I N E S ///////////////////////////////////////////////////
+
+
+// S T R U C T S ///////////////////////////////////////////////////
+
+namespace MVS {
+
+// a mesh represented by a list vertices and triangles (faces)
+class Mesh
+{
+public:
+	typedef TPoint3<float> Vertex;
+	typedef uint32_t Index;
+	typedef TPoint3<Index> Face;
+
+	typedef CLISTDEF0(Vertex) VertexArr;
+	typedef CLISTDEF0(Face) FaceArr;
+
+public:
+	VertexArr vertices;
+	FaceArr faces;
+
+public:
+	inline Mesh() {}
+
+	void Release();
+};
+/*----------------------------------------------------------------*/
+
+} // namespace MVS
+
+#endif // _MVS_MESH_H_

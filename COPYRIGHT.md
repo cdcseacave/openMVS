@@ -9,6 +9,26 @@
 
 This program includes works distributed under the terms of another license(s) and other copyright notice(s).
 
+*   __SeaCave__<br />
+    Copyright (c) 2007 SEACAVE SRL.
+    Licensed under a [Boost license](http://www.boost.org/users/license.html).
+
+*   __easyexif__<br />
+    Copyright (c) 2010 Mayank Lahiri.
+    Distributed under the [New BSD License](http://opensource.org/licenses/BSD-3-Clause).
+
+*   __histogram__<br />
+    Copyright (c) Jansson Consulting & Pierre Moulon.
+    Licensed under the [MPL2 license](http://opensource.org/licenses/MPL-2.0).
+
+*   __htmlDoc__<br />
+    Copyright (c) Pierre Moulon.
+    Licensed under the [MPL2 license](http://opensource.org/licenses/MPL-2.0).
+
+*   __stlplus3__<br />
+    Copyright (c) 1999-2004 Southampton University, 2004 onwards Andy Rushton. All rights reserved.
+    Licensed under the [BSD license](http://opensource.org/licenses/bsd-license.php).
+
 *   __ceres-solver__<br />
     <[http://ceres-solver.org/](http://ceres-solver.org/)><br />
     Copyright 2015 Google Inc. All rights reserved.

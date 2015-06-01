@@ -1,5 +1,5 @@
 /*
-* Common.cpp
+* Platform.h
 *
 * Copyright (c) 2014-2015 FOXEL SA - http://foxel.ch
 * Please read <http://foxel.ch/license> for more information.
@@ -36,8 +36,50 @@
 *      Attribution" section of <http://foxel.ch/license>.
 */
 
-// Source file that includes just the standard includes
-// Common.pch will be the pre-compiled header
-// Common.obj will contain the pre-compiled type information
+#ifndef _MVS_PLATFORM_H_
+#define _MVS_PLATFORM_H_
 
-#include "Common.h"
+
+// I N C L U D E S /////////////////////////////////////////////////
+
+#include "Camera.h"
+
+
+// D E F I N E S ///////////////////////////////////////////////////
+
+
+// S T R U C T S ///////////////////////////////////////////////////
+
+namespace MVS {
+
+// a mobile platform with cameras attached to it
+class Platform
+{
+public:
+	// structure describing a normalized camera mounted on a platform
+	typedef CameraIntern Camera;
+	typedef SEACAVE::cList<Camera> CameraArr;
+
+	// structure describing a pose along the trajectory of a platform
+	struct Pose {
+		RMatrix R; // platform's rotation matrix
+		CMatrix C; // platform's translation vector in the global coordinate system
+	};
+	typedef SEACAVE::cList<Pose> PoseArr;
+
+public:
+	String name; // platform's name
+	CameraArr cameras; // cameras mounted on the platform
+	PoseArr poses; // trajectory of the platform
+
+public:
+	inline Platform() {}
+
+	Camera GetCamera(uint32_t cameraID, uint32_t poseID) const;
+};
+typedef SEACAVE::cList<Platform> PlatformArr;
+/*----------------------------------------------------------------*/
+
+} // namespace MVS
+
+#endif // _MVS_PLATFORM_H_

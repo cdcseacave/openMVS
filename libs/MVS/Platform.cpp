@@ -1,5 +1,5 @@
 /*
-* Common.cpp
+* Platform.cpp
 *
 * Copyright (c) 2014-2015 FOXEL SA - http://foxel.ch
 * Please read <http://foxel.ch/license> for more information.
@@ -36,8 +36,27 @@
 *      Attribution" section of <http://foxel.ch/license>.
 */
 
-// Source file that includes just the standard includes
-// Common.pch will be the pre-compiled header
-// Common.obj will contain the pre-compiled type information
-
 #include "Common.h"
+#include "Platform.h"
+
+using namespace MVS;
+
+
+// D E F I N E S ///////////////////////////////////////////////////
+
+
+// S T R U C T S ///////////////////////////////////////////////////
+
+// return the normalized absolute camera pose
+Platform::Camera Platform::GetCamera(uint32_t cameraID, uint32_t poseID) const
+{
+	const Camera& camera = cameras[cameraID];
+	const Pose& pose = poses[poseID];
+	// add the relative camera pose to the platform
+	Camera cam;
+	cam.K = camera.K;
+	cam.R = camera.R*pose.R;
+	cam.C = pose.R.t()*camera.C+pose.C;
+	return cam;
+} // GetCamera
+/*----------------------------------------------------------------*/

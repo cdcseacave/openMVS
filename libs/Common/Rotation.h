@@ -28,9 +28,9 @@
 #endif
 
 
-// P R O T O T Y P E S /////////////////////////////////////////////
-
 namespace SEACAVE {
+
+// S T R U C T S ///////////////////////////////////////////////////
 
 // generic matrix struct
 #define QUATERNION_EPSILON 1E-10 // DBL_EPSILON, too small (dherzog)

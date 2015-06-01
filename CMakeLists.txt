@@ -37,8 +37,6 @@ SET(OpenMVS_USE_FAST_FLOAT2INT ON CACHE BOOL "Use an optimized code to convert r
 SET(OpenMVS_USE_FAST_INVSQRT OFF CACHE BOOL "Use an optimized code to compute the inverse square root (slower in fact on modern compilers)")
 SET(OpenMVS_USE_FAST_CBRT ON CACHE BOOL "Use an optimized code to compute the cubic root")
 SET(OpenMVS_USE_SSE ON CACHE BOOL "Enable SSE optimizations")
-SET(OpenMVS_USE_BOOST ON CACHE BOOL "Enable BOOST library")
-SET(OpenMVS_USE_CERES ON CACHE BOOL "Enable CERES library")
 SET(OpenMVS_USE_OPENMP ON CACHE BOOL "Enable OpenMP library")
 SET(OpenMVS_USE_BREAKPAD ON CACHE BOOL "Enable BreakPad library")
 
@@ -101,9 +99,7 @@ endif()
 if(OpenMVS_USE_SSE)
 	LIST(APPEND OpenMVS_DEFINITIONS -D_USE_SSE) 
 endif()
-if(OpenMVS_USE_BOOST)
-	LIST(APPEND OpenMVS_DEFINITIONS -D_USE_BOOST) 
-endif()
+LIST(APPEND OpenMVS_DEFINITIONS -D_USE_BOOST) 
 ADD_DEFINITIONS(${OpenMVS_DEFINITIONS})
 
 # Add modules

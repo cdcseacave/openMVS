@@ -4,6 +4,7 @@ if(CERES_FOUND)
 	include_directories(${CERES_INCLUDE_DIRS})
 	add_definitions(${CERES_DEFINITIONS})
 endif()
+
 FIND_PACKAGE(CGAL ${SYSTEM_PACKAGE_REQUIRED})
 if(CGAL_FOUND)
 	include_directories(${CGAL_INCLUDE_DIRS})
@@ -11,7 +12,7 @@ if(CGAL_FOUND)
 	link_directories(${CGAL_LIBRARY_DIRS})
 endif()
 
-# list sources files
+# List sources files
 FILE(GLOB PCH_C "Common.cpp")
 
 FILE(GLOB LIBRARY_FILES_C "*.cpp")

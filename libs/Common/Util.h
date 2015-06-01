@@ -279,6 +279,13 @@ public:
 			#endif
 	}
 
+	static String& ensureValidPath(String& str) {
+		return strTrim(ensureUnifySlash(str), _T("\""));
+	}
+	static String& ensureValidDirectoryPath(String& str) {
+		return strTrim(ensureUnifySlash(ensureDirectorySlash(str)), _T("\""));
+	}
+
 	static inline bool isFullPath(LPCTSTR path) {
 		// returns true if local drive full path or network path
 		return (path && (path[1]==_T(':') ||
@@ -287,6 +294,9 @@ public:
 			#else
 			*((WORD*)path)==0x5C5C/*"\\\\"*/));
 			#endif // UNICODE
+	}
+	static String getFullPath(const String& str) {
+		return isFullPath(str) ? str : getCurrentDirectory()+str;
 	}
 
 	static String getHomeDirectory();
@@ -609,6 +619,7 @@ public:
 	enum CPUFNC {NA=0, SSE, AVX};
 	static const Flags ms_CPUFNC;
 
+	static void		LogBuild();
 	static void		LogMemoryInfo();
 
 	static LPSTR* CommandLineToArgvA(LPCSTR CmdLine, size_t& _argc);

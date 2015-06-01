@@ -200,6 +200,7 @@ private:
 	std::streambuf*	m_coutOld;		// the original cout stream
 	std::streambuf*	m_cerr;			// the redirected cerr stream
 	std::streambuf*	m_cerrOld;		// the original cout stream
+	bool			bManageConsole;	// remember if the console is created here or is an existing console
 };
 #define GET_LOGCONSOLE()	LogConsole::GetInstance()
 #define OPEN_LOGCONSOLE()	GET_LOGCONSOLE().Open()

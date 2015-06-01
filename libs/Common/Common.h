@@ -13,6 +13,7 @@
 
 #include "Config.h"
 
+// macors controling the verbosity
 #define TD_VERBOSE_OFF		0
 #define TD_VERBOSE_ON		1
 #define TD_VERBOSE_DEBUG	2
@@ -46,6 +47,8 @@
 #define DEBUG_EXTRA(...)	DEBUG_LEVEL(1, __VA_ARGS__)
 #define DEBUG_ULTIMATE(...)	DEBUG_LEVEL(2, __VA_ARGS__)
 
+
+// macros that simplify timing tasks
 #define TD_TIMER_OFF		0
 #define TD_TIMER_ON			1
 #ifndef TD_TIMER
@@ -76,8 +79,20 @@
 #endif
 #endif
 
+
+// macros redirecting standard streams to the log
 #define LOG_OUT() GET_LOG() //or std::cout
 #define LOG_ERR() GET_LOG() //or std::cerr
+
+
+// macros simplifying the task of composing file paths;
+// WORKING_FOLDER and WORKING_FOLDER_FULL must be defined as strings
+// containing the relative/full path to the working folder
+#define MAKE_PATH(str)		(WORKING_FOLDER+(str)) // add working directory to the given file name
+#define MAKE_PATH_SAFE(str)	(SEACAVE::Util::isFullPath((str).c_str()) ? (str) : (WORKING_FOLDER+(str))) // add working directory to the given file name only if not full path already
+#define MAKE_PATH_FULL(p,s) (SEACAVE::Util::isFullPath((s).c_str()) ? (s) : ((p)+(s))) // add the given path to the given file name
+#define MAKE_PATH_REL(p,s)	((s).compare(0,(p).size(),p) ? (s) : SEACAVE::String((s).substr((p).size()))) // remove the given path from the given file name
+#define GET_PATH_FULL(str)	(SEACAVE::Util::isFullPath((str).c_str()) ? SEACAVE::Util::getFilePath(str) : WORKING_FOLDER_FULL+SEACAVE::Util::getFilePath(str)) // retrieve the full path to the given file
 
 
 // I N C L U D E S /////////////////////////////////////////////////
@@ -89,8 +104,6 @@
 
 namespace SEACAVE {
 
-typedef TPoint2<float> Point2f;
-typedef TPoint3<float> Point3f;
 typedef TMatrix<float,2,1> Vec2f;
 typedef TMatrix<float,3,1> Vec3f;
 typedef TMatrix<float,4,1> Vec4f;
@@ -131,6 +144,9 @@ typedef Matrix3x4   PMatrix;
 // reconstructed 3D point type
 typedef Vec3 X3D;
 typedef SEACAVE::cList<X3D, const X3D&, 0, 8192> X3DArr;
+
+typedef SEACAVE::cList<cv::Mat, const cv::Mat&, 2> MatArr;
+typedef SEACAVE::CLISTDEF0(uint32_t) IndexArr;
 
 typedef SEACAVE::CLISTDEF0(REAL) REALArr;
 typedef SEACAVE::CLISTDEF0(Point2f) Point2fArr;
@@ -209,7 +225,7 @@ inline PairIdx MakePairIdx(uint32_t idxImageA, uint32_t idxImageB) {
 }
 /*----------------------------------------------------------------*/
 
-} // SEACAVE
+} // namespace SEACAVE
 
 // define specialized cv:DataType<>
 DEFINE_CVDATATYPE(SEACAVE::Vec2f)
@@ -229,9 +245,4 @@ DEFINE_CVDATATYPE(SEACAVE::Matrix3x4d)
 DEFINE_CVDATATYPE(SEACAVE::Matrix4x4d)
 /*----------------------------------------------------------------*/
 
-typedef SEACAVE::cList<cv::Mat, const cv::Mat&, 2> MatArr;
-typedef SEACAVE::cList<cv::Matx34f> CameraMatArr;
-typedef SEACAVE::cList<uint32_t, uint32_t, 0> IndexArr;
-/*----------------------------------------------------------------*/
-
-#endif //_COMMON_COMMON_H_
+#endif // _COMMON_COMMON_H_

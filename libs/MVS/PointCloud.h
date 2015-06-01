@@ -1,5 +1,5 @@
 /*
-* Common.h
+* PointCloud.h
 *
 * Copyright (c) 2014-2015 FOXEL SA - http://foxel.ch
 * Please read <http://foxel.ch/license> for more information.
@@ -36,26 +36,57 @@
 *      Attribution" section of <http://foxel.ch/license>.
 */
 
-#ifndef _MVS_COMMON_H_
-#define _MVS_COMMON_H_
+#ifndef _MVS_POINTCLOUD_H_
+#define _MVS_POINTCLOUD_H_
 
 
 // I N C L U D E S /////////////////////////////////////////////////
-
-#include "../Common/Common.h"
 
 
 // D E F I N E S ///////////////////////////////////////////////////
 
 
-// P R O T O T Y P E S /////////////////////////////////////////////
-
-using namespace SEACAVE;
+// S T R U C T S ///////////////////////////////////////////////////
 
 namespace MVS {
 
+// a point-cloud containing the points with the corresponding views
+// and optionally normals, colors and wights
+// (same size as the number of points or zero)
+class PointCloud
+{
+public:
+	typedef TPoint3<float> Position;
+	typedef SEACAVE::cList<uint32_t,uint32_t,0,4,uint32_t> ViewArr;
+	struct Point {
+		Position X;
+		ViewArr views;
+	};
+	typedef TPoint3<float> Normal;
+	typedef Pixel8U Color;
+	typedef float Weight;
+
+	typedef SEACAVE::cList<Point,const Point&,2> PointArr;
+	typedef CLISTDEF0(Normal) NormalArr;
+	typedef CLISTDEF0(Color) ColorArr;
+	typedef CLISTDEF0(Weight) WeightArr;
+
+public:
+	PointArr points;
+	NormalArr normals;
+	ColorArr colors;
+	WeightArr weights;
+
+public:
+	inline PointCloud() {}
+
+	void Release();
+
+	inline bool IsEmpty() const { return points.IsEmpty(); }
+	inline size_t GetSize() const { return points.GetSize(); }
+};
 /*----------------------------------------------------------------*/
 
 } // namespace MVS
 
-#endif // _MVS_COMMON_H_
+#endif // _MVS_POINTCLOUD_H_

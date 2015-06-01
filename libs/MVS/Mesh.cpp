@@ -1,5 +1,5 @@
 /*
-* Common.cpp
+* Mesh.cpp
 *
 * Copyright (c) 2014-2015 FOXEL SA - http://foxel.ch
 * Please read <http://foxel.ch/license> for more information.
@@ -36,8 +36,22 @@
 *      Attribution" section of <http://foxel.ch/license>.
 */
 
-// Source file that includes just the standard includes
-// Common.pch will be the pre-compiled header
-// Common.obj will contain the pre-compiled type information
-
 #include "Common.h"
+#include "Mesh.h"
+#include "../Common/PLY.h"
+
+using namespace MVS;
+
+
+// D E F I N E S ///////////////////////////////////////////////////
+
+
+// S T R U C T S ///////////////////////////////////////////////////
+
+// free all memory
+void Mesh::Release()
+{
+	vertices.Empty();
+	faces.Empty();
+} // Release
+/*----------------------------------------------------------------*/

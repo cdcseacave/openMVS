@@ -1,5 +1,5 @@
 /*
-* Common.h
+* Image.h
 *
 * Copyright (c) 2014-2015 FOXEL SA - http://foxel.ch
 * Please read <http://foxel.ch/license> for more information.
@@ -36,26 +36,52 @@
 *      Attribution" section of <http://foxel.ch/license>.
 */
 
-#ifndef _MVS_COMMON_H_
-#define _MVS_COMMON_H_
+#ifndef _MVS_VIEW_H_
+#define _MVS_VIEW_H_
 
 
 // I N C L U D E S /////////////////////////////////////////////////
 
-#include "../Common/Common.h"
+#include "Platform.h"
 
 
 // D E F I N E S ///////////////////////////////////////////////////
 
 
-// P R O T O T Y P E S /////////////////////////////////////////////
-
-using namespace SEACAVE;
+// S T R U C T S ///////////////////////////////////////////////////
 
 namespace MVS {
 
+// a view instance seeing the scene
+class Image
+{
+public:
+	uint32_t platformID; // ID of the associated platform
+	uint32_t cameraID; // ID of the associated camera on the associated platform
+	uint32_t poseID; // ID of the pose of the associated platform
+	String name; // image file name
+	uint32_t width, height; // image size
+	Image8U3 image; // image color pixels
+	Image32F imageGray; // image gray pixels
+	Camera camera; // view's pose
+
+public:
+	inline Image() {}
+
+	inline bool IsValid() const { return poseID != NO_ID; }
+
+	// read image data from the file
+	bool LoadImage(const String& fileName, unsigned nMaxResolution=0);
+	bool ReloadImage(unsigned nMaxResolution=0, bool bLoadPixels=true);
+	void ReleaseImage();
+	float ResizeImage(unsigned nMaxResolution=0);
+	unsigned ComputeMaxResolution(unsigned& level, unsigned minImageSize) const;
+
+	void UpdateCamera(const PlatformArr& platforms);
+};
+typedef SEACAVE::cList<Image, const Image&, 2> ImageArr;
 /*----------------------------------------------------------------*/
 
 } // namespace MVS
 
-#endif // _MVS_COMMON_H_
+#endif // _MVS_VIEW_H_

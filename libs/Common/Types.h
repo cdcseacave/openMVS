@@ -1480,6 +1480,10 @@ public:
 	inline operator EMatMap () { return EMatMap((TYPE*)this); }
 	#endif
 
+	// calculate right/left null-vector of matrix A ([n,1])
+	inline TMatrix<TYPE,n,1> RightNullVector(int flags = 0) const;
+	inline TMatrix<TYPE,n,1> LeftNullVector(int flags = 0) const;
+
 	#ifdef _USE_BOOST
 	// serialize
 	template <class Archive>
@@ -2060,14 +2064,13 @@ public:
 	#endif
 };
 /*----------------------------------------------------------------*/
-typedef TImage<uint8_t> Image;
+typedef TImage<uint8_t> Image8U;
 typedef TImage<float> Image32F;
 typedef TImage<double> Image64F;
 typedef TImage<Pixel8U> Image8U3;
 typedef TImage<Color8U> Image8U4;
 typedef TImage<Pixel32F> Image32F3;
 typedef TImage<Color32F> Image32F4;
-typedef SEACAVE::cList<Image, const Image&, 2> ImageArr;
 /*----------------------------------------------------------------*/
 
 

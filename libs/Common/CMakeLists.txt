@@ -1,6 +1,4 @@
-INCLUDE_DIRECTORIES(".")
-
-# list sources files
+# List sources files
 FILE(GLOB PCH_C "Common.cpp")
 
 FILE(GLOB LIBRARY_FILES_C "*.cpp")

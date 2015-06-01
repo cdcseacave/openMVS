@@ -9,6 +9,10 @@
 #include "Util.h"
 #ifdef _MSC_VER
 #include <Shlobj.h>
+#ifndef _USE_WINSDKOS
+#define _USE_WINSDKOS
+#include <VersionHelpers.h>
+#endif
 #else
 #include <sys/utsname.h>
 #include <pwd.h>
@@ -263,6 +267,40 @@ String Util::GetOSInfo()
 {
 	#ifdef _MSC_VER
 
+	String os;
+	#ifdef _USE_WINSDKOS
+	#ifndef _WIN32_WINNT_WIN10
+	#define _WIN32_WINNT_WIN10 0x0A00
+	if (IsWindowsVersionOrGreater(HIBYTE(_WIN32_WINNT_WIN10), LOBYTE(_WIN32_WINNT_WIN10), 0))
+	#else
+	if (IsWindows10OrGreater())
+	#endif
+		os = _T("Windows 10+");
+	else if (IsWindows8Point1OrGreater())
+		os = _T("Windows 8.1");
+	else if (IsWindows8OrGreater())
+		os = _T("Windows 8");
+	else if (IsWindows7SP1OrGreater())
+		os = _T("Windows 7 (SP1)");
+	else if (IsWindows7OrGreater())
+		os = _T("Windows 7");
+	else if (IsWindowsVistaSP2OrGreater())
+		os = _T("Windows Vista (SP2)");
+	else if (IsWindowsVistaSP1OrGreater())
+		os = _T("Windows Vista (SP1)");
+	else if (IsWindowsVistaOrGreater())
+		os = _T("Windows Vista");
+	else if (IsWindowsXPSP3OrGreater())
+		os = _T("Windows XP (SP3)");
+	else if (IsWindowsXPSP2OrGreater())
+		os = _T("Windows XP (SP2)");
+	else if (IsWindowsXPSP1OrGreater())
+		os = _T("Windows XP (SP1)");
+	else if (IsWindowsXPOrGreater())
+		os = _T("Windows XP");
+	else
+		os = _T("Windows (unknown version)");
+	#else
 	OSVERSIONINFOEX ver;
 	memset(&ver, 0, sizeof(OSVERSIONINFOEX));
 	ver.dwOSVersionInfoSize = sizeof(OSVERSIONINFOEX);
@@ -270,11 +308,10 @@ String Util::GetOSInfo()
 	if (!GetVersionEx((OSVERSIONINFO*)&ver)) {
 		ver.dwOSVersionInfoSize = sizeof(OSVERSIONINFO);
 		if (!GetVersionEx((OSVERSIONINFO*)&ver)) {
-			return "Windows (version unknown)";
+			return "Windows (unknown version)";
 		}
 	}
 
-	String os;
 	if (ver.dwPlatformId != VER_PLATFORM_WIN32_NT) {
 		os = "Win9x/ME";
 	} else {
@@ -317,6 +354,17 @@ String Util::GetOSInfo()
 			os += " DC";
 	}
 
+	if (ver.wServicePackMajor != 0) {
+		os += " (SP";
+		os += String::ToString(ver.wServicePackMajor);
+		if (ver.wServicePackMinor != 0) {
+			os += '.';
+			os += String::ToString(ver.wServicePackMinor);
+		}
+		os += ")";
+	}
+	#endif
+
 	#ifdef _WIN64
 	os += " x64";
 	#else
@@ -326,15 +374,6 @@ String Util::GetOSInfo()
 	if (fnIsWow64Process && fnIsWow64Process(GetCurrentProcess(),&bIsWow64) && bIsWow64)
 		os += " x64";
 	#endif
-
-	if (ver.wServicePackMajor != 0) {
-		os += " SP";
-		os += String::ToString(ver.wServicePackMajor);
-		if (ver.wServicePackMinor != 0) {
-			os += '.';
-			os += String::ToString(ver.wServicePackMinor);
-		}
-	}
 
 	return os;
 
@@ -750,16 +789,31 @@ bool OSSupportsAVX()
 #endif // _MSC_VER
 
 
+// print details about the current build and PC
+void Util::LogBuild()
+{
+	#if TD_VERBOSE == TD_VERBOSE_OFF
+	LOG(_T("Build date: ") __DATE__);
+	#else
+	LOG(_T("Build date: ") __DATE__ _T(", ") __TIME__);
+	#endif
+	LOG((_T("CPU: ") + Util::GetCPUInfo()).c_str());
+	LOG((_T("RAM: ") + Util::GetRAMInfo()).c_str());
+	LOG((_T("OS: ") + Util::GetOSInfo()).c_str());
+	if (!SIMD_ENABLED.isSet(Util::SSE)) LOG(_T("warning: no SSE compatible CPU or OS detected"));
+	else if (!SIMD_ENABLED.isSet(Util::AVX)) LOG(_T("warning: no AVX compatible CPU or OS detected"));
+	else LOG(_T("SSE & AVX compatible CPU & OS detected"));
+}
+
+// print information about the memory usage
 #ifdef _MSC_VER
 #include <Psapi.h>
 #pragma comment(lib, "Psapi.lib")
 void Util::LogMemoryInfo()
 {
 	PROCESS_MEMORY_COUNTERS pmc;
-
 	if (!GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof(pmc)))
 		return;
-
 	LOG(_T("MEMORYINFO: {"));
 	LOG(_T("\tPageFaultCount %d"), pmc.PageFaultCount);
 	LOG(_T("\tPeakWorkingSetSize %s"), SEACAVE::Util::formatBytes(pmc.PeakWorkingSetSize).c_str());

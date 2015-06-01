@@ -1,5 +1,5 @@
 /*
-* Common.cpp
+* Scene.h
 *
 * Copyright (c) 2014-2015 FOXEL SA - http://foxel.ch
 * Please read <http://foxel.ch/license> for more information.
@@ -36,8 +36,42 @@
 *      Attribution" section of <http://foxel.ch/license>.
 */
 
-// Source file that includes just the standard includes
-// Common.pch will be the pre-compiled header
-// Common.obj will contain the pre-compiled type information
+#ifndef _MVS_SCENE_H_
+#define _MVS_SCENE_H_
 
-#include "Common.h"
+
+// I N C L U D E S /////////////////////////////////////////////////
+
+#include "Image.h"
+#include "PointCloud.h"
+#include "Mesh.h"
+
+
+// D E F I N E S ///////////////////////////////////////////////////
+
+
+// S T R U C T S ///////////////////////////////////////////////////
+
+namespace MVS {
+
+class Scene
+{
+public:
+	PlatformArr platforms; // camera platforms, each containing the mounted cameras and all known poses
+	ImageArr images; // images, each referencing a platform's camera pose
+	PointCloud pointcloud; // point-cloud (sparse or dense), each containing the point position and the views seeing it
+	Mesh mesh; // mesh, represented as vertices and triangles, constructed from the input point-cloud
+
+public:
+	inline Scene() {}
+
+	bool Load(const String& fileName, const String& workingFolderFull=String());
+	bool Save(const String& fileName, const String& workingFolderFull=String());
+
+	bool ReconstructMesh(float distInsert=2);
+};
+/*----------------------------------------------------------------*/
+
+} // namespace MVS
+
+#endif // _MVS_SCENE_H_
