@@ -79,7 +79,9 @@
 #endif
 /*----------------------------------------------------------------*/
 
-#define ALIGN(n) __declspec(align(n))
+#if _MSC_VER >= 1800
+#define _SUPPORT_CPP11
+#endif
 
 // Define platform type
 #if _WIN64
@@ -102,7 +104,9 @@
 #define GENERAL_API
 #define GENERAL_TPL
 
-#define ALIGN(n) __attribute__((aligned(n)))
+#if __cplusplus >= 201103L
+#define _SUPPORT_CPP11
+#endif
 
 // Define platform type
 #if __x86_64__ || __ppc64__
@@ -148,6 +152,7 @@
 
 //optimization flags
 #if defined(_MSC_VER)
+#	define ALIGN(n) __declspec(align(n))
 #	define NOINITVTABLE __declspec(novtable) //disable generating code to initialize the vfptr in the constructor(s) and destructor of the class
 #	define DECRESTRICT __declspec(restrict) //applied to a function declaration or definition that returns a pointer type and tells the compiler that the function returns an object that will not be aliased with any other pointers
 #	define NOALIAS __declspec(noalias) //applied to a function declaration or definition that returns a pointer type and tells the compiler that the function call does not modify or reference visible global state and only modifies the memory pointed to directly by pointer parameters (first-level indirections)
@@ -160,6 +165,7 @@
 #	define THREADLOCAL __declspec(thread)
 #	define FORCEINLINE __forceinline
 #elif defined(__GNUC__)
+#	define ALIGN(n) __attribute__((aligned(n)))
 #	define NOINITVTABLE
 #	define DECRESTRICT
 #	define NOALIAS
@@ -172,6 +178,7 @@
 #	define THREADLOCAL __thread
 #	define FORCEINLINE inline //__attribute__((always_inline))
 #else
+#	define ALIGN(n)
 #	define NOINITVTABLE
 #	define DECRESTRICT
 #	define NOALIAS

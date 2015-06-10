@@ -142,10 +142,15 @@ public:
 		}
 	}
 
-	void setThreadPriority(Priority p) const { pthread_setschedprio(threadHandle, convertPriority(p)); }
-	inline Priority getThreadPriority() const { return convertPriority((PriorityOS)::pthread_getschedprio(threadHandle)); }
+	inline void setThreadPriority(Priority p) const { pthread_setschedprio(threadHandle, convertPriority(p)); }
+	inline Priority getThreadPriority() const { return getThreadPriority(threadHandle); }
 	static void setThreadPriority(void* th, Priority p) { pthread_setschedprio((pthread_t)th, convertPriority(p)); }
-	static inline Priority getThreadPriority(void* th) { return convertPriority((PriorityOS)::pthread_getschedprio((pthread_t)th)); }
+	static Priority getThreadPriority(void* th) {
+		struct sched_param param;
+		int                policy;
+		pthread_getschedparam((pthread_t)th, &policy, &param);
+		return convertPriority((PriorityOS)param.sched_priority);
+	}
 
 	static void sleep(uint32_t millis)	{ ::usleep(millis*1000); }
 	static void yield()					{ ::sched_yield(); }

@@ -25,51 +25,70 @@ namespace SEACAVE {
 class GENERAL_API String : public std::string
 {
 public:
+	typedef std::string Base;
+
+public:
 	inline String() {}
-	inline String(LPCTSTR sz) : std::string(sz) {}
-	inline String(const std::string& str) : std::string(str) {}
-	inline String(size_t n, value_type v) : std::string(n, v) {}
-	inline String(LPCTSTR sz, size_t count) : std::string(sz, count) {}
-	inline String(LPCTSTR sz, size_t offset, size_t count) : std::string(sz, offset, count) {}
+	inline String(LPCTSTR sz) : Base(sz) {}
+	inline String(const Base& str) : Base(str) {}
+	inline String(size_t n, value_type v) : Base(n, v) {}
+	inline String(LPCTSTR sz, size_t count) : Base(sz, count) {}
+	inline String(LPCTSTR sz, size_t offset, size_t count) : Base(sz, offset, count) {}
 
 	inline void Release() { return clear(); }
 	inline bool IsEmpty() const { return empty(); }
 
 	inline operator LPCTSTR() const { return c_str(); }
 
-	inline void Format(LPCTSTR szFormat, ...) {
+	String& Format(LPCTSTR szFormat, ...) {
 		va_list args;
 		va_start(args, szFormat);
 		TCHAR szBuffer[2048];
-		if (_vsntprintf(szBuffer, 2047, szFormat, args) == -1) {
+		const int len(_vsntprintf(szBuffer, 2047, szFormat, args));
+		if (len == -1 || len >= 2047) {
 			*this = FormatStringSafe(szFormat, args);
 			va_end(args);
 		} else {
 			va_end(args);
-			szBuffer[2047] = 0;
 			*this = szBuffer;
 		}
+		return *this;
+	}
+	String& FormatSafe(LPCTSTR szFormat, ...) {
+		va_list args;
+		va_start(args, szFormat);
+		#ifdef _MSC_VER
+		const size_t count((size_t)_vsctprintf(szFormat, args)+1);
+		#else
+		const size_t count((size_t)_vsntprintf(NULL, 0, szFormat, args)+1);
+		#endif
+		TCHAR* szBuffer(new TCHAR[count]);
+		_vsntprintf(szBuffer, count, szFormat, args);
+		va_end(args);
+		*this = szBuffer;
+		delete[] szBuffer;
+		return *this;
 	}
 	static String FormatString(LPCTSTR szFormat, ...) {
 		va_list args;
 		va_start(args, szFormat);
 		TCHAR szBuffer[2048];
-		if (_vsntprintf(szBuffer, 2047, szFormat, args) == -1) {
-			const String str = FormatStringSafe(szFormat, args);
+		const int len(_vsntprintf(szBuffer, 2047, szFormat, args));
+		if (len == -1 || len >= 2047) {
+			const String str(FormatStringSafe(szFormat, args));
 			va_end(args);
 			return str;
 		}
 		va_end(args);
-		szBuffer[2047] = 0;
 		return szBuffer;
 	}
-	static String FormatStringSafe(LPCTSTR szFormat, va_list args) {
+	static inline String FormatStringSafe(LPCTSTR szFormat, va_list args) {
 		#ifdef _MSC_VER
-		const size_t count = (size_t)_vsctprintf(szFormat, args)+1;
+		const size_t count((size_t)_vsctprintf(szFormat, args)+1);
 		#else
-		const size_t count = (size_t)_vsntprintf(NULL, 0, szFormat, args)+1;
+		const size_t count((size_t)_vsntprintf(NULL, 0, szFormat, args)+1);
 		#endif
-		TCHAR* szBuffer = new TCHAR[count];
+		TCHAR* szBuffer(new TCHAR[count]);
 		_vsntprintf(szBuffer, count, szFormat, args);
 		String str(szBuffer);
 		delete[] szBuffer;
@@ -169,9 +188,8 @@ protected:
 	// implement BOOST serialization
 	friend class boost::serialization::access;
 	template<class Archive>
-	void serialize(Archive& ar, const unsigned int version)
-	{
-		ar & boost::serialization::base_object<std::string>(*this);
+	void serialize(Archive& ar, const unsigned int version) {
+		ar & boost::serialization::base_object<Base>(*this);
 	}
 #endif
 };

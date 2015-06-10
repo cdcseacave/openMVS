@@ -159,7 +159,7 @@ bool Scene::Save(const String & fileName, const String& workingFolderFull)
 			plat.cameras.push_back(cam);
 		}
 		plat.poses.reserve(platform.poses.GetSize());
-		FOREACH(j, platform.cameras) {
+		FOREACH(j, platform.poses) {
 			const Platform::Pose& pose = platform.poses[j];
 			Interface::Platform::Pose p;
 			p.R = pose.R;

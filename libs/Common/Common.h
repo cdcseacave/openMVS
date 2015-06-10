@@ -104,6 +104,15 @@
 
 namespace SEACAVE {
 
+typedef TAABB<float, 2> AABB2f;
+typedef TAABB<float, 3> AABB3f;
+typedef TOBB<float, 2> OBB2f;
+typedef TOBB<float, 3> OBB3f;
+typedef TRay<float, 2> Ray2f;
+typedef TRay<float, 3> Ray3f;
+typedef TPlane<float> Planef;
+typedef TPoint2<float> Point2f;
+typedef TPoint3<float> Point3f;
 typedef TMatrix<float,2,1> Vec2f;
 typedef TMatrix<float,3,1> Vec3f;
 typedef TMatrix<float,4,1> Vec4f;
@@ -112,6 +121,13 @@ typedef TMatrix<float,3,3> Matrix3x3f;
 typedef TMatrix<float,3,4> Matrix3x4f;
 typedef TMatrix<float,4,4> Matrix4x4f;
 
+typedef TAABB<double, 2> AABB2d;
+typedef TAABB<double, 3> AABB3d;
+typedef TOBB<double, 2> OBB2d;
+typedef TOBB<double, 3> OBB3d;
+typedef TRay<double, 2> Ray2d;
+typedef TRay<double, 3> Ray3d;
+typedef TPlane<double> Planed;
 typedef TPoint2<double> Point2d;
 typedef TPoint3<double> Point3d;
 typedef TMatrix<double,2,1> Vec2d;
@@ -122,6 +138,13 @@ typedef TMatrix<double,3,3> Matrix3x3d;
 typedef TMatrix<double,3,4> Matrix3x4d;
 typedef TMatrix<double,4,4> Matrix4x4d;
 
+typedef TAABB<REAL, 2> AABB2;
+typedef TAABB<REAL, 3> AABB3;
+typedef TOBB<REAL, 2> OBB2;
+typedef TOBB<REAL, 3> OBB3;
+typedef TRay<REAL, 2> Ray2;
+typedef TRay<REAL, 3> Ray3;
+typedef TPlane<REAL> Plane;
 typedef TPoint2<REAL> Point2;
 typedef TPoint3<REAL> Point3;
 typedef TMatrix<REAL,2,1> Vec2;
@@ -145,7 +168,6 @@ typedef Matrix3x4   PMatrix;
 typedef Vec3 X3D;
 typedef SEACAVE::cList<X3D, const X3D&, 0, 8192> X3DArr;
 
-typedef SEACAVE::cList<cv::Mat, const cv::Mat&, 2> MatArr;
 typedef SEACAVE::CLISTDEF0(uint32_t) IndexArr;
 
 typedef SEACAVE::CLISTDEF0(REAL) REALArr;
@@ -167,62 +189,6 @@ typedef SEACAVE::CLISTDEF0(Pixel8U) Pixel8UArr;
 typedef SEACAVE::CLISTDEF0(Pixel32F) Pixel32FArr;
 typedef SEACAVE::CLISTDEF0(Color8U) Color8UArr;
 typedef SEACAVE::CLISTDEF0(Color32F) Color32FArr;
-/*----------------------------------------------------------------*/
-
-// used for sorting some indices by their score (decreasing)
-template <typename IndexType, typename ScoreType>
-struct TIndexScore {
-	IndexType idx;
-	ScoreType score;
-	inline TIndexScore() {}
-	inline TIndexScore(IndexType _idx, ScoreType _score) : idx(_idx), score(_score) {}
-	// compare by index (increasing)
-	inline bool operator<(IndexType i) const { return (idx < i); }
-	inline bool operator==(IndexType i) const { return (idx == i); }
-	// compare by score (decreasing)
-	inline bool operator<(const TIndexScore& r) const { return (score > r.score); }
-	inline bool operator==(const TIndexScore& r) const { return (score == r.score); }
-	static bool STCALL CompareByIndex(const TIndexScore& l, const TIndexScore& r) { return (l.idx < r.idx); }
-	static bool STCALL CompareByScore(const TIndexScore& l, const TIndexScore& r) { return (r.score < l.score); }
-	#ifdef _USE_BOOST
-	// implement BOOST serialization
-	template<class Archive>
-	void serialize(Archive& ar, const unsigned int version) {
-		ar & idx;
-		ar & score;
-	}
-	#endif
-};
-typedef TIndexScore<uint32_t,float> IndexScore;
-typedef cList<IndexScore, const IndexScore&, 0> IndexScoreArr;
-/*----------------------------------------------------------------*/
-
-struct PairIdx {
-	union {
-		uint64_t idx;
-		struct {
-			#if __BYTE_ORDER == __LITTLE_ENDIAN
-			uint32_t j;
-			uint32_t i;
-			#else
-			uint32_t i;
-			uint32_t j;
-			#endif
-		};
-	};
-	inline PairIdx() {}
-	inline PairIdx(uint64_t _idx) : idx(_idx) {}
-	inline PairIdx(uint32_t _i, uint32_t _j) : i(_i), j(_j) {}
-	// get index
-	inline operator uint64_t () const { return idx; }
-	// compare by index (increasing)
-	inline bool operator<(const PairIdx& r) const { return (idx < r.idx); }
-	inline bool operator==(const PairIdx& r) const { return (idx == r.idx); }
-};
-typedef cList<PairIdx, const PairIdx&, 0> PairIdxArr;
-inline PairIdx MakePairIdx(uint32_t idxImageA, uint32_t idxImageB) {
-	return (idxImageA<idxImageB ? PairIdx(idxImageA,idxImageB) : PairIdx(idxImageB,idxImageA));
-}
 /*----------------------------------------------------------------*/
 
 } // namespace SEACAVE

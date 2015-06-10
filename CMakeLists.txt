@@ -26,7 +26,7 @@ cmake_policy(SET CMP0011 OLD)
 INCLUDE(build/Utils.cmake)
 INCLUDE(build/Cotire.cmake)
 
-# Init sesion with macros defined in Utils.cmake
+# Init session with macros defined in Utils.cmake
 GetOperatingSystemArchitectureBitness(SYSTEM)
 ComposePackageLibSuffix()
 ConfigCompilerAndLinker()
@@ -63,7 +63,7 @@ if(OpenMVS_USE_BREAKPAD)
 	endif()
 endif()
 
-FIND_PACKAGE(Boost ${SYSTEM_PACKAGE_REQUIRED})
+FIND_PACKAGE(Boost ${SYSTEM_PACKAGE_REQUIRED} COMPONENTS system serialization iostreams)
 if(Boost_FOUND)
 	include_directories(${Boost_INCLUDE_DIRS})
 	add_definitions(${Boost_DEFINITIONS})

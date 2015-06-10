@@ -78,7 +78,12 @@ namespace SEACAVE {
 typedef size_t IDX;
 enum { NO_IDX = ((IDX)-1) };
 
-template <typename TYPE, typename ARG_TYPE=const TYPE&, int useConstruct=1, int grow=16, typename IDX_TYPE=IDX>
+template <
+	typename TYPE,
+	typename ARG_TYPE=const TYPE&,
+	int useConstruct=1,
+	int grow=16,
+	typename IDX_TYPE=IDX>
 class cList
 {
 public:
@@ -383,63 +388,16 @@ public:
 		return pData;
 	}
 
+	#ifdef _SUPPORT_CPP11
 	// Adds a new empty element at the end of the array and pass the arguments to its constructor.
-	template <typename _T0>
-	inline TYPE&	AddConstruct(_T0&& a0)
+	template <typename... Args>
+	inline TYPE&	AddConstruct(Args&&... args)
 	{
 		if (vectorSize <= size)
 			_Grow(vectorSize + grow);
-		return *(new(vector + (size++)) TYPE(std::forward<_T0>(a0)));
+		return *(new(vector + (size++)) TYPE(std::forward<Args>(args)...));
 	}
-	template <typename _T0, typename _T1>
-	inline TYPE&	AddConstruct(_T0&& a0, _T1&& a1)
-	{
-		if (vectorSize <= size)
-			_Grow(vectorSize + grow);
-		return *(new(vector + (size++)) TYPE(std::forward<_T0>(a0), std::forward<_T1>(a1)));
-	}
-	template <typename _T0, typename _T1, typename _T2>
-	inline TYPE&	AddConstruct(_T0&& a0, _T1&& a1, _T2&& a2)
-	{
-		if (vectorSize <= size)
-			_Grow(vectorSize + grow);
-		return *(new(vector + (size++)) TYPE(std::forward<_T0>(a0), std::forward<_T1>(a1), std::forward<_T2>(a2)));
-	}
-	template <typename _T0, typename _T1, typename _T2, typename _T3>
-	inline TYPE&	AddConstruct(_T0&& a0, _T1&& a1, _T2&& a2, _T3&& a3)
-	{
-		if (vectorSize <= size)
-			_Grow(vectorSize + grow);
-		return *(new(vector + (size++)) TYPE(std::forward<_T0>(a0), std::forward<_T1>(a1), std::forward<_T2>(a2), std::forward<_T3>(a3)));
-	}
-	template <typename _T0, typename _T1, typename _T2, typename _T3, typename _T4>
-	inline TYPE&	AddConstruct(_T0&& a0, _T1&& a1, _T2&& a2, _T3&& a3, _T4&& a4)
-	{
-		if (vectorSize <= size)
-			_Grow(vectorSize + grow);
-		return *(new(vector + (size++)) TYPE(std::forward<_T0>(a0), std::forward<_T1>(a1), std::forward<_T2>(a2), std::forward<_T3>(a3), std::forward<_T4>(a4)));
-	}
-	template <typename _T0, typename _T1, typename _T2, typename _T3, typename _T4, typename _T5>
-	inline TYPE&	AddConstruct(_T0&& a0, _T1&& a1, _T2&& a2, _T3&& a3, _T4&& a4, _T5&& a5)
-	{
-		if (vectorSize <= size)
-			_Grow(vectorSize + grow);
-		return *(new(vector + (size++)) TYPE(std::forward<_T0>(a0), std::forward<_T1>(a1), std::forward<_T2>(a2), std::forward<_T3>(a3), std::forward<_T4>(a4), std::forward<_T5>(a5)));
-	}
-	template <typename _T0, typename _T1, typename _T2, typename _T3, typename _T4, typename _T5, typename _T6>
-	inline TYPE&	AddConstruct(_T0&& a0, _T1&& a1, _T2&& a2, _T3&& a3, _T4&& a4, _T5&& a5, _T6&& a6)
-	{
-		if (vectorSize <= size)
-			_Grow(vectorSize + grow);
-		return *(new(vector + (size++)) TYPE(std::forward<_T0>(a0), std::forward<_T1>(a1), std::forward<_T2>(a2), std::forward<_T3>(a3), std::forward<_T4>(a4), std::forward<_T5>(a5), std::forward<_T6>(a6)));
-	}
-	template <typename _T0, typename _T1, typename _T2, typename _T3, typename _T4, typename _T5, typename _T6, typename _T7>
-	inline TYPE&	AddConstruct(_T0&& a0, _T1&& a1, _T2&& a2, _T3&& a3, _T4&& a4, _T5&& a5, _T6&& a6, _T7&& a7)
-	{
-		if (vectorSize <= size)
-			_Grow(vectorSize + grow);
-		return *(new(vector + (size++)) TYPE(std::forward<_T0>(a0), std::forward<_T1>(a1), std::forward<_T2>(a2), std::forward<_T3>(a3), std::forward<_T4>(a4), std::forward<_T5>(a5), std::forward<_T6>(a6), std::forward<_T7>(a7)));
-	}
+	#endif
 
 	inline IDX		InsertEmpty()
 	{
@@ -451,6 +409,18 @@ public:
 	}
 
 	// Adds the new element at the end of the array.
+	#ifdef _SUPPORT_CPP11
+	template <typename T>
+	inline void		Insert(T&& elem)
+	{
+		if (vectorSize <= size)
+			_Grow(vectorSize + grow);
+		if (useConstruct)
+			new(vector+(size++)) TYPE(std::forward<T>(elem));
+		else
+			vector[size++] = std::forward<T>(elem);
+	}
+	#else
 	inline void		Insert(ARG_TYPE elem)
 	{
 		if (vectorSize <= size)
@@ -460,14 +430,42 @@ public:
 		else
 			vector[size++] = elem;
 	}
+	#endif
 
+	#ifdef _SUPPORT_CPP11
+	template <typename T>
+	inline void		SetAt(IDX index, T&& elem)
+	{
+		if (size <= index)
+			Resize(index + 1);
+		vector[index] = std::forward<T>(elem);
+	}
+	#else
 	inline void		SetAt(IDX index, ARG_TYPE elem)
 	{
 		if (size <= index)
 			Resize(index + 1);
 		vector[index] = elem;
 	}
+	#endif
 
+	#ifdef _SUPPORT_CPP11
+	template <typename T>
+	inline void		AddAt(IDX index, T&& elem)
+	{
+		if (index < size)
+			return InsertAt(index, std::forward<T>(elem));
+		const IDX newSize = index + 1;
+		if (vectorSize <= newSize)
+			_Grow(newSize + grow);
+		_ArrayConstruct(vector+size, index-size);
+		if (useConstruct)
+			new(vector+index) TYPE(std::forward<T>(elem));
+		else
+			vector[index] = std::forward<T>(elem);
+		++size;
+	}
+	#else
 	inline void		AddAt(IDX index, ARG_TYPE elem)
 	{
 		if (index < size)
@@ -482,7 +480,18 @@ public:
 			vector[index] = elem;
 		++size;
 	}
+	#endif
 
+	#ifdef _SUPPORT_CPP11
+	template <typename T>
+	inline void		InsertAt(IDX index, T&& elem)
+	{
+		if (useConstruct)
+			new(AllocateAt(index)) TYPE(std::forward<T>(elem));
+		else
+			*AllocateAt(index) = std::forward<T>(elem);
+	}
+	#else
 	inline void		InsertAt(IDX index, ARG_TYPE elem)
 	{
 		if (useConstruct)
@@ -490,6 +499,7 @@ public:
 		else
 			*AllocateAt(index) = elem;
 	}
+	#endif
 
 	// Same as Insert, but the constructor is not called.
 	inline TYPE*	Allocate()
@@ -569,6 +579,10 @@ public:
 		TYPE* const nth(Begin()+index);
 		std::nth_element(Begin(), nth, End());
 		return *nth;
+	}
+	inline TYPE&	GetMedian()
+	{
+		return GetNth(size >> 1);
 	}
 
 	inline void		Sort()
@@ -1062,10 +1076,15 @@ protected:
 		vectorSize = size = 0;
 	}
 
-	// Increase the size of the array to the specified amount.
+	// Increase the size of the array at least to the specified amount.
 	inline void		_Grow(IDX newVectorSize)
 	{
 		ASSERT(newVectorSize > vectorSize);
+		// grow by 50% or at least to minNewVectorSize
+		const IDX expoVectorSize(vectorSize + (vectorSize>>1));
+		if (newVectorSize < expoVectorSize)
+			newVectorSize = expoVectorSize;
+		// allocate a larger chunk of memory, copy the data and delete the old chunk
 		TYPE* const tmp(vector);
 		vector = (TYPE*) operator new[] (newVectorSize * sizeof(TYPE));
 		_ArrayMoveConstruct<true>(vector, tmp, size);

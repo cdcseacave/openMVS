@@ -68,7 +68,7 @@ public:
 	bool Load(const String& fileName, const String& workingFolderFull=String());
 	bool Save(const String& fileName, const String& workingFolderFull=String());
 
-	bool ReconstructMesh(float distInsert=2);
+	bool ReconstructMesh(float distInsert=2, bool bUseFreeSpaceSupport=true);
 };
 /*----------------------------------------------------------------*/
 

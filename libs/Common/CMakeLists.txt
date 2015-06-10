@@ -17,4 +17,4 @@ cxx_library_with_type_no_pch(Common "Libs" "" "${cxx_default}"
 set_target_pch(Common Common.h)
 
 # Link its dependencies
-TARGET_LINK_LIBRARIES(Common ${OpenCV_LIBS})
+TARGET_LINK_LIBRARIES(Common ${Boost_LIBRARIES} ${OpenCV_LIBS})

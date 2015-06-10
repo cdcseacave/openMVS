@@ -82,7 +82,7 @@ class FastCriticalSection {
 public:
 #ifdef _MSC_VER
 
-	FastCriticalSection() : state(0) { };
+	FastCriticalSection() : state(0) {}
 
 	void Clear() {
 		Thread::safeExchange(state, 0);
@@ -105,21 +105,12 @@ protected:
 #else
 
 	// We have to use a pthread (nonrecursive) mutex, didn't find any test_and_set on linux...
-	FastCriticalSection() { 
-		pthread_mutexattr_t attr;
-		pthread_mutexattr_init(&attr);
-		pthread_mutex_init(&mtx, &attr);
-	};
-	~FastCriticalSection() { pthread_mutex_destroy(&mtx); };
-	void Clear() {
-		pthread_mutex_destroy(&mtx);
-		pthread_mutexattr_t attr;
-		pthread_mutexattr_init(&attr);
-		pthread_mutex_init(&mtx, &attr);
-	}
-	void Enter() { pthread_mutex_lock(&mtx); };
+	FastCriticalSection() { pthread_mutex_init(&mtx, NULL); }
+	~FastCriticalSection() { pthread_mutex_destroy(&mtx); }
+	void Clear() { pthread_mutex_destroy(&mtx); pthread_mutex_init(&mtx, NULL); }
+	void Enter() { pthread_mutex_lock(&mtx); }
 	bool TryEnter() { return (pthread_mutex_trylock(&mtx) == 0); }
-	void Leave() { pthread_mutex_unlock(&mtx); };
+	void Leave() { pthread_mutex_unlock(&mtx); }
 
 protected:
 	pthread_mutex_t mtx;
@@ -130,8 +121,8 @@ protected:
 template<class T>
 class SimpleLock {
 public:
-	SimpleLock(T& aCs) : cs(aCs)	{ cs.Enter(); };
-	~SimpleLock()					{ cs.Leave(); };
+	SimpleLock(T& aCs) : cs(aCs)	{ cs.Enter(); }
+	~SimpleLock()					{ cs.Leave(); }
 protected:
 	T& cs;
 };
@@ -139,8 +130,8 @@ protected:
 template<class T>
 class SimpleLockTry {
 public:
-	SimpleLockTry(T& aCs) : cs(aCs)	{ bLocked = cs.TryEnter(); };
-	~SimpleLockTry()				{ if (bLocked) cs.Leave(); };
+	SimpleLockTry(T& aCs) : cs(aCs)	{ bLocked = cs.TryEnter(); }
+	~SimpleLockTry()				{ if (bLocked) cs.Leave(); }
 	bool IsLocked() const			{ return bLocked; }
 protected:
 	T& cs;
@@ -155,9 +146,9 @@ typedef SimpleLockTry<FastCriticalSection> FastLockTry;
 class RWLock
 {
 public:
-	RWLock() : cs(), readers(0) { }
+	RWLock() : cs(), readers(0) {}
 	~RWLock() { ASSERT(readers==0); }
-	void Clear() { cs.Clear(); readers = 0; };
+	void Clear() { cs.Clear(); readers = 0; }
 
 	// Read
 	void EnterRead() {

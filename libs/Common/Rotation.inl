@@ -1327,53 +1327,52 @@ inline typename TRMatrixBase<TYPE>::Vec TRMatrixBase<TYPE>::GetRotationAxisAngle
 template <typename TYPE>
 bool TRMatrixBase<TYPE>::Check(const TYPE eps, int verbose) const
 {
-  // check determinant
-  bool ok = equal(TYPE(cv::determinant(*this)), TYPE(1), eps);
-  // check unit column vector length
-  Vec c[3];
-  for (register unsigned int i = 0; i < 3 && ok; i++) {
-	c[i] = Base::col(i);
-	ok = equal(norm(c[i]), TYPE(1), eps);
-  }
-  // check orthogonality
-  if (ok)
-	ok = equal(c[0].dot(c[1]), TYPE(0), eps);
-  if (ok)
-	ok = equal(c[0].dot(c[2]), TYPE(0), eps);
-  if (ok)
-	ok = equal(c[1].dot(c[2]), TYPE(0), eps);
-  #if TD_VERBOSE != TD_VERBOSE_OFF
-  // print the reason in case of failure
-  if (!ok && VERBOSITY_LEVEL > verbose) {
-	  std::ostringstream res(" ");
-	  const TYPE det(cv::determinant(*this));
-	  if (!equal(det, TYPE(1), eps)) {
-		  res << "det != 1 (det=" << std::setprecision(30) << det << ") ";
-	  }
-	  Vec c[3];
-	  for (register unsigned int i = 0; i < 3; i++) {
-		  c[i] = Base::col(i);
-		  if (!equal(norm(c[i]), TYPE(1), eps)){
-			  res << "col[" << i << "].NormL2() != 1) (= "
-				  << norm(c[i]) << ") ";
-		  }
-	  }
-	  if (!equal(c[0].dot(c[1]), TYPE(0), eps)){
-		  res << "col[0].ScalarProduct(c[1]) != 0 (= "
-			  << c[0].dot(c[1]) << ") ";
-	  }
-	  if (!equal(c[0].dot(c[2]), TYPE(0), eps)){
-		  res << "col[0].ScalarProduct(c[2]) != 0 (= "
-			  << c[0].dot(c[2]) << ") ";
-	  }
-	  if (!equal(c[1].dot(c[2]), TYPE(0), eps)){
-		  res << "col[1].ScalarProduct(c[2]) != 0 (= "
-			  << c[1].dot(c[2]) << ") ";
-	  }
-	  SLOG("Rotation matrix is invalid: " << res.str() << std::endl);
-  }
-  #endif
-  return ok;
+	// check determinant
+	bool ok = equal(TYPE(cv::determinant(*this)), TYPE(1), eps);
+	// check unit column vector length
+	Vec cl[3];
+	for (register unsigned int i = 0; i < 3 && ok; i++) {
+		cl[i] = Base::col(i);
+		ok = equal(norm(cl[i]), TYPE(1), eps);
+	}
+	// check orthogonality
+	if (ok)
+		ok = equal(cl[0].dot(cl[1]), TYPE(0), eps);
+	if (ok)
+		ok = equal(cl[0].dot(cl[2]), TYPE(0), eps);
+	if (ok)
+		ok = equal(cl[1].dot(cl[2]), TYPE(0), eps);
+	#if TD_VERBOSE != TD_VERBOSE_OFF
+	// print the reason in case of failure
+	if (!ok && VERBOSITY_LEVEL > verbose) {
+		std::ostringstream res(" ");
+		const TYPE det(cv::determinant(*this));
+		if (!equal(det, TYPE(1), eps)) {
+			res << "det != 1 (det=" << std::setprecision(30) << det << ") ";
+		}
+		for (register unsigned int i = 0; i < 3; i++) {
+			cl[i] = Base::col(i);
+			if (!equal(norm(cl[i]), TYPE(1), eps)) {
+				res << "col[" << i << "].NormL2() != 1) (= "
+					<< norm(cl[i]) << ") ";
+			}
+		}
+		if (!equal(cl[0].dot(cl[1]), TYPE(0), eps)) {
+			res << "col[0].ScalarProduct(c[1]) != 0 (= "
+				<< cl[0].dot(cl[1]) << ") ";
+		}
+		if (!equal(cl[0].dot(cl[2]), TYPE(0), eps)) {
+			res << "col[0].ScalarProduct(c[2]) != 0 (= "
+				<< cl[0].dot(cl[2]) << ") ";
+		}
+		if (!equal(cl[1].dot(cl[2]), TYPE(0), eps)) {
+			res << "col[1].ScalarProduct(c[2]) != 0 (= "
+				<< cl[1].dot(cl[2]) << ") ";
+		}
+		SLOG("Rotation matrix is invalid: " << res.str() << std::endl);
+	}
+	#endif
+	return ok;
 }
 
 template <typename TYPE>

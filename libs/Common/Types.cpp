@@ -50,7 +50,7 @@ String cvMat2String(const TYPE* M, uint32_t rows, uint32_t cols, uint32_t step, 
 	}
 	return str;
 }
-String SEACAVE::cvMat2String(const cv::Mat& M, LPCSTR format) {
+String cvMat2String(const cv::Mat& M, LPCSTR format) {
 	switch (M.type()) {
 	case CV_32F: return cvMat2String(M.ptr<float>(), (uint32_t)M.rows, (uint32_t)M.cols, (uint32_t)M.step1(), format);
 	case CV_64F: return cvMat2String(M.ptr<double>(), (uint32_t)M.rows, (uint32_t)M.cols, (uint32_t)M.step1(), format);

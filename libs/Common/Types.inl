@@ -540,12 +540,12 @@ inline typename RealType<TYPE>::type normSq(const cv::Matx<TYPE,m,n>& v) {
 template <typename TYPE>
 inline typename RealType<TYPE>::type normSq(const TDMatrix<TYPE>& v) {
 	typedef typename RealType<TYPE>::type real;
-	return cv::normL2Sqr<TYPE,real>(v.ptr<const TYPE>(), v.area());
+	return cv::normL2Sqr<TYPE,real>(v.cv::Mat::ptr<const TYPE>(), v.area());
 }
 template <typename TYPE>
 inline typename RealType<TYPE>::type normSq(const cv::Mat_<TYPE>& v) {
 	typedef typename RealType<TYPE>::type real;
-	return cv::normL2Sqr<TYPE,real>(v.ptr<const TYPE>(), v.cols*v.rows);
+	return cv::normL2Sqr<TYPE,real>(v.cv::Mat::ptr<const TYPE>(), v.cols*v.rows);
 }
 
 inline REAL normSq(int v) {
@@ -760,7 +760,7 @@ inline typename RealType<TYPE>::type norm(const TMatrix<TYPE,m,n>& v) {
 template <typename TYPE>
 inline typename RealType<TYPE>::type norm(const TDMatrix<TYPE>& v) {
 	typedef typename RealType<TYPE>::type real;
-	return SQRT(cv::normL2Sqr<TYPE,real>(v.ptr<const TYPE>(), v.area()));
+	return SQRT(cv::normL2Sqr<TYPE,real>(v.cv::Mat::ptr<const TYPE>(), v.area()));
 }
 
 template <typename TYPE>
@@ -980,7 +980,7 @@ inline TPoint2<TYPE> operator/(const cv::Point_<TYPE>& pt0, const cv::Point_<TYP
 template <typename TYPE, typename TYPEM>
 inline TPoint2<TYPE>& operator/=(cv::Point_<TYPE>& pt0, const cv::Point_<TYPEM>& pt1) {
 	pt0.x/=pt1.x; pt0.y/=pt1.y;
-	return (TPoint2<TYPE>&)pt;
+	return (TPoint2<TYPE>&)pt0;
 }
 
 template <typename TYPE, typename TYPEM>
@@ -1933,13 +1933,13 @@ void TImage<TYPE>::toGray(TImage<T>& out, int code, bool bNormalize) const
 	const T &cb(coeffs[0]), &cg(coeffs[1]), &cr(coeffs[2]);
 	if (out.rows!=rows || out.cols!=cols)
 		out.create(rows, cols);
-	ASSERT(isContinuous());
-	ASSERT(out.isContinuous());
+	ASSERT(cv::Mat::isContinuous());
+	ASSERT(out.cv::Mat::isContinuous());
 	const int scn(channels());
-	T* dst = out.ptr<T>();
+	T* dst = out.cv::Mat::ptr<T>();
 	T* const dstEnd = dst + out.area();
 	typedef typename cv::DataType<TYPE>::channel_type ST;
-	for (const ST* src=ptr<ST>(); dst!=dstEnd; src+=scn)
+	for (const ST* src=cv::Mat::ptr<ST>(); dst!=dstEnd; src+=scn)
 		*dst++ = cb*T(src[0]) + cg*T(src[1]) + cr*T(src[2]);
 	#else
 	cv::Mat cimg;
@@ -2355,93 +2355,6 @@ bool TImage<TYPE>::DrawLineAntialias(const ImageRef& x1, const ImageRef& x2,
 /*----------------------------------------------------------------*/
 
 
-#ifdef _USE_TOON
-/**
- * a normal member taking two arguments and returning an integer value.
- * @param in a image containing the information to be extracted.
- * @param out the image to be filled.  The whole image out image is filled by the in image.
- * @param M the matrix used to map point in the out matrix to those in the in matrix
- * @param inOrig origin in the in image
- * @param outOrig origin in the out image
- * @return the number of pixels not in the in image
- * @Note: this will collide with transform in the std namespace
- */
-template <typename TYPE>
-template <typename T, typename P>
-int TImage<TYPE>::transform(TImage<T>& out, const TooN::Matrix<2,2,P>& M, const TooN::Vector<2,P>& inOrig, const TooN::Vector<2,P>& outOrig, const T& defaultValue)
-{
-	const int w = out.size().width, h = out.size().height, iw = Base::size().width, ih = Base::size().height;
-	const TooN::Vector<2, P> across = M.T()[0];
-	const TooN::Vector<2, P> down =   M.T()[1];
-
-	const TooN::Vector<2, P> p0 = inOrig - M*outOrig;
-	const TooN::Vector<2, P> p1 = p0 + w*across;
-	const TooN::Vector<2, P> p2 = p0 + h*down;
-	const TooN::Vector<2, P> p3 = p0 + w*across + h*down;
-
-	// ul --> p0
-	// ur --> w*across + p0
-	// ll --> h*down + p0
-	// lr --> w*across + h*down + p0
-	P min_x = p0[0], min_y = p0[1];
-	P max_x = min_x, max_y = min_y;
-
-	// Minimal comparisons needed to determine bounds
-	if (across[0] < 0)
-		min_x += w*across[0];
-	else
-		max_x += w*across[0];
-	if (down[0] < 0)
-		min_x += h*down[0];
-	else
-		max_x += h*down[0];
-	if (across[1] < 0)
-		min_y += w*across[1];
-	else
-		max_y += w*across[1];
-	if (down[1] < 0)
-		min_y += h*down[1];
-	else
-		max_y += h*down[1];
-
-	// This gets from the end of one row to the beginning of the next
-	const TooN::Vector<2, P> carriage_return = down - w*across;
-
-	//If the patch being extracted is completely in the image then no
-	//check is needed with each point.
-	if (min_x >= 0 && min_y >= 0 && max_x < iw-1 && max_y < ih-1)
-	{
-		TooN::Vector<2, P> p = p0;
-		for (int j=0; j<h; ++j, p+=carriage_return)
-			for (int i=0; i<w; ++i, p+=across)
-				sample(TPoint2<P>(p), out(i,j));
-		return 0;
-	}
-	else // Check each source location
-	{
-		// Store as doubles to avoid conversion cost for comparison
-		const P x_bound = iw-1;
-		const P y_bound = ih-1;
-		int count = 0;
-		TooN::Vector<2, P> p = p0;
-		for (int j=0; j<h; ++j, p+=carriage_return) {
-			for (int i=0; i<w; ++i, p+=across) {
-				//Make sure that we are extracting pixels in the image
-				if (0 <= p[0] && 0 <= p[1] &&  p[0] < x_bound && p[1] < y_bound)
-					sample(TPoint2<P>(p), out(i,j));
-				else {
-					out(i,j) = defaultValue;
-					++count;
-				}
-			}
-		}
-		return count;
-	}
-} // transform
-/*----------------------------------------------------------------*/
-#endif
-
-
 template <typename TYPE>
 bool TImage<TYPE>::Load(const String& fileName)
 {
@@ -2493,10 +2406,10 @@ bool TImage<TYPE>::Save(const String& fileName) const
 		static const bool is_little_endian = (*((float*)b) < 1.f);
 		static const double scale = (is_little_endian ? -1.0 : 1.0);
 		fImage.print("Pf\n%d %d\n%lf\n", width(), height(), scale*Base::channels());
-		ASSERT(sizeof(float)*Base::channels() == step.p[1]);
-		const size_t rowbytes = (size_t)size.p[1]*step.p[1];
+		ASSERT(sizeof(float)*Base::channels() == Base::step.p[1]);
+		const size_t rowbytes = (size_t)Base::size.p[1]*Base::step.p[1];
 		for (int i=0; i<rows; ++i)
-			fImage.write(TImage::ptr<const float>(i), rowbytes);
+			fImage.write(cv::Mat::ptr<const float>(i), rowbytes);
 		return true;
 	}
 
@@ -2685,8 +2598,8 @@ void Convolve(const TImage<Type>& in,
 	const int src_line_stride = in.step1(0);
 	const int src_stride = in.step1(1);
 	const int dst_stride = out.step1(1);
-	const Type* src = in.ptr<Type>();
-	Type* dst = out.ptr<Type>();
+	const Type* src = in.cv::Mat::ptr<Type>();
+	Type* dst = out.cv::Mat::ptr<Type>();
 
 	// Use a dispatch table to make most convolutions used in practice use the
 	// fast path.
@@ -2857,7 +2770,7 @@ bool Save(const TVertex<TYPE,COLOR_TYPE>* data, size_t size, const String& fileN
 // dist_func - 0 for exp(-(I-J)^2/sigma^2) and 1 for 1/(|I-J|^sigma+eps)
 // sigma - sets the range scale used in the pixel-range distance function
 template <typename TYPE, int TABLE_LEN>
-TWavelets<TYPE,TABLE_LEN>::TWavelets(DistanceType distType, TYPE alpha, TYPE eps=TYPE(0.0001)) {
+TWavelets<TYPE,TABLE_LEN>::TWavelets(DistanceType distType, TYPE alpha, TYPE eps) {
 	// initiates distance table
 	switch (distType) {
 	case DT_EXP:
@@ -2900,7 +2813,6 @@ template <typename TYPE, int TABLE_LEN>
 template <class WAVELET_TYPE, typename PIXEL_TYPE>
 void TWavelets<TYPE,TABLE_LEN>::ForwardTransform(const TImage<PIXEL_TYPE>& image, TDMatrix< TImage<typename WAVELET_TYPE::Type> >& A, TDMatrix< TImage<typename WAVELET_TYPE::Type> >& W, WAVELET_TYPE& wavelet, size_t nlevels)
 {
-	typedef typename WAVELET_TYPE::Type TYPE;
 	typedef TImage<TYPE> IMAGE_TYPE;
 	const int nc = cv::DataType<PIXEL_TYPE>::channels;
 	A.construct(nlevels+1, nc);
@@ -2908,7 +2820,7 @@ void TWavelets<TYPE,TABLE_LEN>::ForwardTransform(const TImage<PIXEL_TYPE>& image
 	// extract image channels
 	MatArr channels(nc);
 	cv::split(image, channels.Begin());
-	if (cv::DataType<cv::DataType<PIXEL_TYPE>::channel_type>::type < CV_32F) {
+	if (cv::DataType<typename cv::DataType<PIXEL_TYPE>::channel_type>::type < CV_32F) {
 		// cast image channels to the working format
 		FOREACHPTR(pImage, channels)
 			pImage->convertTo(*pImage, cv::DataType<TYPE>::type, TYPE(1)/TYPE(255));
@@ -2937,7 +2849,6 @@ template <typename TYPE, int TABLE_LEN>
 template <class WAVELET_TYPE, typename PIXEL_TYPE>
 void TWavelets<TYPE,TABLE_LEN>::BackwardTransform(const TDMatrix< TImage<typename WAVELET_TYPE::Type> >& A, const TDMatrix< TImage<typename WAVELET_TYPE::Type> >& W, TImage<PIXEL_TYPE>& image, WAVELET_TYPE& wavelet)
 {
-	typedef typename WAVELET_TYPE::Type TYPE;
 	typedef TImage<TYPE> IMAGE_TYPE;
 	const int nc = A.cols;
 	const int nlevels = W.rows;
@@ -2955,7 +2866,7 @@ void TWavelets<TYPE,TABLE_LEN>::BackwardTransform(const TDMatrix< TImage<typenam
 			wavelet.Compose(A, W(i,c), OA);
 		}
 	}
-	if (cv::DataType<cv::DataType<PIXEL_TYPE>::channel_type>::type < CV_32F) {
+	if (cv::DataType<typename cv::DataType<PIXEL_TYPE>::channel_type>::type < CV_32F) {
 		// cast image channels to the desired format
 		FOREACHPTR(pImage, channels) {
 			cv::Mat& channel = *pImage;
@@ -4120,8 +4031,7 @@ namespace boost {
 			split_free(ar, t, file_version);
 		}
 		template<typename _Tp>
-		struct version< cv::Mat_<_Tp> >
-		{
+		struct version< cv::Mat_<_Tp> > {
 			typedef mpl::int_<1> type;
 			typedef mpl::integral_c_tag tag;
 			BOOST_STATIC_CONSTANT(unsigned int, value = version::type::value);
@@ -4129,50 +4039,43 @@ namespace boost {
 
 		// Serialization support for cv::Matx
 		template<class Archive, typename _Tp, int m, int n>
-		void serialize(Archive& ar, cv::Matx<_Tp, m, n>& _m, const unsigned int version)
-		{
+		void serialize(Archive& ar, cv::Matx<_Tp, m, n>& _m, const unsigned int version) {
 			ar & _m.val;
 		}
 
 		// Serialization support for cv::Vec
 		template<class Archive, typename _Tp, int cn>
-		void serialize(Archive& ar, cv::Vec<_Tp, cn>& v, const unsigned int version)
-		{
+		void serialize(Archive& ar, cv::Vec<_Tp, cn>& v, const unsigned int version) {
 			ar & boost::serialization::base_object<cv::Matx<_Tp, cn, 1> >(v);
 		}
 
 		// Serialization support for cv::Point_
 		template<class Archive, typename _Tp>
-		void serialize(Archive& ar, cv::Point_<_Tp>& pt, const unsigned int version)
-		{
+		void serialize(Archive& ar, cv::Point_<_Tp>& pt, const unsigned int version) {
 			ar & pt.x & pt.y;
 		}
 
 		// Serialization support for cv::Point3_
 		template<class Archive, typename _Tp>
-		void serialize(Archive& ar, cv::Point3_<_Tp>& pt, const unsigned int version)
-		{
+		void serialize(Archive& ar, cv::Point3_<_Tp>& pt, const unsigned int version) {
 			ar & pt.x & pt.y & pt.z;
 		}
 
 		// Serialization support for cv::Size_
 		template<class Archive, typename _Tp>
-		void serialize(Archive& ar, cv::Size_<_Tp>& sz, const unsigned int version)
-		{
+		void serialize(Archive& ar, cv::Size_<_Tp>& sz, const unsigned int version) {
 			ar & sz.width & sz.height;
 		}
 
 		// Serialization support for cv::Rect_
 		template<class Archive, typename _Tp>
-		void serialize(Archive& ar, cv::Rect_<_Tp>& rc, const unsigned int version)
-		{
+		void serialize(Archive& ar, cv::Rect_<_Tp>& rc, const unsigned int version) {
 			ar & rc.x & rc.y & rc.width & rc.height;
 		}
 
 		// Serialization support for cv::KeyPoint
 		template<class Archive>
-		void serialize(Archive& ar, cv::KeyPoint& k, const unsigned int version)
-		{
+		void serialize(Archive& ar, cv::KeyPoint& k, const unsigned int version) {
 			ar & k.pt;
 			ar & k.size;
 			ar & k.angle;
@@ -4183,8 +4086,7 @@ namespace boost {
 
 		// Serialization support for cv::DMatch
 		template<class Archive>
-		void serialize(Archive& ar, cv::DMatch& m, const unsigned int version)
-		{
+		void serialize(Archive& ar, cv::DMatch& m, const unsigned int version) {
 			ar & m.queryIdx;
 			ar & m.trainIdx;
 			ar & m.imgIdx;

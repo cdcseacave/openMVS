@@ -71,6 +71,10 @@ public:
 	inline Mesh() {}
 
 	void Release();
+
+	// file IO
+	bool Load(const String& fileName);
+	bool Save(const String& fileName, bool bBinary=true) const;
 };
 /*----------------------------------------------------------------*/
 

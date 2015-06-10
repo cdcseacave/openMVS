@@ -1,5 +1,5 @@
 /*
- * ImportDataOpenMVG.cpp
+ * InterfaceOpenMVG.cpp
  *
  * Copyright (c) 2014-2015 FOXEL SA - http://foxel.ch
  * Please read <http://foxel.ch/license> for more information.
@@ -43,7 +43,9 @@
 
 // D E F I N E S ///////////////////////////////////////////////////
 
-#define APPNAME _T("ImportDataOpenMVG")
+#define APPNAME _T("InterfaceOpenMVG")
+#define MVS_EXT _T(".mvs")
+#define MVG_EXT _T(".baf")
 
 #define WORKING_FOLDER		OPT::strWorkingFolder // empty by default (current folder)
 #define WORKING_FOLDER_FULL	OPT::strWorkingFolderFull // full path to current folder
@@ -52,6 +54,7 @@
 // S T R U C T S ///////////////////////////////////////////////////
 
 namespace OPT {
+bool bOpenMVS2OpenMVG; // conversion direction
 String strListFileName; // image list file name
 String strInputFileName; // BAF file name of the input data
 String strOutputFileName; // file name of the mesh data
@@ -120,13 +123,14 @@ bool ImportScene(const std::string& sList_filename, const std::string& sBaf_file
 	{
 		std::ifstream file(sList_filename.c_str());
 		if (!file.good()) {
-			LOG_OUT() << "Unable to open file: " << sList_filename;
+			LOG_OUT() << "Unable to open file: " << sList_filename << std::endl;
+			return false;
 		}
 		Image image;
 		uint32_t count = 0;
 		while (file >> image.name >> image.id_camera >> image.id_pose) {
 			sceneBAF.images.push_back(image);
-			map_cam_pose_toViewId[std::make_pair(image.id_camera, image.id_pose)] = count;
+			map_cam_pose_toViewId[std::make_pair(image.id_camera, image.id_pose)] = count++;
 			LOG_OUT() << image.name << ' ' << image.id_camera << ' ' << image.id_pose << std::endl;
 		}
 	}
@@ -154,10 +158,8 @@ bool ImportScene(const std::string& sList_filename, const std::string& sBaf_file
 		// Read the intrinsics (only support reading Pinhole Radial 3).
 		{
 			for (uint32_t i = 0; i < num_intrinsics; ++i) {
-
 				double focal, ppx, ppy, k1, k2, k3;
 				file >> focal >> ppx >> ppy >> k1 >> k2 >> k3;
-
 				Camera cam;
 				cam.K <<
 					focal, 0, ppx,
@@ -173,16 +175,21 @@ bool ImportScene(const std::string& sList_filename, const std::string& sBaf_file
 			for (uint32_t i = 0; i < num_poses; ++i) {
 				Pose pose;
 				for (int j = 0; j < 9; ++j) {
-					file >> pose.R.array().operator()(j);
+					file >> pose.R.array()(j);
 				}
 				file >> pose.C[0] >> pose.C[1] >> pose.C[2];
+				#ifndef _RELEASE
 				LOG_OUT() << "\n" << pose.R << "\n\n" << pose.C.transpose() << std::endl;
+				#endif
 				sceneBAF.poses.push_back(pose);
 			}
 		}
 
 		// Read structure and visibility
 		{
+			#ifdef _RELEASE
+			Util::Progress progress(_T("Processed points"), num_points);
+			#endif
 			for (uint32_t i = 0; i < num_points; ++i) {
 				Vertex vertex;
 				file >> vertex.X[0] >> vertex.X[1] >> vertex.X[2];
@@ -192,22 +199,124 @@ bool ImportScene(const std::string& sList_filename, const std::string& sBaf_file
 					uint32_t id_intrinsics, id_pose;
 					double x, y;
 					file >> id_intrinsics >> id_pose >> x >> y;
-
+					#ifndef _RELEASE
 					LOG_OUT() << "observation:"
 						<< " " <<  id_intrinsics
 						<< " " <<  id_pose
-						<< " " << x << " " << y << "\n";
-
+						<< " " << x << " " << y << std::endl;
+					#endif
 					if (map_cam_pose_toViewId.find(std::make_pair(id_intrinsics, id_pose)) == map_cam_pose_toViewId.end()) {
 						LOG_OUT() << "Error" << std::endl;
 						continue;
 					}
 					const uint32_t id_view = map_cam_pose_toViewId.at(std::make_pair(id_intrinsics, id_pose));
 					vertex.views.push_back(id_view);
-
-					sceneBAF.vertices.push_back(vertex);
 				}
+				sceneBAF.vertices.push_back(vertex);
+				#ifdef _RELEASE
+				progress.display(i);
+				#endif
 			}
+			#ifdef _RELEASE
+			progress.close();
+			#endif
+		}
+	}
+	return true;
+}
+
+bool ExportScene(const std::string& sList_filename, const std::string& sBaf_filename, const SfM_Scene& sceneBAF)
+{
+	LOG_OUT() << "Writing:\n"
+		<< sList_filename << "\n"
+		<< sBaf_filename << std::endl;
+
+	// Write view list file (view filename, id_intrinsic, id_pose)
+	{
+		std::ofstream file(sList_filename.c_str());
+		if (!file.good()) {
+			LOG_OUT() << "Unable to open file: " << sList_filename << std::endl;
+			return false;
+		}
+		for (uint32_t i=0; i<sceneBAF.images.size(); ++i) {
+			const Image& image = sceneBAF.images[i];
+			file << image.name << ' ' << image.id_camera << ' ' << image.id_pose << std::endl;
+			LOG_OUT() << image.name << ' ' << image.id_camera << ' ' << image.id_pose << std::endl;
+		}
+	}
+
+	// Write BAF file
+	{
+		std::ofstream file(sBaf_filename.c_str());
+		if (!file.good()) {
+			LOG_OUT() << "Unable to open file: " << sBaf_filename << std::endl;
+			return false;
+		}
+
+		const uint32_t num_intrinsics = (uint32_t)sceneBAF.cameras.size();
+		const uint32_t num_poses = (uint32_t)sceneBAF.poses.size();
+		const uint32_t num_points = (uint32_t)sceneBAF.vertices.size();
+
+		LOG_OUT() << "Writing BAF file with:\n"
+			<< " num_intrinsics: " << num_intrinsics << "\n"
+			<< " num_poses: " << num_poses << "\n"
+			<< " num_points: " << num_points << "\n";
+
+		// Write header
+		file << num_intrinsics << std::endl;
+		file << num_poses << std::endl;
+		file << num_points << std::endl;
+
+		// Write the intrinsics (only support writing Pinhole Radial 3).
+		{
+			for (uint32_t i = 0; i < num_intrinsics; ++i) {
+				const Camera& cam = sceneBAF.cameras[i];
+				file << cam.K(0,0) << ' ' << cam.K(0,2) << ' ' << cam.K(1,2) << ' ' << 0 << ' ' << 0 << ' ' << 0 << std::endl;
+				LOG_OUT() << "\n" << cam.K << std::endl;
+			}
+		}
+
+		// Write poses
+		{
+			for (uint32_t i = 0; i < num_poses; ++i) {
+				const Pose& pose = sceneBAF.poses[i];
+				for (int j = 0; j < 9; ++j) {
+					file << pose.R.array()(j) << ' ';
+				}
+				file << pose.C[0] << ' ' << pose.C[1] << ' ' << pose.C[2] << std::endl;
+				#ifndef _RELEASE
+				LOG_OUT() << "\n" << pose.R << "\n\n" << pose.C.transpose() << std::endl;
+				#endif
+			}
+		}
+
+		// Write structure and visibility
+		{
+			#ifdef _RELEASE
+			Util::Progress progress(_T("Processed points"), num_points);
+			#endif
+			for (uint32_t i = 0; i < num_points; ++i) {
+				const Vertex& vertex = sceneBAF.vertices[i];
+				file << vertex.X[0] << ' ' << vertex.X[1] << ' ' << vertex.X[2] << std::endl;
+				const uint32_t num_observations_for_point = (uint32_t)vertex.views.size();
+				file << num_observations_for_point << std::endl;
+				for (uint32_t j = 0; j < num_observations_for_point; ++j) {
+					const uint32_t id_view = vertex.views[j];
+					const Image& image = sceneBAF.images[id_view];
+					file << image.id_camera << ' ' << image.id_pose << ' ' << 0 << ' ' << 0 << std::endl;
+					#ifndef _RELEASE
+					LOG_OUT() << "observation:"
+						<< " " <<  image.id_camera
+						<< " " <<  image.id_pose << std::endl;
+					#endif
+				}
+				#ifdef _RELEASE
+				progress.display(i);
+				#endif
+			}
+			#ifdef _RELEASE
+			progress.close();
+			#endif
 		}
 	}
 	return true;
@@ -258,8 +367,14 @@ bool ParseCmdLine(size_t argc, LPCTSTR* argv)
 		return false;
 	Util::ensureValidPath(OPT::strOutputFileName);
 	Util::ensureUnifySlash(OPT::strOutputFileName);
-	if (OPT::strOutputFileName.IsEmpty())
-		OPT::strOutputFileName = Util::getFullFileName(OPT::strInputFileName) + _T("mvs");
+	OPT::bOpenMVS2OpenMVG = (Util::getFileExt(OPT::strInputFileName) == MVS_EXT);
+	if (OPT::bOpenMVS2OpenMVG) {
+		if (OPT::strOutputFileName.IsEmpty())
+			OPT::strOutputFileName = Util::getFullFileName(OPT::strInputFileName) + MVG_EXT;
+	} else {
+		if (OPT::strOutputFileName.IsEmpty())
+			OPT::strOutputFileName = Util::getFullFileName(OPT::strInputFileName) + MVS_EXT;
+	}
 	Util::ensureValidDirectoryPath(OPT::strWorkingFolder);
 	OPT::strWorkingFolderFull = Util::getFullPath(OPT::strWorkingFolder);
 	return true;
@@ -286,45 +401,99 @@ int main(int argc, LPCTSTR* argv)
 
 	TD_TIMER_START();
 
-	// read OpenMVG input data
-	openMVS::MVS_IO::SfM_Scene sceneBAF;
-	openMVS::MVS_IO::ImportScene(MAKE_PATH_SAFE(OPT::strListFileName), MAKE_PATH_SAFE(OPT::strInputFileName), sceneBAF);
+	if (OPT::bOpenMVS2OpenMVG) {
+		// read OpenMVS input data
+		MVS::Scene scene;
+		scene.Load(MAKE_PATH_SAFE(OPT::strInputFileName), OPT::strWorkingFolderFull);
 
-	// convert data from OpenMVG to OpemMVS
-	MVS::Scene scene;
-	for (const auto& cameraBAF: sceneBAF.cameras) {
-		MVS::Platform& platform = scene.platforms.AddEmpty();
-		MVS::Platform::Camera& camera = platform.cameras.AddEmpty();
-		camera.K = cameraBAF.K;
-		camera.R = RMatrix::IDENTITY;
-		camera.C = CMatrix::ZERO;
-	}
-	for (const auto& imageBAF: sceneBAF.images) {
-		openMVS::MVS_IO::Pose& poseBAF = sceneBAF.poses[imageBAF.id_pose];
-		MVS::Image& image = scene.images.AddEmpty();
-		image.name = imageBAF.name;
-		Util::ensureUnifySlash(image.name);
-		image.name = MAKE_PATH_FULL(WORKING_FOLDER_FULL, image.name);
-		image.platformID = imageBAF.id_camera;
-		MVS::Platform& platform = scene.platforms[image.platformID];
-		image.cameraID = 0;
-		image.poseID = (uint32_t)platform.poses.GetSize();
-		MVS::Platform::Pose& pose = platform.poses.AddEmpty();
-		pose.R = poseBAF.R;
-		pose.C = poseBAF.C;
-	}
-	for (const auto& vertexBAF: sceneBAF.vertices) {
-		MVS::PointCloud::Point& point = scene.pointcloud.points.AddEmpty();
-		point.X = vertexBAF.X.cast<float>();
-		for (const auto& viewBAF: vertexBAF.views) {
-			point.views.Insert(viewBAF);
+		// convert data from OpenMVS to OpenMVG
+		openMVS::MVS_IO::SfM_Scene sceneBAF;
+		FOREACH(p, scene.platforms) {
+			const MVS::Platform& platform = scene.platforms[p];
+			if (platform.cameras.GetSize() != 1) {
+				LOG("error: unsupported scene structure");
+				return false;
+			}
+			const MVS::Platform::Camera& camera = platform.cameras[0];
+			openMVS::MVS_IO::Camera cameraBAF;
+			cameraBAF.K = camera.K;
+			sceneBAF.cameras.push_back(cameraBAF);
 		}
+		FOREACH(i, scene.images) {
+			const MVS::Image& image = scene.images[i];
+			const MVS::Platform& platform = scene.platforms[image.platformID];
+			const MVS::Platform::Pose& pose = platform.poses[image.poseID];
+			openMVS::MVS_IO::Image imageBAF;
+			imageBAF.name = image.name;
+			imageBAF.name = MAKE_PATH_REL(WORKING_FOLDER_FULL, imageBAF.name);
+			imageBAF.id_camera = image.platformID;
+			imageBAF.id_pose = (uint32_t)sceneBAF.poses.size();
+			sceneBAF.images.push_back(imageBAF);
+			openMVS::MVS_IO::Pose poseBAF;
+			poseBAF.R = pose.R;
+			poseBAF.C = pose.C;
+			sceneBAF.poses.push_back(poseBAF);
+		}
+		sceneBAF.vertices.reserve(scene.pointcloud.points.GetSize());
+		FOREACH(p, scene.pointcloud.points) {
+			const MVS::PointCloud::Point& point = scene.pointcloud.points[p];
+			openMVS::MVS_IO::Vertex vertexBAF;
+			vertexBAF.X = ((const MVS::PointCloud::Position::EVec)point.X).cast<REAL>();
+			FOREACH(v, point.views) {
+				unsigned viewBAF = point.views[(uint32_t)v];
+				vertexBAF.views.push_back(viewBAF);
+			}
+			sceneBAF.vertices.push_back(vertexBAF);
+		}
+
+		// write OpenMVG input data
+		openMVS::MVS_IO::ExportScene(MAKE_PATH_SAFE(OPT::strListFileName), MAKE_PATH_SAFE(OPT::strOutputFileName), sceneBAF);
+
+		VERBOSE("Input data exported: %u cameras & %u poses & %u images & %u vertices (%s)", sceneBAF.cameras.size(), sceneBAF.poses.size(), sceneBAF.images.size(), sceneBAF.vertices.size(), TD_TIMER_GET_FMT().c_str());
+	} else {
+		// read OpenMVG input data
+		openMVS::MVS_IO::SfM_Scene sceneBAF;
+		openMVS::MVS_IO::ImportScene(MAKE_PATH_SAFE(OPT::strListFileName), MAKE_PATH_SAFE(OPT::strInputFileName), sceneBAF);
+
+		// convert data from OpenMVG to OpenMVS
+		MVS::Scene scene;
+		scene.platforms.Reserve(sceneBAF.cameras.size());
+		for (const auto& cameraBAF: sceneBAF.cameras) {
+			MVS::Platform& platform = scene.platforms.AddEmpty();
+			MVS::Platform::Camera& camera = platform.cameras.AddEmpty();
+			camera.K = cameraBAF.K;
+			camera.R = RMatrix::IDENTITY;
+			camera.C = CMatrix::ZERO;
+		}
+		scene.images.Reserve(sceneBAF.images.size());
+		for (const auto& imageBAF: sceneBAF.images) {
+			openMVS::MVS_IO::Pose& poseBAF = sceneBAF.poses[imageBAF.id_pose];
+			MVS::Image& image = scene.images.AddEmpty();
+			image.name = imageBAF.name;
+			Util::ensureUnifySlash(image.name);
+			image.name = MAKE_PATH_FULL(WORKING_FOLDER_FULL, image.name);
+			image.platformID = imageBAF.id_camera;
+			MVS::Platform& platform = scene.platforms[image.platformID];
+			image.cameraID = 0;
+			image.poseID = (uint32_t)platform.poses.GetSize();
+			MVS::Platform::Pose& pose = platform.poses.AddEmpty();
+			pose.R = poseBAF.R;
+			pose.C = poseBAF.C;
+		}
+		scene.pointcloud.points.Reserve(sceneBAF.vertices.size());
+		for (const auto& vertexBAF: sceneBAF.vertices) {
+			MVS::PointCloud::Point& point = scene.pointcloud.points.AddEmpty();
+			point.X = vertexBAF.X.cast<float>();
+			for (const auto& viewBAF: vertexBAF.views) {
+				point.views.Insert(viewBAF);
+			}
+		}
+
+		// write OpenMVS input data
+		scene.Save(MAKE_PATH_SAFE(OPT::strOutputFileName), OPT::strWorkingFolderFull);
+
+		VERBOSE("Input data imported: %u cameras & %u poses & %u images & %u vertices (%s)", sceneBAF.cameras.size(), sceneBAF.poses.size(), sceneBAF.images.size(), sceneBAF.vertices.size(), TD_TIMER_GET_FMT().c_str());
 	}
-
-	// write OpenMVS input data
-	scene.Save(MAKE_PATH_SAFE(OPT::strOutputFileName), OPT::strWorkingFolderFull);
-
-	VERBOSE("Input data imported: %u cameras & %u poses & %u images & %u vertices (%s)", sceneBAF.cameras.size(), sceneBAF.poses.size(), sceneBAF.images.size(), sceneBAF.vertices.size(), TD_TIMER_GET_FMT().c_str());
 
 	#if TD_VERBOSE != TD_VERBOSE_OFF
 	// print memory statistics

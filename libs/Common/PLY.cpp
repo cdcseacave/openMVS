@@ -21,7 +21,7 @@ using namespace SEACAVE;
 #define OTHER_PROP       0
 #define NAMED_PROP       1
 
-#define abort_ply(szFormat, ...) { VERBOSE(szFormat, __VA_ARGS__); exit(-1); }
+#define abort_ply(...)   { VERBOSE(__VA_ARGS__); exit(-1); }
 
 
 // S T R U C T S ///////////////////////////////////////////////////
@@ -286,11 +286,11 @@ bool PLY::header_complete()
 
 	/* write out the comments */
 	for (int i = 0; i < this->comments.size(); i++)
-		fp->print("comment %s\n", this->comments[i]);
+		fp->print("comment %s\n", this->comments[i].c_str());
 
 	/* write out object information */
 	for (int i = 0; i < this->obj_info.size(); i++)
-		fp->print("obj_info %s\n", this->obj_info[i]);
+		fp->print("obj_info %s\n", this->obj_info[i].c_str());
 
 	/* write out information about each element */
 	for (int i = 0; i < this->elems.size(); i++) {
@@ -2418,10 +2418,10 @@ void* PLY::get_new_props()
 	vals.resize(rules->props.size());
 
 	/* in case we need a random choice */
-	random_pick = FLOOR2INT(random() * rules->props.size());
+	random_pick = FLOOR2INT(SEACAVE::random() * rules->props.size());
 
 	/* calculate the combination for each "other" property of the element */
-	for (int i = 0; i < elem->props.size(); i++) {
+	for (size_t i = 0; i < elem->props.size(); i++) {
 
 		/* don't bother with properties we've been asked to store explicitly */
 		if (elem->store_prop[i])
@@ -2432,7 +2432,7 @@ void* PLY::get_new_props()
 		type = prop->external_type;
 
 		/* collect together all the values we're to combine */
-		for (int j = 0; j < rules->props.size(); j++) {
+		for (size_t j = 0; j < rules->props.size(); j++) {
 			char* data = (char *)rules->props[j];
 			void* ptr = (void *)(data + offset);
 			get_stored_item((void *)ptr, type, &int_val, &uint_val, &double_val);
@@ -2444,7 +2444,7 @@ void* PLY::get_new_props()
 		case AVERAGE_RULE: {
 			double sum = 0;
 			double weight_sum = 0;
-			for (int j = 0; j < rules->props.size(); j++) {
+			for (size_t j = 0; j < rules->props.size(); j++) {
 				sum += vals[j] * rules->weights[j];
 				weight_sum += rules->weights[j];
 			}
@@ -2453,14 +2453,14 @@ void* PLY::get_new_props()
 						   }
 		case MINIMUM_RULE: {
 			double_val = vals[0];
-			for (int j = 1; j < rules->props.size(); j++)
+			for (size_t j = 1; j < rules->props.size(); j++)
 				if (double_val > vals[j])
 					double_val = vals[j];
 			break;
 						   }
 		case MAXIMUM_RULE: {
 			double_val = vals[0];
-			for (int j = 1; j < rules->props.size(); j++)
+			for (size_t j = 1; j < rules->props.size(); j++)
 				if (double_val < vals[j])
 					double_val = vals[j];
 			break;
@@ -2471,7 +2471,7 @@ void* PLY::get_new_props()
 						  }
 		case SAME_RULE: {
 			double_val = vals[0];
-			for (int j = 1; j < rules->props.size(); j++)
+			for (size_t j = 1; j < rules->props.size(); j++)
 				if (double_val != vals[j])
 					abort_ply("error: get_new_props: Error combining properties that should be the same");
 			break;

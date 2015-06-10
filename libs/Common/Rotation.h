@@ -302,11 +302,7 @@ public:
 	template <typename T> inline TRMatrixBase& operator = (const cv::Matx<T,3,3>& rhs) { BaseBase::operator = (rhs); return *this; }
 	inline TRMatrixBase& operator = (const cv::Mat& rhs) { BaseBase::operator = (rhs); return *this; }
 	#ifdef _USE_EIGEN
-	inline TRMatrixBase& operator = (const Base::EMat& rhs) { operator Base::EMat& () = rhs; return *this; }
-	#endif
-	#ifdef _USE_TOON
-	inline TRMatrixBase& operator = (const Base::TMat& rhs) { operator Base::TMat& () = rhs; return *this; }
-	inline TRMatrixBase& operator = (const Base::TVec& rhs) { operator Base::TVec& () = rhs; return *this; }
+	inline TRMatrixBase& operator = (const typename Base::EMat& rhs) { operator typename Base::EMat& () = rhs; return *this; }
 	#endif
 
 	/** @brief Set Euler angles (in rad) in order XYZ

@@ -183,9 +183,7 @@ public:
 	void			Close();
 	void			Pause();
 	void			Play();
-	void			Record(const String&); 
-	void			OpenStreambuf();
-	void			CloseStreambuf();
+	void			Record(const String&);
 
 private:
 	#ifdef _USE_COSOLEFILEHANDLES

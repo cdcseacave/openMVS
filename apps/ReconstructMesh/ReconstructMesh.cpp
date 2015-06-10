@@ -56,6 +56,7 @@ namespace OPT {
 String strInputFileName; // file name of the input data
 String strOutputFileName; // file name of the mesh data
 float fDistInsert; // minimum distance between the projection of two points to consider them different
+bool bUseFreeSpaceSupport; // exploit free-space support in order to try reconstruct weakly-represented surfaces
 String strWorkingFolder; // empty by default (current folder)
 String strWorkingFolderFull; // full path to current folder
 } // namespace OPT
@@ -66,6 +67,7 @@ String strWorkingFolderFull; // full path to current folder
 bool ParseCmdLine(size_t argc, LPCTSTR* argv)
 {
 	OPT::fDistInsert = 2.f;
+	OPT::bUseFreeSpaceSupport = true;
 	bool bPrintHelp(false);
 	String strCmdLine;
 	for (size_t i=1; i<argc; ++i) {
@@ -80,6 +82,9 @@ bool ParseCmdLine(size_t argc, LPCTSTR* argv)
 		} else if (PARAM_EQUAL(dist) || PARAM_EQUAL(d)) {
 			param = strchr(param, '=')+1;
 			OPT::fDistInsert = (float)atof(param);
+		} else if (PARAM_EQUAL(fss)) {
+			param = strchr(param, '=')+1;
+			OPT::bUseFreeSpaceSupport = (atoi(param) != 0);
 		} else if (PARAM_EQUAL(workdir) || PARAM_EQUAL(w)) {
 			param = strchr(param, '=')+1;
 			OPT::strWorkingFolder = param;
@@ -95,6 +100,7 @@ bool ParseCmdLine(size_t argc, LPCTSTR* argv)
 			"\t-input= or -i=<input_filename> for setting the input filename containing camera poses and image list\n"
 			"\t-output= or -o=<output_filename> for setting the output filename for storing the mesh and texture\n"
 			"\t-dist= or -d=<distance_insert> for setting the minimum distance between the projection of two 3D points to consider them different (default 2 pixels)\n"
+			"\t-fss=<free_space_support> for exploiting free-space support in order to try reconstruct weakly-represented surfaces (default on)\n"
 			"\t-workdir= or -w=<folder_path> for setting the working directory (default current directory)\n"
 			"\t-help or -h or -? for displaying this message"
 		);
@@ -103,7 +109,7 @@ bool ParseCmdLine(size_t argc, LPCTSTR* argv)
 	Util::ensureValidPath(OPT::strOutputFileName);
 	Util::ensureUnifySlash(OPT::strOutputFileName);
 	if (OPT::strOutputFileName.IsEmpty())
-		OPT::strOutputFileName = Util::getFullFileName(OPT::strInputFileName) + _T("ply");
+		OPT::strOutputFileName = Util::getFullFileName(OPT::strInputFileName) + _T(".ply");
 	Util::ensureValidDirectoryPath(OPT::strWorkingFolder);
 	OPT::strWorkingFolderFull = Util::getFullPath(OPT::strWorkingFolder);
 	return true;
@@ -131,9 +137,11 @@ int main(int argc, LPCTSTR* argv)
 
 	Scene scene;
 	scene.Load(MAKE_PATH_SAFE(OPT::strInputFileName), OPT::strWorkingFolderFull);
-	scene.ReconstructMesh(OPT::fDistInsert);
+	scene.ReconstructMesh(OPT::fDistInsert, OPT::bUseFreeSpaceSupport);
 	
 	VERBOSE("Mesh reconstruction completed: %u vertices & %u faces (%s)", scene.mesh.vertices.GetSize(), scene.mesh.faces.GetSize(), TD_TIMER_GET_FMT().c_str());
+
+	scene.mesh.Save(MAKE_PATH_SAFE(OPT::strOutputFileName));
 
 	#if TD_VERBOSE != TD_VERBOSE_OFF
 	// print memory statistics

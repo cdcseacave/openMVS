@@ -57,7 +57,7 @@ class PointCloud
 {
 public:
 	typedef TPoint3<float> Position;
-	typedef SEACAVE::cList<uint32_t,uint32_t,0,4,uint32_t> ViewArr;
+	typedef SEACAVE::cList<uint32_t,const uint32_t,0,4,uint32_t> ViewArr;
 	struct Point {
 		Position X;
 		ViewArr views;
@@ -66,7 +66,7 @@ public:
 	typedef Pixel8U Color;
 	typedef float Weight;
 
-	typedef SEACAVE::cList<Point,const Point&,2> PointArr;
+	typedef SEACAVE::cList<Point,const Point&,2,8192> PointArr;
 	typedef CLISTDEF0(Normal) NormalArr;
 	typedef CLISTDEF0(Color) ColorArr;
 	typedef CLISTDEF0(Weight) WeightArr;

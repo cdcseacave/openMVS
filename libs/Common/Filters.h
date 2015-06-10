@@ -567,7 +567,7 @@ public:
 	bool		setPos(size_f_t wpos) {
 		eos = false;
 		pos = TOKEN_MAXBUF;
-		return s->setPos(wpos);
+		return this->s->setPos(wpos);
 	}
 
 	size_f_t	getPos() const {
@@ -581,7 +581,7 @@ public:
 		return eos;
 	}
 
-	InputStream* getInputStream(int typ) { return (typ == LAYER_TOKEN ? this : s->getInputStream(typ)); }
+	InputStream* getInputStream(int typ) { return (typ == LAYER_TOKEN ? this : this->s->getInputStream(typ)); }
 
 private:
 	uint8_t buf[TOKEN_MAXBUF+TOKEN_SIZE];

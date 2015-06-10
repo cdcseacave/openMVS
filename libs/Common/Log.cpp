@@ -151,11 +151,10 @@ void Log::_Record(UINT lt, LPCTSTR szFormat, va_list args)
 	#endif
 	if (_vsntprintf(szBuffer, 2047, szFormat, args) == -1) {
 		// not enough space for the full string, reprint dynamically
-		m_message.Format("%s [%s] %s\r\n", szTime, logType, String::FormatStringSafe(szFormat, args).c_str());
+		m_message.FormatSafe("%s [%s] %s" LINE_SEPARATOR_STR, szTime, logType, String::FormatStringSafe(szFormat, args).c_str());
 	} else {
 		// enough space for all the string, print directly
-		szBuffer[2047] = 0;
-		m_message.Format("%s [%s] %s\r\n", szTime, logType, szBuffer);
+		m_message.Format("%s [%s] %s" LINE_SEPARATOR_STR, szTime, logType, szBuffer);
 	}
 	TRACE(m_message);
 
@@ -251,9 +250,9 @@ public:
 LogConsole::LogConsole()
 	:
 	#ifdef _USE_COSOLEFILEHANDLES
-	m_fileOut(NULL), m_fileIn(NULL), m_fileErr(NULL),
+	m_fileIn(NULL), m_fileOut(NULL), m_fileErr(NULL),
 	#else
-	m_fileOut(-1), m_fileIn(-1), m_fileErr(-1),
+	m_fileIn(-1), m_fileOut(-1), m_fileErr(-1),
 	#endif
 	m_cout(NULL), m_coutOld(NULL),
 	m_cerr(NULL), m_cerrOld(NULL),
@@ -274,19 +273,26 @@ bool LogConsole::IsOpen() const
 
 void LogConsole::Open()
 {
-	if (m_fileOut > 0)
-		return; 
-
-	// capture std::cout and std::cerr
-	OpenStreambuf();
+	if (IsOpen())
+		return;
 
 	// allocate a console for this app
 	bManageConsole = (AllocConsole()!=FALSE?true:false);
 
+	// capture std::cout and std::cerr
+	if (bManageConsole && !m_cout) {
+		// set std::cout to use our custom streambuf
+		m_cout = new LogConsoleOutbuf;
+		m_coutOld = std::cout.rdbuf(m_cout);
+		// use same buffer for std::cerr as well
+		m_cerr = NULL;
+		m_cerrOld = std::cerr.rdbuf(m_cout);
+	}
+
 	// set the screen buffer to be big enough to let us scroll text
 	CONSOLE_SCREEN_BUFFER_INFO coninfo;
 	GetConsoleScreenBufferInfo(GetStdHandle(STD_OUTPUT_HANDLE), &coninfo);
-	coninfo.dwSize.X = MAX_CONSOLE_WIDTH;
+	coninfo.dwSize.X = MAX_CONSOLE_WIDTH; // does not resize the console window
 	coninfo.dwSize.Y = MAX_CONSOLE_LINES;
 	SetConsoleScreenBufferSize(GetStdHandle(STD_OUTPUT_HANDLE), coninfo.dwSize);
 
@@ -358,19 +364,6 @@ void LogConsole::Open()
 	GET_LOG().RegisterListener(bind(&LogConsole::Record, this));
 }
 
-void LogConsole::OpenStreambuf()
-{
-	if (m_cout)
-		return;
-
-	// set std::cout to use our custom streambuf
-	m_cout = new LogConsoleOutbuf;
-	m_coutOld = std::cout.rdbuf(m_cout);
-	// use same buffer for std::cerr as well
-	m_cerr = NULL;
-	m_cerrOld = std::cerr.rdbuf(m_cout);
-}
-
 void LogConsole::Close()
 {
 	if (!IsOpen())
@@ -396,28 +389,23 @@ void LogConsole::Close()
 	m_fileErr = -1;
 	#endif
 	// close console
-	if (bManageConsole)
+	if (bManageConsole) {
+		if (m_cout) {
+			// set std::cout to the original streambuf
+			std::cout.rdbuf(m_coutOld);
+			std::cerr.rdbuf(m_cerrOld);
+			delete m_cout; m_cout = NULL;
+		}
 		FreeConsole();
-	CloseStreambuf();
+	}
 	#ifndef _USE_COSOLEFILEHANDLES
 	std::ios::sync_with_stdio();
 	#endif
 }
 
-void LogConsole::CloseStreambuf()
-{
-	if (!m_cout)
-		return;
-
-	// set std::cout to the original streambuf
-	std::cout.rdbuf(m_coutOld);
-	std::cerr.rdbuf(m_cerrOld);
-	delete m_cout; m_cout = NULL;
-}
-
 void LogConsole::Record(const String& msg)
 {
-	ASSERT(m_fileOut != NULL);
+	ASSERT(IsOpen());
 	printf(msg);
 	fflush(stdout);
 }
@@ -426,31 +414,27 @@ void LogConsole::Record(const String& msg)
 
 void LogConsole::Open()
 {
-	if (m_fileOut > 0)
+	if (IsOpen())
 		return;
-}
-
-void LogConsole::OpenStreambuf()
-{
-	if (m_cout)
-		return;
+	++m_fileIn;
+	// register with our log system
+	GET_LOG().RegisterListener(bind(&LogConsole::Record, this));
 }
 
 void LogConsole::Close()
 {
 	if (!IsOpen())
 		return;
-}
-
-void LogConsole::CloseStreambuf()
-{
-	if (!m_cout)
-		return;
+	// unregister with our log system
+	GET_LOG().UnregisterListener(bind(&LogConsole::Record, this));
+	--m_fileIn;
 }
 
 void LogConsole::Record(const String& msg)
 {
-	ASSERT(m_fileOut != NULL);
+	ASSERT(IsOpen());
+	printf(_T("%s"), msg.c_str());
+	fflush(stdout);
 }
 
 #endif // _MSC_VER

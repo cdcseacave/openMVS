@@ -86,8 +86,6 @@ namespace boost { void throw_exception(std::exception const&); }
 #include <boost/serialization/list.hpp>
 #include <boost/serialization/map.hpp>
 #include <boost/serialization/set.hpp>
-#include <boost/serialization/hash_map.hpp>
-#include <boost/serialization/hash_set.hpp>
 #include <boost/serialization/unordered_map.hpp>
 #include <boost/serialization/unordered_set.hpp>
 #include <boost/serialization/nvp.hpp>
@@ -218,6 +216,7 @@ typedef LPCSTR				LPCTSTR;
 
 #define _tcslen         	strlen
 #define _tcscpy         	strcpy
+#define _tcsncpy         	strncpy
 #define _tcschr         	strchr
 #define _tcsrchr         	strrchr
 #define _tcscmp         	strcmp
@@ -227,7 +226,7 @@ typedef LPCSTR				LPCTSTR;
 #define _tcsncicmp(s1,s2,s) strncasecmp(s1, s2, (s)*sizeof(TCHAR))
 #define _stprintf           sprintf
 #define _sntprintf          snprintf
-#define _vsntprintf         snprintf
+#define _vsntprintf         vsnprintf
 
 #define _T(s)               s
 #endif //_MSC_VER
@@ -383,6 +382,7 @@ typedef class GENERAL_API cList<double, double, 0>      DoubleArr;
 #include "SML.h"
 #include "ConfigTable.h"
 #include "HTMLDoc.h"
+#include "PLY.h"
 
 
 // D E F I N E S ///////////////////////////////////////////////////
@@ -1219,10 +1219,10 @@ inline bool   ISZERO(double x)				{ return ABS(x) < ZERO_TOLERANCE; }
 inline bool   ISEQUAL(float  x, float  v)	{ return Float(x).IsEqual(v); }
 inline bool   ISEQUAL(double x, double v)	{ return ABS(x-v) < ZERO_TOLERANCE; }
 
-inline float  INVZERO(float  x)				{ return FINV_ZERO; }
-inline double INVZERO(double x)				{ return INV_ZERO; }
+inline float  INVZERO(float)				{ return FINV_ZERO; }
+inline double INVZERO(double)				{ return INV_ZERO; }
 template<typename _Tp>
-inline _Tp    INVZERO(_Tp    x)				{ return std::numeric_limits<_Tp>::max(); }
+inline _Tp    INVZERO(_Tp)					{ return std::numeric_limits<_Tp>::max(); }
 
 template<typename _Tp>
 inline _Tp    INVERT(_Tp    x)				{ return (x==_Tp(0) ? INVZERO(x) : _Tp(1)/x); }
@@ -1259,6 +1259,7 @@ public:
 	#endif
 
 	using Base::x;
+	using Base::y;
 
 	static const TPoint2 ZERO;
 	static const TPoint2 INF;
@@ -1266,7 +1267,7 @@ public:
 public:
 	inline TPoint2() {}
 	inline TPoint2(const Size& rhs) : Base(rhs) {}
-	template <typename T> inline TPoint2(const cv::Point_<T>& rhs) : Base(rhs) {}
+	template <typename T> inline TPoint2(const cv::Point_<T>& rhs) : Base((Type)rhs.x,(Type)rhs.y) {}
 	template <typename T> inline TPoint2(const cv::Matx<T,2,1>& rhs) : Base(rhs(0),rhs(1)) {}
 	template <typename T> inline TPoint2(const cv::Matx<T,1,2>& rhs) : Base(rhs(0),rhs(1)) {}
 	#ifdef _USE_EIGEN
@@ -1349,13 +1350,15 @@ public:
 	#endif
 
 	using Base::x;
+	using Base::y;
+	using Base::z;
 
 	static const TPoint3 ZERO;
 	static const TPoint3 INF;
 
 public:
 	inline TPoint3() {}
-	template <typename T> inline TPoint3(const cv::Point3_<T>& rhs) : Base(rhs) {}
+	template <typename T> inline TPoint3(const cv::Point3_<T>& rhs) : Base((Type)rhs.x,(Type)rhs.y,(Type)rhs.z) {}
 	template <typename T> inline TPoint3(const cv::Matx<T,3,1>& rhs) : Base(rhs(0),rhs(1),rhs(2)) {}
 	template <typename T> inline TPoint3(const cv::Matx<T,1,3>& rhs) : Base(rhs(0),rhs(1),rhs(2)) {}
 	#ifdef _USE_EIGEN
@@ -1552,7 +1555,7 @@ public:
 	}
 
 	/// Set all elements to the given value
-	inline void memset(uint8_t v) { ASSERT(dims == 2 && isContinuous()); ::memset(data, v, row_stride()*rows); }
+	inline void memset(uint8_t v) { ASSERT(dims == 2 && cv::Mat::isContinuous()); ::memset(data, v, row_stride()*rows); }
 	inline void fill(const TYPE& v) { ASSERT(dims == 2); for (int i=0; i<rows; ++i) for (int j=0; j<cols; ++j) cv::Mat::at<TYPE>(i,j) = v; }
 
 	/// What is the row stride of the matrix?
@@ -1654,13 +1657,13 @@ public:
 	}
 
 	/// pointer to the beginning of the matrix data
-	inline const TYPE* getData() const { ASSERT(isContinuous()); return (const TYPE*)data; }
-	inline TYPE* getData() { ASSERT(isContinuous()); return (TYPE*)data; }
+	inline const TYPE* getData() const { ASSERT(cv::Mat::isContinuous()); return (const TYPE*)data; }
+	inline TYPE* getData() { ASSERT(cv::Mat::isContinuous()); return (TYPE*)data; }
 
 	#ifdef _USE_EIGEN
 	// Access point as Eigen::Map equivalent
-	inline operator const EMatMap () const { ASSERT(isContinuous()); return EMatMap((TYPE*)data, rows, cols); }
-	inline operator EMatMap () { ASSERT(isContinuous()); return EMatMap((TYPE*)data, rows, cols); }
+	inline operator const EMatMap () const { ASSERT(cv::Mat::isContinuous()); return EMatMap((TYPE*)data, rows, cols); }
+	inline operator EMatMap () { ASSERT(cv::Mat::isContinuous()); return EMatMap((TYPE*)data, rows, cols); }
 	#endif
 
 	#ifdef _USE_BOOST
@@ -1680,6 +1683,7 @@ typedef TDMatrix<uint32_t> DMatrix32U;
 typedef TDMatrix<float> DMatrix32F;
 typedef TDMatrix<double> DMatrix64F;
 typedef SEACAVE::cList<DMatrix, const DMatrix&, 2> DMatrixArr;
+typedef SEACAVE::cList<cv::Mat, const cv::Mat&, 2> MatArr;
 /*----------------------------------------------------------------*/
 
 
@@ -1848,17 +1852,17 @@ struct TPixel {
 	inline bool operator==(const TPixel& col) const { return (memcmp(c, col.c, sizeof(TPixel)) == 0); }
 	inline bool operator!=(const TPixel& col) const { return (memcmp(c, col.c, sizeof(TPixel)) != 0); }
 	// operators
+	inline TPixel operator*(const TPixel& v) const { return TPixel(r*v.r, g*v.g, b*v.b); }
 	template<typename T> inline TPixel operator*(T v) const { return TPixel((TYPE)(v*r), (TYPE)(v*g), (TYPE)(v*b)); }
-	template<> inline TPixel operator*(TPixel v) const { return TPixel(r*v.r, g*v.g, b*v.b); }
 	template<typename T> inline TPixel& operator*=(T v) { return (*this = operator*(v)); }
+	inline TPixel operator/(const TPixel& v) const { return TPixel(r/v.r, g/v.g, b/v.b); }
 	template<typename T> inline TPixel operator/(T v) const { return operator*(T(1)/v); }
-	template<> inline TPixel operator/(TPixel v) const { return TPixel(r/v.r, g/v.g, b/v.b); }
 	template<typename T> inline TPixel& operator/=(T v) { return (*this = operator/(v)); }
+	inline TPixel operator+(const TPixel& v) const { return TPixel(r+v.r, g+v.g, b+v.b); }
 	template<typename T> inline TPixel operator+(T v) const { return TPixel((TYPE)(r+v), (TYPE)(g+v), (TYPE)(b+v)); }
-	template<> inline TPixel operator+(TPixel v) const { return TPixel(r+v.r, g+v.g, b+v.b); }
 	template<typename T> inline TPixel& operator+=(T v) { return (*this = operator+(v)); }
+	inline TPixel operator-(const TPixel& v) const { return TPixel(r-v.r, g-v.g, b-v.b); }
 	template<typename T> inline TPixel operator-(T v) const { return TPixel((TYPE)(r-v), (TYPE)(g-v), (TYPE)(b-v)); }
-	template<> inline TPixel operator-(TPixel v) const { return TPixel(r-v.r, g-v.g, b-v.b); }
 	template<typename T> inline TPixel& operator-=(T v) { return (*this = operator-(v)); }
 	#ifdef _USE_BOOST
 	// serialize
@@ -1946,17 +1950,17 @@ struct TColor {
 	inline bool operator==(const TColor& col) const { return (memcmp(c, col.c, sizeof(TColor)) == 0); }
 	inline bool operator!=(const TColor& col) const { return (memcmp(c, col.c, sizeof(TColor)) != 0); }
 	// operators
+	inline TColor operator*(const TColor& v) const { return TColor(r*v.r, g*v.g, b*v.b, a*v.a); }
 	template<typename T> inline TColor operator*(T v) const { return TColor((TYPE)(v*r), (TYPE)(v*g), (TYPE)(v*b), (TYPE)(v*a)); }
-	template<> inline TColor operator*(TColor v) const { return TColor(r*v.r, g*v.g, b*v.b, a*v.a); }
 	template<typename T> inline TColor& operator*=(T v) { return (*this = operator*(v)); }
+	inline TColor operator/(const TColor& v) const { return TColor(r/v.r, g/v.g, b/v.b, a/v.a); }
 	template<typename T> inline TColor operator/(T v) const { return operator*(T(1)/v); }
-	template<> inline TColor operator/(TColor v) const { return TColor(r/v.r, g/v.g, b/v.b, a/v.a); }
 	template<typename T> inline TColor& operator/=(T v) { return (*this = operator/(v)); }
+	inline TColor operator+(const TColor& v) const { return TColor(r+v.r, g+v.g, b+v.b, a+v.a); }
 	template<typename T> inline TColor operator+(T v) const { return TColor((TYPE)(r+v), (TYPE)(g+v), (TYPE)(b+v), (TYPE)(a+v)); }
-	template<> inline TColor operator+(TColor v) const { return TColor(r+v.r, g+v.g, b+v.b, a+v.a); }
 	template<typename T> inline TColor& operator+=(T v) { return (*this = operator+(v)); }
+	inline TColor operator-(const TColor& v) const { return TColor(r-v.r, g-v.g, b-v.b, a-v.a); }
 	template<typename T> inline TColor operator-(T v) const { return TColor((TYPE)(r-v), (TYPE)(g-v), (TYPE)(b-v), (TYPE)(a-v)); }
-	template<> inline TColor operator-(TColor v) const { return TColor(r-v.r, g-v.g, b-v.b, a-v.a); }
 	template<typename T> inline TColor& operator-=(T v) { return (*this = operator-(v)); }
 	inline operator DWORD () const { DWORD dwColor; get((uint8_t*)&dwColor); return dwColor; }
 	#ifdef _USE_BOOST
@@ -2117,19 +2121,19 @@ public:
 		tmp.d = data; data = m.data; m.data = tmp.d;
 	}
 
-	inline void and(const TBitMatrix& m) {
+	inline void And(const TBitMatrix& m) {
 		ASSERT(rows == m.rows && cols == m.cols);
 		int i = length();
 		while (i-- > 0)
 			data[i] &= m.data[i];
 	}
-	inline void or(const TBitMatrix& m) {
+	inline void Or(const TBitMatrix& m) {
 		ASSERT(rows == m.rows && cols == m.cols);
 		int i = length();
 		while (i-- > 0)
 			data[i] |= m.data[i];
 	}
-	inline void xor(const TBitMatrix& m) {
+	inline void XOr(const TBitMatrix& m) {
 		ASSERT(rows == m.rows && cols == m.cols);
 		int i = length();
 		while (i-- > 0)
@@ -2163,25 +2167,25 @@ public:
 
 	/// Is this coordinate inside the 2D matrix?
 	inline bool isInside(const Size& pt) const {
-		return pt.width>=0 && pt.height>=0 && pt.width<Base::size().width && pt.height<Base::size().height;
+		return pt.width>=0 && pt.height>=0 && pt.width<size().width && pt.height<size().height;
 	}
 	template <typename T>
 	inline bool isInside(const cv::Point_<T>& pt) const {
-		return int(pt.x)>=0 && int(pt.y)>=0 && int(pt.x)<Base::size().width && int(pt.y)<Base::size().height;
+		return int(pt.x)>=0 && int(pt.y)>=0 && int(pt.x)<size().width && int(pt.y)<size().height;
 	}
 
 	/// Is this coordinate inside the 2D matrix, and not too close to the edges?
 	/// @param border: the size of the border
 	inline bool isInsideWithBorder(const Size& pt, int border) const {
-		return pt.width>=border && pt.height>=border && pt.width<Base::size().width-border && pt.height<Base::size().height-border;
+		return pt.width>=border && pt.height>=border && pt.width<size().width-border && pt.height<size().height-border;
 	}
 	template <typename T>
 	inline bool isInsideWithBorder(const cv::Point_<T>& pt, int border) const {
-		return int(pt.x)>=border && int(pt.y)>=border && int(pt.x)<Base::size().width-border && int(pt.y)<Base::size().height-border;
+		return int(pt.x)>=border && int(pt.y)>=border && int(pt.x)<size().width-border && int(pt.y)<size().height-border;
 	}
 	template <typename T, int border>
 	inline bool isInsideWithBorder(const cv::Point_<T>& pt) const {
-		return int(pt.x)>=border && int(pt.y)>=border && int(pt.x)<Base::size().width-border && int(pt.y)<Base::size().height-border;
+		return int(pt.x)>=border && int(pt.y)>=border && int(pt.x)<size().width-border && int(pt.y)<size().height-border;
 	}
 
 	static inline int computeLength(int size) { return (size+numBitsPerCell-1)>>numBitsShift; }
@@ -2226,6 +2230,70 @@ protected:
 };
 /*----------------------------------------------------------------*/
 typedef TBitMatrix<size_t> BitMatrix;
+/*----------------------------------------------------------------*/
+
+
+// structure used for sorting some indices by their score (decreasing by default)
+template <typename IndexType, typename ScoreType>
+struct TIndexScore {
+	IndexType idx;
+	ScoreType score;
+	inline TIndexScore() {}
+	inline TIndexScore(IndexType _idx, ScoreType _score) : idx(_idx), score(_score) {}
+	// compare by index (increasing)
+	inline bool operator<(IndexType i) const { return (idx < i); }
+	inline bool operator==(IndexType i) const { return (idx == i); }
+	// compare by score (decreasing)
+	inline bool operator<(const TIndexScore& r) const { return (score > r.score); }
+	inline bool operator==(const TIndexScore& r) const { return (score == r.score); }
+	static bool STCALL CompareByIndex(const TIndexScore& l, const TIndexScore& r) { return (l.idx < r.idx); }
+	static bool STCALL CompareByScore(const TIndexScore& l, const TIndexScore& r) { return (r.score < l.score); }
+	#ifdef _USE_BOOST
+	// implement BOOST serialization
+	template<class Archive>
+	void serialize(Archive& ar, const unsigned int version) {
+		ar & idx;
+		ar & score;
+	}
+	#endif
+};
+typedef TIndexScore<uint32_t, float> IndexScore;
+typedef SEACAVE::cList<IndexScore, const IndexScore&, 0> IndexScoreArr;
+/*----------------------------------------------------------------*/
+
+
+// structure describing a pair of indices as one long index
+struct PairIdx {
+	union {
+		uint64_t idx;
+		struct {
+			#if __BYTE_ORDER == __LITTLE_ENDIAN
+			uint32_t j;
+			uint32_t i;
+			#else
+			uint32_t i;
+			uint32_t j;
+			#endif
+		};
+	};
+	inline PairIdx() {}
+	inline PairIdx(uint64_t _idx) : idx(_idx) {}
+	inline PairIdx(uint32_t _i, uint32_t _j)
+		#if __BYTE_ORDER == __LITTLE_ENDIAN
+		: j(_j), i(_i) {}
+		#else
+		: i(_i), j(_j) {}
+		#endif
+	// get index
+	inline operator uint64_t () const { return idx; }
+	// compare by index (increasing)
+	inline bool operator<(const PairIdx& r) const { return (idx < r.idx); }
+	inline bool operator==(const PairIdx& r) const { return (idx == r.idx); }
+};
+typedef SEACAVE::cList<PairIdx, const PairIdx&, 0> PairIdxArr;
+inline PairIdx MakePairIdx(uint32_t idxImageA, uint32_t idxImageB) {
+	return (idxImageA<idxImageB ? PairIdx(idxImageA, idxImageB) : PairIdx(idxImageB, idxImageA));
+}
 /*----------------------------------------------------------------*/
 
 
@@ -2537,5 +2605,10 @@ private:
 
 #include "Types.inl"
 #include "Rotation.h"
+#include "AABB.h"
+#include "OBB.h"
+#include "Plane.h"
+#include "Ray.h"
+#include "Octree.h"
 
 #endif // __SEACAVE_TYPES_H__

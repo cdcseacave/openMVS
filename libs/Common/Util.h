@@ -18,8 +18,13 @@
 #define PATH_SEPARATOR_STR _T("/")
 #define REVERSE_PATH_SEPARATOR _T('\\')
 
+#ifdef _MSC_VER
 #define LINE_SEPARATOR_STR _T("\r\n")
 #define LINE_SEPARATOR_LEN 2
+#else
+#define LINE_SEPARATOR_STR _T("\n")
+#define LINE_SEPARATOR_LEN 1
+#endif
 
 #ifdef _MSC_VER
 #define SETTINGS_PATH _T("%APPDATA%")
@@ -187,7 +192,7 @@ public:
 		LPTSTR home = getenv("HOME");
 		if (home == NULL)
 			return emptyString;
-		String name = String(home) + "/app";
+		String name(String(home) + "/app");
 		return ensureUnifySlash(name);
 		#endif // _MSC_VER
 	}
@@ -229,14 +234,13 @@ public:
 			0,
 			NULL
 			);
-		String tmp = (LPCTSTR)lpMsgBuf;
+		String tmp((LPCTSTR)lpMsgBuf);
 		// Free the buffer.
-		LocalFree( lpMsgBuf );
+		LocalFree(lpMsgBuf);
 		String::size_type i;
 
-		while ((i = tmp.find_last_of(LINE_SEPARATOR_STR)) != String::npos) {
+		while ((i = tmp.find_last_of(LINE_SEPARATOR_STR)) != String::npos)
 			tmp.erase(i, LINE_SEPARATOR_LEN);
-		}
 		return tmp;
 		#else // _MSC_VER
 		return strerror(aError);
@@ -296,7 +300,9 @@ public:
 			#endif // UNICODE
 	}
 	static String getFullPath(const String& str) {
-		return isFullPath(str) ? str : getCurrentDirectory()+str;
+		if (isFullPath(str))
+			return str;
+		return getCurrentDirectory()+str;
 	}
 
 	static String getHomeDirectory();
@@ -437,6 +443,7 @@ public:
 		}
 	}
 
+	// format given time in milliseconds to higher units
 	static String formatTime(int64_t sTime, uint32_t nAproximate = 0) {
 		char buf[128];
 		UINT len = 0;
@@ -652,7 +659,7 @@ public:
 			lastElapsed = elapsed;
 			// compute percentage, elapsed and ETA
 			const float percentage((float)done/(float)total);
-			const Timer::Type remaining(percentage<0.01f ? Timer::Type(0) : elapsed/percentage - elapsed);
+			const Timer::Type remaining(percentage<0.01f && (done<10 || elapsed<10*1000) ? Timer::Type(0) : elapsed/percentage - elapsed);
 			// display progress
 			print(String::FormatString(_T("%s %u (%.2f%%, %s, ETA %s)..."), msg.c_str(), done, percentage*100.f, formatTime((int64_t)elapsed,1).c_str(), formatTime((int64_t)remaining,2).c_str()));
 		}

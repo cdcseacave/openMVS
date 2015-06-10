@@ -151,8 +151,12 @@ void MVS::DecomposeProjectionMatrix(const PMatrix& P, KMatrix& K, RMatrix& R, CM
 	// ensure positive focal length
 	if (K(0,0) < 0) {
 		ASSERT(K(1,1) < 0);
-		K = -K;
-		(TMatrix<REAL,2,3>&)R *= -1.0;
+		NEGATE(K(0,0));
+		NEGATE(K(1,1));
+		NEGATE(K(0,1));
+		NEGATE(K(0,2));
+		NEGATE(K(1,2));
+		(TMatrix<REAL,2,3>&)R *= REAL(-1);
 	}
 	ASSERT(R.IsValid());
 } // DecomposeProjectionMatrix

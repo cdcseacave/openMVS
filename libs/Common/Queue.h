@@ -28,7 +28,7 @@ class cQueue
 {
 public:
 	cQueue(int_t xSize = 16) :
-		vector(NULL), vectorSize(0), first(-1), last(-1)
+		first(-1), last(-1), vectorSize(0), vector(NULL)
 	{
 		if (xSize > 0)
 			Grow(xSize);
