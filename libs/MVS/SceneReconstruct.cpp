@@ -54,14 +54,10 @@ using namespace MVS;
 
 // D E F I N E S ///////////////////////////////////////////////////
 
-#if !defined(_MSC_VER)
-// uncomment to enable optimized Delaunay triangulation code
-// (enters an infinite loop on Windows)
-#define DELAUNAY_OPTIMIZE_INSERT
-#endif
-
 // uncomment to enable multi-threading based on OpenMP
+#ifdef _USE_OPENMP
 #define DELAUNAY_USE_OPENMP
+#endif
 
 // uncomment to enable reconstruction algorithm of weakly supported surfaces
 #define DELAUNAY_WEAKSURF
@@ -309,7 +305,8 @@ struct adjacent_vertex_back_inserter_t {
 	inline adjacent_vertex_back_inserter_t& operator*() { return *this; }
 	inline adjacent_vertex_back_inserter_t& operator++(int) { return *this; }
 	inline void operator=(const vertex_handle_t& w) {
-		if (delaunay.is_infinite(v) || delaunay.geom_traits().compare_distance_3_object()(p, w->point(), v->point()) == CGAL::SMALLER)
+		ASSERT(!delaunay.is_infinite(v));
+		if (!delaunay.is_infinite(w) && delaunay.geom_traits().compare_distance_3_object()(p, w->point(), v->point()) == CGAL::SMALLER)
 			v = w;
 	}
 };
@@ -793,6 +790,7 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport)
 {
 	using namespace DELAUNAY;
 	ASSERT(!pointcloud.IsEmpty());
+	mesh.Release();
 
 	// create the Delaunay triangulation
 	delaunay_t delaunay;
@@ -815,10 +813,8 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport)
 		// insert vertices
 		const float distInsertSq(SQUARE(distInsert));
 		vertex_handle_t hint;
-		#ifdef DELAUNAY_OPTIMIZE_INSERT
 		delaunay_t::Locate_type lt;
 		int li, lj;
-		#endif
 		std::for_each(indices.cbegin(), indices.cend(), [&](size_t idx) {
 			const point_t& p = vertices[idx];
 			const PointCloud::Point& point = pointcloud.points[idx];
@@ -834,23 +830,6 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport)
 				hint = delaunay.insert(p, hint);
 				ASSERT(hint != vertex_handle_t());
 			} else {
-				#ifndef DELAUNAY_OPTIMIZE_INSERT
-				// locate the nearest vertex
-				vertex_handle_t nearest(delaunay.nearest_vertex(p, hint->cell()));
-				// check if point is far enough to all existing points
-				FOREACHPTR(pViewID, point.views) {
-					const Image& imageData = images[*pViewID];
-					const Point2f pn(imageData.camera.ProjectPointP(point.X));
-					const Point2f pe(imageData.camera.ProjectPointP(CGAL2MVS<float>(nearest->point())));
-					if (normSq(pn-pe) > distInsertSq) {
-						// point far enough to an existing point,
-						// insert as a new point
-						hint = delaunay.insert(p, nearest->cell());
-						ASSERT(hint != vertex_handle_t());
-						break;
-					}
-				}
-				#else
 				// locate cell containing this point
 				cell_handle_t c(delaunay.locate(p, lt, li, lj, hint->cell()));
 				if (lt == delaunay_t::VERTEX) {
@@ -897,13 +876,12 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport)
 						}
 					}
 				}
-				#endif
 			}
 			// update point visibility info
 			vert_info_t& vi = hint->info();
 			FOREACHPTR(pImageID, point.views) {
 				ASSERT(images[*pImageID].IsValid());
-				ASSERT(images[*pImageID].camera.IsInsideProjectionP(CGAL2MVS<REAL>(p)));
+				//ASSERT(images[*pImageID].camera.IsInsideProjectionP(CGAL2MVS<REAL>(p))); // due to radial distortion, some points can be slightly outside the image
 				vi.Insert(*pImageID);
 			}
 		});
@@ -1093,6 +1071,7 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport)
 	// run graph-cut and extract the mesh
 	{
 		TD_TIMER_STARTD();
+
 		// create graph
 		MaxFlow<cell_size_t,edge_cap_t> graph(delaunay.number_of_cells());
 		// set weights
@@ -1115,7 +1094,7 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport)
 		const float maxflow(graph.ComputeMaxFlow());
 		// extract surface formed by the facets between inside/outside cells
 		const size_t nEstimatedNumVerts(delaunay.number_of_vertices());
-		std::unordered_map<void*,Mesh::Index> mapVertices;
+		std::unordered_map<void*,Mesh::VIndex> mapVertices;
 		#if defined(_MSC_VER) && (_MSC_VER > 1600)
 		mapVertices.reserve(nEstimatedNumVerts);
 		#endif
@@ -1134,7 +1113,7 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport)
 				for (int v=0; v<3; ++v) {
 					const vertex_handle_t vh(getTriangleVertex(facet_t(ci,i), v));
 					ASSERT(vh->point() == delaunay.triangle(ci,i)[v]);
-					const auto pairItID(mapVertices.insert(std::make_pair(vh.for_compact_container(), (Mesh::Index)mesh.vertices.GetSize())));
+					const auto pairItID(mapVertices.insert(std::make_pair(vh.for_compact_container(), (Mesh::VIndex)mesh.vertices.GetSize())));
 					if (pairItID.second)
 						mesh.vertices.Insert(CGAL2MVS<Mesh::Vertex::Type>(vh->point()));
 					ASSERT(pairItID.first->second < mesh.vertices.GetSize());

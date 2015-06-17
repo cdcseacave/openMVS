@@ -55,6 +55,7 @@
 
 namespace OPT {
 bool bOpenMVS2OpenMVG; // conversion direction
+bool bNormalizeIntrinsics; // normalize K while exporting to OpenMVS format
 String strListFileName; // image list file name
 String strInputFileName; // BAF file name of the input data
 String strOutputFileName; // file name of the mesh data
@@ -205,11 +206,12 @@ bool ImportScene(const std::string& sList_filename, const std::string& sBaf_file
 						<< " " <<  id_pose
 						<< " " << x << " " << y << std::endl;
 					#endif
-					if (map_cam_pose_toViewId.find(std::make_pair(id_intrinsics, id_pose)) == map_cam_pose_toViewId.end()) {
-						LOG_OUT() << "Error" << std::endl;
+					const auto itIntrPose(map_cam_pose_toViewId.find(std::make_pair(id_intrinsics, id_pose)));
+					if (itIntrPose == map_cam_pose_toViewId.end()) {
+						LOG_OUT() << "error: intrinsics-pose pair not existing" << std::endl;
 						continue;
 					}
-					const uint32_t id_view = map_cam_pose_toViewId.at(std::make_pair(id_intrinsics, id_pose));
+					const uint32_t id_view(itIntrPose->second);
 					vertex.views.push_back(id_view);
 				}
 				sceneBAF.vertices.push_back(vertex);
@@ -327,10 +329,10 @@ bool ExportScene(const std::string& sList_filename, const std::string& sBaf_file
 
 // ParseCmdLine to parse the command line parameters
 #define PARAM_EQUAL(name) (0 == _tcsncicmp(param, _T("-" #name "="), sizeof(_T("-" #name "="))-sizeof(TCHAR)))
-bool ParseCmdLine(size_t argc, LPCTSTR* argv)
+bool ParseCmdLine(size_t argc, LPCTSTR* argv, String& strCmdLine)
 {
 	bool bPrintHelp(false);
-	String strCmdLine;
+	OPT::bNormalizeIntrinsics = true;
 	for (size_t i=1; i<argc; ++i) {
 		LPCSTR param = argv[i];
 		strCmdLine += _T(" ") + String(param);
@@ -346,11 +348,20 @@ bool ParseCmdLine(size_t argc, LPCTSTR* argv)
 		} else if (PARAM_EQUAL(workdir) || PARAM_EQUAL(w)) {
 			param = strchr(param, '=')+1;
 			OPT::strWorkingFolder = param;
+		} else if (PARAM_EQUAL(normalize) || PARAM_EQUAL(n)) {
+			param = strchr(param, '=')+1;
+			OPT::bNormalizeIntrinsics = (atoi(param) != 0);
 		} else if (0 == _tcsicmp(param, _T("-help")) || 0 == _tcsicmp(param, _T("-h")) || 0 == _tcsicmp(param, _T("-?"))) {
 			bPrintHelp = true;
 		}
 	}
-	LOG(_T("Command line:%s"), strCmdLine.c_str());
+	Util::ensureValidDirectoryPath(OPT::strWorkingFolder);
+	OPT::strWorkingFolderFull = Util::getFullPath(OPT::strWorkingFolder);
+	return bPrintHelp;
+}
+
+bool ValidateInput(bool bPrintHelp)
+{
 	Util::ensureValidPath(OPT::strListFileName);
 	Util::ensureUnifySlash(OPT::strListFileName);
 	Util::ensureValidPath(OPT::strInputFileName);
@@ -361,6 +372,7 @@ bool ParseCmdLine(size_t argc, LPCTSTR* argv)
 			"\t-input= or -i=<input_filename> for setting the BAF input filename containing camera poses\n"
 			"\t-output= or -o=<output_filename> for setting the output filename for storing the mesh and texture\n"
 			"\t-workdir= or -w=<folder_path> for setting the working directory (default current directory)\n"
+			"\t-normalize= or -n=<bool> normalize intrinsics while exporting to OpenMVS format (default true)\n"
 			"\t-help or -h or -? for displaying this message"
 		);
 	if (OPT::strListFileName.IsEmpty() || OPT::strInputFileName.IsEmpty())
@@ -375,8 +387,6 @@ bool ParseCmdLine(size_t argc, LPCTSTR* argv)
 		if (OPT::strOutputFileName.IsEmpty())
 			OPT::strOutputFileName = Util::getFullFileName(OPT::strInputFileName) + MVS_EXT;
 	}
-	Util::ensureValidDirectoryPath(OPT::strWorkingFolder);
-	OPT::strWorkingFolderFull = Util::getFullPath(OPT::strWorkingFolder);
 	return true;
 }
 
@@ -388,16 +398,21 @@ int main(int argc, LPCTSTR* argv)
 	_CrtSetDbgFlag(_CRTDBG_ALLOC_MEM_DF | _CRTDBG_LEAK_CHECK_DF);// | _CRTDBG_CHECK_ALWAYS_DF);
 	#endif
 
+	{
 	OPEN_LOG();
 	OPEN_LOGCONSOLE();
+	String strCmdLine;
+	const bool bPrintHelp(ParseCmdLine(argc, argv, strCmdLine));
 	OPEN_LOGFILE(MAKE_PATH(APPNAME _T("-")+Util::getUniqueName(0)+_T(".log")).c_str());
 
 	Util::LogBuild();
+	LOG(_T("Command line:%s"), strCmdLine.c_str());
+	if (!ValidateInput(bPrintHelp))
+		return -1;
 	#ifdef _USE_BREAKPAD
 	MiniDumper::Create(APPNAME, WORKING_FOLDER);
 	#endif
-	if (!ParseCmdLine(argc, argv))
-		return -1;
+	}
 
 	TD_TIMER_START();
 
@@ -488,11 +503,40 @@ int main(int argc, LPCTSTR* argv)
 				point.views.Insert(viewBAF);
 			}
 		}
+		if (OPT::bNormalizeIntrinsics) {
+			FOREACH(p, scene.platforms) {
+				MVS::Platform& platform = scene.platforms[p];
+				FOREACH(c, platform.cameras) {
+					MVS::Platform::Camera& camera = platform.cameras[c];
+					// find one image using this camera
+					MVS::Image* pImage(NULL);
+					FOREACHPTR(pImg, scene.images) {
+						if (pImg->platformID == p && pImg->cameraID == c) {
+							pImage = pImg;
+							break;
+						}
+					}
+					if (pImage == NULL) {
+						LOG("error: no image using camera %u of platform %u", c, p);
+						continue;
+					}
+					if (!pImage->ReloadImage(0, false)) {
+						LOG("error: can not read image %s", pImage->name.c_str());
+						continue;
+					}
+					const REAL fScale(REAL(1)/MVS::Camera::GetNormalizationScale(pImage->width, pImage->height));
+					camera.K(0,0) *= fScale;
+					camera.K(1,1) *= fScale;
+					camera.K(0,2) *= fScale;
+					camera.K(1,2) *= fScale;
+				}
+			}
+		}
 
 		// write OpenMVS input data
 		scene.Save(MAKE_PATH_SAFE(OPT::strOutputFileName), OPT::strWorkingFolderFull);
 
-		VERBOSE("Input data imported: %u cameras & %u poses & %u images & %u vertices (%s)", sceneBAF.cameras.size(), sceneBAF.poses.size(), sceneBAF.images.size(), sceneBAF.vertices.size(), TD_TIMER_GET_FMT().c_str());
+		VERBOSE("Input data imported: %u cameras, %u poses, %u images, %u vertices (%s)", sceneBAF.cameras.size(), sceneBAF.poses.size(), sceneBAF.images.size(), sceneBAF.vertices.size(), TD_TIMER_GET_FMT().c_str());
 	}
 
 	#if TD_VERBOSE != TD_VERBOSE_OFF

@@ -57,8 +57,9 @@ class Mesh
 {
 public:
 	typedef TPoint3<float> Vertex;
-	typedef uint32_t Index;
-	typedef TPoint3<Index> Face;
+	typedef uint32_t VIndex;
+	typedef TPoint3<VIndex> Face;
+	typedef uint32_t FIndex;
 
 	typedef CLISTDEF0(Vertex) VertexArr;
 	typedef CLISTDEF0(Face) FaceArr;

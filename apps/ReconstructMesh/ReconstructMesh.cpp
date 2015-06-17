@@ -64,12 +64,11 @@ String strWorkingFolderFull; // full path to current folder
 
 // ParseCmdLine to parse the command line parameters
 #define PARAM_EQUAL(name) (0 == _tcsncicmp(param, _T("-" #name "="), sizeof(_T("-" #name "="))-sizeof(TCHAR)))
-bool ParseCmdLine(size_t argc, LPCTSTR* argv)
+bool ParseCmdLine(size_t argc, LPCTSTR* argv, String& strCmdLine)
 {
 	OPT::fDistInsert = 2.f;
 	OPT::bUseFreeSpaceSupport = true;
 	bool bPrintHelp(false);
-	String strCmdLine;
 	for (size_t i=1; i<argc; ++i) {
 		LPCSTR param = argv[i];
 		strCmdLine += _T(" ") + String(param);
@@ -92,7 +91,13 @@ bool ParseCmdLine(size_t argc, LPCTSTR* argv)
 			bPrintHelp = true;
 		}
 	}
-	LOG(_T("Command line:%s"), strCmdLine.c_str());
+	Util::ensureValidDirectoryPath(OPT::strWorkingFolder);
+	OPT::strWorkingFolderFull = Util::getFullPath(OPT::strWorkingFolder);
+	return bPrintHelp;
+}
+
+bool ValidateInput(bool bPrintHelp)
+{
 	Util::ensureValidPath(OPT::strInputFileName);
 	Util::ensureUnifySlash(OPT::strInputFileName);
 	if (bPrintHelp || OPT::strInputFileName.IsEmpty())
@@ -110,8 +115,6 @@ bool ParseCmdLine(size_t argc, LPCTSTR* argv)
 	Util::ensureUnifySlash(OPT::strOutputFileName);
 	if (OPT::strOutputFileName.IsEmpty())
 		OPT::strOutputFileName = Util::getFullFileName(OPT::strInputFileName) + _T(".ply");
-	Util::ensureValidDirectoryPath(OPT::strWorkingFolder);
-	OPT::strWorkingFolderFull = Util::getFullPath(OPT::strWorkingFolder);
 	return true;
 }
 
@@ -122,16 +125,21 @@ int main(int argc, LPCTSTR* argv)
 	_CrtSetDbgFlag(_CRTDBG_ALLOC_MEM_DF | _CRTDBG_LEAK_CHECK_DF);// | _CRTDBG_CHECK_ALWAYS_DF);
 	#endif
 
+	{
 	OPEN_LOG();
 	OPEN_LOGCONSOLE();
+	String strCmdLine;
+	const bool bPrintHelp(ParseCmdLine(argc, argv, strCmdLine));
 	OPEN_LOGFILE(MAKE_PATH(APPNAME _T("-")+Util::getUniqueName(0)+_T(".log")).c_str());
 
 	Util::LogBuild();
+	LOG(_T("Command line:%s"), strCmdLine.c_str());
+	if (!ValidateInput(bPrintHelp))
+		return -1;
 	#ifdef _USE_BREAKPAD
 	MiniDumper::Create(APPNAME, WORKING_FOLDER);
 	#endif
-	if (!ParseCmdLine(argc, argv))
-		return -1;
+	}
 
 	TD_TIMER_START();
 
@@ -139,7 +147,7 @@ int main(int argc, LPCTSTR* argv)
 	scene.Load(MAKE_PATH_SAFE(OPT::strInputFileName), OPT::strWorkingFolderFull);
 	scene.ReconstructMesh(OPT::fDistInsert, OPT::bUseFreeSpaceSupport);
 	
-	VERBOSE("Mesh reconstruction completed: %u vertices & %u faces (%s)", scene.mesh.vertices.GetSize(), scene.mesh.faces.GetSize(), TD_TIMER_GET_FMT().c_str());
+	VERBOSE("Mesh reconstruction completed: %u vertices, %u faces (%s)", scene.mesh.vertices.GetSize(), scene.mesh.faces.GetSize(), TD_TIMER_GET_FMT().c_str());
 
 	scene.mesh.Save(MAKE_PATH_SAFE(OPT::strOutputFileName));
 
