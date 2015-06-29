@@ -4,8 +4,8 @@
 
 find_path(EIGEN_DIR "Eigen/Core"
     HINTS "${EIGEN_ROOT}" "$ENV{EIGEN_ROOT}"
-    PATHS "$ENV{PROGRAMFILES}/Eigen" "$ENV{PROGRAMW6432}/Eigen" "/usr" "/usr/local"
-    PATH_SUFFIXES eigen3 include/eigen3 include
+    PATHS "$ENV{PROGRAMFILES}" "$ENV{PROGRAMW6432}" "/usr" "/usr/local" "/usr/share" "/usr/local/share"
+    PATH_SUFFIXES "eigen" "eigen3" "include"
     DOC "Root directory of EIGEN library")
 
 ##====================================================

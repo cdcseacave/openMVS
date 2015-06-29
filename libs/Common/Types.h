@@ -56,9 +56,6 @@
 #include "FileUtil.h"
 #include "Wildcard.h"
 
-// Tiny XML parser
-#include "TinyXML2.h"
-
 // Function delegate functionality
 #include "FastDelegate.h"
 #include "FastDelegateBind.h"
@@ -382,7 +379,6 @@ typedef class GENERAL_API cList<double, double, 0>      DoubleArr;
 #include "SML.h"
 #include "ConfigTable.h"
 #include "HTMLDoc.h"
-#include "PLY.h"
 
 
 // D E F I N E S ///////////////////////////////////////////////////
@@ -2297,36 +2293,6 @@ inline PairIdx MakePairIdx(uint32_t idxImageA, uint32_t idxImageB) {
 /*----------------------------------------------------------------*/
 
 
-// structure describing a given 3D point
-template <typename TYPE, typename COLOR_TYPE=Pixel8U>
-class TVertex
-{
-public:
-	typedef TYPE Type;
-	typedef TPoint3<TYPE> Point;
-	typedef COLOR_TYPE Color;
-
-public:
-	Point p; // vertex position
-	Point n; // vertex normal
-	Color c; // vertex color
-
-	#ifdef _USE_BOOST
-	// serialize
-	template<class Archive>
-	void serialize(Archive& ar, const unsigned int version) {
-		ar & p;
-		ar & n;
-		ar & c;
-	}
-	#endif
-};
-/*----------------------------------------------------------------*/
-typedef TVertex<float> Vertex;
-typedef SEACAVE::cList<Vertex, const Vertex&, 0, 8192> VertexArr;
-/*----------------------------------------------------------------*/
-
-
 // tools
 String cvMat2String(const cv::Mat&, LPCSTR format="% 10.4f ");
 template<typename TYPE, int m, int n> inline String cvMat2String(const TMatrix<TYPE,m,n>& mat, LPCSTR format="% 10.4f ") { return cvMat2String(cv::Mat(mat), format); }
@@ -2610,5 +2576,6 @@ private:
 #include "Plane.h"
 #include "Ray.h"
 #include "Octree.h"
+#include "Util.inl"
 
 #endif // __SEACAVE_TYPES_H__

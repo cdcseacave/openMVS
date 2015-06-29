@@ -47,11 +47,66 @@ using namespace MVS;
 
 // S T R U C T S ///////////////////////////////////////////////////
 
+IMAGEPTR Image::OpenImage(const String& fileName)
+{
+	#if 0
+	if (Util::isFullPath(fileName))
+		return IMAGEPTR(CImage::Create(fileName, CImage::READ));
+	return IMAGEPTR(CImage::Create((Util::getCurrentDirectory()+fileName).c_str(), CImage::READ));
+	#else
+	return IMAGEPTR(CImage::Create(fileName, CImage::READ));
+	#endif
+} // OpenImage
+/*----------------------------------------------------------------*/
+
+IMAGEPTR Image::ReadImageHeader(const String& fileName)
+{
+	IMAGEPTR pImage(OpenImage(fileName));
+	if (pImage == NULL || FAILED(pImage->ReadHeader())) {
+		LOG("error: failed loading image header");
+		pImage.Release();
+	}
+	return pImage;
+} // ReadImageHeader
+/*----------------------------------------------------------------*/
+
+IMAGEPTR Image::ReadImage(const String& fileName, Image8U3& image)
+{
+	IMAGEPTR pImage(OpenImage(fileName));
+	if (pImage != NULL && !ReadImage(pImage, image))
+		pImage.Release();
+	return pImage;
+} // ReadImage
+/*----------------------------------------------------------------*/
+
+bool Image::ReadImage(IMAGEPTR pImage, Image8U3& image)
+{
+	if (FAILED(pImage->ReadHeader())) {
+		LOG("error: failed loading image header");
+		return false;
+	}
+	image.create(pImage->GetHeight(), pImage->GetWidth());
+	if (FAILED(pImage->ReadData(image.data, PF_R8G8B8, 3, (UINT)image.step))) {
+		LOG("error: failed loading image data");
+		return false;
+	}
+	return true;
+} // ReadImage
+/*----------------------------------------------------------------*/
+
+
 bool Image::LoadImage(const String& fileName, unsigned nMaxResolution)
 {
 	name = fileName;
-	if (!image.Load(fileName)) {
+	// open image file
+	IMAGEPTR pImage(OpenImage(fileName));
+	if (pImage == NULL) {
 		LOG("error: failed opening input image '%s'", name.c_str());
+		return false;
+	}
+	// create and fill image data
+	if (!ReadImage(pImage, image)) {
+		LOG("error: failed loading image '%s'", name.c_str());
 		return false;
 	}
 	// resize image if needed
@@ -63,15 +118,18 @@ bool Image::LoadImage(const String& fileName, unsigned nMaxResolution)
 // open the stored image file name and read again the image data
 bool Image::ReloadImage(unsigned nMaxResolution, bool bLoadPixels)
 {
-	if (!image.Load(name)) {
+	IMAGEPTR pImage(bLoadPixels ? ReadImage(name, image) : ReadImageHeader(name));
+	if (pImage == NULL) {
 		LOG("error: failed reloading image '%s'", name.c_str());
 		return false;
 	}
+	if (!bLoadPixels) {
+		// init image size
+		width = pImage->GetWidth();
+		height = pImage->GetHeight();
+	}
 	// resize image if needed
 	ResizeImage(nMaxResolution);
-	// release image pixels if not needed
-	if (!bLoadPixels)
-		ReleaseImage();
 	return true;
 } // ReloadImage
 /*----------------------------------------------------------------*/

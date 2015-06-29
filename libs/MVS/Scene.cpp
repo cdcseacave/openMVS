@@ -101,9 +101,14 @@ bool Scene::Load(const String & fileName, const String& workingFolderFull)
 			continue;
 		imageData.platformID = image.platformID;
 		imageData.cameraID = image.cameraID;
+		#if 1
 		if (!imageData.ReloadImage(0, false))
 			return false;
 		imageData.UpdateCamera(platforms);
+		#else
+		imageData.camera = platforms[imageData.platformID].GetCamera(imageData.cameraID, imageData.poseID);
+		imageData.camera.ComposeP();
+		#endif
 		DEBUG_EXTRA("Image loaded %3u: %s", images.GetSize()-1, Util::getFileFullName(imageData.name).c_str());
 	}
 	if (images.GetSize() < 2)

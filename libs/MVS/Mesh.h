@@ -57,24 +57,49 @@ class Mesh
 {
 public:
 	typedef TPoint3<float> Vertex;
-	typedef uint32_t Index;
-	typedef TPoint3<Index> Face;
+	typedef uint32_t VIndex;
+	typedef TPoint3<VIndex> Face;
+	typedef uint32_t FIndex;
 
 	typedef CLISTDEF0(Vertex) VertexArr;
 	typedef CLISTDEF0(Face) FaceArr;
 
+	typedef cList<FIndex,FIndex,0,8> FaceIdxArr;
+	typedef cList<FaceIdxArr> VertexFacesArr;
+
+	// used to find adjacent face
+	struct FaceCount {
+		int count;
+		inline FaceCount() : count(0) {}
+	};
+	typedef std::unordered_map<FIndex,FaceCount> FacetCountMap;
+
 public:
 	VertexArr vertices;
 	FaceArr faces;
+
+	VertexFacesArr vertexFaces; // for each vertex, the list of faces containing it (optional)
+	BoolArr vertexBoundary; // for each vertex, stores if it is at the boundary or not (optional)
 
 public:
 	inline Mesh() {}
 
 	void Release();
 
+	void ListIncidenteFaces();
+	void ListBoundaryVertices();
+
+	bool FixNonManifold();
+	void Clean(float fDecimate=0.7f, float fSpurious=10.f, bool bRemoveSpikes=true, unsigned nCloseHoles=30, unsigned nSmoothMesh=2);
+
 	// file IO
 	bool Load(const String& fileName);
 	bool Save(const String& fileName, bool bBinary=true) const;
+	static bool Save(const VertexArr& vertices, const String& fileName, bool bBinary=true);
+
+	static inline uint32_t FindVertex(const Face& f, VIndex v) { for (uint32_t i=0; i<3; ++i) if (f[i] == v) return i; return NO_ID; }
+	static inline VIndex GetVertex(const Face& f, VIndex v) { const uint32_t idx(FindVertex(f, v)); ASSERT(idx != NO_ID); return f[idx]; }
+	static inline VIndex& GetVertex(Face& f, VIndex v) { const uint32_t idx(FindVertex(f, v)); ASSERT(idx != NO_ID); return f[idx]; }
 };
 /*----------------------------------------------------------------*/
 

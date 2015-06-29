@@ -136,6 +136,20 @@ public:
 		std::string name;
 	};
 
+private:
+	struct ValueType {
+		union {
+			int8_t i8;
+			int16_t i16;
+			int32_t i32;
+			uint8_t u8;
+			uint16_t u16;
+			uint32_t u32;
+			float f;
+			double d;
+		};
+	};
+
 public:
 	PLY();
 	~PLY();
@@ -194,7 +208,7 @@ public:
 
 	static inline bool equal_strings(const char* s1, const char* s2) { return _tcscmp(s1, s2) == 0; }
 
-protected:
+private:
 	/* find an element in a ply's list */
 	PlyElement* find_element(const char *) const;
 
@@ -209,27 +223,24 @@ protected:
 	char **get_words(STRISTREAM&, int *, char **);
 
 	/* write an item to a file */
-	void write_binary_item(int, unsigned int, double, int);
-	void write_ascii_item(int, unsigned int, double, int);
+	void write_binary_item(const ValueType&, int, int);
+	void write_ascii_item(const ValueType&, int, int);
+
+	/* return the value of a stored item */
+	void get_stored_item(void*, int, ValueType&);
+
+	/* get binary or ascii item and store it according to ptr and type */
+	void get_binary_item(SEACAVE::ISTREAM*, int, ValueType&);
+	void get_ascii_item(const char*, int, ValueType&);
+
+	/* store a value into where a pointer and a type specify */
+	void store_item(void*, int, const ValueType&, int);
 
 	/* add information to a PLY file descriptor */
 	void add_element(const char **, int);
 	void add_property(const char **, int);
 	void add_comment(const char *);
 	void add_obj_info(const char *);
-
-	/* store a value into where a pointer and a type specify */
-	void store_item(char *, int, int, unsigned int, double);
-
-	/* return the value of a stored item */
-	void get_stored_item(void *, int, int *, unsigned int *, double *);
-
-	/* return the value stored in an item, given ptr to it and its type */
-	double get_item_value(const char *, int);
-
-	/* get binary or ascii item and store it according to ptr and type */
-	void get_ascii_item(char *, int, int *, unsigned int *, double *);
-	void get_binary_item(SEACAVE::ISTREAM*, int, int *, unsigned int *, double *);
 
 	/* get a bunch of elements from a file */
 	void ascii_get_element(uint8_t*);
@@ -245,11 +256,37 @@ protected:
 	/* copy a property */
 	static void copy_property(PlyProperty&, const PlyProperty&);
 
+	/* return the value as T stored in val as type */
+	template <typename T>
+	static inline T ValueType2Type(const ValueType& val, int type) {
+		switch (type) {
+		case Int8:
+			return (T)val.i8;
+		case Int16:
+			return (T)val.i16;
+		case Int32:
+			return (T)val.i32;
+		case Uint8:
+			return (T)val.u8;
+		case Uint16:
+			return (T)val.u16;
+		case Uint32:
+			return (T)val.u32;
+		case Float32:
+			return (T)val.f;
+		case Float64:
+			return (T)val.d;
+		}
+		ASSERT("error: bad type" == NULL);
+		return T(0);
+	}
+
 public:
 	// description of PLY file
 	std::string filename;          /* file name */
 	SEACAVE::MemFile* mfp;         /* mem file pointer */
 	SEACAVE::IOSTREAM* fp;         /* file pointer */
+	SEACAVE::OSTREAM* f;           /* output file pointer */
 	int file_type;                 /* ascii or binary */
 	float version;                 /* version number of file */
 	std::vector<PlyElement*> elems;/* list of elements */
@@ -261,7 +298,7 @@ public:
 	PlyRuleList *rule_list;        /* rule list from user */
 	std::vector<double> vals;      /* rule list from user */
 
-protected:
+private:
 	static const char *type_names[9]; // names of scalar types
 	static const char *old_type_names[9]; // old names of types for backward compatibility
 	static const int ply_type_size[9];

@@ -65,7 +65,7 @@ Exit:
 
 PLY::PLY()
 	:
-	mfp(NULL), fp(NULL),
+	mfp(NULL), fp(NULL), f(NULL),
 	which_elem(NULL), other_elems(NULL), current_rules(NULL), rule_list(NULL)
 {
 }
@@ -92,6 +92,7 @@ void PLY::release()
 		delete fp;
 	}
 	fp = NULL;
+	f = NULL;
 	if (!elems.empty()) {
 		for (int i=0; i<elems.size(); ++i) {
 			PlyElement* elem = elems[i];
@@ -153,8 +154,12 @@ bool PLY::write(OSTREAM* f, int nelems, LPCSTR* elem_names, int file_type, size_
 	this->other_elems = NULL;
 
 	/* init buffer if requested */
-	if (bufferSize > 0)
+	if (bufferSize > 0) {
 		mfp = new MemFile(bufferSize);
+		this->f = mfp;
+	} else {
+		this->f = f;
+	}
 
 	/* tuck aside the names of the elements */
 	this->elems.resize(nelems);
@@ -363,9 +368,7 @@ void PLY::put_element(const void* elem_ptr)
 	char *item;
 	char *elem_data;
 	char **item_ptr;
-	int int_val;
-	unsigned int uint_val;
-	double double_val;
+	ValueType val;
 	char **other_ptr;
 
 	PlyElement *elem = this->which_elem;
@@ -390,36 +393,29 @@ void PLY::put_element(const void* elem_ptr)
 			switch (prop->is_list) {
 			case SCALAR: {  /* scalar */
 				item = elem_data + prop->offset;
-				get_stored_item((void *)item, prop->internal_type,
-					&int_val, &uint_val, &double_val);
-				write_ascii_item(int_val, uint_val, double_val,
-					prop->external_type);
+				get_stored_item((void*)item, prop->internal_type, val);
+				write_ascii_item(val, prop->internal_type, prop->external_type);
 				break;
 			}
 			case LIST: {   /* list */
 				item = elem_data + prop->count_offset;
-				get_stored_item((void *)item, prop->count_internal,
-					&int_val, &uint_val, &double_val);
-				write_ascii_item(int_val, uint_val, double_val,
-					prop->count_external);
-				const int list_count = uint_val;
+				get_stored_item((void*)item, prop->count_internal, val);
+				write_ascii_item(val, prop->count_internal, prop->count_external);
+				const int list_count(ValueType2Type<int>(val, prop->count_external));
 				item_ptr = (char **)(elem_data + prop->offset);
 				item = item_ptr[0];
 				const int item_size = ply_type_size[prop->internal_type];
 				for (int k = 0; k < list_count; k++) {
-					get_stored_item((void *)item, prop->internal_type,
-						&int_val, &uint_val, &double_val);
-					write_ascii_item(int_val, uint_val, double_val,
-						prop->external_type);
+					get_stored_item((void*)item, prop->internal_type, val);
+					write_ascii_item(val, prop->internal_type, prop->external_type);
 					item += item_size;
 				}
 				break;
 			}
 			case STRING: {  /* string */
-				char **str;
 				item = elem_data + prop->offset;
-				str = (char **) item;
-				fp->print("\"%s\"", *str);
+				char **str = (char **)item;
+				f->print("\"%s\"", *str);
 				break;
 			}
 			default:
@@ -427,7 +423,7 @@ void PLY::put_element(const void* elem_ptr)
 			}
 		}
 
-		fp->print("\n");
+		f->print("\n");
 	}
 	else {
 
@@ -443,29 +439,23 @@ void PLY::put_element(const void* elem_ptr)
 			switch (prop->is_list) {
 			case SCALAR: {  /* scalar */
 				item = elem_data + prop->offset;
-				const int item_size = ply_type_size[prop->internal_type];
-				get_stored_item((void *) item, prop->internal_type,
-					&int_val, &uint_val, &double_val);
-				write_binary_item(int_val, uint_val, double_val,
-					prop->external_type);
+				const int item_size(ply_type_size[prop->internal_type]);
+				get_stored_item((void*)item, prop->internal_type, val);
+				write_binary_item(val, prop->internal_type, prop->external_type);
 				break;
 			}
 			case LIST: {    /* list */
 				item = elem_data + prop->count_offset;
 				int item_size = ply_type_size[prop->count_internal];
-				get_stored_item((void *)item, prop->count_internal,
-					&int_val, &uint_val, &double_val);
-				write_binary_item(int_val, uint_val, double_val,
-					prop->count_external);
-				const int list_count = uint_val;
+				get_stored_item((void*)item, prop->count_internal, val);
+				write_binary_item(val, prop->count_internal, prop->count_external);
+				const int list_count(ValueType2Type<int>(val, prop->count_external));
 				item_ptr = (char **)(elem_data + prop->offset);
 				item = item_ptr[0];
 				item_size = ply_type_size[prop->internal_type];
 				for (int k = 0; k < list_count; k++) {
-					get_stored_item((void *)item, prop->internal_type,
-						&int_val, &uint_val, &double_val);
-					write_binary_item(int_val, uint_val, double_val,
-						prop->external_type);
+					get_stored_item((void*)item, prop->internal_type, val);
+					write_binary_item(val, prop->internal_type, prop->external_type);
 					item += item_size;
 				}
 				break;
@@ -476,10 +466,10 @@ void PLY::put_element(const void* elem_ptr)
 
 				/* write the length */
 				const int len = (int)strlen(*str) + 1;
-				fp->write(&len, sizeof(int));
+				f->write(&len, sizeof(int));
 
 				/* write the string, including the null character */
-				fp->write(*str, len);
+				f->write(*str, len);
 				break;
 			}
 			default:
@@ -1088,9 +1078,7 @@ void PLY::ascii_get_element(uint8_t* elem_ptr)
 {
 	char *elem_data, *item;
 	char *item_ptr;
-	int int_val;
-	unsigned int uint_val;
-	double double_val;
+	ValueType val;
 	char *orig_line;
 	char *other_data(NULL);
 	int other_flag(0);
@@ -1131,17 +1119,16 @@ void PLY::ascii_get_element(uint8_t* elem_ptr)
 
 		if (prop->is_list == LIST) {       /* a list */
 			/* get and store the number of items in the list */
-			get_ascii_item (words[which_word++], prop->count_external,
-				&int_val, &uint_val, &double_val);
+			get_ascii_item(words[which_word++], prop->count_external, val);
 			if (store_it) {
 				item = elem_data + prop->count_offset;
-				store_item(item, prop->count_internal, int_val, uint_val, double_val);
+				store_item(item, prop->count_internal, val, prop->count_external);
 			}
 
 			/* allocate space for an array of items and store a ptr to the array */
-			const int list_count = int_val;
-			const int item_size = ply_type_size[prop->internal_type];
-			char **store_array = (char **)(elem_data + prop->offset);
+			const int list_count(ValueType2Type<int>(val, prop->count_external));
+			const int item_size(ply_type_size[prop->internal_type]);
+			char **store_array((char**)(elem_data + prop->offset));
 			if (list_count == 0) {
 				if (store_it)
 					*store_array = NULL;
@@ -1155,10 +1142,9 @@ void PLY::ascii_get_element(uint8_t* elem_ptr)
 
 				/* read items and store them into the array */
 				for (int k = 0; k < list_count; k++) {
-					get_ascii_item (words[which_word++], prop->external_type,
-						&int_val, &uint_val, &double_val);
+					get_ascii_item(words[which_word++], prop->external_type, val);
 					if (store_it) {
-						store_item(item, prop->internal_type, int_val, uint_val, double_val);
+						store_item(item, prop->internal_type, val, prop->external_type);
 						item += item_size;
 					}
 				}
@@ -1174,12 +1160,11 @@ void PLY::ascii_get_element(uint8_t* elem_ptr)
 				which_word++;
 			}
 		}
-		else {                     /* a scalar */
-			get_ascii_item (words[which_word++], prop->external_type,
-				&int_val, &uint_val, &double_val);
+		else {                               /* a scalar */
+			get_ascii_item(words[which_word++], prop->external_type, val);
 			if (store_it) {
 				item = elem_data + prop->offset;
-				store_item(item, prop->internal_type, int_val, uint_val, double_val);
+				store_item(item, prop->internal_type, val, prop->external_type);
 			}
 		}
 	}
@@ -1200,9 +1185,7 @@ void PLY::binary_get_element(uint8_t* elem_ptr)
 	char *elem_data;
 	char *item;
 	char *item_ptr;
-	int int_val;
-	unsigned int uint_val;
-	double double_val;
+	ValueType val;
 	char *other_data(NULL);
 	int other_flag(0);
 
@@ -1232,17 +1215,16 @@ void PLY::binary_get_element(uint8_t* elem_ptr)
 		if (prop->is_list == LIST) {          /* list */
 
 			/* get and store the number of items in the list */
-			get_binary_item(fp, prop->count_external,
-				&int_val, &uint_val, &double_val);
+			get_binary_item(fp, prop->count_external, val);
 			if (store_it) {
 				item = elem_data + prop->count_offset;
-				store_item(item, prop->count_internal, int_val, uint_val, double_val);
+				store_item(item, prop->count_internal, val, prop->count_external);
 			}
 
 			/* allocate space for an array of items and store a ptr to the array */
-			const int list_count = int_val;
-			const int item_size = ply_type_size[prop->internal_type];
-			char **store_array = (char **) (elem_data + prop->offset);
+			const int list_count(ValueType2Type<int>(val, prop->count_external));
+			const int item_size(ply_type_size[prop->internal_type]);
+			char **store_array((char**)(elem_data + prop->offset));
 			if (list_count == 0) {
 				if (store_it)
 					*store_array = NULL;
@@ -1256,10 +1238,9 @@ void PLY::binary_get_element(uint8_t* elem_ptr)
 
 				/* read items and store them into the array */
 				for (int k = 0; k < list_count; k++) {
-					get_binary_item (fp, prop->external_type,
-						&int_val, &uint_val, &double_val);
+					get_binary_item(fp, prop->external_type, val);
 					if (store_it) {
-						store_item(item, prop->internal_type, int_val, uint_val, double_val);
+						store_item(item, prop->internal_type, val, prop->external_type);
 						item += item_size;
 					}
 				}
@@ -1276,12 +1257,11 @@ void PLY::binary_get_element(uint8_t* elem_ptr)
 				*((char **)item) = str;
 			}
 		}
-		else {                                      /* scalar */
-			get_binary_item(fp, prop->external_type,
-				&int_val, &uint_val, &double_val);
+		else {                                   /* scalar */
+			get_binary_item(fp, prop->external_type, val);
 			if (store_it) {
 				item = elem_data + prop->offset;
-				store_item(item, prop->internal_type, int_val, uint_val, double_val);
+				store_item(item, prop->internal_type, val, prop->external_type);
 			}
 		}
 	}
@@ -1421,129 +1401,55 @@ char** PLY::get_words(STRISTREAM& sfp, int *nwords, char **orig_line)
 
 
 /******************************************************************************
-Return the value of an item, given a pointer to it and its type.
-
-Entry:
-item - pointer to item
-type - data type that "item" points to
-
-Exit:
-returns a double-precision float that contains the value of the item
-******************************************************************************/
-
-double PLY::get_item_value(const char *item, int type)
-{
-	unsigned char *puchar;
-	char *pchar;
-	short int *pshort;
-	unsigned short int *pushort;
-	int *pint;
-	unsigned int *puint;
-	float *pfloat;
-	double *pdouble;
-	int int_value;
-	unsigned int uint_value;
-	double double_value;
-
-	switch (type) {
-	case Int8:
-		pchar = (char *) item;
-		int_value = *pchar;
-		return ((double) int_value);
-	case Uint8:
-		puchar = (unsigned char *) item;
-		int_value = *puchar;
-		return ((double) int_value);
-	case Int16:
-		pshort = (short int *) item;
-		int_value = *pshort;
-		return ((double) int_value);
-	case Uint16:
-		pushort = (unsigned short int *) item;
-		int_value = *pushort;
-		return ((double) int_value);
-	case Int32:
-		pint = (int *) item;
-		int_value = *pint;
-		return ((double) int_value);
-	case Uint32:
-		puint = (unsigned int *) item;
-		uint_value = *puint;
-		return ((double) uint_value);
-	case Float32:
-		pfloat = (float *) item;
-		double_value = *pfloat;
-		return (double_value);
-	case Float64:
-		pdouble = (double *) item;
-		double_value = *pdouble;
-		return (double_value);
-	default:
-		abort_ply("error: get_item_value: bad type = %d", type);
-	}
-
-	return (0.0);  /* never actually gets here */
-}
-
-
-/******************************************************************************
 Write out an item to a file as raw binary bytes.
 
 Entry:
-fp         - file to write to
-int_val    - integer version of item
-uint_val   - unsigned integer version of item
-double_val - double-precision float version of item
+val        - item value to be written
+double_val - value type
 type       - data type to write out
 ******************************************************************************/
 
 void PLY::write_binary_item(
-	int int_val,
-	unsigned int uint_val,
-	double double_val,
-	int type
+	const ValueType& val,
+	int from_type,
+	int to_type
 	)
 {
-	unsigned char uchar_val;
-	char char_val;
-	unsigned short ushort_val;
-	short short_val;
-	float float_val;
-
-	OSTREAM* f = (mfp ? mfp : fp);
-
-	switch (type) {
-	case Int8:
-		char_val = int_val;
-		f->write(&char_val, 1);
-		break;
-	case Int16:
-		short_val = int_val;
-		f->write(&short_val, 2);
-		break;
-	case Int32:
-		f->write(&int_val, 4);
-		break;
-	case Uint8:
-		uchar_val = uint_val;
-		f->write(&uchar_val, 1);
-		break;
-	case Uint16:
-		ushort_val = uint_val;
-		f->write(&ushort_val, 2);
-		break;
-	case Uint32:
-		f->write(&uint_val, 4);
-		break;
-	case Float32:
-		float_val = (float)double_val;
-		f->write(&float_val, 4);
-		break;
-	case Float64:
-		f->write(&double_val, 8);
-		break;
+	switch (to_type) {
+	case Int8: {
+		const int8_t v(ValueType2Type<int8_t>(val, from_type));
+		f->write(&v, 1);
+		break; }
+	case Int16: {
+		const int16_t v(ValueType2Type<int16_t>(val, from_type));
+		f->write(&v, 2);
+		break; }
+	case Int32: {
+		const int32_t v(ValueType2Type<int32_t>(val, from_type));
+		f->write(&v, 4);
+		break; }
+	case Uint8: {
+		const uint8_t v(ValueType2Type<uint8_t>(val, from_type));
+		f->write(&v, 1);
+		break; }
+	case Uint16: {
+		const uint16_t v(ValueType2Type<uint16_t>(val, from_type));
+		f->write(&v, 2);
+		break; }
+	case Uint32: {
+		const uint32_t v(ValueType2Type<uint32_t>(val, from_type));
+		f->write(&v, 4);
+		break; }
+	case Float32: {
+		const float v(ValueType2Type<float>(val, from_type));
+		f->write(&v, 4);
+		break; }
+	case Float64: {
+		const double v(ValueType2Type<double>(val, from_type));
+		f->write(&v, 8);
+		break; }
 	default:
-		abort_ply("error: write_binary_item: bad type = %d", type);
+		abort_ply("error: write_binary_item: bad type = %d", to_type);
 	}
 }
 
@@ -1552,39 +1458,34 @@ void PLY::write_binary_item(
 Write out an item to a file as ascii characters.
 
 Entry:
-fp         - file to write to
-int_val    - integer version of item
-uint_val   - unsigned integer version of item
-double_val - double-precision float version of item
+val        - item value to be written
+double_val - value type
 type       - data type to write out
 ******************************************************************************/
 
 void PLY::write_ascii_item(
-	int int_val,
-	unsigned int uint_val,
-	double double_val,
-	int type
+	const ValueType& val,
+	int from_type,
+	int to_type
 	)
 {
-	OSTREAM* f = (mfp ? mfp : fp);
-
-	switch (type) {
+	switch (to_type) {
 	case Int8:
 	case Int16:
 	case Int32:
-		f->print("%d ", int_val);
+		f->print("%d ", ValueType2Type<int32_t>(val, from_type));
 		break;
 	case Uint8:
 	case Uint16:
 	case Uint32:
-		f->print("%u ", uint_val);
+		f->print("%u ", ValueType2Type<uint32_t>(val, from_type));
 		break;
 	case Float32:
 	case Float64:
-		f->print("%g ", double_val);
+		f->print("%g ", ValueType2Type<double>(val, from_type));
 		break;
 	default:
-		abort_ply("error: write_ascii_item: bad type = %d", type);
+		abort_ply("error: write_ascii_item: bad type = %d", to_type);
 	}
 }
 
@@ -1594,63 +1495,43 @@ Get the value of an item that is in memory, and place the result
 into an integer, an unsigned integer and a double.
 
 Entry:
-ptr  - pointer to the item
-type - data type supposedly in the item
+ptr        - pointer to the item
+type       - data type supposedly in the item
 
 Exit:
-int_val    - integer value
-uint_val   - unsigned integer value
-double_val - double-precision floating point value
+val        - extracted value
 ******************************************************************************/
 
 void PLY::get_stored_item(
 	void *ptr,
 	int type,
-	int *int_val,
-	unsigned int *uint_val,
-	double *double_val
+	ValueType& val
 	)
 {
 	switch (type) {
 	case Int8:
-		*int_val = *((char *) ptr);
-		*uint_val = *int_val;
-		*double_val = *int_val;
+		val.i8 = *((int8_t*)ptr);
 		break;
 	case Uint8:
-		*uint_val = *((unsigned char *) ptr);
-		*int_val = *uint_val;
-		*double_val = *uint_val;
+		val.u8 = *((uint8_t*)ptr);
 		break;
 	case Int16:
-		*int_val = *((short int *) ptr);
-		*uint_val = *int_val;
-		*double_val = *int_val;
+		val.i16 = *((int16_t*)ptr);
 		break;
 	case Uint16:
-		*uint_val = *((unsigned short int *) ptr);
-		*int_val = *uint_val;
-		*double_val = *uint_val;
+		val.u16 = *((uint16_t*)ptr);
 		break;
 	case Int32:
-		*int_val = *((int *) ptr);
-		*uint_val = *int_val;
-		*double_val = *int_val;
+		val.i32 = *((int32_t*)ptr);
 		break;
 	case Uint32:
-		*uint_val = *((unsigned int *) ptr);
-		*int_val = *uint_val;
-		*double_val = *uint_val;
+		val.u32 = *((uint32_t*)ptr);
 		break;
 	case Float32:
-		*double_val = *((float *) ptr);
-		*int_val = (int) *double_val;
-		*uint_val = (int) *double_val;
+		val.f = *((float*)ptr);
 		break;
 	case Float64:
-		*double_val = *((double *) ptr);
-		*int_val = (int) *double_val;
-		*uint_val = (int) *double_val;
+		val.d = *((double*)ptr);
 		break;
 	default:
 		abort_ply("error: get_stored_item: bad type = %d", type);
@@ -1663,74 +1544,43 @@ Get the value of an item from a binary file, and place the result
 into an integer, an unsigned integer and a double.
 
 Entry:
-fp   - file to get item from
-type - data type supposedly in the word
+fp         - file to get item from
+type       - data type supposedly in the word
 
 Exit:
-int_val    - integer value
-uint_val   - unsigned integer value
-double_val - double-precision floating point value
+val        - store value
 ******************************************************************************/
 
 void PLY::get_binary_item(
 	ISTREAM* fp,
 	int type,
-	int *int_val,
-	unsigned int *uint_val,
-	double *double_val
+	ValueType& val
 	)
 {
-	char c[8];
-	void *ptr = (void *) c;
-
 	switch (type) {
 	case Int8:
-		fp->read(ptr, 1);
-		*int_val = *((char *) ptr);
-		*uint_val = *int_val;
-		*double_val = *int_val;
+		fp->read(&val.i8, 1);
 		break;
 	case Uint8:
-		fp->read(ptr, 1);
-		*uint_val = *((unsigned char *) ptr);
-		*int_val = *uint_val;
-		*double_val = *uint_val;
+		fp->read(&val.u8, 1);
 		break;
 	case Int16:
-		fp->read(ptr, 2);
-		*int_val = *((short int *) ptr);
-		*uint_val = *int_val;
-		*double_val = *int_val;
+		fp->read(&val.i16, 2);
 		break;
 	case Uint16:
-		fp->read(ptr, 2);
-		*uint_val = *((unsigned short int *) ptr);
-		*int_val = *uint_val;
-		*double_val = *uint_val;
+		fp->read(&val.u16, 2);
 		break;
 	case Int32:
-		fp->read(ptr, 4);
-		*int_val = *((int *) ptr);
-		*uint_val = *int_val;
-		*double_val = *int_val;
+		fp->read(&val.i32, 4);
 		break;
 	case Uint32:
-		fp->read(ptr, 4);
-		*uint_val = *((unsigned int *) ptr);
-		*int_val = *uint_val;
-		*double_val = *uint_val;
+		fp->read(&val.u32, 4);
 		break;
 	case Float32:
-		fp->read(ptr, 4);
-		*double_val = *((float *) ptr);
-		*int_val = (int) *double_val;
-		*uint_val = (int) *double_val;
+		fp->read(&val.f, 4);
 		break;
 	case Float64:
-		fp->read(ptr, 8);
-		*double_val = *((double *) ptr);
-		*int_val = (int) *double_val;
-		*uint_val = (int) *double_val;
+		fp->read(&val.d, 8);
 		break;
 	default:
 		abort_ply("error: get_binary_item: bad type = %d", type);
@@ -1743,47 +1593,44 @@ Extract the value of an item from an ascii word, and place the result
 into an integer, an unsigned integer and a double.
 
 Entry:
-word - word to extract value from
-type - data type supposedly in the word
+word       - word to extract value from
+type       - data type supposedly in the word
 
 Exit:
-int_val    - integer value
-uint_val   - unsigned integer value
-double_val - double-precision floating point value
+val        - store value
 ******************************************************************************/
 
 void PLY::get_ascii_item(
-	char *word,
+	const char* word,
 	int type,
-	int *int_val,
-	unsigned int *uint_val,
-	double *double_val
+	ValueType& val
 	)
 {
 	switch (type) {
 	case Int8:
+		val.i8 = (int8_t)atoi(word);
+		break;
 	case Uint8:
+		val.u8 = (uint8_t)atoi(word);
+		break;
 	case Int16:
+		val.i16 = (int16_t)atoi(word);
+		break;
 	case Uint16:
+		val.u16 = (uint16_t)atoi(word);
+		break;
 	case Int32:
-		*int_val = atoi (word);
-		*uint_val = *int_val;
-		*double_val = *int_val;
+		val.i32 = atoi(word);
 		break;
-
 	case Uint32:
-		*uint_val = strtoul (word, (char **) NULL, 10);
-		*int_val = *uint_val;
-		*double_val = *uint_val;
+		val.u32 = strtoul(word, (char **)NULL, 10);
 		break;
-
 	case Float32:
-	case Float64:
-		*double_val = atof (word);
-		*int_val = (int) *double_val;
-		*uint_val = (unsigned int) *double_val;
+		val.f = (float)atof(word);
 		break;
-
+	case Float64:
+		val.d = atof(word);
+		break;
 	default:
 		abort_ply("error: get_ascii_item: bad type = %d", type);
 	}
@@ -1794,66 +1641,48 @@ void PLY::get_ascii_item(
 Store a value into a place being pointed to, guided by a data type.
 
 Entry:
-item       - place to store value
-type       - data type
-int_val    - integer version of value
-uint_val   - unsigned integer version of value
-double_val - double version of value
+to_type    - data type
+val        - value to be stored
+from_type  - value type
 
 Exit:
-item - pointer to stored value
+ptr        - data pointer to stored value
 ******************************************************************************/
 
 void PLY::store_item(
-	char *item,
-	int type,
-	int int_val,
-	unsigned int uint_val,
-	double double_val
+	void* ptr,
+	int to_type,
+	const ValueType& val,
+	int from_type
 	)
 {
-	unsigned char *puchar;
-	short int *pshort;
-	unsigned short int *pushort;
-	int *pint;
-	unsigned int *puint;
-	float *pfloat;
-	double *pdouble;
-
-	switch (type) {
+	switch (to_type) {
 	case Int8:
-		*item = int_val;
+		*((int8_t*)ptr) = ValueType2Type<int8_t>(val, from_type);
 		break;
 	case Uint8:
-		puchar = (unsigned char *) item;
-		*puchar = uint_val;
+		*((uint8_t*)ptr) = ValueType2Type<uint8_t>(val, from_type);
 		break;
 	case Int16:
-		pshort = (short *) item;
-		*pshort = int_val;
+		*((int16_t*)ptr) = ValueType2Type<int16_t>(val, from_type);
 		break;
 	case Uint16:
-		pushort = (unsigned short *) item;
-		*pushort = uint_val;
+		*((uint16_t*)ptr) = ValueType2Type<uint16_t>(val, from_type);
 		break;
 	case Int32:
-		pint = (int *) item;
-		*pint = int_val;
+		*((int32_t*)ptr) = ValueType2Type<int32_t>(val, from_type);
 		break;
 	case Uint32:
-		puint = (unsigned int *) item;
-		*puint = uint_val;
+		*((uint32_t*)ptr) = ValueType2Type<uint32_t>(val, from_type);
 		break;
 	case Float32:
-		pfloat = (float *) item;
-		*pfloat = (float)double_val;
+		*((float*)ptr) = ValueType2Type<float>(val, from_type);
 		break;
 	case Float64:
-		pdouble = (double *) item;
-		*pdouble = double_val;
+		*((double*)ptr) = ValueType2Type<double>(val, from_type);
 		break;
 	default:
-		abort_ply("error: store_item: bad type = %d", type);
+		abort_ply("error: store_item: bad type = %d", to_type);
 	}
 }
 
@@ -2402,9 +2231,7 @@ void* PLY::get_new_props()
 	PlyProperty *prop;
 	int offset;
 	int type;
-	double double_val;
-	int int_val;
-	unsigned int uint_val;
+	ValueType val;
 	int random_pick;
 
 	/* return NULL if we've got no "other" properties */
@@ -2435,8 +2262,8 @@ void* PLY::get_new_props()
 		for (size_t j = 0; j < rules->props.size(); j++) {
 			char* data = (char *)rules->props[j];
 			void* ptr = (void *)(data + offset);
-			get_stored_item((void *)ptr, type, &int_val, &uint_val, &double_val);
-			vals[j] = double_val;
+			get_stored_item((void*)ptr, type, val);
+			vals[j] = ValueType2Type<double>(val, type);
 		}
 
 		/* calculate the combined value */
@@ -2448,31 +2275,31 @@ void* PLY::get_new_props()
 				sum += vals[j] * rules->weights[j];
 				weight_sum += rules->weights[j];
 			}
-			double_val = sum / weight_sum;
+			val.d = sum / weight_sum;
 			break;
 						   }
 		case MINIMUM_RULE: {
-			double_val = vals[0];
+			val.d = vals[0];
 			for (size_t j = 1; j < rules->props.size(); j++)
-				if (double_val > vals[j])
-					double_val = vals[j];
+				if (val.d > vals[j])
+					val.d = vals[j];
 			break;
 						   }
 		case MAXIMUM_RULE: {
-			double_val = vals[0];
+			val.d = vals[0];
 			for (size_t j = 1; j < rules->props.size(); j++)
-				if (double_val < vals[j])
-					double_val = vals[j];
+				if (val.d < vals[j])
+					val.d = vals[j];
 			break;
 						  }
 		case RANDOM_RULE: {
-			double_val = vals[random_pick];
+			val.d = vals[random_pick];
 			break;
 						  }
 		case SAME_RULE: {
-			double_val = vals[0];
+			val.d = vals[0];
 			for (size_t j = 1; j < rules->props.size(); j++)
-				if (double_val != vals[j])
+				if (val.d != vals[j])
 					abort_ply("error: get_new_props: Error combining properties that should be the same");
 			break;
 						}
@@ -2481,10 +2308,7 @@ void* PLY::get_new_props()
 		}
 
 		/* store the combined value */
-		int_val = (int) double_val;
-		uint_val = (unsigned int) double_val;
-		void* ptr = (void *) (new_data + offset);
-		store_item((char *) ptr, type, int_val, uint_val, double_val);
+		store_item((void*)(new_data + offset), type, val, Float64);
 	}
 
 	return ((void*)new_data);

@@ -71,6 +71,10 @@ public:
 	inline bool IsValid() const { return poseID != NO_ID; }
 
 	// read image data from the file
+	static IMAGEPTR OpenImage(const String& fileName);
+	static IMAGEPTR ReadImageHeader(const String& fileName);
+	static IMAGEPTR ReadImage(const String& fileName, Image8U3& image);
+	static bool ReadImage(IMAGEPTR pImage, Image8U3& image);
 	bool LoadImage(const String& fileName, unsigned nMaxResolution=0);
 	bool ReloadImage(unsigned nMaxResolution=0, bool bLoadPixels=true);
 	void ReleaseImage();

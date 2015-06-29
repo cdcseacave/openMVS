@@ -28,20 +28,13 @@
 #if TD_VERBOSE == TD_VERBOSE_OFF
 #define VERBOSE LOG
 #define DEBUG_LEVEL(n,...)
-#endif
-#if TD_VERBOSE == TD_VERBOSE_ON
+#else
 #ifndef VERBOSITY_LEVEL
-#define VERBOSITY_LEVEL 2
+extern int g_nVerbosityLevel;
+#define VERBOSITY_LEVEL g_nVerbosityLevel
 #endif
 #define VERBOSE LOG
-#define DEBUG_LEVEL(n,...)	{ if (VERBOSITY_LEVEL > n) VERBOSE(__VA_ARGS__); }
-#endif
-#if TD_VERBOSE == TD_VERBOSE_DEBUG
-#ifndef VERBOSITY_LEVEL
-#define VERBOSITY_LEVEL 3
-#endif
-#define VERBOSE LOG
-#define DEBUG_LEVEL(n,...)	{ if (VERBOSITY_LEVEL > n) VERBOSE(__VA_ARGS__); }
+#define DEBUG_LEVEL(n,...)	{ if (n < VERBOSITY_LEVEL) VERBOSE(__VA_ARGS__); }
 #endif
 #define DEBUG(...)			DEBUG_LEVEL(0, __VA_ARGS__)
 #define DEBUG_EXTRA(...)	DEBUG_LEVEL(1, __VA_ARGS__)

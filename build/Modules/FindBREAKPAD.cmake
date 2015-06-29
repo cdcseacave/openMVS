@@ -18,8 +18,8 @@
 
 find_path(BREAKPAD_DIR "include/breakpad/client/minidump_file_writer.h"
     HINTS "${BREAKPAD_ROOT}" "$ENV{BREAKPAD_ROOT}"
-    PATHS "$ENV{PROGRAMFILES}/BreakPad" "$ENV{PROGRAMW6432}/BreakPad" "/usr" "/usr/local"
-    PATH_SUFFIXES ""
+    PATHS "$ENV{PROGRAMFILES}" "$ENV{PROGRAMW6432}" "/usr" "/usr/local" "/usr/share" "/usr/local/share"
+    PATH_SUFFIXES "BreakPad" "include"
     DOC "Root directory of BREAKPAD library")
 
 ##====================================================

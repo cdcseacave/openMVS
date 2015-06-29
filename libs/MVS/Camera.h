@@ -116,8 +116,8 @@ public:
 	template<typename TYPE, typename TYPER>
 	static inline TMatrix<TYPE,3,3> ComposeInvK(const TYPE& fX, const TYPE& fY, TYPER w=TYPER(1), TYPER h=TYPER(1)) {
 		TMatrix<TYPE,3,3> invK(TMatrix<TYPE,3,3>::IDENTITY);
-		invK(0,0) = 1.f/fX;
-		invK(1,1) = 1.f/fY;
+		invK(0,0) = TYPE(1)/fX;
+		invK(1,1) = TYPE(1)/fY;
 		invK(0,2) = TYPE(-0.5)*invK(0,0)*(w-1);
 		invK(1,2) = TYPE(-0.5)*invK(1,1)*(h-1);
 		return invK;
@@ -127,16 +127,30 @@ public:
 	template<typename TYPE>
 	inline TMatrix<TYPE,3,3> GetK(uint32_t width, uint32_t height) const {
 		const float fScale(GetNormalizationScale(width, height));
-		return ComposeK(
-			TYPE(K(0,0)*fScale), TYPE(K(1,1)*fScale),
-			width, height );
+		if (K(0,2)==0 && K(1,2)==0)
+			return ComposeK(
+				TYPE(K(0,0)*fScale), TYPE(K(1,1)*fScale),
+				width, height );
+		TMatrix<TYPE,3,3> fullK(TMatrix<TYPE,3,3>::IDENTITY);
+		fullK(0,0) = K(0,0)*fScale;
+		fullK(1,1) = K(1,1)*fScale;
+		fullK(0,2) = K(0,2)*fScale;
+		fullK(1,2) = K(1,2)*fScale;
+		return fullK;
 	}
 	template<typename TYPE>
 	inline TMatrix<TYPE,3,3> GetInvK(uint32_t width, uint32_t height) const {
 		const float fScale(GetNormalizationScale(width, height));
-		return ComposeInvK(
-			TYPE(K(0,0)*fScale), TYPE(K(1,1)*fScale),
-			width, height );
+		if (K(0,2)==0 && K(1,2)==0)
+			return ComposeInvK(
+				TYPE(K(0,0)*fScale), TYPE(K(1,1)*fScale),
+				width, height );
+		TMatrix<TYPE,3,3> fullInvK(TMatrix<TYPE,3,3>::IDENTITY);
+		fullInvK(0,0) = TYPE(1)/(K(0,0)*fScale);
+		fullInvK(1,1) = TYPE(1)/(K(1,1)*fScale);
+		fullInvK(0,2) = -K(0,2)*fScale*fullInvK(0,0);
+		fullInvK(1,2) = -K(1,2)*fScale*fullInvK(1,1);
+		return fullInvK;
 	}
 
 	// extract sensor's resolution from K

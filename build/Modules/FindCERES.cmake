@@ -19,8 +19,8 @@
 if(NOT EXISTS "${CERES_DIR}")
 	find_path(CERES_DIR "CeresConfig.cmake"
 		HINTS "${CERES_ROOT}" "$ENV{CERES_ROOT}" "$ENV{CERES_ROOT}" "$ENV{CERES_ROOT}/CMake"
-		PATHS "$ENV{PROGRAMFILES}/CERES" "$ENV{PROGRAMW6432}/CERES"
-		PATH_SUFFIXES "include" "CMake"
+		PATHS "$ENV{PROGRAMFILES}" "$ENV{PROGRAMW6432}" "/usr" "/usr/local" "/usr/share" "/usr/local/share"
+		PATH_SUFFIXES "CERES" "include" "CMake"
 		DOC "Root directory of CERES")
 endif()
 

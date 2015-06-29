@@ -39,6 +39,7 @@
 
 #include "../../libs/MVS/Common.h"
 #include "../../libs/MVS/Scene.h"
+#include <boost/program_options.hpp>
 
 
 // D E F I N E S ///////////////////////////////////////////////////
@@ -52,16 +53,6 @@
 
 
 // S T R U C T S ///////////////////////////////////////////////////
-
-namespace OPT {
-bool bOpenMVS2OpenMVG; // conversion direction
-String strListFileName; // image list file name
-String strInputFileName; // BAF file name of the input data
-String strOutputFileName; // file name of the mesh data
-String strWorkingFolder; // empty by default (current folder)
-String strWorkingFolderFull; // full path to current folder
-} // namespace OPT
-
 
 namespace openMVS {
 namespace MVS_IO {
@@ -205,11 +196,12 @@ bool ImportScene(const std::string& sList_filename, const std::string& sBaf_file
 						<< " " <<  id_pose
 						<< " " << x << " " << y << std::endl;
 					#endif
-					if (map_cam_pose_toViewId.find(std::make_pair(id_intrinsics, id_pose)) == map_cam_pose_toViewId.end()) {
-						LOG_OUT() << "Error" << std::endl;
+					const auto itIntrPose(map_cam_pose_toViewId.find(std::make_pair(id_intrinsics, id_pose)));
+					if (itIntrPose == map_cam_pose_toViewId.end()) {
+						LOG_OUT() << "error: intrinsics-pose pair not existing" << std::endl;
 						continue;
 					}
-					const uint32_t id_view = map_cam_pose_toViewId.at(std::make_pair(id_intrinsics, id_pose));
+					const uint32_t id_view(itIntrPose->second);
 					vertex.views.push_back(id_view);
 				}
 				sceneBAF.vertices.push_back(vertex);
@@ -325,44 +317,102 @@ bool ExportScene(const std::string& sList_filename, const std::string& sBaf_file
 } // openMVS
 
 
-// ParseCmdLine to parse the command line parameters
-#define PARAM_EQUAL(name) (0 == _tcsncicmp(param, _T("-" #name "="), sizeof(_T("-" #name "="))-sizeof(TCHAR)))
-bool ParseCmdLine(size_t argc, LPCTSTR* argv)
+namespace OPT {
+bool bOpenMVS2OpenMVG; // conversion direction
+bool bNormalizeIntrinsics;
+String strListFileName;
+String strInputFileName;
+String strOutputFileName;
+String strWorkingFolder; // empty by default (current folder)
+String strWorkingFolderFull; // full path to current folder
+String strConfigFileName;
+boost::program_options::variables_map vm;
+} // namespace OPT
+
+// initialize and parse the command line parameters
+bool Initialize(size_t argc, LPCTSTR* argv)
 {
-	bool bPrintHelp(false);
-	String strCmdLine;
-	for (size_t i=1; i<argc; ++i) {
-		LPCSTR param = argv[i];
-		strCmdLine += _T(" ") + String(param);
-		if (PARAM_EQUAL(list) || PARAM_EQUAL(l)) {
-			param = strchr(param, '=')+1;
-			OPT::strListFileName = param;
-		} else if (PARAM_EQUAL(input) || PARAM_EQUAL(i)) {
-			param = strchr(param, '=')+1;
-			OPT::strInputFileName = param;
-		} else if (PARAM_EQUAL(output) || PARAM_EQUAL(o)) {
-			param = strchr(param, '=')+1;
-			OPT::strOutputFileName = param;
-		} else if (PARAM_EQUAL(workdir) || PARAM_EQUAL(w)) {
-			param = strchr(param, '=')+1;
-			OPT::strWorkingFolder = param;
-		} else if (0 == _tcsicmp(param, _T("-help")) || 0 == _tcsicmp(param, _T("-h")) || 0 == _tcsicmp(param, _T("-?"))) {
-			bPrintHelp = true;
+	// initialize log and console
+	OPEN_LOG();
+	OPEN_LOGCONSOLE();
+
+	// group of options allowed only on command line
+	boost::program_options::options_description generic("Generic options");
+	generic.add_options()
+		("help", "produce this help message")
+		("working-folder,w", boost::program_options::value<std::string>(&OPT::strWorkingFolder), "the working directory (default current directory)")
+		("config-file,c", boost::program_options::value<std::string>(&OPT::strConfigFileName)->default_value(APPNAME _T(".cfg")), "the file name containing program options")
+		#if TD_VERBOSE != TD_VERBOSE_OFF
+		("verbosity,v", boost::program_options::value<int>(&g_nVerbosityLevel)->default_value(
+			#if TD_VERBOSE == TD_VERBOSE_DEBUG
+			3
+			#else
+			2
+			#endif
+			), "the verbosity level")
+		#endif
+		;
+
+	// group of options allowed both on command line and in config file
+	boost::program_options::options_description config("Main options");
+	config.add_options()
+		("images-list-file,l", boost::program_options::value<std::string>(&OPT::strListFileName), "the input filename containing image list")
+		("input-file,i", boost::program_options::value<std::string>(&OPT::strInputFileName), "the input filename containing camera poses and image list")
+		("output-file,o", boost::program_options::value<std::string>(&OPT::strOutputFileName), "the output filename for storing the mesh")
+		("normalize,f", boost::program_options::value<bool>(&OPT::bNormalizeIntrinsics)->default_value(true), "normalize intrinsics while exporting to OpenMVS format")
+		;
+
+	boost::program_options::options_description cmdline_options;
+	cmdline_options.add(generic).add(config);
+
+	boost::program_options::options_description config_file_options;
+	config_file_options.add(config);
+
+	boost::program_options::positional_options_description p;
+	p.add("input-file", -1);
+
+	try {
+		// parse command line options
+		boost::program_options::store(boost::program_options::command_line_parser((int)argc, argv).options(cmdline_options).positional(p).run(), OPT::vm);
+		boost::program_options::notify(OPT::vm);
+
+		// initialize working folder
+		Util::ensureValidDirectoryPath(OPT::strWorkingFolder);
+		OPT::strWorkingFolderFull = Util::getFullPath(OPT::strWorkingFolder);
+
+		// parse configuration file
+		std::ifstream ifs(MAKE_PATH_SAFE(OPT::strConfigFileName));
+		if (ifs) {
+			boost::program_options::store(parse_config_file(ifs, config_file_options), OPT::vm);
+			boost::program_options::notify(OPT::vm);
 		}
 	}
-	LOG(_T("Command line:%s"), strCmdLine.c_str());
+	catch (const std::exception& e) {
+		LOG(e.what());
+		return false;
+	}
+
+	// initialize the log file
+	OPEN_LOGFILE(MAKE_PATH(APPNAME _T("-")+Util::getUniqueName(0)+_T(".log")).c_str());
+
+	// print application details: version and command line
+	Util::LogBuild();
+	LOG(_T("Command line:%s"), Util::CommandLineToString(argc, argv).c_str());
+
+	// validate input
 	Util::ensureValidPath(OPT::strListFileName);
 	Util::ensureUnifySlash(OPT::strListFileName);
 	Util::ensureValidPath(OPT::strInputFileName);
 	Util::ensureUnifySlash(OPT::strInputFileName);
-	if (bPrintHelp || OPT::strListFileName.IsEmpty() || OPT::strInputFileName.IsEmpty())
-		LOG("Available list of command-line parameters:\n"
-			"\t-list= or -l=<list_filename> for setting the input filename containing image list\n"
-			"\t-input= or -i=<input_filename> for setting the BAF input filename containing camera poses\n"
-			"\t-output= or -o=<output_filename> for setting the output filename for storing the mesh and texture\n"
-			"\t-workdir= or -w=<folder_path> for setting the working directory (default current directory)\n"
-			"\t-help or -h or -? for displaying this message"
-		);
+	if (OPT::vm.count("help") || OPT::strListFileName.IsEmpty() || OPT::strInputFileName.IsEmpty()) {
+		boost::program_options::options_description visible("Available options");
+		visible.add(generic).add(config);
+		GET_LOG() << visible;
+	}
+	if (OPT::strInputFileName.IsEmpty())
+		return false;
+
+	// initialize optional options
 	if (OPT::strListFileName.IsEmpty() || OPT::strInputFileName.IsEmpty())
 		return false;
 	Util::ensureValidPath(OPT::strOutputFileName);
@@ -375,11 +425,26 @@ bool ParseCmdLine(size_t argc, LPCTSTR* argv)
 		if (OPT::strOutputFileName.IsEmpty())
 			OPT::strOutputFileName = Util::getFullFileName(OPT::strInputFileName) + MVS_EXT;
 	}
-	Util::ensureValidDirectoryPath(OPT::strWorkingFolder);
-	OPT::strWorkingFolderFull = Util::getFullPath(OPT::strWorkingFolder);
+
+	#ifdef _USE_BREAKPAD
+	// start memory dumper
+	MiniDumper::Create(APPNAME, WORKING_FOLDER);
+	#endif
 	return true;
 }
 
+// finalize application instance
+void Finalize()
+{
+	#if TD_VERBOSE != TD_VERBOSE_OFF
+	// print memory statistics
+	Util::LogMemoryInfo();
+	#endif
+
+	CLOSE_LOGFILE();
+	CLOSE_LOGCONSOLE();
+	CLOSE_LOG();
+}
 
 int main(int argc, LPCTSTR* argv)
 {
@@ -388,16 +453,8 @@ int main(int argc, LPCTSTR* argv)
 	_CrtSetDbgFlag(_CRTDBG_ALLOC_MEM_DF | _CRTDBG_LEAK_CHECK_DF);// | _CRTDBG_CHECK_ALWAYS_DF);
 	#endif
 
-	OPEN_LOG();
-	OPEN_LOGCONSOLE();
-	OPEN_LOGFILE(MAKE_PATH(APPNAME _T("-")+Util::getUniqueName(0)+_T(".log")).c_str());
-
-	Util::LogBuild();
-	#ifdef _USE_BREAKPAD
-	MiniDumper::Create(APPNAME, WORKING_FOLDER);
-	#endif
-	if (!ParseCmdLine(argc, argv))
-		return -1;
+	if (!Initialize(argc, argv))
+		return EXIT_FAILURE;
 
 	TD_TIMER_START();
 
@@ -488,22 +545,43 @@ int main(int argc, LPCTSTR* argv)
 				point.views.Insert(viewBAF);
 			}
 		}
+		if (OPT::bNormalizeIntrinsics) {
+			FOREACH(p, scene.platforms) {
+				MVS::Platform& platform = scene.platforms[p];
+				FOREACH(c, platform.cameras) {
+					MVS::Platform::Camera& camera = platform.cameras[c];
+					// find one image using this camera
+					MVS::Image* pImage(NULL);
+					FOREACHPTR(pImg, scene.images) {
+						if (pImg->platformID == p && pImg->cameraID == c) {
+							pImage = pImg;
+							break;
+						}
+					}
+					if (pImage == NULL) {
+						LOG("error: no image using camera %u of platform %u", c, p);
+						continue;
+					}
+					if (!pImage->ReloadImage(0, false)) {
+						LOG("error: can not read image %s", pImage->name.c_str());
+						continue;
+					}
+					const REAL fScale(REAL(1)/MVS::Camera::GetNormalizationScale(pImage->width, pImage->height));
+					camera.K(0,0) *= fScale;
+					camera.K(1,1) *= fScale;
+					camera.K(0,2) *= fScale;
+					camera.K(1,2) *= fScale;
+				}
+			}
+		}
 
 		// write OpenMVS input data
 		scene.Save(MAKE_PATH_SAFE(OPT::strOutputFileName), OPT::strWorkingFolderFull);
 
-		VERBOSE("Input data imported: %u cameras & %u poses & %u images & %u vertices (%s)", sceneBAF.cameras.size(), sceneBAF.poses.size(), sceneBAF.images.size(), sceneBAF.vertices.size(), TD_TIMER_GET_FMT().c_str());
+		VERBOSE("Input data imported: %u cameras, %u poses, %u images, %u vertices (%s)", sceneBAF.cameras.size(), sceneBAF.poses.size(), sceneBAF.images.size(), sceneBAF.vertices.size(), TD_TIMER_GET_FMT().c_str());
 	}
 
-	#if TD_VERBOSE != TD_VERBOSE_OFF
-	// print memory statistics
-	Util::LogMemoryInfo();
-	#endif
-
-	CLOSE_LOGFILE();
-	CLOSE_LOGCONSOLE();
-	CLOSE_LOG();
-
+	Finalize();
 	return EXIT_SUCCESS;
 }
 /*----------------------------------------------------------------*/

@@ -38,6 +38,7 @@
 
 #include "../../libs/MVS/Common.h"
 #include "../../libs/MVS/Scene.h"
+#include <boost/program_options.hpp>
 
 using namespace MVS;
 
@@ -53,66 +54,142 @@ using namespace MVS;
 // S T R U C T S ///////////////////////////////////////////////////
 
 namespace OPT {
-String strInputFileName; // file name of the input data
-String strOutputFileName; // file name of the mesh data
-float fDistInsert; // minimum distance between the projection of two points to consider them different
-bool bUseFreeSpaceSupport; // exploit free-space support in order to try reconstruct weakly-represented surfaces
+String strInputFileName;
+String strOutputFileName;
+String strMeshFileName;
+float fDistInsert;
+bool bUseFreeSpaceSupport;
+float fDecimateMesh;
+float fRemoveSpurious;
+bool bRemoveSpikes;
+unsigned nCloseHoles;
+unsigned nSmoothMesh;
 String strWorkingFolder; // empty by default (current folder)
 String strWorkingFolderFull; // full path to current folder
+String strConfigFileName;
+boost::program_options::variables_map vm;
 } // namespace OPT
 
-
-// ParseCmdLine to parse the command line parameters
-#define PARAM_EQUAL(name) (0 == _tcsncicmp(param, _T("-" #name "="), sizeof(_T("-" #name "="))-sizeof(TCHAR)))
-bool ParseCmdLine(size_t argc, LPCTSTR* argv)
+// initialize and parse the command line parameters
+bool Initialize(size_t argc, LPCTSTR* argv)
 {
-	OPT::fDistInsert = 2.f;
-	OPT::bUseFreeSpaceSupport = true;
-	bool bPrintHelp(false);
-	String strCmdLine;
-	for (size_t i=1; i<argc; ++i) {
-		LPCSTR param = argv[i];
-		strCmdLine += _T(" ") + String(param);
-		if (PARAM_EQUAL(input) || PARAM_EQUAL(i)) {
-			param = strchr(param, '=')+1;
-			OPT::strInputFileName = param;
-		} else if (PARAM_EQUAL(output) || PARAM_EQUAL(o)) {
-			param = strchr(param, '=')+1;
-			OPT::strOutputFileName = param;
-		} else if (PARAM_EQUAL(dist) || PARAM_EQUAL(d)) {
-			param = strchr(param, '=')+1;
-			OPT::fDistInsert = (float)atof(param);
-		} else if (PARAM_EQUAL(fss)) {
-			param = strchr(param, '=')+1;
-			OPT::bUseFreeSpaceSupport = (atoi(param) != 0);
-		} else if (PARAM_EQUAL(workdir) || PARAM_EQUAL(w)) {
-			param = strchr(param, '=')+1;
-			OPT::strWorkingFolder = param;
-		} else if (0 == _tcsicmp(param, _T("-help")) || 0 == _tcsicmp(param, _T("-h")) || 0 == _tcsicmp(param, _T("-?"))) {
-			bPrintHelp = true;
+	// initialize log and console
+	OPEN_LOG();
+	OPEN_LOGCONSOLE();
+
+	// group of options allowed only on command line
+	boost::program_options::options_description generic("Generic options");
+	generic.add_options()
+		("help", "produce this help message")
+		("working-folder,w", boost::program_options::value<std::string>(&OPT::strWorkingFolder), "the working directory (default current directory)")
+		("config-file,c", boost::program_options::value<std::string>(&OPT::strConfigFileName)->default_value(APPNAME _T(".cfg")), "the file name containing program options")
+		#if TD_VERBOSE != TD_VERBOSE_OFF
+		("verbosity,v", boost::program_options::value<int>(&g_nVerbosityLevel)->default_value(
+			#if TD_VERBOSE == TD_VERBOSE_DEBUG
+			3
+			#else
+			2
+			#endif
+			), "the verbosity level")
+		#endif
+		;
+
+	// group of options allowed both on command line and in config file
+	boost::program_options::options_description config_main("Reconstruct options");
+	config_main.add_options()
+		("input-file,i", boost::program_options::value<std::string>(&OPT::strInputFileName), "the input filename containing camera poses and image list")
+		("output-file,o", boost::program_options::value<std::string>(&OPT::strOutputFileName), "the output filename for storing the mesh")
+		("min-point-distance,d", boost::program_options::value<float>(&OPT::fDistInsert)->default_value(2.f), "the minimum distance in pixels between the projection of two 3D points to consider them different while triangulating")
+		("free-space-support,f", boost::program_options::value<bool>(&OPT::bUseFreeSpaceSupport)->default_value(true), "exploits the free-space support in order to reconstruct weakly-represented surfaces")
+		;
+	boost::program_options::options_description config_clean("Clean options");
+	config_clean.add_options()
+		("decimate", boost::program_options::value<float>(&OPT::fDecimateMesh)->default_value(0.7f), "the decimation factor in range (0..1] to be applied to the reconstructed surface (disable 1)")
+		("remove-spurious", boost::program_options::value<float>(&OPT::fRemoveSpurious)->default_value(10.f), "the spurious factor for removing faces with too long edges or isolated components (disable 0)")
+		("remove-spikes", boost::program_options::value<bool>(&OPT::bRemoveSpikes)->default_value(true), "the flag controlling the removal of spike faces")
+		("close-holes", boost::program_options::value<unsigned>(&OPT::nCloseHoles)->default_value(30), "try to close small holes in the reconstructed surface (disable 0)")
+		("smooth", boost::program_options::value<unsigned>(&OPT::nSmoothMesh)->default_value(2), "number of iterations to smooth the reconstructed surface (disable 0)")
+		;
+
+	// hidden options, allowed both on command line and
+	// in config file, but will not be shown to the user
+	boost::program_options::options_description hidden("Hidden options");
+	hidden.add_options()
+		("mesh-filename", boost::program_options::value<std::string>(&OPT::strMeshFileName), "the mesh file name to clean (skips the reconstruction step)")
+		;
+
+	boost::program_options::options_description cmdline_options;
+	cmdline_options.add(generic).add(config_main).add(config_clean).add(hidden);
+
+	boost::program_options::options_description config_file_options;
+	config_file_options.add(config_main).add(config_clean).add(hidden);
+
+	boost::program_options::positional_options_description p;
+	p.add("input-file", -1);
+
+	try {
+		// parse command line options
+		boost::program_options::store(boost::program_options::command_line_parser((int)argc, argv).options(cmdline_options).positional(p).run(), OPT::vm);
+		boost::program_options::notify(OPT::vm);
+
+		// initialize working folder
+		Util::ensureValidDirectoryPath(OPT::strWorkingFolder);
+		OPT::strWorkingFolderFull = Util::getFullPath(OPT::strWorkingFolder);
+
+		// parse configuration file
+		std::ifstream ifs(MAKE_PATH_SAFE(OPT::strConfigFileName));
+		if (ifs) {
+			boost::program_options::store(parse_config_file(ifs, config_file_options), OPT::vm);
+			boost::program_options::notify(OPT::vm);
 		}
 	}
-	LOG(_T("Command line:%s"), strCmdLine.c_str());
+	catch (const std::exception& e) {
+		LOG(e.what());
+		return false;
+	}
+
+	// initialize the log file
+	OPEN_LOGFILE(MAKE_PATH(APPNAME _T("-")+Util::getUniqueName(0)+_T(".log")).c_str());
+
+	// print application details: version and command line
+	Util::LogBuild();
+	LOG(_T("Command line:%s"), Util::CommandLineToString(argc, argv).c_str());
+
+	// validate input
 	Util::ensureValidPath(OPT::strInputFileName);
 	Util::ensureUnifySlash(OPT::strInputFileName);
-	if (bPrintHelp || OPT::strInputFileName.IsEmpty())
-		LOG("Available list of command-line parameters:\n"
-			"\t-input= or -i=<input_filename> for setting the input filename containing camera poses and image list\n"
-			"\t-output= or -o=<output_filename> for setting the output filename for storing the mesh and texture\n"
-			"\t-dist= or -d=<distance_insert> for setting the minimum distance between the projection of two 3D points to consider them different (default 2 pixels)\n"
-			"\t-fss=<free_space_support> for exploiting free-space support in order to try reconstruct weakly-represented surfaces (default on)\n"
-			"\t-workdir= or -w=<folder_path> for setting the working directory (default current directory)\n"
-			"\t-help or -h or -? for displaying this message"
-		);
+	if (OPT::vm.count("help") || OPT::strInputFileName.IsEmpty()) {
+		boost::program_options::options_description visible("Available options");
+		visible.add(generic).add(config_main).add(config_clean);
+		GET_LOG() << visible;
+	}
 	if (OPT::strInputFileName.IsEmpty())
 		return false;
+
+	// initialize optional options
 	Util::ensureValidPath(OPT::strOutputFileName);
 	Util::ensureUnifySlash(OPT::strOutputFileName);
 	if (OPT::strOutputFileName.IsEmpty())
 		OPT::strOutputFileName = Util::getFullFileName(OPT::strInputFileName) + _T(".ply");
-	Util::ensureValidDirectoryPath(OPT::strWorkingFolder);
-	OPT::strWorkingFolderFull = Util::getFullPath(OPT::strWorkingFolder);
+
+	#ifdef _USE_BREAKPAD
+	// start memory dumper
+	MiniDumper::Create(APPNAME, WORKING_FOLDER);
+	#endif
 	return true;
+}
+
+// finalize application instance
+void Finalize()
+{
+	#if TD_VERBOSE != TD_VERBOSE_OFF
+	// print memory statistics
+	Util::LogMemoryInfo();
+	#endif
+
+	CLOSE_LOGFILE();
+	CLOSE_LOGCONSOLE();
+	CLOSE_LOG();
 }
 
 int main(int argc, LPCTSTR* argv)
@@ -122,35 +199,30 @@ int main(int argc, LPCTSTR* argv)
 	_CrtSetDbgFlag(_CRTDBG_ALLOC_MEM_DF | _CRTDBG_LEAK_CHECK_DF);// | _CRTDBG_CHECK_ALWAYS_DF);
 	#endif
 
-	OPEN_LOG();
-	OPEN_LOGCONSOLE();
-	OPEN_LOGFILE(MAKE_PATH(APPNAME _T("-")+Util::getUniqueName(0)+_T(".log")).c_str());
-
-	Util::LogBuild();
-	#ifdef _USE_BREAKPAD
-	MiniDumper::Create(APPNAME, WORKING_FOLDER);
-	#endif
-	if (!ParseCmdLine(argc, argv))
-		return -1;
-
-	TD_TIMER_START();
+	if (!Initialize(argc, argv))
+		return EXIT_FAILURE;
 
 	Scene scene;
-	scene.Load(MAKE_PATH_SAFE(OPT::strInputFileName), OPT::strWorkingFolderFull);
-	scene.ReconstructMesh(OPT::fDistInsert, OPT::bUseFreeSpaceSupport);
-	
-	VERBOSE("Mesh reconstruction completed: %u vertices & %u faces (%s)", scene.mesh.vertices.GetSize(), scene.mesh.faces.GetSize(), TD_TIMER_GET_FMT().c_str());
+	if (OPT::strMeshFileName.IsEmpty()) {
+		// load point-cloud and reconstruct a coarse mesh
+		TD_TIMER_START();
+		scene.Load(MAKE_PATH_SAFE(OPT::strInputFileName), OPT::strWorkingFolderFull);
+		scene.ReconstructMesh(OPT::fDistInsert, OPT::bUseFreeSpaceSupport);
+		VERBOSE("Mesh reconstruction completed: %u vertices, %u faces (%s)", scene.mesh.vertices.GetSize(), scene.mesh.faces.GetSize(), TD_TIMER_GET_FMT().c_str());
+		#if TD_VERBOSE != TD_VERBOSE_OFF
+		// dump raw mesh
+		scene.mesh.Save(MAKE_PATH_SAFE(Util::getFullFileName(OPT::strOutputFileName) + _T("_raw.ply")));
+		#endif
+	} else {
+		// load existing mesh to clean
+		scene.mesh.Load(MAKE_PATH_SAFE(OPT::strMeshFileName));
+	}
 
+	// clean and save the final mesh
+	scene.mesh.Clean(OPT::fDecimateMesh, OPT::fRemoveSpurious, OPT::bRemoveSpikes, OPT::nCloseHoles, OPT::nSmoothMesh);
 	scene.mesh.Save(MAKE_PATH_SAFE(OPT::strOutputFileName));
 
-	#if TD_VERBOSE != TD_VERBOSE_OFF
-	// print memory statistics
-	Util::LogMemoryInfo();
-	#endif
-
-	CLOSE_LOGFILE();
-	CLOSE_LOGCONSOLE();
-	CLOSE_LOG();
+	Finalize();
 	return EXIT_SUCCESS;
 }
 /*----------------------------------------------------------------*/
