@@ -83,8 +83,8 @@ namespace boost { void throw_exception(std::exception const&); }
 #include <boost/serialization/list.hpp>
 #include <boost/serialization/map.hpp>
 #include <boost/serialization/set.hpp>
-#include <boost/serialization/unordered_map.hpp>
-#include <boost/serialization/unordered_set.hpp>
+#include <boost/serialization/hash_map.hpp>
+#include <boost/serialization/hash_set.hpp>
 #include <boost/serialization/nvp.hpp>
 // include headers that define an input and output archive
 #include <boost/archive/detail/common_oarchive.hpp>

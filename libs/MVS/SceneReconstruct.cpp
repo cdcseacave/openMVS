@@ -234,7 +234,7 @@ struct vert_info_t {
 	#endif
 	Type w; // point's weight
 	#ifdef DELAUNAY_WEAKSURF
-	view_info_t* viewsInfo; // each view caches the two faces from the point towards the camera and the end (used only by the weackly supported surfaces)
+	view_info_t* viewsInfo; // each view caches the two faces from the point towards the camera and the end (used only by the weakly supported surfaces)
 	};
 	inline vert_info_t() : viewsInfo(NULL) { ASSERT(w==0); }
 	~vert_info_t();
@@ -492,7 +492,7 @@ int intersect(const triangle_t& t, const segment_t& s, int coplanar[3])
 		}
 	case CGAL::NEGATIVE:
 		switch (orientation(a,b,c,q)) {
-		case CGAL::POSITIVE: 
+		case CGAL::POSITIVE:
 			// q sees the triangle in counterclockwise order
 			return checkEdges(a,b,c,q,p,coplanar);
 		case CGAL::COPLANAR:
