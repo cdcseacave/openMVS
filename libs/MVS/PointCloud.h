@@ -51,7 +51,7 @@
 namespace MVS {
 
 // a point-cloud containing the points with the corresponding views
-// and optionally normals, colors and wights
+// and optionally normals, colors and weights
 // (same size as the number of points or zero)
 class PointCloud
 {
