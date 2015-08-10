@@ -241,10 +241,10 @@ HRESULT CImageDDS::ReadHeader()
 	{
 		if (ddsInfo.ddsPixelFormat.dwFlags & DDPFAlphaPixels)
 		{
-			if (ISBITMASK(0xff0000, 0xff00, 0xff, 0xff000000))
-				m_format = PF_A8R8G8B8;
-			else if (ISBITMASK(0xff00, 0xff0000, 0xff000000, 0xff))
+			if (ISBITMASK(0xff, 0xff00, 0xff0000, 0xff000000))
 				m_format = PF_B8G8R8A8;
+			else if (ISBITMASK(0xff0000, 0xff00, 0xff, 0xff000000))
+				m_format = PF_R8G8B8A8;
 			//else if (ISBITMASK(0xff000000, 0xff0000, 0xff00, 0xff))
 			//	m_format = FORMAT_ABGR;
 			//else if (ISBITMASK(0x7C00, 0x3E0, 0x1F, 0x8000))
@@ -252,12 +252,12 @@ HRESULT CImageDDS::ReadHeader()
 		}
 		else //no DDPFAlphaPixels
 		{
-			if (ISBITMASK(0xff0000, 0xff00, 0xff, 0x00))
+			if (ISBITMASK(0xff, 0xff00, 0xff0000, 0x00))
+				m_format = PF_B8G8R8;
+			else if (ISBITMASK(0xff0000, 0xff00, 0xff, 0x00))
 				m_format = PF_R8G8B8;
 			else if (ISBITMASK(0xF800, 0x7E0, 0x1F, 0x00))
 				m_format = PF_R5G6B5;
-			else if (ISBITMASK(0xff, 0xff00, 0xff0000, 0x00))
-				m_format = PF_B8G8R8;
 			//else if (ISBITMASK(0xffFF, 0xffFF0000, 0x00, 0x00))
 			//	m_format = FORMAT_G16R16;
 			//else if (ISBITMASK(0x7C00, 0x3E0, 0x1F, 0x00))
@@ -269,7 +269,7 @@ HRESULT CImageDDS::ReadHeader()
 		if (ISBITMASK(0x00, 0x00, 0x00, 0xff))
 			m_format = PF_A8;
 		else if (ISBITMASK(0xff, 0x00, 0x00, 0x00))
-			m_format = PF_GREY8;
+			m_format = PF_GRAY8;
 		//else if (ISBITMASK(0xffff, 0x00, 0x00, 0x00))
 		//	m_format = FORMAT_L16;
 		//else if (ISBITMASK(0xff, 0x00, 0x00, 0xff00))

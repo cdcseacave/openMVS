@@ -1,5 +1,5 @@
 /*
- * ReconstructMesh.cpp
+ * RefineMesh.cpp
  *
  * Copyright (c) 2014-2015 FOXEL SA - http://foxel.ch
  * Please read <http://foxel.ch/license> for more information.
@@ -45,7 +45,7 @@ using namespace MVS;
 
 // D E F I N E S ///////////////////////////////////////////////////
 
-#define APPNAME _T("ReconstructMesh")
+#define APPNAME _T("RefineMesh")
 
 
 // S T R U C T S ///////////////////////////////////////////////////
@@ -54,13 +54,14 @@ namespace OPT {
 String strInputFileName;
 String strOutputFileName;
 String strMeshFileName;
-float fDistInsert;
-bool bUseFreeSpaceSupport;
 float fDecimateMesh;
-float fRemoveSpurious;
-bool bRemoveSpikes;
 unsigned nCloseHoles;
-unsigned nSmoothMesh;
+unsigned nEnsureEdgeSize;
+unsigned nScales;
+float fScaleStep;
+float fRegularityWeight;
+unsigned nMaxFaceArea;
+float fConfidenceThreshold;
 int nProcessPriority;
 unsigned nMaxThreads;
 String strConfigFileName;
@@ -94,34 +95,32 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		;
 
 	// group of options allowed both on command line and in config file
-	boost::program_options::options_description config_main("Reconstruct options");
-	config_main.add_options()
+	boost::program_options::options_description config("Refine options");
+	config.add_options()
 		("input-file,i", boost::program_options::value<std::string>(&OPT::strInputFileName), "the input filename containing camera poses and image list")
 		("output-file,o", boost::program_options::value<std::string>(&OPT::strOutputFileName), "the output filename for storing the mesh")
-		("min-point-distance,d", boost::program_options::value<float>(&OPT::fDistInsert)->default_value(2.f), "the minimum distance in pixels between the projection of two 3D points to consider them different while triangulating")
-		("free-space-support,f", boost::program_options::value<bool>(&OPT::bUseFreeSpaceSupport)->default_value(true), "exploits the free-space support in order to reconstruct weakly-represented surfaces")
-		;
-	boost::program_options::options_description config_clean("Clean options");
-	config_clean.add_options()
-		("decimate", boost::program_options::value<float>(&OPT::fDecimateMesh)->default_value(1.f), "the decimation factor in range (0..1] to be applied to the reconstructed surface (1 - disabled)")
-		("remove-spurious", boost::program_options::value<float>(&OPT::fRemoveSpurious)->default_value(10.f), "the spurious factor for removing faces with too long edges or isolated components (0 - disabled)")
-		("remove-spikes", boost::program_options::value<bool>(&OPT::bRemoveSpikes)->default_value(true), "the flag controlling the removal of spike faces")
-		("close-holes", boost::program_options::value<unsigned>(&OPT::nCloseHoles)->default_value(15), "try to close small holes in the reconstructed surface (0 - disabled)")
-		("smooth", boost::program_options::value<unsigned>(&OPT::nSmoothMesh)->default_value(2), "number of iterations to smooth the reconstructed surface (0 - disabled)")
+		("decimate", boost::program_options::value<float>(&OPT::fDecimateMesh)->default_value(0.f), "the decimation factor in range [0..1] to be applied to the input surface before refinement (0 - auto, 1 - disabled)")
+		("close-holes", boost::program_options::value<unsigned>(&OPT::nCloseHoles)->default_value(15), "try to close small holes in the input surface (0 - disabled)")
+		("ensure-edge-size", boost::program_options::value<unsigned>(&OPT::nEnsureEdgeSize)->default_value(1), "ensure edge size and improve vertex valence of the input surface (0 - disabled)")
+		("scales", boost::program_options::value<unsigned>(&OPT::nScales)->default_value(3), "how many iterations to run mesh optimization on multi-scale images")
+		("scale-step", boost::program_options::value<float>(&OPT::fScaleStep)->default_value(0.7071f), "image scale factor used at each mesh optimization step")
+		("regularity-weight", boost::program_options::value<float>(&OPT::fRegularityWeight)->default_value(0.1f), "the scalar regularity weight to balance between photo-consistency and regularization terms during mesh optimization")
+		("max-face-area", boost::program_options::value<unsigned>(&OPT::nMaxFaceArea)->default_value(64), "maximum face area projected in any pair of images that is not subdivided (0 - disabled)")
 		;
 
 	// hidden options, allowed both on command line and
 	// in config file, but will not be shown to the user
 	boost::program_options::options_description hidden("Hidden options");
 	hidden.add_options()
-		("mesh-file", boost::program_options::value<std::string>(&OPT::strMeshFileName), "the mesh file name to clean (skips the reconstruction step)")
+		("mesh-file", boost::program_options::value<std::string>(&OPT::strMeshFileName), "the mesh file name to refine (overwrite the existing mesh)")
+		("confidence-threshold", boost::program_options::value<float>(&OPT::fConfidenceThreshold)->default_value(-1.f), "threshold on the geometry confidence")
 		;
 
 	boost::program_options::options_description cmdline_options;
-	cmdline_options.add(generic).add(config_main).add(config_clean).add(hidden);
+	cmdline_options.add(generic).add(config).add(hidden);
 
 	boost::program_options::options_description config_file_options;
-	config_file_options.add(config_main).add(config_clean).add(hidden);
+	config_file_options.add(config).add(hidden);
 
 	boost::program_options::positional_options_description p;
 	p.add("input-file", -1);
@@ -155,7 +154,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	Util::ensureUnifySlash(OPT::strInputFileName);
 	if (OPT::vm.count("help") || OPT::strInputFileName.IsEmpty()) {
 		boost::program_options::options_description visible("Available options");
-		visible.add(generic).add(config_main).add(config_clean);
+		visible.add(generic).add(config);
 		GET_LOG() << visible;
 	}
 	if (OPT::strInputFileName.IsEmpty())
@@ -205,28 +204,24 @@ int main(int argc, LPCTSTR* argv)
 		return EXIT_FAILURE;
 
 	Scene scene;
-	if (OPT::strMeshFileName.IsEmpty()) {
-		// load point-cloud and reconstruct a coarse mesh
-		if (!scene.Load(MAKE_PATH_SAFE(OPT::strInputFileName)))
-			return EXIT_FAILURE;
-		TD_TIMER_START();
-		scene.ReconstructMesh(OPT::fDistInsert, OPT::bUseFreeSpaceSupport);
-		VERBOSE("Mesh reconstruction completed: %u vertices, %u faces (%s)", scene.mesh.vertices.GetSize(), scene.mesh.faces.GetSize(), TD_TIMER_GET_FMT().c_str());
-		#if TD_VERBOSE != TD_VERBOSE_OFF
-		if (VERBOSITY_LEVEL > 2) {
-			// dump raw mesh
-			scene.mesh.Save(MAKE_PATH_SAFE(Util::getFullFileName(OPT::strOutputFileName) + _T("_mesh_raw.ply")));
-		}
-		#endif
-	} else {
+	// load point-cloud and refine the coarse mesh
+	if (!scene.Load(MAKE_PATH_SAFE(OPT::strInputFileName)))
+		return EXIT_FAILURE;
+	if (!OPT::strMeshFileName.IsEmpty()) {
 		// load existing mesh to clean
 		scene.mesh.Load(MAKE_PATH_SAFE(OPT::strMeshFileName));
 	}
+	if (scene.mesh.IsEmpty()) {
+		VERBOSE("error: empty initial mesh");
+		return EXIT_FAILURE;
+	}
+	TD_TIMER_START();
+	scene.RefineMesh(OPT::fDecimateMesh, OPT::nCloseHoles, OPT::nEnsureEdgeSize, OPT::nScales, OPT::fScaleStep, OPT::fRegularityWeight, OPT::nMaxFaceArea, OPT::fConfidenceThreshold);
+	VERBOSE("Mesh refinement completed: %u vertices, %u faces (%s)", scene.mesh.vertices.GetSize(), scene.mesh.faces.GetSize(), TD_TIMER_GET_FMT().c_str());
 
-	// clean and save the final mesh
-	scene.mesh.Clean(OPT::fDecimateMesh, OPT::fRemoveSpurious, OPT::bRemoveSpikes, OPT::nCloseHoles, OPT::nSmoothMesh);
-	scene.mesh.Save(MAKE_PATH_SAFE(Util::getFullFileName(OPT::strOutputFileName) + _T("_mesh.ply")));
-	scene.Save(MAKE_PATH_SAFE(Util::getFullFileName(OPT::strOutputFileName) + _T("_mesh.mvs")));
+	// save the final mesh
+	scene.mesh.Save(MAKE_PATH_SAFE(Util::getFullFileName(OPT::strOutputFileName) + _T("_refine.ply")));
+	scene.Save(MAKE_PATH_SAFE(Util::getFullFileName(OPT::strOutputFileName) + _T("_refine.mvs")));
 
 	Finalize();
 	return EXIT_SUCCESS;

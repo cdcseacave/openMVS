@@ -29,15 +29,18 @@ namespace SEACAVE {
 // most-significant bit (alpha).
 typedef enum PIXELFORMAT_TYPE {
 	PF_UNKNOWN = 0,
-	// uncompressed RGB
+	// gray
 	PF_A8,
-	PF_GREY8,
+	PF_GRAY8,
+	// uncompressed RGB
 	PF_R5G6B5,
 	PF_R8G8B8,
+	PF_R8G8B8A8,
 	PF_A8R8G8B8,
 	// uncompressed BGR
 	PF_B8G8R8,
 	PF_B8G8R8A8,
+	PF_A8B8G8R8,
 	// compressed
 	PF_DXT1 = 128,
 	PF_DXT2,

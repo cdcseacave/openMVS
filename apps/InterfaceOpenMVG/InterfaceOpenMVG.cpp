@@ -48,9 +48,6 @@
 #define MVS_EXT _T(".mvs")
 #define MVG_EXT _T(".baf")
 
-#define WORKING_FOLDER		OPT::strWorkingFolder // empty by default (current folder)
-#define WORKING_FOLDER_FULL	OPT::strWorkingFolderFull // full path to current folder
-
 
 // S T R U C T S ///////////////////////////////////////////////////
 
@@ -114,7 +111,7 @@ bool ImportScene(const std::string& sList_filename, const std::string& sBaf_file
 	{
 		std::ifstream file(sList_filename.c_str());
 		if (!file.good()) {
-			LOG_OUT() << "Unable to open file: " << sList_filename << std::endl;
+			VERBOSE("error: unable to open file '%s'", sList_filename.c_str());
 			return false;
 		}
 		Image image;
@@ -130,7 +127,7 @@ bool ImportScene(const std::string& sList_filename, const std::string& sBaf_file
 	{
 		std::ifstream file(sBaf_filename.c_str());
 		if (!file.good()) {
-			LOG_OUT() << "Unable to open file: " << sBaf_filename << std::endl;
+			VERBOSE("error: unable to open file '%s'", sBaf_filename.c_str());
 			return false;
 		}
 
@@ -227,7 +224,7 @@ bool ExportScene(const std::string& sList_filename, const std::string& sBaf_file
 	{
 		std::ofstream file(sList_filename.c_str());
 		if (!file.good()) {
-			LOG_OUT() << "Unable to open file: " << sList_filename << std::endl;
+			VERBOSE("error: unable to open file '%s'", sList_filename.c_str());
 			return false;
 		}
 		for (uint32_t i=0; i<sceneBAF.images.size(); ++i) {
@@ -241,7 +238,7 @@ bool ExportScene(const std::string& sList_filename, const std::string& sBaf_file
 	{
 		std::ofstream file(sBaf_filename.c_str());
 		if (!file.good()) {
-			LOG_OUT() << "Unable to open file: " << sBaf_filename << std::endl;
+			VERBOSE("error: unable to open file '%s'", sBaf_filename.c_str());
 			return false;
 		}
 
@@ -323,8 +320,8 @@ bool bNormalizeIntrinsics;
 String strListFileName;
 String strInputFileName;
 String strOutputFileName;
-String strWorkingFolder; // empty by default (current folder)
-String strWorkingFolderFull; // full path to current folder
+int nProcessPriority;
+unsigned nMaxThreads;
 String strConfigFileName;
 boost::program_options::variables_map vm;
 } // namespace OPT
@@ -339,9 +336,11 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	// group of options allowed only on command line
 	boost::program_options::options_description generic("Generic options");
 	generic.add_options()
-		("help", "produce this help message")
-		("working-folder,w", boost::program_options::value<std::string>(&OPT::strWorkingFolder), "the working directory (default current directory)")
+		("help,h", "produce this help message")
+		("working-folder,w", boost::program_options::value<std::string>(&WORKING_FOLDER), "the working directory (default current directory)")
 		("config-file,c", boost::program_options::value<std::string>(&OPT::strConfigFileName)->default_value(APPNAME _T(".cfg")), "the file name containing program options")
+		("process-priority", boost::program_options::value<int>(&OPT::nProcessPriority)->default_value(-1), "Process priority (below normal by default)")
+		("max-threads", boost::program_options::value<unsigned>(&OPT::nMaxThreads)->default_value(0), "maximum number of threads (0 for using all available cores)")
 		#if TD_VERBOSE != TD_VERBOSE_OFF
 		("verbosity,v", boost::program_options::value<int>(&g_nVerbosityLevel)->default_value(
 			#if TD_VERBOSE == TD_VERBOSE_DEBUG
@@ -375,11 +374,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		// parse command line options
 		boost::program_options::store(boost::program_options::command_line_parser((int)argc, argv).options(cmdline_options).positional(p).run(), OPT::vm);
 		boost::program_options::notify(OPT::vm);
-
-		// initialize working folder
-		Util::ensureValidDirectoryPath(OPT::strWorkingFolder);
-		OPT::strWorkingFolderFull = Util::getFullPath(OPT::strWorkingFolder);
-
+		INIT_WORKING_FOLDER;
 		// parse configuration file
 		std::ifstream ifs(MAKE_PATH_SAFE(OPT::strConfigFileName));
 		if (ifs) {
@@ -426,6 +421,13 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 			OPT::strOutputFileName = Util::getFullFileName(OPT::strInputFileName) + MVS_EXT;
 	}
 
+	// initialize global options
+	Process::setCurrentProcessPriority((Process::Priority)OPT::nProcessPriority);
+	#ifdef _USE_OPENMP
+	if (OPT::nMaxThreads != 0)
+		omp_set_num_threads(OPT::nMaxThreads);
+	#endif
+
 	#ifdef _USE_BREAKPAD
 	// start memory dumper
 	MiniDumper::Create(APPNAME, WORKING_FOLDER);
@@ -461,7 +463,8 @@ int main(int argc, LPCTSTR* argv)
 	if (OPT::bOpenMVS2OpenMVG) {
 		// read OpenMVS input data
 		MVS::Scene scene;
-		scene.Load(MAKE_PATH_SAFE(OPT::strInputFileName), OPT::strWorkingFolderFull);
+		if (!scene.Load(MAKE_PATH_SAFE(OPT::strInputFileName)))
+			return EXIT_FAILURE;
 
 		// convert data from OpenMVS to OpenMVG
 		openMVS::MVS_IO::SfM_Scene sceneBAF;
@@ -510,11 +513,12 @@ int main(int argc, LPCTSTR* argv)
 	} else {
 		// read OpenMVG input data
 		openMVS::MVS_IO::SfM_Scene sceneBAF;
-		openMVS::MVS_IO::ImportScene(MAKE_PATH_SAFE(OPT::strListFileName), MAKE_PATH_SAFE(OPT::strInputFileName), sceneBAF);
+		if (!openMVS::MVS_IO::ImportScene(MAKE_PATH_SAFE(OPT::strListFileName), MAKE_PATH_SAFE(OPT::strInputFileName), sceneBAF))
+			return EXIT_FAILURE;
 
 		// convert data from OpenMVG to OpenMVS
 		MVS::Scene scene;
-		scene.platforms.Reserve(sceneBAF.cameras.size());
+		scene.platforms.Reserve((uint32_t)sceneBAF.cameras.size());
 		for (const auto& cameraBAF: sceneBAF.cameras) {
 			MVS::Platform& platform = scene.platforms.AddEmpty();
 			MVS::Platform::Camera& camera = platform.cameras.AddEmpty();
@@ -522,7 +526,7 @@ int main(int argc, LPCTSTR* argv)
 			camera.R = RMatrix::IDENTITY;
 			camera.C = CMatrix::ZERO;
 		}
-		scene.images.Reserve(sceneBAF.images.size());
+		scene.images.Reserve((uint32_t)sceneBAF.images.size());
 		for (const auto& imageBAF: sceneBAF.images) {
 			openMVS::MVS_IO::Pose& poseBAF = sceneBAF.poses[imageBAF.id_pose];
 			MVS::Image& image = scene.images.AddEmpty();
@@ -532,7 +536,7 @@ int main(int argc, LPCTSTR* argv)
 			image.platformID = imageBAF.id_camera;
 			MVS::Platform& platform = scene.platforms[image.platformID];
 			image.cameraID = 0;
-			image.poseID = (uint32_t)platform.poses.GetSize();
+			image.poseID = platform.poses.GetSize();
 			MVS::Platform::Pose& pose = platform.poses.AddEmpty();
 			pose.R = poseBAF.R;
 			pose.C = poseBAF.C;
@@ -576,7 +580,7 @@ int main(int argc, LPCTSTR* argv)
 		}
 
 		// write OpenMVS input data
-		scene.Save(MAKE_PATH_SAFE(OPT::strOutputFileName), OPT::strWorkingFolderFull);
+		scene.Save(MAKE_PATH_SAFE(OPT::strOutputFileName));
 
 		VERBOSE("Input data imported: %u cameras, %u poses, %u images, %u vertices (%s)", sceneBAF.cameras.size(), sceneBAF.poses.size(), sceneBAF.images.size(), sceneBAF.vertices.size(), TD_TIMER_GET_FMT().c_str());
 	}

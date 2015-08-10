@@ -174,7 +174,7 @@ void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE,SIZE,NOM,DENOM>::_Insert(CELL_TYPE
 			// init leaf
 			typename CELL_TYPE::LEAF_TYPE& leaf = child.Leaf();
 			leaf.idxBegin = m_indices.GetSize();
-			leaf.size = childIndices.GetSize();
+			leaf.size = (typename CELL_TYPE::SIZE_TYPE)childIndices.GetSize();
 			// store items
 			m_indices.Join(childIndices);
 			childIndices.Release();
@@ -234,7 +234,7 @@ inline void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE,SIZE,NOM,DENOM>::Insert(con
 {
 	ASSERT(!items.IsEmpty());
 	AABB_TYPE aabb;
-	ASSERT(sizeof(POINT_TYPE) == sizeof(ITEMARR_TYPE::Type));
+	ASSERT(sizeof(POINT_TYPE) == sizeof(typename ITEMARR_TYPE::Type));
 	aabb.Set((const POINT_TYPE*)items.Begin(), items.GetSize());
 	aabb.Enlarge(ZEROTOLERANCE<TYPE>()*TYPE(10));
 	Insert(items, aabb);

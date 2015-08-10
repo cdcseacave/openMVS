@@ -213,14 +213,14 @@ private:
 #ifndef _RELEASE
 public:
 	typedef struct DEBUGINFO_TYPE {
-		UINT memSize;		// total memory used
-		UINT memStruct;		// memory used for the tree structure
-		UINT memItems;		// memory used for the contained items
-		UINT numItems;		// number of contained items
-		UINT numNodes;		// total nodes...
-		UINT numLeaves;		// ... from which this number of leaves
-		UINT minDepth;		// minimum tree depth
-		UINT maxDepth;		// maximum tree depth
+		size_t memSize;		// total memory used
+		size_t memStruct;	// memory used for the tree structure
+		size_t memItems;	// memory used for the contained items
+		size_t numItems;	// number of contained items
+		size_t numNodes;	// total nodes...
+		size_t numLeaves;	// ... from which this number of leaves
+		size_t minDepth;	// minimum tree depth
+		size_t maxDepth;	// maximum tree depth
 		float avgDepth;		// average tree depth
 		void Init() { memset(this, 0, sizeof(DEBUGINFO_TYPE)); }
 		void operator += (const DEBUGINFO_TYPE& r) {
@@ -237,7 +237,7 @@ public:
 	static void LogDebugInfo(const DEBUGINFO&);
 
 private:
-	void _GetDebugInfo(const CELL_TYPE&, UINT, DEBUGINFO&) const;
+	void _GetDebugInfo(const CELL_TYPE&, unsigned, DEBUGINFO&) const;
 #endif
 }; // class TOctree
 /*----------------------------------------------------------------*/
