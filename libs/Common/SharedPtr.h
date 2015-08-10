@@ -39,18 +39,20 @@ struct SharedRef {
 	inline SharedRef() {}
 	inline SharedRef(TYPE_REF v) : val(v) {}
 
-	inline void Inc() {
+	inline TYPE_REF Inc() {
 		#ifdef SEACAVE_NO_MULTITHREAD
-		++val;
+		ASSERT(val >= 0);
+		return ++val;
 		#else
-		Thread::safeInc(val);
+		return Thread::safeInc(val);
 		#endif
 	}
-	inline void Dec() {
+	inline TYPE_REF Dec() {
 		#ifdef SEACAVE_NO_MULTITHREAD
-		--val;
+		ASSERT(val > 0);
+		return --val;
 		#else
-		Thread::safeDec(val);
+		return Thread::safeDec(val);
 		#endif
 	}
 
@@ -176,9 +178,8 @@ private:
 	{
 		if (m_pointer == NULL)
 			return;
-		ASSERT(m_pNoRef && m_pNoRef->val > 0);
-		m_pNoRef->Dec();
-		if (m_pNoRef->val == 0)
+		ASSERT(m_pNoRef);
+		if (m_pNoRef->Dec() == 0)
 		{
 			delete m_pointer;
 			m_pointer = NULL;

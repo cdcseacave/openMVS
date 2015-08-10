@@ -234,7 +234,7 @@ struct vert_info_t {
 	#endif
 	Type w; // point's weight
 	#ifdef DELAUNAY_WEAKSURF
-	view_info_t* viewsInfo; // each view caches the two faces from the point towards the camera and the end (used only by the weackly supported surfaces)
+	view_info_t* viewsInfo; // each view caches the two faces from the point towards the camera and the end (used only by the weakly supported surfaces)
 	};
 	inline vert_info_t() : viewsInfo(NULL) { ASSERT(w==0); }
 	~vert_info_t();
@@ -366,7 +366,7 @@ inline bool checkPointInside(const point_t& a, const point_t& b, const point_t& 
 // find all facets on the convex-hull and inside the camera frustum,
 // else return all four cell's facets
 template <int FacetOrientation>
-void fetchCellFacets(const delaunay_t& Tr, const cell_handle_t& cell, const Camera& camera, std::vector<facet_t>& facets)
+void fetchCellFacets(const delaunay_t& Tr, const cell_handle_t& cell, const Image& imageData, std::vector<facet_t>& facets)
 {
 	if (!Tr.is_infinite(cell)) {
 		// store all 4 facets of the cell
@@ -379,7 +379,8 @@ void fetchCellFacets(const delaunay_t& Tr, const cell_handle_t& cell, const Came
 	}
 	// find all facets on the convex-hull in camera's view
 	// create the 4 frustum planes
-	const Point2 size(camera.ExtractSensorResolution());
+	const Camera& camera(imageData.camera);
+	const Point2 size(imageData.GetSize());
 	const point_t ptOrigin(MVS2CGAL(camera.C));
 	const point_t ptUpLeft(MVS2CGAL(camera.TransformPointI2W(Point3(REAL(0), REAL(0), REAL(1)))));
 	const point_t ptUpRight(MVS2CGAL(camera.TransformPointI2W(Point3(size.x, REAL(0), REAL(1)))));
@@ -492,7 +493,7 @@ int intersect(const triangle_t& t, const segment_t& s, int coplanar[3])
 		}
 	case CGAL::NEGATIVE:
 		switch (orientation(a,b,c,q)) {
-		case CGAL::POSITIVE: 
+		case CGAL::POSITIVE:
 			// q sees the triangle in counterclockwise order
 			return checkEdges(a,b,c,q,p,coplanar);
 		case CGAL::COPLANAR:
@@ -881,7 +882,7 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport)
 			vert_info_t& vi = hint->info();
 			FOREACHPTR(pImageID, point.views) {
 				ASSERT(images[*pImageID].IsValid());
-				//ASSERT(images[*pImageID].camera.IsInsideProjectionP(CGAL2MVS<REAL>(p))); // due to radial distortion, some points can be slightly outside the image
+				//ASSERT(images[*pImageID].camera.IsInsideProjectionP(CGAL2MVS<REAL>(p), Point2(images[*pImageID].GetSize()))); // due to radial distortion, some points can be slightly outside the image
 				vi.Insert(*pImageID);
 			}
 		});
@@ -903,7 +904,7 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport)
 			camera_cell_t& camCell = camCells[i];
 			camCell.cell = delaunay.locate(MVS2CGAL(camera.C));
 			ASSERT(camCell.cell != cell_handle_t());
-			fetchCellFacets<CGAL::POSITIVE>(delaunay, camCell.cell, camera, camCell.facets);
+			fetchCellFacets<CGAL::POSITIVE>(delaunay, camCell.cell, imageData, camCell.facets);
 			// link all cells contained by the camera to the source
 			for (const facet_t& f: camCell.facets)
 				infoCells[f.first->info()].s = (edge_cap_t)WEIGHT_INF;
@@ -982,7 +983,7 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport)
 				const segment_t segEndPoint(MVS2CGAL(endPoint), p);
 				const cell_handle_t endCell(delaunay.locate(segEndPoint.source(), vi->cell()));
 				ASSERT(endCell != cell_handle_t());
-				fetchCellFacets<CGAL::NEGATIVE>(delaunay, endCell, camera, facets);
+				fetchCellFacets<CGAL::NEGATIVE>(delaunay, endCell, imageData, facets);
 				infoCells[endCell->info()].t += alpha_vis;
 				while (intersect(delaunay, segEndPoint, facets, facets, inter)) {
 					// assign score, weighted by the distance from the point to the intersection
@@ -1098,7 +1099,7 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport)
 		#if defined(_MSC_VER) && (_MSC_VER > 1600)
 		mapVertices.reserve(nEstimatedNumVerts);
 		#endif
-		mesh.vertices.Reserve(nEstimatedNumVerts);
+		mesh.vertices.Reserve((Mesh::VIndex)nEstimatedNumVerts);
 		mesh.faces.Reserve(nEstimatedNumVerts*2);
 		for (delaunay_t::All_cells_iterator ci=delaunay.all_cells_begin(), ce=delaunay.all_cells_end(); ci!=ce; ++ci) {
 			const cell_size_t ciID(ci->info());
@@ -1125,14 +1126,14 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport)
 			}
 		}
 		delaunay.clear();
-		// fix non-manifold vertices and edges
-		for (int i=0; i<4; ++i)
-			if (!mesh.FixNonManifold())
-				break;
 
 		DEBUG_EXTRA("Delaunay tetrahedras graph-cut completed (%g flow): %u vertices, %u faces (%s)", maxflow, mesh.vertices.GetSize(), mesh.faces.GetSize(), TD_TIMER_GET_FMT().c_str());
 	}
 
+	// fix non-manifold vertices and edges
+	for (int i=0; i<4; ++i)
+		if (!mesh.FixNonManifold())
+			break;
 	return true;
 }
 /*----------------------------------------------------------------*/

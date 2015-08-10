@@ -103,7 +103,7 @@ HRESULT CImagePNG::ReadHeader()
 	case PNG_COLOR_TYPE_GRAY:
 		if (bitdepth < 8)
 			png_set_expand_gray_1_2_4_to_8(png_ptr);
-		m_format = PF_GREY8;
+		m_format = PF_GRAY8;
 		m_stride = 1;
 		break;
 	case PNG_COLOR_TYPE_PALETTE:
@@ -152,9 +152,9 @@ HRESULT CImagePNG::ReadData(void* pData, PIXELFORMAT dataFormat, UINT nStride, U
 	png_infop info_ptr = (png_infop)m_info_ptr;
 
 	// read data
-	if (nStride == m_stride) {
+	if (nStride == m_stride && (m_format != PF_B8G8R8A8 || (dataFormat != PF_A8R8G8B8 && dataFormat != PF_A8B8G8R8))) {
 		if ((m_format == PF_B8G8R8 && dataFormat == PF_R8G8B8) ||
-			(m_format == PF_B8G8R8A8 && dataFormat == PF_A8R8G8B8)) {
+			(m_format == PF_B8G8R8A8 && dataFormat == PF_R8G8B8A8)) {
 			// flip R and B from the PNG library
 			png_set_bgr(png_ptr);
 		} else {
@@ -205,17 +205,19 @@ HRESULT CImagePNG::WriteHeader(PIXELFORMAT imageFormat, UINT width, UINT height,
 	switch (imageFormat)
 	{
 	case PF_A8:
-	case PF_GREY8:
+	case PF_GRAY8:
 		m_stride = 1;
-		m_format = PF_GREY8;
+		m_format = PF_GRAY8;
 		break;
 	case PF_B8G8R8:
 	case PF_R8G8B8:
 		m_stride = 3;
 		m_format = PF_B8G8R8;
 		break;
-	case PF_B8G8R8A8:
+	case PF_R8G8B8A8:
 	case PF_A8R8G8B8:
+	case PF_B8G8R8A8:
+	case PF_A8B8G8R8:
 		m_stride = 4;
 		m_format = PF_B8G8R8A8;
 		break;
@@ -264,9 +266,9 @@ HRESULT CImagePNG::WriteData(void* pData, PIXELFORMAT dataFormat, UINT nStride, 
 	png_infop info_ptr = (png_infop)m_info_ptr;
 
 	// write data
-	if (nStride == m_stride) {
+	if (nStride == m_stride && (m_format != PF_B8G8R8A8 || (dataFormat != PF_A8R8G8B8 && dataFormat != PF_A8B8G8R8))) {
 		if ((m_format == PF_B8G8R8 && dataFormat == PF_R8G8B8) ||
-			(m_format == PF_B8G8R8A8 && dataFormat == PF_A8R8G8B8)) {
+			(m_format == PF_B8G8R8A8 && dataFormat == PF_R8G8B8A8)) {
 			// flip R and B from the PNG library
 			png_set_bgr(png_ptr);
 		} else {

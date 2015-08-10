@@ -132,7 +132,7 @@ if(EXISTS "${OpenCV_DIR}")
 			
 	endforeach()
 
-	set(OpenCV_INCLUDE_DIRS "${OpenCV_DIR}/include")
+	set(OpenCV_INCLUDE_DIRS "${OpenCV_INCLUDE_DIRS}" "${OpenCV_DIR}/include")
 	message(STATUS "OpenCV ${OpenCV_VERSION} found (include: ${OpenCV_INCLUDE_DIRS})")
 
 else()

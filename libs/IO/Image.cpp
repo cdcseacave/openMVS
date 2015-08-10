@@ -193,15 +193,17 @@ UINT CImage::GetStride(PIXELFORMAT pixFormat)
 	switch (pixFormat)
 	{
 	case PF_A8:
-	case PF_GREY8:
+	case PF_GRAY8:
 		return 1;
 	case PF_R5G6B5:
 		return 2;
 	case PF_B8G8R8:
 	case PF_R8G8B8:
 		return 3;
-	case PF_B8G8R8A8:
+	case PF_R8G8B8A8:
 	case PF_A8R8G8B8:
+	case PF_B8G8R8A8:
+	case PF_A8B8G8R8:
 		return 4;
 	case PF_DXT1:
 		return 8;
@@ -225,14 +227,16 @@ bool CImage::FormatHasAlpha(PIXELFORMAT format)
 	switch (format)
 	{
 	case PF_A8:
-	case PF_B8G8R8A8:
+	case PF_R8G8B8A8:
 	case PF_A8R8G8B8:
+	case PF_B8G8R8A8:
+	case PF_A8B8G8R8:
 	case PF_DXT2:
 	case PF_DXT3:
 	case PF_DXT4:
 	case PF_DXT5:
 		return true;
-	case PF_GREY8:
+	case PF_GRAY8:
 	case PF_R5G6B5:
 	case PF_B8G8R8:
 	case PF_R8G8B8:
@@ -255,22 +259,25 @@ bool CImage::FilterFormat(void* pDst, PIXELFORMAT formatDst, UINT strideDst, con
 	switch (formatDst)
 	{
 	case PF_A8:
-	case PF_GREY8:
+	case PF_GRAY8:
 		switch (formatSrc)
 		{
-		case PF_B8G8R8A8:
+		case PF_R8G8B8A8:
 		case PF_A8R8G8B8:
-			// from PF_A8R8G8B8 to PF_A8 (just copy the alpha channel)
+		case PF_B8G8R8A8:
+		case PF_A8B8G8R8:
+			// from PF_R8G8B8A8 to PF_A8 (just copy the alpha channel)
 			(uint8_t*&)pSrc += 3; //skip the first RGB values
 		case PF_A8:
-		case PF_GREY8:
+		case PF_GRAY8:
 			// from PF_A8 to PF_A8 (just copy)
+			ASSERT(strideDst != strideSrc);
 			for (UINT i=0; i<nSzize; ++i,(uint8_t*&)pDst+=strideDst,(uint8_t*&)pSrc+=strideSrc)
 				((uint8_t*)pDst)[0] = ((uint8_t*)pSrc)[0];
 			return true;
 
 		case PF_R5G6B5:
-			// from PF_R5G6B5 to PF_A8 (16bits to grey)
+			// from PF_R5G6B5 to PF_A8 (16bits to gray)
 			for (UINT i=0; i<nSzize; ++i,(uint8_t*&)pDst+=strideDst,(uint8_t*&)pSrc+=strideSrc) {
 				const uint16_t clr = *((uint16_t*)pSrc);
 				((uint8_t*)pDst)[0] = RGB24TO8(RGB16TOR(clr), RGB16TOG(clr), RGB16TOB(clr));
@@ -279,7 +286,7 @@ bool CImage::FilterFormat(void* pDst, PIXELFORMAT formatDst, UINT strideDst, con
 
 		case PF_B8G8R8:
 		case PF_R8G8B8:
-			// from PF_R8G8B8 to PF_A8 (24bits to grey)
+			// from PF_R8G8B8 to PF_A8 (24bits to gray)
 			for (UINT i=0; i<nSzize; ++i,(uint8_t*&)pDst+=strideDst,(uint8_t*&)pSrc+=strideSrc)
 				((uint8_t*)pDst)[0] = RGB24TO8(((uint8_t*)pSrc)[2], ((uint8_t*)pSrc)[1], ((uint8_t*)pSrc)[0]);
 			return true;
@@ -290,16 +297,32 @@ bool CImage::FilterFormat(void* pDst, PIXELFORMAT formatDst, UINT strideDst, con
 		switch (formatSrc)
 		{
 		case PF_A8:
-		case PF_GREY8:
+		case PF_GRAY8:
 			// from PF_A8 to PF_R5G6B5 (doesn't make sense)
+			ASSERT(pDst != pSrc);
 			for (UINT i=0; i<nSzize; ++i,(uint8_t*&)pDst+=strideDst,(uint8_t*&)pSrc+=strideSrc)
 				*((uint16_t*)pDst) = RGB24TO16(((uint8_t*)pSrc)[0], ((uint8_t*)pSrc)[0], ((uint8_t*)pSrc)[0]);
 			return true;
 
 		case PF_R5G6B5:
 			// from PF_R5G6B5 to PF_R5G6B5 (just copy)
+			ASSERT(strideDst != strideSrc);
 			for (UINT i=0; i<nSzize; ++i,(uint8_t*&)pDst+=strideDst,(uint8_t*&)pSrc+=strideSrc)
 				*((uint16_t*)pDst) = *((uint16_t*)pSrc);
+			return true;
+
+		case PF_R8G8B8:
+			// from PF_R8G8B8 to PF_R5G6B5 (24bits to 16bits)
+		case PF_R8G8B8A8:
+			// from PF_R8G8B8A8 to PF_R5G6B5 (24bits to 16bits)
+			for (UINT i=0; i<nSzize; ++i,(uint8_t*&)pDst+=strideDst,(uint8_t*&)pSrc+=strideSrc)
+				*((uint16_t*)pDst) = RGB24TO16(((uint8_t*)pSrc)[2], ((uint8_t*)pSrc)[1], ((uint8_t*)pSrc)[0]);
+			return true;
+
+		case PF_A8R8G8B8:
+			// from PF_A8R8G8B8 to PF_R5G6B5 (24bits to 16bits)
+			for (UINT i=0; i<nSzize; ++i,(uint8_t*&)pDst+=strideDst,(uint8_t*&)pSrc+=strideSrc)
+				*((uint16_t*)pDst) = RGB24TO16(((uint8_t*)pSrc)[3], ((uint8_t*)pSrc)[2], ((uint8_t*)pSrc)[1]);
 			return true;
 
 		case PF_B8G8R8:
@@ -311,66 +334,13 @@ bool CImage::FilterFormat(void* pDst, PIXELFORMAT formatDst, UINT strideDst, con
 		case PF_B8G8R8A8:
 			// from PF_B8G8R8A8 to PF_R5G6B5 (24bits to 16bits)
 			for (UINT i=0; i<nSzize; ++i,(uint8_t*&)pDst+=strideDst,(uint8_t*&)pSrc+=strideSrc)
+				*((uint16_t*)pDst) = RGB24TO16(((uint8_t*)pSrc)[0], ((uint8_t*)pSrc)[1], ((uint8_t*)pSrc)[2]);
+			return true;
+
+		case PF_A8B8G8R8:
+			// from PF_A8B8G8R8 to PF_R5G6B5 (24bits to 16bits)
+			for (UINT i=0; i<nSzize; ++i,(uint8_t*&)pDst+=strideDst,(uint8_t*&)pSrc+=strideSrc)
 				*((uint16_t*)pDst) = RGB24TO16(((uint8_t*)pSrc)[1], ((uint8_t*)pSrc)[2], ((uint8_t*)pSrc)[3]);
-			return true;
-
-		case PF_R8G8B8:
-			// from PF_R8G8B8 to PF_R5G6B5 (24bits to 16bits)
-		case PF_A8R8G8B8:
-			// from PF_A8R8G8B8 to PF_R5G6B5 (24bits to 16bits)
-			for (UINT i=0; i<nSzize; ++i,(uint8_t*&)pDst+=strideDst,(uint8_t*&)pSrc+=strideSrc)
-				*((uint16_t*)pDst) = RGB24TO16(((uint8_t*)pSrc)[2], ((uint8_t*)pSrc)[1], ((uint8_t*)pSrc)[0]);
-			return true;
-		}
-		break;
-
-	case PF_B8G8R8:
-		switch (formatSrc)
-		{
-		case PF_A8:
-		case PF_GREY8:
-			// from PF_A8 to PF_B8G8R8 (doesn't make sense)
-			for (UINT i=0; i<nSzize; ++i,(uint8_t*&)pDst+=strideDst,(uint8_t*&)pSrc+=strideSrc)
-				((uint8_t*)pDst)[0] = ((uint8_t*)pDst)[1] = ((uint8_t*)pDst)[2] = *((uint8_t*)pSrc);
-			return true;
-
-		case PF_R5G6B5:
-			// from PF_R5G6B5 to PF_B8G8R8 (16bits to 24bits))
-			for (UINT i=0; i<nSzize; ++i,(uint8_t*&)pDst+=strideDst,(uint8_t*&)pSrc+=strideSrc) {
-				const uint16_t clr = *((uint16_t*)pSrc);
-				((uint8_t*)pDst)[0] = RGB16TOR(clr);
-				((uint8_t*)pDst)[1] = RGB16TOG(clr);
-				((uint8_t*)pDst)[2] = RGB16TOB(clr);
-			}
-			return true;
-
-		case PF_B8G8R8:
-			// from PF_B8G8R8 to PF_B8G8R8 (just copy)
-			ASSERT(strideDst != strideSrc);
-			for (UINT i=0; i<nSzize; ++i,(uint8_t*&)pDst+=strideDst,(uint8_t*&)pSrc+=strideSrc) {
-				((uint16_t*)pDst)[0] = ((uint16_t*)pSrc)[0];
-				((uint8_t*)pDst)[2] = ((uint8_t*)pSrc)[2];
-			}
-			return true;
-
-		case PF_B8G8R8A8:
-			// from PF_B8G8R8A8 to PF_B8G8R8 (just copy)
-			for (UINT i=0; i<nSzize; ++i,(uint8_t*&)pDst+=strideDst,(uint8_t*&)pSrc+=strideSrc) {
-				((uint8_t*)pDst)[0] = ((uint8_t*)pSrc)[1];
-				((uint8_t*)pDst)[1] = ((uint8_t*)pSrc)[2];
-				((uint8_t*)pDst)[2] = ((uint8_t*)pSrc)[3];
-			}
-			return true;
-
-		case PF_R8G8B8:
-			// from PF_R8G8B8 to PF_B8G8R8 (flip)
-		case PF_A8R8G8B8:
-			// from PF_A8R8G8B8 to PF_B8G8R8 (flip)
-			for (UINT i=0; i<nSzize; ++i,(uint8_t*&)pDst+=strideDst,(uint8_t*&)pSrc+=strideSrc) {
-				((uint8_t*)pDst)[0] = ((uint8_t*)pSrc)[2];
-				((uint8_t*)pDst)[1] = ((uint8_t*)pSrc)[1];
-				((uint8_t*)pDst)[2] = ((uint8_t*)pSrc)[0];
-			}
 			return true;
 		}
 		break;
@@ -379,14 +349,16 @@ bool CImage::FilterFormat(void* pDst, PIXELFORMAT formatDst, UINT strideDst, con
 		switch (formatSrc)
 		{
 		case PF_A8:
-		case PF_GREY8:
+		case PF_GRAY8:
 			// from PF_A8 to PF_R8G8B8 (doesn't make sense)
+			ASSERT(pDst != pSrc);
 			for (UINT i=0; i<nSzize; ++i,(uint8_t*&)pDst+=strideDst,(uint8_t*&)pSrc+=strideSrc)
 				((uint8_t*)pDst)[0] = ((uint8_t*)pDst)[1] = ((uint8_t*)pDst)[2] = *((uint8_t*)pSrc);
 			return true;
 
 		case PF_R5G6B5:
 			// from PF_R5G6B5 to PF_R8G8B8 (16bits to 24bits))
+			ASSERT(pDst != pSrc);
 			for (UINT i=0; i<nSzize; ++i,(uint8_t*&)pDst+=strideDst,(uint8_t*&)pSrc+=strideSrc) {
 				const uint16_t clr = *((uint16_t*)pSrc);
 				((uint8_t*)pDst)[0] = RGB16TOB(clr);
@@ -395,8 +367,32 @@ bool CImage::FilterFormat(void* pDst, PIXELFORMAT formatDst, UINT strideDst, con
 			}
 			return true;
 
+		case PF_R8G8B8:
+			// from PF_R8G8B8 to PF_R8G8B8 (just copy)
+			ASSERT(strideDst != strideSrc);
+		case PF_R8G8B8A8:
+			// from PF_R8G8B8A8 to PF_R8G8B8 (just copy)
+			for (UINT i=0; i<nSzize; ++i,(uint8_t*&)pDst+=strideDst,(uint8_t*&)pSrc+=strideSrc) {
+				((uint16_t*)pDst)[0] = ((uint16_t*)pSrc)[0];
+				((uint8_t*)pDst)[2] = ((uint8_t*)pSrc)[2];
+			}
+			return true;
+
+		case PF_A8R8G8B8:
+			// from PF_A8R8G8B8 to PF_R8G8B8 (just copy)
+			ASSERT(pDst != pSrc);
+			for (UINT i=0; i<nSzize; ++i,(uint8_t*&)pDst+=strideDst,(uint8_t*&)pSrc+=strideSrc) {
+				((uint8_t*)pDst)[0] = ((uint8_t*)pSrc)[1];
+				((uint8_t*)pDst)[1] = ((uint8_t*)pSrc)[2];
+				((uint8_t*)pDst)[2] = ((uint8_t*)pSrc)[3];
+			}
+			return true;
+
 		case PF_B8G8R8:
 			// from PF_B8G8R8 to PF_R8G8B8 (flip)
+		case PF_B8G8R8A8:
+			// from PF_B8G8R8A8 to PF_R8G8B8 (flip)
+			ASSERT(pDst != pSrc);
 			for (UINT i=0; i<nSzize; ++i,(uint8_t*&)pDst+=strideDst,(uint8_t*&)pSrc+=strideSrc) {
 				((uint8_t*)pDst)[0] = ((uint8_t*)pSrc)[2];
 				((uint8_t*)pDst)[1] = ((uint8_t*)pSrc)[1];
@@ -404,80 +400,96 @@ bool CImage::FilterFormat(void* pDst, PIXELFORMAT formatDst, UINT strideDst, con
 			}
 			return true;
 
-		case PF_B8G8R8A8:
-			// from PF_B8G8R8A8 to PF_R8G8B8 (flip)
+		case PF_A8B8G8R8:
+			// from PF_A8B8G8R8 to PF_R8G8B8 (flip)
+			ASSERT(pDst != pSrc);
 			for (UINT i=0; i<nSzize; ++i,(uint8_t*&)pDst+=strideDst,(uint8_t*&)pSrc+=strideSrc) {
 				((uint8_t*)pDst)[0] = ((uint8_t*)pSrc)[3];
 				((uint8_t*)pDst)[1] = ((uint8_t*)pSrc)[2];
 				((uint8_t*)pDst)[2] = ((uint8_t*)pSrc)[1];
 			}
 			return true;
-
-		case PF_R8G8B8:
-			// from PF_R8G8B8 to PF_R8G8B8 (just copy)
-			ASSERT(strideDst != strideSrc);
-		case PF_A8R8G8B8:
-			// from PF_A8R8G8B8 to PF_R8G8B8 (just copy)
-			for (UINT i=0; i<nSzize; ++i,(uint8_t*&)pDst+=strideDst,(uint8_t*&)pSrc+=strideSrc) {
-				((uint16_t*)pDst)[0] = ((uint16_t*)pSrc)[0];
-				((uint8_t*)pDst)[2] = ((uint8_t*)pSrc)[2];
-			}
-			return true;
 		}
 		break;
 
-	case PF_B8G8R8A8:
+	case PF_R8G8B8A8:
 		switch (formatSrc)
 		{
 		case PF_A8:
-		case PF_GREY8:
-			// from PF_A8 to PF_B8G8R8A8 (doesn't make sense)
+		case PF_GRAY8:
+			// from PF_A8 to PF_R8G8B8A8 (doesn't make sense)
+			ASSERT(pDst != pSrc);
 			for (UINT i=0; i<nSzize; ++i,(uint8_t*&)pDst+=strideDst,(uint8_t*&)pSrc+=strideSrc) {
-				((uint8_t*)pDst)[0] = 0xFF;
-				((uint8_t*)pDst)[1] = ((uint8_t*)pDst)[2] = ((uint8_t*)pDst)[3] = *((uint8_t*)pSrc);
+				((uint8_t*)pDst)[0] = ((uint8_t*)pDst)[1] = ((uint8_t*)pDst)[2] = *((uint8_t*)pSrc);
+				((uint8_t*)pDst)[3] = 0xFF;
 			}
 			return true;
 
 		case PF_R5G6B5:
-			// from PF_R5G6B5 to PF_B8G8R8A8 (16bits to 24bits))
+			// from PF_R5G6B5 to PF_R8G8B8A8 (16bits to 24bits))
+			ASSERT(pDst != pSrc);
 			for (UINT i=0; i<nSzize; ++i,(uint8_t*&)pDst+=strideDst,(uint8_t*&)pSrc+=strideSrc) {
 				const uint16_t clr = *((uint16_t*)pSrc);
-				((uint8_t*)pDst)[0] = 0xFF;
-				((uint8_t*)pDst)[1] = RGB16TOR(clr);
-				((uint8_t*)pDst)[2] = RGB16TOG(clr);
-				((uint8_t*)pDst)[3] = RGB16TOB(clr);
+				((uint8_t*)pDst)[0] = RGB16TOB(clr);
+				((uint8_t*)pDst)[1] = RGB16TOG(clr);
+				((uint8_t*)pDst)[2] = RGB16TOR(clr);
+				((uint8_t*)pDst)[3] = 0xFF;
 			}
 			return true;
 
-		case PF_B8G8R8:
-			// from PF_B8G8R8 to PF_B8G8R8A8 (just copy the RGB and set A to 255)
+		case PF_R8G8B8:
+			// from PF_R8G8B8 to PF_R8G8B8A8 (just copy the RGB and set A to 255)
+			ASSERT(pDst != pSrc);
 			for (UINT i=0; i<nSzize; ++i,(uint8_t*&)pDst+=strideDst,(uint8_t*&)pSrc+=strideSrc) {
-				((uint8_t*)pDst)[0] = 0xFF;
-				((uint8_t*)pDst)[1] = ((uint8_t*)pSrc)[0];
-				((uint8_t*)pDst)[2] = ((uint8_t*)pSrc)[1];
-				((uint8_t*)pDst)[3] = ((uint8_t*)pSrc)[2];
+				((uint16_t*)pDst)[0] = ((uint16_t*)pSrc)[0];
+				((uint8_t*)pDst)[2] = ((uint8_t*)pSrc)[2];
+				((uint8_t*)pDst)[3] = 0xFF;
 			}
 			return true;
 
-		case PF_B8G8R8A8:
-			// from PF_B8G8R8A8 to PF_B8G8R8A8 (just copy)
+		case PF_R8G8B8A8:
+			// from PF_R8G8B8A8 to PF_R8G8B8A8 (just copy)
 			ASSERT(strideDst != strideSrc);
 			for (UINT i=0; i<nSzize; ++i,(uint8_t*&)pDst+=strideDst,(uint8_t*&)pSrc+=strideSrc)
 				((uint32_t*)pDst)[0] = ((uint32_t*)pSrc)[0];
 			return true;
 
-		case PF_R8G8B8:
-			// from PF_R8G8B8 to PF_B8G8R8A8 (copy and flip the RGB and set A to 255)
+		case PF_A8R8G8B8:
+			// from PF_A8R8G8B8 to PF_R8G8B8A8 (copy and flip)
+			ASSERT(pDst != pSrc);
 			for (UINT i=0; i<nSzize; ++i,(uint8_t*&)pDst+=strideDst,(uint8_t*&)pSrc+=strideSrc) {
-				((uint8_t*)pDst)[0] = 0xFF;
+				((uint8_t*)pDst)[0] = ((uint8_t*)pSrc)[1];
 				((uint8_t*)pDst)[1] = ((uint8_t*)pSrc)[2];
-				((uint8_t*)pDst)[2] = ((uint8_t*)pSrc)[1];
+				((uint8_t*)pDst)[2] = ((uint8_t*)pSrc)[3];
 				((uint8_t*)pDst)[3] = ((uint8_t*)pSrc)[0];
 			}
 			return true;
 
-		case PF_A8R8G8B8:
-			// from PF_A8R8G8B8 to PF_B8G8R8A8 (copy and flip)
+		case PF_B8G8R8:
+			// from PF_B8G8R8 to PF_R8G8B8A8 (copy and flip the RGB and set A to 255)
+			ASSERT(pDst != pSrc);
+			for (UINT i=0; i<nSzize; ++i,(uint8_t*&)pDst+=strideDst,(uint8_t*&)pSrc+=strideSrc) {
+				((uint8_t*)pDst)[0] = ((uint8_t*)pSrc)[2];
+				((uint8_t*)pDst)[1] = ((uint8_t*)pSrc)[1];
+				((uint8_t*)pDst)[2] = ((uint8_t*)pSrc)[0];
+				((uint8_t*)pDst)[3] = 0xFF;
+			}
+			return true;
+
+		case PF_B8G8R8A8:
+			// from PF_B8G8R8A8 to PF_R8G8B8A8 (copy and flip)
+			ASSERT(pDst != pSrc);
+			for (UINT i=0; i<nSzize; ++i,(uint8_t*&)pDst+=strideDst,(uint8_t*&)pSrc+=strideSrc) {
+				((uint8_t*)pDst)[0] = ((uint8_t*)pSrc)[2];
+				((uint8_t*)pDst)[1] = ((uint8_t*)pSrc)[1];
+				((uint8_t*)pDst)[2] = ((uint8_t*)pSrc)[0];
+				((uint8_t*)pDst)[3] = ((uint8_t*)pSrc)[3];
+			}
+			return true;
+
+		case PF_A8B8G8R8:
+			// from PF_A8B8G8R8 to PF_R8G8B8A8 (flip)
+			ASSERT(pDst != pSrc);
 			for (UINT i=0; i<nSzize; ++i,(uint8_t*&)pDst+=strideDst,(uint8_t*&)pSrc+=strideSrc) {
 				((uint8_t*)pDst)[0] = ((uint8_t*)pSrc)[3];
 				((uint8_t*)pDst)[1] = ((uint8_t*)pSrc)[2];
@@ -492,37 +504,70 @@ bool CImage::FilterFormat(void* pDst, PIXELFORMAT formatDst, UINT strideDst, con
 		switch (formatSrc)
 		{
 		case PF_A8:
-		case PF_GREY8:
+		case PF_GRAY8:
 			// from PF_A8 to PF_A8R8G8B8 (doesn't make sense)
+			ASSERT(pDst != pSrc);
 			for (UINT i=0; i<nSzize; ++i,(uint8_t*&)pDst+=strideDst,(uint8_t*&)pSrc+=strideSrc) {
-				((uint8_t*)pDst)[0] = ((uint8_t*)pDst)[1] = ((uint8_t*)pDst)[2] = *((uint8_t*)pSrc);
-				((uint8_t*)pDst)[3] = 0xFF;
+				((uint8_t*)pDst)[0] = 0xFF;
+				((uint8_t*)pDst)[1] = ((uint8_t*)pDst)[2] = ((uint8_t*)pDst)[3] = *((uint8_t*)pSrc);
 			}
 			return true;
 
 		case PF_R5G6B5:
 			// from PF_R5G6B5 to PF_A8R8G8B8 (16bits to 24bits))
+			ASSERT(pDst != pSrc);
 			for (UINT i=0; i<nSzize; ++i,(uint8_t*&)pDst+=strideDst,(uint8_t*&)pSrc+=strideSrc) {
 				const uint16_t clr = *((uint16_t*)pSrc);
-				((uint8_t*)pDst)[0] = RGB16TOB(clr);
-				((uint8_t*)pDst)[1] = RGB16TOG(clr);
-				((uint8_t*)pDst)[2] = RGB16TOR(clr);
-				((uint8_t*)pDst)[3] = 0xFF;
+				((uint8_t*)pDst)[0] = 0xFF;
+				((uint8_t*)pDst)[1] = RGB16TOB(clr);
+				((uint8_t*)pDst)[2] = RGB16TOG(clr);
+				((uint8_t*)pDst)[3] = RGB16TOR(clr);
 			}
+			return true;
+
+		case PF_R8G8B8:
+			// from PF_R8G8B8 to PF_A8R8G8B8 (just copy the RGB and set A to 255)
+			ASSERT(pDst != pSrc);
+			for (UINT i=0; i<nSzize; ++i,(uint8_t*&)pDst+=strideDst,(uint8_t*&)pSrc+=strideSrc) {
+				((uint8_t*)pDst)[0] = 0xFF;
+				((uint8_t*)pDst)[1] = ((uint8_t*)pSrc)[0];
+				((uint8_t*)pDst)[2] = ((uint8_t*)pSrc)[1];
+				((uint8_t*)pDst)[3] = ((uint8_t*)pSrc)[2];
+			}
+			return true;
+
+		case PF_R8G8B8A8:
+			// from PF_R8G8B8A8 to PF_A8R8G8B8 (copy and flip)
+			ASSERT(pDst != pSrc);
+			for (UINT i=0; i<nSzize; ++i,(uint8_t*&)pDst+=strideDst,(uint8_t*&)pSrc+=strideSrc) {
+				((uint8_t*)pDst)[0] = ((uint8_t*)pSrc)[3];
+				((uint8_t*)pDst)[1] = ((uint8_t*)pSrc)[0];
+				((uint8_t*)pDst)[2] = ((uint8_t*)pSrc)[1];
+				((uint8_t*)pDst)[3] = ((uint8_t*)pSrc)[2];
+			}
+			return true;
+
+		case PF_A8R8G8B8:
+			// from PF_A8R8G8B8 to PF_A8R8G8B8 (just copy)
+			ASSERT(strideDst != strideSrc);
+			for (UINT i=0; i<nSzize; ++i,(uint8_t*&)pDst+=strideDst,(uint8_t*&)pSrc+=strideSrc)
+				((uint32_t*)pDst)[0] = ((uint32_t*)pSrc)[0];
 			return true;
 
 		case PF_B8G8R8:
 			// from PF_B8G8R8 to PF_A8R8G8B8 (copy and flip the RGB and set A to 255)
+			ASSERT(pDst != pSrc);
 			for (UINT i=0; i<nSzize; ++i,(uint8_t*&)pDst+=strideDst,(uint8_t*&)pSrc+=strideSrc) {
-				((uint8_t*)pDst)[0] = ((uint8_t*)pSrc)[2];
-				((uint8_t*)pDst)[1] = ((uint8_t*)pSrc)[1];
-				((uint8_t*)pDst)[2] = ((uint8_t*)pSrc)[0];
-				((uint8_t*)pDst)[3] = 0xFF;
+				((uint8_t*)pDst)[0] = 0xFF;
+				((uint8_t*)pDst)[1] = ((uint8_t*)pSrc)[2];
+				((uint8_t*)pDst)[2] = ((uint8_t*)pSrc)[1];
+				((uint8_t*)pDst)[3] = ((uint8_t*)pSrc)[0];
 			}
 			return true;
 
 		case PF_B8G8R8A8:
-			// from PF_B8G8R8A8 to PF_A8R8G8B8 (copy and flip)
+			// from PF_B8G8R8A8 to PF_A8R8G8B8 (flip)
+			ASSERT(pDst != pSrc);
 			for (UINT i=0; i<nSzize; ++i,(uint8_t*&)pDst+=strideDst,(uint8_t*&)pSrc+=strideSrc) {
 				((uint8_t*)pDst)[0] = ((uint8_t*)pSrc)[3];
 				((uint8_t*)pDst)[1] = ((uint8_t*)pSrc)[2];
@@ -531,8 +576,146 @@ bool CImage::FilterFormat(void* pDst, PIXELFORMAT formatDst, UINT strideDst, con
 			}
 			return true;
 
+		case PF_A8B8G8R8:
+			// from PF_A8B8G8R8 to PF_A8R8G8B8 (copy and flip)
+			ASSERT(pDst != pSrc);
+			for (UINT i=0; i<nSzize; ++i,(uint8_t*&)pDst+=strideDst,(uint8_t*&)pSrc+=strideSrc) {
+				((uint8_t*)pDst)[0] = ((uint8_t*)pSrc)[0];
+				((uint8_t*)pDst)[1] = ((uint8_t*)pSrc)[3];
+				((uint8_t*)pDst)[2] = ((uint8_t*)pSrc)[2];
+				((uint8_t*)pDst)[3] = ((uint8_t*)pSrc)[1];
+			}
+			return true;
+		}
+		break;
+
+	case PF_B8G8R8:
+		switch (formatSrc)
+		{
+		case PF_A8:
+		case PF_GRAY8:
+			// from PF_A8 to PF_B8G8R8 (doesn't make sense)
+			ASSERT(pDst != pSrc);
+			for (UINT i=0; i<nSzize; ++i,(uint8_t*&)pDst+=strideDst,(uint8_t*&)pSrc+=strideSrc)
+				((uint8_t*)pDst)[0] = ((uint8_t*)pDst)[1] = ((uint8_t*)pDst)[2] = *((uint8_t*)pSrc);
+			return true;
+
+		case PF_R5G6B5:
+			// from PF_R5G6B5 to PF_B8G8R8 (16bits to 24bits))
+			ASSERT(pDst != pSrc);
+			for (UINT i=0; i<nSzize; ++i,(uint8_t*&)pDst+=strideDst,(uint8_t*&)pSrc+=strideSrc) {
+				const uint16_t clr = *((uint16_t*)pSrc);
+				((uint8_t*)pDst)[0] = RGB16TOR(clr);
+				((uint8_t*)pDst)[1] = RGB16TOG(clr);
+				((uint8_t*)pDst)[2] = RGB16TOB(clr);
+			}
+			return true;
+
 		case PF_R8G8B8:
-			// from PF_R8G8B8 to PF_A8R8G8B8 (just copy the RGB and set A to 255)
+			// from PF_R8G8B8 to PF_B8G8R8 (flip)
+		case PF_R8G8B8A8:
+			// from PF_R8G8B8A8 to PF_B8G8R8 (flip)
+			ASSERT(pDst != pSrc);
+			for (UINT i=0; i<nSzize; ++i,(uint8_t*&)pDst+=strideDst,(uint8_t*&)pSrc+=strideSrc) {
+				((uint8_t*)pDst)[0] = ((uint8_t*)pSrc)[2];
+				((uint8_t*)pDst)[1] = ((uint8_t*)pSrc)[1];
+				((uint8_t*)pDst)[2] = ((uint8_t*)pSrc)[0];
+			}
+			return true;
+
+		case PF_A8R8G8B8:
+			// from PF_A8R8G8B8 to PF_B8G8R8 (flip)
+			ASSERT(pDst != pSrc);
+			for (UINT i=0; i<nSzize; ++i,(uint8_t*&)pDst+=strideDst,(uint8_t*&)pSrc+=strideSrc) {
+				((uint8_t*)pDst)[0] = ((uint8_t*)pSrc)[3];
+				((uint8_t*)pDst)[1] = ((uint8_t*)pSrc)[2];
+				((uint8_t*)pDst)[2] = ((uint8_t*)pSrc)[1];
+			}
+			return true;
+
+		case PF_B8G8R8:
+			// from PF_B8G8R8 to PF_B8G8R8 (just copy)
+			ASSERT(strideDst != strideSrc);
+		case PF_B8G8R8A8:
+			// from PF_B8G8R8A8 to PF_B8G8R8 (just copy)
+			for (UINT i=0; i<nSzize; ++i,(uint8_t*&)pDst+=strideDst,(uint8_t*&)pSrc+=strideSrc) {
+				((uint16_t*)pDst)[0] = ((uint16_t*)pSrc)[0];
+				((uint8_t*)pDst)[2] = ((uint8_t*)pSrc)[2];
+			}
+			return true;
+
+		case PF_A8B8G8R8:
+			// from PF_A8B8G8R8 to PF_B8G8R8 (just copy)
+			for (UINT i=0; i<nSzize; ++i,(uint8_t*&)pDst+=strideDst,(uint8_t*&)pSrc+=strideSrc) {
+				((uint8_t*)pDst)[0] = ((uint8_t*)pSrc)[1];
+				((uint8_t*)pDst)[1] = ((uint8_t*)pSrc)[2];
+				((uint8_t*)pDst)[2] = ((uint8_t*)pSrc)[3];
+			}
+			return true;
+		}
+		break;
+
+	case PF_B8G8R8A8:
+		switch (formatSrc)
+		{
+		case PF_A8:
+		case PF_GRAY8:
+			// from PF_A8 to PF_B8G8R8A8 (doesn't make sense)
+			ASSERT(pDst != pSrc);
+			for (UINT i=0; i<nSzize; ++i,(uint8_t*&)pDst+=strideDst,(uint8_t*&)pSrc+=strideSrc) {
+				((uint8_t*)pDst)[0] = ((uint8_t*)pDst)[1] = ((uint8_t*)pDst)[2] = *((uint8_t*)pSrc);
+				((uint8_t*)pDst)[3] = 0xFF;
+			}
+			return true;
+
+		case PF_R5G6B5:
+			// from PF_R5G6B5 to PF_B8G8R8A8 (16bits to 24bits))
+			ASSERT(pDst != pSrc);
+			for (UINT i=0; i<nSzize; ++i,(uint8_t*&)pDst+=strideDst,(uint8_t*&)pSrc+=strideSrc) {
+				const uint16_t clr = *((uint16_t*)pSrc);
+				((uint8_t*)pDst)[0] = RGB16TOR(clr);
+				((uint8_t*)pDst)[1] = RGB16TOG(clr);
+				((uint8_t*)pDst)[2] = RGB16TOB(clr);
+				((uint8_t*)pDst)[3] = 0xFF;
+			}
+			return true;
+
+		case PF_R8G8B8:
+			// from PF_R8G8B8 to PF_B8G8R8A8 (copy and flip the RGB and set A to 255)
+			ASSERT(pDst != pSrc);
+			for (UINT i=0; i<nSzize; ++i,(uint8_t*&)pDst+=strideDst,(uint8_t*&)pSrc+=strideSrc) {
+				((uint8_t*)pDst)[0] = ((uint8_t*)pSrc)[2];
+				((uint8_t*)pDst)[1] = ((uint8_t*)pSrc)[1];
+				((uint8_t*)pDst)[2] = ((uint8_t*)pSrc)[0];
+				((uint8_t*)pDst)[3] = 0xFF;
+			}
+			return true;
+
+		case PF_R8G8B8A8:
+			// from PF_R8G8B8A8 to PF_B8G8R8A8 (copy and flip)
+			ASSERT(pDst != pSrc);
+			for (UINT i=0; i<nSzize; ++i,(uint8_t*&)pDst+=strideDst,(uint8_t*&)pSrc+=strideSrc) {
+				((uint8_t*)pDst)[0] = ((uint8_t*)pSrc)[2];
+				((uint8_t*)pDst)[1] = ((uint8_t*)pSrc)[1];
+				((uint8_t*)pDst)[2] = ((uint8_t*)pSrc)[0];
+				((uint8_t*)pDst)[3] = ((uint8_t*)pSrc)[3];
+			}
+			return true;
+
+		case PF_A8R8G8B8:
+			// from PF_A8R8G8B8 to PF_B8G8R8A8 (copy and flip)
+			ASSERT(pDst != pSrc);
+			for (UINT i=0; i<nSzize; ++i,(uint8_t*&)pDst+=strideDst,(uint8_t*&)pSrc+=strideSrc) {
+				((uint8_t*)pDst)[0] = ((uint8_t*)pSrc)[3];
+				((uint8_t*)pDst)[1] = ((uint8_t*)pSrc)[2];
+				((uint8_t*)pDst)[2] = ((uint8_t*)pSrc)[1];
+				((uint8_t*)pDst)[3] = ((uint8_t*)pSrc)[0];
+			}
+			return true;
+
+		case PF_B8G8R8:
+			// from PF_B8G8R8 to PF_B8G8R8A8 (just copy the RGB and set A to 255)
+			ASSERT(pDst != pSrc);
 			for (UINT i=0; i<nSzize; ++i,(uint8_t*&)pDst+=strideDst,(uint8_t*&)pSrc+=strideSrc) {
 				((uint16_t*)pDst)[0] = ((uint16_t*)pSrc)[0];
 				((uint8_t*)pDst)[2] = ((uint8_t*)pSrc)[2];
@@ -540,8 +723,108 @@ bool CImage::FilterFormat(void* pDst, PIXELFORMAT formatDst, UINT strideDst, con
 			}
 			return true;
 
+		case PF_B8G8R8A8:
+			// from PF_B8G8R8A8 to PF_B8G8R8A8 (just copy)
+			ASSERT(strideDst != strideSrc);
+			for (UINT i=0; i<nSzize; ++i,(uint8_t*&)pDst+=strideDst,(uint8_t*&)pSrc+=strideSrc)
+				((uint32_t*)pDst)[0] = ((uint32_t*)pSrc)[0];
+			return true;
+
+		case PF_A8B8G8R8:
+			// from PF_A8B8G8R8 to PF_B8G8R8A8 (copy and flip)
+			ASSERT(pDst != pSrc);
+			for (UINT i=0; i<nSzize; ++i,(uint8_t*&)pDst+=strideDst,(uint8_t*&)pSrc+=strideSrc) {
+				((uint8_t*)pDst)[0] = ((uint8_t*)pSrc)[1];
+				((uint8_t*)pDst)[1] = ((uint8_t*)pSrc)[2];
+				((uint8_t*)pDst)[2] = ((uint8_t*)pSrc)[3];
+				((uint8_t*)pDst)[3] = ((uint8_t*)pSrc)[0];
+			}
+			return true;
+		}
+		break;
+
+	case PF_A8B8G8R8:
+		switch (formatSrc)
+		{
+		case PF_A8:
+		case PF_GRAY8:
+			// from PF_A8 to PF_A8B8G8R8 (doesn't make sense)
+			ASSERT(pDst != pSrc);
+			for (UINT i=0; i<nSzize; ++i,(uint8_t*&)pDst+=strideDst,(uint8_t*&)pSrc+=strideSrc) {
+				((uint8_t*)pDst)[0] = 0xFF;
+				((uint8_t*)pDst)[1] = ((uint8_t*)pDst)[2] = ((uint8_t*)pDst)[3] = *((uint8_t*)pSrc);
+			}
+			return true;
+
+		case PF_R5G6B5:
+			// from PF_R5G6B5 to PF_A8B8G8R8 (16bits to 24bits))
+			ASSERT(pDst != pSrc);
+			for (UINT i=0; i<nSzize; ++i,(uint8_t*&)pDst+=strideDst,(uint8_t*&)pSrc+=strideSrc) {
+				const uint16_t clr = *((uint16_t*)pSrc);
+				((uint8_t*)pDst)[0] = 0xFF;
+				((uint8_t*)pDst)[1] = RGB16TOR(clr);
+				((uint8_t*)pDst)[2] = RGB16TOG(clr);
+				((uint8_t*)pDst)[3] = RGB16TOB(clr);
+			}
+			return true;
+
+		case PF_R8G8B8:
+			// from PF_R8G8B8 to PF_A8B8G8R8 (copy and flip the RGB and set A to 255)
+			ASSERT(pDst != pSrc);
+			for (UINT i=0; i<nSzize; ++i,(uint8_t*&)pDst+=strideDst,(uint8_t*&)pSrc+=strideSrc) {
+				((uint8_t*)pDst)[0] = 0xFF;
+				((uint8_t*)pDst)[1] = ((uint8_t*)pSrc)[2];
+				((uint8_t*)pDst)[2] = ((uint8_t*)pSrc)[1];
+				((uint8_t*)pDst)[3] = ((uint8_t*)pSrc)[0];
+			}
+			return true;
+
+		case PF_R8G8B8A8:
+			// from PF_R8G8B8A8 to PF_A8B8G8R8 (copy and flip)
+			ASSERT(pDst != pSrc);
+			for (UINT i=0; i<nSzize; ++i,(uint8_t*&)pDst+=strideDst,(uint8_t*&)pSrc+=strideSrc) {
+				((uint8_t*)pDst)[0] = ((uint8_t*)pSrc)[3];
+				((uint8_t*)pDst)[1] = ((uint8_t*)pSrc)[2];
+				((uint8_t*)pDst)[2] = ((uint8_t*)pSrc)[1];
+				((uint8_t*)pDst)[3] = ((uint8_t*)pSrc)[0];
+			}
+			return true;
+
 		case PF_A8R8G8B8:
-			// from PF_A8R8G8B8 to PF_A8R8G8B8 (just copy)
+			// from PF_A8R8G8B8 to PF_A8B8G8R8 (copy and flip)
+			ASSERT(pDst != pSrc);
+			for (UINT i=0; i<nSzize; ++i,(uint8_t*&)pDst+=strideDst,(uint8_t*&)pSrc+=strideSrc) {
+				((uint8_t*)pDst)[0] = ((uint8_t*)pSrc)[0];
+				((uint8_t*)pDst)[1] = ((uint8_t*)pSrc)[2];
+				((uint8_t*)pDst)[2] = ((uint8_t*)pSrc)[1];
+				((uint8_t*)pDst)[3] = ((uint8_t*)pSrc)[0];
+			}
+			return true;
+
+		case PF_B8G8R8:
+			// from PF_B8G8R8 to PF_A8B8G8R8 (just copy the RGB and set A to 255)
+			ASSERT(pDst != pSrc);
+			for (UINT i=0; i<nSzize; ++i,(uint8_t*&)pDst+=strideDst,(uint8_t*&)pSrc+=strideSrc) {
+				((uint8_t*)pDst)[0] = 0xFF;
+				((uint8_t*)pDst)[1] = ((uint8_t*)pSrc)[0];
+				((uint8_t*)pDst)[2] = ((uint8_t*)pSrc)[1];
+				((uint8_t*)pDst)[3] = ((uint8_t*)pSrc)[2];
+			}
+			return true;
+
+		case PF_B8G8R8A8:
+			// from PF_B8G8R8A8 to PF_A8B8G8R8 (copy and flip)
+			ASSERT(pDst != pSrc);
+			for (UINT i=0; i<nSzize; ++i, (uint8_t*&)pDst+=strideDst, (uint8_t*&)pSrc+=strideSrc) {
+				((uint8_t*)pDst)[0] = ((uint8_t*)pSrc)[3];
+				((uint8_t*)pDst)[1] = ((uint8_t*)pSrc)[0];
+				((uint8_t*)pDst)[2] = ((uint8_t*)pSrc)[1];
+				((uint8_t*)pDst)[3] = ((uint8_t*)pSrc)[2];
+			}
+			return true;
+
+		case PF_A8B8G8R8:
+			// from PF_A8B8G8R8 to PF_A8B8G8R8 (just copy)
 			ASSERT(strideDst != strideSrc);
 			for (UINT i=0; i<nSzize; ++i,(uint8_t*&)pDst+=strideDst,(uint8_t*&)pSrc+=strideSrc)
 				((uint32_t*)pDst)[0] = ((uint32_t*)pSrc)[0];
@@ -612,6 +895,10 @@ CImage* CImage::Create(LPCTSTR szName, IMCREATE mode)
 	#ifdef _IMAGE_JPG
 	else if (_tcsncicmp(fext, _T(".jpg"), 4) == 0)
 		pImage = new CImageJPG();
+	#endif
+	#ifdef _IMAGE_TIFF
+	else if (_tcsncicmp(fext, _T(".tif"), 4) == 0 || _tcsncicmp(fext, _T(".tiff"), 5) == 0)
+		pImage = new CImageTIFF();
 	#endif
 	else
 		goto UNKNOWN_FORMAT;

@@ -160,7 +160,7 @@ HRESULT CImageJPG::ReadHeader()
 		switch (m_stride)
 		{
 		case 1:
-			m_format = PF_GREY8;
+			m_format = PF_GRAY8;
 			state->cinfo.out_color_space = JCS_GRAYSCALE;
 			state->cinfo.out_color_components = 1;
 			break;

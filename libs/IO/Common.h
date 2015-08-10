@@ -22,6 +22,9 @@
 #ifdef _USE_JPG
 #define _IMAGE_JPG		// add JPG support
 #endif
+#ifdef _USE_TIFF
+#define _IMAGE_TIFF		// add TIFF support
+#endif
 #ifdef _USE_EXIV2
 #define _IMAGE_EXIF		// complete EXIF info support based on Exiv2
 #endif
@@ -41,6 +44,9 @@
 #endif
 #ifdef _IMAGE_JPG
 #include "ImageJPG.h"
+#endif
+#ifdef _IMAGE_TIFF
+#include "ImageTIFF.h"
 #endif
 #ifdef _IMAGE_EXIF
 #include "ImageEXIF.h"
