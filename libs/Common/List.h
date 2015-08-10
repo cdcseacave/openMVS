@@ -14,12 +14,23 @@
 
 // D E F I N E S ///////////////////////////////////////////////////
 
+// cList index type
+#ifdef _SUPPORT_CPP11
+#ifdef _MSC_VER
+#define ARR2IDX(arr) std::remove_reference<decltype(arr)>::type::IDX
+#else
+#define ARR2IDX(arr) typename std::remove_reference<decltype(arr)>::type::IDX
+#endif
+#else
+#define ARR2IDX(arr) IDX
+#endif
+
 // cList iterator by index
 #ifndef FOREACH
-#define FOREACH(var, arr) for (IDX var=0, var##size=(arr).GetSize(); var<var##size; ++var)
+#define FOREACH(var, arr) for (ARR2IDX(arr) var=0, var##size=(arr).GetSize(); var<var##size; ++var)
 #endif
 #ifndef RFOREACH
-#define RFOREACH(var, arr) for (IDX var=(arr).GetSize(); var-->0; )
+#define RFOREACH(var, arr) for (ARR2IDX(arr) var=(arr).GetSize(); var-->0; )
 #endif
 // cList iterator by pointer
 #ifndef FOREACHPTR
@@ -53,7 +64,9 @@
 #define CLISTREFVECTOR(CLIST, var, vec) uint8_t _ArrData##var[sizeof(CLIST)]; new(_ArrData##var) CLIST(vec.size(), &vec[0]); const CLIST& var(*((const CLIST*)_ArrData##var))
 #endif
 
-#define CLISTDEF0(TYPE) cList< TYPE, const TYPE&, 0 >
+#define CLISTDEF0(TYPE) SEACAVE::cList< TYPE, const TYPE&, 0 >
+#define CLISTDEFIDX(TYPE,IDXTYPE) SEACAVE::cList< TYPE, const TYPE&, 1, 16, IDXTYPE >
+#define CLISTDEF0IDX(TYPE,IDXTYPE) SEACAVE::cList< TYPE, const TYPE&, 0, 16, IDXTYPE >
 
 
 namespace SEACAVE {
@@ -116,10 +129,12 @@ public:
 	// copy constructor: creates a deep-copy of the given list
 	cList(const cList& rList) : size(rList.size), vectorSize(rList.vectorSize), vector(NULL)
 	{
-		if (vectorSize == 0)
+		if (vectorSize == 0) {
+			ASSERT(size == 0);
 			return;
+		}
 		vector = (TYPE*)(operator new[] (vectorSize * sizeof(TYPE)));
-		_ArrayCopyConstruct(vector, rList.vector, rList.size);
+		_ArrayCopyConstruct(vector, rList.vector, size);
 	}
 
 	// constructor a list from a raw data array, taking ownership of the array memory
@@ -317,6 +332,12 @@ public:
 	{
 		if (size < vectorSize)
 			_ShrinkExact(size);
+	}
+
+	inline IDX		GetIndex(const TYPE* pElem) const
+	{
+		ASSERT(pElem-vector < size);
+		return (IDX)(pElem-vector);
 	}
 
 	inline ARG_TYPE	operator[](IDX index) const

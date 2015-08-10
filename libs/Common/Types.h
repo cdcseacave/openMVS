@@ -56,9 +56,6 @@
 #include "FileUtil.h"
 #include "Wildcard.h"
 
-// Tiny XML parser
-#include "TinyXML2.h"
-
 // Function delegate functionality
 #include "FastDelegate.h"
 #include "FastDelegateBind.h"
@@ -86,8 +83,10 @@ namespace boost { void throw_exception(std::exception const&); }
 #include <boost/serialization/list.hpp>
 #include <boost/serialization/map.hpp>
 #include <boost/serialization/set.hpp>
+#if (BOOST_VERSION / 100000) > 1 || (BOOST_VERSION / 100 % 1000) > 55
 #include <boost/serialization/unordered_map.hpp>
 #include <boost/serialization/unordered_set.hpp>
+#endif
 #include <boost/serialization/nvp.hpp>
 // include headers that define an input and output archive
 #include <boost/archive/detail/common_oarchive.hpp>
@@ -382,7 +381,6 @@ typedef class GENERAL_API cList<double, double, 0>      DoubleArr;
 #include "SML.h"
 #include "ConfigTable.h"
 #include "HTMLDoc.h"
-#include "PLY.h"
 
 
 // D E F I N E S ///////////////////////////////////////////////////
@@ -1643,8 +1641,8 @@ public:
 	void GaussJordan();
 
 	//! more convenient forms of row and element access operators
-	const TYPE& operator [](size_t i) const { return cv::Mat::at<TYPE>(i); }
-	TYPE& operator [](size_t i) { return cv::Mat::at<TYPE>(i); }
+	const TYPE& operator [](size_t i) const { return cv::Mat::at<TYPE>((int)i); }
+	TYPE& operator [](size_t i) { return cv::Mat::at<TYPE>((int)i); }
 
 	/// Access an element from the matrix. Bounds checking is only performed in debug mode.
 	inline const TYPE& operator [] (const Size& pos) const {
@@ -2037,6 +2035,9 @@ public:
 	template <typename T>
 	TYPE sampleSafe(const TPoint2<T>& pt, bool (STCALL *fncCond)(const TYPE&), const TYPE& dv) const;
 
+	template <typename SAMPLER, typename INTERTYPE>
+	INTERTYPE sample(const SAMPLER& sampler, const TPoint2<typename SAMPLER::Type>& pt) const;
+
 	template <typename T>
 	void toGray(TImage<T>& out, int code, bool bNormalize=false) const;
 
@@ -2264,28 +2265,30 @@ typedef SEACAVE::cList<IndexScore, const IndexScore&, 0> IndexScoreArr;
 
 // structure describing a pair of indices as one long index
 struct PairIdx {
+	typedef uint64_t PairIndex;
+	typedef uint32_t Index;
 	union {
-		uint64_t idx;
+		PairIndex idx;
 		struct {
 			#if __BYTE_ORDER == __LITTLE_ENDIAN
-			uint32_t j;
-			uint32_t i;
+			Index j;
+			Index i;
 			#else
-			uint32_t i;
-			uint32_t j;
+			Index i;
+			Index j;
 			#endif
 		};
 	};
 	inline PairIdx() {}
-	inline PairIdx(uint64_t _idx) : idx(_idx) {}
-	inline PairIdx(uint32_t _i, uint32_t _j)
+	inline PairIdx(PairIndex _idx) : idx(_idx) {}
+	inline PairIdx(Index _i, Index _j)
 		#if __BYTE_ORDER == __LITTLE_ENDIAN
 		: j(_j), i(_i) {}
 		#else
 		: i(_i), j(_j) {}
 		#endif
 	// get index
-	inline operator uint64_t () const { return idx; }
+	inline operator PairIndex () const { return idx; }
 	// compare by index (increasing)
 	inline bool operator<(const PairIdx& r) const { return (idx < r.idx); }
 	inline bool operator==(const PairIdx& r) const { return (idx == r.idx); }
@@ -2297,33 +2300,17 @@ inline PairIdx MakePairIdx(uint32_t idxImageA, uint32_t idxImageB) {
 /*----------------------------------------------------------------*/
 
 
-// structure describing a given 3D point
-template <typename TYPE, typename COLOR_TYPE=Pixel8U>
-class TVertex
-{
-public:
-	typedef TYPE Type;
-	typedef TPoint3<TYPE> Point;
-	typedef COLOR_TYPE Color;
-
-public:
-	Point p; // vertex position
-	Point n; // vertex normal
-	Color c; // vertex color
-
-	#ifdef _USE_BOOST
-	// serialize
-	template<class Archive>
-	void serialize(Archive& ar, const unsigned int version) {
-		ar & p;
-		ar & n;
-		ar & c;
-	}
-	#endif
+struct cuint32_t {
+	typedef uint32_t Type;
+	union {
+		uint32_t idx;
+		uint8_t i;
+	};
+	inline cuint32_t() {}
+	inline cuint32_t(uint32_t _idx) : idx(_idx) {}
+	inline operator uint32_t () const { return idx; }
+	inline operator uint32_t& () { return idx; }
 };
-/*----------------------------------------------------------------*/
-typedef TVertex<float> Vertex;
-typedef SEACAVE::cList<Vertex, const Vertex&, 0, 8192> VertexArr;
 /*----------------------------------------------------------------*/
 
 
@@ -2610,5 +2597,6 @@ private:
 #include "Plane.h"
 #include "Ray.h"
 #include "Octree.h"
+#include "Util.inl"
 
 #endif // __SEACAVE_TYPES_H__

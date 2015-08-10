@@ -630,6 +630,12 @@ public:
 	static void		LogMemoryInfo();
 
 	static LPSTR* CommandLineToArgvA(LPCSTR CmdLine, size_t& _argc);
+	static String CommandLineToString(size_t argc, LPCTSTR* argv) {
+		String strCmdLine;
+		for (size_t i=1; i<argc; ++i)
+			strCmdLine += _T(" ") + String(argv[i]);
+		return strCmdLine;
+	}
 
 	struct Progress {
 		const String msg; // custom message header (ex: "Processed images")

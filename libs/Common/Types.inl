@@ -1549,10 +1549,11 @@ inline TYPE TDMatrix<TYPE>::getDetSquare() const
 	const int subdim = dim-1;
 	// end of recursion in 1x1:
 	if (subdim==0)
-		return (Base::operator()(0,0));
+		return Base::operator()(0,0);
 	// end of recursion in 2x2:
-	else if (subdim==1) return (Base::operator()(0,0)*Base::operator()(1,1)-
-		Base::operator()(1,0)*Base::operator()(0,1));
+	if (subdim==1)
+		return (Base::operator()(0,0)*Base::operator()(1,1)-
+				Base::operator()(1,0)*Base::operator()(0,1));
 	TYPE d = 0;
 	TDMatrix<TYPE> SubMatrix(subdim, subdim);
 	for (register int sub=0; sub<dim; sub++) {
@@ -1623,8 +1624,8 @@ inline void TDMatrix<TYPE>::makeSymmetric()
 {
 	ASSERT(cols == rows);
 	const int num = cols;
-	for (int r=0; r<num; r++){
-		for (int c=r; c<num; c++){
+	for (int r=0; r<num; r++) {
+		for (int c=r; c<num; c++) {
 			Base::operator()(c,r) = Base::operator()(r,c) = TYPE((Base::operator()(c,r) + Base::operator()(r,c)) * 0.5);
 		}
 	}
@@ -1658,12 +1659,12 @@ void TDMatrix<TYPE>::Kronecker(const TDMatrix& B, TDMatrix& dest) const
 	const int B_rows = B.rows;
 	const int B_cols = B.cols;
 
-	dest.newsize (A_rows*B_rows, A_cols*B_cols);
+	dest.newsize(A_rows*B_rows,A_cols*B_cols);
 	for (int i=0; i<A_rows; i++) {
 		for (int j=0; j<A_cols; j++) {
 			for (int r=0; r<B_rows; r++) {
 				for (int s=0; s<B_cols; s++) {
-					dest(i*B_rows+r, j*B_cols+s) = Base::operator()(i,j) * B(r,s);
+					dest(i*B_rows+r,j*B_cols+s) = Base::operator()(i,j) * B(r,s);
 				}
 			}
 		}
@@ -1690,19 +1691,19 @@ void TDMatrix<TYPE>::GaussJordan()
 	const int max = MINF(numr, numc);
 	///<< offset to right from diagonal, the working column is given by r+offs
 	int offs = 0;
-	for (int r=0; r<max; r++){ ///<< r is the working row
+	for (int r=0; r<max; r++) { ///<< r is the working row
 		MDOUT("working row: "<<r<<endl);
 		// search for the next column which has non zero elements in or
 		// below working row
-		for ( ;r+offs<numc && Base::operator()(r,r+offs)==0.; offs++){
+		for (; r+offs<numc && Base::operator()(r, r+offs)==0.; offs++) {
 			// search for the next row with non-zero element in current column
 			MDOUT(*this<<"\nsearching for the next row with non-zero element "
-				<<"in current column "<<r+offs<<endl);
+				  <<"in current column "<<r+offs<<endl);
 			int rr;
-			for (rr=r+1; rr<numr && Base::operator()(rr,r+offs)==0.; rr++){}
+			for (rr=r+1; rr<numr && Base::operator()(rr, r+offs)==0.; rr++) {}
 			if (rr!=numr) {
 				MDOUT("found next non-zero element in column "<<r+offs<<" and row "<<rr
-					<<", swapping rows"<<endl);
+					  <<", swapping rows"<<endl);
 				SwapRows(r, rr);
 				break;
 			}
@@ -1729,7 +1730,7 @@ void TDMatrix<TYPE>::GaussJordan()
 		//	eliminate values below working position by subtracting a multiple of
 		//	the current row
 		MDOUT("eliminitaing entries in working column ("<<r+offs
-			<<") below working row ("<<r<<")\n");
+			  <<") below working row ("<<r<<")\n");
 		for (long row=r+1; row<numr; ++row) {
 			const TYPE wval=Base::operator()(row,r+offs);
 			for (int col=0; col<numc; col++) {
@@ -1744,7 +1745,7 @@ void TDMatrix<TYPE>::GaussJordan()
 	for (int r=numr-1; r>=0; --r) {
 		// search for leading element
 		int c;
-		for (c=r; c<numc && Base::operator()(r,c)==0.; c++){}
+		for (c=r; c<numc && Base::operator()(r,c)==0.; c++) {}
 		//	eliminate value above working position by subtracting a multiple of
 		//	the current row
 		for (int row=r-1; row>=0; --row) {
@@ -1780,8 +1781,8 @@ void TDVector<TYPE>::getKroneckerProduct(const TDVector<TYPE>& arg, TDVector<TYP
 	const int s1=rows, s2=arg.rows;
 	int l=0;
 	dst.newsize(s1*s2);
-	for (register int i=0; i<s1; i++){
-		for (register int k=0; k<s2; k++){
+	for (register int i=0; i<s1; i++) {
+		for (register int k=0; k<s2; k++) {
 			dst[l]=(*this)[i]*arg[k];
 			l++;
 		}
@@ -1886,7 +1887,7 @@ TYPE TImage<TYPE>::sample(const TPoint2<T>& pt, bool (STCALL *fncCond)(const TYP
 	const TYPE& x0y1(BaseBase::operator()(ly+1, lx  )); const bool b01(fncCond(x0y1));
 	const TYPE& x1y1(BaseBase::operator()(ly+1, lx+1)); const bool b11(fncCond(x1y1));
 	return y1*(x1*(b00 ? x0y0 : dv) + x*(b10 ? x1y0 : dv)) +
-			y*(x1*(b01 ? x0y1 : dv) + x*(b11 ? x1y1 : dv));
+		y*(x1*(b01 ? x0y1 : dv) + x*(b11 ? x1y1 : dv));
 }
 template <typename TYPE>
 template <typename T>
@@ -1906,6 +1907,271 @@ TYPE TImage<TYPE>::sampleSafe(const TPoint2<T>& pt, bool (STCALL *fncCond)(const
 /*----------------------------------------------------------------*/
 
 
+// Sampling functors
+// These functors computes weight associated to each pixels
+// Copyright (c) 2012, 2013, 2015 Pierre MOULON.
+// Copyright (c) 2015 Romuald Perrot.
+//
+// For a (relative) sampling position x (in [0,1]) between two (consecutive) points :
+//
+//   A  .... x ......... B
+//
+//   w[0] is the weight associated to A
+//   w[1] is the weight associated to B
+//
+// Note: The following functors generalize the sampling to more than two neighbors
+// They all contains the width variable that specify the number of neighbors used for sampling
+//
+// All contain the operator () with the following definition:
+//
+//   @brief Computes weight associated to neighboring pixels
+//   @author Romuald Perrot <perrot.romuald_AT_gmail.com>
+//   @param x Sampling position
+//   @param[out] weigth Sampling factors associated to the neighboring
+//   @note weight must be at least width length
+namespace Sampler {
+// Linear sampling (ie: linear interpolation between two pixels)
+template <typename TYPE>
+struct Linear {
+	typedef TYPE Type;
+
+	static const int halfWidth = 1;
+	static const int width = halfWidth*2;
+
+	inline void operator () (const TYPE x, TYPE* const weigth) const {
+		weigth[0] = TYPE(1) - x;
+		weigth[1] = x;
+	}
+};
+// Cubic interpolation between 4 pixels
+//
+// Interpolation weight is for A,B,C and D pixels given a x position as illustrated as follow :
+//
+// A      B    x C      D
+//
+// Cubic Convolution Interpolation for Digital Image Processing , R. Keys, eq(4)
+//
+// The cubic filter family with the two free parameters usually named B and C:
+// if |x|<1
+//   ((12-9B-6C)|x|^3 + (-18+12B+6C)|x|^2 + (6-2B))/6
+// if 1<=|x|<2
+//   ((-B-6C)|x|^3 + (6B+30C)|x|^2 + (-12B-48C)|x| + (8B+24C))/6
+template <typename TYPE>
+struct Cubic {
+	typedef TYPE Type;
+
+	static const int halfWidth = 2;
+	static const int width = halfWidth*2;
+
+	// Sharpness coefficient used to control sharpness of the cubic curve (between 0.5 to 0.75)
+	// cubic(0,1/2): 0.5 gives better mathematically result (ie: approximation at 3 order precision - Catmull-Rom)
+	const TYPE sharpness;
+	inline Cubic(const TYPE& _sharpness = 0.5) : sharpness(_sharpness) {}
+
+	inline void operator () (const TYPE x, TYPE* const weigth) const {
+		// remember :
+		// A      B    x  C       D
+
+		// weigth[0] -> weight for A
+		// weight[1] -> weight for B
+		// weight[2] -> weight for C
+		// weight[3] -> weigth for D
+
+		weigth[0] = CubicInter12(x + TYPE(1));
+		weigth[1] = CubicInter01(x);
+		weigth[2] = CubicInter01(TYPE(1) - x);
+		weigth[3] = CubicInter12(TYPE(2) - x);
+	}
+
+	// Cubic interpolation for x (in [0,1])
+	inline TYPE CubicInter01(const TYPE x) const {
+		// A = -sharpness
+		// f(x) = (A + 2) * x^3 - (A + 3) * x^2 + 1
+		return ((TYPE(2)-sharpness)*x - (TYPE(3)-sharpness))*x*x + TYPE(1);
+	}
+	// Cubic interpolation for x (in [1,2])
+	inline TYPE CubicInter12(const TYPE x) const {
+		// A = -sharpness
+		// f(x) = A * x^3 - 5 * A * x^2 + 8 * A * x - 4 * A
+		return (((TYPE(5)-x)*x - TYPE(8))*x + TYPE(4))*sharpness;
+	}
+};
+// Sampler spline16 -> Interpolation on 4 points used for 2D ressampling (16 = 4x4 sampling)
+// Cubic interpolation with 0-derivative at edges (ie at A and D points)
+// See Helmut Dersch for more details
+//
+// Some refs :
+//  -   http://forum.doom9.org/archive/index.php/t-147117.html
+//  -   http://avisynth.nl/index.php/Resampling
+//  -   http://www.ipol.im/pub/art/2011/g_lmii/
+//
+// The idea is to consider 3 cubic splines (f1,f2,f3) in the sampling interval :
+//
+// A   f1    B    f2    C     f3     D
+//
+// with curves defined as follow :
+// f1(x) = a1 x^3 + b1 x^2 + c1 x + d1
+// f2(x) = a2 x^3 + b2 x^2 + c2 x + d2
+// f3(x) = a3 x^3 + b2 x^2 + c3 x + d3
+//
+// We want to compute spline coefs for A,B,C,D assuming that:
+// y0 = coef[A] = f1(-1)
+// y1 = coef[B] = f1(0) = f2(0)
+// y2 = coef[C] = f2(1) = f3(1)
+// y3 = coef[D] = f3(2)
+//
+// coef are computed using the following constraints :
+// Curve is continuous, ie:
+// f1(0)  = f2(0)
+// f2(1)  = f3(1)
+// First derivative are equals, ie:
+// f1'(0) = f2'(0)
+// f2'(1) = f3'(1)
+// Second derivative are equals, ie:
+// f1''(0) = f2''(0)
+// f2''(1) = f3''(0)
+// Curve is, at boundary, with second derivative set to zero (it's a constraint introduced by Dersch), ie:
+// f1''(-1) = 0
+// f3''(2) = 0
+//
+// Then, you can solve for (a1,a2,a3,b1,b2,b3,c1,c2,c3,d1,d2,d3)
+//
+// for ex, for curve f2 you find :
+//
+// d2 = y1                                      // easy since y1 = f2(0)
+// c2 = - 7/15 y0 - 1/5 y1 + 4/5 y2 - 2/15 y3
+// b2 = 4/5 y0 - 9/5 y1 + 6/5 y2 - 1/5 y3
+// a2 = - 1/3 y0 + y1 - y2 + 1/3 y3
+//
+//
+// When you have coefs, you just have to express your curve as a linear combination of the control points, fort ex
+// with f2 :
+//
+//
+// f2(x) = w0(x) * y0 + w1(x) + y1 + w2(x) * y2 + w3(x) * y3
+//
+// with :
+//
+// w0(x) = - 1/3 * x^3 + 4/5 * x^2 - 7/15 * x
+// w1(x) = x^3 - 9/5 * x^2 - 1/5 * x + 1
+// w2(x) = -x^3 + 6/5 * x^2 + 4/5 * x
+// w3(x) = 1/3 * x^3 - 1/5 * x^2 - 2/15 * x
+//
+// substituting boundary conditions gives the correct coefficients for y0,y1,y2,y3 giving the final sampling scheme
+template <typename TYPE>
+struct Spline16 {
+	typedef TYPE Type;
+
+	static const int halfWidth = 2;
+	static const int width = halfWidth*2;
+
+	inline void operator () (const TYPE x, TYPE* const weigth) const {
+		weigth[0] = ((TYPE(-1) / TYPE(3) * x + TYPE(4) / TYPE(5)) * x - TYPE(7) / TYPE(15)) * x;
+		weigth[1] = ((x - TYPE(9) / TYPE(5)) * x - TYPE(1) / TYPE(5)) * x + TYPE(1);
+		weigth[2] = ((TYPE(6) / TYPE(5) - x) * x + TYPE(4) / TYPE(5)) * x;
+		weigth[3] = ((TYPE(1) / TYPE(3) * x - TYPE(1) / TYPE(5)) * x - TYPE(2) / TYPE(15)) * x;
+	}
+};
+// Sampler spline 36
+// Same as spline 16 but on 6 neighbors (used for 6x6 frame)
+template <typename TYPE>
+struct Spline36 {
+	typedef TYPE Type;
+
+	static const int halfWidth = 3;
+	static const int width = halfWidth*2;
+
+	inline void operator () (const TYPE x, TYPE* const weigth) const {
+		weigth[0] = ((TYPE(1) / TYPE(11) * x - TYPE(45) / TYPE(209)) * x + TYPE(26) / TYPE(209)) * x;
+		weigth[1] = ((TYPE(-6) / TYPE(11) * x + TYPE(270) / TYPE(209)) * x - TYPE(156) / TYPE(209)) * x;
+		weigth[2] = ((TYPE(13) / TYPE(11) * x - TYPE(453) / TYPE(209)) * x - TYPE(3) / TYPE(209)) * x + TYPE(1);
+		weigth[3] = ((TYPE(-13) / TYPE(11) * x + TYPE(288) / TYPE(209)) * x + TYPE(168) / TYPE(209)) * x;
+		weigth[4] = ((TYPE(6) / TYPE(11) * x - TYPE(72) / TYPE(209)) * x - TYPE(42) / TYPE(209)) * x;
+		weigth[5] = ((TYPE(-1) / TYPE(11) * x + TYPE(12) / TYPE(209)) * x + TYPE(7) / TYPE(209)) * x;
+	}
+};
+// Sampler spline 64
+// Same as spline 16 but on 8 neighbors (used for 8x8 frame)
+template <typename TYPE>
+struct Spline64 {
+	typedef TYPE Type;
+
+	static const int halfWidth = 4;
+	static const int width = halfWidth*2;
+
+	inline void operator () (const TYPE x, TYPE* const weigth) const {
+		weigth[0] = ((TYPE(-1) / TYPE(41) * x + TYPE(168) / TYPE(2911)) * x - TYPE(97) / TYPE(2911)) * x;
+		weigth[1] = ((TYPE(6) / TYPE(41) * x - TYPE(1008) / TYPE(2911)) * x +  TYPE(582) / TYPE(2911)) * x;
+		weigth[2] = ((TYPE(-24) / TYPE(41) * x + TYPE(4032) / TYPE(2911)) * x - TYPE(2328) / TYPE(2911)) * x;
+		weigth[3] = ((TYPE(49) / TYPE(41) * x - TYPE(6387) / TYPE(2911)) * x - TYPE(3) / TYPE(2911)) * x + TYPE(1);
+		weigth[4] = ((TYPE(-49) / TYPE(41) * x + TYPE(4050) / TYPE(2911)) * x + TYPE(2340) / TYPE(2911)) * x;
+		weigth[5] = ((TYPE(24) / TYPE(41) * x - TYPE(1080) / TYPE(2911)) * x - TYPE(624) / TYPE(2911)) * x;
+		weigth[6] = ((TYPE(-6) / TYPE(41) * x + TYPE(270) / TYPE(2911)) * x + TYPE(156) / TYPE(2911)) * x;
+		weigth[7] = ((TYPE(1) / TYPE(41) * x - TYPE(45) / TYPE(2911)) * x - TYPE(26) / TYPE(2911)) * x;
+	}
+};
+} // namespace Sampler
+// Sample image at a specified position
+// @param sampler used to make the sampling
+// @param pt X and Y-coordinate of sampling
+// @return Sampled value
+template <typename TYPE>
+template <typename SAMPLER, typename INTERTYPE>
+INTERTYPE TImage<TYPE>::sample(const SAMPLER& sampler, const TPoint2<typename SAMPLER::Type>& pt) const
+{
+	typedef typename SAMPLER::Type T;
+
+	const int im_width(width());
+	const int im_height(height());
+
+	// integer position of sample (x,y)
+	const int grid_x(FLOOR2INT(pt.x));
+	const int grid_y(FLOOR2INT(pt.y));
+
+	// compute difference between exact pixel location and sample
+	const T dx(pt.x-(T)grid_x);
+	const T dy(pt.y-(T)grid_y);
+
+	// get sampler weights
+	T coefs_x[SAMPLER::width];
+	sampler(dx, coefs_x);
+	T coefs_y[SAMPLER::width];
+	sampler(dy, coefs_y);
+
+	// Sample a grid around specified grid point
+	INTERTYPE res(0);
+	T total_weight(0);
+	for (int i = 0; i < SAMPLER::width; ++i) {
+		// get current i value
+		// +1 for correct scheme (draw it to be convinced)
+		const int cur_i(grid_y + 1 + i - SAMPLER::halfWidth);
+		// handle out of range
+		if (cur_i < 0 || cur_i >= im_height)
+			continue;
+		for (int j = 0; j < SAMPLER::width; ++j) {
+			// get current j value
+			// +1 for the same reason
+			const int cur_j(grid_x + 1 + j - SAMPLER::halfWidth);
+			// handle out of range
+			if (cur_j < 0 || cur_j >= im_width)
+				continue;
+			// sample input image and weight according to sampler
+			const T w(coefs_x[j] * coefs_y[i]);
+			res += INTERTYPE(BaseBase::operator()(cur_i, cur_j)) * w;
+			total_weight += w;
+		}
+	}
+
+	// if value too small, it should be instable, so return the sampled value
+	if (total_weight <= T(0.2))
+		return INTERTYPE();
+	if (total_weight != T(1))
+		return res/total_weight;
+	return res;
+}
+/*----------------------------------------------------------------*/
+
+
 // convert color image to gray
 template <typename TYPE>
 template <typename T>
@@ -1913,10 +2179,10 @@ void TImage<TYPE>::toGray(TImage<T>& out, int code, bool bNormalize) const
 {
 	#if 1
 	ASSERT(code==cv::COLOR_RGB2GRAY || code==cv::COLOR_RGBA2GRAY || code==cv::COLOR_BGR2GRAY || code==cv::COLOR_BGRA2GRAY);
-	static const T coeffsRGB[] = { 0.299, 0.587, 0.114 };
-	static const T coeffsBGR[] = { 0.114, 0.587, 0.299 };
-	static const T coeffsRGBn[] = { 0.299/255, 0.587/255, 0.114/255 };
-	static const T coeffsBGRn[] = { 0.114/255, 0.587/255, 0.299/255 };
+	static const T coeffsRGB[] = {T(0.299), T(0.587), T(0.114)};
+	static const T coeffsBGR[] = {T(0.114), T(0.587), T(0.299)};
+	static const T coeffsRGBn[] = {T(0.299/255), T(0.587/255), T(0.114/255)};
+	static const T coeffsBGRn[] = {T(0.114/255), T(0.587/255), T(0.299/255)};
 	const float* coeffs;
 	switch (code) {
 	case cv::COLOR_BGR2GRAY:
@@ -2015,10 +2281,10 @@ void TImage<TYPE>::RasterizeTriangle(const TPoint2<T>& v1, const TPoint2<T>& v2,
 	const int_t FDY31 = DY31 << 4;
 
 	// Bounding rectangle
-	int minx = (MINF3(X1, X2, X3) + 0xF) >> 4;
-	int maxx = (MAXF3(X1, X2, X3) + 0xF) >> 4;
-	int miny = (MINF3(Y1, Y2, Y3) + 0xF) >> 4;
-	int maxy = (MAXF3(Y1, Y2, Y3) + 0xF) >> 4;
+	int minx = (int)((MINF3(X1, X2, X3) + 0xF) >> 4);
+	int maxx = (int)((MAXF3(X1, X2, X3) + 0xF) >> 4);
+	int miny = (int)((MINF3(Y1, Y2, Y3) + 0xF) >> 4);
+	int maxy = (int)((MAXF3(Y1, Y2, Y3) + 0xF) >> 4);
 
 	// Block size, standard 8x8 (must be power of two)
 	const int q = 8;
@@ -2691,73 +2957,6 @@ void BlurredImageAndDerivatives(const TImage<Type>& in, TImage<Type>& blurred, T
 
 template <typename TYPE>
 const int TBitMatrix<TYPE>::numBitsShift = log2i<TBitMatrix::numBitsPerCell>();
-/*----------------------------------------------------------------*/
-
-
-// C L A S S  //////////////////////////////////////////////////////
-
-template <typename TYPE, typename COLOR_TYPE>
-bool Save(const TVertex<TYPE,COLOR_TYPE>* data, size_t size, const String& fileName)
-{
-	typedef TVertex<TYPE,COLOR_TYPE> VERTEX;
-
-	// vertex definition
-	struct Vertex {
-		float x,y,z;
-		float nx,ny,nz;
-		uint8_t r,g,b;
-	};
-	// list of property information for a vertex
-	static PLY::PlyProperty vert_props[] = {
-		{"x", PLY::Float32, PLY::Float32, offsetof(Vertex,x), 0, 0, 0, 0},
-		{"y", PLY::Float32, PLY::Float32, offsetof(Vertex,y), 0, 0, 0, 0},
-		{"z", PLY::Float32, PLY::Float32, offsetof(Vertex,z), 0, 0, 0, 0},
-		{"nx", PLY::Float32, PLY::Float32, offsetof(Vertex,nx), 0, 0, 0, 0},
-		{"ny", PLY::Float32, PLY::Float32, offsetof(Vertex,ny), 0, 0, 0, 0},
-		{"nz", PLY::Float32, PLY::Float32, offsetof(Vertex,nz), 0, 0, 0, 0},
-		{"red", PLY::Uint8, PLY::Uint8, offsetof(Vertex,r), 0, 0, 0, 0},
-		{"green", PLY::Uint8, PLY::Uint8, offsetof(Vertex,g), 0, 0, 0, 0},
-		{"blue", PLY::Uint8, PLY::Uint8, offsetof(Vertex,b), 0, 0, 0, 0},
-	};
-	// list of the kinds of elements in the PLY
-	static const char* elem_names[] = {
-		"vertex"
-	};
-
-	// create PLY object
-	ASSERT(!fileName.IsEmpty());
-	Util::ensureDirectory(fileName);
-	PLY ply;
-	if (!ply.write(fileName, 1, elem_names, PLY::BINARY_LE, 64*1024))
-		return false;
-
-	// describe what properties go into the vertex elements
-	ply.describe_property("vertex", 9, vert_props);
-
-	// write the header
-	ASSERT(size > 0);
-	ply.element_count("vertex", size);
-	if (!ply.header_complete())
-		return false;
-
-	// export the array of 3D points
-	Vertex vertex;
-	for (size_t i=0; i<size; ++i) {
-		const VERTEX& v = data[i];
-		// export v position
-		vertex.x = (float)v.p[0]; vertex.y = (float)v.p[1]; vertex.z = (float)v.p[2];
-		// export v normal
-		vertex.nx = (float)v.n[0]; vertex.ny = (float)v.n[1]; vertex.nz = (float)v.n[2];
-		// export v color
-		ASSERT(cv::DataType<typename VERTEX::Color>::channels == 3);
-		vertex.r = (uint8_t)v.c.r; vertex.g = (uint8_t)v.c.g; vertex.b = (uint8_t)v.c.b;
-		// write vertex
-		ply.put_element(&vertex);
-	}
-
-	DEBUG_EXTRA("Point-cloud saved to '%s'", fileName.c_str());
-	return true;
-}
 /*----------------------------------------------------------------*/
 
 
@@ -3954,7 +4153,7 @@ namespace boost {
 
 		// Serialization support for cv::Mat
 		template<class Archive>
-		void save(Archive& ar, const cv::Mat& m, const unsigned int version)
+		void save(Archive& ar, const cv::Mat& m, const unsigned int /*version*/)
 		{
 			const int elem_type = m.type();
 			const size_t elem_size = m.elemSize();
@@ -3974,7 +4173,7 @@ namespace boost {
 			}
 		}
 		template<class Archive>
-		void load(Archive& ar, cv::Mat& m, const unsigned int version)
+		void load(Archive& ar, cv::Mat& m, const unsigned int /*version*/)
 		{
 			int cols, rows, elem_type;
 			size_t elem_size;
@@ -3992,7 +4191,7 @@ namespace boost {
 
 		// Serialization support for cv::Mat_
 		template<class Archive, typename _Tp>
-		void save(Archive& ar, const cv::Mat_<_Tp>& m, const unsigned int version)
+		void save(Archive& ar, const cv::Mat_<_Tp>& m, const unsigned int /*version*/)
 		{
 			ar & m.cols;
 			ar & m.rows;
@@ -4007,15 +4206,9 @@ namespace boost {
 			}
 		}
 		template<class Archive, typename _Tp>
-		void load(Archive& ar, cv::Mat_<_Tp>& m, const unsigned int version)
+		void load(Archive& ar, cv::Mat_<_Tp>& m, const unsigned int /*version*/)
 		{
-			if (version == 0) {
-				ar & boost::serialization::base_object<cv::Mat>(m);
-				return;
-			}
-
 			int cols, rows;
-
 			ar & cols;
 			ar & rows;
 
@@ -4027,55 +4220,49 @@ namespace boost {
 			ar & boost::serialization::make_array((_Tp*)m.ptr(), data_size);
 		}
 		template<class Archive, typename _Tp>
-		inline void serialize(Archive& ar, cv::Mat_<_Tp>& t, const unsigned int file_version) {
-			split_free(ar, t, file_version);
+		inline void serialize(Archive& ar, cv::Mat_<_Tp>& t, const unsigned int version) {
+			split_free(ar, t, version);
 		}
-		template<typename _Tp>
-		struct version< cv::Mat_<_Tp> > {
-			typedef mpl::int_<1> type;
-			typedef mpl::integral_c_tag tag;
-			BOOST_STATIC_CONSTANT(unsigned int, value = version::type::value);
-		};
 
 		// Serialization support for cv::Matx
 		template<class Archive, typename _Tp, int m, int n>
-		void serialize(Archive& ar, cv::Matx<_Tp, m, n>& _m, const unsigned int version) {
+		void serialize(Archive& ar, cv::Matx<_Tp, m, n>& _m, const unsigned int /*version*/) {
 			ar & _m.val;
 		}
 
 		// Serialization support for cv::Vec
 		template<class Archive, typename _Tp, int cn>
-		void serialize(Archive& ar, cv::Vec<_Tp, cn>& v, const unsigned int version) {
+		void serialize(Archive& ar, cv::Vec<_Tp, cn>& v, const unsigned int /*version*/) {
 			ar & boost::serialization::base_object<cv::Matx<_Tp, cn, 1> >(v);
 		}
 
 		// Serialization support for cv::Point_
 		template<class Archive, typename _Tp>
-		void serialize(Archive& ar, cv::Point_<_Tp>& pt, const unsigned int version) {
+		void serialize(Archive& ar, cv::Point_<_Tp>& pt, const unsigned int /*version*/) {
 			ar & pt.x & pt.y;
 		}
 
 		// Serialization support for cv::Point3_
 		template<class Archive, typename _Tp>
-		void serialize(Archive& ar, cv::Point3_<_Tp>& pt, const unsigned int version) {
+		void serialize(Archive& ar, cv::Point3_<_Tp>& pt, const unsigned int /*version*/) {
 			ar & pt.x & pt.y & pt.z;
 		}
 
 		// Serialization support for cv::Size_
 		template<class Archive, typename _Tp>
-		void serialize(Archive& ar, cv::Size_<_Tp>& sz, const unsigned int version) {
+		void serialize(Archive& ar, cv::Size_<_Tp>& sz, const unsigned int /*version*/) {
 			ar & sz.width & sz.height;
 		}
 
 		// Serialization support for cv::Rect_
 		template<class Archive, typename _Tp>
-		void serialize(Archive& ar, cv::Rect_<_Tp>& rc, const unsigned int version) {
+		void serialize(Archive& ar, cv::Rect_<_Tp>& rc, const unsigned int /*version*/) {
 			ar & rc.x & rc.y & rc.width & rc.height;
 		}
 
 		// Serialization support for cv::KeyPoint
 		template<class Archive>
-		void serialize(Archive& ar, cv::KeyPoint& k, const unsigned int version) {
+		void serialize(Archive& ar, cv::KeyPoint& k, const unsigned int /*version*/) {
 			ar & k.pt;
 			ar & k.size;
 			ar & k.angle;
@@ -4086,7 +4273,7 @@ namespace boost {
 
 		// Serialization support for cv::DMatch
 		template<class Archive>
-		void serialize(Archive& ar, cv::DMatch& m, const unsigned int version) {
+		void serialize(Archive& ar, cv::DMatch& m, const unsigned int /*version*/) {
 			ar & m.queryIdx;
 			ar & m.trainIdx;
 			ar & m.imgIdx;
@@ -4158,26 +4345,32 @@ bool SerializeSave(const TYPE& obj, const SEACAVE::String& fileName, ARCHIVE_TYP
 template <typename TYPE>
 bool SerializeLoad(TYPE& obj, std::ifstream& fs, ARCHIVE_TYPE type, unsigned flags=0)
 {
-	// serialize in the saved state
-	switch (type) {
-	case ARCHIVE_TEXT: {
-		boost::archive::text_iarchive ar(fs, flags);
-		ar >> obj;
-		break; }
-	case ARCHIVE_BINARY: {
-		boost::archive::binary_iarchive ar(fs, flags);
-		ar >> obj;
-		break; }
-	case ARCHIVE_BINARY_ZIP: {
-		namespace io = boost::iostreams;
-		io::filtering_streambuf<io::input> ffs;
-		ffs.push(io::zlib_decompressor());
-		ffs.push(fs);
-		boost::archive::binary_iarchive ar(ffs, flags);
-		ar >> obj;
-		break; }
-	default:
-		VERBOSE("error: Can not load the object, invalid archive type");
+	try {
+		// serialize in the saved state
+		switch (type) {
+		case ARCHIVE_TEXT: {
+			boost::archive::text_iarchive ar(fs, flags);
+			ar >> obj;
+			break; }
+		case ARCHIVE_BINARY: {
+			boost::archive::binary_iarchive ar(fs, flags);
+			ar >> obj;
+			break; }
+		case ARCHIVE_BINARY_ZIP: {
+			namespace io = boost::iostreams;
+			io::filtering_streambuf<io::input> ffs;
+			ffs.push(io::zlib_decompressor());
+			ffs.push(fs);
+			boost::archive::binary_iarchive ar(ffs, flags);
+			ar >> obj;
+			break; }
+		default:
+			VERBOSE("error: Can not load the object, invalid archive type");
+			return false;
+		}
+	}
+	catch (const std::exception& e) {
+		VERBOSE("error: invalid stream (%s)", e.what());
 		return false;
 	}
 	return true;

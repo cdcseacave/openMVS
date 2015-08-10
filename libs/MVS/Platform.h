@@ -58,14 +58,21 @@ class Platform
 public:
 	// structure describing a normalized camera mounted on a platform
 	typedef CameraIntern Camera;
-	typedef SEACAVE::cList<Camera> CameraArr;
+	typedef CLISTDEF0IDX(Camera,uint32_t) CameraArr;
 
 	// structure describing a pose along the trajectory of a platform
 	struct Pose {
 		RMatrix R; // platform's rotation matrix
 		CMatrix C; // platform's translation vector in the global coordinate system
+		#ifdef _USE_BOOST
+		template <class Archive>
+		void serialize(Archive& ar, const unsigned int version) {
+			ar & R;
+			ar & C;
+		}
+		#endif
 	};
-	typedef SEACAVE::cList<Pose> PoseArr;
+	typedef CLISTDEF0IDX(Pose,uint32_t) PoseArr;
 
 public:
 	String name; // platform's name
@@ -76,8 +83,18 @@ public:
 	inline Platform() {}
 
 	Camera GetCamera(uint32_t cameraID, uint32_t poseID) const;
+
+	#ifdef _USE_BOOST
+	// implement BOOST serialization
+	template <class Archive>
+	void serialize(Archive& ar, const unsigned int version) {
+		ar & name;
+		ar & cameras;
+		ar & poses;
+	}
+	#endif
 };
-typedef SEACAVE::cList<Platform> PlatformArr;
+typedef CLISTDEFIDX(Platform,uint32_t) PlatformArr;
 /*----------------------------------------------------------------*/
 
 } // namespace MVS

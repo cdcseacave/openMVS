@@ -28,20 +28,13 @@
 #if TD_VERBOSE == TD_VERBOSE_OFF
 #define VERBOSE LOG
 #define DEBUG_LEVEL(n,...)
-#endif
-#if TD_VERBOSE == TD_VERBOSE_ON
+#else
 #ifndef VERBOSITY_LEVEL
-#define VERBOSITY_LEVEL 2
+namespace SEACAVE { extern int g_nVerbosityLevel; }
+#define VERBOSITY_LEVEL g_nVerbosityLevel
 #endif
 #define VERBOSE LOG
-#define DEBUG_LEVEL(n,...)	{ if (VERBOSITY_LEVEL > n) VERBOSE(__VA_ARGS__); }
-#endif
-#if TD_VERBOSE == TD_VERBOSE_DEBUG
-#ifndef VERBOSITY_LEVEL
-#define VERBOSITY_LEVEL 3
-#endif
-#define VERBOSE LOG
-#define DEBUG_LEVEL(n,...)	{ if (VERBOSITY_LEVEL > n) VERBOSE(__VA_ARGS__); }
+#define DEBUG_LEVEL(n,...)	{ if (n < VERBOSITY_LEVEL) VERBOSE(__VA_ARGS__); }
 #endif
 #define DEBUG(...)			DEBUG_LEVEL(0, __VA_ARGS__)
 #define DEBUG_EXTRA(...)	DEBUG_LEVEL(1, __VA_ARGS__)
@@ -88,11 +81,21 @@
 // macros simplifying the task of composing file paths;
 // WORKING_FOLDER and WORKING_FOLDER_FULL must be defined as strings
 // containing the relative/full path to the working folder
+#ifndef WORKING_FOLDER
+namespace SEACAVE {
+class String;
+extern String g_strWorkingFolder; // empty by default (current folder)
+extern String g_strWorkingFolderFull; // full path to current folder
+}
+#define WORKING_FOLDER		g_strWorkingFolder // empty by default (current folder)
+#define WORKING_FOLDER_FULL	g_strWorkingFolderFull // full path to current folder
+#endif
+#define INIT_WORKING_FOLDER	{SEACAVE::Util::ensureValidDirectoryPath(WORKING_FOLDER); WORKING_FOLDER_FULL = SEACAVE::Util::getFullPath(WORKING_FOLDER);} // initialize working folders
 #define MAKE_PATH(str)		(WORKING_FOLDER+(str)) // add working directory to the given file name
-#define MAKE_PATH_SAFE(str)	(SEACAVE::Util::isFullPath((str).c_str()) ? (str) : (WORKING_FOLDER+(str))) // add working directory to the given file name only if not full path already
-#define MAKE_PATH_FULL(p,s) (SEACAVE::Util::isFullPath((s).c_str()) ? (s) : ((p)+(s))) // add the given path to the given file name
-#define MAKE_PATH_REL(p,s)	((s).compare(0,(p).size(),p) ? (s) : SEACAVE::String((s).substr((p).size()))) // remove the given path from the given file name
-#define GET_PATH_FULL(str)	(SEACAVE::Util::isFullPath((str).c_str()) ? SEACAVE::Util::getFilePath(str) : WORKING_FOLDER_FULL+SEACAVE::Util::getFilePath(str)) // retrieve the full path to the given file
+#define MAKE_PATH_SAFE(str)	(SEACAVE::Util::isFullPath((str).c_str()) ? String(str) : String(WORKING_FOLDER+(str))) // add working directory to the given file name only if not full path already
+#define MAKE_PATH_FULL(p,s) (SEACAVE::Util::isFullPath((s).c_str()) ? String(s) : String((p)+(s))) // add the given path to the given file name
+#define MAKE_PATH_REL(p,s)	((s).compare(0,(p).size(),p) ? String(s) : String(SEACAVE::String((s).substr((p).size())))) // remove the given path from the given file name
+#define GET_PATH_FULL(str)	(SEACAVE::Util::isFullPath((str).c_str()) ? SEACAVE::Util::getFilePath(str) : String(WORKING_FOLDER_FULL+SEACAVE::Util::getFilePath(str)) // retrieve the full path to the given file
 
 
 // I N C L U D E S /////////////////////////////////////////////////
@@ -168,27 +171,27 @@ typedef Matrix3x4   PMatrix;
 typedef Vec3 X3D;
 typedef SEACAVE::cList<X3D, const X3D&, 0, 8192> X3DArr;
 
-typedef SEACAVE::CLISTDEF0(uint32_t) IndexArr;
+typedef SEACAVE::cList<uint32_t, uint32_t, 0> IndexArr;
 
-typedef SEACAVE::CLISTDEF0(REAL) REALArr;
-typedef SEACAVE::CLISTDEF0(Point2f) Point2fArr;
-typedef SEACAVE::CLISTDEF0(Point3f) Point3fArr;
-typedef SEACAVE::CLISTDEF0(Point2d) Point2dArr;
-typedef SEACAVE::CLISTDEF0(Point3d) Point3dArr;
-typedef SEACAVE::CLISTDEF0(Point2) Point2Arr;
-typedef SEACAVE::CLISTDEF0(Point3) Point3Arr;
-typedef SEACAVE::CLISTDEF0(Vec4) Vec4Arr;
-typedef SEACAVE::CLISTDEF0(Matrix3x3) Matrix3x3Arr;
-typedef SEACAVE::CLISTDEF0(Matrix3x4) Matrix3x4Arr;
-typedef SEACAVE::CLISTDEF0(CMatrix) CMatrixArr;
-typedef SEACAVE::CLISTDEF0(RMatrix) RMatrixArr;
-typedef SEACAVE::CLISTDEF0(KMatrix) KMatrixArr;
-typedef SEACAVE::CLISTDEF0(PMatrix) PMatrixArr;
-typedef SEACAVE::CLISTDEF0(ImageRef) ImageRefArr;
-typedef SEACAVE::CLISTDEF0(Pixel8U) Pixel8UArr;
-typedef SEACAVE::CLISTDEF0(Pixel32F) Pixel32FArr;
-typedef SEACAVE::CLISTDEF0(Color8U) Color8UArr;
-typedef SEACAVE::CLISTDEF0(Color32F) Color32FArr;
+typedef CLISTDEF0(REAL) REALArr;
+typedef CLISTDEF0(Point2f) Point2fArr;
+typedef CLISTDEF0(Point3f) Point3fArr;
+typedef CLISTDEF0(Point2d) Point2dArr;
+typedef CLISTDEF0(Point3d) Point3dArr;
+typedef CLISTDEF0(Point2) Point2Arr;
+typedef CLISTDEF0(Point3) Point3Arr;
+typedef CLISTDEF0(Vec4) Vec4Arr;
+typedef CLISTDEF0(Matrix3x3) Matrix3x3Arr;
+typedef CLISTDEF0(Matrix3x4) Matrix3x4Arr;
+typedef CLISTDEF0(CMatrix) CMatrixArr;
+typedef CLISTDEF0(RMatrix) RMatrixArr;
+typedef CLISTDEF0(KMatrix) KMatrixArr;
+typedef CLISTDEF0(PMatrix) PMatrixArr;
+typedef CLISTDEF0(ImageRef) ImageRefArr;
+typedef CLISTDEF0(Pixel8U) Pixel8UArr;
+typedef CLISTDEF0(Pixel32F) Pixel32FArr;
+typedef CLISTDEF0(Color8U) Color8UArr;
+typedef CLISTDEF0(Color32F) Color32FArr;
 /*----------------------------------------------------------------*/
 
 } // namespace SEACAVE
@@ -209,6 +212,8 @@ DEFINE_CVDATATYPE(SEACAVE::Matrix2x2d)
 DEFINE_CVDATATYPE(SEACAVE::Matrix3x3d)
 DEFINE_CVDATATYPE(SEACAVE::Matrix3x4d)
 DEFINE_CVDATATYPE(SEACAVE::Matrix4x4d)
+
+DEFINE_CVDATATYPE(SEACAVE::cuint32_t)
 /*----------------------------------------------------------------*/
 
 #endif // _COMMON_COMMON_H_

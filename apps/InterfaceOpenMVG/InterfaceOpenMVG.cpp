@@ -39,6 +39,7 @@
 
 #include "../../libs/MVS/Common.h"
 #include "../../libs/MVS/Scene.h"
+#include <boost/program_options.hpp>
 
 
 // D E F I N E S ///////////////////////////////////////////////////
@@ -47,22 +48,8 @@
 #define MVS_EXT _T(".mvs")
 #define MVG_EXT _T(".baf")
 
-#define WORKING_FOLDER		OPT::strWorkingFolder // empty by default (current folder)
-#define WORKING_FOLDER_FULL	OPT::strWorkingFolderFull // full path to current folder
-
 
 // S T R U C T S ///////////////////////////////////////////////////
-
-namespace OPT {
-bool bOpenMVS2OpenMVG; // conversion direction
-bool bNormalizeIntrinsics; // normalize K while exporting to OpenMVS format
-String strListFileName; // image list file name
-String strInputFileName; // BAF file name of the input data
-String strOutputFileName; // file name of the mesh data
-String strWorkingFolder; // empty by default (current folder)
-String strWorkingFolderFull; // full path to current folder
-} // namespace OPT
-
 
 namespace openMVS {
 namespace MVS_IO {
@@ -124,7 +111,7 @@ bool ImportScene(const std::string& sList_filename, const std::string& sBaf_file
 	{
 		std::ifstream file(sList_filename.c_str());
 		if (!file.good()) {
-			LOG_OUT() << "Unable to open file: " << sList_filename << std::endl;
+			VERBOSE("error: unable to open file '%s'", sList_filename.c_str());
 			return false;
 		}
 		Image image;
@@ -140,7 +127,7 @@ bool ImportScene(const std::string& sList_filename, const std::string& sBaf_file
 	{
 		std::ifstream file(sBaf_filename.c_str());
 		if (!file.good()) {
-			LOG_OUT() << "Unable to open file: " << sBaf_filename << std::endl;
+			VERBOSE("error: unable to open file '%s'", sBaf_filename.c_str());
 			return false;
 		}
 
@@ -237,7 +224,7 @@ bool ExportScene(const std::string& sList_filename, const std::string& sBaf_file
 	{
 		std::ofstream file(sList_filename.c_str());
 		if (!file.good()) {
-			LOG_OUT() << "Unable to open file: " << sList_filename << std::endl;
+			VERBOSE("error: unable to open file '%s'", sList_filename.c_str());
 			return false;
 		}
 		for (uint32_t i=0; i<sceneBAF.images.size(); ++i) {
@@ -251,7 +238,7 @@ bool ExportScene(const std::string& sList_filename, const std::string& sBaf_file
 	{
 		std::ofstream file(sBaf_filename.c_str());
 		if (!file.good()) {
-			LOG_OUT() << "Unable to open file: " << sBaf_filename << std::endl;
+			VERBOSE("error: unable to open file '%s'", sBaf_filename.c_str());
 			return false;
 		}
 
@@ -327,54 +314,100 @@ bool ExportScene(const std::string& sList_filename, const std::string& sBaf_file
 } // openMVS
 
 
-// ParseCmdLine to parse the command line parameters
-#define PARAM_EQUAL(name) (0 == _tcsncicmp(param, _T("-" #name "="), sizeof(_T("-" #name "="))-sizeof(TCHAR)))
-bool ParseCmdLine(size_t argc, LPCTSTR* argv, String& strCmdLine)
+namespace OPT {
+bool bOpenMVS2OpenMVG; // conversion direction
+bool bNormalizeIntrinsics;
+String strListFileName;
+String strInputFileName;
+String strOutputFileName;
+int nProcessPriority;
+unsigned nMaxThreads;
+String strConfigFileName;
+boost::program_options::variables_map vm;
+} // namespace OPT
+
+// initialize and parse the command line parameters
+bool Initialize(size_t argc, LPCTSTR* argv)
 {
-	bool bPrintHelp(false);
-	OPT::bNormalizeIntrinsics = true;
-	for (size_t i=1; i<argc; ++i) {
-		LPCSTR param = argv[i];
-		strCmdLine += _T(" ") + String(param);
-		if (PARAM_EQUAL(list) || PARAM_EQUAL(l)) {
-			param = strchr(param, '=')+1;
-			OPT::strListFileName = param;
-		} else if (PARAM_EQUAL(input) || PARAM_EQUAL(i)) {
-			param = strchr(param, '=')+1;
-			OPT::strInputFileName = param;
-		} else if (PARAM_EQUAL(output) || PARAM_EQUAL(o)) {
-			param = strchr(param, '=')+1;
-			OPT::strOutputFileName = param;
-		} else if (PARAM_EQUAL(workdir) || PARAM_EQUAL(w)) {
-			param = strchr(param, '=')+1;
-			OPT::strWorkingFolder = param;
-		} else if (PARAM_EQUAL(normalize) || PARAM_EQUAL(n)) {
-			param = strchr(param, '=')+1;
-			OPT::bNormalizeIntrinsics = (atoi(param) != 0);
-		} else if (0 == _tcsicmp(param, _T("-help")) || 0 == _tcsicmp(param, _T("-h")) || 0 == _tcsicmp(param, _T("-?"))) {
-			bPrintHelp = true;
+	// initialize log and console
+	OPEN_LOG();
+	OPEN_LOGCONSOLE();
+
+	// group of options allowed only on command line
+	boost::program_options::options_description generic("Generic options");
+	generic.add_options()
+		("help,h", "produce this help message")
+		("working-folder,w", boost::program_options::value<std::string>(&WORKING_FOLDER), "the working directory (default current directory)")
+		("config-file,c", boost::program_options::value<std::string>(&OPT::strConfigFileName)->default_value(APPNAME _T(".cfg")), "the file name containing program options")
+		("process-priority", boost::program_options::value<int>(&OPT::nProcessPriority)->default_value(-1), "Process priority (below normal by default)")
+		("max-threads", boost::program_options::value<unsigned>(&OPT::nMaxThreads)->default_value(0), "maximum number of threads (0 for using all available cores)")
+		#if TD_VERBOSE != TD_VERBOSE_OFF
+		("verbosity,v", boost::program_options::value<int>(&g_nVerbosityLevel)->default_value(
+			#if TD_VERBOSE == TD_VERBOSE_DEBUG
+			3
+			#else
+			2
+			#endif
+			), "the verbosity level")
+		#endif
+		;
+
+	// group of options allowed both on command line and in config file
+	boost::program_options::options_description config("Main options");
+	config.add_options()
+		("images-list-file,l", boost::program_options::value<std::string>(&OPT::strListFileName), "the input filename containing image list")
+		("input-file,i", boost::program_options::value<std::string>(&OPT::strInputFileName), "the input filename containing camera poses and image list")
+		("output-file,o", boost::program_options::value<std::string>(&OPT::strOutputFileName), "the output filename for storing the mesh")
+		("normalize,f", boost::program_options::value<bool>(&OPT::bNormalizeIntrinsics)->default_value(true), "normalize intrinsics while exporting to OpenMVS format")
+		;
+
+	boost::program_options::options_description cmdline_options;
+	cmdline_options.add(generic).add(config);
+
+	boost::program_options::options_description config_file_options;
+	config_file_options.add(config);
+
+	boost::program_options::positional_options_description p;
+	p.add("input-file", -1);
+
+	try {
+		// parse command line options
+		boost::program_options::store(boost::program_options::command_line_parser((int)argc, argv).options(cmdline_options).positional(p).run(), OPT::vm);
+		boost::program_options::notify(OPT::vm);
+		INIT_WORKING_FOLDER;
+		// parse configuration file
+		std::ifstream ifs(MAKE_PATH_SAFE(OPT::strConfigFileName));
+		if (ifs) {
+			boost::program_options::store(parse_config_file(ifs, config_file_options), OPT::vm);
+			boost::program_options::notify(OPT::vm);
 		}
 	}
-	Util::ensureValidDirectoryPath(OPT::strWorkingFolder);
-	OPT::strWorkingFolderFull = Util::getFullPath(OPT::strWorkingFolder);
-	return bPrintHelp;
-}
+	catch (const std::exception& e) {
+		LOG(e.what());
+		return false;
+	}
 
-bool ValidateInput(bool bPrintHelp)
-{
+	// initialize the log file
+	OPEN_LOGFILE(MAKE_PATH(APPNAME _T("-")+Util::getUniqueName(0)+_T(".log")).c_str());
+
+	// print application details: version and command line
+	Util::LogBuild();
+	LOG(_T("Command line:%s"), Util::CommandLineToString(argc, argv).c_str());
+
+	// validate input
 	Util::ensureValidPath(OPT::strListFileName);
 	Util::ensureUnifySlash(OPT::strListFileName);
 	Util::ensureValidPath(OPT::strInputFileName);
 	Util::ensureUnifySlash(OPT::strInputFileName);
-	if (bPrintHelp || OPT::strListFileName.IsEmpty() || OPT::strInputFileName.IsEmpty())
-		LOG("Available list of command-line parameters:\n"
-			"\t-list= or -l=<list_filename> for setting the input filename containing image list\n"
-			"\t-input= or -i=<input_filename> for setting the BAF input filename containing camera poses\n"
-			"\t-output= or -o=<output_filename> for setting the output filename for storing the mesh and texture\n"
-			"\t-workdir= or -w=<folder_path> for setting the working directory (default current directory)\n"
-			"\t-normalize= or -n=<bool> normalize intrinsics while exporting to OpenMVS format (default true)\n"
-			"\t-help or -h or -? for displaying this message"
-		);
+	if (OPT::vm.count("help") || OPT::strListFileName.IsEmpty() || OPT::strInputFileName.IsEmpty()) {
+		boost::program_options::options_description visible("Available options");
+		visible.add(generic).add(config);
+		GET_LOG() << visible;
+	}
+	if (OPT::strInputFileName.IsEmpty())
+		return false;
+
+	// initialize optional options
 	if (OPT::strListFileName.IsEmpty() || OPT::strInputFileName.IsEmpty())
 		return false;
 	Util::ensureValidPath(OPT::strOutputFileName);
@@ -387,9 +420,33 @@ bool ValidateInput(bool bPrintHelp)
 		if (OPT::strOutputFileName.IsEmpty())
 			OPT::strOutputFileName = Util::getFullFileName(OPT::strInputFileName) + MVS_EXT;
 	}
+
+	// initialize global options
+	Process::setCurrentProcessPriority((Process::Priority)OPT::nProcessPriority);
+	#ifdef _USE_OPENMP
+	if (OPT::nMaxThreads != 0)
+		omp_set_num_threads(OPT::nMaxThreads);
+	#endif
+
+	#ifdef _USE_BREAKPAD
+	// start memory dumper
+	MiniDumper::Create(APPNAME, WORKING_FOLDER);
+	#endif
 	return true;
 }
 
+// finalize application instance
+void Finalize()
+{
+	#if TD_VERBOSE != TD_VERBOSE_OFF
+	// print memory statistics
+	Util::LogMemoryInfo();
+	#endif
+
+	CLOSE_LOGFILE();
+	CLOSE_LOGCONSOLE();
+	CLOSE_LOG();
+}
 
 int main(int argc, LPCTSTR* argv)
 {
@@ -398,28 +455,16 @@ int main(int argc, LPCTSTR* argv)
 	_CrtSetDbgFlag(_CRTDBG_ALLOC_MEM_DF | _CRTDBG_LEAK_CHECK_DF);// | _CRTDBG_CHECK_ALWAYS_DF);
 	#endif
 
-	{
-	OPEN_LOG();
-	OPEN_LOGCONSOLE();
-	String strCmdLine;
-	const bool bPrintHelp(ParseCmdLine(argc, argv, strCmdLine));
-	OPEN_LOGFILE(MAKE_PATH(APPNAME _T("-")+Util::getUniqueName(0)+_T(".log")).c_str());
-
-	Util::LogBuild();
-	LOG(_T("Command line:%s"), strCmdLine.c_str());
-	if (!ValidateInput(bPrintHelp))
-		return -1;
-	#ifdef _USE_BREAKPAD
-	MiniDumper::Create(APPNAME, WORKING_FOLDER);
-	#endif
-	}
+	if (!Initialize(argc, argv))
+		return EXIT_FAILURE;
 
 	TD_TIMER_START();
 
 	if (OPT::bOpenMVS2OpenMVG) {
 		// read OpenMVS input data
 		MVS::Scene scene;
-		scene.Load(MAKE_PATH_SAFE(OPT::strInputFileName), OPT::strWorkingFolderFull);
+		if (!scene.Load(MAKE_PATH_SAFE(OPT::strInputFileName)))
+			return EXIT_FAILURE;
 
 		// convert data from OpenMVS to OpenMVG
 		openMVS::MVS_IO::SfM_Scene sceneBAF;
@@ -468,11 +513,12 @@ int main(int argc, LPCTSTR* argv)
 	} else {
 		// read OpenMVG input data
 		openMVS::MVS_IO::SfM_Scene sceneBAF;
-		openMVS::MVS_IO::ImportScene(MAKE_PATH_SAFE(OPT::strListFileName), MAKE_PATH_SAFE(OPT::strInputFileName), sceneBAF);
+		if (!openMVS::MVS_IO::ImportScene(MAKE_PATH_SAFE(OPT::strListFileName), MAKE_PATH_SAFE(OPT::strInputFileName), sceneBAF))
+			return EXIT_FAILURE;
 
 		// convert data from OpenMVG to OpenMVS
 		MVS::Scene scene;
-		scene.platforms.Reserve(sceneBAF.cameras.size());
+		scene.platforms.Reserve((uint32_t)sceneBAF.cameras.size());
 		for (const auto& cameraBAF: sceneBAF.cameras) {
 			MVS::Platform& platform = scene.platforms.AddEmpty();
 			MVS::Platform::Camera& camera = platform.cameras.AddEmpty();
@@ -480,7 +526,7 @@ int main(int argc, LPCTSTR* argv)
 			camera.R = RMatrix::IDENTITY;
 			camera.C = CMatrix::ZERO;
 		}
-		scene.images.Reserve(sceneBAF.images.size());
+		scene.images.Reserve((uint32_t)sceneBAF.images.size());
 		for (const auto& imageBAF: sceneBAF.images) {
 			openMVS::MVS_IO::Pose& poseBAF = sceneBAF.poses[imageBAF.id_pose];
 			MVS::Image& image = scene.images.AddEmpty();
@@ -490,7 +536,7 @@ int main(int argc, LPCTSTR* argv)
 			image.platformID = imageBAF.id_camera;
 			MVS::Platform& platform = scene.platforms[image.platformID];
 			image.cameraID = 0;
-			image.poseID = (uint32_t)platform.poses.GetSize();
+			image.poseID = platform.poses.GetSize();
 			MVS::Platform::Pose& pose = platform.poses.AddEmpty();
 			pose.R = poseBAF.R;
 			pose.C = poseBAF.C;
@@ -534,20 +580,12 @@ int main(int argc, LPCTSTR* argv)
 		}
 
 		// write OpenMVS input data
-		scene.Save(MAKE_PATH_SAFE(OPT::strOutputFileName), OPT::strWorkingFolderFull);
+		scene.Save(MAKE_PATH_SAFE(OPT::strOutputFileName));
 
 		VERBOSE("Input data imported: %u cameras, %u poses, %u images, %u vertices (%s)", sceneBAF.cameras.size(), sceneBAF.poses.size(), sceneBAF.images.size(), sceneBAF.vertices.size(), TD_TIMER_GET_FMT().c_str());
 	}
 
-	#if TD_VERBOSE != TD_VERBOSE_OFF
-	// print memory statistics
-	Util::LogMemoryInfo();
-	#endif
-
-	CLOSE_LOGFILE();
-	CLOSE_LOGCONSOLE();
-	CLOSE_LOG();
-
+	Finalize();
 	return EXIT_SUCCESS;
 }
 /*----------------------------------------------------------------*/
