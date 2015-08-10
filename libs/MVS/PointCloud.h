@@ -57,10 +57,18 @@ class PointCloud
 {
 public:
 	typedef TPoint3<float> Position;
-	typedef SEACAVE::cList<uint32_t,const uint32_t,0,4,uint32_t> ViewArr;
+	typedef uint32_t View;
+	typedef SEACAVE::cList<View,const View,0,4,uint32_t> ViewArr;
 	struct Point {
 		Position X;
 		ViewArr views;
+		#ifdef _USE_BOOST
+		template <class Archive>
+		void serialize(Archive& ar, const unsigned int version) {
+			ar & X;
+			ar & views;
+		}
+		#endif
 	};
 	typedef TPoint3<float> Normal;
 	typedef Pixel8U Color;
@@ -84,6 +92,17 @@ public:
 
 	inline bool IsEmpty() const { return points.IsEmpty(); }
 	inline size_t GetSize() const { return points.GetSize(); }
+
+	#ifdef _USE_BOOST
+	// implement BOOST serialization
+	template <class Archive>
+	void serialize(Archive& ar, const unsigned int version) {
+		ar & points;
+		ar & normals;
+		ar & colors;
+		ar & weights;
+	}
+	#endif
 };
 /*----------------------------------------------------------------*/
 

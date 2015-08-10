@@ -104,7 +104,7 @@ HRESULT CImageBMP::ReadHeader()
 	switch (m_stride)
 	{
 	case 1:
-		m_format = PF_GREY8;
+		m_format = PF_GRAY8;
 		break;
 	case 2:
 		m_format = PF_R5G6B5;
@@ -113,7 +113,7 @@ HRESULT CImageBMP::ReadHeader()
 		m_format = PF_R8G8B8;
 		break;
 	case 4:
-		m_format = PF_A8R8G8B8;
+		m_format = PF_R8G8B8A8;
 		break;
 	default:
 		LOG(LT_IMAGE, "error: unsupported BMP image");
@@ -167,10 +167,10 @@ HRESULT CImageBMP::WriteHeader(PIXELFORMAT imageFormat, UINT width, UINT height,
 	switch (imageFormat)
 	{
 	case PF_A8:
-	case PF_GREY8:
+	case PF_GRAY8:
 		m_stride = 1;
 		dwCompression = BI_RGB;
-		m_format = PF_GREY8;
+		m_format = PF_GRAY8;
 		break;
 	case PF_R5G6B5:
 		m_stride = 2;
@@ -183,11 +183,13 @@ HRESULT CImageBMP::WriteHeader(PIXELFORMAT imageFormat, UINT width, UINT height,
 		dwCompression = BI_RGB;
 		m_format = PF_R8G8B8;
 		break;
-	case PF_B8G8R8A8:
+	case PF_R8G8B8A8:
 	case PF_A8R8G8B8:
+	case PF_B8G8R8A8:
+	case PF_A8B8G8R8:
 		m_stride = 4;
 		dwCompression = BI_BITFIELDS;
-		m_format = PF_A8R8G8B8;
+		m_format = PF_R8G8B8A8;
 		break;
 	default:
 		LOG(LT_IMAGE, "error: unsupported BMP image format");

@@ -80,7 +80,7 @@ HRESULT CImageTGA::ReadHeader()
 	{
 	case 2:	//uncompressed, true-color image
 	case 3:	//uncompressed, black-and-white image
-		m_format = (m_stride == 3 ? PF_R8G8B8 : PF_A8R8G8B8);
+		m_format = (m_stride == 3 ? PF_R8G8B8 : PF_R8G8B8A8);
 		m_bRLE = false;
 		break;
 	//case 10://run-length encoded, true-color image and

@@ -153,20 +153,18 @@ public:
 		return fullInvK;
 	}
 
-	// extract sensor's resolution from K
-	template<typename TYPE>
-	static inline TPoint2<TYPE> ExtractSensorResolution(const TMatrix<TYPE,3,3>& K) {
-		return TPoint2<TYPE>(
-			TYPE(2)*K(0,2)+TYPE(1),
-			TYPE(2)*K(1,2)+TYPE(1) );
+	#ifdef _USE_BOOST
+	// implement BOOST serialization
+	template <class Archive>
+	void serialize(Archive& ar, const unsigned int version) {
+		ar & K;
+		ar & R;
+		ar & C;
 	}
-	inline Point2 ExtractSensorResolution() const {
-		return Point2(
-			REAL(2)*K(0,2)+REAL(1),
-			REAL(2)*K(1,2)+REAL(1) );
-	}
+	#endif
 };
 /*----------------------------------------------------------------*/
+
 
 // same as above, plus caching the projection matrix
 class Camera : public CameraIntern
@@ -214,7 +212,7 @@ public:
 	template <typename TYPE>
 	inline TPoint3<TYPE> ProjectPointP3(const TPoint3<TYPE>& X) const {
 		const REAL* const p(P.val);
-		return typename TPoint3<TYPE>::Base(
+		return TPoint3<TYPE>(
 			(TYPE)(p[0*4+0]*X.x + p[0*4+1]*X.y + p[0*4+2]*X.z + p[0*4+3]),
 			(TYPE)(p[1*4+0]*X.x + p[1*4+1]*X.y + p[1*4+2]*X.z + p[1*4+3]),
 			(TYPE)(p[2*4+0]*X.x + p[2*4+1]*X.y + p[2*4+2]*X.z + p[2*4+3]));
@@ -228,25 +226,25 @@ public:
 	// transform from image pixel coords to view plane coords
 	template <typename TYPE>
 	inline TPoint2<TYPE> TransformPointI2V(const TPoint2<TYPE>& x) const {
-		return typename TPoint2<TYPE>::Base(
-			x.x-K(0,2),
-			x.y-K(1,2));
+		return TPoint2<TYPE>(
+			TYPE(x.x-K(0,2)),
+			TYPE(x.y-K(1,2)) );
 	}
 	// un-project from image pixel coords to the camera space (z=1 plane by default)
 	template <typename TYPE>
 	inline TPoint3<TYPE> TransformPointI2C(const TPoint2<TYPE>& x) const {
-		return typename TPoint3<TYPE>::Base(
-			(x.x-K(0,2))/K(0,0),
-			(x.y-K(1,2))/K(1,1),
-			TYPE(1));
+		return TPoint3<TYPE>(
+			TYPE((x.x-K(0,2))/K(0,0)),
+			TYPE((x.y-K(1,2))/K(1,1)),
+			TYPE(1) );
 	}
 	// un-project from image pixel coords to the camera space
 	template <typename TYPE>
 	inline TPoint3<TYPE> TransformPointI2C(const TPoint3<TYPE>& X) const {
-		return typename TPoint3<TYPE>::Base(
-			(X.x-K(0,2))*X.z/K(0,0),
-			(X.y-K(1,2))*X.z/K(1,1),
-			X.z);
+		return TPoint3<TYPE>(
+			TYPE((X.x-K(0,2))*X.z/K(0,0)),
+			TYPE((X.y-K(1,2))*X.z/K(1,1)),
+			X.z );
 	}
 	template <typename TYPE>
 	inline TPoint3<TYPE> TransformPointC2W(const TPoint3<TYPE>& X) const {
@@ -274,16 +272,16 @@ public:
 	// project from the camera z=1 plane to image pixels
 	template <typename TYPE>
 	inline TPoint2<TYPE> TransformPointC2I(const TPoint2<TYPE>& x) const {
-		return TPoint2<TYPE>::Base(
-			K(0,2)+K(0,0)*x.x,
-			K(1,2)+K(1,1)*x.y );
+		return TPoint2<TYPE>(
+			TYPE(K(0,2)+K(0,0)*x.x),
+			TYPE(K(1,2)+K(1,1)*x.y) );
 	}
 	// project from the camera space to view plane
 	template <typename TYPE>
 	inline TPoint2<TYPE> TransformPointC2V(const TPoint3<TYPE>& X) const {
-		return TPoint2<TYPE>::Base(
-			K(0,0)*X.x/X.z,
-			K(1,1)*X.y/X.z );
+		return TPoint2<TYPE>(
+			TYPE(K(0,0)*X.x/X.z),
+			TYPE(K(1,1)*X.y/X.z) );
 	}
 	// project from the camera space to image pixels
 	template <typename TYPE>
@@ -301,18 +299,31 @@ public:
 
 	// check if the given point (or its projection) is inside the camera view
 	template <typename TYPE>
-	inline bool IsInside(const TPoint2<TYPE>& pt) const {
-		const Point2 size(ExtractSensorResolution());
+	inline bool IsInside(const TPoint2<TYPE>& pt, const TPoint2<TYPE>& size) const {
 		return pt.x>=0 && pt.y>=0 && pt.x<size.x && pt.y<size.y;
 	}
 	template <typename TYPE>
-	inline bool IsInsideProjection(const TPoint3<TYPE>& X) const {
-		return IsInside(ProjectPoint(X));
+	inline bool IsInsideProjection(const TPoint3<TYPE>& X, const TPoint2<TYPE>& size) const {
+		return IsInside(ProjectPoint(X), size);
 	}
 	template <typename TYPE>
-	inline bool IsInsideProjectionP(const TPoint3<TYPE>& X) const {
-		return IsInside(ProjectPointP(X));
+	inline bool IsInsideProjectionP(const TPoint3<TYPE>& X, const TPoint2<TYPE>& size) const {
+		return IsInside(ProjectPointP(X), size);
 	}
+
+	#ifdef _USE_BOOST
+	// implement BOOST serialization
+	template<class Archive>
+	void save(Archive& ar, const unsigned int version) const {
+		ar & BOOST_SERIALIZATION_BASE_OBJECT_NVP(MVS::CameraIntern);
+	}
+	template<class Archive>
+	void load(Archive& ar, const unsigned int version) {
+		ar & BOOST_SERIALIZATION_BASE_OBJECT_NVP(MVS::CameraIntern);
+		ComposeP();
+	}
+	BOOST_SERIALIZATION_SPLIT_MEMBER()
+	#endif
 };
 typedef SEACAVE::cList<Camera, const Camera&, 0> CameraArr;
 /*----------------------------------------------------------------*/

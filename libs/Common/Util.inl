@@ -628,7 +628,7 @@ inline TYPE FindAbsMaxElement(const TYPE* values, size_t n) {
 
 
 // given an array of values and their bound, approximate the area covered, in percentage
-template<typename TYPE, int n, int s>
+template<typename TYPE, int n, int s, bool bCentered>
 inline TYPE ComputeCoveredArea(const TYPE* values, size_t size, const TYPE* bound, int stride=n) {
 	ASSERT(size > 0);
 	typedef Eigen::Matrix<TYPE,1,n,Eigen::RowMajor> Vector;
@@ -638,7 +638,7 @@ inline TYPE ComputeCoveredArea(const TYPE* values, size_t size, const TYPE* boun
 	typedef Eigen::Matrix<unsigned,s,s,Eigen::RowMajor> MatrixSurface;
 	const MapMatrix points(values, size, n, Eigen::OuterStride<>(stride));
 	const Vector norm = MapVector(bound);
-	const Vector offset(TYPE(0.5), TYPE(0.5));
+	const Vector offset(Vector::Constant(bCentered ? TYPE(0.5) : TYPE(0)));
 	MatrixSurface surface;
 	surface.setZero();
 	for (size_t i=0; i<size; ++i) {
@@ -1066,13 +1066,10 @@ template<typename TYPE>
 struct CHuber {
 	inline CHuber(TYPE _threshold = 0.005) : threshold(_threshold) {}
 	inline TYPE operator()(const TYPE d) const {
-		const TYPE b_sq = SQUARE(threshold);
-
-		const TYPE d_abs = ABS(d);
+		const TYPE d_abs(ABS(d));
 		if (d_abs < threshold)
 			return TYPE(1);
-		else
-			return SQRT(TYPE(2) * threshold * d_abs - b_sq) / d_abs;
+		return SQRT(threshold * (TYPE(2) * d_abs - threshold)) / d_abs;
 	}
 	const TYPE threshold;
 };
@@ -1119,10 +1116,28 @@ typedef CBlakeZisserman<REAL> CRobustNorm;
 
 
 // makes sure the inverse NCC score does not exceed 0.3
+#if 0
 template <typename T>
-inline T robustincc(const T rhs) { return rhs / (T(1) + T(3) * rhs); }
+inline T robustincc(const T x) { return x / (T(1) + T(3) * x); }
 template <typename T>
-inline T unrobustincc(const T rhs) { return rhs / (T(1) - T(3) * rhs); }
+inline T robustinccg(const T x) { return T(1)/SQUARE(T(1) + T(3) * x); }
+template <typename T>
+inline T unrobustincc(const T y) { return y / (T(1) - T(3) * y); }
+#elif 0
+template <typename T>
+inline T robustincc(const T x) { return T(1)-EXP(x*x*T(-4)); }
+template <typename T>
+inline T robustinccg(const T x) { return T(8)*x*EXP(x*x*T(-4)); }
+template <typename T>
+inline T unrobustincc(const T y) { return SQRT(-LOGN(T(1) - y))/T(2); }
+#else
+template <typename T>
+inline T robustincc(const T x) { return x/SQRT(T(0.3)+x*x); }
+template <typename T>
+inline T robustinccg(const T x) { return T(0.3)/((T(0.3)+x*x)*SQRT(T(0.3)+x*x)); }
+template <typename T>
+inline T unrobustincc(const T y) { return (SQRT(30)*y)/(T(10)*SQRT(T(1) - y*y)); }
+#endif
 /*----------------------------------------------------------------*/
 
 } // namespace SEACAVE

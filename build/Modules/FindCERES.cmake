@@ -86,7 +86,7 @@ else()
 		
 		#Add to the general list
 		if(CERES_LIBRARY)
-			set(CERES_LIBS ${CERES_LIBS} ${CERES_LIBRARY})
+			set(CERES_LIBRARIES ${CERES_LIBS} ${CERES_LIBRARY})
 		endif()
 	endif()
 
