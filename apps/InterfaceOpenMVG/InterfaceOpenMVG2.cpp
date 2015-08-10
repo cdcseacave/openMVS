@@ -202,7 +202,7 @@ int main(int argc, LPCTSTR* argv)
 	if (OPT::bOpenMVS2PLY) {
 		// read OpenMVS input data
 		MVS::Scene scene;
-		scene.Load(MAKE_PATH_SAFE(OPT::strInputFileName), OPT::strWorkingFolderFull);
+		scene.Load(MAKE_PATH_SAFE(OPT::strInputFileName));
 
 		// Export the scene to a PLY file
 		uint32_t nbcamera = 0;
@@ -350,7 +350,7 @@ int main(int argc, LPCTSTR* argv)
 		}
 
 		// write OpenMVS input data
-		scene.Save(MAKE_PATH_SAFE(OPT::strOutputFileName), OPT::strWorkingFolderFull);
+		scene.Save(MAKE_PATH_SAFE(OPT::strOutputFileName));
 
 		VERBOSE("Exported data: %u platforms, %u cameras, %u poses, %u images, %u vertices (%s)",
 				scene.platforms.GetSize(),
