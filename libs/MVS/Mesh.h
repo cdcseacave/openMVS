@@ -61,14 +61,18 @@ public:
 	typedef TPoint3<VIndex> Face;
 	typedef uint32_t FIndex;
 
-	typedef TPoint3<float> Normal;
-	typedef cList<Normal,const Normal&,0,8192> NormalArr;
-
 	typedef cList<Vertex,const Vertex&,0,8192,VIndex> VertexArr;
-	typedef cList<Face,const Face&,0,8192> FaceArr;
+	typedef cList<Face,const Face&,0,8192,FIndex> FaceArr;
 
-	typedef cList<FIndex,FIndex,0,8> FaceIdxArr;
+	typedef cList<VIndex,VIndex,0,8,VIndex> VertexIdxArr;
+	typedef cList<FIndex,FIndex,0,8,FIndex> FaceIdxArr;
 	typedef cList<FaceIdxArr> VertexFacesArr;
+
+	typedef TPoint3<float> Normal;
+	typedef cList<Normal,const Normal&,0,8192,FIndex> NormalArr;
+
+	typedef TPoint2<float> TexCoord;
+	typedef cList<TexCoord,const TexCoord&,0,8192,FIndex> TexCoordArr;
 
 	// used to find adjacent face
 	struct FaceCount {
@@ -76,6 +80,8 @@ public:
 		inline FaceCount() : count(0) {}
 	};
 	typedef std::unordered_map<FIndex,FaceCount> FacetCountMap;
+	typedef FaceCount VertCount;
+	typedef std::unordered_map<VIndex,VertCount> VertCountMap;
 
 public:
 	VertexArr vertices;
@@ -86,6 +92,9 @@ public:
 	BoolArr vertexBoundary; // for each vertex, stores if it is at the boundary or not (optional)
 
 	NormalArr faceNormals; // for each face, the normal to it (optional)
+	TexCoordArr faceTexcoords; // for each face, the texture-coordinates corresponding to the contained vertices (optional)
+
+	Image8U3 textureDiffuse; // texture containing the diffuse color (optional)
 
 public:
 	inline Mesh() {}
@@ -100,6 +109,11 @@ public:
 	void ComputeNormalFaces();
 	void ComputeNormalVertices();
 
+	void GetEdgeFaces(VIndex, VIndex, FaceIdxArr&) const;
+	void GetFaceFaces(FIndex, FaceIdxArr&) const;
+	void GetEdgeVertices(FIndex, FIndex, uint32_t vs0[2], uint32_t vs1[2]) const;
+	void GetAdjVertices(VIndex, VertexIdxArr&) const;
+
 	bool FixNonManifold();
 	void Clean(float fDecimate=0.7f, float fSpurious=10.f, bool bRemoveSpikes=true, unsigned nCloseHoles=30, unsigned nSmoothMesh=2);
 
@@ -107,7 +121,7 @@ public:
 
 	// file IO
 	bool Load(const String& fileName);
-	bool Save(const String& fileName, bool bBinary=true) const;
+	bool Save(const String& fileName, const cList<String>& comments=cList<String>(), bool bBinary=true) const;
 	static bool Save(const VertexArr& vertices, const String& fileName, bool bBinary=true);
 
 	static inline uint32_t FindVertex(const Face& f, VIndex v) { for (uint32_t i=0; i<3; ++i) if (f[i] == v) return i; return NO_ID; }
@@ -120,6 +134,12 @@ public:
 	void serialize(Archive& ar, const unsigned int version) {
 		ar & vertices;
 		ar & faces;
+		ar & vertexNormals;
+		ar & vertexFaces;
+		ar & vertexBoundary;
+		ar & faceNormals;
+		ar & faceTexcoords;
+		ar & textureDiffuse;
 	}
 	#endif
 };

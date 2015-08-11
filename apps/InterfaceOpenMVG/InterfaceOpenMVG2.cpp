@@ -320,7 +320,13 @@ int main(int argc, LPCTSTR* argv)
 			}
 		}
 
+		// read images meta-data
+		FOREACHPTR(pImage, scene.images) {
+			if (!pImage->ReloadImage(0, false))
+				LOG("error: can not read image %s", pImage->name.c_str());
+		}
 		if (OPT::bNormalizeIntrinsics) {
+			// normalize camera intrinsics
 			FOREACH(p, scene.platforms) {
 				MVS::Platform& platform = scene.platforms[p];
 				FOREACH(c, platform.cameras) {
@@ -337,12 +343,11 @@ int main(int argc, LPCTSTR* argv)
 						LOG("error: no image using camera %u of platform %u", c, p);
 						continue;
 					}
-					if (!pImage->ReloadImage(0, false)) {
-						LOG("error: can not read image %s", pImage->name.c_str());
-						continue;
-					}
 					const REAL fScale(REAL(1)/MVS::Camera::GetNormalizationScale(pImage->width, pImage->height));
-					camera.K *= fScale;
+					camera.K(0,0) *= fScale;
+					camera.K(1,1) *= fScale;
+					camera.K(0,2) *= fScale;
+					camera.K(1,2) *= fScale;
 				}
 			}
 		}

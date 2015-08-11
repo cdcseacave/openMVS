@@ -100,12 +100,14 @@ public:
 
 	// returns the scale used to normalize the intrinsics
 	static inline float GetNormalizationScale(uint32_t width, uint32_t height) {
+		ASSERT(width>0 && height>0);
 		return float(MAXF(width, height));
 	}
 
 	// create K with the supplied focal length and sensor center
 	template<typename TYPE, typename TYPER>
 	static inline TMatrix<TYPE,3,3> ComposeK(const TYPE& fX, const TYPE& fY, TYPER w=TYPER(1), TYPER h=TYPER(1)) {
+		ASSERT(w>0 && h>0);
 		TMatrix<TYPE,3,3> K(TMatrix<TYPE,3,3>::IDENTITY);
 		K(0,0) = fX;
 		K(1,1) = fY;
@@ -115,6 +117,7 @@ public:
 	}
 	template<typename TYPE, typename TYPER>
 	static inline TMatrix<TYPE,3,3> ComposeInvK(const TYPE& fX, const TYPE& fY, TYPER w=TYPER(1), TYPER h=TYPER(1)) {
+		ASSERT(w>0 && h>0);
 		TMatrix<TYPE,3,3> invK(TMatrix<TYPE,3,3>::IDENTITY);
 		invK(0,0) = TYPE(1)/fX;
 		invK(1,1) = TYPE(1)/fY;
@@ -126,6 +129,7 @@ public:
 	// returns full K and the inverse of K (assuming standard K format)
 	template<typename TYPE>
 	inline TMatrix<TYPE,3,3> GetK(uint32_t width, uint32_t height) const {
+		ASSERT(width>0 && height>0);
 		const float fScale(GetNormalizationScale(width, height));
 		if (K(0,2)==0 && K(1,2)==0)
 			return ComposeK(
@@ -140,6 +144,7 @@ public:
 	}
 	template<typename TYPE>
 	inline TMatrix<TYPE,3,3> GetInvK(uint32_t width, uint32_t height) const {
+		ASSERT(width>0 && height>0);
 		const float fScale(GetNormalizationScale(width, height));
 		if (K(0,2)==0 && K(1,2)==0)
 			return ComposeInvK(

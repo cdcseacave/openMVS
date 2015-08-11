@@ -549,7 +549,13 @@ int main(int argc, LPCTSTR* argv)
 				point.views.Insert(viewBAF);
 			}
 		}
+		// read images meta-data
+		FOREACHPTR(pImage, scene.images) {
+			if (!pImage->ReloadImage(0, false))
+				LOG("error: can not read image %s", pImage->name.c_str());
+		}
 		if (OPT::bNormalizeIntrinsics) {
+			// normalize camera intrinsics
 			FOREACH(p, scene.platforms) {
 				MVS::Platform& platform = scene.platforms[p];
 				FOREACH(c, platform.cameras) {
@@ -564,10 +570,6 @@ int main(int argc, LPCTSTR* argv)
 					}
 					if (pImage == NULL) {
 						LOG("error: no image using camera %u of platform %u", c, p);
-						continue;
-					}
-					if (!pImage->ReloadImage(0, false)) {
-						LOG("error: can not read image %s", pImage->name.c_str());
 						continue;
 					}
 					const REAL fScale(REAL(1)/MVS::Camera::GetNormalizationScale(pImage->width, pImage->height));

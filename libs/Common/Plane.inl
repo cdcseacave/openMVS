@@ -310,10 +310,7 @@ void TFrustum<TYPE,DIMS>::Set(const MATRIX4x4& m)
 	m_planes[3].Set(-(m.col(3)-m.col(1)));
 	// near plane
 	if (DIMS > 4)
-	if (MODE)
-	m_planes[4].Set(-(m.col(3)+m.col(2)));
-	else
-	m_planes[4].Set(-m.col(2));
+	m_planes[4].Set(MODE ? -(m.col(3)+m.col(2)) : -m.col(2));
 	// far plane
 	if (DIMS > 5)
 	m_planes[5].Set(-(m.col(3)-m.col(2)));
@@ -356,20 +353,19 @@ void TFrustum<TYPE,DIMS>::Set(const MATRIX3x4& m)
 	));
 	// near plane
 	if (DIMS > 4)
-	if (MODE)
-	m_planes[4].Set(VECTOR4(
+	m_planes[4].Set(MODE ?
+		VECTOR4(
 		-(m(0,3)+m(0,2)),
 		-(m(1,3)+m(1,2)),
 		-(m(2,3)+m(2,2)),
-		-TYPE(1)
-	));
-	else
-	m_planes[4].Set(VECTOR4(
+		-TYPE(1))
+		:
+		VECTOR4(
 		-m(0,2),
 		-m(1,2),
 		-m(2,2),
-		TYPE(0)
-	));
+		TYPE(0))
+	);
 	// far plane
 	if (DIMS > 5)
 	m_planes[5].Set(VECTOR4(

@@ -2621,6 +2621,44 @@ bool TImage<TYPE>::DrawLineAntialias(const ImageRef& x1, const ImageRef& x2,
 /*----------------------------------------------------------------*/
 
 
+// set all invalid pixels to the average of the neighbors
+template <typename TYPE>
+template <int HalfSize>
+void TImage<TYPE>::DilateMean(TImage<TYPE>& dst, const TYPE& invalid) const
+{
+	TImage<TYPE> out;
+	Base::copyTo(out);
+	const int RowsEnd(rows-HalfSize);
+	const int ColsEnd(cols-HalfSize);
+	for (int r=HalfSize; r<RowsEnd; ++r) {
+		for (int c=HalfSize; c<ColsEnd; ++c) {
+			const TYPE& v = Base::operator()(r,c);
+			if (v != invalid)
+				continue;
+			TYPE vo(0);
+			int n(0);
+			for (int i=-HalfSize; i<=HalfSize; ++i) {
+				const int rw(r+i);
+				for (int j=-HalfSize; j<=HalfSize; ++j) {
+					if (i==0 && j==0)
+						continue;
+					const int cw(c+j);
+					const TYPE& vi = Base::operator()(rw,cw);
+					if (vi == invalid)
+						continue;
+					vo += vi;
+					++n;
+				}
+			}
+			if (n > 0)
+				out(r,c) = (n > 1 ? vo/n : vo);
+		}
+	}
+	dst = out;
+}
+/*----------------------------------------------------------------*/
+
+
 template <typename TYPE>
 bool TImage<TYPE>::Load(const String& fileName)
 {

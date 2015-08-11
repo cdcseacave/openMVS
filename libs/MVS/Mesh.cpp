@@ -78,6 +78,8 @@ void Mesh::ReleaseExtra()
 	vertexFaces.Release();
 	vertexBoundary.Release();
 	faceNormals.Release();
+	faceTexcoords.Release();
+	textureDiffuse.release();
 } // ReleaseExtra
 void Mesh::EmptyExtra()
 {
@@ -85,6 +87,8 @@ void Mesh::EmptyExtra()
 	vertexFaces.Empty();
 	vertexBoundary.Empty();
 	faceNormals.Empty();
+	faceTexcoords.Empty();
+	textureDiffuse.release();
 } // EmptyExtra
 /*----------------------------------------------------------------*/
 
@@ -110,8 +114,6 @@ void Mesh::ListBoundaryVertices()
 	vertexBoundary.Empty();
 	vertexBoundary.Resize(vertices.GetSize());
 	vertexBoundary.Memset(0);
-	typedef FaceCount VertCount;
-	typedef std::unordered_map<VIndex,VertCount> VertCountMap;
 	VertCountMap mapVerts; mapVerts.reserve(12*2);
 	FOREACH(idxV, vertices) {
 		const FaceIdxArr& vf = vertexFaces[idxV];
@@ -207,6 +209,71 @@ void Mesh::ComputeNormalVertices()
 		normalize(*pVertexNormal);
 }
 #endif
+/*----------------------------------------------------------------*/
+
+
+void Mesh::GetEdgeFaces(VIndex v0, VIndex v1, FaceIdxArr& afaces) const
+{
+	const FaceIdxArr& faces0 = vertexFaces[v0];
+	const FaceIdxArr& faces1 = vertexFaces[v1];
+	std::unordered_set<FIndex> setFaces1(faces1.Begin(), faces1.End());
+	FOREACH(i, faces0) {
+		if (setFaces1.find(faces0[i]) != setFaces1.end())
+			afaces.Insert(faces0[i]);
+	}
+}
+
+void Mesh::GetFaceFaces(FIndex f, FaceIdxArr& afaces) const
+{
+	const Face& face = faces[f];
+	const FaceIdxArr& faces0 = vertexFaces[face[0]];
+	const FaceIdxArr& faces1 = vertexFaces[face[1]];
+	const FaceIdxArr& faces2 = vertexFaces[face[2]];
+	std::unordered_set<FIndex> setFaces(faces1.Begin(), faces1.End());
+	FOREACHPTR(pIdxFace, faces0) {
+		if (f != *pIdxFace && setFaces.find(*pIdxFace) != setFaces.end())
+			afaces.Insert(*pIdxFace);
+	}
+	FOREACHPTR(pIdxFace, faces2) {
+		if (f != *pIdxFace && setFaces.find(*pIdxFace) != setFaces.end())
+			afaces.Insert(*pIdxFace);
+	}
+	setFaces.clear();
+	setFaces.insert(faces2.Begin(), faces2.End());
+	FOREACHPTR(pIdxFace, faces0) {
+		if (f != *pIdxFace && setFaces.find(*pIdxFace) != setFaces.end())
+			afaces.Insert(*pIdxFace);
+	}
+}
+
+void Mesh::GetEdgeVertices(FIndex f0, FIndex f1, uint32_t* vs0, uint32_t* vs1) const
+{
+	const Face& face0 = faces[f0];
+	const Face& face1 = faces[f1];
+	int i(0);
+	for (int v=0; v<3; ++v) {
+		if ((vs1[i] = FindVertex(face1, face0[v])) != NO_ID) {
+			vs0[i] = v;
+			if (++i == 2)
+				return;
+		}
+	}
+}
+
+void Mesh::GetAdjVertices(VIndex v, VertexIdxArr& indices) const
+{
+	ASSERT(vertexFaces.GetSize() == vertices.GetSize());
+	const FaceIdxArr& idxFaces = vertexFaces[v];
+	std::unordered_set<VIndex> setIndices;
+	FOREACHPTR(pIdxFace, idxFaces) {
+		const Face& face = faces[*pIdxFace];
+		for (int i=0; i<3; ++i) {
+			const VIndex vAdj(face[i]);
+			if (vAdj != v && setIndices.insert(vAdj).second)
+				indices.Insert(vAdj);
+		}
+	}
+}
 /*----------------------------------------------------------------*/
 
 
@@ -1083,12 +1150,24 @@ namespace BasicPLY {
 		{"nz", PLY::Float32, PLY::Float32, offsetof(VertexNormal,n.z), 0, 0, 0, 0}
 	};
 	// list of property information for a face
-	struct Facet {
+	struct Face {
 		uint8_t num;
 		Mesh::Face* pFace;
 	};
 	static const PLY::PlyProperty face_props[] = {
-		{"vertex_indices", PLY::Uint32, PLY::Uint32, offsetof(Facet,pFace), 1, PLY::Uint8, PLY::Uint8, offsetof(Facet,num)}
+		{"vertex_indices", PLY::Uint32, PLY::Uint32, offsetof(Face,pFace), 1, PLY::Uint8, PLY::Uint8, offsetof(Face,num)}
+	};
+	struct TexCoord {
+		uint8_t num;
+		Mesh::TexCoord* pTex;
+	};
+	struct FaceTex {
+		Face face;
+		TexCoord tex;
+	};
+	static const PLY::PlyProperty face_tex_props[] = {
+		{"vertex_indices", PLY::Uint32, PLY::Uint32, offsetof(FaceTex,face.pFace), 1, PLY::Uint8, PLY::Uint8, offsetof(FaceTex,face.num)},
+		{"texcoord", PLY::Float32, PLY::Float32, offsetof(FaceTex,tex.pTex), 1, PLY::Uint8, PLY::Uint8, offsetof(FaceTex,tex.num)}
 	};
 	// list of the kinds of elements in the PLY
 	static const char* elem_names[] = {
@@ -1125,7 +1204,7 @@ bool Mesh::Load(const String& fileName)
 	}
 
 	// read PLY body
-	BasicPLY::Facet facet;
+	BasicPLY::Face face;
 	for (int i = 0; i < ply.elems.size(); i++) {
 		int elem_count;
 		LPCSTR elem_name = ply.setup_element_read(i, &elem_count);
@@ -1141,13 +1220,13 @@ bool Mesh::Load(const String& fileName)
 			ASSERT(faces.GetSize() == elem_count);
 			ply.setup_property(BasicPLY::face_props[0]);
 			FOREACHPTR(pFace, faces) {
-				ply.get_element(&facet);
-				if (facet.num != 3) {
+				ply.get_element(&face);
+				if (face.num != 3) {
 					DEBUG_EXTRA("error: unsupported mesh file (face not triangle)");
 					return false;
 				}
-				memcpy(pFace, facet.pFace, sizeof(VIndex)*3);
-				delete[] facet.pFace;
+				memcpy(pFace, face.pFace, sizeof(VIndex)*3);
+				delete[] face.pFace;
 			}
 		} else {
 			ply.get_other_element();
@@ -1158,7 +1237,7 @@ bool Mesh::Load(const String& fileName)
 /*----------------------------------------------------------------*/
 
 // export the mesh as a PLY file
-bool Mesh::Save(const String& fileName, bool bBinary) const
+bool Mesh::Save(const String& fileName, const cList<String>& comments, bool bBinary) const
 {
 	ASSERT(!fileName.IsEmpty());
 	Util::ensureDirectory(fileName);
@@ -1169,6 +1248,17 @@ bool Mesh::Save(const String& fileName, bool bBinary) const
 	if (!ply.write(fileName, 2, BasicPLY::elem_names, bBinary?PLY::BINARY_LE:PLY::ASCII, bufferSize)) {
 		DEBUG_EXTRA("error: can not create the mesh file");
 		return false;
+	}
+
+	// export comments
+	FOREACHPTR(pStr, comments)
+		ply.append_comment(pStr->c_str());
+
+	// export texture file name as comment if needed
+	String textureFileName;
+	if (!faceTexcoords.IsEmpty() && !textureDiffuse.empty()) {
+		textureFileName = Util::getFullFileName(fileName)+_T(".png");
+		ply.append_comment((_T("TextureFile ")+Util::getFileFullName(textureFileName)).c_str());
 	}
 
 	if (vertexNormals.IsEmpty()) {
@@ -1195,14 +1285,33 @@ bool Mesh::Save(const String& fileName, bool bBinary) const
 	if (ply.get_current_element_count() == 0)
 		return false;
 
-	// describe what properties go into the vertex elements
-	ply.describe_property(BasicPLY::elem_names[1], 1, BasicPLY::face_props);
+	if (faceTexcoords.IsEmpty()) {
+		// describe what properties go into the vertex elements
+		ply.describe_property(BasicPLY::elem_names[1], 1, BasicPLY::face_props);
 
-	// export the array of faces
-	BasicPLY::Facet facet; facet.num = 3;
-	FOREACHPTR(pFace, faces) {
-		facet.pFace = pFace;
-		ply.put_element(&facet);
+		// export the array of faces
+		BasicPLY::Face face = {3};
+		FOREACHPTR(pFace, faces) {
+			face.pFace = pFace;
+			ply.put_element(&face);
+		}
+	} else {
+		ASSERT(faceTexcoords.GetSize() == faces.GetSize()*3);
+
+		// describe what properties go into the vertex elements
+		ply.describe_property(BasicPLY::elem_names[1], 2, BasicPLY::face_tex_props);
+
+		// export the array of faces
+		BasicPLY::FaceTex face = {{3},{6}};
+		FOREACH(f, faces) {
+			face.face.pFace = faces.Begin()+f;
+			face.tex.pTex = faceTexcoords.Begin()+f*3;
+			ply.put_element(&face);
+		}
+
+		// export the texture
+		if (!textureDiffuse.empty())
+			textureDiffuse.Save(textureFileName);
 	}
 	if (ply.get_current_element_count() == 0)
 		return false;

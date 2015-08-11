@@ -391,20 +391,109 @@ inline TYPE2 ComputeAngle(const TYPE1* X1, const TYPE1* C1, const TYPE1* X2, con
 } // ComputeAngle
 /*----------------------------------------------------------------*/
 
-// compute barycentric coordinates for point p with respect to triangle (a, b, c)
+// given a triangle defined by 3 vertex positions and a point,
+// compute the barycentric coordinates corresponding to that point
+// (only the first two values: alpha and beta)
 template <typename TYPE>
-TPoint3<TYPE> BarycentricCoordinates(const TPoint3<TYPE>& a, const TPoint3<TYPE>& b, const TPoint3<TYPE>& c, const TPoint3<TYPE>& p) {
-	const TPoint3<TYPE> v0(b - a), v1(c - a), v2(p - a);
-	const TYPE d00 = v0.dot(v0);
-	const TYPE d01 = v0.dot(v1);
-	const TYPE d11 = v1.dot(v1);
-	const TYPE d20 = v2.dot(v0);
-	const TYPE d21 = v2.dot(v1);
-	const TYPE invDenom = INVERT(d00 * d11 - d01 * d01);
-	const TYPE v = (d11 * d20 - d01 * d21) * invDenom;
-	const TYPE w = (d00 * d21 - d01 * d20) * invDenom;
-	const TYPE u = 1.0f - v - w;
-	return TPoint3<TYPE>(u,v,w);
+inline TPoint2<TYPE> BarycentricCoordinatesUV(const TPoint3<TYPE>& A, const TPoint3<TYPE>& B, const TPoint3<TYPE>& C, const TPoint3<TYPE>& P) {
+	#if 0
+	// the triangle normal
+	const TPoint3<TYPE> normalVec((B-A).cross(C-A));
+	//const TYPE normalLen(norm(normalVec));
+	// the area of the triangles
+	const TYPE invAreaABC(INVERT(normSq(normalVec)/*/(2*normalLen)*/));
+	const TPoint3<TYPE> CP(C-P);
+	const TYPE areaPBC(normalVec.dot((B-P).cross(CP))/*/(2*normalLen)*/);
+	const TYPE areaPCA(normalVec.dot(CP.cross(A-P))/*/(2*normalLen)*/);
+	// the barycentric coordinates
+	return TPoint2<TYPE>(
+		areaPBC * invAreaABC, // alpha
+		areaPCA * invAreaABC  // beta
+	);
+	#else
+	// using the Cramer's rule for solving a linear system
+	const TPoint3<TYPE> v0(A-C), v1(B-C), v2(P-C);
+	const TYPE d00(normSq(v0));
+	const TYPE d01(v0.dot(v1));
+	const TYPE d11(normSq(v1));
+	const TYPE d20(v2.dot(v0));
+	const TYPE d21(v2.dot(v1));
+	const TYPE invDenom(INVERT(d00 * d11 - d01 * d01));
+	return TPoint2<TYPE>(
+		(d11 * d20 - d01 * d21) * invDenom, // alpha
+		(d00 * d21 - d01 * d20) * invDenom  // beta
+	);
+	#endif
+}
+// same as above, but returns all three barycentric coordinates
+template <typename TYPE>
+inline TPoint3<TYPE> BarycentricCoordinates(const TPoint3<TYPE>& A, const TPoint3<TYPE>& B, const TPoint3<TYPE>& C, const TPoint3<TYPE>& P)
+{
+	TPoint2<TYPE> b(BarycentricCoordinatesUV(A, B, C, P));
+	return TPoint3<TYPE>(
+		b.x,            // alpha
+		b.y,            // beta
+		TYPE(1)-b.x-b.y // gamma
+	);
+}
+// same as above, but for 2D triangle case
+template <typename TYPE>
+inline TPoint2<TYPE> BarycentricCoordinatesUV(const TPoint2<TYPE>& A, const TPoint2<TYPE>& B, const TPoint2<TYPE>& C, const TPoint2<TYPE>& P) {
+	const TPoint2<TYPE> D(P - C);
+	const TYPE d00(A.x - C.x);
+	const TYPE d01(B.x - C.x);
+	const TYPE d10(A.y - C.y);
+	const TYPE d11(B.y - C.y);
+	const TYPE invDet(INVERT(d00 * d11 - d10 * d01));
+	return TPoint2<TYPE>(
+		(d11 * D.x - d01 * D.y) * invDet, // alpha
+		(d00 * D.y - d10 * D.x) * invDet  // beta
+	);
+}
+// same as above, but returns all three barycentric coordinates
+template <typename TYPE>
+inline TPoint3<TYPE> BarycentricCoordinates(const TPoint2<TYPE>& A, const TPoint2<TYPE>& B, const TPoint2<TYPE>& C, const TPoint2<TYPE>& P)
+{
+	TPoint2<TYPE> b(BarycentricCoordinatesUV(A, B, C, P));
+	return TPoint3<TYPE>(
+		b.x,            // alpha
+		b.y,            // beta
+		TYPE(1)-b.x-b.y // gamma
+	);
+}
+// correct the barycentric coordinates in case of numerical errors
+// (the corresponding point is assumed to be inside the triangle)
+template <typename TYPE>
+inline TPoint3<TYPE> CorrectBarycentricCoordinates(TPoint2<TYPE> b)
+{
+	if (b.x < TYPE(0)) // alpha
+		b.x = TYPE(0);
+	else if (b.x > TYPE(1))
+		b.x = TYPE(1);
+	if (b.y < TYPE(0)) // beta
+		b.y = TYPE(0);
+	else if (b.y > TYPE(1))
+		b.y = TYPE(1);
+	TYPE z(TYPE(1) - b.x - b.y); // gamma
+	if (z < 0) {
+		// equally distribute the error
+		const TYPE half(-z/TYPE(2));
+		if (half > b.x) {
+			b.x = TYPE(0);
+			b.y = TYPE(1);
+		} else
+		if (half > b.y) {
+			b.x = TYPE(1);
+			b.y = TYPE(0);
+		} else {
+			b.x -= half;
+			b.y -= half;
+		}
+		z = TYPE(0);
+	}
+	// check that the given point is inside the triangle
+	ASSERT((b.x >= 0) && (b.y >= 0) && (b.x+b.y <= 1) && ISEQUAL(b.x+b.y+z, TYPE(1)));
+	return TPoint3<TYPE>(b.x, b.y, z);
 }
 // compute the area of a triangle using Heron's formula
 template <typename TYPE>

@@ -94,6 +94,9 @@ typedef class GENERAL_API TFlags<uint32_t> Flags;
 // 2011-12-17 Modified by Pierre Moulon
 //  - use vector array to avoid memory management
 //  - add value by sequence with iterator
+// 2015-04-04 Modified by cDc
+//  - rewrite
+//  - add GetApproximatePermille()
 // Dedicated to the public domain.
 template <typename TYPE>
 class THistogram
@@ -105,11 +108,10 @@ public:
 	// Construct a histogram that can count within a range of values.
 	// All bins of the histogram are set to zero.
 	THistogram(const std::pair<Type,Type>& range, size_t bins=10) :
-		NBins(bins),
 		Start(range.first),
 		End(range.second),
-		BinInterval(Type(NBins)/(End-Start)),
-		Freq(NBins, 0),
+		BinInterval(Type(bins)/(End-Start)),
+		Freq(bins, 0),
 		Overflow(0),
 		Underflow(0) {}
 
@@ -126,7 +128,7 @@ public:
 			++Underflow;
 		} else {
 			const size_t i(static_cast<size_t>((x-Start)*BinInterval));
-			if (i < NBins) ++Freq[i];
+			if (i < Freq.size()) ++Freq[i];
 			else ++Overflow;
 		}
 	}
@@ -141,35 +143,49 @@ public:
 	inline const std::vector<size_t>& GetHist() const { return Freq; }
 	// Get XbinsValue
 	std::vector<Type> GetXbinsValue() const {
+		const size_t NBins(Freq.size());
 		std::vector<Type> vec_XbinValue(NBins);
-		const Type val = (End-Start)/static_cast<Type>(NBins-1);
+		const Type val((End-Start)/static_cast<Type>(NBins-1));
 		for (size_t i = 0; i < NBins; ++i)
 			vec_XbinValue[i] = (val*static_cast<Type>(i) + Start);
 		return vec_XbinValue;
 	}
 	// Get start
-	inline double GetStart() const { return Start; }
+	inline Type GetStart() const { return Start; }
 	// Get End
-	inline double GetEnd() const { return End; }
+	inline Type GetEnd() const { return End; }
+
+	// Returns the approximate permille
+	Type GetApproximatePermille(float permille) const {
+		ASSERT(permille >= 0.f && permille <= 1.f);
+		size_t NumValues(0);
+		for (size_t n: Freq)
+			NumValues += n;
+		size_t Num(0);
+		Type UpperBound(Start);
+		for (size_t i = 0; i < Freq.size(); ++i) {
+			if (static_cast<float>(Num)/NumValues > permille)
+				return UpperBound;
+			Num += Freq[i];
+			UpperBound = (static_cast<Type>(i)*End)/(Freq.size()-1)+Start;
+		}
+		return End;
+	}
 
 	// Text display of the histogram
 	std::string ToString(const std::string& sTitle = "") const {
 		std::ostringstream os;
 		os.precision(3);
 		os << sTitle << "\n";
-		const size_t n = Freq.size();
-		for (size_t i = 0; i < n; ++i) {
-			os
-				<< static_cast<float>(End-Start)/n*static_cast<float>(i)
-				<< "\t|\t" << Freq[i] << "\n";
-		}
+		const size_t n(Freq.size());
+		for (size_t i = 0; i < n; ++i)
+			os << static_cast<float>(End-Start)/n*static_cast<float>(i) << "\t|\t" << Freq[i] << "\n";
 		os << End << "\n";
 		return os.str();
 	}
 
 private:
-	const size_t NBins; // number of bins
-	const Type Start, End, BinInterval;
+	const Type Start, End, BinInterval; // min/max/step of values
 	std::vector<size_t> Freq; // histogram
 	size_t Overflow, Underflow; // count under/over flow
 };

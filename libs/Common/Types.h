@@ -1838,6 +1838,8 @@ struct TPixel {
 	// set/get as vector
 	inline const TYPE& operator[](size_t i) const { ASSERT(i<3); return c[i]; }
 	inline TYPE& operator[](size_t i) { ASSERT(i<3); return c[i]; }
+	// access as point equivalent
+	template<typename T> inline operator TPoint3<T>() const { return TPoint3<T>(T(c[0]), T(c[1]), T(c[2])); }
 	// access as vector equivalent
 	inline operator const Pnt& () const { return *((const Pnt*)this); }
 	inline operator Pnt& () { return *((Pnt*)this); }
@@ -2056,6 +2058,9 @@ public:
 	static bool DrawLineAntialias(Point2f x1, Point2f x2, FncDrawPointAntialias fncDrawPoint, void* pData=NULL);
 	static bool DrawLineAntialias(const ImageRef& x1, const ImageRef& x2, FncDrawPointAntialias fncDrawPoint, void* pData=NULL);
 
+	template <int HalfSize>
+	void DilateMean(TImage<TYPE>& out, const TYPE& invalid) const;
+
 	bool Load(const String&);
 	bool Save(const String&) const;
 	void Show(const String& winname, int delay=0, bool bDestroy=true) const;
@@ -2258,6 +2263,7 @@ struct TIndexScore {
 	}
 	#endif
 };
+/*----------------------------------------------------------------*/
 typedef TIndexScore<uint32_t, float> IndexScore;
 typedef SEACAVE::cList<IndexScore, const IndexScore&, 0> IndexScoreArr;
 /*----------------------------------------------------------------*/
@@ -2269,6 +2275,7 @@ struct PairIdx {
 	typedef uint32_t Index;
 	union {
 		PairIndex idx;
+		Index indices[2];
 		struct {
 			#if __BYTE_ORDER == __LITTLE_ENDIAN
 			Index j;
@@ -2289,10 +2296,27 @@ struct PairIdx {
 		#endif
 	// get index
 	inline operator PairIndex () const { return idx; }
+	inline Index operator[](unsigned n) const {
+		ASSERT(n < 2);
+		#if __BYTE_ORDER == __LITTLE_ENDIAN
+		return indices[(n+1)%2];
+		#else
+		return indices[n];
+		#endif
+	}
+	inline Index& operator[](unsigned n) {
+		ASSERT(n < 2);
+		#if __BYTE_ORDER == __LITTLE_ENDIAN
+		return indices[(n+1)%2];
+		#else
+		return indices[n];
+		#endif
+	}
 	// compare by index (increasing)
 	inline bool operator<(const PairIdx& r) const { return (idx < r.idx); }
 	inline bool operator==(const PairIdx& r) const { return (idx == r.idx); }
 };
+/*----------------------------------------------------------------*/
 typedef SEACAVE::cList<PairIdx, const PairIdx&, 0> PairIdxArr;
 inline PairIdx MakePairIdx(uint32_t idxImageA, uint32_t idxImageB) {
 	return (idxImageA<idxImageB ? PairIdx(idxImageA, idxImageB) : PairIdx(idxImageB, idxImageA));
