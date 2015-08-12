@@ -46,7 +46,7 @@ using namespace MVS;
 
 // uncomment to enable multi-threading based on OpenMP
 #ifdef _USE_OPENMP
-#define REFINE_USE_OPENMP
+#define MESHOPT_USE_OPENMP
 #endif
 
 // uncomment to ensure edge size and improve vertex valence
@@ -443,7 +443,7 @@ bool MeshRefine::InitImages(double scale, double sigma)
 	views.Resize(images.GetSize());
 	typedef float real;
 	TImage<real> grad[2];
-	#ifdef REFINE_USE_OPENMP
+	#ifdef MESHOPT_USE_OPENMP
 	bool bAbort(false);
 	#pragma omp parallel for private(grad)
 	for (int_t iID=0; iID<(int_t)images.GetSize(); ++iID) {
@@ -461,7 +461,7 @@ bool MeshRefine::InitImages(double scale, double sigma)
 		unsigned level(nResolutionLevel);
 		const unsigned imageSize(imageData.RecomputeMaxResolution(level, nMinResolution));
 		if ((imageData.image.empty() || MAXF(imageData.width,imageData.height) != imageSize) && FAILED(imageData.ReloadImage(imageSize))) {
-			#ifdef REFINE_USE_OPENMP
+			#ifdef MESHOPT_USE_OPENMP
 			bAbort = true;
 			#pragma omp flush (bAbort)
 			#else
@@ -496,7 +496,7 @@ bool MeshRefine::InitImages(double scale, double sigma)
 		cv::merge(grad, 2, view.imageGrad);
 		#endif
 	}
-	#ifdef REFINE_USE_OPENMP
+	#ifdef MESHOPT_USE_OPENMP
 	return !bAbort;
 	#else
 	return true;
@@ -946,7 +946,7 @@ void MeshRefine::ScoreMesh(double& score)
 	#ifdef MESHOPT_DEBUG
 	Image32F image;
 	#endif
-	typedef Sampler::Cubic<REAL> Sampler;
+	typedef Sampler::Linear<REAL> Sampler;
 	const Sampler sampler;
 	ViewVertexArr viewVertices(0, vertices.GetSize());
 	cList<uint16_t,uint16_t,0> countVertices(vertices.GetSize());
@@ -1114,7 +1114,7 @@ void MeshRefine::ScoreMesh(double& score, double* gradients, double eps)
 	#ifdef MESHOPT_DEBUG
 	Image32F image;
 	#endif
-	typedef Sampler::Cubic<REAL> Sampler;
+	typedef Sampler::Linear<REAL> Sampler;
 	const Sampler sampler;
 	ViewVertexArr viewVertices(0, vertices.GetSize());
 	cList<uint16_t,uint16_t,0> countVertices(vertices.GetSize());
@@ -1402,7 +1402,7 @@ void MeshRefine::ScoreMesh(double& score, double* gradients)
 	#ifdef MESHOPT_DEBUG
 	Image32F image;
 	#endif
-	typedef Sampler::Cubic<REAL> Sampler;
+	typedef Sampler::Linear<REAL> Sampler;
 	const Sampler sampler;
 	ViewVertexArr viewVertices(0, vertices.GetSize());
 	cList<uint16_t,uint16_t,0> countVertices(vertices.GetSize());

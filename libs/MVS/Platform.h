@@ -66,7 +66,7 @@ public:
 		CMatrix C; // platform's translation vector in the global coordinate system
 		#ifdef _USE_BOOST
 		template <class Archive>
-		void serialize(Archive& ar, const unsigned int version) {
+		void serialize(Archive& ar, const unsigned int /*version*/) {
 			ar & R;
 			ar & C;
 		}
@@ -87,7 +87,7 @@ public:
 	#ifdef _USE_BOOST
 	// implement BOOST serialization
 	template <class Archive>
-	void serialize(Archive& ar, const unsigned int version) {
+	void serialize(Archive& ar, const unsigned int /*version*/) {
 		ar & name;
 		ar & cameras;
 		ar & poses;

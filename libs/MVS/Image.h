@@ -62,7 +62,7 @@ struct ViewInfo {
 	#ifdef _USE_BOOST
 				// implement BOOST serialization
 	template<class Archive>
-	void serialize(Archive& ar, const unsigned int version) {
+	void serialize(Archive& ar, const unsigned int /*version*/) {
 		ar & ID;
 		ar & points;
 		ar & scale;
@@ -122,7 +122,7 @@ public:
 	#ifdef _USE_BOOST
 	// implement BOOST serialization
 	template<class Archive>
-	void save(Archive& ar, const unsigned int version) const {
+	void save(Archive& ar, const unsigned int /*version*/) const {
 		ar & platformID;
 		ar & cameraID;
 		ar & poseID;
@@ -133,7 +133,7 @@ public:
 		ar & avgDepth;
 	}
 	template<class Archive>
-	void load(Archive& ar, const unsigned int version) {
+	void load(Archive& ar, const unsigned int /*version*/) {
 		ar & platformID;
 		ar & cameraID;
 		ar & poseID;

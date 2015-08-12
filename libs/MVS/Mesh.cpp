@@ -100,9 +100,9 @@ void Mesh::ListIncidenteFaces()
 	vertexFaces.Resize(vertices.GetSize());
 	FOREACH(i, faces) {
 		const Face& face = faces[i];
-		for (uint32_t v=0; v<3; ++v) {
-			ASSERT(vertexFaces[face[v]].Find(i) == IndexArr::NO_INDEX);
-			vertexFaces[face[v]].Insert((FIndex)i);
+		for (int v=0; v<3; ++v) {
+			ASSERT(vertexFaces[face[v]].Find(i) == FaceIdxArr::NO_INDEX);
+			vertexFaces[face[v]].Insert(i);
 		}
 	}
 }
@@ -673,8 +673,8 @@ bool Mesh::FixNonManifold()
 			continue;
 		FOREACHPTR(pFIdx, vFaces) {
 			const Face& f(faces[*pFIdx]);
-			const uint32_t i(FindVertex(f, (VIndex)v));
-			vertexInfo.AddEdge(f[(i+1)%3], f[(i+2)%3], (FIndex)*pFIdx);
+			const uint32_t i(FindVertex(f, v));
+			vertexInfo.AddEdge(f[(i+1)%3], f[(i+2)%3], *pFIdx);
 		}
 		for (const auto& idx2id: vertexInfo.index2idx) {
 			boost::tie(ei, eie) = boost::out_edges(idx2id.second, vertexInfo.graph);
@@ -769,8 +769,8 @@ bool Mesh::FixNonManifold()
 			continue;
 		FOREACHPTR(pFIdx, vFaces) {
 			const Face& f(faces[*pFIdx]);
-			const uint32_t i(FindVertex(f, (VIndex)v));
-			vertexInfo.AddEdge(f[(i+1)%3], f[(i+2)%3], (FIndex)*pFIdx);
+			const uint32_t i(FindVertex(f, v));
+			vertexInfo.AddEdge(f[(i+1)%3], f[(i+2)%3], *pFIdx);
 		}
 		// find all connected sub-graphs
 		const size_t nComponents(vertexInfo.ComputeComponents());

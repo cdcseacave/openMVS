@@ -1317,7 +1317,7 @@ public:
 	#ifdef _USE_BOOST
 	// serialize
 	template <class Archive>
-	void serialize(Archive& ar, const unsigned int version) {
+	void serialize(Archive& ar, const unsigned int /*version*/) {
 		ar & boost::serialization::base_object<Base>(*this);
 	}
 	#endif
@@ -1409,7 +1409,7 @@ public:
 	#ifdef _USE_BOOST
 	// serialize
 	template <class Archive>
-	void serialize(Archive& ar, const unsigned int version) {
+	void serialize(Archive& ar, const unsigned int /*version*/) {
 		ar & boost::serialization::base_object<Base>(*this);
 	}
 	#endif
@@ -1488,7 +1488,7 @@ public:
 	#ifdef _USE_BOOST
 	// serialize
 	template <class Archive>
-	void serialize(Archive& ar, const unsigned int version) {
+	void serialize(Archive& ar, const unsigned int /*version*/) {
 		ar & boost::serialization::base_object<Base>(*this);
 	}
 	#endif
@@ -1667,7 +1667,7 @@ public:
 	#ifdef _USE_BOOST
 	// serialize
 	template <class Archive>
-	void serialize(Archive& ar, const unsigned int version) {
+	void serialize(Archive& ar, const unsigned int /*version*/) {
 		ar & boost::serialization::base_object<Base>(*this);
 	}
 	#endif
@@ -1867,7 +1867,7 @@ struct TPixel {
 	#ifdef _USE_BOOST
 	// serialize
 	template <class Archive>
-	void serialize(Archive& ar, const unsigned int version) {
+	void serialize(Archive& ar, const unsigned int /*version*/) {
 		ar & c;
 	}
 	#endif
@@ -1966,7 +1966,7 @@ struct TColor {
 	#ifdef _USE_BOOST
 	// serialize
 	template <class Archive>
-	void serialize(Archive& ar, const unsigned int version) {
+	void serialize(Archive& ar, const unsigned int /*version*/) {
 		ar & c;
 	}
 	#endif
@@ -2068,7 +2068,7 @@ public:
 	#ifdef _USE_BOOST
 	// serialize
 	template <class Archive>
-	void serialize(Archive& ar, const unsigned int version) {
+	void serialize(Archive& ar, const unsigned int /*version*/) {
 		ar & boost::serialization::base_object<Base>(*this);
 	}
 	#endif
@@ -2211,7 +2211,7 @@ public:
 protected:
 	// implement BOOST serialization
 	template<class Archive>
-	void save(Archive& ar, const unsigned int version) const {
+	void save(Archive& ar, const unsigned int /*version*/) const {
 		if (empty()) {
 			const int size(0);
 			ar & size;
@@ -2222,7 +2222,7 @@ protected:
 		ar & boost::serialization::make_array(data, sizeof(Type)*length());
 	}
 	template<class Archive>
-	void load(Archive& ar, const unsigned int version) {
+	void load(Archive& ar, const unsigned int /*version*/) {
 		ar & cols;
 		if (cols == 0) {
 			data = NULL;
@@ -2257,7 +2257,7 @@ struct TIndexScore {
 	#ifdef _USE_BOOST
 	// implement BOOST serialization
 	template<class Archive>
-	void serialize(Archive& ar, const unsigned int version) {
+	void serialize(Archive& ar, const unsigned int /*version*/) {
 		ar & idx;
 		ar & score;
 	}

@@ -161,7 +161,7 @@ public:
 	#ifdef _USE_BOOST
 	// implement BOOST serialization
 	template <class Archive>
-	void serialize(Archive& ar, const unsigned int version) {
+	void serialize(Archive& ar, const unsigned int /*version*/) {
 		ar & K;
 		ar & R;
 		ar & C;
@@ -319,11 +319,11 @@ public:
 	#ifdef _USE_BOOST
 	// implement BOOST serialization
 	template<class Archive>
-	void save(Archive& ar, const unsigned int version) const {
+	void save(Archive& ar, const unsigned int /*version*/) const {
 		ar & BOOST_SERIALIZATION_BASE_OBJECT_NVP(MVS::CameraIntern);
 	}
 	template<class Archive>
-	void load(Archive& ar, const unsigned int version) {
+	void load(Archive& ar, const unsigned int /*version*/) {
 		ar & BOOST_SERIALIZATION_BASE_OBJECT_NVP(MVS::CameraIntern);
 		ComposeP();
 	}

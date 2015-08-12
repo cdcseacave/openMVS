@@ -59,7 +59,7 @@ struct SharedRef {
 	#ifdef _USE_BOOST
 	// serialize
 	template <class Archive>
-	void serialize(Archive& ar, const unsigned int version) {
+	void serialize(Archive& ar, const unsigned int /*version*/) {
 		#ifdef SEACAVE_NO_MULTITHREAD
 		ar & val;
 		#else
@@ -196,7 +196,7 @@ protected:
 	// implement BOOST serialization
 	friend class boost::serialization::access;
 	template <class Archive>
-	void serialize(Archive& ar, const unsigned int version) {
+	void serialize(Archive& ar, const unsigned int /*version*/) {
 		ar & m_pointer;
 		ar & m_pNoRef;
 	}
