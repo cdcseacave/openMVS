@@ -41,7 +41,7 @@
 #include "RectsBinPack.h"
 // inference algorithm 
 #include "../Math/LBP.h"
-// find connected components
+// connected components
 #include <boost/graph/adjacency_list.hpp>
 #include <boost/graph/filtered_graph.hpp>
 #include <boost/graph/connected_components.hpp>
@@ -53,7 +53,7 @@ using namespace MVS;
 
 // uncomment to enable multi-threading based on OpenMP
 #ifdef _USE_OPENMP
-#define TEXTURE_USE_OPENMP
+#define TEXOPT_USE_OPENMP
 #endif
 
 
@@ -64,6 +64,16 @@ typedef Mesh::VIndex VIndex;
 typedef Mesh::Face Face;
 typedef Mesh::FIndex FIndex;
 typedef Mesh::TexCoord TexCoord;
+
+typedef int MatIdx;
+typedef Eigen::Triplet<float,MatIdx> MatEntry;
+typedef Eigen::SparseMatrix<float,Eigen::ColMajor,MatIdx> SparseMat;
+
+enum Mask {
+	empty = 0,
+	border = 128,
+	interior = 255
+};
 
 struct MeshTexture {
 	// store necessary data about a view
@@ -130,7 +140,7 @@ struct MeshTexture {
 					return (idxSeamVertex == _idxSeamVertex);
 				}
 			};
-			typedef CLISTDEF0IDX(Edge, uint32_t) Edges;
+			typedef cList<Edge,const Edge&,0,4,uint32_t> Edges;
 
 			uint32_t idxPatch; // the patch containing this vertex
 			Point2f proj; // the projection of this vertex in this patch
@@ -142,7 +152,7 @@ struct MeshTexture {
 				return (idxPatch == _idxPatch);
 			}
 		};
-		typedef CLISTDEFIDX(Patch, uint32_t) Patches;
+		typedef cList<Patch,const Patch&,1,4,uint32_t> Patches;
 
 		VIndex idxVertex; // the index of this vertex
 		Patches patches; // the patches meeting at this vertex (two or more)
@@ -166,7 +176,7 @@ struct MeshTexture {
 			});
 		}
 	};
-	typedef CLISTDEFIDX(SeamVertex, uint32_t) SeamVertices;
+	typedef cList<SeamVertex,const SeamVertex&,1,256,uint32_t> SeamVertices;
 
 	// used to iterate vertex labels
 	struct PatchIndex {
@@ -202,6 +212,56 @@ struct MeshTexture {
 		}
 	};
 
+	// used to sample seam edges
+	typedef TAccumulator<Color> AccumColor;
+	typedef Sampler::Linear<float> Sampler;
+	struct SampleImage {
+
+		AccumColor accumColor;
+		const Image8U3& image;
+		const Sampler sampler;
+
+		inline SampleImage(const Image8U3& _image) : image(_image) {}
+		// sample the edge with linear weights
+		void AddEdge(const TexCoord& p0, const TexCoord& p1) {
+			const TexCoord p01(p1 - p0);
+			const float length(norm(p01));
+			ASSERT(length > 0.f);
+			const int nSamples(ROUND2INT(MAXF(length, 1.f) * 2.f));
+			AccumColor edgeAccumColor;
+			for (int s=0; s<nSamples; ++s) {
+				const float len(static_cast<float>(s) / (nSamples-1));
+				const TexCoord samplePos(p0 + p01 * len);
+				const Color color(image.sample<Sampler,Color>(sampler, samplePos));
+				edgeAccumColor.Add(RGB2YCBCR(color), 1.f-len);
+			}
+			accumColor.Add(edgeAccumColor.Normalized(), length);
+		}
+		// returns accumulated color
+		Color GetColor() const {
+			return accumColor.Normalized();
+		}
+	};
+
+	// used to interpolate adjustments color over the whole texture patch
+	typedef TImage<Color> ColorMap;
+	struct RasterPatchColorData {
+		const TexCoord* tri;
+		Color colors[3];
+		ColorMap& image;
+
+		inline RasterPatchColorData(ColorMap& _image) : image(_image) {}
+		inline void operator()(const ImageRef& pt) {
+			const Point3f b(BarycentricCoordinates(tri[0], tri[1], tri[2], TexCoord(pt)));
+			#if 0
+			if (b.x<0 || b.y<0 || b.z<0)
+				return; // outside triangle
+			#endif
+			ASSERT(image.isInside(pt));
+			image(pt) = colors[0]*b.x + colors[1]*b.y + colors[2]*b.z;
+		}
+	};
+
 
 public:
 	MeshTexture(Scene& _scene, unsigned _nResolutionLevel=0, unsigned _nMinResolution=640);
@@ -217,7 +277,9 @@ public:
 
 	void FaceViewSellection();
 
-	void GenerateTexture();
+	void CreateSeamVertices();
+	void GlobalSeamLeveling();
+	void GenerateTexture(bool bGlobalSeamLeveling);
 
 	template <typename PIXEL>
 	static inline PIXEL RGB2YCBCR(const PIXEL& v) {
@@ -239,6 +301,11 @@ public:
 			v[0]/* * T(1)*/ + v1 * T(1.772)/* + v2 * T(0)*/
 		);
 	}
+
+
+private:
+	static void ProcessMask(Image8U& mask, int stripWidth);
+	static void PoissonBlending(const Image32F3& src, Image32F3& dst, const Image8U& mask, float bias=1.f);
 
 
 public:
@@ -297,7 +364,7 @@ bool MeshTexture::InitImages()
 	Image32F img;
 	cv::Mat grad[2];
 	Eigen::Matrix<real,Eigen::Dynamic,1> mGrad[2], mMag;
-	#ifdef TEXTURE_USE_OPENMP
+	#ifdef TEXOPT_USE_OPENMP
 	bool bAbort(false);
 	#pragma omp parallel for private(img, grad, mGrad, mMag)
 	for (int_t iID=0; iID<(int_t)images.GetSize(); ++iID) {
@@ -315,7 +382,7 @@ bool MeshTexture::InitImages()
 		unsigned level(nResolutionLevel);
 		const unsigned imageSize(imageData.RecomputeMaxResolution(level, nMinResolution));
 		if ((imageData.image.empty() || MAXF(imageData.width,imageData.height) != imageSize) && FAILED(imageData.ReloadImage(imageSize))) {
-			#ifdef TEXTURE_USE_OPENMP
+			#ifdef TEXOPT_USE_OPENMP
 			bAbort = true;
 			#pragma omp flush (bAbort)
 			#else
@@ -345,7 +412,7 @@ bool MeshTexture::InitImages()
 		mMag = (mGrad[0].cwiseAbs2()+mGrad[1].cwiseAbs2()).cwiseSqrt();
 		cv::Mat(img.rows, img.cols, cv::DataType<real>::type, (void*)mMag.data()).copyTo(views[ID].imageGradMag);
 	}
-	#ifdef TEXTURE_USE_OPENMP
+	#ifdef TEXOPT_USE_OPENMP
 	return !bAbort;
 	#else
 	return true;
@@ -505,8 +572,11 @@ void MeshTexture::FaceViewSellection()
 					const FIndex idxFaceAdj = *pIdxFace;
 					if (idxFace >= idxFaceAdj)
 						continue;
-					if (facesDatas[idxFace].IsEmpty() || facesDatas[idxFaceAdj].IsEmpty()) {
-						seamEdges.AddConstruct(idxFace, idxFaceAdj);
+					const bool bInvisibleFace(facesDatas[idxFace].IsEmpty());
+					const bool bInvisibleFaceAdj(facesDatas[idxFaceAdj].IsEmpty());
+					if (bInvisibleFace || bInvisibleFaceAdj) {
+						if (bInvisibleFace != bInvisibleFaceAdj)
+							seamEdges.AddConstruct(idxFace, idxFaceAdj);
 						continue;
 					}
 					if (setEdges.insert(PairIdx(idxFace, idxFaceAdj).idx).second)
@@ -688,21 +758,287 @@ void MeshTexture::FaceViewSellection()
 }
 
 
-void MeshTexture::GenerateTexture()
+void MeshTexture::GlobalSeamLeveling()
+{
+	const unsigned numPatches(texturePatches.GetSize()-1);
+
+	// create seam vertices and edges:
+	// each vertex will contain the list of patches it separates,
+	// except the patch containing invisible faces;
+	// each patch contains the list of edges belonging to that texture patch, starting from that vertex
+	// (usually there are pairs of edges in each patch, representing the two edges starting from that vertex separating two valid patches)
+	VIndex vs[2];
+	uint32_t vs0[2], vs1[2];
+	std::unordered_map<VIndex, uint32_t> mapVertexSeam;
+	SeamVertices seamVertices;
+	FOREACHPTR(pEdge, seamEdges) {
+		// store edge for the later seam optimization
+		ASSERT(pEdge->i < pEdge->j);
+		seamVertices.ReserveExtra(2);
+		scene.mesh.GetEdgeVertices(pEdge->i, pEdge->j, vs0, vs1);
+		ASSERT(faces[pEdge->i][vs0[0]] == faces[pEdge->j][vs1[0]]);
+		ASSERT(faces[pEdge->i][vs0[1]] == faces[pEdge->j][vs1[1]]);
+		vs[0] = faces[pEdge->i][vs0[0]];
+		vs[1] = faces[pEdge->i][vs0[1]];
+
+		const auto itSeamVertex0(mapVertexSeam.emplace(std::make_pair(vs[0], seamVertices.GetSize())));
+		if (itSeamVertex0.second)
+			seamVertices.AddConstruct(vs[0]);
+		SeamVertex& seamVertex0 = seamVertices[itSeamVertex0.first->second];
+
+		const auto itSeamVertex1(mapVertexSeam.emplace(std::make_pair(vs[1], seamVertices.GetSize())));
+		if (itSeamVertex1.second)
+			seamVertices.AddConstruct(vs[1]);
+		SeamVertex& seamVertex1 = seamVertices[itSeamVertex1.first->second];
+
+		const uint32_t idxPatch0(mapIdxPatch[components[pEdge->i]]);
+		const uint32_t idxPatch1(mapIdxPatch[components[pEdge->j]]);
+		ASSERT(idxPatch0 != idxPatch1);
+		if (idxPatch0 < numPatches) {
+			const TexCoord offset0(texturePatches[idxPatch0].rect.tl());
+			SeamVertex::Patch& patch00 = seamVertex0.GetPatch(idxPatch0);
+			SeamVertex::Patch& patch10 = seamVertex1.GetPatch(idxPatch0);
+			ASSERT(patch00.edges.Find(itSeamVertex1.first->second) == NO_ID);
+			patch00.edges.AddConstruct(itSeamVertex1.first->second).idxFace = pEdge->i;
+			patch00.proj = faceTexcoords[pEdge->i*3+vs0[0]]+offset0;
+			ASSERT(patch10.edges.Find(itSeamVertex0.first->second) == NO_ID);
+			patch10.edges.AddConstruct(itSeamVertex0.first->second).idxFace = pEdge->i;
+			patch10.proj = faceTexcoords[pEdge->i*3+vs0[1]]+offset0;
+		}
+		if (idxPatch1 < numPatches) {
+			const TexCoord offset1(texturePatches[idxPatch1].rect.tl());
+			SeamVertex::Patch& patch01 = seamVertex0.GetPatch(idxPatch1);
+			SeamVertex::Patch& patch11 = seamVertex1.GetPatch(idxPatch1);
+			ASSERT(patch01.edges.Find(itSeamVertex1.first->second) == NO_ID);
+			patch01.edges.AddConstruct(itSeamVertex1.first->second).idxFace = pEdge->j;
+			patch01.proj = faceTexcoords[pEdge->j*3+vs1[0]]+offset1;
+			ASSERT(patch11.edges.Find(itSeamVertex0.first->second) == NO_ID);
+			patch11.edges.AddConstruct(itSeamVertex0.first->second).idxFace = pEdge->j;
+			patch11.proj = faceTexcoords[pEdge->j*3+vs1[1]]+offset1;
+		}
+	}
+
+	// find the patch ID for each vertex
+	PatchIndices patchIndices(vertices.GetSize());
+	patchIndices.Memset(0);
+	FOREACH(f, faces) {
+		const uint32_t idxPatch(mapIdxPatch[components[f]]);
+		const Face& face = faces[f];
+		for (int v=0; v<3; ++v)
+			patchIndices[face[v]].idxPatch = idxPatch;
+	}
+	FOREACH(i, seamVertices) {
+		const SeamVertex& seamVertex = seamVertices[i];
+		ASSERT(!seamVertex.patches.IsEmpty());
+		PatchIndex& patchIndex = patchIndices[seamVertex.idxVertex];
+		patchIndex.bIndex = true;
+		patchIndex.idxSeamVertex = i;
+	}
+
+	// assign a row index within the solution vector x to each vertex and to each patch
+	size_t rowsX(0);
+	typedef std::unordered_map<uint32_t,MatIdx> VertexPatch2RowMap;
+	cList<VertexPatch2RowMap> vertpatch2rows(vertices.GetSize());
+	FOREACH(i, vertices) {
+		const PatchIndex& patchIndex = patchIndices[i];
+		VertexPatch2RowMap& vertpatch2row = vertpatch2rows[i];
+		if (patchIndex.bIndex) {
+			// vertex is part of multiple patches
+			const SeamVertex& seamVertex = seamVertices[patchIndex.idxSeamVertex];
+			ASSERT(seamVertex.idxVertex == i);
+			FOREACHPTR(pPatch, seamVertex.patches) {
+				ASSERT(pPatch->idxPatch != numPatches);
+				vertpatch2row[pPatch->idxPatch] = (MatIdx)rowsX++;
+			}
+		} else
+		if (patchIndex.idxPatch < numPatches) {
+			// vertex is part of only one patch
+			vertpatch2row[patchIndex.idxPatch] = (MatIdx)rowsX++;
+		}
+	}
+	ASSERT(rowsX < static_cast<size_t>(std::numeric_limits<MatIdx>::max()));
+
+	CLISTDEF0(MatEntry) rows(0, vertices.GetSize()*4);
+
+	// fill Tikhonov's Gamma matrix (regularization constraints)
+	const float lambda(0.1f);
+	MatIdx rowsGamma(0);
+	Mesh::VertexIdxArr adjVerts;
+	FOREACH(v, vertices) {
+		adjVerts.Empty();
+		scene.mesh.GetAdjVertices(v, adjVerts);
+		VertexPatchIterator itV(patchIndices[v], seamVertices);
+		while (itV.Next()) {
+			const uint32_t idxPatch(itV);
+			if (idxPatch == numPatches)
+				continue;
+			const MatIdx col(vertpatch2rows[v].at(idxPatch));
+			FOREACHPTR(pAdjVert, adjVerts) {
+				const VIndex vAdj(*pAdjVert);
+				if (v >= vAdj)
+					continue;
+				VertexPatchIterator itVAdj(patchIndices[vAdj], seamVertices);
+				while (itVAdj.Next()) {
+					const uint32_t idxPatchAdj(itVAdj);
+					if (idxPatch == idxPatchAdj) {
+						const MatIdx colAdj(vertpatch2rows[vAdj].at(idxPatchAdj));
+						rows.AddConstruct(rowsGamma, col, lambda);
+						rows.AddConstruct(rowsGamma, colAdj, -lambda);
+						++rowsGamma;
+					}
+				}
+			}
+		}
+	}
+	ASSERT(rows.GetSize()/2 < static_cast<size_t>(std::numeric_limits<MatIdx>::max()));
+
+	SparseMat Gamma(rowsGamma, (MatIdx)rowsX);
+	Gamma.setFromTriplets(rows.Begin(), rows.End());
+	rows.Empty();
+
+	// fill the matrix A and the coefficients for the Vector b of the linear equation system
+	IndexArr indices;
+	Colors vertexColors;
+	Colors coeffB;
+	FOREACHPTR(pSeamVertex, seamVertices) {
+		const SeamVertex& seamVertex = *pSeamVertex;
+		if (seamVertex.patches.GetSize() < 2)
+			continue;
+		const VertexPatch2RowMap& vertpatch2row = vertpatch2rows[seamVertex.idxVertex];
+		seamVertex.SortByPatchIndex(indices);
+		vertexColors.Resize(indices.GetSize());
+		FOREACH(i, indices) {
+			const SeamVertex::Patch& patch0 = seamVertex.patches[indices[i]];
+			ASSERT(patch0.idxPatch < numPatches);
+			SampleImage smapler(images[texturePatches[patch0.idxPatch].label].image);
+			FOREACHPTR(pEdge, patch0.edges) {
+				const SeamVertex& seamVertex1 = seamVertices[pEdge->idxSeamVertex];
+				const SeamVertex::Patches::IDX idxPatch1(seamVertex1.patches.Find(patch0.idxPatch));
+				ASSERT(idxPatch1 != SeamVertex::Patches::NO_INDEX);
+				const SeamVertex::Patch& patch1 = seamVertex1.patches[idxPatch1];
+				smapler.AddEdge(patch0.proj, patch1.proj);
+			}
+			vertexColors[i] = smapler.GetColor();
+		}
+		for (IDX i=0; i<indices.GetSize()-1; ++i) {
+			const uint32_t idxPatch0(seamVertex.patches[indices[i]].idxPatch);
+			const Color& color0 = vertexColors[i];
+			const MatIdx col0(vertpatch2row.at(idxPatch0));
+			for (IDX j=i+1; j<indices.GetSize(); ++j) {
+				const uint32_t idxPatch1(seamVertex.patches[indices[j]].idxPatch);
+				const Color& color1 = vertexColors[j];
+				const MatIdx col1(vertpatch2row.at(idxPatch1));
+				ASSERT(idxPatch0 < idxPatch1);
+				const MatIdx rowA((MatIdx)coeffB.GetSize());
+				coeffB.Insert(color1 - color0);
+				ASSERT(ISFINITE(coeffB.Last()));
+				rows.AddConstruct(rowA, col0,  1.f);
+				rows.AddConstruct(rowA, col1, -1.f);
+			}
+		}
+	}
+	ASSERT(coeffB.GetSize() < static_cast<size_t>(std::numeric_limits<MatIdx>::max()));
+
+	const MatIdx rowsA((MatIdx)coeffB.GetSize());
+	SparseMat A(rowsA, (MatIdx)rowsX);
+	A.setFromTriplets(rows.Begin(), rows.End());
+	rows.Release();
+
+	SparseMat Lhs(A.transpose() * A + Gamma.transpose() * Gamma);
+	// CG uses only the lower triangle, so prune the rest and compress matrix
+	Lhs.prune([](const int& row, const int& col, const float&) -> bool {
+		return col <= row;
+	});
+
+	// globally solve for the correction colors
+	Eigen::MatrixX3f colorAdjustments(rowsX, 3);
+	{
+		// init CG solver
+		Eigen::ConjugateGradient<SparseMat, Eigen::Lower> solver;
+		solver.setMaxIterations(1000);
+		solver.setTolerance(0.0001f);
+		solver.compute(Lhs);
+		ASSERT(solver.info() == Eigen::Success);
+		#ifdef TEXOPT_USE_OPENMP
+		#pragma omp parallel for
+		#endif
+		for (int channel=0; channel<3; ++channel) {
+			// init right hand side vector
+			const Eigen::Map< Eigen::VectorXf, Eigen::Unaligned, Eigen::Stride<0,3> > b(coeffB.Begin()->ptr()+channel, rowsA);
+			const Eigen::VectorXf Rhs(SparseMat(A.transpose()) * b);
+			// solve for x
+			const Eigen::VectorXf x(solver.solve(Rhs));
+			ASSERT(solver.info() == Eigen::Success);
+			// subtract mean since the system is under-constrained and
+			// we need the solution with minimal adjustments
+			Eigen::Map< Eigen::VectorXf, Eigen::Unaligned, Eigen::Stride<0,3> >(colorAdjustments.data()+channel, rowsX) = x.array() - x.mean();
+			DEBUG_ULTIMATE("\tcolor channel %d: %d iterations, %g residual", channel, solver.iterations(), solver.error());
+		}
+	}
+
+	// adjust texture patches using the correction colors
+	#ifdef TEXOPT_USE_OPENMP
+	#pragma omp parallel for
+	for (int i=0; i<(int)numPatches; ++i) {
+	#else
+	for (unsigned i=0; i<numPatches; ++i) {
+	#endif
+		const uint32_t idxPatch((uint32_t)i);
+		TexturePatch& texturePatch = texturePatches[idxPatch];
+		ColorMap imageAdj(texturePatch.rect.size());
+		imageAdj.memset(0);
+		// interpolate color adjustments over the whole patch
+		RasterPatchColorData data(imageAdj);
+		FOREACHPTR(pIdxFace, texturePatch.faces) {
+			const FIndex idxFace(*pIdxFace);
+			const Face& face = faces[idxFace];
+			data.tri = faceTexcoords.Begin()+idxFace*3;
+			for (int v=0; v<3; ++v)
+				data.colors[v] = colorAdjustments.row(vertpatch2rows[face[v]].at(idxPatch));
+			// render triangle and for each pixel interpolate the color adjustment
+			// from the triangle corners using barycentric coordinates
+			ColorMap::RasterizeTriangle(data.tri[0], data.tri[1], data.tri[2], data);
+		}
+		// dilate with one pixel width, in order to make sure patch border smooths out a little
+		imageAdj.DilateMean<1>(imageAdj, Color::ZERO);
+		// apply color correction to the patch image
+		cv::Mat image(images[texturePatch.label].image(texturePatch.rect));
+		for (int r=0; r<image.rows; ++r) {
+			for (int c=0; c<image.cols; ++c) {
+				const Color& a = imageAdj(r,c);
+				if (a == Color::ZERO)
+					continue;
+				Pixel8U& v = image.at<Pixel8U>(r,c);
+				const Color col(RGB2YCBCR(Color(v)));
+				const Color acol(YCBCR2RGB(Color(col+a)));
+				for (int i=0; i<3; ++i)
+					v[i] = (uint8_t)CLAMP(ROUND2INT(acol[i]), 0, 255);
+			}
+		}
+	}
+}
+
+void MeshTexture::GenerateTexture(bool bGlobalSeamLeveling)
 {
 	// project patches in the corresponding view and compute texture-coordinates and bounding-box
 	const int border(2);
-	const unsigned numPatches(texturePatches.GetSize()-1);
 	faceTexcoords.Resize(faces.GetSize()*3);
+	#ifdef TEXOPT_USE_OPENMP
+	const unsigned numPatches(texturePatches.GetSize()-1);
+	#pragma omp parallel for
+	for (int_t i=0; i<(int_t)numPatches; ++i) {
+		TexturePatch& texturePatch = texturePatches[(uint32_t)i];
+	#else
 	for (TexturePatch *pTexturePatch=texturePatches.Begin(), *pTexturePatchEnd=texturePatches.End()-1; pTexturePatch<pTexturePatchEnd; ++pTexturePatch) {
 		TexturePatch& texturePatch = *pTexturePatch;
+	#endif
 		const Image& imageData = images[texturePatch.label];
 		// project vertices and  compute bounding-box
 		AABB2f aabb(true);
 		FOREACHPTR(pIdxFace, texturePatch.faces) {
-			const FIndex f(*pIdxFace);
-			const Face& face = faces[f];
-			TexCoord* texcoords = faceTexcoords.Begin()+f*3;
+			const FIndex idxFace(*pIdxFace);
+			const Face& face = faces[idxFace];
+			TexCoord* texcoords = faceTexcoords.Begin()+idxFace*3;
 			for (int i=0; i<3; ++i) {
 				texcoords[i] = imageData.camera.ProjectPointP(vertices[face[i]]);
 				ASSERT(imageData.image.isInsideWithBorder(texcoords[i], border));
@@ -718,19 +1054,30 @@ void MeshTexture::GenerateTexture()
 		texturePatch.rect.height = CEIL2INT(aabb.ptMax[1]-aabb.ptMin[1])+border*2;
 		ASSERT(imageData.image.isInside(texturePatch.rect.tl()));
 		ASSERT(imageData.image.isInside(texturePatch.rect.br()));
+		const TexCoord offset(texturePatch.rect.tl());
+		FOREACHPTR(pIdxFace, texturePatch.faces) {
+			const FIndex idxFace(*pIdxFace);
+			TexCoord* texcoords = faceTexcoords.Begin()+idxFace*3;
+			for (int v=0; v<3; ++v)
+				texcoords[v] -= offset;
+		}
 	}
 	{
 		// init last patch to point to a small uniform color patch
-		TexturePatch& texturePatch = texturePatches[numPatches];
+		TexturePatch& texturePatch = texturePatches.Last();
 		const int sizePatch(border*2+1);
 		texturePatch.rect = cv::Rect(0,0, sizePatch,sizePatch);
 		FOREACHPTR(pIdxFace, texturePatch.faces) {
-			const FIndex f(*pIdxFace);
-			TexCoord* texcoords = faceTexcoords.Begin()+f*3;
+			const FIndex idxFace(*pIdxFace);
+			TexCoord* texcoords = faceTexcoords.Begin()+idxFace*3;
 			for (int i=0; i<3; ++i)
 				texcoords[i] = TexCoord(0.5f, 0.5f);
 		}
 	}
+
+	// perform seam leveling
+	if (bGlobalSeamLeveling)
+		GlobalSeamLeveling();
 
 	// merge texture patches with overlapping rectangles
 	for (unsigned i=0; i<texturePatches.GetSize()-2; ++i) {
@@ -743,7 +1090,17 @@ void MeshTexture::GenerateTexture()
 				continue;
 			if (!IsContainedIn(texturePatchSmall.rect, texturePatchBig.rect))
 				continue;
+			// translate texture coordinates
+			const TexCoord offset(texturePatchSmall.rect.tl()-texturePatchBig.rect.tl());
+			FOREACHPTR(pIdxFace, texturePatchSmall.faces) {
+				const FIndex idxFace(*pIdxFace);
+				TexCoord* texcoords = faceTexcoords.Begin()+idxFace*3;
+				for (int v=0; v<3; ++v)
+					texcoords[v] += offset;
+			}
+			// join faces lists
 			texturePatchBig.faces.JoinRemove(texturePatchSmall.faces);
+			// remove the small patch
 			texturePatches.RemoveAtMove(j--);
 		}
 	}
@@ -767,10 +1124,8 @@ void MeshTexture::GenerateTexture()
 		const float invNorm(1.f/(float)(textureSize-1));
 		textureDiffuse.create(textureSize, textureSize);
 		textureDiffuse.setTo(cv::Scalar(39, 127, 255));
-		TexCoord offset;
-		int x, y;
-		#ifdef TEXTURE_USE_OPENMP
-		#pragma omp parallel for private(offset, x, y)
+		#ifdef TEXOPT_USE_OPENMP
+		#pragma omp parallel for
 		for (int_t i=0; i<(int_t)texturePatches.GetSize(); ++i) {
 		#else
 		FOREACH(i, texturePatches) {
@@ -781,6 +1136,7 @@ void MeshTexture::GenerateTexture()
 			// copy patch image
 			ASSERT((rect.width == texturePatch.rect.width && rect.height == texturePatch.rect.height) ||
 				   (rect.height == texturePatch.rect.width && rect.width == texturePatch.rect.height));
+			int x(0), y(1);
 			if (texturePatch.label != NO_ID) {
 				const Image& imageData = images[texturePatch.label];
 				cv::Mat patch(imageData.image(texturePatch.rect));
@@ -788,27 +1144,20 @@ void MeshTexture::GenerateTexture()
 					// flip patch and texture-coordinates
 					patch = patch.t();
 					x = 1; y = 0;
-					offset.x = float(rect.x - texturePatch.rect.y);
-					offset.y = float(rect.y - texturePatch.rect.x);
-				} else {
-					x = 0; y = 1;
-					offset = rect.tl()-texturePatch.rect.tl();
 				}
 				patch.copyTo(textureDiffuse(rect));
-			} else {
-				x = 0; y = 1;
-				offset = rect.tl();
 			}
 			// compute final texture coordinates
+			const TexCoord offset(rect.tl());
 			FOREACHPTR(pIdxFace, texturePatch.faces) {
-				const FIndex f(*pIdxFace);
-				TexCoord* texcoords = faceTexcoords.Begin()+f*3;
+				const FIndex idxFace(*pIdxFace);
+				TexCoord* texcoords = faceTexcoords.Begin()+idxFace*3;
 				for (int v=0; v<3; ++v) {
 					TexCoord& texcoord = texcoords[v];
 					// translate, normalize and flip Y axis
 					texcoord = TexCoord(
-						(texcoord[x]+(float)offset.x)*invNorm,
-						1.f-(texcoord[y]+(float)offset.y)*invNorm
+						(texcoord[x]+offset.x)*invNorm,
+						1.f-(texcoord[y]+offset.y)*invNorm
 					);
 				}
 			}
@@ -817,7 +1166,7 @@ void MeshTexture::GenerateTexture()
 }
 
 // texture mesh
-bool Scene::TextureMesh(unsigned nResolutionLevel, unsigned nMinResolution)
+bool Scene::TextureMesh(unsigned nResolutionLevel, unsigned nMinResolution, bool bGlobalSeamLeveling, bool bLocalSeamLeveling)
 {
 	MeshTexture texture(*this, nResolutionLevel, nMinResolution);
 
@@ -838,7 +1187,7 @@ bool Scene::TextureMesh(unsigned nResolutionLevel, unsigned nMinResolution)
 	// generate the texture image and atlas 
 	{
 		TD_TIMER_STARTD();
-		texture.GenerateTexture();
+		texture.GenerateTexture(bGlobalSeamLeveling);
 		DEBUG_EXTRA("Generating texture atlas and image completed: %u patches, %u image size (%s)", texture.texturePatches.GetSize(), mesh.textureDiffuse.width(), TD_TIMER_GET_FMT().c_str());
 	}
 

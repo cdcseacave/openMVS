@@ -75,6 +75,9 @@ namespace SEACAVE {
 
 // S T R U C T S ///////////////////////////////////////////////////
 
+typedef size_t IDX;
+#define NO_IDX DECLARE_NO_INDEX(IDX)
+
 /**************************************************************************************
  * List template
  * --------------
@@ -1298,9 +1301,6 @@ template <typename IDX_TYPE>
 inline bool ValidIDX(const IDX_TYPE& idx) {
 	return (idx != DECLARE_NO_INDEX(IDX_TYPE));
 }
-
-typedef size_t IDX;
-#define NO_IDX DECLARE_NO_INDEX(IDX)
 /*----------------------------------------------------------------*/
 
 

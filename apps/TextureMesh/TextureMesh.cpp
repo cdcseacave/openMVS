@@ -56,6 +56,8 @@ String strOutputFileName;
 String strMeshFileName;
 unsigned nResolutionLevel;
 unsigned nMinResolution;
+bool bGlobalSeamLeveling;
+bool bLocalSeamLeveling;
 int nProcessPriority;
 unsigned nMaxThreads;
 String strConfigFileName;
@@ -95,6 +97,8 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		("output-file,o", boost::program_options::value<std::string>(&OPT::strOutputFileName), "the output filename for storing the mesh")
 		("resolution-level", boost::program_options::value<unsigned>(&OPT::nResolutionLevel)->default_value(0), "how many times to scale down the images before mesh refinement")
 		("min-resolution", boost::program_options::value<unsigned>(&OPT::nMinResolution)->default_value(640), "do not scale images lower than this resolution")
+		("global-seam-leveling", boost::program_options::value<bool>(&OPT::bGlobalSeamLeveling)->default_value(true), "generate uniform texture patches using global seam leveling")
+		("local-seam-leveling", boost::program_options::value<bool>(&OPT::bLocalSeamLeveling)->default_value(true), "generate uniform texture patch borders using local seam leveling")
 		;
 
 	// hidden options, allowed both on command line and
@@ -204,7 +208,7 @@ int main(int argc, LPCTSTR* argv)
 		return EXIT_FAILURE;
 	}
 	TD_TIMER_START();
-	scene.TextureMesh(OPT::nResolutionLevel, OPT::nMinResolution);
+	scene.TextureMesh(OPT::nResolutionLevel, OPT::nMinResolution, OPT::bGlobalSeamLeveling, OPT::bLocalSeamLeveling);
 	VERBOSE("Mesh texturing completed: %u vertices, %u faces (%s)", scene.mesh.vertices.GetSize(), scene.mesh.faces.GetSize(), TD_TIMER_GET_FMT().c_str());
 
 	// save the final mesh

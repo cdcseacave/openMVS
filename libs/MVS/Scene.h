@@ -88,7 +88,7 @@ public:
 
 	bool RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsigned nMaxViews, float fDecimateMesh, unsigned nCloseHoles, unsigned nEnsureEdgeSize, unsigned nScales, float fScaleStep, float fRegularityWeight, unsigned nMaxFaceArea, float fConfidenceThreshold);
 
-	bool TextureMesh(unsigned nResolutionLevel, unsigned nMinResolution);
+	bool TextureMesh(unsigned nResolutionLevel, unsigned nMinResolution, bool bGlobalSeamLeveling=true, bool bLocalSeamLeveling=true);
 
 	bool SelectNeighborViews(uint32_t ID, IndexArr& points, unsigned nMinViews=3, unsigned nMinPointViews=2, float fOptimAngle=FD2R(12));
 	static bool FilterNeighborViews(ViewScoreArr& neighbors, float fMinArea=0.12f, float fMinScale=0.2f, float fMaxScale=2.4f, float fMinAngle=FD2R(3), float fMaxAngle=FD2R(45), unsigned nMaxViews=12);

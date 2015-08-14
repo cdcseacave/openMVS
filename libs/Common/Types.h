@@ -27,7 +27,11 @@
 #include <fcntl.h>
 #include <string.h>
 #endif
+#ifdef _SUPPORT_CPP11
+#include <cstdint>
+#else
 #include <stdint.h>
+#endif
 #include <new>
 #include <string>
 #include <iostream>
@@ -1804,6 +1808,11 @@ struct TPixel {
 			TYPE b;
 			#endif
 		};
+		struct {
+			TYPE c0;
+			TYPE c1;
+			TYPE c2;
+		};
 		TYPE c[3];
 	};
 	typedef typename ColorType<TYPE>::alt_type ALT;
@@ -1823,18 +1832,18 @@ struct TPixel {
 	inline TPixel() {}
 	template <typename T> inline TPixel(const TPixel<T>& p) : r(TYPE(p.r)), g(TYPE(p.g)), b(TYPE(p.b)) {}
 	inline TPixel(TYPE _r, TYPE _g, TYPE _b) : r(_r), g(_g), b(_b) {}
-	inline TPixel(const Pnt& col) : r(col.x), g(col.y), b(col.z) {}
-	inline TPixel(const Vec& col) : r(col[0]), g(col[1]), b(col[2]) {}
+	inline TPixel(const Pnt& col) : c0(col.x),  c1(col.y),  c2(col.z) {}
+	inline TPixel(const Vec& col) : c0(col[0]), c1(col[1]), c2(col[2]) {}
 	// set/get from default type
 	inline void set(TYPE _r, TYPE _g, TYPE _b) { r = _r; g = _g; b = _b; }
-	inline void set(const TYPE* clr) { set(clr[2], clr[1], clr[0]); }
+	inline void set(const TYPE* clr) { c[0] = clr[0]; c[1] = clr[1]; c[2] = clr[2]; }
 	inline void get(TYPE& _r, TYPE& _g, TYPE& _b) const { _r = r; _g = g; _b = b; }
-	inline void get(TYPE* clr) const { get(clr[2], clr[1], clr[0]); }
+	inline void get(TYPE* clr) const { clr[0] = c[0]; clr[1] = c[1]; clr[2] = c[2]; }
 	// set/get from alternative type
 	inline void set(ALT _r, ALT _g, ALT _b) { r = TYPE(_r); g = TYPE(_g); b = TYPE(_b); }
-	inline void set(const ALT* clr) { set(clr[2], clr[1], clr[0]); }
+	inline void set(const ALT* clr) { c[0] = TYPE(clr[0]); c[1] = TYPE(clr[1]); c[2] = TYPE(clr[2]); }
 	inline void get(ALT& _r, ALT& _g, ALT& _b) const { _r = ALT(r); _g = ALT(g); _b = ALT(b); }
-	inline void get(ALT* clr) const { get(clr[2], clr[1], clr[0]); }
+	inline void get(ALT* clr) const { clr[0] = ALT(c[0]); clr[1] = ALT(c[1]); clr[2] = ALT(c[2]); }
 	// set/get as vector
 	inline const TYPE& operator[](size_t i) const { ASSERT(i<3); return c[i]; }
 	inline TYPE& operator[](size_t i) { ASSERT(i<3); return c[i]; }
@@ -1899,6 +1908,12 @@ struct TColor {
 			TYPE b;
 			#endif
 		};
+		struct {
+			TYPE c0;
+			TYPE c1;
+			TYPE c2;
+			TYPE c3;
+		};
 		TYPE c[4];
 	};
 	typedef typename ColorType<TYPE>::alt_type ALT;
@@ -1919,19 +1934,25 @@ struct TColor {
 	inline TColor() {}
 	template <typename T> inline TColor(const TColor<T>& p) : r(TYPE(p.r)), g(TYPE(p.g)), b(TYPE(p.b)), a(TYPE(p.a)) {}
 	inline TColor(TYPE _r, TYPE _g, TYPE _b, TYPE _a=ColorType<TYPE>::ONE) : r(_r), g(_g), b(_b), a(_a) {}
-	inline TColor(const Pxl& col, TYPE _a=ColorType<TYPE>::ONE) : r(col.r), g(col.g), b(col.b), a(_a) {}
-	inline TColor(const Pnt& col, TYPE _a=ColorType<TYPE>::ONE) : r(col.x), g(col.y), b(col.z), a(_a) {}
+	inline TColor(const Pxl& col, TYPE _a=ColorType<TYPE>::ONE) : r(col.r),  g(col.g),  b(col.b), a(_a) {}
+	#if _COLORMODE == _COLORMODE_BGR
+	inline TColor(const Pnt& col, TYPE _a=ColorType<TYPE>::ONE) : b(col.x),  g(col.y),  r(col.z),  a(_a) {}
+	inline TColor(const Vec& col, TYPE _a=ColorType<TYPE>::ONE) : b(col[0]), g(col[1]), r(col[2]), a(_a) {}
+	#endif
+	#if _COLORMODE == _COLORMODE_RGB
+	inline TColor(const Pnt& col, TYPE _a=ColorType<TYPE>::ONE) : r(col.x),  g(col.y),  b(col.z),  a(_a) {}
 	inline TColor(const Vec& col, TYPE _a=ColorType<TYPE>::ONE) : r(col[0]), g(col[1]), b(col[2]), a(_a) {}
+	#endif
 	// set/get from default type
 	inline void set(TYPE _r, TYPE _g, TYPE _b, TYPE _a=ColorType<TYPE>::ONE) { r = _r; g = _g; b = _b; a = _a; }
-	inline void set(const TYPE* clr) { set(clr[2], clr[1], clr[0], clr[3]); }
+	inline void set(const TYPE* clr) { c[0] = clr[0]; c[1] = clr[1]; c[2] = clr[2]; c[3] = clr[3]; }
 	inline void get(TYPE& _r, TYPE& _g, TYPE& _b, TYPE& _a) const { _r = r; _g = g; _b = b; _a = a; }
-	inline void get(TYPE* clr) const { get(clr[2], clr[1], clr[0], clr[3]); }
+	inline void get(TYPE* clr) const { clr[0] = c[0]; clr[1] = c[1]; clr[2] = c[2]; clr[3] = c[3]; }
 	// set/get from alternative type
 	inline void set(ALT _r, ALT _g, ALT _b, ALT _a=ColorType<TYPE>::ALTONE) { r = TYPE(_r); g = TYPE(_g); b = TYPE(_b); a = TYPE(_a); }
-	inline void set(const ALT* clr) { set(clr[2], clr[1], clr[0], clr[3]); }
+	inline void set(const ALT* clr) { c[0] = TYPE(clr[0]); c[1] = TYPE(clr[1]); c[2] = TYPE(clr[2]); c[3] = TYPE(clr[3]); }
 	inline void get(ALT& _r, ALT& _g, ALT& _b, ALT& _a) const { _r = ALT(r); _g = ALT(g); _b = ALT(b); _a = ALT(a); }
-	inline void get(ALT* clr) const { get(clr[2], clr[1], clr[0], clr[3]); }
+	inline void get(ALT* clr) const { clr[0] = ALT(c[0]); clr[1] = ALT(c[1]); clr[2] = ALT(c[2]); clr[3] = ALT(c[3]); }
 	// set/get as vector
 	inline const TYPE& operator[](size_t i) const { ASSERT(i<4); return c[i]; }
 	inline TYPE& operator[](size_t i) { ASSERT(i<4); return c[i]; }
@@ -2236,6 +2257,55 @@ protected:
 };
 /*----------------------------------------------------------------*/
 typedef TBitMatrix<size_t> BitMatrix;
+/*----------------------------------------------------------------*/
+
+
+// weighted accumulator class that operates on arbitrary types
+template <typename TYPE, typename ACCUMTYPE=TYPE, typename WEIGHTTYPE=float>
+struct TAccumulator {
+	typedef TYPE Type;
+	typedef ACCUMTYPE AccumType;
+	typedef WEIGHTTYPE WeightType;
+
+	AccumType value;
+	WeightType weight;
+
+	inline TAccumulator() : value(0), weight(0) {}
+	inline TAccumulator(const Type& v, const WeightType& w) : value(v), weight(w) {}
+	// adds the given weighted value to the internal value
+	inline void Add(const Type& v, const WeightType& w) {
+		value += v*w;
+		weight += w;
+	}
+	inline void Add(const TAccumulator& accum) {
+		value += accum.value;
+		weight += accum.weight;
+	}
+	// subtracts the given weighted value to the internal value
+	inline void Sub(const Type& v, const WeightType& w) {
+		value -= v*w;
+		weight -= w;
+	}
+	inline void Sub(const TAccumulator& accum) {
+		value -= accum.value;
+		weight -= accum.weight;
+	}
+	// returns the normalized version of the internal value
+	inline AccumType NormalizedFull() const {
+		return value / weight;
+	}
+	inline Type Normalized() const {
+		return Type(NormalizedFull());
+	}
+	#ifdef _USE_BOOST
+	// implement BOOST serialization
+	template<class Archive>
+	void serialize(Archive& ar, const unsigned int /*version*/) {
+		ar & value;
+		ar & weight;
+	}
+	#endif
+};
 /*----------------------------------------------------------------*/
 
 
