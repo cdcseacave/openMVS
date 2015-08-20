@@ -64,7 +64,7 @@ public:
 		ViewArr views;
 		#ifdef _USE_BOOST
 		template <class Archive>
-		void serialize(Archive& ar, const unsigned int version) {
+		void serialize(Archive& ar, const unsigned int /*version*/) {
 			ar & X;
 			ar & views;
 		}
@@ -96,7 +96,7 @@ public:
 	#ifdef _USE_BOOST
 	// implement BOOST serialization
 	template <class Archive>
-	void serialize(Archive& ar, const unsigned int version) {
+	void serialize(Archive& ar, const unsigned int /*version*/) {
 		ar & points;
 		ar & normals;
 		ar & colors;

@@ -13,7 +13,11 @@
 
 #ifdef _MSC_VER
 #include <windows.h>
+#ifdef _SUPPORT_CPP11
+#include <cstdint>
+#else
 #include <stdint.h>
+#endif
 #else
 #include <pthread.h>
 #include <sched.h>

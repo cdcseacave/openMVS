@@ -62,11 +62,15 @@ using namespace MVS;
 // uncomment to enable reconstruction algorithm of weakly supported surfaces
 #define DELAUNAY_WEAKSURF
 
+// uncomment to use IBFS algorithm for max-flow
+// (faster, but not clear license policy)
+#define DELAUNAY_MAXFLOW_IBFS
+
 
 // S T R U C T S ///////////////////////////////////////////////////
 
-#if 0
-#include "IBFS.cpp"
+#ifdef DELAUNAY_MAXFLOW_IBFS
+#include "../Math/IBFS.h"
 template <typename NType, typename VType>
 class MaxFlow
 {
@@ -1100,7 +1104,7 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport)
 		mapVertices.reserve(nEstimatedNumVerts);
 		#endif
 		mesh.vertices.Reserve((Mesh::VIndex)nEstimatedNumVerts);
-		mesh.faces.Reserve(nEstimatedNumVerts*2);
+		mesh.faces.Reserve((Mesh::FIndex)nEstimatedNumVerts*2);
 		for (delaunay_t::All_cells_iterator ci=delaunay.all_cells_begin(), ce=delaunay.all_cells_end(); ci!=ce; ++ci) {
 			const cell_size_t ciID(ci->info());
 			for (int i=0; i<4; ++i) {

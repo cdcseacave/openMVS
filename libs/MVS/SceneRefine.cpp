@@ -44,6 +44,11 @@ using namespace MVS;
 
 // D E F I N E S ///////////////////////////////////////////////////
 
+// uncomment to enable multi-threading based on OpenMP
+#ifdef _USE_OPENMP
+#define MESHOPT_USE_OPENMP
+#endif
+
 // uncomment to ensure edge size and improve vertex valence
 // (should enable more stable flow)
 #define MESHOPT_ENSUREEDGESIZE 1 // 0 - at all resolution
@@ -296,11 +301,7 @@ struct MeshRefine {
 	typedef std::unordered_map<FIndex,SplitFace> FacetSplitMap;
 
 	// used to find adjacent face
-	struct FaceCount {
-		int count;
-		inline FaceCount() : count(0) {}
-	};
-	typedef std::unordered_map<FIndex,FaceCount> FacetCountMap;
+	typedef Mesh::FacetCountMap FacetCountMap;
 
 	// used to compute the analytical gradient of a vertex
 	struct GradientData {
@@ -315,7 +316,6 @@ public:
 	~MeshRefine();
 
 	bool InitImages(double scale, double sigma=0);
-	void InitImageGradients();
 
 	void ListVertexFaces();
 	void ListCameraFaces();
@@ -344,12 +344,6 @@ public:
 	bool umbrella_operator(VIndex idxV, Point3f& U) const;
 	bool umbrella_operator(VIndex idxV, Point3f& U2, const Mesh::VertexArr& arrVertsU, const bool* valids) const;
 	Point3f umbrella_operator_gradient(const Point3f& U, const Point3f& U2) const;
-
-	// compute the barycentric coordinates
-	template <typename T>
-	static void BarycentricCoordinates(const TPoint3<T>& A, const TPoint3<T>& B, const TPoint3<T>& C, const TPoint3<T>& P, TPoint2<T>& b);
-	template <typename T>
-	static void BarycentricCoordinates(const TPoint3<T>& A, const TPoint3<T>& B, const TPoint3<T>& C, const TPoint3<T>& P, TPoint3<T>& b);
 
 	// given a vertex position and a projection camera, compute the projected position and its derivative
 	template <typename TP, typename TX, typename T>
@@ -442,18 +436,38 @@ MeshRefine::~MeshRefine()
 }
 
 // load and initialize all images at the given scale
+// and compute the gradient for each input image
 // optional: blur them using the given sigma
 bool MeshRefine::InitImages(double scale, double sigma)
 {
 	views.Resize(images.GetSize());
+	typedef float real;
+	TImage<real> grad[2];
+	#ifdef MESHOPT_USE_OPENMP
+	bool bAbort(false);
+	#pragma omp parallel for private(grad)
+	for (int_t iID=0; iID<(int_t)images.GetSize(); ++iID) {
+		#pragma omp flush (bAbort)
+		if (bAbort)
+			continue;
+		const uint32_t ID((uint32_t)iID);
+	#else
 	FOREACH(ID, images) {
+	#endif
 		Image& imageData = images[ID];
 		if (!imageData.IsValid())
 			continue;
+		// load and init image
 		unsigned level(nResolutionLevel);
 		const unsigned imageSize(imageData.RecomputeMaxResolution(level, nMinResolution));
-		if ((imageData.image.empty() || MAXF(imageData.width,imageData.height) != imageSize) && FAILED(imageData.ReloadImage(imageSize)))
+		if ((imageData.image.empty() || MAXF(imageData.width,imageData.height) != imageSize) && FAILED(imageData.ReloadImage(imageSize))) {
+			#ifdef MESHOPT_USE_OPENMP
+			bAbort = true;
+			#pragma omp flush (bAbort)
+			#else
 			return false;
+			#endif
+		}
 		View& view = views[ID];
 		Image32F& img = view.image;
 		imageData.image.toGray(img, cv::COLOR_BGR2GRAY, true);
@@ -465,21 +479,8 @@ bool MeshRefine::InitImages(double scale, double sigma)
 		imageData.UpdateCamera(scene.platforms);
 		if (sigma > 0)
 			cv::GaussianBlur(img, img, cv::Size(), sigma);
-	}
-	return true;
-}
-
-// compute the gradient for each input image
-void MeshRefine::InitImageGradients()
-{
-	ASSERT(!views.IsEmpty());
-	typedef float real;
-	TImage<real> grad[2];
-	FOREACHPTR(pView, views) {
-		const Image32F& img = pView->image;
-		if (img.empty())
-			continue;
-		View::ImageGrad& imgGrad = pView->imageGrad;
+		#ifndef MESHOPT_NUMERICAL
+		// compute image gradient
 		#if 1
 		cv::Sobel(img, grad[0], cv::DataType<real>::type, 1, 0, 3, 1.0/8.0);
 		cv::Sobel(img, grad[1], cv::DataType<real>::type, 0, 1, 3, 1.0/8.0);
@@ -492,8 +493,14 @@ void MeshRefine::InitImageGradients()
 		cv::filter2D(img, grad[0], cv::DataType<real>::type, kernel);
 		cv::filter2D(img, grad[1], cv::DataType<real>::type, kernel.t());
 		#endif
-		cv::merge(grad, 2, imgGrad);
+		cv::merge(grad, 2, view.imageGrad);
+		#endif
 	}
+	#ifdef MESHOPT_USE_OPENMP
+	return !bAbort;
+	#else
+	return true;
+	#endif
 }
 
 // extract array of triangles incident to each vertex
@@ -588,14 +595,22 @@ void MeshRefine::ListCameraFaces()
 			#endif
 			{
 			#if 1
+			// compute the face center, which is also the view to face vector
+			// (cause the face is in camera view space)
+			const Point3 faceCenter((ptc[0]+ptc[1]+ptc[2])/3);
+			// skip face if the (cos) angle between
+			// the view to face vector and the view direction is negative
+			if (faceCenter.z < 0)
+				continue;
 			// compute the plane defined by the 3 points
 			const Point3 edge1(ptc[1]-ptc[0]);
 			const Point3 edge2(ptc[2]-ptc[0]);
 			data.normalPlane = edge1.cross(edge2);
-			#if 1
-			if (data.normalPlane.z > 0)
+			// skip face if the (cos) angle between
+			// the face normal and the face to view vector is negative
+			if (faceCenter.dot(data.normalPlane) > 0)
 				continue;
-			#endif
+			// prepare vector used to compute the depth during rendering
 			data.normalPlane *= INVERT(data.normalPlane.dot(ptc[0]));
 			// draw triangle and for each pixel compute depth as the ray intersection with the plane
 			Image8U3::RasterizeTriangle(pti[0], pti[1], pti[2], data);
@@ -761,7 +776,7 @@ void MeshRefine::SubdivideMesh(uint32_t maxArea, float fDecimate, unsigned nClos
 		// by adding a new vertex at the middle of each edge
 		faces.ReserveExtra(4);
 		Face& newface = faces.AddConstruct(3); // defined by the three new vertices
-		const Face& face = faces[f];
+		const Face& face = faces[(FIndex)f];
 		SplitFace& split = mapSplits[(FIndex)f];
 		for (unsigned i=0; i<3; ++i) {
 			// if the current edge was already split, used the existing vertex
@@ -931,7 +946,7 @@ void MeshRefine::ScoreMesh(double& score)
 	#ifdef MESHOPT_DEBUG
 	Image32F image;
 	#endif
-	typedef Sampler::Cubic<REAL> Sampler;
+	typedef Sampler::Linear<REAL> Sampler;
 	const Sampler sampler;
 	ViewVertexArr viewVertices(0, vertices.GetSize());
 	cList<uint16_t,uint16_t,0> countVertices(vertices.GetSize());
@@ -1099,7 +1114,7 @@ void MeshRefine::ScoreMesh(double& score, double* gradients, double eps)
 	#ifdef MESHOPT_DEBUG
 	Image32F image;
 	#endif
-	typedef Sampler::Cubic<REAL> Sampler;
+	typedef Sampler::Linear<REAL> Sampler;
 	const Sampler sampler;
 	ViewVertexArr viewVertices(0, vertices.GetSize());
 	cList<uint16_t,uint16_t,0> countVertices(vertices.GetSize());
@@ -1387,7 +1402,7 @@ void MeshRefine::ScoreMesh(double& score, double* gradients)
 	#ifdef MESHOPT_DEBUG
 	Image32F image;
 	#endif
-	typedef Sampler::Cubic<REAL> Sampler;
+	typedef Sampler::Linear<REAL> Sampler;
 	const Sampler sampler;
 	ViewVertexArr viewVertices(0, vertices.GetSize());
 	cList<uint16_t,uint16_t,0> countVertices(vertices.GetSize());
@@ -1509,7 +1524,7 @@ void MeshRefine::ScoreMesh(double& score, double* gradients)
 				const Point3f& N(faceNormals[idxFace]);
 				const Point2f gj(imageGradB.sample< Sampler,TPoint2<Sampler::Type> >(sampler, pt));
 				gradData.g = (gj.dot(Point2f(xJac*(const Vec3f&)d))/N.dot(d))*N;
-				BarycentricCoordinates(vertices[f0], vertices[f1], vertices[f2], CastFloat(X), gradData.xb);
+				gradData.xb = CorrectBarycentricCoordinates(BarycentricCoordinatesUV(vertices[f0], vertices[f1], vertices[f2], CastFloat(X)));
 			}
 		}
 		#ifdef MESHOPT_DEBUG
@@ -2003,74 +2018,6 @@ Point3f MeshRefine::umbrella_operator_gradient(const Point3f& U, const Point3f& 
 }
 
 
-// given a triangle defined by 3 vertex positions and a point,
-// compute the barycentric coordinates corresponding to that point
-template <typename T>
-void MeshRefine::BarycentricCoordinates(const TPoint3<T>& A, const TPoint3<T>& B, const TPoint3<T>& C, const TPoint3<T>& P, TPoint2<T>& b)
-{
-	#if 0
-	// the triangle normal
-	const TPoint3<T> normalVec((B-A).cross(C-A));
-	//const T normalLen(norm(normalVec));
-	// the area of the triangles
-	const T areaABC(normSq(normalVec)/*/(2*normalLen)*/);
-	ASSERT(areaABC != T(0));
-	const TPoint3<T> CP(C-P);
-	const T areaPBC(normalVec.dot((B-P).cross(CP))/*/(2*normalLen)*/);
-	const T areaPCA(normalVec.dot(CP.cross(A-P))/*/(2*normalLen)*/);
-	// the barycentric coordinates
-	b.x = areaPBC/areaABC; // alpha
-	b.y = areaPCA/areaABC; // beta
-	#else
-	// using the Cramer's rule for solving a linear system
-	const TPoint3<T> v0(A-C), v1(B-C), v2(P-C);
-	const T d00(normSq(v0));
-	const T d01(v0.dot(v1));
-	const T d11(normSq(v1));
-	const T d20(v2.dot(v0));
-	const T d21(v2.dot(v1));
-	const T denom(d00 * d11 - d01 * d01);
-	ASSERT(denom != T(0));
-	b.x = (d11 * d20 - d01 * d21) / denom; // alpha
-	b.y = (d00 * d21 - d01 * d20) / denom; // beta
-	#endif
-}
-// same as above, but store barycentric coordinates for each vertex,
-// and correct them in case of numerical errors
-// (the point is assumed to be inside the triangle)
-template <typename T>
-void MeshRefine::BarycentricCoordinates(const TPoint3<T>& A, const TPoint3<T>& B, const TPoint3<T>& C, const TPoint3<T>& P, TPoint3<T>& b)
-{
-	BarycentricCoordinates(A, B, C, P, (TPoint2<T>&)b);
-	if (b.x < T(0)) // alpha
-		b.x = T(0);
-	else if (b.x > T(1))
-		b.x = T(1);
-	if (b.y < T(0)) // beta
-		b.y = T(0);
-	else if (b.y > T(1))
-		b.y = T(1);
-	b.z = T(1) - b.x - b.y; // gamma
-	if (b.z < 0) {
-		// equally distribute the error
-		const T half(-b.z/T(2));
-		if (half > b.x) {
-			b.x = T(0);
-			b.y = T(1);
-		} else
-		if (half > b.y) {
-			b.x = T(1);
-			b.y = T(0);
-		} else {
-			b.x -= half;
-			b.y -= half;
-		}
-		b.z = T(0);
-	}
-	// check if the given point is inside the triangle
-	ASSERT((b.x >= 0) && (b.y >= 0) && (b.x+b.y <= 1) && ISEQUAL(b.x+b.y+b.z, T(1)));
-}
-
 // given a vertex position and a projection camera, compute the projected position and its derivative
 // returns the depth
 template <typename TP, typename TX, typename T>
@@ -2198,9 +2145,9 @@ protected:
 } // namespace ceres
 
 // optimize mesh using photo-consistency
-bool Scene::RefineMesh(float fDecimateMesh, unsigned nCloseHoles, unsigned nEnsureEdgeSize, unsigned nScales, float fScaleStep, float fRegularityWeight, unsigned nMaxFaceArea, float fConfidenceThreshold)
+bool Scene::RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsigned nMaxViews, float fDecimateMesh, unsigned nCloseHoles, unsigned nEnsureEdgeSize, unsigned nScales, float fScaleStep, float fRegularityWeight, unsigned nMaxFaceArea, float fConfidenceThreshold)
 {
-	MeshRefine refine(*this, fRegularityWeight);
+	MeshRefine refine(*this, fRegularityWeight, nResolutionLevel, nMinResolution, nMaxViews);
 
 	// run the mesh optimization on multiple scales (coarse to fine)
 	for (unsigned iter=0; iter<nScales; ++iter) {
@@ -2215,9 +2162,6 @@ bool Scene::RefineMesh(float fDecimateMesh, unsigned nCloseHoles, unsigned nEnsu
 		//const double step(4); // => 16 area
 		//refine.InitImages(scale, 0.12*step+0.2);
 		refine.InitImages(scale);
-		#ifndef MESHOPT_NUMERICAL
-		refine.InitImageGradients();
-		#endif
 
 		// extract array of triangles incident to each vertex
 		refine.ListVertexFaces();
@@ -2273,7 +2217,7 @@ bool Scene::RefineMesh(float fDecimateMesh, unsigned nCloseHoles, unsigned nEnsu
 			iters = FLOOR2INT(-fConfidenceThreshold);
 			gstep = (-fConfidenceThreshold-(float)iters)*10;
 		}
-		Eigen::Matrix<double,Eigen::Dynamic,3> gradients(refine.vertices.GetSize(),3);
+		Eigen::Matrix<double,Eigen::Dynamic,3,Eigen::RowMajor> gradients(refine.vertices.GetSize(),3);
 		for (int iter=0; iter<iters; ++iter) {
 			// evaluate residuals and gradients
 			double cost;
@@ -2285,9 +2229,8 @@ bool Scene::RefineMesh(float fDecimateMesh, unsigned nCloseHoles, unsigned nEnsu
 			// apply gradients
 			double gv(0);
 			FOREACH(v, refine.vertices) {
-				const Eigen::Vector3f delta((gradients.row(v)*gstep).cast<float>());
 				Vertex& vert = refine.vertices[v];
-				vert -= Vertex(delta);
+				vert -= Vertex((gradients.row(v)*gstep).cast<float>());
 				gv += gradients.row(v).norm();
 			}
 			DEBUG_EXTRA("% 2d. f: %g (%g)\tg: %g (%g - %g)\ts: %g", iter, cost, cost/refine.vertices.GetSize(), gradients.norm(), gradients.norm()/refine.vertices.GetSize(), gv/refine.vertices.GetSize(), gstep);
@@ -2303,5 +2246,5 @@ bool Scene::RefineMesh(float fDecimateMesh, unsigned nCloseHoles, unsigned nEnsu
 	}
 
 	return _OK;
-} // OptimizeMesh
+} // RefineMesh
 /*----------------------------------------------------------------*/

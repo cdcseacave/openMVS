@@ -1137,56 +1137,54 @@ void TRMatrixBase<TYPE>::SetFromQuaternion(const Quat& qu)
 template <typename TYPE>
 void  TRMatrixBase<TYPE>::SetFromOrthogonalBasis(const Vec& xxx, const Vec& yyy, const Vec& zzz)
 {
-  SetFromRowVectors( xxx.GetNormalized(),
-					 yyy.GetNormalized(),
-					 zzz.GetNormalized() );
+	SetFromRowVectors(normalized(xxx),
+					  normalized(yyy),
+					  normalized(zzz));
 }
 
 
 template <typename TYPE>
 void TRMatrixBase<TYPE>::SetFromHV(const Vec& xxx, const Vec& yyy)
 {
-  // normalize
-  const Vec x0(xxx.GetNormalized());
+	// normalize
+	const Vec x0(normalized(xxx));
 
-  // compute base z in rhs:
-  const Vec z0(cross(xxx,yyy).GetNormalized());
+	// compute base z in rhs:
+	const Vec z0(normalized(cross(xxx, yyy)));
 
-  // compute y base orthogonal in rhs
-  const Vec y0(cross(z0,x0).GetNormalized());
+	// compute y base orthogonal in rhs
+	const Vec y0(normalized(cross(z0, x0)));
 
-  (*this).SetFromColumnVectors(x0,  y0,  z0);
+	(*this).SetFromColumnVectors(x0,  y0,  z0);
 }
 
 
 template <typename TYPE>
-int TRMatrixBase<TYPE>::SetFromOriUpGL(const Vec& ori, const Vec& up)
+void TRMatrixBase<TYPE>::SetFromDirUpGL(const Vec& viewDir, const Vec& viewUp)
 {
-  //calculate orthogonal vectors
-  Vec right;
-  normalize(ori);
-  right = cross(ori,up);
-  normalize(right);
-  up = cross(right,ori);
-  normalize(up);
-  ori*=-1.0; // we need the right handed system
-  SetFromColumnVectors(right,up,ori);
-  return 0;
+	ASSERT(ISEQUAL(norm(viewDir), TYPE(1)));
+	ASSERT(ISEQUAL(norm(viewUp), TYPE(1)));
+	const Vec right(normalized(cross(viewDir, viewUp)));
+	const Vec up(normalized(cross(right, viewDir)));
+	const Vec forward(viewDir * TYPE(-1)); // convert to right handed system
+	SetFromColumnVectors(right, up, forward);
 }
 
+template <typename TYPE>
+void TRMatrixBase<TYPE>::SetFromDirUp(const Vec& viewDir, const Vec& viewUp)
+{
+	ASSERT(ISEQUAL(norm(viewDir), TYPE(1)));
+	ASSERT(ISEQUAL(norm(viewUp), TYPE(1)));
+	const Vec right(normalized(cross(viewDir, viewUp)));
+	const Vec up(normalized(cross(viewDir, right)));
+	const Vec& forward(viewDir);
+	SetFromColumnVectors(right, up, forward);
+}
 
 template <typename TYPE>
-int TRMatrixBase<TYPE>::SetFromOriUp(const Vec& ori, const Vec& up)
+void TRMatrixBase<TYPE>::LookAt(const Vec& from, const Vec& to, const Vec& up)
 {
-  //calculate orthogonal vectors
-  Vec right;
-  normalize(ori);
-  right = cross(ori,up);
-  normalize(right);
-  up = cross(ori,right);
-  normalize(up);
-  SetFromColumnVectors(right,up,ori);
-  return 0;
+	SetFromDirUp(normalized(to-from), up);
 }
 
 

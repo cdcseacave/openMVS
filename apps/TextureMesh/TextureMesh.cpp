@@ -1,5 +1,5 @@
 /*
- * RefineMesh.cpp
+ * TextureMesh.cpp
  *
  * Copyright (c) 2014-2015 FOXEL SA - http://foxel.ch
  * Please read <http://foxel.ch/license> for more information.
@@ -45,7 +45,7 @@ using namespace MVS;
 
 // D E F I N E S ///////////////////////////////////////////////////
 
-#define APPNAME _T("RefineMesh")
+#define APPNAME _T("TextureMesh")
 
 
 // S T R U C T S ///////////////////////////////////////////////////
@@ -56,15 +56,9 @@ String strOutputFileName;
 String strMeshFileName;
 unsigned nResolutionLevel;
 unsigned nMinResolution;
-unsigned nMaxViews;
-float fDecimateMesh;
-unsigned nCloseHoles;
-unsigned nEnsureEdgeSize;
-unsigned nScales;
-float fScaleStep;
-float fRegularityWeight;
-unsigned nMaxFaceArea;
-float fConfidenceThreshold;
+float fOutlierThreshold;
+bool bGlobalSeamLeveling;
+bool bLocalSeamLeveling;
 int nProcessPriority;
 unsigned nMaxThreads;
 String strConfigFileName;
@@ -104,14 +98,9 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		("output-file,o", boost::program_options::value<std::string>(&OPT::strOutputFileName), "the output filename for storing the mesh")
 		("resolution-level", boost::program_options::value<unsigned>(&OPT::nResolutionLevel)->default_value(0), "how many times to scale down the images before mesh refinement")
 		("min-resolution", boost::program_options::value<unsigned>(&OPT::nMinResolution)->default_value(640), "do not scale images lower than this resolution")
-		("max-views", boost::program_options::value<unsigned>(&OPT::nMaxViews)->default_value(8), "maximum number of neighbor images used to refine the mesh")
-		("decimate", boost::program_options::value<float>(&OPT::fDecimateMesh)->default_value(0.f), "the decimation factor in range [0..1] to be applied to the input surface before refinement (0 - auto, 1 - disabled)")
-		("close-holes", boost::program_options::value<unsigned>(&OPT::nCloseHoles)->default_value(15), "try to close small holes in the input surface (0 - disabled)")
-		("ensure-edge-size", boost::program_options::value<unsigned>(&OPT::nEnsureEdgeSize)->default_value(1), "ensure edge size and improve vertex valence of the input surface (0 - disabled)")
-		("scales", boost::program_options::value<unsigned>(&OPT::nScales)->default_value(3), "how many iterations to run mesh optimization on multi-scale images")
-		("scale-step", boost::program_options::value<float>(&OPT::fScaleStep)->default_value(0.7071f), "image scale factor used at each mesh optimization step")
-		("regularity-weight", boost::program_options::value<float>(&OPT::fRegularityWeight)->default_value(0.1f), "the scalar regularity weight to balance between photo-consistency and regularization terms during mesh optimization")
-		("max-face-area", boost::program_options::value<unsigned>(&OPT::nMaxFaceArea)->default_value(64), "maximum face area projected in any pair of images that is not subdivided (0 - disabled)")
+		("outlier-threshold", boost::program_options::value<float>(&OPT::fOutlierThreshold)->default_value(6e-2f), "threshold used to find and remove outlier face textures (0 - disabled)")
+		("global-seam-leveling", boost::program_options::value<bool>(&OPT::bGlobalSeamLeveling)->default_value(true), "generate uniform texture patches using global seam leveling")
+		("local-seam-leveling", boost::program_options::value<bool>(&OPT::bLocalSeamLeveling)->default_value(true), "generate uniform texture patch borders using local seam leveling")
 		;
 
 	// hidden options, allowed both on command line and
@@ -119,7 +108,6 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	boost::program_options::options_description hidden("Hidden options");
 	hidden.add_options()
 		("mesh-file", boost::program_options::value<std::string>(&OPT::strMeshFileName), "the mesh file name to refine (overwrite the existing mesh)")
-		("confidence-threshold", boost::program_options::value<float>(&OPT::fConfidenceThreshold)->default_value(-1.f), "threshold on the geometry confidence")
 		;
 
 	boost::program_options::options_description cmdline_options;
@@ -210,11 +198,11 @@ int main(int argc, LPCTSTR* argv)
 		return EXIT_FAILURE;
 
 	Scene scene;
-	// load and refine the coarse mesh
+	// load and texture the mesh
 	if (!scene.Load(MAKE_PATH_SAFE(OPT::strInputFileName)))
 		return EXIT_FAILURE;
 	if (!OPT::strMeshFileName.IsEmpty()) {
-		// load given coarse mesh
+		// load given mesh
 		scene.mesh.Load(MAKE_PATH_SAFE(OPT::strMeshFileName));
 	}
 	if (scene.mesh.IsEmpty()) {
@@ -222,16 +210,12 @@ int main(int argc, LPCTSTR* argv)
 		return EXIT_FAILURE;
 	}
 	TD_TIMER_START();
-	scene.RefineMesh(OPT::nResolutionLevel, OPT::nMinResolution, OPT::nMaxViews,
-					 OPT::fDecimateMesh, OPT::nCloseHoles, OPT::nEnsureEdgeSize,
-					 OPT::nScales, OPT::fScaleStep,
-					 OPT::fRegularityWeight, OPT::nMaxFaceArea,
-					 OPT::fConfidenceThreshold);
-	VERBOSE("Mesh refinement completed: %u vertices, %u faces (%s)", scene.mesh.vertices.GetSize(), scene.mesh.faces.GetSize(), TD_TIMER_GET_FMT().c_str());
+	scene.TextureMesh(OPT::nResolutionLevel, OPT::nMinResolution, OPT::fOutlierThreshold, OPT::bGlobalSeamLeveling, OPT::bLocalSeamLeveling);
+	VERBOSE("Mesh texturing completed: %u vertices, %u faces (%s)", scene.mesh.vertices.GetSize(), scene.mesh.faces.GetSize(), TD_TIMER_GET_FMT().c_str());
 
 	// save the final mesh
-	scene.mesh.Save(MAKE_PATH_SAFE(Util::getFullFileName(OPT::strOutputFileName) + _T("_refine.ply")));
-	scene.Save(MAKE_PATH_SAFE(Util::getFullFileName(OPT::strOutputFileName) + _T("_refine.mvs")));
+	scene.mesh.Save(MAKE_PATH_SAFE(Util::getFullFileName(OPT::strOutputFileName) + _T("_texture.ply")));
+	scene.Save(MAKE_PATH_SAFE(Util::getFullFileName(OPT::strOutputFileName) + _T("_texture.mvs")));
 
 	Finalize();
 	return EXIT_SUCCESS;

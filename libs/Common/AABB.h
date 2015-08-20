@@ -28,7 +28,7 @@ class TAABB
 public:
 	typedef TYPE Type;
 	typedef Eigen::Matrix<TYPE,DIMS,1> POINT;
-	typedef Eigen::Matrix<TYPE,DIMS,DIMS> MATRIX;
+	typedef Eigen::Matrix<TYPE,DIMS,DIMS,Eigen::RowMajor> MATRIX;
 	static const int numChildren = (2<<(DIMS-1));
 	static const int numCorners = (DIMS==1 ? 2 : (DIMS==2 ? 4 : 8)); // 2^DIMS
 	static const int numScalar = (2*DIMS);
@@ -38,11 +38,13 @@ public:
 	//---------------------------------------
 
 	inline TAABB() {}
+	inline TAABB(bool);
 	inline TAABB(const POINT& _pt);
 	inline TAABB(const POINT& _ptMin, const POINT& _ptMax);
 	inline TAABB(const POINT& center, const TYPE& radius);
 	inline TAABB(const POINT* pts, size_t n);
 
+	inline void Reset();
 	inline void Set(const POINT& _pt);
 	inline void Set(const POINT& _ptMin, const POINT& _ptMax);
 	inline void Set(const POINT& center, const TYPE& radius);
@@ -51,6 +53,7 @@ public:
 	inline void Enlarge(TYPE);
 	inline void EnlargePercent(TYPE);
 
+		   void InsertFull(const POINT&);
 		   void Insert(const POINT&);
 		   void Insert(const TAABB&);
 

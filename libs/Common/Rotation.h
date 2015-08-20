@@ -474,14 +474,17 @@ public:
 		@author grest 06/2003 */
 	void SetFromQuaternion(const Quat& q);
 
-	/** @brief Set rotation matrix from orientation and up vector
+	/** @brief Set rotation matrix from direction and up vector
 		@note This is openGL conform, similar to gluLookAt(), i.e. if
-		ori is (0,0,-1) and up is (0,1,0) the resulting matrix is identity.
+		direction is (0,0,-1) and up is (0,1,0) the resulting matrix is identity.
 		@author grest 12/2005 */
-	int SetFromOriUpGL(const Vec& ori, const Vec& up);
+	void SetFromDirUpGL(const Vec& viewDir, const Vec& viewUp);
 
-	/** @brief Set rotation matrix from orientation and up vector*/
-	int SetFromOriUp(const Vec& ori, const Vec& up);
+	/** @brief Set rotation matrix from direction and up vector */
+	void SetFromDirUp(const Vec& viewDir, const Vec& viewUp);
+
+	/** @brief Set rotation matrix from an eye point and a look-at target point and the up vector */
+	void LookAt(const Vec& from, const Vec& to, const Vec& up);
 
 	// get parametrized rotation (axis-angle) from the rotation matrix
 	inline void SetRotationAxisAngle(const Vec& rot);

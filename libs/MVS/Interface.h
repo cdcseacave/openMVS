@@ -34,7 +34,7 @@ struct Interface
 
 			#ifdef _USE_BOOST
 			template <class Archive>
-			void serialize(Archive& ar, const unsigned int version) {
+			void serialize(Archive& ar, const unsigned int /*version*/) {
 				ar & name;
 				ar & K;
 				ar & R;
@@ -51,7 +51,7 @@ struct Interface
 
 			#ifdef _USE_BOOST
 			template <class Archive>
-			void serialize(Archive& ar, const unsigned int version) {
+			void serialize(Archive& ar, const unsigned int /*version*/) {
 				ar & R;
 				ar & C;
 			}
@@ -65,7 +65,7 @@ struct Interface
 
 		#ifdef _USE_BOOST
 		template <class Archive>
-		void serialize(Archive& ar, const unsigned int version) {
+		void serialize(Archive& ar, const unsigned int /*version*/) {
 			ar & name;
 			ar & cameras;
 			ar & poses;
@@ -84,7 +84,7 @@ struct Interface
 
 		#ifdef _USE_BOOST
 		template <class Archive>
-		void serialize(Archive& ar, const unsigned int version) {
+		void serialize(Archive& ar, const unsigned int /*version*/) {
 			ar & name;
 			ar & platformID;
 			ar & cameraID;
@@ -105,7 +105,7 @@ struct Interface
 			#ifdef _USE_BOOST
 							   // implement BOOST serialization
 			template<class Archive>
-			void serialize(Archive& ar, const unsigned int version) {
+			void serialize(Archive& ar, const unsigned int /*version*/) {
 				ar & imageID;
 				ar & confidence;
 			}
@@ -118,7 +118,7 @@ struct Interface
 
 		#ifdef _USE_BOOST
 		template <class Archive>
-		void serialize(Archive& ar, const unsigned int version) {
+		void serialize(Archive& ar, const unsigned int /*version*/) {
 			ar & X;
 			ar & views;
 		}
@@ -133,7 +133,7 @@ struct Interface
 
 		#ifdef _USE_BOOST
 		template <class Archive>
-		void serialize(Archive& ar, const unsigned int version) {
+		void serialize(Archive& ar, const unsigned int /*version*/) {
 			ar & n;
 		}
 		#endif
@@ -147,7 +147,7 @@ struct Interface
 
 		#ifdef _USE_BOOST
 		template <class Archive>
-		void serialize(Archive& ar, const unsigned int version) {
+		void serialize(Archive& ar, const unsigned int /*version*/) {
 			ar & c;
 		}
 		#endif
@@ -163,7 +163,7 @@ struct Interface
 
 	#ifdef _USE_BOOST
 	template <class Archive>
-	void serialize(Archive& ar, const unsigned int version) {
+	void serialize(Archive& ar, const unsigned int /*version*/) {
 		ar & platforms;
 		ar & images;
 		ar & vertices;

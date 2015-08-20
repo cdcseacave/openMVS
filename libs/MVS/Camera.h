@@ -53,7 +53,12 @@ namespace MVS {
 // a camera is represented as:
 //   P = KR[I|-C]
 // where R and C represent the camera orientation and position relative to the world coordinate system;
-// C is expressed as the explicit camera center (as opposite to standard form which is negated and has the rotation of the camera already applied P = K[R|t])
+// R is expressed as the rotation from world to camera coordinates
+// C is expressed as the explicit camera center in world coordinates
+// (as opposite to standard form t which is negated and has the rotation of the camera already applied P = K[R|t]);
+// the world and camera coordinates system is right handed,
+// with x pointing right, y pointing down, and z pointing forward
+// (see: R. Hartley, "Multiple View Geometry," 2004, pp. 156.)
 class CameraIntern
 {
 public:
@@ -69,8 +74,10 @@ public:
 	inline void SetT(const CMatrix& T) { C = R.t()*(-T); }
 	inline CMatrix GetT() const { return R*(-C); }
 
-	// returns the camera's view direction
-	inline Point3 Direction() const { return R.row(2); }
+	// returns the camera's view forward direction
+	inline Point3 Direction() const { return R.row(2); /* equivalent to R.t() * Vec(0,0,1) */ }
+	// returns the camera's view up direction
+	inline Point3 UpDirection() const { return -R.row(1); /* equivalent to R.t() * Vec(0,-1,0) */ }
 
 	// returns the focal length
 	inline REAL GetFocalLength() const { return K(0,0); }
@@ -100,12 +107,14 @@ public:
 
 	// returns the scale used to normalize the intrinsics
 	static inline float GetNormalizationScale(uint32_t width, uint32_t height) {
+		ASSERT(width>0 && height>0);
 		return float(MAXF(width, height));
 	}
 
 	// create K with the supplied focal length and sensor center
 	template<typename TYPE, typename TYPER>
 	static inline TMatrix<TYPE,3,3> ComposeK(const TYPE& fX, const TYPE& fY, TYPER w=TYPER(1), TYPER h=TYPER(1)) {
+		ASSERT(w>0 && h>0);
 		TMatrix<TYPE,3,3> K(TMatrix<TYPE,3,3>::IDENTITY);
 		K(0,0) = fX;
 		K(1,1) = fY;
@@ -115,6 +124,7 @@ public:
 	}
 	template<typename TYPE, typename TYPER>
 	static inline TMatrix<TYPE,3,3> ComposeInvK(const TYPE& fX, const TYPE& fY, TYPER w=TYPER(1), TYPER h=TYPER(1)) {
+		ASSERT(w>0 && h>0);
 		TMatrix<TYPE,3,3> invK(TMatrix<TYPE,3,3>::IDENTITY);
 		invK(0,0) = TYPE(1)/fX;
 		invK(1,1) = TYPE(1)/fY;
@@ -126,6 +136,7 @@ public:
 	// returns full K and the inverse of K (assuming standard K format)
 	template<typename TYPE>
 	inline TMatrix<TYPE,3,3> GetK(uint32_t width, uint32_t height) const {
+		ASSERT(width>0 && height>0);
 		const float fScale(GetNormalizationScale(width, height));
 		if (K(0,2)==0 && K(1,2)==0)
 			return ComposeK(
@@ -140,6 +151,7 @@ public:
 	}
 	template<typename TYPE>
 	inline TMatrix<TYPE,3,3> GetInvK(uint32_t width, uint32_t height) const {
+		ASSERT(width>0 && height>0);
 		const float fScale(GetNormalizationScale(width, height));
 		if (K(0,2)==0 && K(1,2)==0)
 			return ComposeInvK(
@@ -156,7 +168,7 @@ public:
 	#ifdef _USE_BOOST
 	// implement BOOST serialization
 	template <class Archive>
-	void serialize(Archive& ar, const unsigned int version) {
+	void serialize(Archive& ar, const unsigned int /*version*/) {
 		ar & K;
 		ar & R;
 		ar & C;
@@ -314,11 +326,11 @@ public:
 	#ifdef _USE_BOOST
 	// implement BOOST serialization
 	template<class Archive>
-	void save(Archive& ar, const unsigned int version) const {
+	void save(Archive& ar, const unsigned int /*version*/) const {
 		ar & BOOST_SERIALIZATION_BASE_OBJECT_NVP(MVS::CameraIntern);
 	}
 	template<class Archive>
-	void load(Archive& ar, const unsigned int version) {
+	void load(Archive& ar, const unsigned int /*version*/) {
 		ar & BOOST_SERIALIZATION_BASE_OBJECT_NVP(MVS::CameraIntern);
 		ComposeP();
 	}

@@ -12,6 +12,13 @@
 // S T R U C T S ///////////////////////////////////////////////////
 
 template <typename TYPE, int DIMS>
+inline TAABB<TYPE,DIMS>::TAABB(bool)
+	:
+	ptMin(POINT::Constant(std::numeric_limits<TYPE>::max())),
+	ptMax(POINT::Constant(std::numeric_limits<TYPE>::min()))
+{
+}
+template <typename TYPE, int DIMS>
 inline TAABB<TYPE,DIMS>::TAABB(const POINT& _pt)
 	:
 	ptMin(_pt), ptMax(_pt)
@@ -37,6 +44,12 @@ inline TAABB<TYPE,DIMS>::TAABB(const POINT* pts, size_t n)
 /*----------------------------------------------------------------*/
 
 
+template <typename TYPE, int DIMS>
+inline void TAABB<TYPE,DIMS>::Reset()
+{
+	ptMin = POINT::Constant(std::numeric_limits<TYPE>::max());
+	ptMax = POINT::Constant(std::numeric_limits<TYPE>::min());
+}
 template <typename TYPE, int DIMS>
 inline void TAABB<TYPE,DIMS>::Set(const POINT& _pt)
 {
@@ -162,6 +175,29 @@ inline void TAABB<TYPE,DIMS>::Transform(const MATRIX& m)
 
 
 // Update the box such that it contains the given point.
+template <typename TYPE, int DIMS>
+void TAABB<TYPE,DIMS>::InsertFull(const POINT& pt)
+{
+	if (ptMin[0] > pt[0])
+		ptMin[0] = pt[0];
+	if (ptMax[0] < pt[0])
+		ptMax[0] = pt[0];
+
+	if (DIMS > 1) {
+	if (ptMin[1] > pt[1])
+		ptMin[1] = pt[1];
+	if (ptMax[1] < pt[1])
+		ptMax[1] = pt[1];
+	}
+
+	if (DIMS > 2) {
+	if (ptMin[2] > pt[2])
+		ptMin[2] = pt[2];
+	if (ptMax[2] < pt[2])
+		ptMax[2] = pt[2];
+	}
+}
+// same as above, but for the initialized case
 template <typename TYPE, int DIMS>
 void TAABB<TYPE,DIMS>::Insert(const POINT& pt)
 {

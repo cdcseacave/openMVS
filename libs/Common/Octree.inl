@@ -185,7 +185,8 @@ template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE, in
 void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE,SIZE,NOM,DENOM>::_Insert(CELL_TYPE& cell, const POINT_TYPE& center, TYPE radius, IDXARR_TYPE& indices)
 {
 	ASSERT(cell.IsLeaf());
-	ASSERT(cell.Leaf().size > OCTREE_CELLITEMS && (NOM == 0 || radius > OCTREE_CELLRADIUS));
+	ASSERT(indices.GetSize() > OCTREE_CELLITEMS);
+	ASSERT(NOM == 0 || radius > OCTREE_CELLRADIUS);
 	// divide cell
 	// transform this cell in node
 	cell.m_child = new CELL_TYPE[CELL_TYPE::numChildren];

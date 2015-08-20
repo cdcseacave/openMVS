@@ -29,6 +29,7 @@ if(EXISTS "${CERES_DIR}")
 
  	## Include the standard CMake script
 	include("${CERES_DIR}/CeresConfig.cmake")
+	set(CERES_LIBS ${CERES_LIBS} ${CERES_LIBRARIES})
 
 else()
 

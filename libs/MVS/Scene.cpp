@@ -360,7 +360,7 @@ bool Scene::SelectNeighborViews(uint32_t ID, IndexArr& points, unsigned nMinView
 	imageData.avgDepth = 0;
 	FOREACH(idx, pointcloud.points) {
 		const PointCloud::Point& point = pointcloud.points[idx];
-		if (point.views.FindFirst(ID) == NO_IDX)
+		if (point.views.FindFirst(ID) == PointCloud::ViewArr::NO_INDEX)
 			continue;
 		// store this point
 		if (point.views.GetSize() >= nMinPointViews)
@@ -414,8 +414,8 @@ bool Scene::SelectNeighborViews(uint32_t ID, IndexArr& points, unsigned nMinView
 		ASSERT(pointsA.IsEmpty() && pointsB.IsEmpty());
 		FOREACHPTR(pIdx, points) {
 			const PointCloud::Point& point = pointcloud.points[*pIdx];
-			ASSERT(point.views.FindFirst(ID) != NO_IDX);
-			if (point.views.FindFirst(IDB) == NO_IDX)
+			ASSERT(point.views.FindFirst(ID) != PointCloud::ViewArr::NO_INDEX);
+			if (point.views.FindFirst(IDB) == PointCloud::ViewArr::NO_INDEX)
 				continue;
 			Point2f& ptA = pointsA.AddConstruct(imageData.camera.ProjectPointP(point.X));
 			Point2f& ptB = pointsB.AddConstruct(imageDataB.camera.ProjectPointP(point.X));

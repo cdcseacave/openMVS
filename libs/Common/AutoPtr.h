@@ -151,12 +151,12 @@ protected:
 	// implement BOOST serialization
 	friend class boost::serialization::access;
 	template<class Archive>
-	void save(Archive& ar, const unsigned int version) const
+	void save(Archive& ar, const unsigned int /*version*/) const
 	{
 		ar & m_pointer;
 	}
 	template<class Archive>
-	void load(Archive& ar, const unsigned int version)
+	void load(Archive& ar, const unsigned int /*version*/)
 	{
 		TYPE_PTR newPointer;
 		ar & newPointer;
@@ -274,12 +274,12 @@ protected:
 	// implement BOOST serialization
 	friend class boost::serialization::access;
 	template<class Archive>
-	void save(Archive& ar, const unsigned int version) const
+	void save(Archive& ar, const unsigned int /*version*/) const
 	{
 		ar & m_pointer;
 	}
 	template<class Archive>
-	void load(Archive& ar, const unsigned int version)
+	void load(Archive& ar, const unsigned int /*version*/)
 	{
 		TYPE_PTR newPointer;
 		ar & newPointer;

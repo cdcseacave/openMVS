@@ -68,10 +68,15 @@
 #define CLISTDEFIDX(TYPE,IDXTYPE) SEACAVE::cList< TYPE, const TYPE&, 1, 16, IDXTYPE >
 #define CLISTDEF0IDX(TYPE,IDXTYPE) SEACAVE::cList< TYPE, const TYPE&, 0, 16, IDXTYPE >
 
+#define DECLARE_NO_INDEX(...) ((__VA_ARGS__)-1)
+
 
 namespace SEACAVE {
 
 // S T R U C T S ///////////////////////////////////////////////////
+
+typedef size_t IDX;
+#define NO_IDX DECLARE_NO_INDEX(IDX)
 
 /**************************************************************************************
  * List template
@@ -88,9 +93,6 @@ namespace SEACAVE {
  *   operator == is also needed if argument is not ARG_TYPE)
  **************************************************************************************/
 
-typedef size_t IDX;
-enum { NO_IDX = ((IDX)-1) };
-
 template <
 	typename TYPE,
 	typename ARG_TYPE=const TYPE&,
@@ -103,7 +105,6 @@ public:
 	typedef TYPE Type;
 	typedef ARG_TYPE ArgType;
 	typedef IDX_TYPE IDX;
-	enum { NO_INDEX = ((IDX)-1) };
 	typedef int (STCALL *TFncCompare)(const void* elem, const void* key); //returns 0 if equal, otherwise <0 or >0 respectively
 	typedef bool (STCALL *TFncCompareBool)(ARG_TYPE elem, ARG_TYPE key); //returns true if the two elements are strict in weak ordering
 
@@ -1224,18 +1225,21 @@ protected:
 	IDX		vectorSize;
 	TYPE*	vector;
 
+public:
+	static const IDX NO_INDEX;
+
 #ifdef _USE_BOOST
 protected:
 	// implement BOOST serialization
 	friend class boost::serialization::access;
 	template<class Archive>
-	void save(Archive& ar, const unsigned int version) const
+	void save(Archive& ar, const unsigned int /*version*/) const
 	{
 		ar & size;
 		ar & boost::serialization::make_array(vector, size);
 	}
 	template<class Archive>
-	void load(Archive& ar, const unsigned int version)
+	void load(Archive& ar, const unsigned int /*version*/)
 	{
 		IDX newSize;
 		ar & newSize;
@@ -1245,6 +1249,11 @@ protected:
 	BOOST_SERIALIZATION_SPLIT_MEMBER()
 #endif
 };
+template <typename TYPE, typename ARG_TYPE, int useConstruct, int grow, typename IDX_TYPE>
+const typename cList<TYPE,ARG_TYPE,useConstruct,grow,IDX_TYPE>::IDX
+cList<TYPE,ARG_TYPE,useConstruct,grow,IDX_TYPE>::NO_INDEX(
+	DECLARE_NO_INDEX(typename cList<TYPE,ARG_TYPE,useConstruct,grow,IDX_TYPE>::IDX)
+);
 /*----------------------------------------------------------------*/
 
 
@@ -1252,6 +1261,7 @@ template<class VECTOR>
 class cList2vector: public VECTOR {
 public:
 	typedef VECTOR Vector;
+	typedef typename VECTOR::IDX IDX;
 	typedef typename VECTOR::Type Type;
 	typedef typename VECTOR::ArgType ArgType;
 	typedef Type value_type;
@@ -1284,6 +1294,13 @@ public:
 	inline void swap(VECTOR& list) { VECTOR::Swap(list); }
 };
 #define VECTORINTERFACE(CLIST, var) ((const cList2vector<CLIST>&)(var))
+/*----------------------------------------------------------------*/
+
+
+template <typename IDX_TYPE>
+inline bool ValidIDX(const IDX_TYPE& idx) {
+	return (idx != DECLARE_NO_INDEX(IDX_TYPE));
+}
 /*----------------------------------------------------------------*/
 
 
