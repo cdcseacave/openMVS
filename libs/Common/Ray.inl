@@ -57,7 +57,8 @@ inline TYPE TRay<TYPE,DIMS>::SetFromPointsLen(const POINT& pt0, const POINT& pt1
 template <typename TYPE, int DIMS>
 inline void TRay<TYPE,DIMS>::DeTransform(const MATRIX& _m)
 {
-	MATRIX m=_m;
+	COMPILE_TIME_ASSERT(DIMS == 3);
+	MATRIX m(_m);
 
 	// invert translation
 	typedef Eigen::Matrix<TYPE,4,1> VECTOR4;

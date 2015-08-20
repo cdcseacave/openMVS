@@ -2217,7 +2217,7 @@ bool Scene::RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsig
 			iters = FLOOR2INT(-fConfidenceThreshold);
 			gstep = (-fConfidenceThreshold-(float)iters)*10;
 		}
-		Eigen::Matrix<double,Eigen::Dynamic,3> gradients(refine.vertices.GetSize(),3);
+		Eigen::Matrix<double,Eigen::Dynamic,3,Eigen::RowMajor> gradients(refine.vertices.GetSize(),3);
 		for (int iter=0; iter<iters; ++iter) {
 			// evaluate residuals and gradients
 			double cost;
@@ -2229,9 +2229,8 @@ bool Scene::RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsig
 			// apply gradients
 			double gv(0);
 			FOREACH(v, refine.vertices) {
-				const Eigen::Vector3f delta((gradients.row(v)*gstep).cast<float>());
 				Vertex& vert = refine.vertices[v];
-				vert -= Vertex(delta);
+				vert -= Vertex((gradients.row(v)*gstep).cast<float>());
 				gv += gradients.row(v).norm();
 			}
 			DEBUG_EXTRA("% 2d. f: %g (%g)\tg: %g (%g - %g)\ts: %g", iter, cost, cost/refine.vertices.GetSize(), gradients.norm(), gradients.norm()/refine.vertices.GetSize(), gv/refine.vertices.GetSize(), gstep);

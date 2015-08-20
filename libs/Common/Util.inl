@@ -80,8 +80,8 @@ inline bool IsRotationMatrix(const TMatrix<TYPE,3,3>& R) {
 	ASSERT(sizeof(TMatrix<TYPE,3,3>) == sizeof(TRMatrixBase<TYPE>));
 	return ((const TRMatrixBase<TYPE>&)R).IsValid();
 } // IsRotationMatrix
-template<typename TYPE>
-inline bool IsRotationMatrix(const Eigen::Matrix<TYPE,3,3>& R) {
+template<typename TYPE, int O>
+inline bool IsRotationMatrix(const Eigen::Matrix<TYPE,3,3,O>& R) {
 	// the trace should be three and the determinant should be one
 	return (ISEQUAL(R.determinant(), TYPE(1)) && ISEQUAL((R*R.transpose()).trace(), TYPE(3)));
 } // IsRotationMatrix
@@ -1096,17 +1096,16 @@ inline void ExampleKDE() {
 //  1 is best (zero variance orthogonally to the fitting line)
 //  0 is worst (isotropic case, returns a plane with default direction)
 template <typename TYPE>
-TYPE FitPlane(const TPoint3<TYPE>* points, size_t size, TPlane<TYPE>& plane)
-{
+TYPE FitPlane(const TPoint3<TYPE>* points, size_t size, TPlane<TYPE>& plane) {
 	// compute a point on the plane, which is shown to be the centroid of the points
-	const Eigen::Map< const Eigen::Matrix<TYPE,Eigen::Dynamic,3> > vPoints((const TYPE*)points, size, 3);
+	const Eigen::Map< const Eigen::Matrix<TYPE,Eigen::Dynamic,3,Eigen::RowMajor> > vPoints((const TYPE*)points, size, 3);
 	const TPoint3<TYPE> c(vPoints.colwise().mean());
 
 	// assemble covariance matrix; matrix numbering:
 	// 0          
 	// 1 2
 	// 3 4 5          
-	Eigen::Matrix<TYPE,3,3> A(Eigen::Matrix<TYPE,3,3>::Zero());
+	Eigen::Matrix<TYPE,3,3,Eigen::RowMajor> A(Eigen::Matrix<TYPE,3,3,Eigen::RowMajor>::Zero());
 	FOREACHRAWPTR(pPt, points, size) {
 		const TPoint3<TYPE> X(*pPt - c);
 		A(0,0) += X.x*X.x;
@@ -1118,7 +1117,7 @@ TYPE FitPlane(const TPoint3<TYPE>* points, size_t size, TPlane<TYPE>& plane)
 	}
 
 	// the plane normal is simply the eigenvector corresponding to least eigenvalue
-	const Eigen::SelfAdjointEigenSolver< Eigen::Matrix<TYPE,3,3> > es(A);
+	const Eigen::SelfAdjointEigenSolver< Eigen::Matrix<TYPE,3,3,Eigen::RowMajor> > es(A);
 	ASSERT(ISEQUAL(es.eigenvectors().col(0).norm(), TYPE(1)));
 	plane.Set(es.eigenvectors().col(0), c);
 	const TYPE* const vals(es.eigenvalues().data());

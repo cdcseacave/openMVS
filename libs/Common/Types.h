@@ -102,7 +102,6 @@ namespace boost { void throw_exception(std::exception const&); }
 
 #define _USE_EIGEN
 #ifdef _USE_EIGEN
-#define EIGEN_DEFAULT_TO_ROW_MAJOR
 #include <Eigen/Core>
 #include <Eigen/Dense>
 #include <Eigen/Sparse>
@@ -1437,7 +1436,7 @@ public:
 	typedef cv::Vec<TYPE,m> Vec;
 	#ifdef _USE_EIGEN
 	EIGEN_MAKE_ALIGNED_OPERATOR_NEW_IF_VECTORIZABLE_FIXED_SIZE(TYPE,m*n)
-	typedef Eigen::Matrix<TYPE,m,n> EMat;
+	typedef Eigen::Matrix<TYPE,m,n,(n>1?Eigen::RowMajor:Eigen::Default)> EMat;
 	typedef Eigen::Map<EMat> EMatMap;
 	#endif
 
@@ -1512,7 +1511,7 @@ public:
 	typedef cv::Mat_<TYPE> Base;
 	typedef cv::Size Size;
 	#ifdef _USE_EIGEN
-	typedef Eigen::Matrix<TYPE,Eigen::Dynamic,Eigen::Dynamic> EMat;
+	typedef Eigen::Matrix<TYPE,Eigen::Dynamic,Eigen::Dynamic,Eigen::RowMajor> EMat;
 	typedef Eigen::Map<EMat> EMatMap;
 	#endif
 
@@ -2072,8 +2071,8 @@ public:
 	template <typename T, typename PARSER>
 	static void RasterizeTriangleDepth(TPoint3<T> p1, TPoint3<T> p2, TPoint3<T> p3, PARSER& parser);
 
-	typedef void (STCALL *FncDrawPoint) (const ImageRef&, void*);
-	static void DrawLine(const ImageRef& x1, const ImageRef& x2, FncDrawPoint fncDrawPoint, void* pData=NULL);
+	template <typename T, typename PARSER>
+	static void DrawLine(const TPoint2<T>& p1, const TPoint2<T>& p2, PARSER& parser);
 
 	typedef void (STCALL *FncDrawPointAntialias) (const ImageRef&, const ImageRef&, float, float, void*);
 	static bool DrawLineAntialias(Point2f x1, Point2f x2, FncDrawPointAntialias fncDrawPoint, void* pData=NULL);
@@ -2277,18 +2276,32 @@ struct TAccumulator {
 		value += v*w;
 		weight += w;
 	}
-	inline void Add(const TAccumulator& accum) {
+	inline TAccumulator& operator +=(const TAccumulator& accum) {
 		value += accum.value;
 		weight += accum.weight;
+		return *this;
+	}
+	inline TAccumulator operator +(const TAccumulator& accum) const {
+		return TAccumulator(
+			value + accum.value,
+			weight + accum.weight
+		);
 	}
 	// subtracts the given weighted value to the internal value
 	inline void Sub(const Type& v, const WeightType& w) {
 		value -= v*w;
 		weight -= w;
 	}
-	inline void Sub(const TAccumulator& accum) {
+	inline TAccumulator& operator -=(const TAccumulator& accum) {
 		value -= accum.value;
 		weight -= accum.weight;
+		return *this;
+	}
+	inline TAccumulator operator -(const TAccumulator& accum) const {
+		return TAccumulator(
+			value - accum.value,
+			weight - accum.weight
+		);
 	}
 	// returns the normalized version of the internal value
 	inline AccumType NormalizedFull() const {
@@ -2492,24 +2505,23 @@ namespace Eigen {
 /// finite rotation vector, i.e. a three-dimensional vector whose direction is the axis of rotation
 /// and whose length is the angle of rotation in radians. Exponentiating this vector gives the matrix,
 /// and the logarithm of the matrix gives this vector.
-/// @ingroup gTransforms
 template <typename Precision>
 class SO3
 {
 public:
 	friend std::istream& operator>>(std::istream& is, SO3& rhs);
 
-	typedef Matrix<Precision,3,3> Mat3;
+	typedef Matrix<Precision,3,3,Eigen::RowMajor> Mat3;
 	typedef Matrix<Precision,3,1> Vec3;
 
 	/// Default constructor. Initializes the matrix to the identity (no rotation)
-	SO3() : my_matrix(Mat3::Identity()) {}
-
-	/// Construct from the axis of rotation (and angle given by the magnitude).
-	SO3(const Vec3& v) { *this = exp(v); }
+	inline SO3() : my_matrix(Mat3::Identity()) {}
 
 	/// Construct from a rotation matrix.
-	SO3(const Mat3& rhs) { *this = rhs; }
+	inline SO3(const Mat3& rhs) : my_matrix(rhs) {}
+
+	/// Construct from the axis of rotation (and angle given by the magnitude).
+	inline SO3(const Vec3& v) : my_matrix(exp(v)) {}
 
 	/// creates an SO3 as a rotation that takes Vector a into the direction of Vector b
 	/// with the rotation axis along a ^ b. If |a ^ b| == 0, it creates the identity rotation.
@@ -2540,7 +2552,7 @@ public:
 
 	/// Assignment operator from a general matrix. This also calls coerce()
 	/// to make sure that the matrix is a valid rotation matrix.
-	SO3& operator=(const Mat3& rhs) {
+	inline SO3& operator=(const Mat3& rhs) {
 		my_matrix = rhs;
 		coerce();
 		return *this;
@@ -2563,7 +2575,7 @@ public:
 
 	/// Exponentiate a vector in the Lie algebra to generate a new SO3.
 	/// See the Detailed Description for details of this vector.
-	inline static SO3 exp(const Vec3& vect);
+	inline Mat3 exp(const Vec3& vect) const;
 
 	/// Take the logarithm of the matrix, generating the corresponding vector in the Lie Algebra.
 	/// See the Detailed Description for details of this vector.
@@ -2571,20 +2583,20 @@ public:
 
 	/// Right-multiply by another rotation matrix
 	template <typename P>
-	SO3& operator *=(const SO3<P>& rhs) {
+	inline SO3& operator *=(const SO3<P>& rhs) {
 		*this = *this * rhs;
 		return *this;
 	}
 
 	/// Right-multiply by another rotation matrix
-	SO3 operator *(const SO3& rhs) const { return SO3(*this, rhs); }
+	inline SO3 operator *(const SO3& rhs) const { return SO3(*this, rhs); }
 
 	/// Returns the SO3 as a Matrix<3>
-	inline const Mat3 & get_matrix() const { return my_matrix; }
+	inline const Mat3& get_matrix() const { return my_matrix; }
 
 	/// Returns the i-th generator.  The generators of a Lie group are the basis
 	/// for the space of the Lie algebra.  For %SO3, the generators are three
-	/// \f$3\times3\f$ matrices representing the three possible (linearised)
+	/// \f$3\times3\f$ matrices representing the three possible (linearized)
 	/// rotations.
 	inline static Mat3 generator(int i) {
 		Mat3 result(Mat3::Zero());
@@ -2612,63 +2624,59 @@ private:
 
 
 /// Class to represent a two-dimensional rotation matrix. Two-dimensional rotation
-/// matrices are members of the Special Orthogonal Lie group SO2. This group can be parameterized with
-/// one number (the rotation angle).
-/// @ingroup gTransforms
+/// matrices are members of the Special Orthogonal Lie group SO2. This group can be parameterized
+/// with one number (the rotation angle).
 template<typename Precision>
 class SO2
 {
 public:
 	friend std::istream& operator>>(std::istream&, SO2&);
 
-	typedef Matrix<Precision,2,2> Mat2;
+	typedef Matrix<Precision,2,2,Eigen::RowMajor> Mat2;
 
 	/// Default constructor. Initializes the matrix to the identity (no rotation)
-	SO2() : my_matrix(Mat2::Identity()) {} 
+	inline SO2() : my_matrix(Mat2::Identity()) {}
 
 	/// Construct from a rotation matrix.
-	SO2(const Mat2& rhs) {  
-		*this = rhs; 
-		coerce();
-	}
+	inline SO2(const Mat2& rhs) : my_matrix(rhs) {}
 
 	/// Construct from an angle.
-	SO2(const Precision l) { *this = exp(l); }
+	inline SO2(const Precision l) : my_matrix(exp(l)) {}
 
 	/// Assigment operator from a general matrix. This also calls coerce()
 	/// to make sure that the matrix is a valid rotation matrix.
-	SO2& operator=(const Mat2& rhs) {
+	inline SO2& operator=(const Mat2& rhs) {
 		my_matrix = rhs;
 		coerce();
 		return *this;
 	}
 
 	/// Modifies the matrix to make sure it is a valid rotation matrix.
-	void coerce() {
+	inline void coerce() {
 		my_matrix.row(0).normalize();
 		my_matrix.row(1) = (my_matrix.row(1) - my_matrix.row(0) * (my_matrix.row(0).dot(my_matrix.row(1)))).normalized();
 	}
 
 	/// Exponentiate an angle in the Lie algebra to generate a new SO2.
-	inline static SO2 exp(const Precision& d);
+	inline Mat2 exp(const Precision& d) const;
 
 	/// extracts the rotation angle from the SO2
-	Precision ln() const;
+	inline Precision ln() const;
 
 	/// Self right-multiply by another rotation matrix
-	SO2& operator *=(const SO2& rhs) {
-		my_matrix=my_matrix*rhs.get_matrix();
+	inline SO2& operator *=(const SO2& rhs) {
+		my_matrix = my_matrix*rhs.get_matrix();
 		return *this;
 	}
 
 	/// Right-multiply by another rotation matrix
-	SO2 operator *(const SO2& rhs) const { return SO2(*this, rhs); }
+	inline SO2 operator *(const SO2& rhs) const { return SO2(*this, rhs); }
 
 	/// Returns the SO2 as a Matrix<2>
-	const Mat2& get_matrix() const { return my_matrix; }
+	inline const Mat2& get_matrix() const { return my_matrix; }
 
 	/// returns generator matrix
-	static Mat2 generator() {
+	inline static Mat2 generator() {
 		Mat2 result;
 		result(0,0) = Precision(0); result(0,1) = Precision(-1);
 		result(1,0) = Precision(1); result(1,1) = Precision(0);

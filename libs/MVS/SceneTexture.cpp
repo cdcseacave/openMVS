@@ -56,6 +56,20 @@ using namespace MVS;
 #define TEXOPT_USE_OPENMP
 #endif
 
+// uncomment to use SparseLU for solving the linear systems
+// (should be faster, but not working on old Eigen)
+#if !defined(EIGEN_DEFAULT_TO_ROW_MAJOR) || EIGEN_WORLD_VERSION>3 || (EIGEN_WORLD_VERSION==3 && EIGEN_MAJOR_VERSION>2)
+#define TEXOPT_SOLVER_SPARSELU
+#endif
+
+// method used to try to detect outlier face views
+// (should enable more consistent textures, but it is not working)
+#define TEXOPT_FACEOUTLIER_NA 0
+#define TEXOPT_FACEOUTLIER_MEDIAN 1
+#define TEXOPT_FACEOUTLIER_GAUSS_DAMPING 2
+#define TEXOPT_FACEOUTLIER_GAUSS_CLAMPING 3
+#define TEXOPT_FACEOUTLIER TEXOPT_FACEOUTLIER_GAUSS_CLAMPING
+
 
 // S T R U C T S ///////////////////////////////////////////////////
 
@@ -111,6 +125,9 @@ struct MeshTexture {
 	struct FaceData {
 		VIndex idxView;// the view seeing this face
 		float quality; // how well the face is seen by this view
+		#if TEXOPT_FACEOUTLIER != TEXOPT_FACEOUTLIER_NA
+		Color color; // additionally store mean color (used to remove outliers)
+		#endif
 	};
 	typedef cList<FaceData,const FaceData&,0,8,uint32_t> FaceDataArr; // store information about one face seen from several views
 	typedef cList<FaceDataArr,const FaceDataArr&,2,1024,FIndex> FaceDataViewArr; // store data for all the faces of the mesh
@@ -262,6 +279,45 @@ struct MeshTexture {
 		}
 	};
 
+	// used to compute the coverage of a texture patch
+	struct RasterPatchCoverageData {
+		const TexCoord* tri;
+		Image8U& image;
+
+		inline RasterPatchCoverageData(Image8U& _image) : image(_image) {}
+		inline void operator()(const ImageRef& pt) {
+			ASSERT(image.isInside(pt));
+			image(pt) = interior;
+		}
+	};
+
+	// used to draw the average edge color of a texture patch
+	struct RasterPatchMeanEdgeData {
+		Image32F3& image;
+		Image8U& mask;
+		const Image32F3& image0;
+		const Image8U3& image1;
+		const TexCoord p0, p0Dir;
+		const TexCoord p1, p1Dir;
+		const float length;
+		const Sampler sampler;
+
+		inline RasterPatchMeanEdgeData(Image32F3& _image, Image8U& _mask, const Image32F3& _image0, const Image8U3& _image1,
+									   const TexCoord& _p0, const TexCoord& _p0Adj, const TexCoord& _p1, const TexCoord& _p1Adj)
+			: image(_image), mask(_mask), image0(_image0), image1(_image1), p0(_p0), p0Dir(_p0Adj-_p0), p1(_p1), p1Dir(_p1Adj-_p1), length((float)norm(p0Dir)) {}
+		inline void operator()(const ImageRef& pt) {
+			const float l((float)norm(TexCoord(pt)-p0)/length);
+			// compute mean color
+			const TexCoord samplePos0(p0 + p0Dir * l);
+			AccumColor accumColor(image0.sample<Sampler,Color>(sampler, samplePos0), 1.f);
+			const TexCoord samplePos1(p1 + p1Dir * l);
+			accumColor.Add(image1.sample<Sampler,Color>(sampler, samplePos1)/255.f, 1.f);
+			image(pt) = accumColor.Normalized();
+			// set mask edge also
+			mask(pt) = border;
+		}
+	};
+
 
 public:
 	MeshTexture(Scene& _scene, unsigned _nResolutionLevel=0, unsigned _nMinResolution=640);
@@ -271,15 +327,16 @@ public:
 
 	void ListVertexFaces();
 
-	void ListCameraFaces(FaceDataViewArr&);
+	void ListCameraFaces(FaceDataViewArr&, float fOutlierThreshold);
 
-	bool FaceOutlierDetection(FaceDataArr& faceDatas) const;
+	bool FaceOutlierDetection(FaceDataArr& faceDatas, float fOutlierThreshold) const;
 
-	void FaceViewSellection();
+	void FaceViewSellection(float fOutlierThreshold);
 
 	void CreateSeamVertices();
 	void GlobalSeamLeveling();
-	void GenerateTexture(bool bGlobalSeamLeveling);
+	void LocalSeamLeveling();
+	void GenerateTexture(bool bGlobalSeamLeveling, bool bLocalSeamLeveling);
 
 	template <typename PIXEL>
 	static inline PIXEL RGB2YCBCR(const PIXEL& v) {
@@ -319,6 +376,7 @@ public:
 	PairIdxArr seamEdges; // the (face-face) edges connecting different texture patches
 	Mesh::FaceIdxArr components; // for each face, stores the texture patch index to which belongs
 	IndexArr mapIdxPatch; // remap texture patch indices after invalid patches removal
+	SeamVertices seamVertices; // array of vertices on the border between two or more patches
 
 	// valid the entire time
 	Mesh::VertexFacesArr& vertexFaces; // for each vertex, the list of faces containing it
@@ -429,7 +487,7 @@ void MeshTexture::ListVertexFaces()
 }
 
 // extract array of faces viewed by each image
-void MeshTexture::ListCameraFaces(FaceDataViewArr& facesDatas)
+void MeshTexture::ListCameraFaces(FaceDataViewArr& facesDatas, float fOutlierThreshold)
 {
 	facesDatas.Resize(faces.GetSize());
 	typedef std::unordered_set<FIndex> CameraFaces;
@@ -458,6 +516,10 @@ void MeshTexture::ListCameraFaces(FaceDataViewArr& facesDatas)
 	#endif
 	FaceMap faceMap;
 	DepthMap depthMap;
+	#if TEXOPT_FACEOUTLIER != TEXOPT_FACEOUTLIER_NA
+	typedef CLISTDEF0IDX(uint32_t,FIndex) AreaArr;
+	AreaArr areas(faces.GetSize());
+	#endif
 	Point3 ptc[3]; Point2f pti[3];
 	FOREACH(idxView, images) {
 		const Image& imageData = images[idxView];
@@ -511,6 +573,9 @@ void MeshTexture::ListCameraFaces(FaceDataViewArr& facesDatas)
 		}
 		// compute the projection area of visible faces
 		const View& view = views[idxView];
+		#if TEXOPT_FACEOUTLIER != TEXOPT_FACEOUTLIER_NA
+		areas.Memset(0);
+		#endif
 		for (int j=0; j<faceMap.rows; ++j) {
 			for (int i=0; i<faceMap.cols; ++i) {
 				const FIndex& idxFace = faceMap(j,i);
@@ -518,32 +583,238 @@ void MeshTexture::ListCameraFaces(FaceDataViewArr& facesDatas)
 				if (idxFace == NO_ID)
 					continue;
 				FaceDataArr& faceDatas = facesDatas[idxFace];
+				#if TEXOPT_FACEOUTLIER != TEXOPT_FACEOUTLIER_NA
+				uint32_t& area = areas[idxFace];
+				if (area++ == 0) {
+				#else
 				if (faceDatas.IsEmpty() || faceDatas.Last().idxView != idxView) {
+				#endif
 					// create new face-data
 					FaceData& faceData = faceDatas.AddEmpty();
 					faceData.idxView = idxView;
 					faceData.quality = view.imageGradMag(j,i);
+					#if TEXOPT_FACEOUTLIER != TEXOPT_FACEOUTLIER_NA
+					faceData.color = imageData.image(j,i);
+					#endif
 				} else {
 					// update face-data
 					ASSERT(!faceDatas.IsEmpty());
 					FaceData& faceData = faceDatas.Last();
 					ASSERT(faceData.idxView == idxView);
 					faceData.quality += view.imageGradMag(j,i);
+					#if TEXOPT_FACEOUTLIER != TEXOPT_FACEOUTLIER_NA
+					faceData.color += Color(imageData.image(j,i));
+					#endif
 				}
 			}
 		}
+		#if TEXOPT_FACEOUTLIER != TEXOPT_FACEOUTLIER_NA
+		FOREACH(idxFace, areas) {
+			const uint32_t& area = areas[idxFace];
+			if (area > 0) {
+				Color& color = facesDatas[idxFace].Last().color;
+				color = RGB2YCBCR(Color(color * (1.f/(float)area)));
+			}
+		}
+		#endif
 	}
+
+	#if TEXOPT_FACEOUTLIER != TEXOPT_FACEOUTLIER_NA
+	if (fOutlierThreshold > 0) {
+		// try to detect outlier views for each face
+		// (views for which the face is occluded by a dynamic object in the scene, ex. pedestrians)
+		FOREACHPTR(pFaceDatas, facesDatas)
+			FaceOutlierDetection(*pFaceDatas, fOutlierThreshold);
+	}
+	#endif
 
 	// release image gradient magnitudes
 	views.Release();
 }
+
+#if TEXOPT_FACEOUTLIER == TEXOPT_FACEOUTLIER_MEDIAN
+
+// decrease the quality of / remove all views in which the face's projection
+// has a much different color than in the majority of views
+bool MeshTexture::FaceOutlierDetection(FaceDataArr& faceDatas, float thOutlier) const
+{
+	// consider as outlier if the absolute difference to the median is outside this threshold
+	if (thOutlier <= 0)
+		thOutlier = 0.15f*255.f;
+
+	// init colors array
+	if (faceDatas.GetSize() <= 3)
+		return false;
+	FloatArr channels[3];
+	for (int c=0; c<3; ++c)
+		channels[c].Resize(faceDatas.GetSize());
+	FOREACH(i, faceDatas) {
+		const Color& color = faceDatas[i].color;
+		for (int c=0; c<3; ++c)
+			channels[c][i] = color[c];
+	}
+
+	// find median
+	for (int c=0; c<3; ++c)
+		channels[c].Sort();
+	const unsigned idxMedian(faceDatas.GetSize() >> 1);
+	Color median;
+	for (int c=0; c<3; ++c)
+		median[c] = channels[c][idxMedian];
+
+	// abort if there are not at least 3 inliers
+	int nInliers(0);
+	BoolArr inliers(faceDatas.GetSize());
+	FOREACH(i, faceDatas) {
+		const Color& color = faceDatas[i].color;
+		for (int c=0; c<3; ++c) {
+			if (ABS(median[c]-color[c]) > thOutlier) {
+				inliers[i] = false;
+				goto CONTINUE_LOOP;
+			}
+		}
+		inliers[i] = true;
+		++nInliers;
+		CONTINUE_LOOP:;
+	}
+	if (nInliers == faceDatas.GetSize())
+		return true;
+	if (nInliers < 3)
+		return false;
+
+	// remove outliers
+	RFOREACH(i, faceDatas)
+		if (!inliers[i])
+			faceDatas.RemoveAt(i);
+	return true;
+}
+
+#else
+
+// A multi-variate normal distribution which is NOT normalized such that the integral is 1
+// - centered is the vector for which the function is to be evaluated with the mean subtracted [Nx1]
+// - X is the vector for which the function is to be evaluated [Nx1]
+// - mu is the mean around which the distribution is centered [Nx1]
+// - covarianceInv is the inverse of the covariance matrix [NxN]
+// return exp(-1/2 * (X-mu)^T * covariance_inv * (X-mu))
+template <typename T, int N>
+inline T MultiGaussUnnormalized(const Eigen::Matrix<T,N,1>& centered, const Eigen::Matrix<T,N,N>& covarianceInv) {
+	return EXP(T(-0.5) * T(centered.adjoint() * covarianceInv * centered));
+}
+template <typename T, int N>
+inline T MultiGaussUnnormalized(const Eigen::Matrix<T,N,1>& X, const Eigen::Matrix<T,N,1>& mu, const Eigen::Matrix<T,N,N>& covarianceInv) {
+	return MultiGaussUnnormalized<T,N>(X - mu, covarianceInv);
+}
+
+// decrease the quality of / remove all views in which the face's projection
+// has a much different color than in the majority of views
+bool MeshTexture::FaceOutlierDetection(FaceDataArr& faceDatas, float thOutlier) const
+{
+	// reject all views whose gauss value is below this threshold
+	if (thOutlier <= 0)
+		thOutlier = 6e-2f;
+
+	const float minCovariance(1e-3f); // if all covariances drop below this the outlier detection aborted
+
+	const unsigned maxIterations(10);
+	const unsigned minInliers(4);
+
+	// init colors array
+	if (faceDatas.GetSize() <= minInliers)
+		return false;
+	Eigen::Matrix3Xd colors(3, faceDatas.GetSize());
+	BoolArr inliers(faceDatas.GetSize());
+	FOREACH(i, faceDatas) {
+		colors.col(i) = ((const Color::EVec)faceDatas[i].color).cast<double>();
+		inliers[i] = true;
+	}
+
+	// perform outlier removal; abort if something goes wrong
+	// (number of inliers below threshold or can not invert the covariance)
+	Eigen::Vector3d mean;
+	Eigen::Matrix3d covariance;
+	Eigen::Matrix3d covarianceInv;
+	for (int iter = 0; iter < maxIterations; ++iter) {
+		// compute the mean color and color covariance only for inliers
+		mean = colors.rowwise().mean();
+		const Eigen::Matrix3Xd centered(colors.colwise() - mean);
+		covariance = (centered * centered.transpose()) / double(colors.cols() - 1);
+
+		// stop if all covariances gets very small
+		if (covariance.array().abs().maxCoeff() < minCovariance) {
+			// remove the outliers
+			RFOREACH(i, faceDatas)
+				if (!inliers[i])
+					faceDatas.RemoveAt(i);
+			return true;
+		}
+
+		// invert the covariance matrix
+		// (FullPivLU not the fastest, but gives feedback about numerical stability during inversion)
+		const Eigen::FullPivLU<Eigen::Matrix3d> lu(covariance);
+		if (!lu.isInvertible())
+			return false;
+		covarianceInv = lu.inverse();
+
+		// filter inliers
+		// (all views with a gauss value above the threshold)
+		bool bChanged(false);
+		size_t numInliers(0);
+		FOREACH(i, faceDatas) {
+			const Eigen::Vector3d color(((const Color::EVec)faceDatas[i].color).cast<double>());
+			const double gaussValue(MultiGaussUnnormalized<double,3>(color, mean, covarianceInv));
+			bool& inlier = inliers[i];
+			if (gaussValue > thOutlier) {
+				// set as inlier
+				colors.col(numInliers++) = color;
+				if (inlier != true) {
+					inlier = true;
+					bChanged = true;
+				}
+			} else {
+				// set as outlier
+				if (inlier != false) {
+					inlier = false;
+					bChanged = true;
+				}
+			}
+		}
+		if (numInliers == faceDatas.GetSize())
+			return true;
+		if (numInliers < minInliers)
+			return false;
+		if (!bChanged)
+			break;
+		colors.conservativeResize(3, numInliers);
+	}
+
+	#if TEXOPT_FACEOUTLIER == TEXOPT_FACEOUTLIER_GAUSS_DAMPING
+	// select the final inliers
+	const float factorOutlierRemoval(0.2f);
+	covarianceInv *= factorOutlierRemoval;
+	RFOREACH(i, faceDatas) {
+		const Eigen::Vector3d color(((const Color::EVec)faceDatas[i].color).cast<double>());
+		const double gaussValue(MultiGaussUnnormalized<double,3>(color, mean, covarianceInv));
+		ASSERT(gaussValue >= 0 && gaussValue <= 1);
+		faceDatas[i].quality *= gaussValue;
+	}
+	#endif
+	#if TEXOPT_FACEOUTLIER == TEXOPT_FACEOUTLIER_GAUSS_CLAMPING
+	// remove outliers
+	RFOREACH(i, faceDatas)
+		if (!inliers[i])
+			faceDatas.RemoveAt(i);
+	#endif
+	return true;
+}
+#endif
 
 // Potts model as smoothness function
 LBPInference::EnergyType STCALL SmoothnessPotts(LBPInference::NodeID, LBPInference::NodeID, LBPInference::LabelID l1, LBPInference::LabelID l2) {
 	return l1 == l2 && l1 != 0 && l2 != 0 ? LBPInference::EnergyType(0) : LBPInference::EnergyType(LBPInference::MaxEnergy);
 }
 
-void MeshTexture::FaceViewSellection()
+void MeshTexture::FaceViewSellection(float fOutlierThreshold)
 {
 	// extract array of triangles incident to each vertex
 	ListVertexFaces();
@@ -552,7 +823,7 @@ void MeshTexture::FaceViewSellection()
 	{
 		// list all views for each face
 		FaceDataViewArr facesDatas;
-		ListCameraFaces(facesDatas);
+		ListCameraFaces(facesDatas, fOutlierThreshold);
 
 		// create faces graph
 		typedef boost::adjacency_list<boost::vecS, boost::vecS, boost::undirectedS> Graph;
@@ -758,11 +1029,9 @@ void MeshTexture::FaceViewSellection()
 }
 
 
-void MeshTexture::GlobalSeamLeveling()
+// create seam vertices and edges
+void MeshTexture::CreateSeamVertices()
 {
-	const unsigned numPatches(texturePatches.GetSize()-1);
-
-	// create seam vertices and edges:
 	// each vertex will contain the list of patches it separates,
 	// except the patch containing invisible faces;
 	// each patch contains the list of edges belonging to that texture patch, starting from that vertex
@@ -770,7 +1039,7 @@ void MeshTexture::GlobalSeamLeveling()
 	VIndex vs[2];
 	uint32_t vs0[2], vs1[2];
 	std::unordered_map<VIndex, uint32_t> mapVertexSeam;
-	SeamVertices seamVertices;
+	const unsigned numPatches(texturePatches.GetSize()-1);
 	FOREACHPTR(pEdge, seamEdges) {
 		// store edge for the later seam optimization
 		ASSERT(pEdge->i < pEdge->j);
@@ -817,6 +1086,12 @@ void MeshTexture::GlobalSeamLeveling()
 			patch11.proj = faceTexcoords[pEdge->j*3+vs1[1]]+offset1;
 		}
 	}
+}
+
+void MeshTexture::GlobalSeamLeveling()
+{
+	ASSERT(!seamVertices.IsEmpty());
+	const unsigned numPatches(texturePatches.GetSize()-1);
 
 	// find the patch ID for each vertex
 	PatchIndices patchIndices(vertices.GetSize());
@@ -951,7 +1226,7 @@ void MeshTexture::GlobalSeamLeveling()
 	});
 
 	// globally solve for the correction colors
-	Eigen::MatrixX3f colorAdjustments(rowsX, 3);
+	Eigen::Matrix<float,Eigen::Dynamic,3,Eigen::RowMajor> colorAdjustments(rowsX, 3);
 	{
 		// init CG solver
 		Eigen::ConjugateGradient<SparseMat, Eigen::Lower> solver;
@@ -978,7 +1253,7 @@ void MeshTexture::GlobalSeamLeveling()
 
 	// adjust texture patches using the correction colors
 	#ifdef TEXOPT_USE_OPENMP
-	#pragma omp parallel for
+	#pragma omp parallel for schedule(dynamic)
 	for (int i=0; i<(int)numPatches; ++i) {
 	#else
 	for (unsigned i=0; i<numPatches; ++i) {
@@ -1018,14 +1293,413 @@ void MeshTexture::GlobalSeamLeveling()
 	}
 }
 
-void MeshTexture::GenerateTexture(bool bGlobalSeamLeveling)
+// set to one in order to dilate also on the diagonal of the border
+// (normally not needed)
+#define DILATE_EXTRA 0
+void MeshTexture::ProcessMask(Image8U& mask, int stripWidth)
+{
+	typedef Image8U::Type Type;
+
+	// dilate and erode around the border,
+	// in order to fill all gaps and remove outside pixels
+	// (due to imperfect overlay of the raster line border and raster faces)
+	#define DILATEDIR(rd,cd) { \
+		Type& vi = mask(r+(rd),c+(cd)); \
+		if (vi != border) \
+			vi = interior; \
+	}
+	const int HalfSize(1);
+	const int RowsEnd(mask.rows-HalfSize);
+	const int ColsEnd(mask.cols-HalfSize);
+	for (int r=HalfSize; r<RowsEnd; ++r) {
+		for (int c=HalfSize; c<ColsEnd; ++c) {
+			const Type v(mask(r,c));
+			if (v != border)
+				continue;
+			#if DILATE_EXTRA
+			for (int i=-HalfSize; i<=HalfSize; ++i) {
+				const int rw(r+i);
+				for (int j=-HalfSize; j<=HalfSize; ++j) {
+					const int cw(c+j);
+					Type& vi = mask(rw,cw);
+					if (vi != border)
+						vi = interior;
+				}
+			}
+			#else
+			DILATEDIR(-1, 0);
+			DILATEDIR(1, 0);
+			DILATEDIR(0, -1);
+			DILATEDIR(0, 1);
+			#endif
+		}
+	}
+	#undef DILATEDIR
+	#define ERODEDIR(rd,cd) { \
+		const int rl(r-(rd)), cl(c-(cd)), rr(r+(rd)), cr(c+(cd)); \
+		const Type vl(mask.isInside(ImageRef(cl,rl)) ? mask(rl,cl) : empty); \
+		const Type vr(mask.isInside(ImageRef(cr,rr)) ? mask(rr,cr) : empty); \
+		if ((vl == border && vr == empty) || (vr == border && vl == empty)) { \
+			v = empty; \
+			continue; \
+		} \
+	}
+	#if DILATE_EXTRA
+	for (int i=0; i<2; ++i)
+	#endif
+	for (int r=0; r<mask.rows; ++r) {
+		for (int c=0; c<mask.cols; ++c) {
+			Type& v = mask(r,c);
+			if (v != interior)
+				continue;
+			ERODEDIR(0, 1);
+			ERODEDIR(1, 0);
+			ERODEDIR(1, 1);
+			ERODEDIR(-1, 1);
+		}
+	}
+	#undef ERODEDIR
+
+	// mark all interior pixels with empty neighbors as border
+	for (int r=0; r<mask.rows; ++r) {
+		for (int c=0; c<mask.cols; ++c) {
+			Type& v = mask(r,c);
+			if (v != interior)
+				continue;
+			if (mask(r-1,c) == empty ||
+				mask(r,c-1) == empty ||
+				mask(r+1,c) == empty ||
+				mask(r,c+1) == empty)
+				v = border;
+		}
+	}
+
+	#if 0
+	// mark all interior pixels with border neighbors on two sides as border
+	{
+	Image8U orgMask;
+	mask.copyTo(orgMask);
+	for (int r=0; r<mask.rows; ++r) {
+		for (int c=0; c<mask.cols; ++c) {
+			Type& v = mask(r,c);
+			if (v != interior)
+				continue;
+			if ((orgMask(r+1,c+0) == border && orgMask(r+0,c+1) == border) ||
+				(orgMask(r+1,c+0) == border && orgMask(r-0,c-1) == border) ||
+				(orgMask(r-1,c-0) == border && orgMask(r+0,c+1) == border) ||
+				(orgMask(r-1,c-0) == border && orgMask(r-0,c-1) == border))
+				v = border;
+		}
+	}
+	}
+	#endif
+
+	// compute the set of valid pixels at the border of the texture patch
+	#define ISEMPTY(mask, x,y) (mask(y,x) == empty)
+	const int width(mask.width()), height(mask.height());
+	typedef std::unordered_set<ImageRef> PixelSet;
+	PixelSet borderPixels;
+	for (int y=0; y<height; ++y) {
+		for (int x=0; x<width; ++x) {
+			if (ISEMPTY(mask, x,y))
+				continue;
+			// valid border pixels need no invalid neighbors
+			if (x == 0 || x == width - 1 || y == 0 || y == height - 1) {
+				borderPixels.insert(ImageRef(x,y));
+				continue;
+			}
+			// check the direct neighborhood of all invalid pixels
+			for (int j=-1; j<=1; ++j) {
+				for (int i=-1; i<=1; ++i) {
+					// if the valid pixel has an invalid neighbor...
+					const int xn(x+i), yn(y+j);
+					if (ISINSIDE(xn, 0, width) &&
+						ISINSIDE(yn, 0, height) &&
+						ISEMPTY(mask, xn,yn)) {
+						// add the pixel to the set of valid border pixels
+						borderPixels.insert(ImageRef(x,y));
+						goto CONTINUELOOP;
+					}
+				}
+			}
+			CONTINUELOOP:;
+		}
+	}
+
+	// iteratively erode all border pixels
+	{
+	Image8U orgMask;
+	mask.copyTo(orgMask);
+	typedef std::vector<ImageRef> PixelVector;
+	for (int i=0; i<stripWidth; ++i) {
+		PixelVector emptyPixels(borderPixels.begin(), borderPixels.end());
+		borderPixels.clear();
+		// mark the new empty pixels as empty in the mask
+		for (PixelVector::const_iterator it=emptyPixels.cbegin(); it!=emptyPixels.cend(); ++it)
+			orgMask(*it) = empty;
+		// find the set of valid pixels at the border of the valid area
+		for (PixelVector::const_iterator it=emptyPixels.cbegin(); it!=emptyPixels.cend(); ++it) {
+			for (int j=-1; j<=1; j++) {
+				for (int i=-1; i<=1; i++) {
+					const int xn(it->x+i), yn(it->y+j);
+					if (ISINSIDE(xn, 0, width) &&
+						ISINSIDE(yn, 0, height) &&
+						!ISEMPTY(orgMask, xn, yn))
+						borderPixels.insert(ImageRef(xn,yn));
+				}
+			}
+		}
+	}
+	#undef ISEMPTY
+
+	// mark all remaining pixels empty in the mask
+	for (int y=0; y<height; ++y) {
+		for (int x=0; x<width; ++x) {
+			if (orgMask(y,x) != empty)
+				mask(y,x) = empty;
+		}
+	}
+	}
+
+	// mark all border pixels
+	for (PixelSet::const_iterator it=borderPixels.cbegin(); it!=borderPixels.cend(); ++it)
+		mask(*it) = border;
+
+	#if 0
+	// dilate border
+	{
+	Image8U orgMask;
+	mask.copyTo(orgMask);
+	for (int r=HalfSize; r<RowsEnd; ++r) {
+		for (int c=HalfSize; c<ColsEnd; ++c) {
+			const Type v(orgMask(r, c));
+			if (v != border)
+				continue;
+			for (int i=-HalfSize; i<=HalfSize; ++i) {
+				const int rw(r+i);
+				for (int j=-HalfSize; j<=HalfSize; ++j) {
+					const int cw(c+j);
+					Type& vi = mask(rw, cw);
+					if (vi == empty)
+						vi = border;
+				}
+			}
+		}
+	}
+	}
+	#endif
+}
+
+inline MeshTexture::Color ColorLaplacian(const Image32F3& img, int i) {
+	const int width(img.width());
+	return img(i-width) + img(i-1) + img(i+1) + img(i+width) - img(i)*4.f;
+}
+
+void MeshTexture::PoissonBlending(const Image32F3& src, Image32F3& dst, const Image8U& mask, float bias)
+{
+	ASSERT(src.width() == mask.width() && src.width() == dst.width());
+	ASSERT(src.height() == mask.height() && src.height() == dst.height());
+	ASSERT(src.channels() == 3 && dst.channels() == 3 && mask.channels() == 1);
+	ASSERT(src.type() == CV_32FC3 && dst.type() == CV_32FC3 && mask.type() == CV_8U);
+
+	#ifndef _RELEASE
+	// check the mask border has no pixels marked as interior
+	for (int x=0; x<mask.cols; ++x)
+		ASSERT(mask(0,x) != interior && mask(mask.rows-1,x) != interior);
+	for (int y=0; y<mask.rows; ++y)
+		ASSERT(mask(y,0) != interior && mask(y,mask.cols-1) != interior);
+	#endif
+
+	const int n(dst.area());
+	const int width(dst.width());
+	const int height(dst.height());
+
+	TImage<MatIdx> indices(dst.size());
+	indices.memset(0xff);
+	MatIdx nnz(0);
+	for (int i = 0; i < n; ++i)
+		if (mask(i) != empty)
+			indices(i) = nnz++;
+
+	Colors coeffB(nnz);
+	CLISTDEF0(MatEntry) coeffA(0, nnz);
+	for (int i = 0; i < n; ++i) {
+		switch (mask(i)) {
+		case border: {
+			const MatIdx idx(indices(i));
+			ASSERT(idx != -1);
+			coeffA.AddConstruct(idx, idx, 1.f);
+			coeffB[idx] = Color(dst(i));
+		} break;
+		case interior: {
+			const MatIdx idxUp(indices(i - width));
+			const MatIdx idxLeft(indices(i - 1));
+			const MatIdx idxCenter(indices(i));
+			const MatIdx idxRight(indices(i + 1));
+			const MatIdx idxDown(indices(i + width));
+			// all indices should be either border conditions or part of the optimization
+			ASSERT(idxUp != -1 && idxLeft != -1 && idxCenter != -1 && idxRight != -1 && idxDown != -1);
+			coeffA.AddConstruct(idxCenter, idxUp, 1.f);
+			coeffA.AddConstruct(idxCenter, idxLeft, 1.f);
+			coeffA.AddConstruct(idxCenter, idxCenter,-4.f);
+			coeffA.AddConstruct(idxCenter, idxRight, 1.f);
+			coeffA.AddConstruct(idxCenter, idxDown, 1.f);
+			// set target coefficient
+			coeffB[idxCenter] = (bias == 1.f ?
+								 ColorLaplacian(src,i) :
+								 ColorLaplacian(src,i)*bias + ColorLaplacian(dst,i)*(1.f-bias));
+		} break;
+		}
+	}
+
+	SparseMat A(nnz, nnz);
+	A.setFromTriplets(coeffA.Begin(), coeffA.End());
+	coeffA.Release();
+
+	#ifdef TEXOPT_SOLVER_SPARSELU
+	// use SparseLU factorization
+	// (faster, but not working if EIGEN_DEFAULT_TO_ROW_MAJOR is defined, bug inside Eigen)
+	const Eigen::SparseLU< SparseMat, Eigen::COLAMDOrdering<MatIdx> > solver(A);
+	#else
+	// use BiCGSTAB solver
+	const Eigen::BiCGSTAB< SparseMat, Eigen::IncompleteLUT<float> > solver(A);
+	#endif
+	ASSERT(solver.info() == Eigen::Success);
+	for (int channel=0; channel<3; ++channel) {
+		const Eigen::Map< Eigen::VectorXf, Eigen::Unaligned, Eigen::Stride<0,3> > b(coeffB.Begin()->ptr()+channel, nnz);
+		const Eigen::VectorXf x(solver.solve(b));
+		ASSERT(solver.info() == Eigen::Success);
+		for (int i = 0; i < n; ++i) {
+			const MatIdx index(indices(i));
+			if (index != -1)
+				dst(i)[channel] = x[index];
+		}
+	}
+}
+
+void MeshTexture::LocalSeamLeveling()
+{
+	ASSERT(!seamVertices.IsEmpty());
+	const unsigned numPatches(texturePatches.GetSize()-1);
+
+	// adjust texture patches locally, so that the border continues smoothly inside the patch
+	#ifdef TEXOPT_USE_OPENMP
+	#pragma omp parallel for schedule(dynamic)
+	for (int i=0; i<(int)numPatches; ++i) {
+	#else
+	for (unsigned i=0; i<numPatches; ++i) {
+	#endif
+		const uint32_t idxPatch((uint32_t)i);
+		TexturePatch& texturePatch = texturePatches[idxPatch];
+		// extract image
+		const Image8U3& image0(images[texturePatch.label].image);
+		Image32F3 image, imageOrg;
+		image0(texturePatch.rect).convertTo(image, CV_32FC3, 1.0/255.0);
+		image.copyTo(imageOrg);
+		// render patch coverage
+		Image8U mask(texturePatch.rect.size());
+		mask.memset(0);
+		RasterPatchCoverageData data(mask);
+		FOREACHPTR(pIdxFace, texturePatch.faces) {
+			const FIndex idxFace(*pIdxFace);
+			const Face& face = faces[idxFace];
+			data.tri = faceTexcoords.Begin()+idxFace*3;
+			ColorMap::RasterizeTriangle(data.tri[0], data.tri[1], data.tri[2], data);
+		}
+		// render the patch border meeting neighbor patches
+		const TexCoord offset(texturePatch.rect.tl());
+		FOREACHPTR(pSeamVertex, seamVertices) {
+			const SeamVertex& seamVertex0 = *pSeamVertex;
+			if (seamVertex0.patches.GetSize() < 2)
+				continue;
+			const uint32_t idxVertPatch0(seamVertex0.patches.Find(idxPatch));
+			if (idxVertPatch0 == SeamVertex::Patches::NO_INDEX)
+				continue;
+			const SeamVertex::Patch& patch0 = seamVertex0.patches[idxVertPatch0];
+			const TexCoord p0(patch0.proj-offset);
+			// for each edge of this vertex belonging to this patch...
+			FOREACHPTR(pEdge0, patch0.edges) {
+				// select the same edge leaving from the adjacent vertex
+				const SeamVertex& seamVertex1 = seamVertices[pEdge0->idxSeamVertex];
+				const uint32_t idxVertPatch0Adj(seamVertex1.patches.Find(idxPatch));
+				ASSERT(idxVertPatch0Adj != SeamVertex::Patches::NO_INDEX);
+				const SeamVertex::Patch& patch0Adj = seamVertex1.patches[idxVertPatch0Adj];
+				const TexCoord p0Adj(patch0Adj.proj-offset);
+				// find the other patch sharing the same edge (edge with same adjacent vertex)
+				FOREACH(idxVertPatch1, seamVertex0.patches) {
+					if (idxVertPatch1 == idxVertPatch0)
+						continue;
+					const SeamVertex::Patch& patch1 = seamVertex0.patches[idxVertPatch1];
+					const uint32_t idxEdge1(patch1.edges.Find(pEdge0->idxSeamVertex));
+					if (idxEdge1 == SeamVertex::Patch::Edges::NO_INDEX)
+						continue;
+					const TexCoord& p1(patch1.proj);
+					// select the same edge belonging to the second patch leaving from the adjacent vertex
+					const uint32_t idxVertPatch1Adj(seamVertex1.patches.Find(patch1.idxPatch));
+					ASSERT(idxVertPatch1Adj != SeamVertex::Patches::NO_INDEX);
+					const SeamVertex::Patch& patch1Adj = seamVertex1.patches[idxVertPatch1Adj];
+					const TexCoord& p1Adj(patch1Adj.proj);
+					// this is an edge separating two (valid) patches;
+					// draw it on this patch as the mean color of the two patches
+					const Image8U3& image1(images[texturePatches[patch1.idxPatch].label].image);
+					RasterPatchMeanEdgeData data(image, mask, imageOrg, image1, p0, p0Adj, p1, p1Adj);
+					Image32F3::DrawLine(p0, p0Adj, data);
+					// skip remaining patches,
+					// as a manifold edge is shared by maximum two face (one in each patch), which we found already
+					break;
+				}
+			}
+		}
+		// render the vertices at the patch border meeting neighbor patches
+		const Sampler sampler;
+		FOREACHPTR(pSeamVertex, seamVertices) {
+			const SeamVertex& seamVertex = *pSeamVertex;
+			if (seamVertex.patches.GetSize() < 2)
+				continue;
+			const uint32_t idxVertPatch(seamVertex.patches.Find(idxPatch));
+			if (idxVertPatch == SeamVertex::Patches::NO_INDEX)
+				continue;
+			AccumColor accumColor;
+			// for each patch...
+			FOREACHPTR(pPatch, seamVertex.patches) {
+				const SeamVertex::Patch& patch = *pPatch;
+				// add its view to the vertex mean color
+				const Image8U3& image(images[texturePatches[patch.idxPatch].label].image);
+				accumColor.Add(image.sample<Sampler,Color>(sampler, patch.proj)/255.f, 1.f);
+			}
+			const SeamVertex::Patch& thisPatch = seamVertex.patches[idxVertPatch];
+			const ImageRef pt(ROUND2INT(thisPatch.proj-offset));
+			image(pt) = accumColor.Normalized();
+			mask(pt) = border;
+		}
+		// make sure the border is continuous and
+		// keep only the exterior tripe of the given size
+		ProcessMask(mask, 20);
+		// compute texture patch blending
+		PoissonBlending(imageOrg, image, mask);
+		// apply color correction to the patch image
+		cv::Mat imagePatch(images[texturePatch.label].image(texturePatch.rect));
+		for (int r=0; r<image.rows; ++r) {
+			for (int c=0; c<image.cols; ++c) {
+				if (mask(r,c) == empty)
+					continue;
+				const Color& a = image(r,c);
+				Pixel8U& v = imagePatch.at<Pixel8U>(r,c);
+				for (int i=0; i<3; ++i)
+					v[i] = (uint8_t)CLAMP(ROUND2INT(a[i]*255.f), 0, 255);
+			}
+		}
+	}
+}
+
+void MeshTexture::GenerateTexture(bool bGlobalSeamLeveling, bool bLocalSeamLeveling)
 {
 	// project patches in the corresponding view and compute texture-coordinates and bounding-box
 	const int border(2);
 	faceTexcoords.Resize(faces.GetSize()*3);
 	#ifdef TEXOPT_USE_OPENMP
 	const unsigned numPatches(texturePatches.GetSize()-1);
-	#pragma omp parallel for
+	#pragma omp parallel for schedule(dynamic)
 	for (int_t i=0; i<(int_t)numPatches; ++i) {
 		TexturePatch& texturePatch = texturePatches[(uint32_t)i];
 	#else
@@ -1076,8 +1750,18 @@ void MeshTexture::GenerateTexture(bool bGlobalSeamLeveling)
 	}
 
 	// perform seam leveling
-	if (bGlobalSeamLeveling)
-		GlobalSeamLeveling();
+	if (texturePatches.GetSize() > 2 && (bGlobalSeamLeveling || bLocalSeamLeveling)) {
+		// create seam vertices and edges
+		CreateSeamVertices();
+
+		// perform global seam leveling
+		if (bGlobalSeamLeveling)
+			GlobalSeamLeveling();
+
+		// perform local seam leveling
+		if (bLocalSeamLeveling)
+			LocalSeamLeveling();
+	}
 
 	// merge texture patches with overlapping rectangles
 	for (unsigned i=0; i<texturePatches.GetSize()-2; ++i) {
@@ -1125,7 +1809,7 @@ void MeshTexture::GenerateTexture(bool bGlobalSeamLeveling)
 		textureDiffuse.create(textureSize, textureSize);
 		textureDiffuse.setTo(cv::Scalar(39, 127, 255));
 		#ifdef TEXOPT_USE_OPENMP
-		#pragma omp parallel for
+		#pragma omp parallel for schedule(dynamic)
 		for (int_t i=0; i<(int_t)texturePatches.GetSize(); ++i) {
 		#else
 		FOREACH(i, texturePatches) {
@@ -1166,31 +1850,32 @@ void MeshTexture::GenerateTexture(bool bGlobalSeamLeveling)
 }
 
 // texture mesh
-bool Scene::TextureMesh(unsigned nResolutionLevel, unsigned nMinResolution, bool bGlobalSeamLeveling, bool bLocalSeamLeveling)
+bool Scene::TextureMesh(unsigned nResolutionLevel, unsigned nMinResolution, float fOutlierThreshold, bool bGlobalSeamLeveling, bool bLocalSeamLeveling)
 {
 	MeshTexture texture(*this, nResolutionLevel, nMinResolution);
 
 	// init images
 	{
 		TD_TIMER_STARTD();
-		texture.InitImages();
+		if (!texture.InitImages())
+			return false;
 		DEBUG_EXTRA("Initializing images completed: %u images (%s)", images.GetSize(), TD_TIMER_GET_FMT().c_str());
 	}
 
 	// assign the best view to each face 
 	{
 		TD_TIMER_STARTD();
-		texture.FaceViewSellection();
+		texture.FaceViewSellection(fOutlierThreshold);
 		DEBUG_EXTRA("Assigning the best view to each face completed: %u faces (%s)", mesh.faces.GetSize(), TD_TIMER_GET_FMT().c_str());
 	}
 
 	// generate the texture image and atlas 
 	{
 		TD_TIMER_STARTD();
-		texture.GenerateTexture(bGlobalSeamLeveling);
+		texture.GenerateTexture(bGlobalSeamLeveling, bLocalSeamLeveling);
 		DEBUG_EXTRA("Generating texture atlas and image completed: %u patches, %u image size (%s)", texture.texturePatches.GetSize(), mesh.textureDiffuse.width(), TD_TIMER_GET_FMT().c_str());
 	}
 
-	return _OK;
+	return true;
 } // TextureMesh
 /*----------------------------------------------------------------*/

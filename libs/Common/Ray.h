@@ -24,7 +24,7 @@ template <typename TYPE, int DIMS>
 class TRay
 {
 public:
-	typedef Eigen::Matrix<TYPE,DIMS+1,DIMS+1> MATRIX;
+	typedef Eigen::Matrix<TYPE,DIMS+1,DIMS+1,Eigen::RowMajor> MATRIX;
 	typedef Eigen::Matrix<TYPE,DIMS,1> VECTOR;
 	typedef Eigen::Matrix<TYPE,DIMS,1> POINT;
 	typedef SEACAVE::TAABB<TYPE,DIMS> AABB;

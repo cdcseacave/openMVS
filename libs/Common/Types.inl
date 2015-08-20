@@ -1166,6 +1166,23 @@ FORCEINLINE SEACAVE::TColor<TYPE> operator/(TYPEM n, const SEACAVE::TColor<TYPE>
 } // namespace SEACAVE
 
 
+namespace std {
+
+//namespace tr1 {
+// Specializations for unordered containers
+template <> struct hash<SEACAVE::ImageRef>
+{
+	typedef SEACAVE::ImageRef argument_type;
+	typedef size_t result_type;
+	result_type operator()(const argument_type& v) const {
+		return std::hash<uint64_t>()((const uint64_t&)v);
+	}
+};
+//} // namespace tr1
+
+} // namespace std
+
+
 namespace cv {
 
 #if CV_MAJOR_VERSION > 2
@@ -1966,7 +1983,7 @@ struct Cubic {
 	// Sharpness coefficient used to control sharpness of the cubic curve (between 0.5 to 0.75)
 	// cubic(0,1/2): 0.5 gives better mathematically result (ie: approximation at 3 order precision - Catmull-Rom)
 	const TYPE sharpness;
-	inline Cubic(const TYPE& _sharpness = 0.5) : sharpness(_sharpness) {}
+	inline Cubic(const TYPE& _sharpness=TYPE(0.5)) : sharpness(_sharpness) {}
 
 	inline void operator () (const TYPE x, TYPE* const weigth) const {
 		// remember :
@@ -2248,7 +2265,7 @@ unsigned TImage<TYPE>::computeMaxResolution(unsigned& level, unsigned minImageSi
 
 // Raster the given triangle and output the position of each pixel of the triangle;
 // based on "Advanced Rasterization" by Nick (Nicolas Capens)
-// http://devmaster.net/forums/topic/1145-advanced-rasterization/
+// http://devmaster.net/forums/topic/1145-advanced-rasterization
 template <typename TYPE>
 template <typename T, typename PARSER>
 void TImage<TYPE>::RasterizeTriangle(const TPoint2<T>& v1, const TPoint2<T>& v2, const TPoint2<T>& v3, PARSER& parser)
@@ -2310,29 +2327,29 @@ void TImage<TYPE>::RasterizeTriangle(const TPoint2<T>& v1, const TPoint2<T>& v2,
 		for (int x = minx; x < maxx; x += q)
 		{
 			// Corners of block
-			int_t x0 = int_t(x) << 4;
-			int_t x1 = int_t(x + q - 1) << 4;
-			int_t y0 = int_t(y) << 4;
-			int_t y1 = int_t(y + q - 1) << 4;
+			const int_t x0 = int_t(x) << 4;
+			const int_t x1 = int_t(x + q - 1) << 4;
+			const int_t y0 = int_t(y) << 4;
+			const int_t y1 = int_t(y + q - 1) << 4;
 
 			// Evaluate half-space functions
-			bool a00 = C1 + DX12 * y0 - DY12 * x0 > 0;
-			bool a10 = C1 + DX12 * y0 - DY12 * x1 > 0;
-			bool a01 = C1 + DX12 * y1 - DY12 * x0 > 0;
-			bool a11 = C1 + DX12 * y1 - DY12 * x1 > 0;
-			int a = (a00 << 0) | (a10 << 1) | (a01 << 2) | (a11 << 3);
+			const bool a00 = C1 + DX12 * y0 - DY12 * x0 > 0;
+			const bool a10 = C1 + DX12 * y0 - DY12 * x1 > 0;
+			const bool a01 = C1 + DX12 * y1 - DY12 * x0 > 0;
+			const bool a11 = C1 + DX12 * y1 - DY12 * x1 > 0;
+			const int a = (a00 << 0) | (a10 << 1) | (a01 << 2) | (a11 << 3);
 
-			bool b00 = C2 + DX23 * y0 - DY23 * x0 > 0;
-			bool b10 = C2 + DX23 * y0 - DY23 * x1 > 0;
-			bool b01 = C2 + DX23 * y1 - DY23 * x0 > 0;
-			bool b11 = C2 + DX23 * y1 - DY23 * x1 > 0;
-			int b = (b00 << 0) | (b10 << 1) | (b01 << 2) | (b11 << 3);
+			const bool b00 = C2 + DX23 * y0 - DY23 * x0 > 0;
+			const bool b10 = C2 + DX23 * y0 - DY23 * x1 > 0;
+			const bool b01 = C2 + DX23 * y1 - DY23 * x0 > 0;
+			const bool b11 = C2 + DX23 * y1 - DY23 * x1 > 0;
+			const int b = (b00 << 0) | (b10 << 1) | (b01 << 2) | (b11 << 3);
 
-			bool c00 = C3 + DX31 * y0 - DY31 * x0 > 0;
-			bool c10 = C3 + DX31 * y0 - DY31 * x1 > 0;
-			bool c01 = C3 + DX31 * y1 - DY31 * x0 > 0;
-			bool c11 = C3 + DX31 * y1 - DY31 * x1 > 0;
-			int c = (c00 << 0) | (c10 << 1) | (c01 << 2) | (c11 << 3);
+			const bool c00 = C3 + DX31 * y0 - DY31 * x0 > 0;
+			const bool c10 = C3 + DX31 * y0 - DY31 * x1 > 0;
+			const bool c01 = C3 + DX31 * y1 - DY31 * x0 > 0;
+			const bool c11 = C3 + DX31 * y1 - DY31 * x1 > 0;
+			const int c = (c00 << 0) | (c10 << 1) | (c01 << 2) | (c11 << 3);
 
 			// Skip block when outside an edge
 			if (a == 0x0 || b == 0x0 || c == 0x0) continue;
@@ -2476,22 +2493,53 @@ void TImage<TYPE>::RasterizeTriangleDepth(TPoint3<T> p1, TPoint3<T> p2, TPoint3<
 
 
 template <typename TYPE>
-void SEACAVE::TImage<TYPE>::DrawLine(const ImageRef& x1, const ImageRef& x2,
-								 FncDrawPoint fncDrawPoint, void* pData)
+template <typename T, typename PARSER>
+void SEACAVE::TImage<TYPE>::DrawLine(const TPoint2<T>& p1, const TPoint2<T>& p2, PARSER& parser)
 {
-	const ImageRef d = ABS(x2 - x1);
-	int sx = x1.x<x2.x ? 1 : -1;
-	int sy = x1.y<x2.y ? 1 : -1;
-	int err = (d.x>d.y ? d.x : -d.y)/2, e2;
+	#if 0
+	const TPoint2<T> d(ABS(p2 - p1));
+	const int sx(p1.x<p2.x ? 1 : -1);
+	const int sy(p1.y<p2.y ? 1 : -1);
+	T err((d.x>d.y ? d.x : -d.y)/2), e2;
 
-	ImageRef p = x1;
+	const ImageRef x2(p2);
+	ImageRef p(p1);
 	while (true) {
-		fncDrawPoint(p, pData);
+		parser(p);
 		if (p == x2) break;
 		e2 = err;
 		if (e2 >-d.x) { err -= d.y; p.x += sx; }
 		if (e2 < d.y) { err += d.x; p.y += sy; }
 	}
+	#else
+	// Bresenham's line algorithm
+	// https://en.wikipedia.org/wiki/Bresenham%27s_line_algorithm
+	T x1(p1.x), y1(p1.y), x2(p2.x), y2(p2.y);
+	const bool steep(ABS(y2 - y1) > ABS(x2 - x1));
+	if (steep) {
+		std::swap(x1, y1);
+		std::swap(x2, y2);
+	}
+	if (x1 > x2) {
+		std::swap(x1, x2);
+		std::swap(y1, y2);
+	}
+	const T dx(x2 - x1);
+	const T dy(ABS(y2 - y1));
+
+	T error(dx / 2.f);
+	int y(ROUND2INT(y1));
+	const int ystep((y1 < y2) ? 1 : -1);
+	const int maxX(ROUND2INT(x2));
+	for (int x=ROUND2INT(x1); x<maxX; ++x) {
+		parser(steep ? ImageRef(y,x) : ImageRef(x,y));
+		error -= dy;
+		if (error < 0) {
+			y += ystep;
+			error += dx;
+		}
+	}
+	#endif
 }
 
 #define ipart_(X) FLOOR2INT(X)
@@ -3961,7 +4009,7 @@ TYPE InvertMatrix3x3(const TYPE* m, TYPE* mi) {
 ///@param R Matrix to hold the return value.
 ///@relates SO3
 template <typename Precision>
-inline void eigen_so3_exp(const Eigen::Matrix<Precision,3,1>& w, Eigen::Matrix<Precision,3,3>& R) {
+inline void eigen_SO3_exp(const typename Eigen::SO3<Precision>::Vec3& w, typename Eigen::SO3<Precision>::Mat3& R) {
 	static const Precision one_6th(1.0/6.0);
 	static const Precision one_20th(1.0/20.0);
 	//Use a Taylor series expansion near zero. This is required for
@@ -4010,16 +4058,16 @@ inline void eigen_so3_exp(const Eigen::Matrix<Precision,3,1>& w, Eigen::Matrix<P
 	}
 }
 template <typename Precision>
-inline Eigen::SO3<Precision> Eigen::SO3<Precision>::exp(const Vec3& w) {
-	SO3<Precision> result;
-	eigen_so3_exp(w, result.my_matrix);
+inline typename Eigen::SO3<Precision>::Mat3 Eigen::SO3<Precision>::exp(const Vec3& w) const {
+	Mat3 result;
+	eigen_SO3_exp<Precision>(w, result);
 	return result;
 }
 
 /// Take the logarithm of the matrix, generating the corresponding vector in the Lie Algebra.
 /// See the Detailed Description for details of this vector.
 template <typename Precision>
-inline void eigen_so3_ln(const Eigen::Matrix<Precision,3,3>& R, Eigen::Matrix<Precision,3,1>& w) {
+inline void eigen_SO3_ln(const typename Eigen::SO3<Precision>::Mat3& R, typename Eigen::SO3<Precision>::Vec3& w) {
 	const Precision cos_angle((R(0,0) + R(1,1) + R(2,2) - Precision(1)) * Precision(0.5));
 	w(0) = (R(2,1)-R(1,2))*Precision(0.5);
 	w(1) = (R(0,2)-R(2,0))*Precision(0.5);
@@ -4038,7 +4086,7 @@ inline void eigen_so3_ln(const Eigen::Matrix<Precision,3,3>& R, Eigen::Matrix<Pr
 		const Precision d0(R(0,0) - cos_angle);
 		const Precision d1(R(1,1) - cos_angle);
 		const Precision d2(R(2,2) - cos_angle);
-		Eigen::Matrix<Precision,3,1> r2;
+		typename Eigen::SO3<Precision>::Vec3 r2;
 		if (d0*d0 > d1*d1 && d0*d0 > d2*d2) {      // first is largest, fill with first column
 			r2(0) = d0;
 			r2(1) = (R(1,0)+R(0,1))*Precision(0.5);
@@ -4059,9 +4107,9 @@ inline void eigen_so3_ln(const Eigen::Matrix<Precision,3,3>& R, Eigen::Matrix<Pr
 	} 
 }
 template <typename Precision>
-inline Eigen::Matrix<Precision,3,1> Eigen::SO3<Precision>::ln() const {
+inline typename Eigen::SO3<Precision>::Vec3 Eigen::SO3<Precision>::ln() const {
 	Vec3 result;
-	eigen_so3_ln(my_matrix, result);
+	eigen_SO3_ln<Precision>(my_matrix, result);
 	return result;
 }
 
@@ -4082,26 +4130,26 @@ inline std::istream& operator>>(std::istream& is, Eigen::SO3<Precision>& rhs) {
 
 /// Right-multiply by a Vector
 /// @relates SO3
-template<typename P>
-inline Eigen::Matrix<P,3,1> operator*(const Eigen::SO3<P>& lhs, const Eigen::Matrix<P,3,1>& rhs) {
+template <typename P, int O>
+inline Eigen::Matrix<P,3,1,O> operator*(const Eigen::SO3<P>& lhs, const Eigen::Matrix<P,3,1,O>& rhs) {
 	return lhs.get_matrix() * rhs;
 }
 /// Left-multiply by a Vector
 /// @relates SO3
-template<typename P>
-inline Eigen::Matrix<P,3,1> operator*(const Eigen::Matrix<P,3,1>& lhs, const Eigen::SO3<P>& rhs) {
+template <typename P, int O>
+inline Eigen::Matrix<P,3,1,O> operator*(const Eigen::Matrix<P,3,1,O>& lhs, const Eigen::SO3<P>& rhs) {
 	return lhs * rhs.get_matrix();
 }
 /// Right-multiply by a matrix
 /// @relates SO3
-template<typename P, int C>
-inline Eigen::Matrix<P,3,C> operator*(const Eigen::SO3<P>& lhs, const Eigen::Matrix<P,3,C>& rhs) {
+template <typename P, int C, int O>
+inline Eigen::Matrix<P,3,C,O> operator*(const Eigen::SO3<P>& lhs, const Eigen::Matrix<P,3,C,O>& rhs) {
 	return lhs.get_matrix() * rhs;
 }
 /// Left-multiply by a matrix
 /// @relates SO3
-template<typename P, int R>
-inline Eigen::Matrix<P,R,3> operator*(const Eigen::Matrix<P,R,3>& lhs, const Eigen::SO3<P>& rhs) {
+template <typename P, int R, int O>
+inline Eigen::Matrix<P,R,3,O> operator*(const Eigen::Matrix<P,R,3,O>& lhs, const Eigen::SO3<P>& rhs) {
 	return lhs * rhs.get_matrix();
 }
 /*----------------------------------------------------------------*/
@@ -4109,27 +4157,27 @@ inline Eigen::Matrix<P,R,3> operator*(const Eigen::Matrix<P,R,3>& lhs, const Eig
 
 /// Exponentiate an angle in the Lie algebra to generate a new SO2.
 template <typename Precision>
-inline void eigen_so2_exp(const Precision& d, Eigen::Matrix<Precision,2,2>& R) {
+inline void eigen_SO2_exp(const Precision& d, typename Eigen::SO2<Precision>::Mat2& R) {
 	R(0,0) = R(1,1) = cos(d);
 	R(1,0) = sin(d);
 	R(0,1) = -R(1,0);
 }
 template <typename Precision>
-inline Eigen::SO2<Precision> Eigen::SO2<Precision>::exp(const Precision& d) {
-	SO2<Precision> result;
-	eigen_so2_exp(d, result.my_matrix);
+inline typename Eigen::SO2<Precision>::Mat2 Eigen::SO2<Precision>::exp(const Precision& d) const {
+	Mat2 result;
+	eigen_SO2_exp<Precision>(d, result);
 	return result;
 }
 
 /// Extracts the rotation angle from the SO2
 template <typename Precision>
-inline void eigen_so2_ln(const Eigen::Matrix<Precision,2,2>& R, Precision& d) {
+inline void eigen_SO2_ln(const typename Eigen::SO2<Precision>::Mat2& R, Precision& d) {
 	d = atan2(R(1,0), R(0,0));
 }
 template <typename Precision>
-Precision Eigen::SO2<Precision>::ln() const {
+inline Precision Eigen::SO2<Precision>::ln() const {
 	Precision d;
-	eigen_so2_ln(my_matrix, d);
+	eigen_SO2_ln<Precision>(my_matrix, d);
 	return d;
 }
 
@@ -4150,26 +4198,26 @@ inline std::istream& operator>>(std::istream& is, Eigen::SO2<Precision>& rhs) {
 
 /// Right-multiply by a Vector
 /// @relates SO2
-template<typename P>
-inline Eigen::Matrix<P,2,1> operator*(const Eigen::SO2<P>& lhs, const Eigen::Matrix<P,2,1>& rhs) {
+template <typename P, int O>
+inline Eigen::Matrix<P,2,1,O> operator*(const Eigen::SO2<P>& lhs, const Eigen::Matrix<P,2,1,O>& rhs) {
 	return lhs.get_matrix() * rhs;
 }
 /// Left-multiply by a Vector
 /// @relates SO2
-template<typename P>
-inline Eigen::Matrix<P,2,1> operator*(const Eigen::Matrix<P,2,1>& lhs, const Eigen::SO2<P>& rhs) {
+template <typename P, int O>
+inline Eigen::Matrix<P,2,1,O> operator*(const Eigen::Matrix<P,2,1,O>& lhs, const Eigen::SO2<P>& rhs) {
 	return lhs * rhs.get_matrix();
 }
 /// Right-multiply by a Matrix
 /// @relates SO2
-template <typename P, int C> 
-inline Eigen::Matrix<P,2,C> operator*(const Eigen::SO2<P>& lhs, const Eigen::Matrix<P,2,C>& rhs) {
+template <typename P, int C, int O>
+inline Eigen::Matrix<P,2,C,O> operator*(const Eigen::SO2<P>& lhs, const Eigen::Matrix<P,2,C,O>& rhs) {
 	return lhs.get_matrix() * rhs;
 }
 /// Left-multiply by a Matrix
 /// @relates SO2
-template <typename P, int R>
-inline Eigen::Matrix<P,R,2> operator*(const Eigen::Matrix<P,R,2>& lhs, const Eigen::SO2<P>& rhs) {
+template <typename P, int R, int O>
+inline Eigen::Matrix<P,R,2,O> operator*(const Eigen::Matrix<P,R,2,O>& lhs, const Eigen::SO2<P>& rhs) {
 	return lhs * rhs.get_matrix();
 }
 /*----------------------------------------------------------------*/

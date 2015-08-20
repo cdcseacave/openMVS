@@ -55,8 +55,8 @@ namespace openMVS {
 namespace MVS_IO {
 
 typedef REAL RealT;
-typedef Eigen::Matrix<RealT, 3, 3> Mat33;
-typedef Eigen::Matrix<RealT, 3, 1> Vec3;
+typedef Eigen::Matrix<RealT,3,3,Eigen::RowMajor> Mat33;
+typedef Eigen::Matrix<RealT,3,1> Vec3;
 
 // Structure to model the pinhole camera projection model
 struct Camera
@@ -162,8 +162,10 @@ bool ImportScene(const std::string& sList_filename, const std::string& sBaf_file
 		{
 			for (uint32_t i = 0; i < num_poses; ++i) {
 				Pose pose;
-				for (int j = 0; j < 9; ++j) {
-					file >> pose.R.array()(j);
+				for (int r = 0; r < 3; ++r) {
+					for (int c = 0; c < 3; ++c) {
+						file >> pose.R(r,c);
+					}
 				}
 				file >> pose.C[0] >> pose.C[1] >> pose.C[2];
 				#ifndef _RELEASE
@@ -269,8 +271,10 @@ bool ExportScene(const std::string& sList_filename, const std::string& sBaf_file
 		{
 			for (uint32_t i = 0; i < num_poses; ++i) {
 				const Pose& pose = sceneBAF.poses[i];
-				for (int j = 0; j < 9; ++j) {
-					file << pose.R.array()(j) << ' ';
+				for (int r = 0; r < 3; ++r) {
+					for (int c = 0; c < 3; ++c) {
+						file << pose.R(r,c) << ' ';
+					}
 				}
 				file << pose.C[0] << ' ' << pose.C[1] << ' ' << pose.C[2] << std::endl;
 				#ifndef _RELEASE

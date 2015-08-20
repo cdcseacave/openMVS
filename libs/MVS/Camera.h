@@ -53,7 +53,12 @@ namespace MVS {
 // a camera is represented as:
 //   P = KR[I|-C]
 // where R and C represent the camera orientation and position relative to the world coordinate system;
-// C is expressed as the explicit camera center (as opposite to standard form which is negated and has the rotation of the camera already applied P = K[R|t])
+// R is expressed as the rotation from world to camera coordinates
+// C is expressed as the explicit camera center in world coordinates
+// (as opposite to standard form t which is negated and has the rotation of the camera already applied P = K[R|t]);
+// the world and camera coordinates system is right handed,
+// with x pointing right, y pointing down, and z pointing forward
+// (see: R. Hartley, "Multiple View Geometry," 2004, pp. 156.)
 class CameraIntern
 {
 public:
@@ -69,8 +74,10 @@ public:
 	inline void SetT(const CMatrix& T) { C = R.t()*(-T); }
 	inline CMatrix GetT() const { return R*(-C); }
 
-	// returns the camera's view direction
-	inline Point3 Direction() const { return R.row(2); }
+	// returns the camera's view forward direction
+	inline Point3 Direction() const { return R.row(2); /* equivalent to R.t() * Vec(0,0,1) */ }
+	// returns the camera's view up direction
+	inline Point3 UpDirection() const { return -R.row(1); /* equivalent to R.t() * Vec(0,-1,0) */ }
 
 	// returns the focal length
 	inline REAL GetFocalLength() const { return K(0,0); }

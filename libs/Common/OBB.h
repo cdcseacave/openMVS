@@ -34,7 +34,7 @@ class TOBB
 public:
 	typedef TYPE Type;
 	typedef Eigen::Matrix<TYPE,DIMS,1> POINT;
-	typedef Eigen::Matrix<TYPE,DIMS,DIMS> MATRIX;
+	typedef Eigen::Matrix<TYPE,DIMS,DIMS,Eigen::RowMajor> MATRIX;
 	typedef SEACAVE::TAABB<TYPE,DIMS> AABB;
 	typedef SEACAVE::TRay<TYPE,DIMS> RAY;
 	typedef unsigned ITYPE;

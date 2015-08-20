@@ -19,53 +19,43 @@ namespace SEACAVE {
 
 // S T R U C T S ///////////////////////////////////////////////////
 
-/*
+// OBJ model files parser.
+// 
+// The OBJ file format is a simple data-format that represents 3D geometry alone —
+// namely, the position of each vertex, the UV position of each texture coordinate
+// vertex, vertex normals, and the faces that make each polygon defined as a list of
+// vertices, and texture vertices. Vertices are stored in a counter-clockwise order
+// by default, making explicit declaration of face normals unnecessary.
 
-OBJ model files parser.
-(originally by Michael Waechter, modified by cDc@seacave)
-
-The OBJ file format is a simple data-format that represents 3D geometry alone —
-namely, the position of each vertex, the UV position of each texture coordinate
-vertex, vertex normals, and the faces that make each polygon defined as a list of
-vertices, and texture vertices. Vertices are stored in a counter-clockwise order
-by default, making explicit declaration of face normals unnecessary.
-
-*/
-
-/*----------------------------------------------------------------*/
-
-// Class representing a OBJ model.
 class ObjModel {
 public:
-	// Class representing a material lib of an OBJ model.
-	class MaterialLib {
-	public:
-		// Class representing a Lambertian material.
-		class Material {
-		private:
+	typedef Pixel32F Color;
+
+	// represents a material lib of an OBJ model
+	struct MaterialLib {
+		// represents a Lambertian material
+		struct Material {
 			Image8U3 diffuse_map;
+			Color Kd;
 
-		public:
-			Material(const Image8U3& _diffuse_map);
-
-			const Image8U3& get_diffuse_map() const { return diffuse_map; }
+			Material() : Kd(Color::WHITE) {}
+			Material(const Image8U3& _diffuse_map, const Color& _Kd=Color::WHITE);
 		};
 
-	private:
 		std::vector<Material> materials;
-		std::vector<std::string> material_names;
+		std::vector<String> material_names;
 
-	public:
 		MaterialLib();
 
-		void add_material(const std::string& name, Material material);
-		inline size_t size() const { return materials.size(); }
+		void AddMaterial(const String& name, Material material);
+		inline size_t GetSize() const { return materials.size(); }
 
-		// Saves the material lib to an .mtl file and all textures of its materials with the given prefix.
-		bool save(const std::string& prefix) const;
+		// Saves the material lib to a .mtl file and all textures of its materials with the given prefix
+		bool Save(const String& prefix) const;
+		// Loads the material lib from a .mtl file and all textures of its materials with the given prefix
+		bool Load(const String& fileName);
 	};
 
-public:
 	struct Face {
 		size_t vertices[3];
 		size_t texcoords[3];
@@ -73,7 +63,7 @@ public:
 	};
 
 	struct Group {
-		std::string material_name;
+		String material_name;
 		std::vector<Face> faces;
 	};
 
@@ -90,17 +80,18 @@ private:
 	MaterialLib material_lib;
 
 public:
-	// Saves the obj model to an .obj file, its material lib and the materials with the given prefix.
-	bool save(const std::string& prefix) const;
 	ObjModel();
+
+	// Saves the obj model to an .obj file, its material lib and the materials with the given prefix
+	bool Save(const String& prefix) const;
+	// Loads the obj model from an .obj file, its material lib and the materials with the given prefix
+	bool Load(const String& fileName);
 
 	MaterialLib& get_material_lib() { return material_lib; }
 	Vertices& get_vertices() { return vertices; }
 	TexCoords& get_texcoords() { return texcoords; }
 	Normals& get_normals() { return normals; }
 	Groups& get_groups() { return groups; }
-
-	static bool save(const ObjModel& model, const std::string& prefix);
 };
 /*----------------------------------------------------------------*/
 
