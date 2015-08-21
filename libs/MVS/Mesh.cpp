@@ -145,9 +145,7 @@ void Mesh::ListBoundaryVertices()
 void Mesh::ComputeNormalFaces()
 {
 	faceNormals.Resize(faces.GetSize());
-
 	#ifndef _USE_CUDA
-
 	FOREACH(idxFace, faces) {
 		const Face& face = faces[idxFace];
 		const Vertex& v0 = vertices[face[0]];
@@ -156,82 +154,17 @@ void Mesh::ComputeNormalFaces()
 		Normal& normal = faceNormals[idxFace];
 		normal = normalized((v1-v0).cross(v2-v0));
 	}
-
 	#else
-
-	// Initialize CUDA device if needed
-	if (CUDA::devices.IsEmpty())
-		checkCudaErrors(CUDA::initDevice());
-
-	#ifdef _SUPPORT_CPP11
-
-	CUDA::KernelRT kernel("FaceNormal.ptx", "Kernel_ComputeFaceNormal", true);
-	ASSERT(sizeof(Vertex) == sizeof(float)*3);
-	ASSERT(sizeof(Face) == sizeof(VIndex)*3 && sizeof(VIndex) == sizeof(uint32_t));
-	ASSERT(sizeof(Normal) == sizeof(float)*3);
-	kernel((int)faces.GetSize(),
-		   CUDA::KernelRT::InputParam(vertices.GetData(), vertices.GetDataSize()),
-		   CUDA::KernelRT::InputParam(faces.GetData(), faces.GetDataSize()),
-		   CUDA::KernelRT::OutputParam(faceNormals.GetDataSize()),
-		   faces.GetSize());
-	kernel.GetResult({CUDA::KernelRT::ReturnParam(faceNormals.GetData(), faceNormals.GetDataSize())});
-
-	#else
-
-	// JIT Compile the Kernel from PTX and get the Handles (Driver API)
-	CUmodule hModule(NULL);
-	CUfunction hKernel(NULL);
-	CUlinkState lState;
-	const char* fileName("FaceNormal.ptx"); const char* functionName("Kernel_ComputeFaceNormal");
-	checkCudaErrors(CUDA::ptxJIT(fileName, functionName, &hModule, &hKernel, &lState, true));
-
-	// Set the kernel parameters (Driver API)
-	int paramOffset(0);
-	// vertices
-	void* cpVertices;
-	ASSERT(sizeof(Vertex) == sizeof(float)*3);
-	const VIndex numVertices(vertices.GetSize());
-	const size_t sizeVertices(sizeof(Vertex)*numVertices);
-	checkCudaErrors(cudaMalloc(&cpVertices, sizeVertices));
-	checkCudaErrors(cudaMemcpy(cpVertices, vertices.Begin(), sizeVertices, cudaMemcpyHostToDevice));
-	checkCudaErrors(CUDA::addKernelParam(hKernel, paramOffset, cpVertices));
-	// faces
-	void* cpFaces;
-	ASSERT(sizeof(Face) == sizeof(VIndex)*3 && sizeof(VIndex) == sizeof(uint32_t));
-	const FIndex numFaces(faces.GetSize());
-	const size_t sizeFaces(sizeof(Face)*numFaces);
-	checkCudaErrors(cudaMalloc(&cpFaces, sizeFaces));
-	checkCudaErrors(cudaMemcpy(cpFaces, faces.Begin(), sizeFaces, cudaMemcpyHostToDevice));
-	checkCudaErrors(CUDA::addKernelParam(hKernel, paramOffset, cpFaces));
-	// normals [output]
-	void* cpNormals;
-	ASSERT(sizeof(Normal) == sizeof(float)*3);
-	const size_t sizeNormals(sizeof(Normal)*numFaces);
-	checkCudaErrors(cudaMalloc(&cpNormals, sizeNormals));
-	checkCudaErrors(CUDA::addKernelParam(hKernel, paramOffset, cpNormals));
-	// number of normals
-	checkCudaErrors(CUDA::addKernelParam(hKernel, paramOffset, numFaces));
-	// finish setting parameters
-	checkCudaErrors(cuParamSetSize(hKernel, paramOffset));
-
-	// Launch the kernel (Driver API)
-	const cudaDeviceProp& deviceProp = CUDA::devices.Last().prop;
-	const int nThreads(MINF((int)numFaces, deviceProp.maxThreadsPerBlock));
-	const int nBlocks(MAXF((int)((numFaces+nThreads-1)/nThreads), 1));
-	checkCudaErrors(cuFuncSetBlockShape(hKernel, nThreads, 1, 1));
-	checkCudaErrors(cuLaunchGrid(hKernel, nBlocks, 1));
-
-	// Copy the result back to the host
-	faceNormals.Resize(numFaces);
-	checkCudaErrors(cudaMemcpy(faceNormals.Begin(), cpNormals, sizeNormals, cudaMemcpyDeviceToHost));
-
-	// Cleanup
-	checkCudaErrors(cudaFree(cpNormals));
-	checkCudaErrors(cudaFree(cpFaces));
-	checkCudaErrors(cudaFree(cpVertices));
-	checkCudaErrors(cuModuleUnload(hModule));
-	#endif
-
+	kernelComputeFaceNormal(
+		(int)faces.GetSize(),
+		CUDA::KernelRT::InputParam(vertices.GetData(), vertices.GetDataSize()),
+		CUDA::KernelRT::InputParam(faces.GetData(), faces.GetDataSize()),
+		CUDA::KernelRT::OutputParam(faceNormals.GetDataSize()),
+		faces.GetSize()
+	);
+	kernelComputeFaceNormal.GetResult({
+		CUDA::KernelRT::ReturnParam(faceNormals.GetData(), faceNormals.GetDataSize())
+	});
 	#endif
 }
 
@@ -2638,3 +2571,123 @@ void Mesh::EnsureEdgeSize(float epsilonMin, float epsilonMax, float collapseRati
 	CLN::ExportMesh(p, vertices, faces);
 }
 /*----------------------------------------------------------------*/
+
+
+
+#ifdef _USE_CUDA
+CUDA::KernelRT Mesh::kernelComputeFaceNormal;
+
+bool Mesh::InitKernels(int device)
+{
+	// initialize CUDA device if needed
+	if (CUDA::devices.IsEmpty() && CUDA::initDevice(device) != CUDA_SUCCESS)
+		return false;
+
+	// initialize CUDA kernels
+	if (!kernelComputeFaceNormal.IsValid()) {
+		// kernel used to compute face normal, given the array of face vertices and vertex positions
+		COMPILE_TIME_ASSERT(sizeof(Vertex) == sizeof(float)*3);
+		COMPILE_TIME_ASSERT(sizeof(Face) == sizeof(VIndex)*3 && sizeof(VIndex) == sizeof(uint32_t));
+		COMPILE_TIME_ASSERT(sizeof(Normal) == sizeof(float)*3);
+		#define FUNC "ComputeFaceNormal"
+		LPCSTR const szKernel =
+			".version 3.2\n"
+			".target sm_20\n"
+			".address_size 64\n"
+			"\n"
+			"	// .globl	" FUNC "\n"
+			"\n"
+			".visible .entry " FUNC "(\n"
+			"	.param .u64 " FUNC "_param_1, // array vertices (float*3 * numVertices)\n"
+			"	.param .u64 " FUNC "_param_2, // array faces (uint32_t*3 * numFaces)\n"
+			"	.param .u64 " FUNC "_param_3, // array normals (float*3 * numFaces)\n"
+			"	.param .u32 " FUNC "_param_4  // numFaces = numNormals (uint32_t)\n"
+			")\n"
+			"{\n"
+			"	.reg .f32 %f<32>;\n"
+			"	.reg .pred %p<2>;\n"
+			"	.reg .u32 %r<17>;\n"
+			"	.reg .u64 %rl<18>;\n"
+			"\n"
+			"	ld.param.u64 %rl4, [" FUNC "_param_1];\n"
+			"	ld.param.u64 %rl5, [" FUNC "_param_2];\n"
+			"	ld.param.u64 %rl6, [" FUNC "_param_3];\n"
+			"	ld.param.u32 %r2,  [" FUNC "_param_4];\n"
+			"	cvta.to.global.u64 %rl1, %rl6;\n"
+			"	cvta.to.global.u64 %rl2, %rl4;\n"
+			"	cvta.to.global.u64 %rl3, %rl5;\n"
+			"	mov.u32 %r3, %ntid.x;\n"
+			"	mov.u32 %r4, %ctaid.x;\n"
+			"	mov.u32 %r5, %tid.x;\n"
+			"	mad.lo.u32 %r1, %r3, %r4, %r5;\n"
+			"	setp.ge.u32 %p1, %r1, %r2;\n"
+			"	@%p1 bra BB00_1;\n"
+			"\n"
+			"	mul.lo.u32 %r6, %r1, 3;\n"
+			"	mul.wide.u32 %rl7, %r6, 4;\n"
+			"	add.u64 %rl8, %rl3, %rl7;\n"
+			"	ld.global.u32 %r8, [%rl8];\n"
+			"	mul.lo.u32 %r10, %r8, 3;\n"
+			"	mul.wide.u32 %rl11, %r10, 4;\n"
+			"	add.u64 %rl12, %rl2, %rl11;\n"
+			"	ld.global.u32 %r11, [%rl8+4];\n"
+			"	mul.lo.u32 %r13, %r11, 3;\n"
+			"	mul.wide.u32 %rl13, %r13, 4;\n"
+			"	add.u64 %rl14, %rl2, %rl13;\n"
+			"	ld.global.u32 %r14, [%rl8+8];\n"
+			"	mul.lo.u32 %r16, %r14, 3;\n"
+			"	mul.wide.u32 %rl15, %r16, 4;\n"
+			"	add.u64 %rl16, %rl2, %rl15;\n"
+			"\n"
+			"	ld.global.f32 %f1, [%rl14];\n"
+			"	ld.global.f32 %f2, [%rl12];\n"
+			"	sub.f32 %f3, %f1, %f2;\n"
+			"	ld.global.f32 %f4, [%rl14+4];\n"
+			"	ld.global.f32 %f5, [%rl12+4];\n"
+			"	sub.f32 %f6, %f4, %f5;\n"
+			"	ld.global.f32 %f7, [%rl14+8];\n"
+			"	ld.global.f32 %f8, [%rl12+8];\n"
+			"	sub.f32 %f9, %f7, %f8;\n"
+			"	ld.global.f32 %f10, [%rl16];\n"
+			"	sub.f32 %f11, %f10, %f2;\n"
+			"	ld.global.f32 %f12, [%rl16+4];\n"
+			"	sub.f32 %f13, %f12, %f5;\n"
+			"	ld.global.f32 %f14, [%rl16+8];\n"
+			"	sub.f32 %f15, %f14, %f8;\n"
+			"\n"
+			"	mul.f32 %f16, %f6, %f15;\n"
+			"	neg.f32 %f17, %f9;\n"
+			"	fma.rn.f32 %f18, %f17, %f13, %f16;\n"
+			"	mul.f32 %f19, %f9, %f11;\n"
+			"	neg.f32 %f20, %f3;\n"
+			"	fma.rn.f32 %f21, %f20, %f15, %f19;\n"
+			"	mul.f32 %f22, %f3, %f13;\n"
+			"	neg.f32 %f23, %f6;\n"
+			"\n"
+			"	fma.rn.f32 %f24, %f23, %f11, %f22;\n"
+			"	mul.f32 %f25, %f21, %f21;\n"
+			"	fma.rn.f32 %f26, %f18, %f18, %f25;\n"
+			"	fma.rn.f32 %f27, %f24, %f24, %f26;\n"
+			"\n"
+			"	sqrt.rn.f32 %f28, %f27;\n"
+			"	div.rn.f32 %f29, %f18, %f28;\n"
+			"	div.rn.f32 %f30, %f21, %f28;\n"
+			"	div.rn.f32 %f31, %f24, %f28;\n"
+			"\n"
+			"	add.u64 %rl17, %rl1, %rl7;\n"
+			"	st.global.f32 [%rl17], %f29;\n"
+			"	st.global.f32 [%rl17+4], %f30;\n"
+			"	st.global.f32 [%rl17+8], %f31;\n"
+			"\n"
+			"	BB00_1:\n"
+			"	ret;\n"
+			"}\n";
+		if (kernelComputeFaceNormal.Reset(szKernel, FUNC) != CUDA_SUCCESS)
+			return false;
+		#undef FUNC
+	}
+
+	return true;
+}
+/*----------------------------------------------------------------*/
+#endif
