@@ -233,7 +233,6 @@ struct MeshTexture {
 	typedef TAccumulator<Color> AccumColor;
 	typedef Sampler::Linear<float> Sampler;
 	struct SampleImage {
-
 		AccumColor accumColor;
 		const Image8U3& image;
 		const Sampler sampler;
@@ -1043,6 +1042,11 @@ void MeshTexture::CreateSeamVertices()
 	FOREACHPTR(pEdge, seamEdges) {
 		// store edge for the later seam optimization
 		ASSERT(pEdge->i < pEdge->j);
+		const uint32_t idxPatch0(mapIdxPatch[components[pEdge->i]]);
+		const uint32_t idxPatch1(mapIdxPatch[components[pEdge->j]]);
+		ASSERT(idxPatch0 != idxPatch1 || idxPatch0 == numPatches);
+		if (idxPatch0 == idxPatch1)
+			continue;
 		seamVertices.ReserveExtra(2);
 		scene.mesh.GetEdgeVertices(pEdge->i, pEdge->j, vs0, vs1);
 		ASSERT(faces[pEdge->i][vs0[0]] == faces[pEdge->j][vs1[0]]);
@@ -1060,9 +1064,6 @@ void MeshTexture::CreateSeamVertices()
 			seamVertices.AddConstruct(vs[1]);
 		SeamVertex& seamVertex1 = seamVertices[itSeamVertex1.first->second];
 
-		const uint32_t idxPatch0(mapIdxPatch[components[pEdge->i]]);
-		const uint32_t idxPatch1(mapIdxPatch[components[pEdge->j]]);
-		ASSERT(idxPatch0 != idxPatch1);
 		if (idxPatch0 < numPatches) {
 			const TexCoord offset0(texturePatches[idxPatch0].rect.tl());
 			SeamVertex::Patch& patch00 = seamVertex0.GetPatch(idxPatch0);
@@ -1086,6 +1087,7 @@ void MeshTexture::CreateSeamVertices()
 			patch11.proj = faceTexcoords[pEdge->j*3+vs1[1]]+offset1;
 		}
 	}
+	seamEdges.Release();
 }
 
 void MeshTexture::GlobalSeamLeveling()

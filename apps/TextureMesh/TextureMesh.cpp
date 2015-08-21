@@ -59,6 +59,7 @@ unsigned nMinResolution;
 float fOutlierThreshold;
 bool bGlobalSeamLeveling;
 bool bLocalSeamLeveling;
+unsigned nArchiveType;
 int nProcessPriority;
 unsigned nMaxThreads;
 String strConfigFileName;
@@ -78,7 +79,8 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		("help,h", "produce this help message")
 		("working-folder,w", boost::program_options::value<std::string>(&WORKING_FOLDER), "the working directory (default current directory)")
 		("config-file,c", boost::program_options::value<std::string>(&OPT::strConfigFileName)->default_value(APPNAME _T(".cfg")), "the file name containing program options")
-		("process-priority", boost::program_options::value<int>(&OPT::nProcessPriority)->default_value(-1), "Process priority (below normal by default)")
+		("archive-type", boost::program_options::value<unsigned>(&OPT::nArchiveType)->default_value(2), "project archive type: 0-text, 1-binary, 2-compressed binary")
+		("process-priority", boost::program_options::value<int>(&OPT::nProcessPriority)->default_value(-1), "process priority (below normal by default)")
 		("max-threads", boost::program_options::value<unsigned>(&OPT::nMaxThreads)->default_value(0), "maximum number of threads (0 for using all available cores)")
 		#if TD_VERBOSE != TD_VERBOSE_OFF
 		("verbosity,v", boost::program_options::value<int>(&g_nVerbosityLevel)->default_value(
@@ -215,7 +217,7 @@ int main(int argc, LPCTSTR* argv)
 
 	// save the final mesh
 	scene.mesh.Save(MAKE_PATH_SAFE(Util::getFullFileName(OPT::strOutputFileName) + _T("_texture.ply")));
-	scene.Save(MAKE_PATH_SAFE(Util::getFullFileName(OPT::strOutputFileName) + _T("_texture.mvs")));
+	scene.Save(MAKE_PATH_SAFE(Util::getFullFileName(OPT::strOutputFileName) + _T("_texture.mvs")), (ARCHIVE_TYPE)OPT::nArchiveType);
 
 	Finalize();
 	return EXIT_SUCCESS;
