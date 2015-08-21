@@ -29,6 +29,7 @@
 #endif
 #ifdef _SUPPORT_CPP11
 #include <cstdint>
+#include <initializer_list>
 #else
 #include <stdint.h>
 #endif
@@ -56,7 +57,7 @@
 #include <omp.h>
 #endif
 
-// File System utils (stlplus)
+// File-System utils (stlplus)
 #include "FileUtil.h"
 #include "Wildcard.h"
 
@@ -384,6 +385,7 @@ typedef class GENERAL_API cList<double, double, 0>      DoubleArr;
 #include "SML.h"
 #include "ConfigTable.h"
 #include "HTMLDoc.h"
+#include "CUDA.h"
 
 
 // D E F I N E S ///////////////////////////////////////////////////
