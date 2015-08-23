@@ -155,16 +155,15 @@ void Mesh::ComputeNormalFaces()
 		normal = normalized((v1-v0).cross(v2-v0));
 	}
 	#else
-	kernelComputeFaceNormal(
-		(int)faces.GetSize(),
-		CUDA::KernelRT::InputParam(vertices.GetData(), vertices.GetDataSize()),
-		CUDA::KernelRT::InputParam(faces.GetData(), faces.GetDataSize()),
+	checkCudaErrors(kernelComputeFaceNormal((int)faces.GetSize(),
+		vertices,
+		faces,
 		CUDA::KernelRT::OutputParam(faceNormals.GetDataSize()),
 		faces.GetSize()
-	);
-	kernelComputeFaceNormal.GetResult({
-		CUDA::KernelRT::ReturnParam(faceNormals.GetData(), faceNormals.GetDataSize())
-	});
+	));
+	checkCudaErrors(kernelComputeFaceNormal.GetResult(0,
+		faceNormals
+	));
 	#endif
 }
 
@@ -2684,6 +2683,7 @@ bool Mesh::InitKernels(int device)
 			"}\n";
 		if (kernelComputeFaceNormal.Reset(szKernel, FUNC) != CUDA_SUCCESS)
 			return false;
+		ASSERT(kernelComputeFaceNormal.IsValid());
 		#undef FUNC
 	}
 

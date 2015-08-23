@@ -1,16 +1,12 @@
 /*
- * TextureMesh.cpp
+ * DensifyPointCloud.cpp
  *
- * Copyright (c) 2014-2015 FOXEL SA - http://foxel.ch
- * Please read <http://foxel.ch/license> for more information.
- *
+ * Copyright (c) 2014-2015 SEACAVE
  *
  * Author(s):
  *
  *      cDc <cdc.seacave@gmail.com>
  *
- *
- * This file is part of the FOXEL project <http://foxel.ch>.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as published by
@@ -31,9 +27,6 @@
  *      You are required to preserve legal notices and author attributions in
  *      that material or in the Appropriate Legal Notices displayed by works
  *      containing it.
- *
- *      You are required to attribute the work as explained in the "Usage and
- *      Attribution" section of <http://foxel.ch/license>.
  */
 
 #include "../../libs/MVS/Common.h"
@@ -45,7 +38,7 @@ using namespace MVS;
 
 // D E F I N E S ///////////////////////////////////////////////////
 
-#define APPNAME _T("TextureMesh")
+#define APPNAME _T("DensifyPointCloud")
 
 
 // S T R U C T S ///////////////////////////////////////////////////
@@ -54,11 +47,9 @@ namespace OPT {
 String strInputFileName;
 String strOutputFileName;
 String strMeshFileName;
+String strDenseConfigFileName;
 unsigned nResolutionLevel;
 unsigned nMinResolution;
-float fOutlierThreshold;
-bool bGlobalSeamLeveling;
-bool bLocalSeamLeveling;
 unsigned nArchiveType;
 int nProcessPriority;
 unsigned nMaxThreads;
@@ -100,16 +91,13 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		("output-file,o", boost::program_options::value<std::string>(&OPT::strOutputFileName), "the output filename for storing the mesh")
 		("resolution-level", boost::program_options::value<unsigned>(&OPT::nResolutionLevel)->default_value(0), "how many times to scale down the images before mesh refinement")
 		("min-resolution", boost::program_options::value<unsigned>(&OPT::nMinResolution)->default_value(640), "do not scale images lower than this resolution")
-		("outlier-threshold", boost::program_options::value<float>(&OPT::fOutlierThreshold)->default_value(6e-2f), "threshold used to find and remove outlier face textures (0 - disabled)")
-		("global-seam-leveling", boost::program_options::value<bool>(&OPT::bGlobalSeamLeveling)->default_value(true), "generate uniform texture patches using global seam leveling")
-		("local-seam-leveling", boost::program_options::value<bool>(&OPT::bLocalSeamLeveling)->default_value(true), "generate uniform texture patch borders using local seam leveling")
 		;
 
 	// hidden options, allowed both on command line and
 	// in config file, but will not be shown to the user
 	boost::program_options::options_description hidden("Hidden options");
 	hidden.add_options()
-		("mesh-file", boost::program_options::value<std::string>(&OPT::strMeshFileName), "the mesh file name to refine (overwrite the existing mesh)")
+		("dense-config-file", boost::program_options::value<std::string>(&OPT::strDenseConfigFileName), "optional configuration file for the densifier (overwritten by the command line options)")
 		;
 
 	boost::program_options::options_description cmdline_options;
@@ -162,6 +150,15 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	if (OPT::strOutputFileName.IsEmpty())
 		OPT::strOutputFileName = Util::getFullFileName(OPT::strInputFileName) + _T(".mvs");
 
+	// init dense options
+	OPTDENSE::init();
+	const bool bValidConfig(OPTDENSE::oConfig.Load(OPT::strDenseConfigFileName));
+	OPTDENSE::update();
+	OPTDENSE::nResolutionLevel = OPT::nResolutionLevel;
+	OPTDENSE::nMinResolution = OPT::nMinResolution;
+	if (!bValidConfig)
+		OPTDENSE::oConfig.Save(OPT::strDenseConfigFileName);
+
 	// initialize global options
 	Process::setCurrentProcessPriority((Process::Priority)OPT::nProcessPriority);
 	#ifdef _USE_OPENMP
@@ -200,24 +197,20 @@ int main(int argc, LPCTSTR* argv)
 		return EXIT_FAILURE;
 
 	Scene scene(OPT::nMaxThreads);
-	// load and texture the mesh
+	// load and estimate a dense point-cloud
 	if (!scene.Load(MAKE_PATH_SAFE(OPT::strInputFileName)))
 		return EXIT_FAILURE;
-	if (!OPT::strMeshFileName.IsEmpty()) {
-		// load given mesh
-		scene.mesh.Load(MAKE_PATH_SAFE(OPT::strMeshFileName));
-	}
-	if (scene.mesh.IsEmpty()) {
-		VERBOSE("error: empty initial mesh");
+	if (scene.pointcloud.IsEmpty()) {
+		VERBOSE("error: empty initial point-cloud");
 		return EXIT_FAILURE;
 	}
 	TD_TIMER_START();
-	scene.TextureMesh(OPT::nResolutionLevel, OPT::nMinResolution, OPT::fOutlierThreshold, OPT::bGlobalSeamLeveling, OPT::bLocalSeamLeveling);
-	VERBOSE("Mesh texturing completed: %u vertices, %u faces (%s)", scene.mesh.vertices.GetSize(), scene.mesh.faces.GetSize(), TD_TIMER_GET_FMT().c_str());
+	scene.DenseReconstruction();
+	VERBOSE("Densifying point-cloud completed: %u points (%s)", scene.pointcloud.points.GetSize(), TD_TIMER_GET_FMT().c_str());
 
 	// save the final mesh
-	scene.mesh.Save(MAKE_PATH_SAFE(Util::getFullFileName(OPT::strOutputFileName) + _T("_texture.ply")));
-	scene.Save(MAKE_PATH_SAFE(Util::getFullFileName(OPT::strOutputFileName) + _T("_texture.mvs")), (ARCHIVE_TYPE)OPT::nArchiveType);
+	scene.pointcloud.Save(MAKE_PATH_SAFE(Util::getFullFileName(OPT::strOutputFileName) + _T("_dense.ply")));
+	scene.Save(MAKE_PATH_SAFE(Util::getFullFileName(OPT::strOutputFileName) + _T("_dense.mvs")), (ARCHIVE_TYPE)OPT::nArchiveType);
 
 	Finalize();
 	return EXIT_SUCCESS;

@@ -123,22 +123,29 @@ bool Scene::LoadInterface(const String & fileName)
 
 	// import 3D points
 	if (!obj.vertices.empty()) {
+		bool bValidWeights(false);
 		pointcloud.points.Resize(obj.vertices.size());
-		pointcloud.weights.Resize(obj.vertices.size());
+		pointcloud.pointViews.Resize(obj.vertices.size());
+		pointcloud.pointWeights.Resize(obj.vertices.size());
 		FOREACH(i, pointcloud.points) {
 			const Interface::Vertex& vertex = obj.vertices[i];
 			PointCloud::Point& point = pointcloud.points[i];
-			point.X = vertex.X;
-			point.views.Resize((PointCloud::ViewArr::IDX)vertex.views.size());
-			ASSERT(point.views.GetSize() >= 2);
-			float& w = pointcloud.weights[0];
-			w = 0;
-			point.views.ForEach([&](PointCloud::ViewArr::IDX v) {
+			point = vertex.X;
+			PointCloud::ViewArr& views = pointcloud.pointViews[i];
+			views.Resize((PointCloud::ViewArr::IDX)vertex.views.size());
+			PointCloud::WeightArr& weights = pointcloud.pointWeights[i];
+			weights.Resize((PointCloud::ViewArr::IDX)vertex.views.size());
+			ASSERT(vertex.views.size() >= 2);
+			views.ForEach([&](PointCloud::ViewArr::IDX v) {
 				const Interface::Vertex::View& view = vertex.views[v];
-				point.views[v] = view.imageID;
-				w += view.confidence;
+				views[v] = view.imageID;
+				weights[v] = view.confidence;
+				if (view.confidence != 0)
+					bValidWeights = true;
 			});
 		}
+		if (!bValidWeights)
+			pointcloud.pointWeights.Release();
 		if (!obj.verticesNormal.empty()) {
 			ASSERT(obj.vertices.size() == obj.verticesNormal.size());
 			pointcloud.normals.CopyOf((const Point3f*)&obj.verticesNormal[0].n, obj.vertices.size());
@@ -147,16 +154,6 @@ bool Scene::LoadInterface(const String & fileName)
 			ASSERT(obj.vertices.size() == obj.verticesColor.size());
 			pointcloud.colors.CopyOf((const Pixel8U*)&obj.verticesColor[0].c, obj.vertices.size());
 		}
-	}
-
-	// score neighbors
-	FOREACH(ID, images) {
-		Image& imageData = images[ID];
-		if (imageData.poseID == NO_ID)
-			continue;
-		ASSERT(imageData.neighbors.IsEmpty());
-        IndexArr points;
-		SelectNeighborViews(ID, points);
 	}
 	return true;
 } // LoadInterface
@@ -205,15 +202,15 @@ bool Scene::SaveInterface(const String & fileName) const
 	obj.vertices.resize(pointcloud.points.GetSize());
 	FOREACH(i, pointcloud.points) {
 		const PointCloud::Point& point = pointcloud.points[i];
+		const PointCloud::ViewArr& views = pointcloud.pointViews[i];
 		MVS::Interface::Vertex& vertex = obj.vertices[i];
-		ASSERT(sizeof(MVS::Interface::Real) == sizeof(point.X.x));
-		vertex.X = point.X;
-		const float w(pointcloud.weights.IsEmpty() ? 0.f : pointcloud.weights[i]/point.views.GetSize());
-		vertex.views.resize(point.views.GetSize());
-		point.views.ForEach([&](PointCloud::ViewArr::IDX v) {
+		ASSERT(sizeof(MVS::Interface::Real) == sizeof(point.x));
+		vertex.X = point;
+		vertex.views.resize(views.GetSize());
+		views.ForEach([&](PointCloud::ViewArr::IDX v) {
 			MVS::Interface::Vertex::View& view = vertex.views[v];
-			view.imageID = point.views[v];
-			view.confidence = w;
+			view.imageID = views[v];
+			view.confidence = (pointcloud.pointWeights.IsEmpty() ? 0.f : pointcloud.pointWeights[i][v]);
 		});
 	}
 	if (!pointcloud.normals.IsEmpty()) {
@@ -275,7 +272,7 @@ bool Scene::Load(const String& fileName)
 	// serialize in the current state
 	if (!SerializeLoad(*this, fs, (ARCHIVE_TYPE)nType))
 		return false;
-	// load images
+	// init images
 	nCalibratedImages = 0;
 	FOREACH(ID, images) {
 		Image& imageData = images[ID];
@@ -283,16 +280,6 @@ bool Scene::Load(const String& fileName)
 			continue;
 		imageData.UpdateCamera(platforms);
 		++nCalibratedImages;
-	}
-	// score neighbors
-	FOREACH(ID, images) {
-		Image& imageData = images[ID];
-		if (imageData.poseID == NO_ID)
-			continue;
-		if (imageData.neighbors.IsEmpty()) {
-			IndexArr points;
-			SelectNeighborViews(ID, points);
-        }
 	}
 	return true;
 	#else
@@ -359,24 +346,25 @@ bool Scene::SelectNeighborViews(uint32_t ID, IndexArr& points, unsigned nMinView
 	unsigned nPoints = 0;
 	imageData.avgDepth = 0;
 	FOREACH(idx, pointcloud.points) {
-		const PointCloud::Point& point = pointcloud.points[idx];
-		if (point.views.FindFirst(ID) == PointCloud::ViewArr::NO_INDEX)
+		const PointCloud::ViewArr& views = pointcloud.pointViews[idx];
+		if (views.FindFirst(ID) == PointCloud::ViewArr::NO_INDEX)
 			continue;
 		// store this point
-		if (point.views.GetSize() >= nMinPointViews)
+		const PointCloud::Point& point = pointcloud.points[idx];
+		if (views.GetSize() >= nMinPointViews)
 			points.Insert((uint32_t)idx);
-		imageData.avgDepth += (float)imageData.camera.PointDepth(point.X);
+		imageData.avgDepth += (float)imageData.camera.PointDepth(point);
 		++nPoints;
 		// score shared views
-		const Point3f V1(imageData.camera.C - CastReal(point.X));
-		const float footprint1(Footprint(imageData.camera, point.X));
-		FOREACHPTR(pView, point.views) {
+		const Point3f V1(imageData.camera.C - CastReal(point));
+		const float footprint1(Footprint(imageData.camera, point));
+		FOREACHPTR(pView, views) {
 			const PointCloud::View& view = *pView;
 			if (view == ID)
 				continue;
 			const Image& imageData2 = images[view];
-			const Point3f V2(imageData2.camera.C - CastReal(point.X));
-			const float footprint2(Footprint(imageData2.camera, point.X));
+			const Point3f V2(imageData2.camera.C - CastReal(point));
+			const float footprint2(Footprint(imageData2.camera, point));
 			const float fAngle(ACOS(ComputeAngle<float,float>(V1.ptr(), V2.ptr())));
 			const float fScaleRatio(footprint1/footprint2);
 			const float wAngle(MINF(POW(fAngle/fOptimAngle, 1.5f), 1.f));
@@ -413,12 +401,13 @@ bool Scene::SelectNeighborViews(uint32_t ID, IndexArr& points, unsigned nMinView
 		const Point2f boundsB(imageDataB.GetSize());
 		ASSERT(pointsA.IsEmpty() && pointsB.IsEmpty());
 		FOREACHPTR(pIdx, points) {
-			const PointCloud::Point& point = pointcloud.points[*pIdx];
-			ASSERT(point.views.FindFirst(ID) != PointCloud::ViewArr::NO_INDEX);
-			if (point.views.FindFirst(IDB) == PointCloud::ViewArr::NO_INDEX)
+			const PointCloud::ViewArr& views = pointcloud.pointViews[*pIdx];
+			ASSERT(views.FindFirst(ID) != PointCloud::ViewArr::NO_INDEX);
+			if (views.FindFirst(IDB) == PointCloud::ViewArr::NO_INDEX)
 				continue;
-			Point2f& ptA = pointsA.AddConstruct(imageData.camera.ProjectPointP(point.X));
-			Point2f& ptB = pointsB.AddConstruct(imageDataB.camera.ProjectPointP(point.X));
+			const PointCloud::Point& point = pointcloud.points[*pIdx];
+			Point2f& ptA = pointsA.AddConstruct(imageData.camera.ProjectPointP(point));
+			Point2f& ptB = pointsB.AddConstruct(imageDataB.camera.ProjectPointP(point));
 			if (!imageData.camera.IsInside(ptA, boundsA) || !imageDataB.camera.IsInside(ptB, boundsB)) {
 				pointsA.RemoveLast();
 				pointsB.RemoveLast();
@@ -470,86 +459,4 @@ bool Scene::FilterNeighborViews(ViewScoreArr& neighbors, float fMinArea, float f
 		neighbors.Resize(nMaxViews);
 	return !neighbors.IsEmpty();
 } // FilterNeighborViews
-/*----------------------------------------------------------------*/
-
-
-
-// export depth map as an image (dark - far depth, light - close depth)
-bool MVS::ExportDepthMap(const String& fileName, const DepthMap& depthMap, Depth minDepth, Depth maxDepth)
-{
-	// find min and max values
-	if (minDepth == FLT_MAX && maxDepth == 0) {
-		cList<Depth, const Depth, 0> depths(0, depthMap.area());
-		for (size_t i=depthMap.area(); i>0; ) {
-			const Depth depth = depthMap[--i];
-			ASSERT(depth == 0 || depth > 0);
-			if (depth > 0)
-				depths.Insert(depth);
-		}
-		if (!depths.IsEmpty()) {
-			const std::pair<Depth,Depth> th(ComputeX84Threshold<Depth,Depth>(depths.Begin(), depths.GetSize()));
-			maxDepth = th.first+th.second;
-			minDepth = th.first-th.second;
-		}
-		if (minDepth < 0.1f)
-			minDepth = 0.1f;
-		if (maxDepth < 0.1f)
-			maxDepth = 30.f;
-		DEBUG_ULTIMATE("Depth range: %g min - %g max", minDepth, maxDepth);
-	}
-	const Depth deltaDepth = maxDepth - minDepth;
-	// save image
-	Image8U img(depthMap.size());
-	for (size_t i=depthMap.area(); i>0; ) {
-		const Depth depth = depthMap[--i];
-		img[i] = (depth > 0 ? (uint8_t)CLAMP((maxDepth-depth)*255.f/deltaDepth, 0.f, 255.f) : 0);
-	}
-	return img.Save(fileName);
-} // ExportDepthMap
-/*----------------------------------------------------------------*/
-
-// export normal map as an image
-bool MVS::ExportNormalMap(const String& fileName, const NormalMap& normalMap)
-{
-	if (normalMap.empty())
-		return false;
-	Image8U3 img(normalMap.size());
-	normalMap.convertTo(img, img.type(), 255.f/2.f, 255.f/2.f);
-	return img.Save(fileName);
-} // ExportNormalMap
-/*----------------------------------------------------------------*/
-
-// export confidence map as an image (dark - low confidence, light - high confidence)
-bool MVS::ExportConfidenceMap(const String& fileName, const ConfidenceMap& confMap)
-{
-	// find min and max values
-	FloatArr confs(0, confMap.area());
-	for (size_t i=confMap.area(); i>0; ) {
-		const float conf = confMap[--i];
-		ASSERT(conf == 0 || conf > 0);
-		if (conf > 0)
-			confs.Insert(conf);
-	}
-	if (confs.IsEmpty())
-		return false;
-	float minConf, maxConf;
-	if (!confs.IsEmpty()) {
-		const std::pair<float,float> th(ComputeX84Threshold<float,float>(confs.Begin(), confs.GetSize()));
-		minConf = th.first-th.second;
-		maxConf = th.first+th.second;
-	}
-	if (minConf < 0.1f)
-		minConf = 0.1f;
-	if (maxConf < 0.1f)
-		maxConf = 30.f;
-	DEBUG_ULTIMATE("Confidence range: %g min - %g max", minConf, maxConf);
-	const float deltaConf = maxConf - minConf;
-	// save image
-	Image8U img(confMap.size());
-	for (size_t i=confMap.area(); i>0; ) {
-		const float conf = confMap[--i];
-		img[i] = (conf > 0 ? (uint8_t)CLAMP((conf-minConf)*255.f/deltaConf, 0.f, 255.f) : 0);
-	}
-	return img.Save(fileName);
-} // ExportConfidenceMap
 /*----------------------------------------------------------------*/

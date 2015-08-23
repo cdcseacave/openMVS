@@ -25,6 +25,41 @@ inline void ComputeRelativePose(const TMatrix<TYPE,3,3>& Ri, const TPoint3<TYPE>
 } // ComputeRelativePose
 /*----------------------------------------------------------------*/
 
+// compute the homography matrix transforming points from image A to image B,
+// given the relative pose of B with respect to A, and the plane
+// (see R. Hartley, "Multiple View Geometry," 2004, pp. 234)
+template <typename TYPE>
+TMatrix<TYPE,3,3> HomographyMatrixComposition(const TMatrix<TYPE,3,3>& R, const TPoint3<TYPE>& C, const TMatrix<TYPE,3,1>& n, const TYPE& d) {
+	const TMatrix<TYPE,3,1> t(R*(-C));
+	return TMatrix<TYPE,3,3>(R - t*(n.t()*INVERT(d)));
+}
+template <typename TYPE>
+TMatrix<TYPE,3,3> HomographyMatrixComposition(const TMatrix<TYPE,3,3>& R, const TPoint3<TYPE>& C, const TMatrix<TYPE,3,1>& n, const TMatrix<TYPE,3,1>& X) {
+	return HomographyMatrixComposition(R, C, n, -n.dot(X));
+}
+template <typename TYPE>
+TMatrix<TYPE,3,3> HomographyMatrixComposition(const TMatrix<TYPE,3,3>& Ri, const TPoint3<TYPE>& Ci, const TMatrix<TYPE,3,3>& Rj, const TPoint3<TYPE>& Cj, const TMatrix<TYPE,3,1>& n, const TYPE& d) {
+	#if 0
+	Matrix3x3 R; Point3 C;
+	ComputeRelativePose(Ri, Ci, Rj, Cj, R, C);
+	return HomographyMatrixComposition(R, C, n, d);
+	#else
+	const TMatrix<TYPE,3,1> t((Ci - Cj)*INVERT(d));
+	return TMatrix<TYPE,3,3>(Rj * (Ri.t() - t*n.t()));
+	#endif
+}
+template <typename TYPE>
+TMatrix<TYPE,3,3> HomographyMatrixComposition(const TMatrix<TYPE,3,3>& Ri, const TPoint3<TYPE>& Ci, const TMatrix<TYPE,3,3>& Rj, const TPoint3<TYPE>& Cj, const TMatrix<TYPE,3,1>& n, const TMatrix<TYPE,3,1>& X) {
+	#if 0
+	Matrix3x3 R; Point3 C;
+	ComputeRelativePose(Ri, Ci, Rj, Cj, R, C);
+	return HomographyMatrixComposition(R, C, n, X);
+	#else
+	const TMatrix<TYPE,3,1> t((Ci - Cj)*INVERT(n.dot(X)));
+	return TMatrix<TYPE,3,3>(Rj * (Ri.t() + t*n.t()));
+	#endif
+}
+/*----------------------------------------------------------------*/
 
 // transform essential matrix to fundamental matrix
 template<typename TYPE>
@@ -1087,6 +1122,85 @@ inline void ExampleKDE() {
 	KernelDensityEstimation(samples, 6, bandwidth, xMin, xMax, stepMax, inserter);
 }
 #endif
+/*----------------------------------------------------------------*/
+
+
+// normalize image points (inhomogeneous 2D) so that their centroid and typical magnitude of the vector is (1,1)
+template <typename TYPE, typename HTYPE>
+void NormalizePoints(const CLISTDEF0(TPoint2<TYPE>)& pointsIn, CLISTDEF0(TPoint2<TYPE>)& pointsOut, TMatrix<HTYPE,3,3>* pH=NULL) {
+	// find centroid
+	TPoint2<HTYPE> ptAvg(0,0);
+	FOREACHPTR(pPt, pointsIn)
+		ptAvg.x += TPoint2<HTYPE>(*pPt);
+	ptAvg *= HTYPE(1)/HTYPE(pointsIn.GetSize());
+	// move centroid to origin
+	if (pointsOut.GetSize() != pointsIn.GetSize())
+		pointsOut.Resize(pointsIn.GetSize());
+	HTYPE var(0);
+	const TPoint2<TYPE> ptAvgF(ptAvg);
+	FOREACH(i, pointsIn) {
+		const TPoint2<TYPE>& ptIn = pointsIn[i];
+		TPoint2<TYPE>& ptOut = pointsOut[i];
+		ptOut = ptIn - ptAvgF;
+		var += norm(ptOut);
+	}
+	// calculate variance
+	var /= HTYPE(pointsIn.GetSize());
+	// scale points
+	HTYPE scale(1);
+	if (!ISZERO(var))
+		scale = HTYPE(SQRT_2) / var;
+	FOREACHPTR(pPt, pointsOut)
+		*pPt *= scale;
+	// initialize normalizing homography matrix from Scale and Translation (H = S * T);
+	if (pH != NULL) {
+		TMatrix<HTYPE,3,3>& H = *pH;
+		H = TMatrix<HTYPE,3,3>::IDENTITY;
+		H(0,2) = -scale * ptAvg.x;
+		H(1,2) = -scale * ptAvg.y;
+		H(0,0) =  scale;
+		H(1,1) =  scale;
+	}
+}
+// normalize scene points (inhomogeneous 3D) so that their centroid and typical magnitude of the vector is (1,1,1)
+// This normalization algorithm is suitable only for compact distribution of points (see Hartley04 p180)
+template <typename TYPE, typename HTYPE>
+void NormalizePoints(const CLISTDEF0(TPoint3<TYPE>)& pointsIn, CLISTDEF0(TPoint3<TYPE>)& pointsOut, TMatrix<HTYPE,4,4>* pH=NULL) {
+	// find centroid
+	TPoint3<HTYPE> ptAvg(0, 0, 0);
+	FOREACHPTR(pPt, pointsIn)
+		ptAvg += TPoint3<HTYPE>(*pPt);
+	ptAvg *= HTYPE(1)/HTYPE(pointsIn.GetSize());
+	// move centroid to origin
+	if (pointsOut.GetSize() != pointsIn.GetSize())
+		pointsOut.Resize(pointsIn.GetSize());
+	HTYPE var(0);
+	FOREACH(i, pointsIn) {
+		const TPoint3<TYPE>& ptIn = pointsIn[i];
+		TPoint3<TYPE>& ptOut = pointsOut[i];
+		ptOut = ptIn - ptAvg;
+		var += norm(ptOut);
+	}
+	// calculate variance
+	var /= HTYPE(pointsIn.GetSize());
+	// scale points
+	HTYPE scale(1);
+	if (!ISZERO(var))
+		scale = HTYPE(SQRT_3) / var;
+	FOREACHPTR(pPt, pointsOut)
+		*pPt *= scale;
+	// initialize normalizing homography matrix
+	if (pH != NULL) {
+		TMatrix<HTYPE,4,4>& H = *pH;
+		H = TMatrix<HTYPE,4,4>::IDENTITY;
+		H(0,3) = -scale * ptAvg.x;
+		H(1,3) = -scale * ptAvg.y;
+		H(2,3) = -scale * ptAvg.z;
+		H(0,0) =  scale;
+		H(1,1) =  scale;
+		H(2,2) =  scale;
+	}
+}
 /*----------------------------------------------------------------*/
 
 

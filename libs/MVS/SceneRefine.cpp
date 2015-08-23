@@ -415,12 +415,25 @@ MeshRefine::MeshRefine(Scene& _scene, double _weightRegularity, unsigned _nResol
 	typedef std::unordered_set<uint64_t> PairsMap;
 	PairsMap mapPairs;
 	mapPairs.reserve(images.GetSize()*nMaxViews);
+	#ifdef MESHOPT_USE_OPENMP
+	#pragma omp parallel for shared(mapPairs)
+	for (int_t ID=0; ID<(int_t)images.GetSize(); ++ID) {
+		const uint32_t idxImage((uint32_t)ID);
+	#else
 	FOREACH(idxImage, images) {
+	#endif
 		const Image& imageData = images[idxImage];
 		if (!imageData.IsValid())
 			continue;
+		if (imageData.neighbors.IsEmpty()) {
+			IndexArr points;
+			scene.SelectNeighborViews(idxImage, points);
+		}
 		ViewScoreArr neighbors(imageData.neighbors);
 		Scene::FilterNeighborViews(neighbors, fMinArea, fMinScale, fMaxScale, fMinAngle, fMaxAngle, nMaxViews);
+		#ifdef MESHOPT_USE_OPENMP
+		#pragma omp critical
+		#endif
 		FOREACHPTR(pNeighbor, neighbors) {
 			ASSERT(images[pNeighbor->idx.ID].IsValid());
 			mapPairs.insert(MakePairIdx((uint32_t)idxImage, pNeighbor->idx.ID));

@@ -201,7 +201,7 @@ int main(int argc, LPCTSTR* argv)
 
 	if (OPT::bOpenMVS2PLY) {
 		// read OpenMVS input data
-		MVS::Scene scene;
+		MVS::Scene scene(OPT::nMaxThreads);
 		scene.Load(MAKE_PATH_SAFE(OPT::strInputFileName));
 
 		// Export the scene to a PLY file
@@ -237,7 +237,7 @@ int main(int argc, LPCTSTR* argv)
 		}
 		FOREACH(p, scene.pointcloud.points) {
 			const MVS::PointCloud::Point& point = scene.pointcloud.points[p];
-			stream << point.X[0] << " "  << point.X[1] << " " << point.X[2] << " 255 255 255" << "\n";
+			stream << point[0] << " "  << point[1] << " " << point[2] << " 255 255 255" << "\n";
 		}
 		stream.flush();
 		stream.close();
@@ -261,7 +261,7 @@ int main(int argc, LPCTSTR* argv)
 				sfm_data.GetLandmarks().size());
 
 		// convert data from OpenMVG to OpenMVS
-		MVS::Scene scene;
+		MVS::Scene scene(OPT::nMaxThreads);
 
 		// OpenMVG can have not contigous index, use a map to create the required OpenMVS contiguous ID index
 		std::map<openMVG::IndexT, uint32_t> map_intrinsic, map_view;
@@ -312,13 +312,15 @@ int main(int argc, LPCTSTR* argv)
 
 		// Define structure
 		scene.pointcloud.points.Reserve(sfm_data.GetLandmarks().size());
+		scene.pointcloud.pointViews.Reserve(sfm_data.GetLandmarks().size());
 		for (const auto& vertex: sfm_data.GetLandmarks()) {
 			const Landmark & landmark = vertex.second;
 			MVS::PointCloud::Point& point = scene.pointcloud.points.AddEmpty();
-			point.X = landmark.X.cast<float>();
+			point = landmark.X.cast<float>();
+			MVS::PointCloud::ViewArr& views = scene.pointcloud.pointViews.AddEmpty();
 			for (const auto& observation: landmark.obs) {
-				//point.views.Insert(map_view[observation.first]);
-				point.views.Insert(observation.first);
+				//views.Insert(map_view[observation.first]);
+				views.Insert(observation.first);
 			}
 		}
 

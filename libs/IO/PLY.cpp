@@ -1040,7 +1040,7 @@ returns the element, or NULL if not found
 
 PLY::PlyElement* PLY::find_element(const char *element) const
 {
-	for (int i = 0; i < elems.size(); i++)
+	for (size_t i=0; i<elems.size(); ++i)
 		if (equal_strings(element, elems[i]->name.c_str()))
 			return elems[i];
 	return NULL;
@@ -1060,9 +1060,9 @@ returns the index to position in list
 
 int PLY::find_property(PlyElement *elem, const char *prop_name) const
 {
-	for (int i = 0; i < elem->props.size(); i++)
+	for (size_t i=0; i<elem->props.size(); ++i)
 		if (equal_strings(prop_name, elem->props[i]->name.c_str()))
-			return i;
+			return (int)i;
 	return -1;
 }
 

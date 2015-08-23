@@ -211,7 +211,7 @@ int main(int argc, LPCTSTR* argv)
 	if (!Initialize(argc, argv))
 		return EXIT_FAILURE;
 
-	Scene scene;
+	Scene scene(OPT::nMaxThreads);
 	// load and refine the coarse mesh
 	if (!scene.Load(MAKE_PATH_SAFE(OPT::strInputFileName)))
 		return EXIT_FAILURE;

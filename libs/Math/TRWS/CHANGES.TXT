@@ -1,0 +1,13 @@
+Changes from version 1.2:
+
+- Fixed bug in typeBinaryFast
+- Added the option of reading min_marginals
+- Added function AddRandomMessages()
+
+Changes from version 1.1:
+
+- Fixed bug in memory allocation
+
+Changes from version 1.0:
+
+- Modified syntax of 'friend' declarations to make it compile under unix

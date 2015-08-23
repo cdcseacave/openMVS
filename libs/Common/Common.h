@@ -98,6 +98,79 @@ extern String g_strWorkingFolderFull; // full path to current folder
 #define GET_PATH_FULL(str)	(SEACAVE::Util::isFullPath((str).c_str()) ? SEACAVE::Util::getFilePath(str) : String(WORKING_FOLDER_FULL+SEACAVE::Util::getFilePath(str)) // retrieve the full path to the given file
 
 
+// macros simplifying the task of managing options
+#define DECOPT_SPACE(SPACE) namespace SPACE { \
+	void init(); \
+	void update(); \
+	extern SEACAVE::VoidArr arrFncOpt; \
+	extern SEACAVE::CConfigTable oConfig; \
+}
+#define DEFOPT_SPACE(SPACE, name) namespace SPACE { \
+	SEACAVE::CConfigTable oConfig(name); \
+	typedef LPCTSTR (*FNCINDEX)(); \
+	typedef void (*FNCINIT)(SEACAVE::IDX); \
+	typedef void (*FNCUPDATE)(); \
+	VoidArr arrFncOpt; \
+	void init() { \
+		FOREACH(i, arrFncOpt) \
+			((FNCINIT)arrFncOpt[i])(i); \
+	} \
+	void update() { \
+		FOREACH(i, arrFncOpt) \
+			((FNCUPDATE)arrFncOpt[i])(); \
+	} \
+}
+
+#define DEFVAR_OPTION(SPACE, flags, type, name, title, desc, ...) namespace SPACE { \
+	type name; \
+	LPCTSTR defval_##name(NULL); \
+	void update_##name() { \
+		SEACAVE::String::FromString(oConfig[title].val, name); \
+	} \
+	void init_##name(SEACAVE::IDX idx) { \
+		LPCTSTR const vals[] = {__VA_ARGS__}; \
+		arrFncOpt[idx] = (void*)update_##name; \
+		SMLVALUE& val = oConfig[title]; \
+		CFGITEM& opt = *((CFGITEM*)val.data); \
+		opt.state = flags; \
+		val.val = opt.defval = (defval_##name != NULL ? defval_##name : vals[0]); \
+		opt.vals.Insert(opt.defval); \
+		for (size_t i=1; i<sizeof(vals)/sizeof(LPCTSTR); ++i) \
+			opt.vals.Insert(vals[i]); \
+		SEACAVE::String::FromString(opt.defval, name); \
+	} \
+	LPCTSTR index_##name() { \
+		arrFncOpt.Insert((void*)init_##name); \
+		return title; \
+	} \
+	LPCTSTR const name_##name(index_##name()); \
+}
+
+#define FDEFVAR_string(SPACE, flags, name, title, desc, ...)  DEFVAR_OPTION(SPACE, flags, String, name, title, desc, __VA_ARGS__)
+#define FDEFVAR_bool(SPACE, flags, name, title, desc, ...)    DEFVAR_OPTION(SPACE, flags, bool, name, title, desc, __VA_ARGS__)
+#define FDEFVAR_int32(SPACE, flags, name, title, desc, ...)   DEFVAR_OPTION(SPACE, flags, int32_t, name, title, desc, __VA_ARGS__)
+#define FDEFVAR_uint32(SPACE, flags, name, title, desc, ...)  DEFVAR_OPTION(SPACE, flags, uint32_t, name, title, desc, __VA_ARGS__)
+#define FDEFVAR_flags(SPACE, flags, name, title, desc, ...)   DEFVAR_OPTION(SPACE, flags, Flags, name, title, desc, __VA_ARGS__)
+#define FDEFVAR_float(SPACE, flags, name, title, desc, ...)   DEFVAR_OPTION(SPACE, flags, float, name, title, desc, __VA_ARGS__)
+#define FDEFVAR_double(SPACE, flags, name, title, desc, ...)  DEFVAR_OPTION(SPACE, flags, double, name, title, desc, __VA_ARGS__)
+
+#define DEFVAR_string(SPACE, name, title, desc, ...)  DEFVAR_OPTION(SPACE, CFGITEM::NA, String, name, title, desc, __VA_ARGS__)
+#define DEFVAR_bool(SPACE, name, title, desc, ...)    DEFVAR_OPTION(SPACE, CFGITEM::NA, bool, name, title, desc, __VA_ARGS__)
+#define DEFVAR_int32(SPACE, name, title, desc, ...)   DEFVAR_OPTION(SPACE, CFGITEM::NA, int32_t, name, title, desc, __VA_ARGS__)
+#define DEFVAR_uint32(SPACE, name, title, desc, ...)  DEFVAR_OPTION(SPACE, CFGITEM::NA, uint32_t, name, title, desc, __VA_ARGS__)
+#define DEFVAR_flags(SPACE, name, title, desc, ...)   DEFVAR_OPTION(SPACE, CFGITEM::NA, Flags, name, title, desc, __VA_ARGS__)
+#define DEFVAR_float(SPACE, name, title, desc, ...)   DEFVAR_OPTION(SPACE, CFGITEM::NA, float, name, title, desc, __VA_ARGS__)
+#define DEFVAR_double(SPACE, name, title, desc, ...)  DEFVAR_OPTION(SPACE, CFGITEM::NA, double, name, title, desc, __VA_ARGS__)
+
+#define TDEFVAR_string(SPACE, name, title, desc, ...) DEFVAR_OPTION(SPACE, CFGITEM::TEMP, String, name, title, desc, __VA_ARGS__)
+#define TDEFVAR_bool(SPACE, name, title, desc, ...)   DEFVAR_OPTION(SPACE, CFGITEM::TEMP, bool, name, title, desc, __VA_ARGS__)
+#define TDEFVAR_int32(SPACE, name, title, desc, ...)  DEFVAR_OPTION(SPACE, CFGITEM::TEMP, int32_t, name, title, desc, __VA_ARGS__)
+#define TDEFVAR_uint32(SPACE, name, title, desc, ...) DEFVAR_OPTION(SPACE, CFGITEM::TEMP, uint32_t, name, title, desc, __VA_ARGS__)
+#define TDEFVAR_flags(SPACE, name, title, desc, ...)  DEFVAR_OPTION(SPACE, CFGITEM::TEMP, Flags, name, title, desc, __VA_ARGS__)
+#define TDEFVAR_float(SPACE, name, title, desc, ...)  DEFVAR_OPTION(SPACE, CFGITEM::TEMP, float, name, title, desc, __VA_ARGS__)
+#define TDEFVAR_double(SPACE, name, title, desc, ...) DEFVAR_OPTION(SPACE, CFGITEM::TEMP, double, name, title, desc, __VA_ARGS__)
+
+
 // I N C L U D E S /////////////////////////////////////////////////
 
 #include "Types.h"

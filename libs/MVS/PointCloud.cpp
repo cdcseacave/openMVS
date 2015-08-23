@@ -50,8 +50,78 @@ using namespace MVS;
 void PointCloud::Release()
 {
 	points.Release();
+	pointViews.Release();
+	pointWeights.Release();
 	normals.Release();
 	colors.Release();
-	weights.Release();
 }
+/*----------------------------------------------------------------*/
+
+// save the dense point cloud as PLY file
+bool PointCloud::Save(const String& fileName)
+{
+	// vertex definition
+	struct Vertex {
+		float x,y,z;
+		float nx,ny,nz;
+		uint8_t r,g,b;
+	};
+	// list of property information for a vertex
+	static PLY::PlyProperty vert_props[] = {
+		{"x", PLY::Float32, PLY::Float32, offsetof(Vertex,x), 0, 0, 0, 0},
+		{"y", PLY::Float32, PLY::Float32, offsetof(Vertex,y), 0, 0, 0, 0},
+		{"z", PLY::Float32, PLY::Float32, offsetof(Vertex,z), 0, 0, 0, 0},
+		{"nx", PLY::Float32, PLY::Float32, offsetof(Vertex,nx), 0, 0, 0, 0},
+		{"ny", PLY::Float32, PLY::Float32, offsetof(Vertex,ny), 0, 0, 0, 0},
+		{"nz", PLY::Float32, PLY::Float32, offsetof(Vertex,nz), 0, 0, 0, 0},
+		{"red", PLY::Uint8, PLY::Uint8, offsetof(Vertex,r), 0, 0, 0, 0},
+		{"green", PLY::Uint8, PLY::Uint8, offsetof(Vertex,g), 0, 0, 0, 0},
+		{"blue", PLY::Uint8, PLY::Uint8, offsetof(Vertex,b), 0, 0, 0, 0},
+	};
+	// list of the kinds of elements in the PLY
+	static const char* elem_names[] = {
+		"vertex"
+	};
+
+	if (points.IsEmpty())
+		return false;
+
+	// create PLY object
+	ASSERT(!fileName.IsEmpty());
+	Util::ensureDirectory(fileName);
+	PLY ply;
+	if (!ply.write(fileName, 1, elem_names, PLY::BINARY_LE, 64*1024))
+		return false;
+
+	// describe what properties go into the vertex elements
+	ply.describe_property("vertex", 9, vert_props);
+
+	// write the header
+	ply.element_count("vertex", (int)points.GetSize());
+	if (!ply.header_complete())
+		return false;
+
+	// export the array of 3D points
+	Vertex vertex;
+	FOREACH(i, points) {
+		// export the vertex position, normal and color
+		const Point& point = points[i];
+		vertex.x = point.x; vertex.y = point.y; vertex.z = point.z;
+		if (!normals.IsEmpty()) {
+			const Normal& normal = normals[i];
+			vertex.nx = normal.x; vertex.ny = normal.y; vertex.nz = normal.z;
+		} else {
+			vertex.nx = 0; vertex.ny = 0; vertex.nz = 0;
+		}
+		if (!colors.IsEmpty()) {
+			const Color& color = colors[i];
+			vertex.r = color.r; vertex.g = color.g; vertex.b = color.b;
+		} else {
+			vertex.r = 255; vertex.g = 255; vertex.b = 255;
+		}
+		ply.put_element(&vertex);
+	}
+
+	return true;
+} // Save
 /*----------------------------------------------------------------*/

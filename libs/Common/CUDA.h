@@ -169,18 +169,26 @@ public:
 		inline ReturnParam() {}
 		inline ReturnParam(void* _data, size_t _size) : data(_data), size(_size) {}
 	};
-	// read from the device the variadic output parameters
+	CUresult GetResult(int idx, const ReturnParam& param);
+	template <typename TYPE, typename ARG_TYPE, int useConstruct, int grow, typename IDX_TYPE>
+	inline CUresult GetResult(int idx, const cList<TYPE,ARG_TYPE,useConstruct,grow,IDX_TYPE>& param) {
+		return GetResult(idx, ReturnParam(param.GetData(), param.GetDataSize()));
+	}
 	CUresult GetResult(const std::initializer_list<ReturnParam>& params);
 
 private:
 	void Reset();
 
+	CUresult _AddParam(const InputParam& param);
+	CUresult _AddParam(const OutputParam& param);
 	template <typename T>
 	inline CUresult _AddParam(T param) {
 		return addKernelParam(hKernel, paramOffset, param);
 	}
-	CUresult _AddParam(const InputParam& param);
-	CUresult _AddParam(const OutputParam& param);
+	template <typename TYPE, typename ARG_TYPE, int useConstruct, int grow, typename IDX_TYPE>
+	inline CUresult _AddParam(const cList<TYPE,ARG_TYPE,useConstruct,grow,IDX_TYPE>& param) {
+		return _AddParam(InputParam(param.GetData(), param.GetDataSize()));
+	}
 	template <typename T>
 	inline CUresult AddParam(T&& param) {
 		return _AddParam(std::forward<T>(param));

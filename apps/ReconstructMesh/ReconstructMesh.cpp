@@ -206,7 +206,7 @@ int main(int argc, LPCTSTR* argv)
 	if (!Initialize(argc, argv))
 		return EXIT_FAILURE;
 
-	Scene scene;
+	Scene scene(OPT::nMaxThreads);
 	if (OPT::strMeshFileName.IsEmpty()) {
 		// load point-cloud and reconstruct a coarse mesh
 		if (!scene.Load(MAKE_PATH_SAFE(OPT::strInputFileName)))

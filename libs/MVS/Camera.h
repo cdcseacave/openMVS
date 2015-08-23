@@ -1,5 +1,5 @@
 /*
-* Camera.cpp
+* Camera.h
 *
 * Copyright (c) 2014-2015 FOXEL SA - http://foxel.ch
 * Please read <http://foxel.ch/license> for more information.
@@ -189,6 +189,7 @@ public:
 
 public:
 	inline Camera() {}
+	inline Camera(const CameraIntern& camera) : CameraIntern(camera) {}
 	Camera(const Matrix3x4& _P, bool bUpdate=true);
 	Camera(const Matrix3x3& _R, const Point3& _C, bool bUpdate=true);
 	Camera(const Matrix3x3& _K, const Matrix3x3& _R, const Point3& _C, bool bUpdate=true);

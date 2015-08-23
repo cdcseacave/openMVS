@@ -275,25 +275,6 @@ void KernelRT::Release() {
 		hModule = NULL;
 	}
 }
-CUresult KernelRT::Reset(LPCSTR program, LPCSTR functionName, bool bFromFile) {
-	// JIT Compile the Kernel from PTX and get the Handles (Driver API)
-	CUresult result(ptxJIT(program, functionName, &hModule, &hKernel, &lState, bFromFile));
-	if (result != CUDA_SUCCESS)
-		hModule = NULL;
-	return result;
-}
-
-// read from the device the variadic output parameters
-CUresult KernelRT::GetResult(const std::initializer_list<ReturnParam>& params) {
-	IDX idx(0);
-	for (auto param : params) {
-		// copy result back to the host
-		if (cudaMemcpy(param.data, outDatas[idx++], param.size, cudaMemcpyDeviceToHost) != cudaSuccess)
-			return CUDA_ERROR_INVALID_VALUE;
-	}
-	return CUDA_SUCCESS;
-}
-
 void KernelRT::Reset() {
 	paramOffset = 0;
 	FOREACHPTR(ptrData, inDatas)
@@ -303,7 +284,16 @@ void KernelRT::Reset() {
 		cudaFree(*ptrData);
 	outDatas.Empty();
 }
+CUresult KernelRT::Reset(LPCSTR program, LPCSTR functionName, bool bFromFile) {
+	// JIT Compile the Kernel from PTX and get the Handles (Driver API)
+	CUresult result(ptxJIT(program, functionName, &hModule, &hKernel, &lState, bFromFile));
+	if (result != CUDA_SUCCESS)
+		hModule = NULL;
+	return result;
+}
 
+
+// append a generic input parameter (allocate&copy input buffer)
 CUresult KernelRT::_AddParam(const InputParam& param) {
 	void*& data = inDatas.AddEmpty();
 	if (cudaMalloc(&data, param.size) != cudaSuccess)
@@ -312,11 +302,27 @@ CUresult KernelRT::_AddParam(const InputParam& param) {
 		return CUDA_ERROR_INVALID_VALUE;
 	return addKernelParam(hKernel, paramOffset, data);
 }
+// append a generic output parameter (allocate output buffer)
 CUresult KernelRT::_AddParam(const OutputParam& param) {
 	void*& data = outDatas.AddEmpty();
 	if (cudaMalloc(&data, param.size) != cudaSuccess)
 		return CUDA_ERROR_OUT_OF_MEMORY;
 	return addKernelParam(hKernel, paramOffset, data);
+}
+
+
+// copy result from the given output parameter index back to the host
+CUresult KernelRT::GetResult(int idx, const ReturnParam& param) {
+	return (cudaMemcpy(param.data, outDatas[idx], param.size, cudaMemcpyDeviceToHost) == cudaSuccess) ?
+		CUDA_SUCCESS : CUDA_ERROR_INVALID_VALUE;
+}
+// read from the device the variadic output parameters
+CUresult KernelRT::GetResult(const std::initializer_list<ReturnParam>& params) {
+	IDX idx(0);
+	for (auto param : params)
+		if (cudaMemcpy(param.data, outDatas[idx++], param.size, cudaMemcpyDeviceToHost) != cudaSuccess)
+			return CUDA_ERROR_INVALID_VALUE;
+	return CUDA_SUCCESS;
 }
 /*----------------------------------------------------------------*/
 #endif // _SUPPORT_CPP11
