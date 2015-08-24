@@ -29,6 +29,7 @@
 #endif
 #ifdef _SUPPORT_CPP11
 #include <cstdint>
+#include <initializer_list>
 #else
 #include <stdint.h>
 #endif
@@ -56,7 +57,7 @@
 #include <omp.h>
 #endif
 
-// File System utils (stlplus)
+// File-System utils (stlplus)
 #include "FileUtil.h"
 #include "Wildcard.h"
 
@@ -384,6 +385,7 @@ typedef class GENERAL_API cList<double, double, 0>      DoubleArr;
 #include "SML.h"
 #include "ConfigTable.h"
 #include "HTMLDoc.h"
+#include "CUDA.h"
 
 
 // D E F I N E S ///////////////////////////////////////////////////
@@ -1594,7 +1596,7 @@ public:
 		// replace the removed element by the last one and decrease the size
 		ASSERT(rows == 1 || cols == 1);
 		const int last = area()-1;
-		operator()(idx) = operator()(last);
+		Base::operator()(idx) = Base::operator()(last);
 		resize((size_t)last);
 	}
 
@@ -2531,15 +2533,16 @@ public:
 	SO3(const Vec3& a, const Vec3& b) {
 		ASSERT(a.size() == 3);
 		ASSERT(b.size() == 3);
-		Vec3 n = a.cross(b);
-		if (n.squaredNorm() == P1(0)) {
-			//check that the vectors are in the same direction if cross product is 0. If not,
-			//this means that the rotation is 180 degrees, which leads to an ambiguity in the rotation axis.
-			ASSERT(a.dot(b) >= P1(0));
+		Vec3 n(a.cross(b));
+		const Precision nrmSq(n.squaredNorm());
+		if (nrmSq == Precision(0)) {
+			// check that the vectors are in the same direction if cross product is 0; if not,
+			// this means that the rotation is 180 degrees, which leads to an ambiguity in the rotation axis
+			ASSERT(a.dot(b) >= Precision(0));
 			my_matrix = Mat3::Identity();
 			return;
 		}
-		n.normalize();
+		n *= Precision(1)/sqrt(nrmSq);
 		Mat3 R1;
 		R1.col(0) = a.normalized();
 		R1.col(1) = n;

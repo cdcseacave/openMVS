@@ -193,7 +193,7 @@ unsigned Image::RecomputeMaxResolution(unsigned& level, unsigned minImageSize) c
 
 
 // compute the camera extrinsics from the platform pose and the relative camera pose to the platform
-void Image::UpdateCamera(const PlatformArr& platforms)
+Camera Image::GetCamera(const PlatformArr& platforms, const Image8U::Size& resolution) const
 {
 	ASSERT(platformID != NO_ID);
 	ASSERT(cameraID != NO_ID);
@@ -201,10 +201,16 @@ void Image::UpdateCamera(const PlatformArr& platforms)
 
 	// compute the normalized absolute camera pose
 	const Platform& platform = platforms[platformID];
-	camera = platform.GetCamera(cameraID, poseID);
+	Camera camera(platform.GetCamera(cameraID, poseID));
 
 	// compute the unnormalized camera
-	camera.K = camera.GetK<REAL>(width, height);
+	camera.K = camera.GetK<REAL>(resolution.width, resolution.height);
 	camera.ComposeP();
+
+	return camera;
+} // GetCamera
+void Image::UpdateCamera(const PlatformArr& platforms)
+{
+	camera = GetCamera(platforms, Image8U::Size(width, height));
 } // UpdateCamera
 /*----------------------------------------------------------------*/

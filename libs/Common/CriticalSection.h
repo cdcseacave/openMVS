@@ -80,8 +80,6 @@ private:
 */
 class FastCriticalSection {
 public:
-#ifdef _MSC_VER
-
 	FastCriticalSection() : state(0) {}
 
 	void Clear() {
@@ -101,21 +99,6 @@ public:
 
 protected:
 	volatile Thread::safe_t state;
-
-#else
-
-	// We have to use a pthread (nonrecursive) mutex, didn't find any test_and_set on linux...
-	FastCriticalSection() { pthread_mutex_init(&mtx, NULL); }
-	~FastCriticalSection() { pthread_mutex_destroy(&mtx); }
-	void Clear() { pthread_mutex_destroy(&mtx); pthread_mutex_init(&mtx, NULL); }
-	void Enter() { pthread_mutex_lock(&mtx); }
-	bool TryEnter() { return (pthread_mutex_trylock(&mtx) == 0); }
-	void Leave() { pthread_mutex_unlock(&mtx); }
-
-protected:
-	pthread_mutex_t mtx;
-
-#endif
 };
 
 template<class T>

@@ -1836,8 +1836,8 @@ TYPE TImage<TYPE>::sample(const TPoint2<T>& pt) const
 	const int ly((int)pt.y);
 	const T x(pt.x-lx), x1(T(1)-x);
 	const T y(pt.y-ly), y1(T(1)-y);
-	return y1*(x1*BaseBase::operator()( ly, lx) + x*BaseBase::operator()( ly, lx+1)) +
-			y*(x1*BaseBase::operator()(ly+1,lx) + x*BaseBase::operator()(ly+1,lx+1));
+	return (BaseBase::operator()( ly, lx)*x1 + BaseBase::operator()( ly, lx+1)*x)*y1 +
+		   (BaseBase::operator()(ly+1,lx)*x1 + BaseBase::operator()(ly+1,lx+1)*x)*y;
 }
 template <typename TYPE>
 template <typename T>
@@ -1847,8 +1847,8 @@ TYPE TImage<TYPE>::sampleSafe(const TPoint2<T>& pt) const
 	const int ly((int)pt.y);
 	const T x(pt.x-lx), x1(T(1)-x);
 	const T y(pt.y-ly), y1(T(1)-y);
-	return y1*(x1*getPixel( ly, lx) + x*getPixel( ly, lx+1)) +
-			y*(x1*getPixel(ly+1,lx) + x*getPixel(ly+1,lx+1));
+	return (getPixel( ly, lx)*x1 + getPixel( ly, lx+1)*x)*y1 +
+		   (getPixel(ly+1,lx)*x1 + getPixel(ly+1,lx+1)*x)*y;
 }
 /*----------------------------------------------------------------*/
 
@@ -1904,7 +1904,7 @@ TYPE TImage<TYPE>::sample(const TPoint2<T>& pt, bool (STCALL *fncCond)(const TYP
 	const TYPE& x0y1(BaseBase::operator()(ly+1, lx  )); const bool b01(fncCond(x0y1));
 	const TYPE& x1y1(BaseBase::operator()(ly+1, lx+1)); const bool b11(fncCond(x1y1));
 	return y1*(x1*(b00 ? x0y0 : dv) + x*(b10 ? x1y0 : dv)) +
-		y*(x1*(b01 ? x0y1 : dv) + x*(b11 ? x1y1 : dv));
+		    y*(x1*(b01 ? x0y1 : dv) + x*(b11 ? x1y1 : dv));
 }
 template <typename TYPE>
 template <typename T>

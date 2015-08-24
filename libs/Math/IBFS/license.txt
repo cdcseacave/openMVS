@@ -1,0 +1,33 @@
+/*
+#########################################################
+#                                                       #
+#  IBFSGraph -  Software for solving                    #
+#               Maximum s-t Flow / Minimum s-t Cut      #
+#               using the IBFS algorithm                #
+#                                                       #
+#  http://www.cs.tau.ac.il/~sagihed/ibfs/               #
+#                                                       #
+#  Haim Kaplan (haimk@cs.tau.ac.il)                     #
+#  Sagi Hed (sagihed@post.tau.ac.il)                    #
+#                                                       #
+#########################################################
+
+This software implements the IBFS (Incremental Breadth First Search) maximum flow algorithm from
+	"Maximum flows by incremental breadth-first search"
+	Andrew V. Goldberg, Sagi Hed, Haim Kaplan, Robert E. Tarjan, and Renato F. Werneck.
+	In Proceedings of the 19th European conference on Algorithms, ESA'11, pages 457-468.
+	ISBN 978-3-642-23718-8
+	2011
+
+Copyright Haim Kaplan (haimk@cs.tau.ac.il) and Sagi Hed (sagihed@post.tau.ac.il)
+
+###########
+# LICENSE #
+###########
+This software can be used for research purposes only.
+If you use this software for research purposes, you should cite the aforementioned paper
+in any resulting publication and appropriately credit it.
+
+If you require another license, please contact the above.
+
+*/

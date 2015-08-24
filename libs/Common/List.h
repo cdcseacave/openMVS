@@ -356,6 +356,10 @@ public:
 	{
 		return vector;
 	}
+	inline size_t	GetDataSize() const
+	{
+		return sizeof(TYPE)*size;
+	}
 
 	inline TYPE*	Begin() const
 	{

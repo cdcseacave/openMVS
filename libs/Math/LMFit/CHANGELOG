@@ -1,0 +1,115 @@
+Customized by CDC:
+
+- support user Jacobian evaluation
+
+Changes in lmfit-4.0, released 16jul13
+
+- binary library renamed: lmmin -> lmfit
+- API changes:
+  - lmcurve.h no longer depends on lmmin.h, but only on new lmstruct.h
+  - low-level API lmdif is removed (code integrated in lmmin)
+  - lmcurve_fit -> lmcurve
+  - new control parameter 'pivot' (default: pivoting is used, as before)
+  - new structure lm_princon_struct, generalizing printflags
+  - in consequence thereof, new parameter lists for lmcurve and lmmin
+- code cleanup:
+  - ensure strict C90 compliance: no C++ comments; replace non-standard
+    struct assignement (reported by Elio Mazzocca, using LCC)
+  - revert malloc trick of release 3.4 (readability is more important)
+  - source code comment blocks moved around, to reduce duplications
+- build scripts cleanup:
+  - demo programs are no longer installed to $bindir
+  - configure.ac: cleaned up, and inserted comments
+- documentation:
+  - new web location: apps.jcns.fz-juelich.de/lmfit
+  - new entry page (dokuwiki) instead of man page
+  - man page split and largely rewritten: lmcurve(3), lmmin(3)
+
+Changes in lmfit-3.5, released 3feb13
+
+- changed overall license to FreeBSD to facilitate inclusion in Linux
+  distributions (request by M. Hroncok)
+- directory doc renamed man
+
+Changes in lmfit-3.4, released 21jan13
+
+- only one malloc call to allocate all arrays (proposal by F. Polchow)
+- liblmmin_la_LDFLAGS += -lm (required by Ubuntu, report by J. M. Agosta)
+- there is now an alternative ruby binding, using inline instead of swig
+  (contribution by I. Drozdov)
+- long message for degenerate case now suggests increasing epsilon
+  (suggestion by Nghia Ho)
+
+Changes in lmfit-3.3, released 12sep12
+
+- moved "int" declarations to top of lm_printout_std() and lmmin()
+  (required by Visual Studio 2005: bug report M. Beek)
+- corrected typo 0.55 -> 0.5 (bug reports M. Kardas and D. Pescia)
+- man pages now produced by make; finally got rid of dmake
+- untabified code (hint by W. Pimenta)
+
+Changes in lmfit-3.2, released 28mar10 (preview 27mar10):
+
+- shared library is given correct version number (set in configure.ac)
+- man page lmfit(3) is copied by dmake to lmmin(3) and lmcurve_fit(3)
+
+Changes in lmfit-3.1, released 12mar10:
+
+- debian directory not part of tgz distribution
+- temporarily removed lmmin.3 (was symlink -> lmfit.3)
+
+Changes in lmfit-3.0, released 2mar10 (preview 27feb10):
+
+- for parameter close to zero, change step width for calculation of jabobian
+- outer iteration counter starting at zero (C style)
+- replace BUG by LMFIT_DEBUG_MESSAGES and .._MATRIX to allow control by -D
+- remove redundant calculation by exchanging workspaces and lm_lmpar output
+- eliminate unncessary wa1 = -wa1 computation
+- avoid passing wa3 to wa1, choose better names for work arrays in lm_par
+- migrate documentation from brain-damaged asciidoc to pod
+- rewrote interface documentation
+- API changes:
+  -- eliminate lm_initialize_control, provide defaults for float and double
+  -- separate limits and status records
+  -- separate generic minimization and one-dimensional curve fitting
+  -- simplify the latter
+- replace curve-fitting demo
+- provide surface-fitting demo (correspondence M. Rudolphi)
+- provide vector minimization demos
+- test for fnorm<=LM_DWARF, renumbered info values 0, 10, 11
+
+Changes in lmfit-2.6, released 29sep09:
+
+- nfev incrementation even if printout=0 (bug report C. Tanner)
+- correct t->tvec, y->yvec in man page  (bug report C. Tanner)
+
+Changes in lmfit-2.5, released 20sep09:
+
+- malloc==NULL ? (suggestion R. Strickland)
+- allow printout=NULL (suggestion J. Lodewyck)
+- improve infmsg (correspondence B. McHoull)
+- eliminate some static variables (p25, p5, p75, ..)
+- eliminate function data types; they obscure more than they help
+
+Changes in lmfit-2.4, released 27jul08:
+
+- clearer file headers
+- clearer licence (everything has ever been in the public domain)
+- machine-dependent arithmetic constants from float.h (suggestion M. Bydder)
+- minor improvements of comments
+
+Changes in lmfit-2.3, released 5apr08:
+
+- fixed bug sf#1817631: replaced confusing variable names in lmmin.c:lm_qrsolv()
+- accepted feature request 1814970: inclusion protection in headers
+- accepted feature request 1814976: cplusplus wrapper in headers
+- fixed bug sf#1868399: typos in debug messages
+- accepted proposal from M. Bydder:
+     improved calculation of differences in lmmin, lines 415-417
+- reverted comments in lmmin.c to pure C style
+- improved documentation of interfaces
+
+Changes up to lmfit-2.2, released 20sep07:
+
+- no change log has been maintained,
+  there are just the sourceforge release notes

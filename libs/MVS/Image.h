@@ -98,7 +98,7 @@ public:
 	}
 
 	inline bool IsValid() const { return poseID != NO_ID; }
-	inline ImageRef GetSize() const { return ImageRef(width, height); }
+	inline Image8U::Size GetSize() const { return Image8U::Size(width, height); }
 
 	// read image data from the file
 	static IMAGEPTR OpenImage(const String& fileName);
@@ -112,6 +112,7 @@ public:
 	unsigned ComputeMaxResolution(unsigned& level, unsigned minImageSize) const;
 	unsigned RecomputeMaxResolution(unsigned& level, unsigned minImageSize) const;
 
+	Camera GetCamera(const PlatformArr& platforms, const Image8U::Size& resolution) const;
 	void UpdateCamera(const PlatformArr& platforms);
 
 	float GetNormalizationScale() const {

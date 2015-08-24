@@ -415,12 +415,21 @@ MeshRefine::MeshRefine(Scene& _scene, double _weightRegularity, unsigned _nResol
 	typedef std::unordered_set<uint64_t> PairsMap;
 	PairsMap mapPairs;
 	mapPairs.reserve(images.GetSize()*nMaxViews);
+	#ifdef MESHOPT_USE_OPENMP
+	#pragma omp parallel for shared(mapPairs)
+	for (int_t ID=0; ID<(int_t)images.GetSize(); ++ID) {
+		const uint32_t idxImage((uint32_t)ID);
+	#else
 	FOREACH(idxImage, images) {
+	#endif
 		const Image& imageData = images[idxImage];
 		if (!imageData.IsValid())
 			continue;
 		ViewScoreArr neighbors(imageData.neighbors);
 		Scene::FilterNeighborViews(neighbors, fMinArea, fMinScale, fMaxScale, fMinAngle, fMaxAngle, nMaxViews);
+		#ifdef MESHOPT_USE_OPENMP
+		#pragma omp critical
+		#endif
 		FOREACHPTR(pNeighbor, neighbors) {
 			ASSERT(images[pNeighbor->idx.ID].IsValid());
 			mapPairs.insert(MakePairIdx((uint32_t)idxImage, pNeighbor->idx.ID));
@@ -1671,11 +1680,11 @@ void MeshRefine::DumpScoreMesh(const double* gradients, const String& fileName)
 
 
 
-/** 
+/**
  * Computes the discrete curvature approximation as in the paper [Meyer et al 2002]:
  * "Discrete Differential-Geometry Operators for Triangulated 2-Manifolds"
  * Mark Meyer, Mathieu Desbrun, Peter Schroder, Alan H. Barr
- * VisMath '02, Berlin (Germany) 
+ * VisMath '02, Berlin (Germany)
  * http://www-grail.usc.edu/pubs.html
  */
 
@@ -1686,7 +1695,7 @@ inline bool triangle_obtuse(const Vertex& v, const Vertex& v1, const Vertex& v2)
 	return (angle_obtuse(v, v1, v2) ||
 			angle_obtuse(v1, v2, v) ||
 			angle_obtuse(v2, v, v1));
-} 
+}
 
 inline float cotan(const Vertex& vo, const Vertex& v1, const Vertex& v2) {
 	// cf. Appendix B of [Meyer et al 2002]

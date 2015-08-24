@@ -96,8 +96,16 @@ public:
 
 	Image8U3 textureDiffuse; // texture containing the diffuse color (optional)
 
+	#ifdef _USE_CUDA
+	static CUDA::KernelRT kernelComputeFaceNormal;
+	#endif
+
 public:
-	inline Mesh() {}
+	inline Mesh() {
+		#ifdef _USE_CUDA
+		InitKernels();
+		#endif
+	}
 
 	void Release();
 	void ReleaseExtra();
@@ -127,6 +135,10 @@ public:
 	static inline uint32_t FindVertex(const Face& f, VIndex v) { for (uint32_t i=0; i<3; ++i) if (f[i] == v) return i; return NO_ID; }
 	static inline VIndex GetVertex(const Face& f, VIndex v) { const uint32_t idx(FindVertex(f, v)); ASSERT(idx != NO_ID); return f[idx]; }
 	static inline VIndex& GetVertex(Face& f, VIndex v) { const uint32_t idx(FindVertex(f, v)); ASSERT(idx != NO_ID); return f[idx]; }
+
+	#ifdef _USE_CUDA
+	static bool InitKernels(int device=-1);
+	#endif
 
 	#ifdef _USE_BOOST
 	// implement BOOST serialization

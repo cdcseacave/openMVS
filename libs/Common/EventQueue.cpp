@@ -42,11 +42,9 @@ void EventQueue::AddEventFirst(Event* evt)
 
 Event* EventQueue::GetEvent()
 {
-	if (!m_sem.Wait())
-		return NULL;
+	m_sem.Wait();
 	Lock l(m_cs);
-	if (m_events.IsEmpty())
-		return NULL;
+	ASSERT(!m_events.IsEmpty());
 	return m_events.RemoveHead();
 }
 Event* EventQueue::GetEvent(uint32_t millis)
@@ -60,11 +58,9 @@ Event* EventQueue::GetEvent(uint32_t millis)
 }
 Event* EventQueue::GetEventLast()
 {
-	if (!m_sem.Wait())
-		return NULL;
+	m_sem.Wait();
 	Lock l(m_cs);
-	if (m_events.IsEmpty())
-		return NULL;
+	ASSERT(!m_events.IsEmpty());
 	return m_events.RemoveTail();
 }
 Event* EventQueue::GetEventLast(uint32_t millis)

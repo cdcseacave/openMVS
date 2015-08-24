@@ -42,8 +42,7 @@
 
 // I N C L U D E S /////////////////////////////////////////////////
 
-#include "Image.h"
-#include "PointCloud.h"
+#include "DepthMap.h"
 #include "Mesh.h"
 
 
@@ -53,17 +52,6 @@
 // S T R U C T S ///////////////////////////////////////////////////
 
 namespace MVS {
-
-typedef float Depth;
-typedef Point3f Normal;
-typedef TImage<Depth> DepthMap;
-typedef TImage<Normal> NormalMap;
-typedef TImage<float> ConfidenceMap;
-typedef SEACAVE::cList<Depth, Depth, 0> DepthArr;
-typedef SEACAVE::cList<DepthMap, const DepthMap&, 2> DepthMapArr;
-typedef SEACAVE::cList<NormalMap, const NormalMap&, 2> NormalMapArr;
-typedef SEACAVE::cList<ConfidenceMap, const ConfidenceMap&, 2> ConfidenceMapArr;
-/*----------------------------------------------------------------*/
 
 class Scene
 {
@@ -75,8 +63,10 @@ public:
 
 	unsigned nCalibratedImages; // number of valid images
 
+	unsigned nMaxThreads; // maximum number of threads used to distribute the work load
+
 public:
-	inline Scene() {}
+	inline Scene(unsigned _nMaxThreads=0) : nMaxThreads(Thread::getMaxThreads(_nMaxThreads)) {}
 
 	bool LoadInterface(const String& fileName);
 	bool SaveInterface(const String& fileName) const;
@@ -84,14 +74,24 @@ public:
 	bool Load(const String& fileName);
 	bool Save(const String& fileName, ARCHIVE_TYPE type=ARCHIVE_BINARY_ZIP) const;
 
-	bool ReconstructMesh(float distInsert=2, bool bUseFreeSpaceSupport=true);
-
-	bool RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsigned nMaxViews, float fDecimateMesh, unsigned nCloseHoles, unsigned nEnsureEdgeSize, unsigned nScales, float fScaleStep, float fRegularityWeight, unsigned nMaxFaceArea, float fConfidenceThreshold);
-
-	bool TextureMesh(unsigned nResolutionLevel, unsigned nMinResolution, float fOutlierThreshold=0, bool bGlobalSeamLeveling=true, bool bLocalSeamLeveling=true);
-
 	bool SelectNeighborViews(uint32_t ID, IndexArr& points, unsigned nMinViews=3, unsigned nMinPointViews=2, float fOptimAngle=FD2R(12));
 	static bool FilterNeighborViews(ViewScoreArr& neighbors, float fMinArea=0.12f, float fMinScale=0.2f, float fMaxScale=2.4f, float fMinAngle=FD2R(3), float fMaxAngle=FD2R(45), unsigned nMaxViews=12);
+
+	// Dense reconstruction
+	bool DenseReconstruction();
+	static void* DenseReconstructionEstimateTmp(void*);
+	void DenseReconstructionEstimate(void*);
+	static void* DenseReconstructionFilterTmp(void*);
+	void DenseReconstructionFilter(void*);
+
+	// Mesh reconstruction
+	bool ReconstructMesh(float distInsert=2, bool bUseFreeSpaceSupport=true);
+
+	// Mesh refinement
+	bool RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsigned nMaxViews, float fDecimateMesh, unsigned nCloseHoles, unsigned nEnsureEdgeSize, unsigned nScales, float fScaleStep, float fRegularityWeight, unsigned nMaxFaceArea, float fConfidenceThreshold);
+
+	// Mesh texturing
+	bool TextureMesh(unsigned nResolutionLevel, unsigned nMinResolution, float fOutlierThreshold=0, bool bGlobalSeamLeveling=true, bool bLocalSeamLeveling=true);
 
 	#ifdef _USE_BOOST
 	// implement BOOST serialization
@@ -104,12 +104,6 @@ public:
 	}
 	#endif
 };
-/*----------------------------------------------------------------*/
-
-// Tools
-bool ExportDepthMap(const String& fileName, const DepthMap& depthMap, Depth minDepth=FLT_MAX, Depth maxDepth=0);
-bool ExportNormalMap(const String& fileName, const NormalMap& normalMap);
-bool ExportConfidenceMap(const String& fileName, const ConfidenceMap& confMap);
 /*----------------------------------------------------------------*/
 
 } // namespace MVS

@@ -61,6 +61,7 @@ float fRemoveSpurious;
 bool bRemoveSpikes;
 unsigned nCloseHoles;
 unsigned nSmoothMesh;
+unsigned nArchiveType;
 int nProcessPriority;
 unsigned nMaxThreads;
 String strConfigFileName;
@@ -80,7 +81,8 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		("help,h", "produce this help message")
 		("working-folder,w", boost::program_options::value<std::string>(&WORKING_FOLDER), "the working directory (default current directory)")
 		("config-file,c", boost::program_options::value<std::string>(&OPT::strConfigFileName)->default_value(APPNAME _T(".cfg")), "the file name containing program options")
-		("process-priority", boost::program_options::value<int>(&OPT::nProcessPriority)->default_value(-1), "Process priority (below normal by default)")
+		("archive-type", boost::program_options::value<unsigned>(&OPT::nArchiveType)->default_value(2), "project archive type: 0-text, 1-binary, 2-compressed binary")
+		("process-priority", boost::program_options::value<int>(&OPT::nProcessPriority)->default_value(-1), "process priority (below normal by default)")
 		("max-threads", boost::program_options::value<unsigned>(&OPT::nMaxThreads)->default_value(0), "maximum number of threads (0 for using all available cores)")
 		#if TD_VERBOSE != TD_VERBOSE_OFF
 		("verbosity,v", boost::program_options::value<int>(&g_nVerbosityLevel)->default_value(
@@ -204,11 +206,21 @@ int main(int argc, LPCTSTR* argv)
 	if (!Initialize(argc, argv))
 		return EXIT_FAILURE;
 
-	Scene scene;
+	Scene scene(OPT::nMaxThreads);
 	if (OPT::strMeshFileName.IsEmpty()) {
 		// load point-cloud and reconstruct a coarse mesh
 		if (!scene.Load(MAKE_PATH_SAFE(OPT::strInputFileName)))
 			return EXIT_FAILURE;
+		// make sure the image neighbors are initialized before deleting the point-cloud
+		FOREACH(idxImage, scene.images) {
+			const Image& imageData = scene.images[idxImage];
+			if (!imageData.IsValid())
+				continue;
+			if (imageData.neighbors.IsEmpty()) {
+				IndexArr points;
+				scene.SelectNeighborViews(idxImage, points);
+			}
+		}
 		TD_TIMER_START();
 		scene.ReconstructMesh(OPT::fDistInsert, OPT::bUseFreeSpaceSupport);
 		VERBOSE("Mesh reconstruction completed: %u vertices, %u faces (%s)", scene.mesh.vertices.GetSize(), scene.mesh.faces.GetSize(), TD_TIMER_GET_FMT().c_str());
@@ -226,7 +238,7 @@ int main(int argc, LPCTSTR* argv)
 	// clean and save the final mesh
 	scene.mesh.Clean(OPT::fDecimateMesh, OPT::fRemoveSpurious, OPT::bRemoveSpikes, OPT::nCloseHoles, OPT::nSmoothMesh);
 	scene.mesh.Save(MAKE_PATH_SAFE(Util::getFullFileName(OPT::strOutputFileName) + _T("_mesh.ply")));
-	scene.Save(MAKE_PATH_SAFE(Util::getFullFileName(OPT::strOutputFileName) + _T("_mesh.mvs")));
+	scene.Save(MAKE_PATH_SAFE(Util::getFullFileName(OPT::strOutputFileName) + _T("_mesh.mvs")), (ARCHIVE_TYPE)OPT::nArchiveType);
 
 	Finalize();
 	return EXIT_SUCCESS;

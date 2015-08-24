@@ -324,6 +324,7 @@ bool bNormalizeIntrinsics;
 String strListFileName;
 String strInputFileName;
 String strOutputFileName;
+unsigned nArchiveType;
 int nProcessPriority;
 unsigned nMaxThreads;
 String strConfigFileName;
@@ -343,7 +344,8 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		("help,h", "produce this help message")
 		("working-folder,w", boost::program_options::value<std::string>(&WORKING_FOLDER), "the working directory (default current directory)")
 		("config-file,c", boost::program_options::value<std::string>(&OPT::strConfigFileName)->default_value(APPNAME _T(".cfg")), "the file name containing program options")
-		("process-priority", boost::program_options::value<int>(&OPT::nProcessPriority)->default_value(-1), "Process priority (below normal by default)")
+		("archive-type", boost::program_options::value<unsigned>(&OPT::nArchiveType)->default_value(2), "project archive type: 0-text, 1-binary, 2-compressed binary")
+		("process-priority", boost::program_options::value<int>(&OPT::nProcessPriority)->default_value(-1), "process priority (below normal by default)")
 		("max-threads", boost::program_options::value<unsigned>(&OPT::nMaxThreads)->default_value(0), "maximum number of threads (0 for using all available cores)")
 		#if TD_VERBOSE != TD_VERBOSE_OFF
 		("verbosity,v", boost::program_options::value<int>(&g_nVerbosityLevel)->default_value(
@@ -466,7 +468,7 @@ int main(int argc, LPCTSTR* argv)
 
 	if (OPT::bOpenMVS2OpenMVG) {
 		// read OpenMVS input data
-		MVS::Scene scene;
+		MVS::Scene scene(OPT::nMaxThreads);
 		if (!scene.Load(MAKE_PATH_SAFE(OPT::strInputFileName)))
 			return EXIT_FAILURE;
 
@@ -502,9 +504,10 @@ int main(int argc, LPCTSTR* argv)
 		FOREACH(p, scene.pointcloud.points) {
 			const MVS::PointCloud::Point& point = scene.pointcloud.points[p];
 			openMVS::MVS_IO::Vertex vertexBAF;
-			vertexBAF.X = ((const MVS::PointCloud::Position::EVec)point.X).cast<REAL>();
-			FOREACH(v, point.views) {
-				unsigned viewBAF = point.views[(uint32_t)v];
+			vertexBAF.X = ((const MVS::PointCloud::Point::EVec)point).cast<REAL>();
+			const MVS::PointCloud::ViewArr& views = scene.pointcloud.pointViews[p];
+			FOREACH(v, views) {
+				unsigned viewBAF = views[(uint32_t)v];
 				vertexBAF.views.push_back(viewBAF);
 			}
 			sceneBAF.vertices.push_back(vertexBAF);
@@ -521,7 +524,7 @@ int main(int argc, LPCTSTR* argv)
 			return EXIT_FAILURE;
 
 		// convert data from OpenMVG to OpenMVS
-		MVS::Scene scene;
+		MVS::Scene scene(OPT::nMaxThreads);
 		scene.platforms.Reserve((uint32_t)sceneBAF.cameras.size());
 		for (const auto& cameraBAF: sceneBAF.cameras) {
 			MVS::Platform& platform = scene.platforms.AddEmpty();
@@ -546,12 +549,13 @@ int main(int argc, LPCTSTR* argv)
 			pose.C = poseBAF.C;
 		}
 		scene.pointcloud.points.Reserve(sceneBAF.vertices.size());
+		scene.pointcloud.pointViews.Reserve(sceneBAF.vertices.size());
 		for (const auto& vertexBAF: sceneBAF.vertices) {
 			MVS::PointCloud::Point& point = scene.pointcloud.points.AddEmpty();
-			point.X = vertexBAF.X.cast<float>();
-			for (const auto& viewBAF: vertexBAF.views) {
-				point.views.Insert(viewBAF);
-			}
+			point = vertexBAF.X.cast<float>();
+			MVS::PointCloud::ViewArr& views = scene.pointcloud.pointViews.AddEmpty();
+			for (const auto& viewBAF: vertexBAF.views)
+				views.Insert(viewBAF);
 		}
 		// read images meta-data
 		FOREACHPTR(pImage, scene.images) {
@@ -586,7 +590,7 @@ int main(int argc, LPCTSTR* argv)
 		}
 
 		// write OpenMVS input data
-		scene.Save(MAKE_PATH_SAFE(OPT::strOutputFileName));
+		scene.Save(MAKE_PATH_SAFE(OPT::strOutputFileName), (ARCHIVE_TYPE)OPT::nArchiveType);
 
 		VERBOSE("Input data imported: %u cameras, %u poses, %u images, %u vertices (%s)", sceneBAF.cameras.size(), sceneBAF.poses.size(), sceneBAF.images.size(), sceneBAF.vertices.size(), TD_TIMER_GET_FMT().c_str());
 	}

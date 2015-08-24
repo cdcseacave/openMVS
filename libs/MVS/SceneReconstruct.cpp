@@ -70,7 +70,7 @@ using namespace MVS;
 // S T R U C T S ///////////////////////////////////////////////////
 
 #ifdef DELAUNAY_MAXFLOW_IBFS
-#include "../Math/IBFS.h"
+#include "../Math/IBFS/IBFS.h"
 template <typename NType, typename VType>
 class MaxFlow
 {
@@ -808,7 +808,7 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport)
 		std::vector<std::ptrdiff_t> indices(pointcloud.points.GetSize());
 		// fetch points
 		FOREACH(i, pointcloud.points) {
-			const Point3f& X(pointcloud.points[i].X);
+			const PointCloud::Point& X(pointcloud.points[i]);
 			vertices[i] = point_t(X.x, X.y, X.z);
 			indices[i] = i;
 		}
@@ -823,7 +823,8 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport)
 		std::for_each(indices.cbegin(), indices.cend(), [&](size_t idx) {
 			const point_t& p = vertices[idx];
 			const PointCloud::Point& point = pointcloud.points[idx];
-			ASSERT(!point.views.IsEmpty());
+			const PointCloud::ViewArr& views = pointcloud.pointViews[idx];
+			ASSERT(!views.IsEmpty());
 			if (hint == vertex_handle_t()) {
 				// this is the first point,
 				// insert it
@@ -868,9 +869,9 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport)
 					}
 					ASSERT(nearest == delaunay.nearest_vertex(p));
 					// check if point is far enough to all existing points
-					FOREACHPTR(pViewID, point.views) {
+					FOREACHPTR(pViewID, views) {
 						const Image& imageData = images[*pViewID];
-						const Point3f pn(imageData.camera.ProjectPointP3(point.X));
+						const Point3f pn(imageData.camera.ProjectPointP3(point));
 						const Point3f pe(imageData.camera.ProjectPointP3(CGAL2MVS<float>(nearest->point())));
 						if (!IsDepthSimilar(pn.z, pe.z) || normSq(Point2f(pn)-Point2f(pe)) > distInsertSq) {
 							// point far enough to an existing point,
@@ -884,7 +885,7 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport)
 			}
 			// update point visibility info
 			vert_info_t& vi = hint->info();
-			FOREACHPTR(pImageID, point.views) {
+			FOREACHPTR(pImageID, views) {
 				ASSERT(images[*pImageID].IsValid());
 				//ASSERT(images[*pImageID].camera.IsInsideProjectionP(CGAL2MVS<REAL>(p), Point2(images[*pImageID].GetSize()))); // due to radial distortion, some points can be slightly outside the image
 				vi.Insert(*pImageID);

@@ -51,56 +51,54 @@
 namespace MVS {
 
 // a point-cloud containing the points with the corresponding views
-// and optionally normals, colors and weights
+// and optionally weights, normals and colors
 // (same size as the number of points or zero)
 class PointCloud
 {
 public:
-	typedef TPoint3<float> Position;
+	typedef TPoint3<float> Point;
+	typedef SEACAVE::cList<Point,const Point&,2,8192> PointArr;
+
 	typedef uint32_t View;
 	typedef SEACAVE::cList<View,const View,0,4,uint32_t> ViewArr;
-	struct Point {
-		Position X;
-		ViewArr views;
-		#ifdef _USE_BOOST
-		template <class Archive>
-		void serialize(Archive& ar, const unsigned int /*version*/) {
-			ar & X;
-			ar & views;
-		}
-		#endif
-	};
-	typedef TPoint3<float> Normal;
-	typedef Pixel8U Color;
-	typedef float Weight;
+	typedef SEACAVE::cList<ViewArr> PointViewArr;
 
-	typedef SEACAVE::cList<Point,const Point&,2,8192> PointArr;
+	typedef float Weight;
+	typedef SEACAVE::cList<Weight,const Weight,0,4,uint32_t> WeightArr;
+	typedef SEACAVE::cList<WeightArr> PointWeightArr;
+
+	typedef TPoint3<float> Normal;
 	typedef CLISTDEF0(Normal) NormalArr;
+
+	typedef Pixel8U Color;
 	typedef CLISTDEF0(Color) ColorArr;
-	typedef CLISTDEF0(Weight) WeightArr;
 
 public:
 	PointArr points;
+	PointViewArr pointViews;
+	PointWeightArr pointWeights;
 	NormalArr normals;
 	ColorArr colors;
-	WeightArr weights;
 
 public:
 	inline PointCloud() {}
 
 	void Release();
 
-	inline bool IsEmpty() const { return points.IsEmpty(); }
-	inline size_t GetSize() const { return points.GetSize(); }
+	inline bool IsEmpty() const { ASSERT(points.GetSize() == pointViews.GetSize()); return points.IsEmpty(); }
+	inline size_t GetSize() const { ASSERT(points.GetSize() == pointViews.GetSize()); return points.GetSize(); }
+
+	bool Save(const String& fileName);
 
 	#ifdef _USE_BOOST
 	// implement BOOST serialization
 	template <class Archive>
 	void serialize(Archive& ar, const unsigned int /*version*/) {
 		ar & points;
+		ar & pointViews;
+		ar & pointWeights;
 		ar & normals;
 		ar & colors;
-		ar & weights;
 	}
 	#endif
 };

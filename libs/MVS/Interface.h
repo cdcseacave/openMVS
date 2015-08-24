@@ -100,7 +100,7 @@ struct Interface
 		// structure describing one view for a given 3D feature
 		struct View {
 			uint32_t imageID; // image ID corresponding to this view
-			Real confidence; // view's confidence 
+			Real confidence; // view's confidence (0 - not available)
 
 			#ifdef _USE_BOOST
 							   // implement BOOST serialization
