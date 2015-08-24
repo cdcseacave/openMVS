@@ -1,18 +1,57 @@
+------------
+Dependencies
+------------
+
+OpenMVS relies on a number of open source libraries, some of which are optional. For details on customizing the build process, see the compilation instructions.
+* [Eigen](http://eigen.tuxfamily.org)
+* [OpenCV](http://opencv.org)
+* [Ceres](http://ceres-solver.org)
+* [CGAL](http://www.cgal.org)
+* [VCG](http://vcg.isti.cnr.it/vcglib)
+
 ------------------
 Build instructions
 ------------------
 
 Required tools:
-* Cmake 
-* Git
-* c/c++ compiler
+* [CMake](http://www.cmake.org)
+* [git](https://git-scm.com)
+* C/C++ compiler like Visual Studio or GCC
+
+-------------------
+Windows compilation
+-------------------
+
+Visual Studion 2008 or newer is supported. Please not that the development is done mainly on Windows, so this platform build is tested the most.
+
+```
+# Make a toplevel directory for deps & build & src somewhere:
+mkdir OpenMVS
+cd OpenMVS
+
+# Get dependencies, unpack and build them as subdirectories:
+like in OpenMVS/Eigen, OpenMVS/Ceres, etc
+
+# Get and unpack OpenMVS in OpenMVS/src:
+git clone https://github.com/cdcseacave/openMVS.git src
+
+# Make build directory:
+mkdir build
+cd build
+
+# Run CMake:
+cmake . ../src -DCMAKE_BUILD_TYPE=RELEASE -DEIGEN_DIR="../OpenMVS/Eigen" -DOPENCV_DIR="../OpenMVS/OpenCV" -DCERES_DIR="../OpenMVS/Ceres" -DCGAL_DIR="../OpenMVS/CGAL" -DVCG_DIR="../OpenMVS/VCG"
+
+# Open the solution and build it in MSVC
+```
 
 -----------------
 Linux compilation
 -----------------
 
-```
+[Ubuntu](http://www.ubuntu.com) is used next as the example linux distribution.
 
+```
 # Getting the OpenMVG sources:
 git clone https://github.com/cdcseacave/openMVS.git
 
@@ -68,5 +107,4 @@ cmake . ../openMVS -DCMAKE_BUILD_TYPE=RELEASE -DVCG_DIR="$main_path/vcglib" -DCE
 
 #If you want use OpenMVG as optional third party add to the cmake command:
 -DOpenMVG_DIR:STRING="$main_path/openMVG_Build/openMVG_install/share/openMVG/cmake/"
-
 ```

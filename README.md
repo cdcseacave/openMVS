@@ -17,7 +17,7 @@ See [AGPL](https://github.com/cdcseacave/openMVS/blob/master/COPYRIGHT.md) copyr
 Build
 -----
 
-See [BUILD](https://github.com/cdcseacave/blob/master/BUILD.md) build tutorial file
+See [BUILD](https://github.com/cdcseacave/openMVS/blob/master/BUILD.md) build tutorial file
 
 -------
 Contact
