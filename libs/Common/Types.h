@@ -247,6 +247,9 @@ typedef uint32_t            uint_t;
 // type used for the size of the files
 typedef int64_t     		size_f_t;
 
+#define DECLARE_NO_INDEX(...) (std::numeric_limits<__VA_ARGS__>::max())
+#define NO_ID				DECLARE_NO_INDEX(uint32_t)
+
 #ifndef MAKEWORD
 #define MAKEWORD(a, b)		((WORD)(((BYTE)(((DWORD)(a)) & 0xff)) | ((WORD)((BYTE)(((DWORD)(b)) & 0xff))) << 8))
 #endif
@@ -427,8 +430,6 @@ typedef class GENERAL_API cList<double, double, 0>      DoubleArr;
 
 
 // D E F I N E S ///////////////////////////////////////////////////
-
-#define NO_ID				((uint32_t)-1)
 
 #define RGBA(r, g, b, a)	((DWORD)(((a) << 24) | ((r) << 16) | ((g) << 8) | (b)))
 #define RGBC(clr)			(RGBA((BYTE)((clr).fR*255), (BYTE)((clr).fG*255), (BYTE)((clr).fB*255), (BYTE)((clr).fA*255)))
