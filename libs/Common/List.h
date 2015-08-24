@@ -68,7 +68,7 @@
 #define CLISTDEFIDX(TYPE,IDXTYPE) SEACAVE::cList< TYPE, const TYPE&, 1, 16, IDXTYPE >
 #define CLISTDEF0IDX(TYPE,IDXTYPE) SEACAVE::cList< TYPE, const TYPE&, 0, 16, IDXTYPE >
 
-#define DECLARE_NO_INDEX(...) ((__VA_ARGS__)-1)
+#define DECLARE_NO_INDEX(...) (std::numeric_limits<__VA_ARGS__>::max())
 
 
 namespace SEACAVE {

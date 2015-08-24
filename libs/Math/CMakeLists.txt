@@ -32,3 +32,4 @@ set_target_pch(Math Common.h)
 
 # Link its dependencies
 TARGET_LINK_LIBRARIES(Math Common)
+TARGET_INCLUDE_DIRECTORIES(Math PUBLIC ../Common)

@@ -497,7 +497,7 @@ void lm_lmdif( int m, int n, double *x, double *fvec, double ftol,
 
             for (j = 0; j < n; ++j) {
                 const double temp = x[j];
-                step = eps*MAXF(eps,abs(temp));
+                step = eps*MAXF(eps,static_cast<double>(abs(temp)));
                 x[j] = temp + step; /* replace temporarily */
                 info = 0;
                 (*evaluate) (x, m, data, wa4, NULL, &info);

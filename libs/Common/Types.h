@@ -428,7 +428,7 @@ typedef class GENERAL_API cList<double, double, 0>      DoubleArr;
 
 // D E F I N E S ///////////////////////////////////////////////////
 
-#define NO_ID				((uint32_t)-1)
+#define NO_ID				(std::numeric_limits<uint32_t>::max())
 
 #define RGBA(r, g, b, a)	((DWORD)(((a) << 24) | ((r) << 16) | ((g) << 8) | (b)))
 #define RGBC(clr)			(RGBA((BYTE)((clr).fR*255), (BYTE)((clr).fG*255), (BYTE)((clr).fB*255), (BYTE)((clr).fA*255)))
