@@ -425,10 +425,6 @@ MeshRefine::MeshRefine(Scene& _scene, double _weightRegularity, unsigned _nResol
 		const Image& imageData = images[idxImage];
 		if (!imageData.IsValid())
 			continue;
-		if (imageData.neighbors.IsEmpty()) {
-			IndexArr points;
-			scene.SelectNeighborViews(idxImage, points);
-		}
 		ViewScoreArr neighbors(imageData.neighbors);
 		Scene::FilterNeighborViews(neighbors, fMinArea, fMinScale, fMaxScale, fMinAngle, fMaxAngle, nMaxViews);
 		#ifdef MESHOPT_USE_OPENMP

@@ -211,6 +211,16 @@ int main(int argc, LPCTSTR* argv)
 		// load point-cloud and reconstruct a coarse mesh
 		if (!scene.Load(MAKE_PATH_SAFE(OPT::strInputFileName)))
 			return EXIT_FAILURE;
+		// make sure the image neighbors are initialized before deleting the point-cloud
+		FOREACH(idxImage, scene.images) {
+			const Image& imageData = scene.images[idxImage];
+			if (!imageData.IsValid())
+				continue;
+			if (imageData.neighbors.IsEmpty()) {
+				IndexArr points;
+				scene.SelectNeighborViews(idxImage, points);
+			}
+		}
 		TD_TIMER_START();
 		scene.ReconstructMesh(OPT::fDistInsert, OPT::bUseFreeSpaceSupport);
 		VERBOSE("Mesh reconstruction completed: %u vertices, %u faces (%s)", scene.mesh.vertices.GetSize(), scene.mesh.faces.GetSize(), TD_TIMER_GET_FMT().c_str());
