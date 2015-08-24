@@ -39,7 +39,7 @@
 #include "Common.h"
 #include "Scene.h"
 #include "RectsBinPack.h"
-// inference algorithm 
+// inference algorithm
 #include "../Math/LBP.h"
 // connected components
 #include <boost/graph/adjacency_list.hpp>
@@ -1864,14 +1864,14 @@ bool Scene::TextureMesh(unsigned nResolutionLevel, unsigned nMinResolution, floa
 		DEBUG_EXTRA("Initializing images completed: %u images (%s)", images.GetSize(), TD_TIMER_GET_FMT().c_str());
 	}
 
-	// assign the best view to each face 
+	// assign the best view to each face
 	{
 		TD_TIMER_STARTD();
 		texture.FaceViewSellection(fOutlierThreshold);
 		DEBUG_EXTRA("Assigning the best view to each face completed: %u faces (%s)", mesh.faces.GetSize(), TD_TIMER_GET_FMT().c_str());
 	}
 
-	// generate the texture image and atlas 
+	// generate the texture image and atlas
 	{
 		TD_TIMER_STARTD();
 		texture.GenerateTexture(bGlobalSeamLeveling, bLocalSeamLeveling);

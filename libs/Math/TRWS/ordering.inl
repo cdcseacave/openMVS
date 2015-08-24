@@ -1,8 +1,3 @@
-#include "Common.h"
-#include "MRFEnergy.h"
-
-#include "instances.inl"
-
 template <class T> void MRFEnergy<T>::SetAutomaticOrdering()
 {
 	int dMin;

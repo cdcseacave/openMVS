@@ -1,8 +1,3 @@
-#include "Common.h"
-#include "MRFEnergy.h"
-
-#include "instances.inl"
-
 template <class T> int MRFEnergy<T>::Minimize_TRW_S(Options& options, REAL& lowerBound, REAL& energy, REAL* min_marginals)
 {
 	Node* i;

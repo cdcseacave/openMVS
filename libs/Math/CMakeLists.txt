@@ -1,3 +1,5 @@
+INCLUDE_DIRECTORIES(".")
+
 # List sources files
 FILE(GLOB PCH_C "Common.cpp")
 

@@ -1684,11 +1684,11 @@ void MeshRefine::DumpScoreMesh(const double* gradients, const String& fileName)
 
 
 
-/** 
+/**
  * Computes the discrete curvature approximation as in the paper [Meyer et al 2002]:
  * "Discrete Differential-Geometry Operators for Triangulated 2-Manifolds"
  * Mark Meyer, Mathieu Desbrun, Peter Schroder, Alan H. Barr
- * VisMath '02, Berlin (Germany) 
+ * VisMath '02, Berlin (Germany)
  * http://www-grail.usc.edu/pubs.html
  */
 
@@ -1699,7 +1699,7 @@ inline bool triangle_obtuse(const Vertex& v, const Vertex& v1, const Vertex& v2)
 	return (angle_obtuse(v, v1, v2) ||
 			angle_obtuse(v1, v2, v) ||
 			angle_obtuse(v2, v, v1));
-} 
+}
 
 inline float cotan(const Vertex& vo, const Vertex& v1, const Vertex& v2) {
 	// cf. Appendix B of [Meyer et al 2002]

@@ -33,7 +33,10 @@
 #include "Scene.h"
 // MRF: view selection
 #include "../Math/TRWS/MRFEnergy.h"
-#include "../Math/TRWS/MRFEnergy.cpp"
+// CGAL: depth-map initialization
+#include <CGAL/Simple_cartesian.h>
+#include <CGAL/Delaunay_triangulation_2.h>
+#include <CGAL/Projection_traits_xy_3.h>
 
 using namespace MVS;
 
@@ -128,6 +131,7 @@ public:
 	bool SelectViews(IndexArr& images, IndexArr& imagesMap, IndexArr& neighborsMap);
 	bool SelectViews(DepthData& depthData);
 	bool InitViews(DepthData& depthData, uint32_t idxNeighbor, uint32_t numNeighbors);
+	bool InitDepthMap(DepthData& depthData);
 	bool EstimateDepthMap(uint32_t idxImage);
 
 	bool RemoveSmallSegments(DepthData& depthData);
@@ -137,10 +141,9 @@ public:
 	void FuseFilterDepthMaps(PointCloud& pointcloud, bool bEstimateNormal);
 
 protected:
-	static void* STCALL ScoreDepthMapNCCTmp(void*);
-	static void* STCALL EstimateDepthMapNCCTmp(void*);
-	static void* STCALL EndDepthMapNCCTmp(void*);
-	static void* STCALL ProjectDepthMapNCCTmp(void*);
+	static void* STCALL ScoreDepthMapTmp(void*);
+	static void* STCALL EstimateDepthMapTmp(void*);
+	static void* STCALL EndDepthMapTmp(void*);
 
 public:
 	Scene& scene;
@@ -307,7 +310,7 @@ bool DepthMapsData::SelectViews(DepthData& depthData)
 	const uint32_t idxImage((uint32_t)(&depthData-arrDepthData.Begin()));
 	ASSERT(depthData.neighbors.IsEmpty());
 	ASSERT(scene.images[idxImage].neighbors.IsEmpty());
-	if (!scene.SelectNeighborViews(idxImage, depthData.points))
+	if (!scene.SelectNeighborViews(idxImage, depthData.points, OPTDENSE::nMinViews, OPTDENSE::nMinViewsTrustPoint>1?OPTDENSE::nMinViewsTrustPoint:2, FD2R(OPTDENSE::fOptimAngle)))
 		return false;
 	depthData.neighbors.CopyOf(scene.images[idxImage].neighbors);
 
@@ -407,9 +410,163 @@ bool DepthMapsData::InitViews(DepthData& depthData, uint32_t idxNeighbor, uint32
 } // InitViews
 /*----------------------------------------------------------------*/
 
+namespace CGAL {
+typedef CGAL::Simple_cartesian<double> kernel_t;
+typedef CGAL::Projection_traits_xy_3<kernel_t> Geometry;
+typedef CGAL::Delaunay_triangulation_2<Geometry> Delaunay;
+typedef CGAL::Delaunay::Face_circulator FaceCirculator;
+typedef CGAL::Delaunay::Face_handle FaceHandle;
+typedef CGAL::Delaunay::Vertex_circulator VertexCirculator;
+typedef CGAL::Delaunay::Vertex_handle VertexHandle;
+typedef kernel_t::Point_3 Point;
+}
+
+// triangulate in-view points, generating a 2D mesh
+// return also the estimated depth boundaries (min and max depth)
+std::pair<float,float> TriangulatePointsDelaunay(CGAL::Delaunay& delaunay, const Scene& scene, const DepthData::ViewData& image, const IndexArr& points)
+{
+	ASSERT(sizeof(Point3) == sizeof(X3D));
+	ASSERT(sizeof(Point3) == sizeof(CGAL::Point));
+	std::pair<float,float> depthBounds(FLT_MAX, 0.f);
+	FOREACH(p, points) {
+		const PointCloud::Point& point = scene.pointcloud.points[points[p]];
+		const Point3 ptCam(image.camera.TransformPointW2C(CastReal(point)));
+		const Point2 ptImg(image.camera.TransformPointC2I(ptCam));
+		delaunay.insert(CGAL::Point(ptImg.x, ptImg.y, ptCam.z));
+		const Depth depth((float)ptCam.z);
+		if (depthBounds.first > depth)
+			depthBounds.first = depth;
+		if (depthBounds.second < depth)
+			depthBounds.second = depth;
+	}
+	// if full size depth-map requested
+	if (OPTDENSE::bAddCorners) {
+		typedef TIndexScore<float,float> DepthDist;
+		typedef CLISTDEF0(DepthDist) DepthDistArr;
+		typedef Eigen::Map< Eigen::VectorXf, Eigen::Unaligned, Eigen::InnerStride<2> > FloatMap;
+		// add the four image corners at the average depth
+		const CGAL::VertexHandle vcorners[] = {
+			delaunay.insert(CGAL::Point(0, 0, image.pImageData->avgDepth)),
+			delaunay.insert(CGAL::Point(image.image.width(), 0, image.pImageData->avgDepth)),
+			delaunay.insert(CGAL::Point(0, image.image.height(), image.pImageData->avgDepth)),
+			delaunay.insert(CGAL::Point(image.image.width(), image.image.height(), image.pImageData->avgDepth))
+		};
+		// compute average depth from the closest 3 directly connected faces,
+		// weighted by the distance
+		const size_t numPoints = 3;
+		for (int i=0; i<4; ++i) {
+			const CGAL::VertexHandle vcorner = vcorners[i];
+			CGAL::FaceCirculator cfc(delaunay.incident_faces(vcorner));
+			if (cfc == 0)
+				continue; // normally this should never happen
+			const CGAL::FaceCirculator done(cfc);
+			Point3d& poszA = (Point3d&)vcorner->point();
+			const Point2d& posA = (const Point2d&)poszA;
+			const Ray3d rayA(Point3d::ZERO, normalized(image.camera.TransformPointI2C(poszA)));
+			DepthDistArr depths(0, numPoints);
+			do {
+				CGAL::FaceHandle fc(cfc->neighbor(cfc->index(vcorner)));
+				if (fc == delaunay.infinite_face())
+					continue;
+				for (int j=0; j<4; ++j)
+					if (fc->has_vertex(vcorners[j]))
+						goto Continue;
+				// compute the depth as the intersection of the corner ray with
+				// the plane defined by the face's vertices
+				{
+				const Point3d& poszB0 = (const Point3d&)fc->vertex(0)->point();
+				const Point3d& poszB1 = (const Point3d&)fc->vertex(1)->point();
+				const Point3d& poszB2 = (const Point3d&)fc->vertex(2)->point();
+				const Planed planeB(
+					image.camera.TransformPointI2C(poszB0),
+					image.camera.TransformPointI2C(poszB1),
+					image.camera.TransformPointI2C(poszB2)
+				);
+				const Point3d poszB(rayA.Intersects(planeB));
+				if (poszB.z <= 0)
+					continue;
+				const Point2d posB(((const Point2d&)poszB0+(const Point2d&)poszB1+(const Point2d&)poszB2)/3.f);
+				const REAL dist(norm(posB-posA));
+				depths.StoreTop<numPoints>(DepthDist((float)poszB.z, 1.f/(float)dist));
+				}
+				Continue:;
+			} while (++cfc != done);
+			if (depths.GetSize() != numPoints)
+				continue; // normally this should never happen
+			FloatMap vecDists(&depths[0].score, numPoints);
+			vecDists *= 1.f/vecDists.sum();
+			FloatMap vecDepths(&depths[0].idx, numPoints);
+			poszA.z = vecDepths.dot(vecDists);
+		}
+	}
+	return depthBounds;
+}
+
+// roughly estimate depth and normal maps by triangulating the sparse point cloud
+// and interpolating normal and depth for all pixels
+bool DepthMapsData::InitDepthMap(DepthData& depthData)
+{
+	TD_TIMER_STARTD();
+
+	ASSERT(depthData.images.GetSize() > 1 && !depthData.points.IsEmpty());
+	const DepthData::ViewData& image(depthData.images.First());
+	ASSERT(!image.image.empty());
+
+	// triangulate in-view points
+	CGAL::Delaunay delaunay;
+	const std::pair<float,float> thDepth(TriangulatePointsDelaunay(delaunay, scene, image, depthData.points));
+	depthData.dMin = thDepth.first*0.9f;
+	depthData.dMax = thDepth.second*1.1f;
+
+	// create rough depth-map by interpolating inside triangles
+	const Camera& camera = image.camera;
+	depthData.depthMap.create(image.image.size());
+	depthData.normalMap.create(image.image.size());
+	if (!OPTDENSE::bAddCorners) {
+		depthData.depthMap.setTo(Depth(0));
+		depthData.normalMap.setTo(0.f);
+	}
+	struct RasterDepthDataPlaneData {
+		const Camera& P;
+		DepthMap& depthMap;
+		NormalMap& normalMap;
+		Point3f normal;
+		Point3f normalPlane;
+		inline void operator()(const ImageRef& pt) {
+			if (!depthMap.isInside(pt))
+				return;
+			const float z(INVERT(normalPlane.dot(P.TransformPointI2C(Point2f(pt)))));
+			ASSERT(z > 0);
+			depthMap(pt) = z;
+			normalMap(pt) = normal;
+		}
+	};
+	RasterDepthDataPlaneData data = {camera, depthData.depthMap, depthData.normalMap};
+	for (CGAL::Delaunay::Face_iterator it=delaunay.faces_begin(); it!=delaunay.faces_end(); ++it) {
+		const CGAL::Delaunay::Face& face = *it;
+		const Point3f i0((const Point3&)face.vertex(0)->point());
+		const Point3f i1((const Point3&)face.vertex(1)->point());
+		const Point3f i2((const Point3&)face.vertex(2)->point());
+		// compute the plane defined by the 3 points
+		const Point3f c0(camera.TransformPointI2C(i0));
+		const Point3f c1(camera.TransformPointI2C(i1));
+		const Point3f c2(camera.TransformPointI2C(i2));
+		const Point3f edge1(c1-c0);
+		const Point3f edge2(c2-c0);
+		data.normal = normalized(edge2.cross(edge1));
+		data.normalPlane = data.normal * INVERT(data.normal.dot(c0));
+		// draw triangle and for each pixel compute depth as the ray intersection with the plane
+		Image8U::RasterizeTriangle((const Point2f&)i2, (const Point2f&)i1, (const Point2f&)i0, data);
+	}
+
+	DEBUG_ULTIMATE("Depth-map % 3u roughly estimated from %u sparse points: %dx%d (%s)", &depthData-arrDepthData.Begin(), depthData.points.GetSize(), image.image.width(), image.image.height(), TD_TIMER_GET_FMT().c_str());
+	return true;
+} // InitDepthMap
+/*----------------------------------------------------------------*/
+
 
 // initialize the confidence map (NCC score map) with the score of the current estimates
-void* STCALL DepthMapsData::ScoreDepthMapNCCTmp(void* arg)
+void* STCALL DepthMapsData::ScoreDepthMapTmp(void* arg)
 {
 	DepthEstimator& estimator = *((DepthEstimator*)arg);
 	IDX idx;
@@ -423,15 +580,20 @@ void* STCALL DepthMapsData::ScoreDepthMapNCCTmp(void* arg)
 		}
 		Depth& depth = estimator.depthMap0(x);
 		Normal& normal = estimator.normalMap0(x);
-		if (depth <= 0)
+		if (depth <= 0) {
+			// init with random values
 			depth = DepthEstimator::RandomDepth(estimator.dMin, estimator.dMax);
-		normal = DepthEstimator::RandomNormal();
+			normal = DepthEstimator::RandomNormal();
+		} else if (normal.z >= 0) {
+			// replace invalid normal with random values
+			normal = DepthEstimator::RandomNormal();
+		}
 		estimator.confMap0(x) = DepthEstimator::EncodeScoreScale(estimator.ScorePixel(depth, normal));
 	}
 	return NULL;
 }
 // run propagation and random refinement cycles
-void* STCALL DepthMapsData::EstimateDepthMapNCCTmp(void* arg)
+void* STCALL DepthMapsData::EstimateDepthMapTmp(void* arg)
 {
 	DepthEstimator& estimator = *((DepthEstimator*)arg);
 	IDX idx;
@@ -440,7 +602,7 @@ void* STCALL DepthMapsData::EstimateDepthMapNCCTmp(void* arg)
 	return NULL;
 }
 // remove all estimates with too big score and invert confidence map
-void* STCALL DepthMapsData::EndDepthMapNCCTmp(void* arg)
+void* STCALL DepthMapsData::EndDepthMapTmp(void* arg)
 {
 	DepthEstimator& estimator = *((DepthEstimator*)arg);
 	IDX idx;
@@ -481,108 +643,6 @@ void* STCALL DepthMapsData::EndDepthMapNCCTmp(void* arg)
 	return NULL;
 }
 
-struct DepthProjectorNCC {
-	static const int nBandSize = 64;
-
-	int nLastRaw;
-	ImageRef x;
-
-	DepthMap& depthMap0;
-	NormalMap& normalMap0;
-	const DepthMap& depthMap1;
-	const NormalMap& normalMap1;
-	const ConfidenceMap& confMap1;
-
-	const DepthData::ViewData& image0;
-	const DepthData::ViewData& image1;
-	const Matrix3x3f R10;
-
-	volatile Thread::safe_t& idxBand; // current image band to be processed
-
-	const float thConfIgnore;
-
-	DepthProjectorNCC(DepthData& _depthData0, const DepthData& _depthData1, volatile Thread::safe_t& _idx, float _thConfIgnore);
-
-	bool SetBand(int idxBand);
-	bool ProjectNextPixel();
-};
-
-DepthProjectorNCC::DepthProjectorNCC(DepthData& _depthData0, const DepthData& _depthData1, volatile Thread::safe_t& _idx, float _thConfIgnore)
-	:
-	depthMap0(_depthData0.depthMap), normalMap0(_depthData0.normalMap),
-	depthMap1(_depthData1.depthMap), normalMap1(_depthData1.normalMap), confMap1(_depthData1.confMap),
-	image0(_depthData1.images[1]), image1(_depthData1.images[0]),
-	R10(DepthEstimator::ComputeRelativeR(_depthData1)),
-	idxBand(_idx),
-	thConfIgnore(_thConfIgnore)
-{
-	ASSERT(!depthMap1.empty() && !normalMap1.empty() && !confMap1.empty());
-}
-
-// init current pixel position
-bool DepthProjectorNCC::SetBand(int idxBand)
-{
-	const int nFirstRaw(MAXF(idxBand*nBandSize, DepthEstimator::nSizeHalfWindow));
-	const int nEndRaw(image1.image.height()-DepthEstimator::nSizeHalfWindow);
-	if (nFirstRaw >= nEndRaw)
-		return false;
-	nLastRaw = MINF(nFirstRaw+nBandSize, nEndRaw);
-	x.x = DepthEstimator::nSizeHalfWindow;
-	x.y = nFirstRaw;
-	return true;
-}
-
-// project current pixel of image 1 in the image 0;
-// returns false if the end of the band was reached
-bool DepthProjectorNCC::ProjectNextPixel()
-{
-	if (DepthEstimator::DecodeScore(confMap1(x)) < thConfIgnore) {
-		const Depth depth(depthMap1(x));
-		if (depth > 0) {
-			const Point3 X(image1.camera.TransformPointI2W(Point3(x.x,x.y,depth)));
-			const Point3 camX(image0.camera.TransformPointW2C(X));
-			if (camX.z > 0) {
-				// set depth on the 4 pixels around the image projection
-				const Point2 imgX(image0.camera.TransformPointC2I(camX));
-				const ImageRef xRefs[4] = {
-					ImageRef(FLOOR2INT(imgX.x), FLOOR2INT(imgX.y)),
-					ImageRef(FLOOR2INT(imgX.x), CEIL2INT(imgX.y)),
-					ImageRef(CEIL2INT(imgX.x), FLOOR2INT(imgX.y)),
-					ImageRef(CEIL2INT(imgX.x), CEIL2INT(imgX.y))
-				};
-				const Normal normal(R10*normalMap1(x));
-				for (int p=0; p<4; ++p) {
-					const ImageRef& xRef = xRefs[p];
-					if (!depthMap0.isInside(xRef))
-						continue;
-					Depth& depthRef(depthMap0(xRef));
-					if (depthRef != 0 && depthRef < (float)camX.z)
-						continue;
-					depthRef = (float)camX.z;
-					normalMap0(xRef) = normal;
-				}
-			}
-		}
-	}
-	// go to the next pixel
-	if (++x.x >= image1.image.width()) {
-		if (++x.y >= nLastRaw)
-			return false;
-		x.x = DepthEstimator::nSizeHalfWindow;
-	}
-	return true;
-}
-
-// remove all estimates with too big score and invert confidence map
-void* STCALL DepthMapsData::ProjectDepthMapNCCTmp(void* arg)
-{
-	DepthProjectorNCC& projector = *((DepthProjectorNCC*)arg);
-	while (projector.SetBand((int)Thread::safeInc(projector.idxBand))) {
-		while (projector.ProjectNextPixel());
-	}
-	return NULL;
-}
-
 // estimate depth-map using propagation and random refinement with NCC score
 // as in: "Accurate Multiple View 3D Reconstruction Using Patch-Based Stereo for Large-Scale Scenes", S. Shen, 2013
 // The implementations follows closely the paper, although there are some changes/additions.
@@ -610,8 +670,9 @@ bool DepthMapsData::EstimateDepthMap(uint32_t idxImage)
 	depthData.confMap.create(size);
 	const unsigned nMaxThreads(scene.nMaxThreads);
 
-	// compute depth range and initialize known depths
-	{
+	// initialize the depth-map
+	if (OPTDENSE::nMinViewsTrustPoint < 2) {
+		// compute depth range and initialize known depths
 		const int nPixelArea(3); // half windows size around a pixel to be initialize with the known depth
 		const Camera& camera = depthData.images.First().camera;
 		depthData.dMin = FLT_MAX;
@@ -633,6 +694,17 @@ bool DepthMapsData::EstimateDepthMap(uint32_t idxImage)
 		}
 		depthData.dMin *= 0.9f;
 		depthData.dMax *= 1.1f;
+	} else {
+		// compute rough estimates using the sparse point-cloud
+		InitDepthMap(depthData);
+		#if TD_VERBOSE != TD_VERBOSE_OFF
+		// save rough depth map as image
+		if (g_nVerbosityLevel > 4) {
+			ExportDepthMap(ComposeDepthFilePath(idxImage, "rough.png"), depthData.depthMap);
+			ExportNormalMap(ComposeDepthFilePath(idxImage, "rough.normal.png"), depthData.normalMap);
+			ExportPointCloud(ComposeDepthFilePath(idxImage, "rough.ply"), *depthData.images.First().pImageData, depthData.depthMap, depthData.normalMap);
+		}
+		#endif
 	}
 
 	// init integral images and index to image-ref map for the reference data
@@ -662,8 +734,8 @@ bool DepthMapsData::EstimateDepthMap(uint32_t idxImage)
 			estimators.AddConstruct(depthData, idxPixel, imageSum0, coords, DepthEstimator::RB2LT);
 		ASSERT(estimators.GetSize() == threads.GetSize()+1);
 		FOREACH(i, threads)
-			threads[i].start(ScoreDepthMapNCCTmp, &estimators[i]);
-		ScoreDepthMapNCCTmp(&estimators.Last());
+			threads[i].start(ScoreDepthMapTmp, &estimators[i]);
+		ScoreDepthMapTmp(&estimators.Last());
 		// wait for the working threads to close
 		FOREACHPTR(pThread, threads)
 			pThread->join();
@@ -680,8 +752,8 @@ bool DepthMapsData::EstimateDepthMap(uint32_t idxImage)
 			estimators.AddConstruct(depthData, idxPixel, imageSum0, coords, dir);
 		ASSERT(estimators.GetSize() == threads.GetSize()+1);
 		FOREACH(i, threads)
-			threads[i].start(EstimateDepthMapNCCTmp, &estimators[i]);
-		EstimateDepthMapNCCTmp(&estimators.Last());
+			threads[i].start(EstimateDepthMapTmp, &estimators[i]);
+		EstimateDepthMapTmp(&estimators.Last());
 		// wait for the working threads to close
 		FOREACHPTR(pThread, threads)
 			pThread->join();
@@ -706,8 +778,8 @@ bool DepthMapsData::EstimateDepthMap(uint32_t idxImage)
 			estimators.AddConstruct(depthData, idxPixel, imageSum0, coords, DepthEstimator::DIRS);
 		ASSERT(estimators.GetSize() == threads.GetSize()+1);
 		FOREACH(i, threads)
-			threads[i].start(EndDepthMapNCCTmp, &estimators[i]);
-		EndDepthMapNCCTmp(&estimators.Last());
+			threads[i].start(EndDepthMapTmp, &estimators[i]);
+		EndDepthMapTmp(&estimators.Last());
 		// wait for the working threads to close
 		FOREACHPTR(pThread, threads)
 			pThread->join();
@@ -790,7 +862,7 @@ bool DepthMapsData::RemoveSmallSegments(DepthData& depthData)
 								done = true;
 							}
 						}
-					} 
+					}
 				}
 
 				// set current pixel in seg_list to "done"
@@ -1471,7 +1543,7 @@ bool Scene::DenseReconstruction()
 
 	// fuse all depth-maps
 	pointcloud.Release();
-	data.detphMaps.FuseFilterDepthMaps(pointcloud, (OPTDENSE::nOptimize & OPTDENSE::NORMAL_POINTS) != 0);
+	data.detphMaps.FuseFilterDepthMaps(pointcloud, OPTDENSE::nEstimateNormals == 2);
 	#if TD_VERBOSE != TD_VERBOSE_OFF
 	if (g_nVerbosityLevel > 2) {
 		// print number of points with 3+ views
@@ -1495,9 +1567,9 @@ bool Scene::DenseReconstruction()
 	#endif
 
 	if (!pointcloud.IsEmpty()) {
-		if (pointcloud.colors.IsEmpty())
+		if (pointcloud.colors.IsEmpty() && OPTDENSE::nEstimateColors == 1)
 			EstimatePointColors(images, pointcloud);
-		if (pointcloud.normals.IsEmpty())
+		if (pointcloud.normals.IsEmpty() && OPTDENSE::nEstimateNormals == 1)
 			EstimatePointNormals(images, pointcloud);
 	}
 	return true;
@@ -1514,8 +1586,8 @@ void* Scene::DenseReconstructionEstimateTmp(void* arg) {
 void Scene::DenseReconstructionEstimate(void* pData)
 {
 	DenseDepthMapData& data = *((DenseDepthMapData*)pData);
-	CAutoPtr<Event> evt;
-	while ((evt=data.events.GetEvent()) != NULL) {
+	while (true) {
+		CAutoPtr<Event> evt(data.events.GetEvent());
 		switch (evt->GetID()) {
 		case EVT_PROCESSIMAGE: {
 			const EVTProcessImage& evtImage = *((EVTProcessImage*)(Event*)evt);

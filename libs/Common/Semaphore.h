@@ -14,8 +14,13 @@
 #include "Thread.h"
 
 #ifndef _MSC_VER
+#ifdef _SUPPORT_CPP11
+#include <mutex>
+#include <condition_variable>
+#else
 #include "CriticalSection.h"
 #include <sys/time.h>
+#endif
 #endif
 
 
@@ -50,8 +55,8 @@ public:
 		ReleaseSemaphore(h, count, NULL);
 	}
 
-	bool Wait() {
-		return WaitForSingleObject(h, INFINITE) == WAIT_OBJECT_0;
+	void Wait() {
+		WaitForSingleObject(h, INFINITE);
 	}
 	bool Wait(uint32_t millis) {
 		return WaitForSingleObject(h, millis) == WAIT_OBJECT_0;
@@ -59,56 +64,99 @@ public:
 
 protected:
 	HANDLE h;
-#else
+
+#elif !defined(_SUPPORT_CPP11)
+// pthread implementation
 public:
 	Semaphore(unsigned c=0) : count(c) { pthread_cond_init(&cond, NULL); }
 	~Semaphore() { pthread_cond_destroy(&cond); }
 
 	void Clear(unsigned c=0) {
+		cs.Clear();
 		pthread_cond_destroy(&cond);
 		pthread_cond_init(&cond, NULL);
 		count = c;
 	}
 
-	void Signal() { 
+	void Signal() {
 		Lock l(cs);
-		count++;
+		++count;
 		pthread_cond_signal(&cond);
 	}
-	void Signal(unsigned c) { 
+	void Signal(unsigned c) {
 		ASSERT(c > 0);
-		Lock l(cs);
-		count += c;
-		pthread_cond_signal(&cond);
+		for (unsigned i=0; i<c; ++i)
+			Signal();
 	}
 
-	bool Wait() { 
+	void Wait() {
 		Lock l(cs);
-		if (count == 0)
+		while (!count)
 			pthread_cond_wait(&cond, &cs.getMutex());
-		count--;
-		return true;
+		--count;
 	}
-	bool Wait(uint32_t millis) { 
+	bool Wait(uint32_t millis) {
 		Lock l(cs);
 		if (count == 0) {
 			timeval timev;
-			timespec t;
 			gettimeofday(&timev, NULL);
-			millis+=timev.tv_usec/1000;
-			t.tv_sec = timev.tv_sec + (millis/1000);
-			t.tv_nsec = (millis%1000)*1000*1000;
-			if (pthread_cond_timedwait(&cond, &cs.getMutex(), &t) != 0)
+			millis += timev.tv_usec/1000;
+			timespec t = {
+				timev.tv_sec + (millis/1000),
+				(millis%1000)*1000*1000
+			};
+			pthread_cond_timedwait(&cond, &cs.getMutex(), &t);
+			if (count == 0)
 				return false;
 		}
-		count--;
+		--count;
 		return true;
 	}
 
 protected:
 	pthread_cond_t cond;
 	CriticalSection cs;
-	int count;
+	unsigned count;
+
+#else
+// C++11 implementation
+public:
+	Semaphore(unsigned c=0) : count(c) {}
+	~Semaphore() {}
+
+	void Clear(unsigned c=0) {
+		std::lock_guard<std::mutex> lock{mtx};
+		count = c;
+	}
+
+	void Signal() {
+		std::lock_guard<std::mutex> lock{mtx};
+		++count;
+		cv.notify_one();
+	}
+	void Signal(unsigned c) {
+		ASSERT(c > 0);
+		for (unsigned i=0; i<c; ++i)
+			Signal();
+	}
+
+	void Wait() {
+		std::unique_lock<std::mutex> lock{mtx};
+		cv.wait(lock, [&] { return count > 0; });
+		--count;
+	}
+	bool Wait(uint32_t millis) {
+		std::unique_lock<std::mutex> lock{mtx};
+		if (!cv.wait_for(lock, std::chrono::milliseconds(millis), [&] { return count > 0; }))
+			return false;
+		--count;
+		return true;
+	}
+
+protected:
+	std::condition_variable cv;
+	std::mutex mtx;
+	unsigned count;
 #endif
 
 private:

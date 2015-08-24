@@ -45,7 +45,7 @@
 
 // P R O T O T Y P E S /////////////////////////////////////////////
 
-namespace MVS {
+namespace SEACAVE {
 
 /// logarithm (base 10) of binomial coefficient
 static inline double logcombi(size_t k, size_t n)
@@ -285,7 +285,7 @@ std::pair<double, double> ACRANSAC(
 	ErrorIndexArr vec_residuals(nData); // [residual,index]
 	for (size_t iter=0; iter<nIter || iter<nMinIter; ++iter) {
 		// Get random sample
-		sampler.Sample<Kernel::MINIMUM_SAMPLES>(
+		sampler.template Sample<Kernel::MINIMUM_SAMPLES>(
 			#ifdef ACRANSAC_SAMPLE_INLIERS
 			vec_index,
 			#else
@@ -394,7 +394,7 @@ void RANSAC(
 	std::vector<size_t> vec_inliers_tmp; vec_inliers_tmp.reserve(nData); vec_inliers.reserve(nData);
 	for (size_t iter=0; iter<nIter || iter<nMinIter; ++iter) {
 		// Get random sample
-		sampler.Sample<Kernel::MINIMUM_SAMPLES>(
+		sampler.template Sample<Kernel::MINIMUM_SAMPLES>(
 			#ifdef ACRANSAC_SAMPLE_INLIERS
 			vec_index,
 			#else
@@ -663,6 +663,6 @@ private:
 };
 /*----------------------------------------------------------------*/
 
-} // namespace MVS
+} // namespace SEACAVE
 
 #endif // __SEACAVE_AUTO_ESTIMATOR_H__

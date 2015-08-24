@@ -50,6 +50,8 @@ String strMeshFileName;
 String strDenseConfigFileName;
 unsigned nResolutionLevel;
 unsigned nMinResolution;
+unsigned nEstimateColors;
+unsigned nEstimateNormals;
 unsigned nArchiveType;
 int nProcessPriority;
 unsigned nMaxThreads;
@@ -91,6 +93,8 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		("output-file,o", boost::program_options::value<std::string>(&OPT::strOutputFileName), "the output filename for storing the mesh")
 		("resolution-level", boost::program_options::value<unsigned>(&OPT::nResolutionLevel)->default_value(0), "how many times to scale down the images before mesh refinement")
 		("min-resolution", boost::program_options::value<unsigned>(&OPT::nMinResolution)->default_value(640), "do not scale images lower than this resolution")
+		("estimate-colors", boost::program_options::value<unsigned>(&OPT::nEstimateColors)->default_value(1), "estimate the colors for the dense point-cloud")
+		("estimate-normals", boost::program_options::value<unsigned>(&OPT::nEstimateNormals)->default_value(0), "estimate the colors for the dense point-cloud")
 		;
 
 	// hidden options, allowed both on command line and
@@ -156,6 +160,8 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	OPTDENSE::update();
 	OPTDENSE::nResolutionLevel = OPT::nResolutionLevel;
 	OPTDENSE::nMinResolution = OPT::nMinResolution;
+	OPTDENSE::nEstimateColors = OPT::nEstimateColors;
+	OPTDENSE::nEstimateNormals = OPT::nEstimateNormals;
 	if (!bValidConfig)
 		OPTDENSE::oConfig.Save(OPT::strDenseConfigFileName);
 

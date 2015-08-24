@@ -24,19 +24,7 @@
 #include "Common.h"
 #include "lmmin.h"
 
-
-#ifndef MINF
-#define MINF			(std::min)
-#endif
-#ifndef MAXF
-#define MAXF			(std::max)
-#endif
-
-template<typename T>
-inline T SQUARE(const T& a)
-{
-    return (a * a);
-}
+using namespace SEACAVE;
 
 
 /*****************************************************************************/
@@ -497,7 +485,7 @@ void lm_lmdif( int m, int n, double *x, double *fvec, double ftol,
 
             for (j = 0; j < n; ++j) {
                 const double temp = x[j];
-                step = eps*MAXF(eps,abs(temp));
+                step = eps*MAXF(eps,ABS(temp));
                 x[j] = temp + step; /* replace temporarily */
                 info = 0;
                 (*evaluate) (x, m, data, wa4, NULL, &info);

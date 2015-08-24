@@ -49,18 +49,6 @@
 
 namespace MVS {
 
-typedef float Depth;
-typedef Point3f Normal;
-typedef TImage<Depth> DepthMap;
-typedef TImage<Normal> NormalMap;
-typedef TImage<float> ConfidenceMap;
-typedef SEACAVE::cList<Depth,Depth,0> DepthArr;
-typedef SEACAVE::cList<DepthMap,const DepthMap&,2> DepthMapArr;
-typedef SEACAVE::cList<NormalMap,const NormalMap&,2> NormalMapArr;
-typedef SEACAVE::cList<ConfidenceMap,const ConfidenceMap&,2> ConfidenceMapArr;
-/*----------------------------------------------------------------*/
-
-
 DECOPT_SPACE(OPTDENSE)
 
 namespace OPTDENSE {
@@ -68,7 +56,6 @@ enum DepthFlags {
 	REMOVE_SPECKLES	= (1 << 0),
 	FILL_GAPS		= (1 << 1),
 	ADJUST_FILTER	= (1 << 2),
-	NORMAL_POINTS	= (1 << 3),
 	OPTIMIZE		= (REMOVE_SPECKLES|FILL_GAPS)
 };
 extern unsigned nMinResolution;
@@ -77,7 +64,9 @@ extern unsigned nMinViews;
 extern unsigned nMaxViews;
 extern unsigned nMinViewsFilter;
 extern unsigned nMinViewsFilterAdjust;
+extern unsigned nMinViewsTrustPoint;
 extern unsigned nNumViews;
+extern bool bAddCorners;
 extern float fViewMinScore;
 extern float fViewMinScoreRatio;
 extern float fMinAngle;
@@ -92,6 +81,8 @@ extern int nOptimizerMaxIters;
 extern unsigned nSpeckleSize;
 extern unsigned nIpolGapSize;
 extern unsigned nOptimize;
+extern unsigned nEstimateColors;
+extern unsigned nEstimateNormals;
 extern float fNCCThresholdKeep;
 extern float fNCCThresholdRefine;
 extern unsigned nEstimationIters;
@@ -104,6 +95,18 @@ extern float fRandomSmoothDepth;
 extern float fRandomSmoothNormal;
 extern float fRandomSmoothBonus;
 } // namespace OPTDENSE
+/*----------------------------------------------------------------*/
+
+
+typedef float Depth;
+typedef Point3f Normal;
+typedef TImage<Depth> DepthMap;
+typedef TImage<Normal> NormalMap;
+typedef TImage<float> ConfidenceMap;
+typedef SEACAVE::cList<Depth,Depth,0> DepthArr;
+typedef SEACAVE::cList<DepthMap,const DepthMap&,2> DepthMapArr;
+typedef SEACAVE::cList<NormalMap,const NormalMap&,2> NormalMapArr;
+typedef SEACAVE::cList<ConfidenceMap,const ConfidenceMap&,2> ConfidenceMapArr;
 /*----------------------------------------------------------------*/
 
 
@@ -260,7 +263,7 @@ struct DepthEstimator {
 		#else
 		// compute homography matrix as above, caching some constants
 		const Vec3 n(normal);
-		return (img.Hl + img.Hm * (n.t()*INVERT(n.dot(X0)*depth))) * img.Hr; 
+		return (img.Hl + img.Hm * (n.t()*INVERT(n.dot(X0)*depth))) * img.Hr;
 		#endif
 	}
 

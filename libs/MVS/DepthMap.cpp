@@ -67,20 +67,24 @@ DEFVAR_OPTDENSE_uint32(nMinViews, "Min Views", "minimum number of agreeing views
 MDEFVAR_OPTDENSE_uint32(nMaxViews, "Max Views", "maximum number of neighbor images used to compute the depth-map for the reference image", "12")
 DEFVAR_OPTDENSE_uint32(nMinViewsFilter, "Min Views Filter", "minimum number of images that agrees with an estimate in order to consider it inlier", "2")
 MDEFVAR_OPTDENSE_uint32(nMinViewsFilterAdjust, "Min Views Filter Adjust", "minimum number of images that agrees with an estimate in order to consider it inlier (0 - disabled)", "1")
+MDEFVAR_OPTDENSE_uint32(nMinViewsTrustPoint, "Min Views Trust Point", "min-number of views so that the point is considered for approximating the depth-maps (<2 - random initialization)", "2")
 MDEFVAR_OPTDENSE_uint32(nNumViews, "Num Views", "Number of views used for depth-map estimation (0 - all views available)", "1", "0")
+MDEFVAR_OPTDENSE_bool(bAddCorners, "Add Corners", "add support points at image corners with nearest neighbor disparities", "1")
 MDEFVAR_OPTDENSE_float(fViewMinScore, "View Min Score", "Min score to consider a neighbor images (0 - disabled)", "2.0")
 MDEFVAR_OPTDENSE_float(fViewMinScoreRatio, "View Min Score Ratio", "Min score ratio to consider a neighbor images", "0.3")
 MDEFVAR_OPTDENSE_float(fMinAngle, "Min Angle", "Min angle for accepting the depth triangulation", "3.0")
 MDEFVAR_OPTDENSE_float(fOptimAngle, "Optim Angle", "Optimal angle for computing the depth triangulation", "12.0")
 MDEFVAR_OPTDENSE_float(fMaxAngle, "Max Angle", "Max angle for accepting the depth triangulation", "45.0")
 MDEFVAR_OPTDENSE_float(fDescriptorMinMagnitudeThreshold, "Descriptor Min Magnitude Threshold", "minimum texture variance accepted when matching two patches (0 - disabled)", "0.03"/*NCC*/, "0.005"/*DAISY*/)
-MDEFVAR_OPTDENSE_float(fDepthDiffThreshold, "Depth Diff Threshold", "maximum variance allowed for the depths during refinement", "0.012")
+MDEFVAR_OPTDENSE_float(fDepthDiffThreshold, "Depth Diff Threshold", "maximum variance allowed for the depths during refinement", "0.01")
 MDEFVAR_OPTDENSE_float(fPairwiseMul, "Pairwise Mul", "pairwise cost scale to match the unary cost", "0.3")
 MDEFVAR_OPTDENSE_float(fOptimizerEps, "Optimizer Eps", "MRF optimizer stop epsilon", "0.005")
 MDEFVAR_OPTDENSE_int32(nOptimizerMaxIters, "Optimizer Max Iters", "MRF optimizer max number of iterations", "80")
 MDEFVAR_OPTDENSE_uint32(nSpeckleSize, "Speckle Size", "maximal size of a speckle (small speckles get removed)", "100")
 MDEFVAR_OPTDENSE_uint32(nIpolGapSize, "Interpolate Gap Size", "interpolate small gaps (left<->right, top<->bottom)", "7")
-MDEFVAR_OPTDENSE_uint32(nOptimize, "Optimize", "should we optimize/filter/refine the extracted depth-maps?", "7") // see OPTIMIZE_FLAGS
+MDEFVAR_OPTDENSE_uint32(nOptimize, "Optimize", "should we filter the extracted depth-maps?", "7") // see OPTIMIZE_FLAGS
+MDEFVAR_OPTDENSE_uint32(nEstimateColors, "Estimate Colors", "should we estimate the colors for the dense point-cloud?", "1", "0")
+MDEFVAR_OPTDENSE_uint32(nEstimateNormals, "Estimate Normals", "should we estimate the normals for the dense point-cloud?", "0", "1", "2")
 MDEFVAR_OPTDENSE_float(fNCCThresholdKeep, "NCC Threshold Keep", "Maximum 1-NCC score accepted for a match", "0.5", "0.3")
 MDEFVAR_OPTDENSE_float(fNCCThresholdRefine, "NCC Threshold Refine", "1-NCC score under which a match is not refined anymore", "0.03")
 MDEFVAR_OPTDENSE_uint32(nEstimationIters, "Estimation Iters", "Number of iterations for depth-map refinement", "3")
@@ -307,7 +311,7 @@ float DepthEstimator::ScorePixel(Depth depth, const Normal& normal)
 		// center a patch of given size on the segment and fetch the pixel values in the target image
 		const ViewData& image1 = images[idx];
 		float& score = scores[idx];
-		const Matrix3x3f H(ComputeHomographyMatrix(image1, depth, normal)); 
+		const Matrix3x3f H(ComputeHomographyMatrix(image1, depth, normal));
 		Point2f pt;
 		int n = 0;
 		for (int i=0; i<nSizeWindow; ++i) {
@@ -320,6 +324,7 @@ float DepthEstimator::ScorePixel(Depth depth, const Normal& normal)
 				texels1(n++) = image1.view.image.sample(pt);
 			}
 		}
+		{
 		ASSERT(n == nTexels);
 		// score similarity of the reference and target texture patches
 		const float normSq1(normSqZeroMean<float,float,nTexels>(texels1.data()));
@@ -335,7 +340,8 @@ float DepthEstimator::ScorePixel(Depth depth, const Normal& normal)
 			score *= 1.f - (1.f - smoothBonusDepth) * EXP(SQUARE(DepthSimilarity(depth, pNbr->depth)) * smoothSigmaDepth);
 			score *= 1.f - (1.f - smoothBonusNormal) * EXP(SQUARE(ACOS(ComputeAngle<float,float>(normal.ptr(), pNbr->normal.ptr()))) * smoothSigmaNormal);
 		}
-		NEXT_IMAGE: ;
+		}
+		NEXT_IMAGE:;
 	}
 	// set score as the nth element
 	return (scores.GetSize() > 1 ? scores.GetNth(idxScore) : scores.First());
@@ -502,9 +508,9 @@ public:
 	{
 		// LogAlpha0 is used to make error data scale invariant
 		// Ratio of containing diagonal image rectangle over image area
-		const float D = sqrt(w*w + h*h + d*d); // diameter
+		const float D = SQRT(w*w + h*h + d*d); // diameter
 		const float A = w*h*d+1.f; // volume
-		logalpha0_ = log10(2.0f*D/A*0.5f);
+		logalpha0_ = LOG10(2.0f*D/A*0.5f);
 	}
 
 	inline bool Fit(const std::vector<size_t>& samples, Models& models) const {
@@ -758,7 +764,7 @@ bool MVS::ExportDepthMap(const String& fileName, const DepthMap& depthMap, Depth
 			minDepth = 0.1f;
 		if (maxDepth < 0.1f)
 			maxDepth = 30.f;
-		DEBUG_ULTIMATE("Depth range: %g min - %g max", minDepth, maxDepth);
+		DEBUG_ULTIMATE("\tdepth range: [%g, %g]", minDepth, maxDepth);
 	}
 	const Depth deltaDepth = maxDepth - minDepth;
 	// save image
@@ -805,7 +811,7 @@ bool MVS::ExportConfidenceMap(const String& fileName, const ConfidenceMap& confM
 		minConf = 0.1f;
 	if (maxConf < 0.1f)
 		maxConf = 30.f;
-	DEBUG_ULTIMATE("Confidence range: %g min - %g max", minConf, maxConf);
+	DEBUG_ULTIMATE("\tconfidence range: [%g, %g]", minConf, maxConf);
 	const float deltaConf = maxConf - minConf;
 	// save image
 	Image8U img(confMap.size());

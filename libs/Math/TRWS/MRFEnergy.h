@@ -35,7 +35,7 @@ public:
 	typedef typename T::EdgeData   EdgeData;
 
 	typedef Node* NodeId;
-	typedef void (*ErrorFunction)(char* msg);
+	typedef void (*ErrorFunction)(const char* msg);
 
 	// Constructor. Function errorFn is called with an error message, if an error occurs.
 	MRFEnergy(GlobalSize Kglobal, ErrorFunction errorFn = NULL);
@@ -240,5 +240,7 @@ template <class T> inline typename T::Label MRFEnergy<T>::GetSolution(NodeId i)
 {
 	return i->m_solution;
 }
+
+#include "MRFEnergy.inl"
 
 #endif

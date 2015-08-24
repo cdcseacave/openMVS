@@ -1,12 +1,10 @@
-#include "Common.h"
-#include "MRFEnergy.h"
-#include "minimize.cpp"
-#include "ordering.cpp"
-#include "treeProbabilities.cpp"
+#include "minimize.inl"
+#include "ordering.inl"
+#include "treeProbabilities.inl"
 
 #include "instances.inl"
 
-void DefaultErrorFn(char* msg)
+static void DefaultErrorFn(const char* msg)
 {
 	fprintf(stderr, "%s\n", msg);
 	exit(1);
