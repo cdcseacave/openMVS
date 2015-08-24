@@ -48,7 +48,7 @@
 
 // D E F I N E S ///////////////////////////////////////////////////
 
-#define APPNAME _T("InterfaceOpenMVG_2")
+#define APPNAME _T("InterfaceOpenMVG2")
 #define MVS_EXT _T(".mvs")
 #define PLY_EXT _T(".ply")
 

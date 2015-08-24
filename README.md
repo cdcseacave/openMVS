@@ -11,7 +11,13 @@ Introduction
 License
 -------
 
-See [AGPL](https://github.com/FoxelSA/pychecktiff/blob/master/LICENSE) license text file
+See [AGPL](https://github.com/cdcseacave/openMVS/blob/master/COPYRIGHT.md) copyright file 
+
+-------
+Build
+-------
+
+See [BUILD](https://github.com/cdcseacave/blob/develop/BUILD) build tutorial text file
 
 -------
 Contact
