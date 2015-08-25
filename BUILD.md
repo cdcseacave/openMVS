@@ -3,11 +3,12 @@ Dependencies
 ------------
 
 OpenMVS relies on a number of open source libraries, some of which are optional. For details on customizing the build process, see the compilation instructions.
-* [Eigen](http://eigen.tuxfamily.org)
-* [OpenCV](http://opencv.org)
-* [Ceres](http://ceres-solver.org)
-* [CGAL](http://www.cgal.org)
+* [Eigen](http://eigen.tuxfamily.org) version 3.2 or higher
+* [OpenCV](http://opencv.org) version 2.4 or higher
+* [Ceres](http://ceres-solver.org) version 1.10 or higher
+* [CGAL](http://www.cgal.org) version 4.2 or higher
 * [VCG](http://vcg.isti.cnr.it/vcglib)
+* [OpenMVG](https://github.com/openMVG/openMVG) version 0.8.1 or higher
 
 ------------------
 Build instructions
@@ -99,7 +100,7 @@ current_path=`pwd`
 cmake -DCMAKE_BUILD_TYPE=RELEASE . ../openMVG/src/ -DCMAKE_INSTALL_PREFIX=$current_path/openMVG_install
 make
 
-# OpenMVS build
+#OpenMVS build
 main_path=`pwd`
 mkdir openMVS_Build
 cd openMVS_Build
@@ -108,3 +109,9 @@ cmake . ../openMVS -DCMAKE_BUILD_TYPE=RELEASE -DVCG_DIR="$main_path/vcglib" -DCE
 #If you want use OpenMVG as optional third party add to the cmake command:
 -DOpenMVG_DIR:STRING="$main_path/openMVG_Build/openMVG_install/share/openMVG/cmake/"
 ```
+
+--------------------
+Mac OS X compilation
+--------------------
+
+Not tested, any help testing on this platform is welcome.
