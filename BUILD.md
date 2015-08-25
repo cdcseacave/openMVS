@@ -7,6 +7,7 @@ OpenMVS relies on a number of open source libraries, some of which are optional.
 * [OpenCV](http://opencv.org) version 2.4 or higher
 * [Ceres](http://ceres-solver.org) version 1.10 or higher
 * [CGAL](http://www.cgal.org) version 4.2 or higher
+* [Boost](http://www.boost.org) version 1.56 or higher
 * [VCG](http://vcg.isti.cnr.it/vcglib)
 * [OpenMVG](https://github.com/openMVG/openMVG) version 0.8.1 or higher
 
