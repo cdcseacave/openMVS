@@ -135,12 +135,12 @@ public:
 
 	struct NodeData
 	{
-		NodeData(REAL* data); // data = pointer to array of size MRFEnergy::m_Kglobal
+		NodeData(const REAL* data); // data = pointer to array of size MRFEnergy::m_Kglobal
 
 	private:
 	friend struct Vector;
 	friend struct Edge;
-		REAL*		m_data;
+		const REAL*	m_data;
 	};
 
 	struct EdgeData
@@ -254,7 +254,7 @@ inline TypePotts::GlobalSize::GlobalSize(int K)
 
 ///////////////////// NodeData and EdgeData ///////////////////////
 
-inline TypePotts::NodeData::NodeData(REAL* data)
+inline TypePotts::NodeData::NodeData(const REAL* data)
 {
 	m_data = data;
 }

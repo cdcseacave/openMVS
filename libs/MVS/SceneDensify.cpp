@@ -215,7 +215,7 @@ bool DepthMapsData::SelectViews(IndexArr& images, IndexArr& imagesMap, IndexArr&
 	const size_t _num_edges = edges.size();
 	typedef MRFEnergy<TypeGeneral> MRFEnergyType;
 	CAutoPtr<MRFEnergyType> energy(new MRFEnergyType(TypeGeneral::GlobalSize()));
-	CAutoPtr<MRFEnergyType::NodeId> nodes(new MRFEnergyType::NodeId[_num_nodes]);
+	CAutoPtrArr<MRFEnergyType::NodeId> nodes(new MRFEnergyType::NodeId[_num_nodes]);
 	typedef SEACAVE::cList<TypeGeneral::REAL, const TypeGeneral::REAL&, 0> EnergyCostArr;
 	// unary costs: inverse proportional to the image pair score
 	EnergyCostArr arrUnary(_num_labels);
@@ -1460,6 +1460,7 @@ bool Scene::DenseReconstruction()
 				return false;
 				#endif
 			}
+			imageData.UpdateCamera(platforms);
 			// print image camera
 			DEBUG_ULTIMATE("K%d = \n%s", idxImage, cvMat2String(imageData.camera.K).c_str());
 			DEBUG_LEVEL(3, "R%d = \n%s", idxImage, cvMat2String(imageData.camera.R).c_str());

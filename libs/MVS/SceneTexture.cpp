@@ -39,8 +39,6 @@
 #include "Common.h"
 #include "Scene.h"
 #include "RectsBinPack.h"
-// inference algorithm
-#include "../Math/LBP.h"
 // connected components
 #include <boost/graph/adjacency_list.hpp>
 #include <boost/graph/filtered_graph.hpp>
@@ -70,6 +68,70 @@ using namespace MVS;
 #define TEXOPT_FACEOUTLIER_GAUSS_CLAMPING 3
 #define TEXOPT_FACEOUTLIER TEXOPT_FACEOUTLIER_GAUSS_CLAMPING
 
+// method used to find optimal view per face
+#define TEXOPT_INFERENCE_LBP 1
+#define TEXOPT_INFERENCE_TRWS 2
+#define TEXOPT_INFERENCE TEXOPT_INFERENCE_LBP
+
+// inference algorithm
+#if TEXOPT_INFERENCE == TEXOPT_INFERENCE_LBP
+#include "../Math/LBP.h"
+namespace MVS {
+typedef LBPInference::NodeID NodeID;
+// Potts model as smoothness function
+LBPInference::EnergyType STCALL SmoothnessPotts(LBPInference::NodeID, LBPInference::NodeID, LBPInference::LabelID l1, LBPInference::LabelID l2) {
+	return l1 == l2 && l1 != 0 && l2 != 0 ? LBPInference::EnergyType(0) : LBPInference::EnergyType(LBPInference::MaxEnergy);
+}
+}
+#endif
+#if TEXOPT_INFERENCE == TEXOPT_INFERENCE_TRWS
+#include "../Math/TRWS/MRFEnergy.h"
+namespace MVS {
+// TRWS MRF energy using Potts model
+typedef unsigned NodeID;
+typedef unsigned LabelID;
+typedef TypePotts::REAL EnergyType;
+static const EnergyType MaxEnergy(1);
+struct TRWSInference {
+	typedef MRFEnergy<TypePotts> MRFEnergyType;
+	typedef MRFEnergy<TypePotts>::Options MRFOptions;
+
+	CAutoPtr<MRFEnergyType> mrf;
+	CAutoPtrArr<MRFEnergyType::NodeId> nodes;
+
+	inline TRWSInference() {}
+	void Init(NodeID nNodes, LabelID nLabels) {
+		mrf = new MRFEnergyType(TypePotts::GlobalSize(nLabels));
+		nodes = new MRFEnergyType::NodeId[nNodes];
+	}
+	inline bool IsEmpty() const {
+		return mrf == NULL;
+	}
+	inline void AddNode(NodeID n, const EnergyType* D) {
+		nodes[n] = mrf->AddNode(TypePotts::LocalSize(), TypePotts::NodeData(D));
+	}
+	inline void AddEdge(NodeID n1, NodeID n2) {
+		mrf->AddEdge(nodes[n1], nodes[n2], TypePotts::EdgeData(MaxEnergy));
+	}
+	EnergyType Optimize() {
+		MRFOptions options;
+		options.m_eps = 0.005;
+		options.m_iterMax = 1000;
+		#if 1
+		EnergyType lowerBound, energy;
+		mrf->Minimize_TRW_S(options, lowerBound, energy);
+		#else
+		EnergyType energy;
+		mrf->Minimize_BP(options, energy);
+		#endif
+		return energy;
+	}
+	inline LabelID GetLabel(NodeID n) const {
+		return mrf->GetSolution(nodes[n]);
+	}
+};
+}
+#endif
 
 // S T R U C T S ///////////////////////////////////////////////////
 
@@ -808,11 +870,6 @@ bool MeshTexture::FaceOutlierDetection(FaceDataArr& faceDatas, float thOutlier) 
 }
 #endif
 
-// Potts model as smoothness function
-LBPInference::EnergyType STCALL SmoothnessPotts(LBPInference::NodeID, LBPInference::NodeID, LBPInference::LabelID l1, LBPInference::LabelID l2) {
-	return l1 == l2 && l1 != 0 && l2 != 0 ? LBPInference::EnergyType(0) : LBPInference::EnergyType(LBPInference::MaxEnergy);
-}
-
 void MeshTexture::FaceViewSellection(float fOutlierThreshold)
 {
 	// extract array of triangles incident to each vertex
@@ -830,6 +887,17 @@ void MeshTexture::FaceViewSellection(float fOutlierThreshold)
 		typedef boost::graph_traits<Graph>::edge_descriptor Edge;
 		typedef boost::graph_traits<Graph>::edge_iterator EdgeIter;
 		typedef boost::graph_traits<Graph>::out_edge_iterator EdgeOutIter;
+		struct Components {
+			static FIndex Find(const Graph& graph, Mesh::FaceIdxArr& components) {
+				FIndex nComponents(boost::connected_components(graph, components.Begin()));
+				#if 1
+				// assign a component to all faces left out of the graph (isolated)
+				for (FIndex nComp=(FIndex)boost::num_vertices(graph); nComp<components.GetSize(); ++nComp)
+					components[nComp] = nComponents++;
+				#endif
+				return nComponents;
+			}
+		};
 		Graph graph;
 		{
 			Mesh::FaceIdxArr afaces;
@@ -861,10 +929,9 @@ void MeshTexture::FaceViewSellection(float fOutlierThreshold)
 		components.Resize(faces.GetSize());
 		{
 			// find connected components
-			const FIndex nComponents(boost::connected_components(graph, components.Begin()));
+			const FIndex nComponents(Components::Find(graph, components));
 
 			// map face ID from global to component space
-			typedef LBPInference::NodeID NodeID;
 			typedef cList<NodeID, NodeID, 0, 128, NodeID> NodeIDs;
 			NodeIDs nodeIDs(faces.GetSize());
 			NodeIDs sizes(nComponents);
@@ -888,8 +955,9 @@ void MeshTexture::FaceViewSellection(float fOutlierThreshold)
 			}
 			const float normQuality(hist.GetApproximatePermille(0.95f));
 
+			#if TEXOPT_INFERENCE == TEXOPT_INFERENCE_LBP
 			// initialize inference structures
-			cList<LBPInference, const LBPInference&, 1, 8, FIndex> inferences(nComponents);
+			CLISTDEFIDX(LBPInference,FIndex) inferences(nComponents);
 			{
 				FOREACH(s, sizes) {
 					const NodeID numNodes(sizes[s]);
@@ -926,11 +994,11 @@ void MeshTexture::FaceViewSellection(float fOutlierThreshold)
 				}
 				// set data costs for all labels (except label 0 - undefined)
 				FOREACH(f, facesDatas) {
-					const FaceDataArr& faceDatas = facesDatas[f];
-					const NodeID nodeID(nodeIDs[f]);
 					LBPInference& inference = inferences[components[f]];
 					if (inference.GetNumNodes() == 0)
 						continue;
+					const FaceDataArr& faceDatas = facesDatas[f];
+					const NodeID nodeID(nodeIDs[f]);
 					FOREACHPTR(pFaceData, faceDatas) {
 						const FaceData& faceData = *pFaceData;
 						const Label label((Label)faceData.idxView+1);
@@ -960,6 +1028,81 @@ void MeshTexture::FaceViewSellection(float fOutlierThreshold)
 				if (label > 0)
 					labels[l] = label-1;
 			}
+			#endif
+
+			#if TEXOPT_INFERENCE == TEXOPT_INFERENCE_TRWS
+			// initialize inference structures
+			const LabelID numLabels(images.GetSize()+1);
+			CLISTDEFIDX(TRWSInference, FIndex) inferences(nComponents);
+			FOREACH(s, sizes) {
+				const NodeID numNodes(sizes[s]);
+				ASSERT(numNodes > 0);
+				if (numNodes <= 1)
+					continue;
+				TRWSInference& inference = inferences[s];
+				inference.Init(numNodes, numLabels);
+			}
+
+			// set data costs
+			{
+				// add nodes
+				CLISTDEF0(EnergyType) D(numLabels);
+				FOREACH(f, facesDatas) {
+					TRWSInference& inference = inferences[components[f]];
+					if (inference.IsEmpty())
+						continue;
+					D.MemsetValue(MaxEnergy);
+					const FaceDataArr& faceDatas = facesDatas[f];
+					FOREACHPTR(pFaceData, faceDatas) {
+						const FaceData& faceData = *pFaceData;
+						const Label label((Label)faceData.idxView);
+						const float normalizedQuality(faceData.quality>=normQuality ? 1.f : faceData.quality/normQuality);
+						const EnergyType dataCost(MaxEnergy*(1.f-normalizedQuality));
+						D[label] = dataCost;
+					}
+					const NodeID nodeID(nodeIDs[f]);
+					inference.AddNode(nodeID, D.Begin());
+				}
+				// add edges
+				EdgeOutIter ei, eie;
+				FOREACH(f, faces) {
+					TRWSInference& inference = inferences[components[f]];
+					if (inference.IsEmpty())
+						continue;
+					for (boost::tie(ei, eie) = boost::out_edges(f, graph); ei != eie; ++ei) {
+						ASSERT(f == (FIndex)ei->m_source);
+						const FIndex fAdj((FIndex)ei->m_target);
+						ASSERT(components[f] == components[fAdj]);
+						if (f < fAdj) // add edges only once
+							inference.AddEdge(nodeIDs[f], nodeIDs[fAdj]);
+					}
+				}
+			}
+
+			// assign the optimal view (label) to each face
+			#ifdef TEXOPT_USE_OPENMP
+			#pragma omp parallel for schedule(dynamic)
+			for (int i=0; i<(int)inferences.GetSize(); ++i) {
+			#else
+			FOREACH(i, inferences) {
+			#endif
+				TRWSInference& inference = inferences[i];
+				if (inference.IsEmpty())
+					continue;
+				inference.Optimize();
+			}
+			// extract resulting labeling
+			labels.Memset(0xFF);
+			FOREACH(l, labels) {
+				TRWSInference& inference = inferences[components[l]];
+				if (inference.IsEmpty())
+					continue;
+				const Label label(inference.GetLabel(nodeIDs[l]));
+				ASSERT(label >= 0 && label < numLabels);
+				if (label < images.GetSize())
+					labels[l] = label;
+			}
+			#endif
 		}
 
 		// create texture patches
@@ -978,7 +1121,7 @@ void MeshTexture::FaceViewSellection(float fOutlierThreshold)
 				boost::remove_edge(pEdge->i, pEdge->j, graph);
 
 			// find connected components: texture patches
-			const FIndex nComponents(boost::connected_components(graph, components.Begin()));
+			const FIndex nComponents(Components::Find(graph, components));
 
 			// create texture patches;
 			// last texture patch contains all faces with no texture

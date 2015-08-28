@@ -5,7 +5,7 @@
     Copyright (c) OpenMVS authors
     Licensed under the [AGPL](http://opensource.org/licenses/AGPL-3.0) license.
 
-## Included third parties licence details
+## Included third parties license details
 
 This program includes works distributed under the terms of another license(s) and other copyright notice(s).
 
@@ -26,15 +26,44 @@ This program includes works distributed under the terms of another license(s) an
     Copyright (c) Pierre Moulon.
     Licensed under the [MPL2 license](http://opensource.org/licenses/MPL-2.0).
 
+*   __ACRANSAC__<br />
+    Copyright (c) Pierre Moulon.
+    Licensed under the [MPL2 license](http://opensource.org/licenses/MPL-2.0).
+
 *   __stlplus3__<br />
     [http://stlplus.sourceforge.net](http://stlplus.sourceforge.net)
     Copyright (c) 1999-2004 Southampton University, 2004 onwards Andy Rushton. All rights reserved.
     Licensed under the [BSD license](http://opensource.org/licenses/bsd-license.php).
 
+*   __rectangle-bin-packing__<br />
+    [http://clb.demon.fi/projects/rectangle-bin-packing](http://clb.demon.fi/projects/rectangle-bin-packing)
+    Copyright (c) Jukka Jylänki.
+    Released to Public Domain, do whatever you want with it.
+
 *   __ceres-solver__<br />
     [http://ceres-solver.org](http://ceres-solver.org)
     Copyright 2015 Google Inc. All rights reserved.
-    Licensed under the [New BSD licence](http://ceres-solver.org/license.html).
+    Licensed under the [New BSD license](http://ceres-solver.org/license.html).
+
+*   __lmfit__<br />
+    [http://apps.jcns.fz-juelich.de/doku/sc/lmfit](http://apps.jcns.fz-juelich.de/doku/sc/lmfit)
+    Copyright (c) Joachim Wuttke.
+    Licensed under the [FreeBSD license](http://opensource.org/licenses/BSD-2-Clause).
+
+*   __TRWS__<br />
+    [http://pub.ist.ac.at/~vnk/software.html](http://pub.ist.ac.at/~vnk/software.html)
+    Copyright (c) Vladimir Kolmogorov.
+    Licensed under the [MSR-SSLA license](http://research.microsoft.com/en-us/um/people/antr/vrr/vrr/license.htm).
+
+*   __ibfs__<br />
+    [http://www.cs.tau.ac.il/~sagihed/ibfs](http://www.cs.tau.ac.il/~sagihed/ibfs)
+    Copyright (c) Haim Kaplan and Sagi Hed.
+    This software can be used for research purposes only.
+
+*   __loopy-belief-propagation__<br />
+    [https://github.com/nmoehrle/mvs-texturing](https://github.com/nmoehrle/mvs-texturing)
+    Copyright (c) Michael Waechter.
+    Licensed under the [BSD 3-Clause license](http://opensource.org/licenses/BSD-3-Clause).
 
 *   __eigen__<br />
     [http://eigen.tuxfamily.org](http://eigen.tuxfamily.org)

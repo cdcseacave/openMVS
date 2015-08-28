@@ -25,7 +25,10 @@ namespace SEACAVE {
 // S T R U C T S ///////////////////////////////////////////////////
 
 // basic implementation of the loopy belief propagation algorithm
-// (based on a code originally written by Michael Waechter)
+// based on a code originally written by Michael Waechter:
+// https://github.com/nmoehrle/mvs-texturing
+// Copyright(c) Michael Waechter
+// Licensed under the BSD 3-Clause license
 class LBPInference
 {
 public:

@@ -44,14 +44,15 @@ template<typename TYPE, typename CopyPolicy=AutoPtrMoveCopy>
 class CAutoPtr
 {
 private:
-	typedef TYPE*			TYPE_PTR;
+	typedef TYPE			Type;
+	typedef TYPE*			TypePtr;
 
 public:
 	inline CAutoPtr() : m_pointer(NULL)
 	{	// construct with NULL pointer
 	}
 
-	inline explicit CAutoPtr(TYPE_PTR _Ptr) : m_pointer(_Ptr)
+	inline explicit CAutoPtr(TypePtr _Ptr) : m_pointer(_Ptr)
 	{	// construct from object pointer
 	}
 
@@ -67,7 +68,7 @@ public:
 
 	void Swap(CAutoPtr& _Right)
 	{	// swap compatible _Right (assume pointer)
-		const TYPE_PTR tmp(m_pointer);
+		const TypePtr tmp(m_pointer);
 		m_pointer = _Right.m_pointer;
 		_Right.m_pointer = tmp;
 	}
@@ -81,7 +82,7 @@ public:
 		return (*this);
 	}
 
-	CAutoPtr& operator=(TYPE_PTR _Ptr)
+	CAutoPtr& operator=(TypePtr _Ptr)
 	{	// assign compatible _Right (assume pointer)
 		if (m_pointer != _Ptr) {
 			delete m_pointer;
@@ -90,24 +91,24 @@ public:
 		return (*this);
 	}
 
-	inline TYPE& operator*() const
+	inline Type& operator*() const
 	{	// return designated value
 		ASSERT(m_pointer);
 		return (*m_pointer);
 	}
 
-	inline TYPE* operator->() const
+	inline Type* operator->() const
 	{	// return pointer to class object
 		ASSERT(m_pointer);
 		return m_pointer;
 	}
 
-	inline operator TYPE_PTR() const
+	inline operator TypePtr() const
 	{	// return pointer to class object
 		return m_pointer;
 	}
 
-	inline operator TYPE_PTR&()
+	inline operator TypePtr&()
 	{	// return reference to class object
 		return m_pointer;
 	}
@@ -138,13 +139,13 @@ public:
 		m_pointer = NULL;
 	}
 
-	inline void Reset(TYPE_PTR _Ptr = NULL)
+	inline void Reset(TypePtr _Ptr = NULL)
 	{	// reset pointer
 		m_pointer = _Ptr;
 	}
 
 private:
-	TYPE_PTR	m_pointer;		// the wrapped object pointer
+	TypePtr	m_pointer;		// the wrapped object pointer
 
 #ifdef _USE_BOOST
 protected:
@@ -158,7 +159,7 @@ protected:
 	template<class Archive>
 	void load(Archive& ar, const unsigned int /*version*/)
 	{
-		TYPE_PTR newPointer;
+		TypePtr newPointer;
 		ar & newPointer;
 		operator=(newPointer);
 	}
@@ -171,14 +172,15 @@ template<class TYPE>
 class CAutoPtrArr
 {
 private:
-	typedef TYPE*			TYPE_PTR;
+	typedef TYPE			Type;
+	typedef TYPE*			TypePtr;
 
 public:
 	inline CAutoPtrArr() : m_pointer(NULL)
 	{	// construct with NULL pointer
 	}
 
-	inline explicit CAutoPtrArr(TYPE_PTR _Ptr) : m_pointer(_Ptr)
+	inline explicit CAutoPtrArr(TypePtr _Ptr) : m_pointer(_Ptr)
 	{	// construct from object pointer
 	}
 
@@ -203,7 +205,7 @@ public:
 		return (*this);
 	}
 
-	CAutoPtrArr& operator=(TYPE_PTR _Ptr)
+	CAutoPtrArr& operator=(TypePtr _Ptr)
 	{	// assign compatible _Right (assume pointer)
 		if (m_pointer != _Ptr)
 		{
@@ -213,24 +215,24 @@ public:
 		return (*this);
 	}
 
-	inline TYPE& operator*() const
+	inline Type& operator*() const
 	{	// return designated value
 		ASSERT(m_pointer);
 		return (*m_pointer);
 	}
 
-	inline TYPE* operator->() const
+	inline Type* operator->() const
 	{	// return pointer to class object
 		ASSERT(m_pointer);
 		return m_pointer;
 	}
 
-	inline operator TYPE_PTR() const
+	inline operator TypePtr() const
 	{	// return pointer to class object
 		return m_pointer;
 	}
 
-	inline operator TYPE_PTR&()
+	inline operator TypePtr&()
 	{	// return reference to class object
 		return m_pointer;
 	}
@@ -261,13 +263,13 @@ public:
 		m_pointer = NULL;
 	}
 
-	inline void Reset(TYPE_PTR _Ptr = NULL)
+	inline void Reset(TypePtr _Ptr = NULL)
 	{	// reset pointer
 		m_pointer = _Ptr;
 	}
 
 private:
-	TYPE_PTR	m_pointer;		// the wrapped object pointer
+	TypePtr	m_pointer;		// the wrapped object pointer
 
 #ifdef _USE_BOOST
 protected:
@@ -281,7 +283,7 @@ protected:
 	template<class Archive>
 	void load(Archive& ar, const unsigned int /*version*/)
 	{
-		TYPE_PTR newPointer;
+		TypePtr newPointer;
 		ar & newPointer;
 		operator=(newPointer);
 	}
