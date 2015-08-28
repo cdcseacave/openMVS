@@ -998,8 +998,10 @@ void Mesh::Clean(float fDecimate, float fSpurious, bool bRemoveSpikes, unsigned 
 		#endif
 		const int nUnreferencedVertices = vcg::tri::Clean<CLEAN::Mesh>::RemoveUnreferencedVertex(mesh);
 		DEBUG_ULTIMATE("Removed %d unreferenced vertices", nUnreferencedVertices);
+		#if 0 // not working
 		const int nSplitNonManifoldVertices = vcg::tri::Clean<CLEAN::Mesh>::SplitNonManifoldVertex(mesh, 0);
 		DEBUG_ULTIMATE("Split %d non-manifold vertices", nSplitNonManifoldVertices);
+		#endif
 		const int nNonManifoldVertices = vcg::tri::Clean<CLEAN::Mesh>::RemoveNonManifoldVertex(mesh);
 		DEBUG_ULTIMATE("Removed %d non-manifold vertices", nNonManifoldVertices);
 		vcg::tri::Allocator<CLEAN::Mesh>::CompactFaceVector(mesh);
@@ -1108,8 +1110,10 @@ void Mesh::Clean(float fDecimate, float fSpurious, bool bRemoveSpikes, unsigned 
 	if (fSpurious > 0 || bRemoveSpikes || nCloseHoles > 0 || nSmooth > 0) {
 		const int nNonManifoldFaces = vcg::tri::Clean<CLEAN::Mesh>::RemoveNonManifoldFace(mesh);
 		DEBUG_ULTIMATE("Removed %d non-manifold faces", nNonManifoldFaces);
+		#if 0 // not working
 		const int nSplitNonManifoldVertices = vcg::tri::Clean<CLEAN::Mesh>::SplitNonManifoldVertex(mesh, 0);
 		DEBUG_ULTIMATE("Split %d non-manifold vertices", nSplitNonManifoldVertices);
+		#endif
 		const int nNonManifoldVertices = vcg::tri::Clean<CLEAN::Mesh>::RemoveNonManifoldVertex(mesh);
 		DEBUG_ULTIMATE("Removed %d non-manifold vertices", nNonManifoldVertices);
 	}

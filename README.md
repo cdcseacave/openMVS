@@ -15,9 +15,13 @@ See the complete [documentation](https://github.com/cdcseacave/openMVS/wiki) on 
 
 See the [building](https://github.com/cdcseacave/openMVS/wiki/Building) wiki page.
 
+## Example
+
+See the usage [example](https://github.com/cdcseacave/openMVS/wiki/Usage) wiki page.
+
 ## License
 
-See the [AGPL](https://github.com/cdcseacave/openMVS/blob/master/COPYRIGHT.md) copyright file.
+See the [copyright](https://github.com/cdcseacave/openMVS/blob/master/COPYRIGHT.md) file.
 
 ## Contact
 

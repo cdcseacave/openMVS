@@ -108,8 +108,8 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		("decimate", boost::program_options::value<float>(&OPT::fDecimateMesh)->default_value(1.f), "the decimation factor in range (0..1] to be applied to the reconstructed surface (1 - disabled)")
 		("remove-spurious", boost::program_options::value<float>(&OPT::fRemoveSpurious)->default_value(10.f), "the spurious factor for removing faces with too long edges or isolated components (0 - disabled)")
 		("remove-spikes", boost::program_options::value<bool>(&OPT::bRemoveSpikes)->default_value(true), "the flag controlling the removal of spike faces")
-		("close-holes", boost::program_options::value<unsigned>(&OPT::nCloseHoles)->default_value(15), "try to close small holes in the reconstructed surface (0 - disabled)")
-		("smooth", boost::program_options::value<unsigned>(&OPT::nSmoothMesh)->default_value(2), "number of iterations to smooth the reconstructed surface (0 - disabled)")
+		("close-holes", boost::program_options::value<unsigned>(&OPT::nCloseHoles)->default_value(20), "try to close small holes in the reconstructed surface (0 - disabled)")
+		("smooth", boost::program_options::value<unsigned>(&OPT::nSmoothMesh)->default_value(3), "number of iterations to smooth the reconstructed surface (0 - disabled)")
 		;
 
 	// hidden options, allowed both on command line and
@@ -237,6 +237,7 @@ int main(int argc, LPCTSTR* argv)
 
 	// clean and save the final mesh
 	scene.mesh.Clean(OPT::fDecimateMesh, OPT::fRemoveSpurious, OPT::bRemoveSpikes, OPT::nCloseHoles, OPT::nSmoothMesh);
+	scene.mesh.Clean(1.f, 0.f, OPT::bRemoveSpikes, OPT::nCloseHoles, 0); // extra cleaning trying to close more holes
 	scene.mesh.Save(MAKE_PATH_SAFE(Util::getFullFileName(OPT::strOutputFileName) + _T("_mesh.ply")));
 	scene.Save(MAKE_PATH_SAFE(Util::getFullFileName(OPT::strOutputFileName) + _T("_mesh.mvs")), (ARCHIVE_TYPE)OPT::nArchiveType);
 
