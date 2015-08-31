@@ -44,6 +44,9 @@
 #undef R2D
 #include <openMVG/sfm/sfm_data.hpp>
 #include <openMVG/sfm/sfm_data_io.hpp>
+#include "openMVG/image/image.hpp"
+#include <openMVG/third_party/stlplus3/filesystemSimplified/file_system.hpp>
+#include <openMVG/third_party/progress/progress.hpp>
 
 
 // D E F I N E S ///////////////////////////////////////////////////
@@ -98,7 +101,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	boost::program_options::options_description config("Main options");
 	config.add_options()
 		("input-file,i", boost::program_options::value<std::string>(&OPT::strInputFileName), "the input filename containing camera poses and image list")
-		("output-file,o", boost::program_options::value<std::string>(&OPT::strOutputFileName), "the output filename for storing the mesh")
+		("output-file,o", boost::program_options::value<std::string>(&OPT::strOutputFileName), "the output filename for storing the OpenMVS scene")
 		("normalize,f", boost::program_options::value<bool>(&OPT::bNormalizeIntrinsics)->default_value(true), "normalize intrinsics while exporting to OpenMVS format")
 		;
 
@@ -243,15 +246,15 @@ int main(int argc, LPCTSTR* argv)
 		stream.close();
 
 		VERBOSE("Input data exported: %u poses & %u vertices", nbcamera, scene.pointcloud.GetSize());
-	} else {
-		// read OpenMVG input data
-		using namespace openMVG::sfm;
-		using namespace openMVG::cameras;
-		SfM_Data sfm_data;
-		std::string sSfM_Data_Filename = MAKE_PATH_SAFE(OPT::strInputFileName);
-		if (!Load(sfm_data, sSfM_Data_Filename, ESfM_Data(ALL))) {
-			VERBOSE("error: the input SfM_Data file '%s' cannot be read", sSfM_Data_Filename.c_str());
-			return EXIT_FAILURE;
+		} else {
+			// read OpenMVG input data
+			using namespace openMVG::sfm;
+			using namespace openMVG::cameras;
+			SfM_Data sfm_data;
+			std::string sSfM_Data_Filename = MAKE_PATH_SAFE(OPT::strInputFileName);
+			if (!Load(sfm_data, sSfM_Data_Filename, ESfM_Data(ALL))) {
+				VERBOSE("error: the input SfM_Data file '%s' cannot be read", sSfM_Data_Filename.c_str());
+				return EXIT_FAILURE;
 		}
 
 		VERBOSE("Imported data: %u cameras, %u poses, %u images, %u vertices",
@@ -286,9 +289,16 @@ int main(int argc, LPCTSTR* argv)
 			}
 		}
 
+		// Create output directory for the undistorted images
+		if (!stlplus::is_folder(MAKE_PATH_FULL(WORKING_FOLDER_FULL, std::string("images")))) {
+				stlplus::folder_create(MAKE_PATH_FULL(WORKING_FOLDER_FULL, std::string("images")));
+		}
+
 		// Define images & poses
+		C_Progress_display progress_bar( sfm_data.GetViews().size()*1);
 		scene.images.Reserve(sfm_data.GetViews().size());
 		for (const auto& view : sfm_data.GetViews()) {
+			++progress_bar;
 			map_view[view.first] = scene.images.GetSize();
 			MVS::Image& image = scene.images.AddEmpty();
 			image.name = "images/" + view.second->s_Img_path;
@@ -296,17 +306,48 @@ int main(int argc, LPCTSTR* argv)
 			image.name = MAKE_PATH_FULL(WORKING_FOLDER_FULL, image.name);
 			image.platformID = 0;
 			MVS::Platform& platform = scene.platforms[image.platformID];
-			//image.cameraID = map_intrinsic[view.second->id_intrinsic];
-			image.cameraID = view.second->id_intrinsic;
+			image.cameraID = map_intrinsic.at(view.second->id_intrinsic);
+
+			openMVG::image::Image<openMVG::image::RGBColor> imageRGB, imageRGB_ud;
+			const std::string srcImage = stlplus::create_filespec(sfm_data.s_root_path, view.second->s_Img_path);
+			const std::string dstImage = image.name;
+
 			if (sfm_data.IsPoseAndIntrinsicDefined(view.second.get())) {
 				image.poseID = platform.poses.GetSize();
 				MVS::Platform::Pose& pose = platform.poses.AddEmpty();
 				const openMVG::geometry::Pose3 poseMVG = sfm_data.GetPoses().at(view.second->id_pose);
 				pose.R = poseMVG.rotation();
 				pose.C = poseMVG.center();
-			} else // Image have not valid pose, so set an undefined pose
-			{
+				// export undistorted images
+				const openMVG::cameras::IntrinsicBase * cam = sfm_data.GetIntrinsics().at(view.second->id_intrinsic).get();
+				if (cam->have_disto())  {
+					// Undistort and save the image
+					openMVG::image::ReadImage(srcImage.c_str(), &imageRGB);
+					openMVG::cameras::UndistortImage(imageRGB, cam, imageRGB_ud, openMVG::image::BLACK);
+					openMVG::image::WriteImage(dstImage.c_str(), imageRGB_ud);
+				} else  { // (no distortion)
+					// If extensions match, copy the image
+					if (stlplus::extension_part(srcImage) == "JPG" ||
+					stlplus::extension_part(srcImage) == "jpg")
+					{
+						stlplus::file_copy(srcImage, dstImage);
+					} else  {
+					openMVG::image::ReadImage( srcImage.c_str(), &imageRGB);
+					openMVG::image::WriteImage( dstImage.c_str(), imageRGB);
+					}
+				}
+			} else {
+				// Image have not valid pose, so set an undefined pose
 				image.poseID = NO_ID;
+				// export the corresponding image
+				if (stlplus::extension_part(srcImage) == "JPG" ||
+						stlplus::extension_part(srcImage) == "jpg")
+				{
+					stlplus::file_copy(srcImage, dstImage);
+				} else  {
+					openMVG::image::ReadImage( srcImage.c_str(), &imageRGB);
+					openMVG::image::WriteImage( dstImage.c_str(), imageRGB);
+				}
 			}
 		}
 
@@ -319,8 +360,7 @@ int main(int argc, LPCTSTR* argv)
 			point = landmark.X.cast<float>();
 			MVS::PointCloud::ViewArr& views = scene.pointcloud.pointViews.AddEmpty();
 			for (const auto& observation: landmark.obs) {
-				//views.Insert(map_view[observation.first]);
-				views.Insert(observation.first);
+				views.Insert(map_view.at(observation.first));
 			}
 		}
 
