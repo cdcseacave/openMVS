@@ -315,7 +315,7 @@ int main(int argc, LPCTSTR* argv)
 			if (sfm_data.IsPoseAndIntrinsicDefined(view.second.get())) {
 				image.poseID = platform.poses.GetSize();
 				MVS::Platform::Pose& pose = platform.poses.AddEmpty();
-				const openMVG::geometry::Pose3 poseMVG = sfm_data.GetPoses().at(view.second->id_pose);
+				const openMVG::geometry::Pose3 poseMVG = sfm_data.GetPoseOrDie(view.second.get());
 				pose.R = poseMVG.rotation();
 				pose.C = poseMVG.center();
 				// export undistorted images
