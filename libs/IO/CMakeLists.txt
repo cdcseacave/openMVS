@@ -9,6 +9,11 @@ if(JPEG_FOUND)
 	include_directories(${JPEG_INCLUDE_DIR})
 	add_definitions(${JPEG_DEFINITIONS} -D_USE_JPG)
 endif()
+FIND_PACKAGE(TIFF QUIET)
+if(TIFF_FOUND)
+	include_directories(${TIFF_INCLUDE_DIR})
+	add_definitions(${TIFF_DEFINITIONS} -D_USE_TIFF)
+endif()
 if(OpenMVS_USE_EXIV2)
 	FIND_PACKAGE(EXIV2 QUIET)
 	if(EXIV2_FOUND)
@@ -35,4 +40,4 @@ cxx_library_with_type_no_pch(IO "Libs" "" "${cxx_default}"
 set_target_pch(IO Common.h)
 
 # Link its dependencies
-TARGET_LINK_LIBRARIES(IO Common ${PNG_LIBRARIES} ${JPEG_LIBRARIES} ${EXIV2_LIBS})
+TARGET_LINK_LIBRARIES(IO Common ${PNG_LIBRARIES} ${JPEG_LIBRARIES} ${TIFF_LIBRARIES} ${EXIV2_LIBS})

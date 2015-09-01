@@ -11,7 +11,7 @@
 #include "ImageTIFF.h"
 
 extern "C" {
-#include <tiff/tiffiop.h>
+#include <tiffio.h>
 }
 
 using namespace SEACAVE;
@@ -111,7 +111,6 @@ extern "C" {
 	static tmsize_t _tiffosWriteProc(thandle_t fd, void* buf, tmsize_t size)
 	{
 		tiffos_data	*data = reinterpret_cast<tiffos_data *>(fd);
-		size_f_t pos = data->stream->getPos();
 
 		// Verify that type does not overflow.
 		size_t request_size = size;
