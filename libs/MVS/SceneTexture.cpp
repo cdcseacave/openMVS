@@ -821,6 +821,7 @@ bool MeshTexture::FaceOutlierDetection(FaceDataArr& faceDatas, float thOutlier) 
 		// (all views with a gauss value above the threshold)
 		bool bChanged(false);
 		size_t numInliers(0);
+		colors.conservativeResize(3, faceDatas.GetSize());
 		FOREACH(i, faceDatas) {
 			const Eigen::Vector3d color(((const Color::EVec)faceDatas[i].color).cast<double>());
 			const double gaussValue(MultiGaussUnnormalized<double,3>(color, mean, covarianceInv));
@@ -828,13 +829,13 @@ bool MeshTexture::FaceOutlierDetection(FaceDataArr& faceDatas, float thOutlier) 
 			if (gaussValue > thOutlier) {
 				// set as inlier
 				colors.col(numInliers++) = color;
-				if (inlier != true) {
+				if (inlier == false) {
 					inlier = true;
 					bChanged = true;
 				}
 			} else {
 				// set as outlier
-				if (inlier != false) {
+				if (inlier == true) {
 					inlier = false;
 					bChanged = true;
 				}
