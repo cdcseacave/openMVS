@@ -390,7 +390,9 @@ public:
 
 	void ListCameraFaces(FaceDataViewArr&, float fOutlierThreshold);
 
+	#if TEXOPT_FACEOUTLIER != TEXOPT_FACEOUTLIER_NA
 	bool FaceOutlierDetection(FaceDataArr& faceDatas, float fOutlierThreshold) const;
+	#endif
 
 	void FaceViewSellection(float fOutlierThreshold);
 
@@ -750,7 +752,7 @@ bool MeshTexture::FaceOutlierDetection(FaceDataArr& faceDatas, float thOutlier) 
 	return true;
 }
 
-#else
+#elif TEXOPT_FACEOUTLIER != TEXOPT_FACEOUTLIER_NA
 
 // A multi-variate normal distribution which is NOT normalized such that the integral is 1
 // - centered is the vector for which the function is to be evaluated with the mean subtracted [Nx1]
@@ -783,20 +785,22 @@ bool MeshTexture::FaceOutlierDetection(FaceDataArr& faceDatas, float thOutlier) 
 	// init colors array
 	if (faceDatas.GetSize() <= minInliers)
 		return false;
-	Eigen::Matrix3Xd colors(3, faceDatas.GetSize());
+	Eigen::Matrix3Xd colorsAll(3, faceDatas.GetSize());
 	BoolArr inliers(faceDatas.GetSize());
 	FOREACH(i, faceDatas) {
-		colors.col(i) = ((const Color::EVec)faceDatas[i].color).cast<double>();
+		colorsAll.col(i) = ((const Color::EVec)faceDatas[i].color).cast<double>();
 		inliers[i] = true;
 	}
 
 	// perform outlier removal; abort if something goes wrong
 	// (number of inliers below threshold or can not invert the covariance)
+	size_t numInliers(faceDatas.GetSize());
 	Eigen::Vector3d mean;
 	Eigen::Matrix3d covariance;
 	Eigen::Matrix3d covarianceInv;
 	for (int iter = 0; iter < maxIterations; ++iter) {
 		// compute the mean color and color covariance only for inliers
+		const Eigen::Block<Eigen::Matrix3Xd,3,Eigen::Dynamic,!Eigen::Matrix3Xd::IsRowMajor> colors(colorsAll.leftCols(numInliers));
 		mean = colors.rowwise().mean();
 		const Eigen::Matrix3Xd centered(colors.colwise() - mean);
 		covariance = (centered * centered.transpose()) / double(colors.cols() - 1);
@@ -819,15 +823,15 @@ bool MeshTexture::FaceOutlierDetection(FaceDataArr& faceDatas, float thOutlier) 
 
 		// filter inliers
 		// (all views with a gauss value above the threshold)
+		numInliers = 0;
 		bool bChanged(false);
-		size_t numInliers(0);
 		FOREACH(i, faceDatas) {
 			const Eigen::Vector3d color(((const Color::EVec)faceDatas[i].color).cast<double>());
 			const double gaussValue(MultiGaussUnnormalized<double,3>(color, mean, covarianceInv));
 			bool& inlier = inliers[i];
 			if (gaussValue > thOutlier) {
 				// set as inlier
-				colors.col(numInliers++) = color;
+				colorsAll.col(numInliers++) = color;
 				if (inlier != true) {
 					inlier = true;
 					bChanged = true;
@@ -846,7 +850,6 @@ bool MeshTexture::FaceOutlierDetection(FaceDataArr& faceDatas, float thOutlier) 
 			return false;
 		if (!bChanged)
 			break;
-		colors.conservativeResize(3, numInliers);
 	}
 
 	#if TEXOPT_FACEOUTLIER == TEXOPT_FACEOUTLIER_GAUSS_DAMPING
