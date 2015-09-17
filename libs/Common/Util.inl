@@ -205,6 +205,20 @@ bool CheckCollinearity(const TPoint3<TYPE>* ptr, int count, bool checkPartialSub
 /*----------------------------------------------------------------*/
 
 
+// compute the corresponding ray for a given projection matrix P[3,4] and image point pt[2,1]
+// output ray[3,1]
+template<typename TYPE1, typename TYPE2>
+inline void RayPoint_3x4_2_3(const TYPE1* P, const TYPE2* pt, TYPE1* ray) {
+	Eigen::Map< const Eigen::Matrix<TYPE1,3,4> > mP(P);
+	const Eigen::Matrix<TYPE1,3,3> mM(mP.block<3,3>(0,0));
+	TYPE1 M[9];
+	InvertMatrix3x3(mM.data(), M);
+	ray[0] = M[0*3+0]*pt[0] + M[0*3+1]*pt[1] + M[0*3+2];
+	ray[1] = M[1*3+0]*pt[0] + M[1*3+1]*pt[1] + M[1*3+2];
+	ray[2] = M[2*3+0]*pt[0] + M[2*3+1]*pt[1] + M[2*3+2];
+} // RayPoint_3x4_2_3
+/*----------------------------------------------------------------*/
+
 // project column vertex - used only for visualization purposes
 // (optimized ProjectVertex for P[3,4] and X[3,1], output pt[3,1])
 template<typename TYPE1, typename TYPE2>

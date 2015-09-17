@@ -44,7 +44,7 @@
 #undef R2D
 #include <openMVG/sfm/sfm_data.hpp>
 #include <openMVG/sfm/sfm_data_io.hpp>
-#include "openMVG/image/image.hpp"
+#include <openMVG/image/image.hpp>
 #include <openMVG/third_party/stlplus3/filesystemSimplified/file_system.hpp>
 #include <openMVG/third_party/progress/progress.hpp>
 

@@ -63,15 +63,11 @@ using namespace MVS;
 
 // uncomment to use robust data term
 // (somewhat slower and not seem to make much of a difference)
-#define MESHOPT_ROBUST
+//#define MESHOPT_ROBUST
 
 // uncomment to refine mesh using also a smoothing term
 // (somewhat slower, but increases a lot the quality)
 #define MESHOPT_SMOOTH
-
-// uncomment to use for refine mesh only vertices with the entire ring-1 triangle-fun visible in the pair images
-// (somewhat slower, and does not seem to increase the quality)
-//#define MESHOPT_VERTEXFULLRING
 
 // uncomment to refine mesh using numerical method
 // (somewhat slower and should be less accurate compared to the analytical method)
@@ -90,6 +86,9 @@ typedef Mesh::Face Face;
 typedef Mesh::FIndex FIndex;
 
 struct MeshRefine {
+	typedef std::unordered_set<FIndex> CameraFaces;
+	typedef SEACAVE::cList<CameraFaces,const CameraFaces&,2> CameraFacesArr;
+
 	// store necessary data about a view
 	struct View {
 		typedef TImage<Point2f> ImageGrad;
@@ -250,7 +249,8 @@ struct MeshRefine {
 			return var/(var+0.001f);
 		}
 	};
-	typedef cList<ViewVertex,const ViewVertex&,1,16,VIndex> ViewVertexArr;
+	typedef SEACAVE::cList<ViewVertex,const ViewVertex&,1,16,VIndex> ViewVertexArr;
+	typedef SEACAVE::cList<uint16_t,uint16_t,0> CountVertexArr;
 
 	struct RasterMeshData {
 		const Camera& P;
@@ -259,7 +259,7 @@ struct MeshRefine {
 		Point3 normalPlane;
 		FIndex idxFace;
 		inline void operator()(const ImageRef& pt) {
-			if (!depthMap.isInside(pt))
+			if (!depthMap.isInsideWithBorder<int,4>(pt))
 				return;
 			const float z((float)INVERT(normalPlane.dot(P.TransformPointI2C(Point2(pt)))));
 			ASSERT(z > 0);
@@ -270,7 +270,7 @@ struct MeshRefine {
 			}
 		}
 		inline void operator()(const ImageRef& pt, float z) {
-			if (!depthMap.isInside(pt))
+			if (!depthMap.isInsideWithBorder<int,4>(pt))
 				return;
 			ASSERT(z > 0);
 			Depth& depth = depthMap(pt);
@@ -349,6 +349,12 @@ public:
 	template <typename TP, typename TX, typename T>
 	static T ProjectVertex(const TP* P, const TX* X, T* x, T* jacobian=NULL);
 
+	static bool IsDepthSimilar(const DepthMap& depthMap, const Point2f& pt, Depth z);
+	static void ProjectMesh(
+		const Mesh::VertexArr& vertices, const Mesh::FaceArr& faces, const CameraFaces& cameraFaces,
+		const Camera& camera, const Image8U::Size& size,
+		DepthMap& depthMap, FaceMap& faceMap);
+
 
 public:
 	const float ratioRigidityElasticity; // a scalar weight used to compute the regularity gradient
@@ -357,12 +363,8 @@ public:
 	const unsigned nMinResolution; // how many times to scale down the images before mesh optimization
 
 	// valid after ListCameraFaces()
-	#ifdef MESHOPT_VERTEXFULLRING
-	typedef SEACAVE::cList<BitMatrix> BitMatrixArr;
-	BitMatrixArr vertexMaps; // remember for each vertex if the entire ring-1 triangle-fun is visible in the image
-	#endif
 	FaceMapArr faceMaps; // remember for each pixel what face projects there
-	DepthMapArr depthMaps;
+	DepthMapArr depthMaps; // depth-map
 	#ifndef MESHOPT_NUMERICAL
 	Mesh::NormalArr& faceNormals; // normals corresponding to each face
 	#endif
@@ -525,8 +527,6 @@ void MeshRefine::ListVertexFaces()
 void MeshRefine::ListCameraFaces()
 {
 	// extract array of faces viewed by each camera
-	typedef std::unordered_set<FIndex> CameraFaces;
-	typedef cList<CameraFaces> CameraFacesArr;
 	CameraFacesArr arrCameraFaces(images.GetSize());
 	{
 	struct FacesInserter {
@@ -563,91 +563,25 @@ void MeshRefine::ListCameraFaces()
 	}
 
 	// project mesh to each camera plane
-	#ifdef MESHOPT_VERTEXFULLRING
-	BoolArr faceValids(faces.GetSize());
-	vertexMaps.Resize(images.GetSize());
-	#endif
 	faceMaps.Resize(images.GetSize());
 	depthMaps.Resize(images.GetSize());
-	Point3 ptc[3]; Point2f pti[3];
+	#ifdef MESHOPT_USE_OPENMP
+	#pragma omp parallel for schedule(dynamic)
+	for (int ID=0; ID<(int)images.GetSize(); ++ID) {
+	#else
 	FOREACH(ID, images) {
+	#endif
 		const Image& imageData = images[ID];
 		if (!imageData.IsValid())
 			continue;
-		// init view data
-		FaceMap& faceMap = faceMaps[ID];
-		faceMap.create(imageData.height, imageData.width);
-		faceMap.memset((uint8_t)NO_ID);
-		DepthMap& depthMap = depthMaps[ID];
-		depthMap.create(imageData.height, imageData.width);
-		depthMap.memset(0);
-		const Camera& camera = imageData.camera;
-		RasterMeshData data = {camera, faceMap, depthMap};
-		// project all triangles on this image and keep the closest ones
-		const CameraFaces& cameraFaces = arrCameraFaces[ID];
-		#ifdef MESHOPT_VERTEXFULLRING
-		faceValids.Memset(0);
-		#endif
-		for (auto idxFace : cameraFaces) {
-			data.idxFace = idxFace;
-			const Face& facet = faces[idxFace];
-			for (unsigned v=0; v<3; ++v) {
-				const Vertex& pt = vertices[facet[v]];
-				ptc[v] = camera.TransformPointW2C(CastReal(pt));
-				pti[v] = camera.TransformPointC2I(ptc[v]);
-				// skip face if not completely inside
-				if (!depthMap.isInsideWithBorder<float,3>(pti[v]))
-					goto CONTIUE2NEXTFACE;
-			}
-			#ifdef MESHOPT_VERTEXFULLRING
-			faceValids[idxFace] = true;
-			#endif
-			{
-			#if 1
-			// compute the face center, which is also the view to face vector
-			// (cause the face is in camera view space)
-			const Point3 faceCenter((ptc[0]+ptc[1]+ptc[2])/3);
-			// skip face if the (cos) angle between
-			// the view to face vector and the view direction is negative
-			if (faceCenter.z < 0)
-				continue;
-			// compute the plane defined by the 3 points
-			const Point3 edge1(ptc[1]-ptc[0]);
-			const Point3 edge2(ptc[2]-ptc[0]);
-			data.normalPlane = edge1.cross(edge2);
-			// skip face if the (cos) angle between
-			// the face normal and the face to view vector is negative
-			if (faceCenter.dot(data.normalPlane) > 0)
-				continue;
-			// prepare vector used to compute the depth during rendering
-			data.normalPlane *= INVERT(data.normalPlane.dot(ptc[0]));
-			// draw triangle and for each pixel compute depth as the ray intersection with the plane
-			Image8U3::RasterizeTriangle(pti[0], pti[1], pti[2], data);
-			#else
-			Image8U3::RasterizeTriangleDepth(Point3f(pti[0],float(ptc[0].z)), Point3f(pti[1],float(ptc[1].z)), Point3f(pti[2],float(ptc[2].z)), data);
-			#endif
-			}
-			CONTIUE2NEXTFACE:;
-		}
-		#ifdef MESHOPT_VERTEXFULLRING
-		// check for each vertex if the entire ring-1 triangle-fun is visible in the image
-		BitMatrix& vertexMap = vertexMaps[ID];
-		vertexMap.create(vertices.GetSize());
-		vertexMap.memset(0);
-		FOREACH(idxVert, vertices) {
-			const Mesh::FaceIdxArr& vf = vertexFaces[idxVert];
-			FOREACHPTR(pFace, vf)
-				if (!faceValids[*pFace])
-					goto CONTIUE2NEXTVERTEX;
-			vertexMap.set(idxVert);
-			CONTIUE2NEXTVERTEX:;
-		}
-		#endif
+		// project mesh to the given camera plane
+		ProjectMesh(vertices, faces, arrCameraFaces[ID], imageData.camera, Image8U::Size(imageData.width, imageData.height),
+					depthMaps[ID], faceMaps[ID]);
 		#if TD_VERBOSE != TD_VERBOSE_OFF
 		if (VERBOSITY_LEVEL > 4) {
 			// export depth-map
 			const String fileName(String::FormatString(_T("MeshView%04u_depth.png"), ID));
-			DepthMap dmap; depthMap.convertTo(dmap, CV_32F);
+			DepthMap dmap; depthMaps[ID].convertTo(dmap, CV_32F);
 			ExportDepthMap(MAKE_PATH_FULL(WORKING_FOLDER_FULL, fileName), dmap);
 		}
 		#endif
@@ -735,6 +669,7 @@ void MeshRefine::SubdivideMesh(uint32_t maxArea, float fDecimate, unsigned nClos
 
 			// estimate the faces' area that have big projection areas in both images of a pair
 			ListFaceAreas(maxAreas);
+			ASSERT(!maxAreas.IsEmpty());
 
 			const float maxArea((float)(maxArea > 0 ? maxArea : 64));
 			const float medianArea(6.f*(float)AreaArr(maxAreas).GetMedian());
@@ -784,10 +719,10 @@ void MeshRefine::SubdivideMesh(uint32_t maxArea, float fDecimate, unsigned nClos
 		// split face in four triangles
 		// by adding a new vertex at the middle of each edge
 		faces.ReserveExtra(4);
-		Face& newface = faces.AddConstruct(3); // defined by the three new vertices
+		Face& newface = faces.AddEmpty(); // defined by the three new vertices
 		const Face& face = faces[(FIndex)f];
 		SplitFace& split = mapSplits[(FIndex)f];
-		for (unsigned i=0; i<3; ++i) {
+		for (int i=0; i<3; ++i) {
 			// if the current edge was already split, used the existing vertex
 			if (split.idxVert[i] != SplitFace::NO_VERT) {
 				newface[i] = split.idxVert[i];
@@ -800,7 +735,7 @@ void MeshRefine::SubdivideMesh(uint32_t maxArea, float fDecimate, unsigned nClos
 		}
 		// create the last three faces, defined by one old and two new vertices
 		for (int i=0; i<3; ++i) {
-			Face& nf = faces.AddConstruct(3);
+			Face& nf = faces.AddEmpty();
 			nf[0] = face[i];
 			nf[1] = newface[(i+2)%3];
 			nf[2] = newface[(i+1)%3];
@@ -808,7 +743,7 @@ void MeshRefine::SubdivideMesh(uint32_t maxArea, float fDecimate, unsigned nClos
 		split.bSplit = true;
 		// find all three adjacent faces and inform them of the split
 		ASSERT(mapFaces.empty());
-		for (unsigned i=0; i<3; ++i) {
+		for (int i=0; i<3; ++i) {
 			const Mesh::FaceIdxArr& vf = vertexFaces[face[i]];
 			FOREACHPTR(pFace, vf)
 				++mapFaces[*pFace].count;
@@ -848,11 +783,11 @@ void MeshRefine::SubdivideMesh(uint32_t maxArea, float fDecimate, unsigned nClos
 		case 1: {
 			// one edge is split; create two triangles
 			const int i(indices[0]);
-			Face& nf0 = faces.AddConstruct(3);
+			Face& nf0 = faces.AddEmpty();
 			nf0[0] = split.idxVert[i];
 			nf0[1] = face[(i+2)%3];
 			nf0[2] = face[i];
-			Face& nf1 = faces.AddConstruct(3);
+			Face& nf1 = faces.AddEmpty();
 			nf1[0] = split.idxVert[i];
 			nf1[1] = face[i];
 			nf1[2] = face[(i+1)%3];
@@ -861,9 +796,9 @@ void MeshRefine::SubdivideMesh(uint32_t maxArea, float fDecimate, unsigned nClos
 			// two edges are split; create three triangles
 			const int i0(indices[0]);
 			const int i1(indices[1]);
-			Face& nf0 = faces.AddConstruct(3);
-			Face& nf1 = faces.AddConstruct(3);
-			Face& nf2 = faces.AddConstruct(3);
+			Face& nf0 = faces.AddEmpty();
+			Face& nf1 = faces.AddEmpty();
+			Face& nf2 = faces.AddEmpty();
 			if (i0==0) {
 				if (i1==1) {
 					nf0[0] = split.idxVert[1];
@@ -902,13 +837,13 @@ void MeshRefine::SubdivideMesh(uint32_t maxArea, float fDecimate, unsigned nClos
 		case 3: {
 			// all three edges are split; create four triangles
 			// create the new triangle in the middle
-			Face& newface = faces.AddConstruct(3);
+			Face& newface = faces.AddEmpty();
 			newface[0] = split.idxVert[0];
 			newface[1] = split.idxVert[1];
 			newface[2] = split.idxVert[2];
 			// create the last three faces, defined by one old and two new vertices
 			for (int i=0; i<3; ++i) {
-				Face& nf = faces.AddConstruct(3);
+				Face& nf = faces.AddEmpty();
 				nf[0] = face[i];
 				nf[1] = newface[(i+2)%3];
 				nf[2] = newface[(i+1)%3];
@@ -958,28 +893,23 @@ void MeshRefine::ScoreMesh(double& score)
 	typedef Sampler::Linear<REAL> Sampler;
 	const Sampler sampler;
 	ViewVertexArr viewVertices(0, vertices.GetSize());
-	cList<uint16_t,uint16_t,0> countVertices(vertices.GetSize());
+	CountVertexArr countVertices(vertices.GetSize());
 	countVertices.Memset(0);
 	FOREACHPTR(pPair, pairs) {
 		ASSERT(pPair->i < pPair->j);
+	for (int ip=0; ip<2; ++ip) {
 		// fetch view A data
-		const uint32_t idxImageA(pPair->i);
+		const uint32_t idxImageA(ip ? pPair->j : pPair->i);
 		const Image& imageDataA = images[idxImageA];
 		ASSERT(imageDataA.IsValid());
-		#ifdef MESHOPT_VERTEXFULLRING
-		const BitMatrix& vertexMapA = vertexMaps[idxImageA];
-		#endif
 		const FaceMap& faceMapA = faceMaps[idxImageA];
 		const DepthMap& depthMapA = depthMaps[idxImageA];
 		const Image32F& imageA = views[idxImageA].image;
 		const Camera& cameraA = imageDataA.camera;
 		// fetch view B data
-		const uint32_t idxImageB(pPair->j);
+		const uint32_t idxImageB(ip ? pPair->i : pPair->j);
 		const Image& imageDataB = images[idxImageB];
 		ASSERT(imageDataB.IsValid());
-		#ifdef MESHOPT_VERTEXFULLRING
-		const BitMatrix& vertexMapB = vertexMaps[idxImageB];
-		#endif
 		const DepthMap& depthMapB = depthMaps[idxImageB];
 		const Image32F& imageB = views[idxImageB].image;
 		const Camera& cameraB = imageDataB.camera;
@@ -1014,15 +944,7 @@ void MeshRefine::ScoreMesh(double& score)
 				const Point3 X(cameraA.TransformPointI2W(Point3(i,j,depthA)));
 				const Point3f ptC(cameraB.TransformPointW2C(X));
 				const Point2f pt(cameraB.TransformPointC2I(ptC));
-				const ImageRef ir(ROUND2INT(pt));
-				if (!depthMapB.isInsideWithBorder<float,3>(ir))
-					continue;
-				const Depth& depthB = depthMapB(ir);
-				#ifndef MESHOPT_DEPTHCONSTBIAS
-				if (depthB <= 0 || !IsDepthSimilar(depthB, ptC.z, 0.01f))
-				#else
-				if (depthB <= 0 || depthB+MESHOPT_DEPTHCONSTBIAS < ptC.z)
-				#endif
+				if (!IsDepthSimilar(depthMapB, pt, ptC.z))
 					continue;
 				const float pixelB((float)imageB.sample<Sampler,Sampler::Type>(sampler, pt));
 				#ifdef MESHOPT_DEBUG
@@ -1056,11 +978,8 @@ void MeshRefine::ScoreMesh(double& score)
 		const float weightA(SQUARE(imageDataA.avgDepth/(float)cameraA.GetFocalLength()));
 		FOREACH(idxV, viewVertices) {
 			ViewVertex& viewVertex = viewVertices[idxV];
-			if (!viewVertex.IsValid() || vertexBoundary[idxV]
-				#ifdef MESHOPT_VERTEXFULLRING
-				|| !vertexMapA.isSet(idxV) || !vertexMapB.isSet(idxV)
-				#endif
-			) continue;
+			if (!viewVertex.IsValid() || vertexBoundary[idxV])
+				continue;
 			++countVertices[idxV];
 			const float vscore(viewVertex.Score());
 			ASSERT(ISFINITE(vscore) && ISFINITE(weightA));
@@ -1082,6 +1001,7 @@ void MeshRefine::ScoreMesh(double& score)
 		#endif
 		#endif
 		viewVertices.Empty();
+	}
 	}
 
 	#ifdef MESHOPT_SMOOTH
@@ -1126,28 +1046,23 @@ void MeshRefine::ScoreMesh(double& score, double* gradients, double eps)
 	typedef Sampler::Linear<REAL> Sampler;
 	const Sampler sampler;
 	ViewVertexArr viewVertices(0, vertices.GetSize());
-	cList<uint16_t,uint16_t,0> countVertices(vertices.GetSize());
+	CountVertexArr countVertices(vertices.GetSize());
 	countVertices.Memset(0);
 	FOREACHPTR(pPair, pairs) {
 		ASSERT(pPair->i < pPair->j);
+	for (int ip=0; ip<2; ++ip) {
 		// fetch view A data
-		const uint32_t idxImageA(pPair->i);
+		const uint32_t idxImageA(ip ? pPair->j : pPair->i);
 		const Image& imageDataA = images[idxImageA];
 		ASSERT(imageDataA.IsValid());
-		#ifdef MESHOPT_VERTEXFULLRING
-		const BitMatrix& vertexMapA = vertexMaps[idxImageA];
-		#endif
 		const FaceMap& faceMapA = faceMaps[idxImageA];
 		const DepthMap& depthMapA = depthMaps[idxImageA];
 		const Image32F& imageA = views[idxImageA].image;
 		const Camera& cameraA = imageDataA.camera;
 		// fetch view B data
-		const uint32_t idxImageB(pPair->j);
+		const uint32_t idxImageB(ip ? pPair->i : pPair->j);
 		const Image& imageDataB = images[idxImageB];
 		ASSERT(imageDataB.IsValid());
-		#ifdef MESHOPT_VERTEXFULLRING
-		const BitMatrix& vertexMapB = vertexMaps[idxImageB];
-		#endif
 		const DepthMap& depthMapB = depthMaps[idxImageB];
 		const Image32F& imageB = views[idxImageB].image;
 		const Camera& cameraB = imageDataB.camera;
@@ -1182,15 +1097,7 @@ void MeshRefine::ScoreMesh(double& score, double* gradients, double eps)
 				const Point3 X(cameraA.TransformPointI2W(Point3(i,j,depthA)));
 				const Point3f ptC(cameraB.TransformPointW2C(X));
 				const Point2f pt(cameraB.TransformPointC2I(ptC));
-				const ImageRef ir(ROUND2INT(pt));
-				if (!depthMapB.isInsideWithBorder<float,3>(ir))
-					continue;
-				const Depth& depthB = depthMapB(ir);
-				#ifndef MESHOPT_DEPTHCONSTBIAS
-				if (depthB <= 0 || !IsDepthSimilar(depthB, ptC.z, 0.01f))
-				#else
-				if (depthB <= 0 || depthB+MESHOPT_DEPTHCONSTBIAS < ptC.z)
-				#endif
+				if (!IsDepthSimilar(depthMapB, pt, ptC.z))
 					continue;
 				const float pixelA(imageA(j,i));
 				const FIndex& idxFace = faceMapA(j,i);
@@ -1243,11 +1150,8 @@ void MeshRefine::ScoreMesh(double& score, double* gradients, double eps)
 		const float weightA(SQUARE(imageDataA.avgDepth/(float)cameraA.GetFocalLength()));
 		FOREACH(idxV, viewVertices) {
 			ViewVertex& viewVertex = viewVertices[idxV];
-			if (!viewVertex.IsValid() || vertexBoundary[idxV]
-				#ifdef MESHOPT_VERTEXFULLRING
-				|| !vertexMapA.isSet(idxV) || !vertexMapB.isSet(idxV)
-				#endif
-			) continue;
+			if (!viewVertex.IsValid() || vertexBoundary[idxV])
+				continue;
 			++countVertices[idxV];
 			const float normSqA(viewVertex.PreScore());
 			if (normSqA < FLT_EPSILON)
@@ -1289,12 +1193,14 @@ void MeshRefine::ScoreMesh(double& score, double* gradients, double eps)
 		#endif
 		viewVertices.Empty();
 	}
+	}
 	#ifdef MESHOPT_PHOTOGRADNORMAL
 	// project gradient vector onto the vertex normal
 	FOREACH(idxV, vertices) {
 		const Point3d N(vertexNormals[idxV]);
 		Point3d& grad = ((Point3d*)gradients)[idxV];
-		grad = N*(grad.dot(N));
+		const unsigned count(countVertices[idxV]);
+		grad = N*((grad/(double)count).dot(N));
 	}
 	#endif
 	#if defined(MESHOPT_DEBUG) && MESHOPT_DEBUG>1
@@ -1414,31 +1320,26 @@ void MeshRefine::ScoreMesh(double& score, double* gradients)
 	typedef Sampler::Linear<REAL> Sampler;
 	const Sampler sampler;
 	ViewVertexArr viewVertices(0, vertices.GetSize());
-	cList<uint16_t,uint16_t,0> countVertices(vertices.GetSize());
+	CountVertexArr countVertices(vertices.GetSize());
 	countVertices.Memset(0);
 	GradientDataArr gradDatas;
 	TMatrix<float,2,3> xJac;
 	Point2f pt;
 	FOREACHPTR(pPair, pairs) {
 		ASSERT(pPair->i < pPair->j);
+	for (int ip=0; ip<2; ++ip) {
 		// fetch view A data
-		const uint32_t idxImageA(pPair->i);
+		const uint32_t idxImageA(ip ? pPair->j : pPair->i);
 		const Image& imageDataA = images[idxImageA];
 		ASSERT(imageDataA.IsValid());
-		#ifdef MESHOPT_VERTEXFULLRING
-		const BitMatrix& vertexMapA = vertexMaps[idxImageA];
-		#endif
 		const FaceMap& faceMapA = faceMaps[idxImageA];
 		const DepthMap& depthMapA = depthMaps[idxImageA];
 		const Image32F& imageA = views[idxImageA].image;
 		const Camera& cameraA = imageDataA.camera;
 		// fetch view B data
-		const uint32_t idxImageB(pPair->j);
+		const uint32_t idxImageB(ip ? pPair->i : pPair->j);
 		const Image& imageDataB = images[idxImageB];
 		ASSERT(imageDataB.IsValid());
-		#ifdef MESHOPT_VERTEXFULLRING
-		const BitMatrix& vertexMapB = vertexMaps[idxImageB];
-		#endif
 		const DepthMap& depthMapB = depthMaps[idxImageB];
 		const Image32F& imageB = views[idxImageB].image;
 		const Camera& cameraB = imageDataB.camera;
@@ -1476,15 +1377,7 @@ void MeshRefine::ScoreMesh(double& score, double* gradients)
 				// project point in second image and
 				// projection Jacobian matrix in the second image of the 3D point on the surface
 				const float z(ProjectVertex(cameraB.P.val, X.ptr(), pt.ptr(), xJac.val));
-				const ImageRef ir(ROUND2INT(pt));
-				if (!depthMapB.isInsideWithBorder<float,3>(ir))
-					continue;
-				const Depth& depthB = depthMapB(ir);
-				#ifndef MESHOPT_DEPTHCONSTBIAS
-				if (depthB <= 0 || !IsDepthSimilar(depthB, z, 0.01f))
-				#else
-				if (depthB <= 0 || depthB+MESHOPT_DEPTHCONSTBIAS < z)
-				#endif
+				if (!IsDepthSimilar(depthMapB, pt, z))
 					continue;
 				const float pixelB((float)imageB.sample<Sampler,Sampler::Type>(sampler, pt));
 				#ifdef MESHOPT_DEBUG
@@ -1552,15 +1445,12 @@ void MeshRefine::ScoreMesh(double& score, double* gradients)
 		image.create(imageA.size());
 		image.memset(0);
 		#endif
-		const float weightA(SQUARE(imageDataA.avgDepth/(float)cameraA.GetFocalLength()));
+		const float weightA((float)((REAL)(imageDataA.avgDepth*imageDataB.avgDepth)/(cameraA.GetFocalLength()*cameraB.GetFocalLength())));
 		ViewVertex::DerivativeData dData;
 		FOREACH(idxV, viewVertices) {
 			ViewVertex& viewVertex = viewVertices[idxV];
-			if (!viewVertex.IsValid() || vertexBoundary[idxV]
-				#ifdef MESHOPT_VERTEXFULLRING
-				|| !vertexMapA.isSet(idxV) || !vertexMapB.isSet(idxV)
-				#endif
-			) continue;
+			if (!viewVertex.IsValid() || vertexBoundary[idxV])
+				continue;
 			++countVertices[idxV];
 			// compute score
 			const float w(weightA*viewVertex.ReliabilityFactor()*viewVertex.size);
@@ -1603,12 +1493,14 @@ void MeshRefine::ScoreMesh(double& score, double* gradients)
 		#endif
 		viewVertices.Empty();
 	}
+	}
 	#ifdef MESHOPT_PHOTOGRADNORMAL
 	// project gradient vector onto the vertex normal
 	FOREACH(idxV, vertices) {
 		const Point3d N(vertexNormals[idxV]);
 		Point3d& grad = ((Point3d*)gradients)[idxV];
-		grad = N*(grad.dot(N));
+		const unsigned count(countVertices[idxV]);
+		grad = N*((grad/(double)count).dot(N));
 	}
 	#endif
 	#if defined(MESHOPT_DEBUG) && MESHOPT_DEBUG>1
@@ -2090,6 +1982,85 @@ T MeshRefine::ProjectVertex(const TP* P, const TX* X, T* x, T* jacobian)
 }
 
 
+// check if any of the depths surrounding the given coordinate is similar to the given value
+bool MeshRefine::IsDepthSimilar(const DepthMap& depthMap, const Point2f& pt, Depth z)
+{
+	const ImageRef tl(FLOOR2INT(pt));
+	for (int x=0; x<2; ++x) {
+		for (int y=0; y<2; ++y) {
+			const ImageRef ir(tl.x+x, tl.y+y);
+			if (!depthMap.isInsideWithBorder<float,3>(ir))
+				continue;
+			const Depth& depth = depthMap(ir);
+			#ifndef MESHOPT_DEPTHCONSTBIAS
+			if (depth <= 0 || ABS(depth-z) > z*0.01f /*!IsDepthSimilar(depth, z, 0.01f)*/)
+			#else
+			if (depth <= 0 || depth+MESHOPT_DEPTHCONSTBIAS < z)
+			#endif
+				continue;
+			return true;
+		}
+	}
+	return false;
+}
+
+// project mesh to the given camera plane
+void MeshRefine::ProjectMesh(
+	const Mesh::VertexArr& vertices, const Mesh::FaceArr& faces, const CameraFaces& cameraFaces,
+	const Camera& camera, const Image8U::Size& size,
+	DepthMap& depthMap, FaceMap& faceMap)
+{
+	// init view data
+	faceMap.create(size);
+	depthMap.create(size);
+	// project all triangles on this image and keep the closest ones
+	faceMap.memset((uint8_t)NO_ID);
+	depthMap.memset(0);
+	Point3 ptc[3]; Point2f pti[3];
+	RasterMeshData data = {camera, faceMap, depthMap};
+	for (auto idxFace : cameraFaces) {
+		data.idxFace = idxFace;
+		const Face& facet = faces[idxFace];
+		for (int v=0; v<3; ++v) {
+			const Vertex& pt = vertices[facet[v]];
+			ptc[v] = camera.TransformPointW2C(CastReal(pt));
+			pti[v] = camera.TransformPointC2I(ptc[v]);
+			// skip face if not completely inside
+			if (!depthMap.isInsideWithBorder<float,3>(pti[v]))
+				goto CONTIUE2NEXTFACE;
+		}
+		{
+		#if 1
+		// compute the face center, which is also the view to face vector
+		// (cause the face is in camera view space)
+		const Point3 faceCenter((ptc[0]+ptc[1]+ptc[2])/3);
+		// skip face if the (cos) angle between
+		// the view to face vector and the view direction is negative
+		if (faceCenter.z < 0)
+			continue;
+		// compute the plane defined by the 3 points
+		const Point3 edge1(ptc[1]-ptc[0]);
+		const Point3 edge2(ptc[2]-ptc[0]);
+		data.normalPlane = edge1.cross(edge2);
+		// skip face if the (cos) angle between
+		// the face normal and the face to view vector is negative
+		if (faceCenter.dot(data.normalPlane) > 0)
+			continue;
+		// prepare vector used to compute the depth during rendering
+		data.normalPlane *= INVERT(data.normalPlane.dot(ptc[0]));
+		// draw triangle and for each pixel compute depth as the ray intersection with the plane
+		Image8U3::RasterizeTriangle(pti[0], pti[1], pti[2], data);
+		#else
+		Image8U3::RasterizeTriangleDepth(Point3f(pti[0],float(ptc[0].z)), Point3f(pti[1],float(ptc[1].z)), Point3f(pti[2],float(ptc[2].z)), data);
+		#endif
+		}
+		CONTIUE2NEXTFACE:;
+	}
+}
+/*----------------------------------------------------------------*/
+
+
+
 // S T R U C T S ///////////////////////////////////////////////////
 
 #pragma push_macro("LOG")
@@ -2159,14 +2130,14 @@ bool Scene::RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsig
 	MeshRefine refine(*this, fRegularityWeight, nResolutionLevel, nMinResolution, nMaxViews);
 
 	// run the mesh optimization on multiple scales (coarse to fine)
-	for (unsigned iter=0; iter<nScales; ++iter) {
+	for (unsigned nScale=0; nScale<nScales; ++nScale) {
 		#if defined(MESHOPT_DEBUG) && MESHOPT_DEBUG>1
-		refine._level = iter;
+		refine._level = nScale;
 		refine._iteration = 0;
 		#endif
 
 		// init images
-		const double scale(powi(fScaleStep, (int)(nScales-iter-1)));
+		const double scale(powi(fScaleStep, (int)(nScales-nScale-1)));
 		DEBUG_ULTIMATE("Refine mesh at: %.2f image scale", scale);
 		//const double step(4); // => 16 area
 		//refine.InitImages(scale, 0.12*step+0.2);
@@ -2176,11 +2147,11 @@ bool Scene::RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsig
 		refine.ListVertexFaces();
 
 		// automatic mesh subdivision
-		refine.SubdivideMesh(nMaxFaceArea, iter == 0 ? fDecimateMesh : 1.f, nCloseHoles, nEnsureEdgeSize);
+		refine.SubdivideMesh(nMaxFaceArea, nScale == 0 ? fDecimateMesh : 1.f, nCloseHoles, nEnsureEdgeSize);
 
 		#if TD_VERBOSE != TD_VERBOSE_OFF
 		if (VERBOSITY_LEVEL > 2)
-			mesh.Save(MAKE_PATH(String::FormatString("MeshRefine%u.ply", nScales-iter-1)));
+			mesh.Save(MAKE_PATH(String::FormatString("MeshRefine%u.ply", nScales-nScale-1)));
 		#endif
 
 		// minimize
@@ -2226,6 +2197,7 @@ bool Scene::RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsig
 			iters = FLOOR2INT(-fConfidenceThreshold);
 			gstep = (-fConfidenceThreshold-(float)iters)*10;
 		}
+		iters = MAXF(iters/(int)(nScale+1),10);
 		Eigen::Matrix<double,Eigen::Dynamic,3,Eigen::RowMajor> gradients(refine.vertices.GetSize(),3);
 		for (int iter=0; iter<iters; ++iter) {
 			// evaluate residuals and gradients
@@ -2250,7 +2222,7 @@ bool Scene::RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsig
 
 		#if TD_VERBOSE != TD_VERBOSE_OFF
 		if (VERBOSITY_LEVEL > 2)
-			mesh.Save(MAKE_PATH(String::FormatString("MeshRefined%u.ply", nScales-iter-1)));
+			mesh.Save(MAKE_PATH(String::FormatString("MeshRefined%u.ply", nScales-nScale-1)));
 		#endif
 	}
 

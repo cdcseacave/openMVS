@@ -111,6 +111,20 @@ public:
 		return float(MAXF(width, height));
 	}
 
+	// return K.inv() (assuming standard K format)
+	inline KMatrix GetInvK() const {
+		#if 0
+		return K.inv();
+		#else
+		KMatrix invK(KMatrix::IDENTITY);
+		invK(0,0) = REAL(1)/K(0,0);
+		invK(1,1) = REAL(1)/K(1,1);
+		invK(0,2) = -K(0,2)*invK(0,0);
+		invK(1,2) = -K(1,2)*invK(1,1);
+		return invK;
+		#endif
+	}
+
 	// create K with the supplied focal length and sensor center
 	template<typename TYPE, typename TYPER>
 	static inline TMatrix<TYPE,3,3> ComposeK(const TYPE& fX, const TYPE& fY, TYPER w=TYPER(1), TYPER h=TYPER(1)) {

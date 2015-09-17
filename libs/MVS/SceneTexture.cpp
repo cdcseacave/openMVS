@@ -394,7 +394,7 @@ public:
 	bool FaceOutlierDetection(FaceDataArr& faceDatas, float fOutlierThreshold) const;
 	#endif
 
-	void FaceViewSellection(float fOutlierThreshold);
+	void FaceViewSelection(float fOutlierThreshold);
 
 	void CreateSeamVertices();
 	void GlobalSeamLeveling();
@@ -873,7 +873,7 @@ bool MeshTexture::FaceOutlierDetection(FaceDataArr& faceDatas, float thOutlier) 
 }
 #endif
 
-void MeshTexture::FaceViewSellection(float fOutlierThreshold)
+void MeshTexture::FaceViewSelection(float fOutlierThreshold)
 {
 	// extract array of triangles incident to each vertex
 	ListVertexFaces();
@@ -2013,7 +2013,7 @@ bool Scene::TextureMesh(unsigned nResolutionLevel, unsigned nMinResolution, floa
 	// assign the best view to each face
 	{
 		TD_TIMER_STARTD();
-		texture.FaceViewSellection(fOutlierThreshold);
+		texture.FaceViewSelection(fOutlierThreshold);
 		DEBUG_EXTRA("Assigning the best view to each face completed: %u faces (%s)", mesh.faces.GetSize(), TD_TIMER_GET_FMT().c_str());
 	}
 
