@@ -52,9 +52,22 @@ protected:
 #else
 
 public:
-	CriticalSection() { mtx = PTHREAD_RECURSIVE_MUTEX_INITIALIZER_NP; }
+	CriticalSection() {
+		#ifdef __APPLE__
+		pthread_mutex_init(&mtx, NULL);
+		#else
+		mtx = PTHREAD_RECURSIVE_MUTEX_INITIALIZER_NP;
+		#endif
+	}
 	~CriticalSection() { pthread_mutex_destroy(&mtx); }
-	void Clear() { pthread_mutex_destroy(&mtx); mtx = PTHREAD_RECURSIVE_MUTEX_INITIALIZER_NP; }
+	void Clear() {
+		pthread_mutex_destroy(&mtx);
+		#ifdef __APPLE__
+		pthread_mutex_init(&mtx, NULL);
+		#else
+		mtx = PTHREAD_RECURSIVE_MUTEX_INITIALIZER_NP;
+		#endif
+	}
 	void Enter() { pthread_mutex_lock(&mtx); }
 	bool TryEnter() { return (pthread_mutex_trylock(&mtx) == 0); }
 	void Leave() { pthread_mutex_unlock(&mtx); }

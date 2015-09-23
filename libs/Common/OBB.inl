@@ -141,7 +141,7 @@ inline void TOBB<TYPE,DIMS>::SetRotation(const MATRIX& C)
 {
 	// extract the eigenvalues and eigenvectors from C
 	const Eigen::EigenSolver<MATRIX> es(C);
-	if (es.info() != Eigen::ComputationInfo::Success)
+	if (es.info() != Eigen::Success)
 		return;
 	const MATRIX eigvec(es.eigenvectors().real());
 	const POINT eigval(es.eigenvalues().real());

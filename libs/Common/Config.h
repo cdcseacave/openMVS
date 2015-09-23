@@ -104,7 +104,7 @@
 #define GENERAL_API
 #define GENERAL_TPL
 
-#if __cplusplus >= 201103L
+#if __cplusplus >= 201103L || (defined(__APPLE__) && __clang_major__ >= 4)
 #define _SUPPORT_CPP11
 #endif
 

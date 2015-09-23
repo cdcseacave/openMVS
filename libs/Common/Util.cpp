@@ -15,7 +15,11 @@
 #endif
 #else
 #include <sys/utsname.h>
+#ifdef __APPLE__
+#include <sys/sysctl.h>
+#else
 #include <sys/sysinfo.h>
+#endif
 #include <pwd.h>
 #endif
 
@@ -246,7 +250,7 @@ String Util::GetCPUInfo()
 
 String Util::GetRAMInfo()
 {
-	#ifdef _MSC_VER
+	#if defined(_MSC_VER)
 
 	#ifdef _WIN64
 	MEMORYSTATUSEX memoryStatus;
@@ -264,7 +268,16 @@ String Util::GetRAMInfo()
 	const size_t nTotalVirtual((size_t)memoryStatus.dwTotalVirtual);
 	#endif
 
-	#else // _MSC_VER
+	#elif defined(__APPLE__)
+
+	int mib[2] = {CTL_HW, HW_MEMSIZE};
+	const unsigned namelen = sizeof(mib) / sizeof(mib[0]);
+	size_t len = sizeof(size_t);
+	size_t nTotalPhys;
+	sysctl(mib, namelen, &nTotalPhys, &len, NULL, 0);
+	const size_t nTotalVirtual(nTotalPhys);
+
+	#else // __GNUC__
 
 	struct sysinfo info;
 	sysinfo(&info);

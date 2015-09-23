@@ -12,7 +12,7 @@ OPTION(BUILD_EXCEPTIONS_ENABLED "Enable support for exceptions" ON)
 OPTION(BUILD_RTTI_ENABLED "Enable support run-time type information" ON)
 OPTION(BUILD_STATIC_RUNTIME "Link staticaly the run-time library" ON)
 OPTION(CMAKE_SUPPRESS_REGENERATION "This will cause CMake to not put in the rules that re-run CMake. This might be useful if you want to use the generated build files on another machine" OFF)
-OPTION(CMAKE_USE_RELATIVE_PATHS "Try to use relative paths in generated projects" ON)
+OPTION(CMAKE_USE_RELATIVE_PATHS "Try to use relative paths in generated projects" OFF)
 
 # Organize projects into folders
 SET_PROPERTY(GLOBAL PROPERTY USE_FOLDERS ON)
@@ -263,7 +263,7 @@ endmacro()
 
 # Set as Pre-Compiled Header automaticaly or to the given file name
 macro(set_target_pch TRGT)
-	if(ENABLE_PRECOMPILED_HEADERS)
+	if(ENABLE_PRECOMPILED_HEADERS AND COMMAND cotire)
 		if(NOT ${ARGN} STREQUAL "")
 			set_target_properties("${TRGT}" PROPERTIES COTIRE_CXX_PREFIX_HEADER_INIT "${ARGN}")
 		endif()
@@ -503,6 +503,10 @@ macro(optimize_default_compiler_settings)
 	    add_extra_compiler_option(-fpermissive)
 	  endif()
 	  add_extra_compiler_option(-std=c++11)
+	  if(CLANG)
+	    add_extra_compiler_option(-stdlib=libc++)
+		set(CMAKE_EXE_LINKER_FLAGS "-stdlib=libc++")
+	  endif()
 
 	  # SSE3 and further should be disabled under MingW because it generates compiler errors
 	  if(NOT MINGW)

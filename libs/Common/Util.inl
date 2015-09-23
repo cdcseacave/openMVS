@@ -210,7 +210,7 @@ bool CheckCollinearity(const TPoint3<TYPE>* ptr, int count, bool checkPartialSub
 template<typename TYPE1, typename TYPE2>
 inline void RayPoint_3x4_2_3(const TYPE1* P, const TYPE2* pt, TYPE1* ray) {
 	Eigen::Map< const Eigen::Matrix<TYPE1,3,4> > mP(P);
-	const Eigen::Matrix<TYPE1,3,3> mM(mP.block<3,3>(0,0));
+	const Eigen::Matrix<TYPE1,3,3> mM(mP.template topLeftCorner<3,3>());
 	TYPE1 M[9];
 	InvertMatrix3x3(mM.data(), M);
 	ray[0] = M[0*3+0]*pt[0] + M[0*3+1]*pt[1] + M[0*3+2];

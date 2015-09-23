@@ -439,7 +439,6 @@ void PLY::put_element(const void* elem_ptr)
 			switch (prop->is_list) {
 			case SCALAR: {  /* scalar */
 				item = elem_data + prop->offset;
-				const int item_size(ply_type_size[prop->internal_type]);
 				get_stored_item((void*)item, prop->internal_type, val);
 				write_binary_item(val, prop->internal_type, prop->external_type);
 				break;
@@ -1127,13 +1126,14 @@ void PLY::ascii_get_element(uint8_t* elem_ptr)
 
 			/* allocate space for an array of items and store a ptr to the array */
 			const int list_count(ValueType2Type<int>(val, prop->count_external));
-			const int item_size(ply_type_size[prop->internal_type]);
 			char **store_array((char**)(elem_data + prop->offset));
 			if (list_count == 0) {
 				if (store_it)
 					*store_array = NULL;
 			}
 			else {
+				const int item_size(ply_type_size[prop->internal_type]);
+
 				if (store_it) {
 					item_ptr = new char[item_size * list_count];
 					item = item_ptr;

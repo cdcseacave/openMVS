@@ -126,7 +126,7 @@ void IBFSGraph::initSize(int numNodes, int numEdges)
 	orphanBuckets.init(nodes, numNodes);
 
 	// allocate arcs
-	unsigned long long arcMemsize = sizeof(TmpArc)*(numEdges*2) + sizeof(TmpEdge)*numEdges;
+	size_t arcMemsize = sizeof(TmpArc)*(numEdges*2) + sizeof(TmpEdge)*numEdges;
 	if (arcMemsize < sizeof(Arc)*(numEdges*2)) {
 		arcMemsize = sizeof(Arc)*(numEdges*2);
 	}

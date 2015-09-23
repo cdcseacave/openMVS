@@ -358,8 +358,10 @@ public:
 		if (mode & TRUNCATE)
 			m |= O_TRUNC;
 
+		#ifndef __APPLE__
 		if (flags & NOBUFFER)
 			m |= O_DIRECT;
+		#endif
 		h = ::open(aFileName, m, S_IRUSR | S_IWUSR);
 	}
 

@@ -540,12 +540,12 @@ inline typename RealType<TYPE>::type normSq(const cv::Matx<TYPE,m,n>& v) {
 template <typename TYPE>
 inline typename RealType<TYPE>::type normSq(const TDMatrix<TYPE>& v) {
 	typedef typename RealType<TYPE>::type real;
-	return cv::normL2Sqr<TYPE,real>(v.cv::Mat::ptr<const TYPE>(), v.area());
+	return cv::normL2Sqr<TYPE,real>(v.cv::Mat::template ptr<const TYPE>(), v.area());
 }
 template <typename TYPE>
 inline typename RealType<TYPE>::type normSq(const cv::Mat_<TYPE>& v) {
 	typedef typename RealType<TYPE>::type real;
-	return cv::normL2Sqr<TYPE,real>(v.cv::Mat::ptr<const TYPE>(), v.cols*v.rows);
+	return cv::normL2Sqr<TYPE,real>(v.cv::Mat::template ptr<const TYPE>(), v.cols*v.rows);
 }
 
 inline REAL normSq(int v) {
@@ -760,7 +760,7 @@ inline typename RealType<TYPE>::type norm(const TMatrix<TYPE,m,n>& v) {
 template <typename TYPE>
 inline typename RealType<TYPE>::type norm(const TDMatrix<TYPE>& v) {
 	typedef typename RealType<TYPE>::type real;
-	return SQRT(cv::normL2Sqr<TYPE,real>(v.cv::Mat::ptr<const TYPE>(), v.area()));
+	return SQRT(cv::normL2Sqr<TYPE,real>(v.cv::Mat::template ptr<const TYPE>(), v.area()));
 }
 
 template <typename TYPE>
@@ -1551,7 +1551,7 @@ inline TMatrix<TYPE,n,1> TMatrix<TYPE,m,n>::RightNullVector(int flags /*= 0*/) c
 template <typename TYPE, int m, int n>
 inline TMatrix<TYPE,n,1> TMatrix<TYPE,m,n>::LeftNullVector(int flags /*= 0*/) const
 {
-	return TMatrix<TYPE,m,n>(t()).RightNullVector(flags);
+	return TMatrix<TYPE,m,n>(Base::t()).RightNullVector(flags);
 }
 /*----------------------------------------------------------------*/
 
@@ -2218,11 +2218,11 @@ void TImage<TYPE>::toGray(TImage<T>& out, int code, bool bNormalize) const
 		out.create(rows, cols);
 	ASSERT(cv::Mat::isContinuous());
 	ASSERT(out.cv::Mat::isContinuous());
-	const int scn(channels());
-	T* dst = out.cv::Mat::ptr<T>();
+	const int scn(cv::Mat::channels());
+	T* dst = out.cv::Mat::template ptr<T>();
 	T* const dstEnd = dst + out.area();
 	typedef typename cv::DataType<TYPE>::channel_type ST;
-	for (const ST* src=cv::Mat::ptr<ST>(); dst!=dstEnd; src+=scn)
+	for (const ST* src=cv::Mat::template ptr<ST>(); dst!=dstEnd; src+=scn)
 		*dst++ = cb*T(src[0]) + cg*T(src[1]) + cr*T(src[2]);
 	#else
 	cv::Mat cimg;
@@ -2761,7 +2761,7 @@ bool TImage<TYPE>::Save(const String& fileName) const
 		ASSERT(sizeof(float)*Base::channels() == Base::step.p[1]);
 		const size_t rowbytes = (size_t)Base::size.p[1]*Base::step.p[1];
 		for (int i=0; i<rows; ++i)
-			fImage.write(cv::Mat::ptr<const float>(i), rowbytes);
+			fImage.write(cv::Mat::template ptr<const float>(i), rowbytes);
 		return true;
 	}
 
@@ -2780,7 +2780,7 @@ bool TImage<TYPE>::Save(const String& fileName) const
 /*----------------------------------------------------------------*/
 
 template <typename TYPE>
-void TImage<TYPE>::Show(const String& winname, int delay=0, bool bDestroy=true) const
+void TImage<TYPE>::Show(const String& winname, int delay, bool bDestroy) const
 {
 	cv::imshow(winname, *this);
 	cv::waitKey(delay);
@@ -2950,8 +2950,8 @@ void Convolve(const TImage<Type>& in,
 	const int src_line_stride = in.step1(0);
 	const int src_stride = in.step1(1);
 	const int dst_stride = out.step1(1);
-	const Type* src = in.cv::Mat::ptr<Type>();
-	Type* dst = out.cv::Mat::ptr<Type>();
+	const Type* src = in.cv::Mat::template ptr<Type>();
+	Type* dst = out.cv::Mat::template ptr<Type>();
 
 	// Use a dispatch table to make most convolutions used in practice use the
 	// fast path.
@@ -3176,8 +3176,8 @@ void TSeparableWavelets<TYPE,TABLE_LEN>::Decompose(const TImage<TYPE>& OA, TImag
 	const int nx = OA.rows;
 	const int ny = OA.cols;
 
-	const int nxm = 2 * ((nx-1)/2);
-	const int nym = 2 * ((ny-1)/2);
+	int nxm = 2 * ((nx-1)/2);
+	int nym = 2 * ((ny-1)/2);
 
 	TYPE w1, w2, w3, w4, sw;
 	TYPE A1, A2, A3, A4;
@@ -3304,8 +3304,8 @@ void TSeparableWavelets<TYPE,TABLE_LEN>::Compose(const TImage<TYPE>& OA, const T
 	const int nx = OA.rows;
 	const int ny = OA.cols;
 
-	const int nxm = nx - 1;
-	const int nym = ny - 1;
+	int nxm = nx - 1;
+	int nym = ny - 1;
 
 	TYPE w1, w2, w3, w4;
 	TYPE A1, A2, A3, A4;

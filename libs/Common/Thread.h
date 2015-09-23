@@ -146,9 +146,13 @@ public:
 		}
 	}
 
-	inline void setThreadPriority(Priority p) const { pthread_setschedprio(threadHandle, convertPriority(p)); }
+	inline void setThreadPriority(Priority p) const { setThreadPriority(threadHandle, p); }
 	inline Priority getThreadPriority() const { return getThreadPriority(threadHandle); }
-	static void setThreadPriority(void* th, Priority p) { pthread_setschedprio((pthread_t)th, convertPriority(p)); }
+	static void setThreadPriority(void* th, Priority p) {
+		struct sched_param param;
+		param.sched_priority = convertPriority(p);
+		pthread_setschedparam((pthread_t)th, SCHED_OTHER, &param);
+	}
 	static Priority getThreadPriority(void* th) {
 		struct sched_param param;
 		int                policy;
@@ -282,8 +286,8 @@ public:
 	#else //_MSC_VER
 
 	static inline void* getCurrentProcessID() { return (void*)::getpid(); }
-	static inline void setProcessPriority(void* id, Priority p) { ::setpriority(PRIO_PROCESS, (id_t)id, convertPriority(p)); }
-	static inline Priority getProcessPriority(void* id) { return convertPriority((PriorityOS)::getpriority(PRIO_PROCESS, (id_t)id)); }
+	static inline void setProcessPriority(void* id, Priority p) { ::setpriority(PRIO_PROCESS, (const id_t&)id, convertPriority(p)); }
+	static inline Priority getProcessPriority(void* id) { if (sizeof(void*) > sizeof(id_t)) id = NULL; return convertPriority((PriorityOS)::getpriority(PRIO_PROCESS, (id_t&)id)); }
 
 	#endif //_MSC_VER
 

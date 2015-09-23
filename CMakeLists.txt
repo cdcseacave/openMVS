@@ -24,7 +24,10 @@ set(COTIRE_INTDIR "cotire")
 # Define helper functions and macros.
 cmake_policy(SET CMP0011 OLD)
 INCLUDE(build/Utils.cmake)
-INCLUDE(build/Cotire.cmake)
+if(ENABLE_PRECOMPILED_HEADERS)
+	INCLUDE(build/Cotire.cmake)
+endif()
+
 
 # Init session with macros defined in Utils.cmake
 GetOperatingSystemArchitectureBitness(SYSTEM)

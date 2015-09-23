@@ -317,6 +317,8 @@ FORCEINLINE T RANDOM() { return (T(1)/RAND_MAX)*RAND(); }
 # define __BIG_ENDIAN 1
 # define __PDP_ENDIAN 2
 # define __BYTE_ORDER __LITTLE_ENDIAN
+#elif defined(__APPLE__)
+# include <machine/endian.h>
 #elif defined(__GNUC__)
 # include <endian.h>
 #endif
@@ -938,7 +940,7 @@ inline Type cerp(const Type& u0, const Type& u1, const Type& u2, const Type& u3,
 
 // define utile functions to deal with SSE operations
 
-ALIGN(16) struct sse_vec4f {
+struct ALIGN(16) sse_vec4f {
 	union {
 		float v[4];
 		struct {
@@ -955,7 +957,7 @@ ALIGN(16) struct sse_vec4f {
 	inline operator float*() {return v;}
 };
 
-ALIGN(16) struct sse_vec2d {
+struct ALIGN(16) sse_vec2d {
 	union {
 		double v[2];
 		struct {
@@ -1598,7 +1600,7 @@ public:
 		ASSERT(rows == 1 || cols == 1);
 		const int last = area()-1;
 		Base::operator()(idx) = Base::operator()(last);
-		resize((size_t)last);
+		Base::resize((size_t)last);
 	}
 
 	/** @author koeser

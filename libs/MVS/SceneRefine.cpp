@@ -447,7 +447,7 @@ void MeshRefine::ListFaceAreas(AreaArr& maxAreas)
 		for (int j=0; j<faceMap.rows; ++j) {
 			for (int i=0; i<faceMap.cols; ++i) {
 				const FIndex& idxFace = faceMap(j,i);
-				ASSERT((idxFace == NO_ID && depthMaps[idxImage](j,i) == 0) || (idxFace != NO_ID && depthMaps[idxImage](j,i) > 0));
+				ASSERT((idxFace == NO_ID && views[idxImage].depthMap(j,i) == 0) || (idxFace != NO_ID && views[idxImage].depthMap(j,i) > 0));
 				if (idxFace == NO_ID)
 					continue;
 				++areas[idxFace];
