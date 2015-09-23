@@ -1,16 +1,12 @@
 /*
 * SceneRefine.cpp
 *
-* Copyright (c) 2014-2015 FOXEL SA - http://foxel.ch
-* Please read <http://foxel.ch/license> for more information.
-*
+* Copyright (c) 2014-2015 SEACAVE
 *
 * Author(s):
 *
 *      cDc <cdc.seacave@gmail.com>
 *
-*
-* This file is part of the FOXEL project <http://foxel.ch>.
 *
 * This program is free software: you can redistribute it and/or modify
 * it under the terms of the GNU Affero General Public License as published by
@@ -31,9 +27,6 @@
 *      You are required to preserve legal notices and author attributions in
 *      that material or in the Appropriate Legal Notices displayed by works
 *      containing it.
-*
-*      You are required to attribute the work as explained in the "Usage and
-*      Attribution" section of <http://foxel.ch/license>.
 */
 
 #include "Common.h"
@@ -44,38 +37,13 @@ using namespace MVS;
 
 // D E F I N E S ///////////////////////////////////////////////////
 
-// uncomment to enable multi-threading based on OpenMP
-#ifdef _USE_OPENMP
-#define MESHOPT_USE_OPENMP
-#endif
-
 // uncomment to ensure edge size and improve vertex valence
 // (should enable more stable flow)
 #define MESHOPT_ENSUREEDGESIZE 1 // 0 - at all resolution
 
-// uncomment to project data gradient term on the vertex normal
-// (should filter out the various noise in the photo-consistency gradient term)
-#define MESHOPT_PHOTOGRADNORMAL
-
 // uncomment to use constant z-buffer bias
 // (should be enough, as the numerical error does not depend on the depth)
 #define MESHOPT_DEPTHCONSTBIAS 0.05f
-
-// uncomment to use robust data term
-// (somewhat slower and not seem to make much of a difference)
-//#define MESHOPT_ROBUST
-
-// uncomment to refine mesh using also a smoothing term
-// (somewhat slower, but increases a lot the quality)
-#define MESHOPT_SMOOTH
-
-// uncomment to refine mesh using numerical method
-// (somewhat slower and should be less accurate compared to the analytical method)
-//#define MESHOPT_NUMERICAL
-
-// uncomment to generate more debug info during mesh optimization
-// (quite fast, but uses more memory)
-//#define MESHOPT_DEBUG 2
 
 
 // S T R U C T S ///////////////////////////////////////////////////
@@ -86,176 +54,39 @@ typedef Mesh::Face Face;
 typedef Mesh::FIndex FIndex;
 
 struct MeshRefine {
+	typedef double Real;
+
+	typedef TPoint3<Real> Grad;
+	typedef CLISTDEF0IDX(Grad,VIndex) GradArr;
+
 	typedef std::unordered_set<FIndex> CameraFaces;
 	typedef SEACAVE::cList<CameraFaces,const CameraFaces&,2> CameraFacesArr;
 
+	typedef TImage<cuint32_t> VertexMap;
+	typedef TImage<cuint32_t> FaceMap;
+	typedef TImage<Point3f> BaryMap;
+
 	// store necessary data about a view
 	struct View {
-		typedef TImage<Point2f> ImageGrad;
+		typedef TPoint2<Real> Grad;
+		typedef TImage<Grad> ImageGrad;
 		Image32F image; // image pixels
 		ImageGrad imageGrad; // image pixel gradients
+		TImage<Real> imageMean; // image pixels mean
+		TImage<Real> imageVar; // image pixels variance
+		FaceMap faceMap; // remember for each pixel what face projects there
+		DepthMap depthMap; // depth-map
+		BaryMap baryMap; // barycentric coordinates
 	};
 	typedef SEACAVE::cList<View,const View&,2> ViewsArr;
 
 	// used to render a mesh for optimization
-	typedef TImage<cuint32_t> VertexMap;
-	typedef SEACAVE::cList<VertexMap,const VertexMap&,2> VertexMapArr;
-	typedef TImage<cuint32_t> FaceMap;
-	typedef SEACAVE::cList<FaceMap,const FaceMap&,2> FaceMapArr;
-	struct ViewVertex {
-		uint32_t area; // area of the faces adjacent to this vertex in this image (in pixels)
-		uint32_t size; // number of pixels fetched for this vertex
-		float* texA; // pixel values corresponding to image A
-		float* texB; // pixel values corresponding to image B back-projected on image A
-		inline ViewVertex() : area(0), size(0), texA(NULL), texB(NULL) {}
-		inline ~ViewVertex() { delete[] texA; }
-		inline bool IsEmpty() const { return size == 0; }
-		inline bool IsValid() const { return size >= 6; } // minimum number of pixels a vertex patch should have to be considered
-		inline void Init() {
-			if (area == 0)
-				return;
-			// allocate space to store two texture patches
-			texA = new float[area*2];
-			texB = texA + area;
-		}
-		inline void InitGradient() {
-			if (area == 0)
-				return;
-			// allocate space to store two texture patches
-			// and three slightly modified texture patches of patch B
-			texA = new float[area*5];
-			texB = texA + area;
-		}
-		inline void InitIndices() {
-			if (area == 0)
-				return;
-			// allocate space to store two texture patches
-			// and one array of indices in the image A (stored as uint32_t = i*width+j
-			texA = new float[area*3];
-			texB = texA + area;
-		}
-		inline void Insert(float pixelA, float pixelB) {
-			ASSERT(area != 0);
-			texA[size] = pixelA;
-			texB[size] = pixelB;
-			++size;
-		}
-		inline void Insert(uint32_t i, float pixelB) {
-			ASSERT(area != 0);
-			texB[area*(i+1)+size] = pixelB;
-		}
-		inline void Insert(float pixelA, float pixelB, uint32_t idxA) {
-			ASSERT(area != 0);
-			texA[size] = pixelA;
-			texB[size] = pixelB;
-			((uint32_t*)(texB+area))[size] = idxA;
-			++size;
-		}
-		inline float* GetBufferA() const {
-			ASSERT(area != 0);
-			return texA;
-		}
-		inline float* GetBufferB() const {
-			ASSERT(area != 0);
-			return texB;
-		}
-		inline float* GetBufferB(uint32_t i) const {
-			ASSERT(area != 0);
-			return texB + area*(i+1);
-		}
-		inline uint32_t GetIndexA(uint32_t i) const {
-			ASSERT(area != 0);
-			return ((uint32_t*)(texB+area))[i];
-		}
-		inline float Score() {
-			ASSERT(size <= area && IsValid());
-			#if 1
-			const float normSqA(normSq<float,float>(texA, size));
-			const float normSqB(normSq<float,float>(texB, size));
-			#else
-			const float normSqA(normSqZeroMean<float,float>(texA, size));
-			const float normSqB(normSqZeroMean<float,float>(texB, size));
-			#endif
-			const float den(SQRT(normSqA*normSqB));
-			if (den < FLT_EPSILON)
-				return 0.5f;
-			const float ncc(CLAMP(1.f-dot<float,float>(texA, texB, size)/den, 0.f, 2.f));
-			#ifdef MESHOPT_ROBUST
-			return robustincc(ncc);
-			#else
-			return ncc;
-			#endif
-		}
-		inline float PreScore() {
-			ASSERT(size <= area && IsValid());
-			#if 1
-			return normSq<float,float>(texA, size);
-			#else
-			return normSqZeroMean<float,float>(texA, size);
-			#endif
-		}
-		inline float Score(float normSqA, float* pixB) {
-			ASSERT(size <= area && IsValid());
-			ASSERT(normSqA > 0);
-			#if 1
-			const float normSqB(normSq<float,float>(pixB, size));
-			#else
-			const float normSqB(normSqZeroMean<float,float>(pixB, size));
-			#endif
-			if (normSqB < FLT_EPSILON)
-				return 0.5f;
-			const float ncc(CLAMP(1.f-dot<float,float>(texA, pixB, size)/SQRT(normSqA*normSqB), 0.f, 2.f));
-			#ifdef MESHOPT_ROBUST
-			return robustincc(ncc);
-			#else
-			return ncc;
-			#endif
-		}
-		struct DerivativeData {
-			float NCC;
-			float normSqA;
-			float invSQRTnormSqAnormSqB;
-		};
-		inline float Score(DerivativeData& dData) {
-			ASSERT(size <= area && IsValid());
-			dData.normSqA = normSq<float,float>(texA, size);
-			const float normSqB(normSq<float,float>(texB, size));
-			const float normSqAnormSqB(dData.normSqA*normSqB);
-			if (normSqAnormSqB < FLT_EPSILON*FLT_EPSILON)
-				return 0.5f;
-			dData.invSQRTnormSqAnormSqB = 1.f/SQRT(normSqAnormSqB);
-			dData.NCC = dot<float,float>(texA, texB, size)*dData.invSQRTnormSqAnormSqB;
-			const float ncc(CLAMP(1.f-dData.NCC, 0.f, 2.f));
-			#ifdef MESHOPT_ROBUST
-			return robustincc(ncc);
-			#else
-			return ncc;
-			#endif
-		}
-		inline float ScoreDerivative(const DerivativeData& dData, uint32_t idx) const {
-			ASSERT(idx < size && IsValid());
-			return (dData.NCC*dData.normSqA*texB[idx]*dData.invSQRTnormSqAnormSqB - texA[idx])*dData.invSQRTnormSqAnormSqB
-				#ifdef MESHOPT_ROBUST
-				* robustinccg(1.f-dData.NCC)
-				#endif
-			;
-		}
-		inline float ReliabilityFactor() const {
-			ASSERT(size <= area && IsValid());
-			const MeanStd<float> varA(texA, size);
-			const MeanStd<float> varB(texB, size);
-			const float var(MINF(varA.GetVariance(), varB.GetVariance()));
-			ASSERT(ISFINITE(var));
-			return var/(var+0.001f);
-		}
-	};
-	typedef SEACAVE::cList<ViewVertex,const ViewVertex&,1,16,VIndex> ViewVertexArr;
-	typedef SEACAVE::cList<uint16_t,uint16_t,0> CountVertexArr;
-
 	struct RasterMeshData {
 		const Camera& P;
 		FaceMap& faceMap;
 		DepthMap& depthMap;
+		BaryMap& baryMap;
+		const Point2f* pti;
 		Point3 normalPlane;
 		FIndex idxFace;
 		inline void operator()(const ImageRef& pt) {
@@ -267,6 +98,7 @@ struct MeshRefine {
 			if (depth == 0 || depth > z) {
 				depth = z;
 				faceMap(pt) = idxFace;
+				baryMap(pt) = CorrectBarycentricCoordinates(BarycentricCoordinatesUV(pti[0], pti[1], pti[2], Point2f(pt)));
 			}
 		}
 		inline void operator()(const ImageRef& pt, float z) {
@@ -277,6 +109,7 @@ struct MeshRefine {
 			if (depth == 0 || depth > z) {
 				depth = z;
 				faceMap(pt) = idxFace;
+				baryMap(pt) = CorrectBarycentricCoordinates(BarycentricCoordinatesUV(pti[0], pti[1], pti[2], Point2f(pt)));
 			}
 		}
 	};
@@ -303,78 +136,87 @@ struct MeshRefine {
 	// used to find adjacent face
 	typedef Mesh::FacetCountMap FacetCountMap;
 
-	// used to compute the analytical gradient of a vertex
-	struct GradientData {
-		Point3f g;  // pre-gradient of a 3D point on the surface
-		Point3f xb; // barycentric coordinates of a 3D point on the surface, corresponding to the triangle it belongs to
-	};
-	typedef CLISTDEF0(GradientData) GradientDataArr; // used to store gradient data of a 3D point on the surface, corresponding to each pixel in an image
-
 
 public:
-	MeshRefine(Scene& _scene, double _weightRegularity=0.2f, unsigned _nResolutionLevel=0, unsigned _nMinResolution=640, unsigned nMaxViews=8);
+	MeshRefine(Scene& _scene, Real _weightRegularity=1.5f, unsigned _nResolutionLevel=0, unsigned _nMinResolution=640, unsigned nMaxViews=8, unsigned nMaxThreads=1);
 	~MeshRefine();
 
-	bool InitImages(double scale, double sigma=0);
+	bool InitImages(Real scale, Real sigma=0);
 
-	void ListVertexFaces();
+	void ListVertexFacesPre();
+	void ListVertexFacesPost();
 	void ListCameraFaces();
 
 	typedef cList<uint16_t,uint16_t,0> AreaArr;
 	void ListFaceAreas(AreaArr& maxAreas);
 	void SubdivideMesh(uint32_t maxArea, float fDecimate=1.f, unsigned nCloseHoles=15, unsigned nEnsureEdgeSize=1);
 
-	void ScoreMesh(double& score);
-	#ifdef MESHOPT_NUMERICAL
-	void ScoreMesh(double& score, double* gradients, double eps);
-	#endif
-	#ifndef MESHOPT_NUMERICAL
-	void ScoreMesh(double& score, double* gradients);
-	#endif
-	#ifdef MESHOPT_DEBUG
-	void DumpScoreMesh(const double* gradients, const String& fileName=String(_T("MeshScore.ply")));
-	#endif
-
-	// curvature related functions
-	bool vertex_mean_curvature_normal(VIndex idxV, Point3f& Kh) const;
-	bool vertex_gaussian_curvature(VIndex idxV, float& Kg) const;
-	bool vertex_principal_curvatures(VIndex idxV, float& K1, float& K2) const;
-	void vertex_principal_curvatures(float Kh, float Kg, float& K1, float& K2) const;
-	float vertex_first_ring_area(VIndex idxV) const;
-	bool umbrella_operator(VIndex idxV, Point3f& U) const;
-	bool umbrella_operator(VIndex idxV, Point3f& U2, const Mesh::VertexArr& arrVertsU, const bool* valids) const;
-	Point3f umbrella_operator_gradient(const Point3f& U, const Point3f& U2) const;
+	double ScoreMesh(double* gradients);
 
 	// given a vertex position and a projection camera, compute the projected position and its derivative
-	template <typename TP, typename TX, typename T>
-	static T ProjectVertex(const TP* P, const TX* X, T* x, T* jacobian=NULL);
+	template <typename TP, typename TX, typename T, typename TJ>
+	static T ProjectVertex(const TP* P, const TX* X, T* x, TJ* jacobian=NULL);
 
 	static bool IsDepthSimilar(const DepthMap& depthMap, const Point2f& pt, Depth z);
 	static void ProjectMesh(
 		const Mesh::VertexArr& vertices, const Mesh::FaceArr& faces, const CameraFaces& cameraFaces,
 		const Camera& camera, const Image8U::Size& size,
-		DepthMap& depthMap, FaceMap& faceMap);
+		DepthMap& depthMap, FaceMap& faceMap, BaryMap& baryMap);
+	static void ImageMeshWarp(
+		const DepthMap& depthMapA, const Camera& cameraA,
+		const DepthMap& depthMapB, const Camera& cameraB,
+		const Image32F& imageB, Image32F& imageA, Image8U& mask);
+	static void ComputeLocalVariance(
+		const Image32F& image, const Image8U& mask,
+		TImage<Real>& imageMean, TImage<Real>& imageVar);
+	static float ComputeLocalZNCC(
+		const Image32F& imageA, const TImage<Real>& imageMeanA, const TImage<Real>& imageVarA,
+		const Image32F& imageB, const TImage<Real>& imageMeanB, const TImage<Real>& imageVarB,
+		const Image8U& mask, TImage<Real>& imageZNCC, TImage<Real>& imageDZNCC);
+	static void ComputePhotometricGradient(
+		const Mesh::FaceArr& faces, const Mesh::NormalArr& normals,
+		const DepthMap& depthMapA, const FaceMap& faceMapA, const BaryMap& baryMapA, const Camera& cameraA,
+		const Camera& cameraB, const View& viewB,
+		const TImage<Real>& imageDZNCC, const Image8U& mask, GradArr& photoGrad, FloatArr& photoGradNorm, Real RegularizationScale);
+	static float ComputeSmoothnessGradient1(
+		const Mesh::VertexArr& vertices, const Mesh::VertexVerticesArr& vertexVertices, const BoolArr& vertexBoundary,
+		GradArr& smoothGrad1, VIndex idxStart, VIndex idxEnd);
+	static void ComputeSmoothnessGradient2(
+		const GradArr& smoothGrad1, const Mesh::VertexVerticesArr& vertexVertices, const BoolArr& vertexBoundary,
+		GradArr& smoothGrad2, VIndex idxStart, VIndex idxEnd);
 
+	static void* ThreadWorkerTmp(void*);
+	void ThreadWorker();
+	void WaitThreadWorkers(size_t nJobs);
+	void ThSelectNeighbors(uint32_t idxImage, std::unordered_set<uint64_t>& mapPairs, unsigned nMaxViews);
+	void ThInitImage(uint32_t idxImage, Real scale, Real sigma);
+	void ThProjectMesh(uint32_t idxImage, const CameraFaces& cameraFaces);
+	void ThProcessPair(uint32_t idxImageA, uint32_t idxImageB);
+	void ThSmoothVertices1(VIndex idxStart, VIndex idxEnd);
+	void ThSmoothVertices2(VIndex idxStart, VIndex idxEnd);
 
 public:
-	const float ratioRigidityElasticity; // a scalar weight used to compute the regularity gradient
-	const double weightRegularity; // a scalar regularity weight to balance between photo-consistency and regularization terms
+	const Real weightRegularity; // a scalar regularity weight to balance between photo-consistency and regularization terms
 	const unsigned nResolutionLevel; // how many times to scale down the images before mesh optimization
 	const unsigned nMinResolution; // how many times to scale down the images before mesh optimization
 
+	Scene& scene; // the mesh vertices and faces
+
+	// gradient related
+	float scorePhoto;
+	float scoreSmooth;
+	GradArr photoGrad;
+	FloatArr photoGradNorm;
+	GradArr smoothGrad1;
+	GradArr smoothGrad2;
+
 	// valid after ListCameraFaces()
-	FaceMapArr faceMaps; // remember for each pixel what face projects there
-	DepthMapArr depthMaps; // depth-map
-	#ifndef MESHOPT_NUMERICAL
 	Mesh::NormalArr& faceNormals; // normals corresponding to each face
-	#endif
-	#ifdef MESHOPT_PHOTOGRADNORMAL
-	Mesh::NormalArr& vertexNormals; // normals corresponding to each vertex
-	#endif
 
 	// valid the entire time, but changes
 	Mesh::VertexArr& vertices;
 	Mesh::FaceArr& faces;
+	Mesh::VertexVerticesArr& vertexVertices; // for each vertex, the list of adjacent vertices
 	Mesh::VertexFacesArr& vertexFaces; // for each vertex, the list of faces containing it
 	BoolArr& vertexBoundary; // for each vertex, stores if it is at the boundary or not
 
@@ -383,143 +225,159 @@ public:
 	ViewsArr views; // views' data
 	PairIdxArr pairs; // image pairs used to refine the mesh
 
-	Scene& scene; // the mesh vertices and faces
+	// multi-threading
+	static SEACAVE::EventQueue events; // internal events queue (processed by the working threads)
+	static SEACAVE::cList<SEACAVE::Thread> threads; // worker threads
+	static CriticalSection cs; // mutex
+	static Semaphore sem; // signal job end
 
-	#if defined(MESHOPT_DEBUG) && MESHOPT_DEBUG>1
-	unsigned _level; // current level
-	unsigned _iteration; // current iteration
-	#endif
+	static const int HalfSize = 3; // half window size used to compute ZNCC
 };
 
-MeshRefine::MeshRefine(Scene& _scene, double _weightRegularity, unsigned _nResolutionLevel, unsigned _nMinResolution, unsigned nMaxViews)
+enum EVENT_TYPE {
+	EVT_JOB = 0,
+	EVT_CLOSE,
+};
+
+class EVTClose : public Event
+{
+public:
+	EVTClose() : Event(EVT_CLOSE) {}
+};
+class EVTSelectNeighbors : public Event
+{
+public:
+	uint32_t idxImage;
+	std::unordered_set<uint64_t>& mapPairs;
+	unsigned nMaxViews;
+	bool Run(void* pArgs) {
+		((MeshRefine*)pArgs)->ThSelectNeighbors(idxImage, mapPairs, nMaxViews);
+		return true;
+	}
+	EVTSelectNeighbors(uint32_t _idxImage, std::unordered_set<uint64_t>& _mapPairs, unsigned _nMaxViews) : Event(EVT_JOB), idxImage(_idxImage), mapPairs(_mapPairs), nMaxViews(_nMaxViews) {}
+};
+class EVTInitImage : public Event
+{
+public:
+	uint32_t idxImage;
+	double scale, sigma;
+	bool Run(void* pArgs) {
+		((MeshRefine*)pArgs)->ThInitImage(idxImage, scale, sigma);
+		return true;
+	}
+	EVTInitImage(uint32_t _idxImage, double _scale, double _sigma) : Event(EVT_JOB), idxImage(_idxImage), scale(_scale), sigma(_sigma) {}
+};
+class EVTProjectMesh : public Event
+{
+public:
+	uint32_t idxImage;
+	const MeshRefine::CameraFaces& cameraFaces;
+	bool Run(void* pArgs) {
+		((MeshRefine*)pArgs)->ThProjectMesh(idxImage, cameraFaces);
+		return true;
+	}
+	EVTProjectMesh(uint32_t _idxImage, const MeshRefine::CameraFaces& _cameraFaces) : Event(EVT_JOB), idxImage(_idxImage), cameraFaces(_cameraFaces) {}
+};
+class EVTProcessPair : public Event
+{
+public:
+	uint32_t idxImageA, idxImageB;
+	bool Run(void* pArgs) {
+		((MeshRefine*)pArgs)->ThProcessPair(idxImageA, idxImageB);
+		return true;
+	}
+	EVTProcessPair(uint32_t _idxImageA, uint32_t _idxImageB) : Event(EVT_JOB), idxImageA(_idxImageA), idxImageB(_idxImageB) {}
+};
+class EVTSmoothVertices1 : public Event
+{
+public:
+	VIndex idxStart, idxEnd;
+	bool Run(void* pArgs) {
+		((MeshRefine*)pArgs)->ThSmoothVertices1(idxStart, idxEnd);
+		return true;
+	}
+	EVTSmoothVertices1(VIndex _idxStart, VIndex _idxEnd) : Event(EVT_JOB), idxStart(_idxStart), idxEnd(_idxEnd) {}
+};
+class EVTSmoothVertices2 : public Event
+{
+public:
+	VIndex idxStart, idxEnd;
+	bool Run(void* pArgs) {
+		((MeshRefine*)pArgs)->ThSmoothVertices2(idxStart, idxEnd);
+		return true;
+	}
+	EVTSmoothVertices2(VIndex _idxStart, VIndex _idxEnd) : Event(EVT_JOB), idxStart(_idxStart), idxEnd(_idxEnd) {}
+};
+
+SEACAVE::EventQueue MeshRefine::events;
+SEACAVE::cList<SEACAVE::Thread> MeshRefine::threads;
+CriticalSection MeshRefine::cs;
+Semaphore MeshRefine::sem;
+
+MeshRefine::MeshRefine(Scene& _scene, Real _weightRegularity, unsigned _nResolutionLevel, unsigned _nMinResolution, unsigned nMaxViews, unsigned nMaxThreads)
 	:
-	ratioRigidityElasticity(0.8f),
 	weightRegularity(_weightRegularity),
 	nResolutionLevel(_nResolutionLevel),
 	nMinResolution(_nMinResolution),
-	#ifndef MESHOPT_NUMERICAL
+	scene(_scene),
 	faceNormals(_scene.mesh.faceNormals),
-	#endif
-	#ifdef MESHOPT_PHOTOGRADNORMAL
-	vertexNormals(_scene.mesh.vertexNormals),
-	#endif
 	vertices(_scene.mesh.vertices),
 	faces(_scene.mesh.faces),
+	vertexVertices(_scene.mesh.vertexVertices),
 	vertexFaces(_scene.mesh.vertexFaces),
 	vertexBoundary(_scene.mesh.vertexBoundary),
-	images(_scene.images),
-	scene(_scene)
+	images(_scene.images)
 {
+	// start worker threads
+	ASSERT(nMaxThreads > 0);
+	ASSERT(threads.IsEmpty());
+	threads.Resize(nMaxThreads);
+	FOREACHPTR(pThread, threads)
+		pThread->start(ThreadWorkerTmp, this);
 	// keep only best neighbor views for each image
-	const float fMinArea(0.12f);
-	const float fMinScale(0.2f), fMaxScale(3.2f);
-	const float fMinAngle(FD2R(3)), fMaxAngle(FD2R(45));
-	typedef std::unordered_set<uint64_t> PairsMap;
-	PairsMap mapPairs;
+	std::unordered_set<uint64_t> mapPairs;
 	mapPairs.reserve(images.GetSize()*nMaxViews);
-	#ifdef MESHOPT_USE_OPENMP
-	#pragma omp parallel for shared(mapPairs)
-	for (int_t ID=0; ID<(int_t)images.GetSize(); ++ID) {
-		const uint32_t idxImage((uint32_t)ID);
-	#else
-	FOREACH(idxImage, images) {
-	#endif
-		const Image& imageData = images[idxImage];
-		if (!imageData.IsValid())
-			continue;
-		ViewScoreArr neighbors(imageData.neighbors);
-		Scene::FilterNeighborViews(neighbors, fMinArea, fMinScale, fMaxScale, fMinAngle, fMaxAngle, nMaxViews);
-		#ifdef MESHOPT_USE_OPENMP
-		#pragma omp critical
-		#endif
-		FOREACHPTR(pNeighbor, neighbors) {
-			ASSERT(images[pNeighbor->idx.ID].IsValid());
-			mapPairs.insert(MakePairIdx((uint32_t)idxImage, pNeighbor->idx.ID));
-		}
-	}
+	ASSERT(events.IsEmpty());
+	FOREACH(idxImage, images)
+		events.AddEvent(new EVTSelectNeighbors(idxImage, mapPairs, nMaxViews));
+	WaitThreadWorkers(images.GetSize());
 	pairs.Reserve(mapPairs.size());
 	for (uint64_t pair: mapPairs)
 		pairs.AddConstruct(pair);
 }
 MeshRefine::~MeshRefine()
 {
+	// wait for the working threads to close
+	FOREACH(i, threads)
+		events.AddEvent(new EVTClose());
+	FOREACHPTR(pThread, threads)
+		pThread->join();
 	scene.mesh.ReleaseExtra();
 }
 
 // load and initialize all images at the given scale
 // and compute the gradient for each input image
 // optional: blur them using the given sigma
-bool MeshRefine::InitImages(double scale, double sigma)
+bool MeshRefine::InitImages(Real scale, Real sigma)
 {
 	views.Resize(images.GetSize());
-	typedef float real;
-	TImage<real> grad[2];
-	#ifdef MESHOPT_USE_OPENMP
-	bool bAbort(false);
-	#pragma omp parallel for private(grad)
-	for (int_t iID=0; iID<(int_t)images.GetSize(); ++iID) {
-		#pragma omp flush (bAbort)
-		if (bAbort)
-			continue;
-		const uint32_t ID((uint32_t)iID);
-	#else
-	FOREACH(ID, images) {
-	#endif
-		Image& imageData = images[ID];
-		if (!imageData.IsValid())
-			continue;
-		// load and init image
-		unsigned level(nResolutionLevel);
-		const unsigned imageSize(imageData.RecomputeMaxResolution(level, nMinResolution));
-		if ((imageData.image.empty() || MAXF(imageData.width,imageData.height) != imageSize) && FAILED(imageData.ReloadImage(imageSize))) {
-			#ifdef MESHOPT_USE_OPENMP
-			bAbort = true;
-			#pragma omp flush (bAbort)
-			#else
-			return false;
-			#endif
-		}
-		View& view = views[ID];
-		Image32F& img = view.image;
-		imageData.image.toGray(img, cv::COLOR_BGR2GRAY, true);
-		imageData.image.release();
-		if (scale < 1.0) {
-			cv::resize(img, img, cv::Size(), scale, scale, cv::INTER_LINEAR);
-			imageData.width = img.width(); imageData.height = img.height();
-		}
-		imageData.UpdateCamera(scene.platforms);
-		if (sigma > 0)
-			cv::GaussianBlur(img, img, cv::Size(), sigma);
-		#ifndef MESHOPT_NUMERICAL
-		// compute image gradient
-		#if 1
-		cv::Sobel(img, grad[0], cv::DataType<real>::type, 1, 0, 3, 1.0/8.0);
-		cv::Sobel(img, grad[1], cv::DataType<real>::type, 0, 1, 3, 1.0/8.0);
-		#elif 1
-		const TMatrix<real,3,5> kernel(CreateDerivativeKernel3x5());
-		cv::filter2D(img, grad[0], cv::DataType<real>::type, kernel);
-		cv::filter2D(img, grad[1], cv::DataType<real>::type, kernel.t());
-		#else
-		const TMatrix<real,5,7> kernel(CreateDerivativeKernel5x7());
-		cv::filter2D(img, grad[0], cv::DataType<real>::type, kernel);
-		cv::filter2D(img, grad[1], cv::DataType<real>::type, kernel.t());
-		#endif
-		cv::merge(grad, 2, view.imageGrad);
-		#endif
-	}
-	#ifdef MESHOPT_USE_OPENMP
-	return !bAbort;
-	#else
+	ASSERT(events.IsEmpty());
+	FOREACH(idxImage, images)
+		events.AddEvent(new EVTInitImage(idxImage, scale, sigma));
+	WaitThreadWorkers(images.GetSize());
 	return true;
-	#endif
 }
 
 // extract array of triangles incident to each vertex
 // and check each vertex if it is at the boundary or not
-void MeshRefine::ListVertexFaces()
+void MeshRefine::ListVertexFacesPre()
 {
 	scene.mesh.EmptyExtra();
 	scene.mesh.ListIncidenteFaces();
+}
+void MeshRefine::ListVertexFacesPost()
+{
+	scene.mesh.ListIncidenteVertices();
 	scene.mesh.ListBoundaryVertices();
 }
 
@@ -563,39 +421,10 @@ void MeshRefine::ListCameraFaces()
 	}
 
 	// project mesh to each camera plane
-	faceMaps.Resize(images.GetSize());
-	depthMaps.Resize(images.GetSize());
-	#ifdef MESHOPT_USE_OPENMP
-	#pragma omp parallel for schedule(dynamic)
-	for (int ID=0; ID<(int)images.GetSize(); ++ID) {
-	#else
-	FOREACH(ID, images) {
-	#endif
-		const Image& imageData = images[ID];
-		if (!imageData.IsValid())
-			continue;
-		// project mesh to the given camera plane
-		ProjectMesh(vertices, faces, arrCameraFaces[ID], imageData.camera, Image8U::Size(imageData.width, imageData.height),
-					depthMaps[ID], faceMaps[ID]);
-		#if TD_VERBOSE != TD_VERBOSE_OFF
-		if (VERBOSITY_LEVEL > 4) {
-			// export depth-map
-			const String fileName(String::FormatString(_T("MeshView%04u_depth.png"), ID));
-			DepthMap dmap; depthMaps[ID].convertTo(dmap, CV_32F);
-			ExportDepthMap(MAKE_PATH_FULL(WORKING_FOLDER_FULL, fileName), dmap);
-		}
-		#endif
-	}
-
-	#ifndef MESHOPT_NUMERICAL
-	// compute face normals
-	scene.mesh.ComputeNormalFaces();
-	#endif
-
-	#ifdef MESHOPT_PHOTOGRADNORMAL
-	// compute vertex normals
-	scene.mesh.ComputeNormalVertices();
-	#endif
+	ASSERT(events.IsEmpty());
+	FOREACH(idxImage, images)
+		events.AddEvent(new EVTProjectMesh(idxImage, arrCameraFaces[idxImage]));
+	WaitThreadWorkers(images.GetSize());
 }
 
 // compute for each face the projection area as the maximum area in both images of a pair
@@ -613,8 +442,8 @@ void MeshRefine::ListFaceAreas(AreaArr& maxAreas)
 		AreaArr& areas = viewAreas[idxImage];
 		areas.Resize(faces.GetSize());
 		areas.Memset(0);
+		const FaceMap& faceMap = views[idxImage].faceMap;
 		// compute area covered by all vertices (incident faces) viewed by this image
-		const FaceMap& faceMap = faceMaps[idxImage];
 		for (int j=0; j<faceMap.rows; ++j) {
 			for (int i=0; i<faceMap.cols; ++i) {
 				const FIndex& idxFace = faceMap(j,i);
@@ -662,7 +491,7 @@ void MeshRefine::SubdivideMesh(uint32_t maxArea, float fDecimate, unsigned nClos
 			#endif
 
 			// re-map vertex and camera faces
-			ListVertexFaces();
+			ListVertexFacesPre();
 		} else {
 			// extract array of faces viewed by each camera
 			ListCameraFaces();
@@ -686,7 +515,7 @@ void MeshRefine::SubdivideMesh(uint32_t maxArea, float fDecimate, unsigned nClos
 				#endif
 
 				// re-map vertex and camera faces
-				ListVertexFaces();
+				ListVertexFacesPre();
 			}
 		}
 	}
@@ -700,10 +529,6 @@ void MeshRefine::SubdivideMesh(uint32_t maxArea, float fDecimate, unsigned nClos
 		// estimate the faces' area that have big projection areas in both images of a pair
 		ListFaceAreas(maxAreas);
 	}
-
-	// free some memory (these need to be recomputed anyway)
-	faceMaps.Release();
-	depthMaps.Release();
 
 	// for each image, compute the projection area of visible faces
 	const size_t numVertsOld(vertices.GetSize());
@@ -866,7 +691,7 @@ void MeshRefine::SubdivideMesh(uint32_t maxArea, float fDecimate, unsigned nClos
 	#endif
 
 	// re-map vertex and camera faces
-	ListVertexFaces();
+	ListVertexFacesPre();
 
 	DEBUG_EXTRA("Mesh subdivided: %u/%u -> %u/%u vertices/faces", numVertsOld, numFacesOld, vertices.GetSize(), faces.GetSize());
 
@@ -876,1057 +701,77 @@ void MeshRefine::SubdivideMesh(uint32_t maxArea, float fDecimate, unsigned nClos
 	#endif
 }
 
-// score mesh using photo-consistency
-void MeshRefine::ScoreMesh(double& score)
-{
-	score = 0;
 
-	// extract array of faces viewed by each camera
-	ListCameraFaces();
-
-	// for each pair of images, compute a photo-consistency score
-	// between the reference image and the pixels of the second image
-	// projected in the reference image through the mesh surface
-	#ifdef MESHOPT_DEBUG
-	Image32F image;
-	#endif
-	typedef Sampler::Linear<REAL> Sampler;
-	const Sampler sampler;
-	ViewVertexArr viewVertices(0, vertices.GetSize());
-	CountVertexArr countVertices(vertices.GetSize());
-	countVertices.Memset(0);
-	FOREACHPTR(pPair, pairs) {
-		ASSERT(pPair->i < pPair->j);
-	for (int ip=0; ip<2; ++ip) {
-		// fetch view A data
-		const uint32_t idxImageA(ip ? pPair->j : pPair->i);
-		const Image& imageDataA = images[idxImageA];
-		ASSERT(imageDataA.IsValid());
-		const FaceMap& faceMapA = faceMaps[idxImageA];
-		const DepthMap& depthMapA = depthMaps[idxImageA];
-		const Image32F& imageA = views[idxImageA].image;
-		const Camera& cameraA = imageDataA.camera;
-		// fetch view B data
-		const uint32_t idxImageB(ip ? pPair->i : pPair->j);
-		const Image& imageDataB = images[idxImageB];
-		ASSERT(imageDataB.IsValid());
-		const DepthMap& depthMapB = depthMaps[idxImageB];
-		const Image32F& imageB = views[idxImageB].image;
-		const Camera& cameraB = imageDataB.camera;
-		// compute area covered by all vertices (incident faces) viewed by this image
-		ASSERT(viewVertices.IsEmpty());
-		viewVertices.Resize(vertices.GetSize());
-		for (int j=0; j<faceMapA.rows; ++j) {
-			for (int i=0; i<faceMapA.cols; ++i) {
-				const FIndex& idxFace = faceMapA(j,i);
-				ASSERT((idxFace == NO_ID && depthMapA(j,i) == 0) || (idxFace != NO_ID && depthMapA(j,i) > 0));
-				if (idxFace == NO_ID)
-					continue;
-				const Face& facet = faces[idxFace];
-				for (unsigned v=0; v<3; ++v)
-					++viewVertices[facet[v]].area;
-			}
-		}
-		// init vertex textures
-		FOREACHPTR(pViewVertex, viewVertices)
-			pViewVertex->Init();
-		// project the surface seen by this image on the pair image
-		// and store pixel values
-		#ifdef MESHOPT_DEBUG
-		image.create(imageA.size());
-		image.memset(0);
-		#endif
-		for (int j=0; j<depthMapA.rows; ++j) {
-			for (int i=0; i<depthMapA.cols; ++i) {
-				const Depth& depthA = depthMapA(j,i);
-				if (depthA <= 0)
-					continue;
-				const Point3 X(cameraA.TransformPointI2W(Point3(i,j,depthA)));
-				const Point3f ptC(cameraB.TransformPointW2C(X));
-				const Point2f pt(cameraB.TransformPointC2I(ptC));
-				if (!IsDepthSimilar(depthMapB, pt, ptC.z))
-					continue;
-				const float pixelB((float)imageB.sample<Sampler,Sampler::Type>(sampler, pt));
-				#ifdef MESHOPT_DEBUG
-				image(j,i) = pixelB;
-				#endif
-				const float pixelA(imageA(j,i));
-				// store pixel value in each vertex of the face
-				const FIndex& idxFace = faceMapA(j,i);
-				ASSERT(idxFace != NO_ID);
-				const Face& facet = faces[idxFace];
-				for (unsigned v=0; v<3; ++v)
-					viewVertices[facet[v]].Insert(pixelA, pixelB);
-			}
-		}
-		#ifdef MESHOPT_DEBUG
-		#if TD_VERBOSE != TD_VERBOSE_OFF
-		if (VERBOSITY_LEVEL > 1) {
-			// export back-projected image
-			Image8U grayImage;
-			image.convertTo(grayImage, CV_8U, 255.0);
-			const String fileName(String::FormatString(_T("MeshView%04u_%04u.png"), idxImageA, idxImageB));
-			grayImage.Save(MAKE_PATH_FULL(WORKING_FOLDER_FULL, fileName));
-		}
-		#endif
-		#endif
-		// init vertex textures
-		#ifdef MESHOPT_DEBUG
-		image.create(imageA.size());
-		image.memset(0);
-		#endif
-		const float weightA(SQUARE(imageDataA.avgDepth/(float)cameraA.GetFocalLength()));
-		FOREACH(idxV, viewVertices) {
-			ViewVertex& viewVertex = viewVertices[idxV];
-			if (!viewVertex.IsValid() || vertexBoundary[idxV])
-				continue;
-			++countVertices[idxV];
-			const float vscore(viewVertex.Score());
-			ASSERT(ISFINITE(vscore) && ISFINITE(weightA));
-			score += vscore*weightA*viewVertex.ReliabilityFactor()*viewVertex.size;
-			#ifdef MESHOPT_DEBUG
-			const Point2f pt(cameraA.TransformPointW2I(CastDouble(vertices[idxV])));
-			image(ROUND2INT(pt)) = vscore;
-			#endif
-		}
-		#ifdef MESHOPT_DEBUG
-		#if TD_VERBOSE != TD_VERBOSE_OFF
-		if (VERBOSITY_LEVEL > 1) {
-			// export back-projected image
-			Image8U grayImage;
-			image.convertTo(grayImage, CV_8U, 255.0*3);
-			const String fileName(String::FormatString(_T("MeshView%04u_%04u_Score.png"), idxImageA, idxImageB));
-			grayImage.Save(MAKE_PATH_FULL(WORKING_FOLDER_FULL, fileName));
-		}
-		#endif
-		#endif
-		viewVertices.Empty();
-	}
-	}
-
-	#ifdef MESHOPT_SMOOTH
-	// loop through all vertices and add the smoothing term
-	FOREACH(idxV, vertices) {
-		const unsigned count(countVertices[idxV]);
-		if (count == 0)
-			continue;
-		ASSERT(vertexBoundary[idxV] == false);
-		#if 0
-		float k1, k2;
-		vertex_principal_curvatures(idxV, k1, k2);
-		const float regularityScore(MINF((ABS(k1)+ABS(k2))/*(k1*k1+k2*k2)*/, 30.f)*vertex_first_ring_area(idxV)/3);
-		#else
-		Point3f U;
-		umbrella_operator(idxV, U);
-		const float regularityScore(norm(U));
-		#endif
-		ASSERT(ISFINITE(regularityScore));
-		score += weightRegularity*regularityScore;
-	}
-	#endif
-}
-
-#ifdef MESHOPT_NUMERICAL
-// score mesh using photo-consistency
-// and compute vertices gradient using numerical method
-void MeshRefine::ScoreMesh(double& score, double* gradients, double eps)
-{
-	score = 0;
-	memset(gradients, 0, sizeof(double)*vertices.GetSize()*3);
-
-	// extract array of faces viewed by each camera
-	ListCameraFaces();
-
-	// for each pair of images, compute a photo-consistency score
-	// between the reference image and the pixels of the second image
-	// projected in the reference image through the mesh surface
-	#ifdef MESHOPT_DEBUG
-	Image32F image;
-	#endif
-	typedef Sampler::Linear<REAL> Sampler;
-	const Sampler sampler;
-	ViewVertexArr viewVertices(0, vertices.GetSize());
-	CountVertexArr countVertices(vertices.GetSize());
-	countVertices.Memset(0);
-	FOREACHPTR(pPair, pairs) {
-		ASSERT(pPair->i < pPair->j);
-	for (int ip=0; ip<2; ++ip) {
-		// fetch view A data
-		const uint32_t idxImageA(ip ? pPair->j : pPair->i);
-		const Image& imageDataA = images[idxImageA];
-		ASSERT(imageDataA.IsValid());
-		const FaceMap& faceMapA = faceMaps[idxImageA];
-		const DepthMap& depthMapA = depthMaps[idxImageA];
-		const Image32F& imageA = views[idxImageA].image;
-		const Camera& cameraA = imageDataA.camera;
-		// fetch view B data
-		const uint32_t idxImageB(ip ? pPair->i : pPair->j);
-		const Image& imageDataB = images[idxImageB];
-		ASSERT(imageDataB.IsValid());
-		const DepthMap& depthMapB = depthMaps[idxImageB];
-		const Image32F& imageB = views[idxImageB].image;
-		const Camera& cameraB = imageDataB.camera;
-		// compute area covered by all vertices (incident faces) viewed by this image
-		ASSERT(viewVertices.IsEmpty());
-		viewVertices.Resize(vertices.GetSize());
-		for (int j=0; j<faceMapA.rows; ++j) {
-			for (int i=0; i<faceMapA.cols; ++i) {
-				const FIndex& idxFace = faceMapA(j,i);
-				ASSERT((idxFace == NO_ID && depthMapA(j,i) == 0) || (idxFace != NO_ID && depthMapA(j,i) > 0));
-				if (idxFace == NO_ID)
-					continue;
-				const Face& facet = faces[idxFace];
-				for (unsigned v=0; v<3; ++v)
-					++viewVertices[facet[v]].area;
-			}
-		}
-		// init vertex textures for the score and the three derivatives
-		FOREACHPTR(pViewVertex, viewVertices)
-			pViewVertex->InitGradient();
-		// project the surface seen by this image on the pair image
-		// and store pixel values
-		#ifdef MESHOPT_DEBUG
-		image.create(imageA.size());
-		image.memset(0);
-		#endif
-		for (int j=0; j<depthMapA.rows; ++j) {
-			for (int i=0; i<depthMapA.cols; ++i) {
-				const Depth& depthA = depthMapA(j,i);
-				if (depthA <= 0)
-					continue;
-				const Point3 X(cameraA.TransformPointI2W(Point3(i,j,depthA)));
-				const Point3f ptC(cameraB.TransformPointW2C(X));
-				const Point2f pt(cameraB.TransformPointC2I(ptC));
-				if (!IsDepthSimilar(depthMapB, pt, ptC.z))
-					continue;
-				const float pixelA(imageA(j,i));
-				const FIndex& idxFace = faceMapA(j,i);
-				ASSERT(idxFace != NO_ID);
-				const Face& facet = faces[idxFace];
-				// store pixel value in each vertex of the face
-				const float pixelB((float)imageB.sample<Sampler,Sampler::Type>(sampler, pt));
-				#ifdef MESHOPT_DEBUG
-				image(j,i) = pixelB;
-				#endif
-				// store pixel value in each vertex of the face corresponding to the derivative
-				const Point3d verts[] = {vertices[facet[0]], vertices[facet[1]], vertices[facet[2]]};
-				for (unsigned v=0; v<3; ++v) {
-					ViewVertex& viewVert = viewVertices[facet[v]];
-					const Point3d& vert(verts[v]);
-					const double step(eps*cameraB.PointDepth(vert));
-					ASSERT(step > 0);
-					const Ray3d ray(cameraA.C, cameraA.TransformPointI2W(Point3(i,j,1)), true);
-					for (unsigned i=0; i<3; ++i) {
-						Point3d vertd(vert);
-						vertd[i] += step;
-						const Planed plane(vertd, verts[(v+1)%3], verts[(v+2)%3]);
-						const Point3d X(ray.Intersects(plane));
-						const Point2f pt(cameraB.TransformPointW2I(X));
-						if (depthMapB.isInsideWithBorder<float,2>(pt))
-							viewVert.Insert(i, (float)imageB.sample<Sampler,Sampler::Type>(sampler, pt));
-						else
-							viewVert.Insert(i, pixelB);
-					}
-					viewVert.Insert(pixelA, pixelB);
-				}
-			}
-		}
-		#ifdef MESHOPT_DEBUG
-		#if TD_VERBOSE != TD_VERBOSE_OFF
-		if (VERBOSITY_LEVEL > 1) {
-			// export back-projected image
-			Image8U grayImage;
-			image.convertTo(grayImage, CV_8U, 255.0);
-			const String fileName(String::FormatString(_T("MeshView%04u_%04u.png"), idxImageA, idxImageB));
-			grayImage.Save(MAKE_PATH_FULL(WORKING_FOLDER_FULL, fileName));
-		}
-		#endif
-		#endif
-		// compute score and gradients
-		#ifdef MESHOPT_DEBUG
-		image.create(imageA.size());
-		image.memset(0);
-		#endif
-		const float weightA(SQUARE(imageDataA.avgDepth/(float)cameraA.GetFocalLength()));
-		FOREACH(idxV, viewVertices) {
-			ViewVertex& viewVertex = viewVertices[idxV];
-			if (!viewVertex.IsValid() || vertexBoundary[idxV])
-				continue;
-			++countVertices[idxV];
-			const float normSqA(viewVertex.PreScore());
-			if (normSqA < FLT_EPSILON)
-				continue;
-			// compute score
-			const float w(weightA*viewVertex.ReliabilityFactor()*viewVertex.size);
-			const float vscore(viewVertex.Score(normSqA, viewVertex.GetBufferB()));
-			ASSERT(ISFINITE(vscore) && ISFINITE(w));
-			score += vscore*w;
-			#ifdef MESHOPT_DEBUG
-			const Point2f pt(cameraA.TransformPointW2I(CastDouble(vertices[idxV])));
-			image(ROUND2INT(pt)) = vscore;
-			#endif
-			// vertex gradient
-			double* grad = gradients+idxV*3;
-			for (unsigned i=0; i<3; ++i) {
-				const double step(eps*cameraB.PointDepth(CastDouble(vertices[idxV])));
-				ASSERT(step > 0);
-				const float vscored(viewVertex.Score(normSqA, viewVertex.GetBufferB(i)));
-				const double g(((double)vscored-(double)vscore)*w/step);
-				ASSERT(ISFINITE(g));
-				grad[i] += g;
-			}
-		}
-		#ifdef MESHOPT_DEBUG
-		#if TD_VERBOSE != TD_VERBOSE_OFF
-		if (VERBOSITY_LEVEL > 1) {
-			// export back-projected image
-			Image8U grayImage;
-			image.convertTo(grayImage, CV_8U, 255.0*3);
-			const String fileName(String::FormatString(_T("MeshView%04u_%04u_Score.png"), idxImageA, idxImageB));
-			grayImage.Save(MAKE_PATH_FULL(WORKING_FOLDER_FULL, fileName));
-		}
-		#if MESHOPT_DEBUG>1
-		if (VERBOSITY_LEVEL > 3)
-			DumpScoreMesh(gradients, String::FormatString(_T("MeshScore_Lvl%u_Iter%04u_View%04u_%04u.ply"), _level, _iteration, idxImageA, idxImageB));
-		#endif
-		#endif
-		#endif
-		viewVertices.Empty();
-	}
-	}
-	#ifdef MESHOPT_PHOTOGRADNORMAL
-	// project gradient vector onto the vertex normal
-	FOREACH(idxV, vertices) {
-		const Point3d N(vertexNormals[idxV]);
-		Point3d& grad = ((Point3d*)gradients)[idxV];
-		const unsigned count(countVertices[idxV]);
-		grad = N*((grad/(double)count).dot(N));
-	}
-	#endif
-	#if defined(MESHOPT_DEBUG) && MESHOPT_DEBUG>1
-	#if TD_VERBOSE != TD_VERBOSE_OFF
-	if (VERBOSITY_LEVEL > 2)
-		DumpScoreMesh(gradients, String::FormatString(_T("MeshScore_Lvl%u_Iter%04u.ply"), _level, _iteration));
-	#endif
-	#endif
-
-	#ifdef MESHOPT_SMOOTH
-	// loop through all vertices and add the smoothing term
-	#if 0
-	size_t countDist(0);
-	Vertex avgDist(Vertex::ZERO);
-	FOREACHPTR(pFace, arrFaces) {
-		const Face& face = *pFace;
-		const Vertex& v0(arrVerts[face[0]]);
-		const Vertex& v1(arrVerts[face[1]]);
-		const Vertex& v2(arrVerts[face[2]]);
-		avgDist += ABS(v0-v1);
-		avgDist += ABS(v1-v2);
-		avgDist += ABS(v2-v0);
-		countDist += 3;
-	}
-	avgDist *= 1.f/countDist;
-	const double eps2(eps*(avgDist.x+avgDist.y+avgDist.y)/3);
-	ASSERT(eps2 > 0);
-	FOREACH(idxV, arrVerts) {
-		const unsigned count(countVertices[idxV]);
-		if (count == 0)
-			continue;
-		ASSERT(vertexBoundary[idxV] == false);
-		float k1, k2;
-		vertex_principal_curvatures(idxV, k1, k2);
-		const float regularityScore(MINF((ABS(k1)+ABS(k2))/*(k1*k1+k2*k2)*/, 30.f)*vertex_first_ring_area(idxV)/*/3.f*/);
-		ASSERT(ISFINITE(regularityScore));
-		score += weightRegularity*regularityScore;
-		// vertex gradient
-		double* grad = gradients+idxV*3;
-		// compute the smoothing term gradient numerically
-		Vertex& vertd(arrVerts[idxV]);
-		const Vertex vert(vertd);
-		for (unsigned i=0; i<3; ++i) {
-			vertd[i] += eps2;
-			vertex_principal_curvatures(idxV, k1, k2);
-			const float regularityScored(MINF((ABS(k1)+ABS(k2))/*(k1*k1+k2*k2)*/, 30.f)*vertex_first_ring_area(idxV)/*/3.f*/);
-			const double g(((double)regularityScored-(double)regularityScore)*weightRegularity/eps2);
-			ASSERT(ISFINITE(g));
-			grad[i] += g;
-			vertd = vert;
-		}
-	}
-	#else
-	Mesh::VertexArr arrVertsU(vertices.GetSize());
-	BoolArr validsU(vertices.GetSize());
-	validsU.Memset(0);
-	FOREACH(idxV, vertices) {
-		const unsigned count(countVertices[idxV]);
-		if (count == 0)
-			continue;
-		ASSERT(vertexBoundary[idxV] == false);
-		Vertex& U = arrVertsU[idxV];
-		validsU[idxV] = umbrella_operator(idxV, U);
-		const float regularityScore(norm(U));
-		ASSERT(ISFINITE(regularityScore));
-		score += weightRegularity*regularityScore;
-	}
-	Point3f U2;
-	FOREACH(idxV, vertices) {
-		const unsigned count(countVertices[idxV]);
-		if (count == 0)
-			continue;
-		ASSERT(vertexBoundary[idxV] == false);
-		// compute the thin-plate energy gradient using the umbrella operator
-		if (!umbrella_operator(idxV, U2, arrVertsU, validsU.Begin()))
-			continue; // vertex at the border of the mesh
-		// vertex gradient
-		Point3d& grad = ((Point3d*)gradients)[idxV];
-		ASSERT(ISFINITE(U2));
-		grad += weightRegularity*CastDouble(
-			#if 0
-			umbrella_operator_gradient(arrVertsU[idxV], U2)
-			#else
-			U2
-			#endif
-		);
-	}
-	#endif
-	#if defined(MESHOPT_DEBUG) && MESHOPT_DEBUG>1
-	#if TD_VERBOSE != TD_VERBOSE_OFF
-	if (VERBOSITY_LEVEL > 2)
-		DumpScoreMesh(gradients, String::FormatString(_T("MeshScore_Lvl%u_Iter%04u_Smooth.ply"), _level, _iteration));
-	#endif
-	++_iteration;
-	#endif
-	#endif
-}
-#endif
-
-#ifndef MESHOPT_NUMERICAL
 // score mesh using photo-consistency
 // and compute vertices gradient using analytical method
-void MeshRefine::ScoreMesh(double& score, double* gradients)
+double MeshRefine::ScoreMesh(double* gradients)
 {
-	score = 0;
-	memset(gradients, 0, sizeof(double)*vertices.GetSize()*3);
-
 	// extract array of faces viewed by each camera
 	ListCameraFaces();
+
+	// compute face normals
+	scene.mesh.ComputeNormalFaces();
 
 	// for each pair of images, compute a photo-consistency score
 	// between the reference image and the pixels of the second image
 	// projected in the reference image through the mesh surface
-	#ifdef MESHOPT_DEBUG
-	Image32F image;
-	#endif
-	typedef Sampler::Linear<REAL> Sampler;
-	const Sampler sampler;
-	ViewVertexArr viewVertices(0, vertices.GetSize());
-	CountVertexArr countVertices(vertices.GetSize());
-	countVertices.Memset(0);
-	GradientDataArr gradDatas;
-	TMatrix<float,2,3> xJac;
-	Point2f pt;
+	scorePhoto = 0;
+	photoGrad.Resize(vertices.GetSize());
+	photoGrad.Memset(0);
+	photoGradNorm.Resize(vertices.GetSize());
+	photoGradNorm.Memset(0);
+	ASSERT(events.IsEmpty());
 	FOREACHPTR(pPair, pairs) {
 		ASSERT(pPair->i < pPair->j);
-	for (int ip=0; ip<2; ++ip) {
-		// fetch view A data
-		const uint32_t idxImageA(ip ? pPair->j : pPair->i);
-		const Image& imageDataA = images[idxImageA];
-		ASSERT(imageDataA.IsValid());
-		const FaceMap& faceMapA = faceMaps[idxImageA];
-		const DepthMap& depthMapA = depthMaps[idxImageA];
-		const Image32F& imageA = views[idxImageA].image;
-		const Camera& cameraA = imageDataA.camera;
-		// fetch view B data
-		const uint32_t idxImageB(ip ? pPair->i : pPair->j);
-		const Image& imageDataB = images[idxImageB];
-		ASSERT(imageDataB.IsValid());
-		const DepthMap& depthMapB = depthMaps[idxImageB];
-		const Image32F& imageB = views[idxImageB].image;
-		const Camera& cameraB = imageDataB.camera;
-		const View::ImageGrad& imageGradB = views[idxImageB].imageGrad;
-		// compute area covered by all vertices (incident faces) viewed by this image
-		ASSERT(viewVertices.IsEmpty());
-		viewVertices.Resize(vertices.GetSize());
-		for (int j=0; j<faceMapA.rows; ++j) {
-			for (int i=0; i<faceMapA.cols; ++i) {
-				const FIndex& idxFace = faceMapA(j,i);
-				ASSERT((idxFace == NO_ID && depthMapA(j,i) == 0) || (idxFace != NO_ID && depthMapA(j,i) > 0));
-				if (idxFace == NO_ID)
-					continue;
-				const Face& facet = faces[idxFace];
-				for (unsigned v=0; v<3; ++v)
-					++viewVertices[facet[v]].area;
-			}
-		}
-		// init vertex textures
-		FOREACHPTR(pViewVertex, viewVertices)
-			pViewVertex->InitIndices();
-		// project the surface seen by this image on the pair image
-		// and store pixel values
-		#ifdef MESHOPT_DEBUG
-		image.create(imageA.size());
-		image.memset(0);
-		#endif
-		gradDatas.Resize(faceMapA.area());
-		for (int j=0; j<depthMapA.rows; ++j) {
-			for (int i=0; i<depthMapA.cols; ++i) {
-				const Depth& depthA = depthMapA(j,i);
-				if (depthA <= 0)
-					continue;
-				const Point3 X(cameraA.TransformPointI2W(Point3(i,j,depthA)));
-				// project point in second image and
-				// projection Jacobian matrix in the second image of the 3D point on the surface
-				const float z(ProjectVertex(cameraB.P.val, X.ptr(), pt.ptr(), xJac.val));
-				if (!IsDepthSimilar(depthMapB, pt, z))
-					continue;
-				const float pixelB((float)imageB.sample<Sampler,Sampler::Type>(sampler, pt));
-				#ifdef MESHOPT_DEBUG
-				image(j,i) = pixelB;
-				#endif
-				const float pixelA(imageA(j,i));
-				// store pixel value and its index in each vertex of the face
-				const uint32_t idxA(j*depthMapA.width()+i);
-				const FIndex& idxFace = faceMapA(j,i);
-				ASSERT(idxFace != NO_ID);
-				const Face& face = faces[idxFace];
-				const VIndex f0(face[0]);
-				const VIndex f1(face[1]);
-				const VIndex f2(face[2]);
-				viewVertices[f0].Insert(pixelA, pixelB, idxA);
-				viewVertices[f1].Insert(pixelA, pixelB, idxA);
-				viewVertices[f2].Insert(pixelA, pixelB, idxA);
-				#if 0
-				// numerical differentiation
-				typedef double TX;
-				Point3f fjac;
-				{
-				const TX eps = 1.e-5;
-				TX cX[3];
-				memcpy(cX, X.ptr(), sizeof(TX)*3);
-				TX pos[2];
-				TX x0, x1;
-				ProjectVertex_3x4_3_2(cameraB.P.val, cX, pos);
-				x0 = imageB.sample<Sampler,Sampler::Type>(sampler, *((const TPoint2<TX>*)pos));
-				for (unsigned j=0; j<3; ++j) {
-					const TX temp = cX[j];
-					const TX step = eps*MAXF(eps,abs(temp));
-					cX[j] += step;
-					ProjectVertex_3x4_3_2(cameraB.P.val, cX, pos);
-					x1 = imageB.sample<Sampler,Sampler::Type>(sampler, *((const TPoint2<TX>*)pos));
-					cX[j] = temp;
-					fjac[j] = (float)((x1 - x0) / step);
-				}
-				}
-				const Point3f del((const TMatrix<float,1,2>&)Point2f(imageGradB.sample< Sampler,TPoint2<Sampler::Type> >(sampler, pt))*xJac);
-				//const Point3f g = (fjac.dot(d)/N.dot(d))*N;
-				#endif
-				// store data needed to compute the gradient as the barycentric coordinates
-				GradientData& gradData = gradDatas[idxA];
-				const Point3f d(X-cameraA.C);
-				const Point3f& N(faceNormals[idxFace]);
-				const Point2f gj(imageGradB.sample< Sampler,TPoint2<Sampler::Type> >(sampler, pt));
-				gradData.g = (gj.dot(Point2f(xJac*(const Vec3f&)d))/N.dot(d))*N;
-				gradData.xb = CorrectBarycentricCoordinates(BarycentricCoordinatesUV(vertices[f0], vertices[f1], vertices[f2], CastFloat(X)));
-			}
-		}
-		#ifdef MESHOPT_DEBUG
-		#if TD_VERBOSE != TD_VERBOSE_OFF
-		if (VERBOSITY_LEVEL > 1) {
-			// export back-projected image
-			Image8U grayImage;
-			image.convertTo(grayImage, CV_8U, 255.0);
-			const String fileName(String::FormatString(_T("MeshView%04u_%04u.png"), idxImageA, idxImageB));
-			grayImage.Save(MAKE_PATH_FULL(WORKING_FOLDER_FULL, fileName));
-		}
-		#endif
-		#endif
-		// init vertex textures
-		#ifdef MESHOPT_DEBUG
-		image.create(imageA.size());
-		image.memset(0);
-		#endif
-		const float weightA((float)((REAL)(imageDataA.avgDepth*imageDataB.avgDepth)/(cameraA.GetFocalLength()*cameraB.GetFocalLength())));
-		ViewVertex::DerivativeData dData;
-		FOREACH(idxV, viewVertices) {
-			ViewVertex& viewVertex = viewVertices[idxV];
-			if (!viewVertex.IsValid() || vertexBoundary[idxV])
-				continue;
-			++countVertices[idxV];
-			// compute score
-			const float w(weightA*viewVertex.ReliabilityFactor()*viewVertex.size);
-			const float vscore(viewVertex.Score(dData));
-			ASSERT(ISFINITE(vscore) && ISFINITE(w));
-			score += vscore*w;
-			#ifdef MESHOPT_DEBUG
-			const Point2f pt(cameraA.TransformPointW2I(CastDouble(vertices[idxV])));
-			image(ROUND2INT(pt)) = vscore;
-			#endif
-			// vertex gradient
-			Point3d& grad = ((Point3d*)gradients)[idxV];
-			for (uint32_t i=0; i<viewVertex.size; ++i) {
-				const uint32_t idxA(viewVertex.GetIndexA(i));
-				ASSERT(faceMapA.isContinuous() && (int)idxA < faceMapA.area());
-				const FIndex& idxFace = faceMapA.ptr<const FIndex>()[idxA];
-				const Face& face = faces[idxFace];
-				const GradientData& gradData = gradDatas[idxA];
-				const double b(gradData.xb[Mesh::FindVertex(face, idxV)]);
-				const double dNCC(viewVertex.ScoreDerivative(dData, i));
-				const double s(w*b*dNCC);
-				ASSERT(ISFINITE(s) && ISFINITE(gradData.g));
-				grad += CastDouble(gradData.g)*s;
-			}
-		}
-		#ifdef MESHOPT_DEBUG
-		#if TD_VERBOSE != TD_VERBOSE_OFF
-		if (VERBOSITY_LEVEL > 1) {
-			// export back-projected image
-			Image8U grayImage;
-			image.convertTo(grayImage, CV_8U, 255.0*3);
-			const String fileName(String::FormatString(_T("MeshView%04u_%04u_Score.png"), idxImageA, idxImageB));
-			grayImage.Save(MAKE_PATH_FULL(WORKING_FOLDER_FULL, fileName));
-		}
-		#if MESHOPT_DEBUG>1
-		if (VERBOSITY_LEVEL > 3)
-			DumpScoreMesh(gradients, String::FormatString(_T("MeshScore_Lvl%u_Iter%04u_View%04u_%04u.ply"), _level, _iteration, idxImageA, idxImageB));
-		#endif
-		#endif
-		#endif
-		viewVertices.Empty();
+		for (int ip=0; ip<2; ++ip)
+			events.AddEvent(ip ? new EVTProcessPair(pPair->j,pPair->i) : new EVTProcessPair(pPair->i,pPair->j));
 	}
+	WaitThreadWorkers(pairs.GetSize()*2);
+
+	// loop through all vertices and compute the smoothing score
+	scoreSmooth = 0;
+	const VIndex idxStep((vertices.GetSize()+(VIndex)threads.GetSize()-1)/(VIndex)threads.GetSize());
+	smoothGrad1.Resize(vertices.GetSize());
+	{
+	ASSERT(events.IsEmpty());
+	VIndex idx(0);
+	while (idx<vertices.GetSize()) {
+		const VIndex idxNext(MINF(idx+idxStep, vertices.GetSize()));
+		events.AddEvent(new EVTSmoothVertices1(idx, idxNext));
+		idx = idxNext;
 	}
-	#ifdef MESHOPT_PHOTOGRADNORMAL
-	// project gradient vector onto the vertex normal
-	FOREACH(idxV, vertices) {
-		const Point3d N(vertexNormals[idxV]);
-		Point3d& grad = ((Point3d*)gradients)[idxV];
-		const unsigned count(countVertices[idxV]);
-		grad = N*((grad/(double)count).dot(N));
+	WaitThreadWorkers(threads.GetSize());
 	}
-	#endif
-	#if defined(MESHOPT_DEBUG) && MESHOPT_DEBUG>1
-	#if TD_VERBOSE != TD_VERBOSE_OFF
-	if (VERBOSITY_LEVEL > 2)
-		DumpScoreMesh(gradients, String::FormatString(_T("MeshScore_Lvl%u_Iter%04u.ply"), _level, _iteration));
-	#endif
-	#endif
-
-	#ifdef MESHOPT_SMOOTH
-	// loop through all vertices and add the smoothing term
-	Mesh::VertexArr arrVertsU(vertices.GetSize());
-	BoolArr validsU(vertices.GetSize());
-	validsU.Memset(0);
-	FOREACH(idxV, vertices) {
-		const unsigned count(countVertices[idxV]);
-		if (count == 0)
-			continue;
-		ASSERT(vertexBoundary[idxV] == false);
-		Vertex& U = arrVertsU[idxV];
-		validsU[idxV] = umbrella_operator(idxV, U);
-		const float regularityScore(norm(U));
-		ASSERT(ISFINITE(regularityScore));
-		score += weightRegularity*regularityScore;
+	// loop through all vertices and compute the smoothing gradient
+	smoothGrad2.Resize(vertices.GetSize());
+	{
+	ASSERT(events.IsEmpty());
+	VIndex idx(0);
+	while (idx<vertices.GetSize()) {
+		const VIndex idxNext(MINF(idx+idxStep, vertices.GetSize()));
+		events.AddEvent(new EVTSmoothVertices2(idx, idxNext));
+		idx = idxNext;
 	}
-	Point3f U2;
-	FOREACH(idxV, vertices) {
-		const unsigned count(countVertices[idxV]);
-		if (count == 0)
-			continue;
-		ASSERT(vertexBoundary[idxV] == false);
-		// compute the thin-plate energy gradient using the umbrella operator
-		if (!umbrella_operator(idxV, U2, arrVertsU, validsU.Begin()))
-			continue; // vertex at the border of the mesh
-		// vertex gradient
-		Point3d& grad = ((Point3d*)gradients)[idxV];
-		ASSERT(ISFINITE(U2));
-		grad += weightRegularity*CastDouble(
-			#if 0
-			umbrella_operator_gradient(arrVertsU[idxV], U2)
-			#else
-			U2
-			#endif
-		);
+	WaitThreadWorkers(threads.GetSize());
 	}
-	#if defined(MESHOPT_DEBUG) && (MESHOPT_DEBUG>1)
-	#if TD_VERBOSE != TD_VERBOSE_OFF
-	if (VERBOSITY_LEVEL > 2)
-		DumpScoreMesh(gradients, String::FormatString(_T("MeshScore_Lvl%u_Iter%04u_Smooth.ply"), _level, _iteration));
-	#endif
-	++_iteration;
-	#endif
-	#endif
-}
-#endif
 
-#ifdef MESHOPT_DEBUG
-void MeshRefine::DumpScoreMesh(const double* gradients, const String& fileName)
-{
-	Mesh::NormalArr vertexNormalsOrg;
-	vertexNormalsOrg.Swap(vertexNormals);
-	vertexNormals.Resize(vertices.GetSize());
-	FOREACH(i, vertexNormals)
-		vertexNormals[i] = ((const Point3d*)gradients)[i];
-	scene.mesh.Save(MAKE_PATH_FULL(WORKING_FOLDER_FULL, fileName));
-	vertexNormals.Swap(vertexNormalsOrg);
-}
-#endif
-
-
-
-/**
- * Computes the discrete curvature approximation as in the paper [Meyer et al 2002]:
- * "Discrete Differential-Geometry Operators for Triangulated 2-Manifolds"
- * Mark Meyer, Mathieu Desbrun, Peter Schroder, Alan H. Barr
- * VisMath '02, Berlin (Germany)
- * http://www-grail.usc.edu/pubs.html
- */
-
-inline bool angle_obtuse(const Vertex& v, const Vertex& v1, const Vertex& v2) {
-	return ((v1-v).dot(v2-v) < 0);
-}
-inline bool triangle_obtuse(const Vertex& v, const Vertex& v1, const Vertex& v2) {
-	return (angle_obtuse(v, v1, v2) ||
-			angle_obtuse(v1, v2, v) ||
-			angle_obtuse(v2, v, v1));
-}
-
-inline float cotan(const Vertex& vo, const Vertex& v1, const Vertex& v2) {
-	// cf. Appendix B of [Meyer et al 2002]
-	const Vertex u(v1-vo);
-	const Vertex v(v2-vo);
-
-	const float udotv(u.dot(v));
-	const float denom(SQRT(normSq(u)*normSq(v)-udotv*udotv));
-
-	// denom can be zero if u==v
-	// returning 0 is acceptable, based on the callers of this function below
-	if (denom == 0)
-		return 0;
-	return (udotv/denom);
-}
-inline float angle_from_cotan(const Vertex& vo, const Vertex& v1, const Vertex& v2) {
-	// cf. Appendix B and the caption of Table 1 from [Meyer et al 2002]
-	// Note: I assume this is what they mean by using atan2()
-	const Vertex u(v1-vo);
-	const Vertex v(v2-vo);
-
-	const float udotv(u.dot(v));
-	const float denom(SQRT(normSq(u)*normSq(v)-udotv*udotv));
-
-	// tan = denom/udotv = y/x (see help for atan2)
-	return ABS(atan2(denom, udotv));
-}
-
-inline float region_area(const Vertex& v, const Vertex& v1, const Vertex& v2) {
-	// cf. Section 3.3 of [Meyer et al 2002]
-
-	// computes the area of the triangle
-	const Vertex vec1(v1-v);
-	const Vertex vec2(v2-v);
-	const Vertex normal(vec1.cross(vec2));
-	const float area(norm(normal)*0.5f);
-	if (area == 0)
-		return 0;
-
-	if (triangle_obtuse(v, v1, v2)) {
-		if (angle_obtuse(v, v1, v2))
-			return (area/2.f);
-		else
-			return (area/4.f);
-	}
-	return ((cotan(v1, v, v2)*normSq(vec2) + cotan(v2, v, v1)*normSq(vec1))/8.f);
-}
-
-/**
- * vertex_mean_curvature_normal:
- * @v: a vertex index
- * @Kh: the Mean Curvature Normal at the given vertex
- *
- * Computes the Discrete Mean Curvature Normal approximation at @v.
- * The mean curvature at @v is half the magnitude of the vector @Kh.
- * See [Meyer et al 2002].
- *
- * Note: the normal computed is not unit length, and may point either
- * into or out of the surface, depending on the curvature at @v.  It
- * is the responsibility of the caller of the function to use the mean
- * curvature normal appropriately.
- *
- * Returns: %TRUE if the operator could be evaluated, %FALSE if the
- * evaluation failed for some reason (@v is boundary or is the
- * endpoint of a non-manifold edge).
- */
-bool MeshRefine::vertex_mean_curvature_normal(VIndex idxV, Point3f& Kh) const
-{
-	#if 1
-	ASSERT(!vertexBoundary[idxV]);
-	#else
-	// this operator is not defined for boundary edges
-	if (vertexBoundary[idxV])
-		return false;
-	#endif
-
-	float area(0);
-	Kh = Point3f::ZERO;
-	const Vertex& v(vertices[idxV]);
-	const Mesh::FaceIdxArr& vf(vertexFaces[idxV]);
-	ASSERT(vf.GetSize() > 2);
-	FOREACHPTR(pFaceIdx, vf) {
-		const Face& face = faces[*pFaceIdx];
-		const uint32_t idx(Mesh::FindVertex(face, idxV));
-		ASSERT(idx != NO_ID);
-		const Vertex& v1(vertices[face[(idx+1)%3]]);
-		const Vertex& v2(vertices[face[(idx+2)%3]]);
-		Kh += cotan(v1, v, v2)*(v2-v);
-		Kh += cotan(v2, v, v1)*(v1-v);
-		area += region_area(v, v1, v2);
-	}
-	if (area <= 0)
-		return false;
-	Kh /= area*2;
-	return true;
-}
-
-/**
- * vertex_gaussian_curvature:
- * @v: a vertex index
- * @Kg: the Discrete Gaussian Curvature approximation at @v
- *
- * Computes the Discrete Gaussian Curvature approximation at @v.
- * See [Meyer et al 2002].
- *
- * Returns: %TRUE if the operator could be evaluated, %FALSE if the
- * evaluation failed for some reason (@v is boundary or is the
- * endpoint of a non-manifold edge).
- */
-bool MeshRefine::vertex_gaussian_curvature(VIndex idxV, float& Kg) const
-{
-	#if 1
-	ASSERT(!vertexBoundary[idxV]);
-	#else
-	// this operator is not defined for boundary edges
-	if (vertexBoundary[idxV])
-		return false;
-	#endif
-
-	float area(0);
-	float angle_sum(0);
-	const Vertex& v(vertices[idxV]);
-	const Mesh::FaceIdxArr& vf(vertexFaces[idxV]);
-	ASSERT(vf.GetSize() > 2);
-	FOREACHPTR(pFaceIdx, vf) {
-		const Face& face = faces[*pFaceIdx];
-		const uint32_t idx(Mesh::FindVertex(face, idxV));
-		ASSERT(idx != NO_ID);
-		const Vertex& v1(vertices[face[(idx+1)%3]]);
-		const Vertex& v2(vertices[face[(idx+2)%3]]);
-		angle_sum += angle_from_cotan(v, v1, v2);
-		area += region_area(v, v1, v2);
-	}
-	if (area <= 0)
-		return false;
-	Kg = (2.f*FPI - angle_sum)/area;
-	return true;
-}
-
-/**
- * vertex_principal_curvatures:
- * @v: a vertex index
- * @K1: first principal curvature
- * @K2: second principal curvature
- *
- * Computes the principal curvatures at a point by combining the mean and
- * Gaussian curvatures at that point, calculated from the
- * discrete differential operators.
- * See [Meyer et al 2002].
- *
- * Returns: %TRUE if the operator could be evaluated, %FALSE if the
- * evaluation failed for some reason (@v is boundary or is the
- * endpoint of a non-manifold edge).
- */
-bool MeshRefine::vertex_principal_curvatures(VIndex idxV, float& K1, float& K2) const
-{
-	#if 1
-	ASSERT(!vertexBoundary[idxV]);
-	#else
-	// this operator is not defined for boundary edges
-	if (vertexBoundary[idxV])
-		return false;
-	#endif
-
-	float area(0);
-	float angle_sum(0);
-	Point3f Kh(Point3f::ZERO);
-	const Vertex& v(vertices[idxV]);
-	const Mesh::FaceIdxArr& vf(vertexFaces[idxV]);
-	ASSERT(vf.GetSize() > 2);
-	FOREACHPTR(pFaceIdx, vf) {
-		const Face& face = faces[*pFaceIdx];
-		const uint32_t idx(Mesh::FindVertex(face, idxV));
-		ASSERT(idx != NO_ID);
-		const Vertex& v1(vertices[face[(idx+1)%3]]);
-		const Vertex& v2(vertices[face[(idx+2)%3]]);
-		Kh += cotan(v1, v, v2)*(v2-v);
-		Kh += cotan(v2, v, v1)*(v1-v);
-		angle_sum += angle_from_cotan(v, v1, v2);
-		area += region_area(v, v1, v2);
-	}
-	if (area <= 0)
-		return false;
-	const float Kg((2.f*FPI - angle_sum)/area);
-	const float halfNormKh(norm(Kh)/(area*4));
-	vertex_principal_curvatures(halfNormKh, Kg, K1, K2);
-	return true;
-}
-
-/**
- * vertex_principal_curvatures:
- * @Kh: mean curvature
- * @Kg: Gaussian curvature
- * @K1: first principal curvature
- * @K2: second principal curvature
- *
- * Computes the principal curvatures at a point given the mean and
- * Gaussian curvatures at that point, calculated from the
- * discrete differential operators.
- *
- * The mean curvature can be computed as one-half the magnitude of the
- * vector computed by vertex_mean_curvature_normal().
- *
- * The Gaussian curvature can be computed with
- * vertex_gaussian_curvature().
- */
-void MeshRefine::vertex_principal_curvatures(float Kh, float Kg, float& K1, float& K2) const
-{
-	float temp(Kh*Kh - Kg);
-	if (temp < 0)
-		temp = 0;
-	temp = SQRT(temp);
-	K1 = Kh + temp;
-	K2 = Kh - temp;
-}
-
-/**
- * vertex_first_ring_area:
- * @v: a vertex index
- *
- * Computes the area of the first triangle ring at the given point.
- */
-float MeshRefine::vertex_first_ring_area(VIndex idxV) const
-{
-	#if 1
-	ASSERT(!vertexBoundary[idxV]);
-	#else
-	// this operator is not defined for boundary edges
-	if (vertexBoundary[idxV])
-		return false;
-	#endif
-
-	float area(0);
-	const Mesh::FaceIdxArr& vf(vertexFaces[idxV]);
-	ASSERT(vf.GetSize() > 2);
-	FOREACHPTR(pFaceIdx, vf) {
-		const Face& face = faces[*pFaceIdx];
-		// computes the area of the triangle
-		const Vertex& v (vertices[face[0]]);
-		const Vertex& v1(vertices[face[1]]);
-		const Vertex& v2(vertices[face[2]]);
-		const Vertex normal((v1-v).cross(v2-v));
-		area += norm(normal)*0.5f;
-	}
-	return area;
-}
-
-/**
- * umbrella_operator:
- * @v: a vertex index
- * @U: the discrete analog of the Laplacian
- *
- * Computes the discrete analog of the Laplacian using
- * the umbrella-operator on the first triangle ring at the given point.
- */
-bool MeshRefine::umbrella_operator(VIndex idxV, Point3f& U) const
-{
-	#if 1
-	ASSERT(!vertexBoundary[idxV]);
-	#else
-	// this operator is not defined for boundary edges
-	if (vertexBoundary[idxV])
-		return false;
-	#endif
-
-	U = Point3f::ZERO;
-	const Mesh::FaceIdxArr& vf(vertexFaces[idxV]);
-	ASSERT(vf.GetSize() > 2);
-	std::unordered_set<VIndex> setVertices(vf.GetSize());
-	FOREACHPTR(pFaceIdx, vf) {
-		const Face& face = faces[*pFaceIdx];
-		for (unsigned i=0; i<3; ++i) {
-			const VIndex idx(face[i]);
-			if (idx != idxV && setVertices.insert(idx).second)
-				U += vertices[idx];
-		}
-	}
-	ASSERT(vf.GetSize() == setVertices.size());
-	const Vertex& v(vertices[idxV]);
-	#if 1
-	// normalize using vertex valence
-	U = U/(float)vf.GetSize() - v;
-	#else
-	// normalize using vertex valence and 1st ring area
-	U = (U/(float)vf.GetSize() - v) * vertex_first_ring_area(idxV)/*/3.f*/;
-	#endif
-	return true;
-}
-// same as above, but used to compute level 2;
-// normalized as in "Stereo and Silhouette Fusion for 3D Object Modeling from Uncalibrated Images Under Circular Motion" C. Hernandez, 2004
-bool MeshRefine::umbrella_operator(VIndex idxV, Point3f& U2, const Mesh::VertexArr& arrVertsU, const bool* valids) const
-{
-	#if 1
-	ASSERT(!vertexBoundary[idxV]);
-	#else
-	// this operator is not defined for boundary edges
-	if (vertexBoundary[idxV])
-		return false;
-	#endif
-
-	U2 = Point3f::ZERO;
-	const Mesh::FaceIdxArr& vf(vertexFaces[idxV]);
-	ASSERT(vf.GetSize() > 2);
-	std::unordered_set<VIndex> setVertices(vf.GetSize());
-	float fNorm(0);
-	FOREACHPTR(pFaceIdx, vf) {
-		const Face& face = faces[*pFaceIdx];
-		for (unsigned i=0; i<3; ++i) {
-			const VIndex idx(face[i]);
-			if (idx != idxV && setVertices.insert(idx).second) {
-				if (!valids[idx])
-					return false;
-				U2 += arrVertsU[idx];
-				fNorm += 1.f/(float)vertexFaces[idx].GetSize();
-			}
-		}
-	}
-	ASSERT(vf.GetSize() == setVertices.size());
-	const Vertex& U(arrVertsU[idxV]);
-	// normalize using vertices valence
-	U2 = (U2/(float)vf.GetSize() - U) / (1.f + fNorm/(float)vf.GetSize());
-	return true;
-}
-// compute level 1 and 2 of the Laplacian operator to compute the final smoothing gradient;
-// (see page 105 of "Stereo and Silhouette Fusion for 3D Object Modeling from Uncalibrated Images Under Circular Motion" C. Hernandez, 2004)
-Point3f MeshRefine::umbrella_operator_gradient(const Point3f& U, const Point3f& U2) const
-{
-	return U2*ratioRigidityElasticity - U*(1.f-ratioRigidityElasticity);
+	// set the final gradient as the combination of photometric and smoothness gradients
+	FOREACH(v, vertices)
+		((Point3d*)gradients)[v] = photoGradNorm[v] > 0 ?
+			CastDouble(photoGrad[v]/photoGradNorm[v] + smoothGrad2[v]*weightRegularity) :
+			CastDouble(smoothGrad2[v]*weightRegularity);
+	return 0.15f*scorePhoto + 0.1f*scoreSmooth;
 }
 
 
 // given a vertex position and a projection camera, compute the projected position and its derivative
 // returns the depth
-template <typename TP, typename TX, typename T>
-T MeshRefine::ProjectVertex(const TP* P, const TX* X, T* x, T* jacobian)
+template <typename TP, typename TX, typename T, typename TJ>
+T MeshRefine::ProjectVertex(const TP* P, const TX* X, T* x, TJ* jacobian)
 {
 	#if 0
 	// numerical differentiation
-	T fjac[2*3];
+	TJ fjac[2*3];
 	{
 	const TX eps = 1.e-7;
 	TX cX[3];
@@ -1971,12 +816,12 @@ T MeshRefine::ProjectVertex(const TP* P, const TX* X, T* x, T* jacobian)
 	x[0] = T(t11);
 	x[1] = T(t16);
 	if (jacobian) {
-		jacobian[0] = T((p1_1-p3_1*t11)*t6);
-		jacobian[1] = T((p1_2-p3_2*t11)*t6);
-		jacobian[2] = T((p1_3-p3_3*t11)*t6);
-		jacobian[3] = T((p2_1-p3_1*t16)*t6);
-		jacobian[4] = T((p2_2-p3_2*t16)*t6);
-		jacobian[5] = T((p2_3-p3_3*t16)*t6);
+		jacobian[0] = TJ((p1_1-p3_1*t11)*t6);
+		jacobian[1] = TJ((p1_2-p3_2*t11)*t6);
+		jacobian[2] = TJ((p1_3-p3_3*t11)*t6);
+		jacobian[3] = TJ((p2_1-p3_1*t16)*t6);
+		jacobian[4] = TJ((p2_2-p3_2*t16)*t6);
+		jacobian[5] = TJ((p2_3-p3_3*t16)*t6);
 	}
 	return T(t5);
 }
@@ -1989,7 +834,7 @@ bool MeshRefine::IsDepthSimilar(const DepthMap& depthMap, const Point2f& pt, Dep
 	for (int x=0; x<2; ++x) {
 		for (int y=0; y<2; ++y) {
 			const ImageRef ir(tl.x+x, tl.y+y);
-			if (!depthMap.isInsideWithBorder<float,3>(ir))
+			if (!depthMap.isInsideWithBorder<int,3>(ir))
 				continue;
 			const Depth& depth = depthMap(ir);
 			#ifndef MESHOPT_DEPTHCONSTBIAS
@@ -2008,16 +853,18 @@ bool MeshRefine::IsDepthSimilar(const DepthMap& depthMap, const Point2f& pt, Dep
 void MeshRefine::ProjectMesh(
 	const Mesh::VertexArr& vertices, const Mesh::FaceArr& faces, const CameraFaces& cameraFaces,
 	const Camera& camera, const Image8U::Size& size,
-	DepthMap& depthMap, FaceMap& faceMap)
+	DepthMap& depthMap, FaceMap& faceMap, BaryMap& baryMap)
 {
 	// init view data
 	faceMap.create(size);
 	depthMap.create(size);
+	baryMap.create(size);
 	// project all triangles on this image and keep the closest ones
 	faceMap.memset((uint8_t)NO_ID);
 	depthMap.memset(0);
+	baryMap.memset(0);
 	Point3 ptc[3]; Point2f pti[3];
-	RasterMeshData data = {camera, faceMap, depthMap};
+	RasterMeshData data = {camera, faceMap, depthMap, baryMap, pti};
 	for (auto idxFace : cameraFaces) {
 		data.idxFace = idxFace;
 		const Face& facet = faces[idxFace];
@@ -2056,6 +903,587 @@ void MeshRefine::ProjectMesh(
 		}
 		CONTIUE2NEXTFACE:;
 	}
+}
+
+// project image from view B to view A through the mesh;
+// the projected image is stored in imageA
+// (imageAB is assumed to be initialize to the right size)
+void MeshRefine::ImageMeshWarp(
+	const DepthMap& depthMapA, const Camera& cameraA,
+	const DepthMap& depthMapB, const Camera& cameraB,
+	const Image32F& imageB, Image32F& imageA, Image8U& mask)
+{
+	ASSERT(!imageA.empty());
+	mask.create(imageA.size());
+	typedef Sampler::Linear<REAL> Sampler;
+	const Sampler sampler;
+	imageA.memset(0);
+	mask.memset(0);
+	for (int j=0; j<depthMapA.rows; ++j) {
+		for (int i=0; i<depthMapA.cols; ++i) {
+			const Depth& depthA = depthMapA(j,i);
+			if (depthA <= 0)
+				continue;
+			const Point3 X(cameraA.TransformPointI2W(Point3(i,j,depthA)));
+			const Point3f ptC(cameraB.TransformPointW2C(X));
+			const Point2f pt(cameraB.TransformPointC2I(ptC));
+			if (!IsDepthSimilar(depthMapB, pt, ptC.z))
+				continue;
+			imageA(j,i) = (float)imageB.sample<Sampler,Sampler::Type>(sampler, pt);
+			mask(j,i) = 1;
+		}
+	}
+}
+
+// compute local variance for each image pixel
+void MeshRefine::ComputeLocalVariance(const Image32F& image, const Image8U& mask, TImage<Real>& imageMean, TImage<Real>& imageVar)
+{
+	ASSERT(image.size() == mask.size());
+	imageMean.create(image.size());
+	imageVar.create(image.size());
+	imageMean.memset(0);
+	imageVar.memset(0);
+	const int RowsEnd(image.rows-HalfSize);
+	const int ColsEnd(image.cols-HalfSize);
+	#if 0
+	for (int r=HalfSize; r<RowsEnd; ++r) {
+		for (int c=HalfSize; c<ColsEnd; ++c) {
+			if (!mask(r,c))
+				continue;
+			MeanStd<Real> var;
+			for (int i=-HalfSize; i<=HalfSize; ++i) {
+				const int rw(r+i);
+				for (int j=-HalfSize; j<=HalfSize; ++j) {
+					const int cw(c+j);
+					var.Update(image(rw,cw));
+				}
+			}
+			if (var.size > 0) {
+				imageMean(r,c) = var.GetMean();
+				imageVar(r,c) = var.GetVariance();
+			}
+		}
+	}
+	#elif 0
+	const int n(SQUARE(HalfSize*2+1));
+	for (int r=HalfSize; r<RowsEnd; ++r) {
+		for (int c=HalfSize; c<ColsEnd; ++c) {
+			if (!mask(r,c))
+				continue;
+			Real m(0);
+			for (int i=-HalfSize; i<=HalfSize; ++i) {
+				const int rw(r+i);
+				for (int j=-HalfSize; j<=HalfSize; ++j) {
+					const int cw(c+j);
+					m += (Real)image(rw,cw);
+				}
+			}
+			imageMean(r,c) = m*(Real(1)/(Real)n);
+		}
+	}
+	for (int r=HalfSize; r<RowsEnd; ++r) {
+		for (int c=HalfSize; c<ColsEnd; ++c) {
+			if (!mask(r,c))
+				continue;
+			const Real m(imageMean(r,c));
+			Real v(0);
+			for (int i=-HalfSize; i<=HalfSize; ++i) {
+				const int rw(r+i);
+				for (int j=-HalfSize; j<=HalfSize; ++j) {
+					const int cw(c+j);
+					v += SQUARE((Real)image(rw,cw)-m);
+				}
+			}
+			imageVar(r,c) = MAXF(v*(Real(1)/(Real)n), Real(0.0001));
+		}
+	}
+	#else
+	Image64F imageSum, imageSumSq;
+	#if CV_MAJOR_VERSION > 2
+	cv::integral(image, imageSum, imageSumSq, CV_64F, CV_64F);
+	#else
+	cv::integral(image, imageSum, imageSumSq, CV_64F);
+	#endif
+	const int n(SQUARE(HalfSize*2+1));
+	for (int r=HalfSize; r<RowsEnd; ++r) {
+		for (int c=HalfSize; c<ColsEnd; ++c) {
+			if (!mask(r,c))
+				continue;
+			imageMean(r,c) = (Real)((
+				imageSum(r+HalfSize+1, c+HalfSize+1) -
+				imageSum(r+HalfSize+1, c-HalfSize  ) -
+				imageSum(r-HalfSize,   c+HalfSize+1) +
+				imageSum(r-HalfSize,   c-HalfSize  ) ) * (1.0/(double)n));
+		}
+	}
+	for (int r=HalfSize; r<RowsEnd; ++r) {
+		for (int c=HalfSize; c<ColsEnd; ++c) {
+			if (!mask(r,c))
+				continue;
+			const Real sumSq = (Real)((
+				imageSumSq(r+HalfSize+1, c+HalfSize+1) -
+				imageSumSq(r+HalfSize+1, c-HalfSize  ) -
+				imageSumSq(r-HalfSize,   c+HalfSize+1) +
+				imageSumSq(r-HalfSize,   c-HalfSize  ) ) * (1.0/(double)n));
+			imageVar(r,c) = MAXF(sumSq-SQUARE(imageMean(r,c)), Real(0.0001));
+		}
+	}
+	#endif
+}
+
+// compute local ZNCC and its gradient for each image pixel
+float MeshRefine::ComputeLocalZNCC(
+	const Image32F& imageA, const TImage<Real>& imageMeanA, const TImage<Real>& imageVarA,
+	const Image32F& imageB, const TImage<Real>& imageMeanB, const TImage<Real>& imageVarB,
+	const Image8U& mask, TImage<Real>& imageZNCC, TImage<Real>& imageDZNCC)
+{
+	ASSERT(imageA.size() == mask.size() && imageB.size() == mask.size() && !mask.empty());
+	float score(0);
+	imageZNCC.create(mask.size());
+	imageDZNCC.create(mask.size());
+	const int RowsEnd(mask.rows-HalfSize);
+	const int ColsEnd(mask.cols-HalfSize);
+	#ifndef MESHOPT_SAFEVAL
+	const int n(SQUARE(HalfSize*2+1));
+	#endif
+	imageZNCC.memset(0);
+	#if 0
+	for (int r=HalfSize; r<RowsEnd; ++r) {
+		for (int c=HalfSize; c<ColsEnd; ++c) {
+			if (!mask(r,c))
+				continue;
+			#ifdef MESHOPT_SAFEVAL
+			int n(0);
+			#endif
+			FloatArr t1, t2;
+			for (int i=-HalfSize; i<=HalfSize; ++i) {
+				const int rw(r+i);
+				for (int j=-HalfSize; j<=HalfSize; ++j) {
+					const int cw(c+j);
+					#ifdef MESHOPT_SAFEVAL
+					if (!mask(rw,cw))
+						continue;
+					++n;
+					#endif
+					t1.Insert(imageA(rw,cw));
+					t2.Insert(imageB(rw,cw));
+				}
+			}
+			#ifdef MESHOPT_SAFEVAL
+			if (n == 0)
+				continue;
+			#endif
+			const float normSq1(normSqZeroMean<float,float>(t1.GetData(), n));
+			const float normSq2(normSqZeroMean<float,float>(t2.GetData(), n));
+			imageZNCC(r,c) = dot<float,float>(t1.GetData(), t2.GetData(), n)/SQRT(normSq1*normSq2);
+		}
+	}
+	#elif 0
+	TImage<Real> imageInvSqrtVAVB(mask.size());
+	for (int r=HalfSize; r<RowsEnd; ++r) {
+		for (int c=HalfSize; c<ColsEnd; ++c) {
+			if (!mask(r,c))
+				continue;
+			Real cv(0);
+			#ifdef MESHOPT_SAFEVAL
+			int n(0);
+			#endif
+			for (int i=-HalfSize; i<=HalfSize; ++i) {
+				const int rw(r+i);
+				for (int j=-HalfSize; j<=HalfSize; ++j) {
+					const int cw(c+j);
+					#ifdef MESHOPT_SAFEVAL
+					if (!mask(rw,cw))
+						continue;
+					++n;
+					#endif
+					cv += (Real)(imageA(rw,cw)*imageB(rw,cw));
+				}
+			}
+			#ifdef MESHOPT_SAFEVAL
+			if (n == 0)
+				continue;
+			#endif
+			const Real covariance(cv/(Real)n - imageMeanA(r,c)*imageMeanB(r,c));
+			const Real invSqrtVAVB(Real(1)/SQRT(imageVarA(r,c)*imageVarB(r,c)));
+			imageZNCC(r,c) = covariance * invSqrtVAVB;
+			imageInvSqrtVAVB(r,c) = invSqrtVAVB;
+		}
+	}
+	#else
+	Image32F imageAB;
+	cv::multiply(imageA, imageB, imageAB);
+	Image64F imageABSum;
+	cv::integral(imageAB, imageABSum, CV_64F);
+	TImage<Real> imageInvSqrtVAVB(mask.size());
+	for (int r=HalfSize; r<RowsEnd; ++r) {
+		for (int c=HalfSize; c<ColsEnd; ++c) {
+			if (!mask(r, c))
+				continue;
+			const Real cv = (Real)((
+				imageABSum(r+HalfSize+1, c+HalfSize+1) -
+				imageABSum(r+HalfSize+1, c-HalfSize  ) -
+				imageABSum(r-HalfSize,   c+HalfSize+1) +
+				imageABSum(r-HalfSize,   c-HalfSize  ) ) * (1.0/(double)n));
+			const Real invSqrtVAVB(Real(1)/SQRT(imageVarA(r,c)*imageVarB(r,c)));
+			imageZNCC(r,c) = (cv - imageMeanA(r,c)*imageMeanB(r,c)) * invSqrtVAVB;
+			imageInvSqrtVAVB(r,c) = invSqrtVAVB;
+		}
+	}
+	#endif
+	imageDZNCC.memset(0);
+	#if 0
+	for (int r=HalfSize; r<RowsEnd; ++r) {
+		for (int c=HalfSize; c<ColsEnd; ++c) {
+			if (!mask(r,c))
+				continue;
+			#if 0
+			// numerical differentiation
+			typedef double TX;
+			typedef cList<TX,TX,0> VTX;
+			int n(0);
+			VTX t1, t2;
+			for (int i=-HalfSize; i<=HalfSize; ++i) {
+				const int rw(r+i);
+				for (int j=-HalfSize; j<=HalfSize; ++j) {
+					const int cw(c+j);
+					t1.Insert(imageA(rw,cw));
+					t2.Insert(imageB(rw,cw));
+					++n;
+				}
+			}
+			if (n == 0)
+				continue;
+			VTX _t1(t1), _t2(t2);
+			const TX normSq1(normSqZeroMean<TX,TX>(t1.GetData(), n));
+			const TX normSq2(normSqZeroMean<TX,TX>(t2.GetData(), n));
+			const TX ZNCC(dot<TX,TX>(t1.GetData(), t2.GetData(), n)/SQRT(normSq1*normSq2));
+			const TX eps = 1.e-6;
+			TX& cX = _t2[n/2];
+			const TX temp = cX;
+			const TX step = eps*MAXF(eps, abs(temp));
+			cX += step;
+			const TX _normSq1(normSqZeroMean<TX,TX>(_t1.GetData(), n));
+			const TX _normSq2(normSqZeroMean<TX,TX>(_t2.GetData(), n));
+			const TX _ZNCC(dot<TX,TX>(_t1.GetData(), _t2.GetData(), n)/SQRT(_normSq1*_normSq2));
+			cX = temp;
+			const Real dZNCC((Real)((_ZNCC - ZNCC) / step));
+			#else
+			const Real dZNCC(((Real)imageA(r,c)-imageMeanA(r,c))/(SQRT(imageVarA(r,c)*imageVarB(r,c))*n) - imageZNCC(r,c)*imageVarA(r,c)*((Real)imageB(r,c)-imageMeanB(r,c))/(imageVarA(r,c)*imageVarB(r,c)*n));
+			#endif
+			const Real minVAVB(MINF(imageVarA(r,c), imageVarB(r,c)));
+			const Real ReliabilityFactor(minVAVB/(minVAVB+Real(0.0015)));
+			imageDZNCC(r,c) = -ReliabilityFactor*dZNCC;
+			score += (float)(ReliabilityFactor*(Real(1)-imageZNCC(r,c)));
+		}
+	}
+	#else
+	for (int r=HalfSize; r<RowsEnd; ++r) {
+		for (int c=HalfSize; c<ColsEnd; ++c) {
+			if (!mask(r,c))
+				continue;
+			#if 1
+			const Real ZNCC(imageZNCC(r,c));
+			const Real invSqrtVAVB(imageInvSqrtVAVB(r,c));
+			const Real ZNCCinvVB(ZNCC/imageVarB(r,c));
+			const Real dZNCC((Real)imageA(r,c)*invSqrtVAVB - (Real)imageB(r,c)*ZNCCinvVB + imageMeanB(r,c)*ZNCCinvVB - imageMeanA(r,c)*invSqrtVAVB);
+			#else
+			Real sumA(0), sumB(0), sumC(0);
+			int n(0);
+			for (int i=-HalfSize; i<=HalfSize; ++i) {
+				const int rw(r+i);
+				for (int j=-HalfSize; j<=HalfSize; ++j) {
+					const int cw(c+j);
+					if (!mask(rw,cw))
+						continue;
+					const Real invSqrtVAVB(imageInvSqrtVAVB(rw,cw));
+					const Real ZNCCinvVB(imageZNCC(rw,cw)/imageVarB(rw,cw));
+					sumA += invSqrtVAVB;
+					sumB -= ZNCCinvVB;
+					sumC += imageMeanB(rw,cw)*ZNCCinvVB - imageMeanA(rw,cw)*invSqrtVAVB;
+					++n;
+				}
+			}
+			if (n == 0)
+				continue;
+			const Real dZNCC((sumA*imageA(r,c) + sumB*imageB(r,c) + sumC)/(Real)n);
+			const Real ZNCC(imageZNCC(r,c));
+			#endif
+			const Real minVAVB(MINF(imageVarA(r,c),imageVarB(r,c)));
+			const Real ReliabilityFactor(minVAVB/(minVAVB+Real(0.0015)));
+			imageDZNCC(r,c) = -ReliabilityFactor*dZNCC;
+			score += (float)(ReliabilityFactor*(Real(1)-ZNCC));
+		}
+	}
+	#endif
+	return score;
+}
+
+// compute the photometric gradient for all vertices seen by an image pair
+void MeshRefine::ComputePhotometricGradient(
+	const Mesh::FaceArr& faces, const Mesh::NormalArr& normals,
+	const DepthMap& depthMapA, const FaceMap& faceMapA, const BaryMap& baryMapA, const Camera& cameraA,
+	const Camera& cameraB, const View& viewB,
+	const TImage<Real>& imageDZNCC, const Image8U& mask, GradArr& photoGrad, FloatArr& photoGradNorm, Real RegularizationScale)
+{
+	ASSERT(faces.GetSize() == normals.GetSize() && !faces.IsEmpty());
+	ASSERT(depthMapA.size() == mask.size() && faceMapA.size() == mask.size() && baryMapA.size() == mask.size() && imageDZNCC.size() == mask.size() && !mask.empty());
+	ASSERT(viewB.image.size() == viewB.imageGrad.size() && !viewB.image.empty());
+	const int RowsEnd(mask.rows-HalfSize);
+	const int ColsEnd(mask.cols-HalfSize);
+	typedef Sampler::Linear<Real> Sampler;
+	const Sampler sampler;
+	TMatrix<Real,2,3> xJac;
+	Point2f xB;
+	GradArr _photoGrad(photoGrad.GetSize());
+	UnsignedArr photoGradPixels(photoGrad.GetSize());
+	_photoGrad.Memset(0);
+	photoGradPixels.Memset(0);
+	for (int r=HalfSize; r<RowsEnd; ++r) {
+		for (int c=HalfSize; c<ColsEnd; ++c) {
+			if (!mask(r,c))
+				continue;
+			const FIndex idxFace(faceMapA(r,c));
+			ASSERT(idxFace != NO_ID);
+			const Normal& N(normals[idxFace]);
+			const Point3 rayA(cameraA.RayPoint(Point2(c,r)));
+			const Grad dA(normalized(rayA));
+			const Real Nd(N.dot(dA));
+			#if 1
+			if (Nd > -0.1)
+				continue;
+			#endif
+			const Depth depthA(depthMapA(r,c));
+			ASSERT(depthA > 0);
+			const Point3 X(rayA*REAL(depthA)+cameraA.C);
+			// project point in second image and
+			// projection Jacobian matrix in the second image of the 3D point on the surface
+			const float depthB(ProjectVertex(cameraB.P.val, X.ptr(), xB.ptr(), xJac.val));
+			ASSERT(depthB > 0);
+			// compute gradient in image B
+			const View::Grad gB(viewB.imageGrad.sample<Sampler,View::Grad>(sampler, xB));
+			// compute gradient scale
+			const Real dZNCC(imageDZNCC(r,c));
+			const Real sg(gB.dot(View::Grad(xJac*(const TMatrix<Real,3,1>&)dA))*dZNCC*RegularizationScale/Nd);
+			// add gradient to the three vertices
+			const Face& face(faces[idxFace]);
+			const Point3f& b(baryMapA(r,c));
+			for (int v=0; v<3; ++v) {
+				const Grad g(Grad(N)*(sg*(Real)b[v]));
+				const VIndex idxVert(face[v]);
+				_photoGrad[idxVert] += g;
+				++photoGradPixels[idxVert];
+			}
+		}
+	}
+	Lock l(cs);
+	FOREACH(i, photoGrad) {
+		if (photoGradPixels[i] > 0) {
+			photoGrad[i] += _photoGrad[i];
+			photoGradNorm[i] += 1.f;
+		}
+	}
+}
+
+float MeshRefine::ComputeSmoothnessGradient1(
+	const Mesh::VertexArr& vertices, const Mesh::VertexVerticesArr& vertexVertices, const BoolArr& vertexBoundary,
+	GradArr& smoothGrad1, VIndex idxStart, VIndex idxEnd)
+{
+	ASSERT(!vertices.IsEmpty() && vertices.GetSize() == vertexVertices.GetSize() && vertices.GetSize() == smoothGrad1.GetSize());
+	float score(0);
+	for (VIndex idxV=idxStart; idxV<idxEnd; ++idxV) {
+		Grad& grad = smoothGrad1[idxV];
+		#if 1
+		if (vertexBoundary[idxV]) {
+			grad = Grad::ZERO;
+			continue;
+		}
+		#endif
+		const Mesh::VertexIdxArr& verts = vertexVertices[idxV];
+		if (verts.IsEmpty()) {
+			grad = Grad::ZERO;
+			continue;
+		}
+		const Real nrm(Real(1)/(Real)verts.GetSize());
+		grad = Grad(vertices[idxV]);
+		FOREACH(v, verts)
+			grad -= Grad(vertices[verts[v]]) * nrm;
+		const float regularityScore((float)norm(grad));
+		ASSERT(ISFINITE(regularityScore));
+		score += regularityScore;
+	}
+	return score;
+}
+void MeshRefine::ComputeSmoothnessGradient2(
+	const GradArr& smoothGrad1, const Mesh::VertexVerticesArr& vertexVertices, const BoolArr& vertexBoundary,
+	GradArr& smoothGrad2, VIndex idxStart, VIndex idxEnd)
+{
+	ASSERT(!smoothGrad1.IsEmpty() && smoothGrad1.GetSize() == vertexVertices.GetSize() && smoothGrad1.GetSize() == smoothGrad2.GetSize());
+	for (VIndex idxV=idxStart; idxV<idxEnd; ++idxV) {
+		Grad& grad = smoothGrad2[idxV];
+		#if 1
+		if (vertexBoundary[idxV]) {
+			grad = Grad::ZERO;
+			continue;
+		}
+		#endif
+		const Mesh::VertexIdxArr& verts = vertexVertices[idxV];
+		if (verts.IsEmpty()) {
+			grad = Grad::ZERO;
+			continue;
+		}
+		const Real numV((Real)verts.GetSize());
+		const Real nrm(Real(1)/numV);
+		grad = smoothGrad1[idxV];
+		Real w(1);
+		FOREACH(v, verts) {
+			const VIndex idxVert(verts[v]);
+			grad -= smoothGrad1[idxVert] * nrm;
+			const VIndex numVert(vertexVertices[idxVert].GetSize());
+			if (numVert > 0)
+				w += numV / (Real)numVert;
+		}
+		grad /= w;
+	}
+}
+
+
+void* MeshRefine::ThreadWorkerTmp(void* arg) {
+	MeshRefine& refine = *((MeshRefine*)arg);
+	refine.ThreadWorker();
+	return NULL;
+}
+void MeshRefine::ThreadWorker()
+{
+	while (true) {
+		CAutoPtr<Event> evt(events.GetEvent());
+		switch (evt->GetID()) {
+		case EVT_JOB:
+			evt->Run(this);
+			break;
+		case EVT_CLOSE:
+			return;
+		default:
+			ASSERT("Should not happen!" == NULL);
+		}
+		sem.Signal();
+	}
+}
+void MeshRefine::WaitThreadWorkers(size_t nJobs)
+{
+	while (nJobs-- > 0)
+		sem.Wait();
+	ASSERT(events.IsEmpty());
+}
+void MeshRefine::ThSelectNeighbors(uint32_t idxImage, std::unordered_set<uint64_t>& mapPairs, unsigned nMaxViews)
+{
+	// keep only best neighbor views
+	const float fMinArea(0.12f);
+	const float fMinScale(0.2f), fMaxScale(3.2f);
+	const float fMinAngle(FD2R(3)), fMaxAngle(FD2R(45));
+	const Image& imageData = images[idxImage];
+	if (!imageData.IsValid())
+		return;
+	ViewScoreArr neighbors(imageData.neighbors);
+	Scene::FilterNeighborViews(neighbors, fMinArea, fMinScale, fMaxScale, fMinAngle, fMaxAngle, nMaxViews);
+	Lock l(cs);
+	FOREACHPTR(pNeighbor, neighbors) {
+		ASSERT(images[pNeighbor->idx.ID].IsValid());
+		mapPairs.insert(MakePairIdx((uint32_t)idxImage, pNeighbor->idx.ID));
+	}
+}
+void MeshRefine::ThInitImage(uint32_t idxImage, Real scale, Real sigma)
+{
+	Image& imageData = images[idxImage];
+	if (!imageData.IsValid())
+		return;
+	// load and init image
+	unsigned level(nResolutionLevel);
+	const unsigned imageSize(imageData.RecomputeMaxResolution(level, nMinResolution));
+	if ((imageData.image.empty() || MAXF(imageData.width,imageData.height) != imageSize) && FAILED(imageData.ReloadImage(imageSize)))
+		ABORT("can not load image");
+	View& view = views[idxImage];
+	Image32F& img = view.image;
+	imageData.image.toGray(img, cv::COLOR_BGR2GRAY, true);
+	imageData.image.release();
+	if (scale < 1.0) {
+		cv::resize(img, img, cv::Size(), scale, scale, cv::INTER_LINEAR);
+		imageData.width = img.width(); imageData.height = img.height();
+	}
+	imageData.UpdateCamera(scene.platforms);
+	if (sigma > 0)
+		cv::GaussianBlur(img, img, cv::Size(), sigma);
+	// compute image mean and variance
+	ComputeLocalVariance(img, Image8U(img.size(), 1), view.imageMean, view.imageVar);
+	// compute image gradient
+	TImage<Real> grad[2];
+	#if 1
+	cv::Sobel(img, grad[0], cv::DataType<Real>::type, 1, 0, 3, 1.0/8.0);
+	cv::Sobel(img, grad[1], cv::DataType<Real>::type, 0, 1, 3, 1.0/8.0);
+	#elif 1
+	const TMatrix<Real,3,5> kernel(CreateDerivativeKernel3x5());
+	cv::filter2D(img, grad[0], cv::DataType<Real>::type, kernel);
+	cv::filter2D(img, grad[1], cv::DataType<Real>::type, kernel.t());
+	#else
+	const TMatrix<Real,5,7> kernel(CreateDerivativeKernel5x7());
+	cv::filter2D(img, grad[0], cv::DataType<Real>::type, kernel);
+	cv::filter2D(img, grad[1], cv::DataType<Real>::type, kernel.t());
+	#endif
+	cv::merge(grad, 2, view.imageGrad);
+}
+void MeshRefine::ThProjectMesh(uint32_t idxImage, const CameraFaces& cameraFaces)
+{
+	const Image& imageData = images[idxImage];
+	if (!imageData.IsValid())
+		return;
+	// project mesh to the given camera plane
+	View& view = views[idxImage];
+	ProjectMesh(vertices, faces, cameraFaces, imageData.camera, view.image.size(),
+				view.depthMap, view.faceMap, view.baryMap);
+}
+void MeshRefine::ThProcessPair(uint32_t idxImageA, uint32_t idxImageB)
+{
+	// fetch view A data
+	const Image& imageDataA = images[idxImageA];
+	ASSERT(imageDataA.IsValid());
+	const View& viewA = views[idxImageA];
+	const BaryMap& baryMapA = viewA.baryMap;
+	const FaceMap& faceMapA = viewA.faceMap;
+	const DepthMap& depthMapA = viewA.depthMap;
+	const Image32F& imageA = viewA.image;
+	const Camera& cameraA = imageDataA.camera;
+	// fetch view B data
+	const Image& imageDataB = images[idxImageB];
+	ASSERT(imageDataB.IsValid());
+	const View& viewB = views[idxImageB];
+	const DepthMap& depthMapB = viewB.depthMap;
+	const Image32F& imageB = viewB.image;
+	const Camera& cameraB = imageDataB.camera;
+	// warp imageB to imageA using the mesh
+	Image8U mask;
+	Image32F imageAB(imageA.size());
+	ImageMeshWarp(depthMapA, cameraA, depthMapB, cameraB, imageB, imageAB, mask);
+	// init vertex textures
+	const TImage<Real>& imageMeanA = viewA.imageMean;
+	const TImage<Real>& imageVarA = viewA.imageVar;
+	TImage<Real> imageMeanAB, imageVarAB;
+	ComputeLocalVariance(imageAB, mask, imageMeanAB, imageVarAB);
+	TImage<Real> imageZNCC, imageDZNCC;
+	const float score(ComputeLocalZNCC(imageA, imageMeanA, imageVarA, imageAB, imageMeanAB, imageVarAB, mask, imageZNCC, imageDZNCC));
+	const Real RegularizationScale((Real)((REAL)(imageDataA.avgDepth*imageDataB.avgDepth)/(cameraA.GetFocalLength()*cameraB.GetFocalLength())));
+	ComputePhotometricGradient(faces, faceNormals, depthMapA, faceMapA, baryMapA, cameraA, cameraB, viewB, imageDZNCC, mask, photoGrad, photoGradNorm, RegularizationScale);
+	Lock l(cs);
+	scorePhoto += (float)RegularizationScale*score;
+}
+void MeshRefine::ThSmoothVertices1(VIndex idxStart, VIndex idxEnd)
+{
+	const float score(ComputeSmoothnessGradient1(vertices, vertexVertices, vertexBoundary, smoothGrad1, idxStart, idxEnd));
+	Lock l(cs);
+	scoreSmooth += score;
+}
+void MeshRefine::ThSmoothVertices2(VIndex idxStart, VIndex idxEnd)
+{
+	ComputeSmoothnessGradient2(smoothGrad1, vertexVertices, vertexBoundary, smoothGrad2, idxStart, idxEnd);
 }
 /*----------------------------------------------------------------*/
 
@@ -2099,18 +1527,13 @@ public:
 	bool Evaluate(const double* const parameters, double* cost, double* gradient) const {
 		// update surface parameters
 		ApplyParams(parameters);
-		// evaluate residuals
-		*cost = 0;
-		if (!gradient) {
-			refine.ScoreMesh(*cost);
-			return true;
-		}
 		// evaluate residuals and gradients
-		#ifdef MESHOPT_NUMERICAL
-		refine.ScoreMesh(*cost, gradient, 1e-4);
-		#else
-		refine.ScoreMesh(*cost, gradient);
-		#endif
+		Point3dArr gradients;
+		if (!gradient) {
+			gradients.Resize(refine.vertices.GetSize());
+			gradient = (double*)gradients.Begin();
+		}
+		*cost = refine.ScoreMesh(gradient);
 		return true;
 	}
 
@@ -2125,9 +1548,9 @@ protected:
 } // namespace ceres
 
 // optimize mesh using photo-consistency
-bool Scene::RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsigned nMaxViews, float fDecimateMesh, unsigned nCloseHoles, unsigned nEnsureEdgeSize, unsigned nScales, float fScaleStep, float fRegularityWeight, unsigned nMaxFaceArea, float fConfidenceThreshold)
+bool Scene::RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsigned nMaxViews, float fDecimateMesh, unsigned nCloseHoles, unsigned nEnsureEdgeSize, unsigned nMaxFaceArea, unsigned nScales, float fScaleStep, float fRegularityWeight, float fGradientStep)
 {
-	MeshRefine refine(*this, fRegularityWeight, nResolutionLevel, nMinResolution, nMaxViews);
+	MeshRefine refine(*this, fRegularityWeight, nResolutionLevel, nMinResolution, nMaxViews, nMaxThreads);
 
 	// run the mesh optimization on multiple scales (coarse to fine)
 	for (unsigned nScale=0; nScale<nScales; ++nScale) {
@@ -2144,10 +1567,13 @@ bool Scene::RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsig
 		refine.InitImages(scale);
 
 		// extract array of triangles incident to each vertex
-		refine.ListVertexFaces();
+		refine.ListVertexFacesPre();
 
 		// automatic mesh subdivision
 		refine.SubdivideMesh(nMaxFaceArea, nScale == 0 ? fDecimateMesh : 1.f, nCloseHoles, nEnsureEdgeSize);
+
+		// extract array of triangle normals
+		refine.ListVertexFacesPost();
 
 		#if TD_VERBOSE != TD_VERBOSE_OFF
 		if (VERBOSITY_LEVEL > 2)
@@ -2155,7 +1581,7 @@ bool Scene::RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsig
 		#endif
 
 		// minimize
-		if (fConfidenceThreshold >= -1.f) {
+		if (fGradientStep >= -1.f) {
 		//#if 0
 		// DefineProblem
 		ceres::MeshProblem* problemData(new ceres::MeshProblem(refine));
@@ -2193,20 +1619,15 @@ bool Scene::RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsig
 		// loop a constant number of iterations and apply the gradient
 		int iters(25);
 		double gstep(0.05);
-		if (fConfidenceThreshold < 0) {
-			iters = FLOOR2INT(-fConfidenceThreshold);
-			gstep = (-fConfidenceThreshold-(float)iters)*10;
+		if (fGradientStep < 0) {
+			iters = FLOOR2INT(-fGradientStep);
+			gstep = (-fGradientStep-(float)iters)*10;
 		}
-		iters = MAXF(iters/(int)(nScale+1),10);
+		iters = MAXF(iters/(int)(nScale+1),8);
 		Eigen::Matrix<double,Eigen::Dynamic,3,Eigen::RowMajor> gradients(refine.vertices.GetSize(),3);
 		for (int iter=0; iter<iters; ++iter) {
 			// evaluate residuals and gradients
-			double cost;
-			#ifdef MESHOPT_NUMERICAL
-			refine.ScoreMesh(cost, gradients.data(), 1e-4);
-			#else
-			refine.ScoreMesh(cost, gradients.data());
-			#endif
+			const double cost = refine.ScoreMesh(gradients.data());
 			// apply gradients
 			double gv(0);
 			FOREACH(v, refine.vertices) {
@@ -2215,7 +1636,7 @@ bool Scene::RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsig
 				gv += gradients.row(v).norm();
 			}
 			DEBUG_EXTRA("% 2d. f: %g (%g)\tg: %g (%g - %g)\ts: %g", iter, cost, cost/refine.vertices.GetSize(), gradients.norm(), gradients.norm()/refine.vertices.GetSize(), gv/refine.vertices.GetSize(), gstep);
-			gstep *= 0.99;
+			gstep *= 0.98;
 		}
 		}
 		//#endif

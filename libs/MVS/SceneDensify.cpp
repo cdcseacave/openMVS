@@ -1413,6 +1413,8 @@ struct DenseDepthMapData {
 	}
 };
 
+static void* DenseReconstructionEstimateTmp(void*);
+static void* DenseReconstructionFilterTmp(void*);
 bool Scene::DenseReconstruction()
 {
 	DenseDepthMapData data(*this);
@@ -1577,7 +1579,7 @@ bool Scene::DenseReconstruction()
 } // DenseReconstructionDepthMap
 /*----------------------------------------------------------------*/
 
-void* Scene::DenseReconstructionEstimateTmp(void* arg) {
+void* DenseReconstructionEstimateTmp(void* arg) {
 	const DenseDepthMapData& dataThreads = *((const DenseDepthMapData*)arg);
 	dataThreads.scene.DenseReconstructionEstimate(arg);
 	return NULL;
@@ -1698,7 +1700,7 @@ void Scene::DenseReconstructionEstimate(void* pData)
 } // DenseReconstructionDepthMapEstimate
 /*----------------------------------------------------------------*/
 
-void* Scene::DenseReconstructionFilterTmp(void* arg) {
+void* DenseReconstructionFilterTmp(void* arg) {
 	DenseDepthMapData& dataThreads = *((DenseDepthMapData*)arg);
 	dataThreads.scene.DenseReconstructionFilter(arg);
 	return NULL;

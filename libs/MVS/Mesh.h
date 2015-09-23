@@ -66,6 +66,7 @@ public:
 
 	typedef cList<VIndex,VIndex,0,8,VIndex> VertexIdxArr;
 	typedef cList<FIndex,FIndex,0,8,FIndex> FaceIdxArr;
+	typedef cList<VertexIdxArr> VertexVerticesArr;
 	typedef cList<FaceIdxArr> VertexFacesArr;
 
 	typedef TPoint3<float> Normal;
@@ -88,6 +89,7 @@ public:
 	FaceArr faces;
 
 	NormalArr vertexNormals; // for each vertex, the normal to the surface in that point (optional)
+	VertexVerticesArr vertexVertices; // for each vertex, the list of adjacent vertices (optional)
 	VertexFacesArr vertexFaces; // for each vertex, the list of faces containing it (optional)
 	BoolArr vertexBoundary; // for each vertex, stores if it is at the boundary or not (optional)
 
@@ -112,6 +114,7 @@ public:
 	void EmptyExtra();
 	inline bool IsEmpty() const { return vertices.IsEmpty(); }
 
+	void ListIncidenteVertices();
 	void ListIncidenteFaces();
 	void ListBoundaryVertices();
 	void ComputeNormalFaces();
@@ -147,6 +150,7 @@ public:
 		ar & vertices;
 		ar & faces;
 		ar & vertexNormals;
+		ar & vertexVertices;
 		ar & vertexFaces;
 		ar & vertexBoundary;
 		ar & faceNormals;

@@ -64,7 +64,7 @@ unsigned nScales;
 float fScaleStep;
 float fRegularityWeight;
 unsigned nMaxFaceArea;
-float fConfidenceThreshold;
+float fGradientStep;
 unsigned nArchiveType;
 int nProcessPriority;
 unsigned nMaxThreads;
@@ -83,8 +83,8 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	boost::program_options::options_description generic("Generic options");
 	generic.add_options()
 		("help,h", "produce this help message")
-		("working-folder,w", boost::program_options::value<std::string>(&WORKING_FOLDER), "the working directory (default current directory)")
-		("config-file,c", boost::program_options::value<std::string>(&OPT::strConfigFileName)->default_value(APPNAME _T(".cfg")), "the file name containing program options")
+		("working-folder,w", boost::program_options::value<std::string>(&WORKING_FOLDER), "working directory (default current directory)")
+		("config-file,c", boost::program_options::value<std::string>(&OPT::strConfigFileName)->default_value(APPNAME _T(".cfg")), "file name containing program options")
 		("archive-type", boost::program_options::value<unsigned>(&OPT::nArchiveType)->default_value(2), "project archive type: 0-text, 1-binary, 2-compressed binary")
 		("process-priority", boost::program_options::value<int>(&OPT::nProcessPriority)->default_value(-1), "process priority (below normal by default)")
 		("max-threads", boost::program_options::value<unsigned>(&OPT::nMaxThreads)->default_value(0), "maximum number of threads (0 for using all available cores)")
@@ -95,33 +95,33 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 			#else
 			2
 			#endif
-			), "the verbosity level")
+			), "verbosity level")
 		#endif
 		;
 
 	// group of options allowed both on command line and in config file
 	boost::program_options::options_description config("Refine options");
 	config.add_options()
-		("input-file,i", boost::program_options::value<std::string>(&OPT::strInputFileName), "the input filename containing camera poses and image list")
-		("output-file,o", boost::program_options::value<std::string>(&OPT::strOutputFileName), "the output filename for storing the mesh")
+		("input-file,i", boost::program_options::value<std::string>(&OPT::strInputFileName), "input filename containing camera poses and image list")
+		("output-file,o", boost::program_options::value<std::string>(&OPT::strOutputFileName), "output filename for storing the mesh")
 		("resolution-level", boost::program_options::value<unsigned>(&OPT::nResolutionLevel)->default_value(0), "how many times to scale down the images before mesh refinement")
 		("min-resolution", boost::program_options::value<unsigned>(&OPT::nMinResolution)->default_value(640), "do not scale images lower than this resolution")
 		("max-views", boost::program_options::value<unsigned>(&OPT::nMaxViews)->default_value(8), "maximum number of neighbor images used to refine the mesh")
-		("decimate", boost::program_options::value<float>(&OPT::fDecimateMesh)->default_value(0.f), "the decimation factor in range [0..1] to be applied to the input surface before refinement (0 - auto, 1 - disabled)")
+		("decimate", boost::program_options::value<float>(&OPT::fDecimateMesh)->default_value(0.f), "decimation factor in range [0..1] to be applied to the input surface before refinement (0 - auto, 1 - disabled)")
 		("close-holes", boost::program_options::value<unsigned>(&OPT::nCloseHoles)->default_value(15), "try to close small holes in the input surface (0 - disabled)")
 		("ensure-edge-size", boost::program_options::value<unsigned>(&OPT::nEnsureEdgeSize)->default_value(1), "ensure edge size and improve vertex valence of the input surface (0 - disabled)")
+		("max-face-area", boost::program_options::value<unsigned>(&OPT::nMaxFaceArea)->default_value(32), "maximum face area projected in any pair of images that is not subdivided (0 - disabled)")
 		("scales", boost::program_options::value<unsigned>(&OPT::nScales)->default_value(3), "how many iterations to run mesh optimization on multi-scale images")
-		("scale-step", boost::program_options::value<float>(&OPT::fScaleStep)->default_value(0.7071f), "image scale factor used at each mesh optimization step")
-		("regularity-weight", boost::program_options::value<float>(&OPT::fRegularityWeight)->default_value(0.1f), "the scalar regularity weight to balance between photo-consistency and regularization terms during mesh optimization")
-		("max-face-area", boost::program_options::value<unsigned>(&OPT::nMaxFaceArea)->default_value(64), "maximum face area projected in any pair of images that is not subdivided (0 - disabled)")
+		("scale-step", boost::program_options::value<float>(&OPT::fScaleStep)->default_value(0.5f), "image scale factor used at each mesh optimization step")
+		("regularity-weight", boost::program_options::value<float>(&OPT::fRegularityWeight)->default_value(1.5f), "scalar regularity weight to balance between photo-consistency and regularization terms during mesh optimization")
+		("gradient-step", boost::program_options::value<float>(&OPT::fGradientStep)->default_value(-50.05f), "gradient step to be used instead (-1 - auto)")
 		;
 
 	// hidden options, allowed both on command line and
 	// in config file, but will not be shown to the user
 	boost::program_options::options_description hidden("Hidden options");
 	hidden.add_options()
-		("mesh-file", boost::program_options::value<std::string>(&OPT::strMeshFileName), "the mesh file name to refine (overwrite the existing mesh)")
-		("confidence-threshold", boost::program_options::value<float>(&OPT::fConfidenceThreshold)->default_value(-1.f), "threshold on the geometry confidence")
+		("mesh-file", boost::program_options::value<std::string>(&OPT::strMeshFileName), "mesh file name to refine (overwrite the existing mesh)")
 		;
 
 	boost::program_options::options_description cmdline_options;
@@ -226,9 +226,10 @@ int main(int argc, LPCTSTR* argv)
 	TD_TIMER_START();
 	scene.RefineMesh(OPT::nResolutionLevel, OPT::nMinResolution, OPT::nMaxViews,
 					 OPT::fDecimateMesh, OPT::nCloseHoles, OPT::nEnsureEdgeSize,
+					 OPT::nMaxFaceArea,
 					 OPT::nScales, OPT::fScaleStep,
-					 OPT::fRegularityWeight, OPT::nMaxFaceArea,
-					 OPT::fConfidenceThreshold);
+					 OPT::fRegularityWeight,
+					 OPT::fGradientStep);
 	VERBOSE("Mesh refinement completed: %u vertices, %u faces (%s)", scene.mesh.vertices.GetSize(), scene.mesh.faces.GetSize(), TD_TIMER_GET_FMT().c_str());
 
 	// save the final mesh

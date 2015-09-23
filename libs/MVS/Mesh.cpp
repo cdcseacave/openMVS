@@ -93,6 +93,24 @@ void Mesh::EmptyExtra()
 /*----------------------------------------------------------------*/
 
 
+// extract array of vertices incident to each vertex
+void Mesh::ListIncidenteVertices()
+{
+	vertexVertices.Empty();
+	vertexVertices.Resize(vertices.GetSize());
+	FOREACH(i, faces) {
+		const Face& face = faces[i];
+		for (int v=0; v<3; ++v) {
+			VertexIdxArr& verts(vertexVertices[face[v]]);
+			for (int i=1; i<3; ++i) {
+				const VIndex idxVert(face[(v+i)%3]);
+				if (verts.Find(idxVert) == VertexIdxArr::NO_INDEX)
+					verts.Insert(idxVert);
+			}
+		}
+	}
+}
+
 // extract array of triangles incident to each vertex
 void Mesh::ListIncidenteFaces()
 {
@@ -992,12 +1010,12 @@ void Mesh::Clean(float fDecimate, float fSpurious, bool bRemoveSpikes, unsigned 
 		DEBUG_ULTIMATE("Removed %d non-manifold faces", nNonManifoldFaces);
 		const int nDegenerateVertices = vcg::tri::Clean<CLEAN::Mesh>::RemoveDegenerateVertex(mesh);
 		DEBUG_ULTIMATE("Removed %d degenerate vertices", nDegenerateVertices);
-		#if 0
+		const int nUnreferencedVertices = vcg::tri::Clean<CLEAN::Mesh>::RemoveUnreferencedVertex(mesh);
+		DEBUG_ULTIMATE("Removed %d unreferenced vertices", nUnreferencedVertices);
+		#if 1
 		const int nDuplicateVertices = vcg::tri::Clean<CLEAN::Mesh>::RemoveDuplicateVertex(mesh);
 		DEBUG_ULTIMATE("Removed %d duplicate vertices", nDuplicateVertices);
 		#endif
-		const int nUnreferencedVertices = vcg::tri::Clean<CLEAN::Mesh>::RemoveUnreferencedVertex(mesh);
-		DEBUG_ULTIMATE("Removed %d unreferenced vertices", nUnreferencedVertices);
 		#if 0 // not working
 		const int nSplitNonManifoldVertices = vcg::tri::Clean<CLEAN::Mesh>::SplitNonManifoldVertex(mesh, 0);
 		DEBUG_ULTIMATE("Split %d non-manifold vertices", nSplitNonManifoldVertices);
@@ -1021,7 +1039,7 @@ void Mesh::Clean(float fDecimate, float fSpurious, bool bRemoveSpikes, unsigned 
 		const auto ret(ComputeX84Threshold<float,float>(edgeLens.Begin(), edgeLens.GetSize(), 3.f*fSpurious));
 		const float thLongEdge(ret.first+ret.second);
 		#else
-		const float thLongEdge(edgeLens.GetNth(edgeLens.GetSize()*9/10)*fSpurious);
+		const float thLongEdge(edgeLens.GetNth(edgeLens.GetSize()*95/100)*fSpurious);
 		#endif
 		// remove faces with too long edges
 		const size_t numLongFaces(vcg::tri::UpdateSelection<CLEAN::Mesh>::FaceOutOfRangeEdge(mesh, 0, thLongEdge));

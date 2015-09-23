@@ -342,8 +342,8 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	boost::program_options::options_description generic("Generic options");
 	generic.add_options()
 		("help,h", "produce this help message")
-		("working-folder,w", boost::program_options::value<std::string>(&WORKING_FOLDER), "the working directory (default current directory)")
-		("config-file,c", boost::program_options::value<std::string>(&OPT::strConfigFileName)->default_value(APPNAME _T(".cfg")), "the file name containing program options")
+		("working-folder,w", boost::program_options::value<std::string>(&WORKING_FOLDER), "working directory (default current directory)")
+		("config-file,c", boost::program_options::value<std::string>(&OPT::strConfigFileName)->default_value(APPNAME _T(".cfg")), "file name containing program options")
 		("archive-type", boost::program_options::value<unsigned>(&OPT::nArchiveType)->default_value(2), "project archive type: 0-text, 1-binary, 2-compressed binary")
 		("process-priority", boost::program_options::value<int>(&OPT::nProcessPriority)->default_value(-1), "process priority (below normal by default)")
 		("max-threads", boost::program_options::value<unsigned>(&OPT::nMaxThreads)->default_value(0), "maximum number of threads (0 for using all available cores)")
@@ -354,16 +354,16 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 			#else
 			2
 			#endif
-			), "the verbosity level")
+			), "verbosity level")
 		#endif
 		;
 
 	// group of options allowed both on command line and in config file
 	boost::program_options::options_description config("Main options");
 	config.add_options()
-		("images-list-file,l", boost::program_options::value<std::string>(&OPT::strListFileName), "the input filename containing image list")
-		("input-file,i", boost::program_options::value<std::string>(&OPT::strInputFileName), "the input filename containing camera poses and image list")
-		("output-file,o", boost::program_options::value<std::string>(&OPT::strOutputFileName), "the output filename for storing the mesh")
+		("images-list-file,l", boost::program_options::value<std::string>(&OPT::strListFileName), "input filename containing image list")
+		("input-file,i", boost::program_options::value<std::string>(&OPT::strInputFileName), "input filename containing camera poses and image list")
+		("output-file,o", boost::program_options::value<std::string>(&OPT::strOutputFileName), "output filename for storing the mesh")
 		("normalize,f", boost::program_options::value<bool>(&OPT::bNormalizeIntrinsics)->default_value(true), "normalize intrinsics while exporting to OpenMVS format")
 		;
 

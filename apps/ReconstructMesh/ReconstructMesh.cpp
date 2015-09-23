@@ -54,6 +54,7 @@ namespace OPT {
 String strInputFileName;
 String strOutputFileName;
 String strMeshFileName;
+bool bMeshExport;
 float fDistInsert;
 bool bUseFreeSpaceSupport;
 float fDecimateMesh;
@@ -79,8 +80,8 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	boost::program_options::options_description generic("Generic options");
 	generic.add_options()
 		("help,h", "produce this help message")
-		("working-folder,w", boost::program_options::value<std::string>(&WORKING_FOLDER), "the working directory (default current directory)")
-		("config-file,c", boost::program_options::value<std::string>(&OPT::strConfigFileName)->default_value(APPNAME _T(".cfg")), "the file name containing program options")
+		("working-folder,w", boost::program_options::value<std::string>(&WORKING_FOLDER), "working directory (default current directory)")
+		("config-file,c", boost::program_options::value<std::string>(&OPT::strConfigFileName)->default_value(APPNAME _T(".cfg")), "file name containing program options")
 		("archive-type", boost::program_options::value<unsigned>(&OPT::nArchiveType)->default_value(2), "project archive type: 0-text, 1-binary, 2-compressed binary")
 		("process-priority", boost::program_options::value<int>(&OPT::nProcessPriority)->default_value(-1), "process priority (below normal by default)")
 		("max-threads", boost::program_options::value<unsigned>(&OPT::nMaxThreads)->default_value(0), "maximum number of threads (0 for using all available cores)")
@@ -91,23 +92,23 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 			#else
 			2
 			#endif
-			), "the verbosity level")
+			), "verbosity level")
 		#endif
 		;
 
 	// group of options allowed both on command line and in config file
 	boost::program_options::options_description config_main("Reconstruct options");
 	config_main.add_options()
-		("input-file,i", boost::program_options::value<std::string>(&OPT::strInputFileName), "the input filename containing camera poses and image list")
-		("output-file,o", boost::program_options::value<std::string>(&OPT::strOutputFileName), "the output filename for storing the mesh")
-		("min-point-distance,d", boost::program_options::value<float>(&OPT::fDistInsert)->default_value(2.f), "the minimum distance in pixels between the projection of two 3D points to consider them different while triangulating")
+		("input-file,i", boost::program_options::value<std::string>(&OPT::strInputFileName), "input filename containing camera poses and image list")
+		("output-file,o", boost::program_options::value<std::string>(&OPT::strOutputFileName), "output filename for storing the mesh")
+		("min-point-distance,d", boost::program_options::value<float>(&OPT::fDistInsert)->default_value(2.f), "minimum distance in pixels between the projection of two 3D points to consider them different while triangulating")
 		("free-space-support,f", boost::program_options::value<bool>(&OPT::bUseFreeSpaceSupport)->default_value(true), "exploits the free-space support in order to reconstruct weakly-represented surfaces")
 		;
 	boost::program_options::options_description config_clean("Clean options");
 	config_clean.add_options()
-		("decimate", boost::program_options::value<float>(&OPT::fDecimateMesh)->default_value(1.f), "the decimation factor in range (0..1] to be applied to the reconstructed surface (1 - disabled)")
-		("remove-spurious", boost::program_options::value<float>(&OPT::fRemoveSpurious)->default_value(10.f), "the spurious factor for removing faces with too long edges or isolated components (0 - disabled)")
-		("remove-spikes", boost::program_options::value<bool>(&OPT::bRemoveSpikes)->default_value(true), "the flag controlling the removal of spike faces")
+		("decimate", boost::program_options::value<float>(&OPT::fDecimateMesh)->default_value(1.f), "decimation factor in range (0..1] to be applied to the reconstructed surface (1 - disabled)")
+		("remove-spurious", boost::program_options::value<float>(&OPT::fRemoveSpurious)->default_value(12.f), "spurious factor for removing faces with too long edges or isolated components (0 - disabled)")
+		("remove-spikes", boost::program_options::value<bool>(&OPT::bRemoveSpikes)->default_value(true), "flag controlling the removal of spike faces")
 		("close-holes", boost::program_options::value<unsigned>(&OPT::nCloseHoles)->default_value(15), "try to close small holes in the reconstructed surface (0 - disabled)")
 		("smooth", boost::program_options::value<unsigned>(&OPT::nSmoothMesh)->default_value(2), "number of iterations to smooth the reconstructed surface (0 - disabled)")
 		;
@@ -116,7 +117,8 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	// in config file, but will not be shown to the user
 	boost::program_options::options_description hidden("Hidden options");
 	hidden.add_options()
-		("mesh-file", boost::program_options::value<std::string>(&OPT::strMeshFileName), "the mesh file name to clean (skips the reconstruction step)")
+		("mesh-file", boost::program_options::value<std::string>(&OPT::strMeshFileName), "mesh file name to clean (skips the reconstruction step)")
+		("mesh-export", boost::program_options::value<bool>(&OPT::bMeshExport)->default_value(false), "just export the mesh contained in loaded project")
 		;
 
 	boost::program_options::options_description cmdline_options;
@@ -207,39 +209,49 @@ int main(int argc, LPCTSTR* argv)
 		return EXIT_FAILURE;
 
 	Scene scene(OPT::nMaxThreads);
-	if (OPT::strMeshFileName.IsEmpty()) {
-		// load point-cloud and reconstruct a coarse mesh
-		if (!scene.Load(MAKE_PATH_SAFE(OPT::strInputFileName)))
+	if (OPT::bMeshExport) {
+		// load project
+		if (!scene.Load(MAKE_PATH_SAFE(OPT::strInputFileName)) || scene.mesh.IsEmpty())
 			return EXIT_FAILURE;
-		// make sure the image neighbors are initialized before deleting the point-cloud
-		FOREACH(idxImage, scene.images) {
-			const Image& imageData = scene.images[idxImage];
-			if (!imageData.IsValid())
-				continue;
-			if (imageData.neighbors.IsEmpty()) {
-				IndexArr points;
-				scene.SelectNeighborViews(idxImage, points);
-			}
-		}
-		TD_TIMER_START();
-		scene.ReconstructMesh(OPT::fDistInsert, OPT::bUseFreeSpaceSupport);
-		VERBOSE("Mesh reconstruction completed: %u vertices, %u faces (%s)", scene.mesh.vertices.GetSize(), scene.mesh.faces.GetSize(), TD_TIMER_GET_FMT().c_str());
-		#if TD_VERBOSE != TD_VERBOSE_OFF
-		if (VERBOSITY_LEVEL > 2) {
-			// dump raw mesh
-			scene.mesh.Save(MAKE_PATH_SAFE(Util::getFullFileName(OPT::strOutputFileName) + _T("_mesh_raw.ply")));
-		}
-		#endif
+		// save mesh
+		scene.mesh.Save(MAKE_PATH_SAFE(Util::getFullFileName(OPT::strOutputFileName) + _T(".ply")));
 	} else {
-		// load existing mesh to clean
-		scene.mesh.Load(MAKE_PATH_SAFE(OPT::strMeshFileName));
-	}
+		if (OPT::strMeshFileName.IsEmpty()) {
+			// load point-cloud and reconstruct a coarse mesh
+			if (!scene.Load(MAKE_PATH_SAFE(OPT::strInputFileName)))
+				return EXIT_FAILURE;
+			// make sure the image neighbors are initialized before deleting the point-cloud
+			FOREACH(idxImage, scene.images) {
+				const Image& imageData = scene.images[idxImage];
+				if (!imageData.IsValid())
+					continue;
+				if (imageData.neighbors.IsEmpty()) {
+					IndexArr points;
+					scene.SelectNeighborViews(idxImage, points);
+				}
+			}
+			TD_TIMER_START();
+			scene.ReconstructMesh(OPT::fDistInsert, OPT::bUseFreeSpaceSupport);
+			VERBOSE("Mesh reconstruction completed: %u vertices, %u faces (%s)", scene.mesh.vertices.GetSize(), scene.mesh.faces.GetSize(), TD_TIMER_GET_FMT().c_str());
+			#if TD_VERBOSE != TD_VERBOSE_OFF
+			if (VERBOSITY_LEVEL > 2) {
+				// dump raw mesh
+				scene.mesh.Save(MAKE_PATH_SAFE(Util::getFullFileName(OPT::strOutputFileName) + _T("_mesh_raw.ply")));
+			}
+			#endif
+		} else {
+			// load existing mesh to clean
+			scene.mesh.Load(MAKE_PATH_SAFE(OPT::strMeshFileName));
+		}
 
-	// clean and save the final mesh
-	scene.mesh.Clean(OPT::fDecimateMesh, OPT::fRemoveSpurious, OPT::bRemoveSpikes, OPT::nCloseHoles, OPT::nSmoothMesh);
-	scene.mesh.Clean(1.f, 0.f, OPT::bRemoveSpikes, OPT::nCloseHoles, 0); // extra cleaning trying to close more holes
-	scene.mesh.Save(MAKE_PATH_SAFE(Util::getFullFileName(OPT::strOutputFileName) + _T("_mesh.ply")));
-	scene.Save(MAKE_PATH_SAFE(Util::getFullFileName(OPT::strOutputFileName) + _T("_mesh.mvs")), (ARCHIVE_TYPE)OPT::nArchiveType);
+		// clean the mesh
+		scene.mesh.Clean(OPT::fDecimateMesh, OPT::fRemoveSpurious, OPT::bRemoveSpikes, OPT::nCloseHoles, OPT::nSmoothMesh);
+		scene.mesh.Clean(1.f, 0.f, OPT::bRemoveSpikes, OPT::nCloseHoles, 0); // extra cleaning trying to close more holes
+
+		// save the final mesh
+		scene.mesh.Save(MAKE_PATH_SAFE(Util::getFullFileName(OPT::strOutputFileName) + _T("_mesh.ply")));
+		scene.Save(MAKE_PATH_SAFE(Util::getFullFileName(OPT::strOutputFileName) + _T("_mesh.mvs")), (ARCHIVE_TYPE)OPT::nArchiveType);
+	}
 
 	Finalize();
 	return EXIT_SUCCESS;
