@@ -107,9 +107,9 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	boost::program_options::options_description config_clean("Clean options");
 	config_clean.add_options()
 		("decimate", boost::program_options::value<float>(&OPT::fDecimateMesh)->default_value(1.f), "decimation factor in range (0..1] to be applied to the reconstructed surface (1 - disabled)")
-		("remove-spurious", boost::program_options::value<float>(&OPT::fRemoveSpurious)->default_value(12.f), "spurious factor for removing faces with too long edges or isolated components (0 - disabled)")
+		("remove-spurious", boost::program_options::value<float>(&OPT::fRemoveSpurious)->default_value(20.f), "spurious factor for removing faces with too long edges or isolated components (0 - disabled)")
 		("remove-spikes", boost::program_options::value<bool>(&OPT::bRemoveSpikes)->default_value(true), "flag controlling the removal of spike faces")
-		("close-holes", boost::program_options::value<unsigned>(&OPT::nCloseHoles)->default_value(15), "try to close small holes in the reconstructed surface (0 - disabled)")
+		("close-holes", boost::program_options::value<unsigned>(&OPT::nCloseHoles)->default_value(30), "try to close small holes in the reconstructed surface (0 - disabled)")
 		("smooth", boost::program_options::value<unsigned>(&OPT::nSmoothMesh)->default_value(2), "number of iterations to smooth the reconstructed surface (0 - disabled)")
 		;
 

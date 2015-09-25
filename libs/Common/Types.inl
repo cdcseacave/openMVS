@@ -1406,6 +1406,9 @@ public: \
 #define DEFINE_CVDATATYPE(tp) DEFINE_GENERIC_CVDATATYPE(tp,tp::Type)
 
 // define specialized cv:DataType<>
+DEFINE_CVDATATYPE(SEACAVE::hfloat)
+DEFINE_CVDATATYPE(SEACAVE::cuint32_t)
+/*----------------------------------------------------------------*/
 DEFINE_CVDATATYPE(SEACAVE::Point2i)
 DEFINE_CVDATATYPE(SEACAVE::Point2f)
 DEFINE_CVDATATYPE(SEACAVE::Point2d)
@@ -1437,6 +1440,7 @@ DEFINE_GENERIC_CVDATATYPE(SEACAVE::DVector32F, uint8_t)
 DEFINE_GENERIC_CVDATATYPE(SEACAVE::DVector64F, uint8_t)
 /*----------------------------------------------------------------*/
 DEFINE_GENERIC_CVDATATYPE(SEACAVE::Image8U, uint8_t)
+DEFINE_GENERIC_CVDATATYPE(SEACAVE::Image16F, uint8_t)
 DEFINE_GENERIC_CVDATATYPE(SEACAVE::Image32F, uint8_t)
 DEFINE_GENERIC_CVDATATYPE(SEACAVE::Image64F, uint8_t)
 DEFINE_GENERIC_CVDATATYPE(SEACAVE::Image8U3, uint8_t)
@@ -2494,7 +2498,7 @@ void TImage<TYPE>::RasterizeTriangleDepth(TPoint3<T> p1, TPoint3<T> p2, TPoint3<
 
 template <typename TYPE>
 template <typename T, typename PARSER>
-void SEACAVE::TImage<TYPE>::DrawLine(const TPoint2<T>& p1, const TPoint2<T>& p2, PARSER& parser)
+void TImage<TYPE>::DrawLine(const TPoint2<T>& p1, const TPoint2<T>& p2, PARSER& parser)
 {
 	#if 0
 	const TPoint2<T> d(ABS(p2 - p1));
@@ -2786,6 +2790,23 @@ void TImage<TYPE>::Show(const String& winname, int delay, bool bDestroy) const
 	cv::waitKey(delay);
 	if (bDestroy)
 		cv::destroyWindow(winname);
+}
+/*----------------------------------------------------------------*/
+
+
+inline Image16F cvtImage32FtoImage16F(const Image32F& image) {
+	Image16F img(image.size());
+	for (int r=0; r<image.rows; ++r)
+		for (int c=0; c<image.cols; ++c)
+			img(r,c) = image(r,c);
+	return img;
+}
+inline Image32F cvtImage16FtoImage32F(const Image16F& image) {
+	Image32F img(image.size());
+	for (int r=0; r<image.rows; ++r)
+		for (int c=0; c<image.cols; ++c)
+			img(r,c) = image(r,c);
+	return img;
 }
 /*----------------------------------------------------------------*/
 

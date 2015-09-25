@@ -599,27 +599,6 @@ double MeshRefine::ScoreMesh(double* gradients)
 template <typename TP, typename TX, typename T, typename TJ>
 T MeshRefine::ProjectVertex(const TP* P, const TX* X, T* x, TJ* jacobian)
 {
-	#if 0
-	// numerical differentiation
-	TJ fjac[2*3];
-	{
-	const TX eps = 1.e-7;
-	TX cX[3];
-	memcpy(cX, X, sizeof(TX)*3);
-	TX x0[2], x1[2];
-	ProjectVertexVisualization_3x4_3_2(P, X, x0);
-	for (int j=0; j<3; j++) {
-		const TX temp = cX[j];
-		const TX step = eps*MAXF(eps,abs(temp));
-		cX[j] += step;
-		ProjectVertexVisualization_3x4_3_2(P, cX, x1);
-		cX[j] = temp;
-		for (int i=0; i<2; i++)
-			fjac[i*3+j] = (x1[i] - x0[i]) / step;
-	}
-	}
-	#endif
-
 	const TX&  x1(X[0]);
 	const TX&  x2(X[1]);
 	const TX&  x3(X[2]);
@@ -775,66 +754,13 @@ void MeshRefine::ComputeLocalVariance(const Image32F& image, const Image8U& mask
 	imageVar.memset(0);
 	const int RowsEnd(image.rows-HalfSize);
 	const int ColsEnd(image.cols-HalfSize);
-	#if 0
-	for (int r=HalfSize; r<RowsEnd; ++r) {
-		for (int c=HalfSize; c<ColsEnd; ++c) {
-			if (!mask(r,c))
-				continue;
-			MeanStd<Real> var;
-			for (int i=-HalfSize; i<=HalfSize; ++i) {
-				const int rw(r+i);
-				for (int j=-HalfSize; j<=HalfSize; ++j) {
-					const int cw(c+j);
-					var.Update(image(rw,cw));
-				}
-			}
-			if (var.size > 0) {
-				imageMean(r,c) = var.GetMean();
-				imageVar(r,c) = var.GetVariance();
-			}
-		}
-	}
-	#elif 0
 	const int n(SQUARE(HalfSize*2+1));
-	for (int r=HalfSize; r<RowsEnd; ++r) {
-		for (int c=HalfSize; c<ColsEnd; ++c) {
-			if (!mask(r,c))
-				continue;
-			Real m(0);
-			for (int i=-HalfSize; i<=HalfSize; ++i) {
-				const int rw(r+i);
-				for (int j=-HalfSize; j<=HalfSize; ++j) {
-					const int cw(c+j);
-					m += (Real)image(rw,cw);
-				}
-			}
-			imageMean(r,c) = m*(Real(1)/(Real)n);
-		}
-	}
-	for (int r=HalfSize; r<RowsEnd; ++r) {
-		for (int c=HalfSize; c<ColsEnd; ++c) {
-			if (!mask(r,c))
-				continue;
-			const Real m(imageMean(r,c));
-			Real v(0);
-			for (int i=-HalfSize; i<=HalfSize; ++i) {
-				const int rw(r+i);
-				for (int j=-HalfSize; j<=HalfSize; ++j) {
-					const int cw(c+j);
-					v += SQUARE((Real)image(rw,cw)-m);
-				}
-			}
-			imageVar(r,c) = MAXF(v*(Real(1)/(Real)n), Real(0.0001));
-		}
-	}
-	#else
 	Image64F imageSum, imageSumSq;
 	#if CV_MAJOR_VERSION > 2
 	cv::integral(image, imageSum, imageSumSq, CV_64F, CV_64F);
 	#else
 	cv::integral(image, imageSum, imageSumSq, CV_64F);
 	#endif
-	const int n(SQUARE(HalfSize*2+1));
 	for (int r=HalfSize; r<RowsEnd; ++r) {
 		for (int c=HalfSize; c<ColsEnd; ++c) {
 			if (!mask(r,c))
@@ -858,7 +784,6 @@ void MeshRefine::ComputeLocalVariance(const Image32F& image, const Image8U& mask
 			imageVar(r,c) = MAXF(sumSq-SQUARE(imageMean(r,c)), Real(0.0001));
 		}
 	}
-	#endif
 }
 
 // compute local ZNCC and its gradient for each image pixel
@@ -873,74 +798,8 @@ float MeshRefine::ComputeLocalZNCC(
 	imageDZNCC.create(mask.size());
 	const int RowsEnd(mask.rows-HalfSize);
 	const int ColsEnd(mask.cols-HalfSize);
-	#ifndef MESHOPT_SAFEVAL
 	const int n(SQUARE(HalfSize*2+1));
-	#endif
 	imageZNCC.memset(0);
-	#if 0
-	for (int r=HalfSize; r<RowsEnd; ++r) {
-		for (int c=HalfSize; c<ColsEnd; ++c) {
-			if (!mask(r,c))
-				continue;
-			#ifdef MESHOPT_SAFEVAL
-			int n(0);
-			#endif
-			FloatArr t1, t2;
-			for (int i=-HalfSize; i<=HalfSize; ++i) {
-				const int rw(r+i);
-				for (int j=-HalfSize; j<=HalfSize; ++j) {
-					const int cw(c+j);
-					#ifdef MESHOPT_SAFEVAL
-					if (!mask(rw,cw))
-						continue;
-					++n;
-					#endif
-					t1.Insert(imageA(rw,cw));
-					t2.Insert(imageB(rw,cw));
-				}
-			}
-			#ifdef MESHOPT_SAFEVAL
-			if (n == 0)
-				continue;
-			#endif
-			const float normSq1(normSqZeroMean<float,float>(t1.GetData(), n));
-			const float normSq2(normSqZeroMean<float,float>(t2.GetData(), n));
-			imageZNCC(r,c) = dot<float,float>(t1.GetData(), t2.GetData(), n)/SQRT(normSq1*normSq2);
-		}
-	}
-	#elif 0
-	TImage<Real> imageInvSqrtVAVB(mask.size());
-	for (int r=HalfSize; r<RowsEnd; ++r) {
-		for (int c=HalfSize; c<ColsEnd; ++c) {
-			if (!mask(r,c))
-				continue;
-			Real cv(0);
-			#ifdef MESHOPT_SAFEVAL
-			int n(0);
-			#endif
-			for (int i=-HalfSize; i<=HalfSize; ++i) {
-				const int rw(r+i);
-				for (int j=-HalfSize; j<=HalfSize; ++j) {
-					const int cw(c+j);
-					#ifdef MESHOPT_SAFEVAL
-					if (!mask(rw,cw))
-						continue;
-					++n;
-					#endif
-					cv += (Real)(imageA(rw,cw)*imageB(rw,cw));
-				}
-			}
-			#ifdef MESHOPT_SAFEVAL
-			if (n == 0)
-				continue;
-			#endif
-			const Real covariance(cv/(Real)n - imageMeanA(r,c)*imageMeanB(r,c));
-			const Real invSqrtVAVB(Real(1)/SQRT(imageVarA(r,c)*imageVarB(r,c)));
-			imageZNCC(r,c) = covariance * invSqrtVAVB;
-			imageInvSqrtVAVB(r,c) = invSqrtVAVB;
-		}
-	}
-	#else
 	Image32F imageAB;
 	cv::multiply(imageA, imageB, imageAB);
 	Image64F imageABSum;
@@ -960,54 +819,7 @@ float MeshRefine::ComputeLocalZNCC(
 			imageInvSqrtVAVB(r,c) = invSqrtVAVB;
 		}
 	}
-	#endif
 	imageDZNCC.memset(0);
-	#if 0
-	for (int r=HalfSize; r<RowsEnd; ++r) {
-		for (int c=HalfSize; c<ColsEnd; ++c) {
-			if (!mask(r,c))
-				continue;
-			#if 0
-			// numerical differentiation
-			typedef double TX;
-			typedef cList<TX,TX,0> VTX;
-			int n(0);
-			VTX t1, t2;
-			for (int i=-HalfSize; i<=HalfSize; ++i) {
-				const int rw(r+i);
-				for (int j=-HalfSize; j<=HalfSize; ++j) {
-					const int cw(c+j);
-					t1.Insert(imageA(rw,cw));
-					t2.Insert(imageB(rw,cw));
-					++n;
-				}
-			}
-			if (n == 0)
-				continue;
-			VTX _t1(t1), _t2(t2);
-			const TX normSq1(normSqZeroMean<TX,TX>(t1.GetData(), n));
-			const TX normSq2(normSqZeroMean<TX,TX>(t2.GetData(), n));
-			const TX ZNCC(dot<TX,TX>(t1.GetData(), t2.GetData(), n)/SQRT(normSq1*normSq2));
-			const TX eps = 1.e-6;
-			TX& cX = _t2[n/2];
-			const TX temp = cX;
-			const TX step = eps*MAXF(eps, abs(temp));
-			cX += step;
-			const TX _normSq1(normSqZeroMean<TX,TX>(_t1.GetData(), n));
-			const TX _normSq2(normSqZeroMean<TX,TX>(_t2.GetData(), n));
-			const TX _ZNCC(dot<TX,TX>(_t1.GetData(), _t2.GetData(), n)/SQRT(_normSq1*_normSq2));
-			cX = temp;
-			const Real dZNCC((Real)((_ZNCC - ZNCC) / step));
-			#else
-			const Real dZNCC(((Real)imageA(r,c)-imageMeanA(r,c))/(SQRT(imageVarA(r,c)*imageVarB(r,c))*n) - imageZNCC(r,c)*imageVarA(r,c)*((Real)imageB(r,c)-imageMeanB(r,c))/(imageVarA(r,c)*imageVarB(r,c)*n));
-			#endif
-			const Real minVAVB(MINF(imageVarA(r,c), imageVarB(r,c)));
-			const Real ReliabilityFactor(minVAVB/(minVAVB+Real(0.0015)));
-			imageDZNCC(r,c) = -ReliabilityFactor*dZNCC;
-			score += (float)(ReliabilityFactor*(Real(1)-imageZNCC(r,c)));
-		}
-	}
-	#else
 	for (int r=HalfSize; r<RowsEnd; ++r) {
 		for (int c=HalfSize; c<ColsEnd; ++c) {
 			if (!mask(r,c))
@@ -1045,7 +857,6 @@ float MeshRefine::ComputeLocalZNCC(
 			score += (float)(ReliabilityFactor*(Real(1)-ZNCC));
 		}
 	}
-	#endif
 	return score;
 }
 
@@ -1384,11 +1195,6 @@ bool Scene::RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsig
 
 	// run the mesh optimization on multiple scales (coarse to fine)
 	for (unsigned nScale=0; nScale<nScales; ++nScale) {
-		#if defined(MESHOPT_DEBUG) && MESHOPT_DEBUG>1
-		refine._level = nScale;
-		refine._iteration = 0;
-		#endif
-
 		// init images
 		const double scale(powi(fScaleStep, (int)(nScales-nScale-1)));
 		DEBUG_ULTIMATE("Refine mesh at: %.2f image scale", scale);
@@ -1463,7 +1269,7 @@ bool Scene::RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsig
 					vert -= Vertex((gradients.row(v)*gstep).cast<float>());
 					gv += gradients.row(v).norm();
 				}
-				DEBUG_EXTRA("\t%2d. f: %.5f (%.4e)\tg: %.5f (%.4e - %.4e)\ts: %.3f", iter, cost, cost/refine.vertices.GetSize(), gradients.norm(), gradients.norm()/refine.vertices.GetSize(), gv/refine.vertices.GetSize(), gstep);
+				DEBUG_EXTRA("\t%2d. f: %.5f (%.4e)\tg: %.5f (%.4e - %.4e)\ts: %.3f", iter+1, cost, cost/refine.vertices.GetSize(), gradients.norm(), gradients.norm()/refine.vertices.GetSize(), gv/refine.vertices.GetSize(), gstep);
 				gstep *= 0.98;
 			}
 		}
@@ -1474,6 +1280,6 @@ bool Scene::RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsig
 		#endif
 	}
 
-	return _OK;
+	return true;
 } // RefineMesh
 /*----------------------------------------------------------------*/

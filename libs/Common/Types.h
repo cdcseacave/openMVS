@@ -338,6 +338,7 @@ FORCEINLINE T RANDOM() { return (T(1)/RAND_MAX)*RAND(); }
 #include "File.h"
 #include "MemFile.h"
 #include "LinkLib.h"
+#include "HalfFloat.h"
 
 namespace SEACAVE {
 
@@ -2099,6 +2100,7 @@ public:
 };
 /*----------------------------------------------------------------*/
 typedef TImage<uint8_t> Image8U;
+typedef TImage<hfloat> Image16F;
 typedef TImage<float> Image32F;
 typedef TImage<double> Image64F;
 typedef TImage<Pixel8U> Image8U3;

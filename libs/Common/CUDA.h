@@ -13,17 +13,11 @@
 
 // I N C L U D E S /////////////////////////////////////////////////
 
-// CUDA driver & runtime
+// CUDA driver
 #include <cuda.h>
-#include <cuda_runtime.h>
 
 
 // D E F I N E S ///////////////////////////////////////////////////
-
-#ifdef _MSC_VER
-//#define TIMER_OLDSUPPORT
-#endif
-#define FIX_FPS
 
 
 namespace SEACAVE {
@@ -32,32 +26,19 @@ namespace CUDA {
 
 // S T R U C T S ///////////////////////////////////////////////////
 
-#ifdef __DRIVER_TYPES_H__
-#ifndef DEVICE_RESET
-#define DEVICE_RESET cudaDeviceReset();
-#endif
-inline CUresult __reportCudaError(cudaError_t result, LPCSTR errorMessage) {
-	if (result == cudaSuccess)
-		return CUDA_SUCCESS;
-	#ifdef _DEBUG
-	VERBOSE("CUDA error at %s:%d: %s (%s (code %d) - %s)", __FILE__, __LINE__, errorMessage, cudaGetErrorName(result), static_cast<unsigned>(result), cudaGetErrorString(result));
-	#else
-	DEBUG("CUDA error: %s (%s (code %d) - %s)", errorMessage, cudaGetErrorName(result), static_cast<unsigned>(result), cudaGetErrorString(result));
-	#endif
-	ASSERT("CudaError" == NULL);
-	return CUDA_ERROR_INVALID_VALUE;
-}
-// calls cudaGetLastError() and outputs the proper error string
-inline CUresult __getLastCudaError(LPCSTR errorMessage) {
-	return __reportCudaError(cudaGetLastError(), errorMessage);
-}
-#define getLastCudaError(msg) CUDA::__getLastCudaError(msg)
-#else
-#ifndef DEVICE_RESET
-#define DEVICE_RESET
-#endif
-#define getLastCudaError(msg)
-#endif // __DRIVER_TYPES_H__
+// global list of initialized devices
+struct Device {
+	CUdevice ID;
+	int major, minor;
+	int computeMode;
+	CUdevprop prop;
+	CUcontext ctx;
+
+	inline Device() : ctx(NULL) {}
+	inline ~Device() { if (ctx != NULL) cuCtxDestroy(ctx); }
+};
+typedef CLISTDEF0(Device) Devices;
+extern Devices devices;
 
 // outputs the proper CUDA error code in the event that a CUDA host call returns an error
 inline CUresult __reportCudaError(CUresult result, LPCSTR errorMessage) {
@@ -84,7 +65,6 @@ inline void __ensureCudaResult(CUresult result, LPCSTR errorMessage) {
 	if (__reportCudaError(result, errorMessage))
 		return;
 	ASSERT("CudaAbort" == NULL);
-	DEVICE_RESET;
 	exit(EXIT_FAILURE);
 }
 #define ensureCudaResult(val) CUDA::__ensureCudaResult(val, #val)
@@ -95,26 +75,6 @@ inline T align(T o, T a) {
 	a -= T(1);
 	return (o + a)&~a;
 }
-
-// GPU Architecture definitions
-inline int convertSMVer2Cores(int major, int minor);
-
-#ifdef __CUDA_RUNTIME_H__
-// checks that the given device ID is valid;
-// return the device ID if successful
-int gpuCheckDeviceId(int devID);
-
-// finds the best GPU (with maximum GFLOPS);
-// return the device ID if successful
-int gpuGetMaxGflopsDeviceId();
-
-// global list of initialized devices
-struct Device {
-	uint32_t ID;
-	cudaDeviceProp prop;
-};
-typedef CLISTDEF0(Device) Devices;
-extern Devices devices;
 
 // initialize the given CUDA device and add it to the array of initialized devices;
 // if the given device is -1, the best available device is selected
@@ -137,31 +97,26 @@ inline CUresult addKernelParam(CUfunction& hKernel, int& paramOffset, const T& p
 }
 
 // allocate on the CUDA device a chunk of memory of the given size
-inline CUresult allocMemDevice(size_t size, void*& dataDevice) {
-	return (cudaMalloc(&dataDevice, size) == cudaSuccess) ?
-		CUDA_SUCCESS : CUDA_ERROR_OUT_OF_MEMORY;
+inline CUresult allocMemDevice(size_t size, CUdeviceptr& dataDevice) {
+	return cuMemAlloc(&dataDevice, size);
 }
 // copy on the CUDA device the given chunk of memory
-inline CUresult copyMemDevice(const void* data, size_t size, void* dataDevice) {
-	return (cudaMemcpy(dataDevice, data, size, cudaMemcpyHostToDevice) == cudaSuccess) ?
-		CUDA_SUCCESS : CUDA_ERROR_INVALID_VALUE;
+inline CUresult copyMemDevice(const void* data, size_t size, CUdeviceptr dataDevice) {
+	return cuMemcpyHtoD(dataDevice, data, size);
 }
 // allocate and copy on the CUDA device the given chunk of memory
-inline CUresult createReplicaDevice(const void* data, size_t size, void*& dataDevice) {
-	if (cudaMalloc(&dataDevice, size) != cudaSuccess)
+inline CUresult createReplicaDevice(const void* data, size_t size, CUdeviceptr& dataDevice) {
+	if (cuMemAlloc(&dataDevice, size) != CUDA_SUCCESS)
 		return CUDA_ERROR_OUT_OF_MEMORY;
-	if (cudaMemcpy(dataDevice, data, size, cudaMemcpyHostToDevice) != cudaSuccess)
-		return CUDA_ERROR_INVALID_VALUE;
-	return CUDA_SUCCESS;
+	return cuMemcpyHtoD(dataDevice, data, size);
 }
 // copy from the CUDA device the given chunk of memory
-inline CUresult fetchMemDevice(void* data, size_t size, const void* dataDevice) {
-	return (cudaMemcpy(data, dataDevice, size, cudaMemcpyDeviceToHost) == cudaSuccess) ?
-		CUDA_SUCCESS : CUDA_ERROR_INVALID_VALUE;
+inline CUresult fetchMemDevice(void* data, size_t size, const CUdeviceptr dataDevice) {
+	return cuMemcpyDtoH(data, dataDevice, size);
 }
 // free the given memory on the CUDA device
-inline CUresult freeMemDevice(void*& dataDevice) {
-	if (cudaFree(dataDevice) != cudaSuccess)
+inline CUresult freeMemDevice(CUdeviceptr& dataDevice) {
+	if (cuMemFree(dataDevice) != CUDA_SUCCESS)
 		return CUDA_ERROR_NOT_INITIALIZED;
 	dataDevice = NULL;
 	return CUDA_SUCCESS;
@@ -172,7 +127,7 @@ inline CUresult freeMemDevice(void*& dataDevice) {
 class MemDevice
 {
 private:
-	void* pData;
+	CUdeviceptr pData;
 	size_t nSize;
 
 public:
@@ -229,11 +184,8 @@ public:
 		return GetData(param.GetData(), param.GetDataSize());
 	}
 
-	inline operator void*() const {
-		return pData;
-	}
 	inline operator CUdeviceptr() const {
-		return (CUdeviceptr)pData;
+		return pData;
 	}
 };
 typedef CSharedPtr<MemDevice> MemDevicePtr;
@@ -381,7 +333,7 @@ public:
 		if ((result=cuParamSetSize(hKernel, paramOffset)) != CUDA_SUCCESS)
 			return result;
 		// launch the kernel (Driver API)
-		const cudaDeviceProp& deviceProp = CUDA::devices.Last().prop;
+		const CUdevprop& deviceProp = CUDA::devices.Last().prop;
 		const int numBlockThreads(MINF(numThreads, deviceProp.maxThreadsPerBlock));
 		const int nBlocks(MAXF((numThreads+numBlockThreads-1)/numBlockThreads, 1));
 		if ((result=cuFuncSetBlockShape(hKernel, numBlockThreads, 1, 1)) != CUDA_SUCCESS)
@@ -402,7 +354,7 @@ public:
 		if ((result=cuParamSetSize(hKernel, paramOffset)) != CUDA_SUCCESS)
 			return result;
 		// launch the kernel (Driver API)
-		const cudaDeviceProp& deviceProp = CUDA::devices.Last().prop;
+		const CUdevprop& deviceProp = CUDA::devices.Last().prop;
 		const REAL scale(MINF(REAL(1), SQRT((REAL)deviceProp.maxThreadsPerBlock/(REAL)(numThreads.x*numThreads.y))));
 		const SEACAVE::TPoint2<int> numBlockThreads(FLOOR2INT(SEACAVE::TPoint2<REAL>(numThreads)*scale));
 		const TPoint2<int> nBlocks(
@@ -422,7 +374,7 @@ public:
 		inline ReturnParam() {}
 		inline ReturnParam(void* _data, size_t _size) : data(_data), size(_size) {}
 	};
-	CUresult GetResult(void* data, const ReturnParam& param) const;
+	CUresult GetResult(const CUdeviceptr data, const ReturnParam& param) const;
 	inline CUresult GetResult(const MemDevice& memDev, const ReturnParam& param) const {
 		return memDev.GetData(param.data, param.size);
 	}
@@ -450,7 +402,7 @@ private:
 	}
 	inline CUresult _AddParam(const MemDevice& param) {
 		ASSERT(param.IsValid());
-		return addKernelParam(hKernel, paramOffset, (void*)param);
+		return addKernelParam(hKernel, paramOffset, (CUdeviceptr)param);
 	}
 	template <typename TYPE>
 	inline CUresult _AddParam(const TImage<TYPE>& param) {
@@ -490,6 +442,7 @@ template<> struct traits<uint32_t> { static const CUarray_format format = CU_AD_
 template<> struct traits<int8_t> { static const CUarray_format format = CU_AD_FORMAT_SIGNED_INT8; };
 template<> struct traits<int16_t> { static const CUarray_format format = CU_AD_FORMAT_SIGNED_INT16; };
 template<> struct traits<int32_t> { static const CUarray_format format = CU_AD_FORMAT_SIGNED_INT32; };
+template<> struct traits<hfloat> { static const CUarray_format format = CU_AD_FORMAT_HALF; };
 template<> struct traits<float> { static const CUarray_format format = CU_AD_FORMAT_FLOAT; };
 } // namespace ARRAY
 
@@ -505,8 +458,8 @@ private:
 
 public:
 	inline TArrayRT() : hArray(NULL) {}
-	inline TArrayRT(const Image8U::Size& size, unsigned flags=0) { reportCudaError(Reset(size, flags)); }
-	inline TArrayRT(unsigned width, unsigned height, unsigned depth=0, unsigned flags=0) { reportCudaError(Reset(width, height, depth, flags)); }
+	inline TArrayRT(const Image8U::Size& size, unsigned flags=0) : hArray(NULL) { reportCudaError(Reset(size, flags)); }
+	inline TArrayRT(unsigned width, unsigned height, unsigned depth=0, unsigned flags=0) : hArray(NULL) { reportCudaError(Reset(width, height, depth, flags)); }
 	inline ~TArrayRT() { Release(); }
 
 	TArrayRT(TArrayRT& rhs) : hArray(rhs.hArray) { rhs.hArray = NULL; }
@@ -578,8 +531,7 @@ public:
 
 	// copy some data from host memory to device memory
 	CUresult SetData(const ImageType& image) {
-		ASSERT(IsValid());
-		ASSERT(image.width() == Width() && image.height() == Height());
+		ASSERT(IsValid() && !image.empty());
 		CUDA_MEMCPY2D param;
 		memset(&param, 0, sizeof(CUDA_MEMCPY2D));
 		param.dstMemoryType = CU_MEMORYTYPE_ARRAY;
@@ -594,8 +546,7 @@ public:
 
 	// copy data from device memory to host memory
 	CUresult GetData(ImageType& image) const {
-		ASSERT(IsValid());
-		image.create(Height(), Width());
+		ASSERT(IsValid() && !image.empty());
 		CUDA_MEMCPY2D param;
 		memset(&param, 0, sizeof(CUDA_MEMCPY2D));
 		param.dstMemoryType = CU_MEMORYTYPE_HOST;
@@ -610,6 +561,7 @@ public:
 };
 typedef TArrayRT<uint8_t> ArrayRT8U;
 typedef TArrayRT<uint32_t> ArrayRT32U;
+typedef TArrayRT<hfloat> ArrayRT16F;
 typedef TArrayRT<float> ArrayRT32F;
 /*----------------------------------------------------------------*/
 
@@ -677,6 +629,7 @@ public:
 };
 typedef TTextureRT<uint8_t> TextureRT8U;
 typedef TTextureRT<uint32_t> TextureRT32U;
+typedef TTextureRT<hfloat> TextureRT16F;
 typedef TTextureRT<float> TextureRT32F;
 /*----------------------------------------------------------------*/
 
@@ -722,21 +675,20 @@ public:
 	}
 
 	// bind the given array to the surface
-	CUresult Bind(ArrayType& array) {
+	CUresult Bind(const ArrayType& array) {
 		return cuSurfRefSetArray(hSurfref, array, 0);
 	}
 
 	// fetch the array bind to the surface
-	CUresult Fetch(ArrayType& array) {
+	CUresult Fetch(const ArrayType& array) const {
 		return cuSurfRefGetArray(hSurfref, array);
 	}
 };
 typedef TSurfaceRT<uint8_t> SurfaceRT8U;
 typedef TSurfaceRT<uint32_t> SurfaceRT32U;
+typedef TSurfaceRT<hfloat> SurfaceRT16F;
 typedef TSurfaceRT<float> SurfaceRT32F;
 /*----------------------------------------------------------------*/
-
-#endif // __CUDA_RUNTIME_H__
 
 } // namespace CUDA
 

@@ -231,14 +231,13 @@ int main(int argc, LPCTSTR* argv)
 	}
 	TD_TIMER_START();
 	#ifdef _USE_CUDA
-	if (OPT::bUseCUDA)
-	scene.RefineMeshCUDA(OPT::nResolutionLevel, OPT::nMinResolution, OPT::nMaxViews,
-						 OPT::fDecimateMesh, OPT::nCloseHoles, OPT::nEnsureEdgeSize,
-						 OPT::nMaxFaceArea,
-						 OPT::nScales, OPT::fScaleStep,
-						 OPT::fRegularityWeight,
-						 OPT::fGradientStep);
-	else
+	if (!OPT::bUseCUDA ||
+		!scene.RefineMeshCUDA(OPT::nResolutionLevel, OPT::nMinResolution, OPT::nMaxViews,
+							  OPT::fDecimateMesh, OPT::nCloseHoles, OPT::nEnsureEdgeSize,
+							  OPT::nMaxFaceArea,
+							  OPT::nScales, OPT::fScaleStep,
+							  OPT::fRegularityWeight,
+							  OPT::fGradientStep))
 	#endif
 	scene.RefineMesh(OPT::nResolutionLevel, OPT::nMinResolution, OPT::nMaxViews,
 					 OPT::fDecimateMesh, OPT::nCloseHoles, OPT::nEnsureEdgeSize,

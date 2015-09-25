@@ -285,8 +285,6 @@ DEFINE_CVDATATYPE(SEACAVE::Matrix2x2d)
 DEFINE_CVDATATYPE(SEACAVE::Matrix3x3d)
 DEFINE_CVDATATYPE(SEACAVE::Matrix3x4d)
 DEFINE_CVDATATYPE(SEACAVE::Matrix4x4d)
-
-DEFINE_CVDATATYPE(SEACAVE::cuint32_t)
 /*----------------------------------------------------------------*/
 
 #endif // _COMMON_COMMON_H_

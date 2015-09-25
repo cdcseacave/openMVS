@@ -2611,6 +2611,8 @@ void Mesh::EnsureEdgeSize(float epsilonMin, float epsilonMax, float collapseRati
 // is bigger than the given number of pixels
 void Mesh::SubdivideMesh(const AreaArr& maxAreas, uint32_t maxArea)
 {
+	ASSERT(vertexFaces.GetSize() == vertices.GetSize());
+
 	// each face that needs to split, remember for each edge the new vertex index
 	// (each new vertex index corresponds to the edge opposed to the existing vertex index)
 	struct SplitFace {
