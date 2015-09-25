@@ -212,7 +212,6 @@ bool DepthMapsData::SelectViews(IndexArr& images, IndexArr& imagesMap, IndexArr&
 	const float fSamePairwise = 24.f*OPTDENSE::fPairwiseMul;
 	const size_t _num_labels = OPTDENSE::nMaxViews+1; // N neighbors and an empty state
 	const size_t _num_nodes = images.GetSize();
-	const size_t _num_edges = edges.size();
 	typedef MRFEnergy<TypeGeneral> MRFEnergyType;
 	CAutoPtr<MRFEnergyType> energy(new MRFEnergyType(TypeGeneral::GlobalSize()));
 	CAutoPtrArr<MRFEnergyType::NodeId> nodes(new MRFEnergyType::NodeId[_num_nodes]);
@@ -1253,9 +1252,9 @@ void DepthMapsData::FuseFilterDepthMaps(PointCloud& pointcloud, bool bEstimateNo
 	pointcloud.points.Reserve(nPointsEstimate);
 	pointcloud.pointViews.Reserve(nPointsEstimate);
 	pointcloud.pointWeights.Reserve(nPointsEstimate);
-	FOREACH(i, connections) {
+	FOREACHPTR(pConnection, connections) {
 		TD_TIMER_STARTD();
-		const uint32_t idxImage(connections[i].idx);
+		const uint32_t idxImage(pConnection->idx);
 		DepthData& depthData(arrDepthData[idxImage]);
 		ASSERT(!depthData.images.IsEmpty() && !depthData.neighbors.IsEmpty());
 		FOREACHPTR(pNeighbor, depthData.neighbors) {
@@ -1403,8 +1402,8 @@ struct DenseDepthMapData {
 	SEACAVE::EventQueue events; // internal events queue (processed by the working threads)
 	Semaphore sem;
 
-	DenseDepthMapData(Scene& _scene, unsigned nNumViews=1)
-		: scene(_scene), detphMaps(_scene), sem(1), idxImage(0) {}
+	DenseDepthMapData(Scene& _scene)
+		: scene(_scene), detphMaps(_scene), idxImage(0), sem(1) {}
 
 	void SignalCompleteDepthmapFilter() {
 		ASSERT(idxImage > 0);

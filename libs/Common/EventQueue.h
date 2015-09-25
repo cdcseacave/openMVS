@@ -31,7 +31,7 @@ public:
 
 	uint32_t GetID() const { return id; }
 
-	virtual bool Run(void* pArgs) { return true; }
+	virtual bool Run(void* /*pArgs*/) { return true; }
 
 private:
 	const uint32_t id;

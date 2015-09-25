@@ -2241,8 +2241,8 @@ protected:
 	template<class Archive>
 	void save(Archive& ar, const unsigned int /*version*/) const {
 		if (empty()) {
-			const int size(0);
-			ar & size;
+			const int sz(0);
+			ar & sz;
 			return;
 		}
 		ar & cols;
@@ -2517,7 +2517,8 @@ template <typename Precision>
 class SO3
 {
 public:
-	friend std::istream& operator>>(std::istream& is, SO3& rhs);
+	template <typename P>
+	friend std::istream& operator>>(std::istream& is, SO3<P>& rhs);
 
 	typedef Matrix<Precision,3,3,Eigen::RowMajor> Mat3;
 	typedef Matrix<Precision,3,1> Vec3;
@@ -2639,7 +2640,8 @@ template<typename Precision>
 class SO2
 {
 public:
-	friend std::istream& operator>>(std::istream&, SO2&);
+	template <typename P>
+	friend std::istream& operator>>(std::istream&, SO2<P>&);
 
 	typedef Matrix<Precision,2,2,Eigen::RowMajor> Mat2;
 

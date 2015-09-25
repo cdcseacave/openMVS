@@ -378,7 +378,7 @@ public:
 	inline CUresult GetResult(const MemDevice& memDev, const ReturnParam& param) const {
 		return memDev.GetData(param.data, param.size);
 	}
-	inline CUresult KernelRT::GetResult(int idx, const ReturnParam& param) const {
+	inline CUresult GetResult(int idx, const ReturnParam& param) const {
 		return GetResult(outDatas[idx], param);
 	}
 	template <typename TYPE>

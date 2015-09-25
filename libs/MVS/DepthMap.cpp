@@ -266,7 +266,7 @@ DepthEstimator::DepthEstimator(DepthData& _depthData0, volatile Thread::safe_t& 
 	image0Sum(_image0Sum), coords(_coords), size(_depthData0.images.First().image.size()),
 	idxScore((_depthData0.images.GetSize()-1)/3), dir(_dir),
 	dMin(_depthData0.dMin), dMax(_depthData0.dMax),
-	neighbors(0,2), neighborsData(0,4),
+	neighborsData(0,4), neighbors(0,2),
 	smoothBonusDepth(OPTDENSE::fRandomSmoothBonus), smoothBonusNormal(OPTDENSE::fRandomSmoothBonus*0.98f),
 	smoothSigmaDepth(-1.f/(2.f*SQUARE(OPTDENSE::fRandomSmoothDepth))), // used in exp(-x^2 / (2*(0.005^2)))
 	smoothSigmaNormal(-1.f/(2.f*SQUARE(FD2R(OPTDENSE::fRandomSmoothNormal)))), // used in exp(-x^2 / (2*(0.15^2)))

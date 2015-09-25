@@ -724,7 +724,7 @@ void MeshRefine::ImageMeshWarp(
 {
 	ASSERT(!imageA.empty());
 	mask.create(imageA.size());
-	typedef Sampler::Linear<REAL> Sampler;
+	typedef Sampler::Linear<float> Sampler;
 	const Sampler sampler;
 	imageA.memset(0);
 	mask.memset(0);
@@ -738,7 +738,7 @@ void MeshRefine::ImageMeshWarp(
 			const Point2f pt(cameraB.TransformPointC2I(ptC));
 			if (!IsDepthSimilar(depthMapB, pt, ptC.z))
 				continue;
-			imageA(j,i) = (float)imageB.sample<Sampler,Sampler::Type>(sampler, pt);
+			imageA(j,i) = imageB.sample<Sampler,Sampler::Type>(sampler, pt);
 			mask(j,i) = 1;
 		}
 	}
