@@ -390,7 +390,6 @@ typedef class GENERAL_API cList<double, double, 0>      DoubleArr;
 #include "SML.h"
 #include "ConfigTable.h"
 #include "HTMLDoc.h"
-#include "CUDA.h"
 
 
 // D E F I N E S ///////////////////////////////////////////////////
@@ -2706,5 +2705,6 @@ private:
 #include "Ray.h"
 #include "Octree.h"
 #include "Util.inl"
+#include "CUDA.h"
 
 #endif // __SEACAVE_TYPES_H__

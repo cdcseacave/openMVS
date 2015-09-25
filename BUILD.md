@@ -2,7 +2,7 @@
 Dependencies
 ------------
 
-OpenMVS relies on a number of open source libraries, some of which are optional. For details on customizing the build process, see the compilation instructions.
+*OpenMVS* relies on a number of open source libraries, some of which are optional. For details on customizing the build process, see the compilation instructions.
 * [Eigen](http://eigen.tuxfamily.org) version 3.2 or higher
 * [OpenCV](http://opencv.org) version 2.4 or higher
 * [Ceres](http://ceres-solver.org) version 1.10 or higher
@@ -54,7 +54,7 @@ Linux compilation
 [Ubuntu](http://www.ubuntu.com) is used next as the example linux distribution.
 
 ```
-# Getting the OpenMVG sources:
+# Getting the OpenMVS sources:
 git clone https://github.com/cdcseacave/openMVS.git
 
 ##
@@ -111,8 +111,52 @@ cmake . ../openMVS -DCMAKE_BUILD_TYPE=RELEASE -DVCG_DIR="$main_path/vcglib" -DCE
 -DOpenMVG_DIR:STRING="$main_path/openMVG_Build/openMVG_install/share/openMVG/cmake/"
 ```
 
+Default compilation settings of OpenMVS reveals some tiny compilation error in VCG. Here the fixes:
+
+```
+Index: vcg/complex/algorithms/clean.h
+===================================================================
+--- vcg/complex/algorithms/clean.h	(revision 5553)
++++ vcg/complex/algorithms/clean.h	(working copy)
+@@ -452,7 +452,7 @@
+     return count_removed;
+   }
+ 
+-  static int SplitSelectedVertexOnEdgeMesh(MeshType& m)
++  static void SplitSelectedVertexOnEdgeMesh(MeshType& m)
+   {
+     tri::RequireCompactness(m);
+     tri::UpdateFlags<MeshType>::VertexClearV(m);
+Index: vcg/complex/algorithms/hole.h
+===================================================================
+--- vcg/complex/algorithms/hole.h	(revision 5553)
++++ vcg/complex/algorithms/hole.h	(working copy)
+@@ -98,6 +98,7 @@
+     ComputeQuality();
+     ComputeAngle();
+   }
++  virtual ~TrivialEar() {}
+ 
+   /// Compute the angle of the two edges of the ear.
+   // it tries to make the computation in a precision safe way.
+```
+
 --------------------
 Mac OS X compilation
 --------------------
 
 Not tested, any help testing on this platform is welcome.
+
+```
+# Install dependencies using [MacPorts](http://www.macports.org):
+sudo port install opencv boost cgal ceres-solver eigen3
+
+# Getting the OpenMVS sources:
+git clone https://github.com/cdcseacave/openMVS.git
+
+# Build
+mkdir bin
+cd bin
+cmake . <OpenMVS_path> -DCMAKE_BUILD_TYPE=RELEASE -DVCG_DIR="<vcglib_path>" -DCGAL_DIR="/opt/local/share/CGAL" -DCERES_DIR="/opt/local/share/Ceres"
+make -j4
+```

@@ -114,28 +114,6 @@ struct MeshRefine {
 		}
 	};
 
-	// each face that needs to split, remember for each edge the new vertex index
-	// (each new vertex index corresponds to the edge opposed to the existing vertex index)
-	struct SplitFace {
-		VIndex idxVert[3];
-		bool bSplit;
-		enum {NO_VERT = (VIndex)-1};
-		inline SplitFace() : bSplit(false) { memset(idxVert, 0xFF, sizeof(VIndex)*3); }
-		static VIndex FindSharedEdge(const Face& f, const Face& a) {
-			for (int i=0; i<2; ++i) {
-				const VIndex v(f[i]);
-				if (v != a[0] && v != a[1] && v != a[2])
-					return i;
-			}
-			ASSERT(f[2] != a[0] && f[2] != a[1] && f[2] != a[2]);
-			return 2;
-		}
-	};
-	typedef std::unordered_map<FIndex,SplitFace> FacetSplitMap;
-
-	// used to find adjacent face
-	typedef Mesh::FacetCountMap FacetCountMap;
-
 
 public:
 	MeshRefine(Scene& _scene, Real _weightRegularity=1.5f, unsigned _nResolutionLevel=0, unsigned _nMinResolution=640, unsigned nMaxViews=8, unsigned nMaxThreads=1);
@@ -147,8 +125,7 @@ public:
 	void ListVertexFacesPost();
 	void ListCameraFaces();
 
-	typedef cList<uint16_t,uint16_t,0> AreaArr;
-	void ListFaceAreas(AreaArr& maxAreas);
+	void ListFaceAreas(Mesh::AreaArr& maxAreas);
 	void SubdivideMesh(uint32_t maxArea, float fDecimate=1.f, unsigned nCloseHoles=15, unsigned nEnsureEdgeSize=1);
 
 	double ScoreMesh(double* gradients);
@@ -404,7 +381,7 @@ void MeshRefine::ListCameraFaces()
 	};
 	typedef TOctree<Mesh::VertexArr,float,3> Octree;
 	const Octree octree(vertices);
-	#if 1 && !defined(_RELEASE)
+	#if 0 && !defined(_RELEASE)
 	Octree::DEBUGINFO_TYPE info;
 	octree.GetDebugInfo(&info);
 	Octree::LogDebugInfo(info);
@@ -429,24 +406,24 @@ void MeshRefine::ListCameraFaces()
 
 // compute for each face the projection area as the maximum area in both images of a pair
 // (make sure ListCameraFaces() was called before)
-void MeshRefine::ListFaceAreas(AreaArr& maxAreas)
+void MeshRefine::ListFaceAreas(Mesh::AreaArr& maxAreas)
 {
 	ASSERT(maxAreas.IsEmpty());
 	// for each image, compute the projection area of visible faces
-	typedef cList<AreaArr> ImageAreaArr;
+	typedef cList<Mesh::AreaArr> ImageAreaArr;
 	ImageAreaArr viewAreas(images.GetSize());
 	FOREACH(idxImage, images) {
 		const Image& imageData = images[idxImage];
 		if (!imageData.IsValid())
 			continue;
-		AreaArr& areas = viewAreas[idxImage];
+		Mesh::AreaArr& areas = viewAreas[idxImage];
 		areas.Resize(faces.GetSize());
 		areas.Memset(0);
 		const FaceMap& faceMap = views[idxImage].faceMap;
 		// compute area covered by all vertices (incident faces) viewed by this image
 		for (int j=0; j<faceMap.rows; ++j) {
 			for (int i=0; i<faceMap.cols; ++i) {
-				const FIndex& idxFace = faceMap(j,i);
+				const FIndex idxFace(faceMap(j,i));
 				ASSERT((idxFace == NO_ID && views[idxImage].depthMap(j,i) == 0) || (idxFace != NO_ID && views[idxImage].depthMap(j,i) > 0));
 				if (idxFace == NO_ID)
 					continue;
@@ -458,8 +435,8 @@ void MeshRefine::ListFaceAreas(AreaArr& maxAreas)
 	maxAreas.Resize(faces.GetSize());
 	maxAreas.Memset(0);
 	FOREACHPTR(pPair, pairs) {
-		const AreaArr& areasA = viewAreas[pPair->i];
-		const AreaArr& areasB = viewAreas[pPair->j];
+		const Mesh::AreaArr& areasA = viewAreas[pPair->i];
+		const Mesh::AreaArr& areasB = viewAreas[pPair->j];
 		ASSERT(areasA.GetSize() == areasB.GetSize());
 		FOREACH(f, areasA) {
 			const uint16_t minArea(MINF(areasA[f], areasB[f]));
@@ -474,7 +451,7 @@ void MeshRefine::ListFaceAreas(AreaArr& maxAreas)
 // its projection area is bigger than the given number of pixels in both images
 void MeshRefine::SubdivideMesh(uint32_t maxArea, float fDecimate, unsigned nCloseHoles, unsigned nEnsureEdgeSize)
 {
-	AreaArr maxAreas;
+	Mesh::AreaArr maxAreas;
 
 	// first decimate if necessary
 	const bool bNoDecimation(fDecimate >= 1.f);
@@ -501,7 +478,7 @@ void MeshRefine::SubdivideMesh(uint32_t maxArea, float fDecimate, unsigned nClos
 			ASSERT(!maxAreas.IsEmpty());
 
 			const float maxArea((float)(maxArea > 0 ? maxArea : 64));
-			const float medianArea(6.f*(float)AreaArr(maxAreas).GetMedian());
+			const float medianArea(6.f*(float)Mesh::AreaArr(maxAreas).GetMedian());
 			if (medianArea < maxArea) {
 				maxAreas.Empty();
 
@@ -530,157 +507,10 @@ void MeshRefine::SubdivideMesh(uint32_t maxArea, float fDecimate, unsigned nClos
 		ListFaceAreas(maxAreas);
 	}
 
-	// for each image, compute the projection area of visible faces
+	// subdivide mesh faces if its projection area is bigger than the given number of pixels
 	const size_t numVertsOld(vertices.GetSize());
 	const size_t numFacesOld(faces.GetSize());
-	FacetSplitMap mapSplits; mapSplits.reserve(faces.GetSize());
-	FacetCountMap mapFaces; mapFaces.reserve(12*3);
-	vertices.Reserve(vertices.GetSize()*2);
-	faces.Reserve(faces.GetSize()*3);
-	FOREACH(f, maxAreas) {
-		const AreaArr::Type area(maxAreas[f]);
-		if (area <= maxArea)
-			continue;
-		// split face in four triangles
-		// by adding a new vertex at the middle of each edge
-		faces.ReserveExtra(4);
-		Face& newface = faces.AddEmpty(); // defined by the three new vertices
-		const Face& face = faces[(FIndex)f];
-		SplitFace& split = mapSplits[(FIndex)f];
-		for (int i=0; i<3; ++i) {
-			// if the current edge was already split, used the existing vertex
-			if (split.idxVert[i] != SplitFace::NO_VERT) {
-				newface[i] = split.idxVert[i];
-				continue;
-			}
-			// create a new vertex at the middle of the current edge
-			// (current edge is the opposite edge to the current vertex index)
-			split.idxVert[i] = newface[i] = vertices.GetSize();
-			vertices.AddConstruct((vertices[face[(i+1)%3]]+vertices[face[(i+2)%3]])*0.5f);
-		}
-		// create the last three faces, defined by one old and two new vertices
-		for (int i=0; i<3; ++i) {
-			Face& nf = faces.AddEmpty();
-			nf[0] = face[i];
-			nf[1] = newface[(i+2)%3];
-			nf[2] = newface[(i+1)%3];
-		}
-		split.bSplit = true;
-		// find all three adjacent faces and inform them of the split
-		ASSERT(mapFaces.empty());
-		for (int i=0; i<3; ++i) {
-			const Mesh::FaceIdxArr& vf = vertexFaces[face[i]];
-			FOREACHPTR(pFace, vf)
-				++mapFaces[*pFace].count;
-		}
-		for (const auto& fc: mapFaces) {
-			ASSERT(fc.second.count <= 2 || (fc.second.count == 3 && fc.first == f));
-			if (fc.second.count != 2)
-				continue;
-			if (fc.first < f && maxAreas[fc.first] > maxArea) {
-				// already fully split, nothing to do
-				ASSERT(mapSplits[fc.first].idxVert[SplitFace::FindSharedEdge(faces[fc.first], face)] == newface[SplitFace::FindSharedEdge(face, faces[fc.first])]);
-				continue;
-			}
-			const VIndex idxVertex(newface[SplitFace::FindSharedEdge(face, faces[fc.first])]);
-			VIndex& idxSplit = mapSplits[fc.first].idxVert[SplitFace::FindSharedEdge(faces[fc.first], face)];
-			ASSERT(idxSplit == SplitFace::NO_VERT || idxSplit == idxVertex);
-			idxSplit = idxVertex;
-		}
-		mapFaces.clear();
-	}
-
-	// add all faces partially split
-	int indices[3];
-	for (const auto& s: mapSplits) {
-		const SplitFace& split = s.second;
-		if (split.bSplit)
-			continue;
-		int count(0);
-		for (int i=0; i<3; ++i) {
-			if (split.idxVert[i] != SplitFace::NO_VERT)
-				indices[count++] = i;
-		}
-		ASSERT(count > 0);
-		faces.ReserveExtra(4);
-		const Face& face = faces[s.first];
-		switch (count) {
-		case 1: {
-			// one edge is split; create two triangles
-			const int i(indices[0]);
-			Face& nf0 = faces.AddEmpty();
-			nf0[0] = split.idxVert[i];
-			nf0[1] = face[(i+2)%3];
-			nf0[2] = face[i];
-			Face& nf1 = faces.AddEmpty();
-			nf1[0] = split.idxVert[i];
-			nf1[1] = face[i];
-			nf1[2] = face[(i+1)%3];
-			break; }
-		case 2: {
-			// two edges are split; create three triangles
-			const int i0(indices[0]);
-			const int i1(indices[1]);
-			Face& nf0 = faces.AddEmpty();
-			Face& nf1 = faces.AddEmpty();
-			Face& nf2 = faces.AddEmpty();
-			if (i0==0) {
-				if (i1==1) {
-					nf0[0] = split.idxVert[1];
-					nf0[1] = split.idxVert[0];
-					nf0[2] = face[2];
-					nf1[0] = face[0];
-					nf1[1] = face[1];
-					nf1[2] = split.idxVert[0];
-					nf2[0] = face[0];
-					nf2[1] = split.idxVert[0];
-					nf2[2] = split.idxVert[1];
-				} else {
-					nf0[0] = split.idxVert[2];
-					nf0[1] = face[1];
-					nf0[2] = split.idxVert[0];
-					nf1[0] = face[0];
-					nf1[1] = split.idxVert[2];
-					nf1[2] = face[2];
-					nf2[0] = split.idxVert[2];
-					nf2[1] = split.idxVert[0];
-					nf2[2] = face[2];
-				}
-			} else {
-				ASSERT(i0==1 && i1==2);
-				nf0[0] = face[0];
-				nf0[1] = split.idxVert[2];
-				nf0[2] = split.idxVert[1];
-				nf1[0] = split.idxVert[1];
-				nf1[1] = face[1];
-				nf1[2] = face[2];
-				nf2[0] = split.idxVert[2];
-				nf2[1] = face[1];
-				nf2[2] = split.idxVert[1];
-			}
-			break; }
-		case 3: {
-			// all three edges are split; create four triangles
-			// create the new triangle in the middle
-			Face& newface = faces.AddEmpty();
-			newface[0] = split.idxVert[0];
-			newface[1] = split.idxVert[1];
-			newface[2] = split.idxVert[2];
-			// create the last three faces, defined by one old and two new vertices
-			for (int i=0; i<3; ++i) {
-				Face& nf = faces.AddEmpty();
-				nf[0] = face[i];
-				nf[1] = newface[(i+2)%3];
-				nf[2] = newface[(i+1)%3];
-			}
-			break; }
-		}
-	}
-
-	// remove all faces that split
-	ASSERT(faces.GetSize()-(faces.GetCapacity()/3)/*initial size*/ > mapSplits.size());
-	for (const auto& s: mapSplits)
-		faces.RemoveAt(s.first);
+	scene.mesh.SubdivideMesh(maxAreas, maxArea);
 
 	#ifdef MESHOPT_ENSUREEDGESIZE
 	// make sure there are no edges too small or too long
@@ -1581,65 +1411,62 @@ bool Scene::RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsig
 		#endif
 
 		// minimize
-		if (fGradientStep >= -1.f) {
-		//#if 0
-		// DefineProblem
-		ceres::MeshProblem* problemData(new ceres::MeshProblem(refine));
-		ceres::GradientProblem problem(problemData);
-		// SetMinimizerOptions
-		ceres::GradientProblemSolver::Options options;
-		if (VERBOSITY_LEVEL > 1) {
-			options.logging_type = ceres::LoggingType::PER_MINIMIZER_ITERATION;
-			options.minimizer_progress_to_stdout = true;
-		} else {
-			options.logging_type = ceres::LoggingType::SILENT;
-			options.minimizer_progress_to_stdout = false;
-		}
-		options.function_tolerance = 1e-3;
-		options.gradient_tolerance = 1e-7;
-		options.max_num_line_search_step_size_iterations = 10;
-		ceres::GradientProblemSolver::Summary summary;
-		// SolveProblem
-		ceres::Solve(options, problem, problemData->GetParameters(), &summary);
-		DEBUG_ULTIMATE(summary.FullReport().c_str());
-		switch (summary.termination_type) {
-		case ceres::TerminationType::NO_CONVERGENCE:
-			DEBUG_EXTRA("CERES: maximum number of iterations reached!");
-		case ceres::TerminationType::CONVERGENCE:
-		case ceres::TerminationType::USER_SUCCESS:
-			break;
-		default:
-			VERBOSE("CERES surface refine error: %s!", summary.message.c_str());
-			return false;
-		}
-		ASSERT(summary.IsSolutionUsable());
-		problemData->ApplyParams();
-		} else {
-		//#else
-		// loop a constant number of iterations and apply the gradient
-		int iters(25);
-		double gstep(0.05);
-		if (fGradientStep < 0) {
-			iters = FLOOR2INT(-fGradientStep);
-			gstep = (-fGradientStep-(float)iters)*10;
-		}
-		iters = MAXF(iters/(int)(nScale+1),8);
-		Eigen::Matrix<double,Eigen::Dynamic,3,Eigen::RowMajor> gradients(refine.vertices.GetSize(),3);
-		for (int iter=0; iter<iters; ++iter) {
-			// evaluate residuals and gradients
-			const double cost = refine.ScoreMesh(gradients.data());
-			// apply gradients
-			double gv(0);
-			FOREACH(v, refine.vertices) {
-				Vertex& vert = refine.vertices[v];
-				vert -= Vertex((gradients.row(v)*gstep).cast<float>());
-				gv += gradients.row(v).norm();
+		if (fGradientStep == 0) {
+			// DefineProblem
+			ceres::MeshProblem* problemData(new ceres::MeshProblem(refine));
+			ceres::GradientProblem problem(problemData);
+			// SetMinimizerOptions
+			ceres::GradientProblemSolver::Options options;
+			if (VERBOSITY_LEVEL > 1) {
+				options.logging_type = ceres::LoggingType::PER_MINIMIZER_ITERATION;
+				options.minimizer_progress_to_stdout = true;
+			} else {
+				options.logging_type = ceres::LoggingType::SILENT;
+				options.minimizer_progress_to_stdout = false;
 			}
-			DEBUG_EXTRA("% 2d. f: %g (%g)\tg: %g (%g - %g)\ts: %g", iter, cost, cost/refine.vertices.GetSize(), gradients.norm(), gradients.norm()/refine.vertices.GetSize(), gv/refine.vertices.GetSize(), gstep);
-			gstep *= 0.98;
+			options.function_tolerance = 1e-3;
+			options.gradient_tolerance = 1e-7;
+			options.max_num_line_search_step_size_iterations = 10;
+			ceres::GradientProblemSolver::Summary summary;
+			// SolveProblem
+			ceres::Solve(options, problem, problemData->GetParameters(), &summary);
+			DEBUG_ULTIMATE(summary.FullReport().c_str());
+			switch (summary.termination_type) {
+			case ceres::TerminationType::NO_CONVERGENCE:
+				DEBUG_EXTRA("CERES: maximum number of iterations reached!");
+			case ceres::TerminationType::CONVERGENCE:
+			case ceres::TerminationType::USER_SUCCESS:
+				break;
+			default:
+				VERBOSE("CERES surface refine error: %s!", summary.message.c_str());
+				return false;
+			}
+			ASSERT(summary.IsSolutionUsable());
+			problemData->ApplyParams();
+		} else {
+			// loop a constant number of iterations and apply the gradient
+			int iters(75);
+			double gstep(0.4);
+			if (fGradientStep > 1) {
+				iters = FLOOR2INT(fGradientStep);
+				gstep = (fGradientStep-(float)iters)*10;
+			}
+			iters = MAXF(iters/(int)(nScale+1),8);
+			Eigen::Matrix<double,Eigen::Dynamic,3,Eigen::RowMajor> gradients(refine.vertices.GetSize(),3);
+			for (int iter=0; iter<iters; ++iter) {
+				// evaluate residuals and gradients
+				const double cost = refine.ScoreMesh(gradients.data());
+				// apply gradients
+				double gv(0);
+				FOREACH(v, refine.vertices) {
+					Vertex& vert = refine.vertices[v];
+					vert -= Vertex((gradients.row(v)*gstep).cast<float>());
+					gv += gradients.row(v).norm();
+				}
+				DEBUG_EXTRA("\t%2d. f: %.5f (%.4e)\tg: %.5f (%.4e - %.4e)\ts: %.3f", iter, cost, cost/refine.vertices.GetSize(), gradients.norm(), gradients.norm()/refine.vertices.GetSize(), gv/refine.vertices.GetSize(), gstep);
+				gstep *= 0.98;
+			}
 		}
-		}
-		//#endif
 
 		#if TD_VERBOSE != TD_VERBOSE_OFF
 		if (VERBOSITY_LEVEL > 2)

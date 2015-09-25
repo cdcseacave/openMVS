@@ -60,7 +60,8 @@ int convertSMVer2Cores(int major, int minor)
 int gpuCheckDeviceId(int devID)
 {
 	int device_count;
-	checkCudaErrors(cudaGetDeviceCount(&device_count));
+	if (reportCudaError(cudaGetDeviceCount(&device_count)) != CUDA_SUCCESS)
+		return -1;
 	if (device_count == 0) {
 		VERBOSE("CUDA error: no devices supporting CUDA");
 		return -1;
@@ -72,7 +73,8 @@ int gpuCheckDeviceId(int devID)
 		return -1;
 	}
 	cudaDeviceProp deviceProp;
-	checkCudaErrors(cudaGetDeviceProperties(&deviceProp, devID));
+	if (reportCudaError(cudaGetDeviceProperties(&deviceProp, devID)) != CUDA_SUCCESS)
+		return -1;
 	if (deviceProp.computeMode == cudaComputeModeProhibited) {
 		VERBOSE("CUDA error: device is running in <Compute Mode Prohibited>, no threads can use ::cudaSetDevice()");
 		return -1;
@@ -81,7 +83,8 @@ int gpuCheckDeviceId(int devID)
 		VERBOSE("CUDA error: GPU device does not support CUDA");
 		return -1;
 	}
-	checkCudaErrors(cudaSetDevice(devID));
+	if (reportCudaError(cudaSetDevice(devID)) != CUDA_SUCCESS)
+		return -1;
 	return devID;
 }
 
@@ -98,7 +101,8 @@ int gpuGetMaxGflopsDeviceId()
 	cudaDeviceProp deviceProp;
 	cudaGetDeviceCount(&device_count);
 
-	checkCudaErrors(cudaGetDeviceCount(&device_count));
+	if (reportCudaError(cudaGetDeviceCount(&device_count)) != CUDA_SUCCESS)
+		return -1;
 	if (device_count == 0) {
 		VERBOSE("CUDA error: no devices supporting CUDA");
 		return -1;
@@ -174,33 +178,41 @@ CUresult initDevice(int deviceID)
 		// Otherwise pick the device with the highest Gflops/s
 		device.ID = gpuGetMaxGflopsDeviceId();
 	}
-	if (device.ID < 0) {
+	if (device.ID == NO_ID) {
 		VERBOSE("error: no CUDA capable devices found");
 		return CUDA_ERROR_NO_DEVICE;
 	}
-	checkCudaErrors(cudaSetDevice(device.ID));
+	checkCudaError(cudaSetDevice(device.ID));
 
-	checkCudaErrors(cudaGetDeviceProperties(&device.prop, device.ID));
+	checkCudaError(cudaGetDeviceProperties(&device.prop, device.ID));
 	if (device.prop.major < 2) {
 		VERBOSE("CUDA error: compute capability 2.0 or greater required (available %d.%d for device[%d])", device.ID, device.prop.major, device.prop.minor);
 		return CUDA_ERROR_INVALID_DEVICE;
 	}
 	devices.Insert(device);
-	DEBUG("CUDA device[%d] initialized: %s (Compute Capability %d.%d)", device.ID, device.prop.name, device.prop.major, device.prop.minor);
 
 	#if 1
 	// dummy memory allocation to work around a bug inside CUDA
 	// (this seems to initialize some more things)
+	{
 	void* cpDummy;
-	cudaMalloc(&cpDummy, sizeof(int));
+	while (cudaMalloc(&cpDummy, sizeof(float)*256) != cudaSuccess);
 	cudaFree(cpDummy);
+	}
+	#endif
+
+	#if TD_VERBOSE != TD_VERBOSE_OFF
+	size_t memFree, memSize;
+	checkCudaError(cudaMemGetInfo(&memFree, &memSize));
+	DEBUG("CUDA device[%d] initialized: %s (compute capability %d.%d; memory %s)", device.ID, device.prop.name, device.prop.major, device.prop.minor, Util::formatBytes(memSize).c_str());
 	#endif
 	return CUDA_SUCCESS;
 }
 
-// load/read kernel from 'program' file/string, compile and return the requested function
-CUresult ptxJIT(const char* program, const char* functionName, CUmodule *phModule, CUfunction *phKernel, CUlinkState *lState, bool bFromFile)
+// load/read module (program) from file/string and compile it
+CUresult ptxJIT(LPCSTR program, CUmodule& hModule, int mode)
 {
+	CUlinkState lState;
 	CUjit_option options[6];
 	void *optionVals[6];
 	float walltime(0);
@@ -230,102 +242,215 @@ CUresult ptxJIT(const char* program, const char* functionName, CUmodule *phModul
 	optionVals[5] = (void*)1;
 
 	// Create a pending linker invocation
-	checkCudaErrors(cuLinkCreate(6, options, optionVals, lState));
+	checkCudaError(cuLinkCreate(6, options, optionVals, &lState));
 
-	DEBUG("Loading '%s' program", functionName);
+	const size_t programLen(strlen(program));
 	CUresult myErr;
-	if (bFromFile) {
-		// Load the PTX from the file (64-bit)
-		myErr = cuLinkAddFile(*lState, CU_JIT_INPUT_PTX, program, 0, 0, 0);
+	if (mode == JIT::FILE || (mode == JIT::AUTO && programLen < 256)) {
+		// Load the PTX from the file
+		myErr = cuLinkAddFile(lState, CU_JIT_INPUT_PTX, program, 0, 0, 0);
 	} else {
-		// Load the PTX from the string myPtx (64-bit)
-		myErr = cuLinkAddData(*lState, CU_JIT_INPUT_PTX, (void*)program, strlen(program)+1, 0, 0, 0, 0);
+		// Load the PTX from the string
+		myErr = cuLinkAddData(lState, CU_JIT_INPUT_PTX, (void*)program, programLen+1, 0, 0, 0, 0);
 	}
 	if (myErr != CUDA_SUCCESS) {
-		// Errors will be put in error_log, per CU_JIT_ERROR_LOG_BUFFER option above.
+		// Errors will be put in error_log, per CU_JIT_ERROR_LOG_BUFFER option above
 		VERBOSE("PTX Linker Error: %s", error_log);
 		return myErr;
 	}
 
 	// Complete the linker step
-	checkCudaErrors(cuLinkComplete(*lState, &cuOut, &outSize));
+	checkCudaError(cuLinkComplete(lState, &cuOut, &outSize));
 
-	// Linker walltime and info_log were requested in options above.
-	DEBUG("CUDA link completed (%gms):\n%s", walltime, info_log);
+	// Linker walltime and info_log were requested in options above
+	DEBUG_LEVEL(3, "CUDA link completed (%gms):\n%s", walltime, info_log);
 
 	// Load resulting cuBin into module
-	checkCudaErrors(cuModuleLoadData(phModule, cuOut));
-
-	// Locate the kernel entry point
-	checkCudaErrors(cuModuleGetFunction(phKernel, *phModule, functionName));
+	checkCudaError(cuModuleLoadData(&hModule, cuOut));
 
 	// Destroy the linker invocation
-	checkCudaErrors(cuLinkDestroy(*lState));
+	return reportCudaError(cuLinkDestroy(lState));
+}
+
+// requested function (kernel) from module (program)
+CUresult ptxGetFunc(const CUmodule& hModule, LPCSTR functionName, CUfunction& hKernel)
+{
+	// Locate the kernel entry point
+	checkCudaError(cuModuleGetFunction(&hKernel, hModule, functionName));
+	DEBUG_ULTIMATE("Kernel '%s' loaded", functionName);
 	return CUDA_SUCCESS;
 }
 /*----------------------------------------------------------------*/
 
 
+void MemDevice::Release() {
+	if (pData) {
+		reportCudaError(cudaFree(pData));
+		pData = NULL;
+	}
+}
+CUresult MemDevice::Reset(size_t size) {
+	if (pData) {
+		if (nSize == size)
+			return CUDA_SUCCESS;
+		Release();
+	}
+	if (cudaMalloc(&pData, size) != cudaSuccess) {
+		pData = NULL;
+		return CUDA_ERROR_OUT_OF_MEMORY;
+	}
+	nSize = size;
+	return CUDA_SUCCESS;
+}
+CUresult MemDevice::Reset(const void* pDataHost, size_t size) {
+	if (pData && nSize != size)
+		Release();
+	if (!pData && cudaMalloc(&pData, size) != cudaSuccess) {
+		pData = NULL;
+		return CUDA_ERROR_OUT_OF_MEMORY;
+	}
+	nSize = size;
+	if (cudaMemcpy(pData, pDataHost, size, cudaMemcpyHostToDevice) != cudaSuccess)
+		return CUDA_ERROR_INVALID_VALUE;
+	return CUDA_SUCCESS;
+}
 
-#ifdef _SUPPORT_CPP11
-void KernelRT::Release() {
-	Reset();
+CUresult MemDevice::SetData(const void* pDataHost, size_t size) {
+	ASSERT(IsValid());
+	if (cudaMemcpy(pData, pDataHost, size, cudaMemcpyHostToDevice) != cudaSuccess)
+		return CUDA_ERROR_INVALID_VALUE;
+	return CUDA_SUCCESS;
+}
+
+CUresult MemDevice::GetData(void* pDataHost, size_t size) const {
+	ASSERT(IsValid());
+	if (cudaMemcpy(pDataHost, pData, size, cudaMemcpyDeviceToHost) != cudaSuccess)
+		return CUDA_ERROR_INVALID_VALUE;
+	return CUDA_SUCCESS;
+}
+/*----------------------------------------------------------------*/
+
+
+void EventRT::Release() {
+	if (hEvent) {
+		reportCudaError(cuEventDestroy(hEvent));
+		hEvent = NULL;
+	}
+}
+CUresult EventRT::Reset(unsigned flags) {
+	CUresult ret(cuEventCreate(&hEvent, flags));
+	if (ret != CUDA_SUCCESS)
+		hEvent = NULL;
+	return ret;
+}
+/*----------------------------------------------------------------*/
+
+
+void StreamRT::Release() {
+	if (hStream) {
+		reportCudaError(cuStreamDestroy(hStream));
+		hStream = NULL;
+	}
+}
+CUresult StreamRT::Reset(unsigned flags) {
+	CUresult ret(cuStreamCreate(&hStream, flags));
+	if (ret != CUDA_SUCCESS)
+		hStream = NULL;
+	return ret;
+}
+
+CUresult StreamRT::Wait(CUevent hEvent) {
+	ASSERT(IsValid());
+	return cuStreamWaitEvent(hStream, hEvent, 0);
+}
+/*----------------------------------------------------------------*/
+
+
+void ModuleRT::Release() {
 	if (hModule) {
-		cuModuleUnload(hModule);
+		reportCudaError(cuModuleUnload(hModule));
 		hModule = NULL;
 	}
 }
-void KernelRT::Reset() {
-	paramOffset = 0;
-	FOREACHPTR(ptrData, inDatas)
-		cudaFree(*ptrData);
-	inDatas.Empty();
-	FOREACHPTR(ptrData, outDatas)
-		cudaFree(*ptrData);
-	outDatas.Empty();
-}
-CUresult KernelRT::Reset(LPCSTR program, LPCSTR functionName, bool bFromFile) {
-	// JIT Compile the Kernel from PTX and get the Handles (Driver API)
-	CUresult result(ptxJIT(program, functionName, &hModule, &hKernel, &lState, bFromFile));
+CUresult ModuleRT::Reset(LPCSTR program, int mode) {
+	// compile the module (program) from PTX and get its handle (Driver API)
+	CUresult result(ptxJIT(program, hModule, mode));
 	if (result != CUDA_SUCCESS)
 		hModule = NULL;
 	return result;
+}
+/*----------------------------------------------------------------*/
+
+
+void KernelRT::Release() {
+	inDatas.Release();
+	outDatas.Release();
+	ptrModule.Release();
+	hKernel = NULL;
+}
+void KernelRT::Reset() {
+	paramOffset = 0;
+	inDatas.Empty();
+	outDatas.Empty();
+}
+CUresult KernelRT::Reset(LPCSTR functionName) {
+	// get the function handle (Driver API)
+	ASSERT(ptrModule != NULL && ptrModule->IsValid());
+	CUresult result(ptxGetFunc(*ptrModule, functionName, hKernel));
+	if (result != CUDA_SUCCESS) {
+		ptrModule.Release();
+		hKernel = NULL;
+	}
+	return result;
+}
+CUresult KernelRT::Reset(const ModuleRTPtr& _ptrModule, LPCSTR functionName) {
+	// set module
+	ptrModule = _ptrModule;
+	// set function
+	return Reset(functionName);
+}
+CUresult KernelRT::Reset(LPCSTR program, LPCSTR functionName, int mode) {
+	// compile the module (program) from PTX and get the function handle (Driver API)
+	ptrModule = new ModuleRT(program, mode);
+	if (!ptrModule->IsValid()) {
+		ptrModule.Release();
+		hKernel = NULL;
+		return CUDA_ERROR_INVALID_HANDLE;
+	}
+	return Reset(functionName);
 }
 
 
 // append a generic input parameter (allocate&copy input buffer)
 CUresult KernelRT::_AddParam(const InputParam& param) {
-	void*& data = inDatas.AddEmpty();
-	if (cudaMalloc(&data, param.size) != cudaSuccess)
+	MemDevice& data = inDatas.AddEmpty();
+	if (data.Reset(param.data, param.size) != CUDA_SUCCESS)
 		return CUDA_ERROR_OUT_OF_MEMORY;
-	if (cudaMemcpy(data, param.data, param.size, cudaMemcpyHostToDevice) != cudaSuccess)
-		return CUDA_ERROR_INVALID_VALUE;
-	return addKernelParam(hKernel, paramOffset, data);
+	return addKernelParam(hKernel, paramOffset, (void*)data);
 }
 // append a generic output parameter (allocate output buffer)
 CUresult KernelRT::_AddParam(const OutputParam& param) {
-	void*& data = outDatas.AddEmpty();
-	if (cudaMalloc(&data, param.size) != cudaSuccess)
+	MemDevice& data = outDatas.AddEmpty();
+	if (data.Reset(param.size) != CUDA_SUCCESS)
 		return CUDA_ERROR_OUT_OF_MEMORY;
-	return addKernelParam(hKernel, paramOffset, data);
+	return addKernelParam(hKernel, paramOffset, (void*)data);
 }
 
 
 // copy result from the given output parameter index back to the host
-CUresult KernelRT::GetResult(int idx, const ReturnParam& param) {
-	return (cudaMemcpy(param.data, outDatas[idx], param.size, cudaMemcpyDeviceToHost) == cudaSuccess) ?
+CUresult KernelRT::GetResult(void* data, const ReturnParam& param) const {
+	return (cudaMemcpy(param.data, data, param.size, cudaMemcpyDeviceToHost) == cudaSuccess) ?
 		CUDA_SUCCESS : CUDA_ERROR_INVALID_VALUE;
 }
 // read from the device the variadic output parameters
-CUresult KernelRT::GetResult(const std::initializer_list<ReturnParam>& params) {
-	IDX idx(0);
+CUresult KernelRT::GetResult(const std::initializer_list<ReturnParam>& params) const {
+	MemDeviceArr::IDX idx(0);
 	for (auto param : params)
-		if (cudaMemcpy(param.data, outDatas[idx++], param.size, cudaMemcpyDeviceToHost) != cudaSuccess)
+		if (outDatas[idx++].GetData(param.data, param.size) != CUDA_SUCCESS)
 			return CUDA_ERROR_INVALID_VALUE;
 	return CUDA_SUCCESS;
 }
 /*----------------------------------------------------------------*/
-#endif // _SUPPORT_CPP11
 
 #endif // __CUDA_RUNTIME_H__
 

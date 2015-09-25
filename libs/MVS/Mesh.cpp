@@ -173,15 +173,16 @@ void Mesh::ComputeNormalFaces()
 		normal = normalized((v1-v0).cross(v2-v0));
 	}
 	#else
-	checkCudaErrors(kernelComputeFaceNormal((int)faces.GetSize(),
+	reportCudaError(kernelComputeFaceNormal((int)faces.GetSize(),
 		vertices,
 		faces,
 		CUDA::KernelRT::OutputParam(faceNormals.GetDataSize()),
 		faces.GetSize()
 	));
-	checkCudaErrors(kernelComputeFaceNormal.GetResult(0,
+	reportCudaError(kernelComputeFaceNormal.GetResult(0,
 		faceNormals
 	));
+	kernelComputeFaceNormal.Reset();
 	#endif
 }
 
@@ -1402,6 +1403,8 @@ bool Mesh::Save(const VertexArr& vertices, const String& fileName, bool bBinary)
 #include <CGAL/Triangulation_face_base_with_info_2.h>
 #include <CGAL/Triangulation_vertex_base_with_info_2.h>
 
+#include <CGAL/Inverse_index.h>
+
 #define CURVATURE_TH 0 // 0.1
 #define ROBUST_NORMALS 0 // 4
 #define ENSURE_MIN_AREA 0 // 2
@@ -2565,22 +2568,29 @@ static bool ExportMesh(const Polyhedron& p, Mesh::VertexArr& vertices, Mesh::Fac
 	vertices.Resize((Mesh::VIndex)p.size_of_vertices());
 	for (Polyhedron::Vertex_const_iterator it=p.vertices_begin(), ite=p.vertices_end(); it!=ite; ++it) {
 		Mesh::Vertex& v = vertices[nCount++];
-		v.x = (float)it->point().x();
-		v.y = (float)it->point().y();
-		v.z = (float)it->point().z();
+		v.x = (float)CGAL::to_double(it->point().x());
+		v.y = (float)CGAL::to_double(it->point().y());
+		v.z = (float)CGAL::to_double(it->point().z());
 	}
 	// extract the faces
 	nCount = 0;
 	faces.Resize((Mesh::FIndex)p.size_of_facets());
+	CGAL::Inverse_index<Polyhedron::Vertex_const_iterator> index(p.vertices_begin(), p.vertices_end());
 	for (Polyhedron::Face_const_iterator it=p.facets_begin(), ite=p.facets_end(); it!=ite; ++it) {
 		ASSERT(it->is_triangle());
-		Polyhedron::Halfedge_around_facet_const_circulator j = it->facet_begin();
-		ASSERT(CGAL::circulator_size(j) == 3);
+		Polyhedron::Halfedge_around_facet_const_circulator hc = it->facet_begin();
+		ASSERT(CGAL::circulator_size(hc) == 3);
 		Mesh::Face& facet = faces[nCount++];
+		#if 0
+		Polyhedron::Halfedge_around_facet_const_circulator hc_end = hc;
 		unsigned i(0);
 		do {
-			facet[i++] = (Mesh::FIndex)std::distance(p.vertices_begin(), j->vertex());
-		} while (++j != it->facet_begin());
+			facet[i++] = (Mesh::FIndex)index[Polyhedron::Vertex_const_iterator(hc->vertex())];
+		} while (++hc != hc_end);
+		#else
+		for (int i=0; i<3; ++i, ++hc)
+			facet[i] = (Mesh::FIndex)index[Polyhedron::Vertex_const_iterator(hc->vertex())];
+		#endif
 	}
 	DEBUG_ULTIMATE("Mesh exported: %u vertices, %u facets (%u border edges)", p.size_of_vertices(), p.size_of_facets(), p.size_of_border_edges());
 	return true;
@@ -2597,6 +2607,183 @@ void Mesh::EnsureEdgeSize(float epsilonMin, float epsilonMax, float collapseRati
 }
 /*----------------------------------------------------------------*/
 
+// subdivide mesh faces if its projection area
+// is bigger than the given number of pixels
+void Mesh::SubdivideMesh(const AreaArr& maxAreas, uint32_t maxArea)
+{
+	// each face that needs to split, remember for each edge the new vertex index
+	// (each new vertex index corresponds to the edge opposed to the existing vertex index)
+	struct SplitFace {
+		VIndex idxVert[3];
+		bool bSplit;
+		enum {NO_VERT = (VIndex)-1};
+		inline SplitFace() : bSplit(false) { memset(idxVert, 0xFF, sizeof(VIndex)*3); }
+		static VIndex FindSharedEdge(const Face& f, const Face& a) {
+			for (int i=0; i<2; ++i) {
+				const VIndex v(f[i]);
+				if (v != a[0] && v != a[1] && v != a[2])
+					return i;
+			}
+			ASSERT(f[2] != a[0] && f[2] != a[1] && f[2] != a[2]);
+			return 2;
+		}
+	};
+	typedef std::unordered_map<FIndex,SplitFace> FacetSplitMap;
+
+	// used to find adjacent face
+	typedef Mesh::FacetCountMap FacetCountMap;
+
+	// for each image, compute the projection area of visible faces
+	FacetSplitMap mapSplits; mapSplits.reserve(faces.GetSize());
+	FacetCountMap mapFaces; mapFaces.reserve(12*3);
+	vertices.Reserve(vertices.GetSize()*2);
+	faces.Reserve(faces.GetSize()*3);
+	FOREACH(f, maxAreas) {
+		const AreaArr::Type area(maxAreas[f]);
+		if (area <= maxArea)
+			continue;
+		// split face in four triangles
+		// by adding a new vertex at the middle of each edge
+		faces.ReserveExtra(4);
+		Face& newface = faces.AddEmpty(); // defined by the three new vertices
+		const Face& face = faces[(FIndex)f];
+		SplitFace& split = mapSplits[(FIndex)f];
+		for (int i=0; i<3; ++i) {
+			// if the current edge was already split, used the existing vertex
+			if (split.idxVert[i] != SplitFace::NO_VERT) {
+				newface[i] = split.idxVert[i];
+				continue;
+			}
+			// create a new vertex at the middle of the current edge
+			// (current edge is the opposite edge to the current vertex index)
+			split.idxVert[i] = newface[i] = vertices.GetSize();
+			vertices.AddConstruct((vertices[face[(i+1)%3]]+vertices[face[(i+2)%3]])*0.5f);
+		}
+		// create the last three faces, defined by one old and two new vertices
+		for (int i=0; i<3; ++i) {
+			Face& nf = faces.AddEmpty();
+			nf[0] = face[i];
+			nf[1] = newface[(i+2)%3];
+			nf[2] = newface[(i+1)%3];
+		}
+		split.bSplit = true;
+		// find all three adjacent faces and inform them of the split
+		ASSERT(mapFaces.empty());
+		for (int i=0; i<3; ++i) {
+			const Mesh::FaceIdxArr& vf = vertexFaces[face[i]];
+			FOREACHPTR(pFace, vf)
+				++mapFaces[*pFace].count;
+		}
+		for (const auto& fc: mapFaces) {
+			ASSERT(fc.second.count <= 2 || (fc.second.count == 3 && fc.first == f));
+			if (fc.second.count != 2)
+				continue;
+			if (fc.first < f && maxAreas[fc.first] > maxArea) {
+				// already fully split, nothing to do
+				ASSERT(mapSplits[fc.first].idxVert[SplitFace::FindSharedEdge(faces[fc.first], face)] == newface[SplitFace::FindSharedEdge(face, faces[fc.first])]);
+				continue;
+			}
+			const VIndex idxVertex(newface[SplitFace::FindSharedEdge(face, faces[fc.first])]);
+			VIndex& idxSplit = mapSplits[fc.first].idxVert[SplitFace::FindSharedEdge(faces[fc.first], face)];
+			ASSERT(idxSplit == SplitFace::NO_VERT || idxSplit == idxVertex);
+			idxSplit = idxVertex;
+		}
+		mapFaces.clear();
+	}
+
+	// add all faces partially split
+	int indices[3];
+	for (const auto& s: mapSplits) {
+		const SplitFace& split = s.second;
+		if (split.bSplit)
+			continue;
+		int count(0);
+		for (int i=0; i<3; ++i) {
+			if (split.idxVert[i] != SplitFace::NO_VERT)
+				indices[count++] = i;
+		}
+		ASSERT(count > 0);
+		faces.ReserveExtra(4);
+		const Face& face = faces[s.first];
+		switch (count) {
+		case 1: {
+			// one edge is split; create two triangles
+			const int i(indices[0]);
+			Face& nf0 = faces.AddEmpty();
+			nf0[0] = split.idxVert[i];
+			nf0[1] = face[(i+2)%3];
+			nf0[2] = face[i];
+			Face& nf1 = faces.AddEmpty();
+			nf1[0] = split.idxVert[i];
+			nf1[1] = face[i];
+			nf1[2] = face[(i+1)%3];
+			break; }
+		case 2: {
+			// two edges are split; create three triangles
+			const int i0(indices[0]);
+			const int i1(indices[1]);
+			Face& nf0 = faces.AddEmpty();
+			Face& nf1 = faces.AddEmpty();
+			Face& nf2 = faces.AddEmpty();
+			if (i0==0) {
+				if (i1==1) {
+					nf0[0] = split.idxVert[1];
+					nf0[1] = split.idxVert[0];
+					nf0[2] = face[2];
+					nf1[0] = face[0];
+					nf1[1] = face[1];
+					nf1[2] = split.idxVert[0];
+					nf2[0] = face[0];
+					nf2[1] = split.idxVert[0];
+					nf2[2] = split.idxVert[1];
+				} else {
+					nf0[0] = split.idxVert[2];
+					nf0[1] = face[1];
+					nf0[2] = split.idxVert[0];
+					nf1[0] = face[0];
+					nf1[1] = split.idxVert[2];
+					nf1[2] = face[2];
+					nf2[0] = split.idxVert[2];
+					nf2[1] = split.idxVert[0];
+					nf2[2] = face[2];
+				}
+			} else {
+				ASSERT(i0==1 && i1==2);
+				nf0[0] = face[0];
+				nf0[1] = split.idxVert[2];
+				nf0[2] = split.idxVert[1];
+				nf1[0] = split.idxVert[1];
+				nf1[1] = face[1];
+				nf1[2] = face[2];
+				nf2[0] = split.idxVert[2];
+				nf2[1] = face[1];
+				nf2[2] = split.idxVert[1];
+			}
+			break; }
+		case 3: {
+			// all three edges are split; create four triangles
+			// create the new triangle in the middle
+			Face& newface = faces.AddEmpty();
+			newface[0] = split.idxVert[0];
+			newface[1] = split.idxVert[1];
+			newface[2] = split.idxVert[2];
+			// create the last three faces, defined by one old and two new vertices
+			for (int i=0; i<3; ++i) {
+				Face& nf = faces.AddEmpty();
+				nf[0] = face[i];
+				nf[1] = newface[(i+2)%3];
+				nf[2] = newface[(i+1)%3];
+			}
+			break; }
+		}
+	}
+
+	// remove all faces that split
+	ASSERT(faces.GetSize()-(faces.GetCapacity()/3)/*initial size*/ > mapSplits.size());
+	for (const auto& s: mapSplits)
+		faces.RemoveAt(s.first);
+}
+/*----------------------------------------------------------------*/
 
 
 #ifdef _USE_CUDA
@@ -2620,13 +2807,11 @@ bool Mesh::InitKernels(int device)
 			".target sm_20\n"
 			".address_size 64\n"
 			"\n"
-			"	// .globl	" FUNC "\n"
-			"\n"
 			".visible .entry " FUNC "(\n"
-			"	.param .u64 " FUNC "_param_1, // array vertices (float*3 * numVertices)\n"
-			"	.param .u64 " FUNC "_param_2, // array faces (uint32_t*3 * numFaces)\n"
-			"	.param .u64 " FUNC "_param_3, // array normals (float*3 * numFaces)\n"
-			"	.param .u32 " FUNC "_param_4  // numFaces = numNormals (uint32_t)\n"
+			"	.param .u64 .ptr param_1, // array vertices (float*3 * numVertices)\n"
+			"	.param .u64 .ptr param_2, // array faces (uint32_t*3 * numFaces)\n"
+			"	.param .u64 .ptr param_3, // array normals (float*3 * numFaces) [out]\n"
+			"	.param .u32 param_4 // numFaces = numNormals (uint32_t)\n"
 			")\n"
 			"{\n"
 			"	.reg .f32 %f<32>;\n"
@@ -2634,10 +2819,10 @@ bool Mesh::InitKernels(int device)
 			"	.reg .u32 %r<17>;\n"
 			"	.reg .u64 %rl<18>;\n"
 			"\n"
-			"	ld.param.u64 %rl4, [" FUNC "_param_1];\n"
-			"	ld.param.u64 %rl5, [" FUNC "_param_2];\n"
-			"	ld.param.u64 %rl6, [" FUNC "_param_3];\n"
-			"	ld.param.u32 %r2,  [" FUNC "_param_4];\n"
+			"	ld.param.u64 %rl4, [param_1];\n"
+			"	ld.param.u64 %rl5, [param_2];\n"
+			"	ld.param.u64 %rl6, [param_3];\n"
+			"	ld.param.u32 %r2,  [param_4];\n"
 			"	cvta.to.global.u64 %rl1, %rl6;\n"
 			"	cvta.to.global.u64 %rl2, %rl4;\n"
 			"	cvta.to.global.u64 %rl3, %rl5;\n"

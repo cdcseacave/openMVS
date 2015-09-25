@@ -130,6 +130,9 @@ public:
 
 	void EnsureEdgeSize(float minEdge=-0.5f, float maxEdge=-4.f, float collapseRatio=0.2, float degenerate_angle_deg=150, int mode=1, int max_iters=50);
 
+	typedef cList<uint16_t,uint16_t,0,16,FIndex> AreaArr;
+	void SubdivideMesh(const AreaArr& maxAreas, uint32_t maxArea);
+
 	// file IO
 	bool Load(const String& fileName);
 	bool Save(const String& fileName, const cList<String>& comments=cList<String>(), bool bBinary=true) const;

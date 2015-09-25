@@ -432,12 +432,12 @@ bool Scene::SelectNeighborViews(uint32_t ID, IndexArr& points, unsigned nMinView
 	if (VERBOSITY_LEVEL > 2) {
 		String msg;
 		FOREACH(n, neighbors)
-			msg += String::FormatString(" % 3u(%upts,%.2fscl)", neighbors[n].idx.ID, neighbors[n].idx.points, neighbors[n].idx.scale);
-		VERBOSE("Reference image % 3u sees %u views:%s (%u shared points)", ID, neighbors.GetSize(), msg.c_str(), nPoints);
+			msg += String::FormatString(" %3u(%upts,%.2fscl)", neighbors[n].idx.ID, neighbors[n].idx.points, neighbors[n].idx.scale);
+		VERBOSE("Reference image %3u sees %u views:%s (%u shared points)", ID, neighbors.GetSize(), msg.c_str(), nPoints);
 	}
 	#endif
 	if (points.GetSize() <= 3 || neighbors.GetSize() < MINF(nMinViews,nCalibratedImages-1)) {
-		DEBUG_EXTRA("error: reference image % 3u has not enough images in view", ID);
+		DEBUG_EXTRA("error: reference image %3u has not enough images in view", ID);
 		return false;
 	}
 	return true;

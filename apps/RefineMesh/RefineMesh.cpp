@@ -65,6 +65,9 @@ float fScaleStep;
 float fRegularityWeight;
 unsigned nMaxFaceArea;
 float fGradientStep;
+#ifdef _USE_CUDA
+bool bUseCUDA;
+#endif
 unsigned nArchiveType;
 int nProcessPriority;
 unsigned nMaxThreads;
@@ -114,7 +117,10 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		("scales", boost::program_options::value<unsigned>(&OPT::nScales)->default_value(3), "how many iterations to run mesh optimization on multi-scale images")
 		("scale-step", boost::program_options::value<float>(&OPT::fScaleStep)->default_value(0.5f), "image scale factor used at each mesh optimization step")
 		("regularity-weight", boost::program_options::value<float>(&OPT::fRegularityWeight)->default_value(1.5f), "scalar regularity weight to balance between photo-consistency and regularization terms during mesh optimization")
-		("gradient-step", boost::program_options::value<float>(&OPT::fGradientStep)->default_value(-50.05f), "gradient step to be used instead (-1 - auto)")
+		("gradient-step", boost::program_options::value<float>(&OPT::fGradientStep)->default_value(50.05f), "gradient step to be used instead (0 - auto)")
+		#ifdef _USE_CUDA
+		("use-cuda", boost::program_options::value<bool>(&OPT::bUseCUDA)->default_value(true), "refine mesh using CUDA")
+		#endif
 		;
 
 	// hidden options, allowed both on command line and
@@ -224,6 +230,16 @@ int main(int argc, LPCTSTR* argv)
 		return EXIT_FAILURE;
 	}
 	TD_TIMER_START();
+	#ifdef _USE_CUDA
+	if (OPT::bUseCUDA)
+	scene.RefineMeshCUDA(OPT::nResolutionLevel, OPT::nMinResolution, OPT::nMaxViews,
+						 OPT::fDecimateMesh, OPT::nCloseHoles, OPT::nEnsureEdgeSize,
+						 OPT::nMaxFaceArea,
+						 OPT::nScales, OPT::fScaleStep,
+						 OPT::fRegularityWeight,
+						 OPT::fGradientStep);
+	else
+	#endif
 	scene.RefineMesh(OPT::nResolutionLevel, OPT::nMinResolution, OPT::nMaxViews,
 					 OPT::fDecimateMesh, OPT::nCloseHoles, OPT::nEnsureEdgeSize,
 					 OPT::nMaxFaceArea,

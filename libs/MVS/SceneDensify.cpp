@@ -281,7 +281,7 @@ bool DepthMapsData::SelectViews(IndexArr& images, IndexArr& imagesMap, IndexArr&
 			idxNeighbor = NO_ID; // empty
 		} else {
 			idxNeighbor = label;
-			DEBUG_ULTIMATE("\treference image % 3u paired with target image % 3u (idx %u)", images[n], neighbors[label].idx.ID, label);
+			DEBUG_ULTIMATE("\treference image %3u paired with target image %3u (idx %2u)", images[n], neighbors[label].idx.ID, label);
 		}
 	}
 
@@ -320,7 +320,7 @@ bool DepthMapsData::SelectViews(DepthData& depthData)
 	const float fMinAngle(FD2R(OPTDENSE::fMinAngle));
 	const float fMaxAngle(FD2R(OPTDENSE::fMaxAngle));
 	if (!Scene::FilterNeighborViews(depthData.neighbors, fMinArea, fMinScale, fMaxScale, fMinAngle, fMaxAngle, OPTDENSE::nMaxViews)) {
-		DEBUG_EXTRA("error: reference image % 3u has no good images in view", idxImage);
+		DEBUG_EXTRA("error: reference image %3u has no good images in view", idxImage);
 		return false;
 	}
 	return true;
@@ -353,7 +353,7 @@ bool DepthMapsData::InitViews(DepthData& depthData, uint32_t idxNeighbor, uint32
 		imageTrg.pImageData->image.toGray(imageTrg.image, cv::COLOR_BGR2GRAY, true);
 		if (imageTrg.ScaleImage(imageTrg.image, imageTrg.image, imageTrg.scale))
 			imageTrg.camera = imageTrg.pImageData->GetCamera(scene.platforms, imageTrg.image.size());
-		DEBUG_EXTRA("Reference image % 3u paired with image % 3u", idxImage, neighbor.idx.ID);
+		DEBUG_EXTRA("Reference image %3u paired with image %3u", idxImage, neighbor.idx.ID);
 	} else {
 		// init all neighbor views too (global reconstruction is used)
 		const float fMinScore(MAXF(depthData.neighbors.First().score*(OPTDENSE::fViewMinScoreRatio*0.1f), OPTDENSE::fViewMinScore));
@@ -389,10 +389,10 @@ bool DepthMapsData::InitViews(DepthData& depthData, uint32_t idxNeighbor, uint32
 		if (g_nVerbosityLevel > 2) {
 			String msg;
 			for (IDX i=1; i<depthData.images.GetSize(); ++i)
-				msg += String::FormatString(" % 3u(%.2fscl)", depthData.images[i].pImageData-scene.images.Begin(), depthData.images[i].scale);
-			VERBOSE("Reference image % 3u paired with %u views:%s (%u shared points)", idxImage, depthData.images.GetSize()-1, msg.c_str(), depthData.points.GetSize());
+				msg += String::FormatString(" %3u(%.2fscl)", depthData.images[i].pImageData-scene.images.Begin(), depthData.images[i].scale);
+			VERBOSE("Reference image %3u paired with %u views:%s (%u shared points)", idxImage, depthData.images.GetSize()-1, msg.c_str(), depthData.points.GetSize());
 		} else
-		DEBUG_EXTRA("Reference image % 3u paired with %u views", idxImage, depthData.images.GetSize()-1);
+		DEBUG_EXTRA("Reference image %3u paired with %u views", idxImage, depthData.images.GetSize()-1);
 		#endif
 	}
 	if (depthData.images.GetSize() < 2) {
@@ -559,7 +559,7 @@ bool DepthMapsData::InitDepthMap(DepthData& depthData)
 		Image8U::RasterizeTriangle((const Point2f&)i2, (const Point2f&)i1, (const Point2f&)i0, data);
 	}
 
-	DEBUG_ULTIMATE("Depth-map % 3u roughly estimated from %u sparse points: %dx%d (%s)", &depthData-arrDepthData.Begin(), depthData.points.GetSize(), image.image.width(), image.image.height(), TD_TIMER_GET_FMT().c_str());
+	DEBUG_ULTIMATE("Depth-map %3u roughly estimated from %u sparse points: %dx%d (%s)", &depthData-arrDepthData.Begin(), depthData.points.GetSize(), image.image.width(), image.image.height(), TD_TIMER_GET_FMT().c_str());
 	return true;
 } // InitDepthMap
 /*----------------------------------------------------------------*/
@@ -786,10 +786,10 @@ bool DepthMapsData::EstimateDepthMap(uint32_t idxImage)
 		estimators.Release();
 	}
 
-	DEBUG_EXTRA("Depth-map for image % 3u %s: %dx%d (%s)", image.pImageData-scene.images.Begin(),
+	DEBUG_EXTRA("Depth-map for image %3u %s: %dx%d (%s)", image.pImageData-scene.images.Begin(),
 		depthData.images.GetSize() > 2 ?
-			String::FormatString("estimated using %u images", depthData.images.GetSize()-1).c_str() :
-			String::FormatString("with image % 3u estimated", depthData.images[1].pImageData-scene.images.Begin()).c_str(),
+			String::FormatString("estimated using %2u images", depthData.images.GetSize()-1).c_str() :
+			String::FormatString("with image %3u estimated", depthData.images[1].pImageData-scene.images.Begin()).c_str(),
 		size.width, size.height, TD_TIMER_GET_FMT().c_str());
 	return true;
 } // EstimateDepthMap
@@ -1047,7 +1047,7 @@ bool DepthMapsData::FilterDepthMapAdjust(DepthData& depthDataRef, const IndexArr
 	const unsigned nMinViews(MINF(OPTDENSE::nMinViewsFilter,scene.nCalibratedImages-1));
 	const unsigned nMinViewsAdjust(MINF(OPTDENSE::nMinViewsFilterAdjust,scene.nCalibratedImages-1));
 	if (N < nMinViews || N < nMinViewsAdjust) {
-		DEBUG("error: depth map % 3u can not be filtered", depthDataRef.images.First().pImageData-scene.images.Begin());
+		DEBUG("error: depth map %3u can not be filtered", depthDataRef.images.First().pImageData-scene.images.Begin());
 		return false;
 	}
 
@@ -1199,7 +1199,7 @@ bool DepthMapsData::FilterDepthMapAdjust(DepthData& depthDataRef, const IndexArr
 		return false;
 
 	#if TD_VERBOSE != TD_VERBOSE_OFF
-	DEBUG("Depth map % 3u filtered using %u other images: %u/%u depths discarded (%s)", imageRef.pImageData-scene.images.Begin(), N, nDiscarded, nProcessed, TD_TIMER_GET_FMT().c_str());
+	DEBUG("Depth map %3u filtered using %u other images: %u/%u depths discarded (%s)", imageRef.pImageData-scene.images.Begin(), N, nDiscarded, nProcessed, TD_TIMER_GET_FMT().c_str());
 	#endif
 
 	return true;
@@ -1348,7 +1348,7 @@ void DepthMapsData::FuseFilterDepthMaps(PointCloud& pointcloud, bool bEstimateNo
 			}
 		}
 		ASSERT(pointcloud.points.GetSize() == pointcloud.pointViews.GetSize() && pointcloud.points.GetSize() == pointcloud.pointWeights.GetSize() && pointcloud.points.GetSize() == projs.GetSize());
-		DEBUG_ULTIMATE("Depths map for reference image % 3u fused using %u depths maps: %u new points (%s)", idxImage, depthData.images.GetSize()-1, pointcloud.points.GetSize()-nNumPointsPrev, TD_TIMER_GET_FMT().c_str());
+		DEBUG_ULTIMATE("Depths map for reference image %3u fused using %u depths maps: %u new points (%s)", idxImage, depthData.images.GetSize()-1, pointcloud.points.GetSize()-nNumPointsPrev, TD_TIMER_GET_FMT().c_str());
 	}
 	arrDepthIdx.Release();
 
@@ -1657,12 +1657,12 @@ void Scene::DenseReconstructionEstimate(void* pData)
 			if (OPTDENSE::nOptimize & (OPTDENSE::REMOVE_SPECKLES)) {
 				TD_TIMER_START();
 				data.detphMaps.RemoveSmallSegments(depthData);
-				DEBUG_ULTIMATE("Depth-map % 3u filtered: remove small segments (%s)", idx, TD_TIMER_GET_FMT().c_str());
+				DEBUG_ULTIMATE("Depth-map %3u filtered: remove small segments (%s)", idx, TD_TIMER_GET_FMT().c_str());
 			}
 			if (OPTDENSE::nOptimize & (OPTDENSE::FILL_GAPS)) {
 				TD_TIMER_START();
 				data.detphMaps.GapInterpolation(depthData);
-				DEBUG_ULTIMATE("Depth-map % 3u filtered: gap interpolation (%s)", idx, TD_TIMER_GET_FMT().c_str());
+				DEBUG_ULTIMATE("Depth-map %3u filtered: gap interpolation (%s)", idx, TD_TIMER_GET_FMT().c_str());
 			}
 			// save depth-map
 			data.events.AddEventFirst(new EVTSaveDepthMap(evtImage.idxImage));

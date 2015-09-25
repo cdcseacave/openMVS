@@ -204,7 +204,7 @@ public:
 			Optimize(1);
 			energy = ComputeEnergy();
 			diff = last_energy - energy;
-			DEBUG_ULTIMATE("\t% 2u. e: %g\td: %g\tt: %s", i, last_energy, diff, TD_TIMER_GET_FMT().c_str());
+			DEBUG_ULTIMATE("\t%2u. e: %g\td: %g\tt: %s", i, last_energy, diff, TD_TIMER_GET_FMT().c_str());
 			if (++i > 100 || diff == EnergyType(0))
 				break;
 			#if 1

@@ -451,9 +451,9 @@ void RANSAC(
 				}
 				#ifdef _USE_MSAC
 				best_score = score;
-				DEBUG_LEVEL(4, "\titer=% 3u inliers=%u score=%g", iter, vec_inliers.size(), best_score);
+				DEBUG_LEVEL(4, "\titer=%3u inliers=%u score=%g", iter, vec_inliers.size(), best_score);
 				#else
-				DEBUG_LEVEL(4, "\titer=% 3u inliers=%u", iter, vec_inliers.size());
+				DEBUG_LEVEL(4, "\titer=%3u inliers=%u", iter, vec_inliers.size());
 				#endif
 				#ifdef ACRANSAC_SAMPLE_INLIERS
 				better = true;
