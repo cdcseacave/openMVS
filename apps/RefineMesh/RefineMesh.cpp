@@ -116,7 +116,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		("max-face-area", boost::program_options::value<unsigned>(&OPT::nMaxFaceArea)->default_value(32), "maximum face area projected in any pair of images that is not subdivided (0 - disabled)")
 		("scales", boost::program_options::value<unsigned>(&OPT::nScales)->default_value(3), "how many iterations to run mesh optimization on multi-scale images")
 		("scale-step", boost::program_options::value<float>(&OPT::fScaleStep)->default_value(0.5f), "image scale factor used at each mesh optimization step")
-		("regularity-weight", boost::program_options::value<float>(&OPT::fRegularityWeight)->default_value(1.5f), "scalar regularity weight to balance between photo-consistency and regularization terms during mesh optimization")
+		("regularity-weight", boost::program_options::value<float>(&OPT::fRegularityWeight)->default_value(1.f), "scalar regularity weight to balance between photo-consistency and regularization terms during mesh optimization")
 		("gradient-step", boost::program_options::value<float>(&OPT::fGradientStep)->default_value(50.05f), "gradient step to be used instead (0 - auto)")
 		#ifdef _USE_CUDA
 		("use-cuda", boost::program_options::value<bool>(&OPT::bUseCUDA)->default_value(true), "refine mesh using CUDA")

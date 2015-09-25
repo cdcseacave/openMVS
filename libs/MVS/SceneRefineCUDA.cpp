@@ -69,13 +69,14 @@ static LPCSTR const g_szMeshRefineModule =
 	"	.param .u64 .ptr param_3, // array face IDs (uint32_t * numFacesView)\n"
 	"	.param .u64 .ptr param_4, // depth-map (float) [out]\n"
 	"	.param .u64 .ptr param_5, // face-map (uint32_t) [out]\n"
-	"	.param .u64 .ptr param_6, // bary-map (float) [out]\n"
+	"	.param .u64 .ptr param_6, // bary-map (hfloat*3) [out]\n"
 	"	.param .align 4 .b8 param_7[176], // camera\n"
 	"	.param .u32 param_8 // numFacesView (uint32_t)\n"
 	")\n"
 	"{\n"
 	"	.reg .f32 %f<234>;\n"
 	"	.reg .pred %p<20>;\n"
+	"	.reg .s16 %rs<5>;\n"
 	"	.reg .s32 %r<105>;\n"
 	"	.reg .s64 %rl<42>;\n"
 	"\n"
@@ -377,23 +378,38 @@ static LPCSTR const g_szMeshRefineModule =
 	"	add.s64 %rl7, %rl28, %rl29;\n"
 	"	ld.param.u64 %rl40, [param_6];\n"
 	"	cvta.to.global.u64 %rl31, %rl40;\n"
-	"	mul.wide.s32 %rl30, %r76, 12;\n"
+	"	mul.wide.s32 %rl30, %r76, 6;\n"
 	"	add.s64 %rl8, %rl31, %rl30;\n"
 	"	@%p2 bra BB00_4;\n"
 	"\n"
 	"	mov.s32 %r77, -1;\n"
 	"	st.global.u32 [%rl7], %r77;\n"
-	"	mov.u32 %r79, 0;\n"
-	"	st.global.u32 [%rl8], %r79;\n"
-	"	st.global.u32 [%rl8+4], %r79;\n"
-	"	st.global.u32 [%rl8+8], %r79;\n"
+	"	mov.u16 %rs4, 0;\n"
+	"	st.global.b16 [%rl8], %rs4;\n"
+	"	st.global.b16 [%rl8+2], %rs4;\n"
+	"	st.global.b16 [%rl8+4], %rs4;\n"
 	"	bra.uni BB00_5;\n"
 	"\n"
 	"	BB00_4:\n"
 	"	st.global.u32 [%rl7], %r6;\n"
-	"	st.global.f32 [%rl8], %f77;\n"
-	"	st.global.f32 [%rl8+4], %f76;\n"
-	"	st.global.f32 [%rl8+8], %f75;\n"
+	"	{\n"
+	"	.reg .b16 %temp;\n"
+	"	cvt.rn.f16.f32 %temp, %f77;\n"
+	"	mov.b16 %rs1, %temp;\n"
+	"	}\n"
+	"	st.global.b16 [%rl8], %rs1;\n"
+	"	{\n"
+	"	.reg .b16 %temp;\n"
+	"	cvt.rn.f16.f32 %temp, %f76;\n"
+	"	mov.b16 %rs2, %temp;\n"
+	"	}\n"
+	"	st.global.b16 [%rl8+2], %rs2;\n"
+	"	{\n"
+	"	.reg .b16 %temp;\n"
+	"	cvt.rn.f16.f32 %temp, %f75;\n"
+	"	mov.b16 %rs3, %temp;\n"
+	"	}\n"
+	"	st.global.b16 [%rl8+4], %rs3;\n"
 	"\n"
 	"	BB00_5:\n"
 	"	add.f32 %f76, %f76, %f69;\n"
@@ -488,6 +504,7 @@ static LPCSTR const g_szMeshRefineModule =
 	"{\n"
 	"	.reg .f32 %f<187>;\n"
 	"	.reg .pred %p<19>;\n"
+	"	.reg .s16 %rs<2>;\n"
 	"	.reg .s32 %r<36>;\n"
 	"	.reg .s64 %rl<23>;\n"
 	"	.reg .s16 %rc<2>;\n"
@@ -643,8 +660,13 @@ static LPCSTR const g_szMeshRefineModule =
 	"	mov.u16 %rc1, 1;\n"
 	"	\n"
 	"	BB00_1:\n"
-	"	shl.b32 %r13, %r3, 2;\n"
-	"	sust.b.2d.b32.trap [surfImageProjRef, {%r13, %r4}], {%f141};\n"
+	"	{\n"
+	"	.reg .b16 %temp;\n"
+	"	cvt.rn.f16.f32 %temp, %f141;\n"
+	"	mov.b16 %rs1, %temp;\n"
+	"	}\n"
+	"	shl.b32 %r13, %r3, 1;\n"
+	"	sust.b.2d.b16.trap [surfImageProjRef, {%r13, %r4}], {%rs1};\n"
 	"	ld.param.u64 %rl1, [param_3];\n"
 	"	cvta.to.global.u64 %rl4, %rl1;\n"
 	"	cvt.s64.s32 %rl3, %r12;\n"
@@ -665,9 +687,9 @@ static LPCSTR const g_szMeshRefineModule =
 	"{\n"
 	"	.reg .f32 %f<10>;\n"
 	"	.reg .pred %p<19>;\n"
+	"	.reg .s16 %rc<4>;\n"
 	"	.reg .s32 %r<40>;\n"
 	"	.reg .s64 %rl<13>;\n"
-	"	.reg .s16 %rc<3>;\n"
 	"\n"
 	"	ld.param.u32 %r1, [param_3];\n"
 	"	ld.param.u32 %r2, [param_4];\n"
@@ -739,8 +761,13 @@ static LPCSTR const g_szMeshRefineModule =
 	"\n"
 	"	BB00_4:\n"
 	"	add.s32 %r26, %r38, %r5;\n"
-	"	shl.b32 %r27, %r8, 2;\n"
-	"	suld.b.2d.b32.trap {%f7}, [surfImageRef, {%r27, %r26}];\n"
+	"	shl.b32 %r27, %r8, 1;\n"
+	"	suld.b.2d.b16.trap {%rc3}, [surfImageRef, {%r27, %r26}];\n"
+	"	{\n"
+	"	.reg .b16 %temp;\n"
+	"	mov.b16 %temp, %rc3;\n"
+	"	cvt.f32.f16 %f7, %temp;\n"
+	"	}\n"
 	"	add.f32 %f9, %f9, %f7;\n"
 	"	add.s32 %r38, %r38, 1;\n"
 	"	ld.param.u32 %r34, [param_5];\n"
@@ -777,9 +804,9 @@ static LPCSTR const g_szMeshRefineModule =
 	"{\n"
 	"	.reg .f32 %f<15>;\n"
 	"	.reg .pred %p<19>;\n"
+	"	.reg .s16 %rc<4>;\n"
 	"	.reg .s32 %r<43>;\n"
 	"	.reg .s64 %rl<17>;\n"
-	"	.reg .s16 %rc<3>;\n"
 	"\n"
 	"	ld.param.u32 %r1, [param_4];\n"
 	"	ld.param.u32 %r2, [param_5];\n"
@@ -852,8 +879,13 @@ static LPCSTR const g_szMeshRefineModule =
 	"\n"
 	"	BB00_3:\n"
 	"	add.s32 %r26, %r41, %r5;\n"
-	"	shl.b32 %r27, %r8, 2;\n"
-	"	suld.b.2d.b32.trap {%f9}, [surfImageRef, {%r27, %r26}];\n"
+	"	shl.b32 %r27, %r8, 1;\n"
+	"	suld.b.2d.b16.trap {%rc3}, [surfImageRef, {%r27, %r26}];\n"
+	"	{\n"
+	"	.reg .b16 %temp;\n"
+	"	mov.b16 %temp, %rc3;\n"
+	"	cvt.f32.f16 %f9, %temp;\n"
+	"	}\n"
 	"	sub.f32 %f10, %f9, %f2;\n"
 	"	fma.rn.f32 %f14, %f10, %f10, %f14;\n"
 	"	add.s32 %r41, %r41, 1;\n"
@@ -888,9 +920,9 @@ static LPCSTR const g_szMeshRefineModule =
 	"{\n"
 	"	.reg .f32 %f<17>;\n"
 	"	.reg .pred %p<19>;\n"
+	"	.reg .s16 %rs<4>;\n"
 	"	.reg .s32 %r<53>;\n"
 	"	.reg .s64 %rl<27>;\n"
-	"	.reg .s16 %rc<2>;\n"
 	"\n"
 	"	ld.param.u32 %r1, [param_5];\n"
 	"	ld.param.u32 %r2, [param_6];\n"
@@ -944,11 +976,11 @@ static LPCSTR const g_szMeshRefineModule =
 	"	@!%p14 bra BB00_1;\n"
 	"\n"
 	"	add.s64 %rl16, %rl6, %rl8;\n"
-	"	ld.global.u8 %rc1, [%rl16];\n"
+	"	ld.global.u8 %rs3, [%rl16];\n"
 	"	{\n"
 	"	.reg .s16 %temp1;\n"
 	"	.reg .s16 %temp2;\n"
-	"	cvt.s16.s8 %temp1, %rc1;\n"
+	"	cvt.s16.s8 %temp1, %rs3;\n"
 	"	mov.b16 %temp2, 1;\n"
 	"	cvt.s16.s8 %temp2, %temp2;\n"
 	"	setp.eq.s16 %p15, %temp1, %temp2;\n"
@@ -974,10 +1006,20 @@ static LPCSTR const g_szMeshRefineModule =
 	"\n"
 	"	BB00_3:\n"
 	"	add.s32 %r26, %r51, %r5;\n"
-	"	shl.b32 %r27, %r8, 2;\n"
-	"	suld.b.2d.b32.trap {%f10}, [surfImageRef, {%r27, %r26}];\n"
+	"	shl.b32 %r27, %r8, 1;\n"
+	"	suld.b.2d.b16.trap {%rs1}, [surfImageRef, {%r27, %r26}];\n"
+	"	{\n"
+	"	.reg .b16 %temp;\n"
+	"	mov.b16 %temp, %rs1;\n"
+	"	cvt.f32.f16 %f10, %temp;\n"
+	"	}\n"
 	"	sub.f32 %f11, %f10, %f2;\n"
-	"	suld.b.2d.b32.trap {%f12}, [surfImageProjRef, {%r27, %r26}];\n"
+	"	suld.b.2d.b16.trap {%rs2}, [surfImageProjRef, {%r27, %r26}];\n"
+	"	{\n"
+	"	.reg .b16 %temp;\n"
+	"	mov.b16 %temp, %rs2;\n"
+	"	cvt.f32.f16 %f12, %temp;\n"
+	"	}\n"
 	"	sub.f32 %f13, %f12, %f3;\n"
 	"	fma.rn.f32 %f16, %f11, %f13, %f16;\n"
 	"	add.s32 %r51, %r51, 1;\n"
@@ -1116,9 +1158,9 @@ static LPCSTR const g_szMeshRefineModule =
 	"{\n"
 	"	.reg .f32 %f<69>;\n"
 	"	.reg .pred %p<20>;\n"
+	"	.reg .s16 %rc<7>;\n"
 	"	.reg .s32 %r<90>;\n"
 	"	.reg .s64 %rl<81>;\n"
-	"	.reg .s16 %rc<5>;\n"
 	"\n"
 	"	ld.param.u32 %r1, [param_8];\n"
 	"	ld.param.u32 %r2, [param_9];\n"
@@ -1261,12 +1303,22 @@ static LPCSTR const g_szMeshRefineModule =
 	"	mov.f32 %f56, %f59;\n"
 	"\n"
 	"	BB00_7:\n"
-	"	shl.b32 %r9, %r5, 2;\n"
-	"	suld.b.2d.b32.trap {%f22}, [surfImageProjRef, {%r9, %r8}];\n"
+	"	shl.b32 %r9, %r5, 1;\n"
+	"	suld.b.2d.b16.trap {%rc5}, [surfImageProjRef, {%r9, %r8}];\n"
+	"	{\n"
+	"	.reg .b16 %temp;\n"
+	"	mov.b16 %temp, %rc5;\n"
+	"	cvt.f32.f16 %f22, %temp;\n"
+	"	}\n"
 	"	div.rn.f32 %f43, %f57, %f59;\n"
 	"	mul.f32 %f65, %f43, %f22;\n"
 	"	div.rn.f32 %f42, %f58, %f59;\n"
-	"	suld.b.2d.b32.trap {%f21}, [surfImageRef, {%r9, %r8}];\n"
+	"	suld.b.2d.b16.trap {%rc6}, [surfImageRef, {%r9, %r8}];\n"
+	"	{\n"
+	"	.reg .b16 %temp;\n"
+	"	mov.b16 %temp, %rc6;\n"
+	"	cvt.f32.f16 %f21, %temp;\n"
+	"	}\n"
 	"	fma.rn.f32 %f66, %f42, %f21, %f65;\n"
 	"	div.rn.f32 %f44, %f56, %f59;\n"
 	"	add.f32 %f68, %f66, %f44;\n"
@@ -1287,10 +1339,10 @@ static LPCSTR const g_szMeshRefineModule =
 	".visible .entry ComputePhotometricGradient(\n"
 	"	.param .u64 .ptr param_1, // faces\n"
 	"	.param .u64 .ptr param_2, // normals\n"
-	"	.param .u64 .ptr param_3, // depth-map A\n"
-	"	.param .u64 .ptr param_4, // face-map A\n"
-	"	.param .u64 .ptr param_5, // bary-center A\n"
-	"	.param .u64 .ptr param_6, // NCCGrad\n"
+	"	.param .u64 .ptr param_3, // depth-map A (float)\n"
+	"	.param .u64 .ptr param_4, // face-map A (uint32_t)\n"
+	"	.param .u64 .ptr param_5, // bary-map A (hfloat*3)\n"
+	"	.param .u64 .ptr param_6, // DZNCC\n"
 	"	.param .u64 .ptr param_7, // mask\n"
 	"	.param .u64 .ptr param_8, // photo-grad [in/out]\n"
 	"	.param .u64 .ptr param_9, // photo-grad-norm [in/out]\n"
@@ -1301,9 +1353,9 @@ static LPCSTR const g_szMeshRefineModule =
 	"{\n"
 	"	.reg .f32 %f<232>;\n"
 	"	.reg .pred %p<11>;\n"
+	"	.reg .s16 %rs<5>;\n"
 	"	.reg .s32 %r<69>;\n"
 	"	.reg .s64 %rl<66>;\n"
-	"	.reg .s16 %rc<2>;\n"
 	"\n"
 	"	ld.param.u32 %r1, [param_10+168];\n"
 	"	ld.param.u32 %r2, [param_10+172];\n"
@@ -1329,11 +1381,11 @@ static LPCSTR const g_szMeshRefineModule =
 	"	ld.param.u64 %rl12, [param_7];\n"
 	"	cvta.to.global.u64 %rl10, %rl12;\n"
 	"	add.s64 %rl13, %rl10, %rl11;\n"
-	"	ld.global.u8 %rc1, [%rl13];\n"
+	"	ld.global.u8 %rs4, [%rl13];\n"
 	"	{\n"
 	"	.reg .s16 %temp1;\n"
 	"	.reg .s16 %temp2;\n"
-	"	cvt.s16.s8 %temp1, %rc1;\n"
+	"	cvt.s16.s8 %temp1, %rs4;\n"
 	"	mov.b16 %temp2, 1;\n"
 	"	cvt.s16.s8 %temp2, %temp2;\n"
 	"	setp.ne.s16 %p8, %temp1, %temp2;\n"
@@ -1350,12 +1402,26 @@ static LPCSTR const g_szMeshRefineModule =
 	"	add.s64 %rl18, %rl17, %rl15;\n"
 	"	ld.param.u64 %rl61, [param_5];\n"
 	"	cvta.to.global.u64 %rl19, %rl61;\n"
-	"	mul.lo.s32 %r16, %r15, 3;\n"
-	"	mul.wide.s32 %rl9, %r16, 4;\n"
+	"	mul.wide.s32 %rl9, %r15, 6;\n"
 	"	add.s64 %rl20, %rl19, %rl9;\n"
-	"	ld.global.f32 %f41, [%rl20];\n"
-	"	ld.global.f32 %f42, [%rl20+4];\n"
-	"	ld.global.f32 %f43, [%rl20+8];\n"
+	"	ld.global.b16 %rs1, [%rl20];\n"
+	"	{\n"
+	"	.reg .b16 %temp;\n"
+	"	mov.b16 %temp, %rs1;\n"
+	"	cvt.f32.f16 %f41, %temp;\n"
+	"	}\n"
+	"	ld.global.b16 %rs2, [%rl20+2];\n"
+	"	{\n"
+	"	.reg .b16 %temp;\n"
+	"	mov.b16 %temp, %rs2;\n"
+	"	cvt.f32.f16 %f42, %temp;\n"
+	"	}\n"
+	"	ld.global.b16 %rs3, [%rl20+4];\n"
+	"	{\n"
+	"	.reg .b16 %temp;\n"
+	"	mov.b16 %temp, %rs3;\n"
+	"	cvt.f32.f16 %f43, %temp;\n"
+	"	}\n"
 	"	ld.param.f32 %f44, [param_12];\n"
 	"	ld.global.u32 %r20, [%rl18];\n"
 	"	mul.lo.s32 %r22, %r20, 3;\n"
@@ -1813,7 +1879,7 @@ struct MeshRefineCUDA {
 	struct View {
 		Image32F imageHost; // store temporarily the image pixels
 		Image8U::Size size;
-		CUDA::ArrayRT32F image;
+		CUDA::ArrayRT16F image;
 		CUDA::MemDevice depthMap;
 		CUDA::MemDevice faceMap;
 		CUDA::MemDevice baryMap;
@@ -1862,7 +1928,7 @@ public:
 	void ImageMeshWarp(
 		const Camera& cameraA, const Camera& cameraB, const Image8U::Size& size,
 		uint32_t idxImageA, uint32_t idxImageB);
-	void ComputeLocalVariance(const CUDA::ArrayRT32F& image, const Image8U::Size& size,
+	void ComputeLocalVariance(const CUDA::ArrayRT16F& image, const Image8U::Size& size,
 		CUDA::MemDevice& imageMean, CUDA::MemDevice& imageVar);
 	void ComputeLocalZNCC(const Image8U::Size& size);
 	void ComputePhotometricGradient(const Camera& cameraA, const Camera& cameraB, const Image8U::Size& size,
@@ -1900,13 +1966,13 @@ public:
 	CUDA::MemDevice vertexVertices;
 	CUDA::MemDevice faces;
 	CUDA::MemDevice faceNormals;
-	CUDA::TextureRT32F texImageRef;
-	CUDA::SurfaceRT32F surfImageRef;
-	CUDA::SurfaceRT32F surfImageProjRef;
+	CUDA::TextureRT16F texImageRef;
+	CUDA::SurfaceRT16F surfImageRef;
+	CUDA::SurfaceRT16F surfImageProjRef;
 	CUDA::MemDevice mask;
 	CUDA::MemDevice imageMeanA;
 	CUDA::MemDevice imageVarA;
-	CUDA::ArrayRT32F imageAB;
+	CUDA::ArrayRT16F imageAB;
 	CUDA::MemDevice imageMeanAB;
 	CUDA::MemDevice imageVarAB;
 	CUDA::MemDevice imageCov;
@@ -2059,13 +2125,13 @@ bool MeshRefineCUDA::InitImages(float scale, float sigma)
 		Image32F& img = view.imageHost;
 		imageData.image.toGray(img, cv::COLOR_BGR2GRAY, true);
 		imageData.image.release();
+		if (sigma > 0)
+			cv::GaussianBlur(img, img, cv::Size(), sigma);
 		if (scale < 1.0) {
 			cv::resize(img, img, cv::Size(), scale, scale, cv::INTER_LINEAR);
 			imageData.width = img.width(); imageData.height = img.height();
 		}
 		imageData.UpdateCamera(scene.platforms);
-		if (sigma > 0)
-			cv::GaussianBlur(img, img, cv::Size(), sigma);
 	}
 	#ifdef MESHCUDAOPT_USE_OPENMP
 	if (bAbort)
@@ -2080,12 +2146,12 @@ bool MeshRefineCUDA::InitImages(float scale, float sigma)
 		Image8U::Size& size(view.size);
 		size = view.imageHost.size();
 		reportCudaError(view.image.Reset(size, CUDA_ARRAY3D_SURFACE_LDST));
-		reportCudaError(view.image.SetData(view.imageHost));
+		reportCudaError(view.image.SetData(cvtImage<float,hfloat>(view.imageHost)));
 		view.imageHost.release();
 		const size_t area((size_t)size.area());
 		reportCudaError(view.depthMap.Reset(sizeof(float)*area));
 		reportCudaError(view.faceMap.Reset(sizeof(FIndex)*area));
-		reportCudaError(view.baryMap.Reset(sizeof(Point3f)*area));
+		reportCudaError(view.baryMap.Reset(sizeof(hfloat)*3*area));
 		if (maxSize.width < size.width)
 			maxSize.width = size.width;
 		if (maxSize.height < size.height)
@@ -2276,7 +2342,7 @@ void MeshRefineCUDA::SubdivideMesh(uint32_t maxArea, float fDecimate, unsigned n
 				maxAreas.Empty();
 
 				// decimate to the auto detected resolution
-				scene.mesh.Clean(medianArea/maxArea, 0, false, nCloseHoles, 0);
+				scene.mesh.Clean(MAXF(0.1f, medianArea/maxArea), 0, false, nCloseHoles, 0);
 
 				#ifdef MESHOPT_ENSUREEDGESIZE
 				// make sure there are no edges too small or too long
@@ -2409,8 +2475,11 @@ void MeshRefineCUDA::ProjectMesh(
 	// debug view
 	DepthMap depthMap(size);
 	TImage<FIndex> faceMap(size);
+	TImage<Point3hf> baryMap(size);
 	view.depthMap.GetData(depthMap);
 	view.faceMap.GetData(faceMap);
+	view.baryMap.GetData(baryMap);
+	TImage<Point3f> _baryMap(cvtImage<Point3hf,Point3f>(baryMap));
 	#endif
 }
 
@@ -2453,15 +2522,16 @@ void MeshRefineCUDA::ImageMeshWarp(
 	));
 	#if 0
 	// debug view
-	Image32F _imageAB(size);
+	Image16F _imageAB(size);
 	Image8U _mask(size);
 	imageAB.GetData(_imageAB);
 	mask.GetData(_mask);
+	Image32F __imageAB(cvtImage<hfloat,float>(_imageAB));
 	#endif
 }
 
 // compute local variance for each image pixel
-void MeshRefineCUDA::ComputeLocalVariance(const CUDA::ArrayRT32F& image, const Image8U::Size& size,
+void MeshRefineCUDA::ComputeLocalVariance(const CUDA::ArrayRT16F& image, const Image8U::Size& size,
 	CUDA::MemDevice& imageMean, CUDA::MemDevice& imageVar)
 {
 	surfImageRef.Bind(image);
@@ -2531,8 +2601,6 @@ void MeshRefineCUDA::ComputeLocalZNCC(const Image8U::Size& size)
 void MeshRefineCUDA::ComputePhotometricGradient(const Camera& cameraA, const Camera& cameraB, const Image8U::Size& size,
 	uint32_t idxImageA, uint32_t idxImageB, uint32_t numVertices, float RegularizationScale)
 {
-	// set image texture
-	texImageRef.Bind(views[idxImageB].image);
 	// compute photometric gradient for all visible vertices
 	reportCudaError(cuMemsetD32(photoGradPixels, 0, numVertices));
 	reportCudaError(kernelComputePhotometricGradient(size,
@@ -2627,10 +2695,9 @@ bool Scene::RefineMeshCUDA(unsigned nResolutionLevel, unsigned nMinResolution, u
 	for (unsigned nScale=0; nScale<nScales; ++nScale) {
 		// init images
 		const float scale(powi(fScaleStep, (int)(nScales-nScale-1)));
+		const float step(powi(2.f, (int)(nScales-nScale)));
 		DEBUG_ULTIMATE("Refine mesh at: %.2f image scale", scale);
-		//const float step(4); // => 16 area
-		//refine.InitImages(scale, 0.12*step+0.2);
-		refine.InitImages(scale);
+		refine.InitImages(scale, 0.12f*step+0.2f);
 
 		// extract array of triangles incident to each vertex
 		refine.ListVertexFacesPre();

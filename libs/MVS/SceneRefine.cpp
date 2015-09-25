@@ -483,7 +483,7 @@ void MeshRefine::SubdivideMesh(uint32_t maxArea, float fDecimate, unsigned nClos
 				maxAreas.Empty();
 
 				// decimate to the auto detected resolution
-				scene.mesh.Clean(medianArea/maxArea, 0, false, nCloseHoles, 0);
+				scene.mesh.Clean(MAXF(0.1f, medianArea/maxArea), 0, false, nCloseHoles, 0);
 
 				#ifdef MESHOPT_ENSUREEDGESIZE
 				// make sure there are no edges too small or too long
@@ -1047,13 +1047,13 @@ void MeshRefine::ThInitImage(uint32_t idxImage, Real scale, Real sigma)
 	Image32F& img = view.image;
 	imageData.image.toGray(img, cv::COLOR_BGR2GRAY, true);
 	imageData.image.release();
+	if (sigma > 0)
+		cv::GaussianBlur(img, img, cv::Size(), sigma);
 	if (scale < 1.0) {
 		cv::resize(img, img, cv::Size(), scale, scale, cv::INTER_LINEAR);
 		imageData.width = img.width(); imageData.height = img.height();
 	}
 	imageData.UpdateCamera(scene.platforms);
-	if (sigma > 0)
-		cv::GaussianBlur(img, img, cv::Size(), sigma);
 	// compute image mean and variance
 	ComputeLocalVariance(img, Image8U(img.size(), 1), view.imageMean, view.imageVar);
 	// compute image gradient
@@ -1197,10 +1197,9 @@ bool Scene::RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsig
 	for (unsigned nScale=0; nScale<nScales; ++nScale) {
 		// init images
 		const double scale(powi(fScaleStep, (int)(nScales-nScale-1)));
+		const double step(powi(2.0, (int)(nScales-nScale)));
 		DEBUG_ULTIMATE("Refine mesh at: %.2f image scale", scale);
-		//const double step(4); // => 16 area
-		//refine.InitImages(scale, 0.12*step+0.2);
-		refine.InitImages(scale);
+		refine.InitImages(scale, 0.12*step+0.2);
 
 		// extract array of triangles incident to each vertex
 		refine.ListVertexFacesPre();

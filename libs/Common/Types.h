@@ -1334,6 +1334,7 @@ template <typename TYPE> const TPoint2<TYPE> TPoint2<TYPE>::ZERO(0,0);
 template <typename TYPE> const TPoint2<TYPE> TPoint2<TYPE>::INF(std::numeric_limits<TYPE>::infinity(),std::numeric_limits<TYPE>::infinity());
 /*----------------------------------------------------------------*/
 typedef TPoint2<int> Point2i;
+typedef TPoint2<hfloat> Point2hf;
 typedef TPoint2<float> Point2f;
 typedef TPoint2<double> Point2d;
 /*----------------------------------------------------------------*/
@@ -1426,6 +1427,7 @@ template <typename TYPE> const TPoint3<TYPE> TPoint3<TYPE>::ZERO(0,0,0);
 template <typename TYPE> const TPoint3<TYPE> TPoint3<TYPE>::INF(std::numeric_limits<TYPE>::infinity(),std::numeric_limits<TYPE>::infinity(),std::numeric_limits<TYPE>::infinity());
 /*----------------------------------------------------------------*/
 typedef TPoint3<int> Point3i;
+typedef TPoint3<hfloat> Point3hf;
 typedef TPoint3<float> Point3f;
 typedef TPoint3<double> Point3d;
 /*----------------------------------------------------------------*/

@@ -1690,17 +1690,20 @@ inline bool CanCollapseCenterVertex(Vertex::Vertex_handle v) {
 #define REPLACE_POINT(V,P1,P2,PMIDDLE) (((V==P1)||(V==P2)) ? (PMIDDLE) : (V))
 static bool CanCollapseEdge(Vertex::Halfedge_handle v0v1)
 {
+	if (v0v1->is_border_edge())
+		return false;
 	Vertex::Halfedge_handle v1v0 = v0v1->opposite();
+	if (v0v1->next()->opposite()->facet() == v1v0->prev()->opposite()->facet())
+		return false;
 	Vertex::Vertex_handle v0 = v0v1->vertex();
+	if (v0->isBorder())
+		return false;
 	Vertex::Vertex_handle v1 = v1v0->vertex();
+	if (v1->isBorder())
+		return false;
 
-	if (v0v1->is_border_edge()) return false;
-	if (v0->isBorder() || v1->isBorder()) return false;
-	Vertex::Vertex_handle vl, vr, vTmp;
+	Vertex::Vertex_handle vl, vr;
 	Vertex::Halfedge_handle h1, h2;
-
-	if (v0v1->next()->opposite()->facet() == v1v0->prev()->opposite()->facet()) return false;
-
 	if (!v0v1->is_border()) {
 		vl = v0v1->next()->vertex();
 		h1 = v0v1->next();
@@ -1708,7 +1711,6 @@ static bool CanCollapseEdge(Vertex::Halfedge_handle v0v1)
 		if (h1->is_border() || h2->is_border())
 			return false;
 	}
-
 	if (!v1v0->is_border()) {
 		vr = v1v0->next()->vertex();
 		h1 = v1v0->next();
@@ -1717,7 +1719,8 @@ static bool CanCollapseEdge(Vertex::Halfedge_handle v0v1)
 			return false;
 	}
 	// if vl and vr are equal or both invalid -> fail
-	if (vl == vr) return false;
+	if (vl == vr)
+		return false;
 
 	HV_circulator c, d;
 
@@ -1732,7 +1735,7 @@ static bool CanCollapseEdge(Vertex::Halfedge_handle v0v1)
 
 	c = v0->vertex_begin(); d = c;
 	CGAL_For_all(c, d) {
-		vTmp =c->opposite()->vertex();
+		Vertex::Vertex_handle vTmp =c->opposite()->vertex();
 		if (vTmp->flags.isSet(Vertex::FLG_EULER) && (vTmp!=vl) && (vTmp!=vr))
 			return false;
 	}
@@ -2243,7 +2246,7 @@ static void Smooth(Polyhedron& p, double delta, int mode=0, bool only_visible=fa
 //         10 - fixDegeneracy=Yes smoothing=No;
 // - max_iter (default=30) - maximum number of iterations to be performed; since there is no guarantee that one operations (such as a collapse, for example)
 //   will not in turn generate new degeneracies, operations are being performed on the mesh in an iterative fashion. 
-static void EnsureEdgeSize(Polyhedron& p, double epsilonMin, double epsilonMax, double collapseRatio, double degenerate_angle_deg, int mode, int max_iters)
+static void EnsureEdgeSize(Polyhedron& p, double epsilonMin, double epsilonMax, double collapseRatio, double degenerate_angle_deg, int mode, int max_iters, int comp_size_threshold)
 {
 	if (mode>0)
 		FixDegeneracy(p, collapseRatio, degenerate_angle_deg);
@@ -2329,7 +2332,8 @@ static void EnsureEdgeSize(Polyhedron& p, double epsilonMin, double epsilonMax, 
 			Smooth(p, 0.1, 1);
 	}
 
-	RemoveConnectedComponents(p, 100, (float)edge.min*2);
+	if (comp_size_threshold > 0)
+		RemoveConnectedComponents(p, comp_size_threshold, (float)edge.min*2);
 
 	#if TD_VERBOSE != TD_VERBOSE_OFF
 	if (VERBOSITY_LEVEL > 2) {
@@ -2525,25 +2529,26 @@ public:
 			B.add_vertex(Point(v.x, v.y, v.z));
 		}
 		// add the facets
+		#if TD_VERBOSE != TD_VERBOSE_OFF
+		String msgFaces;
+		#endif
 		FOREACH(i, faces) {
 			const Mesh::Face& f = faces[i];
 			if (!B.test_facet(f.ptr(), f.ptr()+3)) {
-				if (!bProblems) {
-					std::cout << "WARNING: following facet(s) violate the manifold constraint (will be ignored):";
-					bProblems=true;
-				}
-				std::cout << " " << i;
-				std::cout.flush();
+				bProblems = true;
+				#if TD_VERBOSE != TD_VERBOSE_OFF
+				if (VERBOSITY_LEVEL > 1)
+					msgFaces += String::FormatString(" %u", i);
+				#endif
 				continue;
 			}
 			B.add_facet(f.ptr(), f.ptr()+3);
 		}
-		if (bProblems)
-			std::cout << std::endl;
-		//if (B.check_unconnected_vertices()) {
-		//	std::cout << "WARNING: unconnected vertices exists. They will be removed" << std::endl;
-		//	B.remove_unconnected_vertices();
-		//}
+		DEBUG_EXTRA("warning: ignoring the following facet(s) violating the manifold constraint:%s", msgFaces.c_str());
+		if (B.check_unconnected_vertices()) {
+			DEBUG_EXTRA("warning: remove unconnected vertices");
+			B.remove_unconnected_vertices();
+		}
 		B.end_surface();
 	}
 };
@@ -2551,8 +2556,6 @@ typedef TMeshBuilder<Polyhedron::HalfedgeDS, Kernel> MeshBuilder;
 static bool ImportMesh(Polyhedron& p, const Mesh::VertexArr& vertices, const Mesh::FaceArr& faces) {
 	MeshBuilder builder(vertices, faces);
 	p.delegate(builder);
-	if (builder.bProblems)
-		return false;
 	UpdateMeshData(p);
 	DEBUG_ULTIMATE("Mesh imported: %u vertices, %u facets (%u border edges)", p.size_of_vertices(), p.size_of_facets(), p.size_of_border_edges());
 	return true;
@@ -2602,7 +2605,7 @@ void Mesh::EnsureEdgeSize(float epsilonMin, float epsilonMax, float collapseRati
 	CLN::Polyhedron p;
 	CLN::ImportMesh(p, vertices, faces);
 	Release();
-	CLN::EnsureEdgeSize(p, epsilonMin, epsilonMax, collapseRatio, degenerate_angle_deg, mode, max_iters);
+	CLN::EnsureEdgeSize(p, epsilonMin, epsilonMax, collapseRatio, degenerate_angle_deg, mode, max_iters, 0);
 	CLN::ExportMesh(p, vertices, faces);
 }
 /*----------------------------------------------------------------*/

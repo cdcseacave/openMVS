@@ -993,6 +993,11 @@ inline TPoint2<TYPE>& operator*=(cv::Point_<TYPE>& pt0, const cv::Point_<TYPEM>&
 	return (TPoint2<TYPE>&)pt0;
 }
 
+template <typename TFROM, typename TTO>
+inline TPoint2<TTO> cvtPoint2(const TPoint2<TFROM>& p) {
+	return TPoint2<TTO>(TTO(p.x), TTO(p.y));
+}
+
 // TPoint3 operators
 #if CV_MAJOR_VERSION > 2
 template <typename TYPE, typename TYPEM>
@@ -1082,6 +1087,11 @@ inline TPoint3<TYPE>& operator*=(cv::Point3_<TYPE>& pt0, const cv::Point3_<TYPEM
 	return (TPoint3<TYPE>&)pt0;
 }
 
+template <typename TFROM, typename TTO>
+inline TPoint3<TTO> cvtPoint3(const TPoint3<TFROM>& p) {
+	return TPoint3<TTO>(TTO(p.x), TTO(p.y), TTO(p.z));
+}
+
 // TPixel operators
 template <typename TYPE, typename TYPEM>
 inline TPixel<TYPE> operator/(const TPixel<TYPE>& pt, TYPEM m) {
@@ -1142,6 +1152,16 @@ template <typename TYPE>
 inline TColor<TYPE>& operator*=(TColor<TYPE>& pt0, const TColor<TYPE>& pt1) {
 	pt0.r*=pt1.r; pt0.g*=pt1.g; pt0.b*=pt1.b; pt0.a*=pt1.a;
 	return pt0;
+}
+
+// TImage operators
+template <typename TFROM, typename TTO>
+inline TImage<TTO> cvtImage(const TImage<TFROM>& image) {
+	TImage<TTO> img(image.size());
+	for (int r=0; r<image.rows; ++r)
+		for (int c=0; c<image.cols; ++c)
+			img(r,c) = image(r,c);
+	return img;
 }
 
 // operator /
@@ -1410,10 +1430,12 @@ DEFINE_CVDATATYPE(SEACAVE::hfloat)
 DEFINE_CVDATATYPE(SEACAVE::cuint32_t)
 /*----------------------------------------------------------------*/
 DEFINE_CVDATATYPE(SEACAVE::Point2i)
+DEFINE_CVDATATYPE(SEACAVE::Point2hf)
 DEFINE_CVDATATYPE(SEACAVE::Point2f)
 DEFINE_CVDATATYPE(SEACAVE::Point2d)
 /*----------------------------------------------------------------*/
 DEFINE_CVDATATYPE(SEACAVE::Point3i)
+DEFINE_CVDATATYPE(SEACAVE::Point3hf)
 DEFINE_CVDATATYPE(SEACAVE::Point3f)
 DEFINE_CVDATATYPE(SEACAVE::Point3d)
 /*----------------------------------------------------------------*/
@@ -2790,23 +2812,6 @@ void TImage<TYPE>::Show(const String& winname, int delay, bool bDestroy) const
 	cv::waitKey(delay);
 	if (bDestroy)
 		cv::destroyWindow(winname);
-}
-/*----------------------------------------------------------------*/
-
-
-inline Image16F cvtImage32FtoImage16F(const Image32F& image) {
-	Image16F img(image.size());
-	for (int r=0; r<image.rows; ++r)
-		for (int c=0; c<image.cols; ++c)
-			img(r,c) = image(r,c);
-	return img;
-}
-inline Image32F cvtImage16FtoImage32F(const Image16F& image) {
-	Image32F img(image.size());
-	for (int r=0; r<image.rows; ++r)
-		for (int c=0; c<image.cols; ++c)
-			img(r,c) = image(r,c);
-	return img;
 }
 /*----------------------------------------------------------------*/
 
