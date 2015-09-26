@@ -62,13 +62,12 @@ struct MeshRefine {
 	typedef std::unordered_set<FIndex> CameraFaces;
 	typedef SEACAVE::cList<CameraFaces,const CameraFaces&,2> CameraFacesArr;
 
-	typedef TImage<cuint32_t> VertexMap;
 	typedef TImage<cuint32_t> FaceMap;
 	typedef TImage<Point3f> BaryMap;
 
 	// store necessary data about a view
 	struct View {
-		typedef TPoint2<Real> Grad;
+		typedef TPoint2<float> Grad;
 		typedef TImage<Grad> ImageGrad;
 		Image32F image; // image pixels
 		ImageGrad imageGrad; // image pixel gradients
@@ -723,10 +722,9 @@ void MeshRefine::ImageMeshWarp(
 	const Image32F& imageB, Image32F& imageA, Image8U& mask)
 {
 	ASSERT(!imageA.empty());
-	mask.create(imageA.size());
 	typedef Sampler::Linear<float> Sampler;
 	const Sampler sampler;
-	imageA.memset(0);
+	mask.create(imageA.size());
 	mask.memset(0);
 	for (int j=0; j<depthMapA.rows; ++j) {
 		for (int i=0; i<depthMapA.cols; ++i) {
@@ -872,7 +870,7 @@ void MeshRefine::ComputePhotometricGradient(
 	ASSERT(viewB.image.size() == viewB.imageGrad.size() && !viewB.image.empty());
 	const int RowsEnd(mask.rows-HalfSize);
 	const int ColsEnd(mask.cols-HalfSize);
-	typedef Sampler::Linear<Real> Sampler;
+	typedef Sampler::Linear<View::Grad::Type> Sampler;
 	const Sampler sampler;
 	TMatrix<Real,2,3> xJac;
 	Point2f xB;
@@ -886,7 +884,7 @@ void MeshRefine::ComputePhotometricGradient(
 				continue;
 			const FIndex idxFace(faceMapA(r,c));
 			ASSERT(idxFace != NO_ID);
-			const Normal& N(normals[idxFace]);
+			const Grad N(normals[idxFace]);
 			const Point3 rayA(cameraA.RayPoint(Point2(c,r)));
 			const Grad dA(normalized(rayA));
 			const Real Nd(N.dot(dA));
@@ -902,15 +900,15 @@ void MeshRefine::ComputePhotometricGradient(
 			const float depthB(ProjectVertex(cameraB.P.val, X.ptr(), xB.ptr(), xJac.val));
 			ASSERT(depthB > 0);
 			// compute gradient in image B
-			const View::Grad gB(viewB.imageGrad.sample<Sampler,View::Grad>(sampler, xB));
+			const TMatrix<Real,1,2> gB(viewB.imageGrad.sample<Sampler,View::Grad>(sampler, xB));
 			// compute gradient scale
 			const Real dZNCC(imageDZNCC(r,c));
-			const Real sg(gB.dot(View::Grad(xJac*(const TMatrix<Real,3,1>&)dA))*dZNCC*RegularizationScale/Nd);
+			const Real sg((gB*(xJac*(const TMatrix<Real,3,1>&)dA))(0)*dZNCC*RegularizationScale/Nd);
 			// add gradient to the three vertices
 			const Face& face(faces[idxFace]);
 			const Point3f& b(baryMapA(r,c));
 			for (int v=0; v<3; ++v) {
-				const Grad g(Grad(N)*(sg*(Real)b[v]));
+				const Grad g(N*(sg*(Real)b[v]));
 				const VIndex idxVert(face[v]);
 				_photoGrad[idxVert] += g;
 				++photoGradPixels[idxVert];
@@ -1057,18 +1055,19 @@ void MeshRefine::ThInitImage(uint32_t idxImage, Real scale, Real sigma)
 	// compute image mean and variance
 	ComputeLocalVariance(img, Image8U(img.size(), 1), view.imageMean, view.imageVar);
 	// compute image gradient
-	TImage<Real> grad[2];
-	#if 1
-	cv::Sobel(img, grad[0], cv::DataType<Real>::type, 1, 0, 3, 1.0/8.0);
-	cv::Sobel(img, grad[1], cv::DataType<Real>::type, 0, 1, 3, 1.0/8.0);
+	typedef View::Grad::Type GradType;
+	TImage<GradType> grad[2];
+	#if 0
+	cv::Sobel(img, grad[0], cv::DataType<GradType>::type, 1, 0, 3, 1.0/8.0);
+	cv::Sobel(img, grad[1], cv::DataType<GradType>::type, 0, 1, 3, 1.0/8.0);
 	#elif 1
-	const TMatrix<Real,3,5> kernel(CreateDerivativeKernel3x5());
-	cv::filter2D(img, grad[0], cv::DataType<Real>::type, kernel);
-	cv::filter2D(img, grad[1], cv::DataType<Real>::type, kernel.t());
+	const TMatrix<GradType,3,5> kernel(CreateDerivativeKernel3x5());
+	cv::filter2D(img, grad[0], cv::DataType<GradType>::type, kernel);
+	cv::filter2D(img, grad[1], cv::DataType<GradType>::type, kernel.t());
 	#else
-	const TMatrix<Real,5,7> kernel(CreateDerivativeKernel5x7());
-	cv::filter2D(img, grad[0], cv::DataType<Real>::type, kernel);
-	cv::filter2D(img, grad[1], cv::DataType<Real>::type, kernel.t());
+	const TMatrix<GradType,5,7> kernel(CreateDerivativeKernel5x7());
+	cv::filter2D(img, grad[0], cv::DataType<GradType>::type, kernel);
+	cv::filter2D(img, grad[1], cv::DataType<GradType>::type, kernel.t());
 	#endif
 	cv::merge(grad, 2, view.imageGrad);
 }
@@ -1102,7 +1101,7 @@ void MeshRefine::ThProcessPair(uint32_t idxImageA, uint32_t idxImageB)
 	const Camera& cameraB = imageDataB.camera;
 	// warp imageB to imageA using the mesh
 	Image8U mask;
-	Image32F imageAB(imageA.size());
+	Image32F imageAB; imageA.copyTo(imageAB);
 	ImageMeshWarp(depthMapA, cameraA, depthMapB, cameraB, imageB, imageAB, mask);
 	// init vertex textures
 	const TImage<Real>& imageMeanA = viewA.imageMean;

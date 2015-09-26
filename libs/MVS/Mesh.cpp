@@ -2544,7 +2544,10 @@ public:
 			}
 			B.add_facet(f.ptr(), f.ptr()+3);
 		}
-		DEBUG_EXTRA("warning: ignoring the following facet(s) violating the manifold constraint:%s", msgFaces.c_str());
+		#if TD_VERBOSE != TD_VERBOSE_OFF
+		if (bProblems)
+			DEBUG_EXTRA("warning: ignoring the following facet(s) violating the manifold constraint:%s", msgFaces.c_str());
+		#endif
 		if (B.check_unconnected_vertices()) {
 			DEBUG_EXTRA("warning: remove unconnected vertices");
 			B.remove_unconnected_vertices();

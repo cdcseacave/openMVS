@@ -1934,7 +1934,7 @@ public:
 	void ComputePhotometricGradient(const Camera& cameraA, const Camera& cameraB, const Image8U::Size& size,
 		uint32_t idxImageA, uint32_t idxImageB, uint32_t numVertices, float RegularizationScale);
 	void ComputeSmoothnessGradient(uint32_t numVertices);
-	void CombineGradients(uint32_t numVertices, float weightRegularity);
+	void CombineGradients(uint32_t numVertices);
 
 public:
 	const float weightRegularity; // a scalar regularity weight to balance between photo-consistency and regularization terms
@@ -2435,7 +2435,7 @@ void MeshRefineCUDA::ScoreMesh(float* gradients)
 	ComputeSmoothnessGradient(numVertices);
 
 	// set the final gradient as the combination of photometric and smoothness gradients
-	CombineGradients(numVertices, (float)weightRegularity);
+	CombineGradients(numVertices);
 	reportCudaError(smoothGrad1.GetData(gradients, sizeof(Point3f)*numVertices));
 }
 
@@ -2661,7 +2661,7 @@ void MeshRefineCUDA::ComputeSmoothnessGradient(uint32_t numVertices)
 	#endif
 }
 
-void MeshRefineCUDA::CombineGradients(uint32_t numVertices, float weightRegularity)
+void MeshRefineCUDA::CombineGradients(uint32_t numVertices)
 {
 	// compute smoothness gradient for all vertices
 	reportCudaError(kernelCombineGradients((int)numVertices,
