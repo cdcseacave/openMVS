@@ -211,7 +211,8 @@ int main(int argc, LPCTSTR* argv)
 		return EXIT_FAILURE;
 	}
 	TD_TIMER_START();
-	scene.DenseReconstruction();
+	if (!scene.DenseReconstruction())
+		return EXIT_FAILURE;
 	VERBOSE("Densifying point-cloud completed: %u points (%s)", scene.pointcloud.points.GetSize(), TD_TIMER_GET_FMT().c_str());
 
 	// save the final mesh

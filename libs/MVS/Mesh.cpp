@@ -1050,7 +1050,7 @@ void Mesh::Clean(float fDecimate, float fSpurious, bool bRemoveSpikes, unsigned 
 		DEBUG_ULTIMATE("Removed %d faces with edges longer than %f", numLongFaces, thLongEdge);
 		// remove isolated components
 		vcg::tri::UpdateTopology<CLEAN::Mesh>::FaceFace(mesh);
-		const std::pair<int, int> delInfo(vcg::tri::Clean<CLEAN::Mesh>::RemoveSmallConnectedComponentsDiameter(mesh, thLongEdge*1.5f));
+		const std::pair<int, int> delInfo(vcg::tri::Clean<CLEAN::Mesh>::RemoveSmallConnectedComponentsDiameter(mesh, thLongEdge));
 		DEBUG_ULTIMATE("Removed %d connected components out of %d", delInfo.second, delInfo.first);
 	}
 

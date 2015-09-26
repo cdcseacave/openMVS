@@ -212,7 +212,8 @@ int main(int argc, LPCTSTR* argv)
 		return EXIT_FAILURE;
 	}
 	TD_TIMER_START();
-	scene.TextureMesh(OPT::nResolutionLevel, OPT::nMinResolution, OPT::fOutlierThreshold, OPT::bGlobalSeamLeveling, OPT::bLocalSeamLeveling);
+	if (!scene.TextureMesh(OPT::nResolutionLevel, OPT::nMinResolution, OPT::fOutlierThreshold, OPT::bGlobalSeamLeveling, OPT::bLocalSeamLeveling))
+		return EXIT_FAILURE;
 	VERBOSE("Mesh texturing completed: %u vertices, %u faces (%s)", scene.mesh.vertices.GetSize(), scene.mesh.faces.GetSize(), TD_TIMER_GET_FMT().c_str());
 
 	// save the final mesh

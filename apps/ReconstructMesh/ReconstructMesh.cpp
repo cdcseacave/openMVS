@@ -231,7 +231,8 @@ int main(int argc, LPCTSTR* argv)
 				}
 			}
 			TD_TIMER_START();
-			scene.ReconstructMesh(OPT::fDistInsert, OPT::bUseFreeSpaceSupport);
+			if (!scene.ReconstructMesh(OPT::fDistInsert, OPT::bUseFreeSpaceSupport))
+				return EXIT_FAILURE;
 			VERBOSE("Mesh reconstruction completed: %u vertices, %u faces (%s)", scene.mesh.vertices.GetSize(), scene.mesh.faces.GetSize(), TD_TIMER_GET_FMT().c_str());
 			#if TD_VERBOSE != TD_VERBOSE_OFF
 			if (VERBOSITY_LEVEL > 2) {

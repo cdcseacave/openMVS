@@ -1198,7 +1198,8 @@ bool Scene::RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsig
 		const double scale(powi(fScaleStep, (int)(nScales-nScale-1)));
 		const double step(powi(2.0, (int)(nScales-nScale)));
 		DEBUG_ULTIMATE("Refine mesh at: %.2f image scale", scale);
-		refine.InitImages(scale, 0.12*step+0.2);
+		if (!refine.InitImages(scale, 0.12*step+0.2))
+			return false;
 
 		// extract array of triangles incident to each vertex
 		refine.ListVertexFacesPre();

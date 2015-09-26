@@ -113,7 +113,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		("decimate", boost::program_options::value<float>(&OPT::fDecimateMesh)->default_value(0.f), "decimation factor in range [0..1] to be applied to the input surface before refinement (0 - auto, 1 - disabled)")
 		("close-holes", boost::program_options::value<unsigned>(&OPT::nCloseHoles)->default_value(15), "try to close small holes in the input surface (0 - disabled)")
 		("ensure-edge-size", boost::program_options::value<unsigned>(&OPT::nEnsureEdgeSize)->default_value(1), "ensure edge size and improve vertex valence of the input surface (0 - disabled)")
-		("max-face-area", boost::program_options::value<unsigned>(&OPT::nMaxFaceArea)->default_value(32), "maximum face area projected in any pair of images that is not subdivided (0 - disabled)")
+		("max-face-area", boost::program_options::value<unsigned>(&OPT::nMaxFaceArea)->default_value(64), "maximum face area projected in any pair of images that is not subdivided (0 - disabled)")
 		("scales", boost::program_options::value<unsigned>(&OPT::nScales)->default_value(3), "how many iterations to run mesh optimization on multi-scale images")
 		("scale-step", boost::program_options::value<float>(&OPT::fScaleStep)->default_value(0.5f), "image scale factor used at each mesh optimization step")
 		("regularity-weight", boost::program_options::value<float>(&OPT::fRegularityWeight)->default_value(1.f), "scalar regularity weight to balance between photo-consistency and regularization terms during mesh optimization")
@@ -239,12 +239,13 @@ int main(int argc, LPCTSTR* argv)
 							  OPT::fRegularityWeight,
 							  OPT::fGradientStep))
 	#endif
-	scene.RefineMesh(OPT::nResolutionLevel, OPT::nMinResolution, OPT::nMaxViews,
-					 OPT::fDecimateMesh, OPT::nCloseHoles, OPT::nEnsureEdgeSize,
-					 OPT::nMaxFaceArea,
-					 OPT::nScales, OPT::fScaleStep,
-					 OPT::fRegularityWeight,
-					 OPT::fGradientStep);
+	if (!scene.RefineMesh(OPT::nResolutionLevel, OPT::nMinResolution, OPT::nMaxViews,
+						  OPT::fDecimateMesh, OPT::nCloseHoles, OPT::nEnsureEdgeSize,
+						  OPT::nMaxFaceArea,
+						  OPT::nScales, OPT::fScaleStep,
+						  OPT::fRegularityWeight,
+						  OPT::fGradientStep))
+		return EXIT_FAILURE;
 	VERBOSE("Mesh refinement completed: %u vertices, %u faces (%s)", scene.mesh.vertices.GetSize(), scene.mesh.faces.GetSize(), TD_TIMER_GET_FMT().c_str());
 
 	// save the final mesh

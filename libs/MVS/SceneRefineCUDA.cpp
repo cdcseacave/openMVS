@@ -319,6 +319,12 @@ static LPCSTR const g_szMeshRefineModule =
 	"\n"
 	"	setp.gt.s32 %p1, %r8, %r9;\n"
 	"	setp.gt.f32 %p2, %f63, 0f00000000;\n"
+	"	ld.param.u64 %rl37, [param_4];\n"
+	"	cvta.to.global.u64 %rl22, %rl37;\n"
+	"	ld.param.u64 %rl39, [param_5];\n"
+	"	cvta.to.global.u64 %rl28, %rl39;\n"
+	"	ld.param.u64 %rl40, [param_6];\n"
+	"	cvta.to.global.u64 %rl31, %rl40;\n"
 	"\n"
 	"	BB00_2:\n"
 	"	mov.f32 %f230, %f232;\n"
@@ -348,8 +354,6 @@ static LPCSTR const g_szMeshRefineModule =
 	"	fma.rn.f32 %f78, %f75, %f58, %f172;\n"
 	"	ld.param.u32 %r100, [param_7+168];\n"
 	"	mad.lo.s32 %r67, %r11, %r100, %r103;\n"
-	"	ld.param.u64 %rl37, [param_4];\n"
-	"	cvta.to.global.u64 %rl22, %rl37;\n"
 	"	mul.wide.s32 %rl23, %r67, 4;\n"
 	"	mov.b32 %r13, %f78;\n"
 	"	add.s64 %rl24, %rl22, %rl23;\n"
@@ -359,26 +363,16 @@ static LPCSTR const g_szMeshRefineModule =
 	"	setp.lt.f32 %p16, %f233, %f78;\n"
 	"	@%p16 bra BB00_5;\n"
 	"\n"
-	"	ld.param.u32 %r99, [param_7+168];\n"
-	"	mad.lo.s32 %r71, %r11, %r99, %r103;\n"
-	"	mul.wide.s32 %rl26, %r71, 4;\n"
 	"	mov.b32 %r72, %f233;\n"
-	"	add.s64 %rl27, %rl22, %rl26;\n"
+	"	add.s64 %rl27, %rl22, %rl23;\n"
 	"	atom.global.cas.b32 %r73, [%rl27], %r72, %r13;\n"
 	"	ld.global.f32 %f80, [%rl27];\n"
 	"	setp.neu.f32 %p17, %f233, %f80;\n"
 	"	mov.f32 %f233, %f80;\n"
 	"	@%p17 bra BB00_3;\n"
 	"\n"
-	"	ld.param.u64 %rl39, [param_5];\n"
-	"	cvta.to.global.u64 %rl28, %rl39;\n"
-	"	ld.param.u32 %r98, [param_7+168];\n"
-	"	mad.lo.s32 %r76, %r11, %r98, %r103;\n"
-	"	mul.wide.s32 %rl29, %r76, 4;\n"
-	"	add.s64 %rl7, %rl28, %rl29;\n"
-	"	ld.param.u64 %rl40, [param_6];\n"
-	"	cvta.to.global.u64 %rl31, %rl40;\n"
-	"	mul.wide.s32 %rl30, %r76, 6;\n"
+	"	add.s64 %rl7, %rl28, %rl23;\n"
+	"	mul.wide.s32 %rl30, %r67, 6;\n"
 	"	add.s64 %rl8, %rl31, %rl30;\n"
 	"	@%p2 bra BB00_4;\n"
 	"\n"
@@ -2697,7 +2691,8 @@ bool Scene::RefineMeshCUDA(unsigned nResolutionLevel, unsigned nMinResolution, u
 		const float scale(powi(fScaleStep, (int)(nScales-nScale-1)));
 		const float step(powi(2.f, (int)(nScales-nScale)));
 		DEBUG_ULTIMATE("Refine mesh at: %.2f image scale", scale);
-		refine.InitImages(scale, 0.12f*step+0.2f);
+		if (!refine.InitImages(scale, 0.12f*step+0.2f))
+			return false;
 
 		// extract array of triangles incident to each vertex
 		refine.ListVertexFacesPre();
