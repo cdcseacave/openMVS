@@ -787,9 +787,9 @@ void TRMatrixBase<TYPE>::GetQuaternion(Quat& quat) const
   {
 	// Use alternate formula using largest trace element
 	TYPE s;
-	unsigned int i;
-	unsigned int j;
-	unsigned int k;
+	unsigned i;
+	unsigned j;
+	unsigned k;
 
 	// Find largest trace element i and its successors j, k
 	if(Base::operator()(1,1) > Base::operator()(0,0))
@@ -1121,8 +1121,8 @@ void TRMatrixBase<TYPE>::SetFromQuaternion(const Quat& qu)
   RCompare[1][2] =       2.0 * (q[1] * q[2] - q[0] * q[3]);
   RCompare[2][2] = 1.0 - 2.0 * (q[1] * q[1] + q[0] * q[0]);
 
-  for (unsigned int i=0; i<3; i++) {
-	for (unsigned int j=0; j<3; j++) {
+  for (unsigned i=0; i<3; i++) {
+	for (unsigned j=0; j<3; j++) {
 	  if (!equal(Base::operator()(i,j), RCompare[i][j], TYPE(1e-12))) {
 		SLOG("Matrices are not same !"<<*this<<" "<<RCompare<<std::endl);
 		SLOG(" at "<<i<<" "<<j<<" "<< (Base::operator()(i,j))-(RCompare[i][j])<<std::endl);
@@ -1329,7 +1329,7 @@ bool TRMatrixBase<TYPE>::Check(const TYPE eps, int verbose) const
 	bool ok = equal(TYPE(cv::determinant(*this)), TYPE(1), eps);
 	// check unit column vector length
 	Vec cl[3];
-	for (register unsigned int i = 0; i < 3 && ok; i++) {
+	for (register unsigned i = 0; i < 3 && ok; i++) {
 		cl[i] = Base::col(i);
 		ok = equal(norm(cl[i]), TYPE(1), eps);
 	}
@@ -1348,7 +1348,7 @@ bool TRMatrixBase<TYPE>::Check(const TYPE eps, int verbose) const
 		if (!equal(det, TYPE(1), eps)) {
 			res << "det != 1 (det=" << std::setprecision(30) << det << ") ";
 		}
-		for (register unsigned int i = 0; i < 3; i++) {
+		for (register unsigned i = 0; i < 3; i++) {
 			cl[i] = Base::col(i);
 			if (!equal(norm(cl[i]), TYPE(1), eps)) {
 				res << "col[" << i << "].NormL2() != 1) (= "
@@ -1387,7 +1387,7 @@ void TRMatrixBase<TYPE>::EnforceOrthogonality()
 	TYPE m[9], ri[9], x[9];
 	memcpy(m, r, 9*sizeof(TYPE));
 	//By trial and error I found that 4 iterates always works unless your matrix is waaay off. Limit 10.
-	for (unsigned int iterate = 0; iterate != 10; iterate++) {
+	for (unsigned iterate = 0; iterate != 10; iterate++) {
 		//Invert r. Use inverse and not transpose since r is only approximately orthogonal (transpose will result in slow, oscillating convergence).
 		InvertMatrix3x3(r, ri);
 

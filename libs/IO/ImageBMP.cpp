@@ -158,7 +158,7 @@ HRESULT CImageBMP::ReadData(void* pData, PIXELFORMAT dataFormat, UINT nStride, U
 /*----------------------------------------------------------------*/
 
 
-HRESULT CImageBMP::WriteHeader(PIXELFORMAT imageFormat, UINT width, UINT height, BYTE numLevels)
+HRESULT CImageBMP::WriteHeader(PIXELFORMAT imageFormat, UINT width, UINT height, BYTE /*numLevels*/)
 {
 	// write header
 	m_numLevels = 0;

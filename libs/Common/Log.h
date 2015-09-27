@@ -43,7 +43,7 @@ class GENERAL_API Log
 	DECLARE_SINGLETON(Log);
 
 public:
-	typedef FastDelegate<void (const String&)> ClbkRecordMsg;
+	typedef DELEGATE<void (const String&)> ClbkRecordMsg;
 	typedef cList<ClbkRecordMsg> ClbkRecordMsgArray;
 	typedef CSharedPtr<ClbkRecordMsgArray> ClbkRecordMsgArrayPtr;
 

@@ -57,7 +57,8 @@ public:
 
 	#ifdef _MSC_VER
 
-	typedef void* (STCALL *FncStart)(void *);
+	typedef HANDLE thread_t;
+	typedef void* (STCALL *FncStart)(void*);
 
 	typedef struct STARTER_DATA {
 		FncStart fnStarter;
@@ -65,8 +66,10 @@ public:
 		STARTER_DATA(FncStart _fnStarter, void* _pData) : fnStarter(_fnStarter), pData(_pData) {}
 	} StarterData;
 
-	Thread() : threadHandle(NULL), threadId(0)	{}
-	virtual ~Thread()							{ stop(); }
+	Thread() : threadHandle(NULL), threadId(0) {}
+	virtual ~Thread() { stop(); }
+
+	inline bool isRunning() const { return (threadHandle != NULL); }
 
 	bool start(FncStart pfnStarter, void* pData=NULL) {
 		join();
@@ -94,12 +97,12 @@ public:
 
 	inline void setThreadPriority(Priority p) const { ::SetThreadPriority(threadHandle, convertPriority(p)); }
 	inline Priority getThreadPriority() const { return convertPriority((PriorityOS)::GetThreadPriority(threadHandle)); }
-	static inline void setThreadPriority(void* th, Priority p) { ::SetThreadPriority((HANDLE)th, convertPriority(p)); }
-	static inline Priority getThreadPriority(void* th) { return convertPriority((PriorityOS)::GetThreadPriority((HANDLE)th)); }
+	static inline void setThreadPriority(thread_t th, Priority p) { ::SetThreadPriority(th, convertPriority(p)); }
+	static inline Priority getThreadPriority(thread_t th) { return convertPriority((PriorityOS)::GetThreadPriority(th)); }
 
 	static inline void sleep(uint32_t millis)	{ ::Sleep(millis); }
 	static inline void yield()					{ ::Sleep(0); }
-	static inline void* currentThread()			{ return ::GetCurrentThread(); }
+	static inline thread_t currentThread()		{ return ::GetCurrentThread(); }
 	static uint32_t hardwareConcurrency() {
 		SYSTEM_INFO info={{0}};
 		GetSystemInfo(&info);
@@ -120,10 +123,13 @@ public:
 
 	#else //_MSC_VER
 
+	typedef pthread_t thread_t;
 	typedef void* (STCALL *FncStart)(void*);
 
-	Thread() : threadHandle(0)			{}
-	virtual ~Thread()					{ stop(); }
+	Thread() : threadHandle(0) {}
+	virtual ~Thread() { stop(); }
+
+	inline bool isRunning() const { return (threadHandle != 0); }
 
 	bool start(FncStart pfnStarter, void* pData=NULL) {
 		join();
@@ -139,8 +145,7 @@ public:
 		}
 	}
 	void join() {
-		if (threadHandle)
-		{
+		if (threadHandle) {
 			pthread_join(threadHandle, 0);
 			threadHandle = 0;
 		}
@@ -148,21 +153,21 @@ public:
 
 	inline void setThreadPriority(Priority p) const { setThreadPriority(threadHandle, p); }
 	inline Priority getThreadPriority() const { return getThreadPriority(threadHandle); }
-	static void setThreadPriority(void* th, Priority p) {
+	static void setThreadPriority(thread_t th, Priority p) {
 		struct sched_param param;
 		param.sched_priority = convertPriority(p);
-		pthread_setschedparam((pthread_t)th, SCHED_OTHER, &param);
+		pthread_setschedparam(th, SCHED_OTHER, &param);
 	}
-	static Priority getThreadPriority(void* th) {
+	static Priority getThreadPriority(thread_t th) {
 		struct sched_param param;
 		int                policy;
-		pthread_getschedparam((pthread_t)th, &policy, &param);
+		pthread_getschedparam(th, &policy, &param);
 		return convertPriority((PriorityOS)param.sched_priority);
 	}
 
 	static void sleep(uint32_t millis)	{ ::usleep(millis*1000); }
 	static void yield()					{ ::sched_yield(); }
-	static inline void* currentThread()	{ return (void*)pthread_self(); }
+	static inline thread_t currentThread(){ return pthread_self(); }
 	static uint32_t hardwareConcurrency() { return sysconf(_SC_NPROCESSORS_ONLN); }
 
 	static inline int32_t safeInc(volatile int32_t& v) { return __sync_add_and_fetch(&v, 1); }
@@ -176,8 +181,6 @@ public:
 	static inline int64_t safeCompareExchange(volatile int64_t& target, int64_t comp, int64_t value) { return __sync_val_compare_and_swap(&target, comp, value); }
 
 	#endif //_MSC_VER
-
-	inline bool isRunning() const		{ return (threadHandle != NULL); }
 
 	static unsigned getMaxThreads(unsigned threads) {
 		if (threads == 1)
@@ -244,16 +247,10 @@ private:
 	}
 
 private:
+	thread_t threadHandle;
 	#ifdef _MSC_VER
-
-	HANDLE threadHandle;
 	DWORD threadId;
-
-	#else //_MSC_VER
-
-	pthread_t threadHandle;
-
-	#endif //_MSC_VER
+	#endif
 };
 
 
@@ -279,15 +276,19 @@ public:
 
 	#ifdef _MSC_VER
 
-	static inline void* getCurrentProcessID() { return (void*)::GetCurrentProcess(); }
-	static inline void setProcessPriority(void* id, Priority p) { ::SetPriorityClass((HANDLE)id, convertPriority(p)); }
-	static inline Priority getProcessPriority(void* id) { return convertPriority((PriorityOS)::GetPriorityClass((HANDLE)id)); }
+	typedef HANDLE process_t;
+
+	static inline process_t getCurrentProcessID() { return ::GetCurrentProcess(); }
+	static inline void setProcessPriority(process_t id, Priority p) { ::SetPriorityClass(id, convertPriority(p)); }
+	static inline Priority getProcessPriority(process_t id) { return convertPriority((PriorityOS)::GetPriorityClass(id)); }
 
 	#else //_MSC_VER
 
-	static inline void* getCurrentProcessID() { return (void*)::getpid(); }
-	static inline void setProcessPriority(void* id, Priority p) { ::setpriority(PRIO_PROCESS, (const id_t&)id, convertPriority(p)); }
-	static inline Priority getProcessPriority(void* id) { if (sizeof(void*) > sizeof(id_t)) id = NULL; return convertPriority((PriorityOS)::getpriority(PRIO_PROCESS, (id_t&)id)); }
+	typedef id_t process_t;
+
+	static inline process_t getCurrentProcessID() { return ::getpid(); }
+	static inline void setProcessPriority(process_t id, Priority p) { ::setpriority(PRIO_PROCESS, id, convertPriority(p)); }
+	static inline Priority getProcessPriority(process_t id) { return convertPriority((PriorityOS)::getpriority(PRIO_PROCESS, id)); }
 
 	#endif //_MSC_VER
 

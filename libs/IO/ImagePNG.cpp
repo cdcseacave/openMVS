@@ -179,7 +179,7 @@ HRESULT CImagePNG::ReadData(void* pData, PIXELFORMAT dataFormat, UINT nStride, U
 /*----------------------------------------------------------------*/
 
 
-HRESULT CImagePNG::WriteHeader(PIXELFORMAT imageFormat, UINT width, UINT height, BYTE numLevels)
+HRESULT CImagePNG::WriteHeader(PIXELFORMAT imageFormat, UINT width, UINT height, BYTE /*numLevels*/)
 {
 	ASSERT(m_png_ptr == NULL);
 	m_png_ptr = png_create_write_struct(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);

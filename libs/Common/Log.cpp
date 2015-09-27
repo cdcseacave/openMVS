@@ -16,9 +16,9 @@ using namespace SEACAVE;
 
 // S T R U C T S ///////////////////////////////////////////////////
 
-/*-----------------------------------------------------------*/
-/* Log class implementation                                  *
-/*-----------------------------------------------------------*/
+/*-----------------------------------------------------------*
+ * Log class implementation                                  *
+ *-----------------------------------------------------------*/
 
 #ifndef DEFAULT_LOGTYPE
 Log::LogType Log::g_appType;
@@ -165,9 +165,9 @@ void Log::_Record(UINT lt, LPCTSTR szFormat, va_list args)
 /*----------------------------------------------------------------*/
 
 
-/*-----------------------------------------------------------*/
-/* LogFile class implementation                              *
-/*-----------------------------------------------------------*/
+/*-----------------------------------------------------------*
+ * LogFile class implementation                              *
+ *-----------------------------------------------------------*/
 
 /**
  * Constructor
@@ -183,14 +183,14 @@ bool LogFile::Open(LPCTSTR logName)
 		m_ptrFile = NULL;
 		return false;
 	}
-	GET_LOG().RegisterListener(bind(&LogFile::Record, this));
+	GET_LOG().RegisterListener(DELEGATEBINDCLASS(Log::ClbkRecordMsg, &LogFile::Record, this));
 	return true;
 }
 void LogFile::Close()
 {
 	if (m_ptrFile == NULL)
 		return;
-	GET_LOG().UnregisterListener(bind(&LogFile::Record, this));
+	GET_LOG().UnregisterListener(DELEGATEBINDCLASS(Log::ClbkRecordMsg, &LogFile::Record, this));
 	m_ptrFile = NULL;
 }
 
@@ -198,13 +198,13 @@ void LogFile::Pause()
 {
 	if (m_ptrFile == NULL)
 		return;
-	GET_LOG().UnregisterListener(bind(&LogFile::Record, this));
+	GET_LOG().UnregisterListener(DELEGATEBINDCLASS(Log::ClbkRecordMsg, &LogFile::Record, this));
 }
 void LogFile::Play()
 {
 	if (m_ptrFile == NULL)
 		return;
-	GET_LOG().RegisterListener(bind(&LogFile::Record, this));
+	GET_LOG().RegisterListener(DELEGATEBINDCLASS(Log::ClbkRecordMsg, &LogFile::Record, this));
 }
 
 void LogFile::Record(const String& msg)
@@ -216,9 +216,9 @@ void LogFile::Record(const String& msg)
 /*----------------------------------------------------------------*/
 
 
-/*-----------------------------------------------------------*/
-/* LogConsole class implementation                           *
-/*-----------------------------------------------------------*/
+/*-----------------------------------------------------------*
+ * LogConsole class implementation                           *
+ *-----------------------------------------------------------*/
 
 #define MAX_CONSOLE_WIDTH 100
 #define MAX_CONSOLE_LINES 2000
@@ -361,14 +361,14 @@ void LogConsole::Open()
 	#endif
 
 	// register with our log system
-	GET_LOG().RegisterListener(bind(&LogConsole::Record, this));
+	GET_LOG().RegisterListener(DELEGATEBINDCLASS(Log::ClbkRecordMsg, &LogConsole::Record, this));
 }
 
 void LogConsole::Close()
 {
 	if (!IsOpen())
 		return;
-	GET_LOG().UnregisterListener(bind(&LogConsole::Record, this));
+	GET_LOG().UnregisterListener(DELEGATEBINDCLASS(Log::ClbkRecordMsg, &LogConsole::Record, this));
 	#ifdef _USE_COSOLEFILEHANDLES
 	// close console stream handles
 	fclose(m_fileIn); m_fileIn = NULL;
@@ -418,7 +418,7 @@ void LogConsole::Open()
 		return;
 	++m_fileIn;
 	// register with our log system
-	GET_LOG().RegisterListener(bind(&LogConsole::Record, this));
+	GET_LOG().RegisterListener(DELEGATEBINDCLASS(Log::ClbkRecordMsg, &LogConsole::Record, this));
 }
 
 void LogConsole::Close()
@@ -426,7 +426,7 @@ void LogConsole::Close()
 	if (!IsOpen())
 		return;
 	// unregister with our log system
-	GET_LOG().UnregisterListener(bind(&LogConsole::Record, this));
+	GET_LOG().UnregisterListener(DELEGATEBINDCLASS(Log::ClbkRecordMsg, &LogConsole::Record, this));
 	--m_fileIn;
 }
 
@@ -442,11 +442,11 @@ void LogConsole::Record(const String& msg)
 void LogConsole::Pause()
 {
 	if (IsOpen())
-		GET_LOG().UnregisterListener(bind(&LogConsole::Record, this));
+		GET_LOG().UnregisterListener(DELEGATEBINDCLASS(Log::ClbkRecordMsg, &LogConsole::Record, this));
 }
 void LogConsole::Play()
 {
 	if (IsOpen())
-		GET_LOG().RegisterListener(bind(&LogConsole::Record, this));
+		GET_LOG().RegisterListener(DELEGATEBINDCLASS(Log::ClbkRecordMsg, &LogConsole::Record, this));
 }
 /*----------------------------------------------------------------*/

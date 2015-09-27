@@ -543,10 +543,10 @@ public:
 
 	inline IDX		InsertSort(ARG_TYPE elem)
 	{
-		register IDX l1(0), l2(size);
+		IDX l1(0), l2(size);
 		while (l1 < l2) {
-			register IDX i((l1 + l2) >> 1);
-			register ARG_TYPE compElem(vector[i]);
+			IDX i((l1 + l2) >> 1);
+			ARG_TYPE compElem(vector[i]);
 			if (elem < compElem)
 				l2 = i;
 			else if (compElem < elem)
@@ -562,10 +562,10 @@ public:
 
 	inline IDX		InsertSortPtr(ARG_TYPE elem)
 	{
-		register IDX l1(0), l2(size);
+		IDX l1(0), l2(size);
 		while (l1 < l2) {
-			register IDX i((l1 + l2) >> 1);
-			register ARG_TYPE compElem(vector[i]);
+			IDX i((l1 + l2) >> 1);
+			ARG_TYPE compElem(vector[i]);
 			if (*elem < *compElem)
 				l2 = i;
 			else if (*compElem < *elem)
@@ -581,10 +581,10 @@ public:
 
 	inline IDX		InsertSort(ARG_TYPE elem, TFncCompare xCompare)
 	{
-		register IDX l1(0), l2(size);
+		IDX l1(0), l2(size);
 		while (l1 < l2) {
-			register IDX i((l1 + l2) >> 1);
-			register const int res(xCompare(vector+i, &elem));
+			IDX i((l1 + l2) >> 1);
+			const int res(xCompare(vector+i, &elem));
 			if (res == 0) {
 				InsertAt(i, elem);
 				return i;
@@ -647,10 +647,10 @@ public:
 
 	inline IDX		InsertSortUnique(ARG_TYPE elem, bool& bExisted)
 	{
-		register IDX l1(0), l2(size);
+		IDX l1(0), l2(size);
 		while (l1 < l2) {
-			register IDX i((l1 + l2) >> 1);
-			register ARG_TYPE compElem(vector[i]);
+			IDX i((l1 + l2) >> 1);
+			ARG_TYPE compElem(vector[i]);
 			if (elem < compElem)
 				l2 = i;
 			else if (compElem < elem)
@@ -667,10 +667,10 @@ public:
 
 	inline IDX		InsertSortUniquePtr(ARG_TYPE elem, bool& bExisted)
 	{
-		register IDX l1(0), l2(size);
+		IDX l1(0), l2(size);
 		while (l1 < l2) {
-			register IDX i((l1 + l2) >> 1);
-			register ARG_TYPE compElem(vector[i]);
+			IDX i((l1 + l2) >> 1);
+			ARG_TYPE compElem(vector[i]);
 			if (*elem < *compElem)
 				l2 = i;
 			else if (*compElem < *elem)
@@ -687,10 +687,10 @@ public:
 
 	inline IDX		InsertSortUnique(ARG_TYPE elem, TFncCompare xCompare, bool& bExisted)
 	{
-		register IDX l1(0), l2(size);
+		IDX l1(0), l2(size);
 		while (l1 < l2) {
-			register IDX i((l1 + l2) >> 1);
-			register const int res(xCompare(vector+i, &elem));
+			IDX i((l1 + l2) >> 1);
+			const int res(xCompare(vector+i, &elem));
 			if (res == 0) {
 				bExisted = true;
 				return i;
@@ -730,10 +730,10 @@ public:
 
 	inline IDX		FindFirst(ARG_TYPE searchedKey) const
 	{
-		register IDX l1(0), l2(size);
+		IDX l1(0), l2(size);
 		while (l1 < l2) {
-			register IDX i((l1 + l2) >> 1);
-			register ARG_TYPE key(vector[i]);
+			IDX i((l1 + l2) >> 1);
+			ARG_TYPE key(vector[i]);
 			if (searchedKey < key)
 				l2 = i;
 			else if (key < searchedKey)
@@ -746,10 +746,10 @@ public:
 
 	inline IDX		FindFirstPtr(ARG_TYPE searchedKey) const
 	{
-		register IDX l1(0), l2(size);
+		IDX l1(0), l2(size);
 		while (l1 < l2) {
-			register IDX i((l1 + l2) >> 1);
-			register ARG_TYPE key(vector[i]);
+			IDX i((l1 + l2) >> 1);
+			ARG_TYPE key(vector[i]);
 			if (*searchedKey < *key)
 				l2 = i;
 			else if (*key < *searchedKey)
@@ -763,10 +763,10 @@ public:
 	template <typename SEARCH_TYPE>
 	inline IDX		FindFirst(const SEARCH_TYPE& searchedKey) const
 	{
-		register IDX l1(0), l2(size);
+		IDX l1(0), l2(size);
 		while (l1 < l2) {
-			register IDX i((l1 + l2) >> 1);
-			register ARG_TYPE key(vector[i]);
+			IDX i((l1 + l2) >> 1);
+			ARG_TYPE key(vector[i]);
 			if (key == searchedKey)
 				return i;
 			if (key < searchedKey)
@@ -780,10 +780,10 @@ public:
 	template <typename SEARCH_TYPE>
 	inline IDX		FindFirstPtr(const SEARCH_TYPE& searchedKey) const
 	{
-		register IDX l1(0), l2(size);
+		IDX l1(0), l2(size);
 		while (l1 < l2) {
-			register IDX i((l1 + l2) >> 1);
-			register ARG_TYPE key(vector[i]);
+			IDX i((l1 + l2) >> 1);
+			ARG_TYPE key(vector[i]);
 			if (*key == searchedKey)
 				return i;
 			if (*key < searchedKey)
@@ -796,10 +796,10 @@ public:
 
 	inline IDX		FindFirst(const void* searchedKey, TFncCompare xCompare) const
 	{
-		register IDX l1(0), l2(size);
+		IDX l1(0), l2(size);
 		while (l1 < l2) {
-			register IDX i((l1 + l2) >> 1);
-			register const int res(xCompare(vector+i, searchedKey));
+			IDX i((l1 + l2) >> 1);
+			const int res(xCompare(vector+i, searchedKey));
 			if (res == 0)
 				return i;
 			if (res < 0)
@@ -813,10 +813,10 @@ public:
 	inline IDX		FindFirstBelow(ARG_TYPE searchedKey) const
 	{
 		if (size == 0) return NO_INDEX;
-		register IDX l1(0), l2(size);
+		IDX l1(0), l2(size);
 		do {
-			register IDX i((l1 + l2) >> 1);
-			register ARG_TYPE key(vector[i]);
+			IDX i((l1 + l2) >> 1);
+			ARG_TYPE key(vector[i]);
 			if (searchedKey < key)
 				l2 = i;
 			else if (key < searchedKey)
@@ -833,10 +833,10 @@ public:
 	inline IDX		FindFirstBelow(const SEARCH_TYPE& searchedKey) const
 	{
 		if (size == 0) return NO_INDEX;
-		register IDX l1(0), l2(size);
+		IDX l1(0), l2(size);
 		do {
-			register IDX i((l1 + l2) >> 1);
-			register ARG_TYPE key(vector[i]);
+			IDX i((l1 + l2) >> 1);
+			ARG_TYPE key(vector[i]);
 			if (key == searchedKey) {
 				while (i-- && vector[i] == searchedKey);
 				return i;
@@ -852,10 +852,10 @@ public:
 	inline IDX		FindFirstEqlGreater(ARG_TYPE searchedKey) const
 	{
 		if (size == 0) return 0;
-		register IDX l1(0), l2(size);
+		IDX l1(0), l2(size);
 		do {
-			register IDX i((l1 + l2) >> 1);
-			register ARG_TYPE key(vector[i]);
+			IDX i((l1 + l2) >> 1);
+			ARG_TYPE key(vector[i]);
 			if (searchedKey < key)
 				l2 = i;
 			else if (key < searchedKey)
@@ -872,10 +872,10 @@ public:
 	inline IDX		FindFirstEqlGreater(const SEARCH_TYPE& searchedKey) const
 	{
 		if (size == 0) return 0;
-		register IDX l1(0), l2(size);
+		IDX l1(0), l2(size);
 		do {
-			register IDX i((l1 + l2) >> 1);
-			register ARG_TYPE key(vector[i]);
+			IDX i((l1 + l2) >> 1);
+			ARG_TYPE key(vector[i]);
 			if (key == searchedKey) {
 				while (i-- && vector[i] == searchedKey);
 				return i+1;

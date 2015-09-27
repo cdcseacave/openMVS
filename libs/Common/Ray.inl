@@ -19,7 +19,7 @@ inline TRay<TYPE,DIMS>::TRay(const POINT& pOrig, const VECTOR& vDir)
 	ASSERT(ISEQUAL(m_vDir.squaredNorm(), 1));
 } // constructors
 template <typename TYPE, int DIMS>
-inline TRay<TYPE,DIMS>::TRay(const POINT& pt0, const POINT& pt1, bool bPoints)
+inline TRay<TYPE,DIMS>::TRay(const POINT& pt0, const POINT& pt1, bool /*bPoints*/)
 	:
 	m_vDir((pt1-pt0).normalized()), m_pOrig(pt0)
 {

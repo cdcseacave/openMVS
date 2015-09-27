@@ -462,8 +462,8 @@ inline void CPUID(int CPUInfo[4], int level) {
 #else
 #include <cpuid.h>
 inline void CPUID(int CPUInfo[4], int level) {
-	unsigned int* p((unsigned int*)CPUInfo);
-	__get_cpuid((unsigned int&)level, p+0, p+1, p+2, p+3);
+	unsigned* p((unsigned*)CPUInfo);
+	__get_cpuid((unsigned&)level, p+0, p+1, p+2, p+3);
 }
 #endif
 

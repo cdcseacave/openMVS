@@ -57,7 +57,7 @@ template <typename TYPE, int m, int n>
 FORCEINLINE SEACAVE::TMatrix<TYPE,m,n> SQUARE(const SEACAVE::TMatrix<TYPE,m,n>& v)
 {
 	SEACAVE::TMatrix<TYPE,m,n> nv;
-	for (register int i=0; i<m*n; ++i)
+	for (int i=0; i<m*n; ++i)
 		nv(i) = SQUARE(v.val[i]);
 	return nv;
 }
@@ -75,7 +75,7 @@ template <typename TYPE, int m, int n>
 FORCEINLINE SEACAVE::TMatrix<TYPE,m,n> SQUARE(const cv::Matx<TYPE,m,n>& v)
 {
 	SEACAVE::TMatrix<TYPE,m,n> nv;
-	for (register int i=0; i<m*n; ++i)
+	for (int i=0; i<m*n; ++i)
 		nv(i) = SQUARE(v.val[i]);
 	return nv;
 }
@@ -105,7 +105,7 @@ template <typename TYPE, int m, int n>
 FORCEINLINE SEACAVE::TMatrix<TYPE,m,n> SQRT(const SEACAVE::TMatrix<TYPE,m,n>& v)
 {
 	SEACAVE::TMatrix<TYPE,m,n> nv;
-	for (register int i=0; i<m*n; ++i)
+	for (int i=0; i<m*n; ++i)
 		nv(i) = SQRT(v.val[i]);
 	return nv;
 }
@@ -123,7 +123,7 @@ template <typename TYPE, int m, int n>
 FORCEINLINE SEACAVE::TMatrix<TYPE,m,n> SQRT(const cv::Matx<TYPE,m,n>& v)
 {
 	SEACAVE::TMatrix<TYPE,m,n> nv;
-	for (register int i=0; i<m*n; ++i)
+	for (int i=0; i<m*n; ++i)
 		nv(i) = SQRT(v.val[i]);
 	return nv;
 }
@@ -153,7 +153,7 @@ template <typename TYPE, int m, int n>
 FORCEINLINE SEACAVE::TMatrix<TYPE,m,n> EXP(const SEACAVE::TMatrix<TYPE,m,n>& v)
 {
 	SEACAVE::TMatrix<TYPE,m,n> nv;
-	for (register int i=0; i<m*n; ++i)
+	for (int i=0; i<m*n; ++i)
 		nv(i) = EXP(v.val[i]);
 	return nv;
 }
@@ -171,7 +171,7 @@ template <typename TYPE, int m, int n>
 FORCEINLINE SEACAVE::TMatrix<TYPE,m,n> EXP(const cv::Matx<TYPE,m,n>& v)
 {
 	SEACAVE::TMatrix<TYPE,m,n> nv;
-	for (register int i=0; i<m*n; ++i)
+	for (int i=0; i<m*n; ++i)
 		nv(i) = EXP(v.val[i]);
 	return nv;
 }
@@ -201,7 +201,7 @@ template <typename TYPE, int m, int n>
 FORCEINLINE SEACAVE::TMatrix<TYPE,m,n> LOGN(const SEACAVE::TMatrix<TYPE,m,n>& v)
 {
 	SEACAVE::TMatrix<TYPE,m,n> nv;
-	for (register int i=0; i<m*n; ++i)
+	for (int i=0; i<m*n; ++i)
 		nv(i) = LOGN(v.val[i]);
 	return nv;
 }
@@ -219,7 +219,7 @@ template <typename TYPE, int m, int n>
 FORCEINLINE SEACAVE::TMatrix<TYPE,m,n> LOGN(const cv::Matx<TYPE,m,n>& v)
 {
 	SEACAVE::TMatrix<TYPE,m,n> nv;
-	for (register int i=0; i<m*n; ++i)
+	for (int i=0; i<m*n; ++i)
 		nv(i) = LOGN(v.val[i]);
 	return nv;
 }
@@ -249,7 +249,7 @@ template <typename TYPE, int m, int n>
 FORCEINLINE SEACAVE::TMatrix<TYPE,m,n> ABS(const SEACAVE::TMatrix<TYPE,m,n>& v)
 {
 	SEACAVE::TMatrix<TYPE,m,n> nv;
-	for (register int i=0; i<m*n; ++i)
+	for (int i=0; i<m*n; ++i)
 		nv(i) = ABS(v.val[i]);
 	return nv;
 }
@@ -267,7 +267,7 @@ template <typename TYPE, int m, int n>
 FORCEINLINE SEACAVE::TMatrix<TYPE,m,n> ABS(const cv::Matx<TYPE,m,n>& v)
 {
 	SEACAVE::TMatrix<TYPE,m,n> nv;
-	for (register int i=0; i<m*n; ++i)
+	for (int i=0; i<m*n; ++i)
 		nv(i) = ABS(v.val[i]);
 	return nv;
 }
@@ -286,7 +286,7 @@ FORCEINLINE bool ISZERO(const cv::Point3_<TYPE>& v)
 template <typename TYPE, int m, int n>
 FORCEINLINE bool ISZERO(const cv::Matx<TYPE,m,n>& v)
 {
-	for (register int i=0; i<m*n; ++i)
+	for (int i=0; i<m*n; ++i)
 		if (!ISZERO(v.val[i]))
 			return false;
 	return true;
@@ -306,7 +306,7 @@ FORCEINLINE bool ISEQUAL(const cv::Point3_<TYPE>& v1, const cv::Point3_<TYPE>& v
 template <typename TYPE, int m, int n>
 FORCEINLINE bool ISEQUAL(const cv::Matx<TYPE,m,n>& v1, const cv::Matx<TYPE,m,n>& v2)
 {
-	for (register int i=0; i<m*n; ++i)
+	for (int i=0; i<m*n; ++i)
 		if (!ISEQUAL(v1.val[i], v2.val[i]))
 			return false;
 	return true;
@@ -349,7 +349,7 @@ template <typename TYPE, int m, int n>
 FORCEINLINE SEACAVE::TMatrix<TYPE,m,n> Floor2Int(const cv::Matx<TYPE,m,n>& v)
 {
 	SEACAVE::TMatrix<TYPE,m,n> nv;
-	for (register int i=0; i<m*n; ++i)
+	for (int i=0; i<m*n; ++i)
 		nv.val[i] = Floor2Int(v.val[i]);
 	return nv;
 }
@@ -357,7 +357,7 @@ template <typename TYPE, int m, int n>
 FORCEINLINE SEACAVE::TMatrix<TYPE,m,n> Ceil2Int(const cv::Matx<TYPE,m,n>& v)
 {
 	SEACAVE::TMatrix<TYPE,m,n> nv;
-	for (register int i=0; i<m*n; ++i)
+	for (int i=0; i<m*n; ++i)
 		nv.val[i] = Ceil2Int(v.val[i]);
 	return nv;
 }
@@ -365,7 +365,7 @@ template <typename TYPE, int m, int n>
 FORCEINLINE SEACAVE::TMatrix<TYPE,m,n> Round2Int(const cv::Matx<TYPE,m,n>& v)
 {
 	SEACAVE::TMatrix<TYPE,m,n> nv;
-	for (register int i=0; i<m*n; ++i)
+	for (int i=0; i<m*n; ++i)
 		nv.val[i] = Round2Int(v.val[i]);
 	return nv;
 }
@@ -835,7 +835,7 @@ inline TYPE area(const cv::Point3_<TYPE>& v1, const cv::Point3_<TYPE>& v2) {
 /** @brief comparison function for floating point values
 	See http://www.boost.org/libs/test/doc/components/test_tools/floating_point_comparison.html */
 template<typename _Tp> // left == right
-inline bool equal(const _Tp& left, const _Tp& right, const _Tp& eps = std::numeric_limits<_Tp>::epsilon())
+inline bool equal(const _Tp& left, const _Tp& right, const _Tp& = std::numeric_limits<_Tp>::epsilon())
 { return (left==right); }
 template<>
 inline bool equal<double>(const double& left, const double& right, const double& eps) {
@@ -886,11 +886,10 @@ inline bool greaterEqual(const _Tp& left, const _Tp& right, const _Tp& eps = std
 #  pragma warning(push, 2)
 #endif // WIN32
 template<typename _Tp>
-inline unsigned int decimalsToStore()
-{
+inline unsigned decimalsToStore() {
 	if (std::numeric_limits<_Tp>::is_integer){
 		// integer types can display exactly one decimal more than their guaranteed precision digits
-		return std::numeric_limits<_Tp>::digits10 +1;
+		return std::numeric_limits<_Tp>::digits10+1;
 	} else {
 		//return std::numeric_limits<_Tp>::digits10; // lower bound
 		return std::numeric_limits<_Tp>::digits;   // upper bound
@@ -1566,7 +1565,7 @@ TPoint3<TYPE> TPoint3<TYPE>::RotateAngleAxis(const TPoint3& pt, const TPoint3& a
 template <typename TYPE, int m, int n>
 inline bool TMatrix<TYPE,m,n>::IsEqual(const Base& rhs) const
 {
-	for (register int i=0; i<elems; ++i)
+	for (int i=0; i<elems; ++i)
 		if (!ISEQUAL(val[i], rhs.val[i]))
 			return false;
 	return true;
@@ -1574,7 +1573,7 @@ inline bool TMatrix<TYPE,m,n>::IsEqual(const Base& rhs) const
 template <typename TYPE, int m, int n>
 inline bool TMatrix<TYPE,m,n>::IsEqual(const Base& rhs, TYPE eps) const
 {
-	for (register int i=0; i<elems; ++i)
+	for (int i=0; i<elems; ++i)
 		if (!equal(val[i], rhs.val[i], eps))
 			return false;
 	return true;
@@ -1615,14 +1614,14 @@ inline TYPE TDMatrix<TYPE>::getDetSquare() const
 				Base::operator()(1,0)*Base::operator()(0,1));
 	TYPE d = 0;
 	TDMatrix<TYPE> SubMatrix(subdim, subdim);
-	for (register int sub=0; sub<dim; sub++) {
+	for (int sub=0; sub<dim; sub++) {
 		// first column is used,
 		// set up the n-1xn-1 submatrices from the right matrix part
 		// this is done n times (loop counter="sub")
-		for (register int i=0; i<subdim; i++) {
+		for (int i=0; i<subdim; i++) {
 			// construct the sub matrix under inspection,
 			// skip the first column
-			for (register int j=0; j<subdim; j++) {
+			for (int j=0; j<subdim; j++) {
 				SubMatrix(j,i) = Base::operator()((sub+j+1)%dim,i+1);
 			}
 		}
@@ -1694,7 +1693,7 @@ template <typename TYPE>
 inline TYPE TDMatrix<TYPE>::getNormL1() const
 {
 	TYPE result = 0;
-	for (register const TYPE* dataP = getData()+Base::total()-1; dataP >= getData(); dataP--)
+	for (const TYPE* dataP = getData()+Base::total()-1; dataP >= getData(); dataP--)
 		result += ABS(*dataP);
 	return result;
 }
@@ -1704,7 +1703,7 @@ template <typename TYPE>
 inline double TDMatrix<TYPE>::getNormL2() const
 {
 	double result = 0;
-	for (register const TYPE* dataP = getData()+Base::total()-1; dataP >= getData(); dataP--)
+	for (const TYPE* dataP = getData()+Base::total()-1; dataP >= getData(); dataP--)
 		result += (double)((*dataP) * (*dataP));
 	return SQRT(result);
 }
@@ -1840,8 +1839,8 @@ void TDVector<TYPE>::getKroneckerProduct(const TDVector<TYPE>& arg, TDVector<TYP
 	const int s1=rows, s2=arg.rows;
 	int l=0;
 	dst.newsize(s1*s2);
-	for (register int i=0; i<s1; i++) {
-		for (register int k=0; k<s2; k++) {
+	for (int i=0; i<s1; i++) {
+		for (int k=0; k<s2; k++) {
 			dst[l]=(*this)[i]*arg[k];
 			l++;
 		}
@@ -2831,918 +2830,6 @@ const int TBitMatrix<TYPE>::numBitsShift = log2i<TBitMatrix::numBitsPerCell>();
 
 
 // C L A S S  //////////////////////////////////////////////////////
-
-// Wavelet Constructor
-// Supports both Separable wavelets and Red-Black wavelets
-//
-// Input:
-// dist_func - 0 for exp(-(I-J)^2/sigma^2) and 1 for 1/(|I-J|^sigma+eps)
-// sigma - sets the range scale used in the pixel-range distance function
-template <typename TYPE, int TABLE_LEN>
-TWavelets<TYPE,TABLE_LEN>::TWavelets(DistanceType distType, TYPE alpha, TYPE eps) {
-	// initiates distance table
-	switch (distType) {
-	case DT_EXP:
-		// initiates distance table (exp(-d^2))
-		for (int i = 0; i < TABLE_LEN; ++i) {
-			const TYPE v = TYPE(4) * (((TYPE)i+TYPE(0.5)) / TABLE_LEN - TYPE(0.5));
-			dist_table[i] = exp(-(SQUARE(v*alpha)));
-		}
-		break;
-	case DT_INV:
-		// initiates distance table (1/d)
-		for (int i = 0; i < TABLE_LEN; ++i) {
-			const TYPE v = TYPE(4) * (((TYPE)i+TYPE(0.5)) / TABLE_LEN - TYPE(0.5));
-			dist_table[i] = pow(fabs(v) + eps, -alpha);
-		}
-		break;
-	default:
-		ASSERT("Unsupported distance type!" == NULL);
-	}
-}
-
-template <typename TYPE, int TABLE_LEN>
-inline TYPE TWavelets<TYPE,TABLE_LEN>::dist(TYPE v) const {
-	if (v > TYPE(2) || v < TYPE(-2))
-		return dist_table[0];
-	const int i = (int)((v + TYPE(2)) * TYPE(0.25) * TABLE_LEN);
-	return dist_table[i];
-}
-
-// Forward Wavelet Transform
-//
-// Input:
-// I - 2D image (must have its values between 0 and 1)
-// nlevels - number of transformation levels (each is full octave)
-//
-// Output:
-// A - (cell array) approximation and detail coefficients (approx. not really needed)
-// W - (cell array) wavelets weights
-template <typename TYPE, int TABLE_LEN>
-template <class WAVELET_TYPE, typename PIXEL_TYPE>
-void TWavelets<TYPE,TABLE_LEN>::ForwardTransform(const TImage<PIXEL_TYPE>& image, TDMatrix< TImage<typename WAVELET_TYPE::Type> >& A, TDMatrix< TImage<typename WAVELET_TYPE::Type> >& W, WAVELET_TYPE& wavelet, size_t nlevels)
-{
-	typedef TImage<TYPE> IMAGE_TYPE;
-	const int nc = cv::DataType<PIXEL_TYPE>::channels;
-	A.construct(nlevels+1, nc);
-	W.construct(nlevels, nc);
-	// extract image channels
-	MatArr channels(nc);
-	cv::split(image, channels.Begin());
-	if (cv::DataType<typename cv::DataType<PIXEL_TYPE>::channel_type>::type < CV_32F) {
-		// cast image channels to the working format
-		FOREACHPTR(pImage, channels)
-			pImage->convertTo(*pImage, cv::DataType<TYPE>::type, TYPE(1)/TYPE(255));
-	}
-	// decompose wavelet levels
-	for (int c=0; c<nc; ++c) {
-		cv::Mat& J = channels[c];
-		for (int i=0; i<nlevels; ++i) {
-			IMAGE_TYPE OA(J.size(), J.ptr<TYPE>());
-			wavelet.Decompose(OA, A(i,c), W(i,c));
-			cv::downsample2x(A(i,c), J);
-		}
-		J.copyTo(A(nlevels,c));
-	}
-}
-
-// Backward Wavelet Transform
-//
-// Input:
-// A - (cell array) approximation and detail coefficients
-// W - (cell array) wavelets weights
-//
-// Output:
-// I - 2D image
-template <typename TYPE, int TABLE_LEN>
-template <class WAVELET_TYPE, typename PIXEL_TYPE>
-void TWavelets<TYPE,TABLE_LEN>::BackwardTransform(const TDMatrix< TImage<typename WAVELET_TYPE::Type> >& A, const TDMatrix< TImage<typename WAVELET_TYPE::Type> >& W, TImage<PIXEL_TYPE>& image, WAVELET_TYPE& wavelet)
-{
-	typedef TImage<TYPE> IMAGE_TYPE;
-	const int nc = A.cols;
-	const int nlevels = W.rows;
-	// compose wavelet levels
-	MatArr channels(nc);
-	for (int c=0; c<nc; ++c) {
-		cv::Mat& J = channels[c];
-		J = A(nlevels,c);
-		for (int i=nlevels-1; i>=0; --i) {
-			cv::Mat nextJ(A(i,c));
-			cv::upsample2x(J, nextJ);
-			IMAGE_TYPE A(nextJ.size(), nextJ.ptr<TYPE>());
-			J.create(nextJ.size(), cv::DataType<TYPE>::type);
-			IMAGE_TYPE OA(J.size(), J.ptr<TYPE>());
-			wavelet.Compose(A, W(i,c), OA);
-		}
-	}
-	if (cv::DataType<typename cv::DataType<PIXEL_TYPE>::channel_type>::type < CV_32F) {
-		// cast image channels to the desired format
-		FOREACHPTR(pImage, channels) {
-			cv::Mat& channel = *pImage;
-			//cv::min(cv::max(channel, 0), 1, channel);
-			channel.convertTo(channel, cv::DataType<PIXEL_TYPE>::type, TYPE(255));
-		}
-	}
-	// compose image channels
-	image.create(channels[0].size());
-	cv::merge(channels.Begin(), nc, cv::Mat(image.rows, image.cols, cv::DataType<PIXEL_TYPE>::type, (void*)image.data));
-}
-/*----------------------------------------------------------------*/
-
-#define UPDT TYPE(0.5)
-
-/***************************************************/
-/*             Separable Wavelets                  */
-/***************************************************/
-
-template <typename TYPE, int TABLE_LEN>
-void TSeparableWavelets<TYPE,TABLE_LEN>::Decompose(const TImage<TYPE>& OA, TImage<TYPE>& A, TImage<TYPE>& W) const {
-	const int nx = OA.rows;
-	const int ny = OA.cols;
-
-	int nxm = 2 * ((nx-1)/2);
-	int nym = 2 * ((ny-1)/2);
-
-	TYPE w1, w2, w3, w4, sw;
-	TYPE A1, A2, A3, A4;
-	TYPE Axy;
-
-	OA.copyTo(A);
-	W.create(nx*ny*3,1);
-
-	int i = 0;
-	for (int y = 0; y < nym; y+=2) {
-		for (int x = 0; x < nxm; x+=2) {
-			Axy = A(x+1,y);
-
-			A1 = A(x,y);
-			A2 = A(x+2,y);
-
-			w1 = dist(A1-Axy);
-			w2 = dist(A2-Axy);
-			sw = TYPE(1) / (w1 + w2);
-
-			w1 *= sw;
-			w2 *= sw;
-			W[i++] = w1;
-			W[i++] = w2;
-
-			A(x+1,y) = Axy - (w1 * A1 + w2 * A2);
-
-			Axy = A(x,y+1);
-			// A1 = A(x,y);
-			A2 = A(x,y+2);
-
-			w1 = dist(A1-Axy);
-			w2 = dist(A2-Axy);
-			sw = TYPE(1) / (w1 + w2);
-
-			w1 *= sw;
-			w2 *= sw;
-			W[i++] = w1;
-			W[i++] = w2;
-
-			A(x,y+1) = Axy - (w1 * A1 + w2 * A2);
-
-			Axy = A(x+1,y+1);
-			// A1 = A(x,y);
-			// A2 = A(x,y+2);
-			A3 = A(x+2,y);
-			A4 = A(x+2,y+2);
-
-			w1 = dist(A1-Axy);
-			w2 = dist(A2-Axy);
-			w3 = dist(A3-Axy);
-			w4 = dist(A4-Axy);
-
-			sw = TYPE(1) / (w1 + w2 + w3 + w4);
-
-			w1 *= sw;
-			w2 *= sw;
-			w3 *= sw;
-			w4 *= sw;
-
-			W[i++] = w1;
-			W[i++] = w2;
-			W[i++] = w3;
-			W[i++] = w4;
-
-			A(x+1,y+1) = Axy - (w1 * A1 + w2 * A2 + w3 * A3 + w4 * A4);
-		}
-
-		Axy = A(nxm,y);
-		A(nxm,y+1) = A(nxm,y+1) - Axy;
-
-		if (nxm + 1 < nx) {
-			A(nxm+1,y) = A(nxm+1,y) - Axy;
-			A(nxm+1,y+1) = A(nxm+1,y+1) - Axy;
-		}
-	}
-
-	for (int x = 0; x < nxm+1; x+=2) {
-		Axy = A(x,nym);
-
-		if (x + 1 < nx)
-			A(x+1,nym) = A(x+1,nym) - Axy;
-
-		if (nym + 1 < ny) {
-			A(x,nym+1) = A(x,nym+1) - Axy;
-
-			if (x + 1 < nx)
-				A(x+1,nym+1) = A(x+1,nym+1) - Axy;
-		}
-	}
-
-	i = nx * ny * 2;
-
-	nxm = nx - 1;
-	nym = ny - 1;
-
-	for (int y = 2; y < nym; y+=2)
-		for (int x = 2; x < nxm; x+=2) {
-			Axy = OA(x,y);
-
-			w1 = dist(OA(x+1,y)-Axy);
-			w2 = dist(OA(x-1,y)-Axy);
-			w3 = dist(OA(x,y+1)-Axy);
-			w4 = dist(OA(x,y-1)-Axy);
-
-			sw = UPDT / (w1 + w2 + w3 + w4);
-
-			w1 *= sw;
-			w2 *= sw;
-			w3 *= sw;
-			w4 *= sw;
-
-			W[i++] = w1;
-			W[i++] = w2;
-			W[i++] = w3;
-			W[i++] = w4;
-
-			A(x,y) += (w1 * A(x+1,y) + w2 * A(x-1,y) + w3 * A(x,y+1) + w4 * A(x,y-1));
-		}
-}
-
-template <typename TYPE, int TABLE_LEN>
-void TSeparableWavelets<TYPE,TABLE_LEN>::Compose(const TImage<TYPE>& OA, const TImage<TYPE>& W, TImage<TYPE>& A) const {
-	const int nx = OA.rows;
-	const int ny = OA.cols;
-
-	int nxm = nx - 1;
-	int nym = ny - 1;
-
-	TYPE w1, w2, w3, w4;
-	TYPE A1, A2, A3, A4;
-	TYPE Axy, t;
-
-	OA.copyTo(A);
-
-	int i = nx * ny * 2;
-	for (int y = 2; y < nym; y+=2)
-		for (int x = 2; x < nxm; x+=2) {
-			t = W[i++] * A(x+1,y);
-			t += W[i++] * A(x-1,y);
-			t += W[i++] * A(x,y+1);
-			t += W[i++] * A(x,y-1);
-
-			A(x,y) += t;
-		}
-
-		i = 0;
-
-		nxm = 2 * ((nx-1)/2);
-		nym = 2 * ((ny-1)/2);
-
-		for (int y = 0; y < nym; y+=2) {
-			for (int x = 0; x < nxm; x+=2) {
-				Axy = A(x+1,y);
-				A1 = A(x,y);
-				A2 = A(x+2,y);
-
-				w1 = W[i++];
-				w2 = W[i++];
-
-				A(x+1,y) = Axy + (w1 * A1 + w2 * A2);
-
-				Axy = A(x,y+1);
-				// A1 = A(x,y);
-				A2 = A(x,y+2);
-
-				w1 = W[i++];
-				w2 = W[i++];
-
-				A(x,y+1) = Axy + (w1 * A1 + w2 * A2);
-
-				Axy = A(x+1,y+1);
-				// A1 = A(x,y);
-				// A2 = A(x,y+2);
-				A3 = A(x+2,y);
-				A4 = A(x+2,y+2);
-
-				w1 = W[i++];
-				w2 = W[i++];
-				w3 = W[i++];
-				w4 = W[i++];
-
-				A(x+1,y+1) = Axy + (w1 * A1 + w2 * A2 + w3 * A3 + w4 * A4);
-			}
-
-			Axy = A(nxm,y);
-			A(nxm,y+1) = A(nxm,y+1) + Axy;
-
-			if (nxm + 1 < nx) {
-				A(nxm+1,y) = A(nxm+1,y) + Axy;
-				A(nxm+1,y+1) = A(nxm+1,y+1) + Axy;
-			}
-		}
-
-		for (int x = 0; x < nxm+1; x+=2) {
-			Axy = A(x,nym);
-
-			if (x + 1 < nx)
-				A(x+1,nym) = A(x+1,nym) + Axy;
-
-			if (nym + 1 < ny) {
-				A(x,nym+1) = A(x,nym+1) + Axy;
-
-				if (x + 1 < nx)
-					A(x+1,nym+1) = A(x+1,nym+1) + Axy;
-			}
-		}
-}
-/*----------------------------------------------------------------*/
-
-
-/***************************************************/
-/*             Red-Black Wavelets                  */
-/***************************************************/
-
-template <typename TYPE, int TABLE_LEN>
-void TRedBlackWavelets<TYPE,TABLE_LEN>::Decompose(const TImage<TYPE>& OA, TImage<TYPE>& A, TImage<TYPE>& W) const {
-	const int nx = OA.rows;
-	const int ny = OA.cols;
-
-	const int nxm = nx - 1;
-	const int nym = ny - 1;
-
-	TYPE w1, w2, w3, w4, sw;
-	TYPE A1=0, A2=0, A3=0, A4=0;
-	TYPE Axy;
-
-	OA.copyTo(A);
-	W.create(nx*ny*8,1);
-
-	// PREDICT I
-	int i = 0;
-	for (int y = 0; y < ny; y++) {
-		for (int x = 0; x < nx; x++) {
-			if ((x+y) % 2 == 0)
-				continue;
-
-			if (x > 0 && y > 0 && x < nxm && y < nym) {
-				Axy = A(x,y);
-				A1 = A(x+1,y);
-				A2 = A(x-1,y);
-				A3 = A(x,y+1);
-				A4 = A(x,y-1);
-
-				w1 = dist(A1-Axy);
-				w2 = dist(A2-Axy);
-				w3 = dist(A3-Axy);
-				w4 = dist(A4-Axy);
-
-				sw = TYPE(1) / (w1 + w2 + w3 + w4);
-
-				w1 *= sw;
-				w2 *= sw;
-				w3 *= sw;
-				w4 *= sw;
-
-				W[i++] = w1;
-				W[i++] = w2;
-				W[i++] = w3;
-				W[i++] = w4;
-
-				A(x,y) -= (w1 * A1 + w2 * A2 + w3 * A3 + w4 * A4);
-			} else {
-				Axy = A(x,y);
-
-				if (x + 1 < nx) {
-					A1 = A(x+1,y);
-					w1 = dist(A1-Axy);
-				}
-				else
-					w1 = 0;
-
-				if (x - 1 >= 0) {
-					A2 = A(x-1,y);
-					w2 = dist(A2-Axy);
-				}
-				else
-					w2 = 0;
-
-				if (y + 1 < ny) {
-					A3 = A(x,y+1);
-					w3 = dist(A3-Axy);
-				}
-				else
-					w3 = 0;
-
-				if (y - 1 >= 0) {
-					A4 = A(x,y-1);
-					w4 = dist(A4-Axy);
-				}
-				else
-					w4 = 0;
-
-				sw = TYPE(1) / (w1 + w2 + w3 + w4);
-
-				w1 *= sw;
-				w2 *= sw;
-				w3 *= sw;
-				w4 *= sw;
-
-				if (x + 1 < nx) {
-					W[i++] = w1;
-					A(x,y) -= w1 * A1;
-				}
-
-				if (x - 1 >= 0) {
-					W[i++] = w2;
-					A(x,y) -= w2 * A2;
-				}
-
-				if (y + 1 < ny) {
-					W[i++] = w3;
-					A(x,y) -= w3 * A3;
-				}
-
-				if (y - 1 >= 0) {
-					W[i++] = w4;
-					A(x,y) -= w4 * A4;
-				}
-			}
-		}
-	}
-
-	i = 2 * nx * ny;
-
-
-	// UPDATE I
-	for (int y = 0; y < ny; y++) {
-		for (int x = 0; x < nx; x++) {
-			if ((x+y) % 2 == 1)
-				continue;
-
-			if (x > 0 && y > 0 && x < nxm && y < nym) {
-				Axy = OA(x,y); // needed for weights
-				A1 = OA(x+1,y);
-				A2 = OA(x-1,y);
-				A3 = OA(x,y+1);
-				A4 = OA(x,y-1);
-
-				w1 = dist(A1-Axy);
-				w2 = dist(A2-Axy);
-				w3 = dist(A3-Axy);
-				w4 = dist(A4-Axy);
-
-				sw = UPDT / (w1 + w2 + w3 + w4);
-
-				w1 *= sw;
-				w2 *= sw;
-				w3 *= sw;
-				w4 *= sw;
-
-				W[i++] = w1;
-				W[i++] = w2;
-				W[i++] = w3;
-				W[i++] = w4;
-
-				A1 = A(x+1,y);
-				A2 = A(x-1,y);
-				A3 = A(x,y+1);
-				A4 = A(x,y-1);
-
-				A(x,y) += (w1 * A1 + w2 * A2 + w3 * A3 + w4 * A4);
-			} else {
-				Axy = OA(x,y);
-
-				if (x + 1 < nx) {
-					A1 = OA(x+1,y);
-					w1 = dist(A1-Axy);
-				}
-				else
-					w1 = 0;
-
-				if (x - 1 >= 0) {
-					A2 = OA(x-1,y);
-					w2 = dist(A2-Axy);
-				}
-				else
-					w2 = 0;
-
-				if (y + 1 < ny) {
-					A3 = OA(x,y+1);
-					w3 = dist(A3-Axy);
-				}
-				else
-					w3 = 0;
-
-				if (y - 1 >= 0) {
-					A4 = OA(x,y-1);
-					w4 = dist(A4-Axy);
-				}
-				else
-					w4 = 0;
-
-				sw = UPDT / (w1 + w2 + w3 + w4);
-
-				w1 *= sw;
-				w2 *= sw;
-				w3 *= sw;
-				w4 *= sw;
-
-				if (x + 1 < nx) {
-					W[i++] = w1;
-					A(x,y) += w1 * A(x+1,y);
-				}
-
-				if (x - 1 >= 0) {
-					W[i++] = w2;
-					A(x,y) += w2 * A(x-1,y);
-				}
-
-				if (y + 1 < ny) {
-					W[i++] = w3;
-					A(x,y) += w3 * A(x,y+1);
-				}
-
-				if (y - 1 >= 0) {
-					W[i++] = w4;
-					A(x,y) += w4 * A(x,y-1);
-				}
-			}
-		}
-	}
-
-	i = 4 * nx * ny;
-
-	// PREDICT II
-	for (int y = 1; y < ny; y+=2) {
-		for (int x = 1; x < nx; x+=2) {
-			if (x > 0 && y > 0 && x < nxm && y < nym) {
-				Axy = A(x,y);
-				A1 = A(x-1,y+1);
-				A2 = A(x-1,y-1);
-				A3 = A(x+1,y+1);
-				A4 = A(x+1,y-1);
-
-				w1 = dist(A1-Axy);
-				w2 = dist(A2-Axy);
-				w3 = dist(A3-Axy);
-				w4 = dist(A4-Axy);
-
-				sw = TYPE(1) / (w1 + w2 + w3 + w4);
-
-				w1 *= sw;
-				w2 *= sw;
-				w3 *= sw;
-				w4 *= sw;
-
-				W[i++] = w1;
-				W[i++] = w2;
-				W[i++] = w3;
-				W[i++] = w4;
-
-				A(x,y) -= (w1 * A1 + w2 * A2 + w3 * A3 + w4 * A4);
-			} else {
-				Axy = A(x,y);
-
-				if (x - 1 >=0 && y + 1 < ny)
-					w1 = dist(A(x-1,y+1)-Axy);
-				else
-					w1 = 0;
-
-				if (x - 1 >=0 && y - 1 >= 0)
-					w2 = dist(A(x-1,y-1)-Axy);
-				else
-					w2 = 0;
-
-				if (x + 1 < nx && y + 1 < ny)
-					w3 = dist(A(x+1,y+1)-Axy);
-				else
-					w3 = 0;
-
-				if (x + 1 < nx && y - 1 >= 0)
-					w4 = dist(A(x+1,y-1)-Axy);
-				else
-					w4 = 0;
-
-				sw = TYPE(1) / (w1 + w2 + w3 + w4);
-
-				w1 *= sw;
-				w2 *= sw;
-				w3 *= sw;
-				w4 *= sw;
-
-				if (x - 1 >=0 && y + 1 < ny) {
-					W[i++] = w1;
-					A(x,y) -= w1 * A(x-1,y+1);
-				}
-
-				if (x - 1 >=0 && y - 1 >= 0) {
-					W[i++] = w2;
-					A(x,y) -= w2 * A(x-1,y-1);
-				}
-
-				if (x + 1 < nx && y + 1 < ny) {
-					W[i++] = w3;
-					A(x,y) -= w3 * A(x+1,y+1);
-				}
-
-				if (x + 1 < nx && y - 1 >= 0) {
-					W[i++] = w4;
-					A(x,y) -= w4 * A(x+1,y-1);
-				}
-			}
-		}
-	}
-
-	i = 6 * nx * ny;
-
-	// UPDATE II
-	for (int y = 0; y < ny; y+=2) {
-		for (int x = 0; x < nx; x+=2) {
-			if (x > 0 && y > 0 && x < nxm && y < nym) {
-				Axy = OA(x,y);
-				A1 = OA(x-1,y+1);
-				A2 = OA(x-1,y-1);
-				A3 = OA(x+1,y+1);
-				A4 = OA(x+1,y-1);
-
-				w1 = dist(A1-Axy);
-				w2 = dist(A2-Axy);
-				w3 = dist(A3-Axy);
-				w4 = dist(A4-Axy);
-
-				sw = UPDT / (w1 + w2 + w3 + w4);
-
-				w1 *= sw;
-				w2 *= sw;
-				w3 *= sw;
-				w4 *= sw;
-
-				W[i++] = w1;
-				W[i++] = w2;
-				W[i++] = w3;
-				W[i++] = w4;
-
-				A1 = A(x-1,y+1);
-				A2 = A(x-1,y-1);
-				A3 = A(x+1,y+1);
-				A4 = A(x+1,y-1);
-
-				A(x,y) += (w1 * A1 + w2 * A2 + w3 * A3 + w4 * A4);
-			} else {
-				Axy = OA(x,y);
-
-				if (x - 1 >=0 && y + 1 < ny)
-					w1 = dist(OA(x-1,y+1)-Axy);
-				else
-					w1 = 0;
-
-				if (x - 1 >=0 && y - 1 >= 0)
-					w2 = dist(OA(x-1,y-1)-Axy);
-				else
-					w2 = 0;
-
-				if (x + 1 < nx && y + 1 < ny)
-					w3 = dist(OA(x+1,y+1)-Axy);
-				else
-					w3 = 0;
-
-				if (x + 1 < nx && y - 1 >= 0)
-					w4 = dist(OA(x+1,y-1)-Axy);
-				else
-					w4 = 0;
-
-				sw = UPDT / (w1 + w2 + w3 + w4);
-
-				w1 *= sw;
-				w2 *= sw;
-				w3 *= sw;
-				w4 *= sw;
-
-				if (x - 1 >=0 && y + 1 < ny) {
-					W[i++] = w1;
-					A(x,y) += w1 * A(x-1,y+1);
-				}
-
-				if (x - 1 >=0 && y - 1 >= 0) {
-					W[i++] = w2;
-					A(x,y) += w2 * A(x-1,y-1);
-				}
-
-				if (x + 1 < nx && y + 1 < ny) {
-					W[i++] = w3;
-					A(x,y) += w3 * A(x+1,y+1);
-				}
-
-				if (x + 1 < nx && y - 1 >= 0) {
-					W[i++] = w4;
-					A(x,y) += w4 * A(x+1,y-1);
-				}
-			}
-		}
-	}
-}
-
-template <typename TYPE, int TABLE_LEN>
-void TRedBlackWavelets<TYPE,TABLE_LEN>::Compose(const TImage<TYPE>& OA, const TImage<TYPE>& W, TImage<TYPE>& A) const {
-	const int nx = OA.rows;
-	const int ny = OA.cols;
-
-	const int nxm = nx - 1;
-	const int nym = ny - 1;
-
-	TYPE w1, w2, w3, w4;
-	TYPE A1=0, A2=0, A3=0, A4=0;
-
-	OA.copyTo(A);
-
-	int i = 6 * nx * ny;
-
-	// UPDATE II
-	for (int y = 0; y < ny; y+=2) {
-		for (int x = 0; x < nx; x+=2) {
-			if (x > 0 && y > 0 && x < nxm && y < nym) {
-				w1 = W[i++];
-				w2 = W[i++];
-				w3 = W[i++];
-				w4 = W[i++];
-
-				A1 = A(x-1,y+1);
-				A2 = A(x-1,y-1);
-				A3 = A(x+1,y+1);
-				A4 = A(x+1,y-1);
-
-				A(x,y) -= (w1 * A1 + w2 * A2 + w3 * A3 + w4 * A4);
-			} else {
-				if (x - 1 >=0 && y + 1 < ny) {
-					w1 = W[i++];
-					A(x,y) -= w1 * A(x-1,y+1);
-				}
-
-				if (x - 1 >=0 && y - 1 >= 0) {
-					w2 = W[i++];
-					A(x,y) -= w2 * A(x-1,y-1);
-				}
-
-				if (x + 1 < nx && y + 1 < ny) {
-					w3 = W[i++];
-					A(x,y) -= w3 * A(x+1,y+1);
-				}
-
-				if (x + 1 < nx && y - 1 >= 0) {
-					w4 = W[i++];
-					A(x,y) -= w4 * A(x+1,y-1);
-				}
-			}
-		}
-	}
-
-	i = 4 * nx * ny;
-
-	// PREDICT II
-	for (int y = 1; y < ny; y+=2) {
-		for (int x = 1; x < nx; x+=2) {
-			if (x > 0 && y > 0 && x < nxm && y < nym) {
-				w1 = W[i++];
-				w2 = W[i++];
-				w3 = W[i++];
-				w4 = W[i++];
-
-				A1 = A(x-1,y+1);
-				A2 = A(x-1,y-1);
-				A3 = A(x+1,y+1);
-				A4 = A(x+1,y-1);
-
-				A(x,y) += (w1 * A1 + w2 * A2 + w3 * A3 + w4 * A4);
-			} else {
-				if (x - 1 >=0 && y + 1 < ny) {
-					w1 = W[i++];
-					A(x,y) += w1 * A(x-1,y+1);
-				}
-
-				if (x - 1 >=0 && y - 1 >= 0) {
-					w2 = W[i++];
-					A(x,y) += w2 * A(x-1,y-1);
-				}
-
-				if (x + 1 < nx && y + 1 < ny) {
-					w3 = W[i++];
-					A(x,y) += w3 * A(x+1,y+1);
-				}
-
-				if (x + 1 < nx && y - 1 >= 0) {
-					w4 = W[i++];
-					A(x,y) += w4 * A(x+1,y-1);
-				}
-			}
-		}
-	}
-
-	i = 2 * nx * ny;
-
-	// UPDATE I
-	for (int y = 0; y < ny; y++) {
-		for (int x = 0; x < nx; x++) {
-			if ((x+y) % 2 == 1)
-				continue;
-
-			if (x > 0 && y > 0 && x < nxm && y < nym) {
-				w1 = W[i++];
-				w2 = W[i++];
-				w3 = W[i++];
-				w4 = W[i++];
-
-				A1 = A(x+1,y);
-				A2 = A(x-1,y);
-				A3 = A(x,y+1);
-				A4 = A(x,y-1);
-
-				A(x,y) -= (w1 * A1 + w2 * A2 + w3 * A3 + w4 * A4);
-			} else {
-				if (x + 1 < nx) {
-					w1 = W[i++];
-					A(x,y) -= w1 * A(x+1,y);
-				}
-
-				if (x - 1 >= 0) {
-					w2 = W[i++];
-					A(x,y) -= w2 * A(x-1,y);
-				}
-
-				if (y + 1 < ny) {
-					w3 = W[i++];
-					A(x,y) -= w3 * A(x,y+1);
-				}
-
-				if (y - 1 >= 0) {
-					w4 = W[i++];
-					A(x,y) -= w4 * A(x,y-1);
-				}
-			}
-		}
-	}
-
-	// PREDICT I
-	i = 0;
-	for (int y = 0; y < ny; y++) {
-		for (int x = 0; x < nx; x++) {
-			if ((x+y) % 2 == 0)
-				continue;
-
-			if (x > 0 && y > 0 && x < nxm && y < nym) {
-				A1 = A(x+1,y);
-				A2 = A(x-1,y);
-				A3 = A(x,y+1);
-				A4 = A(x,y-1);
-
-				w1 = W[i++];
-				w2 = W[i++];
-				w3 = W[i++];
-				w4 = W[i++];
-
-				A(x,y) += (w1 * A1 + w2 * A2 + w3 * A3 + w4 * A4);
-			} else {
-				if (x + 1 < nx) {
-					w1 = W[i++];
-					A(x,y) += w1 * A(x+1,y);
-				}
-
-				if (x - 1 >= 0) {
-					w2 = W[i++];
-					A(x,y) += w2 * A(x-1,y);
-				}
-
-				if (y + 1 < ny) {
-					w3 = W[i++];
-					A(x,y) += w3 * A(x,y+1);
-				}
-
-				if (y - 1 >= 0) {
-					w4 = W[i++];
-					A(x,y) += w4 * A(x,y-1);
-				}
-			}
-		}
-	}
-}
-/*----------------------------------------------------------------*/
-
-#undef UPDT
-
 
 // returns determinant, note that if it's zero no inversion done;
 // use Mi == M to store result into M

@@ -111,7 +111,7 @@ bool SML::ParseSection(TokenIStream& filter, MemFile& memFile)
 		const size_f_t posMemFile = memFile.getPos();
 		MemFile valuesMemFile;
 		TokenIStream sectionFilter(&memFile, SML_TOKEN_SECTIONCLOSEBRACKET);
-		const size_t lenValues = sectionFilter.readLine(valuesMemFile);
+		const size_f_t lenValues = sectionFilter.readLine(valuesMemFile);
 		if (ParseValues(valuesMemFile) == false)
 			return false; // Parse Error: invalid values
 		ASSERT(valuesMemFile.getSize() == 0);
@@ -126,10 +126,8 @@ bool SML::ParseSection(TokenIStream& filter, MemFile& memFile)
 			break;
 		}
 		else {
-			ASSERT(memFile.getSize()-posMemFile == lenValues*sizeof(TCHAR));
-			ASSERT(memFile.getSize()-posMemFile == memFile.getSize() ||
-				memFile.getSize()-posMemFile == memFile.getSizeLeft() ||
-				memFile.getSizeLeft() == 0);
+			ASSERT(memFile.getSize()-posMemFile == lenValues*(size_f_t)sizeof(TCHAR));
+			ASSERT(posMemFile == 0 || memFile.getSize()-posMemFile == memFile.getSizeLeft() || memFile.getSizeLeft() == 0);
 			memFile.setSize(0);
 		}
 
@@ -212,7 +210,7 @@ bool SML::ParseValues(MemFile& valuesMemFile)
 		filterValue.read(memValue);
 		LPCTSTR szValue = filterValue.trimFrontLine(memValue);
 		val.val = szValue;
-		ASSERT(_tcslen(szValue) == memValue.getSizeLeft());
+		ASSERT((size_f_t)_tcslen(szValue) == memValue.getSizeLeft());
 		memValue.setSize(0);
 		memLine.setSize(0);
 		filterValue.setPos(0);

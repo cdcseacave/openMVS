@@ -278,12 +278,12 @@ extern "C" {
 		return 0;
 	}
 
-	static int _tiffDummyMapProc(thandle_t, void** base, toff_t* size)
+	static int _tiffDummyMapProc(thandle_t, void** /*base*/, toff_t* /*size*/)
 	{
 		return (0);
 	}
 
-	static void _tiffDummyUnmapProc(thandle_t, void* base, toff_t size)
+	static void _tiffDummyUnmapProc(thandle_t, void* /*base*/, toff_t /*size*/)
 	{
 	}
 

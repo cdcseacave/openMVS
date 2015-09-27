@@ -2,8 +2,6 @@
 #include "ordering.inl"
 #include "treeProbabilities.inl"
 
-#include "instances.inl"
-
 static void DefaultErrorFn(const char* msg)
 {
 	fprintf(stderr, "%s\n", msg);

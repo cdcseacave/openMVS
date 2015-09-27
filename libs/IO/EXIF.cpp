@@ -51,7 +51,7 @@ namespace {
   };
 
   // Helper functions
-  unsigned int parse32(const unsigned char *buf, bool intel) {
+  unsigned parse32(const unsigned char *buf, bool intel) {
     if (intel) 
       return ((unsigned)buf[3]<<24) | 
              ((unsigned)buf[2]<<16) | 

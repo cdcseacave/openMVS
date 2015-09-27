@@ -118,7 +118,7 @@ public:
 	struct PlyPropRules {
 		PlyElement *elem;      /* element whose rules we are making */
 		int *rule_list;        /* types of rules (AVERAGE_PLY, MAJORITY_PLY, etc.) */
-		int max_props;         /* maximum number of properties we have room for now */
+		uint32_t max_props;    /* maximum number of properties we have room for now */
 		std::vector<void*> props;/* list of properties we're combining */
 		std::vector<float> weights;/* list of weights of the properties */
 	};
@@ -162,7 +162,6 @@ public:
 	void release();
 
 	void get_info(float *, int *);
-	void free_other_elements(PlyOtherElems *);
 
 	void append_comment(const char *);
 	void append_obj_info(const char *);

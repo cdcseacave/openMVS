@@ -299,7 +299,7 @@ struct MeshTexture {
 		const Image8U3& image;
 		const Sampler sampler;
 
-		inline SampleImage(const Image8U3& _image) : image(_image) {}
+		inline SampleImage(const Image8U3& _image) : image(_image), sampler() {}
 		// sample the edge with linear weights
 		void AddEdge(const TexCoord& p0, const TexCoord& p1) {
 			const TexCoord p01(p1 - p0);
@@ -365,7 +365,8 @@ struct MeshTexture {
 
 		inline RasterPatchMeanEdgeData(Image32F3& _image, Image8U& _mask, const Image32F3& _image0, const Image8U3& _image1,
 									   const TexCoord& _p0, const TexCoord& _p0Adj, const TexCoord& _p1, const TexCoord& _p1Adj)
-			: image(_image), mask(_mask), image0(_image0), image1(_image1), p0(_p0), p0Dir(_p0Adj-_p0), p1(_p1), p1Dir(_p1Adj-_p1), length((float)norm(p0Dir)) {}
+			: image(_image), mask(_mask), image0(_image0), image1(_image1),
+			p0(_p0), p0Dir(_p0Adj-_p0), p1(_p1), p1Dir(_p1Adj-_p1), length((float)norm(p0Dir)), sampler() {}
 		inline void operator()(const ImageRef& pt) {
 			const float l((float)norm(TexCoord(pt)-p0)/length);
 			// compute mean color
@@ -572,7 +573,7 @@ void MeshTexture::ListCameraFaces(FaceDataViewArr& facesDatas, float fOutlierThr
 	};
 	typedef TOctree<Mesh::VertexArr,float,3> Octree;
 	const Octree octree(vertices);
-	#if 1 && !defined(_RELEASE)
+	#if 0 && !defined(_RELEASE)
 	Octree::DEBUGINFO_TYPE info;
 	octree.GetDebugInfo(&info);
 	Octree::LogDebugInfo(info);
@@ -591,7 +592,7 @@ void MeshTexture::ListCameraFaces(FaceDataViewArr& facesDatas, float fOutlierThr
 		// select faces inside view frustum
 		typedef TFrustum<float,5> Frustum;
 		FacesInserter inserter(vertexFaces, cameraFaces);
-		const Frustum frustum(Frustum::MATRIX3x4(((const PMatrix::EMatMap)imageData.camera.P).cast<float>()), (float)imageData.width, (float)imageData.height);
+		const Frustum frustum(Frustum::MATRIX3x4(((PMatrix::CEMatMap)imageData.camera.P).cast<float>()), (float)imageData.width, (float)imageData.height);
 		octree.Traverse(frustum, inserter);
 		// project all triangles in this view and keep the closest ones
 		const Camera& camera = imageData.camera;

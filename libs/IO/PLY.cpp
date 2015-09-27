@@ -94,10 +94,10 @@ void PLY::release()
 	fp = NULL;
 	f = NULL;
 	if (!elems.empty()) {
-		for (int i=0; i<elems.size(); ++i) {
+		for (size_t i=0; i<elems.size(); ++i) {
 			PlyElement* elem = elems[i];
 			if (!elem->props.empty()) {
-				for (int j=0; j<elem->props.size(); ++j)
+				for (size_t j=0; j<elem->props.size(); ++j)
 					delete elem->props[j];
 				elem->props.clear();
 				elem->store_prop.clear();
@@ -107,7 +107,7 @@ void PLY::release()
 		elems.clear();
 	}
 	if (other_elems != NULL) {
-		for (int i=0; i<other_elems->other_list.size(); ++i) {
+		for (size_t i=0; i<other_elems->other_list.size(); ++i) {
 			OtherElem& elem = other_elems->other_list[i];
 			delete[] elem.other_data;
 			delete elem.other_props;
@@ -163,7 +163,7 @@ bool PLY::write(OSTREAM* f, int nelems, LPCSTR* elem_names, int file_type, size_
 
 	/* tuck aside the names of the elements */
 	this->elems.resize(nelems);
-	for (int i = 0; i < nelems; i++) {
+	for (int i = 0; i < nelems; ++i) {
 		PlyElement* elem = new PlyElement;
 		elem->name = elem_names[i];
 		elem->num = 0;
@@ -202,7 +202,7 @@ void PLY::element_layout(
 	elem->props.resize(nprops);
 	elem->store_prop.resize(nprops);
 
-	for (int i = 0; i < nprops; i++) {
+	for (int i = 0; i < nprops; ++i) {
 		PlyProperty *prop = new PlyProperty;
 		elem->props[i] = prop;
 		elem->store_prop[i] = NAMED_PROP;
@@ -290,20 +290,20 @@ bool PLY::header_complete()
 	}
 
 	/* write out the comments */
-	for (int i = 0; i < this->comments.size(); i++)
+	for (size_t i = 0; i < this->comments.size(); ++i)
 		fp->print("comment %s\n", this->comments[i].c_str());
 
 	/* write out object information */
-	for (int i = 0; i < this->obj_info.size(); i++)
+	for (size_t i = 0; i < this->obj_info.size(); ++i)
 		fp->print("obj_info %s\n", this->obj_info[i].c_str());
 
 	/* write out information about each element */
-	for (int i = 0; i < this->elems.size(); i++) {
+	for (size_t i = 0; i < this->elems.size(); ++i) {
 		PlyElement *elem = this->elems[i];
 		fp->print("element %s %d\n", elem->name.c_str(), elem->num);
 
 		/* write out each property */
-		for (int j = 0; j < elem->props.size(); j++) {
+		for (size_t j = 0; j < elem->props.size(); ++j) {
 			PlyProperty *prop = elem->props[j];
 			if (prop->is_list == LIST) {
 				fp->print("property list ");
@@ -381,7 +381,7 @@ void PLY::put_element(const void* elem_ptr)
 		/* write an ascii file */
 
 		/* write out each property of the element */
-		for (int j = 0; j < elem->props.size(); j++) {
+		for (size_t j = 0; j < elem->props.size(); ++j) {
 
 			PlyProperty *prop = elem->props[j];
 
@@ -430,7 +430,7 @@ void PLY::put_element(const void* elem_ptr)
 		/* write a binary file */
 
 		/* write out each property of the element */
-		for (int j = 0; j < elem->props.size(); j++) {
+		for (size_t j = 0; j < elem->props.size(); ++j) {
 			PlyProperty *prop = elem->props[j];
 			if (elem->store_prop[j] == OTHER_PROP)
 				elem_data = *other_ptr;
@@ -572,10 +572,10 @@ bool PLY::read(ISTREAM* f)
 
 	/* create tags for each property of each element, to be used */
 	/* later to say whether or not to store each property for the user */
-	for (int i = 0; i < this->elems.size(); i++) {
+	for (size_t i = 0; i < this->elems.size(); ++i) {
 		PlyElement *elem = this->elems[i];
 		elem->store_prop.resize(elem->props.size());
-		for (int j = 0; j < elem->props.size(); j++)
+		for (size_t j = 0; j < elem->props.size(); ++j)
 			elem->store_prop[j] = DONT_STORE_PROP;
 		elem->other_offset = NO_OTHER_PROPS; /* no "other" props by default */
 	}
@@ -600,11 +600,11 @@ int PLY::get_element_description(const char *elem_name, std::vector<PlyProperty*
 	/* find information about the element */
 	PlyElement *elem = find_element(elem_name);
 	if (elem == NULL)
-		return (NULL);
+		return 0;
 
 	/* make a copy of the element's property list */
 	prop_list.resize(elem->props.size());
-	for (int i = 0; i < elem->props.size(); i++) {
+	for (size_t i = 0; i < elem->props.size(); ++i) {
 		PlyProperty *prop = new PlyProperty;
 		copy_property(*prop, *elem->props[i]);
 		prop_list[i] = prop;
@@ -635,7 +635,7 @@ void PLY::get_element_setup(
 	this->which_elem = elem;
 
 	/* deposit the property information into the element's description */
-	for (int i = 0; i < nprops; i++) {
+	for (int i = 0; i < nprops; ++i) {
 		/* look for actual property */
 		int index = find_property(elem, prop_list[i].name.c_str());
 		if (index == -1) {
@@ -763,7 +763,7 @@ void PLY::setup_other_props(PlyElement *elem)
 
 		/* add up the space taken by each property, and save this information */
 		/* away in the property descriptor */
-		for (int i = 0; i < elem->props.size(); i++) {
+		for (size_t i = 0; i < elem->props.size(); ++i) {
 
 			/* don't bother with properties we've been asked to store explicitly */
 			if (elem->store_prop[i])
@@ -850,7 +850,7 @@ PLY::PlyOtherProp* PLY::get_other_properties(PlyElement *elem, int offset)
 	other->props.reserve(elem->props.size());
 
 	/* save descriptions of each "other" property */
-	for (int i = 0; i < elem->props.size(); i++) {
+	for (size_t i = 0; i < elem->props.size(); ++i) {
 		if (elem->store_prop[i])
 			continue;
 		PlyProperty *prop = new PlyProperty;
@@ -938,7 +938,7 @@ PLY::PlyOtherElems* PLY::get_other_element()
 	other.other_props = get_other_properties(elem->name.c_str(), offsetof(OtherData,other_props));
 
 	/* grab all these elements */
-	for (int i = 0; i < other.elem_count; i++) {
+	for (int i = 0; i < other.elem_count; ++i) {
 		/* grab and element from the file */
 		other.other_data[i] = new OtherData;
 		get_element((uint8_t*)other.other_data[i]);
@@ -965,26 +965,14 @@ void PLY::put_other_elements()
 		return;
 
 	/* write out the data for each "other" element */
-	for (int i = 0; i < this->other_elems->other_list.size(); i++) {
+	for (size_t i = 0; i < this->other_elems->other_list.size(); ++i) {
 		OtherElem *other = &(this->other_elems->other_list[i]);
 		put_element_setup(other->elem_name.c_str());
 
 		/* write out each instance of the current element */
-		for (int j = 0; j < other->elem_count; j++)
+		for (int j = 0; j < other->elem_count; ++j)
 			put_element(other->other_data[j]);
 	}
-}
-
-
-/******************************************************************************
-Free up storage used by an "other" elements data structure.
-
-Entry:
-other_elems - data structure to free up
-******************************************************************************/
-
-void PLY::free_other_elements(PlyOtherElems *other_elems)
-{
 }
 
 
@@ -1106,7 +1094,7 @@ void PLY::ascii_get_element(uint8_t* elem_ptr)
 	}
 	int which_word = 0;
 
-	for (int j = 0; j < elem->props.size(); j++) {
+	for (size_t j = 0; j < elem->props.size(); ++j) {
 		PlyProperty *prop = elem->props[j];
 		const int store_it(elem->store_prop[j] | other_flag);
 
@@ -1202,7 +1190,7 @@ void PLY::binary_get_element(uint8_t* elem_ptr)
 	}
 
 	/* read in a number of elements */
-	for (int j = 0; j < elem->props.size(); j++) {
+	for (size_t j = 0; j < elem->props.size(); ++j) {
 		PlyProperty *prop = elem->props[j];
 		const int store_it(elem->store_prop[j] | other_flag);
 
@@ -1695,7 +1683,7 @@ words   - list of words describing the element
 nwords  - number of words in the list
 ******************************************************************************/
 
-void PLY::add_element(const char **words, int nwords)
+void PLY::add_element(const char **words, int /*nwords*/)
 {
 	/* create the new element */
 	PlyElement *elem = new PlyElement;
@@ -1720,12 +1708,12 @@ returns integer code for property, or 0 if not found
 int PLY::get_prop_type(const char *type_name)
 {
 	/* try to match the type name */
-	for (int i = StartType + 1; i < EndType; i++)
+	for (int i = StartType + 1; i < EndType; ++i)
 		if (equal_strings (type_name, type_names[i]))
 			return (i);
 
 	/* see if we can match an old type name */
-	for (int i = StartType + 1; i < EndType; i++)
+	for (int i = StartType + 1; i < EndType; ++i)
 		if (equal_strings (type_name, old_type_names[i]))
 			return (i);
 
@@ -1742,7 +1730,7 @@ words   - list of words describing the property
 nwords  - number of words in the list
 ******************************************************************************/
 
-void PLY::add_property(const char **words, int nwords)
+void PLY::add_property(const char **words, int /*nwords*/)
 {
 	/* create the new property */
 	PlyProperty *prop = new PlyProperty;
@@ -1842,7 +1830,7 @@ int PLY::get_element_list(std::vector<std::string>& elem_names) const
 {
 	/* create the list of element names */
 	elem_names.resize(elems.size());
-	for (size_t i = 0; i < elems.size(); i++)
+	for (size_t i = 0; i < elems.size(); ++i)
 		elem_names[i] = elems[i]->name;
 	/* return the number of elements and the list of element names */
 	return (int)elems.size();
@@ -1873,7 +1861,7 @@ in_ply  - the source of the comments
 
 void PLY::copy_comments(const PLY& in_ply)
 {
-	for (int i = 0; i < in_ply.comments.size(); i++)
+	for (size_t i = 0; i < in_ply.comments.size(); ++i)
 		append_comment(in_ply.comments[i].c_str());
 }
 
@@ -1902,7 +1890,7 @@ in_ply  - the source of the object information
 
 void PLY::copy_obj_info(const PLY& in_ply)
 {
-	for (int i = 0; i < in_ply.obj_info.size(); i++)
+	for (size_t i = 0; i < in_ply.obj_info.size(); ++i)
 		append_obj_info(in_ply.obj_info[i].c_str());
 }
 
@@ -1920,7 +1908,7 @@ returns pointer to the name of this next element
 
 LPCSTR PLY::setup_element_read(int index, int* elem_count)
 {
-	if (index < 0 || index > elems.size()) {
+	if ((size_t)index > elems.size()) {
 		DEBUG("warning:  No element with index %d", index);
 		return (0);
 	}
@@ -2046,7 +2034,7 @@ void PLY::describe_other_properties(
 	}
 
 	/* copy the other properties */
-	for (int i = 0; i < other->props.size(); i++) {
+	for (size_t i = 0; i < other->props.size(); ++i) {
 		PlyProperty *prop = new PlyProperty;
 		copy_property(*prop, *other->props[i]);
 		elem->props.push_back(prop);
@@ -2077,7 +2065,7 @@ void PLY::describe_other_elements(PlyOtherElems *other_elems)
 	this->other_elems = other_elems;
 
 	/* describe the other properties of this element */
-	for (int i = 0; i < other_elems->other_list.size(); i++) {
+	for (size_t i = 0; i < other_elems->other_list.size(); ++i) {
 		OtherElem *other = &(other_elems->other_list[i]);
 		element_count(other->elem_name.c_str(), other->elem_count);
 		describe_other_properties(other->other_props, offsetof(OtherData,other_props));
@@ -2114,7 +2102,7 @@ PLY::PlyPropRules* PLY::init_rule(const char *elem_name)
 
 	/* default is to use averaging rule */
 	rules->rule_list = new int[elem->props.size()];
-	for (int i = 0; i < elem->props.size(); i++)
+	for (size_t i = 0; i < elem->props.size(); ++i)
 		rules->rule_list[i] = AVERAGE_RULE;
 
 	/* try to match the element, property and rule name */
@@ -2124,13 +2112,13 @@ PLY::PlyPropRules* PLY::init_rule(const char *elem_name)
 			continue;
 
 		int found_prop = 0;
-		for (int i = 0; i < elem->props.size(); i++)
+		for (size_t i = 0; i < elem->props.size(); ++i)
 			if (equal_strings(list->property, elem->props[i]->name.c_str())) {
 
 				found_prop = 1;
 
 				/* look for matching rule name */
-				for (int j = 0; rule_name_list[j].code != -1; j++)
+				for (int j = 0; rule_name_list[j].code != -1; ++j)
 					if (equal_strings(list->name, rule_name_list[j].name.c_str())) {
 						rules->rule_list[i] = rule_name_list[j].code;
 						break;
@@ -2161,7 +2149,7 @@ void PLY::modify_rule(PlyPropRules *rules, const char *prop_name, int rule_type)
 	PlyElement *elem = rules->elem;
 
 	/* find the property and modify its rule type */
-	for (int i = 0; i < elem->props.size(); i++)
+	for (size_t i = 0; i < elem->props.size(); ++i)
 		if (equal_strings(elem->props[i]->name.c_str(), prop_name)) {
 			rules->rule_list[i] = rule_type;
 			return;
@@ -2248,7 +2236,7 @@ void* PLY::get_new_props()
 	random_pick = FLOOR2INT(SEACAVE::random() * rules->props.size());
 
 	/* calculate the combination for each "other" property of the element */
-	for (size_t i = 0; i < elem->props.size(); i++) {
+	for (size_t i = 0; i < elem->props.size(); ++i) {
 
 		/* don't bother with properties we've been asked to store explicitly */
 		if (elem->store_prop[i])
@@ -2259,7 +2247,7 @@ void* PLY::get_new_props()
 		type = prop->external_type;
 
 		/* collect together all the values we're to combine */
-		for (size_t j = 0; j < rules->props.size(); j++) {
+		for (size_t j = 0; j < rules->props.size(); ++j) {
 			char* data = (char *)rules->props[j];
 			void* ptr = (void *)(data + offset);
 			get_stored_item((void*)ptr, type, val);
@@ -2271,7 +2259,7 @@ void* PLY::get_new_props()
 		case AVERAGE_RULE: {
 			double sum = 0;
 			double weight_sum = 0;
-			for (size_t j = 0; j < rules->props.size(); j++) {
+			for (size_t j = 0; j < rules->props.size(); ++j) {
 				sum += vals[j] * rules->weights[j];
 				weight_sum += rules->weights[j];
 			}
@@ -2280,14 +2268,14 @@ void* PLY::get_new_props()
 						   }
 		case MINIMUM_RULE: {
 			val.d = vals[0];
-			for (size_t j = 1; j < rules->props.size(); j++)
+			for (size_t j = 1; j < rules->props.size(); ++j)
 				if (val.d > vals[j])
 					val.d = vals[j];
 			break;
 						   }
 		case MAXIMUM_RULE: {
 			val.d = vals[0];
-			for (size_t j = 1; j < rules->props.size(); j++)
+			for (size_t j = 1; j < rules->props.size(); ++j)
 				if (val.d < vals[j])
 					val.d = vals[j];
 			break;
@@ -2298,7 +2286,7 @@ void* PLY::get_new_props()
 						  }
 		case SAME_RULE: {
 			val.d = vals[0];
-			for (size_t j = 1; j < rules->props.size(); j++)
+			for (size_t j = 1; j < rules->props.size(); ++j)
 				if (val.d != vals[j])
 					abort_ply("error: get_new_props: Error combining properties that should be the same");
 			break;
@@ -2393,7 +2381,7 @@ returns 1 if we find a match, 0 if not
 
 int PLY::matches_rule_name(const char *name)
 {
-	for (int i = 0; rule_name_list[i].code != -1; i++)
+	for (int i = 0; rule_name_list[i].code != -1; ++i)
 		if (equal_strings(rule_name_list[i].name.c_str(), name))
 			return 1;
 	return 0;

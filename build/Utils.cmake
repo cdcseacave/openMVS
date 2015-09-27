@@ -5,6 +5,8 @@
 # - This file can be run multiple times, therefore it shouldn't
 #   have any side effects other than defining the functions and macros.
 
+INCLUDE(CheckCXXCompilerFlag)
+
 # BUILD_SHARED_LIBS is a standard CMake variable, but we declare it here to
 # make it prominent in the GUI.
 OPTION(BUILD_SHARED_LIBS "Build shared libraries (DLLs)" OFF)
@@ -67,23 +69,23 @@ macro(GetOperatingSystemArchitectureBitness)
 		set(MSVC64 1)
 	endif()
 
-	if(NOT APPLE)
-	  if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+	if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
 		set(CLANG 1)
-		set(CMAKE_COMPILER_IS_GNUCXX 1)
-	  endif()
-	  if(CMAKE_C_COMPILER_ID STREQUAL "Clang")
+		if(NOT APPLE)
+			set(CMAKE_COMPILER_IS_GNUCXX 1)
+		endif()
+	endif()
+	if(CMAKE_C_COMPILER_ID STREQUAL "Clang")
 		set(CLANG 1)
-		set(CMAKE_COMPILER_IS_GNUCC 1)
-	  endif()
+		if(NOT APPLE)
+			set(CMAKE_COMPILER_IS_GNUCC 1)
+		endif()
 	endif()
 
 	# Detect Intel ICC compiler -- for -fPIC in 3rdparty ( UNIX ONLY ):
-	#  see  include/opencv/cxtypes.h file for related   ICC & FLG_ICC defines.
-	# NOTE: The system needs to determine if the '-fPIC' option needs to be added
-	#  for the 3rdparty static libs being compiled.  The CMakeLists.txt files
-	#  in 3rdparty use the FLG_ICC definition being set here to determine if
-	#  the -fPIC flag should be used.
+	#  the system needs to determine if the '-fPIC' option needs to be added
+	#  for the 3rdparty static libs being compiled; use the FLG_ICC definition
+	#  being set here to determine if the -fPIC flag should be used
 	if(UNIX)
 		if  (__ICL)
 			set(FLG_ICC   __ICL)
@@ -370,7 +372,7 @@ macro(add_extra_compiler_option option)
 endmacro()
 
 macro(optimize_default_compiler_settings)
-	# OpenCV build options
+	# build options
 	# ===================================================
 	add_option(ENABLE_PRECOMPILED_HEADERS "Use precompiled headers"                                  ON   IF (NOT IOS) )
 	add_option(ENABLE_PROFILING           "Enable profiling in the GCC compiler (Add flags: -g -pg)" OFF  IF CMAKE_COMPILER_IS_GNUCXX )
@@ -413,6 +415,19 @@ macro(optimize_default_compiler_settings)
 	set(BUILD_EXTRA_EXE_LINKER_FLAGS_RELEASE "")
 	set(BUILD_EXTRA_EXE_LINKER_FLAGS_DEBUG "")
 
+	# try to enable C++11 support
+	check_cxx_compiler_flag("-std=c++11" COMPILER_HAS_CXX11_FLAG)
+	if (COMPILER_HAS_CXX11_FLAG)
+		# update CMAKE_REQUIRED_FLAGS used by CheckCXXSourceCompiles
+		# to include -std=c++11
+		set(CMAKE_REQUIRED_FLAGS -std=c++11)
+		add_extra_compiler_option(-std=c++11)
+		if(CLANG)
+			add_extra_compiler_option(-stdlib=libc++)
+			set(CMAKE_EXE_LINKER_FLAGS "-stdlib=libc++")
+		endif()
+	endif()
+
 	if(MINGW)
 	  # http://gcc.gnu.org/bugzilla/show_bug.cgi?id=40838
 	  # here we are trying to workaround the problem
@@ -426,7 +441,7 @@ macro(optimize_default_compiler_settings)
 	  # High level of warnings.
 	  add_extra_compiler_option(-W)
 	  add_extra_compiler_option(-Wall)
-	  add_extra_compiler_option(-Werror=return-type)
+	  #add_extra_compiler_option(-Werror=return-type)
 	  #add_extra_compiler_option(-Werror=non-virtual-dtor)
 	  add_extra_compiler_option(-Werror=address)
 	  add_extra_compiler_option(-Werror=sequence-point)
@@ -434,10 +449,10 @@ macro(optimize_default_compiler_settings)
 	  add_extra_compiler_option(-Werror=format-security -Wformat)
 	  add_extra_compiler_option(-Wstrict-prototypes)
 	  add_extra_compiler_option(-Winit-self)
-	  add_extra_compiler_option(-Wshadow)
 	  add_extra_compiler_option(-Wsign-promo)
 
 	  if(ENABLE_NOISY_WARNINGS)
+		add_extra_compiler_option(-Wshadow)
 		add_extra_compiler_option(-Wextra)
 		add_extra_compiler_option(-Wcast-align)
 		add_extra_compiler_option(-Wstrict-aliasing=2)
@@ -450,8 +465,10 @@ macro(optimize_default_compiler_settings)
 		add_extra_compiler_option(-Wno-comment)
 		add_extra_compiler_option(-Wno-narrowing)
 		add_extra_compiler_option(-Wno-attributes)
+		add_extra_compiler_option(-Wno-enum-compare)
 		add_extra_compiler_option(-Wno-missing-declarations)
 		add_extra_compiler_option(-Wno-missing-prototypes)
+		add_extra_compiler_option(-Wno-missing-field-initializers)
 		add_extra_compiler_option(-Wno-unused-local-typedefs)
 		add_extra_compiler_option(-Wno-delete-non-virtual-dtor)
 		add_extra_compiler_option(-Wno-unnamed-type-template-args)
@@ -496,16 +513,6 @@ macro(optimize_default_compiler_settings)
 	  endif()
 	  if(ENABLE_SSE2)
 		add_extra_compiler_option(-msse2)
-	  endif()
-	  if(CLANG)
-	    #set(ENABLE_PRECOMPILED_HEADERS OFF CACHE BOOL "" FORCE)
-	  else()
-	    add_extra_compiler_option(-fpermissive)
-	  endif()
-	  add_extra_compiler_option(-std=c++11)
-	  if(CLANG)
-	    add_extra_compiler_option(-stdlib=libc++)
-		set(CMAKE_EXE_LINKER_FLAGS "-stdlib=libc++")
 	  endif()
 
 	  # SSE3 and further should be disabled under MingW because it generates compiler errors

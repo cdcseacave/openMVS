@@ -632,8 +632,8 @@ struct VertexInfo {
 			return (filterVerts->find(boost::source(e,*graph)) == filterVerts->cend() &&
 					filterVerts->find(boost::target(e,*graph)) == filterVerts->cend());
 		}
-		const VertexSet* filterVerts;
 		const Graph* graph;
+		const VertexSet* filterVerts;
 	};
 
 	VertexMap index2idx; // useful/valid only during graph creation
@@ -950,11 +950,11 @@ void Mesh::Clean(float fDecimate, float fSpurious, bool bRemoveSpikes, unsigned 
 		FOREACHPTR(pFace, faces) {
 			const Face& f(*pFace);
 			ASSERT((*fi).VN() == 3);
-			ASSERT(f[0]>=0 && f[0]<(uint32_t)mesh.vn);
+			ASSERT(f[0]<(uint32_t)mesh.vn);
 			(*fi).V(0) = indices[f[0]];
-			ASSERT(f[1]>=0 && f[1]<(uint32_t)mesh.vn);
+			ASSERT(f[1]<(uint32_t)mesh.vn);
 			(*fi).V(1) = indices[f[1]];
-			ASSERT(f[2]>=0 && f[2]<(uint32_t)mesh.vn);
+			ASSERT(f[2]<(uint32_t)mesh.vn);
 			(*fi).V(2) = indices[f[2]];
 			++fi;
 		}
@@ -1228,7 +1228,7 @@ bool Mesh::Load(const String& fileName)
 		DEBUG_EXTRA("error: invalid PLY file");
 		return false;
 	}
-	for (int i = 0; i < ply.elems.size(); i++) {
+	for (int i = 0; i < (int)ply.elems.size(); ++i) {
 		int elem_count;
 		LPCSTR elem_name = ply.setup_element_read(i, &elem_count);
 		if (PLY::equal_strings(BasicPLY::elem_names[0], elem_name)) {
@@ -1245,11 +1245,11 @@ bool Mesh::Load(const String& fileName)
 
 	// read PLY body
 	BasicPLY::Face face;
-	for (int i = 0; i < ply.elems.size(); i++) {
+	for (int i = 0; i < (int)ply.elems.size(); i++) {
 		int elem_count;
 		LPCSTR elem_name = ply.setup_element_read(i, &elem_count);
 		if (PLY::equal_strings(BasicPLY::elem_names[0], elem_name)) {
-			ASSERT(vertices.GetSize() == elem_count);
+			ASSERT(vertices.GetSize() == (VIndex)elem_count);
 			ply.setup_property(BasicPLY::vert_props[0]);
 			ply.setup_property(BasicPLY::vert_props[1]);
 			ply.setup_property(BasicPLY::vert_props[2]);
@@ -1257,7 +1257,7 @@ bool Mesh::Load(const String& fileName)
 				ply.get_element(pVert);
 		} else
 		if (PLY::equal_strings(BasicPLY::elem_names[1], elem_name)) {
-			ASSERT(faces.GetSize() == elem_count);
+			ASSERT(faces.GetSize() == (FIndex)elem_count);
 			ply.setup_property(BasicPLY::face_props[0]);
 			FOREACHPTR(pFace, faces) {
 				ply.get_element(&face);
@@ -1417,6 +1417,21 @@ typedef Kernel::Point_3                                Point;
 typedef Kernel::Vector_3                               Vector;
 typedef Kernel::Triangle_3                             Triangle;
 typedef Kernel::Plane_3	                               Plane;
+
+inline double v_norm(const Vector& A) {
+	return SQRT(A*A); // operator * is overloaded as dot product
+}
+inline Vector v_normalized(const Vector& A) {
+	const double nrmSq(A*A);
+	return (nrmSq==0 ? A : A / SQRT(nrmSq));
+}
+inline double v_angle(const Vector& A, const Vector& B) {
+	return acos(MAXF(-1.0, MINF(1.0, v_normalized(A)*v_normalized(B))));
+}
+inline double p_angle(const Point& A, const Point& B, const Point& C) {
+	return v_angle(A-B, C-B);
+}
+#define edge_size(h) v_norm((h)->vertex()->point() - (h)->next()->next()->vertex()->point())
 
 template <class Refs, class T, class P, class Normal>
 class MeshVertex : public CGAL::HalfedgeDS_vertex_base<Refs, T, P>
@@ -1606,21 +1621,6 @@ typedef Polyhedron::Halfedge_iterator                  Halfedge_iterator;
 typedef Polyhedron::Halfedge_const_iterator            Halfedge_const_iterator;
 typedef Polyhedron::Halfedge_around_facet_circulator   HF_circulator;
 typedef Polyhedron::Halfedge_around_vertex_circulator  HV_circulator;
-
-inline double v_norm(const Vector& A) {
-	return SQRT(A*A); // operator * is overloaded as dot product
-}
-inline Vector v_normalized(const Vector& A) {
-	const double nrmSq(A*A);
-	return (nrmSq==0 ? A : A / SQRT(nrmSq));
-}
-inline double v_angle(const Vector& A, const Vector& B) {
-	return acos(MAXF(-1.0, MINF(1.0, v_normalized(A)*v_normalized(B))));
-}
-inline double p_angle(const Point& A, const Point& B, const Point& C) {
-	return v_angle(A-B, C-B);
-}
-#define edge_size(h) v_norm((h)->vertex()->point() - (h)->next()->next()->vertex()->point())
 
 struct Stats {
 	double min, avg, stdDev, max;
@@ -1909,10 +1909,8 @@ static int ImproveVertexValence(Polyhedron& p, int valence_mode=2)
 	switch (valence_mode) {
 	case 1: {
 		//erase all the center triangles!
-		for (Vertex_iterator vi=p.vertices_begin(); vi!=p.vertices_end(); ) {
+		for (Vertex_iterator vi=p.vertices_begin(); vi!=p.vertices_end(); ++vi) {
 			Vertex::Vertex_handle old_vi = vi;
-			vi++;
-			size_t degree = old_vi->vertex_degree();
 			if (CanCollapseCenterVertex(old_vi))
 				p.erase_center_vertex(old_vi->halfedge());
 		}
@@ -1938,12 +1936,12 @@ static int ImproveVertexValence(Polyhedron& p, int valence_mode=2)
 					current_edge_stats = (float)edge_size(c);
 				}
 				d = c;
-				bool collapsed(false);
+				//bool collapsed(false);
 				CGAL_For_all(c, d) {
 					if (CanCollapseEdge(c->opposite())) {
 						//if ((c->opposite()->vertex()==vi) && (vi!=p.vertices_end())) vi++;
 						CollapseEdge(p, c->opposite());
-						collapsed = true;
+						//collapsed = true;
 						total_no_ops++;
 						break;
 					}
@@ -1958,17 +1956,14 @@ static int ImproveVertexValence(Polyhedron& p, int valence_mode=2)
 		do {
 			iters++;
 			no_ops = 0;
-			for (Edge_iterator ei=p.edges_begin(); ei!=p.edges_end(); ) {
-				if (ei->is_border_edge()) {
-					ei++;
+			for (Edge_iterator ei=p.edges_begin(); ei!=p.edges_end(); ++ei) {
+				if (ei->is_border_edge())
 					continue;
-				}
 				int d1_1 = (int)ei->vertex()->vertex_degree();
 				int d1_2 = (int)ei->opposite()->vertex()->vertex_degree();
 				int d2_1 = (int)ei->next()->vertex()->vertex_degree();
 				int d2_2 = (int)ei->opposite()->next()->vertex()->vertex_degree();
 				Vertex::Halfedge_handle h = ei;
-				ei++;
 				if (((d1_1+d1_2) - (d2_1+d2_2) > 2) && CanFlipEdge(h)) {
 					FlipEdge(p, h);
 					no_ops++;
@@ -1984,11 +1979,9 @@ static int ImproveVertexValence(Polyhedron& p, int valence_mode=2)
 		do {
 			iters++;
 			no_ops = 0;
-			for (Edge_iterator ei=p.edges_begin(); ei!=p.edges_end(); ) {
-				if (ei->is_border_edge()) {
-					ei++;
+			for (Edge_iterator ei=p.edges_begin(); ei!=p.edges_end(); ++ei) {
+				if (ei->is_border_edge())
 					continue;
-				}
 				Point p1=ei->vertex()->point();
 				Point p2=ei->next()->vertex()->point();
 				Point p3=ei->prev()->vertex()->point();
@@ -1998,7 +1991,6 @@ static int ImproveVertexValence(Polyhedron& p, int valence_mode=2)
 				float cost2((float)MINF(MINF(MINF(MINF(MINF(p_angle(p1, p2, p4), p_angle(p1, p4, p2)), p_angle(p3, p4, p2)), p_angle(p4, p2, p3)), p_angle(p4, p1, p2)), p_angle(p4, p3, p2)));
 
 				Vertex::Halfedge_handle h = ei;
-				ei++;
 				if ((cost2 > cost1) && CanFlipEdge(h)) {
 					FlipEdge(p, h);
 					no_ops++;
@@ -2200,7 +2192,7 @@ inline Vector ComputeVectorComponent(Vector n, Vector v, int mode)
 		return v - across_normal;
 }
 
-static void Smooth(Polyhedron& p, double delta, int mode=0, bool only_visible=false)
+static void Smooth(Polyhedron& p, double delta, int mode=0)
 {
 	// 0 - both components;
 	// 1 - tangetial;

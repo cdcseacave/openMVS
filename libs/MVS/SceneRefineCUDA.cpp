@@ -2242,7 +2242,7 @@ void MeshRefineCUDA::ListCameraFaces()
 			continue;
 		typedef TFrustum<float,5> Frustum;
 		FacesInserter inserter(scene.mesh.vertexFaces, arrCameraFaces[ID]);
-		const Frustum frustum(Frustum::MATRIX3x4(((const PMatrix::EMatMap)imageData.camera.P).cast<float>()), (float)imageData.width, (float)imageData.height);
+		const Frustum frustum(Frustum::MATRIX3x4(((PMatrix::CEMatMap)imageData.camera.P).cast<float>()), (float)imageData.width, (float)imageData.height);
 		octree.Traverse(frustum, inserter);
 	}
 	}
