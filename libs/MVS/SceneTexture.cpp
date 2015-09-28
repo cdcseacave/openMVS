@@ -605,7 +605,7 @@ void MeshTexture::ListCameraFaces(FaceDataViewArr& facesDatas, float fOutlierThr
 			const Face& facet = faces[idxFace];
 			for (unsigned v=0; v<3; ++v) {
 				const Vertex& pt = vertices[facet[v]];
-				ptc[v] = camera.TransformPointW2C(CastReal(pt));
+				ptc[v] = camera.TransformPointW2C(Cast<REAL>(pt));
 				pti[v] = camera.TransformPointC2I(ptc[v]);
 				// skip face if not completely inside
 				if (!depthMap.isInsideWithBorder<float,3>(pti[v]))

@@ -258,7 +258,7 @@ CUresult ptxGetFunc(const CUmodule& hModule, LPCSTR functionName, CUfunction& hK
 void MemDevice::Release() {
 	if (pData) {
 		reportCudaError(cuMemFree(pData));
-		pData = NULL;
+		pData = 0;
 	}
 }
 CUresult MemDevice::Reset(size_t size) {
@@ -268,7 +268,7 @@ CUresult MemDevice::Reset(size_t size) {
 		Release();
 	}
 	if (cuMemAlloc(&pData, size) != CUDA_SUCCESS) {
-		pData = NULL;
+		pData = 0;
 		return CUDA_ERROR_OUT_OF_MEMORY;
 	}
 	nSize = size;
@@ -278,7 +278,7 @@ CUresult MemDevice::Reset(const void* pDataHost, size_t size) {
 	if (pData && nSize != size)
 		Release();
 	if (!pData && cuMemAlloc(&pData, size) != CUDA_SUCCESS) {
-		pData = NULL;
+		pData = 0;
 		return CUDA_ERROR_OUT_OF_MEMORY;
 	}
 	nSize = size;

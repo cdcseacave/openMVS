@@ -111,7 +111,7 @@ void DepthData::GetNormal(const ImageRef& ir, Point3f& N, const TImage<Point3f>*
 	const Camera& camera = images.First().camera;
 	if (!normalMap.empty()) {
 		// set available normal
-		N = camera.R.t()*CastReal(normalMap(ir));
+		N = camera.R.t()*Cast<REAL>(normalMap(ir));
 		return;
 	}
 	// estimate normal based on the neighbor depths
@@ -650,7 +650,7 @@ void MVS::EstimatePointColors(const ImageArr& images, PointCloud& pointcloud)
 			color = Pixel8U::WHITE;
 		} else {
 			// get image color
-			const Point2f proj(CastFloat(pImageData->camera.ProjectPointP(point)));
+			const Point2f proj(pImageData->camera.ProjectPointP(point));
 			color = (pImageData->image.isInside(proj) ? pImageData->image.sample(proj) : Pixel8U::WHITE);
 		}
 	}
@@ -690,7 +690,7 @@ void MVS::EstimatePointNormals(const ImageArr& images, PointCloud& pointcloud, i
 		// correct normal orientation
 		ASSERT(!views.IsEmpty());
 		const Image& imageData = images[views.First()];
-		if (normal.dot(CastFloat(imageData.camera.C)-point) < 0)
+		if (normal.dot(Cast<float>(imageData.camera.C)-point) < 0)
 			normal = -normal;
 	}
 
@@ -925,7 +925,7 @@ bool MVS::ExportPointCloud(const String& fileName, const Image& imageData, const
 					continue;
 				const Point3f X(P0.TransformPointI2W(Point3(i,j,depth)));
 				vertex.x = X.x; vertex.y = X.y; vertex.z = X.z;
-				const Point3f N(P0.R.t() * CastReal(normalMap(j,i)));
+				const Point3f N(P0.R.t() * Cast<REAL>(normalMap(j,i)));
 				vertex.nx = N.x; vertex.ny = N.y; vertex.nz = N.z;
 				const Pixel8U c(imageData.image.empty() ? Pixel8U::WHITE : imageData.image(j, i));
 				vertex.r = c.r; vertex.g = c.g; vertex.b = c.b;

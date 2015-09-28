@@ -1491,23 +1491,35 @@ namespace SEACAVE {
 
 // C L A S S  //////////////////////////////////////////////////////
 
-inline TPoint2<REAL> CastReal(const cv::Point2f& ptFloat) {
-	return TPoint2<REAL>(ptFloat);
+template <typename FLT>
+struct OppositeType {
+	typedef FLT Type;
+};
+template <>
+struct OppositeType<float> {
+	typedef double Type;
+};
+template <>
+struct OppositeType<double> {
+	typedef float Type;
+};
+// Point2
+template <typename FLT1, typename FLT2>
+inline cv::Point_<FLT1> Cast(const cv::Point_<FLT2>& pt) {
+	return pt;
 }
-inline TPoint2<float> CastFloat(const cv::Point_<REAL>& ptReal) {
-	return TPoint2<float>(ptReal);
+template <typename FLT1, typename FLT2>
+inline TPoint2<FLT1> Cast(const TPoint2<FLT2>& pt) {
+	return pt;
 }
-inline TPoint2<double> CastDouble(const cv::Point2f& ptFloat) {
-	return TPoint2<double>(ptFloat);
+// Point3
+template <typename FLT1, typename FLT2>
+inline cv::Point3_<FLT1> Cast(const cv::Point3_<FLT2>& pt) {
+	return pt;
 }
-inline TPoint3<REAL> CastReal(const cv::Point3f& ptFloat) {
-	return TPoint3<REAL>(ptFloat);
-}
-inline TPoint3<float> CastFloat(const cv::Point3_<REAL>& ptReal) {
-	return TPoint3<float>(ptReal);
-}
-inline TPoint3<double> CastDouble(const cv::Point3f& ptFloat) {
-	return TPoint3<double>(ptFloat);
+template <typename FLT1, typename FLT2>
+inline TPoint3<FLT1> Cast(const TPoint3<FLT2>& pt) {
+	return pt;
 }
 /*----------------------------------------------------------------*/
 

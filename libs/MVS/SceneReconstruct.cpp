@@ -967,7 +967,7 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport)
 				const Camera& camera = imageData.camera;
 				const camera_cell_t& camCell = camCells[imageID];
 				// compute the ray used to find point intersection
-				const Point3f vecCamPoint(pt-CastFloat(camera.C));
+				const Point3f vecCamPoint(pt-Cast<float>(camera.C));
 				const float invLenCamPoint(1.f/norm(vecCamPoint));
 				const Ray3f ray(pt, Point3f(vecCamPoint*invLenCamPoint));
 				// find faces intersected by the camera-point segment
@@ -1032,7 +1032,7 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport)
 				ASSERT(imageData.IsValid());
 				const Camera& camera = imageData.camera;
 				// compute the ray used to find point intersection
-				const Point3f vecCamPoint(pt-CastFloat(camera.C));
+				const Point3f vecCamPoint(pt-Cast<float>(camera.C));
 				const float invLenCamPoint(1.f/norm(vecCamPoint));
 				// find faces intersected by the point-camera segment and keep the max free-space support score
 				const Point3f bgnPoint(pt-vecCamPoint*(invLenCamPoint*sigma*kf));

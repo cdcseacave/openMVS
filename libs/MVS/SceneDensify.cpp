@@ -429,7 +429,7 @@ std::pair<float,float> TriangulatePointsDelaunay(CGAL::Delaunay& delaunay, const
 	std::pair<float,float> depthBounds(FLT_MAX, 0.f);
 	FOREACH(p, points) {
 		const PointCloud::Point& point = scene.pointcloud.points[points[p]];
-		const Point3 ptCam(image.camera.TransformPointW2C(CastReal(point)));
+		const Point3 ptCam(image.camera.TransformPointW2C(Cast<REAL>(point)));
 		const Point2 ptImg(image.camera.TransformPointC2I(ptCam));
 		delaunay.insert(CGAL::Point(ptImg.x, ptImg.y, ptCam.z));
 		const Depth depth((float)ptCam.z);
@@ -680,7 +680,7 @@ bool DepthMapsData::EstimateDepthMap(uint32_t idxImage)
 		depthData.dMax = 0;
 		FOREACHPTR(pPoint, depthData.points) {
 			const PointCloud::Point& X = scene.pointcloud.points[*pPoint];
-			const Point3 camX(camera.TransformPointW2C(CastReal(X)));
+			const Point3 camX(camera.TransformPointW2C(Cast<REAL>(X)));
 			const ImageRef x(ROUND2INT(camera.TransformPointC2I(camX)));
 			const float d((float)camX.z);
 			const ImageRef sx(MAXF(x.x-nPixelArea,0), MAXF(x.y-nPixelArea,0));
@@ -1304,7 +1304,7 @@ void DepthMapsData::FuseFilterDepthMaps(PointCloud& pointcloud, bool bEstimateNo
 				FOREACHPTR(pNeighbor, depthData.neighbors) {
 					const uint32_t idxImageB(pNeighbor->idx.ID);
 					const Image& imageDataB = scene.images[idxImageB];
-					const Point3 ptCam(imageDataB.camera.TransformPointW2C(CastReal(point)));
+					const Point3 ptCam(imageDataB.camera.TransformPointW2C(Cast<REAL>(point)));
 					const ImageRef xB(ROUND2INT(imageDataB.camera.TransformPointC2I(ptCam)));
 					DepthData& depthDataB = arrDepthData[idxImageB];
 					DepthMap& depthMapB = depthDataB.depthMap;
@@ -1345,7 +1345,7 @@ void DepthMapsData::FuseFilterDepthMaps(PointCloud& pointcloud, bool bEstimateNo
 					pointcloud.pointViews.RemoveLast();
 					pointcloud.points.RemoveLast();
 				}
-				point = CastFloat(X*(REAL(1)/confidence));
+				point = X*(REAL(1)/confidence);
 			}
 		}
 		ASSERT(pointcloud.points.GetSize() == pointcloud.pointViews.GetSize() && pointcloud.points.GetSize() == pointcloud.pointWeights.GetSize() && pointcloud.points.GetSize() == projs.GetSize());

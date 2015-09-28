@@ -587,8 +587,8 @@ double MeshRefine::ScoreMesh(double* gradients)
 	// set the final gradient as the combination of photometric and smoothness gradients
 	FOREACH(v, vertices)
 		((Point3d*)gradients)[v] = photoGradNorm[v] > 0 ?
-			CastDouble(photoGrad[v]/photoGradNorm[v] + smoothGrad2[v]*weightRegularity) :
-			CastDouble(smoothGrad2[v]*weightRegularity);
+			Cast<double>(photoGrad[v]/photoGradNorm[v] + smoothGrad2[v]*weightRegularity) :
+			Cast<double>(smoothGrad2[v]*weightRegularity);
 	return 0.15f*scorePhoto + 0.1f*scoreSmooth;
 }
 
@@ -678,7 +678,7 @@ void MeshRefine::ProjectMesh(
 		const Face& facet = faces[idxFace];
 		for (int v=0; v<3; ++v) {
 			const Vertex& pt = vertices[facet[v]];
-			ptc[v] = camera.TransformPointW2C(CastReal(pt));
+			ptc[v] = camera.TransformPointW2C(Cast<REAL>(pt));
 			pti[v] = camera.TransformPointC2I(ptc[v]);
 			// skip face if not completely inside
 			if (!depthMap.isInsideWithBorder<float,3>(pti[v]))
@@ -944,9 +944,9 @@ float MeshRefine::ComputeSmoothnessGradient1(
 			continue;
 		}
 		const Real nrm(Real(1)/(Real)verts.GetSize());
-		grad = Grad(vertices[idxV]);
+		grad = vertices[idxV];
 		FOREACH(v, verts)
-			grad -= Grad(vertices[verts[v]]) * nrm;
+			grad -= Cast<Real>(vertices[verts[v]]) * nrm;
 		const float regularityScore((float)norm(grad));
 		ASSERT(ISFINITE(regularityScore));
 		score += regularityScore;

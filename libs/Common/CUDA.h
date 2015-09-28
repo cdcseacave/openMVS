@@ -118,7 +118,7 @@ inline CUresult fetchMemDevice(void* data, size_t size, const CUdeviceptr dataDe
 inline CUresult freeMemDevice(CUdeviceptr& dataDevice) {
 	if (cuMemFree(dataDevice) != CUDA_SUCCESS)
 		return CUDA_ERROR_NOT_INITIALIZED;
-	dataDevice = NULL;
+	dataDevice = 0;
 	return CUDA_SUCCESS;
 }
 /*----------------------------------------------------------------*/
@@ -131,20 +131,20 @@ private:
 	size_t nSize;
 
 public:
-	inline MemDevice() : pData(NULL) {}
-	inline MemDevice(size_t size) : pData(NULL) { reportCudaError(Reset(size)); }
-	inline MemDevice(const void* pDataHost, size_t size) : pData(NULL) { reportCudaError(Reset(pDataHost, size)); }
+	inline MemDevice() : pData(0) {}
+	inline MemDevice(size_t size) : pData(0) { reportCudaError(Reset(size)); }
+	inline MemDevice(const void* pDataHost, size_t size) : pData(0) { reportCudaError(Reset(pDataHost, size)); }
 	template <typename TYPE>
-	inline MemDevice(const TImage<TYPE>& param) : pData(NULL) { reportCudaError(Reset(param)); }
+	inline MemDevice(const TImage<TYPE>& param) : pData(0) { reportCudaError(Reset(param)); }
 	template <typename TYPE, typename ARG_TYPE, int useConstruct, int grow, typename IDX_TYPE>
-	inline MemDevice(const cList<TYPE,ARG_TYPE,useConstruct,grow,IDX_TYPE>& param) : pData(NULL) { reportCudaError(Reset(param)); }
+	inline MemDevice(const cList<TYPE,ARG_TYPE,useConstruct,grow,IDX_TYPE>& param) : pData(0) { reportCudaError(Reset(param)); }
 	inline ~MemDevice() { Release(); }
 
-	MemDevice(MemDevice& rhs) : pData(rhs.pData) { rhs.pData = NULL; }
-	MemDevice& operator=(MemDevice& rhs) { pData = rhs.pData; rhs.pData = NULL; return *this; }
+	MemDevice(MemDevice& rhs) : pData(rhs.pData) { rhs.pData = 0; }
+	MemDevice& operator=(MemDevice& rhs) { pData = rhs.pData; rhs.pData = 0; return *this; }
 
 	inline bool IsValid() const {
-		return (pData != NULL);
+		return (pData != 0);
 	}
 	void Release();
 	CUresult Reset(size_t size);
