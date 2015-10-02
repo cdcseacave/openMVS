@@ -7,10 +7,81 @@
 
 // D E F I N E S ///////////////////////////////////////////////////
 
+// uncomment to enable custom OpenCV data types
+// (should be uncommented if OpenCV is not available)
+#ifndef _USE_CUSTOM_CV
+//#define _USE_CUSTOM_CV
+#endif
 
-namespace MVS {
+// uncomment to enable BOOST serialization support
+// (should be uncommented)
+#ifndef _USE_BOOST
+//#define _USE_BOOST
+#endif
+
+// uncomment to enable BOOST serialization type specializations
+// (should be uncommented if serialization specialization not previously implemented)
+#ifndef _USE_BOOST_SERIALIZATION
+//#defined _USE_BOOST_SERIALIZATION
+#endif
+
 
 // S T R U C T S ///////////////////////////////////////////////////
+
+#ifdef _USE_CUSTOM_CV
+
+namespace cv {
+
+// simple cv::Matx
+template<typename _Tp, int m, int n>
+class Matx
+{
+public:
+	_Tp val[m*n];
+};
+
+// simple cv::Matx
+template<typename _Tp>
+class Point3_
+{
+public:
+	_Tp x, y, z;
+};
+
+} // namespace cv
+/*----------------------------------------------------------------*/
+#endif
+
+
+#if defined(_USE_BOOST) && defined(_USE_BOOST_SERIALIZATION)
+
+#include <boost/serialization/serialization.hpp>
+#include <boost/serialization/utility.hpp>
+#include <boost/serialization/export.hpp>
+#include <boost/serialization/vector.hpp>
+
+namespace boost {
+namespace serialization {
+
+// Serialization support for cv::Matx
+template<class Archive, typename _Tp, int m, int n>
+void serialize(Archive& ar, cv::Matx<_Tp, m, n>& _m, const unsigned int /*version*/) {
+	ar & _m.val;
+}
+
+// Serialization support for cv::Point3_
+template<class Archive, typename _Tp>
+void serialize(Archive& ar, cv::Point3_<_Tp>& pt, const unsigned int /*version*/) {
+	ar & pt.x & pt.y & pt.z;
+}
+
+} // namespace serialization
+} // namespace boost
+/*----------------------------------------------------------------*/
+#endif
+
+
+namespace MVS {
 
 // interface used to export/import MVS input data;
 // MAX(width,height) is used for normalization

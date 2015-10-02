@@ -139,18 +139,18 @@ the resulting vector is given in res
 */
 template <typename TYPE>
 inline int TQuaternion<TYPE>::MultVec(const Vec &vec, Vec &res) const {
-	register TYPE rx,ry,rz;
-	register TYPE Vx= vec[0], Vy=vec[1], Vz=vec[2];
+	TYPE rx,ry,rz;
+	TYPE Vx= vec[0], Vy=vec[1], Vz=vec[2];
 	const TYPE *q = this->val;
 	{
-		register TYPE QwQx, QwQy, QwQz, QxQy, QxQz, QyQz;
+		TYPE QwQx, QwQy, QwQz, QxQy, QxQz, QyQz;
 		QwQx = q[3] * q[0]; QwQy = q[3] * q[1]; QwQz = q[3] * q[2];
 		QxQy = q[0] * q[1]; QxQz = q[0] * q[2]; QyQz = q[1] * q[2];
 		rx = 2* (Vy * (-QwQz + QxQy) + Vz *( QwQy + QxQz));
 		ry = 2* (Vx * ( QwQz + QxQy) + Vz *(-QwQx + QyQz));
 		rz = 2* (Vx * (-QwQy + QxQz) + Vy *( QwQx + QyQz));
 	}
-	register TYPE QwQw, QxQx, QyQy, QzQz;
+	TYPE QwQw, QxQx, QyQy, QzQz;
 	QwQw= q[3]*q[3]; QxQx = q[0]*q[0]; QyQy = q[1]*q[1]; QzQz= q[2]*q[2];
 	rx+= Vx * (QwQw + QxQx - QyQy - QzQz);
 	ry+= Vy * (QwQw - QxQx + QyQy - QzQz);
@@ -466,7 +466,7 @@ void TQuaternion<TYPE>::EnforceRigidCouplingConstraint(TQuaternion<TYPE> &other)
 	if (q0norm > TYPE(1e-8) && q1norm > TYPE(1e-8)) {
 		TYPE qscale0 = (TYPE)sqrt(double((1-q0[3]*q0[3])/q0norm));
 		TYPE qscale1 = (TYPE)sqrt(double((1-q1[3]*q1[3])/q1norm));
-		for (register int l = 0; l < 3; l++) {
+		for (int l = 0; l < 3; l++) {
 			q0[l] *= qscale0;
 			q1[l] *= qscale1;
 		}
@@ -499,7 +499,7 @@ void TQuaternion<TYPE>::EnforceRigidCouplingConstraint(std::vector<TQuaternion<T
 		TYPE qnorm = q[0]*q[0] + q[1]*q[1] + q[2]*q[2];
 		if (qnorm > TYPE(1e-8)) {
 			TYPE qscale = (TYPE)sqrt(double((1-q[3]*q[3])/qnorm));
-			for (register int l = 0; l < 3; l++)
+			for (int l = 0; l < 3; l++)
 				q[l] *= qscale;
 		}
 	}
@@ -1329,7 +1329,7 @@ bool TRMatrixBase<TYPE>::Check(const TYPE eps, int verbose) const
 	bool ok = equal(TYPE(cv::determinant(*this)), TYPE(1), eps);
 	// check unit column vector length
 	Vec cl[3];
-	for (register unsigned i = 0; i < 3 && ok; i++) {
+	for (unsigned i = 0; i < 3 && ok; i++) {
 		cl[i] = Base::col(i);
 		ok = equal(norm(cl[i]), TYPE(1), eps);
 	}
@@ -1348,7 +1348,7 @@ bool TRMatrixBase<TYPE>::Check(const TYPE eps, int verbose) const
 		if (!equal(det, TYPE(1), eps)) {
 			res << "det != 1 (det=" << std::setprecision(30) << det << ") ";
 		}
-		for (register unsigned i = 0; i < 3; i++) {
+		for (unsigned i = 0; i < 3; i++) {
 			cl[i] = Base::col(i);
 			if (!equal(norm(cl[i]), TYPE(1), eps)) {
 				res << "col[" << i << "].NormL2() != 1) (= "

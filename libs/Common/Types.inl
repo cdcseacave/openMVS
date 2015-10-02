@@ -3112,11 +3112,6 @@ inline Eigen::Matrix<P,R,2,O> operator*(const Eigen::Matrix<P,R,2,O>& lhs, const
 
 #ifdef _USE_BOOST
 
-#include <boost/serialization/split_free.hpp>
-#include <boost/serialization/vector.hpp>
-
-BOOST_SERIALIZATION_SPLIT_FREE(cv::Mat)
-
 namespace boost {
 	namespace serialization {
 
@@ -3157,6 +3152,10 @@ namespace boost {
 			const size_t data_size = elem_size * m.cols * m.rows;
 			ar & boost::serialization::make_array(m.ptr(), data_size);
 		}
+		template<class Archive>
+		inline void serialize(Archive& ar, cv::Mat& m, const unsigned int version) {
+			split_free(ar, m, version);
+		}
 
 		// Serialization support for cv::Mat_
 		template<class Archive, typename _Tp>
@@ -3189,8 +3188,8 @@ namespace boost {
 			ar & boost::serialization::make_array((_Tp*)m.ptr(), data_size);
 		}
 		template<class Archive, typename _Tp>
-		inline void serialize(Archive& ar, cv::Mat_<_Tp>& t, const unsigned int version) {
-			split_free(ar, t, version);
+		inline void serialize(Archive& ar, cv::Mat_<_Tp>& m, const unsigned int version) {
+			split_free(ar, m, version);
 		}
 
 		// Serialization support for cv::Matx
