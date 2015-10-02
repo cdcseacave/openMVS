@@ -1,3 +1,6 @@
+// prevent conflict with identical but renamed file in openMVG
+#ifndef STLPLUS_FILE_SYSTEM
+#define STLPLUS_FILE_SYSTEM
 #ifndef _FILE_UTIL_H_
 #define _FILE_UTIL_H_
 
@@ -199,3 +202,4 @@ namespace stlplus
 } // namespace stlplus
 
 #endif //_FILE_UTIL_H_
+#endif //STLPLUS_FILE_SYSTEM

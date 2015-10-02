@@ -297,7 +297,7 @@ struct MeshTexture {
 	struct SampleImage {
 		AccumColor accumColor;
 		const Image8U3& image;
-		const Sampler sampler;
+		const Sampler sampler{};
 
 		inline SampleImage(const Image8U3& _image) : image(_image), sampler() {}
 		// sample the edge with linear weights
@@ -361,7 +361,7 @@ struct MeshTexture {
 		const TexCoord p0, p0Dir;
 		const TexCoord p1, p1Dir;
 		const float length;
-		const Sampler sampler;
+		const Sampler sampler{};
 
 		inline RasterPatchMeanEdgeData(Image32F3& _image, Image8U& _mask, const Image32F3& _image0, const Image8U3& _image1,
 									   const TexCoord& _p0, const TexCoord& _p0Adj, const TexCoord& _p1, const TexCoord& _p1Adj)
@@ -1677,7 +1677,8 @@ void MeshTexture::PoissonBlending(const Image32F3& src, Image32F3& dst, const Im
 			const MatIdx idx(indices(i));
 			ASSERT(idx != -1);
 			coeffA.AddConstruct(idx, idx, 1.f);
-			coeffB[idx] = Color(dst(i));
+			Color c = dst(i);
+			coeffB[idx] = c;
 		} break;
 		case interior: {
 			const MatIdx idxUp(indices(i - width));
@@ -1800,7 +1801,7 @@ void MeshTexture::LocalSeamLeveling()
 			}
 		}
 		// render the vertices at the patch border meeting neighbor patches
-		const Sampler sampler;
+		const Sampler sampler{};
 		FOREACHPTR(pSeamVertex, seamVertices) {
 			const SeamVertex& seamVertex = *pSeamVertex;
 			if (seamVertex.patches.GetSize() < 2)

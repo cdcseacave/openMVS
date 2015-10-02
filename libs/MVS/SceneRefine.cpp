@@ -723,7 +723,7 @@ void MeshRefine::ImageMeshWarp(
 {
 	ASSERT(!imageA.empty());
 	typedef Sampler::Linear<float> Sampler;
-	const Sampler sampler;
+	const Sampler sampler{};
 	mask.create(imageA.size());
 	mask.memset(0);
 	for (int j=0; j<depthMapA.rows; ++j) {
@@ -871,7 +871,7 @@ void MeshRefine::ComputePhotometricGradient(
 	const int RowsEnd(mask.rows-HalfSize);
 	const int ColsEnd(mask.cols-HalfSize);
 	typedef Sampler::Linear<View::Grad::Type> Sampler;
-	const Sampler sampler;
+	const Sampler sampler{};
 	TMatrix<Real,2,3> xJac;
 	Point2f xB;
 	GradArr _photoGrad(photoGrad.GetSize());

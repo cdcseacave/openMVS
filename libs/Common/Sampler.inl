@@ -257,7 +257,8 @@ inline TYPE Sample(const IMAGE& image, const SAMPLER& sampler, const POINT& pt)
 				continue;
 			// sample input image and weight according to sampler
 			const T w(coefs_x[j] * coefs_y[i]);
-			res += TYPE(image(cur_i, cur_j)) * w;
+			TYPE c = image(cur_i, cur_j) * w;
+			res += c;
 			total_weight += w;
 		}
 	}
