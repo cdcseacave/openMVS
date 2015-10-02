@@ -10,8 +10,13 @@
 #ifdef _IMAGE_TIFF
 #include "ImageTIFF.h"
 
+// This corrects a conflict where both libtiff and opencv3 try to redefine uint64 and int64
 extern "C" {
-#include <tiffio.h>
+#define uint64 uint64_tiff
+#define int64 int64_tiff
+#include "tiffio.h"
+#undef uint64_tiff
+#undef int64_tiff
 }
 
 using namespace SEACAVE;
@@ -69,10 +74,10 @@ extern "C" {
 	static tmsize_t _tiffisReadProc(thandle_t fd, void* buf, tmsize_t size);
 	static tmsize_t _tiffosWriteProc(thandle_t fd, void* buf, tmsize_t size);
 	static tmsize_t _tiffisWriteProc(thandle_t, void*, tmsize_t);
-	static uint64   _tiffosSeekProc(thandle_t fd, uint64 off, int whence);
-	static uint64   _tiffisSeekProc(thandle_t fd, uint64 off, int whence);
-	static uint64   _tiffosSizeProc(thandle_t fd);
-	static uint64   _tiffisSizeProc(thandle_t fd);
+	static uint64_tiff   _tiffosSeekProc(thandle_t fd, uint64_tiff off, int whence);
+	static uint64_tiff   _tiffisSeekProc(thandle_t fd, uint64_tiff off, int whence);
+	static uint64_tiff   _tiffosSizeProc(thandle_t fd);
+	static uint64_tiff   _tiffisSizeProc(thandle_t fd);
 	static int      _tiffosCloseProc(thandle_t fd);
 	static int      _tiffisCloseProc(thandle_t fd);
 	static int 	    _tiffDummyMapProc(thandle_t, void** base, toff_t* size);
@@ -125,26 +130,26 @@ extern "C" {
 		return 0;
 	}
 
-	static uint64 _tiffosSeekProc(thandle_t fd, uint64 off, int whence)
+	static uint64_tiff _tiffosSeekProc(thandle_t fd, uint64_tiff off, int whence)
 	{
 		tiffos_data	*data = reinterpret_cast<tiffos_data *>(fd);
 		OSTREAM* os = data->stream;
 
 		// if the stream has already failed, don't do anything
 		if (os == NULL)
-			return static_cast<uint64>(-1);
+			return static_cast<uint64_tiff>(-1);
 
 		bool bSucceeded(true);
 		switch (whence) {
 		case SEEK_SET:
 		{
 			// Compute 64-bit offset
-			uint64 new_offset = static_cast<uint64>(data->start_pos) + off;
+			uint64_tiff new_offset = static_cast<uint64_tiff>(data->start_pos) + off;
 
 			// Verify that value does not overflow
 			size_f_t offset = static_cast<size_f_t>(new_offset);
-			if (static_cast<uint64>(offset) != new_offset)
-				return static_cast<uint64>(-1);
+			if (static_cast<uint64_tiff>(offset) != new_offset)
+				return static_cast<uint64_tiff>(-1);
 
 			bSucceeded = os->setPos(offset);
 			break;
@@ -153,8 +158,8 @@ extern "C" {
 		{
 			// Verify that value does not overflow
 			size_f_t offset = static_cast<size_f_t>(off);
-			if (static_cast<uint64>(offset) != off)
-				return static_cast<uint64>(-1);
+			if (static_cast<uint64_tiff>(offset) != off)
+				return static_cast<uint64_tiff>(-1);
 
 			bSucceeded = os->setPos(os->getPos()+offset);
 			break;
@@ -163,8 +168,8 @@ extern "C" {
 		{
 			// Verify that value does not overflow
 			size_f_t offset = static_cast<size_f_t>(off);
-			if (static_cast<uint64>(offset) != off)
-				return static_cast<uint64>(-1);
+			if (static_cast<uint64_tiff>(offset) != off)
+				return static_cast<uint64_tiff>(-1);
 
 			bSucceeded = os->setPos(os->getSize()-offset);
 			break;
@@ -192,23 +197,23 @@ extern "C" {
 			}
 
 			// only do something if desired seek position is valid
-			if ((static_cast<uint64>(origin) + off) > static_cast<uint64>(data->start_pos)) {
-				uint64	num_fill;
+			if ((static_cast<uint64_tiff>(origin) + off) > static_cast<uint64_tiff>(data->start_pos)) {
+				uint64_tiff	num_fill;
 				// extend the stream to the expected size
 				os->setPos(os->getSize());
-				num_fill = (static_cast<uint64>(origin)) + off - os->getPos();
+				num_fill = (static_cast<uint64_tiff>(origin)) + off - os->getPos();
 				const char dummy = '\0';
-				for (uint64 i = 0; i < num_fill; i++)
+				for (uint64_tiff i = 0; i < num_fill; i++)
 					os->write(&dummy, 1);
 				// retry the seek
-				os->setPos(static_cast<size_f_t>(static_cast<uint64>(origin) + off));
+				os->setPos(static_cast<size_f_t>(static_cast<uint64_tiff>(origin) + off));
 			}
 		}
 
-		return static_cast<uint64>(os->getPos());
+		return static_cast<uint64_tiff>(os->getPos());
 	}
 
-	static uint64 _tiffisSeekProc(thandle_t fd, uint64 off, int whence)
+	static uint64_tiff _tiffisSeekProc(thandle_t fd, uint64_tiff off, int whence)
 	{
 		tiffis_data	*data = reinterpret_cast<tiffis_data *>(fd);
 		ISTREAM* is = data->stream;
@@ -217,12 +222,12 @@ extern "C" {
 		case SEEK_SET:
 		{
 			// Compute 64-bit offset
-			uint64 new_offset = static_cast<uint64>(data->start_pos) + off;
+			uint64_tiff new_offset = static_cast<uint64_tiff>(data->start_pos) + off;
 
 			// Verify that value does not overflow
 			size_f_t offset = static_cast<size_f_t>(new_offset);
-			if (static_cast<uint64>(offset) != new_offset)
-				return static_cast<uint64>(-1);
+			if (static_cast<uint64_tiff>(offset) != new_offset)
+				return static_cast<uint64_tiff>(-1);
 
 			is->setPos(offset);
 			break;
@@ -231,8 +236,8 @@ extern "C" {
 		{
 			// Verify that value does not overflow
 			size_f_t offset = static_cast<size_f_t>(off);
-			if (static_cast<uint64>(offset) != off)
-				return static_cast<uint64>(-1);
+			if (static_cast<uint64_tiff>(offset) != off)
+				return static_cast<uint64_tiff>(-1);
 
 			is->setPos(is->getPos()+offset);
 			break;
@@ -241,27 +246,27 @@ extern "C" {
 		{
 			// Verify that value does not overflow
 			size_f_t offset = static_cast<size_f_t>(off);
-			if (static_cast<uint64>(offset) != off)
-				return static_cast<uint64>(-1);
+			if (static_cast<uint64_tiff>(offset) != off)
+				return static_cast<uint64_tiff>(-1);
 
 			is->setPos(is->getSize()-offset);
 			break;
 		}
 		}
 
-		return (uint64)(is->getPos() - data->start_pos);
+		return (uint64_tiff)(is->getPos() - data->start_pos);
 	}
 
-	static uint64 _tiffosSizeProc(thandle_t fd)
+	static uint64_tiff _tiffosSizeProc(thandle_t fd)
 	{
 		tiffos_data	*data = reinterpret_cast<tiffos_data *>(fd);
-		return (uint64)data->stream->getSize();
+		return (uint64_tiff)data->stream->getSize();
 	}
 
-	static uint64 _tiffisSizeProc(thandle_t fd)
+	static uint64_tiff _tiffisSizeProc(thandle_t fd)
 	{
 		tiffis_data	*data = reinterpret_cast<tiffis_data *>(fd);
-		return (uint64)data->stream->getSize();
+		return (uint64_tiff)data->stream->getSize();
 	}
 
 	static int _tiffosCloseProc(thandle_t fd)
