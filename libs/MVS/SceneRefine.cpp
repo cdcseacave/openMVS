@@ -118,6 +118,8 @@ public:
 	MeshRefine(Scene& _scene, Real _weightRegularity=1.5f, unsigned _nResolutionLevel=0, unsigned _nMinResolution=640, unsigned nMaxViews=8, unsigned nMaxThreads=1);
 	~MeshRefine();
 
+	bool IsValid() const { return !pairs.IsEmpty(); }
+
 	bool InitImages(Real scale, Real sigma=0);
 
 	void ListVertexFacesPre();
@@ -153,7 +155,7 @@ public:
 		const Mesh::FaceArr& faces, const Mesh::NormalArr& normals,
 		const DepthMap& depthMapA, const FaceMap& faceMapA, const BaryMap& baryMapA, const Camera& cameraA,
 		const Camera& cameraB, const View& viewB,
-		const TImage<Real>& imageDZNCC, const Image8U& mask, GradArr& photoGrad, FloatArr& photoGradNorm, Real RegularizationScale);
+		const TImage<Real>& imageDZNCC, const Image8U& mask, GradArr& photoGrad, UnsignedArr& photoGradNorm, Real RegularizationScale);
 	static float ComputeSmoothnessGradient1(
 		const Mesh::VertexArr& vertices, const Mesh::VertexVerticesArr& vertexVertices, const BoolArr& vertexBoundary,
 		GradArr& smoothGrad1, VIndex idxStart, VIndex idxEnd);
@@ -183,6 +185,7 @@ public:
 	float scoreSmooth;
 	GradArr photoGrad;
 	FloatArr photoGradNorm;
+	FloatArr vertexDepth;
 	GradArr smoothGrad1;
 	GradArr smoothGrad2;
 
@@ -509,7 +512,7 @@ void MeshRefine::SubdivideMesh(uint32_t maxArea, float fDecimate, unsigned nClos
 	// subdivide mesh faces if its projection area is bigger than the given number of pixels
 	const size_t numVertsOld(vertices.GetSize());
 	const size_t numFacesOld(faces.GetSize());
-	scene.mesh.SubdivideMesh(maxAreas, maxArea);
+	scene.mesh.Subdivide(maxAreas, maxArea);
 
 	#ifdef MESHOPT_ENSUREEDGESIZE
 	// make sure there are no edges too small or too long
@@ -549,6 +552,10 @@ double MeshRefine::ScoreMesh(double* gradients)
 	photoGrad.Memset(0);
 	photoGradNorm.Resize(vertices.GetSize());
 	photoGradNorm.Memset(0);
+	if (!vertexDepth.IsEmpty()) {
+		ASSERT(vertexDepth.GetSize() == vertices.GetSize());
+		vertexDepth.MemsetValue(FLT_MAX);
+	}
 	ASSERT(events.IsEmpty());
 	FOREACHPTR(pPair, pairs) {
 		ASSERT(pPair->i < pPair->j);
@@ -863,7 +870,7 @@ void MeshRefine::ComputePhotometricGradient(
 	const Mesh::FaceArr& faces, const Mesh::NormalArr& normals,
 	const DepthMap& depthMapA, const FaceMap& faceMapA, const BaryMap& baryMapA, const Camera& cameraA,
 	const Camera& cameraB, const View& viewB,
-	const TImage<Real>& imageDZNCC, const Image8U& mask, GradArr& photoGrad, FloatArr& photoGradNorm, Real RegularizationScale)
+	const TImage<Real>& imageDZNCC, const Image8U& mask, GradArr& photoGrad, UnsignedArr& photoGradNorm, Real RegularizationScale)
 {
 	ASSERT(faces.GetSize() == normals.GetSize() && !faces.IsEmpty());
 	ASSERT(depthMapA.size() == mask.size() && faceMapA.size() == mask.size() && baryMapA.size() == mask.size() && imageDZNCC.size() == mask.size() && !mask.empty());
@@ -874,10 +881,8 @@ void MeshRefine::ComputePhotometricGradient(
 	const Sampler sampler;
 	TMatrix<Real,2,3> xJac;
 	Point2f xB;
-	GradArr _photoGrad(photoGrad.GetSize());
-	UnsignedArr photoGradPixels(photoGrad.GetSize());
-	_photoGrad.Memset(0);
-	photoGradPixels.Memset(0);
+	photoGrad.Memset(0);
+	photoGradNorm.Memset(0);
 	for (int r=HalfSize; r<RowsEnd; ++r) {
 		for (int c=HalfSize; c<ColsEnd; ++c) {
 			if (!mask(r,c))
@@ -910,16 +915,9 @@ void MeshRefine::ComputePhotometricGradient(
 			for (int v=0; v<3; ++v) {
 				const Grad g(N*(sg*(Real)b[v]));
 				const VIndex idxVert(face[v]);
-				_photoGrad[idxVert] += g;
-				++photoGradPixels[idxVert];
+				photoGrad[idxVert] += g;
+				++photoGradNorm[idxVert];
 			}
-		}
-	}
-	Lock l(cs);
-	FOREACH(i, photoGrad) {
-		if (photoGradPixels[i] > 0) {
-			photoGrad[i] += _photoGrad[i];
-			photoGradNorm[i] += 1.f;
 		}
 	}
 }
@@ -1019,7 +1017,7 @@ void MeshRefine::ThSelectNeighbors(uint32_t idxImage, std::unordered_set<uint64_
 	// keep only best neighbor views
 	const float fMinArea(0.12f);
 	const float fMinScale(0.2f), fMaxScale(3.2f);
-	const float fMinAngle(FD2R(3)), fMaxAngle(FD2R(45));
+	const float fMinAngle(FD2R(2.5f)), fMaxAngle(FD2R(45.f));
 	const Image& imageData = images[idxImage];
 	if (!imageData.IsValid())
 		return;
@@ -1110,9 +1108,29 @@ void MeshRefine::ThProcessPair(uint32_t idxImageA, uint32_t idxImageB)
 	ComputeLocalVariance(imageAB, mask, imageMeanAB, imageVarAB);
 	TImage<Real> imageZNCC, imageDZNCC;
 	const float score(ComputeLocalZNCC(imageA, imageMeanA, imageVarA, imageAB, imageMeanAB, imageVarAB, mask, imageZNCC, imageDZNCC));
+	GradArr _photoGrad(photoGrad.GetSize());
+	UnsignedArr _photoGradNorm(photoGrad.GetSize());
 	const Real RegularizationScale((Real)((REAL)(imageDataA.avgDepth*imageDataB.avgDepth)/(cameraA.GetFocalLength()*cameraB.GetFocalLength())));
-	ComputePhotometricGradient(faces, faceNormals, depthMapA, faceMapA, baryMapA, cameraA, cameraB, viewB, imageDZNCC, mask, photoGrad, photoGradNorm, RegularizationScale);
+	ComputePhotometricGradient(faces, faceNormals, depthMapA, faceMapA, baryMapA, cameraA, cameraB, viewB, imageDZNCC, mask, _photoGrad, _photoGradNorm, RegularizationScale);
 	Lock l(cs);
+	if (vertexDepth.IsEmpty()) {
+		FOREACH(i, photoGrad) {
+			if (_photoGradNorm[i] > 0) {
+				photoGrad[i] += _photoGrad[i];
+				photoGradNorm[i] += 1.f;
+			}
+		}
+	} else {
+		const float depth(MINF(imageDataA.avgDepth, imageDataB.avgDepth));
+		FOREACH(i, photoGrad) {
+			if (_photoGradNorm[i] > 0) {
+				photoGrad[i] += _photoGrad[i];
+				photoGradNorm[i] += 1.f;
+				if (vertexDepth[i] > depth)
+					vertexDepth[i] = depth;
+			}
+		}
+	}
 	scorePhoto += (float)RegularizationScale*score;
 }
 void MeshRefine::ThSmoothVertices1(VIndex idxStart, VIndex idxEnd)
@@ -1188,9 +1206,12 @@ protected:
 } // namespace ceres
 
 // optimize mesh using photo-consistency
-bool Scene::RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsigned nMaxViews, float fDecimateMesh, unsigned nCloseHoles, unsigned nEnsureEdgeSize, unsigned nMaxFaceArea, unsigned nScales, float fScaleStep, float fRegularityWeight, float fGradientStep)
+// fThPlanarVertex - threshold used to remove vertices on planar patches (percentage of the minimum depth, 0 - disable)
+bool Scene::RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsigned nMaxViews, float fDecimateMesh, unsigned nCloseHoles, unsigned nEnsureEdgeSize, unsigned nMaxFaceArea, unsigned nScales, float fScaleStep, float fRegularityWeight, float fThPlanarVertex, float fGradientStep)
 {
 	MeshRefine refine(*this, fRegularityWeight, nResolutionLevel, nMinResolution, nMaxViews, nMaxThreads);
+	if (!refine.IsValid())
+		return false;
 
 	// run the mesh optimization on multiple scales (coarse to fine)
 	for (unsigned nScale=0; nScale<nScales; ++nScale) {
@@ -1257,18 +1278,50 @@ bool Scene::RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsig
 				gstep = (fGradientStep-(float)iters)*10;
 			}
 			iters = MAXF(iters/(int)(nScale+1),8);
+			const int iterStart(fThPlanarVertex > 0 ? iters*4/10 : INT_MAX);
 			Eigen::Matrix<double,Eigen::Dynamic,3,Eigen::RowMajor> gradients(refine.vertices.GetSize(),3);
 			for (int iter=0; iter<iters; ++iter) {
+				const bool bAdaptMesh(iter >= iterStart && (iter-iterStart)%3 == 0 && iters-iter > 5);
 				// evaluate residuals and gradients
+				if (bAdaptMesh)
+					refine.vertexDepth.Resize(refine.vertices.GetSize());
 				const double cost = refine.ScoreMesh(gradients.data());
-				// apply gradients
 				double gv(0);
-				FOREACH(v, refine.vertices) {
-					Vertex& vert = refine.vertices[v];
-					vert -= Vertex((gradients.row(v)*gstep).cast<float>());
-					gv += gradients.row(v).norm();
+				VIndex numVertsRemoved(0);
+				if (bAdaptMesh) {
+					// apply gradients and
+					// remove planar vertices (small gradient and almost on the center of their surrounding patch)
+					ASSERT(refine.vertexDepth.GetSize() == refine.vertices.GetSize());
+					Mesh::VertexIdxArr vertexRemove;
+					FOREACH(v, refine.vertices) {
+						Vertex& vert = refine.vertices[v];
+						const Point3d grad(gradients.row(v));
+						vert -= Cast<Vertex::Type>(grad*gstep);
+						const double gn(norm(grad));
+						gv += gn;
+						const float depth(refine.vertexDepth[v]);
+						if (depth < FLT_MAX) {
+							const float th(depth*fThPlanarVertex);
+							if (!refine.vertexBoundary[v] && (float)gn < th && norm(refine.smoothGrad1[v]) < th)
+								vertexRemove.Insert(v);
+						}
+					}
+					if (!vertexRemove.IsEmpty()) {
+						numVertsRemoved = vertexRemove.GetSize();
+						mesh.Decimate(vertexRemove);
+						refine.ListVertexFacesPost();
+					}
+					refine.vertexDepth.Empty();
+				} else {
+					// apply gradients
+					FOREACH(v, refine.vertices) {
+						Vertex& vert = refine.vertices[v];
+						const Point3d grad(gradients.row(v));
+						vert -= Cast<Vertex::Type>(grad*gstep);
+						gv += norm(grad);
+					}
 				}
-				DEBUG_EXTRA("\t%2d. f: %.5f (%.4e)\tg: %.5f (%.4e - %.4e)\ts: %.3f", iter+1, cost, cost/refine.vertices.GetSize(), gradients.norm(), gradients.norm()/refine.vertices.GetSize(), gv/refine.vertices.GetSize(), gstep);
+				DEBUG_EXTRA("\t%2d. f: %.5f (%.4e)\tg: %.5f (%.4e - %.4e)\ts: %.3f\tv: %5u", iter+1, cost, cost/refine.vertices.GetSize(), gradients.norm(), gradients.norm()/refine.vertices.GetSize(), gv/refine.vertices.GetSize(), gstep, numVertsRemoved);
 				gstep *= 0.98;
 			}
 		}

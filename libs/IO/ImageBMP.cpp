@@ -204,15 +204,15 @@ HRESULT CImageBMP::WriteHeader(PIXELFORMAT imageFormat, UINT width, UINT height,
 	// Write the BITMAPFILEHEADER and the BITMAPINFOHEADER.
 	const BITMAPFILEHEADER bmp_fileheader = {
 		0x4d42, //BM
-		sizeof(BITMAPFILEHEADER)+sizeof(BITMAPINFOHEADER)+m_lineWidth*m_height, //total file size
+		(DWORD)sizeof(BITMAPFILEHEADER)+(DWORD)sizeof(BITMAPINFOHEADER)+m_lineWidth*m_height, //total file size
 		0, 0, //reserved
-		sizeof(BITMAPFILEHEADER)+sizeof(BITMAPINFOHEADER) //offset to the bitmap bits
+		(DWORD)sizeof(BITMAPFILEHEADER)+(DWORD)sizeof(BITMAPINFOHEADER) //offset to the bitmap bits
 	};
 	const BITMAPINFOHEADER bmp_infoheader = {
-		sizeof(BITMAPINFOHEADER), //size of this structure
+		(DWORD)sizeof(BITMAPINFOHEADER), //size of this structure
 		(LONG)m_width, (LONG)m_height, //dim
 		(WORD)1, //number of color planes being used (must be set to 1)
-		(WORD)m_stride<<3, //number of bits per pixel
+		(WORD)(m_stride<<3), //number of bits per pixel
 		dwCompression, //compression method being used
 		m_lineWidth*m_height, //raw image size
 		0, 0, //pixels-per-meter

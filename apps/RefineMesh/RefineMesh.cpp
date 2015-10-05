@@ -64,6 +64,7 @@ unsigned nScales;
 float fScaleStep;
 float fRegularityWeight;
 unsigned nMaxFaceArea;
+float fPlanarVertexRatio;
 float fGradientStep;
 #ifdef _USE_CUDA
 bool bUseCUDA;
@@ -118,6 +119,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		("scale-step", boost::program_options::value<float>(&OPT::fScaleStep)->default_value(0.5f), "image scale factor used at each mesh optimization step")
 		("regularity-weight", boost::program_options::value<float>(&OPT::fRegularityWeight)->default_value(1.f), "scalar regularity weight to balance between photo-consistency and regularization terms during mesh optimization")
 		("gradient-step", boost::program_options::value<float>(&OPT::fGradientStep)->default_value(50.05f), "gradient step to be used instead (0 - auto)")
+		("planar-vertex-ratio", boost::program_options::value<float>(&OPT::fPlanarVertexRatio)->default_value(0.f), "threshold used to remove vertices on planar patches (0 - disabled)")
 		#ifdef _USE_CUDA
 		("use-cuda", boost::program_options::value<bool>(&OPT::bUseCUDA)->default_value(true), "refine mesh using CUDA")
 		#endif
@@ -244,6 +246,7 @@ int main(int argc, LPCTSTR* argv)
 						  OPT::nMaxFaceArea,
 						  OPT::nScales, OPT::fScaleStep,
 						  OPT::fRegularityWeight,
+						  OPT::fPlanarVertexRatio,
 						  OPT::fGradientStep))
 		return EXIT_FAILURE;
 	VERBOSE("Mesh refinement completed: %u vertices, %u faces (%s)", scene.mesh.vertices.GetSize(), scene.mesh.faces.GetSize(), TD_TIMER_GET_FMT().c_str());

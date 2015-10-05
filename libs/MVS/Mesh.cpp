@@ -164,14 +164,8 @@ void Mesh::ComputeNormalFaces()
 {
 	faceNormals.Resize(faces.GetSize());
 	#ifndef _USE_CUDA
-	FOREACH(idxFace, faces) {
-		const Face& face = faces[idxFace];
-		const Vertex& v0 = vertices[face[0]];
-		const Vertex& v1 = vertices[face[1]];
-		const Vertex& v2 = vertices[face[2]];
-		Normal& normal = faceNormals[idxFace];
-		normal = normalized((v1-v0).cross(v2-v0));
-	}
+	FOREACH(idxFace, faces)
+		faceNormals[idxFace] = normalized(FaceNormal(faces[idxFace]));
 	#else
 	reportCudaError(kernelComputeFaceNormal((int)faces.GetSize(),
 		vertices,
@@ -304,6 +298,18 @@ void Mesh::GetAdjVertices(VIndex v, VertexIdxArr& indices) const
 			if (vAdj != v && setIndices.insert(vAdj).second)
 				indices.Insert(vAdj);
 		}
+	}
+}
+
+void Mesh::GetAdjVertexFaces(VIndex idxVCenter, VIndex idxVAdj, FaceIdxArr& indices) const
+{
+	ASSERT(vertexFaces.GetSize() == vertices.GetSize());
+	const FaceIdxArr& idxFaces = vertexFaces[idxVCenter];
+	FOREACHPTR(pIdxFace, idxFaces) {
+		const Face& face = faces[*pIdxFace];
+		ASSERT(FindVertex(face, idxVCenter) != NO_ID);
+		if (FindVertex(face, idxVAdj) != NO_ID)
+			indices.Insert(*pIdxFace);
 	}
 }
 /*----------------------------------------------------------------*/
@@ -1017,12 +1023,13 @@ void Mesh::Clean(float fDecimate, float fSpurious, bool bRemoveSpikes, unsigned 
 		const int nDuplicateVertices = vcg::tri::Clean<CLEAN::Mesh>::RemoveDuplicateVertex(mesh);
 		DEBUG_ULTIMATE("Removed %d duplicate vertices", nDuplicateVertices);
 		#endif
-		#if 0 // not working
-		const int nSplitNonManifoldVertices = vcg::tri::Clean<CLEAN::Mesh>::SplitNonManifoldVertex(mesh, 0);
+		#if 1
+		const int nSplitNonManifoldVertices = vcg::tri::Clean<CLEAN::Mesh>::SplitNonManifoldVertex(mesh, 0.1f);
 		DEBUG_ULTIMATE("Split %d non-manifold vertices", nSplitNonManifoldVertices);
-		#endif
+		#else
 		const int nNonManifoldVertices = vcg::tri::Clean<CLEAN::Mesh>::RemoveNonManifoldVertex(mesh);
 		DEBUG_ULTIMATE("Removed %d non-manifold vertices", nNonManifoldVertices);
+		#endif
 		vcg::tri::Allocator<CLEAN::Mesh>::CompactFaceVector(mesh);
 		vcg::tri::Allocator<CLEAN::Mesh>::CompactVertexVector(mesh);
 		vcg::tri::UpdateTopology<CLEAN::Mesh>::AllocateEdge(mesh);
@@ -1100,6 +1107,8 @@ void Mesh::Clean(float fDecimate, float fSpurious, bool bRemoveSpikes, unsigned 
 	if (nCloseHoles > 0) {
 		if (fSpurious <= 0 && !bRemoveSpikes)
 			vcg::tri::UpdateTopology<CLEAN::Mesh>::FaceFace(mesh);
+		vcg::tri::UpdateNormal<CLEAN::Mesh>::PerFaceNormalized(mesh);
+		vcg::tri::UpdateNormal<CLEAN::Mesh>::PerVertexAngleWeighted(mesh);
 		ASSERT(vcg::tri::Clean<CLEAN::Mesh>::CountNonManifoldEdgeFF(mesh) == 0);
 		const int OriginalSize(mesh.fn);
 		#if 1
@@ -1129,12 +1138,13 @@ void Mesh::Clean(float fDecimate, float fSpurious, bool bRemoveSpikes, unsigned 
 	if (fSpurious > 0 || bRemoveSpikes || nCloseHoles > 0 || nSmooth > 0) {
 		const int nNonManifoldFaces = vcg::tri::Clean<CLEAN::Mesh>::RemoveNonManifoldFace(mesh);
 		DEBUG_ULTIMATE("Removed %d non-manifold faces", nNonManifoldFaces);
-		#if 0 // not working
-		const int nSplitNonManifoldVertices = vcg::tri::Clean<CLEAN::Mesh>::SplitNonManifoldVertex(mesh, 0);
+		#if 1
+		const int nSplitNonManifoldVertices = vcg::tri::Clean<CLEAN::Mesh>::SplitNonManifoldVertex(mesh, 0.1f);
 		DEBUG_ULTIMATE("Split %d non-manifold vertices", nSplitNonManifoldVertices);
-		#endif
+		#else
 		const int nNonManifoldVertices = vcg::tri::Clean<CLEAN::Mesh>::RemoveNonManifoldVertex(mesh);
 		DEBUG_ULTIMATE("Removed %d non-manifold vertices", nNonManifoldVertices);
+		#endif
 	}
 
 	// import VCG mesh
@@ -2607,7 +2617,7 @@ void Mesh::EnsureEdgeSize(float epsilonMin, float epsilonMax, float collapseRati
 
 // subdivide mesh faces if its projection area
 // is bigger than the given number of pixels
-void Mesh::SubdivideMesh(const AreaArr& maxAreas, uint32_t maxArea)
+void Mesh::Subdivide(const AreaArr& maxAreas, uint32_t maxArea)
 {
 	ASSERT(vertexFaces.GetSize() == vertices.GetSize());
 
@@ -2782,6 +2792,424 @@ void Mesh::SubdivideMesh(const AreaArr& maxAreas, uint32_t maxArea)
 	ASSERT(faces.GetSize()-(faces.GetCapacity()/3)/*initial size*/ > mapSplits.size());
 	for (const auto& s: mapSplits)
 		faces.RemoveAt(s.first);
+}
+/*----------------------------------------------------------------*/
+
+// decimate mesh by removing the given list of vertices
+//#define DECIMATE_JOINHOLES // not finished
+void Mesh::Decimate(VertexIdxArr& verticesRemove)
+{
+	ASSERT(vertices.GetSize() == vertexFaces.GetSize());
+	FaceIdxArr facesRemove(0, verticesRemove.GetSize()*8);
+	#ifdef DECIMATE_JOINHOLES
+	cList<VertexIdxArr> holes;
+	#endif
+	FOREACHPTR(pIdxV, verticesRemove) {
+		const VIndex idxV(*pIdxV);
+		ASSERT(idxV < vertices.GetSize());
+		// create the list of consecutive vertices around selected vertex
+		VertexIdxArr verts;
+		{
+			FaceIdxArr& vf(vertexFaces[idxV]);
+			if (vf.IsEmpty())
+				continue;
+			const FIndex n(vf.GetSize());
+			facesRemove.Join(vf);
+			ASSERT(verts.IsEmpty());
+			{
+				// add vertices of the first face
+				const Face& f = faces[vf.First()];
+				const uint32_t i(FindVertex(f, idxV));
+				verts.Insert(f[(i+1)%3]);
+				verts.Insert(f[(i+2)%3]);
+				vf.RemoveAt(0);
+			}
+			while (verts.GetSize() < n) {
+				// find the face that contains our vertex and the last added vertex
+				const VIndex idxVL(verts.Last());
+				FOREACH(idxF, vf) {
+					const Face& f = faces[vf[idxF]];
+					ASSERT(FindVertex(f, idxV) != NO_ID);
+					const uint32_t i(FindVertex(f, idxVL));
+					if (i == NO_ID)
+						continue;
+					// add the missing vertex at the end
+					ASSERT(f[(i+2)%3] == idxV);
+					const FIndex idxVN(f[(i+1)%3]);
+					ASSERT(verts.First() != idxVN);
+					verts.Insert(idxVN);
+					vf.RemoveAt(idxF);
+					goto NEXT_FACE_FORWARD;
+				}
+			#ifndef DECIMATE_JOINHOLES
+				vf.Release();
+				goto NEXT_VERTEX;
+				NEXT_FACE_FORWARD:;
+			}
+			vf.Release();
+			#else
+				break;
+				NEXT_FACE_FORWARD:;
+			}
+			while (!vf.IsEmpty()) {
+				// find the face that contains our vertex and the first added vertex
+				const VIndex idxVF(verts.First());
+				FOREACH(idxF, vf) {
+					const Face& f = faces[vf[idxF]];
+					ASSERT(FindVertex(f, idxV) != NO_ID);
+					const uint32_t i(FindVertex(f, idxVF));
+					if (i == NO_ID)
+						continue;
+					// add the missing vertex at the beginning
+					ASSERT(f[(i+1)%3] == idxV);
+					const FIndex idxVP(f[(i+2)%3]);
+					ASSERT(verts.Last() != idxVP || vf.GetSize() == 1);
+					if (verts.Last() != idxVP)
+						verts.InsertAt(0, idxVP);
+					vf.RemoveAt(idxF);
+					goto NEXT_FACE_BACKWARD;
+				}
+				vf.Release();
+				goto NEXT_VERTEX;
+				NEXT_FACE_BACKWARD:;
+			}
+			#endif
+		}
+		// remove the deleted faces from each vertex face list
+		FOREACHPTR(pV, verts) {
+			FaceIdxArr& vf(vertexFaces[*pV]);
+			RFOREACH(i, vf) {
+				const Face& f = faces[vf[i]];
+				if (FindVertex(f, idxV) != NO_ID)
+					vf.RemoveAt(i);
+			}
+		}
+		#ifdef DECIMATE_JOINHOLES
+		// find the hole that contains the vertex to be deleted
+		FOREACHPTR(pHole, holes) {
+			const VIndex idxVH(pHole->Find(idxV));
+			if (idxVH == VertexIdxArr::NO_INDEX)
+				continue;
+			// extend the hole with the new loop vertices
+			VertexIdxArr& hole(*pHole);
+			hole.RemoveAtMove(idxVH);
+			const VIndex idxS((idxVH+hole.GetSize()-1)%hole.GetSize());
+			const VIndex idxL(verts.Find(hole[idxS]));
+			ASSERT(idxL != VertexIdxArr::NO_INDEX);
+			ASSERT(verts[(idxL+verts.GetSize()-1)%verts.GetSize()] == hole[(idxS+1)%hole.GetSize()]);
+			const VIndex n(verts.GetSize()-2);
+			for (VIndex v=1; v<=n; ++v)
+				hole.InsertAt(idxS+v, verts[(idxL+v)%verts.GetSize()]);
+			goto NEXT_VERTEX;
+		}
+		// or create a new hole
+		if (verts.GetSize() < 3)
+			continue;
+		verts.Swap(holes.AddEmpty());
+		#else
+		// close the holes defined by the complete loop of consecutive vertices
+		// (the loop can be opened, cause some of the vertices can be on the border)
+		if (verts.GetSize() > 2)
+			CloseHoleQuality(verts);
+		#endif
+		NEXT_VERTEX:;
+	}
+	#ifndef _RELEASE
+	// check all removed vertices are completely disconnected from the mesh
+	FOREACHPTR(pIdxV, verticesRemove)
+		ASSERT(vertexFaces[*pIdxV].IsEmpty());
+	#endif
+
+	// remove deleted faces
+	RemoveFaces(facesRemove, true);
+
+	// remove deleted vertices
+	RemoveVertices(verticesRemove);
+
+	#ifdef DECIMATE_JOINHOLES
+	// close the holes defined by the complete loop of consecutive vertices
+	// (the loop can be opened, cause some of the vertices can be on the border)
+	FOREACHPTR(pHole, holes) {
+		ASSERT(pHole->GetSize() > 2);
+		CloseHoleQuality(*pHole);
+	}
+	#endif
+
+	#ifndef _RELEASE
+	// check all faces see valid vertices
+	FOREACH(idxF, faces) {
+		const Face& face = faces[idxF];
+		for (int v=0; v<3; ++v)
+			ASSERT(face[v] < vertices.GetSize());
+	}
+	#endif
+}
+/*----------------------------------------------------------------*/
+
+// given a hole defined by a complete loop of consecutive vertices,
+// split it recursively in two halves till the splits becomes a face
+void Mesh::CloseHole(VertexIdxArr& split0)
+{
+	ASSERT(split0.GetSize() >= 3);
+	if (split0.GetSize() == 3) {
+		const FIndex idxF(faces.GetSize());
+		faces.AddConstruct(split0[0], split0[1], split0[2]);
+		for (int v=0; v<3; ++v) {
+			#ifndef _RELEASE
+			FaceIdxArr indices;
+			GetAdjVertexFaces(split0[v], split0[(v+1)%3], indices);
+			ASSERT(indices.GetSize() < 2);
+			indices.Empty();
+			GetAdjVertexFaces(split0[v], split0[(v+2)%3], indices);
+			ASSERT(indices.GetSize() < 2);
+			#endif
+			vertexFaces[split0[v]].Insert(idxF);
+		}
+		return;
+	}
+	const VIndex i(split0.GetSize() >> 1);
+	const VIndex j(split0.GetSize()-i);
+	VertexIdxArr split1(0, j+1);
+	split1.Join(split0.Begin()+i, j);
+	split1.Insert(split0.First());
+	split0.RemoveLast(j-1);
+	CloseHole(split0);
+	CloseHole(split1);
+}
+
+// given a hole defined by a complete loop of consecutive vertices,
+// fills it using an heap to choose the best candidate face to be added
+void Mesh::CloseHoleQuality(VertexIdxArr& verts)
+{
+	struct CandidateFace
+	{
+		Face face;
+		float angle;
+		float dihedral;
+		float aspectRatio;
+
+		CandidateFace() {}
+		// the vertices of the given face must be in the order they appear on the border of the hole
+		// (the middle face vertex must be between the first and third on the border)
+		CandidateFace(VIndex v0, VIndex v1, VIndex v2, const Mesh& mesh) : face(v0,v1,v2) {
+			const Normal n(mesh.FaceNormal(face));
+			// compute the angle between the two existing edges of the face
+			// (the angle computation takes into account the case of reversed face)
+			angle = ACOS(ComputeAngle<float,float>(mesh.vertices[face[1]].ptr(), mesh.vertices[face[0]].ptr(), mesh.vertices[face[2]].ptr()));
+			if (n.dot(mesh.VertexNormal(face[1])) < 0)
+				angle = float(2*M_PI) - angle;
+			// compute quality as a composition of dihedral angle and area/sum(edge^2);
+			// the dihedral angle uses the normal of the edge faces
+			// which are possible not to exist if the edges are on the border
+			FaceIdxArr indices;
+			mesh.GetAdjVertexFaces(face[2], face[0], indices);
+			if (indices.GetSize() > 1) {
+				aspectRatio = -1;
+				return;
+			}
+			indices.Empty();
+			mesh.GetAdjVertexFaces(face[0], face[1], indices);
+			if (indices.GetSize() > 1) {
+				aspectRatio = -1;
+				return;
+			}
+			const FIndex i0(indices.GetSize());
+			mesh.GetAdjVertexFaces(face[1], face[2], indices);
+			if (indices.GetSize()-i0 > 1) {
+				aspectRatio = -1;
+				return;
+			}
+			if (indices.IsEmpty())
+				dihedral = FD2R(33.f);
+			else {
+				const Normal n0(mesh.FaceNormal(mesh.faces[indices[0]]));
+				if (indices.GetSize() == 1)
+					dihedral = ACOS(ComputeAngle<float,float>(n.ptr(), n0.ptr()));
+				else {
+					const Normal n1(mesh.FaceNormal(mesh.faces[indices[1]]));
+					dihedral = MAXF(ACOS(ComputeAngle<float,float>(n.ptr(), n0.ptr())), ACOS(ComputeAngle<float,float>(n.ptr(), n1.ptr())));
+				}
+			}
+			aspectRatio = ComputeTriangleQuality(mesh.vertices[face[0]], mesh.vertices[face[1]], mesh.vertices[face[2]]);
+		}
+
+		inline operator const Face&() const { return face; }
+		inline bool IsConcave() const { return angle > (float)M_PI; }
+		inline float GetQuality() const { return aspectRatio - 0.3f/*diedral weight*/*(dihedral/(float)M_PI); }
+
+		// In the heap, by default, we retrieve the LARGEST value,
+		// so if we need the ear with minimal dihedral angle, we must reverse the sign of the comparison.
+		// The concave elements must be all in the end of the heap, sorted accordingly,
+		// So if only one of the two ear is Concave that one is always the minimum one.
+		inline bool operator < (const CandidateFace& c) const {
+			if ( IsConcave() && !c.IsConcave()) return true;
+			if (!IsConcave() &&  c.IsConcave()) return false;
+			return GetQuality() < c.GetQuality();
+		}
+	};
+
+	// create the initial list of new possible face along the edge of the hole
+	ASSERT(verts.GetSize() > 2);
+	cList<CandidateFace> candidateFaces(0, verts.GetSize());
+	FOREACH(v, verts) {
+		if (candidateFaces.AddConstruct(verts[v], verts[(v+1)%verts.GetSize()], verts[(v+2)%verts.GetSize()], *this).aspectRatio < 0)
+			candidateFaces.RemoveLast();
+	}
+	candidateFaces.Sort();
+
+	// add new faces until there are only two vertices left
+	while(true) {
+		// add the best candidate face
+		ASSERT(!candidateFaces.IsEmpty());
+		const Face& candidateFace = candidateFaces.Last();
+		ASSERT(verts.Find(candidateFace[0]) != VertexIdxArr::NO_INDEX);
+		ASSERT(verts.Find(candidateFace[1]) != VertexIdxArr::NO_INDEX);
+		ASSERT(verts.Find(candidateFace[2]) != VertexIdxArr::NO_INDEX);
+		const FIndex idxF(faces.GetSize());
+		faces.Insert(candidateFace);
+		for (int v=0; v<3; ++v) {
+			#ifndef _RELEASE
+			FaceIdxArr indices;
+			GetAdjVertexFaces(candidateFace[v], candidateFace[(v+1)%3], indices);
+			ASSERT(indices.GetSize() < 2);
+			indices.Empty();
+			GetAdjVertexFaces(candidateFace[v], candidateFace[(v+2)%3], indices);
+			ASSERT(indices.GetSize() < 2);
+			#endif
+			vertexFaces[candidateFace[v]].Insert(idxF);
+		}
+		if (verts.GetSize() <= 3)
+			break;
+		const VIndex idxV(verts.Find(candidateFace[1]));
+		// remove all candidate face containing this vertex
+		{
+		candidateFaces.RemoveLast();
+		const VIndex idxVert(verts[idxV]);
+		int n(0);
+		RFOREACH(c, candidateFaces)
+			if (FindVertex(candidateFaces[c].face, idxVert) != NO_ID) {
+				candidateFaces.RemoveAtMove(c);
+				if (++n == 2)
+					break;
+			}
+		}
+		// insert the two new candidate faces
+		const VIndex idxB(idxV+verts.GetSize());
+		const VIndex idxVB2(verts[(idxB-2)%verts.GetSize()]);
+		const VIndex idxVB1(verts[(idxB-1)%verts.GetSize()]);
+		const VIndex idxVF1(verts[(idxV+1)%verts.GetSize()]);
+		const VIndex idxVF2(verts[(idxV+2)%verts.GetSize()]);
+		{
+			const CandidateFace newCandidateFace(idxVB2, idxVB1, idxVF1, *this);
+			if (newCandidateFace.aspectRatio >= 0)
+				candidateFaces.InsertSort(newCandidateFace);
+		}
+		{
+			const CandidateFace newCandidateFace(idxVB1, idxVF1, idxVF2, *this);
+			if (newCandidateFace.aspectRatio >= 0)
+				candidateFaces.InsertSort(newCandidateFace);
+		}
+		verts.RemoveAtMove(idxV);
+	}
+}
+/*----------------------------------------------------------------*/
+
+// remove the given list of faces
+void Mesh::RemoveFaces(FaceIdxArr& facesRemove, bool bUpdateLists)
+{
+	facesRemove.Sort();
+	FIndex idxLast(FaceIdxArr::NO_INDEX);
+	if (!bUpdateLists || vertexFaces.IsEmpty()) {
+		RFOREACHPTR(pIdxF, facesRemove) {
+			const FIndex idxF(*pIdxF);
+			if (idxLast == idxF)
+				continue;
+			faces.RemoveAt(idxF);
+			idxLast = idxF;
+		}
+	} else {
+		ASSERT(vertices.GetSize() == vertexFaces.GetSize());
+		RFOREACHPTR(pIdxF, facesRemove) {
+			const FIndex idxF(*pIdxF);
+			if (idxLast == idxF)
+				continue;
+			{
+				// remove face from vertex face list
+				const Face& face = faces[idxF];
+				for (int v=0; v<3; ++v) {
+					const VIndex idxV(face[v]);
+					FaceIdxArr& vf(vertexFaces[idxV]);
+					const FIndex idx(vf.Find(idxF));
+					if (idx != FaceIdxArr::NO_INDEX)
+						vf[idx] = idxF;
+				}
+			}
+			const FIndex idxFM(faces.GetSize()-1);
+			if (idxF < idxFM) {
+				// update all vertices of the moved face
+				const Face& face = faces[idxFM];
+				for (int v=0; v<3; ++v) {
+					const VIndex idxV(face[v]);
+					FaceIdxArr& vf(vertexFaces[idxV]);
+					const FIndex idx(vf.Find(idxFM));
+					if (idx != FaceIdxArr::NO_INDEX)
+						vf[idx] = idxF;
+				}
+			}
+			faces.RemoveAt(idxF);
+			idxLast = idxF;
+		}
+	}
+	vertexVertices.Release();
+}
+/*----------------------------------------------------------------*/
+
+// remove the given list of vertices
+void Mesh::RemoveVertices(VertexIdxArr& vertexRemove, bool bUpdateLists)
+{
+	ASSERT(vertices.GetSize() == vertexFaces.GetSize());
+	vertexRemove.Sort();
+	VIndex idxLast(VertexIdxArr::NO_INDEX);
+	if (!bUpdateLists) {
+		RFOREACHPTR(pIdxV, vertexRemove) {
+			const VIndex idxV(*pIdxV);
+			if (idxLast == idxV)
+				continue;
+			const VIndex idxVM(vertices.GetSize()-1);
+			if (idxV < idxVM) {
+				// update all faces of the moved vertex
+				const FaceIdxArr& vf(vertexFaces[idxVM]);
+				FOREACHPTR(pIdxF, vf)
+					GetVertex(faces[*pIdxF], idxVM) = idxV;
+			}
+			vertexFaces.RemoveAt(idxV);
+			vertices.RemoveAt(idxV);
+			idxLast = idxV;
+		}
+		return;
+	}
+	FaceIdxArr facesRemove;
+	RFOREACHPTR(pIdxV, vertexRemove) {
+		const VIndex idxV(*pIdxV);
+		if (idxLast == idxV)
+			continue;
+		const VIndex idxVM(vertices.GetSize()-1);
+		if (idxV < idxVM) {
+			// update all faces of the moved vertex
+			const FaceIdxArr& vf(vertexFaces[idxVM]);
+			FOREACHPTR(pIdxF, vf)
+				GetVertex(faces[*pIdxF], idxVM) = idxV;
+		}
+		if (!vertexFaces.IsEmpty()) {
+			facesRemove.Join(vertexFaces[idxV]);
+			vertexFaces.RemoveAt(idxV);
+		}
+		if (!vertexVertices.IsEmpty())
+			vertexVertices.RemoveAt(idxV);
+		vertices.RemoveAt(idxV);
+		idxLast = idxV;
+	}
+	RemoveFaces(facesRemove);
 }
 /*----------------------------------------------------------------*/
 

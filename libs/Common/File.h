@@ -457,20 +457,20 @@ public:
 
 #endif // _MSC_VER
 
-	template <typename SIZET, class VECTOR>
+	template <class VECTOR>
 	inline size_t write(const VECTOR& arr) {
-		const SIZET nSize = (SIZET)arr.GetSize();
-		size_t nBytes = write(&nSize, sizeof(SIZET));
-		nBytes += write(arr.Begin(), sizeof(typename VECTOR::Type)*nSize);
+		const typename VECTOR::IDX nSize(arr.GetSize());
+		size_t nBytes(write(&nSize, sizeof(typename VECTOR::IDX)));
+		nBytes += write(arr.GetData(), arr.GetDataSize());
 		return nBytes;
 	}
 
-	template <typename SIZET, class VECTOR>
+	template <class VECTOR>
 	inline size_t read(VECTOR& arr) {
-		SIZET nSize;
-		size_t nBytes = read(&nSize, sizeof(SIZET));
+		typename VECTOR::IDX nSize;
+		size_t nBytes(read(&nSize, sizeof(typename VECTOR::IDX)));
 		arr.Resize(nSize);
-		nBytes += read(arr.Begin(), sizeof(typename VECTOR::Type)*nSize);
+		nBytes += read(arr.GetData(), arr.GetDataSize());
 		return nBytes;
 	}
 

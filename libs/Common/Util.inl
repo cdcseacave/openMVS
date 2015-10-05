@@ -440,6 +440,32 @@ inline TYPE2 ComputeAngle(const TYPE1* X1, const TYPE1* C1, const TYPE1* X2, con
 } // ComputeAngle
 /*----------------------------------------------------------------*/
 
+// given a triangle defined by three 3D points,
+// compute its normal (plane's normal oriented according to the given points order)
+template<typename TYPE>
+inline TPoint3<TYPE> ComputeTriangleNormal(const TPoint3<TYPE>& v0, const TPoint3<TYPE>& v1, const TPoint3<TYPE>& v2) {
+	return (v1-v0).cross(v2-v0);
+} // ComputeTriangleNormal
+/*----------------------------------------------------------------*/
+
+// compute a shape quality measure of the triangle composed by vertices (v0,v1,v2)
+// returns 2*AreaTri/(MaxEdge^2) in range [0, 0.866]
+// (ex: equilateral sqrt(3)/2, half-square 1/2, up to a line that has zero quality)
+template<typename TYPE>
+inline TYPE ComputeTriangleQuality(const TPoint3<TYPE>& v0, const TPoint3<TYPE>& v1, const TPoint3<TYPE>& v2)
+{
+	const TPoint3<TYPE> d10(v1-v0);
+	const TPoint3<TYPE> d20(v2-v0);
+	const TPoint3<TYPE> d12(v1-v2);
+	const TYPE a((TYPE)norm(d10.cross(d20)));
+	if (a == 0) return 0; // area zero triangles have surely zero quality
+	const TYPE nd10(normSq(d10));
+	if (nd10 == 0) return 0; // area zero triangles have surely zero quality
+	const TYPE b(MAXF3(nd10, normSq(d20), normSq(d12)));
+	return a/b;
+} // ComputeTriangleQuality
+/*----------------------------------------------------------------*/
+
 // given a triangle defined by 3 vertex positions and a point,
 // compute the barycentric coordinates corresponding to that point
 // (only the first two values: alpha and beta)

@@ -1899,7 +1899,7 @@ public:
 	MeshRefineCUDA(Scene& _scene, float _weightRegularity=1.5f, unsigned _nResolutionLevel=0, unsigned _nMinResolution=640, unsigned nMaxViews=8);
 	~MeshRefineCUDA();
 
-	bool IsValid() const { return module != NULL && module->IsValid(); }
+	bool IsValid() const { return module != NULL && module->IsValid() && !pairs.IsEmpty(); }
 
 	bool InitKernels(int device=-1);
 	bool InitImages(float scale, float sigma=0);
@@ -2001,7 +2001,7 @@ MeshRefineCUDA::MeshRefineCUDA(Scene& _scene, float _weightRegularity, unsigned 
 		// keep only best neighbor views
 		const float fMinArea(0.12f);
 		const float fMinScale(0.2f), fMaxScale(3.2f);
-		const float fMinAngle(FD2R(3)), fMaxAngle(FD2R(45));
+		const float fMinAngle(FD2R(2.5f)), fMaxAngle(FD2R(45.f));
 		const Image& imageData = images[idxImage];
 		if (!imageData.IsValid())
 			continue;
@@ -2363,7 +2363,7 @@ void MeshRefineCUDA::SubdivideMesh(uint32_t maxArea, float fDecimate, unsigned n
 	// subdivide mesh faces if its projection area is bigger than the given number of pixels
 	const size_t numVertsOld(scene.mesh.vertices.GetSize());
 	const size_t numFacesOld(scene.mesh.faces.GetSize());
-	scene.mesh.SubdivideMesh(maxAreas, maxArea);
+	scene.mesh.Subdivide(maxAreas, maxArea);
 
 	#ifdef MESHOPT_ENSUREEDGESIZE
 	// make sure there are no edges too small or too long
@@ -2724,8 +2724,11 @@ bool Scene::RefineMeshCUDA(unsigned nResolutionLevel, unsigned nMinResolution, u
 			float gv(0);
 			FOREACH(v, mesh.vertices) {
 				Vertex& vert = mesh.vertices[v];
-				vert -= Vertex(gradients.row(v)*gstep);
-				gv += gradients.row(v).norm();
+				const Point3f grad(gradients.row(v));
+				if (!ISFINITE(grad))
+					continue;
+				vert -= Vertex(grad*gstep);
+				gv += norm(grad);
 			}
 			DEBUG_EXTRA("\t%2d. g: %.5f (%.3e - %.3e)\ts: %.3f", iter+1, gradients.norm(), gradients.norm()/mesh.vertices.GetSize(), gv/mesh.vertices.GetSize(), gstep);
 			gstep *= 0.98f;
