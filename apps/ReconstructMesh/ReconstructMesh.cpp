@@ -246,8 +246,9 @@ int main(int argc, LPCTSTR* argv)
 		}
 
 		// clean the mesh
-		scene.mesh.Clean(OPT::fDecimateMesh, OPT::fRemoveSpurious, OPT::bRemoveSpikes, OPT::nCloseHoles, OPT::nSmoothMesh);
-		scene.mesh.Clean(1.f, 0.f, OPT::bRemoveSpikes, OPT::nCloseHoles, 0); // extra cleaning trying to close more holes
+		scene.mesh.Clean(OPT::fDecimateMesh, OPT::fRemoveSpurious, OPT::bRemoveSpikes, OPT::nCloseHoles, OPT::nSmoothMesh, false);
+		scene.mesh.Clean(1.f, 0.f, OPT::bRemoveSpikes, OPT::nCloseHoles, 0, false); // extra cleaning trying to close more holes
+		scene.mesh.Clean(1.f, 0.f, false, 0, 0, true); // extra cleaning to remove non-manifold problems created by closing holes
 
 		// save the final mesh
 		scene.mesh.Save(MAKE_PATH_SAFE(Util::getFullFileName(OPT::strOutputFileName) + _T("_mesh.ply")));

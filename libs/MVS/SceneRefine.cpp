@@ -115,7 +115,7 @@ struct MeshRefine {
 
 
 public:
-	MeshRefine(Scene& _scene, Real _weightRegularity=1.5f, unsigned _nResolutionLevel=0, unsigned _nMinResolution=640, unsigned nMaxViews=8, unsigned nMaxThreads=1);
+	MeshRefine(Scene& _scene, Real _weightRegularity=1.5f, Real _ratioRigidityElasticity=0.8f, unsigned _nResolutionLevel=0, unsigned _nMinResolution=640, unsigned nMaxViews=8, unsigned nMaxThreads=1);
 	~MeshRefine();
 
 	bool IsValid() const { return !pairs.IsEmpty(); }
@@ -175,6 +175,7 @@ public:
 
 public:
 	const Real weightRegularity; // a scalar regularity weight to balance between photo-consistency and regularization terms
+	Real ratioRigidityElasticity; // a scalar ratio used to compute the regularity gradient as a combination of rigidity and elasticity
 	const unsigned nResolutionLevel; // how many times to scale down the images before mesh optimization
 	const unsigned nMinResolution; // how many times to scale down the images before mesh optimization
 
@@ -293,9 +294,10 @@ SEACAVE::cList<SEACAVE::Thread> MeshRefine::threads;
 CriticalSection MeshRefine::cs;
 Semaphore MeshRefine::sem;
 
-MeshRefine::MeshRefine(Scene& _scene, Real _weightRegularity, unsigned _nResolutionLevel, unsigned _nMinResolution, unsigned nMaxViews, unsigned nMaxThreads)
+MeshRefine::MeshRefine(Scene& _scene, Real _weightRegularity, Real _ratioRigidityElasticity, unsigned _nResolutionLevel, unsigned _nMinResolution, unsigned nMaxViews, unsigned nMaxThreads)
 	:
 	weightRegularity(_weightRegularity),
+	ratioRigidityElasticity(_ratioRigidityElasticity),
 	nResolutionLevel(_nResolutionLevel),
 	nMinResolution(_nMinResolution),
 	scene(_scene),
@@ -461,12 +463,15 @@ void MeshRefine::SubdivideMesh(uint32_t maxArea, float fDecimate, unsigned nClos
 	if (!bNoDecimation) {
 		if (fDecimate > 0.f) {
 			// decimate to the desired resolution
-			scene.mesh.Clean(fDecimate, 0, false, nCloseHoles, 0);
+			scene.mesh.Clean(fDecimate, 0.f, false, nCloseHoles, 0, false);
+			scene.mesh.Clean(1.f, 0.f, false, nCloseHoles, 0, true);
 
 			#ifdef MESHOPT_ENSUREEDGESIZE
 			// make sure there are no edges too small or too long
-			if (nEnsureEdgeSize > 0 && bNoSimplification)
+			if (nEnsureEdgeSize > 0 && bNoSimplification) {
 				scene.mesh.EnsureEdgeSize();
+				scene.mesh.Clean(1.f, 0.f, false, nCloseHoles, 0, true);
+			}
 			#endif
 
 			// re-map vertex and camera faces
@@ -485,12 +490,15 @@ void MeshRefine::SubdivideMesh(uint32_t maxArea, float fDecimate, unsigned nClos
 				maxAreas.Empty();
 
 				// decimate to the auto detected resolution
-				scene.mesh.Clean(MAXF(0.1f, medianArea/maxArea), 0, false, nCloseHoles, 0);
+				scene.mesh.Clean(MAXF(0.1f, medianArea/maxArea), 0.f, false, nCloseHoles, 0, false);
+				scene.mesh.Clean(1.f, 0.f, false, nCloseHoles, 0, true);
 
 				#ifdef MESHOPT_ENSUREEDGESIZE
 				// make sure there are no edges too small or too long
-				if (nEnsureEdgeSize > 0 && bNoSimplification)
+				if (nEnsureEdgeSize > 0 && bNoSimplification) {
 					scene.mesh.EnsureEdgeSize();
+					scene.mesh.Clean(1.f, 0.f, false, nCloseHoles, 0, true);
+				}
 				#endif
 
 				// re-map vertex and camera faces
@@ -519,7 +527,10 @@ void MeshRefine::SubdivideMesh(uint32_t maxArea, float fDecimate, unsigned nClos
 	#if MESHOPT_ENSUREEDGESIZE==1
 	if ((nEnsureEdgeSize == 1 && !bNoDecimation) || nEnsureEdgeSize > 1)
 	#endif
+	{
 		scene.mesh.EnsureEdgeSize();
+		scene.mesh.Clean(1.f, 0.f, false, nCloseHoles, 0, true);
+	}
 	#endif
 
 	// re-map vertex and camera faces
@@ -592,11 +603,22 @@ double MeshRefine::ScoreMesh(double* gradients)
 	}
 
 	// set the final gradient as the combination of photometric and smoothness gradients
-	FOREACH(v, vertices)
-		((Point3d*)gradients)[v] = photoGradNorm[v] > 0 ?
-			Cast<double>(photoGrad[v]/photoGradNorm[v] + smoothGrad2[v]*weightRegularity) :
-			Cast<double>(smoothGrad2[v]*weightRegularity);
-	return 0.15f*scorePhoto + 0.1f*scoreSmooth;
+	if (ratioRigidityElasticity >= 1.f) {
+		FOREACH(v, vertices)
+			((Point3d*)gradients)[v] = photoGradNorm[v] > 0 ?
+				Cast<double>(photoGrad[v]/photoGradNorm[v] + smoothGrad2[v]*weightRegularity) :
+				Cast<double>(smoothGrad2[v]*weightRegularity);
+	} else {
+		// compute smoothing gradient as a combination of level 1 and 2 of the Laplacian operator;
+		// (see page 105 of "Stereo and Silhouette Fusion for 3D Object Modeling from Uncalibrated Images Under Circular Motion" C. Hernandez, 2004)
+		const Real rigidity((Real(1)-ratioRigidityElasticity)*weightRegularity);
+		const Real elasticity(ratioRigidityElasticity*weightRegularity);
+		FOREACH(v, vertices)
+			((Point3d*)gradients)[v] = photoGradNorm[v] > 0 ?
+				Cast<double>(photoGrad[v]/photoGradNorm[v] + smoothGrad2[v]*elasticity - smoothGrad1[v]*rigidity) :
+				Cast<double>(smoothGrad2[v]*elasticity - smoothGrad1[v]*rigidity);
+	}
+	return 0.1f*scorePhoto + 0.01f*scoreSmooth;
 }
 
 
@@ -922,6 +944,8 @@ void MeshRefine::ComputePhotometricGradient(
 	}
 }
 
+// computes the discrete analog of the Laplacian using
+// the umbrella-operator on the first triangle ring at each point
 float MeshRefine::ComputeSmoothnessGradient1(
 	const Mesh::VertexArr& vertices, const Mesh::VertexVerticesArr& vertexVertices, const BoolArr& vertexBoundary,
 	GradArr& smoothGrad1, VIndex idxStart, VIndex idxEnd)
@@ -930,27 +954,25 @@ float MeshRefine::ComputeSmoothnessGradient1(
 	float score(0);
 	for (VIndex idxV=idxStart; idxV<idxEnd; ++idxV) {
 		Grad& grad = smoothGrad1[idxV];
+		grad = Grad::ZERO;
 		#if 1
-		if (vertexBoundary[idxV]) {
-			grad = Grad::ZERO;
+		if (vertexBoundary[idxV])
 			continue;
-		}
 		#endif
 		const Mesh::VertexIdxArr& verts = vertexVertices[idxV];
-		if (verts.IsEmpty()) {
-			grad = Grad::ZERO;
+		if (verts.IsEmpty())
 			continue;
-		}
-		const Real nrm(Real(1)/(Real)verts.GetSize());
-		grad = vertices[idxV];
 		FOREACH(v, verts)
-			grad -= Cast<Real>(vertices[verts[v]]) * nrm;
+			grad += Cast<Real>(vertices[verts[v]]);
+		grad = grad/(Real)verts.GetSize() - Cast<Real>(vertices[idxV]);
 		const float regularityScore((float)norm(grad));
 		ASSERT(ISFINITE(regularityScore));
 		score += regularityScore;
 	}
 	return score;
 }
+// same as above, but used to compute level 2;
+// normalized as in "Stereo and Silhouette Fusion for 3D Object Modeling from Uncalibrated Images Under Circular Motion" C. Hernandez, 2004
 void MeshRefine::ComputeSmoothnessGradient2(
 	const GradArr& smoothGrad1, const Mesh::VertexVerticesArr& vertexVertices, const BoolArr& vertexBoundary,
 	GradArr& smoothGrad2, VIndex idxStart, VIndex idxEnd)
@@ -958,29 +980,25 @@ void MeshRefine::ComputeSmoothnessGradient2(
 	ASSERT(!smoothGrad1.IsEmpty() && smoothGrad1.GetSize() == vertexVertices.GetSize() && smoothGrad1.GetSize() == smoothGrad2.GetSize());
 	for (VIndex idxV=idxStart; idxV<idxEnd; ++idxV) {
 		Grad& grad = smoothGrad2[idxV];
+		grad = Grad::ZERO;
 		#if 1
-		if (vertexBoundary[idxV]) {
-			grad = Grad::ZERO;
+		if (vertexBoundary[idxV])
 			continue;
-		}
 		#endif
 		const Mesh::VertexIdxArr& verts = vertexVertices[idxV];
-		if (verts.IsEmpty()) {
-			grad = Grad::ZERO;
+		if (verts.IsEmpty())
 			continue;
-		}
-		const Real numV((Real)verts.GetSize());
-		const Real nrm(Real(1)/numV);
-		grad = smoothGrad1[idxV];
-		Real w(1);
+		Real w(0);
 		FOREACH(v, verts) {
 			const VIndex idxVert(verts[v]);
-			grad -= smoothGrad1[idxVert] * nrm;
+			grad += smoothGrad1[idxVert];
 			const VIndex numVert(vertexVertices[idxVert].GetSize());
 			if (numVert > 0)
-				w += numV / (Real)numVert;
+				w += REAL(1)/(Real)numVert;
 		}
-		grad /= w;
+		const Real numVert((Real)verts.GetSize());
+		const Real nrm(Real(1)/(Real(1)+w/numVert));
+		grad = grad*(nrm/numVert) - smoothGrad1[idxV]*nrm;
 	}
 }
 
@@ -1207,9 +1225,11 @@ protected:
 
 // optimize mesh using photo-consistency
 // fThPlanarVertex - threshold used to remove vertices on planar patches (percentage of the minimum depth, 0 - disable)
-bool Scene::RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsigned nMaxViews, float fDecimateMesh, unsigned nCloseHoles, unsigned nEnsureEdgeSize, unsigned nMaxFaceArea, unsigned nScales, float fScaleStep, float fRegularityWeight, float fThPlanarVertex, float fGradientStep)
+bool Scene::RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsigned nMaxViews,
+					   float fDecimateMesh, unsigned nCloseHoles, unsigned nEnsureEdgeSize, unsigned nMaxFaceArea,
+					   unsigned nScales, float fScaleStep, float fRegularityWeight, float fRatioRigidityElasticity, float fThPlanarVertex, float fGradientStep)
 {
-	MeshRefine refine(*this, fRegularityWeight, nResolutionLevel, nMinResolution, nMaxViews, nMaxThreads);
+	MeshRefine refine(*this, fRegularityWeight, fRatioRigidityElasticity, nResolutionLevel, nMinResolution, nMaxViews, nMaxThreads);
 	if (!refine.IsValid())
 		return false;
 
@@ -1239,6 +1259,7 @@ bool Scene::RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsig
 		// minimize
 		if (fGradientStep == 0) {
 			// DefineProblem
+			refine.ratioRigidityElasticity = 1.f;
 			ceres::MeshProblem* problemData(new ceres::MeshProblem(refine));
 			ceres::GradientProblem problem(problemData);
 			// SetMinimizerOptions
@@ -1278,9 +1299,11 @@ bool Scene::RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsig
 				gstep = (fGradientStep-(float)iters)*10;
 			}
 			iters = MAXF(iters/(int)(nScale+1),8);
+			const int iterStop(iters*7/10);
 			const int iterStart(fThPlanarVertex > 0 ? iters*4/10 : INT_MAX);
 			Eigen::Matrix<double,Eigen::Dynamic,3,Eigen::RowMajor> gradients(refine.vertices.GetSize(),3);
 			for (int iter=0; iter<iters; ++iter) {
+				refine.ratioRigidityElasticity = (iter <= iterStop ? fRatioRigidityElasticity : 1.f);
 				const bool bAdaptMesh(iter >= iterStart && (iter-iterStart)%3 == 0 && iters-iter > 5);
 				// evaluate residuals and gradients
 				if (bAdaptMesh)

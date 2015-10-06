@@ -63,6 +63,7 @@ unsigned nEnsureEdgeSize;
 unsigned nScales;
 float fScaleStep;
 float fRegularityWeight;
+float fRatioRigidityElasticity;
 unsigned nMaxFaceArea;
 float fPlanarVertexRatio;
 float fGradientStep;
@@ -112,12 +113,13 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		("min-resolution", boost::program_options::value<unsigned>(&OPT::nMinResolution)->default_value(640), "do not scale images lower than this resolution")
 		("max-views", boost::program_options::value<unsigned>(&OPT::nMaxViews)->default_value(8), "maximum number of neighbor images used to refine the mesh")
 		("decimate", boost::program_options::value<float>(&OPT::fDecimateMesh)->default_value(0.f), "decimation factor in range [0..1] to be applied to the input surface before refinement (0 - auto, 1 - disabled)")
-		("close-holes", boost::program_options::value<unsigned>(&OPT::nCloseHoles)->default_value(15), "try to close small holes in the input surface (0 - disabled)")
+		("close-holes", boost::program_options::value<unsigned>(&OPT::nCloseHoles)->default_value(30), "try to close small holes in the input surface (0 - disabled)")
 		("ensure-edge-size", boost::program_options::value<unsigned>(&OPT::nEnsureEdgeSize)->default_value(1), "ensure edge size and improve vertex valence of the input surface (0 - disabled)")
 		("max-face-area", boost::program_options::value<unsigned>(&OPT::nMaxFaceArea)->default_value(64), "maximum face area projected in any pair of images that is not subdivided (0 - disabled)")
 		("scales", boost::program_options::value<unsigned>(&OPT::nScales)->default_value(3), "how many iterations to run mesh optimization on multi-scale images")
 		("scale-step", boost::program_options::value<float>(&OPT::fScaleStep)->default_value(0.5f), "image scale factor used at each mesh optimization step")
-		("regularity-weight", boost::program_options::value<float>(&OPT::fRegularityWeight)->default_value(1.f), "scalar regularity weight to balance between photo-consistency and regularization terms during mesh optimization")
+		("regularity-weight", boost::program_options::value<float>(&OPT::fRegularityWeight)->default_value(0.1f), "scalar regularity weight to balance between photo-consistency and regularization terms during mesh optimization")
+		("rigidity-elasticity-ratio", boost::program_options::value<float>(&OPT::fRatioRigidityElasticity)->default_value(0.9f), "scalar ratio used to compute the regularity gradient as a combination of rigidity and elasticity")
 		("gradient-step", boost::program_options::value<float>(&OPT::fGradientStep)->default_value(50.05f), "gradient step to be used instead (0 - auto)")
 		("planar-vertex-ratio", boost::program_options::value<float>(&OPT::fPlanarVertexRatio)->default_value(0.f), "threshold used to remove vertices on planar patches (0 - disabled)")
 		#ifdef _USE_CUDA
@@ -239,6 +241,7 @@ int main(int argc, LPCTSTR* argv)
 							  OPT::nMaxFaceArea,
 							  OPT::nScales, OPT::fScaleStep,
 							  OPT::fRegularityWeight,
+							  OPT::fRatioRigidityElasticity,
 							  OPT::fGradientStep))
 	#endif
 	if (!scene.RefineMesh(OPT::nResolutionLevel, OPT::nMinResolution, OPT::nMaxViews,
@@ -246,6 +249,7 @@ int main(int argc, LPCTSTR* argv)
 						  OPT::nMaxFaceArea,
 						  OPT::nScales, OPT::fScaleStep,
 						  OPT::fRegularityWeight,
+						  OPT::fRatioRigidityElasticity,
 						  OPT::fPlanarVertexRatio,
 						  OPT::fGradientStep))
 		return EXIT_FAILURE;

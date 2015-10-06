@@ -1681,11 +1681,11 @@ static LPCSTR const g_szMeshRefineModule =
 	"\n"
 	// kernel used to compute the smoothness gradient for all vertices
 	".visible .entry ComputeSmoothnessGradient(\n"
-	"	.param .u64 param_1, // vertices\n"
-	"	.param .u64 param_2, // vert-vertices [in]\n"
-	"	.param .u64 param_3, // vert-sizes [in]\n"
-	"	.param .u64 param_4, // vert-pos [in]\n"
-	"	.param .u64 param_5, // smooth-grad [out]\n"
+	"	.param .u64 .ptr param_1, // vertices\n"
+	"	.param .u64 .ptr param_2, // vert-vertices [in]\n"
+	"	.param .u64 .ptr param_3, // vert-sizes [in]\n"
+	"	.param .u64 .ptr param_4, // vert-pos [in]\n"
+	"	.param .u64 .ptr param_5, // smooth-grad [out]\n"
 	"	.param .u32 param_6, // numVertices\n"
 	"	.param .u8 param_7 // switch 0/1\n"
 	")\n"
@@ -1743,6 +1743,7 @@ static LPCSTR const g_szMeshRefineModule =
 	"	add.s64 %rl11, %rl20, %rl19;\n"
 	"	ld.global.u32 %r27, [%rl11];\n"
 	"	cvt.rn.f32.s32 %f22, %r67;\n"
+	"	rcp.rn.f32 %f30, %f22;\n"
 	"	mov.u32 %r68, 0;\n"
 	"\n"
 	"	BB00_2:\n"
@@ -1754,13 +1755,13 @@ static LPCSTR const g_szMeshRefineModule =
 	"	mul.wide.s32 %rl25, %r32, 4;\n"
 	"	add.s64 %rl26, %rl7, %rl25;\n"
 	"	ld.global.f32 %f20, [%rl26];\n"
-	"	div.rn.f32 %f21, %f20, %f22;\n"
+	"	mul.f32 %f21, %f20, %f30;\n"
 	"	sub.f32 %f36, %f36, %f21;\n"
 	"	ld.global.f32 %f23, [%rl26+4];\n"
-	"	div.rn.f32 %f24, %f23, %f22;\n"
+	"	mul.f32 %f24, %f23, %f30;\n"
 	"	sub.f32 %f35, %f35, %f24;\n"
 	"	ld.global.f32 %f26, [%rl26+8];\n"
-	"	div.rn.f32 %f27, %f26, %f22;\n"
+	"	mul.f32 %f27, %f26, %f30;\n"
 	"	sub.f32 %f34, %f34, %f27;\n"
 	"	@%p3 bra BB00_3;\n"
 	"\n"
@@ -1769,7 +1770,7 @@ static LPCSTR const g_szMeshRefineModule =
 	"	ld.global.u32 %r59, [%rl40];\n"
 	"	cvt.rn.f32.s32 %f28, %r59;\n"
 	"	rcp.rn.f32 %f29, %f28;\n"
-	"	fma.rn.f32 %f37, %f29, %f22, %f37;\n"
+	"	fma.rn.f32 %f37, %f29, %f30, %f37;\n"
 	"\n"
 	"	BB00_3:\n"
 	"	add.s32 %r68, %r68, 1;\n"
@@ -1791,20 +1792,19 @@ static LPCSTR const g_szMeshRefineModule =
 	"\n"
 	// kernel used to combine the photo and smoothness gradient for all vertices
 	".visible .entry CombineGradients(\n"
-	"	.param .u64 param_1, // photo-gradient [in]\n"
-	"	.param .u64 param_2, // photo-norm [in]\n"
-	"	.param .u64 param_3, // smoothness-gradient [in]\n"
-	"	.param .u64 param_4, // gradient [out]\n"
-	"	.param .u32 param_5, // numVertices\n"
-	"	.param .f32 param_6 // smoothness-weight\n"
+	"	.param .u64 .ptr param_1, // photo-gradient [in/out]\n"
+	"	.param .u64 .ptr param_2, // photo-norm [in]\n"
+	"	.param .u64 .ptr param_3, // smoothness-gradient [in]\n"
+	"	.param .u32 param_4, // numVertices\n"
+	"	.param .f32 param_5 // smoothness-weight\n"
 	")\n"
 	"{\n"
 	"	.reg .f32 %f<17>;\n"
 	"	.reg .pred %p<3>;\n"
-	"	.reg .s32 %r<17>;\n"
+	"	.reg .s32 %r<6>;\n"
 	"	.reg .s64 %rl<15>;\n"
 	"\n"
-	"	ld.param.u32 %r2, [param_5];\n"
+	"	ld.param.u32 %r2, [param_4];\n"
 	"	mov.u32 %r3, %ntid.x;\n"
 	"	mov.u32 %r4, %ctaid.x;\n"
 	"	mov.u32 %r5, %tid.x;\n"
@@ -1812,18 +1812,18 @@ static LPCSTR const g_szMeshRefineModule =
 	"	setp.lt.s32 %p1, %r1, %r2;\n"
 	"	@!%p1 bra BB00_1;\n"
 	"\n"
-	"	ld.param.u64 %rl11, [param_2];\n"
 	"	ld.param.u64 %rl4, [param_3];\n"
-	"	ld.param.u64 %rl13, [param_4];\n"
-	"	cvta.to.global.u64 %rl12, %rl11;\n"
 	"	cvta.to.global.u64 %rl2, %rl4;\n"
+	"	ld.param.u64 %rl11, [param_2];\n"
+	"	cvta.to.global.u64 %rl12, %rl11;\n"
+	"	ld.param.u64 %rl13, [param_1];\n"
 	"	cvta.to.global.u64 %rl14, %rl13;\n"
 	"	mul.wide.s32 %rl4, %r1, 4;\n"
 	"	mul.wide.s32 %rl5, %r1, 12;\n"
 	"	add.s64 %rl9, %rl12, %rl4;\n"
 	"	add.s64 %rl6, %rl2, %rl5;\n"
 	"	add.s64 %rl8, %rl14, %rl5;\n"
-	"	ld.param.f32 %f8, [param_6];\n"
+	"	ld.param.f32 %f8, [param_5];\n"
 	"	ld.global.f32 %f2, [%rl6];\n"
 	"	mul.f32 %f3, %f2, %f8;\n"
 	"	ld.global.f32 %f4, [%rl6+4];\n"
@@ -1841,18 +1841,92 @@ static LPCSTR const g_szMeshRefineModule =
 	"\n"
 	"	BB00_2:\n"
 	"	rcp.rn.f32 %f10, %f9;\n"
-	"	ld.param.u64 %rl3, [param_1];\n"
-	"	cvta.to.global.u64 %rl1, %rl3;\n"
-	"	add.s64 %rl7, %rl1, %rl5;\n"
-	"	ld.global.f32 %f11, [%rl7];\n"
+	"	ld.global.f32 %f11, [%rl8];\n"
 	"	fma.rn.f32 %f12, %f11, %f10, %f3;\n"
-	"	ld.global.f32 %f13, [%rl7+4];\n"
+	"	ld.global.f32 %f13, [%rl8+4];\n"
 	"	fma.rn.f32 %f14, %f13, %f10, %f5;\n"
-	"	ld.global.f32 %f15, [%rl7+8];\n"
+	"	ld.global.f32 %f15, [%rl8+8];\n"
 	"	fma.rn.f32 %f16, %f15, %f10, %f7;\n"
 	"	st.global.f32 [%rl8], %f12;\n"
 	"	st.global.f32 [%rl8+4], %f14;\n"
 	"	st.global.f32 [%rl8+8], %f16;\n"
+	"	BB00_1:\n"
+	"	ret;\n"
+	"}\n"
+	// kernel used to combine the photo and both smoothness gradients for all vertices
+	".visible .entry CombineAllGradients(\n"
+	"	.param .u64 .ptr param_1, // photo-gradient [in/out]\n"
+	"	.param .u64 .ptr param_2, // photo-norm [in]\n"
+	"	.param .u64 .ptr param_3, // smoothness-gradient 1 [in]\n"
+	"	.param .u64 .ptr param_4, // smoothness-gradient 2 [in]\n"
+	"	.param .u32 param_5, // numVertices\n"
+	"	.param .f32 param_6, // rigidity-weight\n"
+	"	.param .f32 param_7 // elasticity-weight\n"
+	")\n"
+	"{\n"
+	"	.reg .f32 %f<19>;\n"
+	"	.reg .pred %p<3>;\n"
+	"	.reg .s32 %r<17>;\n"
+	"	.reg .s64 %rl<15>;\n"
+	"\n"
+	"	ld.param.u32 %r2, [param_5];\n"
+	"	mov.u32 %r3, %ntid.x;\n"
+	"	mov.u32 %r4, %ctaid.x;\n"
+	"	mov.u32 %r5, %tid.x;\n"
+	"	mad.lo.s32 %r1, %r3, %r4, %r5;\n"
+	"	setp.lt.s32 %p1, %r1, %r2;\n"
+	"	@!%p1 bra BB00_1;\n"
+	"\n"
+	"	ld.global.f32 %f11, [%rl7];\n"
+	"	\n"
+	"	ld.param.u64 %rl3, [param_4];\n"
+	"	cvta.to.global.u64 %rl1, %rl3;\n"
+	"	ld.param.u64 %rl4, [param_3];\n"
+	"	cvta.to.global.u64 %rl2, %rl4;\n"
+	"	ld.param.u64 %rl11, [param_2];\n"
+	"	cvta.to.global.u64 %rl12, %rl11;\n"
+	"	ld.param.u64 %rl13, [param_1];\n"
+	"	cvta.to.global.u64 %rl14, %rl13;\n"
+	"	mul.wide.s32 %rl4, %r1, 4;\n"
+	"	mul.wide.s32 %rl5, %r1, 12;\n"
+	"	add.s64 %rl7, %rl1, %rl5;\n"
+	"	add.s64 %rl6, %rl2, %rl5;\n"
+	"	add.s64 %rl9, %rl12, %rl4;\n"
+	"	add.s64 %rl8, %rl14, %rl5;\n"
+	"	ld.param.f32 %f8, [param_6];\n"
+	"	ld.param.f32 %f18, [param_7];\n"
+	"	ld.global.f32 %f2, [%rl6];\n"
+	"	mul.f32 %f3, %f2, %f8;\n"
+	"	ld.global.f32 %f12, [%rl7];\n"
+	"	fma.rn.f32 %f11, %f12, %f18, %f3;\n"
+	"	ld.global.f32 %f4, [%rl6+4];\n"
+	"	mul.f32 %f5, %f4, %f8;\n"
+	"	ld.global.f32 %f14, [%rl7+4];\n"
+	"	fma.rn.f32 %f13, %f14, %f18, %f5;\n"
+	"	ld.global.f32 %f6, [%rl6+8];\n"
+	"	mul.f32 %f7, %f6, %f8;\n"
+	"	ld.global.f32 %f16, [%rl7+8];\n"
+	"	fma.rn.f32 %f15, %f16, %f18, %f7;\n"
+	"	ld.global.f32 %f9, [%rl9];\n"
+	"	setp.gt.f32 %p2, %f9, 0f00000000;\n"
+	"	@%p2 bra BB00_2;\n"
+	"\n"
+	"	st.global.f32 [%rl8], %f11;\n"
+	"	st.global.f32 [%rl8+4], %f13;\n"
+	"	st.global.f32 [%rl8+8], %f15;\n"
+	"	ret;\n"
+	"\n"
+	"	BB00_2:\n"
+	"	rcp.rn.f32 %f10, %f9;\n"
+	"	ld.global.f32 %f2, [%rl8];\n"
+	"	fma.rn.f32 %f3, %f2, %f10, %f11;\n"
+	"	ld.global.f32 %f4, [%rl8+4];\n"
+	"	fma.rn.f32 %f5, %f4, %f10, %f13;\n"
+	"	ld.global.f32 %f6, [%rl8+8];\n"
+	"	fma.rn.f32 %f7, %f6, %f10, %f15;\n"
+	"	st.global.f32 [%rl8], %f3;\n"
+	"	st.global.f32 [%rl8+4], %f5;\n"
+	"	st.global.f32 [%rl8+8], %f7;\n"
 	"	BB00_1:\n"
 	"	ret;\n"
 	"}\n";
@@ -1896,7 +1970,7 @@ struct MeshRefineCUDA {
 
 
 public:
-	MeshRefineCUDA(Scene& _scene, float _weightRegularity=1.5f, unsigned _nResolutionLevel=0, unsigned _nMinResolution=640, unsigned nMaxViews=8);
+	MeshRefineCUDA(Scene& _scene, float _weightRegularity=1.5f, float _ratioRigidityElasticity=0.8f, unsigned _nResolutionLevel=0, unsigned _nMinResolution=640, unsigned nMaxViews=8);
 	~MeshRefineCUDA();
 
 	bool IsValid() const { return module != NULL && module->IsValid() && !pairs.IsEmpty(); }
@@ -1932,6 +2006,7 @@ public:
 
 public:
 	const float weightRegularity; // a scalar regularity weight to balance between photo-consistency and regularization terms
+	float ratioRigidityElasticity; // a scalar ratio used to compute the regularity gradient as a combination of rigidity and elasticity
 	const unsigned nResolutionLevel; // how many times to scale down the images before mesh optimization
 	const unsigned nMinResolution; // how many times to scale down the images before mesh optimization
 
@@ -1955,6 +2030,7 @@ public:
 	CUDA::KernelRT kernelUpdatePhotoGradNorm;
 	CUDA::KernelRT kernelComputeSmoothnessGradient;
 	CUDA::KernelRT kernelCombineGradients;
+	CUDA::KernelRT kernelCombineAllGradients;
 
 	CUDA::MemDevice vertices;
 	CUDA::MemDevice vertexVertices;
@@ -1984,9 +2060,10 @@ public:
 	static const int HalfSize = 2; // half window size used to compute ZNCC
 };
 
-MeshRefineCUDA::MeshRefineCUDA(Scene& _scene, float _weightRegularity, unsigned _nResolutionLevel, unsigned _nMinResolution, unsigned nMaxViews)
+MeshRefineCUDA::MeshRefineCUDA(Scene& _scene, float _weightRegularity, float _ratioRigidityElasticity, unsigned _nResolutionLevel, unsigned _nMinResolution, unsigned nMaxViews)
 	:
 	weightRegularity(_weightRegularity),
+	ratioRigidityElasticity(_ratioRigidityElasticity),
 	nResolutionLevel(_nResolutionLevel),
 	nMinResolution(_nMinResolution),
 	scene(_scene),
@@ -2073,6 +2150,9 @@ bool MeshRefineCUDA::InitKernels(int device)
 	if (kernelCombineGradients.Reset(module, "CombineGradients") != CUDA_SUCCESS)
 		return false;
 	ASSERT(kernelCombineGradients.IsValid());
+	if (kernelCombineAllGradients.Reset(module, "CombineAllGradients") != CUDA_SUCCESS)
+		return false;
+	ASSERT(kernelCombineAllGradients.IsValid());
 
 	// init textures
 	if (texImageRef.Reset(module, "texImageRef", CU_TR_FILTER_MODE_LINEAR) != CUDA_SUCCESS)
@@ -2312,12 +2392,15 @@ void MeshRefineCUDA::SubdivideMesh(uint32_t maxArea, float fDecimate, unsigned n
 	if (!bNoDecimation) {
 		if (fDecimate > 0.f) {
 			// decimate to the desired resolution
-			scene.mesh.Clean(fDecimate, 0, false, nCloseHoles, 0);
+			scene.mesh.Clean(fDecimate, 0.f, false, nCloseHoles, 0, false);
+			scene.mesh.Clean(1.f, 0.f, false, nCloseHoles, 0, true);
 
 			#ifdef MESHOPT_ENSUREEDGESIZE
 			// make sure there are no edges too small or too long
-			if (nEnsureEdgeSize > 0 && bNoSimplification)
+			if (nEnsureEdgeSize > 0 && bNoSimplification) {
 				scene.mesh.EnsureEdgeSize();
+				scene.mesh.Clean(1.f, 0.f, false, nCloseHoles, 0, true);
+			}
 			#endif
 
 			// re-map vertex and camera faces
@@ -2336,12 +2419,15 @@ void MeshRefineCUDA::SubdivideMesh(uint32_t maxArea, float fDecimate, unsigned n
 				maxAreas.Empty();
 
 				// decimate to the auto detected resolution
-				scene.mesh.Clean(MAXF(0.1f, medianArea/maxArea), 0, false, nCloseHoles, 0);
+				scene.mesh.Clean(MAXF(0.1f, medianArea/maxArea), 0.f, false, nCloseHoles, 0, false);
+				scene.mesh.Clean(1.f, 0.f, false, nCloseHoles, 0, true);
 
 				#ifdef MESHOPT_ENSUREEDGESIZE
 				// make sure there are no edges too small or too long
-				if (nEnsureEdgeSize > 0 && bNoSimplification)
+				if (nEnsureEdgeSize > 0 && bNoSimplification) {
 					scene.mesh.EnsureEdgeSize();
+					scene.mesh.Clean(1.f, 0.f, false, nCloseHoles, 0, true);
+				}
 				#endif
 
 				// re-map vertex and camera faces
@@ -2370,7 +2456,10 @@ void MeshRefineCUDA::SubdivideMesh(uint32_t maxArea, float fDecimate, unsigned n
 	#if MESHOPT_ENSUREEDGESIZE==1
 	if ((nEnsureEdgeSize == 1 && !bNoDecimation) || nEnsureEdgeSize > 1)
 	#endif
+	{
 		scene.mesh.EnsureEdgeSize();
+		scene.mesh.Clean(1.f, 0.f, false, nCloseHoles, 0, true);
+	}
 	#endif
 
 	// re-map vertex and camera faces
@@ -2430,7 +2519,7 @@ void MeshRefineCUDA::ScoreMesh(float* gradients)
 
 	// set the final gradient as the combination of photometric and smoothness gradients
 	CombineGradients(numVertices);
-	reportCudaError(smoothGrad1.GetData(gradients, sizeof(Point3f)*numVertices));
+	reportCudaError(photoGrad.GetData(gradients, sizeof(Point3f)*numVertices));
 }
 
 
@@ -2658,18 +2747,33 @@ void MeshRefineCUDA::ComputeSmoothnessGradient(uint32_t numVertices)
 void MeshRefineCUDA::CombineGradients(uint32_t numVertices)
 {
 	// compute smoothness gradient for all vertices
-	reportCudaError(kernelCombineGradients((int)numVertices,
-		photoGrad,
-		photoGradNorm,
-		smoothGrad2,
-		smoothGrad1,
-		numVertices,
-		weightRegularity
-	));
+	if (ratioRigidityElasticity >= 1.f) {
+		reportCudaError(kernelCombineGradients((int)numVertices,
+			photoGrad,
+			photoGradNorm,
+			smoothGrad2,
+			numVertices,
+			weightRegularity
+		));
+	} else {
+		// compute smoothing gradient as a combination of level 1 and 2 of the Laplacian operator;
+		// (see page 105 of "Stereo and Silhouette Fusion for 3D Object Modeling from Uncalibrated Images Under Circular Motion" C. Hernandez, 2004)
+		const float rigidity((1.f-ratioRigidityElasticity)*weightRegularity);
+		const float elasticity(ratioRigidityElasticity*weightRegularity);
+		reportCudaError(kernelCombineAllGradients((int)numVertices,
+			photoGrad,
+			photoGradNorm,
+			smoothGrad1,
+			smoothGrad2,
+			numVertices,
+			rigidity,
+			elasticity
+		));
+	}
 	#if 0		
 	// debug view
-	Point3fArr _smoothGrad1(numVertices);
-	smoothGrad1.GetData(_smoothGrad1);
+	Point3fArr _photoGrad(numVertices);
+	photoGrad.GetData(_photoGrad);
 	#endif
 }
 /*----------------------------------------------------------------*/
@@ -2679,9 +2783,11 @@ void MeshRefineCUDA::CombineGradients(uint32_t numVertices)
 // S T R U C T S ///////////////////////////////////////////////////
 
 // optimize mesh using photo-consistency
-bool Scene::RefineMeshCUDA(unsigned nResolutionLevel, unsigned nMinResolution, unsigned nMaxViews, float fDecimateMesh, unsigned nCloseHoles, unsigned nEnsureEdgeSize, unsigned nMaxFaceArea, unsigned nScales, float fScaleStep, float fRegularityWeight, float fGradientStep)
+bool Scene::RefineMeshCUDA(unsigned nResolutionLevel, unsigned nMinResolution, unsigned nMaxViews,
+						   float fDecimateMesh, unsigned nCloseHoles, unsigned nEnsureEdgeSize, unsigned nMaxFaceArea,
+						   unsigned nScales, float fScaleStep, float fRegularityWeight, float fRatioRigidityElasticity, float fGradientStep)
 {
-	MeshRefineCUDA refine(*this, fRegularityWeight, nResolutionLevel, nMinResolution, nMaxViews);
+	MeshRefineCUDA refine(*this, fRegularityWeight, fRatioRigidityElasticity, nResolutionLevel, nMinResolution, nMaxViews);
 	if (!refine.IsValid())
 		return false;
 
@@ -2716,8 +2822,10 @@ bool Scene::RefineMeshCUDA(unsigned nResolutionLevel, unsigned nMinResolution, u
 			gstep = (fGradientStep-(float)iters)*10;
 		}
 		iters = MAXF(iters/(int)(nScale+1),8);
+		const int iterStop(iters*7/10);
 		Eigen::Matrix<float,Eigen::Dynamic,3,Eigen::RowMajor> gradients(mesh.vertices.GetSize(),3);
 		for (int iter=0; iter<iters; ++iter) {
+			refine.ratioRigidityElasticity = (iter <= iterStop ? fRatioRigidityElasticity : 1.f);
 			// evaluate residuals and gradients
 			refine.ScoreMesh(gradients.data());
 			// apply gradients
