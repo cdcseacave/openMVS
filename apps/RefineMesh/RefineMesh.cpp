@@ -62,6 +62,7 @@ unsigned nCloseHoles;
 unsigned nEnsureEdgeSize;
 unsigned nScales;
 float fScaleStep;
+unsigned nAlternatePair;
 float fRegularityWeight;
 float fRatioRigidityElasticity;
 unsigned nMaxFaceArea;
@@ -118,9 +119,10 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		("max-face-area", boost::program_options::value<unsigned>(&OPT::nMaxFaceArea)->default_value(64), "maximum face area projected in any pair of images that is not subdivided (0 - disabled)")
 		("scales", boost::program_options::value<unsigned>(&OPT::nScales)->default_value(3), "how many iterations to run mesh optimization on multi-scale images")
 		("scale-step", boost::program_options::value<float>(&OPT::fScaleStep)->default_value(0.5f), "image scale factor used at each mesh optimization step")
+		("alternate-pair", boost::program_options::value<unsigned>(&OPT::nAlternatePair)->default_value(1), "refine mesh using an image pair alternatively as reference")
 		("regularity-weight", boost::program_options::value<float>(&OPT::fRegularityWeight)->default_value(0.1f), "scalar regularity weight to balance between photo-consistency and regularization terms during mesh optimization")
 		("rigidity-elasticity-ratio", boost::program_options::value<float>(&OPT::fRatioRigidityElasticity)->default_value(0.9f), "scalar ratio used to compute the regularity gradient as a combination of rigidity and elasticity")
-		("gradient-step", boost::program_options::value<float>(&OPT::fGradientStep)->default_value(50.05f), "gradient step to be used instead (0 - auto)")
+		("gradient-step", boost::program_options::value<float>(&OPT::fGradientStep)->default_value(45.05f), "gradient step to be used instead (0 - auto)")
 		("planar-vertex-ratio", boost::program_options::value<float>(&OPT::fPlanarVertexRatio)->default_value(0.f), "threshold used to remove vertices on planar patches (0 - disabled)")
 		#ifdef _USE_CUDA
 		("use-cuda", boost::program_options::value<bool>(&OPT::bUseCUDA)->default_value(true), "refine mesh using CUDA")
@@ -240,6 +242,7 @@ int main(int argc, LPCTSTR* argv)
 							  OPT::fDecimateMesh, OPT::nCloseHoles, OPT::nEnsureEdgeSize,
 							  OPT::nMaxFaceArea,
 							  OPT::nScales, OPT::fScaleStep,
+							  OPT::nAlternatePair>1 ? true : false,
 							  OPT::fRegularityWeight,
 							  OPT::fRatioRigidityElasticity,
 							  OPT::fGradientStep))
@@ -248,6 +251,7 @@ int main(int argc, LPCTSTR* argv)
 						  OPT::fDecimateMesh, OPT::nCloseHoles, OPT::nEnsureEdgeSize,
 						  OPT::nMaxFaceArea,
 						  OPT::nScales, OPT::fScaleStep,
+						  OPT::nAlternatePair!=0,
 						  OPT::fRegularityWeight,
 						  OPT::fRatioRigidityElasticity,
 						  OPT::fPlanarVertexRatio,

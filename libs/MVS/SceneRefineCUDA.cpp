@@ -1970,7 +1970,7 @@ struct MeshRefineCUDA {
 
 
 public:
-	MeshRefineCUDA(Scene& _scene, float _weightRegularity=1.5f, float _ratioRigidityElasticity=0.8f, unsigned _nResolutionLevel=0, unsigned _nMinResolution=640, unsigned nMaxViews=8);
+	MeshRefineCUDA(Scene& _scene, bool _bAlternatePair=true, float _weightRegularity=1.5f, float _ratioRigidityElasticity=0.8f, unsigned _nResolutionLevel=0, unsigned _nMinResolution=640, unsigned nMaxViews=8);
 	~MeshRefineCUDA();
 
 	bool IsValid() const { return module != NULL && module->IsValid() && !pairs.IsEmpty(); }
@@ -2009,6 +2009,8 @@ public:
 	float ratioRigidityElasticity; // a scalar ratio used to compute the regularity gradient as a combination of rigidity and elasticity
 	const unsigned nResolutionLevel; // how many times to scale down the images before mesh optimization
 	const unsigned nMinResolution; // how many times to scale down the images before mesh optimization
+	bool bAlternatePair; // using an image pair alternatively as reference image
+	unsigned iteration; // current refinement iteration
 
 	Scene& scene; // the mesh vertices and faces
 
@@ -2060,12 +2062,13 @@ public:
 	static const int HalfSize = 2; // half window size used to compute ZNCC
 };
 
-MeshRefineCUDA::MeshRefineCUDA(Scene& _scene, float _weightRegularity, float _ratioRigidityElasticity, unsigned _nResolutionLevel, unsigned _nMinResolution, unsigned nMaxViews)
+MeshRefineCUDA::MeshRefineCUDA(Scene& _scene, bool _bAlternatePair, float _weightRegularity, float _ratioRigidityElasticity, unsigned _nResolutionLevel, unsigned _nMinResolution, unsigned nMaxViews)
 	:
 	weightRegularity(_weightRegularity),
 	ratioRigidityElasticity(_ratioRigidityElasticity),
 	nResolutionLevel(_nResolutionLevel),
 	nMinResolution(_nMinResolution),
+	bAlternatePair(_bAlternatePair),
 	scene(_scene),
 	images(_scene.images)
 {
@@ -2242,6 +2245,7 @@ bool MeshRefineCUDA::InitImages(float scale, float sigma)
 	reportCudaError(imageZNCC.Reset(sizeof(float)*area));
 	reportCudaError(imageDZNCC.Reset(sizeof(float)*area));
 	surfImageProjRef.Bind(imageAB);
+	iteration = 0;
 	return true;
 }
 
@@ -2508,9 +2512,14 @@ void MeshRefineCUDA::ScoreMesh(float* gradients)
 	// projected in the reference image through the mesh surface
 	FOREACHPTR(pPair, pairs) {
 		ASSERT(pPair->i < pPair->j);
-		for (int ip=0; ip<2; ++ip) {
-			const PairIdx pair(ip ? PairIdx(pPair->j,pPair->i) : PairIdx(pPair->i,pPair->j));
+		if (bAlternatePair) {
+			const PairIdx pair(iteration%2 ? PairIdx(pPair->j,pPair->i) : PairIdx(pPair->i,pPair->j));
 			ProcessPair(pair.i, pair.j);
+		} else {
+			for (int ip=0; ip<2; ++ip) {
+				const PairIdx pair(ip ? PairIdx(pPair->j,pPair->i) : PairIdx(pPair->i,pPair->j));
+				ProcessPair(pair.i, pair.j);
+			}
 		}
 	}
 
@@ -2785,9 +2794,9 @@ void MeshRefineCUDA::CombineGradients(uint32_t numVertices)
 // optimize mesh using photo-consistency
 bool Scene::RefineMeshCUDA(unsigned nResolutionLevel, unsigned nMinResolution, unsigned nMaxViews,
 						   float fDecimateMesh, unsigned nCloseHoles, unsigned nEnsureEdgeSize, unsigned nMaxFaceArea,
-						   unsigned nScales, float fScaleStep, float fRegularityWeight, float fRatioRigidityElasticity, float fGradientStep)
+						   unsigned nScales, float fScaleStep, bool bAlternatePair, float fRegularityWeight, float fRatioRigidityElasticity, float fGradientStep)
 {
-	MeshRefineCUDA refine(*this, fRegularityWeight, fRatioRigidityElasticity, nResolutionLevel, nMinResolution, nMaxViews);
+	MeshRefineCUDA refine(*this, bAlternatePair, fRegularityWeight, fRatioRigidityElasticity, nResolutionLevel, nMinResolution, nMaxViews);
 	if (!refine.IsValid())
 		return false;
 
@@ -2825,6 +2834,8 @@ bool Scene::RefineMeshCUDA(unsigned nResolutionLevel, unsigned nMinResolution, u
 		const int iterStop(iters*7/10);
 		Eigen::Matrix<float,Eigen::Dynamic,3,Eigen::RowMajor> gradients(mesh.vertices.GetSize(),3);
 		for (int iter=0; iter<iters; ++iter) {
+			refine.iteration = (unsigned)iter;
+			refine.bAlternatePair = (iter+1 < iters ? bAlternatePair : false);
 			refine.ratioRigidityElasticity = (iter <= iterStop ? fRatioRigidityElasticity : 1.f);
 			// evaluate residuals and gradients
 			refine.ScoreMesh(gradients.data());

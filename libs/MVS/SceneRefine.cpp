@@ -115,7 +115,7 @@ struct MeshRefine {
 
 
 public:
-	MeshRefine(Scene& _scene, Real _weightRegularity=1.5f, Real _ratioRigidityElasticity=0.8f, unsigned _nResolutionLevel=0, unsigned _nMinResolution=640, unsigned nMaxViews=8, unsigned nMaxThreads=1);
+	MeshRefine(Scene& _scene, bool _bAlternatePair=true, Real _weightRegularity=1.5f, Real _ratioRigidityElasticity=0.8f, unsigned _nResolutionLevel=0, unsigned _nMinResolution=640, unsigned nMaxViews=8, unsigned nMaxThreads=1);
 	~MeshRefine();
 
 	bool IsValid() const { return !pairs.IsEmpty(); }
@@ -178,6 +178,8 @@ public:
 	Real ratioRigidityElasticity; // a scalar ratio used to compute the regularity gradient as a combination of rigidity and elasticity
 	const unsigned nResolutionLevel; // how many times to scale down the images before mesh optimization
 	const unsigned nMinResolution; // how many times to scale down the images before mesh optimization
+	bool bAlternatePair; // using an image pair alternatively as reference image
+	unsigned iteration; // current refinement iteration
 
 	Scene& scene; // the mesh vertices and faces
 
@@ -294,12 +296,13 @@ SEACAVE::cList<SEACAVE::Thread> MeshRefine::threads;
 CriticalSection MeshRefine::cs;
 Semaphore MeshRefine::sem;
 
-MeshRefine::MeshRefine(Scene& _scene, Real _weightRegularity, Real _ratioRigidityElasticity, unsigned _nResolutionLevel, unsigned _nMinResolution, unsigned nMaxViews, unsigned nMaxThreads)
+MeshRefine::MeshRefine(Scene& _scene, bool _bAlternatePair, Real _weightRegularity, Real _ratioRigidityElasticity, unsigned _nResolutionLevel, unsigned _nMinResolution, unsigned nMaxViews, unsigned nMaxThreads)
 	:
 	weightRegularity(_weightRegularity),
 	ratioRigidityElasticity(_ratioRigidityElasticity),
 	nResolutionLevel(_nResolutionLevel),
 	nMinResolution(_nMinResolution),
+	bAlternatePair(_bAlternatePair),
 	scene(_scene),
 	faceNormals(_scene.mesh.faceNormals),
 	vertices(_scene.mesh.vertices),
@@ -346,6 +349,7 @@ bool MeshRefine::InitImages(Real scale, Real sigma)
 	FOREACH(idxImage, images)
 		events.AddEvent(new EVTInitImage(idxImage, scale, sigma));
 	WaitThreadWorkers(images.GetSize());
+	iteration = 0;
 	return true;
 }
 
@@ -570,10 +574,14 @@ double MeshRefine::ScoreMesh(double* gradients)
 	ASSERT(events.IsEmpty());
 	FOREACHPTR(pPair, pairs) {
 		ASSERT(pPair->i < pPair->j);
-		for (int ip=0; ip<2; ++ip)
-			events.AddEvent(ip ? new EVTProcessPair(pPair->j,pPair->i) : new EVTProcessPair(pPair->i,pPair->j));
+		if (bAlternatePair) {
+			events.AddEvent(iteration%2 ? new EVTProcessPair(pPair->j,pPair->i) : new EVTProcessPair(pPair->i,pPair->j));
+		} else {
+			for (int ip=0; ip<2; ++ip)
+				events.AddEvent(ip ? new EVTProcessPair(pPair->j,pPair->i) : new EVTProcessPair(pPair->i,pPair->j));
+		}
 	}
-	WaitThreadWorkers(pairs.GetSize()*2);
+	WaitThreadWorkers(bAlternatePair ? pairs.GetSize() : pairs.GetSize()*2);
 
 	// loop through all vertices and compute the smoothing score
 	scoreSmooth = 0;
@@ -618,7 +626,7 @@ double MeshRefine::ScoreMesh(double* gradients)
 				Cast<double>(photoGrad[v]/photoGradNorm[v] + smoothGrad2[v]*elasticity - smoothGrad1[v]*rigidity) :
 				Cast<double>(smoothGrad2[v]*elasticity - smoothGrad1[v]*rigidity);
 	}
-	return 0.1f*scorePhoto + 0.01f*scoreSmooth;
+	return (bAlternatePair ? 0.2f : 0.1f)*scorePhoto + 0.01f*scoreSmooth;
 }
 
 
@@ -1182,7 +1190,7 @@ void MeshRefine::ThSmoothVertices2(VIndex idxStart, VIndex idxEnd)
 #pragma pop_macro("LOG")
 
 namespace ceres {
-class MeshProblem : public FirstOrderFunction
+class MeshProblem : public FirstOrderFunction, public IterationCallback
 {
 public:
 	MeshProblem(MeshRefine& _refine) : refine(_refine), params(refine.vertices.GetSize()*3) {
@@ -1190,6 +1198,7 @@ public:
 		FOREACH(i, refine.vertices)
 			*((Point3d*)params.Begin()+i) = refine.vertices[i];
 	}
+	virtual ~MeshProblem() {}
 
 	void ApplyParams() const {
 		FOREACH(i, refine.vertices)
@@ -1213,6 +1222,11 @@ public:
 		return true;
 	}
 
+	CallbackReturnType operator()(const IterationSummary& summary) {
+		refine.iteration = summary.iteration;
+		return ceres::SOLVER_CONTINUE;
+	}
+
 	int NumParameters() const { return (int)params.GetSize(); }
 	const double* GetParameters() const { return params.Begin(); }
 	double* GetParameters() { return params.Begin(); }
@@ -1227,9 +1241,9 @@ protected:
 // fThPlanarVertex - threshold used to remove vertices on planar patches (percentage of the minimum depth, 0 - disable)
 bool Scene::RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsigned nMaxViews,
 					   float fDecimateMesh, unsigned nCloseHoles, unsigned nEnsureEdgeSize, unsigned nMaxFaceArea,
-					   unsigned nScales, float fScaleStep, float fRegularityWeight, float fRatioRigidityElasticity, float fThPlanarVertex, float fGradientStep)
+					   unsigned nScales, float fScaleStep, bool bAlternatePair, float fRegularityWeight, float fRatioRigidityElasticity, float fThPlanarVertex, float fGradientStep)
 {
-	MeshRefine refine(*this, fRegularityWeight, fRatioRigidityElasticity, nResolutionLevel, nMinResolution, nMaxViews, nMaxThreads);
+	MeshRefine refine(*this, bAlternatePair, fRegularityWeight, fRatioRigidityElasticity, nResolutionLevel, nMinResolution, nMaxViews, nMaxThreads);
 	if (!refine.IsValid())
 		return false;
 
@@ -1274,6 +1288,7 @@ bool Scene::RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsig
 			options.function_tolerance = 1e-3;
 			options.gradient_tolerance = 1e-7;
 			options.max_num_line_search_step_size_iterations = 10;
+			options.callbacks.push_back(problemData);
 			ceres::GradientProblemSolver::Summary summary;
 			// SolveProblem
 			ceres::Solve(options, problem, problemData->GetParameters(), &summary);
@@ -1303,6 +1318,8 @@ bool Scene::RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsig
 			const int iterStart(fThPlanarVertex > 0 ? iters*4/10 : INT_MAX);
 			Eigen::Matrix<double,Eigen::Dynamic,3,Eigen::RowMajor> gradients(refine.vertices.GetSize(),3);
 			for (int iter=0; iter<iters; ++iter) {
+				refine.iteration = (unsigned)iter;
+				refine.bAlternatePair = (iter+1 < iters ? bAlternatePair : false);
 				refine.ratioRigidityElasticity = (iter <= iterStop ? fRatioRigidityElasticity : 1.f);
 				const bool bAdaptMesh(iter >= iterStart && (iter-iterStart)%3 == 0 && iters-iter > 5);
 				// evaluate residuals and gradients

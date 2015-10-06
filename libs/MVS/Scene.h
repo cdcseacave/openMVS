@@ -86,9 +86,9 @@ public:
 	bool ReconstructMesh(float distInsert=2, bool bUseFreeSpaceSupport=true);
 
 	// Mesh refinement
-	bool RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsigned nMaxViews, float fDecimateMesh, unsigned nCloseHoles, unsigned nEnsureEdgeSize, unsigned nMaxFaceArea, unsigned nScales, float fScaleStep, float fRegularityWeight, float fRatioRigidityElasticity, float fThPlanarVertex, float fGradientStep);
+	bool RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsigned nMaxViews, float fDecimateMesh, unsigned nCloseHoles, unsigned nEnsureEdgeSize, unsigned nMaxFaceArea, unsigned nScales, float fScaleStep, bool bAlternatePair, float fRegularityWeight, float fRatioRigidityElasticity, float fThPlanarVertex, float fGradientStep);
 	#ifdef _USE_CUDA
-	bool RefineMeshCUDA(unsigned nResolutionLevel, unsigned nMinResolution, unsigned nMaxViews, float fDecimateMesh, unsigned nCloseHoles, unsigned nEnsureEdgeSize, unsigned nMaxFaceArea, unsigned nScales, float fScaleStep, float fRegularityWeight, float fRatioRigidityElasticity, float fGradientStep);
+	bool RefineMeshCUDA(unsigned nResolutionLevel, unsigned nMinResolution, unsigned nMaxViews, float fDecimateMesh, unsigned nCloseHoles, unsigned nEnsureEdgeSize, unsigned nMaxFaceArea, unsigned nScales, float fScaleStep, bool bAlternatePair, float fRegularityWeight, float fRatioRigidityElasticity, float fGradientStep);
 	#endif
 
 	// Mesh texturing
