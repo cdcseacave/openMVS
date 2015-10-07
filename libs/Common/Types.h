@@ -1848,6 +1848,7 @@ struct TPixel {
 	inline TPixel(TYPE _r, TYPE _g, TYPE _b) : r(_r), g(_g), b(_b) {}
 	inline TPixel(const Pnt& col) : c0(col.x),  c1(col.y),  c2(col.z) {}
 	inline TPixel(const Vec& col) : c0(col[0]), c1(col[1]), c2(col[2]) {}
+	inline TPixel(uint32_t col) : r((col>>16)&0xFF), g((col>>8)&0xFF), b(col&0xFF) {}
 	// set/get from default type
 	inline void set(TYPE _r, TYPE _g, TYPE _b) { r = _r; g = _g; b = _b; }
 	inline void set(const TYPE* clr) { c[0] = clr[0]; c[1] = clr[1]; c[2] = clr[2]; }
@@ -1887,6 +1888,7 @@ struct TPixel {
 	inline TPixel operator-(const TPixel& v) const { return TPixel(r-v.r, g-v.g, b-v.b); }
 	template<typename T> inline TPixel operator-(T v) const { return TPixel((TYPE)(r-v), (TYPE)(g-v), (TYPE)(b-v)); }
 	template<typename T> inline TPixel& operator-=(T v) { return (*this = operator-(v)); }
+	inline operator uint32_t () const { return RGBA((uint8_t)r, (uint8_t)g, (uint8_t)b, (uint8_t)0); }
 	#ifdef _USE_BOOST
 	// serialize
 	template <class Archive>
@@ -1957,6 +1959,7 @@ struct TColor {
 	inline TColor(const Pnt& col, TYPE _a=ColorType<TYPE>::ONE) : r(col.x),  g(col.y),  b(col.z),  a(_a) {}
 	inline TColor(const Vec& col, TYPE _a=ColorType<TYPE>::ONE) : r(col[0]), g(col[1]), b(col[2]), a(_a) {}
 	#endif
+	inline TColor(uint32_t col) : r((col>>16)&0xFF), g((col>>8)&0xFF), b(col&0xFF), a((col>>24)&0xFF) {}
 	// set/get from default type
 	inline void set(TYPE _r, TYPE _g, TYPE _b, TYPE _a=ColorType<TYPE>::ONE) { r = _r; g = _g; b = _b; a = _a; }
 	inline void set(const TYPE* clr) { c[0] = clr[0]; c[1] = clr[1]; c[2] = clr[2]; c[3] = clr[3]; }
@@ -1997,7 +2000,7 @@ struct TColor {
 	inline TColor operator-(const TColor& v) const { return TColor(r-v.r, g-v.g, b-v.b, a-v.a); }
 	template<typename T> inline TColor operator-(T v) const { return TColor((TYPE)(r-v), (TYPE)(g-v), (TYPE)(b-v), (TYPE)(a-v)); }
 	template<typename T> inline TColor& operator-=(T v) { return (*this = operator-(v)); }
-	inline operator DWORD () const { DWORD dwColor; get((uint8_t*)&dwColor); return dwColor; }
+	inline operator uint32_t () const { return RGBA((uint8_t)r, (uint8_t)g, (uint8_t)b, (uint8_t)a); }
 	#ifdef _USE_BOOST
 	// serialize
 	template <class Archive>
@@ -2010,9 +2013,9 @@ template <> inline void TColor<float>::set(uint8_t _r, uint8_t _g, uint8_t _b, u
 template <> inline void TColor<float>::get(uint8_t& _r, uint8_t& _g, uint8_t& _b, uint8_t& _a) const { _r = uint8_t(r*255); _g = uint8_t(g*255); _b = uint8_t(b*255); _a = uint8_t(a*255); }
 template <> inline void TColor<uint8_t>::set(float _r, float _g, float _b, float _a) { r = uint8_t(_r*255); g = uint8_t(_g*255); b = uint8_t(_b*255); a = uint8_t(_a*255); }
 template <> inline void TColor<uint8_t>::get(float& _r, float& _g, float& _b, float& _a) const { _r = float(r)/255; _g = float(g)/255; _b = float(b)/255; _a = float(a)/255; }
-template <> inline bool TColor<uint8_t>::operator==(const TColor& col) const { return (*((const DWORD*)c) == *((const DWORD*)col.c)); }
-template <> inline bool TColor<uint8_t>::operator!=(const TColor& col) const { return (*((const DWORD*)c) != *((const DWORD*)col.c)); }
-template <> inline TColor<uint8_t>::operator DWORD () const { return *((const DWORD*)c); }
+template <> inline bool TColor<uint8_t>::operator==(const TColor& col) const { return (*((const uint32_t*)c) == *((const uint32_t*)col.c)); }
+template <> inline bool TColor<uint8_t>::operator!=(const TColor& col) const { return (*((const uint32_t*)c) != *((const uint32_t*)col.c)); }
+template <> inline TColor<uint8_t>::operator uint32_t () const { return *((const uint32_t*)c); }
 /*----------------------------------------------------------------*/
 typedef TColor<uint8_t> Color8U;
 typedef TColor<float> Color32F;
