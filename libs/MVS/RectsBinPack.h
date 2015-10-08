@@ -340,6 +340,8 @@ public:
 	/// Inserts a single rectangle into the bin, possibly rotated.
 	Rect Insert(int width, int height, LevelChoiceHeuristic method);
 
+	Rect ScoreRect(int width, int height, LevelChoiceHeuristic method, int &score1, int &score2, int &index) const;
+
 	/// Computes the ratio of used surface area to the total bin area.
 	float Occupancy() const;
 

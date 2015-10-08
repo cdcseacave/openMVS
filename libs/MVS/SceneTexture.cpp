@@ -388,7 +388,7 @@ public:
 	bool FaceOutlierDetection(FaceDataArr& faceDatas, float fOutlierThreshold) const;
 	#endif
 
-	void FaceViewSelection(float fOutlierThreshold);
+	void FaceViewSelection(float fOutlierThreshold, float fRatioDataSmoothness);
 
 	void CreateSeamVertices();
 	void GlobalSeamLeveling();
@@ -867,7 +867,7 @@ bool MeshTexture::FaceOutlierDetection(FaceDataArr& faceDatas, float thOutlier) 
 }
 #endif
 
-void MeshTexture::FaceViewSelection(float fOutlierThreshold)
+void MeshTexture::FaceViewSelection(float fOutlierThreshold, float fRatioDataSmoothness)
 {
 	// extract array of triangles incident to each vertex
 	ListVertexFaces();
@@ -980,6 +980,7 @@ void MeshTexture::FaceViewSelection(float fOutlierThreshold)
 
 			// set data costs
 			{
+				const LBPInference::EnergyType MaxEnergy(fRatioDataSmoothness*LBPInference::MaxEnergy);
 				// set costs for label 0 (undefined)
 				FOREACH(s, inferences) {
 					LBPInference& inference = inferences[s];
@@ -987,7 +988,7 @@ void MeshTexture::FaceViewSelection(float fOutlierThreshold)
 						continue;
 					const NodeID numNodes(sizes[s]);
 					for (NodeID nodeID=0; nodeID<numNodes; ++nodeID)
-						inference.SetDataCost((Label)0, nodeID, LBPInference::MaxEnergy);
+						inference.SetDataCost((Label)0, nodeID, MaxEnergy);
 				}
 				// set data costs for all labels (except label 0 - undefined)
 				FOREACH(f, facesDatas) {
@@ -1000,7 +1001,7 @@ void MeshTexture::FaceViewSelection(float fOutlierThreshold)
 						const FaceData& faceData = *pFaceData;
 						const Label label((Label)faceData.idxView+1);
 						const float normalizedQuality(faceData.quality>=normQuality ? 1.f : faceData.quality/normQuality);
-						const float dataCost((1.f-normalizedQuality)*LBPInference::MaxEnergy);
+						const float dataCost((1.f-normalizedQuality)*MaxEnergy);
 						inference.SetDataCost(label, nodeID, dataCost);
 					}
 				}
@@ -2019,7 +2020,7 @@ void MeshTexture::GenerateTexture(bool bGlobalSeamLeveling, bool bLocalSeamLevel
 }
 
 // texture mesh
-bool Scene::TextureMesh(unsigned nResolutionLevel, unsigned nMinResolution, float fOutlierThreshold, bool bGlobalSeamLeveling, bool bLocalSeamLeveling, unsigned nRectPackingHeuristic, Pixel8U colEmpty)
+bool Scene::TextureMesh(unsigned nResolutionLevel, unsigned nMinResolution, float fOutlierThreshold, float fRatioDataSmoothness, bool bGlobalSeamLeveling, bool bLocalSeamLeveling, unsigned nRectPackingHeuristic, Pixel8U colEmpty)
 {
 	MeshTexture texture(*this, nResolutionLevel, nMinResolution);
 
@@ -2034,7 +2035,7 @@ bool Scene::TextureMesh(unsigned nResolutionLevel, unsigned nMinResolution, floa
 	// assign the best view to each face
 	{
 		TD_TIMER_STARTD();
-		texture.FaceViewSelection(fOutlierThreshold);
+		texture.FaceViewSelection(fOutlierThreshold, fRatioDataSmoothness);
 		DEBUG_EXTRA("Assigning the best view to each face completed: %u faces (%s)", mesh.faces.GetSize(), TD_TIMER_GET_FMT().c_str());
 	}
 

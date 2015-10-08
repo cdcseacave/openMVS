@@ -50,6 +50,7 @@ String strMeshFileName;
 unsigned nResolutionLevel;
 unsigned nMinResolution;
 float fOutlierThreshold;
+float fRatioDataSmoothness;
 bool bGlobalSeamLeveling;
 bool bLocalSeamLeveling;
 unsigned nRectPackingHeuristic;
@@ -96,6 +97,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		("resolution-level", boost::program_options::value<unsigned>(&OPT::nResolutionLevel)->default_value(0), "how many times to scale down the images before mesh refinement")
 		("min-resolution", boost::program_options::value<unsigned>(&OPT::nMinResolution)->default_value(640), "do not scale images lower than this resolution")
 		("outlier-threshold", boost::program_options::value<float>(&OPT::fOutlierThreshold)->default_value(6e-2f), "threshold used to find and remove outlier face textures (0 - disabled)")
+		("cost-smoothness-ratio", boost::program_options::value<float>(&OPT::fRatioDataSmoothness)->default_value(0.1f), "ratio used to adjust the preference for more compact patches (1 - best quality/worst compactness, ~0 - worst quality/best compactness)")
 		("global-seam-leveling", boost::program_options::value<bool>(&OPT::bGlobalSeamLeveling)->default_value(true), "generate uniform texture patches using global seam leveling")
 		("local-seam-leveling", boost::program_options::value<bool>(&OPT::bLocalSeamLeveling)->default_value(true), "generate uniform texture patch borders using local seam leveling")
 		("patch-packing-heuristic", boost::program_options::value<unsigned>(&OPT::nRectPackingHeuristic)->default_value(3), "specify the heuristic used when deciding where to place a new patch (0 - best fit, 3 - good speed, 100 - best speed)")
@@ -209,7 +211,7 @@ int main(int argc, LPCTSTR* argv)
 		return EXIT_FAILURE;
 	}
 	TD_TIMER_START();
-	if (!scene.TextureMesh(OPT::nResolutionLevel, OPT::nMinResolution, OPT::fOutlierThreshold, OPT::bGlobalSeamLeveling, OPT::bLocalSeamLeveling, OPT::nRectPackingHeuristic, Pixel8U(OPT::nColEmpty)))
+	if (!scene.TextureMesh(OPT::nResolutionLevel, OPT::nMinResolution, OPT::fOutlierThreshold, OPT::fRatioDataSmoothness, OPT::bGlobalSeamLeveling, OPT::bLocalSeamLeveling, OPT::nRectPackingHeuristic, Pixel8U(OPT::nColEmpty)))
 		return EXIT_FAILURE;
 	VERBOSE("Mesh texturing completed: %u vertices, %u faces (%s)", scene.mesh.vertices.GetSize(), scene.mesh.faces.GetSize(), TD_TIMER_GET_FMT().c_str());
 
