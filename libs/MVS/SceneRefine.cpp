@@ -48,14 +48,14 @@ using namespace MVS;
 
 // S T R U C T S ///////////////////////////////////////////////////
 
+typedef float Real;
 typedef Mesh::Vertex Vertex;
 typedef Mesh::VIndex VIndex;
 typedef Mesh::Face Face;
 typedef Mesh::FIndex FIndex;
 
-struct MeshRefine {
-	typedef double Real;
-
+class MeshRefine {
+public:
 	typedef TPoint3<Real> Grad;
 	typedef CLISTDEF0IDX(Grad,VIndex) GradArr;
 
@@ -115,7 +115,7 @@ struct MeshRefine {
 
 
 public:
-	MeshRefine(Scene& _scene, bool _bAlternatePair=true, Real _weightRegularity=1.5f, Real _ratioRigidityElasticity=0.8f, unsigned _nResolutionLevel=0, unsigned _nMinResolution=640, unsigned nMaxViews=8, unsigned nMaxThreads=1);
+	MeshRefine(Scene& _scene, unsigned _nReduceMemory, unsigned _nAlternatePair=true, Real _weightRegularity=1.5f, Real _ratioRigidityElasticity=0.8f, unsigned _nResolutionLevel=0, unsigned _nMinResolution=640, unsigned nMaxViews=8, unsigned nMaxThreads=1);
 	~MeshRefine();
 
 	bool IsValid() const { return !pairs.IsEmpty(); }
@@ -178,7 +178,8 @@ public:
 	Real ratioRigidityElasticity; // a scalar ratio used to compute the regularity gradient as a combination of rigidity and elasticity
 	const unsigned nResolutionLevel; // how many times to scale down the images before mesh optimization
 	const unsigned nMinResolution; // how many times to scale down the images before mesh optimization
-	bool bAlternatePair; // using an image pair alternatively as reference image
+	const unsigned nReduceMemory; // recompute image mean and variance in order to reduce memory requirements
+	unsigned nAlternatePair; // using an image pair alternatively as reference image (0 - both, 1 - alternate, 2 - only left, 3 - only right)
 	unsigned iteration; // current refinement iteration
 
 	Scene& scene; // the mesh vertices and faces
@@ -216,6 +217,7 @@ public:
 	static const int HalfSize = 3; // half window size used to compute ZNCC
 };
 
+
 enum EVENT_TYPE {
 	EVT_JOB = 0,
 	EVT_CLOSE,
@@ -242,12 +244,12 @@ class EVTInitImage : public Event
 {
 public:
 	uint32_t idxImage;
-	double scale, sigma;
+	Real scale, sigma;
 	bool Run(void* pArgs) {
 		((MeshRefine*)pArgs)->ThInitImage(idxImage, scale, sigma);
 		return true;
 	}
-	EVTInitImage(uint32_t _idxImage, double _scale, double _sigma) : Event(EVT_JOB), idxImage(_idxImage), scale(_scale), sigma(_sigma) {}
+	EVTInitImage(uint32_t _idxImage, Real _scale, Real _sigma) : Event(EVT_JOB), idxImage(_idxImage), scale(_scale), sigma(_sigma) {}
 };
 class EVTProjectMesh : public Event
 {
@@ -296,13 +298,14 @@ SEACAVE::cList<SEACAVE::Thread> MeshRefine::threads;
 CriticalSection MeshRefine::cs;
 Semaphore MeshRefine::sem;
 
-MeshRefine::MeshRefine(Scene& _scene, bool _bAlternatePair, Real _weightRegularity, Real _ratioRigidityElasticity, unsigned _nResolutionLevel, unsigned _nMinResolution, unsigned nMaxViews, unsigned nMaxThreads)
+MeshRefine::MeshRefine(Scene& _scene, unsigned _nReduceMemory, unsigned _nAlternatePair, Real _weightRegularity, Real _ratioRigidityElasticity, unsigned _nResolutionLevel, unsigned _nMinResolution, unsigned nMaxViews, unsigned nMaxThreads)
 	:
 	weightRegularity(_weightRegularity),
 	ratioRigidityElasticity(_ratioRigidityElasticity),
 	nResolutionLevel(_nResolutionLevel),
 	nMinResolution(_nMinResolution),
-	bAlternatePair(_bAlternatePair),
+	nReduceMemory(_nReduceMemory),
+	nAlternatePair(_nAlternatePair),
 	scene(_scene),
 	faceNormals(_scene.mesh.faceNormals),
 	vertices(_scene.mesh.vertices),
@@ -574,14 +577,22 @@ double MeshRefine::ScoreMesh(double* gradients)
 	ASSERT(events.IsEmpty());
 	FOREACHPTR(pPair, pairs) {
 		ASSERT(pPair->i < pPair->j);
-		if (bAlternatePair) {
+		switch (nAlternatePair) {
+		case 1:
 			events.AddEvent(iteration%2 ? new EVTProcessPair(pPair->j,pPair->i) : new EVTProcessPair(pPair->i,pPair->j));
-		} else {
+			break;
+		case 2:
+			events.AddEvent(new EVTProcessPair(pPair->i, pPair->j));
+			break;
+		case 3:
+			events.AddEvent(new EVTProcessPair(pPair->j, pPair->i));
+			break;
+		default:
 			for (int ip=0; ip<2; ++ip)
 				events.AddEvent(ip ? new EVTProcessPair(pPair->j,pPair->i) : new EVTProcessPair(pPair->i,pPair->j));
 		}
 	}
-	WaitThreadWorkers(bAlternatePair ? pairs.GetSize() : pairs.GetSize()*2);
+	WaitThreadWorkers(nAlternatePair ? pairs.GetSize() : pairs.GetSize()*2);
 
 	// loop through all vertices and compute the smoothing score
 	scoreSmooth = 0;
@@ -626,7 +637,7 @@ double MeshRefine::ScoreMesh(double* gradients)
 				Cast<double>(photoGrad[v]/photoGradNorm[v] + smoothGrad2[v]*elasticity - smoothGrad1[v]*rigidity) :
 				Cast<double>(smoothGrad2[v]*elasticity - smoothGrad1[v]*rigidity);
 	}
-	return (bAlternatePair ? 0.2f : 0.1f)*scorePhoto + 0.01f*scoreSmooth;
+	return (nAlternatePair ? 0.2f : 0.1f)*scorePhoto + 0.01f*scoreSmooth;
 }
 
 
@@ -1002,7 +1013,7 @@ void MeshRefine::ComputeSmoothnessGradient2(
 			grad += smoothGrad1[idxVert];
 			const VIndex numVert(vertexVertices[idxVert].GetSize());
 			if (numVert > 0)
-				w += REAL(1)/(Real)numVert;
+				w += Real(1)/(Real)numVert;
 		}
 		const Real numVert((Real)verts.GetSize());
 		const Real nrm(Real(1)/(Real(1)+w/numVert));
@@ -1076,8 +1087,10 @@ void MeshRefine::ThInitImage(uint32_t idxImage, Real scale, Real sigma)
 		imageData.width = img.width(); imageData.height = img.height();
 	}
 	imageData.UpdateCamera(scene.platforms);
-	// compute image mean and variance
-	ComputeLocalVariance(img, Image8U(img.size(), 1), view.imageMean, view.imageVar);
+	if (!nReduceMemory) {
+		// compute image mean and variance
+		ComputeLocalVariance(img, Image8U(img.size(), 1), view.imageMean, view.imageVar);
+	}
 	// compute image gradient
 	typedef View::Grad::Type GradType;
 	TImage<GradType> grad[2];
@@ -1127,13 +1140,17 @@ void MeshRefine::ThProcessPair(uint32_t idxImageA, uint32_t idxImageB)
 	Image8U mask;
 	Image32F imageAB; imageA.copyTo(imageAB);
 	ImageMeshWarp(depthMapA, cameraA, depthMapB, cameraB, imageB, imageAB, mask);
-	// init vertex textures
-	const TImage<Real>& imageMeanA = viewA.imageMean;
-	const TImage<Real>& imageVarA = viewA.imageVar;
+	// compute ZNCC and its gradient
+	TImage<Real> imageMeanA, imageVarA;
+	if (nReduceMemory)
+		ComputeLocalVariance(viewA.image, mask, imageMeanA, imageVarA);
+	else
+		imageMeanA = viewA.imageMean, imageVarA = viewA.imageVar;
 	TImage<Real> imageMeanAB, imageVarAB;
 	ComputeLocalVariance(imageAB, mask, imageMeanAB, imageVarAB);
 	TImage<Real> imageZNCC, imageDZNCC;
 	const float score(ComputeLocalZNCC(imageA, imageMeanA, imageVarA, imageAB, imageMeanAB, imageVarAB, mask, imageZNCC, imageDZNCC));
+	// compute field gradient
 	GradArr _photoGrad(photoGrad.GetSize());
 	UnsignedArr _photoGradNorm(photoGrad.GetSize());
 	const Real RegularizationScale((Real)((REAL)(imageDataA.avgDepth*imageDataB.avgDepth)/(cameraA.GetFocalLength()*cameraB.GetFocalLength())));
@@ -1241,19 +1258,20 @@ protected:
 // fThPlanarVertex - threshold used to remove vertices on planar patches (percentage of the minimum depth, 0 - disable)
 bool Scene::RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsigned nMaxViews,
 					   float fDecimateMesh, unsigned nCloseHoles, unsigned nEnsureEdgeSize, unsigned nMaxFaceArea,
-					   unsigned nScales, float fScaleStep, bool bAlternatePair, float fRegularityWeight, float fRatioRigidityElasticity, float fThPlanarVertex, float fGradientStep)
+					   unsigned nScales, float fScaleStep,
+					   unsigned nReduceMemory, unsigned nAlternatePair, float fRegularityWeight, float fRatioRigidityElasticity, float fThPlanarVertex, float fGradientStep)
 {
-	MeshRefine refine(*this, bAlternatePair, fRegularityWeight, fRatioRigidityElasticity, nResolutionLevel, nMinResolution, nMaxViews, nMaxThreads);
+	MeshRefine refine(*this, nReduceMemory, nAlternatePair, fRegularityWeight, fRatioRigidityElasticity, nResolutionLevel, nMinResolution, nMaxViews, nMaxThreads);
 	if (!refine.IsValid())
 		return false;
 
 	// run the mesh optimization on multiple scales (coarse to fine)
 	for (unsigned nScale=0; nScale<nScales; ++nScale) {
 		// init images
-		const double scale(powi(fScaleStep, (int)(nScales-nScale-1)));
-		const double step(powi(2.0, (int)(nScales-nScale)));
+		const Real scale(powi(fScaleStep, (int)(nScales-nScale-1)));
+		const Real step(powi(2.f, (int)(nScales-nScale)));
 		DEBUG_ULTIMATE("Refine mesh at: %.2f image scale", scale);
-		if (!refine.InitImages(scale, 0.12*step+0.2))
+		if (!refine.InitImages(scale, Real(0.12)*step+Real(0.2)))
 			return false;
 
 		// extract array of triangles incident to each vertex
@@ -1319,7 +1337,7 @@ bool Scene::RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsig
 			Eigen::Matrix<double,Eigen::Dynamic,3,Eigen::RowMajor> gradients(refine.vertices.GetSize(),3);
 			for (int iter=0; iter<iters; ++iter) {
 				refine.iteration = (unsigned)iter;
-				refine.bAlternatePair = (iter+1 < iters ? bAlternatePair : false);
+				refine.nAlternatePair = (iter+1 < iters ? nAlternatePair : 0);
 				refine.ratioRigidityElasticity = (iter <= iterStop ? fRatioRigidityElasticity : 1.f);
 				const bool bAdaptMesh(iter >= iterStart && (iter-iterStart)%3 == 0 && iters-iter > 5);
 				// evaluate residuals and gradients
