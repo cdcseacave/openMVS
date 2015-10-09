@@ -1,17 +1,13 @@
 /*
  * InterfaceOpenMVG.cpp
  *
- * Copyright (c) 2014-2015 FOXEL SA - http://foxel.ch
- * Please read <http://foxel.ch/license> for more information.
- *
+ * Copyright (c) 2014-2015 SEACAVE
  *
  * Author(s):
  *
  *      cDc <cdc.seacave@gmail.com>
  *      Pierre MOULON <p.moulon@foxel.ch>
  *
- *
- * This file is part of the FOXEL project <http://foxel.ch>.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as published by
@@ -32,9 +28,6 @@
  *      You are required to preserve legal notices and author attributions in
  *      that material or in the Appropriate Legal Notices displayed by works
  *      containing it.
- *
- *      You are required to attribute the work as explained in the "Usage and
- *      Attribution" section of <http://foxel.ch/license>.
  */
 
 #include "../../libs/MVS/Common.h"

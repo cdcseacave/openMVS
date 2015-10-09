@@ -113,22 +113,12 @@ public:
 		return m_pointer;
 	}
 
-	inline bool operator==(const CAutoPtr& _Right) const
-	{	// return pointer to class object
-		return (m_pointer == _Right.m_pointer);
-	}
-
-	inline bool operator!=(const CAutoPtr& _Right) const
-	{	// return pointer to class object
-		return (m_pointer != _Right.m_pointer);
-	}
-
-	inline bool operator==(const void* _Right) const
+	inline bool operator==(const TypePtr _Right) const
 	{	// return pointer to class object
 		return (m_pointer == _Right);
 	}
 
-	inline bool operator!=(const void* _Right) const
+	inline bool operator!=(const TypePtr _Right) const
 	{	// return pointer to class object
 		return (m_pointer != _Right);
 	}
@@ -237,22 +227,12 @@ public:
 		return m_pointer;
 	}
 
-	inline bool operator==(const CAutoPtrArr& _Right) const
-	{	// return pointer to class object
-		return (m_pointer == _Right.m_pointer);
-	}
-
-	inline bool operator!=(const CAutoPtrArr& _Right) const
-	{	// return pointer to class object
-		return (m_pointer != _Right.m_pointer);
-	}
-
-	inline bool operator==(const void* _Right) const
+	inline bool operator==(const TypePtr _Right) const
 	{	// return pointer to class object
 		return (m_pointer == _Right);
 	}
 
-	inline bool operator!=(const void* _Right) const
+	inline bool operator!=(const TypePtr _Right) const
 	{	// return pointer to class object
 		return (m_pointer != _Right);
 	}
