@@ -651,7 +651,7 @@ void MVS::EstimatePointColors(const ImageArr& images, PointCloud& pointcloud)
 		} else {
 			// get image color
 			const Point2f proj(pImageData->camera.ProjectPointP(point));
-			color = (pImageData->image.isInside(proj) ? pImageData->image.sample(proj) : Pixel8U::WHITE);
+			color = (pImageData->image.isInsideWithBorder<float,1>(proj) ? pImageData->image.sample(proj) : Pixel8U::WHITE);
 		}
 	}
 
