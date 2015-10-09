@@ -2141,8 +2141,10 @@ public:
 
 public:
 	inline TBitMatrix() : data(NULL) {}
-	inline TBitMatrix(int _rows, int _cols) : rows(_rows), cols(_cols), data(rows && cols ? new Type[computeLength(rows, cols)] : NULL) {}
+	inline TBitMatrix(int _rows, int _cols=1) : rows(_rows), cols(_cols), data(rows && cols ? new Type[computeLength(rows, cols)] : NULL) {}
+	inline TBitMatrix(int _rows, int _cols, uint8_t v) : rows(_rows), cols(_cols), data(rows && cols ? new Type[computeLength(rows, cols)] : NULL) { if (!empty()) memset(v); }
 	inline TBitMatrix(const Size& sz) : rows(sz.height), cols(sz.width), data(rows && cols ? new Type[computeLength(sz)] : NULL) {}
+	inline TBitMatrix(const Size& sz, uint8_t v) : rows(sz.height), cols(sz.width), data(rows && cols ? new Type[computeLength(sz)] : NULL) { if (!empty()) memset(v); }
 	inline ~TBitMatrix() { delete[] data; }
 
 	inline void create(int _rows, int _cols=1) {
@@ -2189,6 +2191,10 @@ public:
 	inline Size size() const { return Size(cols, rows); }
 	inline int area() const { return cols*rows; }
 	inline int length() const { return computeLength(rows, cols); }
+
+	inline bool operator() (int i) const { return isSet(i); }
+	inline bool operator() (int i, int j) const { return isSet(i,j); }
+	inline bool operator() (const ImageRef& ir) const { return isSet(ir); }
 
 	inline bool isSet(int i) const { ASSERT(!empty() && i<area()); const Index idx(computeIndex(i)); return (data[idx.idx] & idx.flag) != 0; }
 	inline bool isSet(int i, int j) const { ASSERT(!empty() && i<rows && j<cols); const Index idx(computeIndex(i, j, cols)); return (data[idx.idx] & idx.flag) != 0; }

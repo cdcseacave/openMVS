@@ -1,16 +1,12 @@
 /*
  * RefineMesh.cpp
  *
- * Copyright (c) 2014-2015 FOXEL SA - http://foxel.ch
- * Please read <http://foxel.ch/license> for more information.
- *
+ * Copyright (c) 2014-2015 SEACAVE
  *
  * Author(s):
  *
  *      cDc <cdc.seacave@gmail.com>
  *
- *
- * This file is part of the FOXEL project <http://foxel.ch>.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as published by
@@ -31,9 +27,6 @@
  *      You are required to preserve legal notices and author attributions in
  *      that material or in the Appropriate Legal Notices displayed by works
  *      containing it.
- *
- *      You are required to attribute the work as explained in the "Usage and
- *      Attribution" section of <http://foxel.ch/license>.
  */
 
 #include "../../libs/MVS/Common.h"
@@ -62,6 +55,7 @@ unsigned nCloseHoles;
 unsigned nEnsureEdgeSize;
 unsigned nScales;
 float fScaleStep;
+unsigned nReduceMemory;
 unsigned nAlternatePair;
 float fRegularityWeight;
 float fRatioRigidityElasticity;
@@ -119,7 +113,8 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		("max-face-area", boost::program_options::value<unsigned>(&OPT::nMaxFaceArea)->default_value(64), "maximum face area projected in any pair of images that is not subdivided (0 - disabled)")
 		("scales", boost::program_options::value<unsigned>(&OPT::nScales)->default_value(3), "how many iterations to run mesh optimization on multi-scale images")
 		("scale-step", boost::program_options::value<float>(&OPT::fScaleStep)->default_value(0.5f), "image scale factor used at each mesh optimization step")
-		("alternate-pair", boost::program_options::value<unsigned>(&OPT::nAlternatePair)->default_value(1), "refine mesh using an image pair alternatively as reference")
+		("reduce-memory", boost::program_options::value<unsigned>(&OPT::nReduceMemory)->default_value(1), "recompute some data in order to reduce memory requirements")
+		("alternate-pair", boost::program_options::value<unsigned>(&OPT::nAlternatePair)->default_value(0), "refine mesh using an image pair alternatively as reference (0 - both, 1 - alternate, 2 - only left, 3 - only right)")
 		("regularity-weight", boost::program_options::value<float>(&OPT::fRegularityWeight)->default_value(0.1f), "scalar regularity weight to balance between photo-consistency and regularization terms during mesh optimization")
 		("rigidity-elasticity-ratio", boost::program_options::value<float>(&OPT::fRatioRigidityElasticity)->default_value(0.9f), "scalar ratio used to compute the regularity gradient as a combination of rigidity and elasticity")
 		("gradient-step", boost::program_options::value<float>(&OPT::fGradientStep)->default_value(45.05f), "gradient step to be used instead (0 - auto)")
@@ -242,7 +237,7 @@ int main(int argc, LPCTSTR* argv)
 							  OPT::fDecimateMesh, OPT::nCloseHoles, OPT::nEnsureEdgeSize,
 							  OPT::nMaxFaceArea,
 							  OPT::nScales, OPT::fScaleStep,
-							  OPT::nAlternatePair>1 ? true : false,
+							  OPT::nAlternatePair>10 ? OPT::nAlternatePair%10 : 0,
 							  OPT::fRegularityWeight,
 							  OPT::fRatioRigidityElasticity,
 							  OPT::fGradientStep))
@@ -251,7 +246,7 @@ int main(int argc, LPCTSTR* argv)
 						  OPT::fDecimateMesh, OPT::nCloseHoles, OPT::nEnsureEdgeSize,
 						  OPT::nMaxFaceArea,
 						  OPT::nScales, OPT::fScaleStep,
-						  OPT::nAlternatePair!=0,
+						  OPT::nReduceMemory, OPT::nAlternatePair,
 						  OPT::fRegularityWeight,
 						  OPT::fRatioRigidityElasticity,
 						  OPT::fPlanarVertexRatio,

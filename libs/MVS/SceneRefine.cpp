@@ -143,19 +143,19 @@ public:
 	static void ImageMeshWarp(
 		const DepthMap& depthMapA, const Camera& cameraA,
 		const DepthMap& depthMapB, const Camera& cameraB,
-		const Image32F& imageB, Image32F& imageA, Image8U& mask);
+		const Image32F& imageB, Image32F& imageA, BitMatrix& mask);
 	static void ComputeLocalVariance(
-		const Image32F& image, const Image8U& mask,
+		const Image32F& image, const BitMatrix& mask,
 		TImage<Real>& imageMean, TImage<Real>& imageVar);
 	static float ComputeLocalZNCC(
 		const Image32F& imageA, const TImage<Real>& imageMeanA, const TImage<Real>& imageVarA,
 		const Image32F& imageB, const TImage<Real>& imageMeanB, const TImage<Real>& imageVarB,
-		const Image8U& mask, TImage<Real>& imageZNCC, TImage<Real>& imageDZNCC);
+		const BitMatrix& mask, TImage<Real>& imageZNCC, TImage<Real>& imageDZNCC);
 	static void ComputePhotometricGradient(
 		const Mesh::FaceArr& faces, const Mesh::NormalArr& normals,
 		const DepthMap& depthMapA, const FaceMap& faceMapA, const BaryMap& baryMapA, const Camera& cameraA,
 		const Camera& cameraB, const View& viewB,
-		const TImage<Real>& imageDZNCC, const Image8U& mask, GradArr& photoGrad, UnsignedArr& photoGradNorm, Real RegularizationScale);
+		const TImage<Real>& imageDZNCC, const BitMatrix& mask, GradArr& photoGrad, UnsignedArr& photoGradNorm, Real RegularizationScale);
 	static float ComputeSmoothnessGradient1(
 		const Mesh::VertexArr& vertices, const Mesh::VertexVerticesArr& vertexVertices, const BoolArr& vertexBoundary,
 		GradArr& smoothGrad1, VIndex idxStart, VIndex idxEnd);
@@ -767,7 +767,7 @@ void MeshRefine::ProjectMesh(
 void MeshRefine::ImageMeshWarp(
 	const DepthMap& depthMapA, const Camera& cameraA,
 	const DepthMap& depthMapB, const Camera& cameraB,
-	const Image32F& imageB, Image32F& imageA, Image8U& mask)
+	const Image32F& imageB, Image32F& imageA, BitMatrix& mask)
 {
 	ASSERT(!imageA.empty());
 	typedef Sampler::Linear<float> Sampler;
@@ -785,13 +785,13 @@ void MeshRefine::ImageMeshWarp(
 			if (!IsDepthSimilar(depthMapB, pt, ptC.z))
 				continue;
 			imageA(j,i) = imageB.sample<Sampler,Sampler::Type>(sampler, pt);
-			mask(j,i) = 1;
+			mask.set(j,i);
 		}
 	}
 }
 
 // compute local variance for each image pixel
-void MeshRefine::ComputeLocalVariance(const Image32F& image, const Image8U& mask, TImage<Real>& imageMean, TImage<Real>& imageVar)
+void MeshRefine::ComputeLocalVariance(const Image32F& image, const BitMatrix& mask, TImage<Real>& imageMean, TImage<Real>& imageVar)
 {
 	ASSERT(image.size() == mask.size());
 	imageMean.create(image.size());
@@ -836,7 +836,7 @@ void MeshRefine::ComputeLocalVariance(const Image32F& image, const Image8U& mask
 float MeshRefine::ComputeLocalZNCC(
 	const Image32F& imageA, const TImage<Real>& imageMeanA, const TImage<Real>& imageVarA,
 	const Image32F& imageB, const TImage<Real>& imageMeanB, const TImage<Real>& imageVarB,
-	const Image8U& mask, TImage<Real>& imageZNCC, TImage<Real>& imageDZNCC)
+	const BitMatrix& mask, TImage<Real>& imageZNCC, TImage<Real>& imageDZNCC)
 {
 	ASSERT(imageA.size() == mask.size() && imageB.size() == mask.size() && !mask.empty());
 	float score(0);
@@ -911,7 +911,7 @@ void MeshRefine::ComputePhotometricGradient(
 	const Mesh::FaceArr& faces, const Mesh::NormalArr& normals,
 	const DepthMap& depthMapA, const FaceMap& faceMapA, const BaryMap& baryMapA, const Camera& cameraA,
 	const Camera& cameraB, const View& viewB,
-	const TImage<Real>& imageDZNCC, const Image8U& mask, GradArr& photoGrad, UnsignedArr& photoGradNorm, Real RegularizationScale)
+	const TImage<Real>& imageDZNCC, const BitMatrix& mask, GradArr& photoGrad, UnsignedArr& photoGradNorm, Real RegularizationScale)
 {
 	ASSERT(faces.GetSize() == normals.GetSize() && !faces.IsEmpty());
 	ASSERT(depthMapA.size() == mask.size() && faceMapA.size() == mask.size() && baryMapA.size() == mask.size() && imageDZNCC.size() == mask.size() && !mask.empty());
@@ -1089,7 +1089,7 @@ void MeshRefine::ThInitImage(uint32_t idxImage, Real scale, Real sigma)
 	imageData.UpdateCamera(scene.platforms);
 	if (!nReduceMemory) {
 		// compute image mean and variance
-		ComputeLocalVariance(img, Image8U(img.size(), 1), view.imageMean, view.imageVar);
+		ComputeLocalVariance(img, BitMatrix(img.size(), 0xFF), view.imageMean, view.imageVar);
 	}
 	// compute image gradient
 	typedef View::Grad::Type GradType;
@@ -1137,7 +1137,7 @@ void MeshRefine::ThProcessPair(uint32_t idxImageA, uint32_t idxImageB)
 	const Image32F& imageB = viewB.image;
 	const Camera& cameraB = imageDataB.camera;
 	// warp imageB to imageA using the mesh
-	Image8U mask;
+	BitMatrix mask;
 	Image32F imageAB; imageA.copyTo(imageAB);
 	ImageMeshWarp(depthMapA, cameraA, depthMapB, cameraB, imageB, imageAB, mask);
 	// compute ZNCC and its gradient
