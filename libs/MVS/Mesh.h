@@ -137,10 +137,10 @@ public:
 		ASSERT(vertices.GetSize() == vertexFaces.GetSize());
 		const FaceIdxArr& vf = vertexFaces[idxV];
 		ASSERT(!vf.IsEmpty());
-		Normal n(Normal::ZERO); int c(0);
+		Normal n(Normal::ZERO);
 		FOREACHPTR(pIdxF, vf)
 			n += normalized(FaceNormal(faces[*pIdxF]));
-		return n/(float)c;
+		return n;
 	}
 
 	// file IO
@@ -152,10 +152,18 @@ public:
 	static inline VIndex GetVertex(const Face& f, VIndex v) { const uint32_t idx(FindVertex(f, v)); ASSERT(idx != NO_ID); return f[idx]; }
 	static inline VIndex& GetVertex(Face& f, VIndex v) { const uint32_t idx(FindVertex(f, v)); ASSERT(idx != NO_ID); return f[idx]; }
 
+private:
+	bool LoadPLY(const String& fileName);
+	bool LoadOBJ(const String& fileName);
+
+	bool SavePLY(const String& fileName, const cList<String>& comments=cList<String>(), bool bBinary=true) const;
+	bool SaveOBJ(const String& fileName) const;
+
 	#ifdef _USE_CUDA
 	static bool InitKernels(int device=-1);
 	#endif
 
+public:
 	#ifdef _USE_BOOST
 	// implement BOOST serialization
 	template <class Archive>

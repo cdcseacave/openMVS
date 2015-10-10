@@ -93,7 +93,7 @@ public:
 	float Occupancy() const;
 
 	/// Computes an approximate texture atlas size.
-	static int ComputeTextureSize(const RectArr& rects);
+	static int ComputeTextureSize(const RectArr& rects, int mult=0);
 
 	/// Returns true if a is contained/on the border in b.
 	static inline bool IsContainedIn(const Rect& a, const Rect& b) {

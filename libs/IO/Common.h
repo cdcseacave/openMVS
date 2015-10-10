@@ -53,6 +53,7 @@
 #endif
 #include "EXIF.h"
 #include "PLY.h"
+#include "OBJ.h"
 #include "TinyXML2.h"
 /*----------------------------------------------------------------*/
 

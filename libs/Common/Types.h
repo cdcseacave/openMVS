@@ -1286,7 +1286,7 @@ public:
 	#ifdef _USE_EIGEN
 	inline TPoint2(const EVec& rhs) { operator EVec& () = rhs; }
 	#endif
-	inline TPoint2(const TYPE& _x) : Base(_x,_x) {}
+	explicit inline TPoint2(const TYPE& _x) : Base(_x,_x) {}
 	inline TPoint2(const TYPE& _x, const TYPE& _y) : Base(_x,_y) {}
 	explicit inline TPoint2(const cv::Point3_<TYPE>& pt) : Base(pt.x/pt.z,pt.y/pt.z) {}
 
@@ -1378,7 +1378,7 @@ public:
 	#ifdef _USE_EIGEN
 	inline TPoint3(const EVec& rhs) { operator EVec& () = rhs; }
 	#endif
-	inline TPoint3(const TYPE& _x) : Base(_x,_x,_x) {}
+	explicit inline TPoint3(const TYPE& _x) : Base(_x,_x,_x) {}
 	inline TPoint3(const TYPE& _x, const TYPE& _y, const TYPE& _z) : Base(_x,_y,_z) {}
 	template <typename T> inline TPoint3(const cv::Point_<T>& pt, const T& _z=T(1)) : Base(pt.x,pt.y,_z) {}
 	template <typename T1, typename T2> inline TPoint3(const cv::Point_<T1>& pt, const T2& _z) : Base(pt.x,pt.y,_z) {}
@@ -1832,7 +1832,6 @@ struct TPixel {
 	typedef typename ColorType<TYPE>::alt_type ALT;
 	typedef TYPE Type;
 	typedef TPoint3<TYPE> Pnt;
-	typedef TMatrix<TYPE,3,1> Vec;
 	static const TPixel BLACK;
 	static const TPixel WHITE;
 	static const TPixel GRAY;
@@ -1847,7 +1846,6 @@ struct TPixel {
 	template <typename T> inline TPixel(const TPixel<T>& p) : r(TYPE(p.r)), g(TYPE(p.g)), b(TYPE(p.b)) {}
 	inline TPixel(TYPE _r, TYPE _g, TYPE _b) : r(_r), g(_g), b(_b) {}
 	inline TPixel(const Pnt& col) : c0(col.x),  c1(col.y),  c2(col.z) {}
-	inline TPixel(const Vec& col) : c0(col[0]), c1(col[1]), c2(col[2]) {}
 	inline TPixel(uint32_t col) : r((col>>16)&0xFF), g((col>>8)&0xFF), b(col&0xFF) {}
 	// set/get from default type
 	inline void set(TYPE _r, TYPE _g, TYPE _b) { r = _r; g = _g; b = _b; }
@@ -1867,9 +1865,6 @@ struct TPixel {
 	// access as vector equivalent
 	inline operator const Pnt& () const { return *((const Pnt*)this); }
 	inline operator Pnt& () { return *((Pnt*)this); }
-	// access as vector equivalent
-	inline operator const Vec& () const { return *((const Vec*)this); }
-	inline operator Vec& () { return *((Vec*)this); }
 	// access as cv::Scalar equivalent
 	inline operator cv::Scalar () const { return cv::Scalar(c[0], c[1], c[2], TYPE(0)); }
 	// compare
@@ -1936,7 +1931,6 @@ struct TColor {
 	typedef TYPE Type;
 	typedef TPixel<TYPE> Pxl;
 	typedef TPoint3<TYPE> Pnt;
-	typedef TMatrix<TYPE,4,1> Vec;
 	static const TColor BLACK;
 	static const TColor WHITE;
 	static const TColor GRAY;
@@ -1953,11 +1947,9 @@ struct TColor {
 	inline TColor(const Pxl& col, TYPE _a=ColorType<TYPE>::ONE) : r(col.r),  g(col.g),  b(col.b), a(_a) {}
 	#if _COLORMODE == _COLORMODE_BGR
 	inline TColor(const Pnt& col, TYPE _a=ColorType<TYPE>::ONE) : b(col.x),  g(col.y),  r(col.z),  a(_a) {}
-	inline TColor(const Vec& col, TYPE _a=ColorType<TYPE>::ONE) : b(col[0]), g(col[1]), r(col[2]), a(_a) {}
 	#endif
 	#if _COLORMODE == _COLORMODE_RGB
 	inline TColor(const Pnt& col, TYPE _a=ColorType<TYPE>::ONE) : r(col.x),  g(col.y),  b(col.z),  a(_a) {}
-	inline TColor(const Vec& col, TYPE _a=ColorType<TYPE>::ONE) : r(col[0]), g(col[1]), b(col[2]), a(_a) {}
 	#endif
 	inline TColor(uint32_t col) : r((col>>16)&0xFF), g((col>>8)&0xFF), b(col&0xFF), a((col>>24)&0xFF) {}
 	// set/get from default type
@@ -1979,9 +1971,6 @@ struct TColor {
 	// access as point equivalent
 	inline operator const Pnt& () const { return *((const Pnt*)this); }
 	inline operator Pnt& () { return *((Pnt*)this); }
-	// access as vector equivalent
-	inline operator const Vec& () const { return *((const Vec*)this); }
-	inline operator Vec& () { return *((Vec*)this); }
 	// access as cv::Scalar equivalent
 	inline operator cv::Scalar () const { return cv::Scalar(c[0], c[1], c[2], c[3]); }
 	// compare

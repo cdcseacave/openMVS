@@ -241,7 +241,7 @@ public:
 // call with empty parameter to get an unused image;
 // call with an image pointer retrieved earlier to signal that is not needed anymore
 template<typename TYPE>
-static TYPE* MeshRefine::TypePool(TYPE* pObj)
+TYPE* MeshRefine::TypePool(TYPE* pObj)
 {
 	typedef CAutoPtr<TYPE> TypePtr;
 	static CriticalSection cs;

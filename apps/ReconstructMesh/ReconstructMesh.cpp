@@ -207,7 +207,7 @@ int main(int argc, LPCTSTR* argv)
 		if (!scene.Load(MAKE_PATH_SAFE(OPT::strInputFileName)) || scene.mesh.IsEmpty())
 			return EXIT_FAILURE;
 		// save mesh
-		scene.mesh.Save(MAKE_PATH_SAFE(Util::getFullFileName(OPT::strOutputFileName) + _T(".ply")));
+		scene.mesh.Save(MAKE_PATH_SAFE(OPT::strOutputFileName));
 	} else {
 		if (OPT::strMeshFileName.IsEmpty()) {
 			// load point-cloud and reconstruct a coarse mesh

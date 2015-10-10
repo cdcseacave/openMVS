@@ -1230,8 +1230,16 @@ namespace BasicPLY {
 	};
 } // namespace BasicPLY
 
-// import the mesh as a PLY file
+// import the mesh from the given file
 bool Mesh::Load(const String& fileName)
+{
+	const String ext(Util::getFileExt(fileName).ToLower());
+	if (ext == _T(".obj"))
+		return LoadOBJ(fileName);
+	return LoadPLY(fileName);
+}
+// import the mesh as a PLY file
+bool Mesh::LoadPLY(const String& fileName)
 {
 	ASSERT(!fileName.IsEmpty());
 	Release();
@@ -1287,11 +1295,74 @@ bool Mesh::Load(const String& fileName)
 		}
 	}
 	return true;
+}
+// import the mesh as a OBJ file
+bool Mesh::LoadOBJ(const String& fileName)
+{
+	ASSERT(!fileName.IsEmpty());
+	Release();
+
+	// open and parse OBJ file
+	ObjModel model;
+	if (!model.Load(fileName)) {
+		DEBUG_EXTRA("error: invalid OBJ file");
+		return false;
+	}
+	if (model.get_vertices().empty() || model.get_groups().size() != 1 || model.get_groups()[0].faces.empty()) {
+		DEBUG_EXTRA("error: invalid mesh file");
+		return false;
+	}
+
+	// store vertices
+	ASSERT(sizeof(ObjModel::Vertex) == sizeof(Vertex));
+	ASSERT(model.get_vertices().size() < std::numeric_limits<VIndex>::max());
+	vertices.CopyOf(&model.get_vertices()[0], (VIndex)model.get_vertices().size());
+
+	// store vertex normals
+	ASSERT(sizeof(ObjModel::Normal) == sizeof(Normal));
+	ASSERT(model.get_vertices().size() < std::numeric_limits<VIndex>::max());
+	if (!model.get_normals().empty()) {
+		ASSERT(model.get_normals().size() == model.get_vertices().size());
+		vertexNormals.CopyOf(&model.get_normals()[0], (VIndex)model.get_normals().size());
+	}
+
+	// store faces
+	const ObjModel::Group& group = model.get_groups()[0];
+	ASSERT(group.faces.size() < std::numeric_limits<FIndex>::max());
+	faces.Reserve((FIndex)group.faces.size());
+	for (const ObjModel::Face& f: group.faces) {
+		ASSERT(f.vertices[0] != NO_ID);
+		faces.AddConstruct(f.vertices[0], f.vertices[1], f.vertices[2]);
+		if (f.texcoords[0] != NO_ID) {
+			for (int i=0; i<3; ++i)
+				faceTexcoords.AddConstruct(model.get_texcoords()[f.texcoords[i]]);
+		}
+		if (f.normals[0] != NO_ID) {
+			Normal& n = faceNormals.AddConstruct(Normal::ZERO);
+			for (int i=0; i<3; ++i)
+				n += normalized(model.get_normals()[f.normals[i]]);
+			normalize(n);
+		}
+	}
+
+	// store texture
+	ObjModel::MaterialLib::Material* pMaterial(model.GetMaterial(group.material_name));
+	if (pMaterial && pMaterial->LoadDiffuseMap())
+		cv::swap(textureDiffuse, pMaterial->diffuse_map);
+	return true;
 } // Load
 /*----------------------------------------------------------------*/
 
-// export the mesh as a PLY file
+// export the mesh to the given file
 bool Mesh::Save(const String& fileName, const cList<String>& comments, bool bBinary) const
+{
+	const String ext(Util::getFileExt(fileName).ToLower());
+	if (ext == _T(".obj"))
+		return SaveOBJ(fileName);
+	return SavePLY(ext != _T(".ply") ? String(fileName+_T(".ply")) : fileName, comments, bBinary);
+}
+// export the mesh as a PLY file
+bool Mesh::SavePLY(const String& fileName, const cList<String>& comments, bool bBinary) const
 {
 	ASSERT(!fileName.IsEmpty());
 	Util::ensureDirectory(fileName);
@@ -1372,6 +1443,58 @@ bool Mesh::Save(const String& fileName, const cList<String>& comments, bool bBin
 
 	// write to file
 	return ply.header_complete();
+}
+// export the mesh as a OBJ file
+bool Mesh::SaveOBJ(const String& fileName) const
+{
+	ASSERT(!fileName.IsEmpty());
+	Util::ensureDirectory(fileName);
+
+	// create the OBJ model
+	ObjModel model;
+
+	// store vertices
+	ASSERT(sizeof(ObjModel::Vertex) == sizeof(Vertex));
+	model.get_vertices().insert(model.get_vertices().begin(), vertices.Begin(), vertices.End());
+
+	// store vertex normals
+	ASSERT(sizeof(ObjModel::Normal) == sizeof(Normal));
+	ASSERT(model.get_vertices().size() < std::numeric_limits<VIndex>::max());
+	if (!vertexNormals.IsEmpty()) {
+		ASSERT(vertexNormals.GetSize() == vertices.GetSize());
+		model.get_normals().insert(model.get_normals().begin(), vertexNormals.Begin(), vertexNormals.End());
+	}
+
+	// store face texture coordinates
+	ASSERT(sizeof(ObjModel::TexCoord) == sizeof(TexCoord));
+	if (!faceTexcoords.IsEmpty()) {
+		ASSERT(faceTexcoords.GetSize() == faces.GetSize()*3);
+		model.get_texcoords().insert(model.get_texcoords().begin(), faceTexcoords.Begin(), faceTexcoords.End());
+	}
+
+	// store faces
+	ObjModel::Group& group = model.AddGroup(_T("material_0"));
+	group.faces.reserve(faces.GetSize());
+	FOREACH(idxFace, faces) {
+		const Face& face = faces[idxFace];
+		ObjModel::Face f;
+		memset(&f, 0xFF, sizeof(ObjModel::Face));
+		for (int i=0; i<3; ++i) {
+			f.vertices[i] = face[i];
+			if (!faceTexcoords.IsEmpty())
+				f.texcoords[i] = idxFace*3+i;
+			if (!vertexNormals.IsEmpty())
+				f.normals[i] = face[i];
+		}
+		group.faces.push_back(f);
+	}
+
+	// store texture
+	ObjModel::MaterialLib::Material* pMaterial(model.GetMaterial(group.material_name));
+	ASSERT(pMaterial != NULL);
+	pMaterial->diffuse_map = textureDiffuse;
+
+	return model.Save(fileName);
 } // Save
 /*----------------------------------------------------------------*/
 

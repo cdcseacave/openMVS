@@ -29,6 +29,13 @@ ObjModel::MaterialLib::Material::Material(const Image8U3& _diffuse_map, const Co
 	Kd(_Kd)
 {
 }
+
+bool ObjModel::MaterialLib::Material::LoadDiffuseMap()
+{
+	if (diffuse_map.empty())
+		return diffuse_map.Load(diffuse_name);
+	return true;
+}
 /*----------------------------------------------------------------*/
 
 
@@ -39,42 +46,32 @@ ObjModel::MaterialLib::MaterialLib()
 {
 }
 
-void ObjModel::MaterialLib::AddMaterial(String const & name, Material material)
-{
-	material_names.push_back(name);
-	materials.push_back(material);
-}
-
 bool ObjModel::MaterialLib::Save(const String& prefix) const
 {
-	String filename(prefix + ".mtl");
-	std::ofstream out(filename.c_str());
+	std::ofstream out((prefix+".mtl").c_str());
 	if (!out.good())
 		return false;
 
-	String name(Util::getFileName(prefix));
-
-	for (size_t i = 0; i < materials.size(); ++i) {
-		const Material& mat = materials[i];
-		String diffuse_map_postfix("_" + material_names[i] + "_map_Kd.png");
-		out << "newmtl " << material_names[i] << std::endl
-			<< "Ka 1.000000 1.000000 1.000000" << std::endl
-			<< "Kd " << mat.Kd.r << " " << mat.Kd.g << " " << mat.Kd.b << std::endl
-			<< "Ks 0.000000 0.000000 0.000000" << std::endl
-			<< "Tr 1.000000" << std::endl
-			<< "illum 1" << std::endl
-			<< "Ns 1.000000" << std::endl
-			<< "map_Kd " << name + diffuse_map_postfix << std::endl;
-	}
-	out.close();
-
+	const String pathName(Util::getFilePath(prefix));
 	#ifdef OBJ_USE_OPENMP
 	bool bSuccess(true);
 	#pragma omp parallel for
 	#endif
 	for (int_t i = 0; i < (int_t)materials.size(); ++i) {
-		String diffuse_map_postfix("_" + material_names[i] + "_map_Kd.png");
-		const bool bRet(materials[i].diffuse_map.Save(prefix + diffuse_map_postfix));
+		const Material& mat = materials[i];
+		// save material description
+		if (mat.diffuse_name.IsEmpty())
+			const_cast<String&>(mat.diffuse_name) = prefix+"_"+mat.name+"_map_Kd.png";
+		out << "newmtl " << mat.name << "\n"
+			<< "Ka 1.000000 1.000000 1.000000" << "\n"
+			<< "Kd " << mat.Kd.r << " " << mat.Kd.g << " " << mat.Kd.b << "\n"
+			<< "Ks 0.000000 0.000000 0.000000" << "\n"
+			<< "Tr 1.000000" << "\n"
+			<< "illum 1" << "\n"
+			<< "Ns 1.000000" << "\n"
+			<< "map_Kd " << mat.diffuse_name << "\n";
+		// save material maps
+		const bool bRet(mat.diffuse_map.Save(mat.diffuse_name));
 		#ifdef OBJ_USE_OPENMP
 		#pragma omp critical
 		if (!bRet)
@@ -93,27 +90,26 @@ bool ObjModel::MaterialLib::Save(const String& prefix) const
 
 bool ObjModel::MaterialLib::Load(const String& fileName)
 {
+	const size_t numMaterials(materials.size());
 	std::ifstream in(fileName.c_str());
-	if (!in.good())
-		return false;
-
 	String keyword;
-	while (!in.eof()) {
-		in >> keyword;
+	while (in.good() && in >> keyword) {
 		if (keyword == "newmtl") {
 			in >> keyword;
-			material_names.push_back(keyword);
-			materials.push_back(Material());
+			materials.push_back(Material(keyword));
 		} else if (keyword == "Kd") {
+			ASSERT(numMaterials < materials.size());
 			Color c;
 			in >> c.r >> c.g >> c.b;
 			materials.back().Kd = c;
 		} else if (keyword == "map_Kd") {
-			in >> keyword;
-			materials.back().diffuse_map.Load(keyword);
+			ASSERT(numMaterials < materials.size());
+			String& diffuse_name = materials.back().diffuse_name;
+			in >> diffuse_name;
+			diffuse_name = Util::getFilePath(fileName) + diffuse_name;
 		}
 	}
-	return true;
+	return numMaterials < materials.size();
 }
 /*----------------------------------------------------------------*/
 
@@ -121,42 +117,41 @@ bool ObjModel::MaterialLib::Load(const String& fileName)
 
 // S T R U C T S ///////////////////////////////////////////////////
 
-ObjModel::ObjModel()
+bool ObjModel::Save(const String& fileName, unsigned precision) const
 {
-}
-
-bool ObjModel::Save(const String& prefix) const
-{
+	const String prefix(Util::getFileName(fileName));
 	if (!material_lib.Save(prefix))
 		return false;
 
-	String name(Util::getFileName(prefix));
 	std::ofstream out((prefix + ".obj").c_str());
 	if (!out.good())
 		return false;
 
-	out << "mtllib " << name << ".mtl" << std::endl;
+	out << "mtllib " << prefix << ".mtl" << "\n";
 
-	out << std::fixed << std::setprecision(6);
+	out << std::fixed << std::setprecision(precision);
 	for (size_t i = 0; i < vertices.size(); ++i) {
-		out << "v " << vertices[i][0] << " "
+		out << "v "
+			<< vertices[i][0] << " "
 			<< vertices[i][1] << " "
-			<< vertices[i][2] << std::endl;
+			<< vertices[i][2] << "\n";
 	}
 
 	for (size_t i = 0; i < texcoords.size(); ++i) {
-		out << "vt " << texcoords[i][0] << " "
-			<< texcoords[i][1] << std::endl;
+		out << "vt "
+			<< texcoords[i][0] << " "
+			<< texcoords[i][1] << "\n";
 	}
 
 	for (size_t i = 0; i < normals.size(); ++i) {
-		out << "vn " << normals[i][0] << " "
+		out << "vn "
+			<< normals[i][0] << " "
 			<< normals[i][1] << " "
-			<< normals[i][2] << std::endl;
+			<< normals[i][2] << "\n";
 	}
 
 	for (size_t i = 0; i < groups.size(); ++i) {
-		out << "usemtl " << groups[i].material_name << std::endl;
+		out << "usemtl " << groups[i].material_name << "\n";
 		for (size_t j = 0; j < groups[i].faces.size(); ++j) {
 			Face const & face =  groups[i].faces[j];
 			out << "f";
@@ -165,7 +160,7 @@ bool ObjModel::Save(const String& prefix) const
 					<< "/" << face.texcoords[k]  + OBJ_INDEX_OFFSET
 					<< "/" << face.normals[k]  + OBJ_INDEX_OFFSET;
 			}
-			out << std::endl;
+			out << "\n";
 		}
 	}
 	return true;
@@ -173,65 +168,99 @@ bool ObjModel::Save(const String& prefix) const
 
 bool ObjModel::Load(const String& fileName)
 {
-	std::ifstream in(fileName.c_str());
-	if (!in.good())
-		return false;
-
-	String keyword;
-	in >> keyword;
-	if (keyword != "mtllib")
-		return false;
-	in >> keyword;
-	if (!material_lib.Load(keyword))
-		return false;
-
-	in >> keyword;
-	while (keyword == "v") {
-		Vec3f v;
-		in >> v[0] >> v[1] >> v[2];
-		if (!in.good())
-			return false;
-		vertices.push_back(v);
+	ASSERT(vertices.empty() && groups.empty() && material_lib.materials.empty());
+	std::ifstream fin(fileName.c_str());
+	String line, keyword;
+	std::istringstream in;
+	while (fin.good()) {
+		std::getline(fin, line);
+		if (line.empty() || line[0] == '#')
+			continue;
+		in.str(line);
 		in >> keyword;
-	}
-	while (keyword == "vt") {
-		Vec2f vt;
-		in >> vt[0] >> vt[1];
-		if (!in.good())
-			return false;
-		texcoords.push_back(vt);
-		in >> keyword;
-	}
-	while (keyword == "vn") {
-		Vec3f vn;
-		in >> vn[0] >> vn[1] >> vn[2];
-		if (!in.good())
-			return false;
-		normals.push_back(vn);
-		in >> keyword;
-	}
-	while (keyword == "usemtl") {
-		Group group;
-		in >> group.material_name;
-		if (!in.good())
-			return false;
-		in >> keyword;
-		while (keyword == "f") {
+		if (keyword == "v") {
+			Vertex v;
+			in >> v[0] >> v[1] >> v[2];
+			if (in.fail())
+				return false;
+			vertices.push_back(v);
+		} else
+		if (keyword == "vt") {
+			TexCoord vt;
+			in >> vt[0] >> vt[1];
+			if (in.fail())
+				return false;
+			texcoords.push_back(vt);
+		} else
+		if (keyword == "vn") {
+			Normal vn;
+			in >> vn[0] >> vn[1] >> vn[2];
+			if (in.fail())
+				return false;
+			normals.push_back(vn);
+		} else
+		if (keyword == "f") {
 			Face f;
+			memset(&f, 0xFF, sizeof(Face));
 			for (size_t k = 0; k < 3; ++k) {
 				in >> keyword;
-				sscanf(keyword, "%zu/%zu/%zu", f.vertices+k, f.texcoords+k, f.normals+k);
-				f.vertices[k] -= OBJ_INDEX_OFFSET;
-				f.texcoords[k] -= OBJ_INDEX_OFFSET;
-				f.normals[k] -= OBJ_INDEX_OFFSET;
+				switch (sscanf(keyword, "%u/%u/%u", f.vertices+k, f.texcoords+k, f.normals+k)) {
+				case 1:
+					f.vertices[k] -= OBJ_INDEX_OFFSET;
+					break;
+				case 2:
+					f.vertices[k] -= OBJ_INDEX_OFFSET;
+					if (f.texcoords[k] != NO_ID)
+						f.texcoords[k] -= OBJ_INDEX_OFFSET;
+					if (f.normals[k] != NO_ID)
+						f.normals[k] -= OBJ_INDEX_OFFSET;
+					break;
+				case 3:
+					f.vertices[k] -= OBJ_INDEX_OFFSET;
+					f.texcoords[k] -= OBJ_INDEX_OFFSET;
+					f.normals[k] -= OBJ_INDEX_OFFSET;
+					break;
+				default:
+					return false;
+				}
 			}
-			if (!in.good())
+			if (in.fail())
 				return false;
-			group.faces.push_back(f);
+			groups.back().faces.push_back(f);
+		} else
+		if (keyword == "mtllib") {
 			in >> keyword;
+			if (!material_lib.Load(keyword))
+				return false;
+		} else
+		if (keyword == "usemtl") {
+			Group group;
+			in >> group.material_name;
+			if (in.fail())
+				return false;
+			groups.push_back(group);
 		}
-		groups.push_back(group);
+		in.clear();
 	}
-	return true;
+	return !vertices.empty();
+}
+
+
+ObjModel::Group& ObjModel::AddGroup(const String& material_name)
+{
+	groups.push_back(Group());
+	Group& group = groups.back();
+	group.material_name = material_name;
+	if (!GetMaterial(material_name))
+		material_lib.materials.push_back(MaterialLib::Material(material_name));
+	return group;
+}
+
+ObjModel::MaterialLib::Material* ObjModel::GetMaterial(const String& name)
+{
+	MaterialLib::Materials::iterator it(std::find_if(material_lib.materials.begin(), material_lib.materials.end(), [&name](const MaterialLib::Material& mat) { return mat.name == name; }));
+	if (it == material_lib.materials.end())
+		return NULL;
+	return &(*it);
 }
 /*----------------------------------------------------------------*/

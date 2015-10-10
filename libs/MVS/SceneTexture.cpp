@@ -393,7 +393,7 @@ public:
 	void CreateSeamVertices();
 	void GlobalSeamLeveling();
 	void LocalSeamLeveling();
-	void GenerateTexture(bool bGlobalSeamLeveling, bool bLocalSeamLeveling, unsigned nRectPackingHeuristic, Pixel8U colEmpty);
+	void GenerateTexture(bool bGlobalSeamLeveling, bool bLocalSeamLeveling, unsigned nTextureSizeMultiple, unsigned nRectPackingHeuristic, Pixel8U colEmpty);
 
 	template <typename PIXEL>
 	static inline PIXEL RGB2YCBCR(const PIXEL& v) {
@@ -1480,8 +1480,8 @@ void MeshTexture::ProcessMask(Image8U& mask, int stripWidth)
 	#undef DILATEDIR
 	#define ERODEDIR(rd,cd) { \
 		const int rl(r-(rd)), cl(c-(cd)), rr(r+(rd)), cr(c+(cd)); \
-		const Type vl(mask.isInside(ImageRef(cl,rl)) ? mask(rl,cl) : empty); \
-		const Type vr(mask.isInside(ImageRef(cr,rr)) ? mask(rr,cr) : empty); \
+		const Type vl(mask.isInside(ImageRef(cl,rl)) ? mask(rl,cl) : uint8_t(empty)); \
+		const Type vr(mask.isInside(ImageRef(cr,rr)) ? mask(rr,cr) : uint8_t(empty)); \
 		if ((vl == border && vr == empty) || (vr == border && vl == empty)) { \
 			v = empty; \
 			continue; \
@@ -1835,7 +1835,7 @@ void MeshTexture::LocalSeamLeveling()
 	}
 }
 
-void MeshTexture::GenerateTexture(bool bGlobalSeamLeveling, bool bLocalSeamLeveling, unsigned nRectPackingHeuristic, Pixel8U colEmpty)
+void MeshTexture::GenerateTexture(bool bGlobalSeamLeveling, bool bLocalSeamLeveling, unsigned nTextureSizeMultiple, unsigned nRectPackingHeuristic, Pixel8U colEmpty)
 {
 	// project patches in the corresponding view and compute texture-coordinates and bounding-box
 	const int border(2);
@@ -1944,7 +1944,7 @@ void MeshTexture::GenerateTexture(bool bGlobalSeamLeveling, bool bLocalSeamLevel
 		RectsBinPack::RectArr rects(texturePatches.GetSize());
 		FOREACH(i, texturePatches)
 			rects[i] = texturePatches[i].rect;
-		int textureSize(RectsBinPack::ComputeTextureSize(rects));
+		int textureSize(RectsBinPack::ComputeTextureSize(rects, nTextureSizeMultiple));
 		// increase texture size till all patches fit
 		while (true) {
 			TD_TIMER_STARTD();
@@ -2020,7 +2020,7 @@ void MeshTexture::GenerateTexture(bool bGlobalSeamLeveling, bool bLocalSeamLevel
 }
 
 // texture mesh
-bool Scene::TextureMesh(unsigned nResolutionLevel, unsigned nMinResolution, float fOutlierThreshold, float fRatioDataSmoothness, bool bGlobalSeamLeveling, bool bLocalSeamLeveling, unsigned nRectPackingHeuristic, Pixel8U colEmpty)
+bool Scene::TextureMesh(unsigned nResolutionLevel, unsigned nMinResolution, float fOutlierThreshold, float fRatioDataSmoothness, bool bGlobalSeamLeveling, bool bLocalSeamLeveling, unsigned nTextureSizeMultiple, unsigned nRectPackingHeuristic, Pixel8U colEmpty)
 {
 	MeshTexture texture(*this, nResolutionLevel, nMinResolution);
 
@@ -2042,7 +2042,7 @@ bool Scene::TextureMesh(unsigned nResolutionLevel, unsigned nMinResolution, floa
 	// generate the texture image and atlas
 	{
 		TD_TIMER_STARTD();
-		texture.GenerateTexture(bGlobalSeamLeveling, bLocalSeamLeveling, nRectPackingHeuristic, colEmpty);
+		texture.GenerateTexture(bGlobalSeamLeveling, bLocalSeamLeveling, nTextureSizeMultiple, nRectPackingHeuristic, colEmpty);
 		DEBUG_EXTRA("Generating texture atlas and image completed: %u patches, %u image size (%s)", texture.texturePatches.GetSize(), mesh.textureDiffuse.width(), TD_TIMER_GET_FMT().c_str());
 	}
 

@@ -499,9 +499,10 @@ void MaxRectsBinPack::PruneFreeList()
 }
 
 
-/// Compute the appropriate texture atlas size
-/// (an approximation since the packing is a heuristic)
-int MaxRectsBinPack::ComputeTextureSize(const RectArr& rects)
+// Compute the appropriate texture atlas size
+// (an approximation since the packing is a heuristic)
+// (if mult > 0, the returned size is a multiple of that value, otherwise is a power of two)
+int MaxRectsBinPack::ComputeTextureSize(const RectArr& rects, int mult)
 {
 	int area(0), maxSizePatch(0);
 	FOREACHPTR(pRect, rects) {
@@ -514,8 +515,13 @@ int MaxRectsBinPack::ComputeTextureSize(const RectArr& rects)
 	// compute the approximate area
 	// considering the best case scenario for the packing algorithm: 0.9 fill
 	area = CEIL2INT((1.f/0.9f)*(float)area);
-	// compute texture size as power of two
-	int sizeTex(MAXF(CEIL2INT(SQRT((float)area)), maxSizePatch));
+	// compute texture size...
+	const int sizeTex(MAXF(CEIL2INT(SQRT((float)area)), maxSizePatch));
+	if (mult > 0) {
+		// ... as multiple of mult
+		return ((sizeTex+mult-1)/mult)*mult;
+	}
+	// ... as power of two
 	return POWI((int)2, CEIL2INT(LOGN((float)sizeTex) / LOGN(2.f)));
 }
 /*----------------------------------------------------------------*/

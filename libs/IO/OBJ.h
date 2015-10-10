@@ -35,31 +35,41 @@ public:
 	struct MaterialLib {
 		// represents a Lambertian material
 		struct Material {
+			String name;
+			String diffuse_name;
 			Image8U3 diffuse_map;
 			Color Kd;
 
 			Material() : Kd(Color::WHITE) {}
+			Material(const String& _name) : name(_name), Kd(Color::WHITE) {}
 			Material(const Image8U3& _diffuse_map, const Color& _Kd=Color::WHITE);
+
+			// Makes sure the image is loaded for the diffuse map
+			bool LoadDiffuseMap();
 		};
 
-		std::vector<Material> materials;
-		std::vector<String> material_names;
+		typedef std::vector<Material> Materials;
+
+		Materials materials;
 
 		MaterialLib();
 
-		void AddMaterial(const String& name, Material material);
-		inline size_t GetSize() const { return materials.size(); }
-
-		// Saves the material lib to a .mtl file and all textures of its materials with the given prefix
+		// Saves the material lib to a .mtl file and all textures of its materials with the given prefix name
 		bool Save(const String& prefix) const;
-		// Loads the material lib from a .mtl file and all textures of its materials with the given prefix
+		// Loads the material lib from a .mtl file and all textures of its materials with the given file name
 		bool Load(const String& fileName);
 	};
 
+	typedef Point3f Vertex;
+	typedef Point2f TexCoord;
+	typedef Point3f Normal;
+
+	typedef uint32_t Index;
+
 	struct Face {
-		size_t vertices[3];
-		size_t texcoords[3];
-		size_t normals[3];
+		Index vertices[3];
+		Index texcoords[3];
+		Index normals[3];
 	};
 
 	struct Group {
@@ -67,9 +77,9 @@ public:
 		std::vector<Face> faces;
 	};
 
-	typedef std::vector<Vec3f> Vertices;
-	typedef std::vector<Vec2f> TexCoords;
-	typedef std::vector<Vec3f> Normals;
+	typedef std::vector<Vertex> Vertices;
+	typedef std::vector<TexCoord> TexCoords;
+	typedef std::vector<Normal> Normals;
 	typedef std::vector<Group> Groups;
 
 private:
@@ -80,12 +90,17 @@ private:
 	MaterialLib material_lib;
 
 public:
-	ObjModel();
+	ObjModel() {}
 
-	// Saves the obj model to an .obj file, its material lib and the materials with the given prefix
-	bool Save(const String& prefix) const;
-	// Loads the obj model from an .obj file, its material lib and the materials with the given prefix
+	// Saves the obj model to an .obj file, its material lib and the materials with the given file name
+	bool Save(const String& fileName, unsigned precision=6) const;
+	// Loads the obj model from an .obj file, its material lib and the materials with the given file name
 	bool Load(const String& fileName);
+
+	// Creates a new group with the given material name
+	Group& AddGroup(const String& material_name);
+	// Retrieves a material from the library based on its name
+	MaterialLib::Material* GetMaterial(const String& name);
 
 	MaterialLib& get_material_lib() { return material_lib; }
 	Vertices& get_vertices() { return vertices; }
