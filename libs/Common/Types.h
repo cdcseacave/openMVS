@@ -72,7 +72,6 @@
 #endif
 
 // File-System utils (stlplus)
-#include "FileUtil.h"
 #include "Wildcard.h"
 
 // include usual boost libraries
