@@ -211,8 +211,10 @@ class RLock {
 public:
 	RLock(RWLock& aCs) : cs(aCs)	{ cs.EnterRead(); }
 	~RLock()						{ cs.LeaveRead(); }
-protected:
+private:
+	RLock(const RLock&);
 	RLock& operator=(const RLock&);
+protected:
 	RWLock& cs;
 };
 
@@ -223,8 +225,10 @@ public:
 	bool IsLocked() const			{ return bLocked; }
 	bool TryEnter()					{ return (bLocked = cs.TryEnterRead()); }
 	bool TryLeave()					{ return !(bLocked = !cs.TryLeaveRead()); }
+private:
+	RLockTry(const RLockTry&);
+	RLockTry& operator=(const RLockTry&);
 protected:
-	RLock& operator=(const RLock&);
 	RWLock& cs;
 	bool bLocked;
 };
@@ -233,8 +237,10 @@ class WLock {
 public:
 	WLock(RWLock& aCs) : cs(aCs)	{ cs.EnterWrite(); }
 	~WLock()						{ cs.LeaveWrite(); }
+private:
+	WLock(const WLock&);
+	WLock& operator=(const WLock&);
 protected:
-	RLock& operator=(const RLock&);
 	RWLock& cs;
 };
 
@@ -244,8 +250,10 @@ public:
 	~WLockTry()						{ if (bLocked) cs.LeaveWrite(); }
 	bool IsLocked() const			{ return bLocked; }
 	bool TryEnter()					{ return (bLocked = cs.TryEnterWrite()); }
+private:
+	WLockTry(const WLockTry&);
+	WLockTry& operator=(const WLockTry&);
 protected:
-	RLock& operator=(const RLock&);
 	RWLock& cs;
 	bool bLocked;
 };

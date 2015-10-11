@@ -46,7 +46,7 @@ public:
 
 	enum { MaxEnergy = 1000 };
 
-private:
+protected:
 	struct DirectedEdge {
 		NodeID nodeID1;
 		NodeID nodeID2;

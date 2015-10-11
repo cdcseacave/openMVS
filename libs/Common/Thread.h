@@ -194,7 +194,7 @@ public:
 protected:
 	virtual void run() {}
 
-private:
+protected:
 	#ifdef _MSC_VER
 
 	enum PriorityOS {
@@ -246,7 +246,7 @@ private:
 		return NULL;
 	}
 
-private:
+protected:
 	thread_t threadHandle;
 	#ifdef _MSC_VER
 	DWORD threadId;
@@ -295,7 +295,7 @@ public:
 	static inline void setCurrentProcessPriority(Priority p) { setProcessPriority(getCurrentProcessID(), p); }
 	static inline Priority getCurrentProcessPriority() { return getProcessPriority(getCurrentProcessID()); }
 
-private:
+protected:
 
 	#ifdef _MSC_VER
 

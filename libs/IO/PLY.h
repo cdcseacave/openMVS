@@ -136,7 +136,7 @@ public:
 		std::string name;
 	};
 
-private:
+protected:
 	struct ValueType {
 		union {
 			int8_t i8;
@@ -207,7 +207,7 @@ public:
 
 	static inline bool equal_strings(const char* s1, const char* s2) { return _tcscmp(s1, s2) == 0; }
 
-private:
+protected:
 	/* find an element in a ply's list */
 	PlyElement* find_element(const char *) const;
 
@@ -297,7 +297,7 @@ public:
 	PlyRuleList *rule_list;        /* rule list from user */
 	std::vector<double> vals;      /* rule list from user */
 
-private:
+protected:
 	static const char *type_names[9]; // names of scalar types
 	static const char *old_type_names[9]; // old names of types for backward compatibility
 	static const int ply_type_size[9];

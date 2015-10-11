@@ -126,7 +126,7 @@ inline CUresult freeMemDevice(CUdeviceptr& dataDevice) {
 
 class MemDevice
 {
-private:
+protected:
 	CUdeviceptr pData;
 	size_t nSize;
 
@@ -195,7 +195,7 @@ typedef CLISTDEFIDX(MemDevice,int) MemDeviceArr;
 
 class EventRT
 {
-private:
+protected:
 	CUevent hEvent;
 
 protected:
@@ -222,7 +222,7 @@ typedef CSharedPtr<EventRT> EventRTPtr;
 
 class StreamRT
 {
-private:
+protected:
 	CUstream hStream;
 
 protected:
@@ -251,7 +251,7 @@ typedef CSharedPtr<StreamRT> StreamRTPtr;
 
 class ModuleRT
 {
-private:
+protected:
 	CUmodule hModule;
 
 protected:
@@ -393,7 +393,7 @@ public:
 	}
 	CUresult GetResult(const std::initializer_list<ReturnParam>& params) const;
 
-private:
+protected:
 	CUresult _AddParam(const InputParam& param);
 	CUresult _AddParam(const OutputParam& param);
 	template <typename T>
@@ -453,7 +453,7 @@ public:
 	typedef TYPE Type;
 	typedef TImage<TYPE> ImageType;
 
-private:
+protected:
 	CUarray hArray;
 
 public:

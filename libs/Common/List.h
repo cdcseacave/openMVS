@@ -339,7 +339,7 @@ public:
 		return (IDX)(pElem-vector);
 	}
 
-	inline ARG_TYPE	operator[](IDX index) const
+	inline const TYPE&	operator[](IDX index) const
 	{
 		ASSERT(index < size);
 		return vector[index];
@@ -369,7 +369,7 @@ public:
 		return vector+size;
 	}
 
-	inline ARG_TYPE	First() const
+	inline const TYPE&	First() const
 	{
 		ASSERT(size > 0);
 		return vector[0];
@@ -380,7 +380,7 @@ public:
 		return vector[0];
 	}
 
-	inline ARG_TYPE	Last() const
+	inline const TYPE&	Last() const
 	{
 		ASSERT(size > 0);
 		return vector[size-1];
@@ -967,6 +967,7 @@ public:
 	inline ARG_TYPE	RemoveTail()
 	{
 		ASSERT(size);
+		ASSERT(!useConstruct);
 		return vector[--size];
 	}
 
@@ -1253,9 +1254,7 @@ protected:
 };
 template <typename TYPE, typename ARG_TYPE, int useConstruct, int grow, typename IDX_TYPE>
 const typename cList<TYPE,ARG_TYPE,useConstruct,grow,IDX_TYPE>::IDX
-cList<TYPE,ARG_TYPE,useConstruct,grow,IDX_TYPE>::NO_INDEX(
-	DECLARE_NO_INDEX(typename cList<TYPE,ARG_TYPE,useConstruct,grow,IDX_TYPE>::IDX)
-);
+cList<TYPE,ARG_TYPE,useConstruct,grow,IDX_TYPE>::NO_INDEX(DECLARE_NO_INDEX(IDX));
 /*----------------------------------------------------------------*/
 
 
@@ -1408,6 +1407,155 @@ inline bool cListTest(unsigned iters) {
 	return true;
 }
 #endif
+/*----------------------------------------------------------------*/
+
+
+
+/**************************************************************************************
+ * Fixed size list template
+ **************************************************************************************/
+
+template <typename TYPE, int N>
+class cListFixed {
+public:
+	typedef TYPE Type;
+	typedef const TYPE& ArgType;
+	typedef unsigned IDX;
+	enum {MAX_SIZE = N};
+
+	inline cListFixed() : size(0) {}
+	inline void CopyOf(const TYPE* pData, IDX nSize) {
+		memcpy(vector, pData, nSize);
+		size = nSize;
+	}
+	inline bool IsEmpty() const {
+		return (size == 0);
+	}
+	inline IDX GetSize() const {
+		return size;
+	}
+	inline const TYPE* Begin() const {
+		return vector;
+	}
+	inline TYPE* Begin() {
+		return vector;
+	}
+	inline const TYPE* End() const {
+		return vector+size;
+	}
+	inline TYPE* End() {
+		return vector+size;
+	}
+	inline const TYPE& First() const {
+		ASSERT(size > 0);
+		return vector[0];
+	}
+	inline TYPE& First() {
+		ASSERT(size > 0);
+		return vector[0];
+	}
+	inline const TYPE& Last() const {
+		ASSERT(size > 0);
+		return vector[size-1];
+	}
+	inline TYPE& Last() {
+		ASSERT(size > 0);
+		return vector[size-1];
+	}
+	inline const TYPE& operator[](IDX index) const {
+		ASSERT(index < size);
+		return vector[index];
+	}
+	inline TYPE& operator[](IDX index) {
+		ASSERT(index < size);
+		return vector[index];
+	}
+	inline TYPE& AddEmpty() {
+		ASSERT(size < N);
+		return vector[size++];
+	}
+	inline void InsertAt(IDX index, ArgType elem) {
+		ASSERT(size < N);
+		memmove(vector+index+1, vector+index, sizeof(TYPE)*(size++ - index));
+		vector[index] = elem;
+	}
+	inline void Insert(ArgType elem) {
+		ASSERT(size < N);
+		vector[size++] = elem;
+	}
+	inline void RemoveLast() {
+		ASSERT(size);
+		--size;
+	}
+	inline void RemoveAt(IDX index) {
+		ASSERT(index < size);
+		if (index+1 == size)
+			RemoveLast();
+		else
+			memcpy(vector+index, vector+(--size), sizeof(TYPE));
+	}
+	inline void Empty() {
+		size = 0;
+	}
+	inline void Sort() {
+		std::sort(Begin(), End());
+	}
+	inline IDX Find(ArgType elem) const
+	{
+		IDX i = size;
+		while (i)
+			if (vector[--i] == elem)
+				return i;
+		return NO_INDEX;
+	}
+	inline IDX FindFirstEqlGreater(ArgType searchedKey) const {
+		if (size == 0) return 0;
+		IDX l1 = 0, l2 = size;
+		do {
+			IDX i = (l1 + l2) >> 1;
+			const TYPE& key = vector[i];
+			if (key == searchedKey) {
+				while (i-- && vector[i] == searchedKey);
+				return i+1;
+			}
+			if (key < searchedKey)
+				l1 = i+1;
+			else
+				l2 = i;
+		} while (l1 < l2);
+		return l1;
+	}
+	inline void StoreTop(ArgType elem) {
+		const IDX idx(FindFirstEqlGreater(elem));
+		if (idx < GetSize()) {
+			if (GetSize() >= N)
+				RemoveLast();
+			InsertAt(idx, elem);
+		} else if (GetSize() < N) {
+			Insert(elem);
+		}
+	}
+
+protected:
+	TYPE vector[N];
+	IDX size;
+
+public:
+	static const IDX NO_INDEX;
+
+#ifdef _USE_BOOST
+protected:
+	// implement BOOST serialization
+	friend class boost::serialization::access;
+	template<class Archive>
+	void serialize(Archive& ar, const unsigned int /*version*/) {
+		ar & size;
+		ar & boost::serialization::make_array(vector, size);
+	}
+#endif
+};
+template <typename TYPE, int N>
+const typename cListFixed<TYPE,N>::IDX cListFixed<TYPE,N>::NO_INDEX(DECLARE_NO_INDEX(IDX));
 /*----------------------------------------------------------------*/
 
 } // namespace SEACAVE

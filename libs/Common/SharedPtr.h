@@ -74,7 +74,7 @@ struct SharedRef {
 template<class TYPE>
 class CSharedPtr
 {
-private:
+protected:
 	typedef SharedRef<int32_t>	TYPE_REF;
 	typedef TYPE*				TYPE_PTR;
 
@@ -165,7 +165,7 @@ public:
 		m_pNoRef = NULL;
 	}
 
-private:
+protected:
 	inline void IncRef()
 	{
 		if (m_pointer == NULL)

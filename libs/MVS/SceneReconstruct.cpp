@@ -97,7 +97,7 @@ public:
 		return graph.isNodeOnSrcSide((int)n);
 	}
 
-private:
+protected:
 	graph_type graph;
 };
 #else
@@ -180,7 +180,7 @@ public:
 		return (color[n] != boost::white_color);
 	}
 
-private:
+protected:
 	graph_type graph;
 	std::vector<boost::default_color_type> color;
 	const node_type S;

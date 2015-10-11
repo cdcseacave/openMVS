@@ -102,7 +102,7 @@ public:
 			&& a.y+a.height <= b.y+b.height;
 	}
 
-private:
+protected:
 	int binWidth;
 	int binHeight;
 
@@ -261,7 +261,7 @@ public:
 	/// can be represented with a single rectangle. Takes up Theta(|freeRectangles|^2) time.
 	void MergeFreeList();
 
-private:
+protected:
 	int binWidth;
 	int binHeight;
 
@@ -345,7 +345,7 @@ public:
 	/// Computes the ratio of used surface area to the total bin area.
 	float Occupancy() const;
 
-private:
+protected:
 	int binWidth;
 	int binHeight;
 

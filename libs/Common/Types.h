@@ -108,7 +108,6 @@ namespace boost { void throw_exception(std::exception const&); }
 #include <boost/pool/singleton_pool.hpp>
 #endif
 
-#define _USE_EIGEN
 #ifdef _USE_EIGEN
 #include <Eigen/Core>
 #include <Eigen/Dense>
@@ -254,7 +253,7 @@ typedef uint32_t            uint_t;
 // type used for the size of the files
 typedef int64_t     		size_f_t;
 
-#define DECLARE_NO_INDEX(...) (std::numeric_limits<__VA_ARGS__>::max())
+#define DECLARE_NO_INDEX(...) std::numeric_limits<__VA_ARGS__>::max()
 #define NO_ID				DECLARE_NO_INDEX(uint32_t)
 
 #ifndef MAKEWORD
@@ -1846,7 +1845,7 @@ struct TPixel {
 	template <typename T> inline TPixel(const TPixel<T>& p) : r(TYPE(p.r)), g(TYPE(p.g)), b(TYPE(p.b)) {}
 	inline TPixel(TYPE _r, TYPE _g, TYPE _b) : r(_r), g(_g), b(_b) {}
 	inline TPixel(const Pnt& col) : c0(col.x),  c1(col.y),  c2(col.z) {}
-	inline TPixel(uint32_t col) : r((col>>16)&0xFF), g((col>>8)&0xFF), b(col&0xFF) {}
+	explicit inline TPixel(uint32_t col) : r((col>>16)&0xFF), g((col>>8)&0xFF), b(col&0xFF) {}
 	// set/get from default type
 	inline void set(TYPE _r, TYPE _g, TYPE _b) { r = _r; g = _g; b = _b; }
 	inline void set(const TYPE* clr) { c[0] = clr[0]; c[1] = clr[1]; c[2] = clr[2]; }
@@ -1883,7 +1882,7 @@ struct TPixel {
 	inline TPixel operator-(const TPixel& v) const { return TPixel(r-v.r, g-v.g, b-v.b); }
 	template<typename T> inline TPixel operator-(T v) const { return TPixel((TYPE)(r-v), (TYPE)(g-v), (TYPE)(b-v)); }
 	template<typename T> inline TPixel& operator-=(T v) { return (*this = operator-(v)); }
-	inline operator uint32_t () const { return RGBA((uint8_t)r, (uint8_t)g, (uint8_t)b, (uint8_t)0); }
+	inline uint32_t toDWORD() const { return RGBA((uint8_t)r, (uint8_t)g, (uint8_t)b, (uint8_t)0); }
 	#ifdef _USE_BOOST
 	// serialize
 	template <class Archive>
@@ -1951,7 +1950,7 @@ struct TColor {
 	#if _COLORMODE == _COLORMODE_RGB
 	inline TColor(const Pnt& col, TYPE _a=ColorType<TYPE>::ONE) : r(col.x),  g(col.y),  b(col.z),  a(_a) {}
 	#endif
-	inline TColor(uint32_t col) : r((col>>16)&0xFF), g((col>>8)&0xFF), b(col&0xFF), a((col>>24)&0xFF) {}
+	explicit inline TColor(uint32_t col) : r((col>>16)&0xFF), g((col>>8)&0xFF), b(col&0xFF), a((col>>24)&0xFF) {}
 	// set/get from default type
 	inline void set(TYPE _r, TYPE _g, TYPE _b, TYPE _a=ColorType<TYPE>::ONE) { r = _r; g = _g; b = _b; a = _a; }
 	inline void set(const TYPE* clr) { c[0] = clr[0]; c[1] = clr[1]; c[2] = clr[2]; c[3] = clr[3]; }
@@ -1989,7 +1988,7 @@ struct TColor {
 	inline TColor operator-(const TColor& v) const { return TColor(r-v.r, g-v.g, b-v.b, a-v.a); }
 	template<typename T> inline TColor operator-(T v) const { return TColor((TYPE)(r-v), (TYPE)(g-v), (TYPE)(b-v), (TYPE)(a-v)); }
 	template<typename T> inline TColor& operator-=(T v) { return (*this = operator-(v)); }
-	inline operator uint32_t () const { return RGBA((uint8_t)r, (uint8_t)g, (uint8_t)b, (uint8_t)a); }
+	inline uint32_t toDWORD() const { return RGBA((uint8_t)r, (uint8_t)g, (uint8_t)b, (uint8_t)a); }
 	#ifdef _USE_BOOST
 	// serialize
 	template <class Archive>
@@ -2004,7 +2003,7 @@ template <> inline void TColor<uint8_t>::set(float _r, float _g, float _b, float
 template <> inline void TColor<uint8_t>::get(float& _r, float& _g, float& _b, float& _a) const { _r = float(r)/255; _g = float(g)/255; _b = float(b)/255; _a = float(a)/255; }
 template <> inline bool TColor<uint8_t>::operator==(const TColor& col) const { return (*((const uint32_t*)c) == *((const uint32_t*)col.c)); }
 template <> inline bool TColor<uint8_t>::operator!=(const TColor& col) const { return (*((const uint32_t*)c) != *((const uint32_t*)col.c)); }
-template <> inline TColor<uint8_t>::operator uint32_t () const { return *((const uint32_t*)c); }
+template <> inline uint32_t TColor<uint8_t>::toDWORD() const { return *((const uint32_t*)c); }
 /*----------------------------------------------------------------*/
 typedef TColor<uint8_t> Color8U;
 typedef TColor<float> Color32F;
@@ -2469,13 +2468,13 @@ public:
 	typedef Matrix<Precision,3,1> Vec3;
 
 	/// Default constructor. Initializes the matrix to the identity (no rotation)
-	inline SO3() : my_matrix(Mat3::Identity()) {}
+	inline SO3() : mat(Mat3::Identity()) {}
 
 	/// Construct from a rotation matrix.
-	inline SO3(const Mat3& rhs) : my_matrix(rhs) {}
+	inline SO3(const Mat3& rhs) : mat(rhs) {}
 
 	/// Construct from the axis of rotation (and angle given by the magnitude).
-	inline SO3(const Vec3& v) : my_matrix(exp(v)) {}
+	inline SO3(const Vec3& v) : mat(exp(v)) {}
 
 	/// creates an SO3 as a rotation that takes Vector a into the direction of Vector b
 	/// with the rotation axis along a ^ b. If |a ^ b| == 0, it creates the identity rotation.
@@ -2491,7 +2490,7 @@ public:
 			// check that the vectors are in the same direction if cross product is 0; if not,
 			// this means that the rotation is 180 degrees, which leads to an ambiguity in the rotation axis
 			ASSERT(a.dot(b) >= Precision(0));
-			my_matrix = Mat3::Identity();
+			mat = Mat3::Identity();
 			return;
 		}
 		n *= Precision(1)/sqrt(nrmSq);
@@ -2499,33 +2498,33 @@ public:
 		R1.col(0) = a.normalized();
 		R1.col(1) = n;
 		R1.col(2) = R1.col(0).cross(n);
-		my_matrix.col(0) = b.normalized();
-		my_matrix.col(1) = n;
-		my_matrix.col(2) = my_matrix.col(0).cross(n);
-		my_matrix = my_matrix * R1.transpose();
+		mat.col(0) = b.normalized();
+		mat.col(1) = n;
+		mat.col(2) = mat.col(0).cross(n);
+		mat = mat * R1.transpose();
 	}
 
 	/// Assignment operator from a general matrix. This also calls coerce()
 	/// to make sure that the matrix is a valid rotation matrix.
 	inline SO3& operator=(const Mat3& rhs) {
-		my_matrix = rhs;
+		mat = rhs;
 		coerce();
 		return *this;
 	}
 
 	/// Modifies the matrix to make sure it is a valid rotation matrix.
 	void coerce() {
-		my_matrix.row(0).normalize();
-		const Precision d01(my_matrix.row(0).dot(my_matrix.row(1)));
-		my_matrix.row(1) -= my_matrix.row(0) * d01;
-		my_matrix.row(1).normalize();
-		const Precision d02(my_matrix.row(0).dot(my_matrix.row(2)));
-		my_matrix.row(2) -= my_matrix.row(0) * d02;
-		const Precision d12(my_matrix.row(1).dot(my_matrix.row(2)));
-		my_matrix.row(2) -= my_matrix.row(1) * d12;
-		my_matrix.row(2).normalize();
+		mat.row(0).normalize();
+		const Precision d01(mat.row(0).dot(mat.row(1)));
+		mat.row(1) -= mat.row(0) * d01;
+		mat.row(1).normalize();
+		const Precision d02(mat.row(0).dot(mat.row(2)));
+		mat.row(2) -= mat.row(0) * d02;
+		const Precision d12(mat.row(1).dot(mat.row(2)));
+		mat.row(2) -= mat.row(1) * d12;
+		mat.row(2).normalize();
 		// check for positive determinant <=> right handed coordinate system of row vectors
-		ASSERT(my_matrix.row(0).cross(my_matrix.row(1)).dot(my_matrix.row(2)) > 0); 
+		ASSERT(mat.row(0).cross(mat.row(1)).dot(mat.row(2)) > 0); 
 	}
 
 	/// Exponentiate a vector in the Lie algebra to generate a new SO3.
@@ -2547,7 +2546,7 @@ public:
 	inline SO3 operator *(const SO3& rhs) const { return SO3(*this, rhs); }
 
 	/// Returns the SO3 as a Matrix<3>
-	inline const Mat3& get_matrix() const { return my_matrix; }
+	inline const Mat3& get_matrix() const { return mat; }
 
 	/// Returns the i-th generator.  The generators of a Lie group are the basis
 	/// for the space of the Lie algebra.  For %SO3, the generators are three
@@ -2570,10 +2569,29 @@ public:
 	}
 
 	template <typename PA, typename PB>
-	inline SO3(const SO3<PA>& a, const SO3<PB>& b) : my_matrix(a.get_matrix()*b.get_matrix()) {}
+	inline SO3(const SO3<PA>& a, const SO3<PB>& b) : mat(a.get_matrix()*b.get_matrix()) {}
 
-private:
-	Mat3 my_matrix;
+protected:
+	Mat3 mat;
+
+	#ifdef _USE_BOOST
+	// implement BOOST serialization
+	friend class boost::serialization::access;
+	template<class Archive>
+	void save(Archive& ar, const unsigned int /*version*/) const
+	{
+		Vec3 comp(ln());
+		ar & comp;
+	}
+	template<class Archive>
+	void load(Archive& ar, const unsigned int /*version*/)
+	{
+		Vec3 comp;
+		ar & comp;
+		mat = exp(comp);
+	}
+	BOOST_SERIALIZATION_SPLIT_MEMBER()
+	#endif
 };
 /*----------------------------------------------------------------*/
 
@@ -2591,26 +2609,26 @@ public:
 	typedef Matrix<Precision,2,2,Eigen::RowMajor> Mat2;
 
 	/// Default constructor. Initializes the matrix to the identity (no rotation)
-	inline SO2() : my_matrix(Mat2::Identity()) {}
+	inline SO2() : mat(Mat2::Identity()) {}
 
 	/// Construct from a rotation matrix.
-	inline SO2(const Mat2& rhs) : my_matrix(rhs) {}
+	inline SO2(const Mat2& rhs) : mat(rhs) {}
 
 	/// Construct from an angle.
-	inline SO2(const Precision l) : my_matrix(exp(l)) {}
+	inline SO2(const Precision l) : mat(exp(l)) {}
 
 	/// Assigment operator from a general matrix. This also calls coerce()
 	/// to make sure that the matrix is a valid rotation matrix.
 	inline SO2& operator=(const Mat2& rhs) {
-		my_matrix = rhs;
+		mat = rhs;
 		coerce();
 		return *this;
 	}
 
 	/// Modifies the matrix to make sure it is a valid rotation matrix.
 	inline void coerce() {
-		my_matrix.row(0).normalize();
-		my_matrix.row(1) = (my_matrix.row(1) - my_matrix.row(0) * (my_matrix.row(0).dot(my_matrix.row(1)))).normalized();
+		mat.row(0).normalize();
+		mat.row(1) = (mat.row(1) - mat.row(0) * (mat.row(0).dot(mat.row(1)))).normalized();
 	}
 
 	/// Exponentiate an angle in the Lie algebra to generate a new SO2.
@@ -2621,7 +2639,7 @@ public:
 
 	/// Self right-multiply by another rotation matrix
 	inline SO2& operator *=(const SO2& rhs) {
-		my_matrix = my_matrix*rhs.get_matrix();
+		mat = mat*rhs.get_matrix();
 		return *this;
 	}
 
@@ -2629,7 +2647,7 @@ public:
 	inline SO2 operator *(const SO2& rhs) const { return SO2(*this, rhs); }
 
 	/// Returns the SO2 as a Matrix<2>
-	inline const Mat2& get_matrix() const { return my_matrix; }
+	inline const Mat2& get_matrix() const { return mat; }
 
 	/// returns generator matrix
 	inline static Mat2 generator() {
@@ -2639,8 +2657,27 @@ public:
 		return result;
 	}
 
-private:
-	Mat2 my_matrix;
+protected:
+	Mat2 mat;
+
+	#ifdef _USE_BOOST
+	// implement BOOST serialization
+	friend class boost::serialization::access;
+	template<class Archive>
+	void save(Archive& ar, const unsigned int /*version*/) const
+	{
+		Precision comp(ln());
+		ar & comp;
+	}
+	template<class Archive>
+	void load(Archive& ar, const unsigned int /*version*/)
+	{
+		Precision comp;
+		ar & comp;
+		mat = exp(comp);
+	}
+	BOOST_SERIALIZATION_SPLIT_MEMBER()
+	#endif
 };
 /*----------------------------------------------------------------*/
 

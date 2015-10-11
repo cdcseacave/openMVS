@@ -38,7 +38,7 @@ public:
 	inline const TYPE* GetData() const { return m_data; }
 	inline IDX GetSize() const { return m_size; }
 
-private:
+protected:
 	const TYPE* m_data;
 	IDX m_size;
 }; // class TItemArr
@@ -183,7 +183,7 @@ public:
 	inline const IDXARR_TYPE& GetIndexArr() const { return m_indices; }
 	inline const ITEM_TYPE* GetItems() const { return m_items; }
 
-private:
+protected:
 	static inline POINT_TYPE ComputeChildCenter(const POINT_TYPE&, TYPE, unsigned);
 
 	void _Insert(CELL_TYPE&, TYPE, IDXARR_TYPE []);
@@ -204,7 +204,7 @@ private:
 	template <typename FTYPE, int FDIMS, typename PARSER>
 	void _TraverseCells(CELL_TYPE&, TYPE, const TFrustum<FTYPE,FDIMS>&, PARSER&);
 
-private:
+protected:
 	const ITEM_TYPE* m_items; // original input items (the only condition is that every item to resolve to a position)
 	IDXARR_TYPE m_indices; // indices to input items re-arranged spatially (as dictated by the octree)
 	CELL_TYPE m_root; // first cell of the tree (always of Node type)
@@ -236,7 +236,7 @@ public:
 	void GetDebugInfo(DEBUGINFO* =NULL, bool bPrintStats=false) const;
 	static void LogDebugInfo(const DEBUGINFO&);
 
-private:
+protected:
 	void _GetDebugInfo(const CELL_TYPE&, unsigned, DEBUGINFO&) const;
 #endif
 }; // class TOctree

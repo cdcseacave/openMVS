@@ -82,7 +82,7 @@ public:
 	typedef std::vector<Normal> Normals;
 	typedef std::vector<Group> Groups;
 
-private:
+protected:
 	Vertices vertices;
 	TexCoords texcoords;
 	Normals normals;

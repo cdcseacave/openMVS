@@ -251,9 +251,7 @@ TYPE* MeshRefine::TypePool(TYPE* pObj)
 	if (pObj == NULL) {
 		if (unused.IsEmpty())
 			return objects.AddConstruct(new TYPE);
-		pObj = unused.Last();
-		unused.RemoveLast();
-		return pObj;
+		return unused.RemoveTail();
 	} else {
 		ASSERT(objects.Find(pObj) != NO_IDX);
 		ASSERT(unused.Find(pObj) == NO_IDX);

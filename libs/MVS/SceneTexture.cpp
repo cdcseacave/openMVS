@@ -417,7 +417,7 @@ public:
 	}
 
 
-private:
+protected:
 	static void ProcessMask(Image8U& mask, int stripWidth);
 	static void PoissonBlending(const Image32F3& src, Image32F3& dst, const Image8U& mask, float bias=1.f);
 

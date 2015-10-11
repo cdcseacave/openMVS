@@ -69,6 +69,7 @@ DEFVAR_OPTDENSE_uint32(nMinViewsFilter, "Min Views Filter", "minimum number of i
 MDEFVAR_OPTDENSE_uint32(nMinViewsFilterAdjust, "Min Views Filter Adjust", "minimum number of images that agrees with an estimate in order to consider it inlier (0 - disabled)", "1")
 MDEFVAR_OPTDENSE_uint32(nMinViewsTrustPoint, "Min Views Trust Point", "min-number of views so that the point is considered for approximating the depth-maps (<2 - random initialization)", "2")
 MDEFVAR_OPTDENSE_uint32(nNumViews, "Num Views", "Number of views used for depth-map estimation (0 - all views available)", "1", "0")
+MDEFVAR_OPTDENSE_bool(bFilterAdjust, "Filter Adjust", "adjust depth estimates during filtering", "1")
 MDEFVAR_OPTDENSE_bool(bAddCorners, "Add Corners", "add support points at image corners with nearest neighbor disparities", "1")
 MDEFVAR_OPTDENSE_float(fViewMinScore, "View Min Score", "Min score to consider a neighbor images (0 - disabled)", "2.0")
 MDEFVAR_OPTDENSE_float(fViewMinScoreRatio, "View Min Score Ratio", "Min score ratio to consider a neighbor images", "0.3")
@@ -536,7 +537,7 @@ public:
 	inline double logalpha0() const { return logalpha0_; }
 	inline double multError() const { return 0.5; }
 
-private:
+protected:
 	const Point3Arr& points_; // Normalized input data
 	double logalpha0_; // Alpha0 is used to make the error adaptive to the image size
 	Model model2evaluate; // current model to be evaluated

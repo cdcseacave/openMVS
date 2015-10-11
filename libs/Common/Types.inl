@@ -2992,7 +2992,7 @@ inline void eigen_SO3_ln(const typename Eigen::SO3<Precision>::Mat3& R, typename
 template <typename Precision>
 inline typename Eigen::SO3<Precision>::Vec3 Eigen::SO3<Precision>::ln() const {
 	Vec3 result;
-	eigen_SO3_ln<Precision>(my_matrix, result);
+	eigen_SO3_ln<Precision>(mat, result);
 	return result;
 }
 
@@ -3006,7 +3006,7 @@ inline std::ostream& operator<<(std::ostream& os, const Eigen::SO3<Precision>& r
 /// @relates SO3
 template <typename Precision>
 inline std::istream& operator>>(std::istream& is, Eigen::SO3<Precision>& rhs) {
-	is >> rhs.my_matrix;
+	is >> rhs.mat;
 	rhs.coerce();
 	return is;
 }
@@ -3060,7 +3060,7 @@ inline void eigen_SO2_ln(const typename Eigen::SO2<Precision>::Mat2& R, Precisio
 template <typename Precision>
 inline Precision Eigen::SO2<Precision>::ln() const {
 	Precision d;
-	eigen_SO2_ln<Precision>(my_matrix, d);
+	eigen_SO2_ln<Precision>(mat, d);
 	return d;
 }
 
@@ -3074,7 +3074,7 @@ inline std::ostream& operator<<(std::ostream& os, const Eigen::SO2<Precision> & 
 /// @relates SO2
 template <typename Precision>
 inline std::istream& operator>>(std::istream& is, Eigen::SO2<Precision>& rhs) {
-	is >> rhs.my_matrix;
+	is >> rhs.mat;
 	rhs.coerce();
 	return is;
 }

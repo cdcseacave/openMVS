@@ -68,17 +68,16 @@ public:
 	inline void operator=(TFlags rhs)					{ flags = rhs.flags; }
 	inline operator Type() const						{ return flags; }
 	inline operator Type&()								{ return flags; }
-private:
-	Type flags;
-#ifdef _USE_BOOST
 protected:
+	Type flags;
+	#ifdef _USE_BOOST
 	// implement BOOST serialization
 	friend class boost::serialization::access;
 	template<class Archive>
 	void serialize(Archive& ar, const unsigned int /*version*/) {
 		ar & flags;
 	}
-#endif
+	#endif
 };
 typedef class GENERAL_API TFlags<uint32_t> Flags;
 /*----------------------------------------------------------------*/
@@ -184,7 +183,7 @@ public:
 		return os.str();
 	}
 
-private:
+protected:
 	const Type Start, End, BinInterval; // min/max/step of values
 	std::vector<size_t> Freq; // histogram
 	size_t Overflow, Underflow; // count under/over flow
@@ -638,7 +637,6 @@ public:
 	static String	GetCPUInfo();
 	static String	GetRAMInfo();
 	static String	GetOSInfo();
-	static uint64_t	GetHardwareFingerprint();
 	enum CPUFNC {NA=0, SSE, AVX};
 	static const Flags ms_CPUFNC;
 
@@ -698,35 +696,6 @@ public:
 	};
 };
 /*----------------------------------------------------------------*/
-
-
-#ifdef _MSC_VER
-
-class QueryWMI
-{
-public:
-	QueryWMI();
-	~QueryWMI() { Release(); }
-
-	void Release();
-	inline bool IsOpen() const { return vpSvc != NULL; }
-
-	String Query(String wmiClass, String wmiProperty, String wmiCondition=String());
-
-	String cpuId();
-	String biosId();
-	String diskId();
-	String baseId();
-	String videoId();
-	String macId();
-
-private:
-	void* vpLoc;
-	void* vpSvc;
-};
-/*----------------------------------------------------------------*/
-
-#endif // _MSC_VER
 
 } // namespace SEACAVE
 

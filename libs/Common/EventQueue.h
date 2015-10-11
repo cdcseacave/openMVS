@@ -33,7 +33,7 @@ public:
 
 	virtual bool Run(void* /*pArgs*/) { return true; }
 
-private:
+protected:
 	const uint32_t id;
 };
 typedef cQueue<Event*,Event*,0> EVENTQUEUE;
@@ -64,7 +64,7 @@ public:
 	bool IsEmpty() const; //are there any events in the queue?
 	uint_t GetSize() const; //number of events in the queue
 
-private:
+protected:
 	Semaphore m_sem;
 	mutable CriticalSection m_cs;
 	EVENTQUEUE m_events;

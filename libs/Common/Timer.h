@@ -101,7 +101,7 @@ public:
 		return 0.001f * ms_fTimeFactor * t;
 	}
 
-private:
+protected:
 	#ifdef TIMER_OLDSUPPORT
 	static const bool	ms_bPerfFlag;	// flag for timer to use
 	#endif
@@ -117,7 +117,7 @@ public:
 public:
 	AutoTimer(Type& duration) : m_duration(duration) { m_duration = Timer::GetTime(); }
 	~AutoTimer() { m_duration = Timer::GetTime() - m_duration; }
-private:
+protected:
 	Type&	m_duration;
 };
 
@@ -128,7 +128,7 @@ public:
 public:
 	AutoAddTimer(Type& duration) : m_duration(duration) { m_lastTime = Timer::GetTime(); }
 	~AutoAddTimer() { m_duration += Timer::GetTime() - m_lastTime; }
-private:
+protected:
 	Type&	m_duration;
 	Type	m_lastTime;
 };

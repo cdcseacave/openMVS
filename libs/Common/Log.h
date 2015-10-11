@@ -93,11 +93,11 @@ public:
 	}
 	#endif
 
-private:
+protected:
 	// write a message of a certain type to the log
 	void		_Record(UINT, LPCTSTR, va_list); 
 
-private:
+protected:
 	struct LogType {
 		TCHAR szName[LOGTYPE_SIZE+1];
 		inline operator LPCTSTR () const { return szName; }
@@ -160,7 +160,7 @@ public:
 	void			Play();
 	void			Record(const String&); 
 
-private:
+protected:
 	FilePtr			m_ptrFile;		// the log file
 };
 #define GET_LOGFILE()		LogFile::GetInstance()
@@ -185,7 +185,7 @@ public:
 	void			Play();
 	void			Record(const String&);
 
-private:
+protected:
 	#ifdef _USE_COSOLEFILEHANDLES
 	typedef FILE* StreamHandle;
 	#else

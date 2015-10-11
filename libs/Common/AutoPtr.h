@@ -134,11 +134,10 @@ public:
 		m_pointer = _Ptr;
 	}
 
-private:
+protected:
 	TypePtr	m_pointer;		// the wrapped object pointer
 
-#ifdef _USE_BOOST
-protected:
+	#ifdef _USE_BOOST
 	// implement BOOST serialization
 	friend class boost::serialization::access;
 	template<class Archive>
@@ -154,7 +153,7 @@ protected:
 		operator=(newPointer);
 	}
 	BOOST_SERIALIZATION_SPLIT_MEMBER()
-#endif
+	#endif
 };
 
 
@@ -248,11 +247,10 @@ public:
 		m_pointer = _Ptr;
 	}
 
-private:
+protected:
 	TypePtr	m_pointer;		// the wrapped object pointer
 
-#ifdef _USE_BOOST
-protected:
+	#ifdef _USE_BOOST
 	// implement BOOST serialization
 	friend class boost::serialization::access;
 	template<class Archive>
@@ -268,7 +266,7 @@ protected:
 		operator=(newPointer);
 	}
 	BOOST_SERIALIZATION_SPLIT_MEMBER()
-#endif
+	#endif
 };
 /*----------------------------------------------------------------*/
 

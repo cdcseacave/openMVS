@@ -547,7 +547,7 @@ public:
 	inline double logalpha0() const { return logalpha0_; }
 	inline double multError() const { return (bPointToLine_ ? 0.5 : 1.0); }
 
-private:
+protected:
 	DMatrix32F x1_, x2_; // Normalized input data
 	double logalpha0_; // Alpha0 is used to make the error adaptive to the image size
 	bool bPointToLine_;// Store if error model is pointToLine or point to point
@@ -597,7 +597,7 @@ public:
 	inline double logalpha0() const { return logalpha0_; }
 	inline double multError() const { return 1.0; } // point to point error
 
-private:
+protected:
 	DMatrix32F x2d_;
 	DMatrix x3D_;
 	double logalpha0_; // Alpha0 is used to make the error adaptive to the image size
@@ -656,7 +656,7 @@ public:
 	inline double logalpha0() const { return logalpha0_; }
 	inline double multError() const { return 0.5; } // point to line error
 
-private:
+protected:
 	Solver solver;
 	DMatrix32F x1_, x2_; // image point and camera plane point.
 	double logalpha0_; // Alpha0 is used to make the error adaptive to the image size

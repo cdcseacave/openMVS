@@ -152,7 +152,7 @@ public:
 	static inline VIndex GetVertex(const Face& f, VIndex v) { const uint32_t idx(FindVertex(f, v)); ASSERT(idx != NO_ID); return f[idx]; }
 	static inline VIndex& GetVertex(Face& f, VIndex v) { const uint32_t idx(FindVertex(f, v)); ASSERT(idx != NO_ID); return f[idx]; }
 
-private:
+protected:
 	bool LoadPLY(const String& fileName);
 	bool LoadOBJ(const String& fileName);
 
@@ -163,9 +163,9 @@ private:
 	static bool InitKernels(int device=-1);
 	#endif
 
-public:
 	#ifdef _USE_BOOST
 	// implement BOOST serialization
+	friend class boost::serialization::access;
 	template <class Archive>
 	void serialize(Archive& ar, const unsigned int /*version*/) {
 		ar & vertices;
