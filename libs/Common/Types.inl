@@ -19,25 +19,25 @@ namespace SEACAVE {
 template <typename TYPE> const typename ColorType<TYPE>::value_type ColorType<TYPE>::ONE(1);
 template <typename TYPE> const typename ColorType<TYPE>::alt_type ColorType<TYPE>::ALTONE(1);
 
-template <typename TYPE> const TPixel<TYPE> TPixel<TYPE>::BLACK		(0.f, 0.f, 0.f);
+template <typename TYPE> const TPixel<TYPE> TPixel<TYPE>::BLACK		(0, 0, 0);
 template <typename TYPE> const TPixel<TYPE> TPixel<TYPE>::WHITE		(ColorType<TYPE>::ONE, ColorType<TYPE>::ONE, ColorType<TYPE>::ONE);
 template <typename TYPE> const TPixel<TYPE> TPixel<TYPE>::GRAY		(0.8f*ColorType<TYPE>::ONE, 0.8f*ColorType<TYPE>::ONE, 0.8f*ColorType<TYPE>::ONE);
-template <typename TYPE> const TPixel<TYPE> TPixel<TYPE>::RED		(ColorType<TYPE>::ONE, 0.f, 0.f);
-template <typename TYPE> const TPixel<TYPE> TPixel<TYPE>::GREEN		(0.f, ColorType<TYPE>::ONE, 0.f);
-template <typename TYPE> const TPixel<TYPE> TPixel<TYPE>::BLUE		(0.f, 0.f, ColorType<TYPE>::ONE);
-template <typename TYPE> const TPixel<TYPE> TPixel<TYPE>::YELLOW	(ColorType<TYPE>::ONE, ColorType<TYPE>::ONE, 0.f);
-template <typename TYPE> const TPixel<TYPE> TPixel<TYPE>::MAGENTA	(ColorType<TYPE>::ONE, 0.f, ColorType<TYPE>::ONE);
-template <typename TYPE> const TPixel<TYPE> TPixel<TYPE>::CYAN		(0.f, ColorType<TYPE>::ONE, ColorType<TYPE>::ONE);
+template <typename TYPE> const TPixel<TYPE> TPixel<TYPE>::RED		(ColorType<TYPE>::ONE, 0, 0);
+template <typename TYPE> const TPixel<TYPE> TPixel<TYPE>::GREEN		(0, ColorType<TYPE>::ONE, 0);
+template <typename TYPE> const TPixel<TYPE> TPixel<TYPE>::BLUE		(0, 0, ColorType<TYPE>::ONE);
+template <typename TYPE> const TPixel<TYPE> TPixel<TYPE>::YELLOW	(ColorType<TYPE>::ONE, ColorType<TYPE>::ONE, 0);
+template <typename TYPE> const TPixel<TYPE> TPixel<TYPE>::MAGENTA	(ColorType<TYPE>::ONE, 0, ColorType<TYPE>::ONE);
+template <typename TYPE> const TPixel<TYPE> TPixel<TYPE>::CYAN		(0, ColorType<TYPE>::ONE, ColorType<TYPE>::ONE);
 
-template <typename TYPE> const TColor<TYPE> TColor<TYPE>::BLACK		(0.f, 0.f, 0.f, ColorType<TYPE>::ONE);
+template <typename TYPE> const TColor<TYPE> TColor<TYPE>::BLACK		(0, 0, 0, ColorType<TYPE>::ONE);
 template <typename TYPE> const TColor<TYPE> TColor<TYPE>::WHITE		(ColorType<TYPE>::ONE, ColorType<TYPE>::ONE, ColorType<TYPE>::ONE, ColorType<TYPE>::ONE);
 template <typename TYPE> const TColor<TYPE> TColor<TYPE>::GRAY		(0.8f*ColorType<TYPE>::ONE, 0.8f*ColorType<TYPE>::ONE, 0.8f*ColorType<TYPE>::ONE, ColorType<TYPE>::ONE);
-template <typename TYPE> const TColor<TYPE> TColor<TYPE>::RED		(ColorType<TYPE>::ONE, 0.f, 0.f, ColorType<TYPE>::ONE);
-template <typename TYPE> const TColor<TYPE> TColor<TYPE>::GREEN		(0.f, ColorType<TYPE>::ONE, 0.f, ColorType<TYPE>::ONE);
-template <typename TYPE> const TColor<TYPE> TColor<TYPE>::BLUE		(0.f, 0.f, ColorType<TYPE>::ONE, ColorType<TYPE>::ONE);
-template <typename TYPE> const TColor<TYPE> TColor<TYPE>::YELLOW	(ColorType<TYPE>::ONE, ColorType<TYPE>::ONE, 0.f, ColorType<TYPE>::ONE);
-template <typename TYPE> const TColor<TYPE> TColor<TYPE>::MAGENTA	(ColorType<TYPE>::ONE, 0.f, ColorType<TYPE>::ONE, ColorType<TYPE>::ONE);
-template <typename TYPE> const TColor<TYPE> TColor<TYPE>::CYAN		(0.f, ColorType<TYPE>::ONE, ColorType<TYPE>::ONE, ColorType<TYPE>::ONE);
+template <typename TYPE> const TColor<TYPE> TColor<TYPE>::RED		(ColorType<TYPE>::ONE, 0, 0, ColorType<TYPE>::ONE);
+template <typename TYPE> const TColor<TYPE> TColor<TYPE>::GREEN		(0, ColorType<TYPE>::ONE, 0, ColorType<TYPE>::ONE);
+template <typename TYPE> const TColor<TYPE> TColor<TYPE>::BLUE		(0, 0, ColorType<TYPE>::ONE, ColorType<TYPE>::ONE);
+template <typename TYPE> const TColor<TYPE> TColor<TYPE>::YELLOW	(ColorType<TYPE>::ONE, ColorType<TYPE>::ONE, 0, ColorType<TYPE>::ONE);
+template <typename TYPE> const TColor<TYPE> TColor<TYPE>::MAGENTA	(ColorType<TYPE>::ONE, 0, ColorType<TYPE>::ONE, ColorType<TYPE>::ONE);
+template <typename TYPE> const TColor<TYPE> TColor<TYPE>::CYAN		(0, ColorType<TYPE>::ONE, ColorType<TYPE>::ONE, ColorType<TYPE>::ONE);
 
 
 // C L A S S  //////////////////////////////////////////////////////

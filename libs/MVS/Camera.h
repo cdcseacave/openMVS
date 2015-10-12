@@ -172,6 +172,21 @@ public:
 		return fullInvK;
 	}
 
+	// normalize inhomogeneous 2D point by the given camera intrinsics K
+	// K is assumed to be the [3,3] triangular matrix with: fx, fy, s, cx, cy and scale 1
+	template<typename TYPE1, typename TYPE2, typename TYPE3>
+	static inline void NormalizeProjection(const TYPE1* K, const TYPE2* x, TYPE3* n) {
+		n[0] = TYPE3(K[0]*x[0] + K[1]*x[1] + K[2]);
+		n[1] = TYPE3(            K[4]*x[1] + K[5]);
+	}
+	template <typename TYPE>
+	inline TPoint2<TYPE> NormalizeProjection(const TPoint2<TYPE>& proj) const {
+		TPoint2<TYPE> pt;
+		const TMatrix<TYPE,3,3> invK(GetInvK<TYPE>());
+		NormalizeProjection(mK.val, proj.ptr(), pt.ptr());
+		return pt;
+	}
+
 	#ifdef _USE_BOOST
 	// implement BOOST serialization
 	template <class Archive>
