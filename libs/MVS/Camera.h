@@ -183,7 +183,7 @@ public:
 	inline TPoint2<TYPE> NormalizeProjection(const TPoint2<TYPE>& proj) const {
 		TPoint2<TYPE> pt;
 		const TMatrix<TYPE,3,3> invK(GetInvK<TYPE>());
-		NormalizeProjection(mK.val, proj.ptr(), pt.ptr());
+		NormalizeProjection(invK.val, proj.ptr(), pt.ptr());
 		return pt;
 	}
 

@@ -246,7 +246,7 @@ TYPE* MeshRefine::TypePool(TYPE* pObj)
 	typedef CAutoPtr<TYPE> TypePtr;
 	static CriticalSection cs;
 	static cList<TypePtr,TYPE*> objects;
-	static cList<TYPE*,TYPE*> unused;
+	static cList<TYPE*,TYPE*,0> unused;
 	Lock l(cs);
 	if (pObj == NULL) {
 		if (unused.IsEmpty())
