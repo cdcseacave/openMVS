@@ -283,8 +283,8 @@ int main(int argc, LPCTSTR* argv)
 		}
 
 		// Create output directory for the undistorted images
-		if (!stlplus::is_folder(MAKE_PATH_FULL(WORKING_FOLDER_FULL, std::string("images")))) {
-				stlplus::folder_create(MAKE_PATH_FULL(WORKING_FOLDER_FULL, std::string("images")));
+		if (!stlplus::is_folder(MAKE_PATH_FULL(WORKING_FOLDER_FULL, std::string("images_undistorted")))) {
+				stlplus::folder_create(MAKE_PATH_FULL(WORKING_FOLDER_FULL, std::string("images_undistorted")));
 		}
 
 		// Define images & poses
@@ -294,7 +294,7 @@ int main(int argc, LPCTSTR* argv)
 			++progress_bar;
 			map_view[view.first] = scene.images.GetSize();
 			MVS::Image& image = scene.images.AddEmpty();
-			image.name = "images/" + view.second->s_Img_path;
+			image.name = "images_undistorted/" + view.second->s_Img_path;
 			Util::ensureUnifySlash(image.name);
 			image.name = MAKE_PATH_FULL(WORKING_FOLDER_FULL, image.name);
 			image.platformID = 0;
