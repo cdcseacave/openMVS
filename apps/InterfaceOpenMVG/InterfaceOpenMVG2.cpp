@@ -56,6 +56,7 @@ bool bOpenMVS2PLY; // conversion direction
 bool bNormalizeIntrinsics;
 String strInputFileName;
 String strOutputFileName;
+String strOutputImageFolder;
 unsigned nArchiveType;
 int nProcessPriority;
 unsigned nMaxThreads;
@@ -95,6 +96,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	config.add_options()
 		("input-file,i", boost::program_options::value<std::string>(&OPT::strInputFileName), "input filename containing camera poses and image list")
 		("output-file,o", boost::program_options::value<std::string>(&OPT::strOutputFileName), "output filename for storing the OpenMVS scene")
+		("output-image-folder", boost::program_options::value<std::string>(&OPT::strOutputImageFolder)->default_value("undistorted_images"), "output folder to store undistorted images")
 		("normalize,f", boost::program_options::value<bool>(&OPT::bNormalizeIntrinsics)->default_value(true), "normalize intrinsics while exporting to OpenMVS format")
 		;
 
@@ -147,6 +149,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		return false;
 	Util::ensureValidPath(OPT::strOutputFileName);
 	Util::ensureUnifySlash(OPT::strOutputFileName);
+	Util::ensureUnifySlash(OPT::strOutputImageFolder);
 	OPT::bOpenMVS2PLY = (Util::getFileExt(OPT::strInputFileName) == MVS_EXT);
 	if (OPT::bOpenMVS2PLY) {
 		if (OPT::strOutputFileName.IsEmpty())
@@ -259,7 +262,7 @@ int main(int argc, LPCTSTR* argv)
 		// convert data from OpenMVG to OpenMVS
 		MVS::Scene scene(OPT::nMaxThreads);
 
-		// OpenMVG can have not contigous index, use a map to create the required OpenMVS contiguous ID index
+		// OpenMVG can have not contiguous index, use a map to create the required OpenMVS contiguous ID index
 		std::map<openMVG::IndexT, uint32_t> map_intrinsic, map_view;
 
 		// Define a platform with all the intrinsic group
@@ -283,9 +286,7 @@ int main(int argc, LPCTSTR* argv)
 		}
 
 		// Create output directory for the undistorted images
-		if (!stlplus::is_folder(MAKE_PATH_FULL(WORKING_FOLDER_FULL, std::string("images")))) {
-				stlplus::folder_create(MAKE_PATH_FULL(WORKING_FOLDER_FULL, std::string("images")));
-		}
+		Util::ensureDirectory(MAKE_PATH_FULL(WORKING_FOLDER_FULL, OPT::strOutputImageFolder));
 
 		// Define images & poses
 		C_Progress_display progress_bar( sfm_data.GetViews().size()*1);
@@ -294,7 +295,7 @@ int main(int argc, LPCTSTR* argv)
 			++progress_bar;
 			map_view[view.first] = scene.images.GetSize();
 			MVS::Image& image = scene.images.AddEmpty();
-			image.name = "images/" + view.second->s_Img_path;
+			image.name = OPT::strOutputImageFolder + view.second->s_Img_path;
 			Util::ensureUnifySlash(image.name);
 			image.name = MAKE_PATH_FULL(WORKING_FOLDER_FULL, image.name);
 			image.platformID = 0;
