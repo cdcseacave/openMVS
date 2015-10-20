@@ -79,7 +79,7 @@ if(OpenMVS_USE_BREAKPAD)
 	endif()
 endif()
 
-FIND_PACKAGE(Boost ${SYSTEM_PACKAGE_REQUIRED} COMPONENTS iostreams program_options system serialization)
+FIND_PACKAGE(Boost ${SYSTEM_PACKAGE_REQUIRED} COMPONENTS iostreams program_options system serialization regex)
 if(Boost_FOUND)
 	include_directories(${Boost_INCLUDE_DIRS})
 	add_definitions(${Boost_DEFINITIONS})
