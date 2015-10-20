@@ -56,6 +56,7 @@ bool bOpenMVS2PLY; // conversion direction
 bool bNormalizeIntrinsics;
 String strInputFileName;
 String strOutputFileName;
+String strOutputImageFolder;
 unsigned nArchiveType;
 int nProcessPriority;
 unsigned nMaxThreads;
@@ -75,6 +76,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	generic.add_options()
 		("help,h", "produce this help message")
 		("working-folder,w", boost::program_options::value<std::string>(&WORKING_FOLDER), "working directory (default current directory)")
+		("output-image-folder", boost::program_options::value<std::string>(&OPT::strOutputImageFolder)->default_value("undistorted_images"), "output folder to store undistorted images")
 		("config-file,c", boost::program_options::value<std::string>(&OPT::strConfigFileName)->default_value(APPNAME _T(".cfg")), "file name containing program options")
 		("archive-type", boost::program_options::value<unsigned>(&OPT::nArchiveType)->default_value(2), "project archive type: 0-text, 1-binary, 2-compressed binary")
 		("process-priority", boost::program_options::value<int>(&OPT::nProcessPriority)->default_value(-1), "process priority (below normal by default)")
@@ -95,6 +97,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	config.add_options()
 		("input-file,i", boost::program_options::value<std::string>(&OPT::strInputFileName), "input filename containing camera poses and image list")
 		("output-file,o", boost::program_options::value<std::string>(&OPT::strOutputFileName), "output filename for storing the OpenMVS scene")
+
 		("normalize,f", boost::program_options::value<bool>(&OPT::bNormalizeIntrinsics)->default_value(true), "normalize intrinsics while exporting to OpenMVS format")
 		;
 
@@ -283,8 +286,8 @@ int main(int argc, LPCTSTR* argv)
 		}
 
 		// Create output directory for the undistorted images
-		if (!stlplus::is_folder(MAKE_PATH_FULL(WORKING_FOLDER_FULL, std::string("images")))) {
-				stlplus::folder_create(MAKE_PATH_FULL(WORKING_FOLDER_FULL, std::string("images")));
+		if (!stlplus::is_folder(MAKE_PATH_FULL(WORKING_FOLDER_FULL, std::string(OPT::strOutputImageFolder)))) {
+				stlplus::folder_create(MAKE_PATH_FULL(WORKING_FOLDER_FULL, std::string(OPT::strOutputImageFolder)));
 		}
 
 		// Define images & poses
@@ -294,7 +297,7 @@ int main(int argc, LPCTSTR* argv)
 			++progress_bar;
 			map_view[view.first] = scene.images.GetSize();
 			MVS::Image& image = scene.images.AddEmpty();
-			image.name = "images/" + view.second->s_Img_path;
+			image.name = OPT::strOutputImageFolder + view.second->s_Img_path;
 			Util::ensureUnifySlash(image.name);
 			image.name = MAKE_PATH_FULL(WORKING_FOLDER_FULL, image.name);
 			image.platformID = 0;
