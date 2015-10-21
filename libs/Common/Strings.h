@@ -57,11 +57,9 @@ public:
 	String& FormatSafe(LPCTSTR szFormat, ...) {
 		va_list args;
 		va_start(args, szFormat);
-		#ifdef _MSC_VER
-		const size_t count((size_t)_vsctprintf(szFormat, args)+1);
-		#else
-		const size_t count((size_t)_vsntprintf(NULL, 0, szFormat, args)+1);
-		#endif
+		const int cnt(_vsctprintf(szFormat, args));
+		ASSERT(cnt >= 0);
+		const size_t count((size_t)cnt+1);
 		TCHAR* szBuffer(new TCHAR[count]);
 		_vsntprintf(szBuffer, count, szFormat, args);
 		va_end(args);
@@ -83,11 +81,9 @@ public:
 		return szBuffer;
 	}
 	static inline String FormatStringSafe(LPCTSTR szFormat, va_list args) {
-		#ifdef _MSC_VER
-		const size_t count((size_t)_vsctprintf(szFormat, args)+1);
-		#else
-		const size_t count((size_t)_vsntprintf(NULL, 0, szFormat, args)+1);
-		#endif
+		const int cnt(_vsctprintf(szFormat, args));
+		ASSERT(cnt >= 0);
+		const size_t count((size_t)cnt+1);
 		TCHAR* szBuffer(new TCHAR[count]);
 		_vsntprintf(szBuffer, count, szFormat, args);
 		String str(szBuffer);

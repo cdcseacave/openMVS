@@ -235,6 +235,9 @@ typedef LPCSTR				LPCTSTR;
 #define _stprintf           sprintf
 #define _sntprintf          snprintf
 #define _vsntprintf         vsnprintf
+#define _vsctprintf         _vscprintf
+
+int _vscprintf(LPCSTR format, va_list pargs);
 
 #define _T(s)               s
 #endif //_MSC_VER

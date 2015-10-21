@@ -17,6 +17,18 @@
 
 // G L O B A L S ///////////////////////////////////////////////////
 
+#ifndef _MSC_VER
+int _vscprintf(LPCSTR format, va_list pargs) {
+	va_list argcopy;
+	va_copy(argcopy, pargs);
+	const int retval(vsnprintf(NULL, 0, format, argcopy));
+	va_end(argcopy);
+	return retval;
+}
+#endif
+/*----------------------------------------------------------------*/
+
+
 namespace SEACAVE {
 
 const ColorType<uint8_t>::value_type ColorType<uint8_t>::ONE(255);
