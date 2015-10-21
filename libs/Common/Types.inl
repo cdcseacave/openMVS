@@ -9,10 +9,252 @@
 // D E F I N E S ///////////////////////////////////////////////////
 
 
-namespace SEACAVE {
-
 // S T R U C T S ///////////////////////////////////////////////////
 
+namespace std {
+
+//namespace tr1 {
+// Specializations for unordered containers
+template <> struct hash<SEACAVE::ImageRef>
+{
+	typedef SEACAVE::ImageRef argument_type;
+	typedef size_t result_type;
+	result_type operator()(const argument_type& v) const {
+		return std::hash<uint64_t>()((const uint64_t&)v);
+	}
+};
+//} // namespace tr1
+
+} // namespace std
+
+
+namespace cv {
+
+#if CV_MAJOR_VERSION > 2
+template<> class DataType<unsigned>
+{
+public:
+	typedef unsigned    value_type;
+	typedef value_type  work_type;
+	typedef value_type  channel_type;
+	typedef value_type  vec_type;
+	enum { generic_type = 0,
+		depth        = CV_32S,
+		channels     = 1,
+		fmt          = (int)'i',
+		type         = CV_MAKETYPE(depth, channels)
+	};
+};
+
+template <typename REAL_TYPE, typename INT_TYPE>
+INT_TYPE cvRANSACUpdateNumIters(REAL_TYPE p, REAL_TYPE ep, INT_TYPE modelPoints, INT_TYPE maxIters)
+{
+	ASSERT(p>=0 && p<=1);
+	ASSERT(ep>=0 && ep<=1);
+
+	// avoid inf's & nan's
+	REAL_TYPE num = MAXF(REAL_TYPE(1)-p, DBL_MIN);
+	REAL_TYPE denom = REAL_TYPE(1)-powi(REAL_TYPE(1)-ep, modelPoints);
+	if (denom < REAL_TYPE(DBL_MIN))
+		return 0;
+
+	num = log(num);
+	denom = log(denom);
+
+	return (denom >= 0 || -num >= (-denom)*maxIters ? maxIters : ROUND2INT(num/denom));
+}
+#else
+#if CV_MINOR_VERSION < 4
+template<typename _Tp, typename _AccTp> static inline
+_AccTp normL2Sqr(const _Tp* a, int n)
+{
+	_AccTp s = 0;
+	int i=0;
+	#if CV_ENABLE_UNROLLED
+	for (; i <= n - 4; i += 4) {
+		_AccTp v0 = a[i], v1 = a[i+1], v2 = a[i+2], v3 = a[i+3];
+		s += v0*v0 + v1*v1 + v2*v2 + v3*v3;
+	}
+	#endif
+	for (; i < n; i++) {
+		_AccTp v = a[i];
+		s += v*v;
+	}
+	return s;
+}
+#endif
+// Convenience creation functions. In the far future, there may be variadic templates here.
+template<typename T>
+Ptr<T> makePtr()
+{
+	return Ptr<T>(new T());
+}
+template<typename T, typename A1>
+Ptr<T> makePtr(const A1& a1)
+{
+	return Ptr<T>(new T(a1));
+}
+template<typename T, typename A1, typename A2>
+Ptr<T> makePtr(const A1& a1, const A2& a2)
+{
+	return Ptr<T>(new T(a1, a2));
+}
+template<typename T, typename A1, typename A2, typename A3>
+Ptr<T> makePtr(const A1& a1, const A2& a2, const A3& a3)
+{
+	return Ptr<T>(new T(a1, a2, a3));
+}
+template<typename T, typename A1, typename A2, typename A3, typename A4>
+Ptr<T> makePtr(const A1& a1, const A2& a2, const A3& a3, const A4& a4)
+{
+	return Ptr<T>(new T(a1, a2, a3, a4));
+}
+template<typename T, typename A1, typename A2, typename A3, typename A4, typename A5>
+Ptr<T> makePtr(const A1& a1, const A2& a2, const A3& a3, const A4& a4, const A5& a5)
+{
+	return Ptr<T>(new T(a1, a2, a3, a4, a5));
+}
+template<typename T, typename A1, typename A2, typename A3, typename A4, typename A5, typename A6>
+Ptr<T> makePtr(const A1& a1, const A2& a2, const A3& a3, const A4& a4, const A5& a5, const A6& a6)
+{
+	return Ptr<T>(new T(a1, a2, a3, a4, a5, a6));
+}
+template<typename T, typename A1, typename A2, typename A3, typename A4, typename A5, typename A6, typename A7>
+Ptr<T> makePtr(const A1& a1, const A2& a2, const A3& a3, const A4& a4, const A5& a5, const A6& a6, const A7& a7)
+{
+	return Ptr<T>(new T(a1, a2, a3, a4, a5, a6, a7));
+}
+template<typename T, typename A1, typename A2, typename A3, typename A4, typename A5, typename A6, typename A7, typename A8>
+Ptr<T> makePtr(const A1& a1, const A2& a2, const A3& a3, const A4& a4, const A5& a5, const A6& a6, const A7& a7, const A8& a8)
+{
+	return Ptr<T>(new T(a1, a2, a3, a4, a5, a6, a7, a8));
+}
+template<typename T, typename A1, typename A2, typename A3, typename A4, typename A5, typename A6, typename A7, typename A8, typename A9>
+Ptr<T> makePtr(const A1& a1, const A2& a2, const A3& a3, const A4& a4, const A5& a5, const A6& a6, const A7& a7, const A8& a8, const A9& a9)
+{
+	return Ptr<T>(new T(a1, a2, a3, a4, a5, a6, a7, a8, a9));
+}
+template<typename T, typename A1, typename A2, typename A3, typename A4, typename A5, typename A6, typename A7, typename A8, typename A9, typename A10>
+Ptr<T> makePtr(const A1& a1, const A2& a2, const A3& a3, const A4& a4, const A5& a5, const A6& a6, const A7& a7, const A8& a8, const A9& a9, const A10& a10)
+{
+	return Ptr<T>(new T(a1, a2, a3, a4, a5, a6, a7, a8, a9, a10));
+}
+
+// property implementation macros
+#define CV_IMPL_PROPERTY_RO(type, name, member) \
+	inline type get##name() const { return member; }
+
+#define CV_HELP_IMPL_PROPERTY(r_type, w_type, name, member) \
+	CV_IMPL_PROPERTY_RO(r_type, name, member) \
+	inline void set##name(w_type val) { member = val; }
+
+#define CV_HELP_WRAP_PROPERTY(r_type, w_type, name, internal_name, internal_obj) \
+	r_type get##name() const { return internal_obj.get##internal_name(); } \
+	void set##name(w_type val) { internal_obj.set##internal_name(val); }
+
+#define CV_IMPL_PROPERTY(type, name, member) CV_HELP_IMPL_PROPERTY(type, type, name, member)
+#define CV_IMPL_PROPERTY_S(type, name, member) CV_HELP_IMPL_PROPERTY(type, const type &, name, member)
+
+#define CV_WRAP_PROPERTY(type, name, internal_name, internal_obj)  CV_HELP_WRAP_PROPERTY(type, type, name, internal_name, internal_obj)
+#define CV_WRAP_PROPERTY_S(type, name, internal_name, internal_obj) CV_HELP_WRAP_PROPERTY(type, const type &, name, internal_name, internal_obj)
+
+#define CV_WRAP_SAME_PROPERTY(type, name, internal_obj) CV_WRAP_PROPERTY(type, name, name, internal_obj)
+#define CV_WRAP_SAME_PROPERTY_S(type, name, internal_obj) CV_WRAP_PROPERTY_S(type, name, name, internal_obj)
+#endif
+
+//! copy every second source image element to the destination image
+inline void downsample2x(InputArray _src, OutputArray _dst)
+{
+	Mat src(_src.getMat());
+	#if 1
+	_dst.create((src.rows+1)/2, (src.cols+1)/2, src.type());
+	#else
+	if (_dst.empty()) {
+		// create a new matrix
+		_dst.create(src.rows/2, src.cols/2, src.type());
+	} else {
+		// overwrite elements in the existing matrix
+		ASSERT(src.rows > 0 && (unsigned)(src.rows-_dst.size().height*2) <= 1);
+		ASSERT(src.cols > 0 && (unsigned)(src.cols-_dst.size().width*2) <= 1);
+		ASSERT(src.type() == _dst.type());
+	}
+	#endif
+	Mat dst(_dst.getMat());
+	ASSERT(src.elemSize() == dst.elemSize());
+	switch (src.elemSize()) {
+	case 1:
+		for (int i=0; i<dst.rows; ++i)
+			for (int j=0; j<dst.cols; ++j)
+				dst.at<uint8_t>(i,j) = src.at<uint8_t>(2*i,2*j);
+		break;
+	case 2:
+		for (int i=0; i<dst.rows; ++i)
+			for (int j=0; j<dst.cols; ++j)
+				dst.at<uint16_t>(i,j) = src.at<uint16_t>(2*i,2*j);
+		break;
+	case 4:
+		for (int i=0; i<dst.rows; ++i)
+			for (int j=0; j<dst.cols; ++j)
+				dst.at<float>(i,j) = src.at<float>(2*i,2*j);
+		break;
+	case 8:
+		for (int i=0; i<dst.rows; ++i)
+			for (int j=0; j<dst.cols; ++j)
+				dst.at<double>(i,j) = src.at<double>(2*i,2*j);
+		break;
+	default:
+		for (int i=0; i<dst.rows; ++i)
+			for (int j=0; j<dst.cols; ++j)
+				memcpy(dst.ptr(i,j), src.ptr(2*i,2*j), src.elemSize());
+	}
+}
+//! copy elements of source image to the 2 x position in the destination image
+inline void upsample2x(InputArray _src, OutputArray _dst)
+{
+	Mat src(_src.getMat());
+	if (_dst.empty()) {
+		// create a new matrix
+		_dst.create(src.rows*2, src.cols*2, src.type());
+	} else {
+		// overwrite only new elements in the existing matrix
+		ASSERT(src.rows > 0 && src.rows*2-1 <= _dst.size().height);
+		ASSERT(src.cols > 0 && src.cols*2-1 <= _dst.size().width);
+		ASSERT(src.type() == _dst.type());
+	}
+	Mat dst(_dst.getMat());
+	ASSERT(src.elemSize() == dst.elemSize());
+	switch (src.elemSize()) {
+	case 1:
+		for (int i=0; i<src.rows; ++i)
+			for (int j=0; j<src.cols; ++j)
+				dst.at<uint8_t>(2*i,2*j) = src.at<uint8_t>(i,j);
+		break;
+	case 2:
+		for (int i=0; i<src.rows; ++i)
+			for (int j=0; j<src.cols; ++j)
+				dst.at<uint16_t>(2*i,2*j) = src.at<uint16_t>(i,j);
+		break;
+	case 4:
+		for (int i=0; i<src.rows; ++i)
+			for (int j=0; j<src.cols; ++j)
+				dst.at<float>(2*i,2*j) = src.at<float>(i,j);
+		break;
+	case 8:
+		for (int i=0; i<src.rows; ++i)
+			for (int j=0; j<src.cols; ++j)
+				dst.at<double>(2*i,2*j) = src.at<double>(i,j);
+		break;
+	default:
+		for (int i=0; i<src.rows; ++i)
+			for (int j=0; j<src.cols; ++j)
+				memcpy(dst.ptr(2*i,2*j), src.ptr(i,j), src.elemSize());
+	}
+}
+
+} // namespace cv
+
+
+namespace SEACAVE {
 
 // G L O B A L S ///////////////////////////////////////////////////
 
@@ -1184,229 +1426,6 @@ FORCEINLINE SEACAVE::TColor<TYPE> operator/(TYPEM n, const SEACAVE::TColor<TYPE>
 
 } // namespace SEACAVE
 
-
-namespace std {
-
-//namespace tr1 {
-// Specializations for unordered containers
-template <> struct hash<SEACAVE::ImageRef>
-{
-	typedef SEACAVE::ImageRef argument_type;
-	typedef size_t result_type;
-	result_type operator()(const argument_type& v) const {
-		return std::hash<uint64_t>()((const uint64_t&)v);
-	}
-};
-//} // namespace tr1
-
-} // namespace std
-
-
-namespace cv {
-
-#if CV_MAJOR_VERSION > 2
-template<> class DataType<unsigned>
-{
-public:
-	typedef unsigned    value_type;
-	typedef value_type  work_type;
-	typedef value_type  channel_type;
-	typedef value_type  vec_type;
-	enum { generic_type = 0,
-		depth        = CV_32S,
-		channels     = 1,
-		fmt          = (int)'i',
-		type         = CV_MAKETYPE(depth, channels)
-	};
-};
-
-template <typename REAL_TYPE, typename INT_TYPE>
-INT_TYPE cvRANSACUpdateNumIters(REAL_TYPE p, REAL_TYPE ep, INT_TYPE modelPoints, INT_TYPE maxIters)
-{
-	ASSERT(p>=0 && p<=1);
-	ASSERT(ep>=0 && ep<=1);
-
-	// avoid inf's & nan's
-	REAL_TYPE num = MAXF(REAL_TYPE(1)-p, DBL_MIN);
-	REAL_TYPE denom = REAL_TYPE(1)-powi(REAL_TYPE(1)-ep, modelPoints);
-	if (denom < REAL_TYPE(DBL_MIN))
-		return 0;
-
-	num = log(num);
-	denom = log(denom);
-
-	return (denom >= 0 || -num >= (-denom)*maxIters ? maxIters : ROUND2INT(num/denom));
-}
-#else
-// Convenience creation functions. In the far future, there may be variadic templates here.
-template<typename T>
-Ptr<T> makePtr()
-{
-	return Ptr<T>(new T());
-}
-template<typename T, typename A1>
-Ptr<T> makePtr(const A1& a1)
-{
-	return Ptr<T>(new T(a1));
-}
-template<typename T, typename A1, typename A2>
-Ptr<T> makePtr(const A1& a1, const A2& a2)
-{
-	return Ptr<T>(new T(a1, a2));
-}
-template<typename T, typename A1, typename A2, typename A3>
-Ptr<T> makePtr(const A1& a1, const A2& a2, const A3& a3)
-{
-	return Ptr<T>(new T(a1, a2, a3));
-}
-template<typename T, typename A1, typename A2, typename A3, typename A4>
-Ptr<T> makePtr(const A1& a1, const A2& a2, const A3& a3, const A4& a4)
-{
-	return Ptr<T>(new T(a1, a2, a3, a4));
-}
-template<typename T, typename A1, typename A2, typename A3, typename A4, typename A5>
-Ptr<T> makePtr(const A1& a1, const A2& a2, const A3& a3, const A4& a4, const A5& a5)
-{
-	return Ptr<T>(new T(a1, a2, a3, a4, a5));
-}
-template<typename T, typename A1, typename A2, typename A3, typename A4, typename A5, typename A6>
-Ptr<T> makePtr(const A1& a1, const A2& a2, const A3& a3, const A4& a4, const A5& a5, const A6& a6)
-{
-	return Ptr<T>(new T(a1, a2, a3, a4, a5, a6));
-}
-template<typename T, typename A1, typename A2, typename A3, typename A4, typename A5, typename A6, typename A7>
-Ptr<T> makePtr(const A1& a1, const A2& a2, const A3& a3, const A4& a4, const A5& a5, const A6& a6, const A7& a7)
-{
-	return Ptr<T>(new T(a1, a2, a3, a4, a5, a6, a7));
-}
-template<typename T, typename A1, typename A2, typename A3, typename A4, typename A5, typename A6, typename A7, typename A8>
-Ptr<T> makePtr(const A1& a1, const A2& a2, const A3& a3, const A4& a4, const A5& a5, const A6& a6, const A7& a7, const A8& a8)
-{
-	return Ptr<T>(new T(a1, a2, a3, a4, a5, a6, a7, a8));
-}
-template<typename T, typename A1, typename A2, typename A3, typename A4, typename A5, typename A6, typename A7, typename A8, typename A9>
-Ptr<T> makePtr(const A1& a1, const A2& a2, const A3& a3, const A4& a4, const A5& a5, const A6& a6, const A7& a7, const A8& a8, const A9& a9)
-{
-	return Ptr<T>(new T(a1, a2, a3, a4, a5, a6, a7, a8, a9));
-}
-template<typename T, typename A1, typename A2, typename A3, typename A4, typename A5, typename A6, typename A7, typename A8, typename A9, typename A10>
-Ptr<T> makePtr(const A1& a1, const A2& a2, const A3& a3, const A4& a4, const A5& a5, const A6& a6, const A7& a7, const A8& a8, const A9& a9, const A10& a10)
-{
-	return Ptr<T>(new T(a1, a2, a3, a4, a5, a6, a7, a8, a9, a10));
-}
-
-// property implementation macros
-#define CV_IMPL_PROPERTY_RO(type, name, member) \
-	inline type get##name() const { return member; }
-
-#define CV_HELP_IMPL_PROPERTY(r_type, w_type, name, member) \
-	CV_IMPL_PROPERTY_RO(r_type, name, member) \
-	inline void set##name(w_type val) { member = val; }
-
-#define CV_HELP_WRAP_PROPERTY(r_type, w_type, name, internal_name, internal_obj) \
-	r_type get##name() const { return internal_obj.get##internal_name(); } \
-	void set##name(w_type val) { internal_obj.set##internal_name(val); }
-
-#define CV_IMPL_PROPERTY(type, name, member) CV_HELP_IMPL_PROPERTY(type, type, name, member)
-#define CV_IMPL_PROPERTY_S(type, name, member) CV_HELP_IMPL_PROPERTY(type, const type &, name, member)
-
-#define CV_WRAP_PROPERTY(type, name, internal_name, internal_obj)  CV_HELP_WRAP_PROPERTY(type, type, name, internal_name, internal_obj)
-#define CV_WRAP_PROPERTY_S(type, name, internal_name, internal_obj) CV_HELP_WRAP_PROPERTY(type, const type &, name, internal_name, internal_obj)
-
-#define CV_WRAP_SAME_PROPERTY(type, name, internal_obj) CV_WRAP_PROPERTY(type, name, name, internal_obj)
-#define CV_WRAP_SAME_PROPERTY_S(type, name, internal_obj) CV_WRAP_PROPERTY_S(type, name, name, internal_obj)
-#endif
-
-//! copy every second source image element to the destination image
-inline void downsample2x(InputArray _src, OutputArray _dst)
-{
-	Mat src(_src.getMat());
-	#if 1
-	_dst.create((src.rows+1)/2, (src.cols+1)/2, src.type());
-	#else
-	if (_dst.empty()) {
-		// create a new matrix
-		_dst.create(src.rows/2, src.cols/2, src.type());
-	} else {
-		// overwrite elements in the existing matrix
-		ASSERT(src.rows > 0 && (unsigned)(src.rows-_dst.size().height*2) <= 1);
-		ASSERT(src.cols > 0 && (unsigned)(src.cols-_dst.size().width*2) <= 1);
-		ASSERT(src.type() == _dst.type());
-	}
-	#endif
-	Mat dst(_dst.getMat());
-	ASSERT(src.elemSize() == dst.elemSize());
-	switch (src.elemSize()) {
-	case 1:
-		for (int i=0; i<dst.rows; ++i)
-			for (int j=0; j<dst.cols; ++j)
-				dst.at<uint8_t>(i,j) = src.at<uint8_t>(2*i,2*j);
-		break;
-	case 2:
-		for (int i=0; i<dst.rows; ++i)
-			for (int j=0; j<dst.cols; ++j)
-				dst.at<uint16_t>(i,j) = src.at<uint16_t>(2*i,2*j);
-		break;
-	case 4:
-		for (int i=0; i<dst.rows; ++i)
-			for (int j=0; j<dst.cols; ++j)
-				dst.at<float>(i,j) = src.at<float>(2*i,2*j);
-		break;
-	case 8:
-		for (int i=0; i<dst.rows; ++i)
-			for (int j=0; j<dst.cols; ++j)
-				dst.at<double>(i,j) = src.at<double>(2*i,2*j);
-		break;
-	default:
-		for (int i=0; i<dst.rows; ++i)
-			for (int j=0; j<dst.cols; ++j)
-				memcpy(dst.ptr(i,j), src.ptr(2*i,2*j), src.elemSize());
-	}
-}
-//! copy elements of source image to the 2 x position in the destination image
-inline void upsample2x(InputArray _src, OutputArray _dst)
-{
-	Mat src(_src.getMat());
-	if (_dst.empty()) {
-		// create a new matrix
-		_dst.create(src.rows*2, src.cols*2, src.type());
-	} else {
-		// overwrite only new elements in the existing matrix
-		ASSERT(src.rows > 0 && src.rows*2-1 <= _dst.size().height);
-		ASSERT(src.cols > 0 && src.cols*2-1 <= _dst.size().width);
-		ASSERT(src.type() == _dst.type());
-	}
-	Mat dst(_dst.getMat());
-	ASSERT(src.elemSize() == dst.elemSize());
-	switch (src.elemSize()) {
-	case 1:
-		for (int i=0; i<src.rows; ++i)
-			for (int j=0; j<src.cols; ++j)
-				dst.at<uint8_t>(2*i,2*j) = src.at<uint8_t>(i,j);
-		break;
-	case 2:
-		for (int i=0; i<src.rows; ++i)
-			for (int j=0; j<src.cols; ++j)
-				dst.at<uint16_t>(2*i,2*j) = src.at<uint16_t>(i,j);
-		break;
-	case 4:
-		for (int i=0; i<src.rows; ++i)
-			for (int j=0; j<src.cols; ++j)
-				dst.at<float>(2*i,2*j) = src.at<float>(i,j);
-		break;
-	case 8:
-		for (int i=0; i<src.rows; ++i)
-			for (int j=0; j<src.cols; ++j)
-				dst.at<double>(2*i,2*j) = src.at<double>(i,j);
-		break;
-	default:
-		for (int i=0; i<src.rows; ++i)
-			for (int j=0; j<src.cols; ++j)
-				memcpy(dst.ptr(2*i,2*j), src.ptr(i,j), src.elemSize());
-	}
-}
-
-} // namespace cv
 
 // Informative template class for OpenCV "scalars"
 #define DEFINE_GENERIC_CVDATATYPE(tp,ctp) namespace cv { \

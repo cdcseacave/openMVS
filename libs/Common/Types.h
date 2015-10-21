@@ -115,7 +115,10 @@ namespace boost { void throw_exception(std::exception const&); }
 #include <Eigen/Geometry>
 #endif
 
+#include <opencv2/core/version.hpp>
+#if CV_MAJOR_VERSION > 2 || CV_MINOR_VERSION > 3
 #include <opencv2/opencv_modules.hpp>
+#endif
 #include <opencv2/opencv.hpp>
 #ifdef HAVE_OPENCV_GPU
 #if CV_MAJOR_VERSION > 2

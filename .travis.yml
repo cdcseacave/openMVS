@@ -1,0 +1,52 @@
+language: cpp
+
+compiler:
+  - gcc
+  - clang
+
+before_install:
+  - echo $LANG
+  - export OMP_NUM_THREADS=4
+  - if [ $TRAVIS_OS_NAME == linux ]; then sudo apt-get update -qq && sudo apt-get install -qq; fi
+
+install:
+  # Install g++4.8.1
+  - if [ "$CXX" = "g++" ]; then sudo add-apt-repository -y ppa:ubuntu-toolchain-r/test && sudo apt-get update -qq && sudo apt-get install -qq g++-4.8 && export CXX="g++-4.8" CC="gcc-4.8" && sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-4.8 90 && sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-4.8 90 && sudo apt-get install libstdc++-4.8-dev; fi
+  # Install clang 3.4
+  - if [ "$CXX" == "clang++" ]; then sudo add-apt-repository -y ppa:h-rayflood/llvm && sudo apt-get update -qq && sudo apt-get install --allow-unauthenticated -qq clang-3.4 && export CXX="clang++-3.4"; fi
+  ### LINUX
+  - if [ $TRAVIS_OS_NAME == linux ]; then sudo apt-get install git mercurial subversion cmake libopencv-dev libcgal-dev libatlas-base-dev libsuitesparse-dev libboost-iostreams-dev libboost-program-options-dev libboost-system-dev libboost-serialization-dev libpng-dev libjpeg-dev libtiff-dev; fi
+  # Install the latest version of Eigen
+  - if [ $TRAVIS_OS_NAME == linux ]; then hg clone https://bitbucket.org/eigen/eigen /tmp/eigen && cd /tmp/eigen && hg pull && hg update 3.2 && cd - && mkdir /tmp/eigen-build && cd /tmp/eigen-build && cmake /tmp/eigen && make && sudo make install && cd -; fi
+  # Install the latest version of Ceres Solver
+  - if [ $TRAVIS_OS_NAME == linux ]; then git clone --branch=master git://github.com/ceres-solver/ceres-solver.git /tmp/ceres-solver && mkdir /tmp/ceres-solver-build && cd /tmp/ceres-solver-build && cmake /tmp/ceres-solver -DMINIGLOG=ON -DBUILD_TESTING=OFF -DBUILD_EXAMPLES=OFF && make -j4 && sudo make install && cd -; fi
+  ### OSX
+  - if [ $TRAVIS_OS_NAME == osx ]; then sudo port install boost eigen3 opencv cgal ceres-solver; fi
+
+before_script:
+  - cd ..
+  - main_path=`pwd`
+  - svn checkout svn://svn.code.sf.net/p/vcg/code/trunk/vcglib vcglib
+  - mkdir build
+  - cd build
+  - if [ $TRAVIS_OS_NAME == linux ]; then cmake  . ../openMVS -DCMAKE_BUILD_TYPE=Release -DOpenCV_DIR="/usr/share/OpenCV" -DCGAL_DIR="/usr/lib/CGAL" -DVCG_DIR="$main_path/vcglib" -DCERES_DIR="/usr/local/share/Ceres" -DOpenCV_CAN_BREAK_BINARY_COMPATIBILITY=OFF; fi
+  - if [ $TRAVIS_OS_NAME == osx ]; then cmake  . ../openMVS -DCMAKE_BUILD_TYPE=Release -DCERES_DIR="/opt/local/share/Ceres" -DCGAL_DIR="/opt/local/share/CGAL" -DVCG_DIR="$main_path/vcglib"; fi
+
+script:
+  - make -j4
+
+after_success:
+  - if [ $TRAVIS_BRANCH == $TRAVIS_TAG ]; then rake deploy; fi
+
+branches:
+  only:
+    - master
+    - develop
+    - travis
+
+notifications:
+  email: true
+
+os:
+  - linux
+  #- osx
