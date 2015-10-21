@@ -1484,6 +1484,7 @@ struct DenseDepthMapData {
 	volatile Thread::safe_t idxImage;
 	SEACAVE::EventQueue events; // internal events queue (processed by the working threads)
 	Semaphore sem;
+	CAutoPtr<Util::Progress> progress;
 
 	DenseDepthMapData(Scene& _scene)
 		: scene(_scene), detphMaps(_scene), idxImage(0), sem(1) {}
@@ -1589,6 +1590,8 @@ bool Scene::DenseReconstruction()
 	ASSERT(data.events.IsEmpty());
 	data.events.AddEvent(new EVTProcessImage(0));
 	// start working threads
+	data.progress = new Util::Progress("Estimated depth-maps", data.images.GetSize());
+	GET_LOGCONSOLE().Pause();
 	if (nMaxThreads > 1) {
 		// multi-thread execution
 		cList<SEACAVE::Thread> threads(2);
@@ -1600,8 +1603,10 @@ bool Scene::DenseReconstruction()
 		// single-thread execution
 		DenseReconstructionEstimate((void*)&data);
 	}
+	GET_LOGCONSOLE().Play();
 	if (!data.events.IsEmpty())
 		return false;
+	data.progress.Release();
 
 	if ((OPTDENSE::nOptimize & OPTDENSE::ADJUST_FILTER) != 0) {
 		// initialize the queue of depth-maps to be filtered
@@ -1611,6 +1616,8 @@ bool Scene::DenseReconstruction()
 		FOREACH(i, data.images)
 			data.events.AddEvent(new EVTFilterDepthMap((uint32_t)i));
 		// start working threads
+		data.progress = new Util::Progress("Filtered depth-maps", data.images.GetSize());
+		GET_LOGCONSOLE().Pause();
 		if (nMaxThreads > 1) {
 			// multi-thread execution
 			cList<SEACAVE::Thread> threads(MINF(nMaxThreads, (unsigned)data.images.GetSize()));
@@ -1622,8 +1629,10 @@ bool Scene::DenseReconstruction()
 			// single-thread execution
 			DenseReconstructionFilter((void*)&data);
 		}
+		GET_LOGCONSOLE().Play();
 		if (!data.events.IsEmpty())
 			return false;
+		data.progress.Release();
 	}
 
 	// fuse all depth-maps
@@ -1770,6 +1779,7 @@ void Scene::DenseReconstructionEstimate(void* pData)
 			depthData.Save(ComposeDepthFilePath(idx, "dmap"));
 			depthData.ReleaseImages();
 			depthData.Release();
+			data.progress->operator++();
 			break; }
 
 		case EVT_CLOSE: {
@@ -1861,6 +1871,7 @@ void Scene::DenseReconstructionFilter(void* pData)
 				ExportPointCloud(ComposeDepthFilePath(idx, "filtered.ply"), *depthData.images.First().pImageData, depthData.depthMap, depthData.normalMap);
 			}
 			#endif
+			data.progress->operator++();
 			break; }
 
 		case EVT_FAIL: {

@@ -2846,6 +2846,8 @@ bool Scene::RefineMeshCUDA(unsigned nResolutionLevel, unsigned nMinResolution, u
 		iters = MAXF(iters/(int)(nScale+1),8);
 		const int iterStop(iters*7/10);
 		Eigen::Matrix<float,Eigen::Dynamic,3,Eigen::RowMajor> gradients(mesh.vertices.GetSize(),3);
+		Util::Progress progress(_T("Processed iterations"), iters);
+		GET_LOGCONSOLE().Pause();
 		for (int iter=0; iter<iters; ++iter) {
 			refine.iteration = (unsigned)iter;
 			refine.nAlternatePair = (iter+1 < iters ? nAlternatePair : 0);
@@ -2864,7 +2866,10 @@ bool Scene::RefineMeshCUDA(unsigned nResolutionLevel, unsigned nMinResolution, u
 			}
 			DEBUG_EXTRA("\t%2d. g: %.5f (%.3e - %.3e)\ts: %.3f", iter+1, gradients.norm(), gradients.norm()/mesh.vertices.GetSize(), gv/mesh.vertices.GetSize(), gstep);
 			gstep *= 0.98f;
+			progress.display(iter);
 		}
+		GET_LOGCONSOLE().Play();
+		progress.close();
 
 		#if TD_VERBOSE != TD_VERBOSE_OFF
 		if (VERBOSITY_LEVEL > 2)

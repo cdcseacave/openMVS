@@ -1,5 +1,6 @@
 # Add applications
 ADD_SUBDIRECTORY(InterfaceOpenMVG)
+ADD_SUBDIRECTORY(InterfaceVisualSFM)
 ADD_SUBDIRECTORY(DensifyPointCloud)
 ADD_SUBDIRECTORY(ReconstructMesh)
 ADD_SUBDIRECTORY(RefineMesh)

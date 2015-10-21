@@ -658,10 +658,49 @@ public:
 		const Timer::SysType start; // time when the work started
 		Timer::Type lastElapsed; // time when the last progress was displayed
 		size_t lastMsgLen; // how many characters had the last message
+		volatile size_t processed; // number of jobs already processed
+		CriticalSection cs; // multi-threading safety only for the incremental operator
 
 		Progress(const String& _msg, size_t _total, Timer::Type _slp=100/*ms*/)
-			: msg(_msg), total(_total), slp(_slp), start(Timer::GetSysTime()), lastElapsed(0), lastMsgLen(0) {}
+			: msg(_msg), total(_total), slp(_slp), start(Timer::GetSysTime()), lastElapsed(0), lastMsgLen(0), processed(0) {}
+		~Progress() { if (processed) close(); }
 
+		void operator++ () {
+			Thread::safeInc((Thread::safe_t&)processed);
+			if (cs.TryEnter()) {
+				process();
+				cs.Leave();
+			}
+		}
+		void display(size_t done) {
+			processed = done;
+			process();
+		}
+		void displayRemaining(size_t remaining) {
+			processed = total-remaining;
+			process();
+		}
+		void process() {
+			// make sure we don't print the progress too often
+			const Timer::Type elapsed(Timer::SysTime2TimeMs(Timer::GetSysTime()-start));
+			if (elapsed-lastElapsed < slp)
+				return;
+			lastElapsed = elapsed;
+			// compute percentage, elapsed and ETA
+			const size_t done(processed);
+			const float percentage((float)done/(float)total);
+			const Timer::Type remaining(percentage<0.01f && (done<10 || elapsed<10*1000) ? Timer::Type(0) : elapsed/percentage - elapsed);
+			// display progress
+			print(String::FormatString(_T("%s %u (%.2f%%, %s, ETA %s)..."), msg.c_str(), done, percentage*100.f, formatTime((int64_t)elapsed,1).c_str(), formatTime((int64_t)remaining,2).c_str()));
+		}
+		void close() {
+			// make sure we print the complete progress
+			const Timer::Type elapsed(Timer::SysTime2TimeMs(Timer::GetSysTime()-start));
+			// display progress
+			print(String::FormatString(_T("%s %u (100%%, %s)"), msg.c_str(), total, formatTime((int64_t)elapsed).c_str()));
+			std::cout << _T("\n");
+			processed = 0;
+		}
 		void print(const String& line) {
 			// print given line and make sure the last line is erased
 			const size_t msgLen = line.length();
@@ -670,28 +709,6 @@ public:
 				std::cout << String(lastMsgLen-msgLen, _T(' '));
 			std::cout << std::flush;
 			lastMsgLen = msgLen;
-		}
-		void display(size_t done) {
-			// make sure we don't print the progress too often
-			const Timer::Type elapsed(Timer::SysTime2TimeMs(Timer::GetSysTime()-start));
-			if (elapsed-lastElapsed < slp)
-				return;
-			lastElapsed = elapsed;
-			// compute percentage, elapsed and ETA
-			const float percentage((float)done/(float)total);
-			const Timer::Type remaining(percentage<0.01f && (done<10 || elapsed<10*1000) ? Timer::Type(0) : elapsed/percentage - elapsed);
-			// display progress
-			print(String::FormatString(_T("%s %u (%.2f%%, %s, ETA %s)..."), msg.c_str(), done, percentage*100.f, formatTime((int64_t)elapsed,1).c_str(), formatTime((int64_t)remaining,2).c_str()));
-		}
-		void displayRemaining(size_t remaining) {
-			display(total-remaining);
-		}
-		void close() {
-			// make sure we print the complete progress
-			const Timer::Type elapsed(Timer::SysTime2TimeMs(Timer::GetSysTime()-start));
-			// display progress
-			print(String::FormatString(_T("%s %u (100%%, %s)"), msg.c_str(), total, formatTime((int64_t)elapsed).c_str()));
-			std::cout << _T("\n");
 		}
 	};
 };

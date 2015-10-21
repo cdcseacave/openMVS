@@ -345,6 +345,8 @@ FORCEINLINE T RANDOM() { return (T(1)/RAND_MAX)*RAND(); }
 #include "Queue.h"
 #include "Hash.h"
 #include "Timer.h"
+#include "CriticalSection.h"
+#include "Semaphore.h"
 #include "Util.h"
 #include "File.h"
 #include "MemFile.h"
@@ -396,8 +398,6 @@ typedef class GENERAL_API cList<double, double, 0>      DoubleArr;
 } // namespace SEACAVE
 
 #include "Log.h"
-#include "CriticalSection.h"
-#include "Semaphore.h"
 #include "EventQueue.h"
 #include "SML.h"
 #include "ConfigTable.h"

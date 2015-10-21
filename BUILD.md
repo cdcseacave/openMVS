@@ -61,13 +61,8 @@ git clone https://github.com/cdcseacave/openMVS.git
 #Setup the required external library:
 ##
 
-#Ceres 3rd parties
-sudo apt-get install libgoogle-glog-dev
-sudo apt-get install libatlas-base-dev
-sudo apt-get install libeigen3-dev
-sudo apt-get install libsuitesparse-dev
-
 #Ceres (Required)
+sudo apt-get install libgoogle-glog-dev libatlas-base-dev libeigen3-dev libsuitesparse-dev
 git clone https://ceres-solver.googlesource.com/ceres-solver
 mkdir ceres_Build
 cd ceres_Build/
@@ -90,7 +85,7 @@ svn checkout svn://svn.code.sf.net/p/vcg/code/trunk/vcglib vcglib
 sudo apt-get install mesa-dev
 
 #Boost (Required)
-sudo apt-get install libboost-iostreams-dev libboost-program_options-dev libboost-system-dev libboost-serialization-dev
+sudo apt-get install libboost-iostreams-dev libboost-program-options-dev libboost-system-dev libboost-serialization-dev
 
 #OpenMVG (Optional)
 sudo apt-get install libpng-dev libjpeg-dev libtiff-dev libxxf86vm1 libxxf86vm-dev libxi-dev libxrandr-dev graphviz
