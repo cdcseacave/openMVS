@@ -128,9 +128,14 @@ bool Scene::LoadInterface(const String & fileName)
 			views.Resize((PointCloud::ViewArr::IDX)vertex.views.size());
 			PointCloud::WeightArr& weights = pointcloud.pointWeights[i];
 			weights.Resize((PointCloud::ViewArr::IDX)vertex.views.size());
+			CLISTDEF0(PointCloud::ViewArr::IDX) indices(views.GetSize());
+			std::iota(indices.Begin(), indices.End(), 0);
+			std::sort(indices.Begin(), indices.End(), [&](IndexArr::Type i0, IndexArr::Type i1) -> bool {
+				return vertex.views[i0].imageID < vertex.views[i1].imageID;
+			});
 			ASSERT(vertex.views.size() >= 2);
 			views.ForEach([&](PointCloud::ViewArr::IDX v) {
-				const Interface::Vertex::View& view = vertex.views[v];
+				const Interface::Vertex::View& view = vertex.views[indices[v]];
 				views[v] = view.imageID;
 				weights[v] = view.confidence;
 				if (view.confidence != 0)
@@ -340,6 +345,7 @@ bool Scene::SelectNeighborViews(uint32_t ID, IndexArr& points, unsigned nMinView
 	imageData.avgDepth = 0;
 	FOREACH(idx, pointcloud.points) {
 		const PointCloud::ViewArr& views = pointcloud.pointViews[idx];
+		ASSERT(views.IsSorted());
 		if (views.FindFirst(ID) == PointCloud::ViewArr::NO_INDEX)
 			continue;
 		// store this point
@@ -395,6 +401,7 @@ bool Scene::SelectNeighborViews(uint32_t ID, IndexArr& points, unsigned nMinView
 		ASSERT(pointsA.IsEmpty() && pointsB.IsEmpty());
 		FOREACHPTR(pIdx, points) {
 			const PointCloud::ViewArr& views = pointcloud.pointViews[*pIdx];
+			ASSERT(views.IsSorted());
 			ASSERT(views.FindFirst(ID) != PointCloud::ViewArr::NO_INDEX);
 			if (views.FindFirst(IDB) == PointCloud::ViewArr::NO_INDEX)
 				continue;
@@ -452,4 +459,66 @@ bool Scene::FilterNeighborViews(ViewScoreArr& neighbors, float fMinArea, float f
 		neighbors.Resize(nMaxViews);
 	return !neighbors.IsEmpty();
 } // FilterNeighborViews
+/*----------------------------------------------------------------*/
+
+
+// export all estimated cameras in a MeshLab MLP project as raster layers
+bool Scene::ExportCamerasMLP(const String& fileName, const String& fileNameScene) const
+{
+	static const char mlp_header[] =
+		"<!DOCTYPE MeshLabDocument>\n"
+		"<MeshLabProject>\n"
+		" <MeshGroup>\n"
+		"  <MLMesh label=\"%s\" filename=\"%s\">\n"
+		"   <MLMatrix44>\n"
+		"1 0 0 0 \n"
+		"0 1 0 0 \n"
+		"0 0 1 0 \n"
+		"0 0 0 1 \n"
+		"   </MLMatrix44>\n"
+		"  </MLMesh>\n"
+		" </MeshGroup>\n";
+	static const char mlp_raster[] =
+		"  <MLRaster label=\"%s\">\n"
+		"   <VCGCamera TranslationVector=\"%0.6g %0.6g %0.6g 1\""
+		" LensDistortion=\"%0.6g %0.6g\""
+		" ViewportPx=\"%u %u\""
+		" PixelSizeMm=\"1 %0.4f\""
+		" FocalMm=\"%0.4f\""
+		" CenterPx=\"%0.4f %0.4f\""
+		" RotationMatrix=\"%0.6g %0.6g %0.6g 0 %0.6g %0.6g %0.6g 0 %0.6g %0.6g %0.6g 0 0 0 0 1\"/>\n"
+		"   <Plane semantic=\"\" fileName=\"%s\"/>\n"
+		"  </MLRaster>\n";
+
+	Util::ensureDirectory(fileName);
+	File f(fileName, File::WRITE, File::CREATE | File::TRUNCATE);
+
+	// write MLP header containing the referenced PLY file
+	f.print(mlp_header, Util::getFileName(fileNameScene).c_str(), MAKE_PATH_REL(WORKING_FOLDER_FULL, fileNameScene).c_str());
+
+	// write the raster layers
+	f <<  " <RasterGroup>\n";
+	FOREACH(i, images) {
+		const Image& imageData = images[i];
+		// skip invalid, uncalibrated or discarded images
+		if (!imageData.IsValid())
+			continue;
+		const Camera& camera = imageData.camera;
+		f.print(mlp_raster,
+			Util::getFileName(imageData.name).c_str(),
+			-camera.C.x, -camera.C.y, -camera.C.z,
+			0, 0,
+			imageData.width, imageData.height,
+			camera.K(1,1)/camera.K(0,0), camera.K(0,0),
+			camera.K(0,2), camera.K(1,2),
+			 camera.R(0,0),  camera.R(0,1),  camera.R(0,2),
+			-camera.R(1,0), -camera.R(1,1), -camera.R(1,2),
+			-camera.R(2,0), -camera.R(2,1), -camera.R(2,2),
+			MAKE_PATH_REL(WORKING_FOLDER_FULL, imageData.name).c_str()
+		);
+	}
+	f << " </RasterGroup>\n</MeshLabProject>\n";
+
+	return true;
+} // ExportCamerasMLP
 /*----------------------------------------------------------------*/

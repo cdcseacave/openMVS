@@ -50,14 +50,88 @@ void PointCloud::Release()
 }
 /*----------------------------------------------------------------*/
 
-// save the dense point cloud as PLY file
-bool PointCloud::Save(const String& fileName)
-{
+
+// define a PLY file format composed only of vertices
+namespace BasicPLY {
+	typedef PointCloud::Point Point;
+	typedef PointCloud::Color Color;
+	typedef PointCloud::Normal Normal;
+	// list of property information for a vertex
+	struct PointColNormal {
+		Point p;
+		Color c;
+		Normal n;
+	};
+	static const PLY::PlyProperty vert_props[] = {
+		{"x",     PLY::Float32, PLY::Float32, offsetof(PointColNormal,p.x), 0, 0, 0, 0},
+		{"y",     PLY::Float32, PLY::Float32, offsetof(PointColNormal,p.y), 0, 0, 0, 0},
+		{"z",     PLY::Float32, PLY::Float32, offsetof(PointColNormal,p.z), 0, 0, 0, 0},
+		{"red",   PLY::Uint8,   PLY::Uint8,   offsetof(PointColNormal,c.r), 0, 0, 0, 0},
+		{"green", PLY::Uint8,   PLY::Uint8,   offsetof(PointColNormal,c.g), 0, 0, 0, 0},
+		{"blue",  PLY::Uint8,   PLY::Uint8,   offsetof(PointColNormal,c.b), 0, 0, 0, 0},
+		{"nx",    PLY::Float32, PLY::Float32, offsetof(PointColNormal,n.x), 0, 0, 0, 0},
+		{"ny",    PLY::Float32, PLY::Float32, offsetof(PointColNormal,n.y), 0, 0, 0, 0},
+		{"nz",    PLY::Float32, PLY::Float32, offsetof(PointColNormal,n.z), 0, 0, 0, 0}
+	};
 	// list of the kinds of elements in the PLY
 	static const char* elem_names[] = {
 		"vertex"
 	};
+} // namespace BasicPLY
 
+// load the dense point cloud from a PLY file
+bool PointCloud::Load(const String& fileName)
+{
+	ASSERT(!fileName.IsEmpty());
+	Release();
+
+	// open PLY file and read header
+	PLY ply;
+	if (!ply.read(fileName)) {
+		DEBUG_EXTRA("error: invalid PLY file");
+		return false;
+	}
+
+	// read PLY body
+	BasicPLY::PointColNormal vertex;
+	for (int i = 0; i < (int)ply.elems.size(); i++) {
+		int elem_count;
+		LPCSTR elem_name = ply.setup_element_read(i, &elem_count);
+		if (PLY::equal_strings(BasicPLY::elem_names[0], elem_name)) {
+			PLY::PlyElement* elm = ply.find_element(elem_name);
+			const size_t nMaxProps(SizeOfArray(BasicPLY::vert_props));
+			for (size_t p=0; p<nMaxProps; ++p) {
+				if (ply.find_property(elm, BasicPLY::vert_props[p].name.c_str()) < 0)
+					continue;
+				ply.setup_property(BasicPLY::vert_props[p]);
+				switch (p) {
+				case 0: points.Resize((IDX)elem_count); break;
+				case 3: colors.Resize((IDX)elem_count); break;
+				case 6: normals.Resize((IDX)elem_count); break;
+				}
+			}
+			for (int v=0; v<elem_count; ++v) {
+				ply.get_element(&vertex);
+				points[v] = vertex.p;
+				if (!colors.IsEmpty())
+					colors[v] = vertex.c;
+				if (!normals.IsEmpty())
+					normals[v] = vertex.n;
+			}
+		} else {
+			ply.get_other_element();
+		}
+	}
+	if (points.IsEmpty()) {
+		DEBUG_EXTRA("error: invalid point-cloud");
+		return false;
+	}
+	return true;
+} // Load
+
+// save the dense point cloud as PLY file
+bool PointCloud::Save(const String& fileName) const
+{
 	if (points.IsEmpty())
 		return false;
 
@@ -65,89 +139,42 @@ bool PointCloud::Save(const String& fileName)
 	ASSERT(!fileName.IsEmpty());
 	Util::ensureDirectory(fileName);
 	PLY ply;
-	if (!ply.write(fileName, 1, elem_names, PLY::BINARY_LE, 64*1024))
+	if (!ply.write(fileName, 1, BasicPLY::elem_names, PLY::BINARY_LE, 64*1024))
 		return false;
 
 	if (normals.IsEmpty()) {
-		// vertex definition
-		struct Vertex {
-			float x, y, z;
-			uint8_t r, g, b;
-		};
-		// list of property information for a vertex
-		static PLY::PlyProperty vert_props[] = {
-			{"x", PLY::Float32, PLY::Float32, offsetof(Vertex,x), 0, 0, 0, 0},
-			{"y", PLY::Float32, PLY::Float32, offsetof(Vertex,y), 0, 0, 0, 0},
-			{"z", PLY::Float32, PLY::Float32, offsetof(Vertex,z), 0, 0, 0, 0},
-			{"red", PLY::Uint8, PLY::Uint8, offsetof(Vertex,r), 0, 0, 0, 0},
-			{"green", PLY::Uint8, PLY::Uint8, offsetof(Vertex,g), 0, 0, 0, 0},
-			{"blue", PLY::Uint8, PLY::Uint8, offsetof(Vertex,b), 0, 0, 0, 0},
-		};
-
 		// describe what properties go into the vertex elements
-		ply.describe_property("vertex", 6, vert_props);
+		ply.describe_property(BasicPLY::elem_names[0], 6, BasicPLY::vert_props);
 
 		// write the header
-		ply.element_count("vertex", (int)points.GetSize());
+		ply.element_count(BasicPLY::elem_names[0], (int)points.GetSize());
 		if (!ply.header_complete())
 			return false;
 
 		// export the array of 3D points
-		Vertex vertex;
+		BasicPLY::PointColNormal vertex;
 		FOREACH(i, points) {
 			// export the vertex position, normal and color
-			const Point& point = points[i];
-			vertex.x = point.x; vertex.y = point.y; vertex.z = point.z;
-			if (!colors.IsEmpty()) {
-				const Color& color = colors[i];
-				vertex.r = color.r; vertex.g = color.g; vertex.b = color.b;
-			} else {
-				vertex.r = 255; vertex.g = 255; vertex.b = 255;
-			}
+			vertex.p = points[i];
+			vertex.c = (!colors.IsEmpty() ? colors[i] : Color::WHITE);
 			ply.put_element(&vertex);
 		}
 	} else {
-		// vertex definition
-		struct Vertex {
-			float x, y, z;
-			float nx, ny, nz;
-			uint8_t r, g, b;
-		};
-		// list of property information for a vertex
-		static PLY::PlyProperty vert_props[] = {
-			{"x", PLY::Float32, PLY::Float32, offsetof(Vertex,x), 0, 0, 0, 0},
-			{"y", PLY::Float32, PLY::Float32, offsetof(Vertex,y), 0, 0, 0, 0},
-			{"z", PLY::Float32, PLY::Float32, offsetof(Vertex,z), 0, 0, 0, 0},
-			{"nx", PLY::Float32, PLY::Float32, offsetof(Vertex,nx), 0, 0, 0, 0},
-			{"ny", PLY::Float32, PLY::Float32, offsetof(Vertex,ny), 0, 0, 0, 0},
-			{"nz", PLY::Float32, PLY::Float32, offsetof(Vertex,nz), 0, 0, 0, 0},
-			{"red", PLY::Uint8, PLY::Uint8, offsetof(Vertex,r), 0, 0, 0, 0},
-			{"green", PLY::Uint8, PLY::Uint8, offsetof(Vertex,g), 0, 0, 0, 0},
-			{"blue", PLY::Uint8, PLY::Uint8, offsetof(Vertex,b), 0, 0, 0, 0},
-		};
-
 		// describe what properties go into the vertex elements
-		ply.describe_property("vertex", 9, vert_props);
+		ply.describe_property(BasicPLY::elem_names[0], 9, BasicPLY::vert_props);
 
 		// write the header
-		ply.element_count("vertex", (int)points.GetSize());
+		ply.element_count(BasicPLY::elem_names[0], (int)points.GetSize());
 		if (!ply.header_complete())
 			return false;
 
 		// export the array of 3D points
-		Vertex vertex;
+		BasicPLY::PointColNormal vertex;
 		FOREACH(i, points) {
 			// export the vertex position, normal and color
-			const Point& point = points[i];
-			vertex.x = point.x; vertex.y = point.y; vertex.z = point.z;
-			const Normal& normal = normals[i];
-			vertex.nx = normal.x; vertex.ny = normal.y; vertex.nz = normal.z;
-			if (!colors.IsEmpty()) {
-				const Color& color = colors[i];
-				vertex.r = color.r; vertex.g = color.g; vertex.b = color.b;
-			} else {
-				vertex.r = 255; vertex.g = 255; vertex.b = 255;
-			}
+			vertex.p = points[i];
+			vertex.n = normals[i];
+			vertex.c = (!colors.IsEmpty() ? colors[i] : Color::WHITE);
 			ply.put_element(&vertex);
 		}
 	}

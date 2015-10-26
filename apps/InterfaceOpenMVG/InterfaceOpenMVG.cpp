@@ -48,7 +48,6 @@
 #define MVS_EXT _T(".mvs")
 #define MVG_EXT _T(".baf")
 #define MVG2_EXT _T(".json")
-#define PLY_EXT _T(".ply")
 
 
 // S T R U C T S ///////////////////////////////////////////////////
@@ -531,42 +530,11 @@ int main(int argc, LPCTSTR* argv)
 		const String strOutputFileNameMVG(OPT::strOutputFileName + MVG_EXT);
 		openMVS::MVS_IO::ExportScene(MAKE_PATH_SAFE(OPT::strListFileName), MAKE_PATH_SAFE(strOutputFileNameMVG), sceneBAF);
 
-		// export the scene to a PLY file
-		uint32_t nbcamera(0);
-		FOREACH(i, scene.images) {
-			const MVS::Image& image = scene.images[i];
-			if (image.poseID != NO_ID)
-				++nbcamera;
-		}
-		const String strOutputFileNamePLY(OPT::strOutputFileName + PLY_EXT);
-		std::ofstream stream(MAKE_PATH_SAFE(strOutputFileNamePLY));
-		if (!stream.is_open())
-			return EXIT_FAILURE;
-		stream << "ply"
-			<< '\n' << "format ascii 1.0"
-			<< '\n' << "element vertex "
-			<< (nbcamera + scene.pointcloud.GetSize())
-			<< '\n' << "property float x"
-			<< '\n' << "property float y"
-			<< '\n' << "property float z"
-			<< '\n' << "property uchar red"
-			<< '\n' << "property uchar green"
-			<< '\n' << "property uchar blue"
-			<< '\n' << "end_header" << std::endl;
-		FOREACH(i, scene.images) {
-			const MVS::Image& image = scene.images[i];
-			if (image.poseID != NO_ID)
-				stream << image.camera.C[0] << " " << image.camera.C[1] << " " << image.camera.C[2] << " 0 255 0" << "\n";
-		}
-		FOREACH(p, scene.pointcloud.points) {
-			const MVS::PointCloud::Point& point = scene.pointcloud.points[p];
-			stream << point[0] << " "  << point[1] << " " << point[2] << " 255 255 255" << "\n";
-		}
-
 		VERBOSE("Input data exported: %u cameras & %u poses & %u images & %u vertices (%s)", sceneBAF.cameras.size(), sceneBAF.poses.size(), sceneBAF.images.size(), sceneBAF.vertices.size(), TD_TIMER_GET_FMT().c_str());
 	} else {
 		// convert data from OpenMVG to OpenMVS
 		MVS::Scene scene(OPT::nMaxThreads);
+		size_t nCameras(0), nPoses(0);
 
 	#ifdef _USE_OPENMVG
 	if (OPT::bOpenMVGjson) {
@@ -589,16 +557,13 @@ int main(int argc, LPCTSTR* argv)
 		std::map<openMVG::IndexT, uint32_t> map_intrinsic, map_view;
 
 		// define a platform with all the intrinsic group
+		nCameras = sfm_data.GetIntrinsics().size();
 		for (const auto& intrinsic: sfm_data.GetIntrinsics()) {
 			if (isPinhole(intrinsic.second.get()->getType())) {
 				const Pinhole_Intrinsic * cam = dynamic_cast<const Pinhole_Intrinsic*>(intrinsic.second.get());
-
-				MVS::Platform& platform =
-					(scene.platforms.GetSize() == 0) ? scene.platforms.AddEmpty() : scene.platforms[0];
-
 				if (map_intrinsic.count(intrinsic.first) == 0)
-					map_intrinsic.insert(std::make_pair(intrinsic.first, platform.cameras.GetSize()));
-
+					map_intrinsic.insert(std::make_pair(intrinsic.first, scene.platforms.GetSize()));
+				MVS::Platform& platform = scene.platforms.AddEmpty();
 				// add the camera
 				MVS::Platform::Camera& camera = platform.cameras.AddEmpty();
 				camera.K = cam->K();
@@ -618,13 +583,14 @@ int main(int argc, LPCTSTR* argv)
 			Util::ensureUnifySlash(image.name);
 			image.name = MAKE_PATH_FULL(WORKING_FOLDER_FULL, image.name);
 			Util::ensureDirectory(image.name);
-			image.platformID = 0;
+			image.platformID = map_intrinsic.at(view.second->id_intrinsic);
 			MVS::Platform& platform = scene.platforms[image.platformID];
-			image.cameraID = map_intrinsic.at(view.second->id_intrinsic);
+			image.cameraID = 0;
 
 			openMVG::image::Image<openMVG::image::RGBColor> imageRGB, imageRGB_ud;
-			const std::string srcImage = stlplus::create_filespec(sfm_data.s_root_path, view.second->s_Img_path);
-			const std::string dstImage = image.name;
+			String pathRoot(sfm_data.s_root_path); Util::ensureDirectorySlash(pathRoot);
+			const String srcImage(MAKE_PATH_FULL(WORKING_FOLDER_FULL, pathRoot+view.second->s_Img_path));
+			const String& dstImage(image.name);
 
 			if (sfm_data.IsPoseAndIntrinsicDefined(view.second.get())) {
 				image.poseID = platform.poses.GetSize();
@@ -636,28 +602,19 @@ int main(int argc, LPCTSTR* argv)
 				const openMVG::cameras::IntrinsicBase * cam = sfm_data.GetIntrinsics().at(view.second->id_intrinsic).get();
 				if (cam->have_disto())  {
 					// undistort and save the image
-					openMVG::image::ReadImage(srcImage.c_str(), &imageRGB);
+					openMVG::image::ReadImage(srcImage, &imageRGB);
 					openMVG::cameras::UndistortImage(imageRGB, cam, imageRGB_ud, openMVG::image::BLACK);
-					openMVG::image::WriteImage(dstImage.c_str(), imageRGB_ud);
-				} else  { // (no distortion)
-					// if extensions match, copy the image
-					if (Util::getFileExt(srcImage).ToLower() == _T(".jpg")) {
-						stlplus::file_copy(srcImage, dstImage);
-					} else  {
-						openMVG::image::ReadImage( srcImage.c_str(), &imageRGB);
-						openMVG::image::WriteImage( dstImage.c_str(), imageRGB);
-					}
+					openMVG::image::WriteImage(dstImage, imageRGB_ud);
+				} else  {
+					// no distortion, copy the image
+					File::copyFile(srcImage, dstImage);
 				}
+				++nPoses;
 			} else {
 				// image have not valid pose, so set an undefined pose
 				image.poseID = NO_ID;
-				// export the corresponding image
-				if (Util::getFileExt(srcImage).ToLower() == _T(".jpg")) {
-					stlplus::file_copy(srcImage, dstImage);
-				} else  {
-					openMVG::image::ReadImage( srcImage.c_str(), &imageRGB);
-					openMVG::image::WriteImage( dstImage.c_str(), imageRGB);
-				}
+				// just copy the image
+				File::copyFile(srcImage, dstImage);
 			}
 			progress.display(scene.images.GetSize());
 		}
@@ -671,9 +628,8 @@ int main(int argc, LPCTSTR* argv)
 			MVS::PointCloud::Point& point = scene.pointcloud.points.AddEmpty();
 			point = landmark.X.cast<float>();
 			MVS::PointCloud::ViewArr& views = scene.pointcloud.pointViews.AddEmpty();
-			for (const auto& observation: landmark.obs) {
-				views.Insert(map_view.at(observation.first));
-			}
+			for (const auto& observation: landmark.obs)
+				views.InsertSort(map_view.at(observation.first));
 		}
 	} else
 	#endif
@@ -684,7 +640,8 @@ int main(int argc, LPCTSTR* argv)
 			return EXIT_FAILURE;
 
 		// convert data from OpenMVG to OpenMVS
-		scene.platforms.Reserve((uint32_t)sceneBAF.cameras.size());
+		nCameras = sceneBAF.cameras.size();
+		scene.platforms.Reserve((uint32_t)nCameras);
 		for (const auto& cameraBAF: sceneBAF.cameras) {
 			MVS::Platform& platform = scene.platforms.AddEmpty();
 			MVS::Platform::Camera& camera = platform.cameras.AddEmpty();
@@ -692,7 +649,8 @@ int main(int argc, LPCTSTR* argv)
 			camera.R = RMatrix::IDENTITY;
 			camera.C = CMatrix::ZERO;
 		}
-		scene.images.Reserve((uint32_t)sceneBAF.images.size());
+		nPoses = sceneBAF.images.size();
+		scene.images.Reserve((uint32_t)nPoses);
 		for (const auto& imageBAF: sceneBAF.images) {
 			openMVS::MVS_IO::Pose& poseBAF = sceneBAF.poses[imageBAF.id_pose];
 			MVS::Image& image = scene.images.AddEmpty();
@@ -714,7 +672,7 @@ int main(int argc, LPCTSTR* argv)
 			point = vertexBAF.X.cast<float>();
 			MVS::PointCloud::ViewArr& views = scene.pointcloud.pointViews.AddEmpty();
 			for (const auto& viewBAF: vertexBAF.views)
-				views.Insert(viewBAF);
+				views.InsertSort(viewBAF);
 		}
 	}
 
@@ -754,11 +712,7 @@ int main(int argc, LPCTSTR* argv)
 		scene.Save(MAKE_PATH_SAFE(OPT::strOutputFileName), (ARCHIVE_TYPE)OPT::nArchiveType);
 
 		VERBOSE("Exported data: %u platforms, %u cameras, %u poses, %u images, %u vertices (%s)",
-				scene.platforms.GetSize(),
-				(scene.platforms.GetSize() == 0) ? 0 : scene.platforms[0].cameras.GetSize(),
-				(scene.platforms.GetSize() == 0) ? 0 : scene.platforms[0].poses.GetSize(),
-				scene.images.GetSize(),
-				scene.pointcloud.GetSize(),
+				scene.platforms.GetSize(), nCameras, nPoses, scene.images.GetSize(), scene.pointcloud.GetSize(),
 				TD_TIMER_GET_FMT().c_str());
 	}
 

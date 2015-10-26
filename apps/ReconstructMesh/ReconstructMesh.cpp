@@ -207,7 +207,12 @@ int main(int argc, LPCTSTR* argv)
 		if (!scene.Load(MAKE_PATH_SAFE(OPT::strInputFileName)) || scene.mesh.IsEmpty())
 			return EXIT_FAILURE;
 		// save mesh
-		scene.mesh.Save(MAKE_PATH_SAFE(OPT::strOutputFileName));
+		const String fileName(MAKE_PATH_SAFE(OPT::strOutputFileName));
+		scene.mesh.Save(fileName);
+		#if TD_VERBOSE != TD_VERBOSE_OFF
+		if (VERBOSITY_LEVEL > 2)
+			scene.ExportCamerasMLP(Util::getFullFileName(OPT::strOutputFileName)+_T(".mlp"), fileName);
+		#endif
 	} else {
 		if (OPT::strMeshFileName.IsEmpty()) {
 			// load point-cloud and reconstruct a coarse mesh
@@ -244,8 +249,13 @@ int main(int argc, LPCTSTR* argv)
 		scene.mesh.Clean(1.f, 0.f, false, 0, 0, true); // extra cleaning to remove non-manifold problems created by closing holes
 
 		// save the final mesh
-		scene.mesh.Save(MAKE_PATH_SAFE(Util::getFullFileName(OPT::strOutputFileName) + _T("_mesh.ply")));
-		scene.Save(MAKE_PATH_SAFE(Util::getFullFileName(OPT::strOutputFileName) + _T("_mesh.mvs")), (ARCHIVE_TYPE)OPT::nArchiveType);
+		const String baseFileName(MAKE_PATH_SAFE(Util::getFullFileName(OPT::strOutputFileName) + _T("_mesh")));
+		scene.Save(baseFileName+_T(".mvs"), (ARCHIVE_TYPE)OPT::nArchiveType);
+		scene.mesh.Save(baseFileName+_T(".ply"));
+		#if TD_VERBOSE != TD_VERBOSE_OFF
+		if (VERBOSITY_LEVEL > 2)
+			scene.ExportCamerasMLP(baseFileName+_T(".mlp"), baseFileName+_T(".ply"));
+		#endif
 	}
 
 	Finalize();

@@ -68,7 +68,7 @@ public:
 
 public:
 	PointArr points;
-	PointViewArr pointViews;
+	PointViewArr pointViews; // array of views for each point (ordered increasing)
 	PointWeightArr pointWeights;
 	NormalArr normals;
 	ColorArr colors;
@@ -78,10 +78,12 @@ public:
 
 	void Release();
 
-	inline bool IsEmpty() const { ASSERT(points.GetSize() == pointViews.GetSize()); return points.IsEmpty(); }
-	inline size_t GetSize() const { ASSERT(points.GetSize() == pointViews.GetSize()); return points.GetSize(); }
+	inline bool IsEmpty() const { ASSERT(points.GetSize() == pointViews.GetSize() || pointViews.IsEmpty()); return points.IsEmpty(); }
+	inline bool IsValid() const { ASSERT(points.GetSize() == pointViews.GetSize() || pointViews.IsEmpty()); return !pointViews.IsEmpty(); }
+	inline size_t GetSize() const { ASSERT(points.GetSize() == pointViews.GetSize() || pointViews.IsEmpty()); return points.GetSize(); }
 
-	bool Save(const String& fileName);
+	bool Load(const String& fileName);
+	bool Save(const String& fileName) const;
 
 	#ifdef _USE_BOOST
 	// implement BOOST serialization

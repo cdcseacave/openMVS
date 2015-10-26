@@ -782,7 +782,7 @@ void MeshRefine::ProjectMesh(
 		const Point3 faceCenter((ptc[0]+ptc[1]+ptc[2])/3);
 		// skip face if the (cos) angle between
 		// the view to face vector and the view direction is negative
-		if (faceCenter.z < 0)
+		if (faceCenter.z <= 0)
 			continue;
 		// compute the plane defined by the 3 points
 		const Point3 edge1(ptc[1]-ptc[0]);

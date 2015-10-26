@@ -1541,6 +1541,7 @@ bool Scene::DenseReconstruction()
 				#ifdef DENSE_USE_OPENMP
 				bAbort = true;
 				#pragma omp flush (bAbort)
+				continue;
 				#else
 				return false;
 				#endif

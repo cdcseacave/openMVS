@@ -29,6 +29,8 @@
 #endif
 #ifdef _SUPPORT_CPP11
 #include <cstdint>
+#include <cstddef>
+#include <type_traits>
 #include <initializer_list>
 #else
 #include <stdint.h>
@@ -1503,9 +1505,11 @@ public:
 	inline operator EMatMap () { return EMatMap((TYPE*)val); }
 	#endif
 
-	// calculate right/left null-vector of matrix A ([n,1])
+	// calculate right null-space of this matrix ([n,n-m])
+	inline TMatrix<TYPE,n,n-m> RightNullSpace(int flags = 0) const;
+	// calculate right/left null-vector of this matrix ([n/m,1])
 	inline TMatrix<TYPE,n,1> RightNullVector(int flags = 0) const;
-	inline TMatrix<TYPE,n,1> LeftNullVector(int flags = 0) const;
+	inline TMatrix<TYPE,m,1> LeftNullVector(int flags = 0) const;
 
 	#ifdef _USE_BOOST
 	// serialize

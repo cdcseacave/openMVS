@@ -345,7 +345,7 @@ int main(int argc, LPCTSTR* argv)
 	scene.pointcloud.pointViews.Resize(vertices.size());
 	for (size_t idx=0; idx<measurements.size(); ++idx) {
 		MVS::PointCloud::ViewArr& views = scene.pointcloud.pointViews[correspondingPoint[idx]];
-		views.Insert(correspondingView[idx]);
+		views.InsertSort(correspondingView[idx]);
 	}
 
 	// undistort images
@@ -370,6 +370,7 @@ int main(int argc, LPCTSTR* argv)
 			#ifdef _USE_OPENMP
 			bAbort = true;
 			#pragma omp flush (bAbort)
+			continue;
 			#else
 			return false;
 			#endif
@@ -381,6 +382,7 @@ int main(int argc, LPCTSTR* argv)
 			#ifdef _USE_OPENMP
 			bAbort = true;
 			#pragma omp flush (bAbort)
+			continue;
 			#else
 			return false;
 			#endif

@@ -281,6 +281,20 @@ template <typename TYPE> const TColor<TYPE> TColor<TYPE>::YELLOW	(ColorType<TYPE
 template <typename TYPE> const TColor<TYPE> TColor<TYPE>::MAGENTA	(ColorType<TYPE>::ONE, 0, ColorType<TYPE>::ONE, ColorType<TYPE>::ONE);
 template <typename TYPE> const TColor<TYPE> TColor<TYPE>::CYAN		(0, ColorType<TYPE>::ONE, ColorType<TYPE>::ONE, ColorType<TYPE>::ONE);
 
+#ifdef _SUPPORT_CPP11
+template <typename A>
+inline typename std::enable_if<std::is_array<A>::value, size_t>::type
+SizeOfArray(const A& a) {
+	return std::extent<A>::value;
+}
+#else
+template <typename T, size_t N>
+inline size_t
+SizeOfArray(const T(&)[N]) {
+	return N;
+}
+#endif
+
 
 // C L A S S  //////////////////////////////////////////////////////
 
@@ -1610,18 +1624,31 @@ inline bool TMatrix<TYPE,m,n>::IsEqual(const Base& rhs, TYPE eps) const
 	return true;
 }
 
-// calculate right null-vector of matrix A ([n,1])
+// calculate right null-Space of the matrix ([n,1])
+template <typename TYPE, int m, int n>
+inline TMatrix<TYPE,n,n-m> TMatrix<TYPE,m,n>::RightNullSpace(int flags /*= 0*/) const
+{
+	COMPILE_TIME_ASSERT(n > m);
+	const cv::SVD svd(*this, flags|cv::SVD::FULL_UV);
+	// the orthonormal basis of the null space is formed by the columns
+	// of svd.vt such that the corresponding singular values are 0 (n - m or svd.vt.cols - svd.w.rows)
+	ASSERT(svd.vt.rows == n && svd.vt.rows == svd.vt.cols && svd.w.rows == m);
+	// return result (last rows transposed)
+	return svd.vt.rowRange(m,n).t();
+}
+// calculate right null-vector of the matrix ([n,1])
 template <typename TYPE, int m, int n>
 inline TMatrix<TYPE,n,1> TMatrix<TYPE,m,n>::RightNullVector(int flags /*= 0*/) const
 {
 	const cv::SVD svd(*this, (m >= n ? flags : flags|cv::SVD::FULL_UV));
 	// the singular values could be checked for numerical stability
 	// return result (last row transposed)
-	return *svd.vt.ptr< const TMatrix<TYPE,n,1> >(m-1);
+	ASSERT(svd.vt.rows == n);
+	return *svd.vt.ptr< const TMatrix<TYPE,n,1> >(n-1);
 }
-// calculate left null-vector of matrix A ([n,1])
+// calculate left null-vector of the matrix ([m,1])
 template <typename TYPE, int m, int n>
-inline TMatrix<TYPE,n,1> TMatrix<TYPE,m,n>::LeftNullVector(int flags /*= 0*/) const
+inline TMatrix<TYPE,m,1> TMatrix<TYPE,m,n>::LeftNullVector(int flags /*= 0*/) const
 {
 	return TMatrix<TYPE,m,n>(Base::t()).RightNullVector(flags);
 }

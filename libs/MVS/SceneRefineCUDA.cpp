@@ -2198,6 +2198,7 @@ bool MeshRefineCUDA::InitImages(float scale, float sigma)
 			#ifdef MESHCUDAOPT_USE_OPENMP
 			bAbort = true;
 			#pragma omp flush (bAbort)
+			continue;
 			#else
 			return false;
 			#endif

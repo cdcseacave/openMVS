@@ -174,7 +174,6 @@ struct Interface
 			Real confidence; // view's confidence (0 - not available)
 
 			#ifdef _USE_BOOST
-							   // implement BOOST serialization
 			template<class Archive>
 			void serialize(Archive& ar, const unsigned int /*version*/) {
 				ar & imageID;

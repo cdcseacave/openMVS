@@ -236,16 +236,17 @@ public:
 		return (SetFileAttributes(aFileName, attribs) != FALSE);
 	}
 
-	static void deleteFile(LPCTSTR aFileName) { ::DeleteFile(aFileName); };
+	static void deleteFile(LPCTSTR aFileName) { ::DeleteFile(aFileName); }
 	static bool renameFile(LPCTSTR source, LPCTSTR target) {
 		if (!::MoveFile(source, target)) {
 			// Can't move, try copy/delete...
-			if (!CopyFile(source, target, FALSE))
+			if (!::CopyFile(source, target, FALSE))
 				return false;
 			deleteFile(source);
 		}
 		return true;
 	}
+	static bool copyFile(LPCTSTR source, LPCTSTR target) { return ::CopyFile(source, target, FALSE) == TRUE; }
 
 	static size_f_t getSize(LPCTSTR aFileName) {
 		const HANDLE fh = ::CreateFile(aFileName, FILE_READ_ATTRIBUTES, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_FLAG_NO_BUFFERING, NULL);
@@ -445,8 +446,14 @@ public:
 		return fsync(h);
 	}
 
-	static void deleteFile(LPCTSTR aFileName) { ::unlink(aFileName); };
-	static void renameFile(LPCTSTR source, LPCTSTR target) { ::rename(source, target); };
+	static void deleteFile(LPCTSTR aFileName) { ::remove(aFileName); }
+	static bool renameFile(LPCTSTR source, LPCTSTR target) { return ::rename(source, target) == 0; }
+	static bool copyFile(LPCTSTR source, LPCTSTR target) {
+		std::ifstream src(source, std::ios::binary);
+		std::ofstream dst(target, std::ios::binary);
+		dst << src.rdbuf();
+		return true;
+	}
 
 	static size_f_t getSize(LPCTSTR aFileName) {
 		struct stat s;

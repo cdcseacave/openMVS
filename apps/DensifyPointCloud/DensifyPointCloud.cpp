@@ -216,8 +216,13 @@ int main(int argc, LPCTSTR* argv)
 	VERBOSE("Densifying point-cloud completed: %u points (%s)", scene.pointcloud.points.GetSize(), TD_TIMER_GET_FMT().c_str());
 
 	// save the final mesh
-	scene.pointcloud.Save(MAKE_PATH_SAFE(Util::getFullFileName(OPT::strOutputFileName) + _T("_dense.ply")));
-	scene.Save(MAKE_PATH_SAFE(Util::getFullFileName(OPT::strOutputFileName) + _T("_dense.mvs")), (ARCHIVE_TYPE)OPT::nArchiveType);
+	const String baseFileName(MAKE_PATH_SAFE(Util::getFullFileName(OPT::strOutputFileName) + _T("_dense")));
+	scene.Save(baseFileName+_T(".mvs"), (ARCHIVE_TYPE)OPT::nArchiveType);
+	scene.pointcloud.Save(baseFileName+_T(".ply"));
+	#if TD_VERBOSE != TD_VERBOSE_OFF
+	if (VERBOSITY_LEVEL > 2)
+		scene.ExportCamerasMLP(baseFileName+_T(".mlp"), baseFileName+_T(".ply"));
+	#endif
 
 	Finalize();
 	return EXIT_SUCCESS;

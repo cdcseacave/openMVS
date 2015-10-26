@@ -243,7 +243,7 @@ struct MeshTexture {
 		inline void SortByPatchIndex(IndexArr& indices) const {
 			indices.Resize(patches.GetSize());
 			std::iota(indices.Begin(), indices.End(), 0);
-			std::sort(indices.Begin(), indices.End(), [&](const IndexArr::Type i0, const IndexArr::Type i1) -> bool {
+			std::sort(indices.Begin(), indices.End(), [&](IndexArr::Type i0, IndexArr::Type i1) -> bool {
 				return patches[i0].idxPatch < patches[i1].idxPatch;
 			});
 		}
@@ -500,6 +500,7 @@ bool MeshTexture::InitImages()
 			#ifdef TEXOPT_USE_OPENMP
 			bAbort = true;
 			#pragma omp flush (bAbort)
+			continue;
 			#else
 			return false;
 			#endif
@@ -610,7 +611,7 @@ void MeshTexture::ListCameraFaces(FaceDataViewArr& facesDatas, float fOutlierThr
 			const Point3 faceCenter((ptc[0]+ptc[1]+ptc[2])/3);
 			// skip face if the (cos) angle between
 			// the view to face vector and the view direction is negative
-			if (faceCenter.z < 0)
+			if (faceCenter.z <= 0)
 				continue;
 			// compute the plane defined by the 3 points
 			const Point3 edge1(ptc[1]-ptc[0]);
