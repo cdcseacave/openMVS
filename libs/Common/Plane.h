@@ -49,9 +49,11 @@ public:
 	inline void Set(const VECTOR4&);
 	inline void Set(const TYPE p[4]);
 	inline void Negate();
+
 	inline TYPE Distance(const TPlane&) const;
-	inline TYPE DistanceAbs(const POINT&) const;
 	inline TYPE Distance(const POINT&) const;
+	inline TYPE DistanceAbs(const POINT&) const;
+
 	inline UINT Classify(const POINT&) const;
 	inline UINT Classify(const AABB&) const;
 
@@ -68,7 +70,7 @@ public:
 
 
 // Basic frustum class
-// (represented as 6 planes)
+// (represented as 6 planes oriented toward outside the frustum volume)
 template <typename TYPE, int DIMS=6>
 class TFrustum
 {
@@ -81,6 +83,7 @@ public:
 	typedef Eigen::Matrix<TYPE,3,1> VECTOR;
 	typedef Eigen::Matrix<TYPE,3,1> POINT;
 	typedef SEACAVE::TPlane<TYPE> PLANE;
+	typedef SEACAVE::TSphere<TYPE,3> SPHERE;
 	typedef SEACAVE::TAABB<TYPE,3> AABB;
 
 	PLANE	m_planes[DIMS];	// left, right, top, bottom, near and far planes
@@ -99,6 +102,7 @@ public:
 	void Set(const MATRIX3x4&, TYPE width, TYPE height, TYPE near=TYPE(0.0001), TYPE far=TYPE(1000));
 
 	UINT Classify(const POINT&) const;
+	UINT Classify(const SPHERE&) const;
 	UINT Classify(const AABB&) const;
 
 	inline TYPE& operator [] (BYTE i) { ASSERT(i<DIMS); return m_planes[i]; }

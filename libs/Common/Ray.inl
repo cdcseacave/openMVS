@@ -539,7 +539,7 @@ bool TRay<TYPE,DIMS>::Intersects(const PLANE& plane, bool bCull, TYPE *t, POINT*
 	if (bCull && (Vd > TYPE(0)))
 		return false;
 
-	const TYPE Vo(-plane.DistanceAbs(m_pOrig));
+	const TYPE Vo(-plane.Distance(m_pOrig));
 
 	const TYPE _t(Vo / Vd);
 
@@ -560,7 +560,7 @@ template <typename TYPE, int DIMS>
 inline TYPE TRay<TYPE,DIMS>::IntersectsDist(const PLANE& plane) const
 {
 	const TYPE Vd(plane.m_vN.dot(m_vDir));
-	const TYPE Vo(-plane.DistanceAbs(m_pOrig));
+	const TYPE Vo(-plane.Distance(m_pOrig));
 	return SAFEDIVIDE(Vo, Vd);
 } // IntersectsDist(PLANE)
 template <typename TYPE, int DIMS>
@@ -586,7 +586,7 @@ bool TRay<TYPE,DIMS>::Intersects(const PLANE& plane, bool bCull, TYPE fL, TYPE *
 	if (bCull && (Vd > TYPE(0)))
 		return false;
 
-	const TYPE Vo(-plane.DistanceAbs(m_pOrig));
+	const TYPE Vo(-plane.Distance(m_pOrig));
 
 	const TYPE _t(Vo / Vd);
 

@@ -574,50 +574,67 @@ int main(int argc, LPCTSTR* argv)
 		}
 
 		// define images & poses
-		Util::Progress progress(_T("Processed images"), sfm_data.GetViews().size());
-		scene.images.Reserve((uint32_t)sfm_data.GetViews().size());
+		const uint32_t nViews((uint32_t)sfm_data.GetViews().size());
+		scene.images.Reserve(nViews);
+		Util::Progress progress(_T("Processed images"), nViews);
+		GET_LOGCONSOLE().Pause();
+		#ifdef _USE_OPENMP
+		const std::vector<Views::value_type> views(sfm_data.GetViews().cbegin(), sfm_data.GetViews().cend());
+		#pragma omp parallel for schedule(dynamic)
+		for (int i=0; i<(int)nViews; ++i) {
+			const Views::value_type& view = views[i];
+			#pragma omp critical
+			map_view[view.first] = scene.images.GetSize();
+		#else
 		for (const auto& view : sfm_data.GetViews()) {
 			map_view[view.first] = scene.images.GetSize();
+		#endif
 			MVS::Image& image = scene.images.AddEmpty();
-			image.name = OPT::strOutputImageFolder + view.second->s_Img_path;
+			image.name = view.second->s_Img_path;
 			Util::ensureUnifySlash(image.name);
-			image.name = MAKE_PATH_FULL(WORKING_FOLDER_FULL, image.name);
+			Util::strTrim(image.name, PATH_SEPARATOR_STR);
+			String pathRoot(sfm_data.s_root_path); Util::ensureDirectorySlash(pathRoot);
+			const String srcImage(MAKE_PATH_FULL(WORKING_FOLDER_FULL, pathRoot+image.name));
+			image.name = MAKE_PATH_FULL(WORKING_FOLDER_FULL, OPT::strOutputImageFolder+image.name);
 			Util::ensureDirectory(image.name);
 			image.platformID = map_intrinsic.at(view.second->id_intrinsic);
 			MVS::Platform& platform = scene.platforms[image.platformID];
 			image.cameraID = 0;
-
-			openMVG::image::Image<openMVG::image::RGBColor> imageRGB, imageRGB_ud;
-			String pathRoot(sfm_data.s_root_path); Util::ensureDirectorySlash(pathRoot);
-			const String srcImage(MAKE_PATH_FULL(WORKING_FOLDER_FULL, pathRoot+view.second->s_Img_path));
-			const String& dstImage(image.name);
-
 			if (sfm_data.IsPoseAndIntrinsicDefined(view.second.get())) {
+				MVS::Platform::Pose* pPose;
+				#ifdef _USE_OPENMP
+				#pragma omp critical
+				#endif
+				{
 				image.poseID = platform.poses.GetSize();
-				MVS::Platform::Pose& pose = platform.poses.AddEmpty();
-				const openMVG::geometry::Pose3 poseMVG = sfm_data.GetPoseOrDie(view.second.get());
-				pose.R = poseMVG.rotation();
-				pose.C = poseMVG.center();
+				pPose = &platform.poses.AddEmpty();
+				}
+				const openMVG::geometry::Pose3 poseMVG(sfm_data.GetPoseOrDie(view.second.get()));
+				pPose->R = poseMVG.rotation();
+				pPose->C = poseMVG.center();
 				// export undistorted images
 				const openMVG::cameras::IntrinsicBase * cam = sfm_data.GetIntrinsics().at(view.second->id_intrinsic).get();
 				if (cam->have_disto())  {
 					// undistort and save the image
+					openMVG::image::Image<openMVG::image::RGBColor> imageRGB, imageRGB_ud;
 					openMVG::image::ReadImage(srcImage, &imageRGB);
 					openMVG::cameras::UndistortImage(imageRGB, cam, imageRGB_ud, openMVG::image::BLACK);
-					openMVG::image::WriteImage(dstImage, imageRGB_ud);
+					openMVG::image::WriteImage(image.name, imageRGB_ud);
 				} else  {
 					// no distortion, copy the image
-					File::copyFile(srcImage, dstImage);
+					File::copyFile(srcImage, image.name);
 				}
 				++nPoses;
 			} else {
 				// image have not valid pose, so set an undefined pose
 				image.poseID = NO_ID;
 				// just copy the image
-				File::copyFile(srcImage, dstImage);
+				File::copyFile(srcImage, image.name);
+				DEBUG_EXTRA("warning: uncalibrated image '%s'", view.second->s_Img_path.c_str());
 			}
-			progress.display(scene.images.GetSize());
+			++progress;
 		}
+		GET_LOGCONSOLE().Play();
 		progress.close();
 
 		// define structure

@@ -450,7 +450,11 @@ public:
 	static bool renameFile(LPCTSTR source, LPCTSTR target) { return ::rename(source, target) == 0; }
 	static bool copyFile(LPCTSTR source, LPCTSTR target) {
 		std::ifstream src(source, std::ios::binary);
+		if (!src.is_open())
+			return false;
 		std::ofstream dst(target, std::ios::binary);
+		if (!dst.is_open())
+			return false;
 		dst << src.rdbuf();
 		return true;
 	}

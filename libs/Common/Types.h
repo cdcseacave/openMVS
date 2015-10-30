@@ -2696,6 +2696,7 @@ protected:
 
 #include "Types.inl"
 #include "Rotation.h"
+#include "Sphere.h"
 #include "AABB.h"
 #include "OBB.h"
 #include "Plane.h"

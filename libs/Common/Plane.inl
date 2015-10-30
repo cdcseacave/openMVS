@@ -97,14 +97,14 @@ inline TYPE TPlane<TYPE>::Distance(const TPlane& p) const
 
 // Calculate distance to point. Plane normal must be normalized.
 template <typename TYPE>
-inline TYPE TPlane<TYPE>::DistanceAbs(const POINT& p) const
+inline TYPE TPlane<TYPE>::Distance(const POINT& p) const
 {
 	return m_vN.dot(p) + m_fD;
 }
 template <typename TYPE>
-inline TYPE TPlane<TYPE>::Distance(const POINT& p) const
+inline TYPE TPlane<TYPE>::DistanceAbs(const POINT& p) const
 {
-	return ABS(DistanceAbs(p));
+	return ABS(Distance(p));
 }
 /*----------------------------------------------------------------*/
 
@@ -113,7 +113,7 @@ inline TYPE TPlane<TYPE>::Distance(const POINT& p) const
 template <typename TYPE>
 inline UINT TPlane<TYPE>::Classify(const POINT& p) const
 {
-	const TYPE f(DistanceAbs(p));
+	const TYPE f(Distance(p));
 	if (f >  ZEROTOLERANCE<TYPE>()) return FRONT;
 	if (f < -ZEROTOLERANCE<TYPE>()) return BACK;
 	return PLANAR;
@@ -407,6 +407,49 @@ void TFrustum<TYPE,DIMS>::Set(const MATRIX3x4& m, TYPE w, TYPE h, TYPE n, TYPE f
 
 
 /**
+ * Culls POINT to n sided frustum. Normals pointing outwards.
+ * -> IN:  POINT   - point to be tested
+ *    OUT: VISIBLE - point inside frustum
+ *         CULLED  - point outside frustum
+ */
+template <typename TYPE, int DIMS>
+UINT TFrustum<TYPE,DIMS>::Classify(const POINT& p) const
+{
+	// check if on the front side of any of the planes
+	for (int i=0; i<DIMS; ++i) {
+		if (m_planes[i].Classify(p) == FRONT)
+			return CULLED;
+	} // for
+	return VISIBLE;
+}
+
+/**
+ * Culls SPHERE to n sided frustum. Normals pointing outwards.
+ * -> IN:  POINT   - center of the sphere to be tested
+ *         TYPE    - radius of the sphere to be tested
+ *    OUT: VISIBLE - sphere inside frustum
+ *         CLIPPED - sphere clipped by frustum
+ *         CULLED  - sphere outside frustum
+ */
+template <typename TYPE, int DIMS>
+UINT TFrustum<TYPE,DIMS>::Classify(const SPHERE& s) const
+{
+	// compute distances to each of the planes
+	for (int i=0; i<DIMS; ++i) {
+		// compute the distance to this plane
+		const TYPE dist(m_planes[i].Distance(s.center));
+		// if distance is bigger than the sphere radius, the sphere is outside
+		if (dist > s.radius)
+			return CULLED;
+		// if the distance is between +- radius, the sphere intersects the frustum
+		if (ABS(dist) < s.radius)
+			return CLIPPED;
+	} // for
+	// otherwise sphere is fully in view
+	return VISIBLE;
+}
+
+/**
  * Culls AABB to n sided frustum. Normals pointing outwards.
  * -> IN:  AABB    - bounding box to be tested
  *    OUT: VISIBLE - aabb totally inside frustum
@@ -424,7 +467,7 @@ UINT TFrustum<TYPE,DIMS>::Classify(const AABB& aabb) const
 		POINT ptPlaneMin, ptPlaneMax;
 
 		// x coordinate
-		if (plane.m_vN(0) >= 0.0f) {
+		if (plane.m_vN(0) >= TYPE(0)) {
 			ptPlaneMin(0) = aabb.ptMin(0);
 			ptPlaneMax(0) = aabb.ptMax(0);
 		} else {
@@ -432,7 +475,7 @@ UINT TFrustum<TYPE,DIMS>::Classify(const AABB& aabb) const
 			ptPlaneMax(0) = aabb.ptMin(0);
 		}
 		// y coordinate
-		if (plane.m_vN(1) >= 0.0f) {
+		if (plane.m_vN(1) >= TYPE(0)) {
 			ptPlaneMin(1) = aabb.ptMin(1);
 			ptPlaneMax(1) = aabb.ptMax(1);
 		} else {
@@ -440,7 +483,7 @@ UINT TFrustum<TYPE,DIMS>::Classify(const AABB& aabb) const
 			ptPlaneMax(1) = aabb.ptMin(1);
 		}
 		// z coordinate
-		if (plane.m_vN(2) >= 0.0f) {
+		if (plane.m_vN(2) >= TYPE(0)) {
 			ptPlaneMin(2) = aabb.ptMin(2);
 			ptPlaneMax(2) = aabb.ptMax(2);
 		} else {
@@ -457,5 +500,5 @@ UINT TFrustum<TYPE,DIMS>::Classify(const AABB& aabb) const
 
 	if (bIntersects) return CLIPPED;
 	return VISIBLE;
-} // Cull
+}
 /*----------------------------------------------------------------*/

@@ -334,6 +334,10 @@ bool ParseImageListXML(MVS::Scene& scene, PlatformDistCoeffs& pltDistCoeffs, siz
 		ASSERT(scene.images.GetSize() == ID);
 		Image& imageData = scene.images.AddEmpty();
 		LPCTSTR name;
+		if ((name=camera->Attribute(_T("type"))) != NULL && _tcsicmp(name, _T("frame")) != 0) {
+			DEBUG_EXTRA("warning: unsupported camera calibration '%s'", name);
+			continue;
+		}
 		if ((name=camera->Attribute(_T("label"))) != NULL)
 			imageData.name = name;
 		Util::ensureUnifySlash(imageData.name);
@@ -342,6 +346,7 @@ bool ParseImageListXML(MVS::Scene& scene, PlatformDistCoeffs& pltDistCoeffs, siz
 		imageData.cameraID = 0; // only one camera per platform supported by this format
 		if (!camera->BoolAttribute(_T("enabled"))) {
 			imageData.poseID = NO_ID;
+			DEBUG_EXTRA("warning: uncalibrated image '%s'", name);
 			continue;
 		}
 		// set pose

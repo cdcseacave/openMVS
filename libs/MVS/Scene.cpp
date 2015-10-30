@@ -85,6 +85,7 @@ bool Scene::LoadInterface(const String & fileName)
 
 	// import images
 	nCalibratedImages = 0;
+	size_t nTotalPixels(0);
 	ASSERT(!obj.images.empty());
 	images.Reserve((uint32_t)obj.images.size());
 	for (Interface::ImageArr::const_iterator it=obj.images.begin(); it!=obj.images.end(); ++it) {
@@ -95,8 +96,10 @@ bool Scene::LoadInterface(const String & fileName)
 		Util::ensureUnifySlash(imageData.name);
 		imageData.name = MAKE_PATH_FULL(WORKING_FOLDER_FULL, imageData.name);
 		imageData.poseID = image.poseID;
-		if (imageData.poseID == NO_ID)
+		if (imageData.poseID == NO_ID) {
+			DEBUG_EXTRA("warning: uncalibrated image '%s'", image.name.c_str());
 			continue;
+		}
 		imageData.platformID = image.platformID;
 		imageData.cameraID = image.cameraID;
 		#if 1
@@ -109,10 +112,13 @@ bool Scene::LoadInterface(const String & fileName)
 		imageData.camera.ComposeP();
 		#endif
 		++nCalibratedImages;
+		nTotalPixels += imageData.width * imageData.height;
 		DEBUG_EXTRA("Image loaded %3u: %s", ID, Util::getFileFullName(imageData.name).c_str());
 	}
 	if (images.GetSize() < 2)
 		return false;
+	DEBUG_EXTRA("Scene composed of %u images (%u calibrated) with a total of %.2f MPixels (%.2f MPixels/image)",
+				images.GetSize(), nCalibratedImages, (double)nTotalPixels/(1024.0*1024.0), (double)nTotalPixels/(1024.0*1024.0*nCalibratedImages));
 
 	// import 3D points
 	if (!obj.vertices.empty()) {
@@ -272,13 +278,17 @@ bool Scene::Load(const String& fileName)
 		return false;
 	// init images
 	nCalibratedImages = 0;
+	size_t nTotalPixels(0);
 	FOREACH(ID, images) {
 		Image& imageData = images[ID];
 		if (imageData.poseID == NO_ID)
 			continue;
 		imageData.UpdateCamera(platforms);
 		++nCalibratedImages;
+		nTotalPixels += imageData.width * imageData.height;
 	}
+	DEBUG_EXTRA("Scene composed of %u images (%u calibrated) with a total of %.2f MPixels (%.2f MPixels/image)",
+				images.GetSize(), nCalibratedImages, (double)nTotalPixels/(1024.0*1024.0), (double)nTotalPixels/(1024.0*1024.0*nCalibratedImages));
 	return true;
 	#else
 	return false;
