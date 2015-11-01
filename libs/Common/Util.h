@@ -307,7 +307,12 @@ public:
 
 	static inline bool isFullPath(LPCTSTR path) {
 		// returns true if local drive full path or network path
-		return (path && (path[1]==_T(':') ||
+		return (path && (
+			#ifdef _MSC_VER
+			path[1]==_T(':') ||
+			#else // _MSC_VER
+			path[0]==_T('/') ||
+			#endif // _MSC_VER
 			#ifdef UNICODE
 			*((DWORD*)path)==0x5C005C00/*"\\\\"*/));
 			#else

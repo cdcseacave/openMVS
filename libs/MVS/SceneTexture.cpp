@@ -899,8 +899,6 @@ void MeshTexture::FaceViewSelection(float fOutlierThreshold, float fRatioDataSmo
 		Graph graph;
 		{
 			Mesh::FaceIdxArr afaces;
-			std::unordered_set<PairIdx::PairIndex> setEdges;
-			setEdges.reserve(faces.GetSize()*2);
 			FOREACH(idxFace, faces) {
 				scene.mesh.GetFaceFaces(idxFace, afaces);
 				ASSERT(ISINSIDE((int)afaces.GetSize(), 1, 4));
@@ -915,8 +913,7 @@ void MeshTexture::FaceViewSelection(float fOutlierThreshold, float fRatioDataSmo
 							seamEdges.AddConstruct(idxFace, idxFaceAdj);
 						continue;
 					}
-					if (setEdges.insert(PairIdx(idxFace, idxFaceAdj).idx).second)
-						boost::add_edge(idxFace, *pIdxFace, graph);
+					boost::add_edge(idxFace, idxFaceAdj, graph);
 				}
 				afaces.Empty();
 			}
@@ -1254,8 +1251,9 @@ void MeshTexture::GlobalSeamLeveling()
 		patchIndex.idxSeamVertex = i;
 	}
 
-	// assign a row index within the solution vector x to each vertex and to each patch
-	size_t rowsX(0);
+	// assign a row index within the solution vector x to each vertex/patch
+	ASSERT(vertices.GetSize() < static_cast<VIndex>(std::numeric_limits<MatIdx>::max()));
+	MatIdx rowsX(0);
 	typedef std::unordered_map<uint32_t,MatIdx> VertexPatch2RowMap;
 	cList<VertexPatch2RowMap> vertpatch2rows(vertices.GetSize());
 	FOREACH(i, vertices) {
@@ -1267,22 +1265,20 @@ void MeshTexture::GlobalSeamLeveling()
 			ASSERT(seamVertex.idxVertex == i);
 			FOREACHPTR(pPatch, seamVertex.patches) {
 				ASSERT(pPatch->idxPatch != numPatches);
-				vertpatch2row[pPatch->idxPatch] = (MatIdx)rowsX++;
+				vertpatch2row[pPatch->idxPatch] = rowsX++;
 			}
 		} else
 		if (patchIndex.idxPatch < numPatches) {
 			// vertex is part of only one patch
-			vertpatch2row[patchIndex.idxPatch] = (MatIdx)rowsX++;
+			vertpatch2row[patchIndex.idxPatch] = rowsX++;
 		}
 	}
-	ASSERT(rowsX < static_cast<size_t>(std::numeric_limits<MatIdx>::max()));
-
-	CLISTDEF0(MatEntry) rows(0, vertices.GetSize()*4);
 
 	// fill Tikhonov's Gamma matrix (regularization constraints)
 	const float lambda(0.1f);
 	MatIdx rowsGamma(0);
 	Mesh::VertexIdxArr adjVerts;
+	CLISTDEF0(MatEntry) rows(0, vertices.GetSize()*4);
 	FOREACH(v, vertices) {
 		adjVerts.Empty();
 		scene.mesh.GetAdjVertices(v, adjVerts);
@@ -1309,9 +1305,9 @@ void MeshTexture::GlobalSeamLeveling()
 			}
 		}
 	}
-	ASSERT(rows.GetSize()/2 < static_cast<size_t>(std::numeric_limits<MatIdx>::max()));
+	ASSERT(rows.GetSize()/2 < static_cast<IDX>(std::numeric_limits<MatIdx>::max()));
 
-	SparseMat Gamma(rowsGamma, (MatIdx)rowsX);
+	SparseMat Gamma(rowsGamma, rowsX);
 	Gamma.setFromTriplets(rows.Begin(), rows.End());
 	rows.Empty();
 
@@ -1323,22 +1319,22 @@ void MeshTexture::GlobalSeamLeveling()
 		const SeamVertex& seamVertex = *pSeamVertex;
 		if (seamVertex.patches.GetSize() < 2)
 			continue;
-		const VertexPatch2RowMap& vertpatch2row = vertpatch2rows[seamVertex.idxVertex];
 		seamVertex.SortByPatchIndex(indices);
 		vertexColors.Resize(indices.GetSize());
 		FOREACH(i, indices) {
 			const SeamVertex::Patch& patch0 = seamVertex.patches[indices[i]];
 			ASSERT(patch0.idxPatch < numPatches);
-			SampleImage smapler(images[texturePatches[patch0.idxPatch].label].image);
+			SampleImage sampler(images[texturePatches[patch0.idxPatch].label].image);
 			FOREACHPTR(pEdge, patch0.edges) {
 				const SeamVertex& seamVertex1 = seamVertices[pEdge->idxSeamVertex];
 				const SeamVertex::Patches::IDX idxPatch1(seamVertex1.patches.Find(patch0.idxPatch));
 				ASSERT(idxPatch1 != SeamVertex::Patches::NO_INDEX);
 				const SeamVertex::Patch& patch1 = seamVertex1.patches[idxPatch1];
-				smapler.AddEdge(patch0.proj, patch1.proj);
+				sampler.AddEdge(patch0.proj, patch1.proj);
 			}
-			vertexColors[i] = smapler.GetColor();
+			vertexColors[i] = sampler.GetColor();
 		}
+		const VertexPatch2RowMap& vertpatch2row = vertpatch2rows[seamVertex.idxVertex];
 		for (IDX i=0; i<indices.GetSize()-1; ++i) {
 			const uint32_t idxPatch0(seamVertex.patches[indices[i]].idxPatch);
 			const Color& color0 = vertexColors[i];
@@ -1356,10 +1352,10 @@ void MeshTexture::GlobalSeamLeveling()
 			}
 		}
 	}
-	ASSERT(coeffB.GetSize() < static_cast<size_t>(std::numeric_limits<MatIdx>::max()));
+	ASSERT(coeffB.GetSize() < static_cast<IDX>(std::numeric_limits<MatIdx>::max()));
 
 	const MatIdx rowsA((MatIdx)coeffB.GetSize());
-	SparseMat A(rowsA, (MatIdx)rowsX);
+	SparseMat A(rowsA, rowsX);
 	A.setFromTriplets(rows.Begin(), rows.End());
 	rows.Release();
 

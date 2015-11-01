@@ -645,7 +645,7 @@ public:
 		return true;
 	}
 
-	inline IDX		InsertSortUnique(ARG_TYPE elem, bool& bExisted)
+	inline std::pair<IDX,bool>	InsertSortUnique(ARG_TYPE elem)
 	{
 		IDX l1(0), l2(size);
 		while (l1 < l2) {
@@ -655,17 +655,14 @@ public:
 				l2 = i;
 			else if (compElem < elem)
 				l1 = i+1;
-			else {
-				bExisted = true;
-				return i;
-			}
+			else
+				return std::make_pair(i,true);
 		}
 		InsertAt(l1, elem);
-		bExisted = false;
-		return l1;
+		return std::make_pair(l1, false);
 	}
 
-	inline IDX		InsertSortUniquePtr(ARG_TYPE elem, bool& bExisted)
+	inline std::pair<IDX,bool>	InsertSortUniquePtr(ARG_TYPE elem)
 	{
 		IDX l1(0), l2(size);
 		while (l1 < l2) {
@@ -675,34 +672,28 @@ public:
 				l2 = i;
 			else if (*compElem < *elem)
 				l1 = i+1;
-			else {
-				bExisted = true;
-				return i;
-			}
+			else
+				return std::make_pair(i, true);
 		}
 		InsertAt(l1, elem);
-		bExisted = false;
-		return l1;
+		return std::make_pair(l1, false);
 	}
 
-	inline IDX		InsertSortUnique(ARG_TYPE elem, TFncCompare xCompare, bool& bExisted)
+	inline std::pair<IDX,bool>	InsertSortUnique(ARG_TYPE elem, TFncCompare xCompare)
 	{
 		IDX l1(0), l2(size);
 		while (l1 < l2) {
 			IDX i((l1 + l2) >> 1);
 			const int res(xCompare(vector+i, &elem));
-			if (res == 0) {
-				bExisted = true;
-				return i;
-			}
+			if (res == 0)
+				return std::make_pair(i, true);
 			if (res < 0)
 				l1 = i + 1;
 			else
 				l2 = i;
 		}
 		InsertAt(l1, elem);
-		bExisted = false;
-		return l1;
+		return std::make_pair(l1, false);
 	}
 
 	// insert given element if it is in the top N

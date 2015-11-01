@@ -251,17 +251,17 @@ void Mesh::GetFaceFaces(FIndex f, FaceIdxArr& afaces) const
 	std::unordered_set<FIndex> setFaces(faces1.Begin(), faces1.End());
 	FOREACHPTR(pIdxFace, faces0) {
 		if (f != *pIdxFace && setFaces.find(*pIdxFace) != setFaces.end())
-			afaces.Insert(*pIdxFace);
+			afaces.InsertSortUnique(*pIdxFace);
 	}
 	FOREACHPTR(pIdxFace, faces2) {
 		if (f != *pIdxFace && setFaces.find(*pIdxFace) != setFaces.end())
-			afaces.Insert(*pIdxFace);
+			afaces.InsertSortUnique(*pIdxFace);
 	}
 	setFaces.clear();
 	setFaces.insert(faces2.Begin(), faces2.End());
 	FOREACHPTR(pIdxFace, faces0) {
 		if (f != *pIdxFace && setFaces.find(*pIdxFace) != setFaces.end())
-			afaces.Insert(*pIdxFace);
+			afaces.InsertSortUnique(*pIdxFace);
 	}
 }
 

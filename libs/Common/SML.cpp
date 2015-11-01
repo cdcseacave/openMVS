@@ -310,11 +310,10 @@ IDX SML::InsertChild(const LPSML pSML)
 }
 IDX SML::InsertChildUnique(const LPSML pSML)
 {
-	bool bExisted;
-	const IDX idx = m_arrChildren.InsertSortUnique(pSML, SML::Compare, bExisted);
-	if (bExisted)
+	const std::pair<IDX,bool> res(m_arrChildren.InsertSortUnique(pSML, SML::Compare));
+	if (res.second)
 		delete pSML;
-	return idx;
+	return res.first;
 }
 /*----------------------------------------------------------------*/
 
