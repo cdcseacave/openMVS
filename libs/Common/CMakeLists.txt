@@ -18,3 +18,7 @@ set_target_pch(Common Common.h)
 
 # Link its dependencies
 TARGET_LINK_LIBRARIES(Common ${Boost_LIBRARIES} ${OpenCV_LIBS})
+
+# Install
+INSTALL(FILES ${LIBRARY_FILES_H} DESTINATION "include/${PROJECT_NAME}/Common")
+INSTALL(TARGETS Common DESTINATION "lib/${PROJECT_NAME}")

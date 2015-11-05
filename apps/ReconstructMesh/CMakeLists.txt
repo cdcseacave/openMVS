@@ -10,3 +10,6 @@ cxx_executable_with_flags_no_pch(ReconstructMesh "Apps" "${cxx_default}" "MVS" $
 if(OpenMVS_USE_BREAKPAD AND BREAKPAD_FOUND)
 	target_link_libraries(ReconstructMesh ${BREAKPAD_LIBS})
 endif()
+
+# Install
+INSTALL(TARGETS ReconstructMesh DESTINATION "bin/${PROJECT_NAME}")

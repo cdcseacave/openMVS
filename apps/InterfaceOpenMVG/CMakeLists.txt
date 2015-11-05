@@ -20,3 +20,6 @@ cxx_executable_with_flags_no_pch(InterfaceOpenMVG "Apps" "${cxx_default}" "${LIB
 if(OpenMVS_USE_BREAKPAD AND BREAKPAD_FOUND)
 	target_link_libraries(InterfaceOpenMVG ${BREAKPAD_LIBS})
 endif()
+
+# Install
+INSTALL(TARGETS InterfaceOpenMVG DESTINATION "bin/${PROJECT_NAME}")

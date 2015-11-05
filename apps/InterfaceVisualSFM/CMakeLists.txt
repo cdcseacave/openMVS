@@ -10,3 +10,6 @@ cxx_executable_with_flags_no_pch(InterfaceVisualSFM "Apps" "${cxx_default}" "MVS
 if(OpenMVS_USE_BREAKPAD AND BREAKPAD_FOUND)
 	target_link_libraries(InterfaceVisualSFM ${BREAKPAD_LIBS})
 endif()
+
+# Install
+INSTALL(TARGETS InterfaceVisualSFM DESTINATION "bin/${PROJECT_NAME}")

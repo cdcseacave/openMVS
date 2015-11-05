@@ -10,3 +10,6 @@ cxx_executable_with_flags_no_pch(RefineMesh "Apps" "${cxx_default}" "MVS" ${LIBR
 if(OpenMVS_USE_BREAKPAD AND BREAKPAD_FOUND)
 	target_link_libraries(RefineMesh ${BREAKPAD_LIBS})
 endif()
+
+# Install
+INSTALL(TARGETS RefineMesh DESTINATION "bin/${PROJECT_NAME}")

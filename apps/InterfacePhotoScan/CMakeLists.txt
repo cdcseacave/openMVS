@@ -10,3 +10,6 @@ cxx_executable_with_flags_no_pch(InterfacePhotoScan "Apps" "${cxx_default}" "${L
 if(OpenMVS_USE_BREAKPAD AND BREAKPAD_FOUND)
 	target_link_libraries(InterfacePhotoScan ${BREAKPAD_LIBS})
 endif()
+
+# Install
+INSTALL(TARGETS InterfacePhotoScan DESTINATION "bin/${PROJECT_NAME}")
