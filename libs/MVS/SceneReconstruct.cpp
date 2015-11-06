@@ -713,13 +713,13 @@ float computePlaneSphereAngle(const delaunay_t& Tr, const facet_t& facet)
 	const Point3f v0(CGAL2MVS<float>(vh0->point()));
 	const Point3f v1(CGAL2MVS<float>(vh1->point()));
 	const Point3f v2(CGAL2MVS<float>(vh2->point()));
-	const Point3f fn(normalized((v1-v0).cross(v2-v0)));
+	const Point3f fn((v1-v0).cross(v2-v0));
 
 	// compute the co-tangent to the circumscribed sphere in one of the vertices
 	const Point3f cc(CGAL2MVS<float>(facet.first->circumcenter(Tr.geom_traits())));
-	const Point3f ct(normalized(cc-v0));
+	const Point3f ct(cc-v0);
 
-	return ABS(fn.dot(ct));
+	return ABS(ComputeAngle<float,float>(fn.ptr(), ct.ptr()));
 }
 
 // Fetch the facet vertex corresponding to the given index (i),
@@ -752,7 +752,7 @@ inline vertex_handle_t getTriangleVertex(const facet_t& facet, int i)
 // Next, the score is computed for all the edges of the directed graph composed of points as vertices.
 // Finally, graph-cut algorithm is used to split the tetrahedrons in inside and outside,
 // and the surface is such extracted.
-bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport)
+bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, unsigned nItersFixNonManifold)
 {
 	using namespace DELAUNAY;
 	ASSERT(!pointcloud.IsEmpty());
@@ -799,7 +799,7 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport)
 				ASSERT(hint != vertex_handle_t());
 			} else {
 				// locate cell containing this point
-				cell_handle_t c(delaunay.locate(p, lt, li, lj, hint->cell()));
+				const cell_handle_t c(delaunay.locate(p, lt, li, lj, hint->cell()));
 				if (lt == delaunay_t::VERTEX) {
 					// duplicate point, nothing to insert,
 					// just update its visibility info
@@ -829,7 +829,7 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport)
 								break;
 						}
 					}
-					ASSERT(nearest == delaunay.nearest_vertex(p));
+					ASSERT(nearest == delaunay.nearest_vertex(p, hint->cell()));
 					// check if point is far enough to all existing points
 					FOREACHPTR(pViewID, views) {
 						const Image& imageData = images[*pViewID];
@@ -1111,7 +1111,7 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport)
 	}
 
 	// fix non-manifold vertices and edges
-	for (int i=0; i<4; ++i)
+	for (unsigned i=0; i<nItersFixNonManifold; ++i)
 		if (!mesh.FixNonManifold())
 			break;
 	return true;

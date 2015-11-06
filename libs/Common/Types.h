@@ -53,6 +53,7 @@
 #include <list>
 #include <queue>
 #include <deque>
+#include <iterator>
 #include <cmath>
 #include <ctime>
 #ifdef _USE_OPENMP

@@ -1,0 +1,55 @@
+// OpenMVS compiled as static or dynamic libs
+#cmakedefine BUILD_SHARED_LIBS
+
+// Define to 1 if you have the <inttypes.h> header file
+#cmakedefine01 HAVE_INTTYPES_H
+
+// Define to 1 if exceptions are enabled
+#cmakedefine01 _HAS_EXCEPTIONS
+
+// Define to 1 if RTTI is enabled
+#cmakedefine01 _HAS_RTTI
+
+// OpenMP support
+#cmakedefine _USE_OPENMP
+
+// BREAKPAD support
+#cmakedefine _USE_BREAKPAD
+
+// Boost support
+#cmakedefine _USE_BOOST
+
+// Eigen Matrix & Linear Algebra Library
+#cmakedefine _USE_EIGEN
+
+// JPEG codec
+#cmakedefine _USE_JPG
+
+// PNG codec
+#cmakedefine _USE_PNG
+
+// TIFF codec
+#cmakedefine _USE_TIFF
+
+// EXIV2 parser
+#cmakedefine _USE_EXIV2
+
+// OpenGL support
+#cmakedefine _USE_OPENGL
+
+// OpenCL support
+#cmakedefine _USE_OPENCL
+#cmakedefine _USE_OPENCL_STATIC
+#cmakedefine _USE_OPENCL_SVM
+
+// NVidia Cuda Runtime API
+#cmakedefine _USE_CUDA
+
+// Fast float to int support
+#cmakedefine _USE_FAST_FLOAT2INT
+
+// Fast CBRT support
+#cmakedefine _USE_FAST_CBRT
+
+// SSE support
+#cmakedefine _USE_SSE

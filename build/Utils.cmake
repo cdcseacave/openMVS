@@ -6,6 +6,7 @@
 #   have any side effects other than defining the functions and macros.
 
 INCLUDE(CheckCXXCompilerFlag)
+INCLUDE(CheckIncludeFile)
 
 # BUILD_SHARED_LIBS is a standard CMake variable, but we declare it here to
 # make it prominent in the GUI.
@@ -686,6 +687,7 @@ macro(optimize_default_compiler_settings)
 		string(REPLACE "/Zm1000" "" ${flags} "${${flags}}")
 	  endforeach()
 	endif()
+	CHECK_INCLUDE_FILE("inttypes.h" HAVE_INTTYPES_H)
 endmacro()
 
 
@@ -770,12 +772,14 @@ macro(ConfigCompilerAndLinker)
 
   if (BUILD_EXCEPTIONS_ENABLED)
     set(cxx_exception_support "${CMAKE_CXX_FLAGS} ${cxx_base_flags} ${cxx_exception_flags}")
+    set(_HAS_EXCEPTIONS TRUE)
   else()
     set(cxx_exception_support "${CMAKE_CXX_FLAGS} ${cxx_base_flags} ${cxx_no_exception_flags}")
   endif()
 
   if (BUILD_RTTI_ENABLED)
     set(cxx_rtti_support "")
+    set(_HAS_RTTI TRUE)
   else()
     set(cxx_rtti_support "${cxx_no_rtti_flags}")
   endif()
