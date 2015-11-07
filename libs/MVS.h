@@ -40,11 +40,7 @@
 #include "IO/Common.h"
 #include "Math/Common.h"
 #include "MVS/Common.h"
-
-
-// D E F I N E S ///////////////////////////////////////////////////
-
-using namespace SEACAVE;
+#include "MVS/Scene.h"
 
 
 #endif // _MVS_MVS_H_

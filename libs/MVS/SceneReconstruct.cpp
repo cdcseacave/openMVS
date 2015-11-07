@@ -701,48 +701,51 @@ edge_cap_t freeSpaceSupport(const delaunay_t& Tr, const std::vector<cell_info_t>
 }
 
 
+// Fetch the triangle formed by the facet vertices,
+// making sure the facet orientation is kept (as in CGAL::Triangulation_3::triangle())
+// return the vertex handles of the triangle
+struct triangle_vhandles_t {
+	union {
+		struct {
+			vertex_handle_t v0, v1, v2;
+		};
+		vertex_handle_t verts[3];
+	};
+	triangle_vhandles_t() {}
+	triangle_vhandles_t(const triangle_vhandles_t& t) : v0(t.v0), v1(t.v1), v2(t.v2) {}
+	triangle_vhandles_t(vertex_handle_t _v0, vertex_handle_t _v1, vertex_handle_t _v2) : v0(_v0), v1(_v1), v2(_v2) {}
+};
+inline triangle_vhandles_t getTriangle(cell_handle_t cell, int i)
+{
+	ASSERT(i >= 0 && i <= 3);
+	if ((i&1) == 0)
+		return triangle_vhandles_t(
+			cell->vertex((i+2)&3),
+			cell->vertex((i+1)&3),
+			cell->vertex((i+3)&3) );
+	return triangle_vhandles_t(
+		cell->vertex((i+1)&3),
+		cell->vertex((i+2)&3),
+		cell->vertex((i+3)&3) );
+}
+
 // Compute the angle between the plane containing the given facet and the cell's circumscribed sphere
 // return cosines of the angle
 float computePlaneSphereAngle(const delaunay_t& Tr, const facet_t& facet)
 {
 	// compute facet normal
-	if (Tr.is_infinite(facet.first->vertex(facet.second))) return 1;
-	const vertex_handle_t vh0(facet.first->vertex((facet.second+1)%4)); if (Tr.is_infinite(vh0)) return 1;
-	const vertex_handle_t vh1(facet.first->vertex((facet.second+2)%4)); if (Tr.is_infinite(vh1)) return 1;
-	const vertex_handle_t vh2(facet.first->vertex((facet.second+3)%4)); if (Tr.is_infinite(vh2)) return 1;
-	const Point3f v0(CGAL2MVS<float>(vh0->point()));
-	const Point3f v1(CGAL2MVS<float>(vh1->point()));
-	const Point3f v2(CGAL2MVS<float>(vh2->point()));
+	if (Tr.is_infinite(facet.first)) return 1;
+	const triangle_vhandles_t tri(getTriangle(facet.first, facet.second));
+	const Point3f v0(CGAL2MVS<float>(tri.verts[0]->point()));
+	const Point3f v1(CGAL2MVS<float>(tri.verts[1]->point()));
+	const Point3f v2(CGAL2MVS<float>(tri.verts[2]->point()));
 	const Point3f fn((v1-v0).cross(v2-v0));
 
 	// compute the co-tangent to the circumscribed sphere in one of the vertices
 	const Point3f cc(CGAL2MVS<float>(facet.first->circumcenter(Tr.geom_traits())));
 	const Point3f ct(cc-v0);
 
-	return ABS(ComputeAngle<float,float>(fn.ptr(), ct.ptr()));
-}
-
-// Fetch the facet vertex corresponding to the given index (i),
-// making sure the facet orientation is kept (as in CGAL::Triangulation_3::triangle())
-// return the vertex handle
-inline vertex_handle_t getTriangleVertex(const facet_t& facet, int i)
-{
-	ASSERT(i >= 0 && i < 3);
-	if ((facet.second&1) == 0) {
-		switch (i) {
-		case 0: return facet.first->vertex((facet.second+2)&3);
-		case 1: return facet.first->vertex((facet.second+1)&3);
-		case 2: return facet.first->vertex((facet.second+3)&3);
-		}
-	} else {
-		switch (i) {
-		case 0: return facet.first->vertex((facet.second+1)&3);
-		case 1: return facet.first->vertex((facet.second+2)&3);
-		case 2: return facet.first->vertex((facet.second+3)&3);
-		}
-	}
-	ASSERT("Should never happen!" == NULL);
-	return vertex_handle_t();
+	return ComputeAngle<float,float>(fn.ptr(), ct.ptr());
 }
 } // namespace DELAUNAY
 
@@ -1091,8 +1094,9 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, unsigne
 				const bool ciType(graph.IsNodeOnSrcSide(ciID));
 				if (ciType == graph.IsNodeOnSrcSide(cjID)) continue;
 				Mesh::Face& face = mesh.faces.AddEmpty();
+				const triangle_vhandles_t tri(getTriangle(ci, i));
 				for (int v=0; v<3; ++v) {
-					const vertex_handle_t vh(getTriangleVertex(facet_t(ci,i), v));
+					const vertex_handle_t vh(tri.verts[v]);
 					ASSERT(vh->point() == delaunay.triangle(ci,i)[v]);
 					const auto pairItID(mapVertices.insert(std::make_pair(vh.for_compact_container(), (Mesh::VIndex)mesh.vertices.GetSize())));
 					if (pairItID.second)

@@ -44,26 +44,25 @@ public:
 		va_list args;
 		va_start(args, szFormat);
 		TCHAR szBuffer[2048];
-		const int len(_vsntprintf(szBuffer, 2047, szFormat, args));
-		if (len == -1 || len >= 2047) {
+		const size_t len((size_t)_vsntprintf(szBuffer, 2048, szFormat, args));
+		if (len > 2048) {
 			*this = FormatStringSafe(szFormat, args);
 			va_end(args);
 		} else {
 			va_end(args);
-			*this = szBuffer;
+			this->assign(szBuffer, len);
 		}
 		return *this;
 	}
 	String& FormatSafe(LPCTSTR szFormat, ...) {
 		va_list args;
 		va_start(args, szFormat);
-		const int cnt(_vsctprintf(szFormat, args));
-		ASSERT(cnt >= 0);
-		const size_t count((size_t)cnt+1);
-		TCHAR* szBuffer(new TCHAR[count]);
-		_vsntprintf(szBuffer, count, szFormat, args);
+		const size_t len((size_t)_vsctprintf(szFormat, args));
+		ASSERT(len != (size_t)-1);
+		TCHAR* szBuffer(new TCHAR[len]);
+		_vsntprintf(szBuffer, len, szFormat, args);
 		va_end(args);
-		*this = szBuffer;
+		this->assign(szBuffer, len);
 		delete[] szBuffer;
 		return *this;
 	}
@@ -71,22 +70,21 @@ public:
 		va_list args;
 		va_start(args, szFormat);
 		TCHAR szBuffer[2048];
-		const int len(_vsntprintf(szBuffer, 2047, szFormat, args));
-		if (len == -1 || len >= 2047) {
+		const size_t len((size_t)_vsntprintf(szBuffer, 2048, szFormat, args));
+		if (len > 2048) {
 			const String str(FormatStringSafe(szFormat, args));
 			va_end(args);
 			return str;
 		}
 		va_end(args);
-		return szBuffer;
+		return String(szBuffer, len);
 	}
 	static inline String FormatStringSafe(LPCTSTR szFormat, va_list args) {
-		const int cnt(_vsctprintf(szFormat, args));
-		ASSERT(cnt >= 0);
-		const size_t count((size_t)cnt+1);
-		TCHAR* szBuffer(new TCHAR[count]);
-		_vsntprintf(szBuffer, count, szFormat, args);
-		String str(szBuffer);
+		const size_t len((size_t)_vsctprintf(szFormat, args));
+		ASSERT(len != (size_t)-1);
+		TCHAR* szBuffer(new TCHAR[len]);
+		_vsntprintf(szBuffer, len, szFormat, args);
+		String str(szBuffer, len);
 		delete[] szBuffer;
 		return str;
 	}

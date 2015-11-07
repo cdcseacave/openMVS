@@ -62,13 +62,23 @@ public:
 	 *         STREAM_ERROR if there were errors.
 	 */
 	virtual size_t	write(const void* buf, size_t len) = 0;
-	inline  size_t	print(LPCTSTR format, ...) {
+	inline  size_t	print(LPCTSTR szFormat, ...) {
 		va_list args;
-		va_start(args, format);
-		TCHAR buf[4096];
-		const size_t len = _vsntprintf(buf, 4095, format, args);
+		va_start(args, szFormat);
+		TCHAR szBuffer[2048];
+		const size_t len((size_t)_vsntprintf(szBuffer, 2048, szFormat, args));
+		if (len > 2048) {
+			const size_t count((size_t)_vsctprintf(szFormat, args));
+			ASSERT(count != (size_t)-1);
+			TCHAR* const buffer(new TCHAR[count]);
+			_vsntprintf(buffer, count, szFormat, args);
+			va_end(args);
+			const size_t size(write(buffer, count));
+			delete[] buffer;
+			return size;
+		}
 		va_end(args);
-		return write(buf, len);
+		return write(szBuffer, len);
 	}
 	inline  size_t	print(const std::string& str) {
 		return write(str.c_str(), str.length());
