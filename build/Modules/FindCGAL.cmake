@@ -5,6 +5,7 @@
 #  CGAL_INCLUDE_DIRS     - CGAL include directories
 #  CGAL_LIBRARY_DIRS     - Link directories for CGAL libraries
 #  CGAL_LIBS             - CGAL libraries
+#  CGAL_VERSION          - MAJOR.MINOR
 #----------------------------------------------------------
  
 set(CMAKE_ALLOW_LOOSE_LOOP_CONSTRUCTS true)
@@ -56,10 +57,12 @@ endif()
 ##====================================================
 ## Include CGAL library
 ##----------------------------------------------------
+set(CGAL_VERSION "")
 if(EXISTS "${CGAL_DIR}" AND NOT "${CGAL_DIR}" STREQUAL "")
 	if(EXISTS "${CGAL_DIR}/CGALConfig.cmake")
 		include("${CGAL_DIR}/CGALConfig.cmake")
 		set(CGAL_LIBS ${CGAL_LIBS} ${CGAL_LIBRARIES} ${CGAL_LIBRARY} ${CGAL_Core_LIBRARY} ${CGAL_ImageIO_LIBRARY} ${CGAL_3RD_PARTY_LIBRARIES} ${CGAL_Core_3RD_PARTY_LIBRARIES} ${CGAL_ImageIO_3RD_PARTY_LIBRARIES} ${MPFR_LIBRARIES} ${GMP_LIBRARIES} ${ZLIB_LIBRARIES})
+		set(CGAL_VERSION "${CGAL_MAJOR_VERSION}.${CGAL_MINOR_VERSION}")
 	else()
 		set(CGAL_INCLUDE_DIRS "${CGAL_DIR}/include" "${CGAL_DIR}/auxiliary/gmp/include")
 		set(CGAL_LIBRARY_DIRS "${CGAL_DIR}/lib${PACKAGE_LIB_SUFFIX}")
@@ -67,7 +70,7 @@ if(EXISTS "${CGAL_DIR}" AND NOT "${CGAL_DIR}" STREQUAL "")
 	set(CGAL_FOUND TRUE)
 	set(CGAL_DIR "${CGAL_DIR}" CACHE PATH "" FORCE)
 	mark_as_advanced(CGAL_DIR)
-	message(STATUS "CGAL found (include: ${CGAL_INCLUDE_DIRS})")
+	message(STATUS "CGAL ${CGAL_VERSION} found (include: ${CGAL_INCLUDE_DIRS})")
 else()
 	package_report_not_found(CGAL "Please specify CGAL directory using CGAL_ROOT env. variable")
 endif()

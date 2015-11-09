@@ -705,15 +705,14 @@ edge_cap_t freeSpaceSupport(const delaunay_t& Tr, const std::vector<cell_info_t>
 // making sure the facet orientation is kept (as in CGAL::Triangulation_3::triangle())
 // return the vertex handles of the triangle
 struct triangle_vhandles_t {
-	union {
-		struct {
-			vertex_handle_t v0, v1, v2;
-		};
-		vertex_handle_t verts[3];
-	};
+	vertex_handle_t verts[3];
 	triangle_vhandles_t() {}
-	triangle_vhandles_t(const triangle_vhandles_t& t) : v0(t.v0), v1(t.v1), v2(t.v2) {}
-	triangle_vhandles_t(vertex_handle_t _v0, vertex_handle_t _v1, vertex_handle_t _v2) : v0(_v0), v1(_v1), v2(_v2) {}
+	triangle_vhandles_t(vertex_handle_t _v0, vertex_handle_t _v1, vertex_handle_t _v2)
+		#ifdef _SUPPORT_CPP11
+		: verts{_v0,_v1,_v2} {}
+		#else
+		{ verts[0] = _v0; verts[1] = _v1; verts[2] = _v2; }
+		#endif
 };
 inline triangle_vhandles_t getTriangle(cell_handle_t cell, int i)
 {

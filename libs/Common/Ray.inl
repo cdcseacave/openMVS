@@ -16,7 +16,7 @@ inline TRay<TYPE,DIMS>::TRay(const POINT& pOrig, const VECTOR& vDir)
 	:
 	m_vDir(vDir), m_pOrig(pOrig)
 {
-	ASSERT(ISEQUAL(m_vDir.squaredNorm(), 1));
+	ASSERT(ISEQUAL(m_vDir.squaredNorm(), TYPE(1)));
 } // constructors
 template <typename TYPE, int DIMS>
 inline TRay<TYPE,DIMS>::TRay(const POINT& pt0, const POINT& pt1, bool /*bPoints*/)
@@ -686,8 +686,8 @@ bool TRay<TYPE,DIMS>::IntersectsAprox2(const TRay& ray, POINT& p) const
 template <typename TYPE, int DIMS>
 inline TYPE TRay<TYPE,DIMS>::CosAngle(const TRay& ray) const
 {
-	ASSERT(ISEQUAL(m_vDir.norm(), 1));
-	ASSERT(ISEQUAL(ray.m_vDir.norm(), 1));
+	ASSERT(ISEQUAL(m_vDir.norm(), TYPE(1)));
+	ASSERT(ISEQUAL(ray.m_vDir.norm(), TYPE(1)));
 	return m_vDir.dot(ray.m_vDir);
 }
 // tests if the two lines are coplanar (intersect)
@@ -712,14 +712,14 @@ inline bool TRay<TYPE,DIMS>::Parallel(const TRay& ray) const
 template <typename TYPE, int DIMS>
 inline TYPE TRay<TYPE,DIMS>::Classify(const POINT& pt) const
 {
-	ASSERT(ISEQUAL(m_vDir.norm(), 1));
+	ASSERT(ISEQUAL(m_vDir.norm(), TYPE(1)));
 	const VECTOR a(pt - m_pOrig);
 	return a.dot(m_vDir);
 } // Classify(POINT)
 template <typename TYPE, int DIMS>
 inline typename TRay<TYPE,DIMS>::POINT TRay<TYPE,DIMS>::ProjectPoint(const POINT& pt) const
 {
-	ASSERT(ISEQUAL(m_vDir.norm(), 1));
+	ASSERT(ISEQUAL(m_vDir.norm(), TYPE(1)));
 	return m_pOrig + m_vDir*Classify(pt);
 } // ProjectPoint
 /*----------------------------------------------------------------*/
@@ -752,7 +752,7 @@ bool TRay<TYPE,DIMS>::Distance(const POINT& pt, TYPE& d) const
 template <typename TYPE, int DIMS>
 TYPE TRay<TYPE,DIMS>::DistanceSq(const POINT& pt) const
 {
-	ASSERT(ISEQUAL(m_vDir.norm(), 1));
+	ASSERT(ISEQUAL(m_vDir.norm(), TYPE(1)));
 	const VECTOR a(pt - m_pOrig);
 	const VECTOR b(a - m_vDir);
 	return b.cross(a).squaredNorm();
