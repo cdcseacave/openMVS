@@ -924,9 +924,10 @@ public:
 // fDecimate factor is in range (0..1], if 1 no decimation takes place
 void Mesh::Clean(float fDecimate, float fSpurious, bool bRemoveSpikes, unsigned nCloseHoles, unsigned nSmooth, bool bLastClean)
 {
+	if (vertices.IsEmpty() || faces.IsEmpty())
+		return;
 	TD_TIMER_STARTD();
 	// create VCG mesh
-	ASSERT(!vertices.IsEmpty() && !faces.IsEmpty());
 	CLEAN::Mesh mesh;
 	{
 		CLEAN::Mesh::VertexIterator vi = vcg::tri::Allocator<CLEAN::Mesh>::AddVertices(mesh, vertices.GetSize());
@@ -1233,10 +1234,17 @@ namespace BasicPLY {
 // import the mesh from the given file
 bool Mesh::Load(const String& fileName)
 {
+	TD_TIMER_STARTD();
 	const String ext(Util::getFileExt(fileName).ToLower());
+	bool ret;
 	if (ext == _T(".obj"))
-		return LoadOBJ(fileName);
-	return LoadPLY(fileName);
+		ret = LoadOBJ(fileName);
+	else
+		ret = LoadPLY(fileName);
+	if (!ret)
+		return false;
+	DEBUG_EXTRA("Mesh loaded: %u vertices, %u faces (%s)", vertices.GetSize(), faces.GetSize(), TD_TIMER_GET_FMT().c_str());
+	return true;
 }
 // import the mesh as a PLY file
 bool Mesh::LoadPLY(const String& fileName)
@@ -1356,10 +1364,17 @@ bool Mesh::LoadOBJ(const String& fileName)
 // export the mesh to the given file
 bool Mesh::Save(const String& fileName, const cList<String>& comments, bool bBinary) const
 {
+	TD_TIMER_STARTD();
 	const String ext(Util::getFileExt(fileName).ToLower());
+	bool ret;
 	if (ext == _T(".obj"))
-		return SaveOBJ(fileName);
-	return SavePLY(ext != _T(".ply") ? String(fileName+_T(".ply")) : fileName, comments, bBinary);
+		ret = SaveOBJ(fileName);
+	else
+		ret = SavePLY(ext != _T(".ply") ? String(fileName+_T(".ply")) : fileName, comments, bBinary);
+	if (!ret)
+		return false;
+	DEBUG_EXTRA("Mesh saved: %u vertices, %u faces (%s)", vertices.GetSize(), faces.GetSize(), TD_TIMER_GET_FMT().c_str());
+	return true;
 }
 // export the mesh as a PLY file
 bool Mesh::SavePLY(const String& fileName, const cList<String>& comments, bool bBinary) const

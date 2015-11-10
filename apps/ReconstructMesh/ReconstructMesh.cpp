@@ -162,7 +162,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	Util::ensureValidPath(OPT::strOutputFileName);
 	Util::ensureUnifySlash(OPT::strOutputFileName);
 	if (OPT::strOutputFileName.IsEmpty())
-		OPT::strOutputFileName = Util::getFullFileName(OPT::strInputFileName) + _T(".mvs");
+		OPT::strOutputFileName = Util::getFullFileName(OPT::strInputFileName) + _T("_mesh.mvs");
 
 	// initialize global options
 	Process::setCurrentProcessPriority((Process::Priority)OPT::nProcessPriority);
@@ -202,9 +202,12 @@ int main(int argc, LPCTSTR* argv)
 		return EXIT_FAILURE;
 
 	Scene scene(OPT::nMaxThreads);
+	// load project
+	if (!scene.Load(MAKE_PATH_SAFE(OPT::strInputFileName)))
+		return EXIT_FAILURE;
 	if (OPT::bMeshExport) {
-		// load project
-		if (!scene.Load(MAKE_PATH_SAFE(OPT::strInputFileName)) || scene.mesh.IsEmpty())
+		// check there is a mesh to export
+		if (scene.mesh.IsEmpty())
 			return EXIT_FAILURE;
 		// save mesh
 		const String fileName(MAKE_PATH_SAFE(OPT::strOutputFileName));
@@ -215,9 +218,6 @@ int main(int argc, LPCTSTR* argv)
 		#endif
 	} else {
 		if (OPT::strMeshFileName.IsEmpty()) {
-			// load point-cloud and reconstruct a coarse mesh
-			if (!scene.Load(MAKE_PATH_SAFE(OPT::strInputFileName)))
-				return EXIT_FAILURE;
 			// make sure the image neighbors are initialized before deleting the point-cloud
 			FOREACH(idxImage, scene.images) {
 				const Image& imageData = scene.images[idxImage];
@@ -228,6 +228,7 @@ int main(int argc, LPCTSTR* argv)
 					scene.SelectNeighborViews(idxImage, points);
 				}
 			}
+			// reconstruct a coarse mesh from the given point-cloud
 			TD_TIMER_START();
 			if (!scene.ReconstructMesh(OPT::fDistInsert, OPT::bUseFreeSpaceSupport))
 				return EXIT_FAILURE;
@@ -235,7 +236,7 @@ int main(int argc, LPCTSTR* argv)
 			#if TD_VERBOSE != TD_VERBOSE_OFF
 			if (VERBOSITY_LEVEL > 2) {
 				// dump raw mesh
-				scene.mesh.Save(MAKE_PATH_SAFE(Util::getFullFileName(OPT::strOutputFileName) + _T("_mesh_raw.ply")));
+				scene.mesh.Save(MAKE_PATH_SAFE(Util::getFullFileName(OPT::strOutputFileName) + _T("_raw.ply")));
 			}
 			#endif
 		} else {
@@ -249,7 +250,7 @@ int main(int argc, LPCTSTR* argv)
 		scene.mesh.Clean(1.f, 0.f, false, 0, 0, true); // extra cleaning to remove non-manifold problems created by closing holes
 
 		// save the final mesh
-		const String baseFileName(MAKE_PATH_SAFE(Util::getFullFileName(OPT::strOutputFileName) + _T("_mesh")));
+		const String baseFileName(MAKE_PATH_SAFE(Util::getFullFileName(OPT::strOutputFileName)));
 		scene.Save(baseFileName+_T(".mvs"), (ARCHIVE_TYPE)OPT::nArchiveType);
 		scene.mesh.Save(baseFileName+_T(".ply"));
 		#if TD_VERBOSE != TD_VERBOSE_OFF

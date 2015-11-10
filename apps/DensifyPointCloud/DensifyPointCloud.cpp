@@ -152,7 +152,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	Util::ensureValidPath(OPT::strOutputFileName);
 	Util::ensureUnifySlash(OPT::strOutputFileName);
 	if (OPT::strOutputFileName.IsEmpty())
-		OPT::strOutputFileName = Util::getFullFileName(OPT::strInputFileName) + _T(".mvs");
+		OPT::strOutputFileName = Util::getFullFileName(OPT::strInputFileName) + _T("_dense.mvs");
 
 	// init dense options
 	OPTDENSE::init();
@@ -216,7 +216,7 @@ int main(int argc, LPCTSTR* argv)
 	VERBOSE("Densifying point-cloud completed: %u points (%s)", scene.pointcloud.points.GetSize(), TD_TIMER_GET_FMT().c_str());
 
 	// save the final mesh
-	const String baseFileName(MAKE_PATH_SAFE(Util::getFullFileName(OPT::strOutputFileName) + _T("_dense")));
+	const String baseFileName(MAKE_PATH_SAFE(Util::getFullFileName(OPT::strOutputFileName)));
 	scene.Save(baseFileName+_T(".mvs"), (ARCHIVE_TYPE)OPT::nArchiveType);
 	scene.pointcloud.Save(baseFileName+_T(".ply"));
 	#if TD_VERBOSE != TD_VERBOSE_OFF

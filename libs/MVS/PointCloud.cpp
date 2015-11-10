@@ -82,6 +82,8 @@ namespace BasicPLY {
 // load the dense point cloud from a PLY file
 bool PointCloud::Load(const String& fileName)
 {
+	TD_TIMER_STARTD();
+
 	ASSERT(!fileName.IsEmpty());
 	Release();
 
@@ -126,6 +128,8 @@ bool PointCloud::Load(const String& fileName)
 		DEBUG_EXTRA("error: invalid point-cloud");
 		return false;
 	}
+
+	DEBUG_EXTRA("Point-cloud loaded: %u points (%s)", points.GetSize(), TD_TIMER_GET_FMT().c_str());
 	return true;
 } // Load
 
@@ -134,6 +138,7 @@ bool PointCloud::Save(const String& fileName) const
 {
 	if (points.IsEmpty())
 		return false;
+	TD_TIMER_STARTD();
 
 	// create PLY object
 	ASSERT(!fileName.IsEmpty());
@@ -179,6 +184,7 @@ bool PointCloud::Save(const String& fileName) const
 		}
 	}
 
+	DEBUG_EXTRA("Point-cloud saved: %u points (%s)", points.GetSize(), TD_TIMER_GET_FMT().c_str());
 	return true;
 } // Save
 /*----------------------------------------------------------------*/

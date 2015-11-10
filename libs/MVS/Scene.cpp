@@ -46,6 +46,7 @@ using namespace MVS;
 
 bool Scene::LoadInterface(const String & fileName)
 {
+	TD_TIMER_STARTD();
 	Interface obj;
 
 	#ifdef _USE_BOOST
@@ -117,8 +118,6 @@ bool Scene::LoadInterface(const String & fileName)
 	}
 	if (images.GetSize() < 2)
 		return false;
-	DEBUG_EXTRA("Scene composed of %u images (%u calibrated) with a total of %.2f MPixels (%.2f MPixels/image)",
-				images.GetSize(), nCalibratedImages, (double)nTotalPixels/(1024.0*1024.0), (double)nTotalPixels/(1024.0*1024.0*nCalibratedImages));
 
 	// import 3D points
 	if (!obj.vertices.empty()) {
@@ -159,11 +158,19 @@ bool Scene::LoadInterface(const String & fileName)
 			pointcloud.colors.CopyOf((const Pixel8U*)&obj.verticesColor[0].c, obj.vertices.size());
 		}
 	}
+
+	DEBUG_EXTRA("Scene loaded from interface format (%s):\n"
+				"\t%u images (%u calibrated) with a total of %.2f MPixels (%.2f MPixels/image)\n"
+				"\t%u points, %u vertices, %u faces",
+				TD_TIMER_GET_FMT().c_str(),
+				images.GetSize(), nCalibratedImages, (double)nTotalPixels/(1024.0*1024.0), (double)nTotalPixels/(1024.0*1024.0*nCalibratedImages),
+				pointcloud.points.GetSize(), mesh.vertices.GetSize(), mesh.faces.GetSize());
 	return true;
 } // LoadInterface
 
 bool Scene::SaveInterface(const String & fileName) const
 {
+	TD_TIMER_STARTD();
 	Interface obj;
 
 	// export platforms
@@ -236,7 +243,15 @@ bool Scene::SaveInterface(const String & fileName) const
 
 	#ifdef _USE_BOOST
 	// serialize out the current state
-	return SerializeSave(obj, fileName, ARCHIVE_BINARY_ZIP);
+	if (!SerializeSave(obj, fileName, ARCHIVE_BINARY_ZIP))
+		return false;
+	DEBUG_EXTRA("Scene saved to interface format (%s):\n"
+				"\t%u images (%u calibrated)\n"
+				"\t%u points, %u vertices, %u faces",
+				TD_TIMER_GET_FMT().c_str(),
+				images.GetSize(), nCalibratedImages,
+				pointcloud.points.GetSize(), mesh.vertices.GetSize(), mesh.faces.GetSize());
+	return true;
 	#else
 	return false;
 	#endif
@@ -245,6 +260,7 @@ bool Scene::SaveInterface(const String & fileName) const
 
 bool Scene::Load(const String& fileName)
 {
+	TD_TIMER_STARTD();
 	#ifdef _USE_BOOST
 	// open the input stream
 	std::ifstream fs(fileName, std::ios::in | std::ios::binary);
@@ -287,8 +303,12 @@ bool Scene::Load(const String& fileName)
 		++nCalibratedImages;
 		nTotalPixels += imageData.width * imageData.height;
 	}
-	DEBUG_EXTRA("Scene composed of %u images (%u calibrated) with a total of %.2f MPixels (%.2f MPixels/image)",
-				images.GetSize(), nCalibratedImages, (double)nTotalPixels/(1024.0*1024.0), (double)nTotalPixels/(1024.0*1024.0*nCalibratedImages));
+	DEBUG_EXTRA("Scene loaded (%s):\n"
+				"\t%u images (%u calibrated) with a total of %.2f MPixels (%.2f MPixels/image)\n"
+				"\t%u points, %u vertices, %u faces",
+				TD_TIMER_GET_FMT().c_str(),
+				images.GetSize(), nCalibratedImages, (double)nTotalPixels/(1024.0*1024.0), (double)nTotalPixels/(1024.0*1024.0*nCalibratedImages),
+				pointcloud.points.GetSize(), mesh.vertices.GetSize(), mesh.faces.GetSize());
 	return true;
 	#else
 	return false;
@@ -297,6 +317,7 @@ bool Scene::Load(const String& fileName)
 
 bool Scene::Save(const String& fileName, ARCHIVE_TYPE type) const
 {
+	TD_TIMER_STARTD();
 	#ifdef _USE_BOOST
 	// open the output stream
 	std::ofstream fs(fileName, std::ios::out | std::ios::binary);
@@ -314,7 +335,15 @@ bool Scene::Save(const String& fileName, ARCHIVE_TYPE type) const
 	const uint64_t nReserved = 0;
 	fs.write((const char*)&nReserved, sizeof(uint64_t));
 	// serialize out the current state
-	return SerializeSave(*this, fs, type);
+	if (!SerializeSave(*this, fs, type))
+		return false;
+	DEBUG_EXTRA("Scene saved (%s):\n"
+				"\t%u images (%u calibrated)\n"
+				"\t%u points, %u vertices, %u faces",
+				TD_TIMER_GET_FMT().c_str(),
+				images.GetSize(), nCalibratedImages,
+				pointcloud.points.GetSize(), mesh.vertices.GetSize(), mesh.faces.GetSize());
+	return true;
 	#else
 	return false;
 	#endif
