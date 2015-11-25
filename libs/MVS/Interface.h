@@ -7,12 +7,6 @@
 
 // D E F I N E S ///////////////////////////////////////////////////
 
-// uncomment to enable custom OpenCV data types
-// (should be uncommented if OpenCV is not available)
-#ifndef _USE_CUSTOM_CV
-//#define _USE_CUSTOM_CV
-#endif
-
 // uncomment to enable BOOST serialization support
 // (should be uncommented)
 #ifndef _USE_BOOST
@@ -23,6 +17,18 @@
 // (should be uncommented if serialization specialization not previously implemented)
 #ifndef _USE_BOOST_SERIALIZATION
 //#defined _USE_BOOST_SERIALIZATION
+#endif
+
+// uncomment to enable custom OpenCV data types
+// (should be uncommented if OpenCV is not available)
+#ifndef _USE_CUSTOM_CV
+//#define _USE_CUSTOM_CV
+#endif
+
+// uncomment to enable custom serialization code
+// (should be uncommented if BOOST is not available)
+#if !defined(_USE_BOOST) && !defined(_USE_CUSTOM_ARCHIVE)
+#define _USE_CUSTOM_ARCHIVE
 #endif
 
 
@@ -49,11 +55,159 @@ public:
 };
 
 } // namespace cv
-/*----------------------------------------------------------------*/
 #endif
+/*----------------------------------------------------------------*/
 
 
-#if defined(_USE_BOOST) && defined(_USE_BOOST_SERIALIZATION)
+#if defined(_USE_CUSTOM_ARCHIVE) || !defined(_USE_BOOST)
+
+// custom serialization
+#include <fstream>
+
+namespace ARCHIVE {
+
+struct ArchiveSave;
+struct ArchiveLoad;
+
+template<typename _Tp>
+bool Save(ArchiveSave& a, const _Tp& obj) {
+	const_cast<_Tp&>(obj).serialize(a, 0);
+	return true;
+}
+template<typename _Tp>
+bool Load(ArchiveLoad& a, _Tp& obj) {
+	obj.serialize(a, 0);
+	return true;
+}
+
+
+// Basic serialization types
+struct ArchiveSave {
+	std::ostream& stream;
+	ArchiveSave(std::ostream& _stream) : stream(_stream) {}
+	template<typename _Tp>
+	ArchiveSave& operator & (const _Tp& obj) {
+		Save(*this, obj);
+		return *this;
+	}
+};
+struct ArchiveLoad {
+	std::istream& stream;
+	ArchiveLoad(std::istream& _stream) : stream(_stream) {}
+	template<typename _Tp>
+	ArchiveLoad& operator & (_Tp& obj) {
+		Load(*this, obj);
+		return *this;
+	}
+};
+
+
+// Main exporter & importer
+template<typename _Tp>
+bool SerializeSave(const _Tp& obj, const String& fileName) {
+	std::ofstream stream(fileName, std::ofstream::binary);
+	if (!stream.is_open())
+		return false;
+	ARCHIVE::ArchiveSave serializer(stream);
+	serializer & obj;
+	return true;
+}
+template<typename _Tp>
+bool SerializeLoad(_Tp& obj, const String& fileName) {
+	std::ifstream stream(fileName, std::ifstream::binary);
+	if (!stream.is_open())
+		return false;
+	ARCHIVE::ArchiveLoad serializer(stream);
+	serializer & obj;
+	return true;
+}
+
+
+#define ARCHIVE_DEFINE_TYPE(TYPE) \
+template<> \
+bool Save<TYPE>(ArchiveSave& a, const TYPE& v) { \
+	a.stream.write((const char*)&v, sizeof(TYPE)); \
+	return true; \
+} \
+template<> \
+bool Load<TYPE>(ArchiveLoad& a, TYPE& v) { \
+	a.stream.read((char*)&v, sizeof(TYPE)); \
+	return true; \
+}
+
+// Serialization support for basic types
+ARCHIVE_DEFINE_TYPE(uint32_t)
+ARCHIVE_DEFINE_TYPE(uint64_t)
+ARCHIVE_DEFINE_TYPE(float)
+ARCHIVE_DEFINE_TYPE(double)
+
+// Serialization support for cv::Matx
+template<typename _Tp, int m, int n>
+bool Save(ArchiveSave& a, const cv::Matx<_Tp,m,n>& _m) {
+	a.stream.write((const char*)_m.val, sizeof(_Tp)*m*n);
+	return true;
+}
+template<typename _Tp, int m, int n>
+bool Load(ArchiveLoad& a, cv::Matx<_Tp,m,n>& _m) {
+	a.stream.read((char*)_m.val, sizeof(_Tp)*m*n);
+	return true;
+}
+
+// Serialization support for cv::Point3_
+template<typename _Tp>
+bool Save(ArchiveSave& a, const cv::Point3_<_Tp>& pt) {
+	a.stream.write((const char*)&pt.x, sizeof(_Tp)*3);
+	return true;
+}
+template<typename _Tp>
+bool Load(ArchiveLoad& a, cv::Point3_<_Tp>& pt) {
+	a.stream.read((char*)&pt.x, sizeof(_Tp)*3);
+	return true;
+}
+
+// Serialization support for std::string
+template<>
+bool Save<std::string>(ArchiveSave& a, const std::string& s) {
+	const size_t size(s.size());
+	Save(a, size);
+	if (size > 0)
+		a.stream.write(&s[0], sizeof(char)*size);
+	return true;
+}
+template<>
+bool Load<std::string>(ArchiveLoad& a, std::string& s) {
+	size_t size;
+	Load(a, size);
+	if (size > 0) {
+		s.resize(size);
+		a.stream.read(&s[0], sizeof(char)*size);
+	}
+	return true;
+}
+
+// Serialization support for std::vector
+template<typename _Tp>
+bool Save(ArchiveSave& a, const std::vector<_Tp>& v) {
+	const size_t size(v.size());
+	Save(a, size);
+	for (size_t i=0; i<size; ++i)
+		Save(a, v[i]);
+	return true;
+}
+template<typename _Tp>
+bool Load(ArchiveLoad& a, std::vector<_Tp>& v) {
+	size_t size;
+	Load(a, size);
+	if (size > 0) {
+		v.resize(size);
+		for (size_t i=0; i<size; ++i)
+			Load(a, v[i]);
+	}
+	return true;
+}
+} // namespace ARCHIVE
+
+#elif defined(_USE_BOOST_SERIALIZATION)
 
 #include <boost/serialization/serialization.hpp>
 #include <boost/serialization/utility.hpp>
@@ -65,7 +219,7 @@ namespace serialization {
 
 // Serialization support for cv::Matx
 template<class Archive, typename _Tp, int m, int n>
-void serialize(Archive& ar, cv::Matx<_Tp, m, n>& _m, const unsigned int /*version*/) {
+void serialize(Archive& ar, cv::Matx<_Tp,m,n>& _m, const unsigned int /*version*/) {
 	ar & _m.val;
 }
 
@@ -77,8 +231,9 @@ void serialize(Archive& ar, cv::Point3_<_Tp>& pt, const unsigned int /*version*/
 
 } // namespace serialization
 } // namespace boost
-/*----------------------------------------------------------------*/
+
 #endif
+/*----------------------------------------------------------------*/
 
 
 namespace MVS {
@@ -103,7 +258,6 @@ struct Interface
 			Mat33 R; // camera's rotation matrix relative to the platform
 			Pos3 C; // camera's translation vector relative to the platform
 
-			#ifdef _USE_BOOST
 			template <class Archive>
 			void serialize(Archive& ar, const unsigned int /*version*/) {
 				ar & name;
@@ -111,7 +265,6 @@ struct Interface
 				ar & R;
 				ar & C;
 			}
-			#endif
 		};
 		typedef std::vector<Camera> CameraArr;
 
@@ -120,13 +273,11 @@ struct Interface
 			Mat33 R; // platform's rotation matrix
 			Pos3 C; // platform's translation vector in the global coordinate system
 
-			#ifdef _USE_BOOST
 			template <class Archive>
 			void serialize(Archive& ar, const unsigned int /*version*/) {
 				ar & R;
 				ar & C;
 			}
-			#endif
 		};
 		typedef std::vector<Pose> PoseArr;
 
@@ -134,14 +285,12 @@ struct Interface
 		CameraArr cameras; // cameras mounted on the platform
 		PoseArr poses; // trajectory of the platform
 
-		#ifdef _USE_BOOST
 		template <class Archive>
 		void serialize(Archive& ar, const unsigned int /*version*/) {
 			ar & name;
 			ar & cameras;
 			ar & poses;
 		}
-		#endif
 	};
 	typedef std::vector<Platform> PlatformArr;
 	/*----------------------------------------------------------------*/
@@ -153,7 +302,6 @@ struct Interface
 		uint32_t cameraID; // ID of the associated camera on the associated platform
 		uint32_t poseID; // ID of the pose of the associated platform
 
-		#ifdef _USE_BOOST
 		template <class Archive>
 		void serialize(Archive& ar, const unsigned int /*version*/) {
 			ar & name;
@@ -161,7 +309,6 @@ struct Interface
 			ar & cameraID;
 			ar & poseID;
 		}
-		#endif
 	};
 	typedef std::vector<Image> ImageArr;
 	/*----------------------------------------------------------------*/
@@ -173,26 +320,22 @@ struct Interface
 			uint32_t imageID; // image ID corresponding to this view
 			Real confidence; // view's confidence (0 - not available)
 
-			#ifdef _USE_BOOST
 			template<class Archive>
 			void serialize(Archive& ar, const unsigned int /*version*/) {
 				ar & imageID;
 				ar & confidence;
 			}
-			#endif
 		};
 		typedef std::vector<View> ViewArr;
 
 		Pos3 X; // 3D point position
 		ViewArr views; // list of all available views for this 3D feature
 
-		#ifdef _USE_BOOST
 		template <class Archive>
 		void serialize(Archive& ar, const unsigned int /*version*/) {
 			ar & X;
 			ar & views;
 		}
-		#endif
 	};
 	typedef std::vector<Vertex> VertexArr;
 	/*----------------------------------------------------------------*/
@@ -201,12 +344,10 @@ struct Interface
 	struct VertexNormal {
 		Pos3 n; // 3D feature normal
 
-		#ifdef _USE_BOOST
 		template <class Archive>
 		void serialize(Archive& ar, const unsigned int /*version*/) {
 			ar & n;
 		}
-		#endif
 	};
 	typedef std::vector<VertexNormal> VertexNormalArr;
 	/*----------------------------------------------------------------*/
@@ -215,12 +356,10 @@ struct Interface
 	struct VertexColor {
 		Col3 c; // 3D feature color
 
-		#ifdef _USE_BOOST
 		template <class Archive>
 		void serialize(Archive& ar, const unsigned int /*version*/) {
 			ar & c;
 		}
-		#endif
 	};
 	typedef std::vector<VertexColor> VertexColorArr;
 	/*----------------------------------------------------------------*/
@@ -231,7 +370,6 @@ struct Interface
 	VertexNormalArr verticesNormal; // array of reconstructed 3D points' normal (optional)
 	VertexColorArr verticesColor; // array of reconstructed 3D points' color (optional)
 
-	#ifdef _USE_BOOST
 	template <class Archive>
 	void serialize(Archive& ar, const unsigned int /*version*/) {
 		ar & platforms;
@@ -240,7 +378,6 @@ struct Interface
 		ar & verticesNormal;
 		ar & verticesColor;
 	}
-	#endif
 };
 /*----------------------------------------------------------------*/
 

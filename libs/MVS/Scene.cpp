@@ -44,18 +44,27 @@ using namespace MVS;
 
 // S T R U C T S ///////////////////////////////////////////////////
 
+void Scene::Release()
+{
+	platforms.Release();
+	images.Release();
+	pointcloud.Release();
+	mesh.Release();
+}
+
+
 bool Scene::LoadInterface(const String & fileName)
 {
 	TD_TIMER_STARTD();
 	Interface obj;
 
-	#ifdef _USE_BOOST
 	// serialize in the current state
+	#if defined(_USE_CUSTOM_ARCHIVE)
+	if (!ARCHIVE::SerializeLoad(obj, fileName))
+	#elif defined(_USE_BOOST)
 	if (!SerializeLoad(obj, fileName, ARCHIVE_BINARY_ZIP))
-		return false;
-	#else
-	return false;
 	#endif
+		return false;
 
 	// import platforms and cameras
 	ASSERT(!obj.platforms.empty());
@@ -241,10 +250,14 @@ bool Scene::SaveInterface(const String & fileName) const
 		}
 	}
 
-	#ifdef _USE_BOOST
 	// serialize out the current state
+	#if defined(_USE_CUSTOM_ARCHIVE)
+	if (!ARCHIVE::SerializeSave(obj, fileName))
+	#elif defined(_USE_BOOST)
 	if (!SerializeSave(obj, fileName, ARCHIVE_BINARY_ZIP))
+	#endif
 		return false;
+
 	DEBUG_EXTRA("Scene saved to interface format (%s):\n"
 				"\t%u images (%u calibrated)\n"
 				"\t%u points, %u vertices, %u faces",
@@ -252,15 +265,14 @@ bool Scene::SaveInterface(const String & fileName) const
 				images.GetSize(), nCalibratedImages,
 				pointcloud.points.GetSize(), mesh.vertices.GetSize(), mesh.faces.GetSize());
 	return true;
-	#else
-	return false;
-	#endif
 } // SaveInterface
 /*----------------------------------------------------------------*/
 
 bool Scene::Load(const String& fileName)
 {
 	TD_TIMER_STARTD();
+	Release();
+
 	#ifdef _USE_BOOST
 	// open the input stream
 	std::ifstream fs(fileName, std::ios::in | std::ios::binary);
