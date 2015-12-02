@@ -1037,6 +1037,14 @@ public:
 		_Init();
 	}
 
+	// Discard all stored data and initialize it as an empty array.
+	// (note: call this only when you know what you are doing,
+	// you have to deallocate yourself all elements and vector data)
+	inline void		Reset()
+	{
+		_Init();
+	}
+
 	// Delete also the pointers (take care to use this function only if the elements are pointers).
 	inline void		EmptyDelete()
 	{

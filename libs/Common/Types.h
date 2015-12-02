@@ -2165,7 +2165,7 @@ public:
 		data = new Type[length()];
 	}
 	inline void create(const Size& sz) { create(sz.height, sz.width); }
-	inline void release() { if (data) { delete[] data; data = NULL; } }
+	inline void release() { delete[] data; data = NULL; }
 	inline void memset(uint8_t v) { ASSERT(!empty()); ::memset(data, v, sizeof(Type)*length()); }
 	inline void swap(TBitMatrix& m) {
 		union {int i; Type* d;} tmp;
@@ -2261,6 +2261,7 @@ public:
 #ifdef _USE_BOOST
 protected:
 	// implement BOOST serialization
+	friend class boost::serialization::access;
 	template<class Archive>
 	void save(Archive& ar, const unsigned int /*version*/) const {
 		if (empty()) {
@@ -2270,17 +2271,17 @@ protected:
 		}
 		ar & cols;
 		ar & rows;
-		ar & boost::serialization::make_array(data, sizeof(Type)*length());
+		ar & boost::serialization::make_array(data, length());
 	}
 	template<class Archive>
 	void load(Archive& ar, const unsigned int /*version*/) {
+		release();
 		ar & cols;
-		if (cols == 0) {
-			data = NULL;
+		if (cols == 0)
 			return;
-		}
 		ar & rows;
-		ar & boost::serialization::make_array(data, sizeof(Type)*length());
+		create(rows, cols);
+		ar & boost::serialization::make_array(data, length());
 	}
 	BOOST_SERIALIZATION_SPLIT_MEMBER()
 #endif

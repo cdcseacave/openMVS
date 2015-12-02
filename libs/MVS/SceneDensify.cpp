@@ -1316,7 +1316,7 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateNormal)
 		DepthData& depthData = arrDepthData[i];
 		if (!depthData.IsValid())
 			continue;
-		if (depthData.IsEmpty() && depthData.IncRef(ComposeDepthFilePath(i, "dmap")) == 0)
+		if (depthData.IncRef(ComposeDepthFilePath(i, "dmap")) == 0)
 			return;
 		ASSERT(!depthData.IsEmpty());
 		IndexScore& connection = connections.AddEmpty();
@@ -1335,6 +1335,8 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateNormal)
 	pointcloud.points.Reserve(nPointsEstimate);
 	pointcloud.pointViews.Reserve(nPointsEstimate);
 	pointcloud.pointWeights.Reserve(nPointsEstimate);
+	Util::Progress progress(_T("Fused depth-maps"), connections.GetSize());
+	GET_LOGCONSOLE().Pause();
 	FOREACHPTR(pConnection, connections) {
 		TD_TIMER_STARTD();
 		const uint32_t idxImage(pConnection->idx);
@@ -1431,7 +1433,10 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateNormal)
 		}
 		ASSERT(pointcloud.points.GetSize() == pointcloud.pointViews.GetSize() && pointcloud.points.GetSize() == pointcloud.pointWeights.GetSize() && pointcloud.points.GetSize() == projs.GetSize());
 		DEBUG_ULTIMATE("Depths map for reference image %3u fused using %u depths maps: %u new points (%s)", idxImage, depthData.images.GetSize()-1, pointcloud.points.GetSize()-nNumPointsPrev, TD_TIMER_GET_FMT().c_str());
+		progress.display(pConnection-connections.Begin());
 	}
+	GET_LOGCONSOLE().Play();
+	progress.close();
 	arrDepthIdx.Release();
 
 	DEBUG_EXTRA("Depth-maps fused and filtered: %u depth-maps, %u depths, %u points (%d%%%%) (%s)", connections.GetSize(), nDepths, pointcloud.points.GetSize(), ROUND2INT((100.f*pointcloud.points.GetSize())/nDepths), TD_TIMER_GET_FMT().c_str());
@@ -1854,7 +1859,7 @@ void Scene::DenseReconstructionFilter(void* pData)
 			ASSERT(depthData.IsValid());
 			data.sem.Wait();
 			// load filtered maps
-			if ((depthData.IsEmpty() && depthData.IncRef(ComposeDepthFilePath(idx, "dmap")) == 0) ||
+			if (depthData.IncRef(ComposeDepthFilePath(idx, "dmap")) == 0 ||
 				!LoadDepthMap(ComposeDepthFilePath(idx, "filtered.dmap"), depthData.depthMap) ||
 				!LoadConfidenceMap(ComposeDepthFilePath(idx, "filtered.cmap"), depthData.confMap))
 			{
@@ -1872,6 +1877,7 @@ void Scene::DenseReconstructionFilter(void* pData)
 				ExportPointCloud(ComposeDepthFilePath(idx, "filtered.ply"), *depthData.images.First().pImageData, depthData.depthMap, depthData.normalMap);
 			}
 			#endif
+			depthData.DecRef();
 			data.progress->operator++();
 			break; }
 
