@@ -61,14 +61,25 @@ bool LoadNVM(std::ifstream& in, std::vector<CameraT>& camera_data, std::vector<P
         in >> token; //file header
         if(strstr(token.c_str(), "R9T"))
         {
-            rotation_parameter_num = 9;    //rotation as 3x3 matrix
+            rotation_parameter_num = 9; //rotation as 3x3 matrix
             format_r9t = true;
         }
     }
-    
+
+	double fxFixed, fyFixed, cxFixed, cyFixed, k1(0);
     int ncam = 0, npoint = 0, nproj = 0;   
-    // read # of cameras
-    in >> ncam;  if(ncam <= 1) return false; 
+	in >> token;
+	if (token == "FixedK") {
+		// read fixed intrinsics
+		std::getline(in, token);
+		sscanf(token.c_str(), "%lf %lf %lf %lf %lf", &fxFixed, &cxFixed, &fyFixed, &cyFixed, &k1);
+		// read # of cameras
+		in >> ncam;
+	} else {
+		// read # of cameras
+		ncam = atoi(token.c_str());
+	}
+	if(ncam <= 1) return false; 
 
     //read the camera parameters
     camera_data.resize(ncam); // allocate the camera data
@@ -88,11 +99,11 @@ bool LoadNVM(std::ifstream& in, std::vector<CameraT>& camera_data, std::vector<P
         }
         else
         {
-            //older format for compability
+            //older format for compatibility
             camera_data[i].SetQuaternionRotation(q);        //quaternion from the file
             camera_data[i].SetCameraCenterAfterRotation(c); //camera center from the file
         }
-        camera_data[i].SetNormalizedMeasurementDistortion(d[0]); 
+        camera_data[i].SetNormalizedMeasurementDistortion(k1!=0 ? k1 : d[0]);
         names[i] = token;
     }
 
