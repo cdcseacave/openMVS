@@ -301,6 +301,7 @@ int main(int argc, LPCTSTR* argv)
 	MVS::Scene scene(OPT::nMaxThreads);
 	scene.platforms.Reserve((uint32_t)cameras.size());
 	scene.images.Reserve((uint32_t)cameras.size());
+	scene.nCalibratedImages = 0;
 	for (size_t idx=0; idx<cameras.size(); ++idx) {
 		MVS::Image& image = scene.images.AddEmpty();
 		image.name = names[idx];
@@ -331,6 +332,7 @@ int main(int argc, LPCTSTR* argv)
 		cameraNVM.GetMatrixRotation(pose.R.val);
 		cameraNVM.GetCameraCenter(pose.C.ptr());
 		image.UpdateCamera(scene.platforms);
+		++scene.nCalibratedImages;
 	}
 	scene.pointcloud.points.Reserve(vertices.size());
 	for (size_t idx=0; idx<vertices.size(); ++idx) {

@@ -576,6 +576,7 @@ int main(int argc, LPCTSTR* argv)
 		// define images & poses
 		const uint32_t nViews((uint32_t)sfm_data.GetViews().size());
 		scene.images.Reserve(nViews);
+		scene.nCalibratedImages = 0;
 		Util::Progress progress(_T("Processed images"), nViews);
 		GET_LOGCONSOLE().Pause();
 		#ifdef _USE_OPENMP
@@ -608,6 +609,7 @@ int main(int argc, LPCTSTR* argv)
 				{
 				image.poseID = platform.poses.GetSize();
 				pPose = &platform.poses.AddEmpty();
+				++scene.nCalibratedImages;
 				}
 				const openMVG::geometry::Pose3 poseMVG(sfm_data.GetPoseOrDie(view.second.get()));
 				pPose->R = poseMVG.rotation();
@@ -642,11 +644,18 @@ int main(int argc, LPCTSTR* argv)
 		scene.pointcloud.pointViews.Reserve(sfm_data.GetLandmarks().size());
 		for (const auto& vertex: sfm_data.GetLandmarks()) {
 			const Landmark & landmark = vertex.second;
+			MVS::PointCloud::ViewArr& views = scene.pointcloud.pointViews.AddEmpty();
+			for (const auto& observation: landmark.obs) {
+				const auto it(map_view.find(observation.first));
+				if (it != map_view.end())
+					views.InsertSort(it->second);
+			}
+			if (views.GetSize() < 2) {
+				scene.pointcloud.pointViews.RemoveLast();
+				continue;
+			}
 			MVS::PointCloud::Point& point = scene.pointcloud.points.AddEmpty();
 			point = landmark.X.cast<float>();
-			MVS::PointCloud::ViewArr& views = scene.pointcloud.pointViews.AddEmpty();
-			for (const auto& observation: landmark.obs)
-				views.InsertSort(map_view.at(observation.first));
 		}
 	} else
 	#endif
