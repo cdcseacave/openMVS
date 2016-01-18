@@ -54,22 +54,16 @@ Linux compilation
 [Ubuntu](http://www.ubuntu.com) is used next as the example linux distribution.
 
 ```
-# Getting the OpenMVS sources:
-git clone https://github.com/cdcseacave/openMVS.git
+#Prepare and empty machine for building:
+sudo apt-get update -qq && sudo apt-get install -qq
+sudo apt-get -y install git subversion cmake libpng-dev libjpeg-dev libtiff-dev
+main_path=`pwd`
 
-##
-#Setup the required external library:
-##
+#Eigen (Required)
+sudo apt-get install libeigen3-dev
 
-#Ceres (Required)
-sudo apt-get install libgoogle-glog-dev libatlas-base-dev libeigen3-dev libsuitesparse-dev
-git clone https://ceres-solver.googlesource.com/ceres-solver
-mkdir ceres_Build
-cd ceres_Build/
-cmake . ../ceres-solver/
-make
-sudo make install
-cd ..
+#Boost (Required)
+sudo apt-get install libboost-iostreams-dev libboost-program-options-dev libboost-system-dev libboost-serialization-dev
 
 #CGAL (Required)
 sudo apt-get install libcgal-dev
@@ -78,32 +72,40 @@ sudo apt-get install libcgal-dev
 sudo apt-get install libopencv-dev
 
 #VCGLib (Required)
-sudo apt-get install subversion
 svn checkout svn://svn.code.sf.net/p/vcg/code/trunk/vcglib vcglib
 
-#MESA (Required)
-sudo apt-get install mesa-dev
-
-#Boost (Required)
-sudo apt-get install libboost-iostreams-dev libboost-program-options-dev libboost-system-dev libboost-serialization-dev
+#Ceres (Required)
+sudo apt-get install libatlas-base-dev libsuitesparse-dev
+git clone https://ceres-solver.googlesource.com/ceres-solver
+mkdir ceres_Build
+cd ceres_Build/
+cmake . ../ceres-solver/ -DMINIGLOG=ON -DBUILD_TESTING=OFF -DBUILD_EXAMPLES=OFF
+make
+sudo make install
+cd ..
 
 #OpenMVG (Optional)
-sudo apt-get install libpng-dev libjpeg-dev libtiff-dev libxxf86vm1 libxxf86vm-dev libxi-dev libxrandr-dev graphviz
+sudo apt-get install libxxf86vm1 libxxf86vm-dev libxi-dev libxrandr-dev graphviz
 git clone --recursive https://github.com/openMVG/openMVG.git
 mkdir openMVG_Build
 cd openMVG_Build
-current_path=`pwd`
-cmake -DCMAKE_BUILD_TYPE=RELEASE . ../openMVG/src/ -DCMAKE_INSTALL_PREFIX=$current_path/openMVG_install
+cmake -DCMAKE_BUILD_TYPE=RELEASE . ../openMVG/src/ -DCMAKE_INSTALL_PREFIX=$main_path/openMVG_install
 make
 
-#OpenMVS build
-main_path=`pwd`
+#OpenMVS
+git clone https://github.com/cdcseacave/openMVS.git
 mkdir openMVS_Build
 cd openMVS_Build
-cmake . ../openMVS -DCMAKE_BUILD_TYPE=RELEASE -DVCG_DIR="$main_path/vcglib" -DCERES_DIR="/usr/local/share/Ceres" -DOpenCV_CAN_BREAK_BINARY_COMPATIBILITY=OFF
+cmake . ../openMVS -DCMAKE_BUILD_TYPE=Release -DVCG_DIR="$main_path/vcglib" -DCERES_DIR="/usr/local/share/Ceres" -DOpenCV_CAN_BREAK_BINARY_COMPATIBILITY=OFF
 
-#If you want use OpenMVG as optional third party add to the cmake command:
+#If you want to use OpenMVS as shared library, add to the cmake command:
+-DBUILD_SHARED_LIBS=ON
+
+#If you want to use OpenMVG as optional third party library, add to the cmake command:
 -DOpenMVG_DIR:STRING="$main_path/openMVG_Build/openMVG_install/share/openMVG/cmake/"
+
+#Install OpenMVS library (optional):
+sudo make install
 ```
 
 Default compilation settings of OpenMVS reveals some tiny compilation error in VCG. Here the fixes:
