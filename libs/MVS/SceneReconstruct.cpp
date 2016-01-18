@@ -195,8 +195,8 @@ protected:
 // construct the mesh out of the dense point cloud using Delaunay tetrahedralization & graph-cut method
 // see "Exploiting Visibility Information in Surface Reconstruction to Preserve Weakly Supported Surfaces", Jancosek and Pajdla, 2015
 namespace DELAUNAY {
-static const uint32_t WEIGHT_QUAL(8);
-static const uint32_t WEIGHT_INF((uint32_t)(INT_MAX/8));
+static const float kQual(4.f);
+static const float kInf((float)(INT_MAX/8));
 
 static const float kf(3.f);
 static const float kb(4.f);
@@ -832,6 +832,7 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, unsigne
 						}
 					}
 					ASSERT(nearest == delaunay.nearest_vertex(p, hint->cell()));
+					hint = nearest;
 					// check if point is far enough to all existing points
 					FOREACHPTR(pViewID, views) {
 						const Image& imageData = images[*pViewID];
@@ -890,7 +891,7 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, unsigne
 			fetchCellFacets<CGAL::POSITIVE>(delaunay, hullFacets, camCell.cell, imageData, camCell.facets);
 			// link all cells contained by the camera to the source
 			for (const facet_t& f: camCell.facets)
-				infoCells[f.first->info()].s = (edge_cap_t)WEIGHT_INF;
+				infoCells[f.first->info()].s = kInf;
 		}
 
 		DEBUG_EXTRA("Delaunay tetrahedralization completed: %u points -> %u vertices, %u (+%u) cells, %u (+%u) faces (%s)", indices.size(), delaunay.number_of_vertices(), delaunay.number_of_finite_cells(), delaunay.number_of_cells()-delaunay.number_of_finite_cells(), delaunay.number_of_finite_facets(), delaunay.number_of_facets()-delaunay.number_of_finite_facets(), TD_TIMER_GET_FMT().c_str());
@@ -1068,7 +1069,7 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, unsigne
 				if (cjID < ciID) continue;
 				const cell_info_t& cjInfo(infoCells[cjID]);
 				const int j(cj->index(ci));
-				const edge_cap_t q((1.f - MINF(computePlaneSphereAngle(delaunay, facet_t(ci,i)), computePlaneSphereAngle(delaunay, facet_t(cj,j))))*WEIGHT_QUAL);
+				const edge_cap_t q((1.f - MINF(computePlaneSphereAngle(delaunay, facet_t(ci,i)), computePlaneSphereAngle(delaunay, facet_t(cj,j))))*kQual);
 				graph.AddEdge(ciID, cjID, ciInfo.f[i]+q, cjInfo.f[j]+q);
 			}
 		}
