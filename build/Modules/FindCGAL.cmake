@@ -35,7 +35,7 @@ if(NOT CGAL_DIR)
     ${CGAL_DIR_SEARCH}
 
     # Look in standard UNIX install locations.
-    PATHS "$ENV{PROGRAMFILES}/CGAL" "$ENV{PROGRAMW6432}/CGAL" "/usr/local/lib/CGAL" "/usr/lib/CGAL"
+    PATHS "$ENV{PROGRAMFILES}/CGAL" "$ENV{PROGRAMW6432}/CGAL" "/usr/local/lib/CGAL" "/usr/lib/CGAL"  "/usr/include/CGAL"
 
     # Read from the CMakeSetup registry entries.  It is likely that
     # CGAL will have been recently built.
