@@ -96,7 +96,7 @@ make
 git clone https://github.com/cdcseacave/openMVS.git
 mkdir openMVS_Build
 cd openMVS_Build
-cmake . ../openMVS -DCMAKE_BUILD_TYPE=Release -DVCG_DIR="$main_path/vcglib" -DCERES_DIR="/usr/local/share/Ceres" -DOpenCV_CAN_BREAK_BINARY_COMPATIBILITY=OFF
+cmake . ../openMVS -DCMAKE_BUILD_TYPE=Release -DVCG_DIR="~/vcglib" -DCERES_DIR="/usr/local/share/Ceres" -DOpenCV_CAN_BREAK_BINARY_COMPATIBILITY=OFF
 
 #If you want to use OpenMVS as shared library, add to the cmake command:
 -DBUILD_SHARED_LIBS=ON
