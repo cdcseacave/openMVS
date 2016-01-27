@@ -27,7 +27,7 @@ if(NOT CGAL_DIR)
   #
   # Look for an installation or build tree.
   #
-  find_path(CGAL_DIR CGALConfig.cmake
+  find_path(CGAL_DIR "CGALConfig.cmake"
     # Look for an environment variable CGAL_DIR.
     HINTS "${CGAL_ROOT}" "$ENV{CGAL_ROOT}" "$ENV{CGAL_DIR}"
 
@@ -35,7 +35,7 @@ if(NOT CGAL_DIR)
     ${CGAL_DIR_SEARCH}
 
     # Look in standard UNIX install locations.
-    PATHS "$ENV{PROGRAMFILES}/CGAL" "$ENV{PROGRAMW6432}/CGAL" "/usr/local/lib/CGAL" "/usr/lib/CGAL"
+    PATHS "$ENV{PROGRAMFILES}" "$ENV{PROGRAMW6432}" "/usr" "/usr/local" "/usr/share" "/usr/local/share" "/usr/lib/cmake" "/usr/local/lib/cmake" "/usr/include"
 
     # Read from the CMakeSetup registry entries.  It is likely that
     # CGAL will have been recently built.
@@ -49,6 +49,8 @@ if(NOT CGAL_DIR)
     [HKEY_CURRENT_USER\\Software\\Kitware\\CMakeSetup\\Settings\\StartPath;WhereBuild8]
     [HKEY_CURRENT_USER\\Software\\Kitware\\CMakeSetup\\Settings\\StartPath;WhereBuild9]
     [HKEY_CURRENT_USER\\Software\\Kitware\\CMakeSetup\\Settings\\StartPath;WhereBuild10]
+	
+	PATH_SUFFIXES "CGAL"
 	
 	DOC "Root directory of CGAL library"
   )

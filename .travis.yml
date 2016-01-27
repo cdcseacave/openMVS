@@ -14,7 +14,7 @@ before_install:
 
 install:
   ### LINUX
-  - if [ $TRAVIS_OS_NAME == linux ]; then sudo apt-get -y install git mercurial subversion cmake libopencv-dev libcgal-dev libatlas-base-dev libsuitesparse-dev libboost-iostreams-dev libboost-program-options-dev libboost-system-dev libboost-serialization-dev libpng-dev libjpeg-dev libtiff-dev; fi
+  - if [ $TRAVIS_OS_NAME == linux ]; then sudo apt-get -y install git mercurial subversion cmake libopencv-dev libcgal-dev libatlas-base-dev libsuitesparse-dev libboost-iostreams-dev libboost-program-options-dev libboost-system-dev libboost-serialization-dev libpng-dev libjpeg-dev libtiff-dev libglu1-mesa-dev; fi
   # Install the latest version of Eigen
   - if [ $TRAVIS_OS_NAME == linux ]; then hg clone https://bitbucket.org/eigen/eigen /tmp/eigen && cd /tmp/eigen && hg pull && hg update 3.2.6 && cd - && mkdir /tmp/eigen-build && cd /tmp/eigen-build && cmake /tmp/eigen && make && sudo make install && cd -; fi
   # Install the latest version of Ceres Solver
@@ -28,8 +28,7 @@ before_script:
   - svn checkout svn://svn.code.sf.net/p/vcg/code/trunk/vcglib vcglib
   - mkdir build
   - cd build
-  - if [ $TRAVIS_OS_NAME == linux ]; then cmake  . ../openMVS -DCMAKE_BUILD_TYPE=Release -DOpenCV_DIR="/usr/share/OpenCV" -DCGAL_DIR="/usr/lib/CGAL" -DVCG_DIR="$main_path/vcglib" -DCERES_DIR="/usr/local/share/Ceres" -DOpenCV_CAN_BREAK_BINARY_COMPATIBILITY=OFF; fi
-  - if [ $TRAVIS_OS_NAME == osx ]; then cmake  . ../openMVS -DCMAKE_BUILD_TYPE=Release -DCERES_DIR="/opt/local/share/Ceres" -DCGAL_DIR="/opt/local/share/CGAL" -DVCG_DIR="$main_path/vcglib"; fi
+  - cmake . ../openMVS -DCMAKE_BUILD_TYPE=Release -DVCG_DIR="$main_path/vcglib" -DOpenCV_CAN_BREAK_BINARY_COMPATIBILITY=OFF
 
 script:
   - make -j4

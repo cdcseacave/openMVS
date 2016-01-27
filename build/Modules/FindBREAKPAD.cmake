@@ -17,8 +17,8 @@
 #----------------------------------------------------------
 
 find_path(BREAKPAD_DIR "include/breakpad/client/minidump_file_writer.h"
-    HINTS "${BREAKPAD_ROOT}" "$ENV{BREAKPAD_ROOT}"
-    PATHS "$ENV{PROGRAMFILES}" "$ENV{PROGRAMW6432}" "/usr" "/usr/local" "/usr/share" "/usr/local/share"
+    HINTS "${BREAKPAD_ROOT}" "$ENV{BREAKPAD_ROOT}" "$ENV{BREAKPAD_DIR}"
+    PATHS "$ENV{PROGRAMFILES}" "$ENV{PROGRAMW6432}" "/usr" "/usr/local" "/usr/share" "/usr/local/share" "/usr/lib/cmake" "/usr/local/lib/cmake"
     PATH_SUFFIXES "BreakPad" "include"
     DOC "Root directory of BREAKPAD library")
 

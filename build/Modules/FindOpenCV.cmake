@@ -24,8 +24,8 @@
 #try to use the Config script
 if(NOT EXISTS "${OpenCV_DIR}")
 	find_path(OpenCV_DIR "OpenCVConfig.cmake"
-		HINTS "${OpenCV_ROOT}" "$ENV{OpenCV_ROOT}"
-		PATHS "CMake" "$ENV{PROGRAMFILES}" "$ENV{PROGRAMW6432}" "/usr" "/usr/local" "/usr/share" "/usr/local/share"
+		HINTS "${OpenCV_ROOT}" "$ENV{OpenCV_ROOT}" "$ENV{OpenCV_DIR}"
+		PATHS "CMake" "$ENV{PROGRAMFILES}" "$ENV{PROGRAMW6432}" "/usr" "/usr/local" "/usr/share" "/usr/local/share" "/usr/lib/cmake" "/usr/local/lib/cmake"
 		PATH_SUFFIXES "OpenCV" "include"
 		DOC "Root directory of OpenCV")
 endif()
