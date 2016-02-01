@@ -25,7 +25,7 @@
 if(NOT EXISTS "${OpenCV_DIR}")
 	find_path(OpenCV_DIR "OpenCVConfig.cmake"
 		HINTS "${OpenCV_ROOT}" "$ENV{OpenCV_ROOT}" "$ENV{OpenCV_DIR}"
-		PATHS "CMake" "$ENV{PROGRAMFILES}" "$ENV{PROGRAMW6432}" "/usr" "/usr/local" "/usr/share" "/usr/local/share" "/usr/lib/cmake" "/usr/local/lib/cmake"
+		PATHS "CMake" "$ENV{PROGRAMFILES}" "$ENV{PROGRAMW6432}" "/usr" "/usr/local" "/usr/share" "/usr/local/share" "/usr/lib/cmake" "/usr/local/lib/cmake" "/usr/lib/x86_64-linux-gnu/cmake"
 		PATH_SUFFIXES "OpenCV" "include"
 		DOC "Root directory of OpenCV")
 endif()

@@ -27,6 +27,8 @@ public:
 	CImagePNG();
 	virtual ~CImagePNG();
 
+	void		Close();
+
 	HRESULT		ReadHeader();
 	HRESULT		ReadData(void*, PIXELFORMAT, UINT nStride, UINT lineWidth);
 	HRESULT		WriteHeader(PIXELFORMAT, UINT width, UINT height, BYTE numLevels);
@@ -35,6 +37,7 @@ public:
 protected:
 	void*		m_png_ptr;
 	void*		m_info_ptr;
+	bool		bRead;
 }; // class CImagePNG
 /*----------------------------------------------------------------*/
 

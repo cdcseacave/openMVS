@@ -4,7 +4,7 @@
 
 find_path(EIGEN_DIR "Eigen/Core"
     HINTS "${EIGEN_ROOT}" "$ENV{EIGEN_ROOT}"
-    PATHS "$ENV{PROGRAMFILES}" "$ENV{PROGRAMW6432}" "/usr" "/usr/local" "/usr/share" "/usr/local/share"
+    PATHS "$ENV{PROGRAMFILES}" "$ENV{PROGRAMW6432}" "/usr" "/usr/local" "/usr/share" "/usr/local/share" "/usr/lib/x86_64-linux-gnu/cmake"
     PATH_SUFFIXES "eigen" "eigen3" "include"
     DOC "Root directory of EIGEN library")
 

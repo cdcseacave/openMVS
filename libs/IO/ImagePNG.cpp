@@ -48,7 +48,23 @@ CImagePNG::CImagePNG() : m_png_ptr(NULL), m_info_ptr(NULL)
 
 CImagePNG::~CImagePNG()
 {
+	Close();
 } // Destructor
+/*----------------------------------------------------------------*/
+
+void CImagePNG::Close()
+{
+	if (m_png_ptr) {
+		png_structp png_ptr = (png_structp)m_png_ptr;
+		png_infop info_ptr = (png_infop)m_info_ptr;
+		if (bRead)
+			png_destroy_read_struct(&png_ptr, &info_ptr, (png_infopp)NULL);
+		else
+			png_destroy_write_struct(&png_ptr, &info_ptr);
+		m_png_ptr = m_info_ptr = NULL;
+	}
+	CImage::Close();
+}
 /*----------------------------------------------------------------*/
 
 
@@ -61,6 +77,7 @@ HRESULT CImagePNG::ReadHeader()
 		LOG(LT_IMAGE, "error: invalid PNG image (png_create_read_struct)");
 		return _INVALIDFILE;
 	}
+	bRead = true;
 	png_structp png_ptr = (png_structp)m_png_ptr;
 
 	m_info_ptr = png_create_info_struct(png_ptr);
@@ -70,10 +87,8 @@ HRESULT CImagePNG::ReadHeader()
 	}
 	png_infop info_ptr = (png_infop)m_info_ptr;
 
-	if (setjmp(png_jmpbuf(png_ptr))) {
-		png_destroy_read_struct(&png_ptr, &info_ptr, (png_infopp)NULL);
+	if (setjmp(png_jmpbuf(png_ptr)))
 		return _INVALIDFILE;
-	}
 
 	((ISTREAM*)m_pStream)->setPos(0);
 	png_set_read_fn(png_ptr, m_pStream, custom_png_read_file);
@@ -172,7 +187,6 @@ HRESULT CImagePNG::ReadData(void* pData, PIXELFORMAT dataFormat, UINT nStride, U
 				return _FAIL;
 		}
 	}
-	png_destroy_read_struct(&png_ptr, &info_ptr, (png_infopp)NULL);
 
 	return _OK;
 } // Read
@@ -181,12 +195,14 @@ HRESULT CImagePNG::ReadData(void* pData, PIXELFORMAT dataFormat, UINT nStride, U
 
 HRESULT CImagePNG::WriteHeader(PIXELFORMAT imageFormat, UINT width, UINT height, BYTE /*numLevels*/)
 {
+	// initialize stuff
 	ASSERT(m_png_ptr == NULL);
 	m_png_ptr = png_create_write_struct(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
 	if (!m_png_ptr) {
 		LOG(LT_IMAGE, "error: can not create PNG image (png_create_write_struct)");
 		return _INVALIDFILE;
 	}
+	bRead = false;
 	png_structp png_ptr = (png_structp)m_png_ptr;
 
 	m_info_ptr = png_create_info_struct(png_ptr);
@@ -196,10 +212,8 @@ HRESULT CImagePNG::WriteHeader(PIXELFORMAT imageFormat, UINT width, UINT height,
 	}
 	png_infop info_ptr = (png_infop)m_info_ptr;
 
-	if (setjmp(png_jmpbuf(png_ptr))) {
-		png_destroy_write_struct(&png_ptr, &info_ptr);
+	if (setjmp(png_jmpbuf(png_ptr)))
 		return _INVALIDFILE;
-	}
 
 	// write header
 	switch (imageFormat)
@@ -287,7 +301,6 @@ HRESULT CImagePNG::WriteData(void* pData, PIXELFORMAT dataFormat, UINT nStride, 
 		}
 	}
 	png_write_end(png_ptr, NULL);
-	png_destroy_write_struct(&png_ptr, &info_ptr);
 
 	return _OK;
 } // WriteData
