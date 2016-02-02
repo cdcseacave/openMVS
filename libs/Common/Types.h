@@ -1234,17 +1234,16 @@ template<>
 inline double ZEROTOLERANCE()				{ return ZERO_TOLERANCE; }
 
 template<typename _Tp>
-inline bool   ISZERO(_Tp  x)				{ return x == _Tp(0); }
+inline _Tp    EPSILONTOLERANCE()			{ return std::numeric_limits<_Tp>::epsilon(); }
 template<>
+inline float  EPSILONTOLERANCE()			{ return 0.00001f; }
+template<>
+inline double EPSILONTOLERANCE()			{ return 1e-10; }
+
 inline bool   ISZERO(float  x)				{ return Float(x).IsZero(); }
-template<>
 inline bool   ISZERO(double x)				{ return ABS(x) < ZERO_TOLERANCE; }
 
-template<typename _Tp>
-inline bool   ISEQUAL(_Tp  x, _Tp  v)		{ return x == v; }
-template<>
 inline bool   ISEQUAL(float  x, float  v)	{ return Float(x).IsEqual(v); }
-template<>
 inline bool   ISEQUAL(double x, double v)	{ return ABS(x-v) < ZERO_TOLERANCE; }
 
 inline float  INVZERO(float)				{ return FINV_ZERO; }

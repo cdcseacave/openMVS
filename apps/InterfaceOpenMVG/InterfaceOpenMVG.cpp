@@ -48,6 +48,7 @@
 #define MVS_EXT _T(".mvs")
 #define MVG_EXT _T(".baf")
 #define MVG2_EXT _T(".json")
+#define MVG3_EXT _T(".bin")
 
 
 // S T R U C T S ///////////////////////////////////////////////////
@@ -416,7 +417,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	const String strInputFileNameExt(Util::getFileExt(OPT::strInputFileName).ToLower());
 	OPT::bOpenMVS2OpenMVG = (strInputFileNameExt == MVS_EXT);
 	#ifdef _USE_OPENMVG
-	OPT::bOpenMVGjson = (strInputFileNameExt == MVG2_EXT);
+	OPT::bOpenMVGjson = (strInputFileNameExt == MVG2_EXT || strInputFileNameExt == MVG3_EXT);
 	const bool bInvalidCommand(OPT::strInputFileName.IsEmpty() || (OPT::strListFileName.IsEmpty() && !OPT::bOpenMVGjson && !OPT::bOpenMVS2OpenMVG));
 	#else
 	const bool bInvalidCommand(OPT::strInputFileName.IsEmpty() || (OPT::strListFileName.IsEmpty() && !OPT::bOpenMVS2OpenMVG));
