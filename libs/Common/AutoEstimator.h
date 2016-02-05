@@ -88,7 +88,7 @@ struct ErrorIndex {
 #ifdef ACRANSAC_STD_VECTOR
 typedef std::vector<ErrorIndex> ErrorIndexArr;
 #else
-typedef SEACAVE::cList2vector< SEACAVE::cList<ErrorIndex,const ErrorIndex&,0> > ErrorIndexArr;
+typedef SEACAVE::cList<ErrorIndex,const ErrorIndex&,0> ErrorIndexArr;
 #endif
 
 /// Find best NFA and its index wrt square error threshold in e.

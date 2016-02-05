@@ -14,6 +14,10 @@
 
 // D E F I N E S ///////////////////////////////////////////////////
 
+#ifndef _USE_VECTORINTERFACE
+#define _USE_VECTORINTERFACE 1
+#endif
+
 // cList index type
 #ifdef _SUPPORT_CPP11
 #ifdef _MSC_VER
@@ -27,39 +31,39 @@
 
 // cList iterator by index
 #ifndef FOREACH
-#define FOREACH(var, arr) for (ARR2IDX(arr) var=0, var##size=(arr).GetSize(); var<var##size; ++var)
+#define FOREACH(var, arr) for (ARR2IDX(arr) var=0, var##Size=(arr).GetSize(); var<var##Size; ++var)
 #endif
 #ifndef RFOREACH
 #define RFOREACH(var, arr) for (ARR2IDX(arr) var=(arr).GetSize(); var-->0; )
 #endif
 // cList iterator by pointer
 #ifndef FOREACHPTR
-#define FOREACHPTR(var, arr) for (auto var=(arr).Begin(), var##end=(arr).End(); var!=var##end; ++var)
+#define FOREACHPTR(var, arr) for (auto var=(arr).Begin(), var##End=(arr).End(); var!=var##End; ++var)
 #endif
 #ifndef RFOREACHPTR
-#define RFOREACHPTR(var, arr) for (auto var=(arr).End(), var##begin=(arr).Begin(); var--!=var##begin; )
+#define RFOREACHPTR(var, arr) for (auto var=(arr).End(), var##Begin=(arr).Begin(); var--!=var##Begin; )
 #endif
 
 // raw data array iterator by index
 #ifndef FOREACHRAW
-#define FOREACHRAW(var, sz) for (IDX var=0, var##size=(sz); var<var##size; ++var)
+#define FOREACHRAW(var, sz) for (IDX var=0, var##Size=(sz); var<var##Size; ++var)
 #endif
 #ifndef RFOREACHRAW
 #define RFOREACHRAW(var, sz) for (IDX var=sz; var-->0; )
 #endif
 // raw data array iterator by pointer
 #ifndef FOREACHRAWPTR
-#define FOREACHRAWPTR(var, arr, sz) for (auto var=(arr), var##end=var+sz; var!=var##end; ++var)
+#define FOREACHRAWPTR(var, arr, sz) for (auto var=(arr), var##End=var+sz; var!=var##End; ++var)
 #endif
 #ifndef RFOREACHRAWPTR
-#define RFOREACHRAWPTR(var, arr, sz) for (auto var##begin=(arr), var=var##begin+sz; var--!=var##begin; )
+#define RFOREACHRAWPTR(var, arr, sz) for (auto var##Begin=(arr), var=var##Begin+sz; var--!=var##Begin; )
 #endif
 
 // constructs a cList reference to a given raw data array
 #ifndef CLISTREFRAW
 #define CLISTREFRAW(CLIST, var, arr, sz) uint8_t _ArrData##var[sizeof(CLIST)]; new(_ArrData##var) CLIST(sz, arr); const CLIST& var(*((const CLIST*)_ArrData##var))
 #endif
-// constructs a cList reference to a given std::vector
+// constructs a cList reference to a given std::_vector
 #ifndef CLISTREFVECTOR
 #define CLISTREFVECTOR(CLIST, var, vec) uint8_t _ArrData##var[sizeof(CLIST)]; new(_ArrData##var) CLIST(vec.size(), &vec[0]); const CLIST& var(*((const CLIST*)_ArrData##var))
 #endif
@@ -107,37 +111,37 @@ public:
 	typedef bool (STCALL *TFncCompareBool)(ARG_TYPE elem, ARG_TYPE key); //returns true if the two elements are strict in weak ordering
 
 	// construct an empty list
-	inline cList() : size(0), vectorSize(0), vector(NULL)
+	inline cList() : _size(0), _vectorSize(0), _vector(NULL)
 	{
 	}
 
-	// construct a list containing _size initialized elements
-	cList(IDX _size) : size(_size), vectorSize(_size), vector((TYPE*)operator new[] (_size * sizeof(TYPE)))
+	// construct a list containing size initialized elements
+	cList(IDX size) : _size(size), _vectorSize(size), _vector((TYPE*)operator new[] (size * sizeof(TYPE)))
 	{
-		ASSERT(_size > 0 && _size < NO_INDEX);
-		_ArrayConstruct(vector, _size);
+		ASSERT(size > 0 && size < NO_INDEX);
+		_ArrayConstruct(_vector, size);
 	}
 
-	// construct a list containing _size initialized elements and allocated space for _reserved elements
-	cList(IDX _size, IDX _reserved) : size(_size), vectorSize(_reserved), vector((TYPE*)operator new[] (_reserved * sizeof(TYPE)))
+	// construct a list containing size initialized elements and allocated space for _reserved elements
+	cList(IDX size, IDX _reserved) : _size(size), _vectorSize(_reserved), _vector((TYPE*)operator new[] (_reserved * sizeof(TYPE)))
 	{
-		ASSERT(_reserved >= _size && _reserved < NO_INDEX);
-		_ArrayConstruct(vector, _size);
+		ASSERT(_reserved >= size && _reserved < NO_INDEX);
+		_ArrayConstruct(_vector, size);
 	}
 
 	// copy constructor: creates a deep-copy of the given list
-	cList(const cList& rList) : size(rList.size), vectorSize(rList.vectorSize), vector(NULL)
+	cList(const cList& rList) : _size(rList._size), _vectorSize(rList._vectorSize), _vector(NULL)
 	{
-		if (vectorSize == 0) {
-			ASSERT(size == 0);
+		if (_vectorSize == 0) {
+			ASSERT(_size == 0);
 			return;
 		}
-		vector = (TYPE*)(operator new[] (vectorSize * sizeof(TYPE)));
-		_ArrayCopyConstruct(vector, rList.vector, size);
+		_vector = (TYPE*)(operator new[] (_vectorSize * sizeof(TYPE)));
+		_ArrayCopyConstruct(_vector, rList._vector, _size);
 	}
 
 	// constructor a list from a raw data array, taking ownership of the array memory
-	explicit inline cList(IDX nSize, TYPE* pData) : size(nSize), vectorSize(nSize), vector(pData)
+	explicit inline cList(IDX nSize, TYPE* pData) : _size(nSize), _vectorSize(nSize), _vector(pData)
 	{
 	}
 
@@ -156,43 +160,43 @@ public:
 	{
 		if (this == &rList)
 			return (*this);
-		if (bForceResize || vectorSize < rList.vectorSize) {
+		if (bForceResize || _vectorSize < rList._vectorSize) {
 			_Release();
-			vectorSize = rList.vectorSize;
-			vector = (TYPE*) operator new[] (vectorSize * sizeof(TYPE));
-			_ArrayCopyConstruct(vector, rList.vector, rList.size);
+			_vectorSize = rList._vectorSize;
+			_vector = (TYPE*) operator new[] (_vectorSize * sizeof(TYPE));
+			_ArrayCopyConstruct(_vector, rList._vector, rList._size);
 		} else {
-			if (size >= rList.size) {
-				_ArrayDestruct(vector+rList.size, size-rList.size);
-				_ArrayCopyRestrict(vector, rList.vector, rList.size);
+			if (_size >= rList._size) {
+				_ArrayDestruct(_vector+rList._size, _size-rList._size);
+				_ArrayCopyRestrict(_vector, rList._vector, rList._size);
 			} else {
-				_ArrayCopyRestrict(vector, rList.vector, size);
-				_ArrayCopyConstruct(vector+size, rList.vector+size, rList.size-size);
+				_ArrayCopyRestrict(_vector, rList._vector, _size);
+				_ArrayCopyConstruct(_vector+_size, rList._vector+_size, rList._size-_size);
 			}
 		}
-		size = rList.size;
+		_size = rList._size;
 		return (*this);
 	}
 
 	inline	cList&	CopyOf(const TYPE* pData, IDX nSize, bool bForceResize=false)
 	{
-		if (vector == pData)
+		if (_vector == pData)
 			return (*this);
-		if (bForceResize || vectorSize < nSize) {
+		if (bForceResize || _vectorSize < nSize) {
 			_Release();
-			vectorSize = nSize;
-			vector = (TYPE*) operator new[] (vectorSize * sizeof(TYPE));
-			_ArrayCopyConstruct(vector, pData, nSize);
+			_vectorSize = nSize;
+			_vector = (TYPE*) operator new[] (_vectorSize * sizeof(TYPE));
+			_ArrayCopyConstruct(_vector, pData, nSize);
 		} else {
-			if (size >= nSize) {
-				_ArrayDestruct(vector+nSize, size-nSize);
-				_ArrayCopyRestrict(vector, pData, nSize);
+			if (_size >= nSize) {
+				_ArrayDestruct(_vector+nSize, _size-nSize);
+				_ArrayCopyRestrict(_vector, pData, nSize);
 			} else {
-				_ArrayCopyRestrict(vector, pData, size);
-				_ArrayCopyConstruct(vector+size, pData+size, nSize-size);
+				_ArrayCopyRestrict(_vector, pData, _size);
+				_ArrayCopyConstruct(_vector+_size, pData+_size, nSize-_size);
 			}
 		}
-		size = nSize;
+		_size = nSize;
 		return (*this);
 	}
 
@@ -202,40 +206,40 @@ public:
 		if (this == &rList)
 			return (*this);
 		_Release();
-		size = rList.size;
-		vectorSize = rList.vectorSize;
-		vector = rList.vector;
-		rList.vector = NULL;
-		rList.size = rList.vectorSize = 0;
+		_size = rList._size;
+		_vectorSize = rList._vectorSize;
+		_vector = rList._vector;
+		rList._vector = NULL;
+		rList._size = rList._vectorSize = 0;
 		return (*this);
 	}
 
 	inline	void	Join(const cList& rList)
 	{
-		if (this == &rList || rList.size == 0)
+		if (this == &rList || rList._size == 0)
 			return;
-		const IDX newSize = size + rList.size;
+		const IDX newSize = _size + rList._size;
 		Reserve(newSize);
-		_ArrayCopyConstruct(vector+size, rList.vector, rList.size);
-		size = newSize;
+		_ArrayCopyConstruct(_vector+_size, rList._vector, rList._size);
+		_size = newSize;
 	}
 	inline	void	Join(const TYPE* pData, IDX nSize)
 	{
-		const IDX newSize = size + nSize;
+		const IDX newSize = _size + nSize;
 		Reserve(newSize);
-		_ArrayCopyConstruct(vector+size, pData, nSize);
-		size = newSize;
+		_ArrayCopyConstruct(_vector+_size, pData, nSize);
+		_size = newSize;
 	}
 
 	inline	void	JoinRemove(cList& rList)
 	{
-		if (this == &rList || rList.size == 0)
+		if (this == &rList || rList._size == 0)
 			return;
-		const IDX newSize(size + rList.size);
+		const IDX newSize(_size + rList._size);
 		Reserve(newSize);
-		_ArrayMoveConstruct<true>(vector+size, rList.vector, rList.size);
-		size = newSize;
-		rList.size = 0;
+		_ArrayMoveConstruct<true>(_vector+_size, rList._vector, rList._size);
+		_size = newSize;
+		rList._size = 0;
 	}
 
 	// Swap the elements of the two lists.
@@ -243,34 +247,34 @@ public:
 	{
 		if (this == &rList)
 			return;
-		const IDX tmpSize = size;
-		size = rList.size;
-		rList.size = tmpSize;
-		const IDX tmpVectorSize = vectorSize;
-		vectorSize = rList.vectorSize;
-		rList.vectorSize = tmpVectorSize;
-		TYPE* const tmpVector = vector;
-		vector = rList.vector;
-		rList.vector = tmpVector;
+		const IDX tmpSize = _size;
+		_size = rList._size;
+		rList._size = tmpSize;
+		const IDX tmpVectorSize = _vectorSize;
+		_vectorSize = rList._vectorSize;
+		rList._vectorSize = tmpVectorSize;
+		TYPE* const tmpVector = _vector;
+		_vector = rList._vector;
+		rList._vector = tmpVector;
 	}
 
 	// Swap the two elements.
 	inline	void	Swap(IDX idx1, IDX idx2)
 	{
-		ASSERT(idx1 < size && idx2 < size);
-		TYPE tmp = vector[idx1];
-		vector[idx1] = vector[idx2];
-		vector[idx2] = tmp;
+		ASSERT(idx1 < _size && idx2 < _size);
+		TYPE tmp = _vector[idx1];
+		_vector[idx1] = _vector[idx2];
+		_vector[idx2] = tmp;
 	}
 
 	// Set the allocated memory (normally used for types without constructor).
 	inline void		Memset(uint8_t val)
 	{
-		memset(vector, val, size * sizeof(TYPE));
+		memset(_vector, val, _size * sizeof(TYPE));
 	}
 	inline void		MemsetValue(ARG_TYPE val)
 	{
-		std::fill_n(vector, size, val);
+		std::fill_n(_vector, _size, val);
 	}
 
 	// Delete the old array, and create a new one of the desired size;
@@ -278,28 +282,28 @@ public:
 	inline void		Reset(IDX newSize)
 	{
 		_Release();
-		vectorSize = newSize;
-		size = newSize;
+		_vectorSize = newSize;
+		_size = newSize;
 		if (newSize == 0) {
-			vector = NULL;
+			_vector = NULL;
 			return;
 		}
-		vector = (TYPE*) operator new[] (newSize * sizeof(TYPE));
-		_ArrayConstruct(vector, newSize);
+		_vector = (TYPE*) operator new[] (newSize * sizeof(TYPE));
+		_ArrayConstruct(_vector, newSize);
 	}
 
 	// Pre-allocate memory for the array at the desired size;
 	// the old elements are kept.
 	inline	void	Reserve(IDX needVectorSize)
 	{
-		if (vectorSize < needVectorSize)
+		if (_vectorSize < needVectorSize)
 			_Grow(needVectorSize);
 	}
 	// Same as above, but only the extra needed space is passed.
 	inline	void	ReserveExtra(IDX needVectorExtraSize)
 	{
-		if (vectorSize < size+needVectorExtraSize)
-			_Grow(vectorSize+MAXF(needVectorExtraSize,(IDX)grow));
+		if (_vectorSize < _size+needVectorExtraSize)
+			_Grow(_vectorSize+MAXF(needVectorExtraSize,(IDX)grow));
 	}
 
 	// Set the size of the array at the new desired size;
@@ -307,129 +311,137 @@ public:
 	// If increased, the array is filled with new empty elements.
 	inline	void	Resize(IDX newSize)
 	{
-		if (newSize == size)
+		if (newSize == _size)
 			return;
-		if (newSize < size)
+		if (newSize < _size)
 			return _Shrink(newSize);
 		Reserve(newSize);
-		_ArrayConstruct(vector+size, newSize-size);
-		size = newSize;
+		_ArrayConstruct(_vector+_size, newSize-_size);
+		_size = newSize;
 	}
 	inline	void	ResizeExact(IDX newSize)
 	{
-		if (newSize == size)
+		if (newSize == _size)
 			return;
-		if (newSize < size)
+		if (newSize < _size)
 			return _ShrinkExact(newSize);
 		Reserve(newSize);
-		_ArrayConstruct(vector+size, newSize-size);
-		size = newSize;
+		_ArrayConstruct(_vector+_size, newSize-_size);
+		_size = newSize;
 	}
 
 	// Free unused memory.
 	inline void		ReleaseFree()
 	{
-		if (size < vectorSize)
-			_ShrinkExact(size);
+		if (_size < _vectorSize)
+			_ShrinkExact(_size);
 	}
 
 	inline IDX		GetIndex(const TYPE* pElem) const
 	{
-		ASSERT(pElem-vector < size);
-		return (IDX)(pElem-vector);
+		ASSERT(pElem-_vector < _size);
+		return (IDX)(pElem-_vector);
 	}
 
 	inline const TYPE&	operator[](IDX index) const
 	{
-		ASSERT(index < size);
-		return vector[index];
+		ASSERT(index < _size);
+		return _vector[index];
 	}
 	inline TYPE&	operator[](IDX index)
 	{
-		ASSERT(index < size);
-		return vector[index];
+		ASSERT(index < _size);
+		return _vector[index];
 	}
 
 	inline TYPE*	GetData() const
 	{
-		return vector;
+		return _vector;
 	}
 	inline size_t	GetDataSize() const
 	{
-		return sizeof(TYPE)*size;
+		return sizeof(TYPE)*_size;
 	}
 
 	inline TYPE*	Begin() const
 	{
-		return vector;
+		return _vector;
 	}
 
 	inline TYPE*	End() const
 	{
-		return vector+size;
+		return _vector+_size;
 	}
 
 	inline const TYPE&	First() const
 	{
-		ASSERT(size > 0);
-		return vector[0];
+		ASSERT(_size > 0);
+		return _vector[0];
 	}
 	inline TYPE&	First()
 	{
-		ASSERT(size > 0);
-		return vector[0];
+		ASSERT(_size > 0);
+		return _vector[0];
 	}
 
 	inline const TYPE&	Last() const
 	{
-		ASSERT(size > 0);
-		return vector[size-1];
+		ASSERT(_size > 0);
+		return _vector[_size-1];
 	}
 	inline TYPE&	Last()
 	{
-		ASSERT(size > 0);
-		return vector[size-1];
+		ASSERT(_size > 0);
+		return _vector[_size-1];
 	}
 
 	// Adds a new empty element at the end of the array.
 	inline TYPE&	AddEmpty()
 	{
-		if (vectorSize <= size)
-			_Grow(vectorSize + grow);
+		if (_vectorSize <= _size)
+			_Grow(_vectorSize + grow);
 		if (useConstruct)
-			return *(new(vector + (size++)) TYPE);
+			return *(new(_vector + (_size++)) TYPE);
 		else
-			return vector[size++];
+			return _vector[_size++];
 	}
 	inline TYPE*	AddEmpty(IDX numElems)
 	{
-		const IDX newSize = size + numElems;
-		if (vectorSize < newSize)
+		const IDX newSize = _size + numElems;
+		if (_vectorSize < newSize)
 			_Grow(newSize + grow);
-		Type* const pData = vector + size;
+		Type* const pData = _vector + _size;
 		_ArrayConstruct(pData, numElems);
-		size = newSize;
+		_size = newSize;
 		return pData;
 	}
 
-	#ifdef _SUPPORT_CPP11
 	// Adds a new empty element at the end of the array and pass the arguments to its constructor.
+	#ifdef _SUPPORT_CPP11
 	template <typename... Args>
 	inline TYPE&	AddConstruct(Args&&... args)
 	{
-		if (vectorSize <= size)
-			_Grow(vectorSize + grow);
-		return *(new(vector + (size++)) TYPE(std::forward<Args>(args)...));
+		if (_vectorSize <= _size)
+			_Grow(_vectorSize + grow);
+		return *(new(_vector + (_size++)) TYPE(std::forward<Args>(args)...));
+	}
+	#else
+	template <typename... Args>
+	inline TYPE&	AddConstruct(Args... args)
+	{
+		if (_vectorSize <= _size)
+			_Grow(_vectorSize + grow);
+		return *(new(_vector + (_size++)) TYPE(args...));
 	}
 	#endif
 
 	inline IDX		InsertEmpty()
 	{
-		if (vectorSize <= size)
-			_Grow(vectorSize + grow);
+		if (_vectorSize <= _size)
+			_Grow(_vectorSize + grow);
 		if (useConstruct)
-			new(vector + size) TYPE;
-		return size++;
+			new(_vector + _size) TYPE;
+		return _size++;
 	}
 
 	// Adds the new element at the end of the array.
@@ -437,22 +449,22 @@ public:
 	template <typename T>
 	inline void		Insert(T&& elem)
 	{
-		if (vectorSize <= size)
-			_Grow(vectorSize + grow);
+		if (_vectorSize <= _size)
+			_Grow(_vectorSize + grow);
 		if (useConstruct)
-			new(vector+(size++)) TYPE(std::forward<T>(elem));
+			new(_vector+(_size++)) TYPE(std::forward<T>(elem));
 		else
-			vector[size++] = std::forward<T>(elem);
+			_vector[_size++] = std::forward<T>(elem);
 	}
 	#else
 	inline void		Insert(ARG_TYPE elem)
 	{
-		if (vectorSize <= size)
-			_Grow(vectorSize + grow);
+		if (_vectorSize <= _size)
+			_Grow(_vectorSize + grow);
 		if (useConstruct)
-			new(vector+(size++)) TYPE(elem);
+			new(_vector+(_size++)) TYPE(elem);
 		else
-			vector[size++] = elem;
+			_vector[_size++] = elem;
 	}
 	#endif
 
@@ -460,16 +472,16 @@ public:
 	template <typename T>
 	inline void		SetAt(IDX index, T&& elem)
 	{
-		if (size <= index)
+		if (_size <= index)
 			Resize(index + 1);
-		vector[index] = std::forward<T>(elem);
+		_vector[index] = std::forward<T>(elem);
 	}
 	#else
 	inline void		SetAt(IDX index, ARG_TYPE elem)
 	{
-		if (size <= index)
+		if (_size <= index)
 			Resize(index + 1);
-		vector[index] = elem;
+		_vector[index] = elem;
 	}
 	#endif
 
@@ -477,32 +489,32 @@ public:
 	template <typename T>
 	inline void		AddAt(IDX index, T&& elem)
 	{
-		if (index < size)
+		if (index < _size)
 			return InsertAt(index, std::forward<T>(elem));
 		const IDX newSize = index + 1;
-		if (vectorSize <= newSize)
+		if (_vectorSize <= newSize)
 			_Grow(newSize + grow);
-		_ArrayConstruct(vector+size, index-size);
+		_ArrayConstruct(_vector+_size, index-_size);
 		if (useConstruct)
-			new(vector+index) TYPE(std::forward<T>(elem));
+			new(_vector+index) TYPE(std::forward<T>(elem));
 		else
-			vector[index] = std::forward<T>(elem);
-		++size;
+			_vector[index] = std::forward<T>(elem);
+		++_size;
 	}
 	#else
 	inline void		AddAt(IDX index, ARG_TYPE elem)
 	{
-		if (index < size)
+		if (index < _size)
 			return InsertAt(index, elem);
 		const IDX newSize = index + 1;
-		if (vectorSize <= newSize)
+		if (_vectorSize <= newSize)
 			_Grow(newSize + grow);
-		_ArrayConstruct(vector+size, index-size);
+		_ArrayConstruct(_vector+_size, index-_size);
 		if (useConstruct)
-			new(vector+index) TYPE(elem);
+			new(_vector+index) TYPE(elem);
 		else
-			vector[index] = elem;
-		++size;
+			_vector[index] = elem;
+		++_size;
 	}
 	#endif
 
@@ -528,25 +540,25 @@ public:
 	// Same as Insert, but the constructor is not called.
 	inline TYPE*	Allocate()
 	{
-		if (vectorSize <= size)
-			_Grow(vectorSize + grow);
-		return vector+size++;
+		if (_vectorSize <= _size)
+			_Grow(_vectorSize + grow);
+		return _vector+_size++;
 	}
 	inline TYPE*	AllocateAt(IDX index)
 	{
-		ASSERT(index <= size);
-		const IDX move(size-index);
+		ASSERT(index <= _size);
+		const IDX move(_size-index);
 		Allocate();
-		_ArrayMoveConstruct<false>(vector+index+1, vector+index, move);
-		return vector+index;
+		_ArrayMoveConstruct<false>(_vector+index+1, _vector+index, move);
+		return _vector+index;
 	}
 
 	inline IDX		InsertSort(ARG_TYPE elem)
 	{
-		IDX l1(0), l2(size);
+		IDX l1(0), l2(_size);
 		while (l1 < l2) {
 			IDX i((l1 + l2) >> 1);
-			ARG_TYPE compElem(vector[i]);
+			ARG_TYPE compElem(_vector[i]);
 			if (elem < compElem)
 				l2 = i;
 			else if (compElem < elem)
@@ -562,10 +574,10 @@ public:
 
 	inline IDX		InsertSortPtr(ARG_TYPE elem)
 	{
-		IDX l1(0), l2(size);
+		IDX l1(0), l2(_size);
 		while (l1 < l2) {
 			IDX i((l1 + l2) >> 1);
-			ARG_TYPE compElem(vector[i]);
+			ARG_TYPE compElem(_vector[i]);
 			if (*elem < *compElem)
 				l2 = i;
 			else if (*compElem < *elem)
@@ -581,10 +593,10 @@ public:
 
 	inline IDX		InsertSort(ARG_TYPE elem, TFncCompare xCompare)
 	{
-		IDX l1(0), l2(size);
+		IDX l1(0), l2(_size);
 		while (l1 < l2) {
 			IDX i((l1 + l2) >> 1);
-			const int res(xCompare(vector+i, &elem));
+			const int res(xCompare(_vector+i, &elem));
 			if (res == 0) {
 				InsertAt(i, elem);
 				return i;
@@ -606,7 +618,7 @@ public:
 	}
 	inline TYPE&	GetMedian()
 	{
-		return GetNth(size >> 1);
+		return GetNth(_size >> 1);
 	}
 
 	inline void		Sort()
@@ -620,12 +632,12 @@ public:
 
 	inline	bool	IsSorted() const
 	{
-		if (size < 2)
+		if (_size < 2)
 			return true;
-		IDX i = size-1;
+		IDX i = _size-1;
 		do {
-			ARG_TYPE elem1 = vector[i];
-			ARG_TYPE elem0 = vector[--i];
+			ARG_TYPE elem1 = _vector[i];
+			ARG_TYPE elem0 = _vector[--i];
 			if (!(elem0 < elem1 || elem0 == elem1))
 				return false;
 		} while (i > 0);
@@ -633,12 +645,12 @@ public:
 	}
 	inline	bool	IsSorted(TFncCompareBool xCompare) const
 	{
-		if (size < 2)
+		if (_size < 2)
 			return true;
-		IDX i = size-1;
+		IDX i = _size-1;
 		do {
-			ARG_TYPE elem1 = vector[i];
-			ARG_TYPE elem0 = vector[--i];
+			ARG_TYPE elem1 = _vector[i];
+			ARG_TYPE elem0 = _vector[--i];
 			if (!xCompare(elem0, elem1))
 				return false;
 		} while (i > 0);
@@ -647,10 +659,10 @@ public:
 
 	inline std::pair<IDX,bool>	InsertSortUnique(ARG_TYPE elem)
 	{
-		IDX l1(0), l2(size);
+		IDX l1(0), l2(_size);
 		while (l1 < l2) {
 			IDX i((l1 + l2) >> 1);
-			ARG_TYPE compElem(vector[i]);
+			ARG_TYPE compElem(_vector[i]);
 			if (elem < compElem)
 				l2 = i;
 			else if (compElem < elem)
@@ -664,10 +676,10 @@ public:
 
 	inline std::pair<IDX,bool>	InsertSortUniquePtr(ARG_TYPE elem)
 	{
-		IDX l1(0), l2(size);
+		IDX l1(0), l2(_size);
 		while (l1 < l2) {
 			IDX i((l1 + l2) >> 1);
-			ARG_TYPE compElem(vector[i]);
+			ARG_TYPE compElem(_vector[i]);
 			if (*elem < *compElem)
 				l2 = i;
 			else if (*compElem < *elem)
@@ -681,10 +693,10 @@ public:
 
 	inline std::pair<IDX,bool>	InsertSortUnique(ARG_TYPE elem, TFncCompare xCompare)
 	{
-		IDX l1(0), l2(size);
+		IDX l1(0), l2(_size);
 		while (l1 < l2) {
 			IDX i((l1 + l2) >> 1);
-			const int res(xCompare(vector+i, &elem));
+			const int res(xCompare(_vector+i, &elem));
 			if (res == 0)
 				return std::make_pair(i, true);
 			if (res < 0)
@@ -700,31 +712,31 @@ public:
 	template <int N>
 	inline void		StoreTop(ARG_TYPE elem) {
 		const IDX idx(FindFirstEqlGreater(elem));
-		if (idx < size) {
-			if (size >= N)
+		if (idx < _size) {
+			if (_size >= N)
 				RemoveLast();
 			InsertAt(idx, elem);
-		} else if (size < N) {
+		} else if (_size < N) {
 			Insert(elem);
 		}
 	}
 	inline void		StoreTop(ARG_TYPE elem, IDX N) {
 		const IDX idx(FindFirstEqlGreater(elem));
-		if (idx < size) {
-			if (size >= N)
+		if (idx < _size) {
+			if (_size >= N)
 				RemoveLast();
 			InsertAt(idx, elem);
-		} else if (size < N) {
+		} else if (_size < N) {
 			Insert(elem);
 		}
 	}
 
 	inline IDX		FindFirst(ARG_TYPE searchedKey) const
 	{
-		IDX l1(0), l2(size);
+		IDX l1(0), l2(_size);
 		while (l1 < l2) {
 			IDX i((l1 + l2) >> 1);
-			ARG_TYPE key(vector[i]);
+			ARG_TYPE key(_vector[i]);
 			if (searchedKey < key)
 				l2 = i;
 			else if (key < searchedKey)
@@ -737,10 +749,10 @@ public:
 
 	inline IDX		FindFirstPtr(ARG_TYPE searchedKey) const
 	{
-		IDX l1(0), l2(size);
+		IDX l1(0), l2(_size);
 		while (l1 < l2) {
 			IDX i((l1 + l2) >> 1);
-			ARG_TYPE key(vector[i]);
+			ARG_TYPE key(_vector[i]);
 			if (*searchedKey < *key)
 				l2 = i;
 			else if (*key < *searchedKey)
@@ -754,10 +766,10 @@ public:
 	template <typename SEARCH_TYPE>
 	inline IDX		FindFirst(const SEARCH_TYPE& searchedKey) const
 	{
-		IDX l1(0), l2(size);
+		IDX l1(0), l2(_size);
 		while (l1 < l2) {
 			IDX i((l1 + l2) >> 1);
-			ARG_TYPE key(vector[i]);
+			ARG_TYPE key(_vector[i]);
 			if (key == searchedKey)
 				return i;
 			if (key < searchedKey)
@@ -771,10 +783,10 @@ public:
 	template <typename SEARCH_TYPE>
 	inline IDX		FindFirstPtr(const SEARCH_TYPE& searchedKey) const
 	{
-		IDX l1(0), l2(size);
+		IDX l1(0), l2(_size);
 		while (l1 < l2) {
 			IDX i((l1 + l2) >> 1);
-			ARG_TYPE key(vector[i]);
+			ARG_TYPE key(_vector[i]);
 			if (*key == searchedKey)
 				return i;
 			if (*key < searchedKey)
@@ -787,10 +799,10 @@ public:
 
 	inline IDX		FindFirst(const void* searchedKey, TFncCompare xCompare) const
 	{
-		IDX l1(0), l2(size);
+		IDX l1(0), l2(_size);
 		while (l1 < l2) {
 			IDX i((l1 + l2) >> 1);
-			const int res(xCompare(vector+i, searchedKey));
+			const int res(xCompare(_vector+i, searchedKey));
 			if (res == 0)
 				return i;
 			if (res < 0)
@@ -803,17 +815,17 @@ public:
 
 	inline IDX		FindFirstBelow(ARG_TYPE searchedKey) const
 	{
-		if (size == 0) return NO_INDEX;
-		IDX l1(0), l2(size);
+		if (_size == 0) return NO_INDEX;
+		IDX l1(0), l2(_size);
 		do {
 			IDX i((l1 + l2) >> 1);
-			ARG_TYPE key(vector[i]);
+			ARG_TYPE key(_vector[i]);
 			if (searchedKey < key)
 				l2 = i;
 			else if (key < searchedKey)
 				l1 = i+1;
 			else {
-				while (i-- && !(vector[i] < searchedKey));
+				while (i-- && !(_vector[i] < searchedKey));
 				return i;
 			}
 		} while (l1 < l2);
@@ -823,13 +835,13 @@ public:
 	template <typename SEARCH_TYPE>
 	inline IDX		FindFirstBelow(const SEARCH_TYPE& searchedKey) const
 	{
-		if (size == 0) return NO_INDEX;
-		IDX l1(0), l2(size);
+		if (_size == 0) return NO_INDEX;
+		IDX l1(0), l2(_size);
 		do {
 			IDX i((l1 + l2) >> 1);
-			ARG_TYPE key(vector[i]);
+			ARG_TYPE key(_vector[i]);
 			if (key == searchedKey) {
-				while (i-- && vector[i] == searchedKey);
+				while (i-- && _vector[i] == searchedKey);
 				return i;
 			}
 			if (key < searchedKey)
@@ -842,17 +854,17 @@ public:
 
 	inline IDX		FindFirstEqlGreater(ARG_TYPE searchedKey) const
 	{
-		if (size == 0) return 0;
-		IDX l1(0), l2(size);
+		if (_size == 0) return 0;
+		IDX l1(0), l2(_size);
 		do {
 			IDX i((l1 + l2) >> 1);
-			ARG_TYPE key(vector[i]);
+			ARG_TYPE key(_vector[i]);
 			if (searchedKey < key)
 				l2 = i;
 			else if (key < searchedKey)
 				l1 = i+1;
 			else {
-				while (i-- && !(vector[i] < searchedKey));
+				while (i-- && !(_vector[i] < searchedKey));
 				return i+1;
 			}
 		} while (l1 < l2);
@@ -862,13 +874,13 @@ public:
 	template <typename SEARCH_TYPE>
 	inline IDX		FindFirstEqlGreater(const SEARCH_TYPE& searchedKey) const
 	{
-		if (size == 0) return 0;
-		IDX l1(0), l2(size);
+		if (_size == 0) return 0;
+		IDX l1(0), l2(_size);
 		do {
 			IDX i((l1 + l2) >> 1);
-			ARG_TYPE key(vector[i]);
+			ARG_TYPE key(_vector[i]);
 			if (key == searchedKey) {
-				while (i-- && vector[i] == searchedKey);
+				while (i-- && _vector[i] == searchedKey);
 				return i+1;
 			}
 			if (key < searchedKey)
@@ -879,30 +891,57 @@ public:
 		return l1;
 	}
 
-	// Find the matching "elem" by brute-force.
+	// find the matching "elem" by brute-force (front to back)
+	// returns the first element found
 	inline IDX		Find(ARG_TYPE elem) const
 	{
-		IDX i = size;
-		while (i)
-			if (vector[--i] == elem)
+		for (IDX i = 0; i < _size; ++i)
+			if (_vector[i] == elem)
 				return i;
 		return NO_INDEX;
 	}
-
 	template <typename SEARCH_TYPE>
 	inline IDX		Find(const SEARCH_TYPE& searchedKey) const
 	{
-		IDX i = size;
-		while (i)
-			if (vector[--i] == searchedKey)
+		for (IDX i = 0; i < _size; ++i)
+			if (_vector[i] == searchedKey)
+				return i;
+		return NO_INDEX;
+	}
+	template <typename Functor>
+	inline IDX		FindFunc(const Functor& functor) const
+	{
+		for (IDX i = 0; i < _size; ++i)
+			if (functor(_vector[i]))
 				return i;
 		return NO_INDEX;
 	}
 
-	inline	IDX		Find(const void* searchedKey, TFncCompare xCompare) const
+	// find the matching "elem" by brute-force (back to front)
+	// returns the first element found
+	inline IDX		RFind(ARG_TYPE elem) const
 	{
-		for (IDX i = 0; i < size; i++)
-			if (xCompare(vector + i, searchedKey) == 0)
+		IDX i(_size);
+		while (i)
+			if (_vector[--i] == elem)
+				return i;
+		return NO_INDEX;
+	}
+	template <typename SEARCH_TYPE>
+	inline IDX		RFind(const SEARCH_TYPE& searchedKey) const
+	{
+		IDX i(_size);
+		while (i)
+			if (_vector[--i] == searchedKey)
+				return i;
+		return NO_INDEX;
+	}
+	template <typename Functor>
+	inline IDX		RFindFunc(const Functor& functor) const
+	{
+		IDX i(_size);
+		while (i)
+			if (functor(_vector[--i]))
 				return i;
 		return NO_INDEX;
 	}
@@ -949,85 +988,85 @@ public:
 	// Erase each element matching "elem".
 	inline void		Remove(ARG_TYPE elem)
 	{
-		IDX i = size;
+		IDX i = _size;
 		while (i)
-			if (vector[--i] == elem)
+			if (_vector[--i] == elem)
 				RemoveAt(i);
 	}
 
 	inline ARG_TYPE	RemoveTail()
 	{
-		ASSERT(size);
+		ASSERT(_size);
 		ASSERT(!useConstruct);
-		return vector[--size];
+		return _vector[--_size];
 	}
 
 	inline void		RemoveLast()
 	{
-		ASSERT(size);
-		_ArrayDestruct(vector+(--size), 1);
+		ASSERT(_size);
+		_ArrayDestruct(_vector+(--_size), 1);
 	}
 
 	inline void		RemoveLast(IDX count)
 	{
-		ASSERT(count <= size);
-		_ArrayDestruct(vector+(size-=count), count);
+		ASSERT(count <= _size);
+		_ArrayDestruct(_vector+(_size-=count), count);
 	}
 
 	inline void		RemoveAt(IDX index)
 	{
-		ASSERT(index < size);
-		if (index+1 == size)
+		ASSERT(index < _size);
+		if (index+1 == _size)
 			RemoveLast();
 		else
-			_ArrayMoveCopy<true>(vector+index, vector+(--size), 1);
+			_ArrayMoveCopy<true>(_vector+index, _vector+(--_size), 1);
 	}
 
 	inline void		RemoveAt(IDX index, IDX count)
 	{
-		ASSERT(index+count <= size);
-		if (index+count == size) {
+		ASSERT(index+count <= _size);
+		if (index+count == _size) {
 			RemoveLast(count);
 		} else {
-			size -= count;
-			const IDX move(size-index);
-			TYPE* const vectorEnd(vector+size);
+			_size -= count;
+			const IDX move(_size-index);
+			TYPE* const vectorEnd(_vector+_size);
 			if (move < count) {
 				const IDX del(count-move);
-				_ArrayMoveCopy<true>(vector+index, vectorEnd+del, move);
+				_ArrayMoveCopy<true>(_vector+index, vectorEnd+del, move);
 				_ArrayDestruct(vectorEnd, del);
 			} else {
-				_ArrayMoveCopy<false>(vector+index, vectorEnd, count);
+				_ArrayMoveCopy<false>(_vector+index, vectorEnd, count);
 			}
 		}
 	}
 
 	inline void		RemoveAtMove(IDX index)
 	{
-		ASSERT(index < size);
-		if (index+1 == size) {
+		ASSERT(index < _size);
+		if (index+1 == _size) {
 			RemoveLast();
 		} else {
-			_ArrayDestruct(vector+index, 1);
-			_ArrayMoveConstructFwd(vector+index, vector+index+1, (--size)-index);
+			_ArrayDestruct(_vector+index, 1);
+			_ArrayMoveConstructFwd(_vector+index, _vector+index+1, (--_size)-index);
 		}
 	}
 
 	inline void		RemoveAtMove(IDX index, IDX count)
 	{
-		ASSERT(index+count <= size);
-		if (index+count == size) {
+		ASSERT(index+count <= _size);
+		if (index+count == _size) {
 			RemoveLast(count);
 		} else {
-			_ArrayDestruct(vector+index, count);
-			_ArrayMoveConstructFwd(vector+index, vector+index+count, (size-=count)-index);
+			_ArrayDestruct(_vector+index, count);
+			_ArrayMoveConstructFwd(_vector+index, _vector+index+count, (_size-=count)-index);
 		}
 	}
 
 	inline	void	Empty()
 	{
-		_ArrayDestruct(vector, size);
-		size = 0;
+		_ArrayDestruct(_vector, _size);
+		_size = 0;
 	}
 
 	// same as Empty(), plus free all allocated memory
@@ -1039,7 +1078,7 @@ public:
 
 	// Discard all stored data and initialize it as an empty array.
 	// (note: call this only when you know what you are doing,
-	// you have to deallocate yourself all elements and vector data)
+	// you have to deallocate yourself all elements and _vector data)
 	inline void		Reset()
 	{
 		_Init();
@@ -1048,32 +1087,32 @@ public:
 	// Delete also the pointers (take care to use this function only if the elements are pointers).
 	inline void		EmptyDelete()
 	{
-		while (size)
-			delete vector[--size];
+		while (_size)
+			delete _vector[--_size];
 	}
 
 	// same as EmptyDelete(), plus free all allocated memory
 	inline void		ReleaseDelete()
 	{
 		EmptyDelete();
-		operator delete[] (vector);
-		vector = NULL;
-		vectorSize = 0;
+		operator delete[] (_vector);
+		_vector = NULL;
+		_vectorSize = 0;
 	}
 
 	inline	IDX		GetCapacity() const
 	{
-		return vectorSize;
+		return _vectorSize;
 	}
 
 	inline	IDX		GetSize() const
 	{
-		return size;
+		return _size;
 	}
 
 	inline	bool	IsEmpty() const
 	{
-		return (size == 0);
+		return (_size == 0);
 	}
 
 	static inline unsigned GetConstructType()
@@ -1089,51 +1128,51 @@ protected:
 	// Free all memory.
 	inline	void	_Release()
 	{
-		_ArrayDestruct(vector, size);
-		operator delete[] (vector);
+		_ArrayDestruct(_vector, _size);
+		operator delete[] (_vector);
 	}
 
 	// Initialize array.
 	inline	void	_Init()
 	{
-		vector = NULL;
-		vectorSize = size = 0;
+		_vector = NULL;
+		_vectorSize = _size = 0;
 	}
 
 	// Increase the size of the array at least to the specified amount.
 	inline void		_Grow(IDX newVectorSize)
 	{
-		ASSERT(newVectorSize > vectorSize);
+		ASSERT(newVectorSize > _vectorSize);
 		// grow by 50% or at least to minNewVectorSize
-		const IDX expoVectorSize(vectorSize + (vectorSize>>1));
+		const IDX expoVectorSize(_vectorSize + (_vectorSize>>1));
 		if (newVectorSize < expoVectorSize)
 			newVectorSize = expoVectorSize;
 		// allocate a larger chunk of memory, copy the data and delete the old chunk
-		TYPE* const tmp(vector);
-		vector = (TYPE*) operator new[] (newVectorSize * sizeof(TYPE));
-		_ArrayMoveConstruct<true>(vector, tmp, size);
-		vectorSize = newVectorSize;
+		TYPE* const tmp(_vector);
+		_vector = (TYPE*) operator new[] (newVectorSize * sizeof(TYPE));
+		_ArrayMoveConstruct<true>(_vector, tmp, _size);
+		_vectorSize = newVectorSize;
 		operator delete[] (tmp);
 	}
 
 	// Decrease the size of the array at the specified new size.
 	inline void		_Shrink(IDX newSize)
 	{
-		ASSERT(newSize <= size);
-		_ArrayDestruct(vector+newSize, size-newSize);
-		size = newSize;
+		ASSERT(newSize <= _size);
+		_ArrayDestruct(_vector+newSize, _size-newSize);
+		_size = newSize;
 	}
 	inline void		_ShrinkExact(IDX newSize)
 	{
 		_Shrink(newSize);
-		vectorSize = newSize;
+		_vectorSize = newSize;
 		if (newSize == 0) {
-			operator delete[] (vector);
-			vector = NULL;
+			operator delete[] (_vector);
+			_vector = NULL;
 		} else {
-			TYPE* const tmp(vector);
-			vector = (TYPE*) operator new[] (vectorSize * sizeof(TYPE));
-			_ArrayMoveConstruct<true>(vector, tmp, vectorSize);
+			TYPE* const tmp(_vector);
+			_vector = (TYPE*) operator new[] (_vectorSize * sizeof(TYPE));
+			_ArrayMoveConstruct<true>(_vector, tmp, _vectorSize);
 			operator delete[] (tmp);
 		}
 	}
@@ -1194,11 +1233,11 @@ protected:
 				(src+n)->~TYPE();
 			}
 		} else {
-			const size_t size(sizeof(TYPE)*n);
+			const size_t _size(sizeof(TYPE)*n);
 			if (bRestrict)
-				memcpy(dst, src, size);
+				memcpy(dst, src, _size);
 			else
-				memmove(dst, src, size);
+				memmove(dst, src, _size);
 		}
 	}
 	template <bool bRestrict>
@@ -1211,42 +1250,68 @@ protected:
 				(src+n)->~TYPE();
 			}
 		} else {
-			const size_t size(sizeof(TYPE)*n);
+			const size_t _size(sizeof(TYPE)*n);
 			if (useConstruct == 1)
 				while (n--)
 					(dst+n)->~TYPE();
 			if (bRestrict)
-				memcpy(dst, src, size);
+				memcpy(dst, src, _size);
 			else
-				memmove(dst, src, size);
+				memmove(dst, src, _size);
 		}
 	}
 
 protected:
-	IDX		size;
-	IDX		vectorSize;
-	TYPE*	vector;
+	IDX		_size;
+	IDX		_vectorSize;
+	TYPE*	_vector;
 
 public:
 	static const IDX NO_INDEX;
+
+#if _USE_VECTORINTERFACE != 0
+public:
+	typedef Type value_type;
+	typedef value_type* iterator;
+	typedef const value_type* const_iterator;
+	typedef std::vector<Type> VectorType;
+	inline cList(const VectorType& rList) { CopyOf(&rList[0], rList.size()); }
+	inline bool empty() const { return IsEmpty(); }
+	inline IDX size() const { return GetSize(); }
+	inline IDX capacity() const { return GetCapacity(); }
+	inline void clear() { Empty(); }
+	inline void insert(Type* it, ArgType elem) { InsertAt(it-this->_vector, elem); }
+	inline void push_back(ArgType elem) { Insert(elem); }
+	inline void pop_back() { RemoveLast(); }
+	inline void reserve(IDX newSize) { Reserve(newSize); }
+	inline void resize(IDX newSize) { Resize(newSize); }
+	inline void erase(Type* it) { RemoveAtMove(it-this->_vector); }
+	inline const Type* cdata() const { return GetData(); }
+	inline const Type* cbegin() const { return Begin(); }
+	inline const Type* cend() const { return End(); }
+	inline Type* data() const { return GetData(); }
+	inline Type* begin() const { return Begin(); }
+	inline Type* end() const { return End(); }
+	inline ArgType front() const { return First(); }
+	inline ArgType back() const { return Last(); }
+	inline void swap(cList& rList) { Swap(rList); }
+#endif
 
 #ifdef _USE_BOOST
 protected:
 	// implement BOOST serialization
 	friend class boost::serialization::access;
 	template<class Archive>
-	void save(Archive& ar, const unsigned int /*version*/) const
-	{
-		ar & size;
-		ar & boost::serialization::make_array(vector, size);
+	void save(Archive& ar, const unsigned int /*version*/) const {
+		ar & _size;
+		ar & boost::serialization::make_array(_vector, _size);
 	}
 	template<class Archive>
-	void load(Archive& ar, const unsigned int /*version*/)
-	{
+	void load(Archive& ar, const unsigned int /*version*/) {
 		IDX newSize;
 		ar & newSize;
 		Resize(newSize);
-		ar & boost::serialization::make_array(vector, size);
+		ar & boost::serialization::make_array(_vector, _size);
 	}
 	BOOST_SERIALIZATION_SPLIT_MEMBER()
 #endif
@@ -1255,47 +1320,6 @@ template <typename TYPE, typename ARG_TYPE, int useConstruct, int grow, typename
 const typename cList<TYPE,ARG_TYPE,useConstruct,grow,IDX_TYPE>::IDX
 cList<TYPE,ARG_TYPE,useConstruct,grow,IDX_TYPE>::NO_INDEX(DECLARE_NO_INDEX(IDX));
 /*----------------------------------------------------------------*/
-
-
-template<class VECTOR>
-class cList2vector: public VECTOR {
-public:
-	typedef VECTOR Vector;
-	typedef typename VECTOR::IDX IDX;
-	typedef typename VECTOR::Type Type;
-	typedef typename VECTOR::ArgType ArgType;
-	typedef Type value_type;
-	typedef value_type* iterator;
-	typedef const value_type* const_iterator;
-	typedef std::vector<Type> VectorType;
-	inline cList2vector() {}
-	inline cList2vector(IDX _size) : VECTOR(_size) {}
-	inline cList2vector(IDX _size, ArgType _val) : VECTOR(_size) { VECTOR::MemsetValue(_val); }
-	inline cList2vector(const VECTOR& rList) : VECTOR(rList) {}
-	inline cList2vector(const VectorType& rList) { VECTOR::CopyOf(&rList[0], rList.size()); }
-	inline bool empty() const { return VECTOR::IsEmpty(); }
-	inline size_t size() const { return VECTOR::GetSize(); }
-	inline size_t capacity() const { return VECTOR::GetCapacity(); }
-	inline void clear() { VECTOR::Empty(); }
-	inline void insert(Type* it, ArgType elem) { VECTOR::InsertAt(it-this->vector, elem); }
-	inline void push_back(ArgType elem) { VECTOR::Insert(elem); }
-	inline void pop_back() { VECTOR::RemoveLast(); }
-	inline void reserve(size_t newSize) { VECTOR::Reserve(newSize); }
-	inline void resize(size_t newSize) { VECTOR::Resize(newSize); }
-	inline void erase(Type* it) { VECTOR::RemoveAtMove(it-this->vector); }
-	inline const Type* cdata() const { return VECTOR::GetData(); }
-	inline const Type* cbegin() const { return VECTOR::Begin(); }
-	inline const Type* cend() const { return VECTOR::End(); }
-	inline Type* data() const { return VECTOR::GetData(); }
-	inline Type* begin() const { return VECTOR::Begin(); }
-	inline Type* end() const { return VECTOR::End(); }
-	inline ArgType front() const { return VECTOR::First(); }
-	inline ArgType back() const { return VECTOR::Last(); }
-	inline void swap(VECTOR& list) { VECTOR::Swap(list); }
-};
-#define VECTORINTERFACE(CLIST, var) ((const cList2vector<CLIST>&)(var))
-/*----------------------------------------------------------------*/
-
 
 template <typename IDX_TYPE>
 inline bool ValidIDX(const IDX_TYPE& idx) {
@@ -1422,99 +1446,99 @@ public:
 	typedef unsigned IDX;
 	enum {MAX_SIZE = N};
 
-	inline cListFixed() : size(0) {}
+	inline cListFixed() : _size(0) {}
 	inline void CopyOf(const TYPE* pData, IDX nSize) {
-		memcpy(vector, pData, nSize);
-		size = nSize;
+		memcpy(_vector, pData, nSize);
+		_size = nSize;
 	}
 	inline bool IsEmpty() const {
-		return (size == 0);
+		return (_size == 0);
 	}
 	inline IDX GetSize() const {
-		return size;
+		return _size;
 	}
 	inline const TYPE* Begin() const {
-		return vector;
+		return _vector;
 	}
 	inline TYPE* Begin() {
-		return vector;
+		return _vector;
 	}
 	inline const TYPE* End() const {
-		return vector+size;
+		return _vector+_size;
 	}
 	inline TYPE* End() {
-		return vector+size;
+		return _vector+_size;
 	}
 	inline const TYPE& First() const {
-		ASSERT(size > 0);
-		return vector[0];
+		ASSERT(_size > 0);
+		return _vector[0];
 	}
 	inline TYPE& First() {
-		ASSERT(size > 0);
-		return vector[0];
+		ASSERT(_size > 0);
+		return _vector[0];
 	}
 	inline const TYPE& Last() const {
-		ASSERT(size > 0);
-		return vector[size-1];
+		ASSERT(_size > 0);
+		return _vector[_size-1];
 	}
 	inline TYPE& Last() {
-		ASSERT(size > 0);
-		return vector[size-1];
+		ASSERT(_size > 0);
+		return _vector[_size-1];
 	}
 	inline const TYPE& operator[](IDX index) const {
-		ASSERT(index < size);
-		return vector[index];
+		ASSERT(index < _size);
+		return _vector[index];
 	}
 	inline TYPE& operator[](IDX index) {
-		ASSERT(index < size);
-		return vector[index];
+		ASSERT(index < _size);
+		return _vector[index];
 	}
 	inline TYPE& AddEmpty() {
-		ASSERT(size < N);
-		return vector[size++];
+		ASSERT(_size < N);
+		return _vector[_size++];
 	}
 	inline void InsertAt(IDX index, ArgType elem) {
-		ASSERT(size < N);
-		memmove(vector+index+1, vector+index, sizeof(TYPE)*(size++ - index));
-		vector[index] = elem;
+		ASSERT(_size < N);
+		memmove(_vector+index+1, _vector+index, sizeof(TYPE)*(_size++ - index));
+		_vector[index] = elem;
 	}
 	inline void Insert(ArgType elem) {
-		ASSERT(size < N);
-		vector[size++] = elem;
+		ASSERT(_size < N);
+		_vector[_size++] = elem;
 	}
 	inline void RemoveLast() {
-		ASSERT(size);
-		--size;
+		ASSERT(_size);
+		--_size;
 	}
 	inline void RemoveAt(IDX index) {
-		ASSERT(index < size);
-		if (index+1 == size)
+		ASSERT(index < _size);
+		if (index+1 == _size)
 			RemoveLast();
 		else
-			memcpy(vector+index, vector+(--size), sizeof(TYPE));
+			memcpy(_vector+index, _vector+(--_size), sizeof(TYPE));
 	}
 	inline void Empty() {
-		size = 0;
+		_size = 0;
 	}
 	inline void Sort() {
 		std::sort(Begin(), End());
 	}
 	inline IDX Find(ArgType elem) const
 	{
-		IDX i = size;
+		IDX i = _size;
 		while (i)
-			if (vector[--i] == elem)
+			if (_vector[--i] == elem)
 				return i;
 		return NO_INDEX;
 	}
 	inline IDX FindFirstEqlGreater(ArgType searchedKey) const {
-		if (size == 0) return 0;
-		IDX l1 = 0, l2 = size;
+		if (_size == 0) return 0;
+		IDX l1 = 0, l2 = _size;
 		do {
 			IDX i = (l1 + l2) >> 1;
-			const TYPE& key = vector[i];
+			const TYPE& key = _vector[i];
 			if (key == searchedKey) {
-				while (i-- && vector[i] == searchedKey);
+				while (i-- && _vector[i] == searchedKey);
 				return i+1;
 			}
 			if (key < searchedKey)
@@ -1536,8 +1560,8 @@ public:
 	}
 
 protected:
-	TYPE vector[N];
-	IDX size;
+	TYPE _vector[N];
+	IDX _size;
 
 public:
 	static const IDX NO_INDEX;
@@ -1548,8 +1572,8 @@ protected:
 	friend class boost::serialization::access;
 	template<class Archive>
 	void serialize(Archive& ar, const unsigned int /*version*/) {
-		ar & size;
-		ar & boost::serialization::make_array(vector, size);
+		ar & _size;
+		ar & boost::serialization::make_array(_vector, _size);
 	}
 #endif
 };
