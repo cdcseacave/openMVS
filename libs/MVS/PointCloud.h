@@ -49,6 +49,8 @@ namespace MVS {
 class PointCloud
 {
 public:
+	typedef IDX Index;
+
 	typedef TPoint3<float> Point;
 	typedef SEACAVE::cList<Point,const Point&,2,8192> PointArr;
 
@@ -81,6 +83,8 @@ public:
 	inline bool IsEmpty() const { ASSERT(points.GetSize() == pointViews.GetSize() || pointViews.IsEmpty()); return points.IsEmpty(); }
 	inline bool IsValid() const { ASSERT(points.GetSize() == pointViews.GetSize() || pointViews.IsEmpty()); return !pointViews.IsEmpty(); }
 	inline size_t GetSize() const { ASSERT(points.GetSize() == pointViews.GetSize() || pointViews.IsEmpty()); return points.GetSize(); }
+
+	void RemovePoint(IDX idx);
 
 	bool Load(const String& fileName);
 	bool Save(const String& fileName) const;
