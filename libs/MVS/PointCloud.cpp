@@ -51,6 +51,25 @@ void PointCloud::Release()
 /*----------------------------------------------------------------*/
 
 
+void PointCloud::RemovePoint(IDX idx)
+{
+	ASSERT(pointViews.IsEmpty() || pointViews.GetSize() == points.GetSize());
+	if (!pointViews.IsEmpty())
+		pointViews.RemoveAt(idx);
+	ASSERT(pointWeights.IsEmpty() || pointWeights.GetSize() == points.GetSize());
+	if (!pointWeights.IsEmpty())
+		pointWeights.RemoveAt(idx);
+	ASSERT(normals.IsEmpty() || normals.GetSize() == points.GetSize());
+	if (!normals.IsEmpty())
+		normals.RemoveAt(idx);
+	ASSERT(colors.IsEmpty() || colors.GetSize() == points.GetSize());
+	if (!colors.IsEmpty())
+		colors.RemoveAt(idx);
+	points.RemoveAt(idx);
+}
+/*----------------------------------------------------------------*/
+
+
 // define a PLY file format composed only of vertices
 namespace BasicPLY {
 	typedef PointCloud::Point Point;

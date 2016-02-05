@@ -495,7 +495,8 @@ void lm_lmdif( int m, int n, double *x, double *fvec, double ftol,
                 #endif
                 if (info < 0)
                     return; /* user requested break */
-                for (i = 0; i < m; ++i)
+				step = x[j] - temp; /* due to float point arithmetic errors most of the time this is not equal to step */
+				for (i = 0; i < m; ++i)
                     fjac[j*m+i] = (wa4[i] - fvec[i]) / step;
                 x[j] = temp; /* restore */
             }

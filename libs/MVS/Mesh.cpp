@@ -35,6 +35,10 @@
 #include <boost/graph/adjacency_list.hpp>
 #include <boost/graph/filtered_graph.hpp>
 #include <boost/graph/connected_components.hpp>
+#ifdef _MSC_VER
+#  pragma warning(push)
+#  pragma warning(disable: 4244 4267 4305)
+#endif
 // VCG: mesh reconstruction post-processing
 #define _SILENCE_STDEXT_HASH_DEPRECATION_WARNINGS
 #include <vcg/complex/complex.h>
@@ -49,6 +53,9 @@
 #include <vcg/complex/algorithms/update/selection.h>
 #include <vcg/complex/algorithms/local_optimization.h>
 #include <vcg/complex/algorithms/local_optimization/tri_edge_collapse_quadric.h>
+#ifdef _MSC_VER
+#  pragma warning(pop)
+#endif
 
 using namespace MVS;
 

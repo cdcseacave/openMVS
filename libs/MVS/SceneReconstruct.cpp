@@ -195,16 +195,6 @@ protected:
 // construct the mesh out of the dense point cloud using Delaunay tetrahedralization & graph-cut method
 // see "Exploiting Visibility Information in Surface Reconstruction to Preserve Weakly Supported Surfaces", Jancosek and Pajdla, 2015
 namespace DELAUNAY {
-static const float kQual(4.f);
-static const float kInf((float)(INT_MAX/8));
-
-static const float kf(3.f);
-static const float kb(4.f);
-
-static const float kRel(0.1f); // max 0.3
-static const float kAbs(1000.f); // min 500
-static const float kOutl(400.f); // max 700.f
-
 typedef CGAL::Exact_predicates_inexact_constructions_kernel kernel_t;
 typedef kernel_t::Point_3 point_t;
 typedef kernel_t::Vector_3 vector_t;
@@ -224,35 +214,46 @@ struct view_info_t;
 #endif
 struct vert_info_t {
 	typedef edge_cap_t Type;
-	typedef SEACAVE::cList<uint32_t,uint32_t,0,4,uint32_t> view_vec_t;
+	struct view_t {
+		PointCloud::View idxView; // view index
+		Type weight; // point's weight
+		inline view_t() {}
+		inline view_t(PointCloud::View _idxView, Type _weight) : idxView(_idxView), weight(_weight) {}
+		inline bool operator <(const view_t& v) const { return idxView < v.idxView; }
+		inline operator PointCloud::View() const { return idxView; }
+	};
+	typedef SEACAVE::cList<view_t,const view_t&,0,4,uint32_t> view_vec_t;
 	view_vec_t views; // faces' weight from the cell outwards
 	#ifdef DELAUNAY_WEAKSURF
-	union {
-	#endif
-	Type w; // point's weight
-	#ifdef DELAUNAY_WEAKSURF
 	view_info_t* viewsInfo; // each view caches the two faces from the point towards the camera and the end (used only by the weakly supported surfaces)
-	};
-	inline vert_info_t() : viewsInfo(NULL) { ASSERT(w==0); }
+	inline vert_info_t() : viewsInfo(NULL) {}
 	~vert_info_t();
 	void AllocateInfo();
 	#else
-	inline vert_info_t() : w(0) {}
+	inline vert_info_t() {}
 	#endif
-	void Insert(uint32_t viewID) {
-		// insert viewID in increasing order
-		const uint32_t idx((uint32_t)views.FindFirstEqlGreater(viewID));
-		if (idx < views.GetSize() && views[idx] == viewID) {
-			// the new view is already in the array
-			ASSERT(views.FindFirst(viewID) == idx);
-		} else {
-			// the new view is not in the array,
-			// insert it
-			views.InsertAt(idx, viewID);
-			ASSERT(views.IsSorted());
+	void InsertViews(const PointCloud& pc, PointCloud::Index idxPoint) {
+		const PointCloud::ViewArr& _views = pc.pointViews[idxPoint];
+		ASSERT(!_views.IsEmpty());
+		const PointCloud::WeightArr* pweights(pc.pointWeights.IsEmpty() ? NULL : pc.pointWeights.Begin()+idxPoint);
+		ASSERT(pweights == NULL || _views.GetSize() == pweights->GetSize());
+		FOREACH(i, _views) {
+			const PointCloud::View viewID(_views[i]);
+			const PointCloud::Weight weight(pweights ? (*pweights)[i] : PointCloud::Weight(1));
+			// insert viewID in increasing order
+			const uint32_t idx(views.FindFirstEqlGreater(viewID));
+			if (idx < views.GetSize() && views[idx] == viewID) {
+				// the new view is already in the array
+				ASSERT(views.FindFirst(viewID) == idx);
+				// update point's weight
+				views[idx].weight += weight;
+			} else {
+				// the new view is not in the array,
+				// insert it
+				views.InsertAt(idx, view_t(viewID, weight));
+				ASSERT(views.IsSorted());
+			}
 		}
-		// update point's weight
-		w += 1;
 	}
 };
 
@@ -754,7 +755,11 @@ float computePlaneSphereAngle(const delaunay_t& Tr, const facet_t& facet)
 // Next, the score is computed for all the edges of the directed graph composed of points as vertices.
 // Finally, graph-cut algorithm is used to split the tetrahedrons in inside and outside,
 // and the surface is such extracted.
-bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, unsigned nItersFixNonManifold)
+bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, unsigned nItersFixNonManifold,
+							float kQual, float kb,
+							float kf, float kRel, float kAbs, float kOutl,
+							float kInf
+)
 {
 	using namespace DELAUNAY;
 	ASSERT(!pointcloud.IsEmpty());
@@ -849,12 +854,7 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, unsigne
 				}
 			}
 			// update point visibility info
-			vert_info_t& vi = hint->info();
-			FOREACHPTR(pImageID, views) {
-				ASSERT(images[*pImageID].IsValid());
-				//ASSERT(images[*pImageID].camera.IsInsideProjectionP(CGAL2MVS<REAL>(p), Point2(images[*pImageID].GetSize()))); // due to radial distortion, some points can be slightly outside the image
-				vi.Insert(*pImageID);
-			}
+			hint->info().InsertViews(pointcloud, idx);
 		});
 		pointcloud.Release();
 		// init cells weights and
@@ -932,14 +932,15 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, unsigne
 			vert_info_t& vert(vi->info());
 			if (vert.views.IsEmpty())
 				continue;
-			const edge_cap_t alpha_vis(vert.w);
 			#ifdef DELAUNAY_WEAKSURF
 			vert.AllocateInfo();
 			#endif
 			const point_t& p(vi->point());
 			const Point3f pt(CGAL2MVS<float>(p));
 			FOREACH(v, vert.views) {
-				const uint32_t imageID(vert.views[(vert_info_t::view_vec_t::IDX)v]);
+				const typename vert_info_t::view_t view(vert.views[v]);
+				const uint32_t imageID(view.idxView);
+				const edge_cap_t alpha_vis(view.weight);
 				const Image& imageData = images[imageID];
 				ASSERT(imageData.IsValid());
 				const Camera& camera = imageData.camera;
