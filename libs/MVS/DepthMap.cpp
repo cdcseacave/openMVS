@@ -497,8 +497,7 @@ public:
 	enum { MAX_MODELS = 1 };
 
 	typedef Plane Model;
-	typedef cList<Model> ModelArr;
-	typedef cList2vector<ModelArr> Models;
+	typedef cList<Model> Models;
 
 	PlaneSolverAdaptor(const Point3Arr& points)
 		: points_(points)
