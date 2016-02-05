@@ -903,14 +903,14 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, unsigne
 		TD_TIMER_STARTD();
 
 		// estimate the size of the smallest reconstructible object
-		FloatArr dists(0, delaunay.number_of_edges());
+		FloatArr distsSq(0, delaunay.number_of_edges());
 		for (delaunay_t::Finite_edges_iterator ei=delaunay.finite_edges_begin(), eei=delaunay.finite_edges_end(); ei!=eei; ++ei) {
 			const cell_handle_t& c(ei->first);
-			dists.Insert(normSq(CGAL2MVS<float>(c->vertex(ei->second)->point()) - CGAL2MVS<float>(c->vertex(ei->third)->point())));
+			distsSq.Insert(normSq(CGAL2MVS<float>(c->vertex(ei->second)->point()) - CGAL2MVS<float>(c->vertex(ei->third)->point())));
 		}
-		const float sigma(dists.GetMedian()*2);
+		const float sigma(SQRT(distsSq.GetMedian())*2);
 		const float inv2SigmaSq(0.5f/(sigma*sigma));
-		dists.Release();
+		distsSq.Release();
 
 		intersection_t inter;
 		std::vector<facet_t> facets;
@@ -963,7 +963,7 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, unsigne
 				vert.viewsInfo[v].cell2Cam = inter.facet.first;
 				#endif
 				// find faces intersected by the endpoint-point segment
-				const Point3f endPoint(pt+vecCamPoint*(invLenCamPoint*sigma*kb));
+				const Point3f endPoint(pt+vecCamPoint*(invLenCamPoint*sigma));
 				const segment_t segEndPoint(MVS2CGAL(endPoint), p);
 				const cell_handle_t endCell(delaunay.locate(segEndPoint.source(), vi->cell()));
 				ASSERT(endCell != cell_handle_t());
