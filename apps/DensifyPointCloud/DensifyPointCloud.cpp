@@ -50,6 +50,7 @@ String strMeshFileName;
 String strDenseConfigFileName;
 unsigned nResolutionLevel;
 unsigned nMinResolution;
+unsigned nNumViews;
 unsigned nEstimateColors;
 unsigned nEstimateNormals;
 unsigned nArchiveType;
@@ -93,6 +94,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		("output-file,o", boost::program_options::value<std::string>(&OPT::strOutputFileName), "output filename for storing the dense point-cloud")
 		("resolution-level", boost::program_options::value<unsigned>(&OPT::nResolutionLevel)->default_value(1), "how many times to scale down the images before point cloud computation")
 		("min-resolution", boost::program_options::value<unsigned>(&OPT::nMinResolution)->default_value(640), "do not scale images lower than this resolution")
+		("number-views", boost::program_options::value<unsigned>(&OPT::nNumViews)->default_value(4), "number of views used for depth-map estimation (0 - all neighbor views available)")
 		("estimate-colors", boost::program_options::value<unsigned>(&OPT::nEstimateColors)->default_value(1), "estimate the colors for the dense point-cloud")
 		("estimate-normals", boost::program_options::value<unsigned>(&OPT::nEstimateNormals)->default_value(0), "estimate the colors for the dense point-cloud")
 		;
@@ -160,6 +162,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	OPTDENSE::update();
 	OPTDENSE::nResolutionLevel = OPT::nResolutionLevel;
 	OPTDENSE::nMinResolution = OPT::nMinResolution;
+	OPTDENSE::nNumViews = OPT::nNumViews;
 	OPTDENSE::nEstimateColors = OPT::nEstimateColors;
 	OPTDENSE::nEstimateNormals = OPT::nEstimateNormals;
 	if (!bValidConfig)
