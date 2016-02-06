@@ -1483,7 +1483,6 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateNormal)
 struct DenseDepthMapData {
 	Scene& scene;
 	IndexArr images;
-	IndexArr imagesMap; // maps global view indices to our list of views to be processed
 	IndexArr neighborsMap;
 	DepthMapsData detphMaps;
 	volatile Thread::safe_t idxImage;
@@ -1507,11 +1506,15 @@ bool Scene::DenseReconstruction()
 {
 	DenseDepthMapData data(*this);
 
+	{
+	// maps global view indices to our list of views to be processed
+	IndexArr imagesMap;
+
 	// prepare images for dense reconstruction (load if needed)
 	{
 		TD_TIMER_START();
 		data.images.Reserve(images.GetSize());
-		data.imagesMap.Resize(images.GetSize()); // maps global view indices to our list of views to be processed
+		imagesMap.Resize(images.GetSize());
 		#ifdef DENSE_USE_OPENMP
 		bool bAbort(false);
 		#pragma omp parallel for shared(data, bAbort)
@@ -1529,7 +1532,7 @@ bool Scene::DenseReconstruction()
 				#ifdef DENSE_USE_OPENMP
 				#pragma omp critical
 				#endif
-				data.imagesMap[idxImage] = NO_ID;
+				imagesMap[idxImage] = NO_ID;
 				continue;
 			}
 			// map image index
@@ -1537,7 +1540,7 @@ bool Scene::DenseReconstruction()
 			#pragma omp critical
 			#endif
 			{
-				data.imagesMap[idxImage] = (uint32_t)data.images.GetSize();
+				imagesMap[idxImage] = (uint32_t)data.images.GetSize();
 				data.images.Insert(idxImage);
 			}
 			// reload image at the appropriate resolution
@@ -1572,23 +1575,38 @@ bool Scene::DenseReconstruction()
 	{
 		TD_TIMER_START();
 		// for each image, find all useful neighbor views
+		IndexArr invalidIDs;
 		#ifdef DENSE_USE_OPENMP
-		#pragma omp parallel for shared(data)
+		#pragma omp parallel for shared(data, invalidIDs)
 		for (int_t ID=0; ID<(int_t)data.images.GetSize(); ++ID) {
-			const uint32_t idxImage((uint32_t)ID);
+			const uint32_t idx((uint32_t)ID);
 		#else
-		FOREACH(idxImage, data.images) {
+		FOREACH(idx, data.images) {
 		#endif
+			const uint32_t idxImage(data.images[idx]);
+			ASSERT(imagesMap[idxImage] != NO_ID);
 			DepthData& depthData(data.detphMaps.arrDepthData[idxImage]);
-			data.detphMaps.SelectViews(depthData);
+			if (!data.detphMaps.SelectViews(depthData)) {
+				#ifdef DENSE_USE_OPENMP
+				#pragma omp critical
+				#endif
+				invalidIDs.InsertSort(idx);
+			}
+		}
+		RFOREACH(i, invalidIDs) {
+			const uint32_t idx(invalidIDs[i]);
+			imagesMap[data.images.Last()] = idx;
+			imagesMap[data.images[idx]] = NO_ID;
+			data.images.RemoveAt(idx);
 		}
 		// globally select a target view for each reference image
-		if (OPTDENSE::nNumViews != 0 && !data.detphMaps.SelectViews(data.images, data.imagesMap, data.neighborsMap)) {
+		if (OPTDENSE::nNumViews == 1 && !data.detphMaps.SelectViews(data.images, imagesMap, data.neighborsMap)) {
 			VERBOSE("error: no valid images to be dense reconstructed");
 			return false;
 		}
 		ASSERT(!data.images.IsEmpty());
 		VERBOSE("Selecting images for dense reconstruction completed: %d images (%s)", data.images.GetSize(), TD_TIMER_GET_FMT().c_str());
+	}
 	}
 
 	// initialize the queue of images to be processed
