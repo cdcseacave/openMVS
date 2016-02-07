@@ -602,7 +602,8 @@ int main(int argc, LPCTSTR* argv)
 			image.platformID = map_intrinsic.at(view.second->id_intrinsic);
 			MVS::Platform& platform = scene.platforms[image.platformID];
 			image.cameraID = 0;
-			if (sfm_data.IsPoseAndIntrinsicDefined(view.second.get())) {
+			if (sfm_data.IsPoseAndIntrinsicDefined(view.second.get()) &&
+				File::access(srcImage)) {
 				MVS::Platform::Pose* pPose;
 				#ifdef _USE_OPENMP
 				#pragma omp critical
@@ -717,7 +718,7 @@ int main(int argc, LPCTSTR* argv)
 					// find one image using this camera
 					MVS::Image* pImage(NULL);
 					FOREACHPTR(pImg, scene.images) {
-						if (pImg->platformID == p && pImg->cameraID == c) {
+						if (pImg->platformID == p && pImg->cameraID == c && pImg->poseID != NO_ID) {
 							pImage = pImg;
 							break;
 						}

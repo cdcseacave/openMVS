@@ -342,7 +342,7 @@ bool DepthMapsData::InitViews(DepthData& depthData, uint32_t idxNeighbor, uint32
 	depthData.images.Reserve(depthData.neighbors.GetSize()+1);
 	depthData.images.AddEmpty();
 
-	if (idxNeighbor != NO_ID && numNeighbors < 2) {
+	if (idxNeighbor != NO_ID) {
 		// set target image as the given neighbor
 		const ViewScore& neighbor = depthData.neighbors[idxNeighbor];
 		DepthData::ViewData& imageTrg = depthData.images.AddEmpty();
@@ -356,25 +356,11 @@ bool DepthMapsData::InitViews(DepthData& depthData, uint32_t idxNeighbor, uint32
 	} else {
 		// init all neighbor views too (global reconstruction is used)
 		const float fMinScore(MAXF(depthData.neighbors.First().score*(OPTDENSE::fViewMinScoreRatio*0.1f), OPTDENSE::fViewMinScore));
-		bool bGivenNeighborUsed(numNeighbors == 0);
 		FOREACH(idx, depthData.neighbors) {
 			const ViewScore& neighbor = depthData.neighbors[idx];
-			if (numNeighbors) {
-				if (depthData.images.GetSize() > numNeighbors)
-					break;
-				if (bGivenNeighborUsed) {
-					if (neighbor.score < fMinScore)
-						break;
-				} else {
-					if (idx == idxNeighbor)
-						bGivenNeighborUsed = true;
-					else if (depthData.images.GetSize() == numNeighbors || neighbor.score < fMinScore)
-						continue;
-				}
-			} else {
-				if (neighbor.score < fMinScore)
-					break;
-			}
+			if ((numNeighbors && depthData.images.GetSize() > numNeighbors) ||
+				(neighbor.score < fMinScore))
+				break;
 			DepthData::ViewData& imageTrg = depthData.images.AddEmpty();
 			imageTrg.pImageData = &scene.images[neighbor.idx.ID];
 			imageTrg.scale = neighbor.idx.scale;
