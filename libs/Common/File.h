@@ -13,6 +13,13 @@
 
 #include "Streams.h"
 
+#ifdef _MSC_VER
+#include <io.h>
+#else
+#include <unistd.h>
+#define _taccess access
+#endif
+
 
 // D E F I N E S ///////////////////////////////////////////////////
 
@@ -55,6 +62,13 @@ public:
 		WRITE = GENERIC_WRITE,
 		RW = READ | WRITE
 	} FMACCESS;
+
+	typedef enum FMCHECKACCESS_TYPE {
+		CA_EXIST	= 0, // existence
+		CA_WRITE	= 2, // write
+		CA_READ		= 4, // read
+		CA_RW		= CA_READ | CA_WRITE
+	} FMCHECKACCESS;
 
 	File() : h(INVALID_HANDLE_VALUE) {
 		#ifdef _DEBUG
@@ -321,6 +335,14 @@ public:
 		RW = READ | WRITE,
 	} FMACCESS;
 
+	typedef enum FMCHECKACCESS_TYPE {
+		CA_EXIST	= F_OK, // existence
+		CA_WRITE	= W_OK, // write
+		CA_READ		= R_OK, // read
+		CA_RW		= R_OK | W_OK,
+		CA_EXEC		= X_OK, // execute
+	} FMCHECKACCESS;
+
 	File() : h(-1) {
 		#ifdef _DEBUG
 		breakRead = -1;
@@ -467,6 +489,8 @@ public:
 	}
 
 #endif // _MSC_VER
+
+	static bool access(LPCTSTR aFileName, int mode=CA_EXIST) { return _taccess(aFileName, mode) == 0; }
 
 	template <class VECTOR>
 	inline size_t write(const VECTOR& arr) {
