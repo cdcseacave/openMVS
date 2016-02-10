@@ -77,8 +77,7 @@ svn checkout svn://svn.code.sf.net/p/vcg/code/trunk/vcglib vcglib
 #Ceres (Required)
 sudo apt-get install libatlas-base-dev libsuitesparse-dev
 git clone https://ceres-solver.googlesource.com/ceres-solver ceres-solver
-mkdir ceres_build
-cd ceres_build/
+mkdir ceres_build && cd ceres_build/
 cmake . ../ceres-solver/ -DMINIGLOG=ON -DBUILD_TESTING=OFF -DBUILD_EXAMPLES=OFF
 make
 sudo make install
@@ -87,15 +86,13 @@ cd ..
 #OpenMVG (Optional)
 sudo apt-get install libxxf86vm1 libxxf86vm-dev libxi-dev libxrandr-dev graphviz
 git clone --recursive https://github.com/openMVG/openMVG.git openMVG
-mkdir openMVG_build
-cd openMVG_build
+mkdir openMVG_build && cd openMVG_build
 cmake -DCMAKE_BUILD_TYPE=RELEASE . ../openMVG/src/ -DCMAKE_INSTALL_PREFIX=$main_path/openMVG_build/openMVG_install
 make
 
 #OpenMVS
 git clone https://github.com/cdcseacave/openMVS.git openMVS
-mkdir openMVS_build
-cd openMVS_build
+mkdir openMVS_build && cd openMVS_build
 cmake . ../openMVS -DCMAKE_BUILD_TYPE=Release -DVCG_DIR="$main_path/vcglib" -DOpenCV_CAN_BREAK_BINARY_COMPATIBILITY=OFF
 
 #If you want to use OpenMVS as shared library, add to the cmake command:
