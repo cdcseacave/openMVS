@@ -942,3 +942,123 @@ bool MVS::ExportPointCloud(const String& fileName, const Image& imageData, const
 	return true;
 } // ExportPointCloud
 /*----------------------------------------------------------------*/
+
+
+// compare the estimated and ground-truth depth-maps
+void MVS::CompareDepthMaps(const DepthMap& depthMap, const DepthMap& depthMapGT, uint32_t idxImage, float threshold)
+{
+	TD_TIMER_START();
+	const uint32_t width = (uint32_t)depthMap.width();
+	const uint32_t height = (uint32_t)depthMap.height();
+	// compute depth errors for each pixel
+	cv::resize(depthMapGT, depthMapGT, depthMap.size());
+	unsigned nErrorPixels(0);
+	unsigned nExtraPixels(0);
+	unsigned nMissingPixels(0);
+	FloatArr depths(0, depthMap.area());
+	FloatArr depthsGT(0, depthMap.area());
+	FloatArr errors(0, depthMap.area());
+	for (uint32_t i=0; i<height; ++i) {
+		for (uint32_t j=0; j<width; ++j) {
+			const Depth& depth = depthMap(i,j);
+			const Depth& depthGT = depthMapGT(i,j);
+			if (depth != 0 && depthGT == 0) {
+				++nExtraPixels;
+				continue;
+			}
+			if (depth == 0 && depthGT != 0) {
+				++nMissingPixels;
+				continue;
+			}
+			depths.Insert(depth);
+			depthsGT.Insert(depthGT);
+			const float error(depthGT==0 ? 0 : ABS(depth-depthGT)/depthGT);
+			errors.Insert(error);
+		}
+	}
+	const float fPSNR((float)ComputePSNR(DMatrix32F((int)depths.GetSize(),1,depths.GetData()), DMatrix32F((int)depthsGT.GetSize(),1,depthsGT.GetData())));
+	const MeanStd<float,double> ms(errors.Begin(), errors.GetSize());
+	const float mean((float)ms.GetMean());
+	const float stddev((float)ms.GetStdDev());
+	const std::pair<float,float> th(ComputeX84Threshold<float,float>(errors.Begin(), errors.GetSize()));
+	#if TD_VERBOSE != TD_VERBOSE_OFF
+	IDX idxPixel = 0;
+	Image8U3 errorsVisual(depthMap.size());
+	for (uint32_t i=0; i<height; ++i) {
+		for (uint32_t j=0; j<width; ++j) {
+			Pixel8U& pix = errorsVisual(i,j);
+			const Depth& depth = depthMap(i,j);
+			const Depth& depthGT = depthMapGT(i,j);
+			if (depth != 0 && depthGT == 0) {
+				pix = Pixel8U::GREEN;
+				continue;
+			}
+			if (depth == 0 && depthGT != 0) {
+				pix = Pixel8U::BLUE;
+				continue;
+			}
+			const float error = errors[idxPixel++];
+			if (depth == 0 && depthGT == 0) {
+				pix = Pixel8U::BLACK;
+				continue;
+			}
+			if (error > threshold) {
+				pix = Pixel8U::RED;
+				++nErrorPixels;
+				continue;
+			}
+			const uint8_t gray((uint8_t)CLAMP((1.f-SAFEDIVIDE(ABS(error), threshold))*255.f, 0.f, 255.f));
+			pix = Pixel8U(gray, gray, gray);
+		}
+	}
+	errorsVisual.Save(ComposeDepthFilePath(idxImage, "errors.png"));
+	#endif
+	VERBOSE("Depth-maps compared for image % 3u: %.4f PSNR; %g median %g mean %g stddev error; %u (%.2f%%%%) error %u (%.2f%%%%) missing %u (%.2f%%%%) extra pixels (%s)",
+		idxImage,
+		fPSNR,
+		th.first, mean, stddev,
+		nErrorPixels, (float)nErrorPixels*100.f/depthMap.area(),
+		nMissingPixels, (float)nMissingPixels*100.f/depthMap.area(),
+		nExtraPixels, (float)nExtraPixels*100.f/depthMap.area(),
+		TD_TIMER_GET_FMT().c_str()
+	);
+}
+
+// compare the estimated and ground-truth normal-maps
+void MVS::CompareNormalMaps(const NormalMap& normalMap, const NormalMap& normalMapGT, uint32_t idxImage)
+{
+	TD_TIMER_START();
+	// load normal data
+	const uint32_t width = (uint32_t)normalMap.width();
+	const uint32_t height = (uint32_t)normalMap.height();
+	// compute normal errors for each pixel
+	cv::resize(normalMapGT, normalMapGT, normalMap.size());
+	FloatArr errors(0, normalMap.area());
+	for (uint32_t i=0; i<height; ++i) {
+		for (uint32_t j=0; j<width; ++j) {
+			const Normal& normal = normalMap(i,j);
+			const Normal& normalGT = normalMapGT(i,j);
+			if (normal != Normal::ZERO && normalGT == Normal::ZERO)
+				continue;
+			if (normal == Normal::ZERO && normalGT != Normal::ZERO)
+				continue;
+			if (normal == Normal::ZERO && normalGT == Normal::ZERO) {
+				errors.Insert(0.f);
+				continue;
+			}
+			ASSERT(ISEQUAL(norm(normal),1.f) && ISEQUAL(norm(normalGT),1.f));
+			const float error(FR2D(ACOS(CLAMP(normal.dot(normalGT), -1.f, 1.f))));
+			errors.Insert(error);
+		}
+	}
+	const MeanStd<float,double> ms(errors.Begin(), errors.GetSize());
+	const float mean((float)ms.GetMean());
+	const float stddev((float)ms.GetStdDev());
+	const std::pair<float,float> th(ComputeX84Threshold<float,float>(errors.Begin(), errors.GetSize()));
+	VERBOSE("Normal-maps compared for image % 3u: %.2f median %.2f mean %.2f stddev error° (%s)",
+		idxImage,
+		th.first, mean, stddev,
+		TD_TIMER_GET_FMT().c_str()
+	);
+}
+/*----------------------------------------------------------------*/

@@ -1443,7 +1443,7 @@ FORCEINLINE SEACAVE::TColor<TYPE> operator/(TYPEM n, const SEACAVE::TColor<TYPE>
 
 // Informative template class for OpenCV "scalars"
 #define DEFINE_GENERIC_CVDATATYPE(tp,ctp) namespace cv { \
-template<> class DataType<tp> { \
+template<> class DataType< tp > { \
 public: \
 	typedef tp value_type; \
 	typedef value_type work_type; \
@@ -1460,11 +1460,11 @@ public: \
 #define DEFINE_CVDATATYPE(tp) DEFINE_GENERIC_CVDATATYPE(tp,tp::Type)
 
 #define DEFINE_GENERIC_CVDATADEPTH(tp,ctp) namespace cv { \
-template<> class DataDepth<tp> { \
+template<> class DataDepth< tp > { \
 public: \
 	enum { \
-		value = DataDepth<ctp>::value, \
-		fmt = DataDepth<ctp>::fmt \
+		value = DataDepth< ctp >::value, \
+		fmt = DataDepth< ctp >::fmt \
 	}; \
 }; }
 #define DEFINE_CVDATADEPTH(tp) DEFINE_GENERIC_CVDATADEPTH(tp,tp::Type)
@@ -2551,6 +2551,63 @@ void TImage<TYPE>::DilateMean(TImage<TYPE>& dst, const TYPE& invalid) const
 template <typename TYPE>
 bool TImage<TYPE>::Load(const String& fileName)
 {
+	if (Util::getFileExt(fileName).ToLower() == ".pfm") {
+		if (Base::depth() != CV_32F)
+			return false;
+		File fImage(fileName, File::READ, File::OPEN);
+		if (!fImage.isOpen())
+			return false;
+		ASSERT(sizeof(float) == 4);
+		int i;
+		char buffer[128];
+		// check header
+		for (i=0; i<4; ++i) {
+			if (fImage.read(buffer+i, 1) != 1)
+				return false;
+			if (buffer[i] == '\n')
+				break;
+		}
+		if (buffer[0] != 'P' || buffer[1] != 'f' || buffer[i] != '\n')
+			return false;
+		// read resolution
+		int w, h;
+		for (i=0; i<127; ++i) {
+			if (fImage.read(buffer+i, 1) != 1)
+				return false;
+			if (buffer[i] == '\n')
+				break;
+		}
+		buffer[i] = 0;
+		if (sscanf(buffer, "%d %d", &w, &h) != 2)
+			return false;
+		// read number of channels
+		double sc;
+		for (i=0; i<127; ++i) {
+			if (fImage.read(buffer+i, 1) != 1)
+				return false;
+			if (buffer[i] == '\n')
+				break;
+		}
+		buffer[i] = 0;
+		if (sscanf(buffer, "%lf", &sc) != 1)
+			return false;
+		const bool bLittleEndian(sc < 0);
+		#if __BYTE_ORDER == __LITTLE_ENDIAN
+		ASSERT(bLittleEndian);
+		#else
+		ASSERT(!bLittleEndian);
+		#endif
+		const int nChannels(bLittleEndian ? -((int)sc) : (int)sc);
+		if (nChannels != Base::channels())
+			return false;
+		Base::create(h, w);
+		ASSERT(sizeof(float)*Base::channels() == Base::step.p[1]);
+		const size_t rowbytes((size_t)Base::size.p[1]*Base::step.p[1]);
+		for (int i=0; i<rows; ++i)
+			if (fImage.read(cv::Mat::template ptr<float>(i), rowbytes) != rowbytes)
+				return false;
+		return true;
+	}
 	cv::Mat img(cv::imread(fileName, CV_LOAD_IMAGE_UNCHANGED));
 	if (img.empty()) {
 		VERBOSE("error: loading image '%s'", fileName.c_str());

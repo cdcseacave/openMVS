@@ -369,6 +369,9 @@ bool ExportDepthMap(const String& fileName, const DepthMap& depthMap, Depth minD
 bool ExportNormalMap(const String& fileName, const NormalMap& normalMap);
 bool ExportConfidenceMap(const String& fileName, const ConfidenceMap& confMap);
 bool ExportPointCloud(const String& fileName, const Image&, const DepthMap&, const NormalMap&);
+
+void CompareDepthMaps(const DepthMap& depthMap, const DepthMap& depthMapGT, uint32_t idxImage, float threshold=0.01f);
+void CompareNormalMaps(const NormalMap& normalMap, const NormalMap& normalMapGT, uint32_t idxImage);
 /*----------------------------------------------------------------*/
 
 } // namespace MVS
