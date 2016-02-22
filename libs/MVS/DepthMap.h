@@ -62,6 +62,7 @@ extern unsigned nMinResolution;
 extern unsigned nResolutionLevel;
 extern unsigned nMinViews;
 extern unsigned nMaxViews;
+extern unsigned nMinViewsFuse;
 extern unsigned nMinViewsFilter;
 extern unsigned nMinViewsFilterAdjust;
 extern unsigned nMinViewsTrustPoint;

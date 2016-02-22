@@ -1313,6 +1313,7 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateNormal)
 	connections.Sort();
 
 	// fuse all depth-maps, processing the best connected images first
+	const unsigned nMinViewsFuse(MINF(OPTDENSE::nMinViewsFuse, scene.images.GetSize()));
 	size_t nDepths(0);
 	typedef TImage<cuint32_t> DepthIndex;
 	typedef SEACAVE::cList<DepthIndex,const DepthIndex&,1> DepthIndexArr;
@@ -1402,7 +1403,7 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateNormal)
 						depthB = 0;
 					}
 				}
-				if (views.GetSize() < 2) {
+				if (views.GetSize() < nMinViewsFuse) {
 					// remove point
 					FOREACH(v, views) {
 						const ImageRef x(pointProjs[v].GetCoord());
