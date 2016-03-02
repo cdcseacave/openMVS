@@ -490,7 +490,7 @@ public:
 
 #endif // _MSC_VER
 
-	static bool access(LPCTSTR aFileName, int mode=CA_EXIST) { return _taccess(aFileName, mode) == 0; }
+	static bool access(LPCTSTR aFileName, int mode=CA_EXIST) { return ::_taccess(aFileName, mode) == 0; }
 
 	template <class VECTOR>
 	inline size_t write(const VECTOR& arr) {
