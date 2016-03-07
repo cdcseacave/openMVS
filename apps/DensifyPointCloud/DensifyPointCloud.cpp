@@ -96,7 +96,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		("min-resolution", boost::program_options::value<unsigned>(&OPT::nMinResolution)->default_value(640), "do not scale images lower than this resolution")
 		("number-views", boost::program_options::value<unsigned>(&OPT::nNumViews)->default_value(4), "number of views used for depth-map estimation (0 - all neighbor views available)")
 		("estimate-colors", boost::program_options::value<unsigned>(&OPT::nEstimateColors)->default_value(1), "estimate the colors for the dense point-cloud")
-		("estimate-normals", boost::program_options::value<unsigned>(&OPT::nEstimateNormals)->default_value(0), "estimate the colors for the dense point-cloud")
+		("estimate-normals", boost::program_options::value<unsigned>(&OPT::nEstimateNormals)->default_value(0), "estimate the normals for the dense point-cloud")
 		;
 
 	// hidden options, allowed both on command line and
