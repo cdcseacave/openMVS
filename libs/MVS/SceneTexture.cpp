@@ -898,6 +898,10 @@ void MeshTexture::FaceViewSelection(float fOutlierThreshold, float fRatioDataSmo
 		};
 		Graph graph;
 		{
+			FOREACH(idxFace, faces) {
+				const Mesh::FIndex idx((Mesh::FIndex)boost::add_vertex(graph));
+				ASSERT(idx == idxFace);
+			}
 			Mesh::FaceIdxArr afaces;
 			FOREACH(idxFace, faces) {
 				scene.mesh.GetFaceFaces(idxFace, afaces);
@@ -917,6 +921,7 @@ void MeshTexture::FaceViewSelection(float fOutlierThreshold, float fRatioDataSmo
 				}
 				afaces.Empty();
 			}
+			ASSERT((Mesh::FIndex)boost::num_vertices(graph) == faces.GetSize());
 		}
 
 		// assign the best view to each face
