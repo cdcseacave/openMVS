@@ -89,8 +89,10 @@ sudo apt-get install libxxf86vm1 libxxf86vm-dev libxi-dev libxrandr-dev graphviz
 git clone --recursive https://github.com/openMVG/openMVG.git openMVG
 mkdir openMVG_build
 cd openMVG_build
-cmake -DCMAKE_BUILD_TYPE=RELEASE . ../openMVG/src/ -DCMAKE_INSTALL_PREFIX=$main_path/openMVG_install
+cmake -DCMAKE_BUILD_TYPE=RELEASE . ../openMVG/src/ -DCMAKE_INSTALL_PREFIX=$main_path/openMVG_build/openMVG_install
 make
+make install
+cd ..
 
 #OpenMVS
 git clone https://github.com/cdcseacave/openMVS.git openMVS
