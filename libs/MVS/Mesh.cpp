@@ -3363,6 +3363,22 @@ void Mesh::RemoveVertices(VertexIdxArr& vertexRemove, bool bUpdateLists)
 /*----------------------------------------------------------------*/
 
 
+// project mesh to the given camera plane
+void Mesh::Project(const Camera& camera, DepthMap& depthMap) const
+{
+	struct RasterMesh : TRasterMesh<RasterMesh> {
+		typedef TRasterMesh<RasterMesh> Base;
+		RasterMesh(const VertexArr& _vertices, const Camera& _camera, DepthMap& _depthMap)
+			: Base(_vertices, _camera, _depthMap) {}
+	};
+	RasterMesh rasterer(vertices, camera, depthMap);
+	rasterer.Clear();
+	for (const Face& facet: faces)
+		rasterer.Project(facet);
+}
+/*----------------------------------------------------------------*/
+
+
 #ifdef _USE_CUDA
 CUDA::KernelRT Mesh::kernelComputeFaceNormal;
 

@@ -31,7 +31,10 @@
 
 #include "Common.h"
 #include "Scene.h"
+#pragma push_macro("_USE_BOOST")
+#undef _USE_BOOST
 #include "Interface.h"
+#pragma pop_macro("_USE_BOOST")
 
 using namespace MVS;
 
