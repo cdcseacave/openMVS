@@ -147,6 +147,7 @@ public:
 	}
 
 	void Project(const Camera& camera, DepthMap& depthMap) const;
+	void Project(const Camera& camera, DepthMap& depthMap, Image8U3& image) const;
 
 	// file IO
 	bool Load(const String& fileName);

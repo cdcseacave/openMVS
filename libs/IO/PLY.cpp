@@ -1298,7 +1298,7 @@ char** PLY::get_words(STRISTREAM& sfp, int *nwords, char **orig_line)
 
 	int max_words = 10;
 	int num_words = 0;
-	char *ptr,*ptr2;
+	char *ptr, *ptr2;
 
 	char **words = (char **)malloc(sizeof (char *) * max_words);
 
@@ -1316,21 +1316,23 @@ char** PLY::get_words(STRISTREAM& sfp, int *nwords, char **orig_line)
 	/*  null character at the end of the string) */
 	if (str[len-1] == '\r')
 		--len;
-	str[len] = ' ';
-	str[len+1] = '\0';
+	str[len] = '\n';
 
-	for (ptr = str, ptr2 = str_copy; *ptr != '\0'; ptr++, ptr2++) {
-		*ptr2 = *ptr;
-		if (*ptr == '\t') {
+	for (ptr = str, ptr2 = str_copy; ; ptr++, ptr2++) {
+		switch (*ptr) {
+		case '\t':
 			*ptr = ' ';
 			*ptr2 = ' ';
-		}
-		else if (*ptr == '\n') {
-			*ptr = ' ';
-			*ptr2 = '\0';
 			break;
+		case '\n':
+			*ptr = ' ';
+			*(ptr+1) = *ptr2 = '\0';
+			goto EXIT_LOOP;
+		default:
+			*ptr2 = *ptr;
 		}
 	}
+	EXIT_LOOP:
 
 	/* find the words in the line */
 	ptr = str;
