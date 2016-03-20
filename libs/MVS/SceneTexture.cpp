@@ -153,16 +153,20 @@ struct MeshTexture {
 
 	// used to render the surface to a view camera
 	typedef TImage<cuint32_t> FaceMap;
-	struct RasterMeshData {
-		const Camera& P;
+	struct RasterMesh : TRasterMesh<RasterMesh> {
+		typedef TRasterMesh<RasterMesh> Base;
 		FaceMap& faceMap;
-		DepthMap& depthMap;
-		Point3 normalPlane;
 		FIndex idxFace;
-		inline void operator()(const ImageRef& pt) {
+		RasterMesh(const Mesh::VertexArr& _vertices, const Camera& _camera, DepthMap& _depthMap, FaceMap& _faceMap)
+			: Base(_vertices, _camera, _depthMap), faceMap(_faceMap) {}
+		void Clear() {
+			Base::Clear();
+			faceMap.memset((uint8_t)NO_ID);
+		}
+		void Raster(const ImageRef& pt) {
 			if (!depthMap.isInside(pt))
 				return;
-			const float z((float)INVERT(normalPlane.dot(P.TransformPointI2C(Point2(pt)))));
+			const float z((float)INVERT(normalPlane.dot(camera.TransformPointI2C(Point2(pt)))));
 			ASSERT(z > 0);
 			Depth& depth = depthMap(pt);
 			if (depth == 0 || depth > z) {
@@ -578,7 +582,6 @@ void MeshTexture::ListCameraFaces(FaceDataViewArr& facesDatas, float fOutlierThr
 	typedef CLISTDEF0IDX(uint32_t,FIndex) AreaArr;
 	AreaArr areas(faces.GetSize());
 	#endif
-	Point3 ptc[3]; Point2f pti[3];
 	FOREACH(idxView, images) {
 		const Image& imageData = images[idxView];
 		if (!imageData.IsValid())
@@ -589,45 +592,14 @@ void MeshTexture::ListCameraFaces(FaceDataViewArr& facesDatas, float fOutlierThr
 		const Frustum frustum(Frustum::MATRIX3x4(((PMatrix::CEMatMap)imageData.camera.P).cast<float>()), (float)imageData.width, (float)imageData.height);
 		octree.Traverse(frustum, inserter);
 		// project all triangles in this view and keep the closest ones
-		const Camera& camera = imageData.camera;
 		faceMap.create(imageData.height, imageData.width);
-		faceMap.memset((uint8_t)NO_ID);
 		depthMap.create(imageData.height, imageData.width);
-		depthMap.memset(0);
-		RasterMeshData data = {camera, faceMap, depthMap};
+		RasterMesh rasterer(vertices, imageData.camera, depthMap, faceMap);
+		rasterer.Clear();
 		for (auto idxFace : cameraFaces) {
 			const Face& facet = faces[idxFace];
-			for (unsigned v=0; v<3; ++v) {
-				const Vertex& pt = vertices[facet[v]];
-				ptc[v] = camera.TransformPointW2C(Cast<REAL>(pt));
-				pti[v] = camera.TransformPointC2I(ptc[v]);
-				// skip face if not completely inside
-				if (!depthMap.isInsideWithBorder<float,3>(pti[v]))
-					goto CONTIUE2NEXTFACE;
-			}
-			{
-			// compute the face center, which is also the view to face vector
-			// (cause the face is in camera view space)
-			const Point3 faceCenter((ptc[0]+ptc[1]+ptc[2])/3);
-			// skip face if the (cos) angle between
-			// the view to face vector and the view direction is negative
-			if (faceCenter.z <= 0)
-				continue;
-			// compute the plane defined by the 3 points
-			const Point3 edge1(ptc[1]-ptc[0]);
-			const Point3 edge2(ptc[2]-ptc[0]);
-			data.normalPlane = edge1.cross(edge2);
-			// skip face if the (cos) angle between
-			// the face normal and the face to view vector is negative
-			if (faceCenter.dot(data.normalPlane) > 0)
-				continue;
-			// prepare vector used to compute the depth during rendering
-			data.normalPlane *= INVERT(data.normalPlane.dot(ptc[0]));
-			// draw triangle and for each pixel compute depth as the ray intersection with the plane
-			data.idxFace = idxFace;
-			Image8U3::RasterizeTriangle(pti[0], pti[1], pti[2], data);
-			}
-			CONTIUE2NEXTFACE:;
+			rasterer.idxFace = idxFace;
+			rasterer.Project(facet);
 		}
 		// compute the projection area of visible faces
 		const View& view = views[idxView];
@@ -898,6 +870,10 @@ void MeshTexture::FaceViewSelection(float fOutlierThreshold, float fRatioDataSmo
 		};
 		Graph graph;
 		{
+			FOREACH(idxFace, faces) {
+				const Mesh::FIndex idx((Mesh::FIndex)boost::add_vertex(graph));
+				ASSERT(idx == idxFace);
+			}
 			Mesh::FaceIdxArr afaces;
 			FOREACH(idxFace, faces) {
 				scene.mesh.GetFaceFaces(idxFace, afaces);
@@ -917,6 +893,7 @@ void MeshTexture::FaceViewSelection(float fOutlierThreshold, float fRatioDataSmo
 				}
 				afaces.Empty();
 			}
+			ASSERT((Mesh::FIndex)boost::num_vertices(graph) == faces.GetSize());
 		}
 
 		// assign the best view to each face

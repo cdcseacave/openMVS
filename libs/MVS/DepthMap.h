@@ -62,6 +62,7 @@ extern unsigned nMinResolution;
 extern unsigned nResolutionLevel;
 extern unsigned nMinViews;
 extern unsigned nMaxViews;
+extern unsigned nMinViewsFuse;
 extern unsigned nMinViewsFilter;
 extern unsigned nMinViewsFilterAdjust;
 extern unsigned nMinViewsTrustPoint;
@@ -95,18 +96,6 @@ extern float fRandomSmoothDepth;
 extern float fRandomSmoothNormal;
 extern float fRandomSmoothBonus;
 } // namespace OPTDENSE
-/*----------------------------------------------------------------*/
-
-
-typedef float Depth;
-typedef Point3f Normal;
-typedef TImage<Depth> DepthMap;
-typedef TImage<Normal> NormalMap;
-typedef TImage<float> ConfidenceMap;
-typedef SEACAVE::cList<Depth,Depth,0> DepthArr;
-typedef SEACAVE::cList<DepthMap,const DepthMap&,2> DepthMapArr;
-typedef SEACAVE::cList<NormalMap,const NormalMap&,2> NormalMapArr;
-typedef SEACAVE::cList<ConfidenceMap,const ConfidenceMap&,2> ConfidenceMapArr;
 /*----------------------------------------------------------------*/
 
 
@@ -369,6 +358,9 @@ bool ExportDepthMap(const String& fileName, const DepthMap& depthMap, Depth minD
 bool ExportNormalMap(const String& fileName, const NormalMap& normalMap);
 bool ExportConfidenceMap(const String& fileName, const ConfidenceMap& confMap);
 bool ExportPointCloud(const String& fileName, const Image&, const DepthMap&, const NormalMap&);
+
+void CompareDepthMaps(const DepthMap& depthMap, const DepthMap& depthMapGT, uint32_t idxImage, float threshold=0.01f);
+void CompareNormalMaps(const NormalMap& normalMap, const NormalMap& normalMapGT, uint32_t idxImage);
 /*----------------------------------------------------------------*/
 
 } // namespace MVS

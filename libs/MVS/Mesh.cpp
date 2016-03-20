@@ -75,6 +75,7 @@ void Mesh::Release()
 void Mesh::ReleaseExtra()
 {
 	vertexNormals.Release();
+	vertexVertices.Release();
 	vertexFaces.Release();
 	vertexBoundary.Release();
 	faceNormals.Release();
@@ -84,6 +85,7 @@ void Mesh::ReleaseExtra()
 void Mesh::EmptyExtra()
 {
 	vertexNormals.Empty();
+	vertexVertices.Empty();
 	vertexFaces.Empty();
 	vertexBoundary.Empty();
 	faceNormals.Empty();
@@ -1281,7 +1283,6 @@ bool Mesh::LoadPLY(const String& fileName)
 	}
 
 	// read PLY body
-	BasicPLY::Face face;
 	for (int i = 0; i < (int)ply.elems.size(); i++) {
 		int elem_count;
 		LPCSTR elem_name = ply.setup_element_read(i, &elem_count);
@@ -1295,15 +1296,48 @@ bool Mesh::LoadPLY(const String& fileName)
 		} else
 		if (PLY::equal_strings(BasicPLY::elem_names[1], elem_name)) {
 			ASSERT(faces.GetSize() == (FIndex)elem_count);
-			ply.setup_property(BasicPLY::face_props[0]);
-			FOREACHPTR(pFace, faces) {
-				ply.get_element(&face);
-				if (face.num != 3) {
-					DEBUG_EXTRA("error: unsupported mesh file (face not triangle)");
-					return false;
+			if (ply.find_property(ply.elems[i], BasicPLY::face_tex_props[1].name.c_str()) == -1) {
+				// load vertex indices
+				BasicPLY::Face face;
+				ply.setup_property(BasicPLY::face_props[0]);
+				FOREACHPTR(pFace, faces) {
+					ply.get_element(&face);
+					if (face.num != 3) {
+						DEBUG_EXTRA("error: unsupported mesh file (face not triangle)");
+						return false;
+					}
+					memcpy(pFace, face.pFace, sizeof(VIndex)*3);
+					delete[] face.pFace;
 				}
-				memcpy(pFace, face.pFace, sizeof(VIndex)*3);
-				delete[] face.pFace;
+			} else {
+				// load vertex indices and texture coordinates
+				faceTexcoords.Resize((FIndex)elem_count*3);
+				BasicPLY::FaceTex face;
+				ply.setup_property(BasicPLY::face_tex_props[0]);
+				ply.setup_property(BasicPLY::face_tex_props[1]);
+				FOREACH(f, faces) {
+					ply.get_element(&face);
+					if (face.face.num != 3) {
+						DEBUG_EXTRA("error: unsupported mesh file (face not triangle)");
+						return false;
+					}
+					memcpy(faces.Begin()+f, face.face.pFace, sizeof(VIndex)*3);
+					delete[] face.face.pFace;
+					if (face.tex.num != 6) {
+						DEBUG_EXTRA("error: unsupported mesh file (texture coordinates not per face vertex)");
+						return false;
+					}
+					memcpy(faceTexcoords.Begin()+f*3, face.tex.pTex, sizeof(TexCoord)*3);
+					delete[] face.tex.pTex;
+				}
+				// load the texture
+				for (const std::string& comment: ply.get_comments()) {
+					if (_tcsncmp(comment.c_str(), _T("TextureFile "), 12) == 0) {
+						const String textureFileName(comment.substr(12));
+						textureDiffuse.Load(Util::getFilePath(fileName)+textureFileName);
+						break;
+					}
+				}
 			}
 		} else {
 			ply.get_other_element();
@@ -3359,6 +3393,63 @@ void Mesh::RemoveVertices(VertexIdxArr& vertexRemove, bool bUpdateLists)
 		idxLast = idxV;
 	}
 	RemoveFaces(facesRemove);
+}
+/*----------------------------------------------------------------*/
+
+
+// project mesh to the given camera plane
+void Mesh::Project(const Camera& camera, DepthMap& depthMap) const
+{
+	struct RasterMesh : TRasterMesh<RasterMesh> {
+		typedef TRasterMesh<RasterMesh> Base;
+		RasterMesh(const VertexArr& _vertices, const Camera& _camera, DepthMap& _depthMap)
+			: Base(_vertices, _camera, _depthMap) {}
+	};
+	RasterMesh rasterer(vertices, camera, depthMap);
+	rasterer.Clear();
+	for (const Face& facet: faces)
+		rasterer.Project(facet);
+}
+void Mesh::Project(const Camera& camera, DepthMap& depthMap, Image8U3& image) const
+{
+	ASSERT(!faceTexcoords.IsEmpty() && !textureDiffuse.empty());
+	struct RasterMesh : TRasterMesh<RasterMesh> {
+		typedef TRasterMesh<RasterMesh> Base;
+		const Mesh& mesh;
+		Image8U3& image;
+		FIndex idxFaceTex;
+		TexCoord xt;
+		RasterMesh(const Mesh& _mesh, const Camera& _camera, DepthMap& _depthMap, Image8U3& _image)
+			: Base(_mesh.vertices, _camera, _depthMap), mesh(_mesh), image(_image) {}
+		void Clear() {
+			Base::Clear();
+			image.memset(0);
+		}
+		void Raster(const ImageRef& pt) {
+			if (!depthMap.isInsideWithBorder<int,4>(pt))
+				return;
+			const float z((float)INVERT(normalPlane.dot(camera.TransformPointI2C(Point2(pt)))));
+			ASSERT(z > 0);
+			Depth& depth = depthMap(pt);
+			if (depth == 0 || depth > z) {
+				depth = z;
+				const Point3f b(CorrectBarycentricCoordinates(BarycentricCoordinatesUV(pti[0], pti[1], pti[2], Point2f(pt))));
+				xt  = mesh.faceTexcoords[idxFaceTex+0] * b[0];
+				xt += mesh.faceTexcoords[idxFaceTex+1] * b[1];
+				xt += mesh.faceTexcoords[idxFaceTex+2] * b[2];
+				image(pt) = mesh.textureDiffuse.sampleSafe(Point2f(xt.x*mesh.textureDiffuse.width(), (1.f-xt.y)*mesh.textureDiffuse.height()));
+			}
+		}
+	};
+	if (image.size() != depthMap.size())
+		image.create(depthMap.size());
+	RasterMesh rasterer(*this, camera, depthMap, image);
+	rasterer.Clear();
+	FOREACH(idxFace, faces) {
+		const Face& facet = faces[idxFace];
+		rasterer.idxFaceTex = idxFace*3;
+		rasterer.Project(facet);
+	}
 }
 /*----------------------------------------------------------------*/
 

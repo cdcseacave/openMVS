@@ -103,6 +103,18 @@ public:
 };
 /*----------------------------------------------------------------*/
 
+
+typedef float Depth;
+typedef Point3f Normal;
+typedef TImage<Depth> DepthMap;
+typedef TImage<Normal> NormalMap;
+typedef TImage<float> ConfidenceMap;
+typedef SEACAVE::cList<Depth,Depth,0> DepthArr;
+typedef SEACAVE::cList<DepthMap,const DepthMap&,2> DepthMapArr;
+typedef SEACAVE::cList<NormalMap,const NormalMap&,2> NormalMapArr;
+typedef SEACAVE::cList<ConfidenceMap,const ConfidenceMap&,2> ConfidenceMapArr;
+/*----------------------------------------------------------------*/
+
 } // namespace MVS
 
 #endif // _MVS_POINTCLOUD_H_

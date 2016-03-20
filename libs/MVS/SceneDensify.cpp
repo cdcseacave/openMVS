@@ -1313,6 +1313,8 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateNormal)
 	connections.Sort();
 
 	// fuse all depth-maps, processing the best connected images first
+	const unsigned nMinViewsFuse(MINF(OPTDENSE::nMinViewsFuse, scene.images.GetSize()));
+	CLISTDEF0(Depth*) invalidDepths(0, 32);
 	size_t nDepths(0);
 	typedef TImage<cuint32_t> DepthIndex;
 	typedef SEACAVE::cList<DepthIndex,const DepthIndex&,1> DepthIndexArr;
@@ -1326,7 +1328,7 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateNormal)
 	FOREACHPTR(pConnection, connections) {
 		TD_TIMER_STARTD();
 		const uint32_t idxImage(pConnection->idx);
-		DepthData& depthData(arrDepthData[idxImage]);
+		const DepthData& depthData(arrDepthData[idxImage]);
 		ASSERT(!depthData.images.IsEmpty() && !depthData.neighbors.IsEmpty());
 		FOREACHPTR(pNeighbor, depthData.neighbors) {
 			const Image& imageData = scene.images[pNeighbor->idx.ID];
@@ -1370,6 +1372,7 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateNormal)
 				// check the projection in the neighbor depth-maps
 				REAL confidence(weights.First());
 				Point3 X(point*confidence);
+				invalidDepths.Empty();
 				FOREACHPTR(pNeighbor, depthData.neighbors) {
 					const uint32_t idxImageB(pNeighbor->idx.ID);
 					const Image& imageDataB = scene.images[idxImageB];
@@ -1399,10 +1402,10 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateNormal)
 					} else
 					if (d < depthB) {
 						// discard depth
-						depthB = 0;
+						invalidDepths.Insert(&depthB);
 					}
 				}
-				if (views.GetSize() < 2) {
+				if (views.GetSize() < nMinViewsFuse) {
 					// remove point
 					FOREACH(v, views) {
 						const ImageRef x(pointProjs[v].GetCoord());
@@ -1413,6 +1416,11 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateNormal)
 					pointcloud.pointWeights.RemoveLast();
 					pointcloud.pointViews.RemoveLast();
 					pointcloud.points.RemoveLast();
+				} else {
+					// this point is valid,
+					// so invalidate all neighbor depths that do not agree with it
+					for (Depth* pDepth: invalidDepths)
+						*pDepth = 0;
 				}
 				point = X*(REAL(1)/confidence);
 			}
