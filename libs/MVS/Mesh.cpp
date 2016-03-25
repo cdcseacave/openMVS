@@ -3421,12 +3421,12 @@ void Mesh::Project(const Camera& camera, DepthMap& depthMap, Image8U3& image) co
 		TexCoord xt;
 		RasterMesh(const Mesh& _mesh, const Camera& _camera, DepthMap& _depthMap, Image8U3& _image)
 			: Base(_mesh.vertices, _camera, _depthMap), mesh(_mesh), image(_image) {}
-		void Clear() {
+		inline void Clear() {
 			Base::Clear();
 			image.memset(0);
 		}
 		void Raster(const ImageRef& pt) {
-			if (!depthMap.isInsideWithBorder<int,4>(pt))
+			if (!depthMap.isInsideWithBorder<float,3>(pt))
 				return;
 			const float z((float)INVERT(normalPlane.dot(camera.TransformPointI2C(Point2(pt)))));
 			ASSERT(z > 0);
@@ -3434,6 +3434,82 @@ void Mesh::Project(const Camera& camera, DepthMap& depthMap, Image8U3& image) co
 			if (depth == 0 || depth > z) {
 				depth = z;
 				const Point3f b(CorrectBarycentricCoordinates(BarycentricCoordinatesUV(pti[0], pti[1], pti[2], Point2f(pt))));
+				xt  = mesh.faceTexcoords[idxFaceTex+0] * b[0];
+				xt += mesh.faceTexcoords[idxFaceTex+1] * b[1];
+				xt += mesh.faceTexcoords[idxFaceTex+2] * b[2];
+				image(pt) = mesh.textureDiffuse.sampleSafe(Point2f(xt.x*mesh.textureDiffuse.width(), (1.f-xt.y)*mesh.textureDiffuse.height()));
+			}
+		}
+	};
+	if (image.size() != depthMap.size())
+		image.create(depthMap.size());
+	RasterMesh rasterer(*this, camera, depthMap, image);
+	rasterer.Clear();
+	FOREACH(idxFace, faces) {
+		const Face& facet = faces[idxFace];
+		rasterer.idxFaceTex = idxFace*3;
+		rasterer.Project(facet);
+	}
+}
+// project mesh to the given camera plane using orthographic projection
+void Mesh::ProjectOrtho(const Camera& camera, DepthMap& depthMap) const
+{
+	struct RasterMesh : TRasterMesh<RasterMesh> {
+		typedef TRasterMesh<RasterMesh> Base;
+		RasterMesh(const VertexArr& _vertices, const Camera& _camera, DepthMap& _depthMap)
+			: Base(_vertices, _camera, _depthMap) {}
+		inline bool ProjectVertex(const Mesh::Vertex& pt, int v) {
+			ptc[v] = camera.TransformPointW2C(Cast<REAL>(pt));
+			pti[v] = camera.TransformPointC2I((const Point2&)ptc[v]);
+			return depthMap.isInsideWithBorder<float,3>(pti[v]);
+		}
+		void Raster(const ImageRef& pt) {
+			if (!depthMap.isInsideWithBorder<float,3>(pt))
+				return;
+			const Point3f b(CorrectBarycentricCoordinates(BarycentricCoordinatesUV(pti[0], pti[1], pti[2], Point2f(pt))));
+			const float z((float)(ptc[0].z*b[0] + ptc[1].z*b[1] + ptc[2].z*b[2]));
+			ASSERT(z > 0);
+			Depth& depth = depthMap(pt);
+			if (depth == 0 || depth > z)
+				depth = z;
+		}
+	};
+	RasterMesh rasterer(vertices, camera, depthMap);
+	rasterer.Clear();
+	for (const Face& facet: faces)
+		rasterer.Project(facet);
+}
+void Mesh::ProjectOrtho(const Camera& camera, DepthMap& depthMap, Image8U3& image) const
+{
+	ASSERT(!faceTexcoords.IsEmpty() && !textureDiffuse.empty());
+	struct RasterMesh : TRasterMesh<RasterMesh> {
+		typedef TRasterMesh<RasterMesh> Base;
+		const Mesh& mesh;
+		Image8U3& image;
+		FIndex idxFaceTex;
+		TexCoord xt;
+		RasterMesh(const Mesh& _mesh, const Camera& _camera, DepthMap& _depthMap, Image8U3& _image)
+			: Base(_mesh.vertices, _camera, _depthMap), mesh(_mesh), image(_image) {}
+		inline void Clear() {
+			Base::Clear();
+			image.memset(0);
+		}
+		inline bool ProjectVertex(const Mesh::Vertex& pt, int v) {
+			ptc[v] = camera.TransformPointW2C(Cast<REAL>(pt));
+			pti[v] = camera.TransformPointC2I((const Point2&)ptc[v]);
+			return depthMap.isInsideWithBorder<float,3>(pti[v]);
+		}
+		inline void SetupNormalPlane() {
+		}
+		void Raster(const ImageRef& pt) {
+			if (!depthMap.isInsideWithBorder<float,3>(pt))
+				return;
+			const Point3f b(CorrectBarycentricCoordinates(BarycentricCoordinatesUV(pti[0], pti[1], pti[2], Point2f(pt))));
+			const float z((float)(ptc[0].z*b[0] + ptc[1].z*b[1] + ptc[2].z*b[2]));
+			ASSERT(z > 0);
+			Depth& depth = depthMap(pt);
+			if (depth == 0 || depth > z) {
+				depth = z;
 				xt  = mesh.faceTexcoords[idxFaceTex+0] * b[0];
 				xt += mesh.faceTexcoords[idxFaceTex+1] * b[1];
 				xt += mesh.faceTexcoords[idxFaceTex+2] * b[2];

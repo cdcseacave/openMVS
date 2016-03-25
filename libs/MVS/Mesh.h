@@ -148,6 +148,8 @@ public:
 
 	void Project(const Camera& camera, DepthMap& depthMap) const;
 	void Project(const Camera& camera, DepthMap& depthMap, Image8U3& image) const;
+	void ProjectOrtho(const Camera& camera, DepthMap& depthMap) const;
+	void ProjectOrtho(const Camera& camera, DepthMap& depthMap, Image8U3& image) const;
 
 	// file IO
 	bool Load(const String& fileName);
@@ -204,17 +206,23 @@ struct TRasterMesh {
 	TRasterMesh(const Mesh::VertexArr& _vertices, const Camera& _camera, DepthMap& _depthMap)
 		: vertices(_vertices), camera(_camera), depthMap(_depthMap) {}
 
-	void Clear() {
+	inline void Clear() {
 		depthMap.memset(0);
 	}
 
+	inline bool ProjectVertex(const Mesh::Vertex& pt, int v) {
+		ptc[v] = camera.TransformPointW2C(Cast<REAL>(pt));
+		pti[v] = camera.TransformPointC2I(ptc[v]);
+		return depthMap.isInsideWithBorder<float,3>(pti[v]);
+	}
+	inline void SetupNormalPlane() {
+		normalPlane /= normalPlane.dot(ptc[0]);
+	}
 	void Project(const Mesh::Face& facet) {
+		// project face vertices to image plane
 		for (int v=0; v<3; ++v) {
-			const Mesh::Vertex& pt = vertices[facet[v]];
-			ptc[v] = camera.TransformPointW2C(Cast<REAL>(pt));
-			pti[v] = camera.TransformPointC2I(ptc[v]);
 			// skip face if not completely inside
-			if (!depthMap.isInsideWithBorder<float,3>(pti[v]))
+			if (!static_cast<DERIVED*>(this)->ProjectVertex(vertices[facet[v]], v))
 				return;
 		}
 		// compute the face center, which is also the view to face vector
@@ -222,7 +230,7 @@ struct TRasterMesh {
 		const Point3 faceCenter((ptc[0]+ptc[1]+ptc[2])/3);
 		// skip face if the (cos) angle between
 		// the view to face vector and the view direction is negative
-		if (faceCenter.z <= 0)
+		if (faceCenter.z <= REAL(0))
 			return;
 		// compute the plane defined by the 3 points
 		const Point3 edge1(ptc[1]-ptc[0]);
@@ -230,16 +238,16 @@ struct TRasterMesh {
 		normalPlane = edge1.cross(edge2);
 		// skip face if the (cos) angle between
 		// the face normal and the face to view vector is negative
-		if (faceCenter.dot(normalPlane) > 0)
+		if (faceCenter.dot(normalPlane) >= REAL(0))
 			return;
 		// prepare vector used to compute the depth during rendering
-		normalPlane *= INVERT(normalPlane.dot(ptc[0]));
+		static_cast<DERIVED*>(this)->SetupNormalPlane();
 		// draw triangle and for each pixel compute depth as the ray intersection with the plane
 		Image8U3::RasterizeTriangle(pti[0], pti[1], pti[2], *this);
 	}
 
 	void Raster(const ImageRef& pt) {
-		if (!depthMap.isInsideWithBorder<int,4>(pt))
+		if (!depthMap.isInsideWithBorder<float,3>(pt))
 			return;
 		const float z((float)INVERT(normalPlane.dot(camera.TransformPointI2C(Point2(pt)))));
 		ASSERT(z > 0);
