@@ -239,9 +239,13 @@ int main(int argc, LPCTSTR* argv)
 	if (OPT::nOrthoMapResolution) {
 		// project mesh as an orthographic image
 		ProjectOrtho:
-		Image8U3 image;
+		Image8U3 imageRGB;
+		Image8U imageRGBA[4];
 		Point3 center;
-		scene.mesh.ProjectOrthoTopDown(OPT::nOrthoMapResolution, image, center);
+		scene.mesh.ProjectOrthoTopDown(OPT::nOrthoMapResolution, imageRGB, imageRGBA[3], center);
+		Image8U4 image;
+		cv::split(imageRGB, imageRGBA);
+		cv::merge(imageRGBA, 4, image);
 		image.Save(baseFileName+_T("_orthomap.png"));
 		VERBOSE("Orthographic view center: %g %g %g", center.x, center.y, center.z);
 	}

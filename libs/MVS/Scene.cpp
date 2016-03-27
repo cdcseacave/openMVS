@@ -227,7 +227,7 @@ bool Scene::SaveInterface(const String & fileName) const
 		const PointCloud::Point& point = pointcloud.points[i];
 		const PointCloud::ViewArr& views = pointcloud.pointViews[i];
 		MVS::Interface::Vertex& vertex = obj.vertices[i];
-		ASSERT(sizeof(MVS::Interface::Real) == sizeof(point.x));
+		ASSERT(sizeof(vertex.X.x) == sizeof(point.x));
 		vertex.X = point;
 		vertex.views.resize(views.GetSize());
 		views.ForEach([&](PointCloud::ViewArr::IDX v) {

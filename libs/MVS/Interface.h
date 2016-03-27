@@ -31,6 +31,10 @@
 #define _USE_CUSTOM_ARCHIVE
 #endif
 
+#ifndef NO_ID
+#define NO_ID std::numeric_limits<uint32_t>::max()
+#endif
+
 
 // S T R U C T S ///////////////////////////////////////////////////
 
@@ -43,6 +47,21 @@ template<typename _Tp, int m, int n>
 class Matx
 {
 public:
+	typedef _Tp Type;
+	inline Matx() {}
+	#ifdef _USE_EIGEN
+	EIGEN_MAKE_ALIGNED_OPERATOR_NEW_IF_VECTORIZABLE_FIXED_SIZE(Type,m*n)
+	typedef Eigen::Matrix<Type,m,n,(n>1?Eigen::RowMajor:Eigen::Default)> EMat;
+	typedef Eigen::Map<const EMat> CEMatMap;
+	typedef Eigen::Map<EMat> EMatMap;
+	inline Matx(const EMat& rhs) { operator EMatMap () = rhs; }
+	inline Matx& operator = (const EMat& rhs) { operator EMatMap () = rhs; return *this; }
+	inline operator CEMatMap() const { return CEMatMap((const Type*)val); }
+	inline operator EMatMap () { return EMatMap((Type*)val); }
+	#endif
+	Type operator()(int r, int c) const { return val[r*n+c]; }
+	Type& operator()(int r, int c) { return val[r*n+c]; }
+public:
 	_Tp val[m*n];
 };
 
@@ -50,6 +69,18 @@ public:
 template<typename _Tp>
 class Point3_
 {
+public:
+	typedef _Tp Type;
+	inline Point3_() {}
+	#ifdef _USE_EIGEN
+	EIGEN_MAKE_ALIGNED_OPERATOR_NEW_IF_VECTORIZABLE_FIXED_SIZE(Type,3)
+	typedef Eigen::Matrix<Type,3,1> EVec;
+	typedef Eigen::Map<EVec> EVecMap;
+	inline Point3_(const EVec& rhs) { operator EVecMap () = rhs; }
+	inline Point3_& operator = (const EVec& rhs) { operator EVecMap () = rhs; return *this; }
+	inline operator const EVecMap () const { return EVecMap((Type*)this); }
+	inline operator EVecMap () { return EVecMap((Type*)this); }
+	#endif
 public:
 	_Tp x, y, z;
 };
@@ -104,7 +135,7 @@ struct ArchiveLoad {
 
 // Main exporter & importer
 template<typename _Tp>
-bool SerializeSave(const _Tp& obj, const String& fileName) {
+bool SerializeSave(const _Tp& obj, const std::string& fileName) {
 	std::ofstream stream(fileName, std::ofstream::binary);
 	if (!stream.is_open())
 		return false;
@@ -113,7 +144,7 @@ bool SerializeSave(const _Tp& obj, const String& fileName) {
 	return true;
 }
 template<typename _Tp>
-bool SerializeLoad(_Tp& obj, const String& fileName) {
+bool SerializeLoad(_Tp& obj, const std::string& fileName) {
 	std::ifstream stream(fileName, std::ifstream::binary);
 	if (!stream.is_open())
 		return false;
@@ -242,9 +273,9 @@ namespace MVS {
 // MAX(width,height) is used for normalization
 struct Interface
 {
-	typedef float Real;
-	typedef cv::Point3_<Real> Pos3;
-	typedef cv::Matx<Real,3,3> Mat33;
+	typedef cv::Point3_<float> Pos3f;
+	typedef cv::Point3_<double> Pos3d;
+	typedef cv::Matx<double,3,3> Mat33d;
 	typedef uint8_t Color;
 	typedef cv::Point3_<Color> Col3; // x=B, y=G, z=R
 	/*----------------------------------------------------------------*/
@@ -254,9 +285,9 @@ struct Interface
 		// structure describing a camera mounted on a platform
 		struct Camera {
 			std::string name; // camera's name
-			Mat33 K; // camera's normalized intrinsics matrix
-			Mat33 R; // camera's rotation matrix relative to the platform
-			Pos3 C; // camera's translation vector relative to the platform
+			Mat33d K; // camera's normalized intrinsics matrix
+			Mat33d R; // camera's rotation matrix relative to the platform
+			Pos3d C; // camera's translation vector relative to the platform
 
 			template <class Archive>
 			void serialize(Archive& ar, const unsigned int /*version*/) {
@@ -270,8 +301,8 @@ struct Interface
 
 		// structure describing a pose along the trajectory of a platform
 		struct Pose {
-			Mat33 R; // platform's rotation matrix
-			Pos3 C; // platform's translation vector in the global coordinate system
+			Mat33d R; // platform's rotation matrix
+			Pos3d C; // platform's translation vector in the global coordinate system
 
 			template <class Archive>
 			void serialize(Archive& ar, const unsigned int /*version*/) {
@@ -318,7 +349,7 @@ struct Interface
 		// structure describing one view for a given 3D feature
 		struct View {
 			uint32_t imageID; // image ID corresponding to this view
-			Real confidence; // view's confidence (0 - not available)
+			float confidence; // view's confidence (0 - not available)
 
 			template<class Archive>
 			void serialize(Archive& ar, const unsigned int /*version*/) {
@@ -328,7 +359,7 @@ struct Interface
 		};
 		typedef std::vector<View> ViewArr;
 
-		Pos3 X; // 3D point position
+		Pos3f X; // 3D point position
 		ViewArr views; // list of all available views for this 3D feature
 
 		template <class Archive>
@@ -342,7 +373,7 @@ struct Interface
 
 	// structure describing a 3D point's normal (optional)
 	struct VertexNormal {
-		Pos3 n; // 3D feature normal
+		Pos3f n; // 3D feature normal
 
 		template <class Archive>
 		void serialize(Archive& ar, const unsigned int /*version*/) {

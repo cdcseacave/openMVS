@@ -3528,7 +3528,7 @@ void Mesh::ProjectOrtho(const Camera& camera, DepthMap& depthMap, Image8U3& imag
 	}
 }
 // assuming the mesh is properly oriented, ortho-project it to a camera looking from top to down
-void Mesh::ProjectOrthoTopDown(unsigned resolution, Image8U3& image, Point3& center) const
+void Mesh::ProjectOrthoTopDown(unsigned resolution, Image8U3& image, Image8U& mask, Point3& center) const
 {
 	ASSERT(!IsEmpty() && !textureDiffuse.empty());
 	const AABB3f box(vertices.Begin(), vertices.GetSize());
@@ -3550,6 +3550,11 @@ void Mesh::ProjectOrthoTopDown(unsigned resolution, Image8U3& image, Point3& cen
 	camera.K(1,2) = (REAL)(image.height()-1)/2;
 	DepthMap depthMap(image.size());
 	ProjectOrtho(camera, depthMap, image);
+	if (mask.size() != depthMap.size())
+		mask.create(depthMap.size());
+	for (int r=0; r<mask.rows; ++r)
+		for (int c=0; c<mask.cols; ++c)
+			mask(r,c) = depthMap(r,c) > 0 ? 255 : 0;
 }
 /*----------------------------------------------------------------*/
 

@@ -9,7 +9,6 @@ Dependencies
 * [CGAL](http://www.cgal.org) version 4.2 or higher
 * [Boost](http://www.boost.org) version 1.56 or higher
 * [VCG](http://vcg.isti.cnr.it/vcglib)
-* [OpenMVG](https://github.com/openMVG/openMVG) version 0.8.1 or higher
 
 ------------------
 Build instructions
@@ -84,16 +83,6 @@ make
 sudo make install
 cd ..
 
-#OpenMVG (Optional)
-sudo apt-get install libxxf86vm1 libxxf86vm-dev libxi-dev libxrandr-dev graphviz
-git clone --recursive https://github.com/openMVG/openMVG.git openMVG
-mkdir openMVG_build
-cd openMVG_build
-cmake -DCMAKE_BUILD_TYPE=RELEASE . ../openMVG/src/ -DCMAKE_INSTALL_PREFIX=$main_path/openMVG_build/openMVG_install
-make
-make install
-cd ..
-
 #OpenMVS
 git clone https://github.com/cdcseacave/openMVS.git openMVS
 mkdir openMVS_build
@@ -102,9 +91,6 @@ cmake . ../openMVS -DCMAKE_BUILD_TYPE=Release -DVCG_DIR="$main_path/vcglib" -DOp
 
 #If you want to use OpenMVS as shared library, add to the cmake command:
 -DBUILD_SHARED_LIBS=ON
-
-#If you want to use OpenMVG as optional third party library, add to the cmake command:
--DOpenMVG_DIR:STRING="$main_path/openMVG_build/openMVG_install/share/openMVG/cmake/"
 
 #Install OpenMVS library (optional):
 sudo make install
