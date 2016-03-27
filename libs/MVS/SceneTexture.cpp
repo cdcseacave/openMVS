@@ -857,17 +857,6 @@ void MeshTexture::FaceViewSelection(float fOutlierThreshold, float fRatioDataSmo
 		typedef boost::graph_traits<Graph>::edge_descriptor Edge;
 		typedef boost::graph_traits<Graph>::edge_iterator EdgeIter;
 		typedef boost::graph_traits<Graph>::out_edge_iterator EdgeOutIter;
-		struct Components {
-			static FIndex Find(const Graph& graph, Mesh::FaceIdxArr& components) {
-				FIndex nComponents(boost::connected_components(graph, components.Begin()));
-				#if 1
-				// assign a component to all faces left out of the graph (isolated)
-				for (FIndex nComp=(FIndex)boost::num_vertices(graph); nComp<components.GetSize(); ++nComp)
-					components[nComp] = nComponents++;
-				#endif
-				return nComponents;
-			}
-		};
 		Graph graph;
 		{
 			FOREACH(idxFace, faces) {
@@ -901,7 +890,7 @@ void MeshTexture::FaceViewSelection(float fOutlierThreshold, float fRatioDataSmo
 		components.Resize(faces.GetSize());
 		{
 			// find connected components
-			const FIndex nComponents(Components::Find(graph, components));
+			const FIndex nComponents(boost::connected_components(graph, components.Begin()));
 
 			// map face ID from global to component space
 			typedef cList<NodeID, NodeID, 0, 128, NodeID> NodeIDs;
@@ -1094,7 +1083,8 @@ void MeshTexture::FaceViewSelection(float fOutlierThreshold, float fRatioDataSmo
 				boost::remove_edge(pEdge->i, pEdge->j, graph);
 
 			// find connected components: texture patches
-			const FIndex nComponents(Components::Find(graph, components));
+			ASSERT((FIndex)boost::num_vertices(graph) == components.GetSize());
+			const FIndex nComponents(boost::connected_components(graph, components.Begin()));
 
 			// create texture patches;
 			// last texture patch contains all faces with no texture

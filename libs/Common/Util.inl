@@ -448,12 +448,45 @@ inline TPoint3<TYPE> ComputeTriangleNormal(const TPoint3<TYPE>& v0, const TPoint
 } // ComputeTriangleNormal
 /*----------------------------------------------------------------*/
 
+// compute the area of a triangle using Heron's formula
+template <typename TYPE>
+TYPE ComputeTriangleAreaSq(TYPE lena, TYPE lenb, TYPE lenc) {
+	const TYPE s((lena+lenb+lenc)/TYPE(2));
+	return s*(s-lena)*(s-lenb)*(s-lenc);
+}
+template <typename TYPE>
+TYPE ComputeTriangleArea(TYPE lena, TYPE lenb, TYPE lenc) {
+	return (TYPE)sqrt(ComputeTriangleAreaSq(lena, lenb, lenc));
+}
+template <typename TYPE>
+TYPE ComputeTriangleAreaSqLenSq(TYPE lenaSq, TYPE lenbSq, TYPE lencSq) {
+	return SQUARE(lenaSq+lenbSq+lencSq)/TYPE(2)-(lenaSq*lenaSq+lenbSq*lenbSq+lencSq*lencSq);
+}
+template <typename TYPE>
+TYPE ComputeTriangleAreaLenSq(TYPE lenaSq, TYPE lenbSq, TYPE lencSq) {
+	return (TYPE)sqrt(ComputeTriangleAreaSqLenSq(lenaSq, lenbSq, lencSq));
+}
+// compute area for a triangle defined by three 2D points
+template <typename TYPE>
+TYPE ComputeTriangleArea(const TPoint2<TYPE>& x0, const TPoint2<TYPE>& x1, const TPoint2<TYPE>& x2) {
+	return abs((TYPE)((x0-x2).cross(x0-x1)/TYPE(2)));
+}
+// compute area for a triangle defined by three 3D points
+template <typename TYPE>
+TYPE ComputeTriangleAreaSq(const TPoint3<TYPE>& x0, const TPoint3<TYPE>& x1, const TPoint2<TYPE>& x2) {
+	return (TYPE)(normSq((x1-x0).cross(x2-x0))/TYPE(4));
+}
+template <typename TYPE>
+TYPE ComputeTriangleArea(const TPoint3<TYPE>& x0, const TPoint3<TYPE>& x1, const TPoint2<TYPE>& x2) {
+	return (TYPE)sqrt(ComputeTriangleAreaSq(x0, x1, x2));
+} // ComputeTriangleArea
+/*----------------------------------------------------------------*/
+
 // compute a shape quality measure of the triangle composed by vertices (v0,v1,v2)
 // returns 2*AreaTri/(MaxEdge^2) in range [0, 0.866]
 // (ex: equilateral sqrt(3)/2, half-square 1/2, up to a line that has zero quality)
 template<typename TYPE>
-inline TYPE ComputeTriangleQuality(const TPoint3<TYPE>& v0, const TPoint3<TYPE>& v1, const TPoint3<TYPE>& v2)
-{
+inline TYPE ComputeTriangleQuality(const TPoint3<TYPE>& v0, const TPoint3<TYPE>& v1, const TPoint3<TYPE>& v2) {
 	const TPoint3<TYPE> d10(v1-v0);
 	const TPoint3<TYPE> d20(v2-v0);
 	const TPoint3<TYPE> d12(v1-v2);
@@ -502,8 +535,7 @@ inline TPoint2<TYPE> BarycentricCoordinatesUV(const TPoint3<TYPE>& A, const TPoi
 }
 // same as above, but returns all three barycentric coordinates
 template <typename TYPE>
-inline TPoint3<TYPE> BarycentricCoordinates(const TPoint3<TYPE>& A, const TPoint3<TYPE>& B, const TPoint3<TYPE>& C, const TPoint3<TYPE>& P)
-{
+inline TPoint3<TYPE> BarycentricCoordinates(const TPoint3<TYPE>& A, const TPoint3<TYPE>& B, const TPoint3<TYPE>& C, const TPoint3<TYPE>& P) {
 	TPoint2<TYPE> b(BarycentricCoordinatesUV(A, B, C, P));
 	return TPoint3<TYPE>(
 		b.x,            // alpha
@@ -527,8 +559,7 @@ inline TPoint2<TYPE> BarycentricCoordinatesUV(const TPoint2<TYPE>& A, const TPoi
 }
 // same as above, but returns all three barycentric coordinates
 template <typename TYPE>
-inline TPoint3<TYPE> BarycentricCoordinates(const TPoint2<TYPE>& A, const TPoint2<TYPE>& B, const TPoint2<TYPE>& C, const TPoint2<TYPE>& P)
-{
+inline TPoint3<TYPE> BarycentricCoordinates(const TPoint2<TYPE>& A, const TPoint2<TYPE>& B, const TPoint2<TYPE>& C, const TPoint2<TYPE>& P) {
 	TPoint2<TYPE> b(BarycentricCoordinatesUV(A, B, C, P));
 	return TPoint3<TYPE>(
 		b.x,            // alpha
@@ -539,8 +570,7 @@ inline TPoint3<TYPE> BarycentricCoordinates(const TPoint2<TYPE>& A, const TPoint
 // correct the barycentric coordinates in case of numerical errors
 // (the corresponding point is assumed to be inside the triangle)
 template <typename TYPE>
-inline TPoint3<TYPE> CorrectBarycentricCoordinates(TPoint2<TYPE> b)
-{
+inline TPoint3<TYPE> CorrectBarycentricCoordinates(TPoint2<TYPE> b) {
 	if (b.x < TYPE(0)) // alpha
 		b.x = TYPE(0);
 	else if (b.x > TYPE(1))
@@ -569,16 +599,6 @@ inline TPoint3<TYPE> CorrectBarycentricCoordinates(TPoint2<TYPE> b)
 	// check that the given point is inside the triangle
 	ASSERT((b.x >= 0) && (b.y >= 0) && (b.x+b.y <= 1) && ISEQUAL(b.x+b.y+z, TYPE(1)));
 	return TPoint3<TYPE>(b.x, b.y, z);
-}
-// compute the area of a triangle using Heron's formula
-template <typename TYPE>
-TYPE TriangleAreaSq(TYPE lena, TYPE lenb, TYPE lenc) {
-	const TYPE s = (lena + lenb + lenc) / TYPE(2);
-	return abs(s*(s-lena)*(s-lenb)*(s-lenc));
-}
-template <typename TYPE>
-TYPE TriangleArea(TYPE lena, TYPE lenb, TYPE lenc) {
-	return sqrt(TriangleAreaSq(lena, lenb, lenc));
 }
 /*----------------------------------------------------------------*/
 
