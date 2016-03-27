@@ -56,6 +56,7 @@ bool bLocalSeamLeveling;
 unsigned nTextureSizeMultiple;
 unsigned nRectPackingHeuristic;
 uint32_t nColEmpty;
+unsigned nOrthoMapResolution;
 unsigned nArchiveType;
 int nProcessPriority;
 unsigned nMaxThreads;
@@ -104,6 +105,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		("texture-size-multiple", boost::program_options::value<unsigned>(&OPT::nTextureSizeMultiple)->default_value(0), "texture size should be a multiple of this value (0 - power of two)")
 		("patch-packing-heuristic", boost::program_options::value<unsigned>(&OPT::nRectPackingHeuristic)->default_value(3), "specify the heuristic used when deciding where to place a new patch (0 - best fit, 3 - good speed, 100 - best speed)")
 		("empty-color", boost::program_options::value<uint32_t>(&OPT::nColEmpty)->default_value(0x00FF7F27), "color used for faces not covered by any image")
+		("orthographic-image-resolution", boost::program_options::value<unsigned>(&OPT::nOrthoMapResolution)->default_value(0), "orthographic image resolution to be generated from the textured mesh - the mesh is expected to be already geo-referenced or at least properly oriented (0 - disabled)")
 		;
 
 	// hidden options, allowed both on command line and
@@ -212,19 +214,37 @@ int main(int argc, LPCTSTR* argv)
 		VERBOSE("error: empty initial mesh");
 		return EXIT_FAILURE;
 	}
+	const String baseFileName(MAKE_PATH_SAFE(Util::getFullFileName(OPT::strOutputFileName)));
+	if (OPT::nOrthoMapResolution && !scene.mesh.textureDiffuse.empty()) {
+		// the input mesh is already textured and an orthographic projection was requested
+		goto ProjectOrtho;
+	}
+
+	{
+	// compute mesh texture
 	TD_TIMER_START();
 	if (!scene.TextureMesh(OPT::nResolutionLevel, OPT::nMinResolution, OPT::fOutlierThreshold, OPT::fRatioDataSmoothness, OPT::bGlobalSeamLeveling, OPT::bLocalSeamLeveling, OPT::nTextureSizeMultiple, OPT::nRectPackingHeuristic, Pixel8U(OPT::nColEmpty)))
 		return EXIT_FAILURE;
 	VERBOSE("Mesh texturing completed: %u vertices, %u faces (%s)", scene.mesh.vertices.GetSize(), scene.mesh.faces.GetSize(), TD_TIMER_GET_FMT().c_str());
 
 	// save the final mesh
-	const String baseFileName(MAKE_PATH_SAFE(Util::getFullFileName(OPT::strOutputFileName)));
 	scene.Save(baseFileName+_T(".mvs"), (ARCHIVE_TYPE)OPT::nArchiveType);
 	scene.mesh.Save(baseFileName+_T(".ply"));
 	#if TD_VERBOSE != TD_VERBOSE_OFF
 	if (VERBOSITY_LEVEL > 2)
 		scene.ExportCamerasMLP(baseFileName+_T(".mlp"), baseFileName+_T(".ply"));
 	#endif
+	}
+
+	if (OPT::nOrthoMapResolution) {
+		// project mesh as an orthographic image
+		ProjectOrtho:
+		Image8U3 image;
+		Point3 center;
+		scene.mesh.ProjectOrthoTopDown(OPT::nOrthoMapResolution, image, center);
+		image.Save(baseFileName+_T("_orthomap.png"));
+		VERBOSE("Orthographic view center: %g %g %g", center.x, center.y, center.z);
+	}
 
 	Finalize();
 	return EXIT_SUCCESS;

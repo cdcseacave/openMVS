@@ -150,6 +150,7 @@ public:
 	void Project(const Camera& camera, DepthMap& depthMap, Image8U3& image) const;
 	void ProjectOrtho(const Camera& camera, DepthMap& depthMap) const;
 	void ProjectOrtho(const Camera& camera, DepthMap& depthMap, Image8U3& image) const;
+	void ProjectOrthoTopDown(unsigned resolution, Image8U3& image, Point3& center) const;
 
 	// file IO
 	bool Load(const String& fileName);

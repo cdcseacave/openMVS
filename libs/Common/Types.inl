@@ -759,11 +759,11 @@ inline TYPE dot(const cv::Vec<TYPE,m>* v1, const cv::Vec<TYPE,m>* v2, size_t siz
 
 template <typename TYPE, int m, int n>
 inline TMatrix<TYPE,m,n> cross(const TMatrix<TYPE,m,n>& l, const TMatrix<TYPE,m,n>& r) {
-	return static_cast<cv::Matx<TYPE,m,n>&>(((const typename TMatrix<TYPE,m*n,1>::Vec&)l).cross((const typename TMatrix<TYPE,m*n,1>::Vec&)r));
+	return ((const typename TMatrix<TYPE,m*n,1>::Vec&)l).cross((const typename TMatrix<TYPE,m*n,1>::Vec&)r);
 }
 template <typename TYPE, int m, int n>
 inline TMatrix<TYPE,m,n> cross(const cv::Matx<TYPE,m,n>& l, const cv::Matx<TYPE,m,n>& r) {
-	return static_cast<cv::Matx<TYPE,m,n>&>(((const typename TMatrix<TYPE,m*n,1>::Vec&)l).cross((const typename TMatrix<TYPE,m*n,1>::Vec&)r));
+	return ((const typename TMatrix<TYPE,m*n,1>::Vec&)l).cross((const typename TMatrix<TYPE,m*n,1>::Vec&)r);
 }
 
 template <typename TYPE>
@@ -1037,11 +1037,11 @@ inline TPoint3<TYPE> normalized(const cv::Point3_<TYPE>& v) {
 }
 template <typename TYPE, int m, int n>
 inline TMatrix<TYPE,m,n> normalized(const TMatrix<TYPE,m,n>& v) {
-	return static_cast<cv::Matx<TYPE,m,n>&>(cv::normalize((const typename TMatrix<TYPE,m*n,1>::Vec&)v));
+	return cv::normalize((const typename TMatrix<TYPE,m*n,1>::Vec&)v);
 }
 template <typename TYPE, int m, int n>
 inline TMatrix<TYPE,m,n> normalized(const cv::Matx<TYPE,m,n>& v) {
-	return static_cast<cv::Matx<TYPE,m,n>&>(cv::normalize((const typename TMatrix<TYPE,m*n,1>::Vec&)v));
+	return cv::normalize((const typename TMatrix<TYPE,m*n,1>::Vec&)v);
 }
 
 template <typename TYPE>

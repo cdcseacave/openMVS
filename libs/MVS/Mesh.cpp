@@ -3527,6 +3527,30 @@ void Mesh::ProjectOrtho(const Camera& camera, DepthMap& depthMap, Image8U3& imag
 		rasterer.Project(facet);
 	}
 }
+// assuming the mesh is properly oriented, ortho-project it to a camera looking from top to down
+void Mesh::ProjectOrthoTopDown(unsigned resolution, Image8U3& image, Point3& center) const
+{
+	ASSERT(!IsEmpty() && !textureDiffuse.empty());
+	const AABB3f box(vertices.Begin(), vertices.GetSize());
+	const Point3 size(box.GetSize().cast<REAL>());
+	center = box.GetCenter().cast<REAL>();
+	Camera camera;
+	camera.R.SetFromDirUp(Vec3(Point3(0,0,-1)), Vec3(Point3(0,1,0)));
+	camera.C = center;
+	camera.C.z += size.z;
+	camera.K = KMatrix::IDENTITY;
+	if (size.x > size.y) {
+		image.create(CEIL2INT(size.y*(resolution-1)/size.x), (int)resolution);
+		camera.K(0,0) = camera.K(1,1) = (resolution-1)/size.x;
+	} else {
+		image.create((int)resolution, CEIL2INT(size.x*(resolution-1)/size.y));
+		camera.K(0,0) = camera.K(1,1) = (resolution-1)/size.y;
+	}
+	camera.K(0,2) = (REAL)(image.width()-1)/2;
+	camera.K(1,2) = (REAL)(image.height()-1)/2;
+	DepthMap depthMap(image.size());
+	ProjectOrtho(camera, depthMap, image);
+}
 /*----------------------------------------------------------------*/
 
 

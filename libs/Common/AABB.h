@@ -42,13 +42,15 @@ public:
 	inline TAABB(const POINT& _pt);
 	inline TAABB(const POINT& _ptMin, const POINT& _ptMax);
 	inline TAABB(const POINT& center, const TYPE& radius);
-	inline TAABB(const POINT* pts, size_t n);
+	template <typename TPoint>
+	inline TAABB(const TPoint* pts, size_t n);
 
 	inline void Reset();
 	inline void Set(const POINT& _pt);
 	inline void Set(const POINT& _ptMin, const POINT& _ptMax);
 	inline void Set(const POINT& center, const TYPE& radius);
-	inline void Set(const POINT* pts, size_t n);
+	template <typename TPoint>
+	inline void Set(const TPoint* pts, size_t n);
 
 	inline void Enlarge(TYPE);
 	inline void EnlargePercent(TYPE);
