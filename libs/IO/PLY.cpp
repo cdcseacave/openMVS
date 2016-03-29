@@ -1114,7 +1114,7 @@ void PLY::ascii_get_element(uint8_t* elem_ptr)
 
 			/* allocate space for an array of items and store a ptr to the array */
 			const int list_count(ValueType2Type<int>(val, prop->count_external));
-			char **store_array((char**)(elem_data + prop->offset));
+			char **store_array = (char**)(elem_data + prop->offset);
 			if (list_count == 0) {
 				if (store_it)
 					*store_array = NULL;
@@ -1212,7 +1212,7 @@ void PLY::binary_get_element(uint8_t* elem_ptr)
 			/* allocate space for an array of items and store a ptr to the array */
 			const int list_count(ValueType2Type<int>(val, prop->count_external));
 			const int item_size(ply_type_size[prop->internal_type]);
-			char **store_array((char**)(elem_data + prop->offset));
+			char **store_array = (char**)(elem_data + prop->offset);
 			if (list_count == 0) {
 				if (store_it)
 					*store_array = NULL;
