@@ -31,10 +31,8 @@
 
 #include "Common.h"
 #include "Scene.h"
-#pragma push_macro("_USE_BOOST")
-#undef _USE_BOOST
+#define _USE_OPENCV
 #include "Interface.h"
-#pragma pop_macro("_USE_BOOST")
 
 using namespace MVS;
 
@@ -62,11 +60,7 @@ bool Scene::LoadInterface(const String & fileName)
 	Interface obj;
 
 	// serialize in the current state
-	#if defined(_USE_CUSTOM_ARCHIVE)
 	if (!ARCHIVE::SerializeLoad(obj, fileName))
-	#elif defined(_USE_BOOST)
-	if (!SerializeLoad(obj, fileName, ARCHIVE_BINARY_ZIP))
-	#endif
 		return false;
 
 	// import platforms and cameras
@@ -254,11 +248,7 @@ bool Scene::SaveInterface(const String & fileName) const
 	}
 
 	// serialize out the current state
-	#if defined(_USE_CUSTOM_ARCHIVE)
 	if (!ARCHIVE::SerializeSave(obj, fileName))
-	#elif defined(_USE_BOOST)
-	if (!SerializeSave(obj, fileName, ARCHIVE_BINARY_ZIP))
-	#endif
 		return false;
 
 	DEBUG_EXTRA("Scene saved to interface format (%s):\n"
