@@ -5,15 +5,20 @@
 # Project-wide settings
 CMAKE_MINIMUM_REQUIRED(VERSION 2.6.2)
 
-# Find dependencies:
-SET(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} ${CMAKE_CURRENT_SOURCE_DIR}/build/Modules)
-
 # Name of the project.
 #
 # CMake files in this project can refer to the root source directory
 # as ${OpenMVS_SOURCE_DIR} and to the root binary directory as
 # ${OpenMVS_BINARY_DIR}.
 PROJECT(OpenMVS)
+
+set(OpenMVS_MAJOR_VERSION 0)
+set(OpenMVS_MINOR_VERSION 7)
+set(OpenMVS_PATCH_VERSION 0)
+set(OpenMVS_VERSION ${OpenMVS_MAJOR_VERSION}.${OpenMVS_MINOR_VERSION}.${OpenMVS_PATCH_VERSION})
+
+# Find dependencies:
+SET(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} ${CMAKE_CURRENT_SOURCE_DIR}/build/Modules)
 
 # fix CMake IntDir variable
 if(MSVC AND "${MSVC_VERSION}" STRGREATER "1500")
@@ -28,11 +33,11 @@ if(ENABLE_PRECOMPILED_HEADERS)
 	INCLUDE(build/Cotire.cmake)
 endif()
 
-
 # Init session with macros defined in Utils.cmake
 GetOperatingSystemArchitectureBitness(SYSTEM)
 ComposePackageLibSuffix()
 ConfigCompilerAndLinker()
+ConfigLibrary()
 
 # List configuration options
 SET(OpenMVS_USE_NONFREE ON CACHE BOOL "Build non-free (patented) functionality")
@@ -103,6 +108,9 @@ if(OpenCV_FOUND)
 	INCLUDE_DIRECTORIES(${OpenCV_INCLUDE_DIRS})
 	ADD_DEFINITIONS(${OpenCV_DEFINITIONS})
 	SET(_USE_OPENCV TRUE)
+	MESSAGE(STATUS "OpenCV ${OpenCV_VERSION} found (include: ${OpenCV_INCLUDE_DIRS})")
+else()
+	MESSAGE("-- Can't find OpenCV. Please specify OpenCV directory using OpenCV_DIR variable")
 endif()
 
 # Set defines
@@ -136,5 +144,41 @@ ADD_SUBDIRECTORY(docs)
 
 # Set configuration file
 CONFIGURE_FILE("${OpenMVS_SOURCE_DIR}/build/Templates/ConfigLocal.h.in" "${OpenMVS_CONFIG_INCLUDE_DIR}/ConfigLocal.h")
-INSTALL(FILES "${OpenMVS_CONFIG_INCLUDE_DIR}/ConfigLocal.h" DESTINATION "include/${PROJECT_NAME}")
+INSTALL(FILES "${OpenMVS_CONFIG_INCLUDE_DIR}/ConfigLocal.h" DESTINATION "${INSTALL_INCLUDE_DIR}")
 INCLUDE_DIRECTORIES(${OpenMVS_CONFIG_INCLUDE_DIR})
+
+# Add all targets to the build-tree export set
+export(TARGETS Common IO Math MVS FILE "${PROJECT_BINARY_DIR}/OpenMVSTargets.cmake")
+
+# Export the package for use from the build-tree
+# (this registers the build-tree with a global CMake-registry)
+export(PACKAGE OpenMVS)
+ 
+# Create the OpenMVSConfig.cmake and OpenMVSConfigVersion files
+file(RELATIVE_PATH REL_INCLUDE_DIR "${INSTALL_CMAKE_DIR}" "${INSTALL_INCLUDE_DIR}")
+# ... for the build tree
+set(CONF_INCLUDE_DIRS "${PROJECT_SOURCE_DIR}" "${PROJECT_BINARY_DIR}")
+configure_file("${CMAKE_CURRENT_SOURCE_DIR}/build/OpenMVSConfig.cmake.in" "${PROJECT_BINARY_DIR}/OpenMVSConfig.cmake" @ONLY)
+# ... for the install tree
+set(CONF_INCLUDE_DIRS "${INSTALL_CMAKE_DIR}/${REL_INCLUDE_DIR}")
+configure_file("${CMAKE_CURRENT_SOURCE_DIR}/build/OpenMVSConfig.cmake.in" "${PROJECT_BINARY_DIR}${CMAKE_FILES_DIRECTORY}/OpenMVSConfig.cmake" @ONLY)
+# ... for both
+configure_file("${CMAKE_CURRENT_SOURCE_DIR}/build/OpenMVSConfigVersion.cmake.in" "${PROJECT_BINARY_DIR}/OpenMVSConfigVersion.cmake" @ONLY)
+ 
+# Install the OpenMVSConfig.cmake and OpenMVSConfigVersion.cmake
+install(FILES
+	"${PROJECT_BINARY_DIR}${CMAKE_FILES_DIRECTORY}/OpenMVSConfig.cmake"
+	"${PROJECT_BINARY_DIR}/OpenMVSConfigVersion.cmake"
+	DESTINATION "${INSTALL_CMAKE_DIR}" COMPONENT dev)
+
+# Install the export set for use with the install-tree
+install(EXPORT OpenMVSTargets DESTINATION "${INSTALL_CMAKE_DIR}" COMPONENT dev)
+
+# uninstall target
+configure_file(
+	"${CMAKE_CURRENT_SOURCE_DIR}/build/cmake_uninstall.cmake.in"
+	"${CMAKE_CURRENT_BINARY_DIR}/cmake_uninstall.cmake"
+	IMMEDIATE @ONLY)
+
+add_custom_target(uninstall
+	COMMAND ${CMAKE_COMMAND} -P ${CMAKE_CURRENT_BINARY_DIR}/cmake_uninstall.cmake)

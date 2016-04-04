@@ -11,7 +11,18 @@
 
 // I N C L U D E S /////////////////////////////////////////////////
 
+#if defined(IO_EXPORTS) && !defined(Common_EXPORTS)
+#define Common_EXPORTS
+#endif
+
 #include "../Common/Common.h"
+
+#ifndef IO_API
+#define IO_API GENERAL_API
+#endif
+#ifndef IO_TPL
+#define IO_TPL GENERAL_TPL
+#endif
 
 #define _IMAGE_BMP		// add BMP support
 #define _IMAGE_TGA		// add TGA support

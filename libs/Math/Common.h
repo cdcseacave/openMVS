@@ -11,7 +11,18 @@
 
 // I N C L U D E S /////////////////////////////////////////////////
 
+#if defined(Math_EXPORTS) && !defined(Common_EXPORTS)
+#define Common_EXPORTS
+#endif
+
 #include "../Common/Common.h"
+
+#ifndef MATH_API
+#define MATH_API GENERAL_API
+#endif
+#ifndef MATH_TPL
+#define MATH_TPL GENERAL_TPL
+#endif
 /*----------------------------------------------------------------*/
 
 #endif // __MATH_COMMON_H__

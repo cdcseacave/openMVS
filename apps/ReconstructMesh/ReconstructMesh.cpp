@@ -97,7 +97,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		("output-file,o", boost::program_options::value<std::string>(&OPT::strOutputFileName), "output filename for storing the mesh")
 		("min-point-distance,d", boost::program_options::value<float>(&OPT::fDistInsert)->default_value(2.f), "minimum distance in pixels between the projection of two 3D points to consider them different while triangulating")
 		("constant-weight", boost::program_options::value<bool>(&OPT::bUseConstantWeight)->default_value(true), "considers all view weights 1 instead of the available weight")
-		("free-space-support,f", boost::program_options::value<bool>(&OPT::bUseFreeSpaceSupport)->default_value(true), "exploits the free-space support in order to reconstruct weakly-represented surfaces")
+		("free-space-support,f", boost::program_options::value<bool>(&OPT::bUseFreeSpaceSupport)->default_value(false), "exploits the free-space support in order to reconstruct weakly-represented surfaces")
 		;
 	boost::program_options::options_description config_clean("Clean options");
 	config_clean.add_options()

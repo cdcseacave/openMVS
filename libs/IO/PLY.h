@@ -30,7 +30,7 @@ chars for red, green and blue.
 
 // S T R U C T S ///////////////////////////////////////////////////
 
-class PLY
+class IO_API PLY
 {
 public:
 	// scalar data types supported by PLY format

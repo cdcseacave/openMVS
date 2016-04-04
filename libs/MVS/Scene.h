@@ -46,7 +46,7 @@
 
 namespace MVS {
 
-class Scene
+class MVS_API Scene
 {
 public:
 	PlatformArr platforms; // camera platforms, each containing the mounted cameras and all known poses

@@ -50,7 +50,7 @@ typedef enum PIXELFORMAT_TYPE {
 	PF_3DC,
 } PIXELFORMAT;
 
-class GENERAL_API CImage
+class IO_API CImage
 {
 	DECLARE_LOG();
 

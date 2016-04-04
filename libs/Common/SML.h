@@ -58,7 +58,7 @@ public:
 	};
 
 public:
-	SML(const String& =Util::emptyString);
+	SML(const String& =String());
 	~SML();
 
 	void			Release();
@@ -68,8 +68,8 @@ public:
 	bool			Load(ISTREAM&);
 	bool			Save(const String&, SAVEFLAG=NONE) const;
 	bool			Save(OSTREAM&, SAVEFLAG=NONE) const;
-	IDX				CreateChild(const String& =Util::emptyString);
-	IDX				CreateChildUnique(const String& =Util::emptyString);
+	IDX				CreateChild(const String& =String());
+	IDX				CreateChildUnique(const String& =String());
 	IDX				InsertChild(const LPSML);
 	IDX				InsertChildUnique(const LPSML);
 	void			RemoveChild(IDX);

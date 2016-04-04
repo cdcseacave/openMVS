@@ -59,7 +59,6 @@ bool OSSupportsAVX();
 
 // G L O B A L S ///////////////////////////////////////////////////
 
-String Util::emptyString;
 const Flags Util::ms_CPUFNC(InitCPU());
 
 /**
@@ -103,7 +102,7 @@ const Flags Util::ms_CPUFNC(InitCPU());
  *          the 32 bit assembler implementation of CRC64Process can be optimized,
  *          avoiding at least one 'xor' operation.
  */
-const uint64_t Util::ms_au64CRC64[256] =
+static const uint64_t gs_au64CRC64[256] =
 {
 	0x0000000000000000ULL, 0x01B0000000000000ULL, 0x0360000000000000ULL, 0x02D0000000000000ULL,
 	0x06C0000000000000ULL, 0x0770000000000000ULL, 0x05A0000000000000ULL, 0x0410000000000000ULL,
@@ -179,7 +178,7 @@ String Util::getHomeDirectory()
 	#ifdef _MSC_VER
 	TCHAR homedir[MAX_PATH];
 	if (SHGetSpecialFolderPath(0, homedir, CSIDL_PROFILE, TRUE) != TRUE)
-		return emptyString;
+		return String();
 	#else
 	const char *homedir;
 	if ((homedir = getenv("HOME")) == NULL)
@@ -194,7 +193,7 @@ String Util::getAppplicationsDirectory()
 	#ifdef _MSC_VER
 	TCHAR appdir[MAX_PATH];
 	if (SHGetSpecialFolderPath(0, appdir, CSIDL_APPDATA, TRUE) != TRUE)
-		return emptyString;
+		return String();
 	String dir(String(appdir) + PATH_SEPARATOR);
 	#else
 	const char *homedir;
@@ -213,9 +212,28 @@ String Util::getCurrentDirectory()
 	#else // _MSC_VER
 	if (!getcwd(pathname, MAX_PATH))
 	#endif // _MSC_VER
-		return emptyString;
+		return String();
 	String dir(String(pathname) + PATH_SEPARATOR);
 	return ensureUnifySlash(dir);
+}
+/*----------------------------------------------------------------*/
+
+
+uint64_t Util::CRC64(const void *pv, size_t cb)
+{
+	const uint8_t* pu8 = (const uint8_t *)pv;
+	uint64_t       uCRC64 = 0ULL;
+	while (cb--)
+		uCRC64 = gs_au64CRC64[(uCRC64 ^ *pu8++) & 0xff] ^ (uCRC64 >> 8);
+	return uCRC64;
+}
+
+uint64_t Util::CRC64Process(uint64_t uCRC64, const void *pv, size_t cb)
+{
+	const uint8_t *pu8 = (const uint8_t *)pv;
+	while (cb--)
+		uCRC64 = gs_au64CRC64[(uCRC64 ^ *pu8++) & 0xff] ^ (uCRC64 >> 8);
+	return uCRC64;
 }
 /*----------------------------------------------------------------*/
 

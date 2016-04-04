@@ -67,15 +67,17 @@
 #define EXPORT_API __declspec(dllexport)
 #define IMPORT_API __declspec(dllimport)
 /*----------------------------------------------------------------*/
-#if defined(_GENERAL_EXPORTS)
-#define GENERAL_API EXPORT_API
-#define GENERAL_TPL
-#elif defined(_GENERAL_IMPORTS)
-#define GENERAL_API IMPORT_API
-#define GENERAL_TPL extern
+#ifdef _USRDLL
+  #ifdef Common_EXPORTS
+    #define GENERAL_API EXPORT_API
+    #define GENERAL_TPL
+  #else
+    #define GENERAL_API IMPORT_API
+    #define GENERAL_TPL extern
+  #endif
 #else
-#define GENERAL_API
-#define GENERAL_TPL
+  #define GENERAL_API
+  #define GENERAL_TPL
 #endif
 /*----------------------------------------------------------------*/
 

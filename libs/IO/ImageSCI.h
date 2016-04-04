@@ -18,7 +18,7 @@ namespace SEACAVE {
 
 // S T R U C T S ///////////////////////////////////////////////////
 
-class GENERAL_API CImageSCI : public CImage
+class IO_API CImageSCI : public CImage
 {
 public:
 	CImageSCI();

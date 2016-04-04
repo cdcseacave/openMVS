@@ -301,11 +301,10 @@ typename TQuaternion<TYPE>::Vec TQuaternion<TYPE>::GetRotationAxis() const
 template <typename TYPE>
 TYPE TQuaternion<TYPE>::GetRotationAngle() const
 {
-	const TYPE angle = TYPE(2.0 * acos((*this)[3]));
-	if (isnan(angle) && ABS(ABS((*this)[3]) - 1.0) < QUATERNION_EPSILON)
-		return TYPE(0);
-	else
-		return angle;
+	const TYPE angle = TYPE(2 * acos((*this)[3]));
+	return std::isnan(angle) && ABS(ABS((*this)[3]) - TYPE(1)) < QUATERNION_EPSILON ?
+		TYPE(0) :
+		angle;
 }
 
 template <typename TYPE>

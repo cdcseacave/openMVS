@@ -196,8 +196,6 @@ typedef class GENERAL_API THistogram<double> Histogram64F;
 class GENERAL_API Util
 {
 public:
-	static String emptyString;
-
 	static String getAppName() {
 		#ifdef _MSC_VER
 		TCHAR buf[MAX_PATH+1];
@@ -206,7 +204,7 @@ public:
 		#else // _MSC_VER
 		LPTSTR home = getenv("HOME");
 		if (home == NULL)
-			return emptyString;
+			return String();
 		String name(String(home) + "/app");
 		return ensureUnifySlash(name);
 		#endif // _MSC_VER
@@ -341,7 +339,7 @@ public:
 
 	static String getFilePath(const String& path) {
 		const String::size_type i = path.rfind(PATH_SEPARATOR);
-		return (i != String::npos) ? path.substr(0, i+1) : emptyString;
+		return (i != String::npos) ? path.substr(0, i+1) : String();
 	}
 	static String getFullFileName(const String& path) {
 		const String::size_type i = path.rfind('.');
@@ -362,11 +360,11 @@ public:
 	}
 	static String getFileExt(const String& path) {
 		const String::size_type i = path.rfind('.');
-		return (i != String::npos) ? path.substr(i) : emptyString;
+		return (i != String::npos) ? path.substr(i) : String();
 	}
 	static String getLastDir(const String& path) {
 		const String::size_type i = path.rfind(PATH_SEPARATOR);
-		if (i == String::npos) return Util::emptyString;
+		if (i == String::npos) return String();
 		const String::size_type j = path.rfind(PATH_SEPARATOR, i-1);
 		if (j != String::npos)
 			return path.substr(j+1, j-i-1);
@@ -391,10 +389,10 @@ public:
 	static String getValue(const String& str, const String& label) {
 		String::size_type pos = str.find(label);
 		if (pos == String::npos)
-			return emptyString;
+			return String();
 		pos = str.find(_T("="), pos);
 		if (pos == String::npos)
-			return emptyString;
+			return String();
 		String::size_type end = str.find_first_of(_T(LINE_SEPARATOR_STR), ++pos);
 		return str.substr(pos, end-pos);
 	}
@@ -506,7 +504,7 @@ public:
 
 	static String toString(const wchar_t* wsz) {
 		if (wsz == NULL)
-			return emptyString;
+			return String();
 		#if 1
 		const std::wstring ws(wsz);
 		return std::string(ws.cbegin(), ws.cend());
@@ -514,10 +512,10 @@ public:
 		std::mbstate_t state = std::mbstate_t();
 		const size_t len(std::wcsrtombs(NULL, &wsz, 0, &state));
 		if (len == static_cast<std::size_t>(-1))
-			return emptyString;
+			return String();
 		std::vector<char> mbstr(len+1);
 		if (std::wcsrtombs(&mbstr[0], &wsz, mbstr.size(), &state) == static_cast<std::size_t>(-1))
-			return emptyString;
+			return String();
 		return String(&mbstr[0]);
 		#elif 1
 		const std::wstring ws(wsz);
@@ -529,7 +527,7 @@ public:
 		const wchar_t* from_next;
 		char* to_next;
 		if (converter.out(state, ws.data(), ws.data() + ws.length(), from_next, &to[0], &to[0] + to.size(), to_next) != converter_type::ok)
-			return emptyString;
+			return String();
 		return std::string(&to[0], to_next);
 		#else
 		typedef std::codecvt_utf8<wchar_t> convert_typeX;
@@ -596,13 +594,7 @@ public:
 	 * @param   pv      Pointer to the memory block.
 	 * @param   cb      Size of the memory block in bytes.
 	 */
-	static uint64_t CRC64(const void *pv, size_t cb) {
-		const uint8_t* pu8 = (const uint8_t *)pv;
-		uint64_t       uCRC64 = 0ULL;
-		while (cb--)
-			uCRC64 = ms_au64CRC64[(uCRC64 ^ *pu8++) & 0xff] ^ (uCRC64 >> 8);
-		return uCRC64;
-	}
+	static uint64_t CRC64(const void *pv, size_t cb);
 
 	/**
 	 * Start a multiblock CRC64 calculation.
@@ -620,12 +612,7 @@ public:
 	 * @param   pv      The data block to process.
 	 * @param   cb      The size of the data block in bytes.
 	 */
-	static uint64_t CRC64Process(uint64_t uCRC64, const void *pv, size_t cb) {
-		const uint8_t *pu8 = (const uint8_t *)pv;
-		while (cb--)
-			uCRC64 = ms_au64CRC64[(uCRC64 ^ *pu8++) & 0xff] ^ (uCRC64 >> 8);
-		return uCRC64;
-	}
+	static uint64_t CRC64Process(uint64_t uCRC64, const void *pv, size_t cb);
 	/**
 	 * Complete a multiblock CRC64 calculation.
 	 *
@@ -635,8 +622,6 @@ public:
 	static uint64_t CRC64Finish(uint64_t uCRC64) {
 		return uCRC64;
 	}
-
-	static const uint64_t ms_au64CRC64[256];
 
 
 	static String	GetCPUInfo();

@@ -27,7 +27,7 @@ namespace SEACAVE {
 // vertices, and texture vertices. Vertices are stored in a counter-clockwise order
 // by default, making explicit declaration of face normals unnecessary.
 
-class ObjModel {
+class IO_API ObjModel {
 public:
 	typedef Pixel32F Color;
 

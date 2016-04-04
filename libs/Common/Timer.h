@@ -84,21 +84,23 @@ public:
 		return (tv.tv_sec * 1000000) + tv.tv_usec;
 		#endif // _MSC_VER
 	}
+	// get milliseconds scaling factor for time
+	static Type GetTimeFactor();
 	// get current time in milliseconds
 	static inline Type GetTimeMs() {
-		return ms_fTimeFactor * GetSysTime();
+		return GetTimeFactor() * GetSysTime();
 	}
 	// get current time in seconds
 	static inline Type GetTime() {
-		return 0.001f * ms_fTimeFactor * GetSysTime();
+		return 0.001f * GetTimeFactor() * GetSysTime();
 	}
 	// convert given time to milliseconds
 	static inline Type SysTime2TimeMs(SysType t) {
-		return ms_fTimeFactor * t;
+		return GetTimeFactor() * t;
 	}
 	// convert given time to seconds
 	static inline Type SysTime2Time(SysType t) {
-		return 0.001f * ms_fTimeFactor * t;
+		return 0.001f * GetTimeFactor() * t;
 	}
 
 protected:
@@ -110,7 +112,7 @@ protected:
 /*----------------------------------------------------------------*/
 
 
-class AutoTimer
+class GENERAL_API AutoTimer
 {
 public:
 	typedef Timer::Type Type;
@@ -121,7 +123,7 @@ protected:
 	Type&	m_duration;
 };
 
-class AutoAddTimer
+class GENERAL_API AutoAddTimer
 {
 public:
 	typedef Timer::Type Type;
