@@ -23,7 +23,7 @@ namespace SEACAVE {
 
 // S T R U C T S ///////////////////////////////////////////////////
 
-class GENERAL_API CImageEXIF : public CImage
+class IO_API CImageEXIF : public CImage
 {
 public:
 	CImageEXIF();

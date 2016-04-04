@@ -297,7 +297,7 @@ int main(int argc, LPCTSTR* argv)
 	if (!PBA::LoadModelFile(MAKE_PATH_SAFE(OPT::strInputFileName), cameras, vertices, measurements, correspondingPoint, correspondingView, names, ptc))
 		return EXIT_FAILURE;
 
-	// convert data from OpenMVG to OpenMVS
+	// convert data from VisualSFM to OpenMVS
 	MVS::Scene scene(OPT::nMaxThreads);
 	scene.platforms.Reserve((uint32_t)cameras.size());
 	scene.images.Reserve((uint32_t)cameras.size());

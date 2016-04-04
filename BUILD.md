@@ -50,12 +50,12 @@ cmake . ../src -DCMAKE_BUILD_TYPE=RELEASE -DEIGEN_DIR="../OpenMVS/Eigen" -DOPENC
 Linux compilation
 -----------------
 
-[Ubuntu](http://www.ubuntu.com) is used next as the example linux distribution.
+[Ubuntu](http://www.ubuntu.com) 15.10 is used next as the example linux distribution.
 
 ```
 #Prepare and empty machine for building:
 sudo apt-get update -qq && sudo apt-get install -qq
-sudo apt-get -y install git subversion cmake libpng-dev libjpeg-dev libtiff-dev libglu1-mesa-dev
+sudo apt-get -y install git mercurial subversion cmake libpng-dev libjpeg-dev libtiff-dev libglu1-mesa-dev
 main_path=`pwd`
 
 #Eigen (Required)
@@ -74,10 +74,9 @@ sudo apt-get -y install libcgal-dev
 svn checkout svn://svn.code.sf.net/p/vcg/code/trunk/vcglib vcglib
 
 #Ceres (Required)
-sudo apt-get install libatlas-base-dev libsuitesparse-dev
+sudo apt-get -y install libatlas-base-dev libsuitesparse-dev
 git clone https://ceres-solver.googlesource.com/ceres-solver ceres-solver
-mkdir ceres_build
-cd ceres_build/
+mkdir ceres_build && cd ceres_build
 cmake . ../ceres-solver/ -DMINIGLOG=ON -DBUILD_TESTING=OFF -DBUILD_EXAMPLES=OFF
 make
 sudo make install
@@ -85,45 +84,14 @@ cd ..
 
 #OpenMVS
 git clone https://github.com/cdcseacave/openMVS.git openMVS
-mkdir openMVS_build
-cd openMVS_build
-cmake . ../openMVS -DCMAKE_BUILD_TYPE=Release -DVCG_DIR="$main_path/vcglib" -DOpenCV_CAN_BREAK_BINARY_COMPATIBILITY=OFF
+mkdir openMVS_build && cd openMVS_build
+cmake . ../openMVS -DCMAKE_BUILD_TYPE=Release -DVCG_DIR="$main_path/vcglib"
 
 #If you want to use OpenMVS as shared library, add to the cmake command:
 -DBUILD_SHARED_LIBS=ON
 
 #Install OpenMVS library (optional):
 sudo make install
-```
-
-Default compilation settings of OpenMVS reveals some tiny compilation error in VCG. Here the fixes:
-
-```
-Index: vcg/complex/algorithms/clean.h
-===================================================================
---- vcg/complex/algorithms/clean.h	(revision 5553)
-+++ vcg/complex/algorithms/clean.h	(working copy)
-@@ -452,7 +452,7 @@
-     return count_removed;
-   }
- 
--  static int SplitSelectedVertexOnEdgeMesh(MeshType& m)
-+  static void SplitSelectedVertexOnEdgeMesh(MeshType& m)
-   {
-     tri::RequireCompactness(m);
-     tri::UpdateFlags<MeshType>::VertexClearV(m);
-Index: vcg/complex/algorithms/hole.h
-===================================================================
---- vcg/complex/algorithms/hole.h	(revision 5553)
-+++ vcg/complex/algorithms/hole.h	(working copy)
-@@ -98,6 +98,7 @@
-     ComputeQuality();
-     ComputeAngle();
-   }
-+  virtual ~TrivialEar() {}
- 
-   /// Compute the angle of the two edges of the ear.
-   // it tries to make the computation in a precision safe way.
 ```
 
 --------------------

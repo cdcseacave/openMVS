@@ -52,7 +52,7 @@ namespace MVS {
 // the world and camera coordinates system is right handed,
 // with x pointing right, y pointing down, and z pointing forward
 // (see: R. Hartley, "Multiple View Geometry," 2004, pp. 156.)
-class CameraIntern
+class MVS_API CameraIntern
 {
 public:
 	KMatrix K; // the intrinsic camera parameters (3x3)
@@ -201,7 +201,7 @@ public:
 
 
 // same as above, plus caching the projection matrix
-class Camera : public CameraIntern
+class MVS_API Camera : public CameraIntern
 {
 public:
 	PMatrix P; // the composed projection matrix (3x4)
@@ -363,10 +363,10 @@ public:
 typedef SEACAVE::cList<Camera, const Camera&, 0> CameraArr;
 /*----------------------------------------------------------------*/
 
-void DecomposeProjectionMatrix(const PMatrix& P, KMatrix& K, RMatrix& R, CMatrix& C);
-void DecomposeProjectionMatrix(const PMatrix& P, RMatrix& R, CMatrix& C);
-void AssembleProjectionMatrix(const KMatrix& K, const RMatrix& R, const CMatrix& C, PMatrix& P);
-void AssembleProjectionMatrix(const RMatrix& R, const CMatrix& C, PMatrix& P);
+MVS_API void DecomposeProjectionMatrix(const PMatrix& P, KMatrix& K, RMatrix& R, CMatrix& C);
+MVS_API void DecomposeProjectionMatrix(const PMatrix& P, RMatrix& R, CMatrix& C);
+MVS_API void AssembleProjectionMatrix(const KMatrix& K, const RMatrix& R, const CMatrix& C, PMatrix& P);
+MVS_API void AssembleProjectionMatrix(const RMatrix& R, const CMatrix& C, PMatrix& P);
 /*----------------------------------------------------------------*/
 
 } // namespace MVS

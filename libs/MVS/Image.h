@@ -45,7 +45,7 @@
 
 namespace MVS {
 
-struct ViewInfo {
+struct MVS_API ViewInfo {
 	uint32_t ID; // image ID
 	uint32_t points; // number of 3D points shared with the reference image
 	float scale; // image scale relative to the reference image
@@ -64,12 +64,12 @@ struct ViewInfo {
 	}
 	#endif
 };
-typedef TIndexScore<ViewInfo, float> ViewScore;
-typedef CLISTDEF0IDX(ViewScore, uint32_t) ViewScoreArr;
+typedef MVS_API TIndexScore<ViewInfo, float> ViewScore;
+typedef MVS_API CLISTDEF0IDX(ViewScore, uint32_t) ViewScoreArr;
 /*----------------------------------------------------------------*/
 
 // a view instance seeing the scene
-class Image
+class MVS_API Image
 {
 public:
 	uint32_t platformID; // ID of the associated platform
@@ -140,7 +140,7 @@ public:
 	BOOST_SERIALIZATION_SPLIT_MEMBER()
 	#endif
 };
-typedef SEACAVE::cList<Image, const Image&, 2, 16, uint32_t> ImageArr;
+typedef MVS_API SEACAVE::cList<Image, const Image&, 2, 16, uint32_t> ImageArr;
 /*----------------------------------------------------------------*/
 
 } // namespace MVS

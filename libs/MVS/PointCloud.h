@@ -46,7 +46,7 @@ namespace MVS {
 // a point-cloud containing the points with the corresponding views
 // and optionally weights, normals and colors
 // (same size as the number of points or zero)
-class PointCloud
+class MVS_API PointCloud
 {
 public:
 	typedef IDX Index;
@@ -104,15 +104,15 @@ public:
 /*----------------------------------------------------------------*/
 
 
-typedef float Depth;
-typedef Point3f Normal;
-typedef TImage<Depth> DepthMap;
-typedef TImage<Normal> NormalMap;
-typedef TImage<float> ConfidenceMap;
-typedef SEACAVE::cList<Depth,Depth,0> DepthArr;
-typedef SEACAVE::cList<DepthMap,const DepthMap&,2> DepthMapArr;
-typedef SEACAVE::cList<NormalMap,const NormalMap&,2> NormalMapArr;
-typedef SEACAVE::cList<ConfidenceMap,const ConfidenceMap&,2> ConfidenceMapArr;
+typedef MVS_API float Depth;
+typedef MVS_API Point3f Normal;
+typedef MVS_API TImage<Depth> DepthMap;
+typedef MVS_API TImage<Normal> NormalMap;
+typedef MVS_API TImage<float> ConfidenceMap;
+typedef MVS_API SEACAVE::cList<Depth,Depth,0> DepthArr;
+typedef MVS_API SEACAVE::cList<DepthMap,const DepthMap&,2> DepthMapArr;
+typedef MVS_API SEACAVE::cList<NormalMap,const NormalMap&,2> NormalMapArr;
+typedef MVS_API SEACAVE::cList<ConfidenceMap,const ConfidenceMap&,2> ConfidenceMapArr;
 /*----------------------------------------------------------------*/
 
 } // namespace MVS

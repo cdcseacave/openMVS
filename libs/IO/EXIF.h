@@ -59,7 +59,7 @@
 // 
 // Class responsible for storing and parsing EXIF information from a JPEG blob
 //
-class EXIFInfo {
+class IO_API EXIFInfo {
  public:
   // Parsing function for an entire JPEG image buffer.
   //

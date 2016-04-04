@@ -46,7 +46,7 @@
 namespace MVS {
 
 // a mobile platform with cameras attached to it
-class Platform
+class MVS_API Platform
 {
 public:
 	// structure describing a normalized camera mounted on a platform
@@ -87,7 +87,7 @@ public:
 	}
 	#endif
 };
-typedef CLISTDEFIDX(Platform,uint32_t) PlatformArr;
+typedef MVS_API CLISTDEFIDX(Platform,uint32_t) PlatformArr;
 /*----------------------------------------------------------------*/
 
 } // namespace MVS

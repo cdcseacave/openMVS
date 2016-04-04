@@ -426,6 +426,9 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		boost::program_options::options_description visible("Available options");
 		visible.add(generic).add(config);
 		GET_LOG() << visible;
+		#ifndef _USE_OPENMVG
+		GET_LOG() << "\nWARNING: Only " MVG_EXT " files supported! In order to import " MVG2_EXT " or " MVG3_EXT " files use the converter included in OpenMVG, or link OpenMVS to the latest version of OpenMVG during compile time.\n";
+		#endif
 	}
 	if (bInvalidCommand)
 		return false;

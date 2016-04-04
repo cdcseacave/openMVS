@@ -181,7 +181,7 @@ String CImageEXIF::ReadKeyEXIF(const String& name, bool bInterpret) const
 	const Exiv2::ExifKey key("Exif."+name);
 	Exiv2::ExifData::const_iterator it = exifData.findKey(key);
 	if (it == exifData.end())
-		return Util::emptyString;
+		return String();
 	if (bInterpret)
 		return it->print();
 	return it->value().toString();

@@ -47,7 +47,7 @@
 namespace MVS {
 
 // a mesh represented by a list vertices and triangles (faces)
-class Mesh
+class MVS_API Mesh
 {
 public:
 	typedef TPoint3<float> Vertex;

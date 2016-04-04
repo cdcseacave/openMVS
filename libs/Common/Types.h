@@ -471,26 +471,6 @@ typedef class GENERAL_API cList<double, double, 0>      DoubleArr;
 #define ABORT(msg)			{ VERBOSE("error: " #msg); exit(-1); }
 #endif
 
-#if (defined(_MSC_VER) && _MSC_VER < 1800) || defined(__BORLANDC__)
-	/* MS C-runtime has functions which can be used in order to determine if
-	   a given floating-point variable contains NaN, (+-)INF. These are
-	   preferred, because floating-point technology is considered proprietary
-	   by MS and we can assume that their functions know more about their
-	   oddities than we do. */
-	#include <float.h>
-	/* Bjorn Reese figured a quite nice construct for isinf() using the _fpclass function. */
-	#ifndef isinf
-	template<typename _Tp>
-	inline int isinf(_Tp x) { return ((_fpclass(x) == _FPCLASS_PINF) ? 1 : ((_fpclass(x) == _FPCLASS_NINF) ? -1 : 0)); }
-	#endif
-	/* _isnan(x) returns nonzero if (x == NaN) and zero otherwise. */
-	#ifndef isnan
-	template<typename _Tp>
-	inline int isnan(_Tp x) { return (_isnan(x)); }
-	#endif
-#endif
-
-
 #ifndef _USE_MATH_DEFINES
 /** e */
 #ifndef M_E
@@ -1203,10 +1183,10 @@ public:
 /*----------------------------------------------------------------*/
 
 
-inline bool   ISINFORNAN(float x)			{ return (isinf(x) || isnan(x)); }
-inline bool   ISINFORNAN(double x)			{ return (isinf(x) || isnan(x)); }
-inline bool   ISFINITE(float x)				{ return (!isinf(x) && !isnan(x)); }
-inline bool   ISFINITE(double x)			{ return (!isinf(x) && !isnan(x)); }
+inline bool   ISINFORNAN(float x)			{ return (std::isinf(x) || std::isnan(x)); }
+inline bool   ISINFORNAN(double x)			{ return (std::isinf(x) || std::isnan(x)); }
+inline bool   ISFINITE(float x)				{ return (!std::isinf(x) && !std::isnan(x)); }
+inline bool   ISFINITE(double x)			{ return (!std::isinf(x) && !std::isnan(x)); }
 template<typename _Tp>
 inline bool   ISFINITE(const _Tp* x, size_t n)	{ for (size_t i=0; i<n; ++i) if (ISINFORNAN(x[i])) return false; return true; }
 

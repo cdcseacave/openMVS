@@ -29,7 +29,7 @@ namespace SEACAVE {
 // https://github.com/nmoehrle/mvs-texturing
 // Copyright(c) Michael Waechter
 // Licensed under the BSD 3-Clause license
-class LBPInference
+class MATH_API LBPInference
 {
 public:
 	typedef unsigned NodeID;
