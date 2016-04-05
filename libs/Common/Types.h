@@ -1839,10 +1839,28 @@ struct TPixel {
 	static const TPixel CYAN;
 	// init
 	inline TPixel() {}
-	template <typename T> inline TPixel(const TPixel<T>& p) : r(TYPE(p.r)), g(TYPE(p.g)), b(TYPE(p.b)) {}
-	inline TPixel(TYPE _r, TYPE _g, TYPE _b) : r(_r), g(_g), b(_b) {}
+	template <typename T> inline TPixel(const TPixel<T>& p)
+		#if _COLORMODE == _COLORMODE_BGR
+		: b(TYPE(p.b)), g(TYPE(p.g)), r(TYPE(p.r)) {}
+		#endif
+		#if _COLORMODE == _COLORMODE_RGB
+		: r(TYPE(p.r)), g(TYPE(p.g)), b(TYPE(p.b)) {}
+		#endif
+	inline TPixel(TYPE _r, TYPE _g, TYPE _b)
+		#if _COLORMODE == _COLORMODE_BGR
+		: b(_b), g(_g), r(_r) {}
+		#endif
+		#if _COLORMODE == _COLORMODE_RGB
+		: r(_r), g(_g), b(_b) {}
+		#endif
 	inline TPixel(const Pnt& col) : c0(col.x),  c1(col.y),  c2(col.z) {}
-	explicit inline TPixel(uint32_t col) : r(TYPE((col>>16)&0xFF)), g(TYPE((col>>8)&0xFF)), b(TYPE(col&0xFF)) {}
+	explicit inline TPixel(uint32_t col)
+		#if _COLORMODE == _COLORMODE_BGR
+		: b(TYPE(col&0xFF)), g(TYPE((col>>8)&0xFF)), r(TYPE((col>>16)&0xFF)) {}
+		#endif
+		#if _COLORMODE == _COLORMODE_RGB
+		: r(TYPE((col>>16)&0xFF)), g(TYPE((col>>8)&0xFF)), b(TYPE(col&0xFF)) {}
+		#endif
 	// set/get from default type
 	inline void set(TYPE _r, TYPE _g, TYPE _b) { r = _r; g = _g; b = _b; }
 	inline void set(const TYPE* clr) { c[0] = clr[0]; c[1] = clr[1]; c[2] = clr[2]; }
@@ -1938,16 +1956,22 @@ struct TColor {
 	static const TColor CYAN;
 	// init
 	inline TColor() {}
-	template <typename T> inline TColor(const TColor<T>& p) : r(TYPE(p.r)), g(TYPE(p.g)), b(TYPE(p.b)), a(TYPE(p.a)) {}
-	inline TColor(TYPE _r, TYPE _g, TYPE _b, TYPE _a=ColorType<TYPE>::ONE) : r(_r), g(_g), b(_b), a(_a) {}
-	inline TColor(const Pxl& col, TYPE _a=ColorType<TYPE>::ONE) : r(col.r),  g(col.g),  b(col.b), a(_a) {}
+	template <typename T> inline TColor(const TColor<T>& p)
+		: r(TYPE(p.r)), g(TYPE(p.g)), b(TYPE(p.b)), a(TYPE(p.a)) {}
+	inline TColor(TYPE _r, TYPE _g, TYPE _b, TYPE _a=ColorType<TYPE>::ONE)
+		: r(_r), g(_g), b(_b), a(_a) {}
+	inline TColor(const Pxl& col, TYPE _a=ColorType<TYPE>::ONE)
+		: r(col.r),  g(col.g),  b(col.b), a(_a) {}
 	#if _COLORMODE == _COLORMODE_BGR
-	inline TColor(const Pnt& col, TYPE _a=ColorType<TYPE>::ONE) : b(col.x),  g(col.y),  r(col.z),  a(_a) {}
+	inline TColor(const Pnt& col, TYPE _a=ColorType<TYPE>::ONE)
+		: b(col.x),  g(col.y),  r(col.z),  a(_a) {}
 	#endif
 	#if _COLORMODE == _COLORMODE_RGB
-	inline TColor(const Pnt& col, TYPE _a=ColorType<TYPE>::ONE) : r(col.x),  g(col.y),  b(col.z),  a(_a) {}
+	inline TColor(const Pnt& col, TYPE _a=ColorType<TYPE>::ONE)
+		: r(col.x),  g(col.y),  b(col.z),  a(_a) {}
 	#endif
-	explicit inline TColor(uint32_t col) : r(TYPE((col>>16)&0xFF)), g(TYPE((col>>8)&0xFF)), b(TYPE(col&0xFF)), a(TYPE((col>>24)&0xFF)) {}
+	explicit inline TColor(uint32_t col)
+		: r(TYPE((col>>16)&0xFF)), g(TYPE((col>>8)&0xFF)), b(TYPE(col&0xFF)), a(TYPE((col>>24)&0xFF)) {}
 	// set/get from default type
 	inline void set(TYPE _r, TYPE _g, TYPE _b, TYPE _a=ColorType<TYPE>::ONE) { r = _r; g = _g; b = _b; a = _a; }
 	inline void set(const TYPE* clr) { c[0] = clr[0]; c[1] = clr[1]; c[2] = clr[2]; c[3] = clr[3]; }

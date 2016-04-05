@@ -37,6 +37,8 @@ struct Linear {
 	static const int halfWidth = 1;
 	static const int width = halfWidth*2;
 
+	inline Linear() {}
+	
 	inline void operator () (const TYPE x, TYPE* const weigth) const {
 		weigth[0] = TYPE(1) - x;
 		weigth[1] = x;
@@ -166,6 +168,8 @@ struct Spline16 {
 	static const int halfWidth = 2;
 	static const int width = halfWidth*2;
 
+	inline Spline16() {}
+
 	inline void operator () (const TYPE x, TYPE* const weigth) const {
 		weigth[0] = ((TYPE(-1) / TYPE(3) * x + TYPE(4) / TYPE(5)) * x - TYPE(7) / TYPE(15)) * x;
 		weigth[1] = ((x - TYPE(9) / TYPE(5)) * x - TYPE(1) / TYPE(5)) * x + TYPE(1);
@@ -182,6 +186,8 @@ struct Spline36 {
 
 	static const int halfWidth = 3;
 	static const int width = halfWidth*2;
+
+	inline Spline36() {}
 
 	inline void operator () (const TYPE x, TYPE* const weigth) const {
 		weigth[0] = ((TYPE(1) / TYPE(11) * x - TYPE(45) / TYPE(209)) * x + TYPE(26) / TYPE(209)) * x;
@@ -201,6 +207,8 @@ struct Spline64 {
 
 	static const int halfWidth = 4;
 	static const int width = halfWidth*2;
+
+	inline Spline64() {}
 
 	inline void operator () (const TYPE x, TYPE* const weigth) const {
 		weigth[0] = ((TYPE(-1) / TYPE(41) * x + TYPE(168) / TYPE(2911)) * x - TYPE(97) / TYPE(2911)) * x;
@@ -240,7 +248,6 @@ inline TYPE Sample(const IMAGE& image, const SAMPLER& sampler, const POINT& pt)
 
 	// Sample a grid around specified grid point
 	TYPE res(0);
-	T total_weight(0);
 	for (int i = 0; i < SAMPLER::width; ++i) {
 		// get current i value
 		// +1 for correct scheme (draw it to be convinced)
@@ -256,18 +263,12 @@ inline TYPE Sample(const IMAGE& image, const SAMPLER& sampler, const POINT& pt)
 			if (cur_j < 0 || cur_j >= image.cols)
 				continue;
 			// sample input image and weight according to sampler
-			const T w(coefs_x[j] * coefs_y[i]);
-			res += TYPE(image(cur_i, cur_j)) * w;
-			total_weight += w;
+			const T w = coefs_x[j] * coefs_y[i];
+			const TYPE pixel = image(cur_i, cur_j);
+			res += pixel * w;
 		}
 	}
-	// if the weight is too small, the result is unstable
-	if (total_weight <= T(0.2))
-		return TYPE();
-
-	if (ISEQUAL(total_weight, T(1)))
-		return res;
-	return res/total_weight;
+	return res;
 }
 
 } // namespace Sampler

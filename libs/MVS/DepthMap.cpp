@@ -676,7 +676,12 @@ void MVS::EstimatePointNormals(const ImageArr& images, PointCloud& pointcloud, i
 	// estimates normals direction;
 	// Note: pca_estimate_normals() requires an iterator over points
 	// as well as property maps to access each point's position and normal.
-	CGAL::pca_estimate_normals(pointvectors.begin(), pointvectors.end(),
+	#if CGAL_VERSION_NR < 1040800000
+	CGAL::pca_estimate_normals(
+	#else
+	CGAL::pca_estimate_normals<CGAL::Sequential_tag>(
+	#endif
+		pointvectors.begin(), pointvectors.end(),
 		CGAL::First_of_pair_property_map<PointVectorPair>(),
 		CGAL::Second_of_pair_property_map<PointVectorPair>(),
 		numNeighbors
@@ -802,12 +807,9 @@ bool MVS::ExportConfidenceMap(const String& fileName, const ConfidenceMap& confM
 	}
 	if (confs.IsEmpty())
 		return false;
-	float minConf, maxConf;
-	if (!confs.IsEmpty()) {
-		const std::pair<float,float> th(ComputeX84Threshold<float,float>(confs.Begin(), confs.GetSize()));
-		minConf = th.first-th.second;
-		maxConf = th.first+th.second;
-	}
+	const std::pair<float,float> th(ComputeX84Threshold<float,float>(confs.Begin(), confs.GetSize()));
+	float minConf = th.first-th.second;
+	float maxConf = th.first+th.second;
 	if (minConf < 0.1f)
 		minConf = 0.1f;
 	if (maxConf < 0.1f)

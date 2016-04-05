@@ -532,10 +532,10 @@ bool PLY::read(ISTREAM* f)
 	STRISTREAM sfp(fp);
 	char **words = get_words(sfp, &nwords, &orig_line);
 	if (words == NULL)
-		return (NULL);
+		return false;
 	if (!equal_strings (words[0], "ply")) {
 		free(words);
-		return (NULL);
+		return false;
 	}
 	free(words);
 
@@ -543,7 +543,7 @@ bool PLY::read(ISTREAM* f)
 	while ((words = get_words(sfp, &nwords, &orig_line)) != NULL) {
 		if (equal_strings(words[0], "format")) {
 			if (nwords != 3)
-				return (NULL);
+				return false;
 			if (equal_strings(words[1], "ascii"))
 				this->file_type = ASCII;
 			else if (equal_strings(words[1], "binary_big_endian"))
@@ -551,7 +551,7 @@ bool PLY::read(ISTREAM* f)
 			else if (equal_strings(words[1], "binary_little_endian"))
 				this->file_type = BINARY_LE;
 			else
-				return (NULL);
+				return false;
 			this->version = (float)atof(words[2]);
 		}
 		else if (equal_strings(words[0], "element"))
