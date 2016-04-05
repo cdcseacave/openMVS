@@ -371,7 +371,7 @@ public:
 	}
 	template< typename DataInputIteratorX, typename DataInputIteratorY>
 	void drawPolyline(DataInputIteratorX xStart, DataInputIteratorX xEnd,
-		DataInputIteratorY yStart, DataInputIteratorY yEnd,
+		DataInputIteratorY yStart, DataInputIteratorY /*yEnd*/,
 		const svgStyle& style)
 	{
 		svgStream << "<polyline points='";

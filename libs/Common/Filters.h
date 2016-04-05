@@ -76,7 +76,7 @@ public:
 	BufferedOutputStream(OutputStream* aStream, size_t aBufSize) : LayerOutputStream<managed>(aStream), buf(new uint8_t[aBufSize]), bufSize(aBufSize), pos(0) { }
 	virtual ~BufferedOutputStream() {
 		flush();
-		delete buf;
+		delete[] buf;
 	}
 
 	size_t flush() {
@@ -132,7 +132,7 @@ class BufferedInputStream : public LayerInputStream<managed> {
 public:
 	BufferedInputStream(InputStream* aStream, size_t aBufSize) : LayerInputStream<managed>(aStream), buf(new uint8_t[aBufSize]), bufSize(aBufSize), maxCache(0), caching(0), pos(0) { }
 	virtual ~BufferedInputStream() {
-		delete buf;
+		delete[] buf;
 	}
 
 	size_t read(void* wbuf, size_t len) {
@@ -213,7 +213,7 @@ public:
 
 	FilteredOutputStream(OutputStream* aFile, size_t aBufSize, void* pData) : LayerOutputStream<managed>(aFile), buf(new uint8_t[aBufSize]), bufSize(aBufSize), filter(pData), flushed(false) {}
 	virtual ~FilteredOutputStream() {
-		delete buf;
+		delete[] buf;
 	}
 
 	size_t flush() {
@@ -282,7 +282,7 @@ class FilteredInputStream : public LayerInputStream<managed> {
 public:
 	FilteredInputStream(InputStream* pFile, size_t nFilteredSize, size_t nBufSize, void* pData) : LayerInputStream<managed>(pFile), buf(new uint8_t[nBufSize]), filteredSize(nFilteredSize), bufSize(nBufSize), valid(0), pos(0), filter(pData), more(true) {}
 	virtual ~FilteredInputStream() {
-		delete buf;
+		delete[] buf;
 	}
 
 	/**

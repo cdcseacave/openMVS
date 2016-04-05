@@ -119,10 +119,11 @@ macro(GetOperatingSystemArchitectureBitness)
 		execute_process(COMMAND ${CMAKE_CXX_COMPILER} --version
 					  OUTPUT_VARIABLE CMAKE_FLG_GCC_VERSION_FULL
 					  OUTPUT_STRIP_TRAILING_WHITESPACE)
-
-		execute_process(COMMAND ${CMAKE_CXX_COMPILER} -v
-					  ERROR_VARIABLE CMAKE_FLG_GCC_INFO_FULL
-					  OUTPUT_STRIP_TRAILING_WHITESPACE)
+		if(CMAKE_FLG_GCC_VERSION_FULL STREQUAL "")
+			execute_process(COMMAND ${CMAKE_CXX_COMPILER} -v
+						  ERROR_VARIABLE CMAKE_FLG_GCC_VERSION_FULL
+						  OUTPUT_STRIP_TRAILING_WHITESPACE)
+		endif()
 
 		# Typical output in CMAKE_FLG_GCC_VERSION_FULL: "c+//0 (whatever) 4.2.3 (...)"
 		# Look for the version number
@@ -638,11 +639,13 @@ macro(optimize_default_compiler_settings)
 	endif()
 
 	# Extra link libs if the user selects building static libs:
-	if(NOT BUILD_SHARED_LIBS AND CMAKE_COMPILER_IS_GNUCXX AND NOT ANDROID)
-		# Android does not need these settings because they are already set by toolchain file
-		set(BUILD_EXTRA_LINKER_LIBS ${BUILD_EXTRA_LINKER_LIBS} stdc++)
-	else()
-		set(BUILD_EXTRA_FLAGS "${BUILD_EXTRA_FLAGS} -fPIC")
+	# Android does not need these settings because they are already set by toolchain file
+	if(CMAKE_COMPILER_IS_GNUCXX AND NOT ANDROID)
+		if(BUILD_SHARED_LIBS)
+			set(BUILD_EXTRA_FLAGS "${BUILD_EXTRA_FLAGS} -fPIC")
+		else()
+			set(BUILD_EXTRA_LINKER_LIBS "${BUILD_EXTRA_LINKER_LIBS} stdc++")
+		endif()
 	endif()
 
 	# Add user supplied extra options (optimization, etc...)

@@ -1635,7 +1635,7 @@ void MeshTexture::PoissonBlending(const Image32F3& src, Image32F3& dst, const Im
 			const MatIdx idx(indices(i));
 			ASSERT(idx != -1);
 			coeffA.AddConstruct(idx, idx, 1.f);
-			coeffB[idx] = Color(dst(i));
+			coeffB[idx] = (const Color&)dst(i);
 		} break;
 		case interior: {
 			const MatIdx idxUp(indices(i - width));

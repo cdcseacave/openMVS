@@ -1191,7 +1191,7 @@ protected:
 			while (n--)
 				new(dst+n) TYPE(src[n]);
 		} else {
-			memcpy(dst, src, n*sizeof(TYPE));
+			memcpy((void*)dst, (const void*)src, n*sizeof(TYPE));
 		}
 	}
 	static inline void	_ArrayDestruct(TYPE* dst, IDX n)
@@ -1208,7 +1208,7 @@ protected:
 			while (n--)
 				dst[n] = src[n];
 		} else {
-			memcpy(dst, src, n*sizeof(TYPE));
+			memcpy((void*)dst, (const void*)src, n*sizeof(TYPE));
 		}
 	}
 	static inline void	_ArrayMoveConstructFwd(TYPE* dst, TYPE* src, IDX n)
@@ -1220,7 +1220,7 @@ protected:
 				(src+i)->~TYPE();
 			}
 		} else {
-			memmove(dst, src, n*sizeof(TYPE));
+			memmove((void*)dst, (const void*)src, n*sizeof(TYPE));
 		}
 	}
 	template <bool bRestrict>
@@ -1235,9 +1235,9 @@ protected:
 		} else {
 			const size_t _size(sizeof(TYPE)*n);
 			if (bRestrict)
-				memcpy(dst, src, _size);
+				memcpy((void*)dst, (const void*)src, _size);
 			else
-				memmove(dst, src, _size);
+				memmove((void*)dst, (const void*)src, _size);
 		}
 	}
 	template <bool bRestrict>
@@ -1255,9 +1255,9 @@ protected:
 				while (n--)
 					(dst+n)->~TYPE();
 			if (bRestrict)
-				memcpy(dst, src, _size);
+				memcpy((void*)dst, (const void*)src, _size);
 			else
-				memmove(dst, src, _size);
+				memmove((void*)dst, (const void*)src, _size);
 		}
 	}
 

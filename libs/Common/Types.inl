@@ -284,7 +284,7 @@ template <typename TYPE> const TColor<TYPE> TColor<TYPE>::CYAN		(0, ColorType<TY
 #ifdef _SUPPORT_CPP11
 template <typename A>
 inline typename std::enable_if<std::is_array<A>::value, size_t>::type
-SizeOfArray(const A& a) {
+SizeOfArray(const A&) {
 	return std::extent<A>::value;
 }
 #else
