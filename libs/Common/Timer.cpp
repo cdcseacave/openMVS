@@ -160,6 +160,6 @@ const Timer::Type Timer::ms_fTimeFactor = GetSysTimeFactor();
 
 Timer::Type Timer::GetTimeFactor()
 {
-	return ms_fTimeFactor * GetSysTime();
+	return ms_fTimeFactor;
 }
 /*----------------------------------------------------------------*/

@@ -60,6 +60,7 @@ unsigned nOrthoMapResolution;
 unsigned nArchiveType;
 int nProcessPriority;
 unsigned nMaxThreads;
+String strExportType;
 String strConfigFileName;
 boost::program_options::variables_map vm;
 } // namespace OPT
@@ -77,6 +78,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		("help,h", "produce this help message")
 		("working-folder,w", boost::program_options::value<std::string>(&WORKING_FOLDER), "working directory (default current directory)")
 		("config-file,c", boost::program_options::value<std::string>(&OPT::strConfigFileName)->default_value(APPNAME _T(".cfg")), "file name containing program options")
+		("export-type", boost::program_options::value<std::string>(&OPT::strExportType)->default_value(_T("ply")), "file type used to export the 3D scene (ply or obj)")
 		("archive-type", boost::program_options::value<unsigned>(&OPT::nArchiveType)->default_value(2), "project archive type: 0-text, 1-binary, 2-compressed binary")
 		("process-priority", boost::program_options::value<int>(&OPT::nProcessPriority)->default_value(-1), "process priority (below normal by default)")
 		("max-threads", boost::program_options::value<unsigned>(&OPT::nMaxThreads)->default_value(0), "maximum number of threads (0 for using all available cores)")
@@ -158,6 +160,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	}
 	if (OPT::strInputFileName.IsEmpty())
 		return false;
+	OPT::strExportType = OPT::strExportType.ToLower() == _T("obj") ? _T(".obj") : _T(".ply");
 
 	// initialize optional options
 	Util::ensureValidPath(OPT::strOutputFileName);
@@ -229,10 +232,10 @@ int main(int argc, LPCTSTR* argv)
 
 	// save the final mesh
 	scene.Save(baseFileName+_T(".mvs"), (ARCHIVE_TYPE)OPT::nArchiveType);
-	scene.mesh.Save(baseFileName+_T(".ply"));
+	scene.mesh.Save(baseFileName+OPT::strExportType);
 	#if TD_VERBOSE != TD_VERBOSE_OFF
 	if (VERBOSITY_LEVEL > 2)
-		scene.ExportCamerasMLP(baseFileName+_T(".mlp"), baseFileName+_T(".ply"));
+		scene.ExportCamerasMLP(baseFileName+_T(".mlp"), baseFileName+OPT::strExportType);
 	#endif
 	}
 
