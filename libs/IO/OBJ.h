@@ -55,7 +55,7 @@ public:
 		MaterialLib();
 
 		// Saves the material lib to a .mtl file and all textures of its materials with the given prefix name
-		bool Save(const String& prefix) const;
+		bool Save(const String& prefix, bool texLossless=false) const;
 		// Loads the material lib from a .mtl file and all textures of its materials with the given file name
 		bool Load(const String& fileName);
 	};
@@ -93,7 +93,7 @@ public:
 	ObjModel() {}
 
 	// Saves the obj model to an .obj file, its material lib and the materials with the given file name
-	bool Save(const String& fileName, unsigned precision=6) const;
+	bool Save(const String& fileName, unsigned precision=6, bool texLossless=false) const;
 	// Loads the obj model from an .obj file, its material lib and the materials with the given file name
 	bool Load(const String& fileName);
 

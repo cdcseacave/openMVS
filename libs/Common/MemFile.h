@@ -16,8 +16,6 @@
 
 // D E F I N E S ///////////////////////////////////////////////////
 
-#define MEMFILE_GROWSIZE	4096
-
 
 namespace SEACAVE {
 
@@ -66,7 +64,7 @@ public:
 	virtual bool setSize(size_f_t newSize) {
 		ASSERT(newSize >= 0);
 		if (newSize > m_sizeBuffer)
-			setMaxSize(newSize+MEMFILE_GROWSIZE);
+			setMaxSize(newSize);
 		m_size = newSize;
 		if (m_pos > m_size)
 			m_pos = m_size;
@@ -82,7 +80,12 @@ public:
 	}
 
 	virtual bool setMaxSize(size_f_t newSize) {
-		ASSERT(newSize > 0);
+		ASSERT(newSize > m_sizeBuffer);
+		// grow by 50% or at least to minNewVectorSize
+		const size_f_t expoSize(m_sizeBuffer + (m_sizeBuffer>>1));
+		if (newSize < expoSize)
+			newSize = expoSize;
+		// allocate a larger chunk of memory, copy the data and delete the old chunk
 		BYTE* const tmp(m_buffer);
 		m_buffer = new BYTE[(size_t)newSize];
 		if (!m_buffer) {
@@ -107,8 +110,8 @@ public:
 
 	virtual bool ensureSize(size_f_t extraSize) {
 		const size_f_t newSize = m_size + extraSize;
-		if (m_sizeBuffer < newSize)
-			return setMaxSize(newSize+MEMFILE_GROWSIZE);
+		if (newSize > m_sizeBuffer)
+			return setMaxSize(newSize);
 		return true;
 	}
 

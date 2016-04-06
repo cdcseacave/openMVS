@@ -23,7 +23,7 @@ Required tools:
 Windows compilation
 -------------------
 
-Visual Studion 2008 or newer is supported. Please not that the development is done mainly on Windows, so this platform build is tested the most.
+Visual Studion 2008 or newer is supported. Please note that the development is done mainly on Windows, so this platform build is tested the most. The latest pre-built binaries for fast testing can be download from [here](https://github.com/cdcseacave/openMVS_sample/releases/latest).
 
 ```
 # Make a toplevel directory for deps & build & src somewhere:
@@ -43,7 +43,7 @@ cd build
 # Run CMake:
 cmake . ../src -DCMAKE_BUILD_TYPE=RELEASE -DEIGEN_DIR="../OpenMVS/Eigen" -DOPENCV_DIR="../OpenMVS/OpenCV" -DCERES_DIR="../OpenMVS/Ceres" -DCGAL_DIR="../OpenMVS/CGAL" -DVCG_DIR="../OpenMVS/VCG"
 
-# Open the solution and build it in MSVC
+# Open the solution in MSVC and build it
 ```
 
 -----------------
@@ -55,7 +55,7 @@ Linux compilation
 ```
 #Prepare and empty machine for building:
 sudo apt-get update -qq && sudo apt-get install -qq
-sudo apt-get -y install git mercurial subversion cmake libpng-dev libjpeg-dev libtiff-dev libglu1-mesa-dev
+sudo apt-get -y install git subversion cmake libpng-dev libjpeg-dev libtiff-dev libglu1-mesa-dev
 main_path=`pwd`
 
 #Eigen (Required)
@@ -87,29 +87,35 @@ git clone https://github.com/cdcseacave/openMVS.git openMVS
 mkdir openMVS_build && cd openMVS_build
 cmake . ../openMVS -DCMAKE_BUILD_TYPE=Release -DVCG_DIR="$main_path/vcglib"
 
-#If you want to use OpenMVS as shared library, add to the cmake command:
+#If you want to use OpenMVS as shared library, add to the CMake command:
 -DBUILD_SHARED_LIBS=ON
 
 #Install OpenMVS library (optional):
-sudo make install
+make && sudo make install
 ```
 
 --------------------
 Mac OS X compilation
 --------------------
 
-Not tested, any help testing on this platform is welcome.
+Install dependencies, run CMake and make.
 
 ```
-# Install dependencies using [MacPorts](http://www.macports.org):
-sudo port install opencv boost cgal ceres-solver eigen3
+#Install dependencies
+brew install opencv boost cgal eigen ceres-solver
+svn checkout svn://svn.code.sf.net/p/vcg/code/trunk/vcglib vcglib
+main_path=`pwd`
 
-# Getting the OpenMVS sources:
+#Getting the OpenMVS sources:
 git clone https://github.com/cdcseacave/openMVS.git
 
-# Build
-mkdir bin
-cd bin
-cmake . <OpenMVS_path> -DCMAKE_BUILD_TYPE=RELEASE -DVCG_DIR="<vcglib_path>" -DCGAL_DIR="/opt/local/share/CGAL" -DCERES_DIR="/opt/local/share/Ceres"
-make -j4
+#Build OpenMVS
+mkdir openMVS_build && cd openMVS_build
+cmake . ../openMVS -DCMAKE_BUILD_TYPE=Release -DVCG_DIR="$main_path/vcglib"
+
+#If you want to use OpenMVS as shared library, add to the CMake command:
+-DBUILD_SHARED_LIBS=ON
+
+#Install OpenMVS library (optional):
+make && sudo make install
 ```
