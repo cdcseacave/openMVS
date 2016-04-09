@@ -3499,7 +3499,10 @@ void Mesh::ProjectOrtho(const Camera& camera, DepthMap& depthMap, Image8U3& imag
 			pti[v] = camera.TransformPointC2I((const Point2&)ptc[v]);
 			return depthMap.isInsideWithBorder<float,3>(pti[v]);
 		}
-		inline void SetupNormalPlane() {
+		inline bool CheckNormal(const Point3& /*faceCenter*/) {
+			// skip face if the (cos) angle between
+			// the face normal and the view direction is negative
+			return camera.Direction().dot(normalPlane) >= ZEROTOLERANCE<REAL>();
 		}
 		void Raster(const ImageRef& pt) {
 			if (!depthMap.isInsideWithBorder<float,3>(pt))
@@ -3532,7 +3535,7 @@ void Mesh::ProjectOrthoTopDown(unsigned resolution, Image8U3& image, Image8U& ma
 {
 	ASSERT(!IsEmpty() && !textureDiffuse.empty());
 	const AABB3f box(vertices.Begin(), vertices.GetSize());
-	const Point3 size(box.GetSize().cast<REAL>());
+	const Point3 size(Vertex(box.GetSize())*1.005f/*border*/);
 	center = box.GetCenter().cast<REAL>();
 	Camera camera;
 	camera.R.SetFromDirUp(Vec3(Point3(0,0,-1)), Vec3(Point3(0,1,0)));
