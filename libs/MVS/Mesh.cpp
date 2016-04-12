@@ -3397,6 +3397,27 @@ void Mesh::RemoveVertices(VertexIdxArr& vertexRemove, bool bUpdateLists)
 /*----------------------------------------------------------------*/
 
 
+// computes the area of the mesh surface as the sum of the signed areas of its faces
+REAL Mesh::ComputeArea() const
+{
+	REAL area(0);
+	for (const Face& face: faces)
+		area += ComputeTriangleArea(vertices[face[0]], vertices[face[1]], vertices[face[2]]);
+	return area;
+}
+
+// computes the signed volume of the domain bounded by the mesh surface
+// (note: valid only for closed and orientable manifolds)
+REAL Mesh::ComputeVolume() const
+{
+	REAL volume(0);
+	for (const Face& face: faces)
+		volume += ComputeTriangleVolume(vertices[face[0]], vertices[face[1]], vertices[face[2]]);
+	return volume;
+}
+/*----------------------------------------------------------------*/
+
+
 // project mesh to the given camera plane
 void Mesh::Project(const Camera& camera, DepthMap& depthMap) const
 {

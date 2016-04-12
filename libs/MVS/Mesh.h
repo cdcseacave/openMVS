@@ -50,7 +50,9 @@ namespace MVS {
 class MVS_API Mesh
 {
 public:
-	typedef TPoint3<float> Vertex;
+	typedef float Type;
+
+	typedef TPoint3<Type> Vertex;
 	typedef uint32_t VIndex;
 	typedef TPoint3<VIndex> Face;
 	typedef uint32_t FIndex;
@@ -63,10 +65,10 @@ public:
 	typedef cList<VertexIdxArr> VertexVerticesArr;
 	typedef cList<FaceIdxArr> VertexFacesArr;
 
-	typedef TPoint3<float> Normal;
+	typedef TPoint3<Type> Normal;
 	typedef cList<Normal,const Normal&,0,8192,FIndex> NormalArr;
 
-	typedef TPoint2<float> TexCoord;
+	typedef TPoint2<Type> TexCoord;
 	typedef cList<TexCoord,const TexCoord&,0,8192,FIndex> TexCoordArr;
 
 	// used to find adjacent face
@@ -145,6 +147,9 @@ public:
 			n += normalized(FaceNormal(faces[*pIdxF]));
 		return n;
 	}
+
+	REAL ComputeArea() const;
+	REAL ComputeVolume() const;
 
 	void Project(const Camera& camera, DepthMap& depthMap) const;
 	void Project(const Camera& camera, DepthMap& depthMap, Image8U3& image) const;
@@ -254,7 +259,7 @@ struct TRasterMesh {
 	void Raster(const ImageRef& pt) {
 		if (!depthMap.isInsideWithBorder<float,3>(pt))
 			return;
-		const float z((float)INVERT(normalPlane.dot(camera.TransformPointI2C(Point2(pt)))));
+		const Depth z((Depth)INVERT(normalPlane.dot(camera.TransformPointI2C(Point2(pt)))));
 		ASSERT(z > 0);
 		Depth& depth = depthMap(pt);
 		if (depth == 0 || depth > z)
