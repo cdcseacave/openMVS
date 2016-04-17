@@ -54,6 +54,7 @@ bool bUseFreeSpaceSupport;
 float fDecimateMesh;
 float fRemoveSpurious;
 bool bRemoveSpikes;
+bool gclowdensity;
 unsigned nCloseHoles;
 unsigned nSmoothMesh;
 unsigned nArchiveType;
@@ -100,6 +101,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		("min-point-distance,d", boost::program_options::value<float>(&OPT::fDistInsert)->default_value(2.f), "minimum distance in pixels between the projection of two 3D points to consider them different while triangulating")
 		("constant-weight", boost::program_options::value<bool>(&OPT::bUseConstantWeight)->default_value(true), "considers all view weights 1 instead of the available weight")
 		("free-space-support,f", boost::program_options::value<bool>(&OPT::bUseFreeSpaceSupport)->default_value(false), "exploits the free-space support in order to reconstruct weakly-represented surfaces")
+		("gclowdensity", boost::program_options::value<bool>(&OPT::gclowdensity)->default_value(false), "flag controlling low density mode for graph-cut. (false by default).")
 		;
 	boost::program_options::options_description config_clean("Clean options");
 	config_clean.add_options()
@@ -237,7 +239,7 @@ int main(int argc, LPCTSTR* argv)
 			TD_TIMER_START();
 			if (OPT::bUseConstantWeight)
 				scene.pointcloud.pointWeights.Release();
-			if (!scene.ReconstructMesh(OPT::fDistInsert, OPT::bUseFreeSpaceSupport))
+			if (!scene.ReconstructMesh(OPT::fDistInsert, OPT::bUseFreeSpaceSupport, OPT::gclowdensity))
 				return EXIT_FAILURE;
 			VERBOSE("Mesh reconstruction completed: %u vertices, %u faces (%s)", scene.mesh.vertices.GetSize(), scene.mesh.faces.GetSize(), TD_TIMER_GET_FMT().c_str());
 			#if TD_VERBOSE != TD_VERBOSE_OFF

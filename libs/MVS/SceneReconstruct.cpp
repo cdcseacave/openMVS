@@ -772,7 +772,7 @@ float computePlaneSphereAngle(const delaunay_t& Tr, const facet_t& facet)
 // Next, the score is computed for all the edges of the directed graph composed of points as vertices.
 // Finally, graph-cut algorithm is used to split the tetrahedrons in inside and outside,
 // and the surface is such extracted.
-bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, unsigned nItersFixNonManifold,
+bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool gclowdensity, unsigned nItersFixNonManifold,
 							float kQual, float kb,
 							float kf, float kRel, float kAbs, float kOutl,
 							float kInf
@@ -925,7 +925,15 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, unsigne
 			const cell_handle_t& c(ei->first);
 			distsSq.Insert(normSq(CGAL2MVS<float>(c->vertex(ei->second)->point()) - CGAL2MVS<float>(c->vertex(ei->third)->point())));
 		}
-		const float sigma(SQRT(distsSq.GetMedian())*2);
+		// Graph-cut: If gclowdensity is set to false, use squareroot, leave out if not for sparse point-clouds
+		float gc_calc_median;
+		if (gclowdensity == false) {
+			gc_calc_median = SQRT(distsSq.GetMedian())*2;
+		}
+		else {
+			gc_calc_median = distsSq.GetMedian()*2;
+		}
+		const float sigma(gc_calc_median);
 		const float inv2SigmaSq(0.5f/(sigma*sigma));
 		distsSq.Release();
 
@@ -1160,3 +1168,4 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, unsigne
 	return true;
 }
 /*----------------------------------------------------------------*/
+
