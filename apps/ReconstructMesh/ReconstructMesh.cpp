@@ -54,6 +54,7 @@ bool bUseFreeSpaceSupport;
 float fDecimateMesh;
 float fRemoveSpurious;
 bool bRemoveSpikes;
+bool gclowdensity;
 unsigned nCloseHoles;
 unsigned nSmoothMesh;
 unsigned nArchiveType;
@@ -108,6 +109,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		("remove-spikes", boost::program_options::value<bool>(&OPT::bRemoveSpikes)->default_value(true), "flag controlling the removal of spike faces")
 		("close-holes", boost::program_options::value<unsigned>(&OPT::nCloseHoles)->default_value(30), "try to close small holes in the reconstructed surface (0 - disabled)")
 		("smooth", boost::program_options::value<unsigned>(&OPT::nSmoothMesh)->default_value(2), "number of iterations to smooth the reconstructed surface (0 - disabled)")
+		("gclowdensity", boost::program_options::value<bool>(&OPT::gclowdensity)->default_value(false), "flag controlling low density mode for graph-cut. (false by default).")
 		;
 
 	// hidden options, allowed both on command line and
@@ -237,7 +239,7 @@ int main(int argc, LPCTSTR* argv)
 			TD_TIMER_START();
 			if (OPT::bUseConstantWeight)
 				scene.pointcloud.pointWeights.Release();
-			if (!scene.ReconstructMesh(OPT::fDistInsert, OPT::bUseFreeSpaceSupport))
+			if (!scene.ReconstructMesh(OPT::fDistInsert, OPT::bUseFreeSpaceSupport, OPT::gclowdensity))
 				return EXIT_FAILURE;
 			VERBOSE("Mesh reconstruction completed: %u vertices, %u faces (%s)", scene.mesh.vertices.GetSize(), scene.mesh.faces.GetSize(), TD_TIMER_GET_FMT().c_str());
 			#if TD_VERBOSE != TD_VERBOSE_OFF
