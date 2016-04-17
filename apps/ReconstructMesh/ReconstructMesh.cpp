@@ -101,6 +101,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		("min-point-distance,d", boost::program_options::value<float>(&OPT::fDistInsert)->default_value(2.f), "minimum distance in pixels between the projection of two 3D points to consider them different while triangulating")
 		("constant-weight", boost::program_options::value<bool>(&OPT::bUseConstantWeight)->default_value(true), "considers all view weights 1 instead of the available weight")
 		("free-space-support,f", boost::program_options::value<bool>(&OPT::bUseFreeSpaceSupport)->default_value(false), "exploits the free-space support in order to reconstruct weakly-represented surfaces")
+		("gclowdensity", boost::program_options::value<bool>(&OPT::gclowdensity)->default_value(false), "flag controlling low density mode for graph-cut. (false by default).")
 		;
 	boost::program_options::options_description config_clean("Clean options");
 	config_clean.add_options()
@@ -109,7 +110,6 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		("remove-spikes", boost::program_options::value<bool>(&OPT::bRemoveSpikes)->default_value(true), "flag controlling the removal of spike faces")
 		("close-holes", boost::program_options::value<unsigned>(&OPT::nCloseHoles)->default_value(30), "try to close small holes in the reconstructed surface (0 - disabled)")
 		("smooth", boost::program_options::value<unsigned>(&OPT::nSmoothMesh)->default_value(2), "number of iterations to smooth the reconstructed surface (0 - disabled)")
-		("gclowdensity", boost::program_options::value<bool>(&OPT::gclowdensity)->default_value(false), "flag controlling low density mode for graph-cut. (false by default).")
 		;
 
 	// hidden options, allowed both on command line and
