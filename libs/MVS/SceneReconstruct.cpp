@@ -994,7 +994,7 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool gc
 				vert.viewsInfo[v].cell2Cam = inter.facet.first;
 				#endif
 				// find faces intersected by the endpoint-point segment
-				const Point3f endPoint(pt+vecCamPoint*(invLenCamPoint*sigma*kb));
+				const Point3f endPoint(pt+vecCamPoint*(invLenCamPoint*sigma));
 				const segment_t segEndPoint(MVS2CGAL(endPoint), p);
 				const cell_handle_t endCell(delaunay.locate(segEndPoint.source(), vi->cell()));
 				ASSERT(endCell != cell_handle_t());
