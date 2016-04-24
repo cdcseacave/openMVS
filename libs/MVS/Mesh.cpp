@@ -3397,6 +3397,27 @@ void Mesh::RemoveVertices(VertexIdxArr& vertexRemove, bool bUpdateLists)
 /*----------------------------------------------------------------*/
 
 
+// computes the area of the mesh surface as the sum of the signed areas of its faces
+REAL Mesh::ComputeArea() const
+{
+	REAL area(0);
+	for (const Face& face: faces)
+		area += ComputeTriangleArea(vertices[face[0]], vertices[face[1]], vertices[face[2]]);
+	return area;
+}
+
+// computes the signed volume of the domain bounded by the mesh surface
+// (note: valid only for closed and orientable manifolds)
+REAL Mesh::ComputeVolume() const
+{
+	REAL volume(0);
+	for (const Face& face: faces)
+		volume += ComputeTriangleVolume(vertices[face[0]], vertices[face[1]], vertices[face[2]]);
+	return volume;
+}
+/*----------------------------------------------------------------*/
+
+
 // project mesh to the given camera plane
 void Mesh::Project(const Camera& camera, DepthMap& depthMap) const
 {
@@ -3534,9 +3555,10 @@ void Mesh::ProjectOrtho(const Camera& camera, DepthMap& depthMap, Image8U3& imag
 void Mesh::ProjectOrthoTopDown(unsigned resolution, Image8U3& image, Image8U& mask, Point3& center) const
 {
 	ASSERT(!IsEmpty() && !textureDiffuse.empty());
+	// initialize camera
 	const AABB3f box(vertices.Begin(), vertices.GetSize());
-	const Point3 size(Vertex(box.GetSize())*1.005f/*border*/);
-	center = box.GetCenter().cast<REAL>();
+	const Point3 size(Vertex(box.GetSize())*1.01f/*border*/);
+	center = Vertex(box.GetCenter());
 	Camera camera;
 	camera.R.SetFromDirUp(Vec3(Point3(0,0,-1)), Vec3(Point3(0,1,0)));
 	camera.C = center;
@@ -3551,13 +3573,19 @@ void Mesh::ProjectOrthoTopDown(unsigned resolution, Image8U3& image, Image8U& ma
 	}
 	camera.K(0,2) = (REAL)(image.width()-1)/2;
 	camera.K(1,2) = (REAL)(image.height()-1)/2;
+	// project mesh
 	DepthMap depthMap(image.size());
 	ProjectOrtho(camera, depthMap, image);
+	// create mask for the valid image pixels
 	if (mask.size() != depthMap.size())
 		mask.create(depthMap.size());
 	for (int r=0; r<mask.rows; ++r)
 		for (int c=0; c<mask.cols; ++c)
 			mask(r,c) = depthMap(r,c) > 0 ? 255 : 0;
+	// compute 3D coordinates for the image center
+	const ImageRef xCenter(image.width()/2, image.height()/2);
+	const Depth depthCenter(depthMap(xCenter));
+	center = camera.TransformPointI2W(Point3(xCenter.x, xCenter.y, depthCenter > 0 ? depthCenter : camera.C.z-center.z));
 }
 /*----------------------------------------------------------------*/
 

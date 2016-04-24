@@ -94,7 +94,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		;
 
 	// group of options allowed both on command line and in config file
-	boost::program_options::options_description config("Refine options");
+	boost::program_options::options_description config("Texture options");
 	config.add_options()
 		("input-file,i", boost::program_options::value<std::string>(&OPT::strInputFileName), "input filename containing camera poses and image list")
 		("output-file,o", boost::program_options::value<std::string>(&OPT::strOutputFileName), "output filename for storing the mesh")
@@ -250,7 +250,9 @@ int main(int argc, LPCTSTR* argv)
 		cv::split(imageRGB, imageRGBA);
 		cv::merge(imageRGBA, 4, image);
 		image.Save(baseFileName+_T("_orthomap.png"));
-		VERBOSE("Orthographic view center: %g %g %g", center.x, center.y, center.z);
+		SML sml(_T("OrthoMap"));
+		sml[_T("Center")].val = String::FormatString(_T("%g %g %g"), center.x, center.y, center.z);
+		sml.Save(baseFileName+_T("_orthomap.txt"));
 	}
 
 	Finalize();

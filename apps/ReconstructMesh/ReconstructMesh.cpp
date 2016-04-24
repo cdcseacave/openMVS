@@ -40,6 +40,11 @@ using namespace MVS;
 
 #define APPNAME _T("ReconstructMesh")
 
+// uncomment to enable multi-threading based on OpenMP
+#ifdef _USE_OPENMP
+#define RECMESH_USE_OPENMP
+#endif
+
 
 // S T R U C T S ///////////////////////////////////////////////////
 
@@ -51,6 +56,8 @@ bool bMeshExport;
 float fDistInsert;
 bool bUseConstantWeight;
 bool bUseFreeSpaceSupport;
+float fThicknessFactor;
+float fQualityFactor;
 float fDecimateMesh;
 float fRemoveSpurious;
 bool bRemoveSpikes;
@@ -97,9 +104,11 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	config_main.add_options()
 		("input-file,i", boost::program_options::value<std::string>(&OPT::strInputFileName), "input filename containing camera poses and image list")
 		("output-file,o", boost::program_options::value<std::string>(&OPT::strOutputFileName), "output filename for storing the mesh")
-		("min-point-distance,d", boost::program_options::value<float>(&OPT::fDistInsert)->default_value(2.f), "minimum distance in pixels between the projection of two 3D points to consider them different while triangulating")
+		("min-point-distance,d", boost::program_options::value<float>(&OPT::fDistInsert)->default_value(2.f), "minimum distance in pixels between the projection of two 3D points to consider them different while triangulating (0 - disabled)")
 		("constant-weight", boost::program_options::value<bool>(&OPT::bUseConstantWeight)->default_value(true), "considers all view weights 1 instead of the available weight")
 		("free-space-support,f", boost::program_options::value<bool>(&OPT::bUseFreeSpaceSupport)->default_value(false), "exploits the free-space support in order to reconstruct weakly-represented surfaces")
+		("thickness-factor", boost::program_options::value<float>(&OPT::fThicknessFactor)->default_value(2.f), "multiplier adjusting the minimum thickness considered during visibility weighting")
+		("quality-factor", boost::program_options::value<float>(&OPT::fQualityFactor)->default_value(1.f), "multiplier adjusting the quality weight considered during graph-cut")
 		;
 	boost::program_options::options_description config_clean("Clean options");
 	config_clean.add_options()
@@ -223,21 +232,48 @@ int main(int argc, LPCTSTR* argv)
 		#endif
 	} else {
 		if (OPT::strMeshFileName.IsEmpty()) {
+			// reset image resolution to the original size and
 			// make sure the image neighbors are initialized before deleting the point-cloud
+			#ifdef RECMESH_USE_OPENMP
+			bool bAbort(false);
+			#pragma omp parallel for
+			for (int_t idx=0; idx<(int_t)scene.images.GetSize(); ++idx) {
+				#pragma omp flush (bAbort)
+				if (bAbort)
+					continue;
+				const uint32_t idxImage((uint32_t)idx);
+			#else
 			FOREACH(idxImage, scene.images) {
-				const Image& imageData = scene.images[idxImage];
+			#endif
+				Image& imageData = scene.images[idxImage];
 				if (!imageData.IsValid())
 					continue;
+				// reset image resolution
+				if (FAILED(imageData.ReloadImage(0, false))) {
+					#ifdef RECMESH_USE_OPENMP
+					bAbort = true;
+					#pragma omp flush (bAbort)
+					continue;
+					#else
+					return EXIT_FAILURE;
+					#endif
+				}
+				imageData.UpdateCamera(scene.platforms);
+				// select neighbor views
 				if (imageData.neighbors.IsEmpty()) {
 					IndexArr points;
 					scene.SelectNeighborViews(idxImage, points);
 				}
 			}
+			#ifdef RECMESH_USE_OPENMP
+			if (bAbort)
+				return EXIT_FAILURE;
+			#endif
 			// reconstruct a coarse mesh from the given point-cloud
 			TD_TIMER_START();
 			if (OPT::bUseConstantWeight)
 				scene.pointcloud.pointWeights.Release();
-			if (!scene.ReconstructMesh(OPT::fDistInsert, OPT::bUseFreeSpaceSupport))
+			if (!scene.ReconstructMesh(OPT::fDistInsert, OPT::bUseFreeSpaceSupport, 4, OPT::fThicknessFactor, OPT::fQualityFactor))
 				return EXIT_FAILURE;
 			VERBOSE("Mesh reconstruction completed: %u vertices, %u faces (%s)", scene.mesh.vertices.GetSize(), scene.mesh.faces.GetSize(), TD_TIMER_GET_FMT().c_str());
 			#if TD_VERBOSE != TD_VERBOSE_OFF

@@ -302,10 +302,10 @@ struct MeshTexture {
 			const TexCoord p01(p1 - p0);
 			const float length(norm(p01));
 			ASSERT(length > 0.f);
-			const int nSamples(ROUND2INT(MAXF(length, 1.f) * 2.f));
+			const int nSamples(ROUND2INT(MAXF(length, 1.f) * 2.f)-1);
 			AccumColor edgeAccumColor;
 			for (int s=0; s<nSamples; ++s) {
-				const float len(static_cast<float>(s) / (nSamples-1));
+				const float len(static_cast<float>(s) / nSamples);
 				const TexCoord samplePos(p0 + p01 * len);
 				const Color color(image.sample<Sampler,Color>(sampler, samplePos));
 				edgeAccumColor.Add(RGB2YCBCR(color), 1.f-len);
