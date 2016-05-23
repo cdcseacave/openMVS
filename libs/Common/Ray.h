@@ -23,14 +23,16 @@ namespace SEACAVE {
 template <typename TYPE, int DIMS>
 class TRay
 {
+	STATIC_ASSERT(DIMS > 1 && DIMS <= 3);
+
 public:
 	typedef Eigen::Matrix<TYPE,DIMS+1,DIMS+1,Eigen::RowMajor> MATRIX;
 	typedef Eigen::Matrix<TYPE,DIMS,1> VECTOR;
 	typedef Eigen::Matrix<TYPE,DIMS,1> POINT;
 	typedef SEACAVE::TAABB<TYPE,DIMS> AABB;
 	typedef SEACAVE::TOBB<TYPE,DIMS> OBB;
-	typedef SEACAVE::TPlane<TYPE> PLANE;
-	static const int numScalar = (2*DIMS);
+	typedef SEACAVE::TPlane<TYPE,DIMS> PLANE;
+	enum { numScalar = (2*DIMS) };
 
 	VECTOR	m_vDir;		// ray direction (normalized)
 	POINT	m_pOrig;	// ray origin

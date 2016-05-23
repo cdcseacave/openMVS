@@ -248,7 +248,7 @@ namespace SEACAVE_ASSERT
 	template <typename T> struct assert_are_not_same_type<T,T> {};
 }
 
-#define COMPILE_TIME_ASSERT(expression) \
+#define STATIC_ASSERT(expression) \
 	NOWARNUNUSED typedef char CTA##__LINE__[::SEACAVE_ASSERT::compile_time_assert<(bool)(expression)>::value] 
 
 #define ASSERT_ARE_SAME_TYPE(type1, type2) \

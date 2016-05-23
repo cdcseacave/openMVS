@@ -23,15 +23,15 @@ namespace SEACAVE {
 template <typename TYPE, int DIMS>
 class TAABB
 {
-	COMPILE_TIME_ASSERT(DIMS > 0 && DIMS <= 3);
+	STATIC_ASSERT(DIMS > 0 && DIMS <= 3);
 
 public:
 	typedef TYPE Type;
 	typedef Eigen::Matrix<TYPE,DIMS,1> POINT;
 	typedef Eigen::Matrix<TYPE,DIMS,DIMS,Eigen::RowMajor> MATRIX;
-	static const int numChildren = (2<<(DIMS-1));
-	static const int numCorners = (DIMS==1 ? 2 : (DIMS==2 ? 4 : 8)); // 2^DIMS
-	static const int numScalar = (2*DIMS);
+	enum { numChildren = (2<<(DIMS-1)) };
+	enum { numCorners = (DIMS==1 ? 2 : (DIMS==2 ? 4 : 8)) }; // 2^DIMS
+	enum { numScalar = (2*DIMS) };
 
 	POINT ptMin, ptMax;	// box extreme points
 

@@ -228,7 +228,7 @@ public:
 	static CriticalSection cs; // mutex
 	static Semaphore sem; // signal job end
 
-	static const int HalfSize = 3; // half window size used to compute ZNCC
+	enum { HalfSize = 3 }; // half window size used to compute ZNCC
 };
 
 // call with empty parameter to get an unused image;

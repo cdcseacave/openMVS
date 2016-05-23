@@ -628,10 +628,10 @@ inline int log2i(int val) {
 	}
 	return ret;
 }
-template <int N> inline int log2i() { return 1+log2i<(N>>1)>(); }
-template <> inline int log2i<0>() { return -1; }
-template <> inline int log2i<1>() { return 0; }
-template <> inline int log2i<2>() { return 1; }
+template <int N> constexpr inline int log2i() { return 1+log2i<(N>>1)>(); }
+template <>   constexpr inline int log2i<0>() { return -1; }
+template <>   constexpr inline int log2i<1>() { return 0; }
+template <>   constexpr inline int log2i<2>() { return 1; }
 
 template<typename T>
 inline T arithmeticSeries(T n, T a1=1, T d=1) {
@@ -1246,7 +1246,7 @@ typedef double REAL;
 template <typename TYPE, int m, int n> class TMatrix;
 template <typename TYPE, int DIMS> class TAABB;
 template <typename TYPE, int DIMS> class TRay;
-template <typename TYPE> class TPlane;
+template <typename TYPE, int DIMS> class TPlane;
 
 // 2D point struct
 template <typename TYPE>
@@ -1451,7 +1451,7 @@ public:
 
 	using Base::val;
 
-	static const int elems = m*n;
+	enum { elems = m*n };
 
 	static const TMatrix ZERO;
 	static const TMatrix IDENTITY;
@@ -2145,8 +2145,8 @@ public:
 		inline Index(size_t _idx, Type _flag) : idx(_idx), flag(_flag) {}
 	};
 
-	static const int numBitsPerCell = sizeof(Type)*8;
-	static const int numBitsShift;
+	enum { numBitsPerCell = sizeof(Type)*8 };
+	enum { numBitsShift = log2i<TBitMatrix::numBitsPerCell>() };
 
 public:
 	inline TBitMatrix() : data(NULL) {}

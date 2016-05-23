@@ -174,10 +174,10 @@ typedef MVS_API SEACAVE::cList<DepthData,const DepthData&,1> DepthDataArr;
 
 
 struct MVS_API DepthEstimator {
-	static const int TexelChannels = 1;
-	static const int nSizeHalfWindow = 3;
-	static const int nSizeWindow = nSizeHalfWindow*2+1;
-	static const int nTexels = nSizeWindow*nSizeWindow*TexelChannels;
+	enum { TexelChannels = 1 };
+	enum { nSizeHalfWindow = 3 };
+	enum { nSizeWindow = nSizeHalfWindow*2+1 };
+	enum { nTexels = nSizeWindow*nSizeWindow*TexelChannels };
 
 	enum ENDIRECTION {
 		LT2RB = 0,

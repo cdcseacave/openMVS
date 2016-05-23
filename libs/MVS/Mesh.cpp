@@ -3602,9 +3602,9 @@ bool Mesh::InitKernels(int device)
 	// initialize CUDA kernels
 	if (!kernelComputeFaceNormal.IsValid()) {
 		// kernel used to compute face normal, given the array of face vertices and vertex positions
-		COMPILE_TIME_ASSERT(sizeof(Vertex) == sizeof(float)*3);
-		COMPILE_TIME_ASSERT(sizeof(Face) == sizeof(VIndex)*3 && sizeof(VIndex) == sizeof(uint32_t));
-		COMPILE_TIME_ASSERT(sizeof(Normal) == sizeof(float)*3);
+		STATIC_ASSERT(sizeof(Vertex) == sizeof(float)*3);
+		STATIC_ASSERT(sizeof(Face) == sizeof(VIndex)*3 && sizeof(VIndex) == sizeof(uint32_t));
+		STATIC_ASSERT(sizeof(Normal) == sizeof(float)*3);
 		#define FUNC "ComputeFaceNormal"
 		LPCSTR const szKernel =
 			".version 3.2\n"

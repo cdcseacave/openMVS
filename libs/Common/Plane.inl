@@ -12,65 +12,55 @@
 // S T R U C T S ///////////////////////////////////////////////////
 
 // Construct plane given its normal and the distance from the origin.
-template <typename TYPE>
-inline TPlane<TYPE>::TPlane(const VECTOR& vN, TYPE fD)
+template <typename TYPE, int DIMS>
+inline TPlane<TYPE,DIMS>::TPlane(const VECTOR& vN, TYPE fD)
 	:
 	m_vN(vN), m_fD(fD)
 {
 }
 // Construct plane given its normal and a point on the plane.
-template <typename TYPE>
-inline TPlane<TYPE>::TPlane(const VECTOR& vN, const POINT& p)
+template <typename TYPE, int DIMS>
+inline TPlane<TYPE,DIMS>::TPlane(const VECTOR& vN, const POINT& p)
 	:
 	m_vN(vN), m_fD(-vN.dot(p))
 {
 }
 // Construct plane given three points on the plane.
-template <typename TYPE>
-inline TPlane<TYPE>::TPlane(const POINT& p0, const POINT& p1, const POINT& p2)
+template <typename TYPE, int DIMS>
+inline TPlane<TYPE,DIMS>::TPlane(const POINT& p0, const POINT& p1, const POINT& p2)
 {
 	Set(p0, p1, p2);
 }
 // Construct plane given its standard equation: Ax + By + Cz + D = 0
-template <typename TYPE>
-inline TPlane<TYPE>::TPlane(const VECTOR4& p)
-{
-	Set(p);
-}
-template <typename TYPE>
-inline TPlane<TYPE>::TPlane(const TYPE p[4])
+template <typename TYPE, int DIMS>
+inline TPlane<TYPE,DIMS>::TPlane(const TYPE p[DIMS+1])
 {
 	Set(p);
 } // constructors
 /*----------------------------------------------------------------*/
 
-template <typename TYPE>
-inline void TPlane<TYPE>::Set(const VECTOR& vN, TYPE fD)
+template <typename TYPE, int DIMS>
+inline void TPlane<TYPE,DIMS>::Set(const VECTOR& vN, TYPE fD)
 {
 	m_vN = vN;
 	m_fD = fD;
 }
-template <typename TYPE>
-inline void TPlane<TYPE>::Set(const VECTOR& vN, const POINT& p)
+template <typename TYPE, int DIMS>
+inline void TPlane<TYPE,DIMS>::Set(const VECTOR& vN, const POINT& p)
 {
 	m_vN = vN;
 	m_fD = -vN.dot(p);
 }
-template <typename TYPE>
-inline void TPlane<TYPE>::Set(const POINT& p0, const POINT& p1, const POINT& p2)
+template <typename TYPE, int DIMS>
+inline void TPlane<TYPE,DIMS>::Set(const POINT& p0, const POINT& p1, const POINT& p2)
 {
 	const VECTOR vcEdge1 = p1 - p0;
 	const VECTOR vcEdge2 = p2 - p0;
 	m_vN = vcEdge1.cross(vcEdge2).normalized();
 	m_fD = -m_vN.dot(p0);
 }
-template <typename TYPE>
-inline void TPlane<TYPE>::Set(const VECTOR4& p)
-{
-	Set(p.data());
-}
-template <typename TYPE>
-inline void TPlane<TYPE>::Set(const TYPE p[4])
+template <typename TYPE, int DIMS>
+inline void TPlane<TYPE,DIMS>::Set(const TYPE p[DIMS+1])
 {
 	const Eigen::Map<const VECTOR> vN(p);
 	const TYPE invD(INVERT(vN.norm()));
@@ -79,8 +69,8 @@ inline void TPlane<TYPE>::Set(const TYPE p[4])
 /*----------------------------------------------------------------*/
 
 
-template <typename TYPE>
-inline void TPlane<TYPE>::Negate()
+template <typename TYPE, int DIMS>
+inline void TPlane<TYPE,DIMS>::Negate()
 {
 	m_vN = -m_vN;
 	m_fD = -m_fD;
@@ -88,21 +78,21 @@ inline void TPlane<TYPE>::Negate()
 /*----------------------------------------------------------------*/
 
 
-template <typename TYPE>
-inline TYPE TPlane<TYPE>::Distance(const TPlane& p) const
+template <typename TYPE, int DIMS>
+inline TYPE TPlane<TYPE,DIMS>::Distance(const TPlane& p) const
 {
 	return ABS(m_fD - p.m_fD);
 }
 /*----------------------------------------------------------------*/
 
 // Calculate distance to point. Plane normal must be normalized.
-template <typename TYPE>
-inline TYPE TPlane<TYPE>::Distance(const POINT& p) const
+template <typename TYPE, int DIMS>
+inline TYPE TPlane<TYPE,DIMS>::Distance(const POINT& p) const
 {
 	return m_vN.dot(p) + m_fD;
 }
-template <typename TYPE>
-inline TYPE TPlane<TYPE>::DistanceAbs(const POINT& p) const
+template <typename TYPE, int DIMS>
+inline TYPE TPlane<TYPE,DIMS>::DistanceAbs(const POINT& p) const
 {
 	return ABS(Distance(p));
 }
@@ -110,20 +100,20 @@ inline TYPE TPlane<TYPE>::DistanceAbs(const POINT& p) const
 
 
 // Classify point to plane.
-template <typename TYPE>
-inline UINT TPlane<TYPE>::Classify(const POINT& p) const
+template <typename TYPE, int DIMS>
+inline UINT TPlane<TYPE,DIMS>::Classify(const POINT& p) const
 {
 	const TYPE f(Distance(p));
-	if (f >  ZEROTOLERANCE<TYPE>()) return FRONT;
-	if (f < -ZEROTOLERANCE<TYPE>()) return BACK;
+	if (f >  ZEROTOLERANCE<TYPE,DIMS>()) return FRONT;
+	if (f < -ZEROTOLERANCE<TYPE,DIMS>()) return BACK;
 	return PLANAR;
 }
 /*----------------------------------------------------------------*/
 
 
 // Classify bounding box to plane.
-template <typename TYPE>
-inline UINT TPlane<TYPE>::Classify(const AABB& aabb) const
+template <typename TYPE, int DIMS>
+inline UINT TPlane<TYPE,DIMS>::Classify(const AABB& aabb) const
 {
 	const UINT classMin = Classify(aabb.ptMin);
 	const UINT classMax = Classify(aabb.ptMax);
@@ -134,8 +124,8 @@ inline UINT TPlane<TYPE>::Classify(const AABB& aabb) const
 
 
 // clips a ray into two segments if it intersects the plane
-template <typename TYPE>
-bool TPlane<TYPE>::Clip(const RAY& ray, TYPE fL, RAY* pF, RAY* pB) const
+template <typename TYPE, int DIMS>
+bool TPlane<TYPE,DIMS>::Clip(const RAY& ray, TYPE fL, RAY* pF, RAY* pB) const
 {
 	POINT ptHit = POINT::ZERO;
 
@@ -164,13 +154,13 @@ bool TPlane<TYPE>::Clip(const RAY& ray, TYPE fL, RAY* pF, RAY* pB) const
 // Intersection of two planes.
 // Returns the line of intersection.
 // http://paulbourke.net/geometry/pointlineplane/
-template <typename TYPE>
-bool TPlane<TYPE>::Intersects(const TPlane& plane, RAY& ray) const
+template <typename TYPE, int DIMS>
+bool TPlane<TYPE,DIMS>::Intersects(const TPlane& plane, RAY& ray) const
 {
 	// if crossproduct of normals 0 than planes parallel
 	const VECTOR vCross(m_vN.cross(plane.m_vN));
 	const TYPE fSqrLength(vCross.squaredNorm());
-	if (fSqrLength < ZEROTOLERANCE<TYPE>()) 
+	if (fSqrLength < ZEROTOLERANCE<TYPE,DIMS>()) 
 		return false;
 
 	// find line of intersection
@@ -202,8 +192,8 @@ bool TPlane<TYPE>::Intersects(const TPlane& plane, RAY& ray) const
 
 // Intersection of a plane with a triangle. If all vertices of the
 // triangle are on the same side of the plane, no intersection occurred. 
-template <typename TYPE>
-bool TPlane<TYPE>::Intersects(const POINT& p0, const POINT& p1, const POINT& p2) const
+template <typename TYPE, int DIMS>
+bool TPlane<TYPE,DIMS>::Intersects(const POINT& p0, const POINT& p1, const POINT& p2) const
 {
 	const UINT n(Classify(p0));
 	if ((n == Classify(p1)) && 
@@ -217,8 +207,8 @@ bool TPlane<TYPE>::Intersects(const POINT& p0, const POINT& p1, const POINT& p2)
 // Intersection with AABB. Search for AABB diagonal that is most
 // aligned to plane normal. Test its two vertices against plane.
 // (Möller/Haines, "Real-Time Rendering")
-template <typename TYPE>
-bool TPlane<TYPE>::Intersects(const AABB& aabb) const
+template <typename TYPE, int DIMS>
+bool TPlane<TYPE,DIMS>::Intersects(const AABB& aabb) const
 {
 	POINT Vmin, Vmax;
 
