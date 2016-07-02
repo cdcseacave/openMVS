@@ -1539,7 +1539,7 @@ bool Scene::DenseReconstruction()
 			}
 			// reload image at the appropriate resolution
 			const unsigned nMaxResolution(imageData.RecomputeMaxResolution(OPTDENSE::nResolutionLevel, OPTDENSE::nMinResolution));
-			if (FAILED(imageData.ReloadImage(nMaxResolution))) {
+			if (!imageData.ReloadImage(nMaxResolution)) {
 				#ifdef DENSE_USE_OPENMP
 				bAbort = true;
 				#pragma omp flush (bAbort)

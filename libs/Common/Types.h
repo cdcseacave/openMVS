@@ -111,11 +111,21 @@ namespace boost { void throw_exception(std::exception const&); }
 #endif
 
 #ifdef _USE_EIGEN
+#if defined(_MSC_VER)
+#pragma warning (push)
+#pragma warning (disable : 4244) // warning C4244: 'argument': conversion from '__int64' to 'int', possible loss of data
+#endif
 #include <Eigen/Core>
 #include <Eigen/Dense>
 #include <Eigen/Sparse>
-#include <Eigen/SVD>
 #include <Eigen/Geometry>
+#include <Eigen/Eigenvalues>
+#include <Eigen/SVD>
+#include <Eigen/QR>
+#include <Eigen/LU>
+#if defined(_MSC_VER)
+#pragma warning (pop)
+#endif
 #endif
 
 #include <opencv2/core/version.hpp>

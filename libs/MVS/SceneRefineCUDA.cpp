@@ -2194,7 +2194,7 @@ bool MeshRefineCUDA::InitImages(float scale, float sigma)
 		// load and init image
 		unsigned level(nResolutionLevel);
 		const unsigned imageSize(imageData.RecomputeMaxResolution(level, nMinResolution));
-		if ((imageData.image.empty() || MAXF(imageData.width,imageData.height) != imageSize) && FAILED(imageData.ReloadImage(imageSize))) {
+		if ((imageData.image.empty() || MAXF(imageData.width,imageData.height) != imageSize) && !imageData.ReloadImage(imageSize)) {
 			#ifdef MESHCUDAOPT_USE_OPENMP
 			bAbort = true;
 			#pragma omp flush (bAbort)

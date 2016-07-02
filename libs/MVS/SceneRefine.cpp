@@ -1083,7 +1083,7 @@ void MeshRefine::ThInitImage(uint32_t idxImage, Real scale, Real sigma)
 	// load and init image
 	unsigned level(nResolutionLevel);
 	const unsigned imageSize(imageData.RecomputeMaxResolution(level, nMinResolution));
-	if ((imageData.image.empty() || MAXF(imageData.width,imageData.height) != imageSize) && FAILED(imageData.ReloadImage(imageSize)))
+	if ((imageData.image.empty() || MAXF(imageData.width,imageData.height) != imageSize) && !imageData.ReloadImage(imageSize))
 		ABORT("can not load image");
 	View& view = views[idxImage];
 	Image32F& img = view.image;
