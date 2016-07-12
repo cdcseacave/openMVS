@@ -1408,9 +1408,10 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateNormal)
 				if (views.GetSize() < nMinViewsFuse) {
 					// remove point
 					FOREACH(v, views) {
+						const uint32_t idxImageB(views[v]);
 						const ImageRef x(pointProjs[v].GetCoord());
-						ASSERT(arrDepthIdx[idxImage].isInside(x));
-						arrDepthIdx[idxImage](x).idx = NO_ID;
+						ASSERT(arrDepthIdx[idxImageB].isInside(x) && arrDepthIdx[idxImageB](x).idx != NO_ID);
+						arrDepthIdx[idxImageB](x).idx = NO_ID;
 					}
 					projs.RemoveLast();
 					pointcloud.pointWeights.RemoveLast();
