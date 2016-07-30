@@ -237,12 +237,14 @@ public:
 	template <typename TYPE>
 	inline TPoint2<TYPE> ProjectPointRT(const TPoint3<TYPE>& X) const {
 		const TPoint3<TYPE> q(R * (X - C));
-		return ((const TPoint2<TYPE>&)q)*INVERT(q.z);
+		const TYPE invZ(INVERT(q.z));
+		return TPoint2<TYPE>(q.x*invZ, q.y*invZ);
 	}
 	template <typename TYPE>
 	inline TPoint2<TYPE> ProjectPoint(const TPoint3<TYPE>& X) const {
 		const TPoint3<TYPE> q(K * (R * (X - C)));
-		return ((const TPoint2<TYPE>&)q)*INVERT(q.z);
+		const TYPE invZ(INVERT(q.z));
+		return TPoint2<TYPE>(q.x*invZ, q.y*invZ);
 	}
 	template <typename TYPE>
 	inline TPoint3<TYPE> ProjectPointP3(const TPoint3<TYPE>& X) const {
@@ -255,7 +257,8 @@ public:
 	template <typename TYPE>
 	inline TPoint2<TYPE> ProjectPointP(const TPoint3<TYPE>& X) const {
 		const TPoint3<TYPE> q(ProjectPointP3(X));
-		return ((const TPoint2<TYPE>&)q)*INVERT(q.z);
+		const TYPE invZ(INVERT(q.z));
+		return TPoint2<TYPE>(q.x*invZ, q.y*invZ);
 	}
 
 	// transform from image pixel coords to view plane coords
