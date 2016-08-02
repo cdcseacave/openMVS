@@ -28,7 +28,11 @@
 #include <string.h>
 #endif
 #ifdef _SUPPORT_CPP11
+#ifdef __clang__
+#include <stdint.h>
+#else
 #include <cstdint>
+#endif
 #include <cstddef>
 #include <type_traits>
 #include <initializer_list>
@@ -111,11 +115,18 @@ namespace boost { void throw_exception(std::exception const&); }
 #endif
 
 #ifdef _USE_EIGEN
+#if defined(_MSC_VER)
+#pragma warning (push)
+#pragma warning (disable : 4244) // 'argument': conversion from '__int64' to 'int', possible loss of data
+#endif
 #include <Eigen/Core>
 #include <Eigen/Dense>
 #include <Eigen/Sparse>
 #include <Eigen/SVD>
 #include <Eigen/Geometry>
+#if defined(_MSC_VER)
+#pragma warning (pop)
+#endif
 #endif
 
 #include <opencv2/core/version.hpp>

@@ -50,16 +50,20 @@ cmake . ../src -DCMAKE_BUILD_TYPE=RELEASE -DEIGEN_DIR="../OpenMVS/Eigen" -DOPENC
 Linux compilation
 -----------------
 
-[Ubuntu](http://www.ubuntu.com) 15.10 is used next as the example linux distribution.
+[Ubuntu](http://www.ubuntu.com) 16.04 is used next as the example linux distribution.
 
 ```
 #Prepare and empty machine for building:
 sudo apt-get update -qq && sudo apt-get install -qq
-sudo apt-get -y install git subversion cmake libpng-dev libjpeg-dev libtiff-dev libglu1-mesa-dev
+sudo apt-get -y install git mercurial cmake libpng-dev libjpeg-dev libtiff-dev libglu1-mesa-dev
 main_path=`pwd`
 
 #Eigen (Required)
-sudo apt-get -y install libeigen3-dev
+hg clone https://bitbucket.org/eigen/eigen#3.2
+mkdir eigen_build && cd eigen_build
+cmake . ../eigen
+make && sudo make install
+cd ..
 
 #Boost (Required)
 sudo apt-get -y install libboost-iostreams-dev libboost-program-options-dev libboost-system-dev libboost-serialization-dev
@@ -68,18 +72,17 @@ sudo apt-get -y install libboost-iostreams-dev libboost-program-options-dev libb
 sudo apt-get -y install libopencv-dev
 
 #CGAL (Required)
-sudo apt-get -y install libcgal-dev
+sudo apt-get -y install libcgal-dev libcgal-qt5-dev
 
 #VCGLib (Required)
-svn checkout svn://svn.code.sf.net/p/vcg/code/trunk/vcglib vcglib
+git clone https://github.com/cdcseacave/VCG.git vcglib
 
 #Ceres (Required)
 sudo apt-get -y install libatlas-base-dev libsuitesparse-dev
 git clone https://ceres-solver.googlesource.com/ceres-solver ceres-solver
 mkdir ceres_build && cd ceres_build
 cmake . ../ceres-solver/ -DMINIGLOG=ON -DBUILD_TESTING=OFF -DBUILD_EXAMPLES=OFF
-make
-sudo make install
+make -j2 && sudo make install
 cd ..
 
 #OpenMVS
@@ -91,7 +94,7 @@ cmake . ../openMVS -DCMAKE_BUILD_TYPE=Release -DVCG_DIR="$main_path/vcglib"
 -DBUILD_SHARED_LIBS=ON
 
 #Install OpenMVS library (optional):
-make && sudo make install
+make -j2 && sudo make install
 ```
 
 --------------------
@@ -102,9 +105,13 @@ Install dependencies, run CMake and make.
 
 ```
 #Install dependencies
-brew install opencv boost cgal eigen ceres-solver
-svn checkout svn://svn.code.sf.net/p/vcg/code/trunk/vcglib vcglib
+brew update
+brew tap homebrew/science
+brew install boost eigen opencv cgal ceres-solver
 main_path=`pwd`
+
+#VCGLib (Required)
+git clone https://github.com/cdcseacave/VCG.git vcglib
 
 #Getting the OpenMVS sources:
 git clone https://github.com/cdcseacave/openMVS.git

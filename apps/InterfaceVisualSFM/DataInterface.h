@@ -60,12 +60,12 @@ struct CameraT_
 	//////////////////////////////////////////////
     template <class CameraX>   void SetCameraT(const CameraX & cam)
     {
-        f = (float_t) cam.f;  
+        f = (float_t)cam.f;  
         t[0] = (float_t)cam.t[0];    t[1] = (float_t)cam.t[1];    t[2] = (float_t)cam.t[2];
         for(int i = 0; i < 3; ++i) for(int j = 0; j < 3; ++j) m[i][j] = (float_t)cam.m[i][j];
-        radial = (float_t) cam.radial;
-        distortion_type = cam.distortion_type;
-		constant_camera = cam.constant_camera;
+        radial = (float_t)cam.radial;
+        distortion_type = (float_t)cam.distortion_type;
+		constant_camera = (float_t)cam.constant_camera;
     }
 
 	//////////////////////////////////////////

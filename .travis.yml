@@ -1,34 +1,56 @@
-dist: trusty
+language: cpp
 
-language:
-  cpp
-   
-compiler:
-  - gcc # 4.8.4
-  #- clang # 3.5.0
+matrix:
+  include:
+    - os: linux
+      dist: trusty
+      sudo: required
+    - os: osx
+      sudo: required
+
+addons:
+  apt:
+    packages:
+      - git
+      - mercurial
+      - cmake
+      - libpng-dev
+      - libjpeg-dev
+      - libtiff-dev
+      - libglu1-mesa-dev
+      - libboost-iostreams-dev
+      - libboost-program-options-dev
+      - libboost-system-dev
+      - libboost-serialization-dev
+      - libopencv-dev
+      - libcgal-dev
+      - libatlas-base-dev
+      - libsuitesparse-dev
 
 before_install:
   - echo $LANG
   - export OMP_NUM_THREADS=4
-  - if [ $TRAVIS_OS_NAME == linux ]; then sudo apt-get update -qq && sudo apt-get install -qq; fi
 
 install:
   ### LINUX
-  - if [ $TRAVIS_OS_NAME == linux ]; then sudo apt-get -y install git mercurial subversion cmake libopencv-dev libcgal-dev libatlas-base-dev libsuitesparse-dev libboost-iostreams-dev libboost-program-options-dev libboost-system-dev libboost-serialization-dev libpng-dev libjpeg-dev libtiff-dev libglu1-mesa-dev; fi
   # Install the latest version of Eigen
-  - if [ $TRAVIS_OS_NAME == linux ]; then hg clone https://bitbucket.org/eigen/eigen /tmp/eigen && cd /tmp/eigen && hg pull && hg update 3.2.6 && cd - && mkdir /tmp/eigen-build && cd /tmp/eigen-build && cmake /tmp/eigen && make && sudo make install && cd -; fi
+  - if [ $TRAVIS_OS_NAME == linux ]; then hg clone https://bitbucket.org/eigen/eigen#3.2 /tmp/eigen && mkdir /tmp/eigen-build && cd /tmp/eigen-build && cmake . /tmp/eigen && make && sudo make install && cd -; fi
   # Install the latest version of Ceres Solver
   - if [ $TRAVIS_OS_NAME == linux ]; then git clone --branch=master git://github.com/ceres-solver/ceres-solver.git /tmp/ceres-solver && mkdir /tmp/ceres-solver-build && cd /tmp/ceres-solver-build && cmake /tmp/ceres-solver -DMINIGLOG=ON -DBUILD_TESTING=OFF -DBUILD_EXAMPLES=OFF && make -j4 && sudo make install && cd -; fi
   ### OSX
-  - if [ $TRAVIS_OS_NAME == osx ]; then sudo port install boost eigen3 opencv cgal ceres-solver; fi
+  # Install the latest version of Eigen
+  - if [ $TRAVIS_OS_NAME == osx ]; then hg clone https://bitbucket.org/eigen/eigen#3.2.8 /tmp/eigen && mkdir /tmp/eigen-build && cd /tmp/eigen-build && cmake . /tmp/eigen && make && sudo make install && cd -; fi
+  # Install dependencies
+  - if [ $TRAVIS_OS_NAME == osx ]; then brew update && brew tap homebrew/science && brew install boost ceres-solver opencv cgal; fi
+  ### Common
+  # Install the latest version of VCG
+  - git clone https://github.com/cdcseacave/VCG.git /tmp/vcglib
 
 before_script:
   - cd ..
-  - main_path=`pwd`
-  - svn checkout svn://svn.code.sf.net/p/vcg/code/trunk/vcglib vcglib
   - mkdir build
   - cd build
-  - cmake . ../openMVS -DCMAKE_BUILD_TYPE=Release -DVCG_DIR="$main_path/vcglib" -DOpenCV_CAN_BREAK_BINARY_COMPATIBILITY=OFF
+  - cmake . ../openMVS -DCMAKE_BUILD_TYPE=Release -DVCG_DIR="/tmp/vcglib"
 
 script:
   - make -j4
@@ -40,11 +62,6 @@ branches:
   only:
     - master
     - develop
-    - travis
 
 notifications:
   email: true
-
-os:
-  - linux
-  #- osx
