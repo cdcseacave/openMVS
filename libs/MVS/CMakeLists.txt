@@ -16,6 +16,7 @@ FIND_PACKAGE(CERES ${SYSTEM_PACKAGE_REQUIRED})
 if(CERES_FOUND)
 	include_directories(${CERES_INCLUDE_DIRS})
 	add_definitions(${CERES_DEFINITIONS})
+	link_directories(${CERES_LIBRARY_DIRS})
 endif()
 
 # List sources files
