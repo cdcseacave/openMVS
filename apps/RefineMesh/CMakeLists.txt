@@ -11,6 +11,10 @@ if(OpenMVS_USE_BREAKPAD AND BREAKPAD_FOUND)
 	target_link_libraries(RefineMesh ${BREAKPAD_LIBS})
 endif()
 
+link_libraries(RefineMesh ${CERES_LIBS} ${GLOG_LIBS})
+
+target_link_libraries(RefineMesh ${CERES_LIBRARIES} ${GLOG_LIBRARY})
+
 # Install
 INSTALL(TARGETS RefineMesh
 	EXPORT OpenMVSTargets

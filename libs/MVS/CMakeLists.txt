@@ -16,6 +16,7 @@ FIND_PACKAGE(CERES ${SYSTEM_PACKAGE_REQUIRED})
 if(CERES_FOUND)
 	include_directories(${CERES_INCLUDE_DIRS})
 	add_definitions(${CERES_DEFINITIONS})
+	link_directories(${CERES_LIBRARY_DIRS})
 endif()
 
 # List sources files
@@ -37,7 +38,7 @@ cxx_library_with_type_no_pch(MVS "Libs" "" "${cxx_default}"
 set_target_pch(MVS Common.h)
 
 # Link its dependencies
-TARGET_LINK_LIBRARIES(MVS Common Math IO ${CERES_LIBS} ${CGAL_LIBS} ${CUDA_LIBRARIES})
+TARGET_LINK_LIBRARIES(MVS Common Math IO ${CERES_LIBS} ${CGAL_LIBS} ${CUDA_LIBRARIES} ${CUDA_LINKER_FLAGS})
 
 # Install
 SET_TARGET_PROPERTIES(MVS PROPERTIES
