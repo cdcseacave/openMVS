@@ -55,7 +55,7 @@ struct CameraT_
     float_t		constant_camera; 
   
 	//////////////////////////////////////////////////////////
-    CameraT_(){    radial = 0;  distortion_type = 0;  constant_camera = 0;  }
+    CameraT_() { radial = 0;  distortion_type = 0;  constant_camera = 0; }
 
 	//////////////////////////////////////////////
     template <class CameraX>   void SetCameraT(const CameraX & cam)

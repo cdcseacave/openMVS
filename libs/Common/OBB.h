@@ -29,7 +29,7 @@ class TRay;
 template <typename TYPE, int DIMS>
 class TOBB
 {
-	COMPILE_TIME_ASSERT(DIMS > 0 && DIMS <= 3);
+	STATIC_ASSERT(DIMS > 0 && DIMS <= 3);
 
 public:
 	typedef TYPE Type;
@@ -39,8 +39,8 @@ public:
 	typedef SEACAVE::TRay<TYPE,DIMS> RAY;
 	typedef unsigned ITYPE;
 	typedef Eigen::Matrix<ITYPE,DIMS,1> TRIANGLE;
-	static const int numCorners = (DIMS==1 ? 2 : (DIMS==2 ? 4 : 8)); // 2^DIMS
-	static const int numScalar = (5*DIMS);
+	enum { numCorners = (DIMS==1 ? 2 : (DIMS==2 ? 4 : 8)) }; // 2^DIMS
+	enum { numScalar = (5*DIMS) };
 
 	MATRIX m_rot;	// rotation matrix of the transformation (orthonormal axes)
 	POINT m_pos;	// translation of the transformation (center-point)

@@ -34,8 +34,8 @@ template <typename TYPE>
 struct Linear {
 	typedef TYPE Type;
 
-	static const int halfWidth = 1;
-	static const int width = halfWidth*2;
+	enum { halfWidth = 1 };
+	enum { width = halfWidth*2 };
 
 	inline Linear() {}
 	
@@ -62,8 +62,8 @@ template <typename TYPE>
 struct Cubic {
 	typedef TYPE Type;
 
-	static const int halfWidth = 2;
-	static const int width = halfWidth*2;
+	enum { halfWidth = 2 };
+	enum { width = halfWidth*2 };
 
 	// Sharpness coefficient used to control sharpness of the cubic curve (between 0.5 to 0.75)
 	// cubic(0,1/2): 0.5 gives better mathematically result (ie: approximation at 3 order precision - Catmull-Rom)
@@ -165,8 +165,8 @@ template <typename TYPE>
 struct Spline16 {
 	typedef TYPE Type;
 
-	static const int halfWidth = 2;
-	static const int width = halfWidth*2;
+	enum { halfWidth = 2 };
+	enum { width = halfWidth*2 };
 
 	inline Spline16() {}
 
@@ -184,8 +184,8 @@ template <typename TYPE>
 struct Spline36 {
 	typedef TYPE Type;
 
-	static const int halfWidth = 3;
-	static const int width = halfWidth*2;
+	enum { halfWidth = 3 };
+	enum { width = halfWidth*2 };
 
 	inline Spline36() {}
 
@@ -205,8 +205,8 @@ template <typename TYPE>
 struct Spline64 {
 	typedef TYPE Type;
 
-	static const int halfWidth = 4;
-	static const int width = halfWidth*2;
+	enum { halfWidth = 4 };
+	enum { width = halfWidth*2 };
 
 	inline Spline64() {}
 

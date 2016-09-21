@@ -109,13 +109,13 @@ public:
 		return info.dwNumberOfProcessors;
 	}
 
-	COMPILE_TIME_ASSERT(sizeof(int32_t)==sizeof(LONG));
+	STATIC_ASSERT(sizeof(int32_t)==sizeof(LONG));
 	static inline int32_t safeInc(volatile int32_t& v) { return InterlockedIncrement((volatile LONG*)&v); };
 	static inline int32_t safeDec(volatile int32_t& v) { return InterlockedDecrement((volatile LONG*)&v); };
 	static inline int32_t safeExchange(volatile int32_t& target, int32_t value) { return InterlockedExchange((volatile LONG*)&target, value); };
 	static inline int32_t safeCompareExchange(volatile int32_t& target, int32_t comp, int32_t value) { return InterlockedCompareExchange((volatile LONG*)&target, value, comp); };
 
-	COMPILE_TIME_ASSERT(sizeof(int64_t)==sizeof(LONGLONG));
+	STATIC_ASSERT(sizeof(int64_t)==sizeof(LONGLONG));
 	static inline int64_t safeInc(volatile int64_t& v) { return InterlockedIncrement64((volatile LONGLONG*)&v); };
 	static inline int64_t safeDec(volatile int64_t& v) { return InterlockedDecrement64((volatile LONGLONG*)&v); };
 	static inline int64_t safeExchange(volatile int64_t& target, int64_t value) { return InterlockedExchange64((volatile LONGLONG*)&target, value); };

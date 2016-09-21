@@ -49,7 +49,7 @@ protected:
 template <typename TYPE, int DIMS, typename DATA_TYPE>
 class TOctreeCell
 {
-	COMPILE_TIME_ASSERT(DIMS > 0 && DIMS <= 3);
+	STATIC_ASSERT(DIMS > 0 && DIMS <= 3);
 
 public:
 	typedef Eigen::Matrix<TYPE,DIMS,1> POINT_TYPE;
@@ -65,7 +65,7 @@ public:
 		DATA_TYPE data; // user data associated with this leaf
 	} LEAF_TYPE;
 	static const size_t dataSize = (sizeof(NODE_TYPE)>sizeof(LEAF_TYPE) ? sizeof(NODE_TYPE) : sizeof(LEAF_TYPE));
-	static const int numChildren = (2<<(DIMS-1));
+	enum { numChildren = (2<<(DIMS-1)) };
 
 public:
 	inline TOctreeCell();

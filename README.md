@@ -15,6 +15,9 @@ See the complete [documentation](https://github.com/cdcseacave/openMVS/wiki) on 
 
 See the [building](https://github.com/cdcseacave/openMVS/wiki/Building) wiki page.
 
+Continuous integration:
+ - linux 64 bits/GCC: [![Build Status](https://travis-ci.org/cdcseacave/openMVS.svg?branch=master)](https://travis-ci.org/cdcseacave/openMVS)
+
 ## Example
 
 See the usage [example](https://github.com/cdcseacave/openMVS/wiki/Usage) wiki page.

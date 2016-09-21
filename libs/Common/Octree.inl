@@ -550,7 +550,7 @@ void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE,SIZE,NOM,DENOM>::LogDebugInfo(cons
 // if everything works fine, this function should return true
 template <typename TYPE, int DIMS>
 inline bool OctreeTest(unsigned iters, unsigned maxItems=1000, bool bRandom=true) {
-	COMPILE_TIME_ASSERT(DIMS > 0 && DIMS <= 3);
+	STATIC_ASSERT(DIMS > 0 && DIMS <= 3);
 	srand(bRandom ? (unsigned)time(NULL) : 0);
 	typedef Eigen::Matrix<TYPE,DIMS,1> POINT_TYPE;
 	typedef SEACAVE::cList<POINT_TYPE,const POINT_TYPE&,0> TestArr;

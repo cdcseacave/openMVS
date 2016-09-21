@@ -2063,7 +2063,7 @@ public:
 	CUDA::MemDevice smoothGrad1;
 	CUDA::MemDevice smoothGrad2;
 
-	static const int HalfSize = 2; // half window size used to compute ZNCC
+	enum { HalfSize = 2 }; // half window size used to compute ZNCC
 };
 
 MeshRefineCUDA::MeshRefineCUDA(Scene& _scene, unsigned _nAlternatePair, float _weightRegularity, float _ratioRigidityElasticity, unsigned _nResolutionLevel, unsigned _nMinResolution, unsigned nMaxViews)
@@ -2107,7 +2107,7 @@ MeshRefineCUDA::~MeshRefineCUDA()
 
 bool MeshRefineCUDA::InitKernels(int device)
 {
-	COMPILE_TIME_ASSERT(sizeof(CameraCUDA) == 176);
+	STATIC_ASSERT(sizeof(CameraCUDA) == 176);
 
 	// initialize CUDA device if needed
 	if (CUDA::devices.IsEmpty() && CUDA::initDevice(device) != CUDA_SUCCESS)
@@ -2194,7 +2194,7 @@ bool MeshRefineCUDA::InitImages(float scale, float sigma)
 		// load and init image
 		unsigned level(nResolutionLevel);
 		const unsigned imageSize(imageData.RecomputeMaxResolution(level, nMinResolution));
-		if ((imageData.image.empty() || MAXF(imageData.width,imageData.height) != imageSize) && FAILED(imageData.ReloadImage(imageSize))) {
+		if ((imageData.image.empty() || MAXF(imageData.width,imageData.height) != imageSize) && !imageData.ReloadImage(imageSize)) {
 			#ifdef MESHCUDAOPT_USE_OPENMP
 			bAbort = true;
 			#pragma omp flush (bAbort)

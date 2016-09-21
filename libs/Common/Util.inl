@@ -450,13 +450,13 @@ inline TPoint3<TYPE> ComputeTriangleNormal(const TPoint3<TYPE>& v0, const TPoint
 
 // compute the area of a triangle using Heron's formula
 template <typename TYPE>
-TYPE ComputeTriangleAreaSq(TYPE lena, TYPE lenb, TYPE lenc) {
+TYPE ComputeTriangleAreaSqLen(TYPE lena, TYPE lenb, TYPE lenc) {
 	const TYPE s((lena+lenb+lenc)/TYPE(2));
 	return s*(s-lena)*(s-lenb)*(s-lenc);
 }
 template <typename TYPE>
-TYPE ComputeTriangleArea(TYPE lena, TYPE lenb, TYPE lenc) {
-	return (TYPE)sqrt(ComputeTriangleAreaSq(lena, lenb, lenc));
+TYPE ComputeTriangleAreaLen(TYPE lena, TYPE lenb, TYPE lenc) {
+	return (TYPE)sqrt(ComputeTriangleAreaSqLen(lena, lenb, lenc));
 }
 template <typename TYPE>
 TYPE ComputeTriangleAreaSqLenSq(TYPE lenaSq, TYPE lenbSq, TYPE lencSq) {
@@ -473,13 +473,20 @@ TYPE ComputeTriangleArea(const TPoint2<TYPE>& x0, const TPoint2<TYPE>& x1, const
 }
 // compute area for a triangle defined by three 3D points
 template <typename TYPE>
-TYPE ComputeTriangleAreaSq(const TPoint3<TYPE>& x0, const TPoint3<TYPE>& x1, const TPoint2<TYPE>& x2) {
+TYPE ComputeTriangleAreaSq(const TPoint3<TYPE>& x0, const TPoint3<TYPE>& x1, const TPoint3<TYPE>& x2) {
 	return (TYPE)(normSq((x1-x0).cross(x2-x0))/TYPE(4));
 }
 template <typename TYPE>
-TYPE ComputeTriangleArea(const TPoint3<TYPE>& x0, const TPoint3<TYPE>& x1, const TPoint2<TYPE>& x2) {
+TYPE ComputeTriangleArea(const TPoint3<TYPE>& x0, const TPoint3<TYPE>& x1, const TPoint3<TYPE>& x2) {
 	return (TYPE)sqrt(ComputeTriangleAreaSq(x0, x1, x2));
 } // ComputeTriangleArea
+/*----------------------------------------------------------------*/
+
+// compute signed volume of the tetrahedron defined by the given triangle connected to origin
+template <typename TYPE>
+TYPE ComputeTriangleVolume(const TPoint3<TYPE>& x0, const TPoint3<TYPE>& x1, const TPoint3<TYPE>& x2) {
+	return (TYPE)(x0.dot(x1.cross(x2)) / TYPE(6));
+} // ComputeTriangleVolume
 /*----------------------------------------------------------------*/
 
 // compute a shape quality measure of the triangle composed by vertices (v0,v1,v2)

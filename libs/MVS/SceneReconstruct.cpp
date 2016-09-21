@@ -773,7 +773,7 @@ float computePlaneSphereAngle(const delaunay_t& Tr, const facet_t& facet)
 // Finally, graph-cut algorithm is used to split the tetrahedrons in inside and outside,
 // and the surface is such extracted.
 bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, unsigned nItersFixNonManifold,
-							float kQual, float kb,
+							float kSigma, float kQual, float kb,
 							float kf, float kRel, float kAbs, float kOutl,
 							float kInf
 )
@@ -925,7 +925,7 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, unsigne
 			const cell_handle_t& c(ei->first);
 			distsSq.Insert(normSq(CGAL2MVS<float>(c->vertex(ei->second)->point()) - CGAL2MVS<float>(c->vertex(ei->third)->point())));
 		}
-		const float sigma(SQRT(distsSq.GetMedian())*2);
+		const float sigma(SQRT(distsSq.GetMedian())*kSigma);
 		const float inv2SigmaSq(0.5f/(sigma*sigma));
 		distsSq.Release();
 

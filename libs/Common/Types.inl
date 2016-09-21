@@ -1631,7 +1631,7 @@ inline bool TMatrix<TYPE,m,n>::IsEqual(const Base& rhs, TYPE eps) const
 template <typename TYPE, int m, int n>
 inline TMatrix<TYPE,n,n-m> TMatrix<TYPE,m,n>::RightNullSpace(int flags /*= 0*/) const
 {
-	COMPILE_TIME_ASSERT(n > m);
+	STATIC_ASSERT(n > m);
 	const cv::SVD svd(*this, flags|cv::SVD::FULL_UV);
 	// the orthonormal basis of the null space is formed by the columns
 	// of svd.vt such that the corresponding singular values are 0 (n - m or svd.vt.cols - svd.w.rows)
@@ -2937,13 +2937,6 @@ void BlurredImageAndDerivatives(const TImage<Type>& in, TImage<Type>& blurred, T
 	BlurredImageAndDerivatives(in, blurred, grad, sigma);
 	cv::merge(dir, 2, grad);
 }
-/*----------------------------------------------------------------*/
-
-
-// C L A S S  //////////////////////////////////////////////////////
-
-template <typename TYPE>
-const int TBitMatrix<TYPE>::numBitsShift = log2i<TBitMatrix::numBitsPerCell>();
 /*----------------------------------------------------------------*/
 
 
