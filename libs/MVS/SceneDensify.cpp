@@ -1377,6 +1377,9 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateNormal)
 					const uint32_t idxImageB(pNeighbor->idx.ID);
 					const Image& imageDataB = scene.images[idxImageB];
 					const Point3 ptCam(imageDataB.camera.TransformPointW2C(Cast<REAL>(point)));
+					const Depth d((float)ptCam.z);
+					if (d <= 0)
+						continue;
 					const ImageRef xB(ROUND2INT(imageDataB.camera.TransformPointC2I(ptCam)));
 					DepthData& depthDataB = arrDepthData[idxImageB];
 					DepthMap& depthMapB = depthDataB.depthMap;
@@ -1388,7 +1391,6 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateNormal)
 					uint32_t& idxPointB = arrDepthIdx[idxImageB](xB);
 					if (idxPointB != NO_ID)
 						continue;
-					const Depth d((float)ptCam.z);
 					if (IsDepthSimilar(d, depthB, OPTDENSE::fDepthDiffThreshold)) {
 						// add view to the 3D point
 						ASSERT(views.FindFirst(idxImageB) == PointCloud::ViewArr::NO_INDEX);
@@ -1417,12 +1419,12 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateNormal)
 					pointcloud.pointViews.RemoveLast();
 					pointcloud.points.RemoveLast();
 				} else {
-					// this point is valid,
-					// so invalidate all neighbor depths that do not agree with it
+					// this point is valid, store it
+					point = X*(REAL(1)/confidence);
+					// invalidate all neighbor depths that do not agree with it
 					for (Depth* pDepth: invalidDepths)
 						*pDepth = 0;
 				}
-				point = X*(REAL(1)/confidence);
 			}
 		}
 		ASSERT(pointcloud.points.GetSize() == pointcloud.pointViews.GetSize() && pointcloud.points.GetSize() == pointcloud.pointWeights.GetSize() && pointcloud.points.GetSize() == projs.GetSize());
