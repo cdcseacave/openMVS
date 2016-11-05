@@ -41,7 +41,7 @@ install:
   # Install the latest version of Eigen
   - if [ $TRAVIS_OS_NAME == osx ]; then hg clone https://bitbucket.org/eigen/eigen#3.2.8 /tmp/eigen && mkdir /tmp/eigen-build && cd /tmp/eigen-build && cmake . /tmp/eigen && make && sudo make install && cd -; fi
   # Install dependencies
-  - if [ $TRAVIS_OS_NAME == osx ]; then brew update && brew tap homebrew/science && brew install boost ceres-solver opencv cgal; fi
+  - if [ $TRAVIS_OS_NAME == osx ]; then brew update && brew tap homebrew/science && brew install boost eigen opencv cgal ceres-solver; fi
   ### Common
   # Install the latest version of VCG
   - git clone https://github.com/cdcseacave/VCG.git /tmp/vcglib

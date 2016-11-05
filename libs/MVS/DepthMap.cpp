@@ -1058,7 +1058,7 @@ void MVS::CompareNormalMaps(const NormalMap& normalMap, const NormalMap& normalM
 	const float mean((float)ms.GetMean());
 	const float stddev((float)ms.GetStdDev());
 	const std::pair<float,float> th(ComputeX84Threshold<float,float>(errors.Begin(), errors.GetSize()));
-	VERBOSE("Normal-maps compared for image % 3u: %.2f median %.2f mean %.2f stddev error° (%s)",
+	VERBOSE("Normal-maps compared for image % 3u: %.2f median %.2f mean %.2f stddev error (%s)",
 		idxImage,
 		th.first, mean, stddev,
 		TD_TIMER_GET_FMT().c_str()

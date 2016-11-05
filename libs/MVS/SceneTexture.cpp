@@ -839,8 +839,6 @@ bool MeshTexture::FaceViewSelection(float fOutlierThreshold, float fRatioDataSmo
 
 		// create faces graph
 		typedef boost::adjacency_list<boost::vecS, boost::vecS, boost::undirectedS> Graph;
-		typedef boost::graph_traits<Graph>::vertex_descriptor Vertex;
-		typedef boost::graph_traits<Graph>::edge_descriptor Edge;
 		typedef boost::graph_traits<Graph>::edge_iterator EdgeIter;
 		typedef boost::graph_traits<Graph>::out_edge_iterator EdgeOutIter;
 		Graph graph;

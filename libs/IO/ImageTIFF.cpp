@@ -11,6 +11,13 @@
 #include "ImageTIFF.h"
 
 extern "C" {
+#if !defined(_MSC_VER) && !defined(__BORLANDC__)
+#include <tiffconf.h>
+#undef TIFF_INT64_T
+#define TIFF_INT64_T int64_t
+#undef TIFF_UINT64_T
+#define TIFF_UINT64_T uint64_t
+#endif
 #include <tiffio.h>
 }
 

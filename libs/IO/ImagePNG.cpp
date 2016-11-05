@@ -164,7 +164,6 @@ HRESULT CImagePNG::ReadHeader()
 HRESULT CImagePNG::ReadData(void* pData, PIXELFORMAT dataFormat, UINT nStride, UINT lineWidth)
 {
 	png_structp png_ptr = (png_structp)m_png_ptr;
-	png_infop info_ptr = (png_infop)m_info_ptr;
 
 	// read data
 	if (nStride == m_stride && (m_format != PF_B8G8R8A8 || (dataFormat != PF_A8R8G8B8 && dataFormat != PF_A8B8G8R8))) {
@@ -277,7 +276,6 @@ HRESULT CImagePNG::WriteHeader(PIXELFORMAT imageFormat, UINT width, UINT height,
 HRESULT CImagePNG::WriteData(void* pData, PIXELFORMAT dataFormat, UINT nStride, UINT lineWidth)
 {
 	png_structp png_ptr = (png_structp)m_png_ptr;
-	png_infop info_ptr = (png_infop)m_info_ptr;
 
 	// write data
 	if (nStride == m_stride && (m_format != PF_B8G8R8A8 || (dataFormat != PF_A8R8G8B8 && dataFormat != PF_A8B8G8R8))) {
