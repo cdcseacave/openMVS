@@ -234,7 +234,7 @@ typedef signed int			INT;
 typedef unsigned int		UINT;
 typedef long				LONG;
 
-typedef LONG				HRESULT;
+typedef int32_t				HRESULT;
 
 typedef CHAR*				LPSTR;
 typedef const CHAR*			LPCSTR;

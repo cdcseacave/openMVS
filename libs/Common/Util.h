@@ -260,12 +260,22 @@ public:
 		#endif // _MSC_VER
 	}
 
+	static String& trimUnifySlash(String& aFile)
+	{
+		String::size_type start = 1;
+		while ((start = aFile.find(PATH_SEPARATOR, start)) != String::npos)
+			if (aFile[start-1] == PATH_SEPARATOR)
+				aFile.erase(start, 1);
+			else
+				++start;
+		return aFile;
+	}
 	static String& ensureUnifySlash(String& aFile)
 	{
 		String::size_type start = 0;
 		while ((start = aFile.find(REVERSE_PATH_SEPARATOR, start)) != String::npos)
 			aFile[start] = PATH_SEPARATOR;
-		return aFile;
+		return trimUnifySlash(aFile);
 	}
 	static String& ensureUnifyReverseSlash(String& aFile)
 	{

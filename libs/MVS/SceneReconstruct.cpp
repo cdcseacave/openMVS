@@ -334,13 +334,12 @@ inline int orientation(const point_t& a, const point_t& b, const point_t& c, con
 	const double& qx = b.x(); const double& qy = b.y(); const double& qz = b.z();
 	const double& rx = c.x(); const double& ry = c.y(); const double& rz = c.z();
 	const double& sx = p.x(); const double& sy = p.y(); const double& sz = p.z();
-	#if 0
+	#if 1
 	const double det(CGAL::determinant(
 		qx - px, qy - py, qz - pz,
 		rx - px, ry - py, rz - pz,
 		sx - px, sy - py, sz - pz));
-	if (det > 0) return CGAL::POSITIVE;
-	if (det < 0) return CGAL::NEGATIVE;
+	const double eps(1e-12);
 	#else
 	const double pqx(qx - px);
 	const double pqy(qy - py);
@@ -358,9 +357,9 @@ inline int orientation(const point_t& a, const point_t& b, const point_t& c, con
 	const double max0(MAXF3(ABS(pqx), ABS(pqy), ABS(pqz)));
 	const double max1(MAXF3(ABS(prx), ABS(pry), ABS(prz)));
 	const double eps(5.1107127829973299e-15 * MAXF(max0, max1));
+	#endif
 	if (det >  eps) return CGAL::POSITIVE;
 	if (det < -eps) return CGAL::NEGATIVE;
-	#endif
 	return CGAL::COPLANAR;
 	#endif
 }
