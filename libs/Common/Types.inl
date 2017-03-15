@@ -3370,6 +3370,7 @@ namespace boost {
 #endif
 
 enum ARCHIVE_TYPE {
+	ARCHIVE_MVS = -1,
 	ARCHIVE_TEXT = 0,
 	ARCHIVE_BINARY,
 	ARCHIVE_BINARY_ZIP,

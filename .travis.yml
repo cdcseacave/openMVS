@@ -33,16 +33,16 @@ before_install:
 
 install:
   ### Common
-  # Install the latest version of Eigen
-  - hg clone https://bitbucket.org/eigen/eigen#3.2 /tmp/eigen && mkdir /tmp/eigen-build && cd /tmp/eigen-build && cmake . /tmp/eigen && make && sudo make install && cd -
   # Install the latest version of VCG
   - git clone https://github.com/cdcseacave/VCG.git /tmp/vcglib
   ### LINUX
+  # Install the latest version of Eigen
+  - if [ $TRAVIS_OS_NAME == linux ]; then hg clone https://bitbucket.org/eigen/eigen#3.2 /tmp/eigen && mkdir /tmp/eigen-build && cd /tmp/eigen-build && cmake . /tmp/eigen && make && sudo make install && cd -; fi
   # Install the latest version of Ceres Solver
   - if [ $TRAVIS_OS_NAME == linux ]; then git clone --branch=master git://github.com/ceres-solver/ceres-solver.git /tmp/ceres-solver && mkdir /tmp/ceres-solver-build && cd /tmp/ceres-solver-build && cmake /tmp/ceres-solver -DMINIGLOG=ON -DBUILD_TESTING=OFF -DBUILD_EXAMPLES=OFF && make -j4 && sudo make install && cd -; fi
   ### OSX
   # Install dependencies
-  - if [ $TRAVIS_OS_NAME == osx ]; then brew update && brew tap homebrew/science && brew link eigen && brew install boost opencv cgal ceres-solver; fi
+  - if [ $TRAVIS_OS_NAME == osx ]; then brew update && brew tap homebrew/science && brew install boost eigen opencv cgal ceres-solver; fi
 
 before_script:
   - cd ..

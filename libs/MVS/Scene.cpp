@@ -323,6 +323,12 @@ bool Scene::Load(const String& fileName)
 bool Scene::Save(const String& fileName, ARCHIVE_TYPE type) const
 {
 	TD_TIMER_STARTD();
+	// save using MVS interface if requested
+	if (type == ARCHIVE_MVS) {
+		if (mesh.IsEmpty())
+			return SaveInterface(fileName);
+		type = ARCHIVE_BINARY_ZIP;
+	}
 	#ifdef _USE_BOOST
 	// open the output stream
 	std::ofstream fs(fileName, std::ios::out | std::ios::binary);

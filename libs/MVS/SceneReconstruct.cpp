@@ -617,8 +617,7 @@ bool intersect(const delaunay_t& Tr, const segment_t& seg, const std::vector<fac
 				return true; }
 			}
 			// coplanar with 3 edges = tangent = impossible?
-			out_facets.clear();
-			return false;
+			break;
 		}
 	}
 	// Bad end: no intersection found and we are not at the end of the segment (very rarely, but it happens)!
@@ -764,6 +763,7 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, unsigne
 		typedef CGAL::Spatial_sort_traits_adapter_3<delaunay_t::Geom_traits, point_t*> Search_traits;
 		CGAL::spatial_sort(indices.begin(), indices.end(), Search_traits(&vertices[0], delaunay.geom_traits()));
 		// insert vertices
+		Util::Progress progress(_T("Points inserted"), indices.size());
 		const float distInsertSq(SQUARE(distInsert));
 		vertex_handle_t hint;
 		delaunay_t::Locate_type lt;
@@ -834,7 +834,9 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, unsigne
 			}
 			// update point visibility info
 			hint->info().InsertViews(pointcloud, idx);
+			++progress;
 		});
+		progress.close();
 		pointcloud.Release();
 		// init cells weights and
 		// loop over all cells and store the finite facet of the infinite cells
@@ -896,6 +898,7 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, unsigne
 		// compute the weights for each edge
 		{
 		TD_TIMER_STARTD();
+		Util::Progress progress(_T("Points weighted"), delaunay.number_of_vertices());
 		#ifdef DELAUNAY_USE_OPENMP
 		delaunay_t::Vertex_iterator vertexIter(delaunay.vertices_begin());
 		const int64_t nVerts(delaunay.number_of_vertices()+1);
@@ -973,7 +976,9 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, unsigne
 				vert.viewsInfo[v].cell2End = inter.facet.first;
 				#endif
 			}
+			++progress;
 		}
+		progress.close();
 		DEBUG_ULTIMATE("\tweighting completed in %s", TD_TIMER_GET_FMT().c_str());
 		}
 		camCells.clear();
