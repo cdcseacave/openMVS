@@ -321,35 +321,36 @@ inline point_t MVS2CGAL(const TPoint3<TYPE>& p) {
 	return point_t((kernel_t::RT)p.x, (kernel_t::RT)p.y, (kernel_t::RT)p.z);
 }
 
+// Given a facet, compute the plane containing it
+inline Plane getFacetPlane(const facet_t& facet)
+{
+	const point_t& v0(facet.first->vertex((facet.second+1)%4)->point());
+	const point_t& v1(facet.first->vertex((facet.second+2)%4)->point());
+	const point_t& v2(facet.first->vertex((facet.second+3)%4)->point());
+	return Plane(CGAL2MVS<REAL>(v0), CGAL2MVS<REAL>(v1), CGAL2MVS<REAL>(v2));
+}
+
 
 // Check if a point (p) is coplanar with a triangle (a, b, c);
 // return orientation type
-inline int orientation(const point_t& a, const point_t& b, const point_t& c, const point_t& p)
+#ifdef __GNUC__
+#pragma GCC push_options
+#pragma GCC target ("no-fma")
+#endif
+static inline int orientation(const point_t& a, const point_t& b, const point_t& c, const point_t& p)
 {
 	#if 0
 	return CGAL::orientation(a, b, c, p);
 	#else
 	// inexact_orientation
 	const double& px = a.x(); const double& py = a.y(); const double& pz = a.z();
-	const double& qx = b.x(); const double& qy = b.y(); const double& qz = b.z();
-	const double& rx = c.x(); const double& ry = c.y(); const double& rz = c.z();
-	const double& sx = p.x(); const double& sy = p.y(); const double& sz = p.z();
+	const double pqx(b.x()-px); const double prx(c.x()-px); const double psx(p.x()-px);
+	const double pqy(b.y()-py); const double pry(c.y()-py); const double psy(p.y()-py);
 	#if 1
-	const double det(CGAL::determinant(
-		qx - px, qy - py, qz - pz,
-		rx - px, ry - py, rz - pz,
-		sx - px, sy - py, sz - pz));
+	const double det((pqx*pry-prx*pqy)*(p.z()-pz) - (pqx*psy-psx*pqy)*(c.z()-pz) + (prx*psy-psx*pry)*(b.z()-pz));
 	const double eps(1e-12);
-	#else
-	const double pqx(qx - px);
-	const double pqy(qy - py);
-	const double pqz(qz - pz);
-	const double prx(rx - px);
-	const double pry(ry - py);
-	const double prz(rz - pz);
-	const double psx(sx - px);
-	const double psy(sy - py);
-	const double psz(sz - pz);
+	#else // very slow due to ABS()
+	const double pqz(b.z()-pz); const double prz(c.z()-pz); const double psz(p.z()-pz);
 	const double det(CGAL::determinant(
 		pqx, pqy, pqz,
 		prx, pry, prz,
@@ -363,6 +364,9 @@ inline int orientation(const point_t& a, const point_t& b, const point_t& c, con
 	return CGAL::COPLANAR;
 	#endif
 }
+#ifdef __GNUC__
+#pragma GCC pop_options
+#endif
 
 // Check if a point (p) is inside a frustum
 // given the four corners (a, b, c, d) and the origin (o) of the frustum
@@ -421,6 +425,11 @@ struct intersection_t {
 	vertex_handle_t v2; // 2nd edge vertex for edge intersection
 	facet_t facet; // intersected facet
 	Type type; // type of intersection (inside facet, on edge, or vertex)
+	REAL dist; // distance from starting point (camera) to this facet
+	bool bigger; // are we advancing away or towards the starting point?
+	const Ray3 ray; // the ray from starting point into the direction of the end point (point -> camera/end-point)
+	inline intersection_t() {}
+	inline intersection_t(const Point3& pt, const Point3& dir) : dist(-FLT_MAX), bigger(true), ray(pt, dir) {}
 };
 
 // Check if a segment (p, q) is coplanar with edges of a triangle (a, b, c):
@@ -519,100 +528,100 @@ int intersect(const triangle_t& t, const segment_t& s, int coplanar[3])
 bool intersect(const delaunay_t& Tr, const segment_t& seg, const std::vector<facet_t>& in_facets, std::vector<facet_t>& out_facets, intersection_t& inter)
 {
 	ASSERT(!in_facets.empty());
-	int coplanar[3];
-	int nb_coplanar;
-	for (std::vector<facet_t>::const_iterator it=in_facets.cbegin(); it!=in_facets.cend(); ++it) {
-		ASSERT(!Tr.is_infinite(*it));
-		nb_coplanar = intersect(Tr.triangle(*it), seg, coplanar);
-		if (nb_coplanar >= 0) {
-			inter.facet = *it;
-			goto ContinueIntersection;
-		}
-	}
-	// Bad end: no intersection found and we are not at the end of the segment (very rarely, but it happens)!
-	out_facets.clear();
-	return false;
-
-	ContinueIntersection:
-	// vertices of facet i: j = 4 * i, vertices = facet_vertex_order[j,j+1,j+2] negative orientation
 	static const int facet_vertex_order[] = {2,1,3,2,2,3,0,2,0,3,1,0,0,1,2,0};
-	switch (nb_coplanar) {
-	case 0: {
-		// face intersection
-		inter.type = intersection_t::FACET;
-		// now find next facets to be checked as
-		// the three faces in the neighbor cell different than the origin face
-		out_facets.clear();
-		const cell_handle_t nc(inter.facet.first->neighbor(inter.facet.second));
-		ASSERT(!Tr.is_infinite(nc));
-		for (int i=0; i<4; ++i)
-			if (nc->neighbor(i) != inter.facet.first)
-				out_facets.push_back(facet_t(nc, i));
-		return true; }
-	case 1: {
-		// coplanar with 1 edge = intersect edge
-		const int j(4 * inter.facet.second);
-		const int i1(j + coplanar[0]);
-		inter.type = intersection_t::EDGE;
-		inter.v1 = inter.facet.first->vertex(facet_vertex_order[i1]);
-		inter.v2 = inter.facet.first->vertex(facet_vertex_order[i1+1]);
-		// now find next facets to be checked as
-		// the faces in the cells around opposing this common edge
-		std::unordered_set<void*> used_cells;
-		for (std::vector<facet_t>::const_iterator it=in_facets.cbegin(); it!=in_facets.cend(); ++it)
-			used_cells.insert(it->first.for_compact_container());
-		out_facets.clear();
-		const vertex_handle_t v1(inter.v1);
-		const vertex_handle_t v2(inter.v2);
-		const edge_t out_edge(inter.facet.first, inter.facet.first->index(v1), inter.facet.first->index(v2));
-		const delaunay_t::Cell_circulator efc(Tr.incident_cells(out_edge));
-		delaunay_t::Cell_circulator ifc(efc);
-		do {
-			const cell_handle_t c(ifc);
-			if (!used_cells.insert(c.for_compact_container()).second) continue;
-			out_facets.push_back(facet_t(c, c->index(v1)));
-			out_facets.push_back(facet_t(c, c->index(v2)));
-		} while (++ifc != efc);
-		return true; }
-	case 2: {
-		// coplanar with 2 edges = hit a vertex
-		// find vertex index
-		const int j(4 * inter.facet.second);
-		const int i1(j + coplanar[0]);
-		const int i2(j + coplanar[1]);
-		int i;
-		if (facet_vertex_order[i1] == facet_vertex_order[i2] || facet_vertex_order[i1] == facet_vertex_order[i2+1])
-			i = facet_vertex_order[i1];
-		else
-		if (facet_vertex_order[i1+1] == facet_vertex_order[i2] || facet_vertex_order[i1+1] == facet_vertex_order[i2+1])
-			i = facet_vertex_order[i1+1];
-		else
-			ASSERT("2 edges intersections without common vertex" == NULL);
-		inter.type = intersection_t::VERTEX;
-		inter.v1 = inter.facet.first->vertex(i);
-		ASSERT(!Tr.is_infinite(inter.v1));
-		if (inter.v1->point() == seg.target()) {
-			// target reached
+	int coplanar[3];
+	const REAL prevDist(inter.dist);
+	for (const facet_t& in_facet: in_facets) {
+		ASSERT(!Tr.is_infinite(in_facet));
+		const int nb_coplanar(intersect(Tr.triangle(in_facet), seg, coplanar));
+		if (nb_coplanar >= 0) {
+			// skip this cell if the intersection is not in the desired direction
+			inter.dist = inter.ray.IntersectsDist(getFacetPlane(in_facet));
+			if ((inter.dist > prevDist) != inter.bigger)
+				continue;
+			// vertices of facet i: j = 4 * i, vertices = facet_vertex_order[j,j+1,j+2] negative orientation
+			inter.facet = in_facet;
+			switch (nb_coplanar) {
+			case 0: {
+				// face intersection
+				inter.type = intersection_t::FACET;
+				// now find next facets to be checked as
+				// the three faces in the neighbor cell different than the origin face
+				out_facets.clear();
+				const cell_handle_t nc(inter.facet.first->neighbor(inter.facet.second));
+				ASSERT(!Tr.is_infinite(nc));
+				for (int i=0; i<4; ++i)
+					if (nc->neighbor(i) != inter.facet.first)
+						out_facets.push_back(facet_t(nc, i));
+				return true; }
+			case 1: {
+				// coplanar with 1 edge = intersect edge
+				const int j(4 * inter.facet.second);
+				const int i1(j + coplanar[0]);
+				inter.type = intersection_t::EDGE;
+				inter.v1 = inter.facet.first->vertex(facet_vertex_order[i1+0]);
+				inter.v2 = inter.facet.first->vertex(facet_vertex_order[i1+1]);
+				// now find next facets to be checked as
+				// the two faces in this cell opposing this edge
+				out_facets.clear();
+				const edge_t out_edge(inter.facet.first, facet_vertex_order[i1+0], facet_vertex_order[i1+1]);
+				const typename delaunay_t::Cell_circulator efc(Tr.incident_cells(out_edge));
+				typename delaunay_t::Cell_circulator ifc(efc);
+				do {
+					const cell_handle_t c(ifc);
+					if (c == inter.facet.first) continue;
+					out_facets.push_back(facet_t(c, c->index(inter.v1)));
+					out_facets.push_back(facet_t(c, c->index(inter.v2)));
+				} while (++ifc != efc);
+				return true; }
+			case 2: {
+				// coplanar with 2 edges = hit a vertex
+				// find vertex index
+				const int j(4 * inter.facet.second);
+				const int i1(j + coplanar[0]);
+				const int i2(j + coplanar[1]);
+				int i;
+				if (facet_vertex_order[i1] == facet_vertex_order[i2] || facet_vertex_order[i1] == facet_vertex_order[i2+1]) {
+					i = facet_vertex_order[i1];
+				} else
+				if (facet_vertex_order[i1+1] == facet_vertex_order[i2] || facet_vertex_order[i1+1] == facet_vertex_order[i2+1]) {
+					i = facet_vertex_order[i1+1];
+				} else {
+					ASSERT("2 edges intersections without common vertex" == NULL);
+				}
+				inter.type = intersection_t::VERTEX;
+				inter.v1 = inter.facet.first->vertex(i);
+				ASSERT(!Tr.is_infinite(inter.v1));
+				if (inter.v1->point() == seg.target()) {
+					// target reached
+					out_facets.clear();
+					return false;
+				}
+				// now find next facets to be checked as
+				// the faces in the cells around opposing this common vertex
+				out_facets.clear();
+				struct cell_back_inserter_t {
+					const vertex_handle_t v;
+					const cell_handle_t current_cell;
+					std::vector<facet_t>& out_facets;
+					inline cell_back_inserter_t(const intersection_t& inter, std::vector<facet_t>& _out_facets)
+						: v(inter.v1), current_cell(inter.facet.first), out_facets(_out_facets) {}
+					inline cell_back_inserter_t& operator*() { return *this; }
+					inline cell_back_inserter_t& operator++(int) { return *this; }
+					inline void operator=(cell_handle_t c) {
+						if (c != current_cell)
+							out_facets.push_back(facet_t(c, c->index(v)));
+					}
+				};
+				Tr.finite_incident_cells(inter.v1, cell_back_inserter_t(inter, out_facets));
+				return true; }
+			}
+			// coplanar with 3 edges = tangent = impossible?
 			out_facets.clear();
 			return false;
 		}
-		// now find next facets to be checked as
-		// the faces in the cells around opposing this common vertex
-		std::unordered_set<void*> used_cells;
-		for (std::vector<facet_t>::const_iterator it=in_facets.cbegin(); it!=in_facets.cend(); ++it)
-			used_cells.insert(it->first.for_compact_container());
-		out_facets.clear();
-		const vertex_handle_t v(inter.v1);
-		std::vector<cell_handle_t> cells;
-		Tr.finite_incident_cells(v, std::back_inserter(cells));
-		for (std::vector<cell_handle_t>::iterator it = cells.begin(); it != cells.end(); it++) {
-			const cell_handle_t c(*it);
-			if (!used_cells.insert(c.for_compact_container()).second) continue;
-			out_facets.push_back(facet_t(c, c->index(v)));
-		}
-		return true; }
 	}
-	// coplanar with 3 edges = tangent = impossible?
+	// Bad end: no intersection found and we are not at the end of the segment (very rarely, but it happens)!
 	out_facets.clear();
 	return false;
 }
@@ -643,41 +652,6 @@ bool intersectFace(const delaunay_t& Tr, const segment_t& seg, const std::vector
 	out_facets.clear();
 	return false;
 }
-// same as above, but it starts from a point and a direction instead of a list of faces to test
-//  cell [in] : the cell having the point a vertex, from where the ray is coming (set in inter.facet.first)
-//  vertex [in] : the vertex, from where the ray is coming (set in inter.v1)
-bool intersectFace(const delaunay_t& Tr, const segment_t& seg, std::vector<facet_t>& out_facets, intersection_t& inter)
-{
-	ASSERT(out_facets.empty());
-	// find next facets to be checked as
-	// the faces in the cells around opposing this common vertex
-	const cell_handle_t cell(inter.facet.first);
-	const vertex_handle_t v(inter.v1);
-	std::vector<cell_handle_t> cells;
-	Tr.incident_cells(v, std::back_inserter(cells));
-	int coplanar[3];
-	for (std::vector<cell_handle_t>::iterator it = cells.begin(); it != cells.end(); it++) {
-		const cell_handle_t c(*it);
-		if (Tr.is_infinite(c) || c == cell) continue;
-		const facet_t f(c, c->index(v));
-		ASSERT(!Tr.is_infinite(f));
-		if (intersect(Tr.triangle(f), seg, coplanar) == 0) {
-			// face intersection
-			inter.facet = f;
-			inter.type = intersection_t::FACET;
-			// now find next facets to be checked as
-			// the three faces in the neighbor cell different than the origin face
-			inter.ncell = inter.facet.first->neighbor(inter.facet.second);
-			if (Tr.is_infinite(inter.ncell))
-				return false;
-			for (int i=0; i<4; ++i)
-				if (inter.ncell->neighbor(i) != inter.facet.first)
-					out_facets.push_back(facet_t(inter.ncell, i));
-			return true;
-		}
-	}
-	return false;
-}
 // same as above, but starts from a known vertex and incident cell
 inline bool intersectFace(const delaunay_t& Tr, const segment_t& seg, const vertex_handle_t& v, const cell_handle_t& cell, std::vector<facet_t>& out_facets, intersection_t& inter)
 {
@@ -694,16 +668,6 @@ inline bool intersectFace(const delaunay_t& Tr, const segment_t& seg, const vert
 }
 
 
-// Given a facet, compute the plane containing it
-inline Planef getFacetPlane(const facet_t& facet)
-{
-	const point_t& v0(facet.first->vertex((facet.second+1)%4)->point());
-	const point_t& v1(facet.first->vertex((facet.second+2)%4)->point());
-	const point_t& v2(facet.first->vertex((facet.second+3)%4)->point());
-	return Planef(CGAL2MVS<float>(v0), CGAL2MVS<float>(v1), CGAL2MVS<float>(v2));
-}
-
-
 // Given a cell, compute the free-space support for it
 edge_cap_t freeSpaceSupport(const delaunay_t& Tr, const std::vector<cell_info_t>& infoCells, const cell_handle_t& cell)
 {
@@ -716,7 +680,6 @@ edge_cap_t freeSpaceSupport(const delaunay_t& Tr, const std::vector<cell_info_t>
 	}
 	return wf;
 }
-
 
 // Fetch the triangle formed by the facet vertices,
 // making sure the facet orientation is kept (as in CGAL::Triangulation_3::triangle())
@@ -928,7 +891,6 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, unsigne
 		const float inv2SigmaSq(0.5f/(sigma*sigma));
 		distsSq.Release();
 
-		intersection_t inter;
 		std::vector<facet_t> facets;
 
 		// compute the weights for each edge
@@ -937,7 +899,7 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, unsigne
 		#ifdef DELAUNAY_USE_OPENMP
 		delaunay_t::Vertex_iterator vertexIter(delaunay.vertices_begin());
 		const int64_t nVerts(delaunay.number_of_vertices()+1);
-		#pragma omp parallel for private(inter, facets)
+		#pragma omp parallel for private(facets)
 		for (int64_t i=0; i<nVerts; ++i) {
 			delaunay_t::Vertex_iterator vi;
 			#pragma omp critical
@@ -952,7 +914,7 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, unsigne
 			vert.AllocateInfo();
 			#endif
 			const point_t& p(vi->point());
-			const Point3f pt(CGAL2MVS<float>(p));
+			const Point3 pt(CGAL2MVS<REAL>(p));
 			FOREACH(v, vert.views) {
 				const typename vert_info_t::view_t view(vert.views[v]);
 				const uint32_t imageID(view.idxView);
@@ -962,17 +924,16 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, unsigne
 				const Camera& camera = imageData.camera;
 				const camera_cell_t& camCell = camCells[imageID];
 				// compute the ray used to find point intersection
-				const Point3f vecCamPoint(pt-Cast<float>(camera.C));
-				const float invLenCamPoint(1.f/norm(vecCamPoint));
-				const Ray3f ray(pt, Point3f(vecCamPoint*invLenCamPoint));
+				const Point3 vecCamPoint(pt-camera.C);
+				const REAL invLenCamPoint(REAL(1)/norm(vecCamPoint));
+				intersection_t inter(pt, Point3(vecCamPoint*invLenCamPoint));
 				// find faces intersected by the camera-point segment
 				const segment_t segCamPoint(MVS2CGAL(camera.C), p);
 				if (!intersect(delaunay, segCamPoint, camCell.facets, facets, inter))
 					continue;
 				do {
 					// assign score, weighted by the distance from the point to the intersection
-					const float d(ray.IntersectsDist(getFacetPlane(inter.facet)));
-					const edge_cap_t w(alpha_vis*(1.f-EXP(-d*d*inv2SigmaSq)));
+					const edge_cap_t w(alpha_vis*(1.f-EXP(-SQUARE((float)inter.dist)*inv2SigmaSq)));
 					edge_cap_t& f(infoCells[inter.facet.first->info()].f[inter.facet.second]);
 					#ifdef DELAUNAY_USE_OPENMP
 					#pragma omp atomic
@@ -985,7 +946,8 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, unsigne
 				vert.viewsInfo[v].cell2Cam = inter.facet.first;
 				#endif
 				// find faces intersected by the endpoint-point segment
-				const Point3f endPoint(pt+vecCamPoint*(invLenCamPoint*sigma));
+				inter.dist = FLT_MAX; inter.bigger = false;
+				const Point3 endPoint(pt+vecCamPoint*(invLenCamPoint*sigma));
 				const segment_t segEndPoint(MVS2CGAL(endPoint), p);
 				const cell_handle_t endCell(delaunay.locate(segEndPoint.source(), vi->cell()));
 				ASSERT(endCell != cell_handle_t());
@@ -997,9 +959,8 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, unsigne
 				t += alpha_vis;
 				while (intersect(delaunay, segEndPoint, facets, facets, inter)) {
 					// assign score, weighted by the distance from the point to the intersection
-					const float d(ray.IntersectsDist(getFacetPlane(inter.facet)));
 					const facet_t& mf(delaunay.mirror_facet(inter.facet));
-					const edge_cap_t w(alpha_vis*(1.f-EXP(-d*d*inv2SigmaSq)));
+					const edge_cap_t w(alpha_vis*(1.f-EXP(-SQUARE((float)inter.dist)*inv2SigmaSq)));
 					edge_cap_t& f(infoCells[mf.first->info()].f[mf.second]);
 					#ifdef DELAUNAY_USE_OPENMP
 					#pragma omp atomic
@@ -1024,7 +985,7 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, unsigne
 		#ifdef DELAUNAY_USE_OPENMP
 		delaunay_t::Vertex_iterator vertexIter(delaunay.vertices_begin());
 		const int64_t nVerts(delaunay.number_of_vertices()+1);
-		#pragma omp parallel for private(inter, facets)
+		#pragma omp parallel for private(facets)
 		for (int64_t i=0; i<nVerts; ++i) {
 			delaunay_t::Vertex_iterator vi;
 			#pragma omp critical
@@ -1048,6 +1009,7 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, unsigne
 				// find faces intersected by the point-camera segment and keep the max free-space support score
 				const Point3f bgnPoint(pt-vecCamPoint*(invLenCamPoint*sigma*kf));
 				const segment_t segPointBgn(p, MVS2CGAL(bgnPoint));
+				intersection_t inter;
 				if (!intersectFace(delaunay, segPointBgn, vi, vert.viewsInfo[v].cell2Cam, facets, inter))
 					continue;
 				edge_cap_t beta(0);
