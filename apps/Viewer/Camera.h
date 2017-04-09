@@ -46,6 +46,7 @@ namespace VIEWER {
 class Camera
 {
 public:
+	AABB3d box;
 	int width, height;
 	Eigen::Quaterniond rotation;
 	Eigen::Vector3d center;
@@ -56,7 +57,7 @@ public:
 	MVS::IIndex prevCamID, currentCamID, maxCamID;
 
 public:
-	explicit Camera(const AABB3d& box=AABB3d(true), double _fov=40);
+	explicit Camera(const AABB3d& _box=AABB3d(true), double _fov=40);
 	void CopyOf(const Camera&);
 
 	void Init(const AABB3d&);

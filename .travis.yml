@@ -3,7 +3,7 @@ language: cpp
 matrix:
   include:
     - os: linux
-      dist: trusty
+      dist: xenial
       sudo: required
     - os: osx
       sudo: required
@@ -26,6 +26,9 @@ addons:
       - libcgal-dev
       - libatlas-base-dev
       - libsuitesparse-dev
+      - freeglut3-dev
+      - libglew-dev
+      - libglfw3-dev
 
 before_install:
   - echo $LANG

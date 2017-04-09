@@ -40,8 +40,9 @@ using namespace VIEWER;
 
 // S T R U C T S ///////////////////////////////////////////////////
 
-Camera::Camera(const AABB3d& box, double _fov)
+Camera::Camera(const AABB3d& _box, double _fov)
 	:
+	box(_box),
 	width(0), height(0),
 	rotation(Eigen::Quaterniond::Identity()),
 	center(Eigen::Vector3d::Zero()),
@@ -49,7 +50,7 @@ Camera::Camera(const AABB3d& box, double _fov)
 	scaleF(1.f),
 	prevCamID(NO_ID), currentCamID(NO_ID), maxCamID(0)
 {
-	Init(box);
+	Reset();
 }
 
 void Camera::CopyOf(const Camera& rhs)
@@ -62,20 +63,22 @@ void Camera::CopyOf(const Camera& rhs)
 }
 
 
-void Camera::Init(const AABB3d& box)
+void Camera::Init(const AABB3d& _box)
 {
-	center = box.GetCenter();
-	radius = box.GetSize().norm()*0.5;
+	box = _box;
 	Reset();
 }
 
 void Camera::Reset()
 {
+	center = box.GetCenter();
+	radius = box.GetSize().norm()*0.5;
 	rotation = Eigen::Quaterniond::Identity();
 	scaleF = 1.f;
 	prevCamID = currentCamID = NO_ID;
 	fov = 40;
 	dist = radius * 1.5 / SIN(D2R(fov));
+	Resize(width, height);
 }
 
 void Camera::Resize(int _width, int _height)

@@ -85,6 +85,9 @@ cmake . ../ceres-solver/ -DMINIGLOG=ON -DBUILD_TESTING=OFF -DBUILD_EXAMPLES=OFF
 make -j2 && sudo make install
 cd ..
 
+#GLFW3 (Optional)
+sudo apt-get -y install freeglut3-dev libglew-dev libglfw3-dev
+
 #OpenMVS
 git clone https://github.com/cdcseacave/openMVS.git openMVS
 mkdir openMVS_build && cd openMVS_build
