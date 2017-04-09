@@ -68,6 +68,8 @@ public:
 	typedef Pixel8U Color;
 	typedef CLISTDEF0(Color) ColorArr;
 
+	typedef AABB3f Box;
+
 public:
 	PointArr points;
 	PointViewArr pointViews; // array of views for each point (ordered increasing)
@@ -85,6 +87,10 @@ public:
 	inline size_t GetSize() const { ASSERT(points.GetSize() == pointViews.GetSize() || pointViews.IsEmpty()); return points.GetSize(); }
 
 	void RemovePoint(IDX idx);
+
+	Box GetAABB() const;
+	Box GetAABB(const Box& bound) const;
+	Box GetAABB(unsigned minViews) const;
 
 	bool Load(const String& fileName);
 	bool Save(const String& fileName) const;

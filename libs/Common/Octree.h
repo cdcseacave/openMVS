@@ -64,7 +64,7 @@ public:
 		SIZE_TYPE size; // number of items contained by this cell in the global array
 		DATA_TYPE data; // user data associated with this leaf
 	} LEAF_TYPE;
-	static const size_t dataSize = (sizeof(NODE_TYPE)>sizeof(LEAF_TYPE) ? sizeof(NODE_TYPE) : sizeof(LEAF_TYPE));
+	enum { dataSize = (sizeof(NODE_TYPE)>sizeof(LEAF_TYPE) ? sizeof(NODE_TYPE) : sizeof(LEAF_TYPE)) };
 	enum { numChildren = (2<<(DIMS-1)) };
 
 public:
@@ -73,6 +73,7 @@ public:
 	inline ~TOctreeCell();
 
 	inline void Release();
+	inline void Swap(TOctreeCell&);
 
 	inline unsigned ComputeChild(const POINT_TYPE& item) const;
 	static void ComputeCenter(POINT_TYPE []);
@@ -135,6 +136,7 @@ public:
 	inline TOctree(const ITEMARR_TYPE&, const AABB_TYPE&);
 
 	inline void Release();
+	inline void Swap(TOctree&);
 
 	void Insert(const ITEMARR_TYPE&);
 	void Insert(const ITEMARR_TYPE&, const AABB_TYPE&);
@@ -179,6 +181,7 @@ public:
 			radius = size[2];
 		return radius;
 	}
+	inline bool IsEmpty() const { return m_indices.IsEmpty(); }
 	inline size_t GetNumItems() const { return m_indices.GetSize(); }
 	inline const IDXARR_TYPE& GetIndexArr() const { return m_indices; }
 	inline const ITEM_TYPE* GetItems() const { return m_items; }
@@ -192,7 +195,7 @@ protected:
 	template <typename INSERTER>
 	void _CollectCells(const CELL_TYPE&, INSERTER&) const;
 	template <typename PARSER>
-	void _ParseCells(CELL_TYPE&, PARSER&);
+	void _ParseCells(CELL_TYPE&, TYPE, PARSER&);
 
 	template <typename INSERTER>
 	void _Collect(const CELL_TYPE&, const AABB_TYPE&, INSERTER&) const;

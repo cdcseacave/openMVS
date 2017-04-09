@@ -77,6 +77,9 @@ public:
 	// returns the focal length aspect ratio
 	inline REAL GetFocalLengthRatio() const { return (K(1,1) / K(0,0)); }
 
+	// returns the principal-point
+	inline Point2 GetPrincipalPoint() const { return Point2(K(0,2), K(1,2)); }
+
 	// update camera parameters given the delta
 	inline void UpdateTranslation(const Point3& delta) {
 		C += delta;

@@ -45,6 +45,9 @@
 
 namespace MVS {
 
+typedef uint32_t IIndex;
+typedef cList<IIndex, IIndex, 0, 16, IIndex> IIndexArr;
+
 struct MVS_API ViewInfo {
 	uint32_t ID; // image ID
 	uint32_t points; // number of 3D points shared with the reference image

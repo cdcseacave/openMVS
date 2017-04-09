@@ -42,6 +42,13 @@ inline TAABB<TYPE,DIMS>::TAABB(const TPoint* pts, size_t n)
 {
 	Set(pts, n);
 } // constructor
+template <typename TYPE, int DIMS>
+template <typename CTYPE>
+inline TAABB<TYPE,DIMS>::TAABB(const TAABB<CTYPE,DIMS>& rhs)
+	:
+	ptMin(rhs.ptMin.template cast<TYPE>()), ptMax(rhs.ptMax.template cast<TYPE>())
+{
+} // copy constructor
 /*----------------------------------------------------------------*/
 
 
@@ -77,6 +84,17 @@ inline void TAABB<TYPE,DIMS>::Set(const TPoint* pts, size_t n)
 	for (size_t i=1; i<n; ++i)
 		Insert(pts[i]);
 } // Set
+/*----------------------------------------------------------------*/
+
+
+template <typename TYPE, int DIMS>
+inline bool TAABB<TYPE,DIMS>::IsEmpty() const
+{
+	for (int i=0; i<DIMS; ++i)
+		if (ptMin[i] > ptMax[i])
+			return true;
+	return false;
+} // IsEmpty
 /*----------------------------------------------------------------*/
 
 

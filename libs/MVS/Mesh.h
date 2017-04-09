@@ -80,6 +80,8 @@ public:
 	typedef FaceCount VertCount;
 	typedef std::unordered_map<VIndex,VertCount> VertCountMap;
 
+	typedef AABB3f Box;
+
 public:
 	VertexArr vertices;
 	FaceArr faces;
@@ -109,6 +111,10 @@ public:
 	void ReleaseExtra();
 	void EmptyExtra();
 	inline bool IsEmpty() const { return vertices.IsEmpty(); }
+	inline bool HasTexture() const { ASSERT(faceTexcoords.IsEmpty() == textureDiffuse.empty()); return !faceTexcoords.IsEmpty(); }
+
+	Box GetAABB() const;
+	Box GetAABB(const Box& bound) const;
 
 	void ListIncidenteVertices();
 	void ListIncidenteFaces();

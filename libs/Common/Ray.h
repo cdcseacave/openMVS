@@ -19,6 +19,37 @@ namespace SEACAVE {
 
 // S T R U C T S ///////////////////////////////////////////////////
 
+// Basic triangle class
+template <typename TYPE, int DIMS>
+class TTriangle
+{
+	STATIC_ASSERT(DIMS > 1 && DIMS <= 3);
+
+public:
+	typedef Eigen::Matrix<TYPE,DIMS,1> VECTOR;
+	typedef Eigen::Matrix<TYPE,DIMS,1> POINT;
+	typedef SEACAVE::TAABB<TYPE,DIMS> AABB;
+	typedef SEACAVE::TPlane<TYPE,DIMS> PLANE;
+	enum { numScalar = (2*DIMS) };
+
+	POINT	a, b, c;	// triangle vertices
+
+	//---------------------------------------
+
+	inline TTriangle() {}
+	inline TTriangle(const POINT&, const POINT&, const POINT&);
+
+	inline void Set(const POINT&, const POINT&, const POINT&);
+
+	inline AABB GetAABB() const;
+	inline PLANE GetPlane() const;
+
+	inline const POINT& operator [] (BYTE i) const { ASSERT(i<3); return (&a)[i]; }
+	inline POINT& operator [] (BYTE i) { ASSERT(i<3); return (&a)[i]; }
+}; // class TTriangle
+/*----------------------------------------------------------------*/
+
+
 // Basic ray class
 template <typename TYPE, int DIMS>
 class TRay
@@ -29,6 +60,8 @@ public:
 	typedef Eigen::Matrix<TYPE,DIMS+1,DIMS+1,Eigen::RowMajor> MATRIX;
 	typedef Eigen::Matrix<TYPE,DIMS,1> VECTOR;
 	typedef Eigen::Matrix<TYPE,DIMS,1> POINT;
+	typedef SEACAVE::TTriangle<TYPE,DIMS> TRIANGLE;
+	typedef SEACAVE::TSphere<TYPE,DIMS> SPHERE;
 	typedef SEACAVE::TAABB<TYPE,DIMS> AABB;
 	typedef SEACAVE::TOBB<TYPE,DIMS> OBB;
 	typedef SEACAVE::TPlane<TYPE,DIMS> PLANE;
@@ -48,6 +81,10 @@ public:
 	inline TYPE SetFromPointsLen(const POINT& pt0, const POINT& pt1);
 	inline void DeTransform(const MATRIX&);			// move to matrix space
 
+	template <bool bCull>
+	bool Intersects(const TRIANGLE&, TYPE *t) const;
+	template <bool bCull>
+	bool Intersects(const TRIANGLE&, TYPE fL, TYPE *t) const;
 	bool Intersects(const POINT&, const POINT&, const POINT&,
 					bool bCull, TYPE *t) const;
 	bool Intersects(const POINT&, const POINT&, const POINT&,
@@ -58,6 +95,8 @@ public:
 	inline POINT Intersects(const PLANE& plane) const;
 	bool Intersects(const PLANE& plane, bool bCull,
 					TYPE fL, TYPE *t, POINT* pPtHit) const;
+	bool Intersects(const SPHERE& sphere) const;
+	bool Intersects(const SPHERE& sphere, TYPE& t) const;
 	bool Intersects(const AABB& aabb) const;
 	bool Intersects(const AABB& aabb, TYPE& t) const;
 	bool Intersects(const AABB& aabb, TYPE fL, TYPE *t) const;

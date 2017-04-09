@@ -62,6 +62,7 @@ public:
 	inline Scene(unsigned _nMaxThreads=0) : nMaxThreads(Thread::getMaxThreads(_nMaxThreads)) {}
 
 	void Release();
+	bool IsEmpty() const;
 
 	bool LoadInterface(const String& fileName);
 	bool SaveInterface(const String& fileName) const;

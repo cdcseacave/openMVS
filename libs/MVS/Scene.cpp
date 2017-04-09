@@ -53,6 +53,11 @@ void Scene::Release()
 	mesh.Release();
 }
 
+bool Scene::IsEmpty() const
+{
+	return pointcloud.IsEmpty() && mesh.IsEmpty();
+}
+
 
 bool Scene::LoadInterface(const String & fileName)
 {
@@ -75,6 +80,15 @@ bool Scene::LoadInterface(const String & fileName)
 			camera.K = itCamera->K;
 			camera.R = itCamera->R;
 			camera.C = itCamera->C;
+			if (!itCamera->IsNormalized()) {
+				// normalize K
+				ASSERT(itCamera->HasResolution());
+				const REAL scale(REAL(1)/camera.GetNormalizationScale(itCamera->width,itCamera->height));
+				camera.K(0,0) *= scale;
+				camera.K(1,1) *= scale;
+				camera.K(0,2) *= scale;
+				camera.K(1,2) *= scale;
+			}
 			DEBUG_EXTRA("Camera model loaded: platform %u; camera %2u; f %.3fx%.3f; poses %u", platforms.GetSize()-1, platform.cameras.GetSize()-1, camera.K(0,0), camera.K(1,1), itPlatform->poses.size());
 		}
 		ASSERT(platform.cameras.GetSize() == itPlatform->cameras.size());
@@ -109,15 +123,19 @@ bool Scene::LoadInterface(const String & fileName)
 		}
 		imageData.platformID = image.platformID;
 		imageData.cameraID = image.cameraID;
-		#if 1
-		// load image
-		if (!imageData.ReloadImage(0, false))
-			return false;
+		// init camera
+		const Interface::Platform::Camera& camera = obj.platforms[image.platformID].cameras[image.cameraID];
+		if (camera.HasResolution()) {
+			// use stored resolution
+			imageData.width = camera.width;
+			imageData.height = camera.height;
+			imageData.scale = 1;
+		} else {
+			// read image header for resolution
+			if (!imageData.ReloadImage(0, false))
+				return false;
+		}
 		imageData.UpdateCamera(platforms);
-		#else
-		imageData.camera = platforms[imageData.platformID].GetCamera(imageData.cameraID, imageData.poseID);
-		imageData.camera.ComposeP();
-		#endif
 		++nCalibratedImages;
 		nTotalPixels += imageData.width * imageData.height;
 		DEBUG_EXTRA("Image loaded %3u: %s", ID, Util::getFileFullName(imageData.name).c_str());
@@ -234,7 +252,7 @@ bool Scene::SaveInterface(const String & fileName) const
 		obj.verticesNormal.resize(pointcloud.normals.GetSize());
 		FOREACH(i, pointcloud.normals) {
 			const PointCloud::Normal& normal = pointcloud.normals[i];
-			MVS::Interface::VertexNormal& vertexNormal = obj.verticesNormal[i];
+			MVS::Interface::Normal& vertexNormal = obj.verticesNormal[i];
 			vertexNormal.n = normal;
 		}
 	}
@@ -242,7 +260,7 @@ bool Scene::SaveInterface(const String & fileName) const
 		obj.verticesColor.resize(pointcloud.colors.GetSize());
 		FOREACH(i, pointcloud.colors) {
 			const PointCloud::Color& color = pointcloud.colors[i];
-			MVS::Interface::VertexColor& vertexColor = obj.verticesColor[i];
+			MVS::Interface::Color& vertexColor = obj.verticesColor[i];
 			vertexColor.c = color;
 		}
 	}

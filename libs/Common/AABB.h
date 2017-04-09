@@ -44,6 +44,8 @@ public:
 	inline TAABB(const POINT& center, const TYPE& radius);
 	template <typename TPoint>
 	inline TAABB(const TPoint* pts, size_t n);
+	template <typename CTYPE>
+	inline TAABB(const TAABB<CTYPE, DIMS>&);
 
 	inline void Reset();
 	inline void Set(const POINT& _pt);
@@ -51,6 +53,8 @@ public:
 	inline void Set(const POINT& center, const TYPE& radius);
 	template <typename TPoint>
 	inline void Set(const TPoint* pts, size_t n);
+
+	inline bool IsEmpty() const;
 
 	inline void Enlarge(TYPE);
 	inline void EnlargePercent(TYPE);

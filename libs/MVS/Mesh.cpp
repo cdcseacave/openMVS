@@ -96,6 +96,26 @@ void Mesh::EmptyExtra()
 /*----------------------------------------------------------------*/
 
 
+// compute the axis-aligned bounding-box of the mesh
+Mesh::Box Mesh::GetAABB() const
+{
+	Box box(true);
+	for (const Vertex& X: vertices)
+		box.InsertFull(X);
+	return box;
+}
+// same, but only for vertices inside the given AABB
+Mesh::Box Mesh::GetAABB(const Box& bound) const
+{
+	Box box(true);
+	for (const Vertex& X: vertices)
+		if (bound.Intersects(X))
+			box.InsertFull(X);
+	return box;
+}
+/*----------------------------------------------------------------*/
+
+
 // extract array of vertices incident to each vertex
 void Mesh::ListIncidenteVertices()
 {
