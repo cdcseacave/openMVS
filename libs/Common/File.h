@@ -71,14 +71,14 @@ public:
 	} FMCHECKACCESS;
 
 	File() : h(INVALID_HANDLE_VALUE) {
-		#ifdef _DEBUG
+		#ifndef _RELEASE
 		breakRead = -1;
 		breakWrite = -1;
 		#endif
 	}
 
 	File(LPCTSTR aFileName, int access, int mode, int flags=0) : h(INVALID_HANDLE_VALUE) {
-		#ifdef _DEBUG
+		#ifndef _RELEASE
 		breakRead = -1;
 		breakWrite = -1;
 		#endif
@@ -192,7 +192,7 @@ public:
 	}
 
 	virtual size_t read(void* buf, size_t len) {
-		#ifdef _DEBUG
+		#ifndef _RELEASE
 		if (breakRead != (size_t)(-1)) {
 			if (breakRead <= len) {
 				ASSERT("FILE::read() break" == NULL);
@@ -209,7 +209,7 @@ public:
 	}
 
 	virtual size_t write(const void* buf, size_t len) {
-		#ifdef _DEBUG
+		#ifndef _RELEASE
 		if (breakWrite != (size_t)(-1)) {
 			if (breakWrite <= len) {
 				ASSERT("FILE::write() break" == NULL);
@@ -344,14 +344,14 @@ public:
 	} FMCHECKACCESS;
 
 	File() : h(-1) {
-		#ifdef _DEBUG
+		#ifndef _RELEASE
 		breakRead = -1;
 		breakWrite = -1;
 		#endif
 	}
 
 	File(LPCTSTR aFileName, int access, int mode, int flags=0) : h(-1) {
-		#ifdef _DEBUG
+		#ifndef _RELEASE
 		breakRead = -1;
 		breakWrite = -1;
 		#endif
@@ -422,7 +422,7 @@ public:
 	virtual void movePos(size_f_t pos) { lseek(h, (off_t)pos, SEEK_CUR); };
 
 	virtual size_t read(void* buf, size_t len) {
-		#ifdef _DEBUG
+		#ifndef _RELEASE
 		if (breakRead != (size_t)(-1)) {
 			if (breakRead <= len) {
 				ASSERT("FILE::read() break" == NULL);
@@ -439,7 +439,7 @@ public:
 	}
 
 	virtual size_t write(const void* buf, size_t len) {
-		#ifdef _DEBUG
+		#ifndef _RELEASE
 		if (breakWrite != (size_t)(-1)) {
 			if (breakWrite <= len) {
 				ASSERT("FILE::write() break" == NULL);
@@ -524,7 +524,7 @@ protected:
 	#endif
 
 public:
-	#ifdef _DEBUG
+	#ifndef _RELEASE
 	size_t breakRead;
 	size_t breakWrite;
 	#endif

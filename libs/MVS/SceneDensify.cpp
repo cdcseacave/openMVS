@@ -1422,6 +1422,7 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateNormal)
 				} else {
 					// this point is valid, store it
 					point = X*(REAL(1)/confidence);
+					ASSERT(ISFINITE(point));
 					// invalidate all neighbor depths that do not agree with it
 					for (Depth* pDepth: invalidDepths)
 						*pDepth = 0;

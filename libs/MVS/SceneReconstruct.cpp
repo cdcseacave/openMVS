@@ -79,12 +79,12 @@ public:
 	}
 
 	inline void AddNode(node_type n, value_type source, value_type sink) {
-		ASSERT(source >= 0 && sink >= 0);
+		ASSERT(ISFINITE(source) && source >= 0 && ISFINITE(sink) && sink >= 0);
 		graph.addNode((int)n, source, sink);
 	}
 
 	inline void AddEdge(node_type n1, node_type n2, value_type capacity, value_type reverseCapacity) {
-		ASSERT(capacity >= 0 && reverseCapacity >= 0);
+		ASSERT(ISFINITE(capacity) && capacity >= 0 && ISFINITE(reverseCapacity) && reverseCapacity >= 0);
 		graph.addEdge((int)n1, (int)n2, capacity, reverseCapacity);
 	}
 
@@ -132,7 +132,7 @@ public:
 	MaxFlow(size_t numNodes) : graph(numNodes+2), S(node_type(numNodes)), T(node_type(numNodes+1)) {}
 
 	void AddNode(node_type n, value_type source, value_type sink) {
-		ASSERT(source >= 0 && sink >= 0);
+		ASSERT(ISFINITE(source) && source >= 0 && ISFINITE(sink) && sink >= 0);
 		if (source > 0) {
 			edge_descriptor e(boost::add_edge(S, n, graph).first);
 			edge_descriptor er(boost::add_edge(n, S, graph).first);
@@ -150,7 +150,7 @@ public:
 	}
 
 	void AddEdge(node_type n1, node_type n2, value_type capacity, value_type reverseCapacity) {
-		ASSERT(capacity >= 0 && reverseCapacity >= 0);
+		ASSERT(ISFINITE(capacity) && capacity >= 0 && ISFINITE(reverseCapacity) && reverseCapacity >= 0);
 		edge_descriptor e(boost::add_edge(n1, n2, graph).first);
 		edge_descriptor er(boost::add_edge(n2, n1, graph).first);
 		graph[e].capacity = capacity;
@@ -712,18 +712,26 @@ inline triangle_vhandles_t getTriangle(cell_handle_t cell, int i)
 float computePlaneSphereAngle(const delaunay_t& Tr, const facet_t& facet)
 {
 	// compute facet normal
-	if (Tr.is_infinite(facet.first)) return 1;
+	if (Tr.is_infinite(facet.first))
+		return 1.f;
 	const triangle_vhandles_t tri(getTriangle(facet.first, facet.second));
 	const Point3f v0(CGAL2MVS<float>(tri.verts[0]->point()));
 	const Point3f v1(CGAL2MVS<float>(tri.verts[1]->point()));
 	const Point3f v2(CGAL2MVS<float>(tri.verts[2]->point()));
 	const Point3f fn((v1-v0).cross(v2-v0));
+		const float fnLenSq(normSq(fn));
+		if (fnLenSq == 0.f)
+			return 0.5f;
 
 	// compute the co-tangent to the circumscribed sphere in one of the vertices
 	const Point3f cc(CGAL2MVS<float>(facet.first->circumcenter(Tr.geom_traits())));
 	const Point3f ct(cc-v0);
+	const float ctLenSq(normSq(ct));
+	if (ctLenSq == 0.f)
+		return 0.5f;
 
-	return ComputeAngle<float,float>(fn.ptr(), ct.ptr());
+	// compute the angle between the two vectors
+	return CLAMP((fn.dot(ct))/SQRT(fnLenSq*ctLenSq), -1.f, 1.f);
 }
 } // namespace DELAUNAY
 

@@ -225,9 +225,9 @@
 #define ASSERT(exp)
 #else
 #ifdef _MSC_VER
-#define ASSERT(exp) {if (!(exp) && IDOK == MessageBox(NULL, SEACAVE::String::FormatString("Assertion rised in file %s line %d.\r\n\r\n%s", __FILE__, __LINE__, #exp).c_str(), "Assertion rised. Abort?", MB_OKCANCEL|MB_ICONEXCLAMATION|MB_DEFBUTTON1|MB_APPLMODAL)) exit(-1);}
+#define ASSERT(exp) {if (!(exp)) __debugbreak();}
 #else // _MSC_VER
-#define ASSERT(exp)
+#define ASSERT(exp) {if (!(exp)) __builtin_trap();}
 #endif // _MSC_VER
 #endif
 #define TRACE(...)
