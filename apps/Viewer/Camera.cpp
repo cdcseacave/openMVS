@@ -77,7 +77,7 @@ void Camera::Reset()
 	scaleF = 1.f;
 	prevCamID = currentCamID = NO_ID;
 	fov = 40;
-	dist = radius * 1.5 / SIN(D2R(fov));
+	dist = radius * 0.5 / SIN(D2R(fov));
 	Resize(width, height);
 }
 

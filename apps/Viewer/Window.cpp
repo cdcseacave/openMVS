@@ -307,7 +307,7 @@ void Window::MouseButton(GLFWwindow* window, int button, int action, int mods)
 
 void Window::Scroll(double xoffset, double yoffset)
 {
-	camera->dist *= (yoffset>0 ? POW(0.9,yoffset) : POW(1.11,-yoffset));
+	camera->dist *= (yoffset>0 ? POW(1.11,yoffset) : POW(0.9,-yoffset));
 }
 void Window::Scroll(GLFWwindow* window, double xoffset, double yoffset)
 {

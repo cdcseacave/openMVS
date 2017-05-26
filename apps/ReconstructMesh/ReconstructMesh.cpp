@@ -104,10 +104,10 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	config_main.add_options()
 		("input-file,i", boost::program_options::value<std::string>(&OPT::strInputFileName), "input filename containing camera poses and image list")
 		("output-file,o", boost::program_options::value<std::string>(&OPT::strOutputFileName), "output filename for storing the mesh")
-		("min-point-distance,d", boost::program_options::value<float>(&OPT::fDistInsert)->default_value(2.f), "minimum distance in pixels between the projection of two 3D points to consider them different while triangulating (0 - disabled)")
+		("min-point-distance,d", boost::program_options::value<float>(&OPT::fDistInsert)->default_value(2.5f), "minimum distance in pixels between the projection of two 3D points to consider them different while triangulating (0 - disabled)")
 		("constant-weight", boost::program_options::value<bool>(&OPT::bUseConstantWeight)->default_value(true), "considers all view weights 1 instead of the available weight")
 		("free-space-support,f", boost::program_options::value<bool>(&OPT::bUseFreeSpaceSupport)->default_value(false), "exploits the free-space support in order to reconstruct weakly-represented surfaces")
-		("thickness-factor", boost::program_options::value<float>(&OPT::fThicknessFactor)->default_value(2.f), "multiplier adjusting the minimum thickness considered during visibility weighting")
+		("thickness-factor", boost::program_options::value<float>(&OPT::fThicknessFactor)->default_value(1.f), "multiplier adjusting the minimum thickness considered during visibility weighting")
 		("quality-factor", boost::program_options::value<float>(&OPT::fQualityFactor)->default_value(1.f), "multiplier adjusting the quality weight considered during graph-cut")
 		;
 	boost::program_options::options_description config_clean("Clean options");

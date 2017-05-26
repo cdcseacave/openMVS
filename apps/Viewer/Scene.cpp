@@ -684,9 +684,10 @@ void Scene::CastRay(const Ray3& ray, int action)
 				intRay.pick.idx,
 				window.selectionPoints[0].x, window.selectionPoints[0].y, window.selectionPoints[0].z,
 				[&]() {
-					const MVS::PointCloud::ViewArr& views = scene.pointcloud.pointViews[intRay.pick.idx];
-					if (views.empty())
+					if (scene.pointcloud.pointViews.empty())
 						return String();
+					const MVS::PointCloud::ViewArr& views = scene.pointcloud.pointViews[intRay.pick.idx];
+					ASSERT(!views.empty());
 					String strViews(String::FormatString("\n\tviews: %u", views.size()));
 					for (MVS::PointCloud::View idxImage: views) {
 						const MVS::Image& imageData = scene.images[idxImage];

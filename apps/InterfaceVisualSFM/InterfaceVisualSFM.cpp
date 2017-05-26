@@ -398,7 +398,7 @@ int main(int argc, LPCTSTR* argv)
 	progress.close();
 
 	// write OpenMVS input data
-	scene.Save(MAKE_PATH_SAFE(OPT::strOutputFileName), (ARCHIVE_TYPE)OPT::nArchiveType);
+	scene.SaveInterface(MAKE_PATH_SAFE(OPT::strOutputFileName));
 
 	VERBOSE("Input data imported: %u cameras, %u poses, %u images, %u vertices (%s)", cameras.size(), cameras.size(), cameras.size(), vertices.size(), TD_TIMER_GET_FMT().c_str());
 
