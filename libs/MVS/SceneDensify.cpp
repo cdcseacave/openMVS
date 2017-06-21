@@ -1708,8 +1708,10 @@ void Scene::DenseReconstructionEstimate(void* pData)
 		case EVT_PROCESSIMAGE: {
 			const EVTProcessImage& evtImage = *((EVTProcessImage*)(Event*)evt);
 			if (evtImage.idxImage >= data.images.GetSize()) {
-				// close working threads
-				data.events.AddEvent(new EVTClose);
+				if (nMaxThreads > 1) {
+					// close working threads
+					data.events.AddEvent(new EVTClose);
+				}
 				return;
 			}
 			// select views to reconstruct the depth-map for this image

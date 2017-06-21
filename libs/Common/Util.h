@@ -317,14 +317,14 @@ public:
 		// returns true if local drive full path or network path
 		return (path && (
 			#ifdef _MSC_VER
-			path[1]==_T(':') ||
+			(path[1]==_T(':') && path[0]!=_T('\0')) ||
 			#else // _MSC_VER
 			path[0]==_T('/') ||
 			#endif // _MSC_VER
 			#ifdef UNICODE
-			*((DWORD*)path)==0x5C005C00/*"\\\\"*/));
+			*reinterpret_cast<const DWORD*>(path)==0x5C005C00/*"\\\\"*/));
 			#else
-			*((WORD*)path)==0x5C5C/*"\\\\"*/));
+			*reinterpret_cast<const WORD*>(path)==0x5C5C/*"\\\\"*/));
 			#endif // UNICODE
 	}
 	static String getFullPath(const String& str) {
