@@ -292,8 +292,12 @@ bool Load(ArchiveLoad& a, std::vector<_Tp>& v) {
 // interface used to export/import MVS input data;
 //  - MAX(width,height) is used for normalization
 //  - row-major order is used for storing the matrices
+// two scenarios are supported:
+//  1. point-cloud (sparse/dense), for which at least platforms, images and vertices structures are needed
+//  2. mesh, for which at least platforms, images and mesh structures are needed
 struct Interface
 {
+	typedef cv::Point3_<uint32_t> Pos3u;
 	typedef cv::Point3_<float> Pos3f;
 	typedef cv::Point3_<double> Pos3d;
 	typedef cv::Matx<double,3,3> Mat33d;
@@ -454,6 +458,27 @@ struct Interface
 	typedef std::vector<Color> ColorArr;
 	/*----------------------------------------------------------------*/
 
+	// structure describing a mesh represented by a list vertices and triangles (faces)
+	struct Mesh {
+		// structure describing one vertex
+		typedef Pos3f Vertex;
+		typedef std::vector<Vertex> VertexArr;
+
+		// structure describing one face (triangle of vertex indices)
+		typedef Pos3u Face;
+		typedef std::vector<Face> FaceArr;
+
+		VertexArr vertices;
+		FaceArr faces;
+
+		template <class Archive>
+		void serialize(Archive& ar, const unsigned int /*version*/) {
+			ar & vertices;
+			ar & faces;
+		}
+	};
+	/*----------------------------------------------------------------*/
+
 	PlatformArr platforms; // array of platforms
 	ImageArr images; // array of images
 	VertexArr vertices; // array of reconstructed 3D points
@@ -462,6 +487,7 @@ struct Interface
 	LineArr lines; // array of reconstructed 3D lines
 	NormalArr linesNormal; // array of reconstructed 3D lines' normal (optional)
 	ColorArr linesColor; // array of reconstructed 3D lines' color (optional)
+	Mesh mesh; // array of vertices and triangles describing a 3D mesh
 	Mat44d transform; // transformation used to convert from absolute to relative coordinate system (optional)
 
 	Interface() : transform(Mat44d::eye()) {}
@@ -479,6 +505,9 @@ struct Interface
 			ar & linesColor;
 			if (version > 1) {
 				ar & transform;
+				if (version > 2) {
+					ar & mesh;
+				}
 			}
 		}
 	}
