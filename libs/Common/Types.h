@@ -134,6 +134,8 @@ namespace boost { void throw_exception(std::exception const&); }
 
 #pragma push_macro("free")
 #undef free
+#pragma push_macro("DEBUG")
+#undef DEBUG
 #include <opencv2/core/version.hpp>
 #if CV_MAJOR_VERSION > 2 || CV_MINOR_VERSION > 3
 #include <opencv2/opencv_modules.hpp>
@@ -147,6 +149,7 @@ namespace cv { namespace gpu = cuda; }
 #include <opencv2/gpu/gpu.hpp>
 #endif
 #endif
+#pragma pop_macro("DEBUG")
 #pragma pop_macro("free")
 
 #ifdef _USE_SSE
