@@ -394,7 +394,6 @@ typedef TAliasCast<double,int32_t> CastD2I;
 #include "File.h"
 #include "MemFile.h"
 #include "LinkLib.h"
-#include "HalfFloat.h"
 
 namespace SEACAVE {
 
@@ -1154,75 +1153,6 @@ inline void sse_prefetch(const void* p) {_mm_prefetch((const char*)p, _MM_HINT_N
 
 // C L A S S E S ///////////////////////////////////////////////////
 
-#define FLOOR_FIX	68719476736.0 * 1.5
-#define BIAS		(ForI((int)(((23 + 127) << 23) + (1 << 22))))
-class GENERAL_API Float
-{
-public:
-	struct GENERAL_API ForI
-	{
-		union
-		{
-			float	f;
-			int		i;
-		};
-
-		inline ForI() {}
-		inline explicit ForI(float val)	: f(val) {}
-		inline explicit ForI(int val)	: i(val) {}
-	} v;
-
-	//---------------------------------------
-
-	static const Float  ZERO;   // ( 0)
-	static const Float  ONE;    // ( 1)
-	static const Float nONE;    // (-1)
-	static const Float  INFINIT;// ( 1.#INF)
-	static const Float nINFINIT;// (-1.#INF)
-
-	//---------------------------------------
-
-	inline Float() {}
-	inline Float(float f) : v(f) {}
-
-	inline float	Abs() const						{ return ForI(v.i & 0x7FFFFFFF).f; }
-	inline float	Clamp(float l, float h) const	{ return (v.f < l) ? l : ((v.f > h) ? h : v.f); }
-	inline bool		IsZero() const					{ return Abs() < FZERO_TOLERANCE; }
-	inline bool		IsEqual(float f) const			{ return Float(f - v.f).Abs() < FZERO_TOLERANCE; }
-	inline bool		IsNegative() const				{ return (v.i & 0x80000000) != 0; }
-	inline bool		IsPositive() const				{ return (v.i & 0x80000000) == 0; }
-
-	//TODO: these functions give wrong result on some machines/compilation settings
-	inline int		Floor2Int() const				{ const double d((double)v.f + FLOOR_FIX); return (*(int*)&d) >> 16; }
-	inline float	Floor() const					{ return (float)Floor2Int(); }
-
-	inline int		Ceil2Int() const				{ const double d((double)v.f + 1.0 + FLOOR_FIX); return (*(int*)&d) >> 16; }
-	inline float	Ceil() const					{ return (float)Ceil2Int(); }
-
-	inline int		Round2Int() const				{ return ForI(v.f + BIAS.f).i - BIAS.i; }
-	inline float	Round() const					{ return (float)Round2Int(); }
-
-	inline float	Fract() const					{ return v.f - Floor(); }
-
-	inline float	Sqrt() const					{ return sqrtf(v.f); }
-	inline float	InvSqrt() const					{ return RSQRT(v.f); }
-
-	inline			operator float() const			{ return v.f; }
-	inline void		operator+=(float r)				{ v.f += r; }
-	inline void		operator-=(float r)				{ v.f -= r; }
-	inline void		operator*=(float r)				{ v.f *= r; }
-	inline void		operator/=(float r)				{ v.f /= r; }
-	inline void		operator =(float r)				{ v.f = r; }
-	inline bool		operator==(float r)				{ return v.f == r; }
-	inline bool		operator!=(float r)				{ return v.f != r; }
-	inline bool		operator <(float r)				{ return v.f < r; }
-	inline bool		operator >(float r)				{ return v.f > r; }
-};
-#undef FLOOR_FIX
-#undef BIAS
-/*----------------------------------------------------------------*/
-
-
 inline bool   ISINFORNAN(float x)			{ return (std::isinf(x) || std::isnan(x)); }
 inline bool   ISINFORNAN(double x)			{ return (std::isinf(x) || std::isnan(x)); }
 inline bool   ISFINITE(float x)				{ return (!std::isinf(x) && !std::isnan(x)); }
@@ -1241,10 +1171,8 @@ inline _Tp    CLAMPS(_Tp v, _Tp c0, _Tp c1)	{ if (c0 <= c1) return CLAMP(v, c0, 
 template<typename _Tp>
 inline _Tp    SIGN(_Tp x)					{ if (x > _Tp(0)) return _Tp(1); if (x < _Tp(0)) return _Tp(-1); return _Tp(0); }
 
-inline float  ABS(float  x)					{ return Float(x).Abs(); }
-inline double ABS(double x)					{ return fabs(x); }
 template<typename _Tp>
-inline _Tp    ABS(_Tp    x)					{ return x < _Tp(0) ? -x : x; }
+inline _Tp    ABS(_Tp    x)					{ return std::abs(x); }
 
 template<typename _Tp>
 inline _Tp    ZEROTOLERANCE()				{ return _Tp(0); }
@@ -1260,10 +1188,10 @@ inline float  EPSILONTOLERANCE()			{ return 0.00001f; }
 template<>
 inline double EPSILONTOLERANCE()			{ return 1e-10; }
 
-inline bool   ISZERO(float  x)				{ return Float(x).IsZero(); }
+inline bool   ISZERO(float  x)				{ return ABS(x) < FZERO_TOLERANCE; }
 inline bool   ISZERO(double x)				{ return ABS(x) < ZERO_TOLERANCE; }
 
-inline bool   ISEQUAL(float  x, float  v)	{ return Float(x).IsEqual(v); }
+inline bool   ISEQUAL(float  x, float  v)	{ return ABS(x-v) < FZERO_TOLERANCE; }
 inline bool   ISEQUAL(double x, double v)	{ return ABS(x-v) < ZERO_TOLERANCE; }
 
 inline float  INVZERO(float)				{ return FINV_ZERO; }
@@ -1278,6 +1206,13 @@ template<typename _Tp>
 inline _Tp    SAFEDIVIDE(_Tp   x, _Tp   y)	{ return (y==_Tp(0) ? INVZERO(y) : x/y); }
 /*----------------------------------------------------------------*/
 
+} // namespace SEACAVE
+
+
+#include "HalfFloat.h"
+
+
+namespace SEACAVE {
 
 // P R O T O T Y P E S /////////////////////////////////////////////
 
