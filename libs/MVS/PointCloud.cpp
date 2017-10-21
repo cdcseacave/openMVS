@@ -193,7 +193,7 @@ bool PointCloud::Save(const String& fileName) const
 
 	// create PLY object
 	ASSERT(!fileName.IsEmpty());
-	Util::ensureDirectory(fileName);
+	Util::ensureFolder(fileName);
 	PLY ply;
 	if (!ply.write(fileName, 1, BasicPLY::elem_names, PLY::BINARY_LE, 64*1024))
 		return false;

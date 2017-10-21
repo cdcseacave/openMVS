@@ -1442,7 +1442,7 @@ bool Mesh::Save(const String& fileName, const cList<String>& comments, bool bBin
 bool Mesh::SavePLY(const String& fileName, const cList<String>& comments, bool bBinary) const
 {
 	ASSERT(!fileName.IsEmpty());
-	Util::ensureDirectory(fileName);
+	Util::ensureFolder(fileName);
 
 	// create PLY object
 	const size_t bufferSize(vertices.GetSize()*(4*3/*pos*/+2/*eol*/) + faces.GetSize()*(1*1/*len*/+4*3/*idx*/+2/*eol*/) + 2048/*extra size*/);
@@ -1459,8 +1459,8 @@ bool Mesh::SavePLY(const String& fileName, const cList<String>& comments, bool b
 	// export texture file name as comment if needed
 	String textureFileName;
 	if (!faceTexcoords.IsEmpty() && !textureDiffuse.empty()) {
-		textureFileName = Util::getFullFileName(fileName)+_T(".png");
-		ply.append_comment((_T("TextureFile ")+Util::getFileFullName(textureFileName)).c_str());
+		textureFileName = Util::getFileFullName(fileName)+_T(".png");
+		ply.append_comment((_T("TextureFile ")+Util::getFileNameExt(textureFileName)).c_str());
 	}
 
 	if (vertexNormals.IsEmpty()) {
@@ -1525,7 +1525,7 @@ bool Mesh::SavePLY(const String& fileName, const cList<String>& comments, bool b
 bool Mesh::SaveOBJ(const String& fileName) const
 {
 	ASSERT(!fileName.IsEmpty());
-	Util::ensureDirectory(fileName);
+	Util::ensureFolder(fileName);
 
 	// create the OBJ model
 	ObjModel model;
@@ -1578,7 +1578,7 @@ bool Mesh::SaveOBJ(const String& fileName) const
 bool Mesh::Save(const VertexArr& vertices, const String& fileName, bool bBinary)
 {
 	ASSERT(!fileName.IsEmpty());
-	Util::ensureDirectory(fileName);
+	Util::ensureFolder(fileName);
 
 	// create PLY object
 	const size_t bufferSize(vertices.GetSize()*(4*3/*pos*/+2/*eol*/) + 2048/*extra size*/);

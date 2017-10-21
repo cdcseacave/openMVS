@@ -853,7 +853,7 @@ bool MVS::ExportPointCloud(const String& fileName, const Image& imageData, const
 
 		// create PLY object
 		ASSERT(!fileName.IsEmpty());
-		Util::ensureDirectory(fileName);
+		Util::ensureFolder(fileName);
 		const size_t bufferSize = depthMap.area()*(8*3/*pos*/+3*3/*color*/+7/*space*/+2/*eol*/) + 2048/*extra size*/;
 		PLY ply;
 		if (!ply.write(fileName, 1, elem_names, PLY::BINARY_LE, bufferSize))
@@ -909,7 +909,7 @@ bool MVS::ExportPointCloud(const String& fileName, const Image& imageData, const
 
 		// create PLY object
 		ASSERT(!fileName.IsEmpty());
-		Util::ensureDirectory(fileName);
+		Util::ensureFolder(fileName);
 		const size_t bufferSize = depthMap.area()*(8*3/*pos*/+8*3/*normal*/+3*3/*color*/+8/*space*/+2/*eol*/) + 2048/*extra size*/;
 		PLY ply;
 		if (!ply.write(fileName, 1, elem_names, PLY::BINARY_LE, bufferSize))

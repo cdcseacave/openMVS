@@ -2650,7 +2650,7 @@ bool TImage<TYPE>::Save(const String& fileName) const
 	if (ext == ".pfm") {
 		if (Base::depth() != CV_32F)
 			return false;
-		Util::ensureDirectory(fileName);
+		Util::ensureFolder(fileName);
 		File fImage(fileName, File::WRITE, File::CREATE | File::TRUNCATE);
 		if (!fImage.isOpen())
 			return false;
@@ -3497,7 +3497,7 @@ public:
 		handler(NULL)
 	{
 		if (strDumpPathANSI.IsEmpty())
-			strDumpPathANSI = SEACAVE::Util::getCurrentDirectory();
+			strDumpPathANSI = SEACAVE::Util::getCurrentFolder();
 		const std::wstring strDumpPath(strDumpPathANSI.begin(), strDumpPathANSI.end());
 		const std::wstring strAppName(strAppNameANSI.begin(), strAppNameANSI.end());
 		std::wstring strPipeName;

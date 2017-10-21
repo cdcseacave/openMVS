@@ -53,7 +53,7 @@ HRESULT CImage::Reset(LPCTSTR szFileName, IMCREATE mode)
 	if (mode == READ) {
 		f = new File(szFileName, File::READ, File::OPEN);
 	} else {
-		Util::ensureDirectory(szFileName);
+		Util::ensureFolder(szFileName);
 		f = new File(szFileName, File::WRITE, File::CREATE | File::TRUNCATE);
 	}
 	if (!f->isOpen()) {
