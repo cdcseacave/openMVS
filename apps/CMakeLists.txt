@@ -1,5 +1,6 @@
 # Add applications
 ADD_SUBDIRECTORY(InterfaceVisualSFM)
+ADD_SUBDIRECTORY(MultiCameraCalibration)
 ADD_SUBDIRECTORY(DensifyPointCloud)
 ADD_SUBDIRECTORY(ReconstructMesh)
 ADD_SUBDIRECTORY(RefineMesh)
