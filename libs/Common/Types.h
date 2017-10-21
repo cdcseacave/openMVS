@@ -326,11 +326,14 @@ typedef int64_t     		size_f_t;
 #endif
 
 #ifndef MINF
-#define MINF			(std::min)
+#define MINF			std::min
 #endif
 #ifndef MAXF
-#define MAXF			(std::max)
+#define MAXF			std::max
 #endif
+
+namespace SEACAVE {
+
 template<typename T>
 inline T MINF3(const T& x1, const T& x2, const T& x3) {
 	return MINF(MINF(x1, x2), x3);
@@ -341,10 +344,27 @@ inline T MAXF3(const T& x1, const T& x2, const T& x3) {
 }
 
 #ifndef RAND
-#define RAND			::rand
+#define RAND			std::rand
 #endif
 template<typename T>
 FORCEINLINE T RANDOM() { return (T(1)/RAND_MAX)*RAND(); }
+
+template<typename T1, typename T2>
+union TAliasCast
+{
+	T1 f;
+	T2 i;
+	inline TAliasCast() {}
+	inline TAliasCast(T1 v) : f(v) {}
+	inline TAliasCast(T2 v) : i(v) {}
+	inline TAliasCast& operator = (T1 v) { f = v; return *this; }
+	inline TAliasCast& operator = (T2 v) { i = v; return *this; }
+	inline operator T1 () const { return f; }
+};
+typedef TAliasCast<float,int32_t> CastF2I;
+typedef TAliasCast<double,int32_t> CastD2I;
+
+} // namespace SEACAVE
 
 #if defined(_MSC_VER)
 # define __LITTLE_ENDIAN 0

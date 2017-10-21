@@ -180,7 +180,7 @@ bool SerializeLoad(_Tp& obj, const std::string& fileName, uint32_t* pVersion=NUL
 		if (size <= 4)
 			return false;
 		std::string ext(fileName.substr(size-4));
-		std::transform(ext.begin(), ext.end(), ext.begin(), ::towlower);
+		std::transform(ext.begin(), ext.end(), ext.begin(), [](char c) { return (char)std::tolower(c); });
 		if (ext != ".mvs")
 			return false;
 		stream.seekg(0, std::ifstream::beg);
