@@ -138,7 +138,7 @@ bool Scene::LoadInterface(const String & fileName)
 		imageData.UpdateCamera(platforms);
 		++nCalibratedImages;
 		nTotalPixels += imageData.width * imageData.height;
-		DEBUG_EXTRA("Image loaded %3u: %s", ID, Util::getFileFullName(imageData.name).c_str());
+		DEBUG_EXTRA("Image loaded %3u: %s", ID, Util::getFileNameExt(imageData.name).c_str());
 	}
 	if (images.GetSize() < 2)
 		return false;
@@ -558,7 +558,7 @@ bool Scene::ExportCamerasMLP(const String& fileName, const String& fileNameScene
 		"   <Plane semantic=\"\" fileName=\"%s\"/>\n"
 		"  </MLRaster>\n";
 
-	Util::ensureDirectory(fileName);
+	Util::ensureFolder(fileName);
 	File f(fileName, File::WRITE, File::CREATE | File::TRUNCATE);
 
 	// write MLP header containing the referenced PLY file

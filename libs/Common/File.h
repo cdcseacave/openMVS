@@ -281,7 +281,7 @@ public:
 		HANDLE hFind;
 		size_f_t totalSize = 0;
 		String strPath(_strPath);
-		Util::ensureDirectorySlash(strPath);
+		Util::ensureFolderSlash(strPath);
 		//Find all the files in this folder.
 		hFind = FindFirstFile((strPath + strMask).c_str(), &fd);
 		if (hFind != INVALID_HANDLE_VALUE)

@@ -45,7 +45,7 @@ IMAGEPTR Image::OpenImage(const String& fileName)
 	#if 0
 	if (Util::isFullPath(fileName))
 		return IMAGEPTR(CImage::Create(fileName, CImage::READ));
-	return IMAGEPTR(CImage::Create((Util::getCurrentDirectory()+fileName).c_str(), CImage::READ));
+	return IMAGEPTR(CImage::Create((Util::getCurrentFolder()+fileName).c_str(), CImage::READ));
 	#else
 	return IMAGEPTR(CImage::Create(fileName, CImage::READ));
 	#endif
