@@ -54,6 +54,12 @@ float patternHeight;
 int numCameras;
 int minMatches;
 int cameraType;
+bool fixAspectRatio;
+bool fixPrincipalPoint;
+bool fixRadialDistortion12;
+bool fixRadialDistortion3;
+bool fixRadialDistortion46;
+bool fixTangentDistortion;
 int showFeatureExtraction;
 unsigned nArchiveType;
 int nProcessPriority;
@@ -98,6 +104,12 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		("pattern-height,y", boost::program_options::value<float>(&OPT::patternHeight)->default_value(600), "physical height of random pattern")
 		("number-cameras,n", boost::program_options::value<int>(&OPT::numCameras)->default_value(0), "number of cameras to calibrate")
 		("camera-type,t", boost::program_options::value<int>(&OPT::cameraType)->default_value(0), "camera type: 0 - pinhole, 1 - omnidirectional")
+		("fix-aspect-ratio,a", boost::program_options::value<bool>(&OPT::fixAspectRatio)->default_value(true), "fix the focal length aspect ratio")
+		("fix-principal-point,f", boost::program_options::value<bool>(&OPT::fixPrincipalPoint)->default_value(false), "fix the principal point at the center")
+		("fix-radial-distortion-1-2", boost::program_options::value<bool>(&OPT::fixRadialDistortion12)->default_value(false), "fix the radial distortions k1 and k2")
+		("fix-radial-distortion-3,k", boost::program_options::value<bool>(&OPT::fixRadialDistortion3)->default_value(false), "fix the radial distortion k3")
+		("fix-radial-distortion-4-6", boost::program_options::value<bool>(&OPT::fixRadialDistortion46)->default_value(true), "fix the radial distortions k4, k5 and k6")
+		("fix-tangential-distortion,d", boost::program_options::value<bool>(&OPT::fixTangentDistortion)->default_value(false), "fix the tangential distortions p1 and p2")
 		("show-feature-extraction,e", boost::program_options::value<int>(&OPT::showFeatureExtraction)->default_value(0), "whether show extracted features and feature filtering")
 		("min-matches,m", boost::program_options::value<int>(&OPT::minMatches)->default_value(25), "minimal number of matched features for a frame")
 		("output-file,o", boost::program_options::value<std::string>(&OPT::strOutputFileName), "output filename for storing the result")
@@ -207,6 +219,83 @@ void Finalize()
 	CLOSE_LOG();
 }
 
+// save file-names list OpenCV
+bool SaveFilenamesListCV(const String& strList, const std::vector<String>& fileNames)
+{
+	cv::FileStorage fs(strList, cv::FileStorage::WRITE);
+	if (!fs.isOpened())
+		return false;
+	fs << "images" << "[";
+	for (const String& fileName: fileNames)
+		fs << fileName;
+	fs << "]";
+	return true;
+}
+// load file-names list OpenCV
+bool LoadFilenamesListCV(const String& strList, std::vector<String>& fileNames)
+{
+	fileNames.resize(0);
+	cv::FileStorage fs(strList, cv::FileStorage::READ);
+	if (!fs.isOpened())
+		return false;
+	cv::FileNode n = fs.getFirstTopLevelNode();
+	if (n.type() != cv::FileNode::SEQ)
+		return false;
+	cv::FileNodeIterator it = n.begin(), it_end = n.end();
+	for (; it != it_end; ++it)
+		fileNames.emplace_back(*it);
+	return true;
+}
+
+bool SaveCameraParamsCV(const String& filename, cv::Size imageSize,
+	float patternWidth, float patternHeight, int flags,
+	const cv::Matx33d& cameraMatrix, const std::vector<double>& distCoeffs,
+	const std::vector<cv::Mat>& rvecs, const std::vector<cv::Mat>& tvecs,
+	double rms)
+{
+	cv::FileStorage fs(filename, cv::FileStorage::WRITE);
+	if (!fs.isOpened())
+		return false;
+
+	time_t tt;
+	time(&tt);
+	struct tm *t2 = localtime(&tt);
+	char buf[1024];
+	strftime(buf, sizeof(buf) - 1, "%c", t2);
+	fs << "calibration_time" << buf;
+
+	if (!rvecs.empty())
+		fs << "nframes" << (int)rvecs.size();
+
+	fs << "image_width" << imageSize.width;
+	fs << "image_height" << imageSize.height;
+	fs << "pattern_width" << patternWidth;
+	fs << "pattern_height" << patternHeight;
+
+	fs << "flags" << flags;
+
+	fs << "camera_matrix" << cv::Mat(cameraMatrix);
+	fs << "camera_distortion" << cv::Mat(distCoeffs);
+
+	if (!rvecs.empty() && !tvecs.empty()) {
+		ASSERT(rvecs[0].type() == tvecs[0].type());
+		cv::Mat bigmat((int)rvecs.size(), 6, rvecs[0].type());
+		for (int i = 0; i < (int)rvecs.size(); i++) {
+			cv::Mat r = bigmat(cv::Range(i, i + 1), cv::Range(0, 3));
+			cv::Mat t = bigmat(cv::Range(i, i + 1), cv::Range(3, 6));
+			ASSERT(rvecs[i].rows == 3 && rvecs[i].cols == 1);
+			ASSERT(tvecs[i].rows == 3 && tvecs[i].cols == 1);
+			r = rvecs[i].t();
+			t = tvecs[i].t();
+		}
+		//cvWriteComment(*fs, "a set of 6-tuples (rotation vector + translation vector) for each view", 0);
+		fs << "camera_poses" << bigmat;
+	}
+
+	fs << "rms" << rms;
+	return true;
+}
+
 // generate random pattern used for calibration
 int GeneratePattern()
 {
@@ -230,33 +319,77 @@ int CalibrateMultiCamera()
 	// fetch all input calibration image filenames
 	const String dir(Util::getFilePath(MAKE_PATH_SAFE(OPT::strInputFileName)));
 	const String wld(Util::getFileNameExt(OPT::strInputFileName));
-	const std::vector<String> files(Util::getFolderWildcard(dir, wld, true, false, true));
+	std::vector<String> fileNames(Util::getFolderWildcard(dir, wld, true, false, true));
 
 	// creates a yaml or xml list of files
 	const String strImagesList(Util::getFileFullName(MAKE_PATH_SAFE(OPT::strOutputFileName)) + _T("_images") LST_EXT);
-	{
-		cv::FileStorage fs(strImagesList, cv::FileStorage::WRITE);
-		if (!fs.isOpened())
-			return EXIT_FAILURE;
-		fs << "images" << "[";
-		fs << MAKE_PATH_SAFE(OPT::strPatternFileName);
-		for (const String& fileName: files)
-			fs << Util::getSimplifiedPath(dir+fileName);
-		fs << "]";
-	}
+	for (String& fileName: fileNames)
+		fileName = Util::getSimplifiedPath(dir+fileName);
+	fileNames.insert(fileNames.begin(), MAKE_PATH_SAFE(OPT::strPatternFileName));
+	if (!SaveFilenamesListCV(strImagesList, fileNames))
+		return EXIT_FAILURE;
 
-	// do multi-camera calibration
-	cv::multicalib::MultiCameraCalibration multiCalib(OPT::cameraType, OPT::numCameras, strImagesList, OPT::patternWidth, OPT::patternHeight, VERBOSITY_LEVEL>2?1:0, OPT::showFeatureExtraction, OPT::minMatches);
+	// set calibration flags
+	int flags(0);
+	if (OPT::fixAspectRatio)
+		flags |= cv::CALIB_FIX_ASPECT_RATIO;
+	if (OPT::fixPrincipalPoint)
+		flags |= cv::CALIB_FIX_PRINCIPAL_POINT;
+	if (OPT::fixRadialDistortion12)
+		flags |= cv::CALIB_FIX_K1 | cv::CALIB_FIX_K2;
+	if (OPT::fixRadialDistortion3)
+		flags |= cv::CALIB_FIX_K3;
+	if (OPT::fixRadialDistortion46)
+		flags |= cv::CALIB_FIX_K4 | cv::CALIB_FIX_K5 | cv::CALIB_FIX_K6;
+	if (OPT::fixTangentDistortion)
+		flags |= cv::CALIB_FIX_TANGENT_DIST;
 
-	// next three lines can be replaced by multiCalib.run()
-	multiCalib.loadImages();
-	multiCalib.initialize();
-	multiCalib.optimizeExtrinsics();
-
+	ASSERT(OPT::numCameras > 0);
 	const String strCalibration(Util::getFileFullName(MAKE_PATH_SAFE(OPT::strOutputFileName)) + LST_EXT);
-	multiCalib.writeParameters(strCalibration);
+	if (OPT::numCameras == 1) {
+		// the first image is the pattern
+		const cv::Mat pattern(cv::imread(fileNames.front(), cv::IMREAD_GRAYSCALE));
+		std::vector<cv::Mat> vecImg;
+		for (size_t i=1; i<fileNames.size(); ++i) {
+			vecImg.emplace_back(cv::imread(fileNames[i], cv::IMREAD_GRAYSCALE));
+			if ((pattern.rows < pattern.cols) != (vecImg.back().rows < vecImg.back().cols))
+				cv::flip(vecImg.back().t(), vecImg.back(), 1);
+		}
 
-	VERBOSE("Multi-camera system calibrated: %u cameras, %u images (%s)", OPT::numCameras, files.size(), TD_TIMER_GET_FMT().c_str());
+		// do single-camera calibration
+		cv::randpattern::RandomPatternCornerFinder finder(OPT::patternWidth, OPT::patternHeight, OPT::minMatches);
+		finder.loadPattern(pattern);
+		finder.computeObjectImagePoints(vecImg);
+		#if TD_VERBOSE != TD_VERBOSE_OFF
+		if (VERBOSITY_LEVEL > 2) {
+			VERBOSE("Pattern points: %u", finder.getObjectPoints().front().rows);
+			for (size_t i=0; i<finder.getImagePoints().size(); ++i)
+				VERBOSE("Image % 3u points: %u", i+1, finder.getImagePoints()[i].rows);
+		}
+		#endif
+		cv::Matx33d K(
+			1,0,double(vecImg.front().cols-1)*0.5,
+			0,1,double(vecImg.front().rows-1)*0.5
+		);
+		std::vector<double> D(8, 0.0);
+		std::vector<cv::Mat> rvec, tvec;
+		double rms = cv::calibrateCamera(finder.getObjectPoints(), finder.getImagePoints(), vecImg[0].size(), K, D, rvec, tvec, flags);
+		SaveCameraParamsCV(strCalibration, vecImg[0].size(), OPT::patternWidth, OPT::patternHeight, flags, K, D, rvec, tvec, rms);
+
+		VERBOSE("Camera calibrated: %u images, %gRMS (%s)", fileNames.size()-1, rms, TD_TIMER_GET_FMT().c_str());
+	} else {
+		// do multi-camera calibration
+		cv::multicalib::MultiCameraCalibration multiCalib(OPT::cameraType, OPT::numCameras, strImagesList, OPT::patternWidth, OPT::patternHeight, VERBOSITY_LEVEL>2?1:0, OPT::showFeatureExtraction, OPT::minMatches, flags);
+
+		// next three lines can be replaced by multiCalib.run()
+		multiCalib.loadImages();
+		multiCalib.initialize();
+		double rms = multiCalib.optimizeExtrinsics();
+
+		multiCalib.writeParameters(strCalibration);
+
+		VERBOSE("Multi-camera system calibrated: %u cameras, %u images, %gRMS (%s)", OPT::numCameras, fileNames.size()-1, rms, TD_TIMER_GET_FMT().c_str());
+	}
 	return EXIT_SUCCESS;
 }
 
