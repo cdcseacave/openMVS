@@ -23,15 +23,16 @@ Required tools:
 Windows compilation
 -------------------
 
-Visual Studion 2008 or newer is supported. Please note that the development is done mainly on Windows, so this platform build is tested the most. The latest pre-built binaries for fast testing can be download from [here](https://github.com/cdcseacave/openMVS_sample/releases/latest).
+Visual Studion 2008 or newer is supported. Please note that the development is done mainly on Windows, so this platform build is well tested. The latest pre-built binaries for fast testing can be download from [here](https://github.com/cdcseacave/openMVS_sample/releases/latest).
 
 ```
 # Make a toplevel directory for deps & build & src somewhere:
 mkdir OpenMVS
 cd OpenMVS
 
-# Get dependencies, unpack and build them as subdirectories:
-like in OpenMVS/Eigen, OpenMVS/Ceres, etc
+# Get dependencies, unpack and build them as subdirectories
+# like in OpenMVS/Eigen, OpenMVS/Ceres, etc
+# or use https://github.com/Microsoft/vcpkg for automation
 
 # Get and unpack OpenMVS in OpenMVS/src:
 git clone https://github.com/cdcseacave/openMVS.git src
