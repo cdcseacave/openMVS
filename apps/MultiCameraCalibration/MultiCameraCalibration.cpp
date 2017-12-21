@@ -100,8 +100,8 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	config.add_options()
 		("pattern-file,p", boost::program_options::value<std::string>(&OPT::strPatternFileName)->default_value("pattern.png"), "input/output filename containing pattern")
 		("input-file,i", boost::program_options::value<std::string>(&OPT::strInputFileName), "input filename containing camera poses and image list")
-		("pattern-width,x", boost::program_options::value<float>(&OPT::patternWidth)->default_value(800), "physical width of random pattern")
-		("pattern-height,y", boost::program_options::value<float>(&OPT::patternHeight)->default_value(600), "physical height of random pattern")
+		("pattern-width,x", boost::program_options::value<float>(&OPT::patternWidth)->default_value(1920), "physical width of random pattern")
+		("pattern-height,y", boost::program_options::value<float>(&OPT::patternHeight)->default_value(1080), "physical height of random pattern")
 		("number-cameras,n", boost::program_options::value<int>(&OPT::numCameras)->default_value(0), "number of cameras to calibrate")
 		("camera-type,t", boost::program_options::value<int>(&OPT::cameraType)->default_value(0), "camera type: 0 - pinhole, 1 - omnidirectional")
 		("fix-aspect-ratio,a", boost::program_options::value<bool>(&OPT::fixAspectRatio)->default_value(true), "fix the focal length aspect ratio")
@@ -301,6 +301,9 @@ int GeneratePattern()
 {
 	TD_TIMER_START();
 
+	#ifdef _RELEASE
+	cv::setRNGSeed((int)Util::getTime());
+	#endif
 	cv::randpattern::RandomPatternGenerator generator(ROUND2INT(OPT::patternWidth), ROUND2INT(OPT::patternHeight));
 	generator.generatePattern();
 	cv::Mat pattern = generator.getPattern();
@@ -341,6 +344,8 @@ int CalibrateMultiCamera()
 		flags |= cv::CALIB_FIX_K3;
 	if (OPT::fixRadialDistortion46)
 		flags |= cv::CALIB_FIX_K4 | cv::CALIB_FIX_K5 | cv::CALIB_FIX_K6;
+	else
+		flags |= cv::CALIB_RATIONAL_MODEL;
 	if (OPT::fixTangentDistortion)
 		flags |= cv::CALIB_FIX_TANGENT_DIST;
 
@@ -357,24 +362,18 @@ int CalibrateMultiCamera()
 		}
 
 		// do single-camera calibration
-		cv::randpattern::RandomPatternCornerFinder finder(OPT::patternWidth, OPT::patternHeight, OPT::minMatches);
+		cv::randpattern::RandomPatternCornerFinder finder(OPT::patternWidth, OPT::patternHeight, OPT::minMatches, CV_32F, VERBOSITY_LEVEL>2?1:0);
 		finder.loadPattern(pattern);
 		finder.computeObjectImagePoints(vecImg);
-		#if TD_VERBOSE != TD_VERBOSE_OFF
-		if (VERBOSITY_LEVEL > 2) {
-			VERBOSE("Pattern points: %u", finder.getObjectPoints().front().rows);
-			for (size_t i=0; i<finder.getImagePoints().size(); ++i)
-				VERBOSE("Image % 3u points: %u", i+1, finder.getImagePoints()[i].rows);
-		}
-		#endif
 		cv::Matx33d K(
 			1,0,double(vecImg.front().cols-1)*0.5,
-			0,1,double(vecImg.front().rows-1)*0.5
+			0,1,double(vecImg.front().rows-1)*0.5,
+			0,0,1
 		);
 		std::vector<double> D(8, 0.0);
 		std::vector<cv::Mat> rvec, tvec;
 		double rms = cv::calibrateCamera(finder.getObjectPoints(), finder.getImagePoints(), vecImg[0].size(), K, D, rvec, tvec, flags);
-		SaveCameraParamsCV(strCalibration, vecImg[0].size(), OPT::patternWidth, OPT::patternHeight, flags, K, D, rvec, tvec, rms);
+		SaveCameraParamsCV(strCalibration, vecImg.front().size(), OPT::patternWidth, OPT::patternHeight, flags, K, D, rvec, tvec, rms);
 
 		VERBOSE("Camera calibrated: %u images, %gRMS (%s)", fileNames.size()-1, rms, TD_TIMER_GET_FMT().c_str());
 	} else {
