@@ -1813,7 +1813,7 @@ void Scene::DenseReconstructionEstimate(void* pData)
 			ASSERT("Should not happen!" == NULL);
 		}
 	}
-} // DenseReconstructionDepthMapEstimate
+} // DenseReconstructionEstimate
 /*----------------------------------------------------------------*/
 
 void* DenseReconstructionFilterTmp(void* arg) {
@@ -1895,6 +1895,8 @@ void Scene::DenseReconstructionFilter(void* pData)
 				ExportPointCloud(ComposeDepthFilePath(idx, "filtered.ply"), *depthData.images.First().pImageData, depthData.depthMap, depthData.normalMap);
 			}
 			#endif
+			// save filtered depth-map for this image
+			depthData.Save(ComposeDepthFilePath(idx, "dmap"));
 			depthData.DecRef();
 			data.progress->operator++();
 			break; }
@@ -1907,5 +1909,5 @@ void Scene::DenseReconstructionFilter(void* pData)
 			ASSERT("Should not happen!" == NULL);
 		}
 	}
-} // DenseReconstructionDepthMapFilter
+} // DenseReconstructionFilter
 /*----------------------------------------------------------------*/
