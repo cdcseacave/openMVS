@@ -2062,7 +2062,7 @@ void TImage<TYPE>::toGray(TImage<T>& out, int code, bool bNormalize) const
 		out.create(rows, cols);
 	ASSERT(cv::Mat::isContinuous());
 	ASSERT(out.cv::Mat::isContinuous());
-	const int scn(cv::Mat::channels());
+	const int scn(this->channels());
 	T* dst = out.cv::Mat::template ptr<T>();
 	T* const dstEnd = dst + out.area();
 	typedef typename cv::DataType<TYPE>::channel_type ST;
