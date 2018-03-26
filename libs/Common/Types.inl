@@ -2060,7 +2060,7 @@ void TImage<TYPE>::toGray(TImage<T>& out, int code, bool bNormalize) const
 	const T &cb(coeffs[0]), &cg(coeffs[1]), &cr(coeffs[2]);
 	if (out.rows!=rows || out.cols!=cols)
 		out.create(rows, cols);
-	ASSERT(cv::Mat::isContinuous());
+	ASSERT(this->isContinuous());
 	ASSERT(out.cv::Mat::isContinuous());
 	const int scn(this->channels());
 	T* dst = out.cv::Mat::template ptr<T>();
@@ -2274,7 +2274,7 @@ inline void _ProcessScanLine(int y, const TPoint3<T>& pa, const TPoint3<T>& pb, 
 	}
 }
 // Raster the given triangle and output the position and depth of each pixel of the triangle;
-// based on "Learning how to write a 3D software engine – Rasterization & Z-Buffering" by Nick (David Rousset)
+// based on "Learning how to write a 3D software engine Â– Rasterization & Z-Buffering" by Nick (David Rousset)
 // http://blogs.msdn.com/b/davrous/archive/2013/06/21/tutorial-part-4-learning-how-to-write-a-3d-software-engine-in-c-ts-or-js-rasterization-amp-z-buffering.aspx
 template <typename TYPE>
 template <typename T, typename PARSER>
