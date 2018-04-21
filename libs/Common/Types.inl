@@ -28,6 +28,23 @@ template <> struct hash<SEACAVE::ImageRef>
 } // namespace std
 
 
+#if CV_MAJOR_VERSION > 3
+template <typename REAL_TYPE, typename INT_TYPE>
+INT_TYPE cvRANSACUpdateNumIters(REAL_TYPE p, REAL_TYPE ep, INT_TYPE modelPoints, INT_TYPE maxIters)
+{
+	ASSERT(p>=0 && p<=1);
+	ASSERT(ep>=0 && ep<=1);
+	// avoid inf's & nan's
+	REAL_TYPE num = MAXF(REAL_TYPE(1)-p, EPSILONTOLERANCE<REAL_TYPE>());
+	REAL_TYPE denom = REAL_TYPE(1)-POWI(REAL_TYPE(1)-ep, modelPoints);
+	if (denom < EPSILONTOLERANCE<REAL_TYPE>())
+		return 0;
+	num = LOGN(num);
+	denom = LOGN(denom);
+	return (denom >= 0 || -num >= (-denom)*maxIters ? maxIters : (INT_TYPE)ROUND2INT(num/denom));
+}
+#endif
+
 namespace cv {
 
 #if CV_MAJOR_VERSION > 2
@@ -45,24 +62,6 @@ public:
 		type         = CV_MAKETYPE(depth, channels)
 	};
 };
-
-template <typename REAL_TYPE, typename INT_TYPE>
-INT_TYPE cvRANSACUpdateNumIters(REAL_TYPE p, REAL_TYPE ep, INT_TYPE modelPoints, INT_TYPE maxIters)
-{
-	ASSERT(p>=0 && p<=1);
-	ASSERT(ep>=0 && ep<=1);
-
-	// avoid inf's & nan's
-	REAL_TYPE num = MAXF(REAL_TYPE(1)-p, DBL_MIN);
-	REAL_TYPE denom = REAL_TYPE(1)-powi(REAL_TYPE(1)-ep, modelPoints);
-	if (denom < REAL_TYPE(DBL_MIN))
-		return 0;
-
-	num = log(num);
-	denom = log(denom);
-
-	return (denom >= 0 || -num >= (-denom)*maxIters ? maxIters : ROUND2INT(num/denom));
-}
 #else
 #if CV_MINOR_VERSION < 4
 template<typename _Tp, typename _AccTp> static inline
@@ -2611,7 +2610,7 @@ bool TImage<TYPE>::Load(const String& fileName)
 				return false;
 		return true;
 	}
-	cv::Mat img(cv::imread(fileName, CV_LOAD_IMAGE_UNCHANGED));
+	cv::Mat img(cv::imread(fileName, cv::IMREAD_UNCHANGED));
 	if (img.empty()) {
 		VERBOSE("error: loading image '%s'", fileName.c_str());
 		return false;

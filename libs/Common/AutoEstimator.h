@@ -332,7 +332,7 @@ std::pair<double, double> ACRANSAC(
 				#ifdef ACRANSAC_SAMPLE_INLIERS
 				better = true;
 				#else
-				nIter = cvRANSACUpdateNumIters(confidence, (double)(nData - best.second)/nData, unsigned(Kernel::MINIMUM_SAMPLES), (int)nTrialsRound);
+				nIter = cvRANSACUpdateNumIters(confidence, (double)(nData - best.second)/nData, unsigned(Kernel::MINIMUM_SAMPLES), (unsigned)nTrialsRound);
 				#endif
 			}
 		}
@@ -459,9 +459,9 @@ void RANSAC(
 				better = true;
 				#else
 				#ifdef _USE_MSAC
-				nIter = cvRANSACUpdateNumIters(confidence, (double)score/((double)nData*thresholdSq), unsigned(Kernel::MINIMUM_SAMPLES), (int)nTrialsRound);
+				nIter = cvRANSACUpdateNumIters(confidence, (double)score/((double)nData*thresholdSq), unsigned(Kernel::MINIMUM_SAMPLES), (unsigned)nTrialsRound);
 				#else
-				nIter = cvRANSACUpdateNumIters(confidence, (double)(nData-vec_inliers.size())/nData, unsigned(Kernel::MINIMUM_SAMPLES), (int)nTrialsRound);
+				nIter = cvRANSACUpdateNumIters(confidence, (double)(nData-vec_inliers.size())/nData, unsigned(Kernel::MINIMUM_SAMPLES), (unsigned)nTrialsRound);
 				#endif
 				#endif
 			}
