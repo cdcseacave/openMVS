@@ -418,18 +418,8 @@ macro(optimize_default_compiler_settings)
 	set(BUILD_EXTRA_EXE_LINKER_FLAGS_RELEASE "")
 	set(BUILD_EXTRA_EXE_LINKER_FLAGS_DEBUG "")
 
-	# try to enable C++11 support
-	check_cxx_compiler_flag("-std=c++11" COMPILER_HAS_CXX11_FLAG)
-	if (COMPILER_HAS_CXX11_FLAG)
-		# update CMAKE_REQUIRED_FLAGS used by CheckCXXSourceCompiles
-		# to include -std=c++11
-		set(CMAKE_REQUIRED_FLAGS -std=c++11)
-		add_extra_compiler_option(-std=c++11)
-		if(CLANG)
-			set(CMAKE_EXE_LINKER_FLAGS "-stdlib=libc++")
-			add_extra_compiler_option(-stdlib=libc++)
-		endif()
-	endif()
+	# enable C++11 support
+	set(CMAKE_CXX_STANDARD 11)
 
 	if(MINGW)
 	  # http://gcc.gnu.org/bugzilla/show_bug.cgi?id=40838
