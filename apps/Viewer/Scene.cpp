@@ -141,7 +141,7 @@ struct IntersectRayMesh : public TIntersectRay<MVS::Mesh,Scene::OctreeMesh> {
 		typedef std::unordered_set<MVS::Mesh::FIndex> FaceSet;
 		FaceSet set;
 		FOREACHRAWPTR(pIdx, idices, size) {
-			const MVS::Mesh::VIndex idxVertex(*pIdx);
+			const MVS::Mesh::VIndex idxVertex((MVS::Mesh::VIndex)*pIdx);
 			const MVS::Mesh::FaceIdxArr& faces = scene.vertexFaces[idxVertex];
 			set.insert(faces.begin(), faces.end());
 		}

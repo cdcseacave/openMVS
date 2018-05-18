@@ -16,7 +16,6 @@
 #else
 #include <unistd.h>
 #include <dirent.h>
-#include "Wildcard.h"
 #endif
 
 
@@ -446,92 +445,6 @@ public:
 		#else // _MSC_VER
 		return _tcscmp(path1, path2);
 		#endif // _MSC_VER
-	}
-
-	// the set of all subdirectories
-	static std::vector<String> getFolderSubfolders(const String& folder, bool recursive = false) {
-		return getFolderWildcard(folder, "*", recursive, true, false);
-	}
-	// the set of all files
-	static std::vector<String> getFolderFiles(const String& folder, bool recursive = false) {
-		return getFolderWildcard(folder, "*", recursive, false, true);
-	}
-	// the set of all folders and files
-	static std::vector<String> getFolderAll(const String& folder, bool recursive = false) {
-		return getFolderWildcard(folder, "*", recursive, true, true);
-	}
-	// the set of all folder contents matching a wildcard string
-	// if folders is true, include folders; if files is true, include files
-	static std::vector<String> getFolderWildcard(const String& folder,
-											 const String& wild,
-											 bool recursive = false,
-											 bool subfolders = true,
-											 bool files = true) {
-		String dir(folder.empty() ? String(".") : folder);
-		Util::ensureFolderSlash(dir);
-		std::vector<String> results;
-		#ifdef _MSC_VER
-		String wildcard(dir + wild);
-		intptr_t handle(-1);
-		_finddata_t fileinfo;
-		for (bool OK = (handle = _findfirst((char*)wildcard.c_str(), &fileinfo)) != -1; OK; OK = (_findnext(handle, &fileinfo)==0))
-		{
-			String strentry = fileinfo.name;
-			if (strentry.compare(".")!=0 && strentry.compare("..")!=0) {
-				if (fileinfo.attrib & _A_SUBDIR) {
-					if (recursive) {
-						const String relpath(strentry+PATH_SEPARATOR);
-						const std::vector<String> sub_results(getFolderWildcard(folder+relpath, wild, recursive, subfolders, files));
-						for (const String& file: sub_results)
-							results.push_back(relpath+file);
-					}
-					if (subfolders)
-						results.push_back(strentry);
-					continue;
-				}
-				if (files)
-					results.push_back(strentry);
-			}
-		}
-		_findclose(handle);
-		#else
-		DIR* d = opendir(dir.c_str());
-		if (d)
-		{
-			for (dirent* entry = readdir(d); entry; entry = readdir(d))
-			{
-				String strentry = entry->d_name;
-				if (strentry.compare(".")!=0 && strentry.compare("..")!=0)
-				{
-					String subpath(dir + strentry);
-					if (isFolder(subpath) && stlplus::wildcard(wild, strentry)) {
-						if (recursive) {
-							const String relpath(subpath+PATH_SEPARATOR);
-							const std::vector<String> sub_results(getFolderWildcard(folder+relpath, wild, recursive, subfolders, files));
-							for (const String& file: sub_results)
-								results.push_back(relpath+file);
-						}
-						if (subfolders)
-							results.push_back(strentry);
-						continue;
-					}
-					if (files && isFile(subpath) && stlplus::wildcard(wild, strentry))
-						results.push_back(strentry);
-				}
-			}
-			closedir(d);
-		}
-		#endif // _MSC_VER
-		if (recursive && wild.compare("*")!=0) {
-			const std::vector<String> sub_folder(getFolderSubfolders(folder, true));
-			for (const String& folder: sub_folder) {
-				const String relpath(folder+PATH_SEPARATOR);
-				const std::vector<String> sub_results(getFolderWildcard(folder+relpath, wild, true, subfolders, files));
-				for (const String& file: sub_results)
-					results.push_back(relpath+file);
-			}
-		}
-		return results;
 	}
 
 	static String getValue(const String& str, const String& label) {

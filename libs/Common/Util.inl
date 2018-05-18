@@ -1093,7 +1093,7 @@ inline TYPE BandwidthGaussianKDE(const TMatrix<TYPE,2,1>* samples, size_t numSam
 	}
 	// This is the optimal bandwidth if the point distribution is Gaussian.
 	// (see "Applied Smoothing Techniques for Data Analysis" by Adrian W, Bowman & Adelchi Azzalini (1997))
-	return pow(TYPE(4)/(TYPE(3)*numSamples), TYPE(1)/TYPE(5))*sigma;
+	return POW(TYPE(4)/(TYPE(3)*numSamples), TYPE(1)/TYPE(5))*sigma;
 }
 // estimate density at the given value
 template <typename TYPE>

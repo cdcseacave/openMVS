@@ -256,7 +256,7 @@ void DepthEstimator::MapMatrix2ZigzagIdx(const Image8U::Size& size, DepthEstimat
 	}
 }
 
-// replace powi(0.5f, (int)invScaleRange):         0    1      2       3       4         5         6           7           8             9             10              11
+// replace POWI(0.5f, (int)invScaleRange):         0    1      2       3       4         5         6           7           8             9             10              11
 const float DepthEstimator::scaleRanges[12] = {1.f, 0.5f, 0.25f, 0.125f, 0.0625f, 0.03125f, 0.015625f, 0.0078125f, 0.00390625f, 0.001953125f, 0.0009765625f, 0.00048828125f};
 
 DepthEstimator::DepthEstimator(DepthData& _depthData0, volatile Thread::safe_t& _idx, const Image32F& _image0Sum, const MapRefArr& _coords, ENDIRECTION _dir)

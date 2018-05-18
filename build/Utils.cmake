@@ -14,7 +14,7 @@ OPTION(BUILD_SHARED_LIBS "Build shared libraries (DLLs)" OFF)
 OPTION(BUILD_SHARED_LIBS_FULL "Expose all functionality when built as shared libraries (DLLs)" OFF)
 OPTION(BUILD_EXCEPTIONS_ENABLED "Enable support for exceptions" ON)
 OPTION(BUILD_RTTI_ENABLED "Enable support run-time type information" ON)
-OPTION(BUILD_STATIC_RUNTIME "Link staticaly the run-time library" ON)
+OPTION(BUILD_STATIC_RUNTIME "Link staticaly the run-time library" OFF)
 OPTION(CMAKE_SUPPRESS_REGENERATION "This will cause CMake to not put in the rules that re-run CMake. This might be useful if you want to use the generated build files on another machine" OFF)
 OPTION(CMAKE_USE_RELATIVE_PATHS "Try to use relative paths in generated projects" OFF)
 
@@ -604,12 +604,6 @@ macro(optimize_default_compiler_settings)
 		endif()
 	  endif()
 
-	  if(ENABLE_SSE3)
-		set(BUILD_EXTRA_FLAGS "${BUILD_EXTRA_FLAGS} /arch:SSE3")
-	  endif()
-	  if(ENABLE_SSE4_1)
-		set(BUILD_EXTRA_FLAGS "${BUILD_EXTRA_FLAGS} /arch:SSE4.1")
-	  endif()
 	  if(ENABLE_AVX)
 		set(BUILD_EXTRA_FLAGS "${BUILD_EXTRA_FLAGS} /arch:AVX")
 	  endif()
@@ -625,7 +619,7 @@ macro(optimize_default_compiler_settings)
 	  endif()
 
 	  # fix virtual memory range for PCH exceeded error
-	  set(BUILD_EXTRA_FLAGS "${BUILD_EXTRA_FLAGS} /Zm150")
+	  set(BUILD_EXTRA_FLAGS "${BUILD_EXTRA_FLAGS} /Zm170")
 	endif()
 
 	# Extra link libs if the user selects building static libs:

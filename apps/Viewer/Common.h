@@ -35,9 +35,6 @@
 
 // I N C L U D E S /////////////////////////////////////////////////
 
-#ifndef GLEW_STATIC
-#define GLEW_STATIC
-#endif
 #include <GL/glew.h>
 #include "../../libs/MVS/Common.h"
 #include "../../libs/MVS/Scene.h"

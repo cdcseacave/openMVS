@@ -78,9 +78,6 @@
 #define DELEGATEBINDCLASS(DLGT, FNC, OBJ) fastdelegate::bind(FNC, OBJ)
 #endif
 
-// File-System utils (stlplus)
-#include "Wildcard.h"
-
 // include usual boost libraries
 #ifdef _USE_BOOST
 #if 1
@@ -605,15 +602,16 @@ typedef class GENERAL_API cList<double, double, 0>      DoubleArr;
 #define CEIL2INT		SEACAVE::Ceil2Int
 #define ROUND			SEACAVE::Round2Int
 #define ROUND2INT		SEACAVE::Round2Int
-#define SIN				sinf
-#define ASIN			asinf
-#define COS				cosf
-#define ACOS			acosf
-#define TAN				tanf
-#define ATAN			atanf
-#define ATAN2			atan2f
-#define POW				powf
-#define POWI			powi
+#define SIN				std::sin
+#define ASIN			std::asin
+#define COS				std::cos
+#define ACOS			std::acos
+#define TAN				std::tan
+#define ATAN			std::atan
+#define ATAN2			std::atan2
+#define POW				std::pow
+#define POWI			SEACAVE::powi
+#define LOG2I			SEACAVE::log2i
 
 
 namespace SEACAVE {
@@ -794,14 +792,14 @@ FORCEINLINE float CBRT(float x) {
 	#ifdef _FAST_CBRT
 	return fast_cbrt<float,1>(x);
 	#else
-	return pow(x, 1.0f/3.0f);
+	return POW(x, 1.0f/3.0f);
 	#endif
 }
 FORCEINLINE double CBRT(const double& x) {
 	#ifdef _FAST_CBRT
 	return fast_cbrt<double,2>(x);
 	#else
-	return pow(x, 1.0/3.0);
+	return POW(x, 1.0/3.0);
 	#endif
 }
 /*----------------------------------------------------------------*/
@@ -2121,7 +2119,7 @@ public:
 	};
 
 	enum { numBitsPerCell = sizeof(Type)*8 };
-	enum { numBitsShift = log2i<TBitMatrix::numBitsPerCell>() };
+	enum { numBitsShift = LOG2I<TBitMatrix::numBitsPerCell>() };
 
 public:
 	inline TBitMatrix() : data(NULL) {}
