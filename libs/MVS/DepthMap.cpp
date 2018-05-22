@@ -466,7 +466,7 @@ void DepthEstimator::ProcessPixel(IDX idx)
 			if (!ISINSIDE(ndepth, dMin, dMax))
 				continue;
 			const Point2f np(randomMeanRange(p.x, angle1Range*scaleRange), randomMeanRange(p.y, angle2Range*scaleRange));
-			Dir2Normal(p, nnormal);
+			Dir2Normal(np, nnormal);
 			if (nnormal.z >= 0)
 				continue;
 			const float nconf(ScorePixel(ndepth, nnormal));
