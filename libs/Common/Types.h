@@ -60,6 +60,7 @@
 #include <iterator>
 #include <cmath>
 #include <ctime>
+#include <random>
 #ifdef _USE_OPENMP
 #include <omp.h>
 #endif

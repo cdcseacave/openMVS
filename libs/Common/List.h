@@ -1274,26 +1274,35 @@ public:
 	typedef Type value_type;
 	typedef value_type* iterator;
 	typedef const value_type* const_iterator;
+	typedef value_type& reference;
+	typedef const value_type& const_reference;
 	typedef std::vector<Type> VectorType;
 	inline cList(const VectorType& rList) { CopyOf(&rList[0], rList.size()); }
 	inline bool empty() const { return IsEmpty(); }
 	inline IDX size() const { return GetSize(); }
 	inline IDX capacity() const { return GetCapacity(); }
 	inline void clear() { Empty(); }
-	inline void insert(Type* it, ArgType elem) { InsertAt(it-this->_vector, elem); }
-	inline void push_back(ArgType elem) { Insert(elem); }
+	inline void insert(const_iterator it, const_reference elem) { InsertAt(it-this->_vector, elem); }
+	#ifdef _SUPPORT_CPP11
+	template <typename... Args>
+	inline reference emplace_back(Args&&... args) { return AddConstruct(std::forward<Args>(args)...); }
+	inline void push_back(value_type&& elem) { AddConstruct(elem); }
+	#endif
+	inline void push_back(const_reference elem) { Insert(elem); }
 	inline void pop_back() { RemoveLast(); }
 	inline void reserve(IDX newSize) { Reserve(newSize); }
 	inline void resize(IDX newSize) { Resize(newSize); }
-	inline void erase(Type* it) { RemoveAtMove(it-this->_vector); }
-	inline const Type* cdata() const { return GetData(); }
-	inline const Type* cbegin() const { return Begin(); }
-	inline const Type* cend() const { return End(); }
-	inline Type* data() const { return GetData(); }
-	inline Type* begin() const { return Begin(); }
-	inline Type* end() const { return End(); }
+	inline void erase(const_iterator it) { RemoveAtMove(it-this->_vector); }
+	inline const_iterator cdata() const { return GetData(); }
+	inline const_iterator cbegin() const { return Begin(); }
+	inline const_iterator cend() const { return End(); }
+	inline iterator data() const { return GetData(); }
+	inline iterator begin() const { return Begin(); }
+	inline iterator end() const { return End(); }
 	inline ArgType front() const { return First(); }
 	inline ArgType back() const { return Last(); }
+	inline reference front() { return First(); }
+	inline reference back() { return Last(); }
 	inline void swap(cList& rList) { Swap(rList); }
 #endif
 
