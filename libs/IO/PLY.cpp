@@ -65,7 +65,7 @@ Exit:
 
 PLY::PLY()
 	:
-	mfp(NULL), fp(NULL), f(NULL),
+	mfp(NULL), f(NULL), ostream(NULL),
 	which_elem(NULL), other_elems(NULL), current_rules(NULL), rule_list(NULL)
 {
 }
@@ -87,12 +87,12 @@ void PLY::release()
 		delete mfp;
 		mfp = NULL;
 	}
+	f = NULL;
 	if (!filename.empty()) {
 		filename.clear();
-		delete fp;
+		delete ostream;
 	}
-	fp = NULL;
-	f = NULL;
+	ostream = NULL;
 	if (!elems.empty()) {
 		for (size_t i=0; i<elems.size(); ++i) {
 			PlyElement* elem = elems[i];
@@ -130,7 +130,7 @@ void PLY::release()
 Given a file pointer, get ready to write PLY data to the file.
 
 Entry:
-fp         - the given file pointer
+f          - the given file pointer
 nelems     - number of elements in object
 elem_names - list of element names
 file_type  - file type, either ascii or binary
@@ -142,7 +142,7 @@ returns a pointer to a PlyFile, used to refer to this file, or NULL if error
 bool PLY::write(LPCSTR filename, int nelems, LPCSTR* elem_names, int file_type, size_t bufferSize)
 {
 	this->filename = filename;
-	return write(fp, nelems, elem_names, file_type, bufferSize);
+	return write(ostream, nelems, elem_names, file_type, bufferSize);
 }
 
 bool PLY::write(OSTREAM* f, int nelems, LPCSTR* elem_names, int file_type, size_t bufferSize)
@@ -150,7 +150,7 @@ bool PLY::write(OSTREAM* f, int nelems, LPCSTR* elem_names, int file_type, size_
 	/* create a record for this object */
 	this->file_type = file_type;
 	this->version = 1.0;
-	this->fp = (IOSTREAM*)f;
+	this->ostream = f;
 	this->other_elems = NULL;
 
 	/* init buffer if requested */
@@ -268,22 +268,23 @@ was written already.
 bool PLY::header_complete()
 {
 	if (!filename.empty()) {
-		fp = new File(filename.c_str(), File::WRITE, File::CREATE | File::TRUNCATE);
-		if (!((File*)fp)->isOpen())
+		ostream = new File(filename.c_str(), File::WRITE, File::CREATE | File::TRUNCATE);
+		if (!((File*)ostream)->isOpen())
 			return false;
+		ostream = new BufferedOutputStream<true>(ostream, FILE_WRITE_MINBUF_SIZE);
 	}
 
-	fp->print("ply\n");
+	ostream->print("ply\n");
 
 	switch (this->file_type) {
 	case ASCII:
-		fp->print("format ascii 1.0\n");
+		ostream->print("format ascii 1.0\n");
 		break;
 	case BINARY_BE:
-		fp->print("format binary_big_endian 1.0\n");
+		ostream->print("format binary_big_endian 1.0\n");
 		break;
 	case BINARY_LE:
-		fp->print("format binary_little_endian 1.0\n");
+		ostream->print("format binary_little_endian 1.0\n");
 		break;
 	default:
 		abort_ply("error: ply_header_complete: bad file type = %d\n", this->file_type);
@@ -291,46 +292,45 @@ bool PLY::header_complete()
 
 	/* write out the comments */
 	for (size_t i = 0; i < this->comments.size(); ++i)
-		fp->print("comment %s\n", this->comments[i].c_str());
+		ostream->print("comment %s\n", this->comments[i].c_str());
 
 	/* write out object information */
 	for (size_t i = 0; i < this->obj_info.size(); ++i)
-		fp->print("obj_info %s\n", this->obj_info[i].c_str());
+		ostream->print("obj_info %s\n", this->obj_info[i].c_str());
 
 	/* write out information about each element */
 	for (size_t i = 0; i < this->elems.size(); ++i) {
 		PlyElement *elem = this->elems[i];
-		fp->print("element %s %d\n", elem->name.c_str(), elem->num);
+		ostream->print("element %s %d\n", elem->name.c_str(), elem->num);
 
 		/* write out each property */
 		for (size_t j = 0; j < elem->props.size(); ++j) {
 			PlyProperty *prop = elem->props[j];
 			if (prop->is_list == LIST) {
-				fp->print("property list ");
-				write_scalar_type(fp, prop->count_external);
-				fp->print(" ");
-				write_scalar_type(fp, prop->external_type);
-				fp->print(" %s\n", prop->name.c_str());
+				ostream->print("property list ");
+				write_scalar_type(ostream, prop->count_external);
+				ostream->print(" ");
+				write_scalar_type(ostream, prop->external_type);
+				ostream->print(" %s\n", prop->name.c_str());
 			}
 			else if (prop->is_list == STRING) {
-				fp->print("property string");
-				fp->print(" %s\n", prop->name.c_str());
+				ostream->print("property string");
+				ostream->print(" %s\n", prop->name.c_str());
 			}
 			else {
-				fp->print("property ");
-				write_scalar_type(fp, prop->external_type);
-				fp->print(" %s\n", prop->name.c_str());
+				ostream->print("property ");
+				write_scalar_type(ostream, prop->external_type);
+				ostream->print(" %s\n", prop->name.c_str());
 			}
 		}
 	}
 
-	fp->print("end_header\n");
+	ostream->print("end_header\n");
 
 	/* write the body also if fully buffered */
 	if (mfp && mfp->getSize() > 0) {
-		fp->write(mfp->getBuffer(), mfp->getSize());
-		delete mfp;
-		mfp = NULL;
+		ostream->write(mfp->getBuffer(), mfp->getSize());
+		delete mfp; mfp = NULL;
 	}
 
 	return true;
@@ -479,9 +479,9 @@ void PLY::put_element(const void* elem_ptr)
 
 	/* if buffered mode, count element items */
 	if (mfp) {
-		if (fp != NULL) {
+		if (ostream != NULL) {
 			if (mfp->getSizeBuffer()-mfp->getSize() < 256) {
-				fp->write(mfp->getBuffer(), mfp->getSize());
+				ostream->write(mfp->getBuffer(), mfp->getSize());
 				mfp->setSize(0);
 			}
 		} else {
@@ -501,7 +501,7 @@ void PLY::put_element(const void* elem_ptr)
 Given a file pointer, get ready to read PLY data from the file.
 
 Entry:
-fp - the given file pointer
+f          - the given file pointer
 
 Exit:
 nelems     - number of elements in object
@@ -512,24 +512,24 @@ returns a pointer to a PlyFile, used to refer to this file, or NULL if error
 bool PLY::read(LPCSTR filename)
 {
 	this->filename = filename;
-	fp = new File(filename, File::READ, File::OPEN);
-	if (!((File*)fp)->isOpen())
+	istream = new File(filename, File::READ, File::OPEN);
+	if (!((File*)istream)->isOpen())
 		return false;
-	return read(fp);
+	return read(new BufferedInputStream<true>(istream, FILE_READ_MINBUF_SIZE));
 }
 
 bool PLY::read(ISTREAM* f)
 {
 	/* create record for this object */
 	ASSERT(elems.empty());
-	this->fp = (IOSTREAM*)f;
+	this->istream = f;
 	this->other_elems = NULL;
 	this->rule_list = NULL;
 
 	/* read and parse the file's header */
 	int nwords;
 	char *orig_line;
-	STRISTREAM sfp(fp);
+	STRISTREAM sfp(istream);
 	char **words = get_words(sfp, &nwords, &orig_line);
 	if (words == NULL)
 		return false;
@@ -988,12 +988,12 @@ Flush a PLY file.
 
 void PLY::flush()
 {
-	if (fp != NULL) {
+	if (ostream != NULL) {
 		if (mfp != NULL) {
-			fp->write(mfp->getBuffer(), mfp->getSize());
+			ostream->write(mfp->getBuffer(), mfp->getSize());
 			mfp->setSize(0);
 		}
-		fp->flush();
+		ostream->flush();
 	}
 }
 
@@ -1086,7 +1086,7 @@ void PLY::ascii_get_element(uint8_t* elem_ptr)
 	int nwords;
 	char **words;
 	{
-	STRISTREAM sfp(fp);
+	STRISTREAM sfp(istream);
 	words = get_words(sfp, &nwords, &orig_line);
 	if (words == NULL)
 		abort_ply("error: get_element: unexpected end of file");
@@ -1203,7 +1203,7 @@ void PLY::binary_get_element(uint8_t* elem_ptr)
 		if (prop->is_list == LIST) {          /* list */
 
 			/* get and store the number of items in the list */
-			get_binary_item(fp, prop->count_external, val);
+			get_binary_item(istream, prop->count_external, val);
 			if (store_it) {
 				item = elem_data + prop->count_offset;
 				store_item(item, prop->count_internal, val, prop->count_external);
@@ -1226,7 +1226,7 @@ void PLY::binary_get_element(uint8_t* elem_ptr)
 
 				/* read items and store them into the array */
 				for (int k = 0; k < list_count; k++) {
-					get_binary_item(fp, prop->external_type, val);
+					get_binary_item(istream, prop->external_type, val);
 					if (store_it) {
 						store_item(item, prop->internal_type, val, prop->external_type);
 						item += item_size;
@@ -1237,16 +1237,16 @@ void PLY::binary_get_element(uint8_t* elem_ptr)
 		}
 		else if (prop->is_list == STRING) {     /* string */
 			int len;
-			fp->read(&len, sizeof(int));
+			istream->read(&len, sizeof(int));
 			char *str = new char[len];
-			fp->read(str, len);
+			istream->read(str, len);
 			if (store_it) {
 				item = elem_data + prop->offset;
 				*((char **)item) = str;
 			}
 		}
 		else {                                   /* scalar */
-			get_binary_item(fp, prop->external_type, val);
+			get_binary_item(istream, prop->external_type, val);
 			if (store_it) {
 				item = elem_data + prop->offset;
 				store_item(item, prop->internal_type, val, prop->external_type);
@@ -1282,7 +1282,7 @@ IMPORTANT: The calling routine should call "free" on the returned pointer once
 finished with it.
 
 Entry:
-fp - file to read from
+sfp       - file to read from
 
 Exit:
 nwords    - number of words returned
@@ -1304,7 +1304,7 @@ char** PLY::get_words(STRISTREAM& sfp, int *nwords, char **orig_line)
 
 	/* read in a line */
 	size_t len(sfp.readLine(str, BIG_STRING-2));
-	if (len == 0) {
+	if (len == 0 || len == STREAM_ERROR) {
 		*nwords = 0;
 		*orig_line = NULL;
 		free(words);
