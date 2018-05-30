@@ -619,11 +619,11 @@ void* STCALL DepthMapsData::EndDepthMapTmp(void* arg)
 			const float wAngle(1.f);
 			#endif
 			#if 1
-			conf = wAngle/conf;
+			conf = wAngle/MAXF(conf,1e-2f);
 			#elif 1
-			conf = wAngle/(depth*SQUARE(conf));
+			conf = wAngle/(depth*SQUARE(MAXF(conf,1e-2f)));
 			#else
-			conf = SQRT((float)invScaleRange)*wAngle/(depth*SQUARE(conf));
+			conf = SQRT((float)invScaleRange)*wAngle/(depth*SQUARE(MAXF(conf,1e-2f)));
 			#endif
 		}
 	}
@@ -635,7 +635,7 @@ void* STCALL DepthMapsData::EndDepthMapTmp(void* arg)
 // The implementations follows closely the paper, although there are some changes/additions.
 // Given two views of the same scene, we note as the "reference image" the view for which a depth-map is reconstructed, and the "target image" the other view.
 // As a first step, the whole depth-map is approximated by interpolating between the available sparse points.
-// Next, the depth-map is passed from top/left to bottom/right corner and the oposite sens for each of the next steps.
+// Next, the depth-map is passed from top/left to bottom/right corner and the opposite sens for each of the next steps.
 // For each pixel, first the current depth estimate is replaced with its neighbor estimates if the NCC score is better.
 // Second, the estimate is refined by trying random estimates around the current depth and normal values, keeping the one with the best score.
 // The estimation can be stopped at any point, and usually 2-3 iterations are enough for convergence.
