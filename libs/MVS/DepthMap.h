@@ -169,7 +169,7 @@ struct MVS_API DepthData {
 	}
 	#endif
 };
-typedef MVS_API SEACAVE::cList<DepthData,const DepthData&,1> DepthDataArr;
+typedef MVS_API CLISTDEFIDX(DepthData,IIndex) DepthDataArr;
 /*----------------------------------------------------------------*/
 
 
