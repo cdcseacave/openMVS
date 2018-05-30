@@ -77,7 +77,7 @@ MDEFVAR_OPTDENSE_float(fViewMinScoreRatio, "View Min Score Ratio", "Min score ra
 MDEFVAR_OPTDENSE_float(fMinAngle, "Min Angle", "Min angle for accepting the depth triangulation", "3.0")
 MDEFVAR_OPTDENSE_float(fOptimAngle, "Optim Angle", "Optimal angle for computing the depth triangulation", "12.0")
 MDEFVAR_OPTDENSE_float(fMaxAngle, "Max Angle", "Max angle for accepting the depth triangulation", "45.0")
-MDEFVAR_OPTDENSE_float(fDescriptorMinMagnitudeThreshold, "Descriptor Min Magnitude Threshold", "minimum texture variance accepted when matching two patches (0 - disabled)", "0.03"/*NCC*/, "0.005"/*DAISY*/)
+MDEFVAR_OPTDENSE_float(fDescriptorMinMagnitudeThreshold, "Descriptor Min Magnitude Threshold", "minimum texture variance accepted when matching two patches (0 - disabled)", "0.03")
 MDEFVAR_OPTDENSE_float(fDepthDiffThreshold, "Depth Diff Threshold", "maximum variance allowed for the depths during refinement", "0.01")
 MDEFVAR_OPTDENSE_float(fPairwiseMul, "Pairwise Mul", "pairwise cost scale to match the unary cost", "0.3")
 MDEFVAR_OPTDENSE_float(fOptimizerEps, "Optimizer Eps", "MRF optimizer stop epsilon", "0.005")
@@ -89,7 +89,7 @@ MDEFVAR_OPTDENSE_uint32(nEstimateColors, "Estimate Colors", "should we estimate 
 MDEFVAR_OPTDENSE_uint32(nEstimateNormals, "Estimate Normals", "should we estimate the normals for the dense point-cloud?", "0", "1", "2")
 MDEFVAR_OPTDENSE_float(fNCCThresholdKeep, "NCC Threshold Keep", "Maximum 1-NCC score accepted for a match", "0.5", "0.3")
 MDEFVAR_OPTDENSE_float(fNCCThresholdRefine, "NCC Threshold Refine", "1-NCC score under which a match is not refined anymore", "0.03")
-MDEFVAR_OPTDENSE_uint32(nEstimationIters, "Estimation Iters", "Number of iterations for depth-map refinement", "3")
+MDEFVAR_OPTDENSE_uint32(nEstimationIters, "Estimation Iters", "Number of iterations for depth-map refinement", "4")
 MDEFVAR_OPTDENSE_uint32(nRandomIters, "Random Iters", "Number of iterations for random assignment per pixel", "6")
 MDEFVAR_OPTDENSE_uint32(nRandomMaxScale, "Random Max Scale", "Maximum number of iterations to skip during random assignment", "2")
 MDEFVAR_OPTDENSE_float(fRandomDepthRatio, "Random Depth Ratio", "Depth range ratio of the current estimate for random plane assignment", "0.01")
@@ -256,7 +256,7 @@ void DepthEstimator::MapMatrix2ZigzagIdx(const Image8U::Size& size, DepthEstimat
 	}
 }
 
-// replace POWI(0.5f, (int)invScaleRange):         0    1      2       3       4         5         6           7           8             9             10              11
+// replace POWI(0.5f, (int)invScaleRange):      0    1      2       3       4         5         6           7           8             9             10              11
 const float DepthEstimator::scaleRanges[12] = {1.f, 0.5f, 0.25f, 0.125f, 0.0625f, 0.03125f, 0.015625f, 0.0078125f, 0.00390625f, 0.001953125f, 0.0009765625f, 0.00048828125f};
 
 DepthEstimator::DepthEstimator(DepthData& _depthData0, volatile Thread::safe_t& _idx, const Image32F& _image0Sum, const MapRefArr& _coords, ENDIRECTION _dir)
@@ -293,29 +293,28 @@ bool DepthEstimator::PreparePixelPatch(const ImageRef& x)
 // fetch the patch pixel values in the main image
 bool DepthEstimator::FillPixelPatch(const ImageRef& x)
 {
-	int n = 0;
-	for (int i=0; i<nSizeWindow; ++i) {
-		for (int j=0; j<nSizeWindow; ++j) {
-			texels0(n++) = image0.image(lt0.y+i, lt0.x+j);
-		}
-	}
-	ASSERT(n == nTexels);
-	normSq0 = normSqDelta<float,float,nTexels>(texels0.data(), GetImage0Sum(lt0)*(1.f/nTexels));
-	X0 = (const Vec3&)image0.camera.TransformPointI2C(Point3(x.x,x.y,1));
+	const float mean(GetImage0Sum(lt0)/nTexels);
+	normSq0 = 0;
+	float* pTexel0 = texels0.data();
+	for (int i=0; i<nSizeWindow; ++i)
+		for (int j=0; j<nSizeWindow; ++j)
+			normSq0 += SQUARE(*pTexel0++ = image0.image(lt0.y+i, lt0.x+j)-mean);
+	X0 = (const Vec3&)image0.camera.TransformPointI2C(Cast<REAL>(x));
 	return (normSq0 > thMagnitudeSq);
 }
 
 // compute pixel's NCC score
 float DepthEstimator::ScorePixel(Depth depth, const Normal& normal)
 {
-	ASSERT(normal.z < 0);
+	ASSERT(depth > 0 && normal.dot(Cast<float>(static_cast<const Point3&>(X0))) < 0);
 	FOREACH(idx, images) {
 		// center a patch of given size on the segment and fetch the pixel values in the target image
 		const ViewData& image1 = images[idx];
 		float& score = scores[idx];
 		const Matrix3x3f H(ComputeHomographyMatrix(image1, depth, normal));
 		Point2f pt;
-		int n = 0;
+		int n(0);
+		float sum(0);
 		for (int i=0; i<nSizeWindow; ++i) {
 			for (int j=0; j<nSizeWindow; ++j) {
 				ProjectVertex_3x3_2_2(H.val, Point2f((float)(lt0.x+j), (float)(lt0.y+i)).ptr(), pt.ptr());
@@ -323,20 +322,20 @@ float DepthEstimator::ScorePixel(Depth depth, const Normal& normal)
 					score = 2.f;
 					goto NEXT_IMAGE;
 				}
-				texels1(n++) = image1.view.image.sample(pt);
+				sum += texels1(n++) = image1.view.image.sample(pt);
 			}
 		}
 		{
 		ASSERT(n == nTexels);
 		// score similarity of the reference and target texture patches
-		const float normSq1(normSqZeroMean<float,float,nTexels>(texels1.data()));
+		const float normSq1(normSqDelta<float,float,nTexels>(texels1.data(), sum/(float)nTexels));
 		const float nrm(normSq0*normSq1);
 		if (nrm == 0.f) {
 			score = 1.f;
 			continue;
 		}
-		const float ncc(texels0.dot(texels1)/SQRT(nrm));
-		score = 1.f - CLAMP(ncc, -1.f, 1.f);
+		const float ncc(CLAMP(texels0.dot(texels1)/SQRT(nrm), -1.f, 1.f));
+		score = 1.f - ncc;
 		// encourage smoothness
 		FOREACHPTR(pNbr, neighborsData) {
 			score *= 1.f - (1.f - smoothBonusDepth) * EXP(SQUARE(DepthSimilarity(depth, pNbr->depth)) * smoothSigmaDepth);
@@ -429,7 +428,8 @@ void DepthEstimator::ProcessPixel(IDX idx)
 		}
 		Depth& depth = depthMap0(x);
 		Normal& normal = normalMap0(x);
-		ASSERT(depth > 0);
+		const Normal viewDir(Cast<float>(static_cast<const Point3&>(X0)));
+		ASSERT(depth > 0 && normal.dot(viewDir) < 0);
 		// check if any of the neighbor estimates are better then the current estimate
 		FOREACH(n, neighbors) {
 			float nconf(confMap0(neighbors[n]));
@@ -438,6 +438,8 @@ void DepthEstimator::ProcessPixel(IDX idx)
 				continue;
 			const NeighborData& neighbor = neighborsData[n];
 			ASSERT(neighbor.depth > 0);
+			if (neighbor.normal.dot(viewDir) >= 0)
+				continue;
 			const float newconf(ScorePixel(neighbor.depth, neighbor.normal));
 			ASSERT(newconf >= 0 && newconf <= 2);
 			if (conf > newconf) {
@@ -461,13 +463,13 @@ void DepthEstimator::ProcessPixel(IDX idx)
 		Point2f p;
 		Normal2Dir(normal, p);
 		Normal nnormal;
-		for (unsigned iter=0, endIter=OPTDENSE::nRandomIters-invScaleRange; iter<endIter; ++iter) {
+		for (unsigned iter=invScaleRange; iter<OPTDENSE::nRandomIters; ++iter) {
 			const Depth ndepth(randomMeanRange(depth, depthRange*scaleRange));
 			if (!ISINSIDE(ndepth, dMin, dMax))
 				continue;
 			const Point2f np(randomMeanRange(p.x, angle1Range*scaleRange), randomMeanRange(p.y, angle2Range*scaleRange));
 			Dir2Normal(np, nnormal);
-			if (nnormal.z >= 0)
+			if (nnormal.dot(viewDir) >= 0)
 				continue;
 			const float nconf(ScorePixel(ndepth, nnormal));
 			ASSERT(nconf >= 0);

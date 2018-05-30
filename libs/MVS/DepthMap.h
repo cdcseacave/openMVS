@@ -278,15 +278,10 @@ struct MVS_API DepthEstimator {
 		ASSERT(dMin > 0);
 		return randomRange(dMin, dMax);
 	}
-	static inline Normal RandomNormal() {
-		const float a1Min = FD2R(0.f);
-		const float a1Max = FD2R(360.f);
-		const float a2Min = FD2R(120.f);
-		const float a2Max = FD2R(180.f);
+	static inline Normal RandomNormal(const Point3f& viewRay) {
 		Normal normal;
-		Dir2Normal(Point2f(randomRange(a1Min,a1Max), randomRange(a2Min,a2Max)), normal);
-		ASSERT(normal.z < 0);
-		return normal;
+		Dir2Normal(Point2f(randomRange(FD2R(0.f),FD2R(360.f)), randomRange(FD2R(120.f),FD2R(180.f))), normal);
+		return normal.dot(viewRay) > 0 ? -normal : normal;
 	}
 
 	// encode/decode NCC score and refinement level in one float

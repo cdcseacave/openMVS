@@ -565,13 +565,14 @@ void* STCALL DepthMapsData::ScoreDepthMapTmp(void* arg)
 		}
 		Depth& depth = estimator.depthMap0(x);
 		Normal& normal = estimator.normalMap0(x);
+		const Normal viewDir(Cast<float>(static_cast<const Point3&>(estimator.X0)));
 		if (depth <= 0) {
 			// init with random values
 			depth = DepthEstimator::RandomDepth(estimator.dMin, estimator.dMax);
-			normal = DepthEstimator::RandomNormal();
+			normal = DepthEstimator::RandomNormal(viewDir);
 		} else if (normal.z >= 0) {
 			// replace invalid normal with random values
-			normal = DepthEstimator::RandomNormal();
+			normal = DepthEstimator::RandomNormal(viewDir);
 		}
 		estimator.confMap0(x) = DepthEstimator::EncodeScoreScale(estimator.ScorePixel(depth, normal));
 	}
