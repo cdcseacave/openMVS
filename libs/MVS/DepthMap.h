@@ -41,6 +41,11 @@
 
 // D E F I N E S ///////////////////////////////////////////////////
 
+// NCC type used for patch-similarity computation during depth-map estimation
+#define DENSE_NCC_DEFAULT 0
+#define DENSE_NCC_FAST 1
+#define DENSE_NCC DENSE_NCC_FAST
+
 #define ComposeDepthFilePathBase(b, i, e) MAKE_PATH(String::FormatString((b + "%04u." e).c_str(), i))
 #define ComposeDepthFilePath(i, e) MAKE_PATH(String::FormatString("depth%04u." e, i))
 
@@ -216,7 +221,9 @@ struct MVS_API DepthEstimator {
 	ImageRef x0;	  // constants during one pixel loop
 	float normSq0;	  //
 	TexelVec texels0; //
+	#if DENSE_NCC == DENSE_NCC_DEFAULT
 	TexelVec texels1;
+	#endif
 	Eigen::VectorXf scores;
 	DepthMap& depthMap0;
 	NormalMap& normalMap0;

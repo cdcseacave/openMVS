@@ -314,6 +314,9 @@ float DepthEstimator::ScorePixel(Depth depth, const Normal& normal)
 		Point2f pt;
 		int n(0);
 		float sum(0);
+		#if DENSE_NCC != DENSE_NCC_DEFAULT
+		float sumSq(0), num(0);
+		#endif
 		for (int i=-nSizeHalfWindow; i<=nSizeHalfWindow; ++i) {
 			for (int j=-nSizeHalfWindow; j<=nSizeHalfWindow; ++j) {
 				ProjectVertex_3x3_2_2(H.val, Point2f((float)(x0.x+j), (float)(x0.y+i)).ptr(), pt.ptr());
@@ -321,19 +324,33 @@ float DepthEstimator::ScorePixel(Depth depth, const Normal& normal)
 					score = thRobust;
 					goto NEXT_IMAGE;
 				}
+				#if DENSE_NCC == DENSE_NCC_FAST
+				const float v(image1.view.image.sample(pt));
+				sum += v;
+				sumSq += SQUARE(v);
+				num += texels0(n++)*v;
+				#else
 				sum += texels1(n++) = image1.view.image.sample(pt);
+				#endif
 			}
 		}
 		{
 		ASSERT(n == nTexels);
 		// score similarity of the reference and target texture patches
+		#if DENSE_NCC == DENSE_NCC_FAST
+		const float normSq1(sumSq-SQUARE(sum/nSizeWindow));
+		#else
 		const float normSq1(normSqDelta<float,float,nTexels>(texels1.data(), sum/(float)nTexels));
+		#endif
 		const float nrm(normSq0*normSq1);
 		if (nrm <= 0.f) {
 			score = thRobust;
 			continue;
 		}
-		const float ncc(CLAMP(texels0.dot(texels1)/SQRT(nrm), -1.f, 1.f));
+		#if DENSE_NCC == DENSE_NCC_DEFAULT
+		const float num(texels0.dot(texels1));
+		#endif
+		const float ncc(CLAMP(num/SQRT(nrm), -1.f, 1.f));
 		score = 1.f - ncc;
 		// encourage smoothness
 		FOREACHPTR(pNbr, neighborsData) {
