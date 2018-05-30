@@ -77,7 +77,7 @@ MDEFVAR_OPTDENSE_float(fViewMinScoreRatio, "View Min Score Ratio", "Min score ra
 MDEFVAR_OPTDENSE_float(fMinAngle, "Min Angle", "Min angle for accepting the depth triangulation", "3.0")
 MDEFVAR_OPTDENSE_float(fOptimAngle, "Optim Angle", "Optimal angle for computing the depth triangulation", "12.0")
 MDEFVAR_OPTDENSE_float(fMaxAngle, "Max Angle", "Max angle for accepting the depth triangulation", "45.0")
-MDEFVAR_OPTDENSE_float(fDescriptorMinMagnitudeThreshold, "Descriptor Min Magnitude Threshold", "minimum texture variance accepted when matching two patches (0 - disabled)", "0.03")
+MDEFVAR_OPTDENSE_float(fDescriptorMinMagnitudeThreshold, "Descriptor Min Magnitude Threshold", "minimum texture variance accepted when matching two patches (0 - disabled)", "0.015")
 MDEFVAR_OPTDENSE_float(fDepthDiffThreshold, "Depth Diff Threshold", "maximum variance allowed for the depths during refinement", "0.01")
 MDEFVAR_OPTDENSE_float(fPairwiseMul, "Pairwise Mul", "pairwise cost scale to match the unary cost", "0.3")
 MDEFVAR_OPTDENSE_float(fOptimizerEps, "Optimizer Eps", "MRF optimizer stop epsilon", "0.005")
@@ -259,15 +259,14 @@ void DepthEstimator::MapMatrix2ZigzagIdx(const Image8U::Size& size, DepthEstimat
 // replace POWI(0.5f, (int)invScaleRange):      0    1      2       3       4         5         6           7           8             9             10              11
 const float DepthEstimator::scaleRanges[12] = {1.f, 0.5f, 0.25f, 0.125f, 0.0625f, 0.03125f, 0.015625f, 0.0078125f, 0.00390625f, 0.001953125f, 0.0009765625f, 0.00048828125f};
 
-DepthEstimator::DepthEstimator(DepthData& _depthData0, volatile Thread::safe_t& _idx, const Image32F& _image0Sum, const MapRefArr& _coords, ENDIRECTION _dir)
+DepthEstimator::DepthEstimator(DepthData& _depthData0, volatile Thread::safe_t& _idx, const Image64F& _image0Sum, const MapRefArr& _coords, ENDIRECTION _dir)
 	:
 	idxPixel(_idx),
-	scores(_depthData0.images.GetSize()-1),
+	scores(_depthData0.images.size()-1),
 	depthMap0(_depthData0.depthMap), normalMap0(_depthData0.normalMap), confMap0(_depthData0.confMap),
 	images(InitImages(_depthData0)), image0(_depthData0.images[0]),
 	image0Sum(_image0Sum), coords(_coords), size(_depthData0.images.First().image.size()),
-	idxScore((_depthData0.images.GetSize()-1)/3), dir(_dir),
-	dMin(_depthData0.dMin), dMax(_depthData0.dMax),
+	dir(_dir), dMin(_depthData0.dMin), dMax(_depthData0.dMax),
 	neighborsData(0,4), neighbors(0,2),
 	smoothBonusDepth(OPTDENSE::fRandomSmoothBonus), smoothBonusNormal(OPTDENSE::fRandomSmoothBonus*0.98f),
 	smoothSigmaDepth(-1.f/(2.f*SQUARE(OPTDENSE::fRandomSmoothDepth))), // used in exp(-x^2 / (2*(0.005^2)))
@@ -277,30 +276,30 @@ DepthEstimator::DepthEstimator(DepthData& _depthData0, volatile Thread::safe_t& 
 	angle2Range(FD2R(OPTDENSE::fRandomAngle2Range)),
 	thConfSmall(OPTDENSE::fNCCThresholdKeep*0.25f),
 	thConfBig(OPTDENSE::fNCCThresholdKeep*0.5f),
-	thConfIgnore(OPTDENSE::fNCCThresholdKeep*1.5f)
+	thConfIgnore(OPTDENSE::fNCCThresholdKeep*1.5f),
+	thRobust(OPTDENSE::fNCCThresholdKeep*1.2f)
 {
-	ASSERT(_depthData0.images.GetSize() >= 2);
+	ASSERT(_depthData0.images.size() >= 2);
 }
 
 // center a patch of given size on the segment
 bool DepthEstimator::PreparePixelPatch(const ImageRef& x)
 {
-	lt0.x = x.x-nSizeHalfWindow;
-	lt0.y = x.y-nSizeHalfWindow;
-	const ImageRef rb0(lt0.x+nSizeWindow, lt0.y+nSizeWindow);
-	return (image0.image.isInside(lt0) && image0.image.isInside(rb0));
+	x0 = x;
+	return image0.image.isInside(ImageRef(x.x-nSizeHalfWindow, x.y-nSizeHalfWindow)) &&
+	       image0.image.isInside(ImageRef(x.x+nSizeHalfWindow, x.y+nSizeHalfWindow));
 }
 // fetch the patch pixel values in the main image
-bool DepthEstimator::FillPixelPatch(const ImageRef& x)
+bool DepthEstimator::FillPixelPatch()
 {
-	const float mean(GetImage0Sum(lt0)/nTexels);
+	const float mean(GetImage0Sum(x0)/nTexels);
 	normSq0 = 0;
 	float* pTexel0 = texels0.data();
-	for (int i=0; i<nSizeWindow; ++i)
-		for (int j=0; j<nSizeWindow; ++j)
-			normSq0 += SQUARE(*pTexel0++ = image0.image(lt0.y+i, lt0.x+j)-mean);
-	X0 = (const Vec3&)image0.camera.TransformPointI2C(Cast<REAL>(x));
-	return (normSq0 > thMagnitudeSq);
+	for (int i=-nSizeHalfWindow; i<=nSizeHalfWindow; ++i)
+		for (int j=-nSizeHalfWindow; j<=nSizeHalfWindow; ++j)
+			normSq0 += SQUARE(*pTexel0++ = image0.image(x0.y+i, x0.x+j)-mean);
+	X0 = (const Vec3&)image0.camera.TransformPointI2C(Cast<REAL>(x0));
+	return normSq0 > thMagnitudeSq;
 }
 
 // compute pixel's NCC score
@@ -310,16 +309,16 @@ float DepthEstimator::ScorePixel(Depth depth, const Normal& normal)
 	FOREACH(idx, images) {
 		// center a patch of given size on the segment and fetch the pixel values in the target image
 		const ViewData& image1 = images[idx];
-		float& score = scores[idx];
+		float& score = scores(idx);
 		const Matrix3x3f H(ComputeHomographyMatrix(image1, depth, normal));
 		Point2f pt;
 		int n(0);
 		float sum(0);
-		for (int i=0; i<nSizeWindow; ++i) {
-			for (int j=0; j<nSizeWindow; ++j) {
-				ProjectVertex_3x3_2_2(H.val, Point2f((float)(lt0.x+j), (float)(lt0.y+i)).ptr(), pt.ptr());
+		for (int i=-nSizeHalfWindow; i<=nSizeHalfWindow; ++i) {
+			for (int j=-nSizeHalfWindow; j<=nSizeHalfWindow; ++j) {
+				ProjectVertex_3x3_2_2(H.val, Point2f((float)(x0.x+j), (float)(x0.y+i)).ptr(), pt.ptr());
 				if (!image1.view.image.isInsideWithBorder<float,1>(pt)) {
-					score = 2.f;
+					score = thRobust;
 					goto NEXT_IMAGE;
 				}
 				sum += texels1(n++) = image1.view.image.sample(pt);
@@ -330,8 +329,8 @@ float DepthEstimator::ScorePixel(Depth depth, const Normal& normal)
 		// score similarity of the reference and target texture patches
 		const float normSq1(normSqDelta<float,float,nTexels>(texels1.data(), sum/(float)nTexels));
 		const float nrm(normSq0*normSq1);
-		if (nrm == 0.f) {
-			score = 1.f;
+		if (nrm <= 0.f) {
+			score = thRobust;
 			continue;
 		}
 		const float ncc(CLAMP(texels0.dot(texels1)/SQRT(nrm), -1.f, 1.f));
@@ -344,8 +343,8 @@ float DepthEstimator::ScorePixel(Depth depth, const Normal& normal)
 		}
 		NEXT_IMAGE:;
 	}
-	// set score as the nth element
-	return (scores.GetSize() > 1 ? scores.GetNth(idxScore) : scores.First());
+	// set score as the average similarity
+	return scores.mean();
 }
 
 // run propagation and random refinement cycles;
@@ -354,42 +353,41 @@ void DepthEstimator::ProcessPixel(IDX idx)
 {
 	// compute pixel coordinates from pixel index and its neighbors
 	ASSERT(dir == LT2RB || dir == RB2LT);
-	const ImageRef x(dir == LT2RB ? coords[idx] : coords[coords.GetSize()-1-idx]);
-	if (!PreparePixelPatch(x))
+	if (!PreparePixelPatch(dir == LT2RB ? coords[idx] : coords[coords.GetSize()-1-idx]))
 		return;
 
-	float& conf = confMap0(x);
+	float& conf = confMap0(x0);
 	unsigned invScaleRange(DecodeScoreScale(conf));
-	if ((invScaleRange <= 2 || conf > OPTDENSE::fNCCThresholdRefine) && FillPixelPatch(x)) {
+	if ((invScaleRange <= 2 || conf > OPTDENSE::fNCCThresholdRefine) && FillPixelPatch()) {
 		// find neighbors
 		neighbors.Empty();
 		neighborsData.Empty();
 		if (dir == LT2RB) {
 			// direction from left-top to right-bottom corner
-			if (x.x > nSizeHalfWindow) {
-				const ImageRef nx(x.x-1, x.y);
+			if (x0.x > nSizeHalfWindow) {
+				const ImageRef nx(x0.x-1, x0.y);
 				const Depth ndepth(depthMap0(nx));
 				if (ndepth > 0) {
 					neighbors.Insert(nx);
 					neighborsData.Insert(NeighborData(ndepth,normalMap0(nx)));
 				}
 			}
-			if (x.y > nSizeHalfWindow) {
-				const ImageRef nx(x.x, x.y-1);
+			if (x0.y > nSizeHalfWindow) {
+				const ImageRef nx(x0.x, x0.y-1);
 				const Depth ndepth(depthMap0(nx));
 				if (ndepth > 0) {
 					neighbors.Insert(nx);
 					neighborsData.Insert(NeighborData(ndepth,normalMap0(nx)));
 				}
 			}
-			if (x.x < size.width-nSizeHalfWindow) {
-				const ImageRef nx(x.x+1, x.y);
+			if (x0.x < size.width-nSizeHalfWindow) {
+				const ImageRef nx(x0.x+1, x0.y);
 				const Depth ndepth(depthMap0(nx));
 				if (ndepth > 0)
 					neighborsData.Insert(NeighborData(ndepth,normalMap0(nx)));
 			}
-			if (x.y < size.height-nSizeHalfWindow) {
-				const ImageRef nx(x.x, x.y+1);
+			if (x0.y < size.height-nSizeHalfWindow) {
+				const ImageRef nx(x0.x, x0.y+1);
 				const Depth ndepth(depthMap0(nx));
 				if (ndepth > 0)
 					neighborsData.Insert(NeighborData(ndepth,normalMap0(nx)));
@@ -397,37 +395,37 @@ void DepthEstimator::ProcessPixel(IDX idx)
 		} else {
 			ASSERT(dir == RB2LT);
 			// direction from right-bottom to left-top corner
-			if (x.x < size.width-nSizeHalfWindow) {
-				const ImageRef nx(x.x+1, x.y);
+			if (x0.x < size.width-nSizeHalfWindow) {
+				const ImageRef nx(x0.x+1, x0.y);
 				const Depth ndepth(depthMap0(nx));
 				if (ndepth > 0) {
 					neighbors.Insert(nx);
 					neighborsData.Insert(NeighborData(ndepth,normalMap0(nx)));
 				}
 			}
-			if (x.y < size.height-nSizeHalfWindow) {
-				const ImageRef nx(x.x, x.y+1);
+			if (x0.y < size.height-nSizeHalfWindow) {
+				const ImageRef nx(x0.x, x0.y+1);
 				const Depth ndepth(depthMap0(nx));
 				if (ndepth > 0) {
 					neighbors.Insert(nx);
 					neighborsData.Insert(NeighborData(ndepth,normalMap0(nx)));
 				}
 			}
-			if (x.x > nSizeHalfWindow) {
-				const ImageRef nx(x.x-1, x.y);
+			if (x0.x > nSizeHalfWindow) {
+				const ImageRef nx(x0.x-1, x0.y);
 				const Depth ndepth(depthMap0(nx));
 				if (ndepth > 0)
 					neighborsData.Insert(NeighborData(ndepth,normalMap0(nx)));
 			}
-			if (x.y > nSizeHalfWindow) {
-				const ImageRef nx(x.x, x.y-1);
+			if (x0.y > nSizeHalfWindow) {
+				const ImageRef nx(x0.x, x0.y-1);
 				const Depth ndepth(depthMap0(nx));
 				if (ndepth > 0)
 					neighborsData.Insert(NeighborData(ndepth,normalMap0(nx)));
 			}
 		}
-		Depth& depth = depthMap0(x);
-		Normal& normal = normalMap0(x);
+		Depth& depth = depthMap0(x0);
+		Normal& normal = normalMap0(x0);
 		const Normal viewDir(Cast<float>(static_cast<const Point3&>(X0)));
 		ASSERT(depth > 0 && normal.dot(viewDir) < 0);
 		// check if any of the neighbor estimates are better then the current estimate

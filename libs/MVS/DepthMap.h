@@ -213,36 +213,36 @@ struct MVS_API DepthEstimator {
 	CLISTDEF0(ImageRef) neighbors; // neighbor pixels coordinates to be processed
 	volatile Thread::safe_t& idxPixel; // current image index to be processed
 	Vec3 X0;	      //
-	ImageRef lt0;	  // constants during one pixel loop
+	ImageRef x0;	  // constants during one pixel loop
 	float normSq0;	  //
 	TexelVec texels0; //
 	TexelVec texels1;
-	FloatArr scores;
+	Eigen::VectorXf scores;
 	DepthMap& depthMap0;
 	NormalMap& normalMap0;
 	ConfidenceMap& confMap0;
 
 	const CLISTDEF0(ViewData) images; // neighbor images used
 	const DepthData::ViewData& image0;
-	const Image32F& image0Sum; // integral image used to fast compute patch mean intensity
+	const Image64F& image0Sum; // integral image used to fast compute patch mean intensity
 	const MapRefArr& coords;
 	const Image8U::Size size;
-	const IDX idxScore;
 	const ENDIRECTION dir;
 	const Depth dMin, dMax;
 
-	DepthEstimator(DepthData& _depthData0, volatile Thread::safe_t& _idx, const Image32F& _image0Sum, const MapRefArr& _coords, ENDIRECTION _dir);
+	DepthEstimator(DepthData& _depthData0, volatile Thread::safe_t& _idx, const Image64F& _image0Sum, const MapRefArr& _coords, ENDIRECTION _dir);
 
 	bool PreparePixelPatch(const ImageRef&);
-	bool FillPixelPatch(const ImageRef&);
+	bool FillPixelPatch();
 	float ScorePixel(Depth, const Normal&);
 	void ProcessPixel(IDX idx);
 	
-	inline float GetImage0Sum(const ImageRef& p0) {
+	inline float GetImage0Sum(const ImageRef& p) const {
+		const ImageRef p0(p.x-nSizeHalfWindow, p.y-nSizeHalfWindow);
 		const ImageRef p1(p0.x+nSizeWindow, p0.y);
 		const ImageRef p2(p0.x, p0.y+nSizeWindow);
 		const ImageRef p3(p0.x+nSizeWindow, p0.y+nSizeWindow);
-		return image0Sum(p3) - image0Sum(p2) - image0Sum(p1) + image0Sum(p0);
+		return (float)(image0Sum(p3) - image0Sum(p2) - image0Sum(p1) + image0Sum(p0));
 	}
 
 	inline Matrix3x3f ComputeHomographyMatrix(const ViewData& img, Depth depth, const Normal& normal) const {
@@ -328,6 +328,7 @@ struct MVS_API DepthEstimator {
 	const float thMagnitudeSq;
 	const float angle1Range, angle2Range;
 	const float thConfSmall, thConfBig, thConfIgnore;
+	const float thRobust;
 	static const float scaleRanges[12];
 };
 /*----------------------------------------------------------------*/

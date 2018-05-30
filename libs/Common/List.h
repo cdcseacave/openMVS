@@ -621,6 +621,11 @@ public:
 		return GetNth(_size >> 1);
 	}
 
+	inline TYPE		GetMean()
+	{
+		return std::accumulate(Begin(), End(), TYPE(0)) / _size;
+	}
+
 	inline void		Sort()
 	{
 		std::sort(Begin(), End());

@@ -557,7 +557,7 @@ void* STCALL DepthMapsData::ScoreDepthMapTmp(void* arg)
 	IDX idx;
 	while ((idx=(IDX)Thread::safeInc(estimator.idxPixel)) < estimator.coords.GetSize()) {
 		const ImageRef& x = estimator.coords[idx];
-		if (!estimator.PreparePixelPatch(x) || !estimator.FillPixelPatch(x)) {
+		if (!estimator.PreparePixelPatch(x) || !estimator.FillPixelPatch()) {
 			estimator.depthMap0(x) = 0;
 			estimator.normalMap0(x) = Normal::ZERO;
 			estimator.confMap0(x) = DepthEstimator::EncodeScoreScale(2.f);
@@ -611,8 +611,8 @@ void* STCALL DepthMapsData::EndDepthMapTmp(void* arg)
 		} else {
 			#if 1
 			FOREACH(i, estimator.images)
-				estimator.scores[i] = ComputeAngle<REAL,float>(estimator.image0.camera.TransformPointI2W(Point3(x,depth)).ptr(), estimator.image0.camera.C.ptr(), estimator.images[i].view.camera.C.ptr());
-			const float fCosAngle(estimator.scores.GetSize() > 1 ? estimator.scores.GetNth(estimator.idxScore) : estimator.scores.First());
+				estimator.scores(i) = ComputeAngle<REAL,float>(estimator.image0.camera.TransformPointI2W(Point3(x,depth)).ptr(), estimator.image0.camera.C.ptr(), estimator.images[i].view.camera.C.ptr());
+			const float fCosAngle(estimator.scores.mean());
 			const float wAngle(MINF(POW(ACOS(fCosAngle)/fOptimAngle,1.5f),1.f));
 			#else
 			const float wAngle(1.f);
@@ -694,8 +694,8 @@ bool DepthMapsData::EstimateDepthMap(uint32_t idxImage)
 	}
 
 	// init integral images and index to image-ref map for the reference data
-	Image32F imageSum0;
-	cv::integral(image.image, imageSum0, CV_32F);
+	Image64F imageSum0;
+	cv::integral(image.image, imageSum0, CV_64F);
 	if (prevDepthMapSize != size) {
 		prevDepthMapSize = size;
 		BitMatrix mask;
