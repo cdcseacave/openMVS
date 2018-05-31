@@ -178,6 +178,7 @@ LogFile::LogFile()
 
 bool LogFile::Open(LPCTSTR logName)
 {
+	Util::ensureFolder(logName);
 	m_ptrFile = new File(logName, File::WRITE, File::CREATE | File::TRUNCATE);
 	if (!m_ptrFile->isOpen()) {
 		m_ptrFile = NULL;

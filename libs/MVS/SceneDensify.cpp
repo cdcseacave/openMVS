@@ -611,9 +611,14 @@ void* STCALL DepthMapsData::EndDepthMapTmp(void* arg)
 		} else {
 			#if 1
 			FOREACH(i, estimator.images)
-				estimator.scores(i) = ComputeAngle<REAL,float>(estimator.image0.camera.TransformPointI2W(Point3(x,depth)).ptr(), estimator.image0.camera.C.ptr(), estimator.images[i].view.camera.C.ptr());
-			//const float fCosAngle(estimator.scores.size() > 1 ? estimator.scores.GetNth(estimator.scores.size()/3) : estimator.scores.First());
+				estimator.scores[i] = ComputeAngle<REAL,float>(estimator.image0.camera.TransformPointI2W(Point3(x,depth)).ptr(), estimator.image0.camera.C.ptr(), estimator.images[i].view.camera.C.ptr());
+			#if DENSE_AGGNCC == DENSE_AGGNCC_NTH
+			const float fCosAngle(estimator.scores.size() > 1 ? estimator.scores.GetNth(estimator.idxScore) : estimator.scores.front());
+			#elif DENSE_AGGNCC == DENSE_AGGNCC_MEAN
 			const float fCosAngle(estimator.scores.mean());
+			#else
+			const float fCosAngle(estimator.scores.minCoeff());
+			#endif
 			const float wAngle(MINF(POW(ACOS(fCosAngle)/fOptimAngle,1.5f),1.f));
 			#else
 			const float wAngle(1.f);

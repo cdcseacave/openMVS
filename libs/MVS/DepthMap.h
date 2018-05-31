@@ -46,6 +46,12 @@
 #define DENSE_NCC_FAST 1
 #define DENSE_NCC DENSE_NCC_FAST
 
+// NCC score aggregation type used during depth-map estimation
+#define DENSE_AGGNCC_NTH 0
+#define DENSE_AGGNCC_MEAN 1
+#define DENSE_AGGNCC_MIN 2
+#define DENSE_AGGNCC DENSE_AGGNCC_MEAN
+
 #define ComposeDepthFilePathBase(b, i, e) MAKE_PATH(String::FormatString((b + "%04u." e).c_str(), i))
 #define ComposeDepthFilePath(i, e) MAKE_PATH(String::FormatString("depth%04u." e, i))
 
@@ -224,7 +230,11 @@ struct MVS_API DepthEstimator {
 	#if DENSE_NCC == DENSE_NCC_DEFAULT
 	TexelVec texels1;
 	#endif
+	#if DENSE_AGGNCC == DENSE_AGGNCC_NTH
+	FloatArr scores;
+	#else
 	Eigen::VectorXf scores;
+	#endif
 	DepthMap& depthMap0;
 	NormalMap& normalMap0;
 	ConfidenceMap& confMap0;
@@ -234,6 +244,9 @@ struct MVS_API DepthEstimator {
 	const Image64F& image0Sum; // integral image used to fast compute patch mean intensity
 	const MapRefArr& coords;
 	const Image8U::Size size;
+	#if DENSE_AGGNCC == DENSE_AGGNCC_NTH
+	const IDX idxScore;
+	#endif
 	const ENDIRECTION dir;
 	const Depth dMin, dMax;
 

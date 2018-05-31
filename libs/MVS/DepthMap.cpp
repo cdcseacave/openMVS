@@ -266,6 +266,9 @@ DepthEstimator::DepthEstimator(DepthData& _depthData0, volatile Thread::safe_t& 
 	depthMap0(_depthData0.depthMap), normalMap0(_depthData0.normalMap), confMap0(_depthData0.confMap),
 	images(InitImages(_depthData0)), image0(_depthData0.images[0]),
 	image0Sum(_image0Sum), coords(_coords), size(_depthData0.images.First().image.size()),
+	#if DENSE_AGGNCC == DENSE_AGGNCC_NTH
+	idxScore((_depthData0.images.size()-1)/3),
+	#endif
 	dir(_dir), dMin(_depthData0.dMin), dMax(_depthData0.dMax),
 	neighborsData(0,4), neighbors(0,2),
 	smoothBonusDepth(OPTDENSE::fRandomSmoothBonus), smoothBonusNormal(OPTDENSE::fRandomSmoothBonus*0.98f),
@@ -309,7 +312,7 @@ float DepthEstimator::ScorePixel(Depth depth, const Normal& normal)
 	FOREACH(idx, images) {
 		// center a patch of given size on the segment and fetch the pixel values in the target image
 		const ViewData& image1 = images[idx];
-		float& score = scores(idx);
+		float& score = scores[idx];
 		const Matrix3x3f H(ComputeHomographyMatrix(image1, depth, normal));
 		Point2f pt;
 		int n(0);
@@ -360,8 +363,16 @@ float DepthEstimator::ScorePixel(Depth depth, const Normal& normal)
 		}
 		NEXT_IMAGE:;
 	}
+	#if DENSE_AGGNCC == DENSE_AGGNCC_NTH
+	// set score as the nth element
+	return scores.size() > 1 ? scores.GetNth(idxScore) : scores.front();
+	#elif DENSE_AGGNCC == DENSE_AGGNCC_MEAN
 	// set score as the average similarity
 	return scores.mean();
+	#else
+	// set score as the min similarity
+	return scores.minCoeff();
+	#endif
 }
 
 // run propagation and random refinement cycles;
