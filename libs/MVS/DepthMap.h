@@ -82,6 +82,7 @@ extern bool bFilterAdjust;
 extern bool bAddCorners;
 extern float fViewMinScore;
 extern float fViewMinScoreRatio;
+extern float fMinArea;
 extern float fMinAngle;
 extern float fOptimAngle;
 extern float fMaxAngle;

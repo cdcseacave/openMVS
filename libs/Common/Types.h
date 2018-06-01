@@ -2064,8 +2064,8 @@ public:
 	template <typename T>
 	void toGray(TImage<T>& out, int code, bool bNormalize=false) const;
 
-	unsigned computeMaxResolution(unsigned& level, unsigned minImageSize) const;
-	static unsigned computeMaxResolution(unsigned maxImageSize, unsigned& level, unsigned minImageSize);
+	unsigned computeMaxResolution(unsigned& level, unsigned minImageSize=320, unsigned maxImageSize=INT_MAX) const;
+	static unsigned computeMaxResolution(unsigned width, unsigned height, unsigned& level, unsigned minImageSize=320, unsigned maxImageSize=INT_MAX);
 
 	template <typename T, typename PARSER>
 	static void RasterizeTriangle(const TPoint2<T>& v1, const TPoint2<T>& v2, const TPoint2<T>& v3, PARSER& parser);

@@ -105,7 +105,6 @@ public:
 	bool ReloadImage(unsigned nMaxResolution=0, bool bLoadPixels=true);
 	void ReleaseImage();
 	float ResizeImage(unsigned nMaxResolution=0);
-	unsigned ComputeMaxResolution(unsigned& level, unsigned minImageSize) const;
 	unsigned RecomputeMaxResolution(unsigned& level, unsigned minImageSize) const;
 
 	Camera GetCamera(const PlatformArr& platforms, const Image8U::Size& resolution) const;

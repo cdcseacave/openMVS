@@ -2080,28 +2080,29 @@ void TImage<TYPE>::toGray(TImage<T>& out, int code, bool bNormalize) const
 
 // compute image scale for a given max and min resolution
 template <typename TYPE>
-unsigned TImage<TYPE>::computeMaxResolution(unsigned maxImageSize, unsigned& level, unsigned minImageSize)
+unsigned TImage<TYPE>::computeMaxResolution(unsigned width, unsigned height, unsigned& level, unsigned minImageSize, unsigned maxImageSize)
 {
+	// consider the native resolution the max(width,height)
+	const unsigned imageSize = MAXF(width, height);
 	// if the max level it's used, return original image size
 	if (level == 0)
-		return maxImageSize;
+		return MINF(imageSize, maxImageSize);
 	// compute the resolution corresponding to the desired level
-	unsigned imageSize = (maxImageSize >> level);
+	unsigned size = (imageSize >> level);
 	// if the image is too small
-	if (imageSize < minImageSize) {
+	if (size < minImageSize) {
 		// start from the max level
 		level = 0;
-		while ((maxImageSize>>(level+1)) > minImageSize)
+		while ((imageSize>>(level+1)) >= minImageSize)
 			++level;
-		imageSize = (maxImageSize >> level);
+		size = (imageSize>>level);
 	}
-	return imageSize;
+	return MINF(size, maxImageSize);
 }
 template <typename TYPE>
-unsigned TImage<TYPE>::computeMaxResolution(unsigned& level, unsigned minImageSize) const
+unsigned TImage<TYPE>::computeMaxResolution(unsigned& level, unsigned minImageSize, unsigned maxImageSize) const
 {
-	const unsigned maxImageSize = (unsigned)MAXF(width(), height());
-	return computeMaxResolution(maxImageSize, level, minImageSize);
+	return computeMaxResolution((unsigned)width(), (unsigned)height(), level, minImageSize, maxImageSize);
 }
 /*----------------------------------------------------------------*/
 

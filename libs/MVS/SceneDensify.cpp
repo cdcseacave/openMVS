@@ -314,7 +314,7 @@ bool DepthMapsData::SelectViews(DepthData& depthData)
 	depthData.neighbors.CopyOf(scene.images[idxImage].neighbors);
 
 	// remove invalid neighbor views
-	const float fMinArea(0.12f);
+	const float fMinArea(OPTDENSE::fMinArea);
 	const float fMinScale(0.2f), fMaxScale(3.2f);
 	const float fMinAngle(FD2R(OPTDENSE::fMinAngle));
 	const float fMaxAngle(FD2R(OPTDENSE::fMaxAngle));

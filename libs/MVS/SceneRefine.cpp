@@ -1061,7 +1061,7 @@ void MeshRefine::WaitThreadWorkers(size_t nJobs)
 void MeshRefine::ThSelectNeighbors(uint32_t idxImage, std::unordered_set<uint64_t>& mapPairs, unsigned nMaxViews)
 {
 	// keep only best neighbor views
-	const float fMinArea(0.12f);
+	const float fMinArea(0.1f);
 	const float fMinScale(0.2f), fMaxScale(3.2f);
 	const float fMinAngle(FD2R(2.5f)), fMaxAngle(FD2R(45.f));
 	const Image& imageData = images[idxImage];
