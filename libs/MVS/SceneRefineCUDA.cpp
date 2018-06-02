@@ -2210,7 +2210,7 @@ bool MeshRefineCUDA::InitImages(float scale, float sigma)
 		if (sigma > 0)
 			cv::GaussianBlur(img, img, cv::Size(), sigma);
 		if (scale < 1.0) {
-			cv::resize(img, img, cv::Size(), scale, scale, cv::INTER_LINEAR);
+			cv::resize(img, img, cv::Size(), scale, scale, cv::INTER_AREA);
 			imageData.width = img.width(); imageData.height = img.height();
 		}
 		imageData.UpdateCamera(scene.platforms);

@@ -45,7 +45,7 @@ install:
   - cmd: vcpkg remove --outdated --recurse
 
   # install required dependencies
-  - cmd: vcpkg install --recurse --triplet %VCPKG_ARCH% zlib boost-iostreams boost-program-options boost-system boost-serialization eigen3 cgal
+  - cmd: vcpkg install --recurse --triplet %VCPKG_ARCH% zlib boost-iostreams boost-program-options boost-system boost-serialization eigen3 cgal[core] ceres opencv
 
   # install optional dependencies
   - cmd: vcpkg install --recurse --triplet %VCPKG_ARCH% glew glfw3

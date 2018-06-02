@@ -142,7 +142,7 @@ float Image::ResizeImage(unsigned nMaxResolution)
 		width = image.width();
 		height = image.height();
 	}
-	if (nMaxResolution == 0 || (width <= nMaxResolution && height <= nMaxResolution))
+	if (nMaxResolution == 0 || MAXF(width,height) <= nMaxResolution)
 		return 1.f;
 	float scale;
 	if (width > height) {
@@ -155,7 +155,7 @@ float Image::ResizeImage(unsigned nMaxResolution)
 		height = nMaxResolution;
 	}
 	if (!image.empty())
-		cv::resize(image, image, cv::Size((int)width, (int)height), 0, 0, cv::INTER_LINEAR);
+		cv::resize(image, image, cv::Size((int)width, (int)height), 0, 0, cv::INTER_AREA);
 	return scale;
 } // ResizeImage
 /*----------------------------------------------------------------*/
@@ -164,7 +164,6 @@ float Image::ResizeImage(unsigned nMaxResolution)
 unsigned Image::RecomputeMaxResolution(unsigned& level, unsigned minImageSize) const
 {
 	IMAGEPTR pImage(ReadImageHeader(name));
-	unsigned maxImageSize;
 	if (pImage == NULL) {
 		// something went wrong, use the current known size (however it will most probably fail later)
 		return Image8U3::computeMaxResolution(width, height, level, minImageSize);

@@ -24,7 +24,7 @@ Required tools:
 Windows compilation
 -------------------
 
-Visual Studion 2008 or newer are supported. Please note that the development is done mainly on Windows, so this platform build is well tested. The latest pre-built binaries for fast testing can be download from [here](https://github.com/cdcseacave/openMVS_sample/releases/latest). Visual Studio 2017 and dependencies automation tool [vcpkg](https://github.com/Microsoft/vcpkg) are used in this example.
+Visual Studio 2008 or newer are supported. Please note that the development is done mainly on Windows, so this platform build is well tested. The latest pre-built binaries for fast testing can be download from [here](https://github.com/cdcseacave/openMVS_sample/releases/latest). Visual Studio 2017 and dependencies automation tool [vcpkg](https://github.com/Microsoft/vcpkg) are used in this example.
 
 ```
 #Make a toplevel directory for deps & build & src somewhere:
@@ -33,7 +33,7 @@ cd OpenMVS
 
 #Get and install dependencies using vcpkg;
 #choose the desired triplet, like "x64-windows", by setting the VCPKG_DEFAULT_TRIPLET environment variable or by specifying it after each package:
-vcpkg install zlib boost eigen3 ceres opencv cgal glew glfw3
+vcpkg install zlib boost-iostreams boost-program-options boost-system boost-serialization eigen3 cgal[core] ceres opencv glew glfw3
 
 #Get VCGLib (Required):
 git clone https://github.com/cdcseacave/VCG.git

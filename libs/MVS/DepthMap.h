@@ -122,7 +122,7 @@ struct MVS_API DepthData {
 		static bool ScaleImage(const IMAGE& image, IMAGE& imageScaled, float scale) {
 			if (ABS(scale-1.f) < 0.15f)
 				return false;
-			cv::resize(image, imageScaled, cv::Size(), scale, scale, cv::INTER_LINEAR);
+			cv::resize(image, imageScaled, cv::Size(), scale, scale, scale>1?cv::INTER_CUBIC:cv::INTER_AREA);
 			return true;
 		}
 	};
