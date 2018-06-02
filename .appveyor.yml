@@ -10,7 +10,7 @@ platform:
 
 # specify custom environment variables
 environment:
-  DUMMY: dummy
+  APPVEYOR_SAVE_CACHE_ON_ERROR: true
 
 # build configuration, i.e. Debug, Release, etc.
 configuration:
@@ -45,7 +45,7 @@ install:
   - cmd: vcpkg remove --outdated --recurse
 
   # install required dependencies
-  - cmd: vcpkg install --recurse --triplet %VCPKG_ARCH% zlib boost-iostreams boost-program-options boost-system boost-serialization eigen3 ceres opencv cgal
+  - cmd: vcpkg install --recurse --triplet %VCPKG_ARCH% zlib boost-iostreams boost-program-options boost-system boost-serialization eigen3 cgal
 
   # install optional dependencies
   - cmd: vcpkg install --recurse --triplet %VCPKG_ARCH% glew glfw3
@@ -76,16 +76,16 @@ build_script:
   - cmd: if "%platform%"=="Win32" set CMAKE_GENERATOR=-G"Visual Studio 15 2017"
   - cmd: if "%platform%"=="x64"   set CMAKE_GENERATOR=-G"Visual Studio 15 2017 Win64"
   - cmd: mkdir bin && cd bin
-  - cmd: cmake %CMAKE_GENERATOR% -DCMAKE_BUILD_TYPE=%configuration% -DCMAKE_TOOLCHAIN_FILE="C:\tools\vcpkg\scripts\buildsystems\vcpkg.cmake" -DVCG_ROOT="%APPVEYOR_BUILD_FOLDER%\VCG" ..
-  - cmd: cmake --build . --target ALL_BUILD --config %configuration% -- /maxcpucount:4
+  - cmd: cmake %CMAKE_GENERATOR% -DCMAKE_BUILD_TYPE=%Configuration% -DCMAKE_TOOLCHAIN_FILE="C:\tools\vcpkg\scripts\buildsystems\vcpkg.cmake" -DVCG_ROOT="%APPVEYOR_BUILD_FOLDER%\VCG" ..
+  - cmd: cmake --build . --target ALL_BUILD --config %Configuration% -- /maxcpucount:4
 
   #------------------
   # Ubuntu 16.04 LTS
   #------------------
   - sh: mkdir bin && cd bin
-  - sh: cmake -DCMAKE_BUILD_TYPE=$configuration -DVCG_ROOT="$APPVEYOR_BUILD_FOLDER/VCG" ..
+  - sh: cmake -DCMAKE_BUILD_TYPE=$Configuration -DVCG_ROOT="$APPVEYOR_BUILD_FOLDER/VCG" ..
   - sh: make -j4
 
 test_script:
-  #- cmd: ctest --build-config %configuration% --parallel 4 --output-on-failure
+  #- cmd: ctest --build-config %Configuration% --parallel 4 --output-on-failure
   #- sh: ctest -j4

@@ -570,7 +570,7 @@ void* STCALL DepthMapsData::ScoreDepthMapTmp(void* arg)
 			// init with random values
 			depth = DepthEstimator::RandomDepth(estimator.dMin, estimator.dMax);
 			normal = DepthEstimator::RandomNormal(viewDir);
-		} else if (normal.z >= 0) {
+		} else if (normal.dot(viewDir) >= 0) {
 			// replace invalid normal with random values
 			normal = DepthEstimator::RandomNormal(viewDir);
 		}
@@ -692,9 +692,9 @@ bool DepthMapsData::EstimateDepthMap(IIndex idxImage)
 		#if TD_VERBOSE != TD_VERBOSE_OFF
 		// save rough depth map as image
 		if (g_nVerbosityLevel > 4) {
-			ExportDepthMap(ComposeDepthFilePath(idxImage, "rough.png"), depthData.depthMap);
-			ExportNormalMap(ComposeDepthFilePath(idxImage, "rough.normal.png"), depthData.normalMap);
-			ExportPointCloud(ComposeDepthFilePath(idxImage, "rough.ply"), *depthData.images.First().pImageData, depthData.depthMap, depthData.normalMap);
+			ExportDepthMap(ComposeDepthFilePath(idxImage, "init.png"), depthData.depthMap);
+			ExportNormalMap(ComposeDepthFilePath(idxImage, "init.normal.png"), depthData.normalMap);
+			ExportPointCloud(ComposeDepthFilePath(idxImage, "init.ply"), *depthData.images.First().pImageData, depthData.depthMap, depthData.normalMap);
 		}
 		#endif
 	}
@@ -732,6 +732,14 @@ bool DepthMapsData::EstimateDepthMap(IIndex idxImage)
 		FOREACHPTR(pThread, threads)
 			pThread->join();
 		estimators.Release();
+		#if TD_VERBOSE != TD_VERBOSE_OFF
+		// save rough depth map as image
+		if (g_nVerbosityLevel > 4) {
+			ExportDepthMap(ComposeDepthFilePath(idxImage, "rough.png"), depthData.depthMap);
+			ExportNormalMap(ComposeDepthFilePath(idxImage, "rough.normal.png"), depthData.normalMap);
+			ExportPointCloud(ComposeDepthFilePath(idxImage, "rough.ply"), *depthData.images.First().pImageData, depthData.depthMap, depthData.normalMap);
+		}
+		#endif
 	}
 
 	// run propagation and random refinement cycles on the reference data

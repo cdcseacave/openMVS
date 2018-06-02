@@ -784,8 +784,8 @@ bool MVS::ExportDepthMap(const String& fileName, const DepthMap& depthMap, Depth
 	// find min and max values
 	if (minDepth == FLT_MAX && maxDepth == 0) {
 		cList<Depth, const Depth, 0> depths(0, depthMap.area());
-		for (size_t i=depthMap.area(); i>0; ) {
-			const Depth depth = depthMap[--i];
+		for (int i=depthMap.area(); --i >= 0; ) {
+			const Depth depth = depthMap[i];
 			ASSERT(depth == 0 || depth > 0);
 			if (depth > 0)
 				depths.Insert(depth);
@@ -804,8 +804,8 @@ bool MVS::ExportDepthMap(const String& fileName, const DepthMap& depthMap, Depth
 	const Depth deltaDepth = maxDepth - minDepth;
 	// save image
 	Image8U img(depthMap.size());
-	for (size_t i=depthMap.area(); i>0; ) {
-		const Depth depth = depthMap[--i];
+	for (int i=depthMap.area(); --i >= 0; ) {
+		const Depth depth = depthMap[i];
 		img[i] = (depth > 0 ? (uint8_t)CLAMP((maxDepth-depth)*255.f/deltaDepth, 0.f, 255.f) : 0);
 	}
 	return img.Save(fileName);
@@ -818,7 +818,17 @@ bool MVS::ExportNormalMap(const String& fileName, const NormalMap& normalMap)
 	if (normalMap.empty())
 		return false;
 	Image8U3 img(normalMap.size());
-	normalMap.convertTo(img, img.type(), 255.f/2.f, 255.f/2.f);
+	for (int i=normalMap.area(); --i >= 0; ) {
+		img[i] = [](const Normal& n) {
+			return ISZERO(n) ?
+				Image8U3::Type::BLACK :
+				Image8U3::Type(
+					CLAMP(ROUND2INT((1.f-n.x)*127.5f), 0, 255),
+					CLAMP(ROUND2INT((1.f-n.y)*127.5f), 0, 255),
+					CLAMP(ROUND2INT(    -n.z *255.0f), 0, 255)
+				);
+		} (normalMap[i]);
+	}
 	return img.Save(fileName);
 } // ExportNormalMap
 /*----------------------------------------------------------------*/
@@ -828,8 +838,8 @@ bool MVS::ExportConfidenceMap(const String& fileName, const ConfidenceMap& confM
 {
 	// find min and max values
 	FloatArr confs(0, confMap.area());
-	for (size_t i=confMap.area(); i>0; ) {
-		const float conf = confMap[--i];
+	for (int i=confMap.area(); --i >= 0; ) {
+		const float conf = confMap[i];
 		ASSERT(conf == 0 || conf > 0);
 		if (conf > 0)
 			confs.Insert(conf);
@@ -847,8 +857,8 @@ bool MVS::ExportConfidenceMap(const String& fileName, const ConfidenceMap& confM
 	const float deltaConf = maxConf - minConf;
 	// save image
 	Image8U img(confMap.size());
-	for (size_t i=confMap.area(); i>0; ) {
-		const float conf = confMap[--i];
+	for (int i=confMap.area(); --i >= 0; ) {
+		const float conf = confMap[i];
 		img[i] = (conf > 0 ? (uint8_t)CLAMP((conf-minConf)*255.f/deltaConf, 0.f, 255.f) : 0);
 	}
 	return img.Save(fileName);
