@@ -1391,11 +1391,10 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateNormal)
 				FOREACHPTR(pNeighbor, depthData.neighbors) {
 					const IIndex idxImageB(pNeighbor->idx.ID);
 					const Image& imageDataB = scene.images[idxImageB];
-					const Point3 ptCam(imageDataB.camera.TransformPointW2C(Cast<REAL>(point)));
-					const Depth d((float)ptCam.z);
-					if (d <= 0)
+					const Point3f pt(imageDataB.camera.ProjectPointP3(point));
+					if (pt.z <= 0)
 						continue;
-					const ImageRef xB(ROUND2INT(imageDataB.camera.TransformPointC2I(ptCam)));
+					const ImageRef xB(ROUND2INT(pt.x/pt.z), ROUND2INT(pt.y/pt.z));
 					DepthData& depthDataB = arrDepthData[idxImageB];
 					DepthMap& depthMapB = depthDataB.depthMap;
 					if (!depthMapB.isInside(xB))
@@ -1406,7 +1405,7 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateNormal)
 					uint32_t& idxPointB = arrDepthIdx[idxImageB](xB);
 					if (idxPointB != NO_ID)
 						continue;
-					if (IsDepthSimilar(d, depthB, OPTDENSE::fDepthDiffThreshold)) {
+					if (IsDepthSimilar(pt.z, depthB, OPTDENSE::fDepthDiffThreshold)) {
 						// add view to the 3D point
 						ASSERT(views.FindFirst(idxImageB) == PointCloud::ViewArr::NO_INDEX);
 						const float confidenceB(depthDataB.confMap(xB));
@@ -1417,7 +1416,7 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateNormal)
 						X += imageDataB.camera.TransformPointI2W(Point3(Point2f(xB),depthB))*REAL(confidenceB);
 						confidence += confidenceB;
 					} else
-					if (d < depthB) {
+					if (pt.z < depthB) {
 						// discard depth
 						invalidDepths.Insert(&depthB);
 					}

@@ -96,9 +96,9 @@ MDEFVAR_OPTDENSE_uint32(nRandomMaxScale, "Random Max Scale", "Maximum number of 
 MDEFVAR_OPTDENSE_float(fRandomDepthRatio, "Random Depth Ratio", "Depth range ratio of the current estimate for random plane assignment", "0.01")
 MDEFVAR_OPTDENSE_float(fRandomAngle1Range, "Random Angle1 Range", "Angle 1 range for random plane assignment (in degrees)", "90.0")
 MDEFVAR_OPTDENSE_float(fRandomAngle2Range, "Random Angle2 Range", "Angle 2 range for random plane assignment (in degrees)", "15.0")
-MDEFVAR_OPTDENSE_float(fRandomSmoothDepth, "Random Smooth Depth", "Depth variance used during neighbor smoothness assignment", "0.005")
-MDEFVAR_OPTDENSE_float(fRandomSmoothNormal, "Random Smooth Normal", "Normal variance used during neighbor smoothness assignment (in degrees)", "8.5")
-MDEFVAR_OPTDENSE_float(fRandomSmoothBonus, "Random Smooth Bonus", "Score factor used to encourage smoothness (1 - disabled)", "0.92")
+MDEFVAR_OPTDENSE_float(fRandomSmoothDepth, "Random Smooth Depth", "Depth variance used during neighbor smoothness assignment (ratio)", "0.006")
+MDEFVAR_OPTDENSE_float(fRandomSmoothNormal, "Random Smooth Normal", "Normal variance used during neighbor smoothness assignment (degrees)", "8.5")
+MDEFVAR_OPTDENSE_float(fRandomSmoothBonus, "Random Smooth Bonus", "Score factor used to encourage smoothness (1 - disabled)", "0.9")
 }
 
 
@@ -272,15 +272,14 @@ DepthEstimator::DepthEstimator(DepthData& _depthData0, volatile Thread::safe_t& 
 	#endif
 	dir(_dir), dMin(_depthData0.dMin), dMax(_depthData0.dMax),
 	neighborsData(0,4), neighbors(0,2),
-	smoothBonusDepth(OPTDENSE::fRandomSmoothBonus), smoothBonusNormal(OPTDENSE::fRandomSmoothBonus*0.98f),
-	smoothSigmaDepth(-1.f/(2.f*SQUARE(OPTDENSE::fRandomSmoothDepth))), // used in exp(-x^2 / (2*(0.005^2)))
+	smoothBonusDepth(1.f-OPTDENSE::fRandomSmoothBonus), smoothBonusNormal((1.f-OPTDENSE::fRandomSmoothBonus)*0.96f),
+	smoothSigmaDepth(-1.f/(2.f*SQUARE(OPTDENSE::fRandomSmoothDepth))), // used in exp(-x^2 / (2*(0.006^2)))
 	smoothSigmaNormal(-1.f/(2.f*SQUARE(FD2R(OPTDENSE::fRandomSmoothNormal)))), // used in exp(-x^2 / (2*(0.15^2)))
 	thMagnitudeSq(OPTDENSE::fDescriptorMinMagnitudeThreshold>0?SQUARE(OPTDENSE::fDescriptorMinMagnitudeThreshold):-1.f),
 	angle1Range(FD2R(OPTDENSE::fRandomAngle1Range)),
 	angle2Range(FD2R(OPTDENSE::fRandomAngle2Range)),
 	thConfSmall(OPTDENSE::fNCCThresholdKeep*0.25f),
 	thConfBig(OPTDENSE::fNCCThresholdKeep*0.5f),
-	thConfIgnore(OPTDENSE::fNCCThresholdKeep*1.5f),
 	thRobust(OPTDENSE::fNCCThresholdKeep*1.2f)
 {
 	ASSERT(_depthData0.images.size() >= 2);
@@ -357,9 +356,9 @@ float DepthEstimator::ScorePixel(Depth depth, const Normal& normal)
 		const float ncc(CLAMP(num/SQRT(nrm), -1.f, 1.f));
 		score = 1.f - ncc;
 		// encourage smoothness
-		FOREACHPTR(pNbr, neighborsData) {
-			score *= 1.f - (1.f - smoothBonusDepth) * EXP(SQUARE(DepthSimilarity(depth, pNbr->depth)) * smoothSigmaDepth);
-			score *= 1.f - (1.f - smoothBonusNormal) * EXP(SQUARE(ACOS(ComputeAngle<float,float>(normal.ptr(), pNbr->normal.ptr()))) * smoothSigmaNormal);
+		for (const NeighborData& neighbor: neighborsData) {
+			score *= 1.f - smoothBonusDepth * EXP(SQUARE((depth-neighbor.depth)/depth) * smoothSigmaDepth);
+			score *= 1.f - smoothBonusNormal * EXP(SQUARE(ACOS(ComputeAngle<float,float>(normal.ptr(), neighbor.normal.ptr()))) * smoothSigmaNormal);
 		}
 		}
 		NEXT_IMAGE:;
@@ -397,29 +396,29 @@ void DepthEstimator::ProcessPixel(IDX idx)
 				const ImageRef nx(x0.x-1, x0.y);
 				const Depth ndepth(depthMap0(nx));
 				if (ndepth > 0) {
-					neighbors.Insert(nx);
-					neighborsData.Insert(NeighborData(ndepth,normalMap0(nx)));
+					neighbors.emplace_back(nx);
+					neighborsData.emplace_back(ndepth,normalMap0(nx));
 				}
 			}
 			if (x0.y > nSizeHalfWindow) {
 				const ImageRef nx(x0.x, x0.y-1);
 				const Depth ndepth(depthMap0(nx));
 				if (ndepth > 0) {
-					neighbors.Insert(nx);
-					neighborsData.Insert(NeighborData(ndepth,normalMap0(nx)));
+					neighbors.emplace_back(nx);
+					neighborsData.emplace_back(ndepth,normalMap0(nx));
 				}
 			}
 			if (x0.x < size.width-nSizeHalfWindow) {
 				const ImageRef nx(x0.x+1, x0.y);
 				const Depth ndepth(depthMap0(nx));
 				if (ndepth > 0)
-					neighborsData.Insert(NeighborData(ndepth,normalMap0(nx)));
+					neighborsData.emplace_back(ndepth,normalMap0(nx));
 			}
 			if (x0.y < size.height-nSizeHalfWindow) {
 				const ImageRef nx(x0.x, x0.y+1);
 				const Depth ndepth(depthMap0(nx));
 				if (ndepth > 0)
-					neighborsData.Insert(NeighborData(ndepth,normalMap0(nx)));
+					neighborsData.emplace_back(ndepth,normalMap0(nx));
 			}
 		} else {
 			ASSERT(dir == RB2LT);
@@ -428,29 +427,29 @@ void DepthEstimator::ProcessPixel(IDX idx)
 				const ImageRef nx(x0.x+1, x0.y);
 				const Depth ndepth(depthMap0(nx));
 				if (ndepth > 0) {
-					neighbors.Insert(nx);
-					neighborsData.Insert(NeighborData(ndepth,normalMap0(nx)));
+					neighbors.emplace_back(nx);
+					neighborsData.emplace_back(ndepth,normalMap0(nx));
 				}
 			}
 			if (x0.y < size.height-nSizeHalfWindow) {
 				const ImageRef nx(x0.x, x0.y+1);
 				const Depth ndepth(depthMap0(nx));
 				if (ndepth > 0) {
-					neighbors.Insert(nx);
-					neighborsData.Insert(NeighborData(ndepth,normalMap0(nx)));
+					neighbors.emplace_back(nx);
+					neighborsData.emplace_back(ndepth,normalMap0(nx));
 				}
 			}
 			if (x0.x > nSizeHalfWindow) {
 				const ImageRef nx(x0.x-1, x0.y);
 				const Depth ndepth(depthMap0(nx));
 				if (ndepth > 0)
-					neighborsData.Insert(NeighborData(ndepth,normalMap0(nx)));
+					neighborsData.emplace_back(ndepth,normalMap0(nx));
 			}
 			if (x0.y > nSizeHalfWindow) {
 				const ImageRef nx(x0.x, x0.y-1);
 				const Depth ndepth(depthMap0(nx));
 				if (ndepth > 0)
-					neighborsData.Insert(NeighborData(ndepth,normalMap0(nx)));
+					neighborsData.emplace_back(ndepth,normalMap0(nx));
 			}
 		}
 		Depth& depth = depthMap0(x0);
@@ -461,7 +460,7 @@ void DepthEstimator::ProcessPixel(IDX idx)
 		FOREACH(n, neighbors) {
 			float nconf(confMap0(neighbors[n]));
 			const unsigned ninvScaleRange(DecodeScoreScale(nconf));
-			if (nconf >= thConfIgnore)
+			if (nconf >= OPTDENSE::fNCCThresholdKeep)
 				continue;
 			const NeighborData& neighbor = neighborsData[n];
 			ASSERT(neighbor.depth > 0);

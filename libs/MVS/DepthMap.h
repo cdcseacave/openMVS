@@ -221,8 +221,8 @@ struct MVS_API DepthEstimator {
 			Hr(image0.camera.K.inv()) {}
 	};
 
-	CLISTDEF0(NeighborData) neighborsData; // neighbor pixel depths to be used for smoothing
-	CLISTDEF0(ImageRef) neighbors; // neighbor pixels coordinates to be processed
+	CLISTDEF0IDX(NeighborData,IIndex) neighborsData; // neighbor pixel depths to be used for smoothing
+	CLISTDEF0IDX(ImageRef,IIndex) neighbors; // neighbor pixels coordinates to be processed
 	volatile Thread::safe_t& idxPixel; // current image index to be processed
 	Vec3 X0;	      //
 	ImageRef x0;	  // constants during one pixel loop
@@ -348,7 +348,7 @@ struct MVS_API DepthEstimator {
 	const float smoothSigmaDepth, smoothSigmaNormal;
 	const float thMagnitudeSq;
 	const float angle1Range, angle2Range;
-	const float thConfSmall, thConfBig, thConfIgnore;
+	const float thConfSmall, thConfBig;
 	const float thRobust;
 	static const float scaleRanges[12];
 };
