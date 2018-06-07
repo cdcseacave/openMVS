@@ -45,9 +45,15 @@ using namespace MVS;
 // (should be enough, as the numerical error does not depend on the depth)
 #define MESHOPT_DEPTHCONSTBIAS 0.05f
 
-// uncomment to use enable memory pool
+// uncomment to enable memory pool
 // (should reduce the allocation times for frequent used images)
 #define MESHOPT_TYPEPOOL
+
+// uncomment to enable CERES optimization module
+// (similar performance with the custom minimizer)
+#ifdef _USE_CERES
+#define MESHOPT_CERES
+#endif
 
 #ifdef MESHOPT_TYPEPOOL
 #define DEC_BitMatrix(var)		BitMatrix& var = *BitMatrixPool()
@@ -1222,6 +1228,8 @@ void MeshRefine::ThSmoothVertices2(VIndex idxStart, VIndex idxEnd)
 
 // S T R U C T S ///////////////////////////////////////////////////
 
+#ifdef MESHOPT_CERES
+
 #pragma push_macro("LOG")
 #undef LOG
 #pragma push_macro("CHECK")
@@ -1284,6 +1292,9 @@ protected:
 };
 } // namespace ceres
 
+#endif // MESHOPT_CERES
+
+
 // optimize mesh using photo-consistency
 // fThPlanarVertex - threshold used to remove vertices on planar patches (percentage of the minimum depth, 0 - disable)
 bool Scene::RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsigned nMaxViews,
@@ -1319,6 +1330,7 @@ bool Scene::RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsig
 		#endif
 
 		// minimize
+		#ifdef MESHOPT_CERES
 		if (fGradientStep == 0) {
 			// DefineProblem
 			refine.ratioRigidityElasticity = 1.f;
@@ -1353,7 +1365,9 @@ bool Scene::RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsig
 			}
 			ASSERT(summary.IsSolutionUsable());
 			problemData->ApplyParams();
-		} else {
+		} else
+		#endif // MESHOPT_CERES
+		{
 			// loop a constant number of iterations and apply the gradient
 			int iters(75);
 			double gstep(0.4);

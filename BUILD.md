@@ -33,7 +33,7 @@ cd OpenMVS
 
 #Get and install dependencies using vcpkg;
 #choose the desired triplet, like "x64-windows", by setting the VCPKG_DEFAULT_TRIPLET environment variable or by specifying it after each package:
-vcpkg install zlib boost-iostreams boost-program-options boost-system boost-serialization eigen3 cgal[core] ceres opencv glew glfw3
+vcpkg install zlib boost-iostreams boost-program-options boost-system boost-serialization eigen3 cgal[core] opencv glew glfw3
 
 #Get VCGLib (Required):
 git clone https://github.com/cdcseacave/VCG.git
@@ -82,7 +82,7 @@ sudo apt-get -y install libcgal-dev libcgal-qt5-dev
 #VCGLib (Required)
 git clone https://github.com/cdcseacave/VCG.git vcglib
 
-#Ceres (Required)
+#Ceres (optional)
 sudo apt-get -y install libatlas-base-dev libsuitesparse-dev
 git clone https://ceres-solver.googlesource.com/ceres-solver ceres-solver
 mkdir ceres_build && cd ceres_build

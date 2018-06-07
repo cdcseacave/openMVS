@@ -45,7 +45,7 @@ install:
   - cmd: vcpkg remove --outdated --recurse
 
   # install required dependencies
-  - cmd: vcpkg install --recurse --triplet %VCPKG_ARCH% zlib boost-iostreams boost-program-options boost-system boost-serialization eigen3 cgal[core] ceres opencv
+  - cmd: vcpkg install --recurse --triplet %VCPKG_ARCH% zlib boost-iostreams boost-program-options boost-system boost-serialization eigen3 cgal[core] opencv
 
   # install optional dependencies
   - cmd: vcpkg install --recurse --triplet %VCPKG_ARCH% glew glfw3
@@ -57,9 +57,10 @@ install:
   # Ubuntu 16.04 LTS 
   #------------------
   - sh: sudo apt-get update -qq && sudo apt-get install -qq
-  - sh: sudo apt-get -y install build-essential git mercurial cmake libpng-dev libjpeg-dev libtiff-dev libglu1-mesa-dev
+  - sh: sudo apt-get -y install build-essential git mercurial cmake libpng-dev libjpeg-dev libtiff-dev libglu1-mesa-dev libxmu-dev libxi-dev
   - sh: sudo apt-get -y install libboost-iostreams-dev libboost-program-options-dev libboost-system-dev libboost-serialization-dev
-  - sh: sudo apt-get -y install libeigen3-dev libopencv-dev libcgal-dev libcgal-qt5-dev libatlas-base-dev libsuitesparse-dev libceres-dev
+  - sh: sudo apt-get -y install libopencv-dev libcgal-dev libcgal-qt5-dev libatlas-base-dev
+  #- sh: sudo apt-get -y install libsuitesparse-dev libceres-dev
   - sh: sudo apt-get -y install freeglut3-dev libglew-dev libglfw3-dev
 
 # preserve contents of selected directories and files across project builds
@@ -93,9 +94,14 @@ build_script:
   #------------------
   # Ubuntu 16.04 LTS
   #------------------
+  - sh: hg clone https://bitbucket.org/eigen/eigen#3.2
+  - sh: mkdir eigen_build && cd eigen_build
+  - sh: cmake . ../eigen
+  - sh: make && sudo make install
+  - sh: cd ..
   - sh: mkdir bin && cd bin
   - sh: cmake -DCMAKE_BUILD_TYPE=$Configuration -DVCG_ROOT="$APPVEYOR_BUILD_FOLDER/VCG" ..
-  - sh: make -j4
+  - sh: make
 
 test_script:
   #- cmd: ctest --build-config %Configuration% --parallel 4 --output-on-failure
