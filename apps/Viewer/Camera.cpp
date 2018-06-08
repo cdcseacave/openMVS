@@ -89,7 +89,7 @@ void Camera::Resize(int _width, int _height)
 	const GLfloat zFar = 1e5f;
 	width = _width; height = _height;
 	GLfloat aspect = float(width)/float(height);
-	GLfloat fH = TAN(D2R((float)fov)) * zNear;
+	GLfloat fH = TAN(FD2R((float)fov)) * zNear;
 	GLfloat fW = fH * aspect;
 	glFrustum(-fW, fW, -fH, fH, zNear, zFar);
 }

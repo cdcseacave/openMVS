@@ -141,7 +141,7 @@ struct IntersectRayMesh : public TIntersectRay<MVS::Mesh,Scene::OctreeMesh> {
 		typedef std::unordered_set<MVS::Mesh::FIndex> FaceSet;
 		FaceSet set;
 		FOREACHRAWPTR(pIdx, idices, size) {
-			const MVS::Mesh::VIndex idxVertex(*pIdx);
+			const MVS::Mesh::VIndex idxVertex((MVS::Mesh::VIndex)*pIdx);
 			const MVS::Mesh::FaceIdxArr& faces = scene.vertexFaces[idxVertex];
 			set.insert(faces.begin(), faces.end());
 		}
@@ -342,7 +342,7 @@ bool Scene::Init(int width, int height, LPCTSTR windowName, LPCTSTR fileName, LP
 bool Scene::Open(LPCTSTR fileName, LPCTSTR meshFileName)
 {
 	ASSERT(fileName);
-	DEBUG_EXTRA("Loading: '%s'", Util::getFileFullName(fileName).c_str());
+	DEBUG_EXTRA("Loading: '%s'", Util::getFileNameExt(fileName).c_str());
 	Empty();
 	sceneName = fileName;
 
@@ -422,12 +422,12 @@ bool Scene::Export(LPCTSTR _fileName, LPCTSTR exportType, bool losslessTexture) 
 	ASSERT(!sceneName.IsEmpty());
 	String lastFileName;
 	const String fileName(_fileName != NULL ? String(_fileName) : sceneName);
-	const String baseFileName(Util::getFullFileName(fileName));
+	const String baseFileName(Util::getFileFullName(fileName));
 	const bool bPoints(scene.pointcloud.Save(lastFileName=(baseFileName+_T("_pointcloud.ply"))));
 	const bool bMesh(scene.mesh.Save(lastFileName=(baseFileName+_T("_mesh")+(exportType?exportType:(Util::getFileExt(fileName)==_T(".obj")?_T(".obj"):_T(".ply")))), true, losslessTexture));
 	#if TD_VERBOSE != TD_VERBOSE_OFF
 	if (VERBOSITY_LEVEL > 2 && (bPoints || bMesh))
-		scene.ExportCamerasMLP(Util::getFullFileName(lastFileName)+_T(".mlp"), lastFileName);
+		scene.ExportCamerasMLP(Util::getFileFullName(lastFileName)+_T(".mlp"), lastFileName);
 	#endif
 	return (bPoints || bMesh);
 }
@@ -692,7 +692,7 @@ void Scene::CastRay(const Ray3& ray, int action)
 					for (MVS::PointCloud::View idxImage: views) {
 						const MVS::Image& imageData = scene.images[idxImage];
 						const Point2 x(imageData.camera.TransformPointW2I(Cast<REAL>(window.selectionPoints[0])));
-						strViews += String::FormatString("\n\t\t%s (%.2f %.2f)", Util::getFileFullName(imageData.name).c_str(), x.x, x.y);
+						strViews += String::FormatString("\n\t\t%s (%.2f %.2f)", Util::getFileNameExt(imageData.name).c_str(), x.x, x.y);
 					}
 					return strViews;
 				}().c_str()

@@ -3,7 +3,7 @@
 ########################################################################
 #
 # Project-wide settings
-CMAKE_MINIMUM_REQUIRED(VERSION 2.6.2)
+CMAKE_MINIMUM_REQUIRED(VERSION 3.1.0)
 
 # Name of the project.
 #
@@ -42,6 +42,7 @@ ConfigLibrary()
 # List configuration options
 SET(OpenMVS_USE_NONFREE ON CACHE BOOL "Build non-free (patented) functionality")
 SET(OpenMVS_USE_EXIV2 OFF CACHE BOOL "Link and use EXIV2 library")
+SET(OpenMVS_USE_CERES OFF CACHE BOOL "Enable CERES optimization library")
 SET(OpenMVS_USE_FAST_FLOAT2INT ON CACHE BOOL "Use an optimized code to convert real numbers to int")
 SET(OpenMVS_USE_FAST_INVSQRT OFF CACHE BOOL "Use an optimized code to compute the inverse square root (slower in fact on modern compilers)")
 SET(OpenMVS_USE_FAST_CBRT ON CACHE BOOL "Use an optimized code to compute the cubic root")
@@ -155,6 +156,10 @@ ADD_DEFINITIONS(${OpenMVS_DEFINITIONS})
 ADD_SUBDIRECTORY(libs)
 ADD_SUBDIRECTORY(apps)
 ADD_SUBDIRECTORY(docs)
+
+if(OpenMVS_USE_CERES)
+	SET(_USE_CERES TRUE)
+endif()
 
 # Set configuration file
 CONFIGURE_FILE("${OpenMVS_SOURCE_DIR}/build/Templates/ConfigLocal.h.in" "${OpenMVS_CONFIG_INCLUDE_DIR}/ConfigLocal.h")

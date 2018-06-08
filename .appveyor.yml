@@ -1,0 +1,108 @@
+# Specify version format
+version: "{build}"
+
+image:
+  - Visual Studio 2017
+  - Ubuntu
+
+platform:
+  - x64
+
+# specify custom environment variables
+environment:
+  APPVEYOR_SAVE_CACHE_ON_ERROR: true
+
+# build configuration, i.e. Debug, Release, etc.
+configuration:
+  - Debug
+  - Release
+
+# scripts that are called at very beginning, before repo cloning
+init:
+  - cmd: cmake --version
+  - cmd: msbuild /version
+
+# branches to build
+branches:
+  # blacklist
+  except:
+    - gh-pages
+
+# scripts that run after cloning repository
+install:
+  #------------------
+  # Windows 10
+  #------------------
+  # update vcpkg
+  - cmd: cd C:\tools\vcpkg
+  - cmd: git pull
+  - cmd: .\bootstrap-vcpkg.bat
+
+  - cmd: if "%platform%"=="Win32" set VCPKG_ARCH=x86-windows
+  - cmd: if "%platform%"=="x64"   set VCPKG_ARCH=x64-windows
+
+  # remove outdated versions
+  - cmd: vcpkg remove --outdated --recurse
+
+  # install required dependencies
+  - cmd: vcpkg install --recurse --triplet %VCPKG_ARCH% zlib boost-iostreams boost-program-options boost-system boost-serialization eigen3 cgal[core] opencv
+
+  # install optional dependencies
+  - cmd: vcpkg install --recurse --triplet %VCPKG_ARCH% glew glfw3
+
+  - cmd: vcpkg integrate install
+  - cmd: cd "%APPVEYOR_BUILD_FOLDER%"
+
+  #------------------
+  # Ubuntu 16.04 LTS 
+  #------------------
+  - sh: sudo apt-get update -qq && sudo apt-get install -qq
+  - sh: sudo apt-get -y install build-essential git mercurial cmake libpng-dev libjpeg-dev libtiff-dev libglu1-mesa-dev libxmu-dev libxi-dev
+  - sh: sudo apt-get -y install libboost-iostreams-dev libboost-program-options-dev libboost-system-dev libboost-serialization-dev
+  - sh: sudo apt-get -y install libopencv-dev libcgal-dev libcgal-qt5-dev libatlas-base-dev
+  #- sh: sudo apt-get -y install libsuitesparse-dev libceres-dev
+  - sh: sudo apt-get -y install freeglut3-dev libglew-dev libglfw3-dev
+
+# preserve contents of selected directories and files across project builds
+for:
+-
+  matrix:
+    only:
+      - image: Visual Studio 2017
+  cache:
+    - 'C:\tools\vcpkg\installed'
+-
+  matrix:
+    only:
+      - image: Ubuntu
+  cache:
+    - '/usr/lib/x86_64-linux-gnu/'
+
+build_script:
+  # get VCG library
+  - git clone https://github.com/cdcseacave/VCG.git
+
+  #------------------
+  # Windows 10
+  #------------------
+  - cmd: if "%platform%"=="Win32" set CMAKE_GENERATOR=-G"Visual Studio 15 2017"
+  - cmd: if "%platform%"=="x64"   set CMAKE_GENERATOR=-G"Visual Studio 15 2017 Win64"
+  - cmd: mkdir bin && cd bin
+  - cmd: cmake %CMAKE_GENERATOR% -DCMAKE_BUILD_TYPE=%Configuration% -DCMAKE_TOOLCHAIN_FILE="C:\tools\vcpkg\scripts\buildsystems\vcpkg.cmake" -DVCG_ROOT="%APPVEYOR_BUILD_FOLDER%\VCG" ..
+  - cmd: cmake --build . --target ALL_BUILD --config %Configuration% -- /maxcpucount:4
+
+  #------------------
+  # Ubuntu 16.04 LTS
+  #------------------
+  - sh: hg clone https://bitbucket.org/eigen/eigen#3.2
+  - sh: mkdir eigen_build && cd eigen_build
+  - sh: cmake . ../eigen
+  - sh: make && sudo make install
+  - sh: cd ..
+  - sh: mkdir bin && cd bin
+  - sh: cmake -DCMAKE_BUILD_TYPE=$Configuration -DVCG_ROOT="$APPVEYOR_BUILD_FOLDER/VCG" ..
+  - sh: make
+
+test_script:
+  #- cmd: ctest --build-config %Configuration% --parallel 4 --output-on-failure
+  #- sh: ctest -j4

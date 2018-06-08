@@ -45,7 +45,7 @@ IMAGEPTR Image::OpenImage(const String& fileName)
 	#if 0
 	if (Util::isFullPath(fileName))
 		return IMAGEPTR(CImage::Create(fileName, CImage::READ));
-	return IMAGEPTR(CImage::Create((Util::getCurrentDirectory()+fileName).c_str(), CImage::READ));
+	return IMAGEPTR(CImage::Create((Util::getCurrentFolder()+fileName).c_str(), CImage::READ));
 	#else
 	return IMAGEPTR(CImage::Create(fileName, CImage::READ));
 	#endif
@@ -142,7 +142,7 @@ float Image::ResizeImage(unsigned nMaxResolution)
 		width = image.width();
 		height = image.height();
 	}
-	if (nMaxResolution == 0 || (width <= nMaxResolution && height <= nMaxResolution))
+	if (nMaxResolution == 0 || MAXF(width,height) <= nMaxResolution)
 		return 1.f;
 	float scale;
 	if (width > height) {
@@ -155,32 +155,21 @@ float Image::ResizeImage(unsigned nMaxResolution)
 		height = nMaxResolution;
 	}
 	if (!image.empty())
-		cv::resize(image, image, cv::Size((int)width, (int)height), 0, 0, cv::INTER_LINEAR);
+		cv::resize(image, image, cv::Size((int)width, (int)height), 0, 0, cv::INTER_AREA);
 	return scale;
 } // ResizeImage
-/*----------------------------------------------------------------*/
-
-// compute image scale for a given max and min resolution
-unsigned Image::ComputeMaxResolution(unsigned& level, unsigned minImageSize) const
-{
-	const unsigned maxImageSize = MAXF(width, height);
-	return Image8U3::computeMaxResolution(maxImageSize, level, minImageSize);
-} // ComputeMaxResolution
 /*----------------------------------------------------------------*/
 
 // compute image scale for a given max and min resolution, using the current image file data
 unsigned Image::RecomputeMaxResolution(unsigned& level, unsigned minImageSize) const
 {
 	IMAGEPTR pImage(ReadImageHeader(name));
-	unsigned maxImageSize;
 	if (pImage == NULL) {
 		// something went wrong, use the current known size (however it will most probably fail later)
-		maxImageSize = MAXF(width, height);
-	} else {
-		// re-compute max image size
-		maxImageSize = MAXF(pImage->GetWidth(), pImage->GetHeight());
+		return Image8U3::computeMaxResolution(width, height, level, minImageSize);
 	}
-	return Image8U3::computeMaxResolution(maxImageSize, level, minImageSize);
+	// re-compute max image size
+	return Image8U3::computeMaxResolution(pImage->GetWidth(), pImage->GetHeight(), level, minImageSize);
 } // RecomputeMaxResolution
 /*----------------------------------------------------------------*/
 

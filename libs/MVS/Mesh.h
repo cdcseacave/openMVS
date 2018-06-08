@@ -157,6 +157,10 @@ public:
 	REAL ComputeArea() const;
 	REAL ComputeVolume() const;
 
+	void SamplePoints(unsigned numberOfPoints, PointCloud&) const;
+	void SamplePoints(REAL samplingDensity, PointCloud&) const;
+	void SamplePoints(REAL samplingDensity, unsigned mumPointsTheoretic, PointCloud&) const;
+
 	void Project(const Camera& camera, DepthMap& depthMap) const;
 	void Project(const Camera& camera, DepthMap& depthMap, Image8U3& image) const;
 	void ProjectOrtho(const Camera& camera, DepthMap& depthMap) const;

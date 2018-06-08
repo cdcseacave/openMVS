@@ -53,7 +53,7 @@ bool ObjModel::MaterialLib::Save(const String& prefix, bool texLossless) const
 		return false;
 
 	const String pathName(Util::getFilePath(prefix));
-	const String name(Util::getFileFullName(prefix));
+	const String name(Util::getFileNameExt(prefix));
 	#ifdef OBJ_USE_OPENMP
 	bool bSuccess(true);
 	#pragma omp parallel for
@@ -124,8 +124,8 @@ bool ObjModel::Save(const String& fileName, unsigned precision, bool texLossless
 {
 	if (vertices.empty())
 		return false;
-	const String prefix(Util::getFullFileName(fileName));
-	const String name(Util::getFileFullName(prefix));
+	const String prefix(Util::getFileFullName(fileName));
+	const String name(Util::getFileNameExt(prefix));
 
 	if (!material_lib.Save(prefix, texLossless))
 		return false;

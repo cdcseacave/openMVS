@@ -9,6 +9,7 @@ Dependencies
 * [CGAL](http://www.cgal.org) version 4.2 or higher
 * [Boost](http://www.boost.org) version 1.56 or higher
 * [VCG](http://vcg.isti.cnr.it/vcglib)
+* [GLFW](http://www.glfw.org)
 
 ------------------
 Build instructions
@@ -23,27 +24,31 @@ Required tools:
 Windows compilation
 -------------------
 
-Visual Studion 2008 or newer is supported. Please note that the development is done mainly on Windows, so this platform build is tested the most. The latest pre-built binaries for fast testing can be download from [here](https://github.com/cdcseacave/openMVS_sample/releases/latest).
+Visual Studio 2008 or newer are supported. Please note that the development is done mainly on Windows, so this platform build is well tested. The latest pre-built binaries for fast testing can be download from [here](https://github.com/cdcseacave/openMVS_sample/releases/latest). Visual Studio 2017 and dependencies automation tool [vcpkg](https://github.com/Microsoft/vcpkg) are used in this example.
 
 ```
-# Make a toplevel directory for deps & build & src somewhere:
+#Make a toplevel directory for deps & build & src somewhere:
 mkdir OpenMVS
 cd OpenMVS
 
-# Get dependencies, unpack and build them as subdirectories:
-like in OpenMVS/Eigen, OpenMVS/Ceres, etc
+#Get and install dependencies using vcpkg;
+#choose the desired triplet, like "x64-windows", by setting the VCPKG_DEFAULT_TRIPLET environment variable or by specifying it after each package:
+vcpkg install zlib boost-iostreams boost-program-options boost-system boost-serialization eigen3 cgal[core] opencv glew glfw3
 
-# Get and unpack OpenMVS in OpenMVS/src:
+#Get VCGLib (Required):
+git clone https://github.com/cdcseacave/VCG.git
+
+#Get and unpack OpenMVS in OpenMVS/src:
 git clone https://github.com/cdcseacave/openMVS.git src
 
-# Make build directory:
+#Make build directory:
 mkdir build
 cd build
 
-# Run CMake:
-cmake . ../src -DCMAKE_BUILD_TYPE=RELEASE -DEIGEN_DIR="../OpenMVS/Eigen" -DOPENCV_DIR="../OpenMVS/OpenCV" -DCERES_DIR="../OpenMVS/Ceres" -DCGAL_DIR="../OpenMVS/CGAL" -DVCG_DIR="../OpenMVS/VCG"
+#Run CMake, where VCPKG_ROOT environment variable points to the root of vcpkg installation:
+cmake . ..\src -G "Visual Studio 15 2017 Win64" -DCMAKE_TOOLCHAIN_FILE=%VCPKG_ROOT%\scripts\buildsystems\vcpkg.cmake -DVCPKG_TARGET_TRIPLET=x64-windows -DVCG_ROOT="..\VCG"
 
-# Open the solution in MSVC and build it
+#Open the solution in MSVC and build it
 ```
 
 -----------------
@@ -77,7 +82,7 @@ sudo apt-get -y install libcgal-dev libcgal-qt5-dev
 #VCGLib (Required)
 git clone https://github.com/cdcseacave/VCG.git vcglib
 
-#Ceres (Required)
+#Ceres (optional)
 sudo apt-get -y install libatlas-base-dev libsuitesparse-dev
 git clone https://ceres-solver.googlesource.com/ceres-solver ceres-solver
 mkdir ceres_build && cd ceres_build
@@ -91,7 +96,7 @@ sudo apt-get -y install freeglut3-dev libglew-dev libglfw3-dev
 #OpenMVS
 git clone https://github.com/cdcseacave/openMVS.git openMVS
 mkdir openMVS_build && cd openMVS_build
-cmake . ../openMVS -DCMAKE_BUILD_TYPE=Release -DVCG_DIR="$main_path/vcglib"
+cmake . ../openMVS -DCMAKE_BUILD_TYPE=Release -DVCG_ROOT="$main_path/vcglib"
 
 #If you want to use OpenMVS as shared library, add to the CMake command:
 -DBUILD_SHARED_LIBS=ON

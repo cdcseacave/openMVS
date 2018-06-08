@@ -91,7 +91,7 @@ public:
 
 	inline void ToUpper(String& out) const {
 		out.resize(size());
-		std::transform(begin(), end(), out.begin(), ::towupper);
+		std::transform(begin(), end(), out.begin(), [](TCHAR c) { return (TCHAR)std::toupper(c); });
 	}
 	inline String ToUpper() const {
 		String str;
@@ -101,7 +101,7 @@ public:
 
 	inline void ToLower(String& out) const {
 		out.resize(size());
-		std::transform(begin(), end(), out.begin(), ::towlower);
+		std::transform(begin(), end(), out.begin(), [](TCHAR c) { return (TCHAR)std::tolower(c); });
 	}
 	inline String ToLower() const {
 		String str;

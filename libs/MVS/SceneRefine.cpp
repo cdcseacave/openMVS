@@ -45,9 +45,15 @@ using namespace MVS;
 // (should be enough, as the numerical error does not depend on the depth)
 #define MESHOPT_DEPTHCONSTBIAS 0.05f
 
-// uncomment to use enable memory pool
+// uncomment to enable memory pool
 // (should reduce the allocation times for frequent used images)
 #define MESHOPT_TYPEPOOL
+
+// uncomment to enable CERES optimization module
+// (similar performance with the custom minimizer)
+#ifdef _USE_CERES
+#define MESHOPT_CERES
+#endif
 
 #ifdef MESHOPT_TYPEPOOL
 #define DEC_BitMatrix(var)		BitMatrix& var = *BitMatrixPool()
@@ -1061,7 +1067,7 @@ void MeshRefine::WaitThreadWorkers(size_t nJobs)
 void MeshRefine::ThSelectNeighbors(uint32_t idxImage, std::unordered_set<uint64_t>& mapPairs, unsigned nMaxViews)
 {
 	// keep only best neighbor views
-	const float fMinArea(0.12f);
+	const float fMinArea(0.1f);
 	const float fMinScale(0.2f), fMaxScale(3.2f);
 	const float fMinAngle(FD2R(2.5f)), fMaxAngle(FD2R(45.f));
 	const Image& imageData = images[idxImage];
@@ -1092,7 +1098,7 @@ void MeshRefine::ThInitImage(uint32_t idxImage, Real scale, Real sigma)
 	if (sigma > 0)
 		cv::GaussianBlur(img, img, cv::Size(), sigma);
 	if (scale < 1.0) {
-		cv::resize(img, img, cv::Size(), scale, scale, cv::INTER_LINEAR);
+		cv::resize(img, img, cv::Size(), scale, scale, cv::INTER_AREA);
 		imageData.width = img.width(); imageData.height = img.height();
 	}
 	imageData.UpdateCamera(scene.platforms);
@@ -1222,6 +1228,8 @@ void MeshRefine::ThSmoothVertices2(VIndex idxStart, VIndex idxEnd)
 
 // S T R U C T S ///////////////////////////////////////////////////
 
+#ifdef MESHOPT_CERES
+
 #pragma push_macro("LOG")
 #undef LOG
 #pragma push_macro("CHECK")
@@ -1284,6 +1292,9 @@ protected:
 };
 } // namespace ceres
 
+#endif // MESHOPT_CERES
+
+
 // optimize mesh using photo-consistency
 // fThPlanarVertex - threshold used to remove vertices on planar patches (percentage of the minimum depth, 0 - disable)
 bool Scene::RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsigned nMaxViews,
@@ -1298,8 +1309,8 @@ bool Scene::RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsig
 	// run the mesh optimization on multiple scales (coarse to fine)
 	for (unsigned nScale=0; nScale<nScales; ++nScale) {
 		// init images
-		const Real scale(powi(fScaleStep, (int)(nScales-nScale-1)));
-		const Real step(powi(2.f, (int)(nScales-nScale)));
+		const Real scale(POWI(fScaleStep, (int)(nScales-nScale-1)));
+		const Real step(POWI(2.f, (int)(nScales-nScale)));
 		DEBUG_ULTIMATE("Refine mesh at: %.2f image scale", scale);
 		if (!refine.InitImages(scale, Real(0.12)*step+Real(0.2)))
 			return false;
@@ -1319,6 +1330,7 @@ bool Scene::RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsig
 		#endif
 
 		// minimize
+		#ifdef MESHOPT_CERES
 		if (fGradientStep == 0) {
 			// DefineProblem
 			refine.ratioRigidityElasticity = 1.f;
@@ -1353,7 +1365,9 @@ bool Scene::RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsig
 			}
 			ASSERT(summary.IsSolutionUsable());
 			problemData->ApplyParams();
-		} else {
+		} else
+		#endif // MESHOPT_CERES
+		{
 			// loop a constant number of iterations and apply the gradient
 			int iters(75);
 			double gstep(0.4);

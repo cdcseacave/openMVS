@@ -49,7 +49,7 @@ typedef uint32_t IIndex;
 typedef cList<IIndex, IIndex, 0, 16, IIndex> IIndexArr;
 
 struct MVS_API ViewInfo {
-	uint32_t ID; // image ID
+	IIndex ID; // image ID
 	uint32_t points; // number of 3D points shared with the reference image
 	float scale; // image scale relative to the reference image
 	float angle; // image angle relative to the reference image (radians)
@@ -68,7 +68,7 @@ struct MVS_API ViewInfo {
 	#endif
 };
 typedef MVS_API TIndexScore<ViewInfo, float> ViewScore;
-typedef MVS_API CLISTDEF0IDX(ViewScore, uint32_t) ViewScoreArr;
+typedef MVS_API CLISTDEF0IDX(ViewScore, IIndex) ViewScoreArr;
 /*----------------------------------------------------------------*/
 
 // a view instance seeing the scene
@@ -105,7 +105,6 @@ public:
 	bool ReloadImage(unsigned nMaxResolution=0, bool bLoadPixels=true);
 	void ReleaseImage();
 	float ResizeImage(unsigned nMaxResolution=0);
-	unsigned ComputeMaxResolution(unsigned& level, unsigned minImageSize) const;
 	unsigned RecomputeMaxResolution(unsigned& level, unsigned minImageSize) const;
 
 	Camera GetCamera(const PlatformArr& platforms, const Image8U::Size& resolution) const;
@@ -143,7 +142,7 @@ public:
 	BOOST_SERIALIZATION_SPLIT_MEMBER()
 	#endif
 };
-typedef MVS_API SEACAVE::cList<Image, const Image&, 2, 16, uint32_t> ImageArr;
+typedef MVS_API SEACAVE::cList<Image, const Image&, 2, 16, IIndex> ImageArr;
 /*----------------------------------------------------------------*/
 
 } // namespace MVS

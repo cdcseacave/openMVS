@@ -2083,7 +2083,7 @@ MeshRefineCUDA::MeshRefineCUDA(Scene& _scene, unsigned _nAlternatePair, float _w
 	mapPairs.reserve(images.GetSize()*nMaxViews);
 	FOREACH(idxImage, images) {
 		// keep only best neighbor views
-		const float fMinArea(0.12f);
+		const float fMinArea(0.1f);
 		const float fMinScale(0.2f), fMaxScale(3.2f);
 		const float fMinAngle(FD2R(2.5f)), fMaxAngle(FD2R(45.f));
 		const Image& imageData = images[idxImage];
@@ -2210,7 +2210,7 @@ bool MeshRefineCUDA::InitImages(float scale, float sigma)
 		if (sigma > 0)
 			cv::GaussianBlur(img, img, cv::Size(), sigma);
 		if (scale < 1.0) {
-			cv::resize(img, img, cv::Size(), scale, scale, cv::INTER_LINEAR);
+			cv::resize(img, img, cv::Size(), scale, scale, cv::INTER_AREA);
 			imageData.width = img.width(); imageData.height = img.height();
 		}
 		imageData.UpdateCamera(scene.platforms);
@@ -2817,8 +2817,8 @@ bool Scene::RefineMeshCUDA(unsigned nResolutionLevel, unsigned nMinResolution, u
 	// run the mesh optimization on multiple scales (coarse to fine)
 	for (unsigned nScale=0; nScale<nScales; ++nScale) {
 		// init images
-		const float scale(powi(fScaleStep, (int)(nScales-nScale-1)));
-		const float step(powi(2.f, (int)(nScales-nScale)));
+		const float scale(POWI(fScaleStep, (int)(nScales-nScale-1)));
+		const float step(POWI(2.f, (int)(nScales-nScale)));
 		DEBUG_ULTIMATE("Refine mesh at: %.2f image scale", scale);
 		if (!refine.InitImages(scale, 0.12f*step+0.2f))
 			return false;

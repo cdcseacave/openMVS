@@ -12,7 +12,7 @@
 #define MVSI_PROJECT_ID "MVSI" // identifies the project stream
 #define MVSI_PROJECT_VER ((uint32_t)2) // identifies the version of a project stream
 
-// set a default namespace name is none given
+// set a default namespace name if none given
 #ifndef _INTERFACE_NAMESPACE
 #define _INTERFACE_NAMESPACE MVS
 #endif
@@ -34,12 +34,60 @@
 
 namespace cv {
 
+// simple cv::Point3_
+template<typename Type>
+class Point3_
+{
+public:
+	typedef Type value_type;
+
+	inline Point3_() {}
+	inline Point3_(Type _x, Type _y, Type _z) : x(_x), y(_y), z(_z) {}
+	#ifdef _USE_EIGEN
+	EIGEN_MAKE_ALIGNED_OPERATOR_NEW_IF_VECTORIZABLE_FIXED_SIZE(Type,3)
+	typedef Eigen::Matrix<Type,3,1> EVec;
+	typedef Eigen::Map<EVec> EVecMap;
+	template<typename Derived>
+	inline Point3_(const Eigen::EigenBase<Derived>& rhs) { operator EVecMap () = rhs; }
+	template<typename Derived>
+	inline Point3_& operator = (const Eigen::EigenBase<Derived>& rhs) { operator EVecMap () = rhs; return *this; }
+	inline operator const EVecMap () const { return EVecMap((Type*)this); }
+	inline operator EVecMap () { return EVecMap((Type*)this); }
+	#endif
+
+	Type operator()(int r) const { return (&x)[r]; }
+	Type& operator()(int r) { return (&x)[r]; }
+	Point3_ operator + (const Point3_& X) const {
+		return Point3_(
+			x+X.x,
+			y+X.y,
+			z+X.z
+		);
+	}
+	Point3_ operator - (const Point3_& X) const {
+		return Point3_(
+			x-X.x,
+			y-X.y,
+			z-X.z
+		);
+	}
+
+public:
+	Type x, y, z;
+};
+
 // simple cv::Matx
 template<typename Type, int m, int n>
 class Matx
 {
 public:
 	typedef Type value_type;
+	enum {
+		rows     = m,
+		cols     = n,
+		channels = rows*cols
+	};
+
 	inline Matx() {}
 	#ifdef _USE_EIGEN
 	EIGEN_MAKE_ALIGNED_OPERATOR_NEW_IF_VECTORIZABLE_FIXED_SIZE(Type,m*n)
@@ -53,6 +101,38 @@ public:
 	inline operator CEMatMap() const { return CEMatMap((const Type*)val); }
 	inline operator EMatMap () { return EMatMap((Type*)val); }
 	#endif
+
+	Type operator()(int r, int c) const { return val[r*n+c]; }
+	Type& operator()(int r, int c) { return val[r*n+c]; }
+	Point3_<Type> operator * (const Point3_<Type>& X) const {
+		Point3_<Type> R;
+		for (int r = 0; r < m; r++) {
+			R(r) = Type(0);
+			for (int c = 0; c < n; c++)
+				R(r) += operator()(r,c)*X(c);
+		}
+		return R;
+	}
+	template<int k>
+	Matx<Type,m,k> operator * (const Matx<Type,n,k>& M) const {
+		Matx<Type,m,k> R;
+		for (int r = 0; r < m; r++) {
+			for (int l = 0; l < k; l++) {
+				R(r,l) = Type(0);
+				for (int c = 0; c < n; c++)
+					R(r,l) += operator()(r,c)*M(c,l);
+			}
+		}
+		return R;
+	}
+	Matx<Type,n,m> t() const {
+		Matx<Type,n,m> M;
+		for (int r = 0; r < m; r++)
+			for (int c = 0; c < n; c++)
+				M(c,r) = operator()(r,c);
+		return M;
+	}
+
 	static Matx eye() {
 		Matx M;
 		memset(M.val, 0, sizeof(Type)*m*n);
@@ -61,32 +141,9 @@ public:
 			M(i,i) = 1;
 		return M;
 	}
-	Type operator()(int r, int c) const { return val[r*n+c]; }
-	Type& operator()(int r, int c) { return val[r*n+c]; }
+
 public:
 	Type val[m*n];
-};
-
-// simple cv::Matx
-template<typename Type>
-class Point3_
-{
-public:
-	typedef Type value_type;
-	inline Point3_() {}
-	#ifdef _USE_EIGEN
-	EIGEN_MAKE_ALIGNED_OPERATOR_NEW_IF_VECTORIZABLE_FIXED_SIZE(Type,3)
-	typedef Eigen::Matrix<Type,3,1> EVec;
-	typedef Eigen::Map<EVec> EVecMap;
-	template<typename Derived>
-	inline Point3_(const Eigen::EigenBase<Derived>& rhs) { operator EVecMap () = rhs; }
-	template<typename Derived>
-	inline Point3_& operator = (const Eigen::EigenBase<Derived>& rhs) { operator EVecMap () = rhs; return *this; }
-	inline operator const EVecMap () const { return EVecMap((Type*)this); }
-	inline operator EVecMap () { return EVecMap((Type*)this); }
-	#endif
-public:
-	Type x, y, z;
 };
 
 } // namespace cv
@@ -180,7 +237,7 @@ bool SerializeLoad(_Tp& obj, const std::string& fileName, uint32_t* pVersion=NUL
 		if (size <= 4)
 			return false;
 		std::string ext(fileName.substr(size-4));
-		std::transform(ext.begin(), ext.end(), ext.begin(), ::towlower);
+		std::transform(ext.begin(), ext.end(), ext.begin(), [](char c) { return (char)std::tolower(c); });
 		if (ext != ".mvs")
 			return false;
 		stream.seekg(0, std::ifstream::beg);
@@ -346,6 +403,20 @@ struct Interface
 		CameraArr cameras; // cameras mounted on the platform
 		PoseArr poses; // trajectory of the platform
 
+		const Mat33d& GetK(uint32_t cameraID) const {
+			return cameras[cameraID].K;
+		}
+
+		Pose GetPose(uint32_t cameraID, uint32_t poseID) const {
+			const Camera& camera = cameras[cameraID];
+			const Pose& pose = poses[poseID];
+			// add the relative camera pose to the platform
+			return Pose{
+				camera.R*pose.R,
+				pose.R.t()*camera.C+pose.C
+			};
+		}
+
 		template <class Archive>
 		void serialize(Archive& ar, const unsigned int /*version*/) {
 			ar & name;
@@ -362,6 +433,8 @@ struct Interface
 		uint32_t platformID; // ID of the associated platform
 		uint32_t cameraID; // ID of the associated camera on the associated platform
 		uint32_t poseID; // ID of the pose of the associated platform
+
+		bool IsValid() const { return poseID != NO_ID; }
 
 		template <class Archive>
 		void serialize(Archive& ar, const unsigned int /*version*/) {
@@ -465,6 +538,16 @@ struct Interface
 	Mat44d transform; // transformation used to convert from absolute to relative coordinate system (optional)
 
 	Interface() : transform(Mat44d::eye()) {}
+
+	const Mat33d& GetK(uint32_t imageID) const {
+		const Image& image = images[imageID];
+		return platforms[image.platformID].GetK(image.cameraID);
+	}
+
+	Platform::Pose GetPose(uint32_t imageID) const {
+		const Image& image = images[imageID];
+		return platforms[image.platformID].GetPose(image.cameraID, image.poseID);
+	}
 
 	template <class Archive>
 	void serialize(Archive& ar, const unsigned int version) {

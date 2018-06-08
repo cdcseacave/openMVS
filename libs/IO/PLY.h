@@ -283,8 +283,11 @@ public:
 	// description of PLY file
 	std::string filename;          /* file name */
 	SEACAVE::MemFile* mfp;         /* mem file pointer */
-	SEACAVE::IOSTREAM* fp;         /* file pointer */
 	SEACAVE::OSTREAM* f;           /* output file pointer */
+	union {
+		SEACAVE::ISTREAM* istream; /* input file pointer */
+		SEACAVE::OSTREAM* ostream; /* output file pointer */
+	};
 	int file_type;                 /* ascii or binary */
 	float version;                 /* version number of file */
 	std::vector<PlyElement*> elems;/* list of elements */

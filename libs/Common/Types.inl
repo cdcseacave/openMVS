@@ -28,6 +28,23 @@ template <> struct hash<SEACAVE::ImageRef>
 } // namespace std
 
 
+#if CV_MAJOR_VERSION > 3
+template <typename REAL_TYPE, typename INT_TYPE>
+INT_TYPE cvRANSACUpdateNumIters(REAL_TYPE p, REAL_TYPE ep, INT_TYPE modelPoints, INT_TYPE maxIters)
+{
+	ASSERT(p>=0 && p<=1);
+	ASSERT(ep>=0 && ep<=1);
+	// avoid inf's & nan's
+	REAL_TYPE num = MAXF(REAL_TYPE(1)-p, EPSILONTOLERANCE<REAL_TYPE>());
+	REAL_TYPE denom = REAL_TYPE(1)-POWI(REAL_TYPE(1)-ep, modelPoints);
+	if (denom < EPSILONTOLERANCE<REAL_TYPE>())
+		return 0;
+	num = LOGN(num);
+	denom = LOGN(denom);
+	return (denom >= 0 || -num >= (-denom)*maxIters ? maxIters : (INT_TYPE)ROUND2INT(num/denom));
+}
+#endif
+
 namespace cv {
 
 #if CV_MAJOR_VERSION > 2
@@ -45,24 +62,6 @@ public:
 		type         = CV_MAKETYPE(depth, channels)
 	};
 };
-
-template <typename REAL_TYPE, typename INT_TYPE>
-INT_TYPE cvRANSACUpdateNumIters(REAL_TYPE p, REAL_TYPE ep, INT_TYPE modelPoints, INT_TYPE maxIters)
-{
-	ASSERT(p>=0 && p<=1);
-	ASSERT(ep>=0 && ep<=1);
-
-	// avoid inf's & nan's
-	REAL_TYPE num = MAXF(REAL_TYPE(1)-p, DBL_MIN);
-	REAL_TYPE denom = REAL_TYPE(1)-powi(REAL_TYPE(1)-ep, modelPoints);
-	if (denom < REAL_TYPE(DBL_MIN))
-		return 0;
-
-	num = log(num);
-	denom = log(denom);
-
-	return (denom >= 0 || -num >= (-denom)*maxIters ? maxIters : ROUND2INT(num/denom));
-}
 #else
 #if CV_MINOR_VERSION < 4
 template<typename _Tp, typename _AccTp> static inline
@@ -2081,28 +2080,29 @@ void TImage<TYPE>::toGray(TImage<T>& out, int code, bool bNormalize) const
 
 // compute image scale for a given max and min resolution
 template <typename TYPE>
-unsigned TImage<TYPE>::computeMaxResolution(unsigned maxImageSize, unsigned& level, unsigned minImageSize)
+unsigned TImage<TYPE>::computeMaxResolution(unsigned width, unsigned height, unsigned& level, unsigned minImageSize, unsigned maxImageSize)
 {
+	// consider the native resolution the max(width,height)
+	const unsigned imageSize = MAXF(width, height);
 	// if the max level it's used, return original image size
 	if (level == 0)
-		return maxImageSize;
+		return MINF(imageSize, maxImageSize);
 	// compute the resolution corresponding to the desired level
-	unsigned imageSize = (maxImageSize >> level);
+	unsigned size = (imageSize >> level);
 	// if the image is too small
-	if (imageSize < minImageSize) {
+	if (size < minImageSize) {
 		// start from the max level
 		level = 0;
-		while ((maxImageSize>>(level+1)) > minImageSize)
+		while ((imageSize>>(level+1)) >= minImageSize)
 			++level;
-		imageSize = (maxImageSize >> level);
+		size = (imageSize>>level);
 	}
-	return imageSize;
+	return MINF(size, maxImageSize);
 }
 template <typename TYPE>
-unsigned TImage<TYPE>::computeMaxResolution(unsigned& level, unsigned minImageSize) const
+unsigned TImage<TYPE>::computeMaxResolution(unsigned& level, unsigned minImageSize, unsigned maxImageSize) const
 {
-	const unsigned maxImageSize = (unsigned)MAXF(width(), height());
-	return computeMaxResolution(maxImageSize, level, minImageSize);
+	return computeMaxResolution((unsigned)width(), (unsigned)height(), level, minImageSize, maxImageSize);
 }
 /*----------------------------------------------------------------*/
 
@@ -2611,7 +2611,7 @@ bool TImage<TYPE>::Load(const String& fileName)
 				return false;
 		return true;
 	}
-	cv::Mat img(cv::imread(fileName, CV_LOAD_IMAGE_UNCHANGED));
+	cv::Mat img(cv::imread(fileName, cv::IMREAD_UNCHANGED));
 	if (img.empty()) {
 		VERBOSE("error: loading image '%s'", fileName.c_str());
 		return false;
@@ -2650,7 +2650,7 @@ bool TImage<TYPE>::Save(const String& fileName) const
 	if (ext == ".pfm") {
 		if (Base::depth() != CV_32F)
 			return false;
-		Util::ensureDirectory(fileName);
+		Util::ensureFolder(fileName);
 		File fImage(fileName, File::WRITE, File::CREATE | File::TRUNCATE);
 		if (!fImage.isOpen())
 			return false;
@@ -3497,7 +3497,7 @@ public:
 		handler(NULL)
 	{
 		if (strDumpPathANSI.IsEmpty())
-			strDumpPathANSI = SEACAVE::Util::getCurrentDirectory();
+			strDumpPathANSI = SEACAVE::Util::getCurrentFolder();
 		const std::wstring strDumpPath(strDumpPathANSI.begin(), strDumpPathANSI.end());
 		const std::wstring strAppName(strAppNameANSI.begin(), strAppNameANSI.end());
 		std::wstring strPipeName;

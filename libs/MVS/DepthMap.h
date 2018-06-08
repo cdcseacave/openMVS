@@ -41,6 +41,17 @@
 
 // D E F I N E S ///////////////////////////////////////////////////
 
+// NCC type used for patch-similarity computation during depth-map estimation
+#define DENSE_NCC_DEFAULT 0
+#define DENSE_NCC_FAST 1
+#define DENSE_NCC DENSE_NCC_FAST
+
+// NCC score aggregation type used during depth-map estimation
+#define DENSE_AGGNCC_NTH 0
+#define DENSE_AGGNCC_MEAN 1
+#define DENSE_AGGNCC_MIN 2
+#define DENSE_AGGNCC DENSE_AGGNCC_MEAN
+
 #define ComposeDepthFilePathBase(b, i, e) MAKE_PATH(String::FormatString((b + "%04u." e).c_str(), i))
 #define ComposeDepthFilePath(i, e) MAKE_PATH(String::FormatString("depth%04u." e, i))
 
@@ -71,6 +82,7 @@ extern bool bFilterAdjust;
 extern bool bAddCorners;
 extern float fViewMinScore;
 extern float fViewMinScoreRatio;
+extern float fMinArea;
 extern float fMinAngle;
 extern float fOptimAngle;
 extern float fMaxAngle;
@@ -110,7 +122,7 @@ struct MVS_API DepthData {
 		static bool ScaleImage(const IMAGE& image, IMAGE& imageScaled, float scale) {
 			if (ABS(scale-1.f) < 0.15f)
 				return false;
-			cv::resize(image, imageScaled, cv::Size(), scale, scale, cv::INTER_LINEAR);
+			cv::resize(image, imageScaled, cv::Size(), scale, scale, scale>1?cv::INTER_CUBIC:cv::INTER_AREA);
 			return true;
 		}
 	};
@@ -169,7 +181,7 @@ struct MVS_API DepthData {
 	}
 	#endif
 };
-typedef MVS_API SEACAVE::cList<DepthData,const DepthData&,1> DepthDataArr;
+typedef MVS_API CLISTDEFIDX(DepthData,IIndex) DepthDataArr;
 /*----------------------------------------------------------------*/
 
 
@@ -209,40 +221,49 @@ struct MVS_API DepthEstimator {
 			Hr(image0.camera.K.inv()) {}
 	};
 
-	CLISTDEF0(NeighborData) neighborsData; // neighbor pixel depths to be used for smoothing
-	CLISTDEF0(ImageRef) neighbors; // neighbor pixels coordinates to be processed
+	CLISTDEF0IDX(NeighborData,IIndex) neighborsData; // neighbor pixel depths to be used for smoothing
+	CLISTDEF0IDX(ImageRef,IIndex) neighbors; // neighbor pixels coordinates to be processed
 	volatile Thread::safe_t& idxPixel; // current image index to be processed
 	Vec3 X0;	      //
-	ImageRef lt0;	  // constants during one pixel loop
+	ImageRef x0;	  // constants during one pixel loop
 	float normSq0;	  //
 	TexelVec texels0; //
+	#if DENSE_NCC == DENSE_NCC_DEFAULT
 	TexelVec texels1;
+	#endif
+	#if DENSE_AGGNCC == DENSE_AGGNCC_NTH
 	FloatArr scores;
+	#else
+	Eigen::VectorXf scores;
+	#endif
 	DepthMap& depthMap0;
 	NormalMap& normalMap0;
 	ConfidenceMap& confMap0;
 
 	const CLISTDEF0(ViewData) images; // neighbor images used
 	const DepthData::ViewData& image0;
-	const Image32F& image0Sum; // integral image used to fast compute patch mean intensity
+	const Image64F& image0Sum; // integral image used to fast compute patch mean intensity
 	const MapRefArr& coords;
 	const Image8U::Size size;
+	#if DENSE_AGGNCC == DENSE_AGGNCC_NTH
 	const IDX idxScore;
+	#endif
 	const ENDIRECTION dir;
 	const Depth dMin, dMax;
 
-	DepthEstimator(DepthData& _depthData0, volatile Thread::safe_t& _idx, const Image32F& _image0Sum, const MapRefArr& _coords, ENDIRECTION _dir);
+	DepthEstimator(DepthData& _depthData0, volatile Thread::safe_t& _idx, const Image64F& _image0Sum, const MapRefArr& _coords, ENDIRECTION _dir);
 
 	bool PreparePixelPatch(const ImageRef&);
-	bool FillPixelPatch(const ImageRef&);
+	bool FillPixelPatch();
 	float ScorePixel(Depth, const Normal&);
 	void ProcessPixel(IDX idx);
 	
-	inline float GetImage0Sum(const ImageRef& p0) {
+	inline float GetImage0Sum(const ImageRef& p) const {
+		const ImageRef p0(p.x-nSizeHalfWindow, p.y-nSizeHalfWindow);
 		const ImageRef p1(p0.x+nSizeWindow, p0.y);
 		const ImageRef p2(p0.x, p0.y+nSizeWindow);
 		const ImageRef p3(p0.x+nSizeWindow, p0.y+nSizeWindow);
-		return image0Sum(p3) - image0Sum(p2) - image0Sum(p1) + image0Sum(p0);
+		return (float)(image0Sum(p3) - image0Sum(p2) - image0Sum(p1) + image0Sum(p0));
 	}
 
 	inline Matrix3x3f ComputeHomographyMatrix(const ViewData& img, Depth depth, const Normal& normal) const {
@@ -278,15 +299,10 @@ struct MVS_API DepthEstimator {
 		ASSERT(dMin > 0);
 		return randomRange(dMin, dMax);
 	}
-	static inline Normal RandomNormal() {
-		const float a1Min = FD2R(0.f);
-		const float a1Max = FD2R(360.f);
-		const float a2Min = FD2R(120.f);
-		const float a2Max = FD2R(180.f);
+	static inline Normal RandomNormal(const Point3f& viewRay) {
 		Normal normal;
-		Dir2Normal(Point2f(randomRange(a1Min,a1Max), randomRange(a2Min,a2Max)), normal);
-		ASSERT(normal.z < 0);
-		return normal;
+		Dir2Normal(Point2f(randomRange(FD2R(0.f),FD2R(360.f)), randomRange(FD2R(120.f),FD2R(180.f))), normal);
+		return normal.dot(viewRay) > 0 ? -normal : normal;
 	}
 
 	// encode/decode NCC score and refinement level in one float
@@ -332,7 +348,8 @@ struct MVS_API DepthEstimator {
 	const float smoothSigmaDepth, smoothSigmaNormal;
 	const float thMagnitudeSq;
 	const float angle1Range, angle2Range;
-	const float thConfSmall, thConfBig, thConfIgnore;
+	const float thConfSmall, thConfBig;
+	const float thRobust;
 	static const float scaleRanges[12];
 };
 /*----------------------------------------------------------------*/

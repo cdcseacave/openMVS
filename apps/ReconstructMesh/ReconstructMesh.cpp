@@ -176,7 +176,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	Util::ensureValidPath(OPT::strOutputFileName);
 	Util::ensureUnifySlash(OPT::strOutputFileName);
 	if (OPT::strOutputFileName.IsEmpty())
-		OPT::strOutputFileName = Util::getFullFileName(OPT::strInputFileName) + _T("_mesh.mvs");
+		OPT::strOutputFileName = Util::getFileFullName(OPT::strInputFileName) + _T("_mesh.mvs");
 
 	// initialize global options
 	Process::setCurrentProcessPriority((Process::Priority)OPT::nProcessPriority);
@@ -228,7 +228,7 @@ int main(int argc, LPCTSTR* argv)
 		scene.mesh.Save(fileName);
 		#if TD_VERBOSE != TD_VERBOSE_OFF
 		if (VERBOSITY_LEVEL > 2)
-			scene.ExportCamerasMLP(Util::getFullFileName(OPT::strOutputFileName)+_T(".mlp"), fileName);
+			scene.ExportCamerasMLP(Util::getFileFullName(OPT::strOutputFileName)+_T(".mlp"), fileName);
 		#endif
 	} else {
 		if (OPT::strMeshFileName.IsEmpty()) {
@@ -279,7 +279,7 @@ int main(int argc, LPCTSTR* argv)
 			#if TD_VERBOSE != TD_VERBOSE_OFF
 			if (VERBOSITY_LEVEL > 2) {
 				// dump raw mesh
-				scene.mesh.Save(MAKE_PATH_SAFE(Util::getFullFileName(OPT::strOutputFileName)+_T("_raw")+OPT::strExportType));
+				scene.mesh.Save(MAKE_PATH_SAFE(Util::getFileFullName(OPT::strOutputFileName)+_T("_raw")+OPT::strExportType));
 			}
 			#endif
 		} else {
@@ -293,7 +293,7 @@ int main(int argc, LPCTSTR* argv)
 		scene.mesh.Clean(1.f, 0.f, false, 0, 0, true); // extra cleaning to remove non-manifold problems created by closing holes
 
 		// save the final mesh
-		const String baseFileName(MAKE_PATH_SAFE(Util::getFullFileName(OPT::strOutputFileName)));
+		const String baseFileName(MAKE_PATH_SAFE(Util::getFileFullName(OPT::strOutputFileName)));
 		scene.Save(baseFileName+_T(".mvs"), (ARCHIVE_TYPE)OPT::nArchiveType);
 		scene.mesh.Save(baseFileName+OPT::strExportType);
 		#if TD_VERBOSE != TD_VERBOSE_OFF
