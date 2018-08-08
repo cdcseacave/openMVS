@@ -398,6 +398,64 @@ public:
 		return simplifyPath(path);
 	}
 
+	static String getRelativePath(const String& currentPath, const String& targetPath) {
+		// returns the path to the target relative to the current path;
+		// both current and target paths must be full paths;
+		// current path is assumed to be a folder, while target path can be also a file
+		CLISTDEF2(String) currentPathValues, targetPathValues;
+		Util::strSplit(currentPath, PATH_SEPARATOR, currentPathValues);
+		if (currentPathValues.back().empty())
+			currentPathValues.pop_back();
+		Util::strSplit(targetPath, PATH_SEPARATOR, targetPathValues);
+		size_t idxCurrentPath(0), idxTargetPath(0);
+		while (
+			idxCurrentPath < currentPathValues.size() &&
+			idxTargetPath < targetPathValues.size() &&
+			#ifdef _MSC_VER
+			_tcsicmp(currentPathValues[idxCurrentPath], targetPathValues[idxTargetPath]) == 0
+			#else
+			_tcscmp(currentPathValues[idxCurrentPath], targetPathValues[idxTargetPath]) == 0
+			#endif
+		)
+			++idxCurrentPath, ++idxTargetPath;
+		if (idxCurrentPath == 0)
+			return targetPath;
+		String relativePath;
+		relativePath.reserve(targetPath.size());
+		while (idxCurrentPath < currentPathValues.size()) {
+			relativePath += _T("..") PATH_SEPARATOR_STR;
+			++idxCurrentPath;
+		}
+		const size_t idxFirstTarget(idxTargetPath);
+		while (idxTargetPath < targetPathValues.size()) {
+			if (idxTargetPath > idxFirstTarget)
+				relativePath += PATH_SEPARATOR;
+			relativePath += targetPathValues[idxTargetPath++];
+		}
+		return relativePath;
+	}
+
+	static String& getCommonPath(String& commonPath, const String& path) {
+		// returns the path shared by the given paths
+		#ifdef _MSC_VER
+		while (_tcsnicmp(commonPath, path, commonPath.length()) != 0) {
+		#else
+		while (_tcsncmp(commonPath, path, commonPath.length()) != 0) {
+		#endif
+			commonPath.pop_back();
+			commonPath = getFilePath(commonPath);
+		}
+		return commonPath;
+	}
+	static String getCommonPath(const String* arrPaths, size_t numPaths) {
+		// returns the path shared by all given paths
+		ASSERT(numPaths > 0);
+		String commonPath(arrPaths[0]);
+		for (size_t i=1; !commonPath.empty() && i<numPaths; ++i)
+			getCommonPath(commonPath, arrPaths[i]);
+		return commonPath;
+	}
+
 	static String getFilePath(const String& path) {
 		const String::size_type i = path.rfind(PATH_SEPARATOR);
 		return (i != String::npos) ? path.substr(0, i+1) : String();
@@ -469,18 +527,24 @@ public:
 		return str;
 	}
 	// split an input string with a delimiter and fill a string vector
-	static bool strSplit(const String& str, const String& delim, std::vector<String>& values) {
-		if (delim.empty())
-			return false;
-		values.clear();
-		String::size_type start(0);
-		String::size_type end(String::npos -1);
+	static void strSplit(const String& str, TCHAR delim, CLISTDEF2(String)& values) {
+		values.Empty();
+		String::size_type start(0), end(0);
 		while (end != String::npos) {
 			end = str.find(delim, start);
-			values.push_back(str.substr(start, end-start));
+			values.AddConstruct(str.substr(start, end-start));
+			start = end + 1;
+		}
+	}
+	static void strSplit(const String& str, const String& delim, CLISTDEF2(String)& values) {
+		ASSERT(!delim.empty());
+		values.Empty();
+		String::size_type start(0), end(0);
+		while (end != String::npos) {
+			end = str.find(delim, start);
+			values.AddConstruct(str.substr(start, end-start));
 			start = end + delim.size();
 		}
-		return (values.size() >= 2);
 	}
 
 	static String getShortTimeString() {
