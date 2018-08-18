@@ -748,24 +748,22 @@ inline T TANH(const T& x) {
 // cube root approximation using bit hack for 32-bit float (5 decimals)
 // (exploits the properties of IEEE 754 floating point numbers
 // by leveraging the fact that their binary representation is close to a log2 representation)
-inline float cbrt5(float f) {
-	#if 1
-	(int&)f = (((int&)f-(127<<23))/3+(127<<23));
+inline float cbrt5(float x) {
+	#if 0
+	CastF2I c(x);
+	c.i = ((c.i-(127<<23))/3+(127<<23));
 	#else
-	unsigned* p = (unsigned*)&f;
-	*p = *p/3 + 709921077;
+	TAliasCast<float,uint32_t> c(x);
+	c.i = c.i/3 + 709921077u;
 	#endif
-	return f;
+	return c.f;
 }
 // cube root approximation using bit hack for 64-bit float
 // adapted from Kahan's cbrt (5 decimals)
-inline double cbrt5(double d) {
-	const unsigned B1 = 715094163;
-	double t = 0.0;
-	unsigned* pt = (unsigned*)&t;
-	unsigned* px = (unsigned*)&d;
-	pt[1]=px[1]/3+B1;
-	return t;
+inline double cbrt5(double x) {
+	TAliasCast<double,uint32_t[2]> c(0.0), d(x);
+	c.i[1] = d.i[1]/3 + 715094163u;
+	return c.f;
 }
 // iterative cube root approximation using Halley's method
 // faster convergence than Newton's method: (R/(a*a)+a*2)/3
@@ -813,20 +811,9 @@ const double _float2int_doublemagic         = 6755399441055744.0; //2^52 * 1.5, 
 const double _float2int_doublemagicdelta    = (1.5e-8);
 const double _float2int_doublemagicroundeps = (.5f-_float2int_doublemagicdelta); //almost .5f = .5f - 1e^(number of exp bit)
 FORCEINLINE int CRound2Int(const double& x) {
-	#if 1
-	union CastD2I {
-		double  d;
-		int32_t i;
-	};
-	CastD2I c;
-	c.d = x + _float2int_doublemagic;
+	const CastD2I c(x + _float2int_doublemagic);
 	ASSERT(int32_t(floor(x+.5)) == c.i);
 	return c.i;
-	#else
-	x = x + _float2int_doublemagic;
-	ASSERT(int32_t(floor(x+.5)) == ((int32_t*)&x)[0]);
-	return ((int32_t*)&x)[0];
-	#endif
 }
 #endif
 FORCEINLINE int Floor2Int(float x) {

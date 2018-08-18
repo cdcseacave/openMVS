@@ -242,8 +242,8 @@ public:
 		return key;
 	}
 	static inline Key HashKey(const uint8_t* data, UINT size) { return HashKeyFNV(data, size); }
-	static inline Key HashKey(LPCTSTR sz) { return HashKey((const uint8_t*)sz, _tcslen(sz)); }
-	static inline Key HashKey(const String& str) { return HashKey(str.c_str(), str.size()); }
+	static inline Key HashKey(LPCTSTR sz) { return HashKey((const uint8_t*)sz, (UINT)_tcslen(sz)); }
+	static inline Key HashKey(const String& str) { return HashKey((const uint8_t*)str.c_str(), (UINT)str.size()); }
 
 	// Convenience functions
 	inline		 Type*	Find		(LPCTSTR		key)			{ return  Find  ( HashKey(key) );			}
