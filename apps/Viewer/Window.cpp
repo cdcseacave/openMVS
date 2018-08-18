@@ -165,7 +165,7 @@ void Window::Resize(GLFWwindow* window, int width, int height)
 	g_mapWindows[window]->Resize(width, height);
 }
 
-void Window::Key(int k, int scancode, int action, int mod)
+void Window::Key(int k, int /*scancode*/, int action, int mod)
 {
 	switch (k) {
 	case GLFW_KEY_ESCAPE:
@@ -278,7 +278,7 @@ void Window::Key(GLFWwindow* window, int k, int scancode, int action, int mod)
 	g_mapWindows[window]->Key(k, scancode, action, mod);
 }
 
-void Window::MouseButton(int button, int action, int mods)
+void Window::MouseButton(int button, int action, int /*mods*/)
 {
 	if (clbkRayScene != NULL && button == GLFW_MOUSE_BUTTON_LEFT) {
 		typedef Eigen::Matrix<double,4,4,Eigen::ColMajor> Mat4;
@@ -305,7 +305,7 @@ void Window::MouseButton(GLFWwindow* window, int button, int action, int mods)
 	g_mapWindows[window]->MouseButton(button, action, mods);
 }
 
-void Window::Scroll(double xoffset, double yoffset)
+void Window::Scroll(double /*xoffset*/, double yoffset)
 {
 	camera->dist *= (yoffset>0 ? POW(1.11,yoffset) : POW(0.9,-yoffset));
 }

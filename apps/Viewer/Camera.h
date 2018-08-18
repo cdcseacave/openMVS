@@ -46,6 +46,8 @@ namespace VIEWER {
 class Camera
 {
 public:
+	EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+
 	AABB3d box;
 	int width, height;
 	Eigen::Quaterniond rotation;

@@ -77,6 +77,10 @@ void Image::AssignImage(cv::InputArray img)
 {
 	ASSERT(IsImageLoading());
 	ImagePtrInt pImg(new cv::Mat(img.getMat()));
+	if (pImg.pImage->cols%4 != 0) {
+		// make sure the width is multiple of 4 (seems to be an OpenGL limitation)
+		cv::resize(*pImg.pImage, *pImg.pImage, cv::Size((pImg.pImage->cols/4)*4, pImg.pImage->rows), 0, 0, cv::INTER_AREA);
+	}
 	Thread::safeExchange(pImage.ptr, pImg.ptr);
 }
 bool Image::TransferImage()
