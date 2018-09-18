@@ -47,6 +47,8 @@ using namespace MVS;
 #define COLMAP_CAMERAS COLMAP_SPARSE_FOLDER _T("cameras.txt")
 #define COLMAP_IMAGES COLMAP_SPARSE_FOLDER _T("images.txt")
 #define COLMAP_POINTS COLMAP_SPARSE_FOLDER _T("points3D.txt")
+#define COLMAP_DENSE_POINTS _T("fused.ply")
+#define COLMAP_DENSE_POINTS_VISIBILITY _T("fused.ply.vis")
 #define COLMAP_STEREO_FOLDER _T("stereo/")
 #define COLMAP_FUSION COLMAP_STEREO_FOLDER _T("fusion.cfg")
 #define COLMAP_PATCHMATCH COLMAP_STEREO_FOLDER _T("patch-match.cfg")
@@ -147,7 +149,13 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	if (OPT::vm.count("help") || bInvalidCommand) {
 		boost::program_options::options_description visible("Available options");
 		visible.add(generic).add(config);
-		GET_LOG() << visible;
+		GET_LOG() << _T("\n"
+			"Import/export 3D reconstruction from/to COLMAP format as TXT (the only documented format).\n"
+			"In order to import a scene, run COLMAP SfM and next undistort the images (only PINHOLE\n"
+			"camera model supported for the moment); and convert the BIN scene to TXT by importing in\n"
+			"COLMAP the sparse scene stored in 'dense' folder and exporting it as TXT.\n"
+			"\n")
+			<< visible;
 	}
 	if (bInvalidCommand)
 		return false;
@@ -399,7 +407,7 @@ bool ImportScene(const String& strFolder, Interface& scene)
 	{
 		const String filenameCameras(strFolder+COLMAP_CAMERAS);
 		LOG_OUT() << "Reading cameras: " << filenameCameras << std::endl;
-		std::ifstream file(filenameCameras.c_str());
+		std::ifstream file(filenameCameras);
 		if (!file.good()) {
 			VERBOSE("error: unable to open file '%s'", filenameCameras.c_str());
 			return false;
@@ -447,7 +455,7 @@ bool ImportScene(const String& strFolder, Interface& scene)
 	{
 		const String filenameImages(strFolder+COLMAP_IMAGES);
 		LOG_OUT() << "Reading images: " << filenameImages << std::endl;
-		std::ifstream file(filenameImages.c_str());
+		std::ifstream file(filenameImages);
 		if (!file.good()) {
 			VERBOSE("error: unable to open file '%s'", filenameImages.c_str());
 			return false;
@@ -475,10 +483,13 @@ bool ImportScene(const String& strFolder, Interface& scene)
 	}
 
 	// read points list
-	{
+	const String filenameDensePoints(strFolder+COLMAP_DENSE_POINTS);
+	const String filenameDenseVisPoints(strFolder+COLMAP_DENSE_POINTS_VISIBILITY);
+	if (!File::access(filenameDensePoints) || !File::access(filenameDenseVisPoints)) {
+		// parse sparse point-cloud
 		const String filenamePoints(strFolder+COLMAP_POINTS);
 		LOG_OUT() << "Reading points: " << filenamePoints << std::endl;
-		std::ifstream file(filenamePoints.c_str());
+		std::ifstream file(filenamePoints);
 		if (!file.good()) {
 			VERBOSE("error: unable to open file '%s'", filenamePoints.c_str());
 			return false;
@@ -489,16 +500,50 @@ bool ImportScene(const String& strFolder, Interface& scene)
 			vertex.X = point.p;
 			for (const COLMAP::Point::Track& track: point.tracks) {
 				Interface::Vertex::View view;
-				view.imageID = mapImages[COLMAP::Image(track.idImage)];
+				view.imageID = mapImages.at(COLMAP::Image(track.idImage));
 				view.confidence = 0;
-				vertex.views.push_back(view);
+				vertex.views.emplace_back(view);
 			}
 			std::sort(vertex.views.begin(), vertex.views.end(),
 				[](const Interface::Vertex::View& view0, const Interface::Vertex::View& view1) { return view0.imageID < view1.imageID; });
-			scene.vertices.push_back(vertex);
-			Interface::Color color;
-			color.c = point.c;
-			scene.verticesColor.push_back(color);
+			scene.vertices.emplace_back(std::move(vertex));
+			scene.verticesColor.emplace_back(Interface::Color{point.c});
+		}
+	} else {
+		// parse dense point-cloud
+		LOG_OUT() << "Reading points: " << filenameDensePoints << " and " << filenameDenseVisPoints << std::endl;
+		PointCloud pointcloud;
+		if (!pointcloud.Load(filenameDensePoints)) {
+			VERBOSE("error: unable to open file '%s'", filenameDensePoints.c_str());
+			return false;
+		}
+		File file(filenameDenseVisPoints, File::READ, File::OPEN);
+		if (!file.isOpen()) {
+			VERBOSE("error: unable to open file '%s'", filenameDenseVisPoints.c_str());
+			return false;
+		}
+		uint64_t numPoints(0);
+		file.read(&numPoints, sizeof(uint64_t));
+		if (pointcloud.GetSize() != numPoints) {
+			VERBOSE("error: point-cloud and visibility have different size");
+			return false;
+		}
+		for (size_t i=0; i<numPoints; ++i) {
+			Interface::Vertex vertex;
+			vertex.X = pointcloud.points[i];
+			uint32_t numViews(0);
+			file.read(&numViews, sizeof(uint32_t));
+			for (uint32_t v=0; v<numViews; ++v) {
+				Interface::Vertex::View view;
+				file.read(&view.imageID, sizeof(uint32_t));
+				view.confidence = 0;
+				vertex.views.emplace_back(view);
+			}
+			std::sort(vertex.views.begin(), vertex.views.end(),
+				[](const Interface::Vertex::View& view0, const Interface::Vertex::View& view1) { return view0.imageID < view1.imageID; });
+			scene.vertices.emplace_back(std::move(vertex));
+			scene.verticesNormal.emplace_back(Interface::Normal{pointcloud.normals[i]});
+			scene.verticesColor.emplace_back(Interface::Color{pointcloud.colors[i]});
 		}
 	}
 	return true;
@@ -514,7 +559,7 @@ bool ExportScene(const String& strFolder, const Interface& scene)
 	{
 		const String filenameCameras(strFolder+COLMAP_CAMERAS);
 		LOG_OUT() << "Writing cameras: " << filenameCameras << std::endl;
-		std::ofstream file(filenameCameras.c_str());
+		std::ofstream file(filenameCameras);
 		if (!file.good()) {
 			VERBOSE("error: unable to open file '%s'", filenameCameras.c_str());
 			return false;
@@ -604,7 +649,7 @@ bool ExportScene(const String& strFolder, const Interface& scene)
 	{
 		const String filenamePoints(strFolder+COLMAP_POINTS);
 		LOG_OUT() << "Writing points: " << filenamePoints << std::endl;
-		std::ofstream file(filenamePoints.c_str());
+		std::ofstream file(filenamePoints);
 		if (!file.good()) {
 			VERBOSE("error: unable to open file '%s'", filenamePoints.c_str());
 			return false;
@@ -639,7 +684,7 @@ bool ExportScene(const String& strFolder, const Interface& scene)
 	{
 		const String filenameImages(strFolder+COLMAP_IMAGES);
 		LOG_OUT() << "Writing images: " << filenameImages << std::endl;
-		std::ofstream file(filenameImages.c_str());
+		std::ofstream file(filenameImages);
 		if (!file.good()) {
 			VERBOSE("error: unable to open file '%s'", filenameImages.c_str());
 			return false;
@@ -659,7 +704,7 @@ bool ExportScene(const String& strFolder, const Interface& scene)
 	{
 		const String filenameFusion(strFolder+COLMAP_FUSION);
 		LOG_OUT() << "Writing fusion configuration: " << filenameFusion << std::endl;
-		std::ofstream file(filenameFusion.c_str());
+		std::ofstream file(filenameFusion);
 		if (!file.good()) {
 			VERBOSE("error: unable to open file '%s'", filenameFusion.c_str());
 			return false;
@@ -677,7 +722,7 @@ bool ExportScene(const String& strFolder, const Interface& scene)
 	{
 		const String filenameFusion(strFolder+COLMAP_PATCHMATCH);
 		LOG_OUT() << "Writing patch-match configuration: " << filenameFusion << std::endl;
-		std::ofstream file(filenameFusion.c_str());
+		std::ofstream file(filenameFusion);
 		if (!file.good()) {
 			VERBOSE("error: unable to open file '%s'", filenameFusion.c_str());
 			return false;
