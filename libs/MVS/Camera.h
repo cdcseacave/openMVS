@@ -352,6 +352,27 @@ public:
 		return IsInside(ProjectPointP(X), size);
 	}
 
+	// same as above, but for ortho-projection
+	template <typename TYPE>
+	inline TPoint3<TYPE> TransformPointOrthoI2C(const TPoint3<TYPE>& x) const {
+		return TPoint3<TYPE>(
+			TYPE((x.x-K(0,2))/K(0,0)),
+			TYPE((x.y-K(1,2))/K(1,1)),
+			x.z );
+	}
+	template <typename TYPE>
+	inline TPoint3<TYPE> TransformPointOrthoI2W(const TPoint3<TYPE>& x) const {
+		return TransformPointC2W(TransformPointOrthoI2C(x));
+	}
+	template <typename TYPE>
+	inline TPoint2<TYPE> TransformPointOrthoC2I(const TPoint3<TYPE>& X) const {
+		return TransformPointC2I(TPoint2<TYPE>(X.x, X.y));
+	}
+	template <typename TYPE>
+	inline TPoint2<TYPE> TransformPointOrthoW2I(const TPoint3<TYPE>& X) const {
+		return TransformPointOrthoC2I(TransformPointW2C(X));
+	}
+
 	#ifdef _USE_BOOST
 	// implement BOOST serialization
 	template<class Archive>
