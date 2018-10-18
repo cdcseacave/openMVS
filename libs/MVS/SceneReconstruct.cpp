@@ -34,6 +34,7 @@
 // Delaunay: mesh reconstruction
 #include <CGAL/Exact_predicates_inexact_constructions_kernel.h>
 #include <CGAL/Delaunay_triangulation_3.h>
+#include <CGAL/Delaunay_triangulation_cell_base_3.h>
 #include <CGAL/Triangulation_vertex_base_with_info_3.h>
 #include <CGAL/Triangulation_cell_base_with_info_3.h>
 #include <CGAL/Spatial_sort_traits_adapter_3.h>
@@ -267,7 +268,8 @@ struct cell_info_t {
 };
 
 typedef CGAL::Triangulation_vertex_base_with_info_3<vert_info_t, kernel_t> vertex_base_t;
-typedef CGAL::Triangulation_cell_base_with_info_3<cell_size_t, kernel_t> cell_base_t;
+typedef CGAL::Delaunay_triangulation_cell_base_3<kernel_t> triangulation_cell_t;
+typedef CGAL::Triangulation_cell_base_with_info_3<cell_size_t, kernel_t, triangulation_cell_t> cell_base_t;
 typedef CGAL::Triangulation_data_structure_3<vertex_base_t, cell_base_t> triangulation_data_structure_t;
 typedef CGAL::Delaunay_triangulation_3<kernel_t, triangulation_data_structure_t, CGAL::Compact_location> delaunay_t;
 typedef delaunay_t::Vertex_handle vertex_handle_t;
