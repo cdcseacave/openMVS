@@ -10,7 +10,7 @@
 // D E F I N E S ///////////////////////////////////////////////////
 
 #define MVSI_PROJECT_ID "MVSI" // identifies the project stream
-#define MVSI_PROJECT_VER ((uint32_t)2) // identifies the version of a project stream
+#define MVSI_PROJECT_VER ((uint32_t)3) // identifies the version of a project stream
 
 // set a default namespace name if none given
 #ifndef _INTERFACE_NAMESPACE
@@ -433,15 +433,21 @@ struct Interface
 		uint32_t platformID; // ID of the associated platform
 		uint32_t cameraID; // ID of the associated camera on the associated platform
 		uint32_t poseID; // ID of the pose of the associated platform
+		uint32_t ID; // ID of this image in the global space (optional)
+
+		Image() : poseID(NO_ID), ID(NO_ID) {}
 
 		bool IsValid() const { return poseID != NO_ID; }
 
 		template <class Archive>
-		void serialize(Archive& ar, const unsigned int /*version*/) {
+		void serialize(Archive& ar, const unsigned int version) {
 			ar & name;
 			ar & platformID;
 			ar & cameraID;
 			ar & poseID;
+			if (version > 2) {
+				ar & ID;
+			}
 		}
 	};
 	typedef std::vector<Image> ImageArr;
