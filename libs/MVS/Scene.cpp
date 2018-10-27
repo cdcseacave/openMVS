@@ -279,7 +279,46 @@ bool Scene::SaveInterface(const String & fileName) const
 } // SaveInterface
 /*----------------------------------------------------------------*/
 
-bool Scene::Load(const String& fileName)
+// try to load known point-cloud or mesh files
+bool Scene::Import(const String& fileName)
+{
+	const String ext(Util::getFileExt(fileName).ToLower());
+	if (ext == _T(".obj")) {
+		// import mesh from obj file
+		Release();
+		return mesh.Load(fileName);
+	}
+	if (ext == _T(".ply")) {
+		// import point-cloud/mesh from ply file
+		Release();
+		int nVertices(0), nFaces(0);
+		{
+		PLY ply;
+		if (!ply.read(fileName)) {
+			DEBUG_EXTRA("error: invalid PLY file");
+			return false;
+		}
+		for (int i = 0; i < (int)ply.elems.size(); ++i) {
+			int elem_count;
+			LPCSTR elem_name = ply.setup_element_read(i, &elem_count);
+			if (PLY::equal_strings("vertex", elem_name)) {
+				nVertices = elem_count;
+			} else
+			if (PLY::equal_strings("face", elem_name)) {
+				nFaces = elem_count;
+			}
+		}
+		}
+		if (nVertices && nFaces)
+			return mesh.Load(fileName);
+		if (nVertices)
+			return pointcloud.Load(fileName);
+	}
+	return false;
+} // Import
+/*----------------------------------------------------------------*/
+
+bool Scene::Load(const String& fileName, bool bImport)
 {
 	TD_TIMER_STARTD();
 	Release();
@@ -294,6 +333,8 @@ bool Scene::Load(const String& fileName)
 	fs.read(szHeader, 4);
 	if (!fs || _tcsncmp(szHeader, PROJECT_ID, 4) != 0) {
 		fs.close();
+		if (bImport && Import(fileName))
+			return true;
 		if (LoadInterface(fileName))
 			return true;
 		VERBOSE("error: invalid project");
