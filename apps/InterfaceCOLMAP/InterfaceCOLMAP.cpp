@@ -211,7 +211,7 @@ bool NextLine(std::istream& stream, std::istringstream& in, bool bIgnoreEmpty=tr
 		Util::strTrim(line, _T(" "));
 		if (stream.fail())
 			return false;
-	} while (((bIgnoreEmpty && line.empty()) || line[0] == '#') && stream.good());
+	} while (((bIgnoreEmpty && line.empty()) || line[0u] == '#') && stream.good());
 	in.clear();
 	in.str(line);
 	return true;

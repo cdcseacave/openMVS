@@ -181,7 +181,7 @@ bool ObjModel::Load(const String& fileName)
 	std::istringstream in;
 	while (fin.good()) {
 		std::getline(fin, line);
-		if (line.empty() || line[0] == '#')
+		if (line.empty() || line[0u] == '#')
 			continue;
 		in.str(line);
 		in >> keyword;
