@@ -14,6 +14,7 @@ See the complete [documentation](https://github.com/cdcseacave/openMVS/wiki) on 
 ## Build
 
 See the [building](https://github.com/cdcseacave/openMVS/wiki/Building) wiki page. Windows and Ubuntu x64 continuous integration status [![Build Status](https://ci.appveyor.com/api/projects/status/github/cdcseacave/openmvs?branch=master&svg=true)](https://ci.appveyor.com/project/cdcseacave/openmvs)
+Automatic Windows x64 binary builds can be found for each commit on its Appveyor Artifacts page.
 
 ## Example
 

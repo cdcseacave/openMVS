@@ -106,3 +106,7 @@ build_script:
 test_script:
   #- cmd: ctest --build-config %Configuration% --parallel 4 --output-on-failure
   #- sh: ctest -j4
+  
+on_success:
+  - cmd: 7z a OpenMVS_x64.7z "C:\projects\openmvs\bin\bin\x64\%Configuration%\*.exe" "C:\projects\openmvs\bin\bin\x64\%Configuration%\*.dll"
+  - cmd: appveyor PushArtifact OpenMVS_x64.7z
