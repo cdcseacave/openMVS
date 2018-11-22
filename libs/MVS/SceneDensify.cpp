@@ -1457,9 +1457,26 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateNormal, 
 				} else {
 					// this point is valid, store it
 					point = X*(REAL(1)/confidence);
-					// invalidate all neighbor depths that do not agree with it
-					for (Depth* pDepth: invalidDepths)
-						*pDepth = 0;
+					if (ISFINITE(point))
+					{
+						// invalidate all neighbor depths that do not agree with it
+						for (Depth* pDepth : invalidDepths)
+							*pDepth = 0;
+					}
+					else
+					{
+						// remove point
+						FOREACH(v, views) {
+							const uint32_t idxImageB(views[v]);
+							const ImageRef x(pointProjs[v].GetCoord());
+							ASSERT(arrDepthIdx[idxImageB].isInside(x) && arrDepthIdx[idxImageB](x).idx != NO_ID);
+							arrDepthIdx[idxImageB](x).idx = NO_ID;
+						}
+						projs.RemoveLast();
+						pointcloud.pointWeights.RemoveLast();
+						pointcloud.pointViews.RemoveLast();
+						pointcloud.points.RemoveLast();
+					}
 				}
 			}
 		}
