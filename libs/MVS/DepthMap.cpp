@@ -188,10 +188,22 @@ bool DepthData::Save(const String& fileName) const
 	ASSERT(IsValid() && !depthMap.empty() && !confMap.empty());
 	return SerializeSave(*this, fileName, ARCHIVE_BINARY_ZIP);
 }
+bool DepthData::Save(std::ostream &os) const
+{
+	ASSERT(IsValid() && !depthMap.empty() && !confMap.empty());
+	return SerializeSave(*this, os, ARCHIVE_BINARY_ZIP);
+}
 bool DepthData::Load(const String& fileName)
 {
 	ASSERT(IsValid());
 	return SerializeLoad(*this, fileName, ARCHIVE_BINARY_ZIP);
+}
+bool DepthData::Load(std::istream &is)
+{
+	ASSERT(IsValid());
+	bool ok = SerializeLoad(*this, is, ARCHIVE_BINARY_ZIP);
+	is.seekg(0, is.beg);
+	return ok;
 }
 /*----------------------------------------------------------------*/
 
@@ -206,6 +218,14 @@ unsigned DepthData::IncRef(const String& fileName)
 	Lock l(cs);
 	ASSERT(!IsEmpty() || references==0);
 	if (IsEmpty() && !Load(fileName))
+		return 0;
+	return ++references;
+}
+unsigned DepthData::IncRef(std::istream &is)
+{
+	Lock l(cs);
+	ASSERT(!IsEmpty() || references == 0);
+	if (IsEmpty() && !Load(is))
 		return 0;
 	return ++references;
 }
@@ -712,10 +732,25 @@ bool MVS::SaveDepthMap(const String& fileName, const DepthMap& depthMap)
 	return SerializeSave(depthMap, fileName, ARCHIVE_BINARY_ZIP);
 } // SaveDepthMap
 /*----------------------------------------------------------------*/
+// save the depth map in a stream
+bool MVS::SaveDepthMap(std::ostream &os, const DepthMap &depthMap)
+{
+	ASSERT(!depthMap.empty());
+	return SerializeSave(depthMap, os, ARCHIVE_BINARY_ZIP);
+} // SaveDepthMap
+/*----------------------------------------------------------------*/
 // load the depth map from our .dmap file format
 bool MVS::LoadDepthMap(const String& fileName, DepthMap& depthMap)
 {
 	return SerializeLoad(depthMap, fileName, ARCHIVE_BINARY_ZIP);
+} // LoadDepthMap
+/*----------------------------------------------------------------*/
+// load the depth map from a stream
+bool MVS::LoadDepthMap(std::istream &is, DepthMap &depthMap)
+{
+	bool ok = SerializeLoad(depthMap, is, ARCHIVE_BINARY_ZIP);
+	is.seekg(is.beg);
+	return ok;
 } // LoadDepthMap
 /*----------------------------------------------------------------*/
 
@@ -740,10 +775,25 @@ bool MVS::SaveConfidenceMap(const String& fileName, const ConfidenceMap& confMap
 	return SerializeSave(confMap, fileName, ARCHIVE_BINARY_ZIP);
 } // SaveConfidenceMap
 /*----------------------------------------------------------------*/
+// save the confidence map in stream
+bool MVS::SaveConfidenceMap(std::ostream &os, const ConfidenceMap& confMap)
+{
+	ASSERT(!confMap.empty());
+	return SerializeSave(confMap, os, ARCHIVE_BINARY_ZIP);
+} // SaveConfidenceMap
+/*----------------------------------------------------------------*/
 // load the confidence map from our .cmap file format
 bool MVS::LoadConfidenceMap(const String& fileName, ConfidenceMap& confMap)
 {
 	return SerializeLoad(confMap, fileName, ARCHIVE_BINARY_ZIP);
+} // LoadConfidenceMap
+/*----------------------------------------------------------------*/
+// load the confidence map from stream
+bool MVS::LoadConfidenceMap(std::istream &is, ConfidenceMap& confMap)
+{
+	bool ok = SerializeLoad(confMap, is, ARCHIVE_BINARY_ZIP);
+	is.seekg(is.beg);
+	return ok;
 } // LoadConfidenceMap
 /*----------------------------------------------------------------*/
 

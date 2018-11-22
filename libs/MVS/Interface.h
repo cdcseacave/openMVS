@@ -133,6 +133,19 @@ bool SerializeLoad(_Tp& obj, const std::string& fileName) {
 	return true;
 }
 
+// Main exporter & importer
+template<typename _Tp>
+bool SerializeSave(const _Tp& obj, std::ostream &stream) {
+	ARCHIVE::ArchiveSave serializer(stream);
+	serializer & obj;
+	return true;
+}
+template<typename _Tp>
+bool SerializeLoad(_Tp& obj, std::istream &stream) {
+	ARCHIVE::ArchiveLoad serializer(stream);
+	serializer & obj;
+	return true;
+}
 
 #define ARCHIVE_DEFINE_TYPE(TYPE) \
 template<> \

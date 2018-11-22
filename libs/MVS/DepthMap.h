@@ -150,10 +150,13 @@ struct MVS_API DepthData {
 	void GetNormal(const Point2f& x, Point3f& N, const TImage<Point3f>* pPointMap=NULL) const;
 
 	bool Save(const String& fileName) const;
+	bool Save(std::ostream &os) const;
 	bool Load(const String& fileName);
+	bool Load(std::istream &is);
 
 	unsigned GetRef();
 	unsigned IncRef(const String& fileName);
+	unsigned IncRef(std::istream &is);
 	unsigned DecRef();
 
 	#ifdef _USE_BOOST
@@ -348,11 +351,15 @@ MVS_API void EstimatePointColors(const ImageArr& images, PointCloud& pointcloud)
 MVS_API void EstimatePointNormals(const ImageArr& images, PointCloud& pointcloud, int numNeighbors=16/*K-nearest neighbors*/);
 
 MVS_API bool SaveDepthMap(const String& fileName, const DepthMap& depthMap);
+MVS_API bool SaveDepthMap(std::ostream &os, const DepthMap &depthMap);
 MVS_API bool LoadDepthMap(const String& fileName, DepthMap& depthMap);
+MVS_API bool LoadDepthMap(std::istream &is, DepthMap &depthMap);
 MVS_API bool SaveNormalMap(const String& fileName, const NormalMap& normalMap);
 MVS_API bool LoadNormalMap(const String& fileName, NormalMap& normalMap);
 MVS_API bool SaveConfidenceMap(const String& fileName, const ConfidenceMap& confMap);
+MVS_API bool SaveConfidenceMap(std::ostream &os, const ConfidenceMap & confMap);
 MVS_API bool LoadConfidenceMap(const String& fileName, ConfidenceMap& confMap);
+MVS_API bool LoadConfidenceMap(std::istream &is, ConfidenceMap& confMap);
 
 MVS_API bool ExportDepthMap(const String& fileName, const DepthMap& depthMap, Depth minDepth=FLT_MAX, Depth maxDepth=0);
 MVS_API bool ExportNormalMap(const String& fileName, const NormalMap& normalMap);

@@ -46,6 +46,8 @@
 
 namespace MVS {
 
+struct Interface;
+
 class MVS_API Scene
 {
 public:
@@ -64,6 +66,7 @@ public:
 	void Release();
 
 	bool LoadInterface(const String& fileName);
+	bool LoadInterface(std::istream &is, const uint32_t &width = 0, const uint32_t &height = 0);
 	bool SaveInterface(const String& fileName) const;
 
 	bool Load(const String& fileName);
@@ -104,6 +107,8 @@ public:
 		ar & mesh;
 	}
 	#endif
+private:
+	bool LoadInterface(Interface &obj, const uint32_t &width = 0, const uint32_t &height = 0);
 };
 /*----------------------------------------------------------------*/
 
