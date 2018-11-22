@@ -127,6 +127,52 @@ bool Image::ReloadImage(unsigned nMaxResolution, bool bLoadPixels)
 } // ReloadImage
 /*----------------------------------------------------------------*/
 
+// reads again the image data from the input vector
+bool Image::ReloadImage(const uint32_t &_width, const uint32_t &_height, const uint32_t &depth, unsigned nMaxResolution, bool bLoadPixels, const std::vector<unsigned char> &imageData)
+{
+	width = _width;
+	height = _height;
+
+	if (bLoadPixels)
+	{
+		image.create(height, width);
+
+		uint8_t *pData = image.data;
+
+		const uint8_t *buffer = imageData.data();
+
+		switch (depth)
+		{
+		case 1:
+		{
+			if (!CImage::FilterFormat(pData, PF_R8G8B8, 3, buffer, PF_GRAY8, depth, imageData.size()))
+			{
+				return false;
+			}
+		}
+		break;
+		case 3:
+			memcpy(pData, buffer, imageData.size());
+			break;
+		case 4:
+		{
+			if (!CImage::FilterFormat(pData, PF_R8G8B8, 3, buffer, PF_R8G8B8A8, depth, imageData.size()))
+			{
+				return false;
+			}
+		}
+		break;
+		default:
+			return false;
+		}
+	}
+
+	scale = ResizeImage(nMaxResolution);
+
+	return true;
+} // ReloadImage
+  /*----------------------------------------------------------------*/
+
 // free the image data
 void Image::ReleaseImage()
 {
@@ -184,6 +230,12 @@ unsigned Image::RecomputeMaxResolution(unsigned& level, unsigned minImageSize) c
 } // RecomputeMaxResolution
 /*----------------------------------------------------------------*/
 
+// compute image scale for a given max and min resolution, using the current image file data
+unsigned Image::RecomputeMaxResolution(const uint32_t &width, const uint32_t &height, unsigned& level, unsigned minImageSize) const
+{
+	return Image8U3::computeMaxResolution(MAXF(width, height), level, minImageSize);
+} // RecomputeMaxResolution
+  /*----------------------------------------------------------------*/
 
 // compute the camera extrinsics from the platform pose and the relative camera pose to the platform
 Camera Image::GetCamera(const PlatformArr& platforms, const Image8U::Size& resolution) const

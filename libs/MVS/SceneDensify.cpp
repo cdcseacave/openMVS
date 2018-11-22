@@ -138,8 +138,8 @@ public:
 	bool RemoveSmallSegments(DepthData& depthData);
 	bool GapInterpolation(DepthData& depthData);
 
-	bool FilterDepthMap(DepthData& depthData, const IndexArr& idxNeighbors, bool bAdjust=true);
-	void FuseDepthMaps(PointCloud& pointcloud, bool bEstimateNormal);
+	bool FilterDepthMap(DepthData& depthData, const IndexArr& idxNeighbors, bool bAdjust=true, std::map<uint32_t, std::stringstream> *streamFiltered=NULL, std::map<uint32_t, std::stringstream> *streamConfidence=NULL);
+	void FuseDepthMaps(PointCloud& pointcloud, bool bEstimateNormal, std::map<uint32_t, std::stringstream> *streamDepthMap=NULL);
 
 protected:
 	static void* STCALL ScoreDepthMapTmp(void*);
@@ -1029,7 +1029,7 @@ bool DepthMapsData::GapInterpolation(DepthData& depthData)
 
 
 // filter depth-map, one pixel at a time, using confidence based fusion or neighbor pixels
-bool DepthMapsData::FilterDepthMap(DepthData& depthDataRef, const IndexArr& idxNeighbors, bool bAdjust)
+bool DepthMapsData::FilterDepthMap(DepthData& depthDataRef, const IndexArr& idxNeighbors, bool bAdjust, std::map<uint32_t, std::stringstream> *streamFilteredMap, std::map<uint32_t, std::stringstream> *streamConfidenceMap)
 {
 	TD_TIMER_STARTD();
 
@@ -1271,9 +1271,27 @@ bool DepthMapsData::FilterDepthMap(DepthData& depthDataRef, const IndexArr& idxN
 			}
 		}
 	}
-	if (!SaveDepthMap(ComposeDepthFilePath(imageRef.pImageData-scene.images.Begin(), "filtered.dmap"), newDepthMap) ||
-		!SaveConfidenceMap(ComposeDepthFilePath(imageRef.pImageData-scene.images.Begin(), "filtered.cmap"), newConfMap))
-		return false;
+
+ 	if(streamFilteredMap!=NULL)
+ 	{
+ 	 	if (!SaveDepthMap((*streamFilteredMap)[imageRef.pImageData - scene.images.Begin()], newDepthMap))
+ 	 	 	return false;
+ 	}
+ 	else
+ 	{
+ 	 	if (!SaveDepthMap(ComposeDepthFilePath(imageRef.pImageData-scene.images.Begin(), "filtered.dmap"), newDepthMap))
+ 	 	 	return false;
+ 	}
+ 	if(streamConfidenceMap!=NULL)
+ 	{
+ 	 	if (!SaveConfidenceMap((*streamConfidenceMap)[imageRef.pImageData - scene.images.Begin()], newConfMap))
+ 	 	 	return false;
+ 	}
+ 	else
+ 	{
+ 	 	if (!SaveConfidenceMap(ComposeDepthFilePath(imageRef.pImageData-scene.images.Begin(), "filtered.cmap"), newConfMap))
+ 	 	 	return false;
+ 	}
 
 	#if TD_VERBOSE != TD_VERBOSE_OFF
 	DEBUG("Depth map %3u filtered using %u other images: %u/%u depths discarded (%s)", imageRef.pImageData-scene.images.Begin(), N, nDiscarded, nProcessed, TD_TIMER_GET_FMT().c_str());
@@ -1300,7 +1318,7 @@ struct Proj {
 };
 typedef SEACAVE::cList<Proj,const Proj&,0,4,uint32_t> ProjArr;
 typedef SEACAVE::cList<ProjArr,const ProjArr&,1,65536> ProjsArr;
-void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateNormal)
+void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateNormal, std::map<uint32_t, std::stringstream> *streamDepthMap)
 {
 	TD_TIMER_STARTD();
 
@@ -1311,8 +1329,16 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateNormal)
 		DepthData& depthData = arrDepthData[i];
 		if (!depthData.IsValid())
 			continue;
-		if (depthData.IncRef(ComposeDepthFilePath(i, "dmap")) == 0)
-			return;
+ 		if(streamDepthMap!=NULL)
+ 		{
+ 			if (depthData.IncRef((*streamDepthMap)[i]) == 0)
+ 		 		return;
+ 		}
+ 		else
+ 		{
+ 			if (depthData.IncRef(ComposeDepthFilePath(i, "dmap")) == 0)
+ 		 		return;
+ 		}
 		ASSERT(!depthData.IsEmpty());
 		IndexScore& connection = connections.AddEmpty();
 		connection.idx = i;
@@ -1506,12 +1532,23 @@ struct DenseDepthMapData {
 	}
 };
 
+struct DepthMapDataStream
+{
+	DepthMapDataStream(DenseDepthMapData *inData = nullptr)
+		: data(inData)
+	{}
+	DenseDepthMapData *data;
+	std::map<uint32_t, std::stringstream> streamDepthMap;
+	std::map<uint32_t, std::stringstream> streamFilteredMap;
+	std::map<uint32_t, std::stringstream> streamConfidenceMap;
+};
+
 static void* DenseReconstructionEstimateTmp(void*);
 static void* DenseReconstructionFilterTmp(void*);
 bool Scene::DenseReconstruction(std::vector<BitMatrix>& theMasks, std::vector<std::vector<unsigned char>> &imageVector, const uint32_t &width, const uint32_t &height, const uint32_t &depth)
 {
 	DenseDepthMapData data(*this);
-
+	DepthMapDataStream d(&data);
 	{
 	// maps global view indices to our list of views to be processed
 	IndexArr imagesMap;
@@ -1645,12 +1682,12 @@ bool Scene::DenseReconstruction(std::vector<BitMatrix>& theMasks, std::vector<st
 		// multi-thread execution
 		cList<SEACAVE::Thread> threads(2);
 		FOREACHPTR(pThread, threads)
-			pThread->start(DenseReconstructionEstimateTmp, (void*)&data);
+			pThread->start(DenseReconstructionEstimateTmp, (void*)&d);
 		FOREACHPTR(pThread, threads)
 			pThread->join();
 	} else {
 		// single-thread execution
-		DenseReconstructionEstimate((void*)&data);
+		DenseReconstructionEstimate((void*)&d);
 	}
 	GET_LOGCONSOLE().Play();
 	if (!data.events.IsEmpty())
@@ -1671,12 +1708,12 @@ bool Scene::DenseReconstruction(std::vector<BitMatrix>& theMasks, std::vector<st
 			// multi-thread execution
 			cList<SEACAVE::Thread> threads(MINF(nMaxThreads, (unsigned)data.images.GetSize()));
 			FOREACHPTR(pThread, threads)
-				pThread->start(DenseReconstructionFilterTmp, (void*)&data);
+				pThread->start(DenseReconstructionFilterTmp, (void*)&d);
 			FOREACHPTR(pThread, threads)
 				pThread->join();
 		} else {
 			// single-thread execution
-			DenseReconstructionFilter((void*)&data);
+			DenseReconstructionFilter((void*)&d);
 		}
 		GET_LOGCONSOLE().Play();
 		if (!data.events.IsEmpty())
@@ -1686,7 +1723,7 @@ bool Scene::DenseReconstruction(std::vector<BitMatrix>& theMasks, std::vector<st
 
 	// fuse all depth-maps
 	pointcloud.Release();
-	data.detphMaps.FuseDepthMaps(pointcloud, OPTDENSE::nEstimateNormals == 2);
+	data.detphMaps.FuseDepthMaps(pointcloud, OPTDENSE::nEstimateNormals == 2, &d.streamDepthMap);
 	#if TD_VERBOSE != TD_VERBOSE_OFF
 	if (g_nVerbosityLevel > 2) {
 		// print number of points with 3+ views
@@ -1720,7 +1757,7 @@ bool Scene::DenseReconstruction(std::vector<BitMatrix>& theMasks, std::vector<st
 /*----------------------------------------------------------------*/
 
 void* DenseReconstructionEstimateTmp(void* arg) {
-	const DenseDepthMapData& dataThreads = *((const DenseDepthMapData*)arg);
+	const DenseDepthMapData& dataThreads = *((DepthMapDataStream*)arg)->data;
 	dataThreads.scene.DenseReconstructionEstimate(arg);
 	return NULL;
 }
@@ -1728,7 +1765,9 @@ void* DenseReconstructionEstimateTmp(void* arg) {
 // initialize the dense reconstruction with the sparse point cloud
 void Scene::DenseReconstructionEstimate(void* pData)
 {
-	DenseDepthMapData& data = *((DenseDepthMapData*)pData);
+	DenseDepthMapData& data = *((DepthMapDataStream*)pData)->data;
+	std::map<uint32_t, std::stringstream> &streamDepthMap = ((DepthMapDataStream*)pData)->streamDepthMap;
+
 	while (true) {
 		CAutoPtr<Event> evt(data.events.GetEvent());
 		switch (evt->GetID()) {
@@ -1750,7 +1789,8 @@ void Scene::DenseReconstructionEstimate(void* pData)
 				break;
 			}
 			// try to load already compute depth-map for this image
-			if (depthData.Load(ComposeDepthFilePath(idx, "dmap"))) {
+			std::map<uint32_t, std::stringstream>::iterator pos = streamDepthMap.find(idx);
+			if (pos != streamDepthMap.end()) {
 				if (OPTDENSE::nOptimize & (OPTDENSE::OPTIMIZE)) {
 					// optimize depth-map
 					data.events.AddEventFirst(new EVTOptimizeDepthMap(evtImage.idxImage));
@@ -1825,7 +1865,7 @@ void Scene::DenseReconstructionEstimate(void* pData)
 			}
 			#endif
 			// save compute depth-map for this image
-			depthData.Save(ComposeDepthFilePath(idx, "dmap"));
+			depthData.Save(streamDepthMap[idx]);
 			depthData.ReleaseImages();
 			depthData.Release();
 			data.progress->operator++();
@@ -1842,7 +1882,7 @@ void Scene::DenseReconstructionEstimate(void* pData)
 /*----------------------------------------------------------------*/
 
 void* DenseReconstructionFilterTmp(void* arg) {
-	DenseDepthMapData& dataThreads = *((DenseDepthMapData*)arg);
+	const DenseDepthMapData& dataThreads = *((DepthMapDataStream*)arg)->data;
 	dataThreads.scene.DenseReconstructionFilter(arg);
 	return NULL;
 }
@@ -1850,7 +1890,11 @@ void* DenseReconstructionFilterTmp(void* arg) {
 // filter estimated depth-maps
 void Scene::DenseReconstructionFilter(void* pData)
 {
-	DenseDepthMapData& data = *((DenseDepthMapData*)pData);
+	DenseDepthMapData& data = *((DepthMapDataStream*)pData)->data;
+	std::map<uint32_t, std::stringstream> &streamDepthMap = ((DepthMapDataStream*)pData)->streamDepthMap;
+	std::map<uint32_t, std::stringstream> &streamFilteredMap = ((DepthMapDataStream*)pData)->streamFilteredMap;
+	std::map<uint32_t, std::stringstream> &streamConfidenceMap = ((DepthMapDataStream*)pData)->streamConfidenceMap;
+
 	CAutoPtr<Event> evt;
 	while ((evt=data.events.GetEvent(0)) != NULL) {
 		switch (evt->GetID()) {
@@ -1863,7 +1907,7 @@ void Scene::DenseReconstructionFilter(void* pData)
 				break;
 			}
 			// make sure all depth-maps are loaded
-			depthData.IncRef(ComposeDepthFilePath(idx, "dmap"));
+			depthData.IncRef(streamDepthMap[idx]);
 			const unsigned numMaxNeighbors(8);
 			IndexArr idxNeighbors(0, depthData.neighbors.GetSize());
 			FOREACH(n, depthData.neighbors) {
@@ -1871,7 +1915,7 @@ void Scene::DenseReconstructionFilter(void* pData)
 				DepthData& depthDataPair = data.detphMaps.arrDepthData[idxView];
 				if (!depthDataPair.IsValid())
 					continue;
-				if (depthDataPair.IncRef(ComposeDepthFilePath(idxView, "dmap")) == 0) {
+				if (depthDataPair.IncRef(streamDepthMap[idxView]) == 0) {
 					// signal error and terminate
 					data.events.AddEventFirst(new EVTFail);
 					return;
@@ -1881,7 +1925,7 @@ void Scene::DenseReconstructionFilter(void* pData)
 					break;
 			}
 			// filter the depth-map for this image
-			if (data.detphMaps.FilterDepthMap(depthData, idxNeighbors, OPTDENSE::bFilterAdjust)) {
+			if (data.detphMaps.FilterDepthMap(depthData, idxNeighbors, OPTDENSE::bFilterAdjust, &streamFilteredMap, &streamConfidenceMap)) {
 				// load the filtered maps after all depth-maps were filtered
 				data.events.AddEvent(new EVTAdjustDepthMap(evtImage.idxImage));
 			}
@@ -1902,9 +1946,9 @@ void Scene::DenseReconstructionFilter(void* pData)
 			ASSERT(depthData.IsValid());
 			data.sem.Wait();
 			// load filtered maps
-			if (depthData.IncRef(ComposeDepthFilePath(idx, "dmap")) == 0 ||
-				!LoadDepthMap(ComposeDepthFilePath(idx, "filtered.dmap"), depthData.depthMap) ||
-				!LoadConfidenceMap(ComposeDepthFilePath(idx, "filtered.cmap"), depthData.confMap))
+			if (depthData.IncRef(streamDepthMap[idx]) == 0 ||
+				!LoadDepthMap(streamFilteredMap[idx], depthData.depthMap) ||
+				!LoadConfidenceMap(streamConfidenceMap[idx], depthData.confMap))
 			{
 				// signal error and terminate
 				data.events.AddEventFirst(new EVTFail);

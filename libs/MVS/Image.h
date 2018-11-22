@@ -100,10 +100,12 @@ public:
 	static bool ReadImage(IMAGEPTR pImage, Image8U3& image);
 	bool LoadImage(const String& fileName, unsigned nMaxResolution=0);
 	bool ReloadImage(unsigned nMaxResolution=0, bool bLoadPixels=true);
+	bool ReloadImage(const uint32_t &width, const uint32_t &height, const uint32_t &depth, unsigned nMaxResolution=0, bool bLoadPixels=false, const std::vector<unsigned char> &imageData=std::vector<unsigned char>());
 	void ReleaseImage();
 	float ResizeImage(unsigned nMaxResolution=0);
 	unsigned ComputeMaxResolution(unsigned& level, unsigned minImageSize) const;
 	unsigned RecomputeMaxResolution(unsigned& level, unsigned minImageSize) const;
+	unsigned RecomputeMaxResolution(const uint32_t &width, const uint32_t &height, unsigned& level, unsigned minImageSize) const;
 
 	Camera GetCamera(const PlatformArr& platforms, const Image8U::Size& resolution) const;
 	void UpdateCamera(const PlatformArr& platforms);

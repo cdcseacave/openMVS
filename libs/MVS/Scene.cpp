@@ -129,7 +129,7 @@ bool Scene::LoadInterface(Interface &obj, const uint32_t &width, const uint32_t 
 		imageData.cameraID = image.cameraID;
 		#if 1
 		// load image
-		if (!imageData.ReloadImage(0, false))
+		if ((width == 0 && height == 0) ? !imageData.ReloadImage(0, false) : !imageData.ReloadImage(width, height, 0, 0, false))
 			return false;
 		imageData.UpdateCamera(platforms);
 		#else
