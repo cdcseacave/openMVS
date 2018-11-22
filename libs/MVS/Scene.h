@@ -75,7 +75,7 @@ public:
 	bool ExportCamerasMLP(const String& fileName, const String& fileNameScene) const;
 
 	// Dense reconstruction
-	bool DenseReconstruction();
+	bool DenseReconstruction(std::vector<BitMatrix>& theMasks, std::vector<std::vector<unsigned char>> &images = std::vector<std::vector<unsigned char>>(), const uint32_t &width = 0, const uint32_t &height = 0, const uint32_t &depth = 0);
 	void DenseReconstructionEstimate(void*);
 	void DenseReconstructionFilter(void*);
 

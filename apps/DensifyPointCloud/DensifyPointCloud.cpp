@@ -217,7 +217,7 @@ int main(int argc, LPCTSTR* argv)
 		return EXIT_FAILURE;
 	}
 	TD_TIMER_START();
-	if (!scene.DenseReconstruction())
+	if (!scene.DenseReconstruction(std::vector<BitMatrix>()))
 		return EXIT_FAILURE;
 	VERBOSE("Densifying point-cloud completed: %u points (%s)", scene.pointcloud.points.GetSize(), TD_TIMER_GET_FMT().c_str());
 

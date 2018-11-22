@@ -130,6 +130,7 @@ public:
 
 	bool SelectViews(IndexArr& images, IndexArr& imagesMap, IndexArr& neighborsMap);
 	bool SelectViews(DepthData& depthData);
+	bool SetMasks(DepthData& depthData, BitMatrix& mask);
 	bool InitViews(DepthData& depthData, uint32_t idxNeighbor, uint32_t numNeighbors);
 	bool InitDepthMap(DepthData& depthData);
 	bool EstimateDepthMap(uint32_t idxImage);
@@ -324,6 +325,14 @@ bool DepthMapsData::SelectViews(DepthData& depthData)
 	}
 	return true;
 } // SelectViews
+/*----------------------------------------------------------------*/
+
+bool DepthMapsData::SetMasks(DepthData& depthData, BitMatrix& mask)
+{
+	depthData.mask.create(mask.size());
+	depthData.mask.swap(mask);
+	return true;
+}// SetMasks
 /*----------------------------------------------------------------*/
 
 // select target image for the reference image (the first image in "images")
@@ -1499,7 +1508,7 @@ struct DenseDepthMapData {
 
 static void* DenseReconstructionEstimateTmp(void*);
 static void* DenseReconstructionFilterTmp(void*);
-bool Scene::DenseReconstruction()
+bool Scene::DenseReconstruction(std::vector<BitMatrix>& theMasks, std::vector<std::vector<unsigned char>> &imageVector, const uint32_t &width, const uint32_t &height, const uint32_t &depth)
 {
 	DenseDepthMapData data(*this);
 
@@ -1596,6 +1605,25 @@ bool Scene::DenseReconstruction()
 			imagesMap[data.images[idx]] = NO_ID;
 			data.images.RemoveAt(idx);
 		}
+
+		if (!theMasks.empty())
+		{
+#ifdef DENSE_USE_OPENMP
+#pragma omp parallel for
+			for (int_t ID = 0; ID < (int_t)data.images.GetSize(); ++ID)
+			{
+				const uint32_t idx((uint32_t)ID);
+#else
+			FOREACH(idx, data.images)
+			{
+#endif
+				const uint32_t idxImage(data.images[idx]);
+				DepthData& depthData(data.detphMaps.arrDepthData[idxImage]);
+
+				data.detphMaps.SetMasks(depthData, theMasks[idxImage]);
+			}
+		}
+
 		// globally select a target view for each reference image
 		if (OPTDENSE::nNumViews == 1 && !data.detphMaps.SelectViews(data.images, imagesMap, data.neighborsMap)) {
 			VERBOSE("error: no valid images to be dense reconstructed");
