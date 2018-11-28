@@ -90,12 +90,12 @@ extern String g_strWorkingFolderFull; // full path to current folder
 #define WORKING_FOLDER		g_strWorkingFolder // empty by default (current folder)
 #define WORKING_FOLDER_FULL	g_strWorkingFolderFull // full path to current folder
 #endif
-#define INIT_WORKING_FOLDER	{SEACAVE::Util::ensureValidDirectoryPath(WORKING_FOLDER); WORKING_FOLDER_FULL = SEACAVE::Util::getFullPath(WORKING_FOLDER);} // initialize working folders
-#define MAKE_PATH(str)		(WORKING_FOLDER+(str)) // add working directory to the given file name
-#define MAKE_PATH_SAFE(str)	(SEACAVE::Util::isFullPath((str).c_str()) ? String(str) : String(WORKING_FOLDER+(str))) // add working directory to the given file name only if not full path already
-#define MAKE_PATH_FULL(p,s) (SEACAVE::Util::isFullPath((s).c_str()) ? String(s) : String((p)+(s))) // add the given path to the given file name
-#define MAKE_PATH_REL(p,s)	((s).compare(0,(p).size(),p) ? String(s) : String(SEACAVE::String((s).substr((p).size())))) // remove the given path from the given file name
-#define GET_PATH_FULL(str)	(SEACAVE::Util::isFullPath((str).c_str()) ? SEACAVE::Util::getFilePath(str) : String(WORKING_FOLDER_FULL+SEACAVE::Util::getFilePath(str))) // retrieve the full path to the given file
+#define INIT_WORKING_FOLDER	{SEACAVE::Util::ensureValidFolderPath(WORKING_FOLDER); WORKING_FOLDER_FULL = SEACAVE::Util::getFullPath(WORKING_FOLDER);} // initialize working folders
+#define MAKE_PATH(str)		SEACAVE::Util::getSimplifiedPath(WORKING_FOLDER+(str)) // add working directory to the given file name
+#define MAKE_PATH_SAFE(str)	(SEACAVE::Util::isFullPath((str).c_str()) ? SEACAVE::String(str) : MAKE_PATH(str)) // add working directory to the given file name only if not full path already
+#define MAKE_PATH_FULL(p,s) (SEACAVE::Util::isFullPath((s).c_str()) ? SEACAVE::String(s) : SEACAVE::Util::getSimplifiedPath((p)+(s))) // add the given path to the given file name
+#define MAKE_PATH_REL(p,s)	((s).compare(0,(p).size(),p) ? SEACAVE::String(s) : SEACAVE::String(SEACAVE::String((s).substr((p).size())))) // remove the given path from the given file name
+#define GET_PATH_FULL(str)	(SEACAVE::Util::isFullPath((str).c_str()) ? SEACAVE::Util::getFilePath(str) : SEACAVE::Util::getSimplifiedPath(WORKING_FOLDER_FULL+SEACAVE::Util::getFilePath(str))) // retrieve the full path to the given file
 
 
 // macros simplifying the task of managing options
@@ -180,12 +180,16 @@ extern String g_strWorkingFolderFull; // full path to current folder
 
 namespace SEACAVE {
 
+typedef TSphere<float, 2> Sphere2f;
+typedef TSphere<float, 3> Sphere3f;
 typedef TAABB<float, 2> AABB2f;
 typedef TAABB<float, 3> AABB3f;
 typedef TOBB<float, 2> OBB2f;
 typedef TOBB<float, 3> OBB3f;
 typedef TRay<float, 2> Ray2f;
 typedef TRay<float, 3> Ray3f;
+typedef TTriangle<float, 2> Triangle2f;
+typedef TTriangle<float, 3> Triangle3f;
 typedef TPlane<float> Planef;
 typedef TPoint2<float> Point2f;
 typedef TPoint3<float> Point3f;
@@ -197,12 +201,16 @@ typedef TMatrix<float,3,3> Matrix3x3f;
 typedef TMatrix<float,3,4> Matrix3x4f;
 typedef TMatrix<float,4,4> Matrix4x4f;
 
+typedef TSphere<double, 2> Sphere2d;
+typedef TSphere<double, 3> Sphere3d;
 typedef TAABB<double, 2> AABB2d;
 typedef TAABB<double, 3> AABB3d;
 typedef TOBB<double, 2> OBB2d;
 typedef TOBB<double, 3> OBB3d;
 typedef TRay<double, 2> Ray2d;
 typedef TRay<double, 3> Ray3d;
+typedef TTriangle<double, 2> Triangle2d;
+typedef TTriangle<double, 3> Triangle3d;
 typedef TPlane<double> Planed;
 typedef TPoint2<double> Point2d;
 typedef TPoint3<double> Point3d;
@@ -214,12 +222,16 @@ typedef TMatrix<double,3,3> Matrix3x3d;
 typedef TMatrix<double,3,4> Matrix3x4d;
 typedef TMatrix<double,4,4> Matrix4x4d;
 
+typedef TSphere<REAL, 2> Sphere2;
+typedef TSphere<REAL, 3> Sphere3;
 typedef TAABB<REAL, 2> AABB2;
 typedef TAABB<REAL, 3> AABB3;
 typedef TOBB<REAL, 2> OBB2;
 typedef TOBB<REAL, 3> OBB3;
 typedef TRay<REAL, 2> Ray2;
 typedef TRay<REAL, 3> Ray3;
+typedef TTriangle<REAL, 2> Triangle2;
+typedef TTriangle<REAL, 3> Triangle3;
 typedef TPlane<REAL> Plane;
 typedef TPoint2<REAL> Point2;
 typedef TPoint3<REAL> Point3;

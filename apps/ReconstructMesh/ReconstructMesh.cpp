@@ -104,10 +104,10 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	config_main.add_options()
 		("input-file,i", boost::program_options::value<std::string>(&OPT::strInputFileName), "input filename containing camera poses and image list")
 		("output-file,o", boost::program_options::value<std::string>(&OPT::strOutputFileName), "output filename for storing the mesh")
-		("min-point-distance,d", boost::program_options::value<float>(&OPT::fDistInsert)->default_value(2.f), "minimum distance in pixels between the projection of two 3D points to consider them different while triangulating (0 - disabled)")
+		("min-point-distance,d", boost::program_options::value<float>(&OPT::fDistInsert)->default_value(2.5f), "minimum distance in pixels between the projection of two 3D points to consider them different while triangulating (0 - disabled)")
 		("constant-weight", boost::program_options::value<bool>(&OPT::bUseConstantWeight)->default_value(true), "considers all view weights 1 instead of the available weight")
 		("free-space-support,f", boost::program_options::value<bool>(&OPT::bUseFreeSpaceSupport)->default_value(false), "exploits the free-space support in order to reconstruct weakly-represented surfaces")
-		("thickness-factor", boost::program_options::value<float>(&OPT::fThicknessFactor)->default_value(2.f), "multiplier adjusting the minimum thickness considered during visibility weighting")
+		("thickness-factor", boost::program_options::value<float>(&OPT::fThicknessFactor)->default_value(1.f), "multiplier adjusting the minimum thickness considered during visibility weighting")
 		("quality-factor", boost::program_options::value<float>(&OPT::fQualityFactor)->default_value(1.f), "multiplier adjusting the quality weight considered during graph-cut")
 		;
 	boost::program_options::options_description config_clean("Clean options");
@@ -176,7 +176,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	Util::ensureValidPath(OPT::strOutputFileName);
 	Util::ensureUnifySlash(OPT::strOutputFileName);
 	if (OPT::strOutputFileName.IsEmpty())
-		OPT::strOutputFileName = Util::getFullFileName(OPT::strInputFileName) + _T("_mesh.mvs");
+		OPT::strOutputFileName = Util::getFileFullName(OPT::strInputFileName) + _T("_mesh.mvs");
 
 	// initialize global options
 	Process::setCurrentProcessPriority((Process::Priority)OPT::nProcessPriority);
@@ -228,7 +228,7 @@ int main(int argc, LPCTSTR* argv)
 		scene.mesh.Save(fileName);
 		#if TD_VERBOSE != TD_VERBOSE_OFF
 		if (VERBOSITY_LEVEL > 2)
-			scene.ExportCamerasMLP(Util::getFullFileName(OPT::strOutputFileName)+_T(".mlp"), fileName);
+			scene.ExportCamerasMLP(Util::getFileFullName(OPT::strOutputFileName)+_T(".mlp"), fileName);
 		#endif
 	} else {
 		if (OPT::strMeshFileName.IsEmpty()) {
@@ -279,7 +279,7 @@ int main(int argc, LPCTSTR* argv)
 			#if TD_VERBOSE != TD_VERBOSE_OFF
 			if (VERBOSITY_LEVEL > 2) {
 				// dump raw mesh
-				scene.mesh.Save(MAKE_PATH_SAFE(Util::getFullFileName(OPT::strOutputFileName)+_T("_raw")+OPT::strExportType));
+				scene.mesh.Save(MAKE_PATH_SAFE(Util::getFileFullName(OPT::strOutputFileName)+_T("_raw")+OPT::strExportType));
 			}
 			#endif
 		} else {
@@ -293,7 +293,7 @@ int main(int argc, LPCTSTR* argv)
 		scene.mesh.Clean(1.f, 0.f, false, 0, 0, true); // extra cleaning to remove non-manifold problems created by closing holes
 
 		// save the final mesh
-		const String baseFileName(MAKE_PATH_SAFE(Util::getFullFileName(OPT::strOutputFileName)));
+		const String baseFileName(MAKE_PATH_SAFE(Util::getFileFullName(OPT::strOutputFileName)));
 		scene.Save(baseFileName+_T(".mvs"), (ARCHIVE_TYPE)OPT::nArchiveType);
 		scene.mesh.Save(baseFileName+OPT::strExportType);
 		#if TD_VERBOSE != TD_VERBOSE_OFF

@@ -173,7 +173,7 @@ static const uint64_t gs_au64CRC64[256] =
 
 // F U N C T I O N S ///////////////////////////////////////////////
 
-String Util::getHomeDirectory()
+String Util::getHomeFolder()
 {
 	#ifdef _MSC_VER
 	TCHAR homedir[MAX_PATH];
@@ -188,7 +188,7 @@ String Util::getHomeDirectory()
 	return ensureUnifySlash(dir);
 }
 
-String Util::getAppplicationsDirectory()
+String Util::getApplicationFolder()
 {
 	#ifdef _MSC_VER
 	TCHAR appdir[MAX_PATH];
@@ -204,7 +204,7 @@ String Util::getAppplicationsDirectory()
 	return ensureUnifySlash(dir);
 }
 
-String Util::getCurrentDirectory()
+String Util::getCurrentFolder()
 {
 	TCHAR pathname[MAX_PATH+1];
 	#ifdef _MSC_VER

@@ -22,6 +22,9 @@
 // Eigen Matrix & Linear Algebra Library
 #cmakedefine _USE_EIGEN
 
+// CERES optimization library
+#cmakedefine _USE_CERES
+
 // JPEG codec
 #cmakedefine _USE_JPG
 

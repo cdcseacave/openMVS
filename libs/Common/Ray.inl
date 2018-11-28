@@ -12,6 +12,42 @@
 // S T R U C T S ///////////////////////////////////////////////////
 
 template <typename TYPE, int DIMS>
+inline TTriangle<TYPE,DIMS>::TTriangle(const POINT& p0, const POINT& p1, const POINT& p2)
+	:
+	a(p0), b(p1), c(p2)
+{
+} // constructors
+/*----------------------------------------------------------------*/
+
+// set attributes
+template <typename TYPE, int DIMS>
+inline void TTriangle<TYPE,DIMS>::Set(const POINT& p0, const POINT& p1, const POINT& p2)
+{
+	a = p0;
+	b = p1;
+	c = p2;
+}
+/*----------------------------------------------------------------*/
+
+
+// get AABB
+template <typename TYPE, int DIMS>
+inline typename TTriangle<TYPE,DIMS>::AABB TTriangle<TYPE,DIMS>::GetAABB() const
+{
+	return AABB(& operator [] (0), 3);
+}
+// get plane
+template <typename TYPE, int DIMS>
+inline typename TTriangle<TYPE,DIMS>::PLANE TTriangle<TYPE,DIMS>::GetPlane() const
+{
+	return PLANE(a, b, c);
+}
+/*----------------------------------------------------------------*/
+
+
+// S T R U C T S ///////////////////////////////////////////////////
+
+template <typename TYPE, int DIMS>
 inline TRay<TYPE,DIMS>::TRay(const POINT& pOrig, const VECTOR& vDir)
 	:
 	m_vDir(vDir), m_pOrig(pOrig)
@@ -94,6 +130,79 @@ inline TRay<TYPE,DIMS>& TRay<TYPE,DIMS>::operator*=(const MATRIX& m)
 
 // test for intersection with triangle
 template <typename TYPE, int DIMS>
+template <bool bCull>
+bool TRay<TYPE,DIMS>::Intersects(const TRIANGLE& tri, TYPE *t) const
+{
+	const VECTOR edge1(tri.b - tri.a);
+	const VECTOR edge2(tri.c - tri.a);
+
+	// if close to 0 ray is parallel
+	const VECTOR pvec(m_vDir.cross(edge2));
+	const TYPE det(edge1.dot(pvec));
+	if ((bCull && (det < ZEROTOLERANCE<TYPE>())) || ISZERO(det))
+		return false;
+
+	// distance to plane, < 0 means beyond plane
+	const VECTOR tvec(m_pOrig - tri.a);
+	const TYPE u(tvec.dot(pvec));
+	if (u < TYPE(0) || u > det)
+		return false;
+
+	const VECTOR qvec(tvec.cross(edge1));
+	const TYPE v(m_vDir.dot(qvec));
+	if (v < TYPE(0) || u+v > det)
+		return false;
+
+	if (t)
+		*t = (edge2.dot(qvec)) / det;
+
+	return true;
+} // Intersects(Tri)
+/*----------------------------------------------------------------*/
+
+// test for intersection with triangle at certain length (line segment),
+// same as above but test distance to intersection vs segment length.
+template <typename TYPE, int DIMS>
+template <bool bCull>
+bool TRay<TYPE,DIMS>::Intersects(const TRIANGLE& tri, TYPE fL, TYPE *t) const
+{
+	const VECTOR edge1(tri.b - tri.a);
+	const VECTOR edge2(tri.c - tri.a);
+
+	// if close to 0 ray is parallel
+	const VECTOR pvec(m_vDir.cross(edge2));
+	const TYPE det(edge1.dot(pvec));
+	if ((bCull && (det < ZEROTOLERANCE<TYPE>())) || ISZERO(det))
+		return false;
+
+	// distance to plane, < 0 means beyond plane
+	const VECTOR tvec(m_pOrig - tri.a);
+	const TYPE u(tvec.dot(pvec));
+	if (u < TYPE(0) || u > det)
+		return false;
+
+	const VECTOR qvec(tvec.cross(edge1));
+	const TYPE v(m_vDir.dot(qvec));
+	if (v < TYPE(0) || u+v > det)
+		return false;
+
+	if (t) {
+		*t = (edge2.dot(qvec)) / det;
+		// collision but not on segment?
+		if (*t > fL) return false;
+	}
+	else {
+		// collision but not on segment?
+		if ((edge2.dot(qvec)) / det > fL) return false;
+	}
+
+	return true;
+} // Intersects(Tri at length)
+/*----------------------------------------------------------------*/
+
+
+// test for intersection with triangle
+template <typename TYPE, int DIMS>
 bool TRay<TYPE,DIMS>::Intersects(const POINT& p0, const POINT& p1, const POINT& p2, bool bCull, TYPE *t) const
 {
 	const VECTOR edge1(p1 - p0);
@@ -161,6 +270,30 @@ bool TRay<TYPE,DIMS>::Intersects(const POINT& p0, const POINT& p1, const POINT& 
 
 	return true;
 } // Intersects(Tri at length)
+/*----------------------------------------------------------------*/
+
+
+// test if the ray intersects the given sphere
+template <typename TYPE, int DIMS>
+bool TRay<TYPE,DIMS>::Intersects(const SPHERE& sphere) const
+{
+	TYPE dSq;
+	if (!DistanceSq(sphere.center, dSq))
+		return false;
+	return dSq <= SQUARE(sphere.radius);
+}
+// same as above, but returns also the distance on the ray corresponding to the closest point
+template <typename TYPE, int DIMS>
+bool TRay<TYPE,DIMS>::Intersects(const SPHERE& sphere, TYPE& t) const
+{
+	const VECTOR a(sphere.center - m_pOrig);
+	t = a.dot(m_vDir);
+	// point behind the ray origin
+	if (t < TYPE(0))
+		return false;
+	const TYPE dSq((a - m_vDir*t).squaredNorm());
+	return dSq <= SQUARE(sphere.radius);
+} // Intersects(Sphere)
 /*----------------------------------------------------------------*/
 
 

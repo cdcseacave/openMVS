@@ -70,6 +70,38 @@ void PointCloud::RemovePoint(IDX idx)
 /*----------------------------------------------------------------*/
 
 
+// compute the axis-aligned bounding-box of the point-cloud
+PointCloud::Box PointCloud::GetAABB() const
+{
+	Box box(true);
+	for (const Point& X: points)
+		box.InsertFull(X);
+	return box;
+}
+// same, but only for points inside the given AABB
+PointCloud::Box PointCloud::GetAABB(const Box& bound) const
+{
+	Box box(true);
+	for (const Point& X: points)
+		if (bound.Intersects(X))
+			box.InsertFull(X);
+	return box;
+}
+// compute the axis-aligned bounding-box of the point-cloud
+// with more than the given number of views
+PointCloud::Box PointCloud::GetAABB(unsigned minViews) const
+{
+	if (pointViews.IsEmpty())
+		return GetAABB();
+	Box box(true);
+	FOREACH(idx, points)
+		if (pointViews[idx].GetSize() >= minViews)
+			box.InsertFull(points[idx]);
+	return box;
+}
+/*----------------------------------------------------------------*/
+
+
 // define a PLY file format composed only of vertices
 namespace BasicPLY {
 	typedef PointCloud::Point Point;
@@ -161,7 +193,7 @@ bool PointCloud::Save(const String& fileName) const
 
 	// create PLY object
 	ASSERT(!fileName.IsEmpty());
-	Util::ensureDirectory(fileName);
+	Util::ensureFolder(fileName);
 	PLY ply;
 	if (!ply.write(fileName, 1, BasicPLY::elem_names, PLY::BINARY_LE, 64*1024))
 		return false;

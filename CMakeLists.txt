@@ -3,7 +3,7 @@
 ########################################################################
 #
 # Project-wide settings
-CMAKE_MINIMUM_REQUIRED(VERSION 2.6.2)
+CMAKE_MINIMUM_REQUIRED(VERSION 3.1.0)
 
 # Name of the project.
 #
@@ -42,11 +42,13 @@ ConfigLibrary()
 # List configuration options
 SET(OpenMVS_USE_NONFREE ON CACHE BOOL "Build non-free (patented) functionality")
 SET(OpenMVS_USE_EXIV2 OFF CACHE BOOL "Link and use EXIV2 library")
+SET(OpenMVS_USE_CERES OFF CACHE BOOL "Enable CERES optimization library")
 SET(OpenMVS_USE_FAST_FLOAT2INT ON CACHE BOOL "Use an optimized code to convert real numbers to int")
 SET(OpenMVS_USE_FAST_INVSQRT OFF CACHE BOOL "Use an optimized code to compute the inverse square root (slower in fact on modern compilers)")
 SET(OpenMVS_USE_FAST_CBRT ON CACHE BOOL "Use an optimized code to compute the cubic root")
 SET(OpenMVS_USE_SSE ON CACHE BOOL "Enable SSE optimizations")
 SET(OpenMVS_USE_OPENMP ON CACHE BOOL "Enable OpenMP library")
+SET(OpenMVS_USE_OPENGL ON CACHE BOOL "Enable OpenGL library")
 SET(OpenMVS_USE_CUDA ON CACHE BOOL "Enable CUDA library")
 SET(OpenMVS_USE_BREAKPAD ON CACHE BOOL "Enable BreakPad library")
 SET(OpenMVS_CONFIG_INCLUDE_DIR "${CMAKE_BINARY_DIR}/" CACHE PATH "Where to create the build/platform specific header")
@@ -65,7 +67,17 @@ if(OpenMVS_USE_OPENMP)
 	endif()
 endif()
 
-SET(CUDA_CUDA_LIBRARY "")
+if(OpenMVS_USE_OPENGL)
+	FIND_PACKAGE(OpenGL)
+	if(OPENGL_FOUND)
+		INCLUDE_DIRECTORIES(${OPENGL_INCLUDE_DIR})
+		ADD_DEFINITIONS(${OpenGL_DEFINITIONS} -D_USE_OPENGL)
+		SET(_USE_OPENGL TRUE)
+	else()
+		MESSAGE("-- Can't find OpenGL. Continuing without it.")
+	endif()
+endif()
+
 if(OpenMVS_USE_CUDA)
 	FIND_PACKAGE(CUDA)
 	if(CUDA_FOUND)
@@ -73,8 +85,11 @@ if(OpenMVS_USE_CUDA)
 		ADD_DEFINITIONS(-D_USE_CUDA)
 		SET(_USE_CUDA TRUE)
 	else()
+		SET(CUDA_CUDA_LIBRARY "")
 		MESSAGE("-- Can't find CUDA. Continuing without it.")
 	endif()
+else()
+	SET(CUDA_CUDA_LIBRARY "")
 endif()
 
 if(OpenMVS_USE_BREAKPAD)
@@ -141,6 +156,10 @@ ADD_DEFINITIONS(${OpenMVS_DEFINITIONS})
 ADD_SUBDIRECTORY(libs)
 ADD_SUBDIRECTORY(apps)
 ADD_SUBDIRECTORY(docs)
+
+if(OpenMVS_USE_CERES)
+	SET(_USE_CERES TRUE)
+endif()
 
 # Set configuration file
 CONFIGURE_FILE("${OpenMVS_SOURCE_DIR}/build/Templates/ConfigLocal.h.in" "${OpenMVS_CONFIG_INCLUDE_DIR}/ConfigLocal.h")

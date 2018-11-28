@@ -166,7 +166,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	Util::ensureValidPath(OPT::strOutputFileName);
 	Util::ensureUnifySlash(OPT::strOutputFileName);
 	if (OPT::strOutputFileName.IsEmpty())
-		OPT::strOutputFileName = Util::getFullFileName(OPT::strInputFileName) + _T("_texture.mvs");
+		OPT::strOutputFileName = Util::getFileFullName(OPT::strInputFileName) + _T("_texture.mvs");
 
 	// initialize global options
 	Process::setCurrentProcessPriority((Process::Priority)OPT::nProcessPriority);
@@ -217,7 +217,7 @@ int main(int argc, LPCTSTR* argv)
 		VERBOSE("error: empty initial mesh");
 		return EXIT_FAILURE;
 	}
-	const String baseFileName(MAKE_PATH_SAFE(Util::getFullFileName(OPT::strOutputFileName)));
+	const String baseFileName(MAKE_PATH_SAFE(Util::getFileFullName(OPT::strOutputFileName)));
 	if (OPT::nOrthoMapResolution && !scene.mesh.textureDiffuse.empty()) {
 		// the input mesh is already textured and an orthographic projection was requested
 		goto ProjectOrtho;

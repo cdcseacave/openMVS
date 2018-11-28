@@ -142,9 +142,9 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	Util::ensureValidPath(OPT::strOutputFileName);
 	Util::ensureUnifySlash(OPT::strOutputFileName);
 	Util::ensureUnifySlash(OPT::strOutputImageFolder);
-	Util::ensureDirectorySlash(OPT::strOutputImageFolder);
+	Util::ensureFolderSlash(OPT::strOutputImageFolder);
 	if (OPT::strOutputFileName.IsEmpty())
-		OPT::strOutputFileName = Util::getFullFileName(OPT::strInputFileName) + MVS_EXT;
+		OPT::strOutputFileName = Util::getFileFullName(OPT::strInputFileName) + MVS_EXT;
 
 	// initialize global options
 	Process::setCurrentProcessPriority((Process::Priority)OPT::nProcessPriority);
@@ -379,7 +379,7 @@ int main(int argc, LPCTSTR* argv)
 		}
 		MVS::UndistortImage(imageData.camera, cameraNVM.GetNormalizedMeasurementDistortion(), imageData.image, imageData.image);
 		const String name(pathData + String::FormatString(_T("%05u.png"), i));
-		Util::ensureDirectory(name);
+		Util::ensureFolder(name);
 		if (!imageData.image.Save(name)) {
 			#ifdef _USE_OPENMP
 			bAbort = true;
@@ -398,7 +398,7 @@ int main(int argc, LPCTSTR* argv)
 	progress.close();
 
 	// write OpenMVS input data
-	scene.Save(MAKE_PATH_SAFE(OPT::strOutputFileName), (ARCHIVE_TYPE)OPT::nArchiveType);
+	scene.SaveInterface(MAKE_PATH_SAFE(OPT::strOutputFileName));
 
 	VERBOSE("Input data imported: %u cameras, %u poses, %u images, %u vertices (%s)", cameras.size(), cameras.size(), cameras.size(), vertices.size(), TD_TIMER_GET_FMT().c_str());
 

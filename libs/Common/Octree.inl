@@ -52,6 +52,16 @@ inline void TOctreeCell<TYPE,DIMS,DATA_TYPE>::Release()
 	delete[] m_child;
 	m_child = NULL;
 } // destructor
+// swap the two octrees
+template <typename TYPE, int DIMS, typename DATA_TYPE>
+inline void TOctreeCell<TYPE,DIMS,DATA_TYPE>::Swap(TOctreeCell& rhs)
+{
+	std::swap(m_child, rhs.m_child);
+	uint8_t tmpData[dataSize];
+	memcpy(tmpData, m_data, dataSize);
+	memcpy(m_data, rhs.m_data, dataSize);
+	memcpy(rhs.m_data, tmpData, dataSize);
+} // Swap
 /*----------------------------------------------------------------*/
 
 
@@ -138,6 +148,15 @@ inline void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE,SIZE,NOM,DENOM>::Release()
 	m_indices.Release();
 	m_root.Release();
 } // Release
+// swap the two octrees
+template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE, int SIZE, int NOM, int DENOM>
+inline void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE,SIZE,NOM,DENOM>::Swap(TOctree& rhs)
+{
+	std::swap(m_items, rhs.m_items);
+	m_indices.Swap(rhs.m_indices);
+	m_root.Swap(rhs.m_root);
+	std::swap(m_radius, rhs.m_radius);
+} // Swap
 /*----------------------------------------------------------------*/
 
 
@@ -256,14 +275,15 @@ void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE,SIZE,NOM,DENOM>::_CollectCells(con
 }
 template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE, int SIZE, int NOM, int DENOM>
 template <typename PARSER>
-void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE,SIZE,NOM,DENOM>::_ParseCells(CELL_TYPE& cell, PARSER& parser)
+void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE,SIZE,NOM,DENOM>::_ParseCells(CELL_TYPE& cell, TYPE radius, PARSER& parser)
 {
 	if (cell.IsLeaf()) {
-		parser(cell);
+		parser(cell, radius);
 		return;
 	}
+	const TYPE childRadius = radius / TYPE(2);
 	for (int i=0; i<CELL_TYPE::numChildren; ++i)
-		_ParseCells(cell.m_child[i], parser);
+		_ParseCells(cell.m_child[i], childRadius, parser);
 }
 /*----------------------------------------------------------------*/
 
@@ -279,7 +299,7 @@ template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE, in
 template <typename PARSER>
 void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE,SIZE,NOM,DENOM>::ParseCells(PARSER& parser)
 {
-	_ParseCells(m_root, parser);
+	_ParseCells(m_root, m_radius, parser);
 }
 /*----------------------------------------------------------------*/
 
