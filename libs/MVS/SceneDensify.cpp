@@ -711,10 +711,10 @@ bool DepthMapsData::EstimateDepthMap(IIndex idxImage)
 	// init integral images and index to image-ref map for the reference data
 	Image64F imageSum0;
 	cv::integral(image.image, imageSum0, CV_64F);
-	if (prevDepthMapSize != size) {
+	if (!depthData.mask.empty() || prevDepthMapSize != size) {
 		prevDepthMapSize = size;
-		BitMatrix mask;
-		DepthEstimator::MapMatrix2ZigzagIdx(size, coords, mask, MAXF(64,(int)nMaxThreads*8));
+		//BitMatrix mask;
+		DepthEstimator::MapMatrix2ZigzagIdx(size, coords, depthData.mask, MAXF(64,(int)nMaxThreads*8));
 	}
 
 	// init threads
