@@ -166,7 +166,6 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	if (OPT::b3Dnovator2COLMAP) {
 		if (OPT::strOutputFileName.empty())
 			OPT::strOutputFileName = Util::getFilePath(OPT::strInputFileName);
-		Util::ensureFolderSlash(OPT::strOutputFileName);
 	} else {
 		Util::ensureFolderSlash(OPT::strInputFileName);
 		if (OPT::strOutputFileName.empty())
@@ -745,6 +744,42 @@ bool ExportScene(const String& strFolder, const Interface& scene)
 	return true;
 }
 
+
+// export image poses in log format
+// see: http://redwood-data.org/indoor/fileformat.html
+// to support: https://www.tanksandtemples.org/tutorial
+bool ExportImagesLog(const String& fileName, const Interface& scene)
+{
+	LOG_OUT() << "Writing poses: " << fileName << std::endl;
+	Util::ensureFolder(fileName);
+	std::ofstream out(fileName);
+	if (!out.good()) {
+		VERBOSE("error: unable to open file '%s'", fileName.c_str());
+		return false;
+	}
+	out << std::setprecision(12);
+	for (uint32_t ID=0; ID<(uint32_t)scene.images.size(); ++ID) {
+		const Interface::Image& image = scene.images[ID];
+		Eigen::Matrix3d R(Eigen::Matrix3d::Identity());
+		Eigen::Vector3d t(Eigen::Vector3d::Zero());
+		if (image.poseID != NO_ID) {
+			const Interface::Platform& platform = scene.platforms[image.platformID];
+			const Interface::Platform::Pose& pose = platform.poses[image.poseID];
+			R = Eigen::Map<const EMat33d>(pose.R.val).transpose();
+			t = Eigen::Map<const EVec3d>(&pose.C.x);
+		}
+		Eigen::Matrix4d T(Eigen::Matrix4d::Identity());
+		T.topLeftCorner<3,3>() = R;
+		T.topRightCorner<3,1>() = t;
+		out << ID << _T(" ") << ID << _T(" ") << 0 << _T("\n");
+		out << T(0,0) << _T(" ") << T(0,1) << _T(" ") << T(0,2) << _T(" ") << T(0,3) << _T("\n");
+		out << T(1,0) << _T(" ") << T(1,1) << _T(" ") << T(1,2) << _T(" ") << T(1,3) << _T("\n");
+		out << T(2,0) << _T(" ") << T(2,1) << _T(" ") << T(2,2) << _T(" ") << T(2,3) << _T("\n");
+		out << T(3,0) << _T(" ") << T(3,1) << _T(" ") << T(3,2) << _T(" ") << T(3,3) << _T("\n");
+	}
+	return !out.fail();
+}
+
 int main(int argc, LPCTSTR* argv)
 {
 	#ifdef _DEBUGINFO
@@ -762,8 +797,14 @@ int main(int argc, LPCTSTR* argv)
 		Interface scene;
 		if (!ARCHIVE::SerializeLoad(scene, MAKE_PATH_SAFE(OPT::strInputFileName)))
 			return EXIT_FAILURE;
-		// write COLMAP input data
-		ExportScene(MAKE_PATH_SAFE(OPT::strOutputFileName), scene);
+		if (Util::getFileExt(OPT::strOutputFileName) == _T(".log")) {
+			// write poses in log format
+			ExportImagesLog(MAKE_PATH_SAFE(OPT::strOutputFileName), scene);
+		} else {
+			// write COLMAP input data
+			Util::ensureFolderSlash(OPT::strOutputFileName);
+			ExportScene(MAKE_PATH_SAFE(OPT::strOutputFileName), scene);
+		}
 		VERBOSE("Input data exported: %u images & %u vertices (%s)", scene.images.size(), scene.vertices.size(), TD_TIMER_GET_FMT().c_str());
 	} else {
 		// read COLMAP input data
