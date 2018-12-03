@@ -35,12 +35,12 @@ INT_TYPE cvRANSACUpdateNumIters(REAL_TYPE p, REAL_TYPE ep, INT_TYPE modelPoints,
 	ASSERT(p>=0 && p<=1);
 	ASSERT(ep>=0 && ep<=1);
 	// avoid inf's & nan's
-	REAL_TYPE num = MAXF(REAL_TYPE(1)-p, EPSILONTOLERANCE<REAL_TYPE>());
+	REAL_TYPE num = MAXF(REAL_TYPE(1)-p, SEACAVE::EPSILONTOLERANCE<REAL_TYPE>());
 	REAL_TYPE denom = REAL_TYPE(1)-POWI(REAL_TYPE(1)-ep, modelPoints);
-	if (denom < EPSILONTOLERANCE<REAL_TYPE>())
+	if (denom < SEACAVE::EPSILONTOLERANCE<REAL_TYPE>())
 		return 0;
-	num = LOGN(num);
-	denom = LOGN(denom);
+	num = SEACAVE::LOGN(num);
+	denom = SEACAVE::LOGN(denom);
 	return (denom >= 0 || -num >= (-denom)*maxIters ? maxIters : (INT_TYPE)ROUND2INT(num/denom));
 }
 #endif
