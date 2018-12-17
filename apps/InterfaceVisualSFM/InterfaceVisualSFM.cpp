@@ -374,7 +374,7 @@ int main(int argc, LPCTSTR* argv)
 			#pragma omp flush (bAbort)
 			continue;
 			#else
-			return false;
+			return EXIT_FAILURE;
 			#endif
 		}
 		MVS::UndistortImage(imageData.camera, cameraNVM.GetNormalizedMeasurementDistortion(), imageData.image, imageData.image);
@@ -386,7 +386,7 @@ int main(int argc, LPCTSTR* argv)
 			#pragma omp flush (bAbort)
 			continue;
 			#else
-			return false;
+			return EXIT_FAILURE;
 			#endif
 		}
 		imageData.ReleaseImage();

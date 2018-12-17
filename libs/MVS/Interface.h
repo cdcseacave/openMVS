@@ -304,7 +304,7 @@ bool Load(ArchiveLoad& a, cv::Point3_<_Tp>& pt) {
 // Serialization support for std::string
 template<>
 bool Save<std::string>(ArchiveSave& a, const std::string& s) {
-	const size_t size(s.size());
+	const uint64_t size(s.size());
 	Save(a, size);
 	if (size > 0)
 		a.stream.write(&s[0], sizeof(char)*size);
@@ -312,7 +312,7 @@ bool Save<std::string>(ArchiveSave& a, const std::string& s) {
 }
 template<>
 bool Load<std::string>(ArchiveLoad& a, std::string& s) {
-	size_t size;
+	uint64_t size;
 	Load(a, size);
 	if (size > 0) {
 		s.resize(size);
@@ -324,19 +324,19 @@ bool Load<std::string>(ArchiveLoad& a, std::string& s) {
 // Serialization support for std::vector
 template<typename _Tp>
 bool Save(ArchiveSave& a, const std::vector<_Tp>& v) {
-	const size_t size(v.size());
+	const uint64_t size(v.size());
 	Save(a, size);
-	for (size_t i=0; i<size; ++i)
+	for (uint64_t i=0; i<size; ++i)
 		Save(a, v[i]);
 	return true;
 }
 template<typename _Tp>
 bool Load(ArchiveLoad& a, std::vector<_Tp>& v) {
-	size_t size;
+	uint64_t size;
 	Load(a, size);
 	if (size > 0) {
 		v.resize(size);
-		for (size_t i=0; i<size; ++i)
+		for (uint64_t i=0; i<size; ++i)
 			Load(a, v[i]);
 	}
 	return true;

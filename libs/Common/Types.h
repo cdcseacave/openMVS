@@ -196,6 +196,10 @@ namespace cv { namespace gpu = cuda; }
 #ifndef __THREAD__
 # ifdef _MSC_VER
 #  define __THREAD__ ((unsigned)GetCurrentThreadId())
+# elif defined(__APPLE__)
+#  include <pthread.h>
+inline pid_t GetCurrentThreadId() { uint64_t tid64; pthread_threadid_np(NULL, &tid64); return (pid_t)tid64; }
+#  define __THREAD__ ((unsigned)GetCurrentThreadId())
 # else
 #  include <sys/syscall.h>
 #  define __THREAD__ ((unsigned)((pid_t)syscall(SYS_gettid)))
