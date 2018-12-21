@@ -46,6 +46,8 @@ namespace VIEWER {
 class Camera
 {
 public:
+	EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+
 	AABB3d box;
 	int width, height;
 	Eigen::Quaterniond rotation;
@@ -66,7 +68,8 @@ public:
 	void SetFOV(double _fov);
 
 	Eigen::Vector3d GetPosition() const;
-	void GetLookAt(Eigen::Vector3d& eye, Eigen::Vector3d& center, Eigen::Vector3d& up);
+	Eigen::Matrix4d GetLookAt() const;
+	void GetLookAt(Eigen::Vector3d& eye, Eigen::Vector3d& center, Eigen::Vector3d& up) const;
 	void Rotate(const Eigen::Vector2d& pos, const Eigen::Vector2d& prevPos);
 
 protected:

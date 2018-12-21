@@ -79,7 +79,7 @@ bool Image::ReadImage(IMAGEPTR pImage, Image8U3& image)
 		return false;
 	}
 	image.create(pImage->GetHeight(), pImage->GetWidth());
-	if (FAILED(pImage->ReadData(image.data, PF_R8G8B8, 3, (UINT)image.step))) {
+	if (FAILED(pImage->ReadData(image.data, PF_R8G8B8, 3, (CImage::Size)image.step))) {
 		LOG("error: failed loading image data");
 		return false;
 	}

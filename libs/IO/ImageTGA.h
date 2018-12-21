@@ -25,9 +25,9 @@ public:
 	virtual ~CImageTGA();
 
 	HRESULT		ReadHeader();
-	HRESULT		ReadData(void*, PIXELFORMAT, UINT nStride, UINT lineWidth);
-	HRESULT		WriteHeader(PIXELFORMAT, UINT width, UINT height, BYTE numLevels);
-	HRESULT		WriteData(void*, PIXELFORMAT, UINT nStride, UINT lineWidth);
+	HRESULT		ReadData(void*, PIXELFORMAT, Size nStride, Size lineWidth);
+	HRESULT		WriteHeader(PIXELFORMAT, Size width, Size height, BYTE numLevels);
+	HRESULT		WriteData(void*, PIXELFORMAT, Size nStride, Size lineWidth);
 
 protected:
 	bool		m_bRLE;

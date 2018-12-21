@@ -279,7 +279,7 @@ int main(int argc, LPCTSTR* argv)
 			#if TD_VERBOSE != TD_VERBOSE_OFF
 			if (VERBOSITY_LEVEL > 2) {
 				// dump raw mesh
-				scene.mesh.Save(MAKE_PATH_SAFE(Util::getFileFullName(OPT::strOutputFileName)+_T("_raw")+OPT::strExportType));
+				scene.mesh.Save(MAKE_PATH_SAFE(Util::getFileFullName(OPT::strOutputFileName))+_T("_raw")+OPT::strExportType);
 			}
 			#endif
 		} else {

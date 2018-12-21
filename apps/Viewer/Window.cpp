@@ -124,7 +124,6 @@ void Window::Reset()
 void Window::UpdateView(const ImageArr& images, const MVS::ImageArr& sceneImages)
 {
 	glMatrixMode(GL_MODELVIEW);
-	glLoadIdentity();
 	if (camera->prevCamID != camera->currentCamID && camera->currentCamID != NO_ID) {
 		// enable camera view mode
 		// apply current camera transform
@@ -132,13 +131,12 @@ void Window::UpdateView(const ImageArr& images, const MVS::ImageArr& sceneImages
 		const MVS::Image& imageData = sceneImages[image.idx];
 		const MVS::Camera& camera = imageData.camera;
 		const Eigen::Matrix4d trans(TransW2L((const Matrix3x3::EMat)camera.R, camera.GetT()));
-		glMultMatrixf((GLfloat*)gs_convert);
+		glLoadMatrixf((GLfloat*)gs_convert);
 		glMultMatrixd((GLdouble*)trans.data());
 	} else {
 		// apply view point transform
-		Eigen::Vector3d eye, center, up;
-		camera->GetLookAt(eye, center, up);
-		gluLookAt(eye.x(), eye.y(), eye.z(), center.x(), center.y(), center.z(), up.x(), up.y(), up.z());
+		const Eigen::Matrix4d trans(camera->GetLookAt());
+		glLoadMatrixd((GLdouble*)trans.data());
 	}
 }
 
@@ -165,7 +163,7 @@ void Window::Resize(GLFWwindow* window, int width, int height)
 	g_mapWindows[window]->Resize(width, height);
 }
 
-void Window::Key(int k, int scancode, int action, int mod)
+void Window::Key(int k, int /*scancode*/, int action, int mod)
 {
 	switch (k) {
 	case GLFW_KEY_ESCAPE:
@@ -278,7 +276,7 @@ void Window::Key(GLFWwindow* window, int k, int scancode, int action, int mod)
 	g_mapWindows[window]->Key(k, scancode, action, mod);
 }
 
-void Window::MouseButton(int button, int action, int mods)
+void Window::MouseButton(int button, int action, int /*mods*/)
 {
 	if (clbkRayScene != NULL && button == GLFW_MOUSE_BUTTON_LEFT) {
 		typedef Eigen::Matrix<double,4,4,Eigen::ColMajor> Mat4;
@@ -305,7 +303,7 @@ void Window::MouseButton(GLFWwindow* window, int button, int action, int mods)
 	g_mapWindows[window]->MouseButton(button, action, mods);
 }
 
-void Window::Scroll(double xoffset, double yoffset)
+void Window::Scroll(double /*xoffset*/, double yoffset)
 {
 	camera->dist *= (yoffset>0 ? POW(1.11,yoffset) : POW(0.9,-yoffset));
 }

@@ -55,49 +55,50 @@ class IO_API CImage
 	DECLARE_LOG();
 
 public:
-	typedef enum IMCREATE_TYPE {
+	enum IMCREATE {
 		READ,
 		WRITE
-	} IMCREATE;
+	};
+	typedef uint32_t Size;
 
 	CImage()			{}
 	virtual ~CImage()	{}
 
-	virtual HRESULT		Reset(UINT width, UINT height, PIXELFORMAT pixFormat, UINT levels = 1, bool bAllocate = false);
+	virtual HRESULT		Reset(Size width, Size height, PIXELFORMAT pixFormat, Size levels = 1, bool bAllocate = false);
 	virtual HRESULT		Reset(LPCTSTR szFileName, IMCREATE mode);
 	virtual HRESULT		Reset(IOSTREAMPTR& pStream);
 	virtual void		Close();
 
 	virtual HRESULT		ReadHeader();
-	virtual HRESULT		ReadData(void*, PIXELFORMAT, UINT nStride, UINT lineWidth);
+	virtual HRESULT		ReadData(void*, PIXELFORMAT, Size nStride, Size lineWidth);
 
-	virtual HRESULT		WriteHeader(PIXELFORMAT, UINT width, UINT height, BYTE numLevels);
-	virtual HRESULT		WriteData(void*, PIXELFORMAT, UINT nStride, UINT lineWidth);
+	virtual HRESULT		WriteHeader(PIXELFORMAT, Size width, Size height, BYTE numLevels);
+	virtual HRESULT		WriteData(void*, PIXELFORMAT, Size nStride, Size lineWidth);
 
 	const IOSTREAMPTR&	GetStream() const		{ return m_pStream; }
 	IOSTREAMPTR&		GetStream()				{ return m_pStream; }
 	BYTE*				GetData() const			{ return m_data; }
 	BYTE*&				GetData()				{ return m_data; }
 	size_t				GetDataSize() const		{ return m_lineWidth * m_dataHeight; }
-	UINT				GetWidth() const		{ return m_width; }
-	UINT				GetHeight() const		{ return m_height; }
-	UINT				GetDataWidth() const	{ return m_dataWidth; }
-	UINT				GetDataHeight() const	{ return m_dataHeight; }
-	UINT				GetStride() const		{ return m_stride; }
-	UINT				GetLineWidth() const	{ return m_lineWidth; }
+	Size				GetWidth() const		{ return m_width; }
+	Size				GetHeight() const		{ return m_height; }
+	Size				GetDataWidth() const	{ return m_dataWidth; }
+	Size				GetDataHeight() const	{ return m_dataHeight; }
+	Size				GetStride() const		{ return m_stride; }
+	Size				GetLineWidth() const	{ return m_lineWidth; }
 	BYTE				GetNumLevels() const	{ return m_numLevels; }
 	PIXELFORMAT			GetFormat() const		{ return m_format; }
 	bool				FormatHasAlpha() const	{ return FormatHasAlpha(m_format); }
 	const String&		GetFileName() const		{ return m_fileName; }
 	String&				GetFileName()			{ return m_fileName; }
 
-	UINT				GetDataSizes(UINT mipLevel, UINT& width, UINT& height) const;
+	Size				GetDataSizes(Size mipLevel, Size& width, Size& height) const;
 
-	static UINT			GetStride(PIXELFORMAT); //in bits
+	static Size			GetStride(PIXELFORMAT); //in bits
 	static bool			FormatHasAlpha(PIXELFORMAT);
-	static bool			FilterFormat(void*, PIXELFORMAT, UINT, const void*, PIXELFORMAT, UINT, UINT nSzize);
-	static void			FlipRB24(uint8_t* data, UINT size, UINT stride);
-	static void			CopyFlipRB24(uint8_t* pDst, const uint8_t* pSrc, UINT size, UINT strideDst, UINT strideSrc);
+	static bool			FilterFormat(void*, PIXELFORMAT, Size, const void*, PIXELFORMAT, Size, Size nSzize);
+	static void			FlipRB24(uint8_t* data, Size size, Size stride);
+	static void			CopyFlipRB24(uint8_t* pDst, const uint8_t* pSrc, Size size, Size strideDst, Size strideSrc);
 
 	static CImage*		Create(LPCTSTR szName, IMCREATE mode);
 
@@ -108,12 +109,12 @@ public:
 protected:
 	IOSTREAMPTR			m_pStream;		// stream used to read/write the image data
 	CAutoPtrArr<BYTE>	m_data;			// image's data buffer
-	UINT				m_width;		// image width in pixels
-	UINT				m_height;		// image height in pixels
-	UINT				m_dataWidth;	// image's data width including mipmaps
-	UINT				m_dataHeight;	// image's data height
-	UINT				m_stride;		// bytes per pixel
-	UINT				m_lineWidth;	// image canvas width in bytes
+	Size				m_width;		// image width in pixels
+	Size				m_height;		// image height in pixels
+	Size				m_dataWidth;	// image's data width including mipmaps
+	Size				m_dataHeight;	// image's data height
+	Size				m_stride;		// bytes per pixel
+	Size				m_lineWidth;	// image canvas width in bytes
 	PIXELFORMAT			m_format;		// image format (pixel type)
 	BYTE				m_numLevels;	// number of mipmap levels (0 = auto-generate)
 	BYTE				m_level;		// index of the mipmap level currently reading

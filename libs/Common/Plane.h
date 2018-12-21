@@ -53,8 +53,8 @@ public:
 	inline TYPE Distance(const POINT&) const;
 	inline TYPE DistanceAbs(const POINT&) const;
 
-	inline UINT Classify(const POINT&) const;
-	inline UINT Classify(const AABB&) const;
+	inline GCLASS Classify(const POINT&) const;
+	inline GCLASS Classify(const AABB&) const;
 
 	bool Clip(const RAY&, TYPE, RAY*, RAY*) const;
 
@@ -100,9 +100,9 @@ public:
 	void Set(const MATRIX4x4&, TYPE width, TYPE height, TYPE near=TYPE(0.0001), TYPE far=TYPE(1000));
 	void Set(const MATRIX3x4&, TYPE width, TYPE height, TYPE near=TYPE(0.0001), TYPE far=TYPE(1000));
 
-	UINT Classify(const POINT&) const;
-	UINT Classify(const SPHERE&) const;
-	UINT Classify(const AABB&) const;
+	GCLASS Classify(const POINT&) const;
+	GCLASS Classify(const SPHERE&) const;
+	GCLASS Classify(const AABB&) const;
 
 	inline TYPE& operator [] (BYTE i) { ASSERT(i<DIMS); return m_planes[i]; }
 	inline TYPE operator [] (BYTE i) const { ASSERT(i<DIMS); return m_planes[i]; }

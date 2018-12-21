@@ -262,6 +262,7 @@ const float DepthEstimator::scaleRanges[12] = {1.f, 0.5f, 0.25f, 0.125f, 0.0625f
 
 DepthEstimator::DepthEstimator(DepthData& _depthData0, volatile Thread::safe_t& _idx, const Image64F& _image0Sum, const MapRefArr& _coords, ENDIRECTION _dir)
 	:
+	neighborsData(0,4), neighbors(0,2),
 	idxPixel(_idx),
 	scores(_depthData0.images.size()-1),
 	depthMap0(_depthData0.depthMap), normalMap0(_depthData0.normalMap), confMap0(_depthData0.confMap),
@@ -271,7 +272,6 @@ DepthEstimator::DepthEstimator(DepthData& _depthData0, volatile Thread::safe_t& 
 	idxScore((_depthData0.images.size()-1)/3),
 	#endif
 	dir(_dir), dMin(_depthData0.dMin), dMax(_depthData0.dMax),
-	neighborsData(0,4), neighbors(0,2),
 	smoothBonusDepth(1.f-OPTDENSE::fRandomSmoothBonus), smoothBonusNormal((1.f-OPTDENSE::fRandomSmoothBonus)*0.96f),
 	smoothSigmaDepth(-1.f/(2.f*SQUARE(OPTDENSE::fRandomSmoothDepth))), // used in exp(-x^2 / (2*(0.006^2)))
 	smoothSigmaNormal(-1.f/(2.f*SQUARE(FD2R(OPTDENSE::fRandomSmoothNormal)))), // used in exp(-x^2 / (2*(0.15^2)))

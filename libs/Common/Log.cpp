@@ -33,7 +33,7 @@ Log::Log()
 	#ifndef DEFAULT_LOGTYPE
 	String appName = Util::getAppName();
 	appName = (Util::getFileExt(appName) == _T(".exe") ? Util::getFileName(appName) : Util::getFileNameExt(appName));
-	UINT n = MINF((UINT)appName.length(), (UINT)LOGTYPE_SIZE);
+	Idx n = MINF((Idx)appName.length(), (Idx)LOGTYPE_SIZE);
 	_tcsncpy(g_appType.szName, appName, n);
 	while (n < LOGTYPE_SIZE)
 		g_appType.szName[n++] = _T(' ');
@@ -58,12 +58,12 @@ void Log::UnregisterListener(ClbkRecordMsg clbk)
 }
 
 //Register a new type of log messages (LOGTYPE_SIZE chars)
-UINT Log::RegisterType(LPCTSTR lt)
+Log::Idx Log::RegisterType(LPCTSTR lt)
 {
 	ASSERT(strlen(lt) == LOGTYPE_SIZE);
-	const UINT idx = (UINT)m_arrLogTypes.GetSize();
+	const Idx idx = (Idx)m_arrLogTypes.GetSize();
 	LogType& logType = m_arrLogTypes.AddEmpty();
-	UINT n = MINF((UINT)strlen(lt), (UINT)LOGTYPE_SIZE);
+	Idx n = MINF((Idx)strlen(lt), (Idx)LOGTYPE_SIZE);
 	_tcsncpy(logType.szName, lt, n);
 	while (n < LOGTYPE_SIZE)
 		logType.szName[n++] = _T(' ');
@@ -88,7 +88,7 @@ void Log::Write(LPCTSTR szFormat, ...)
 	_Record(NO_ID, szFormat, args);
 	va_end(args);
 }
-void Log::Write(UINT lt, LPCTSTR szFormat, ...)
+void Log::Write(Idx lt, LPCTSTR szFormat, ...)
 {
 	if (m_arrRecordClbk == NULL)
 		return;
@@ -100,11 +100,11 @@ void Log::Write(UINT lt, LPCTSTR szFormat, ...)
 
 /**
  * Write message to the log if this exists
- * -> IN: UINT - log type
+ * -> IN: Idx - log type
  *        LPCTSTR - format message
  *        ...  - values
  */
-void Log::_Record(UINT lt, LPCTSTR szFormat, va_list args)
+void Log::_Record(Idx lt, LPCTSTR szFormat, va_list args)
 {
 	ASSERT(m_arrRecordClbk != NULL);
 	if (m_arrRecordClbk->IsEmpty())

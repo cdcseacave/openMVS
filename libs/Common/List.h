@@ -68,8 +68,8 @@
 #define CLISTREFVECTOR(CLIST, var, vec) uint8_t _ArrData##var[sizeof(CLIST)]; new(_ArrData##var) CLIST(vec.size(), &vec[0]); const CLIST& var(*((const CLIST*)_ArrData##var))
 #endif
 
-#define CLISTDEF(TYPE) SEACAVE::cList< TYPE, const TYPE&, 1 >
 #define CLISTDEF0(TYPE) SEACAVE::cList< TYPE, const TYPE&, 0 >
+#define CLISTDEF2(TYPE) SEACAVE::cList< TYPE, const TYPE&, 2 >
 #define CLISTDEFIDX(TYPE,IDXTYPE) SEACAVE::cList< TYPE, const TYPE&, 1, 16, IDXTYPE >
 #define CLISTDEF0IDX(TYPE,IDXTYPE) SEACAVE::cList< TYPE, const TYPE&, 0, 16, IDXTYPE >
 

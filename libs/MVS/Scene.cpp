@@ -279,7 +279,46 @@ bool Scene::SaveInterface(const String & fileName) const
 } // SaveInterface
 /*----------------------------------------------------------------*/
 
-bool Scene::Load(const String& fileName)
+// try to load known point-cloud or mesh files
+bool Scene::Import(const String& fileName)
+{
+	const String ext(Util::getFileExt(fileName).ToLower());
+	if (ext == _T(".obj")) {
+		// import mesh from obj file
+		Release();
+		return mesh.Load(fileName);
+	}
+	if (ext == _T(".ply")) {
+		// import point-cloud/mesh from ply file
+		Release();
+		int nVertices(0), nFaces(0);
+		{
+		PLY ply;
+		if (!ply.read(fileName)) {
+			DEBUG_EXTRA("error: invalid PLY file");
+			return false;
+		}
+		for (int i = 0; i < (int)ply.elems.size(); ++i) {
+			int elem_count;
+			LPCSTR elem_name = ply.setup_element_read(i, &elem_count);
+			if (PLY::equal_strings("vertex", elem_name)) {
+				nVertices = elem_count;
+			} else
+			if (PLY::equal_strings("face", elem_name)) {
+				nFaces = elem_count;
+			}
+		}
+		}
+		if (nVertices && nFaces)
+			return mesh.Load(fileName);
+		if (nVertices)
+			return pointcloud.Load(fileName);
+	}
+	return false;
+} // Import
+/*----------------------------------------------------------------*/
+
+bool Scene::Load(const String& fileName, bool bImport)
 {
 	TD_TIMER_STARTD();
 	Release();
@@ -294,6 +333,8 @@ bool Scene::Load(const String& fileName)
 	fs.read(szHeader, 4);
 	if (!fs || _tcsncmp(szHeader, PROJECT_ID, 4) != 0) {
 		fs.close();
+		if (bImport && Import(fileName))
+			return true;
 		if (LoadInterface(fileName))
 			return true;
 		VERBOSE("error: invalid project");
@@ -546,14 +587,16 @@ bool Scene::ExportCamerasMLP(const String& fileName, const String& fileNameScene
 		"   </MLMatrix44>\n"
 		"  </MLMesh>\n"
 		" </MeshGroup>\n";
-	static const char mlp_raster[] =
+	static const char mlp_raster_pos[] =
 		"  <MLRaster label=\"%s\">\n"
-		"   <VCGCamera TranslationVector=\"%0.6g %0.6g %0.6g 1\""
+		"   <VCGCamera TranslationVector=\"%0.6g %0.6g %0.6g 1\"";
+	static const char mlp_raster_cam[] =
 		" LensDistortion=\"%0.6g %0.6g\""
 		" ViewportPx=\"%u %u\""
 		" PixelSizeMm=\"1 %0.4f\""
 		" FocalMm=\"%0.4f\""
-		" CenterPx=\"%0.4f %0.4f\""
+		" CenterPx=\"%0.4f %0.4f\"";
+	static const char mlp_raster_rot[] =
 		" RotationMatrix=\"%0.6g %0.6g %0.6g 0 %0.6g %0.6g %0.6g 0 %0.6g %0.6g %0.6g 0 0 0 0 1\"/>\n"
 		"   <Plane semantic=\"\" fileName=\"%s\"/>\n"
 		"  </MLRaster>\n";
@@ -572,13 +615,17 @@ bool Scene::ExportCamerasMLP(const String& fileName, const String& fileNameScene
 		if (!imageData.IsValid())
 			continue;
 		const Camera& camera = imageData.camera;
-		f.print(mlp_raster,
+		f.print(mlp_raster_pos,
 			Util::getFileName(imageData.name).c_str(),
-			-camera.C.x, -camera.C.y, -camera.C.z,
+			-camera.C.x, -camera.C.y, -camera.C.z
+		);
+		f.print(mlp_raster_cam,
 			0, 0,
 			imageData.width, imageData.height,
 			camera.K(1,1)/camera.K(0,0), camera.K(0,0),
-			camera.K(0,2), camera.K(1,2),
+			camera.K(0,2), camera.K(1,2)
+		);
+		f.print(mlp_raster_rot,
 			 camera.R(0,0),  camera.R(0,1),  camera.R(0,2),
 			-camera.R(1,0), -camera.R(1,1), -camera.R(1,2),
 			-camera.R(2,0), -camera.R(2,1), -camera.R(2,2),

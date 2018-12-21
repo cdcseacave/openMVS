@@ -150,18 +150,18 @@ HRESULT CImagePNG::ReadHeader()
 	png_set_interlace_handling(png_ptr);
 	png_read_update_info(png_ptr, info_ptr);
 
-	m_dataWidth	= m_width	= (UINT)width;
-	m_dataHeight= m_height	= (UINT)height;
+	m_dataWidth	= m_width	= (Size)width;
+	m_dataHeight= m_height	= (Size)height;
 	m_numLevels	= 0;
 	m_level		= 0;
-	m_lineWidth	= (UINT)png_get_rowbytes(png_ptr, info_ptr);
+	m_lineWidth	= (Size)png_get_rowbytes(png_ptr, info_ptr);
 
 	return _OK;
 } // ReadHeader
 /*----------------------------------------------------------------*/
 
 
-HRESULT CImagePNG::ReadData(void* pData, PIXELFORMAT dataFormat, UINT nStride, UINT lineWidth)
+HRESULT CImagePNG::ReadData(void* pData, PIXELFORMAT dataFormat, Size nStride, Size lineWidth)
 {
 	png_structp png_ptr = (png_structp)m_png_ptr;
 
@@ -175,12 +175,12 @@ HRESULT CImagePNG::ReadData(void* pData, PIXELFORMAT dataFormat, UINT nStride, U
 			ASSERT(m_format == dataFormat);
 		}
 		// read image directly to the data buffer
-		for (UINT j=0; j<m_height; ++j, (BYTE*&)pData+=lineWidth)
+		for (Size j=0; j<m_height; ++j, (BYTE*&)pData+=lineWidth)
 			png_read_row(png_ptr, (png_bytep)pData, NULL);
 	} else {
 		// read image to a buffer and convert it
 		CAutoPtrArr<png_byte> const buffer(new png_byte[m_lineWidth]);
-		for (UINT j=0; j<m_height; ++j, pData=(uint8_t*)pData+lineWidth) {
+		for (Size j=0; j<m_height; ++j, pData=(uint8_t*)pData+lineWidth) {
 			png_read_row(png_ptr, buffer, NULL);
 			if (!FilterFormat(pData, dataFormat, nStride, buffer, m_format, m_stride, m_width))
 				return _FAIL;
@@ -192,7 +192,7 @@ HRESULT CImagePNG::ReadData(void* pData, PIXELFORMAT dataFormat, UINT nStride, U
 /*----------------------------------------------------------------*/
 
 
-HRESULT CImagePNG::WriteHeader(PIXELFORMAT imageFormat, UINT width, UINT height, BYTE /*numLevels*/)
+HRESULT CImagePNG::WriteHeader(PIXELFORMAT imageFormat, Size width, Size height, BYTE /*numLevels*/)
 {
 	// initialize stuff
 	ASSERT(m_png_ptr == NULL);
@@ -273,7 +273,7 @@ HRESULT CImagePNG::WriteHeader(PIXELFORMAT imageFormat, UINT width, UINT height,
 /*----------------------------------------------------------------*/
 
 
-HRESULT CImagePNG::WriteData(void* pData, PIXELFORMAT dataFormat, UINT nStride, UINT lineWidth)
+HRESULT CImagePNG::WriteData(void* pData, PIXELFORMAT dataFormat, Size nStride, Size lineWidth)
 {
 	png_structp png_ptr = (png_structp)m_png_ptr;
 
@@ -287,12 +287,12 @@ HRESULT CImagePNG::WriteData(void* pData, PIXELFORMAT dataFormat, UINT nStride, 
 			ASSERT(m_format == dataFormat);
 		}
 		// write image directly to the data buffer
-		for (UINT j=0; j<m_height; ++j, (BYTE*&)pData+=lineWidth)
+		for (Size j=0; j<m_height; ++j, (BYTE*&)pData+=lineWidth)
 			png_write_row(png_ptr, (png_bytep)pData);
 	} else {
 		// read image to a buffer and convert it
 		CAutoPtrArr<png_byte> const buffer(new png_byte[m_lineWidth]);
-		for (UINT j=0; j<m_height; ++j, pData=(uint8_t*)pData+lineWidth) {
+		for (Size j=0; j<m_height; ++j, pData=(uint8_t*)pData+lineWidth) {
 			if (!FilterFormat(buffer, m_format, m_stride, pData, dataFormat, nStride, m_width))
 				return _FAIL;
 			png_write_row(png_ptr, buffer);

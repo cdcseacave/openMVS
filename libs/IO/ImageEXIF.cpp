@@ -133,20 +133,20 @@ HRESULT CImageEXIF::ReadHeader()
 } // ReadHeader
 /*----------------------------------------------------------------*/
 
-HRESULT CImageEXIF::ReadData(void* pData, PIXELFORMAT dataFormat, UINT nStride, UINT lineWidth)
+HRESULT CImageEXIF::ReadData(void* pData, PIXELFORMAT dataFormat, Size nStride, Size lineWidth)
 {
 	return _FAIL;
 } // ReadData
 /*----------------------------------------------------------------*/
 
-HRESULT CImageEXIF::WriteHeader(PIXELFORMAT imageFormat, UINT width, UINT height, BYTE numLevels)
+HRESULT CImageEXIF::WriteHeader(PIXELFORMAT imageFormat, Size width, Size height, BYTE numLevels)
 {
 	//TODO: to implement the EXIF encoder
 	return _OK;
 } // WriteHeader
 /*----------------------------------------------------------------*/
 
-HRESULT CImageEXIF::WriteData(void* pData, PIXELFORMAT dataFormat, UINT nStride, UINT lineWidth)
+HRESULT CImageEXIF::WriteData(void* pData, PIXELFORMAT dataFormat, Size nStride, Size lineWidth)
 {
 	//TODO: to implement the EXIF encoder
 	return _OK;

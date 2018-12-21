@@ -446,7 +446,7 @@ std::pair<float,float> TriangulatePointsDelaunay(CGAL::Delaunay& delaunay, const
 				continue; // normally this should never happen
 			const CGAL::FaceCirculator done(cfc);
 			Point3d& poszA = (Point3d&)vcorner->point();
-			const Point2d& posA = (const Point2d&)poszA;
+			const Point2d& posA = reinterpret_cast<const Point2d&>(poszA);
 			const Ray3d rayA(Point3d::ZERO, normalized(image.camera.TransformPointI2C(poszA)));
 			DepthDistArr depths(0, numPoints);
 			do {
@@ -470,7 +470,7 @@ std::pair<float,float> TriangulatePointsDelaunay(CGAL::Delaunay& delaunay, const
 				const Point3d poszB(rayA.Intersects(planeB));
 				if (poszB.z <= 0)
 					continue;
-				const Point2d posB(((const Point2d&)poszB0+(const Point2d&)poszB1+(const Point2d&)poszB2)/3.f);
+				const Point2d posB((reinterpret_cast<const Point2d&>(poszB0)+reinterpret_cast<const Point2d&>(poszB1)+reinterpret_cast<const Point2d&>(poszB2))/3.f);
 				const REAL dist(norm(posB-posA));
 				depths.StoreTop<numPoints>(DepthDist((float)poszB.z, 1.f/(float)dist));
 				}
@@ -541,7 +541,7 @@ bool DepthMapsData::InitDepthMap(DepthData& depthData)
 		data.normal = normalized(edge2.cross(edge1));
 		data.normalPlane = data.normal * INVERT(data.normal.dot(c0));
 		// draw triangle and for each pixel compute depth as the ray intersection with the plane
-		Image8U::RasterizeTriangle((const Point2f&)i2, (const Point2f&)i1, (const Point2f&)i0, data);
+		Image8U::RasterizeTriangle(reinterpret_cast<const Point2f&>(i2), reinterpret_cast<const Point2f&>(i1), reinterpret_cast<const Point2f&>(i0), data);
 	}
 
 	DEBUG_ULTIMATE("Depth-map %3u roughly estimated from %u sparse points: %dx%d (%s)", &depthData-arrDepthData.Begin(), depthData.points.GetSize(), image.image.width(), image.image.height(), TD_TIMER_GET_FMT().c_str());
@@ -1332,7 +1332,7 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateNormal)
 	CLISTDEF0(Depth*) invalidDepths(0, 32);
 	size_t nDepths(0);
 	typedef TImage<cuint32_t> DepthIndex;
-	typedef CLISTDEF(DepthIndex) DepthIndexArr;
+	typedef cList<DepthIndex> DepthIndexArr;
 	DepthIndexArr arrDepthIdx(scene.images.GetSize());
 	ProjsArr projs(0, nPointsEstimate);
 	pointcloud.points.Reserve(nPointsEstimate);

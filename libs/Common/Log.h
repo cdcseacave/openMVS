@@ -25,9 +25,9 @@
 #define DEFAULT_LOGTYPE	_T("App     ")
 
 #define DECLARE_LOG() \
-	protected: static const UINT ms_nLogType;
+	protected: static const Log::Idx ms_nLogType;
 #define DEFINE_LOG(classname, log) \
-	const UINT classname::ms_nLogType(REGISTER_LOG(log));
+	const Log::Idx classname::ms_nLogType(REGISTER_LOG(log));
 
 #ifdef LOG_THREAD
 #include "CriticalSection.h"
@@ -43,6 +43,7 @@ class GENERAL_API Log
 	DECLARE_SINGLETON(Log);
 
 public:
+	typedef uint32_t Idx;
 	typedef DELEGATE<void (const String&)> ClbkRecordMsg;
 	typedef cList<ClbkRecordMsg> ClbkRecordMsgArray;
 	typedef CSharedPtr<ClbkRecordMsgArray> ClbkRecordMsgArrayPtr;
@@ -54,10 +55,10 @@ public:
 	void		Join(Log& log) { m_arrRecordClbk = log.m_arrRecordClbk; }
 	void		RegisterListener(ClbkRecordMsg);
 	void		UnregisterListener(ClbkRecordMsg);
-	UINT		RegisterType(LPCTSTR);
+	Idx 		RegisterType(LPCTSTR);
 	void		ResetTypes();
 	void		Write(LPCTSTR, ...);
-	void		Write(UINT, LPCTSTR, ...);
+	void		Write(Idx, LPCTSTR, ...);
 
 	#ifdef LOG_STREAM
 	template<class T> inline Log& operator<<(const T& val) {
@@ -95,7 +96,7 @@ public:
 
 protected:
 	// write a message of a certain type to the log
-	void		_Record(UINT, LPCTSTR, va_list); 
+	void		_Record(Idx, LPCTSTR, va_list); 
 
 protected:
 	struct LogType {

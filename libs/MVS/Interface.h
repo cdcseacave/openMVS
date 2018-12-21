@@ -10,7 +10,7 @@
 // D E F I N E S ///////////////////////////////////////////////////
 
 #define MVSI_PROJECT_ID "MVSI" // identifies the project stream
-#define MVSI_PROJECT_VER ((uint32_t)2) // identifies the version of a project stream
+#define MVSI_PROJECT_VER ((uint32_t)3) // identifies the version of a project stream
 
 // set a default namespace name if none given
 #ifndef _INTERFACE_NAMESPACE
@@ -273,7 +273,7 @@ bool Load<TYPE>(ArchiveLoad& a, TYPE& v) { \
 
 // Serialization support for basic types
 ARCHIVE_DEFINE_TYPE(uint32_t)
-ARCHIVE_DEFINE_TYPE(size_t)
+ARCHIVE_DEFINE_TYPE(uint64_t)
 ARCHIVE_DEFINE_TYPE(float)
 ARCHIVE_DEFINE_TYPE(double)
 
@@ -304,7 +304,7 @@ bool Load(ArchiveLoad& a, cv::Point3_<_Tp>& pt) {
 // Serialization support for std::string
 template<>
 bool Save<std::string>(ArchiveSave& a, const std::string& s) {
-	const size_t size(s.size());
+	const uint64_t size(s.size());
 	Save(a, size);
 	if (size > 0)
 		a.stream.write(&s[0], sizeof(char)*size);
@@ -312,7 +312,7 @@ bool Save<std::string>(ArchiveSave& a, const std::string& s) {
 }
 template<>
 bool Load<std::string>(ArchiveLoad& a, std::string& s) {
-	size_t size;
+	uint64_t size;
 	Load(a, size);
 	if (size > 0) {
 		s.resize(size);
@@ -324,19 +324,19 @@ bool Load<std::string>(ArchiveLoad& a, std::string& s) {
 // Serialization support for std::vector
 template<typename _Tp>
 bool Save(ArchiveSave& a, const std::vector<_Tp>& v) {
-	const size_t size(v.size());
+	const uint64_t size(v.size());
 	Save(a, size);
-	for (size_t i=0; i<size; ++i)
+	for (uint64_t i=0; i<size; ++i)
 		Save(a, v[i]);
 	return true;
 }
 template<typename _Tp>
 bool Load(ArchiveLoad& a, std::vector<_Tp>& v) {
-	size_t size;
+	uint64_t size;
 	Load(a, size);
 	if (size > 0) {
 		v.resize(size);
-		for (size_t i=0; i<size; ++i)
+		for (uint64_t i=0; i<size; ++i)
 			Load(a, v[i]);
 	}
 	return true;
@@ -433,15 +433,21 @@ struct Interface
 		uint32_t platformID; // ID of the associated platform
 		uint32_t cameraID; // ID of the associated camera on the associated platform
 		uint32_t poseID; // ID of the pose of the associated platform
+		uint32_t ID; // ID of this image in the global space (optional)
+
+		Image() : poseID(NO_ID), ID(NO_ID) {}
 
 		bool IsValid() const { return poseID != NO_ID; }
 
 		template <class Archive>
-		void serialize(Archive& ar, const unsigned int /*version*/) {
+		void serialize(Archive& ar, const unsigned int version) {
 			ar & name;
 			ar & platformID;
 			ar & cameraID;
 			ar & poseID;
+			if (version > 2) {
+				ar & ID;
+			}
 		}
 	};
 	typedef std::vector<Image> ImageArr;

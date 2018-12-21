@@ -724,7 +724,21 @@ float computePlaneSphereAngle(const delaunay_t& Tr, const facet_t& facet)
 			return 0.5f;
 
 	// compute the co-tangent to the circumscribed sphere in one of the vertices
+	#if CGAL_VERSION_NR < 1041101000
 	const Point3f cc(CGAL2MVS<float>(facet.first->circumcenter(Tr.geom_traits())));
+	#else
+	struct Tools {
+		static point_t circumcenter(const delaunay_t& Tr, const facet_t& facet) {
+			return Tr.geom_traits().construct_circumcenter_3_object()(
+				facet.first->vertex(0)->point(),
+				facet.first->vertex(1)->point(),
+				facet.first->vertex(2)->point(),
+				facet.first->vertex(3)->point()
+			);
+		}
+	};
+	const Point3f cc(CGAL2MVS<float>(Tools::circumcenter(Tr, facet)));
+	#endif
 	const Point3f ct(cc-v0);
 	const float ctLenSq(normSq(ct));
 	if (ctLenSq == 0.f)

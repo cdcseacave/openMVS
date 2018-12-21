@@ -63,7 +63,7 @@ HRESULT CImageSCI::ReadHeader()
 /*----------------------------------------------------------------*/
 
 
-HRESULT CImageSCI::WriteHeader(PIXELFORMAT imageFormat, UINT width, UINT height, BYTE numLevels)
+HRESULT CImageSCI::WriteHeader(PIXELFORMAT imageFormat, Size width, Size height, BYTE numLevels)
 {
 	// write header
 	CImage::WriteHeader(imageFormat, width, height, numLevels);

@@ -103,12 +103,30 @@ void Camera::SetFOV(double _fov)
 
 Eigen::Vector3d Camera::GetPosition() const
 {
-	const Eigen::Matrix3d r(rotation.toRotationMatrix());
+	const Eigen::Matrix3d R(rotation.toRotationMatrix());
 	const Eigen::Vector3d eye(0, 0, dist);
-	return r * eye + center;
+	return R * eye + center;
 }
 
-void Camera::GetLookAt(Eigen::Vector3d& _eye, Eigen::Vector3d& _center, Eigen::Vector3d& _up)
+Eigen::Matrix4d Camera::GetLookAt() const
+{
+	const Eigen::Matrix3d R(rotation.toRotationMatrix());
+	const Eigen::Vector3d eye(R.col(2) * dist + center);
+	const Eigen::Vector3d up(R.col(1));
+	
+	const Eigen::Vector3d n((center-eye).normalized());
+	const Eigen::Vector3d s(n.cross(up));
+	const Eigen::Vector3d v(s.cross(n));
+	
+	Eigen::Matrix4d m;
+	m <<
+	s(0),  s(1),  s(2), -eye.dot(s),
+	v(0),  v(1),  v(2), -eye.dot(v),
+	-n(0), -n(1), -n(2),  eye.dot(n),
+	0.0, 0.0, 0.0, 1.0;
+	return m;
+}
+void Camera::GetLookAt(Eigen::Vector3d& _eye, Eigen::Vector3d& _center, Eigen::Vector3d& _up) const
 {
 	const Eigen::Matrix3d R(rotation.toRotationMatrix());
 	const Eigen::Vector3d eye(0, 0, dist);

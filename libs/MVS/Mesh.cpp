@@ -3590,7 +3590,7 @@ void Mesh::ProjectOrtho(const Camera& camera, DepthMap& depthMap) const
 			: Base(_vertices, _camera, _depthMap) {}
 		inline bool ProjectVertex(const Mesh::Vertex& pt, int v) {
 			ptc[v] = camera.TransformPointW2C(Cast<REAL>(pt));
-			pti[v] = camera.TransformPointC2I((const Point2&)ptc[v]);
+			pti[v] = camera.TransformPointC2I(reinterpret_cast<const Point2&>(ptc[v]));
 			return depthMap.isInsideWithBorder<float,3>(pti[v]);
 		}
 		void Raster(const ImageRef& pt) {
@@ -3626,7 +3626,7 @@ void Mesh::ProjectOrtho(const Camera& camera, DepthMap& depthMap, Image8U3& imag
 		}
 		inline bool ProjectVertex(const Mesh::Vertex& pt, int v) {
 			ptc[v] = camera.TransformPointW2C(Cast<REAL>(pt));
-			pti[v] = camera.TransformPointC2I((const Point2&)ptc[v]);
+			pti[v] = camera.TransformPointC2I(reinterpret_cast<const Point2&>(ptc[v]));
 			return depthMap.isInsideWithBorder<float,3>(pti[v]);
 		}
 		inline bool CheckNormal(const Point3& /*faceCenter*/) {

@@ -26,3 +26,13 @@
 *.exe
 *.out
 *.app
+
+# Custom
+*.tmp
+.DS_Store
+CMakeSettings.json
+.vs/
+.idea/
+.vscode/
+bin/
+binaries/

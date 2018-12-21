@@ -349,7 +349,7 @@ bool Scene::Open(LPCTSTR fileName, LPCTSTR meshFileName)
 	// load the scene
 	WORKING_FOLDER = Util::getFilePath(fileName);
 	INIT_WORKING_FOLDER;
-	if (!scene.Load(fileName))
+	if (!scene.Load(fileName, true))
 		return false;
 	if (meshFileName) {
 		// load given mesh
