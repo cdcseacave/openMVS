@@ -587,14 +587,16 @@ bool Scene::ExportCamerasMLP(const String& fileName, const String& fileNameScene
 		"   </MLMatrix44>\n"
 		"  </MLMesh>\n"
 		" </MeshGroup>\n";
-	static const char mlp_raster[] =
+	static const char mlp_raster_pos[] =
 		"  <MLRaster label=\"%s\">\n"
-		"   <VCGCamera TranslationVector=\"%0.6g %0.6g %0.6g 1\""
+		"   <VCGCamera TranslationVector=\"%0.6g %0.6g %0.6g 1\"";
+	static const char mlp_raster_cam[] =
 		" LensDistortion=\"%0.6g %0.6g\""
 		" ViewportPx=\"%u %u\""
 		" PixelSizeMm=\"1 %0.4f\""
 		" FocalMm=\"%0.4f\""
-		" CenterPx=\"%0.4f %0.4f\""
+		" CenterPx=\"%0.4f %0.4f\"";
+	static const char mlp_raster_rot[] =
 		" RotationMatrix=\"%0.6g %0.6g %0.6g 0 %0.6g %0.6g %0.6g 0 %0.6g %0.6g %0.6g 0 0 0 0 1\"/>\n"
 		"   <Plane semantic=\"\" fileName=\"%s\"/>\n"
 		"  </MLRaster>\n";
@@ -613,13 +615,17 @@ bool Scene::ExportCamerasMLP(const String& fileName, const String& fileNameScene
 		if (!imageData.IsValid())
 			continue;
 		const Camera& camera = imageData.camera;
-		f.print(mlp_raster,
+		f.print(mlp_raster_pos,
 			Util::getFileName(imageData.name).c_str(),
-			-camera.C.x, -camera.C.y, -camera.C.z,
+			-camera.C.x, -camera.C.y, -camera.C.z
+		);
+		f.print(mlp_raster_cam,
 			0, 0,
 			imageData.width, imageData.height,
 			camera.K(1,1)/camera.K(0,0), camera.K(0,0),
-			camera.K(0,2), camera.K(1,2),
+			camera.K(0,2), camera.K(1,2)
+		);
+		f.print(mlp_raster_rot,
 			 camera.R(0,0),  camera.R(0,1),  camera.R(0,2),
 			-camera.R(1,0), -camera.R(1,1), -camera.R(1,2),
 			-camera.R(2,0), -camera.R(2,1), -camera.R(2,2),
