@@ -141,7 +141,7 @@ bool SML::ParseSection(TokenIStream& filter, MemFile& memFile)
 		ASSERT(!filter.isEOS());
 		if (lenName == 0)
 			return false; // Parse Error: invalid section name
-		const String strChildName((LPCTSTR)memFile.getData(), (UINT)lenName);
+		const String strChildName((LPCTSTR)memFile.getData(), lenName);
 		memFile.growSize(-((size_f_t)(lenName*sizeof(TCHAR))));
 		ASSERT(memFile.getSize() == 0);
 		// create the child with the given name

@@ -60,6 +60,7 @@ class cHashTable
 public:
 	typedef uint32_t		Key;
 	typedef uint16_t		Idx;
+	typedef uint32_t		Size;
 	typedef cList<Type>		Values;
 	typedef cList<Key, Key>	Keys;
 	typedef cList<Idx, Idx>	Indices;
@@ -93,9 +94,9 @@ public:
 	inline Values&			GetArrValues()					{ return m_values; }
 
 private:
-	inline UINT _StaticKeyToID(Key key, UINT size)	const	{ return key & (size-1); }
-	inline UINT _KeyToID(Key key)					const	{ return _StaticKeyToID(key, (UINT)m_indices.GetSize()); }
-	inline Idx  _IDToIndex(UINT id)					const	{ return m_indices[id] - 1; }
+	inline Size _StaticKeyToID(Key key, Size size)	const	{ return key & (size-1); }
+	inline Size _KeyToID(Key key)					const	{ return _StaticKeyToID(key, (Size)m_indices.GetSize()); }
+	inline Idx  _IDToIndex(Size id)					const	{ return m_indices[id] - 1; }
 	inline Idx  _KeyToIndex(Key key)				const	{ return (m_indices.IsEmpty() ? KEY_NA : _IDToIndex(_KeyToID(key))); }
 
 	// Completely discards then rebuilds all indices based on the current set of keys
@@ -106,7 +107,7 @@ private:
 		// Run through all keys and recreate the indices
 		for (Idx i=0; i<m_keys.GetSize(); )
 		{
-			const UINT index = _KeyToID(m_keys[i]);
+			const Size index = _KeyToID(m_keys[i]);
 			m_indices[index] = ++i;
 		}
 	}
@@ -136,7 +137,7 @@ public:
 	// Removes a single entry from the list
 	void Delete(Key key)
 	{
-		const UINT id		= _KeyToID(key);
+		const Size id		= _KeyToID(key);
 		const Idx  index	= _IDToIndex(id);
 
 		if (index < m_keys.GetSize() && m_keys[index] == key)
@@ -146,7 +147,7 @@ public:
 			m_indices[id] = 0;
 
 			// Adjust all the indices that follow this one
-			for (UINT i=m_indices.GetSize(); i>0; )
+			for (Size i=m_indices.GetSize(); i>0; )
 			{
 				if (m_indices[--i] > index)
 				{
@@ -184,7 +185,7 @@ public:
 			{
 				// Setting the key was unsuccessful due to another entry colliding with our key;
 				// we must expand the indices until we find a set of keys that will match.
-				UINT newSize = m_indices.GetSize();
+				Size newSize = m_indices.GetSize();
 				while (newSize < (KEY_MAXSIZE>>1))
 				{
 					newSize = newSize << 1;
@@ -202,7 +203,7 @@ public:
 		}
 
 		// assert the total number of values stored is in Idx range
-		ASSERT(m_keys.GetSize() < (UINT)((Idx)-1));
+		ASSERT(m_keys.GetSize() < (Size)((Idx)-1));
 
 		// Append the new key to the end
 		m_keys.Insert(key);
@@ -217,7 +218,7 @@ public:
 public:
 	// Fowler / Noll / Vo (FNV) Hash
 	// magic numbers from http://www.isthe.com/chongo/tech/comp/fnv/
-	static inline Key HashKeyFNV(const uint8_t* data, UINT size)
+	static inline Key HashKeyFNV(const uint8_t* data, Size size)
 	{
 		Key hash = 2166136261U; //InitialFNV
 		for (size_t i = 0; i < size; i++)
@@ -229,11 +230,11 @@ public:
 	}
 	// Function that calculates a hash value from a given data
 	// tested for random binary data (3 <= size <= 33) and performs VERY bad
-	static inline Key HashKeyR5(const uint8_t* data, UINT size)
+	static inline Key HashKeyR5(const uint8_t* data, Size size)
 	{
 		Key key = 0;
 		Key offset = 1357980759;
-		for (UINT i=0; i<size; ++i, ++data)
+		for (Size i=0; i<size; ++i, ++data)
 		{
 			key += (*data & 31) ^ offset;
 			key += i & (offset >> 15);
@@ -241,9 +242,9 @@ public:
 		}
 		return key;
 	}
-	static inline Key HashKey(const uint8_t* data, UINT size) { return HashKeyFNV(data, size); }
-	static inline Key HashKey(LPCTSTR sz) { return HashKey((const uint8_t*)sz, (UINT)_tcslen(sz)); }
-	static inline Key HashKey(const String& str) { return HashKey((const uint8_t*)str.c_str(), (UINT)str.size()); }
+	static inline Key HashKey(const uint8_t* data, Size size) { return HashKeyFNV(data, size); }
+	static inline Key HashKey(LPCTSTR sz) { return HashKey((const uint8_t*)sz, (Size)_tcslen(sz)); }
+	static inline Key HashKey(const String& str) { return HashKey((const uint8_t*)str.c_str(), (Size)str.size()); }
 
 	// Convenience functions
 	inline		 Type*	Find		(LPCTSTR		key)			{ return  Find  ( HashKey(key) );			}

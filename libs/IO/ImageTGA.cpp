@@ -106,19 +106,19 @@ HRESULT CImageTGA::ReadHeader()
 /*----------------------------------------------------------------*/
 
 
-HRESULT CImageTGA::ReadData(void* pData, PIXELFORMAT dataFormat, UINT nStride, UINT lineWidth)
+HRESULT CImageTGA::ReadData(void* pData, PIXELFORMAT dataFormat, Size nStride, Size lineWidth)
 {
 	// read data
 	if (dataFormat == m_format && nStride == m_stride) {
 		// read image directly to the data buffer
 		(BYTE*&)pData += (m_height-1)*lineWidth;
-		for (UINT j=0; j<m_height; ++j, (uint8_t*&)pData-=lineWidth)
+		for (Size j=0; j<m_height; ++j, (uint8_t*&)pData-=lineWidth)
 			if (m_lineWidth != m_pStream->read(pData, m_lineWidth))
 				return _INVALIDFILE;
 	} else {
 		// read image to a buffer and convert it
 		CAutoPtrArr<uint8_t> const buffer(new uint8_t[m_lineWidth]);
-		for (UINT j=0; j<m_height; ++j) {
+		for (Size j=0; j<m_height; ++j) {
 			if (m_lineWidth != m_pStream->read(buffer, m_lineWidth))
 				return _INVALIDFILE;
 			if (!FilterFormat((BYTE*)pData+(m_height-j-1)*lineWidth, dataFormat, nStride, buffer, m_format, m_stride, m_width))
@@ -130,14 +130,14 @@ HRESULT CImageTGA::ReadData(void* pData, PIXELFORMAT dataFormat, UINT nStride, U
 /*----------------------------------------------------------------*/
 
 
-HRESULT CImageTGA::WriteHeader(PIXELFORMAT imageFormat, UINT width, UINT height, BYTE numLevels)
+HRESULT CImageTGA::WriteHeader(PIXELFORMAT imageFormat, Size width, Size height, BYTE numLevels)
 {
 	return _FAIL;
 } // WriteHeader
 /*----------------------------------------------------------------*/
 
 
-HRESULT CImageTGA::WriteData(void* pData, PIXELFORMAT dataFormat, UINT nStride, UINT lineWidth)
+HRESULT CImageTGA::WriteData(void* pData, PIXELFORMAT dataFormat, Size nStride, Size lineWidth)
 {
 	return _FAIL;
 } // WriteData

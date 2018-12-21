@@ -101,7 +101,7 @@ inline TYPE TPlane<TYPE,DIMS>::DistanceAbs(const POINT& p) const
 
 // Classify point to plane.
 template <typename TYPE, int DIMS>
-inline UINT TPlane<TYPE,DIMS>::Classify(const POINT& p) const
+inline GCLASS TPlane<TYPE,DIMS>::Classify(const POINT& p) const
 {
 	const TYPE f(Distance(p));
 	if (f >  ZEROTOLERANCE<TYPE,DIMS>()) return FRONT;
@@ -113,10 +113,10 @@ inline UINT TPlane<TYPE,DIMS>::Classify(const POINT& p) const
 
 // Classify bounding box to plane.
 template <typename TYPE, int DIMS>
-inline UINT TPlane<TYPE,DIMS>::Classify(const AABB& aabb) const
+inline GCLASS TPlane<TYPE,DIMS>::Classify(const AABB& aabb) const
 {
-	const UINT classMin = Classify(aabb.ptMin);
-	const UINT classMax = Classify(aabb.ptMax);
+	const GCLASS classMin = Classify(aabb.ptMin);
+	const GCLASS classMax = Classify(aabb.ptMax);
 	if (classMin == classMax) return classMin;
 	return CLIPPED;
 }
@@ -133,7 +133,7 @@ bool TPlane<TYPE,DIMS>::Clip(const RAY& ray, TYPE fL, RAY* pF, RAY* pB) const
 	if (!ray.Intersects(*this, false, fL, NULL, &ptHit)) 
 		return false;
 
-	UINT n = Classify(ray.m_pOrig);
+	GCLASS n = Classify(ray.m_pOrig);
 
 	// ray comes from planes backside
 	if ( n == BACK ) {
@@ -195,7 +195,7 @@ bool TPlane<TYPE,DIMS>::Intersects(const TPlane& plane, RAY& ray) const
 template <typename TYPE, int DIMS>
 bool TPlane<TYPE,DIMS>::Intersects(const POINT& p0, const POINT& p1, const POINT& p2) const
 {
-	const UINT n(Classify(p0));
+	const GCLASS n(Classify(p0));
 	if ((n == Classify(p1)) && 
 		(n == Classify(p2)))
 		return false;
@@ -206,7 +206,7 @@ bool TPlane<TYPE,DIMS>::Intersects(const POINT& p0, const POINT& p1, const POINT
 
 // Intersection with AABB. Search for AABB diagonal that is most
 // aligned to plane normal. Test its two vertices against plane.
-// (Möller/Haines, "Real-Time Rendering")
+// (Mï¿½ller/Haines, "Real-Time Rendering")
 template <typename TYPE, int DIMS>
 bool TPlane<TYPE,DIMS>::Intersects(const AABB& aabb) const
 {
@@ -403,7 +403,7 @@ void TFrustum<TYPE,DIMS>::Set(const MATRIX3x4& m, TYPE w, TYPE h, TYPE n, TYPE f
  *         CULLED  - point outside frustum
  */
 template <typename TYPE, int DIMS>
-UINT TFrustum<TYPE,DIMS>::Classify(const POINT& p) const
+GCLASS TFrustum<TYPE,DIMS>::Classify(const POINT& p) const
 {
 	// check if on the front side of any of the planes
 	for (int i=0; i<DIMS; ++i) {
@@ -422,7 +422,7 @@ UINT TFrustum<TYPE,DIMS>::Classify(const POINT& p) const
  *         CULLED  - sphere outside frustum
  */
 template <typename TYPE, int DIMS>
-UINT TFrustum<TYPE,DIMS>::Classify(const SPHERE& s) const
+GCLASS TFrustum<TYPE,DIMS>::Classify(const SPHERE& s) const
 {
 	// compute distances to each of the planes
 	for (int i=0; i<DIMS; ++i) {
@@ -447,7 +447,7 @@ UINT TFrustum<TYPE,DIMS>::Classify(const SPHERE& s) const
  *         CULLED  - aabb totally outside frustum
  */
 template <typename TYPE, int DIMS>
-UINT TFrustum<TYPE,DIMS>::Classify(const AABB& aabb) const
+GCLASS TFrustum<TYPE,DIMS>::Classify(const AABB& aabb) const
 {
 	bool bIntersects = false;
 

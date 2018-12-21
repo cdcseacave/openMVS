@@ -589,38 +589,38 @@ public:
 	// format given time in milliseconds to higher units
 	static String formatTime(int64_t sTime, uint32_t nAproximate = 0) {
 		char buf[128];
-		UINT len = 0;
-		UINT nrNumbers = 0;
+		uint32_t len = 0;
+		uint32_t nrNumbers = 0;
 
-		UINT rez = (UINT)(sTime / ((int64_t)24*3600*1000));
+		uint32_t rez = (uint32_t)(sTime / ((int64_t)24*3600*1000));
 		if (rez) {
 			++nrNumbers;
 			len += _stprintf(buf+len, "%ud", rez);
 		}
 		if (nAproximate > 3 && nrNumbers > 0)
 			return buf;
-		rez = (UINT)((sTime%((int64_t)24*3600*1000)) / (3600*1000));
+		rez = (uint32_t)((sTime%((int64_t)24*3600*1000)) / (3600*1000));
 		if (rez) {
 			++nrNumbers;
 			len += _stprintf(buf+len, "%uh", rez);
 		}
 		if (nAproximate > 2 && nrNumbers > 0)
 			return buf;
-		rez = (UINT)((sTime%((int64_t)3600*1000)) / (60*1000));
+		rez = (uint32_t)((sTime%((int64_t)3600*1000)) / (60*1000));
 		if (rez) {
 			++nrNumbers;
 			len += _stprintf(buf+len, "%um", rez);
 		}
 		if (nAproximate > 1 && nrNumbers > 0)
 			return buf;
-		rez = (UINT)((sTime%((int64_t)60*1000)) / (1*1000));
+		rez = (uint32_t)((sTime%((int64_t)60*1000)) / (1*1000));
 		if (rez) {
 			++nrNumbers;
 			len += _stprintf(buf+len, "%us", rez);
 		}
 		if (nAproximate > 0 && nrNumbers > 0)
 			return buf;
-		rez = (UINT)(sTime%((int64_t)1*1000));
+		rez = (uint32_t)(sTime%((int64_t)1*1000));
 		if (rez || !nrNumbers)
 			len += _stprintf(buf+len, "%ums", rez);
 

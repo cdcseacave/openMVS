@@ -71,7 +71,7 @@ inline void TSphere<TYPE,DIMS>::EnlargePercent(TYPE x)
 
 // Classify point to sphere.
 template <typename TYPE, int DIMS>
-inline UINT TSphere<TYPE, DIMS>::Classify(const POINT& p) const
+inline GCLASS TSphere<TYPE, DIMS>::Classify(const POINT& p) const
 {
 	if ((center - p).squaredNorm() > SQUARE(radius))
 		return CULLED;

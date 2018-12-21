@@ -231,19 +231,14 @@ inline pid_t GetCurrentThreadId() { uint64_t tid64; pthread_threadid_np(NULL, &t
 // Type defines
 
 #ifndef _MSC_VER
+typedef int32_t				HRESULT;
+
 typedef unsigned char		BYTE;
 typedef unsigned short		WORD;
 typedef unsigned int		DWORD;
 typedef uint64_t	        QWORD;
 
 typedef char				CHAR;
-typedef int                 BOOL;
-typedef signed int			INT;
-typedef unsigned int		UINT;
-typedef long				LONG;
-
-typedef int32_t				HRESULT;
-
 typedef CHAR*				LPSTR;
 typedef const CHAR*			LPCSTR;
 typedef CHAR				TCHAR;
@@ -311,13 +306,6 @@ typedef int64_t     		size_f_t;
 
 #ifndef NULL
 #define NULL				0
-#endif
-
-#ifndef FALSE
-#define FALSE				0
-#endif
-#ifndef TRUE
-#define TRUE				1
 #endif
 
 #ifdef max
@@ -398,21 +386,6 @@ typedef TAliasCast<double,int32_t> CastD2I;
 #include "LinkLib.h"
 
 namespace SEACAVE {
-
-// maximum number of vertices in one list
-#define MAXNUMVERTS				65535
-// maximum number of indices in one list
-#define MAXNUMINDIS				(MAXNUMVERTS*8)
-typedef WORD					INDEX;
-// maximum number of bone indices in one list
-#define MAXNUMBONES				255
-typedef BYTE					BONEIDX;
-// maximum number of frames in one animation
-#define MAXNUMFRAMES			65535
-typedef WORD					FRAMEIDX;
-
-typedef class GENERAL_API cList<INDEX, INDEX, 0>		CINDEXArray;
-typedef class GENERAL_API cList<UINT, UINT, 0>			CUINTArray;
 
 typedef class GENERAL_API CSharedPtr<File>				FilePtr;
 
@@ -591,6 +564,7 @@ typedef class GENERAL_API cList<double, double, 0>      DoubleArr;
 #define FZERO_TOLERANCE	0.0001f
 #define FINV_ZERO		1000000.f
 
+#define GCLASS			unsigned
 #define FRONT			0
 #define BACK			1
 #define PLANAR			2

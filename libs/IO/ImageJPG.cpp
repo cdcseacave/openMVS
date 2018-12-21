@@ -181,7 +181,7 @@ HRESULT CImageJPG::ReadHeader()
 } // ReadHeader
 /*----------------------------------------------------------------*/
 
-HRESULT CImageJPG::ReadData(void* pData, PIXELFORMAT dataFormat, UINT nStride, UINT lineWidth)
+HRESULT CImageJPG::ReadData(void* pData, PIXELFORMAT dataFormat, Size nStride, Size lineWidth)
 {
 	JpegState* state = (JpegState*)m_state;
 
@@ -199,14 +199,14 @@ HRESULT CImageJPG::ReadData(void* pData, PIXELFORMAT dataFormat, UINT nStride, U
 				// read image directly to the data buffer
 				JSAMPLE* buffer[1] = {(JSAMPLE*)pData};
 				uint8_t*& data = (uint8_t*&)buffer[0];
-				for (UINT j=0; j<m_height; ++j, data+=lineWidth)
+				for (Size j=0; j<m_height; ++j, data+=lineWidth)
 					jpeg_read_scanlines(cinfo, buffer, 1);
 			} else {
 				// read image to a buffer and convert it
 				JSAMPARRAY buffer = (*cinfo->mem->alloc_sarray)((j_common_ptr)cinfo, JPOOL_IMAGE, m_lineWidth, 1);
 				uint8_t* dst = (uint8_t*)pData;
 				uint8_t* src = (uint8_t*)buffer[0];
-				for (UINT j=0; j<m_height; ++j, dst+=lineWidth) {
+				for (Size j=0; j<m_height; ++j, dst+=lineWidth) {
 					jpeg_read_scanlines(cinfo, buffer, 1);
 					if (!FilterFormat(dst, dataFormat, nStride, src, m_format, m_stride, m_width))
 						return _FAIL;
@@ -223,14 +223,14 @@ HRESULT CImageJPG::ReadData(void* pData, PIXELFORMAT dataFormat, UINT nStride, U
 } // Read
 /*----------------------------------------------------------------*/
 
-HRESULT CImageJPG::WriteHeader(PIXELFORMAT imageFormat, UINT width, UINT height, BYTE numLevels)
+HRESULT CImageJPG::WriteHeader(PIXELFORMAT imageFormat, Size width, Size height, BYTE numLevels)
 {
 	//TODO: to implement the JPG encoder
 	return _OK;
 } // WriteHeader
 /*----------------------------------------------------------------*/
 
-HRESULT CImageJPG::WriteData(void* pData, PIXELFORMAT dataFormat, UINT nStride, UINT lineWidth)
+HRESULT CImageJPG::WriteData(void* pData, PIXELFORMAT dataFormat, Size nStride, Size lineWidth)
 {
 	//TODO: to implement the JPG encoder
 	//const int quality = 100;

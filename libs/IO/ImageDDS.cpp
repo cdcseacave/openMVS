@@ -294,7 +294,7 @@ HRESULT CImageDDS::ReadHeader()
 /*----------------------------------------------------------------*/
 
 
-HRESULT CImageDDS::ReadData(void* pData, PIXELFORMAT dataFormat, UINT nStride, UINT lineWidth)
+HRESULT CImageDDS::ReadData(void* pData, PIXELFORMAT dataFormat, Size nStride, Size lineWidth)
 {
 	// read data
 	if (dataFormat == m_format && nStride == m_stride) {
@@ -304,14 +304,14 @@ HRESULT CImageDDS::ReadData(void* pData, PIXELFORMAT dataFormat, UINT nStride, U
 			if (nSize != m_pStream->read(pData, nSize))
 				return _INVALIDFILE;
 		} else {
-			for (UINT j=0; j<m_dataHeight; ++j, (uint8_t*&)pData+=lineWidth)
+			for (Size j=0; j<m_dataHeight; ++j, (uint8_t*&)pData+=lineWidth)
 				if (m_lineWidth != m_pStream->read(pData, m_lineWidth))
 					return _INVALIDFILE;
 		}
 	} else {
 		// read image to a buffer and convert it
 		CAutoPtrArr<uint8_t> const buffer(new uint8_t[m_lineWidth]);
-		for (UINT j=0; j<m_dataHeight; ++j, (uint8_t*&)pData+=lineWidth) {
+		for (Size j=0; j<m_dataHeight; ++j, (uint8_t*&)pData+=lineWidth) {
 			if (m_lineWidth != m_pStream->read(buffer, m_lineWidth))
 				return _INVALIDFILE;
 			if (!FilterFormat(pData, dataFormat, nStride, buffer, m_format, m_stride, m_dataWidth))
@@ -325,14 +325,14 @@ HRESULT CImageDDS::ReadData(void* pData, PIXELFORMAT dataFormat, UINT nStride, U
 /*----------------------------------------------------------------*/
 
 
-HRESULT CImageDDS::WriteHeader(PIXELFORMAT imageFormat, UINT width, UINT height, BYTE numLevels)
+HRESULT CImageDDS::WriteHeader(PIXELFORMAT imageFormat, Size width, Size height, BYTE numLevels)
 {
 	return _FAIL;
 } // WriteHeader
 /*----------------------------------------------------------------*/
 
 
-HRESULT CImageDDS::WriteData(void* pData, PIXELFORMAT dataFormat, UINT nStride, UINT lineWidth)
+HRESULT CImageDDS::WriteData(void* pData, PIXELFORMAT dataFormat, Size nStride, Size lineWidth)
 {
 	return _FAIL;
 } // WriteData
