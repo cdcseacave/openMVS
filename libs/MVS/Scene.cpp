@@ -68,7 +68,25 @@ bool Scene::LoadInterface(const String & fileName)
 	if (!ARCHIVE::SerializeLoad(obj, fileName))
 		return false;
 
+	return LoadInterface(obj);
+} // LoadInterface
+
+bool Scene::LoadInterface(std::istream &is, const uint32_t &width, const uint32_t &height)
+{
+	TD_TIMER_STARTD();
+	Interface obj;
+
+	// serialize in the current state
+	if (!ARCHIVE::SerializeLoad(obj, is))
+		return false;
+
+	return LoadInterface(obj, width, height);
+} // LoadInterface
+
+bool Scene::LoadInterface(Interface &obj, const uint32_t &width, const uint32_t &height)
+{
 	// import platforms and cameras
+	TD_TIMER_STARTD();
 	ASSERT(!obj.platforms.empty());
 	platforms.Reserve((uint32_t)obj.platforms.size());
 	for (Interface::PlatformArr::const_iterator itPlatform=obj.platforms.begin(); itPlatform!=obj.platforms.end(); ++itPlatform) {
@@ -132,8 +150,8 @@ bool Scene::LoadInterface(const String & fileName)
 			imageData.scale = 1;
 		} else {
 			// read image header for resolution
-			if (!imageData.ReloadImage(0, false))
-				return false;
+	  	if ((width == 0 && height == 0) ? !imageData.ReloadImage(0, false) : !imageData.ReloadImage(width, height, 0, 0, false))
+		  	return false;
 		}
 		imageData.UpdateCamera(platforms);
 		++nCalibratedImages;

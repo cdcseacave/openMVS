@@ -3379,23 +3379,23 @@ enum ARCHIVE_TYPE {
 
 // export the current state of the given reconstruction object
 template <typename TYPE>
-bool SerializeSave(const TYPE& obj, std::ofstream& fs, ARCHIVE_TYPE type, unsigned flags=0)
+bool SerializeSave(const TYPE& obj, std::ostream& os, ARCHIVE_TYPE type, unsigned flags=0)
 {
 	// serialize out the current state
 	switch (type) {
 	case ARCHIVE_TEXT: {
-		boost::archive::text_oarchive ar(fs, flags);
+		boost::archive::text_oarchive ar(os, flags);
 		ar << obj;
 		break; }
 	case ARCHIVE_BINARY: {
-		boost::archive::binary_oarchive ar(fs, flags);
+		boost::archive::binary_oarchive ar(os, flags);
 		ar << obj;
 		break; }
 	case ARCHIVE_BINARY_ZIP: {
 		namespace io = boost::iostreams;
 		io::filtering_streambuf<io::output> ffs;
 		ffs.push(io::zlib_compressor(io::zlib::best_speed));
-		ffs.push(fs);
+		ffs.push(os);
 		boost::archive::binary_oarchive ar(ffs, flags);
 		ar << obj;
 		break; }
@@ -3418,24 +3418,24 @@ bool SerializeSave(const TYPE& obj, const SEACAVE::String& fileName, ARCHIVE_TYP
 
 // import the state to the given reconstruction object
 template <typename TYPE>
-bool SerializeLoad(TYPE& obj, std::ifstream& fs, ARCHIVE_TYPE type, unsigned flags=0)
+bool SerializeLoad(TYPE& obj, std::istream& is, ARCHIVE_TYPE type, unsigned flags=0)
 {
 	try {
 		// serialize in the saved state
 		switch (type) {
 		case ARCHIVE_TEXT: {
-			boost::archive::text_iarchive ar(fs, flags);
+			boost::archive::text_iarchive ar(is, flags);
 			ar >> obj;
 			break; }
 		case ARCHIVE_BINARY: {
-			boost::archive::binary_iarchive ar(fs, flags);
+			boost::archive::binary_iarchive ar(is, flags);
 			ar >> obj;
 			break; }
 		case ARCHIVE_BINARY_ZIP: {
 			namespace io = boost::iostreams;
 			io::filtering_streambuf<io::input> ffs;
 			ffs.push(io::zlib_decompressor());
-			ffs.push(fs);
+			ffs.push(is);
 			boost::archive::binary_iarchive ar(ffs, flags);
 			ar >> obj;
 			break; }

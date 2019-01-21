@@ -46,6 +46,8 @@
 
 namespace MVS {
 
+struct Interface;
+
 class MVS_API Scene
 {
 public:
@@ -65,6 +67,7 @@ public:
 	bool IsEmpty() const;
 
 	bool LoadInterface(const String& fileName);
+	bool LoadInterface(std::istream &is, const uint32_t &width = 0, const uint32_t &height = 0);
 	bool SaveInterface(const String& fileName) const;
 
 	bool Import(const String& fileName);
@@ -78,7 +81,7 @@ public:
 	bool ExportCamerasMLP(const String& fileName, const String& fileNameScene) const;
 
 	// Dense reconstruction
-	bool DenseReconstruction();
+	bool DenseReconstruction(std::vector<BitMatrix>& theMasks, std::vector<std::vector<unsigned char>> &images = std::vector<std::vector<unsigned char>>(), const uint32_t &width = 0, const uint32_t &height = 0, const uint32_t &depth = 0);
 	void DenseReconstructionEstimate(void*);
 	void DenseReconstructionFilter(void*);
 
@@ -107,6 +110,8 @@ public:
 		ar & mesh;
 	}
 	#endif
+private:
+	bool LoadInterface(Interface &obj, const uint32_t &width = 0, const uint32_t &height = 0);
 };
 /*----------------------------------------------------------------*/
 

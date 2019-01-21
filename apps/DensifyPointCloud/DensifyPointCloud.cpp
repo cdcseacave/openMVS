@@ -234,11 +234,11 @@ int main(int argc, LPCTSTR* argv)
 		return EXIT_FAILURE;
 	}
 	if ((ARCHIVE_TYPE)OPT::nArchiveType != ARCHIVE_MVS) {
-		TD_TIMER_START();
-		if (!scene.DenseReconstruction())
-			return EXIT_FAILURE;
-		VERBOSE("Densifying point-cloud completed: %u points (%s)", scene.pointcloud.GetSize(), TD_TIMER_GET_FMT().c_str());
-	}
+    TD_TIMER_START();
+	  if (!scene.DenseReconstruction(std::vector<BitMatrix>()))
+		  return EXIT_FAILURE;
+	  VERBOSE("Densifying point-cloud completed: %u points (%s)", scene.pointcloud.GetSize(), TD_TIMER_GET_FMT().c_str());
+  }
 
 	// save the final mesh
 	const String baseFileName(MAKE_PATH_SAFE(Util::getFileFullName(OPT::strOutputFileName)));
