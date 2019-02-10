@@ -105,7 +105,7 @@ public:
 	bool ReloadImage(unsigned nMaxResolution=0, bool bLoadPixels=true);
 	void ReleaseImage();
 	float ResizeImage(unsigned nMaxResolution=0);
-	unsigned RecomputeMaxResolution(unsigned& level, unsigned minImageSize) const;
+	unsigned RecomputeMaxResolution(unsigned& level, unsigned minImageSize, unsigned maxImageSize=INT_MAX) const;
 
 	Camera GetCamera(const PlatformArr& platforms, const Image8U::Size& resolution) const;
 	void UpdateCamera(const PlatformArr& platforms);
@@ -142,7 +142,7 @@ public:
 	BOOST_SERIALIZATION_SPLIT_MEMBER()
 	#endif
 };
-typedef MVS_API SEACAVE::cList<Image, const Image&, 2, 16, IIndex> ImageArr;
+typedef MVS_API CLISTDEF2IDX(Image,IIndex) ImageArr;
 /*----------------------------------------------------------------*/
 
 } // namespace MVS

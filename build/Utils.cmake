@@ -421,8 +421,15 @@ macro(optimize_default_compiler_settings)
 	set(BUILD_EXTRA_EXE_LINKER_FLAGS_RELEASE "")
 	set(BUILD_EXTRA_EXE_LINKER_FLAGS_DEBUG "")
 
-	# enable C++11 support
-	set(CMAKE_CXX_STANDARD 11)
+	# try to enable C++14/C++11 support
+	check_cxx_compiler_flag(--std=c++14 SUPPORTS_STD_CXX14)
+	check_cxx_compiler_flag(--std=c++11 SUPPORTS_STD_CXX11)
+	if(SUPPORTS_STD_CXX14)
+		set(CMAKE_CXX_STANDARD 14)
+	elseif(SUPPORTS_STD_CXX11)
+		set(CMAKE_CXX_STANDARD 11)
+	endif()
+	message("Compiling with C++${CMAKE_CXX_STANDARD}")
 
 	if(MINGW)
 	  # http://gcc.gnu.org/bugzilla/show_bug.cgi?id=40838

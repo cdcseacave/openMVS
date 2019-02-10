@@ -44,13 +44,31 @@
 // NCC type used for patch-similarity computation during depth-map estimation
 #define DENSE_NCC_DEFAULT 0
 #define DENSE_NCC_FAST 1
-#define DENSE_NCC DENSE_NCC_FAST
+#define DENSE_NCC_WEIGHTED 2
+#define DENSE_NCC DENSE_NCC_WEIGHTED
 
 // NCC score aggregation type used during depth-map estimation
 #define DENSE_AGGNCC_NTH 0
 #define DENSE_AGGNCC_MEAN 1
 #define DENSE_AGGNCC_MIN 2
-#define DENSE_AGGNCC DENSE_AGGNCC_MEAN
+#define DENSE_AGGNCC_MINMEAN 3
+#define DENSE_AGGNCC DENSE_AGGNCC_MINMEAN
+
+// type of smoothness used during depth-map estimation
+#define DENSE_SMOOTHNESS_NA 0
+#define DENSE_SMOOTHNESS_FAST 1
+#define DENSE_SMOOTHNESS_PLANE 2
+#define DENSE_SMOOTHNESS DENSE_SMOOTHNESS_PLANE
+
+// type of refinement used during depth-map estimation
+#define DENSE_REFINE_ITER 0
+#define DENSE_REFINE_EXACT 1
+#define DENSE_REFINE DENSE_REFINE_ITER
+
+// exp function type used during depth estimation
+#define DENSE_EXP_DEFUALT EXP
+#define DENSE_EXP_FAST FEXP<true> // ~10% faster, but slightly less precise
+#define DENSE_EXP DENSE_EXP_DEFUALT
 
 #define ComposeDepthFilePathBase(b, i, e) MAKE_PATH(String::FormatString((b + "%04u." e).c_str(), i))
 #define ComposeDepthFilePath(i, e) MAKE_PATH(String::FormatString("depth%04u." e, i))
@@ -69,8 +87,9 @@ enum DepthFlags {
 	ADJUST_FILTER	= (1 << 2),
 	OPTIMIZE		= (REMOVE_SPECKLES|FILL_GAPS)
 };
-extern unsigned nMinResolution;
 extern unsigned nResolutionLevel;
+extern unsigned nMaxResolution;
+extern unsigned nMinResolution;
 extern unsigned nMinViews;
 extern unsigned nMaxViews;
 extern unsigned nMinViewsFuse;
@@ -88,6 +107,7 @@ extern float fOptimAngle;
 extern float fMaxAngle;
 extern float fDescriptorMinMagnitudeThreshold;
 extern float fDepthDiffThreshold;
+extern float fNormalDiffThreshold;
 extern float fPairwiseMul;
 extern float fOptimizerEps;
 extern int nOptimizerMaxIters;
@@ -111,6 +131,18 @@ extern float fRandomSmoothBonus;
 /*----------------------------------------------------------------*/
 
 
+template <int nTexels>
+struct WeightedPatchFix {
+	struct Pixel {
+		float weight;
+		float tempWeight;
+	};
+	Pixel weights[nTexels];
+	float sumWeights;
+	float normSq0;
+	WeightedPatchFix() : normSq0(0) {}
+};
+
 struct MVS_API DepthData {
 	struct ViewData {
 		float scale; // image scale relative to the reference image
@@ -126,7 +158,7 @@ struct MVS_API DepthData {
 			return true;
 		}
 	};
-	typedef SEACAVE::cList<ViewData,const ViewData&,2> ViewDataArr;
+	typedef CLISTDEF2IDX(ViewData,IIndex) ViewDataArr;
 
 	ViewDataArr images; // array of images used to compute this depth-map (reference image is the first)
 	ViewScoreArr neighbors; // array of all images seeing this depth-map (ordered by decreasing importance)
@@ -186,10 +218,12 @@ typedef MVS_API CLISTDEFIDX(DepthData,IIndex) DepthDataArr;
 
 
 struct MVS_API DepthEstimator {
-	enum { TexelChannels = 1 };
-	enum { nSizeHalfWindow = 3 };
+	enum { nSizeHalfWindow = 5 };
 	enum { nSizeWindow = nSizeHalfWindow*2+1 };
-	enum { nTexels = nSizeWindow*nSizeWindow*TexelChannels };
+	enum { nSizeStep = 2 };
+	enum { TexelChannels = 1 };
+	enum { nTexels = SQUARE((nSizeHalfWindow*2+nSizeStep)/nSizeStep)*TexelChannels };
+	enum { nMaxNeighbors = 8 };
 
 	enum ENDIRECTION {
 		LT2RB = 0,
@@ -199,14 +233,34 @@ struct MVS_API DepthEstimator {
 
 	typedef TPoint2<uint16_t> MapRef;
 	typedef CLISTDEF0(MapRef) MapRefArr;
+	typedef CLISTDEF0IDX(ImageRef,unsigned) DirSamples;
 
 	typedef Eigen::Matrix<float,nTexels,1> TexelVec;
 	struct NeighborData {
+		ImageRef x;
 		Depth depth;
 		Normal normal;
-		inline NeighborData() {}
-		inline NeighborData(Depth d, const Normal& n) : depth(d), normal(n) {}
 	};
+	#if DENSE_SMOOTHNESS != DENSE_SMOOTHNESS_NA
+	struct NeighborEstimate {
+		Depth depth;
+		Normal normal;
+		#if DENSE_SMOOTHNESS == DENSE_SMOOTHNESS_PLANE
+		Planef::POINT X;
+		#endif
+	};
+	#endif
+	#if DENSE_REFINE == DENSE_REFINE_EXACT
+	struct PixelEstimate {
+		Depth depth;
+		Normal normal;
+	};
+	#endif
+
+	#if DENSE_NCC == DENSE_NCC_WEIGHTED
+	typedef WeightedPatchFix<nTexels> Weight;
+	typedef CLISTDEFIDX(Weight,int) WeightMap;
+	#endif
 
 	struct ViewData {
 		const DepthData::ViewData& view;
@@ -221,43 +275,78 @@ struct MVS_API DepthEstimator {
 			Hr(image0.camera.K.inv()) {}
 	};
 
-	CLISTDEF0IDX(NeighborData,IIndex) neighborsData; // neighbor pixel depths to be used for smoothing
-	CLISTDEF0IDX(ImageRef,IIndex) neighbors; // neighbor pixels coordinates to be processed
+	SEACAVE::Random rnd;
+
 	volatile Thread::safe_t& idxPixel; // current image index to be processed
+	#if DENSE_SMOOTHNESS == DENSE_SMOOTHNESS_NA
+	CLISTDEF0IDX(NeighborData,IIndex) neighbors; // neighbor pixels coordinates to be processed
+	#else
+	CLISTDEF0IDX(ImageRef,IIndex) neighbors; // neighbor pixels coordinates to be processed
+	#endif
+	#if DENSE_SMOOTHNESS != DENSE_SMOOTHNESS_NA
+	CLISTDEF0IDX(NeighborEstimate,IIndex) neighborsClose; // close neighbor pixel depths to be used for smoothing
+	#endif
 	Vec3 X0;	      //
 	ImageRef x0;	  // constants during one pixel loop
 	float normSq0;	  //
+	#if DENSE_NCC != DENSE_NCC_WEIGHTED
 	TexelVec texels0; //
+	#endif
 	#if DENSE_NCC == DENSE_NCC_DEFAULT
 	TexelVec texels1;
 	#endif
-	#if DENSE_AGGNCC == DENSE_AGGNCC_NTH
+	#if DENSE_AGGNCC == DENSE_AGGNCC_NTH || DENSE_AGGNCC == DENSE_AGGNCC_MINMEAN
 	FloatArr scores;
 	#else
 	Eigen::VectorXf scores;
 	#endif
+	#if DENSE_SMOOTHNESS == DENSE_SMOOTHNESS_PLANE
+	Planef plane; // plane defined by current depth and normal estimate
+	#endif
 	DepthMap& depthMap0;
 	NormalMap& normalMap0;
 	ConfidenceMap& confMap0;
+	#if DENSE_NCC == DENSE_NCC_WEIGHTED
+	WeightMap& weightMap0;
+	#endif
 
-	const CLISTDEF0(ViewData) images; // neighbor images used
+	const unsigned nIteration; // current PatchMatch iteration
+	const CLISTDEF0IDX(ViewData,IIndex) images; // neighbor images used
 	const DepthData::ViewData& image0;
+	#if DENSE_NCC != DENSE_NCC_WEIGHTED
 	const Image64F& image0Sum; // integral image used to fast compute patch mean intensity
+	#endif
 	const MapRefArr& coords;
 	const Image8U::Size size;
-	#if DENSE_AGGNCC == DENSE_AGGNCC_NTH
+	const Depth dMin, dMax;
+	const ENDIRECTION dir;
+	#if DENSE_AGGNCC == DENSE_AGGNCC_NTH || DENSE_AGGNCC == DENSE_AGGNCC_MINMEAN
 	const IDX idxScore;
 	#endif
-	const ENDIRECTION dir;
-	const Depth dMin, dMax;
 
-	DepthEstimator(DepthData& _depthData0, volatile Thread::safe_t& _idx, const Image64F& _image0Sum, const MapRefArr& _coords, ENDIRECTION _dir);
+	DepthEstimator(
+		unsigned nIter, DepthData& _depthData0, volatile Thread::safe_t& _idx,
+		#if DENSE_NCC == DENSE_NCC_WEIGHTED
+		WeightMap& _weightMap0,
+		#else
+		const Image64F& _image0Sum,
+		#endif
+		const MapRefArr& _coords);
 
 	bool PreparePixelPatch(const ImageRef&);
 	bool FillPixelPatch();
+	#if DENSE_SMOOTHNESS == DENSE_SMOOTHNESS_PLANE
+	void InitPlane(Depth, const Normal&);
+	#endif
+	float ScorePixelImage(const ViewData& image1, Depth, const Normal&);
 	float ScorePixel(Depth, const Normal&);
 	void ProcessPixel(IDX idx);
-	
+	Depth InterpolatePixel(const ImageRef&, Depth, const Normal&) const;
+	#if DENSE_REFINE == DENSE_REFINE_EXACT
+	PixelEstimate PerturbEstimate(const PixelEstimate&, float perturbation);
+	#endif
+
+	#if DENSE_NCC != DENSE_NCC_WEIGHTED
 	inline float GetImage0Sum(const ImageRef& p) const {
 		const ImageRef p0(p.x-nSizeHalfWindow, p.y-nSizeHalfWindow);
 		const ImageRef p1(p0.x+nSizeWindow, p0.y);
@@ -265,6 +354,19 @@ struct MVS_API DepthEstimator {
 		const ImageRef p3(p0.x+nSizeWindow, p0.y+nSizeWindow);
 		return (float)(image0Sum(p3) - image0Sum(p2) - image0Sum(p1) + image0Sum(p0));
 	}
+	#endif
+
+	#if DENSE_NCC == DENSE_NCC_WEIGHTED
+	float GetWeight(const ImageRef& x, float center) const {
+		// color weight [0..1]
+		const float sigmaColor(-1.f/(2.f*SQUARE(0.2f)));
+		const float wColor(SQUARE(image0.image(x0+x)-center) * sigmaColor);
+		// spatial weight [0..1]
+		const float sigmaSpatial(-1.f/(2.f*SQUARE((int)nSizeHalfWindow)));
+		const float wSpatial(float(SQUARE(x.x) + SQUARE(x.y)) * sigmaSpatial);
+		return DENSE_EXP(wColor+wSpatial);
+	}
+	#endif
 
 	inline Matrix3x3f ComputeHomographyMatrix(const ViewData& img, Depth depth, const Normal& normal) const {
 		#if 0
@@ -277,10 +379,10 @@ struct MVS_API DepthEstimator {
 		#endif
 	}
 
-	static inline CLISTDEF0(ViewData) InitImages(const DepthData& depthData) {
-		CLISTDEF0(ViewData) images(0, depthData.images.GetSize()-1);
+	static inline CLISTDEF0IDX(ViewData,IIndex) InitImages(const DepthData& depthData) {
+		CLISTDEF0IDX(ViewData,IIndex) images(0, depthData.images.GetSize()-1);
 		const DepthData::ViewData& image0(depthData.images.First());
-		for (IDX i=1; i<depthData.images.GetSize(); ++i)
+		for (IIndex i=1; i<depthData.images.GetSize(); ++i)
 			images.AddConstruct(image0, depthData.images[i]);
 		return images;
 	}
@@ -295,14 +397,22 @@ struct MVS_API DepthEstimator {
 	}
 
 	// generate random depth and normal
-	static inline Depth RandomDepth(Depth dMin, Depth dMax) {
+	inline Depth RandomDepth(Depth dMin, Depth dMax) {
 		ASSERT(dMin > 0);
-		return randomRange(dMin, dMax);
+		return rnd.randomRange(dMin, dMax);
 	}
-	static inline Normal RandomNormal(const Point3f& viewRay) {
+	inline Normal RandomNormal(const Point3f& viewRay) {
 		Normal normal;
-		Dir2Normal(Point2f(randomRange(FD2R(0.f),FD2R(360.f)), randomRange(FD2R(120.f),FD2R(180.f))), normal);
+		Dir2Normal(Point2f(rnd.randomRange(FD2R(0.f),FD2R(360.f)), rnd.randomRange(FD2R(120.f),FD2R(180.f))), normal);
 		return normal.dot(viewRay) > 0 ? -normal : normal;
+	}
+
+	// adjust normal such that it makes at most 90 degrees with the viewing angle
+	inline void CorrectNormal(Normal& normal) const {
+		const Normal viewDir(Cast<float>(X0));
+		const float cosAngLen(normal.dot(viewDir));
+		if (cosAngLen >= 0)
+			normal = RMatrixBaseF(normal.cross(viewDir), MINF((ACOS(cosAngLen/norm(viewDir))-FD2R(90.f))*1.01f, -0.001f)) * normal;
 	}
 
 	// encode/decode NCC score and refinement level in one float
@@ -350,6 +460,9 @@ struct MVS_API DepthEstimator {
 	const float angle1Range, angle2Range;
 	const float thConfSmall, thConfBig;
 	const float thRobust;
+	#if DENSE_REFINE == DENSE_REFINE_EXACT
+	const float thPerturbation;
+	#endif
 	static const float scaleRanges[12];
 };
 /*----------------------------------------------------------------*/

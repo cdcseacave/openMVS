@@ -422,9 +422,13 @@ bool Scene::Save(const String& fileName, ARCHIVE_TYPE type) const
 
 
 inline float Footprint(const Camera& camera, const Point3f& X) {
+	#if 0
 	const REAL fSphereRadius(1);
 	const Point3 cX(camera.TransformPointW2C(Cast<REAL>(X)));
 	return (float)norm(camera.TransformPointC2I(Point3(cX.x+fSphereRadius,cX.y,cX.z))-camera.TransformPointC2I(cX))+std::numeric_limits<float>::epsilon();
+	#else
+	return (float)(camera.GetFocalLength()/camera.PointDepth(Cast<REAL>(X)));
+	#endif
 }
 
 // compute visibility for the reference image
@@ -472,10 +476,10 @@ bool Scene::SelectNeighborViews(uint32_t ID, IndexArr& points, unsigned nMinView
 				continue;
 			const Image& imageData2 = images[view];
 			const Point3f V2(imageData2.camera.C - Cast<REAL>(point));
-			const float footprint2(Footprint(imageData2.camera, point));
 			const float fAngle(ACOS(ComputeAngle<float,float>(V1.ptr(), V2.ptr())));
-			const float fScaleRatio(footprint1/footprint2);
 			const float wAngle(MINF(POW(fAngle/fOptimAngle, 1.5f), 1.f));
+			const float footprint2(Footprint(imageData2.camera, point));
+			const float fScaleRatio(footprint1/footprint2);
 			float wScale;
 			if (fScaleRatio > 1.6f)
 				wScale = SQUARE(1.6f/fScaleRatio);

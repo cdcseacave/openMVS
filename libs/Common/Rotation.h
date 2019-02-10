@@ -290,12 +290,14 @@ public:
 	/** @brief Initialization from parametrized rotation (axis-angle) */
 	inline TRMatrixBase(const Vec& rot);
 
-	/** @brief Initialization from rotation axis w and angle phi (in rad)
-			   using Rodrigues' formula */
+	/** @brief Initialization from rotation axis w and angle phi (in rad) using Rodrigues' formula */
 	inline TRMatrixBase(const Vec& w, const TYPE phi);
 
 	/** @brief Initialization from quaternion */
 	inline TRMatrixBase(const Quat& q);
+
+	/** @brief Initialization with the rotation from roll/pitch/yaw (in rad) */
+	inline TRMatrixBase(TYPE roll, TYPE pitch, TYPE yaw);
 
 	inline ~TRMatrixBase();
 

@@ -554,6 +554,12 @@ inline TRMatrixBase<TYPE>::TRMatrixBase(const Quat& q)
 }
 
 template <typename TYPE>
+inline TRMatrixBase<TYPE>::TRMatrixBase(TYPE roll, TYPE pitch, TYPE yaw)
+{
+	SetXYZ(roll, pitch, yaw);
+}
+
+template <typename TYPE>
 inline TRMatrixBase<TYPE>::~TRMatrixBase()
 {}
 
@@ -561,33 +567,48 @@ inline TRMatrixBase<TYPE>::~TRMatrixBase()
 template <typename TYPE>
 void TRMatrixBase<TYPE>::SetXYZ(TYPE PhiX, TYPE PhiY, TYPE PhiZ)
 {
-  TRMatrixBase<TYPE> Rx(TRMatrixBase<TYPE>::IDENTITY);
-  TRMatrixBase<TYPE> Ry(TRMatrixBase<TYPE>::IDENTITY);
-  TRMatrixBase<TYPE> Rz(TRMatrixBase<TYPE>::IDENTITY);
+	#if 0
+	TRMatrixBase<TYPE> Rx(TRMatrixBase<TYPE>::IDENTITY);
+	TRMatrixBase<TYPE> Ry(TRMatrixBase<TYPE>::IDENTITY);
+	TRMatrixBase<TYPE> Rz(TRMatrixBase<TYPE>::IDENTITY);
 
-  /* set Rz, Ry, Rx as rotation matrices */
-  Rz(0,0) = cos(PhiZ);
-  Rz(0,1) = -sin(PhiZ);
-  Rz(1,0) = -Rz(0,1);
-  Rz(1,1) = Rz(0,0);
-  //Rz(2,2) = 1;
+	/* set Rz, Ry, Rx as rotation matrices */
+	Rz(0,0) = cos(PhiZ);
+	Rz(0,1) = -sin(PhiZ);
+	Rz(1,0) = -Rz(0,1);
+	Rz(1,1) = Rz(0,0);
+	//Rz(2,2) = 1;
 
-  Ry(0,0) = cos(PhiY);
-  Ry(0,2) = sin(PhiY);
-  //Ry(1,1) = 1;
-  Ry(2,0) = -Ry(0,2); //-sin(PhiY);
-  Ry(2,2) = Ry(0,0); //cos(PhiY);
+	Ry(0,0) = cos(PhiY);
+	Ry(0,2) = sin(PhiY);
+	//Ry(1,1) = 1;
+	Ry(2,0) = -Ry(0,2); //-sin(PhiY);
+	Ry(2,2) = Ry(0,0); //cos(PhiY);
 
-  //Rx(0,0) = 1;
-  Rx(1,1) = cos(PhiX);
-  Rx(1,2) = -sin(PhiX);
-  Rx(2,1) = -Rx(1,2); //sin(PhiX);
-  Rx(2,2) = Rx(1,1); //cos(PhiX);
+	//Rx(0,0) = 1;
+	Rx(1,1) = cos(PhiX);
+	Rx(1,2) = -sin(PhiX);
+	Rx(2,1) = -Rx(1,2); //sin(PhiX);
+	Rx(2,2) = Rx(1,1); //cos(PhiX);
 
-//   Mat Result=Rx*Ry*Rz;
-//   for (int i =0; i<9; i++)
-//     this->val[i]=Result.GetData()[i];
-  (*this) = Rx*Ry*Rz;
+	(*this) = Rx*Ry*Rz;
+	#else
+	const TYPE sin_x = sin(PhiX);
+	const TYPE sin_y = sin(PhiY);
+	const TYPE sin_z = sin(PhiZ);
+	const TYPE cos_x = cos(PhiX);
+	const TYPE cos_y = cos(PhiY);
+	const TYPE cos_z = cos(PhiZ);
+	val[0] = cos_y * cos_z;
+	val[1] = -cos_y * sin_z;
+	val[2] = sin_y;
+	val[3] = cos_x * sin_z + cos_z * sin_x * sin_y;
+	val[4] = cos_x * cos_z - sin_x * sin_y * sin_z;
+	val[5] = -cos_y * sin_x;
+	val[6] = sin_x * sin_z - cos_x * cos_z * sin_y;
+	val[7] = cos_z * sin_x + cos_x * sin_y * sin_z;
+	val[8] = cos_x * cos_y;
+	#endif
 }
 
 
@@ -692,21 +713,21 @@ void TRMatrixBase<TYPE>::Set(const Vec& wa, TYPE phi)
   }
 
   const TYPE wnorm(norm(wa));
-  if (wnorm < TYPE(1e-7)) {
+  if (wnorm < std::numeric_limits<TYPE>::epsilon()) {
 	CPC_ERROR("Vector "<<wa<<" is close to zero (norm = "<<wnorm<<"), solution is instable!");
   }
   const Vec w(wa*(TYPE(1)/wnorm));
 
   Mat Omega;
-  Omega(0,0) = 0.0;
+  Omega(0,0) = TYPE(0);
   Omega(0,1) = -w[2];
   Omega(0,2) = w[1];
   Omega(1,0) = w[2];
-  Omega(1,1) = 0.0;
+  Omega(1,1) = TYPE(0);
   Omega(1,2) = -w[0];
   Omega(2,0) = -w[1] ;
   Omega(2,1) = w[0];
-  Omega(2,2) = 0.0;
+  Omega(2,2) = TYPE(0);
 
   const Mat Sin_O(Omega *  sin(phi));
   const Mat Cos_O_O((Omega * Omega) * (TYPE(1)-cos(phi)));

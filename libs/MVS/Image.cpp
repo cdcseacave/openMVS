@@ -161,15 +161,15 @@ float Image::ResizeImage(unsigned nMaxResolution)
 /*----------------------------------------------------------------*/
 
 // compute image scale for a given max and min resolution, using the current image file data
-unsigned Image::RecomputeMaxResolution(unsigned& level, unsigned minImageSize) const
+unsigned Image::RecomputeMaxResolution(unsigned& level, unsigned minImageSize, unsigned maxImageSize) const
 {
 	IMAGEPTR pImage(ReadImageHeader(name));
 	if (pImage == NULL) {
 		// something went wrong, use the current known size (however it will most probably fail later)
-		return Image8U3::computeMaxResolution(width, height, level, minImageSize);
+		return Image8U3::computeMaxResolution(width, height, level, minImageSize, maxImageSize);
 	}
 	// re-compute max image size
-	return Image8U3::computeMaxResolution(pImage->GetWidth(), pImage->GetHeight(), level, minImageSize);
+	return Image8U3::computeMaxResolution(pImage->GetWidth(), pImage->GetHeight(), level, minImageSize, maxImageSize);
 } // RecomputeMaxResolution
 /*----------------------------------------------------------------*/
 

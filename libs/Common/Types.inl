@@ -1556,6 +1556,38 @@ template <typename FLT1, typename FLT2>
 inline TPoint3<FLT1> Cast(const TPoint3<FLT2>& pt) {
 	return pt;
 }
+// Pixel
+template <typename T>
+inline TPixel<uint8_t> Cast(const TPixel<typename std::enable_if<std::is_floating_point<T>::value, T>::type>& pt) {
+	return TPixel<uint8_t>(
+		(uint8_t)CLAMP(ROUND2INT(pt.r), 0, 255),
+		(uint8_t)CLAMP(ROUND2INT(pt.g), 0, 255),
+		(uint8_t)CLAMP(ROUND2INT(pt.b), 0, 255)
+	);
+}
+template <typename FLT1, typename FLT2>
+inline TPixel<FLT1> Cast(const TPixel<FLT2>& pt) {
+	return pt;
+}
+// Color
+template <typename T>
+inline TColor<uint8_t> Cast(const TColor<typename std::enable_if<std::is_floating_point<T>::value, T>::type>& pt) {
+	return TColor<uint8_t>(
+		(uint8_t)CLAMP(ROUND2INT(pt.r), 0, 255),
+		(uint8_t)CLAMP(ROUND2INT(pt.g), 0, 255),
+		(uint8_t)CLAMP(ROUND2INT(pt.b), 0, 255),
+		(uint8_t)CLAMP(ROUND2INT(pt.a), 0, 255)
+	);
+}
+template <typename FLT1, typename FLT2>
+inline TColor<FLT1> Cast(const TColor<FLT2>& pt) {
+	return pt;
+}
+// Matrix
+template <typename FLT1, typename FLT2, int m, int n>
+inline TMatrix<FLT1,m,n> Cast(const TMatrix<FLT2,m,n>& v) {
+	return v;
+}
 /*----------------------------------------------------------------*/
 
 

@@ -194,6 +194,10 @@
 #	define FORCEINLINE inline
 #endif
 
+#ifndef _SUPPORT_CPP11
+#	define constexpr inline
+#endif
+
 #define SAFE_DELETE(p)		{ if (p!=NULL) { delete (p);     (p)=NULL; } }
 #define SAFE_DELETE_ARR(p)	{ if (p!=NULL) { delete [] (p);  (p)=NULL; } }
 #define SAFE_FREE(p)		{ if (p!=NULL) { free(p);        (p)=NULL; } }

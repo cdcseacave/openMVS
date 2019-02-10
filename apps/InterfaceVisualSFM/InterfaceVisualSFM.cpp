@@ -248,7 +248,6 @@ void UndistortImage(const Camera& camera, const REAL& k1, const Image8U3 imgIn, 
 	typedef Sampler::Cubic<float> Sampler;
 	const Sampler sampler;
 	Point2f pt;
-	Pixel32F clr;
 	for (int v=0; v<h; ++v) {
 		for (int u=0; u<w; ++u) {
 			// compute corresponding coordinates in the distorted image
@@ -261,10 +260,7 @@ void UndistortImage(const Camera& camera, const REAL& k1, const Image8U3 imgIn, 
 			Pixel8U& col = imgOut(v,u);
 			if (imgIn.isInside(pt)) {
 				// get pixel color
-				clr = imgIn.sample<Sampler,Pixel32F>(sampler, pt);
-				col.r = CLAMP(ROUND2INT(clr.r), 0, 255);
-				col.g = CLAMP(ROUND2INT(clr.g), 0, 255);
-				col.b = CLAMP(ROUND2INT(clr.b), 0, 255);
+				col = Cast<uint8_t>(imgIn.sample<Sampler,Pixel32F>(sampler, pt));
 			} else {
 				// set to black
 				col = Pixel8U::BLACK;
