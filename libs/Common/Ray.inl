@@ -896,3 +896,81 @@ TYPE TRay<TYPE,DIMS>::Distance(const POINT& pt) const
 	return SQRT(DistanceSq(pt));
 } // Distance(POINT)
 /*----------------------------------------------------------------*/
+
+
+// S T R U C T S ///////////////////////////////////////////////////
+
+template <typename TYPE, int DIMS>
+bool TCylinder<TYPE,DIMS>::Intersects(const SPHERE& sphere) const
+{
+	const VECTOR CmV(sphere.center - ray.m_pOrig);
+	const TYPE t(ray.m_vDir.dot(CmV));
+	// sphere behind the cylinder origin
+	if (t < TYPE(0))
+		return false;
+	// sphere after the cylinder end
+	if (t > height)
+		return false;
+	const TYPE lenSq((CmV - ray.m_vDir * t).squaredNorm());
+	return (lenSq <= SQUARE(sphere.radius + radius));
+}
+/*----------------------------------------------------------------*/
+
+// Classify point to cylinder.
+template <typename TYPE, int DIMS>
+inline GCLASS TCylinder<TYPE,DIMS>::Classify(const POINT& p) const
+{
+	ASSERT(ISEQUAL(ray.m_vDir.norm(), TYPE(1)));
+	const VECTOR D(p - ray.m_pOrig);
+	const TYPE t(ray.m_vDir.dot(D));
+	if (ISZERO(t))
+		return PLANAR;
+	if (t < TYPE(0)) return BACK;
+	if (t > height) return FRONT;
+	const TYPE rSq((D - ray.m_vDir*t).squaredNorm());
+	const TYPE radiusSq(SQUARE(radius));
+	if (rSq > radiusSq) return CULLED;
+	if (rSq < radiusSq) return VISIBLE;
+	return PLANAR;
+}
+/*----------------------------------------------------------------*/
+
+
+// S T R U C T S ///////////////////////////////////////////////////
+
+template <typename TYPE>
+bool TConeIntersect<TYPE>::operator()(const SPHERE& sphere) const
+{
+	const VECTOR CmV(sphere.center - cone.ray.m_pOrig);
+	const VECTOR D(CmV + cone.ray.m_vDir * (sphere.radius * invSinAngle));
+	TYPE lenSq = D.squaredNorm();
+	TYPE e = D.dot(cone.ray.m_vDir);
+	if (e > TYPE(0) && e*e >= lenSq*cosAngleSq) {
+		lenSq = CmV.squaredNorm();
+		e = CmV.dot(cone.ray.m_vDir);
+		if (e < TYPE(0) && e*e >= lenSq*sinAngleSq)
+			return (lenSq <= SQUARE(sphere.radius));
+		return true;
+	}
+	return false;
+}
+/*----------------------------------------------------------------*/
+
+// Classify point to cone.
+template <typename TYPE>
+GCLASS TConeIntersect<TYPE>::Classify(const POINT& p, TYPE& t) const
+{
+	ASSERT(ISEQUAL(cone.ray.m_vDir.norm(), TYPE(1)));
+	const VECTOR D(p - cone.ray.m_pOrig);
+	t = cone.ray.m_vDir.dot(D);
+	if (ISZERO(t))
+		return PLANAR;
+	if (t < cone.minHeight) return BACK;
+	if (t > cone.maxHeight) return FRONT;
+	ASSERT(!ISZERO(D.norm()));
+	const TYPE d(cosAngle*D.norm());
+	if (t < d) return CULLED;
+	if (t > d) return VISIBLE;
+	return PLANAR;
+}
+/*----------------------------------------------------------------*/

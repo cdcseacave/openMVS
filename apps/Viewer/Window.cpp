@@ -292,7 +292,7 @@ void Window::MouseButton(int button, int action, int /*mods*/)
 		// 4d World Coordinates
 		const Mat4 invV(V.inverse());
 		ASSERT(ISEQUAL(invV(3,3),1.0));
-		Eigen::Vector3d start(invV.topRightCorner<3,1>());
+		const Eigen::Vector3d start(invV.topRightCorner<3,1>());
 		const Eigen::Vector4d ray_wor(invV*ray_eye);
 		const Eigen::Vector3d dir(ray_wor.topRows<3>().normalized());
 		clbkRayScene(Ray3d(start, dir), action);
