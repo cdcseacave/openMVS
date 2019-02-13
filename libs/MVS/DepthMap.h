@@ -218,7 +218,7 @@ typedef MVS_API CLISTDEFIDX(DepthData,IIndex) DepthDataArr;
 
 
 struct MVS_API DepthEstimator {
-	enum { nSizeHalfWindow = 5 };
+	enum { nSizeHalfWindow = 9 };
 	enum { nSizeWindow = nSizeHalfWindow*2+1 };
 	enum { nSizeStep = 2 };
 	enum { TexelChannels = 1 };
