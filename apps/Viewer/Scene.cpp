@@ -55,7 +55,7 @@ struct IntersectRayPoints {
 	typedef VIEWER::Scene::OctreePoints Octree;
 	typedef typename Octree::IDX_TYPE IDX;
 	typedef TCone<REAL,3> Cone3;
-	typedef TConeIntersect<REAL> Cone3Intersect;
+	typedef TConeIntersect<REAL,3> Cone3Intersect;
 
 	const Scene& scene;
 	const Octree& octree;
@@ -74,7 +74,7 @@ struct IntersectRayPoints {
 	}
 
 	inline bool Intersects(const typename Octree::POINT_TYPE& center, typename Octree::Type radius) const {
-		return coneIntersect(Sphere3(center.cast<REAL>(), REAL(radius)*M_SQRT2));
+		return coneIntersect(Sphere3(center.cast<REAL>(), REAL(radius)*SQRT_3));
 	}
 
 	void operator () (const IDX* idices, IDX size) {

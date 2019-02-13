@@ -144,18 +144,22 @@ public:
 
 	RAY ray;            // central ray defining starting the point and direction
 	TYPE radius;        // cylinder radius
-	TYPE height;        // cylinder length measured from the origin in the ray direction
+	TYPE minHeight;     // cylinder heights satisfying:
+	TYPE maxHeight;     // std::numeric_limits<TYPE>::lowest() <= minHeight <= 0 < maxHeight <= std::numeric_limits<TYPE>::max()
 
 	//---------------------------------------
 
 	inline TCylinder() {}
 
-	inline TCylinder(const RAY& _ray, TYPE _radius, TYPE _height=std::numeric_limits<TYPE>::max())
-		: ray(_ray), radius(_radius), height(_height) { ASSERT(TYPE(0) < height); }
+	inline TCylinder(const RAY& _ray, TYPE _radius, TYPE _minHeight=TYPE(0), TYPE _maxHeight=std::numeric_limits<TYPE>::max())
+		: ray(_ray), radius(_radius), minHeight(_minHeight), maxHeight(_maxHeight) { ASSERT(TYPE(0) >= minHeight && minHeight < maxHeight); }
 
-	bool Intersects(const SPHERE& sphere) const;
+	inline bool IsFinite() const { return maxHeight < std::numeric_limits<TYPE>::max() && minHeight > std::numeric_limits<TYPE>::lowest(); }
+	inline TYPE GetLength() const { return maxHeight - minHeight; }
 
-	inline GCLASS Classify(const POINT&) const;
+	bool Intersects(const SPHERE&) const;
+
+	inline GCLASS Classify(const POINT&, TYPE& t) const;
 }; // class TCylinder
 /*----------------------------------------------------------------*/
 
@@ -173,10 +177,10 @@ public:
 	typedef SEACAVE::TSphere<TYPE,DIMS> SPHERE;
 	enum { numScalar = (2*DIMS+3) };
 
-	RAY ray;           // ray origin is the cone vertex and ray direction is the cone axis direction
-	TYPE angle;        // cone angle, in radians, must be inside [0, pi/2]
-	TYPE minHeight;    // heights satisfying:
-	TYPE maxHeight;    // 0 <= minHeight < maxHeight <= std::numeric_limits<TYPE>::max()
+	RAY ray;            // ray origin is the cone vertex and ray direction is the cone axis direction
+	TYPE angle;         // cone angle, in radians, must be inside [0, pi/2]
+	TYPE minHeight;     // heights satisfying:
+	TYPE maxHeight;     // 0 <= minHeight < maxHeight <= std::numeric_limits<TYPE>::max()
 
 	//---------------------------------------
 
@@ -186,14 +190,16 @@ public:
 }; // class TCone
 
 // Structure used to compute the intersection between a cone and the given sphere/point
-template <typename TYPE>
+template <typename TYPE, int DIMS>
 class TConeIntersect
 {
+	STATIC_ASSERT(DIMS > 1 && DIMS <= 3);
+
 public:
-	typedef Eigen::Matrix<TYPE,3,1> VECTOR;
-	typedef Eigen::Matrix<TYPE,3,1> POINT;
-	typedef SEACAVE::TCone<TYPE,3> CONE;
-	typedef SEACAVE::TSphere<TYPE,3> SPHERE;
+	typedef Eigen::Matrix<TYPE,DIMS,1> VECTOR;
+	typedef Eigen::Matrix<TYPE,DIMS,1> POINT;
+	typedef SEACAVE::TCone<TYPE,DIMS> CONE;
+	typedef SEACAVE::TSphere<TYPE,DIMS> SPHERE;
 
 	const CONE& cone;
 
@@ -207,7 +213,7 @@ public:
 		sinAngleSq(SQUARE(sinAngle)), cosAngleSq(SQUARE(cosAngle)),
 		invSinAngle(TYPE(1)/sinAngle) {}
 
-	bool operator()(const SPHERE& sphere) const;
+	bool operator()(const SPHERE&) const;
 
 	GCLASS Classify(const POINT&, TYPE& t) const;
 }; // class TConeIntersect
