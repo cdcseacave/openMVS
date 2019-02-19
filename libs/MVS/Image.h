@@ -109,6 +109,7 @@ public:
 
 	Camera GetCamera(const PlatformArr& platforms, const Image8U::Size& resolution) const;
 	void UpdateCamera(const PlatformArr& platforms);
+	REAL ComputeFOV(int dir) const;
 
 	float GetNormalizationScale() const {
 		ASSERT(width > 0 && height > 0);

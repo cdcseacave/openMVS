@@ -195,4 +195,17 @@ void Image::UpdateCamera(const PlatformArr& platforms)
 {
 	camera = GetCamera(platforms, Image8U::Size(width, height));
 } // UpdateCamera
+// computes camera's field of view for the given direction
+REAL Image::ComputeFOV(int dir) const
+{
+	switch (dir) {
+	case 0: // width
+		return 2*ATAN(REAL(width)/(camera.K(0,0)*2));
+	case 1: // height
+		return 2*ATAN(REAL(height)/(camera.K(1,1)*2));
+	case 2: // diagonal
+		return 2*ATAN(SQRT(REAL(SQUARE(width)+SQUARE(height)))/(camera.K(0,0)+camera.K(1,1)));
+	}
+	return 0;
+} // ComputeFOV
 /*----------------------------------------------------------------*/

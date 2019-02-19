@@ -772,6 +772,7 @@ inline T MaxDepthDifference(T d, T threshold) {
 }
 template<typename T>
 inline T DepthSimilarity(T d0, T d1) {
+	ASSERT(d0 > 0 && d1 > 0);
 	#if 0
 	return ABS(d0-d1)*T(2)/(d0+d1);
 	#else

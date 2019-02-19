@@ -58,17 +58,13 @@ struct IntersectRayPoints {
 	typedef TConeIntersect<REAL,3> Cone3Intersect;
 
 	const Scene& scene;
-	const Octree& octree;
 	const Cone3 cone;
 	const Cone3Intersect coneIntersect;
 	const unsigned minViews;
 	IndexDist pick;
 
-	IntersectRayPoints(const Scene& _scene, const Octree& _octree, const Ray3& _ray, unsigned _minViews)
-		:
-		scene(_scene), octree(_octree),
-		cone(_ray, D2R(REAL(0.5))), coneIntersect(cone),
-		minViews(_minViews)
+	IntersectRayPoints(const Octree& octree, const Ray3& _ray, const Scene& _scene, unsigned _minViews)
+		: scene(_scene), cone(_ray, D2R(REAL(0.5))), coneIntersect(cone), minViews(_minViews)
 	{
 		octree.Collect(*this, *this);
 	}
@@ -102,14 +98,11 @@ struct IntersectRayMesh {
 	typedef typename Octree::IDX_TYPE IDX;
 
 	const Scene& scene;
-	const Octree& octree;
 	const Ray3& ray;
 	IndexDist pick;
 
-	IntersectRayMesh(const Scene& _scene, const Octree& _octree, const Ray3& _ray)
-		:
-		scene(_scene), octree(_octree),
-		ray(_ray)
+	IntersectRayMesh(const Octree& octree, const Ray3& _ray, const Scene& _scene)
+		: scene(_scene), ray(_ray)
 	{
 		octree.Collect(*this, *this);
 	}
@@ -629,7 +622,7 @@ void Scene::CastRay(const Ray3& ray, int action)
 	} else
 	if (!octMesh.IsEmpty()) {
 		// find ray intersection with the mesh
-		const IntersectRayMesh intRay(scene.mesh, octMesh, ray);
+		const IntersectRayMesh intRay(octMesh, ray, scene.mesh);
 		if (intRay.pick.IsValid()) {
 			const MVS::Mesh::Face& face = scene.mesh.faces[(MVS::Mesh::FIndex)intRay.pick.idx];
 			window.selectionPoints[0] = scene.mesh.vertices[face[0]];
@@ -650,7 +643,7 @@ void Scene::CastRay(const Ray3& ray, int action)
 	} else
 	if (!octPoints.IsEmpty()) {
 		// find ray intersection with the points
-		const IntersectRayPoints intRay(scene.pointcloud, octPoints, ray, window.minViews);
+		const IntersectRayPoints intRay(octPoints, ray, scene.pointcloud, window.minViews);
 		if (intRay.pick.IsValid()) {
 			window.selectionPoints[0] = window.selectionPoints[3] = scene.pointcloud.points[intRay.pick.idx];
 			window.selectionType = Window::SEL_POINT;
