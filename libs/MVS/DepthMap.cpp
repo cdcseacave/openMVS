@@ -664,6 +664,7 @@ void DepthEstimator::ProcessPixel(IDX idx)
 			if (neighbor.normal.dot(viewDir) >= 0)
 				continue;
 			neighbor.depth = InterpolatePixel(nx, neighbor.depth, neighbor.normal);
+			CorrectNormal(neighbor.normal);
 			ASSERT(neighbor.depth > 0);
 			#if DENSE_SMOOTHNESS == DENSE_SMOOTHNESS_PLANE
 			InitPlane(neighbor.depth, neighbor.normal);
@@ -739,6 +740,7 @@ void DepthEstimator::ProcessPixel(IDX idx)
 				continue;
 			prevEstimate.depth = InterpolatePixel(nx, neighbor.depth, neighbor.normal);
 			prevEstimate.normal = neighbor.normal;
+			CorrectNormal(prevEstimate.normal);
 			prevCost = nconf;
 		}
 		if (prevCost == FLT_MAX)
