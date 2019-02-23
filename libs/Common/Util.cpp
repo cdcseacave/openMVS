@@ -616,7 +616,7 @@ void Util::LogBuild()
 	#else
 	LOG(_T("Build date: ") __DATE__ _T(", ") __TIME__);
 	#endif
-	LOG((_T("CPU: ") + Util::GetCPUInfo()).c_str());
+	LOG(_T("CPU: %s (%u cores)"), Util::GetCPUInfo().c_str(), Thread::hardwareConcurrency());
 	LOG((_T("RAM: ") + Util::GetRAMInfo()).c_str());
 	LOG((_T("OS: ") + Util::GetOSInfo()).c_str());
 	if (!SIMD_ENABLED.isSet(Util::SSE)) LOG(_T("warning: no SSE compatible CPU or OS detected"));
