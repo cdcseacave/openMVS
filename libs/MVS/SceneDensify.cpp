@@ -1486,12 +1486,13 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, b
 					pointcloud.points.RemoveLast();
 				} else {
 					// this point is valid, store it
-					point = X*(REAL(1)/confidence);
+					const REAL nrm(REAL(1)/confidence);
+					point = X*nrm;
 					ASSERT(ISFINITE(point));
 					if (bEstimateColor)
-						pointcloud.colors.AddConstruct(Cast<uint8_t>(C*(1.f/confidence)));
+						pointcloud.colors.AddConstruct((C*(float)nrm).cast<uint8_t>());
 					if (bEstimateNormal)
-						pointcloud.normals.AddConstruct(normalized(N*(1.f/confidence)));
+						pointcloud.normals.AddConstruct(normalized(N*(float)nrm));
 					// invalidate all neighbor depths that do not agree with it
 					for (Depth* pDepth: invalidDepths)
 						*pDepth = 0;

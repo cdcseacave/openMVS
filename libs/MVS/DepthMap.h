@@ -223,7 +223,6 @@ struct MVS_API DepthEstimator {
 	enum { nSizeStep = 2 };
 	enum { TexelChannels = 1 };
 	enum { nTexels = SQUARE((nSizeHalfWindow*2+nSizeStep)/nSizeStep)*TexelChannels };
-	enum { nMaxNeighbors = 8 };
 
 	enum ENDIRECTION {
 		LT2RB = 0,
@@ -233,7 +232,6 @@ struct MVS_API DepthEstimator {
 
 	typedef TPoint2<uint16_t> MapRef;
 	typedef CLISTDEF0(MapRef) MapRefArr;
-	typedef CLISTDEF0IDX(ImageRef,unsigned) DirSamples;
 
 	typedef Eigen::Matrix<float,nTexels,1> TexelVec;
 	struct NeighborData {
@@ -351,7 +349,7 @@ struct MVS_API DepthEstimator {
 		const ImageRef p0(p.x-nSizeHalfWindow, p.y-nSizeHalfWindow);
 		const ImageRef p1(p0.x+nSizeWindow, p0.y);
 		const ImageRef p2(p0.x, p0.y+nSizeWindow);
-		const ImageRef p3(p0.x+nSizeWindow, p0.y+nSizeWindow);
+		const ImageRef p3(p1.x, p2.y);
 		return (float)(image0Sum(p3) - image0Sum(p2) - image0Sum(p1) + image0Sum(p0));
 	}
 	#endif

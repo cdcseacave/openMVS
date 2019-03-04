@@ -1769,6 +1769,14 @@ struct TPixel {
 	inline void set(const ALT* clr) { c[0] = TYPE(clr[0]); c[1] = TYPE(clr[1]); c[2] = TYPE(clr[2]); }
 	inline void get(ALT& _r, ALT& _g, ALT& _b) const { _r = ALT(r); _g = ALT(g); _b = ALT(b); }
 	inline void get(ALT* clr) const { clr[0] = ALT(c[0]); clr[1] = ALT(c[1]); clr[2] = ALT(c[2]); }
+	template<typename T> inline TPixel<typename std::enable_if<!std::is_floating_point<TYPE>::value || !std::is_same<T,uint8_t>::value,T>::type> cast() const { return TPixel<T>(T(r), T(g), T(b)); }
+	template<typename T> inline TPixel<typename std::enable_if<std::is_floating_point<TYPE>::value && std::is_same<T,uint8_t>::value,T>::type> cast() const {
+		return TPixel<uint8_t>(
+			(uint8_t)CLAMP(ROUND2INT(r), 0, 255),
+			(uint8_t)CLAMP(ROUND2INT(g), 0, 255),
+			(uint8_t)CLAMP(ROUND2INT(b), 0, 255)
+		);
+	}
 	// set/get as vector
 	inline const TYPE& operator[](size_t i) const { ASSERT(i<3); return c[i]; }
 	inline TYPE& operator[](size_t i) { ASSERT(i<3); return c[i]; }
@@ -1880,6 +1888,15 @@ struct TColor {
 	inline void set(const ALT* clr) { c[0] = TYPE(clr[0]); c[1] = TYPE(clr[1]); c[2] = TYPE(clr[2]); c[3] = TYPE(clr[3]); }
 	inline void get(ALT& _r, ALT& _g, ALT& _b, ALT& _a) const { _r = ALT(r); _g = ALT(g); _b = ALT(b); _a = ALT(a); }
 	inline void get(ALT* clr) const { clr[0] = ALT(c[0]); clr[1] = ALT(c[1]); clr[2] = ALT(c[2]); clr[3] = ALT(c[3]); }
+	template<typename T> inline TColor<typename std::enable_if<!std::is_floating_point<TYPE>::value || !std::is_same<T,uint8_t>::value,T>::type> cast() const { return TColor<T>(T(r), T(g), T(b), T(a)); }
+	template<typename T> inline TColor<typename std::enable_if<std::is_floating_point<TYPE>::value && std::is_same<T,uint8_t>::value,T>::type> cast() const {
+		return TColor<uint8_t>(
+			(uint8_t)CLAMP(ROUND2INT(r), 0, 255),
+			(uint8_t)CLAMP(ROUND2INT(g), 0, 255),
+			(uint8_t)CLAMP(ROUND2INT(b), 0, 255),
+			(uint8_t)CLAMP(ROUND2INT(a), 0, 255)
+		);
+	}
 	// set/get as vector
 	inline const TYPE& operator[](size_t i) const { ASSERT(i<4); return c[i]; }
 	inline TYPE& operator[](size_t i) { ASSERT(i<4); return c[i]; }

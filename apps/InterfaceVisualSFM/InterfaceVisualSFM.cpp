@@ -260,7 +260,7 @@ void UndistortImage(const Camera& camera, const REAL& k1, const Image8U3 imgIn, 
 			Pixel8U& col = imgOut(v,u);
 			if (imgIn.isInside(pt)) {
 				// get pixel color
-				col = Cast<uint8_t>(imgIn.sample<Sampler,Pixel32F>(sampler, pt));
+				col = imgIn.sample<Sampler,Pixel32F>(sampler, pt).cast<uint8_t>();
 			} else {
 				// set to black
 				col = Pixel8U::BLACK;
