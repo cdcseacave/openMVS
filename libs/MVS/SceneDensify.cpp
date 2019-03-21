@@ -598,7 +598,7 @@ void* STCALL DepthMapsData::EndDepthMapTmp(void* arg)
 		Depth& depth = estimator.depthMap0(x);
 		Normal& normal = estimator.normalMap0(x);
 		float& conf = estimator.confMap0(x);
-		const unsigned invScaleRange(DepthEstimator::DecodeScoreScale(conf));
+		const unsigned idxScaleRange(DepthEstimator::DecodeScoreScale(conf));
 		ASSERT(depth >= 0);
 		// check if the score is good enough
 		// and that the cross-estimates is close enough to the current estimate
@@ -635,7 +635,7 @@ void* STCALL DepthMapsData::EndDepthMapTmp(void* arg)
 			#elif 1
 			conf = wAngle/(depth*SQUARE(MAXF(conf,1e-2f)));
 			#else
-			conf = SQRT((float)invScaleRange)*wAngle/(depth*SQUARE(MAXF(conf,1e-2f)));
+			conf = SQRT((float)idxScaleRange)*wAngle/(depth*SQUARE(MAXF(conf,1e-2f)));
 			#endif
 			#endif
 		}

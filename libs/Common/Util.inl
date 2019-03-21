@@ -613,152 +613,36 @@ inline TPoint3<TYPE> CorrectBarycentricCoordinates(TPoint2<TYPE> b) {
 template<typename T, typename TR>
 inline void Normal2Dir(const TPoint3<T>& d, TPoint2<TR>& p) {
 	ASSERT(ISEQUAL(norm(d), T(1)));
-	#if 0
-	// empirically tested
-	p.y = TR(atan2(sqrt(d.x*d.x + d.y*d.y), d.z));
 	p.x = TR(atan2(d.y, d.x));
-	#elif 0
-	// empirically tested
-	if (d.x == T(0) && d.y == T(0)) {
-		ASSERT(ISEQUAL(ABS(d.z), T(1)));
-		p.y = TR(M_PI_2);
-		p.x = TR(M_PI_2);
-	} else {
-		p.y = TR(atan2(d.z, sqrt(d.x*d.x + d.y*d.y)));
-		p.x = TR(atan2(d.y, d.x));
-	}
-	#else
-	// as in PMVS
-	const T b(asin(CLAMP(d.y, T(-1), T(1))));
-	p.y = TR(b);
-	const T cosb(cos(b));
-	if (cosb == T(0)) {
-		p.x = TR(0);
-	} else {
-		const T scl(T(1) / cosb);
-		const T sina( d.x * scl);
-		const T cosa(-d.z * scl);
-		p.x = TR(acos(CLAMP(cosa, T(-1), T(1))));
-		if (sina < T(0))
-			p.x = -p.x;
-	}
-	#endif
+	p.y = TR(acos(d.z));
 }
 template<typename T, typename TR>
 inline void Dir2Normal(const TPoint2<T>& p, TPoint3<TR>& d) {
-	#if 0
-	// empirically tested
 	const T siny(sin(p.y));
 	d.x = TR(cos(p.x)*siny);
 	d.y = TR(sin(p.x)*siny);
 	d.z = TR(cos(p.y));
-	#elif 0
-	// empirically tested
-	const T cosy(cos(p.y));
-	d.x = TR(cos(p.x)*cosy);
-	d.y = TR(sin(p.x)*cosy);
-	d.z = TR(sin(p.y));
-	#else
-	// as in PMVS
-	const T cosy(cos(p.y));
-	d.x = TR( sin(p.x)*cosy);
-	d.y = TR( sin(p.y));
-	d.z = TR(-cos(p.x)*cosy);
-	#endif
 	ASSERT(ISEQUAL(norm(d), TR(1)));
 }
 // Encodes/decodes a 3D vector in two parameters for the direction and one parameter for the scale
-#if 0
-template<typename T, typename TR>
-inline void Vector2DirScale(const T vect[3], TR dir[2], TR* scale)
-{
-	const T x2y2(SQUARE(vect[0])+SQUARE(vect[1]));
-	const T scl(sqrt(x2y2+SQUARE(vect[2])));
-	scale[0] = TR(scl);
-	const T nrm(T(1) / scl);
-	dir[1] = TR(atan2(sqrt(x2y2)*nrm, vect[2]*nrm));
-	dir[0] = TR(atan2(vect[1]*nrm, vect[0]*nrm));
-}
-template<typename T, typename TR>
-inline void DirScale2Vector(const T dir[2], const T* scale, TR vect[3])
-{
-	const T cosy(cos(dir[1])*scale[0]);
-	vect[0] = TR(cos(dir[0])*cosy);
-	vect[1] = TR(sin(dir[0])*cosy);
-	vect[2] = TR(sin(dir[1])*scale[0]);
-}
-#elif 0
-template<typename T, typename TR>
-inline void Vector2DirScale(const T vect[3], TR dir[2], TR* scale)
-{
-	const T x2y2(SQUARE(vect[0])+SQUARE(vect[1]));
-	const T scl(sqrt(x2y2+SQUARE(vect[2])));
-	scale[0] = TR(scl);
-	const T nrm(T(1) / scl);
-	if (vect[0] == T(0) && vect[1] == T(0)) {
-		ASSERT(ISEQUAL(ABS(vect[2]*nrm), T(1)));
-		dir[1] = TR(M_PI_2);
-		dir[0] = TR(M_PI_2);
-	} else {
-		dir[1] = TR(atan2(vect[2]*nrm, sqrt(x2y2)*nrm));
-		dir[0] = TR(atan2(vect[1]*nrm, vect[0]*nrm));
-	}
-}
-template<typename T, typename TR>
-inline void DirScale2Vector(const T dir[2], const T* scale, TR vect[3])
-{
-	const T cosy(cos(dir[1])*scale[0]);
-	vect[0] = TR(cos(dir[0])*cosy);
-	vect[1] = TR(sin(dir[0])*cosy);
-	vect[2] = TR(sin(dir[1])*scale[0]);
-}
-#else
 template<typename T, typename TR>
 inline void Vector2DirScale(const T vect[3], TR dir[2], TR* scale)
 {
 	const T scl(sqrt(SQUARE(vect[0])+SQUARE(vect[1])+SQUARE(vect[2])));
+	ASSERT(!ISZERO(scl));
 	scale[0] = TR(scl);
-	const T b(asin(CLAMP(vect[1]/scale[0], T(-1), T(1))));
-	dir[1] = TR(b);
-	const T cosb(cos(b));
-	if (cosb == T(0)) {
-		dir[0] = TR(0);
-	} else {
-		const T invscl(T(1) / (scl*cosb));
-		const T sina( vect[0] * invscl);
-		const T cosa(-vect[2] * invscl);
-		dir[0] = TR(acos(CLAMP(cosa, T(-1), T(1))));
-		if (sina < T(0))
-			dir[0] = -dir[0];
-	}
+	dir[0] = TR(atan2(vect[1], vect[0]));
+	dir[1] = TR(acos(vect[2] / scl));
 }
 template<typename T, typename TR>
 inline void DirScale2Vector(const T dir[2], const T* scale, TR vect[3])
 {
-	const T cos_dir1(cos(dir[1])*scale[0]);
-	vect[0] = TR( sin(dir[0]) * cos_dir1);
-	vect[1] = TR( sin(dir[1]) * scale[0]);
-	vect[2] = TR(-cos(dir[0]) * cos_dir1);
+	ASSERT(!ISZERO(*scale));
+	const T siny(*scale*sin(dir[1]));
+	vect[0] = TR(cos(dir[0])*siny);
+	vect[1] = TR(sin(dir[0])*siny);
+	vect[2] = TR(*scale*cos(dir[1]));
 }
-#endif
-#if TD_VERBOSE == TD_VERBOSE_DEBUG
-inline void TestDir() {
-	typedef REAL Real;
-	for (int i=0; i<10000; ++i) {
-		TPoint3<Real> d(
-			SEACAVE::randomMeanRange(0.0, 1.0),
-			SEACAVE::randomMeanRange(0.0, 1.0),
-			SEACAVE::randomMeanRange(0.0, 1.0)
-		);
-		normalize(d);
-		TPoint2<Real> p;
-		Normal2Dir(d, p);
-		TPoint3<Real> _d;
-		Dir2Normal(p, _d);
-		ASSERT(ISEQUAL(d, _d));
-	}
-}
-#endif
 /*----------------------------------------------------------------*/
 
 

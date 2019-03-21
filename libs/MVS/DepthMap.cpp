@@ -230,7 +230,7 @@ unsigned DepthData::DecRef()
 //                         1 2 3
 //  1 2 4 7 5 3 6 8 9 -->  4 5 6
 //                         7 8 9
-void DepthEstimator::MapMatrix2ZigzagIdx(const Image8U::Size& size, DepthEstimator::MapRefArr& coords, BitMatrix& mask, int rawStride)
+void DepthEstimator::MapMatrix2ZigzagIdx(const Image8U::Size& size, DepthEstimator::MapRefArr& coords, const BitMatrix& mask, int rawStride)
 {
 	typedef DepthEstimator::MapRef MapRef;
 	const int w = size.width;
@@ -259,7 +259,7 @@ void DepthEstimator::MapMatrix2ZigzagIdx(const Image8U::Size& size, DepthEstimat
 	}
 }
 
-// replace POWI(0.5f, (int)invScaleRange):      0    1      2       3       4         5         6           7           8             9             10              11
+// replace POWI(0.5f, (int)idxScaleRange):      0    1      2       3       4         5         6           7           8             9             10              11
 const float DepthEstimator::scaleRanges[12] = {1.f, 0.5f, 0.25f, 0.125f, 0.0625f, 0.03125f, 0.015625f, 0.0078125f, 0.00390625f, 0.001953125f, 0.0009765625f, 0.00048828125f};
 
 DepthEstimator::DepthEstimator(
@@ -362,19 +362,6 @@ bool DepthEstimator::FillPixelPatch()
 	reinterpret_cast<Point3&>(X0) = image0.camera.TransformPointI2C(Cast<REAL>(x0));
 	return true;
 }
-
-#if DENSE_SMOOTHNESS == DENSE_SMOOTHNESS_PLANE
-// compute plane defined by current depth and normal estimate
-void DepthEstimator::InitPlane(Depth depth, const Normal& normal)
-{
-	#if 0
-	plane.Set(reinterpret_cast<const Vec3f&>(normal), Vec3f(depth*Cast<float>(X0)));
-	#else
-	plane.m_vN = reinterpret_cast<const Vec3f&>(normal);
-	plane.m_fD = -depth*reinterpret_cast<const Vec3f&>(normal).dot(Cast<float>(X0));
-	#endif
-}
-#endif
 
 // compute pixel's NCC score in the given target image
 float DepthEstimator::ScorePixelImage(const ViewData& image1, Depth depth, const Normal& normal)
@@ -521,8 +508,8 @@ void DepthEstimator::ProcessPixel(IDX idx)
 		return;
 
 	float& conf = confMap0(x0);
-	unsigned invScaleRange(DecodeScoreScale(conf));
-	if ((invScaleRange <= 2 || conf > OPTDENSE::fNCCThresholdRefine) && FillPixelPatch()) {
+	unsigned idxScaleRange(DecodeScoreScale(conf));
+	if ((idxScaleRange <= 2 || conf > OPTDENSE::fNCCThresholdRefine) && FillPixelPatch()) {
 		// find neighbors
 		neighbors.Empty();
 		#if DENSE_SMOOTHNESS != DENSE_SMOOTHNESS_NA
@@ -656,7 +643,7 @@ void DepthEstimator::ProcessPixel(IDX idx)
 			const ImageRef& nx = neighbor.x;
 		#endif
 			float nconf(confMap0(nx));
-			const unsigned ninvScaleRange(DecodeScoreScale(nconf));
+			const unsigned nidxScaleRange(DecodeScoreScale(nconf));
 			if (nconf >= OPTDENSE::fNCCThresholdKeep)
 				continue;
 			#if DENSE_SMOOTHNESS != DENSE_SMOOTHNESS_NA
@@ -674,24 +661,24 @@ void DepthEstimator::ProcessPixel(IDX idx)
 				conf = nconf;
 				depth = neighbor.depth;
 				normal = neighbor.normal;
-				invScaleRange = (ninvScaleRange>1 ? ninvScaleRange-1 : ninvScaleRange);
+				idxScaleRange = (nidxScaleRange>1 ? nidxScaleRange-1 : nidxScaleRange);
 			}
 		}
 		// check few random solutions close to the current estimate in an attempt to find a better estimate
 		float depthRange(MaxDepthDifference(depth, OPTDENSE::fRandomDepthRatio));
-		if (invScaleRange > OPTDENSE::nRandomMaxScale)
-			invScaleRange = OPTDENSE::nRandomMaxScale;
-		else if (invScaleRange == 0) {
+		if (idxScaleRange > OPTDENSE::nRandomMaxScale)
+			idxScaleRange = OPTDENSE::nRandomMaxScale;
+		else if (idxScaleRange == 0) {
 			if (conf <= thConfSmall)
-				invScaleRange = 1;
+				idxScaleRange = 1;
 			else if (conf <= thConfBig)
 				depthRange *= 0.5f;
 		}
-		float scaleRange(scaleRanges[invScaleRange]);
+		float scaleRange(scaleRanges[idxScaleRange]);
 		Point2f p;
 		Normal2Dir(normal, p);
 		Normal nnormal;
-		for (unsigned iter=invScaleRange; iter<OPTDENSE::nRandomIters; ++iter) {
+		for (unsigned iter=idxScaleRange; iter<OPTDENSE::nRandomIters; ++iter) {
 			const Depth ndepth(rnd.randomMeanRange(depth, depthRange*scaleRange));
 			if (!ISINSIDE(ndepth, dMin, dMax))
 				continue;
@@ -709,8 +696,7 @@ void DepthEstimator::ProcessPixel(IDX idx)
 				depth = ndepth;
 				normal = nnormal;
 				p = np;
-				scaleRange *= 0.5f;
-				++invScaleRange;
+				scaleRange = scaleRanges[++idxScaleRange];
 			}
 		}
 		#else
@@ -726,7 +712,7 @@ void DepthEstimator::ProcessPixel(IDX idx)
 			const ImageRef& nx = neighbor.x;
 		#endif
 			float nconf(confMap0(nx));
-			const unsigned ninvScaleRange(DecodeScoreScale(nconf));
+			const unsigned nidxScaleRange(DecodeScoreScale(nconf));
 			ASSERT(nconf >= 0 && nconf <= 2);
 			if (nconf >= OPTDENSE::fNCCThresholdKeep)
 				continue;
@@ -773,7 +759,7 @@ void DepthEstimator::ProcessPixel(IDX idx)
 		}
 		#endif
 	}
-	conf = EncodeScoreScale(conf, invScaleRange);
+	conf = EncodeScoreScale(conf, idxScaleRange);
 }
 
 // interpolate given pixel's estimate to the current position
@@ -833,6 +819,19 @@ Depth DepthEstimator::InterpolatePixel(const ImageRef& nx, Depth depth, const No
 	#endif
 	return ISINSIDE(depthNew,dMin,dMax) ? depthNew : depth;
 }
+
+#if DENSE_SMOOTHNESS == DENSE_SMOOTHNESS_PLANE
+// compute plane defined by current depth and normal estimate
+void DepthEstimator::InitPlane(Depth depth, const Normal& normal)
+{
+	#if 0
+	plane.Set(reinterpret_cast<const Vec3f&>(normal), Vec3f(depth*Cast<float>(X0)));
+	#else
+	plane.m_vN = reinterpret_cast<const Vec3f&>(normal);
+	plane.m_fD = -depth*reinterpret_cast<const Vec3f&>(normal).dot(Cast<float>(X0));
+	#endif
+}
+#endif
 
 #if DENSE_REFINE == DENSE_REFINE_EXACT
 DepthEstimator::PixelEstimate DepthEstimator::PerturbEstimate(const PixelEstimate& est, float perturbation)

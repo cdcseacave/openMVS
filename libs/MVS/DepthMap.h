@@ -333,13 +333,13 @@ struct MVS_API DepthEstimator {
 
 	bool PreparePixelPatch(const ImageRef&);
 	bool FillPixelPatch();
-	#if DENSE_SMOOTHNESS == DENSE_SMOOTHNESS_PLANE
-	void InitPlane(Depth, const Normal&);
-	#endif
 	float ScorePixelImage(const ViewData& image1, Depth, const Normal&);
 	float ScorePixel(Depth, const Normal&);
 	void ProcessPixel(IDX idx);
 	Depth InterpolatePixel(const ImageRef&, Depth, const Normal&) const;
+	#if DENSE_SMOOTHNESS == DENSE_SMOOTHNESS_PLANE
+	void InitPlane(Depth, const Normal&);
+	#endif
 	#if DENSE_REFINE == DENSE_REFINE_EXACT
 	PixelEstimate PerturbEstimate(const PixelEstimate&, float perturbation);
 	#endif
@@ -418,39 +418,14 @@ struct MVS_API DepthEstimator {
 		ASSERT(score >= 0.f && score <= 2.01f);
 		return score*0.1f+(float)invScaleRange;
 	}
-	static inline unsigned DecodeScale(float score) {
-		return (unsigned)FLOOR2INT(score);
-	}
 	static inline unsigned DecodeScoreScale(float& score) {
-		const unsigned invScaleRange(DecodeScale(score));
+		const unsigned invScaleRange((unsigned)FLOOR2INT(score));
 		score = (score-(float)invScaleRange)*10.f;
 		//ASSERT(score >= 0.f && score <= 2.01f); //problems in multi-threading
 		return invScaleRange;
 	}
-	static inline float DecodeScore(float score) {
-		DecodeScoreScale(score);
-		return score;
-	}
 
-	// Encodes/decodes a normalized 3D vector in two parameters for the direction
-	template<typename T, typename TR>
-	static inline void Normal2Dir(const TPoint3<T>& d, TPoint2<TR>& p) {
-		// empirically tested
-		ASSERT(ISEQUAL(norm(d), T(1)));
-		p.y = TR(atan2(sqrt(d.x*d.x + d.y*d.y), d.z));
-		p.x = TR(atan2(d.y, d.x));
-	}
-	template<typename T, typename TR>
-	static inline void Dir2Normal(const TPoint2<T>& p, TPoint3<TR>& d) {
-		// empirically tested
-		const T siny(sin(p.y));
-		d.x = TR(cos(p.x)*siny);
-		d.y = TR(sin(p.x)*siny);
-		d.z = TR(cos(p.y));
-		ASSERT(ISEQUAL(norm(d), TR(1)));
-	}
-
-	static void MapMatrix2ZigzagIdx(const Image8U::Size& size, DepthEstimator::MapRefArr& coords, BitMatrix& mask, int rawStride=16);
+	static void MapMatrix2ZigzagIdx(const Image8U::Size& size, DepthEstimator::MapRefArr& coords, const BitMatrix& mask, int rawStride=16);
 
 	const float smoothBonusDepth, smoothBonusNormal;
 	const float smoothSigmaDepth, smoothSigmaNormal;
