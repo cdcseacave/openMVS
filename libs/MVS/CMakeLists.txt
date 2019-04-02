@@ -42,7 +42,7 @@ cxx_library_with_type_no_pch(MVS "Libs" "" "${cxx_default}"
 set_target_pch(MVS Common.h)
 
 # Link its dependencies
-TARGET_LINK_LIBRARIES(MVS PRIVATE Common Math IO ${CERES_LIBS} ${CGAL_LIBS} ${CUDA_CUDA_LIBRARY} CGAL::CGAL)
+TARGET_LINK_LIBRARIES(MVS PRIVATE Common Math IO ${CERES_LIBS} ${CGAL_LIBS} ${CUDA_CUDA_LIBRARY})
 
 # Install
 SET_TARGET_PROPERTIES(MVS PROPERTIES
