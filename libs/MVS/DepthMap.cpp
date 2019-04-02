@@ -91,7 +91,6 @@ MDEFVAR_OPTDENSE_uint32(nOptimize, "Optimize", "should we filter the extracted d
 MDEFVAR_OPTDENSE_uint32(nEstimateColors, "Estimate Colors", "should we estimate the colors for the dense point-cloud?", "2", "0", "1")
 MDEFVAR_OPTDENSE_uint32(nEstimateNormals, "Estimate Normals", "should we estimate the normals for the dense point-cloud?", "0", "1", "2")
 MDEFVAR_OPTDENSE_float(fNCCThresholdKeep, "NCC Threshold Keep", "Maximum 1-NCC score accepted for a match", "0.5", "0.3")
-MDEFVAR_OPTDENSE_float(fNCCThresholdRefine, "NCC Threshold Refine", "1-NCC score under which a match is not refined anymore", "0.03")
 MDEFVAR_OPTDENSE_uint32(nEstimationIters, "Estimation Iters", "Number of iterations for depth-map refinement", "4")
 MDEFVAR_OPTDENSE_uint32(nRandomIters, "Random Iters", "Number of iterations for random assignment per pixel", "6")
 MDEFVAR_OPTDENSE_uint32(nRandomMaxScale, "Random Max Scale", "Maximum number of iterations to skip during random assignment", "2")
@@ -305,6 +304,7 @@ DepthEstimator::DepthEstimator(
 	angle2Range(FD2R(OPTDENSE::fRandomAngle2Range)),
 	thConfSmall(OPTDENSE::fNCCThresholdKeep*0.25f),
 	thConfBig(OPTDENSE::fNCCThresholdKeep*0.5f),
+	thConfRand(OPTDENSE::fNCCThresholdKeep*1.08f),
 	thRobust(OPTDENSE::fNCCThresholdKeep*1.2f)
 	#if DENSE_REFINE == DENSE_REFINE_EXACT
 	, thPerturbation(1.f/POW(2.f,float(nIter+1)))
@@ -504,262 +504,270 @@ void DepthEstimator::ProcessPixel(IDX idx)
 {
 	// compute pixel coordinates from pixel index and its neighbors
 	ASSERT(dir == LT2RB || dir == RB2LT);
-	if (!PreparePixelPatch(dir == LT2RB ? coords[idx] : coords[coords.GetSize()-1-idx]))
+	if (!PreparePixelPatch(dir == LT2RB ? coords[idx] : coords[coords.GetSize()-1-idx]) || !FillPixelPatch())
 		return;
-
-	float& conf = confMap0(x0);
-	unsigned idxScaleRange(DecodeScoreScale(conf));
-	if ((idxScaleRange <= 2 || conf > OPTDENSE::fNCCThresholdRefine) && FillPixelPatch()) {
-		// find neighbors
-		neighbors.Empty();
+	// find neighbors
+	neighbors.Empty();
+	#if DENSE_SMOOTHNESS != DENSE_SMOOTHNESS_NA
+	neighborsClose.Empty();
+	#endif
+	if (dir == LT2RB) {
+		// direction from left-top to right-bottom corner
+		if (x0.x > nSizeHalfWindow) {
+			const ImageRef nx(x0.x-1, x0.y);
+			const Depth ndepth(depthMap0(nx));
+			if (ndepth > 0) {
+				#if DENSE_SMOOTHNESS != DENSE_SMOOTHNESS_NA
+				neighbors.emplace_back(nx);
+				neighborsClose.emplace_back(NeighborEstimate{ndepth,normalMap0(nx)
+					#if DENSE_SMOOTHNESS == DENSE_SMOOTHNESS_PLANE
+					, Cast<float>(image0.camera.TransformPointI2C(Point3(nx, ndepth)))
+					#endif
+				});
+				#else
+				neighbors.emplace_back(NeighborData{nx,ndepth,normalMap0(nx)});
+				#endif
+			}
+		}
+		if (x0.y > nSizeHalfWindow) {
+			const ImageRef nx(x0.x, x0.y-1);
+			const Depth ndepth(depthMap0(nx));
+			if (ndepth > 0) {
+				#if DENSE_SMOOTHNESS != DENSE_SMOOTHNESS_NA
+				neighbors.emplace_back(nx);
+				neighborsClose.emplace_back(NeighborEstimate{ndepth,normalMap0(nx)
+					#if DENSE_SMOOTHNESS == DENSE_SMOOTHNESS_PLANE
+					, Cast<float>(image0.camera.TransformPointI2C(Point3(nx, ndepth)))
+					#endif
+				});
+				#else
+				neighbors.emplace_back(NeighborData{nx,ndepth,normalMap0(nx)});
+				#endif
+			}
+		}
 		#if DENSE_SMOOTHNESS != DENSE_SMOOTHNESS_NA
-		neighborsClose.Empty();
-		#endif
-		if (dir == LT2RB) {
-			// direction from left-top to right-bottom corner
-			if (x0.x > nSizeHalfWindow) {
-				const ImageRef nx(x0.x-1, x0.y);
-				const Depth ndepth(depthMap0(nx));
-				if (ndepth > 0) {
-					#if DENSE_SMOOTHNESS != DENSE_SMOOTHNESS_NA
-					neighbors.emplace_back(nx);
-					neighborsClose.emplace_back(NeighborEstimate{ndepth,normalMap0(nx)
-						#if DENSE_SMOOTHNESS == DENSE_SMOOTHNESS_PLANE
-						, Cast<float>(image0.camera.TransformPointI2C(Point3(nx, ndepth)))
-						#endif
-					});
-					#else
-					neighbors.emplace_back(NeighborData{nx,ndepth,normalMap0(nx)});
+		if (x0.x < size.width-nSizeHalfWindow) {
+			const ImageRef nx(x0.x+1, x0.y);
+			const Depth ndepth(depthMap0(nx));
+			if (ndepth > 0)
+				neighborsClose.emplace_back(NeighborEstimate{ndepth,normalMap0(nx)
+					#if DENSE_SMOOTHNESS == DENSE_SMOOTHNESS_PLANE
+					, Cast<float>(image0.camera.TransformPointI2C(Point3(nx, ndepth)))
 					#endif
-				}
-			}
-			if (x0.y > nSizeHalfWindow) {
-				const ImageRef nx(x0.x, x0.y-1);
-				const Depth ndepth(depthMap0(nx));
-				if (ndepth > 0) {
-					#if DENSE_SMOOTHNESS != DENSE_SMOOTHNESS_NA
-					neighbors.emplace_back(nx);
-					neighborsClose.emplace_back(NeighborEstimate{ndepth,normalMap0(nx)
-						#if DENSE_SMOOTHNESS == DENSE_SMOOTHNESS_PLANE
-						, Cast<float>(image0.camera.TransformPointI2C(Point3(nx, ndepth)))
-						#endif
-					});
-					#else
-					neighbors.emplace_back(NeighborData{nx,ndepth,normalMap0(nx)});
-					#endif
-				}
-			}
-			#if DENSE_SMOOTHNESS != DENSE_SMOOTHNESS_NA
-			if (x0.x < size.width-nSizeHalfWindow) {
-				const ImageRef nx(x0.x+1, x0.y);
-				const Depth ndepth(depthMap0(nx));
-				if (ndepth > 0)
-					neighborsClose.emplace_back(NeighborEstimate{ndepth,normalMap0(nx)
-						#if DENSE_SMOOTHNESS == DENSE_SMOOTHNESS_PLANE
-						, Cast<float>(image0.camera.TransformPointI2C(Point3(nx, ndepth)))
-						#endif
-					});
-			}
-			if (x0.y < size.height-nSizeHalfWindow) {
-				const ImageRef nx(x0.x, x0.y+1);
-				const Depth ndepth(depthMap0(nx));
-				if (ndepth > 0)
-					neighborsClose.emplace_back(NeighborEstimate{ndepth,normalMap0(nx)
-						#if DENSE_SMOOTHNESS == DENSE_SMOOTHNESS_PLANE
-						, Cast<float>(image0.camera.TransformPointI2C(Point3(nx, ndepth)))
-						#endif
-					});
-			}
-			#endif
-		} else {
-			ASSERT(dir == RB2LT);
-			// direction from right-bottom to left-top corner
-			if (x0.x < size.width-nSizeHalfWindow) {
-				const ImageRef nx(x0.x+1, x0.y);
-				const Depth ndepth(depthMap0(nx));
-				if (ndepth > 0) {
-					#if DENSE_SMOOTHNESS != DENSE_SMOOTHNESS_NA
-					neighbors.emplace_back(nx);
-					neighborsClose.emplace_back(NeighborEstimate{ndepth,normalMap0(nx)
-						#if DENSE_SMOOTHNESS == DENSE_SMOOTHNESS_PLANE
-						, Cast<float>(image0.camera.TransformPointI2C(Point3(nx, ndepth)))
-						#endif
-					});
-					#else
-					neighbors.emplace_back(NeighborData{nx,ndepth,normalMap0(nx)});
-					#endif
-				}
-			}
-			if (x0.y < size.height-nSizeHalfWindow) {
-				const ImageRef nx(x0.x, x0.y+1);
-				const Depth ndepth(depthMap0(nx));
-				if (ndepth > 0) {
-					#if DENSE_SMOOTHNESS != DENSE_SMOOTHNESS_NA
-					neighbors.emplace_back(nx);
-					neighborsClose.emplace_back(NeighborEstimate{ndepth,normalMap0(nx)
-						#if DENSE_SMOOTHNESS == DENSE_SMOOTHNESS_PLANE
-						, Cast<float>(image0.camera.TransformPointI2C(Point3(nx, ndepth)))
-						#endif
-					});
-					#else
-					neighbors.emplace_back(NeighborData{nx,ndepth,normalMap0(nx)});
-					#endif
-				}
-			}
-			#if DENSE_SMOOTHNESS != DENSE_SMOOTHNESS_NA
-			if (x0.x > nSizeHalfWindow) {
-				const ImageRef nx(x0.x-1, x0.y);
-				const Depth ndepth(depthMap0(nx));
-				if (ndepth > 0)
-					neighborsClose.emplace_back(NeighborEstimate{ndepth,normalMap0(nx)
-						#if DENSE_SMOOTHNESS == DENSE_SMOOTHNESS_PLANE
-						, Cast<float>(image0.camera.TransformPointI2C(Point3(nx, ndepth)))
-						#endif
-					});
-			}
-			if (x0.y > nSizeHalfWindow) {
-				const ImageRef nx(x0.x, x0.y-1);
-				const Depth ndepth(depthMap0(nx));
-				if (ndepth > 0)
-					neighborsClose.emplace_back(NeighborEstimate{ndepth,normalMap0(nx)
-						#if DENSE_SMOOTHNESS == DENSE_SMOOTHNESS_PLANE
-						, Cast<float>(image0.camera.TransformPointI2C(Point3(nx, ndepth)))
-						#endif
-					});
-			}
-			#endif
+				});
 		}
-		Depth& depth = depthMap0(x0);
-		Normal& normal = normalMap0(x0);
-		const Normal viewDir(Cast<float>(static_cast<const Point3&>(X0)));
-		ASSERT(depth > 0 && normal.dot(viewDir) < 0);
-		#if DENSE_REFINE == DENSE_REFINE_ITER
-		// check if any of the neighbor estimates are better then the current estimate
+		if (x0.y < size.height-nSizeHalfWindow) {
+			const ImageRef nx(x0.x, x0.y+1);
+			const Depth ndepth(depthMap0(nx));
+			if (ndepth > 0)
+				neighborsClose.emplace_back(NeighborEstimate{ndepth,normalMap0(nx)
+					#if DENSE_SMOOTHNESS == DENSE_SMOOTHNESS_PLANE
+					, Cast<float>(image0.camera.TransformPointI2C(Point3(nx, ndepth)))
+					#endif
+				});
+		}
+		#endif
+	} else {
+		ASSERT(dir == RB2LT);
+		// direction from right-bottom to left-top corner
+		if (x0.x < size.width-nSizeHalfWindow) {
+			const ImageRef nx(x0.x+1, x0.y);
+			const Depth ndepth(depthMap0(nx));
+			if (ndepth > 0) {
+				#if DENSE_SMOOTHNESS != DENSE_SMOOTHNESS_NA
+				neighbors.emplace_back(nx);
+				neighborsClose.emplace_back(NeighborEstimate{ndepth,normalMap0(nx)
+					#if DENSE_SMOOTHNESS == DENSE_SMOOTHNESS_PLANE
+					, Cast<float>(image0.camera.TransformPointI2C(Point3(nx, ndepth)))
+					#endif
+				});
+				#else
+				neighbors.emplace_back(NeighborData{nx,ndepth,normalMap0(nx)});
+				#endif
+			}
+		}
+		if (x0.y < size.height-nSizeHalfWindow) {
+			const ImageRef nx(x0.x, x0.y+1);
+			const Depth ndepth(depthMap0(nx));
+			if (ndepth > 0) {
+				#if DENSE_SMOOTHNESS != DENSE_SMOOTHNESS_NA
+				neighbors.emplace_back(nx);
+				neighborsClose.emplace_back(NeighborEstimate{ndepth,normalMap0(nx)
+					#if DENSE_SMOOTHNESS == DENSE_SMOOTHNESS_PLANE
+					, Cast<float>(image0.camera.TransformPointI2C(Point3(nx, ndepth)))
+					#endif
+				});
+				#else
+				neighbors.emplace_back(NeighborData{nx,ndepth,normalMap0(nx)});
+				#endif
+			}
+		}
 		#if DENSE_SMOOTHNESS != DENSE_SMOOTHNESS_NA
-		FOREACH(n, neighbors) {
-			const ImageRef& nx = neighbors[n];
-		#else
-		for (NeighborData& neighbor: neighbors) {
-			const ImageRef& nx = neighbor.x;
-		#endif
-			float nconf(confMap0(nx));
-			const unsigned nidxScaleRange(DecodeScoreScale(nconf));
-			if (nconf >= OPTDENSE::fNCCThresholdKeep)
-				continue;
-			#if DENSE_SMOOTHNESS != DENSE_SMOOTHNESS_NA
-			NeighborEstimate& neighbor = neighborsClose[n];
-			#endif
-			neighbor.depth = InterpolatePixel(nx, neighbor.depth, neighbor.normal);
-			CorrectNormal(neighbor.normal);
-			ASSERT(neighbor.depth > 0 && neighbor.normal.dot(viewDir) <= 0);
-			#if DENSE_SMOOTHNESS == DENSE_SMOOTHNESS_PLANE
-			InitPlane(neighbor.depth, neighbor.normal);
-			#endif
-			nconf = ScorePixel(neighbor.depth, neighbor.normal);
-			ASSERT(nconf >= 0 && nconf <= 2);
-			if (conf > nconf) {
-				conf = nconf;
-				depth = neighbor.depth;
-				normal = neighbor.normal;
-				idxScaleRange = (nidxScaleRange>1 ? nidxScaleRange-1 : nidxScaleRange);
-			}
+		if (x0.x > nSizeHalfWindow) {
+			const ImageRef nx(x0.x-1, x0.y);
+			const Depth ndepth(depthMap0(nx));
+			if (ndepth > 0)
+				neighborsClose.emplace_back(NeighborEstimate{ndepth,normalMap0(nx)
+					#if DENSE_SMOOTHNESS == DENSE_SMOOTHNESS_PLANE
+					, Cast<float>(image0.camera.TransformPointI2C(Point3(nx, ndepth)))
+					#endif
+				});
 		}
-		// check few random solutions close to the current estimate in an attempt to find a better estimate
-		float depthRange(MaxDepthDifference(depth, OPTDENSE::fRandomDepthRatio));
-		if (idxScaleRange > OPTDENSE::nRandomMaxScale)
-			idxScaleRange = OPTDENSE::nRandomMaxScale;
-		else if (idxScaleRange == 0) {
-			if (conf <= thConfSmall)
-				idxScaleRange = 1;
-			else if (conf <= thConfBig)
-				depthRange *= 0.5f;
-		}
-		float scaleRange(scaleRanges[idxScaleRange]);
-		Point2f p;
-		Normal2Dir(normal, p);
-		Normal nnormal;
-		for (unsigned iter=idxScaleRange; iter<OPTDENSE::nRandomIters; ++iter) {
-			const Depth ndepth(rnd.randomMeanRange(depth, depthRange*scaleRange));
-			if (!ISINSIDE(ndepth, dMin, dMax))
-				continue;
-			const Point2f np(rnd.randomMeanRange(p.x, angle1Range*scaleRange), rnd.randomMeanRange(p.y, angle2Range*scaleRange));
-			Dir2Normal(np, nnormal);
-			if (nnormal.dot(viewDir) >= 0)
-				continue;
-			#if DENSE_SMOOTHNESS == DENSE_SMOOTHNESS_PLANE
-			InitPlane(ndepth, nnormal);
-			#endif
-			const float nconf(ScorePixel(ndepth, nnormal));
-			ASSERT(nconf >= 0);
-			if (conf > nconf) {
-				conf = nconf;
-				depth = ndepth;
-				normal = nnormal;
-				p = np;
-				scaleRange = scaleRanges[++idxScaleRange];
-			}
-		}
-		#else
-		// current pixel estimate
-		PixelEstimate currEstimate{depth, normal};
-		// propagate depth estimate from the best neighbor estimate
-		PixelEstimate prevEstimate; float prevCost(FLT_MAX);
-		#if DENSE_SMOOTHNESS != DENSE_SMOOTHNESS_NA
-		FOREACH(n, neighbors) {
-			const ImageRef& nx = neighbors[n];
-		#else
-		for (const NeighborData& neighbor: neighbors) {
-			const ImageRef& nx = neighbor.x;
-		#endif
-			float nconf(confMap0(nx));
-			const unsigned nidxScaleRange(DecodeScoreScale(nconf));
-			ASSERT(nconf >= 0 && nconf <= 2);
-			if (nconf >= OPTDENSE::fNCCThresholdKeep)
-				continue;
-			if (prevCost <= nconf)
-				continue;
-			#if DENSE_SMOOTHNESS != DENSE_SMOOTHNESS_NA
-			const NeighborEstimate& neighbor = neighborsClose[n];
-			#endif
-			if (neighbor.normal.dot(viewDir) >= 0)
-				continue;
-			prevEstimate.depth = InterpolatePixel(nx, neighbor.depth, neighbor.normal);
-			prevEstimate.normal = neighbor.normal;
-			CorrectNormal(prevEstimate.normal);
-			prevCost = nconf;
-		}
-		if (prevCost == FLT_MAX)
-			prevEstimate = PerturbEstimate(currEstimate, thPerturbation);
-		// randomly sampled estimate
-		PixelEstimate randEstimate(PerturbEstimate(currEstimate, thPerturbation));
-		// select best pixel estimate
-		const int numCosts = 5;
-		float costs[numCosts] = {0,0,0,0,0};
-		const Depth depths[numCosts] = {
-			currEstimate.depth, prevEstimate.depth, randEstimate.depth,
-			currEstimate.depth, randEstimate.depth};
-		const Normal normals[numCosts] = {
-			currEstimate.normal, prevEstimate.normal,
-			randEstimate.normal, randEstimate.normal,
-			currEstimate.normal};
-		conf = FLT_MAX;
-		for (int idxCost=0; idxCost<numCosts; ++idxCost) {
-			const Depth ndepth(depths[idxCost]);
-			const Normal nnormal(normals[idxCost]);
-			#if DENSE_SMOOTHNESS == DENSE_SMOOTHNESS_PLANE
-			InitPlane(ndepth, nnormal);
-			#endif
-			const float nconf(ScorePixel(ndepth, nnormal));
-			ASSERT(nconf >= 0);
-			if (conf > nconf) {
-				conf = nconf;
-				depth = ndepth;
-				normal = nnormal;
-			}
+		if (x0.y > nSizeHalfWindow) {
+			const ImageRef nx(x0.x, x0.y-1);
+			const Depth ndepth(depthMap0(nx));
+			if (ndepth > 0)
+				neighborsClose.emplace_back(NeighborEstimate{ndepth,normalMap0(nx)
+					#if DENSE_SMOOTHNESS == DENSE_SMOOTHNESS_PLANE
+					, Cast<float>(image0.camera.TransformPointI2C(Point3(nx, ndepth)))
+					#endif
+				});
 		}
 		#endif
 	}
-	conf = EncodeScoreScale(conf, idxScaleRange);
+	float& conf = confMap0(x0);
+	Depth& depth = depthMap0(x0);
+	Normal& normal = normalMap0(x0);
+	const Normal viewDir(Cast<float>(static_cast<const Point3&>(X0)));
+	ASSERT(depth > 0 && normal.dot(viewDir) < 0);
+	#if DENSE_REFINE == DENSE_REFINE_ITER
+	// check if any of the neighbor estimates are better then the current estimate
+	#if DENSE_SMOOTHNESS != DENSE_SMOOTHNESS_NA
+	FOREACH(n, neighbors) {
+		const ImageRef& nx = neighbors[n];
+	#else
+	for (NeighborData& neighbor: neighbors) {
+		const ImageRef& nx = neighbor.x;
+	#endif
+		if (confMap0(nx) >= OPTDENSE::fNCCThresholdKeep)
+			continue;
+		#if DENSE_SMOOTHNESS != DENSE_SMOOTHNESS_NA
+		NeighborEstimate& neighbor = neighborsClose[n];
+		#endif
+		neighbor.depth = InterpolatePixel(nx, neighbor.depth, neighbor.normal);
+		CorrectNormal(neighbor.normal);
+		ASSERT(neighbor.depth > 0 && neighbor.normal.dot(viewDir) <= 0);
+		#if DENSE_SMOOTHNESS == DENSE_SMOOTHNESS_PLANE
+		InitPlane(neighbor.depth, neighbor.normal);
+		#endif
+		const float nconf(ScorePixel(neighbor.depth, neighbor.normal));
+		ASSERT(nconf >= 0 && nconf <= 2);
+		if (conf > nconf) {
+			conf = nconf;
+			depth = neighbor.depth;
+			normal = neighbor.normal;
+		}
+	}
+	// check few random solutions close to the current estimate in an attempt to find a better estimate
+	unsigned idxScaleRange(0);
+	if (conf <= thConfSmall)
+		idxScaleRange = 2;
+	else if (conf <= thConfBig)
+		idxScaleRange = 1;
+	else if (conf >= thConfRand) {
+		// try completely random values in order to find an initial estimate
+		for (unsigned iter=0; iter<OPTDENSE::nRandomIters; ++iter) {
+			const Depth ndepth(RandomDepth(dMin, dMax));
+			const Normal nnormal(RandomNormal(viewDir));
+			const float nconf(ScorePixel(ndepth, nnormal));
+			ASSERT(nconf >= 0);
+			if (conf > nconf) {
+				conf = nconf;
+				depth = ndepth;
+				normal = nnormal;
+				if (conf < thConfRand)
+					goto RefineIters;
+			}
+		}
+		return;
+	}
+	RefineIters:
+	// try random values around the current estimate in order to refine it
+	const float depthRange(MaxDepthDifference(depth, OPTDENSE::fRandomDepthRatio));
+	float scaleRange(scaleRanges[idxScaleRange]);
+	Point2f p;
+	Normal2Dir(normal, p);
+	Normal nnormal;
+	for (unsigned iter=0; iter<OPTDENSE::nRandomIters; ++iter) {
+		const Depth ndepth(rnd.randomMeanRange(depth, depthRange*scaleRange));
+		if (!ISINSIDE(ndepth, dMin, dMax))
+			continue;
+		const Point2f np(rnd.randomMeanRange(p.x, angle1Range*scaleRange), rnd.randomMeanRange(p.y, angle2Range*scaleRange));
+		Dir2Normal(np, nnormal);
+		if (nnormal.dot(viewDir) >= 0)
+			continue;
+		#if DENSE_SMOOTHNESS == DENSE_SMOOTHNESS_PLANE
+		InitPlane(ndepth, nnormal);
+		#endif
+		const float nconf(ScorePixel(ndepth, nnormal));
+		ASSERT(nconf >= 0);
+		if (conf > nconf) {
+			conf = nconf;
+			depth = ndepth;
+			normal = nnormal;
+			p = np;
+			scaleRange = scaleRanges[++idxScaleRange];
+		}
+	}
+	#else
+	// current pixel estimate
+	PixelEstimate currEstimate{depth, normal};
+	// propagate depth estimate from the best neighbor estimate
+	PixelEstimate prevEstimate; float prevCost(FLT_MAX);
+	#if DENSE_SMOOTHNESS != DENSE_SMOOTHNESS_NA
+	FOREACH(n, neighbors) {
+		const ImageRef& nx = neighbors[n];
+	#else
+	for (const NeighborData& neighbor: neighbors) {
+		const ImageRef& nx = neighbor.x;
+	#endif
+		float nconf(confMap0(nx));
+		const unsigned nidxScaleRange(DecodeScoreScale(nconf));
+		ASSERT(nconf >= 0 && nconf <= 2);
+		if (nconf >= OPTDENSE::fNCCThresholdKeep)
+			continue;
+		if (prevCost <= nconf)
+			continue;
+		#if DENSE_SMOOTHNESS != DENSE_SMOOTHNESS_NA
+		const NeighborEstimate& neighbor = neighborsClose[n];
+		#endif
+		if (neighbor.normal.dot(viewDir) >= 0)
+			continue;
+		prevEstimate.depth = InterpolatePixel(nx, neighbor.depth, neighbor.normal);
+		prevEstimate.normal = neighbor.normal;
+		CorrectNormal(prevEstimate.normal);
+		prevCost = nconf;
+	}
+	if (prevCost == FLT_MAX)
+		prevEstimate = PerturbEstimate(currEstimate, thPerturbation);
+	// randomly sampled estimate
+	PixelEstimate randEstimate(PerturbEstimate(currEstimate, thPerturbation));
+	// select best pixel estimate
+	const int numCosts = 5;
+	float costs[numCosts] = {0,0,0,0,0};
+	const Depth depths[numCosts] = {
+		currEstimate.depth, prevEstimate.depth, randEstimate.depth,
+		currEstimate.depth, randEstimate.depth};
+	const Normal normals[numCosts] = {
+		currEstimate.normal, prevEstimate.normal,
+		randEstimate.normal, randEstimate.normal,
+		currEstimate.normal};
+	conf = FLT_MAX;
+	for (int idxCost=0; idxCost<numCosts; ++idxCost) {
+		const Depth ndepth(depths[idxCost]);
+		const Normal nnormal(normals[idxCost]);
+		#if DENSE_SMOOTHNESS == DENSE_SMOOTHNESS_PLANE
+		InitPlane(ndepth, nnormal);
+		#endif
+		const float nconf(ScorePixel(ndepth, nnormal));
+		ASSERT(nconf >= 0);
+		if (conf > nconf) {
+			conf = nconf;
+			depth = ndepth;
+			normal = nnormal;
+		}
+	}
+	#endif
 }
 
 // interpolate given pixel's estimate to the current position

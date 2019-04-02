@@ -117,7 +117,6 @@ extern unsigned nOptimize;
 extern unsigned nEstimateColors;
 extern unsigned nEstimateNormals;
 extern float fNCCThresholdKeep;
-extern float fNCCThresholdRefine;
 extern unsigned nEstimationIters;
 extern unsigned nRandomIters;
 extern unsigned nRandomMaxScale;
@@ -413,25 +412,13 @@ struct MVS_API DepthEstimator {
 			normal = RMatrixBaseF(normal.cross(viewDir), MINF((ACOS(cosAngLen/norm(viewDir))-FD2R(90.f))*1.01f, -0.001f)) * normal;
 	}
 
-	// encode/decode NCC score and refinement level in one float
-	static inline float EncodeScoreScale(float score, unsigned invScaleRange=0) {
-		ASSERT(score >= 0.f && score <= 2.01f);
-		return score*0.1f+(float)invScaleRange;
-	}
-	static inline unsigned DecodeScoreScale(float& score) {
-		const unsigned invScaleRange((unsigned)FLOOR2INT(score));
-		score = (score-(float)invScaleRange)*10.f;
-		//ASSERT(score >= 0.f && score <= 2.01f); //problems in multi-threading
-		return invScaleRange;
-	}
-
 	static void MapMatrix2ZigzagIdx(const Image8U::Size& size, DepthEstimator::MapRefArr& coords, const BitMatrix& mask, int rawStride=16);
 
 	const float smoothBonusDepth, smoothBonusNormal;
 	const float smoothSigmaDepth, smoothSigmaNormal;
 	const float thMagnitudeSq;
 	const float angle1Range, angle2Range;
-	const float thConfSmall, thConfBig;
+	const float thConfSmall, thConfBig, thConfRand;
 	const float thRobust;
 	#if DENSE_REFINE == DENSE_REFINE_EXACT
 	const float thPerturbation;

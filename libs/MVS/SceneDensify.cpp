@@ -560,7 +560,7 @@ void* STCALL DepthMapsData::ScoreDepthMapTmp(void* arg)
 		if (!estimator.PreparePixelPatch(x) || !estimator.FillPixelPatch()) {
 			estimator.depthMap0(x) = 0;
 			estimator.normalMap0(x) = Normal::ZERO;
-			estimator.confMap0(x) = DepthEstimator::EncodeScoreScale(2.f);
+			estimator.confMap0(x) = 2.f;
 			continue;
 		}
 		Depth& depth = estimator.depthMap0(x);
@@ -574,7 +574,7 @@ void* STCALL DepthMapsData::ScoreDepthMapTmp(void* arg)
 			// replace invalid normal with random values
 			normal = estimator.RandomNormal(viewDir);
 		}
-		estimator.confMap0(x) = DepthEstimator::EncodeScoreScale(estimator.ScorePixel(depth, normal));
+		estimator.confMap0(x) = estimator.ScorePixel(depth, normal);
 	}
 	return NULL;
 }
@@ -598,7 +598,6 @@ void* STCALL DepthMapsData::EndDepthMapTmp(void* arg)
 		Depth& depth = estimator.depthMap0(x);
 		Normal& normal = estimator.normalMap0(x);
 		float& conf = estimator.confMap0(x);
-		const unsigned idxScaleRange(DepthEstimator::DecodeScoreScale(conf));
 		ASSERT(depth >= 0);
 		// check if the score is good enough
 		// and that the cross-estimates is close enough to the current estimate
@@ -632,10 +631,8 @@ void* STCALL DepthMapsData::EndDepthMapTmp(void* arg)
 			#endif
 			#if 1
 			conf = wAngle/MAXF(conf,1e-2f);
-			#elif 1
-			conf = wAngle/(depth*SQUARE(MAXF(conf,1e-2f)));
 			#else
-			conf = SQRT((float)idxScaleRange)*wAngle/(depth*SQUARE(MAXF(conf,1e-2f)));
+			conf = wAngle/(depth*SQUARE(MAXF(conf,1e-2f)));
 			#endif
 			#endif
 		}
