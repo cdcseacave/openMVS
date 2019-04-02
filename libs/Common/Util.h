@@ -749,6 +749,8 @@ public:
 	}
 
 
+	static void		Init();
+
 	static String	GetCPUInfo();
 	static String	GetRAMInfo();
 	static String	GetOSInfo();

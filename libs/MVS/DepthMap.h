@@ -316,6 +316,7 @@ struct MVS_API DepthEstimator {
 	const MapRefArr& coords;
 	const Image8U::Size size;
 	const Depth dMin, dMax;
+	const Depth dMinSqr, dMaxSqr;
 	const ENDIRECTION dir;
 	#if DENSE_AGGNCC == DENSE_AGGNCC_NTH || DENSE_AGGNCC == DENSE_AGGNCC_MINMEAN
 	const IDX idxScore;
@@ -394,13 +395,13 @@ struct MVS_API DepthEstimator {
 	}
 
 	// generate random depth and normal
-	inline Depth RandomDepth(Depth dMin, Depth dMax) {
-		ASSERT(dMin > 0);
-		return rnd.randomRange(dMin, dMax);
+	inline Depth RandomDepth(Depth dMinSqr, Depth dMaxSqr) {
+		ASSERT(dMinSqr > 0 && dMinSqr < dMaxSqr);
+		return SQUARE(rnd.randomRange(dMinSqr, dMaxSqr));
 	}
 	inline Normal RandomNormal(const Point3f& viewRay) {
 		Normal normal;
-		Dir2Normal(Point2f(rnd.randomRange(FD2R(0.f),FD2R(360.f)), rnd.randomRange(FD2R(120.f),FD2R(180.f))), normal);
+		Dir2Normal(Point2f(rnd.randomRange(FD2R(0.f),FD2R(180.f)), rnd.randomRange(FD2R(90.f),FD2R(180.f))), normal);
 		return normal.dot(viewRay) > 0 ? -normal : normal;
 	}
 

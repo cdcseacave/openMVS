@@ -1480,8 +1480,12 @@ public:
 		return pt.width>=0 && pt.height>=0 && pt.width<Base::size().width && pt.height<Base::size().height;
 	}
 	template <typename T>
-	inline bool isInside(const cv::Point_<T>& pt) const {
-		return int(pt.x)>=0 && int(pt.y)>=0 && int(pt.x)<Base::size().width && int(pt.y)<Base::size().height;
+	inline typename std::enable_if<std::is_integral<T>::value,bool>::type isInside(const cv::Point_<T>& pt) const {
+		return pt.x>=0 && pt.y>=0 && pt.x<Base::size().width && pt.y<Base::size().height;
+	}
+	template <typename T>
+	inline typename std::enable_if<std::is_floating_point<T>::value,bool>::type isInside(const cv::Point_<T>& pt) const {
+		return pt.x>=T(0) && pt.y>=T(0) && pt.x<=T(Base::size().width) && pt.y<=T(Base::size().height);
 	}
 
 	/// Is this coordinate inside the 2D matrix, and not too close to the edges?
@@ -1490,12 +1494,20 @@ public:
 		return pt.width>=border && pt.height>=border && pt.width<Base::size().width-border && pt.height<Base::size().height-border;
 	}
 	template <typename T>
-	inline bool isInsideWithBorder(const cv::Point_<T>& pt, int border) const {
-		return int(pt.x)>=border && int(pt.y)>=border && int(pt.x)<Base::size().width-border && int(pt.y)<Base::size().height-border;
+	inline typename std::enable_if<std::is_integral<T>::value,bool>::type isInsideWithBorder(const cv::Point_<T>& pt, int border) const {
+		return pt.x>=border && pt.y>=border && pt.x<Base::size().width-border && pt.y<Base::size().height-border;
+	}
+	template <typename T>
+	inline typename std::enable_if<std::is_floating_point<T>::value,bool>::type isInsideWithBorder(const cv::Point_<T>& pt, int border) const {
+		return pt.x>=T(border) && pt.y>=T(border) && pt.x<=T(Base::size().width-(border+1)) && pt.y<=T(Base::size().height-(border+1));
 	}
 	template <typename T, int border>
-	inline bool isInsideWithBorder(const cv::Point_<T>& pt) const {
-		return int(pt.x)>=border && int(pt.y)>=border && int(pt.x)<Base::size().width-border && int(pt.y)<Base::size().height-border;
+	inline typename std::enable_if<std::is_integral<T>::value,bool>::type isInsideWithBorder(const cv::Point_<T>& pt) const {
+		return pt.x>=border && pt.y>=border && pt.x<Base::size().width-border && pt.y<Base::size().height-border;
+	}
+	template <typename T, int border>
+	inline typename std::enable_if<std::is_floating_point<T>::value,bool>::type isInsideWithBorder(const cv::Point_<T>& pt) const {
+		return pt.x>=T(border) && pt.y>=T(border) && pt.x<=T(Base::size().width-(border+1)) && pt.y<=T(Base::size().height-(border+1));
 	}
 
 	/// Remove the given element from the vector
@@ -2003,7 +2015,7 @@ public:
 	INTERTYPE sample(const SAMPLER& sampler, const TPoint2<typename SAMPLER::Type>& pt) const;
 
 	template <typename T>
-	void toGray(TImage<T>& out, int code, bool bNormalize=false) const;
+	void toGray(TImage<T>& out, int code, bool bNormalize=false, bool bSRGB=false) const;
 
 	unsigned computeMaxResolution(unsigned& level, unsigned minImageSize=320, unsigned maxImageSize=INT_MAX) const;
 	static unsigned computeMaxResolution(unsigned width, unsigned height, unsigned& level, unsigned minImageSize=320, unsigned maxImageSize=INT_MAX);

@@ -433,6 +433,21 @@ String Util::GetOSInfo()
 /*----------------------------------------------------------------*/
 
 
+// Initialize various global variables (ex: random-number-generator state).
+void Util::Init()
+{
+	#ifdef _RELEASE
+	const time_t t(Util::getTime());
+	std::srand((unsigned)t);
+	cv::setRNGSeed((int)t);
+	#else
+	std::srand((unsigned)0);
+	cv::setRNGSeed((int)0);
+	#endif
+}
+/*----------------------------------------------------------------*/
+
+
 /**
  * Set global variable for availability of SSE instructions.
  */

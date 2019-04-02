@@ -90,13 +90,13 @@ MDEFVAR_OPTDENSE_uint32(nIpolGapSize, "Interpolate Gap Size", "interpolate small
 MDEFVAR_OPTDENSE_uint32(nOptimize, "Optimize", "should we filter the extracted depth-maps?", "7") // see DepthFlags
 MDEFVAR_OPTDENSE_uint32(nEstimateColors, "Estimate Colors", "should we estimate the colors for the dense point-cloud?", "2", "0", "1")
 MDEFVAR_OPTDENSE_uint32(nEstimateNormals, "Estimate Normals", "should we estimate the normals for the dense point-cloud?", "0", "1", "2")
-MDEFVAR_OPTDENSE_float(fNCCThresholdKeep, "NCC Threshold Keep", "Maximum 1-NCC score accepted for a match", "0.5", "0.3")
+MDEFVAR_OPTDENSE_float(fNCCThresholdKeep, "NCC Threshold Keep", "Maximum 1-NCC score accepted for a match", "0.55", "0.3")
 MDEFVAR_OPTDENSE_uint32(nEstimationIters, "Estimation Iters", "Number of iterations for depth-map refinement", "4")
 MDEFVAR_OPTDENSE_uint32(nRandomIters, "Random Iters", "Number of iterations for random assignment per pixel", "6")
 MDEFVAR_OPTDENSE_uint32(nRandomMaxScale, "Random Max Scale", "Maximum number of iterations to skip during random assignment", "2")
-MDEFVAR_OPTDENSE_float(fRandomDepthRatio, "Random Depth Ratio", "Depth range ratio of the current estimate for random plane assignment", "0.004")
-MDEFVAR_OPTDENSE_float(fRandomAngle1Range, "Random Angle1 Range", "Angle 1 range for random plane assignment (degrees)", "20.0")
-MDEFVAR_OPTDENSE_float(fRandomAngle2Range, "Random Angle2 Range", "Angle 2 range for random plane assignment (degrees)", "12.0")
+MDEFVAR_OPTDENSE_float(fRandomDepthRatio, "Random Depth Ratio", "Depth range ratio of the current estimate for random plane assignment", "0.003", "0.004")
+MDEFVAR_OPTDENSE_float(fRandomAngle1Range, "Random Angle1 Range", "Angle 1 range for random plane assignment (degrees)", "16.0", "20.0")
+MDEFVAR_OPTDENSE_float(fRandomAngle2Range, "Random Angle2 Range", "Angle 2 range for random plane assignment (degrees)", "10.0", "12.0")
 MDEFVAR_OPTDENSE_float(fRandomSmoothDepth, "Random Smooth Depth", "Depth variance used during neighbor smoothness assignment (ratio)", "0.02")
 MDEFVAR_OPTDENSE_float(fRandomSmoothNormal, "Random Smooth Normal", "Normal variance used during neighbor smoothness assignment (degrees)", "13")
 MDEFVAR_OPTDENSE_float(fRandomSmoothBonus, "Random Smooth Bonus", "Score factor used to encourage smoothness (1 - disabled)", "0.93")
@@ -290,6 +290,7 @@ DepthEstimator::DepthEstimator(
 	#endif
 	coords(_coords), size(_depthData0.images.First().image.size()),
 	dMin(_depthData0.dMin), dMax(_depthData0.dMax),
+	dMinSqr(SQRT(_depthData0.dMin)), dMaxSqr(SQRT(_depthData0.dMax)),
 	dir(nIter%2 ? RB2LT : LT2RB),
 	#if DENSE_AGGNCC == DENSE_AGGNCC_NTH
 	idxScore((_depthData0.images.size()-1)/3),
@@ -302,9 +303,9 @@ DepthEstimator::DepthEstimator(
 	thMagnitudeSq(OPTDENSE::fDescriptorMinMagnitudeThreshold>0?SQUARE(OPTDENSE::fDescriptorMinMagnitudeThreshold):-1.f),
 	angle1Range(FD2R(OPTDENSE::fRandomAngle1Range)),
 	angle2Range(FD2R(OPTDENSE::fRandomAngle2Range)),
-	thConfSmall(OPTDENSE::fNCCThresholdKeep*0.25f),
-	thConfBig(OPTDENSE::fNCCThresholdKeep*0.5f),
-	thConfRand(OPTDENSE::fNCCThresholdKeep*1.08f),
+	thConfSmall(OPTDENSE::fNCCThresholdKeep*0.2f),
+	thConfBig(OPTDENSE::fNCCThresholdKeep*0.4f),
+	thConfRand(OPTDENSE::fNCCThresholdKeep*0.9f),
 	thRobust(OPTDENSE::fNCCThresholdKeep*1.2f)
 	#if DENSE_REFINE == DENSE_REFINE_EXACT
 	, thPerturbation(1.f/POW(2.f,float(nIter+1)))
@@ -425,11 +426,12 @@ float DepthEstimator::ScorePixelImage(const ViewData& image1, Depth depth, const
 	// encourage smoothness
 	for (const NeighborEstimate& neighbor: neighborsClose) {
 		#if DENSE_SMOOTHNESS == DENSE_SMOOTHNESS_PLANE
-		score *= 1.f - smoothBonusDepth * DENSE_EXP(SQUARE(plane.Distance(neighbor.X)/depth) * smoothSigmaDepth);
+		const float factorDepth(DENSE_EXP(SQUARE(plane.Distance(neighbor.X)/depth) * smoothSigmaDepth));
 		#else
-		score *= 1.f - smoothBonusDepth * DENSE_EXP(SQUARE((depth-neighbor.depth)/depth) * smoothSigmaDepth);
+		const float factorDepth(DENSE_EXP(SQUARE((depth-neighbor.depth)/depth) * smoothSigmaDepth));
 		#endif
-		score *= 1.f - smoothBonusNormal * DENSE_EXP(SQUARE(ACOS(ComputeAngle<float,float>(normal.ptr(), neighbor.normal.ptr()))) * smoothSigmaNormal);
+		const float factorNormal(DENSE_EXP(SQUARE(ACOS(ComputeAngle<float,float>(normal.ptr(), neighbor.normal.ptr()))) * smoothSigmaNormal));
+		score *= (1.f - smoothBonusDepth * factorDepth) * (1.f - smoothBonusNormal * factorNormal);
 	}
 	#endif
 	ASSERT(ISFINITE(score));
@@ -658,8 +660,9 @@ void DepthEstimator::ProcessPixel(IDX idx)
 			normal = neighbor.normal;
 		}
 	}
-	// check few random solutions close to the current estimate in an attempt to find a better estimate
+	// try random values around the current estimate in order to refine it
 	unsigned idxScaleRange(0);
+	RefineIters:
 	if (conf <= thConfSmall)
 		idxScaleRange = 2;
 	else if (conf <= thConfBig)
@@ -667,7 +670,7 @@ void DepthEstimator::ProcessPixel(IDX idx)
 	else if (conf >= thConfRand) {
 		// try completely random values in order to find an initial estimate
 		for (unsigned iter=0; iter<OPTDENSE::nRandomIters; ++iter) {
-			const Depth ndepth(RandomDepth(dMin, dMax));
+			const Depth ndepth(RandomDepth(dMinSqr, dMaxSqr));
 			const Normal nnormal(RandomNormal(viewDir));
 			const float nconf(ScorePixel(ndepth, nnormal));
 			ASSERT(nconf >= 0);
@@ -681,10 +684,8 @@ void DepthEstimator::ProcessPixel(IDX idx)
 		}
 		return;
 	}
-	RefineIters:
-	// try random values around the current estimate in order to refine it
-	const float depthRange(MaxDepthDifference(depth, OPTDENSE::fRandomDepthRatio));
 	float scaleRange(scaleRanges[idxScaleRange]);
+	const float depthRange(MaxDepthDifference(depth, OPTDENSE::fRandomDepthRatio));
 	Point2f p;
 	Normal2Dir(normal, p);
 	Normal nnormal;

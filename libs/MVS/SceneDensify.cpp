@@ -413,16 +413,13 @@ std::pair<float,float> TriangulatePointsDelaunay(CGAL::Delaunay& delaunay, const
 	ASSERT(sizeof(Point3) == sizeof(X3D));
 	ASSERT(sizeof(Point3) == sizeof(CGAL::Point));
 	std::pair<float,float> depthBounds(FLT_MAX, 0.f);
-	FOREACH(p, points) {
-		const PointCloud::Point& point = scene.pointcloud.points[points[p]];
-		const Point3 ptCam(image.camera.TransformPointW2C(Cast<REAL>(point)));
-		const Point2 ptImg(image.camera.TransformPointC2I(ptCam));
-		delaunay.insert(CGAL::Point(ptImg.x, ptImg.y, ptCam.z));
-		const Depth depth((float)ptCam.z);
-		if (depthBounds.first > depth)
-			depthBounds.first = depth;
-		if (depthBounds.second < depth)
-			depthBounds.second = depth;
+	for (uint32_t idx: points) {
+		const Point3f pt(image.camera.ProjectPointP3(scene.pointcloud.points[idx]));
+		delaunay.insert(CGAL::Point(pt.x/pt.z, pt.y/pt.z, pt.z));
+		if (depthBounds.first > pt.z)
+			depthBounds.first = pt.z;
+		if (depthBounds.second < pt.z)
+			depthBounds.second = pt.z;
 	}
 	// if full size depth-map requested
 	if (OPTDENSE::bAddCorners) {
@@ -445,7 +442,7 @@ std::pair<float,float> TriangulatePointsDelaunay(CGAL::Delaunay& delaunay, const
 			if (cfc == 0)
 				continue; // normally this should never happen
 			const CGAL::FaceCirculator done(cfc);
-			Point3d& poszA = (Point3d&)vcorner->point();
+			Point3d& poszA = reinterpret_cast<Point3d&>(vcorner->point());
 			const Point2d& posA = reinterpret_cast<const Point2d&>(poszA);
 			const Ray3d rayA(Point3d::ZERO, normalized(image.camera.TransformPointI2C(poszA)));
 			DepthDistArr depths(0, numPoints);
@@ -459,9 +456,9 @@ std::pair<float,float> TriangulatePointsDelaunay(CGAL::Delaunay& delaunay, const
 				// compute the depth as the intersection of the corner ray with
 				// the plane defined by the face's vertices
 				{
-				const Point3d& poszB0 = (const Point3d&)fc->vertex(0)->point();
-				const Point3d& poszB1 = (const Point3d&)fc->vertex(1)->point();
-				const Point3d& poszB2 = (const Point3d&)fc->vertex(2)->point();
+				const Point3d& poszB0 = reinterpret_cast<const Point3d&>(fc->vertex(0)->point());
+				const Point3d& poszB1 = reinterpret_cast<const Point3d&>(fc->vertex(1)->point());
+				const Point3d& poszB2 = reinterpret_cast<const Point3d&>(fc->vertex(2)->point());
 				const Planed planeB(
 					image.camera.TransformPointI2C(poszB0),
 					image.camera.TransformPointI2C(poszB1),
@@ -470,9 +467,13 @@ std::pair<float,float> TriangulatePointsDelaunay(CGAL::Delaunay& delaunay, const
 				const Point3d poszB(rayA.Intersects(planeB));
 				if (poszB.z <= 0)
 					continue;
-				const Point2d posB((reinterpret_cast<const Point2d&>(poszB0)+reinterpret_cast<const Point2d&>(poszB1)+reinterpret_cast<const Point2d&>(poszB2))/3.f);
-				const REAL dist(norm(posB-posA));
-				depths.StoreTop<numPoints>(DepthDist((float)poszB.z, 1.f/(float)dist));
+				const Point2d posB((
+					reinterpret_cast<const Point2d&>(poszB0)+
+					reinterpret_cast<const Point2d&>(poszB1)+
+					reinterpret_cast<const Point2d&>(poszB2))/3.f
+				);
+				const double dist(norm(posB-posA));
+				depths.StoreTop<numPoints>(DepthDist(CLAMP((float)poszB.z,depthBounds.first,depthBounds.second), INVERT((float)dist)));
 				}
 				Continue:;
 			} while (++cfc != done);
@@ -520,8 +521,9 @@ bool DepthMapsData::InitDepthMap(DepthData& depthData)
 		inline void operator()(const ImageRef& pt) {
 			if (!depthMap.isInside(pt))
 				return;
-			const float z(INVERT(normalPlane.dot(P.TransformPointI2C(Point2f(pt)))));
-			ASSERT(z > 0);
+			const Depth z(INVERT(normalPlane.dot(P.TransformPointI2C(Point2f(pt)))));
+			if (z <= 0) // due to numerical instability
+				return;
 			depthMap(pt) = z;
 			normalMap(pt) = normal;
 		}
@@ -529,9 +531,9 @@ bool DepthMapsData::InitDepthMap(DepthData& depthData)
 	RasterDepthDataPlaneData data = {camera, depthData.depthMap, depthData.normalMap};
 	for (CGAL::Delaunay::Face_iterator it=delaunay.faces_begin(); it!=delaunay.faces_end(); ++it) {
 		const CGAL::Delaunay::Face& face = *it;
-		const Point3f i0((const Point3&)face.vertex(0)->point());
-		const Point3f i1((const Point3&)face.vertex(1)->point());
-		const Point3f i2((const Point3&)face.vertex(2)->point());
+		const Point3f i0(reinterpret_cast<const Point3d&>(face.vertex(0)->point()));
+		const Point3f i1(reinterpret_cast<const Point3d&>(face.vertex(1)->point()));
+		const Point3f i2(reinterpret_cast<const Point3d&>(face.vertex(2)->point()));
 		// compute the plane defined by the 3 points
 		const Point3f c0(camera.TransformPointI2C(i0));
 		const Point3f c1(camera.TransformPointI2C(i1));
@@ -566,9 +568,9 @@ void* STCALL DepthMapsData::ScoreDepthMapTmp(void* arg)
 		Depth& depth = estimator.depthMap0(x);
 		Normal& normal = estimator.normalMap0(x);
 		const Normal viewDir(Cast<float>(static_cast<const Point3&>(estimator.X0)));
-		if (depth <= 0) {
+		if (!ISINSIDE(depth, estimator.dMin, estimator.dMax)) {
 			// init with random values
-			depth = estimator.RandomDepth(estimator.dMin, estimator.dMax);
+			depth = estimator.RandomDepth(estimator.dMinSqr, estimator.dMaxSqr);
 			normal = estimator.RandomNormal(viewDir);
 		} else if (normal.dot(viewDir) >= 0) {
 			// replace invalid normal with random values
@@ -595,16 +597,15 @@ void* STCALL DepthMapsData::EndDepthMapTmp(void* arg)
 	const float fOptimAngle(FD2R(OPTDENSE::fOptimAngle));
 	while ((idx=(IDX)Thread::safeInc(estimator.idxPixel)) < estimator.coords.GetSize()) {
 		const ImageRef& x = estimator.coords[idx];
+		ASSERT(estimator.depthMap0(x) >= 0);
 		Depth& depth = estimator.depthMap0(x);
-		Normal& normal = estimator.normalMap0(x);
 		float& conf = estimator.confMap0(x);
-		ASSERT(depth >= 0);
 		// check if the score is good enough
 		// and that the cross-estimates is close enough to the current estimate
-		if (conf > OPTDENSE::fNCCThresholdKeep) {
+		if (conf >= OPTDENSE::fNCCThresholdKeep) {
 			#if 1 // used if gap-interpolation is active
 			conf = 0;
-			normal = Normal::ZERO;
+			estimator.normalMap0(x) = Normal::ZERO;
 			#endif
 			depth = 0;
 		} else {
@@ -1321,23 +1322,24 @@ bool DepthMapsData::FilterDepthMap(DepthData& depthDataRef, const IIndexArr& idx
 // fuse all valid depth-maps in the same 3D point cloud;
 // join points very likely to represent the same 3D point and
 // filter out points blocking the view
-struct Proj {
-	union {
-		uint32_t idxPixel;
-		struct {
-			uint16_t x, y; // image pixel coordinates
-		};
-	};
-	inline Proj() {}
-	inline Proj(uint32_t _idxPixel) : idxPixel(_idxPixel) {}
-	inline Proj(const ImageRef& ir) : x(ir.x), y(ir.y) {}
-	inline ImageRef GetCoord() const { return ImageRef(x,y); }
-};
-typedef SEACAVE::cList<Proj,const Proj&,0,4,uint32_t> ProjArr;
-typedef SEACAVE::cList<ProjArr,const ProjArr&,1,65536> ProjsArr;
 void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, bool bEstimateNormal)
 {
 	TD_TIMER_STARTD();
+
+	struct Proj {
+		union {
+			uint32_t idxPixel;
+			struct {
+				uint16_t x, y; // image pixel coordinates
+			};
+		};
+		inline Proj() {}
+		inline Proj(uint32_t _idxPixel) : idxPixel(_idxPixel) {}
+		inline Proj(const ImageRef& ir) : x(ir.x), y(ir.y) {}
+		inline ImageRef GetCoord() const { return ImageRef(x,y); }
+	};
+	typedef SEACAVE::cList<Proj,const Proj&,0,4,uint32_t> ProjArr;
+	typedef SEACAVE::cList<ProjArr,const ProjArr&,1,65536> ProjsArr;
 
 	// find best connected images
 	IndexScoreArr connections(0, scene.images.GetSize());
