@@ -85,11 +85,11 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		("help,h", "produce this help message")
 		("working-folder,w", boost::program_options::value<std::string>(&WORKING_FOLDER), "working directory (default current directory)")
 		("config-file,c", boost::program_options::value<std::string>(&OPT::strConfigFileName)->default_value(APPNAME _T(".cfg")), "file name containing program options")
-		("archive-type", boost::program_options::value<unsigned>(&OPT::nArchiveType)->default_value(2), "project archive type: 0-text, 1-binary, 2-compressed binary")
-		("process-priority", boost::program_options::value<int>(&OPT::nProcessPriority)->default_value(-1), "process priority (below normal by default)")
-		("max-threads", boost::program_options::value<unsigned>(&OPT::nMaxThreads)->default_value(0), "maximum number of threads (0 for using all available cores)")
+		("archive-type", boost::program_options::value(&OPT::nArchiveType)->default_value(2), "project archive type: 0-text, 1-binary, 2-compressed binary")
+		("process-priority", boost::program_options::value(&OPT::nProcessPriority)->default_value(-1), "process priority (below normal by default)")
+		("max-threads", boost::program_options::value(&OPT::nMaxThreads)->default_value(0), "maximum number of threads (0 for using all available cores)")
 		#if TD_VERBOSE != TD_VERBOSE_OFF
-		("verbosity,v", boost::program_options::value<int>(&g_nVerbosityLevel)->default_value(
+		("verbosity,v", boost::program_options::value(&g_nVerbosityLevel)->default_value(
 			#if TD_VERBOSE == TD_VERBOSE_DEBUG
 			3
 			#else
@@ -105,7 +105,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		("input-file,i", boost::program_options::value<std::string>(&OPT::strInputFileName), "input COLMAP folder containing cameras, images and points files OR input MVS project file")
 		("output-file,o", boost::program_options::value<std::string>(&OPT::strOutputFileName), "output filename for storing the MVS project")
 		("image-folder", boost::program_options::value<std::string>(&OPT::strImageFolder)->default_value(COLMAP_IMAGES_FOLDER), "folder to the undistorted images")
-		("normalize,f", boost::program_options::value<bool>(&OPT::bNormalizeIntrinsics)->default_value(true), "normalize intrinsics while exporting to MVS format")
+		("normalize,f", boost::program_options::value(&OPT::bNormalizeIntrinsics)->default_value(true), "normalize intrinsics while exporting to MVS format")
 		;
 
 	boost::program_options::options_description cmdline_options;
@@ -434,7 +434,7 @@ bool ImportScene(const String& strFolder, Interface& scene)
 			camera.C = Interface::Pos3d(0,0,0);
 			if (OPT::bNormalizeIntrinsics) {
 				// normalize camera intrinsics
-				const double fScale(1.0/Camera::GetNormalizationScale(colmapCamera.width, colmapCamera.height));
+				const REAL fScale(REAL(1)/Camera::GetNormalizationScale(colmapCamera.width, colmapCamera.height));
 				camera.K(0,0) *= fScale;
 				camera.K(1,1) *= fScale;
 				camera.K(0,2) *= fScale;
