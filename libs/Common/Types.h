@@ -41,6 +41,7 @@
 #endif
 #include <new>
 #include <string>
+#include <codecvt>
 #include <iostream>
 #include <fstream>
 #include <sstream>
