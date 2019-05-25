@@ -439,10 +439,14 @@ void Util::Init()
 	#ifdef _RELEASE
 	const time_t t(Util::getTime());
 	std::srand((unsigned)t);
+	#if CV_MAJOR_VERSION > 3 || (CV_MAJOR_VERSION == 3 && CV_MINOR_VERSION >= 4)
 	cv::setRNGSeed((int)t);
+	#endif
 	#else
 	std::srand((unsigned)0);
+	#if CV_MAJOR_VERSION > 3 || (CV_MAJOR_VERSION == 3 && CV_MINOR_VERSION >= 4)
 	cv::setRNGSeed((int)0);
+	#endif
 	#endif
 }
 /*----------------------------------------------------------------*/
