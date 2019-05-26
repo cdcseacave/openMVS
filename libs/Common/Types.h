@@ -41,6 +41,7 @@
 #endif
 #include <new>
 #include <string>
+#include <codecvt>
 #include <iostream>
 #include <fstream>
 #include <sstream>
@@ -337,7 +338,7 @@ inline T MAXF3(const T& x1, const T& x2, const T& x3) {
 #define RAND			std::rand
 #endif
 template<typename T>
-FORCEINLINE T RANDOM() { return (T(1)/RAND_MAX)*RAND(); }
+FORCEINLINE T RANDOM() { return T(RAND())/RAND_MAX; }
 
 template<typename T1, typename T2>
 union TAliasCast
@@ -598,15 +599,15 @@ namespace SEACAVE {
 // F U N C T I O N S ///////////////////////////////////////////////
 
 template<typename T>
-inline T& NEGATE(T& a) {
+constexpr T& NEGATE(T& a) {
 	return (a = -a);
 }
 template<typename T>
-inline T SQUARE(const T& a) {
+constexpr T SQUARE(const T& a) {
 	return (a * a);
 }
 template<typename T>
-inline T CUBE(const T& a) {
+constexpr T CUBE(const T& a) {
 	return (a * a * a);
 }
 template<typename T>
@@ -626,7 +627,7 @@ inline T LOG10(const T& a) {
 	return T(log10(a));
 }
 template<typename T>
-inline T powi(T base, int exp) {
+constexpr T powi(T base, int exp) {
 	T result(1);
 	while (exp) {
 		if (exp & 1)
@@ -636,7 +637,7 @@ inline T powi(T base, int exp) {
 	}
 	return result;
 }
-inline int log2i(int val) {
+constexpr int log2i(int val) {
 	int ret = -1;
 	while (val > 0) {
 		val >>= 1;
@@ -654,14 +655,14 @@ inline T arithmeticSeries(T n, T a1=1, T d=1) {
 	return (n*(a1*2+(n-1)*d))/2;
 }
 template<typename T>
-inline T factorial(T n) {
+constexpr T factorial(T n) {
 	T ret = 1;
 	while (n > 1)
 		ret *= n--;
 	return ret;
 }
 template<typename T>
-inline T combinations(const T& n, const T& k) {
+constexpr T combinations(const T& n, const T& k) {
 	ASSERT(n >= k);
 	#if 1
 	T num = n;
@@ -673,6 +674,24 @@ inline T combinations(const T& n, const T& k) {
 	#else
 	return factorial(n) / (factorial(k)*factorial(n-k));
 	#endif
+}
+
+// adapted from https://github.com/whackashoe/fastapprox.git
+// (set bSafe to true if the values might be smaller than -126)
+template<bool bSafe>
+inline float FPOW2(float p) {
+	if (bSafe && p < -126.f) {
+		return 0.f;
+	} else {
+		ASSERT(p >= -126.f);
+		CastF2I v;
+		v.i = static_cast<int32_t>((1 << 23) * (p + 126.94269504f));
+		return v.f;
+	}
+}
+template<bool bSafe>
+inline float FEXP(float v) {
+	return FPOW2<bSafe>(1.44269504f * v);
 }
 
 // Inverse of the square root
@@ -835,66 +854,6 @@ FORCEINLINE int Round2Int(double x) {
 	#else
 	return int(floor(x+.5));
 	#endif
-}
-/*----------------------------------------------------------------*/
-
-
-// Random number generation
-// uniform random number generation
-FORCEINLINE float random() {
-	return RANDOM<float>();
-}
-FORCEINLINE double randomd() {
-	return RANDOM<double>();
-}
-template<typename T>
-FORCEINLINE T randomRange(T nMin, T nMax) {
-	return nMin + ((nMax - nMin) * RAND())/RAND_MAX;
-}
-template<>
-FORCEINLINE float randomRange<float>(float fMin, float fMax) {
-	return fMin + (fMax - fMin) * random();
-}
-template<>
-FORCEINLINE double randomRange<double>(double fMin, double fMax) {
-	return fMin + (fMax - fMin) * randomd();
-}
-template<typename T>
-FORCEINLINE T randomMeanRange(T mean, T delta/*=(max-min)/2*/) {
-	return mean-delta + (delta*T(2) * RAND())/RAND_MAX;
-}
-template<>
-FORCEINLINE float randomMeanRange<float>(float mean, float delta/*=(max-min)/2*/) {
-	return mean + delta * (2.f * random() - 1.f);
-}
-template<>
-FORCEINLINE double randomMeanRange<double>(double mean, double delta/*=(max-min)/2*/) {
-	return mean + delta * (2.0 * randomd() - 1.0);
-}
-// gaussian random number generation
-template<typename T>
-FORCEINLINE T gaussian(T val, T sigma) {
-	return EXP(-SQUARE(val/sigma)/2)/(SQRT(T(M_PI*2))*sigma);
-}
-template<typename T>
-FORCEINLINE T randomGaussian(T mean, T sigma) {
-	T x, y, r2;
-	do {
-		x = T(-1) + T(2) * RANDOM<T>();
-		y = T(-1) + T(2) * RANDOM<T>();
-		r2 = x * x + y * y;
-	} while (r2 > T(1) || r2 == T(0));
-	return mean + sigma * y * SQRT(T(-2) * LOGN(r2) / r2);
-}
-template<typename T>
-FORCEINLINE T randomGaussian(T sigma) {
-	return randomGaussian(T(0), sigma);
-}
-FORCEINLINE float randomGaussian() {
-	return randomGaussian(0.f, 1.f);
-}
-FORCEINLINE double randomGaussiand() {
-	return randomGaussian(0.0, 1.0);
 }
 /*----------------------------------------------------------------*/
 
@@ -1173,6 +1132,7 @@ inline _Tp    SAFEDIVIDE(_Tp   x, _Tp   y)	{ return (y==_Tp(0) ? INVZERO(y) : x/
 } // namespace SEACAVE
 
 
+#include "Random.h"
 #include "HalfFloat.h"
 
 
@@ -1521,8 +1481,12 @@ public:
 		return pt.width>=0 && pt.height>=0 && pt.width<Base::size().width && pt.height<Base::size().height;
 	}
 	template <typename T>
-	inline bool isInside(const cv::Point_<T>& pt) const {
-		return int(pt.x)>=0 && int(pt.y)>=0 && int(pt.x)<Base::size().width && int(pt.y)<Base::size().height;
+	inline typename std::enable_if<std::is_integral<T>::value,bool>::type isInside(const cv::Point_<T>& pt) const {
+		return pt.x>=0 && pt.y>=0 && pt.x<Base::size().width && pt.y<Base::size().height;
+	}
+	template <typename T>
+	inline typename std::enable_if<std::is_floating_point<T>::value,bool>::type isInside(const cv::Point_<T>& pt) const {
+		return pt.x>=T(0) && pt.y>=T(0) && pt.x<=T(Base::size().width) && pt.y<=T(Base::size().height);
 	}
 
 	/// Is this coordinate inside the 2D matrix, and not too close to the edges?
@@ -1531,12 +1495,20 @@ public:
 		return pt.width>=border && pt.height>=border && pt.width<Base::size().width-border && pt.height<Base::size().height-border;
 	}
 	template <typename T>
-	inline bool isInsideWithBorder(const cv::Point_<T>& pt, int border) const {
-		return int(pt.x)>=border && int(pt.y)>=border && int(pt.x)<Base::size().width-border && int(pt.y)<Base::size().height-border;
+	inline typename std::enable_if<std::is_integral<T>::value,bool>::type isInsideWithBorder(const cv::Point_<T>& pt, int border) const {
+		return pt.x>=border && pt.y>=border && pt.x<Base::size().width-border && pt.y<Base::size().height-border;
+	}
+	template <typename T>
+	inline typename std::enable_if<std::is_floating_point<T>::value,bool>::type isInsideWithBorder(const cv::Point_<T>& pt, int border) const {
+		return pt.x>=T(border) && pt.y>=T(border) && pt.x<=T(Base::size().width-(border+1)) && pt.y<=T(Base::size().height-(border+1));
 	}
 	template <typename T, int border>
-	inline bool isInsideWithBorder(const cv::Point_<T>& pt) const {
-		return int(pt.x)>=border && int(pt.y)>=border && int(pt.x)<Base::size().width-border && int(pt.y)<Base::size().height-border;
+	inline typename std::enable_if<std::is_integral<T>::value,bool>::type isInsideWithBorder(const cv::Point_<T>& pt) const {
+		return pt.x>=border && pt.y>=border && pt.x<Base::size().width-border && pt.y<Base::size().height-border;
+	}
+	template <typename T, int border>
+	inline typename std::enable_if<std::is_floating_point<T>::value,bool>::type isInsideWithBorder(const cv::Point_<T>& pt) const {
+		return pt.x>=T(border) && pt.y>=T(border) && pt.x<=T(Base::size().width-(border+1)) && pt.y<=T(Base::size().height-(border+1));
 	}
 
 	/// Remove the given element from the vector
@@ -1810,6 +1782,14 @@ struct TPixel {
 	inline void set(const ALT* clr) { c[0] = TYPE(clr[0]); c[1] = TYPE(clr[1]); c[2] = TYPE(clr[2]); }
 	inline void get(ALT& _r, ALT& _g, ALT& _b) const { _r = ALT(r); _g = ALT(g); _b = ALT(b); }
 	inline void get(ALT* clr) const { clr[0] = ALT(c[0]); clr[1] = ALT(c[1]); clr[2] = ALT(c[2]); }
+	template<typename T> inline TPixel<typename std::enable_if<!std::is_floating_point<TYPE>::value || !std::is_same<T,uint8_t>::value,T>::type> cast() const { return TPixel<T>(T(r), T(g), T(b)); }
+	template<typename T> inline TPixel<typename std::enable_if<std::is_floating_point<TYPE>::value && std::is_same<T,uint8_t>::value,T>::type> cast() const {
+		return TPixel<uint8_t>(
+			(uint8_t)CLAMP(ROUND2INT(r), 0, 255),
+			(uint8_t)CLAMP(ROUND2INT(g), 0, 255),
+			(uint8_t)CLAMP(ROUND2INT(b), 0, 255)
+		);
+	}
 	// set/get as vector
 	inline const TYPE& operator[](size_t i) const { ASSERT(i<3); return c[i]; }
 	inline TYPE& operator[](size_t i) { ASSERT(i<3); return c[i]; }
@@ -1921,6 +1901,15 @@ struct TColor {
 	inline void set(const ALT* clr) { c[0] = TYPE(clr[0]); c[1] = TYPE(clr[1]); c[2] = TYPE(clr[2]); c[3] = TYPE(clr[3]); }
 	inline void get(ALT& _r, ALT& _g, ALT& _b, ALT& _a) const { _r = ALT(r); _g = ALT(g); _b = ALT(b); _a = ALT(a); }
 	inline void get(ALT* clr) const { clr[0] = ALT(c[0]); clr[1] = ALT(c[1]); clr[2] = ALT(c[2]); clr[3] = ALT(c[3]); }
+	template<typename T> inline TColor<typename std::enable_if<!std::is_floating_point<TYPE>::value || !std::is_same<T,uint8_t>::value,T>::type> cast() const { return TColor<T>(T(r), T(g), T(b), T(a)); }
+	template<typename T> inline TColor<typename std::enable_if<std::is_floating_point<TYPE>::value && std::is_same<T,uint8_t>::value,T>::type> cast() const {
+		return TColor<uint8_t>(
+			(uint8_t)CLAMP(ROUND2INT(r), 0, 255),
+			(uint8_t)CLAMP(ROUND2INT(g), 0, 255),
+			(uint8_t)CLAMP(ROUND2INT(b), 0, 255),
+			(uint8_t)CLAMP(ROUND2INT(a), 0, 255)
+		);
+	}
 	// set/get as vector
 	inline const TYPE& operator[](size_t i) const { ASSERT(i<4); return c[i]; }
 	inline TYPE& operator[](size_t i) { ASSERT(i<4); return c[i]; }
@@ -2027,7 +2016,7 @@ public:
 	INTERTYPE sample(const SAMPLER& sampler, const TPoint2<typename SAMPLER::Type>& pt) const;
 
 	template <typename T>
-	void toGray(TImage<T>& out, int code, bool bNormalize=false) const;
+	void toGray(TImage<T>& out, int code, bool bNormalize=false, bool bSRGB=false) const;
 
 	unsigned computeMaxResolution(unsigned& level, unsigned minImageSize=320, unsigned maxImageSize=INT_MAX) const;
 	static unsigned computeMaxResolution(unsigned width, unsigned height, unsigned& level, unsigned minImageSize=320, unsigned maxImageSize=INT_MAX);

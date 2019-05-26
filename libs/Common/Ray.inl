@@ -896,3 +896,108 @@ TYPE TRay<TYPE,DIMS>::Distance(const POINT& pt) const
 	return SQRT(DistanceSq(pt));
 } // Distance(POINT)
 /*----------------------------------------------------------------*/
+
+
+// S T R U C T S ///////////////////////////////////////////////////
+
+template <typename TYPE, int DIMS>
+bool TCylinder<TYPE,DIMS>::Intersects(const SPHERE& sphere) const
+{
+	struct Check {
+		static bool Intersection(const RAY& ray, const SPHERE& sphere, const VECTOR& CmV, TYPE t, TYPE radius, TYPE height) {
+			const POINT O(ray.m_pOrig + ray.m_vDir * height);
+			const VECTOR a(sphere.center - O);
+			if (a.squaredNorm() <= SQUARE(sphere.radius))
+				return true; // ray origin inside the sphere
+			const POINT D((CmV - ray.m_vDir * t).normalized());
+			const TYPE d = a.dot(D);
+			if (d < TYPE(0))
+				return false; // intersection behind the ray origin
+			const TYPE dSq((a - D*d).squaredNorm());
+			const TYPE srSq = SQUARE(sphere.radius);
+			if (dSq <= srSq) {
+				const TYPE r = d - SQRT(srSq-dSq);
+				ASSERT(r >= TYPE(0));
+				return r <= radius; // intersection before the ray end
+			}
+			return false;
+		}
+	};
+	const VECTOR CmV(sphere.center - ray.m_pOrig);
+	const TYPE t(ray.m_vDir.dot(CmV));
+	// sphere projects behind the cylinder origin
+	if (t < minHeight) {
+		if (t+sphere.radius < minHeight)
+			return false;
+		return Check::Intersection(ray, sphere, CmV, t, radius, minHeight);
+	}
+	// sphere projects after the cylinder end
+	if (t > maxHeight) {
+		if (t-sphere.radius > maxHeight)
+			return false;
+		return Check::Intersection(ray, sphere, CmV, t, radius, maxHeight);
+	}
+	const TYPE lenSq((CmV - ray.m_vDir * t).squaredNorm());
+	return lenSq <= SQUARE(sphere.radius + radius);
+} // Intersects
+/*----------------------------------------------------------------*/
+
+// Classify point to cylinder.
+template <typename TYPE, int DIMS>
+GCLASS TCylinder<TYPE,DIMS>::Classify(const POINT& p, TYPE& t) const
+{
+	ASSERT(ISEQUAL(ray.m_vDir.norm(), TYPE(1)));
+	const VECTOR D(p - ray.m_pOrig);
+	t = ray.m_vDir.dot(D);
+	if (t < minHeight) return BACK;
+	if (t > maxHeight) return FRONT;
+	const TYPE rSq((D - ray.m_vDir*t).squaredNorm());
+	const TYPE radiusSq(SQUARE(radius));
+	if (rSq > radiusSq) return CULLED;
+	if (rSq < radiusSq) return VISIBLE;
+	return PLANAR;
+} // Classify
+/*----------------------------------------------------------------*/
+
+
+// S T R U C T S ///////////////////////////////////////////////////
+
+template <typename TYPE, int DIMS>
+bool TConeIntersect<TYPE,DIMS>::operator()(const SPHERE& sphere) const
+{
+	const VECTOR CmV(sphere.center - cone.ray.m_pOrig);
+	const VECTOR D(CmV + cone.ray.m_vDir * (sphere.radius*invSinAngle));
+	TYPE e = D.dot(cone.ray.m_vDir);
+	if (e <= TYPE(0) || e*e < D.squaredNorm()*cosAngleSq)
+		return false;
+	e = CmV.dot(cone.ray.m_vDir);
+	if (e-sphere.radius > cone.maxHeight)
+		return false;
+	if (e < cone.minHeight) {
+		const TYPE lenSq = CmV.squaredNorm();
+		if (e*e >= lenSq*sinAngleSq)
+			return lenSq <= SQUARE(sphere.radius);
+	}
+	return true;
+} // Intersect
+/*----------------------------------------------------------------*/
+
+// Classify point to cone.
+template <typename TYPE, int DIMS>
+GCLASS TConeIntersect<TYPE,DIMS>::Classify(const POINT& p, TYPE& t) const
+{
+	ASSERT(ISEQUAL(cone.ray.m_vDir.norm(), TYPE(1)));
+	const VECTOR D(p - cone.ray.m_pOrig);
+	t = cone.ray.m_vDir.dot(D);
+	if (ISZERO(t))
+		return PLANAR;
+	if (t < cone.minHeight) return BACK;
+	if (t > cone.maxHeight) return FRONT;
+	ASSERT(!ISZERO(D.norm()));
+	const TYPE tSq(SQUARE(t));
+	const TYPE dSq(cosAngleSq*D.squaredNorm());
+	if (tSq < dSq) return CULLED;
+	if (tSq > dSq) return VISIBLE;
+	return PLANAR;
+} // Classify
+/*----------------------------------------------------------------*/

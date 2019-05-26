@@ -41,7 +41,6 @@ ConfigLibrary()
 
 # List configuration options
 SET(OpenMVS_USE_NONFREE ON CACHE BOOL "Build non-free (patented) functionality")
-SET(OpenMVS_USE_EXIV2 OFF CACHE BOOL "Link and use EXIV2 library")
 SET(OpenMVS_USE_CERES OFF CACHE BOOL "Enable CERES optimization library")
 SET(OpenMVS_USE_FAST_FLOAT2INT ON CACHE BOOL "Use an optimized code to convert real numbers to int")
 SET(OpenMVS_USE_FAST_INVSQRT OFF CACHE BOOL "Use an optimized code to compute the inverse square root (slower in fact on modern compilers)")

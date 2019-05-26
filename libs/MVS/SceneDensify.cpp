@@ -118,6 +118,13 @@ public:
 /*----------------------------------------------------------------*/
 
 
+// convert the ZNCC score to a weight used to average the fused points
+inline float Conf2Weight(float conf, Depth depth) {
+	return 1.f/(MAXF(1.f-conf,0.03f)*depth*depth);
+}
+/*----------------------------------------------------------------*/
+
+
 
 // S T R U C T S ///////////////////////////////////////////////////
 
@@ -138,7 +145,7 @@ public:
 	bool GapInterpolation(DepthData& depthData);
 
 	bool FilterDepthMap(DepthData& depthData, const IIndexArr& idxNeighbors, bool bAdjust=true);
-	void FuseDepthMaps(PointCloud& pointcloud, bool bEstimateNormal);
+	void FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, bool bEstimateNormal);
 
 protected:
 	static void* STCALL ScoreDepthMapTmp(void*);
@@ -373,7 +380,7 @@ bool DepthMapsData::InitViews(DepthData& depthData, IIndex idxNeighbor, IIndex n
 		// print selected views
 		if (g_nVerbosityLevel > 2) {
 			String msg;
-			for (IDX i=1; i<depthData.images.GetSize(); ++i)
+			for (IIndex i=1; i<depthData.images.GetSize(); ++i)
 				msg += String::FormatString(" %3u(%.2fscl)", depthData.images[i].pImageData-scene.images.Begin(), depthData.images[i].scale);
 			VERBOSE("Reference image %3u paired with %u views:%s (%u shared points)", idxImage, depthData.images.GetSize()-1, msg.c_str(), depthData.points.GetSize());
 		} else
@@ -413,16 +420,13 @@ std::pair<float,float> TriangulatePointsDelaunay(CGAL::Delaunay& delaunay, const
 	ASSERT(sizeof(Point3) == sizeof(X3D));
 	ASSERT(sizeof(Point3) == sizeof(CGAL::Point));
 	std::pair<float,float> depthBounds(FLT_MAX, 0.f);
-	FOREACH(p, points) {
-		const PointCloud::Point& point = scene.pointcloud.points[points[p]];
-		const Point3 ptCam(image.camera.TransformPointW2C(Cast<REAL>(point)));
-		const Point2 ptImg(image.camera.TransformPointC2I(ptCam));
-		delaunay.insert(CGAL::Point(ptImg.x, ptImg.y, ptCam.z));
-		const Depth depth((float)ptCam.z);
-		if (depthBounds.first > depth)
-			depthBounds.first = depth;
-		if (depthBounds.second < depth)
-			depthBounds.second = depth;
+	for (uint32_t idx: points) {
+		const Point3f pt(image.camera.ProjectPointP3(scene.pointcloud.points[idx]));
+		delaunay.insert(CGAL::Point(pt.x/pt.z, pt.y/pt.z, pt.z));
+		if (depthBounds.first > pt.z)
+			depthBounds.first = pt.z;
+		if (depthBounds.second < pt.z)
+			depthBounds.second = pt.z;
 	}
 	// if full size depth-map requested
 	if (OPTDENSE::bAddCorners) {
@@ -445,7 +449,7 @@ std::pair<float,float> TriangulatePointsDelaunay(CGAL::Delaunay& delaunay, const
 			if (cfc == 0)
 				continue; // normally this should never happen
 			const CGAL::FaceCirculator done(cfc);
-			Point3d& poszA = (Point3d&)vcorner->point();
+			Point3d& poszA = reinterpret_cast<Point3d&>(vcorner->point());
 			const Point2d& posA = reinterpret_cast<const Point2d&>(poszA);
 			const Ray3d rayA(Point3d::ZERO, normalized(image.camera.TransformPointI2C(poszA)));
 			DepthDistArr depths(0, numPoints);
@@ -459,9 +463,9 @@ std::pair<float,float> TriangulatePointsDelaunay(CGAL::Delaunay& delaunay, const
 				// compute the depth as the intersection of the corner ray with
 				// the plane defined by the face's vertices
 				{
-				const Point3d& poszB0 = (const Point3d&)fc->vertex(0)->point();
-				const Point3d& poszB1 = (const Point3d&)fc->vertex(1)->point();
-				const Point3d& poszB2 = (const Point3d&)fc->vertex(2)->point();
+				const Point3d& poszB0 = reinterpret_cast<const Point3d&>(fc->vertex(0)->point());
+				const Point3d& poszB1 = reinterpret_cast<const Point3d&>(fc->vertex(1)->point());
+				const Point3d& poszB2 = reinterpret_cast<const Point3d&>(fc->vertex(2)->point());
 				const Planed planeB(
 					image.camera.TransformPointI2C(poszB0),
 					image.camera.TransformPointI2C(poszB1),
@@ -470,9 +474,13 @@ std::pair<float,float> TriangulatePointsDelaunay(CGAL::Delaunay& delaunay, const
 				const Point3d poszB(rayA.Intersects(planeB));
 				if (poszB.z <= 0)
 					continue;
-				const Point2d posB((reinterpret_cast<const Point2d&>(poszB0)+reinterpret_cast<const Point2d&>(poszB1)+reinterpret_cast<const Point2d&>(poszB2))/3.f);
-				const REAL dist(norm(posB-posA));
-				depths.StoreTop<numPoints>(DepthDist((float)poszB.z, 1.f/(float)dist));
+				const Point2d posB((
+					reinterpret_cast<const Point2d&>(poszB0)+
+					reinterpret_cast<const Point2d&>(poszB1)+
+					reinterpret_cast<const Point2d&>(poszB2))/3.f
+				);
+				const double dist(norm(posB-posA));
+				depths.StoreTop<numPoints>(DepthDist(CLAMP((float)poszB.z,depthBounds.first,depthBounds.second), INVERT((float)dist)));
 				}
 				Continue:;
 			} while (++cfc != done);
@@ -520,8 +528,9 @@ bool DepthMapsData::InitDepthMap(DepthData& depthData)
 		inline void operator()(const ImageRef& pt) {
 			if (!depthMap.isInside(pt))
 				return;
-			const float z(INVERT(normalPlane.dot(P.TransformPointI2C(Point2f(pt)))));
-			ASSERT(z > 0);
+			const Depth z(INVERT(normalPlane.dot(P.TransformPointI2C(Point2f(pt)))));
+			if (z <= 0) // due to numerical instability
+				return;
 			depthMap(pt) = z;
 			normalMap(pt) = normal;
 		}
@@ -529,9 +538,9 @@ bool DepthMapsData::InitDepthMap(DepthData& depthData)
 	RasterDepthDataPlaneData data = {camera, depthData.depthMap, depthData.normalMap};
 	for (CGAL::Delaunay::Face_iterator it=delaunay.faces_begin(); it!=delaunay.faces_end(); ++it) {
 		const CGAL::Delaunay::Face& face = *it;
-		const Point3f i0((const Point3&)face.vertex(0)->point());
-		const Point3f i1((const Point3&)face.vertex(1)->point());
-		const Point3f i2((const Point3&)face.vertex(2)->point());
+		const Point3f i0(reinterpret_cast<const Point3d&>(face.vertex(0)->point()));
+		const Point3f i1(reinterpret_cast<const Point3d&>(face.vertex(1)->point()));
+		const Point3f i2(reinterpret_cast<const Point3d&>(face.vertex(2)->point()));
 		// compute the plane defined by the 3 points
 		const Point3f c0(camera.TransformPointI2C(i0));
 		const Point3f c1(camera.TransformPointI2C(i1));
@@ -560,21 +569,21 @@ void* STCALL DepthMapsData::ScoreDepthMapTmp(void* arg)
 		if (!estimator.PreparePixelPatch(x) || !estimator.FillPixelPatch()) {
 			estimator.depthMap0(x) = 0;
 			estimator.normalMap0(x) = Normal::ZERO;
-			estimator.confMap0(x) = DepthEstimator::EncodeScoreScale(2.f);
+			estimator.confMap0(x) = 2.f;
 			continue;
 		}
 		Depth& depth = estimator.depthMap0(x);
 		Normal& normal = estimator.normalMap0(x);
 		const Normal viewDir(Cast<float>(static_cast<const Point3&>(estimator.X0)));
-		if (depth <= 0) {
+		if (!ISINSIDE(depth, estimator.dMin, estimator.dMax)) {
 			// init with random values
-			depth = DepthEstimator::RandomDepth(estimator.dMin, estimator.dMax);
-			normal = DepthEstimator::RandomNormal(viewDir);
+			depth = estimator.RandomDepth(estimator.dMinSqr, estimator.dMaxSqr);
+			normal = estimator.RandomNormal(viewDir);
 		} else if (normal.dot(viewDir) >= 0) {
 			// replace invalid normal with random values
-			normal = DepthEstimator::RandomNormal(viewDir);
+			normal = estimator.RandomNormal(viewDir);
 		}
-		estimator.confMap0(x) = DepthEstimator::EncodeScoreScale(estimator.ScorePixel(depth, normal));
+		estimator.confMap0(x) = estimator.ScorePixel(depth, normal);
 	}
 	return NULL;
 }
@@ -595,29 +604,35 @@ void* STCALL DepthMapsData::EndDepthMapTmp(void* arg)
 	const float fOptimAngle(FD2R(OPTDENSE::fOptimAngle));
 	while ((idx=(IDX)Thread::safeInc(estimator.idxPixel)) < estimator.coords.GetSize()) {
 		const ImageRef& x = estimator.coords[idx];
+		ASSERT(estimator.depthMap0(x) >= 0);
 		Depth& depth = estimator.depthMap0(x);
-		Normal& normal = estimator.normalMap0(x);
 		float& conf = estimator.confMap0(x);
-		const unsigned invScaleRange(DepthEstimator::DecodeScoreScale(conf));
-		ASSERT(depth >= 0);
 		// check if the score is good enough
 		// and that the cross-estimates is close enough to the current estimate
-		if (conf > OPTDENSE::fNCCThresholdKeep) {
+		if (depth <= 0 || conf >= OPTDENSE::fNCCThresholdKeep) {
 			#if 1 // used if gap-interpolation is active
 			conf = 0;
-			normal = Normal::ZERO;
+			estimator.normalMap0(x) = Normal::ZERO;
 			#endif
 			depth = 0;
 		} else {
 			#if 1
+			// converted ZNCC [0-2] score, where 0 is best, to [0-1] confidence, where 1 is best
+			conf = conf>=1.f ? 0.f : 1.f-conf;
+			#else
+			#if 1
 			FOREACH(i, estimator.images)
 				estimator.scores[i] = ComputeAngle<REAL,float>(estimator.image0.camera.TransformPointI2W(Point3(x,depth)).ptr(), estimator.image0.camera.C.ptr(), estimator.images[i].view.camera.C.ptr());
 			#if DENSE_AGGNCC == DENSE_AGGNCC_NTH
-			const float fCosAngle(estimator.scores.size() > 1 ? estimator.scores.GetNth(estimator.idxScore) : estimator.scores.front());
+			const float fCosAngle(estimator.scores.GetNth(estimator.idxScore));
 			#elif DENSE_AGGNCC == DENSE_AGGNCC_MEAN
 			const float fCosAngle(estimator.scores.mean());
-			#else
+			#elif DENSE_AGGNCC == DENSE_AGGNCC_MIN
 			const float fCosAngle(estimator.scores.minCoeff());
+			#else
+			const float fCosAngle(estimator.idxScore ?
+				std::accumulate(estimator.scores.begin(), &estimator.scores.PartialSort(estimator.idxScore), 0.f) / estimator.idxScore :
+				*std::min_element(estimator.scores.cbegin(), estimator.scores.cend()));
 			#endif
 			const float wAngle(MINF(POW(ACOS(fCosAngle)/fOptimAngle,1.5f),1.f));
 			#else
@@ -625,10 +640,9 @@ void* STCALL DepthMapsData::EndDepthMapTmp(void* arg)
 			#endif
 			#if 1
 			conf = wAngle/MAXF(conf,1e-2f);
-			#elif 1
-			conf = wAngle/(depth*SQUARE(MAXF(conf,1e-2f)));
 			#else
-			conf = SQRT((float)invScaleRange)*wAngle/(depth*SQUARE(MAXF(conf,1e-2f)));
+			conf = wAngle/(depth*SQUARE(MAXF(conf,1e-2f)));
+			#endif
 			#endif
 		}
 	}
@@ -665,7 +679,7 @@ bool DepthMapsData::EstimateDepthMap(IIndex idxImage)
 	// initialize the depth-map
 	if (OPTDENSE::nMinViewsTrustPoint < 2) {
 		// compute depth range and initialize known depths
-		const int nPixelArea(3); // half windows size around a pixel to be initialize with the known depth
+		const int nPixelArea(2); // half windows size around a pixel to be initialize with the known depth
 		const Camera& camera = depthData.images.First().camera;
 		depthData.dMin = FLT_MAX;
 		depthData.dMax = 0;
@@ -676,9 +690,12 @@ bool DepthMapsData::EstimateDepthMap(IIndex idxImage)
 			const float d((float)camX.z);
 			const ImageRef sx(MAXF(x.x-nPixelArea,0), MAXF(x.y-nPixelArea,0));
 			const ImageRef ex(MINF(x.x+nPixelArea,size.width-1), MINF(x.y+nPixelArea,size.height-1));
-			for (int y=sx.y; y<=ex.y; ++y)
-				for (int x=sx.x; x<=ex.x; ++x)
+			for (int y=sx.y; y<=ex.y; ++y) {
+				for (int x=sx.x; x<=ex.x; ++x) {
 					depthData.depthMap(y,x) = d;
+					depthData.normalMap(y,x) = Normal::ZERO;
+				}
+			}
 			if (depthData.dMin > d)
 				depthData.dMin = d;
 			if (depthData.dMax < d)
@@ -700,8 +717,12 @@ bool DepthMapsData::EstimateDepthMap(IIndex idxImage)
 	}
 
 	// init integral images and index to image-ref map for the reference data
+	#if DENSE_NCC == DENSE_NCC_WEIGHTED
+	DepthEstimator::WeightMap weightMap0(size.area()-(size.width+1)*DepthEstimator::nSizeHalfWindow);
+	#else
 	Image64F imageSum0;
 	cv::integral(image.image, imageSum0, CV_64F);
+	#endif
 	if (prevDepthMapSize != size) {
 		prevDepthMapSize = size;
 		BitMatrix mask;
@@ -723,7 +744,13 @@ bool DepthMapsData::EstimateDepthMap(IIndex idxImage)
 		idxPixel = -1;
 		ASSERT(estimators.IsEmpty());
 		while (estimators.GetSize() < nMaxThreads)
-			estimators.AddConstruct(depthData, idxPixel, imageSum0, coords, DepthEstimator::RB2LT);
+			estimators.AddConstruct(0, depthData, idxPixel,
+				#if DENSE_NCC == DENSE_NCC_WEIGHTED
+				weightMap0,
+				#else
+				imageSum0,
+				#endif
+				coords);
 		ASSERT(estimators.GetSize() == threads.GetSize()+1);
 		FOREACH(i, threads)
 			threads[i].start(ScoreDepthMapTmp, &estimators[i]);
@@ -745,11 +772,16 @@ bool DepthMapsData::EstimateDepthMap(IIndex idxImage)
 	// run propagation and random refinement cycles on the reference data
 	for (unsigned iter=0; iter<OPTDENSE::nEstimationIters; ++iter) {
 		// create working threads
-		const DepthEstimator::ENDIRECTION dir((DepthEstimator::ENDIRECTION)(iter%DepthEstimator::DIRS));
 		idxPixel = -1;
 		ASSERT(estimators.IsEmpty());
 		while (estimators.GetSize() < nMaxThreads)
-			estimators.AddConstruct(depthData, idxPixel, imageSum0, coords, dir);
+			estimators.AddConstruct(iter, depthData, idxPixel,
+				#if DENSE_NCC == DENSE_NCC_WEIGHTED
+				weightMap0,
+				#else
+				imageSum0,
+				#endif
+				coords);
 		ASSERT(estimators.GetSize() == threads.GetSize()+1);
 		FOREACH(i, threads)
 			threads[i].start(EstimateDepthMapTmp, &estimators[i]);
@@ -775,7 +807,13 @@ bool DepthMapsData::EstimateDepthMap(IIndex idxImage)
 		idxPixel = -1;
 		ASSERT(estimators.IsEmpty());
 		while (estimators.GetSize() < nMaxThreads)
-			estimators.AddConstruct(depthData, idxPixel, imageSum0, coords, DepthEstimator::DIRS);
+			estimators.AddConstruct(0, depthData, idxPixel,
+				#if DENSE_NCC == DENSE_NCC_WEIGHTED
+				weightMap0,
+				#else
+				imageSum0,
+				#endif
+				coords);
 		ASSERT(estimators.GetSize() == threads.GetSize()+1);
 		FOREACH(i, threads)
 			threads[i].start(EndDepthMapTmp, &estimators[i]);
@@ -1292,23 +1330,24 @@ bool DepthMapsData::FilterDepthMap(DepthData& depthDataRef, const IIndexArr& idx
 // fuse all valid depth-maps in the same 3D point cloud;
 // join points very likely to represent the same 3D point and
 // filter out points blocking the view
-struct Proj {
-	union {
-		uint32_t idxPixel;
-		struct {
-			uint16_t x, y; // image pixel coordinates
-		};
-	};
-	inline Proj() {}
-	inline Proj(uint32_t _idxPixel) : idxPixel(_idxPixel) {}
-	inline Proj(const ImageRef& ir) : x(ir.x), y(ir.y) {}
-	inline ImageRef GetCoord() const { return ImageRef(x,y); }
-};
-typedef SEACAVE::cList<Proj,const Proj&,0,4,uint32_t> ProjArr;
-typedef SEACAVE::cList<ProjArr,const ProjArr&,1,65536> ProjsArr;
-void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateNormal)
+void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, bool bEstimateNormal)
 {
 	TD_TIMER_STARTD();
+
+	struct Proj {
+		union {
+			uint32_t idxPixel;
+			struct {
+				uint16_t x, y; // image pixel coordinates
+			};
+		};
+		inline Proj() {}
+		inline Proj(uint32_t _idxPixel) : idxPixel(_idxPixel) {}
+		inline Proj(const ImageRef& ir) : x(ir.x), y(ir.y) {}
+		inline ImageRef GetCoord() const { return ImageRef(x,y); }
+	};
+	typedef SEACAVE::cList<Proj,const Proj&,0,4,uint32_t> ProjArr;
+	typedef SEACAVE::cList<ProjArr,const ProjArr&,1,65536> ProjsArr;
 
 	// find best connected images
 	IndexScoreArr connections(0, scene.images.GetSize());
@@ -1329,6 +1368,7 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateNormal)
 
 	// fuse all depth-maps, processing the best connected images first
 	const unsigned nMinViewsFuse(MINF(OPTDENSE::nMinViewsFuse, scene.images.GetSize()));
+	const float normalError(COS(FD2R(OPTDENSE::fNormalDiffThreshold)));
 	CLISTDEF0(Depth*) invalidDepths(0, 32);
 	size_t nDepths(0);
 	typedef TImage<cuint32_t> DepthIndex;
@@ -1338,6 +1378,10 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateNormal)
 	pointcloud.points.Reserve(nPointsEstimate);
 	pointcloud.pointViews.Reserve(nPointsEstimate);
 	pointcloud.pointWeights.Reserve(nPointsEstimate);
+	if (bEstimateColor)
+		pointcloud.colors.Reserve(nPointsEstimate);
+	if (bEstimateNormal)
+		pointcloud.normals.Reserve(nPointsEstimate);
 	Util::Progress progress(_T("Fused depth-maps"), connections.GetSize());
 	GET_LOGCONSOLE().Pause();
 	FOREACHPTR(pConnection, connections) {
@@ -1346,12 +1390,14 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateNormal)
 		const DepthData& depthData(arrDepthData[idxImage]);
 		ASSERT(!depthData.images.IsEmpty() && !depthData.neighbors.IsEmpty());
 		for (const ViewScore& neighbor: depthData.neighbors) {
-			const Image& imageData = scene.images[neighbor.idx.ID];
-			DepthIndex& depthIdxs = arrDepthIdx[&imageData-scene.images.Begin()];
-			if (depthIdxs.empty()) {
-				depthIdxs.create(Image8U::Size(imageData.width, imageData.height));
-				depthIdxs.memset((uint8_t)NO_ID);
-			}
+			DepthIndex& depthIdxs = arrDepthIdx[neighbor.idx.ID];
+			if (!depthIdxs.empty())
+				continue;
+			const DepthData& depthDataB(arrDepthData[neighbor.idx.ID]);
+			if (depthDataB.IsEmpty())
+				continue;
+			depthIdxs.create(depthDataB.depthMap.size());
+			depthIdxs.memset((uint8_t)NO_ID);
 		}
 		ASSERT(!depthData.IsEmpty());
 		const Image8U::Size sizeMap(depthData.depthMap.size());
@@ -1381,21 +1427,26 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateNormal)
 				PointCloud::ViewArr& views = pointcloud.pointViews.AddEmpty();
 				views.Insert(idxImage);
 				PointCloud::WeightArr& weights = pointcloud.pointWeights.AddEmpty();
-				weights.Insert(depthData.confMap(x));
+				REAL confidence(weights.emplace_back(Conf2Weight(depthData.confMap(x),depth)));
 				ProjArr& pointProjs = projs.AddEmpty();
 				pointProjs.Insert(Proj(x));
+				const PointCloud::Normal normal(imageData.camera.R.t()*Cast<REAL>(depthData.normalMap(x)));
+				ASSERT(ISEQUAL(norm(normal), 1.f));
 				// check the projection in the neighbor depth-maps
-				REAL confidence(weights.First());
 				Point3 X(point*confidence);
+				Pixel32F C(Cast<float>(imageData.image(x))*confidence);
+				PointCloud::Normal N(normal*confidence);
 				invalidDepths.Empty();
 				FOREACHPTR(pNeighbor, depthData.neighbors) {
 					const IIndex idxImageB(pNeighbor->idx.ID);
+					DepthData& depthDataB = arrDepthData[idxImageB];
+					if (depthDataB.IsEmpty())
+						continue;
 					const Image& imageDataB = scene.images[idxImageB];
 					const Point3f pt(imageDataB.camera.ProjectPointP3(point));
 					if (pt.z <= 0)
 						continue;
 					const ImageRef xB(ROUND2INT(pt.x/pt.z), ROUND2INT(pt.y/pt.z));
-					DepthData& depthDataB = arrDepthData[idxImageB];
 					DepthMap& depthMapB = depthDataB.depthMap;
 					if (!depthMapB.isInside(xB))
 						continue;
@@ -1406,16 +1457,26 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateNormal)
 					if (idxPointB != NO_ID)
 						continue;
 					if (IsDepthSimilar(pt.z, depthB, OPTDENSE::fDepthDiffThreshold)) {
-						// add view to the 3D point
-						ASSERT(views.FindFirst(idxImageB) == PointCloud::ViewArr::NO_INDEX);
-						const float confidenceB(depthDataB.confMap(xB));
-						const IIndex idx(views.InsertSort(idxImageB));
-						weights.InsertAt(idx, confidenceB);
-						pointProjs.InsertAt(idx, Proj(xB));
-						idxPointB = idxPoint;
-						X += imageDataB.camera.TransformPointI2W(Point3(Point2f(xB),depthB))*REAL(confidenceB);
-						confidence += confidenceB;
-					} else
+						// check if normals agree
+						const PointCloud::Normal normalB(imageDataB.camera.R.t()*Cast<REAL>(depthDataB.normalMap(xB)));
+						ASSERT(ISEQUAL(norm(normalB), 1.f));
+						if (normal.dot(normalB) > normalError) {
+							// add view to the 3D point
+							ASSERT(views.FindFirst(idxImageB) == PointCloud::ViewArr::NO_INDEX);
+							const float confidenceB(Conf2Weight(depthDataB.confMap(xB),depthB));
+							const IIndex idx(views.InsertSort(idxImageB));
+							weights.InsertAt(idx, confidenceB);
+							pointProjs.InsertAt(idx, Proj(xB));
+							idxPointB = idxPoint;
+							X += imageDataB.camera.TransformPointI2W(Point3(Point2f(xB),depthB))*REAL(confidenceB);
+							if (bEstimateColor)
+								C += Cast<float>(imageDataB.image(xB))*confidenceB;
+							if (bEstimateNormal)
+								N += normalB*confidenceB;
+							confidence += confidenceB;
+							continue;
+						}
+					}
 					if (pt.z < depthB) {
 						// discard depth
 						invalidDepths.Insert(&depthB);
@@ -1435,8 +1496,13 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateNormal)
 					pointcloud.points.RemoveLast();
 				} else {
 					// this point is valid, store it
-					point = X*(REAL(1)/confidence);
+					const REAL nrm(REAL(1)/confidence);
+					point = X*nrm;
 					ASSERT(ISFINITE(point));
+					if (bEstimateColor)
+						pointcloud.colors.AddConstruct((C*(float)nrm).cast<uint8_t>());
+					if (bEstimateNormal)
+						pointcloud.normals.AddConstruct(normalized(N*(float)nrm));
 					// invalidate all neighbor depths that do not agree with it
 					for (Depth* pDepth: invalidDepths)
 						*pDepth = 0;
@@ -1453,7 +1519,7 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateNormal)
 
 	DEBUG_EXTRA("Depth-maps fused and filtered: %u depth-maps, %u depths, %u points (%d%%%%) (%s)", connections.GetSize(), nDepths, pointcloud.points.GetSize(), ROUND2INT((100.f*pointcloud.points.GetSize())/nDepths), TD_TIMER_GET_FMT().c_str());
 
-	if (bEstimateNormal && !pointcloud.points.IsEmpty()) {
+	if (bEstimateNormal && !pointcloud.points.IsEmpty() && pointcloud.normals.IsEmpty()) {
 		// estimate normal also if requested (quite expensive if normal-maps not available)
 		TD_TIMER_STARTD();
 		pointcloud.normals.Resize(pointcloud.points.GetSize());
@@ -1556,7 +1622,7 @@ bool Scene::DenseReconstruction()
 				data.images.Insert(idxImage);
 			}
 			// reload image at the appropriate resolution
-			const unsigned nMaxResolution(imageData.RecomputeMaxResolution(OPTDENSE::nResolutionLevel, OPTDENSE::nMinResolution));
+			const unsigned nMaxResolution(imageData.RecomputeMaxResolution(OPTDENSE::nResolutionLevel, OPTDENSE::nMinResolution, OPTDENSE::nMaxResolution));
 			if (!imageData.ReloadImage(nMaxResolution)) {
 				#ifdef DENSE_USE_OPENMP
 				bAbort = true;
@@ -1673,7 +1739,7 @@ bool Scene::DenseReconstruction()
 
 	// fuse all depth-maps
 	pointcloud.Release();
-	data.detphMaps.FuseDepthMaps(pointcloud, OPTDENSE::nEstimateNormals == 2);
+	data.detphMaps.FuseDepthMaps(pointcloud, OPTDENSE::nEstimateColors == 2, OPTDENSE::nEstimateNormals == 2);
 	#if TD_VERBOSE != TD_VERBOSE_OFF
 	if (g_nVerbosityLevel > 2) {
 		// print number of points with 3+ views
@@ -1703,7 +1769,7 @@ bool Scene::DenseReconstruction()
 			EstimatePointNormals(images, pointcloud);
 	}
 	return true;
-} // DenseReconstructionDepthMap
+} // DenseReconstruction
 /*----------------------------------------------------------------*/
 
 void* DenseReconstructionEstimateTmp(void* arg) {
@@ -1739,14 +1805,14 @@ void Scene::DenseReconstructionEstimate(void* pData)
 				break;
 			}
 			// try to load already compute depth-map for this image
-			if (depthData.Load(ComposeDepthFilePath(idx, "dmap"))) {
-				if (OPTDENSE::nOptimize & (OPTDENSE::OPTIMIZE)) {
+			if (File::access(ComposeDepthFilePath(idx, "dmap"))) {
+				if (OPTDENSE::nOptimize & OPTDENSE::OPTIMIZE) {
+					if (!depthData.Load(ComposeDepthFilePath(idx, "dmap"))) {
+						VERBOSE("error: invalid depth-map '%s'", ComposeDepthFilePath(idx, "dmap").c_str());
+						exit(EXIT_FAILURE);
+					}
 					// optimize depth-map
 					data.events.AddEventFirst(new EVTOptimizeDepthMap(evtImage.idxImage));
-				} else {
-					// release image data
-					depthData.ReleaseImages();
-					depthData.Release();
 				}
 				// process next image
 				data.events.AddEvent(new EVTProcessImage((uint32_t)Thread::safeInc(data.idxImage)));
@@ -1924,4 +1990,139 @@ void Scene::DenseReconstructionFilter(void* pData)
 		}
 	}
 } // DenseReconstructionFilter
+/*----------------------------------------------------------------*/
+
+// filter point-cloud based on camera-point visibility intersections
+void Scene::PointCloudFilter(int thRemove)
+{
+	TD_TIMER_STARTD();
+
+	typedef TOctree<PointCloud::PointArr,PointCloud::Point::Type,3,uint32_t,128> Octree;
+	struct Collector {
+		typedef Octree::IDX_TYPE IDX;
+		typedef PointCloud::Point::Type Real;
+		typedef TCone<Real,3> Cone;
+		typedef TSphere<Real,3> Sphere;
+		typedef TConeIntersect<Real,3> ConeIntersect;
+
+		Cone cone;
+		const ConeIntersect coneIntersect;
+		const PointCloud& pointcloud;
+		IntArr& visibility;
+		PointCloud::Index idxPoint;
+		Real distance;
+		int weight;
+		#ifdef DENSE_USE_OPENMP
+		uint8_t pcs[sizeof(CriticalSection)];
+		#endif
+
+		Collector(const Cone::RAY& ray, Real angle, const PointCloud& _pointcloud, IntArr& _visibility)
+			: cone(ray, angle), coneIntersect(cone), pointcloud(_pointcloud), visibility(_visibility)
+		#ifdef DENSE_USE_OPENMP
+		{ new(pcs) CriticalSection; }
+		~Collector() { reinterpret_cast<CriticalSection*>(pcs)->~CriticalSection(); }
+		inline CriticalSection& GetCS() { return *reinterpret_cast<CriticalSection*>(pcs); }
+		#else
+		{}
+		#endif
+		inline void Init(PointCloud::Index _idxPoint, const PointCloud::Point& X, int _weight) {
+			const Real thMaxDepth(1.02f);
+			idxPoint =_idxPoint;
+			const PointCloud::Point::EVec D((PointCloud::Point::EVec&)X-cone.ray.m_pOrig);
+			distance = D.norm();
+			cone.ray.m_vDir = D/distance;
+			cone.maxHeight = MaxDepthDifference(distance, thMaxDepth);
+			weight = _weight;
+		}
+		inline bool Intersects(const Octree::POINT_TYPE& center, Octree::Type radius) const {
+			return coneIntersect(Sphere(center, radius*Real(SQRT_3)));
+		}
+		inline void operator () (const IDX* idices, IDX size) {
+			const Real thSimilar(0.01f);
+			Real dist;
+			FOREACHRAWPTR(pIdx, idices, size) {
+				const PointCloud::Index idx(*pIdx);
+				if (coneIntersect.Classify(pointcloud.points[idx], dist) == VISIBLE && !IsDepthSimilar(distance, dist, thSimilar)) {
+					if (dist > distance)
+						visibility[idx] += pointcloud.pointViews[idx].size();
+					else
+						visibility[idx] -= weight;
+				}
+			}
+		}
+	};
+	typedef CLISTDEF2(Collector) Collectors;
+
+	// create octree to speed-up search
+	Octree octree(pointcloud.points);
+	IntArr visibility(pointcloud.GetSize()); visibility.Memset(0);
+	Collectors collectors; collectors.reserve(images.size());
+	FOREACH(idxView, images) {
+		const Image& image = images[idxView];
+		const Ray3f ray(Cast<float>(image.camera.C), Cast<float>(image.camera.Direction()));
+		const float angle(float(image.ComputeFOV(0)/image.width));
+		collectors.emplace_back(ray, angle, pointcloud, visibility);
+	}
+
+	// run all camera-point visibility intersections
+	Util::Progress progress(_T("Point visibility checks"), pointcloud.GetSize());
+	#ifdef DENSE_USE_OPENMP
+	#pragma omp parallel for //schedule(dynamic)
+	for (int64_t i=0; i<(int64_t)pointcloud.GetSize(); ++i) {
+		const PointCloud::Index idxPoint((PointCloud::Index)i);
+	#else
+	FOREACH(idxPoint, pointcloud.points) {
+	#endif
+		const PointCloud::Point& X = pointcloud.points[idxPoint];
+		const PointCloud::ViewArr& views = pointcloud.pointViews[idxPoint];
+		for (PointCloud::View idxView: views) {
+			Collector& collector = collectors[idxView];
+			#ifdef DENSE_USE_OPENMP
+			Lock l(collector.GetCS());
+			#endif
+			collector.Init(idxPoint, X, (int)views.size());
+			octree.Collect(collector, collector);
+		}
+		++progress;
+	}
+	progress.close();
+
+	#if TD_VERBOSE != TD_VERBOSE_OFF
+	if (g_nVerbosityLevel > 2) {
+		// print visibility stats
+		UnsignedArr counts(0, 64);
+		for (int views: visibility) {
+			if (views > 0)
+				continue;
+			while (counts.size() <= -views)
+				counts.push_back(0);
+			++counts[-views];
+		}
+		String msg;
+		msg.reserve(64*counts.size());
+		FOREACH(c, counts)
+			if (counts[c])
+				msg += String::FormatString("\n\t% 3u - % 9u", c, counts[c]);
+		VERBOSE("Visibility lengths (%u points):%s", pointcloud.GetSize(), msg.c_str());
+		// save outlier points
+		PointCloud pc;
+		RFOREACH(idxPoint, pointcloud.points) {
+			if (visibility[idxPoint] <= thRemove) {
+				pc.points.push_back(pointcloud.points[idxPoint]);
+				pc.colors.push_back(pointcloud.colors[idxPoint]);
+			}
+		}
+		pc.Save(MAKE_PATH("scene_dense_outliers.ply"));
+	}
+	#endif
+
+	// filter points
+	const size_t numInitPoints(pointcloud.GetSize());
+	RFOREACH(idxPoint, pointcloud.points) {
+		if (visibility[idxPoint] <= thRemove)
+			pointcloud.RemovePoint(idxPoint);
+	}
+
+	DEBUG_EXTRA("Point-cloud filtered: %u/%u points (%d%%%%) (%s)", pointcloud.points.size(), numInitPoints, ROUND2INT((100.f*pointcloud.points.GetSize())/numInitPoints), TD_TIMER_GET_FMT().c_str());
+} // PointCloudFilter
 /*----------------------------------------------------------------*/

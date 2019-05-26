@@ -42,6 +42,7 @@
 #define APPNAME _T("InterfaceVisualSFM")
 #define MVS_EXT _T(".mvs")
 #define VSFM_EXT _T(".nvm")
+#define CMPMVS_EXT _T(".lst")
 
 
 // S T R U C T S ///////////////////////////////////////////////////
@@ -70,11 +71,11 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		("help,h", "produce this help message")
 		("working-folder,w", boost::program_options::value<std::string>(&WORKING_FOLDER), "working directory (default current directory)")
 		("config-file,c", boost::program_options::value<std::string>(&OPT::strConfigFileName)->default_value(APPNAME _T(".cfg")), "file name containing program options")
-		("archive-type", boost::program_options::value<unsigned>(&OPT::nArchiveType)->default_value(2), "project archive type: 0-text, 1-binary, 2-compressed binary")
-		("process-priority", boost::program_options::value<int>(&OPT::nProcessPriority)->default_value(-1), "process priority (below normal by default)")
-		("max-threads", boost::program_options::value<unsigned>(&OPT::nMaxThreads)->default_value(0), "maximum number of threads (0 for using all available cores)")
+		("archive-type", boost::program_options::value(&OPT::nArchiveType)->default_value(2), "project archive type: 0-text, 1-binary, 2-compressed binary")
+		("process-priority", boost::program_options::value(&OPT::nProcessPriority)->default_value(-1), "process priority (below normal by default)")
+		("max-threads", boost::program_options::value(&OPT::nMaxThreads)->default_value(0), "maximum number of threads (0 for using all available cores)")
 		#if TD_VERBOSE != TD_VERBOSE_OFF
-		("verbosity,v", boost::program_options::value<int>(&g_nVerbosityLevel)->default_value(
+		("verbosity,v", boost::program_options::value(&g_nVerbosityLevel)->default_value(
 			#if TD_VERBOSE == TD_VERBOSE_DEBUG
 			3
 			#else
@@ -157,6 +158,8 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	// start memory dumper
 	MiniDumper::Create(APPNAME, WORKING_FOLDER);
 	#endif
+
+	Util::Init();
 	return true;
 }
 
@@ -248,7 +251,6 @@ void UndistortImage(const Camera& camera, const REAL& k1, const Image8U3 imgIn, 
 	typedef Sampler::Cubic<float> Sampler;
 	const Sampler sampler;
 	Point2f pt;
-	Pixel32F clr;
 	for (int v=0; v<h; ++v) {
 		for (int u=0; u<w; ++u) {
 			// compute corresponding coordinates in the distorted image
@@ -261,10 +263,7 @@ void UndistortImage(const Camera& camera, const REAL& k1, const Image8U3 imgIn, 
 			Pixel8U& col = imgOut(v,u);
 			if (imgIn.isInside(pt)) {
 				// get pixel color
-				clr = imgIn.sample<Sampler,Pixel32F>(sampler, pt);
-				col.r = CLAMP(ROUND2INT(clr.r), 0, 255);
-				col.g = CLAMP(ROUND2INT(clr.g), 0, 255);
-				col.b = CLAMP(ROUND2INT(clr.b), 0, 255);
+				col = imgIn.sample<Sampler,Pixel32F>(sampler, pt).cast<uint8_t>();
 			} else {
 				// set to black
 				col = Pixel8U::BLACK;
@@ -274,16 +273,9 @@ void UndistortImage(const Camera& camera, const REAL& k1, const Image8U3 imgIn, 
 }
 } // namespace MVS
 
-int main(int argc, LPCTSTR* argv)
+
+int ImportSceneVSFM()
 {
-	#ifdef _DEBUGINFO
-	// set _crtBreakAlloc index to stop in <dbgheap.c> at allocation
-	_CrtSetDbgFlag(_CRTDBG_ALLOC_MEM_DF | _CRTDBG_LEAK_CHECK_DF);// | _CRTDBG_CHECK_ALWAYS_DF);
-	#endif
-
-	if (!Initialize(argc, argv))
-		return EXIT_FAILURE;
-
 	TD_TIMER_START();
 
 	// read VisualSFM input data
@@ -295,7 +287,7 @@ int main(int argc, LPCTSTR* argv)
 	std::vector<std::string> names;
 	std::vector<int> ptc;
 	if (!PBA::LoadModelFile(MAKE_PATH_SAFE(OPT::strInputFileName), cameras, vertices, measurements, correspondingPoint, correspondingView, names, ptc))
-		return EXIT_FAILURE;
+		return false;
 
 	// convert data from VisualSFM to OpenMVS
 	MVS::Scene scene(OPT::nMaxThreads);
@@ -309,7 +301,7 @@ int main(int argc, LPCTSTR* argv)
 		image.name = MAKE_PATH_FULL(WORKING_FOLDER_FULL, image.name);
 		if (!image.ReloadImage(0, false)) {
 			LOG("error: can not read image %s", image.name.c_str());
-			return EXIT_FAILURE;
+			return false;
 		}
 		// set camera
 		image.platformID = scene.platforms.GetSize();
@@ -322,10 +314,10 @@ int main(int argc, LPCTSTR* argv)
 		camera.C = CMatrix::ZERO;
 		// normalize camera intrinsics
 		const REAL fScale(REAL(1)/MVS::Camera::GetNormalizationScale(image.width, image.height));
-		camera.K(0, 0) *= fScale;
-		camera.K(1, 1) *= fScale;
-		camera.K(0, 2) *= fScale;
-		camera.K(1, 2) *= fScale;
+		camera.K(0,0) *= fScale;
+		camera.K(1,1) *= fScale;
+		camera.K(0,2) *= fScale;
+		camera.K(1,2) *= fScale;
 		// set pose
 		image.poseID = platform.poses.GetSize();
 		MVS::Platform::Pose& pose = platform.poses.AddEmpty();
@@ -374,7 +366,7 @@ int main(int argc, LPCTSTR* argv)
 			#pragma omp flush (bAbort)
 			continue;
 			#else
-			return EXIT_FAILURE;
+			return false;
 			#endif
 		}
 		MVS::UndistortImage(imageData.camera, cameraNVM.GetNormalizedMeasurementDistortion(), imageData.image, imageData.image);
@@ -386,21 +378,143 @@ int main(int argc, LPCTSTR* argv)
 			#pragma omp flush (bAbort)
 			continue;
 			#else
-			return EXIT_FAILURE;
+			return false;
 			#endif
 		}
 		imageData.ReleaseImage();
 	}
 	#ifdef _USE_OPENMP
 	if (bAbort)
-		return EXIT_SUCCESS;
+		return false;
 	#endif
 	progress.close();
 
-	// write OpenMVS input data
-	scene.SaveInterface(MAKE_PATH_SAFE(OPT::strOutputFileName));
-
 	VERBOSE("Input data imported: %u cameras, %u poses, %u images, %u vertices (%s)", cameras.size(), cameras.size(), cameras.size(), vertices.size(), TD_TIMER_GET_FMT().c_str());
+
+	// write OpenMVS input data
+	return scene.SaveInterface(MAKE_PATH_SAFE(OPT::strOutputFileName));
+}
+
+
+template <typename T>
+void _ImageListParseP(const LPSTR* argv, TMatrix<T,3,4>& P)
+{
+	// read projection matrix
+	P(0,0) = String::FromString<T>(argv[0]);
+	P(0,1) = String::FromString<T>(argv[1]);
+	P(0,2) = String::FromString<T>(argv[2]);
+	P(0,3) = String::FromString<T>(argv[3]);
+	P(1,0) = String::FromString<T>(argv[4]);
+	P(1,1) = String::FromString<T>(argv[5]);
+	P(1,2) = String::FromString<T>(argv[6]);
+	P(1,3) = String::FromString<T>(argv[7]);
+	P(2,0) = String::FromString<T>(argv[8]);
+	P(2,1) = String::FromString<T>(argv[9]);
+	P(2,2) = String::FromString<T>(argv[10]);
+	P(2,3) = String::FromString<T>(argv[11]);
+}
+
+int ImportSceneCMPMVS()
+{
+	TD_TIMER_START();
+
+	MVS::Scene scene(OPT::nMaxThreads);
+
+	// read CmpMVS input data as a list of images and their projection matrices
+	std::ifstream iFilein(MAKE_PATH_SAFE(OPT::strInputFileName));
+	if (!iFilein.is_open())
+		return false;
+	while (iFilein.good()) {
+		String strImageName;
+		std::getline(iFilein, strImageName);
+		if (strImageName.empty())
+			continue;
+		if (!File::access(MAKE_PATH_SAFE(strImageName)))
+			return false;
+		const String strImageNameP(Util::getFileFullName(strImageName)+"_P.txt");
+		std::ifstream iFileP(MAKE_PATH_SAFE(strImageNameP));
+		if (!iFileP.is_open())
+			return false;
+		String strP; int numLines(0);
+		while (iFileP.good()) {
+			String line;
+			std::getline(iFileP, line);
+			if (strImageName.empty())
+				break;
+			if (strP.empty())
+				strP = line;
+			else
+				strP += _T(' ') + line;
+			++numLines;
+		}
+		if (numLines != 3)
+			return false;
+		PMatrix P;
+		size_t argc;
+		CAutoPtrArr<LPSTR> argv(Util::CommandLineToArgvA(strP, argc));
+		if (argc != 12)
+			return false;
+		_ImageListParseP(argv, P);
+		KMatrix K; RMatrix R; CMatrix C;
+		MVS::DecomposeProjectionMatrix(P, K, R, C);
+		// set image
+		MVS::Image& image = scene.images.AddEmpty();
+		image.name = strImageName;
+		Util::ensureUnifySlash(image.name);
+		image.name = MAKE_PATH_FULL(WORKING_FOLDER_FULL, image.name);
+		if (!image.ReloadImage(0, false)) {
+			LOG("error: can not read image %s", image.name.c_str());
+			return false;
+		}
+		// set camera
+		image.platformID = scene.platforms.GetSize();
+		MVS::Platform& platform = scene.platforms.AddEmpty();
+		MVS::Platform::Camera& camera = platform.cameras.AddEmpty();
+		image.cameraID = 0;
+		camera.K = K;
+		camera.R = RMatrix::IDENTITY;
+		camera.C = CMatrix::ZERO;
+		// normalize camera intrinsics
+		const REAL fScale(REAL(1)/MVS::Camera::GetNormalizationScale(image.width, image.height));
+		camera.K(0, 0) *= fScale;
+		camera.K(1, 1) *= fScale;
+		camera.K(0, 2) *= fScale;
+		camera.K(1, 2) *= fScale;
+		// set pose
+		image.poseID = platform.poses.GetSize();
+		MVS::Platform::Pose& pose = platform.poses.AddEmpty();
+		pose.R = R;
+		pose.C = C;
+		image.UpdateCamera(scene.platforms);
+		++scene.nCalibratedImages;
+	}
+
+	VERBOSE("Input data imported: %u images (%s)", scene.images.size(), TD_TIMER_GET_FMT().c_str());
+
+	// write OpenMVS input data
+	return scene.SaveInterface(MAKE_PATH_SAFE(OPT::strOutputFileName));
+}
+
+
+int main(int argc, LPCTSTR* argv)
+{
+	#ifdef _DEBUGINFO
+	// set _crtBreakAlloc index to stop in <dbgheap.c> at allocation
+	_CrtSetDbgFlag(_CRTDBG_ALLOC_MEM_DF | _CRTDBG_LEAK_CHECK_DF);// | _CRTDBG_CHECK_ALWAYS_DF);
+	#endif
+
+	if (!Initialize(argc, argv))
+		return EXIT_FAILURE;
+
+	const String strInputFileNameExt(Util::getFileExt(OPT::strInputFileName).ToLower());
+	if (strInputFileNameExt == VSFM_EXT) {
+		if (!ImportSceneVSFM())
+			return EXIT_FAILURE;
+	} else
+	if (strInputFileNameExt == CMPMVS_EXT) {
+		if (!ImportSceneCMPMVS())
+			return EXIT_FAILURE;
+	}
 
 	Finalize();
 	return EXIT_SUCCESS;

@@ -631,8 +631,7 @@ public:
 		if (wsz == NULL)
 			return String();
 		#if 1
-		const std::wstring ws(wsz);
-		return std::string(ws.cbegin(), ws.cend());
+		return std::wstring_convert<std::codecvt_utf8<wchar_t>, wchar_t>().to_bytes(wsz);
 		#elif 1
 		std::mbstate_t state = std::mbstate_t();
 		const size_t len(std::wcsrtombs(NULL, &wsz, 0, &state));
@@ -642,7 +641,7 @@ public:
 		if (std::wcsrtombs(&mbstr[0], &wsz, mbstr.size(), &state) == static_cast<std::size_t>(-1))
 			return String();
 		return String(&mbstr[0]);
-		#elif 1
+		#else
 		const std::wstring ws(wsz);
 		const std::locale locale("");
 		typedef std::codecvt<wchar_t, char, std::mbstate_t> converter_type;
@@ -654,10 +653,6 @@ public:
 		if (converter.out(state, ws.data(), ws.data() + ws.length(), from_next, &to[0], &to[0] + to.size(), to_next) != converter_type::ok)
 			return String();
 		return std::string(&to[0], to_next);
-		#else
-		typedef std::codecvt_utf8<wchar_t> convert_typeX;
-		std::wstring_convert<convert_typeX, wchar_t> converterX;
-		return converterX.to_bytes(wstr);
 		#endif
 	}
 
@@ -748,6 +743,8 @@ public:
 		return uCRC64;
 	}
 
+
+	static void		Init();
 
 	static String	GetCPUInfo();
 	static String	GetRAMInfo();

@@ -30,7 +30,7 @@ public:
 	typedef Eigen::Matrix<TYPE,DIMS,1> POINT;
 	typedef SEACAVE::TAABB<TYPE,DIMS> AABB;
 	typedef SEACAVE::TPlane<TYPE,DIMS> PLANE;
-	enum { numScalar = (2*DIMS) };
+	enum { numScalar = (3*DIMS) };
 
 	POINT	a, b, c;	// triangle vertices
 
@@ -126,6 +126,97 @@ public:
 	inline TYPE& operator [] (BYTE i) { ASSERT(i<6); return m_vDir.data()[i]; }
 	inline TYPE operator [] (BYTE i) const { ASSERT(i<6); return m_vDir.data()[i]; }
 }; // class TRay
+/*----------------------------------------------------------------*/
+
+
+// Basic cylinder class
+template <typename TYPE, int DIMS>
+class TCylinder
+{
+	STATIC_ASSERT(DIMS > 1 && DIMS <= 3);
+
+public:
+	typedef Eigen::Matrix<TYPE,DIMS,1> VECTOR;
+	typedef Eigen::Matrix<TYPE,DIMS,1> POINT;
+	typedef SEACAVE::TRay<TYPE,DIMS> RAY;
+	typedef SEACAVE::TSphere<TYPE,DIMS> SPHERE;
+	enum { numScalar = (2*DIMS+2) };
+
+	RAY ray;            // central ray defining starting the point and direction
+	TYPE radius;        // cylinder radius
+	TYPE minHeight;     // cylinder heights satisfying:
+	TYPE maxHeight;     // std::numeric_limits<TYPE>::lowest() <= minHeight <= 0 < maxHeight <= std::numeric_limits<TYPE>::max()
+
+	//---------------------------------------
+
+	inline TCylinder() {}
+
+	inline TCylinder(const RAY& _ray, TYPE _radius, TYPE _minHeight=TYPE(0), TYPE _maxHeight=std::numeric_limits<TYPE>::max())
+		: ray(_ray), radius(_radius), minHeight(_minHeight), maxHeight(_maxHeight) { ASSERT(TYPE(0) >= minHeight && minHeight < maxHeight); }
+
+	inline bool IsFinite() const { return maxHeight < std::numeric_limits<TYPE>::max() && minHeight > std::numeric_limits<TYPE>::lowest(); }
+	inline TYPE GetLength() const { return maxHeight - minHeight; }
+
+	bool Intersects(const SPHERE&) const;
+
+	inline GCLASS Classify(const POINT&, TYPE& t) const;
+}; // class TCylinder
+/*----------------------------------------------------------------*/
+
+
+// Basic cone class
+template <typename TYPE, int DIMS>
+class TCone
+{
+	STATIC_ASSERT(DIMS > 1 && DIMS <= 3);
+
+public:
+	typedef Eigen::Matrix<TYPE,DIMS,1> VECTOR;
+	typedef Eigen::Matrix<TYPE,DIMS,1> POINT;
+	typedef SEACAVE::TRay<TYPE,DIMS> RAY;
+	typedef SEACAVE::TSphere<TYPE,DIMS> SPHERE;
+	enum { numScalar = (2*DIMS+3) };
+
+	RAY ray;            // ray origin is the cone vertex and ray direction is the cone axis direction
+	TYPE angle;         // cone angle, in radians, must be inside [0, pi/2]
+	TYPE minHeight;     // heights satisfying:
+	TYPE maxHeight;     // 0 <= minHeight < maxHeight <= std::numeric_limits<TYPE>::max()
+
+	//---------------------------------------
+
+	inline TCone() {}
+	inline TCone(const RAY& _ray, TYPE _angle, TYPE _minHeight=TYPE(0), TYPE _maxHeight=std::numeric_limits<TYPE>::max())
+		: ray(_ray), angle(_angle), minHeight(_minHeight), maxHeight(_maxHeight) { ASSERT(TYPE(0) <= minHeight && minHeight < maxHeight); }
+}; // class TCone
+
+// Structure used to compute the intersection between a cone and the given sphere/point
+template <typename TYPE, int DIMS>
+class TConeIntersect
+{
+	STATIC_ASSERT(DIMS > 1 && DIMS <= 3);
+
+public:
+	typedef Eigen::Matrix<TYPE,DIMS,1> VECTOR;
+	typedef Eigen::Matrix<TYPE,DIMS,1> POINT;
+	typedef SEACAVE::TCone<TYPE,DIMS> CONE;
+	typedef SEACAVE::TSphere<TYPE,DIMS> SPHERE;
+
+	const CONE& cone;
+
+	// cache angle derivatives, to avoid calling trigonometric functions in geometric queries
+	const TYPE cosAngle, sinAngle, sinAngleSq, cosAngleSq, invSinAngle;
+
+	//---------------------------------------
+
+	inline TConeIntersect(const CONE& _cone)
+		: cone(_cone), cosAngle(COS(cone.angle)), sinAngle(SIN(cone.angle)),
+		sinAngleSq(SQUARE(sinAngle)), cosAngleSq(SQUARE(cosAngle)),
+		invSinAngle(TYPE(1)/sinAngle) {}
+
+	bool operator()(const SPHERE&) const;
+
+	GCLASS Classify(const POINT&, TYPE& t) const;
+}; // class TConeIntersect
 /*----------------------------------------------------------------*/
 
 

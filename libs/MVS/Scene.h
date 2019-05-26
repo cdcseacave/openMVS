@@ -81,6 +81,7 @@ public:
 	bool DenseReconstruction();
 	void DenseReconstructionEstimate(void*);
 	void DenseReconstructionFilter(void*);
+	void PointCloudFilter(int thRemove=-1);
 
 	// Mesh reconstruction
 	bool ReconstructMesh(float distInsert=2, bool bUseFreeSpaceSupport=true, unsigned nItersFixNonManifold=4,

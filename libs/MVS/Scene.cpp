@@ -422,9 +422,13 @@ bool Scene::Save(const String& fileName, ARCHIVE_TYPE type) const
 
 
 inline float Footprint(const Camera& camera, const Point3f& X) {
+	#if 0
 	const REAL fSphereRadius(1);
 	const Point3 cX(camera.TransformPointW2C(Cast<REAL>(X)));
 	return (float)norm(camera.TransformPointC2I(Point3(cX.x+fSphereRadius,cX.y,cX.z))-camera.TransformPointC2I(cX))+std::numeric_limits<float>::epsilon();
+	#else
+	return (float)(camera.GetFocalLength()/camera.PointDepth(X));
+	#endif
 }
 
 // compute visibility for the reference image
@@ -466,16 +470,15 @@ bool Scene::SelectNeighborViews(uint32_t ID, IndexArr& points, unsigned nMinView
 		// score shared views
 		const Point3f V1(imageData.camera.C - Cast<REAL>(point));
 		const float footprint1(Footprint(imageData.camera, point));
-		FOREACHPTR(pView, views) {
-			const PointCloud::View& view = *pView;
+		for (const PointCloud::View& view: views) {
 			if (view == ID)
 				continue;
 			const Image& imageData2 = images[view];
 			const Point3f V2(imageData2.camera.C - Cast<REAL>(point));
-			const float footprint2(Footprint(imageData2.camera, point));
 			const float fAngle(ACOS(ComputeAngle<float,float>(V1.ptr(), V2.ptr())));
-			const float fScaleRatio(footprint1/footprint2);
 			const float wAngle(MINF(POW(fAngle/fOptimAngle, 1.5f), 1.f));
+			const float footprint2(Footprint(imageData2.camera, point));
+			const float fScaleRatio(footprint1/footprint2);
 			float wScale;
 			if (fScaleRatio > 1.6f)
 				wScale = SQUARE(1.6f/fScaleRatio);
@@ -494,40 +497,38 @@ bool Scene::SelectNeighborViews(uint32_t ID, IndexArr& points, unsigned nMinView
 	ASSERT(nPoints > 3);
 
 	// select best neighborViews
-	Point2fArr pointsA(0, points.GetSize()), pointsB(0, points.GetSize());
+	Point2fArr projs(0, points.GetSize());
 	FOREACH(IDB, images) {
 		const Image& imageDataB = images[IDB];
 		if (!imageDataB.IsValid())
 			continue;
 		const Score& score = scores[IDB];
-		if (score.points == 0)
+		if (score.points < 3)
 			continue;
 		ASSERT(ID != IDB);
-		ViewScore& neighbor = neighbors.AddEmpty();
 		// compute how well the matched features are spread out (image covered area)
 		const Point2f boundsA(imageData.GetSize());
 		const Point2f boundsB(imageDataB.GetSize());
-		ASSERT(pointsA.IsEmpty() && pointsB.IsEmpty());
-		FOREACHPTR(pIdx, points) {
-			const PointCloud::ViewArr& views = pointcloud.pointViews[*pIdx];
+		ASSERT(projs.IsEmpty());
+		for (uint32_t idx: points) {
+			const PointCloud::ViewArr& views = pointcloud.pointViews[idx];
 			ASSERT(views.IsSorted());
 			ASSERT(views.FindFirst(ID) != PointCloud::ViewArr::NO_INDEX);
 			if (views.FindFirst(IDB) == PointCloud::ViewArr::NO_INDEX)
 				continue;
-			const PointCloud::Point& point = pointcloud.points[*pIdx];
-			Point2f& ptA = pointsA.AddConstruct(imageData.camera.ProjectPointP(point));
-			Point2f& ptB = pointsB.AddConstruct(imageDataB.camera.ProjectPointP(point));
-			if (!imageData.camera.IsInside(ptA, boundsA) || !imageDataB.camera.IsInside(ptB, boundsB)) {
-				pointsA.RemoveLast();
-				pointsB.RemoveLast();
-			}
+			const PointCloud::Point& point = pointcloud.points[idx];
+			Point2f& ptA = projs.AddConstruct(imageData.camera.ProjectPointP(point));
+			Point2f ptB = imageDataB.camera.ProjectPointP(point);
+			if (!imageData.camera.IsInside(ptA, boundsA) || !imageDataB.camera.IsInside(ptB, boundsB))
+				projs.RemoveLast();
 		}
-		ASSERT(pointsA.GetSize() == pointsB.GetSize() && pointsA.GetSize() <= score.points);
-		const float areaA(ComputeCoveredArea<float, 2, 16, false>((const float*)pointsA.Begin(), pointsA.GetSize(), boundsA.ptr()));
-		const float areaB(ComputeCoveredArea<float, 2, 16, false>((const float*)pointsB.Begin(), pointsB.GetSize(), boundsB.ptr()));
-		const float area(MINF(areaA, areaB));
-		pointsA.Empty(); pointsB.Empty();
+		ASSERT(projs.GetSize() <= score.points);
+		if (projs.IsEmpty())
+			continue;
+		const float area(ComputeCoveredArea<float,2,16,false>((const float*)projs.Begin(), projs.GetSize(), boundsA.ptr()));
+		projs.Empty();
 		// store image score
+		ViewScore& neighbor = neighbors.AddEmpty();
 		neighbor.idx.ID = IDB;
 		neighbor.idx.points = score.points;
 		neighbor.idx.scale = score.avgScale/score.points;

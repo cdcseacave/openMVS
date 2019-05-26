@@ -85,11 +85,11 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		("help,h", "produce this help message")
 		("working-folder,w", boost::program_options::value<std::string>(&WORKING_FOLDER), "working directory (default current directory)")
 		("config-file,c", boost::program_options::value<std::string>(&OPT::strConfigFileName)->default_value(APPNAME _T(".cfg")), "file name containing program options")
-		("archive-type", boost::program_options::value<unsigned>(&OPT::nArchiveType)->default_value(2), "project archive type: 0-text, 1-binary, 2-compressed binary")
-		("process-priority", boost::program_options::value<int>(&OPT::nProcessPriority)->default_value(-1), "process priority (below normal by default)")
-		("max-threads", boost::program_options::value<unsigned>(&OPT::nMaxThreads)->default_value(0), "maximum number of threads (0 for using all available cores)")
+		("archive-type", boost::program_options::value(&OPT::nArchiveType)->default_value(2), "project archive type: 0-text, 1-binary, 2-compressed binary")
+		("process-priority", boost::program_options::value(&OPT::nProcessPriority)->default_value(-1), "process priority (below normal by default)")
+		("max-threads", boost::program_options::value(&OPT::nMaxThreads)->default_value(0), "maximum number of threads (0 for using all available cores)")
 		#if TD_VERBOSE != TD_VERBOSE_OFF
-		("verbosity,v", boost::program_options::value<int>(&g_nVerbosityLevel)->default_value(
+		("verbosity,v", boost::program_options::value(&g_nVerbosityLevel)->default_value(
 			#if TD_VERBOSE == TD_VERBOSE_DEBUG
 			3
 			#else
@@ -105,7 +105,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		("input-file,i", boost::program_options::value<std::string>(&OPT::strInputFileName), "input COLMAP folder containing cameras, images and points files OR input MVS project file")
 		("output-file,o", boost::program_options::value<std::string>(&OPT::strOutputFileName), "output filename for storing the MVS project")
 		("image-folder", boost::program_options::value<std::string>(&OPT::strImageFolder)->default_value(COLMAP_IMAGES_FOLDER), "folder to the undistorted images")
-		("normalize,f", boost::program_options::value<bool>(&OPT::bNormalizeIntrinsics)->default_value(true), "normalize intrinsics while exporting to MVS format")
+		("normalize,f", boost::program_options::value(&OPT::bNormalizeIntrinsics)->default_value(true), "normalize intrinsics while exporting to MVS format")
 		;
 
 	boost::program_options::options_description cmdline_options;
@@ -185,6 +185,8 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	// start memory dumper
 	MiniDumper::Create(APPNAME, WORKING_FOLDER);
 	#endif
+
+	Util::Init();
 	return true;
 }
 
@@ -318,7 +320,6 @@ struct Image {
 		return true;
 	}
 	bool Write(std::ostream& out) const {
-		ASSERT(!projs.empty());
 		out << ID+1 << _T(" ")
 			<< q.w() << _T(" ") << q.x() << _T(" ") << q.y() << _T(" ") << q.z() << _T(" ")
 			<< t(0) << _T(" ") << t(1) << _T(" ") << t(2) << _T(" ")
@@ -434,7 +435,7 @@ bool ImportScene(const String& strFolder, Interface& scene)
 			camera.C = Interface::Pos3d(0,0,0);
 			if (OPT::bNormalizeIntrinsics) {
 				// normalize camera intrinsics
-				const double fScale(1.0/Camera::GetNormalizationScale(colmapCamera.width, colmapCamera.height));
+				const REAL fScale(REAL(1)/Camera::GetNormalizationScale(colmapCamera.width, colmapCamera.height));
 				camera.K(0,0) *= fScale;
 				camera.K(1,1) *= fScale;
 				camera.K(0,2) *= fScale;
@@ -555,6 +556,7 @@ bool ExportScene(const String& strFolder, const Interface& scene)
 
 	// write camera list
 	CLISTDEF0IDX(KMatrix,uint32_t) Ks;
+	CLISTDEF0IDX(COLMAP::Camera,uint32_t) cams;
 	{
 		const String filenameCameras(strFolder+COLMAP_CAMERAS);
 		LOG_OUT() << "Writing cameras: " << filenameCameras << std::endl;
@@ -614,12 +616,17 @@ bool ExportScene(const String& strFolder, const Interface& scene)
 			K(1,1) = cam.params[1];
 			K(0,2) = cam.params[2];
 			K(1,2) = cam.params[3];
+			cams.emplace_back(cam);
 		}
 	}
 
 	// create images list
 	COLMAP::Images images;
 	CameraArr cameras;
+	float maxNumPointsSparse(0);
+	const float avgViewsPerPoint(3.f);
+	const uint32_t avgResolutionSmallView(640*480), avgResolutionLargeView(6000*4000);
+	const uint32_t avgPointsPerSmallView(3000), avgPointsPerLargeView(12000);
 	{
 		images.resize(scene.images.size());
 		cameras.resize(scene.images.size());
@@ -641,41 +648,125 @@ bool ExportScene(const String& strFolder, const Interface& scene)
 			camera.R = pose.R;
 			camera.C = pose.C;
 			camera.ComposeP();
+			const COLMAP::Camera& cam = cams[image.platformID];
+			const uint32_t resolutionView(cam.width*cam.height);
+			const float linearFactor(float(avgResolutionLargeView-resolutionView)/(avgResolutionLargeView-avgResolutionSmallView));
+			maxNumPointsSparse += (avgPointsPerSmallView+(avgPointsPerLargeView-avgPointsPerSmallView)*linearFactor)/avgViewsPerPoint;
 		}
 	}
 
-	// write points list
-	{
-		const String filenamePoints(strFolder+COLMAP_POINTS);
-		LOG_OUT() << "Writing points: " << filenamePoints << std::endl;
-		std::ofstream file(filenamePoints);
-		if (!file.good()) {
-			VERBOSE("error: unable to open file '%s'", filenamePoints.c_str());
+	// auto-select dense or sparse mode based on number of points
+	const bool bSparsePointCloud(scene.vertices.size() < (size_t)maxNumPointsSparse);
+	if (bSparsePointCloud) {
+		// write points list
+		{
+			const String filenamePoints(strFolder+COLMAP_POINTS);
+			LOG_OUT() << "Writing points: " << filenamePoints << std::endl;
+			std::ofstream file(filenamePoints);
+			if (!file.good()) {
+				VERBOSE("error: unable to open file '%s'", filenamePoints.c_str());
+				return false;
+			}
+			file << _T("# 3D point list with one line of data per point:") << std::endl;
+			file << _T("#   POINT3D_ID, X, Y, Z, R, G, B, ERROR, TRACK[] as (IMAGE_ID, POINT2D_IDX)") << std::endl;
+			for (uint32_t ID=0; ID<(uint32_t)scene.vertices.size(); ++ID) {
+				const Interface::Vertex& vertex = scene.vertices[ID];
+				COLMAP::Point point;
+				point.ID = ID;
+				point.p = vertex.X;
+				for (const Interface::Vertex::View& view: vertex.views) {
+					COLMAP::Image& img = images[view.imageID];
+					COLMAP::Point::Track track;
+					track.idImage = view.imageID;
+					track.idProj = (uint32_t)img.projs.size();
+					point.tracks.push_back(track);
+					COLMAP::Image::Proj proj;
+					proj.idPoint = ID;
+					const Point3 X(vertex.X);
+					ProjectVertex_3x4_3_2(cameras[view.imageID].P.val, X.ptr(), proj.p.data());
+					img.projs.push_back(proj);
+				}
+				point.c = scene.verticesColor.empty() ? Interface::Col3(255,255,255) : scene.verticesColor[ID].c;
+				point.e = 0;
+				if (!point.Write(file))
+					return false;
+			}
+		}
+
+		Util::ensureFolder(strFolder+COLMAP_STEREO_FOLDER);
+
+		// write fusion list
+		{
+			const String filenameFusion(strFolder+COLMAP_FUSION);
+			LOG_OUT() << "Writing fusion configuration: " << filenameFusion << std::endl;
+			std::ofstream file(filenameFusion);
+			if (!file.good()) {
+				VERBOSE("error: unable to open file '%s'", filenameFusion.c_str());
+				return false;
+			}
+			for (const COLMAP::Image& img: images) {
+				if (img.projs.empty())
+					continue;
+				file << img.name << std::endl;
+				if (file.fail())
+					return false;
+			}
+		}
+
+		// write patch-match list
+		{
+			const String filenameFusion(strFolder+COLMAP_PATCHMATCH);
+			LOG_OUT() << "Writing patch-match configuration: " << filenameFusion << std::endl;
+			std::ofstream file(filenameFusion);
+			if (!file.good()) {
+				VERBOSE("error: unable to open file '%s'", filenameFusion.c_str());
+				return false;
+			}
+			for (const COLMAP::Image& img: images) {
+				if (img.projs.empty())
+					continue;
+				file << img.name << std::endl;
+				if (file.fail())
+					return false;
+				file << _T("__auto__, 20") << std::endl;
+				if (file.fail())
+					return false;
+			}
+		}
+
+		Util::ensureFolder(strFolder+COLMAP_STEREO_CONSISTENCYGRAPHS_FOLDER);
+		Util::ensureFolder(strFolder+COLMAP_STEREO_DEPTHMAPS_FOLDER);
+		Util::ensureFolder(strFolder+COLMAP_STEREO_NORMALMAPS_FOLDER);
+	} else {
+		// export dense point-cloud
+		const String filenameDensePoints(strFolder+COLMAP_DENSE_POINTS);
+		const String filenameDenseVisPoints(strFolder+COLMAP_DENSE_POINTS_VISIBILITY);
+		LOG_OUT() << "Writing points: " << filenameDensePoints << " and " << filenameDenseVisPoints << std::endl;
+		File file(filenameDenseVisPoints, File::WRITE, File::CREATE | File::TRUNCATE);
+		if (!file.isOpen()) {
+			VERBOSE("error: unable to write file '%s'", filenameDenseVisPoints.c_str());
 			return false;
 		}
-		file << _T("# 3D point list with one line of data per point:") << std::endl;
-		file << _T("#   POINT3D_ID, X, Y, Z, R, G, B, ERROR, TRACK[] as (IMAGE_ID, POINT2D_IDX)") << std::endl;
-		for (uint32_t ID=0; ID<(uint32_t)scene.vertices.size(); ++ID) {
-			const Interface::Vertex& vertex = scene.vertices[ID];
-			COLMAP::Point point;
-			point.ID = ID;
-			point.p = vertex.X;
-			for (const Interface::Vertex::View& view: vertex.views) {
-				COLMAP::Image& img = images[view.imageID];
-				COLMAP::Point::Track track;
-				track.idImage = view.imageID;
-				track.idProj = (uint32_t)img.projs.size();
-				point.tracks.push_back(track);
-				COLMAP::Image::Proj proj;
-				proj.idPoint = ID;
-				const Point3 X(vertex.X);
-				ProjectVertex_3x4_3_2(cameras[view.imageID].P.val, X.ptr(), proj.p.data());
-				img.projs.push_back(proj);
+		const uint64_t numPoints(scene.vertices.size());
+		file.write(&numPoints, sizeof(uint64_t));
+		PointCloud pointcloud;
+		for (size_t i=0; i<numPoints; ++i) {
+			const Interface::Vertex& vertex = scene.vertices[i];
+			pointcloud.points.emplace_back(vertex.X);
+			if (!scene.verticesNormal.empty())
+				pointcloud.normals.emplace_back(scene.verticesNormal[i].n);
+			if (!scene.verticesColor.empty())
+				pointcloud.colors.emplace_back(scene.verticesColor[i].c);
+			const uint32_t numViews((uint32_t)vertex.views.size());
+			file.write(&numViews, sizeof(uint32_t));
+			for (uint32_t v=0; v<numViews; ++v) {
+				const Interface::Vertex::View& view = vertex.views[v];
+				file.write(&view.imageID, sizeof(uint32_t));
 			}
-			point.c = scene.verticesColor.empty() ? Interface::Col3(255,255,255) : scene.verticesColor[ID].c;
-			point.e = 0;
-			if (!point.Write(file))
-				return false;
+		}
+		if (!pointcloud.Save(filenameDensePoints, true)) {
+			VERBOSE("error: unable to write file '%s'", filenameDensePoints.c_str());
+			return false;
 		}
 	}
 
@@ -692,55 +783,10 @@ bool ExportScene(const String& strFolder, const Interface& scene)
 		file << _T("#   IMAGE_ID, QW, QX, QY, QZ, TX, TY, TZ, CAMERA_ID, NAME") << std::endl;
 		file << _T("#   POINTS2D[] as (X, Y, POINT3D_ID)") << std::endl;
 		for (const COLMAP::Image& img: images) {
-			if (!img.projs.empty() && !img.Write(file))
+			if ((bSparsePointCloud && img.projs.empty()) || !img.Write(file))
 				return false;
 		}
 	}
-
-	Util::ensureFolder(strFolder+COLMAP_STEREO_FOLDER);
-
-	// write fusion list
-	{
-		const String filenameFusion(strFolder+COLMAP_FUSION);
-		LOG_OUT() << "Writing fusion configuration: " << filenameFusion << std::endl;
-		std::ofstream file(filenameFusion);
-		if (!file.good()) {
-			VERBOSE("error: unable to open file '%s'", filenameFusion.c_str());
-			return false;
-		}
-		for (const COLMAP::Image& img: images) {
-			if (img.projs.empty())
-				continue;
-			file << img.name << std::endl;
-			if (file.fail())
-				return false;
-		}
-	}
-
-	// write patch-match list
-	{
-		const String filenameFusion(strFolder+COLMAP_PATCHMATCH);
-		LOG_OUT() << "Writing patch-match configuration: " << filenameFusion << std::endl;
-		std::ofstream file(filenameFusion);
-		if (!file.good()) {
-			VERBOSE("error: unable to open file '%s'", filenameFusion.c_str());
-			return false;
-		}
-		for (const COLMAP::Image& img: images) {
-			if (img.projs.empty())
-				continue;
-			file << img.name << std::endl;
-			if (file.fail())
-				return false;
-			file << _T("__auto__, 20") << std::endl;
-			if (file.fail())
-				return false;
-		}
-	}
-
-	Util::ensureFolder(strFolder+COLMAP_STEREO_CONSISTENCYGRAPHS_FOLDER);
-	Util::ensureFolder(strFolder+COLMAP_STEREO_DEPTHMAPS_FOLDER);
-	Util::ensureFolder(strFolder+COLMAP_STEREO_NORMALMAPS_FOLDER);
 	return true;
 }
 

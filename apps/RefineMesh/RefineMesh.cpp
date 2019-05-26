@@ -195,6 +195,8 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	// start memory dumper
 	MiniDumper::Create(APPNAME, WORKING_FOLDER);
 	#endif
+
+	Util::Init();
 	return true;
 }
 

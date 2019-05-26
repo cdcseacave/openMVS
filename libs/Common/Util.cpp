@@ -433,6 +433,25 @@ String Util::GetOSInfo()
 /*----------------------------------------------------------------*/
 
 
+// Initialize various global variables (ex: random-number-generator state).
+void Util::Init()
+{
+	#ifdef _RELEASE
+	const time_t t(Util::getTime());
+	std::srand((unsigned)t);
+	#if CV_MAJOR_VERSION > 3 || (CV_MAJOR_VERSION == 3 && CV_MINOR_VERSION >= 4)
+	cv::setRNGSeed((int)t);
+	#endif
+	#else
+	std::srand((unsigned)0);
+	#if CV_MAJOR_VERSION > 3 || (CV_MAJOR_VERSION == 3 && CV_MINOR_VERSION >= 4)
+	cv::setRNGSeed((int)0);
+	#endif
+	#endif
+}
+/*----------------------------------------------------------------*/
+
+
 /**
  * Set global variable for availability of SSE instructions.
  */
@@ -616,7 +635,7 @@ void Util::LogBuild()
 	#else
 	LOG(_T("Build date: ") __DATE__ _T(", ") __TIME__);
 	#endif
-	LOG((_T("CPU: ") + Util::GetCPUInfo()).c_str());
+	LOG(_T("CPU: %s (%u cores)"), Util::GetCPUInfo().c_str(), Thread::hardwareConcurrency());
 	LOG((_T("RAM: ") + Util::GetRAMInfo()).c_str());
 	LOG((_T("OS: ") + Util::GetOSInfo()).c_str());
 	if (!SIMD_ENABLED.isSet(Util::SSE)) LOG(_T("warning: no SSE compatible CPU or OS detected"));

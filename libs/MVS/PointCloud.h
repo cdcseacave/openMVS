@@ -93,7 +93,7 @@ public:
 	Box GetAABB(unsigned minViews) const;
 
 	bool Load(const String& fileName);
-	bool Save(const String& fileName) const;
+	bool Save(const String& fileName, bool bLegacyTypes=false) const;
 
 	#ifdef _USE_BOOST
 	// implement BOOST serialization

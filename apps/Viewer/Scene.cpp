@@ -42,68 +42,35 @@ using namespace VIEWER;
 
 // S T R U C T S ///////////////////////////////////////////////////
 
-template <typename OCTREE>
-struct LeafAvgSize {
-	typedef typename OCTREE::IDX_TYPE IDX;
-	const IDX maxNumItems;
-	double radius;
-	size_t count;
-	LeafAvgSize(IDX cellNumItems) : maxNumItems(cellNumItems/2), radius(0), count(0) {}
-	void operator () (const typename OCTREE::CELL_TYPE& cell, typename OCTREE::Type r) {
-		if (cell.GetNumItems() > maxNumItems) {
-			radius += r;
-			count++;
-		}
-	}
-	operator float () const {
-		return (float)(radius / (double)count);
-	}
+struct IndexDist {
+	IDX idx;
+	REAL dist;
+
+	inline IndexDist() : dist(REAL(FLT_MAX)) {}
+	inline bool IsValid() const { return dist < REAL(FLT_MAX); }
 };
 
-template <typename SCENE, typename OCTREE>
-struct TIntersectRay {
-	typedef SCENE Scene;
-	typedef OCTREE Octree;
-	typedef typename OCTREE::IDX_TYPE IDX;
-
-	struct IndexDist {
-		IDX idx;
-		REAL dist;
-
-		inline IndexDist() : dist(REAL(FLT_MAX)) {}
-		inline bool IsValid() const { return dist < REAL(FLT_MAX); }
-	};
+struct IntersectRayPoints {
+	typedef MVS::PointCloud Scene;
+	typedef VIEWER::Scene::OctreePoints Octree;
+	typedef typename Octree::IDX_TYPE IDX;
+	typedef TCone<REAL,3> Cone3;
+	typedef TConeIntersect<REAL,3> Cone3Intersect;
 
 	const Scene& scene;
-	const Octree& octree;
-	const Ray3& ray;
+	const Cone3 cone;
+	const Cone3Intersect coneIntersect;
+	const unsigned minViews;
 	IndexDist pick;
 
-	TIntersectRay(const Scene& _scene, const Octree& _octree, const Ray3& _ray)
-		:
-		scene(_scene),
-		octree(_octree),
-		ray(_ray)
+	IntersectRayPoints(const Octree& octree, const Ray3& _ray, const Scene& _scene, unsigned _minViews)
+		: scene(_scene), cone(_ray, D2R(REAL(0.5))), coneIntersect(cone), minViews(_minViews)
 	{
+		octree.Collect(*this, *this);
 	}
 
 	inline bool Intersects(const typename Octree::POINT_TYPE& center, typename Octree::Type radius) const {
-		return ray.Intersects(AABB3f(center, radius));
-	}
-};
-
-struct IntersectRayPoints : public TIntersectRay<MVS::PointCloud,Scene::OctreePoints> {
-	using typename TIntersectRay::Scene;
-	using typename TIntersectRay::Octree;
-	using typename TIntersectRay::IDX;
-
-	const REAL pointSize;
-	const unsigned minViews;
-
-	IntersectRayPoints(const Scene& _scene, const Octree& _octree, REAL _pointSize, unsigned _minViews, const Ray3& _ray)
-		: TIntersectRay(_scene, _octree, _ray), pointSize(_pointSize), minViews(_minViews)
-	{
-		octree.Collect(*this, *this);
+		return coneIntersect(Sphere3(center.cast<REAL>(), REAL(radius)*SQRT_3));
 	}
 
 	void operator () (const IDX* idices, IDX size) {
@@ -114,7 +81,7 @@ struct IntersectRayPoints : public TIntersectRay<MVS::PointCloud,Scene::OctreePo
 				continue;
 			const MVS::PointCloud::Point& X = scene.points[idx];
 			REAL dist;
-			if (ray.Intersects(Sphere3(Cast<REAL>(X), pointSize), dist)) {
+			if (coneIntersect.Classify(Cast<REAL>(X), dist) == VISIBLE) {
 				ASSERT(dist >= 0);
 				if (pick.dist > dist) {
 					pick.dist = dist;
@@ -125,15 +92,23 @@ struct IntersectRayPoints : public TIntersectRay<MVS::PointCloud,Scene::OctreePo
 	}
 };
 
-struct IntersectRayMesh : public TIntersectRay<MVS::Mesh,Scene::OctreeMesh> {
-	using typename TIntersectRay::Scene;
-	using typename TIntersectRay::Octree;
-	using typename TIntersectRay::IDX;
+struct IntersectRayMesh {
+	typedef MVS::Mesh Scene;
+	typedef VIEWER::Scene::OctreeMesh Octree;
+	typedef typename Octree::IDX_TYPE IDX;
 
-	IntersectRayMesh(const Scene& _scene, const Octree& _octree, const Ray3& _ray)
-		: TIntersectRay(_scene, _octree, _ray)
+	const Scene& scene;
+	const Ray3& ray;
+	IndexDist pick;
+
+	IntersectRayMesh(const Octree& octree, const Ray3& _ray, const Scene& _scene)
+		: scene(_scene), ray(_ray)
 	{
 		octree.Collect(*this, *this);
+	}
+
+	inline bool Intersects(const typename Octree::POINT_TYPE& center, typename Octree::Type radius) const {
+		return ray.Intersects(AABB3f(center, radius));
 	}
 
 	void operator () (const IDX* idices, IDX size) {
@@ -204,18 +179,12 @@ public:
 		MVS::Scene& scene = pScene->scene;
 		if (!scene.mesh.IsEmpty()) {
 			Scene::OctreeMesh octMesh(scene.mesh.vertices);
-			LeafAvgSize<Scene::OctreeMesh> size(128);
-			octMesh.ParseCells(size);
 			scene.mesh.ListIncidenteFaces();
 			pScene->octMesh.Swap(octMesh);
-			pScene->avgScale = size;
 		} else
 		if (!scene.pointcloud.IsEmpty()) {
 			Scene::OctreePoints octPoints(scene.pointcloud.points);
-			LeafAvgSize<Scene::OctreePoints> size(256);
-			octPoints.ParseCells(size);
 			pScene->octPoints.Swap(octPoints);
-			pScene->avgScale = size;
 		}
 		return true;
 	}
@@ -265,7 +234,6 @@ void Scene::Empty()
 	images.Release();
 	scene.Release();
 	sceneName.clear();
-	avgScale = 0;
 }
 void Scene::Release()
 {
@@ -654,7 +622,7 @@ void Scene::CastRay(const Ray3& ray, int action)
 	} else
 	if (!octMesh.IsEmpty()) {
 		// find ray intersection with the mesh
-		const IntersectRayMesh intRay(scene.mesh, octMesh, ray);
+		const IntersectRayMesh intRay(octMesh, ray, scene.mesh);
 		if (intRay.pick.IsValid()) {
 			const MVS::Mesh::Face& face = scene.mesh.faces[(MVS::Mesh::FIndex)intRay.pick.idx];
 			window.selectionPoints[0] = scene.mesh.vertices[face[0]];
@@ -675,7 +643,7 @@ void Scene::CastRay(const Ray3& ray, int action)
 	} else
 	if (!octPoints.IsEmpty()) {
 		// find ray intersection with the points
-		const IntersectRayPoints intRay(scene.pointcloud, octPoints, avgScale*0.1f, window.minViews, ray);
+		const IntersectRayPoints intRay(octPoints, ray, scene.pointcloud, window.minViews);
 		if (intRay.pick.IsValid()) {
 			window.selectionPoints[0] = window.selectionPoints[3] = scene.pointcloud.points[intRay.pick.idx];
 			window.selectionType = Window::SEL_POINT;

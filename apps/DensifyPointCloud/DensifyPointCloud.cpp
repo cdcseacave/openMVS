@@ -49,6 +49,7 @@ String strOutputFileName;
 String strMeshFileName;
 String strDenseConfigFileName;
 float fSampleMesh;
+int thFilterPointCloud;
 int nArchiveType;
 int nProcessPriority;
 unsigned nMaxThreads;
@@ -85,22 +86,27 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 
 	// group of options allowed both on command line and in config file
 	unsigned nResolutionLevel;
+	unsigned nMaxResolution;
 	unsigned nMinResolution;
 	unsigned nNumViews;
 	unsigned nMinViewsFuse;
+	unsigned nOptimize;
 	unsigned nEstimateColors;
 	unsigned nEstimateNormals;
 	boost::program_options::options_description config("Densify options");
 	config.add_options()
 		("input-file,i", boost::program_options::value<std::string>(&OPT::strInputFileName), "input filename containing camera poses and image list")
 		("output-file,o", boost::program_options::value<std::string>(&OPT::strOutputFileName), "output filename for storing the dense point-cloud")
-		("resolution-level", boost::program_options::value<unsigned>(&nResolutionLevel)->default_value(1), "how many times to scale down the images before point cloud computation")
-		("min-resolution", boost::program_options::value<unsigned>(&nMinResolution)->default_value(640), "do not scale images lower than this resolution")
-		("number-views", boost::program_options::value<unsigned>(&nNumViews)->default_value(4), "number of views used for depth-map estimation (0 - all neighbor views available)")
-		("number-views-fuse", boost::program_options::value<unsigned>(&nMinViewsFuse)->default_value(3), "minimum number of images that agrees with an estimate during fusion in order to consider it inlier")
-		("estimate-colors", boost::program_options::value<unsigned>(&nEstimateColors)->default_value(1), "estimate the colors for the dense point-cloud")
-		("estimate-normals", boost::program_options::value<unsigned>(&nEstimateNormals)->default_value(0), "estimate the normals for the dense point-cloud")
-		("sample-mesh", boost::program_options::value<float>(&OPT::fSampleMesh)->default_value(0.f), "uniformly samples points on a mesh (0 - disabled, <0 - number of points, >0 - sample density per square unit)")
+		("resolution-level", boost::program_options::value(&nResolutionLevel)->default_value(1), "how many times to scale down the images before point cloud computation")
+		("max-resolution", boost::program_options::value(&nMaxResolution)->default_value(3200), "do not scale images higher than this resolution")
+		("min-resolution", boost::program_options::value(&nMinResolution)->default_value(640), "do not scale images lower than this resolution")
+		("number-views", boost::program_options::value(&nNumViews)->default_value(5), "number of views used for depth-map estimation (0 - all neighbor views available)")
+		("number-views-fuse", boost::program_options::value(&nMinViewsFuse)->default_value(3), "minimum number of images that agrees with an estimate during fusion in order to consider it inlier")
+		("optimize", boost::program_options::value(&nOptimize)->default_value(7), "filter used after depth-map estimation (0 - disabled, 1 - remove speckles, 2 - fill gaps, 4 - cross-adjust)")
+		("estimate-colors", boost::program_options::value(&nEstimateColors)->default_value(2), "estimate the colors for the dense point-cloud")
+		("estimate-normals", boost::program_options::value(&nEstimateNormals)->default_value(0), "estimate the normals for the dense point-cloud")
+		("sample-mesh", boost::program_options::value(&OPT::fSampleMesh)->default_value(0.f), "uniformly samples points on a mesh (0 - disabled, <0 - number of points, >0 - sample density per square unit)")
+		("filter-point-cloud", boost::program_options::value(&OPT::thFilterPointCloud)->default_value(0), "filter dense point-cloud based on visibility (0 - disabled)")
 		;
 
 	// hidden options, allowed both on command line and
@@ -161,13 +167,17 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		OPT::strOutputFileName = Util::getFileFullName(OPT::strInputFileName) + _T("_dense.mvs");
 
 	// init dense options
+	if (!Util::isFullPath(OPT::strDenseConfigFileName))
+		OPT::strDenseConfigFileName = MAKE_PATH(OPT::strDenseConfigFileName);
 	OPTDENSE::init();
 	const bool bValidConfig(OPTDENSE::oConfig.Load(OPT::strDenseConfigFileName));
 	OPTDENSE::update();
 	OPTDENSE::nResolutionLevel = nResolutionLevel;
+	OPTDENSE::nMaxResolution = nMaxResolution;
 	OPTDENSE::nMinResolution = nMinResolution;
 	OPTDENSE::nNumViews = nNumViews;
 	OPTDENSE::nMinViewsFuse = nMinViewsFuse;
+	OPTDENSE::nOptimize = nOptimize;
 	OPTDENSE::nEstimateColors = nEstimateColors;
 	OPTDENSE::nEstimateNormals = nEstimateNormals;
 	if (!bValidConfig)
@@ -184,6 +194,8 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	// start memory dumper
 	MiniDumper::Create(APPNAME, WORKING_FOLDER);
 	#endif
+
+	Util::Init();
 	return true;
 }
 
@@ -232,6 +244,15 @@ int main(int argc, LPCTSTR* argv)
 	if (scene.pointcloud.IsEmpty()) {
 		VERBOSE("error: empty initial point-cloud");
 		return EXIT_FAILURE;
+	}
+	if (OPT::thFilterPointCloud < 0) {
+		// filter point-cloud based on camera-point visibility intersections
+		scene.PointCloudFilter(OPT::thFilterPointCloud);
+		const String baseFileName(MAKE_PATH_SAFE(Util::getFileFullName(OPT::strOutputFileName))+_T("_filtered"));
+		scene.Save(baseFileName+_T(".mvs"), (ARCHIVE_TYPE)OPT::nArchiveType);
+		scene.pointcloud.Save(baseFileName+_T(".ply"));
+		Finalize();
+		return EXIT_SUCCESS;
 	}
 	if ((ARCHIVE_TYPE)OPT::nArchiveType != ARCHIVE_MVS) {
 		TD_TIMER_START();

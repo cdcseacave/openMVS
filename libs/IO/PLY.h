@@ -161,6 +161,8 @@ public:
 	void flush();
 	void release();
 
+	void set_legacy_type_names();
+
 	void get_info(float *, int *);
 
 	void append_comment(const char *);
@@ -298,10 +300,11 @@ public:
 	PlyPropRules *current_rules;   /* current propagation rules */
 	PlyRuleList *rule_list;        /* rule list from user */
 	std::vector<double> vals;      /* rule list from user */
+	const char* const* write_type_names; /* names of scalar types to be used for writing (new types by default) */
 
 protected:
-	static const char *type_names[9]; // names of scalar types
-	static const char *old_type_names[9]; // old names of types for backward compatibility
+	static const char* const type_names[9]; // names of scalar types
+	static const char* const old_type_names[9]; // old names of types for backward compatibility
 	static const int ply_type_size[9];
 	static const RuleName rule_name_list[7];
 };

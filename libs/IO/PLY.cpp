@@ -26,11 +26,11 @@ using namespace SEACAVE;
 
 // S T R U C T S ///////////////////////////////////////////////////
 
-const char * PLY::type_names[] = {
+const char* const PLY::type_names[] = {
 	"invalid", "int8", "int16", "int32", "uint8", "uint16", "uint32", "float32", "float64",
 };
 
-const char * PLY::old_type_names[] = {
+const char* const PLY::old_type_names[] = {
 	"invalid", "char", "short", "int", "uchar", "ushort", "uint", "float", "double",
 };
 
@@ -66,7 +66,8 @@ Exit:
 PLY::PLY()
 	:
 	mfp(NULL), f(NULL), ostream(NULL),
-	which_elem(NULL), other_elems(NULL), current_rules(NULL), rule_list(NULL)
+	which_elem(NULL), other_elems(NULL), current_rules(NULL), rule_list(NULL),
+	write_type_names(type_names)
 {
 }
 
@@ -999,6 +1000,16 @@ void PLY::flush()
 
 
 /******************************************************************************
+Use old PLY type names during writing for backward compatibility.
+******************************************************************************/
+
+void PLY::set_legacy_type_names()
+{
+	write_type_names = old_type_names;
+}
+
+
+/******************************************************************************
 Get version number and file type of a PlyFile.
 
 Entry:
@@ -1271,7 +1282,7 @@ void PLY::write_scalar_type(OSTREAM* fp, int code)
 		abort_ply("error: write_scalar_type: bad data code = %d", code);
 
 	/* write the code to a file */
-	fp->print("%s", type_names[code]);
+	fp->print("%s", write_type_names[code]);
 }
 
 

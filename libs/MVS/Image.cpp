@@ -161,15 +161,15 @@ float Image::ResizeImage(unsigned nMaxResolution)
 /*----------------------------------------------------------------*/
 
 // compute image scale for a given max and min resolution, using the current image file data
-unsigned Image::RecomputeMaxResolution(unsigned& level, unsigned minImageSize) const
+unsigned Image::RecomputeMaxResolution(unsigned& level, unsigned minImageSize, unsigned maxImageSize) const
 {
 	IMAGEPTR pImage(ReadImageHeader(name));
 	if (pImage == NULL) {
 		// something went wrong, use the current known size (however it will most probably fail later)
-		return Image8U3::computeMaxResolution(width, height, level, minImageSize);
+		return Image8U3::computeMaxResolution(width, height, level, minImageSize, maxImageSize);
 	}
 	// re-compute max image size
-	return Image8U3::computeMaxResolution(pImage->GetWidth(), pImage->GetHeight(), level, minImageSize);
+	return Image8U3::computeMaxResolution(pImage->GetWidth(), pImage->GetHeight(), level, minImageSize, maxImageSize);
 } // RecomputeMaxResolution
 /*----------------------------------------------------------------*/
 
@@ -195,4 +195,17 @@ void Image::UpdateCamera(const PlatformArr& platforms)
 {
 	camera = GetCamera(platforms, Image8U::Size(width, height));
 } // UpdateCamera
+// computes camera's field of view for the given direction
+REAL Image::ComputeFOV(int dir) const
+{
+	switch (dir) {
+	case 0: // width
+		return 2*ATAN(REAL(width)/(camera.K(0,0)*2));
+	case 1: // height
+		return 2*ATAN(REAL(height)/(camera.K(1,1)*2));
+	case 2: // diagonal
+		return 2*ATAN(SQRT(REAL(SQUARE(width)+SQUARE(height)))/(camera.K(0,0)+camera.K(1,1)));
+	}
+	return 0;
+} // ComputeFOV
 /*----------------------------------------------------------------*/
