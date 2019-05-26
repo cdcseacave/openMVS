@@ -34,9 +34,6 @@
 // TIFF codec
 #cmakedefine _USE_TIFF
 
-// EXIV2 parser
-#cmakedefine _USE_EXIV2
-
 // OpenGL support
 #cmakedefine _USE_OPENGL
 
