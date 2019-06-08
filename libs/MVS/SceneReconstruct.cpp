@@ -399,7 +399,7 @@ void fetchCellFacets(const delaunay_t& Tr, const std::vector<facet_t>& hullFacet
 	// create the 4 frustum planes
 	ASSERT(facets.empty());
 	typedef TFrustum<REAL,4> Frustum;
-	Frustum frustum(imageData.camera.P, imageData.width, imageData.width, 0, 1);
+	Frustum frustum(imageData.camera.P, imageData.width, imageData.height, 0, 1);
 	// loop over all cells
 	const point_t ptOrigin(MVS2CGAL(imageData.camera.C));
 	for (const facet_t& face: hullFacets) {
