@@ -245,7 +245,7 @@ int main(int argc, LPCTSTR* argv)
 		VERBOSE("error: empty initial point-cloud");
 		return EXIT_FAILURE;
 	}
-	if (OPT::thFilterPointCloud < 0) {
+	if (OPT::thFilterPointCloud > 0) {
 		// filter point-cloud based on camera-point visibility intersections
 		scene.PointCloudFilter(OPT::thFilterPointCloud);
 		const String baseFileName(MAKE_PATH_SAFE(Util::getFileFullName(OPT::strOutputFileName))+_T("_filtered"));
