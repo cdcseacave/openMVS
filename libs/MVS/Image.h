@@ -138,7 +138,6 @@ public:
 		ar & platformID;
 		ar & cameraID;
 		ar & poseID;
-		ar & poseID;
 		if (version > 0) {
 			ar & ID;
 		}
