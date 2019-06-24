@@ -536,7 +536,7 @@ bool intersect(const delaunay_t& Tr, const segment_t& seg, const std::vector<fac
 		const int nb_coplanar(intersect(Tr.triangle(in_facet), seg, coplanar));
 		if (nb_coplanar >= 0) {
 			// skip this cell if the intersection is not in the desired direction
-			const REAL interDist = inter.ray.IntersectsDist(getFacetPlane(in_facet));
+			const REAL interDist(inter.ray.IntersectsDist(getFacetPlane(in_facet)));
 			if ((interDist > prevDist) != inter.bigger)
 				continue;
 			// vertices of facet i: j = 4 * i, vertices = facet_vertex_order[j,j+1,j+2] negative orientation
@@ -571,10 +571,10 @@ bool intersect(const delaunay_t& Tr, const segment_t& seg, const std::vector<fac
 				do {
 					const cell_handle_t c(ifc);
 					if (c == inter.facet.first) continue;
-					facet_t f1 = facet_t(c, c->index(inter.v1));
+					const facet_t f1(c, c->index(inter.v1));
 					if (!Tr.is_infinite(f1))
 						out_facets.push_back(f1);
-					facet_t f2 = facet_t(c, c->index(inter.v2));
+					const facet_t f2(c, c->index(inter.v2));
 					if (!Tr.is_infinite(f2))
 						out_facets.push_back(f2);
 				} while (++ifc != efc);
@@ -614,8 +614,12 @@ bool intersect(const delaunay_t& Tr, const segment_t& seg, const std::vector<fac
 					inline cell_back_inserter_t& operator*() { return *this; }
 					inline cell_back_inserter_t& operator++(int) { return *this; }
 					inline void operator=(cell_handle_t c) {
-						if (c != current_cell)
-							out_facets.push_back(facet_t(c, c->index(v)));
+						if (c == current_cell)
+							return;
+						const facet_t f(c, c->index(v));
+						if (Tr.is_infinite(f))
+							return;
+						out_facets.push_back(f);
 					}
 				};
 				Tr.finite_incident_cells(inter.v1, cell_back_inserter_t(inter, out_facets));
