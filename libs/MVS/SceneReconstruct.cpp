@@ -606,11 +606,12 @@ bool intersect(const delaunay_t& Tr, const segment_t& seg, const std::vector<fac
 				// the faces in the cells around opposing this common vertex
 				out_facets.clear();
 				struct cell_back_inserter_t {
+					const delaunay_t& Tr;
 					const vertex_handle_t v;
 					const cell_handle_t current_cell;
 					std::vector<facet_t>& out_facets;
-					inline cell_back_inserter_t(const intersection_t& inter, std::vector<facet_t>& _out_facets)
-						: v(inter.v1), current_cell(inter.facet.first), out_facets(_out_facets) {}
+					inline cell_back_inserter_t(const delaunay_t& _Tr, const intersection_t& inter, std::vector<facet_t>& _out_facets)
+						: Tr(_Tr), v(inter.v1), current_cell(inter.facet.first), out_facets(_out_facets) {}
 					inline cell_back_inserter_t& operator*() { return *this; }
 					inline cell_back_inserter_t& operator++(int) { return *this; }
 					inline void operator=(cell_handle_t c) {
@@ -622,7 +623,7 @@ bool intersect(const delaunay_t& Tr, const segment_t& seg, const std::vector<fac
 						out_facets.push_back(f);
 					}
 				};
-				Tr.finite_incident_cells(inter.v1, cell_back_inserter_t(inter, out_facets));
+				Tr.finite_incident_cells(inter.v1, cell_back_inserter_t(Tr, inter, out_facets));
 				return true; }
 			}
 			// coplanar with 3 edges = tangent = impossible?
