@@ -308,6 +308,7 @@ int ImportSceneVSFM()
 		MVS::Platform& platform = scene.platforms.AddEmpty();
 		MVS::Platform::Camera& camera = platform.cameras.AddEmpty();
 		image.cameraID = 0;
+		image.ID = static_cast<uint32_t>(idx);
 		const PBA::Camera& cameraNVM = cameras[idx];
 		camera.K = MVS::Platform::Camera::ComposeK<REAL,REAL>(cameraNVM.GetFocalLength(), cameraNVM.GetFocalLength(), image.width, image.height);
 		camera.R = RMatrix::IDENTITY;

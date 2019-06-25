@@ -475,6 +475,7 @@ bool ImportScene(const String& strFolder, Interface& scene)
 			image.name = OPT::strImageFolder+it.first.name;
 			image.platformID = mapCameras.at(it.first.idCamera);
 			image.cameraID = 0;
+			image.ID = it.first.ID;
 			Interface::Platform& platform = scene.platforms[image.platformID];
 			image.poseID = (uint32_t)platform.poses.size();
 			platform.poses.push_back(pose);
