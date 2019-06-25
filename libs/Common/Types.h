@@ -100,6 +100,7 @@ namespace boost { void throw_exception(std::exception const&); }
 #include <boost/serialization/list.hpp>
 #include <boost/serialization/map.hpp>
 #include <boost/serialization/set.hpp>
+#include <boost/serialization/version.hpp>
 #if (BOOST_VERSION / 100000) > 1 || (BOOST_VERSION / 100 % 1000) > 55
 #include <boost/serialization/unordered_map.hpp>
 #include <boost/serialization/unordered_set.hpp>

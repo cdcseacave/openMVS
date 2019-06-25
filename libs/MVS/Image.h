@@ -88,7 +88,7 @@ public:
 	float avgDepth; // average depth of the points seen by this camera
 
 public:
-	inline Image() {
+	inline Image(): ID(NO_ID) {
 		#ifndef _RELEASE
 		width = height = 0;
 		#endif
@@ -124,7 +124,7 @@ public:
 		ar & platformID;
 		ar & cameraID;
 		ar & poseID;
-		if (version > 2) {
+		if (version > 1) {
 			ar & ID;
 		}
 		const String relName(MAKE_PATH_REL(WORKING_FOLDER_FULL, name));
@@ -139,7 +139,7 @@ public:
 		ar & cameraID;
 		ar & poseID;
 		ar & poseID;
-		if (version > 2) {
+		if (version > 1) {
 			ar & ID;
 		}
 		ar & name;
@@ -155,5 +155,10 @@ typedef MVS_API CLISTDEF2IDX(Image,IIndex) ImageArr;
 /*----------------------------------------------------------------*/
 
 } // namespace MVS
+
+#ifdef _USE_BOOST
+// Set class version. This must be global
+BOOST_CLASS_VERSION(MVS::Image, 1);
+#endif
 
 #endif // _MVS_VIEW_H_
