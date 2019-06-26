@@ -124,7 +124,7 @@ public:
 		ar & platformID;
 		ar & cameraID;
 		ar & poseID;
-		if (version > 1) {
+		if (version > 0) {
 			ar & ID;
 		}
 		const String relName(MAKE_PATH_REL(WORKING_FOLDER_FULL, name));
@@ -139,7 +139,7 @@ public:
 		ar & cameraID;
 		ar & poseID;
 		ar & poseID;
-		if (version > 1) {
+		if (version > 0) {
 			ar & ID;
 		}
 		ar & name;
