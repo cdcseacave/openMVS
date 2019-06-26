@@ -344,6 +344,7 @@ bool ParseImageListXML(MVS::Scene& scene, PlatformDistCoeffs& pltDistCoeffs, siz
 		imageData.name = MAKE_PATH_FULL(strPath, imageData.name);
 		imageData.platformID = camera->UnsignedAttribute(_T("sensor_id"));
 		imageData.cameraID = 0; // only one camera per platform supported by this format
+		imageData.ID = ID;
 		if (!camera->BoolAttribute(_T("enabled"))) {
 			imageData.poseID = NO_ID;
 			DEBUG_EXTRA("warning: uncalibrated image '%s'", name);

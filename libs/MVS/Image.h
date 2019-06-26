@@ -78,6 +78,7 @@ public:
 	uint32_t platformID; // ID of the associated platform
 	uint32_t cameraID; // ID of the associated camera on the associated platform
 	uint32_t poseID; // ID of the pose of the associated platform
+	uint32_t ID; // Global ID of the image
 	String name; // image file name (relative path)
 	Camera camera; // view's pose
 	uint32_t width, height; // image size
@@ -87,7 +88,7 @@ public:
 	float avgDepth; // average depth of the points seen by this camera
 
 public:
-	inline Image() {
+	inline Image(): ID(NO_ID) {
 		#ifndef _RELEASE
 		width = height = 0;
 		#endif
@@ -119,10 +120,13 @@ public:
 	#ifdef _USE_BOOST
 	// implement BOOST serialization
 	template<class Archive>
-	void save(Archive& ar, const unsigned int /*version*/) const {
+	void save(Archive& ar, const unsigned int version) const {
 		ar & platformID;
 		ar & cameraID;
 		ar & poseID;
+		if (version > 0) {
+			ar & ID;
+		}
 		const String relName(MAKE_PATH_REL(WORKING_FOLDER_FULL, name));
 		ar & relName;
 		ar & width & height;
@@ -130,10 +134,14 @@ public:
 		ar & avgDepth;
 	}
 	template<class Archive>
-	void load(Archive& ar, const unsigned int /*version*/) {
+	void load(Archive& ar, const unsigned int version) {
 		ar & platformID;
 		ar & cameraID;
 		ar & poseID;
+		ar & poseID;
+		if (version > 0) {
+			ar & ID;
+		}
 		ar & name;
 		name = MAKE_PATH_FULL(WORKING_FOLDER_FULL, name);
 		ar & width & height;
@@ -147,5 +155,10 @@ typedef MVS_API CLISTDEF2IDX(Image,IIndex) ImageArr;
 /*----------------------------------------------------------------*/
 
 } // namespace MVS
+
+#ifdef _USE_BOOST
+// Set class version. This must be global
+BOOST_CLASS_VERSION(MVS::Image, 1);
+#endif
 
 #endif // _MVS_VIEW_H_

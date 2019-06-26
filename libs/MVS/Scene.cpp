@@ -123,6 +123,7 @@ bool Scene::LoadInterface(const String & fileName)
 		}
 		imageData.platformID = image.platformID;
 		imageData.cameraID = image.cameraID;
+		imageData.ID = image.ID;
 		// init camera
 		const Interface::Platform::Camera& camera = obj.platforms[image.platformID].cameras[image.cameraID];
 		if (camera.HasResolution()) {
@@ -231,6 +232,7 @@ bool Scene::SaveInterface(const String & fileName) const
 		image.poseID = imageData.poseID;
 		image.platformID = imageData.platformID;
 		image.cameraID = imageData.cameraID;
+		image.ID = imageData.ID;
 	}
 
 	// export 3D points
