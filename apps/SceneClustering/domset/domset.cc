@@ -422,7 +422,7 @@ void Domset::computeClustersAP(std::map<size_t, size_t> &xId2vId,
 #if DOMSET_USE_OPENMP
 #pragma omp parallel for
 #endif
-    for (size_t i = 0; i < numX; i++)
+    for_parallel(i, numX)
     {
       Y(i) = AS.row(i).maxCoeff(&I[i]);
       AS(i, I[i]) = minFloat;
@@ -433,7 +433,7 @@ void Domset::computeClustersAP(std::map<size_t, size_t> &xId2vId,
 #if DOMSET_USE_OPENMP
 #pragma omp parallel for
 #endif
-    for (size_t i = 0; i < numX; i++)
+    for_parallel(i, numX)
     {
       Y2(i) = AS.row(i).maxCoeff(&I2[i]);
     }
@@ -450,7 +450,7 @@ void Domset::computeClustersAP(std::map<size_t, size_t> &xId2vId,
 #if DOMSET_USE_OPENMP
 #pragma omp parallel for
 #endif
-    for (size_t i = 0; i < numX; i++)
+    for_parallel(i, numX)
     {
       Rp(i, i) = R(i, i);
     }
@@ -464,7 +464,7 @@ void Domset::computeClustersAP(std::map<size_t, size_t> &xId2vId,
 #if DOMSET_USE_OPENMP
 #pragma omp parallel for
 #endif
-    for (size_t i = 0; i < numX; i++)
+    for_parallel(i, numX)
     {
       A(i, i) = dA(i);
     }
