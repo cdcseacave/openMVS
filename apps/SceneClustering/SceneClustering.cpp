@@ -51,7 +51,7 @@ String strOutputDirectory;
 float fVoxelSize;
 unsigned nMinClusterSize;
 unsigned nMaxClusterSize;
-unsigned nClusterOverlap;
+float fPerCentClusterOverlap;
 bool bDoSVM;
 unsigned nArchiveType;
 int nProcessPriority;
@@ -94,7 +94,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		("voxel-size,x", boost::program_options::value<float>(&OPT::fVoxelSize)->default_value(5.f), "Size of a cell in the voxel grid: level of simplification of the original point cloud")
 		("min-cluster-size,m", boost::program_options::value<unsigned>(&OPT::nMinClusterSize)->default_value(30), "Min number of camera in a cluster" )
 		("max-cluster-size,M", boost::program_options::value<unsigned>(&OPT::nMaxClusterSize)->default_value(50), "Max number of camera in a cluster")
-		("cluster-overlap,o", boost::program_options::value<unsigned>(&OPT::nClusterOverlap)->default_value(4), "Number of views in overlap [NOT implemented yet]" )
+		("cluster-overlap,o", boost::program_options::value<float>(&OPT::fPerCentClusterOverlap)->default_value(0.1), "Percentage of overlap expressed inside the range [0.0;1.0]" )
 		//("svm-classification,s", boost::program_options::bool_switch(&OPT::bDoSVM), "Do the SVM classification [NOT Implemented yet]" )
 		;
 
@@ -152,6 +152,12 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	if(OPT::nMaxClusterSize < OPT::nMinClusterSize)
 	{
 		LOG("max-cluster-size value must be greater than min-cluster-size value");
+		return false;
+	}
+
+	if(OPT::fPerCentClusterOverlap > 1.0 || OPT::fPerCentClusterOverlap < 0.0)
+	{
+		LOG("cluster-overlap value must be inside the range [0.0;1.0]");
 		return false;
 	}
 	// initialize global options
@@ -247,7 +253,9 @@ int main(int argc, LPCTSTR* argv)
 
 	nomoko::Domset domset_instance(domset_points, domset_views, domset_cameras, OPT::fVoxelSize);
 
-	domset_instance.clusterViews(OPT::nMinClusterSize, OPT::nMaxClusterSize, OPT::nClusterOverlap);
+	// Compute the number of overlap
+	size_t nOverlap = size_t(ROUND2INT(((OPT::nMinClusterSize + OPT::nMaxClusterSize) / 2.0) * OPT::fPerCentClusterOverlap));
+	domset_instance.clusterViews(OPT::nMinClusterSize, OPT::nMaxClusterSize, nOverlap);
 
 	#if TD_VERBOSE != TD_VERBOSE_OFF
 	if (VERBOSITY_LEVEL > 2)
