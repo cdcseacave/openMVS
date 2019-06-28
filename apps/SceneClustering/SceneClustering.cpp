@@ -207,20 +207,23 @@ int main(int argc, LPCTSTR* argv)
 		return EXIT_FAILURE;
 	}
 
-
 	const String baseFileName(MAKE_PATH_SAFE(Util::getFileFullName(OPT::strInputFileName)));
 
 	{
 	// compute clustering
 	TD_TIMER_START();
 
-	// set up data
+	// Domset data structures
 	std::vector<nomoko::Camera> domsetCameras; // Camera is useless in domset...
 	std::vector<nomoko::View> domsetViews;
 	std::vector<nomoko::Point> domsetPoints; // nomoko::Point is an Eigen::Vec3f...
-	std::map<uint32_t, uint32_t> viewFwdReindex; // get continuous indexing
-	std::map<uint32_t, uint32_t> viewBkwdReindex; // reverse continuous indexing
+	
+	// Domset needs contiguous ids. These maps handle fwd and bkwd reindexing
+	std::map<uint32_t, uint32_t> viewFwdReindex; 
+	std::map<uint32_t, uint32_t> viewBkwdReindex;
 
+	// We convert our data into the structure accepted by the Domset library
+	// and fills our reindexing maps.
 	uint32_t currID = 0;
 	FOREACH(IdxC, scene.images) {
 		const auto & currImage = scene.images[IdxC];
@@ -235,6 +238,7 @@ int main(int argc, LPCTSTR* argv)
 		}
 	}
 
+	// Now the tracks are remapped and converted 
 	FOREACH(IdxP, scene.pointcloud.points) {
 		nomoko::Point p;
 		p.pos = Eigen::Vector3f(scene.pointcloud.points[IdxP]);
@@ -247,9 +251,11 @@ int main(int argc, LPCTSTR* argv)
 
 	nomoko::Domset domsetInstance(domsetPoints, domsetViews, domsetCameras, OPT::fVoxelSize);
 
-	// Compute the number of overlap
+	// Compute the number of overlaping views by cluster
 	size_t nOverlap = size_t(ROUND2INT(((OPT::nMinClusterSize + OPT::nMaxClusterSize) / 2.0) * OPT::fPerCentClusterOverlap));
 	domsetInstance.clusterViews(OPT::nMinClusterSize, OPT::nMaxClusterSize, nOverlap);
+	const auto domsetClusters = domsetInstance.getClusters();
+	VERBOSE("Clustering completed : %u clusters (%s)", domsetClusters.size(), TD_TIMER_GET_FMT().c_str());
 
 	#if TD_VERBOSE != TD_VERBOSE_OFF
 	if (VERBOSITY_LEVEL > 2) {
@@ -258,9 +264,7 @@ int main(int argc, LPCTSTR* argv)
 	}
 	#endif
 
-	const auto domsetClusters = domsetInstance.getClusters();
-	VERBOSE("Clustering completed : %u clusters (%s)", domsetClusters.size(), TD_TIMER_GET_FMT().c_str());
-
+	// Create separate Scene for each cluster
 	for (size_t i = 0; i < domsetClusters.size(); ++i) {
 		const auto & cluster = domsetClusters[i];
 
@@ -269,9 +273,10 @@ int main(int argc, LPCTSTR* argv)
 		std::vector<uint32_t> globalIDs;
 		sceneCluster.platforms = scene.platforms; // We copy all the plateforms for now, it's easier and harmless
 
+		// First, we copy selected images into the Scene cluster and fill their ID field with their original index in the parent Scene 
 		uint32_t localID = 0;
-		for (const auto inCluster_ID : cluster) {
-			const uint32_t globalID = viewBkwdReindex[inCluster_ID];
+		for (const auto inClusterID : cluster) {
+			const uint32_t globalID = viewBkwdReindex[inClusterID];
 			auto & image = scene.images[globalID];
 			image.ID = globalID; 
 			sceneCluster.images.Insert(scene.images[globalID]);
@@ -280,6 +285,8 @@ int main(int argc, LPCTSTR* argv)
 			++localID;
 		}
 
+		// Second, we iterate throught each track to identify and copy ones that belong to the cluster
+		// -> each view ID is remapped to their index in the Scene cluster   
 		FOREACH(IdxP, scene.pointcloud.points) {
 			const auto & currViewArr = scene.pointcloud.pointViews[IdxP];
 			PointCloud::ViewArr newViewArr;
@@ -290,15 +297,22 @@ int main(int argc, LPCTSTR* argv)
 			}
 
 			if(newViewArr.GetSize() > 1) {
+				// Mandatory fields
 				sceneCluster.pointcloud.points.Insert(scene.pointcloud.points[IdxP]);
 				sceneCluster.pointcloud.pointViews.Insert(newViewArr);
+
+				// Optional fields
 				if(!scene.pointcloud.colors.IsEmpty())
 					sceneCluster.pointcloud.colors.Insert(scene.pointcloud.colors[IdxP]);
 				if(!scene.pointcloud.pointWeights.IsEmpty())
 					sceneCluster.pointcloud.pointWeights.Insert(scene.pointcloud.pointWeights[IdxP]);
+				if(!scene.pointcloud.normals.IsEmpty())
+					sceneCluster.pointcloud.normals.Insert(scene.pointcloud.normals[IdxP]);
 			}
 		}
-		LOG(String::FormatString("Saving cluster #%i", i));
+
+		// Eventually the cluster is saved into its own file
+		LOG(_T("Saving cluster #%i"), i);
 		sceneCluster.Save(baseFileName + String::FormatString("_cluster_%i.mvs", i), (ARCHIVE_TYPE)OPT::nArchiveType);
 		sceneCluster.pointcloud.Save(baseFileName + String::FormatString("_cluster_%i.ply", i));
 	}
