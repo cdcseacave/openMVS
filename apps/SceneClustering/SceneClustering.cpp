@@ -149,14 +149,12 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	if (OPT::strOutputDirectory.IsEmpty())
 		OPT::strOutputDirectory = WORKING_FOLDER;
 
-	if(OPT::nMaxClusterSize < OPT::nMinClusterSize)
-	{
+	if(OPT::nMaxClusterSize < OPT::nMinClusterSize) {
 		LOG("max-cluster-size value must be greater than min-cluster-size value");
 		return false;
 	}
 
-	if(OPT::fPerCentClusterOverlap > 1.0 || OPT::fPerCentClusterOverlap < 0.0)
-	{
+	if(OPT::fPerCentClusterOverlap > 1.0 || OPT::fPerCentClusterOverlap < 0.0) {
 		LOG("cluster-overlap value must be inside the range [0.0;1.0]");
 		return false;
 	}
@@ -217,102 +215,92 @@ int main(int argc, LPCTSTR* argv)
 	TD_TIMER_START();
 
 	// set up data
-	std::vector<nomoko::Camera> domset_cameras; // Camera is useless in domset...
-	std::vector<nomoko::View> domset_views;
-	std::vector<nomoko::Point> domset_points; // nomoko::Point is an Eigen::Vec3f...
-	std::map<uint32_t, uint32_t> view_fwd_reindexing; // get continuous indexing
-	std::map<uint32_t, uint32_t> view_bkwd_reindexing; // reverse continuous indexing
+	std::vector<nomoko::Camera> domsetCameras; // Camera is useless in domset...
+	std::vector<nomoko::View> domsetViews;
+	std::vector<nomoko::Point> domsetPoints; // nomoko::Point is an Eigen::Vec3f...
+	std::map<uint32_t, uint32_t> viewFwdReindex; // get continuous indexing
+	std::map<uint32_t, uint32_t> viewBkwdReindex; // reverse continuous indexing
 
-	uint32_t curr_ID = 0;
-	FOREACH(IdxC, scene.images)
-	{
-		const auto & curr_image = scene.images[IdxC];
-		if(curr_image.IsValid())
-		{
-			view_fwd_reindexing[IdxC] = curr_ID;
-			view_bkwd_reindexing[curr_ID] = IdxC; 
+	uint32_t currID = 0;
+	FOREACH(IdxC, scene.images) {
+		const auto & currImage = scene.images[IdxC];
+		if(currImage.IsValid()) {
+			viewFwdReindex[IdxC] = currID;
+			viewBkwdReindex[currID] = IdxC; 
 			nomoko::View v;
-			v.rot = Eigen::Matrix<double,3,3,1>(curr_image.camera.R).cast<float>();
-			v.trans = Eigen::Vector3d(curr_image.camera.C).cast<float>();
-			domset_views.push_back(v);
-			++curr_ID;
+			v.rot = Eigen::Matrix<REAL,3,3,1>(currImage.camera.R).cast<float>();
+			v.trans = Eigen::Matrix<REAL,3,1>(currImage.camera.C).cast<float>();
+			domsetViews.push_back(v);
+			++currID;
 		}
 	}
 
-	FOREACH(IdxP, scene.pointcloud.points)
-	{
+	FOREACH(IdxP, scene.pointcloud.points) {
 		nomoko::Point p;
 		p.pos = Eigen::Vector3f(scene.pointcloud.points[IdxP]);
-		FOREACH(IdxV, scene.pointcloud.pointViews[IdxP])
-		{
-			auto idx = view_fwd_reindexing[scene.pointcloud.pointViews[IdxP][IdxV]];
+		FOREACH(IdxV, scene.pointcloud.pointViews[IdxP]) {
+			auto idx = viewFwdReindex[scene.pointcloud.pointViews[IdxP][IdxV]];
 			p.viewList.push_back(idx);
 		}
-		domset_points.push_back(p);
+		domsetPoints.push_back(p);
 	}
 
-	nomoko::Domset domset_instance(domset_points, domset_views, domset_cameras, OPT::fVoxelSize);
+	nomoko::Domset domsetInstance(domsetPoints, domsetViews, domsetCameras, OPT::fVoxelSize);
 
 	// Compute the number of overlap
 	size_t nOverlap = size_t(ROUND2INT(((OPT::nMinClusterSize + OPT::nMaxClusterSize) / 2.0) * OPT::fPerCentClusterOverlap));
-	domset_instance.clusterViews(OPT::nMinClusterSize, OPT::nMaxClusterSize, nOverlap);
+	domsetInstance.clusterViews(OPT::nMinClusterSize, OPT::nMaxClusterSize, nOverlap);
 
 	#if TD_VERBOSE != TD_VERBOSE_OFF
-	if (VERBOSITY_LEVEL > 2)
-	{
-		domset_instance.printClusters();
-		domset_instance.exportToPLY(baseFileName + _T("_clusters.ply"));
+	if (VERBOSITY_LEVEL > 2) {
+		domsetInstance.printClusters();
+		domsetInstance.exportToPLY(baseFileName + _T("_clusters.ply"));
 	}
 	#endif
 
-	const auto domset_clusters = domset_instance.getClusters();
-	VERBOSE("Clustering completed : %u clusters (%s)", domset_clusters.size(), TD_TIMER_GET_FMT().c_str());
+	const auto domsetClusters = domsetInstance.getClusters();
+	VERBOSE("Clustering completed : %u clusters (%s)", domsetClusters.size(), TD_TIMER_GET_FMT().c_str());
 
-	for (int i = 0; i < domset_clusters.size(); ++i) 
-	{
-		const auto & cluster = domset_clusters[i];
+	for (int i = 0; i < domsetClusters.size(); ++i) {
+		const auto & cluster = domsetClusters[i];
 
-		Scene scene_cluster;
-		std::map<uint32_t, uint32_t> map_global_to_local;
-		std::vector<uint32_t> global_IDs;
-		scene_cluster.platforms = scene.platforms; // We copy all the plateforms for now, it's easier and harmless
+		Scene sceneCluster;
+		std::map<uint32_t, uint32_t> mapGlobalToLocal;
+		std::vector<uint32_t> globalIDs;
+		sceneCluster.platforms = scene.platforms; // We copy all the plateforms for now, it's easier and harmless
 
-		uint32_t local_ID = 0;
-		for (const auto inCluster_ID : cluster)
-		{
-			const size_t global_ID = view_bkwd_reindexing[inCluster_ID];
-			auto & image = scene.images[global_ID];
-			image.ID = global_ID; 
-			scene_cluster.images.Insert(scene.images[global_ID]);
-			map_global_to_local[global_ID] = local_ID;
-			global_IDs.push_back(global_ID);
-			++local_ID;
+		uint32_t localID = 0;
+		for (const auto inCluster_ID : cluster) {
+			const size_t globalID = viewBkwdReindex[inCluster_ID];
+			auto & image = scene.images[globalID];
+			image.ID = globalID; 
+			sceneCluster.images.Insert(scene.images[globalID]);
+			mapGlobalToLocal[globalID] = localID;
+			globalIDs.push_back(globalID);
+			++localID;
 		}
 
-		FOREACH(IdxP, scene.pointcloud.points)
-		{
-			const auto & curr_viewArr = scene.pointcloud.pointViews[IdxP];
-			PointCloud::ViewArr new_viewArr;
+		FOREACH(IdxP, scene.pointcloud.points) {
+			const auto & currViewArr = scene.pointcloud.pointViews[IdxP];
+			PointCloud::ViewArr newViewArr;
 			
-			for(const auto & idxVG: global_IDs)
-			{
-				if(curr_viewArr.FindFirst(idxVG) != PointCloud::ViewArr::NO_INDEX)
-					new_viewArr.InsertSort(map_global_to_local.at(idxVG));
+			for(const auto & idxVG: globalIDs) {
+				if(currViewArr.FindFirst(idxVG) != PointCloud::ViewArr::NO_INDEX)
+					newViewArr.InsertSort(mapGlobalToLocal.at(idxVG));
 			}
 
-			if(new_viewArr.GetSize() > 1)
-			{
-				scene_cluster.pointcloud.points.Insert(scene.pointcloud.points[IdxP]);
-				scene_cluster.pointcloud.pointViews.Insert(new_viewArr);
+			if(newViewArr.GetSize() > 1) {
+				sceneCluster.pointcloud.points.Insert(scene.pointcloud.points[IdxP]);
+				sceneCluster.pointcloud.pointViews.Insert(newViewArr);
 				if(!scene.pointcloud.colors.IsEmpty())
-					scene_cluster.pointcloud.colors.Insert(scene.pointcloud.colors[IdxP]);
+					sceneCluster.pointcloud.colors.Insert(scene.pointcloud.colors[IdxP]);
 				if(!scene.pointcloud.pointWeights.IsEmpty())
-					scene_cluster.pointcloud.pointWeights.Insert(scene.pointcloud.pointWeights[IdxP]);
+					sceneCluster.pointcloud.pointWeights.Insert(scene.pointcloud.pointWeights[IdxP]);
 			}
 		}
 		LOG(String::FormatString("Saving cluster #%i", i));
-		scene_cluster.Save(baseFileName + String::FormatString("_cluster_%i.mvs", i), (ARCHIVE_TYPE)OPT::nArchiveType);
-		scene_cluster.pointcloud.Save(baseFileName + String::FormatString("_cluster_%i.ply", i));
+		sceneCluster.Save(baseFileName + String::FormatString("_cluster_%i.mvs", i), (ARCHIVE_TYPE)OPT::nArchiveType);
+		sceneCluster.pointcloud.Save(baseFileName + String::FormatString("_cluster_%i.ply", i));
 	}
 	
 	}
