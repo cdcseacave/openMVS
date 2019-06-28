@@ -312,9 +312,9 @@ int main(int argc, LPCTSTR* argv)
 		}
 
 		// Eventually the cluster is saved into its own file
-		LOG(_T("Saving cluster #%i"), i);
-		sceneCluster.Save(baseFileName + String::FormatString("_cluster_%i.mvs", i), (ARCHIVE_TYPE)OPT::nArchiveType);
-		sceneCluster.pointcloud.Save(baseFileName + String::FormatString("_cluster_%i.ply", i));
+		LOG(_T("Saving cluster #%u"), i);
+		sceneCluster.Save(baseFileName + String::FormatString("_cluster_%04u.mvs", i), (ARCHIVE_TYPE)OPT::nArchiveType);
+		sceneCluster.pointcloud.Save(baseFileName + String::FormatString("_cluster_%u.ply", i));
 	}
 	
 	}
