@@ -469,12 +469,12 @@ struct SO2_Adaptor {
   /** Note: this assumes that input angles are already in the range [-pi,pi] */
   template <typename U, typename V>
   inline DistanceType accum_dist(const U a, const V b, const size_t) const {
-    DistanceType result = DistanceType(), NANO_PI = pi_const<DistanceType>();
+    DistanceType result = DistanceType(), PI = pi_const<DistanceType>();
     result = b - a;
-    if (result > NANO_PI)
-      result -= 2 * NANO_PI;
-    else if (result < -NANO_PI)
-      result += 2 * NANO_PI;
+    if (result > PI)
+      result -= 2 * PI;
+    else if (result < -PI)
+      result += 2 * PI;
     return result;
   }
 };

@@ -22,7 +22,14 @@
 #include "types.h"
 
 // 3D Party
+#pragma push_macro("malloc")
+#undef malloc
+#pragma push_macro("PI")
+#undef PI
 #include "../../../libs/Math/nanoflann/nanoflann.hpp"
+#pragma pop_macro("PI")
+#pragma pop_macro("malloc")
+
 
 namespace nomoko
 {
