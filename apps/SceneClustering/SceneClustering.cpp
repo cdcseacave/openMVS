@@ -150,12 +150,12 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		OPT::strOutputDirectory = WORKING_FOLDER;
 
 	if(OPT::nMaxClusterSize < OPT::nMinClusterSize) {
-		LOG("max-cluster-size value must be greater than min-cluster-size value");
+		LOG("error: max-cluster-size value must be greater than min-cluster-size value");
 		return false;
 	}
 
 	if(OPT::fPerCentClusterOverlap > 1.0 || OPT::fPerCentClusterOverlap < 0.0) {
-		LOG("cluster-overlap value must be inside the range [0.0;1.0]");
+		LOG("error: cluster-overlap value must be inside the range [0.0;1.0]");
 		return false;
 	}
 	// initialize global options
@@ -261,7 +261,7 @@ int main(int argc, LPCTSTR* argv)
 	const auto domsetClusters = domsetInstance.getClusters();
 	VERBOSE("Clustering completed : %u clusters (%s)", domsetClusters.size(), TD_TIMER_GET_FMT().c_str());
 
-	for (int i = 0; i < domsetClusters.size(); ++i) {
+	for (size_t i = 0; i < domsetClusters.size(); ++i) {
 		const auto & cluster = domsetClusters[i];
 
 		Scene sceneCluster;
@@ -271,7 +271,7 @@ int main(int argc, LPCTSTR* argv)
 
 		uint32_t localID = 0;
 		for (const auto inCluster_ID : cluster) {
-			const size_t globalID = viewBkwdReindex[inCluster_ID];
+			const uint32_t globalID = viewBkwdReindex[inCluster_ID];
 			auto & image = scene.images[globalID];
 			image.ID = globalID; 
 			sceneCluster.images.Insert(scene.images[globalID]);

@@ -6,6 +6,8 @@
 
 #include "domset.h"
 
+#include "../../../libs/MVS/Common.h"
+
 #include <random>
 
 #if DOMSET_USE_OPENMP
@@ -22,6 +24,7 @@ namespace nomoko
 {
 void Domset::computeInformation()
 {
+  LOG(_T("Dominant set clustering of views"));
   normalizePointCloud();
   voxelGridFilter(kVoxelSize, kVoxelSize, kVoxelSize);
   getAllDistances();
@@ -30,16 +33,15 @@ void Domset::computeInformation()
 void Domset::normalizePointCloud()
 {
   // construct a kd-tree index:
-  typedef KDTreeSingleIndexAdaptor<
-      L2_Simple_Adaptor<float, Domset>,
+  typedef nanoflann::KDTreeSingleIndexAdaptor<
+      nanoflann::L2_Simple_Adaptor<float, Domset>,
       Domset,
       3 /* dim */>
       my_kd_tree_t;
 
-  my_kd_tree_t index(3, *this, KDTreeSingleIndexAdaptorParams(10));
+  my_kd_tree_t index(3, *this, nanoflann::KDTreeSingleIndexAdaptorParams(10));
   index.buildIndex();
 
-  const size_t numResults(1);
   const size_t numPoints(points.size());
   double totalDist = 0.0;
   Eigen::Vector3d centerPos = Eigen::Vector3d::Zero();
@@ -68,10 +70,10 @@ void Domset::normalizePointCloud()
 
   // calculation the normalization scale
   const float avgDist = static_cast<float>(totalDist / numPoints);
-  std::cerr << "Total distance = " << totalDist << std::endl;
-  std::cerr << "Avg distance = " << avgDist << std::endl;
   normScale = 1.f / avgDist;
-  std::cerr << "Normalization Scale = " << normScale << std::endl;
+  LOG(_T("Total distance = %f"), totalDist);
+  LOG(_T("Avg distance = %f"), avgDist);
+  LOG(_T("Normalization Scale = %f"), normScale);
 
 // normalizing the distances on points
 #if DOMSET_USE_OPENMP
@@ -129,7 +131,7 @@ void Domset::voxelGridFilter(const float &sizeX, const float &sizeY, const float
 {
   if (sizeX <= 0.0f || sizeY <= 0.0f || sizeZ <= 0.0f)
   {
-    std::cerr << "Invalid voxel grid dimensions error.\n";
+    LOG(_T("error : Invalid voxel grid dimensions error"));;
     exit(0);
   }
 
@@ -164,16 +166,13 @@ void Domset::voxelGridFilter(const float &sizeX, const float &sizeY, const float
   size_t numVoxelY = static_cast<size_t>(ceil(maxPt.pos(1) - minPt.pos(1)) / sizeY);
   size_t numVoxelZ = static_cast<size_t>(ceil(maxPt.pos(2) - minPt.pos(2)) / sizeZ);
 
-  /* std::cout << "Max = " << maxPt.pos.transpose() << std::endl;
-  std::cout << "Min = " << minPt.pos.transpose() << std::endl;
-  std::cout << "Max - Min = " << (maxPt.pos - minPt.pos).transpose() << std::endl;
-  std::cout << "VoxelSize X = " << sizeX << std::endl;
-  std::cout << "VoxelSize Y = " << sizeY << std::endl;
-  std::cout << "VoxelSize Z = " << sizeZ << std::endl;
-  std::cout << "Number Voxel X = " << numVoxelX << std::endl;
-  std::cout << "Number Voxel Y = " << numVoxelY << std::endl;
-  std::cout << "Number Voxel Z = " << numVoxelZ << std::endl;
-  */
+
+  LOG(_T("VoxelSize X = %f"), sizeX);
+  LOG(_T("VoxelSize Y = %f"), sizeY);
+  LOG(_T("VoxelSize Z = %f"), sizeZ);
+  LOG(_T("Number Voxel X = %u"), numVoxelX);
+  LOG(_T("Number Voxel Y = %u"), numVoxelY);
+  LOG(_T("Number Voxel Z = %u"), numVoxelZ);
 
   /* adding points to the voxels */
   std::map<size_t, std::vector<size_t>> voxels;
@@ -241,25 +240,24 @@ void Domset::voxelGridFilter(const float &sizeX, const float &sizeY, const float
     }
   }
 
-  std::cerr << "New points = " << newPoints.size() << std::endl;
+  LOG(String::FormatString("Number of simplified points = %u", newPoints.size()));
   origPoints.clear();
   points.swap(origPoints);
   points.swap(newPoints);
-  std::cerr << "Number of points = " << points.size() << std::endl;
 } // voxelGridFilter
 
 Eigen::MatrixXf Domset::getSimilarityMatrix(std::map<size_t, size_t> &xId2vId)
 {
-  std::cout << "Generating Similarity Matrix " << std::endl;
+  LOG(_T("Generating Similarity Matrix"));
   const size_t numC = xId2vId.size();
   const size_t numP = points.size();
   if (numC == 0 || numP == 0)
   {
-    std::cerr << "Invalid Data\n";
+    LOG(_T("error : Invalid Data"));
     exit(0);
   }
   const float medianDist = getDistanceMedian(xId2vId);
-  std::cout << "Median dists = " << medianDist << std::endl;
+  LOG(_T("Median dists = %f"), medianDist);
   Eigen::MatrixXf simMat;
   simMat.resize(numC, numC);
 #if DOMSET_USE_OPENMP
@@ -307,7 +305,7 @@ float Domset::getDistanceMedian(const std::map<size_t, size_t> &xId2vId)
 
   if (xId2vId.empty())
   {
-    std::cerr << "No Views initialized \n";
+    LOG(_T("error : No Views initialized"));
     exit(0);
   }
 
@@ -336,7 +334,7 @@ void Domset::getAllDistances()
   const size_t numC = views.size();
   if (numC == 0)
   {
-    std::cerr << "No Views initialized \n";
+    LOG(_T("error : No Views initialized"));
     exit(0);
   }
   viewDists.resize(numC, numC);
@@ -403,7 +401,7 @@ void Domset::computeClustersAP(std::map<size_t, size_t> &xId2vId,
   const size_t numX = xId2vId.size();
   if (numX == 0)
   {
-    std::cout << "Invalid map size\n";
+    LOG(_T("error : Invalid map size"));
     exit(0);
   }
 
@@ -677,7 +675,6 @@ void Domset::clusterViews(std::map<size_t, size_t> &xId2vId, const size_t &minCl
                           const size_t &maxClusterSize, const size_t &clusterOverlap)
 {
   //  std::cout << "[ Clustering Views ] " << std::endl;
-  const size_t umC = views.size();
   kMinClusterSize = minClusterSize;
   kMaxClusterSize = maxClusterSize;
   kClusterOverlap = clusterOverlap;
@@ -723,8 +720,8 @@ void Domset::printClusters()
     }
     ss << "\n\n";
   }
-  std::cout << "Number of clusters = " << finalClusters.size() << std::endl;
-  std::cout << ss.str();
+  LOG(_T("Number of clusters = "), finalClusters.size());
+  LOG(_T("%s"), ss.str());
 }
 
 void Domset::exportToPLY(const std::string &plyFilename, bool exportPoints)
@@ -782,7 +779,7 @@ void Domset::exportToPLY(const std::string &plyFilename, bool exportPoints)
   std::ofstream plyFile(plyFilename);
   if (!plyFile.is_open())
   {
-    std::cout << "Cant open " << plyFilename << " file\n";
+    LOG(_T("Cant open %s file"), plyFilename);
   }
   else
   {

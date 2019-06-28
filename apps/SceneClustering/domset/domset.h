@@ -23,7 +23,6 @@
 
 // 3D Party
 #include "nanoflann.hpp"
-using namespace nanoflann;
 
 namespace nomoko
 {
@@ -60,7 +59,6 @@ public:
          const float &_kVoxelsize) : points(_points), views(_views),
                                      cameras(_cameras), kVoxelSize(_kVoxelsize)
   {
-    std::cout << " [ Dominant set clustering of views ] " << std::endl;
     computeInformation();
   }
 
@@ -91,8 +89,8 @@ public:
 private:
   std::vector<Point> points;
   std::vector<Point> origPoints;
-  std::vector<Camera> cameras;
   std::vector<View> views;
+  std::vector<Camera> cameras;
 
   Eigen::MatrixXf viewDists;
 
