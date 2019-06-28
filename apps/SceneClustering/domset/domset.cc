@@ -41,8 +41,8 @@ void Domset::normalizePointCloud()
 
   const size_t numResults(1);
   const size_t numPoints(points.size());
-  float totalDist = 0.0;
-  pcCentre.pos = Eigen::Vector3f::Zero();
+  double totalDist = 0.0;
+  Eigen::Vector3d centerPos = Eigen::Vector3d::Zero();
 #if DOMSET_USE_OPENMP
 #pragma omp parallel for
 #endif
@@ -60,11 +60,14 @@ void Domset::normalizePointCloud()
 #endif
     {
       totalDist += std::sqrt(out_dist_sq[1]);
-      pcCentre.pos += (p.pos / numPoints);
+      centerPos += (p.pos / numPoints).cast<double>();
     }
   }
+
+  pcCentre.pos = centerPos.cast<float>();
+
   // calculation the normalization scale
-  const float avgDist = totalDist / numPoints;
+  const float avgDist = static_cast<float>(totalDist / numPoints);
   std::cerr << "Total distance = " << totalDist << std::endl;
   std::cerr << "Avg distance = " << avgDist << std::endl;
   normScale = 1.f / avgDist;
