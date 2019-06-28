@@ -22,7 +22,7 @@
 #include "types.h"
 
 // 3D Party
-#include "nanoflann.hpp"
+#include "../../../libs/Math/nanoflann/nanoflann.hpp"
 
 namespace nomoko
 {
