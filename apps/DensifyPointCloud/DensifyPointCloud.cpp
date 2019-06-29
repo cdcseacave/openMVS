@@ -91,6 +91,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	unsigned nNumViews;
 	unsigned nMinViewsFuse;
 	unsigned nOptimize;
+	bool bFuse;
 	unsigned nEstimateColors;
 	unsigned nEstimateNormals;
 	boost::program_options::options_description config("Densify options");
@@ -103,6 +104,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		("number-views", boost::program_options::value(&nNumViews)->default_value(5), "number of views used for depth-map estimation (0 - all neighbor views available)")
 		("number-views-fuse", boost::program_options::value(&nMinViewsFuse)->default_value(3), "minimum number of images that agrees with an estimate during fusion in order to consider it inlier")
 		("optimize", boost::program_options::value(&nOptimize)->default_value(7), "filter used after depth-map estimation (0 - disabled, 1 - remove speckles, 2 - fill gaps, 4 - cross-adjust)")
+		("fuse", boost::program_options::value(&bFuse)->default_value(true), "fuse depth maps into a point cloud")
 		("estimate-colors", boost::program_options::value(&nEstimateColors)->default_value(2), "estimate the colors for the dense point-cloud")
 		("estimate-normals", boost::program_options::value(&nEstimateNormals)->default_value(0), "estimate the normals for the dense point-cloud")
 		("sample-mesh", boost::program_options::value(&OPT::fSampleMesh)->default_value(0.f), "uniformly samples points on a mesh (0 - disabled, <0 - number of points, >0 - sample density per square unit)")
@@ -178,6 +180,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	OPTDENSE::nNumViews = nNumViews;
 	OPTDENSE::nMinViewsFuse = nMinViewsFuse;
 	OPTDENSE::nOptimize = nOptimize;
+	OPTDENSE::bFuse = bFuse;
 	OPTDENSE::nEstimateColors = nEstimateColors;
 	OPTDENSE::nEstimateNormals = nEstimateNormals;
 	if (!bValidConfig)
@@ -261,7 +264,7 @@ int main(int argc, LPCTSTR* argv)
 		VERBOSE("Densifying point-cloud completed: %u points (%s)", scene.pointcloud.GetSize(), TD_TIMER_GET_FMT().c_str());
 	}
 
-	// save the final mesh
+	// save the final point cloud
 	const String baseFileName(MAKE_PATH_SAFE(Util::getFileFullName(OPT::strOutputFileName)));
 	scene.Save(baseFileName+_T(".mvs"), (ARCHIVE_TYPE)OPT::nArchiveType);
 	scene.pointcloud.Save(baseFileName+_T(".ply"));
