@@ -709,9 +709,9 @@ bool DepthMapsData::EstimateDepthMap(IIndex idxImage)
 		#if TD_VERBOSE != TD_VERBOSE_OFF
 		// save rough depth map as image
 		if (g_nVerbosityLevel > 4) {
-			ExportDepthMap(ComposeDepthFilePath(idxImage, "init.png"), depthData.depthMap);
-			ExportNormalMap(ComposeDepthFilePath(idxImage, "init.normal.png"), depthData.normalMap);
-			ExportPointCloud(ComposeDepthFilePath(idxImage, "init.ply"), *depthData.images.First().pImageData, depthData.depthMap, depthData.normalMap);
+			ExportDepthMap(ComposeDepthFilePath(scene.images[idxImage].ID, "init.png"), depthData.depthMap);
+			ExportNormalMap(ComposeDepthFilePath(scene.images[idxImage].ID, "init.normal.png"), depthData.normalMap);
+			ExportPointCloud(ComposeDepthFilePath(scene.images[idxImage].ID, "init.ply"), *depthData.images.First().pImageData, depthData.depthMap, depthData.normalMap);
 		}
 		#endif
 	}
@@ -762,9 +762,9 @@ bool DepthMapsData::EstimateDepthMap(IIndex idxImage)
 		#if TD_VERBOSE != TD_VERBOSE_OFF
 		// save rough depth map as image
 		if (g_nVerbosityLevel > 4) {
-			ExportDepthMap(ComposeDepthFilePath(idxImage, "rough.png"), depthData.depthMap);
-			ExportNormalMap(ComposeDepthFilePath(idxImage, "rough.normal.png"), depthData.normalMap);
-			ExportPointCloud(ComposeDepthFilePath(idxImage, "rough.ply"), *depthData.images.First().pImageData, depthData.depthMap, depthData.normalMap);
+			ExportDepthMap(ComposeDepthFilePath(scene.images[idxImage].ID, "rough.png"), depthData.depthMap);
+			ExportNormalMap(ComposeDepthFilePath(scene.images[idxImage].ID, "rough.normal.png"), depthData.normalMap);
+			ExportPointCloud(ComposeDepthFilePath(scene.images[idxImage].ID, "rough.ply"), *depthData.images.First().pImageData, depthData.depthMap, depthData.normalMap);
 		}
 		#endif
 	}
@@ -793,7 +793,7 @@ bool DepthMapsData::EstimateDepthMap(IIndex idxImage)
 		#if 1 && TD_VERBOSE != TD_VERBOSE_OFF
 		// save intermediate depth map as image
 		if (g_nVerbosityLevel > 4) {
-			const String path(ComposeDepthFilePath(image.pImageData-scene.images.Begin(), "iter")+String::ToString(iter));
+			const String path(ComposeDepthFilePath(image.pImageData->ID, "iter")+String::ToString(iter));
 			ExportDepthMap(path+".png", depthData.depthMap);
 			ExportNormalMap(path+".normal.png", depthData.normalMap);
 			ExportPointCloud(path+".ply", *depthData.images.First().pImageData, depthData.depthMap, depthData.normalMap);
@@ -1315,8 +1315,8 @@ bool DepthMapsData::FilterDepthMap(DepthData& depthDataRef, const IIndexArr& idx
 			}
 		}
 	}
-	if (!SaveDepthMap(ComposeDepthFilePath(imageRef.pImageData-scene.images.Begin(), "filtered.dmap"), newDepthMap) ||
-		!SaveConfidenceMap(ComposeDepthFilePath(imageRef.pImageData-scene.images.Begin(), "filtered.cmap"), newConfMap))
+	if (!SaveDepthMap(ComposeDepthFilePath(imageRef.pImageData->ID - scene.images.begin()->ID, "filtered.dmap"), newDepthMap) ||
+		!SaveConfidenceMap(ComposeDepthFilePath(imageRef.pImageData - scene.images.begin(), "filtered.cmap"), newConfMap))
 		return false;
 
 	#if TD_VERBOSE != TD_VERBOSE_OFF
@@ -1356,7 +1356,7 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, b
 		DepthData& depthData = arrDepthData[i];
 		if (!depthData.IsValid())
 			continue;
-		if (depthData.IncRef(ComposeDepthFilePath(i, "dmap")) == 0)
+		if (depthData.IncRef(ComposeDepthFilePath(scene.images[i].ID, "dmap")) == 0)
 			return;
 		ASSERT(!depthData.IsEmpty());
 		IndexScore& connection = connections.AddEmpty();
@@ -1580,7 +1580,7 @@ struct DenseDepthMapData {
 
 static void* DenseReconstructionEstimateTmp(void*);
 static void* DenseReconstructionFilterTmp(void*);
-bool Scene::DenseReconstruction()
+bool Scene::DenseReconstruction(bool bFuse)
 {
 	DenseDepthMapData data(*this);
 
@@ -1737,9 +1737,13 @@ bool Scene::DenseReconstruction()
 		data.progress.Release();
 	}
 
-	// fuse all depth-maps
+	// fuse all depth-maps if needed
+	if(!bFuse)
+		return true;
+
 	pointcloud.Release();
 	data.detphMaps.FuseDepthMaps(pointcloud, OPTDENSE::nEstimateColors == 2, OPTDENSE::nEstimateNormals == 2);
+
 	#if TD_VERBOSE != TD_VERBOSE_OFF
 	if (g_nVerbosityLevel > 2) {
 		// print number of points with 3+ views
@@ -1757,7 +1761,7 @@ bool Scene::DenseReconstruction()
 			default:
 				++nPoints3p;
 			}
-		}
+		}	
 		VERBOSE("Dense point-cloud composed of:\n\t%u points with 1- views\n\t%u points with 2 views\n\t%u points with 3+ views", nPoints1m, nPoints2, nPoints3p);
 	}
 	#endif
@@ -1768,6 +1772,7 @@ bool Scene::DenseReconstruction()
 		if (pointcloud.normals.IsEmpty() && OPTDENSE::nEstimateNormals == 1)
 			EstimatePointNormals(images, pointcloud);
 	}
+	
 	return true;
 } // DenseReconstruction
 /*----------------------------------------------------------------*/
@@ -1805,10 +1810,10 @@ void Scene::DenseReconstructionEstimate(void* pData)
 				break;
 			}
 			// try to load already compute depth-map for this image
-			if (File::access(ComposeDepthFilePath(idx, "dmap"))) {
+			if (File::access(ComposeDepthFilePath(images[idx].ID, "dmap"))) {
 				if (OPTDENSE::nOptimize & OPTDENSE::OPTIMIZE) {
-					if (!depthData.Load(ComposeDepthFilePath(idx, "dmap"))) {
-						VERBOSE("error: invalid depth-map '%s'", ComposeDepthFilePath(idx, "dmap").c_str());
+					if (!depthData.Load(ComposeDepthFilePath(images[idx].ID, "dmap"))) {
+						VERBOSE("error: invalid depth-map '%s'", ComposeDepthFilePath(images[idx].ID, "dmap").c_str());
 						exit(EXIT_FAILURE);
 					}
 					// optimize depth-map
@@ -1846,18 +1851,18 @@ void Scene::DenseReconstructionEstimate(void* pData)
 			#if TD_VERBOSE != TD_VERBOSE_OFF
 			// save depth map as image
 			if (g_nVerbosityLevel > 3)
-				ExportDepthMap(ComposeDepthFilePath(idx, "raw.png"), depthData.depthMap);
+				ExportDepthMap(ComposeDepthFilePath(images[idx].ID, "raw.png"), depthData.depthMap);
 			#endif
 			// apply filters
 			if (OPTDENSE::nOptimize & (OPTDENSE::REMOVE_SPECKLES)) {
 				TD_TIMER_START();
 				data.detphMaps.RemoveSmallSegments(depthData);
-				DEBUG_ULTIMATE("Depth-map %3u filtered: remove small segments (%s)", idx, TD_TIMER_GET_FMT().c_str());
+				DEBUG_ULTIMATE("Depth-map %3u filtered: remove small segments (%s)", images[idx].ID, TD_TIMER_GET_FMT().c_str());
 			}
 			if (OPTDENSE::nOptimize & (OPTDENSE::FILL_GAPS)) {
 				TD_TIMER_START();
 				data.detphMaps.GapInterpolation(depthData);
-				DEBUG_ULTIMATE("Depth-map %3u filtered: gap interpolation (%s)", idx, TD_TIMER_GET_FMT().c_str());
+				DEBUG_ULTIMATE("Depth-map %3u filtered: gap interpolation (%s)", images[idx].ID, TD_TIMER_GET_FMT().c_str());
 			}
 			// save depth-map
 			data.events.AddEventFirst(new EVTSaveDepthMap(evtImage.idxImage));
@@ -1870,12 +1875,12 @@ void Scene::DenseReconstructionEstimate(void* pData)
 			#if TD_VERBOSE != TD_VERBOSE_OFF
 			// save depth map as image
 			if (g_nVerbosityLevel > 2) {
-				ExportDepthMap(ComposeDepthFilePath(idx, "png"), depthData.depthMap);
-				ExportConfidenceMap(ComposeDepthFilePath(idx, "conf.png"), depthData.confMap);
-				ExportPointCloud(ComposeDepthFilePath(idx, "ply"), *depthData.images.First().pImageData, depthData.depthMap, depthData.normalMap);
+				ExportDepthMap(ComposeDepthFilePath(images[idx].ID, "png"), depthData.depthMap);
+				ExportConfidenceMap(ComposeDepthFilePath(images[idx].ID, "conf.png"), depthData.confMap);
+				ExportPointCloud(ComposeDepthFilePath(images[idx].ID, "ply"), *depthData.images.First().pImageData, depthData.depthMap, depthData.normalMap);
 				if (g_nVerbosityLevel > 4) {
-					ExportNormalMap(ComposeDepthFilePath(idx, "normal.png"), depthData.normalMap);
-					depthData.confMap.Save(ComposeDepthFilePath(idx, "conf.pfm"));
+					ExportNormalMap(ComposeDepthFilePath(images[idx].ID, "normal.png"), depthData.normalMap);
+					depthData.confMap.Save(ComposeDepthFilePath(images[idx].ID, "conf.pfm"));
 				}
 			}
 			#endif
@@ -1918,7 +1923,7 @@ void Scene::DenseReconstructionFilter(void* pData)
 				break;
 			}
 			// make sure all depth-maps are loaded
-			depthData.IncRef(ComposeDepthFilePath(idx, "dmap"));
+			depthData.IncRef(ComposeDepthFilePath(images[idx].ID, "dmap"));
 			const unsigned numMaxNeighbors(8);
 			IIndexArr idxNeighbors(0, depthData.neighbors.GetSize());
 			FOREACH(n, depthData.neighbors) {
@@ -1926,7 +1931,7 @@ void Scene::DenseReconstructionFilter(void* pData)
 				DepthData& depthDataPair = data.detphMaps.arrDepthData[idxView];
 				if (!depthDataPair.IsValid())
 					continue;
-				if (depthDataPair.IncRef(ComposeDepthFilePath(idxView, "dmap")) == 0) {
+				if (depthDataPair.IncRef(ComposeDepthFilePath(images[idxView].ID, "dmap")) == 0) {
 					// signal error and terminate
 					data.events.AddEventFirst(new EVTFail);
 					return;
@@ -1953,30 +1958,31 @@ void Scene::DenseReconstructionFilter(void* pData)
 		case EVT_ADJUSTDEPTHMAP: {
 			const EVTAdjustDepthMap& evtImage = *((EVTAdjustDepthMap*)(Event*)evt);
 			const IIndex idx = data.images[evtImage.idxImage];
+			const uint32_t globalID = images[idx].ID;
 			DepthData& depthData(data.detphMaps.arrDepthData[idx]);
 			ASSERT(depthData.IsValid());
 			data.sem.Wait();
 			// load filtered maps
-			if (depthData.IncRef(ComposeDepthFilePath(idx, "dmap")) == 0 ||
-				!LoadDepthMap(ComposeDepthFilePath(idx, "filtered.dmap"), depthData.depthMap) ||
-				!LoadConfidenceMap(ComposeDepthFilePath(idx, "filtered.cmap"), depthData.confMap))
+			if (depthData.IncRef(ComposeDepthFilePath(globalID, "dmap")) == 0 ||
+				!LoadDepthMap(ComposeDepthFilePath(globalID, "filtered.dmap"), depthData.depthMap) ||
+				!LoadConfidenceMap(ComposeDepthFilePath(globalID, "filtered.cmap"), depthData.confMap))
 			{
 				// signal error and terminate
 				data.events.AddEventFirst(new EVTFail);
 				return;
 			}
 			ASSERT(depthData.GetRef() == 1);
-			File::deleteFile(ComposeDepthFilePath(idx, "filtered.dmap").c_str());
-			File::deleteFile(ComposeDepthFilePath(idx, "filtered.cmap").c_str());
+			File::deleteFile(ComposeDepthFilePath(globalID, "filtered.dmap").c_str());
+			File::deleteFile(ComposeDepthFilePath(globalID, "filtered.cmap").c_str());
 			#if TD_VERBOSE != TD_VERBOSE_OFF
-			// save depth map as image
+			// save depth map as image and point cloud
 			if (g_nVerbosityLevel > 2) {
-				ExportDepthMap(ComposeDepthFilePath(idx, "filtered.png"), depthData.depthMap);
-				ExportPointCloud(ComposeDepthFilePath(idx, "filtered.ply"), *depthData.images.First().pImageData, depthData.depthMap, depthData.normalMap);
+				ExportDepthMap(ComposeDepthFilePath(globalID, "filtered.png"), depthData.depthMap);
+				ExportPointCloud(ComposeDepthFilePath(globalID, "filtered.ply"), *depthData.images.First().pImageData, depthData.depthMap, depthData.normalMap);
 			}
 			#endif
 			// save filtered depth-map for this image
-			depthData.Save(ComposeDepthFilePath(idx, "dmap"));
+			depthData.Save(ComposeDepthFilePath(globalID, "dmap"));
 			depthData.DecRef();
 			data.progress->operator++();
 			break; }

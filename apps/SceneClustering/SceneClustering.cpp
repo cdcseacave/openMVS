@@ -223,7 +223,7 @@ int main(int argc, LPCTSTR* argv)
 	std::map<uint32_t, uint32_t> viewBkwdReindex;
 
 	// We convert our data into the structure accepted by the Domset library
-	// and fills our reindexing maps.
+	// and fill our reindexing maps.
 	uint32_t currID = 0;
 	FOREACH(IdxC, scene.images) {
 		const auto & currImage = scene.images[IdxC];
@@ -277,8 +277,6 @@ int main(int argc, LPCTSTR* argv)
 		uint32_t localID = 0;
 		for (const auto inClusterID : cluster) {
 			const uint32_t globalID = viewBkwdReindex[inClusterID];
-			auto & image = scene.images[globalID];
-			image.ID = globalID; 
 			sceneCluster.images.Insert(scene.images[globalID]);
 			mapGlobalToLocal[globalID] = localID;
 			globalIDs.push_back(globalID);
@@ -286,7 +284,7 @@ int main(int argc, LPCTSTR* argv)
 		}
 
 		// Second, we iterate throught each track to identify and copy ones that belong to the cluster
-		// -> each view ID is remapped to their index in the Scene cluster   
+		// -> each view ID is remapped to its corresponding index in the Scene cluster   
 		FOREACH(IdxP, scene.pointcloud.points) {
 			const auto & currViewArr = scene.pointcloud.pointViews[IdxP];
 			PointCloud::ViewArr newViewArr;
@@ -314,7 +312,7 @@ int main(int argc, LPCTSTR* argv)
 		// Eventually the cluster is saved into its own file
 		LOG(_T("Saving cluster #%u"), i);
 		sceneCluster.Save(baseFileName + String::FormatString("_cluster_%04u.mvs", i), (ARCHIVE_TYPE)OPT::nArchiveType);
-		sceneCluster.pointcloud.Save(baseFileName + String::FormatString("_cluster_%u.ply", i));
+		sceneCluster.pointcloud.Save(baseFileName + String::FormatString("_cluster_%04u.ply", i));
 	}
 	
 	}

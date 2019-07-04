@@ -36,3 +36,4 @@ CMakeSettings.json
 .vscode/
 bin/
 binaries/
+openMVS_build/
