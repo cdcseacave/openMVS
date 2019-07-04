@@ -1738,39 +1738,39 @@ bool Scene::DenseReconstruction()
 	}
 
 	// fuse all depth-maps if needed
-	if(OPTDENSE::bFuse)
-	{
-		pointcloud.Release();
-		data.detphMaps.FuseDepthMaps(pointcloud, OPTDENSE::nEstimateColors == 2, OPTDENSE::nEstimateNormals == 2);
+	if(!OPTDENSE::bFuse)
+		return true;
 
-		#if TD_VERBOSE != TD_VERBOSE_OFF
-		if (g_nVerbosityLevel > 2) {
-			// print number of points with 3+ views
-			size_t nPoints1m(0), nPoints2(0), nPoints3p(0);
-			FOREACHPTR(pViews, pointcloud.pointViews) {
-				switch (pViews->GetSize())
-				{
-				case 0:
-				case 1:
-					++nPoints1m;
-					break;
-				case 2:
-					++nPoints2;
-					break;
-				default:
-					++nPoints3p;
-				}
+	pointcloud.Release();
+	data.detphMaps.FuseDepthMaps(pointcloud, OPTDENSE::nEstimateColors == 2, OPTDENSE::nEstimateNormals == 2);
+
+	#if TD_VERBOSE != TD_VERBOSE_OFF
+	if (g_nVerbosityLevel > 2) {
+		// print number of points with 3+ views
+		size_t nPoints1m(0), nPoints2(0), nPoints3p(0);
+		FOREACHPTR(pViews, pointcloud.pointViews) {
+			switch (pViews->GetSize())
+			{
+			case 0:
+			case 1:
+				++nPoints1m;
+				break;
+			case 2:
+				++nPoints2;
+				break;
+			default:
+				++nPoints3p;
 			}
-			VERBOSE("Dense point-cloud composed of:\n\t%u points with 1- views\n\t%u points with 2 views\n\t%u points with 3+ views", nPoints1m, nPoints2, nPoints3p);
-		}
-		#endif
+		}	
+		VERBOSE("Dense point-cloud composed of:\n\t%u points with 1- views\n\t%u points with 2 views\n\t%u points with 3+ views", nPoints1m, nPoints2, nPoints3p);
+	}
+	#endif
 
-		if (!pointcloud.IsEmpty()) {
-			if (pointcloud.colors.IsEmpty() && OPTDENSE::nEstimateColors == 1)
-				EstimatePointColors(images, pointcloud);
-			if (pointcloud.normals.IsEmpty() && OPTDENSE::nEstimateNormals == 1)
-				EstimatePointNormals(images, pointcloud);
-		}
+	if (!pointcloud.IsEmpty()) {
+		if (pointcloud.colors.IsEmpty() && OPTDENSE::nEstimateColors == 1)
+			EstimatePointColors(images, pointcloud);
+		if (pointcloud.normals.IsEmpty() && OPTDENSE::nEstimateNormals == 1)
+			EstimatePointNormals(images, pointcloud);
 	}
 	
 	return true;
