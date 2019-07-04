@@ -109,6 +109,7 @@ bool Scene::LoadInterface(const String & fileName)
 	size_t nTotalPixels(0);
 	ASSERT(!obj.images.empty());
 	images.Reserve((uint32_t)obj.images.size());
+	bool bHasGlobalID = false;
 	for (Interface::ImageArr::const_iterator it=obj.images.begin(); it!=obj.images.end(); ++it) {
 		const Interface::Image& image = *it;
 		const uint32_t ID(images.GetSize());
@@ -124,6 +125,10 @@ bool Scene::LoadInterface(const String & fileName)
 		imageData.platformID = image.platformID;
 		imageData.cameraID = image.cameraID;
 		imageData.ID = image.ID;
+
+		if(imageData.ID != NO_ID) {
+			bHasGlobalID = true; // One image has a global ID
+		}
 		// init camera
 		const Interface::Platform::Camera& camera = obj.platforms[image.platformID].cameras[image.cameraID];
 		if (camera.HasResolution()) {
@@ -140,6 +145,11 @@ bool Scene::LoadInterface(const String & fileName)
 		++nCalibratedImages;
 		nTotalPixels += imageData.width * imageData.height;
 		DEBUG_EXTRA("Image loaded %3u: %s", ID, Util::getFileNameExt(imageData.name).c_str());
+	}
+	if(!bHasGlobalID) {
+		FOREACH(ID, images) {
+			 images[ID].ID = ID;
+		}
 	}
 	if (images.GetSize() < 2)
 		return false;
@@ -361,13 +371,21 @@ bool Scene::Load(const String& fileName, bool bImport)
 	// init images
 	nCalibratedImages = 0;
 	size_t nTotalPixels(0);
+	bool bHasGlobalID = false;
 	FOREACH(ID, images) {
 		Image& imageData = images[ID];
 		if (imageData.poseID == NO_ID)
 			continue;
+		if (imageData.ID != NO_ID)
+			bHasGlobalID = true; // One image has a global ID
 		imageData.UpdateCamera(platforms);
 		++nCalibratedImages;
 		nTotalPixels += imageData.width * imageData.height;
+	}
+	if(!bHasGlobalID) { 
+		FOREACH(ID, images) {
+			 images[ID].ID = ID;
+		}
 	}
 	DEBUG_EXTRA("Scene loaded (%s):\n"
 				"\t%u images (%u calibrated) with a total of %.2f MPixels (%.2f MPixels/image)\n"
