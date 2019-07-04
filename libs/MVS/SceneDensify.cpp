@@ -1580,7 +1580,7 @@ struct DenseDepthMapData {
 
 static void* DenseReconstructionEstimateTmp(void*);
 static void* DenseReconstructionFilterTmp(void*);
-bool Scene::DenseReconstruction()
+bool Scene::DenseReconstruction(bool bFuse)
 {
 	DenseDepthMapData data(*this);
 
@@ -1738,7 +1738,7 @@ bool Scene::DenseReconstruction()
 	}
 
 	// fuse all depth-maps if needed
-	if(!OPTDENSE::bFuse)
+	if(!bFuse)
 		return true;
 
 	pointcloud.Release();

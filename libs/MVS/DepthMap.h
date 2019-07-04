@@ -98,7 +98,6 @@ extern unsigned nMinViewsFilterAdjust;
 extern unsigned nMinViewsTrustPoint;
 extern unsigned nNumViews;
 extern bool bFilterAdjust;
-extern bool bFuse;
 extern bool bAddCorners;
 extern float fViewMinScore;
 extern float fViewMinScoreRatio;
