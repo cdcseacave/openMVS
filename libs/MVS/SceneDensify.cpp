@@ -1315,8 +1315,8 @@ bool DepthMapsData::FilterDepthMap(DepthData& depthDataRef, const IIndexArr& idx
 			}
 		}
 	}
-	if (!SaveDepthMap(ComposeDepthFilePath(imageRef.pImageData->ID - scene.images.begin()->ID, "filtered.dmap"), newDepthMap) ||
-		!SaveConfidenceMap(ComposeDepthFilePath(imageRef.pImageData - scene.images.begin(), "filtered.cmap"), newConfMap))
+	if (!SaveDepthMap(ComposeDepthFilePath(imageRef.pImageData->ID, "filtered.dmap"), newDepthMap) ||
+		!SaveConfidenceMap(ComposeDepthFilePath(imageRef.pImageData->ID, "filtered.cmap"), newConfMap))
 		return false;
 
 	#if TD_VERBOSE != TD_VERBOSE_OFF
