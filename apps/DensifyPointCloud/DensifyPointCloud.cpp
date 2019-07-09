@@ -167,8 +167,8 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		OPT::strOutputFileName = Util::getFileFullName(OPT::strInputFileName) + _T("_dense.mvs");
 
 	// init dense options
-	if (!OPT::strDenseConfigFileName.IsEmpty() && !Util::isFullPath(OPT::strDenseConfigFileName))
-		OPT::strDenseConfigFileName = MAKE_PATH(OPT::strDenseConfigFileName);
+	if (!OPT::strDenseConfigFileName.IsEmpty())
+		OPT::strDenseConfigFileName = MAKE_PATH_SAFE(OPT::strDenseConfigFileName);
 	OPTDENSE::init();
 	const bool bValidConfig(OPTDENSE::oConfig.Load(OPT::strDenseConfigFileName));
 	OPTDENSE::update();
@@ -180,7 +180,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	OPTDENSE::nOptimize = nOptimize;
 	OPTDENSE::nEstimateColors = nEstimateColors;
 	OPTDENSE::nEstimateNormals = nEstimateNormals;
-	if (!bValidConfig)
+	if (!bValidConfig && !OPT::strDenseConfigFileName.IsEmpty())
 		OPTDENSE::oConfig.Save(OPT::strDenseConfigFileName);
 
 	// initialize global options
