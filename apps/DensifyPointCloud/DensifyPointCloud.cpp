@@ -167,7 +167,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		OPT::strOutputFileName = Util::getFileFullName(OPT::strInputFileName) + _T("_dense.mvs");
 
 	// init dense options
-	if (!Util::isFullPath(OPT::strDenseConfigFileName))
+	if (!OPT::strDenseConfigFileName.IsEmpty() && !Util::isFullPath(OPT::strDenseConfigFileName))
 		OPT::strDenseConfigFileName = MAKE_PATH(OPT::strDenseConfigFileName);
 	OPTDENSE::init();
 	const bool bValidConfig(OPTDENSE::oConfig.Load(OPT::strDenseConfigFileName));
