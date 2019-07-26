@@ -876,6 +876,7 @@ bool MeshTexture::FaceOutlierDetection(FaceDataArr& faceDatas, float thOutlier) 
 // backup variables before global seam leveling
 void MeshTexture::BkpTexture()
 {
+<<<<<<< HEAD
 
 	// create backup directory
 	#if defined(_WIN32)
@@ -883,6 +884,10 @@ void MeshTexture::BkpTexture()
 	#else
   if (mkdir("atlas_backup", S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH) == -1) // can be used on non-Windows
 	#endif
+=======
+	// create backup directory
+	if (mkdir("atlas_backup", S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH) == -1)
+>>>>>>> 40de3b1a39c663c6725fb03d1290c34c6d426b9a
 	{
 		if( errno == EEXIST ) {
 			// alredy exists
