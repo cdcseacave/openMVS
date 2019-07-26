@@ -39,6 +39,9 @@
 
 #include <fstream>
 #include <iostream>
+#ifdef defined(_WIN32) || defined(WIN32)
+#include <direct.h>
+#endif
 
 using namespace MVS;
 using namespace std;
@@ -878,7 +881,7 @@ void MeshTexture::BkpTexture()
 {
 
 	// create backup directory
-	#if defined(_WIN32)
+	#if (defined(_WIN32) || defined(WIN32))
   if (_mkdir("atlas_backup") == -1) // can be used on Windows
 	#else
   if (mkdir("atlas_backup", S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH) == -1) // can be used on non-Windows
