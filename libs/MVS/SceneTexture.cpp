@@ -29,8 +29,6 @@
 *      containing it.
 */
 
-// THIS IS A TEST
-
 #include "Common.h"
 #include "Scene.h"
 #include "RectsBinPack.h"
@@ -881,10 +879,10 @@ bool MeshTexture::FaceOutlierDetection(FaceDataArr& faceDatas, float thOutlier) 
 // backup variables before global seam leveling
 void MeshTexture::BkpTexture()
 {
-
 	// create backup directory
 	#if (defined(_WIN32) || defined(WIN32))
-  if (_mkdir("atlas_backup") == -1) // can be used on Windows
+	wstring folder = L"atlas_backup";
+  if (CreateDirectory(folder.c_str(), NULL) == -1) // can be used on Windows
 	#else
   if (mkdir("atlas_backup", S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH) == -1) // can be used on non-Windows
 	#endif
