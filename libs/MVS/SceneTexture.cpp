@@ -44,8 +44,6 @@
 #endif
 
 using namespace MVS;
-using namespace std;
-
 
 // D E F I N E S ///////////////////////////////////////////////////
 
@@ -896,31 +894,31 @@ void MeshTexture::BkpTexture()
 		}
 	}
 
-	ofstream ofscomponents("atlas_backup/components");
+	std::ofstream ofscomponents("atlas_backup/components");
 	{
 		boost::archive::text_oarchive oa(ofscomponents);
 		oa << components;
 	}
 
-	ofstream ofsmapIdxPatch("atlas_backup/mapIdxPatch");
+	std::ofstream ofsmapIdxPatch("atlas_backup/mapIdxPatch");
 	{
 		boost::archive::text_oarchive oa(ofsmapIdxPatch);
 		oa << mapIdxPatch;
 	}
 
-	ofstream ofsseamVertices("atlas_backup/seamVertices");
+	std::ofstream ofsseamVertices("atlas_backup/seamVertices");
 	{
 		boost::archive::text_oarchive oa(ofsseamVertices);
 		oa << seamVertices;
 	}
 
-	ofstream ofstexturePatches("atlas_backup/texturePatches");
+	std::ofstream ofstexturePatches("atlas_backup/texturePatches");
 	{
 		boost::archive::text_oarchive oa(ofstexturePatches);
 		oa << texturePatches;
 	}
 
-	ofstream ofsscene("atlas_backup/scene");
+	std::ofstream ofsscene("atlas_backup/scene");
 	{
 		boost::archive::text_oarchive oa(ofsscene);
 		oa << scene;
@@ -2080,14 +2078,14 @@ void MeshTexture::GenerateTexture(bool bGlobalSeamLeveling, bool bLocalSeamLevel
 
 		// backup patches/atlas
 		if(reTexture ==0){
-			ofstream ofsrects("atlas_backup/rects");
+			std::ofstream ofsrects("atlas_backup/rects");
 			// save data to archive
 			{
 				boost::archive::text_oarchive oa(ofsrects);
 				oa << rects;
 			}
 
-			ofstream ofstexturePatchesFINAL("atlas_backup/texturePatchesFINAL");
+			std::ofstream ofstexturePatchesFINAL("atlas_backup/texturePatchesFINAL");
 			{
 				boost::archive::text_oarchive oa(ofstexturePatchesFINAL);
 				// write class instance to archive
