@@ -40,7 +40,7 @@
 #include <fstream>
 #include <iostream>
 #ifdef defined(_WIN32) || defined(WIN32)
-#include <direct.h>
+#include <windows.h>
 #endif
 
 using namespace MVS;
