@@ -179,7 +179,7 @@ bool Scene::LoadInterface(const String & fileName)
 		}
 		if (!obj.verticesColor.empty()) {
 			ASSERT(obj.vertices.size() == obj.verticesColor.size());
-			pointcloud.colors.CopyOf((const Pixel8U*)&obj.verticesColor[0].c, obj.vertices.size());
+			pointcloud.colors.CopyOf((const Pixel32F*)&obj.verticesColor[0].c, obj.vertices.size());
 		}
 	}
 

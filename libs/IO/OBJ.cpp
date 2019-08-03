@@ -23,7 +23,7 @@ using namespace SEACAVE;
 
 // S T R U C T S ///////////////////////////////////////////////////
 
-ObjModel::MaterialLib::Material::Material(const Image8U3& _diffuse_map, const Color& _Kd)
+ObjModel::MaterialLib::Material::Material(const Image32F3& _diffuse_map, const Color& _Kd)
 	:
 	diffuse_map(_diffuse_map),
 	Kd(_Kd)
@@ -72,7 +72,8 @@ bool ObjModel::MaterialLib::Save(const String& prefix, bool texLossless) const
 		if (mat.diffuse_map.empty())
 			continue;
 		if (mat.diffuse_name.IsEmpty())
-			const_cast<String&>(mat.diffuse_name) = name+"_"+mat.name+"_map_Kd."+(texLossless?"png":"jpg");
+			const_cast<String&>(mat.diffuse_name) = name+"_"+mat.name+"_map_Kd."+("exr");
+			//const_cast<String&>(mat.diffuse_name) = name+"_"+mat.name+"_map_Kd."+(texLossless?"png":"jpg");
 		out << "map_Kd " << mat.diffuse_name << "\n";
 		const bool bRet(mat.diffuse_map.Save(pathName+mat.diffuse_name));
 		#ifdef OBJ_USE_OPENMP

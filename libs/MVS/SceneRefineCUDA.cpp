@@ -1950,7 +1950,7 @@ public:
 	// store necessary data about a view
 	struct View {
 		Image32F imageHost; // store temporarily the image pixels
-		Image8U::Size size;
+		Image32F::Size size;
 		CUDA::ArrayRT16F image;
 		CUDA::MemDevice depthMap;
 		CUDA::MemDevice faceMap;
@@ -1966,10 +1966,10 @@ public:
 		Point3f C;
 		Matrix3x3f K;
 		Matrix3x3f invK;
-		Image8U::Size size;
+		Image32F::Size size;
 
 		inline CameraCUDA() {}
-		inline CameraCUDA(const Camera& camera, const Image8U::Size& _size) : P(camera.P), R(camera.R), C(camera.C), K(camera.K), invK(camera.GetInvK()), size(_size) {}
+		inline CameraCUDA(const Camera& camera, const Image32F::Size& _size) : P(camera.P), R(camera.R), C(camera.C), K(camera.K), invK(camera.GetInvK()), size(_size) {}
 	};
 
 
@@ -1995,15 +1995,15 @@ public:
 
 	void ProjectMesh(
 		const CameraFaces& cameraFaces,
-		const Camera& camera, const Image8U::Size& size, uint32_t idxImage);
+		const Camera& camera, const Image32F::Size& size, uint32_t idxImage);
 	void ProcessPair(uint32_t idxImageA, uint32_t idxImageB);
 	void ImageMeshWarp(
-		const Camera& cameraA, const Camera& cameraB, const Image8U::Size& size,
+		const Camera& cameraA, const Camera& cameraB, const Image32F::Size& size,
 		uint32_t idxImageA, uint32_t idxImageB);
-	void ComputeLocalVariance(const CUDA::ArrayRT16F& image, const Image8U::Size& size,
+	void ComputeLocalVariance(const CUDA::ArrayRT16F& image, const Image32F::Size& size,
 		CUDA::MemDevice& imageMean, CUDA::MemDevice& imageVar);
-	void ComputeLocalZNCC(const Image8U::Size& size);
-	void ComputePhotometricGradient(const Camera& cameraA, const Camera& cameraB, const Image8U::Size& size,
+	void ComputeLocalZNCC(const Image32F::Size& size);
+	void ComputePhotometricGradient(const Camera& cameraA, const Camera& cameraB, const Image32F::Size& size,
 		uint32_t idxImageA, uint32_t idxImageB, uint32_t numVertices, float RegularizationScale);
 	void ComputeSmoothnessGradient(uint32_t numVertices);
 	void CombineGradients(uint32_t numVertices);
@@ -2220,12 +2220,12 @@ bool MeshRefineCUDA::InitImages(float scale, float sigma)
 		return false;
 	#endif
 	// init GPU memory
-	Image8U::Size maxSize(0,0);
+	Image32F::Size maxSize(0,0);
 	FOREACH(idxImage, views) {
 		View& view = views[idxImage];
 		if (view.imageHost.empty())
 			continue;
-		Image8U::Size& size(view.size);
+		Image32F::Size& size(view.size);
 		size = view.imageHost.size();
 		reportCudaError(view.image.Reset(size, CUDA_ARRAY3D_SURFACE_LDST));
 		reportCudaError(view.image.SetData(cvtImage<float,hfloat>(view.imageHost)));
@@ -2548,7 +2548,7 @@ void MeshRefineCUDA::ScoreMesh(float* gradients)
 // project mesh to the given camera plane
 void MeshRefineCUDA::ProjectMesh(
 	const CameraFaces& cameraFaces,
-	const Camera& camera, const Image8U::Size& size, uint32_t idxImage)
+	const Camera& camera, const Image32F::Size& size, uint32_t idxImage)
 {
 	View& view = views[idxImage];
 	// init depth-map
@@ -2594,7 +2594,7 @@ void MeshRefineCUDA::ProcessPair(uint32_t idxImageA, uint32_t idxImageB)
 	const Image& imageDataA = images[idxImageA];
 	ASSERT(imageDataA.IsValid());
 	const Camera& cameraA = imageDataA.camera;
-	const Image8U::Size& sizeA(views[idxImageA].size);
+	const Image32F::Size& sizeA(views[idxImageA].size);
 	// fetch view B data
 	const Image& imageDataB = images[idxImageB];
 	ASSERT(imageDataB.IsValid());
@@ -2612,7 +2612,7 @@ void MeshRefineCUDA::ProcessPair(uint32_t idxImageA, uint32_t idxImageB)
 // project image from view B to view A through the mesh;
 // the projected image is stored in imageA
 void MeshRefineCUDA::ImageMeshWarp(
-	const Camera& cameraA, const Camera& cameraB, const Image8U::Size& size,
+	const Camera& cameraA, const Camera& cameraB, const Image32F::Size& size,
 	uint32_t idxImageA, uint32_t idxImageB)
 {
 	// set image texture
@@ -2629,7 +2629,7 @@ void MeshRefineCUDA::ImageMeshWarp(
 	#if 0
 	// debug view
 	Image16F _imageAB(size);
-	Image8U _mask(size);
+	Image32F _mask(size);
 	imageAB.GetData(_imageAB);
 	mask.GetData(_mask);
 	Image32F __imageAB(cvtImage<hfloat,float>(_imageAB));
@@ -2637,7 +2637,7 @@ void MeshRefineCUDA::ImageMeshWarp(
 }
 
 // compute local variance for each image pixel
-void MeshRefineCUDA::ComputeLocalVariance(const CUDA::ArrayRT16F& image, const Image8U::Size& size,
+void MeshRefineCUDA::ComputeLocalVariance(const CUDA::ArrayRT16F& image, const Image32F::Size& size,
 	CUDA::MemDevice& imageMean, CUDA::MemDevice& imageVar)
 {
 	surfImageRef.Bind(image);
@@ -2664,7 +2664,7 @@ void MeshRefineCUDA::ComputeLocalVariance(const CUDA::ArrayRT16F& image, const I
 }
 
 // compute local ZNCC and its gradient for each image pixel
-void MeshRefineCUDA::ComputeLocalZNCC(const Image8U::Size& size)
+void MeshRefineCUDA::ComputeLocalZNCC(const Image32F::Size& size)
 {
 	reportCudaError(kernelComputeImageCov(size,
 		imageMeanA,
@@ -2704,7 +2704,7 @@ void MeshRefineCUDA::ComputeLocalZNCC(const Image8U::Size& size)
 }
 
 // compute the photometric gradient for all vertices seen by an image pair
-void MeshRefineCUDA::ComputePhotometricGradient(const Camera& cameraA, const Camera& cameraB, const Image8U::Size& size,
+void MeshRefineCUDA::ComputePhotometricGradient(const Camera& cameraA, const Camera& cameraB, const Image32F::Size& size,
 	uint32_t idxImageA, uint32_t idxImageB, uint32_t numVertices, float RegularizationScale)
 {
 	// compute photometric gradient for all visible vertices
@@ -2758,7 +2758,7 @@ void MeshRefineCUDA::ComputeSmoothnessGradient(uint32_t numVertices)
 		numVertices,
 		uint8_t(1)
 	));
-	#if 0		
+	#if 0
 	// debug view
 	Point3fArr _smoothGrad1(numVertices);
 	Point3fArr _smoothGrad2(numVertices);
@@ -2793,7 +2793,7 @@ void MeshRefineCUDA::CombineGradients(uint32_t numVertices)
 			elasticity
 		));
 	}
-	#if 0		
+	#if 0
 	// debug view
 	Point3fArr _photoGrad(numVertices);
 	photoGrad.GetData(_photoGrad);

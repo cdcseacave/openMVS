@@ -153,7 +153,7 @@ public:
 	static bool IsDepthSimilar(const DepthMap& depthMap, const Point2f& pt, Depth z);
 	static void ProjectMesh(
 		const Mesh::VertexArr& vertices, const Mesh::FaceArr& faces, const CameraFaces& cameraFaces,
-		const Camera& camera, const Image8U::Size& size,
+		const Camera& camera, const Image32F::Size& size,
 		DepthMap& depthMap, FaceMap& faceMap, BaryMap& baryMap);
 	static void ImageMeshWarp(
 		const DepthMap& depthMapA, const Camera& cameraA,
@@ -750,7 +750,7 @@ bool MeshRefine::IsDepthSimilar(const DepthMap& depthMap, const Point2f& pt, Dep
 // project mesh to the given camera plane
 void MeshRefine::ProjectMesh(
 	const Mesh::VertexArr& vertices, const Mesh::FaceArr& faces, const CameraFaces& cameraFaces,
-	const Camera& camera, const Image8U::Size& size,
+	const Camera& camera, const Image32F::Size& size,
 	DepthMap& depthMap, FaceMap& faceMap, BaryMap& baryMap)
 {
 	// init view data

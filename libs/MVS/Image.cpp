@@ -63,7 +63,7 @@ IMAGEPTR Image::ReadImageHeader(const String& fileName)
 } // ReadImageHeader
 /*----------------------------------------------------------------*/
 
-IMAGEPTR Image::ReadImage(const String& fileName, Image8U3& image)
+IMAGEPTR Image::ReadImage(const String& fileName, Image32F3& image)
 {
 	IMAGEPTR pImage(OpenImage(fileName));
 	if (pImage != NULL && !ReadImage(pImage, image))
@@ -72,14 +72,15 @@ IMAGEPTR Image::ReadImage(const String& fileName, Image8U3& image)
 } // ReadImage
 /*----------------------------------------------------------------*/
 
-bool Image::ReadImage(IMAGEPTR pImage, Image8U3& image)
+bool Image::ReadImage(IMAGEPTR pImage, Image32F3& image)
 {
 	if (FAILED(pImage->ReadHeader())) {
 		LOG("error: failed loading image header");
 		return false;
 	}
 	image.create(pImage->GetHeight(), pImage->GetWidth());
-	if (FAILED(pImage->ReadData(image.data, PF_R8G8B8, 3, (CImage::Size)image.step))) {
+	if (FAILED(pImage->ReadData(image.data, PF_R32G32B32, 12, (CImage::Size)image.step))) {
+	//if (FAILED(pImage->ReadData(image.data, PF_R8G8B8, 3, (CImage::Size)image.step))) {
 		LOG("error: failed loading image data");
 		return false;
 	}
@@ -166,16 +167,16 @@ unsigned Image::RecomputeMaxResolution(unsigned& level, unsigned minImageSize, u
 	IMAGEPTR pImage(ReadImageHeader(name));
 	if (pImage == NULL) {
 		// something went wrong, use the current known size (however it will most probably fail later)
-		return Image8U3::computeMaxResolution(width, height, level, minImageSize, maxImageSize);
+		return Image32F3::computeMaxResolution(width, height, level, minImageSize, maxImageSize);
 	}
 	// re-compute max image size
-	return Image8U3::computeMaxResolution(pImage->GetWidth(), pImage->GetHeight(), level, minImageSize, maxImageSize);
+	return Image32F3::computeMaxResolution(pImage->GetWidth(), pImage->GetHeight(), level, minImageSize, maxImageSize);
 } // RecomputeMaxResolution
 /*----------------------------------------------------------------*/
 
 
 // compute the camera extrinsics from the platform pose and the relative camera pose to the platform
-Camera Image::GetCamera(const PlatformArr& platforms, const Image8U::Size& resolution) const
+Camera Image::GetCamera(const PlatformArr& platforms, const Image32F::Size& resolution) const
 {
 	ASSERT(platformID != NO_ID);
 	ASSERT(cameraID != NO_ID);
@@ -193,7 +194,7 @@ Camera Image::GetCamera(const PlatformArr& platforms, const Image8U::Size& resol
 } // GetCamera
 void Image::UpdateCamera(const PlatformArr& platforms)
 {
-	camera = GetCamera(platforms, Image8U::Size(width, height));
+	camera = GetCamera(platforms, Image32F::Size(width, height));
 } // UpdateCamera
 // computes camera's field of view for the given direction
 REAL Image::ComputeFOV(int dir) const

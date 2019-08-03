@@ -361,7 +361,7 @@ bool Scene::Open(LPCTSTR fileName, LPCTSTR meshFileName)
 		image.SetImage(scene.mesh.textureDiffuse);
 		scene.mesh.textureDiffuse.release();
 		#else // preserve texture, used only to be able to export the mesh
-		Image8U3 textureDiffuse;
+		Image32F3 textureDiffuse;
 		cv::flip(scene.mesh.textureDiffuse, textureDiffuse, 0);
 		image.SetImage(textureDiffuse);
 		#endif

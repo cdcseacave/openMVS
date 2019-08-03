@@ -1459,7 +1459,7 @@ bool Mesh::SavePLY(const String& fileName, const cList<String>& comments, bool b
 	// export texture file name as comment if needed
 	String textureFileName;
 	if (!faceTexcoords.IsEmpty() && !textureDiffuse.empty()) {
-		textureFileName = Util::getFileFullName(fileName)+_T(".png");
+		textureFileName = Util::getFileFullName(fileName)+_T(".exr");
 		ply.append_comment((_T("TextureFile ")+Util::getFileNameExt(textureFileName)).c_str());
 	}
 
@@ -2221,16 +2221,16 @@ static int ImproveVertexValence(Polyhedron& p, int valence_mode=2)
 
 static void UpdateMeshData(Polyhedron& p);
 
-// Description: 
+// Description:
 //  It iterates through all the mesh vertices and it tries to fix degenerate triangles.
 //  There are conditions that check for large and small angles.
 // Parameters:
-//  - degenerateAngleDeg 
+//  - degenerateAngleDeg
 //     - for large angles: if an angle is bigger than degenerateAngleDeg.
 //     - a good values to use is typically 170
-//  - collapseRatio 
+//  - collapseRatio
 //     - for small angles: given the corresponding edges (a,b,c) in all permutations, if (a/b < collapseRatio) & (a/c < collapseRatio)
-//     - a good value to use is 0.1 
+//     - a good value to use is 0.1
 static int FixDegeneracy(Polyhedron& p, double collapseRatio, double degenerateAngleDeg)
 {
 	DEBUG_LEVEL(3, "Fix degeneracy: %g collapse-ratio, %g degenerate-angle", collapseRatio, degenerateAngleDeg);
@@ -2440,7 +2440,7 @@ static void Smooth(Polyhedron& p, double delta, int mode=0)
 }
 
 
-// Description: 
+// Description:
 // - The goal of this method is to ensure that all the edges of the mesh are within the interval [epsilonMin,epsilonMax].
 //   In order to do so, edge collapses and edge split operations are performed.
 // - The method also attempts to fix degeneracies by invoking FixDegeneracy(collapseRatio,degenerate_angle_deg) and performs some local smoothing, based on the operating mode.
@@ -2451,7 +2451,7 @@ static void Smooth(Polyhedron& p, double delta, int mode=0)
 //          1 - fixDegeneracy=Yes smoothing=Yes; (default)
 //         10 - fixDegeneracy=Yes smoothing=No;
 // - max_iter (default=30) - maximum number of iterations to be performed; since there is no guarantee that one operations (such as a collapse, for example)
-//   will not in turn generate new degeneracies, operations are being performed on the mesh in an iterative fashion. 
+//   will not in turn generate new degeneracies, operations are being performed on the mesh in an iterative fashion.
 static void EnsureEdgeSize(Polyhedron& p, double epsilonMin, double epsilonMax, double collapseRatio, double degenerate_angle_deg, int mode, int max_iters, int comp_size_threshold)
 {
 	if (mode>0)
@@ -2546,7 +2546,7 @@ static void EnsureEdgeSize(Polyhedron& p, double epsilonMin, double epsilonMax, 
 		ComputeStatsEdge(p, edge);
 		VERBOSE("Edge size in [%g, %g] (requested in [%g, %g]): %d ops, %d iters", edge.min, edge.max, epsilonMin, epsilonMax, total_no_ops, iters);
 	}
-	#endif	
+	#endif
 }
 
 static void ComputeVertexNormals(Polyhedron& p)
@@ -2579,7 +2579,7 @@ static std::vector< std::pair<Vertex*, int> > GetRingNeighbourhood(Vertex& v, in
 	std::queue<Vertex*> elems;
 	std::vector< std::pair<Vertex*, int> > result;
 
-	// add base level	
+	// add base level
 	elems.push(&v);
 	neigh_map[&v]=0;
 
@@ -2690,7 +2690,7 @@ static void UpdateMeshData(Polyhedron& p)
 	// compute vertex normal
 	ComputeVertexNormals(p);
 	#if ROBUST_NORMALS>0
-	// compute robust vertex normal		
+	// compute robust vertex normal
 	for (Vertex_iterator vi=p.vertices_begin(); vi!=p.vertices_end(); vi++)
 		ComputeVertexRobustNormal(*vi, ROBUST_NORMALS);
 	#endif
@@ -2709,7 +2709,7 @@ static void UpdateMeshData(Polyhedron& p)
 		ComputeVertexLaplacianDeriv(*vi);
 	}
 
-	// set border edges	
+	// set border edges
 	for (Halfedge_iterator hi=p.border_halfedges_begin(); hi!=p.halfedges_end(); hi++)
 		hi->vertex()->setBorder();
 }
@@ -2729,7 +2729,7 @@ public:
 		typedef typename HDS::Vertex::Point Point;
 		CGAL::Polyhedron_incremental_builder_3<HDS> B(hds, false);
 		B.begin_surface(vertices.GetSize(), faces.GetSize());
-		// add the vertices		
+		// add the vertices
 		FOREACH(i, vertices) {
 			const Mesh::Vertex& v = vertices[i];
 			B.add_vertex(Point(v.x, v.y, v.z));
@@ -3540,16 +3540,16 @@ void Mesh::Project(const Camera& camera, DepthMap& depthMap) const
 	for (const Face& facet: faces)
 		rasterer.Project(facet);
 }
-void Mesh::Project(const Camera& camera, DepthMap& depthMap, Image8U3& image) const
+void Mesh::Project(const Camera& camera, DepthMap& depthMap, Image32F3& image) const
 {
 	ASSERT(!faceTexcoords.IsEmpty() && !textureDiffuse.empty());
 	struct RasterMesh : TRasterMesh<RasterMesh> {
 		typedef TRasterMesh<RasterMesh> Base;
 		const Mesh& mesh;
-		Image8U3& image;
+		Image32F3& image;
 		FIndex idxFaceTex;
 		TexCoord xt;
-		RasterMesh(const Mesh& _mesh, const Camera& _camera, DepthMap& _depthMap, Image8U3& _image)
+		RasterMesh(const Mesh& _mesh, const Camera& _camera, DepthMap& _depthMap, Image32F3& _image)
 			: Base(_mesh.vertices, _camera, _depthMap), mesh(_mesh), image(_image) {}
 		inline void Clear() {
 			Base::Clear();
@@ -3609,16 +3609,16 @@ void Mesh::ProjectOrtho(const Camera& camera, DepthMap& depthMap) const
 	for (const Face& facet: faces)
 		rasterer.Project(facet);
 }
-void Mesh::ProjectOrtho(const Camera& camera, DepthMap& depthMap, Image8U3& image) const
+void Mesh::ProjectOrtho(const Camera& camera, DepthMap& depthMap, Image32F3& image) const
 {
 	ASSERT(!faceTexcoords.IsEmpty() && !textureDiffuse.empty());
 	struct RasterMesh : TRasterMesh<RasterMesh> {
 		typedef TRasterMesh<RasterMesh> Base;
 		const Mesh& mesh;
-		Image8U3& image;
+		Image32F3& image;
 		FIndex idxFaceTex;
 		TexCoord xt;
-		RasterMesh(const Mesh& _mesh, const Camera& _camera, DepthMap& _depthMap, Image8U3& _image)
+		RasterMesh(const Mesh& _mesh, const Camera& _camera, DepthMap& _depthMap, Image32F3& _image)
 			: Base(_mesh.vertices, _camera, _depthMap), mesh(_mesh), image(_image) {}
 		inline void Clear() {
 			Base::Clear();
@@ -3661,7 +3661,7 @@ void Mesh::ProjectOrtho(const Camera& camera, DepthMap& depthMap, Image8U3& imag
 	}
 }
 // assuming the mesh is properly oriented, ortho-project it to a camera looking from top to down
-void Mesh::ProjectOrthoTopDown(unsigned resolution, Image8U3& image, Image8U& mask, Point3& center) const
+void Mesh::ProjectOrthoTopDown(unsigned resolution, Image32F3& image, Image32F& mask, Point3& center) const
 {
 	ASSERT(!IsEmpty() && !textureDiffuse.empty());
 	// initialize camera

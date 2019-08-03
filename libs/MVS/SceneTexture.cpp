@@ -143,11 +143,11 @@ typedef int MatIdx;
 typedef Eigen::Triplet<float,MatIdx> MatEntry;
 typedef Eigen::SparseMatrix<float,Eigen::ColMajor,MatIdx> SparseMat;
 
-enum Mask {
-	empty = 0,
-	border = 128,
-	interior = 255
-};
+// enum Mask {
+// 	empty = 0,
+// 	border = 128,
+// 	interior = 255
+// };
 
 struct MeshTexture {
 	// used to render the surface to a view camera
@@ -334,10 +334,10 @@ struct MeshTexture {
 	typedef Sampler::Linear<float> Sampler;
 	struct SampleImage {
 		AccumColor accumColor;
-		const Image8U3& image;
+		const Image32F3& image;
 		const Sampler sampler;
 
-		inline SampleImage(const Image8U3& _image) : image(_image), sampler() {}
+		inline SampleImage(const Image32F3& _image) : image(_image), sampler() {}
 		// sample the edge with linear weights
 		void AddEdge(const TexCoord& p0, const TexCoord& p1) {
 			const TexCoord p01(p1 - p0);
@@ -381,27 +381,27 @@ struct MeshTexture {
 	// used to compute the coverage of a texture patch
 	struct RasterPatchCoverageData {
 		const TexCoord* tri;
-		Image8U& image;
+		Image32F& image;
 
-		inline RasterPatchCoverageData(Image8U& _image) : image(_image) {}
+		inline RasterPatchCoverageData(Image32F& _image) : image(_image) {}
 		inline void operator()(const ImageRef& pt) {
 			ASSERT(image.isInside(pt));
-			image(pt) = interior;
+			image(pt) = 1.f;
 		}
 	};
 
 	// used to draw the average edge color of a texture patch
 	struct RasterPatchMeanEdgeData {
 		Image32F3& image;
-		Image8U& mask;
+		Image32F& mask;
 		const Image32F3& image0;
-		const Image8U3& image1;
+		const Image32F3& image1;
 		const TexCoord p0, p0Dir;
 		const TexCoord p1, p1Dir;
 		const float length;
 		const Sampler sampler;
 
-		inline RasterPatchMeanEdgeData(Image32F3& _image, Image8U& _mask, const Image32F3& _image0, const Image8U3& _image1,
+		inline RasterPatchMeanEdgeData(Image32F3& _image, Image32F& _mask, const Image32F3& _image0, const Image32F3& _image1,
 									   const TexCoord& _p0, const TexCoord& _p0Adj, const TexCoord& _p1, const TexCoord& _p1Adj)
 			: image(_image), mask(_mask), image0(_image0), image1(_image1),
 			p0(_p0), p0Dir(_p0Adj-_p0), p1(_p1), p1Dir(_p1Adj-_p1), length((float)norm(p0Dir)), sampler() {}
@@ -411,10 +411,11 @@ struct MeshTexture {
 			const TexCoord samplePos0(p0 + p0Dir * l);
 			AccumColor accumColor(image0.sample<Sampler,Color>(sampler, samplePos0), 1.f);
 			const TexCoord samplePos1(p1 + p1Dir * l);
-			accumColor.Add(image1.sample<Sampler,Color>(sampler, samplePos1)/255.f, 1.f);
+			//accumColor.Add(image1.sample<Sampler,Color>(sampler, samplePos1)/255.f, 1.f);
+			accumColor.Add(image1.sample<Sampler,Color>(sampler, samplePos1)/1.f, 1.f);
 			image(pt) = accumColor.Normalized();
 			// set mask edge also
-			mask(pt) = border;
+			mask(pt) = 0.5f;
 		}
 	};
 
@@ -438,7 +439,7 @@ public:
 	void CreateSeamVertices();
 	void GlobalSeamLeveling();
 	void LocalSeamLeveling();
-	void GenerateTexture(bool bGlobalSeamLeveling, bool bLocalSeamLeveling, unsigned nTextureSizeMultiple, unsigned nRectPackingHeuristic, Pixel8U colEmpty, bool reTexture);
+	void GenerateTexture(bool bGlobalSeamLeveling, bool bLocalSeamLeveling, unsigned nTextureSizeMultiple, unsigned nRectPackingHeuristic, Pixel32F colEmpty, bool reTexture);
 
 	template <typename PIXEL>
 	static inline PIXEL RGB2YCBCR(const PIXEL& v) {
@@ -463,8 +464,8 @@ public:
 
 
 protected:
-	static void ProcessMask(Image8U& mask, int stripWidth);
-	static void PoissonBlending(const Image32F3& src, Image32F3& dst, const Image8U& mask, float bias=1.f);
+	static void ProcessMask(Image32F& mask, int stripWidth);
+	static void PoissonBlending(const Image32F3& src, Image32F3& dst, const Image32F& mask, float bias=1.f);
 
 
 public:
@@ -484,7 +485,7 @@ public:
 	Mesh::VertexFacesArr& vertexFaces; // for each vertex, the list of faces containing it
 	BoolArr& vertexBoundary; // for each vertex, stores if it is at the boundary or not
 	Mesh::TexCoordArr& faceTexcoords; // for each face, the texture-coordinates of the vertices
-	Image8U3& textureDiffuse; // texture containing the diffuse color
+	Image32F3& textureDiffuse; // texture containing the diffuse color
 
 	// constant the entire time
 	Mesh::VertexArr& vertices;
@@ -704,7 +705,8 @@ bool MeshTexture::FaceOutlierDetection(FaceDataArr& faceDatas, float thOutlier) 
 {
 	// consider as outlier if the absolute difference to the median is outside this threshold
 	if (thOutlier <= 0)
-		thOutlier = 0.15f*255.f;
+		//thOutlier = 0.15f*255.f;
+		thOutlier = 0.15f*1.f;
 
 	// init colors array
 	if (faceDatas.GetSize() <= 3)
@@ -1516,11 +1518,11 @@ void MeshTexture::GlobalSeamLeveling()
 				const Color& a = imageAdj(r,c);
 				if (a == Color::ZERO)
 					continue;
-				Pixel8U& v = image.at<Pixel8U>(r,c);
+				Pixel32F& v = image.at<Pixel32F>(r,c);
 				const Color col(RGB2YCBCR(Color(v)));
 				const Color acol(YCBCR2RGB(Color(col+a)));
-				for (int p=0; p<3; ++p)
-					v[p] = (uint8_t)CLAMP(ROUND2INT(acol[p]), 0, 255);
+				// for (int p=0; p<3; ++p)
+				// 	v[p] = (uint8_t)CLAMP(ROUND2INT(acol[p]), 0, 255);
 			}
 		}
 	}
@@ -1529,17 +1531,17 @@ void MeshTexture::GlobalSeamLeveling()
 // set to one in order to dilate also on the diagonal of the border
 // (normally not needed)
 #define DILATE_EXTRA 0
-void MeshTexture::ProcessMask(Image8U& mask, int stripWidth)
+void MeshTexture::ProcessMask(Image32F& mask, int stripWidth)
 {
-	typedef Image8U::Type Type;
+	typedef Image32F::Type Type;
 
 	// dilate and erode around the border,
 	// in order to fill all gaps and remove outside pixels
 	// (due to imperfect overlay of the raster line border and raster faces)
 	#define DILATEDIR(rd,cd) { \
 		Type& vi = mask(r+(rd),c+(cd)); \
-		if (vi != border) \
-			vi = interior; \
+		if (vi != 0.5f) \
+			vi = 1.f; \
 	}
 	const int HalfSize(1);
 	const int RowsEnd(mask.rows-HalfSize);
@@ -1547,7 +1549,7 @@ void MeshTexture::ProcessMask(Image8U& mask, int stripWidth)
 	for (int r=HalfSize; r<RowsEnd; ++r) {
 		for (int c=HalfSize; c<ColsEnd; ++c) {
 			const Type v(mask(r,c));
-			if (v != border)
+			if (v != 0.5f)
 				continue;
 			#if DILATE_EXTRA
 			for (int i=-HalfSize; i<=HalfSize; ++i) {
@@ -1555,8 +1557,8 @@ void MeshTexture::ProcessMask(Image8U& mask, int stripWidth)
 				for (int j=-HalfSize; j<=HalfSize; ++j) {
 					const int cw(c+j);
 					Type& vi = mask(rw,cw);
-					if (vi != border)
-						vi = interior;
+					if (vi != 0.5f)
+						vi = 1.f;
 				}
 			}
 			#else
@@ -1570,10 +1572,10 @@ void MeshTexture::ProcessMask(Image8U& mask, int stripWidth)
 	#undef DILATEDIR
 	#define ERODEDIR(rd,cd) { \
 		const int rl(r-(rd)), cl(c-(cd)), rr(r+(rd)), cr(c+(cd)); \
-		const Type vl(mask.isInside(ImageRef(cl,rl)) ? mask(rl,cl) : uint8_t(empty)); \
-		const Type vr(mask.isInside(ImageRef(cr,rr)) ? mask(rr,cr) : uint8_t(empty)); \
-		if ((vl == border && vr == empty) || (vr == border && vl == empty)) { \
-			v = empty; \
+		const Type vl(mask.isInside(ImageRef(cl,rl)) ? mask(rl,cl) : float(0.f)); \
+		const Type vr(mask.isInside(ImageRef(cr,rr)) ? mask(rr,cr) : float(0.f)); \
+		if ((vl == 0.5f && vr == 0.f) || (vr == 0.5f && vl == 0.f)) { \
+			v = 0.f; \
 			continue; \
 		} \
 	}
@@ -1583,7 +1585,7 @@ void MeshTexture::ProcessMask(Image8U& mask, int stripWidth)
 	for (int r=0; r<mask.rows; ++r) {
 		for (int c=0; c<mask.cols; ++c) {
 			Type& v = mask(r,c);
-			if (v != interior)
+			if (v != 1.f)
 				continue;
 			ERODEDIR(0, 1);
 			ERODEDIR(1, 0);
@@ -1597,38 +1599,38 @@ void MeshTexture::ProcessMask(Image8U& mask, int stripWidth)
 	for (int r=0; r<mask.rows; ++r) {
 		for (int c=0; c<mask.cols; ++c) {
 			Type& v = mask(r,c);
-			if (v != interior)
+			if (v != 1.f)
 				continue;
-			if (mask(r-1,c) == empty ||
-				mask(r,c-1) == empty ||
-				mask(r+1,c) == empty ||
-				mask(r,c+1) == empty)
-				v = border;
+			if (mask(r-1,c) == 0.f ||
+				mask(r,c-1) == 0.f ||
+				mask(r+1,c) == 0.f ||
+				mask(r,c+1) == 0.f)
+				v = 0.5;
 		}
 	}
 
 	#if 0
 	// mark all interior pixels with border neighbors on two sides as border
 	{
-	Image8U orgMask;
+	Image32F orgMask;
 	mask.copyTo(orgMask);
 	for (int r=0; r<mask.rows; ++r) {
 		for (int c=0; c<mask.cols; ++c) {
 			Type& v = mask(r,c);
-			if (v != interior)
+			if (v != 1.f)
 				continue;
-			if ((orgMask(r+1,c+0) == border && orgMask(r+0,c+1) == border) ||
-				(orgMask(r+1,c+0) == border && orgMask(r-0,c-1) == border) ||
-				(orgMask(r-1,c-0) == border && orgMask(r+0,c+1) == border) ||
-				(orgMask(r-1,c-0) == border && orgMask(r-0,c-1) == border))
-				v = border;
+			if ((orgMask(r+1,c+0) == 0.5 && orgMask(r+0,c+1) == 0.5) ||
+				(orgMask(r+1,c+0) == 0.5 && orgMask(r-0,c-1) == 0.5) ||
+				(orgMask(r-1,c-0) == 0.5 && orgMask(r+0,c+1) == 0.5) ||
+				(orgMask(r-1,c-0) == 0.5 && orgMask(r-0,c-1) == 0.5))
+				v = 0.5;
 		}
 	}
 	}
 	#endif
 
 	// compute the set of valid pixels at the border of the texture patch
-	#define ISEMPTY(mask, x,y) (mask(y,x) == empty)
+	#define ISEMPTY(mask, x,y) (mask(y,x) == 0.f)
 	const int width(mask.width()), height(mask.height());
 	typedef std::unordered_set<ImageRef> PixelSet;
 	PixelSet borderPixels;
@@ -1661,7 +1663,7 @@ void MeshTexture::ProcessMask(Image8U& mask, int stripWidth)
 
 	// iteratively erode all border pixels
 	{
-	Image8U orgMask;
+	Image32F orgMask;
 	mask.copyTo(orgMask);
 	typedef std::vector<ImageRef> PixelVector;
 	for (int s=0; s<stripWidth; ++s) {
@@ -1669,7 +1671,7 @@ void MeshTexture::ProcessMask(Image8U& mask, int stripWidth)
 		borderPixels.clear();
 		// mark the new empty pixels as empty in the mask
 		for (PixelVector::const_iterator it=emptyPixels.cbegin(); it!=emptyPixels.cend(); ++it)
-			orgMask(*it) = empty;
+			orgMask(*it) = 0.f;
 		// find the set of valid pixels at the border of the valid area
 		for (PixelVector::const_iterator it=emptyPixels.cbegin(); it!=emptyPixels.cend(); ++it) {
 			for (int j=-1; j<=1; j++) {
@@ -1688,33 +1690,33 @@ void MeshTexture::ProcessMask(Image8U& mask, int stripWidth)
 	// mark all remaining pixels empty in the mask
 	for (int y=0; y<height; ++y) {
 		for (int x=0; x<width; ++x) {
-			if (orgMask(y,x) != empty)
-				mask(y,x) = empty;
+			if (orgMask(y,x) != 0.f)
+				mask(y,x) = 0.f;
 		}
 	}
 	}
 
 	// mark all border pixels
 	for (PixelSet::const_iterator it=borderPixels.cbegin(); it!=borderPixels.cend(); ++it)
-		mask(*it) = border;
+		mask(*it) = 0.5;
 
 	#if 0
 	// dilate border
 	{
-	Image8U orgMask;
+	Image32F orgMask;
 	mask.copyTo(orgMask);
 	for (int r=HalfSize; r<RowsEnd; ++r) {
 		for (int c=HalfSize; c<ColsEnd; ++c) {
 			const Type v(orgMask(r, c));
-			if (v != border)
+			if (v != 0.5)
 				continue;
 			for (int i=-HalfSize; i<=HalfSize; ++i) {
 				const int rw(r+i);
 				for (int j=-HalfSize; j<=HalfSize; ++j) {
 					const int cw(c+j);
 					Type& vi = mask(rw, cw);
-					if (vi == empty)
-						vi = border;
+					if (vi == 0.f)
+						vi = 0.5;
 				}
 			}
 		}
@@ -1728,19 +1730,19 @@ inline MeshTexture::Color ColorLaplacian(const Image32F3& img, int i) {
 	return img(i-width) + img(i-1) + img(i+1) + img(i+width) - img(i)*4.f;
 }
 
-void MeshTexture::PoissonBlending(const Image32F3& src, Image32F3& dst, const Image8U& mask, float bias)
+void MeshTexture::PoissonBlending(const Image32F3& src, Image32F3& dst, const Image32F& mask, float bias)
 {
 	ASSERT(src.width() == mask.width() && src.width() == dst.width());
 	ASSERT(src.height() == mask.height() && src.height() == dst.height());
 	ASSERT(src.channels() == 3 && dst.channels() == 3 && mask.channels() == 1);
-	ASSERT(src.type() == CV_32FC3 && dst.type() == CV_32FC3 && mask.type() == CV_8U);
+	ASSERT(src.type() == CV_32FC3 && dst.type() == CV_32FC3 && mask.type() == CV_32F);
 
 	#ifndef _RELEASE
 	// check the mask border has no pixels marked as interior
 	for (int x=0; x<mask.cols; ++x)
-		ASSERT(mask(0,x) != interior && mask(mask.rows-1,x) != interior);
+		ASSERT(mask(0,x) != 1.f && mask(mask.rows-1,x) != 1.f);
 	for (int y=0; y<mask.rows; ++y)
-		ASSERT(mask(y,0) != interior && mask(y,mask.cols-1) != interior);
+		ASSERT(mask(y,0) != 1.f && mask(y,mask.cols-1) != 1.f);
 	#endif
 
 	const int n(dst.area());
@@ -1750,20 +1752,19 @@ void MeshTexture::PoissonBlending(const Image32F3& src, Image32F3& dst, const Im
 	indices.memset(0xff);
 	MatIdx nnz(0);
 	for (int i = 0; i < n; ++i)
-		if (mask(i) != empty)
+		if (mask(i) != 0.f)
 			indices(i) = nnz++;
 
 	Colors coeffB(nnz);
 	CLISTDEF0(MatEntry) coeffA(0, nnz);
 	for (int i = 0; i < n; ++i) {
-		switch (mask(i)) {
-		case border: {
+		//switch (mask(i)) {
+		if(mask(i) == 0.5f) {
 			const MatIdx idx(indices(i));
 			ASSERT(idx != -1);
 			coeffA.AddConstruct(idx, idx, 1.f);
 			coeffB[idx] = (const Color&)dst(i);
-		} break;
-		case interior: {
+		}else if(mask(i) == 1.f) {
 			const MatIdx idxUp(indices(i - width));
 			const MatIdx idxLeft(indices(i - 1));
 			const MatIdx idxCenter(indices(i));
@@ -1780,8 +1781,8 @@ void MeshTexture::PoissonBlending(const Image32F3& src, Image32F3& dst, const Im
 			coeffB[idxCenter] = (bias == 1.f ?
 								 ColorLaplacian(src,i) :
 								 ColorLaplacian(src,i)*bias + ColorLaplacian(dst,i)*(1.f-bias));
-		} break;
 		}
+	//	}
 	}
 
 	SparseMat A(nnz, nnz);
@@ -1824,12 +1825,13 @@ void MeshTexture::LocalSeamLeveling()
 		const uint32_t idxPatch((uint32_t)i);
 		TexturePatch& texturePatch = texturePatches[idxPatch];
 		// extract image
-		const Image8U3& image0(images[texturePatch.label].image);
+		const Image32F3& image0(images[texturePatch.label].image);
 		Image32F3 image, imageOrg;
-		image0(texturePatch.rect).convertTo(image, CV_32FC3, 1.0/255.0);
+		image0(texturePatch.rect).convertTo(image, CV_32FC3, 1.0/1.0);
+		//image0(texturePatch.rect).convertTo(image, CV_32FC3, 1.0/255.0);
 		image.copyTo(imageOrg);
 		// render patch coverage
-		Image8U mask(texturePatch.rect.size());
+		Image32F mask(texturePatch.rect.size());
 		{
 			mask.memset(0);
 			RasterPatchCoverageData data(mask);
@@ -1874,7 +1876,7 @@ void MeshTexture::LocalSeamLeveling()
 					const TexCoord& p1Adj(patch1Adj.proj);
 					// this is an edge separating two (valid) patches;
 					// draw it on this patch as the mean color of the two patches
-					const Image8U3& image1(images[texturePatches[patch1.idxPatch].label].image);
+					const Image32F3& image1(images[texturePatches[patch1.idxPatch].label].image);
 					RasterPatchMeanEdgeData data(image, mask, imageOrg, image1, p0, p0Adj, p1, p1Adj);
 					Image32F3::DrawLine(p0, p0Adj, data);
 					// skip remaining patches,
@@ -1897,13 +1899,15 @@ void MeshTexture::LocalSeamLeveling()
 			FOREACHPTR(pPatch, seamVertex.patches) {
 				const SeamVertex::Patch& patch = *pPatch;
 				// add its view to the vertex mean color
-				const Image8U3& img(images[texturePatches[patch.idxPatch].label].image);
-				accumColor.Add(img.sample<Sampler,Color>(sampler, patch.proj)/255.f, 1.f);
+				const Image32F3& img(images[texturePatches[patch.idxPatch].label].image);
+				//accumColor.Add(img.sample<Sampler,Color>(sampler, patch.proj)/255.f, 1.f);
+				accumColor.Add(img.sample<Sampler,Color>(sampler, patch.proj)/1.f, 1.f);
 			}
 			const SeamVertex::Patch& thisPatch = seamVertex.patches[idxVertPatch];
-			const ImageRef pt(ROUND2INT(thisPatch.proj-offset));
+			//const ImageRef pt(ROUND2INT(thisPatch.proj-offset));
+			const ImageRef pt(thisPatch.proj-offset);
 			image(pt) = accumColor.Normalized();
-			mask(pt) = border;
+			mask(pt) = 0.5f;
 		}
 		// make sure the border is continuous and
 		// keep only the exterior tripe of the given size
@@ -1914,18 +1918,18 @@ void MeshTexture::LocalSeamLeveling()
 		cv::Mat imagePatch(images[texturePatch.label].image(texturePatch.rect));
 		for (int r=0; r<image.rows; ++r) {
 			for (int c=0; c<image.cols; ++c) {
-				if (mask(r,c) == empty)
+				if (mask(r,c) == 0.f)
 					continue;
 				const Color& a = image(r,c);
-				Pixel8U& v = imagePatch.at<Pixel8U>(r,c);
-				for (int p=0; p<3; ++p)
-					v[p] = (uint8_t)CLAMP(ROUND2INT(a[p]*255.f), 0, 255);
+				Pixel32F& v = imagePatch.at<Pixel32F>(r,c);
+				// for (int p=0; p<3; ++p)
+				// 	v[p] = (uint8_t)CLAMP(ROUND2INT(a[p]*255.f), 0, 255);
 			}
 		}
 	}
 }
 
-void MeshTexture::GenerateTexture(bool bGlobalSeamLeveling, bool bLocalSeamLeveling, unsigned nTextureSizeMultiple, unsigned nRectPackingHeuristic, Pixel8U colEmpty, bool reTexture)
+void MeshTexture::GenerateTexture(bool bGlobalSeamLeveling, bool bLocalSeamLeveling, unsigned nTextureSizeMultiple, unsigned nRectPackingHeuristic, Pixel32F colEmpty, bool reTexture)
 {
 	// project patches in the corresponding view and compute texture-coordinates and bounding-box
 	const int border(2);
@@ -2073,7 +2077,7 @@ void MeshTexture::GenerateTexture(bool bGlobalSeamLeveling, bool bLocalSeamLevel
 		// create texture image
 		const float invNorm(1.f/(float)(textureSize-1));
 		textureDiffuse.create(textureSize, textureSize);
-		textureDiffuse.setTo(cv::Scalar(colEmpty.b, colEmpty.g, colEmpty.r));
+		textureDiffuse.setTo(cv::Scalar(pow(colEmpty.b/255.f,2.2), pow(colEmpty.g/255.f,2.2), pow(colEmpty.r/255.f,2.2)));
 
 		// backup patches/atlas
 		if(reTexture ==0){
@@ -2152,7 +2156,7 @@ void MeshTexture::GenerateTexture(bool bGlobalSeamLeveling, bool bLocalSeamLevel
 }
 
 // texture mesh
-bool Scene::TextureMesh(unsigned nResolutionLevel, unsigned nMinResolution, float fOutlierThreshold, float fRatioDataSmoothness, bool bGlobalSeamLeveling, bool bLocalSeamLeveling, unsigned nTextureSizeMultiple, unsigned nRectPackingHeuristic, Pixel8U colEmpty, bool reTexture)
+bool Scene::TextureMesh(unsigned nResolutionLevel, unsigned nMinResolution, float fOutlierThreshold, float fRatioDataSmoothness, bool bGlobalSeamLeveling, bool bLocalSeamLeveling, unsigned nTextureSizeMultiple, unsigned nRectPackingHeuristic, Pixel32F colEmpty, bool reTexture)
 {
 	MeshTexture texture(*this, nResolutionLevel, nMinResolution);
 

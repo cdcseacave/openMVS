@@ -81,7 +81,7 @@ public:
 	String name; // image file name (relative path)
 	Camera camera; // view's pose
 	uint32_t width, height; // image size
-	Image8U3 image; // image color pixels
+	Image32F3 image; // image color pixels
 	ViewScoreArr neighbors; // score&store the neighbor images
 	float scale; // image scale relative to the original size
 	float avgDepth; // average depth of the points seen by this camera
@@ -94,20 +94,20 @@ public:
 	}
 
 	inline bool IsValid() const { return poseID != NO_ID; }
-	inline Image8U::Size GetSize() const { return Image8U::Size(width, height); }
+	inline Image32F::Size GetSize() const { return Image32F::Size(width, height); }
 
 	// read image data from the file
 	static IMAGEPTR OpenImage(const String& fileName);
 	static IMAGEPTR ReadImageHeader(const String& fileName);
-	static IMAGEPTR ReadImage(const String& fileName, Image8U3& image);
-	static bool ReadImage(IMAGEPTR pImage, Image8U3& image);
+	static IMAGEPTR ReadImage(const String& fileName, Image32F3& image);
+	static bool ReadImage(IMAGEPTR pImage, Image32F3& image);
 	bool LoadImage(const String& fileName, unsigned nMaxResolution=0);
 	bool ReloadImage(unsigned nMaxResolution=0, bool bLoadPixels=true);
 	void ReleaseImage();
 	float ResizeImage(unsigned nMaxResolution=0);
 	unsigned RecomputeMaxResolution(unsigned& level, unsigned minImageSize, unsigned maxImageSize=INT_MAX) const;
 
-	Camera GetCamera(const PlatformArr& platforms, const Image8U::Size& resolution) const;
+	Camera GetCamera(const PlatformArr& platforms, const Image32F::Size& resolution) const;
 	void UpdateCamera(const PlatformArr& platforms);
 	REAL ComputeFOV(int dir) const;
 

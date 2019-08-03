@@ -211,7 +211,7 @@ public:
 	}
 	void Release();
 	CUresult Reset(unsigned flags = CU_EVENT_DEFAULT);
-		
+
 	inline operator CUevent() const {
 		return hEvent;
 	}
@@ -458,7 +458,7 @@ protected:
 
 public:
 	inline TArrayRT() : hArray(NULL) {}
-	inline TArrayRT(const Image8U::Size& size, unsigned flags=0) : hArray(NULL) { reportCudaError(Reset(size, flags)); }
+	inline TArrayRT(const Image32F::Size& size, unsigned flags=0) : hArray(NULL) { reportCudaError(Reset(size, flags)); }
 	inline TArrayRT(unsigned width, unsigned height, unsigned depth=0, unsigned flags=0) : hArray(NULL) { reportCudaError(Reset(width, height, depth, flags)); }
 	inline ~TArrayRT() { Release(); }
 
@@ -478,7 +478,7 @@ public:
 			hArray = NULL;
 		}
 	}
-	inline CUresult Reset(const Image8U::Size& size, unsigned flags=0) {
+	inline CUresult Reset(const Image32F::Size& size, unsigned flags=0) {
 		return Reset((unsigned)size.width, (unsigned)size.height, 0, flags);
 	}
 	CUresult Reset(unsigned width, unsigned height, unsigned depth=0, unsigned flags=0) {
