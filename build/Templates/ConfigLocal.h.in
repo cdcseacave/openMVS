@@ -34,6 +34,9 @@
 // TIFF codec
 #cmakedefine _USE_TIFF
 
+// EXR codec
+#cmakedefine _USE_EXR
+
 // OpenGL support
 #cmakedefine _USE_OPENGL
 

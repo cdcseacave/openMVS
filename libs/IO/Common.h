@@ -36,6 +36,9 @@
 #ifdef _USE_TIFF
 #define _IMAGE_TIFF		// add TIFF support
 #endif
+#ifdef _USE_EXR
+#define _IMAGE_EXR		// add EXR support
+#endif
 
 #include "ImageSCI.h"
 #ifdef _IMAGE_BMP
@@ -46,6 +49,9 @@
 #endif
 #ifdef _IMAGE_DDS
 #include "ImageDDS.h"
+#endif
+#ifdef _IMAGE_EXR
+#include "ImageEXR.h"
 #endif
 #ifdef _IMAGE_PNG
 #include "ImagePNG.h"
