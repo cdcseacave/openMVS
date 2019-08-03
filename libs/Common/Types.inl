@@ -2752,8 +2752,8 @@ bool TImage<TYPE>::Save(const String& fileName) const
 		compression_params.push_back(80);
 	} else
 	if (ext == ".exr") {
-		compression_params.push_back(cv::IMWRITE_EXR_TYPE_FLOAT);
-		compression_params.push_back(2);
+		//compression_params.push_back(cv::IMWRITE_EXR_TYPE_FLOAT);
+		//compression_params.push_back(2);
 	} else
 	if (ext == ".pfm") {
 		if (Base::depth() != CV_32F)

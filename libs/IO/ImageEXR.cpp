@@ -205,11 +205,11 @@ HRESULT CImageEXR::ReadHeader()
 						 		m_stride = channelsNum*byte;
 						 		break;
 						 case 4:
-						 		m_format = PF_R32G32B32A32;
-						 		m_stride = channelsNum*byte;
-								// consider RGBA as RGB ??
-								// m_format = PF_R32G32B32;
-						 		// m_stride = (channelsNum-1)*byte;
+						 		// m_format = PF_R32G32B32A32;
+						 		// m_stride = channelsNum*byte;
+								//consider RGBA as RGB ??
+								m_format = PF_R32G32B32;
+						 		m_stride = (channelsNum-1)*byte;
 						 		break;
 						 default:
 						 		LOG(LT_IMAGE, "error: unsupported EXR image");
@@ -268,62 +268,45 @@ HRESULT CImageEXR::ReadData(void* pData, PIXELFORMAT dataFormat, Size nStride, S
 				// use the low level interface
 				C_IStream istr (cfile, "EXR_FILE");
 
-				if (dataFormat == m_format && nStride == m_stride)
-				{
-					const BYTE *bits = (BYTE*&)pData;
-					InputFile exr (istr);
-					// build a frame buffer (i.e. what we want on output)
-					FrameBuffer frameBuffer;
+				// read image to a buffer and convert it
+				const BYTE *bits = (BYTE*&)pData;
+				BYTE *data = (BYTE*)bits;
+				RgbaInputFile exr (istr);
+				RGBF *pixelFloat;
+				RGBI *pixel;
+				Box2i dw = exr.dataWindow();
+				Array2D<Rgba> line(1, m_width);
+				// read the file in lines
+				while (dw.min.y <= dw.max.y) {
+					// read a line
+					exr.setFrameBuffer (&line[0][0] - dw.min.x - dw.min.y * m_width, 1, m_width);
+					exr.readPixels (dw.min.y, min(dw.min.y , dw.max.y));
 
-					Array2D<float> rPixels(m_height, m_width);
-					const Box2i &dw = exr.header().dataWindow();
-					const size_t bytespp = sizeof (rPixels[0][0]) * 1;
-					const unsigned pitch = sizeof (rPixels[0][0]) * m_width;  // could be lineWidth ??
-					// allow dataWindow with minimal bounds different form zero
-					size_t offset = - dw.min.x * bytespp - dw.min.y * pitch;
-
-					const char *channel_name[3] = { "R", "G", "B" };
-					for(int c = 0; c < 3; c++)
+					if (dataFormat == m_format && nStride == m_stride)
 					{
-						frameBuffer.insert (
-							channel_name[c],															// name
-							Slice (FLOAT,																	// type
-								(char*)(bits + c * sizeof(float) + offset), // base
-								bytespp,																		// xStride sizeof (rPixels[0][0]) * 1,
-								pitch,																			// yStride sizeof (rPixels[0][0]) * width,
-								1, 1,																				// x/y sampling
-								0.0));																			// fillValue
+						pixelFloat = (RGBF*)data;
+					}else{
+						pixel = (RGBI*)data;
 					}
 
-					// read the file
-					exr.setFrameBuffer(frameBuffer);
-					exr.readPixels(dw.min.y, dw.max.y);
-
-				}else{
-						// read image to a buffer and convert it
-						const BYTE *bits = (BYTE*&)pData;
-						BYTE *data = (BYTE*)bits;
-						RgbaInputFile exr (istr);
-						// read the file in lines
-						Box2i dw = exr.dataWindow();
-
-						Array2D<Rgba> line(1, m_width);
-
-						while (dw.min.y <= dw.max.y) {
-							// read a line
-							exr.setFrameBuffer (&line[0][0] - dw.min.x - dw.min.y * m_width, 1, m_width);
-							exr.readPixels (dw.min.y, min(dw.min.y , dw.max.y));
-
-							RGBI *pixel = (RGBI*)data;
-							for(int x = 0; x < m_width; x++) {
-								pixel[x].red = F32TO8(line[0][x].b);
-								pixel[x].green = F32TO8(line[0][x].g);
-								pixel[x].blue = F32TO8(line[0][x].r);
-							}
-							// next line
-							data += lineWidth;
-							dw.min.y += 1;
+					for(int x = 0; x < m_width; x++) {
+						if (dataFormat == m_format && nStride == m_stride)
+						{
+							// FLOAT OUTPUT
+							pixelFloat[x].red = line[0][x].b;
+							pixelFloat[x].green = line[0][x].g;
+							pixelFloat[x].blue = line[0][x].r;
+						}else{
+							// INT OUTPUT
+							pixel[x].red = F32TO8(line[0][x].b);
+							pixel[x].green = F32TO8(line[0][x].g);
+							pixel[x].blue = F32TO8(line[0][x].r);
 						}
+
+					}
+					// next line
+					data += lineWidth;
+					dw.min.y += 1;
 				}
 				return _OK;
 			}
