@@ -412,16 +412,17 @@ bool ImportScene(const String& strFolder, Interface& scene)
 			VERBOSE("error: unable to open file '%s'", filenameCameras.c_str());
 			return false;
 		}
-		typedef std::unordered_set<COLMAP::Camera, COLMAP::Camera::CameraHash, COLMAP::Camera::CameraEqualTo> CamerasSet;
+		typedef std::unordered_map<COLMAP::Camera,uint32_t,COLMAP::Camera::CameraHash,COLMAP::Camera::CameraEqualTo> CamerasSet;
 		CamerasSet setCameras;
-		{
-		COLMAP::Camera camera;
-		while (file.good() && camera.Read(file))
-			setCameras.emplace(camera);
-		}
-		mapCameras.reserve(setCameras.size());
-		for (const COLMAP::Camera& colmapCamera: setCameras) {
-			mapCameras[colmapCamera.ID] = (uint32_t)scene.platforms.size();
+		COLMAP::Camera colmapCamera;
+		while (file.good() && colmapCamera.Read(file)) {
+			const auto setIt(setCameras.emplace(colmapCamera, (uint32_t)scene.platforms.size()));
+			mapCameras.emplace(colmapCamera.ID, setIt.first->second);
+			if (!setIt.second) {
+				// reuse existing platform
+				continue;
+			}
+			// create new platform
 			Interface::Platform platform;
 			platform.name = String::FormatString(_T("platform%03u"), colmapCamera.ID); // only one camera per platform supported
 			Interface::Platform::Camera camera;
@@ -460,20 +461,16 @@ bool ImportScene(const String& strFolder, Interface& scene)
 			VERBOSE("error: unable to open file '%s'", filenameImages.c_str());
 			return false;
 		}
-		{
-		COLMAP::Image image;
-		while (file.good() && image.Read(file))
-			mapImages[image];
-		}
-		for (ImagesMap::value_type& it: mapImages) {
-			it.second = (uint32_t)scene.images.size();
+		COLMAP::Image imageColmap;
+		while (file.good() && imageColmap.Read(file)) {
+			mapImages.emplace(imageColmap, (uint32_t)scene.images.size());
 			Interface::Platform::Pose pose;
-			Eigen::Map<EMat33d>(pose.R.val) = it.first.q.toRotationMatrix();
+			Eigen::Map<EMat33d>(pose.R.val) = imageColmap.q.toRotationMatrix();
 			EnsureRotationMatrix((Matrix3x3d&)pose.R);
-			Eigen::Map<EVec3d>(&pose.C.x) = -(it.first.q.inverse() * it.first.t);
+			Eigen::Map<EVec3d>(&pose.C.x) = -(imageColmap.q.inverse() * imageColmap.t);
 			Interface::Image image;
-			image.name = OPT::strImageFolder+it.first.name;
-			image.platformID = mapCameras.at(it.first.idCamera);
+			image.name = OPT::strImageFolder+imageColmap.name;
+			image.platformID = mapCameras.at(imageColmap.idCamera);
 			image.cameraID = 0;
 			Interface::Platform& platform = scene.platforms[image.platformID];
 			image.poseID = (uint32_t)platform.poses.size();
