@@ -441,7 +441,7 @@ float DepthEstimator::ScorePixelImage(const ViewData& image1, Depth depth, const
 // compute pixel's NCC score
 float DepthEstimator::ScorePixel(Depth depth, const Normal& normal)
 {
-	ASSERT(depth > 0 && normal.dot(Cast<float>(static_cast<const Point3&>(X0))) < 0);
+	ASSERT(depth > 0 && normal.dot(Cast<float>(static_cast<const Point3&>(X0))) <= 0);
 	// compute score for this pixel as seen in each view
 	ASSERT(scores.size() == images.size());
 	FOREACH(idxView, images)
@@ -631,7 +631,7 @@ void DepthEstimator::ProcessPixel(IDX idx)
 	Depth& depth = depthMap0(x0);
 	Normal& normal = normalMap0(x0);
 	const Normal viewDir(Cast<float>(static_cast<const Point3&>(X0)));
-	ASSERT(depth > 0 && normal.dot(viewDir) < 0);
+	ASSERT(depth > 0 && normal.dot(viewDir) <= 0);
 	#if DENSE_REFINE == DENSE_REFINE_ITER
 	// check if any of the neighbor estimates are better then the current estimate
 	#if DENSE_SMOOTHNESS != DENSE_SMOOTHNESS_NA
@@ -774,7 +774,7 @@ void DepthEstimator::ProcessPixel(IDX idx)
 // interpolate given pixel's estimate to the current position
 Depth DepthEstimator::InterpolatePixel(const ImageRef& nx, Depth depth, const Normal& normal) const
 {
-	ASSERT(depth > 0 && normal.dot(image0.camera.TransformPointI2C(Cast<REAL>(nx))) < 0);
+	ASSERT(depth > 0 && normal.dot(image0.camera.TransformPointI2C(Cast<REAL>(nx))) <= 0);
 	Depth depthNew;
 	#if 1
 	// compute as intersection of the lines

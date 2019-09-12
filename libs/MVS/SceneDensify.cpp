@@ -843,7 +843,7 @@ bool DepthMapsData::RemoveSmallSegments(DepthData& depthData)
 	NormalMap& normalMap = depthData.normalMap;
 	ConfidenceMap& confMap = depthData.confMap;
 	ASSERT(!depthMap.empty());
-	ImageRef size(depthMap.size());
+	const ImageRef size(depthMap.size());
 
 	// allocate memory on heap for dynamic programming arrays
 	TImage<bool> done_map(size, false);
@@ -871,33 +871,35 @@ bool DepthMapsData::RemoveSmallSegments(DepthData& depthData)
 			while (seg_list_curr < seg_list_count) {
 				// get address of current pixel in this segment
 				const ImageRef addr_curr(seg_list[seg_list_curr]);
-
-				// fill list with neighbor positions
-				neighbor[0] = ImageRef(addr_curr.x-1, addr_curr.y  );
-				neighbor[1] = ImageRef(addr_curr.x+1, addr_curr.y  );
-				neighbor[2] = ImageRef(addr_curr.x  , addr_curr.y-1);
-				neighbor[3] = ImageRef(addr_curr.x  , addr_curr.y+1);
-
-				// for all neighbors do
 				const Depth& depth_curr = depthMap(addr_curr);
-				for (int i=0; i<4; ++i) {
-					// get neighbor pixel address
-					const ImageRef& addr_neighbor(neighbor[i]);
-					// check if neighbor is inside image
-					if (addr_neighbor.x>=0 && addr_neighbor.y>=0 && addr_neighbor.x<size.x && addr_neighbor.y<size.y) {
-						// check if neighbor has not been added yet
-						bool& done = done_map(addr_neighbor);
-						if (!done) {
-							// check if the neighbor is valid and similar to the current pixel
-							// (belonging to the current segment)
-							const Depth& depth_neighbor = depthMap(addr_neighbor);
-							if (depth_neighbor>0 && IsDepthSimilar(depth_curr, depth_neighbor, fDepthDiffThreshold)) {
-								// add neighbor coordinates to segment list
-								seg_list[seg_list_count++] = addr_neighbor;
-								// set neighbor pixel in done_map to "done"
-								// (otherwise a pixel may be added 2 times to the list, as
-								//  neighbor of one pixel and as neighbor of another pixel)
-								done = true;
+
+				if (depth_curr>0) {
+					// fill list with neighbor positions
+					neighbor[0] = ImageRef(addr_curr.x-1, addr_curr.y  );
+					neighbor[1] = ImageRef(addr_curr.x+1, addr_curr.y  );
+					neighbor[2] = ImageRef(addr_curr.x  , addr_curr.y-1);
+					neighbor[3] = ImageRef(addr_curr.x  , addr_curr.y+1);
+
+					// for all neighbors do
+					for (int i=0; i<4; ++i) {
+						// get neighbor pixel address
+						const ImageRef& addr_neighbor(neighbor[i]);
+						// check if neighbor is inside image
+						if (addr_neighbor.x>=0 && addr_neighbor.y>=0 && addr_neighbor.x<size.x && addr_neighbor.y<size.y) {
+							// check if neighbor has not been added yet
+							bool& done = done_map(addr_neighbor);
+							if (!done) {
+								// check if the neighbor is valid and similar to the current pixel
+								// (belonging to the current segment)
+								const Depth& depth_neighbor = depthMap(addr_neighbor);
+								if (depth_neighbor>0 && IsDepthSimilar(depth_curr, depth_neighbor, fDepthDiffThreshold)) {
+									// add neighbor coordinates to segment list
+									seg_list[seg_list_count++] = addr_neighbor;
+									// set neighbor pixel in done_map to "done"
+									// (otherwise a pixel may be added 2 times to the list, as
+									//  neighbor of one pixel and as neighbor of another pixel)
+									done = true;
+								}
 							}
 						}
 					}
@@ -935,7 +937,7 @@ bool DepthMapsData::GapInterpolation(DepthData& depthData)
 	NormalMap& normalMap = depthData.normalMap;
 	ConfidenceMap& confMap = depthData.confMap;
 	ASSERT(!depthMap.empty());
-	ImageRef size(depthMap.size());
+	const ImageRef size(depthMap.size());
 
 	// 1. Row-wise:
 	// for each row do
@@ -1851,13 +1853,15 @@ void Scene::DenseReconstructionEstimate(void* pData)
 			// apply filters
 			if (OPTDENSE::nOptimize & (OPTDENSE::REMOVE_SPECKLES)) {
 				TD_TIMER_START();
-				data.detphMaps.RemoveSmallSegments(depthData);
-				DEBUG_ULTIMATE("Depth-map %3u filtered: remove small segments (%s)", idx, TD_TIMER_GET_FMT().c_str());
+				if (data.detphMaps.RemoveSmallSegments(depthData)) {
+					DEBUG_ULTIMATE("Depth-map %3u filtered: remove small segments (%s)", idx, TD_TIMER_GET_FMT().c_str());
+				}
 			}
 			if (OPTDENSE::nOptimize & (OPTDENSE::FILL_GAPS)) {
 				TD_TIMER_START();
-				data.detphMaps.GapInterpolation(depthData);
-				DEBUG_ULTIMATE("Depth-map %3u filtered: gap interpolation (%s)", idx, TD_TIMER_GET_FMT().c_str());
+				if (data.detphMaps.GapInterpolation(depthData)) {
+					DEBUG_ULTIMATE("Depth-map %3u filtered: gap interpolation (%s)", idx, TD_TIMER_GET_FMT().c_str());
+				}
 			}
 			// save depth-map
 			data.events.AddEventFirst(new EVTSaveDepthMap(evtImage.idxImage));
