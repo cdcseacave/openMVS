@@ -37,7 +37,6 @@
 
 #include "DepthMap.h"
 #include "Mesh.h"
-#include "SceneDensify.h"
 
 
 // D E F I N E S ///////////////////////////////////////////////////
@@ -46,6 +45,8 @@
 // S T R U C T S ///////////////////////////////////////////////////
 
 namespace MVS {
+// Forward declarations
+struct DenseDepthMapData;
 
 class MVS_API Scene
 {
@@ -80,6 +81,9 @@ public:
 
 	// Dense reconstruction
 	bool DenseReconstruction();
+	bool DenseReconstruction(DenseDepthMapData& data);
+  // Only do the first half of dense reconstruction: depth map computation. Results are saved to "data".
+	bool ComputeDepthMaps(DenseDepthMapData& data);
 	void DenseReconstructionEstimate(void*);
 	void DenseReconstructionFilter(void*);
 	void PointCloudFilter(int thRemove=-1);

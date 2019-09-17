@@ -1524,10 +1524,46 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, b
 
 static void* DenseReconstructionEstimateTmp(void*);
 static void* DenseReconstructionFilterTmp(void*);
-bool Scene::DenseReconstruction()
-{
-	DenseDepthMapData data(*this);
+bool Scene::DenseReconstruction(DenseDepthMapData& data) {
+  if (!ComputeDepthMaps(data)) {
+    return false;
+  }
+	// fuse all depth-maps
+	pointcloud.Release();
+	data.detphMaps.FuseDepthMaps(pointcloud, OPTDENSE::nEstimateColors == 2, OPTDENSE::nEstimateNormals == 2);
+	#if TD_VERBOSE != TD_VERBOSE_OFF
+	if (g_nVerbosityLevel > 2) {
+		// print number of points with 3+ views
+		size_t nPoints1m(0), nPoints2(0), nPoints3p(0);
+		FOREACHPTR(pViews, pointcloud.pointViews) {
+			switch (pViews->GetSize())
+			{
+			case 0:
+			case 1:
+				++nPoints1m;
+				break;
+			case 2:
+				++nPoints2;
+				break;
+			default:
+				++nPoints3p;
+			}
+		}
+		VERBOSE("Dense point-cloud composed of:\n\t%u points with 1- views\n\t%u points with 2 views\n\t%u points with 3+ views", nPoints1m, nPoints2, nPoints3p);
+	}
+	#endif
 
+	if (!pointcloud.IsEmpty()) {
+		if (pointcloud.colors.IsEmpty() && OPTDENSE::nEstimateColors == 1)
+			EstimatePointColors(images, pointcloud);
+		if (pointcloud.normals.IsEmpty() && OPTDENSE::nEstimateNormals == 1)
+			EstimatePointNormals(images, pointcloud);
+	}
+	return true;
+} // ComputeDepthMaps
+/*----------------------------------------------------------------*/
+
+bool Scene::ComputeDepthMaps(DenseDepthMapData& data) {
 	{
 	// maps global view indices to our list of views to be processed
 	IIndexArr imagesMap;
@@ -1680,39 +1716,14 @@ bool Scene::DenseReconstruction()
 			return false;
 		data.progress.Release();
 	}
+  return true;
+} // DenseReconstruction
+/*----------------------------------------------------------------*/
 
-	// fuse all depth-maps
-	pointcloud.Release();
-	data.detphMaps.FuseDepthMaps(pointcloud, OPTDENSE::nEstimateColors == 2, OPTDENSE::nEstimateNormals == 2);
-	#if TD_VERBOSE != TD_VERBOSE_OFF
-	if (g_nVerbosityLevel > 2) {
-		// print number of points with 3+ views
-		size_t nPoints1m(0), nPoints2(0), nPoints3p(0);
-		FOREACHPTR(pViews, pointcloud.pointViews) {
-			switch (pViews->GetSize())
-			{
-			case 0:
-			case 1:
-				++nPoints1m;
-				break;
-			case 2:
-				++nPoints2;
-				break;
-			default:
-				++nPoints3p;
-			}
-		}
-		VERBOSE("Dense point-cloud composed of:\n\t%u points with 1- views\n\t%u points with 2 views\n\t%u points with 3+ views", nPoints1m, nPoints2, nPoints3p);
-	}
-	#endif
-
-	if (!pointcloud.IsEmpty()) {
-		if (pointcloud.colors.IsEmpty() && OPTDENSE::nEstimateColors == 1)
-			EstimatePointColors(images, pointcloud);
-		if (pointcloud.normals.IsEmpty() && OPTDENSE::nEstimateNormals == 1)
-			EstimatePointNormals(images, pointcloud);
-	}
-	return true;
+bool Scene::DenseReconstruction()
+{
+	DenseDepthMapData data(*this);
+  DenseReconstruction(data);
 } // DenseReconstruction
 /*----------------------------------------------------------------*/
 
