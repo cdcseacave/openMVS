@@ -37,6 +37,7 @@
 
 #include "DepthMap.h"
 #include "Mesh.h"
+#include "Scene.h"
 
 
 // D E F I N E S ///////////////////////////////////////////////////

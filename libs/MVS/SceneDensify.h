@@ -44,20 +44,20 @@ namespace MVS {
 class DepthMapsData
 {
 public:
-	DepthMapsData(MVS::Scene& _scene);
+	DepthMapsData(Scene& _scene);
 	~DepthMapsData();
 
-	bool SelectViews(MVS::IIndexArr& images, MVS::IIndexArr& imagesMap, MVS::IIndexArr& neighborsMap);
-	bool SelectViews(MVS::DepthData& depthData);
-	bool InitViews(MVS::DepthData& depthData, MVS::IIndex idxNeighbor, MVS::IIndex numNeighbors);
-	bool InitDepthMap(MVS::DepthData& depthData);
-	bool EstimateDepthMap(MVS::IIndex idxImage);
+	bool SelectViews(IIndexArr& images, IIndexArr& imagesMap, IIndexArr& neighborsMap);
+	bool SelectViews(DepthData& depthData);
+	bool InitViews(DepthData& depthData, IIndex idxNeighbor, IIndex numNeighbors);
+	bool InitDepthMap(DepthData& depthData);
+	bool EstimateDepthMap(IIndex idxImage);
 
-	bool RemoveSmallSegments(MVS::DepthData& depthData);
-	bool GapInterpolation(MVS::DepthData& depthData);
+	bool RemoveSmallSegments(DepthData& depthData);
+	bool GapInterpolation(DepthData& depthData);
 
-	bool FilterDepthMap(MVS::DepthData& depthData, const MVS::IIndexArr& idxNeighbors, bool bAdjust=true);
-	void FuseDepthMaps(MVS::PointCloud& pointcloud, bool bEstimateColor, bool bEstimateNormal);
+	bool FilterDepthMap(DepthData& depthData, const IIndexArr& idxNeighbors, bool bAdjust=true);
+	void FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, bool bEstimateNormal);
 
 protected:
 	static void* STCALL ScoreDepthMapTmp(void*);
@@ -65,28 +65,28 @@ protected:
 	static void* STCALL EndDepthMapTmp(void*);
 
 public:
-  MVS::Scene& scene;
+  Scene& scene;
 
-  MVS::DepthDataArr arrDepthData;
+  DepthDataArr arrDepthData;
 
 	// used internally to estimate the depth-maps
 	Image8U::Size prevDepthMapSize; // remember the size of the last estimated depth-map
 	Image8U::Size prevDepthMapSizeTrg; // ... same for target image
-  MVS::DepthEstimator::MapRefArr coords; // map pixel index to zigzag matrix coordinates
-  MVS::DepthEstimator::MapRefArr coordsTrg; // ... same for target image
+  DepthEstimator::MapRefArr coords; // map pixel index to zigzag matrix coordinates
+  DepthEstimator::MapRefArr coordsTrg; // ... same for target image
 };
 
 struct DenseDepthMapData {
-  MVS::Scene& scene;
-  MVS::IIndexArr images;
-  MVS::IIndexArr neighborsMap;
+  Scene& scene;
+  IIndexArr images;
+  IIndexArr neighborsMap;
 	DepthMapsData detphMaps;
 	volatile Thread::safe_t idxImage;
 	SEACAVE::EventQueue events; // internal events queue (processed by the working threads)
 	Semaphore sem;
 	CAutoPtr<Util::Progress> progress;
 
-	DenseDepthMapData(MVS::Scene& _scene)
+	DenseDepthMapData(Scene& _scene)
 		: scene(_scene), detphMaps(_scene), idxImage(0), sem(1) {}
 
 	void SignalCompleteDepthmapFilter() {

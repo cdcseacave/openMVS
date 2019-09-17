@@ -29,8 +29,6 @@
 *      containing it.
 */
 
-#include "Common.h"
-#include "Scene.h"
 #include "SceneDensify.h"
 // MRF: view selection
 #include "../Math/TRWS/MRFEnergy.h"
