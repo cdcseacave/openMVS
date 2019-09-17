@@ -37,7 +37,7 @@
 
 #include "DepthMap.h"
 #include "Mesh.h"
-#include "Scene.h"
+#include "SceneDensify.h"
 
 
 // D E F I N E S ///////////////////////////////////////////////////

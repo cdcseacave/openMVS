@@ -40,8 +40,10 @@
 // S T R U C T S ///////////////////////////////////////////////////
 
 namespace MVS {
+// Forward declarations
+class Scene;
 // structure used to compute all depth-maps
-class DepthMapsData
+class MVS_API DepthMapsData
 {
 public:
 	DepthMapsData(Scene& _scene);
@@ -76,7 +78,7 @@ public:
   DepthEstimator::MapRefArr coordsTrg; // ... same for target image
 };
 
-struct DenseDepthMapData {
+struct MVS_API DenseDepthMapData {
   Scene& scene;
   IIndexArr images;
   IIndexArr neighborsMap;
