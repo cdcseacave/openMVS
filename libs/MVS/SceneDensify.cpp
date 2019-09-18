@@ -1720,8 +1720,7 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data) {
 } // DenseReconstruction
 /*----------------------------------------------------------------*/
 
-bool Scene::DenseReconstruction()
-{
+bool Scene::DenseReconstruction() {
 	DenseDepthMapData data(*this);
 	return DenseReconstruction(data);
 } // DenseReconstruction
@@ -1734,8 +1733,7 @@ void* DenseReconstructionEstimateTmp(void* arg) {
 }
 
 // initialize the dense reconstruction with the sparse point cloud
-void Scene::DenseReconstructionEstimate(void* pData)
-{
+void Scene::DenseReconstructionEstimate(void* pData) {
 	DenseDepthMapData& data = *((DenseDepthMapData*)pData);
 	while (true) {
 		CAutoPtr<Event> evt(data.events.GetEvent());
