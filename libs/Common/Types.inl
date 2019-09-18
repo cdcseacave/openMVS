@@ -2150,7 +2150,7 @@ void TImage<TYPE>::toGray(TImage<T>& out, int code, bool bNormalize, bool bSRGB)
 #ifdef __clang__
 	const int scn(cv::Mat::channels());
 #else
-  const int scn(Base::channels());
+	const int scn(Base::channels());
 #endif
 	T* dst = out.cv::Mat::template ptr<T>();
 	T* const dstEnd = dst + out.area();
