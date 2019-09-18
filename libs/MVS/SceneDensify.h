@@ -1,5 +1,5 @@
 /*
-* DepthMap.h
+* SceneDensify.h
 *
 * Copyright (c) 2014-2015 SEACAVE
 *
