@@ -1562,7 +1562,7 @@ bool Scene::DenseReconstruction(DenseDepthMapData& data) {
 			EstimatePointNormals(images, pointcloud);
 	}
 	return true;
-} // ComputeDepthMaps
+} // DenseReconstruction
 /*----------------------------------------------------------------*/
 
 bool Scene::ComputeDepthMaps(DenseDepthMapData& data) {
@@ -1719,7 +1719,7 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data) {
 		data.progress.Release();
 	}
   return true;
-} // DenseReconstruction
+} // ComputeDepthMaps
 /*----------------------------------------------------------------*/
 
 bool Scene::DenseReconstruction() {
