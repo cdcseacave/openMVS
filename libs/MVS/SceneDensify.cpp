@@ -1525,9 +1525,9 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, b
 static void* DenseReconstructionEstimateTmp(void*);
 static void* DenseReconstructionFilterTmp(void*);
 bool Scene::DenseReconstruction(DenseDepthMapData& data) {
-  if (!ComputeDepthMaps(data)) {
-    return false;
-  }
+	if (!ComputeDepthMaps(data)) {
+		return false;
+	}
 	// fuse all depth-maps
 	pointcloud.Release();
 	data.detphMaps.FuseDepthMaps(pointcloud, OPTDENSE::nEstimateColors == 2, OPTDENSE::nEstimateNormals == 2);

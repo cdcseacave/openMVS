@@ -82,7 +82,7 @@ public:
 	// Dense reconstruction
 	bool DenseReconstruction();
 	bool DenseReconstruction(DenseDepthMapData& data);
-  // Only do the first half of dense reconstruction: depth map computation. Results are saved to "data".
+	// Only do the first half of dense reconstruction: depth map computation. Results are saved to "data".
 	bool ComputeDepthMaps(DenseDepthMapData& data);
 	void DenseReconstructionEstimate(void*);
 	void DenseReconstructionFilter(void*);
