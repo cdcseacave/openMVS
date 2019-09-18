@@ -74,14 +74,14 @@ public:
 	// used internally to estimate the depth-maps
 	Image8U::Size prevDepthMapSize; // remember the size of the last estimated depth-map
 	Image8U::Size prevDepthMapSizeTrg; // ... same for target image
-  DepthEstimator::MapRefArr coords; // map pixel index to zigzag matrix coordinates
-  DepthEstimator::MapRefArr coordsTrg; // ... same for target image
+	DepthEstimator::MapRefArr coords; // map pixel index to zigzag matrix coordinates
+	DepthEstimator::MapRefArr coordsTrg; // ... same for target image
 };
 
 struct MVS_API DenseDepthMapData {
-  Scene& scene;
-  IIndexArr images;
-  IIndexArr neighborsMap;
+	Scene& scene;
+	IIndexArr images;
+	IIndexArr neighborsMap;
 	DepthMapsData detphMaps;
 	volatile Thread::safe_t idxImage;
 	SEACAVE::EventQueue events; // internal events queue (processed by the working threads)
