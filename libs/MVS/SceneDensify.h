@@ -39,7 +39,7 @@
 
 namespace MVS {
 // Forward declarations
-class Scene;
+class MVS_API Scene;
 // structure used to compute all depth-maps
 class MVS_API DepthMapsData
 {
