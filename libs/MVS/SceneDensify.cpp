@@ -1723,7 +1723,7 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data) {
 bool Scene::DenseReconstruction()
 {
 	DenseDepthMapData data(*this);
-  DenseReconstruction(data);
+	return DenseReconstruction(data);
 } // DenseReconstruction
 /*----------------------------------------------------------------*/
 
