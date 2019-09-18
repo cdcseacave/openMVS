@@ -40,6 +40,7 @@
 #include "IO/Common.h"
 #include "Math/Common.h"
 #include "MVS/Common.h"
+#include "MVS/SceneDensify.h"
 #include "MVS/Scene.h"
 
 
