@@ -82,14 +82,14 @@ struct MVS_API DenseDepthMapData {
 	Scene& scene;
 	IIndexArr images;
 	IIndexArr neighborsMap;
-	DepthMapsData detphMaps;
+	DepthMapsData depthMaps;
 	volatile Thread::safe_t idxImage;
 	SEACAVE::EventQueue events; // internal events queue (processed by the working threads)
 	Semaphore sem;
 	CAutoPtr<Util::Progress> progress;
 
 	DenseDepthMapData(Scene& _scene)
-		: scene(_scene), detphMaps(_scene), idxImage(0), sem(1) {}
+		: scene(_scene), depthMaps(_scene), idxImage(0), sem(1) {}
 
 	void SignalCompleteDepthmapFilter() {
 		ASSERT(idxImage > 0);
