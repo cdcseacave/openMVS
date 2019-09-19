@@ -45,6 +45,7 @@
 // S T R U C T S ///////////////////////////////////////////////////
 
 namespace MVS {
+	
 // Forward declarations
 struct MVS_API DenseDepthMapData;
 
