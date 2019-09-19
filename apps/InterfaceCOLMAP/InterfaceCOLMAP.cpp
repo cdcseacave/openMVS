@@ -496,10 +496,12 @@ bool ImportScene(const String& strFolder, Interface& scene)
 			Interface::Vertex vertex;
 			vertex.X = point.p;
 			for (const COLMAP::Point::Track& track: point.tracks) {
-				Interface::Vertex::View view;
-				view.imageID = mapImages.at(COLMAP::Image(track.idImage));
-				view.confidence = 0;
-				vertex.views.emplace_back(view);
+        if (mapImages.find(track.idImage) != mapImages.end()) {
+          Interface::Vertex::View view;
+          view.imageID = mapImages.at(COLMAP::Image(track.idImage));
+          view.confidence = 0;
+          vertex.views.emplace_back(view);
+        }
 			}
 			std::sort(vertex.views.begin(), vertex.views.end(),
 				[](const Interface::Vertex::View& view0, const Interface::Vertex::View& view1) { return view0.imageID < view1.imageID; });
