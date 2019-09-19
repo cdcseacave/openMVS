@@ -82,7 +82,6 @@ public:
 
 	// Dense reconstruction
 	bool DenseReconstruction();
-	bool DenseReconstruction(DenseDepthMapData& data);
 	bool ComputeDepthMaps(DenseDepthMapData& data);
 	void DenseReconstructionEstimate(void*);
 	void DenseReconstructionFilter(void*);
