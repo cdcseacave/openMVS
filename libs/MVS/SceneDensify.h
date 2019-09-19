@@ -32,14 +32,17 @@
 #ifndef _MVS_SCENEDENSIFY_H_
 #define _MVS_SCENEDENSIFY_H_
 
+
 // I N C L U D E S /////////////////////////////////////////////////
 
 
 // S T R U C T S ///////////////////////////////////////////////////
 
 namespace MVS {
+	
 // Forward declarations
 class MVS_API Scene;
+	
 // structure used to compute all depth-maps
 class MVS_API DepthMapsData
 {
@@ -75,6 +78,7 @@ public:
 	DepthEstimator::MapRefArr coords; // map pixel index to zigzag matrix coordinates
 	DepthEstimator::MapRefArr coordsTrg; // ... same for target image
 };
+/*----------------------------------------------------------------*/
 
 struct MVS_API DenseDepthMapData {
 	Scene& scene;
@@ -95,7 +99,8 @@ struct MVS_API DenseDepthMapData {
 			sem.Signal((unsigned)images.GetSize()*2);
 	}
 };
-
-};
 /*----------------------------------------------------------------*/
+
+} // namespace MVS
+
 #endif
