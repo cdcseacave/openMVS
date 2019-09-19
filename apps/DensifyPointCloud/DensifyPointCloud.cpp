@@ -180,7 +180,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	OPTDENSE::nOptimize = nOptimize;
 	OPTDENSE::nEstimateColors = nEstimateColors;
 	OPTDENSE::nEstimateNormals = nEstimateNormals;
-	if (!bValidConfig && !OPT::strDenseConfigFileName.IsEmpty())
+	if (!bValidConfig)
 		OPTDENSE::oConfig.Save(OPT::strDenseConfigFileName);
 
 	// initialize global options
