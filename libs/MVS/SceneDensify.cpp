@@ -1525,10 +1525,14 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, b
 
 static void* DenseReconstructionEstimateTmp(void*);
 static void* DenseReconstructionFilterTmp(void*);
-bool Scene::DenseReconstruction(DenseDepthMapData& data) {
-	if (!ComputeDepthMaps(data)) {
+
+bool Scene::DenseReconstruction() {
+	DenseDepthMapData data(*this);
+	
+	// estimate depth-maps
+	if (!ComputeDepthMaps(data))
 		return false;
-	}
+	
 	// fuse all depth-maps
 	pointcloud.Release();
 	data.depthMaps.FuseDepthMaps(pointcloud, OPTDENSE::nEstimateColors == 2, OPTDENSE::nEstimateNormals == 2);
@@ -1564,6 +1568,8 @@ bool Scene::DenseReconstruction(DenseDepthMapData& data) {
 } // DenseReconstruction
 /*----------------------------------------------------------------*/
 
+// do first half of dense reconstruction: depth map computation
+// results are saved to "data"
 bool Scene::ComputeDepthMaps(DenseDepthMapData& data) {
 	{
 	// maps global view indices to our list of views to be processed
@@ -1717,14 +1723,8 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data) {
 			return false;
 		data.progress.Release();
 	}
-  return true;
+	return true;
 } // ComputeDepthMaps
-/*----------------------------------------------------------------*/
-
-bool Scene::DenseReconstruction() {
-	DenseDepthMapData data(*this);
-	return DenseReconstruction(data);
-} // DenseReconstruction
 /*----------------------------------------------------------------*/
 
 void* DenseReconstructionEstimateTmp(void* arg) {
