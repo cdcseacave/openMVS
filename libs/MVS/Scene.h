@@ -45,6 +45,9 @@
 // S T R U C T S ///////////////////////////////////////////////////
 
 namespace MVS {
+	
+// Forward declarations
+struct MVS_API DenseDepthMapData;
 
 class MVS_API Scene
 {
@@ -79,6 +82,7 @@ public:
 
 	// Dense reconstruction
 	bool DenseReconstruction();
+	bool ComputeDepthMaps(DenseDepthMapData& data);
 	void DenseReconstructionEstimate(void*);
 	void DenseReconstructionFilter(void*);
 	void PointCloudFilter(int thRemove=-1);
