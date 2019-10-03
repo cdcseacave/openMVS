@@ -149,6 +149,13 @@ struct MVS_API DepthData {
 		Image32F image; // image float intensities
 		Image* pImageData; // image data
 
+		inline IIndex GetID() const {
+			return pImageData->ID;
+		}
+		inline IIndex GetLocalID(const ImageArr& images) const {
+			return (IIndex)(pImageData - images.begin());
+		}
+
 		template <typename IMAGE>
 		static bool ScaleImage(const IMAGE& image, IMAGE& imageScaled, float scale) {
 			if (ABS(scale-1.f) < 0.15f)
@@ -188,6 +195,9 @@ struct MVS_API DepthData {
 	inline bool IsEmpty() const {
 		return depthMap.empty();
 	}
+
+	const ViewData& GetView() const { return images.front(); }
+	const Camera& GetCamera() const { return GetView().camera; }
 
 	void GetNormal(const ImageRef& ir, Point3f& N, const TImage<Point3f>* pPointMap=NULL) const;
 	void GetNormal(const Point2f& x, Point3f& N, const TImage<Point3f>* pPointMap=NULL) const;
