@@ -460,6 +460,17 @@ MVS_API bool ExportNormalMap(const String& fileName, const NormalMap& normalMap)
 MVS_API bool ExportConfidenceMap(const String& fileName, const ConfidenceMap& confMap);
 MVS_API bool ExportPointCloud(const String& fileName, const Image&, const DepthMap&, const NormalMap&);
 
+MVS_API bool ExportDepthDataRaw(const String&,
+	const IIndexArr&, const cv::Size& imageSize,
+	const KMatrix&, const RMatrix&, const CMatrix&,
+	Depth dMin, Depth dMax,
+	const DepthMap&, const NormalMap&, const ConfidenceMap&);
+MVS_API bool ImportDepthDataRaw(const String&,
+	IIndexArr&, cv::Size& imageSize,
+	KMatrix&, RMatrix&, CMatrix&,
+	Depth& dMin, Depth& dMax,
+	DepthMap&, NormalMap&, ConfidenceMap&, unsigned flags=7);
+
 MVS_API void CompareDepthMaps(const DepthMap& depthMap, const DepthMap& depthMapGT, uint32_t idxImage, float threshold=0.01f);
 MVS_API void CompareNormalMaps(const NormalMap& normalMap, const NormalMap& normalMapGT, uint32_t idxImage);
 /*----------------------------------------------------------------*/

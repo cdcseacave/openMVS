@@ -188,12 +188,35 @@ void DepthData::GetNormal(const Point2f& pt, Point3f& N, const TImage<Point3f>* 
 bool DepthData::Save(const String& fileName) const
 {
 	ASSERT(IsValid() && !depthMap.empty() && !confMap.empty());
-	return SerializeSave(*this, fileName, ARCHIVE_BINARY_ZIP);
+	const String fileNameTmp(fileName+".tmp"); {
+		// serialize out the current state
+		IIndexArr IDs(0, images.size());
+		for (const ViewData& image: images)
+			IDs.push_back(image.GetID());
+		const ViewData& image0 = GetView();
+		if (!ExportDepthDataRaw(fileNameTmp, IDs, depthMap.size(), image0.camera.K, image0.camera.R, image0.camera.C, dMin, dMax, depthMap, normalMap, confMap))
+			return false;
+	}
+	if (!File::renameFile(fileNameTmp, fileName)) {
+		DEBUG_EXTRA("error: can not access dmap file '%s'", fileName.c_str());
+		File::deleteFile(fileNameTmp);
+		return false;
+	}
+	return true;
 }
 bool DepthData::Load(const String& fileName)
 {
 	ASSERT(IsValid());
-	return SerializeLoad(*this, fileName, ARCHIVE_BINARY_ZIP);
+	// serialize in the saved state
+	IIndexArr IDs;
+	cv::Size imageSize;
+	Camera camera;
+	if (!ImportDepthDataRaw(fileName, IDs, imageSize, camera.K, camera.R, camera.C, dMin, dMax, depthMap, normalMap, confMap))
+		return false;
+	ASSERT(IDs.size() == images.size());
+	ASSERT(IDs.front() == GetView().GetID());
+	ASSERT(depthMap.size() == imageSize);
+	return true;
 }
 /*----------------------------------------------------------------*/
 
@@ -1349,6 +1372,154 @@ bool MVS::ExportPointCloud(const String& fileName, const Image& imageData, const
 	}
 	return true;
 } // ExportPointCloud
+/*----------------------------------------------------------------*/
+
+
+struct HeaderDepthDataRaw {
+	enum {
+		HAS_DEPTH = (1<<0),
+		HAS_NORMAL = (1<<1),
+		HAS_CONF = (1<<2),
+	};
+	uint16_t name; // file type
+	uint8_t type; // content type
+	uint8_t padding; // reserve
+	uint32_t imageWidth, imageHeight; // image resolution
+	uint32_t depthWidth, depthHeight; // depth-map resolution
+	float dMin, dMax; // depth range for this view
+	uint32_t nIDs; // number of view IDs
+	// view ID followed by neighbor view IDs: uint32_t* IDs
+	// camera, rotation and translation matrices (row-major): double K[3][3], R[3][3], C[3]
+	// depth, normal, confidence maps
+	inline HeaderDepthDataRaw() : name(0), type(0), padding(0) {}
+	static uint16_t HeaderDepthDataRawName() { return *reinterpret_cast<const uint16_t*>("DR"); }
+	int GetStep() const { return ROUND2INT((float)imageWidth/depthWidth); }
+};
+
+bool MVS::ExportDepthDataRaw(const String& fileName,
+	const IIndexArr& IDs, const cv::Size& imageSize,
+	const KMatrix& K, const RMatrix& R, const CMatrix& C,
+	Depth dMin, Depth dMax,
+	const DepthMap& depthMap, const NormalMap& normalMap, const ConfidenceMap& confMap)
+{
+	ASSERT(!depthMap.empty());
+	ASSERT(confMap.empty() || depthMap.size() == confMap.size());
+	ASSERT(depthMap.width() <= imageSize.width && depthMap.height() <= imageSize.height);
+
+	FILE *f = fopen(fileName, "wb");
+	if (f == NULL) {
+		DEBUG("error: opening file '%s' for writing depth-data", fileName.c_str());
+		return false;
+	}
+
+	// write header
+	HeaderDepthDataRaw header;
+	header.name = HeaderDepthDataRaw::HeaderDepthDataRawName();
+	header.type = HeaderDepthDataRaw::HAS_DEPTH;
+	header.imageWidth = (uint32_t)imageSize.width;
+	header.imageHeight = (uint32_t)imageSize.height;
+	header.depthWidth = (uint32_t)depthMap.cols;
+	header.depthHeight = (uint32_t)depthMap.rows;
+	header.dMin = dMin;
+	header.dMax = dMax;
+	header.nIDs = IDs.size();
+	if (!normalMap.empty())
+		header.type |= HeaderDepthDataRaw::HAS_NORMAL;
+	if (!confMap.empty())
+		header.type |= HeaderDepthDataRaw::HAS_CONF;
+	fwrite(&header, sizeof(HeaderDepthDataRaw), 1, f);
+
+	// write neighbor IDs
+	STATIC_ASSERT(sizeof(uint32_t) == sizeof(IIndex));
+	fwrite(IDs.data(), sizeof(IIndex), IDs.size(), f);
+
+	// write pose
+	STATIC_ASSERT(sizeof(double) == sizeof(REAL));
+	fwrite(K.val, sizeof(REAL), 9, f);
+	fwrite(R.val, sizeof(REAL), 9, f);
+	fwrite(C.ptr(), sizeof(REAL), 3, f);
+
+	// write depth-map
+	fwrite(depthMap.getData(), sizeof(float), depthMap.area(), f);
+
+	// write normal-map
+	if ((header.type & HeaderDepthDataRaw::HAS_NORMAL) != 0)
+		fwrite(normalMap.getData(), sizeof(float)*3, normalMap.area(), f);
+
+	// write confidence-map
+	if ((header.type & HeaderDepthDataRaw::HAS_CONF) != 0)
+		fwrite(confMap.getData(), sizeof(float), confMap.area(), f);
+
+	const bool bRet(ferror(f) == 0);
+	fclose(f);
+	return bRet;
+} // ExportDepthDataRaw
+
+bool MVS::ImportDepthDataRaw(const String& fileName,
+	IIndexArr& IDs, cv::Size& imageSize,
+	KMatrix& K, RMatrix& R, CMatrix& C,
+	Depth& dMin, Depth& dMax,
+	DepthMap& depthMap, NormalMap& normalMap, ConfidenceMap& confMap, unsigned flags)
+{
+	FILE *f = fopen(fileName, "rb");
+	if (f == NULL) {
+		DEBUG("error: opening file '%s' for reading depth-data", fileName.c_str());
+		return false;
+	}
+
+	// read header
+	HeaderDepthDataRaw header;
+	if (fread(&header, sizeof(HeaderDepthDataRaw), 1, f) != 1 ||
+		header.name != HeaderDepthDataRaw::HeaderDepthDataRawName() ||
+		(header.type & HeaderDepthDataRaw::HAS_DEPTH) == 0 ||
+		header.depthWidth <= 0 || header.depthHeight <= 0 ||
+		header.imageWidth < header.depthWidth || header.imageHeight < header.depthHeight)
+	{
+		DEBUG("error: invalid depth-data file '%s'", fileName.c_str());
+		return false;
+	}
+
+	// read neighbor IDs
+	STATIC_ASSERT(sizeof(uint32_t) == sizeof(IIndex));
+	IDs.resize(header.nIDs);
+	fread(IDs.data(), sizeof(IIndex), IDs.size(), f);
+
+	// read pose
+	STATIC_ASSERT(sizeof(double) == sizeof(REAL));
+	fread(K.val, sizeof(REAL), 9, f);
+	fread(R.val, sizeof(REAL), 9, f);
+	fread(C.ptr(), sizeof(REAL), 3, f);
+
+	// read depth-map
+	dMin = header.dMin;
+	dMax = header.dMax;
+	imageSize.width = header.imageWidth;
+	imageSize.height = header.imageHeight;
+	depthMap.create(header.depthHeight, header.depthWidth);
+	fread(depthMap.getData(), sizeof(float), depthMap.area(), f);
+
+	// read normal-map
+	if ((header.type & HeaderDepthDataRaw::HAS_NORMAL) != 0) {
+		if ((flags & HeaderDepthDataRaw::HAS_NORMAL) != 0) {
+			normalMap.create(header.depthHeight, header.depthWidth);
+			fread(normalMap.getData(), sizeof(float)*3, normalMap.area(), f);
+		} else {
+			fseek(f, sizeof(float)*3*header.depthWidth*header.depthHeight, SEEK_CUR);
+		}
+	}
+
+	// read confidence-map
+	if ((header.type & HeaderDepthDataRaw::HAS_CONF) != 0) {
+		if ((flags & HeaderDepthDataRaw::HAS_CONF) != 0) {
+			confMap.create(header.depthHeight, header.depthWidth);
+			fread(confMap.getData(), sizeof(float), confMap.area(), f);
+		}
+	}
+
+	const bool bRet(ferror(f) == 0);
+	fclose(f);
+	return bRet;
+} // ImportDepthDataRaw
 /*----------------------------------------------------------------*/
 
 
