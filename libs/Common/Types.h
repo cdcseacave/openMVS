@@ -84,6 +84,7 @@
 #ifdef _USE_BOOST
 #if 1
 // disable exception support
+#define BOOST_NO_UNREACHABLE_RETURN_DETECTION
 #define BOOST_EXCEPTION_DISABLE
 #define BOOST_NO_EXCEPTIONS
 #endif

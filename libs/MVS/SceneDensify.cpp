@@ -31,7 +31,6 @@
 
 #include "Common.h"
 #include "Scene.h"
-#include "SceneDensify.h"
 // MRF: view selection
 #include "../Math/TRWS/MRFEnergy.h"
 // CGAL: depth-map initialization
@@ -1526,7 +1525,8 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, b
 static void* DenseReconstructionEstimateTmp(void*);
 static void* DenseReconstructionFilterTmp(void*);
 
-bool Scene::DenseReconstruction() {
+bool Scene::DenseReconstruction()
+{
 	DenseDepthMapData data(*this);
 	
 	// estimate depth-maps
@@ -1570,7 +1570,8 @@ bool Scene::DenseReconstruction() {
 
 // do first half of dense reconstruction: depth map computation
 // results are saved to "data"
-bool Scene::ComputeDepthMaps(DenseDepthMapData& data) {
+bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
+{
 	{
 	// maps global view indices to our list of views to be processed
 	IIndexArr imagesMap;
@@ -1734,7 +1735,8 @@ void* DenseReconstructionEstimateTmp(void* arg) {
 }
 
 // initialize the dense reconstruction with the sparse point cloud
-void Scene::DenseReconstructionEstimate(void* pData) {
+void Scene::DenseReconstructionEstimate(void* pData)
+{
 	DenseDepthMapData& data = *((DenseDepthMapData*)pData);
 	while (true) {
 		CAutoPtr<Event> evt(data.events.GetEvent());
