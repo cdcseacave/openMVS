@@ -194,7 +194,7 @@ bool DepthData::Save(const String& fileName) const
 		for (const ViewData& image: images)
 			IDs.push_back(image.GetID());
 		const ViewData& image0 = GetView();
-		if (!ExportDepthDataRaw(fileNameTmp, IDs, depthMap.size(), image0.camera.K, image0.camera.R, image0.camera.C, dMin, dMax, depthMap, normalMap, confMap))
+		if (!ExportDepthDataRaw(fileNameTmp, image0.pImageData->name, IDs, depthMap.size(), image0.camera.K, image0.camera.R, image0.camera.C, dMin, dMax, depthMap, normalMap, confMap))
 			return false;
 	}
 	if (!File::renameFile(fileNameTmp, fileName)) {
@@ -208,10 +208,11 @@ bool DepthData::Load(const String& fileName)
 {
 	ASSERT(IsValid());
 	// serialize in the saved state
+	String imageFileName;
 	IIndexArr IDs;
 	cv::Size imageSize;
 	Camera camera;
-	if (!ImportDepthDataRaw(fileName, IDs, imageSize, camera.K, camera.R, camera.C, dMin, dMax, depthMap, normalMap, confMap))
+	if (!ImportDepthDataRaw(fileName, imageFileName, IDs, imageSize, camera.K, camera.R, camera.C, dMin, dMax, depthMap, normalMap, confMap))
 		return false;
 	ASSERT(IDs.size() == images.size());
 	ASSERT(IDs.front() == GetView().GetID());
@@ -1387,8 +1388,8 @@ struct HeaderDepthDataRaw {
 	uint32_t imageWidth, imageHeight; // image resolution
 	uint32_t depthWidth, depthHeight; // depth-map resolution
 	float dMin, dMax; // depth range for this view
-	uint32_t nIDs; // number of view IDs
-	// view ID followed by neighbor view IDs: uint32_t* IDs
+	// image file name length followed by the characters: uint16_t nFileNameSize; char* FileName
+	// number of view IDs followed by view ID and neighbor view IDs: uint32_t nIDs; uint32_t* IDs
 	// camera, rotation and translation matrices (row-major): double K[3][3], R[3][3], C[3]
 	// depth, normal, confidence maps
 	inline HeaderDepthDataRaw() : name(0), type(0), padding(0) {}
@@ -1396,7 +1397,7 @@ struct HeaderDepthDataRaw {
 	int GetStep() const { return ROUND2INT((float)imageWidth/depthWidth); }
 };
 
-bool MVS::ExportDepthDataRaw(const String& fileName,
+bool MVS::ExportDepthDataRaw(const String& fileName, const String& imageFileName,
 	const IIndexArr& IDs, const cv::Size& imageSize,
 	const KMatrix& K, const RMatrix& R, const CMatrix& C,
 	Depth dMin, Depth dMax,
@@ -1422,16 +1423,24 @@ bool MVS::ExportDepthDataRaw(const String& fileName,
 	header.depthHeight = (uint32_t)depthMap.rows;
 	header.dMin = dMin;
 	header.dMax = dMax;
-	header.nIDs = IDs.size();
 	if (!normalMap.empty())
 		header.type |= HeaderDepthDataRaw::HAS_NORMAL;
 	if (!confMap.empty())
 		header.type |= HeaderDepthDataRaw::HAS_CONF;
 	fwrite(&header, sizeof(HeaderDepthDataRaw), 1, f);
 
+	// write image file name
+	STATIC_ASSERT(sizeof(String::value_type) == sizeof(char));
+	const String FileName(MAKE_PATH_REL(Util::getFullPath(Util::getFilePath(fileName)), Util::getFullPath(imageFileName)));
+	const uint16_t nFileNameSize((uint16_t)FileName.length());
+	fwrite(&nFileNameSize, sizeof(uint16_t), 1, f);
+	fwrite(FileName.c_str(), sizeof(char), nFileNameSize, f);
+
 	// write neighbor IDs
 	STATIC_ASSERT(sizeof(uint32_t) == sizeof(IIndex));
-	fwrite(IDs.data(), sizeof(IIndex), IDs.size(), f);
+	const uint32_t nIDs(IDs.size());
+	fwrite(&nIDs, sizeof(IIndex), 1, f);
+	fwrite(IDs.data(), sizeof(IIndex), nIDs, f);
 
 	// write pose
 	STATIC_ASSERT(sizeof(double) == sizeof(REAL));
@@ -1455,7 +1464,7 @@ bool MVS::ExportDepthDataRaw(const String& fileName,
 	return bRet;
 } // ExportDepthDataRaw
 
-bool MVS::ImportDepthDataRaw(const String& fileName,
+bool MVS::ImportDepthDataRaw(const String& fileName, String& imageFileName,
 	IIndexArr& IDs, cv::Size& imageSize,
 	KMatrix& K, RMatrix& R, CMatrix& C,
 	Depth& dMin, Depth& dMax,
@@ -1479,10 +1488,19 @@ bool MVS::ImportDepthDataRaw(const String& fileName,
 		return false;
 	}
 
+	// read image file name
+	STATIC_ASSERT(sizeof(String::value_type) == sizeof(char));
+	uint16_t nFileNameSize;
+	fread(&nFileNameSize, sizeof(uint16_t), 1, f);
+	imageFileName.resize(nFileNameSize);
+	fread(&imageFileName[0], sizeof(char), nFileNameSize, f);
+
 	// read neighbor IDs
 	STATIC_ASSERT(sizeof(uint32_t) == sizeof(IIndex));
-	IDs.resize(header.nIDs);
-	fread(IDs.data(), sizeof(IIndex), IDs.size(), f);
+	uint32_t nIDs;
+	fread(&nIDs, sizeof(IIndex), 1, f);
+	IDs.resize(nIDs);
+	fread(IDs.data(), sizeof(IIndex), nIDs, f);
 
 	// read pose
 	STATIC_ASSERT(sizeof(double) == sizeof(REAL));
