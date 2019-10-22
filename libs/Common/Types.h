@@ -84,11 +84,12 @@
 #ifdef _USE_BOOST
 #if 1
 // disable exception support
+#define BOOST_NO_UNREACHABLE_RETURN_DETECTION
 #define BOOST_EXCEPTION_DISABLE
 #define BOOST_NO_EXCEPTIONS
 #endif
 #ifdef BOOST_NO_EXCEPTIONS
-namespace boost { void throw_exception(std::exception const&); }
+#include <boost/throw_exception.hpp>
 #endif
 #define BOOST_NO_UNREACHABLE_RETURN_DETECTION
 // include headers that implement serialization support
