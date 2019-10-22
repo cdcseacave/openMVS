@@ -3,7 +3,7 @@ version: "{build}"
 
 image:
   - Visual Studio 2017
-  - Ubuntu
+  - ubuntu1804
 
 platform:
   - x64
@@ -19,8 +19,18 @@ configuration:
 
 # scripts that are called at very beginning, before repo cloning
 init:
+  #------------------
+  # Windows 10
+  #------------------
+  - cmd: ver
   - cmd: cmake --version
   - cmd: msbuild /version
+
+  #------------------
+  # Ubuntu 18.04 LTS 
+  #------------------
+  - sh: lsb_release -a
+  - sh: cmake --version
 
 # branches to build
 branches:
@@ -54,7 +64,7 @@ install:
   - cmd: cd "%APPVEYOR_BUILD_FOLDER%"
 
   #------------------
-  # Ubuntu 16.04 LTS 
+  # Ubuntu 18.04 LTS 
   #------------------
   - sh: sudo apt-get update -qq && sudo apt-get install -qq
   - sh: sudo apt-get -y install build-essential git mercurial cmake libpng-dev libjpeg-dev libtiff-dev libglu1-mesa-dev libxmu-dev libxi-dev
@@ -74,7 +84,7 @@ for:
 -
   matrix:
     only:
-      - image: Ubuntu
+      - image: ubuntu1804
   cache:
     - '/usr/lib/x86_64-linux-gnu/'
 
@@ -92,7 +102,7 @@ build_script:
   - cmd: cmake --build . --target ALL_BUILD --config %Configuration% -- /maxcpucount:4
 
   #------------------
-  # Ubuntu 16.04 LTS
+  # Ubuntu 18.04 LTS
   #------------------
   - sh: hg clone https://bitbucket.org/eigen/eigen#3.2
   - sh: mkdir eigen_build && cd eigen_build
