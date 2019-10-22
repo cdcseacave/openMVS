@@ -1095,6 +1095,7 @@ void MVS::EstimatePointNormals(const ImageArr& images, PointCloud& pointcloud, i
 	// estimates normals direction;
 	// Note: pca_estimate_normals() requires an iterator over points
 	// as well as property maps to access each point's position and normal.
+	#if CGAL_VERSION_NR < 1041301000
 	#if CGAL_VERSION_NR < 1040800000
 	CGAL::pca_estimate_normals(
 	#else
@@ -1105,6 +1106,13 @@ void MVS::EstimatePointNormals(const ImageArr& images, PointCloud& pointcloud, i
 		CGAL::Second_of_pair_property_map<PointVectorPair>(),
 		numNeighbors
 	);
+	#else
+	CGAL::pca_estimate_normals<CGAL::Sequential_tag>(
+		pointvectors, numNeighbors,
+		CGAL::parameters::point_map(CGAL::First_of_pair_property_map<PointVectorPair>())
+		.normal_map(CGAL::Second_of_pair_property_map<PointVectorPair>())
+	);
+	#endif
 	// store the point normals
 	pointcloud.normals.Resize(pointcloud.points.GetSize());
 	FOREACH(i, pointcloud.normals) {
