@@ -2358,7 +2358,8 @@ void MeshRefineCUDA::ListFaceAreas(Mesh::AreaArr& maxAreas)
 		if (!imageData.IsValid())
 			continue;
 		Mesh::AreaArr& areas = viewAreas[idxImage];
-		areas.Resize(scene.mesh.faces.GetSize());
+		int facesSize = scene.mesh.faces.GetSize();
+		areas.Resize(facesSize);
 		areas.Memset(0);
 		// get faceMap from the GPU memory
 		TImage<FIndex> faceMap(imageData.height, imageData.width);
@@ -2367,7 +2368,7 @@ void MeshRefineCUDA::ListFaceAreas(Mesh::AreaArr& maxAreas)
 		for (int j=0; j<faceMap.rows; ++j) {
 			for (int i=0; i<faceMap.cols; ++i) {
 				const FIndex idxFace(faceMap(j,i));
-				if (idxFace == NO_ID)
+				if (idxFace == NO_ID || idxFace < 0 || idxFace >= facesSize)
 					continue;
 				++areas[idxFace];
 			}
