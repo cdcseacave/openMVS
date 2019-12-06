@@ -1,4 +1,4 @@
-FROM ubuntu
+FROM ubuntu:18.04
 
 # Initialize the environment 
 RUN apt update
