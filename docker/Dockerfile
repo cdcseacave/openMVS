@@ -9,8 +9,8 @@ RUN apt-get update -yq
 RUN apt-get install -yq
 RUN apt-get -y install git mercurial cmake libpng-dev libjpeg-dev libtiff-dev libglu1-mesa-dev
 
-# Eigen
-RUN hg clone https://bitbucket.org/eigen/eigen#3.2
+# Eigen (This release of eigen has been tested to work with openMVS 1.0) 
+RUN git clone https://gitlab.com/libeigen/eigen --branch 3.3.7 
 RUN mkdir eigen_build
 RUN cd eigen_build &&\
 	cmake . ../eigen &&\
@@ -36,12 +36,11 @@ RUN git clone https://github.com/cdcseacave/openMVS.git --branch v1.0
 # RUN git clone https://github.com/cdcseacave/openMVS.git openMVS
 
 RUN mkdir openMVS_build
-RUN echo "hello"
 RUN cd openMVS_build &&\
 	cmake . ../openMVS -DCMAKE_BUILD_TYPE=Release -DVCG_ROOT=/vcglib
 
 # Install OpenMVS library
 RUN cd openMVS_build &&\
-	make -j2 &&\
+	make -j4 &&\
 	make install
 ENV PATH /usr/local/bin/OpenMVS:$PATH
