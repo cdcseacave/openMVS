@@ -9,8 +9,8 @@ RUN apt-get update -yq
 RUN apt-get install -yq
 RUN apt-get -y install git mercurial cmake libpng-dev libjpeg-dev libtiff-dev libglu1-mesa-dev
 
-# Eigen (This release of eigen has been tested to work with openMVS 1.0) 
-RUN git clone https://gitlab.com/libeigen/eigen --branch 3.2.1 
+# Eigen (Known issues with eigen 3.3.7 as of 12/10/2019, so using this tested branch/commit instead) 
+RUN git clone https://gitlab.com/libeigen/eigen --branch 3.2 ed5cd0a4d16e12daa1bef608628c103e67969d63
 RUN mkdir eigen_build
 RUN cd eigen_build &&\
 	cmake . ../eigen &&\
