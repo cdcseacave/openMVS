@@ -6,7 +6,7 @@
 1. Make sure docker is installed on your local machine.
 2. Run the 'easy start' script, using the *full local path* to the folder with your SFM input files (perhaps output from openMVG or COLMAP):
 
-	./easyStart.sh /path/where/your/SFM/results/are
+	./QUICK_START.sh /path/where/your/SFM/results/are
 
 3. This will put you in a directory (inside the Docker container) mounted to the local path you specified so that you can run openMVS binaries on your own SFM inputs. Enjoy!
 
