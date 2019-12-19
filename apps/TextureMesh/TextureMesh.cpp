@@ -53,6 +53,7 @@ float fOutlierThreshold;
 float fRatioDataSmoothness;
 bool bGlobalSeamLeveling;
 bool bLocalSeamLeveling;
+bool reTexture;
 unsigned nTextureSizeMultiple;
 unsigned nRectPackingHeuristic;
 uint32_t nColEmpty;
@@ -104,6 +105,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		("cost-smoothness-ratio", boost::program_options::value<float>(&OPT::fRatioDataSmoothness)->default_value(0.1f), "ratio used to adjust the preference for more compact patches (1 - best quality/worst compactness, ~0 - worst quality/best compactness)")
 		("global-seam-leveling", boost::program_options::value<bool>(&OPT::bGlobalSeamLeveling)->default_value(true), "generate uniform texture patches using global seam leveling")
 		("local-seam-leveling", boost::program_options::value<bool>(&OPT::bLocalSeamLeveling)->default_value(true), "generate uniform texture patch borders using local seam leveling")
+		("re-texture", boost::program_options::value<bool>(&OPT::reTexture)->default_value(false), "generate texture using previous atlas")
 		("texture-size-multiple", boost::program_options::value<unsigned>(&OPT::nTextureSizeMultiple)->default_value(0), "texture size should be a multiple of this value (0 - power of two)")
 		("patch-packing-heuristic", boost::program_options::value<unsigned>(&OPT::nRectPackingHeuristic)->default_value(3), "specify the heuristic used when deciding where to place a new patch (0 - best fit, 3 - good speed, 100 - best speed)")
 		("empty-color", boost::program_options::value<uint32_t>(&OPT::nColEmpty)->default_value(0x00FF7F27), "color used for faces not covered by any image")
@@ -228,7 +230,7 @@ int main(int argc, LPCTSTR* argv)
 	{
 	// compute mesh texture
 	TD_TIMER_START();
-	if (!scene.TextureMesh(OPT::nResolutionLevel, OPT::nMinResolution, OPT::fOutlierThreshold, OPT::fRatioDataSmoothness, OPT::bGlobalSeamLeveling, OPT::bLocalSeamLeveling, OPT::nTextureSizeMultiple, OPT::nRectPackingHeuristic, Pixel8U(OPT::nColEmpty)))
+	if (!scene.TextureMesh(OPT::nResolutionLevel, OPT::nMinResolution, OPT::fOutlierThreshold, OPT::fRatioDataSmoothness, OPT::bGlobalSeamLeveling, OPT::bLocalSeamLeveling, OPT::nTextureSizeMultiple, OPT::nRectPackingHeuristic, Pixel32F(OPT::nColEmpty), OPT::reTexture))
 		return EXIT_FAILURE;
 	VERBOSE("Mesh texturing completed: %u vertices, %u faces (%s)", scene.mesh.vertices.GetSize(), scene.mesh.faces.GetSize(), TD_TIMER_GET_FMT().c_str());
 
@@ -244,14 +246,14 @@ int main(int argc, LPCTSTR* argv)
 	if (OPT::nOrthoMapResolution) {
 		// project mesh as an orthographic image
 		ProjectOrtho:
-		Image8U3 imageRGB;
-		Image8U imageRGBA[4];
+		Image32F3 imageRGB;
+		Image32F imageRGBA[4];
 		Point3 center;
 		scene.mesh.ProjectOrthoTopDown(OPT::nOrthoMapResolution, imageRGB, imageRGBA[3], center);
-		Image8U4 image;
+		Image32F4 image;
 		cv::split(imageRGB, imageRGBA);
 		cv::merge(imageRGBA, 4, image);
-		image.Save(baseFileName+_T("_orthomap.png"));
+		image.Save(baseFileName+_T("_orthomap.exr"));
 		SML sml(_T("OrthoMap"));
 		sml[_T("Center")].val = String::FormatString(_T("%g %g %g"), center.x, center.y, center.z);
 		sml.Save(baseFileName+_T("_orthomap.txt"));

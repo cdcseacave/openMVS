@@ -124,7 +124,7 @@ void DepthData::GetNormal(const ImageRef& ir, Point3f& N, const TImage<Point3f>*
 	const int nPoints = 2*nPointsHalf+1;
 	const int nWindowHalf = nPointsHalf*nPointsStep;
 	const int nWindow = 2*nWindowHalf+1;
-	const Image8U::Size size(depthMap.size());
+	const Image32F::Size size(depthMap.size());
 	const ImageRef ptCorner(ir.x-nWindowHalf, ir.y-nWindowHalf);
 	const ImageRef ptCornerRel(ptCorner.x>=0?0:-ptCorner.x, ptCorner.y>=0?0:-ptCorner.y);
 	Point3Arr points(1, nPoints*nPoints);
@@ -229,7 +229,7 @@ unsigned DepthData::DecRef()
 //                         1 2 3
 //  1 2 4 7 5 3 6 8 9 -->  4 5 6
 //                         7 8 9
-void DepthEstimator::MapMatrix2ZigzagIdx(const Image8U::Size& size, DepthEstimator::MapRefArr& coords, const BitMatrix& mask, int rawStride)
+void DepthEstimator::MapMatrix2ZigzagIdx(const Image32F::Size& size, DepthEstimator::MapRefArr& coords, const BitMatrix& mask, int rawStride)
 {
 	typedef DepthEstimator::MapRef MapRef;
 	const int w = size.width;
@@ -1043,11 +1043,11 @@ void MVS::EstimatePointColors(const ImageArr& images, PointCloud& pointcloud)
 		}
 		if (pImageData == NULL) {
 			// set a dummy color
-			color = Pixel8U::WHITE;
+			color = Pixel32F::WHITE;
 		} else {
 			// get image color
 			const Point2f proj(pImageData->camera.ProjectPointP(point));
-			color = (pImageData->image.isInsideWithBorder<float,1>(proj) ? pImageData->image.sample(proj) : Pixel8U::WHITE);
+			color = (pImageData->image.isInsideWithBorder<float,1>(proj) ? pImageData->image.sample(proj) : Pixel32F::WHITE);
 		}
 	}
 
@@ -1177,7 +1177,7 @@ bool MVS::ExportDepthMap(const String& fileName, const DepthMap& depthMap, Depth
 	}
 	const Depth deltaDepth = maxDepth - minDepth;
 	// save image
-	Image8U img(depthMap.size());
+	Image32F img(depthMap.size());
 	for (int i=depthMap.area(); --i >= 0; ) {
 		const Depth depth = depthMap[i];
 		img[i] = (depth > 0 ? (uint8_t)CLAMP((maxDepth-depth)*255.f/deltaDepth, 0.f, 255.f) : 0);
@@ -1191,12 +1191,12 @@ bool MVS::ExportNormalMap(const String& fileName, const NormalMap& normalMap)
 {
 	if (normalMap.empty())
 		return false;
-	Image8U3 img(normalMap.size());
+	Image32F3 img(normalMap.size());
 	for (int i=normalMap.area(); --i >= 0; ) {
 		img[i] = [](const Normal& n) {
 			return ISZERO(n) ?
-				Image8U3::Type::BLACK :
-				Image8U3::Type(
+				Image32F3::Type::BLACK :
+				Image32F3::Type(
 					CLAMP(ROUND2INT((1.f-n.x)*127.5f), 0, 255),
 					CLAMP(ROUND2INT((1.f-n.y)*127.5f), 0, 255),
 					CLAMP(ROUND2INT(    -n.z *255.0f), 0, 255)
@@ -1230,7 +1230,7 @@ bool MVS::ExportConfidenceMap(const String& fileName, const ConfidenceMap& confM
 	DEBUG_ULTIMATE("\tconfidence range: [%g, %g]", minConf, maxConf);
 	const float deltaConf = maxConf - minConf;
 	// save image
-	Image8U img(confMap.size());
+	Image32F img(confMap.size());
 	for (int i=confMap.area(); --i >= 0; ) {
 		const float conf = confMap[i];
 		img[i] = (conf > 0 ? (uint8_t)CLAMP((conf-minConf)*255.f/deltaConf, 0.f, 255.f) : 0);
@@ -1285,7 +1285,7 @@ bool MVS::ExportPointCloud(const String& fileName, const Image& imageData, const
 					continue;
 				const Point3f X(P0.TransformPointI2W(Point3(i,j,depth)));
 				vertex.x = X.x; vertex.y = X.y; vertex.z = X.z;
-				const Pixel8U c(imageData.image.empty() ? Pixel8U::WHITE : imageData.image(j,i));
+				const Pixel32F c(imageData.image.empty() ? Pixel32F::WHITE : imageData.image(j,i));
 				vertex.r = c.r; vertex.g = c.g; vertex.b = c.b;
 				ply.put_element(&vertex);
 			}
@@ -1343,7 +1343,7 @@ bool MVS::ExportPointCloud(const String& fileName, const Image& imageData, const
 				vertex.x = X.x; vertex.y = X.y; vertex.z = X.z;
 				const Point3f N(P0.R.t() * Cast<REAL>(normalMap(j,i)));
 				vertex.nx = N.x; vertex.ny = N.y; vertex.nz = N.z;
-				const Pixel8U c(imageData.image.empty() ? Pixel8U::WHITE : imageData.image(j, i));
+				const Pixel32F c(imageData.image.empty() ? Pixel32F::WHITE : imageData.image(j, i));
 				vertex.r = c.r; vertex.g = c.g; vertex.b = c.b;
 				ply.put_element(&vertex);
 			}
@@ -1399,35 +1399,35 @@ void MVS::CompareDepthMaps(const DepthMap& depthMap, const DepthMap& depthMapGT,
 	const std::pair<float,float> th(ComputeX84Threshold<float,float>(errors.Begin(), errors.GetSize()));
 	#if TD_VERBOSE != TD_VERBOSE_OFF
 	IDX idxPixel = 0;
-	Image8U3 errorsVisual(depthMap.size());
+	Image32F3 errorsVisual(depthMap.size());
 	for (uint32_t i=0; i<height; ++i) {
 		for (uint32_t j=0; j<width; ++j) {
-			Pixel8U& pix = errorsVisual(i,j);
+			Pixel32F& pix = errorsVisual(i,j);
 			const Depth& depth = depthMap(i,j);
 			const Depth& depthGT = depthMapGT(i,j);
 			if (depth != 0 && depthGT == 0) {
-				pix = Pixel8U::GREEN;
+				pix = Pixel32F::GREEN;
 				continue;
 			}
 			if (depth == 0 && depthGT != 0) {
-				pix = Pixel8U::BLUE;
+				pix = Pixel32F::BLUE;
 				continue;
 			}
 			const float error = errors[idxPixel++];
 			if (depth == 0 && depthGT == 0) {
-				pix = Pixel8U::BLACK;
+				pix = Pixel32F::BLACK;
 				continue;
 			}
 			if (error > threshold) {
-				pix = Pixel8U::RED;
+				pix = Pixel32F::RED;
 				++nErrorPixels;
 				continue;
 			}
 			const uint8_t gray((uint8_t)CLAMP((1.f-SAFEDIVIDE(ABS(error), threshold))*255.f, 0.f, 255.f));
-			pix = Pixel8U(gray, gray, gray);
+			pix = Pixel32F(gray, gray, gray);
 		}
 	}
-	errorsVisual.Save(ComposeDepthFilePath(idxImage, "errors.png"));
+	errorsVisual.Save(ComposeDepthFilePath(idxImage, "errors.exr"));
 	#endif
 	VERBOSE("Depth-maps compared for image % 3u: %.4f PSNR; %g median %g mean %g stddev error; %u (%.2f%%%%) error %u (%.2f%%%%) missing %u (%.2f%%%%) extra pixels (%s)",
 		idxImage,

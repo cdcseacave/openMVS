@@ -65,7 +65,7 @@ public:
 	typedef TPoint3<float> Normal;
 	typedef CLISTDEF0(Normal) NormalArr;
 
-	typedef Pixel8U Color;
+	typedef Pixel32F Color;
 	typedef CLISTDEF0(Color) ColorArr;
 
 	typedef AABB3f Box;

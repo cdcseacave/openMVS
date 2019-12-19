@@ -31,16 +31,24 @@ typedef enum PIXELFORMAT_TYPE {
 	PF_UNKNOWN = 0,
 	// gray
 	PF_A8,
+	PF_A32,
 	PF_GRAY8,
+	PF_GRAY32,
 	// uncompressed RGB
 	PF_R5G6B5,
 	PF_R8G8B8,
 	PF_R8G8B8A8,
 	PF_A8R8G8B8,
+	PF_R32G32B32,
+	PF_R32G32B32A32,
+	PF_A32R32G32B32,
 	// uncompressed BGR
 	PF_B8G8R8,
 	PF_B8G8R8A8,
 	PF_A8B8G8R8,
+	PF_B32G32R32,
+	PF_B32G32R32A32,
+	PF_A32B32G32R32,
 	// compressed
 	PF_DXT1 = 128,
 	PF_DXT2,
@@ -99,6 +107,8 @@ public:
 	static bool			FilterFormat(void*, PIXELFORMAT, Size, const void*, PIXELFORMAT, Size, Size nSzize);
 	static void			FlipRB24(uint8_t* data, Size size, Size stride);
 	static void			CopyFlipRB24(uint8_t* pDst, const uint8_t* pSrc, Size size, Size strideDst, Size strideSrc);
+	static uint8_t 	F32TO8(float x);
+
 
 	static CImage*		Create(LPCTSTR szName, IMCREATE mode);
 

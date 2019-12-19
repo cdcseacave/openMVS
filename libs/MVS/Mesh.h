@@ -94,7 +94,7 @@ public:
 	NormalArr faceNormals; // for each face, the normal to it (optional)
 	TexCoordArr faceTexcoords; // for each face, the texture-coordinates corresponding to the contained vertices (optional)
 
-	Image8U3 textureDiffuse; // texture containing the diffuse color (optional)
+	Image32F3 textureDiffuse; // texture containing the diffuse color (optional)
 
 	#ifdef _USE_CUDA
 	static CUDA::KernelRT kernelComputeFaceNormal;
@@ -162,10 +162,10 @@ public:
 	void SamplePoints(REAL samplingDensity, unsigned mumPointsTheoretic, PointCloud&) const;
 
 	void Project(const Camera& camera, DepthMap& depthMap) const;
-	void Project(const Camera& camera, DepthMap& depthMap, Image8U3& image) const;
+	void Project(const Camera& camera, DepthMap& depthMap, Image32F3& image) const;
 	void ProjectOrtho(const Camera& camera, DepthMap& depthMap) const;
-	void ProjectOrtho(const Camera& camera, DepthMap& depthMap, Image8U3& image) const;
-	void ProjectOrthoTopDown(unsigned resolution, Image8U3& image, Image8U& mask, Point3& center) const;
+	void ProjectOrtho(const Camera& camera, DepthMap& depthMap, Image32F3& image) const;
+	void ProjectOrthoTopDown(unsigned resolution, Image32F3& image, Image32F& mask, Point3& center) const;
 
 	// file IO
 	bool Load(const String& fileName);
@@ -263,7 +263,7 @@ struct TRasterMesh {
 		if (!static_cast<DERIVED*>(this)->CheckNormal(faceCenter))
 			return;
 		// draw triangle and for each pixel compute depth as the ray intersection with the plane
-		Image8U3::RasterizeTriangle(pti[0], pti[1], pti[2], *this);
+		Image32F3::RasterizeTriangle(pti[0], pti[1], pti[2], *this);
 	}
 
 	void Raster(const ImageRef& pt) {

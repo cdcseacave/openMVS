@@ -683,7 +683,7 @@ bool ExportScene(const String& strFolder, const Interface& scene)
 					ProjectVertex_3x4_3_2(cameras[view.imageID].P.val, X.ptr(), proj.p.data());
 					img.projs.push_back(proj);
 				}
-				point.c = scene.verticesColor.empty() ? Interface::Col3(255,255,255) : scene.verticesColor[ID].c;
+				point.c = scene.verticesColor.empty() ? Interface::Col3(1.f,1.f,1.f) : scene.verticesColor[ID].c;
 				point.e = 0;
 				if (!point.Write(file))
 					return false;

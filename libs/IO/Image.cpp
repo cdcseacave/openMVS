@@ -7,6 +7,7 @@
 
 #include "Common.h"
 #include "Image.h"
+#include <algorithm>
 
 using namespace SEACAVE;
 
@@ -193,6 +194,7 @@ CImage::Size CImage::GetStride(PIXELFORMAT pixFormat)
 	switch (pixFormat)
 	{
 	case PF_A8:
+	case PF_A32:
 	case PF_GRAY8:
 		return 1;
 	case PF_R5G6B5:
@@ -204,14 +206,22 @@ CImage::Size CImage::GetStride(PIXELFORMAT pixFormat)
 	case PF_A8R8G8B8:
 	case PF_B8G8R8A8:
 	case PF_A8B8G8R8:
+	case PF_GRAY32:
 		return 4;
 	case PF_DXT1:
 		return 8;
+	case PF_B32G32R32:
+	case PF_R32G32B32:
+		return 12;
 	case PF_DXT2:
 	case PF_DXT3:
 	case PF_DXT4:
 	case PF_DXT5:
 	case PF_3DC:
+	case PF_R32G32B32A32:
+	case PF_A32R32G32B32:
+	case PF_B32G32R32A32:
+	case PF_A32B32G32R32:
 		return 16;
 	default:
 		LOG(LT_IMAGE, "error: unsupported SCI pixel format");
@@ -227,6 +237,7 @@ bool CImage::FormatHasAlpha(PIXELFORMAT format)
 	switch (format)
 	{
 	case PF_A8:
+	case PF_A32:
 	case PF_R8G8B8A8:
 	case PF_A8R8G8B8:
 	case PF_B8G8R8A8:
@@ -235,11 +246,18 @@ bool CImage::FormatHasAlpha(PIXELFORMAT format)
 	case PF_DXT3:
 	case PF_DXT4:
 	case PF_DXT5:
+	case PF_R32G32B32A32:
+	case PF_A32R32G32B32:
+	case PF_B32G32R32A32:
+	case PF_A32B32G32R32:
 		return true;
 	case PF_GRAY8:
+	case PF_GRAY32:
 	case PF_R5G6B5:
 	case PF_B8G8R8:
 	case PF_R8G8B8:
+	case PF_B32G32R32:
+	case PF_R32G32B32:
 	case PF_DXT1:
 	case PF_3DC:
 		return false;
@@ -259,6 +277,7 @@ bool CImage::FilterFormat(void* pDst, PIXELFORMAT formatDst, Size strideDst, con
 	switch (formatDst)
 	{
 	case PF_A8:
+	case PF_A32:
 	case PF_GRAY8:
 		switch (formatSrc)
 		{
@@ -409,6 +428,67 @@ bool CImage::FilterFormat(void* pDst, PIXELFORMAT formatDst, Size strideDst, con
 				((uint8_t*)pDst)[2] = ((uint8_t*)pSrc)[1];
 			}
 			return true;
+
+		case PF_B32G32R32:
+				// from PF_B32G32R32 to PF_R8G8B8 (flip)
+			ASSERT(pDst != pSrc);
+			for (Size i=0; i<nSzize; ++i,(uint8_t*&)pDst+=strideDst,(uint8_t*&)pSrc+=strideSrc) {
+				((uint8_t*)pDst)[0] = F32TO8(((float*)pSrc)[2]);
+				((uint8_t*)pDst)[1] = F32TO8(((float*)pSrc)[1]);
+				((uint8_t*)pDst)[2] = F32TO8(((float*)pSrc)[0]);
+			}
+			return true;
+
+		case PF_R32G32B32:
+				// from PF_R32G32B32 to PF_R8G8B8
+			ASSERT(pDst != pSrc);
+			for (Size i=0; i<nSzize; ++i,(uint8_t*&)pDst+=strideDst,(uint8_t*&)pSrc+=strideSrc) {
+				((uint8_t*)pDst)[0] = F32TO8(((float*)pSrc)[0]);
+				((uint8_t*)pDst)[1] = F32TO8(((float*)pSrc)[1]);
+				((uint8_t*)pDst)[2] = F32TO8(((float*)pSrc)[2]);
+			}
+			return true;
+
+		case PF_A32B32G32R32:
+				// from PF_A32B32G32R32 to PF_R8G8B8 (flip)
+			ASSERT(pDst != pSrc);
+			for (Size i=0; i<nSzize; ++i,(uint8_t*&)pDst+=strideDst,(uint8_t*&)pSrc+=strideSrc) {
+				((uint8_t*)pDst)[0] = F32TO8(((float*)pSrc)[3]);
+				((uint8_t*)pDst)[1] = F32TO8(((float*)pSrc)[2]);
+				((uint8_t*)pDst)[2] = F32TO8(((float*)pSrc)[1]);
+			}
+			return true;
+
+		case PF_A32R32G32B32:
+				// from PF_A32R32G32B32 to PF_R8G8B8
+			ASSERT(pDst != pSrc);
+			for (Size i=0; i<nSzize; ++i,(uint8_t*&)pDst+=strideDst,(uint8_t*&)pSrc+=strideSrc) {
+				((uint8_t*)pDst)[0] = F32TO8(((float*)pSrc)[1]);
+				((uint8_t*)pDst)[1] = F32TO8(((float*)pSrc)[2]);
+				((uint8_t*)pDst)[2] = F32TO8(((float*)pSrc)[3]);
+			}
+			return true;
+
+		case PF_B32G32R32A32:
+				// from PF_B32G32R32A32 to PF_R8G8B8 (flip)
+			ASSERT(pDst != pSrc);
+			for (Size i=0; i<nSzize; ++i,(uint8_t*&)pDst+=strideDst,(uint8_t*&)pSrc+=strideSrc) {
+				((uint8_t*)pDst)[0] = F32TO8(((float*)pSrc)[2]);
+				((uint8_t*)pDst)[1] = F32TO8(((float*)pSrc)[1]);
+				((uint8_t*)pDst)[2] = F32TO8(((float*)pSrc)[0]);
+			}
+			return true;
+
+		case PF_R32G32B32A32:
+				// from PF_R32G32B32A32 to PF_R8G8B8
+			ASSERT(pDst != pSrc);
+			for (Size i=0; i<nSzize; ++i,(uint8_t*&)pDst+=strideDst,(uint8_t*&)pSrc+=strideSrc) {
+				((uint8_t*)pDst)[0] = F32TO8(((float*)pSrc)[0]);
+				((uint8_t*)pDst)[1] = F32TO8(((float*)pSrc)[1]);
+				((uint8_t*)pDst)[2] = F32TO8(((float*)pSrc)[2]);
+			}
+			return true;
+
 		}
 		break;
 
@@ -836,6 +916,16 @@ bool CImage::FilterFormat(void* pDst, PIXELFORMAT formatDst, Size strideDst, con
 } // FilterFormat
 /*----------------------------------------------------------------*/
 
+// Convert Float 32bit into 8bit
+uint8_t CImage::F32TO8(float x)
+{
+		//int val= int(pow(x, 2.2)*255);
+		int val= uint8_t(pow(x, 1/2.2)*255);
+    return std::min(255, std::max(val, 0));
+}
+// F32TO8
+/*----------------------------------------------------------------*/
+
 
 // Flip R and B in a 24bit pixel color.
 // size is the number of pixels to process.
@@ -887,6 +977,10 @@ CImage* CImage::Create(LPCTSTR szName, IMCREATE mode)
 	#ifdef _IMAGE_DDS
 	else if (_tcsncicmp(fext, _T(".dds"), 4) == 0)
 		pImage = new CImageDDS();
+	#endif
+	#ifdef _IMAGE_EXR
+	else if (_tcsncicmp(fext, _T(".exr"), 4) == 0)
+		pImage = new CImageEXR();
 	#endif
 	#ifdef _IMAGE_PNG
 	else if (_tcsncicmp(fext, _T(".png"), 4) == 0)

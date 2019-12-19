@@ -416,7 +416,7 @@ bool UndistortBrown(MVS::Image& imageData, uint32_t ID, const DistCoeff& dc, con
 	#endif
 
 	// undistort image
-	Image8U3 imgUndist;
+	Image32F3 imgUndist;
 	cv::undistort(imageData.image, imgUndist, prevK, distCoeffs, K);
 	imageData.ReleaseImage();
 
@@ -475,7 +475,7 @@ void AssignPoints(const MVS::Image& imageData, uint32_t ID, MVS::PointCloud& poi
 				const int cw(ir.x+j);
 				if (!depthMap.isInside(ImageRef(cw,rw)))
 					continue;
-				if (depthMap(rw,cw) < Xc.z)			
+				if (depthMap(rw,cw) < Xc.z)
 					goto NEXT_POINT;
 			}
 		}

@@ -314,7 +314,7 @@ struct MVS_API DepthEstimator {
 	const Image64F& image0Sum; // integral image used to fast compute patch mean intensity
 	#endif
 	const MapRefArr& coords;
-	const Image8U::Size size;
+	const Image32F::Size size;
 	const Depth dMin, dMax;
 	const Depth dMinSqr, dMaxSqr;
 	const ENDIRECTION dir;
@@ -413,7 +413,7 @@ struct MVS_API DepthEstimator {
 			normal = RMatrixBaseF(normal.cross(viewDir), MINF((ACOS(cosAngLen/norm(viewDir))-FD2R(90.f))*1.01f, -0.001f)) * normal;
 	}
 
-	static void MapMatrix2ZigzagIdx(const Image8U::Size& size, DepthEstimator::MapRefArr& coords, const BitMatrix& mask, int rawStride=16);
+	static void MapMatrix2ZigzagIdx(const Image32F::Size& size, DepthEstimator::MapRefArr& coords, const BitMatrix& mask, int rawStride=16);
 
 	const float smoothBonusDepth, smoothBonusNormal;
 	const float smoothSigmaDepth, smoothSigmaNormal;

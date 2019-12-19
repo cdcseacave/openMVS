@@ -20,7 +20,7 @@ namespace SEACAVE {
 // S T R U C T S ///////////////////////////////////////////////////
 
 // OBJ model files parser.
-// 
+//
 // The OBJ file format is a simple data-format that represents 3D geometry alone —
 // namely, the position of each vertex, the UV position of each texture coordinate
 // vertex, vertex normals, and the faces that make each polygon defined as a list of
@@ -37,12 +37,12 @@ public:
 		struct Material {
 			String name;
 			String diffuse_name;
-			Image8U3 diffuse_map;
+			Image32F3 diffuse_map;
 			Color Kd;
 
 			Material() : Kd(Color::WHITE) {}
 			Material(const String& _name) : name(_name), Kd(Color::WHITE) {}
-			Material(const Image8U3& _diffuse_map, const Color& _Kd=Color::WHITE);
+			Material(const Image32F3& _diffuse_map, const Color& _Kd=Color::WHITE);
 
 			// Makes sure the image is loaded for the diffuse map
 			bool LoadDiffuseMap();

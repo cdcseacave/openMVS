@@ -158,8 +158,8 @@ public:
 	DepthDataArr arrDepthData;
 
 	// used internally to estimate the depth-maps
-	Image8U::Size prevDepthMapSize; // remember the size of the last estimated depth-map
-	Image8U::Size prevDepthMapSizeTrg; // ... same for target image
+	Image32F::Size prevDepthMapSize; // remember the size of the last estimated depth-map
+	Image32F::Size prevDepthMapSizeTrg; // ... same for target image
 	DepthEstimator::MapRefArr coords; // map pixel index to zigzag matrix coordinates
 	DepthEstimator::MapRefArr coordsTrg; // ... same for target image
 };
@@ -550,7 +550,7 @@ bool DepthMapsData::InitDepthMap(DepthData& depthData)
 		data.normal = normalized(edge2.cross(edge1));
 		data.normalPlane = data.normal * INVERT(data.normal.dot(c0));
 		// draw triangle and for each pixel compute depth as the ray intersection with the plane
-		Image8U::RasterizeTriangle(reinterpret_cast<const Point2f&>(i2), reinterpret_cast<const Point2f&>(i1), reinterpret_cast<const Point2f&>(i0), data);
+		Image32F::RasterizeTriangle(reinterpret_cast<const Point2f&>(i2), reinterpret_cast<const Point2f&>(i1), reinterpret_cast<const Point2f&>(i0), data);
 	}
 
 	DEBUG_ULTIMATE("Depth-map %3u roughly estimated from %u sparse points: %dx%d (%s)", &depthData-arrDepthData.Begin(), depthData.points.GetSize(), image.image.width(), image.image.height(), TD_TIMER_GET_FMT().c_str());
@@ -670,7 +670,7 @@ bool DepthMapsData::EstimateDepthMap(IIndex idxImage)
 	ASSERT(depthData.images.GetSize() > 1 && !depthData.points.IsEmpty());
 	const DepthData::ViewData& image(depthData.images.First());
 	ASSERT(!image.image.empty() && !depthData.images[1].image.empty());
-	const Image8U::Size size(image.image.size());
+	const Image32F::Size size(image.image.size());
 	depthData.depthMap.create(size); depthData.depthMap.memset(0);
 	depthData.normalMap.create(size);
 	depthData.confMap.create(size);
@@ -972,7 +972,7 @@ bool DepthMapsData::GapInterpolation(DepthData& depthData)
 					const Depth avg((depthFirst+depth)*0.5f);
 					do {
 						depthMap(v,u_curr) = avg;
-					} while (++u_curr<u);						
+					} while (++u_curr<u);
 					#else
 					// interpolate values
 					const Depth diff((depth-depthFirst)/(count+1));
@@ -982,7 +982,7 @@ bool DepthMapsData::GapInterpolation(DepthData& depthData)
 						do {
 							depthMap(v,u_curr) = (d+=diff);
 							if (!confMap.empty()) confMap(v,u_curr) = c;
-						} while (++u_curr<u);						
+						} while (++u_curr<u);
 					} else {
 						Point2f dir1, dir2;
 						Normal2Dir(normalMap(v,u_first), dir1);
@@ -993,7 +993,7 @@ bool DepthMapsData::GapInterpolation(DepthData& depthData)
 							dir1 += dirDiff;
 							Dir2Normal(dir1, normalMap(v,u_curr));
 							if (!confMap.empty()) confMap(v,u_curr) = c;
-						} while (++u_curr<u);						
+						} while (++u_curr<u);
 					}
 					#endif
 				}
@@ -1038,7 +1038,7 @@ bool DepthMapsData::GapInterpolation(DepthData& depthData)
 					const Depth avg((depthFirst+depth)*0.5f);
 					do {
 						depthMap(v_curr,u) = avg;
-					} while (++v_curr<v);						
+					} while (++v_curr<v);
 					#else
 					// interpolate values
 					const Depth diff((depth-depthFirst)/(count+1));
@@ -1048,7 +1048,7 @@ bool DepthMapsData::GapInterpolation(DepthData& depthData)
 						do {
 							depthMap(v_curr,u) = (d+=diff);
 							if (!confMap.empty()) confMap(v_curr,u) = c;
-						} while (++v_curr<v);						
+						} while (++v_curr<v);
 					} else {
 						Point2f dir1, dir2;
 						Normal2Dir(normalMap(v_first,u), dir1);
@@ -1059,7 +1059,7 @@ bool DepthMapsData::GapInterpolation(DepthData& depthData)
 							dir1 += dirDiff;
 							Dir2Normal(dir1, normalMap(v_curr,u));
 							if (!confMap.empty()) confMap(v_curr,u) = c;
-						} while (++v_curr<v);						
+						} while (++v_curr<v);
 					}
 					#endif
 				}
@@ -1092,7 +1092,7 @@ bool DepthMapsData::FilterDepthMap(DepthData& depthDataRef, const IIndexArr& idx
 
 	// project all neighbor depth-maps to this image
 	const DepthData::ViewData& imageRef = depthDataRef.images.First();
-	const Image8U::Size sizeRef(depthDataRef.depthMap.size());
+	const Image32F::Size sizeRef(depthDataRef.depthMap.size());
 	const Camera& cameraRef = imageRef.camera;
 	DepthMapArr depthMaps(N);
 	ConfidenceMapArr confMaps(N);
@@ -1108,7 +1108,7 @@ bool DepthMapsData::FilterDepthMap(DepthData& depthDataRef, const IIndexArr& idx
 		const IIndex idxView = depthDataRef.neighbors[idxNeighbors[(IIndex)n]].idx.ID;
 		const DepthData& depthData = arrDepthData[idxView];
 		const Camera& camera = depthData.images.First().camera;
-		const Image8U::Size size(depthData.depthMap.size());
+		const Image32F::Size size(depthData.depthMap.size());
 		for (int i=0; i<size.height; ++i) {
 			for (int j=0; j<size.width; ++j) {
 				const ImageRef x(j,i);
@@ -1402,12 +1402,12 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, b
 			depthIdxs.memset((uint8_t)NO_ID);
 		}
 		ASSERT(!depthData.IsEmpty());
-		const Image8U::Size sizeMap(depthData.depthMap.size());
+		const Image32F::Size sizeMap(depthData.depthMap.size());
 		const Image& imageData = *depthData.images.First().pImageData;
 		ASSERT(&imageData-scene.images.Begin() == idxImage);
 		DepthIndex& depthIdxs = arrDepthIdx[idxImage];
 		if (depthIdxs.empty()) {
-			depthIdxs.create(Image8U::Size(imageData.width, imageData.height));
+			depthIdxs.create(Image32F::Size(imageData.width, imageData.height));
 			depthIdxs.memset((uint8_t)NO_ID);
 		}
 		const size_t nNumPointsPrev(pointcloud.points.GetSize());

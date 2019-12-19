@@ -233,14 +233,14 @@ inline TPoint2<TYPE> DistortPointR1(const TPoint2<TYPE>& pt, const REAL& k1) {
 	#endif
 }
 
-void UndistortImage(const Camera& camera, const REAL& k1, const Image8U3 imgIn, Image8U3& imgOut)
+void UndistortImage(const Camera& camera, const REAL& k1, const Image32F3 imgIn, Image32F3& imgOut)
 {
 	// allocate the undistorted image
 	if (imgOut.data == imgIn.data ||
 		imgOut.cols != imgIn.cols ||
 		imgOut.rows != imgIn.rows ||
 		imgOut.type() != imgIn.type())
-		imgOut = Image8U3(imgIn.rows, imgIn.cols);
+		imgOut = Image32F3(imgIn.rows, imgIn.cols);
 
 	// compute each pixel
 	const int w = imgIn.cols;
@@ -260,13 +260,13 @@ void UndistortImage(const Camera& camera, const REAL& k1, const Image8U3 imgIn, 
 			Camera::NormalizeProjection(K.val, pt.ptr(), pt.ptr());
 
 			// if coordinates in range
-			Pixel8U& col = imgOut(v,u);
+			Pixel32F& col = imgOut(v,u);
 			if (imgIn.isInside(pt)) {
 				// get pixel color
 				col = imgIn.sample<Sampler,Pixel32F>(sampler, pt).cast<uint8_t>();
 			} else {
 				// set to black
-				col = Pixel8U::BLACK;
+				col = Pixel32F::BLACK;
 			}
 		}
 	}
