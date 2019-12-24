@@ -254,7 +254,7 @@ bool Scene::SaveInterface(const String & fileName) const
 			vertexNormal.n = normal;
 		}
 	}
-	if (!pointcloud.normals.IsEmpty()) {
+	if (!pointcloud.colors.IsEmpty()) {
 		obj.verticesColor.resize(pointcloud.colors.GetSize());
 		FOREACH(i, pointcloud.colors) {
 			const PointCloud::Color& color = pointcloud.colors[i];
