@@ -34,5 +34,6 @@ CMakeSettings.json
 .vs/
 .idea/
 .vscode/
+out/
 bin/
 binaries/
