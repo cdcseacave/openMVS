@@ -120,13 +120,6 @@
 #endif // _MSC_VER
 
 
-#define DECLARE_TEMPLATE_INSTANCE(mod, typ, lptyp, ...) \
-	mod##_TPL template class mod##_API T##typ<__VA_ARGS__>; \
-	typedef class T##typ<__VA_ARGS__> typ; \
-	typedef typ *lptyp; \
-	typedef cList<lptyp, lptyp, 0> lptyp##ARR;
-
-
 #if !defined(_DEBUG) && !defined(_PROFILE)
 #define _RELEASE // exclude code useful only for debug
 #endif
