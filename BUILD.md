@@ -118,6 +118,9 @@ brew tap homebrew/science
 brew install boost eigen opencv cgal ceres-solver
 main_path=`pwd`
 
+#GLFW3 (Optional)
+brew install glew glfw3
+
 #VCGLib (Required)
 git clone https://github.com/cdcseacave/VCG.git vcglib
 

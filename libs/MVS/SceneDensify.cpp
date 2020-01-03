@@ -2052,7 +2052,7 @@ void Scene::PointCloudFilter(int thRemove)
 		for (int views: visibility) {
 			if (views > 0)
 				continue;
-			while (counts.size() <= -views)
+			while (counts.size() <= IDX(-views))
 				counts.push_back(0);
 			++counts[-views];
 		}
