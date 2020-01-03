@@ -329,6 +329,9 @@ typedef int64_t     	    size_f_t;
 // type used as the default floating number precision
 typedef double              REAL;
 
+template <typename TYPE, typename REALTYPE=REAL>
+struct RealType { typedef typename std::conditional<std::is_floating_point<TYPE>::value, TYPE, REALTYPE>::type type; };
+
 template<typename T>
 inline T MINF3(const T& x1, const T& x2, const T& x3) {
 	return MINF(MINF(x1, x2), x3);
