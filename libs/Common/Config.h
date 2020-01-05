@@ -120,23 +120,12 @@
 #endif // _MSC_VER
 
 
-#define DECLARE_TEMPLATE_INSTANCE(mod, typ, lptyp, ...) \
-	mod##_TPL template class mod##_API T##typ<__VA_ARGS__>; \
-	typedef class T##typ<__VA_ARGS__> typ; \
-	typedef typ *lptyp; \
-	typedef cList<lptyp, lptyp, 0> lptyp##ARR;
-
-
 #if !defined(_DEBUG) && !defined(_PROFILE)
-#define _RELEASE			// exclude code useful only for debug
+#define _RELEASE // exclude code useful only for debug
 #endif
 
 
 #if defined(_MSC_VER) && _MSC_VER >= 1400
-//disable the deprecated warnings for the CRT functions.
-//#ifndef _CRT_SECURE_CPP_OVERLOAD_STANDARD_NAMES
-//#define _CRT_SECURE_CPP_OVERLOAD_STANDARD_NAMES 1
-//#endif
 #ifndef _CRT_SECURE_NO_WARNINGS
 #define _CRT_SECURE_NO_WARNINGS 1
 #endif
@@ -148,6 +137,16 @@
 #endif
 #ifndef _CRT_NON_CONFORMING_SWPRINTFS
 #define _CRT_NON_CONFORMING_SWPRINTFS 1
+#endif
+#ifndef _CRT_SECURE_CPP_OVERLOAD_SECURE_NAMES
+#define _CRT_SECURE_CPP_OVERLOAD_SECURE_NAMES 0 // disable automatically overloading CPP names to secure versions
+#endif
+#ifndef _ITERATOR_DEBUG_LEVEL
+#ifndef _DEBUG
+#define _ITERATOR_DEBUG_LEVEL 0
+#else
+#define _ITERATOR_DEBUG_LEVEL 1 // disable std iterator debugging even in Debug, as it is very slow
+#endif
 #endif
 #endif
 

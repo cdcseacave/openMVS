@@ -292,7 +292,7 @@ int ImportSceneVSFM()
 	// convert data from VisualSFM to OpenMVS
 	MVS::Scene scene(OPT::nMaxThreads);
 	scene.platforms.Reserve((uint32_t)cameras.size());
-	scene.images.Reserve((uint32_t)cameras.size());
+	scene.images.Reserve((MVS::IIndex)cameras.size());
 	scene.nCalibratedImages = 0;
 	for (size_t idx=0; idx<cameras.size(); ++idx) {
 		MVS::Image& image = scene.images.AddEmpty();
@@ -308,6 +308,7 @@ int ImportSceneVSFM()
 		MVS::Platform& platform = scene.platforms.AddEmpty();
 		MVS::Platform::Camera& camera = platform.cameras.AddEmpty();
 		image.cameraID = 0;
+		image.ID = static_cast<MVS::IIndex>(idx);
 		const PBA::Camera& cameraNVM = cameras[idx];
 		camera.K = MVS::Platform::Camera::ComposeK<REAL,REAL>(cameraNVM.GetFocalLength(), cameraNVM.GetFocalLength(), image.width, image.height);
 		camera.R = RMatrix::IDENTITY;

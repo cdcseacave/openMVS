@@ -78,11 +78,12 @@ public:
 	uint32_t platformID; // ID of the associated platform
 	uint32_t cameraID; // ID of the associated camera on the associated platform
 	uint32_t poseID; // ID of the pose of the associated platform
+	uint32_t ID; // global ID of the image
 	String name; // image file name (relative path)
 	Camera camera; // view's pose
 	uint32_t width, height; // image size
 	Image8U3 image; // image color pixels
-	ViewScoreArr neighbors; // score&store the neighbor images
+	ViewScoreArr neighbors; // scored neighbor images
 	float scale; // image scale relative to the original size
 	float avgDepth; // average depth of the points seen by this camera
 
@@ -123,6 +124,7 @@ public:
 		ar & platformID;
 		ar & cameraID;
 		ar & poseID;
+		ar & ID;
 		const String relName(MAKE_PATH_REL(WORKING_FOLDER_FULL, name));
 		ar & relName;
 		ar & width & height;
@@ -134,6 +136,7 @@ public:
 		ar & platformID;
 		ar & cameraID;
 		ar & poseID;
+		ar & ID;
 		ar & name;
 		name = MAKE_PATH_FULL(WORKING_FOLDER_FULL, name);
 		ar & width & height;

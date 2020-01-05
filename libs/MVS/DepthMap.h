@@ -149,6 +149,13 @@ struct MVS_API DepthData {
 		Image32F image; // image float intensities
 		Image* pImageData; // image data
 
+		inline IIndex GetID() const {
+			return pImageData->ID;
+		}
+		inline IIndex GetLocalID(const ImageArr& images) const {
+			return (IIndex)(pImageData - images.begin());
+		}
+
 		template <typename IMAGE>
 		static bool ScaleImage(const IMAGE& image, IMAGE& imageScaled, float scale) {
 			if (ABS(scale-1.f) < 0.15f)
@@ -188,6 +195,9 @@ struct MVS_API DepthData {
 	inline bool IsEmpty() const {
 		return depthMap.empty();
 	}
+
+	const ViewData& GetView() const { return images.front(); }
+	const Camera& GetCamera() const { return GetView().camera; }
 
 	void GetNormal(const ImageRef& ir, Point3f& N, const TImage<Point3f>* pPointMap=NULL) const;
 	void GetNormal(const Point2f& x, Point3f& N, const TImage<Point3f>* pPointMap=NULL) const;
@@ -449,6 +459,17 @@ MVS_API bool ExportDepthMap(const String& fileName, const DepthMap& depthMap, De
 MVS_API bool ExportNormalMap(const String& fileName, const NormalMap& normalMap);
 MVS_API bool ExportConfidenceMap(const String& fileName, const ConfidenceMap& confMap);
 MVS_API bool ExportPointCloud(const String& fileName, const Image&, const DepthMap&, const NormalMap&);
+
+MVS_API bool ExportDepthDataRaw(const String&, const String& imageFileName,
+	const IIndexArr&, const cv::Size& imageSize,
+	const KMatrix&, const RMatrix&, const CMatrix&,
+	Depth dMin, Depth dMax,
+	const DepthMap&, const NormalMap&, const ConfidenceMap&);
+MVS_API bool ImportDepthDataRaw(const String&, String& imageFileName,
+	IIndexArr&, cv::Size& imageSize,
+	KMatrix&, RMatrix&, CMatrix&,
+	Depth& dMin, Depth& dMax,
+	DepthMap&, NormalMap&, ConfidenceMap&, unsigned flags=7);
 
 MVS_API void CompareDepthMaps(const DepthMap& depthMap, const DepthMap& depthMapGT, uint32_t idxImage, float threshold=0.01f);
 MVS_API void CompareNormalMaps(const NormalMap& normalMap, const NormalMap& normalMapGT, uint32_t idxImage);

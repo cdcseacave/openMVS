@@ -5,12 +5,14 @@
 // I N C L U D E S /////////////////////////////////////////////////
 
 #include <fstream>
+#include <string>
+#include <cctype>
 
 
 // D E F I N E S ///////////////////////////////////////////////////
 
 #define MVSI_PROJECT_ID "MVSI" // identifies the project stream
-#define MVSI_PROJECT_VER ((uint32_t)3) // identifies the version of a project stream
+#define MVSI_PROJECT_VER ((uint32_t)4) // identifies the version of a project stream
 
 // set a default namespace name if none given
 #ifndef _INTERFACE_NAMESPACE
@@ -55,8 +57,17 @@ public:
 	inline operator EVecMap () { return EVecMap((Type*)this); }
 	#endif
 
+	const Type* ptr() const { return &x; }
+	Type* ptr() { return &x; }
 	Type operator()(int r) const { return (&x)[r]; }
 	Type& operator()(int r) { return (&x)[r]; }
+	Point3_ operator - () const {
+		return Point3_(
+			-x,
+			-y,
+			-z
+		);
+	}
 	Point3_ operator + (const Point3_& X) const {
 		return Point3_(
 			x+X.x,
@@ -363,6 +374,7 @@ struct Interface
 		// structure describing a camera mounted on a platform
 		struct Camera {
 			std::string name; // camera's name
+			std::string bandName; // camera's band name, ex: RGB, BLUE, GREEN, RED, NIR, THERMAL, etc (optional)
 			uint32_t width, height; // image resolution in pixels for all images sharing this camera (optional)
 			Mat33d K; // camera's intrinsics matrix (normalized if image resolution not specified)
 			Mat33d R; // camera's rotation matrix relative to the platform
@@ -375,6 +387,9 @@ struct Interface
 			template <class Archive>
 			void serialize(Archive& ar, const unsigned int version) {
 				ar & name;
+				if (version > 3) {
+					ar & bandName;
+				}
 				if (version > 0) {
 					ar & width;
 					ar & height;
@@ -390,6 +405,14 @@ struct Interface
 		struct Pose {
 			Mat33d R; // platform's rotation matrix
 			Pos3d C; // platform's translation vector in the global coordinate system
+
+			Pose() {}
+			template <typename MAT, typename POS>
+			Pose(const MAT& _R, const POS& _C) : R(_R), C(_C) {}
+
+			// translation vector t = -RC
+			inline Pos3d GetTranslation() const { return R*(-C); }
+			inline void SetTranslation(const Pos3d& T) { C = R.t()*(-T); }
 
 			template <class Archive>
 			void serialize(Archive& ar, const unsigned int /*version*/) {
@@ -435,8 +458,8 @@ struct Interface
 		uint32_t poseID; // ID of the pose of the associated platform
 		uint32_t ID; // ID of this image in the global space (optional)
 
-		Image() : poseID(NO_ID), ID(NO_ID) {}
-
+		Image() : platformID(NO_ID), cameraID(NO_ID), poseID(NO_ID), ID(NO_ID) {}
+		
 		bool IsValid() const { return poseID != NO_ID; }
 
 		template <class Archive>
@@ -538,7 +561,7 @@ struct Interface
 	VertexArr vertices; // array of reconstructed 3D points
 	NormalArr verticesNormal; // array of reconstructed 3D points' normal (optional)
 	ColorArr verticesColor; // array of reconstructed 3D points' color (optional)
-	LineArr lines; // array of reconstructed 3D lines
+	LineArr lines; // array of reconstructed 3D lines (optional)
 	NormalArr linesNormal; // array of reconstructed 3D lines' normal (optional)
 	ColorArr linesColor; // array of reconstructed 3D lines' color (optional)
 	Mat44d transform; // transformation used to convert from absolute to relative coordinate system (optional)

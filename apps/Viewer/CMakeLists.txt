@@ -54,16 +54,12 @@ FILE(GLOB LIBRARY_FILES_H "*.h" "*.inl")
 LIST(REMOVE_ITEM LIBRARY_FILES_C ${PCH_C})
 SET(LIBRARY_FILES_C "${PCH_C};${LIBRARY_FILES_C}")
 
-cxx_executable_with_flags_no_pch(${VIEWER_NAME} "Apps" "${cxx_default}" "MVS;${OPENGL_LIBRARIES};${GLEW_LIBRARY};${GLFW_STATIC_LIBRARIES};GLEW::GLEW;${glfw3_LIBRARY};${GLFW3_LIBRARY};glfw" ${LIBRARY_FILES_C} ${LIBRARY_FILES_H})
+cxx_executable_with_flags_no_pch(${VIEWER_NAME} "Apps" "${cxx_default}" "MVS;${OPENGL_LIBRARIES};${GLEW_LIBRARY};${GLFW_STATIC_LIBRARIES};GLEW::GLEW;${glfw3_LIBRARY};${GLFW3_LIBRARY};glfw;${OpenMVS_EXTRA_LIBS}" ${LIBRARY_FILES_C} ${LIBRARY_FILES_H})
 
 # Manually set Common.h as the precompiled header
 set_target_pch(${VIEWER_NAME} Common.h)
 
-if(OpenMVS_USE_BREAKPAD AND BREAKPAD_FOUND)
-	target_link_libraries(${VIEWER_NAME} ${BREAKPAD_LIBS})
-endif()
-
 # Install
 INSTALL(TARGETS ${VIEWER_NAME}
-	EXPORT 3DnovatorTargets
+	EXPORT OpenMVSTargets
 	RUNTIME DESTINATION "${INSTALL_BIN_DIR}" COMPONENT bin)

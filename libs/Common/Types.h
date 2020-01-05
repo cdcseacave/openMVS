@@ -267,19 +267,6 @@ int _vscprintf(LPCSTR format, va_list pargs);
 #define _T(s)               s
 #endif //_MSC_VER
 
-// signed and unsigned types of the size of the architecture
-// (32 or 64 bit for x86 and respectively x64)
-#ifdef _ENVIRONMENT64
-typedef int64_t             int_t;
-typedef uint64_t            uint_t;
-#else
-typedef int32_t             int_t;
-typedef uint32_t            uint_t;
-#endif
-
-// type used for the size of the files
-typedef int64_t     		size_f_t;
-
 #define DECLARE_NO_INDEX(...) std::numeric_limits<__VA_ARGS__>::max()
 #define NO_ID				DECLARE_NO_INDEX(uint32_t)
 
@@ -318,13 +305,32 @@ typedef int64_t     		size_f_t;
 #endif
 
 #ifndef MINF
-#define MINF			std::min
+#define MINF                std::min
 #endif
 #ifndef MAXF
-#define MAXF			std::max
+#define MAXF                std::max
 #endif
 
 namespace SEACAVE {
+
+// signed and unsigned types of the size of the architecture
+// (32 or 64 bit for x86 and respectively x64)
+#ifdef _ENVIRONMENT64
+typedef int64_t             int_t;
+typedef uint64_t            uint_t;
+#else
+typedef int32_t             int_t;
+typedef uint32_t            uint_t;
+#endif
+
+// type used for the size of the files
+typedef int64_t     	    size_f_t;
+
+// type used as the default floating number precision
+typedef double              REAL;
+
+template <typename TYPE, typename REALTYPE=REAL>
+struct RealType { typedef typename std::conditional<std::is_floating_point<TYPE>::value, TYPE, REALTYPE>::type type; };
 
 template<typename T>
 inline T MINF3(const T& x1, const T& x2, const T& x3) {
@@ -1140,8 +1146,6 @@ inline _Tp    SAFEDIVIDE(_Tp   x, _Tp   y)	{ return (y==_Tp(0) ? INVZERO(y) : x/
 namespace SEACAVE {
 
 // P R O T O T Y P E S /////////////////////////////////////////////
-
-typedef double REAL;
 
 template <typename TYPE, int m, int n> class TMatrix;
 template <typename TYPE, int DIMS> class TAABB;

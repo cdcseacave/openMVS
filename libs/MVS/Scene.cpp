@@ -71,34 +71,34 @@ bool Scene::LoadInterface(const String & fileName)
 	// import platforms and cameras
 	ASSERT(!obj.platforms.empty());
 	platforms.Reserve((uint32_t)obj.platforms.size());
-	for (Interface::PlatformArr::const_iterator itPlatform=obj.platforms.begin(); itPlatform!=obj.platforms.end(); ++itPlatform) {
+	for (const Interface::Platform& itPlatform: obj.platforms) {
 		Platform& platform = platforms.AddEmpty();
-		platform.name = itPlatform->name;
-		platform.cameras.Reserve((uint32_t)itPlatform->cameras.size());
-		for (Interface::Platform::CameraArr::const_iterator itCamera=itPlatform->cameras.begin(); itCamera!=itPlatform->cameras.end(); ++itCamera) {
+		platform.name = itPlatform.name;
+		platform.cameras.Reserve((uint32_t)itPlatform.cameras.size());
+		for (const Interface::Platform::Camera& itCamera: itPlatform.cameras) {
 			Platform::Camera& camera = platform.cameras.AddEmpty();
-			camera.K = itCamera->K;
-			camera.R = itCamera->R;
-			camera.C = itCamera->C;
-			if (!itCamera->IsNormalized()) {
+			camera.K = itCamera.K;
+			camera.R = itCamera.R;
+			camera.C = itCamera.C;
+			if (!itCamera.IsNormalized()) {
 				// normalize K
-				ASSERT(itCamera->HasResolution());
-				const REAL scale(REAL(1)/camera.GetNormalizationScale(itCamera->width,itCamera->height));
+				ASSERT(itCamera.HasResolution());
+				const REAL scale(REAL(1)/camera.GetNormalizationScale(itCamera.width,itCamera.height));
 				camera.K(0,0) *= scale;
 				camera.K(1,1) *= scale;
 				camera.K(0,2) *= scale;
 				camera.K(1,2) *= scale;
 			}
-			DEBUG_EXTRA("Camera model loaded: platform %u; camera %2u; f %.3fx%.3f; poses %u", platforms.GetSize()-1, platform.cameras.GetSize()-1, camera.K(0,0), camera.K(1,1), itPlatform->poses.size());
+			DEBUG_EXTRA("Camera model loaded: platform %u; camera %2u; f %.3fx%.3f; poses %u", platforms.size()-1, platform.cameras.size()-1, camera.K(0,0), camera.K(1,1), itPlatform.poses.size());
 		}
-		ASSERT(platform.cameras.GetSize() == itPlatform->cameras.size());
-		platform.poses.Reserve((uint32_t)itPlatform->poses.size());
-		for (Interface::Platform::PoseArr::const_iterator itPose=itPlatform->poses.begin(); itPose!=itPlatform->poses.end(); ++itPose) {
+		ASSERT(platform.cameras.GetSize() == itPlatform.cameras.size());
+		platform.poses.Reserve((uint32_t)itPlatform.poses.size());
+		for (const Interface::Platform::Pose& itPose: itPlatform.poses) {
 			Platform::Pose& pose = platform.poses.AddEmpty();
-			pose.R = itPose->R;
-			pose.C = itPose->C;
+			pose.R = itPose.R;
+			pose.C = itPose.C;
 		}
-		ASSERT(platform.poses.GetSize() == itPlatform->poses.size());
+		ASSERT(platform.poses.GetSize() == itPlatform.poses.size());
 	}
 	ASSERT(platforms.GetSize() == obj.platforms.size());
 	if (platforms.IsEmpty())
@@ -109,9 +109,8 @@ bool Scene::LoadInterface(const String & fileName)
 	size_t nTotalPixels(0);
 	ASSERT(!obj.images.empty());
 	images.Reserve((uint32_t)obj.images.size());
-	for (Interface::ImageArr::const_iterator it=obj.images.begin(); it!=obj.images.end(); ++it) {
-		const Interface::Image& image = *it;
-		const uint32_t ID(images.GetSize());
+	for (const Interface::Image& image: obj.images) {
+		const uint32_t ID(images.size());
 		Image& imageData = images.AddEmpty();
 		imageData.name = image.name;
 		Util::ensureUnifySlash(imageData.name);
@@ -123,6 +122,7 @@ bool Scene::LoadInterface(const String & fileName)
 		}
 		imageData.platformID = image.platformID;
 		imageData.cameraID = image.cameraID;
+		imageData.ID = (image.ID == NO_ID ? ID : image.ID);
 		// init camera
 		const Interface::Platform::Camera& camera = obj.platforms[image.platformID].cameras[image.cameraID];
 		if (camera.HasResolution()) {
@@ -199,12 +199,10 @@ bool Scene::SaveInterface(const String & fileName) const
 
 	// export platforms
 	obj.platforms.reserve(platforms.GetSize());
-	FOREACH(i, platforms) {
-		const Platform& platform = platforms[i];
+	for (const Platform& platform: platforms) {
 		Interface::Platform plat;
 		plat.cameras.reserve(platform.cameras.GetSize());
-		FOREACH(j, platform.cameras) {
-			const Platform::Camera& camera = platform.cameras[j];
+		for (const Platform::Camera& camera: platform.cameras) {
 			Interface::Platform::Camera cam;
 			cam.K = camera.K;
 			cam.R = camera.R;
@@ -212,8 +210,7 @@ bool Scene::SaveInterface(const String & fileName) const
 			plat.cameras.push_back(cam);
 		}
 		plat.poses.reserve(platform.poses.GetSize());
-		FOREACH(j, platform.poses) {
-			const Platform::Pose& pose = platform.poses[j];
+		for (const Platform::Pose& pose: platform.poses) {
 			Interface::Platform::Pose p;
 			p.R = pose.R;
 			p.C = pose.C;
@@ -231,6 +228,7 @@ bool Scene::SaveInterface(const String & fileName) const
 		image.poseID = imageData.poseID;
 		image.platformID = imageData.platformID;
 		image.cameraID = imageData.cameraID;
+		image.ID = imageData.ID;
 	}
 
 	// export 3D points
@@ -256,7 +254,7 @@ bool Scene::SaveInterface(const String & fileName) const
 			vertexNormal.n = normal;
 		}
 	}
-	if (!pointcloud.normals.IsEmpty()) {
+	if (!pointcloud.colors.IsEmpty()) {
 		obj.verticesColor.resize(pointcloud.colors.GetSize());
 		FOREACH(i, pointcloud.colors) {
 			const PointCloud::Color& color = pointcloud.colors[i];

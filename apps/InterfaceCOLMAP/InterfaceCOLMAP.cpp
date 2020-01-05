@@ -449,6 +449,10 @@ bool ImportScene(const String& strFolder, Interface& scene)
 			scene.platforms.push_back(platform);
 		}
 	}
+	if (mapCameras.empty()) {
+		VERBOSE("error: no valid cameras (make sure they are in PINHOLE model)");
+		return false;
+	}
 
 	// read images list
 	typedef std::map<COLMAP::Image, uint32_t> ImagesMap;
@@ -472,6 +476,7 @@ bool ImportScene(const String& strFolder, Interface& scene)
 			image.name = OPT::strImageFolder+imageColmap.name;
 			image.platformID = mapCameras.at(imageColmap.idCamera);
 			image.cameraID = 0;
+			image.ID = imageColmap.ID;
 			Interface::Platform& platform = scene.platforms[image.platformID];
 			image.poseID = (uint32_t)platform.poses.size();
 			platform.poses.push_back(pose);
