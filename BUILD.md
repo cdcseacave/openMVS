@@ -114,8 +114,7 @@ Install dependencies, run CMake and make.
 ```
 #Install dependencies
 brew update
-brew tap homebrew/science
-brew install boost eigen opencv cgal ceres-solver
+brew install boost eigen opencv cgal
 main_path=`pwd`
 
 #GLFW3 (Optional)
