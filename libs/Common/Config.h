@@ -141,12 +141,8 @@
 #ifndef _CRT_SECURE_CPP_OVERLOAD_SECURE_NAMES
 #define _CRT_SECURE_CPP_OVERLOAD_SECURE_NAMES 0 // disable automatically overloading CPP names to secure versions
 #endif
-#ifndef _ITERATOR_DEBUG_LEVEL
-#ifndef _DEBUG
-#define _ITERATOR_DEBUG_LEVEL 0
-#else
+#if 0 && defined(_DEBUG) && !defined(_ITERATOR_DEBUG_LEVEL) // might not build if linking statically to 3rd party libraries
 #define _ITERATOR_DEBUG_LEVEL 1 // disable std iterator debugging even in Debug, as it is very slow
-#endif
 #endif
 #endif
 
