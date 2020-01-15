@@ -192,7 +192,7 @@ bool Scene::LoadInterface(const String & fileName)
 	return true;
 } // LoadInterface
 
-bool Scene::SaveInterface(const String & fileName) const
+bool Scene::SaveInterface(const String & fileName, int version) const
 {
 	TD_TIMER_STARTD();
 	Interface obj;
@@ -264,7 +264,7 @@ bool Scene::SaveInterface(const String & fileName) const
 	}
 
 	// serialize out the current state
-	if (!ARCHIVE::SerializeSave(obj, fileName))
+	if (!ARCHIVE::SerializeSave(obj, fileName, version>=0?uint32_t(version):MVSI_PROJECT_VER))
 		return false;
 
 	DEBUG_EXTRA("Scene saved to interface format (%s):\n"

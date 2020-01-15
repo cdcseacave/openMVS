@@ -69,7 +69,7 @@ public:
 	bool IsEmpty() const;
 
 	bool LoadInterface(const String& fileName);
-	bool SaveInterface(const String& fileName) const;
+	bool SaveInterface(const String& fileName, int version=-1) const;
 
 	bool Import(const String& fileName);
 
