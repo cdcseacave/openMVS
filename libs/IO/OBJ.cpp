@@ -156,6 +156,8 @@ bool ObjModel::Save(const String& fileName, unsigned precision, bool texLossless
 			<< normals[i][1] << " "
 			<< normals[i][2] << "\n";
 	}
+	
+	bool hasNormals = normals.size() > 0;
 
 	for (size_t i = 0; i < groups.size(); ++i) {
 		out << "usemtl " << groups[i].material_name << "\n";
@@ -164,8 +166,10 @@ bool ObjModel::Save(const String& fileName, unsigned precision, bool texLossless
 			out << "f";
 			for (size_t k = 0; k < 3; ++k) {
 				out << " " << face.vertices[k]  + OBJ_INDEX_OFFSET
-					<< "/" << face.texcoords[k]  + OBJ_INDEX_OFFSET
-					<< "/" << face.normals[k]  + OBJ_INDEX_OFFSET;
+					<< "/" << face.texcoords[k]  + OBJ_INDEX_OFFSET;
+				if(hasNormals) {
+					out << "/" << face.normals[k]  + OBJ_INDEX_OFFSET;
+				}
 			}
 			out << "\n";
 		}
