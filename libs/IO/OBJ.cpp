@@ -160,12 +160,17 @@ bool ObjModel::Save(const String& fileName, unsigned precision, bool texLossless
 	for (size_t i = 0; i < groups.size(); ++i) {
 		out << "usemtl " << groups[i].material_name << "\n";
 		for (size_t j = 0; j < groups[i].faces.size(); ++j) {
-			Face const & face =  groups[i].faces[j];
+			const Face& face =  groups[i].faces[j];
 			out << "f";
 			for (size_t k = 0; k < 3; ++k) {
-				out << " " << face.vertices[k]  + OBJ_INDEX_OFFSET
-					<< "/" << face.texcoords[k]  + OBJ_INDEX_OFFSET
-					<< "/" << face.normals[k]  + OBJ_INDEX_OFFSET;
+				out << " " << face.vertices[k]  + OBJ_INDEX_OFFSET;
+				if (!texcoords.empty()) {
+					out << "/" << face.texcoords[k]  + OBJ_INDEX_OFFSET;
+					if (!normals.empty())
+						out << "/" << face.normals[k]  + OBJ_INDEX_OFFSET;
+				} else
+				if (!normals.empty())
+					out << "//" << face.normals[k]  + OBJ_INDEX_OFFSET;
 			}
 			out << "\n";
 		}
