@@ -238,6 +238,8 @@ bool ObjModel::Load(const String& fileName)
 			}
 			if (in.fail())
 				return false;
+			if (groups.empty())
+				AddGroup("");
 			groups.back().faces.push_back(f);
 		} else
 		if (keyword == "mtllib") {
