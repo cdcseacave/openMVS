@@ -74,7 +74,7 @@ def whereis(afile):
     else:
         cmd = "which"
     try:
-        ret = subprocess.run([cmd, afile], capture_output=True, check=True)
+        ret = subprocess.run([cmd, afile], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=True)
         return os.path.split(ret.stdout.decode())[0]
     except subprocess.CalledProcessError:
         return None
@@ -98,11 +98,11 @@ CAMERA_SENSOR_DB_DIRECTORY = find(CAMERA_SENSOR_DB_FILE)
 
 # Ask user for openMVG and openMVS directories if not found
 if not OPENMVG_BIN:
-    OPENMVG_BIN = input("openMVG binary folder?")
+    OPENMVG_BIN = input("openMVG binary folder?\n")
 if not OPENMVS_BIN:
-    OPENMVS_BIN = input("openMVS binary folder?")
+    OPENMVS_BIN = input("openMVS binary folder?\n")
 if not CAMERA_SENSOR_DB_DIRECTORY:
-    CAMERA_SENSOR_DB_DIRECTORY = input("openMVG camera database (%s) folder?" % CAMERA_SENSOR_DB_FILE)
+    CAMERA_SENSOR_DB_DIRECTORY = input("openMVG camera database (%s) folder?\n" % CAMERA_SENSOR_DB_FILE)
 
 
 PRESET = {'SEQUENTIAL': [0, 1, 2, 3, 9, 10, 11, 12, 13],
@@ -175,7 +175,7 @@ class StepsStore:
              ["-i", "%matches_dir%/sfm_data.json", "-o", "%matches_dir%", "-m", "SIFT", "-n", "4"]],
             ["Compute matches",              # 2
              os.path.join(OPENMVG_BIN, "openMVG_main_ComputeMatches"),
-             ["-i", "%matches_dir%/sfm_data.json", "-o", "%matches_dir%", "-r", ".8"]],
+             ["-i", "%matches_dir%/sfm_data.json", "-o", "%matches_dir%", "-n", "HNSWL2", "-r", ".8"]],
             ["Incremental reconstruction",   # 3
              os.path.join(OPENMVG_BIN, "openMVG_main_IncrementalSfM"),
              ["-i", "%matches_dir%/sfm_data.json", "-m", "%matches_dir%", "-o", "%reconstruction_dir%"]],
@@ -196,7 +196,7 @@ class StepsStore:
              ["-i", "%reconstruction_dir%/sfm_data.bin"]],
             ["Export to openMVS",            # 9
              os.path.join(OPENMVG_BIN, "openMVG_main_openMVG2openMVS"),
-             ["-i", "%reconstruction_dir%/sfm_data.bin", "-o", "%mvs_dir%/scene.mvs", "-d", "%mvs_dir%"]],
+             ["-i", "%reconstruction_dir%/sfm_data.bin", "-o", "%mvs_dir%/scene.mvs", "-d", "%mvs_dir%/images"]],
             ["Densify point cloud",          # 10
              os.path.join(OPENMVS_BIN, "DensifyPointCloud"),
              ["--input-file", "%mvs_dir%/scene.mvs", "--resolution-level", "1", "-w", "%mvs_dir%"]],
@@ -332,15 +332,18 @@ for cstep in CONF.steps:
 
     # create a commandline for the current step
     cmdline = [STEPS[cstep].cmd] + STEPS[cstep].opt + opt
+    print('Cmd: ' + ' '.join(cmdline))
 
     if not DEBUG:
         # Launch the current step
         try:
             pStep = subprocess.Popen(cmdline)
             pStep.wait()
+            if pStep.returncode != 0:
+                break
         except KeyboardInterrupt:
             sys.exit('\r\nProcess canceled by user, all files remains')
     else:
         print('\t'.join(cmdline))
 
-printout("# Pipeline end")
+printout("# Pipeline end #", effect=INVERSE)
