@@ -1258,7 +1258,7 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, b
 				REAL confidence(weights.emplace_back(Conf2Weight(depthData.confMap(x),depth)));
 				ProjArr& pointProjs = projs.AddEmpty();
 				pointProjs.Insert(Proj(x));
-				const PointCloud::Normal normal(bNormalMap ? imageData.camera.R.t()*Cast<REAL>(depthData.normalMap(x)) : Normal(0,0,-1));
+				const PointCloud::Normal normal(bNormalMap ? Cast<Normal::Type>(imageData.camera.R.t()*Cast<REAL>(depthData.normalMap(x))) : Normal(0,0,-1));
 				ASSERT(ISEQUAL(norm(normal), 1.f));
 				// check the projection in the neighbor depth-maps
 				Point3 X(point*confidence);
@@ -1286,7 +1286,7 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, b
 						continue;
 					if (IsDepthSimilar(pt.z, depthB, OPTDENSE::fDepthDiffThreshold)) {
 						// check if normals agree
-						const PointCloud::Normal normalB(bNormalMap ? imageDataB.camera.R.t()*Cast<REAL>(depthDataB.normalMap(xB)) : Normal(0,0,-1));
+						const PointCloud::Normal normalB(bNormalMap ? Cast<Normal::Type>(imageDataB.camera.R.t()*Cast<REAL>(depthDataB.normalMap(xB))) : Normal(0,0,-1));
 						ASSERT(ISEQUAL(norm(normalB), 1.f));
 						if (normal.dot(normalB) > normalError) {
 							// add view to the 3D point

@@ -1440,6 +1440,7 @@ public:
 	#endif
 
 	using Base::val;
+	using Base::channels;
 
 	enum { elems = m*n };
 

@@ -2220,7 +2220,7 @@ TPixel<TYPE> TPixel<TYPE>::gray2color(ALT gray)
 		Base(gray + ALT(0.25)),
 		Base(gray),
 		Base(gray - ALT(0.25))
-	).cast<TYPE>();
+	).template cast<TYPE>();
 }
 /*----------------------------------------------------------------*/
 
