@@ -108,9 +108,19 @@ public:
 	float ResizeImage(unsigned nMaxResolution=0);
 	unsigned RecomputeMaxResolution(unsigned& level, unsigned minImageSize, unsigned maxImageSize=INT_MAX) const;
 
+	Image GetImage(const PlatformArr& platforms, double scale, bool bUseImage=true) const;
 	Camera GetCamera(const PlatformArr& platforms, const Image8U::Size& resolution) const;
 	void UpdateCamera(const PlatformArr& platforms);
 	REAL ComputeFOV(int dir) const;
+
+	static bool StereoRectifyImages(const Image& image1, const Image& image2, const Point3fArr& points1, const Point3fArr& points2, Image8U3& rectifiedImage1, Image8U3& rectifiedImage2, Image8U& mask1, Image8U& mask2, Matrix3x3& H, Matrix4x4& Q);
+	static void ScaleStereoRectification(Matrix3x3& H, Matrix4x4& Q, REAL scale);
+	static float Disparity2Depth(const Matrix4x4& Q, const ImageRef& u, float d);
+	static float Disparity2Depth(const Matrix4x4& Q, const Point2f& u, float d);
+	static float Disparity2Depth(const Matrix4x4& Q, const ImageRef& u, float d, Point2f& pt);
+	static float Disparity2Depth(const Matrix4x4& Q, const Point2f& u, float d, Point2f& pt);
+	static float Disparity2Distance(const Matrix3x3& K, const Matrix4x4& Q, const Point2f& u, float d);
+	static bool Depth2Disparity(const Matrix4x4& Q, const Point2f& u, float d, float& disparity);
 
 	float GetNormalizationScale() const {
 		ASSERT(width > 0 && height > 0);

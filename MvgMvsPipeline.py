@@ -9,41 +9,43 @@ usage: MvgMvs_Pipeline.py [-h] [--steps STEPS [STEPS ...]] [--preset PRESET]
                           [--0 0 [0 ...]] [--1 1 [1 ...]] [--2 2 [2 ...]]
                           [--3 3 [3 ...]] [--4 4 [4 ...]] [--5 5 [5 ...]]
                           [--6 6 [6 ...]] [--7 7 [7 ...]] [--8 8 [8 ...]]
-                          [--9 9 [9 ...]] [--10 10 [10 ...]]
-                          [--11 11 [11 ...]] [--12 12 [12 ...]]
-                          [--13 13 [13 ...]]
+                          [--9 9 [9 ...]] [--10 10 [10 ...]] [--11 11 [11 ...]]
+                          [--12 12 [12 ...]] [--13 13 [13 ...]]
+                          [--14 14 [14 ...]] [--15 15 [15 ...]]
                           input_dir output_dir
 
 Photogrammetry reconstruction with these steps:
-    0. Intrinsics analysis          openMVG_main_SfMInit_ImageListing
-    1. Compute features             openMVG_main_ComputeFeatures
-    2. Compute matches              openMVG_main_ComputeMatches
-    3. Incremental reconstruction   openMVG_main_IncrementalSfM
-    4. Global reconstruction        openMVG_main_GlobalSfM
-    5. Colorize Structure           openMVG_main_ComputeSfM_DataColor
-    6. Structure from Known Poses   openMVG_main_ComputeStructureFromKnownPoses
-    7. Colorized robust triangulation    openMVG_main_ComputeSfM_DataColor
-    8. Control Points Registration  ui_openMVG_control_points_registration
-    9. Export to openMVS            openMVG_main_openMVG2openMVS
-    10. Densify point cloud         DensifyPointCloud
-    11. Reconstruct the mesh        ReconstructMesh
-    12. Refine the mesh             RefineMesh
-    13. Texture the mesh            TextureMesh
+    0. Intrinsics analysis             openMVG_main_SfMInit_ImageListing
+    1. Compute features                openMVG_main_ComputeFeatures
+    2. Compute matches                 openMVG_main_ComputeMatches
+    3. Incremental reconstruction      openMVG_main_IncrementalSfM
+    4. Global reconstruction           openMVG_main_GlobalSfM
+    5. Colorize Structure              openMVG_main_ComputeSfM_DataColor
+    6. Structure from Known Poses      openMVG_main_ComputeStructureFromKnownPoses
+    7. Colorized robust triangulation  openMVG_main_ComputeSfM_DataColor
+    8. Control Points Registration     ui_openMVG_control_points_registration
+    9. Export to openMVS               openMVG_main_openMVG2openMVS
+    10. Densify point-cloud            DensifyPointCloud
+    11. Reconstruct the mesh           ReconstructMesh
+    12. Refine the mesh                RefineMesh
+    13. Texture the mesh               TextureMesh
+    14. Estimate disparity-maps        DensifyPointCloud
+    15. Fuse disparity-maps            DensifyPointCloud
 
 positional arguments:
-  input_dir             the directory wich contains the pictures set.
-  output_dir            the directory wich will contain the resulting files.
+  input_dir                 the directory wich contains the pictures set.
+  output_dir                the directory wich will contain the resulting files.
 
 optional arguments:
-  -h, --help            show this help message and exit
-  --steps STEPS [STEPS ...]
-                        steps to process
-  --preset PRESET       steps list preset in
-                        SEQUENTIAL = [0, 1, 2, 3, 9, 10, 11, 12, 13]
-                        GLOBAL = [0, 1, 2, 4, 9, 10, 11, 12, 13]
-                        MVG_SEQ = [0, 1, 2, 3, 5, 6, 7]
-                        MVG_GLOBAL = [0, 1, 2, 4, 5, 6, 7]
-                        default : SEQUENTIAL
+  -h, --help                show this help message and exit
+  --steps STEPS [STEPS ...] steps to process
+  --preset PRESET           steps list preset in
+                            SEQUENTIAL = [0, 1, 2, 3, 9, 10, 11, 12, 13]
+                            GLOBAL = [0, 1, 2, 4, 9, 10, 11, 12, 13]
+                            MVG_SEQ = [0, 1, 2, 3, 5, 6, 7]
+                            MVG_GLOBAL = [0, 1, 2, 4, 5, 6, 7]
+                            MVS_SGM = [14, 15]
+                            default : SEQUENTIAL
 
 Passthrough:
   Option to be passed to command lines (remove - in front of option names)
@@ -108,7 +110,8 @@ if not CAMERA_SENSOR_DB_DIRECTORY:
 PRESET = {'SEQUENTIAL': [0, 1, 2, 3, 9, 10, 11, 12, 13],
           'GLOBAL': [0, 1, 2, 4, 9, 10, 11, 12, 13],
           'MVG_SEQ': [0, 1, 2, 3, 5, 6, 7],
-          'MVG_GLOBAL': [0, 1, 2, 4, 5, 6, 7]}
+          'MVG_GLOBAL': [0, 1, 2, 4, 5, 6, 7],
+          'MVS_SGM': [14, 15]}
 
 PRESET_DEFAULT = 'SEQUENTIAL'
 
@@ -199,16 +202,22 @@ class StepsStore:
              ["-i", "%reconstruction_dir%/sfm_data.bin", "-o", "%mvs_dir%/scene.mvs", "-d", "%mvs_dir%/images"]],
             ["Densify point cloud",          # 10
              os.path.join(OPENMVS_BIN, "DensifyPointCloud"),
-             ["--input-file", "%mvs_dir%/scene.mvs", "--resolution-level", "1", "-w", "%mvs_dir%"]],
+             ["scene.mvs", "--dense-config-file", "Densify.ini", "--resolution-level", "1", "-w", "%mvs_dir%"]],
             ["Reconstruct the mesh",         # 11
              os.path.join(OPENMVS_BIN, "ReconstructMesh"),
-             ["%mvs_dir%/scene_dense.mvs", "-w", "%mvs_dir%"]],
+             ["scene_dense.mvs", "-w", "%mvs_dir%"]],
             ["Refine the mesh",              # 12
              os.path.join(OPENMVS_BIN, "RefineMesh"),
-             ["%mvs_dir%/scene_dense_mesh.mvs", "--scales", "2", "-w", "%mvs_dir%"]],
+             ["scene_dense_mesh.mvs", "--scales", "2", "-w", "%mvs_dir%"]],
             ["Texture the mesh",             # 13
              os.path.join(OPENMVS_BIN, "TextureMesh"),
-             ["scene_dense_mesh_refine.mvs", "--decimate", "0.5", "-w", "%mvs_dir%"]]
+             ["scene_dense_mesh_refine.mvs", "--decimate", "0.5", "-w", "%mvs_dir%"]],
+            ["Estimate disparity-maps",      # 14
+             os.path.join(OPENMVS_BIN, "DensifyPointCloud"),
+             ["scene.mvs", "--dense-config-file", "Densify.ini", "--fusion-mode", "-1", "-w", "%mvs_dir%"]],
+            ["Fuse disparity-maps",          # 15
+             os.path.join(OPENMVS_BIN, "DensifyPointCloud"),
+             ["scene.mvs", "--dense-config-file", "Densify.ini", "--fusion-mode", "-2", "-w", "%mvs_dir%"]]
             ]
 
     def __getitem__(self, indice):

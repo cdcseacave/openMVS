@@ -13,10 +13,66 @@
 
 #include "Streams.h"
 
+// Under both Windows and Unix, the stat function is used for classification
+
+// Under Gnu/Linux, the following classifications are defined
+// source: Gnu/Linux man page for stat(2) http://linux.die.net/man/2/stat
+//   S_IFMT 	0170000	bitmask for the file type bitfields
+//   S_IFSOCK 	0140000	socket (Note this overlaps with S_IFDIR)
+//   S_IFLNK 	0120000	symbolic link
+//   S_IFREG 	0100000	regular file
+//   S_IFBLK 	0060000	block device
+//   S_IFDIR 	0040000	directory
+//   S_IFCHR 	0020000	character device
+//   S_IFIFO 	0010000	FIFO
+// There are also some Posix-standard macros:
+//   S_ISREG(m)        is it a regular file? 
+//   S_ISDIR(m)        directory? 
+//   S_ISCHR(m)        character device? 
+//   S_ISBLK(m)        block device? 
+//   S_ISFIFO(m)       FIFO (named pipe)? 
+//   S_ISLNK(m)        symbolic link? (Not in POSIX.1-1996.) 
+//   S_ISSOCK(m)       socket? (Not in POSIX.1-1996.)
+// Under Windows, the following are defined:
+// source: Header file sys/stat.h distributed with Visual Studio 10
+//   _S_IFMT  (S_IFMT)   0xF000 file type mask
+//   _S_IFREG (S_IFREG)  0x8000 regular
+//   _S_IFDIR (S_IFDIR)  0x4000 directory
+//   _S_IFCHR (S_IFCHR)  0x2000 character special
+//   _S_IFIFO            0x1000 pipe
+
 #ifdef _MSC_VER
 #include <io.h>
+// file type tests are not defined for some reason on Windows despite them providing the stat() function!
+#define F_OK 0
+#define X_OK 1
+#define W_OK 2
+#define R_OK 4
+// Posix-style macros for Windows
+#ifndef S_ISREG
+#define S_ISREG(mode)  ((mode & _S_IFMT) == _S_IFREG)
+#endif
+#ifndef S_ISDIR
+#define S_ISDIR(mode)  ((mode & _S_IFMT) == _S_IFDIR)
+#endif
+#ifndef S_ISCHR
+#define S_ISCHR(mode)  ((mode & _S_IFMT) == _S_IFCHR)
+#endif
+#ifndef S_ISBLK
+#define S_ISBLK(mode)  (false)
+#endif
+#ifndef S_ISFIFO
+#define S_ISFIFO(mode) ((mode & _S_IFMT) == _S_IFIFO)
+#endif
+#ifndef S_ISLNK
+#define S_ISLNK(mode)  (false)
+#endif
+#ifndef S_ISSOCK
+#define S_ISSOCK(mode) (false)
+#endif
 #else
 #include <unistd.h>
+#include <dirent.h>
 #define _taccess access
 #endif
 
@@ -282,7 +338,7 @@ public:
 		size_f_t totalSize = 0;
 		String strPath(_strPath);
 		Util::ensureFolderSlash(strPath);
-		//Find all the files in this folder.
+		// Find all the files in this folder.
 		hFind = FindFirstFile((strPath + strMask).c_str(), &fd);
 		if (hFind != INVALID_HANDLE_VALUE)
 		{
@@ -304,7 +360,7 @@ public:
 			while (FindNextFile(hFind, &fd));
 			FindClose(hFind);
 		}
-		//Process the subfolders also...
+		// Process the subfolders also...
 		if (!bProcessSubdir)
 			return totalSize;
 		hFind = FindFirstFile((strPath + '*').c_str(), &fd);
@@ -318,7 +374,7 @@ public:
 					continue;
 				if (!_tcscmp(fd.cFileName, _T("..")))
 					continue;
-				// Processe all subfolders recursively
+				// Process all subfolders recursively
 				totalSize += findFiles(strPath + fd.cFileName + PATH_SEPARATOR, strMask, true, arrFiles);
 			}
 			while (FindNextFile(hFind, &fd));
@@ -490,7 +546,35 @@ public:
 
 #endif // _MSC_VER
 
-	static bool access(LPCTSTR aFileName, int mode=CA_EXIST) { return ::_taccess(aFileName, mode) == 0; }
+	// test for whether there's something (i.e. folder or file) with this name
+	// and what access mode is supported
+	static bool isPresent(LPCTSTR path) {
+		struct stat buf;
+		return stat(path, &buf) == 0;
+	}
+	static bool access(LPCTSTR path, int mode=CA_EXIST) {
+		return ::_taccess(path, mode) == 0;
+	}
+	// test for whether there's something present and its a folder
+	static bool isFolder(LPCTSTR path) {
+		struct stat buf;
+		if (!(stat(path, &buf) == 0))
+			return false;
+		// If the object is present, see if it is a directory
+		// this is the Posix-approved way of testing
+		return S_ISDIR(buf.st_mode);
+	}
+	// test for whether there's something present and its a file
+	// a file can be a regular file, a symbolic link, a FIFO or a socket, but not a device
+	static bool isFile(LPCTSTR path) {
+		struct stat buf;
+		if (!(stat(path, &buf) == 0))
+			return false;
+		// If the object is present, see if it is a file or file-like object
+		// Note that devices are neither folders nor files
+		// this is the Posix-approved way of testing
+		return S_ISREG(buf.st_mode) || S_ISLNK(buf.st_mode) || S_ISSOCK(buf.st_mode) || S_ISFIFO(buf.st_mode);
+	}
 
 	template <class VECTOR>
 	inline size_t write(const VECTOR& arr) {

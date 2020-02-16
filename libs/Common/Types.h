@@ -380,9 +380,9 @@ typedef TAliasCast<double,int32_t> CastD2I;
 
 #include "Strings.h"
 #include "AutoPtr.h"
+#include "List.h"
 #include "Thread.h"
 #include "SharedPtr.h"
-#include "List.h"
 #include "Queue.h"
 #include "Hash.h"
 #include "Timer.h"
@@ -606,6 +606,16 @@ namespace SEACAVE {
 // F U N C T I O N S ///////////////////////////////////////////////
 
 template<typename T>
+struct MakeIdentity { using type = T; };
+template<typename T>
+using MakeSigned = typename std::conditional<std::is_integral<T>::value,std::make_signed<T>,SEACAVE::MakeIdentity<T>>::type;
+
+template<typename T1, typename T2>
+constexpr T1 Cast(const T2& v) {
+	return static_cast<T1>(v);
+}
+
+template<typename T>
 constexpr T& NEGATE(T& a) {
 	return (a = -a);
 }
@@ -805,6 +815,82 @@ FORCEINLINE double CBRT(const double& x) {
 	return POW(x, 1.0/3.0);
 	#endif
 }
+/*----------------------------------------------------------------*/
+
+
+#if defined(__GNUC__)
+
+FORCEINLINE int PopCnt(uint32_t bb) {
+	return __builtin_popcount(bb);
+}
+FORCEINLINE int PopCnt(uint64_t bb) {
+	return __builtin_popcountll(bb);
+}
+FORCEINLINE int PopCnt15(uint64_t bb) {
+	return __builtin_popcountll(bb);
+}
+FORCEINLINE int PopCntSparse(uint64_t bb) {
+	return __builtin_popcountll(bb);
+}
+
+#elif defined(_USE_SSE) && defined(_M_AMD64) // 64 bit windows
+
+FORCEINLINE int PopCnt(uint32_t bb) {
+	return (int)_mm_popcnt_u32(bb);
+}
+FORCEINLINE int PopCnt(uint64_t bb) {
+	return (int)_mm_popcnt_u64(bb);
+}
+FORCEINLINE int PopCnt15(uint64_t bb) {
+	return (int)_mm_popcnt_u64(bb);
+}
+FORCEINLINE int PopCntSparse(uint64_t bb) {
+	return (int)_mm_popcnt_u64(bb);
+}
+
+#else
+
+// general purpose population count
+template<typename T>
+constexpr int PopCnt(T bb)
+{
+	STATIC_ASSERT(std::is_integral<T>::value && std::is_unsigned<T>::value);
+	return std::bitset<sizeof(T)*8>(bb).count();
+}
+template<>
+inline int PopCnt(uint64_t bb) {
+	const uint64_t k1 = (uint64_t)0x5555555555555555;
+	const uint64_t k2 = (uint64_t)0x3333333333333333;
+	const uint64_t k3 = (uint64_t)0x0F0F0F0F0F0F0F0F;
+	const uint64_t k4 = (uint64_t)0x0101010101010101;
+	bb -= (bb >> 1) & k1;
+	bb = (bb & k2) + ((bb >> 2) & k2);
+	bb = (bb + (bb >> 4)) & k3;
+	return (bb * k4) >> 56;
+}
+// faster version assuming not more than 15 bits set, used in mobility
+// eval, posted on CCC forum by Marco Costalba of Stockfish team
+inline int PopCnt15(uint64_t bb) {
+	unsigned w = unsigned(bb >> 32), v = unsigned(bb);
+	v -= (v >> 1) & 0x55555555; // 0-2 in 2 bits
+	w -= (w >> 1) & 0x55555555;
+	v = ((v >> 2) & 0x33333333) + (v & 0x33333333); // 0-4 in 4 bits
+	w = ((w >> 2) & 0x33333333) + (w & 0x33333333);
+	v += w; // 0-8 in 4 bits
+	v *= 0x11111111;
+	return int(v >> 28);
+}
+// version faster on sparsely populated bitboards
+inline int PopCntSparse(uint64_t bb) {
+	int count = 0;
+	while (bb) {
+		count++;
+		bb &= bb - 1;
+	}
+	return count;
+}
+
+#endif
 /*----------------------------------------------------------------*/
 
 
@@ -1371,6 +1457,37 @@ public:
 	inline TMatrix(const EMat& rhs) { operator EMat& () = rhs; }
 	#endif
 
+	TMatrix(TYPE v0); //!< 1x1 matrix
+	TMatrix(TYPE v0, TYPE v1); //!< 1x2 or 2x1 matrix
+	TMatrix(TYPE v0, TYPE v1, TYPE v2); //!< 1x3 or 3x1 matrix
+	TMatrix(TYPE v0, TYPE v1, TYPE v2, TYPE v3); //!< 1x4, 2x2 or 4x1 matrix
+	TMatrix(TYPE v0, TYPE v1, TYPE v2, TYPE v3, TYPE v4); //!< 1x5 or 5x1 matrix
+	TMatrix(TYPE v0, TYPE v1, TYPE v2, TYPE v3, TYPE v4, TYPE v5); //!< 1x6, 2x3, 3x2 or 6x1 matrix
+	TMatrix(TYPE v0, TYPE v1, TYPE v2, TYPE v3, TYPE v4, TYPE v5, TYPE v6); //!< 1x7 or 7x1 matrix
+	TMatrix(TYPE v0, TYPE v1, TYPE v2, TYPE v3, TYPE v4, TYPE v5, TYPE v6, TYPE v7); //!< 1x8, 2x4, 4x2 or 8x1 matrix
+	TMatrix(TYPE v0, TYPE v1, TYPE v2, TYPE v3, TYPE v4, TYPE v5, TYPE v6, TYPE v7, TYPE v8); //!< 1x9, 3x3 or 9x1 matrix
+	TMatrix(TYPE v0, TYPE v1, TYPE v2, TYPE v3, TYPE v4, TYPE v5, TYPE v6, TYPE v7, TYPE v8, TYPE v9); //!< 1x10, 2x5 or 5x2 or 10x1 matrix
+	TMatrix(TYPE v0, TYPE v1, TYPE v2, TYPE v3,
+		TYPE v4, TYPE v5, TYPE v6, TYPE v7,
+		TYPE v8, TYPE v9, TYPE v10, TYPE v11); //!< 1x12, 2x6, 3x4, 4x3, 6x2 or 12x1 matrix
+	TMatrix(TYPE v0, TYPE v1, TYPE v2, TYPE v3,
+		TYPE v4, TYPE v5, TYPE v6, TYPE v7,
+		TYPE v8, TYPE v9, TYPE v10, TYPE v11,
+		TYPE v12, TYPE v13); //!< 1x14, 2x7, 7x2 or 14x1 matrix
+	TMatrix(TYPE v0, TYPE v1, TYPE v2, TYPE v3,
+		TYPE v4, TYPE v5, TYPE v6, TYPE v7,
+		TYPE v8, TYPE v9, TYPE v10, TYPE v11,
+		TYPE v12, TYPE v13, TYPE v14, TYPE v15); //!< 1x16, 4x4 or 16x1 matrix
+	explicit TMatrix(const TYPE* vals); //!< initialize from a plain array
+
+	TMatrix(const TMatrix<TYPE,m,n>& a, const TMatrix<TYPE,m,n>& b, cv::Matx_AddOp) : Base(a, b, cv::Matx_AddOp()) {}
+	TMatrix(const TMatrix<TYPE,m,n>& a, const TMatrix<TYPE,m,n>& b, cv::Matx_SubOp) : Base(a, b, cv::Matx_SubOp()) {}
+	template<typename TYPE2> TMatrix(const TMatrix<TYPE,m,n>& a, TYPE2 alpha, cv::Matx_ScaleOp) : Base(a, alpha, cv::Matx_ScaleOp()) {}
+	TMatrix(const TMatrix<TYPE,m,n>& a, const TMatrix<TYPE,m,n>& b, cv::Matx_MulOp) : Base(a, b, cv::Matx_MulOp()) {}
+	TMatrix(const TMatrix<TYPE,m,n>& a, const TMatrix<TYPE,m,n>& b, cv::Matx_DivOp) : Base(a, b, cv::Matx_DivOp()) {}
+	template<int l> TMatrix(const TMatrix<TYPE,m,l>& a, const TMatrix<TYPE,l,n>& b, cv::Matx_MatMulOp) : Base(a, b, cv::Matx_MatMulOp()) {}
+	TMatrix(const TMatrix<TYPE,n,m>& a, cv::Matx_TOp) : Base(a, cv::Matx_TOp()) {}
+
 	template <typename T> inline TMatrix& operator = (const cv::Matx<T,m,n>& rhs) { Base::operator = (rhs); return *this; }
 	inline TMatrix& operator = (const cv::Mat& rhs) { Base::operator = (rhs); return *this; }
 	#ifdef _USE_EIGEN
@@ -1822,6 +1939,10 @@ struct TPixel {
 	template<typename T> inline TPixel operator-(T v) const { return TPixel((TYPE)(r-v), (TYPE)(g-v), (TYPE)(b-v)); }
 	template<typename T> inline TPixel& operator-=(T v) { return (*this = operator-(v)); }
 	inline uint32_t toDWORD() const { return RGBA((uint8_t)r, (uint8_t)g, (uint8_t)b, (uint8_t)0); }
+	// tools
+	template <typename VT>
+	static TPixel colorRamp(VT v, VT vmin, VT vmax);
+	static TPixel gray2color(ALT v);
 	#ifdef _USE_BOOST
 	// serialize
 	template <class Archive>
@@ -2008,14 +2129,14 @@ public:
 	template <typename T>
 	TYPE sampleSafe(const TPoint2<T>& pt) const;
 
-	template <typename T>
-	bool sample(TYPE& v, const TPoint2<T>& pt, bool (STCALL *fncCond)(const TYPE&)) const;
-	template <typename T>
-	bool sampleSafe(TYPE& v, const TPoint2<T>& pt, bool (STCALL *fncCond)(const TYPE&)) const;
-	template <typename T>
-	TYPE sample(const TPoint2<T>& pt, bool (STCALL *fncCond)(const TYPE&), const TYPE& dv) const;
-	template <typename T>
-	TYPE sampleSafe(const TPoint2<T>& pt, bool (STCALL *fncCond)(const TYPE&), const TYPE& dv) const;
+	template <typename T, typename TV, typename Functor>
+	bool sample(TV& v, const TPoint2<T>& pt, const Functor& functor) const;
+	template <typename T, typename TV, typename Functor>
+	bool sampleSafe(TV& v, const TPoint2<T>& pt, const Functor& functor) const;
+	template <typename T, typename Functor>
+	TYPE sample(const TPoint2<T>& pt, const Functor& functor, const TYPE& dv) const;
+	template <typename T, typename Functor>
+	TYPE sampleSafe(const TPoint2<T>& pt, const Functor& functor, const TYPE& dv) const;
 
 	template <typename SAMPLER, typename INTERTYPE>
 	INTERTYPE sample(const SAMPLER& sampler, const TPoint2<typename SAMPLER::Type>& pt) const;
@@ -2023,6 +2144,8 @@ public:
 	template <typename T>
 	void toGray(TImage<T>& out, int code, bool bNormalize=false, bool bSRGB=false) const;
 
+	static cv::Size computeResize(const cv::Size& size, REAL scale);
+	static cv::Size computeResize(const cv::Size& size, REAL scale, unsigned resizes);
 	unsigned computeMaxResolution(unsigned& level, unsigned minImageSize=320, unsigned maxImageSize=INT_MAX) const;
 	static unsigned computeMaxResolution(unsigned width, unsigned height, unsigned& level, unsigned minImageSize=320, unsigned maxImageSize=INT_MAX);
 
@@ -2239,6 +2362,7 @@ struct TAccumulator {
 
 	inline TAccumulator() : value(0), weight(0) {}
 	inline TAccumulator(const Type& v, const WeightType& w) : value(v), weight(w) {}
+	inline bool IsEmpty() const { return weight <= 0; }
 	// adds the given weighted value to the internal value
 	inline void Add(const Type& v, const WeightType& w) {
 		value += v*w;

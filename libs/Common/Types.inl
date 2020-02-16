@@ -1404,6 +1404,52 @@ inline TColor<TYPE>& operator*=(TColor<TYPE>& pt0, const TColor<TYPE>& pt1) {
 	return pt0;
 }
 
+// TMatrix operators
+template <typename TYPE, int m, int n>
+inline TMatrix<TYPE,m,n> operator + (const TMatrix<TYPE,m,n>& m1, const TMatrix<TYPE,m,n>& m2) {
+	return TMatrix<TYPE,m,n>(m1, m2, cv::Matx_AddOp());
+}
+template <typename TYPE, int m, int n>
+inline TMatrix<TYPE,m,n> operator + (const TMatrix<TYPE,m,n>& m1, const cv::Matx<TYPE,m,n>& m2) {
+	return cv::Matx<TYPE,m,n>(m1, m2, cv::Matx_AddOp());
+}
+template <typename TYPE, int m, int n>
+inline TMatrix<TYPE,m,n> operator + (const cv::Matx<TYPE,m,n>& m1, const TMatrix<TYPE,m,n>& m2) {
+	return TMatrix<TYPE,m,n>(m1, m2, cv::Matx_AddOp());
+}
+
+template <typename TYPE, int m, int n>
+inline TMatrix<TYPE,m,n> operator - (const TMatrix<TYPE,m,n>& m1, const TMatrix<TYPE,m,n>& m2) {
+	return TMatrix<TYPE,m,n>(m1, m2, cv::Matx_SubOp());
+}
+template <typename TYPE, int m, int n>
+inline TMatrix<TYPE,m,n> operator - (const TMatrix<TYPE,m,n>& m1, const cv::Matx<TYPE,m,n>& m2) {
+	return TMatrix<TYPE,m,n>(m1, m2, cv::Matx_SubOp());
+}
+template <typename TYPE, int m, int n>
+inline TMatrix<TYPE,m,n> operator - (const cv::Matx<TYPE,m,n>& m1, const TMatrix<TYPE,m,n>& m2) {
+	return TMatrix<TYPE,m,n>(m1, m2, cv::Matx_SubOp());
+}
+template <typename TYPE, int m, int n>
+inline TMatrix<TYPE,m,n> operator - (const TMatrix<TYPE,m,n>& M) {
+	return TMatrix<TYPE,m,n>(M, TYPE(-1), cv::Matx_ScaleOp());
+}
+
+template <typename TYPE, int m, int l, int n>
+inline TMatrix<TYPE,m,n> operator * (const TMatrix<TYPE,m,l>& m1, const TMatrix<TYPE,l,n>& m2) {
+	return TMatrix<TYPE,m,n>(m1, m2, cv::Matx_MatMulOp());
+}
+
+template <typename TYPE, int m, int n, typename TYPE2>
+inline TMatrix<TYPE,m,n> operator / (const TMatrix<TYPE,m,n>& mat, TYPE2 v) {
+	typedef typename std::conditional<std::is_floating_point<TYPE2>::value,TYPE2,REAL>::type real_t;
+	return TMatrix<TYPE,m,n>(mat, real_t(1)/v, cv::Matx_ScaleOp());
+}
+template <typename TYPE, int m, int n, typename TYPE2>
+inline TMatrix<TYPE,m,n>& operator /= (TMatrix<TYPE,m,n>& mat, TYPE2 v) {
+	return mat = mat/v;
+}
+
 // TImage operators
 template <typename TFROM, typename TTO>
 inline TImage<TTO> cvtImage(const TImage<TFROM>& image) {
@@ -1471,6 +1517,7 @@ DEFINE_CVDATADEPTH(SEACAVE::cuint32_t)
 // define specialized cv:DataType<>
 DEFINE_CVDATATYPE(SEACAVE::hfloat)
 DEFINE_CVDATATYPE(SEACAVE::cuint32_t)
+DEFINE_GENERIC_CVDATATYPE(uint64_t,double)
 /*----------------------------------------------------------------*/
 DEFINE_CVDATATYPE(SEACAVE::Point2i)
 DEFINE_CVDATATYPE(SEACAVE::Point2hf)
@@ -1689,6 +1736,133 @@ TPoint3<TYPE> TPoint3<TYPE>::RotateAngleAxis(const TPoint3& pt, const TPoint3& a
 
 
 // C L A S S  //////////////////////////////////////////////////////
+
+template <typename TYPE, int m, int n>
+inline TMatrix<TYPE,m,n>::TMatrix(TYPE v0)
+{
+	STATIC_ASSERT(channels >= 1);
+	val[0] = v0;
+	for (int i = 1; i < channels; i++)
+		val[i] = TYPE(0);
+}
+template <typename TYPE, int m, int n>
+inline TMatrix<TYPE,m,n>::TMatrix(TYPE v0, TYPE v1)
+{
+	STATIC_ASSERT(channels >= 2);
+	val[0] = v0; val[1] = v1;
+	for (int i = 2; i < channels; i++)
+		val[i] = TYPE(0);
+}
+template <typename TYPE, int m, int n>
+inline TMatrix<TYPE,m,n>::TMatrix(TYPE v0, TYPE v1, TYPE v2)
+{
+	STATIC_ASSERT(channels >= 3);
+	val[0] = v0; val[1] = v1; val[2] = v2;
+	for (int i = 3; i < channels; i++)
+		val[i] = TYPE(0);
+}
+template <typename TYPE, int m, int n>
+inline TMatrix<TYPE,m,n>::TMatrix(TYPE v0, TYPE v1, TYPE v2, TYPE v3)
+{
+	STATIC_ASSERT(channels >= 4);
+	val[0] = v0; val[1] = v1; val[2] = v2; val[3] = v3;
+	for (int i = 4; i < channels; i++)
+		val[i] = TYPE(0);
+}
+template <typename TYPE, int m, int n>
+inline TMatrix<TYPE,m,n>::TMatrix(TYPE v0, TYPE v1, TYPE v2, TYPE v3, TYPE v4)
+{
+	STATIC_ASSERT(channels >= 5);
+	val[0] = v0; val[1] = v1; val[2] = v2; val[3] = v3; val[4] = v4;
+	for (int i = 5; i < channels; i++)
+		val[i] = TYPE(0);
+}
+template <typename TYPE, int m, int n>
+inline TMatrix<TYPE,m,n>::TMatrix(TYPE v0, TYPE v1, TYPE v2, TYPE v3, TYPE v4, TYPE v5)
+{
+	STATIC_ASSERT(channels >= 6);
+	val[0] = v0; val[1] = v1; val[2] = v2; val[3] = v3;
+	val[4] = v4; val[5] = v5;
+	for (int i = 6; i < channels; i++)
+		val[i] = TYPE(0);
+}
+template <typename TYPE, int m, int n>
+inline TMatrix<TYPE,m,n>::TMatrix(TYPE v0, TYPE v1, TYPE v2, TYPE v3, TYPE v4, TYPE v5, TYPE v6)
+{
+	STATIC_ASSERT(channels >= 7);
+	val[0] = v0; val[1] = v1; val[2] = v2; val[3] = v3;
+	val[4] = v4; val[5] = v5; val[6] = v6;
+	for (int i = 7; i < channels; i++)
+		val[i] = TYPE(0);
+}
+template <typename TYPE, int m, int n>
+inline TMatrix<TYPE,m,n>::TMatrix(TYPE v0, TYPE v1, TYPE v2, TYPE v3, TYPE v4, TYPE v5, TYPE v6, TYPE v7)
+{
+	STATIC_ASSERT(channels >= 8);
+	val[0] = v0; val[1] = v1; val[2] = v2; val[3] = v3;
+	val[4] = v4; val[5] = v5; val[6] = v6; val[7] = v7;
+	for (int i = 8; i < channels; i++)
+		val[i] = TYPE(0);
+}
+template <typename TYPE, int m, int n>
+inline TMatrix<TYPE,m,n>::TMatrix(TYPE v0, TYPE v1, TYPE v2, TYPE v3, TYPE v4, TYPE v5, TYPE v6, TYPE v7, TYPE v8)
+{
+	STATIC_ASSERT(channels >= 9);
+	val[0] = v0; val[1] = v1; val[2] = v2; val[3] = v3;
+	val[4] = v4; val[5] = v5; val[6] = v6; val[7] = v7;
+	val[8] = v8;
+	for (int i = 9; i < channels; i++)
+		val[i] = TYPE(0);
+}
+template <typename TYPE, int m, int n>
+inline TMatrix<TYPE,m,n>::TMatrix(TYPE v0, TYPE v1, TYPE v2, TYPE v3, TYPE v4, TYPE v5, TYPE v6, TYPE v7, TYPE v8, TYPE v9)
+{
+	STATIC_ASSERT(channels >= 10);
+	val[0] = v0; val[1] = v1; val[2] = v2; val[3] = v3;
+	val[4] = v4; val[5] = v5; val[6] = v6; val[7] = v7;
+	val[8] = v8; val[9] = v9;
+	for (int i = 10; i < channels; i++)
+		val[i] = TYPE(0);
+}
+template <typename TYPE, int m, int n>
+inline TMatrix<TYPE,m,n>::TMatrix(TYPE v0, TYPE v1, TYPE v2, TYPE v3, TYPE v4, TYPE v5, TYPE v6, TYPE v7, TYPE v8, TYPE v9, TYPE v10, TYPE v11)
+{
+	STATIC_ASSERT(channels >= 12);
+	val[0] = v0; val[1] = v1; val[2] = v2; val[3] = v3;
+	val[4] = v4; val[5] = v5; val[6] = v6; val[7] = v7;
+	val[8] = v8; val[9] = v9; val[10] = v10; val[11] = v11;
+	for (int i = 12; i < channels; i++)
+		val[i] = TYPE(0);
+}
+template <typename TYPE, int m, int n>
+inline TMatrix<TYPE,m,n>::TMatrix(TYPE v0, TYPE v1, TYPE v2, TYPE v3, TYPE v4, TYPE v5, TYPE v6, TYPE v7, TYPE v8, TYPE v9, TYPE v10, TYPE v11, TYPE v12, TYPE v13)
+{
+	STATIC_ASSERT(channels == 14);
+	val[0] = v0; val[1] = v1; val[2] = v2; val[3] = v3;
+	val[4] = v4; val[5] = v5; val[6] = v6; val[7] = v7;
+	val[8] = v8; val[9] = v9; val[10] = v10; val[11] = v11;
+	val[12] = v12; val[13] = v13;
+	for (int i = 14; i < channels; i++)
+		val[i] = TYPE(0);
+}
+template <typename TYPE, int m, int n>
+inline TMatrix<TYPE,m,n>::TMatrix(TYPE v0, TYPE v1, TYPE v2, TYPE v3, TYPE v4, TYPE v5, TYPE v6, TYPE v7, TYPE v8, TYPE v9, TYPE v10, TYPE v11, TYPE v12, TYPE v13, TYPE v14, TYPE v15)
+{
+	STATIC_ASSERT(channels >= 16);
+	val[0] = v0; val[1] = v1; val[2] = v2; val[3] = v3;
+	val[4] = v4; val[5] = v5; val[6] = v6; val[7] = v7;
+	val[8] = v8; val[9] = v9; val[10] = v10; val[11] = v11;
+	val[12] = v12; val[13] = v13; val[14] = v14; val[15] = v15;
+	for (int i = 16; i < channels; i++)
+		val[i] = TYPE(0);
+}
+template <typename TYPE, int m, int n>
+inline TMatrix<TYPE,m,n>::TMatrix(const TYPE* values)
+{
+	for (int i = 0; i < channels; i++)
+		val[i] = values[i];
+}
+
 
 template <typename TYPE, int m, int n>
 inline bool TMatrix<TYPE,m,n>::IsEqual(const Base& rhs) const
@@ -1992,6 +2166,67 @@ void TDVector<TYPE>::getKroneckerProduct(const TDVector<TYPE>& arg, TDVector<TYP
 
 // C L A S S  //////////////////////////////////////////////////////
 
+// Color ramp code from "Colour Ramping for Data Visualisation"
+// (see http://paulbourke.net/texture_colour/colourspace)
+template <typename TYPE/*PixelType*/>
+template <typename VT/*ValueType*/>
+TPixel<TYPE> TPixel<TYPE>::colorRamp(VT v, VT vmin, VT vmax)
+{
+	if (v < vmin)
+		v = vmin;
+	if (v > vmax)
+		v = vmax;
+	const TYPE dv((TYPE)(vmax - vmin));
+	TPixel<TYPE> c(1,1,1); // white
+	if (v < vmin + (VT)(TYPE(0.25) * dv)) {
+		c.r = TYPE(0);
+		c.g = TYPE(4) * (v - vmin) / dv;
+	} else if (v < vmin + (VT)(TYPE(0.5) * dv)) {
+		c.r = TYPE(0);
+		c.b = TYPE(1) + TYPE(4) * (vmin + TYPE(0.25) * dv - v) / dv;
+	} else if (v < vmin + (VT)(TYPE(0.75) * dv)) {
+		c.r = TYPE(4) * (v - vmin - TYPE(0.5) * dv) / dv;
+		c.b = TYPE(0);
+	} else {
+		c.g = TYPE(1) + TYPE(4) * (vmin + TYPE(0.75) * dv - v) / dv;
+		c.b = TYPE(0);
+	}
+	return c;
+}
+
+// Gray values are expected in the range [0, 1] and converted to RGB values.
+template <typename TYPE>
+TPixel<TYPE> TPixel<TYPE>::gray2color(ALT gray)
+{
+	ASSERT(ALT(0) <= gray && gray <= ALT(1));
+	// Jet colormap inspired by Matlab.
+	auto const Interpolate = [](ALT val, ALT y0, ALT x0, ALT y1, ALT x1) -> ALT {
+		return (val - x0) * (y1 - y0) / (x1 - x0) + y0;
+	};
+	auto const  Base = [&Interpolate](ALT val) -> ALT {
+		if (val <= ALT(0.125)) {
+			return ALT(0);
+		} else if (val <= ALT(0.375)) {
+			return Interpolate(ALT(2) * val - ALT(1), ALT(0), ALT(-0.75), ALT(1), ALT(-0.25));
+		} else if (val <= ALT(0.625)) {
+			return ALT(1);
+		} else if (val <= ALT(0.87)) {
+			return Interpolate(ALT(2) * val - ALT(1), ALT(1), ALT(0.25), ALT(0), ALT(0.75));
+		} else {
+			return ALT(0);
+		}
+	};
+	return TPixel<ALT>(
+		Base(gray + ALT(0.25)),
+		Base(gray),
+		Base(gray - ALT(0.25))
+	).cast<TYPE>();
+}
+/*----------------------------------------------------------------*/
+
+
+// C L A S S  //////////////////////////////////////////////////////
+
 // Find a pixel inside the image
 template <typename TYPE>
 inline const TYPE& TImage<TYPE>::getPixel(int y, int x) const
@@ -2037,71 +2272,71 @@ TYPE TImage<TYPE>::sampleSafe(const TPoint2<T>& pt) const
 
 // sample by bilinear interpolation, using only pixels that meet the user condition
 template <typename TYPE>
-template <typename T>
-bool TImage<TYPE>::sample(TYPE& v, const TPoint2<T>& pt, bool (STCALL *fncCond)(const TYPE&)) const
+template <typename T, typename TV, typename Functor>
+bool TImage<TYPE>::sample(TV& v, const TPoint2<T>& pt, const Functor& functor) const
 {
 	const int lx((int)pt.x);
 	const int ly((int)pt.y);
 	const T x(pt.x-lx), x1(T(1)-x);
 	const T y(pt.y-ly), y1(T(1)-y);
-	const TYPE& x0y0(BaseBase::operator()(ly  , lx  )); const bool b00(fncCond(x0y0));
-	const TYPE& x1y0(BaseBase::operator()(ly  , lx+1)); const bool b10(fncCond(x1y0));
-	const TYPE& x0y1(BaseBase::operator()(ly+1, lx  )); const bool b01(fncCond(x0y1));
-	const TYPE& x1y1(BaseBase::operator()(ly+1, lx+1)); const bool b11(fncCond(x1y1));
+	const TYPE& x0y0(BaseBase::operator()(ly  , lx  )); const bool b00(functor(x0y0));
+	const TYPE& x1y0(BaseBase::operator()(ly  , lx+1)); const bool b10(functor(x1y0));
+	const TYPE& x0y1(BaseBase::operator()(ly+1, lx  )); const bool b01(functor(x0y1));
+	const TYPE& x1y1(BaseBase::operator()(ly+1, lx+1)); const bool b11(functor(x1y1));
 	if (!b00 && !b10 && !b01 && !b11)
 		return false;
-	v = y1*(x1*(b00 ? x0y0 : (b10 ? x1y0 : (b01 ? x0y1 : x1y1))) + x*(b10 ? x1y0 : (b00 ? x0y0 : (b11 ? x1y1 : x0y1)))) +
-		y *(x1*(b01 ? x0y1 : (b11 ? x1y1 : (b00 ? x0y0 : x1y0))) + x*(b11 ? x1y1 : (b01 ? x0y1 : (b10 ? x1y0 : x0y0))));
+	v = TV(y1*(x1*Cast<T>(b00 ? x0y0 : (b10 ? x1y0 : (b01 ? x0y1 : x1y1))) + x*Cast<T>(b10 ? x1y0 : (b00 ? x0y0 : (b11 ? x1y1 : x0y1)))) +
+		   y *(x1*Cast<T>(b01 ? x0y1 : (b11 ? x1y1 : (b00 ? x0y0 : x1y0))) + x*Cast<T>(b11 ? x1y1 : (b01 ? x0y1 : (b10 ? x1y0 : x0y0)))));
 	return true;
 }
 template <typename TYPE>
-template <typename T>
-bool TImage<TYPE>::sampleSafe(TYPE& v, const TPoint2<T>& pt, bool (STCALL *fncCond)(const TYPE&)) const
+template <typename T, typename TV, typename Functor>
+bool TImage<TYPE>::sampleSafe(TV& v, const TPoint2<T>& pt, const Functor& functor) const
 {
 	const int lx((int)pt.x);
 	const int ly((int)pt.y);
 	const T x(pt.x-lx), x1(T(1)-x);
 	const T y(pt.y-ly), y1(T(1)-y);
-	const TYPE& x0y0(getPixel(ly  , lx  )); const bool b00(fncCond(x0y0));
-	const TYPE& x1y0(getPixel(ly  , lx+1)); const bool b10(fncCond(x1y0));
-	const TYPE& x0y1(getPixel(ly+1, lx  )); const bool b01(fncCond(x0y1));
-	const TYPE& x1y1(getPixel(ly+1, lx+1)); const bool b11(fncCond(x1y1));
+	const TYPE& x0y0(getPixel(ly  , lx  )); const bool b00(functor(x0y0));
+	const TYPE& x1y0(getPixel(ly  , lx+1)); const bool b10(functor(x1y0));
+	const TYPE& x0y1(getPixel(ly+1, lx  )); const bool b01(functor(x0y1));
+	const TYPE& x1y1(getPixel(ly+1, lx+1)); const bool b11(functor(x1y1));
 	if (!b00 && !b10 && !b01 && !b11)
 		return false;
-	v = y1*(x1*(b00 ? x0y0 : (b10 ? x1y0 : (b01 ? x0y1 : x1y1))) + x*(b10 ? x1y0 : (b00 ? x0y0 : (b11 ? x1y1 : x0y1)))) +
-		y *(x1*(b01 ? x0y1 : (b11 ? x1y1 : (b00 ? x0y0 : x1y0))) + x*(b11 ? x1y1 : (b01 ? x0y1 : (b10 ? x1y0 : x0y0))));
+	v = TV(y1*(x1*Cast<T>(b00 ? x0y0 : (b10 ? x1y0 : (b01 ? x0y1 : x1y1))) + x*Cast<T>(b10 ? x1y0 : (b00 ? x0y0 : (b11 ? x1y1 : x0y1)))) +
+		   y *(x1*Cast<T>(b01 ? x0y1 : (b11 ? x1y1 : (b00 ? x0y0 : x1y0))) + x*Cast<T>(b11 ? x1y1 : (b01 ? x0y1 : (b10 ? x1y0 : x0y0)))));
 	return true;
 }
 // same as above, but using default value if the condition is not met
 template <typename TYPE>
-template <typename T>
-TYPE TImage<TYPE>::sample(const TPoint2<T>& pt, bool (STCALL *fncCond)(const TYPE&), const TYPE& dv) const
+template <typename T, typename Functor>
+TYPE TImage<TYPE>::sample(const TPoint2<T>& pt, const Functor& functor, const TYPE& dv) const
 {
 	const int lx((int)pt.x);
 	const int ly((int)pt.y);
 	const T x(pt.x-lx), x1(T(1)-x);
 	const T y(pt.y-ly), y1(T(1)-y);
-	const TYPE& x0y0(BaseBase::operator()(ly  , lx  )); const bool b00(fncCond(x0y0));
-	const TYPE& x1y0(BaseBase::operator()(ly  , lx+1)); const bool b10(fncCond(x1y0));
-	const TYPE& x0y1(BaseBase::operator()(ly+1, lx  )); const bool b01(fncCond(x0y1));
-	const TYPE& x1y1(BaseBase::operator()(ly+1, lx+1)); const bool b11(fncCond(x1y1));
-	return y1*(x1*(b00 ? x0y0 : dv) + x*(b10 ? x1y0 : dv)) +
-		    y*(x1*(b01 ? x0y1 : dv) + x*(b11 ? x1y1 : dv));
+	const TYPE& x0y0(BaseBase::operator()(ly  , lx  )); const bool b00(functor(x0y0));
+	const TYPE& x1y0(BaseBase::operator()(ly  , lx+1)); const bool b10(functor(x1y0));
+	const TYPE& x0y1(BaseBase::operator()(ly+1, lx  )); const bool b01(functor(x0y1));
+	const TYPE& x1y1(BaseBase::operator()(ly+1, lx+1)); const bool b11(functor(x1y1));
+	return TYPE(y1*(x1*Cast<T>(b00 ? x0y0 : dv) + x*Cast<T>(b10 ? x1y0 : dv)) +
+				y *(x1*Cast<T>(b01 ? x0y1 : dv) + x*Cast<T>(b11 ? x1y1 : dv)));
 }
 template <typename TYPE>
-template <typename T>
-TYPE TImage<TYPE>::sampleSafe(const TPoint2<T>& pt, bool (STCALL *fncCond)(const TYPE&), const TYPE& dv) const
+template <typename T, typename Functor>
+TYPE TImage<TYPE>::sampleSafe(const TPoint2<T>& pt, const Functor& functor, const TYPE& dv) const
 {
 	const int lx((int)pt.x);
 	const int ly((int)pt.y);
 	const T x(pt.x-lx), x1(T(1)-x);
 	const T y(pt.y-ly), y1(T(1)-y);
-	const TYPE& x0y0(getPixel(ly  , lx  )); const bool b00(fncCond(x0y0));
-	const TYPE& x1y0(getPixel(ly  , lx+1)); const bool b10(fncCond(x1y0));
-	const TYPE& x0y1(getPixel(ly+1, lx  )); const bool b01(fncCond(x0y1));
-	const TYPE& x1y1(getPixel(ly+1, lx+1)); const bool b11(fncCond(x1y1));
-	return y1*(x1*(b00 ? x0y0 : dv) + x*(b10 ? x1y0 : dv)) +
-			y*(x1*(b01 ? x0y1 : dv) + x*(b11 ? x1y1 : dv));
+	const TYPE& x0y0(getPixel(ly  , lx  )); const bool b00(functor(x0y0));
+	const TYPE& x1y0(getPixel(ly  , lx+1)); const bool b10(functor(x1y0));
+	const TYPE& x0y1(getPixel(ly+1, lx  )); const bool b01(functor(x0y1));
+	const TYPE& x1y1(getPixel(ly+1, lx+1)); const bool b11(functor(x1y1));
+	return TYPE(y1*(x1*Cast<T>(b00 ? x0y0 : dv) + x*Cast<T>(b10 ? x1y0 : dv)) +
+				y *(x1*Cast<T>(b01 ? x0y1 : dv) + x*Cast<T>(b11 ? x1y1 : dv)));
 }
 
 // same as above, sample image at a specified position, but using the given sampler
@@ -2119,10 +2354,11 @@ template <typename T>
 void TImage<TYPE>::toGray(TImage<T>& out, int code, bool bNormalize, bool bSRGB) const
 {
 	#if 1
+	typedef typename RealType<T,float>::type Real;
 	ASSERT(code==cv::COLOR_RGB2GRAY || code==cv::COLOR_RGBA2GRAY || code==cv::COLOR_BGR2GRAY || code==cv::COLOR_BGRA2GRAY);
-	static const T coeffsRGB[] = {T(0.299), T(0.587), T(0.114)};
-	static const T coeffsBGR[] = {T(0.114), T(0.587), T(0.299)};
-	const float* coeffs;
+	static const Real coeffsRGB[] = {Real(0.299), Real(0.587), Real(0.114)};
+	static const Real coeffsBGR[] = {Real(0.114), Real(0.587), Real(0.299)};
+	const Real* coeffs;
 	switch (code) {
 	case cv::COLOR_BGR2GRAY:
 	case cv::COLOR_BGRA2GRAY:
@@ -2135,7 +2371,7 @@ void TImage<TYPE>::toGray(TImage<T>& out, int code, bool bNormalize, bool bSRGB)
 	default:
 		ASSERT("Unsupported image format" == NULL);
 	}
-	const T &cb(coeffs[0]), &cg(coeffs[1]), &cr(coeffs[2]);
+	const Real &cb(coeffs[0]), &cg(coeffs[1]), &cr(coeffs[2]);
 	if (out.rows!=rows || out.cols!=cols)
 		out.create(rows, cols);
 	ASSERT(cv::Mat::isContinuous());
@@ -2146,17 +2382,17 @@ void TImage<TYPE>::toGray(TImage<T>& out, int code, bool bNormalize, bool bSRGB)
 	typedef typename cv::DataType<TYPE>::channel_type ST;
 	if (bSRGB) {
 		if (bNormalize) {
-			typedef typename CONVERT::NormsRGB2RGB_t<ST,T> ColConv;
+			typedef typename CONVERT::NormsRGB2RGB_t<ST,Real> ColConv;
 			for (const ST* src=cv::Mat::template ptr<ST>(); dst!=dstEnd; src+=scn)
 				*dst++ = T(cb*ColConv(src[0]) + cg*ColConv(src[1]) + cr*ColConv(src[2]));
 		} else {
-			typedef typename CONVERT::NormsRGB2RGBUnNorm_t<ST,T> ColConv;
+			typedef typename CONVERT::NormsRGB2RGBUnNorm_t<ST,Real> ColConv;
 			for (const ST* src=cv::Mat::template ptr<ST>(); dst!=dstEnd; src+=scn)
 				*dst++ = T(cb*ColConv(src[0]) + cg*ColConv(src[1]) + cr*ColConv(src[2]));
 		}
 	} else {
 		if (bNormalize) {
-			typedef typename CONVERT::NormRGB_t<ST,T> ColConv;
+			typedef typename CONVERT::NormRGB_t<ST,Real> ColConv;
 			for (const ST* src=cv::Mat::template ptr<ST>(); dst!=dstEnd; src+=scn)
 				*dst++ = T(cb*ColConv(src[0]) + cg*ColConv(src[1]) + cr*ColConv(src[2]));
 		} else {
@@ -2174,6 +2410,32 @@ void TImage<TYPE>::toGray(TImage<T>& out, int code, bool bNormalize, bool bSRGB)
 }
 /*----------------------------------------------------------------*/
 
+
+// compute scaled size such that the biggest dimension is scaled as desired
+// and the smaller one maintains the aspect ratio as best as it can
+template <typename TYPE>
+cv::Size TImage<TYPE>::computeResize(const cv::Size& size, REAL scale)
+{
+	cv::Size scaledSize;
+	if (size.width > size.height) {
+		scaledSize.width = ROUND2INT(REAL(size.width)*scale);
+		scaledSize.height = ROUND2INT(REAL(size.height)*scaledSize.width/REAL(size.width));
+	} else {
+		scaledSize.height = ROUND2INT(REAL(size.height)*scale);
+		scaledSize.width = ROUND2INT(REAL(size.width)*scaledSize.height/REAL(size.height));
+	}
+	return scaledSize;
+}
+// compute the final scaled size by performing successive resizes
+// with the given scale value
+template <typename TYPE>
+cv::Size TImage<TYPE>::computeResize(const cv::Size& size, REAL scale, unsigned resizes)
+{
+	cv::Size scaledSize(size);
+	while (resizes-- > 0)
+		scaledSize = computeResize(scaledSize, scale);
+	return scaledSize;
+}
 
 // compute image scale for a given max and min resolution
 template <typename TYPE>

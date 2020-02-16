@@ -39,7 +39,7 @@ namespace SEACAVE {
  * basic thread control
  **************************************************************************************/
 
-class Thread
+class GENERAL_API Thread
 {
 public:
 	#ifdef  _ENVIRONMENT64
@@ -252,6 +252,86 @@ protected:
 	DWORD threadId;
 	#endif
 };
+/*----------------------------------------------------------------*/
+
+
+
+/**************************************************************************************
+ * ThreadPool
+ * --------------
+ * basic thread pool
+ **************************************************************************************/
+
+class GENERAL_API ThreadPool
+{
+public:
+	typedef uint32_t size_type;
+	typedef Thread value_type;
+	typedef value_type* iterator;
+	typedef const value_type* const_iterator;
+	typedef value_type& reference;
+	typedef const value_type& const_reference;
+	typedef CLISTDEFIDX(Thread,size_type) Threads;
+
+public:
+	inline ThreadPool() {}
+	inline ThreadPool(size_type nThreads) : _threads(nThreads>0?nThreads:Thread::hardwareConcurrency()) {}
+	inline ThreadPool(size_type nThreads, Thread::FncStart pfnStarter, void* pData=NULL) : _threads(nThreads>0?nThreads:Thread::hardwareConcurrency()) { start(pfnStarter, pData); }
+	inline ~ThreadPool() { join(); }
+
+	#ifdef _SUPPORT_CPP11
+	inline ThreadPool(ThreadPool&& rhs) : _threads(std::forward<Threads>(rhs._threads)) {
+	}
+
+	inline ThreadPool& operator=(ThreadPool&& rhs) {
+		_threads.Swap(rhs._threads);
+		return *this;
+	}
+	#endif
+
+	// wait for all running threads to finish and resize threads array
+	void resize(size_type nThreads) {
+		join();
+		_threads.resize(nThreads);
+	}
+	// start all threads with the given function
+	bool start(Thread::FncStart pfnStarter, void* pData=NULL) {
+		for (Thread& thread: _threads)
+			if (!thread.start(pfnStarter, pData))
+				return false;
+		return true;
+	}
+	// wait for all running threads to finish
+	void join() {
+		for (Thread& thread: _threads)
+			thread.join();
+	}
+	// stop all threads
+	void stop() {
+		for (Thread& thread: _threads)
+			thread.stop();
+	}
+	// wait for all running threads to finish and release threads array
+	void Release() {
+		join();
+		_threads.Release();
+	}
+
+	inline bool empty() const { return _threads.empty(); }
+	inline size_type size() const { return _threads.size(); }
+	inline const_iterator cbegin() const { return _threads.cbegin(); }
+	inline const_iterator cend() const { return _threads.cend(); }
+	inline const_iterator begin() const { return _threads.begin(); }
+	inline const_iterator end() const { return _threads.end(); }
+	inline iterator begin() { return _threads.begin(); }
+	inline iterator end() { return _threads.end(); }
+	inline const_reference operator[](size_type index) const { return _threads[index]; }
+	inline reference operator[](size_type index) { return _threads[index]; }
+
+protected:
+	Threads _threads;
+};
+/*----------------------------------------------------------------*/
 
 
 
@@ -261,7 +341,7 @@ protected:
  * basic process control
  **************************************************************************************/
 
-class Process
+class GENERAL_API Process
 {
 public:
 	enum Priority {
