@@ -70,9 +70,9 @@ protected:
 	static void* STCALL EndDepthMapTmp(void*);
 
 public:
-  Scene& scene;
+	Scene& scene;
 
-  DepthDataArr arrDepthData;
+	DepthDataArr arrDepthData;
 
 	// used internally to estimate the depth-maps
 	Image8U::Size prevDepthMapSize; // remember the size of the last estimated depth-map

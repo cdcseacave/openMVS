@@ -1809,7 +1809,7 @@ bool MVS::ImportDepthDataRaw(const String& fileName, String& imageFileName,
 	uint16_t nFileNameSize;
 	fread(&nFileNameSize, sizeof(uint16_t), 1, f);
 	imageFileName.resize(nFileNameSize);
-	fread(&imageFileName[0], sizeof(char), nFileNameSize, f);
+	fread(&imageFileName[0u], sizeof(char), nFileNameSize, f);
 
 	// read neighbor IDs
 	STATIC_ASSERT(sizeof(uint32_t) == sizeof(IIndex));

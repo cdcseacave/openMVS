@@ -70,7 +70,7 @@ if(OpenMVS_USE_OPENMP)
 		SET(_USE_OPENMP TRUE)
 		#cmake only check for separate OpenMP library on AppleClang 7+
 		#https://github.com/Kitware/CMake/blob/42212f7539040139ecec092547b7d58ef12a4d72/Modules/FindOpenMP.cmake#L252
-		if (CMAKE_CXX_COMPILER_ID MATCHES "AppleClang" AND CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL "7.0")
+		if (CMAKE_CXX_COMPILER_ID MATCHES "AppleClang" AND (NOT CMAKE_CXX_COMPILER_VERSION VERSION_LESS "7.0"))
 			SET(OpenMP_LIBS ${OpenMP_libomp_LIBRARY})
 			LIST(APPEND OpenMVS_EXTRA_LIBS ${OpenMP_LIBS})
 		endif()
