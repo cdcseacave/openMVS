@@ -20,28 +20,24 @@
 
 // cList index type
 #ifdef _SUPPORT_CPP11
-#ifdef _MSC_VER
-#define ARR2IDX(arr) std::remove_reference<decltype(arr)>::type::IDX
-#else
-#define ARR2IDX(arr) typename std::remove_reference<decltype(arr)>::type::IDX
-#endif
+#define ARR2IDX(arr) typename std::remove_reference<decltype(arr)>::type::size_type
 #else
 #define ARR2IDX(arr) IDX
 #endif
 
 // cList iterator by index
 #ifndef FOREACH
-#define FOREACH(var, arr) for (ARR2IDX(arr) var=0, var##Size=(arr).GetSize(); var<var##Size; ++var)
+#define FOREACH(var, arr) for (ARR2IDX(arr) var=0, var##Size=(arr).size(); var<var##Size; ++var)
 #endif
 #ifndef RFOREACH
-#define RFOREACH(var, arr) for (ARR2IDX(arr) var=(arr).GetSize(); var-->0; )
+#define RFOREACH(var, arr) for (ARR2IDX(arr) var=(arr).size(); var-->0; )
 #endif
 // cList iterator by pointer
 #ifndef FOREACHPTR
-#define FOREACHPTR(var, arr) for (auto var=(arr).Begin(), var##End=(arr).End(); var!=var##End; ++var)
+#define FOREACHPTR(var, arr) for (auto var=(arr).begin(), var##End=(arr).end(); var!=var##End; ++var)
 #endif
 #ifndef RFOREACHPTR
-#define RFOREACHPTR(var, arr) for (auto var=(arr).End(), var##Begin=(arr).Begin(); var--!=var##Begin; )
+#define RFOREACHPTR(var, arr) for (auto var=(arr).end(), var##Begin=(arr).begin(); var--!=var##Begin; )
 #endif
 
 // raw data array iterator by index
@@ -626,6 +622,41 @@ public:
 	{
 		return std::accumulate(Begin(), End(), TYPE(0)) / _size;
 	}
+
+	inline ArgType	GetMax() const {
+		return *std::max_element(Begin(), End());
+	}
+	template <typename Functor>
+	inline ArgType	GetMax(const Functor& functor) const {
+		return *std::max_element(Begin(), End(), functor);
+	}
+	inline IDX	GetMaxIdx() const {
+		return static_cast<IDX>(std::max_element(Begin(), End()) - Begin());
+	}
+	template <typename Functor>
+	inline IDX	GetMaxIdx(const Functor& functor) const {
+		return static_cast<IDX>(std::max_element(Begin(), End(), functor) - Begin());
+	}
+	#ifdef _SUPPORT_CPP11
+	inline std::pair<ArgType,ArgType>	GetMinMax() const {
+		const auto minmax(std::minmax_element(Begin(), End()));
+		return std::pair<ArgType,ArgType>(*minmax.first, *minmax.second);
+	}
+	template <typename Functor>
+	inline std::pair<ArgType,ArgType>	GetMinMax(const Functor& functor) const {
+		const auto minmax(std::minmax_element(Begin(), End(), functor));
+		return std::pair<ArgType,ArgType>(*minmax.first, *minmax.second);
+	}
+	inline std::pair<IDX,IDX>	GetMinMaxIdx() const {
+		const auto minmax(std::minmax_element(Begin(), End()));
+		return std::make_pair(static_cast<IDX>(minmax.first-Begin()), static_cast<IDX>(minmax.second-Begin()));
+	}
+	template <typename Functor>
+	inline std::pair<IDX,IDX>	GetMinMaxIdx(const Functor& functor) const {
+		const auto minmax(std::minmax_element(Begin(), End(), functor));
+		return std::make_pair(static_cast<IDX>(minmax.first-Begin()), static_cast<IDX>(minmax.second-Begin()));
+	}
+	#endif
 
 	inline TYPE&	PartialSort(IDX index)
 	{
@@ -1294,6 +1325,7 @@ public:
 
 #if _USE_VECTORINTERFACE != 0
 public:
+	typedef IDX size_type;
 	typedef Type value_type;
 	typedef value_type* iterator;
 	typedef const value_type* const_iterator;
@@ -1302,11 +1334,11 @@ public:
 	typedef std::vector<Type> VectorType;
 	inline cList(const VectorType& rList) { CopyOf(&rList[0], rList.size()); }
 	#ifdef _SUPPORT_CPP11
-	inline cList(std::initializer_list<Type> l) : _size(0), _vectorSize((IDX)l.size()), _vector(NULL) { ASSERT(l.size()<NO_INDEX); if (_vectorSize == 0) return; _vector = (Type*) operator new[] (_vectorSize*sizeof(Type)); const Type* first(l.begin()); do new(_vector + _size++) Type(*first++); while (first!=l.end()); }
+	inline cList(std::initializer_list<Type> l) : _size(0), _vectorSize((size_type)l.size()), _vector(NULL) { ASSERT(l.size()<NO_INDEX); if (_vectorSize == 0) return; _vector = (Type*) operator new[] (_vectorSize*sizeof(Type)); const Type* first(l.begin()); do new(_vector + _size++) Type(*first++); while (first!=l.end()); }
 	#endif
 	inline bool empty() const { return IsEmpty(); }
-	inline IDX size() const { return GetSize(); }
-	inline IDX capacity() const { return GetCapacity(); }
+	inline size_type size() const { return GetSize(); }
+	inline size_type capacity() const { return GetCapacity(); }
 	inline void clear() { Empty(); }
 	inline void insert(const_iterator it, const_reference elem) { InsertAt(it-this->_vector, elem); }
 	#ifdef _SUPPORT_CPP11
@@ -1316,8 +1348,8 @@ public:
 	#endif
 	inline void push_back(const_reference elem) { Insert(elem); }
 	inline void pop_back() { RemoveLast(); }
-	inline void reserve(IDX newSize) { Reserve(newSize); }
-	inline void resize(IDX newSize) { Resize(newSize); }
+	inline void reserve(size_type newSize) { Reserve(newSize); }
+	inline void resize(size_type newSize) { Resize(newSize); }
 	inline void erase(const_iterator it) { RemoveAtMove(it-this->_vector); }
 	inline const_iterator cdata() const { return GetData(); }
 	inline const_iterator cbegin() const { return Begin(); }

@@ -232,6 +232,10 @@ public:
 	REAL DistanceSq(const Point3& X) const; // compute the distance from the camera to the given 3D point
 	inline REAL Distance(const Point3& X) const { return SQRT(DistanceSq(X)); }
 
+	static REAL StereoRectify(const cv::Size& size1, const Camera& camera1, const cv::Size& size2, const Camera& camera2, Matrix3x3& R1, Matrix3x3& R2, Matrix3x3& K1, Matrix3x3& K2);
+	static REAL StereoRectifyFusiello(const cv::Size& size1, const Camera& camera1, const cv::Size& size2, const Camera& camera2, Matrix3x3& R1, Matrix3x3& R2, Matrix3x3& K1, Matrix3x3& K2);
+	static void SetStereoRectificationROI(const Point3fArr& points1, cv::Size& size1, const Camera& camera1, const Point3fArr& points2, cv::Size& size2, const Camera& camera2, const Matrix3x3& R1, const Matrix3x3& R2, Matrix3x3& K1, Matrix3x3& K2);
+
 	// project 3D point by the camera
 	template <typename TYPE>
 	inline TPoint3<TYPE> ProjectPointRT3(const TPoint3<TYPE>& X) const {
@@ -336,6 +340,11 @@ public:
 	template <typename TYPE>
 	inline TPoint2<TYPE> TransformPointW2I(const TPoint3<TYPE>& X) const {
 		return TransformPointC2I(TransformPointW2C(X));
+	}
+	template <typename TYPE>
+	inline TPoint3<TYPE> TransformPointW2I3(const TPoint3<TYPE>& X) const {
+		const TPoint3<TYPE> camX(TransformPointW2C(X));
+		return TPoint3<TYPE>(TransformPointC2I(camX), camX.z);
 	}
 
 	// check if the given point (or its projection) is inside the camera view

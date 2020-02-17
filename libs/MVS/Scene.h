@@ -35,9 +35,8 @@
 
 // I N C L U D E S /////////////////////////////////////////////////
 
-#include "DepthMap.h"
-#include "Mesh.h"
 #include "SceneDensify.h"
+#include "Mesh.h"
 
 
 // D E F I N E S ///////////////////////////////////////////////////
@@ -46,7 +45,7 @@
 // S T R U C T S ///////////////////////////////////////////////////
 
 namespace MVS {
-	
+
 // Forward declarations
 struct MVS_API DenseDepthMapData;
 
@@ -69,7 +68,7 @@ public:
 	bool IsEmpty() const;
 
 	bool LoadInterface(const String& fileName);
-	bool SaveInterface(const String& fileName) const;
+	bool SaveInterface(const String& fileName, int version=-1) const;
 
 	bool Import(const String& fileName);
 
@@ -82,7 +81,7 @@ public:
 	bool ExportCamerasMLP(const String& fileName, const String& fileNameScene) const;
 
 	// Dense reconstruction
-	bool DenseReconstruction();
+	bool DenseReconstruction(int nFusionMode=0);
 	bool ComputeDepthMaps(DenseDepthMapData& data);
 	void DenseReconstructionEstimate(void*);
 	void DenseReconstructionFilter(void*);

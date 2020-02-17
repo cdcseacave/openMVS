@@ -12,7 +12,7 @@
 // D E F I N E S ///////////////////////////////////////////////////
 
 #define MVSI_PROJECT_ID "MVSI" // identifies the project stream
-#define MVSI_PROJECT_VER ((uint32_t)4) // identifies the version of a project stream
+#define MVSI_PROJECT_VER ((uint32_t)5) // identifies the version of a project stream
 
 // set a default namespace name if none given
 #ifndef _INTERFACE_NAMESPACE
@@ -453,6 +453,7 @@ struct Interface
 	// structure describing an image
 	struct Image {
 		std::string name; // image file name
+		std::string maskName; // segmentation file name (optional)
 		uint32_t platformID; // ID of the associated platform
 		uint32_t cameraID; // ID of the associated camera on the associated platform
 		uint32_t poseID; // ID of the pose of the associated platform
@@ -465,6 +466,9 @@ struct Interface
 		template <class Archive>
 		void serialize(Archive& ar, const unsigned int version) {
 			ar & name;
+			if (version > 4) {
+				ar & maskName;
+			}
 			ar & platformID;
 			ar & cameraID;
 			ar & poseID;

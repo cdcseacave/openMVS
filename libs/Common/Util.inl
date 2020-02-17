@@ -886,8 +886,9 @@ inline std::pair<TYPEW,TYPEW> ComputeX84Threshold(const TYPE* const values, size
 	std::nth_element(data.Begin(), mid, data.End());
 	const TYPEW median(*mid);
 	// threshold = 5.2 * MEDIAN(ABS(values-median));
-	FOREACHPTR(pVal, data)
-		*pVal = ABS((*pVal)-median);
+	using TYPEI = typename MakeSigned<TYPE>::type;
+	for (TYPE& val: data)
+		val = TYPE(ABS(TYPEI(val)-TYPEI(median)));
 	std::nth_element(data.Begin(), mid, data.End());
 	return std::make_pair(median, mul*TYPEW(*mid));
 } // ComputeX84Threshold

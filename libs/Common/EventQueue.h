@@ -71,6 +71,20 @@ protected:
 };
 /*----------------------------------------------------------------*/
 
+
+// basic event and thread pool
+class GENERAL_API EventThreadPool : public ThreadPool, public EventQueue
+{
+public:
+	inline EventThreadPool() {}
+	inline EventThreadPool(size_type nThreads) : ThreadPool(nThreads) {}
+	inline EventThreadPool(size_type nThreads, Thread::FncStart pfnStarter, void* pData=NULL) : ThreadPool(nThreads, pfnStarter, pData) {}
+	inline ~EventThreadPool() {}
+
+	void stop(); //stop threads, reset locks state and empty event queue
+};
+/*----------------------------------------------------------------*/
+
 } // namespace SEACAVE
 
 #endif // __SEACAVE_EVENTQUEUE_H__

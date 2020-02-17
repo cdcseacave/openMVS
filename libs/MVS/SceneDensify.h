@@ -35,6 +35,8 @@
 
 // I N C L U D E S /////////////////////////////////////////////////
 
+#include "SemiGlobalMatcher.h"
+
 
 // S T R U C T S ///////////////////////////////////////////////////
 
@@ -68,9 +70,9 @@ protected:
 	static void* STCALL EndDepthMapTmp(void*);
 
 public:
-  Scene& scene;
+	Scene& scene;
 
-  DepthDataArr arrDepthData;
+	DepthDataArr arrDepthData;
 
 	// used internally to estimate the depth-maps
 	Image8U::Size prevDepthMapSize; // remember the size of the last estimated depth-map
@@ -89,15 +91,13 @@ struct MVS_API DenseDepthMapData {
 	SEACAVE::EventQueue events; // internal events queue (processed by the working threads)
 	Semaphore sem;
 	CAutoPtr<Util::Progress> progress;
+	int nFusionMode;
+	STEREO::SemiGlobalMatcher sgm;
 
-	DenseDepthMapData(Scene& _scene)
-		: scene(_scene), depthMaps(_scene), idxImage(0), sem(1) {}
+	DenseDepthMapData(Scene& _scene, int _nFusionMode=0);
+	~DenseDepthMapData();
 
-	void SignalCompleteDepthmapFilter() {
-		ASSERT(idxImage > 0);
-		if (Thread::safeDec(idxImage) == 0)
-			sem.Signal((unsigned)images.GetSize()*2);
-	}
+	void SignalCompleteDepthmapFilter();
 };
 /*----------------------------------------------------------------*/
 

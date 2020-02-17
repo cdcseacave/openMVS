@@ -47,6 +47,8 @@ namespace OPT {
 String strInputFileName;
 String strOutputFileName;
 String strMeshFileName;
+float fDecimateMesh;
+unsigned nCloseHoles;
 unsigned nResolutionLevel;
 unsigned nMinResolution;
 float fOutlierThreshold;
@@ -98,6 +100,8 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	config.add_options()
 		("input-file,i", boost::program_options::value<std::string>(&OPT::strInputFileName), "input filename containing camera poses and image list")
 		("output-file,o", boost::program_options::value<std::string>(&OPT::strOutputFileName), "output filename for storing the mesh")
+		("decimate", boost::program_options::value<float>(&OPT::fDecimateMesh)->default_value(1.f), "decimation factor in range [0..1] to be applied to the input surface before refinement (0 - auto, 1 - disabled)")
+		("close-holes", boost::program_options::value<unsigned>(&OPT::nCloseHoles)->default_value(30), "try to close small holes in the input surface (0 - disabled)")
 		("resolution-level", boost::program_options::value<unsigned>(&OPT::nResolutionLevel)->default_value(0), "how many times to scale down the images before mesh refinement")
 		("min-resolution", boost::program_options::value<unsigned>(&OPT::nMinResolution)->default_value(640), "do not scale images lower than this resolution")
 		("outlier-threshold", boost::program_options::value<float>(&OPT::fOutlierThreshold)->default_value(6e-2f), "threshold used to find and remove outlier face textures (0 - disabled)")
@@ -226,6 +230,17 @@ int main(int argc, LPCTSTR* argv)
 	}
 
 	{
+	// decimate to the desired resolution
+	if (OPT::fDecimateMesh < 1.f) {
+		ASSERT(OPT::fDecimateMesh > 0.f);
+		scene.mesh.Clean(OPT::fDecimateMesh, 0.f, false, OPT::nCloseHoles, 0u, false);
+		scene.mesh.Clean(1.f, 0.f, false, 0, 0u, true); // extra cleaning to remove non-manifold problems created by closing holes
+		#if TD_VERBOSE != TD_VERBOSE_OFF
+		if (VERBOSITY_LEVEL > 3)
+			scene.mesh.Save(baseFileName +_T("_decim")+OPT::strExportType);
+		#endif
+	}
+
 	// compute mesh texture
 	TD_TIMER_START();
 	if (!scene.TextureMesh(OPT::nResolutionLevel, OPT::nMinResolution, OPT::fOutlierThreshold, OPT::fRatioDataSmoothness, OPT::bGlobalSeamLeveling, OPT::bLocalSeamLeveling, OPT::nTextureSizeMultiple, OPT::nRectPackingHeuristic, Pixel8U(OPT::nColEmpty)))

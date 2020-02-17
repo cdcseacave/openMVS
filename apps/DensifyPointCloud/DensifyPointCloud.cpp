@@ -50,6 +50,7 @@ String strMeshFileName;
 String strDenseConfigFileName;
 float fSampleMesh;
 int thFilterPointCloud;
+int nFusionMode;
 int nArchiveType;
 int nProcessPriority;
 unsigned nMaxThreads;
@@ -107,6 +108,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		("estimate-normals", boost::program_options::value(&nEstimateNormals)->default_value(0), "estimate the normals for the dense point-cloud")
 		("sample-mesh", boost::program_options::value(&OPT::fSampleMesh)->default_value(0.f), "uniformly samples points on a mesh (0 - disabled, <0 - number of points, >0 - sample density per square unit)")
 		("filter-point-cloud", boost::program_options::value(&OPT::thFilterPointCloud)->default_value(0), "filter dense point-cloud based on visibility (0 - disabled)")
+		("fusion-mode", boost::program_options::value(&OPT::nFusionMode)->default_value(0), "depth map fusion mode (-2 - fuse disparity-maps, -1 - export disparity-maps only, 0 - depth-maps & fusion, 1 - export depth-maps only)")
 		;
 
 	// hidden options, allowed both on command line and
@@ -256,8 +258,13 @@ int main(int argc, LPCTSTR* argv)
 	}
 	if ((ARCHIVE_TYPE)OPT::nArchiveType != ARCHIVE_MVS) {
 		TD_TIMER_START();
-		if (!scene.DenseReconstruction())
-			return EXIT_FAILURE;
+		if (!scene.DenseReconstruction(OPT::nFusionMode)) {
+			if (ABS(OPT::nFusionMode) != 1)
+				return EXIT_FAILURE;
+			VERBOSE("Depth-maps estimated (%s)", TD_TIMER_GET_FMT().c_str());
+			Finalize();
+			return EXIT_SUCCESS;
+		}
 		VERBOSE("Densifying point-cloud completed: %u points (%s)", scene.pointcloud.GetSize(), TD_TIMER_GET_FMT().c_str());
 	}
 
