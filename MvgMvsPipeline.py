@@ -59,12 +59,16 @@ import argparse
 
 DEBUG = False
 
-# add current directory to PATH
 if sys.platform.startswith('win'):
-    path_delim = ';'
+    PATH_DELIM = ';'
 else:
-    path_delim = ':'
-os.environ['PATH'] += path_delim + os.getcwd()
+    PATH_DELIM = ':'
+
+# add this script's directory to PATH
+os.environ['PATH'] += PATH_DELIM + os.path.dirname(os.path.abspath(__file__))
+
+# add current directory to PATH
+os.environ['PATH'] += PATH_DELIM + os.getcwd()
 
 
 def whereis(afile):
@@ -81,14 +85,16 @@ def whereis(afile):
     except subprocess.CalledProcessError:
         return None
 
+
 def find(afile):
     """
         As whereis look only for executable on linux, this find look for all file type
     """
-    for d in os.environ['PATH'].split(path_delim):
+    for d in os.environ['PATH'].split(PATH_DELIM):
         if os.path.isfile(os.path.join(d, afile)):
             return d
     return None
+
 
 # Try to find openMVG and openMVS binaries in PATH
 OPENMVG_BIN = whereis("openMVG_main_SfMInit_ImageListing")
@@ -115,10 +121,10 @@ PRESET = {'SEQUENTIAL': [0, 1, 2, 3, 9, 10, 11, 12, 13],
 
 PRESET_DEFAULT = 'SEQUENTIAL'
 
-
 # HELPERS for terminal colors
 BLACK, RED, GREEN, YELLOW, BLUE, MAGENTA, CYAN, WHITE = range(8)
 NO_EFFECT, BOLD, UNDERLINE, BLINK, INVERSE, HIDDEN = (0, 1, 4, 5, 7, 8)
+
 
 # from Python cookbook, #475186
 def has_colours(stream):
@@ -161,6 +167,7 @@ class ConfContainer:
 
 
 class AStep:
+    """ Represents a process step to be run """
     def __init__(self, info, cmd, opt):
         self.info = info
         self.cmd = cmd
@@ -168,6 +175,7 @@ class AStep:
 
 
 class StepsStore:
+    """ List of steps with facilities to configure them """
     def __init__(self):
         self.steps_data = [
             ["Intrinsics analysis",          # 0
@@ -245,29 +253,30 @@ CONF = ConfContainer()
 STEPS = StepsStore()
 
 # ARGS
-parser = argparse.ArgumentParser(
+PARSER = argparse.ArgumentParser(
     formatter_class=argparse.RawTextHelpFormatter,
     description="Photogrammetry reconstruction with these steps: \r\n" +
     "\r\n".join(("\t%i. %s\t %s" % (t, STEPS[t].info, STEPS[t].cmd) for t in range(STEPS.length())))
     )
-parser.add_argument('input_dir',
+PARSER.add_argument('input_dir',
                     help="the directory wich contains the pictures set.")
-parser.add_argument('output_dir',
+PARSER.add_argument('output_dir',
                     help="the directory wich will contain the resulting files.")
-parser.add_argument('--steps',
+PARSER.add_argument('--steps',
                     type=int,
                     nargs="+",
                     help="steps to process")
-parser.add_argument('--preset',
+PARSER.add_argument('--preset',
                     help="steps list preset in \r\n" +
                     " \r\n".join([k + " = " + str(PRESET[k]) for k in PRESET]) +
                     " \r\ndefault : " + PRESET_DEFAULT)
 
-group = parser.add_argument_group('Passthrough', description="Option to be passed to command lines (remove - in front of option names)\r\ne.g. --1 p ULTRA to use the ULTRA preset in openMVG_main_ComputeFeatures")
+GROUP = PARSER.add_argument_group('Passthrough', description="Option to be passed to command lines (remove - in front of option names)\r\ne.g. --1 p ULTRA to use the ULTRA preset in openMVG_main_ComputeFeatures")
 for n in range(STEPS.length()):
-    group.add_argument('--'+str(n), nargs='+')
+    GROUP.add_argument('--'+str(n), nargs='+')
 
-parser.parse_args(namespace=CONF)  # store args in the ConfContainer
+PARSER.parse_args(namespace=CONF)  # store args in the ConfContainer
+
 
 # FOLDERS
 
@@ -275,6 +284,7 @@ def mkdir_ine(dirname):
     """Create the folder if not presents"""
     if not os.path.exists(dirname):
         os.mkdir(dirname)
+
 
 # Absolute path for input and ouput dirs
 CONF.input_dir = os.path.abspath(CONF.input_dir)
