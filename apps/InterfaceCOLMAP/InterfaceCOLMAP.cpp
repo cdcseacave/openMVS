@@ -317,8 +317,8 @@ struct Camera {
 
 		ID = ReadBinaryLittleEndian<camera_t>(&stream);
 		model = mapCameraModel.at(ReadBinaryLittleEndian<int>(&stream));
-		width = ReadBinaryLittleEndian<uint64_t>(&stream);
-		height = ReadBinaryLittleEndian<uint64_t>(&stream);
+		width = (uint32_t)ReadBinaryLittleEndian<uint64_t>(&stream);
+		height = (uint32_t)ReadBinaryLittleEndian<uint64_t>(&stream);
 		if (model != _T("PINHOLE"))
 			return false;
 		params.resize(4);
@@ -430,9 +430,9 @@ struct Image {
 		projs.clear();
 		for (size_t j = 0; j < numPoints2D; ++j) {
 			Proj proj;
-			proj.p(0) = ReadBinaryLittleEndian<double>(&stream);
-			proj.p(1) = ReadBinaryLittleEndian<double>(&stream);
-			proj.idPoint = ReadBinaryLittleEndian<point3D_t>(&stream);
+			proj.p(0) = (float)ReadBinaryLittleEndian<double>(&stream);
+			proj.p(1) = (float)ReadBinaryLittleEndian<double>(&stream);
+			proj.idPoint = (uint32_t)ReadBinaryLittleEndian<point3D_t>(&stream);
 			projs.push_back(proj);
 		}
 		return true;
@@ -520,14 +520,14 @@ struct Point {
 		}
 
 		int r,g,b;
-		ID = ReadBinaryLittleEndian<point3D_t>(&stream);
-		p.x = ReadBinaryLittleEndian<double>(&stream);
-		p.y = ReadBinaryLittleEndian<double>(&stream);
-		p.z = ReadBinaryLittleEndian<double>(&stream);
+		ID = (uint32_t)ReadBinaryLittleEndian<point3D_t>(&stream);
+		p.x = (float)ReadBinaryLittleEndian<double>(&stream);
+		p.y = (float)ReadBinaryLittleEndian<double>(&stream);
+		p.z = (float)ReadBinaryLittleEndian<double>(&stream);
 		r = ReadBinaryLittleEndian<uint8_t>(&stream);
 		g = ReadBinaryLittleEndian<uint8_t>(&stream);
 		b = ReadBinaryLittleEndian<uint8_t>(&stream);
-		e = ReadBinaryLittleEndian<double>(&stream);
+		e = (float)ReadBinaryLittleEndian<double>(&stream);
 		c.x = CLAMP(b,0,255);
 		c.y = CLAMP(g,0,255);
 		c.z = CLAMP(r,0,255);
