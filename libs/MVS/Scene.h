@@ -70,6 +70,7 @@ public:
 	bool LoadInterface(const String& fileName);
 	bool SaveInterface(const String& fileName, int version=-1) const;
 
+	bool LoadDMAP(const String& fileName);
 	bool Import(const String& fileName);
 
 	bool Load(const String& fileName, bool bImport=false);

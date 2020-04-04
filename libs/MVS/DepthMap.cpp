@@ -1485,36 +1485,40 @@ bool MVS::LoadConfidenceMap(const String& fileName, ConfidenceMap& confMap)
 
 
 // export depth map as an image (dark - far depth, light - close depth)
-bool MVS::ExportDepthMap(const String& fileName, const DepthMap& depthMap, Depth minDepth, Depth maxDepth)
+Image8U3 MVS::DepthMap2Image(const DepthMap& depthMap, Depth minDepth, Depth maxDepth)
 {
+	ASSERT(!depthMap.empty());
 	// find min and max values
 	if (minDepth == FLT_MAX && maxDepth == 0) {
-		cList<Depth, const Depth, 0> depths(0, depthMap.area());
+		cList<Depth,Depth,0> depths(0, depthMap.area());
 		for (int i=depthMap.area(); --i >= 0; ) {
 			const Depth depth = depthMap[i];
 			ASSERT(depth == 0 || depth > 0);
 			if (depth > 0)
 				depths.Insert(depth);
 		}
-		if (!depths.IsEmpty()) {
-			const std::pair<Depth,Depth> th(ComputeX84Threshold<Depth,Depth>(depths.Begin(), depths.GetSize()));
-			maxDepth = th.first+th.second;
-			minDepth = th.first-th.second;
+		if (!depths.empty()) {
+			const std::pair<Depth,Depth> th(ComputeX84Threshold<Depth,Depth>(depths.data(), depths.size()));
+			const std::pair<Depth,Depth> mm(depths.GetMinMax());
+			maxDepth = MINF(th.first+th.second, mm.second);
+			minDepth = MAXF(th.first-th.second, mm.first);
 		}
-		if (minDepth < 0.1f)
-			minDepth = 0.1f;
-		if (maxDepth < 0.1f)
-			maxDepth = 30.f;
 		DEBUG_ULTIMATE("\tdepth range: [%g, %g]", minDepth, maxDepth);
 	}
-	const Depth deltaDepth = maxDepth - minDepth;
-	// save image
-	Image8U img(depthMap.size());
+	const Depth sclDepth(Depth(1)/(maxDepth - minDepth));
+	// create color image
+	Image8U3 img(depthMap.size());
 	for (int i=depthMap.area(); --i >= 0; ) {
 		const Depth depth = depthMap[i];
-		img[i] = (depth > 0 ? (uint8_t)CLAMP((maxDepth-depth)*255.f/deltaDepth, 0.f, 255.f) : 0);
+		img[i] = (depth > 0 ? Pixel8U::gray2color(CLAMP((maxDepth-depth)*sclDepth, Depth(0), Depth(1))) : Pixel8U::BLACK);
 	}
-	return img.Save(fileName);
+	return img;
+} // DepthMap2Image
+bool MVS::ExportDepthMap(const String& fileName, const DepthMap& depthMap, Depth minDepth, Depth maxDepth)
+{
+	if (depthMap.empty())
+		return false;
+	return DepthMap2Image(depthMap, minDepth, maxDepth).Save(fileName);
 } // ExportDepthMap
 /*----------------------------------------------------------------*/
 
@@ -1829,8 +1833,12 @@ bool MVS::ImportDepthDataRaw(const String& fileName, String& imageFileName,
 	dMax = header.dMax;
 	imageSize.width = header.imageWidth;
 	imageSize.height = header.imageHeight;
-	depthMap.create(header.depthHeight, header.depthWidth);
-	fread(depthMap.getData(), sizeof(float), depthMap.area(), f);
+	if ((flags & HeaderDepthDataRaw::HAS_DEPTH) != 0) {
+		depthMap.create(header.depthHeight, header.depthWidth);
+		fread(depthMap.getData(), sizeof(float), depthMap.area(), f);
+	} else {
+		fseek(f, sizeof(float)*header.depthWidth*header.depthHeight, SEEK_CUR);
+	}
 
 	// read normal-map
 	if ((header.type & HeaderDepthDataRaw::HAS_NORMAL) != 0) {

@@ -100,7 +100,7 @@ public:
 	void SetCamera(CameraPtr);
 	void SetName(LPCTSTR);
 	void SetVisible(bool);
-	void Reset();
+	void Reset(uint32_t minViews=2);
 
 	inline GLFWwindow* GetWindow() { return window; }
 

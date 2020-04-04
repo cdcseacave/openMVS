@@ -277,10 +277,94 @@ bool Scene::SaveInterface(const String & fileName, int version) const
 } // SaveInterface
 /*----------------------------------------------------------------*/
 
+
+// load depth-map and generate a Multi-View Stereo scene
+bool Scene::LoadDMAP(const String& fileName)
+{
+	TD_TIMER_STARTD();
+
+	// load depth-map data
+	String imageFileName;
+	IIndexArr IDs;
+	cv::Size imageSize;
+	Camera camera;
+	Depth dMin, dMax;
+	DepthMap depthMap;
+	NormalMap normalMap;
+	ConfidenceMap confMap;
+	if (!ImportDepthDataRaw(fileName, imageFileName, IDs, imageSize, camera.K, camera.R, camera.C, dMin, dMax, depthMap, normalMap, confMap))
+		return false;
+
+	// create image
+	Platform& platform = platforms.AddEmpty();
+	platform.name = _T("platform0");
+	platform.cameras.emplace_back(CameraIntern::ScaleK(camera.K, REAL(1)/CameraIntern::GetNormalizationScale((uint32_t)imageSize.width,(uint32_t)imageSize.height)), RMatrix::IDENTITY, CMatrix::ZERO);
+	platform.poses.emplace_back(Platform::Pose{camera.R, camera.C});
+	Image& image = images.AddEmpty();
+	image.name = MAKE_PATH_FULL(WORKING_FOLDER_FULL, imageFileName);
+	image.platformID = 0;
+	image.cameraID = 0;
+	image.poseID = 0;
+	image.ID = IDs.front();
+	image.scale = 1;
+	image.avgDepth = (dMin+dMax)/2;
+	image.width = (uint32_t)imageSize.width;
+	image.height = (uint32_t)imageSize.height;
+	image.UpdateCamera(platforms);
+	nCalibratedImages = 1;
+
+	// load image pixels
+	const Image8U3 imageDepth(DepthMap2Image(depthMap));
+	if (image.ReloadImage(MAXF(image.width,image.height)))
+		cv::resize(image.image, image.image, depthMap.size());
+	else
+		image.image = imageDepth;
+
+	// create point-cloud
+	pointcloud.points.reserve(depthMap.area());
+	pointcloud.pointViews.reserve(depthMap.area());
+	pointcloud.colors.reserve(depthMap.area());
+	if (!normalMap.empty())
+		pointcloud.normals.reserve(depthMap.area());
+	if (!confMap.empty())
+		pointcloud.pointWeights.reserve(depthMap.area());
+	for (int r=0; r<depthMap.rows; ++r) {
+		for (int c=0; c<depthMap.cols; ++c) {
+			const Depth depth = depthMap(r,c);
+			if (depth <= 0)
+				continue;
+			pointcloud.points.emplace_back(camera.TransformPointI2W(Point3(c,r,depth)));
+			pointcloud.pointViews.emplace_back(PointCloud::ViewArr{0});
+			pointcloud.colors.emplace_back(image.image(r,c));
+			if (!normalMap.empty())
+				pointcloud.normals.emplace_back(Cast<PointCloud::Normal::Type>(camera.R.t()*Cast<REAL>(normalMap(r,c))));
+			if (!confMap.empty())
+				pointcloud.pointWeights.emplace_back(PointCloud::WeightArr{confMap(r,c)});
+		}
+	}
+
+	// replace color-image with depth-image
+	image.image = imageDepth;
+
+	DEBUG_EXTRA("Scene loaded from depth-map format - %dx%d size, %.2f%% coverage (%s):\n"
+		"\t1 images (1 calibrated) with a total of %.2f MPixels (%.2f MPixels/image)\n"
+		"\t%u points, 0 lines",
+		depthMap.width(), depthMap.height(), 100.0*pointcloud.GetSize()/depthMap.area(), TD_TIMER_GET_FMT().c_str(),
+		(double)image.image.area()/(1024.0*1024.0), (double)image.image.area()/(1024.0*1024.0*nCalibratedImages),
+		pointcloud.GetSize());
+	return true;
+} // LoadDMAP
+/*----------------------------------------------------------------*/
+
 // try to load known point-cloud or mesh files
 bool Scene::Import(const String& fileName)
 {
 	const String ext(Util::getFileExt(fileName).ToLower());
+	if (ext == _T(".dmap")) {
+		// import point-cloud from dmap file
+		Release();
+		return LoadDMAP(fileName);
+	}
 	if (ext == _T(".obj")) {
 		// import mesh from obj file
 		Release();

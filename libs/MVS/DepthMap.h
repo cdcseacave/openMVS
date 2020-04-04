@@ -464,6 +464,7 @@ MVS_API bool LoadNormalMap(const String& fileName, NormalMap& normalMap);
 MVS_API bool SaveConfidenceMap(const String& fileName, const ConfidenceMap& confMap);
 MVS_API bool LoadConfidenceMap(const String& fileName, ConfidenceMap& confMap);
 
+MVS_API Image8U3 DepthMap2Image(const DepthMap& depthMap, Depth minDepth=FLT_MAX, Depth maxDepth=0);
 MVS_API bool ExportDepthMap(const String& fileName, const DepthMap& depthMap, Depth minDepth=FLT_MAX, Depth maxDepth=0);
 MVS_API bool ExportNormalMap(const String& fileName, const NormalMap& normalMap);
 MVS_API bool ExportConfidenceMap(const String& fileName, const ConfidenceMap& confMap);
