@@ -449,7 +449,7 @@ float DepthEstimator::ScorePixelImage(const ViewData& image1, Depth depth, const
 	const float num(texels0.dot(texels1));
 	#endif
 	const float ncc(CLAMP(num/SQRT(nrmSq), -1.f, 1.f));
-	float score = 1.f - ncc;
+	float score(1.f-ncc);
 	#if DENSE_SMOOTHNESS != DENSE_SMOOTHNESS_NA
 	// encourage smoothness
 	for (const NeighborEstimate& neighbor: neighborsClose) {
@@ -500,17 +500,17 @@ float DepthEstimator::ScorePixel(Depth depth, const Normal& normal)
 	#if 0
 	return std::accumulate(scores.cbegin(), &scores.GetNth(idxScore), 0.f) / idxScore;
 	#elif 1
-	const float* pescore(&scores.PartialSort(idxScore));
+	const float* pescore(&scores.GetNth(idxScore));
 	const float* pscore(scores.cbegin());
-	int n(0); float score(0);
+	int n(1); float score(*pscore);
 	do {
-		const float s(*pscore);
-		if (s < thRobust) {
-			score += s;
-			++n;
-		}
-	} while (++pscore <= pescore);
-	return n ? score/n : thRobust;
+		const float s(*(++pscore));
+		if (s >= thRobust)
+			break;
+		score += s;
+		++n;
+	} while (pscore < pescore);
+	return score/n;
 	#else
 	const float thScore(MAXF(*std::min_element(scores.cbegin(), scores.cend()), 0.05f)*2);
 	const float* pscore(scores.cbegin());
@@ -658,7 +658,7 @@ void DepthEstimator::ProcessPixel(IDX idx)
 	float& conf = confMap0(x0);
 	Depth& depth = depthMap0(x0);
 	Normal& normal = normalMap0(x0);
-	const Normal viewDir(Cast<float>(static_cast<const Point3&>(X0)));
+	const Normal viewDir(Cast<float>(reinterpret_cast<const Point3&>(X0)));
 	ASSERT(depth > 0 && normal.dot(viewDir) <= 0);
 	#if DENSE_REFINE == DENSE_REFINE_ITER
 	// check if any of the neighbor estimates are better then the current estimate
