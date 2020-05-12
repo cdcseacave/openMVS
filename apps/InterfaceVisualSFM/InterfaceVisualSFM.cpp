@@ -43,6 +43,7 @@
 #define MVS_EXT _T(".mvs")
 #define VSFM_EXT _T(".nvm")
 #define CMPMVS_EXT _T(".lst")
+#define BUNDLE_EXT _T(".out")
 
 
 // S T R U C T S ///////////////////////////////////////////////////
@@ -508,7 +509,7 @@ int main(int argc, LPCTSTR* argv)
 		return EXIT_FAILURE;
 
 	const String strInputFileNameExt(Util::getFileExt(OPT::strInputFileName).ToLower());
-	if (strInputFileNameExt == VSFM_EXT) {
+	if ((strInputFileNameExt == VSFM_EXT) || (strInputFileNameExt == BUNDLE_EXT)) {
 		if (!ImportSceneVSFM())
 			return EXIT_FAILURE;
 	} else
