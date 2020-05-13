@@ -42,6 +42,7 @@
 #define APPNAME _T("InterfaceVisualSFM")
 #define MVS_EXT _T(".mvs")
 #define VSFM_EXT _T(".nvm")
+#define BUNDLE_EXT _T(".out")
 #define CMPMVS_EXT _T(".lst")
 
 
@@ -88,7 +89,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	// group of options allowed both on command line and in config file
 	boost::program_options::options_description config("Main options");
 	config.add_options()
-		("input-file,i", boost::program_options::value<std::string>(&OPT::strInputFileName), "input filename containing camera poses and image list")
+		("input-file,i", boost::program_options::value<std::string>(&OPT::strInputFileName), "input filename containing camera poses and image list (NVM, undistorted OUT + image_list.TXT, LST)")
 		("output-file,o", boost::program_options::value<std::string>(&OPT::strOutputFileName), "output filename for storing the mesh")
 		("output-image-folder", boost::program_options::value<std::string>(&OPT::strOutputImageFolder)->default_value("undistorted_images"), "output folder to store undistorted images")
 		;
@@ -508,7 +509,7 @@ int main(int argc, LPCTSTR* argv)
 		return EXIT_FAILURE;
 
 	const String strInputFileNameExt(Util::getFileExt(OPT::strInputFileName).ToLower());
-	if (strInputFileNameExt == VSFM_EXT) {
+	if (strInputFileNameExt == VSFM_EXT || strInputFileNameExt == BUNDLE_EXT) {
 		if (!ImportSceneVSFM())
 			return EXIT_FAILURE;
 	} else
