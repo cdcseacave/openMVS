@@ -383,6 +383,8 @@ struct Interface
 			Camera() : width(0), height(0) {}
 			bool HasResolution() const { return width > 0 && height > 0; }
 			bool IsNormalized() const { return !HasResolution(); }
+			static uint32_t GetNormalizationScale(uint32_t width, uint32_t height) { return std::max(width, height); }
+			uint32_t GetNormalizationScale() const { return GetNormalizationScale(width, height); }
 
 			template <class Archive>
 			void serialize(Archive& ar, const unsigned int version) {
@@ -428,6 +430,19 @@ struct Interface
 
 		const Mat33d& GetK(uint32_t cameraID) const {
 			return cameras[cameraID].K;
+		}
+		static Mat33d ScaleK(const Mat33d& _K, double scale) {
+			Mat33d K(_K);
+			K(0,0) *= scale;
+			K(0,1) *= scale;
+			K(0,2) *= scale;
+			K(1,1) *= scale;
+			K(1,2) *= scale;
+			return K;
+		}
+		Mat33d GetFullK(uint32_t cameraID, uint32_t width, uint32_t height) const {
+			return ScaleK(GetK(cameraID), (double)Camera::GetNormalizationScale(width, height)/
+				(cameras[cameraID].IsNormalized()?1.0:(double)cameras[cameraID].GetNormalizationScale()));
 		}
 
 		Pose GetPose(uint32_t cameraID, uint32_t poseID) const {
