@@ -31,6 +31,8 @@
 
 #include "Common.h"
 #include "DepthMap.h"
+#define _USE_OPENCV
+#include "Interface.h"
 #include "../Common/AutoEstimator.h"
 // CGAL: depth-map initialization
 #include <CGAL/Simple_cartesian.h>
@@ -1695,27 +1697,6 @@ bool MVS::ExportPointCloud(const String& fileName, const Image& imageData, const
 } // ExportPointCloud
 /*----------------------------------------------------------------*/
 
-
-struct HeaderDepthDataRaw {
-	enum {
-		HAS_DEPTH = (1<<0),
-		HAS_NORMAL = (1<<1),
-		HAS_CONF = (1<<2),
-	};
-	uint16_t name; // file type
-	uint8_t type; // content type
-	uint8_t padding; // reserve
-	uint32_t imageWidth, imageHeight; // image resolution
-	uint32_t depthWidth, depthHeight; // depth-map resolution
-	float dMin, dMax; // depth range for this view
-	// image file name length followed by the characters: uint16_t nFileNameSize; char* FileName
-	// number of view IDs followed by view ID and neighbor view IDs: uint32_t nIDs; uint32_t* IDs
-	// camera, rotation and translation matrices (row-major): double K[3][3], R[3][3], C[3]
-	// depth, normal, confidence maps
-	inline HeaderDepthDataRaw() : name(0), type(0), padding(0) {}
-	static uint16_t HeaderDepthDataRawName() { return *reinterpret_cast<const uint16_t*>("DR"); }
-	int GetStep() const { return ROUND2INT((float)imageWidth/depthWidth); }
-};
 
 bool MVS::ExportDepthDataRaw(const String& fileName, const String& imageFileName,
 	const IIndexArr& IDs, const cv::Size& imageSize,
