@@ -2216,11 +2216,11 @@ TPixel<TYPE> TPixel<TYPE>::gray2color(ALT gray)
 			return ALT(0);
 		}
 	};
-	return TPixel<ALT>(
+	return TPixel<TYPE>().set(
 		Base(gray + ALT(0.25)),
 		Base(gray),
 		Base(gray - ALT(0.25))
-	).template cast<TYPE>();
+	);
 }
 /*----------------------------------------------------------------*/
 

@@ -272,12 +272,12 @@ bool SerializeLoad(_Tp& obj, const std::string& fileName, uint32_t* pVersion=NUL
 
 #define ARCHIVE_DEFINE_TYPE(TYPE) \
 template<> \
-bool Save<TYPE>(ArchiveSave& a, const TYPE& v) { \
+inline bool Save<TYPE>(ArchiveSave& a, const TYPE& v) { \
 	a.stream.write((const char*)&v, sizeof(TYPE)); \
 	return true; \
 } \
 template<> \
-bool Load<TYPE>(ArchiveLoad& a, TYPE& v) { \
+inline bool Load<TYPE>(ArchiveLoad& a, TYPE& v) { \
 	a.stream.read((char*)&v, sizeof(TYPE)); \
 	return true; \
 }
@@ -290,31 +290,31 @@ ARCHIVE_DEFINE_TYPE(double)
 
 // Serialization support for cv::Matx
 template<typename _Tp, int m, int n>
-bool Save(ArchiveSave& a, const cv::Matx<_Tp,m,n>& _m) {
+inline bool Save(ArchiveSave& a, const cv::Matx<_Tp,m,n>& _m) {
 	a.stream.write((const char*)_m.val, sizeof(_Tp)*m*n);
 	return true;
 }
 template<typename _Tp, int m, int n>
-bool Load(ArchiveLoad& a, cv::Matx<_Tp,m,n>& _m) {
+inline bool Load(ArchiveLoad& a, cv::Matx<_Tp,m,n>& _m) {
 	a.stream.read((char*)_m.val, sizeof(_Tp)*m*n);
 	return true;
 }
 
 // Serialization support for cv::Point3_
 template<typename _Tp>
-bool Save(ArchiveSave& a, const cv::Point3_<_Tp>& pt) {
+inline bool Save(ArchiveSave& a, const cv::Point3_<_Tp>& pt) {
 	a.stream.write((const char*)&pt.x, sizeof(_Tp)*3);
 	return true;
 }
 template<typename _Tp>
-bool Load(ArchiveLoad& a, cv::Point3_<_Tp>& pt) {
+inline bool Load(ArchiveLoad& a, cv::Point3_<_Tp>& pt) {
 	a.stream.read((char*)&pt.x, sizeof(_Tp)*3);
 	return true;
 }
 
 // Serialization support for std::string
 template<>
-bool Save<std::string>(ArchiveSave& a, const std::string& s) {
+inline bool Save<std::string>(ArchiveSave& a, const std::string& s) {
 	const uint64_t size(s.size());
 	Save(a, size);
 	if (size > 0)
@@ -322,7 +322,7 @@ bool Save<std::string>(ArchiveSave& a, const std::string& s) {
 	return true;
 }
 template<>
-bool Load<std::string>(ArchiveLoad& a, std::string& s) {
+inline bool Load<std::string>(ArchiveLoad& a, std::string& s) {
 	uint64_t size;
 	Load(a, size);
 	if (size > 0) {
@@ -334,7 +334,7 @@ bool Load<std::string>(ArchiveLoad& a, std::string& s) {
 
 // Serialization support for std::vector
 template<typename _Tp>
-bool Save(ArchiveSave& a, const std::vector<_Tp>& v) {
+inline bool Save(ArchiveSave& a, const std::vector<_Tp>& v) {
 	const uint64_t size(v.size());
 	Save(a, size);
 	for (uint64_t i=0; i<size; ++i)
@@ -342,7 +342,7 @@ bool Save(ArchiveSave& a, const std::vector<_Tp>& v) {
 	return true;
 }
 template<typename _Tp>
-bool Load(ArchiveLoad& a, std::vector<_Tp>& v) {
+inline bool Load(ArchiveLoad& a, std::vector<_Tp>& v) {
 	uint64_t size;
 	Load(a, size);
 	if (size > 0) {
@@ -383,6 +383,8 @@ struct Interface
 			Camera() : width(0), height(0) {}
 			bool HasResolution() const { return width > 0 && height > 0; }
 			bool IsNormalized() const { return !HasResolution(); }
+			static uint32_t GetNormalizationScale(uint32_t width, uint32_t height) { return std::max(width, height); }
+			uint32_t GetNormalizationScale() const { return GetNormalizationScale(width, height); }
 
 			template <class Archive>
 			void serialize(Archive& ar, const unsigned int version) {
@@ -428,6 +430,19 @@ struct Interface
 
 		const Mat33d& GetK(uint32_t cameraID) const {
 			return cameras[cameraID].K;
+		}
+		static Mat33d ScaleK(const Mat33d& _K, double scale) {
+			Mat33d K(_K);
+			K(0,0) *= scale;
+			K(0,1) *= scale;
+			K(0,2) *= scale;
+			K(1,1) *= scale;
+			K(1,2) *= scale;
+			return K;
+		}
+		Mat33d GetFullK(uint32_t cameraID, uint32_t width, uint32_t height) const {
+			return ScaleK(GetK(cameraID), (double)Camera::GetNormalizationScale(width, height)/
+				(cameras[cameraID].IsNormalized()?1.0:(double)cameras[cameraID].GetNormalizationScale()));
 		}
 
 		Pose GetPose(uint32_t cameraID, uint32_t poseID) const {
@@ -598,6 +613,39 @@ struct Interface
 			}
 		}
 	}
+};
+/*----------------------------------------------------------------*/
+
+
+// interface used to export/import MVS depth-map data;
+// see MVS::ExportDepthDataRaw() and MVS::ImportDepthDataRaw() for usage example:
+//  - image-resolution at which the depth-map was estimated
+//  - depth-map-resolution, for now only the same resolution as the image is supported
+//  - min/max-depth of the values in the depth-map
+//  - image-file-name is the path to the reference color image
+//  - image-IDs are the reference view ID and neighbor view IDs used to estimate the depth-map
+//  - camera/rotation/position matrices (row-major) is the absolute pose corresponding to the reference view
+//  - depth-map represents the pixel depth
+//  - normal-map (optional) represents the 3D point normal in camera space; same resolution as the depth-map
+//  - confidence-map (optional) represents the 3D point confidence (usually a value in [0,1]); same resolution as the depth-map
+struct HeaderDepthDataRaw {
+	enum {
+		HAS_DEPTH = (1<<0),
+		HAS_NORMAL = (1<<1),
+		HAS_CONF = (1<<2),
+	};
+	uint16_t name; // file type
+	uint8_t type; // content type
+	uint8_t padding; // reserve
+	uint32_t imageWidth, imageHeight; // image resolution
+	uint32_t depthWidth, depthHeight; // depth-map resolution
+	float dMin, dMax; // depth range for this view
+	// image file name length followed by the characters: uint16_t nFileNameSize; char* FileName
+	// number of view IDs followed by view ID and neighbor view IDs: uint32_t nIDs; uint32_t* IDs
+	// camera, rotation and position matrices (row-major): double K[3][3], R[3][3], C[3]
+	// depth, normal, confidence maps: float depthMap[height][width], normalMap[height][width][3], confMap[height][width]
+	inline HeaderDepthDataRaw() : name(0), type(0), padding(0) {}
+	static uint16_t HeaderDepthDataRawName() { return *reinterpret_cast<const uint16_t*>("DR"); }
 };
 /*----------------------------------------------------------------*/
 

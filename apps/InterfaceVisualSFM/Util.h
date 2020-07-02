@@ -198,7 +198,13 @@ bool LoadBundlerOut(const char* name, std::ifstream& in, std::vector<CameraT>& c
     std::ifstream listin(listpath);
     if(!listin.is_open())
     {
-        listin.close();       listin.clear(); 
+        listin.close(); listin.clear(); 
+        strcpy(ext, ".txt\0"); 
+        listin.open(listpath);
+    }
+    if(!listin.is_open())
+    {
+        listin.close(); listin.clear(); 
         char * slash = strrchr(listpath, '/');
         if(slash == NULL) slash = strrchr(listpath, '\\');
         slash = slash ? slash + 1 : listpath; 
@@ -231,9 +237,7 @@ bool LoadBundlerOut(const char* name, std::ifstream& in, std::vector<CameraT>& c
 
         if(listin >> filepath && f != 0)
         {
-            char* slash = strrchr(filepath , '/');
-            if(slash == NULL) slash = strchr(filepath, '\\');
-            names[i] = (slash? (slash + 1) : filepath);
+            names[i] = filepath;
             std::getline(listin, token);
 
             if(!det_checked)

@@ -34,6 +34,7 @@
 #define _USE_OPENCV
 #include "../../libs/MVS/Interface.h"
 #include <boost/program_options.hpp>
+#include "endian.h"
 
 using namespace MVS;
 
@@ -44,9 +45,12 @@ using namespace MVS;
 #define MVS_EXT _T(".mvs")
 #define COLMAP_IMAGES_FOLDER _T("images/")
 #define COLMAP_SPARSE_FOLDER _T("sparse/")
-#define COLMAP_CAMERAS COLMAP_SPARSE_FOLDER _T("cameras.txt")
-#define COLMAP_IMAGES COLMAP_SPARSE_FOLDER _T("images.txt")
-#define COLMAP_POINTS COLMAP_SPARSE_FOLDER _T("points3D.txt")
+#define COLMAP_CAMERAS_TXT COLMAP_SPARSE_FOLDER _T("cameras.txt")
+#define COLMAP_IMAGES_TXT COLMAP_SPARSE_FOLDER _T("images.txt")
+#define COLMAP_POINTS_TXT COLMAP_SPARSE_FOLDER _T("points3D.txt")
+#define COLMAP_CAMERAS_BIN COLMAP_SPARSE_FOLDER _T("cameras.bin")
+#define COLMAP_IMAGES_BIN COLMAP_SPARSE_FOLDER _T("images.bin")
+#define COLMAP_POINTS_BIN COLMAP_SPARSE_FOLDER _T("points3D.bin")
 #define COLMAP_DENSE_POINTS _T("fused.ply")
 #define COLMAP_DENSE_POINTS_VISIBILITY _T("fused.ply.vis")
 #define COLMAP_STEREO_FOLDER _T("stereo/")
@@ -150,10 +154,9 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		boost::program_options::options_description visible("Available options");
 		visible.add(generic).add(config);
 		GET_LOG() << _T("\n"
-			"Import/export 3D reconstruction from/to COLMAP format as TXT (the only documented format).\n"
+			"Import/export 3D reconstruction from COLMAP (TXT/BIN format) and to COLMAP (TXT format). \n"
 			"In order to import a scene, run COLMAP SfM and next undistort the images (only PINHOLE\n"
-			"camera model supported for the moment); and convert the BIN scene to TXT by importing in\n"
-			"COLMAP the sparse scene stored in 'dense' folder and exporting it as TXT.\n"
+			"camera model supported for the moment)."
 			"\n")
 			<< visible;
 	}
@@ -204,6 +207,33 @@ void Finalize()
 }
 
 namespace COLMAP {
+
+using namespace colmap;
+
+// See colmap/src/util/types.h
+typedef uint32_t camera_t;
+typedef uint32_t image_t;
+typedef uint64_t image_pair_t;
+typedef uint32_t point2D_t;
+typedef uint64_t point3D_t;
+
+typedef std::unordered_map<camera_t,String> CameraModelMap;
+CameraModelMap mapCameraModel;
+
+void DefineCameraModels() {
+	COLMAP::mapCameraModel.emplace(0, "SIMPLE_PINHOLE");
+	COLMAP::mapCameraModel.emplace(1, "PINHOLE");
+	COLMAP::mapCameraModel.emplace(2, "SIMPLE_RADIAL");
+	COLMAP::mapCameraModel.emplace(3, "RADIAL");
+	COLMAP::mapCameraModel.emplace(4, "OPENCV");
+	COLMAP::mapCameraModel.emplace(5, "OPENCV_FISHEYE");
+	COLMAP::mapCameraModel.emplace(6, "FULL_OPENCV");
+	COLMAP::mapCameraModel.emplace(7, "FOV");
+	COLMAP::mapCameraModel.emplace(8, "SIMPLE_RADIAL_FISHEYE");
+	COLMAP::mapCameraModel.emplace(9, "RADIAL_FISHEYE");
+	COLMAP::mapCameraModel.emplace(10, "THIN_PRISM_FISHEYE");
+}
+
 // tools
 bool NextLine(std::istream& stream, std::istringstream& in, bool bIgnoreEmpty=true) {
 	String line;
@@ -223,6 +253,7 @@ struct Camera {
 	String model; // camera model name
 	uint32_t width, height; // camera resolution
 	std::vector<REAL> params; // camera parameters
+	bool parsedNumCameras = false;
 
 	Camera() {}
 	Camera(uint32_t _ID) : ID(_ID) {}
@@ -247,9 +278,17 @@ struct Camera {
 		}
 	};
 
+	bool Read(std::istream& stream, bool binary) {
+		if (binary) {
+			return ReadBIN(stream);
+		} else {
+			return ReadTXT(stream);
+		}
+	}	
+
 	// Camera list with one line of data per camera:
 	//   CAMERA_ID, MODEL, WIDTH, HEIGHT, PARAMS[]
-	bool Read(std::istream& stream) {
+	bool ReadTXT(std::istream& stream) {
 		std::istringstream in;
 		if (!NextLine(stream, in))
 			return false;
@@ -262,6 +301,31 @@ struct Camera {
 		in >> params[0] >> params[1] >> params[2] >> params[3];
 		return !in.fail();
 	}
+
+	// See: colmap/src/base/reconstruction.cc
+	// 		void Reconstruction::ReadCamerasBinary(const std::string& path)
+	bool ReadBIN(std::istream& stream) {
+
+		if (stream.peek() == EOF)
+			return false;
+
+		if (!parsedNumCameras) {
+			// Read the first entry in the binary file
+			ReadBinaryLittleEndian<uint64_t>(&stream);
+			parsedNumCameras = true;
+		}
+
+		ID = ReadBinaryLittleEndian<camera_t>(&stream);
+		model = mapCameraModel.at(ReadBinaryLittleEndian<int>(&stream));
+		width = (uint32_t)ReadBinaryLittleEndian<uint64_t>(&stream);
+		height = (uint32_t)ReadBinaryLittleEndian<uint64_t>(&stream);
+		if (model != _T("PINHOLE"))
+			return false;
+		params.resize(4);
+		ReadBinaryLittleEndian<double>(&stream, &params);
+		return true;
+	}
+
 	bool Write(std::ostream& out) const {
 		out << ID+1 << _T(" ") << model << _T(" ") << width << _T(" ") << height;
 		if (out.fail())
@@ -288,15 +352,24 @@ struct Image {
 	uint32_t idCamera; // ID of the associated camera
 	String name; // image file name
 	std::vector<Proj> projs; // known image projections
+	bool parsedNumRegImages = false;
 
 	Image() {}
 	Image(uint32_t _ID) : ID(_ID) {}
 	bool operator < (const Image& rhs) const { return ID < rhs.ID; }
 
+	bool Read(std::istream& stream, bool binary) {
+		if (binary) {
+			return ReadBIN(stream); 
+		} else {
+			return ReadTXT(stream); 
+		}
+	}
+
 	// Image list with two lines of data per image:
 	//   IMAGE_ID, QW, QX, QY, QZ, TX, TY, TZ, CAMERA_ID, NAME
 	//   POINTS2D[] as (X, Y, POINT3D_ID)
-	bool Read(std::istream& stream) {
+	bool ReadTXT(std::istream& stream) {
 		std::istringstream in;
 		if (!NextLine(stream, in))
 			return false;
@@ -319,6 +392,52 @@ struct Image {
 		}
 		return true;
 	}
+
+	// See: colmap/src/base/reconstruction.cc
+	// 		void Reconstruction::ReadImagesBinary(const std::string& path)
+	bool ReadBIN(std::istream& stream) {
+ 
+		if (stream.peek() == EOF)
+			return false;
+
+		if (!parsedNumRegImages) {
+			// Read the first entry in the binary file
+			ReadBinaryLittleEndian<uint64_t>(&stream);
+			parsedNumRegImages = true;
+		}
+
+		ID = ReadBinaryLittleEndian<image_t>(&stream);
+		q.w() = ReadBinaryLittleEndian<double>(&stream);
+		q.x() = ReadBinaryLittleEndian<double>(&stream);
+		q.y() = ReadBinaryLittleEndian<double>(&stream);
+		q.z() = ReadBinaryLittleEndian<double>(&stream);
+		t(0) = ReadBinaryLittleEndian<double>(&stream);
+		t(1) = ReadBinaryLittleEndian<double>(&stream);
+		t(2) = ReadBinaryLittleEndian<double>(&stream);
+		idCamera = ReadBinaryLittleEndian<camera_t>(&stream);
+
+		name = "";
+		char nameChar;
+		do {
+			stream.read(&nameChar, 1);
+			if (nameChar != '\0') {
+				name += nameChar;
+			}
+		} while (nameChar != '\0');
+		Util::ensureValidPath(name);
+
+		const size_t numPoints2D = ReadBinaryLittleEndian<uint64_t>(&stream);
+		projs.clear();
+		for (size_t j = 0; j < numPoints2D; ++j) {
+			Proj proj;
+			proj.p(0) = (float)ReadBinaryLittleEndian<double>(&stream);
+			proj.p(1) = (float)ReadBinaryLittleEndian<double>(&stream);
+			proj.idPoint = (uint32_t)ReadBinaryLittleEndian<point3D_t>(&stream);
+			projs.push_back(proj);
+		}
+		return true;
+	}
+
 	bool Write(std::ostream& out) const {
 		out << ID+1 << _T(" ")
 			<< q.w() << _T(" ") << q.x() << _T(" ") << q.y() << _T(" ") << q.z() << _T(" ")
@@ -346,14 +465,23 @@ struct Point {
 	Interface::Col3 c; // BGR color
 	float e; // error
 	std::vector<Track> tracks; // point track
+	bool parsedNumPoints3D = false;
 
 	Point() {}
 	Point(uint32_t _ID) : ID(_ID) {}
 	bool operator < (const Image& rhs) const { return ID < rhs.ID; }
 
+	bool Read(std::istream& stream, bool binary) {
+		if (binary) {
+			return ReadBIN(stream);
+		} else {
+			return ReadTXT(stream);
+		}
+	}
+
 	// 3D point list with one line of data per point:
 	//   POINT3D_ID, X, Y, Z, R, G, B, ERROR, TRACK[] as (IMAGE_ID, POINT2D_IDX)
-	bool Read(std::istream& stream) {
+	bool ReadTXT(std::istream& stream) {
 		std::istringstream in;
 		if (!NextLine(stream, in))
 			return false;
@@ -377,6 +505,44 @@ struct Point {
 		}
 		return !tracks.empty();
 	}
+
+	// See: colmap/src/base/reconstruction.cc
+	// 		void Reconstruction::ReadPoints3DBinary(const std::string& path)
+	bool ReadBIN(std::istream& stream) {
+
+		if (stream.peek() == EOF)
+			return false;
+
+		if (!parsedNumPoints3D) {
+			// Read the first entry in the binary file
+			ReadBinaryLittleEndian<uint64_t>(&stream);
+			parsedNumPoints3D = true;
+		}
+
+		int r,g,b;
+		ID = (uint32_t)ReadBinaryLittleEndian<point3D_t>(&stream);
+		p.x = (float)ReadBinaryLittleEndian<double>(&stream);
+		p.y = (float)ReadBinaryLittleEndian<double>(&stream);
+		p.z = (float)ReadBinaryLittleEndian<double>(&stream);
+		r = ReadBinaryLittleEndian<uint8_t>(&stream);
+		g = ReadBinaryLittleEndian<uint8_t>(&stream);
+		b = ReadBinaryLittleEndian<uint8_t>(&stream);
+		e = (float)ReadBinaryLittleEndian<double>(&stream);
+		c.x = CLAMP(b,0,255);
+		c.y = CLAMP(g,0,255);
+		c.z = CLAMP(r,0,255);
+		
+		const size_t trackLength = ReadBinaryLittleEndian<uint64_t>(&stream);
+		tracks.clear();
+		for (size_t j = 0; j < trackLength; ++j) {
+			Track track;
+			track.idImage = ReadBinaryLittleEndian<image_t>(&stream);
+			track.idProj = ReadBinaryLittleEndian<point2D_t>(&stream);
+			tracks.push_back(track);
+    	}
+		return !tracks.empty();
+	}
+
 	bool Write(std::ostream& out) const {
 		ASSERT(!tracks.empty());
 		const int r(c.z),g(c.y),b(c.x);
@@ -399,23 +565,48 @@ typedef std::vector<Point> Points;
 typedef Eigen::Matrix<double,3,3,Eigen::RowMajor> EMat33d;
 typedef Eigen::Matrix<double,3,1> EVec3d;
 
+
+bool DetermineInputSource(const String& filenameTXT, const String& filenameBIN, std::ifstream& file, String& filenameCamera, bool& binary)
+{
+	file.open(filenameTXT);
+	if (file.good()) {
+		filenameCamera = filenameTXT;
+		binary = false;
+		return true;
+	}
+	file.open(filenameBIN, std::ios::binary);
+	if (file.good()) {
+		filenameCamera = filenameBIN;
+		binary = true;
+		return true;
+	}
+	VERBOSE("error: unable to open file '%s'", filenameTXT.c_str());
+	VERBOSE("error: unable to open file '%s'", filenameBIN.c_str());
+	return false;
+}
+
+
 bool ImportScene(const String& strFolder, Interface& scene)
 {
+	COLMAP::DefineCameraModels();
 	// read camera list
 	typedef std::unordered_map<uint32_t,uint32_t> CamerasMap;
 	CamerasMap mapCameras;
 	{
-		const String filenameCameras(strFolder+COLMAP_CAMERAS);
-		LOG_OUT() << "Reading cameras: " << filenameCameras << std::endl;
-		std::ifstream file(filenameCameras);
-		if (!file.good()) {
-			VERBOSE("error: unable to open file '%s'", filenameCameras.c_str());
+		const String filenameCamerasTXT(strFolder+COLMAP_CAMERAS_TXT);
+		const String filenameCamerasBIN(strFolder+COLMAP_CAMERAS_BIN);
+		std::ifstream file;
+		bool binary;
+		String filenameCamera;
+		if (!DetermineInputSource(filenameCamerasTXT, filenameCamerasBIN, file, filenameCamera, binary)) {
 			return false;
 		}
+		LOG_OUT() << "Reading cameras: " << filenameCamera << std::endl;
+	
 		typedef std::unordered_map<COLMAP::Camera,uint32_t,COLMAP::Camera::CameraHash,COLMAP::Camera::CameraEqualTo> CamerasSet;
 		CamerasSet setCameras;
 		COLMAP::Camera colmapCamera;
-		while (file.good() && colmapCamera.Read(file)) {
+		while (file.good() && colmapCamera.Read(file, binary)) {
 			const auto setIt(setCameras.emplace(colmapCamera, (uint32_t)scene.platforms.size()));
 			mapCameras.emplace(colmapCamera.ID, setIt.first->second);
 			if (!setIt.second) {
@@ -458,15 +649,18 @@ bool ImportScene(const String& strFolder, Interface& scene)
 	typedef std::map<COLMAP::Image, uint32_t> ImagesMap;
 	ImagesMap mapImages;
 	{
-		const String filenameImages(strFolder+COLMAP_IMAGES);
-		LOG_OUT() << "Reading images: " << filenameImages << std::endl;
-		std::ifstream file(filenameImages);
-		if (!file.good()) {
-			VERBOSE("error: unable to open file '%s'", filenameImages.c_str());
+		const String filenameImagesTXT(strFolder+COLMAP_IMAGES_TXT);
+		const String filenameImagesBIN(strFolder+COLMAP_IMAGES_BIN);
+		std::ifstream file;
+		bool binary;
+		String filenameImages;
+		if (!DetermineInputSource(filenameImagesTXT, filenameImagesBIN, file, filenameImages, binary)) {
 			return false;
 		}
+		LOG_OUT() << "Reading images: " << filenameImages << std::endl;
+
 		COLMAP::Image imageColmap;
-		while (file.good() && imageColmap.Read(file)) {
+		while (file.good() && imageColmap.Read(file, binary)) {
 			mapImages.emplace(imageColmap, (uint32_t)scene.images.size());
 			Interface::Platform::Pose pose;
 			Eigen::Map<EMat33d>(pose.R.val) = imageColmap.q.toRotationMatrix();
@@ -489,15 +683,18 @@ bool ImportScene(const String& strFolder, Interface& scene)
 	const String filenameDenseVisPoints(strFolder+COLMAP_DENSE_POINTS_VISIBILITY);
 	if (!File::access(filenameDensePoints) || !File::access(filenameDenseVisPoints)) {
 		// parse sparse point-cloud
-		const String filenamePoints(strFolder+COLMAP_POINTS);
-		LOG_OUT() << "Reading points: " << filenamePoints << std::endl;
-		std::ifstream file(filenamePoints);
-		if (!file.good()) {
-			VERBOSE("error: unable to open file '%s'", filenamePoints.c_str());
+		const String filenamePointsTXT(strFolder+COLMAP_POINTS_TXT);
+		const String filenamePointsBIN(strFolder+COLMAP_POINTS_BIN);
+		std::ifstream file;
+		bool binary;
+		String filenamePoints;
+		if (!DetermineInputSource(filenamePointsTXT, filenamePointsBIN, file, filenamePoints, binary)) {
 			return false;
 		}
+		LOG_OUT() << "Reading images: " << filenamePoints << std::endl;
+
 		COLMAP::Point point;
-		while (file.good() && point.Read(file)) {
+		while (file.good() && point.Read(file, binary)) {
 			Interface::Vertex vertex;
 			vertex.X = point.p;
 			for (const COLMAP::Point::Track& track: point.tracks) {
@@ -560,7 +757,7 @@ bool ExportScene(const String& strFolder, const Interface& scene)
 	CLISTDEF0IDX(KMatrix,uint32_t) Ks;
 	CLISTDEF0IDX(COLMAP::Camera,uint32_t) cams;
 	{
-		const String filenameCameras(strFolder+COLMAP_CAMERAS);
+		const String filenameCameras(strFolder+COLMAP_CAMERAS_TXT);
 		LOG_OUT() << "Writing cameras: " << filenameCameras << std::endl;
 		std::ofstream file(filenameCameras);
 		if (!file.good()) {
@@ -662,7 +859,7 @@ bool ExportScene(const String& strFolder, const Interface& scene)
 	if (bSparsePointCloud) {
 		// write points list
 		{
-			const String filenamePoints(strFolder+COLMAP_POINTS);
+			const String filenamePoints(strFolder+COLMAP_POINTS_TXT);
 			LOG_OUT() << "Writing points: " << filenamePoints << std::endl;
 			std::ofstream file(filenamePoints);
 			if (!file.good()) {
@@ -774,7 +971,7 @@ bool ExportScene(const String& strFolder, const Interface& scene)
 
 	// write images list
 	{
-		const String filenameImages(strFolder+COLMAP_IMAGES);
+		const String filenameImages(strFolder+COLMAP_IMAGES_TXT);
 		LOG_OUT() << "Writing images: " << filenameImages << std::endl;
 		std::ofstream file(filenameImages);
 		if (!file.good()) {

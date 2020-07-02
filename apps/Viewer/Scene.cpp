@@ -334,7 +334,7 @@ bool Scene::Open(LPCTSTR fileName, LPCTSTR meshFileName)
 	// init scene
 	AABB3d bounds(true);
 	if (!scene.pointcloud.IsEmpty()) {
-		bounds = scene.pointcloud.GetAABB(3);
+		bounds = scene.pointcloud.GetAABB(MINF(3u,scene.nCalibratedImages));
 		if (bounds.IsEmpty())
 			bounds = scene.pointcloud.GetAABB();
 	}
@@ -378,7 +378,7 @@ bool Scene::Open(LPCTSTR fileName, LPCTSTR meshFileName)
 	window.SetCamera(CameraPtr(new Camera(bounds)));
 	window.camera->maxCamID = images.size();
 	window.SetName(String::FormatString((name + _T(": %s")).c_str(), Util::getFileName(fileName).c_str()));
-	window.Reset();
+	window.Reset(MINF(2u, images.size()));
 	return true;
 }
 

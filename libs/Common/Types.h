@@ -1896,13 +1896,13 @@ struct TPixel {
 		: r(TYPE((col>>16)&0xFF)), g(TYPE((col>>8)&0xFF)), b(TYPE(col&0xFF)) {}
 		#endif
 	// set/get from default type
-	inline void set(TYPE _r, TYPE _g, TYPE _b) { r = _r; g = _g; b = _b; }
-	inline void set(const TYPE* clr) { c[0] = clr[0]; c[1] = clr[1]; c[2] = clr[2]; }
+	inline TPixel& set(TYPE _r, TYPE _g, TYPE _b) { r = _r; g = _g; b = _b; return *this; }
+	inline TPixel& set(const TYPE* clr) { c[0] = clr[0]; c[1] = clr[1]; c[2] = clr[2]; return *this; }
 	inline void get(TYPE& _r, TYPE& _g, TYPE& _b) const { _r = r; _g = g; _b = b; }
 	inline void get(TYPE* clr) const { clr[0] = c[0]; clr[1] = c[1]; clr[2] = c[2]; }
 	// set/get from alternative type
-	inline void set(ALT _r, ALT _g, ALT _b) { r = TYPE(_r); g = TYPE(_g); b = TYPE(_b); }
-	inline void set(const ALT* clr) { c[0] = TYPE(clr[0]); c[1] = TYPE(clr[1]); c[2] = TYPE(clr[2]); }
+	inline TPixel& set(ALT _r, ALT _g, ALT _b) { r = TYPE(_r); g = TYPE(_g); b = TYPE(_b); return *this; }
+	inline TPixel& set(const ALT* clr) { c[0] = TYPE(clr[0]); c[1] = TYPE(clr[1]); c[2] = TYPE(clr[2]); return *this; }
 	inline void get(ALT& _r, ALT& _g, ALT& _b) const { _r = ALT(r); _g = ALT(g); _b = ALT(b); }
 	inline void get(ALT* clr) const { clr[0] = ALT(c[0]); clr[1] = ALT(c[1]); clr[2] = ALT(c[2]); }
 	template<typename T> inline TPixel<typename std::enable_if<!std::is_floating_point<TYPE>::value || !std::is_same<T,uint8_t>::value,T>::type> cast() const { return TPixel<T>(T(r), T(g), T(b)); }
@@ -1952,9 +1952,9 @@ struct TPixel {
 	}
 	#endif
 };
-template <> inline void TPixel<float>::set(uint8_t _r, uint8_t _g, uint8_t _b) { r = float(_r)/255; g = float(_g)/255; b = float(_b)/255; }
-template <> inline void TPixel<float>::get(uint8_t& _r, uint8_t& _g, uint8_t& _b) const { _r = uint8_t(r*255); _g = uint8_t(g*255); _b = uint8_t(b*255); }
-template <> inline void TPixel<uint8_t>::set(float _r, float _g, float _b) { r = uint8_t(_r*255); g = uint8_t(_g*255); b = uint8_t(_b*255); }
+template <> inline TPixel<float>& TPixel<float>::set(uint8_t _r, uint8_t _g, uint8_t _b) { r = float(_r)/255; g = float(_g)/255; b = float(_b)/255; return *this; }
+template <> inline void TPixel<float>::get(uint8_t& _r, uint8_t& _g, uint8_t& _b) const { _r = (uint8_t)CLAMP(ROUND2INT(r*255), 0, 255); _g = (uint8_t)CLAMP(ROUND2INT(g*255), 0, 255); _b = (uint8_t)CLAMP(ROUND2INT(b*255), 0, 255); }
+template <> inline TPixel<uint8_t>& TPixel<uint8_t>::set(float _r, float _g, float _b) { r = (uint8_t)CLAMP(ROUND2INT(_r*255), 0, 255); g = (uint8_t)CLAMP(ROUND2INT(_g*255), 0, 255); b = (uint8_t)CLAMP(ROUND2INT(_b*255), 0, 255); return *this; }
 template <> inline void TPixel<uint8_t>::get(float& _r, float& _g, float& _b) const { _r = float(r)/255; _g = float(g)/255; _b = float(b)/255; }
 /*----------------------------------------------------------------*/
 typedef TPixel<uint8_t> Pixel8U;
@@ -2019,13 +2019,13 @@ struct TColor {
 	explicit inline TColor(uint32_t col)
 		: r(TYPE((col>>16)&0xFF)), g(TYPE((col>>8)&0xFF)), b(TYPE(col&0xFF)), a(TYPE((col>>24)&0xFF)) {}
 	// set/get from default type
-	inline void set(TYPE _r, TYPE _g, TYPE _b, TYPE _a=ColorType<TYPE>::ONE) { r = _r; g = _g; b = _b; a = _a; }
-	inline void set(const TYPE* clr) { c[0] = clr[0]; c[1] = clr[1]; c[2] = clr[2]; c[3] = clr[3]; }
+	inline TColor& set(TYPE _r, TYPE _g, TYPE _b, TYPE _a=ColorType<TYPE>::ONE) { r = _r; g = _g; b = _b; a = _a; return *this; }
+	inline TColor& set(const TYPE* clr) { c[0] = clr[0]; c[1] = clr[1]; c[2] = clr[2]; c[3] = clr[3]; return *this; }
 	inline void get(TYPE& _r, TYPE& _g, TYPE& _b, TYPE& _a) const { _r = r; _g = g; _b = b; _a = a; }
 	inline void get(TYPE* clr) const { clr[0] = c[0]; clr[1] = c[1]; clr[2] = c[2]; clr[3] = c[3]; }
 	// set/get from alternative type
-	inline void set(ALT _r, ALT _g, ALT _b, ALT _a=ColorType<TYPE>::ALTONE) { r = TYPE(_r); g = TYPE(_g); b = TYPE(_b); a = TYPE(_a); }
-	inline void set(const ALT* clr) { c[0] = TYPE(clr[0]); c[1] = TYPE(clr[1]); c[2] = TYPE(clr[2]); c[3] = TYPE(clr[3]); }
+	inline TColor& set(ALT _r, ALT _g, ALT _b, ALT _a=ColorType<TYPE>::ALTONE) { r = TYPE(_r); g = TYPE(_g); b = TYPE(_b); a = TYPE(_a); return *this; }
+	inline TColor& set(const ALT* clr) { c[0] = TYPE(clr[0]); c[1] = TYPE(clr[1]); c[2] = TYPE(clr[2]); c[3] = TYPE(clr[3]); return *this; }
 	inline void get(ALT& _r, ALT& _g, ALT& _b, ALT& _a) const { _r = ALT(r); _g = ALT(g); _b = ALT(b); _a = ALT(a); }
 	inline void get(ALT* clr) const { clr[0] = ALT(c[0]); clr[1] = ALT(c[1]); clr[2] = ALT(c[2]); clr[3] = ALT(c[3]); }
 	template<typename T> inline TColor<typename std::enable_if<!std::is_floating_point<TYPE>::value || !std::is_same<T,uint8_t>::value,T>::type> cast() const { return TColor<T>(T(r), T(g), T(b), T(a)); }
@@ -2073,9 +2073,9 @@ struct TColor {
 	}
 	#endif
 };
-template <> inline void TColor<float>::set(uint8_t _r, uint8_t _g, uint8_t _b, uint8_t _a) { r = float(_r)/255; g = float(_g)/255; b = float(_b)/255; a = float(_a)/255; }
+template <> inline TColor<float>& TColor<float>::set(uint8_t _r, uint8_t _g, uint8_t _b, uint8_t _a) { r = float(_r)/255; g = float(_g)/255; b = float(_b)/255; a = float(_a)/255; return *this; }
 template <> inline void TColor<float>::get(uint8_t& _r, uint8_t& _g, uint8_t& _b, uint8_t& _a) const { _r = uint8_t(r*255); _g = uint8_t(g*255); _b = uint8_t(b*255); _a = uint8_t(a*255); }
-template <> inline void TColor<uint8_t>::set(float _r, float _g, float _b, float _a) { r = uint8_t(_r*255); g = uint8_t(_g*255); b = uint8_t(_b*255); a = uint8_t(_a*255); }
+template <> inline TColor<uint8_t>& TColor<uint8_t>::set(float _r, float _g, float _b, float _a) { r = uint8_t(_r*255); g = uint8_t(_g*255); b = uint8_t(_b*255); a = uint8_t(_a*255); return *this; }
 template <> inline void TColor<uint8_t>::get(float& _r, float& _g, float& _b, float& _a) const { _r = float(r)/255; _g = float(g)/255; _b = float(b)/255; _a = float(a)/255; }
 template <> inline bool TColor<uint8_t>::operator==(const TColor& col) const { return (*((const uint32_t*)c) == *((const uint32_t*)col.c)); }
 template <> inline bool TColor<uint8_t>::operator!=(const TColor& col) const { return (*((const uint32_t*)c) != *((const uint32_t*)col.c)); }

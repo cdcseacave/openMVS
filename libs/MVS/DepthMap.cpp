@@ -31,6 +31,8 @@
 
 #include "Common.h"
 #include "DepthMap.h"
+#define _USE_OPENCV
+#include "Interface.h"
 #include "../Common/AutoEstimator.h"
 // CGAL: depth-map initialization
 #include <CGAL/Simple_cartesian.h>
@@ -449,7 +451,7 @@ float DepthEstimator::ScorePixelImage(const ViewData& image1, Depth depth, const
 	const float num(texels0.dot(texels1));
 	#endif
 	const float ncc(CLAMP(num/SQRT(nrmSq), -1.f, 1.f));
-	float score = 1.f - ncc;
+	float score(1.f-ncc);
 	#if DENSE_SMOOTHNESS != DENSE_SMOOTHNESS_NA
 	// encourage smoothness
 	for (const NeighborEstimate& neighbor: neighborsClose) {
@@ -500,17 +502,17 @@ float DepthEstimator::ScorePixel(Depth depth, const Normal& normal)
 	#if 0
 	return std::accumulate(scores.cbegin(), &scores.GetNth(idxScore), 0.f) / idxScore;
 	#elif 1
-	const float* pescore(&scores.PartialSort(idxScore));
+	const float* pescore(&scores.GetNth(idxScore));
 	const float* pscore(scores.cbegin());
-	int n(0); float score(0);
+	int n(1); float score(*pscore);
 	do {
-		const float s(*pscore);
-		if (s < thRobust) {
-			score += s;
-			++n;
-		}
-	} while (++pscore <= pescore);
-	return n ? score/n : thRobust;
+		const float s(*(++pscore));
+		if (s >= thRobust)
+			break;
+		score += s;
+		++n;
+	} while (pscore < pescore);
+	return score/n;
 	#else
 	const float thScore(MAXF(*std::min_element(scores.cbegin(), scores.cend()), 0.05f)*2);
 	const float* pscore(scores.cbegin());
@@ -658,7 +660,7 @@ void DepthEstimator::ProcessPixel(IDX idx)
 	float& conf = confMap0(x0);
 	Depth& depth = depthMap0(x0);
 	Normal& normal = normalMap0(x0);
-	const Normal viewDir(Cast<float>(static_cast<const Point3&>(X0)));
+	const Normal viewDir(Cast<float>(reinterpret_cast<const Point3&>(X0)));
 	ASSERT(depth > 0 && normal.dot(viewDir) <= 0);
 	#if DENSE_REFINE == DENSE_REFINE_ITER
 	// check if any of the neighbor estimates are better then the current estimate
@@ -1485,36 +1487,40 @@ bool MVS::LoadConfidenceMap(const String& fileName, ConfidenceMap& confMap)
 
 
 // export depth map as an image (dark - far depth, light - close depth)
-bool MVS::ExportDepthMap(const String& fileName, const DepthMap& depthMap, Depth minDepth, Depth maxDepth)
+Image8U3 MVS::DepthMap2Image(const DepthMap& depthMap, Depth minDepth, Depth maxDepth)
 {
+	ASSERT(!depthMap.empty());
 	// find min and max values
 	if (minDepth == FLT_MAX && maxDepth == 0) {
-		cList<Depth, const Depth, 0> depths(0, depthMap.area());
+		cList<Depth,Depth,0> depths(0, depthMap.area());
 		for (int i=depthMap.area(); --i >= 0; ) {
 			const Depth depth = depthMap[i];
 			ASSERT(depth == 0 || depth > 0);
 			if (depth > 0)
 				depths.Insert(depth);
 		}
-		if (!depths.IsEmpty()) {
-			const std::pair<Depth,Depth> th(ComputeX84Threshold<Depth,Depth>(depths.Begin(), depths.GetSize()));
-			maxDepth = th.first+th.second;
-			minDepth = th.first-th.second;
+		if (!depths.empty()) {
+			const std::pair<Depth,Depth> th(ComputeX84Threshold<Depth,Depth>(depths.data(), depths.size()));
+			const std::pair<Depth,Depth> mm(depths.GetMinMax());
+			maxDepth = MINF(th.first+th.second, mm.second);
+			minDepth = MAXF(th.first-th.second, mm.first);
 		}
-		if (minDepth < 0.1f)
-			minDepth = 0.1f;
-		if (maxDepth < 0.1f)
-			maxDepth = 30.f;
 		DEBUG_ULTIMATE("\tdepth range: [%g, %g]", minDepth, maxDepth);
 	}
-	const Depth deltaDepth = maxDepth - minDepth;
-	// save image
-	Image8U img(depthMap.size());
+	const Depth sclDepth(Depth(1)/(maxDepth - minDepth));
+	// create color image
+	Image8U3 img(depthMap.size());
 	for (int i=depthMap.area(); --i >= 0; ) {
 		const Depth depth = depthMap[i];
-		img[i] = (depth > 0 ? (uint8_t)CLAMP((maxDepth-depth)*255.f/deltaDepth, 0.f, 255.f) : 0);
+		img[i] = (depth > 0 ? Pixel8U::gray2color(CLAMP((maxDepth-depth)*sclDepth, Depth(0), Depth(1))) : Pixel8U::BLACK);
 	}
-	return img.Save(fileName);
+	return img;
+} // DepthMap2Image
+bool MVS::ExportDepthMap(const String& fileName, const DepthMap& depthMap, Depth minDepth, Depth maxDepth)
+{
+	if (depthMap.empty())
+		return false;
+	return DepthMap2Image(depthMap, minDepth, maxDepth).Save(fileName);
 } // ExportDepthMap
 /*----------------------------------------------------------------*/
 
@@ -1692,27 +1698,6 @@ bool MVS::ExportPointCloud(const String& fileName, const Image& imageData, const
 /*----------------------------------------------------------------*/
 
 
-struct HeaderDepthDataRaw {
-	enum {
-		HAS_DEPTH = (1<<0),
-		HAS_NORMAL = (1<<1),
-		HAS_CONF = (1<<2),
-	};
-	uint16_t name; // file type
-	uint8_t type; // content type
-	uint8_t padding; // reserve
-	uint32_t imageWidth, imageHeight; // image resolution
-	uint32_t depthWidth, depthHeight; // depth-map resolution
-	float dMin, dMax; // depth range for this view
-	// image file name length followed by the characters: uint16_t nFileNameSize; char* FileName
-	// number of view IDs followed by view ID and neighbor view IDs: uint32_t nIDs; uint32_t* IDs
-	// camera, rotation and translation matrices (row-major): double K[3][3], R[3][3], C[3]
-	// depth, normal, confidence maps
-	inline HeaderDepthDataRaw() : name(0), type(0), padding(0) {}
-	static uint16_t HeaderDepthDataRawName() { return *reinterpret_cast<const uint16_t*>("DR"); }
-	int GetStep() const { return ROUND2INT((float)imageWidth/depthWidth); }
-};
-
 bool MVS::ExportDepthDataRaw(const String& fileName, const String& imageFileName,
 	const IIndexArr& IDs, const cv::Size& imageSize,
 	const KMatrix& K, const RMatrix& R, const CMatrix& C,
@@ -1829,8 +1814,12 @@ bool MVS::ImportDepthDataRaw(const String& fileName, String& imageFileName,
 	dMax = header.dMax;
 	imageSize.width = header.imageWidth;
 	imageSize.height = header.imageHeight;
-	depthMap.create(header.depthHeight, header.depthWidth);
-	fread(depthMap.getData(), sizeof(float), depthMap.area(), f);
+	if ((flags & HeaderDepthDataRaw::HAS_DEPTH) != 0) {
+		depthMap.create(header.depthHeight, header.depthWidth);
+		fread(depthMap.getData(), sizeof(float), depthMap.area(), f);
+	} else {
+		fseek(f, sizeof(float)*header.depthWidth*header.depthHeight, SEEK_CUR);
+	}
 
 	// read normal-map
 	if ((header.type & HeaderDepthDataRaw::HAS_NORMAL) != 0) {

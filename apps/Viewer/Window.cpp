@@ -102,12 +102,12 @@ void Window::SetVisible(bool v)
 	else
 		glfwHideWindow(window);
 }
-void Window::Reset()
+void Window::Reset(uint32_t _minViews)
 {
 	if (camera)
 		camera->Reset();
 	sparseType = SPR_ALL;
-	minViews = 2;
+	minViews = _minViews;
 	pointSize = 2.f;
 	cameraBlend = 0.5f;
 	bRenderCameras = true;
@@ -266,7 +266,7 @@ void Window::Key(int k, int /*scancode*/, int action, int mod)
 			else if (mod & GLFW_MOD_SHIFT)
 				camera->scaleF *= 1.11f;
 			else
-				cameraBlend += MAXF(cameraBlend-0.1f, 0.f);
+				cameraBlend = MINF(cameraBlend+0.1f, 1.f);
 		}
 		break;
 	}

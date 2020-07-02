@@ -107,6 +107,25 @@ public:
 		return float(MAXF(width, height));
 	}
 
+	// return scaled K (assuming standard K format)
+	template<typename TYPE>
+	static inline TMatrix<TYPE,3,3> ScaleK(const TMatrix<TYPE,3,3>& K, TYPE s) {
+		#if 0
+		TMatrix<TYPE,3,3> S(TMatrix<TYPE,3,3>::IDENTITY);
+		S(0,0) = S(1,1) = s;
+		return S*K;
+		#else
+		return TMatrix<TYPE,3,3>(
+			K(0,0)*s, K(0,1)*s, K(0,2)*s,
+			TYPE(0),  K(1,1)*s, K(1,2)*s,
+			TYPE(0), TYPE(0), TYPE(1)
+		);
+		#endif
+	}
+	inline KMatrix GetScaledK(REAL s) const {
+		return ScaleK(K, s);
+	}
+
 	// return K.inv() (assuming standard K format)
 	inline KMatrix GetInvK() const {
 		#if 0
