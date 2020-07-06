@@ -113,6 +113,7 @@ extern float fOptimizerEps;
 extern int nOptimizerMaxIters;
 extern unsigned nSpeckleSize;
 extern unsigned nIpolGapSize;
+extern int nIgnoreMaskLabel;
 extern unsigned nOptimize;
 extern unsigned nEstimateColors;
 extern unsigned nEstimateNormals;
@@ -201,6 +202,8 @@ struct MVS_API DepthData {
 
 	void GetNormal(const ImageRef& ir, Point3f& N, const TImage<Point3f>* pPointMap=NULL) const;
 	void GetNormal(const Point2f& x, Point3f& N, const TImage<Point3f>* pPointMap=NULL) const;
+
+	void ApplyIgnoreMask(const BitMatrix&);
 
 	bool Save(const String& fileName) const;
 	bool Load(const String& fileName);
@@ -423,6 +426,7 @@ struct MVS_API DepthEstimator {
 			normal = RMatrixBaseF(normal.cross(viewDir), MINF((ACOS(cosAngLen/norm(viewDir))-FD2R(90.f))*1.01f, -0.001f)) * normal;
 	}
 
+	static bool ImportIgnoreMask(const Image&, const Image8U::Size&, BitMatrix&, uint16_t nIgnoreMaskLabel);
 	static void MapMatrix2ZigzagIdx(const Image8U::Size& size, DepthEstimator::MapRefArr& coords, const BitMatrix& mask, int rawStride=16);
 
 	const float smoothBonusDepth, smoothBonusNormal;

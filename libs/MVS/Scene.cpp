@@ -115,6 +115,11 @@ bool Scene::LoadInterface(const String & fileName)
 		imageData.name = image.name;
 		Util::ensureUnifySlash(imageData.name);
 		imageData.name = MAKE_PATH_FULL(WORKING_FOLDER_FULL, imageData.name);
+		if (!image.maskName.empty()) {
+			imageData.maskName = image.maskName;
+			Util::ensureUnifySlash(imageData.maskName);
+			imageData.maskName = MAKE_PATH_FULL(WORKING_FOLDER_FULL, imageData.maskName);
+		}
 		imageData.poseID = image.poseID;
 		if (imageData.poseID == NO_ID) {
 			DEBUG_EXTRA("warning: uncalibrated image '%s'", image.name.c_str());
@@ -225,6 +230,8 @@ bool Scene::SaveInterface(const String & fileName, int version) const
 		const Image& imageData = images[i];
 		MVS::Interface::Image& image = obj.images[i];
 		image.name = MAKE_PATH_REL(WORKING_FOLDER_FULL, imageData.name);
+		if (!imageData.maskName.empty())
+			image.maskName = MAKE_PATH_REL(WORKING_FOLDER_FULL, imageData.maskName);
 		image.poseID = imageData.poseID;
 		image.platformID = imageData.platformID;
 		image.cameraID = imageData.cameraID;

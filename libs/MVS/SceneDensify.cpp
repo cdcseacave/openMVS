@@ -545,9 +545,20 @@ bool DepthMapsData::EstimateDepthMap(IIndex idxImage)
 	cv::integral(image.image, imageSum0, CV_64F);
 	#endif
 	if (prevDepthMapSize != size) {
-		prevDepthMapSize = size;
 		BitMatrix mask;
+		if (OPTDENSE::nIgnoreMaskLabel >= 0 && DepthEstimator::ImportIgnoreMask(*depthData.GetView().pImageData, depthData.depthMap.size(), mask, (uint16_t)OPTDENSE::nIgnoreMaskLabel))
+			depthData.ApplyIgnoreMask(mask);
 		DepthEstimator::MapMatrix2ZigzagIdx(size, coords, mask, MAXF(64,(int)nMaxThreads*8));
+		#if 0
+		// show pixels to be processed
+		Image8U cmask(size);
+		cmask.memset(0);
+		for (const DepthEstimator::MapRef& x: coords)
+			cmask(x.y, x.x) = 255;
+		cmask.Show("cmask");
+		#endif
+		if (mask.empty())
+			prevDepthMapSize = size;
 	}
 
 	// init threads

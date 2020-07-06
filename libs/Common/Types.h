@@ -2179,6 +2179,7 @@ public:
 };
 /*----------------------------------------------------------------*/
 typedef TImage<uint8_t> Image8U;
+typedef TImage<uint16_t> Image16U;
 typedef TImage<hfloat> Image16F;
 typedef TImage<float> Image32F;
 typedef TImage<double> Image64F;
