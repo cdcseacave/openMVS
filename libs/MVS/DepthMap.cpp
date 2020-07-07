@@ -198,7 +198,7 @@ void DepthData::ApplyIgnoreMask(const BitMatrix& mask)
 	ASSERT(IsValid() && !IsEmpty() && mask.size() == depthMap.size());
 	for (int r=0; r<depthMap.rows; ++r) {
 		for (int c=0; c<depthMap.cols; ++c) {
-			if (!mask.isSet(r,c))
+			if (mask.isSet(r,c))
 				continue;
 			// discard depth-map section ignored by mask
 			depthMap(r,c) = 0;
@@ -276,7 +276,8 @@ unsigned DepthData::DecRef()
 
 // S T R U C T S ///////////////////////////////////////////////////
 
-// try to load and apply mask to the depth map
+// try to load and apply mask to the depth map;
+// the mask marks as false pixels that should be ignored
 bool DepthEstimator::ImportIgnoreMask(const Image& image0, const Image8U::Size& size, BitMatrix& bmask, uint16_t nIgnoreMaskLabel)
 {
 	ASSERT(image0.IsValid() && !image0.image.empty());
