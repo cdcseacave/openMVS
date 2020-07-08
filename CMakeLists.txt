@@ -45,16 +45,17 @@ ConfigCompilerAndLinker()
 ConfigLibrary()
 
 # List configuration options
+SET(OpenMVS_BUILD_TOOLS ON CACHE BOOL "Build example applications")
 SET(OpenMVS_USE_NONFREE ON CACHE BOOL "Build non-free (patented) functionality")
+SET(OpenMVS_USE_OPENMP ON CACHE BOOL "Enable OpenMP library")
+SET(OpenMVS_USE_OPENGL ON CACHE BOOL "Enable OpenGL library")
+SET(OpenMVS_USE_BREAKPAD ON CACHE BOOL "Enable BreakPad library")
 SET(OpenMVS_USE_CERES OFF CACHE BOOL "Enable CERES optimization library")
+SET(OpenMVS_USE_CUDA OFF CACHE BOOL "Enable CUDA library")
 SET(OpenMVS_USE_FAST_FLOAT2INT ON CACHE BOOL "Use an optimized code to convert real numbers to int")
 SET(OpenMVS_USE_FAST_INVSQRT OFF CACHE BOOL "Use an optimized code to compute the inverse square root (slower in fact on modern compilers)")
 SET(OpenMVS_USE_FAST_CBRT ON CACHE BOOL "Use an optimized code to compute the cubic root")
 SET(OpenMVS_USE_SSE ON CACHE BOOL "Enable SSE optimizations")
-SET(OpenMVS_USE_OPENMP ON CACHE BOOL "Enable OpenMP library")
-SET(OpenMVS_USE_OPENGL ON CACHE BOOL "Enable OpenGL library")
-SET(OpenMVS_USE_CUDA ON CACHE BOOL "Enable CUDA library")
-SET(OpenMVS_USE_BREAKPAD ON CACHE BOOL "Enable BreakPad library")
 SET(OpenMVS_CONFIG_INCLUDE_DIR "${CMAKE_BINARY_DIR}/" CACHE PATH "Where to create the build/platform specific header")
 
 INCLUDE_DIRECTORIES("${OpenMVS_SOURCE_DIR}")
@@ -119,7 +120,7 @@ if(OpenMVS_USE_BREAKPAD)
 	endif()
 endif()
 
-FIND_PACKAGE(Boost ${SYSTEM_PACKAGE_REQUIRED} COMPONENTS iostreams program_options system serialization)
+FIND_PACKAGE(Boost COMPONENTS iostreams program_options system serialization REQUIRED)
 if(Boost_FOUND)
 	INCLUDE_DIRECTORIES(${Boost_INCLUDE_DIRS})
 	ADD_DEFINITIONS(${Boost_DEFINITIONS} -D_USE_BOOST)
@@ -127,14 +128,15 @@ if(Boost_FOUND)
 	SET(_USE_BOOST TRUE)
 endif()
 
-FIND_PACKAGE(Eigen ${SYSTEM_PACKAGE_REQUIRED})
-if(EIGEN_FOUND)
-	INCLUDE_DIRECTORIES(${EIGEN_INCLUDE_DIRS})
-	ADD_DEFINITIONS(${EIGEN_DEFINITIONS} -D_USE_EIGEN)
+FIND_PACKAGE(Eigen3 REQUIRED)
+if(EIGEN3_FOUND)
+	INCLUDE_DIRECTORIES(${EIGEN3_INCLUDE_DIR})
+	ADD_DEFINITIONS(${EIGEN3_DEFINITIONS} -D_USE_EIGEN)
 	SET(_USE_EIGEN TRUE)
+	message(STATUS "Eigen ${EIGEN3_VERSION} found (include: ${EIGEN3_INCLUDE_DIR})")
 endif()
 
-FIND_PACKAGE(OpenCV ${SYSTEM_PACKAGE_REQUIRED})
+FIND_PACKAGE(OpenCV REQUIRED)
 if(OpenCV_FOUND)
 	INCLUDE_DIRECTORIES(${OpenCV_INCLUDE_DIRS})
 	ADD_DEFINITIONS(${OpenCV_DEFINITIONS})
@@ -170,7 +172,9 @@ ADD_DEFINITIONS(${OpenMVS_DEFINITIONS})
 
 # Add modules
 ADD_SUBDIRECTORY(libs)
-ADD_SUBDIRECTORY(apps)
+if(OpenMVS_BUILD_TOOLS)
+	ADD_SUBDIRECTORY(apps)
+endif()
 ADD_SUBDIRECTORY(docs)
 
 if(OpenMVS_USE_CERES)
@@ -188,7 +192,7 @@ export(TARGETS Common IO Math MVS FILE "${PROJECT_BINARY_DIR}/OpenMVSTargets.cma
 # Export the package for use from the build-tree
 # (this registers the build-tree with a global CMake-registry)
 export(PACKAGE OpenMVS)
- 
+
 # Create the OpenMVSConfig.cmake and OpenMVSConfigVersion files
 file(RELATIVE_PATH REL_INCLUDE_DIR "${INSTALL_CMAKE_DIR}" "${INSTALL_INCLUDE_DIR}")
 # ... for the build tree
@@ -199,7 +203,7 @@ set(CONF_INCLUDE_DIRS "${INSTALL_CMAKE_DIR}/${REL_INCLUDE_DIR}")
 configure_file("${CMAKE_CURRENT_SOURCE_DIR}/build/OpenMVSConfig.cmake.in" "${PROJECT_BINARY_DIR}${CMAKE_FILES_DIRECTORY}/OpenMVSConfig.cmake" @ONLY)
 # ... for both
 configure_file("${CMAKE_CURRENT_SOURCE_DIR}/build/OpenMVSConfigVersion.cmake.in" "${PROJECT_BINARY_DIR}/OpenMVSConfigVersion.cmake" @ONLY)
- 
+
 # Install the OpenMVSConfig.cmake and OpenMVSConfigVersion.cmake
 install(FILES
 	"${PROJECT_BINARY_DIR}${CMAKE_FILES_DIRECTORY}/OpenMVSConfig.cmake"
