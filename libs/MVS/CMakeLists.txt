@@ -1,12 +1,12 @@
 # Find required packages
-FIND_PACKAGE(CGAL ${SYSTEM_PACKAGE_REQUIRED})
+FIND_PACKAGE(CGAL REQUIRED)
 if(CGAL_FOUND)
 	include_directories(${CGAL_INCLUDE_DIRS})
 	add_definitions(${CGAL_DEFINITIONS})
 	link_directories(${CGAL_LIBRARY_DIRS})
 endif()
 
-FIND_PACKAGE(VCG ${SYSTEM_PACKAGE_REQUIRED})
+FIND_PACKAGE(VCG REQUIRED)
 if(VCG_FOUND)
 	include_directories(${VCG_INCLUDE_DIRS})
 	add_definitions(${VCG_DEFINITIONS})
@@ -14,12 +14,12 @@ endif()
 
 set(CERES_LIBS "")
 if(OpenMVS_USE_CERES)
-	FIND_PACKAGE(CERES)
+	FIND_PACKAGE(Ceres)
 	if(CERES_FOUND)
 		include_directories(${CERES_INCLUDE_DIRS})
 		add_definitions(${CERES_DEFINITIONS})
 	else()
-		set(OpenMVS_USE_CERES OFF)
+		message("-- Can't find CERES. Continuing without it.")
 	endif()
 endif()
 
@@ -42,7 +42,7 @@ cxx_library_with_type_no_pch(MVS "Libs" "" "${cxx_default}"
 set_target_pch(MVS Common.h)
 
 # Link its dependencies
-TARGET_LINK_LIBRARIES(MVS PRIVATE Common Math IO ${CERES_LIBS} ${CGAL_LIBS} ${CUDA_CUDA_LIBRARY})
+TARGET_LINK_LIBRARIES(MVS PRIVATE Common Math IO CGAL::CGAL ${CERES_LIBRARIES} ${CUDA_CUDA_LIBRARY})
 
 # Install
 SET_TARGET_PROPERTIES(MVS PROPERTIES

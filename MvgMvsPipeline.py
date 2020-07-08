@@ -183,10 +183,10 @@ class StepsStore:
              ["-i", "%input_dir%", "-o", "%matches_dir%", "-d", "%camera_file_params%"]],
             ["Compute features",             # 1
              os.path.join(OPENMVG_BIN, "openMVG_main_ComputeFeatures"),
-             ["-i", "%matches_dir%/sfm_data.json", "-o", "%matches_dir%", "-m", "SIFT", "-n", "4"]],
+             ["-i", "%matches_dir%/sfm_data.json", "-o", "%matches_dir%", "-m", "SIFT"]],
             ["Compute matches",              # 2
              os.path.join(OPENMVG_BIN, "openMVG_main_ComputeMatches"),
-             ["-i", "%matches_dir%/sfm_data.json", "-o", "%matches_dir%", "-n", "HNSWL2", "-r", ".8"]],
+             ["-i", "%matches_dir%/sfm_data.json", "-o", "%matches_dir%", "-n", "AUTO"]],
             ["Incremental reconstruction",   # 3
              os.path.join(OPENMVG_BIN, "openMVG_main_IncrementalSfM"),
              ["-i", "%matches_dir%/sfm_data.json", "-m", "%matches_dir%", "-o", "%reconstruction_dir%"]],
