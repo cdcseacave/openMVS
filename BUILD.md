@@ -82,7 +82,7 @@ sudo apt-get -y install libcgal-dev libcgal-qt5-dev
 #VCGLib (Required)
 git clone https://github.com/cdcseacave/VCG.git vcglib
 
-#Ceres (optional)
+#Ceres (Optional)
 sudo apt-get -y install libatlas-base-dev libsuitesparse-dev
 git clone https://ceres-solver.googlesource.com/ceres-solver ceres-solver
 mkdir ceres_build && cd ceres_build
@@ -128,11 +128,36 @@ git clone https://github.com/cdcseacave/openMVS.git
 
 #Build OpenMVS
 mkdir openMVS_build && cd openMVS_build
-cmake . ../openMVS -DCMAKE_BUILD_TYPE=Release -DVCG_DIR="$main_path/vcglib"
+cmake . ../openMVS -DCMAKE_BUILD_TYPE=Release -DVCG_ROOT="$main_path/vcglib"
+
+#Alternatively, build using XCode
+cmake . ../openMVS -G "Xcode" -DCMAKE_BUILD_TYPE=Release -DVCG_ROOT="$main_path/vcglib"
+xcodebuild -configuration Release
 
 #If you want to use OpenMVS as shared library, add to the CMake command:
 -DBUILD_SHARED_LIBS=ON
 
 #Install OpenMVS library (optional):
 make && sudo make install
+```
+
+-------------------
+Library usage
+-------------------
+
+In order to use *OpenMVS* as a third-party libray in your project, first compile it as described above or simply use `vcpgk`:
+```
+vcpkg install openmvs
+```
+
+And inside your project CMake script, use:
+```
+find_package(OpenMVS)
+if(OpenMVS_FOUND)
+	include_directories(${OpenMVS_INCLUDE_DIRS})
+	add_definitions(${OpenMVS_DEFINITIONS})
+endif()
+
+add_executable(your_project source_code.cpp)
+target_link_libraries(your_project PRIVATE OpenMVS::MVS)
 ```

@@ -18,31 +18,10 @@ endif()
 # ${OpenMVS_BINARY_DIR}.
 PROJECT(OpenMVS)
 
-set(OpenMVS_MAJOR_VERSION 1)
-set(OpenMVS_MINOR_VERSION 1)
-set(OpenMVS_PATCH_VERSION 1)
-set(OpenMVS_VERSION ${OpenMVS_MAJOR_VERSION}.${OpenMVS_MINOR_VERSION}.${OpenMVS_PATCH_VERSION})
-
-# Find dependencies:
-SET(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} ${CMAKE_CURRENT_SOURCE_DIR}/build/Modules)
-
-# fix CMake IntDir variable
-if(MSVC AND "${MSVC_VERSION}" STRGREATER "1500")
-	SET(CMAKE_CFG_INTDIR "$(Platform)/$(Configuration)")
-endif()
-SET(COTIRE_INTDIR "cotire")
-
-# Define helper functions and macros.
-INCLUDE(build/Utils.cmake)
-if(ENABLE_PRECOMPILED_HEADERS)
-	INCLUDE(build/Cotire.cmake)
-endif()
-
-# Init session with macros defined in Utils.cmake
-GetOperatingSystemArchitectureBitness(SYSTEM)
-ComposePackageLibSuffix()
-ConfigCompilerAndLinker()
-ConfigLibrary()
+SET(OpenMVS_MAJOR_VERSION 1)
+SET(OpenMVS_MINOR_VERSION 1)
+SET(OpenMVS_PATCH_VERSION 1)
+SET(OpenMVS_VERSION ${OpenMVS_MAJOR_VERSION}.${OpenMVS_MINOR_VERSION}.${OpenMVS_PATCH_VERSION})
 
 # List configuration options
 SET(OpenMVS_BUILD_TOOLS ON CACHE BOOL "Build example applications")
@@ -56,18 +35,32 @@ SET(OpenMVS_USE_FAST_FLOAT2INT ON CACHE BOOL "Use an optimized code to convert r
 SET(OpenMVS_USE_FAST_INVSQRT OFF CACHE BOOL "Use an optimized code to compute the inverse square root (slower in fact on modern compilers)")
 SET(OpenMVS_USE_FAST_CBRT ON CACHE BOOL "Use an optimized code to compute the cubic root")
 SET(OpenMVS_USE_SSE ON CACHE BOOL "Enable SSE optimizations")
-SET(OpenMVS_CONFIG_INCLUDE_DIR "${CMAKE_BINARY_DIR}/" CACHE PATH "Where to create the build/platform specific header")
 
-INCLUDE_DIRECTORIES("${OpenMVS_SOURCE_DIR}")
+# Define helper functions and macros.
+SET(COTIRE_INTDIR "cotire")
+INCLUDE(build/Cotire.cmake)
+INCLUDE(build/Utils.cmake)
+
+# Init session with macros defined in Utils.cmake
+GetOperatingSystemArchitectureBitness(SYSTEM)
+ComposePackageLibSuffix()
+ConfigCompilerAndLinker()
+ConfigLibrary()
+
+# Find dependencies:
+SET(CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/build/Modules)
 
 # Find required packages
+SET(OpenMVS_EXTRA_INCLUDES "")
+SET(OpenMVS_DEFINITIONS "")
 SET(OpenMVS_EXTRA_LIBS "")
+
 if(OpenMVS_USE_OPENMP)
 	SET(OpenMP_LIBS "")
 	FIND_PACKAGE(OpenMP)
 	if(OPENMP_FOUND)
 		SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${OpenMP_CXX_FLAGS}")
-		ADD_DEFINITIONS(-D_USE_OPENMP)
+		LIST(APPEND OpenMVS_DEFINITIONS -D_USE_OPENMP)
 		SET(_USE_OPENMP TRUE)
 		#cmake only check for separate OpenMP library on AppleClang 7+
 		#https://github.com/Kitware/CMake/blob/42212f7539040139ecec092547b7d58ef12a4d72/Modules/FindOpenMP.cmake#L252
@@ -76,7 +69,7 @@ if(OpenMVS_USE_OPENMP)
 			LIST(APPEND OpenMVS_EXTRA_LIBS ${OpenMP_LIBS})
 		endif()
 	else()
-		message("-- Can't find OpenMP. Continuing without it.")
+		MESSAGE("-- Can't find OpenMP. Continuing without it.")
 	endif()
 endif()
 
@@ -87,7 +80,8 @@ if(OpenMVS_USE_OPENGL)
 	FIND_PACKAGE(OpenGL)
 	if(OPENGL_FOUND)
 		INCLUDE_DIRECTORIES(${OPENGL_INCLUDE_DIR})
-		ADD_DEFINITIONS(${OpenGL_DEFINITIONS} -D_USE_OPENGL)
+		LIST(APPEND OpenMVS_DEFINITIONS -D_USE_OPENGL)
+		ADD_DEFINITIONS(${OpenGL_DEFINITIONS})
 		SET(_USE_OPENGL TRUE)
 	else()
 		MESSAGE("-- Can't find OpenGL. Continuing without it.")
@@ -98,7 +92,7 @@ if(OpenMVS_USE_CUDA)
 	FIND_PACKAGE(CUDA)
 	if(CUDA_FOUND)
 		INCLUDE_DIRECTORIES(${CUDA_INCLUDE_DIRS})
-		ADD_DEFINITIONS(-D_USE_CUDA)
+		LIST(APPEND OpenMVS_DEFINITIONS -D_USE_CUDA)
 		SET(_USE_CUDA TRUE)
 	else()
 		SET(CUDA_CUDA_LIBRARY "")
@@ -112,7 +106,8 @@ if(OpenMVS_USE_BREAKPAD)
 	FIND_PACKAGE(BREAKPAD)
 	if(BREAKPAD_FOUND)
 		INCLUDE_DIRECTORIES(${BREAKPAD_INCLUDE_DIRS})
-		ADD_DEFINITIONS(${BREAKPAD_DEFINITIONS} -D_USE_BREAKPAD)
+		LIST(APPEND OpenMVS_DEFINITIONS -D_USE_BREAKPAD)
+		ADD_DEFINITIONS(${BREAKPAD_DEFINITIONS})
 		SET(_USE_BREAKPAD TRUE)
 		LIST(APPEND OpenMVS_EXTRA_LIBS ${BREAKPAD_LIBS})
 	else()
@@ -122,22 +117,27 @@ endif()
 
 FIND_PACKAGE(Boost COMPONENTS iostreams program_options system serialization REQUIRED)
 if(Boost_FOUND)
+	LIST(APPEND OpenMVS_EXTRA_INCLUDES ${Boost_INCLUDE_DIRS})
 	INCLUDE_DIRECTORIES(${Boost_INCLUDE_DIRS})
-	ADD_DEFINITIONS(${Boost_DEFINITIONS} -D_USE_BOOST)
+	LIST(APPEND OpenMVS_DEFINITIONS -D_USE_BOOST)
+	ADD_DEFINITIONS(${Boost_DEFINITIONS})
 	LINK_DIRECTORIES(${Boost_LIBRARY_DIRS})
 	SET(_USE_BOOST TRUE)
 endif()
 
 FIND_PACKAGE(Eigen3 REQUIRED)
 if(EIGEN3_FOUND)
+	LIST(APPEND OpenMVS_EXTRA_INCLUDES ${EIGEN3_INCLUDE_DIR})
 	INCLUDE_DIRECTORIES(${EIGEN3_INCLUDE_DIR})
-	ADD_DEFINITIONS(${EIGEN3_DEFINITIONS} -D_USE_EIGEN)
+	LIST(APPEND OpenMVS_DEFINITIONS -D_USE_EIGEN)
+	ADD_DEFINITIONS(${EIGEN3_DEFINITIONS})
 	SET(_USE_EIGEN TRUE)
-	message(STATUS "Eigen ${EIGEN3_VERSION} found (include: ${EIGEN3_INCLUDE_DIR})")
+	MESSAGE(STATUS "Eigen ${EIGEN3_VERSION} found (include: ${EIGEN3_INCLUDE_DIR})")
 endif()
 
 FIND_PACKAGE(OpenCV REQUIRED)
 if(OpenCV_FOUND)
+	LIST(APPEND OpenMVS_EXTRA_INCLUDES ${OpenCV_INCLUDE_DIRS})
 	INCLUDE_DIRECTORIES(${OpenCV_INCLUDE_DIRS})
 	ADD_DEFINITIONS(${OpenCV_DEFINITIONS})
 	SET(_USE_OPENCV TRUE)
@@ -146,8 +146,10 @@ else()
 	MESSAGE("-- Can't find OpenCV. Please specify OpenCV directory using OpenCV_DIR variable")
 endif()
 
+LIST(REMOVE_DUPLICATES OpenMVS_EXTRA_INCLUDES)
+LIST(REMOVE_DUPLICATES OpenMVS_EXTRA_LIBS)
+
 # Set defines
-SET(OpenMVS_DEFINITIONS "")
 if(OpenMVS_USE_NONFREE)
 	LIST(APPEND OpenMVS_DEFINITIONS -D_USE_NONFREE)
 	SET(_USE_NONFREE TRUE)
@@ -168,7 +170,11 @@ if(OpenMVS_USE_SSE)
 	LIST(APPEND OpenMVS_DEFINITIONS -D_USE_SSE)
 	SET(_USE_SSE TRUE)
 endif()
+
 ADD_DEFINITIONS(${OpenMVS_DEFINITIONS})
+
+INCLUDE_DIRECTORIES("${OpenMVS_SOURCE_DIR}")
+INCLUDE_DIRECTORIES("${CMAKE_BINARY_DIR}")
 
 # Add modules
 ADD_SUBDIRECTORY(libs)
@@ -181,43 +187,41 @@ if(OpenMVS_USE_CERES)
 	SET(_USE_CERES TRUE)
 endif()
 
-# Set configuration file
-CONFIGURE_FILE("${OpenMVS_SOURCE_DIR}/build/Templates/ConfigLocal.h.in" "${OpenMVS_CONFIG_INCLUDE_DIR}/ConfigLocal.h")
-INSTALL(FILES "${OpenMVS_CONFIG_INCLUDE_DIR}/ConfigLocal.h" DESTINATION "${INSTALL_INCLUDE_DIR}")
-INCLUDE_DIRECTORIES(${OpenMVS_CONFIG_INCLUDE_DIR})
-
-# Add all targets to the build-tree export set
-export(TARGETS Common IO Math MVS FILE "${PROJECT_BINARY_DIR}/OpenMVSTargets.cmake")
-
 # Export the package for use from the build-tree
 # (this registers the build-tree with a global CMake-registry)
 export(PACKAGE OpenMVS)
 
-# Create the OpenMVSConfig.cmake and OpenMVSConfigVersion files
-file(RELATIVE_PATH REL_INCLUDE_DIR "${INSTALL_CMAKE_DIR}" "${INSTALL_INCLUDE_DIR}")
-# ... for the build tree
-set(CONF_INCLUDE_DIRS "${PROJECT_SOURCE_DIR}" "${PROJECT_BINARY_DIR}")
-configure_file("${CMAKE_CURRENT_SOURCE_DIR}/build/OpenMVSConfig.cmake.in" "${PROJECT_BINARY_DIR}/OpenMVSConfig.cmake" @ONLY)
-# ... for the install tree
-set(CONF_INCLUDE_DIRS "${INSTALL_CMAKE_DIR}/${REL_INCLUDE_DIR}")
-configure_file("${CMAKE_CURRENT_SOURCE_DIR}/build/OpenMVSConfig.cmake.in" "${PROJECT_BINARY_DIR}${CMAKE_FILES_DIRECTORY}/OpenMVSConfig.cmake" @ONLY)
-# ... for both
-configure_file("${CMAKE_CURRENT_SOURCE_DIR}/build/OpenMVSConfigVersion.cmake.in" "${PROJECT_BINARY_DIR}/OpenMVSConfigVersion.cmake" @ONLY)
-
-# Install the OpenMVSConfig.cmake and OpenMVSConfigVersion.cmake
-install(FILES
-	"${PROJECT_BINARY_DIR}${CMAKE_FILES_DIRECTORY}/OpenMVSConfig.cmake"
-	"${PROJECT_BINARY_DIR}/OpenMVSConfigVersion.cmake"
-	DESTINATION "${INSTALL_CMAKE_DIR}" COMPONENT dev)
-
 # Install the export set for use with the install-tree
-install(EXPORT OpenMVSTargets DESTINATION "${INSTALL_CMAKE_DIR}" COMPONENT dev)
+INSTALL(EXPORT OpenMVSTargets
+	NAMESPACE OpenMVS::
+	DESTINATION "${INSTALL_CMAKE_DIR}")
+
+# Install configuration file
+CONFIGURE_FILE("${CMAKE_CURRENT_SOURCE_DIR}/build/Templates/ConfigLocal.h.in" "${CMAKE_BINARY_DIR}/ConfigLocal.h")
+INSTALL(FILES "${CMAKE_BINARY_DIR}/ConfigLocal.h" DESTINATION "${INSTALL_INCLUDE_DIR}")
+
+# Create the OpenMVSConfig.cmake and OpenMVSConfigVersion files
+INCLUDE(CMakePackageConfigHelpers)
+write_basic_package_version_file("${PROJECT_BINARY_DIR}/OpenMVSConfigVersion.cmake"
+	VERSION ${OpenMVS_VERSION}
+	COMPATIBILITY AnyNewerVersion)
+SET(INSTALL_INCLUDE_DIR_IN ${INSTALL_INCLUDE_DIR_PREFIX} ${OpenMVS_EXTRA_INCLUDES})
+SET(INSTALL_CMAKE_DIR_IN ${INSTALL_CMAKE_DIR_PREFIX})
+configure_package_config_file("${CMAKE_CURRENT_SOURCE_DIR}/build/Templates/OpenMVSConfig.cmake.in"
+	"${PROJECT_BINARY_DIR}/OpenMVSConfig.cmake"
+	INSTALL_DESTINATION ${PROJECT_BINARY_DIR}
+	NO_SET_AND_CHECK_MACRO)
+# Install the OpenMVSConfig.cmake and OpenMVSConfigVersion.cmake
+INSTALL(FILES
+	"${PROJECT_BINARY_DIR}/OpenMVSConfig.cmake"
+	"${PROJECT_BINARY_DIR}/OpenMVSConfigVersion.cmake"
+	DESTINATION "${INSTALL_CMAKE_DIR}")
 
 # uninstall target
-configure_file(
-	"${CMAKE_CURRENT_SOURCE_DIR}/build/cmake_uninstall.cmake.in"
+CONFIGURE_FILE(
+	"${CMAKE_CURRENT_SOURCE_DIR}/build/Templates/cmake_uninstall.cmake.in"
 	"${CMAKE_CURRENT_BINARY_DIR}/cmake_uninstall.cmake"
 	IMMEDIATE @ONLY)
 
-add_custom_target(uninstall
+ADD_CUSTOM_TARGET(uninstall
 	COMMAND ${CMAKE_COMMAND} -P ${CMAKE_CURRENT_BINARY_DIR}/cmake_uninstall.cmake)
