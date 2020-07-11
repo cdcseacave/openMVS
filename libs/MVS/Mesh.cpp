@@ -79,6 +79,7 @@ void Mesh::ReleaseExtra()
 	vertexVertices.Release();
 	vertexFaces.Release();
 	vertexBoundary.Release();
+	vertexColors.Release();
 	faceNormals.Release();
 	faceTexcoords.Release();
 	textureDiffuse.release();
@@ -89,6 +90,7 @@ void Mesh::EmptyExtra()
 	vertexVertices.Empty();
 	vertexFaces.Empty();
 	vertexBoundary.Empty();
+	vertexColors.Empty();
 	faceNormals.Empty();
 	faceTexcoords.Empty();
 	textureDiffuse.release();
@@ -1217,22 +1219,36 @@ void Mesh::Clean(float fDecimate, float fSpurious, bool bRemoveSpikes, unsigned 
 // define a PLY file format composed only of vertices and triangles
 namespace BasicPLY {
 	// list of property information for a vertex
-	static const PLY::PlyProperty vert_props[] = {
-		{"x", PLY::Float32, PLY::Float32, offsetof(Mesh::Vertex,x), 0, 0, 0, 0},
-		{"y", PLY::Float32, PLY::Float32, offsetof(Mesh::Vertex,y), 0, 0, 0, 0},
-		{"z", PLY::Float32, PLY::Float32, offsetof(Mesh::Vertex,z), 0, 0, 0, 0}
+
+	struct VertexColor {
+		Mesh::Vertex v;
+		Mesh::Color c;
 	};
-	struct VertexNormal {
+
+	static const PLY::PlyProperty vert_props[] = {
+		{"x", PLY::Float32, PLY::Float32, offsetof(VertexColor,v.x), 0, 0, 0, 0},
+		{"y", PLY::Float32, PLY::Float32, offsetof(VertexColor,v.y), 0, 0, 0, 0},
+		{"z", PLY::Float32, PLY::Float32, offsetof(VertexColor,v.z), 0, 0, 0, 0},
+		{"red",   PLY::Uint8,   PLY::Uint8,   offsetof(VertexColor,c.r), 0, 0, 0, 0},
+		{"green", PLY::Uint8,   PLY::Uint8,   offsetof(VertexColor,c.g), 0, 0, 0, 0},
+		{"blue",  PLY::Uint8,   PLY::Uint8,   offsetof(VertexColor,c.b), 0, 0, 0, 0},
+	};
+
+	struct VertexNormalColor {
 		Mesh::Vertex v;
 		Mesh::Normal n;
+		Mesh::Color c;
 	};
 	static const PLY::PlyProperty vert_normal_props[] = {
-		{ "x", PLY::Float32, PLY::Float32, offsetof(VertexNormal,v.x), 0, 0, 0, 0},
-		{ "y", PLY::Float32, PLY::Float32, offsetof(VertexNormal,v.y), 0, 0, 0, 0},
-		{ "z", PLY::Float32, PLY::Float32, offsetof(VertexNormal,v.z), 0, 0, 0, 0},
-		{"nx", PLY::Float32, PLY::Float32, offsetof(VertexNormal,n.x), 0, 0, 0, 0},
-		{"ny", PLY::Float32, PLY::Float32, offsetof(VertexNormal,n.y), 0, 0, 0, 0},
-		{"nz", PLY::Float32, PLY::Float32, offsetof(VertexNormal,n.z), 0, 0, 0, 0}
+		{ "x", PLY::Float32, PLY::Float32, offsetof(VertexNormalColor,v.x), 0, 0, 0, 0},
+		{ "y", PLY::Float32, PLY::Float32, offsetof(VertexNormalColor,v.y), 0, 0, 0, 0},
+		{ "z", PLY::Float32, PLY::Float32, offsetof(VertexNormalColor,v.z), 0, 0, 0, 0},
+		{"nx", PLY::Float32, PLY::Float32, offsetof(VertexNormalColor,n.x), 0, 0, 0, 0},
+		{"ny", PLY::Float32, PLY::Float32, offsetof(VertexNormalColor,n.y), 0, 0, 0, 0},
+		{"nz", PLY::Float32, PLY::Float32, offsetof(VertexNormalColor,n.z), 0, 0, 0, 0},
+		{"red",   PLY::Uint8,   PLY::Uint8,   offsetof(VertexNormalColor,c.r), 0, 0, 0, 0},
+		{"green", PLY::Uint8,   PLY::Uint8,   offsetof(VertexNormalColor,c.g), 0, 0, 0, 0},
+		{"blue",  PLY::Uint8,   PLY::Uint8,   offsetof(VertexNormalColor,c.b), 0, 0, 0, 0},
 	};
 	// list of property information for a face
 	struct Face {
@@ -1463,25 +1479,47 @@ bool Mesh::SavePLY(const String& fileName, const cList<String>& comments, bool b
 		ply.append_comment((_T("TextureFile ")+Util::getFileNameExt(textureFileName)).c_str());
 	}
 
+	bool hasColors = !vertexColors.IsEmpty();
 	if (vertexNormals.IsEmpty()) {
 		// describe what properties go into the vertex elements
-		ply.describe_property(BasicPLY::elem_names[0], 3, BasicPLY::vert_props);
+		ply.describe_property(BasicPLY::elem_names[0], hasColors ? 6 : 3, BasicPLY::vert_props);
 
 		// export the array of vertices
-		FOREACHPTR(pVert, vertices)
-			ply.put_element(pVert);
+		BasicPLY::VertexColor vc;
+		if(hasColors) {
+			FOREACH(i, vertices) {
+				vc.v = vertices[i];
+				vc.c = vertexColors[i];
+				ply.put_element(&vc);
+			}
+		} else {
+			FOREACH(i, vertices) {
+				vc.v = vertices[i];
+				ply.put_element(&vc);
+			}
+		}
 	} else {
+		bool hasColors = vertexColors.IsEmpty();
 		ASSERT(vertices.GetSize() == vertexNormals.GetSize());
 
 		// describe what properties go into the vertex elements
-		ply.describe_property(BasicPLY::elem_names[0], 6, BasicPLY::vert_normal_props);
+		ply.describe_property(BasicPLY::elem_names[0], hasColors ? 9 : 6, BasicPLY::vert_normal_props);
 
 		// export the array of vertices
-		BasicPLY::VertexNormal vn;
-		FOREACH(i, vertices) {
-			vn.v = vertices[i];
-			vn.n = vertexNormals[i];
-			ply.put_element(&vn);
+		BasicPLY::VertexNormalColor vn;
+		if(hasColors) {
+			FOREACH(i, vertices) {
+				vn.v = vertices[i];
+				vn.n = vertexNormals[i];
+				vn.c = vertexColors[i];
+				ply.put_element(&vn);
+			}
+		} else {
+			FOREACH(i, vertices) {
+				vn.v = vertices[i];
+				vn.n = vertexNormals[i];
+				ply.put_element(&vn);
+			}
 		}
 	}
 	if (ply.get_current_element_count() == 0)
