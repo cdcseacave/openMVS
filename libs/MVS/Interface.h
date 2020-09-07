@@ -441,8 +441,11 @@ struct Interface
 			return K;
 		}
 		Mat33d GetFullK(uint32_t cameraID, uint32_t width, uint32_t height) const {
-			return ScaleK(GetK(cameraID), (double)Camera::GetNormalizationScale(width, height)/
-				(cameras[cameraID].IsNormalized()?1.0:(double)cameras[cameraID].GetNormalizationScale()));
+			const Camera& camera = cameras[cameraID];
+			if (!camera.IsNormalized() && camera.width == width && camera.height == height)
+				return camera.K;
+			return ScaleK(camera.K, (double)Camera::GetNormalizationScale(width, height)/
+				(camera.IsNormalized()?1.0:(double)camera.GetNormalizationScale()));
 		}
 
 		Pose GetPose(uint32_t cameraID, uint32_t poseID) const {

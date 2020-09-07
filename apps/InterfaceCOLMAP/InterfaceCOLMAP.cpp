@@ -1025,6 +1025,66 @@ bool ExportImagesLog(const String& fileName, const Interface& scene)
 	return !out.fail();
 }
 
+
+// export poses in Strecha camera format:
+// Strecha model is P = K[R^T|-R^T t]
+// our model is P = K[R|t], t = -RC
+bool ExportImagesCamera(const String& pathName, const Interface& scene)
+{
+	LOG_OUT() << "Writing poses: " << pathName << std::endl;
+	Util::ensureFolder(pathName);
+	for (uint32_t ID=0; ID<(uint32_t)scene.images.size(); ++ID) {
+		const Interface::Image& image = scene.images[ID];
+		String imageFileName(image.name);
+		Util::ensureValidPath(imageFileName);
+		const String fileName(pathName+Util::getFileNameExt(imageFileName)+".camera");
+		std::ofstream out(fileName);
+		if (!out.good()) {
+			VERBOSE("error: unable to open file '%s'", fileName.c_str());
+			return false;
+		}
+		out << std::setprecision(12);
+		KMatrix K(KMatrix::IDENTITY);
+		RMatrix R(RMatrix::IDENTITY);
+		CMatrix t(CMatrix::ZERO);
+		unsigned width(0), height(0);
+		if (image.platformID != NO_ID && image.cameraID != NO_ID) {
+			const Interface::Platform& platform = scene.platforms[image.platformID];
+			const Interface::Platform::Camera& camera = platform.cameras[image.cameraID];
+			if (camera.HasResolution()) {
+				width = camera.width;
+				height = camera.height;
+				K = camera.K;
+			} else {
+				IMAGEPTR pImage = Image::ReadImageHeader(image.name);
+				width = pImage->GetWidth();
+				height = pImage->GetHeight();
+				K = platform.GetFullK(image.cameraID, width, height);
+			}
+			if (image.poseID != NO_ID) {
+				const Interface::Platform::Pose& pose = platform.poses[image.poseID];
+				R = pose.R.t();
+				t = pose.C;
+			}
+		}
+		out << K(0,0) << _T(" ") << K(0,1) << _T(" ") << K(0,2) << _T("\n");
+		out << K(1,0) << _T(" ") << K(1,1) << _T(" ") << K(1,2) << _T("\n");
+		out << K(2,0) << _T(" ") << K(2,1) << _T(" ") << K(2,2) << _T("\n");
+		out << _T("0 0 0") << _T("\n");
+		out << R(0,0) << _T(" ") << R(0,1) << _T(" ") << R(0,2) << _T("\n");
+		out << R(1,0) << _T(" ") << R(1,1) << _T(" ") << R(1,2) << _T("\n");
+		out << R(2,0) << _T(" ") << R(2,1) << _T(" ") << R(2,2) << _T("\n");
+		out << t.x << _T(" ") << t.y << _T(" ") << t.z << _T("\n");
+		out << width << _T(" ") << height << _T("\n");
+		if (out.fail()) {
+			VERBOSE("error: unable to write file '%s'", fileName.c_str());
+			return false;
+		}
+	}
+	return true;
+}
+
+
 int main(int argc, LPCTSTR* argv)
 {
 	#ifdef _DEBUGINFO
@@ -1045,6 +1105,10 @@ int main(int argc, LPCTSTR* argv)
 		if (Util::getFileExt(OPT::strOutputFileName) == _T(".log")) {
 			// write poses in log format
 			ExportImagesLog(MAKE_PATH_SAFE(OPT::strOutputFileName), scene);
+		} else
+		if (Util::getFileExt(OPT::strOutputFileName) == _T(".camera")) {
+			// write poses in Strecha camera format
+			ExportImagesCamera((OPT::strOutputFileName=Util::getFileFullName(MAKE_PATH_FULL(WORKING_FOLDER_FULL, OPT::strOutputFileName)))+PATH_SEPARATOR, scene);
 		} else {
 			// write COLMAP input data
 			Util::ensureFolderSlash(OPT::strOutputFileName);
@@ -1058,7 +1122,7 @@ int main(int argc, LPCTSTR* argv)
 			return EXIT_FAILURE;
 		// write MVS input data
 		Util::ensureFolder(Util::getFullPath(MAKE_PATH_FULL(WORKING_FOLDER_FULL, OPT::strOutputFileName)));
-		if (!ARCHIVE::SerializeSave(scene, MAKE_PATH_SAFE(OPT::strOutputFileName), (uint32_t)OPT::bNormalizeIntrinsics?0:1))
+		if (!ARCHIVE::SerializeSave(scene, MAKE_PATH_SAFE(OPT::strOutputFileName)))
 			return EXIT_FAILURE;
 		VERBOSE("Exported data: %u images & %u vertices (%s)", scene.images.size(), scene.vertices.size(), TD_TIMER_GET_FMT().c_str());
 	}
