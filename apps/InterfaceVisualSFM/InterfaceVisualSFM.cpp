@@ -52,6 +52,7 @@ namespace OPT {
 String strInputFileName;
 String strOutputFileName;
 String strOutputImageFolder;
+bool bFromOpenMVS; // conversion direction
 unsigned nArchiveType;
 int nProcessPriority;
 unsigned nMaxThreads;
@@ -145,8 +146,17 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	Util::ensureUnifySlash(OPT::strOutputFileName);
 	Util::ensureUnifySlash(OPT::strOutputImageFolder);
 	Util::ensureFolderSlash(OPT::strOutputImageFolder);
-	if (OPT::strOutputFileName.IsEmpty())
-		OPT::strOutputFileName = Util::getFileFullName(OPT::strInputFileName) + MVS_EXT;
+	const String strInputFileNameExt(Util::getFileExt(OPT::strInputFileName).ToLower());
+	OPT::bFromOpenMVS = (strInputFileNameExt == MVS_EXT);
+	if (OPT::bFromOpenMVS) {
+		if (OPT::strOutputFileName.empty())
+			OPT::strOutputFileName = Util::getFilePath(OPT::strInputFileName);
+	} else {
+		if (OPT::strOutputFileName.empty())
+			OPT::strOutputFileName = Util::getFilePath(OPT::strInputFileName) + _T("scene") MVS_EXT;
+		else
+			OPT::strOutputImageFolder = Util::getRelativePath(Util::getFilePath(OPT::strOutputFileName), Util::getFilePath(OPT::strInputFileName)+OPT::strOutputImageFolder);
+	}
 
 	// initialize global options
 	Process::setCurrentProcessPriority((Process::Priority)OPT::nProcessPriority);
@@ -275,7 +285,86 @@ void UndistortImage(const Camera& camera, const REAL& k1, const Image8U3 imgIn, 
 } // namespace MVS
 
 
-int ImportSceneVSFM()
+bool ExportSceneVSFM()
+{
+	TD_TIMER_START();
+
+	// read MVS input data
+	MVS::Scene scene(OPT::nMaxThreads);
+	if (!scene.Load(MAKE_PATH_SAFE(OPT::strInputFileName)))
+		return false;
+
+	// convert and write data from OpenMVS to VisualSFM
+	std::vector<PBA::Camera> cameras;
+	std::vector<PBA::Point3D> vertices;
+	std::vector<PBA::Point2D> measurements; // the array of 2D projections (only inliers)
+	std::vector<int> correspondingPoint; // 3D point index corresponding to each 2D projection
+	std::vector<int> correspondingView; // and camera index
+	std::vector<std::string> names;
+	std::vector<int> ptc;
+	cameras.reserve(scene.images.size());
+	names.reserve(scene.images.size());
+	MVS::IIndexArr mapIdx(scene.images.size());
+	bool bFocalWarning(false), bPrincipalpointWarning(false);
+	FOREACH(idx, scene.images) {
+		const MVS::Image& image = scene.images[idx];
+		if (!image.IsValid()) {
+			mapIdx[idx] = NO_ID;
+			continue;
+		}
+		if (!bFocalWarning && !ISEQUAL(image.camera.K(0, 0), image.camera.K(1, 1))) {
+			DEBUG("warning: fx != fy and NVM format does not support it");
+			bFocalWarning = true;
+		}
+		if (!bPrincipalpointWarning && (!ISEQUAL(REAL(image.width-1)*0.5, image.camera.K(0, 2)) || !ISEQUAL(REAL(image.height-1)*0.5, image.camera.K(1, 2)))) {
+			DEBUG("warning: cx, cy are not the image center and NVM format does not support it");
+			bPrincipalpointWarning = true;
+		}
+		PBA::Camera cameraNVM;
+		cameraNVM.SetFocalLength((image.camera.K(0, 0) + image.camera.K(1, 1)) * 0.5);
+		cameraNVM.SetMatrixRotation(image.camera.R.val);
+		cameraNVM.SetCameraCenterAfterRotation(image.camera.C.ptr());
+		mapIdx[idx] = static_cast<MVS::IIndex>(cameras.size());
+		cameras.emplace_back(cameraNVM);
+		names.emplace_back(MAKE_PATH_REL(WORKING_FOLDER_FULL, image.name));
+	}
+	vertices.reserve(scene.pointcloud.points.size());
+	measurements.reserve(scene.pointcloud.pointViews.size());
+	correspondingPoint.reserve(scene.pointcloud.pointViews.size());
+	correspondingView.reserve(scene.pointcloud.pointViews.size());
+	FOREACH(idx, scene.pointcloud.points) {
+		const MVS::PointCloud::Point& X = scene.pointcloud.points[idx];
+		const MVS::PointCloud::ViewArr& views = scene.pointcloud.pointViews[idx];
+		const size_t prevMeasurements(measurements.size());
+		for (MVS::IIndex idxView: views) {
+			const MVS::Image& image = scene.images[idxView];
+			const Point2f pt(image.camera.TransformPointW2I(Cast<REAL>(X)));
+			if (pt.x < 0 || pt.y < 0 || pt.x > image.width-1 || pt.y > image.height-1)
+				continue;
+			measurements.emplace_back(pt.x, pt.y);
+			correspondingView.emplace_back(static_cast<int>(mapIdx[idxView]));
+			correspondingPoint.emplace_back(static_cast<int>(vertices.size()));
+		}
+		if (prevMeasurements < measurements.size())
+			vertices.emplace_back(PBA::Point3D{X.x, X.y, X.z});
+	}
+	if (!scene.pointcloud.colors.empty()) {
+		ptc.reserve(scene.pointcloud.colors.size()*3);
+		FOREACH(idx, scene.pointcloud.points) {
+			const MVS::PointCloud::Color& c = scene.pointcloud.colors[idx];
+			ptc.emplace_back(c.r);
+			ptc.emplace_back(c.g);
+			ptc.emplace_back(c.b);
+		}
+	}
+	PBA::SaveModelFile(MAKE_PATH_SAFE(OPT::strOutputFileName), cameras, vertices, measurements, correspondingPoint, correspondingView, names, ptc);
+
+	VERBOSE("Input data exported: %u images & %u points (%s)", scene.images.size(), scene.pointcloud.GetSize(), TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
+
+bool ImportSceneVSFM()
 {
 	TD_TIMER_START();
 
@@ -333,15 +422,15 @@ int ImportSceneVSFM()
 		const PBA::Point3D& X = vertices[idx];
 		scene.pointcloud.points.AddConstruct(X.xyz[0], X.xyz[1], X.xyz[2]);
 	}
-	if (ptc.size() == vertices.size()*3) {
-		scene.pointcloud.colors.Reserve(ptc.size());
-		for (size_t idx=0; idx<ptc.size(); idx+=3)
-			scene.pointcloud.colors.AddConstruct((uint8_t)ptc[idx+0], (uint8_t)ptc[idx+1], (uint8_t)ptc[idx+2]);
-	}
 	scene.pointcloud.pointViews.Resize(vertices.size());
 	for (size_t idx=0; idx<measurements.size(); ++idx) {
 		MVS::PointCloud::ViewArr& views = scene.pointcloud.pointViews[correspondingPoint[idx]];
 		views.InsertSort(correspondingView[idx]);
+	}
+	if (ptc.size() == vertices.size()*3) {
+		scene.pointcloud.colors.Reserve(ptc.size());
+		for (size_t idx=0; idx<ptc.size(); idx+=3)
+			scene.pointcloud.colors.AddConstruct((uint8_t)ptc[idx+0], (uint8_t)ptc[idx+1], (uint8_t)ptc[idx+2]);
 	}
 
 	// undistort images
@@ -391,7 +480,7 @@ int ImportSceneVSFM()
 	#endif
 	progress.close();
 
-	VERBOSE("Input data imported: %u cameras, %u poses, %u images, %u vertices (%s)", cameras.size(), cameras.size(), cameras.size(), vertices.size(), TD_TIMER_GET_FMT().c_str());
+	VERBOSE("Input data imported: %u cameras, %u poses, %u images, %u points (%s)", cameras.size(), cameras.size(), cameras.size(), vertices.size(), TD_TIMER_GET_FMT().c_str());
 
 	// write OpenMVS input data
 	return scene.SaveInterface(MAKE_PATH_SAFE(OPT::strOutputFileName));
@@ -508,14 +597,18 @@ int main(int argc, LPCTSTR* argv)
 	if (!Initialize(argc, argv))
 		return EXIT_FAILURE;
 
-	const String strInputFileNameExt(Util::getFileExt(OPT::strInputFileName).ToLower());
-	if (strInputFileNameExt == VSFM_EXT || strInputFileNameExt == BUNDLE_EXT) {
-		if (!ImportSceneVSFM())
-			return EXIT_FAILURE;
-	} else
-	if (strInputFileNameExt == CMPMVS_EXT) {
-		if (!ImportSceneCMPMVS())
-			return EXIT_FAILURE;
+	if (OPT::bFromOpenMVS) {
+		ExportSceneVSFM();
+	} else {
+		const String strInputFileNameExt(Util::getFileExt(OPT::strInputFileName).ToLower());
+		if (strInputFileNameExt == VSFM_EXT || strInputFileNameExt == BUNDLE_EXT) {
+			if (!ImportSceneVSFM())
+				return EXIT_FAILURE;
+		} else
+		if (strInputFileNameExt == CMPMVS_EXT) {
+			if (!ImportSceneCMPMVS())
+				return EXIT_FAILURE;
+		}
 	}
 
 	Finalize();

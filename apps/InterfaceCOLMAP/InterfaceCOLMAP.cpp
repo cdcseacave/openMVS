@@ -64,7 +64,7 @@ using namespace MVS;
 // S T R U C T S ///////////////////////////////////////////////////
 
 namespace OPT {
-bool b3Dnovator2COLMAP; // conversion direction
+bool bFromOpenMVS; // conversion direction
 bool bNormalizeIntrinsics;
 String strInputFileName;
 String strOutputFileName;
@@ -147,8 +147,6 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 
 	// validate input
 	Util::ensureValidPath(OPT::strInputFileName);
-	const String strInputFileNameExt(Util::getFileExt(OPT::strInputFileName).ToLower());
-	OPT::b3Dnovator2COLMAP = (strInputFileNameExt == MVS_EXT);
 	const bool bInvalidCommand(OPT::strInputFileName.empty());
 	if (OPT::vm.count("help") || bInvalidCommand) {
 		boost::program_options::options_description visible("Available options");
@@ -166,7 +164,9 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	// initialize optional options
 	Util::ensureValidFolderPath(OPT::strImageFolder);
 	Util::ensureValidPath(OPT::strOutputFileName);
-	if (OPT::b3Dnovator2COLMAP) {
+	const String strInputFileNameExt(Util::getFileExt(OPT::strInputFileName).ToLower());
+	OPT::bFromOpenMVS = (strInputFileNameExt == MVS_EXT);
+	if (OPT::bFromOpenMVS) {
 		if (OPT::strOutputFileName.empty())
 			OPT::strOutputFileName = Util::getFilePath(OPT::strInputFileName);
 	} else {
@@ -1097,7 +1097,7 @@ int main(int argc, LPCTSTR* argv)
 
 	TD_TIMER_START();
 
-	if (OPT::b3Dnovator2COLMAP) {
+	if (OPT::bFromOpenMVS) {
 		// read MVS input data
 		Interface scene;
 		if (!ARCHIVE::SerializeLoad(scene, MAKE_PATH_SAFE(OPT::strInputFileName)))
