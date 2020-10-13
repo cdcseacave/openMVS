@@ -109,7 +109,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		("input-file,i", boost::program_options::value<std::string>(&OPT::strInputFileName), "input COLMAP folder containing cameras, images and points files OR input MVS project file")
 		("output-file,o", boost::program_options::value<std::string>(&OPT::strOutputFileName), "output filename for storing the MVS project")
 		("image-folder", boost::program_options::value<std::string>(&OPT::strImageFolder)->default_value(COLMAP_IMAGES_FOLDER), "folder to the undistorted images")
-		("normalize,f", boost::program_options::value(&OPT::bNormalizeIntrinsics)->default_value(true), "normalize intrinsics while exporting to MVS format")
+		("normalize,f", boost::program_options::value(&OPT::bNormalizeIntrinsics)->default_value(false), "normalize intrinsics while exporting to MVS format")
 		;
 
 	boost::program_options::options_description cmdline_options;
@@ -627,11 +627,7 @@ bool ImportScene(const String& strFolder, Interface& scene)
 			camera.C = Interface::Pos3d(0,0,0);
 			if (OPT::bNormalizeIntrinsics) {
 				// normalize camera intrinsics
-				const REAL fScale(REAL(1)/Camera::GetNormalizationScale(colmapCamera.width, colmapCamera.height));
-				camera.K(0,0) *= fScale;
-				camera.K(1,1) *= fScale;
-				camera.K(0,2) *= fScale;
-				camera.K(1,2) *= fScale;
+				camera.K = Camera::ScaleK<double>(camera.K, 1.0/Camera::GetNormalizationScale(colmapCamera.width, colmapCamera.height));
 			} else {
 				camera.width = colmapCamera.width;
 				camera.height = colmapCamera.height;
@@ -774,10 +770,6 @@ bool ExportScene(const String& strFolder, const Interface& scene)
 			ASSERT(platform.cameras.size() == 1); // only one camera per platform supported
 			const Interface::Platform::Camera& camera = platform.cameras[0];
 			cam.ID = ID;
-			cam.params[0] = camera.K(0,0);
-			cam.params[1] = camera.K(1,1);
-			cam.params[2] = camera.K(0,2);
-			cam.params[3] = camera.K(1,2);
 			if (camera.width == 0 || camera.height == 0) {
 				// find one image using this camera
 				const Interface::Image* pImage(NULL);
@@ -797,20 +789,23 @@ bool ExportScene(const String& strFolder, const Interface& scene)
 					return false;
 				cam.width = ptrImage->GetWidth();
 				cam.height = ptrImage->GetHeight();
-				// denormalize camera intrinsics
-				const double fScale(MVS::Camera::GetNormalizationScale(cam.width, cam.height));
-				cam.params[0] *= fScale;
-				cam.params[1] *= fScale;
-				cam.params[2] *= fScale;
-				cam.params[3] *= fScale;
+				// unnormalize camera intrinsics
+				const double scale(MVS::Camera::GetNormalizationScale(cam.width, cam.height));
+				cam.params[0] = camera.K(0,0) * scale;
+				cam.params[1] = camera.K(1,1) * scale;
+				cam.params[2] = camera.K(0,2) * scale;
+				cam.params[3] = camera.K(1,2) * scale;
 			} else {
 				cam.width = camera.width;
 				cam.height = camera.height;
+				cam.params[0] = camera.K(0,0);
+				cam.params[1] = camera.K(1,1);
+				cam.params[2] = camera.K(0,2);
+				cam.params[3] = camera.K(1,2);
 			}
 			if (!cam.Write(file))
 				return false;
-			KMatrix& K = Ks.AddEmpty();
-			K = KMatrix::IDENTITY;
+			KMatrix& K = Ks.emplace_back(KMatrix::IDENTITY);
 			K(0,0) = cam.params[0];
 			K(1,1) = cam.params[1];
 			K(0,2) = cam.params[2];

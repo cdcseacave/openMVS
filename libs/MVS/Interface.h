@@ -376,7 +376,7 @@ struct Interface
 			std::string name; // camera's name
 			std::string bandName; // camera's band name, ex: RGB, BLUE, GREEN, RED, NIR, THERMAL, etc (optional)
 			uint32_t width, height; // image resolution in pixels for all images sharing this camera (optional)
-			Mat33d K; // camera's intrinsics matrix (normalized if image resolution not specified)
+			Mat33d K; // camera's intrinsics matrix (normalized if image resolution not specified), where integer coordinates is by convention the pixel center
 			Mat33d R; // camera's rotation matrix relative to the platform
 			Pos3d C; // camera's translation vector relative to the platform
 
@@ -405,8 +405,8 @@ struct Interface
 
 		// structure describing a pose along the trajectory of a platform
 		struct Pose {
-			Mat33d R; // platform's rotation matrix
-			Pos3d C; // platform's translation vector in the global coordinate system
+			Mat33d R; // platform's rotation matrix that rotates a point from world to camera coordinate system
+			Pos3d C; // platform's translation vector (position) in world coordinate system
 
 			Pose() {}
 			template <typename MAT, typename POS>
@@ -434,11 +434,22 @@ struct Interface
 		static Mat33d ScaleK(const Mat33d& _K, double scale) {
 			Mat33d K(_K);
 			K(0,0) *= scale;
-			K(0,1) *= scale;
-			K(0,2) *= scale;
 			K(1,1) *= scale;
-			K(1,2) *= scale;
+			K(0,2) = (K(0,2)+0.5)*scale-0.5;
+			K(1,2) = (K(1,2)+0.5)*scale-0.5;
+			K(0,1) *= scale;
 			return K;
+		}
+		const Mat33d& SetFullK(uint32_t cameraID, const Mat33d& K, uint32_t width, uint32_t height, bool normalize=false) {
+			Camera& camera = cameras[cameraID];
+			if (normalize) {
+				camera.width = camera.height = 0;
+				camera.K = ScaleK(K, 1.0/(double)Camera::GetNormalizationScale(width, height));
+			} else {
+				camera.width = width; camera.height = height;
+				camera.K = K;
+			}
+			return camera.K;
 		}
 		Mat33d GetFullK(uint32_t cameraID, uint32_t width, uint32_t height) const {
 			const Camera& camera = cameras[cameraID];

@@ -404,11 +404,7 @@ bool ImportSceneVSFM()
 		camera.R = RMatrix::IDENTITY;
 		camera.C = CMatrix::ZERO;
 		// normalize camera intrinsics
-		const REAL fScale(REAL(1)/MVS::Camera::GetNormalizationScale(image.width, image.height));
-		camera.K(0,0) *= fScale;
-		camera.K(1,1) *= fScale;
-		camera.K(0,2) *= fScale;
-		camera.K(1,2) *= fScale;
+		camera.K = camera.GetScaledK(REAL(1)/MVS::Camera::GetNormalizationScale(image.width, image.height));
 		// set pose
 		image.poseID = platform.poses.GetSize();
 		MVS::Platform::Pose& pose = platform.poses.AddEmpty();
@@ -566,11 +562,7 @@ int ImportSceneCMPMVS()
 		camera.R = RMatrix::IDENTITY;
 		camera.C = CMatrix::ZERO;
 		// normalize camera intrinsics
-		const REAL fScale(REAL(1)/MVS::Camera::GetNormalizationScale(image.width, image.height));
-		camera.K(0, 0) *= fScale;
-		camera.K(1, 1) *= fScale;
-		camera.K(0, 2) *= fScale;
-		camera.K(1, 2) *= fScale;
+		camera.K = camera.GetScaledK(REAL(1)/MVS::Camera::GetNormalizationScale(image.width, image.height));
 		// set pose
 		image.poseID = platform.poses.GetSize();
 		MVS::Platform::Pose& pose = platform.poses.AddEmpty();

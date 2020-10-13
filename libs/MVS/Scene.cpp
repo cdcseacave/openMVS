@@ -83,11 +83,7 @@ bool Scene::LoadInterface(const String & fileName)
 			if (!itCamera.IsNormalized()) {
 				// normalize K
 				ASSERT(itCamera.HasResolution());
-				const REAL scale(REAL(1)/camera.GetNormalizationScale(itCamera.width,itCamera.height));
-				camera.K(0,0) *= scale;
-				camera.K(1,1) *= scale;
-				camera.K(0,2) *= scale;
-				camera.K(1,2) *= scale;
+				camera.K = camera.GetScaledK(REAL(1)/Camera::GetNormalizationScale(itCamera.width, itCamera.height));
 			}
 			DEBUG_EXTRA("Camera model loaded: platform %u; camera %2u; f %.3fx%.3f; poses %u", platforms.size()-1, platform.cameras.size()-1, camera.K(0,0), camera.K(1,1), itPlatform.poses.size());
 		}
@@ -305,7 +301,7 @@ bool Scene::LoadDMAP(const String& fileName)
 	// create image
 	Platform& platform = platforms.AddEmpty();
 	platform.name = _T("platform0");
-	platform.cameras.emplace_back(CameraIntern::ScaleK(camera.K, REAL(1)/CameraIntern::GetNormalizationScale((uint32_t)imageSize.width,(uint32_t)imageSize.height)), RMatrix::IDENTITY, CMatrix::ZERO);
+	platform.cameras.emplace_back(camera.GetScaledK(REAL(1)/CameraIntern::GetNormalizationScale((uint32_t)imageSize.width,(uint32_t)imageSize.height)), RMatrix::IDENTITY, CMatrix::ZERO);
 	platform.poses.emplace_back(Platform::Pose{camera.R, camera.C});
 	Image& image = images.AddEmpty();
 	image.name = MAKE_PATH_FULL(WORKING_FOLDER_FULL, imageFileName);
