@@ -194,6 +194,8 @@ CImage::Size CImage::GetStride(PIXELFORMAT pixFormat)
 	{
 	case PF_A8:
 	case PF_GRAY8:
+    case PF_GRAYU16:
+    case PF_GRAYF32:
 		return 1;
 	case PF_R5G6B5:
 		return 2;
@@ -237,6 +239,8 @@ bool CImage::FormatHasAlpha(PIXELFORMAT format)
 	case PF_DXT5:
 		return true;
 	case PF_GRAY8:
+    case PF_GRAYU16:
+    case PF_GRAYF32:
 	case PF_R5G6B5:
 	case PF_B8G8R8:
 	case PF_R8G8B8:

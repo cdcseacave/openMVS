@@ -393,14 +393,16 @@ HRESULT CImageTIFF::ReadHeader()
 		TIFFGetField(tif, TIFFTAG_IMAGELENGTH, &m_height) &&
 		TIFFGetField(tif, TIFFTAG_PHOTOMETRIC, &photometric))
 	{
-		uint16 bpp=8, ncn = photometric > 1 ? 3 : 1;
+		uint16 bpp=8, ncn = photometric > 1 ? 3 : 1, sampleFormat = 1;
 		TIFFGetField(tif, TIFFTAG_BITSPERSAMPLE, &bpp);
 		TIFFGetField(tif, TIFFTAG_SAMPLESPERPIXEL, &ncn);
+        TIFFGetField(tif, TIFFTAG_SAMPLEFORMAT, &sampleFormat);
 
 		m_dataWidth = m_width;
 		m_dataHeight= m_height;
 		m_numLevels = 0;
 		m_level     = 0;
+        m_stride    = ncn;
 
 		if ((bpp == 32 && ncn == 3) || photometric == PHOTOMETRIC_LOGLUV) {
 			// this is HDR format with 3 floats per pixel
@@ -413,27 +415,34 @@ HRESULT CImageTIFF::ReadHeader()
 			((photometric != 2 && photometric != 1) ||
 				(ncn != 1 && ncn != 3 && ncn != 4)))
 			bpp = 8;
-		switch (bpp) {
+
+        bool implemented = true;
+
+		switch (bpp){
 		case 8:
-			m_stride = 4;
-			m_format = PF_B8G8R8A8;
+            if (ncn == 4) m_format = PF_B8G8R8A8;
+            else if (ncn == 3) m_format = PF_B8G8R8;
+            else m_format = PF_GRAY8;
 			break;
-		//case 16:
-		//	m_type = CV_MAKETYPE(CV_16U, photometric > 1 ? 3 : 1);
-		//	break;
-		//case 32:
-		//	m_type = CV_MAKETYPE(CV_32F, photometric > 1 ? 3 : 1);
-		//	break;
-		//case 64:
-		//	m_type = CV_MAKETYPE(CV_64F, photometric > 1 ? 3 : 1);
-		//	break;
+        case 16:
+            m_format = PF_GRAYU16;
+            if (ncn != 1 || sampleFormat != TIFF_SAMPLEFORMAT_UINT) implemented = false;
+            break;
+        case 32:
+            m_format = PF_GRAYF32;
+            if (ncn != 1 || sampleFormat != TIFF_SAMPLEFORMAT_IEEEFP) implemented = false;
+            break;
 		default:
-			//TODO: implement
+            // TODO: implement support for more
+            implemented = false;
+		}
+
+        if (!implemented){
 			ASSERT("error: not implemented" == NULL);
 			LOG(LT_IMAGE, "error: unsupported TIFF image");
 			Close();
 			return _INVALIDFILE;
-		}
+        }
 		m_lineWidth = m_width * m_stride;
 
 		return _OK;
@@ -460,6 +469,7 @@ HRESULT CImageTIFF::ReadData(void* pData, PIXELFORMAT dataFormat, Size nStride, 
 		if (dst_bpp == 8) {
 			char errmsg[1024];
 			if (!TIFFRGBAImageOK(tif, errmsg)) {
+                std::cerr << "IMAGE NOT OK!" << std::endl; // TODO: REMOVE
 				Close();
 				return _INVALIDFILE;
 			}
@@ -494,6 +504,10 @@ HRESULT CImageTIFF::ReadData(void* pData, PIXELFORMAT dataFormat, Size nStride, 
 				CLISTDEF0(uint8_t) _buffer(buffer_size);
 				uint8_t* buffer = _buffer.Begin();
 
+                // TODO: rewrite this http://web.mit.edu/Graphics/src/tiff-v3.6.1/html/man/TIFFReadRGBAStrip.3t.html
+                // TIFFReadRGBAImage 
+                // TIFFReadRGBATile
+
 				for (uint32 y = 0; y < m_height; y += tile_height0, data += lineWidth*tile_height0) {
 					uint32 tile_height = tile_height0;
 					if (y + tile_height > m_height)
@@ -509,6 +523,8 @@ HRESULT CImageTIFF::ReadData(void* pData, PIXELFORMAT dataFormat, Size nStride, 
 						case 8:
 						{
 							uint8_t* bstart = buffer;
+
+                            if (m_format )
 							if (!is_tiled)
 								ok = TIFFReadRGBAStrip(tif, y, (uint32*)buffer);
 							else {

@@ -32,6 +32,8 @@ typedef enum PIXELFORMAT_TYPE {
 	// gray
 	PF_A8,
 	PF_GRAY8,
+    PF_GRAYU16, // unsigned 16
+    PF_GRAYF32, // float 32
 	// uncompressed RGB
 	PF_R5G6B5,
 	PF_R8G8B8,
@@ -107,6 +109,22 @@ public:
 	#endif
 
 protected:
+    template<typename T>
+    void findMinMax(void *data, Size size, T* min, T* max){
+        if (size == 0){
+            *min = *max = 0;
+            return;
+        }
+
+        T *p = reinterpret_cast<T *>(data);
+        *min = *max = p[0];
+
+        for (Size i = 1; i < size; i++){
+            if (p[i] > *max) *max = p[i];
+            if (p[i] < *min) *min = p[i];
+        }
+    }
+
 	IOSTREAMPTR			m_pStream;		// stream used to read/write the image data
 	CAutoPtrArr<BYTE>	m_data;			// image's data buffer
 	Size				m_width;		// image width in pixels
@@ -124,5 +142,6 @@ typedef CSharedPtr<CImage> IMAGEPTR;
 /*----------------------------------------------------------------*/
 
 } // namespace SEACAVE
+
 
 #endif // __SEACAVE_IMAGE_H__
