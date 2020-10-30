@@ -6,7 +6,7 @@
 // (See http://www.boost.org/LICENSE_1_0.txt)
 
 #include "Common.h"
-
+#define _IMAGE_TIFF 1 // TODO REMOVE
 #ifdef _IMAGE_TIFF
 #include "ImageTIFF.h"
 
@@ -420,16 +420,24 @@ HRESULT CImageTIFF::ReadHeader()
 
 		switch (bpp){
 		case 8:
-            if (ncn == 4) m_format = PF_B8G8R8A8;
-            else if (ncn == 3) m_format = PF_B8G8R8;
-            else m_format = PF_GRAY8;
+            if (ncn >= 3){
+                m_format = PF_B8G8R8A8;
+                m_stride = 4;
+            }else if (ncn == 1){
+                m_format = PF_GRAY8;
+                m_stride = 1;
+            }else{
+                implemented = false;
+            }
 			break;
         case 16:
             m_format = PF_GRAYU16;
+            m_stride = 1;
             if (ncn != 1 || sampleFormat != TIFF_SAMPLEFORMAT_UINT) implemented = false;
             break;
         case 32:
             m_format = PF_GRAYF32;
+            m_stride = 1;
             if (ncn != 1 || sampleFormat != TIFF_SAMPLEFORMAT_IEEEFP) implemented = false;
             break;
 		default:
@@ -457,8 +465,6 @@ HRESULT CImageTIFF::ReadData(void* pData, PIXELFORMAT dataFormat, Size nStride, 
 {
 	if (m_state && m_width && m_height) {
 		TIFF* tif = (TIFF*)m_state;
-		uint32 tile_width0 = m_width, tile_height0 = 0;
-		int is_tiled = TIFFIsTiled(tif);
 		uint16 photometric;
 		TIFFGetField(tif, TIFFTAG_PHOTOMETRIC, &photometric);
 		uint16 bpp = 8, ncn = photometric > 1 ? 3 : 1;
@@ -475,90 +481,24 @@ HRESULT CImageTIFF::ReadData(void* pData, PIXELFORMAT dataFormat, Size nStride, 
 			}
 		}
 
-		if ((!is_tiled) ||
-			(is_tiled &&
-			 TIFFGetField(tif, TIFFTAG_TILEWIDTH, &tile_width0) &&
-			 TIFFGetField(tif, TIFFTAG_TILELENGTH, &tile_height0)))
-		{
-			if (!is_tiled)
-				TIFFGetField(tif, TIFFTAG_ROWSPERSTRIP, &tile_height0);
+        uint8_t* data = (uint8_t*)pData;
 
-			if (tile_width0 <= 0)
-				tile_width0 = m_width;
+        // read image to a buffer and convert it
+        const size_t buffer_size = m_stride * m_width * m_height;
+        CLISTDEF0(uint8_t) _buffer(buffer_size);
+        uint8_t* buffer = _buffer.Begin();
 
-			if (tile_height0 <= 0 ||
-				(!is_tiled && tile_height0 == std::numeric_limits<uint32>::max()))
-				tile_height0 = m_height;
+        if (!TIFFReadRGBAImage(tif, m_width, m_height, (uint32*)buffer, 0)){
+            Close();
+            return _INVALIDFILE;
+        }
 
-			uint8_t* data = (uint8_t*)pData;
-			if (!is_tiled && tile_height0 == 1 && dataFormat == m_format && nStride == m_stride) {
-				// read image directly to the data buffer
-				for (Size j=0; j<m_height; ++j, data+=lineWidth)
-					if (!TIFFReadRGBAStrip(tif, j, (uint32*)data)) {
-						Close();
-						return _INVALIDFILE;
-					}
-			} else {
-				// read image to a buffer and convert it
-				const size_t buffer_size = 4 * tile_height0 * tile_width0;
-				CLISTDEF0(uint8_t) _buffer(buffer_size);
-				uint8_t* buffer = _buffer.Begin();
+        if (!FilterFormat(data, dataFormat, nStride, buffer, m_format, m_stride, m_width * m_height)) {
+            Close();
+            return _FAIL;
+        }
 
-                // TODO: rewrite this http://web.mit.edu/Graphics/src/tiff-v3.6.1/html/man/TIFFReadRGBAStrip.3t.html
-                // TIFFReadRGBAImage 
-                // TIFFReadRGBATile
-
-				for (uint32 y = 0; y < m_height; y += tile_height0, data += lineWidth*tile_height0) {
-					uint32 tile_height = tile_height0;
-					if (y + tile_height > m_height)
-						tile_height = m_height - y;
-
-					for (uint32 x = 0; x < m_width; x += tile_width0) {
-						uint32 tile_width = tile_width0;
-						if (x + tile_width > m_width)
-							tile_width = m_width - x;
-
-						int ok;
-						switch (dst_bpp) {
-						case 8:
-						{
-							uint8_t* bstart = buffer;
-
-                            if (m_format )
-							if (!is_tiled)
-								ok = TIFFReadRGBAStrip(tif, y, (uint32*)buffer);
-							else {
-								ok = TIFFReadRGBATile(tif, x, y, (uint32*)buffer);
-								//Tiles fill the buffer from the bottom up
-								bstart += (tile_height0 - tile_height) * tile_width0 * 4;
-							}
-							if (!ok) {
-								Close();
-								return _INVALIDFILE;
-							}
-
-							for (uint32 i = 0; i < tile_height; ++i) {
-								uint8_t* dst = data + x*3 + lineWidth*(tile_height - i - 1);
-								uint8_t* src = bstart + i*tile_width0*4;
-								if (!FilterFormat(dst, dataFormat, nStride, src, m_format, m_stride, tile_width)) {
-									Close();
-									return _FAIL;
-								}
-							}
-							break;
-						}
-						default:
-						{
-							Close();
-							return _INVALIDFILE;
-						}
-						}
-					}
-				}
-			}
-
-			return _OK;
-		}
+        return _OK;
 	}
 
 	Close();
