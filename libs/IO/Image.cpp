@@ -413,6 +413,20 @@ bool CImage::FilterFormat(void* pDst, PIXELFORMAT formatDst, Size strideDst, con
 				((uint8_t*)pDst)[2] = ((uint8_t*)pSrc)[1];
 			}
 			return true;
+
+        case PF_GRAYU16:
+            // from PF_GRAYU16 to PF_R8G8B8
+            
+			for (Size i=0; i<nSzize; ++i,(uint8_t*&)pDst+=strideDst,(uint8_t*&)pSrc+=strideSrc) {
+                uint16_t v = *((uint16_t*)pSrc);
+                uint8_t norm = (uint8_t)((float)v / 65535.0);
+
+                ((uint8_t*)pDst)[0] = norm;
+                ((uint8_t*)pDst)[1] = norm;
+                ((uint8_t*)pDst)[2] = norm;
+                
+			}
+			return true;
 		}
 		break;
 
