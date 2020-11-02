@@ -417,13 +417,17 @@ bool CImage::FilterFormat(void* pDst, PIXELFORMAT formatDst, Size strideDst, con
         case PF_GRAYU16:
             // from PF_GRAYU16 to PF_R8G8B8
             
-			for (Size i=0; i<nSzize; ++i,(uint8_t*&)pDst+=strideDst,(uint8_t*&)pSrc+=strideSrc) {
-                uint16_t v = *((uint16_t*)pSrc);
-                uint8_t norm = (uint8_t)((float)v / 65535.0);
+            uint16_t min, max;
+            uint16_t *pData = (uint16_t*)pSrc;
+            findMinMaxPercentile(pData, nSzize, &min, &max);
 
-                ((uint8_t*)pDst)[0] = norm;
-                ((uint8_t*)pDst)[1] = norm;
-                ((uint8_t*)pDst)[2] = norm;
+			for (Size i=0; i<nSzize; ++i,(uint8_t*&)pDst+=strideDst,(uint8_t*&)pSrc+=strideSrc) {
+                uint16_t v = std::max(min, std::min(max, *((uint16_t*)pSrc)));
+                uint8_t c = (uint8_t)((255.0 * (double)(v - min) / (double)(max - min)) + 0.5);
+
+                ((uint8_t*)pDst)[0] = c;
+                ((uint8_t*)pDst)[1] = c;
+                ((uint8_t*)pDst)[2] = c;
                 
 			}
 			return true;
