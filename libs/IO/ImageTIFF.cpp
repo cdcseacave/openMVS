@@ -29,40 +29,30 @@ using namespace SEACAVE;
 /*
   ISO C++ uses a 'std::streamsize' type to define counts.  This makes
   it similar to, (but perhaps not the same as) size_t.
-
   The std::ios::pos_type is used to represent stream positions as used
   by tellg(), tellp(), seekg(), and seekp().  This makes it similar to
   (but perhaps not the same as) 'off_t'.  The std::ios::streampos type
   is used for character streams, but is documented to not be an
   integral type anymore, so it should *not* be assigned to an integral
   type.
-
   The std::ios::off_type is used to specify relative offsets needed by
   the variants of seekg() and seekp() which accept a relative offset
   argument.
-
   Useful prototype knowledge:
-
   Obtain read position
 	ios::pos_type basic_istream::tellg()
-
   Set read position
 	basic_istream& basic_istream::seekg(ios::pos_type)
 	basic_istream& basic_istream::seekg(ios::off_type, ios_base::seekdir)
-
   Read data
 	basic_istream& istream::read(char *str, streamsize count)
-
   Number of characters read in last unformatted read
 	streamsize istream::gcount();
-
   Obtain write position
 	ios::pos_type basic_ostream::tellp()
-
   Set write position
 	basic_ostream& basic_ostream::seekp(ios::pos_type)
 	basic_ostream& basic_ostream::seekp(ios::off_type, ios_base::seekdir)
-
   Write data
 	basic_ostream& ostream::write(const char *str, streamsize count)
 */
