@@ -6,7 +6,7 @@
 // (See http://www.boost.org/LICENSE_1_0.txt)
 
 #include "Common.h"
-#define _IMAGE_TIFF 1 // TODO REMOVE
+
 #ifdef _IMAGE_TIFF
 #include "ImageTIFF.h"
 
@@ -44,27 +44,27 @@ using namespace SEACAVE;
   Useful prototype knowledge:
 
   Obtain read position
-    ios::pos_type basic_istream::tellg()
+	ios::pos_type basic_istream::tellg()
 
   Set read position
-    basic_istream& basic_istream::seekg(ios::pos_type)
-    basic_istream& basic_istream::seekg(ios::off_type, ios_base::seekdir)
+	basic_istream& basic_istream::seekg(ios::pos_type)
+	basic_istream& basic_istream::seekg(ios::off_type, ios_base::seekdir)
 
   Read data
-    basic_istream& istream::read(char *str, streamsize count)
+	basic_istream& istream::read(char *str, streamsize count)
 
   Number of characters read in last unformatted read
-    streamsize istream::gcount();
+	streamsize istream::gcount();
 
   Obtain write position
-    ios::pos_type basic_ostream::tellp()
+	ios::pos_type basic_ostream::tellp()
 
   Set write position
-    basic_ostream& basic_ostream::seekp(ios::pos_type)
-    basic_ostream& basic_ostream::seekp(ios::off_type, ios_base::seekdir)
+	basic_ostream& basic_ostream::seekp(ios::pos_type)
+	basic_ostream& basic_ostream::seekp(ios::off_type, ios_base::seekdir)
 
   Write data
-    basic_ostream& ostream::write(const char *str, streamsize count)
+	basic_ostream& ostream::write(const char *str, streamsize count)
 */
 
 struct tiffis_data;
@@ -396,13 +396,13 @@ HRESULT CImageTIFF::ReadHeader()
 		uint16 bpp=8, ncn = photometric > 1 ? 3 : 1, sampleFormat = 1;
 		TIFFGetField(tif, TIFFTAG_BITSPERSAMPLE, &bpp);
 		TIFFGetField(tif, TIFFTAG_SAMPLESPERPIXEL, &ncn);
-        TIFFGetField(tif, TIFFTAG_SAMPLEFORMAT, &sampleFormat);
+		TIFFGetField(tif, TIFFTAG_SAMPLEFORMAT, &sampleFormat);
 
 		m_dataWidth = m_width;
 		m_dataHeight= m_height;
 		m_numLevels = 0;
 		m_level     = 0;
-        m_stride    = ncn;
+		m_stride    = ncn;
 
 		if ((bpp == 32 && ncn == 3) || photometric == PHOTOMETRIC_LOGLUV) {
 			// this is HDR format with 3 floats per pixel
@@ -416,41 +416,41 @@ HRESULT CImageTIFF::ReadHeader()
 				(ncn != 1 && ncn != 3 && ncn != 4)))
 			bpp = 8;
 
-        bool implemented = true;
+		bool implemented = true;
 
 		switch (bpp){
 		case 8:
-            if (ncn >= 3){
-                m_format = PF_B8G8R8A8;
-                m_stride = 4;
-            }else if (ncn == 1){
-                m_format = PF_GRAY8;
-                m_stride = 1;
-            }else{
-                implemented = false;
-            }
+			if (ncn >= 3){
+				m_format = PF_B8G8R8A8;
+				m_stride = 4;
+			}else if (ncn == 1){
+				m_format = PF_GRAY8;
+				m_stride = 1;
+			}else{
+				implemented = false;
+			}
 			break;
-        case 16:
-            m_format = PF_GRAYU16;
-            m_stride = 2;
-            if (ncn != 1 || sampleFormat != TIFF_SAMPLEFORMAT_UINT) implemented = false;
-            break;
-        case 32:
-            m_format = PF_GRAYF32;
-            m_stride = 4;
-            if (ncn != 1 || sampleFormat != TIFF_SAMPLEFORMAT_IEEEFP) implemented = false;
-            break;
+		case 16:
+			m_format = PF_GRAYU16;
+			m_stride = 2;
+			if (ncn != 1 || sampleFormat != TIFF_SAMPLEFORMAT_UINT) implemented = false;
+			break;
+		case 32:
+			m_format = PF_GRAYF32;
+			m_stride = 4;
+			if (ncn != 1 || sampleFormat != TIFF_SAMPLEFORMAT_IEEEFP) implemented = false;
+			break;
 		default:
-            // TODO: implement support for more
-            implemented = false;
+			// TODO: implement support for more
+			implemented = false;
 		}
 
-        if (!implemented){
+		if (!implemented){
 			ASSERT("error: not implemented" == NULL);
 			LOG(LT_IMAGE, "error: unsupported TIFF image");
 			Close();
 			return _INVALIDFILE;
-        }
+		}
 		m_lineWidth = m_width * m_stride;
 
 		return _OK;
@@ -470,47 +470,43 @@ HRESULT CImageTIFF::ReadData(void* pData, PIXELFORMAT dataFormat, Size nStride, 
 		uint16 bpp = 8, ncn = photometric > 1 ? 3 : 1;
 		TIFFGetField(tif, TIFFTAG_BITSPERSAMPLE, &bpp);
 		TIFFGetField(tif, TIFFTAG_SAMPLESPERPIXEL, &ncn);
-		const int bitsPerByte = 8;
-		int dst_bpp = (int)(1 * bitsPerByte);
-		if (dst_bpp == 8) {
+
+		const size_t buffer_size = m_stride * m_width * m_height;
+		CLISTDEF0(uint8_t) _buffer(buffer_size);
+		uint8_t* buffer = _buffer.Begin();
+
+		if (m_format == PF_B8G8R8A8 || m_format == PF_GRAY8){
 			char errmsg[1024];
 			if (!TIFFRGBAImageOK(tif, errmsg)) {
-                std::cerr << "IMAGE NOT OK!" << std::endl; // TODO: REMOVE
 				Close();
 				return _INVALIDFILE;
 			}
+
+			// Simplified
+			if (!TIFFReadRGBAImageOriented(tif, m_width, m_height, (uint32*)buffer, ORIENTATION_TOPLEFT, 0)){
+				Close();
+				return _INVALIDFILE;
+			}
+		}else if (m_format == PF_GRAYU16 || m_format == PF_GRAYF32){
+			for (uint32 y = 0; y < m_height; y++, buffer += m_lineWidth){
+				if (!TIFFReadScanline(tif, buffer, y, 0)){
+					Close();
+					return _INVALIDFILE;
+				}
+			}
+
+			buffer = _buffer.Begin();
 		}
 
-        const size_t buffer_size = m_stride * m_width * m_height;
-        CLISTDEF0(uint8_t) _buffer(buffer_size);
-        uint8_t* buffer = _buffer.Begin();
+		// Data not in the format we need?
+		if (dataFormat != m_format || nStride != m_stride){
+			if (!FilterFormat(pData, dataFormat, nStride, buffer, m_format, m_stride, m_width * m_height)) {
+				Close();
+				return _FAIL;
+			}
+		}
 
-        if (m_format == PF_B8G8R8A8 || m_format == PF_GRAY8){
-            // Simplified
-            if (!TIFFReadRGBAImageOriented(tif, m_width, m_height, (uint32*)buffer, ORIENTATION_TOPLEFT, 0)){
-                Close();
-                return _INVALIDFILE;
-            }
-        }else if (m_format == PF_GRAYU16){
-            for (uint32 y = 0; y < m_height; y++, buffer += m_lineWidth){
-                if (!TIFFReadScanline(tif, buffer, y, 0)){
-                    Close();
-                    return _INVALIDFILE;
-                }
-            }
-
-            buffer = _buffer.Begin();
-        }
-
-        // Data not in the format we need?
-        if (dataFormat != m_format || nStride != m_stride){
-            if (!FilterFormat(pData, dataFormat, nStride, buffer, m_format, m_stride, m_width * m_height)) {
-                Close();
-                return _FAIL;
-            }
-        }
-
-        return _OK;
+		return _OK;
 	}
 
 	Close();

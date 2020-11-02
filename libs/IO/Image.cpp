@@ -194,8 +194,8 @@ CImage::Size CImage::GetStride(PIXELFORMAT pixFormat)
 	{
 	case PF_A8:
 	case PF_GRAY8:
-    case PF_GRAYU16:
-    case PF_GRAYF32:
+	case PF_GRAYU16:
+	case PF_GRAYF32:
 		return 1;
 	case PF_R5G6B5:
 		return 2;
@@ -239,8 +239,8 @@ bool CImage::FormatHasAlpha(PIXELFORMAT format)
 	case PF_DXT5:
 		return true;
 	case PF_GRAY8:
-    case PF_GRAYU16:
-    case PF_GRAYF32:
+	case PF_GRAYU16:
+	case PF_GRAYF32:
 	case PF_R5G6B5:
 	case PF_B8G8R8:
 	case PF_R8G8B8:
@@ -414,23 +414,44 @@ bool CImage::FilterFormat(void* pDst, PIXELFORMAT formatDst, Size strideDst, con
 			}
 			return true;
 
-        case PF_GRAYU16:
-            // from PF_GRAYU16 to PF_R8G8B8
-            
-            uint16_t min, max;
-            uint16_t *pData = (uint16_t*)pSrc;
-            findMinMaxPercentile(pData, nSzize, &min, &max);
+		case PF_GRAYU16:{
+			// from PF_GRAYU16 to PF_R8G8B8
+			
+			uint16_t min, max;
+			uint16_t *pData = (uint16_t*)pSrc;
+			findMinMaxPercentile(pData, nSzize, &min, &max);
 
 			for (Size i=0; i<nSzize; ++i,(uint8_t*&)pDst+=strideDst,(uint8_t*&)pSrc+=strideSrc) {
-                uint16_t v = std::max(min, std::min(max, *((uint16_t*)pSrc)));
-                uint8_t c = (uint8_t)((255.0 * (double)(v - min) / (double)(max - min)) + 0.5);
+				uint16_t v = std::max(min, std::min(max, *((uint16_t*)pSrc)));
+				uint8_t c = (uint8_t)((255.0 * (double)(v - min) / (double)(max - min)) + 0.5);
 
-                ((uint8_t*)pDst)[0] = c;
-                ((uint8_t*)pDst)[1] = c;
-                ((uint8_t*)pDst)[2] = c;
-                
+				((uint8_t*)pDst)[0] = c;
+				((uint8_t*)pDst)[1] = c;
+				((uint8_t*)pDst)[2] = c;
+				
 			}
 			return true;
+		}
+		
+		case PF_GRAYF32:{
+			// from PF_GRAYF32 to PF_R8G8B8
+
+			float min, max;
+			float *pData = (float*)pSrc;
+			findMinMaxPercentile(pData, nSzize, &min, &max);
+
+			for (Size i=0; i<nSzize; ++i,(uint8_t*&)pDst+=strideDst,(uint8_t*&)pSrc+=strideSrc) {
+				float v = std::max(min, std::min(max, *((float*)pSrc)));
+				uint8_t c = (uint8_t)((255.0 * (double)(v - min) / (double)(max - min)) + 0.5);
+
+				((uint8_t*)pDst)[0] = c;
+				((uint8_t*)pDst)[1] = c;
+				((uint8_t*)pDst)[2] = c;
+				
+			}
+			return true;
+		}
+
 		}
 		break;
 
