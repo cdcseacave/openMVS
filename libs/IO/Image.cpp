@@ -417,9 +417,10 @@ bool CImage::FilterFormat(void* pDst, PIXELFORMAT formatDst, Size strideDst, con
 		case PF_GRAYU16:{
 			// from PF_GRAYU16 to PF_R8G8B8
 			
-			uint16_t min, max;
 			uint16_t *pData = (uint16_t*)pSrc;
-			findMinMaxPercentile(pData, nSzize, &min, &max);
+			std::pair<uint16_t, uint16_t> mm = Util::ComputePercentileMinMax<uint16_t>(pData, nSzize);
+            uint16_t min = mm.first;
+            uint16_t max = mm.second;
 
 			for (Size i=0; i<nSzize; ++i,(uint8_t*&)pDst+=strideDst,(uint8_t*&)pSrc+=strideSrc) {
 				uint16_t v = std::max(min, std::min(max, *((uint16_t*)pSrc)));
@@ -436,9 +437,10 @@ bool CImage::FilterFormat(void* pDst, PIXELFORMAT formatDst, Size strideDst, con
 		case PF_GRAYF32:{
 			// from PF_GRAYF32 to PF_R8G8B8
 
-			float min, max;
 			float *pData = (float*)pSrc;
-			findMinMaxPercentile(pData, nSzize, &min, &max);
+            std::pair<float, float> mm = Util::ComputePercentileMinMax<float>(pData, nSzize);
+            float min = mm.first;
+            float max = mm.second;
 
 			for (Size i=0; i<nSzize; ++i,(uint8_t*&)pDst+=strideDst,(uint8_t*&)pSrc+=strideSrc) {
 				float v = std::max(min, std::min(max, *((float*)pSrc)));

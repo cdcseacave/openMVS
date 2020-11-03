@@ -109,49 +109,6 @@ public:
 	#endif
 
 protected:
-    template<typename T>
-    static void findMinMaxPercentile(void *data, Size size, T* min, T* max){
-        if (size == 0){
-            *min = *max = 0;
-            return;
-        }
-
-        // Find min/max
-        T *p = reinterpret_cast<T *>(data);
-        T aMin = p[0];
-        T aMax = p[0];
-
-        for (Size i = 1; i < size; i++){
-            if (p[i] > aMax) aMax = p[i];
-            if (p[i] < aMin) aMin = p[i];
-        }
-
-        double range = static_cast<double>(aMax - aMin);
-        if (range == 0){
-            *min = *max = 0;
-            return;
-        }
-
-        double closestMinP = 9999.0;
-        double closestMaxP = 9999.0;
-        
-        // Get min/max values at the 10th and 90th percentile
-        for (Size i = 0; i < size; i++){
-            double percentile = (static_cast<double>(p[i]) - static_cast<double>(aMin)) / range;
-            double minP = abs(percentile - 0.1);
-            double maxP = abs(percentile - 0.9);
-
-            if (minP < closestMinP){
-                *min = p[i];
-                closestMinP = minP;
-            }
-            if (maxP < closestMaxP){
-                *max = p[i];
-                closestMaxP = maxP;
-            }
-        }
-    }
-
 	IOSTREAMPTR			m_pStream;		// stream used to read/write the image data
 	CAutoPtrArr<BYTE>	m_data;			// image's data buffer
 	Size				m_width;		// image width in pixels

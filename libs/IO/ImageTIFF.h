@@ -21,13 +21,6 @@ namespace SEACAVE {
 
 // S T R U C T S ///////////////////////////////////////////////////
 
-// https://www.awaresystems.be/imaging/tiff/tifftags/sampleformat.html
-enum TIFF_SAMPLEFORMAT_TYPE {
-    TIFF_SAMPLEFORMAT_UINT = 1,
-    TIFF_SAMPLEFORMAT_INT = 2,
-    TIFF_SAMPLEFORMAT_IEEEFP = 3
-};
-
 class IO_API CImageTIFF : public CImage
 {
 public:
