@@ -417,32 +417,34 @@ HRESULT CImageTIFF::ReadHeader()
 
 		switch (bpp){
 		case 8:
-			if (ncn >= 3){
+			if (ncn >= 3) {
 				m_format = PF_B8G8R8A8;
 				m_stride = 4;
-			}else if (ncn == 1){
+			} else if (ncn == 1) {
 				m_format = PF_GRAY8;
 				m_stride = 1;
-			}else{
+			} else {
 				implemented = false;
 			}
 			break;
 		case 16:
 			m_format = PF_GRAYU16;
 			m_stride = 2;
-			if (ncn != 1 || sampleFormat != TIFF_SAMPLEFORMAT_UINT) implemented = false;
+			if (ncn != 1 || sampleFormat != TIFF_SAMPLEFORMAT_UINT) 
+				implemented = false;
 			break;
 		case 32:
 			m_format = PF_GRAYF32;
 			m_stride = 4;
-			if (ncn != 1 || sampleFormat != TIFF_SAMPLEFORMAT_IEEEFP) implemented = false;
+			if (ncn != 1 || sampleFormat != TIFF_SAMPLEFORMAT_IEEEFP) 
+				implemented = false;
 			break;
 		default:
 			// TODO: implement support for more
 			implemented = false;
 		}
 
-		if (!implemented){
+		if (!implemented) {
 			ASSERT("error: not implemented" == NULL);
 			LOG(LT_IMAGE, "error: unsupported TIFF image");
 			Close();

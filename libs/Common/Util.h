@@ -825,42 +825,41 @@ public:
 	};
 
 	template<typename T>
-	static std::pair<T,T> ComputePercentileMinMax(void *data, size_t size){
+	static std::pair<T,T> ComputePercentileMinMax(const T *data, size_t size){
 		if (size == 0) 
 			return std::make_pair(0, 0);
 
 		// Find min/max
-		T *p = reinterpret_cast<T *>(data);
-		T aMin = p[0];
-		T aMax = p[0];
+		T aMin = data[0];
+		T aMax = data[0];
 
 		for (size_t i = 1; i < size; i++) {
-			if (p[i] > aMax) aMax = p[i];
-			if (p[i] < aMin) aMin = p[i];
+			if (data[i] > aMax) aMax = data[i];
+			if (data[i] < aMin) aMin = data[i];
 		}
 
-		float range = static_cast<float>(aMax - aMin);
-		if (range == 0) 
+		const float range = static_cast<float>(aMax - aMin);
+		if (range == 0.0f) 
 			return std::make_pair(aMin, aMax);
 
-		float closestMinP = 9999.0;
-		float closestMaxP = 9999.0;
+		float closestMinP = 9999.0f;
+		float closestMaxP = 9999.0f;
 
 		T min = 0;
 		T max = 0;
 		
 		// Get min/max values at the 10th and 90th percentile
 		for (size_t i = 0; i < size; i++) {
-			float percentile = (static_cast<float>(p[i]) - static_cast<float>(aMin)) / range;
-			float minP = abs(percentile - 0.1);
-			float maxP = abs(percentile - 0.9);
+			const float percentile = (static_cast<float>(data[i]) - static_cast<float>(aMin)) / range;
+			const float minP = abs(percentile - 0.1f);
+			const float maxP = abs(percentile - 0.9f);
 
 			if (minP < closestMinP) {
-				min = p[i];
+				min = data[i];
 				closestMinP = minP;
 			}
 			if (maxP < closestMaxP) {
-				max = p[i];
+				max = data[i];
 				closestMaxP = maxP;
 			}
 		}
