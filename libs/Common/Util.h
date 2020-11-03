@@ -841,7 +841,7 @@ public:
 
 		float range = static_cast<float>(aMax - aMin);
 		if (range == 0) 
-			return std::make_pair(0, 0);
+			return std::make_pair(aMin, aMax);
 
 		float closestMinP = 9999.0;
 		float closestMaxP = 9999.0;
