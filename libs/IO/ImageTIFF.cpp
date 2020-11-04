@@ -414,7 +414,6 @@ HRESULT CImageTIFF::ReadHeader()
 			bpp = 8;
 
 		bool implemented = true;
-
 		switch (bpp){
 		case 8:
 			if (ncn >= 3) {
@@ -443,7 +442,6 @@ HRESULT CImageTIFF::ReadHeader()
 			// TODO: implement support for more
 			implemented = false;
 		}
-
 		if (!implemented) {
 			ASSERT("error: not implemented" == NULL);
 			LOG(LT_IMAGE, "error: unsupported TIFF image");
@@ -474,7 +472,7 @@ HRESULT CImageTIFF::ReadData(void* pData, PIXELFORMAT dataFormat, Size nStride, 
 		CLISTDEF0(uint8_t) _buffer(buffer_size);
 		uint8_t* buffer = _buffer.Begin();
 
-		if (m_format == PF_B8G8R8A8 || m_format == PF_GRAY8){
+		if (m_format == PF_B8G8R8A8 || m_format == PF_GRAY8) {
 			char errmsg[1024];
 			if (!TIFFRGBAImageOK(tif, errmsg)) {
 				Close();
@@ -482,13 +480,13 @@ HRESULT CImageTIFF::ReadData(void* pData, PIXELFORMAT dataFormat, Size nStride, 
 			}
 
 			// Simplified
-			if (!TIFFReadRGBAImageOriented(tif, m_width, m_height, (uint32*)buffer, ORIENTATION_TOPLEFT, 0)){
+			if (!TIFFReadRGBAImageOriented(tif, m_width, m_height, (uint32*)buffer, ORIENTATION_TOPLEFT, 0)) {
 				Close();
 				return _INVALIDFILE;
 			}
-		}else if (m_format == PF_GRAYU16 || m_format == PF_GRAYF32){
-			for (uint32 y = 0; y < m_height; y++, buffer += m_lineWidth){
-				if (!TIFFReadScanline(tif, buffer, y, 0)){
+		} else if (m_format == PF_GRAYU16 || m_format == PF_GRAYF32) {
+			for (uint32 y = 0; y < m_height; y++, buffer += m_lineWidth) {
+				if (!TIFFReadScanline(tif, buffer, y, 0)) {
 					Close();
 					return _INVALIDFILE;
 				}
@@ -498,7 +496,7 @@ HRESULT CImageTIFF::ReadData(void* pData, PIXELFORMAT dataFormat, Size nStride, 
 		}
 
 		// Data not in the format we need?
-		if (dataFormat != m_format || nStride != m_stride){
+		if (dataFormat != m_format || nStride != m_stride) {
 			if (!FilterFormat(pData, dataFormat, nStride, buffer, m_format, m_stride, m_width * m_height)) {
 				Close();
 				return _FAIL;
