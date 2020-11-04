@@ -127,5 +127,4 @@ typedef CSharedPtr<CImage> IMAGEPTR;
 
 } // namespace SEACAVE
 
-
 #endif // __SEACAVE_IMAGE_H__
