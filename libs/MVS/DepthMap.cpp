@@ -1919,15 +1919,15 @@ void MVS::CompareDepthMaps(const DepthMap& depthMap, const DepthMap& depthMapGT,
 			}
 			depths.Insert(depth);
 			depthsGT.Insert(depthGT);
-			const float error(depthGT==0 ? 0 : ABS(depth-depthGT)/depthGT);
+			const float error(depthGT==0 ? 0 : DepthSimilarity(depthGT, depth));
 			errors.Insert(error);
 		}
 	}
-	const float fPSNR((float)ComputePSNR(DMatrix32F((int)depths.GetSize(),1,depths.GetData()), DMatrix32F((int)depthsGT.GetSize(),1,depthsGT.GetData())));
-	const MeanStd<float,double> ms(errors.Begin(), errors.GetSize());
+	const float fPSNR((float)ComputePSNR(DMatrix32F((int)depths.size(),1,depths.data()), DMatrix32F((int)depthsGT.size(),1,depthsGT.data())));
+	const MeanStd<float,double> ms(errors.data(), errors.size());
 	const float mean((float)ms.GetMean());
 	const float stddev((float)ms.GetStdDev());
-	const std::pair<float,float> th(ComputeX84Threshold<float,float>(errors.Begin(), errors.GetSize()));
+	const std::pair<float,float> th(ComputeX84Threshold<float,float>(errors.data(), errors.size()));
 	#if TD_VERBOSE != TD_VERBOSE_OFF
 	IDX idxPixel = 0;
 	Image8U3 errorsVisual(depthMap.size());
