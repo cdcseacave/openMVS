@@ -141,6 +141,24 @@ public:
 	inline KMatrix GetScaledK(REAL s) const {
 		return ScaleK(K, s);
 	}
+	// same as above, but for different scale on x and y;
+	// in order to preserve the aspect ratio of the original size, scale both focal lengths by
+	// the smaller of the scale factors, resulting in adding pixels in the dimension that's growing;
+	template<typename TYPE>
+	static inline TMatrix<TYPE,3,3> ScaleK(const TMatrix<TYPE,3,3>& K, const cv::Size& size, const cv::Size& newSize, bool keepAspect=false) {
+		ASSERT(size.area() && newSize.area());
+		cv::Point_<TYPE> s(cv::Point_<TYPE>(newSize) / cv::Point_<TYPE>(size));
+		if (keepAspect)
+			s.x = s.y = MINF(s.x, s.y);
+		return TMatrix<TYPE,3,3>(
+			K(0,0)*s.x, K(0,1)*s.x, (K(0,2)+TYPE(0.5))*s.x-TYPE(0.5),
+			TYPE(0),    K(1,1)*s.y, (K(1,2)+TYPE(0.5))*s.y-TYPE(0.5),
+			TYPE(0),    TYPE(0),    TYPE(1)
+		);
+	}
+	inline KMatrix GetScaledK(const cv::Size& size, const cv::Size& newSize, bool keepAspect=false) const {
+		return ScaleK(K, size, newSize, keepAspect);
+	}
 
 	// return K.inv() (assuming standard K format and no shear)
 	template<typename TYPE>

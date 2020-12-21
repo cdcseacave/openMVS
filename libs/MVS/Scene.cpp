@@ -318,12 +318,14 @@ bool Scene::LoadDMAP(const String& fileName)
 
 	// load image pixels
 	const Image8U3 imageDepth(DepthMap2Image(depthMap));
+	Image8U3 imageColor;
 	if (image.ReloadImage(MAXF(image.width,image.height)))
-		cv::resize(image.image, image.image, depthMap.size());
+		cv::resize(image.image, imageColor, depthMap.size());
 	else
-		image.image = imageDepth;
+		imageColor = imageDepth;
 
 	// create point-cloud
+	camera.K = camera.GetScaledK(imageSize, depthMap.size());
 	pointcloud.points.reserve(depthMap.area());
 	pointcloud.pointViews.reserve(depthMap.area());
 	pointcloud.colors.reserve(depthMap.area());
@@ -338,7 +340,7 @@ bool Scene::LoadDMAP(const String& fileName)
 				continue;
 			pointcloud.points.emplace_back(camera.TransformPointI2W(Point3(c,r,depth)));
 			pointcloud.pointViews.emplace_back(PointCloud::ViewArr{0});
-			pointcloud.colors.emplace_back(image.image(r,c));
+			pointcloud.colors.emplace_back(imageColor(r,c));
 			if (!normalMap.empty())
 				pointcloud.normals.emplace_back(Cast<PointCloud::Normal::Type>(camera.R.t()*Cast<REAL>(normalMap(r,c))));
 			if (!confMap.empty())
@@ -348,6 +350,7 @@ bool Scene::LoadDMAP(const String& fileName)
 
 	// replace color-image with depth-image
 	image.image = imageDepth;
+	cv::resize(image.image, image.image, imageSize);
 
 	DEBUG_EXTRA("Scene loaded from depth-map format - %dx%d size, %.2f%% coverage (%s):\n"
 		"\t1 images (1 calibrated) with a total of %.2f MPixels (%.2f MPixels/image)\n"
