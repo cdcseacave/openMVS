@@ -775,7 +775,7 @@ bool ExportScene(const String& strFolder, const Interface& scene)
 				const Interface::Image* pImage(NULL);
 				for (uint32_t i=0; i<(uint32_t)scene.images.size(); ++i) {
 					const Interface::Image& image = scene.images[i];
-					if (image.platformID == ID && image.cameraID == 0 && image.poseID != NO_ID) {
+					if (image.platformID == ID && image.cameraID == 0 && image.poseID != MVS::NO_ID) {
 						pImage = &image;
 						break;
 					}
@@ -826,7 +826,7 @@ bool ExportScene(const String& strFolder, const Interface& scene)
 		cameras.resize(scene.images.size());
 		for (uint32_t ID=0; ID<(uint32_t)scene.images.size(); ++ID) {
 			const Interface::Image& image = scene.images[ID];
-			if (image.poseID == NO_ID)
+			if (image.poseID == MVS::NO_ID)
 				continue;
 			const Interface::Platform& platform = scene.platforms[image.platformID];
 			const Interface::Platform::Pose& pose = platform.poses[image.poseID];
@@ -1002,7 +1002,7 @@ bool ExportImagesLog(const String& fileName, const Interface& scene)
 		const Interface::Image& image = scene.images[ID];
 		Eigen::Matrix3d R(Eigen::Matrix3d::Identity());
 		Eigen::Vector3d t(Eigen::Vector3d::Zero());
-		if (image.poseID != NO_ID) {
+		if (image.poseID != MVS::NO_ID) {
 			const Interface::Platform& platform = scene.platforms[image.platformID];
 			const Interface::Platform::Pose& pose = platform.poses[image.poseID];
 			R = Eigen::Map<const EMat33d>(pose.R.val).transpose();
@@ -1043,7 +1043,7 @@ bool ExportImagesCamera(const String& pathName, const Interface& scene)
 		RMatrix R(RMatrix::IDENTITY);
 		CMatrix t(CMatrix::ZERO);
 		unsigned width(0), height(0);
-		if (image.platformID != NO_ID && image.cameraID != NO_ID) {
+		if (image.platformID != MVS::NO_ID && image.cameraID != MVS::NO_ID) {
 			const Interface::Platform& platform = scene.platforms[image.platformID];
 			const Interface::Platform::Camera& camera = platform.cameras[image.cameraID];
 			if (camera.HasResolution()) {
@@ -1056,7 +1056,7 @@ bool ExportImagesCamera(const String& pathName, const Interface& scene)
 				height = pImage->GetHeight();
 				K = platform.GetFullK(image.cameraID, width, height);
 			}
-			if (image.poseID != NO_ID) {
+			if (image.poseID != MVS::NO_ID) {
 				const Interface::Platform::Pose& pose = platform.poses[image.poseID];
 				R = pose.R.t();
 				t = pose.C;

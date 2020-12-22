@@ -7,6 +7,7 @@
 #include <fstream>
 #include <string>
 #include <cctype>
+#include <limits>
 
 
 // D E F I N E S ///////////////////////////////////////////////////
@@ -23,10 +24,6 @@
 // (should be uncommented if OpenCV is not available)
 #if !defined(_USE_OPENCV) && !defined(_USE_CUSTOM_CV)
 #define _USE_CUSTOM_CV
-#endif
-
-#ifndef NO_ID
-#define NO_ID std::numeric_limits<uint32_t>::max()
 #endif
 
 
@@ -163,6 +160,9 @@ public:
 
 
 namespace _INTERFACE_NAMESPACE {
+
+// invalid index
+constexpr uint32_t NO_ID = std::numeric_limits<uint32_t>::max();
 
 // custom serialization
 namespace ARCHIVE {

@@ -268,7 +268,6 @@ int _vscprintf(LPCSTR format, va_list pargs);
 #endif //_MSC_VER
 
 #define DECLARE_NO_INDEX(...) std::numeric_limits<__VA_ARGS__>::max()
-#define NO_ID				DECLARE_NO_INDEX(uint32_t)
 
 #ifndef MAKEWORD
 #define MAKEWORD(a, b)		((WORD)(((BYTE)(((DWORD)(a)) & 0xff)) | ((WORD)((BYTE)(((DWORD)(b)) & 0xff))) << 8))
@@ -311,6 +310,10 @@ int _vscprintf(LPCSTR format, va_list pargs);
 #define MAXF                std::max
 #endif
 
+#ifndef RAND
+#define RAND			    std::rand
+#endif
+
 namespace SEACAVE {
 
 // signed and unsigned types of the size of the architecture
@@ -329,7 +332,10 @@ typedef int64_t     	    size_f_t;
 // type used as the default floating number precision
 typedef double              REAL;
 
-template <typename TYPE, typename REALTYPE=REAL>
+// invalid index
+constexpr uint32_t NO_ID = DECLARE_NO_INDEX(uint32_t);
+
+template<typename TYPE, typename REALTYPE=REAL>
 struct RealType { typedef typename std::conditional<std::is_floating_point<TYPE>::value, TYPE, REALTYPE>::type type; };
 
 template<typename T>
@@ -341,15 +347,11 @@ inline T MAXF3(const T& x1, const T& x2, const T& x3) {
 	return MAXF(MAXF(x1, x2), x3);
 }
 
-#ifndef RAND
-#define RAND			std::rand
-#endif
 template<typename T>
 FORCEINLINE T RANDOM() { return T(RAND())/RAND_MAX; }
 
 template<typename T1, typename T2>
-union TAliasCast
-{
+union TAliasCast {
 	T1 f;
 	T2 i;
 	inline TAliasCast() {}
