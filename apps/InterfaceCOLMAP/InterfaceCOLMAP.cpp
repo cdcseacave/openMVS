@@ -977,7 +977,9 @@ bool ExportScene(const String& strFolder, const Interface& scene)
 		file << _T("#   IMAGE_ID, QW, QX, QY, QZ, TX, TY, TZ, CAMERA_ID, NAME") << std::endl;
 		file << _T("#   POINTS2D[] as (X, Y, POINT3D_ID)") << std::endl;
 		for (const COLMAP::Image& img: images) {
-			if ((bSparsePointCloud && img.projs.empty()) || !img.Write(file))
+			if (bSparsePointCloud && img.projs.empty())
+				continue;
+			if (!img.Write(file))
 				return false;
 		}
 	}
