@@ -2965,8 +2965,8 @@ bool TImage<TYPE>::Load(const String& fileName)
 		Base::create(h, w);
 		ASSERT(sizeof(float)*Base::channels() == Base::step.p[1]);
 		const size_t rowbytes((size_t)Base::size.p[1]*Base::step.p[1]);
-		for (int i=0; i<rows; ++i)
-			if (fImage.read(cv::Mat::template ptr<float>(i), rowbytes) != rowbytes)
+		for (int i=rows; i>0; )
+			if (fImage.read(cv::Mat::template ptr<float>(--i), rowbytes) != rowbytes)
 				return false;
 		return true;
 	}
@@ -3014,14 +3014,16 @@ bool TImage<TYPE>::Save(const String& fileName) const
 		if (!fImage.isOpen())
 			return false;
 		ASSERT(sizeof(float) == 4);
-		static const uint8_t b[4] = { 255, 0, 0, 0 };
-		static const bool is_little_endian = (*((float*)b) < 1.f);
-		static const double scale = (is_little_endian ? -1.0 : 1.0);
+		#if __BYTE_ORDER == __LITTLE_ENDIAN
+		static const double scale(-1.0);
+		#else
+		static const double scale(1.0);
+		#endif
 		fImage.print("Pf\n%d %d\n%lf\n", width(), height(), scale*Base::channels());
 		ASSERT(sizeof(float)*Base::channels() == Base::step.p[1]);
 		const size_t rowbytes = (size_t)Base::size.p[1]*Base::step.p[1];
-		for (int i=0; i<rows; ++i)
-			fImage.write(cv::Mat::template ptr<const float>(i), rowbytes);
+		for (int i=rows; i>0; )
+			fImage.write(cv::Mat::template ptr<const float>(--i), rowbytes);
 		return true;
 	}
 
