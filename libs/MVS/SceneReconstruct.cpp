@@ -333,7 +333,7 @@ inline Plane getFacetPlane(const facet_t& facet)
 
 // Check if a point (p) is coplanar with a triangle (a, b, c);
 // return orientation type
-#ifdef __GNUC__
+#if _PLATFORM_X86 && defined(__GNUC__)
 #pragma GCC push_options
 #pragma GCC target ("no-fma")
 #endif
@@ -364,7 +364,7 @@ static inline int orientation(const point_t& a, const point_t& b, const point_t&
 	return CGAL::COPLANAR;
 	#endif
 }
-#ifdef __GNUC__
+#if _PLATFORM_X86 && defined(__GNUC__)
 #pragma GCC pop_options
 #endif
 
