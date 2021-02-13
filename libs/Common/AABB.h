@@ -88,6 +88,15 @@ public:
 
 	inline TYPE& operator [] (BYTE i) { ASSERT(i<numScalar); return ptMin.data()[i]; }
 	inline TYPE operator [] (BYTE i) const { ASSERT(i<numScalar); return ptMin.data()[i]; }
+
+	#ifdef _USE_BOOST
+	// implement BOOST serialization
+	template<class Archive>
+	void serialize(Archive& ar, const unsigned int /*version*/) {
+		ar & ptMin;
+		ar & ptMax;
+	}
+	#endif
 }; // class TAABB
 /*----------------------------------------------------------------*/
 

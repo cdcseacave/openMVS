@@ -184,6 +184,9 @@ bool Scene::LoadInterface(const String & fileName)
 		}
 	}
 
+	// import region of interest
+	obb.Set(Matrix3x3f(obj.obb.rot), Point3f(obj.obb.ptMin), Point3f(obj.obb.ptMax));
+
 	DEBUG_EXTRA("Scene loaded from interface format (%s):\n"
 				"\t%u images (%u calibrated) with a total of %.2f MPixels (%.2f MPixels/image)\n"
 				"\t%u points, %u vertices, %u faces",
@@ -265,6 +268,11 @@ bool Scene::SaveInterface(const String & fileName, int version) const
 			vertexColor.c = color;
 		}
 	}
+
+	// export region of interest
+	obj.obb.rot = Matrix3x3f(obb.m_rot);
+	obj.obb.ptMin = Point3f((obb.m_pos-obb.m_ext).eval());
+	obj.obb.ptMax = Point3f((obb.m_pos+obb.m_ext).eval());
 
 	// serialize out the current state
 	if (!ARCHIVE::SerializeSave(obj, fileName, version>=0?uint32_t(version):MVSI_PROJECT_VER))

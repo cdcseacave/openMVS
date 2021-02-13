@@ -67,6 +67,12 @@ void PointCloud::RemovePoint(IDX idx)
 		colors.RemoveAt(idx);
 	points.RemoveAt(idx);
 }
+void PointCloud::RemovePointsOutside(const OBB3f& obb) {
+	ASSERT(obb.IsValid());
+	RFOREACH(i, points)
+		if (!obb.Intersects(points[i]))
+			RemovePoint(i);
+}
 /*----------------------------------------------------------------*/
 
 

@@ -56,13 +56,15 @@ public:
 	ImageArr images; // images, each referencing a platform's camera pose
 	PointCloud pointcloud; // point-cloud (sparse or dense), each containing the point position and the views seeing it
 	Mesh mesh; // mesh, represented as vertices and triangles, constructed from the input point-cloud
+	OBB3f obb; // optional region-of-interest; oriented bounding box containing the entire scene
 
 	unsigned nCalibratedImages; // number of valid images
 
 	unsigned nMaxThreads; // maximum number of threads used to distribute the work load
 
 public:
-	inline Scene(unsigned _nMaxThreads=0) : nMaxThreads(Thread::getMaxThreads(_nMaxThreads)) {}
+	inline Scene(unsigned _nMaxThreads=0)
+		: nMaxThreads(Thread::getMaxThreads(_nMaxThreads)), obb(true) {}
 
 	void Release();
 	bool IsEmpty() const;
@@ -111,6 +113,7 @@ public:
 		ar & images;
 		ar & pointcloud;
 		ar & mesh;
+		ar & obb;
 	}
 	#endif
 };

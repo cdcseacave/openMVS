@@ -1153,10 +1153,8 @@ bool DepthMapsData::FilterDepthMap(DepthData& depthDataRef, const IIndexArr& idx
 		!SaveConfidenceMap(ComposeDepthFilePath(imageRef.GetID(), "filtered.cmap"), newConfMap))
 		return false;
 
-	#if TD_VERBOSE != TD_VERBOSE_OFF
-	DEBUG("Depth map %3u filtered using %u other images: %u/%u depths discarded (%s)", imageRef.GetID(), N, nDiscarded, nProcessed, TD_TIMER_GET_FMT().c_str());
-	#endif
-
+	DEBUG("Depth map %3u filtered using %u other images: %u/%u depths discarded (%s)",
+		imageRef.GetID(), N, nDiscarded, nProcessed, TD_TIMER_GET_FMT().c_str());
 	return true;
 } // FilterDepthMap
 /*----------------------------------------------------------------*/
@@ -1463,6 +1461,13 @@ bool Scene::DenseReconstruction(int nFusionMode)
 	#endif
 
 	if (!pointcloud.IsEmpty()) {
+		if (obb.IsValid()) {
+			TD_TIMER_START();
+			const size_t numPoints = pointcloud.GetSize();
+			pointcloud.RemovePointsOutside(obb);
+			VERBOSE("Point-cloud trimmed to ROI: %u points removed (%s)",
+				numPoints-pointcloud.GetSize(), TD_TIMER_GET_FMT().c_str());
+		}
 		if (pointcloud.colors.IsEmpty() && OPTDENSE::nEstimateColors == 1)
 			EstimatePointColors(images, pointcloud);
 		if (pointcloud.normals.IsEmpty() && OPTDENSE::nEstimateNormals == 1)

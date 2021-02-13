@@ -12,6 +12,19 @@
 // S T R U C T S ///////////////////////////////////////////////////
 
 template <typename TYPE, int DIMS>
+inline TOBB<TYPE,DIMS>::TOBB(bool)
+	:
+	m_rot(MATRIX::Identity()),
+	m_pos(POINT::Zero()),
+	m_ext(POINT::Zero())
+{
+}
+template <typename TYPE, int DIMS>
+inline TOBB<TYPE,DIMS>::TOBB(const MATRIX& rot, const POINT& ptMin, const POINT& ptMax)
+{
+	Set(rot, ptMin, ptMax);
+}
+template <typename TYPE, int DIMS>
 inline TOBB<TYPE,DIMS>::TOBB(const POINT* pts, size_t n)
 {
 	Set(pts, n);
@@ -23,6 +36,15 @@ inline TOBB<TYPE,DIMS>::TOBB(const POINT* pts, size_t n, const TRIANGLE* tris, s
 } // constructor
 /*----------------------------------------------------------------*/
 
+
+// build from rotation matrix from world to local, and local min/max corners
+template <typename TYPE, int DIMS>
+inline void TOBB<TYPE,DIMS>::Set(const MATRIX& rot, const POINT& ptMin, const POINT& ptMax)
+{
+	m_rot = rot;
+	m_pos = (ptMax + ptMin) * TYPE(0.5);
+	m_ext = (ptMax - ptMin) * TYPE(0.5);
+}
 
 // Inspired from "Fitting Oriented Bounding Boxes" by James Gregson
 // http://jamesgregson.blogspot.ro/2011/03/latex-test.html
@@ -235,6 +257,15 @@ inline void TOBB<TYPE,DIMS>::BuildEnd()
 /*----------------------------------------------------------------*/
 
 
+// check if the oriented bounding box has positive size
+template <typename TYPE, int DIMS>
+inline bool TOBB<TYPE,DIMS>::IsValid() const
+{
+	return m_ext.minCoeff() > TYPE(0);
+} // IsValid
+/*----------------------------------------------------------------*/
+
+
 template <typename TYPE, int DIMS>
 inline void TOBB<TYPE,DIMS>::Enlarge(TYPE x)
 {
@@ -245,6 +276,22 @@ inline void TOBB<TYPE,DIMS>::EnlargePercent(TYPE x)
 {
 	m_ext *= x;
 } // Enlarge
+/*----------------------------------------------------------------*/
+
+
+// Update the box by the given pos delta.
+template <typename TYPE, int DIMS>
+inline void TOBB<TYPE,DIMS>::Translate(const POINT& d)
+{
+	m_pos += d;
+}
+// Update the box by the given transform.
+template <typename TYPE, int DIMS>
+inline void TOBB<TYPE,DIMS>::Transform(const MATRIX& m)
+{
+	m_rot = m * m_rot;
+	m_pos = m * m_pos;
+}
 /*----------------------------------------------------------------*/
 
 
@@ -341,20 +388,18 @@ inline TYPE TOBB<TYPE,DIMS>::GetVolume() const
 /*----------------------------------------------------------------*/
 
 
-// Update the box by the given pos delta.
 template <typename TYPE, int DIMS>
-inline void TOBB<TYPE,DIMS>::Translate(const POINT& d)
+bool TOBB<TYPE,DIMS>::Intersects(const POINT& pt) const
 {
-	m_pos += d;
-}
-/*----------------------------------------------------------------*/
-
-
-// Update the box by the given transform.
-template <typename TYPE, int DIMS>
-inline void TOBB<TYPE,DIMS>::Transform(const MATRIX& m)
-{
-	m_rot = m * m_rot;
-	m_pos = m * m_pos;
-}
+	const POINT dist(m_rot * (pt - m_pos));
+	if (DIMS == 2) {
+		return ABS(dist[0]) <= m_ext[0]
+			&& ABS(dist[1]) <= m_ext[1];
+	}
+	if (DIMS == 3) {
+		return ABS(dist[0]) <= m_ext[0]
+			&& ABS(dist[1]) <= m_ext[1]
+			&& ABS(dist[2]) <= m_ext[2];
+	}
+} // Intersects(POINT)
 /*----------------------------------------------------------------*/

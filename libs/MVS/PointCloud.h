@@ -86,7 +86,8 @@ public:
 	inline bool IsValid() const { ASSERT(points.GetSize() == pointViews.GetSize() || pointViews.IsEmpty()); return !pointViews.IsEmpty(); }
 	inline size_t GetSize() const { ASSERT(points.GetSize() == pointViews.GetSize() || pointViews.IsEmpty()); return points.GetSize(); }
 
-	void RemovePoint(IDX idx);
+	void RemovePoint(IDX);
+	void RemovePointsOutside(const OBB3f&);
 
 	Box GetAABB() const;
 	Box GetAABB(const Box& bound) const;

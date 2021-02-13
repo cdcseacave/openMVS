@@ -13,7 +13,7 @@
 // D E F I N E S ///////////////////////////////////////////////////
 
 #define MVSI_PROJECT_ID "MVSI" // identifies the project stream
-#define MVSI_PROJECT_VER ((uint32_t)5) // identifies the version of a project stream
+#define MVSI_PROJECT_VER ((uint32_t)6) // identifies the version of a project stream
 
 // set a default namespace name if none given
 #ifndef _INTERFACE_NAMESPACE
@@ -162,7 +162,7 @@ public:
 namespace _INTERFACE_NAMESPACE {
 
 // invalid index
-constexpr uint32_t NO_ID = std::numeric_limits<uint32_t>::max();
+constexpr uint32_t NO_ID {std::numeric_limits<uint32_t>::max()};
 
 // custom serialization
 namespace ARCHIVE {
@@ -489,7 +489,7 @@ struct Interface
 		uint32_t ID; // ID of this image in the global space (optional)
 
 		Image() : platformID(NO_ID), cameraID(NO_ID), poseID(NO_ID), ID(NO_ID) {}
-		
+
 		bool IsValid() const { return poseID != NO_ID; }
 
 		template <class Archive>
@@ -589,6 +589,25 @@ struct Interface
 	typedef std::vector<Color> ColorArr;
 	/*----------------------------------------------------------------*/
 
+	// structure describing a Oriented Bounding-Box (optional)
+	struct OBB {
+		Mat33d rot; // rotation from scene to OBB coordinate system
+		Pos3d ptMin; // minimal point represented in OBB coordinate system
+		Pos3d ptMax; // maximal point represented in OBB coordinate system
+
+		OBB() : rot(Mat33d::eye()), ptMin(0, 0, 0), ptMax(0, 0, 0) {}
+
+		bool IsValid() const { return ptMin.x < ptMax.x && ptMin.y < ptMax.y && ptMin.z < ptMax.z; }
+
+		template <class Archive>
+		void serialize(Archive& ar, const unsigned int /*version*/) {
+			ar & rot;
+			ar & ptMin;
+			ar & ptMax;
+		}
+	};
+	/*----------------------------------------------------------------*/
+
 	PlatformArr platforms; // array of platforms
 	ImageArr images; // array of images
 	VertexArr vertices; // array of reconstructed 3D points
@@ -598,6 +617,7 @@ struct Interface
 	NormalArr linesNormal; // array of reconstructed 3D lines' normal (optional)
 	ColorArr linesColor; // array of reconstructed 3D lines' color (optional)
 	Mat44d transform; // transformation used to convert from absolute to relative coordinate system (optional)
+	OBB obb; // minimum oriented bounding box containing the scene (optional)
 
 	Interface() : transform(Mat44d::eye()) {}
 
@@ -624,6 +644,9 @@ struct Interface
 			ar & linesColor;
 			if (version > 1) {
 				ar & transform;
+				if (version > 5) {
+					ar & obb;
+				}
 			}
 		}
 	}

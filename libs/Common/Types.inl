@@ -3708,6 +3708,25 @@ namespace boost {
 			ar & m.distance;
 		}
 
+		#ifdef _USE_EIGEN
+		// Serialization support for Eigen::Matrix
+		// specialization handling fixed sized matrices
+		template<class Archive, class Scalar, int _Rows, int _Cols, int _Options, int _MaxRows, int _MaxCols>
+		inline void save(Archive& ar, const Eigen::Matrix<Scalar,_Rows,_Cols,_Options,_MaxRows,_MaxCols>& M, const unsigned int /*version*/) {
+			ar << make_nvp("data", make_array(M.data(), _Rows*_Cols));
+		}
+		template<class Archive, class Scalar, int _Rows, int _Cols, int _Options, int _MaxRows, int _MaxCols>
+		inline void load(Archive& ar, Eigen::Matrix<Scalar,_Rows,_Cols,_Options,_MaxRows,_MaxCols>& M, const unsigned int /*version*/) {
+			ar >> make_nvp("data", make_array(M.data(), _Rows*_Cols));
+		}
+		// The function that causes boost::serialization to look for separate
+		// save() and load() functions when serializing and Eigen matrix.
+		template<class Archive, class Scalar, int _Rows, int _Cols, int _Options, int _MaxRows, int _MaxCols>
+		inline void serialize(Archive& ar, Eigen::Matrix<Scalar,_Rows,_Cols,_Options,_MaxRows,_MaxCols>& M, const unsigned int version) {
+			split_free(ar, M, version);
+		}
+		#endif // _USE_EIGEN
+
 	} // namespace serialization
 } // namespace boost
 /*----------------------------------------------------------------*/
