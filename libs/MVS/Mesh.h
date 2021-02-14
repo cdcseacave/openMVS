@@ -82,6 +82,31 @@ public:
 
 	typedef AABB3f Box;
 
+	// used to render a mesh
+	typedef TOctree<VertexArr,Vertex::Type,3> Octree;
+	struct FacesInserter {
+		FaceIdxArr& cameraFaces;
+		FacesInserter(FaceIdxArr& _cameraFaces)
+			: cameraFaces(_cameraFaces) {}
+		inline void operator() (const Octree::IDX_TYPE* indices, Octree::SIZE_TYPE size) {
+			cameraFaces.Join(indices, size);
+		}
+		static void CreateOctree(Octree& octree, const Mesh& mesh) {
+			VertexArr centroids(mesh.faces.size());
+			FOREACH(idx, mesh.faces)
+				centroids[idx] = mesh.ComputeCentroid(idx);
+			octree.Insert(centroids, [](Octree::IDX_TYPE size, Octree::Type /*radius*/) {
+				return size > 32;
+			});
+			#if 0 && !defined(_RELEASE)
+			Octree::DEBUGINFO_TYPE info;
+			octree.GetDebugInfo(&info);
+			Octree::LogDebugInfo(info);
+			#endif
+			octree.ResetItems();
+		}
+	};
+
 public:
 	VertexArr vertices;
 	FaceArr faces;
@@ -154,6 +179,8 @@ public:
 		return n;
 	}
 
+	Vertex ComputeCentroid(FIndex) const;
+	Type ComputeArea(FIndex) const;
 	REAL ComputeArea() const;
 	REAL ComputeVolume() const;
 

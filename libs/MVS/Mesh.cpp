@@ -3419,6 +3419,22 @@ void Mesh::RemoveVertices(VertexIdxArr& vertexRemove, bool bUpdateLists)
 /*----------------------------------------------------------------*/
 
 
+
+
+// computes the centroid of the given mesh face
+Mesh::Vertex Mesh::ComputeCentroid(FIndex idxFace) const
+{
+	const Face& face = faces[idxFace];
+	return (vertices[face[0]] + vertices[face[1]] + vertices[face[2]]) * (Type(1)/Type(3));
+}
+
+// computes the area of the given mesh face
+Mesh::Type Mesh::ComputeArea(FIndex idxFace) const
+{
+	const Face& face = faces[idxFace];
+	return ComputeTriangleArea(vertices[face[0]], vertices[face[1]], vertices[face[2]]);
+}
+
 // computes the area of the mesh surface as the sum of the signed areas of its faces
 REAL Mesh::ComputeArea() const
 {

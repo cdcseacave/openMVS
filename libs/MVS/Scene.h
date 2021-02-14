@@ -64,7 +64,7 @@ public:
 
 public:
 	inline Scene(unsigned _nMaxThreads=0)
-		: nMaxThreads(Thread::getMaxThreads(_nMaxThreads)), obb(true) {}
+		: obb(true), nMaxThreads(Thread::getMaxThreads(_nMaxThreads)) {}
 
 	void Release();
 	bool IsEmpty() const;

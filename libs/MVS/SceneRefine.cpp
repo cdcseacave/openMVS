@@ -81,9 +81,6 @@ public:
 	typedef TPoint3<Real> Grad;
 	typedef CLISTDEF0IDX(Grad,VIndex) GradArr;
 
-	typedef std::unordered_set<FIndex> CameraFaces;
-	typedef SEACAVE::cList<CameraFaces,const CameraFaces&,2> CameraFacesArr;
-
 	typedef TImage<cuint32_t> FaceMap;
 	typedef TImage<Point3f> BaryMap;
 
@@ -152,7 +149,7 @@ public:
 
 	static bool IsDepthSimilar(const DepthMap& depthMap, const Point2f& pt, Depth z);
 	static void ProjectMesh(
-		const Mesh::VertexArr& vertices, const Mesh::FaceArr& faces, const CameraFaces& cameraFaces,
+		const Mesh::VertexArr& vertices, const Mesh::FaceArr& faces, const Mesh::FaceIdxArr& cameraFaces,
 		const Camera& camera, const Image8U::Size& size,
 		DepthMap& depthMap, FaceMap& faceMap, BaryMap& baryMap);
 	static void ImageMeshWarp(
@@ -188,7 +185,7 @@ public:
 	void WaitThreadWorkers(size_t nJobs);
 	void ThSelectNeighbors(uint32_t idxImage, std::unordered_set<uint64_t>& mapPairs, unsigned nMaxViews);
 	void ThInitImage(uint32_t idxImage, Real scale, Real sigma);
-	void ThProjectMesh(uint32_t idxImage, const CameraFaces& cameraFaces);
+	void ThProjectMesh(uint32_t idxImage, const Mesh::FaceIdxArr& cameraFaces);
 	void ThProcessPair(uint32_t idxImageA, uint32_t idxImageB);
 	void ThSmoothVertices1(VIndex idxStart, VIndex idxEnd);
 	void ThSmoothVertices2(VIndex idxStart, VIndex idxEnd);
@@ -297,12 +294,12 @@ class EVTProjectMesh : public Event
 {
 public:
 	uint32_t idxImage;
-	const MeshRefine::CameraFaces& cameraFaces;
+	const Mesh::FaceIdxArr& cameraFaces;
 	bool Run(void* pArgs) {
 		((MeshRefine*)pArgs)->ThProjectMesh(idxImage, cameraFaces);
 		return true;
 	}
-	EVTProjectMesh(uint32_t _idxImage, const MeshRefine::CameraFaces& _cameraFaces) : Event(EVT_JOB), idxImage(_idxImage), cameraFaces(_cameraFaces) {}
+	EVTProjectMesh(uint32_t _idxImage, const Mesh::FaceIdxArr& _cameraFaces) : Event(EVT_JOB), idxImage(_idxImage), cameraFaces(_cameraFaces) {}
 };
 class EVTProcessPair : public Event
 {
@@ -415,37 +412,18 @@ void MeshRefine::ListVertexFacesPost()
 void MeshRefine::ListCameraFaces()
 {
 	// extract array of faces viewed by each camera
+	typedef SEACAVE::cList<Mesh::FaceIdxArr,const Mesh::FaceIdxArr&,2> CameraFacesArr;
 	CameraFacesArr arrCameraFaces(images.GetSize());
 	{
-	struct FacesInserter {
-		FacesInserter(const Mesh::VertexFacesArr& _vertexFaces, CameraFaces& _cameraFaces)
-			: vertexFaces(_vertexFaces), cameraFaces(_cameraFaces) {}
-		inline void operator() (IDX idxVertex) {
-			const Mesh::FaceIdxArr& vertexTris = vertexFaces[idxVertex];
-			FOREACHPTR(pTri, vertexTris)
-				cameraFaces.emplace(*pTri);
-		}
-		inline void operator() (const IDX* idices, size_t size) {
-			FOREACHRAWPTR(pIdxVertex, idices, size)
-				operator()(*pIdxVertex);
-		}
-		const Mesh::VertexFacesArr& vertexFaces;
-		CameraFaces& cameraFaces;
-	};
-	typedef TOctree<Mesh::VertexArr,float,3> Octree;
-	const Octree octree(vertices);
-	#if 0 && !defined(_RELEASE)
-	Octree::DEBUGINFO_TYPE info;
-	octree.GetDebugInfo(&info);
-	Octree::LogDebugInfo(info);
-	#endif
+	Mesh::Octree octree;
+	Mesh::FacesInserter::CreateOctree(octree, scene.mesh);
 	FOREACH(ID, images) {
 		const Image& imageData = images[ID];
 		if (!imageData.IsValid())
 			continue;
 		typedef TFrustum<float,5> Frustum;
-		FacesInserter inserter(vertexFaces, arrCameraFaces[ID]);
 		const Frustum frustum(Frustum::MATRIX3x4(((PMatrix::CEMatMap)imageData.camera.P).cast<float>()), (float)imageData.width, (float)imageData.height);
+		Mesh::FacesInserter inserter(arrCameraFaces[ID]);
 		octree.Traverse(frustum, inserter);
 	}
 	}
@@ -749,7 +727,7 @@ bool MeshRefine::IsDepthSimilar(const DepthMap& depthMap, const Point2f& pt, Dep
 
 // project mesh to the given camera plane
 void MeshRefine::ProjectMesh(
-	const Mesh::VertexArr& vertices, const Mesh::FaceArr& faces, const CameraFaces& cameraFaces,
+	const Mesh::VertexArr& vertices, const Mesh::FaceArr& faces, const Mesh::FaceIdxArr& cameraFaces,
 	const Camera& camera, const Image8U::Size& size,
 	DepthMap& depthMap, FaceMap& faceMap, BaryMap& baryMap)
 {
@@ -1123,7 +1101,7 @@ void MeshRefine::ThInitImage(uint32_t idxImage, Real scale, Real sigma)
 	#endif
 	cv::merge(grad, 2, view.imageGrad);
 }
-void MeshRefine::ThProjectMesh(uint32_t idxImage, const CameraFaces& cameraFaces)
+void MeshRefine::ThProjectMesh(uint32_t idxImage, const Mesh::FaceIdxArr& cameraFaces)
 {
 	const Image& imageData = images[idxImage];
 	if (!imageData.IsValid())

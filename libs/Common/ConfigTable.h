@@ -56,7 +56,7 @@ public:
 		  const  SML&		GetConfig() const						{ return m_oSML; }
 				 SML&		GetConfig()								{ return m_oSML; }
 	inline	SMLVALUE&		operator[] (const String& name)			{ return m_oSML[name]; }
-	inline		 IDX		InsertChild(CConfigTable& oCfg)			{ oCfg.SetParent(this); return m_oSML.InsertChild((const LPSML)&oCfg.m_oSML); }
+	inline		 IDX		InsertChild(CConfigTable& oCfg)			{ oCfg.SetParent(this); return m_oSML.InsertChild(&oCfg.m_oSML); }
 	inline		 void		RemoveChild(CConfigTable& oCfg)			{ oCfg.SetParent(NULL); m_oSML.RemoveChild(oCfg.m_oSML.GetName()); }
 
 	// misc methods

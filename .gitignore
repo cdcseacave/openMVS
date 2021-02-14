@@ -37,3 +37,4 @@ CMakeSettings.json
 out/
 bin/
 binaries/
+build_wsl/

@@ -1881,7 +1881,7 @@ void Scene::PointCloudFilter(int thRemove)
 {
 	TD_TIMER_STARTD();
 
-	typedef TOctree<PointCloud::PointArr,PointCloud::Point::Type,3,uint32_t,128> Octree;
+	typedef TOctree<PointCloud::PointArr,PointCloud::Point::Type,3,uint32_t> Octree;
 	struct Collector {
 		typedef Octree::IDX_TYPE IDX;
 		typedef PointCloud::Point::Type Real;
@@ -1938,7 +1938,9 @@ void Scene::PointCloudFilter(int thRemove)
 	typedef CLISTDEF2(Collector) Collectors;
 
 	// create octree to speed-up search
-	Octree octree(pointcloud.points);
+	Octree octree(pointcloud.points, [](Octree::IDX_TYPE size, Octree::Type /*radius*/) {
+		return size > 128;
+	});
 	IntArr visibility(pointcloud.GetSize()); visibility.Memset(0);
 	Collectors collectors; collectors.reserve(images.size());
 	FOREACH(idxView, images) {

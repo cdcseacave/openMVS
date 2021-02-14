@@ -178,12 +178,16 @@ public:
 	bool Run(void*) {
 		MVS::Scene& scene = pScene->scene;
 		if (!scene.mesh.IsEmpty()) {
-			Scene::OctreeMesh octMesh(scene.mesh.vertices);
+			Scene::OctreeMesh octMesh(scene.mesh.vertices, [](Scene::OctreeMesh::IDX_TYPE size, Scene::OctreeMesh::Type /*radius*/) {
+				return size > 256;
+			});
 			scene.mesh.ListIncidenteFaces();
 			pScene->octMesh.Swap(octMesh);
 		} else
 		if (!scene.pointcloud.IsEmpty()) {
-			Scene::OctreePoints octPoints(scene.pointcloud.points);
+			Scene::OctreePoints octPoints(scene.pointcloud.points, [](Scene::OctreePoints::IDX_TYPE size, Scene::OctreePoints::Type /*radius*/) {
+				return size > 512;
+			});
 			pScene->octPoints.Swap(octPoints);
 		}
 		return true;

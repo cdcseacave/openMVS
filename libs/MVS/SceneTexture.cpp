@@ -477,33 +477,12 @@ void MeshTexture::ListVertexFaces()
 // extract array of faces viewed by each image
 bool MeshTexture::ListCameraFaces(FaceDataViewArr& facesDatas, float fOutlierThreshold)
 {
-	// create vertices octree
-	facesDatas.Resize(faces.GetSize());
-	typedef std::unordered_set<FIndex> CameraFaces;
-	struct FacesInserter {
-		FacesInserter(const Mesh::VertexFacesArr& _vertexFaces, CameraFaces& _cameraFaces)
-			: vertexFaces(_vertexFaces), cameraFaces(_cameraFaces) {}
-		inline void operator() (IDX idxVertex) {
-			const Mesh::FaceIdxArr& vertexTris = vertexFaces[idxVertex];
-			FOREACHPTR(pTri, vertexTris)
-				cameraFaces.emplace(*pTri);
-		}
-		inline void operator() (const IDX* idices, size_t size) {
-			FOREACHRAWPTR(pIdxVertex, idices, size)
-				operator()(*pIdxVertex);
-		}
-		const Mesh::VertexFacesArr& vertexFaces;
-		CameraFaces& cameraFaces;
-	};
-	typedef TOctree<Mesh::VertexArr,float,3> Octree;
-	const Octree octree(vertices);
-	#if 0 && !defined(_RELEASE)
-	Octree::DEBUGINFO_TYPE info;
-	octree.GetDebugInfo(&info);
-	Octree::LogDebugInfo(info);
-	#endif
+	// create faces octree
+	Mesh::Octree octree;
+	Mesh::FacesInserter::CreateOctree(octree, scene.mesh);
 
 	// extract array of faces viewed by each image
+	facesDatas.Resize(faces.GetSize());
 	Util::Progress progress(_T("Initialized views"), images.GetSize());
 	typedef float real;
 	TImage<real> imageGradMag;
@@ -562,8 +541,8 @@ bool MeshTexture::ListCameraFaces(FaceDataViewArr& facesDatas, float fOutlierThr
 		#endif
 		(TImage<real>::EMatMap)imageGradMag = (mGrad[0].cwiseAbs2()+mGrad[1].cwiseAbs2()).cwiseSqrt();
 		// select faces inside view frustum
-		CameraFaces cameraFaces;
-		FacesInserter inserter(vertexFaces, cameraFaces);
+		Mesh::FaceIdxArr cameraFaces;
+		Mesh::FacesInserter inserter(cameraFaces);
 		typedef TFrustum<float,5> Frustum;
 		const Frustum frustum(Frustum::MATRIX3x4(((PMatrix::CEMatMap)imageData.camera.P).cast<float>()), (float)imageData.width, (float)imageData.height);
 		octree.Traverse(frustum, inserter);
