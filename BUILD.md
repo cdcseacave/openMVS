@@ -3,7 +3,7 @@ Dependencies
 ------------
 
 *OpenMVS* relies on a number of open source libraries, some of which are optional. For details on customizing the build process, see the compilation instructions.
-* [Eigen](http://eigen.tuxfamily.org) version 3.2 (or higher on Windows only)
+* [Eigen](http://eigen.tuxfamily.org) version 3.3.9 or higher
 * [OpenCV](http://opencv.org) version 2.4 or higher
 * [Ceres](http://ceres-solver.org) version 1.10 or higher
 * [CGAL](http://www.cgal.org) version 4.2 or higher
@@ -33,7 +33,7 @@ cd OpenMVS
 
 #Get and install dependencies using vcpkg;
 #choose the desired triplet, like "x64-windows", by setting the VCPKG_DEFAULT_TRIPLET environment variable or by specifying it after each package:
-vcpkg install zlib boost-iostreams boost-program-options boost-system boost-serialization eigen3 cgal[core] opencv glew glfw3
+vcpkg install zlib boost-iostreams boost-program-options boost-system boost-serialization eigen3 cgal[core] opencv vcglib glew glfw3
 
 #Get VCGLib (Required):
 git clone https://github.com/cdcseacave/VCG.git
@@ -46,7 +46,7 @@ mkdir build
 cd build
 
 #Run CMake, where VCPKG_ROOT environment variable points to the root of vcpkg installation:
-cmake . ..\src -G "Visual Studio 15 2017 Win64" -DCMAKE_TOOLCHAIN_FILE=%VCPKG_ROOT%\scripts\buildsystems\vcpkg.cmake -DVCPKG_TARGET_TRIPLET=x64-windows -DVCG_ROOT="..\VCG"
+cmake . ..\src -G "Visual Studio 15 2017 Win64" -DCMAKE_TOOLCHAIN_FILE=%VCPKG_ROOT%\scripts\buildsystems\vcpkg.cmake -DVCPKG_TARGET_TRIPLET=x64-windows
 
 #Open the solution in MSVC and build it
 ```
