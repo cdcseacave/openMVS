@@ -69,15 +69,17 @@ public:
 
 		inline unsigned ComputeChild(const POINT_TYPE& item) const;
 		static void ComputeCenter(POINT_TYPE []);
+		static inline POINT_TYPE ComputeChildCenter(const POINT_TYPE&, TYPE, unsigned);
 
 		inline bool	IsLeaf() const { return (m_child==NULL); }
 		inline const CELL_TYPE& GetChild(int i) const { ASSERT(!IsLeaf() && i<numChildren); return m_child[i]; }
-		inline const NODE_TYPE& Node() const { ASSERT(!IsLeaf()); return *((const NODE_TYPE*)m_data); }
-		inline NODE_TYPE& Node() { ASSERT(!IsLeaf()); return *((NODE_TYPE*)m_data); }
-		inline const LEAF_TYPE& Leaf() const { ASSERT(IsLeaf()); return *((const LEAF_TYPE*)m_data); }
-		inline LEAF_TYPE& Leaf() { ASSERT(IsLeaf()); return *((LEAF_TYPE*)m_data); }
+		inline const NODE_TYPE& Node() const { ASSERT(!IsLeaf()); return *reinterpret_cast<const NODE_TYPE*>(m_data); }
+		inline NODE_TYPE& Node() { ASSERT(!IsLeaf()); return *reinterpret_cast<NODE_TYPE*>(m_data); }
+		inline const LEAF_TYPE& Leaf() const { ASSERT(IsLeaf()); return *reinterpret_cast<const LEAF_TYPE*>(m_data); }
+		inline LEAF_TYPE& Leaf() { ASSERT(IsLeaf()); return *reinterpret_cast<LEAF_TYPE*>(m_data); }
 		inline const POINT_TYPE& GetCenter() const { return Node().center; }
 		inline AABB_TYPE GetAabb(TYPE radius) const { return AABB_TYPE(Node().center, radius); }
+		inline AABB_TYPE GetChildAabb(unsigned idxChild, TYPE radius) const { const TYPE childRadius(radius / TYPE(2)); return AABB_TYPE(ComputeChildCenter(Node().center, childRadius, idxChild), childRadius); }
 		inline IDX_TYPE GetFirstItemIdx() const { return Leaf().idxBegin; }
 		inline IDX_TYPE GetLastItemIdx() const { return Leaf().idxBegin + Leaf().size; }
 		inline SIZE_TYPE GetNumItems() const { return Leaf().size; }
@@ -150,7 +152,11 @@ public:
 	template <typename FTYPE, int FDIMS>
 	inline void TraverseCells(const TFrustum<FTYPE,FDIMS>&, CELLPTRARR_TYPE&);
 
+	template <typename AREAESTIMATOR, typename CHUNKINSERTER>
+	void SplitVolume(float maxArea, AREAESTIMATOR& areaEstimator, CHUNKINSERTER& chunkInserter);
+
 	inline const CELL_TYPE& GetRoot() const { return m_root; }
+	inline TYPE GetRadius() const { return m_radius; }
 	inline AABB_TYPE GetAabb() const { return m_root.GetAabb(m_radius); }
 	inline bool IsEmpty() const { return m_indices.IsEmpty(); }
 	inline size_t GetNumItems() const { return m_indices.GetSize(); }
@@ -160,8 +166,6 @@ public:
 	inline void ResetItems() { m_items = NULL; }
 
 protected:
-	static inline POINT_TYPE ComputeChildCenter(const POINT_TYPE&, TYPE, unsigned);
-
 	template <typename Functor>
 	struct _InsertData {
 		enum : IDX_TYPE { NO_INDEX = DECLARE_NO_INDEX(IDX_TYPE) };
@@ -183,6 +187,9 @@ protected:
 	void _Traverse(const CELL_TYPE&, TYPE, const TFrustum<FTYPE,FDIMS>&, INSERTER&) const;
 	template <typename FTYPE, int FDIMS, typename PARSER>
 	void _TraverseCells(CELL_TYPE&, TYPE, const TFrustum<FTYPE,FDIMS>&, PARSER&);
+
+	template <typename AREAESTIMATOR, typename CHUNKINSERTER>
+	void _SplitVolume(const CELL_TYPE& parentCell, TYPE parentRadius, unsigned idxChild, float maxArea, AREAESTIMATOR& areaEstimator, CHUNKINSERTER& chunkInserter, const UnsignedArr& indices=UnsignedArr{0,1,2,3,4,5,6,7});
 
 protected:
 	const ITEM_TYPE* m_items; // original input items (the only condition is that every item to resolve to a position)

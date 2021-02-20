@@ -63,6 +63,7 @@ float fRemoveSpurious;
 bool bRemoveSpikes;
 unsigned nCloseHoles;
 unsigned nSmoothMesh;
+float fSplitMaxArea;
 unsigned nArchiveType;
 int nProcessPriority;
 unsigned nMaxThreads;
@@ -124,7 +125,8 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	boost::program_options::options_description hidden("Hidden options");
 	hidden.add_options()
 		("mesh-file", boost::program_options::value<std::string>(&OPT::strMeshFileName), "mesh file name to clean (skips the reconstruction step)")
-		("mesh-export", boost::program_options::value<bool>(&OPT::bMeshExport)->default_value(false), "just export the mesh contained in loaded project")
+		("mesh-export", boost::program_options::value(&OPT::bMeshExport)->default_value(false), "just export the mesh contained in loaded project")
+		("split-max-area", boost::program_options::value(&OPT::fSplitMaxArea)->default_value(0.f), "maximum surface area that a sub-mesh can contain (0 - disabled)")
 		;
 
 	boost::program_options::options_description cmdline_options;
@@ -219,8 +221,17 @@ int main(int argc, LPCTSTR* argv)
 
 	Scene scene(OPT::nMaxThreads);
 	// load project
-	if (!scene.Load(MAKE_PATH_SAFE(OPT::strInputFileName)))
+	if (!scene.Load(MAKE_PATH_SAFE(OPT::strInputFileName), OPT::fSplitMaxArea > 0))
 		return EXIT_FAILURE;
+	const String baseFileName(MAKE_PATH_SAFE(Util::getFileFullName(OPT::strOutputFileName)));
+	if (OPT::fSplitMaxArea > 0) {
+		// split mesh using max-area constraint
+		Mesh::FacesChunkArr chunks;
+		if (scene.mesh.Split(chunks, OPT::fSplitMaxArea))
+			scene.mesh.Save(chunks, baseFileName);
+		Finalize();
+		return EXIT_SUCCESS;
+	}
 	if (OPT::bMeshExport) {
 		// check there is a mesh to export
 		if (scene.mesh.IsEmpty())
@@ -230,7 +241,7 @@ int main(int argc, LPCTSTR* argv)
 		scene.mesh.Save(fileName);
 		#if TD_VERBOSE != TD_VERBOSE_OFF
 		if (VERBOSITY_LEVEL > 2)
-			scene.ExportCamerasMLP(Util::getFileFullName(OPT::strOutputFileName)+_T(".mlp"), fileName);
+			scene.ExportCamerasMLP(baseFileName+_T(".mlp"), fileName);
 		#endif
 	} else {
 		if (OPT::strMeshFileName.IsEmpty()) {
@@ -281,7 +292,7 @@ int main(int argc, LPCTSTR* argv)
 			#if TD_VERBOSE != TD_VERBOSE_OFF
 			if (VERBOSITY_LEVEL > 2) {
 				// dump raw mesh
-				scene.mesh.Save(MAKE_PATH_SAFE(Util::getFileFullName(OPT::strOutputFileName))+_T("_raw")+OPT::strExportType);
+				scene.mesh.Save(baseFileName+_T("_raw")+OPT::strExportType);
 			}
 			#endif
 		} else {
@@ -295,7 +306,6 @@ int main(int argc, LPCTSTR* argv)
 		scene.mesh.Clean(1.f, 0.f, false, 0, 0, true); // extra cleaning to remove non-manifold problems created by closing holes
 
 		// save the final mesh
-		const String baseFileName(MAKE_PATH_SAFE(Util::getFileFullName(OPT::strOutputFileName)));
 		scene.Save(baseFileName+_T(".mvs"), (ARCHIVE_TYPE)OPT::nArchiveType);
 		scene.mesh.Save(baseFileName+OPT::strExportType);
 		#if TD_VERBOSE != TD_VERBOSE_OFF

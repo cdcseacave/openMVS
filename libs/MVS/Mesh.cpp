@@ -54,6 +54,7 @@
 #include <vcg/complex/algorithms/update/selection.h>
 #include <vcg/complex/algorithms/local_optimization.h>
 #include <vcg/complex/algorithms/local_optimization/tri_edge_collapse_quadric.h>
+#undef Split
 #ifdef _MSC_VER
 #  pragma warning(pop)
 #endif
@@ -1574,6 +1575,18 @@ bool Mesh::SaveOBJ(const String& fileName) const
 	return model.Save(fileName);
 } // Save
 /*----------------------------------------------------------------*/
+
+bool Mesh::Save(const FacesChunkArr& chunks, const String& fileName, const cList<String>& comments, bool bBinary) const
+{
+	if (chunks.size() < 2)
+		return Save(fileName, comments, bBinary);
+	FOREACH(i, chunks) {
+		const Mesh mesh(SubMesh(chunks[i].faces));
+		if (!mesh.Save(Util::insertBeforeFileExt(fileName, String::FormatString("_chunk%02u", i)), comments, bBinary))
+			return false;
+	}
+	return true;
+}
 
 bool Mesh::Save(const VertexArr& vertices, const String& fileName, bool bBinary)
 {
@@ -3367,7 +3380,6 @@ void Mesh::RemoveFaces(FaceIdxArr& facesRemove, bool bUpdateLists)
 	}
 	vertexVertices.Release();
 }
-/*----------------------------------------------------------------*/
 
 // remove the given list of vertices
 void Mesh::RemoveVertices(VertexIdxArr& vertexRemove, bool bUpdateLists)
@@ -3415,6 +3427,22 @@ void Mesh::RemoveVertices(VertexIdxArr& vertexRemove, bool bUpdateLists)
 		idxLast = idxV;
 	}
 	RemoveFaces(facesRemove);
+}
+
+// remove all vertices that are not assigned to any face
+// (require vertexFaces)
+Mesh::VIndex Mesh::RemoveUnreferencedVertices(bool bUpdateLists)
+{
+	ASSERT(vertices.size() == vertexFaces.size());
+	VertexIdxArr vertexRemove;
+	FOREACH(idxV, vertexFaces) {
+		if (vertexFaces[idxV].empty())
+			vertexRemove.push_back(idxV);
+	}
+	if (vertexRemove.empty())
+		return 0;
+	RemoveVertices(vertexRemove, bUpdateLists);
+	return vertexRemove.size();
 }
 /*----------------------------------------------------------------*/
 
@@ -3713,6 +3741,80 @@ void Mesh::ProjectOrthoTopDown(unsigned resolution, Image8U3& image, Image8U& ma
 	const Depth depthCenter(depthMap(xCenter));
 	center = camera.TransformPointI2W(Point3(xCenter.x, xCenter.y, depthCenter > 0 ? depthCenter : camera.C.z-center.z));
 }
+/*----------------------------------------------------------------*/
+
+
+// split mesh into sub-meshes such that each has maxArea
+bool Mesh::Split(FacesChunkArr& chunks, float maxArea)
+{
+	TD_TIMER_STARTD();
+	Octree octree;
+	FacesInserter::CreateOctree(octree, *this);
+	FloatArr areas(faces.size());
+	FOREACH(i, faces)
+		areas[i] = ComputeArea(i);
+	struct AreaInserter {
+		const FloatArr& areas;
+		float area;
+		inline void operator() (const Octree::IDX_TYPE* indices, Octree::SIZE_TYPE size) {
+			FOREACHRAWPTR(pIdx, indices, size)
+				area += areas[*pIdx];
+		}
+		inline float PopArea() {
+			const float a(area);
+			area = 0;
+			return a;
+		}
+	} areaEstimator{areas, 0.f};
+	struct ChunkInserter {
+		const Octree& octree;
+		FacesChunkArr& chunks;
+		void operator() (const Octree::CELL_TYPE& parentCell, Octree::Type parentRadius, const UnsignedArr& children) {
+			ASSERT(!children.empty());
+			FaceChunk& chunk = chunks.AddEmpty();
+			struct Inserter {
+				FaceIdxArr& faces;
+				inline void operator() (const Octree::IDX_TYPE* indices, Octree::SIZE_TYPE size) {
+					faces.Join(indices, size);
+				}
+			} inserter{chunk.faces};
+			if (children.size() == 1) {
+				octree.CollectCells(parentCell.GetChild(children.front()), inserter);
+				chunk.box = parentCell.GetChildAabb(children.front(), parentRadius);
+			} else {
+				chunk.box.Reset();
+				for (unsigned c: children) {
+					octree.CollectCells(parentCell.GetChild(c), inserter);
+					chunk.box.Insert(parentCell.GetChildAabb(c, parentRadius));
+				}
+			}
+			if (chunk.faces.empty())
+				chunks.RemoveLast();
+		}
+	} chunkInserter{octree, chunks};
+	octree.SplitVolume(maxArea, areaEstimator, chunkInserter);
+	if (chunks.size() < 2)
+		return false;
+	DEBUG_EXTRA("Mesh split (%g max-area): %u chunks (%s)", maxArea, chunks.size(), TD_TIMER_GET_FMT().c_str());
+	return true;
+} // Split
+/*----------------------------------------------------------------*/
+
+// extract the sub-mesh corresponding to the given chunk of faces
+Mesh Mesh::SubMesh(const FaceIdxArr& chunk) const
+{
+	ASSERT(!chunk.empty());
+	Mesh mesh;
+	mesh.vertices = vertices;
+	mesh.faces.reserve(chunk.size());
+	for (FIndex idxFace: chunk)
+		mesh.faces.emplace_back(faces[idxFace]);
+	mesh.ListIncidenteFaces();
+	mesh.RemoveUnreferencedVertices();
+	// fix non-manifold vertices and edges
+	mesh.FixNonManifold();
+	return mesh;
+} // SubMesh
 /*----------------------------------------------------------------*/
 
 
