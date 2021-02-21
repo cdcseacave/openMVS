@@ -48,6 +48,7 @@ String strInputFileName;
 String strOutputFileName;
 String strMeshFileName;
 String strDenseConfigFileName;
+float fMaxSubsceneArea;
 float fSampleMesh;
 int thFilterPointCloud;
 int nFusionMode;
@@ -106,6 +107,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		("ignore-mask-label", boost::program_options::value(&nIgnoreMaskLabel)->default_value(-1), "integer value for the label to ignore in the segmentation mask (<0 - disabled)")
 		("estimate-colors", boost::program_options::value(&nEstimateColors)->default_value(2), "estimate the colors for the dense point-cloud (0 - disabled, 1 - final, 2 - estimate)")
 		("estimate-normals", boost::program_options::value(&nEstimateNormals)->default_value(2), "estimate the normals for the dense point-cloud (0 - disabled, 1 - final, 2 - estimate)")
+		("sub-scene-area", boost::program_options::value(&OPT::fMaxSubsceneArea)->default_value(0.f), "split the scene in sub-scenes such that each sub-scene surface does not exceed the given maximum sampling area (0 - disabled)")
 		("sample-mesh", boost::program_options::value(&OPT::fSampleMesh)->default_value(0.f), "uniformly samples points on a mesh (0 - disabled, <0 - number of points, >0 - sample density per square unit)")
 		("filter-point-cloud", boost::program_options::value(&OPT::thFilterPointCloud)->default_value(0), "filter dense point-cloud based on visibility (0 - disabled)")
 		("fusion-mode", boost::program_options::value(&OPT::nFusionMode)->default_value(0), "depth map fusion mode (-2 - fuse disparity-maps, -1 - export disparity-maps only, 0 - depth-maps & fusion, 1 - export depth-maps only)")
@@ -246,6 +248,14 @@ int main(int argc, LPCTSTR* argv)
 	if (scene.pointcloud.IsEmpty()) {
 		VERBOSE("error: empty initial point-cloud");
 		return EXIT_FAILURE;
+	}
+	if (OPT::fMaxSubsceneArea > 0) {
+		// split the scene in sub-scenes by maximum sampling area
+		Scene::ImagesChunkArr chunks;
+		scene.Split(chunks, OPT::fMaxSubsceneArea);
+		scene.ExportChunks(chunks, Util::getFilePath(MAKE_PATH_SAFE(OPT::strOutputFileName)));
+		Finalize();
+		return EXIT_SUCCESS;
 	}
 	if (OPT::thFilterPointCloud < 0) {
 		// filter point-cloud based on camera-point visibility intersections

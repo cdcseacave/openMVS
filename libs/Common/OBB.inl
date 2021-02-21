@@ -162,24 +162,12 @@ template <typename TYPE, int DIMS>
 inline void TOBB<TYPE,DIMS>::SetRotation(const MATRIX& C)
 {
 	// extract the eigenvalues and eigenvectors from C
-	const Eigen::EigenSolver<MATRIX> es(C);
-	if (es.info() != Eigen::Success)
-		return;
-	const MATRIX eigvec(es.eigenvectors().real());
-	const POINT eigval(es.eigenvalues().real());
-	int indices[3] = {0,1,2};
-	std::sort(indices, indices+3, [&] (int i, int j) {
-		return eigval(i) < eigval(j);
-	});
-
+	const Eigen::SelfAdjointEigenSolver<MATRIX> es(C);
+	ASSERT(es.info() == Eigen::Success);
 	// find the right, up and forward vectors from the eigenvectors
 	// and set the rotation matrix using the eigenvectors
-	m_rot.row(0) = eigvec.col(indices[0]);
-	m_rot.row(1) = eigvec.col(indices[1]);
-	m_rot.row(2) = eigvec.col(indices[2]);
-	ASSERT(ISEQUAL(m_rot.row(0).norm(), TYPE(1)));
-	ASSERT(ISEQUAL(m_rot.row(1).norm(), TYPE(1)));
-	ASSERT(ISEQUAL(m_rot.row(2).norm(), TYPE(1)));
+	ASSERT(es.eigenvalues()(0) < es.eigenvalues()(1) && es.eigenvalues()(1) < es.eigenvalues()(2));
+	m_rot = es.eigenvectors().transpose();
 	if (m_rot.determinant() < 0)
 		m_rot = -m_rot;
 }
@@ -354,6 +342,7 @@ inline void TOBB<TYPE,DIMS>::GetCorners(POINT pts[numCorners]) const
 template <typename TYPE, int DIMS>
 inline typename TOBB<TYPE,DIMS>::AABB TOBB<TYPE,DIMS>::GetAABB() const
 {
+	#if 0
 	if (DIMS == 2) {
 		const POINT pEAxis[2] = {
 			m_rot.row(0)*m_ext[0],
@@ -375,6 +364,11 @@ inline typename TOBB<TYPE,DIMS>::AABB TOBB<TYPE,DIMS>::GetAABB() const
 			m_pos + pEAxis[0] + pEAxis[1] + pEAxis[2]
 		);
 	}
+	#else
+	POINT pts[numCorners];
+	GetCorners(pts);
+	return AABB(pts, numCorners);
+	#endif
 } // GetAABB
 /*----------------------------------------------------------------*/
 

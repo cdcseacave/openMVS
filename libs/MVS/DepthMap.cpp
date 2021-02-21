@@ -233,7 +233,6 @@ bool DepthData::Save(const String& fileName) const
 }
 bool DepthData::Load(const String& fileName)
 {
-	ASSERT(IsValid());
 	// serialize in the saved state
 	String imageFileName;
 	IIndexArr IDs;
@@ -241,8 +240,7 @@ bool DepthData::Load(const String& fileName)
 	Camera camera;
 	if (!ImportDepthDataRaw(fileName, imageFileName, IDs, imageSize, camera.K, camera.R, camera.C, dMin, dMax, depthMap, normalMap, confMap))
 		return false;
-	ASSERT(IDs.size() == images.size());
-	ASSERT(IDs.front() == GetView().GetID());
+	ASSERT(!IsValid() || (IDs.size() == images.size() && IDs.front() == GetView().GetID()));
 	ASSERT(depthMap.size() == imageSize);
 	return true;
 }

@@ -83,6 +83,15 @@ public:
 
 	bool ExportCamerasMLP(const String& fileName, const String& fileNameScene) const;
 
+	// sub-scene split and save
+	struct ImagesChunk {
+		std::unordered_set<IIndex> images;
+		AABB3f aabb;
+	};
+	typedef cList<ImagesChunk,const ImagesChunk&,2,16,uint32_t> ImagesChunkArr;
+	unsigned Split(ImagesChunkArr& chunks, IIndex maxArea, int depthMapStep=8) const;
+	bool ExportChunks(const ImagesChunkArr& chunks, const String& path) const;
+
 	// Dense reconstruction
 	bool DenseReconstruction(int nFusionMode=0);
 	bool ComputeDepthMaps(DenseDepthMapData& data);

@@ -734,3 +734,246 @@ bool Scene::ExportCamerasMLP(const String& fileName, const String& fileNameScene
 	return true;
 } // ExportCamerasMLP
 /*----------------------------------------------------------------*/
+
+
+// split the scene in sub-scenes such that each sub-scene surface does not exceed the given
+// maximum sampling area; the area is composed of overlapping samples from different cameras
+// taking into account the footprint of each sample (pixels/unit-length, GSD inverse),
+// including overlapping samples;
+// the indirect goals this method tries to achieve are:
+//  - limit the maximum number of images in each sub-scene such that the depth-map fusion
+//    can load all sub-scene's depth-maps into memory at once
+//  - limit in the same time maximum accumulated images resolution (total number of pixels)
+//    per sub-scene in order to allow all images to be loaded and processed during mesh refinement
+unsigned Scene::Split(ImagesChunkArr& chunks, IIndex maxArea, int depthMapStep) const
+{
+	TD_TIMER_STARTD();
+	// gather samples from all depth-maps
+	const float areaScale(0.01f);
+	typedef cList<Point3f::EVec,const Point3f::EVec&,0,4096,uint32_t> Samples;
+	typedef TOctree<Samples,float,3> Octree;
+	Octree octree;
+	FloatArr areas(0, images.size()*4192);
+	IIndexArr visibility(0, areas.capacity());
+	Unsigned32Arr imageAreas(images.size()); {
+		Samples samples(0, areas.capacity());
+		FOREACH(idxImage, images) {
+			const Image& imageData = images[idxImage];
+			if (!imageData.IsValid())
+				continue;
+			DepthData depthData;
+			depthData.Load(ComposeDepthFilePath(imageData.ID, "dmap"));
+			if (depthData.IsEmpty())
+				continue;
+			const size_t numPointsBegin(visibility.size());
+			const Camera camera(imageData.GetCamera(platforms, depthData.depthMap.size()));
+			for (int r=(depthData.depthMap.rows%depthMapStep)/2; r<depthData.depthMap.rows; r+=depthMapStep) {
+				for (int c=(depthData.depthMap.cols%depthMapStep)/2; c<depthData.depthMap.cols; c+=depthMapStep) {
+					const Depth depth = depthData.depthMap(r,c);
+					if (depth <= 0)
+						continue;
+					const Point3f& X = samples.emplace_back(Cast<float>(camera.TransformPointI2W(Point3(c,r,depth))));
+					areas.emplace_back(Footprint(camera, X)*areaScale);
+					visibility.emplace_back(idxImage);
+				}
+			}
+			imageAreas[idxImage] = visibility.size()-numPointsBegin;
+		}
+		#if 0
+		const AABB3f aabb(samples.data(), samples.size());
+		#else
+		// try to find a dominant plane, and set the bounding-box center on the plane bottom
+		OBB3f obb(samples.data(), samples.size());
+		obb.m_ext(0) *= 2;
+		#if 1
+		// dump box for visualization
+		OBB3f::POINT pts[8];
+		obb.GetCorners(pts);
+		PointCloud pc;
+		for (int i=0; i<8; ++i)
+			pc.points.emplace_back(pts[i]);
+		pc.Save(MAKE_PATH("scene_obb.ply"));
+		#endif
+		const AABB3f aabb(obb.GetAABB());
+		#endif
+		octree.Insert(samples, aabb, [](Octree::IDX_TYPE size, Octree::Type /*radius*/) {
+			return size > 128;
+		});
+		#if 0 && !defined(_RELEASE)
+		Octree::DEBUGINFO_TYPE info;
+		octree.GetDebugInfo(&info);
+		Octree::LogDebugInfo(info);
+		#endif
+		octree.ResetItems();
+	}
+	struct AreaInserter {
+		const FloatArr& areas;
+		float area;
+		inline void operator() (const Octree::IDX_TYPE* indices, Octree::SIZE_TYPE size) {
+			FOREACHRAWPTR(pIdx, indices, size)
+				area += areas[*pIdx];
+		}
+		inline float PopArea() {
+			const float a(area);
+			area = 0;
+			return a;
+		}
+	} areaEstimator{areas, 0.f};
+	struct ChunkInserter {
+		const IIndex numImages;
+		const Octree& octree;
+		const IIndexArr& visibility;
+		ImagesChunkArr& chunks;
+		CLISTDEF2(Unsigned32Arr) imagesAreas;
+		void operator() (const Octree::CELL_TYPE& parentCell, Octree::Type parentRadius, const UnsignedArr& children) {
+			ASSERT(!children.empty());
+			ImagesChunk& chunk = chunks.AddEmpty();
+			Unsigned32Arr& imageAreas = imagesAreas.AddEmpty();
+			imageAreas.resize(numImages);
+			imageAreas.Memset(0);
+			struct Inserter {
+				const IIndexArr& visibility;
+				std::unordered_set<IIndex>& images;
+				Unsigned32Arr& imageAreas;
+				inline void operator() (const Octree::IDX_TYPE* indices, Octree::SIZE_TYPE size) {
+					FOREACHRAWPTR(pIdx, indices, size) {
+						const IIndex idxImage(visibility[*pIdx]);
+						images.emplace(idxImage);
+						++imageAreas[idxImage];
+					}
+				}
+			} inserter{visibility, chunk.images, imageAreas};
+			if (children.size() == 1) {
+				octree.CollectCells(parentCell.GetChild(children.front()), inserter);
+				chunk.aabb = parentCell.GetChildAabb(children.front(), parentRadius);
+			} else {
+				chunk.aabb.Reset();
+				for (unsigned c: children) {
+					octree.CollectCells(parentCell.GetChild(c), inserter);
+					chunk.aabb.Insert(parentCell.GetChildAabb(c, parentRadius));
+				}
+			}
+			if (chunk.images.empty()) {
+				chunks.RemoveLast();
+				imagesAreas.RemoveLast();
+			}
+		}
+	} chunkInserter{images.size(), octree, visibility, chunks};
+	octree.SplitVolume(maxArea, areaEstimator, chunkInserter);
+	if (chunks.size() < 2)
+		return 0;
+	// remove images with very little contribution
+	const float minImageContributionRatio(0.25f);
+	FOREACH(c, chunks) {
+		ImagesChunk& chunk = chunks[c];
+		const Unsigned32Arr& chunkImageAreas = chunkInserter.imagesAreas[c];
+		for (auto it = chunk.images.begin(); it != chunk.images.end(); ) {
+			const IIndex idxImage(*it);
+			if (float(chunkImageAreas[idxImage])/float(imageAreas[idxImage]) < minImageContributionRatio)
+				it = chunk.images.erase(it);
+			else
+				++it;
+		}
+	}
+	DEBUG_EXTRA("Scene split (%g max-area): %u chunks (%s)", maxArea, chunks.size(), TD_TIMER_GET_FMT().c_str());
+	#if 1
+	// dump chunks for visualization
+	FOREACH(c, chunks) {
+		const ImagesChunk& chunk = chunks[c];
+		PointCloud pc = pointcloud;
+		pc.RemovePointsOutside(OBB3f(OBB3f::MATRIX::Identity(), chunk.aabb.ptMin, chunk.aabb.ptMax));
+		pc.Save(String::FormatString(MAKE_PATH("scene_%04u.ply"), c));
+	}
+	#endif
+	return chunks.size();
+} // Split
+
+// split the scene in sub-scenes according to the given chunks array, and save them to disk
+bool Scene::ExportChunks(const ImagesChunkArr& chunks, const String& path) const
+{
+	FOREACH(chunkID, chunks) {
+		const ImagesChunk& chunk = chunks[chunkID];
+		Scene subset;
+		subset.nCalibratedImages = (IIndex)chunk.images.size();
+		// extract chunk images
+		typedef std::unordered_map<IIndex,IIndex> MapIIndex;
+		MapIIndex mapPlatforms(platforms.size());
+		MapIIndex mapImages(images.size());
+		FOREACH(idxImage, images) {
+			if (chunk.images.find(idxImage) == chunk.images.end())
+				continue;
+			const Image& image = images[idxImage];
+			if (!image.IsValid())
+				continue;
+			// copy platform
+			const Platform& platform = platforms[image.platformID];
+			MapIIndex::iterator itSubPlatformMVS = mapPlatforms.find(image.platformID);
+			uint32_t subPlatformID;
+			if (itSubPlatformMVS == mapPlatforms.end()) {
+				ASSERT(subset.platforms.size() == mapPlatforms.size());
+				subPlatformID = subset.platforms.size();
+				mapPlatforms.emplace(image.platformID, subPlatformID);
+				Platform subPlatform;
+				subPlatform.name = platform.name;
+				subPlatform.cameras = platform.cameras;
+				subset.platforms.emplace_back(std::move(subPlatform));
+			} else {
+				subPlatformID = itSubPlatformMVS->second;
+			}
+			Platform& subPlatform = subset.platforms[subPlatformID];
+			// copy image
+			const IIndex idxImageNew((IIndex)mapImages.size());
+			mapImages[idxImage] = idxImageNew;
+			Image subImage(image);
+			subImage.platformID = subPlatformID;
+			subImage.poseID = subPlatform.poses.size();
+			subImage.ID = idxImage;
+			subset.images.emplace_back(std::move(subImage));
+			// copy pose
+			subPlatform.poses.emplace_back(platform.poses[image.poseID]);
+		}
+		// map image IDs from global to local
+		for (Image& image: subset.images) {
+			RFOREACH(i, image.neighbors) {
+				ViewScore& neighbor = image.neighbors[i];
+				const auto itImage(mapImages.find(neighbor.idx.ID));
+				if (itImage == mapImages.end()) {
+					image.neighbors.RemoveAtMove(i);
+					continue;
+				}
+				ASSERT(itImage->second < subset.images.size());
+				neighbor.idx.ID = itImage->second;
+			}
+		}
+		// extract point-cloud
+		FOREACH(idxPoint, pointcloud.points) {
+			PointCloud::ViewArr subViews;
+			PointCloud::WeightArr subWeights;
+			const PointCloud::ViewArr& views = pointcloud.pointViews[idxPoint];
+			FOREACH(i, views) {
+				const IIndex idxImage(views[i]);
+				const auto itImage(mapImages.find(idxImage));
+				if (itImage == mapImages.end())
+					continue;
+				subViews.emplace_back(itImage->second);
+				if (!pointcloud.pointWeights.empty())
+					subWeights.emplace_back(pointcloud.pointWeights[idxPoint][i]);
+			}
+			if (subViews.size() < 2)
+				continue;
+			subset.pointcloud.points.emplace_back(pointcloud.points[idxPoint]);
+			subset.pointcloud.pointViews.emplace_back(std::move(subViews));
+			if (!pointcloud.pointWeights.empty())
+				subset.pointcloud.pointWeights.emplace_back(std::move(subWeights));
+			if (!pointcloud.colors.empty())
+				subset.pointcloud.colors.emplace_back(pointcloud.colors[idxPoint]);
+		}
+		// set scene ROI
+		subset.obb.Set(OBB3f::MATRIX::Identity(), chunk.aabb.ptMin, chunk.aabb.ptMax);
+		// serialize out the current state
+		if (!subset.Save(String::FormatString("%s" PATH_SEPARATOR_STR "scene_%04u.mvs", path.c_str(), chunkID)))
+			return false;
+	}
+	return true;
+} // ExportChunks
+/*----------------------------------------------------------------*/
