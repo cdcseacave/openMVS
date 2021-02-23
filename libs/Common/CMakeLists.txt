@@ -9,7 +9,7 @@ FILE(GLOB LIBRARY_FILES_H "*.h" "*.inl")
 LIST(REMOVE_ITEM LIBRARY_FILES_C ${PCH_C})
 SET(LIBRARY_FILES_C "${PCH_C};${LIBRARY_FILES_C}")
 
-cxx_library_with_type_no_pch(Common "Libs" "STATIC" "${cxx_default}"
+cxx_library_with_type_no_pch(Common "Libs" "" "${cxx_default}"
 	${LIBRARY_FILES_C} ${LIBRARY_FILES_H}
 )
 

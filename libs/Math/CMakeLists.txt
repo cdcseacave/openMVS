@@ -23,7 +23,7 @@ SOURCE_GROUP("TRWS" FILES ${TRWS_LIBRARY_FILES_C} ${TRWS_LIBRARY_FILES_H})
 LIST(REMOVE_ITEM LIBRARY_FILES_C ${PCH_C})
 SET(LIBRARY_FILES_C "${PCH_C};${LIBRARY_FILES_C}")
 
-cxx_library_with_type_no_pch(Math "Libs" "STATIC" "${cxx_default}"
+cxx_library_with_type_no_pch(Math "Libs" "" "${cxx_default}"
 	${LIBRARY_FILES_C} ${LIBRARY_FILES_H}
 	${IBFS_LIBRARY_FILES_C} ${IBFS_LIBRARY_FILES_H}
 	${LMFit_LIBRARY_FILES_C} ${LMFit_LIBRARY_FILES_H}
