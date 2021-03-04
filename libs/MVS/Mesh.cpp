@@ -3359,10 +3359,10 @@ void Mesh::RemoveFaces(FaceIdxArr& facesRemove, bool bUpdateLists)
 					FaceIdxArr& vf(vertexFaces[idxV]);
 					const FIndex idx(vf.Find(idxF));
 					if (idx != FaceIdxArr::NO_INDEX)
-						vf[idx] = idxF;
+						vf.RemoveAt(idx);
 				}
 			}
-			const FIndex idxFM(faces.GetSize()-1);
+			const FIndex idxFM(faces.size()-1);
 			if (idxF < idxFM) {
 				// update all vertices of the moved face
 				const Face& face = faces[idxFM];
