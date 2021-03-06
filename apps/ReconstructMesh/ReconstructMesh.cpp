@@ -45,6 +45,7 @@ using namespace MVS;
 #define RECMESH_USE_OPENMP
 #endif
 
+namespace {
 
 // S T R U C T S ///////////////////////////////////////////////////
 
@@ -208,6 +209,8 @@ void Finalize()
 	CLOSE_LOGCONSOLE();
 	CLOSE_LOG();
 }
+
+} // unnamed namespace
 
 int main(int argc, LPCTSTR* argv)
 {

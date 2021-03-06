@@ -41,6 +41,7 @@
 #define XML_EXT _T(".xml")
 #define PLY_EXT _T(".ply")
 
+namespace {
 
 // S T R U C T S ///////////////////////////////////////////////////
 
@@ -523,6 +524,8 @@ void AssignPoints(const MVS::Image& imageData, uint32_t ID, MVS::PointCloud& poi
 
 	DEBUG_ULTIMATE("\tview %3u sees %u points", ID, nNumPoints);
 }
+
+} // unnamed namespace
 
 int main(int argc, LPCTSTR* argv)
 {
