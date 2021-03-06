@@ -41,9 +41,10 @@ using namespace VIEWER;
 
 #define APPNAME _T("Viewer")
 
-namespace {
 
 // S T R U C T S ///////////////////////////////////////////////////
+
+namespace {
 
 namespace OPT {
 String strInputFileName;

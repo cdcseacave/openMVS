@@ -60,9 +60,10 @@ using namespace MVS;
 #define COLMAP_STEREO_DEPTHMAPS_FOLDER COLMAP_STEREO_FOLDER _T("depth_maps/")
 #define COLMAP_STEREO_NORMALMAPS_FOLDER COLMAP_STEREO_FOLDER _T("normal_maps/")
 
-namespace {
 
 // S T R U C T S ///////////////////////////////////////////////////
+
+namespace {
 
 namespace OPT {
 bool bFromOpenMVS; // conversion direction

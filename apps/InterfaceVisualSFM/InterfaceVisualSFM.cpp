@@ -45,9 +45,10 @@
 #define BUNDLE_EXT _T(".out")
 #define CMPMVS_EXT _T(".lst")
 
-namespace {
 
 // S T R U C T S ///////////////////////////////////////////////////
+
+namespace {
 
 namespace OPT {
 String strInputFileName;

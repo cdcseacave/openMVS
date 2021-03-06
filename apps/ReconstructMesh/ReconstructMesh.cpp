@@ -45,9 +45,10 @@ using namespace MVS;
 #define RECMESH_USE_OPENMP
 #endif
 
-namespace {
 
 // S T R U C T S ///////////////////////////////////////////////////
+
+namespace {
 
 namespace OPT {
 String strInputFileName;

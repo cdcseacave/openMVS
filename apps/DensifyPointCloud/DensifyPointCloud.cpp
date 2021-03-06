@@ -40,9 +40,10 @@ using namespace MVS;
 
 #define APPNAME _T("DensifyPointCloud")
 
-namespace {
 
 // S T R U C T S ///////////////////////////////////////////////////
+
+namespace {
 
 namespace OPT {
 String strInputFileName;
