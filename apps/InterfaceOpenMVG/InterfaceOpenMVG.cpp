@@ -50,6 +50,7 @@
 #define MVG2_EXT _T(".json")
 #define MVG3_EXT _T(".bin")
 
+namespace {
 
 // S T R U C T S ///////////////////////////////////////////////////
 
@@ -470,6 +471,8 @@ void Finalize()
 	CLOSE_LOGCONSOLE();
 	CLOSE_LOG();
 }
+
+} // unnamed namespace
 
 int main(int argc, LPCTSTR* argv)
 {

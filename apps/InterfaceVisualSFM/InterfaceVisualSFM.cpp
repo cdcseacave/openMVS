@@ -45,6 +45,7 @@
 #define BUNDLE_EXT _T(".out")
 #define CMPMVS_EXT _T(".lst")
 
+namespace {
 
 // S T R U C T S ///////////////////////////////////////////////////
 
@@ -186,6 +187,8 @@ void Finalize()
 	CLOSE_LOGCONSOLE();
 	CLOSE_LOG();
 }
+
+} // unnamed namespace
 
 #define PBA_PRECISION float
 
