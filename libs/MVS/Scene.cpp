@@ -875,6 +875,28 @@ unsigned Scene::Split(ImagesChunkArr& chunks, IIndex maxArea, int depthMapStep) 
 				++it;
 		}
 	}
+	#if 1
+	// remove images already completely contained by a larger chunk
+	const float minImageContributionRatioLargerChunk(0.9f);
+	FOREACH(cSmall, chunks) {
+		ImagesChunk& chunkSmall = chunks[cSmall];
+		const Unsigned32Arr& chunkSmallImageAreas = chunkInserter.imagesAreas[cSmall];
+		FOREACH(cLarge, chunks) {
+			const ImagesChunk& chunkLarge = chunks[cLarge];
+			if (chunkLarge.images.size() <= chunkSmall.images.size())
+				continue;
+			const Unsigned32Arr& chunkLargeImageAreas = chunkInserter.imagesAreas[cLarge];
+			for (auto it = chunkSmall.images.begin(); it != chunkSmall.images.end(); ) {
+				const IIndex idxImage(*it);
+				if (chunkSmallImageAreas[idxImage] < chunkLargeImageAreas[idxImage] &&
+					float(chunkLargeImageAreas[idxImage])/float(imageAreas[idxImage]) > minImageContributionRatioLargerChunk)
+					it = chunkSmall.images.erase(it);
+				else
+					++it;
+			}
+		}
+	}
+	#endif
 	DEBUG_EXTRA("Scene split (%g max-area): %u chunks (%s)", maxArea, chunks.size(), TD_TIMER_GET_FMT().c_str());
 	#if 1
 	// dump chunks for visualization
