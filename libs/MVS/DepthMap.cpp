@@ -1489,13 +1489,13 @@ bool MVS::EstimateNormalMap(const Matrix3x3f& K, const DepthMap& depthMap, Norma
 bool MVS::SaveDepthMap(const String& fileName, const DepthMap& depthMap)
 {
 	ASSERT(!depthMap.empty());
-	return SerializeSave(depthMap, fileName, ARCHIVE_BINARY_ZIP);
+	return SerializeSave(depthMap, fileName, ARCHIVE_DEFAULT);
 } // SaveDepthMap
 /*----------------------------------------------------------------*/
 // load the depth map from our .dmap file format
 bool MVS::LoadDepthMap(const String& fileName, DepthMap& depthMap)
 {
-	return SerializeLoad(depthMap, fileName, ARCHIVE_BINARY_ZIP);
+	return SerializeLoad(depthMap, fileName, ARCHIVE_DEFAULT);
 } // LoadDepthMap
 /*----------------------------------------------------------------*/
 
@@ -1503,13 +1503,13 @@ bool MVS::LoadDepthMap(const String& fileName, DepthMap& depthMap)
 bool MVS::SaveNormalMap(const String& fileName, const NormalMap& normalMap)
 {
 	ASSERT(!normalMap.empty());
-	return SerializeSave(normalMap, fileName, ARCHIVE_BINARY_ZIP);
+	return SerializeSave(normalMap, fileName, ARCHIVE_DEFAULT);
 } // SaveNormalMap
 /*----------------------------------------------------------------*/
 // load the normal map from our .nmap file format
 bool MVS::LoadNormalMap(const String& fileName, NormalMap& normalMap)
 {
-	return SerializeLoad(normalMap, fileName, ARCHIVE_BINARY_ZIP);
+	return SerializeLoad(normalMap, fileName, ARCHIVE_DEFAULT);
 } // LoadNormalMap
 /*----------------------------------------------------------------*/
 
@@ -1517,13 +1517,13 @@ bool MVS::LoadNormalMap(const String& fileName, NormalMap& normalMap)
 bool MVS::SaveConfidenceMap(const String& fileName, const ConfidenceMap& confMap)
 {
 	ASSERT(!confMap.empty());
-	return SerializeSave(confMap, fileName, ARCHIVE_BINARY_ZIP);
+	return SerializeSave(confMap, fileName, ARCHIVE_DEFAULT);
 } // SaveConfidenceMap
 /*----------------------------------------------------------------*/
 // load the confidence map from our .cmap file format
 bool MVS::LoadConfidenceMap(const String& fileName, ConfidenceMap& confMap)
 {
-	return SerializeLoad(confMap, fileName, ARCHIVE_BINARY_ZIP);
+	return SerializeLoad(confMap, fileName, ARCHIVE_DEFAULT);
 } // LoadConfidenceMap
 /*----------------------------------------------------------------*/
 

@@ -76,7 +76,7 @@ public:
 	bool Import(const String& fileName);
 
 	bool Load(const String& fileName, bool bImport=false);
-	bool Save(const String& fileName, ARCHIVE_TYPE type=ARCHIVE_BINARY_ZIP) const;
+	bool Save(const String& fileName, ARCHIVE_TYPE type=ARCHIVE_DEFAULT) const;
 
 	bool SelectNeighborViews(uint32_t ID, IndexArr& points, unsigned nMinViews=3, unsigned nMinPointViews=2, float fOptimAngle=FD2R(10));
 	static bool FilterNeighborViews(ViewScoreArr& neighbors, float fMinArea=0.1f, float fMinScale=0.2f, float fMaxScale=2.4f, float fMinAngle=FD2R(3), float fMaxAngle=FD2R(45), unsigned nMaxViews=12);
@@ -90,7 +90,7 @@ public:
 	};
 	typedef cList<ImagesChunk,const ImagesChunk&,2,16,uint32_t> ImagesChunkArr;
 	unsigned Split(ImagesChunkArr& chunks, IIndex maxArea, int depthMapStep=8) const;
-	bool ExportChunks(const ImagesChunkArr& chunks, const String& path) const;
+	bool ExportChunks(const ImagesChunkArr& chunks, const String& path, ARCHIVE_TYPE type=ARCHIVE_DEFAULT) const;
 
 	// Dense reconstruction
 	bool DenseReconstruction(int nFusionMode=0);

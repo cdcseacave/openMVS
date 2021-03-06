@@ -75,13 +75,13 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		("working-folder,w", boost::program_options::value<std::string>(&WORKING_FOLDER), "working directory (default current directory)")
 		("config-file,c", boost::program_options::value<std::string>(&OPT::strConfigFileName)->default_value(APPNAME _T(".cfg")), "file name containing program options")
 		("export-type", boost::program_options::value<std::string>(&OPT::strExportType), "file type used to export the 3D scene (ply or obj)")
-		("archive-type", boost::program_options::value<unsigned>(&OPT::nArchiveType)->default_value(2), "project archive type: 0-text, 1-binary, 2-compressed binary")
-		("process-priority", boost::program_options::value<int>(&OPT::nProcessPriority)->default_value(0), "process priority (normal by default)")
-		("max-threads", boost::program_options::value<unsigned>(&OPT::nMaxThreads)->default_value(0), "maximum number of threads that this process should use (0 - use all available cores)")
-		("max-memory", boost::program_options::value<unsigned>(&OPT::nMaxMemory)->default_value(0), "maximum amount of memory in MB that this process should use (0 - use all available memory)")
+		("archive-type", boost::program_options::value(&OPT::nArchiveType)->default_value(ARCHIVE_DEFAULT), "project archive type: 0-text, 1-binary, 2-compressed binary")
+		("process-priority", boost::program_options::value(&OPT::nProcessPriority)->default_value(0), "process priority (normal by default)")
+		("max-threads", boost::program_options::value(&OPT::nMaxThreads)->default_value(0), "maximum number of threads that this process should use (0 - use all available cores)")
+		("max-memory", boost::program_options::value(&OPT::nMaxMemory)->default_value(0), "maximum amount of memory in MB that this process should use (0 - use all available memory)")
 		#if TD_VERBOSE != TD_VERBOSE_OFF
-		("log-file", boost::program_options::value<bool>(&OPT::bLogFile)->default_value(false), "dump log to a file")
-		("verbosity,v", boost::program_options::value<int>(&g_nVerbosityLevel)->default_value(
+		("log-file", boost::program_options::value(&OPT::bLogFile)->default_value(false), "dump log to a file")
+		("verbosity,v", boost::program_options::value(&g_nVerbosityLevel)->default_value(
 			#if TD_VERBOSE == TD_VERBOSE_DEBUG
 			3
 			#else
@@ -96,7 +96,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	config.add_options()
 		("input-file,i", boost::program_options::value<std::string>(&OPT::strInputFileName), "input project filename containing camera poses and scene (point-cloud/mesh)")
 		("output-file,o", boost::program_options::value<std::string>(&OPT::strOutputFileName), "output filename for storing the mesh")
-		("texture-lossless", boost::program_options::value<bool>(&OPT::bLosslessTexture)->default_value(false), "export texture using a lossless image format")
+		("texture-lossless", boost::program_options::value(&OPT::bLosslessTexture)->default_value(false), "export texture using a lossless image format")
 		;
 
 	// hidden options, allowed both on command line and

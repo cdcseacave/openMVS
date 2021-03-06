@@ -482,7 +482,7 @@ bool Scene::Save(const String& fileName, ARCHIVE_TYPE type) const
 	if (type == ARCHIVE_MVS) {
 		if (mesh.IsEmpty())
 			return SaveInterface(fileName);
-		type = ARCHIVE_BINARY_ZIP;
+		type = ARCHIVE_DEFAULT;
 	}
 	#ifdef _USE_BOOST
 	// open the output stream
@@ -911,7 +911,7 @@ unsigned Scene::Split(ImagesChunkArr& chunks, IIndex maxArea, int depthMapStep) 
 } // Split
 
 // split the scene in sub-scenes according to the given chunks array, and save them to disk
-bool Scene::ExportChunks(const ImagesChunkArr& chunks, const String& path) const
+bool Scene::ExportChunks(const ImagesChunkArr& chunks, const String& path, ARCHIVE_TYPE type) const
 {
 	FOREACH(chunkID, chunks) {
 		const ImagesChunk& chunk = chunks[chunkID];
@@ -993,7 +993,7 @@ bool Scene::ExportChunks(const ImagesChunkArr& chunks, const String& path) const
 		// set scene ROI
 		subset.obb.Set(OBB3f::MATRIX::Identity(), chunk.aabb.ptMin, chunk.aabb.ptMax);
 		// serialize out the current state
-		if (!subset.Save(String::FormatString("%s" PATH_SEPARATOR_STR "scene_%04u.mvs", path.c_str(), chunkID)))
+		if (!subset.Save(String::FormatString("%s" PATH_SEPARATOR_STR "scene_%04u.mvs", path.c_str(), chunkID), type))
 			return false;
 	}
 	return true;
