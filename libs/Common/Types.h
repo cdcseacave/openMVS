@@ -1636,6 +1636,22 @@ public:
 		return pt.x>=T(border) && pt.y>=T(border) && pt.x<=T(Base::size().width-(border+1)) && pt.y<=T(Base::size().height-(border+1));
 	}
 
+	template <typename T, int border=0>
+	static inline void clip(TPoint2<T>& ptMin, TPoint2<T>& ptMax, const cv::Size& size) {
+		if (ptMin.x < T(border))
+			ptMin.x = T(border);
+		if (ptMin.y < T(border))
+			ptMin.y = T(border);
+		if (ptMax.x >= T(size.width-border))
+			ptMax.x = T(size.width-(border+1));
+		if (ptMax.y >= T(size.height-border))
+			ptMax.y = T(size.height-(border+1));
+	}
+	template <typename T, int border=0>
+	inline void clip(TPoint2<T>& ptMin, TPoint2<T>& ptMax) const {
+		clip<T,border>(ptMin, ptMax, Base::size());
+	}
+
 	/// Remove the given element from the vector
 	inline void remove(int idx) {
 		// replace the removed element by the last one and decrease the size
@@ -2154,6 +2170,8 @@ public:
 
 	template <typename T, typename PARSER>
 	static void RasterizeTriangle(const TPoint2<T>& v1, const TPoint2<T>& v2, const TPoint2<T>& v3, PARSER& parser);
+	template <typename T, typename PARSER>
+	static void RasterizeTriangleBary(const TPoint2<T>& v1, const TPoint2<T>& v2, const TPoint2<T>& v3, PARSER& parser);
 	template <typename T, typename PARSER>
 	static void RasterizeTriangleDepth(TPoint3<T> p1, TPoint3<T> p2, TPoint3<T> p3, PARSER& parser);
 

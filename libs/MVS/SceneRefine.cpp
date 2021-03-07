@@ -111,16 +111,15 @@ public:
 			faceMap.memset((uint8_t)NO_ID);
 			baryMap.memset(0);
 		}
-		void Raster(const ImageRef& pt) {
-			if (!depthMap.isInsideWithBorder<int,4>(pt))
-				return;
-			const float z((float)INVERT(normalPlane.dot(camera.TransformPointI2C(Point2(pt)))));
-			ASSERT(z > 0);
+		void Raster(const ImageRef& pt, const Point3f& bary) {
+			const Point3f pbary(PerspectiveCorrectBarycentricCoordinates(bary));
+			const Depth z(ComputeDepth(pbary));
+			ASSERT(z > Depth(0));
 			Depth& depth = depthMap(pt);
 			if (depth == 0 || depth > z) {
 				depth = z;
 				faceMap(pt) = idxFace;
-				baryMap(pt) = CorrectBarycentricCoordinates(BarycentricCoordinatesUV(pti[0], pti[1], pti[2], Point2f(pt)));
+				baryMap(pt) = pbary;
 			}
 		}
 	};

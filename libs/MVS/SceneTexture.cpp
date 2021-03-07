@@ -157,11 +157,10 @@ struct MeshTexture {
 			Base::Clear();
 			faceMap.memset((uint8_t)NO_ID);
 		}
-		void Raster(const ImageRef& pt) {
-			if (!depthMap.isInside(pt))
-				return;
-			const Depth z((Depth)INVERT(normalPlane.dot(camera.TransformPointI2C(Point2(pt)))));
-			ASSERT(z > 0);
+		void Raster(const ImageRef& pt, const Point3f& bary) {
+			const Point3f pbary(PerspectiveCorrectBarycentricCoordinates(bary));
+			const Depth z(ComputeDepth(pbary));
+			ASSERT(z > Depth(0));
 			Depth& depth = depthMap(pt);
 			if (depth == 0 || depth > z) {
 				depth = z;

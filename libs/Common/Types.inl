@@ -2605,6 +2605,48 @@ void TImage<TYPE>::RasterizeTriangle(const TPoint2<T>& v1, const TPoint2<T>& v2,
 	}
 }
 
+// same as above, but raster a triangle using barycentric coordinates:
+// https://www.scratchapixel.com/lessons/3d-basic-rendering/rasterization-practical-implementation
+template <typename TYPE>
+template <typename T, typename PARSER>
+void TImage<TYPE>::RasterizeTriangleBary(const TPoint2<T>& v1, const TPoint2<T>& v2, const TPoint2<T>& v3, PARSER& parser)
+{
+	// compute bounding-box fully containing the triangle
+	const TPoint2<T> boxMin(MINF3(v1.x, v2.x, v3.x), MINF3(v1.y, v2.y, v3.y));
+	const TPoint2<T> boxMax(MAXF3(v1.x, v2.x, v3.x), MAXF3(v1.y, v2.y, v3.y));
+	// check the bounding-box intersects the image
+	const cv::Size size(parser.Size());
+	if (boxMax.x < T(0) || boxMin.x > T(size.width - 1) ||
+		boxMax.y < T(0) || boxMin.y > T(size.height - 1))
+		return;
+	// ignore back oriented triangles (negative area)
+	const T area(EdgeFunction(v1, v2, v3));
+	if (area <= 0)
+		return;
+	// clip bounding-box to be fully contained by the image
+	ImageRef boxMinI(FLOOR2INT(boxMin));
+	ImageRef boxMaxI(CEIL2INT(boxMax));
+	Base::clip(boxMinI, boxMaxI, size);
+	// parse all pixels inside the bounding-box
+	const T invArea(T(1) / area);
+	for (int y = boxMinI.y; y <= boxMaxI.y; ++y) {
+		for (int x = boxMinI.x; x <= boxMaxI.x; ++x) {
+			const ImageRef pt(x, y);
+			const TPoint2<T> p(Cast<T>(pt));
+			const T b1(EdgeFunction(v2, v3, p));
+			if (b1 < 0)
+				continue;
+			const T b2(EdgeFunction(v3, v1, p));
+			if (b2 < 0)
+				continue;
+			const T b3(EdgeFunction(v1, v2, p));
+			if (b3 < 0)
+				continue;
+			parser(pt, TPoint3<T>(b1, b2, b3) * invArea);
+		}
+	}
+}
+
 // drawing line between 2 points from left to right
 // papb -> pcpd
 // pa, pb, pc, pd must then be sorted before

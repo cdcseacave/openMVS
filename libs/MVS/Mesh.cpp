@@ -3600,18 +3600,16 @@ void Mesh::Project(const Camera& camera, DepthMap& depthMap, Image8U3& image) co
 			Base::Clear();
 			image.memset(0);
 		}
-		void Raster(const ImageRef& pt) {
-			if (!depthMap.isInsideWithBorder<float,3>(pt))
-				return;
-			const float z((float)INVERT(normalPlane.dot(camera.TransformPointI2C(Point2(pt)))));
-			ASSERT(z > 0);
+		void Raster(const ImageRef& pt, const Point3f& bary) {
+			const Point3f pbary(PerspectiveCorrectBarycentricCoordinates(bary));
+			const Depth z(ComputeDepth(pbary));
+			ASSERT(z > Depth(0));
 			Depth& depth = depthMap(pt);
 			if (depth == 0 || depth > z) {
 				depth = z;
-				const Point3f b(CorrectBarycentricCoordinates(BarycentricCoordinatesUV(pti[0], pti[1], pti[2], Point2f(pt))));
-				xt  = mesh.faceTexcoords[idxFaceTex+0] * b[0];
-				xt += mesh.faceTexcoords[idxFaceTex+1] * b[1];
-				xt += mesh.faceTexcoords[idxFaceTex+2] * b[2];
+				xt  = mesh.faceTexcoords[idxFaceTex+0] * pbary[0];
+				xt += mesh.faceTexcoords[idxFaceTex+1] * pbary[1];
+				xt += mesh.faceTexcoords[idxFaceTex+2] * pbary[2];
 				image(pt) = mesh.textureDiffuse.sampleSafe(Point2f(xt.x*mesh.textureDiffuse.width(), (1.f-xt.y)*mesh.textureDiffuse.height()));
 			}
 		}
@@ -3634,16 +3632,12 @@ void Mesh::ProjectOrtho(const Camera& camera, DepthMap& depthMap) const
 		RasterMesh(const VertexArr& _vertices, const Camera& _camera, DepthMap& _depthMap)
 			: Base(_vertices, _camera, _depthMap) {}
 		inline bool ProjectVertex(const Mesh::Vertex& pt, int v) {
-			ptc[v] = camera.TransformPointW2C(Cast<REAL>(pt));
-			pti[v] = camera.TransformPointC2I(reinterpret_cast<const Point2&>(ptc[v]));
-			return depthMap.isInsideWithBorder<float,3>(pti[v]);
+			return (ptc[v] = camera.TransformPointW2C(Cast<REAL>(pt))).z > 0 &&
+				depthMap.isInsideWithBorder<float,3>(pti[v] = camera.TransformPointC2I(reinterpret_cast<const Point2&>(ptc[v])));
 		}
-		void Raster(const ImageRef& pt) {
-			if (!depthMap.isInsideWithBorder<float,3>(pt))
-				return;
-			const Point3f b(CorrectBarycentricCoordinates(BarycentricCoordinatesUV(pti[0], pti[1], pti[2], Point2f(pt))));
-			const float z((float)(ptc[0].z*b[0] + ptc[1].z*b[1] + ptc[2].z*b[2]));
-			ASSERT(z > 0);
+		void Raster(const ImageRef& pt, const Point3f& bary) {
+			const Depth z(ComputeDepth(bary));
+			ASSERT(z > Depth(0));
 			Depth& depth = depthMap(pt);
 			if (depth == 0 || depth > z)
 				depth = z;
@@ -3670,27 +3664,18 @@ void Mesh::ProjectOrtho(const Camera& camera, DepthMap& depthMap, Image8U3& imag
 			image.memset(0);
 		}
 		inline bool ProjectVertex(const Mesh::Vertex& pt, int v) {
-			ptc[v] = camera.TransformPointW2C(Cast<REAL>(pt));
-			pti[v] = camera.TransformPointC2I(reinterpret_cast<const Point2&>(ptc[v]));
-			return depthMap.isInsideWithBorder<float,3>(pti[v]);
+			return (ptc[v] = camera.TransformPointW2C(Cast<REAL>(pt))).z > 0 &&
+				depthMap.isInsideWithBorder<float,3>(pti[v] = camera.TransformPointC2I(reinterpret_cast<const Point2&>(ptc[v])));
 		}
-		inline bool CheckNormal(const Point3& /*faceCenter*/) {
-			// skip face if the (cos) angle between
-			// the face normal and the view direction is negative
-			return camera.Direction().dot(normalPlane) >= ZEROTOLERANCE<REAL>();
-		}
-		void Raster(const ImageRef& pt) {
-			if (!depthMap.isInsideWithBorder<float,3>(pt))
-				return;
-			const Point3f b(CorrectBarycentricCoordinates(BarycentricCoordinatesUV(pti[0], pti[1], pti[2], Point2f(pt))));
-			const float z((float)(ptc[0].z*b[0] + ptc[1].z*b[1] + ptc[2].z*b[2]));
-			ASSERT(z > 0);
+		void Raster(const ImageRef& pt, const Point3f& bary) {
+			const Depth z(ComputeDepth(bary));
+			ASSERT(z > Depth(0));
 			Depth& depth = depthMap(pt);
 			if (depth == 0 || depth > z) {
 				depth = z;
-				xt  = mesh.faceTexcoords[idxFaceTex+0] * b[0];
-				xt += mesh.faceTexcoords[idxFaceTex+1] * b[1];
-				xt += mesh.faceTexcoords[idxFaceTex+2] * b[2];
+				xt  = mesh.faceTexcoords[idxFaceTex+0] * bary[0];
+				xt += mesh.faceTexcoords[idxFaceTex+1] * bary[1];
+				xt += mesh.faceTexcoords[idxFaceTex+2] * bary[2];
 				image(pt) = mesh.textureDiffuse.sampleSafe(Point2f(xt.x*mesh.textureDiffuse.width(), (1.f-xt.y)*mesh.textureDiffuse.height()));
 			}
 		}

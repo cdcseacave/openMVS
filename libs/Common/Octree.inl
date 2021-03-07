@@ -515,7 +515,7 @@ void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE>::_SplitVolume(const CELL_TYPE& pa
 		POINT_TYPE centers[8];
 		cList<PairIndices> arrHalfIndices;
 		GenerateSamples(const UnsignedArr& _indices)
-			: indices(_indices), numSamples((unsigned)indices.size()), halfSamples((unsigned)indices.size()/2), arrHalfIndices(0, numSamples), numCommonAxis(halfSamples==4?1:2)
+			: indices(_indices), numSamples((unsigned)indices.size()), halfSamples(numSamples/2), numCommonAxis(halfSamples==4?1:2), arrHalfIndices(0, numSamples)
 		{
 			ASSERT(indices.size()%2 == 0 && indices.IsSorted());
 			ASSERT(halfSamples == 4 || halfSamples == 2);
