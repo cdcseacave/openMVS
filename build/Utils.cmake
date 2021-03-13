@@ -273,18 +273,6 @@ macro(add_option variable description value)
 endmacro()
 
 
-# Set as Pre-Compiled Header automaticaly or to the given file name
-macro(set_target_pch TRGT)
-	if(ENABLE_PRECOMPILED_HEADERS AND COMMAND cotire)
-		if(NOT ${ARGN} STREQUAL "")
-			set_target_properties("${TRGT}" PROPERTIES COTIRE_CXX_PREFIX_HEADER_INIT "${ARGN}")
-		endif()
-		set_target_properties("${TRGT}" PROPERTIES COTIRE_ADD_UNITY_BUILD FALSE)
-		cotire("${TRGT}")
-	endif()
-endmacro()
-
-
 # Optimize compiler settings
 
 set(STATIC_COMPILER_FAIL_REGEX
@@ -401,21 +389,6 @@ macro(optimize_default_compiler_settings)
 	add_option(ENABLE_NOISY_WARNINGS      "Show all warnings even if they are too noisy"             OFF )
 	add_option(ENABLE_WARNINGS_AS_ERRORS  "Treat warnings as errors"                                 OFF )
 
-	if(MINGW)
-	  # mingw compiler is known to produce unstable SSE code with -O3 hence we are trying to use -O2 instead
-	  if(CMAKE_COMPILER_IS_GNUCXX)
-		foreach(flags CMAKE_CXX_FLAGS CMAKE_CXX_FLAGS_RELEASE CMAKE_CXX_FLAGS_DEBUG)
-		  string(REPLACE "-O3" "-O2" ${flags} "${${flags}}")
-		endforeach()
-	  endif()
-
-	  if(CMAKE_COMPILER_IS_GNUCC)
-		foreach(flags CMAKE_C_FLAGS CMAKE_C_FLAGS_RELEASE CMAKE_C_FLAGS_DEBUG)
-		  string(REPLACE "-O3" "-O2" ${flags} "${${flags}}")
-		endforeach()
-	  endif()
-	endif()
-
 	set(BUILD_EXTRA_FLAGS "")
 	set(BUILD_EXTRA_C_FLAGS "")
 	set(BUILD_EXTRA_CXX_FLAGS "")
@@ -451,15 +424,6 @@ macro(optimize_default_compiler_settings)
 	set(CMAKE_CXX_STANDARD_REQUIRED ON)
 	set(CMAKE_CXX_EXTENSIONS OFF)
 	message("Compiling with C++${CMAKE_CXX_STANDARD}")
-
-	if(MINGW)
-	  # http://gcc.gnu.org/bugzilla/show_bug.cgi?id=40838
-	  # here we are trying to workaround the problem
-	  add_extra_compiler_option(-mstackrealign)
-	  if(NOT HAVE_CXX_MSTACKREALIGN)
-		add_extra_compiler_option(-mpreferred-stack-boundary=2)
-	  endif()
-	endif()
 
 	if(FLG_COMPILER_IS_GNU)
 	  # High level of warnings.
@@ -526,17 +490,13 @@ macro(optimize_default_compiler_settings)
 		add_extra_compiler_option(-Werror)
 	  endif()
 
-	  if(X86 AND NOT MINGW64 AND NOT X86_64 AND NOT APPLE)
-		add_extra_compiler_option(-march=i686)
-	  endif()
-
 	  # Other optimizations
 	  if(ENABLE_OMIT_FRAME_POINTER)
 		add_extra_compiler_option(-fomit-frame-pointer)
 	  else()
 		add_extra_compiler_option(-fno-omit-frame-pointer)
-		endif()
-		if(NOT CLANG)
+	  endif()
+	  if(NOT CLANG)
 	  if(ENABLE_FAST_MATH)
 		add_extra_compiler_option(-ffast-math)
 	  else()
@@ -849,7 +809,7 @@ endmacro()
 
 # Defines the main libraries.  User tests should link
 # with one of them.
-function(cxx_library_with_type_no_pch name folder type cxx_flags)
+function(cxx_library_with_type name folder type cxx_flags)
   # type can be either STATIC or SHARED to denote a static or shared library.
   # ARGN refers to additional arguments after 'cxx_flags'.
   add_library("${name}" ${type} ${ARGN})
@@ -863,29 +823,11 @@ function(cxx_library_with_type_no_pch name folder type cxx_flags)
   set_target_properties("${name}" PROPERTIES FOLDER "${folder}")
 endfunction()
 
-function(cxx_library_with_type name folder type cxx_flags)
-  cxx_library_with_type_no_pch("${name}" "${folder}" "${type}" "${cxx_flags}" ${ARGN})
-  # Generate precompiled headers
-  set_target_pch("${name}")
-endfunction()
-
-########################################################################
-#
-# Helper functions for creating build targets.
-
-function(cxx_shared_library name folder cxx_flags)
-  cxx_library_with_type("${name}" "${folder}" SHARED "${cxx_flags}" ${ARGN})
-endfunction()
-
-function(cxx_library name folder cxx_flags)
-  cxx_library_with_type("${name}" "${folder}" "" "${cxx_flags}" ${ARGN})
-endfunction()
-
 # cxx_executable_with_flags(name cxx_flags libs srcs...)
 #
 # creates a named C++ executable that depends on the given libraries and
 # is built from the given source files with the given compiler flags.
-function(cxx_executable_with_flags_no_pch name folder cxx_flags libs)
+function(cxx_executable_with_flags name folder cxx_flags libs)
   add_executable("${name}" ${ARGN})
   if (cxx_flags)
     set_target_properties("${name}" PROPERTIES COMPILE_FLAGS "${cxx_flags}")
@@ -897,37 +839,4 @@ function(cxx_executable_with_flags_no_pch name folder cxx_flags libs)
   endforeach()
   # Set project folder
   set_target_properties("${name}" PROPERTIES FOLDER "${folder}")
-endfunction()
-
-function(cxx_executable_with_flags name folder cxx_flags libs)
-  cxx_executable_with_flags_no_pch("${name}" "${folder}" "${cxx_flags}" "${libs}" ${ARGN})
-  # Generate precompiled headers
-  set_target_pch("${name}")
-endfunction()
-
-# cxx_executable(name dir lib srcs...)
-#
-# creates a named target that depends on the given libs and is built
-# from the given source files.  dir/name.cc is implicitly included in
-# the source file list.
-function(cxx_executable name folder dir libs)
-  cxx_executable_with_flags("${name}" "${folder}" "${cxx_default}" "${libs}" "${dir}/${name}.cpp" ${ARGN})
-endfunction()
-
-# cxx_test_with_flags(name cxx_flags libs srcs...)
-#
-# creates a named C++ test that depends on the given libs and is built
-# from the given source files with the given compiler flags.
-function(cxx_test_with_flags name folder cxx_flags libs)
-  cxx_executable_with_flags("${name}" "${folder}" "${cxx_flags}" "${libs}" ${ARGN})
-  add_test("${name}" "${name}")
-endfunction()
-
-# cxx_test(name libs srcs...)
-#
-# creates a named test target that depends on the given libs and is
-# built from the given source files.  Unlike cxx_test_with_flags,
-# test/name.cc is already implicitly included in the source file list.
-function(cxx_test name folder libs)
-  cxx_test_with_flags("${name}" "${folder}" "${cxx_default}" "${libs}" "test/${name}.cc" ${ARGN})
 endfunction()
