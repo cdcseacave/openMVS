@@ -897,8 +897,50 @@ unsigned Scene::Split(ImagesChunkArr& chunks, IIndex maxArea, int depthMapStep) 
 		}
 	}
 	#endif
-	DEBUG_EXTRA("Scene split (%g max-area): %u chunks (%s)", maxArea, chunks.size(), TD_TIMER_GET_FMT().c_str());
 	#if 1
+	// merge small chunks into larger chunk neighbors
+	// TODO: better manage the bounding-box merge
+	const unsigned minNumImagesPerChunk(4);
+	RFOREACH(cSmall, chunks) {
+		ImagesChunk& chunkSmall = chunks[cSmall];
+		if (chunkSmall.images.size() > minNumImagesPerChunk)
+			continue;
+		// find the chunk having the most images in common
+		IIndex idxBestChunk;
+		unsigned numLargestCommonImages(0);
+		FOREACH(cLarge, chunks) {
+			if (cSmall == cLarge)
+				continue;
+			const ImagesChunk& chunkLarge = chunks[cLarge];
+			unsigned numCommonImages(0);
+			for (const IIndex idxImage: chunkSmall.images)
+				if (chunkLarge.images.find(idxImage) != chunkLarge.images.end())
+					++numCommonImages;
+			if (numCommonImages == 0)
+				continue;
+			if (numLargestCommonImages < numCommonImages ||
+				(numLargestCommonImages == numCommonImages && chunks[idxBestChunk].images.size() < chunkLarge.images.size()))
+			{
+				numLargestCommonImages = numCommonImages;
+				idxBestChunk = cLarge;
+			}
+		}
+		if (numLargestCommonImages == 0) {
+			DEBUG_ULTIMATE("warning: small chunk can not be merged (%u chunk, %u images)",
+				cSmall, chunkSmall.images.size());
+			continue;
+		}
+		// merge the small chunk and remove it
+		ImagesChunk& chunkLarge = chunks[idxBestChunk];
+		DEBUG_ULTIMATE("Small chunk merged: %u chunk (%u images) -> %u chunk (%u images)",
+			cSmall, chunkSmall.images.size(), idxBestChunk, chunkLarge.images.size());
+		chunkLarge.aabb.Insert(chunkSmall.aabb);
+		chunkLarge.images.insert(chunkSmall.images.begin(), chunkSmall.images.end());
+		chunks.RemoveAt(cSmall);
+	}
+	#endif
+	DEBUG_EXTRA("Scene split (%g max-area): %u chunks (%s)", maxArea, chunks.size(), TD_TIMER_GET_FMT().c_str());
+	#if 0 || defined(_DEBUG)
 	// dump chunks for visualization
 	FOREACH(c, chunks) {
 		const ImagesChunk& chunk = chunks[c];
