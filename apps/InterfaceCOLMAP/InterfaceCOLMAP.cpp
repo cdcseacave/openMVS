@@ -569,7 +569,7 @@ struct Mat {
 	size_t GetNumBytes() const {
 		return data_.size() * sizeof(T);
 	}
-	const T* Mat<T>::GetChannelPtr(size_t c) const {
+	const T* GetChannelPtr(size_t c) const {
 		return data_.data()+width_*height_*c;
 	}
 
