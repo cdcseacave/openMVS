@@ -44,6 +44,7 @@ optional arguments:
                             GLOBAL = [0, 1, 2, 4, 9, 10, 11, 12, 13]
                             MVG_SEQ = [0, 1, 2, 3, 5, 6, 7]
                             MVG_GLOBAL = [0, 1, 2, 4, 5, 6, 7]
+                            MVS = [10, 11, 12, 13]
                             MVS_SGM = [14, 15]
                             default : SEQUENTIAL
 
@@ -117,6 +118,7 @@ PRESET = {'SEQUENTIAL': [0, 1, 2, 3, 9, 10, 11, 12, 13],
           'GLOBAL': [0, 1, 2, 4, 9, 10, 11, 12, 13],
           'MVG_SEQ': [0, 1, 2, 3, 5, 6, 7],
           'MVG_GLOBAL': [0, 1, 2, 4, 5, 6, 7],
+          'MVS': [10, 11, 12, 13],
           'MVS_SGM': [14, 15]}
 
 PRESET_DEFAULT = 'SEQUENTIAL'
