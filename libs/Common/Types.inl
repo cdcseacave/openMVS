@@ -3619,8 +3619,7 @@ namespace boost {
 
 		// Serialization support for cv::Mat
 		template<class Archive>
-		void save(Archive& ar, const cv::Mat& m, const unsigned int /*version*/)
-		{
+		void save(Archive& ar, const cv::Mat& m, const unsigned int /*version*/) {
 			const int elem_type = m.type();
 			const size_t elem_size = m.elemSize();
 
@@ -3639,8 +3638,7 @@ namespace boost {
 			}
 		}
 		template<class Archive>
-		void load(Archive& ar, cv::Mat& m, const unsigned int /*version*/)
-		{
+		void load(Archive& ar, cv::Mat& m, const unsigned int /*version*/) {
 			int cols, rows, elem_type;
 			size_t elem_size;
 
@@ -3661,8 +3659,7 @@ namespace boost {
 
 		// Serialization support for cv::Mat_
 		template<class Archive, typename _Tp>
-		void save(Archive& ar, const cv::Mat_<_Tp>& m, const unsigned int /*version*/)
-		{
+		void save(Archive& ar, const cv::Mat_<_Tp>& m, const unsigned int /*version*/) {
 			ar & m.cols;
 			ar & m.rows;
 
@@ -3676,8 +3673,7 @@ namespace boost {
 			}
 		}
 		template<class Archive, typename _Tp>
-		void load(Archive& ar, cv::Mat_<_Tp>& m, const unsigned int /*version*/)
-		{
+		void load(Archive& ar, cv::Mat_<_Tp>& m, const unsigned int /*version*/) {
 			int cols, rows;
 			ar & cols;
 			ar & rows;
@@ -3811,7 +3807,7 @@ enum ARCHIVE_TYPE {
 
 // export the current state of the given reconstruction object
 template <typename TYPE>
-bool SerializeSave(const TYPE& obj, std::ofstream& fs, ARCHIVE_TYPE type, unsigned flags=0)
+bool SerializeSave(const TYPE& obj, std::ofstream& fs, ARCHIVE_TYPE type, unsigned flags=boost::archive::no_header)
 {
 	// serialize out the current state
 	switch (type) {
@@ -3848,7 +3844,7 @@ bool SerializeSave(const TYPE& obj, std::ofstream& fs, ARCHIVE_TYPE type, unsign
 	return true;
 } // SerializeSave
 template <typename TYPE>
-bool SerializeSave(const TYPE& obj, const SEACAVE::String& fileName, ARCHIVE_TYPE type, unsigned flags=0)
+bool SerializeSave(const TYPE& obj, const SEACAVE::String& fileName, ARCHIVE_TYPE type, unsigned flags=boost::archive::no_header)
 {
 	// open the output stream
 	std::ofstream fs(fileName, std::ios::out | std::ios::binary);
@@ -3860,7 +3856,7 @@ bool SerializeSave(const TYPE& obj, const SEACAVE::String& fileName, ARCHIVE_TYP
 
 // import the state to the given reconstruction object
 template <typename TYPE>
-bool SerializeLoad(TYPE& obj, std::ifstream& fs, ARCHIVE_TYPE type, unsigned flags=0)
+bool SerializeLoad(TYPE& obj, std::ifstream& fs, ARCHIVE_TYPE type, unsigned flags=boost::archive::no_header)
 {
 	try {
 		// serialize in the saved state
@@ -3903,7 +3899,7 @@ bool SerializeLoad(TYPE& obj, std::ifstream& fs, ARCHIVE_TYPE type, unsigned fla
 	return true;
 } // SerializeLoad
 template <typename TYPE>
-bool SerializeLoad(TYPE& obj, const SEACAVE::String& fileName, ARCHIVE_TYPE type, unsigned flags=0)
+bool SerializeLoad(TYPE& obj, const SEACAVE::String& fileName, ARCHIVE_TYPE type, unsigned flags=boost::archive::no_header)
 {
 	// open the input stream
 	std::ifstream fs(fileName, std::ios::in | std::ios::binary);
