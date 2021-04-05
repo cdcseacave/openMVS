@@ -56,8 +56,8 @@ public:
 
 	inline bool IsEmpty() const;
 
-	inline void Enlarge(TYPE);
-	inline void EnlargePercent(TYPE);
+	inline TAABB& Enlarge(TYPE);
+	inline TAABB& EnlargePercent(TYPE);
 
 		   void InsertFull(const POINT&);
 		   void Insert(const POINT&);

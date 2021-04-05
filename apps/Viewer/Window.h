@@ -50,10 +50,22 @@ class Window
 {
 public:
 	GLFWwindow* window; // window handle
-	CameraPtr camera; // current camera (always valid)
+	Camera camera; // current camera
 	Eigen::Vector2d pos, prevPos; // current and previous mouse position (normalized)
+	Eigen::Matrix4d transform; // view matrix corresponding to the currently selected image
+	cv::Size size; // resolution in pixels, sometimes not equal to window resolution, ex. on Retina display
+	double sizeScale; // window/screen resolution scale
+
+	enum INPUT : unsigned {
+		INP_NA = 0,
+		INP_MOUSE_LEFT    = (1 << 0),
+		INP_MOUSE_MIDDLE  = (1 << 1),
+		INP_MOUSE_RIGHT   = (1 << 2),
+	};
+	Flags inputType;
 
 	enum SPARSE {
+		SPR_NONE   = 0,
 		SPR_POINTS = (1 << 0),
 		SPR_LINES  = (1 << 1),
 		SPR_ALL    = SPR_POINTS|SPR_LINES
@@ -63,6 +75,9 @@ public:
 	float pointSize;
 	float cameraBlend;
 	bool bRenderCameras;
+	bool bRenderCameraTrajectory;
+	bool bRenderImageVisibility;
+	bool bRenderViews;
 	bool bRenderSolid;
 	bool bRenderTexture;
 
@@ -74,6 +89,7 @@ public:
 	SELECTION selectionType;
 	Point3f selectionPoints[4];
 	double selectionTimeClick, selectionTime;
+	IDX selectionIdx;
 
 	typedef DELEGATE<bool (LPCTSTR, LPCTSTR)> ClbkOpenScene;
 	ClbkOpenScene clbkOpenScene;
@@ -94,25 +110,35 @@ public:
 	~Window();
 
 	void Release();
+	void ReleaseClbk();
 	inline bool IsValid() const { return window != NULL; }
-
-	bool Init(int width, int height, LPCTSTR name);
-	void SetCamera(CameraPtr);
-	void SetName(LPCTSTR);
-	void SetVisible(bool);
-	void Reset(uint32_t minViews=2);
 
 	inline GLFWwindow* GetWindow() { return window; }
 
-	void UpdateView(const ImageArr&, const MVS::ImageArr&);
-	void UpdateMousePosition();
+	bool Init(const cv::Size&, LPCTSTR name);
+	void SetCamera(const Camera&);
+	void SetName(LPCTSTR);
+	void SetVisible(bool);
+	bool IsVisible() const;
+	void Reset(SPARSE sparseType=SPR_ALL, unsigned minViews=2);
 
-	void Resize(int width, int height);
+	void CenterCamera(const Point3&);
+
+	void UpdateView(const ImageArr&, const MVS::ImageArr&);
+	void UpdateView(const Eigen::Matrix3d& R, const Eigen::Vector3d& t);
+	void UpdateMousePosition(double xpos, double ypos);
+
+	void GetFrame(Image8U3&) const;
+
+	cv::Size GetSize() const;
+	void Resize(const cv::Size&);
 	static void Resize(GLFWwindow* window, int width, int height);
 	void Key(int k, int scancode, int action, int mod);
 	static void Key(GLFWwindow* window, int k, int scancode, int action, int mod);
 	void MouseButton(int button, int action, int mods);
 	static void MouseButton(GLFWwindow* window, int button, int action, int mods);
+	void MouseMove(double xpos, double ypos);
+	static void MouseMove(GLFWwindow* window, double xpos, double ypos);
 	void Scroll(double xoffset, double yoffset);
 	static void Scroll(GLFWwindow* window, double xoffset, double yoffset);
 	void Drop(int count, const char** paths);

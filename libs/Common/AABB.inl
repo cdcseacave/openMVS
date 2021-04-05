@@ -99,16 +99,18 @@ inline bool TAABB<TYPE,DIMS>::IsEmpty() const
 
 
 template <typename TYPE, int DIMS>
-inline void TAABB<TYPE,DIMS>::Enlarge(TYPE x)
+inline TAABB<TYPE,DIMS>& TAABB<TYPE,DIMS>::Enlarge(TYPE x)
 {
 	ptMin.array() -= x;
 	ptMax.array() += x;
+	return *this;
 }
 template <typename TYPE, int DIMS>
-inline void TAABB<TYPE,DIMS>::EnlargePercent(TYPE x)
+inline TAABB<TYPE,DIMS>& TAABB<TYPE,DIMS>::EnlargePercent(TYPE x)
 {
 	ptMin *= x;
 	ptMax *= x;
+	return *this;
 } // Enlarge
 /*----------------------------------------------------------------*/
 

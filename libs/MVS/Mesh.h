@@ -146,6 +146,7 @@ public:
 
 	Box GetAABB() const;
 	Box GetAABB(const Box& bound) const;
+	Vertex GetCenter() const;
 
 	void ListIncidenteVertices();
 	void ListIncidenteFaces();

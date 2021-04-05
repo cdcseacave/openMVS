@@ -35,6 +35,4 @@ CMakeSettings.json
 .idea/
 .vscode/
 out/
-bin/
-binaries/
-build_wsl/
+bin*/

@@ -105,6 +105,24 @@ PointCloud::Box PointCloud::GetAABB(unsigned minViews) const
 			box.InsertFull(points[idx]);
 	return box;
 }
+
+// compute the center of the point-cloud as the median
+PointCloud::Point PointCloud::GetCenter() const
+{
+	const Index step(5);
+	const Index numPoints(points.size()/step);
+	if (numPoints == 0)
+		return Point::INF;
+	typedef CLISTDEF0IDX(Point::Type,Index) Scalars;
+	Scalars x(numPoints), y(numPoints), z(numPoints);
+	for (Index i=0; i<numPoints; ++i) {
+		const Point& X = points[i*step];
+		x[i] = X.x;
+		y[i] = X.y;
+		z[i] = X.z;
+	}
+	return Point(x.GetMedian(), y.GetMedian(), z.GetMedian());
+}
 /*----------------------------------------------------------------*/
 
 

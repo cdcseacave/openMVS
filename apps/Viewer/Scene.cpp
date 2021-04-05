@@ -234,6 +234,11 @@ void Scene::Empty()
 {
 	ReleasePointCloud();
 	ReleaseMesh();
+	if (window.IsValid()) {
+		window.ReleaseClbk();
+		window.Reset();
+		window.SetName(_T("(empty)"));
+	}
 	textures.Release();
 	images.Release();
 	scene.Release();
@@ -241,6 +246,8 @@ void Scene::Empty()
 }
 void Scene::Release()
 {
+	if (window.IsValid())
+		window.SetVisible(false);
 	if (!thread.isRunning()) {
 		events.AddEvent(new EVTClose());
 		thread.join();
@@ -264,23 +271,19 @@ void Scene::ReleaseMesh()
 	}
 }
 
-bool Scene::Init(int width, int height, LPCTSTR windowName, LPCTSTR fileName, LPCTSTR meshFileName)
+bool Scene::Init(const cv::Size& size, LPCTSTR windowName, LPCTSTR fileName, LPCTSTR meshFileName)
 {
 	ASSERT(scene.IsEmpty());
 
 	// init window
 	if (glfwInit() == GL_FALSE)
 		return false;
-	if (!window.Init(width, height, windowName))
+	if (!window.Init(size, windowName))
 		return false;
 	if (glewInit() != GLEW_OK)
 		return false;
 	name = windowName;
 	window.clbkOpenScene = DELEGATEBINDCLASS(Window::ClbkOpenScene, &Scene::Open, this);
-	window.clbkExportScene = DELEGATEBINDCLASS(Window::ClbkExportScene, &Scene::Export, this);
-	window.clbkRayScene = DELEGATEBINDCLASS(Window::ClbkRayScene, &Scene::CastRay, this);
-	window.clbkCompilePointCloud = DELEGATEBINDCLASS(Window::ClbkCompilePointCloud, &Scene::CompilePointCloud, this);
-	window.clbkCompileMesh = DELEGATEBINDCLASS(Window::ClbkCompileMesh, &Scene::CompileMesh, this);
 
 	// init OpenGL
 	glPolygonMode(GL_FRONT, GL_FILL);
@@ -305,9 +308,9 @@ bool Scene::Init(int width, int height, LPCTSTR windowName, LPCTSTR fileName, LP
 	thread.start(ThreadWorker);
 
 	// open scene or init empty scene
-	if (fileName == NULL || !Open(fileName, meshFileName))
-		window.SetCamera(CameraPtr(new Camera()));
-
+	window.SetCamera(Camera());
+	if (fileName != NULL)
+		Open(fileName, meshFileName);
 	window.SetVisible(true);
 	return true;
 }
@@ -337,14 +340,18 @@ bool Scene::Open(LPCTSTR fileName, LPCTSTR meshFileName)
 
 	// init scene
 	AABB3d bounds(true);
+	AABB3d imageBounds(true);
+	Point3d center(Point3d::INF);
 	if (!scene.pointcloud.IsEmpty()) {
 		bounds = scene.pointcloud.GetAABB(MINF(3u,scene.nCalibratedImages));
 		if (bounds.IsEmpty())
 			bounds = scene.pointcloud.GetAABB();
+		center = scene.pointcloud.GetCenter();
 	}
 	if (!scene.mesh.IsEmpty()) {
 		scene.mesh.ComputeNormalFaces();
 		bounds.Insert(scene.mesh.GetAABB());
+		center = scene.mesh.GetCenter();
 	}
 
 	// init images
@@ -353,7 +360,8 @@ bool Scene::Open(LPCTSTR fileName, LPCTSTR meshFileName)
 		const MVS::Image& imageData = scene.images[idxImage];
 		if (!imageData.IsValid())
 			continue;
-		images.AddConstruct(idxImage);
+		images.emplace_back(idxImage);
+		imageBounds.InsertFull(imageData.camera.C);
 	}
 
 	// init and load texture
@@ -379,10 +387,18 @@ bool Scene::Open(LPCTSTR fileName, LPCTSTR meshFileName)
 	CompileMesh();
 
 	// init camera
-	window.SetCamera(CameraPtr(new Camera(bounds)));
-	window.camera->maxCamID = images.size();
+	window.SetCamera(Camera(bounds,
+		center == Point3d::INF ? Point3d(bounds.GetCenter()) : center,
+		images.size()<2?1.f:(float)imageBounds.EnlargePercent(REAL(1)/images.size()).GetSize().norm()));
+	window.camera.maxCamID = images.size();
 	window.SetName(String::FormatString((name + _T(": %s")).c_str(), Util::getFileName(fileName).c_str()));
-	window.Reset(MINF(2u, images.size()));
+	window.clbkExportScene = DELEGATEBINDCLASS(Window::ClbkExportScene, &Scene::Export, this);
+	window.clbkCompilePointCloud = DELEGATEBINDCLASS(Window::ClbkCompilePointCloud, &Scene::CompilePointCloud, this);
+	window.clbkCompileMesh = DELEGATEBINDCLASS(Window::ClbkCompileMesh, &Scene::CompileMesh, this);
+	if (!bounds.IsEmpty())
+		window.clbkRayScene = DELEGATEBINDCLASS(Window::ClbkRayScene, &Scene::CastRay, this);
+	window.Reset(!scene.pointcloud.IsEmpty()&&!scene.mesh.IsEmpty()?Window::SPR_NONE:Window::SPR_ALL,
+		MINF(2u,images.size()));
 	return true;
 }
 
@@ -468,8 +484,6 @@ void Scene::Draw()
 	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 	glPointSize(window.pointSize);
 
-	window.UpdateView(images, scene.images);
-
 	// render point-cloud
 	if (listPointCloud) {
 		glDisable(GL_TEXTURE_2D);
@@ -493,6 +507,7 @@ void Scene::Draw()
 	// render cameras
 	if (window.bRenderCameras) {
 		glDisable(GL_CULL_FACE);
+		const Point3* ptrPrevC(NULL);
 		FOREACH(idx, images) {
 			Image& image = images[idx];
 			const MVS::Image& imageData = scene.images[image.idx];
@@ -503,7 +518,7 @@ void Scene::Draw()
 			glPointSize(window.pointSize+1.f);
 			glDisable(GL_TEXTURE_2D);
 			// draw camera position and image center
-			const double scaleFocal(window.camera->scaleF);
+			const double scaleFocal(window.camera.scaleF);
 			glBegin(GL_POINTS);
 			glColor3f(1,0,0); glVertex3f(0,0,0); // camera position
 			glColor3f(0,1,0); glVertex3f(0,0,(float)scaleFocal); // image center
@@ -520,7 +535,7 @@ void Scene::Draw()
 			const Point3d ic3(px, py, scaleFocal);
 			const Point3d ic4(px, cy, scaleFocal);
 			// draw image thumbnail
-			const bool bSelectedImage(idx == window.camera->currentCamID);
+			const bool bSelectedImage(idx == window.camera.currentCamID);
 			if (bSelectedImage) {
 				if (image.IsValid()) {
 					// render image
@@ -565,6 +580,36 @@ void Scene::Draw()
 			glEnd();
 			// restore coordinate system
 			glPopMatrix();
+			// render image visibility info
+			if (window.bRenderImageVisibility && idx != NO_ID && idx==window.camera.currentCamID) {
+				if (scene.pointcloud.IsValid()) {
+					const Image& image = images[idx];
+					glPointSize(window.pointSize*1.1f);
+					glDisable(GL_DEPTH_TEST);
+					glBegin(GL_POINTS);
+					glColor3f(1.f,0.f,0.f);
+					FOREACH(i, scene.pointcloud.points) {
+						ASSERT(!scene.pointcloud.pointViews[i].empty());
+						if (scene.pointcloud.pointViews[i].size() < window.minViews)
+							continue;
+						if (scene.pointcloud.pointViews[i].FindFirst(image.idx) == MVS::PointCloud::ViewArr::NO_INDEX)
+							continue;
+						glVertex3fv(scene.pointcloud.points[i].ptr());
+					}
+					glEnd();
+					glEnable(GL_DEPTH_TEST);
+					glPointSize(window.pointSize);
+				}
+			}
+			// render camera trajectory
+			if (window.bRenderCameraTrajectory && ptrPrevC) {
+				glBegin(GL_LINES);
+				glColor3f(1.f,0.5f,0.f);
+				glVertex3dv(ptrPrevC->ptr());
+				glVertex3dv(camera.C.ptr());
+				glEnd();
+			}
+			ptrPrevC = &camera.C;
 		}
 	}
 	if (window.selectionType != Window::SEL_NA) {
@@ -577,25 +622,31 @@ void Scene::Draw()
 		glColor3f(0,0,1); glVertex3fv(window.selectionPoints[2].ptr());
 		}
 		glEnd();
+		if (window.bRenderViews && window.selectionType == Window::SEL_POINT) {
+			if (!scene.pointcloud.pointViews.empty()) {
+				glBegin(GL_LINES);
+				const MVS::PointCloud::ViewArr& views = scene.pointcloud.pointViews[(MVS::PointCloud::Index)window.selectionIdx];
+				ASSERT(!views.empty());
+				for (MVS::PointCloud::View idxImage: views) {
+					const MVS::Image& imageData = scene.images[idxImage];
+					glVertex3dv(imageData.camera.C.ptr());
+					glVertex3fv(window.selectionPoints[0].ptr());
+				}
+				glEnd();
+			}
+		}
 		glEnable(GL_DEPTH_TEST);
 		glPointSize(window.pointSize);
 	}
 	glfwSwapBuffers(window.GetWindow());
 }
 
-void Scene::ProcessEvents()
-{
-	glfwWaitEvents();
-	window.UpdateMousePosition();
-	if (glfwGetMouseButton(window.GetWindow(), GLFW_MOUSE_BUTTON_1) != GLFW_RELEASE)
-		window.camera->Rotate(window.pos, window.prevPos);
-}
-
 void Scene::Loop()
 {
 	while (!glfwWindowShouldClose(window.GetWindow())) {
-		ProcessEvents();
+		window.UpdateView(images, scene.images);
 		Draw();
+		glfwWaitEvents();
 	}
 }
 
@@ -620,8 +671,7 @@ void Scene::CastRay(const Ray3& ray, int action)
 	if (window.selectionType != Window::SEL_NA &&
 		now-window.selectionTime < timeDblClick) {
 		// this is a double click, center scene at the selected point
-		window.camera->center = Point3d(window.selectionPoints[3]);
-		window.camera->dist *= 0.7;
+		window.CenterCamera(window.selectionPoints[3]);
 		window.selectionTime = now;
 	} else
 	if (!octMesh.IsEmpty()) {
@@ -635,6 +685,7 @@ void Scene::CastRay(const Ray3& ray, int action)
 			window.selectionPoints[3] = (ray.m_pOrig + ray.m_vDir*intRay.pick.dist).cast<float>();
 			window.selectionType = Window::SEL_TRIANGLE;
 			window.selectionTime = now;
+			window.selectionIdx = intRay.pick.idx;
 			DEBUG("Face selected:\n\tindex: %u\n\tvertex 1: %u (%g %g %g)\n\tvertex 2: %u (%g %g %g)\n\tvertex 3: %u (%g %g %g)",
 				intRay.pick.idx,
 				face[0], window.selectionPoints[0].x, window.selectionPoints[0].y, window.selectionPoints[0].z,
@@ -652,6 +703,7 @@ void Scene::CastRay(const Ray3& ray, int action)
 			window.selectionPoints[0] = window.selectionPoints[3] = scene.pointcloud.points[intRay.pick.idx];
 			window.selectionType = Window::SEL_POINT;
 			window.selectionTime = now;
+			window.selectionIdx = intRay.pick.idx;
 			DEBUG("Point selected:\n\tindex: %u (%g %g %g)%s",
 				intRay.pick.idx,
 				window.selectionPoints[0].x, window.selectionPoints[0].y, window.selectionPoints[0].z,
@@ -670,7 +722,7 @@ void Scene::CastRay(const Ray3& ray, int action)
 				}().c_str()
 			);
 		} else {
-			window.selectionType = Window::SEL_POINT;
+			window.selectionType = Window::SEL_NA;
 		}
 	}
 	break; }

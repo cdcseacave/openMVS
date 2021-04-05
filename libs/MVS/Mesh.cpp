@@ -114,6 +114,24 @@ Mesh::Box Mesh::GetAABB(const Box& bound) const
 			box.InsertFull(X);
 	return box;
 }
+
+// compute the center of the point-cloud as the median
+Mesh::Vertex Mesh::GetCenter() const
+{
+	const VIndex step(5);
+	const VIndex numPoints(vertices.size()/step);
+	if (numPoints == 0)
+		return Vertex::INF;
+	typedef CLISTDEF0IDX(Vertex::Type,VIndex) Scalars;
+	Scalars x(numPoints), y(numPoints), z(numPoints);
+	for (VIndex i=0; i<numPoints; ++i) {
+		const Vertex& X = vertices[i*step];
+		x[i] = X.x;
+		y[i] = X.y;
+		z[i] = X.z;
+	}
+	return Vertex(x.GetMedian(), y.GetMedian(), z.GetMedian());
+}
 /*----------------------------------------------------------------*/
 
 

@@ -92,6 +92,7 @@ public:
 	Box GetAABB() const;
 	Box GetAABB(const Box& bound) const;
 	Box GetAABB(unsigned minViews) const;
+	Point GetCenter() const;
 
 	bool Load(const String& fileName);
 	bool Save(const String& fileName, bool bLegacyTypes=false) const;

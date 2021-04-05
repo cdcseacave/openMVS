@@ -40,122 +40,136 @@ using namespace VIEWER;
 
 // S T R U C T S ///////////////////////////////////////////////////
 
-Camera::Camera(const AABB3d& _box, double _fov)
+Camera::Camera(const AABB3d& _box, const Point3d& _center, float _scaleF, float _fov)
 	:
-	box(_box),
-	width(0), height(0),
+	boxScene(_box),
+	centerScene(_center),
 	rotation(Eigen::Quaterniond::Identity()),
 	center(Eigen::Vector3d::Zero()),
-	dist(0), radius(100), fov(_fov),
-	scaleF(1.f),
+	dist(0), radius(100),
+	fovDef(_fov), scaleFDef(_scaleF),
 	prevCamID(NO_ID), currentCamID(NO_ID), maxCamID(0)
 {
 	Reset();
 }
 
-void Camera::CopyOf(const Camera& rhs)
-{
-	rotation = rhs.rotation;
-	center = rhs.center;
-	dist   = rhs.dist;
-	radius = rhs.radius;
-	fov    = rhs.fov;
-}
-
-
-void Camera::Init(const AABB3d& _box)
-{
-	box = _box;
-	Reset();
-}
-
 void Camera::Reset()
 {
-	center = box.GetCenter();
-	radius = box.GetSize().norm()*0.5;
+	if (boxScene.IsEmpty()) {
+		center = Point3d::ZERO;
+		radius = 1;
+	} else {
+		center = centerScene;
+		radius = boxScene.GetSize().norm()*0.5;
+	}
 	rotation = Eigen::Quaterniond::Identity();
-	scaleF = 1.f;
+	scaleF = scaleFDef;
 	prevCamID = currentCamID = NO_ID;
-	fov = 40;
-	dist = radius * 0.5 / SIN(D2R(fov));
-	Resize(width, height);
+	fov = fovDef;
+	dist = radius*0.5 / SIN(D2R((double)fov));
+	if (size.area())
+		Resize(size);
 }
 
-void Camera::Resize(int _width, int _height)
+void Camera::Resize(const cv::Size& _size)
 {
+	ASSERT(MINF(_size.width, _size.height) > 0);
+	size = _size;
 	glMatrixMode(GL_PROJECTION);
 	glLoadIdentity();
-	const GLfloat zNear = 1e-2f;
-	const GLfloat zFar = 1e5f;
-	width = _width; height = _height;
-	GLfloat aspect = float(width)/float(height);
-	GLfloat fH = TAN(FD2R((float)fov)) * zNear;
-	GLfloat fW = fH * aspect;
-	glFrustum(-fW, fW, -fH, fH, zNear, zFar);
+	const GLfloat zNear = 1e-3f;
+	const GLfloat zFar = (float)boxScene.GetSize().norm()*10;
+	const GLfloat aspect = float(size.width)/float(size.height);
+	if (fov == 5.f) {
+		// orthographic projection
+		const GLfloat fH = (float)boxScene.GetSize().norm()*0.5f;
+		const GLfloat fW = fH * aspect;
+		glOrtho(-fW, fW, -fH, fH, zNear, zFar);
+	} else {
+		// perspective projection
+		const GLfloat fH = TAN(D2R(fov)) * zNear;
+		const GLfloat fW = fH * aspect;
+		glFrustum(-fW, fW, -fH, fH, zNear, zFar);
+	}
 }
 
-void Camera::SetFOV(double _fov)
+void Camera::SetFOV(float _fov)
 {
-	fov = _fov;
-	Resize(width, height);
+	fov = MAXF(_fov, 5.f);
+	Resize(size);
 }
 
 
 Eigen::Vector3d Camera::GetPosition() const
 {
-	const Eigen::Matrix3d R(rotation.toRotationMatrix());
-	const Eigen::Vector3d eye(0, 0, dist);
-	return R * eye + center;
+	const Eigen::Matrix3d R(GetRotation());
+	return center + R.col(2) * dist;
+}
+
+Eigen::Matrix3d Camera::GetRotation() const
+{
+	return rotation.toRotationMatrix();
 }
 
 Eigen::Matrix4d Camera::GetLookAt() const
 {
-	const Eigen::Matrix3d R(rotation.toRotationMatrix());
-	const Eigen::Vector3d eye(R.col(2) * dist + center);
+	const Eigen::Matrix3d R(GetRotation());
+	const Eigen::Vector3d eye(center + R.col(2) * dist);
 	const Eigen::Vector3d up(R.col(1));
-	
+
 	const Eigen::Vector3d n((center-eye).normalized());
 	const Eigen::Vector3d s(n.cross(up));
 	const Eigen::Vector3d v(s.cross(n));
-	
-	Eigen::Matrix4d m;
-	m <<
-	s(0),  s(1),  s(2), -eye.dot(s),
-	v(0),  v(1),  v(2), -eye.dot(v),
-	-n(0), -n(1), -n(2),  eye.dot(n),
-	0.0, 0.0, 0.0, 1.0;
+
+	Eigen::Matrix4d m; m <<
+		 s(0),  s(1),  s(2), -eye.dot(s),
+		 v(0),  v(1),  v(2), -eye.dot(v),
+		-n(0), -n(1), -n(2),  eye.dot(n),
+		 0.0, 0.0, 0.0, 1.0;
 	return m;
 }
 void Camera::GetLookAt(Eigen::Vector3d& _eye, Eigen::Vector3d& _center, Eigen::Vector3d& _up) const
 {
-	const Eigen::Matrix3d R(rotation.toRotationMatrix());
-	const Eigen::Vector3d eye(0, 0, dist);
-	const Eigen::Vector3d up(0, 1, 0);
-
-	_eye = R * eye + center;
+	const Eigen::Matrix3d R(GetRotation());
+	_eye = center + R.col(2) * dist;
 	_center = center;
-	_up  = R * up;
+	_up = R.col(1);
 }
+
 
 void Camera::Rotate(const Eigen::Vector2d& pos, const Eigen::Vector2d& prevPos)
 {
-	if (pos.isApprox(prevPos, ZERO_TOLERANCE))
+	if (pos.isApprox(prevPos, ZEROTOLERANCE<double>()))
 		return;
 
 	Eigen::Vector3d oldp(prevPos.x(), prevPos.y(), 0);
 	Eigen::Vector3d newp(pos.x(), pos.y(), 0);
-	const double radius_virtual_sphere(0.9);
-	Project2Sphere(radius_virtual_sphere, oldp);
-	Project2Sphere(radius_virtual_sphere, newp);
-	Eigen::Quaterniond dr;
-	dr.setFromTwoVectors(newp, oldp);
-	rotation *= dr;
+	const double radiusSphere(0.9);
+	ProjectOnSphere(radiusSphere, oldp);
+	ProjectOnSphere(radiusSphere, newp);
+	rotation *= Eigen::Quaterniond().setFromTwoVectors(newp, oldp);
 
 	// disable camera view mode
 	prevCamID = currentCamID;
 }
 
-void Camera::Project2Sphere(double radius, Eigen::Vector3d& p) const
+void Camera::Translate(const Eigen::Vector2d& pos, const Eigen::Vector2d& prevPos)
+{
+	if (pos.isApprox(prevPos, ZEROTOLERANCE<double>()))
+		return;
+
+	Eigen::Matrix<double,4,4,Eigen::ColMajor> P, V;
+	glGetDoublev(GL_MODELVIEW_MATRIX, V.data());
+	glGetDoublev(GL_PROJECTION_MATRIX, P.data());
+	Eigen::Vector3d centerScreen((P*V*center.homogeneous().eval()).hnormalized());
+	centerScreen.head<2>() += prevPos - pos;
+	center = (V.inverse()*P.inverse()*centerScreen.homogeneous().eval()).hnormalized();
+
+	// disable camera view mode
+	prevCamID = currentCamID;
+}
+
+void Camera::ProjectOnSphere(double radius, Eigen::Vector3d& p) const
 {
 	p.z() = 0;
 	const double d = p.x()* p.x()+ p.y() * p.y();

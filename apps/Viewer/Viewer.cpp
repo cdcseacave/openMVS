@@ -155,9 +155,12 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 			"\tE: export scene\n"
 			"\tR: reset scene\n"
 			"\tC: render cameras\n"
+			"\tC + Shift: render camera trajectory\n"
 			"\tLeft/Right: select next camera to view the scene\n"
-			"\tW: render wire-frame mesh\n"
 			"\tT: render mesh texture\n"
+			"\tW: render wire-frame mesh\n"
+			"\tV: render view rays to the selected point\n"
+			"\tV + Shift: render points seen by the current view\n"
 			"\tUp/Down: adjust point size\n"
 			"\tUp/Down + Shift: adjust minimum number of views accepted when displaying a point or line\n"
 			"\t+/-: adjust camera thumbnail transparency\n"
@@ -216,7 +219,7 @@ int main(int argc, LPCTSTR* argv)
 
 	// create viewer
 	Scene viewer;
-	if (!viewer.Init(1280, 720, APPNAME,
+	if (!viewer.Init(cv::Size(1280, 720), APPNAME,
 			OPT::strInputFileName.IsEmpty() ? NULL : MAKE_PATH_SAFE(OPT::strInputFileName).c_str(),
 			OPT::strMeshFileName.IsEmpty() ? NULL : MAKE_PATH_SAFE(OPT::strMeshFileName).c_str()))
 		return EXIT_FAILURE;

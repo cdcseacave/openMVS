@@ -48,34 +48,38 @@ class Camera
 public:
 	EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 
-	AABB3d box;
-	int width, height;
+	cv::Size size;
+	AABB3d boxScene;
+	Eigen::Vector3d centerScene;
 	Eigen::Quaterniond rotation;
 	Eigen::Vector3d center;
-	double dist;
-	double radius;
-	double fov;
-	float scaleF;
+	double dist, radius;
+	float fov, fovDef;
+	float scaleF, scaleFDef;
 	MVS::IIndex prevCamID, currentCamID, maxCamID;
 
 public:
-	explicit Camera(const AABB3d& _box=AABB3d(true), double _fov=40);
-	void CopyOf(const Camera&);
+	Camera(const AABB3d& _box=AABB3d(true), const Point3d& _center=Point3d::ZERO, float _scaleF=1, float _fov=40);
 
-	void Init(const AABB3d&);
 	void Reset();
-	void Resize(int _width, int _height);
-	void SetFOV(double _fov);
+	void Resize(const cv::Size&);
+	void SetFOV(float _fov);
+
+	const cv::Size& GetSize() const { return size; }
 
 	Eigen::Vector3d GetPosition() const;
+	Eigen::Matrix3d GetRotation() const;
 	Eigen::Matrix4d GetLookAt() const;
+
 	void GetLookAt(Eigen::Vector3d& eye, Eigen::Vector3d& center, Eigen::Vector3d& up) const;
 	void Rotate(const Eigen::Vector2d& pos, const Eigen::Vector2d& prevPos);
+	void Translate(const Eigen::Vector2d& pos, const Eigen::Vector2d& prevPos);
+
+	bool IsCameraViewMode() const { return prevCamID != currentCamID && currentCamID != NO_ID; }
 
 protected:
-	void Project2Sphere(double radius, Eigen::Vector3d& p) const;
+	void ProjectOnSphere(double radius, Eigen::Vector3d& p) const;
 };
-typedef CSharedPtr<Camera> CameraPtr;
 /*----------------------------------------------------------------*/
 
 } // namespace VIEWER

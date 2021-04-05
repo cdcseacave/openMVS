@@ -82,14 +82,13 @@ public:
 	inline bool IsOpen() const { return IsValid() && !scene.IsEmpty(); }
 	inline bool IsOctreeValid() const { return !octPoints.IsEmpty() || !octMesh.IsEmpty(); }
 
-	bool Init(int width, int height, LPCTSTR windowName, LPCTSTR fileName=NULL, LPCTSTR meshFileName=NULL);
+	bool Init(const cv::Size&, LPCTSTR windowName, LPCTSTR fileName=NULL, LPCTSTR meshFileName=NULL);
 	bool Open(LPCTSTR fileName, LPCTSTR meshFileName=NULL);
 	bool Export(LPCTSTR fileName, LPCTSTR exportType=NULL, bool losslessTexture=false) const;
 	void CompilePointCloud();
 	void CompileMesh();
 
 	void Draw();
-	void ProcessEvents();
 	void Loop();
 
 	void CastRay(const Ray3&, int);
