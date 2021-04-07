@@ -317,16 +317,11 @@ struct MeshTexture {
 		const TexCoord* tri;
 		Color colors[3];
 		ColorMap& image;
-
 		inline RasterPatchColorData(ColorMap& _image) : image(_image) {}
-		inline void operator()(const ImageRef& pt) {
-			const Point3f b(BarycentricCoordinates(tri[0], tri[1], tri[2], TexCoord(pt)));
-			#if 0
-			if (b.x<0 || b.y<0 || b.z<0)
-				return; // outside triangle
-			#endif
+		inline cv::Size Size() const { return image.size(); }
+		inline void operator()(const ImageRef& pt, const Point3f& bary) {
 			ASSERT(image.isInside(pt));
-			image(pt) = colors[0]*b.x + colors[1]*b.y + colors[2]*b.z;
+			image(pt) = colors[0]*bary.x + colors[1]*bary.y + colors[2]*bary.z;
 		}
 	};
 
@@ -334,7 +329,6 @@ struct MeshTexture {
 	struct RasterPatchCoverageData {
 		const TexCoord* tri;
 		Image8U& image;
-
 		inline RasterPatchCoverageData(Image8U& _image) : image(_image) {}
 		inline void operator()(const ImageRef& pt) {
 			ASSERT(image.isInside(pt));
@@ -352,7 +346,6 @@ struct MeshTexture {
 		const TexCoord p1, p1Dir;
 		const float length;
 		const Sampler sampler;
-
 		inline RasterPatchMeanEdgeData(Image32F3& _image, Image8U& _mask, const Image32F3& _image0, const Image8U3& _image1,
 									   const TexCoord& _p0, const TexCoord& _p0Adj, const TexCoord& _p1, const TexCoord& _p1Adj)
 			: image(_image), mask(_mask), image0(_image0), image1(_image1),
@@ -1342,7 +1335,7 @@ void MeshTexture::GlobalSeamLeveling()
 				data.colors[v] = colorAdjustments.row(vertpatch2rows[face[v]].at(idxPatch));
 			// render triangle and for each pixel interpolate the color adjustment
 			// from the triangle corners using barycentric coordinates
-			ColorMap::RasterizeTriangle(data.tri[0], data.tri[1], data.tri[2], data);
+			ColorMap::RasterizeTriangleBary(data.tri[0], data.tri[1], data.tri[2], data);
 		}
 		// dilate with one pixel width, in order to make sure patch border smooths out a little
 		imageAdj.DilateMean<1>(imageAdj, Color::ZERO);
@@ -1666,8 +1659,7 @@ void MeshTexture::LocalSeamLeveling()
 		image0(texturePatch.rect).convertTo(image, CV_32FC3, 1.0/255.0);
 		image.copyTo(imageOrg);
 		// render patch coverage
-		Image8U mask(texturePatch.rect.size());
-		{
+		Image8U mask(texturePatch.rect.size()); {
 			mask.memset(0);
 			RasterPatchCoverageData data(mask);
 			FOREACHPTR(pIdxFace, texturePatch.faces) {

@@ -229,8 +229,7 @@ void Mesh::ComputeNormalVertices()
 {
 	vertexNormals.Resize(vertices.GetSize());
 	vertexNormals.Memset(0);
-	FOREACHPTR(pFace, faces) {
-		const Face& face = *pFace;
+	for (const Face& face: faces) {
 		const Vertex& v0 = vertices[face[0]];
 		const Vertex& v1 = vertices[face[1]];
 		const Vertex& v2 = vertices[face[2]];
@@ -239,8 +238,8 @@ void Mesh::ComputeNormalVertices()
 		vertexNormals[face[1]] += t;
 		vertexNormals[face[2]] += t;
 	}
-	FOREACHPTR(pVertexNormal, vertexNormals)
-		normalize(*pVertexNormal);
+	for (Normal& vertexNormal: vertexNormals)
+		normalize(vertexNormal);
 }
 #else
 // computes the vertex normal as an angle weighted average

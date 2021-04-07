@@ -31,13 +31,14 @@
 
 #include "Common.h"
 #include "DepthMap.h"
+#include "Mesh.h"
 #define _USE_OPENCV
 #include "Interface.h"
 #include "../Common/AutoEstimator.h"
 // CGAL: depth-map initialization
 #include <CGAL/Simple_cartesian.h>
 #include <CGAL/Delaunay_triangulation_2.h>
-#include <CGAL/Projection_traits_xy_3.h>
+#include <CGAL/Triangulation_vertex_base_with_info_2.h>
 // CGAL: estimate normals
 #include <CGAL/Simple_cartesian.h>
 #include <CGAL/property_map.h>
@@ -958,95 +959,101 @@ DepthEstimator::PixelEstimate DepthEstimator::PerturbEstimate(const PixelEstimat
 // S T R U C T S ///////////////////////////////////////////////////
 
 namespace CGAL {
-typedef CGAL::Simple_cartesian<double> kernel_t;
-typedef CGAL::Projection_traits_xy_3<kernel_t> Geometry;
-typedef CGAL::Delaunay_triangulation_2<Geometry> Delaunay;
-typedef CGAL::Delaunay::Face_circulator FaceCirculator;
-typedef CGAL::Delaunay::Face_handle FaceHandle;
-typedef CGAL::Delaunay::Vertex_circulator VertexCirculator;
-typedef CGAL::Delaunay::Vertex_handle VertexHandle;
-typedef kernel_t::Point_3 Point;
 }
 
 // triangulate in-view points, generating a 2D mesh
 // return also the estimated depth boundaries (min and max depth)
-std::pair<float,float> TriangulatePointsDelaunay(const DepthData::ViewData& image, const PointCloud& pointcloud, const IndexArr& points, CGAL::Delaunay& delaunay)
+std::pair<float,float> TriangulatePointsDelaunay(const DepthData::ViewData& image, const PointCloud& pointcloud, const IndexArr& points, Mesh& mesh, Point2fArr& projs)
 {
+	typedef CGAL::Simple_cartesian<double> kernel_t;
+	typedef CGAL::Triangulation_vertex_base_with_info_2<Mesh::VIndex, kernel_t> vertex_base_t;
+	typedef CGAL::Triangulation_data_structure_2<vertex_base_t> triangulation_data_structure_t;
+	typedef CGAL::Delaunay_triangulation_2<kernel_t, triangulation_data_structure_t> Delaunay;
+	typedef Delaunay::Face_circulator FaceCirculator;
+	typedef Delaunay::Face_handle FaceHandle;
+	typedef Delaunay::Vertex_circulator VertexCirculator;
+	typedef Delaunay::Vertex_handle VertexHandle;
+	typedef kernel_t::Point_2 CPoint;
+
 	ASSERT(sizeof(Point3) == sizeof(X3D));
-	ASSERT(sizeof(Point3) == sizeof(CGAL::Point));
+	ASSERT(sizeof(Point2) == sizeof(CPoint));
 	std::pair<float,float> depthBounds(FLT_MAX, 0.f);
+	mesh.vertices.reserve(points.size()+4);
+	projs.reserve(mesh.vertices.capacity());
+	Delaunay delaunay;
 	for (uint32_t idx: points) {
 		const Point3f pt(image.camera.ProjectPointP3(pointcloud.points[idx]));
-		delaunay.insert(CGAL::Point(pt.x/pt.z, pt.y/pt.z, pt.z));
+		const Point3f x(pt.x/pt.z, pt.y/pt.z, pt.z);
+		delaunay.insert(CPoint(x.x, x.y))->info() = mesh.vertices.size();
+		mesh.vertices.emplace_back(image.camera.TransformPointI2C(x));
+		projs.emplace_back(x.x, x.y);
 		if (depthBounds.first > pt.z)
 			depthBounds.first = pt.z;
 		if (depthBounds.second < pt.z)
 			depthBounds.second = pt.z;
 	}
 	// if full size depth-map requested
-	if (OPTDENSE::bAddCorners) {
-		typedef TIndexScore<float,float> DepthDist;
-		typedef CLISTDEF0(DepthDist) DepthDistArr;
-		typedef Eigen::Map< Eigen::VectorXf, Eigen::Unaligned, Eigen::InnerStride<2> > FloatMap;
+	const size_t numPoints(3);
+	if (OPTDENSE::bAddCorners && points.size() >= numPoints) {
 		// add the four image corners at the average depth
 		ASSERT(image.pImageData->IsValid() && ISINSIDE(image.pImageData->avgDepth, depthBounds.first, depthBounds.second));
-		const CGAL::VertexHandle vcorners[] = {
-			delaunay.insert(CGAL::Point(0, 0, image.pImageData->avgDepth)),
-			delaunay.insert(CGAL::Point(image.image.width(), 0, image.pImageData->avgDepth)),
-			delaunay.insert(CGAL::Point(0, image.image.height(), image.pImageData->avgDepth)),
-			delaunay.insert(CGAL::Point(image.image.width(), image.image.height(), image.pImageData->avgDepth))
-		};
+		const Mesh::VIndex idxFirstVertex = mesh.vertices.size();
+		VertexHandle vcorners[4];
+		for (const Point2f& x: {Point2f(0, 0), Point2f(image.image.width()-1, 0), Point2f(0, image.image.height()-1), Point2f(image.image.width()-1, image.image.height()-1)}) {
+			const Mesh::VIndex i(mesh.vertices.size() - idxFirstVertex);
+			(vcorners[i] = delaunay.insert(CPoint(x.x, x.y)))->info() = mesh.vertices.size();
+			mesh.vertices.emplace_back(image.camera.TransformPointI2C(Point3f(x, image.pImageData->avgDepth)));
+			projs.emplace_back(x);
+		}
 		// compute average depth from the closest 3 directly connected faces,
 		// weighted by the distance
-		const size_t numPoints = 3;
 		for (int i=0; i<4; ++i) {
-			const CGAL::VertexHandle vcorner = vcorners[i];
-			CGAL::FaceCirculator cfc(delaunay.incident_faces(vcorner));
-			if (cfc == 0)
-				continue; // normally this should never happen
-			const CGAL::FaceCirculator done(cfc);
-			Point3d& poszA = reinterpret_cast<Point3d&>(vcorner->point());
-			const Point2d& posA = reinterpret_cast<const Point2d&>(poszA);
-			const Ray3d rayA(Point3d::ZERO, normalized(image.camera.TransformPointI2C(poszA)));
-			DepthDistArr depths(0, numPoints);
+			const VertexHandle vcorner(vcorners[i]);
+			FaceCirculator cfc(delaunay.incident_faces(vcorner));
+			ASSERT(cfc != 0);
+			const FaceCirculator done(cfc);
+			const Point2d& posA = reinterpret_cast<const Point2d&>(vcorner->point());
+			const Ray3d rayA(Point3d::ZERO, normalized(Cast<REAL>(mesh.vertices[vcorner->info()])));
+			typedef TIndexScore<float,float> DepthDist;
+			CLISTDEF0(DepthDist) depths(0, numPoints);
 			do {
-				CGAL::FaceHandle fc(cfc->neighbor(cfc->index(vcorner)));
-				if (fc == delaunay.infinite_face())
+				const FaceHandle fc(cfc->neighbor(cfc->index(vcorner)));
+				if (delaunay.is_infinite(fc))
 					continue;
 				for (int j=0; j<4; ++j)
 					if (fc->has_vertex(vcorners[j]))
-						goto Continue;
+						continue;
 				// compute the depth as the intersection of the corner ray with
 				// the plane defined by the face's vertices
-				{
-				const Point3d& poszB0 = reinterpret_cast<const Point3d&>(fc->vertex(0)->point());
-				const Point3d& poszB1 = reinterpret_cast<const Point3d&>(fc->vertex(1)->point());
-				const Point3d& poszB2 = reinterpret_cast<const Point3d&>(fc->vertex(2)->point());
 				const Planed planeB(
-					image.camera.TransformPointI2C(poszB0),
-					image.camera.TransformPointI2C(poszB1),
-					image.camera.TransformPointI2C(poszB2)
+					Cast<REAL>(mesh.vertices[fc->vertex(0)->info()]),
+					Cast<REAL>(mesh.vertices[fc->vertex(1)->info()]),
+					Cast<REAL>(mesh.vertices[fc->vertex(2)->info()])
 				);
 				const Point3d poszB(rayA.Intersects(planeB));
 				if (poszB.z <= 0)
 					continue;
 				const Point2d posB((
-					reinterpret_cast<const Point2d&>(poszB0)+
-					reinterpret_cast<const Point2d&>(poszB1)+
-					reinterpret_cast<const Point2d&>(poszB2))/3.f
+					reinterpret_cast<const Point2d&>(fc->vertex(0)->point())+
+					reinterpret_cast<const Point2d&>(fc->vertex(1)->point())+
+					reinterpret_cast<const Point2d&>(fc->vertex(2)->point()))/3.f
 				);
 				const double dist(norm(posB-posA));
 				depths.StoreTop<numPoints>(DepthDist(CLAMP((float)poszB.z,depthBounds.first,depthBounds.second), INVERT((float)dist)));
-				}
-				Continue:;
 			} while (++cfc != done);
-			if (depths.size() != numPoints)
-				continue; // normally this should never happen
+			ASSERT(depths.size() == numPoints);
+			typedef Eigen::Map< Eigen::VectorXf, Eigen::Unaligned, Eigen::InnerStride<2> > FloatMap;
 			FloatMap vecDists(&depths[0].score, numPoints);
 			vecDists *= 1.f/vecDists.sum();
 			FloatMap vecDepths(&depths[0].idx, numPoints);
-			poszA.z = vecDepths.dot(vecDists);
+			const float depth(vecDepths.dot(vecDists));
+			mesh.vertices[idxFirstVertex+i] = image.camera.TransformPointI2C(Point3(posA, depth));
 		}
+	}
+	mesh.faces.reserve(std::distance(delaunay.finite_faces_begin(),delaunay.finite_faces_end()));
+	for (Delaunay::Face_iterator it=delaunay.faces_begin(); it!=delaunay.faces_end(); ++it) {
+		const Delaunay::Face& face = *it;
+		mesh.faces.emplace_back(face.vertex(2)->info(), face.vertex(1)->info(), face.vertex(0)->info());
 	}
 	return depthBounds;
 }
@@ -1060,54 +1067,54 @@ bool MVS::TriangulatePoints2DepthMap(
 	ASSERT(image.pImageData != NULL);
 
 	// triangulate in-view points
-	CGAL::Delaunay delaunay;
-	const std::pair<float,float> thDepth(TriangulatePointsDelaunay(image, pointcloud, points, delaunay));
+	Mesh mesh;
+	Point2fArr projs;
+	const std::pair<float,float> thDepth(TriangulatePointsDelaunay(image, pointcloud, points, mesh, projs));
 	dMin = thDepth.first;
 	dMax = thDepth.second;
 
 	// create rough depth-map by interpolating inside triangles
 	const Camera& camera = image.camera;
+	mesh.ComputeNormalVertices();
 	depthMap.create(image.image.size());
 	normalMap.create(image.image.size());
 	if (!OPTDENSE::bAddCorners) {
 		depthMap.memset(0);
 		normalMap.memset(0);
 	}
-	struct RasterDepthDataPlaneData {
-		const Camera& P;
-		DepthMap& depthMap;
+	struct RasterDepth : TRasterMeshBase<RasterDepth> {
+		typedef TRasterMeshBase<RasterDepth> Base;
+		using Base::camera;
+		using Base::depthMap;
+		using Base::ptc;
+		using Base::pti;
+		const Mesh::NormalArr& vertexNormals;
 		NormalMap& normalMap;
-		Point3f normal;
-		Point3f normalPlane;
-		inline void operator()(const ImageRef& pt) {
-			if (!depthMap.isInside(pt))
-				return;
-			const Depth z(INVERT(normalPlane.dot(P.TransformPointI2C(Point2f(pt)))));
-			if (z <= 0) // due to numerical instability
-				return;
+		Mesh::Face face;
+		RasterDepth(const Mesh::NormalArr& _vertexNormals, const Camera& _camera, DepthMap& _depthMap, NormalMap& _normalMap)
+			: Base(_camera, _depthMap), vertexNormals(_vertexNormals), normalMap(_normalMap) {}
+		inline void operator()(const ImageRef& pt, const Point3f& bary) {
+			const Point3f pbary(PerspectiveCorrectBarycentricCoordinates(bary));
+			const Depth z(ComputeDepth(pbary));
+			ASSERT(z > Depth(0));
 			depthMap(pt) = z;
-			normalMap(pt) = normal;
+			normalMap(pt) = normalized(
+				vertexNormals[face[0]] * pbary[0]+
+				vertexNormals[face[1]] * pbary[1]+
+				vertexNormals[face[2]] * pbary[2]
+			);
 		}
 	};
-	RasterDepthDataPlaneData data = {camera, depthMap, normalMap};
-	for (CGAL::Delaunay::Face_iterator it=delaunay.faces_begin(); it!=delaunay.faces_end(); ++it) {
-		const CGAL::Delaunay::Face& face = *it;
-		const Point3f i0(reinterpret_cast<const Point3d&>(face.vertex(0)->point()));
-		const Point3f i1(reinterpret_cast<const Point3d&>(face.vertex(1)->point()));
-		const Point3f i2(reinterpret_cast<const Point3d&>(face.vertex(2)->point()));
-		// compute the plane defined by the 3 points
-		const Point3f c0(camera.TransformPointI2C(i0));
-		const Point3f c1(camera.TransformPointI2C(i1));
-		const Point3f c2(camera.TransformPointI2C(i2));
-		const Point3f edge1(c1-c0);
-		const Point3f edge2(c2-c0);
-		data.normal = normalized(edge2.cross(edge1));
-		data.normalPlane = data.normal * INVERT(data.normal.dot(c0));
-		// draw triangle and for each pixel compute depth as the ray intersection with the plane
-		Image8U::RasterizeTriangle(
-			reinterpret_cast<const Point2f&>(i2),
-			reinterpret_cast<const Point2f&>(i1),
-			reinterpret_cast<const Point2f&>(i0), data);
+	RasterDepth rasterer = {mesh.vertexNormals, camera, depthMap, normalMap};
+	for (const Mesh::Face& face : mesh.faces) {
+		rasterer.face = face;
+		rasterer.ptc[0].z = mesh.vertices[face[0]].z;
+		rasterer.ptc[1].z = mesh.vertices[face[1]].z;
+		rasterer.ptc[2].z = mesh.vertices[face[2]].z;
+		Image8U::RasterizeTriangleBary(
+			projs[face[0]],
+			projs[face[1]],
+			projs[face[2]], rasterer);
 	}
 	return true;
 } // TriangulatePoints2DepthMap
@@ -1119,8 +1126,9 @@ bool MVS::TriangulatePoints2DepthMap(
 	ASSERT(image.pImageData != NULL);
 
 	// triangulate in-view points
-	CGAL::Delaunay delaunay;
-	const std::pair<float,float> thDepth(TriangulatePointsDelaunay(image, pointcloud, points, delaunay));
+	Mesh mesh;
+	Point2fArr projs;
+	const std::pair<float,float> thDepth(TriangulatePointsDelaunay(image, pointcloud, points, mesh, projs));
 	dMin = thDepth.first;
 	dMax = thDepth.second;
 
@@ -1129,38 +1137,27 @@ bool MVS::TriangulatePoints2DepthMap(
 	depthMap.create(image.image.size());
 	if (!OPTDENSE::bAddCorners)
 		depthMap.memset(0);
-	struct RasterDepthDataPlaneData {
-		const Camera& P;
-		DepthMap& depthMap;
-		Point3f normalPlane;
-		inline void operator()(const ImageRef& pt) {
-			if (!depthMap.isInside(pt))
-				return;
-			const Depth z((Depth)INVERT(normalPlane.dot(P.TransformPointI2C(Point2f(pt)))));
-			if (z <= 0) // due to numerical instability
-				return;
+	struct RasterDepth : TRasterMeshBase<RasterDepth> {
+		typedef TRasterMeshBase<RasterDepth> Base;
+		using Base::depthMap;
+		RasterDepth(const Camera& _camera, DepthMap& _depthMap)
+			: Base(_camera, _depthMap) {}
+		inline void operator()(const ImageRef& pt, const Point3f& bary) {
+			const Point3f pbary(PerspectiveCorrectBarycentricCoordinates(bary));
+			const Depth z(ComputeDepth(pbary));
+			ASSERT(z > Depth(0));
 			depthMap(pt) = z;
 		}
 	};
-	RasterDepthDataPlaneData data = {camera, depthMap};
-	for (CGAL::Delaunay::Face_iterator it=delaunay.faces_begin(); it!=delaunay.faces_end(); ++it) {
-		const CGAL::Delaunay::Face& face = *it;
-		const Point3f i0(reinterpret_cast<const Point3d&>(face.vertex(0)->point()));
-		const Point3f i1(reinterpret_cast<const Point3d&>(face.vertex(1)->point()));
-		const Point3f i2(reinterpret_cast<const Point3d&>(face.vertex(2)->point()));
-		// compute the plane defined by the 3 points
-		const Point3f c0(camera.TransformPointI2C(i0));
-		const Point3f c1(camera.TransformPointI2C(i1));
-		const Point3f c2(camera.TransformPointI2C(i2));
-		const Point3f edge1(c1-c0);
-		const Point3f edge2(c2-c0);
-		const Normal normal(normalized(edge2.cross(edge1)));
-		data.normalPlane = normal * INVERT(normal.dot(c0));
-		// draw triangle and for each pixel compute depth as the ray intersection with the plane
-		Image8U::RasterizeTriangle(
-			reinterpret_cast<const Point2f&>(i2),
-			reinterpret_cast<const Point2f&>(i1),
-			reinterpret_cast<const Point2f&>(i0), data);
+	RasterDepth rasterer = {camera, depthMap};
+	for (const Mesh::Face& face : mesh.faces) {
+		rasterer.ptc[0].z = mesh.vertices[face[0]].z;
+		rasterer.ptc[1].z = mesh.vertices[face[1]].z;
+		rasterer.ptc[2].z = mesh.vertices[face[2]].z;
+		Image8U::RasterizeTriangleBary(
+			projs[face[0]],
+			projs[face[1]],
+			projs[face[2]], rasterer);
 	}
 	return true;
 } // TriangulatePoints2DepthMap
