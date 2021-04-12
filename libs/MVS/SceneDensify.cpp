@@ -1159,6 +1159,73 @@ bool DepthMapsData::FilterDepthMap(DepthData& depthDataRef, const IIndexArr& idx
 } // FilterDepthMap
 /*----------------------------------------------------------------*/
 
+
+// fuse all depth-maps by simply projecting them in a 3D point cloud
+// in the world coordinate space
+void DepthMapsData::MergeDepthMaps(PointCloud& pointcloud, bool bEstimateColor, bool bEstimateNormal)
+{
+	TD_TIMER_STARTD();
+
+	// estimate total number of 3D points that will be generated
+	size_t nPointsEstimate(0);
+	for (const DepthData& depthData: arrDepthData)
+		if (depthData.IsValid())
+			nPointsEstimate += (size_t)depthData.depthMap.size().area()*7/10;
+
+	// fuse all depth-maps
+	size_t nDepthMaps(0), nDepths(0);
+	pointcloud.points.reserve(nPointsEstimate);
+	pointcloud.pointViews.reserve(nPointsEstimate);
+	if (bEstimateColor)
+		pointcloud.colors.reserve(nPointsEstimate);
+	if (bEstimateNormal)
+		pointcloud.normals.reserve(nPointsEstimate);
+	Util::Progress progress(_T("Merged depth-maps"), arrDepthData.size());
+	GET_LOGCONSOLE().Pause();
+	FOREACH(idxImage, arrDepthData) {
+		TD_TIMER_STARTD();
+		DepthData& depthData = arrDepthData[idxImage];
+		ASSERT(depthData.GetView().GetLocalID(scene.images) == idxImage);
+		if (!depthData.IsValid())
+			continue;
+		if (depthData.IncRef(ComposeDepthFilePath(depthData.GetView().GetID(), "dmap")) == 0)
+			return;
+		ASSERT(!depthData.IsEmpty());
+		const DepthData::ViewData& image = depthData.GetView();
+		const size_t nNumPointsPrev(pointcloud.points.size());
+		for (int i=0; i<depthData.depthMap.rows; ++i) {
+			for (int j=0; j<depthData.depthMap.cols; ++j) {
+				// ignore invalid depth
+				const ImageRef x(j,i);
+				const Depth depth(depthData.depthMap(x));
+				if (depth == 0)
+					continue;
+				ASSERT(ISINSIDE(depth, depthData.dMin, depthData.dMax));
+				// create the corresponding 3D point
+				pointcloud.points.emplace_back(image.camera.TransformPointI2W(Point3(Cast<float>(x),depth)));
+				pointcloud.pointViews.emplace_back().push_back(idxImage);
+				if (bEstimateColor)
+					pointcloud.colors.emplace_back(image.pImageData->image(x));
+				if (bEstimateNormal)
+					depthData.GetNormal(x, pointcloud.normals.emplace_back());
+				++nDepths;
+			}
+		}
+		depthData.DecRef();
+		++nDepthMaps;
+		ASSERT(pointcloud.points.size() == pointcloud.pointViews.size());
+		DEBUG_ULTIMATE("Depths map for reference image %3u merged using %u depths maps: %u new points (%s)",
+			idxImage, depthData.images.size()-1, pointcloud.points.size()-nNumPointsPrev, TD_TIMER_GET_FMT().c_str());
+		progress.display(idxImage+1);
+	}
+	GET_LOGCONSOLE().Play();
+	progress.close();
+
+	DEBUG_EXTRA("Depth-maps merged: %u depth-maps, %u depths, %u points (%d%%%%) (%s)",
+		nDepthMaps, nDepths, pointcloud.points.size(), ROUND2INT(100.f*pointcloud.points.size()/nDepths), TD_TIMER_GET_FMT().c_str());
+} // MergeDepthMaps
+/*----------------------------------------------------------------*/
+
 // fuse all valid depth-maps in the same 3D point cloud;
 // join points very likely to represent the same 3D point and
 // filter out points blocking the view
@@ -1437,7 +1504,13 @@ bool Scene::DenseReconstruction(int nFusionMode)
 
 	// fuse all depth-maps
 	pointcloud.Release();
-	data.depthMaps.FuseDepthMaps(pointcloud, OPTDENSE::nEstimateColors == 2, OPTDENSE::nEstimateNormals == 2);
+	if (OPTDENSE::nMinViewsFuse < 2) {
+		// merge depth-maps
+		data.depthMaps.MergeDepthMaps(pointcloud, OPTDENSE::nEstimateColors == 2, OPTDENSE::nEstimateNormals == 2);
+	} else {
+		// fuse depth-maps
+		data.depthMaps.FuseDepthMaps(pointcloud, OPTDENSE::nEstimateColors == 2, OPTDENSE::nEstimateNormals == 2);
+	}
 	#if TD_VERBOSE != TD_VERBOSE_OFF
 	if (g_nVerbosityLevel > 2) {
 		// print number of points with 3+ views
