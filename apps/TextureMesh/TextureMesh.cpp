@@ -82,7 +82,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		("help,h", "produce this help message")
 		("working-folder,w", boost::program_options::value<std::string>(&WORKING_FOLDER), "working directory (default current directory)")
 		("config-file,c", boost::program_options::value<std::string>(&OPT::strConfigFileName)->default_value(APPNAME _T(".cfg")), "file name containing program options")
-		("export-type", boost::program_options::value<std::string>(&OPT::strExportType)->default_value(_T("ply")), "file type used to export the 3D scene (ply or obj)")
+		("export-type", boost::program_options::value<std::string>(&OPT::strExportType)->default_value(_T("gltf")), "file type used to export the 3D scene (ply, obj or gltf)")
 		("archive-type", boost::program_options::value(&OPT::nArchiveType)->default_value(ARCHIVE_DEFAULT), "project archive type: 0-text, 1-binary, 2-compressed binary")
 		("process-priority", boost::program_options::value(&OPT::nProcessPriority)->default_value(-1), "process priority (below normal by default)")
 		("max-threads", boost::program_options::value(&OPT::nMaxThreads)->default_value(0), "maximum number of threads (0 for using all available cores)")
@@ -166,7 +166,14 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	}
 	if (OPT::strInputFileName.IsEmpty())
 		return false;
-	OPT::strExportType = OPT::strExportType.ToLower() == _T("obj") ? _T(".obj") : _T(".ply");
+	OPT::strExportType = OPT::strExportType.ToLower();
+	if (OPT::strExportType == _T("obj"))
+		OPT::strExportType =  _T(".obj");
+	else
+	if (OPT::strExportType == _T("gltf"))
+		OPT::strExportType =  _T(".gltf");
+	else
+		OPT::strExportType =  _T(".ply");
 
 	// initialize optional options
 	Util::ensureValidPath(OPT::strOutputFileName);

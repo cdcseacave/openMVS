@@ -173,6 +173,7 @@ public:
 	void RemoveFaces(FaceIdxArr& facesRemove, bool bUpdateLists=false);
 	void RemoveVertices(VertexIdxArr& vertexRemove, bool bUpdateLists=false);
 	VIndex RemoveUnreferencedVertices(bool bUpdateLists=false);
+	void ConvertTexturePerVertex(Mesh&) const;
 
 	inline Normal FaceNormal(const Face& f) const {
 		return ComputeTriangleNormal(vertices[f[0]], vertices[f[1]], vertices[f[2]]);
@@ -221,6 +222,7 @@ protected:
 
 	bool SavePLY(const String& fileName, const cList<String>& comments=cList<String>(), bool bBinary=true) const;
 	bool SaveOBJ(const String& fileName) const;
+	bool SaveGLTF(const String& fileName, bool bBinary=true) const;
 
 	#ifdef _USE_CUDA
 	static bool InitKernels(int device=-1);
