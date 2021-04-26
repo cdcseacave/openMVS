@@ -61,6 +61,7 @@ bool bUseFreeSpaceSupport;
 float fThicknessFactor;
 float fQualityFactor;
 float fDecimateMesh;
+int iTargetFaceNum;
 float fRemoveSpurious;
 bool bRemoveSpikes;
 unsigned nCloseHoles;
@@ -116,6 +117,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	boost::program_options::options_description config_clean("Clean options");
 	config_clean.add_options()
 		("decimate", boost::program_options::value(&OPT::fDecimateMesh)->default_value(1.f), "decimation factor in range (0..1] to be applied to the reconstructed surface (1 - disabled)")
+		("target-face-num", boost::program_options::value(&OPT::iTargetFaceNum)->default_value(0), "target number of faces to be applied to the reconstructed surface. (0 - disabled)")
 		("remove-spurious", boost::program_options::value(&OPT::fRemoveSpurious)->default_value(20.f), "spurious factor for removing faces with too long edges or isolated components (0 - disabled)")
 		("remove-spikes", boost::program_options::value(&OPT::bRemoveSpikes)->default_value(true), "flag controlling the removal of spike faces")
 		("close-holes", boost::program_options::value(&OPT::nCloseHoles)->default_value(30), "try to close small holes in the reconstructed surface (0 - disabled)")
@@ -172,7 +174,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		visible.add(generic).add(config_main).add(config_clean);
 		GET_LOG() << visible;
 	}
-	if (OPT::strInputFileName.IsEmpty())
+	if (OPT::strInputFileName.IsEmpty() && OPT::strMeshFileName.IsEmpty())
 		return false;
 	OPT::strExportType = OPT::strExportType.ToLower() == _T("obj") ? _T(".obj") : _T(".ply");
 
@@ -225,7 +227,7 @@ int main(int argc, LPCTSTR* argv)
 
 	Scene scene(OPT::nMaxThreads);
 	// load project
-	if (!scene.Load(MAKE_PATH_SAFE(OPT::strInputFileName), OPT::fSplitMaxArea > 0))
+	if (!scene.Load(MAKE_PATH_SAFE(OPT::strInputFileName), OPT::fSplitMaxArea > 0) && OPT::strMeshFileName.IsEmpty())
 		return EXIT_FAILURE;
 	const String baseFileName(MAKE_PATH_SAFE(Util::getFileFullName(OPT::strOutputFileName)));
 	if (OPT::fSplitMaxArea > 0) {
@@ -305,9 +307,9 @@ int main(int argc, LPCTSTR* argv)
 		}
 
 		// clean the mesh
-		scene.mesh.Clean(OPT::fDecimateMesh, OPT::fRemoveSpurious, OPT::bRemoveSpikes, OPT::nCloseHoles, OPT::nSmoothMesh, false);
-		scene.mesh.Clean(1.f, 0.f, OPT::bRemoveSpikes, OPT::nCloseHoles, 0, false); // extra cleaning trying to close more holes
-		scene.mesh.Clean(1.f, 0.f, false, 0, 0, true); // extra cleaning to remove non-manifold problems created by closing holes
+		scene.mesh.Clean(OPT::fDecimateMesh, OPT::fRemoveSpurious, OPT::bRemoveSpikes, OPT::nCloseHoles, OPT::nSmoothMesh, false, OPT::iTargetFaceNum);
+		scene.mesh.Clean(1.f, 0.f, OPT::bRemoveSpikes, OPT::nCloseHoles, 0, false, 0); // extra cleaning trying to close more holes
+		scene.mesh.Clean(1.f, 0.f, false, 0, 0, true, 0); // extra cleaning to remove non-manifold problems created by closing holes
 
 		// save the final mesh
 		scene.Save(baseFileName+_T(".mvs"), (ARCHIVE_TYPE)OPT::nArchiveType);
