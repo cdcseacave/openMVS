@@ -1036,9 +1036,8 @@ void Mesh::Clean(float fDecimate, float fSpurious, bool bRemoveSpikes, unsigned 
 		vcg::tri::UpdateTopology<CLEAN::Mesh>::VertexFace(mesh);
 		vcg::tri::UpdateFlags<CLEAN::Mesh>::FaceBorderFromVF(mesh);
 		int targetFaceNum(ROUND2INT(fDecimate*mesh.fn));
-		if (iTargetFaceNum > 0){
+		if (iTargetFaceNum > 0)
 			targetFaceNum = iTargetFaceNum;
-		}
 		vcg::math::Quadric<double> QZero;
 		QZero.SetZero();
 		CLEAN::QuadricTemp TD(mesh.vert, QZero);
