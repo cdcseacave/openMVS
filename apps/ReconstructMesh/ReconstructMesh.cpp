@@ -169,7 +169,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	// validate input
 	Util::ensureValidPath(OPT::strInputFileName);
 	Util::ensureUnifySlash(OPT::strInputFileName);
-	if (OPT::vm.count("help") || OPT::strInputFileName.IsEmpty()) {
+	if (OPT::vm.count("help") || (OPT::strInputFileName.IsEmpty() && OPT::strMeshFileName.IsEmpty())) {
 		boost::program_options::options_description visible("Available options");
 		visible.add(generic).add(config_main).add(config_clean);
 		GET_LOG() << visible;
