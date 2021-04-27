@@ -169,12 +169,12 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	// validate input
 	Util::ensureValidPath(OPT::strInputFileName);
 	Util::ensureUnifySlash(OPT::strInputFileName);
-	if (OPT::vm.count("help") || (OPT::strInputFileName.IsEmpty() && OPT::strMeshFileName.IsEmpty())) {
+	if (OPT::vm.count("help") || OPT::strInputFileName.IsEmpty()) {
 		boost::program_options::options_description visible("Available options");
 		visible.add(generic).add(config_main).add(config_clean);
 		GET_LOG() << visible;
 	}
-	if (OPT::strInputFileName.IsEmpty() && OPT::strMeshFileName.IsEmpty())
+	if (OPT::strInputFileName.IsEmpty())
 		return false;
 	OPT::strExportType = OPT::strExportType.ToLower() == _T("obj") ? _T(".obj") : _T(".ply");
 
@@ -227,7 +227,7 @@ int main(int argc, LPCTSTR* argv)
 
 	Scene scene(OPT::nMaxThreads);
 	// load project
-	if (!scene.Load(MAKE_PATH_SAFE(OPT::strInputFileName), OPT::fSplitMaxArea > 0) && OPT::strMeshFileName.IsEmpty())
+	if (!scene.Load(MAKE_PATH_SAFE(OPT::strInputFileName), OPT::fSplitMaxArea > 0 || OPT::fDecimateMesh < 1 || OPT::nTargetFaceNum > 0))
 		return EXIT_FAILURE;
 	const String baseFileName(MAKE_PATH_SAFE(Util::getFileFullName(OPT::strOutputFileName)));
 	if (OPT::fSplitMaxArea > 0) {
@@ -250,7 +250,7 @@ int main(int argc, LPCTSTR* argv)
 			scene.ExportCamerasMLP(baseFileName+_T(".mlp"), fileName);
 		#endif
 	} else {
-		if (OPT::strMeshFileName.IsEmpty()) {
+		if (OPT::strMeshFileName.IsEmpty() && scene.mesh.IsEmpty()) {
 			// reset image resolution to the original size and
 			// make sure the image neighbors are initialized before deleting the point-cloud
 			#ifdef RECMESH_USE_OPENMP
@@ -301,7 +301,7 @@ int main(int argc, LPCTSTR* argv)
 				scene.mesh.Save(baseFileName+_T("_raw")+OPT::strExportType);
 			}
 			#endif
-		} else {
+		} else if (!OPT::strMeshFileName.IsEmpty()) {
 			// load existing mesh to clean
 			scene.mesh.Load(MAKE_PATH_SAFE(OPT::strMeshFileName));
 		}
