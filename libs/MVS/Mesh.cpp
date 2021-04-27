@@ -981,7 +981,7 @@ public:
 
 // decimate, clean and smooth mesh
 // fDecimate factor is in range (0..1], if 1 no decimation takes place
-void Mesh::Clean(float fDecimate, float fSpurious, bool bRemoveSpikes, unsigned nCloseHoles, unsigned nSmooth, bool bLastClean, int iTargetFaceNum)
+void Mesh::Clean(float fDecimate, float fSpurious, bool bRemoveSpikes, unsigned nCloseHoles, unsigned nSmooth, bool bLastClean)
 {
 	if (vertices.IsEmpty() || faces.IsEmpty())
 		return;
@@ -1021,7 +1021,7 @@ void Mesh::Clean(float fDecimate, float fSpurious, bool bRemoveSpikes, unsigned 
 	}
 
 	// decimate mesh
-	if (fDecimate < 1 || iTargetFaceNum > 0) {
+	if (fDecimate < 1) {
 		ASSERT(fDecimate > 0 );
 		vcg::tri::TriEdgeCollapseQuadricParameter pp;
 		pp.QualityThr = 0.3; // Quality Threshold for penalizing bad shaped faces: the value is in the range [0..1], 0 accept any kind of face (no penalties), 0.5 penalize faces with quality < 0.5, proportionally to their shape
@@ -1035,9 +1035,7 @@ void Mesh::Clean(float fDecimate, float fSpurious, bool bRemoveSpikes, unsigned 
 		// decimate
 		vcg::tri::UpdateTopology<CLEAN::Mesh>::VertexFace(mesh);
 		vcg::tri::UpdateFlags<CLEAN::Mesh>::FaceBorderFromVF(mesh);
-		int targetFaceNum(ROUND2INT(fDecimate*mesh.fn));
-		if (iTargetFaceNum > 0)
-			targetFaceNum = iTargetFaceNum;
+		const int TargetFaceNum(ROUND2INT(fDecimate*mesh.fn));
 		vcg::math::Quadric<double> QZero;
 		QZero.SetZero();
 		CLEAN::QuadricTemp TD(mesh.vert, QZero);
@@ -1049,16 +1047,16 @@ void Mesh::Clean(float fDecimate, float fSpurious, bool bRemoveSpikes, unsigned 
 		if (pp.NormalCheck)
 			pp.NormalThrRad = M_PI/4.0;
 		const int OriginalFaceNum(mesh.fn);
-		Util::Progress progress(_T("Decimated faces"), OriginalFaceNum-targetFaceNum);
+		Util::Progress progress(_T("Decimated faces"), OriginalFaceNum-TargetFaceNum);
 		vcg::LocalOptimization<CLEAN::Mesh> DeciSession(mesh, &pp);
 		DeciSession.Init<CLEAN::TriEdgeCollapse>();
-		DeciSession.SetTargetSimplices(targetFaceNum);
+		DeciSession.SetTargetSimplices(TargetFaceNum);
 		DeciSession.SetTimeBudget(0.1f); // this allow to update the progress bar 10 time for sec...
-		while (DeciSession.DoOptimization() && mesh.fn>targetFaceNum)
+		while (DeciSession.DoOptimization() && mesh.fn>TargetFaceNum)
 			progress.display(OriginalFaceNum - mesh.fn);
 		DeciSession.Finalize<CLEAN::TriEdgeCollapse>();
 		progress.close();
-		DEBUG_ULTIMATE("Mesh decimated: %d -> %d faces", OriginalFaceNum, targetFaceNum);
+		DEBUG_ULTIMATE("Mesh decimated: %d -> %d faces", OriginalFaceNum, TargetFaceNum);
 	}
 
 	// clean mesh
