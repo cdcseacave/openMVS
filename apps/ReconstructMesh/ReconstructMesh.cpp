@@ -307,9 +307,7 @@ int main(int argc, LPCTSTR* argv)
 		}
 
 		// clean the mesh
-		float fDecimate = OPT::fDecimateMesh;
-		if (OPT::nTargetFaceNum > 0)
-			fDecimate = static_cast<float>(OPT::nTargetFaceNum) / scene.mesh.faces.size();
+		const float fDecimate(OPT::nTargetFaceNum ? static_cast<float>(OPT::nTargetFaceNum) / scene.mesh.faces.size() : OPT::fDecimateMesh);
 		scene.mesh.Clean(fDecimate, OPT::fRemoveSpurious, OPT::bRemoveSpikes, OPT::nCloseHoles, OPT::nSmoothMesh, false);
 		scene.mesh.Clean(1.f, 0.f, OPT::bRemoveSpikes, OPT::nCloseHoles, 0, false); // extra cleaning trying to close more holes
 		scene.mesh.Clean(1.f, 0.f, false, 0, 0, true); // extra cleaning to remove non-manifold problems created by closing holes
