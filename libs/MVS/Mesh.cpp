@@ -1022,7 +1022,7 @@ void Mesh::Clean(float fDecimate, float fSpurious, bool bRemoveSpikes, unsigned 
 
 	// decimate mesh
 	if (fDecimate < 1) {
-		ASSERT(fDecimate > 0 );
+		ASSERT(fDecimate > 0);
 		vcg::tri::TriEdgeCollapseQuadricParameter pp;
 		pp.QualityThr = 0.3; // Quality Threshold for penalizing bad shaped faces: the value is in the range [0..1], 0 accept any kind of face (no penalties), 0.5 penalize faces with quality < 0.5, proportionally to their shape
 		pp.PreserveBoundary = false; // the simplification process tries to not affect mesh boundaries during simplification
