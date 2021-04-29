@@ -61,6 +61,7 @@ bool bUseFreeSpaceSupport;
 float fThicknessFactor;
 float fQualityFactor;
 float fDecimateMesh;
+unsigned nTargetFaceNum;
 float fRemoveSpurious;
 bool bRemoveSpikes;
 unsigned nCloseHoles;
@@ -116,6 +117,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	boost::program_options::options_description config_clean("Clean options");
 	config_clean.add_options()
 		("decimate", boost::program_options::value(&OPT::fDecimateMesh)->default_value(1.f), "decimation factor in range (0..1] to be applied to the reconstructed surface (1 - disabled)")
+		("target-face-num", boost::program_options::value(&OPT::nTargetFaceNum)->default_value(0), "target number of faces to be applied to the reconstructed surface. (0 - disabled)")
 		("remove-spurious", boost::program_options::value(&OPT::fRemoveSpurious)->default_value(20.f), "spurious factor for removing faces with too long edges or isolated components (0 - disabled)")
 		("remove-spikes", boost::program_options::value(&OPT::bRemoveSpikes)->default_value(true), "flag controlling the removal of spike faces")
 		("close-holes", boost::program_options::value(&OPT::nCloseHoles)->default_value(30), "try to close small holes in the reconstructed surface (0 - disabled)")
@@ -225,7 +227,7 @@ int main(int argc, LPCTSTR* argv)
 
 	Scene scene(OPT::nMaxThreads);
 	// load project
-	if (!scene.Load(MAKE_PATH_SAFE(OPT::strInputFileName), OPT::fSplitMaxArea > 0))
+	if (!scene.Load(MAKE_PATH_SAFE(OPT::strInputFileName), OPT::fSplitMaxArea > 0 || OPT::fDecimateMesh < 1 || OPT::nTargetFaceNum > 0))
 		return EXIT_FAILURE;
 	const String baseFileName(MAKE_PATH_SAFE(Util::getFileFullName(OPT::strOutputFileName)));
 	if (OPT::fSplitMaxArea > 0) {
@@ -248,7 +250,7 @@ int main(int argc, LPCTSTR* argv)
 			scene.ExportCamerasMLP(baseFileName+_T(".mlp"), fileName);
 		#endif
 	} else {
-		if (OPT::strMeshFileName.IsEmpty()) {
+		if (OPT::strMeshFileName.IsEmpty() && scene.mesh.IsEmpty()) {
 			// reset image resolution to the original size and
 			// make sure the image neighbors are initialized before deleting the point-cloud
 			#ifdef RECMESH_USE_OPENMP
@@ -299,13 +301,14 @@ int main(int argc, LPCTSTR* argv)
 				scene.mesh.Save(baseFileName+_T("_raw")+OPT::strExportType);
 			}
 			#endif
-		} else {
+		} else if (!OPT::strMeshFileName.IsEmpty()) {
 			// load existing mesh to clean
 			scene.mesh.Load(MAKE_PATH_SAFE(OPT::strMeshFileName));
 		}
 
 		// clean the mesh
-		scene.mesh.Clean(OPT::fDecimateMesh, OPT::fRemoveSpurious, OPT::bRemoveSpikes, OPT::nCloseHoles, OPT::nSmoothMesh, false);
+		const float fDecimate(OPT::nTargetFaceNum ? static_cast<float>(OPT::nTargetFaceNum) / scene.mesh.faces.size() : OPT::fDecimateMesh);
+		scene.mesh.Clean(fDecimate, OPT::fRemoveSpurious, OPT::bRemoveSpikes, OPT::nCloseHoles, OPT::nSmoothMesh, false);
 		scene.mesh.Clean(1.f, 0.f, OPT::bRemoveSpikes, OPT::nCloseHoles, 0, false); // extra cleaning trying to close more holes
 		scene.mesh.Clean(1.f, 0.f, false, 0, 0, true); // extra cleaning to remove non-manifold problems created by closing holes
 
