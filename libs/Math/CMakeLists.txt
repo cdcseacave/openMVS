@@ -1,8 +1,6 @@
 INCLUDE_DIRECTORIES(".")
 
 # List sources files
-FILE(GLOB PCH_C "Common.cpp")
-
 FILE(GLOB LIBRARY_FILES_C "*.cpp")
 FILE(GLOB LIBRARY_FILES_H "*.h" "*.inl")
 
@@ -18,12 +16,7 @@ FILE(GLOB TRWS_LIBRARY_FILES_C "TRWS/*.cpp")
 FILE(GLOB TRWS_LIBRARY_FILES_H "TRWS/*.h" "TRWS/*.inl")
 SOURCE_GROUP("TRWS" FILES ${TRWS_LIBRARY_FILES_C} ${TRWS_LIBRARY_FILES_H})
 
-# Place Common.cpp as the first file in the list
-# needed by cotire when setting PCH manually
-LIST(REMOVE_ITEM LIBRARY_FILES_C ${PCH_C})
-SET(LIBRARY_FILES_C "${PCH_C};${LIBRARY_FILES_C}")
-
-cxx_library_with_type_no_pch(Math "Libs" "" "${cxx_default}"
+cxx_library_with_type(Math "Libs" "" "${cxx_default}"
 	${LIBRARY_FILES_C} ${LIBRARY_FILES_H}
 	${IBFS_LIBRARY_FILES_C} ${IBFS_LIBRARY_FILES_H}
 	${LMFit_LIBRARY_FILES_C} ${LMFit_LIBRARY_FILES_H}
@@ -31,7 +24,9 @@ cxx_library_with_type_no_pch(Math "Libs" "" "${cxx_default}"
 )
 
 # Manually set Common.h as the precompiled header
-set_target_pch(Math Common.h)
+IF(CMAKE_VERSION VERSION_GREATER_EQUAL 3.16.0)
+	TARGET_PRECOMPILE_HEADERS(Math PRIVATE "Common.h")
+endif()
 
 # Link its dependencies
 TARGET_LINK_LIBRARIES(Math Common)

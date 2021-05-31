@@ -45,8 +45,6 @@ SET(OpenMVS_USE_FAST_CBRT ON CACHE BOOL "Use an optimized code to compute the cu
 SET(OpenMVS_USE_SSE ON CACHE BOOL "Enable SSE optimizations")
 
 # Define helper functions and macros.
-SET(COTIRE_INTDIR "cotire")
-INCLUDE(build/Cotire.cmake)
 INCLUDE(build/Utils.cmake)
 
 # Init session with macros defined in Utils.cmake
