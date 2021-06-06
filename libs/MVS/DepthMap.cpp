@@ -99,7 +99,9 @@ MDEFVAR_OPTDENSE_uint32(nOptimize, "Optimize", "should we filter the extracted d
 MDEFVAR_OPTDENSE_uint32(nEstimateColors, "Estimate Colors", "should we estimate the colors for the dense point-cloud?", "2", "0", "1")
 MDEFVAR_OPTDENSE_uint32(nEstimateNormals, "Estimate Normals", "should we estimate the normals for the dense point-cloud?", "0", "1", "2")
 MDEFVAR_OPTDENSE_float(fNCCThresholdKeep, "NCC Threshold Keep", "Maximum 1-NCC score accepted for a match", "0.55", "0.3")
-MDEFVAR_OPTDENSE_uint32(nEstimationIters, "Estimation Iters", "Number of iterations for depth-map refinement", "4")
+DEFVAR_OPTDENSE_uint32(nEstimationIters, "Estimation Iters", "Number of patch-match iterations", "3")
+DEFVAR_OPTDENSE_uint32(nEstimationGeometricIters, "Estimation Geometric Iters", "Number of geometric consistent patch-match iterations (0 - disabled)", "2")
+MDEFVAR_OPTDENSE_float(fEstimationGeometricWeight, "Estimation Geometric Weight", "pairwise geometric consistency cost weight", "0.1")
 MDEFVAR_OPTDENSE_uint32(nRandomIters, "Random Iters", "Number of iterations for random assignment per pixel", "6")
 MDEFVAR_OPTDENSE_uint32(nRandomMaxScale, "Random Max Scale", "Maximum number of iterations to skip during random assignment", "2")
 MDEFVAR_OPTDENSE_float(fRandomDepthRatio, "Random Depth Ratio", "Depth range ratio of the current estimate for random plane assignment", "0.003", "0.004")
@@ -358,7 +360,7 @@ DepthEstimator::DepthEstimator(
 	weightMap0(_weightMap0),
 	#endif
 	nIteration(nIter),
-	images(InitImages(_depthData0)), image0(_depthData0.images[0]),
+	images(_depthData0.images.begin()+1, _depthData0.images.end()), image0(_depthData0.images[0]),
 	#if DENSE_NCC != DENSE_NCC_WEIGHTED
 	image0Sum(_image0Sum),
 	#endif
@@ -439,7 +441,7 @@ bool DepthEstimator::FillPixelPatch()
 }
 
 // compute pixel's NCC score in the given target image
-float DepthEstimator::ScorePixelImage(const ViewData& image1, Depth depth, const Normal& normal)
+float DepthEstimator::ScorePixelImage(const DepthData::ViewData& image1, Depth depth, const Normal& normal)
 {
 	// center a patch of given size on the segment and fetch the pixel values in the target image
 	Matrix3x3f H(ComputeHomographyMatrix(image1, depth, normal));
@@ -458,9 +460,9 @@ float DepthEstimator::ScorePixelImage(const ViewData& image1, Depth depth, const
 	for (int i=-nSizeHalfWindow; i<=nSizeHalfWindow; i+=nSizeStep) {
 		for (int j=-nSizeHalfWindow; j<=nSizeHalfWindow; j+=nSizeStep) {
 			const Point2f pt(X);
-			if (!image1.view.image.isInsideWithBorder<float,1>(pt))
+			if (!image1.image.isInsideWithBorder<float,1>(pt))
 				return thRobust;
-			const float v(image1.view.image.sample(pt));
+			const float v(image1.image.sample(pt));
 			#if DENSE_NCC == DENSE_NCC_FAST
 			sum += v;
 			sumSq += SQUARE(v);
@@ -508,6 +510,22 @@ float DepthEstimator::ScorePixelImage(const ViewData& image1, Depth depth, const
 		score *= (1.f - smoothBonusDepth * factorDepth) * (1.f - smoothBonusNormal * factorNormal);
 	}
 	#endif
+	if (!image1.depthMap.empty()) {
+		ASSERT(OPTDENSE::fEstimationGeometricWeight > 0);
+		float consistency(4.f);
+		const Point3f X1(image1.Tl*Point3f(float(X0(0))*depth,float(X0(1))*depth,depth)+image1.Tm); // Kj * Rj * (Ri.t() * X + Ci - Cj)
+		if (X1.z > 0) {
+			const Point2f x1(X1);
+			if (image1.depthMap.isInsideWithBorder<float,1>(x1)) {
+				Depth depth1;
+				if (image1.depthMap.sample(depth1, x1, [&X1](Depth d) { return IsDepthSimilar(X1.z, d, 0.03f); })) {
+					const Point2f xb(image1.Tr*Point3f(x1.x*depth1,x1.y*depth1,depth1)+image1.Tn); // Ki * Ri * (Rj.t() * Kj-1 * X + Cj - Ci)
+					consistency = MINF(norm(Point2f(float(x0.x)-xb.x, float(x0.y)-xb.y)), consistency);
+				}
+			}
+		}
+		score += OPTDENSE::fEstimationGeometricWeight * consistency;
+	}
 	ASSERT(ISFINITE(score));
 	return score;
 }

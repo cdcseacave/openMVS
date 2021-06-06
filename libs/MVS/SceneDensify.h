@@ -54,9 +54,9 @@ public:
 
 	bool SelectViews(IIndexArr& images, IIndexArr& imagesMap, IIndexArr& neighborsMap);
 	bool SelectViews(DepthData& depthData);
-	bool InitViews(DepthData& depthData, IIndex idxNeighbor, IIndex numNeighbors);
+	bool InitViews(DepthData& depthData, IIndex idxNeighbor, IIndex numNeighbors, bool initDepthMaps);
 	bool InitDepthMap(DepthData& depthData);
-	bool EstimateDepthMap(IIndex idxImage);
+	bool EstimateDepthMap(IIndex idxImage, int nGeometricIter);
 
 	bool RemoveSmallSegments(DepthData& depthData);
 	bool GapInterpolation(DepthData& depthData);
@@ -92,6 +92,7 @@ struct MVS_API DenseDepthMapData {
 	SEACAVE::EventQueue events; // internal events queue (processed by the working threads)
 	Semaphore sem;
 	CAutoPtr<Util::Progress> progress;
+	int nEstimationGeometricIter;
 	int nFusionMode;
 	STEREO::SemiGlobalMatcher sgm;
 

@@ -137,6 +137,15 @@ public:
 		_ArrayCopyConstruct(_vector, rList._vector, _size);
 	}
 
+	// constructor a list from a raw data array
+	explicit inline cList(TYPE* pDataBegin, TYPE* pDataEnd) : _size((IDX)(pDataEnd-pDataBegin)), _vectorSize(_size)
+	{
+		if (_vectorSize == 0)
+			return;
+		_vector = (TYPE*) operator new[] (_vectorSize * sizeof(TYPE));
+		_ArrayCopyConstruct(_vector, pDataBegin, _size);
+	}
+
 	// constructor a list from a raw data array, taking ownership of the array memory
 	explicit inline cList(IDX nSize, TYPE* pData) : _size(nSize), _vectorSize(nSize), _vector(pData)
 	{

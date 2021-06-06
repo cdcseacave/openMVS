@@ -96,7 +96,6 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	unsigned nMinViewsFuse;
 	unsigned nEstimateColors;
 	unsigned nEstimateNormals;
-	bool bFuseDepthMaps;
 	int nIgnoreMaskLabel;
 	boost::program_options::options_description config("Densify options");
 	config.add_options()
