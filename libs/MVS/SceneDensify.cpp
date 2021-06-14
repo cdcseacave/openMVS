@@ -369,10 +369,9 @@ bool DepthMapsData::InitViews(DepthData& depthData, IIndex idxNeighbor, IIndex n
 			Depth dMin, dMax;
 			NormalMap normalMap;
 			ConfidenceMap confMap;
-			if (!ImportDepthDataRaw(ComposeDepthFilePath(view.GetID(), "dmap"),
-					imageFileName, IDs, imageSize, view.cameraDepthMap.K, view.cameraDepthMap.R, view.cameraDepthMap.C,
-					dMin, dMax, view.depthMap, normalMap, confMap, 1))
-				return false;
+			ImportDepthDataRaw(ComposeDepthFilePath(view.GetID(), "dmap"),
+				imageFileName, IDs, imageSize, view.cameraDepthMap.K, view.cameraDepthMap.R, view.cameraDepthMap.C,
+				dMin, dMax, view.depthMap, normalMap, confMap, 1);
 		}
 		view.Init(viewRef.camera);
 	}
@@ -1749,6 +1748,8 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 		// replace raw depth-maps with the geometric-consistent ones
 		for (IIndex idx: data.images) {
 			const DepthData& depthData(data.depthMaps.arrDepthData[idx]);
+			if (!depthData.IsValid())
+				continue;
 			const String rawName(ComposeDepthFilePath(depthData.GetView().GetID(), "dmap"));
 			File::deleteFile(rawName);
 			File::renameFile(ComposeDepthFilePath(depthData.GetView().GetID(), "geo.dmap"), rawName);
