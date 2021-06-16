@@ -823,6 +823,49 @@ public:
 			lastMsgLen = msgLen;
 		}
 	};
+
+	template<typename T>
+	static std::pair<T,T> ComputePercentileMinMax(const T *data, size_t size){
+		if (size == 0) 
+			return std::make_pair(0, 0);
+
+		// Find min/max
+		T aMin = data[0];
+		T aMax = data[0];
+
+		for (size_t i = 1; i < size; i++) {
+			if (data[i] > aMax) aMax = data[i];
+			if (data[i] < aMin) aMin = data[i];
+		}
+
+		const float range = static_cast<float>(aMax - aMin);
+		if (range == 0.0f) 
+			return std::make_pair(aMin, aMax);
+
+		float closestMinP = 9999.0f;
+		float closestMaxP = 9999.0f;
+
+		T min = 0;
+		T max = 0;
+		
+		// Get min/max values at the 10th and 90th percentile
+		for (size_t i = 0; i < size; i++) {
+			const float percentile = (static_cast<float>(data[i]) - static_cast<float>(aMin)) / range;
+			const float minP = abs(percentile - 0.1f);
+			const float maxP = abs(percentile - 0.9f);
+
+			if (minP < closestMinP) {
+				min = data[i];
+				closestMinP = minP;
+			}
+			if (maxP < closestMaxP) {
+				max = data[i];
+				closestMaxP = maxP;
+			}
+		}
+
+		return std::make_pair(min, max);
+	}
 };
 /*----------------------------------------------------------------*/
 

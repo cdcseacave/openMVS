@@ -29,43 +29,40 @@ using namespace SEACAVE;
 /*
   ISO C++ uses a 'std::streamsize' type to define counts.  This makes
   it similar to, (but perhaps not the same as) size_t.
-
   The std::ios::pos_type is used to represent stream positions as used
   by tellg(), tellp(), seekg(), and seekp().  This makes it similar to
   (but perhaps not the same as) 'off_t'.  The std::ios::streampos type
   is used for character streams, but is documented to not be an
   integral type anymore, so it should *not* be assigned to an integral
   type.
-
   The std::ios::off_type is used to specify relative offsets needed by
   the variants of seekg() and seekp() which accept a relative offset
   argument.
-
   Useful prototype knowledge:
-
   Obtain read position
-    ios::pos_type basic_istream::tellg()
-
+	ios::pos_type basic_istream::tellg()
   Set read position
-    basic_istream& basic_istream::seekg(ios::pos_type)
-    basic_istream& basic_istream::seekg(ios::off_type, ios_base::seekdir)
-
+	basic_istream& basic_istream::seekg(ios::pos_type)
+	basic_istream& basic_istream::seekg(ios::off_type, ios_base::seekdir)
   Read data
-    basic_istream& istream::read(char *str, streamsize count)
-
+	basic_istream& istream::read(char *str, streamsize count)
   Number of characters read in last unformatted read
-    streamsize istream::gcount();
-
+	streamsize istream::gcount();
   Obtain write position
-    ios::pos_type basic_ostream::tellp()
-
+	ios::pos_type basic_ostream::tellp()
   Set write position
-    basic_ostream& basic_ostream::seekp(ios::pos_type)
-    basic_ostream& basic_ostream::seekp(ios::off_type, ios_base::seekdir)
-
+	basic_ostream& basic_ostream::seekp(ios::pos_type)
+	basic_ostream& basic_ostream::seekp(ios::off_type, ios_base::seekdir)
   Write data
-    basic_ostream& ostream::write(const char *str, streamsize count)
+	basic_ostream& ostream::write(const char *str, streamsize count)
 */
+
+// https://www.awaresystems.be/imaging/tiff/tifftags/sampleformat.html
+enum TIFF_SAMPLEFORMAT_TYPE {
+    TIFF_SAMPLEFORMAT_UINT = 1,
+    TIFF_SAMPLEFORMAT_INT = 2,
+    TIFF_SAMPLEFORMAT_IEEEFP = 3
+};
 
 struct tiffis_data;
 struct tiffos_data;
@@ -393,14 +390,16 @@ HRESULT CImageTIFF::ReadHeader()
 		TIFFGetField(tif, TIFFTAG_IMAGELENGTH, &m_height) &&
 		TIFFGetField(tif, TIFFTAG_PHOTOMETRIC, &photometric))
 	{
-		uint16 bpp=8, ncn = photometric > 1 ? 3 : 1;
+		uint16 bpp=8, ncn = photometric > 1 ? 3 : 1, sampleFormat = 1;
 		TIFFGetField(tif, TIFFTAG_BITSPERSAMPLE, &bpp);
 		TIFFGetField(tif, TIFFTAG_SAMPLESPERPIXEL, &ncn);
+		TIFFGetField(tif, TIFFTAG_SAMPLEFORMAT, &sampleFormat);
 
 		m_dataWidth = m_width;
 		m_dataHeight= m_height;
 		m_numLevels = 0;
 		m_level     = 0;
+		m_stride    = ncn;
 
 		if ((bpp == 32 && ncn == 3) || photometric == PHOTOMETRIC_LOGLUV) {
 			// this is HDR format with 3 floats per pixel
@@ -413,22 +412,37 @@ HRESULT CImageTIFF::ReadHeader()
 			((photometric != 2 && photometric != 1) ||
 				(ncn != 1 && ncn != 3 && ncn != 4)))
 			bpp = 8;
-		switch (bpp) {
+
+		bool implemented = true;
+		switch (bpp){
 		case 8:
-			m_stride = 4;
-			m_format = PF_B8G8R8A8;
+			if (ncn >= 3) {
+				m_format = PF_B8G8R8A8;
+				m_stride = 4;
+			} else if (ncn == 1) {
+				m_format = PF_GRAY8;
+				m_stride = 1;
+			} else {
+				implemented = false;
+			}
 			break;
-		//case 16:
-		//	m_type = CV_MAKETYPE(CV_16U, photometric > 1 ? 3 : 1);
-		//	break;
-		//case 32:
-		//	m_type = CV_MAKETYPE(CV_32F, photometric > 1 ? 3 : 1);
-		//	break;
-		//case 64:
-		//	m_type = CV_MAKETYPE(CV_64F, photometric > 1 ? 3 : 1);
-		//	break;
+		case 16:
+			m_format = PF_GRAYU16;
+			m_stride = 2;
+			if (ncn != 1 || sampleFormat != TIFF_SAMPLEFORMAT_UINT) 
+				implemented = false;
+			break;
+		case 32:
+			m_format = PF_GRAYF32;
+			m_stride = 4;
+			if (ncn != 1 || sampleFormat != TIFF_SAMPLEFORMAT_IEEEFP) 
+				implemented = false;
+			break;
 		default:
-			//TODO: implement
+			// TODO: implement support for more
+			implemented = false;
+		}
+		if (!implemented) {
 			ASSERT("error: not implemented" == NULL);
 			LOG(LT_IMAGE, "error: unsupported TIFF image");
 			Close();
@@ -448,101 +462,48 @@ HRESULT CImageTIFF::ReadData(void* pData, PIXELFORMAT dataFormat, Size nStride, 
 {
 	if (m_state && m_width && m_height) {
 		TIFF* tif = (TIFF*)m_state;
-		uint32 tile_width0 = m_width, tile_height0 = 0;
-		int is_tiled = TIFFIsTiled(tif);
 		uint16 photometric;
 		TIFFGetField(tif, TIFFTAG_PHOTOMETRIC, &photometric);
 		uint16 bpp = 8, ncn = photometric > 1 ? 3 : 1;
 		TIFFGetField(tif, TIFFTAG_BITSPERSAMPLE, &bpp);
 		TIFFGetField(tif, TIFFTAG_SAMPLESPERPIXEL, &ncn);
-		const int bitsPerByte = 8;
-		int dst_bpp = (int)(1 * bitsPerByte);
-		if (dst_bpp == 8) {
+
+		const size_t buffer_size = m_stride * m_width * m_height;
+		CLISTDEF0(uint8_t) _buffer(buffer_size);
+		uint8_t* buffer = _buffer.Begin();
+
+		if (m_format == PF_B8G8R8A8 || m_format == PF_GRAY8) {
 			char errmsg[1024];
 			if (!TIFFRGBAImageOK(tif, errmsg)) {
 				Close();
 				return _INVALIDFILE;
 			}
-		}
 
-		if ((!is_tiled) ||
-			(is_tiled &&
-			 TIFFGetField(tif, TIFFTAG_TILEWIDTH, &tile_width0) &&
-			 TIFFGetField(tif, TIFFTAG_TILELENGTH, &tile_height0)))
-		{
-			if (!is_tiled)
-				TIFFGetField(tif, TIFFTAG_ROWSPERSTRIP, &tile_height0);
-
-			if (tile_width0 <= 0)
-				tile_width0 = m_width;
-
-			if (tile_height0 <= 0 ||
-				(!is_tiled && tile_height0 == std::numeric_limits<uint32>::max()))
-				tile_height0 = m_height;
-
-			uint8_t* data = (uint8_t*)pData;
-			if (!is_tiled && tile_height0 == 1 && dataFormat == m_format && nStride == m_stride) {
-				// read image directly to the data buffer
-				for (Size j=0; j<m_height; ++j, data+=lineWidth)
-					if (!TIFFReadRGBAStrip(tif, j, (uint32*)data)) {
-						Close();
-						return _INVALIDFILE;
-					}
-			} else {
-				// read image to a buffer and convert it
-				const size_t buffer_size = 4 * tile_height0 * tile_width0;
-				CLISTDEF0(uint8_t) _buffer(buffer_size);
-				uint8_t* buffer = _buffer.Begin();
-
-				for (uint32 y = 0; y < m_height; y += tile_height0, data += lineWidth*tile_height0) {
-					uint32 tile_height = tile_height0;
-					if (y + tile_height > m_height)
-						tile_height = m_height - y;
-
-					for (uint32 x = 0; x < m_width; x += tile_width0) {
-						uint32 tile_width = tile_width0;
-						if (x + tile_width > m_width)
-							tile_width = m_width - x;
-
-						int ok;
-						switch (dst_bpp) {
-						case 8:
-						{
-							uint8_t* bstart = buffer;
-							if (!is_tiled)
-								ok = TIFFReadRGBAStrip(tif, y, (uint32*)buffer);
-							else {
-								ok = TIFFReadRGBATile(tif, x, y, (uint32*)buffer);
-								//Tiles fill the buffer from the bottom up
-								bstart += (tile_height0 - tile_height) * tile_width0 * 4;
-							}
-							if (!ok) {
-								Close();
-								return _INVALIDFILE;
-							}
-
-							for (uint32 i = 0; i < tile_height; ++i) {
-								uint8_t* dst = data + x*3 + lineWidth*(tile_height - i - 1);
-								uint8_t* src = bstart + i*tile_width0*4;
-								if (!FilterFormat(dst, dataFormat, nStride, src, m_format, m_stride, tile_width)) {
-									Close();
-									return _FAIL;
-								}
-							}
-							break;
-						}
-						default:
-						{
-							Close();
-							return _INVALIDFILE;
-						}
-						}
-					}
+			// Simplified
+			if (!TIFFReadRGBAImageOriented(tif, m_width, m_height, (uint32*)buffer, ORIENTATION_TOPLEFT, 0)) {
+				Close();
+				return _INVALIDFILE;
+			}
+		} else if (m_format == PF_GRAYU16 || m_format == PF_GRAYF32) {
+			for (uint32 y = 0; y < m_height; y++, buffer += m_lineWidth) {
+				if (!TIFFReadScanline(tif, buffer, y, 0)) {
+					Close();
+					return _INVALIDFILE;
 				}
 			}
 
-			return _OK;
+			buffer = _buffer.Begin();
 		}
+
+		// Data not in the format we need?
+		if (dataFormat != m_format || nStride != m_stride) {
+			if (!FilterFormat(pData, dataFormat, nStride, buffer, m_format, m_stride, m_width * m_height)) {
+				Close();
+				return _FAIL;
+			}
+		}
+
+		return _OK;
 	}
 
 	Close();
