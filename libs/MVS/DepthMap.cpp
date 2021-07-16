@@ -1844,6 +1844,7 @@ bool MVS::ImportDepthDataRaw(const String& fileName, String& imageFileName,
 		header.imageWidth < header.depthWidth || header.imageHeight < header.depthHeight)
 	{
 		DEBUG("error: invalid depth-data file '%s'", fileName.c_str());
+		fclose(f);
 		return false;
 	}
 
