@@ -52,8 +52,9 @@ String strMeshFileName;
 String strDenseConfigFileName;
 float fMaxSubsceneArea;
 float fSampleMesh;
-int thFilterPointCloud;
 int nFusionMode;
+int thFilterPointCloud;
+int nExportNumViews;
 int nArchiveType;
 int nProcessPriority;
 unsigned nMaxThreads;
@@ -111,8 +112,9 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		("estimate-normals", boost::program_options::value(&nEstimateNormals)->default_value(2), "estimate the normals for the dense point-cloud (0 - disabled, 1 - final, 2 - estimate)")
 		("sub-scene-area", boost::program_options::value(&OPT::fMaxSubsceneArea)->default_value(0.f), "split the scene in sub-scenes such that each sub-scene surface does not exceed the given maximum sampling area (0 - disabled)")
 		("sample-mesh", boost::program_options::value(&OPT::fSampleMesh)->default_value(0.f), "uniformly samples points on a mesh (0 - disabled, <0 - number of points, >0 - sample density per square unit)")
-		("filter-point-cloud", boost::program_options::value(&OPT::thFilterPointCloud)->default_value(0), "filter dense point-cloud based on visibility (0 - disabled)")
 		("fusion-mode", boost::program_options::value(&OPT::nFusionMode)->default_value(0), "depth map fusion mode (-2 - fuse disparity-maps, -1 - export disparity-maps only, 0 - depth-maps & fusion, 1 - export depth-maps only)")
+		("filter-point-cloud", boost::program_options::value(&OPT::thFilterPointCloud)->default_value(0), "filter dense point-cloud based on visibility (0 - disabled)")
+		("export-number-views", boost::program_options::value(&OPT::nExportNumViews)->default_value(0), "export points with >= number of views (0 - disabled)")
 		;
 
 	// hidden options, allowed both on command line and
@@ -267,6 +269,13 @@ int main(int argc, LPCTSTR* argv)
 		const String baseFileName(MAKE_PATH_SAFE(Util::getFileFullName(OPT::strOutputFileName))+_T("_filtered"));
 		scene.Save(baseFileName+_T(".mvs"), (ARCHIVE_TYPE)OPT::nArchiveType);
 		scene.pointcloud.Save(baseFileName+_T(".ply"));
+		Finalize();
+		return EXIT_SUCCESS;
+	}
+	if (OPT::nExportNumViews && scene.pointcloud.IsValid()) {
+		// export point-cloud containing only points with N+ views
+		const String baseFileName(MAKE_PATH_SAFE(Util::getFileFullName(OPT::strOutputFileName)));
+		scene.pointcloud.SaveNViews(baseFileName+String::FormatString(_T("_%dviews.ply"), OPT::nExportNumViews), (IIndex)OPT::nExportNumViews);
 		Finalize();
 		return EXIT_SUCCESS;
 	}

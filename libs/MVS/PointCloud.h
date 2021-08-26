@@ -96,6 +96,7 @@ public:
 
 	bool Load(const String& fileName);
 	bool Save(const String& fileName, bool bLegacyTypes=false) const;
+	bool SaveNViews(const String& fileName, uint32_t minViews, bool bLegacyTypes=false) const;
 
 	#ifdef _USE_BOOST
 	// implement BOOST serialization
