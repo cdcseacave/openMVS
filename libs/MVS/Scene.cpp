@@ -611,6 +611,7 @@ bool Scene::SelectNeighborViews(uint32_t ID, IndexArr& points, unsigned nMinView
 		nMinPointViews = nCalibratedImages;
 	unsigned nPoints = 0;
 	imageData.avgDepth = 0;
+	const float sigmaAngle(-1.f/(2.f*SQUARE(fOptimAngle*1.3)));
 	FOREACH(idx, pointcloud.points) {
 		const PointCloud::ViewArr& views = pointcloud.pointViews[idx];
 		ASSERT(views.IsSorted());
@@ -631,7 +632,7 @@ bool Scene::SelectNeighborViews(uint32_t ID, IndexArr& points, unsigned nMinView
 			const Image& imageData2 = images[view];
 			const Point3f V2(imageData2.camera.C - Cast<REAL>(point));
 			const float fAngle(ACOS(ComputeAngle<float,float>(V1.ptr(), V2.ptr())));
-			const float wAngle(MINF(POW(fAngle/fOptimAngle, 1.5f), 1.f));
+			const float wAngle(fAngle<fOptimAngle ? POW(fAngle/fOptimAngle, 1.5f) : EXP(SQUARE(fAngle-fOptimAngle)*sigmaAngle));
 			const float footprint2(Footprint(imageData2.camera, point));
 			const float fScaleRatio(footprint1/footprint2);
 			float wScale;
