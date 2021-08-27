@@ -1047,9 +1047,13 @@ void MeshRefine::ThSelectNeighbors(uint32_t idxImage, std::unordered_set<uint64_
 	const float fMinArea(0.1f);
 	const float fMinScale(0.2f), fMaxScale(3.2f);
 	const float fMinAngle(FD2R(2.5f)), fMaxAngle(FD2R(45.f));
-	const Image& imageData = images[idxImage];
+	Image& imageData = images[idxImage];
 	if (!imageData.IsValid())
 		return;
+	if (imageData.neighbors.IsEmpty()) {
+		IndexArr points;
+		scene.SelectNeighborViews(idxImage, points);
+	}
 	ViewScoreArr neighbors(imageData.neighbors);
 	Scene::FilterNeighborViews(neighbors, fMinArea, fMinScale, fMaxScale, fMinAngle, fMaxAngle, nMaxViews);
 	Lock l(cs);
@@ -1279,6 +1283,9 @@ bool Scene::RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsig
 					   unsigned nScales, float fScaleStep,
 					   unsigned nReduceMemory, unsigned nAlternatePair, float fRegularityWeight, float fRatioRigidityElasticity, float fThPlanarVertex, float fGradientStep)
 {
+	if (pointcloud.IsEmpty() && !ImagesHaveNeighbors())
+		SampleMeshWithVisibility();
+
 	MeshRefine refine(*this, nReduceMemory, nAlternatePair, fRegularityWeight, fRatioRigidityElasticity, nResolutionLevel, nMinResolution, nMaxViews, nMaxThreads);
 	if (!refine.IsValid())
 		return false;

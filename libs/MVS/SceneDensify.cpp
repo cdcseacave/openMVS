@@ -1606,6 +1606,10 @@ bool Scene::DenseReconstruction(int nFusionMode)
 // results are saved to "data"
 bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 {
+	// compute point-cloud from the existing mesh
+	if (pointcloud.IsEmpty() && !mesh.IsEmpty() && !ImagesHaveNeighbors())
+		SampleMeshWithVisibility();
+
 	{
 	// maps global view indices to our list of views to be processed
 	IIndexArr imagesMap;

@@ -124,7 +124,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		("gradient-step", boost::program_options::value(&OPT::fGradientStep)->default_value(45.05f), "gradient step to be used instead (0 - auto)")
 		("planar-vertex-ratio", boost::program_options::value(&OPT::fPlanarVertexRatio)->default_value(0.f), "threshold used to remove vertices on planar patches (0 - disabled)")
 		#ifdef _USE_CUDA
-		("use-cuda", boost::program_options::value(&OPT::bUseCUDA)->default_value(true), "refine mesh using CUDA")
+		("use-cuda", boost::program_options::value(&OPT::bUseCUDA)->default_value(false), "refine mesh using CUDA")
 		#endif
 		;
 

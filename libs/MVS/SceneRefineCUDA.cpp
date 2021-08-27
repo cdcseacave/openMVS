@@ -2810,6 +2810,9 @@ bool Scene::RefineMeshCUDA(unsigned nResolutionLevel, unsigned nMinResolution, u
 						   float fDecimateMesh, unsigned nCloseHoles, unsigned nEnsureEdgeSize, unsigned nMaxFaceArea,
 						   unsigned nScales, float fScaleStep, unsigned nAlternatePair, float fRegularityWeight, float fRatioRigidityElasticity, float fGradientStep)
 {
+	if (pointcloud.IsEmpty() && !ImagesHaveNeighbors())
+		SampleMeshWithVisibility();
+
 	MeshRefineCUDA refine(*this, nAlternatePair, fRegularityWeight, fRatioRigidityElasticity, nResolutionLevel, nMinResolution, nMaxViews);
 	if (!refine.IsValid())
 		return false;

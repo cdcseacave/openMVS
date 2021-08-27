@@ -144,18 +144,12 @@ float Image::ResizeImage(unsigned nMaxResolution)
 	}
 	if (nMaxResolution == 0 || MAXF(width,height) <= nMaxResolution)
 		return 1.f;
-	float scale;
-	if (width > height) {
-		scale = (float)nMaxResolution/width;
-		height = height*nMaxResolution/width;
-		width = nMaxResolution;
-	} else {
-		scale = (float)nMaxResolution/height;
-		width = width*nMaxResolution/height;
-		height = nMaxResolution;
-	}
+	const REAL scale(width > height ? (REAL)nMaxResolution/width : (REAL)nMaxResolution/height);
+	const cv::Size scaledSize(Image8U::computeResize(GetSize(), scale));
+	width = (uint32_t)scaledSize.width;
+	height = (uint32_t)scaledSize.height;
 	if (!image.empty())
-		cv::resize(image, image, cv::Size((int)width, (int)height), 0, 0, cv::INTER_AREA);
+		cv::resize(image, image, scaledSize, 0, 0, cv::INTER_AREA);
 	return scale;
 } // ResizeImage
 /*----------------------------------------------------------------*/

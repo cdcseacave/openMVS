@@ -42,6 +42,11 @@ using namespace MVS;
 #define PROJECT_ID "MVS\0" // identifies the project stream
 #define PROJECT_VER ((uint32_t)1) // identifies the version of a project stream
 
+// uncomment to enable multi-threading based on OpenMP
+#ifdef _USE_OPENMP
+#define SCENE_USE_OPENMP
+#endif
+
 
 // S T R U C T S ///////////////////////////////////////////////////
 
@@ -56,6 +61,14 @@ void Scene::Release()
 bool Scene::IsEmpty() const
 {
 	return pointcloud.IsEmpty() && mesh.IsEmpty();
+}
+
+bool Scene::ImagesHaveNeighbors() const
+{
+	for (const Image& image: images)
+		if (!image.neighbors.IsEmpty())
+			return true;
+	return false;
 }
 
 
@@ -514,6 +527,52 @@ bool Scene::Save(const String& fileName, ARCHIVE_TYPE type) const
 	return false;
 	#endif
 } // Save
+/*----------------------------------------------------------------*/
+
+
+// compute point-cloud with visibility info from the existing mesh
+void Scene::SampleMeshWithVisibility(unsigned maxResolution)
+{
+	ASSERT(!mesh.IsEmpty());
+	const Depth thFrontDepth(0.985f);
+	pointcloud.Release();
+	pointcloud.points.resize(mesh.vertices.size());
+	pointcloud.pointViews.resize(mesh.vertices.size());
+	#ifdef SCENE_USE_OPENMP
+	#pragma omp parallel for
+	for (int64_t _ID=0; _ID<images.size(); ++_ID) {
+		const IIndex ID(static_cast<IIndex>(_ID));
+	#else
+	FOREACH(ID, images) {
+	#endif
+		const Image& imageData = images[ID];
+		unsigned level(0);
+		const unsigned nMaxResolution(Image8U::computeMaxResolution(imageData.width, imageData.height, level, 0, maxResolution));
+		const REAL scale(imageData.width > imageData.height ? (REAL)nMaxResolution/imageData.width : (REAL)nMaxResolution/imageData.height);
+		const cv::Size scaledSize(Image8U::computeResize(imageData.GetSize(), scale));
+		const Camera camera(imageData.GetCamera(platforms, scaledSize));
+		DepthMap depthMap(scaledSize);
+		mesh.Project(camera, depthMap);
+		FOREACH(idxVertex, mesh.vertices) {
+			const Point3f xz(camera.TransformPointW2I3(Cast<REAL>(mesh.vertices[idxVertex])));
+			if (xz.z <= 0)
+				continue;
+			const Point2f& x(reinterpret_cast<const Point2f&>(xz));
+			if (depthMap.isInsideWithBorder<float,1>(x) && xz.z * thFrontDepth < depthMap(ROUND2INT(x))) {
+				#ifdef SCENE_USE_OPENMP
+				#pragma omp critical
+				#endif
+				pointcloud.pointViews[idxVertex].emplace_back(ID);
+			}
+		}
+	}
+	RFOREACH(idx, pointcloud.points) {
+		if (pointcloud.pointViews[idx].size() < 2)
+			pointcloud.RemovePoint(idx);
+		else
+			pointcloud.points[idx] = mesh.vertices[idx];
+	}
+} // SampleMeshWithVisibility
 /*----------------------------------------------------------------*/
 
 

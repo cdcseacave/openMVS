@@ -1023,6 +1023,12 @@ void Mesh::Clean(float fDecimate, float fSpurious, bool bRemoveSpikes, unsigned 
 	// decimate mesh
 	if (fDecimate < 1) {
 		ASSERT(fDecimate > 0);
+		const int nZeroAreaFaces = vcg::tri::Clean<CLEAN::Mesh>::RemoveZeroAreaFace(mesh);
+		DEBUG_ULTIMATE("Removed %d zero-area faces", nZeroAreaFaces);
+		const int nDuplicateFaces = vcg::tri::Clean<CLEAN::Mesh>::RemoveDuplicateFace(mesh);
+		DEBUG_ULTIMATE("Removed %d duplicate faces", nDuplicateFaces);
+		const int nUnreferencedVertices = vcg::tri::Clean<CLEAN::Mesh>::RemoveUnreferencedVertex(mesh);
+		DEBUG_ULTIMATE("Removed %d unreferenced vertices", nUnreferencedVertices);
 		vcg::tri::TriEdgeCollapseQuadricParameter pp;
 		pp.QualityThr = 0.3; // Quality Threshold for penalizing bad shaped faces: the value is in the range [0..1], 0 accept any kind of face (no penalties), 0.5 penalize faces with quality < 0.5, proportionally to their shape
 		pp.PreserveBoundary = false; // the simplification process tries to not affect mesh boundaries during simplification
@@ -1061,17 +1067,17 @@ void Mesh::Clean(float fDecimate, float fSpurious, bool bRemoveSpikes, unsigned 
 
 	// clean mesh
 	{
-		vcg::tri::UpdateTopology<CLEAN::Mesh>::FaceFace(mesh);
 		const int nZeroAreaFaces = vcg::tri::Clean<CLEAN::Mesh>::RemoveZeroAreaFace(mesh);
 		DEBUG_ULTIMATE("Removed %d zero-area faces", nZeroAreaFaces);
 		const int nDuplicateFaces = vcg::tri::Clean<CLEAN::Mesh>::RemoveDuplicateFace(mesh);
 		DEBUG_ULTIMATE("Removed %d duplicate faces", nDuplicateFaces);
+		const int nUnreferencedVertices = vcg::tri::Clean<CLEAN::Mesh>::RemoveUnreferencedVertex(mesh);
+		DEBUG_ULTIMATE("Removed %d unreferenced vertices", nUnreferencedVertices);
+		vcg::tri::UpdateTopology<CLEAN::Mesh>::FaceFace(mesh);
 		const int nNonManifoldFaces = vcg::tri::Clean<CLEAN::Mesh>::RemoveNonManifoldFace(mesh);
 		DEBUG_ULTIMATE("Removed %d non-manifold faces", nNonManifoldFaces);
 		const int nDegenerateVertices = vcg::tri::Clean<CLEAN::Mesh>::RemoveDegenerateVertex(mesh);
 		DEBUG_ULTIMATE("Removed %d degenerate vertices", nDegenerateVertices);
-		const int nUnreferencedVertices = vcg::tri::Clean<CLEAN::Mesh>::RemoveUnreferencedVertex(mesh);
-		DEBUG_ULTIMATE("Removed %d unreferenced vertices", nUnreferencedVertices);
 		#if 1
 		const int nDuplicateVertices = vcg::tri::Clean<CLEAN::Mesh>::RemoveDuplicateVertex(mesh);
 		DEBUG_ULTIMATE("Removed %d duplicate vertices", nDuplicateVertices);
