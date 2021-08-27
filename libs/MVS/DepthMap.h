@@ -182,9 +182,12 @@ struct MVS_API DepthData {
 			return (IIndex)(pImageData - images.begin());
 		}
 
+		static bool NeedScaleImage(float scale) {
+			return ABS(scale-1.f) >= 0.15f;
+		}
 		template <typename IMAGE>
 		static bool ScaleImage(const IMAGE& image, IMAGE& imageScaled, float scale) {
-			if (ABS(scale-1.f) < 0.15f)
+			if (!NeedScaleImage(scale))
 				return false;
 			cv::resize(image, imageScaled, cv::Size(), scale, scale, scale>1?cv::INTER_CUBIC:cv::INTER_AREA);
 			return true;

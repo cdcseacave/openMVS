@@ -2416,15 +2416,9 @@ void TImage<TYPE>::toGray(TImage<T>& out, int code, bool bNormalize, bool bSRGB)
 template <typename TYPE>
 cv::Size TImage<TYPE>::computeResize(const cv::Size& size, REAL scale)
 {
-	cv::Size scaledSize;
-	if (size.width > size.height) {
-		scaledSize.width = ROUND2INT(REAL(size.width)*scale);
-		scaledSize.height = ROUND2INT(REAL(size.height)*scaledSize.width/REAL(size.width));
-	} else {
-		scaledSize.height = ROUND2INT(REAL(size.height)*scale);
-		scaledSize.width = ROUND2INT(REAL(size.width)*scaledSize.height/REAL(size.height));
-	}
-	return scaledSize;
+	return cv::Size(
+		cv::saturate_cast<int>((REAL)size.width*scale),
+		cv::saturate_cast<int>((REAL)size.height*scale));
 }
 // compute the final scaled size by performing successive resizes
 // with the given scale value
