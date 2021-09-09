@@ -389,7 +389,7 @@ public:
 	void CreateSeamVertices();
 	void GlobalSeamLeveling();
 	void LocalSeamLeveling();
-	void GenerateTexture(bool bGlobalSeamLeveling, bool bLocalSeamLeveling, unsigned nTextureSizeMultiple, unsigned nRectPackingHeuristic, Pixel8U colEmpty);
+	void GenerateTexture(bool bGlobalSeamLeveling, bool bLocalSeamLeveling, bool bColorVertices, unsigned nTextureSizeMultiple, unsigned nRectPackingHeuristic, Pixel8U colEmpty);
 
 	template <typename PIXEL>
 	static inline PIXEL RGB2YCBCR(const PIXEL& v) {
@@ -433,6 +433,7 @@ public:
 
 	// valid the entire time
 	Mesh::VertexFacesArr& vertexFaces; // for each vertex, the list of faces containing it
+	Mesh::VertexColorArr& vertexColors; // for each vertex, assigned vertex color (optional)
 	BoolArr& vertexBoundary; // for each vertex, stores if it is at the boundary or not
 	Mesh::TexCoordArr& faceTexcoords; // for each face, the texture-coordinates of the vertices
 	Image8U3& textureDiffuse; // texture containing the diffuse color
@@ -450,6 +451,7 @@ MeshTexture::MeshTexture(Scene& _scene, unsigned _nResolutionLevel, unsigned _nM
 	nResolutionLevel(_nResolutionLevel),
 	nMinResolution(_nMinResolution),
 	vertexFaces(_scene.mesh.vertexFaces),
+	vertexColors(_scene.mesh.vertexColors),
 	vertexBoundary(_scene.mesh.vertexBoundary),
 	faceTexcoords(_scene.mesh.faceTexcoords),
 	textureDiffuse(_scene.mesh.textureDiffuse),
@@ -1265,14 +1267,14 @@ void MeshTexture::GlobalSeamLeveling()
 
 	// fill the matrix A and the coefficients for the Vector b of the linear equation system
 	IndexArr indices;
-	Colors vertexColors;
+	Colors vertColors;
 	Colors coeffB;
 	FOREACHPTR(pSeamVertex, seamVertices) {
 		const SeamVertex& seamVertex = *pSeamVertex;
 		if (seamVertex.patches.GetSize() < 2)
 			continue;
 		seamVertex.SortByPatchIndex(indices);
-		vertexColors.Resize(indices.GetSize());
+		vertColors.Resize(indices.GetSize());
 		FOREACH(i, indices) {
 			const SeamVertex::Patch& patch0 = seamVertex.patches[indices[i]];
 			ASSERT(patch0.idxPatch < numPatches);
@@ -1284,16 +1286,16 @@ void MeshTexture::GlobalSeamLeveling()
 				const SeamVertex::Patch& patch1 = seamVertex1.patches[idxPatch1];
 				sampler.AddEdge(patch0.proj, patch1.proj);
 			}
-			vertexColors[i] = sampler.GetColor();
+			vertColors[i] = sampler.GetColor();
 		}
 		const VertexPatch2RowMap& vertpatch2row = vertpatch2rows[seamVertex.idxVertex];
 		for (IDX i=0; i<indices.GetSize()-1; ++i) {
 			const uint32_t idxPatch0(seamVertex.patches[indices[i]].idxPatch);
-			const Color& color0 = vertexColors[i];
+			const Color& color0 = vertColors[i];
 			const MatIdx col0(vertpatch2row.at(idxPatch0));
 			for (IDX j=i+1; j<indices.GetSize(); ++j) {
 				const uint32_t idxPatch1(seamVertex.patches[indices[j]].idxPatch);
-				const Color& color1 = vertexColors[j];
+				const Color& color1 = vertColors[j];
 				const MatIdx col1(vertpatch2row.at(idxPatch1));
 				ASSERT(idxPatch0 < idxPatch1);
 				const MatIdx rowA((MatIdx)coeffB.GetSize());
@@ -1784,7 +1786,7 @@ void MeshTexture::LocalSeamLeveling()
 	}
 }
 
-void MeshTexture::GenerateTexture(bool bGlobalSeamLeveling, bool bLocalSeamLeveling, unsigned nTextureSizeMultiple, unsigned nRectPackingHeuristic, Pixel8U colEmpty)
+void MeshTexture::GenerateTexture(bool bGlobalSeamLeveling, bool bLocalSeamLeveling, bool bColorVertices, unsigned nTextureSizeMultiple, unsigned nRectPackingHeuristic, Pixel8U colEmpty)
 {
 	// project patches in the corresponding view and compute texture-coordinates and bounding-box
 	const int border(2);
@@ -1859,6 +1861,28 @@ void MeshTexture::GenerateTexture(bool bGlobalSeamLeveling, bool bLocalSeamLevel
 			LocalSeamLeveling();
 			DEBUG_ULTIMATE("\tlocal seam leveling completed (%s)", TD_TIMER_GET_FMT().c_str());
 		}
+	}
+
+	if(bColorVertices) {
+		/* Only assign color to mesh vertices and quit; do not generate a PNG texture */
+		vertexColors.Resize(vertices.GetSize());
+		vertexColors.Memset(0);
+		for (int_t idx = 0; idx < (int_t) numPatches; ++idx) {
+			TexturePatch &texturePatch = texturePatches[(uint32_t) idx];
+			const Image &imageData = images[texturePatch.label];
+			FOREACHPTR(pIdxFace, texturePatch.faces) {
+				const FIndex idxFace(*pIdxFace);
+				const Face &face = faces[idxFace];
+				TexCoord *texcoords = faceTexcoords.Begin() + idxFace * 3;
+				const TexCoord offset(texturePatch.rect.tl());
+				for (int i = 0; i < 3; ++i) {
+					TexCoord q = texcoords[i] + offset;
+					vertexColors[face[i]] = imageData.image(q.y, q.x);
+				}
+			}
+		}
+		faceTexcoords.Empty();
+		return;
 	}
 
 	// merge texture patches with overlapping rectangles
@@ -1969,7 +1993,7 @@ void MeshTexture::GenerateTexture(bool bGlobalSeamLeveling, bool bLocalSeamLevel
 }
 
 // texture mesh
-bool Scene::TextureMesh(unsigned nResolutionLevel, unsigned nMinResolution, float fOutlierThreshold, float fRatioDataSmoothness, bool bGlobalSeamLeveling, bool bLocalSeamLeveling, unsigned nTextureSizeMultiple, unsigned nRectPackingHeuristic, Pixel8U colEmpty)
+bool Scene::TextureMesh(unsigned nResolutionLevel, unsigned nMinResolution, float fOutlierThreshold, float fRatioDataSmoothness, bool bGlobalSeamLeveling, bool bLocalSeamLeveling, bool bColorVertices, unsigned nTextureSizeMultiple, unsigned nRectPackingHeuristic, Pixel8U colEmpty)
 {
 	MeshTexture texture(*this, nResolutionLevel, nMinResolution);
 
@@ -1984,7 +2008,7 @@ bool Scene::TextureMesh(unsigned nResolutionLevel, unsigned nMinResolution, floa
 	// generate the texture image and atlas
 	{
 		TD_TIMER_STARTD();
-		texture.GenerateTexture(bGlobalSeamLeveling, bLocalSeamLeveling, nTextureSizeMultiple, nRectPackingHeuristic, colEmpty);
+		texture.GenerateTexture(bGlobalSeamLeveling, bLocalSeamLeveling, bColorVertices, nTextureSizeMultiple, nRectPackingHeuristic, colEmpty);
 		DEBUG_EXTRA("Generating texture atlas and image completed: %u patches, %u image size (%s)", texture.texturePatches.GetSize(), mesh.textureDiffuse.width(), TD_TIMER_GET_FMT().c_str());
 	}
 

@@ -65,6 +65,9 @@ public:
 	typedef cList<VertexIdxArr> VertexVerticesArr;
 	typedef cList<FaceIdxArr> VertexFacesArr;
 
+	typedef Pixel8U Color;
+	typedef CLISTDEF0(Color) VertexColorArr;
+
 	typedef TPoint3<Type> Normal;
 	typedef cList<Normal,const Normal&,0,8192,FIndex> NormalArr;
 
@@ -90,6 +93,8 @@ public:
 	VertexVerticesArr vertexVertices; // for each vertex, the list of adjacent vertices (optional)
 	VertexFacesArr vertexFaces; // for each vertex, the list of faces containing it (optional)
 	BoolArr vertexBoundary; // for each vertex, stores if it is at the boundary or not (optional)
+	VertexColorArr vertexColors; // for each vertex, stores its assigned color (optional)
+
 
 	NormalArr faceNormals; // for each face, the normal to it (optional)
 	TexCoordArr faceTexcoords; // for each face, the texture-coordinates corresponding to the contained vertices (optional)
