@@ -11,6 +11,8 @@
 
 // I N C L U D E S /////////////////////////////////////////////////
 
+#include <utility>
+
 
 // D E F I N E S ///////////////////////////////////////////////////
 
@@ -69,6 +71,10 @@
 #define CLISTDEF0IDX(TYPE,IDXTYPE) SEACAVE::cList< TYPE, const TYPE&, 0, 16, IDXTYPE >
 #define CLISTDEFIDX(TYPE,IDXTYPE) SEACAVE::cList< TYPE, const TYPE&, 1, 16, IDXTYPE >
 #define CLISTDEF2IDX(TYPE,IDXTYPE) SEACAVE::cList< TYPE, const TYPE&, 2, 16, IDXTYPE >
+
+#ifndef STCALL
+#define STCALL
+#endif
 
 
 namespace SEACAVE {

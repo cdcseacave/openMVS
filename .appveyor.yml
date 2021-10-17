@@ -84,7 +84,7 @@ for:
     - '/usr/lib/x86_64-linux-gnu/'
   build_script:
     - git clone https://github.com/cdcseacave/VCG.git
-    - git clone --single-branch --branch 3.2 https://gitlab.com/libeigen/eigen.git
+    - git clone --single-branch --branch 3.4 https://gitlab.com/libeigen/eigen.git
     - mkdir eigen_build && cd eigen_build
     - cmake . ../eigen
     - make && sudo make install

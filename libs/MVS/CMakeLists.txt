@@ -27,6 +27,10 @@ endif()
 # List sources files
 FILE(GLOB LIBRARY_FILES_C "*.cpp")
 FILE(GLOB LIBRARY_FILES_H "*.h" "*.inl")
+if(_USE_CUDA)
+	FILE(GLOB LIBRARY_FILES_CUDA "*.cu")
+	LIST(APPEND LIBRARY_FILES_C ${LIBRARY_FILES_CUDA})
+endif()
 
 cxx_library_with_type(MVS "Libs" "" "${cxx_default}"
 	${LIBRARY_FILES_C} ${LIBRARY_FILES_H}
@@ -38,6 +42,9 @@ IF(CMAKE_VERSION VERSION_GREATER_EQUAL 3.16.0)
 endif()
 
 # Link its dependencies
+if(_USE_CUDA)
+	set_target_properties(MVS PROPERTIES CUDA_ARCHITECTURES "50;72;75")
+endif()
 TARGET_LINK_LIBRARIES(MVS PRIVATE Common Math IO CGAL::CGAL ${CERES_LIBRARIES} ${CUDA_CUDA_LIBRARY})
 
 # Install

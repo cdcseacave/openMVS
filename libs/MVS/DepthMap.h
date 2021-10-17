@@ -87,6 +87,9 @@ enum DepthFlags {
 	ADJUST_FILTER	= (1 << 2),
 	OPTIMIZE		= (REMOVE_SPECKLES|FILL_GAPS)
 };
+#ifdef _USE_CUDA
+extern int nCUDADevice;
+#endif // _USE_CUDA
 extern unsigned nResolutionLevel;
 extern unsigned nMaxResolution;
 extern unsigned nMinResolution;
@@ -260,7 +263,7 @@ typedef MVS_API CLISTDEFIDX(DepthData,IIndex) DepthDataArr;
 
 
 struct MVS_API DepthEstimator {
-	enum { nSizeHalfWindow = 5 };
+	enum { nSizeHalfWindow = 4 };
 	enum { nSizeWindow = nSizeHalfWindow*2+1 };
 	enum { nSizeStep = 2 };
 	enum { TexelChannels = 1 };
@@ -387,10 +390,10 @@ struct MVS_API DepthEstimator {
 	#if DENSE_NCC == DENSE_NCC_WEIGHTED
 	float GetWeight(const ImageRef& x, float center) const {
 		// color weight [0..1]
-		const float sigmaColor(-1.f/(2.f*SQUARE(0.2f)));
+		const float sigmaColor(-1.f/(2.f*SQUARE(0.1f)));
 		const float wColor(SQUARE(image0.image(x0+x)-center) * sigmaColor);
 		// spatial weight [0..1]
-		const float sigmaSpatial(-1.f/(2.f*SQUARE((int)nSizeHalfWindow)));
+		const float sigmaSpatial(-1.f/(2.f*SQUARE((int)nSizeHalfWindow-1)));
 		const float wSpatial(float(SQUARE(x.x) + SQUARE(x.y)) * sigmaSpatial);
 		return DENSE_EXP(wColor+wSpatial);
 	}

@@ -412,19 +412,18 @@ void MeshRefine::ListCameraFaces()
 {
 	// extract array of faces viewed by each camera
 	typedef SEACAVE::cList<Mesh::FaceIdxArr,const Mesh::FaceIdxArr&,2> CameraFacesArr;
-	CameraFacesArr arrCameraFaces(images.GetSize());
-	{
-	Mesh::Octree octree;
-	Mesh::FacesInserter::CreateOctree(octree, scene.mesh);
-	FOREACH(ID, images) {
-		const Image& imageData = images[ID];
-		if (!imageData.IsValid())
-			continue;
-		typedef TFrustum<float,5> Frustum;
-		const Frustum frustum(Frustum::MATRIX3x4(((PMatrix::CEMatMap)imageData.camera.P).cast<float>()), (float)imageData.width, (float)imageData.height);
-		Mesh::FacesInserter inserter(arrCameraFaces[ID]);
-		octree.Traverse(frustum, inserter);
-	}
+	CameraFacesArr arrCameraFaces(images.GetSize()); {
+		Mesh::Octree octree;
+		Mesh::FacesInserter::CreateOctree(octree, scene.mesh);
+		FOREACH(ID, images) {
+			const Image& imageData = images[ID];
+			if (!imageData.IsValid())
+				continue;
+			typedef TFrustum<float,5> Frustum;
+			const Frustum frustum(Frustum::MATRIX3x4(((PMatrix::CEMatMap)imageData.camera.P).cast<float>()), (float)imageData.width, (float)imageData.height);
+			Mesh::FacesInserter inserter(arrCameraFaces[ID]);
+			octree.Traverse(frustum, inserter);
+		}
 	}
 
 	// project mesh to each camera plane

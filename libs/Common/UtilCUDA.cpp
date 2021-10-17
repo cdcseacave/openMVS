@@ -1,12 +1,12 @@
 ////////////////////////////////////////////////////////////////////
-// CUDA.cpp
+// UtilCUDA.cpp
 //
 // Copyright 2007 cDc@seacave
 // Distributed under the Boost Software License, Version 1.0
 // (See http://www.boost.org/LICENSE_1_0.txt)
 
 #include "Common.h"
-#include "CUDA.h"
+#include "UtilCUDA.h"
 
 #ifdef _USE_CUDA
 

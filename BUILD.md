@@ -3,7 +3,7 @@ Dependencies
 ------------
 
 *OpenMVS* relies on a number of open source libraries, some of which are optional. For details on customizing the build process, see the compilation instructions.
-* [Eigen](http://eigen.tuxfamily.org) version 3.3.9 or higher
+* [Eigen](http://eigen.tuxfamily.org) version 3.4 or higher
 * [OpenCV](http://opencv.org) version 2.4 or higher
 * [Ceres](http://ceres-solver.org) version 1.10 or higher
 * [CGAL](http://www.cgal.org) version 4.2 or higher
@@ -64,7 +64,7 @@ sudo apt-get -y install git cmake libpng-dev libjpeg-dev libtiff-dev libglu1-mes
 main_path=`pwd`
 
 #Eigen (Required)
-git clone https://gitlab.com/libeigen/eigen.git --branch 3.2
+git clone https://gitlab.com/libeigen/eigen.git --branch 3.4
 mkdir eigen_build && cd eigen_build
 cmake . ../eigen
 make && sudo make install

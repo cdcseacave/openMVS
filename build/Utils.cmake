@@ -813,7 +813,7 @@ function(cxx_library_with_type name folder type cxx_flags)
   # type can be either STATIC or SHARED to denote a static or shared library.
   # ARGN refers to additional arguments after 'cxx_flags'.
   add_library("${name}" ${type} ${ARGN})
-  set_target_properties("${name}" PROPERTIES COMPILE_FLAGS "${cxx_flags}")
+  #set_target_properties("${name}" PROPERTIES COMPILE_FLAGS "${cxx_flags}")
   if ((BUILD_SHARED_LIBS AND NOT type STREQUAL "STATIC") OR type STREQUAL "SHARED")
     set_target_properties("${name}" PROPERTIES COMPILE_DEFINITIONS "_USRDLL")
   else()

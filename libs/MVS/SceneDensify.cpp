@@ -32,6 +32,7 @@
 #include "Common.h"
 #include "Scene.h"
 #include "SceneDensify.h"
+#include "PatchMatchCUDA.h"
 // MRF: view selection
 #include "../Math/TRWS/MRFEnergy.h"
 
@@ -575,6 +576,13 @@ void* STCALL DepthMapsData::EndDepthMapTmp(void* arg)
 //  - nGeometricIter: current geometric-consistent estimation iteration (-1 - normal patch-match)
 bool DepthMapsData::EstimateDepthMap(IIndex idxImage, int nGeometricIter)
 {
+	#ifdef _USE_CUDA
+	if (pmCUDA) {
+		pmCUDA->EstimateDepthMap(arrDepthData[idxImage]);
+		return true;
+	}
+	#endif // _USE_CUDA
+
 	TD_TIMER_STARTD();
 
 	// initialize
@@ -1713,6 +1721,14 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 	}
 	}
 
+	#ifdef _USE_CUDA
+	// initialize CUDA
+	if (OPTDENSE::nCUDADevice >= 0) {
+		data.depthMaps.pmCUDA = new PatchMatchCUDA(OPTDENSE::nCUDADevice);
+		data.depthMaps.pmCUDA->Init(false);
+	}
+	#endif // _USE_CUDA
+
 	// initialize the queue of images to be processed
 	const int nOptimize(OPTDENSE::nOptimize);
 	if (OPTDENSE::nEstimationGeometricIters)
@@ -1739,6 +1755,14 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 		return false;
 	data.progress.Release();
 
+
+	#ifdef _USE_CUDA
+	// initialize CUDA
+	if (OPTDENSE::nCUDADevice >= 0 && OPTDENSE::nEstimationGeometricIters) {
+		data.depthMaps.pmCUDA->Release();
+		data.depthMaps.pmCUDA->Init(true);
+	}
+	#endif // _USE_CUDA
 	while (++data.nEstimationGeometricIter < (int)OPTDENSE::nEstimationGeometricIters) {
 		// initialize the queue of images to be geometric processed
 		if (data.nEstimationGeometricIter+1 == (int)OPTDENSE::nEstimationGeometricIters)

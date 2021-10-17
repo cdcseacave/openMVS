@@ -211,7 +211,7 @@
 #ifdef _MSC_VER
 #define _DEBUGINFO
 #define _CRTDBG_MAP_ALLOC	//enable this to show also the filename (DEBUG_NEW should also be defined in each file)
-#include <stdlib.h>
+#include <cstdlib>
 #include <crtdbg.h>
 #ifdef _INC_CRTDBG
 #define ASSERT(exp)	{if (!(exp) && 1 == _CrtDbgReport(_CRT_ASSERT, __FILE__, __LINE__, NULL, #exp)) _CrtDbgBreak();}

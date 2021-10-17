@@ -1,5 +1,5 @@
 ////////////////////////////////////////////////////////////////////
-// CUDA.h
+// UtilCUDA.h
 //
 // Copyright 2007 cDc@seacave
 // Distributed under the Boost Software License, Version 1.0
@@ -16,15 +16,22 @@
 // CUDA driver
 #include <cuda.h>
 
+// CUDA toolkit
+#include <cuda_runtime.h>
+#include <cuda_runtime_api.h>
+#include <cuda_texture_types.h>
+#include <curand_kernel.h>
+#include <vector_types.h>
+
 
 // D E F I N E S ///////////////////////////////////////////////////
 
 
+// S T R U C T S ///////////////////////////////////////////////////
+
 namespace SEACAVE {
 
 namespace CUDA {
-
-// S T R U C T S ///////////////////////////////////////////////////
 
 // global list of initialized devices
 struct Device {
@@ -68,6 +75,18 @@ inline void __ensureCudaResult(CUresult result, LPCSTR errorMessage) {
 	exit(EXIT_FAILURE);
 }
 #define ensureCudaResult(val) CUDA::__ensureCudaResult(val, #val)
+
+inline void checkCudaCall(const cudaError_t error) {
+	if (error == cudaSuccess)
+		return;
+	#ifdef _DEBUG
+	VERBOSE("CUDA error at %s:%d: %s (code %d)", __FILE__, __LINE__, cudaGetErrorString(error), error);
+	#else
+	DEBUG("CUDA error: %s (code %d)", cudaGetErrorString(error), error);
+	#endif
+	ASSERT("CudaError" == NULL);
+	exit(EXIT_FAILURE);
+}
 
 // rounds up addr to the align boundary
 template <typename T>
@@ -333,7 +352,7 @@ public:
 		if ((result=cuParamSetSize(hKernel, paramOffset)) != CUDA_SUCCESS)
 			return result;
 		// launch the kernel (Driver API)
-		const CUdevprop& deviceProp = CUDA::devices.Last().prop;
+		const CUdevprop& deviceProp = CUDA::devices.back().prop;
 		const int numBlockThreads(MINF(numThreads, deviceProp.maxThreadsPerBlock));
 		const int nBlocks(MAXF((numThreads+numBlockThreads-1)/numBlockThreads, 1));
 		if ((result=cuFuncSetBlockShape(hKernel, numBlockThreads, 1, 1)) != CUDA_SUCCESS)
@@ -354,7 +373,7 @@ public:
 		if ((result=cuParamSetSize(hKernel, paramOffset)) != CUDA_SUCCESS)
 			return result;
 		// launch the kernel (Driver API)
-		const CUdevprop& deviceProp = CUDA::devices.Last().prop;
+		const CUdevprop& deviceProp = CUDA::devices.back().prop;
 		const REAL scale(MINF(REAL(1), SQRT((REAL)deviceProp.maxThreadsPerBlock/(REAL)(numThreads.x*numThreads.y))));
 		const SEACAVE::TPoint2<int> numBlockThreads(FLOOR2INT(SEACAVE::TPoint2<REAL>(numThreads)*scale));
 		const TPoint2<int> nBlocks(

@@ -152,7 +152,7 @@ bool Scene::LoadInterface(const String & fileName)
 		imageData.UpdateCamera(platforms);
 		++nCalibratedImages;
 		nTotalPixels += imageData.width * imageData.height;
-		DEBUG_EXTRA("Image loaded %3u: %s", ID, Util::getFileNameExt(imageData.name).c_str());
+		DEBUG_ULTIMATE("Image loaded %3u: %s", ID, Util::getFileNameExt(imageData.name).c_str());
 	}
 	if (images.GetSize() < 2)
 		return false;

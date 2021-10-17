@@ -2795,6 +2795,6 @@ protected:
 #include "Ray.h"
 #include "Octree.h"
 #include "Util.inl"
-#include "CUDA.h"
+#include "UtilCUDA.h"
 
 #endif // __SEACAVE_TYPES_H__

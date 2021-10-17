@@ -68,6 +68,10 @@ using namespace MVS;
 namespace MVS {
 DEFOPT_SPACE(OPTDENSE, _T("Dense"))
 
+
+#ifdef _USE_CUDA
+DEFVAR_OPTDENSE_int32(nCUDADevice, "CUDA Device", "CUDA device number to be used for depth-map estimation (-1 - CPU processing)", "0")
+#endif // _USE_CUDA
 DEFVAR_OPTDENSE_uint32(nResolutionLevel, "Resolution Level", "How many times to scale down the images before dense reconstruction", "1")
 MDEFVAR_OPTDENSE_uint32(nMaxResolution, "Max Resolution", "Do not scale images lower than this resolution", "3200")
 MDEFVAR_OPTDENSE_uint32(nMinResolution, "Min Resolution", "Do not scale images lower than this resolution", "640")
@@ -84,7 +88,7 @@ MDEFVAR_OPTDENSE_float(fViewMinScore, "View Min Score", "Min score to consider a
 MDEFVAR_OPTDENSE_float(fViewMinScoreRatio, "View Min Score Ratio", "Min score ratio to consider a neighbor images", "0.3")
 MDEFVAR_OPTDENSE_float(fMinArea, "Min Area", "Min shared area for accepting the depth triangulation", "0.05")
 MDEFVAR_OPTDENSE_float(fMinAngle, "Min Angle", "Min angle for accepting the depth triangulation", "3.0")
-MDEFVAR_OPTDENSE_float(fOptimAngle, "Optim Angle", "Optimal angle for computing the depth triangulation", "10.0")
+MDEFVAR_OPTDENSE_float(fOptimAngle, "Optim Angle", "Optimal angle for computing the depth triangulation", "15.0")
 MDEFVAR_OPTDENSE_float(fMaxAngle, "Max Angle", "Max angle for accepting the depth triangulation", "65.0")
 MDEFVAR_OPTDENSE_float(fDescriptorMinMagnitudeThreshold, "Descriptor Min Magnitude Threshold", "minimum texture variance accepted when matching two patches (0 - disabled)", "0.01")
 MDEFVAR_OPTDENSE_float(fDepthDiffThreshold, "Depth Diff Threshold", "maximum variance allowed for the depths during refinement", "0.01")
@@ -520,7 +524,8 @@ float DepthEstimator::ScorePixelImage(const DepthData::ViewData& image1, Depth d
 				Depth depth1;
 				if (image1.depthMap.sample(depth1, x1, [&X1](Depth d) { return IsDepthSimilar(X1.z, d, 0.03f); })) {
 					const Point2f xb(image1.Tr*Point3f(x1.x*depth1,x1.y*depth1,depth1)+image1.Tn); // Ki * Ri * (Rj.t() * Kj-1 * X + Cj - Ci)
-					consistency = MINF(norm(Point2f(float(x0.x)-xb.x, float(x0.y)-xb.y)), consistency);
+					const float dist(norm(Point2f(float(x0.x)-xb.x, float(x0.y)-xb.y)));
+					consistency = MINF(SQRT(dist*(dist+2.f)), consistency);
 				}
 			}
 		}
@@ -875,33 +880,22 @@ Depth DepthEstimator::InterpolatePixel(const ImageRef& nx, Depth depth, const No
 	// {(0, 0), (x4, 1)} from camera center towards current pixel direction
 	// in the x or y plane
 	if (x0.x == nx.x) {
-		const float fy = (float)image0.camera.K[4];
-		const float cy = (float)image0.camera.K[5];
-		const float x1 = depth * (nx.y - cy) / fy;
-		const float y1 = depth;
-		const float x4 = (x0.y - cy) / fy;
-		const float denom = normal.z + x4 * normal.y;
+		const float nx1 = (x0.y - image0.camera.K(1,2)) / image0.camera.K(1,1);
+		const float denom = normal.z + nx1 * normal.y;
 		if (ISZERO(denom))
 			return depth;
-		const float x2 = x1 + normal.z;
-		const float y2 = y1 - normal.y;
-		const float nom = y1 * x2 - x1 * y2;
+		const float x1 = (nx.y - image0.camera.K(1,2)) / image0.camera.K(1,1);
+		const float nom = depth * (normal.z + x1 * normal.y);
 		depthNew = nom / denom;
 	}
 	else {
 		ASSERT(x0.y == nx.y);
-		const float fx = (float)image0.camera.K[0];
-		const float cx = (float)image0.camera.K[2];
-		ASSERT(image0.camera.K[1] == 0);
-		const float x1 = depth * (nx.x - cx) / fx;
-		const float y1 = depth;
-		const float x4 = (x0.x - cx) / fx;
-		const float denom = normal.z + x4 * normal.x;
+		const float nx1 = (x0.x - image0.camera.K(0,2)) / image0.camera.K(0,0);
+		const float denom = normal.z + nx1 * normal.x;
 		if (ISZERO(denom))
 			return depth;
-		const float x2 = x1 + normal.z;
-		const float y2 = y1 - normal.x;
-		const float nom = y1 * x2 - x1 * y2;
+		const float x1 = (nx.x - image0.camera.K(0,2)) / image0.camera.K(0,0);
+		const float nom = depth * (normal.z + x1 * normal.x);
 		depthNew = nom / denom;
 	}
 	#else
