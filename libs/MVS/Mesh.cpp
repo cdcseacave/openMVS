@@ -1645,10 +1645,10 @@ bool Mesh::SaveGLTF(const String& fileName, bool bBinary) const
 	{
 		STATIC_ASSERT(3 * sizeof(Vertex::Type) == sizeof(Vertex)); // VertexArr should be continuous
 		const Box box(GetAABB());
-		gltfPrimitive.attributes["POSITION"] = gltfModel.accessors.size();
+		gltfPrimitive.attributes["POSITION"] = (int)gltfModel.accessors.size();
 		tinygltf::Accessor vertexPositionAccessor;
 		vertexPositionAccessor.name = "vertexPositionAccessor";
-		vertexPositionAccessor.bufferView = gltfModel.bufferViews.size();
+		vertexPositionAccessor.bufferView = (int)gltfModel.bufferViews.size();
 		vertexPositionAccessor.type = TINYGLTF_TYPE_VEC3;
 		vertexPositionAccessor.componentType = TINYGLTF_COMPONENT_TYPE_FLOAT;
 		vertexPositionAccessor.count = mesh.vertices.size();
@@ -1658,7 +1658,7 @@ bool Mesh::SaveGLTF(const String& fileName, bool bBinary) const
 		// setup vertices buffer
 		tinygltf::BufferView vertexPositionBufferView;
 		vertexPositionBufferView.name = "vertexPositionBufferView";
-		vertexPositionBufferView.buffer = gltfModel.buffers.size();
+		vertexPositionBufferView.buffer = (int)gltfModel.buffers.size();
 		ExtendBufferGLTF(mesh.vertices.data(), mesh.vertices.size(), gltfBuffer,
 			vertexPositionBufferView.byteOffset, vertexPositionBufferView.byteLength);
 		gltfModel.bufferViews.emplace_back(std::move(vertexPositionBufferView));
@@ -1667,10 +1667,10 @@ bool Mesh::SaveGLTF(const String& fileName, bool bBinary) const
 	// setup faces
 	{
 		STATIC_ASSERT(3 * sizeof(Face::Type) == sizeof(Face)); // FaceArr should be continuous
-		gltfPrimitive.indices = gltfModel.accessors.size();
+		gltfPrimitive.indices = (int)gltfModel.accessors.size();
 		tinygltf::Accessor triangleAccessor;
 		triangleAccessor.name = "triangleAccessor";
-		triangleAccessor.bufferView = gltfModel.bufferViews.size();
+		triangleAccessor.bufferView = (int)gltfModel.bufferViews.size();
 		triangleAccessor.type = TINYGLTF_TYPE_SCALAR;
 		triangleAccessor.componentType = TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT;
 		triangleAccessor.count = mesh.faces.size() * 3;
@@ -1678,7 +1678,7 @@ bool Mesh::SaveGLTF(const String& fileName, bool bBinary) const
 		// setup triangles buffer
 		tinygltf::BufferView triangleBufferView;
 		triangleBufferView.name = "triangleBufferView";
-		triangleBufferView.buffer = gltfModel.buffers.size();
+		triangleBufferView.buffer = (int)gltfModel.buffers.size();
 		ExtendBufferGLTF(mesh.faces.data(), mesh.faces.size(), gltfBuffer,
 			triangleBufferView.byteOffset, triangleBufferView.byteLength);
 		gltfModel.bufferViews.emplace_back(std::move(triangleBufferView));
@@ -1686,14 +1686,14 @@ bool Mesh::SaveGLTF(const String& fileName, bool bBinary) const
 	}
 
 	// setup material
-	gltfPrimitive.material = gltfModel.materials.size();
+	gltfPrimitive.material = (int)gltfModel.materials.size();
 	tinygltf::Material gltfMaterial;
 	gltfMaterial.name = "material";
 	gltfMaterial.doubleSided = true;
 	if (mesh.HasTexture()) {
 		// setup texture
 		gltfMaterial.emissiveFactor = std::vector<double>{0,0,0};
-		gltfMaterial.pbrMetallicRoughness.baseColorTexture.index = gltfModel.textures.size();
+		gltfMaterial.pbrMetallicRoughness.baseColorTexture.index = (int)gltfModel.textures.size();
 		gltfMaterial.pbrMetallicRoughness.baseColorTexture.texCoord = 0;
 		gltfMaterial.pbrMetallicRoughness.baseColorFactor = std::vector<double>{1,1,1,1};
 		gltfMaterial.pbrMetallicRoughness.metallicFactor = 0;
@@ -1701,10 +1701,10 @@ bool Mesh::SaveGLTF(const String& fileName, bool bBinary) const
 		gltfMaterial.extensions = {{"KHR_materials_unlit", {}}};
 		gltfModel.extensionsUsed = {"KHR_materials_unlit"};
 		// setup texture coordinates accessor
-		gltfPrimitive.attributes["TEXCOORD_0"] = gltfModel.accessors.size();
+		gltfPrimitive.attributes["TEXCOORD_0"] = (int)gltfModel.accessors.size();
 		tinygltf::Accessor vertexTexcoordAccessor;
 		vertexTexcoordAccessor.name = "vertexTexcoordAccessor";
-		vertexTexcoordAccessor.bufferView = gltfModel.bufferViews.size();
+		vertexTexcoordAccessor.bufferView = (int)gltfModel.bufferViews.size();
 		vertexTexcoordAccessor.componentType = TINYGLTF_COMPONENT_TYPE_FLOAT;
 		vertexTexcoordAccessor.count = mesh.faceTexcoords.size();
 		vertexTexcoordAccessor.type = TINYGLTF_TYPE_VEC2;
@@ -1714,7 +1714,7 @@ bool Mesh::SaveGLTF(const String& fileName, bool bBinary) const
 		ASSERT(mesh.vertices.size() == mesh.faceTexcoords.size());
 		tinygltf::BufferView vertexTexcoordBufferView;
 		vertexTexcoordBufferView.name = "vertexTexcoordBufferView";
-		vertexTexcoordBufferView.buffer = gltfModel.buffers.size();
+		vertexTexcoordBufferView.buffer = (int)gltfModel.buffers.size();
 		TexCoordArr flipTexcoords(mesh.faceTexcoords.size());
 		FOREACH(i, mesh.faceTexcoords) {
 			flipTexcoords[i].x = mesh.faceTexcoords[i].x;
@@ -1726,8 +1726,8 @@ bool Mesh::SaveGLTF(const String& fileName, bool bBinary) const
 		// setup texture
 		tinygltf::Texture texture;
 		texture.name = "texture";
-		texture.source = gltfModel.images.size();
-		texture.sampler = gltfModel.samplers.size();
+		texture.source = (int)gltfModel.images.size();
+		texture.sampler = (int)gltfModel.samplers.size();
 		gltfModel.textures.emplace_back(std::move(texture));
 		// setup texture image
 		tinygltf::Image image;
@@ -1755,10 +1755,10 @@ bool Mesh::SaveGLTF(const String& fileName, bool bBinary) const
 	gltfMesh.primitives.emplace_back(std::move(gltfPrimitive));
 
 	// setup scene node
-	gltfScene.nodes.emplace_back(gltfModel.nodes.size());
+	gltfScene.nodes.emplace_back((int)gltfModel.nodes.size());
 	tinygltf::Node node;
 	node.name = "node";
-	node.mesh = gltfModel.meshes.size();
+	node.mesh = (int)gltfModel.meshes.size();
 	gltfModel.nodes.emplace_back(std::move(node));
 	gltfModel.meshes.emplace_back(std::move(gltfMesh));
 	gltfModel.scenes.emplace_back(std::move(gltfScene));

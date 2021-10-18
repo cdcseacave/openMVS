@@ -62,8 +62,8 @@ public:
 
 	typedef cList<VIndex,VIndex,0,8,VIndex> VertexIdxArr;
 	typedef cList<FIndex,FIndex,0,8,FIndex> FaceIdxArr;
-	typedef cList<VertexIdxArr> VertexVerticesArr;
-	typedef cList<FaceIdxArr> VertexFacesArr;
+	typedef cList<VertexIdxArr,const VertexIdxArr&,2,8192,VIndex> VertexVerticesArr;
+	typedef cList<FaceIdxArr,const FaceIdxArr&,2,8192,VIndex> VertexFacesArr;
 
 	typedef TPoint3<Type> Normal;
 	typedef cList<Normal,const Normal&,0,8192,FIndex> NormalArr;

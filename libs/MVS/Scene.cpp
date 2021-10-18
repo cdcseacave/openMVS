@@ -570,7 +570,7 @@ void Scene::SampleMeshWithVisibility(unsigned maxResolution)
 		if (pointcloud.pointViews[idx].size() < 2)
 			pointcloud.RemovePoint(idx);
 		else
-			pointcloud.points[idx] = mesh.vertices[idx];
+			pointcloud.points[idx] = mesh.vertices[(Mesh::VIndex)idx];
 	}
 } // SampleMeshWithVisibility
 /*----------------------------------------------------------------*/
@@ -611,7 +611,7 @@ bool Scene::SelectNeighborViews(uint32_t ID, IndexArr& points, unsigned nMinView
 		nMinPointViews = nCalibratedImages;
 	unsigned nPoints = 0;
 	imageData.avgDepth = 0;
-	const float sigmaAngle(-1.f/(2.f*SQUARE(fOptimAngle*1.3)));
+	const float sigmaAngle(-1.f/(2.f*SQUARE(fOptimAngle*1.3f)));
 	FOREACH(idx, pointcloud.points) {
 		const PointCloud::ViewArr& views = pointcloud.pointViews[idx];
 		ASSERT(views.IsSorted());
@@ -805,7 +805,7 @@ bool Scene::ExportCamerasMLP(const String& fileName, const String& fileNameScene
 //    can load all sub-scene's depth-maps into memory at once
 //  - limit in the same time maximum accumulated images resolution (total number of pixels)
 //    per sub-scene in order to allow all images to be loaded and processed during mesh refinement
-unsigned Scene::Split(ImagesChunkArr& chunks, IIndex maxArea, int depthMapStep) const
+unsigned Scene::Split(ImagesChunkArr& chunks, float maxArea, int depthMapStep) const
 {
 	TD_TIMER_STARTD();
 	// gather samples from all depth-maps
@@ -814,9 +814,9 @@ unsigned Scene::Split(ImagesChunkArr& chunks, IIndex maxArea, int depthMapStep) 
 	typedef TOctree<Samples,float,3> Octree;
 	Octree octree;
 	FloatArr areas(0, images.size()*4192);
-	IIndexArr visibility(0, areas.capacity());
+	IIndexArr visibility(0, (IIndex)areas.capacity());
 	Unsigned32Arr imageAreas(images.size()); {
-		Samples samples(0, areas.capacity());
+		Samples samples(0, (uint32_t)areas.capacity());
 		FOREACH(idxImage, images) {
 			const Image& imageData = images[idxImage];
 			if (!imageData.IsValid())
@@ -825,7 +825,7 @@ unsigned Scene::Split(ImagesChunkArr& chunks, IIndex maxArea, int depthMapStep) 
 			depthData.Load(ComposeDepthFilePath(imageData.ID, "dmap"));
 			if (depthData.IsEmpty())
 				continue;
-			const size_t numPointsBegin(visibility.size());
+			const IIndex numPointsBegin(visibility.size());
 			const Camera camera(imageData.GetCamera(platforms, depthData.depthMap.size()));
 			for (int r=(depthData.depthMap.rows%depthMapStep)/2; r<depthData.depthMap.rows; r+=depthMapStep) {
 				for (int c=(depthData.depthMap.cols%depthMapStep)/2; c<depthData.depthMap.cols; c+=depthMapStep) {

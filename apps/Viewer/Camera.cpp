@@ -87,7 +87,7 @@ void Camera::Resize(const cv::Size& _size)
 		glOrtho(-fW, fW, -fH, fH, zNear, zFar);
 	} else {
 		// perspective projection
-		const GLfloat fH = TAN(D2R(fov)) * zNear;
+		const GLfloat fH = TAN(FD2R(fov)) * zNear;
 		const GLfloat fW = fH * aspect;
 		glFrustum(-fW, fW, -fH, fH, zNear, zFar);
 	}

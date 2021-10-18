@@ -880,22 +880,22 @@ Depth DepthEstimator::InterpolatePixel(const ImageRef& nx, Depth depth, const No
 	// {(0, 0), (x4, 1)} from camera center towards current pixel direction
 	// in the x or y plane
 	if (x0.x == nx.x) {
-		const float nx1 = (x0.y - image0.camera.K(1,2)) / image0.camera.K(1,1);
-		const float denom = normal.z + nx1 * normal.y;
+		const float nx1((float)(((REAL)x0.y - image0.camera.K(1,2)) / image0.camera.K(1,1)));
+		const float denom(normal.z + nx1 * normal.y);
 		if (ISZERO(denom))
 			return depth;
-		const float x1 = (nx.y - image0.camera.K(1,2)) / image0.camera.K(1,1);
-		const float nom = depth * (normal.z + x1 * normal.y);
+		const float x1((float)(((REAL)nx.y - image0.camera.K(1,2)) / image0.camera.K(1,1)));
+		const float nom(depth * (normal.z + x1 * normal.y));
 		depthNew = nom / denom;
 	}
 	else {
 		ASSERT(x0.y == nx.y);
-		const float nx1 = (x0.x - image0.camera.K(0,2)) / image0.camera.K(0,0);
-		const float denom = normal.z + nx1 * normal.x;
+		const float nx1((float)(((REAL)x0.x - image0.camera.K(0,2)) / image0.camera.K(0,0)));
+		const float denom(normal.z + nx1 * normal.x);
 		if (ISZERO(denom))
 			return depth;
-		const float x1 = (nx.x - image0.camera.K(0,2)) / image0.camera.K(0,0);
-		const float nom = depth * (normal.z + x1 * normal.x);
+		const float x1((float)(((REAL)nx.x - image0.camera.K(0,2)) / image0.camera.K(0,0)));
+		const float nom(depth * (normal.z + x1 * normal.x));
 		depthNew = nom / denom;
 	}
 	#else
@@ -990,7 +990,7 @@ std::pair<float,float> TriangulatePointsDelaunay(const DepthData::ViewData& imag
 	ASSERT(sizeof(Point3) == sizeof(X3D));
 	ASSERT(sizeof(Point2) == sizeof(CPoint));
 	std::pair<float,float> depthBounds(FLT_MAX, 0.f);
-	mesh.vertices.reserve(points.size()+4);
+	mesh.vertices.reserve((Mesh::VIndex)points.size()+4);
 	projs.reserve(mesh.vertices.capacity());
 	Delaunay delaunay;
 	for (uint32_t idx: points) {

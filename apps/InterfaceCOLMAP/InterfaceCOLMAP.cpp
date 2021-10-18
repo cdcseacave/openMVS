@@ -783,7 +783,7 @@ bool ImportScene(const String& strFolder, const String& strOutFolder, Interface&
 	const String pathNormalMaps(strFolder+COLMAP_STEREO_NORMALMAPS_FOLDER);
 	if (File::isFolder(pathDepthMaps) && File::isFolder(pathNormalMaps)) {
 		// read patch-match list
-		CLISTDEF2IDX(IIndexArr,IIndex) imagesNeighbors(scene.images.size());
+		CLISTDEF2IDX(IIndexArr,IIndex) imagesNeighbors((IIndex)scene.images.size());
 		{
 			const String filenameFusion(strFolder+COLMAP_PATCHMATCH);
 			LOG_OUT() << "Reading patch-match configuration: " << filenameFusion << std::endl;
@@ -843,7 +843,7 @@ bool ImportScene(const String& strFolder, const String& strOutFolder, Interface&
 			}
 			if (!colDepthMap.data_.empty()) {
 				IIndexArr IDs = {image.ID};
-				IDs.Join(imagesNeighbors[idx]);
+				IDs.Join(imagesNeighbors[(IIndex)idx]);
 				const Interface::Platform& platform = scene.platforms[image.platformID];
 				const Interface::Platform::Pose pose(platform.GetPose(image.cameraID, image.poseID));
 				const Interface::Mat33d K(platform.GetFullK(image.cameraID, (uint32_t)colDepthMap.width_, (uint32_t)colDepthMap.height_));
