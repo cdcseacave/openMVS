@@ -90,10 +90,10 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		;
 
 	// group of options allowed both on command line and in config file
-	unsigned nResolutionLevel;
 	#ifdef _USE_CUDA
 	unsigned nCUDADevice;
 	#endif
+	unsigned nResolutionLevel;
 	unsigned nMaxResolution;
 	unsigned nMinResolution;
 	unsigned nNumViews;
@@ -105,10 +105,10 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	config.add_options()
 		("input-file,i", boost::program_options::value<std::string>(&OPT::strInputFileName), "input filename containing camera poses and image list")
 		("output-file,o", boost::program_options::value<std::string>(&OPT::strOutputFileName), "output filename for storing the dense point-cloud")
-		("resolution-level", boost::program_options::value(&nResolutionLevel)->default_value(1), "how many times to scale down the images before point cloud computation")
 		#ifdef _USE_CUDA
 		("cuda-device", boost::program_options::value(&nCUDADevice)->default_value(0), "CUDA device number to be used for depth-map estimation (-1 - CPU processing)")
 		#endif
+		("resolution-level", boost::program_options::value(&nResolutionLevel)->default_value(1), "how many times to scale down the images before point cloud computation")
 		("max-resolution", boost::program_options::value(&nMaxResolution)->default_value(3200), "do not scale images higher than this resolution")
 		("min-resolution", boost::program_options::value(&nMinResolution)->default_value(640), "do not scale images lower than this resolution")
 		("number-views", boost::program_options::value(&nNumViews)->default_value(5), "number of views used for depth-map estimation (0 - all neighbor views available)")
@@ -186,10 +186,10 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	OPTDENSE::init();
 	const bool bValidConfig(OPTDENSE::oConfig.Load(OPT::strDenseConfigFileName));
 	OPTDENSE::update();
-	OPTDENSE::nResolutionLevel = nResolutionLevel;
 	#ifdef _USE_CUDA
 	OPTDENSE::nCUDADevice = nCUDADevice;
 	#endif
+	OPTDENSE::nResolutionLevel = nResolutionLevel;
 	OPTDENSE::nMaxResolution = nMaxResolution;
 	OPTDENSE::nMinResolution = nMinResolution;
 	OPTDENSE::nNumViews = nNumViews;

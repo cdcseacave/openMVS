@@ -486,7 +486,6 @@ __device__ void ProcessPixel(const ImagePixels* images, const ImagePixels* depth
 
 	// refine estimate
 	constexpr float perturbation = 0.01f;
-	const Point3 normalRand = GenerateRandomNormal(cameras[0], p, randState);
 	const float depthMinPerturbed = (1.f - perturbation) * depth;
 	const float depthMaxPerturbed = (1.f + perturbation) * depth;
 	float depthPerturbed;
@@ -494,6 +493,7 @@ __device__ void ProcessPixel(const ImagePixels* images, const ImagePixels* depth
 		depthPerturbed = curand_uniform(randState) * (depthMaxPerturbed - depthMinPerturbed) + depthMinPerturbed;
 	} while (depthPerturbed < params.fDepthMin && depthPerturbed > params.fDepthMax);
 	const Point3 perturbedNormal = GeneratePerturbedNormal(cameras[0], p, plane.topLeftCorner<3,1>(), randState, perturbation * (float)M_PI);
+	const Point3 normalRand = GenerateRandomNormal(cameras[0], p, randState);
 	int numValidPlanes = 3;
 	Point3 surfaceNormal;
 	if (valid[0] && valid[1] && valid[2] && valid[3]) {
