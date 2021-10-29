@@ -46,6 +46,7 @@ SET(OpenMVS_USE_FAST_FLOAT2INT ON CACHE BOOL "Use an optimized code to convert r
 SET(OpenMVS_USE_FAST_INVSQRT OFF CACHE BOOL "Use an optimized code to compute the inverse square root (slower in fact on modern compilers)")
 SET(OpenMVS_USE_FAST_CBRT ON CACHE BOOL "Use an optimized code to compute the cubic root")
 SET(OpenMVS_USE_SSE ON CACHE BOOL "Enable SSE optimizations")
+SET(OpenMVS_MAX_CUDA_COMPATIBILITY OFF CACHE BOOL "Build for maximum CUDA device compatibility")
 
 # Define helper functions and macros.
 INCLUDE(build/Utils.cmake)
@@ -101,12 +102,40 @@ if(OpenMVS_USE_CUDA)
 	FIND_PACKAGE(CUDA)
 	if(CUDA_FOUND)
 		ENABLE_LANGUAGE(CUDA)
-		if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
-		  SET(CMAKE_CUDA_ARCHITECTURES 75)
+		if (NOT OpenMVS_MAX_CUDA_COMPATIBILITY)
+			if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
+			  SET(CMAKE_CUDA_ARCHITECTURES 75)
+			endif()
+		else()
+			# Build for maximum compatibility
+			# https://arnon.dk/matching-sm-architectures-arch-and-gencode-for-various-nvidia-cards/
+
+			# Extract list of arch and gencodes
+			execute_process(COMMAND "${CMAKE_CUDA_COMPILER}" --list-gpu-arch 
+				OUTPUT_VARIABLE LIST_GPU_ARCH 
+				ERROR_QUIET)
+			string(REPLACE "\r" "" LIST_GPU_ARCH ${LIST_GPU_ARCH})
+			string(REPLACE "\n" ";" LIST_GPU_ARCH ${LIST_GPU_ARCH})
+
+			execute_process(COMMAND "${CMAKE_CUDA_COMPILER}" --list-gpu-code 
+				OUTPUT_VARIABLE LIST_GPU_CODE 
+				ERROR_QUIET)
+			string(REPLACE "\r" "" LIST_GPU_CODE ${LIST_GPU_CODE})
+			string(REPLACE "\n" ";" LIST_GPU_CODE ${LIST_GPU_CODE})
+
+			list(GET LIST_GPU_CODE 0 TARGET_GPU_CODE)
+			set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -arch=${TARGET_GPU_CODE}")
+
+			set(IDX 0)
+			foreach(GPU_ARCH ${LIST_GPU_ARCH})
+				list(GET LIST_GPU_CODE ${IDX} GPU_CODE)
+				set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -gencode=arch=${GPU_ARCH},code=${GPU_CODE}")
+				MATH(EXPR IDX "${IDX}+1")
+			endforeach()
 		endif()
-		if(UNIX)
-			set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} --expt-relaxed-constexpr -arch=sm_35")
-		endif()
+
+		set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} --expt-relaxed-constexpr")
+
 		INCLUDE_DIRECTORIES(${CUDA_INCLUDE_DIRS})
 		LIST(APPEND OpenMVS_DEFINITIONS -D_USE_CUDA)
 		SET(_USE_CUDA TRUE)
