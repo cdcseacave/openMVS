@@ -272,6 +272,7 @@ void PatchMatchCUDA::EstimateDepthMap(DepthData& depthData)
 
 	// run CUDA patch-match
 	RunCUDA();
+	CUDA::checkCudaCall(cudaGetLastError());
 
 	// load depth-map, normal-map and confidence-map from CUDA memory
 	if (depthData.confMap.empty())
