@@ -923,13 +923,20 @@ unsigned Scene::Split(ImagesChunkArr& chunks, float maxArea, int depthMapStep) c
 	if (chunks.size() < 2)
 		return 0;
 	// remove images with very little contribution
-	const float minImageContributionRatio(0.25f);
+	const float minImageContributionRatio(0.3f);
 	FOREACH(c, chunks) {
 		ImagesChunk& chunk = chunks[c];
 		const Unsigned32Arr& chunkImageAreas = chunkInserter.imagesAreas[c];
+		float maxAreaRatio = 0;
+		for (const IIndex idxImage : chunk.images) {
+			const float areaRatio(float(chunkImageAreas[idxImage])/float(imageAreas[idxImage]));
+			if (maxAreaRatio < areaRatio)
+				maxAreaRatio = areaRatio;
+		}
+		const float minImageContributionRatioChunk(maxAreaRatio * minImageContributionRatio);
 		for (auto it = chunk.images.begin(); it != chunk.images.end(); ) {
 			const IIndex idxImage(*it);
-			if (float(chunkImageAreas[idxImage])/float(imageAreas[idxImage]) < minImageContributionRatio)
+			if (float(chunkImageAreas[idxImage])/float(imageAreas[idxImage]) < minImageContributionRatioChunk)
 				it = chunk.images.erase(it);
 			else
 				++it;
