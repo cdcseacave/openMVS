@@ -1122,7 +1122,12 @@ bool ExportImagesLog(const String& fileName, const Interface& scene)
 		return false;
 	}
 	out << std::setprecision(12);
-	for (uint32_t ID=0; ID<(uint32_t)scene.images.size(); ++ID) {
+	IIndexArr orderedImages((uint32_t)scene.images.size());
+	std::iota(orderedImages.begin(), orderedImages.end(), 0u);
+	orderedImages.Sort([&scene](IIndex i, IIndex j) {
+		return scene.images[i].ID < scene.images[j].ID;
+	});
+	for (IIndex ID: orderedImages) {
 		const Interface::Image& image = scene.images[ID];
 		Eigen::Matrix3d R(Eigen::Matrix3d::Identity());
 		Eigen::Vector3d t(Eigen::Vector3d::Zero());

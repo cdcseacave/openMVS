@@ -373,7 +373,7 @@ bool Scene::LoadDMAP(const String& fileName)
 	image.image = imageDepth;
 	cv::resize(image.image, image.image, imageSize);
 
-	DEBUG_EXTRA("Scene loaded from depth-map format - %dx%d size, %.2f%% coverage (%s):\n"
+	DEBUG_EXTRA("Scene loaded from depth-map format - %dx%d size, %.2f%%%% coverage (%s):\n"
 		"\t1 images (1 calibrated) with a total of %.2f MPixels (%.2f MPixels/image)\n"
 		"\t%u points, 0 lines",
 		depthMap.width(), depthMap.height(), 100.0*pointcloud.GetSize()/depthMap.area(), TD_TIMER_GET_FMT().c_str(),

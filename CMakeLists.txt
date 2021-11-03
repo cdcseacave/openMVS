@@ -214,6 +214,10 @@ if(OpenMVS_USE_SSE)
 	LIST(APPEND OpenMVS_DEFINITIONS -D_USE_SSE)
 	SET(_USE_SSE TRUE)
 endif()
+if(OpenMVS_USE_CERES)
+	LIST(APPEND OpenMVS_DEFINITIONS -D_USE_CERES)
+	SET(_USE_CERES TRUE)
+endif()
 
 ADD_DEFINITIONS(${OpenMVS_DEFINITIONS})
 
@@ -226,10 +230,6 @@ if(OpenMVS_BUILD_TOOLS)
 	ADD_SUBDIRECTORY(apps)
 endif()
 ADD_SUBDIRECTORY(docs)
-
-if(OpenMVS_USE_CERES)
-	SET(_USE_CERES TRUE)
-endif()
 
 # Export the package for use from the build-tree
 # (this registers the build-tree with a global CMake-registry)
