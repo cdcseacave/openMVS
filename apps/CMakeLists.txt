@@ -1,6 +1,6 @@
 # Add applications
 ADD_SUBDIRECTORY(InterfaceCOLMAP)
-ADD_SUBDIRECTORY(InterfaceVisualSFM)
+ADD_SUBDIRECTORY(InterfaceMetashape)
 ADD_SUBDIRECTORY(DensifyPointCloud)
 ADD_SUBDIRECTORY(ReconstructMesh)
 ADD_SUBDIRECTORY(RefineMesh)

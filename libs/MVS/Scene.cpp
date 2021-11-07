@@ -383,6 +383,54 @@ bool Scene::LoadDMAP(const String& fileName)
 } // LoadDMAP
 /*----------------------------------------------------------------*/
 
+// load a text list of views and their neighbors and assign them to the scene images;
+// each line store the view ID followed by the 3+ closest view IDs, ordered in decreasing overlap:
+//
+// <cam-id> <neighbor-cam-id-0> <neighbor-cam-id-1> <neighbor-cam-id-2> <...>
+// 
+// for example:
+// 0 1 2 3 4
+// 1 0 2 3 4
+// 2 1 3 0 4
+// ...
+bool Scene::LoadViewNeighbors(const String& fileName)
+{
+	TD_TIMER_STARTD();
+
+	// parse image list
+	SML smlImages(_T("ImageNeighbors"));
+	smlImages.Load(fileName);
+	const LPSMLARR&	arrSmlChild = smlImages.GetArrChildren();
+	ASSERT(arrSmlChild.size() <= 1);
+
+	// fetch image IDs list
+	size_t argc;
+	for (SML::const_iterator it=smlImages.begin(); it!=smlImages.end(); ++it) {
+		// parse image element
+		CAutoPtrArr<LPSTR> argv(Util::CommandLineToArgvA(it->second.val, argc));
+		if (argc > 0 && argv[0][0] == _T('#'))
+			continue;
+		if (argc < 2) {
+			VERBOSE("Invalid image IDs list: %s", it->second.val.c_str());
+			continue;
+		}
+		// add neighbors to this image
+		const IIndex ID(String::FromString<IIndex>(argv[0], NO_ID));
+		ASSERT(ID != NO_ID);
+		Image& imageData = images[ID];
+		imageData.neighbors.resize(argc-1);
+		FOREACH(i, imageData.neighbors) {
+			const IIndex nID(String::FromString<IIndex>(argv[i+1], NO_ID));
+			ASSERT(nID != NO_ID);
+			imageData.neighbors[i] = ViewScore{ViewInfo{nID, 0, 1.f, FD2R(15.f), 0.5f}, 3.f};
+		}
+	}
+
+	DEBUG_EXTRA("View neighbors list loaded (%s)", TD_TIMER_GET_FMT().c_str());
+	return true;
+} // LoadViewNeighbors
+/*----------------------------------------------------------------*/
+
 // try to load known point-cloud or mesh files
 bool Scene::Import(const String& fileName)
 {
