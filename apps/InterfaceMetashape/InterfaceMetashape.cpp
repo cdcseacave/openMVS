@@ -229,6 +229,7 @@ bool ParseImageListXML(Scene& scene, PlatformDistCoeffs& pltDistCoeffs, size_t& 
 	doc.Parse(strCameras.c_str(), nLen);
 	if (doc.ErrorID() != tinyxml2::XML_SUCCESS)
 		goto InvalidDocument;
+	{
 	tinyxml2::XMLElement* document = doc.FirstChildElement(_T("document"))->FirstChildElement(_T("chunk"));
 	if (document == NULL)
 		goto InvalidDocument;
@@ -389,6 +390,7 @@ bool ParseImageListXML(Scene& scene, PlatformDistCoeffs& pltDistCoeffs, size_t& 
 		imageData.camera = platform.GetCamera(imageData.cameraID, imageData.poseID);
 		++nPoses;
 		}
+	}
 	}
 	}
 	}

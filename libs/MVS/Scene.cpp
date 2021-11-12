@@ -977,14 +977,14 @@ unsigned Scene::Split(ImagesChunkArr& chunks, float maxArea, int depthMapStep) c
 		const Unsigned32Arr& chunkImageAreas = chunkInserter.imagesAreas[c];
 		float maxAreaRatio = 0;
 		for (const IIndex idxImage : chunk.images) {
-			const float areaRatio(float(chunkImageAreas[idxImage])/float(imageAreas[idxImage]));
+			const float areaRatio(static_cast<float>(chunkImageAreas[idxImage])/static_cast<float>(imageAreas[idxImage]));
 			if (maxAreaRatio < areaRatio)
 				maxAreaRatio = areaRatio;
 		}
 		const float minImageContributionRatioChunk(maxAreaRatio * minImageContributionRatio);
 		for (auto it = chunk.images.begin(); it != chunk.images.end(); ) {
 			const IIndex idxImage(*it);
-			if (float(chunkImageAreas[idxImage])/float(imageAreas[idxImage]) < minImageContributionRatioChunk)
+			if (static_cast<float>(chunkImageAreas[idxImage])/static_cast<float>(imageAreas[idxImage]) < minImageContributionRatioChunk)
 				it = chunk.images.erase(it);
 			else
 				++it;
@@ -1004,7 +1004,7 @@ unsigned Scene::Split(ImagesChunkArr& chunks, float maxArea, int depthMapStep) c
 			for (auto it = chunkSmall.images.begin(); it != chunkSmall.images.end(); ) {
 				const IIndex idxImage(*it);
 				if (chunkSmallImageAreas[idxImage] < chunkLargeImageAreas[idxImage] &&
-					float(chunkLargeImageAreas[idxImage])/float(imageAreas[idxImage]) > minImageContributionRatioLargerChunk)
+					static_cast<float>(chunkLargeImageAreas[idxImage])/static_cast<float>(imageAreas[idxImage]) > minImageContributionRatioLargerChunk)
 					it = chunkSmall.images.erase(it);
 				else
 					++it;
