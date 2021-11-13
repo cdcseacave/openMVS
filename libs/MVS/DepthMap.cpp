@@ -83,7 +83,7 @@ MDEFVAR_OPTDENSE_uint32(nMinViewsFilterAdjust, "Min Views Filter Adjust", "minim
 MDEFVAR_OPTDENSE_uint32(nMinViewsTrustPoint, "Min Views Trust Point", "min-number of views so that the point is considered for approximating the depth-maps (<2 - random initialization)", "2")
 MDEFVAR_OPTDENSE_uint32(nNumViews, "Num Views", "Number of views used for depth-map estimation (0 - all views available)", "0", "1", "4")
 MDEFVAR_OPTDENSE_bool(bFilterAdjust, "Filter Adjust", "adjust depth estimates during filtering", "1")
-MDEFVAR_OPTDENSE_bool(bAddCorners, "Add Corners", "add support points at image corners with nearest neighbor disparities", "1")
+MDEFVAR_OPTDENSE_bool(bAddCorners, "Add Corners", "add support points at image corners with nearest neighbor disparities", "0")
 MDEFVAR_OPTDENSE_float(fViewMinScore, "View Min Score", "Min score to consider a neighbor images (0 - disabled)", "2.0")
 MDEFVAR_OPTDENSE_float(fViewMinScoreRatio, "View Min Score Ratio", "Min score ratio to consider a neighbor images", "0.3")
 MDEFVAR_OPTDENSE_float(fMinArea, "Min Area", "Min shared area for accepting the depth triangulation", "0.05")
@@ -975,7 +975,7 @@ namespace CGAL {
 
 // triangulate in-view points, generating a 2D mesh
 // return also the estimated depth boundaries (min and max depth)
-std::pair<float,float> TriangulatePointsDelaunay(const DepthData::ViewData& image, const PointCloud& pointcloud, const IndexArr& points, Mesh& mesh, Point2fArr& projs)
+std::pair<float,float> TriangulatePointsDelaunay(const DepthData::ViewData& image, const PointCloud& pointcloud, const IndexArr& points, Mesh& mesh, Point2fArr& projs, bool bAddCorners)
 {
 	typedef CGAL::Simple_cartesian<double> kernel_t;
 	typedef CGAL::Triangulation_vertex_base_with_info_2<Mesh::VIndex, kernel_t> vertex_base_t;
@@ -1006,7 +1006,7 @@ std::pair<float,float> TriangulatePointsDelaunay(const DepthData::ViewData& imag
 	}
 	// if full size depth-map requested
 	const size_t numPoints(3);
-	if (OPTDENSE::bAddCorners && points.size() >= numPoints) {
+	if (bAddCorners && points.size() >= numPoints) {
 		// add the four image corners at the average depth
 		ASSERT(image.pImageData->IsValid() && ISINSIDE(image.pImageData->avgDepth, depthBounds.first, depthBounds.second));
 		const Mesh::VIndex idxFirstVertex = mesh.vertices.size();
@@ -1074,14 +1074,14 @@ std::pair<float,float> TriangulatePointsDelaunay(const DepthData::ViewData& imag
 // and interpolating normal and depth for all pixels
 bool MVS::TriangulatePoints2DepthMap(
 	const DepthData::ViewData& image, const PointCloud& pointcloud, const IndexArr& points,
-	DepthMap& depthMap, NormalMap& normalMap, Depth& dMin, Depth& dMax)
+	DepthMap& depthMap, NormalMap& normalMap, Depth& dMin, Depth& dMax, bool bAddCorners)
 {
 	ASSERT(image.pImageData != NULL);
 
 	// triangulate in-view points
 	Mesh mesh;
 	Point2fArr projs;
-	const std::pair<float,float> thDepth(TriangulatePointsDelaunay(image, pointcloud, points, mesh, projs));
+	const std::pair<float,float> thDepth(TriangulatePointsDelaunay(image, pointcloud, points, mesh, projs, bAddCorners));
 	dMin = thDepth.first;
 	dMax = thDepth.second;
 
@@ -1090,7 +1090,7 @@ bool MVS::TriangulatePoints2DepthMap(
 	mesh.ComputeNormalVertices();
 	depthMap.create(image.image.size());
 	normalMap.create(image.image.size());
-	if (!OPTDENSE::bAddCorners) {
+	if (!bAddCorners) {
 		depthMap.memset(0);
 		normalMap.memset(0);
 	}
@@ -1133,21 +1133,21 @@ bool MVS::TriangulatePoints2DepthMap(
 // same as above, but does not estimate the normal-map
 bool MVS::TriangulatePoints2DepthMap(
 	const DepthData::ViewData& image, const PointCloud& pointcloud, const IndexArr& points,
-	DepthMap& depthMap, Depth& dMin, Depth& dMax)
+	DepthMap& depthMap, Depth& dMin, Depth& dMax, bool bAddCorners)
 {
 	ASSERT(image.pImageData != NULL);
 
 	// triangulate in-view points
 	Mesh mesh;
 	Point2fArr projs;
-	const std::pair<float,float> thDepth(TriangulatePointsDelaunay(image, pointcloud, points, mesh, projs));
+	const std::pair<float,float> thDepth(TriangulatePointsDelaunay(image, pointcloud, points, mesh, projs, bAddCorners));
 	dMin = thDepth.first;
 	dMax = thDepth.second;
 
 	// create rough depth-map by interpolating inside triangles
 	const Camera& camera = image.camera;
 	depthMap.create(image.image.size());
-	if (!OPTDENSE::bAddCorners)
+	if (!bAddCorners)
 		depthMap.memset(0);
 	struct RasterDepth : TRasterMeshBase<RasterDepth> {
 		typedef TRasterMeshBase<RasterDepth> Base;

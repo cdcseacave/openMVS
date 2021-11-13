@@ -275,6 +275,8 @@ void PatchMatchCUDA::EstimateDepthMap(DepthData& depthData)
 	CUDA::checkCudaCall(cudaGetLastError());
 
 	// load depth-map, normal-map and confidence-map from CUDA memory
+	const float fNCCThresholdKeep(!params.bGeomConsistency && OPTDENSE::nEstimationGeometricIters ?
+		OPTDENSE::fNCCThresholdKeep * 1.5f : OPTDENSE::fNCCThresholdKeep);
 	if (depthData.confMap.empty())
 		depthData.confMap.create(depthData.depthMap.size());
 	for (int r = 0; r < depthData.depthMap.rows; ++r) {
@@ -282,13 +284,21 @@ void PatchMatchCUDA::EstimateDepthMap(DepthData& depthData)
 			const int index = r * depthData.depthMap.cols + c;
 			const Point4& depthNormal = depthNormalEstimates[index];
 			ASSERT(std::isfinite(depthNormal.w()));
-			depthData.depthMap(r,c) = depthNormal.w();
-			depthData.normalMap(r,c) = depthNormal.topLeftCorner<3,1>();
+			// check if the score is good enough
+			// and that the cross-estimates is close enough to the current estimate
 			float& conf = depthData.confMap(r,c);
 			conf = depthNormalCosts[index];
 			ASSERT(std::isfinite(conf));
-			// converted ZNCC [0-2] score, where 0 is best, to [0-1] confidence, where 1 is best
-			conf = conf>=1.f ? 0.f : 1.f-conf;
+			if (depthNormal.w() <= 0 || conf >= fNCCThresholdKeep) {
+				conf = 0;
+				depthData.depthMap(r,c) = 0;
+				depthData.normalMap(r,c) = Normal::ZERO;
+			} else {
+				depthData.depthMap(r,c) = depthNormal.w();
+				depthData.normalMap(r,c) = depthNormal.topLeftCorner<3,1>();
+				// converted ZNCC [0-2] score, where 0 is best, to [0-1] confidence, where 1 is best
+				conf = conf>=1.f ? 0.f : 1.f-conf;
+			}
 		}
 	}
 

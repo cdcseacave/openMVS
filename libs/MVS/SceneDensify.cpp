@@ -459,7 +459,7 @@ bool DepthMapsData::InitDepthMap(DepthData& depthData)
 
 	ASSERT(depthData.images.GetSize() > 1 && !depthData.points.IsEmpty());
 	const DepthData::ViewData& image(depthData.GetView());
-	TriangulatePoints2DepthMap(image, scene.pointcloud, depthData.points, depthData.depthMap, depthData.normalMap, depthData.dMin, depthData.dMax);
+	TriangulatePoints2DepthMap(image, scene.pointcloud, depthData.points, depthData.depthMap, depthData.normalMap, depthData.dMin, depthData.dMax, OPTDENSE::bAddCorners);
 	depthData.dMin *= 0.9f;
 	depthData.dMax *= 1.1f;
 
@@ -529,11 +529,9 @@ void* STCALL DepthMapsData::EndDepthMapTmp(void* arg)
 		// check if the score is good enough
 		// and that the cross-estimates is close enough to the current estimate
 		if (depth <= 0 || conf >= OPTDENSE::fNCCThresholdKeep) {
-			#if 1 // used if gap-interpolation is active
 			conf = 0;
-			estimator.normalMap0(x) = Normal::ZERO;
-			#endif
 			depth = 0;
+			estimator.normalMap0(x) = Normal::ZERO;
 		} else {
 			#if 1
 			// converted ZNCC [0-2] score, where 0 is best, to [0-1] confidence, where 1 is best
@@ -703,6 +701,9 @@ bool DepthMapsData::EstimateDepthMap(IIndex idxImage, int nGeometricIter)
 
 	// remove all estimates with too big score and invert confidence map
 	{
+		const float fNCCThresholdKeep(OPTDENSE::fNCCThresholdKeep);
+		if (nGeometricIter < 0 && OPTDENSE::nEstimationGeometricIters)
+			OPTDENSE::fNCCThresholdKeep *= 1.5f;
 		// create working threads
 		idxPixel = -1;
 		ASSERT(estimators.IsEmpty());
@@ -722,6 +723,7 @@ bool DepthMapsData::EstimateDepthMap(IIndex idxImage, int nGeometricIter)
 		FOREACHPTR(pThread, threads)
 			pThread->join();
 		estimators.Release();
+		OPTDENSE::fNCCThresholdKeep = fNCCThresholdKeep;
 	}
 
 	DEBUG_EXTRA("Depth-map for image %3u %s: %dx%d (%s)", image.GetID(),

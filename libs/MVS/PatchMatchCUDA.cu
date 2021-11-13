@@ -105,7 +105,7 @@ __device__ inline Point3 ViewDirection(const PatchMatchCUDA::Camera& camera, con
 
 // sort the given values array using bubble sort algorithm
 __device__ inline void Sort(const float* values, float* sortedValues, int n) {
-	for (int i = 1; i < n; ++i)
+	for (int i = 0; i < n; ++i)
 		sortedValues[i] = values[i];
 	do {
 		int newn = 0;
