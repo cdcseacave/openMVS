@@ -1603,7 +1603,7 @@ bool Scene::DenseReconstruction(int nFusionMode)
 	#endif
 
 	if (!pointcloud.IsEmpty()) {
-		if (obb.IsValid()) {
+		if (IsBounded()) {
 			TD_TIMER_START();
 			const size_t numPoints = pointcloud.GetSize();
 			pointcloud.RemovePointsOutside(obb);

@@ -69,6 +69,7 @@ public:
 	void Release();
 	bool IsEmpty() const;
 	bool ImagesHaveNeighbors() const;
+	bool IsBounded() const { return obb.IsValid(); }
 
 	bool LoadInterface(const String& fileName);
 	bool SaveInterface(const String& fileName, int version=-1) const;

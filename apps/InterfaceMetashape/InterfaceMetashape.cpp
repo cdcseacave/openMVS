@@ -190,6 +190,28 @@ struct DistCoeff {
 typedef cList<DistCoeff> DistCoeffs;
 typedef cList<DistCoeffs> PlatformDistCoeffs;
 
+void ImageListParseC(const LPSTR* argv, Point3& C)
+{
+	// read position vector
+	C.x = String::FromString<REAL>(argv[0]);
+	C.y = String::FromString<REAL>(argv[1]);
+	C.z = String::FromString<REAL>(argv[2]);
+}
+
+void ImageListParseR(const LPSTR* argv, Matrix3x3& R)
+{
+	// read rotation matrix
+	R(0, 0) = String::FromString<REAL>(argv[0]);
+	R(0, 1) = String::FromString<REAL>(argv[1]);
+	R(0, 2) = String::FromString<REAL>(argv[2]);
+	R(1, 0) = String::FromString<REAL>(argv[3]);
+	R(1, 1) = String::FromString<REAL>(argv[4]);
+	R(1, 2) = String::FromString<REAL>(argv[5]);
+	R(2, 0) = String::FromString<REAL>(argv[6]);
+	R(2, 1) = String::FromString<REAL>(argv[7]);
+	R(2, 2) = String::FromString<REAL>(argv[8]);
+}
+
 void ImageListParseP(const LPSTR* argv, Matrix3x4& P)
 {
 	// read projection matrix
@@ -390,6 +412,46 @@ bool ParseImageListXML(Scene& scene, PlatformDistCoeffs& pltDistCoeffs, size_t& 
 		imageData.camera = platform.GetCamera(imageData.cameraID, imageData.poseID);
 		++nPoses;
 		}
+	}
+	}
+
+	// parse bounding-box
+	{
+	tinyxml2::XMLElement* region = document->FirstChildElement(_T("region"));
+	if (region == NULL)
+		goto InvalidDocument;
+	{
+	size_t argc;
+	CAutoPtrArr<LPSTR> argv;
+	Point3 C, E; Matrix3x3 R;
+	if ((elem=region->FirstChildElement(_T("center"))) == NULL ||
+		(argv=Util::CommandLineToArgvA(elem->GetText(), argc)) == NULL ||
+		argc != 3)
+	{
+		VERBOSE("Invalid image list region: %s", elem->GetText());
+		goto InvalidDocument;
+	}
+	ImageListParseC(argv, C);
+	if ((elem=region->FirstChildElement(_T("size"))) == NULL ||
+		(argv=Util::CommandLineToArgvA(elem->GetText(), argc)) == NULL ||
+		argc != 3)
+	{
+		VERBOSE("Invalid image list region: %s", elem->GetText());
+		goto InvalidDocument;
+	}
+	ImageListParseC(argv, E);
+	E *= REAL(0.5);
+	if ((elem=region->FirstChildElement(_T("R"))) == NULL ||
+		(argv=Util::CommandLineToArgvA(elem->GetText(), argc)) == NULL ||
+		argc != 9)
+	{
+		VERBOSE("Invalid image list region: %s", elem->GetText());
+		goto InvalidDocument;
+	}
+	ImageListParseR(argv, R);
+	scene.obb.m_rot = Cast<float>(R);
+	scene.obb.m_pos = Cast<float>(C);
+	scene.obb.m_ext = Cast<float>(E);
 	}
 	}
 	}
@@ -598,6 +660,13 @@ int main(int argc, LPCTSTR* argv)
 		return EXIT_SUCCESS;
 	#endif
 	progress.close();
+
+	// filter invalid points
+	if (!scene.pointcloud.IsEmpty()) {
+		RFOREACH(i, scene.pointcloud.points)
+			if (scene.pointcloud.pointViews[i].size() < 2)
+				scene.pointcloud.RemovePoint(i);
+	}
 
 	// write OpenMVS input data
 	scene.Save(MAKE_PATH_SAFE(OPT::strOutputFileName), (ARCHIVE_TYPE)OPT::nArchiveType);
