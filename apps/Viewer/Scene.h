@@ -62,6 +62,7 @@ public:
 
 	OctreePoints octPoints;
 	OctreeMesh octMesh;
+	Point3fArr obbPoints;
 
 	GLuint listPointCloud;
 	GLuint listMesh;
@@ -87,6 +88,7 @@ public:
 	bool Export(LPCTSTR fileName, LPCTSTR exportType=NULL, bool losslessTexture=false) const;
 	void CompilePointCloud();
 	void CompileMesh();
+	void CompileBounds();
 
 	void Draw();
 	void Loop();

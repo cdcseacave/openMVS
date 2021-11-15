@@ -234,6 +234,7 @@ void Scene::Empty()
 {
 	ReleasePointCloud();
 	ReleaseMesh();
+	obbPoints.Release();
 	if (window.IsValid()) {
 		window.ReleaseClbk();
 		window.Reset();
@@ -385,6 +386,8 @@ bool Scene::Open(LPCTSTR fileName, LPCTSTR meshFileName)
 	CompilePointCloud();
 	// compile mesh
 	CompileMesh();
+	// compile bounding-box
+	CompileBounds();
 
 	// init camera
 	window.SetCamera(Camera(bounds,
@@ -395,6 +398,8 @@ bool Scene::Open(LPCTSTR fileName, LPCTSTR meshFileName)
 	window.clbkExportScene = DELEGATEBINDCLASS(Window::ClbkExportScene, &Scene::Export, this);
 	window.clbkCompilePointCloud = DELEGATEBINDCLASS(Window::ClbkCompilePointCloud, &Scene::CompilePointCloud, this);
 	window.clbkCompileMesh = DELEGATEBINDCLASS(Window::ClbkCompileMesh, &Scene::CompileMesh, this);
+	if (scene.IsBounded())
+		window.clbkCompileBounds = DELEGATEBINDCLASS(Window::ClbkCompileBounds, &Scene::CompileBounds, this);
 	if (!bounds.IsEmpty())
 		window.clbkRayScene = DELEGATEBINDCLASS(Window::ClbkRayScene, &Scene::CastRay, this);
 	window.Reset(!scene.pointcloud.IsEmpty()&&!scene.mesh.IsEmpty()?Window::SPR_NONE:Window::SPR_ALL,
@@ -477,6 +482,27 @@ void Scene::CompileMesh()
 	}
 	glEnd();
 	glEndList();
+}
+
+void Scene::CompileBounds()
+{
+	if (!scene.IsBounded())
+		return;
+	obbPoints.Release();
+	window.bRenderBounds = !window.bRenderBounds;
+	if (window.bRenderBounds) {
+		static const uint8_t indices[12*2] = {
+			0,2, 2,3, 3,1, 1,0,
+			0,6, 2,4, 3,5, 1,7,
+			6,4, 4,5, 5,7, 7,6
+		};
+		OBB3f::POINT corners[OBB3f::numCorners];
+		scene.obb.GetCorners(corners);
+		for (int i=0; i<12; ++i) {
+			obbPoints.emplace_back(corners[indices[i*2+0]]);
+			obbPoints.emplace_back(corners[indices[i*2+1]]);
+		}
+	}
 }
 
 void Scene::Draw()
@@ -612,6 +638,7 @@ void Scene::Draw()
 			ptrPrevC = &camera.C;
 		}
 	}
+	// render selection
 	if (window.selectionType != Window::SEL_NA) {
 		glPointSize(window.pointSize+4);
 		glDisable(GL_DEPTH_TEST);
@@ -637,6 +664,18 @@ void Scene::Draw()
 		}
 		glEnable(GL_DEPTH_TEST);
 		glPointSize(window.pointSize);
+	}
+	// render oriented-bounding-box
+	if (!obbPoints.empty()) {
+		glDepthMask(GL_FALSE);
+		glBegin(GL_LINES);
+		glColor3f(0.5f,0.1f,0.8f);
+		for (int i=0; i<obbPoints.size(); i+=2) {
+			glVertex3fv(obbPoints[i+0].ptr());
+			glVertex3fv(obbPoints[i+1].ptr());
+		}
+		glEnd();
+		glDepthMask(GL_TRUE);
 	}
 	glfwSwapBuffers(window.GetWindow());
 }

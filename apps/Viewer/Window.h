@@ -80,6 +80,7 @@ public:
 	bool bRenderViews;
 	bool bRenderSolid;
 	bool bRenderTexture;
+	bool bRenderBounds;
 
 	enum SELECTION {
 		SEL_NA = 0,
@@ -101,6 +102,8 @@ public:
 	ClbkCompilePointCloud clbkCompilePointCloud;
 	typedef DELEGATE<void (void)> ClbkCompileMesh;
 	ClbkCompileMesh clbkCompileMesh;
+	typedef DELEGATE<void (void)> ClbkCompileBounds;
+	ClbkCompileBounds clbkCompileBounds;
 
 	typedef std::unordered_map<GLFWwindow*,Window*> WindowsMap;
 	static WindowsMap g_mapWindows;

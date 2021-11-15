@@ -329,12 +329,12 @@ inline void TOBB<TYPE,DIMS>::GetCorners(POINT pts[numCorners]) const
 			m_rot.row(2)*m_ext[2]
 		};
 		pts[0] = m_pos - pEAxis[0] - pEAxis[1] - pEAxis[2];
-		pts[1] = m_pos + pEAxis[0] - pEAxis[1] - pEAxis[2];
-		pts[2] = m_pos + pEAxis[0] + pEAxis[1] - pEAxis[2];
-		pts[3] = m_pos - pEAxis[0] + pEAxis[1] - pEAxis[2];
-		pts[4] = m_pos - pEAxis[0] - pEAxis[1] + pEAxis[2];
-		pts[5] = m_pos + pEAxis[0] - pEAxis[1] + pEAxis[2];
-		pts[6] = m_pos + pEAxis[0] + pEAxis[1] + pEAxis[2];
+		pts[1] = m_pos - pEAxis[0] - pEAxis[1] + pEAxis[2];
+		pts[2] = m_pos + pEAxis[0] - pEAxis[1] - pEAxis[2];
+		pts[3] = m_pos + pEAxis[0] - pEAxis[1] + pEAxis[2];
+		pts[4] = m_pos + pEAxis[0] + pEAxis[1] - pEAxis[2];
+		pts[5] = m_pos + pEAxis[0] + pEAxis[1] + pEAxis[2];
+		pts[6] = m_pos - pEAxis[0] + pEAxis[1] - pEAxis[2];
 		pts[7] = m_pos - pEAxis[0] + pEAxis[1] + pEAxis[2];
 	}
 } // GetCorners

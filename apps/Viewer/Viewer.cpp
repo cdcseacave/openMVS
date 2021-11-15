@@ -154,6 +154,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 			"Keys:\n"
 			"\tE: export scene\n"
 			"\tR: reset scene\n"
+			"\tB: render bounds\n"
 			"\tC: render cameras\n"
 			"\tC + Shift: render camera trajectory\n"
 			"\tLeft/Right: select next camera to view the scene\n"

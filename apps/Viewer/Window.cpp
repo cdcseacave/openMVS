@@ -73,6 +73,7 @@ void Window::ReleaseClbk()
 	clbkRayScene.reset();
 	clbkCompilePointCloud.reset();
 	clbkCompileMesh.reset();
+	clbkCompileBounds.reset();
 }
 
 bool Window::Init(const cv::Size& _size, LPCTSTR name)
@@ -133,6 +134,7 @@ void Window::Reset(SPARSE _sparseType, unsigned _minViews)
 	bRenderViews = true;
 	bRenderSolid = true;
 	bRenderTexture = true;
+	bRenderBounds = false;
 	selectionType = SEL_NA;
 	selectionIdx = NO_IDX;
 	if (clbkCompilePointCloud != NULL)
@@ -260,6 +262,11 @@ void Window::Key(int k, int /*scancode*/, int action, int mod)
 			if (camera.currentCamID >= camera.maxCamID)
 				camera.currentCamID = NO_ID;
 		}
+		break;
+	case GLFW_KEY_B:
+		if (action == GLFW_RELEASE)
+			if (clbkCompileBounds != NULL)
+				clbkCompileBounds();
 		break;
 	case GLFW_KEY_C:
 		if (action == GLFW_RELEASE) {
