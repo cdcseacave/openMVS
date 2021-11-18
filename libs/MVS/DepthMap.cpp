@@ -103,6 +103,9 @@ MDEFVAR_OPTDENSE_uint32(nOptimize, "Optimize", "should we filter the extracted d
 MDEFVAR_OPTDENSE_uint32(nEstimateColors, "Estimate Colors", "should we estimate the colors for the dense point-cloud?", "2", "0", "1")
 MDEFVAR_OPTDENSE_uint32(nEstimateNormals, "Estimate Normals", "should we estimate the normals for the dense point-cloud?", "0", "1", "2")
 MDEFVAR_OPTDENSE_float(fNCCThresholdKeep, "NCC Threshold Keep", "Maximum 1-NCC score accepted for a match", "0.55", "0.3")
+#ifdef _USE_CUDA
+MDEFVAR_OPTDENSE_float(fNCCThresholdKeepCUDA, "NCC Threshold Keep CUDA", "Maximum 1-NCC score accepted for a CUDA match (differs from the CPU version cause that has planarity score integrated)", "0.9", "0.6")
+#endif // _USE_CUDA
 DEFVAR_OPTDENSE_uint32(nEstimationIters, "Estimation Iters", "Number of patch-match iterations", "3")
 DEFVAR_OPTDENSE_uint32(nEstimationGeometricIters, "Estimation Geometric Iters", "Number of geometric consistent patch-match iterations (0 - disabled)", "2")
 MDEFVAR_OPTDENSE_float(fEstimationGeometricWeight, "Estimation Geometric Weight", "pairwise geometric consistency cost weight", "0.1")
