@@ -258,6 +258,8 @@ bool ParseImageListXML(Scene& scene, PlatformDistCoeffs& pltDistCoeffs, size_t& 
 	{
 	bool bMetashapeFile(false);
 	CLISTDEF0(cv::Size) resolutions;
+	std::unordered_map<IIndex,IIndex> mapPlatformID;
+	std::unordered_map<IIndex,IIndex> mapImageID;
 
 	// parse platform and camera models
 	{
@@ -274,7 +276,7 @@ bool ParseImageListXML(Scene& scene, PlatformDistCoeffs& pltDistCoeffs, size_t& 
 		enum CameraModel {METASHAPE=0, VSFM};
 		int model(METASHAPE);
 		sensor->QueryIntAttribute(_T("model"), &model);
-		ASSERT(scene.platforms.GetSize() == ID);
+		mapPlatformID.emplace(ID, scene.platforms.size());
 		Platform& platform = scene.platforms.AddEmpty();
 		LPCTSTR name;
 		if ((name=sensor->Attribute(_T("label"))) != NULL)
@@ -367,7 +369,7 @@ bool ParseImageListXML(Scene& scene, PlatformDistCoeffs& pltDistCoeffs, size_t& 
 			goto InvalidDocument;
 		{
 		// add new image
-		ASSERT(scene.images.size() == ID);
+		mapImageID.emplace(ID, scene.images.size());
 		Image& imageData = scene.images.AddEmpty();
 		LPCTSTR name;
 		if ((name=camera->Attribute(_T("type"))) != NULL && _tcsicmp(name, _T("frame")) != 0) {
@@ -380,9 +382,9 @@ bool ParseImageListXML(Scene& scene, PlatformDistCoeffs& pltDistCoeffs, size_t& 
 		if (Util::getFileExt(imageData.name).empty())
 			imageData.name += _T(".jpg");
 		imageData.name = MAKE_PATH_FULL(strPath, imageData.name);
-		imageData.platformID = camera->UnsignedAttribute(_T("sensor_id"));
+		imageData.platformID = mapPlatformID.at(camera->UnsignedAttribute(_T("sensor_id")));
 		imageData.cameraID = 0; // only one camera per platform supported by this format
-		imageData.ID = ID;
+		imageData.ID = mapImageID.at(ID);
 		const cv::Size& resolution = resolutions[imageData.platformID];
 		imageData.width = resolution.width;
 		imageData.height = resolution.height;

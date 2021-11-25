@@ -587,19 +587,17 @@ __host__ void PatchMatchCUDA::RunCUDA()
 	const unsigned width = cameras[0].width;
 	const unsigned height = cameras[0].height;
 
-	const dim3 gridSizeRandinit((width + 16 - 1) / 16, (height + 16 - 1) / 16, 1);
-	const dim3 blockSizeRandinit(16, 16, 1);
-
+	const dim3 blockSize(BLOCK_W, BLOCK_H, 1);
+	const dim3 gridSizeInitialize((width + BLOCK_H - 1) / BLOCK_H, (height + BLOCK_H - 1) / BLOCK_H, 1);
 	const dim3 gridSizeCheckerboard((width + BLOCK_W - 1) / BLOCK_W, ((height / 2) + BLOCK_H - 1) / BLOCK_H, 1);
-	const dim3 blockSizeCheckerboard(BLOCK_W, BLOCK_H, 1);
 
-	InitializeScore<<<gridSizeRandinit, blockSizeRandinit>>>(cudaTextureImages, cudaTextureDepths, cudaCameras, cudaDepthNormalEstimates, cudaDepthNormalCosts, cudaRandStates, cudaSelectedViews, params);
+	InitializeScore<<<gridSizeInitialize, blockSize>>>(cudaTextureImages, cudaTextureDepths, cudaCameras, cudaDepthNormalEstimates, cudaDepthNormalCosts, cudaRandStates, cudaSelectedViews, params);
 	cudaDeviceSynchronize();
 
 	for (int i = 0; i < params.nEstimationIters; ++i) {
-		BlackPixelProcess<<<gridSizeCheckerboard, blockSizeCheckerboard>>>(cudaTextureImages, cudaTextureDepths, cudaCameras, cudaDepthNormalEstimates, cudaDepthNormalCosts, cudaRandStates, cudaSelectedViews, params, i);
+		BlackPixelProcess<<<gridSizeCheckerboard, blockSize>>>(cudaTextureImages, cudaTextureDepths, cudaCameras, cudaDepthNormalEstimates, cudaDepthNormalCosts, cudaRandStates, cudaSelectedViews, params, i);
 		cudaDeviceSynchronize();
-		RedPixelProcess<<<gridSizeCheckerboard, blockSizeCheckerboard>>>(cudaTextureImages, cudaTextureDepths, cudaCameras, cudaDepthNormalEstimates, cudaDepthNormalCosts, cudaRandStates, cudaSelectedViews, params, i);
+		RedPixelProcess<<<gridSizeCheckerboard, blockSize>>>(cudaTextureImages, cudaTextureDepths, cudaCameras, cudaDepthNormalEstimates, cudaDepthNormalCosts, cudaRandStates, cudaSelectedViews, params, i);
 		cudaDeviceSynchronize();
 	}
 

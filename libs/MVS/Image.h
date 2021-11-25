@@ -89,13 +89,10 @@ public:
 	float avgDepth; // average depth of the points seen by this camera
 
 public:
-	inline Image() {
-		#ifndef _RELEASE
-		width = height = 0;
-		#endif
-	}
+	inline Image() : poseID(NO_ID), width(0), height(0) {}
 
 	inline bool IsValid() const { return poseID != NO_ID; }
+	inline bool HasResolution() const { return width > 0 && height > 0; }
 	inline Image8U::Size GetSize() const { return Image8U::Size(width, height); }
 
 	// read image data from the file

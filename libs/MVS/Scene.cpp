@@ -248,6 +248,11 @@ bool Scene::SaveInterface(const String & fileName, int version) const
 		image.platformID = imageData.platformID;
 		image.cameraID = imageData.cameraID;
 		image.ID = imageData.ID;
+		if (imageData.IsValid() && imageData.HasResolution()) {
+			Interface::Platform& platform = obj.platforms[image.platformID];;
+			if (!platform.cameras[image.cameraID].HasResolution())
+				platform.SetFullK(image.cameraID, imageData.camera.K, imageData.width, imageData.height);
+		}
 	}
 
 	// export 3D points
