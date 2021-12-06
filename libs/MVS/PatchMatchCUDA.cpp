@@ -113,7 +113,7 @@ void PatchMatchCUDA::AllocatePatchMatchCUDA(const cv::Mat1f& image)
 	CUDA::checkCudaCall(cudaMalloc((void**)&cudaTextureImages, sizeof(cudaTextureObject_t) * num_images));
 	CUDA::checkCudaCall(cudaMalloc((void**)&cudaCameras, sizeof(Camera) * num_images));
 	if (params.bGeomConsistency)
-		CUDA::checkCudaCall(cudaMalloc((void**)&cudaTextureDepths, sizeof(cudaTextureObject_t) * num_images));
+		CUDA::checkCudaCall(cudaMalloc((void**)&cudaTextureDepths, sizeof(cudaTextureObject_t) * (num_images-1)));
 
 	const size_t size = image.size().area();
 	depthNormalEstimates = new Point4[size];
@@ -126,7 +126,7 @@ void PatchMatchCUDA::AllocatePatchMatchCUDA(const cv::Mat1f& image)
 	CUDA::checkCudaCall(cudaMalloc((void**)&cudaSelectedViews, sizeof(unsigned) * size));
 }
 
-void PatchMatchCUDA::AllocateImageCUDA(size_t i, const cv::Mat1f& image)
+void PatchMatchCUDA::AllocateImageCUDA(size_t i, const cv::Mat1f& image, bool bHasDepthMap)
 {
 	const cudaChannelFormatDesc channelDesc = cudaCreateChannelDesc(32, 0, 0, 0, cudaChannelFormatKindFloat);
 	CUDA::checkCudaCall(cudaMallocArray(&cudaImageArrays[i], &channelDesc, image.cols, image.rows));
@@ -146,7 +146,7 @@ void PatchMatchCUDA::AllocateImageCUDA(size_t i, const cv::Mat1f& image)
 
 	CUDA::checkCudaCall(cudaCreateTextureObject(&textureImages[i], &resDesc, &texDesc, NULL));
 
-	if (params.bGeomConsistency && i > 0) {
+	if (params.bGeomConsistency && i > 0 && bHasDepthMap) {
 		CUDA::checkCudaCall(cudaMallocArray(&cudaDepthArrays[i-1], &channelDesc, image.cols, image.rows));
 
 		struct cudaResourceDesc resDesc;
@@ -205,7 +205,7 @@ void PatchMatchCUDA::EstimateDepthMap(DepthData& depthData)
 		}
 		if (i >= prevNumImages) {
 			// allocate image CUDA memory
-			AllocateImageCUDA(i, image);
+			AllocateImageCUDA(i, image, !view.depthMap.empty());
 		} else
 		if (images[i].size() != image.size()) {
 			// reallocate image CUDA memory
@@ -215,10 +215,10 @@ void PatchMatchCUDA::EstimateDepthMap(DepthData& depthData)
 				cudaDestroyTextureObject(textureDepths[i-1]);
 				cudaFreeArray(cudaDepthArrays[i-1]);
 			}
-			AllocateImageCUDA(i, image);
+			AllocateImageCUDA(i, image, !view.depthMap.empty());
 		}
 		CUDA::checkCudaCall(cudaMemcpy2DToArray(cudaImageArrays[i], 0, 0, image.ptr<float>(), image.step[0], image.cols*sizeof(float), image.rows, cudaMemcpyHostToDevice));
-		if (params.bGeomConsistency && i > 0) {
+		if (params.bGeomConsistency && i > 0 && !view.depthMap.empty()) {
 			// set previously computed depth-map
 			DepthMap depthMap(view.depthMap);
 			if (depthMap.size() != image.size())

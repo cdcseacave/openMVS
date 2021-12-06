@@ -268,6 +268,8 @@ __device__ inline float ComputeBilateralWeight(int xDist, int yDist, float pix, 
 // compute the geometric consistency weight
 __device__ inline float GeometricConsistencyWeight(const ImagePixels depthImage, const PatchMatchCUDA::Camera& refCamera, const PatchMatchCUDA::Camera& trgCamera, const Point4& plane, const Point2i& p)
 {
+	if (depthImage == NULL)
+		return 0.f;
 	constexpr float maxDist = 4.f;
 	const Point3 forwardPoint = BackProjectPoint(refCamera, p.cast<float>(), plane.w());
 	const Point2 trgPt = ProjectPoint(trgCamera, forwardPoint);
