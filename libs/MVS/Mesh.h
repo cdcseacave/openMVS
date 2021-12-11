@@ -62,8 +62,8 @@ public:
 
 	typedef cList<VIndex,VIndex,0,8,VIndex> VertexIdxArr;
 	typedef cList<FIndex,FIndex,0,8,FIndex> FaceIdxArr;
-	typedef cList<VertexIdxArr> VertexVerticesArr;
-	typedef cList<FaceIdxArr> VertexFacesArr;
+	typedef cList<VertexIdxArr,const VertexIdxArr&,2,8192,VIndex> VertexVerticesArr;
+	typedef cList<FaceIdxArr,const FaceIdxArr&,2,8192,VIndex> VertexFacesArr;
 
 	typedef TPoint3<Type> Normal;
 	typedef cList<Normal,const Normal&,0,8192,FIndex> NormalArr;
@@ -81,6 +81,37 @@ public:
 	typedef std::unordered_map<VIndex,VertCount> VertCountMap;
 
 	typedef AABB3f Box;
+
+	// used to render a mesh
+	typedef TOctree<VertexArr,Vertex::Type,3> Octree;
+	struct FacesInserter {
+		FaceIdxArr& cameraFaces;
+		FacesInserter(FaceIdxArr& _cameraFaces)
+			: cameraFaces(_cameraFaces) {}
+		inline void operator() (const Octree::IDX_TYPE* indices, Octree::SIZE_TYPE size) {
+			cameraFaces.Join(indices, size);
+		}
+		static void CreateOctree(Octree& octree, const Mesh& mesh) {
+			VertexArr centroids(mesh.faces.size());
+			FOREACH(idx, mesh.faces)
+				centroids[idx] = mesh.ComputeCentroid(idx);
+			octree.Insert(centroids, [](Octree::IDX_TYPE size, Octree::Type /*radius*/) {
+				return size > 32;
+			});
+			#if 0 && !defined(_RELEASE)
+			Octree::DEBUGINFO_TYPE info;
+			octree.GetDebugInfo(&info);
+			Octree::LogDebugInfo(info);
+			#endif
+			octree.ResetItems();
+		}
+	};
+
+	struct FaceChunk {
+		FaceIdxArr faces;
+		Box box;
+	};
+	typedef cList<FaceChunk,const FaceChunk&,2,16,uint32_t> FacesChunkArr;
 
 public:
 	VertexArr vertices;
@@ -115,6 +146,7 @@ public:
 
 	Box GetAABB() const;
 	Box GetAABB(const Box& bound) const;
+	Vertex GetCenter() const;
 
 	void ListIncidenteVertices();
 	void ListIncidenteFaces();
@@ -140,6 +172,8 @@ public:
 	void CloseHoleQuality(VertexIdxArr& vertsLoop);
 	void RemoveFaces(FaceIdxArr& facesRemove, bool bUpdateLists=false);
 	void RemoveVertices(VertexIdxArr& vertexRemove, bool bUpdateLists=false);
+	VIndex RemoveUnreferencedVertices(bool bUpdateLists=false);
+	void ConvertTexturePerVertex(Mesh&) const;
 
 	inline Normal FaceNormal(const Face& f) const {
 		return ComputeTriangleNormal(vertices[f[0]], vertices[f[1]], vertices[f[2]]);
@@ -154,6 +188,8 @@ public:
 		return n;
 	}
 
+	Vertex ComputeCentroid(FIndex) const;
+	Type ComputeArea(FIndex) const;
 	REAL ComputeArea() const;
 	REAL ComputeVolume() const;
 
@@ -167,9 +203,13 @@ public:
 	void ProjectOrtho(const Camera& camera, DepthMap& depthMap, Image8U3& image) const;
 	void ProjectOrthoTopDown(unsigned resolution, Image8U3& image, Image8U& mask, Point3& center) const;
 
+	bool Split(FacesChunkArr&, float maxArea);
+	Mesh SubMesh(const FaceIdxArr& faces) const;
+
 	// file IO
 	bool Load(const String& fileName);
 	bool Save(const String& fileName, const cList<String>& comments=cList<String>(), bool bBinary=true) const;
+	bool Save(const FacesChunkArr&, const String& fileName, const cList<String>& comments=cList<String>(), bool bBinary=true) const;
 	static bool Save(const VertexArr& vertices, const String& fileName, bool bBinary=true);
 
 	static inline uint32_t FindVertex(const Face& f, VIndex v) { for (uint32_t i=0; i<3; ++i) if (f[i] == v) return i; return NO_ID; }
@@ -182,6 +222,7 @@ protected:
 
 	bool SavePLY(const String& fileName, const cList<String>& comments=cList<String>(), bool bBinary=true) const;
 	bool SaveOBJ(const String& fileName) const;
+	bool SaveGLTF(const String& fileName, bool bBinary=true) const;
 
 	#ifdef _USE_CUDA
 	static bool InitKernels(int device=-1);
@@ -207,39 +248,66 @@ protected:
 /*----------------------------------------------------------------*/
 
 
-// used to render a mesh
+// used to render a 3D triangle
 template <typename DERIVED>
-struct TRasterMesh {
-	const Mesh::VertexArr& vertices;
+struct TRasterMeshBase {
 	const Camera& camera;
 
 	DepthMap& depthMap;
 
-	Point3 normalPlane;
 	Point3 ptc[3];
 	Point2f pti[3];
 
-	TRasterMesh(const Mesh::VertexArr& _vertices, const Camera& _camera, DepthMap& _depthMap)
-		: vertices(_vertices), camera(_camera), depthMap(_depthMap) {}
+	TRasterMeshBase(const Camera& _camera, DepthMap& _depthMap)
+		: camera(_camera), depthMap(_depthMap) {}
 
 	inline void Clear() {
 		depthMap.memset(0);
 	}
+	inline cv::Size Size() const {
+		return depthMap.size();
+	}
 
-	inline bool ProjectVertex(const Mesh::Vertex& pt, int v) {
-		ptc[v] = camera.TransformPointW2C(Cast<REAL>(pt));
-		pti[v] = camera.TransformPointC2I(ptc[v]);
-		return depthMap.isInsideWithBorder<float,3>(pti[v]);
+	inline bool ProjectVertex(const Point3f& pt, int v) {
+		return (ptc[v] = camera.TransformPointW2C(Cast<REAL>(pt))).z > 0 &&
+			depthMap.isInsideWithBorder<float,3>(pti[v] = camera.TransformPointC2I(ptc[v]));
 	}
-	inline bool CheckNormal(const Point3& faceCenter) {
-		// skip face if the (cos) angle between
-		// the face normal and the face to view vector is negative
-		if (faceCenter.dot(normalPlane) >= ZEROTOLERANCE<REAL>())
-			return false;
-		// prepare vector used to compute the depth during rendering
-		normalPlane /= normalPlane.dot(ptc[0]);
-		return true;
+
+	inline Point3f PerspectiveCorrectBarycentricCoordinates(const Point3f& bary) {
+		return SEACAVE::PerspectiveCorrectBarycentricCoordinates(bary, (float)ptc[0].z, (float)ptc[1].z, (float)ptc[2].z);
 	}
+	inline float ComputeDepth(const Point3f& pbary) {
+		return pbary[0]*(float)ptc[0].z + pbary[1]*(float)ptc[1].z + pbary[2]*(float)ptc[2].z;
+	}
+	void Raster(const ImageRef& pt, const Point3f& bary) {
+		const Point3f pbary(PerspectiveCorrectBarycentricCoordinates(bary));
+		const Depth z(ComputeDepth(pbary));
+		ASSERT(z > Depth(0));
+		Depth& depth = depthMap(pt);
+		if (depth == 0 || depth > z)
+			depth = z;
+	}
+	inline void operator()(const ImageRef& pt, const Point3f& bary) {
+		static_cast<DERIVED*>(this)->Raster(pt, bary);
+	}
+};
+
+// used to render a mesh
+template <typename DERIVED>
+struct TRasterMesh : TRasterMeshBase<DERIVED> {
+	typedef TRasterMeshBase<DERIVED> Base;
+
+	using Base::camera;
+	using Base::depthMap;
+
+	using Base::ptc;
+	using Base::pti;
+
+	const Mesh::VertexArr& vertices;
+
+	TRasterMesh(const Mesh::VertexArr& _vertices, const Camera& _camera, DepthMap& _depthMap)
+		: Base(_camera, _depthMap), vertices(_vertices) {}
+
 	void Project(const Mesh::Face& facet) {
 		// project face vertices to image plane
 		for (int v=0; v<3; ++v) {
@@ -247,36 +315,8 @@ struct TRasterMesh {
 			if (!static_cast<DERIVED*>(this)->ProjectVertex(vertices[facet[v]], v))
 				return;
 		}
-		// compute the face center, which is also the view to face vector
-		// (cause the face is in camera view space)
-		const Point3 faceCenter((ptc[0]+ptc[1]+ptc[2])/3);
-		// skip face if the (cos) angle between
-		// the view to face vector and the view direction is negative
-		if (faceCenter.z <= REAL(0))
-			return;
-		// compute the plane defined by the 3 points
-		const Point3 edge1(ptc[1]-ptc[0]);
-		const Point3 edge2(ptc[2]-ptc[0]);
-		normalPlane = edge1.cross(edge2);
-		// check the face is facing the camera and
-		// prepare vector used to compute the depth during rendering
-		if (!static_cast<DERIVED*>(this)->CheckNormal(faceCenter))
-			return;
-		// draw triangle and for each pixel compute depth as the ray intersection with the plane
-		Image8U3::RasterizeTriangle(pti[0], pti[1], pti[2], *this);
-	}
-
-	void Raster(const ImageRef& pt) {
-		if (!depthMap.isInsideWithBorder<float,3>(pt))
-			return;
-		const Depth z((Depth)INVERT(normalPlane.dot(camera.TransformPointI2C(Point2(pt)))));
-		ASSERT(z > 0);
-		Depth& depth = depthMap(pt);
-		if (depth == 0 || depth > z)
-			depth = z;
-	}
-	inline void operator()(const ImageRef& pt) {
-		static_cast<DERIVED*>(this)->Raster(pt);
+		// draw triangle
+		Image8U3::RasterizeTriangleBary(pti[0], pti[1], pti[2], *this);
 	}
 };
 /*----------------------------------------------------------------*/

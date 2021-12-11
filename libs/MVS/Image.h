@@ -80,6 +80,7 @@ public:
 	uint32_t poseID; // ID of the pose of the associated platform
 	uint32_t ID; // global ID of the image
 	String name; // image file name (relative path)
+	String maskName; // segmentation file name (optional)
 	Camera camera; // view's pose
 	uint32_t width, height; // image size
 	Image8U3 image; // image color pixels
@@ -88,13 +89,10 @@ public:
 	float avgDepth; // average depth of the points seen by this camera
 
 public:
-	inline Image() {
-		#ifndef _RELEASE
-		width = height = 0;
-		#endif
-	}
+	inline Image() : poseID(NO_ID), width(0), height(0) {}
 
 	inline bool IsValid() const { return poseID != NO_ID; }
+	inline bool HasResolution() const { return width > 0 && height > 0; }
 	inline Image8U::Size GetSize() const { return Image8U::Size(width, height); }
 
 	// read image data from the file
@@ -137,6 +135,8 @@ public:
 		ar & ID;
 		const String relName(MAKE_PATH_REL(WORKING_FOLDER_FULL, name));
 		ar & relName;
+		const String relMaskName(MAKE_PATH_REL(WORKING_FOLDER_FULL, maskName));
+		ar & relMaskName;
 		ar & width & height;
 		ar & neighbors;
 		ar & avgDepth;
@@ -149,6 +149,8 @@ public:
 		ar & ID;
 		ar & name;
 		name = MAKE_PATH_FULL(WORKING_FOLDER_FULL, name);
+		ar & maskName;
+		maskName = MAKE_PATH_FULL(WORKING_FOLDER_FULL, maskName);
 		ar & width & height;
 		ar & neighbors;
 		ar & avgDepth;

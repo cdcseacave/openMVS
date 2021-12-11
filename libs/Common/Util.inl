@@ -468,13 +468,17 @@ TYPE ComputeTriangleAreaLenSq(TYPE lenaSq, TYPE lenbSq, TYPE lencSq) {
 }
 // compute area for a triangle defined by three 2D points
 template <typename TYPE>
+TYPE EdgeFunction(const TPoint2<TYPE>& x0, const TPoint2<TYPE>& x1, const TPoint2<TYPE>& x2) {
+	return TYPE((x2-x0).cross(x1-x0));
+}
+template <typename TYPE>
 TYPE ComputeTriangleArea(const TPoint2<TYPE>& x0, const TPoint2<TYPE>& x1, const TPoint2<TYPE>& x2) {
-	return abs((TYPE)((x0-x2).cross(x0-x1)/TYPE(2)));
+	return (TYPE)abs(EdgeFunction(x0, x1, x2)/TYPE(2));
 }
 // compute area for a triangle defined by three 3D points
 template <typename TYPE>
 TYPE ComputeTriangleAreaSq(const TPoint3<TYPE>& x0, const TPoint3<TYPE>& x1, const TPoint3<TYPE>& x2) {
-	return (TYPE)(normSq((x1-x0).cross(x2-x0))/TYPE(4));
+	return (TYPE)normSq((x1-x0).cross(x2-x0))/TYPE(4);
 }
 template <typename TYPE>
 TYPE ComputeTriangleArea(const TPoint3<TYPE>& x0, const TPoint3<TYPE>& x1, const TPoint3<TYPE>& x2) {
@@ -607,6 +611,11 @@ inline TPoint3<TYPE> CorrectBarycentricCoordinates(TPoint2<TYPE> b) {
 	ASSERT((b.x >= 0) && (b.y >= 0) && (b.x+b.y <= 1) && ISEQUAL(b.x+b.y+z, TYPE(1)));
 	return TPoint3<TYPE>(b.x, b.y, z);
 }
+template <typename TYPE>
+inline TPoint3<TYPE> PerspectiveCorrectBarycentricCoordinates(const TPoint3<TYPE>& b, TYPE z0, TYPE z1, TYPE z2) {
+	const TPoint3<TYPE> pb(b.x * z1 * z2, b.y * z0 * z2, b.z * z0 * z1);
+	return pb / (pb.x + pb.y + pb.z);
+}
 /*----------------------------------------------------------------*/
 
 // Encodes/decodes a normalized 3D vector in two parameters for the direction
@@ -656,7 +665,7 @@ inline T MaxDepthDifference(T d, T threshold) {
 }
 template<typename T>
 inline T DepthSimilarity(T d0, T d1) {
-	ASSERT(d0 > 0 && d1 > 0);
+	ASSERT(d0 > 0);
 	#if 0
 	return ABS(d0-d1)*T(2)/(d0+d1);
 	#else

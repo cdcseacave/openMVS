@@ -268,7 +268,6 @@ int _vscprintf(LPCSTR format, va_list pargs);
 #endif //_MSC_VER
 
 #define DECLARE_NO_INDEX(...) std::numeric_limits<__VA_ARGS__>::max()
-#define NO_ID				DECLARE_NO_INDEX(uint32_t)
 
 #ifndef MAKEWORD
 #define MAKEWORD(a, b)		((WORD)(((BYTE)(((DWORD)(a)) & 0xff)) | ((WORD)((BYTE)(((DWORD)(b)) & 0xff))) << 8))
@@ -311,6 +310,10 @@ int _vscprintf(LPCSTR format, va_list pargs);
 #define MAXF                std::max
 #endif
 
+#ifndef RAND
+#define RAND			    std::rand
+#endif
+
 namespace SEACAVE {
 
 // signed and unsigned types of the size of the architecture
@@ -329,7 +332,10 @@ typedef int64_t     	    size_f_t;
 // type used as the default floating number precision
 typedef double              REAL;
 
-template <typename TYPE, typename REALTYPE=REAL>
+// invalid index
+constexpr uint32_t NO_ID = DECLARE_NO_INDEX(uint32_t);
+
+template<typename TYPE, typename REALTYPE=REAL>
 struct RealType { typedef typename std::conditional<std::is_floating_point<TYPE>::value, TYPE, REALTYPE>::type type; };
 
 template<typename T>
@@ -341,15 +347,11 @@ inline T MAXF3(const T& x1, const T& x2, const T& x3) {
 	return MAXF(MAXF(x1, x2), x3);
 }
 
-#ifndef RAND
-#define RAND			std::rand
-#endif
 template<typename T>
 FORCEINLINE T RANDOM() { return T(RAND())/RAND_MAX; }
 
 template<typename T1, typename T2>
-union TAliasCast
-{
+union TAliasCast {
 	T1 f;
 	T2 i;
 	inline TAliasCast() {}
@@ -1634,6 +1636,22 @@ public:
 		return pt.x>=T(border) && pt.y>=T(border) && pt.x<=T(Base::size().width-(border+1)) && pt.y<=T(Base::size().height-(border+1));
 	}
 
+	template <typename T, int border=0>
+	static inline void clip(TPoint2<T>& ptMin, TPoint2<T>& ptMax, const cv::Size& size) {
+		if (ptMin.x < T(border))
+			ptMin.x = T(border);
+		if (ptMin.y < T(border))
+			ptMin.y = T(border);
+		if (ptMax.x >= T(size.width-border))
+			ptMax.x = T(size.width-(border+1));
+		if (ptMax.y >= T(size.height-border))
+			ptMax.y = T(size.height-(border+1));
+	}
+	template <typename T, int border=0>
+	inline void clip(TPoint2<T>& ptMin, TPoint2<T>& ptMax) const {
+		clip<T,border>(ptMin, ptMax, Base::size());
+	}
+
 	/// Remove the given element from the vector
 	inline void remove(int idx) {
 		// replace the removed element by the last one and decrease the size
@@ -2153,6 +2171,8 @@ public:
 	template <typename T, typename PARSER>
 	static void RasterizeTriangle(const TPoint2<T>& v1, const TPoint2<T>& v2, const TPoint2<T>& v3, PARSER& parser);
 	template <typename T, typename PARSER>
+	static void RasterizeTriangleBary(const TPoint2<T>& v1, const TPoint2<T>& v2, const TPoint2<T>& v3, PARSER& parser);
+	template <typename T, typename PARSER>
 	static void RasterizeTriangleDepth(TPoint3<T> p1, TPoint3<T> p2, TPoint3<T> p3, PARSER& parser);
 
 	template <typename T, typename PARSER>
@@ -2179,6 +2199,7 @@ public:
 };
 /*----------------------------------------------------------------*/
 typedef TImage<uint8_t> Image8U;
+typedef TImage<uint16_t> Image16U;
 typedef TImage<hfloat> Image16F;
 typedef TImage<float> Image32F;
 typedef TImage<double> Image64F;
@@ -2774,6 +2795,6 @@ protected:
 #include "Ray.h"
 #include "Octree.h"
 #include "Util.inl"
-#include "CUDA.h"
+#include "UtilCUDA.h"
 
 #endif // __SEACAVE_TYPES_H__

@@ -1944,7 +1944,7 @@ typedef Mesh::FIndex FIndex;
 
 class MeshRefineCUDA {
 public:
-	typedef std::unordered_set<FIndex> CameraFaces;
+	typedef Mesh::FaceIdxArr CameraFaces;
 	typedef SEACAVE::cList<CameraFaces,const CameraFaces&,2> CameraFacesArr;
 
 	// store necessary data about a view
@@ -2301,39 +2301,18 @@ void MeshRefineCUDA::ListVertexFacesPost()
 void MeshRefineCUDA::ListCameraFaces()
 {
 	// extract array of faces viewed by each camera
-	CameraFacesArr arrCameraFaces(images.GetSize());
-	{
-	struct FacesInserter {
-		FacesInserter(const Mesh::VertexFacesArr& _vertexFaces, CameraFaces& _cameraFaces)
-			: vertexFaces(_vertexFaces), cameraFaces(_cameraFaces) {}
-		inline void operator() (IDX idxVertex) {
-			const Mesh::FaceIdxArr& vertexTris = vertexFaces[idxVertex];
-			FOREACHPTR(pTri, vertexTris)
-				cameraFaces.emplace(*pTri);
+	CameraFacesArr arrCameraFaces(images.GetSize()); {
+		Mesh::Octree octree;
+		Mesh::FacesInserter::CreateOctree(octree, scene.mesh);
+		FOREACH(ID, images) {
+			const Image& imageData = images[ID];
+			if (!imageData.IsValid())
+				continue;
+			typedef TFrustum<float,5> Frustum;
+			const Frustum frustum(Frustum::MATRIX3x4(((PMatrix::CEMatMap)imageData.camera.P).cast<float>()), (float)imageData.width, (float)imageData.height);
+			Mesh::FacesInserter inserter(arrCameraFaces[ID]);
+			octree.Traverse(frustum, inserter);
 		}
-		inline void operator() (const IDX* idices, size_t size) {
-			FOREACHRAWPTR(pIdxVertex, idices, size)
-				operator()(*pIdxVertex);
-		}
-		const Mesh::VertexFacesArr& vertexFaces;
-		CameraFaces& cameraFaces;
-	};
-	typedef TOctree<Mesh::VertexArr,float,3> Octree;
-	const Octree octree(scene.mesh.vertices);
-	#if 0 && !defined(_RELEASE)
-	Octree::DEBUGINFO_TYPE info;
-	octree.GetDebugInfo(&info);
-	Octree::LogDebugInfo(info);
-	#endif
-	FOREACH(ID, images) {
-		const Image& imageData = images[ID];
-		if (!imageData.IsValid())
-			continue;
-		typedef TFrustum<float,5> Frustum;
-		FacesInserter inserter(scene.mesh.vertexFaces, arrCameraFaces[ID]);
-		const Frustum frustum(Frustum::MATRIX3x4(((PMatrix::CEMatMap)imageData.camera.P).cast<float>()), (float)imageData.width, (float)imageData.height);
-		octree.Traverse(frustum, inserter);
-	}
 	}
 
 	// project mesh to each camera plane
@@ -2810,6 +2789,9 @@ bool Scene::RefineMeshCUDA(unsigned nResolutionLevel, unsigned nMinResolution, u
 						   float fDecimateMesh, unsigned nCloseHoles, unsigned nEnsureEdgeSize, unsigned nMaxFaceArea,
 						   unsigned nScales, float fScaleStep, unsigned nAlternatePair, float fRegularityWeight, float fRatioRigidityElasticity, float fGradientStep)
 {
+	if (pointcloud.IsEmpty() && !ImagesHaveNeighbors())
+		SampleMeshWithVisibility();
+
 	MeshRefineCUDA refine(*this, nAlternatePair, fRegularityWeight, fRatioRigidityElasticity, nResolutionLevel, nMinResolution, nMaxViews);
 	if (!refine.IsValid())
 		return false;

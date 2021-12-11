@@ -3,7 +3,7 @@ Dependencies
 ------------
 
 *OpenMVS* relies on a number of open source libraries, some of which are optional. For details on customizing the build process, see the compilation instructions.
-* [Eigen](http://eigen.tuxfamily.org) version 3.2 (or higher on Windows only)
+* [Eigen](http://eigen.tuxfamily.org) version 3.4 or higher
 * [OpenCV](http://opencv.org) version 2.4 or higher
 * [Ceres](http://ceres-solver.org) version 1.10 or higher
 * [CGAL](http://www.cgal.org) version 4.2 or higher
@@ -33,7 +33,7 @@ cd OpenMVS
 
 #Get and install dependencies using vcpkg;
 #choose the desired triplet, like "x64-windows", by setting the VCPKG_DEFAULT_TRIPLET environment variable or by specifying it after each package:
-vcpkg install zlib boost-iostreams boost-program-options boost-system boost-serialization eigen3 cgal[core] opencv glew glfw3
+vcpkg install zlib boost-iostreams boost-program-options boost-system boost-serialization eigen3 cgal[core] opencv vcglib glew glfw3
 
 #Get VCGLib (Required):
 git clone https://github.com/cdcseacave/VCG.git
@@ -46,7 +46,7 @@ mkdir build
 cd build
 
 #Run CMake, where VCPKG_ROOT environment variable points to the root of vcpkg installation:
-cmake . ..\src -G "Visual Studio 15 2017 Win64" -DCMAKE_TOOLCHAIN_FILE=%VCPKG_ROOT%\scripts\buildsystems\vcpkg.cmake -DVCPKG_TARGET_TRIPLET=x64-windows -DVCG_ROOT="..\VCG"
+cmake . ..\src -G "Visual Studio 15 2017 Win64" -DCMAKE_TOOLCHAIN_FILE=%VCPKG_ROOT%\scripts\buildsystems\vcpkg.cmake -DVCPKG_TARGET_TRIPLET=x64-windows
 
 #Open the solution in MSVC and build it
 ```
@@ -64,7 +64,7 @@ sudo apt-get -y install git cmake libpng-dev libjpeg-dev libtiff-dev libglu1-mes
 main_path=`pwd`
 
 #Eigen (Required)
-git clone https://gitlab.com/libeigen/eigen.git --branch 3.2
+git clone https://gitlab.com/libeigen/eigen.git --branch 3.4
 mkdir eigen_build && cd eigen_build
 cmake . ../eigen
 make && sudo make install
@@ -82,7 +82,7 @@ sudo apt-get -y install libcgal-dev libcgal-qt5-dev
 #VCGLib (Required)
 git clone https://github.com/cdcseacave/VCG.git vcglib
 
-#Ceres (optional)
+#Ceres (Optional)
 sudo apt-get -y install libatlas-base-dev libsuitesparse-dev
 git clone https://ceres-solver.googlesource.com/ceres-solver ceres-solver
 mkdir ceres_build && cd ceres_build
@@ -128,11 +128,36 @@ git clone https://github.com/cdcseacave/openMVS.git
 
 #Build OpenMVS
 mkdir openMVS_build && cd openMVS_build
-cmake . ../openMVS -DCMAKE_BUILD_TYPE=Release -DVCG_DIR="$main_path/vcglib"
+cmake . ../openMVS -DCMAKE_BUILD_TYPE=Release -DVCG_ROOT="$main_path/vcglib"
+
+#Alternatively, build using XCode
+cmake . ../openMVS -G "Xcode" -DCMAKE_BUILD_TYPE=Release -DVCG_ROOT="$main_path/vcglib"
+xcodebuild -configuration Release
 
 #If you want to use OpenMVS as shared library, add to the CMake command:
 -DBUILD_SHARED_LIBS=ON
 
 #Install OpenMVS library (optional):
 make && sudo make install
+```
+
+-------------------
+Library usage
+-------------------
+
+In order to use *OpenMVS* as a third-party libray in your project, first compile it as described above or simply use `vcpgk`:
+```
+vcpkg install openmvs
+```
+
+And inside your project CMake script, use:
+```
+find_package(OpenMVS)
+if(OpenMVS_FOUND)
+	include_directories(${OpenMVS_INCLUDE_DIRS})
+	add_definitions(${OpenMVS_DEFINITIONS})
+endif()
+
+add_executable(your_project source_code.cpp)
+target_link_libraries(your_project PRIVATE OpenMVS::MVS)
 ```

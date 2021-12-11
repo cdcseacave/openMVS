@@ -70,8 +70,7 @@
 #define DENSE_EXP_FAST FEXP<true> // ~10% faster, but slightly less precise
 #define DENSE_EXP DENSE_EXP_DEFUALT
 
-#define ComposeDepthFilePathBase(b, i, e) MAKE_PATH(String::FormatString((b + "%04u." e).c_str(), i))
-#define ComposeDepthFilePath(i, e) MAKE_PATH(String::FormatString("depth%04u." e, i))
+#define ComposeDepthFilePath(i, e) MAKE_PATH(String::FormatString(("depth%04u." + String(e)).c_str(), i))
 
 
 // S T R U C T S ///////////////////////////////////////////////////
@@ -81,12 +80,16 @@ namespace MVS {
 DECOPT_SPACE(OPTDENSE)
 
 namespace OPTDENSE {
+// configuration variables
 enum DepthFlags {
 	REMOVE_SPECKLES	= (1 << 0),
 	FILL_GAPS		= (1 << 1),
 	ADJUST_FILTER	= (1 << 2),
 	OPTIMIZE		= (REMOVE_SPECKLES|FILL_GAPS)
 };
+#ifdef _USE_CUDA
+extern int nCUDADevice;
+#endif // _USE_CUDA
 extern unsigned nResolutionLevel;
 extern unsigned nMaxResolution;
 extern unsigned nMinResolution;
@@ -113,11 +116,17 @@ extern float fOptimizerEps;
 extern int nOptimizerMaxIters;
 extern unsigned nSpeckleSize;
 extern unsigned nIpolGapSize;
+extern int nIgnoreMaskLabel;
 extern unsigned nOptimize;
 extern unsigned nEstimateColors;
 extern unsigned nEstimateNormals;
 extern float fNCCThresholdKeep;
+#ifdef _USE_CUDA
+extern float fNCCThresholdKeepCUDA;
+#endif // _USE_CUDA
 extern unsigned nEstimationIters;
+extern unsigned nEstimationGeometricIters;
+extern float fEstimationGeometricWeight;
 extern unsigned nRandomIters;
 extern unsigned nRandomMaxScale;
 extern float fRandomDepthRatio;
@@ -149,6 +158,29 @@ struct MVS_API DepthData {
 		Image32F image; // image float intensities
 		Image* pImageData; // image data
 
+		Matrix3x3 Hl; //
+		Vec3 Hm;      // constants during per-pixel loops
+		Matrix3x3 Hr; //
+
+		DepthMap depthMap; // known depth-map (optional)
+		Camera cameraDepthMap; // camera matrix corresponding to the depth-map
+		Matrix3x3f Tl; //
+		Point3f Tm;    // constants during per-pixel geometric-consistent loops
+		Matrix3x3f Tr; //
+		Point3f Tn;    //
+
+		inline void Init(const Camera& cameraRef) {
+			Hl = camera.K * camera.R * cameraRef.R.t();
+			Hm = camera.K * camera.R * (cameraRef.C - camera.C);
+			Hr = cameraRef.K.inv();
+			if (!depthMap.empty()) {
+				Tl = cameraDepthMap.K * cameraDepthMap.R * cameraRef.R.t();
+				Tm = cameraDepthMap.K * cameraDepthMap.R * (cameraRef.C - cameraDepthMap.C);
+				Tr = cameraRef.K * cameraRef.R * cameraDepthMap.R.t() * cameraDepthMap.GetInvK();
+				Tn = cameraRef.K * cameraRef.R * (cameraDepthMap.C - cameraRef.C);
+			}
+		}
+
 		inline IIndex GetID() const {
 			return pImageData->ID;
 		}
@@ -156,9 +188,12 @@ struct MVS_API DepthData {
 			return (IIndex)(pImageData - images.begin());
 		}
 
+		static bool NeedScaleImage(float scale) {
+			return ABS(scale-1.f) >= 0.15f;
+		}
 		template <typename IMAGE>
 		static bool ScaleImage(const IMAGE& image, IMAGE& imageScaled, float scale) {
-			if (ABS(scale-1.f) < 0.15f)
+			if (!NeedScaleImage(scale))
 				return false;
 			cv::resize(image, imageScaled, cv::Size(), scale, scale, scale>1?cv::INTER_CUBIC:cv::INTER_AREA);
 			return true;
@@ -180,8 +215,10 @@ struct MVS_API DepthData {
 	inline DepthData() : references(0) {}
 
 	inline void ReleaseImages() {
-		FOREACHPTR(ptrImage, images)
-			ptrImage->image.release();
+		for (ViewData& image: images) {
+			image.image.release();
+			image.depthMap.release();
+		}
 	}
 	inline void Release() {
 		depthMap.release();
@@ -201,6 +238,8 @@ struct MVS_API DepthData {
 
 	void GetNormal(const ImageRef& ir, Point3f& N, const TImage<Point3f>* pPointMap=NULL) const;
 	void GetNormal(const Point2f& x, Point3f& N, const TImage<Point3f>* pPointMap=NULL) const;
+
+	void ApplyIgnoreMask(const BitMatrix&);
 
 	bool Save(const String& fileName) const;
 	bool Load(const String& fileName);
@@ -227,7 +266,7 @@ typedef MVS_API CLISTDEFIDX(DepthData,IIndex) DepthDataArr;
 
 
 struct MVS_API DepthEstimator {
-	enum { nSizeHalfWindow = 5 };
+	enum { nSizeHalfWindow = 4 };
 	enum { nSizeWindow = nSizeHalfWindow*2+1 };
 	enum { nSizeStep = 2 };
 	enum { TexelChannels = 1 };
@@ -269,19 +308,6 @@ struct MVS_API DepthEstimator {
 	typedef CLISTDEFIDX(Weight,int) WeightMap;
 	#endif
 
-	struct ViewData {
-		const DepthData::ViewData& view;
-		const Matrix3x3 Hl;   //
-		const Vec3 Hm;	      // constants during per-pixel loops
-		const Matrix3x3 Hr;   //
-		inline ViewData() : view(*((const DepthData::ViewData*)this)) {}
-		inline ViewData(const DepthData::ViewData& image0, const DepthData::ViewData& image1)
-			: view(image1),
-			Hl(image1.camera.K * image1.camera.R * image0.camera.R.t()),
-			Hm(image1.camera.K * image1.camera.R * (image0.camera.C - image1.camera.C)),
-			Hr(image0.camera.K.inv()) {}
-	};
-
 	SEACAVE::Random rnd;
 
 	volatile Thread::safe_t& idxPixel; // current image index to be processed
@@ -318,7 +344,7 @@ struct MVS_API DepthEstimator {
 	#endif
 
 	const unsigned nIteration; // current PatchMatch iteration
-	const CLISTDEF0IDX(ViewData,IIndex) images; // neighbor images used
+	const DepthData::ViewDataArr images; // neighbor images used
 	const DepthData::ViewData& image0;
 	#if DENSE_NCC != DENSE_NCC_WEIGHTED
 	const Image64F& image0Sum; // integral image used to fast compute patch mean intensity
@@ -343,7 +369,7 @@ struct MVS_API DepthEstimator {
 
 	bool PreparePixelPatch(const ImageRef&);
 	bool FillPixelPatch();
-	float ScorePixelImage(const ViewData& image1, Depth, const Normal&);
+	float ScorePixelImage(const DepthData::ViewData& image1, Depth, const Normal&);
 	float ScorePixel(Depth, const Normal&);
 	void ProcessPixel(IDX idx);
 	Depth InterpolatePixel(const ImageRef&, Depth, const Normal&) const;
@@ -367,32 +393,24 @@ struct MVS_API DepthEstimator {
 	#if DENSE_NCC == DENSE_NCC_WEIGHTED
 	float GetWeight(const ImageRef& x, float center) const {
 		// color weight [0..1]
-		const float sigmaColor(-1.f/(2.f*SQUARE(0.2f)));
+		const float sigmaColor(-1.f/(2.f*SQUARE(0.1f)));
 		const float wColor(SQUARE(image0.image(x0+x)-center) * sigmaColor);
 		// spatial weight [0..1]
-		const float sigmaSpatial(-1.f/(2.f*SQUARE((int)nSizeHalfWindow)));
+		const float sigmaSpatial(-1.f/(2.f*SQUARE((int)nSizeHalfWindow-1)));
 		const float wSpatial(float(SQUARE(x.x) + SQUARE(x.y)) * sigmaSpatial);
 		return DENSE_EXP(wColor+wSpatial);
 	}
 	#endif
 
-	inline Matrix3x3f ComputeHomographyMatrix(const ViewData& img, Depth depth, const Normal& normal) const {
+	inline Matrix3x3f ComputeHomographyMatrix(const DepthData::ViewData& img, Depth depth, const Normal& normal) const {
 		#if 0
 		// compute homography matrix
-		const Matrix3x3f H(img.view.camera.K*HomographyMatrixComposition(image0.camera, img.view.camera, Vec3(normal), Vec3(X0*depth))*image0.camera.K.inv());
+		const Matrix3x3f H(img.camera.K*HomographyMatrixComposition(image0.camera, img.camera, Vec3(normal), Vec3(X0*depth))*image0.camera.K.inv());
 		#else
 		// compute homography matrix as above, caching some constants
 		const Vec3 n(normal);
 		return (img.Hl + img.Hm * (n.t()*INVERT(n.dot(X0)*depth))) * img.Hr;
 		#endif
-	}
-
-	static inline CLISTDEF0IDX(ViewData,IIndex) InitImages(const DepthData& depthData) {
-		CLISTDEF0IDX(ViewData,IIndex) images(0, depthData.images.GetSize()-1);
-		const DepthData::ViewData& image0(depthData.images.First());
-		for (IIndex i=1; i<depthData.images.GetSize(); ++i)
-			images.AddConstruct(image0, depthData.images[i]);
-		return images;
 	}
 
 	static inline Point3 ComputeRelativeC(const DepthData& depthData) {
@@ -423,6 +441,7 @@ struct MVS_API DepthEstimator {
 			normal = RMatrixBaseF(normal.cross(viewDir), MINF((ACOS(cosAngLen/norm(viewDir))-FD2R(90.f))*1.01f, -0.001f)) * normal;
 	}
 
+	static bool ImportIgnoreMask(const Image&, const Image8U::Size&, BitMatrix&, uint16_t nIgnoreMaskLabel);
 	static void MapMatrix2ZigzagIdx(const Image8U::Size& size, DepthEstimator::MapRefArr& coords, const BitMatrix& mask, int rawStride=16);
 
 	const float smoothBonusDepth, smoothBonusNormal;
@@ -442,10 +461,10 @@ struct MVS_API DepthEstimator {
 // Tools
 bool TriangulatePoints2DepthMap(
 	const DepthData::ViewData& image, const PointCloud& pointcloud, const IndexArr& points,
-	DepthMap& depthMap, NormalMap& normalMap, Depth& dMin, Depth& dMax);
+	DepthMap& depthMap, NormalMap& normalMap, Depth& dMin, Depth& dMax, bool bAddCorners);
 bool TriangulatePoints2DepthMap(
 	const DepthData::ViewData& image, const PointCloud& pointcloud, const IndexArr& points,
-	DepthMap& depthMap, Depth& dMin, Depth& dMax);
+	DepthMap& depthMap, Depth& dMin, Depth& dMax, bool bAddCorners);
 
 MVS_API unsigned EstimatePlane(const Point3Arr&, Plane&, double& maxThreshold, bool arrInliers[]=NULL, size_t maxIters=0);
 MVS_API unsigned EstimatePlaneLockFirstPoint(const Point3Arr&, Plane&, double& maxThreshold, bool arrInliers[]=NULL, size_t maxIters=0);

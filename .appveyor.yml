@@ -48,18 +48,17 @@ for:
     # remove outdated versions
     - vcpkg remove --outdated --recurse
     # install dependencies
-    - vcpkg install --recurse --triplet %VCPKG_ARCH% zlib boost-iostreams boost-program-options boost-system boost-serialization eigen3 cgal[core] opencv glew glfw3
-    - vcpkg integrate install
+    - vcpkg install --recurse yasm-tool:x86-windows
+    - vcpkg install --recurse --triplet %VCPKG_ARCH% zlib boost-iostreams boost-program-options boost-system boost-serialization eigen3 cgal[core] opencv vcglib glew glfw3
     - cd "%APPVEYOR_BUILD_FOLDER%"
   # preserve contents of selected directories and files across project builds
   cache:
     - 'C:\tools\vcpkg\installed'
   build_script:
-    - git clone https://github.com/cdcseacave/VCG.git
     - if "%platform%"=="Win32" set CMAKE_GENERATOR=-G"Visual Studio 15 2017"
     - if "%platform%"=="x64"   set CMAKE_GENERATOR=-G"Visual Studio 15 2017 Win64"
     - mkdir bin && cd bin
-    - cmake %CMAKE_GENERATOR% -DCMAKE_BUILD_TYPE=%Configuration% -DCMAKE_TOOLCHAIN_FILE="C:\tools\vcpkg\scripts\buildsystems\vcpkg.cmake" -DVCG_ROOT="%APPVEYOR_BUILD_FOLDER%\VCG" ..
+    - cmake %CMAKE_GENERATOR% -DCMAKE_BUILD_TYPE=%Configuration% -DCMAKE_TOOLCHAIN_FILE="C:\tools\vcpkg\scripts\buildsystems\vcpkg.cmake" ..
     - cmake --build . --target ALL_BUILD --config %Configuration% -- /maxcpucount:4
 -
   #------------------
@@ -85,7 +84,7 @@ for:
     - '/usr/lib/x86_64-linux-gnu/'
   build_script:
     - git clone https://github.com/cdcseacave/VCG.git
-    - git clone --single-branch --branch 3.2 https://gitlab.com/libeigen/eigen.git
+    - git clone --single-branch --branch 3.4 https://gitlab.com/libeigen/eigen.git
     - mkdir eigen_build && cd eigen_build
     - cmake . ../eigen
     - make && sudo make install

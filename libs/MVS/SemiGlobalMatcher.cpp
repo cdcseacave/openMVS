@@ -615,7 +615,7 @@ void SemiGlobalMatcher::Match(const Scene& scene, IIndex idxImage, IIndex numNei
 				image.camera = leftImageLevel.camera;
 				DepthMap depthMap;
 				Depth dMin, dMax;
-				TriangulatePoints2DepthMap(image, scene.pointcloud, points, depthMap, dMin, dMax);
+				TriangulatePoints2DepthMap(image, scene.pointcloud, points, depthMap, dMin, dMax, true);
 				points.Release();
 				Matrix3x3 H2(H); Matrix4x4 Q2(Q);
 				Image::ScaleStereoRectification(H2, Q2, scale*0.5);

@@ -50,6 +50,27 @@
 
 #define _USE_MATH_DEFINES
 
+#if _MSC_VER >= 1400
+#ifndef _CRT_SECURE_NO_WARNINGS
+#define _CRT_SECURE_NO_WARNINGS 1
+#endif
+#ifndef _CRT_SECURE_NO_DEPRECATE
+#define _CRT_SECURE_NO_DEPRECATE 1
+#endif
+#ifndef _ATL_SECURE_NO_DEPRECATE
+#define _ATL_SECURE_NO_DEPRECATE 1
+#endif
+#ifndef _CRT_NON_CONFORMING_SWPRINTFS
+#define _CRT_NON_CONFORMING_SWPRINTFS 1
+#endif
+#ifndef _CRT_SECURE_CPP_OVERLOAD_SECURE_NAMES
+#define _CRT_SECURE_CPP_OVERLOAD_SECURE_NAMES 0 // disable automatically overloading CPP names to secure versions
+#endif
+#if 0 && defined(_DEBUG) && !defined(_ITERATOR_DEBUG_LEVEL) // might not build if linking statically to 3rd party libraries
+#define _ITERATOR_DEBUG_LEVEL 1 // disable std iterator debugging even in Debug, as it is very slow
+#endif
+#endif
+
 
 //----------------------------------------------------------------------
 // For Microsoft Visual C++, externally accessible symbols must be
@@ -120,31 +141,17 @@
 #endif // _MSC_VER
 
 
+#if defined(__arm__) || defined (__arm64__) || defined(__aarch64__) || defined(_M_ARM) || defined(_M_ARMT)
+#define _PLATFORM_ARM 1
+#else
+#define _PLATFORM_X86 1
+#endif
+
+
 #if !defined(_DEBUG) && !defined(_PROFILE)
 #define _RELEASE // exclude code useful only for debug
 #endif
 
-
-#if defined(_MSC_VER) && _MSC_VER >= 1400
-#ifndef _CRT_SECURE_NO_WARNINGS
-#define _CRT_SECURE_NO_WARNINGS 1
-#endif
-#ifndef _CRT_SECURE_NO_DEPRECATE
-#define _CRT_SECURE_NO_DEPRECATE 1
-#endif
-#ifndef _ATL_SECURE_NO_DEPRECATE
-#define _ATL_SECURE_NO_DEPRECATE 1
-#endif
-#ifndef _CRT_NON_CONFORMING_SWPRINTFS
-#define _CRT_NON_CONFORMING_SWPRINTFS 1
-#endif
-#ifndef _CRT_SECURE_CPP_OVERLOAD_SECURE_NAMES
-#define _CRT_SECURE_CPP_OVERLOAD_SECURE_NAMES 0 // disable automatically overloading CPP names to secure versions
-#endif
-#if 0 && defined(_DEBUG) && !defined(_ITERATOR_DEBUG_LEVEL) // might not build if linking statically to 3rd party libraries
-#define _ITERATOR_DEBUG_LEVEL 1 // disable std iterator debugging even in Debug, as it is very slow
-#endif
-#endif
 
 
 //optimization flags
@@ -204,7 +211,7 @@
 #ifdef _MSC_VER
 #define _DEBUGINFO
 #define _CRTDBG_MAP_ALLOC	//enable this to show also the filename (DEBUG_NEW should also be defined in each file)
-#include <stdlib.h>
+#include <cstdlib>
 #include <crtdbg.h>
 #ifdef _INC_CRTDBG
 #define ASSERT(exp)	{if (!(exp) && 1 == _CrtDbgReport(_CRT_ASSERT, __FILE__, __LINE__, NULL, #exp)) _CrtDbgBreak();}

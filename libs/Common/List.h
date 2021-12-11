@@ -11,6 +11,8 @@
 
 // I N C L U D E S /////////////////////////////////////////////////
 
+#include <utility>
+
 
 // D E F I N E S ///////////////////////////////////////////////////
 
@@ -69,6 +71,10 @@
 #define CLISTDEF0IDX(TYPE,IDXTYPE) SEACAVE::cList< TYPE, const TYPE&, 0, 16, IDXTYPE >
 #define CLISTDEFIDX(TYPE,IDXTYPE) SEACAVE::cList< TYPE, const TYPE&, 1, 16, IDXTYPE >
 #define CLISTDEF2IDX(TYPE,IDXTYPE) SEACAVE::cList< TYPE, const TYPE&, 2, 16, IDXTYPE >
+
+#ifndef STCALL
+#define STCALL
+#endif
 
 
 namespace SEACAVE {
@@ -135,6 +141,15 @@ public:
 		}
 		_vector = (TYPE*)(operator new[] (_vectorSize * sizeof(TYPE)));
 		_ArrayCopyConstruct(_vector, rList._vector, _size);
+	}
+
+	// constructor a list from a raw data array
+	explicit inline cList(TYPE* pDataBegin, TYPE* pDataEnd) : _size((IDX)(pDataEnd-pDataBegin)), _vectorSize(_size)
+	{
+		if (_vectorSize == 0)
+			return;
+		_vector = (TYPE*) operator new[] (_vectorSize * sizeof(TYPE));
+		_ArrayCopyConstruct(_vector, pDataBegin, _size);
 	}
 
 	// constructor a list from a raw data array, taking ownership of the array memory

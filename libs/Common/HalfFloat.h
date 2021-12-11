@@ -39,10 +39,6 @@ public:
 	template <typename T>
 	inline hfloat(T v) : val(fromFloat(static_cast<float>(v))) {}
 
-	inline hfloat& operator = (hfloat v) {
-		val = v.val;
-		return *this;
-	}
 	inline hfloat& operator = (float v) {
 		val = fromFloat(v);
 		return *this;

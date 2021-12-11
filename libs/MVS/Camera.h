@@ -107,39 +107,6 @@ public:
 		return float(MAXF(width, height));
 	}
 
-	// return scaled K (assuming standard K format)
-	template<typename TYPE>
-	static inline TMatrix<TYPE,3,3> ScaleK(const TMatrix<TYPE,3,3>& K, TYPE s) {
-		#if 0
-		TMatrix<TYPE,3,3> S(TMatrix<TYPE,3,3>::IDENTITY);
-		S(0,0) = S(1,1) = s;
-		return S*K;
-		#else
-		return TMatrix<TYPE,3,3>(
-			K(0,0)*s, K(0,1)*s, K(0,2)*s,
-			TYPE(0),  K(1,1)*s, K(1,2)*s,
-			TYPE(0), TYPE(0), TYPE(1)
-		);
-		#endif
-	}
-	inline KMatrix GetScaledK(REAL s) const {
-		return ScaleK(K, s);
-	}
-
-	// return K.inv() (assuming standard K format)
-	inline KMatrix GetInvK() const {
-		#if 0
-		return K.inv();
-		#else
-		KMatrix invK(KMatrix::IDENTITY);
-		invK(0,0) = REAL(1)/K(0,0);
-		invK(1,1) = REAL(1)/K(1,1);
-		invK(0,2) = -K(0,2)*invK(0,0);
-		invK(1,2) = -K(1,2)*invK(1,1);
-		return invK;
-		#endif
-	}
-
 	// create K with the supplied focal length and sensor center
 	template<typename TYPE, typename TYPER>
 	static inline TMatrix<TYPE,3,3> ComposeK(const TYPE& fX, const TYPE& fY, TYPER w=TYPER(1), TYPER h=TYPER(1)) {
@@ -162,36 +129,74 @@ public:
 		return invK;
 	}
 
+	// return scaled K (assuming standard K format)
+	template<typename TYPE>
+	static inline TMatrix<TYPE,3,3> ScaleK(const TMatrix<TYPE,3,3>& K, TYPE s) {
+		return TMatrix<TYPE,3,3>(
+			K(0,0)*s, K(0,1)*s, (K(0,2)+TYPE(0.5))*s-TYPE(0.5),
+			TYPE(0),  K(1,1)*s, (K(1,2)+TYPE(0.5))*s-TYPE(0.5),
+			TYPE(0), TYPE(0), TYPE(1)
+		);
+	}
+	inline KMatrix GetScaledK(REAL s) const {
+		return ScaleK(K, s);
+	}
+	// same as above, but for different scale on x and y;
+	// in order to preserve the aspect ratio of the original size, scale both focal lengths by
+	// the smaller of the scale factors, resulting in adding pixels in the dimension that's growing;
+	template<typename TYPE>
+	static inline TMatrix<TYPE,3,3> ScaleK(const TMatrix<TYPE,3,3>& K, const cv::Size& size, const cv::Size& newSize, bool keepAspect=false) {
+		ASSERT(size.area() && newSize.area());
+		cv::Point_<TYPE> s(cv::Point_<TYPE>(newSize) / cv::Point_<TYPE>(size));
+		if (keepAspect)
+			s.x = s.y = MINF(s.x, s.y);
+		return TMatrix<TYPE,3,3>(
+			K(0,0)*s.x, K(0,1)*s.x, (K(0,2)+TYPE(0.5))*s.x-TYPE(0.5),
+			TYPE(0),    K(1,1)*s.y, (K(1,2)+TYPE(0.5))*s.y-TYPE(0.5),
+			TYPE(0),    TYPE(0),    TYPE(1)
+		);
+	}
+	inline KMatrix GetScaledK(const cv::Size& size, const cv::Size& newSize, bool keepAspect=false) const {
+		return ScaleK(K, size, newSize, keepAspect);
+	}
+
+	// return K.inv() (assuming standard K format and no shear)
+	template<typename TYPE>
+	static inline TMatrix<TYPE,3,3> InvK(const TMatrix<TYPE,3,3>& K) {
+		ASSERT(ISZERO(K(0,1)));
+		TMatrix<TYPE,3,3> invK(TMatrix<TYPE,3,3>::IDENTITY);
+		invK(0,0) = REAL(1)/K(0,0);
+		invK(1,1) = REAL(1)/K(1,1);
+		invK(0,2) = -K(0,2)*invK(0,0);
+		invK(1,2) = -K(1,2)*invK(1,1);
+		return invK;
+	}
+	inline KMatrix GetInvK() const {
+		return InvK(K);
+	}
+
 	// returns full K and the inverse of K (assuming standard K format)
 	template<typename TYPE>
 	inline TMatrix<TYPE,3,3> GetK(uint32_t width, uint32_t height) const {
 		ASSERT(width>0 && height>0);
-		const float fScale(GetNormalizationScale(width, height));
-		if (K(0,2)==0 && K(1,2)==0)
-			return ComposeK(
-				TYPE(K(0,0)*fScale), TYPE(K(1,1)*fScale),
-				width, height );
-		TMatrix<TYPE,3,3> fullK(TMatrix<TYPE,3,3>::IDENTITY);
-		fullK(0,0) = K(0,0)*fScale;
-		fullK(1,1) = K(1,1)*fScale;
-		fullK(0,2) = K(0,2)*fScale;
-		fullK(1,2) = K(1,2)*fScale;
-		return fullK;
+		const float scale(GetNormalizationScale(width, height));
+		if (K(0,2) != 0 || K(1,2) != 0)
+			return GetScaledK(scale);
+		ASSERT(ISZERO(K(0,1)));
+		return ComposeK(
+			TYPE(K(0,0)*scale), TYPE(K(1,1)*scale),
+			width, height );
 	}
 	template<typename TYPE>
 	inline TMatrix<TYPE,3,3> GetInvK(uint32_t width, uint32_t height) const {
 		ASSERT(width>0 && height>0);
-		const float fScale(GetNormalizationScale(width, height));
-		if (K(0,2)==0 && K(1,2)==0)
-			return ComposeInvK(
-				TYPE(K(0,0)*fScale), TYPE(K(1,1)*fScale),
-				width, height );
-		TMatrix<TYPE,3,3> fullInvK(TMatrix<TYPE,3,3>::IDENTITY);
-		fullInvK(0,0) = TYPE(1)/(K(0,0)*fScale);
-		fullInvK(1,1) = TYPE(1)/(K(1,1)*fScale);
-		fullInvK(0,2) = -K(0,2)*fScale*fullInvK(0,0);
-		fullInvK(1,2) = -K(1,2)*fScale*fullInvK(1,1);
-		return fullInvK;
+		const float scale(GetNormalizationScale(width, height));
+		if (K(0,2) != 0 || K(1,2) != 0)
+			return InvK(GetScaledK(scale));
+		ASSERT(ISZERO(K(0,1)));
+		return ComposeInvK(
+			TYPE(K(0,0)*scale), TYPE(K(1,1)*scale),
+			width, height );
 	}
 
 	// normalize inhomogeneous 2D point by the given camera intrinsics K

@@ -157,11 +157,10 @@ struct MeshTexture {
 			Base::Clear();
 			faceMap.memset((uint8_t)NO_ID);
 		}
-		void Raster(const ImageRef& pt) {
-			if (!depthMap.isInside(pt))
-				return;
-			const Depth z((Depth)INVERT(normalPlane.dot(camera.TransformPointI2C(Point2(pt)))));
-			ASSERT(z > 0);
+		void Raster(const ImageRef& pt, const Point3f& bary) {
+			const Point3f pbary(PerspectiveCorrectBarycentricCoordinates(bary));
+			const Depth z(ComputeDepth(pbary));
+			ASSERT(z > Depth(0));
 			Depth& depth = depthMap(pt);
 			if (depth == 0 || depth > z) {
 				depth = z;
@@ -318,16 +317,11 @@ struct MeshTexture {
 		const TexCoord* tri;
 		Color colors[3];
 		ColorMap& image;
-
 		inline RasterPatchColorData(ColorMap& _image) : image(_image) {}
-		inline void operator()(const ImageRef& pt) {
-			const Point3f b(BarycentricCoordinates(tri[0], tri[1], tri[2], TexCoord(pt)));
-			#if 0
-			if (b.x<0 || b.y<0 || b.z<0)
-				return; // outside triangle
-			#endif
+		inline cv::Size Size() const { return image.size(); }
+		inline void operator()(const ImageRef& pt, const Point3f& bary) {
 			ASSERT(image.isInside(pt));
-			image(pt) = colors[0]*b.x + colors[1]*b.y + colors[2]*b.z;
+			image(pt) = colors[0]*bary.x + colors[1]*bary.y + colors[2]*bary.z;
 		}
 	};
 
@@ -335,7 +329,6 @@ struct MeshTexture {
 	struct RasterPatchCoverageData {
 		const TexCoord* tri;
 		Image8U& image;
-
 		inline RasterPatchCoverageData(Image8U& _image) : image(_image) {}
 		inline void operator()(const ImageRef& pt) {
 			ASSERT(image.isInside(pt));
@@ -353,7 +346,6 @@ struct MeshTexture {
 		const TexCoord p1, p1Dir;
 		const float length;
 		const Sampler sampler;
-
 		inline RasterPatchMeanEdgeData(Image32F3& _image, Image8U& _mask, const Image32F3& _image0, const Image8U3& _image1,
 									   const TexCoord& _p0, const TexCoord& _p0Adj, const TexCoord& _p1, const TexCoord& _p1Adj)
 			: image(_image), mask(_mask), image0(_image0), image1(_image1),
@@ -477,33 +469,12 @@ void MeshTexture::ListVertexFaces()
 // extract array of faces viewed by each image
 bool MeshTexture::ListCameraFaces(FaceDataViewArr& facesDatas, float fOutlierThreshold)
 {
-	// create vertices octree
-	facesDatas.Resize(faces.GetSize());
-	typedef std::unordered_set<FIndex> CameraFaces;
-	struct FacesInserter {
-		FacesInserter(const Mesh::VertexFacesArr& _vertexFaces, CameraFaces& _cameraFaces)
-			: vertexFaces(_vertexFaces), cameraFaces(_cameraFaces) {}
-		inline void operator() (IDX idxVertex) {
-			const Mesh::FaceIdxArr& vertexTris = vertexFaces[idxVertex];
-			FOREACHPTR(pTri, vertexTris)
-				cameraFaces.emplace(*pTri);
-		}
-		inline void operator() (const IDX* idices, size_t size) {
-			FOREACHRAWPTR(pIdxVertex, idices, size)
-				operator()(*pIdxVertex);
-		}
-		const Mesh::VertexFacesArr& vertexFaces;
-		CameraFaces& cameraFaces;
-	};
-	typedef TOctree<Mesh::VertexArr,float,3> Octree;
-	const Octree octree(vertices);
-	#if 0 && !defined(_RELEASE)
-	Octree::DEBUGINFO_TYPE info;
-	octree.GetDebugInfo(&info);
-	Octree::LogDebugInfo(info);
-	#endif
+	// create faces octree
+	Mesh::Octree octree;
+	Mesh::FacesInserter::CreateOctree(octree, scene.mesh);
 
 	// extract array of faces viewed by each image
+	facesDatas.Resize(faces.GetSize());
 	Util::Progress progress(_T("Initialized views"), images.GetSize());
 	typedef float real;
 	TImage<real> imageGradMag;
@@ -562,8 +533,8 @@ bool MeshTexture::ListCameraFaces(FaceDataViewArr& facesDatas, float fOutlierThr
 		#endif
 		(TImage<real>::EMatMap)imageGradMag = (mGrad[0].cwiseAbs2()+mGrad[1].cwiseAbs2()).cwiseSqrt();
 		// select faces inside view frustum
-		CameraFaces cameraFaces;
-		FacesInserter inserter(vertexFaces, cameraFaces);
+		Mesh::FaceIdxArr cameraFaces;
+		Mesh::FacesInserter inserter(cameraFaces);
 		typedef TFrustum<float,5> Frustum;
 		const Frustum frustum(Frustum::MATRIX3x4(((PMatrix::CEMatMap)imageData.camera.P).cast<float>()), (float)imageData.width, (float)imageData.height);
 		octree.Traverse(frustum, inserter);
@@ -1364,7 +1335,7 @@ void MeshTexture::GlobalSeamLeveling()
 				data.colors[v] = colorAdjustments.row(vertpatch2rows[face[v]].at(idxPatch));
 			// render triangle and for each pixel interpolate the color adjustment
 			// from the triangle corners using barycentric coordinates
-			ColorMap::RasterizeTriangle(data.tri[0], data.tri[1], data.tri[2], data);
+			ColorMap::RasterizeTriangleBary(data.tri[0], data.tri[1], data.tri[2], data);
 		}
 		// dilate with one pixel width, in order to make sure patch border smooths out a little
 		imageAdj.DilateMean<1>(imageAdj, Color::ZERO);
@@ -1688,8 +1659,7 @@ void MeshTexture::LocalSeamLeveling()
 		image0(texturePatch.rect).convertTo(image, CV_32FC3, 1.0/255.0);
 		image.copyTo(imageOrg);
 		// render patch coverage
-		Image8U mask(texturePatch.rect.size());
-		{
+		Image8U mask(texturePatch.rect.size()); {
 			mask.memset(0);
 			RasterPatchCoverageData data(mask);
 			FOREACHPTR(pIdxFace, texturePatch.faces) {

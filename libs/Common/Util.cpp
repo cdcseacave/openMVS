@@ -473,6 +473,7 @@ Flags InitCPU()
 /*----------------------------------------------------------------*/
 
 
+#if _PLATFORM_X86
 #ifdef _MSC_VER
 #include <intrin.h>
 inline void CPUID(int CPUInfo[4], int level) {
@@ -485,6 +486,11 @@ inline void CPUID(int CPUInfo[4], int level) {
 	__get_cpuid((unsigned&)level, p+0, p+1, p+2, p+3);
 }
 #endif
+#else // _PLATFORM_X86
+inline void CPUID(int CPUInfo[4], int level) {
+	memset(CPUInfo, 0, sizeof(int)*4);
+}
+#endif // _PLATFORM_X86
 
 /**
  * Function to detect SSE availability in CPU.
@@ -551,6 +557,7 @@ CPUINFO GetCPUInfo()
 }
 /*----------------------------------------------------------------*/
 
+#if _PLATFORM_X86
 #ifdef _MSC_VER
 // Function to detect SSE availability in operating system.
 bool OSSupportsSSE()
@@ -626,6 +633,21 @@ bool OSSupportsAVX()
 /*----------------------------------------------------------------*/
 #endif // _MSC_VER
 
+#else // _PLATFORM_X86
+
+// Function to detect SSE availability in operating system.
+bool OSSupportsSSE()
+{
+	return false;
+}
+// Function to detect AVX availability in operating system.
+bool OSSupportsAVX()
+{
+	return false;
+}
+/*----------------------------------------------------------------*/
+#endif // _PLATFORM_X86
+
 
 // print details about the current build and PC
 void Util::LogBuild()
@@ -644,6 +666,7 @@ void Util::LogBuild()
 }
 
 // print information about the memory usage
+#if _PLATFORM_X86
 #ifdef _MSC_VER
 #include <Psapi.h>
 #pragma comment(lib, "Psapi.lib")
@@ -679,6 +702,11 @@ void Util::LogMemoryInfo()
 	LOG(_T("} ENDINFO"));
 }
 #endif // _MSC_VER
+#else // _PLATFORM_X86
+void Util::LogMemoryInfo()
+{
+}
+#endif // _PLATFORM_X86
 
 
 // Parses a ASCII command line string and returns an array of pointers to the command line arguments,

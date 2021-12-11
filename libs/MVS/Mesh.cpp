@@ -54,9 +54,21 @@
 #include <vcg/complex/algorithms/update/selection.h>
 #include <vcg/complex/algorithms/local_optimization.h>
 #include <vcg/complex/algorithms/local_optimization/tri_edge_collapse_quadric.h>
+#undef Split
 #ifdef _MSC_VER
 #  pragma warning(pop)
 #endif
+// GLTF: mesh import/export
+#define JSON_NOEXCEPTION
+#define TINYGLTF_NOEXCEPTION
+#define TINYGLTF_NO_STB_IMAGE
+#define TINYGLTF_NO_STB_IMAGE_WRITE
+#define TINYGLTF_NO_INCLUDE_JSON
+#define TINYGLTF_NO_INCLUDE_STB_IMAGE
+#define TINYGLTF_NO_INCLUDE_STB_IMAGE_WRITE
+#define TINYGLTF_IMPLEMENTATION
+#include "../IO/json.hpp"
+#include "../IO/tiny_gltf.h"
 
 using namespace MVS;
 
@@ -112,6 +124,24 @@ Mesh::Box Mesh::GetAABB(const Box& bound) const
 		if (bound.Intersects(X))
 			box.InsertFull(X);
 	return box;
+}
+
+// compute the center of the point-cloud as the median
+Mesh::Vertex Mesh::GetCenter() const
+{
+	const VIndex step(5);
+	const VIndex numPoints(vertices.size()/step);
+	if (numPoints == 0)
+		return Vertex::INF;
+	typedef CLISTDEF0IDX(Vertex::Type,VIndex) Scalars;
+	Scalars x(numPoints), y(numPoints), z(numPoints);
+	for (VIndex i=0; i<numPoints; ++i) {
+		const Vertex& X = vertices[i*step];
+		x[i] = X.x;
+		y[i] = X.y;
+		z[i] = X.z;
+	}
+	return Vertex(x.GetMedian(), y.GetMedian(), z.GetMedian());
 }
 /*----------------------------------------------------------------*/
 
@@ -210,8 +240,7 @@ void Mesh::ComputeNormalVertices()
 {
 	vertexNormals.Resize(vertices.GetSize());
 	vertexNormals.Memset(0);
-	FOREACHPTR(pFace, faces) {
-		const Face& face = *pFace;
+	for (const Face& face: faces) {
 		const Vertex& v0 = vertices[face[0]];
 		const Vertex& v1 = vertices[face[1]];
 		const Vertex& v2 = vertices[face[2]];
@@ -220,8 +249,8 @@ void Mesh::ComputeNormalVertices()
 		vertexNormals[face[1]] += t;
 		vertexNormals[face[2]] += t;
 	}
-	FOREACHPTR(pVertexNormal, vertexNormals)
-		normalize(*pVertexNormal);
+	for (Normal& vertexNormal: vertexNormals)
+		normalize(vertexNormal);
 }
 #else
 // computes the vertex normal as an angle weighted average
@@ -994,6 +1023,12 @@ void Mesh::Clean(float fDecimate, float fSpurious, bool bRemoveSpikes, unsigned 
 	// decimate mesh
 	if (fDecimate < 1) {
 		ASSERT(fDecimate > 0);
+		const int nZeroAreaFaces = vcg::tri::Clean<CLEAN::Mesh>::RemoveZeroAreaFace(mesh);
+		DEBUG_ULTIMATE("Removed %d zero-area faces", nZeroAreaFaces);
+		const int nDuplicateFaces = vcg::tri::Clean<CLEAN::Mesh>::RemoveDuplicateFace(mesh);
+		DEBUG_ULTIMATE("Removed %d duplicate faces", nDuplicateFaces);
+		const int nUnreferencedVertices = vcg::tri::Clean<CLEAN::Mesh>::RemoveUnreferencedVertex(mesh);
+		DEBUG_ULTIMATE("Removed %d unreferenced vertices", nUnreferencedVertices);
 		vcg::tri::TriEdgeCollapseQuadricParameter pp;
 		pp.QualityThr = 0.3; // Quality Threshold for penalizing bad shaped faces: the value is in the range [0..1], 0 accept any kind of face (no penalties), 0.5 penalize faces with quality < 0.5, proportionally to their shape
 		pp.PreserveBoundary = false; // the simplification process tries to not affect mesh boundaries during simplification
@@ -1032,17 +1067,17 @@ void Mesh::Clean(float fDecimate, float fSpurious, bool bRemoveSpikes, unsigned 
 
 	// clean mesh
 	{
-		vcg::tri::UpdateTopology<CLEAN::Mesh>::FaceFace(mesh);
 		const int nZeroAreaFaces = vcg::tri::Clean<CLEAN::Mesh>::RemoveZeroAreaFace(mesh);
 		DEBUG_ULTIMATE("Removed %d zero-area faces", nZeroAreaFaces);
 		const int nDuplicateFaces = vcg::tri::Clean<CLEAN::Mesh>::RemoveDuplicateFace(mesh);
 		DEBUG_ULTIMATE("Removed %d duplicate faces", nDuplicateFaces);
+		const int nUnreferencedVertices = vcg::tri::Clean<CLEAN::Mesh>::RemoveUnreferencedVertex(mesh);
+		DEBUG_ULTIMATE("Removed %d unreferenced vertices", nUnreferencedVertices);
+		vcg::tri::UpdateTopology<CLEAN::Mesh>::FaceFace(mesh);
 		const int nNonManifoldFaces = vcg::tri::Clean<CLEAN::Mesh>::RemoveNonManifoldFace(mesh);
 		DEBUG_ULTIMATE("Removed %d non-manifold faces", nNonManifoldFaces);
 		const int nDegenerateVertices = vcg::tri::Clean<CLEAN::Mesh>::RemoveDegenerateVertex(mesh);
 		DEBUG_ULTIMATE("Removed %d degenerate vertices", nDegenerateVertices);
-		const int nUnreferencedVertices = vcg::tri::Clean<CLEAN::Mesh>::RemoveUnreferencedVertex(mesh);
-		DEBUG_ULTIMATE("Removed %d unreferenced vertices", nUnreferencedVertices);
 		#if 1
 		const int nDuplicateVertices = vcg::tri::Clean<CLEAN::Mesh>::RemoveDuplicateVertex(mesh);
 		DEBUG_ULTIMATE("Removed %d duplicate vertices", nDuplicateVertices);
@@ -1432,6 +1467,9 @@ bool Mesh::Save(const String& fileName, const cList<String>& comments, bool bBin
 	if (ext == _T(".obj"))
 		ret = SaveOBJ(fileName);
 	else
+	if (ext == _T(".gltf") || ext == _T(".glb"))
+		ret = SaveGLTF(fileName, ext == _T(".glb"));
+	else
 		ret = SavePLY(ext != _T(".ply") ? String(fileName+_T(".ply")) : fileName, comments, bBinary);
 	if (!ret)
 		return false;
@@ -1572,8 +1610,193 @@ bool Mesh::SaveOBJ(const String& fileName) const
 	pMaterial->diffuse_map = textureDiffuse;
 
 	return model.Save(fileName);
+}
+// export the mesh as a GLTF file
+template <typename T>
+void ExtendBufferGLTF(const T* src, size_t size, tinygltf::Buffer& dst, size_t& byte_offset, size_t& byte_length) {
+	byte_offset = dst.data.size();
+	byte_length = sizeof(T) * size;
+	byte_length = ((byte_length + 3) / 4) * 4;
+	dst.data.resize(byte_offset + byte_length);
+	memcpy(&dst.data[byte_offset], &src[0], byte_length);
+}
+bool Mesh::SaveGLTF(const String& fileName, bool bBinary) const
+{
+	ASSERT(!fileName.IsEmpty());
+	Util::ensureFolder(fileName);
+
+	// store a copy of the mesh if it has texture, in order to convert
+	// the texture coordinates from per face to per vertex
+	Mesh meshCompressed;
+	if (HasTexture())
+		ConvertTexturePerVertex(meshCompressed);
+	const Mesh& mesh(HasTexture() ? meshCompressed : *this);
+
+	// create GLTF model
+	tinygltf::Model gltfModel;
+	tinygltf::Scene gltfScene;
+	tinygltf::Mesh gltfMesh;
+	tinygltf::Primitive gltfPrimitive;
+	tinygltf::Buffer gltfBuffer;
+	gltfScene.name = "scene";
+	gltfMesh.name = "mesh";
+
+	// setup vertices
+	{
+		STATIC_ASSERT(3 * sizeof(Vertex::Type) == sizeof(Vertex)); // VertexArr should be continuous
+		const Box box(GetAABB());
+		gltfPrimitive.attributes["POSITION"] = (int)gltfModel.accessors.size();
+		tinygltf::Accessor vertexPositionAccessor;
+		vertexPositionAccessor.name = "vertexPositionAccessor";
+		vertexPositionAccessor.bufferView = (int)gltfModel.bufferViews.size();
+		vertexPositionAccessor.type = TINYGLTF_TYPE_VEC3;
+		vertexPositionAccessor.componentType = TINYGLTF_COMPONENT_TYPE_FLOAT;
+		vertexPositionAccessor.count = mesh.vertices.size();
+		vertexPositionAccessor.minValues = {box.ptMin.x(), box.ptMin.y(), box.ptMin.z()};
+		vertexPositionAccessor.maxValues = {box.ptMax.x(), box.ptMax.y(), box.ptMax.z()};
+		gltfModel.accessors.emplace_back(std::move(vertexPositionAccessor));
+		// setup vertices buffer
+		tinygltf::BufferView vertexPositionBufferView;
+		vertexPositionBufferView.name = "vertexPositionBufferView";
+		vertexPositionBufferView.buffer = (int)gltfModel.buffers.size();
+		ExtendBufferGLTF(mesh.vertices.data(), mesh.vertices.size(), gltfBuffer,
+			vertexPositionBufferView.byteOffset, vertexPositionBufferView.byteLength);
+		gltfModel.bufferViews.emplace_back(std::move(vertexPositionBufferView));
+	}
+
+	// setup faces
+	{
+		STATIC_ASSERT(3 * sizeof(Face::Type) == sizeof(Face)); // FaceArr should be continuous
+		gltfPrimitive.indices = (int)gltfModel.accessors.size();
+		tinygltf::Accessor triangleAccessor;
+		triangleAccessor.name = "triangleAccessor";
+		triangleAccessor.bufferView = (int)gltfModel.bufferViews.size();
+		triangleAccessor.type = TINYGLTF_TYPE_SCALAR;
+		triangleAccessor.componentType = TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT;
+		triangleAccessor.count = mesh.faces.size() * 3;
+		gltfModel.accessors.emplace_back(std::move(triangleAccessor));
+		// setup triangles buffer
+		tinygltf::BufferView triangleBufferView;
+		triangleBufferView.name = "triangleBufferView";
+		triangleBufferView.buffer = (int)gltfModel.buffers.size();
+		ExtendBufferGLTF(mesh.faces.data(), mesh.faces.size(), gltfBuffer,
+			triangleBufferView.byteOffset, triangleBufferView.byteLength);
+		gltfModel.bufferViews.emplace_back(std::move(triangleBufferView));
+		gltfPrimitive.mode = TINYGLTF_MODE_TRIANGLES;
+	}
+
+	// setup material
+	gltfPrimitive.material = (int)gltfModel.materials.size();
+	tinygltf::Material gltfMaterial;
+	gltfMaterial.name = "material";
+	gltfMaterial.doubleSided = true;
+	if (mesh.HasTexture()) {
+		// setup texture
+		gltfMaterial.emissiveFactor = std::vector<double>{0,0,0};
+		gltfMaterial.pbrMetallicRoughness.baseColorTexture.index = (int)gltfModel.textures.size();
+		gltfMaterial.pbrMetallicRoughness.baseColorTexture.texCoord = 0;
+		gltfMaterial.pbrMetallicRoughness.baseColorFactor = std::vector<double>{1,1,1,1};
+		gltfMaterial.pbrMetallicRoughness.metallicFactor = 0;
+		gltfMaterial.pbrMetallicRoughness.roughnessFactor = 1;
+		gltfMaterial.extensions = {{"KHR_materials_unlit", {}}};
+		gltfModel.extensionsUsed = {"KHR_materials_unlit"};
+		// setup texture coordinates accessor
+		gltfPrimitive.attributes["TEXCOORD_0"] = (int)gltfModel.accessors.size();
+		tinygltf::Accessor vertexTexcoordAccessor;
+		vertexTexcoordAccessor.name = "vertexTexcoordAccessor";
+		vertexTexcoordAccessor.bufferView = (int)gltfModel.bufferViews.size();
+		vertexTexcoordAccessor.componentType = TINYGLTF_COMPONENT_TYPE_FLOAT;
+		vertexTexcoordAccessor.count = mesh.faceTexcoords.size();
+		vertexTexcoordAccessor.type = TINYGLTF_TYPE_VEC2;
+		gltfModel.accessors.emplace_back(std::move(vertexTexcoordAccessor));
+		// setup texture coordinates (flip Y)
+		STATIC_ASSERT(2 * sizeof(TexCoord::Type) == sizeof(TexCoord)); // TexCoordArr should be continuous
+		ASSERT(mesh.vertices.size() == mesh.faceTexcoords.size());
+		tinygltf::BufferView vertexTexcoordBufferView;
+		vertexTexcoordBufferView.name = "vertexTexcoordBufferView";
+		vertexTexcoordBufferView.buffer = (int)gltfModel.buffers.size();
+		TexCoordArr flipTexcoords(mesh.faceTexcoords.size());
+		FOREACH(i, mesh.faceTexcoords) {
+			flipTexcoords[i].x = mesh.faceTexcoords[i].x;
+			flipTexcoords[i].y = 1.f - mesh.faceTexcoords[i].y;
+		}
+		ExtendBufferGLTF(flipTexcoords.data(), flipTexcoords.size(), gltfBuffer,
+			vertexTexcoordBufferView.byteOffset, vertexTexcoordBufferView.byteLength);
+		gltfModel.bufferViews.emplace_back(std::move(vertexTexcoordBufferView));
+		// setup texture
+		tinygltf::Texture texture;
+		texture.name = "texture";
+		texture.source = (int)gltfModel.images.size();
+		texture.sampler = (int)gltfModel.samplers.size();
+		gltfModel.textures.emplace_back(std::move(texture));
+		// setup texture image
+		tinygltf::Image image;
+		image.name = Util::getFileFullName(fileName);
+		image.width = mesh.textureDiffuse.cols;
+		image.height = mesh.textureDiffuse.rows;
+		image.component = 3;
+		image.bits = 8;
+		image.pixel_type = TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE;
+		image.mimeType = "image/png";
+		image.image.resize(mesh.textureDiffuse.size().area() * 3);
+		mesh.textureDiffuse.copyTo(cv::Mat(mesh.textureDiffuse.size(), CV_8UC3, image.image.data()));
+		gltfModel.images.emplace_back(std::move(image));
+		// setup texture sampler
+		tinygltf::Sampler sampler;
+		sampler.name = "sampler";
+		sampler.minFilter = TINYGLTF_TEXTURE_FILTER_LINEAR;
+		sampler.magFilter = TINYGLTF_TEXTURE_FILTER_LINEAR;
+		sampler.wrapS = TINYGLTF_TEXTURE_WRAP_CLAMP_TO_EDGE;
+		sampler.wrapT = TINYGLTF_TEXTURE_WRAP_CLAMP_TO_EDGE;
+		gltfModel.samplers.emplace_back(std::move(sampler));
+	}
+	gltfModel.materials.emplace_back(std::move(gltfMaterial));
+	gltfModel.buffers.emplace_back(std::move(gltfBuffer));
+	gltfMesh.primitives.emplace_back(std::move(gltfPrimitive));
+
+	// setup scene node
+	gltfScene.nodes.emplace_back((int)gltfModel.nodes.size());
+	tinygltf::Node node;
+	node.name = "node";
+	node.mesh = (int)gltfModel.meshes.size();
+	gltfModel.nodes.emplace_back(std::move(node));
+	gltfModel.meshes.emplace_back(std::move(gltfMesh));
+	gltfModel.scenes.emplace_back(std::move(gltfScene));
+	gltfModel.asset.generator = "OpenMVS";
+	gltfModel.asset.version = "2.0";
+	gltfModel.defaultScene = 0;
+
+	// setup GLTF
+	struct Tools {
+		static bool WriteImageData(const std::string *basepath, const std::string *filename,
+			tinygltf::Image *image, bool embedImages, void *) {
+			ASSERT(!embedImages);
+			image->uri = Util::isFullPath(filename->c_str()) ?
+				Util::getRelativePath(*basepath, *filename) : String(*filename);
+			String basePath(*basepath);
+			return cv::imwrite(
+				Util::ensureFolderSlash(basePath) + image->uri,
+				cv::Mat(image->height, image->width, CV_8UC3, image->image.data()));
+		}
+	};
+	tinygltf::TinyGLTF gltf;
+	gltf.SetImageWriter(Tools::WriteImageData, NULL);
+	const bool bEmbedImages(false), bEmbedBuffers(true), bPrettyPrint(true);
+	return gltf.WriteGltfSceneToFile(&gltfModel, fileName, bEmbedImages, bEmbedBuffers, bPrettyPrint, bBinary);
 } // Save
 /*----------------------------------------------------------------*/
+
+bool Mesh::Save(const FacesChunkArr& chunks, const String& fileName, const cList<String>& comments, bool bBinary) const
+{
+	if (chunks.size() < 2)
+		return Save(fileName, comments, bBinary);
+	FOREACH(i, chunks) {
+		const Mesh mesh(SubMesh(chunks[i].faces));
+		if (!mesh.Save(Util::insertBeforeFileExt(fileName, String::FormatString("_chunk%02u", i)), comments, bBinary))
+			return false;
+	}
+	return true;
+}
 
 bool Mesh::Save(const VertexArr& vertices, const String& fileName, bool bBinary)
 {
@@ -3346,10 +3569,10 @@ void Mesh::RemoveFaces(FaceIdxArr& facesRemove, bool bUpdateLists)
 					FaceIdxArr& vf(vertexFaces[idxV]);
 					const FIndex idx(vf.Find(idxF));
 					if (idx != FaceIdxArr::NO_INDEX)
-						vf[idx] = idxF;
+						vf.RemoveAt(idx);
 				}
 			}
-			const FIndex idxFM(faces.GetSize()-1);
+			const FIndex idxFM(faces.size()-1);
 			if (idxF < idxFM) {
 				// update all vertices of the moved face
 				const Face& face = faces[idxFM];
@@ -3367,7 +3590,6 @@ void Mesh::RemoveFaces(FaceIdxArr& facesRemove, bool bUpdateLists)
 	}
 	vertexVertices.Release();
 }
-/*----------------------------------------------------------------*/
 
 // remove the given list of vertices
 void Mesh::RemoveVertices(VertexIdxArr& vertexRemove, bool bUpdateLists)
@@ -3416,8 +3638,88 @@ void Mesh::RemoveVertices(VertexIdxArr& vertexRemove, bool bUpdateLists)
 	}
 	RemoveFaces(facesRemove);
 }
+
+// remove all vertices that are not assigned to any face
+// (require vertexFaces)
+Mesh::VIndex Mesh::RemoveUnreferencedVertices(bool bUpdateLists)
+{
+	ASSERT(vertices.size() == vertexFaces.size());
+	VertexIdxArr vertexRemove;
+	FOREACH(idxV, vertexFaces) {
+		if (vertexFaces[idxV].empty())
+			vertexRemove.push_back(idxV);
+	}
+	if (vertexRemove.empty())
+		return 0;
+	RemoveVertices(vertexRemove, bUpdateLists);
+	return vertexRemove.size();
+}
+
+// convert textured mesh to store texture coordinates per vertex instead of per face
+void Mesh::ConvertTexturePerVertex(Mesh& mesh) const
+{
+	ASSERT(HasTexture());
+	mesh.vertices = vertices;
+	mesh.faces.resize(faces.size());
+	mesh.faceTexcoords.reserve(vertices.size()*3/2);
+	mesh.faceTexcoords.resize(vertices.size());
+	VertexIdxArr mapVertices(vertices.size(), vertices.size()*3/2);
+	mapVertices.Memset(0xff);
+	FOREACH(idxF, faces) {
+		// face vertices inside a patch are simply copied;
+		// face vertices on the patch boundary are duplicated,
+		// with the same position, but different texture coordinates
+		const Face& face = faces[idxF];
+		Face& newface = mesh.faces[idxF];
+		for (int i=0; i<3; ++i) {
+			const TexCoord& tc = faceTexcoords[idxF*3+i];
+			VIndex idxV(face[i]);
+			while (true) {
+				VIndex& idxVT = mapVertices[idxV];
+				if (idxVT == NO_ID) {
+					// vertex seen for the first time, so just copy it
+					mesh.faceTexcoords[newface[i] = idxVT = idxV] = tc;
+					break;
+				}
+				// vertex already seen in an other face, check the texture coordinates
+				if (mesh.faceTexcoords[idxV] == tc) {
+					// texture coordinates equal, patch interior vertex, link to it
+					newface[i] = idxV;
+					break;
+				}
+				if (idxVT == idxV) {
+					// duplicate vertex, copy position, but update its texture coordinates
+					mapVertices.emplace_back(newface[i] = idxVT = mesh.vertices.size());
+					mesh.vertices.emplace_back(vertices[face[i]]);
+					mesh.faceTexcoords.emplace_back(tc);
+					break;
+				}
+				// continue with the next linked vertex which share the position,
+				// but use different texture coordinates
+				idxV = idxVT;
+			}
+		}
+	}
+	mesh.textureDiffuse = textureDiffuse;
+} // ConvertTexturePerVertex
 /*----------------------------------------------------------------*/
 
+
+
+
+// computes the centroid of the given mesh face
+Mesh::Vertex Mesh::ComputeCentroid(FIndex idxFace) const
+{
+	const Face& face = faces[idxFace];
+	return (vertices[face[0]] + vertices[face[1]] + vertices[face[2]]) * (Type(1)/Type(3));
+}
+
+// computes the area of the given mesh face
+Mesh::Type Mesh::ComputeArea(FIndex idxFace) const
+{
+	const Face& face = faces[idxFace];
+	return ComputeTriangleArea(vertices[face[0]], vertices[face[1]], vertices[face[2]]);
+}
 
 // computes the area of the mesh surface as the sum of the signed areas of its faces
 REAL Mesh::ComputeArea() const
@@ -3556,18 +3858,16 @@ void Mesh::Project(const Camera& camera, DepthMap& depthMap, Image8U3& image) co
 			Base::Clear();
 			image.memset(0);
 		}
-		void Raster(const ImageRef& pt) {
-			if (!depthMap.isInsideWithBorder<float,3>(pt))
-				return;
-			const float z((float)INVERT(normalPlane.dot(camera.TransformPointI2C(Point2(pt)))));
-			ASSERT(z > 0);
+		void Raster(const ImageRef& pt, const Point3f& bary) {
+			const Point3f pbary(PerspectiveCorrectBarycentricCoordinates(bary));
+			const Depth z(ComputeDepth(pbary));
+			ASSERT(z > Depth(0));
 			Depth& depth = depthMap(pt);
 			if (depth == 0 || depth > z) {
 				depth = z;
-				const Point3f b(CorrectBarycentricCoordinates(BarycentricCoordinatesUV(pti[0], pti[1], pti[2], Point2f(pt))));
-				xt  = mesh.faceTexcoords[idxFaceTex+0] * b[0];
-				xt += mesh.faceTexcoords[idxFaceTex+1] * b[1];
-				xt += mesh.faceTexcoords[idxFaceTex+2] * b[2];
+				xt  = mesh.faceTexcoords[idxFaceTex+0] * pbary[0];
+				xt += mesh.faceTexcoords[idxFaceTex+1] * pbary[1];
+				xt += mesh.faceTexcoords[idxFaceTex+2] * pbary[2];
 				image(pt) = mesh.textureDiffuse.sampleSafe(Point2f(xt.x*mesh.textureDiffuse.width(), (1.f-xt.y)*mesh.textureDiffuse.height()));
 			}
 		}
@@ -3590,16 +3890,12 @@ void Mesh::ProjectOrtho(const Camera& camera, DepthMap& depthMap) const
 		RasterMesh(const VertexArr& _vertices, const Camera& _camera, DepthMap& _depthMap)
 			: Base(_vertices, _camera, _depthMap) {}
 		inline bool ProjectVertex(const Mesh::Vertex& pt, int v) {
-			ptc[v] = camera.TransformPointW2C(Cast<REAL>(pt));
-			pti[v] = camera.TransformPointC2I(reinterpret_cast<const Point2&>(ptc[v]));
-			return depthMap.isInsideWithBorder<float,3>(pti[v]);
+			return (ptc[v] = camera.TransformPointW2C(Cast<REAL>(pt))).z > 0 &&
+				depthMap.isInsideWithBorder<float,3>(pti[v] = camera.TransformPointC2I(reinterpret_cast<const Point2&>(ptc[v])));
 		}
-		void Raster(const ImageRef& pt) {
-			if (!depthMap.isInsideWithBorder<float,3>(pt))
-				return;
-			const Point3f b(CorrectBarycentricCoordinates(BarycentricCoordinatesUV(pti[0], pti[1], pti[2], Point2f(pt))));
-			const float z((float)(ptc[0].z*b[0] + ptc[1].z*b[1] + ptc[2].z*b[2]));
-			ASSERT(z > 0);
+		void Raster(const ImageRef& pt, const Point3f& bary) {
+			const Depth z(ComputeDepth(bary));
+			ASSERT(z > Depth(0));
 			Depth& depth = depthMap(pt);
 			if (depth == 0 || depth > z)
 				depth = z;
@@ -3626,27 +3922,18 @@ void Mesh::ProjectOrtho(const Camera& camera, DepthMap& depthMap, Image8U3& imag
 			image.memset(0);
 		}
 		inline bool ProjectVertex(const Mesh::Vertex& pt, int v) {
-			ptc[v] = camera.TransformPointW2C(Cast<REAL>(pt));
-			pti[v] = camera.TransformPointC2I(reinterpret_cast<const Point2&>(ptc[v]));
-			return depthMap.isInsideWithBorder<float,3>(pti[v]);
+			return (ptc[v] = camera.TransformPointW2C(Cast<REAL>(pt))).z > 0 &&
+				depthMap.isInsideWithBorder<float,3>(pti[v] = camera.TransformPointC2I(reinterpret_cast<const Point2&>(ptc[v])));
 		}
-		inline bool CheckNormal(const Point3& /*faceCenter*/) {
-			// skip face if the (cos) angle between
-			// the face normal and the view direction is negative
-			return camera.Direction().dot(normalPlane) >= ZEROTOLERANCE<REAL>();
-		}
-		void Raster(const ImageRef& pt) {
-			if (!depthMap.isInsideWithBorder<float,3>(pt))
-				return;
-			const Point3f b(CorrectBarycentricCoordinates(BarycentricCoordinatesUV(pti[0], pti[1], pti[2], Point2f(pt))));
-			const float z((float)(ptc[0].z*b[0] + ptc[1].z*b[1] + ptc[2].z*b[2]));
-			ASSERT(z > 0);
+		void Raster(const ImageRef& pt, const Point3f& bary) {
+			const Depth z(ComputeDepth(bary));
+			ASSERT(z > Depth(0));
 			Depth& depth = depthMap(pt);
 			if (depth == 0 || depth > z) {
 				depth = z;
-				xt  = mesh.faceTexcoords[idxFaceTex+0] * b[0];
-				xt += mesh.faceTexcoords[idxFaceTex+1] * b[1];
-				xt += mesh.faceTexcoords[idxFaceTex+2] * b[2];
+				xt  = mesh.faceTexcoords[idxFaceTex+0] * bary[0];
+				xt += mesh.faceTexcoords[idxFaceTex+1] * bary[1];
+				xt += mesh.faceTexcoords[idxFaceTex+2] * bary[2];
 				image(pt) = mesh.textureDiffuse.sampleSafe(Point2f(xt.x*mesh.textureDiffuse.width(), (1.f-xt.y)*mesh.textureDiffuse.height()));
 			}
 		}
@@ -3697,6 +3984,80 @@ void Mesh::ProjectOrthoTopDown(unsigned resolution, Image8U3& image, Image8U& ma
 	const Depth depthCenter(depthMap(xCenter));
 	center = camera.TransformPointI2W(Point3(xCenter.x, xCenter.y, depthCenter > 0 ? depthCenter : camera.C.z-center.z));
 }
+/*----------------------------------------------------------------*/
+
+
+// split mesh into sub-meshes such that each has maxArea
+bool Mesh::Split(FacesChunkArr& chunks, float maxArea)
+{
+	TD_TIMER_STARTD();
+	Octree octree;
+	FacesInserter::CreateOctree(octree, *this);
+	FloatArr areas(faces.size());
+	FOREACH(i, faces)
+		areas[i] = ComputeArea(i);
+	struct AreaInserter {
+		const FloatArr& areas;
+		float area;
+		inline void operator() (const Octree::IDX_TYPE* indices, Octree::SIZE_TYPE size) {
+			FOREACHRAWPTR(pIdx, indices, size)
+				area += areas[*pIdx];
+		}
+		inline float PopArea() {
+			const float a(area);
+			area = 0;
+			return a;
+		}
+	} areaEstimator{areas, 0.f};
+	struct ChunkInserter {
+		const Octree& octree;
+		FacesChunkArr& chunks;
+		void operator() (const Octree::CELL_TYPE& parentCell, Octree::Type parentRadius, const UnsignedArr& children) {
+			ASSERT(!children.empty());
+			FaceChunk& chunk = chunks.AddEmpty();
+			struct Inserter {
+				FaceIdxArr& faces;
+				inline void operator() (const Octree::IDX_TYPE* indices, Octree::SIZE_TYPE size) {
+					faces.Join(indices, size);
+				}
+			} inserter{chunk.faces};
+			if (children.size() == 1) {
+				octree.CollectCells(parentCell.GetChild(children.front()), inserter);
+				chunk.box = parentCell.GetChildAabb(children.front(), parentRadius);
+			} else {
+				chunk.box.Reset();
+				for (unsigned c: children) {
+					octree.CollectCells(parentCell.GetChild(c), inserter);
+					chunk.box.Insert(parentCell.GetChildAabb(c, parentRadius));
+				}
+			}
+			if (chunk.faces.empty())
+				chunks.RemoveLast();
+		}
+	} chunkInserter{octree, chunks};
+	octree.SplitVolume(maxArea, areaEstimator, chunkInserter);
+	if (chunks.size() < 2)
+		return false;
+	DEBUG_EXTRA("Mesh split (%g max-area): %u chunks (%s)", maxArea, chunks.size(), TD_TIMER_GET_FMT().c_str());
+	return true;
+} // Split
+/*----------------------------------------------------------------*/
+
+// extract the sub-mesh corresponding to the given chunk of faces
+Mesh Mesh::SubMesh(const FaceIdxArr& chunk) const
+{
+	ASSERT(!chunk.empty());
+	Mesh mesh;
+	mesh.vertices = vertices;
+	mesh.faces.reserve(chunk.size());
+	for (FIndex idxFace: chunk)
+		mesh.faces.emplace_back(faces[idxFace]);
+	mesh.ListIncidenteFaces();
+	mesh.RemoveUnreferencedVertices();
+	// fix non-manifold vertices and edges
+	mesh.FixNonManifold();
+	return mesh;
+} // SubMesh
 /*----------------------------------------------------------------*/
 
 

@@ -280,9 +280,6 @@ public:
 	inline TRMatrixBase(const BaseBase& rhs) : Base(rhs) {}
 	template <typename T> inline TRMatrixBase(const cv::Matx<T,3,3>& rhs) : Base(rhs) {}
 
-	/** @brief Copy constructor from rotation matrix */
-	inline TRMatrixBase(const TRMatrixBase& r);
-
 	/** @brief Copy constructor from 3x3 matrix
 		@attention Orthonormality of matrix is enforced automatically! */
 	inline TRMatrixBase(const Mat& mat);
@@ -298,8 +295,6 @@ public:
 
 	/** @brief Initialization with the rotation from roll/pitch/yaw (in rad) */
 	inline TRMatrixBase(TYPE roll, TYPE pitch, TYPE yaw);
-
-	inline ~TRMatrixBase();
 
 	template <typename T> inline TRMatrixBase& operator = (const cv::Matx<T,3,3>& rhs) { BaseBase::operator = (rhs); return *this; }
 	inline TRMatrixBase& operator = (const cv::Mat& rhs) { BaseBase::operator = (rhs); return *this; }

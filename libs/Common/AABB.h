@@ -56,8 +56,8 @@ public:
 
 	inline bool IsEmpty() const;
 
-	inline void Enlarge(TYPE);
-	inline void EnlargePercent(TYPE);
+	inline TAABB& Enlarge(TYPE);
+	inline TAABB& EnlargePercent(TYPE);
 
 		   void InsertFull(const POINT&);
 		   void Insert(const POINT&);
@@ -88,6 +88,15 @@ public:
 
 	inline TYPE& operator [] (BYTE i) { ASSERT(i<numScalar); return ptMin.data()[i]; }
 	inline TYPE operator [] (BYTE i) const { ASSERT(i<numScalar); return ptMin.data()[i]; }
+
+	#ifdef _USE_BOOST
+	// implement BOOST serialization
+	template<class Archive>
+	void serialize(Archive& ar, const unsigned int /*version*/) {
+		ar & ptMin;
+		ar & ptMax;
+	}
+	#endif
 }; // class TAABB
 /*----------------------------------------------------------------*/
 

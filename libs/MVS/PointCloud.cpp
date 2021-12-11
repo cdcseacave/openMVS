@@ -67,6 +67,12 @@ void PointCloud::RemovePoint(IDX idx)
 		colors.RemoveAt(idx);
 	points.RemoveAt(idx);
 }
+void PointCloud::RemovePointsOutside(const OBB3f& obb) {
+	ASSERT(obb.IsValid());
+	RFOREACH(i, points)
+		if (!obb.Intersects(points[i]))
+			RemovePoint(i);
+}
 /*----------------------------------------------------------------*/
 
 
@@ -98,6 +104,24 @@ PointCloud::Box PointCloud::GetAABB(unsigned minViews) const
 		if (pointViews[idx].GetSize() >= minViews)
 			box.InsertFull(points[idx]);
 	return box;
+}
+
+// compute the center of the point-cloud as the median
+PointCloud::Point PointCloud::GetCenter() const
+{
+	const Index step(5);
+	const Index numPoints(points.size()/step);
+	if (numPoints == 0)
+		return Point::INF;
+	typedef CLISTDEF0IDX(Point::Type,Index) Scalars;
+	Scalars x(numPoints), y(numPoints), z(numPoints);
+	for (Index i=0; i<numPoints; ++i) {
+		const Point& X = points[i*step];
+		x[i] = X.x;
+		y[i] = X.y;
+		z[i] = X.z;
+	}
+	return Point(x.GetMedian(), y.GetMedian(), z.GetMedian());
 }
 /*----------------------------------------------------------------*/
 
@@ -240,4 +264,60 @@ bool PointCloud::Save(const String& fileName, bool bLegacyTypes) const
 	DEBUG_EXTRA("Point-cloud saved: %u points (%s)", points.GetSize(), TD_TIMER_GET_FMT().c_str());
 	return true;
 } // Save
+
+// save the dense point cloud having >=N views as PLY file
+bool PointCloud::SaveNViews(const String& fileName, uint32_t minViews, bool bLegacyTypes) const
+{
+	if (points.IsEmpty())
+		return false;
+	TD_TIMER_STARTD();
+
+	// create PLY object
+	ASSERT(!fileName.IsEmpty());
+	Util::ensureFolder(fileName);
+	PLY ply;
+	if (bLegacyTypes)
+		ply.set_legacy_type_names();
+	if (!ply.write(fileName, 1, BasicPLY::elem_names, PLY::BINARY_LE, 64*1024))
+		return false;
+
+	if (normals.IsEmpty()) {
+		// describe what properties go into the vertex elements
+		ply.describe_property(BasicPLY::elem_names[0], 6, BasicPLY::vert_props);
+
+		// export the array of 3D points
+		BasicPLY::PointColNormal vertex;
+		FOREACH(i, points) {
+			if (pointViews[i].size() < minViews)
+				continue;
+			// export the vertex position, normal and color
+			vertex.p = points[i];
+			vertex.c = (!colors.IsEmpty() ? colors[i] : Color::WHITE);
+			ply.put_element(&vertex);
+		}
+	} else {
+		// describe what properties go into the vertex elements
+		ply.describe_property(BasicPLY::elem_names[0], 9, BasicPLY::vert_props);
+
+		// export the array of 3D points
+		BasicPLY::PointColNormal vertex;
+		FOREACH(i, points) {
+			if (pointViews[i].size() < minViews)
+				continue;
+			// export the vertex position, normal and color
+			vertex.p = points[i];
+			vertex.n = normals[i];
+			vertex.c = (!colors.IsEmpty() ? colors[i] : Color::WHITE);
+			ply.put_element(&vertex);
+		}
+	}
+	const int numPoints(ply.get_current_element_count());
+
+	// write the header
+	if (!ply.header_complete())
+		return false;
+
+	DEBUG_EXTRA("Point-cloud saved: %u points with at least %u views each (%s)", numPoints, minViews, TD_TIMER_GET_FMT().c_str());
+	return true;
+} // SaveNViews
 /*----------------------------------------------------------------*/

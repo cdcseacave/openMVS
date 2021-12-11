@@ -2416,15 +2416,9 @@ void TImage<TYPE>::toGray(TImage<T>& out, int code, bool bNormalize, bool bSRGB)
 template <typename TYPE>
 cv::Size TImage<TYPE>::computeResize(const cv::Size& size, REAL scale)
 {
-	cv::Size scaledSize;
-	if (size.width > size.height) {
-		scaledSize.width = ROUND2INT(REAL(size.width)*scale);
-		scaledSize.height = ROUND2INT(REAL(size.height)*scaledSize.width/REAL(size.width));
-	} else {
-		scaledSize.height = ROUND2INT(REAL(size.height)*scale);
-		scaledSize.width = ROUND2INT(REAL(size.width)*scaledSize.height/REAL(size.height));
-	}
-	return scaledSize;
+	return cv::Size(
+		cv::saturate_cast<int>((REAL)size.width*scale),
+		cv::saturate_cast<int>((REAL)size.height*scale));
 }
 // compute the final scaled size by performing successive resizes
 // with the given scale value
@@ -2602,6 +2596,48 @@ void TImage<TYPE>::RasterizeTriangle(const TPoint2<T>& v1, const TPoint2<T>& v2,
 		}
 
 		pixy += q;
+	}
+}
+
+// same as above, but raster a triangle using barycentric coordinates:
+// https://www.scratchapixel.com/lessons/3d-basic-rendering/rasterization-practical-implementation
+template <typename TYPE>
+template <typename T, typename PARSER>
+void TImage<TYPE>::RasterizeTriangleBary(const TPoint2<T>& v1, const TPoint2<T>& v2, const TPoint2<T>& v3, PARSER& parser)
+{
+	// compute bounding-box fully containing the triangle
+	const TPoint2<T> boxMin(MINF3(v1.x, v2.x, v3.x), MINF3(v1.y, v2.y, v3.y));
+	const TPoint2<T> boxMax(MAXF3(v1.x, v2.x, v3.x), MAXF3(v1.y, v2.y, v3.y));
+	// check the bounding-box intersects the image
+	const cv::Size size(parser.Size());
+	if (boxMax.x < T(0) || boxMin.x > T(size.width - 1) ||
+		boxMax.y < T(0) || boxMin.y > T(size.height - 1))
+		return;
+	// ignore back oriented triangles (negative area)
+	const T area(EdgeFunction(v1, v2, v3));
+	if (area <= 0)
+		return;
+	// clip bounding-box to be fully contained by the image
+	ImageRef boxMinI(FLOOR2INT(boxMin));
+	ImageRef boxMaxI(CEIL2INT(boxMax));
+	Base::clip(boxMinI, boxMaxI, size);
+	// parse all pixels inside the bounding-box
+	const T invArea(T(1) / area);
+	for (int y = boxMinI.y; y <= boxMaxI.y; ++y) {
+		for (int x = boxMinI.x; x <= boxMaxI.x; ++x) {
+			const ImageRef pt(x, y);
+			const TPoint2<T> p(Cast<T>(pt));
+			const T b1(EdgeFunction(v2, v3, p));
+			if (b1 < 0)
+				continue;
+			const T b2(EdgeFunction(v3, v1, p));
+			if (b2 < 0)
+				continue;
+			const T b3(EdgeFunction(v1, v2, p));
+			if (b3 < 0)
+				continue;
+			parser(pt, TPoint3<T>(b1, b2, b3) * invArea);
+		}
 	}
 }
 
@@ -2965,8 +3001,8 @@ bool TImage<TYPE>::Load(const String& fileName)
 		Base::create(h, w);
 		ASSERT(sizeof(float)*Base::channels() == Base::step.p[1]);
 		const size_t rowbytes((size_t)Base::size.p[1]*Base::step.p[1]);
-		for (int i=0; i<rows; ++i)
-			if (fImage.read(cv::Mat::template ptr<float>(i), rowbytes) != rowbytes)
+		for (int i=rows; i>0; )
+			if (fImage.read(cv::Mat::template ptr<float>(--i), rowbytes) != rowbytes)
 				return false;
 		return true;
 	}
@@ -3014,14 +3050,16 @@ bool TImage<TYPE>::Save(const String& fileName) const
 		if (!fImage.isOpen())
 			return false;
 		ASSERT(sizeof(float) == 4);
-		static const uint8_t b[4] = { 255, 0, 0, 0 };
-		static const bool is_little_endian = (*((float*)b) < 1.f);
-		static const double scale = (is_little_endian ? -1.0 : 1.0);
+		#if __BYTE_ORDER == __LITTLE_ENDIAN
+		static const double scale(-1.0);
+		#else
+		static const double scale(1.0);
+		#endif
 		fImage.print("Pf\n%d %d\n%lf\n", width(), height(), scale*Base::channels());
 		ASSERT(sizeof(float)*Base::channels() == Base::step.p[1]);
 		const size_t rowbytes = (size_t)Base::size.p[1]*Base::step.p[1];
-		for (int i=0; i<rows; ++i)
-			fImage.write(cv::Mat::template ptr<const float>(i), rowbytes);
+		for (int i=rows; i>0; )
+			fImage.write(cv::Mat::template ptr<const float>(--i), rowbytes);
 		return true;
 	}
 
@@ -3575,8 +3613,7 @@ namespace boost {
 
 		// Serialization support for cv::Mat
 		template<class Archive>
-		void save(Archive& ar, const cv::Mat& m, const unsigned int /*version*/)
-		{
+		void save(Archive& ar, const cv::Mat& m, const unsigned int /*version*/) {
 			const int elem_type = m.type();
 			const size_t elem_size = m.elemSize();
 
@@ -3595,8 +3632,7 @@ namespace boost {
 			}
 		}
 		template<class Archive>
-		void load(Archive& ar, cv::Mat& m, const unsigned int /*version*/)
-		{
+		void load(Archive& ar, cv::Mat& m, const unsigned int /*version*/) {
 			int cols, rows, elem_type;
 			size_t elem_size;
 
@@ -3617,8 +3653,7 @@ namespace boost {
 
 		// Serialization support for cv::Mat_
 		template<class Archive, typename _Tp>
-		void save(Archive& ar, const cv::Mat_<_Tp>& m, const unsigned int /*version*/)
-		{
+		void save(Archive& ar, const cv::Mat_<_Tp>& m, const unsigned int /*version*/) {
 			ar & m.cols;
 			ar & m.rows;
 
@@ -3632,8 +3667,7 @@ namespace boost {
 			}
 		}
 		template<class Archive, typename _Tp>
-		void load(Archive& ar, cv::Mat_<_Tp>& m, const unsigned int /*version*/)
-		{
+		void load(Archive& ar, cv::Mat_<_Tp>& m, const unsigned int /*version*/) {
 			int cols, rows;
 			ar & cols;
 			ar & rows;
@@ -3706,6 +3740,25 @@ namespace boost {
 			ar & m.distance;
 		}
 
+		#ifdef _USE_EIGEN
+		// Serialization support for Eigen::Matrix
+		// specialization handling fixed sized matrices
+		template<class Archive, class Scalar, int _Rows, int _Cols, int _Options, int _MaxRows, int _MaxCols>
+		inline void save(Archive& ar, const Eigen::Matrix<Scalar,_Rows,_Cols,_Options,_MaxRows,_MaxCols>& M, const unsigned int /*version*/) {
+			ar << make_nvp("data", make_array(M.data(), _Rows*_Cols));
+		}
+		template<class Archive, class Scalar, int _Rows, int _Cols, int _Options, int _MaxRows, int _MaxCols>
+		inline void load(Archive& ar, Eigen::Matrix<Scalar,_Rows,_Cols,_Options,_MaxRows,_MaxCols>& M, const unsigned int /*version*/) {
+			ar >> make_nvp("data", make_array(M.data(), _Rows*_Cols));
+		}
+		// The function that causes boost::serialization to look for separate
+		// save() and load() functions when serializing and Eigen matrix.
+		template<class Archive, class Scalar, int _Rows, int _Cols, int _Options, int _MaxRows, int _MaxCols>
+		inline void serialize(Archive& ar, Eigen::Matrix<Scalar,_Rows,_Cols,_Options,_MaxRows,_MaxCols>& M, const unsigned int version) {
+			split_free(ar, M, version);
+		}
+		#endif // _USE_EIGEN
+
 	} // namespace serialization
 } // namespace boost
 /*----------------------------------------------------------------*/
@@ -3713,6 +3766,7 @@ namespace boost {
 // include headers that implement a archive in simple text and binary format or XML format
 #if defined(_MSC_VER)
 #pragma warning (push)
+#pragma warning (disable : 4275) // non dll-interface class
 #pragma warning (disable : 4715) // not all control paths return a value
 #endif
 #include <boost/archive/text_oarchive.hpp>
@@ -3724,6 +3778,9 @@ namespace boost {
 // include headers that implement compressed serialization support
 #include <boost/iostreams/filtering_streambuf.hpp>
 #include <boost/iostreams/filter/zlib.hpp>
+#if BOOST_VERSION >= 106900
+#include <boost/iostreams/filter/zstd.hpp>
+#endif
 #if defined(_MSC_VER)
 #pragma warning (pop)
 #endif
@@ -3733,12 +3790,18 @@ enum ARCHIVE_TYPE {
 	ARCHIVE_TEXT = 0,
 	ARCHIVE_BINARY,
 	ARCHIVE_BINARY_ZIP,
-	ARCHIVE_LAST
+	ARCHIVE_BINARY_ZSTD,
+	ARCHIVE_LAST,
+	#if BOOST_VERSION >= 106900
+	ARCHIVE_DEFAULT = ARCHIVE_BINARY_ZSTD
+	#else
+	ARCHIVE_DEFAULT = ARCHIVE_BINARY_ZIP
+	#endif
 };
 
 // export the current state of the given reconstruction object
 template <typename TYPE>
-bool SerializeSave(const TYPE& obj, std::ofstream& fs, ARCHIVE_TYPE type, unsigned flags=0)
+bool SerializeSave(const TYPE& obj, std::ofstream& fs, ARCHIVE_TYPE type, unsigned flags=boost::archive::no_header)
 {
 	// serialize out the current state
 	switch (type) {
@@ -3758,6 +3821,16 @@ bool SerializeSave(const TYPE& obj, std::ofstream& fs, ARCHIVE_TYPE type, unsign
 		boost::archive::binary_oarchive ar(ffs, flags);
 		ar << obj;
 		break; }
+	#if BOOST_VERSION >= 106900
+	case ARCHIVE_BINARY_ZSTD: {
+		namespace io = boost::iostreams;
+		io::filtering_streambuf<io::output> ffs;
+		ffs.push(io::zstd_compressor(io::zstd::best_speed));
+		ffs.push(fs);
+		boost::archive::binary_oarchive ar(ffs, flags);
+		ar << obj;
+		break; }
+	#endif
 	default:
 		VERBOSE("error: Can not save the object, invalid archive type");
 		return false;
@@ -3765,7 +3838,7 @@ bool SerializeSave(const TYPE& obj, std::ofstream& fs, ARCHIVE_TYPE type, unsign
 	return true;
 } // SerializeSave
 template <typename TYPE>
-bool SerializeSave(const TYPE& obj, const SEACAVE::String& fileName, ARCHIVE_TYPE type, unsigned flags=0)
+bool SerializeSave(const TYPE& obj, const SEACAVE::String& fileName, ARCHIVE_TYPE type, unsigned flags=boost::archive::no_header)
 {
 	// open the output stream
 	std::ofstream fs(fileName, std::ios::out | std::ios::binary);
@@ -3777,7 +3850,7 @@ bool SerializeSave(const TYPE& obj, const SEACAVE::String& fileName, ARCHIVE_TYP
 
 // import the state to the given reconstruction object
 template <typename TYPE>
-bool SerializeLoad(TYPE& obj, std::ifstream& fs, ARCHIVE_TYPE type, unsigned flags=0)
+bool SerializeLoad(TYPE& obj, std::ifstream& fs, ARCHIVE_TYPE type, unsigned flags=boost::archive::no_header)
 {
 	try {
 		// serialize in the saved state
@@ -3798,6 +3871,16 @@ bool SerializeLoad(TYPE& obj, std::ifstream& fs, ARCHIVE_TYPE type, unsigned fla
 			boost::archive::binary_iarchive ar(ffs, flags);
 			ar >> obj;
 			break; }
+		#if BOOST_VERSION >= 106900
+		case ARCHIVE_BINARY_ZSTD: {
+			namespace io = boost::iostreams;
+			io::filtering_streambuf<io::input> ffs;
+			ffs.push(io::zstd_decompressor());
+			ffs.push(fs);
+			boost::archive::binary_iarchive ar(ffs, flags);
+			ar >> obj;
+			break; }
+		#endif
 		default:
 			VERBOSE("error: Can not load the object, invalid archive type");
 			return false;
@@ -3810,7 +3893,7 @@ bool SerializeLoad(TYPE& obj, std::ifstream& fs, ARCHIVE_TYPE type, unsigned fla
 	return true;
 } // SerializeLoad
 template <typename TYPE>
-bool SerializeLoad(TYPE& obj, const SEACAVE::String& fileName, ARCHIVE_TYPE type, unsigned flags=0)
+bool SerializeLoad(TYPE& obj, const SEACAVE::String& fileName, ARCHIVE_TYPE type, unsigned flags=boost::archive::no_header)
 {
 	// open the input stream
 	std::ifstream fs(fileName, std::ios::in | std::ios::binary);

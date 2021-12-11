@@ -48,8 +48,8 @@ namespace VIEWER {
 class Scene
 {
 public:
-	typedef TOctree<MVS::PointCloud::PointArr,MVS::PointCloud::Point::Type,3,uint32_t,512> OctreePoints;
-	typedef TOctree<MVS::Mesh::VertexArr,MVS::Mesh::Vertex::Type,3,uint32_t,256> OctreeMesh;
+	typedef TOctree<MVS::PointCloud::PointArr,MVS::PointCloud::Point::Type,3,uint32_t> OctreePoints;
+	typedef TOctree<MVS::Mesh::VertexArr,MVS::Mesh::Vertex::Type,3,uint32_t> OctreeMesh;
 
 public:
 	String name;
@@ -62,6 +62,7 @@ public:
 
 	OctreePoints octPoints;
 	OctreeMesh octMesh;
+	Point3fArr obbPoints;
 
 	GLuint listPointCloud;
 	GLuint listMesh;
@@ -82,14 +83,14 @@ public:
 	inline bool IsOpen() const { return IsValid() && !scene.IsEmpty(); }
 	inline bool IsOctreeValid() const { return !octPoints.IsEmpty() || !octMesh.IsEmpty(); }
 
-	bool Init(int width, int height, LPCTSTR windowName, LPCTSTR fileName=NULL, LPCTSTR meshFileName=NULL);
+	bool Init(const cv::Size&, LPCTSTR windowName, LPCTSTR fileName=NULL, LPCTSTR meshFileName=NULL);
 	bool Open(LPCTSTR fileName, LPCTSTR meshFileName=NULL);
 	bool Export(LPCTSTR fileName, LPCTSTR exportType=NULL, bool losslessTexture=false) const;
 	void CompilePointCloud();
 	void CompileMesh();
+	void CompileBounds();
 
 	void Draw();
-	void ProcessEvents();
 	void Loop();
 
 	void CastRay(const Ray3&, int);

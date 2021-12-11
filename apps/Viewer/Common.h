@@ -59,16 +59,19 @@ using namespace SEACAVE;
 namespace VIEWER {
 
 // the conversion matrix from OpenGL default coordinate system
-//  to the camera coordinate system:
+//  to the camera coordinate system (NADIR orientation):
 // [ 1  0  0  0] * [ x ] = [ x ]
 //   0 -1  0  0      y      -y
 //   0  0 -1  0      z      -z
 //   0  0  0  1      1       1
-static const GLfloat gs_convert[4][4] = {
-	{1.f,  0.f,  0.f, 0.f},
-	{0.f, -1.f,  0.f, 0.f},
-	{0.f,  0.f, -1.f, 0.f},
-	{0.f,  0.f,  0.f, 1.f}};
+static const Eigen::Matrix4d gs_convert = [] {
+	Eigen::Matrix4d tmp; tmp <<
+		1,  0,  0,  0,
+		0, -1,  0,  0,
+		0,  0, -1,  0,
+		0,  0,  0,  1;
+	return tmp;
+}();
 
 /// given rotation matrix R and translation vector t,
 /// column-major matrix m is equal to:

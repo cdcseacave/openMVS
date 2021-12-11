@@ -56,30 +56,46 @@ public:
 	ImageArr images; // images, each referencing a platform's camera pose
 	PointCloud pointcloud; // point-cloud (sparse or dense), each containing the point position and the views seeing it
 	Mesh mesh; // mesh, represented as vertices and triangles, constructed from the input point-cloud
+	OBB3f obb; // optional region-of-interest; oriented bounding box containing the entire scene
 
 	unsigned nCalibratedImages; // number of valid images
 
 	unsigned nMaxThreads; // maximum number of threads used to distribute the work load
 
 public:
-	inline Scene(unsigned _nMaxThreads=0) : nMaxThreads(Thread::getMaxThreads(_nMaxThreads)) {}
+	inline Scene(unsigned _nMaxThreads=0)
+		: obb(true), nMaxThreads(Thread::getMaxThreads(_nMaxThreads)) {}
 
 	void Release();
 	bool IsEmpty() const;
+	bool ImagesHaveNeighbors() const;
+	bool IsBounded() const { return obb.IsValid(); }
 
 	bool LoadInterface(const String& fileName);
 	bool SaveInterface(const String& fileName, int version=-1) const;
 
 	bool LoadDMAP(const String& fileName);
+	bool LoadViewNeighbors(const String& fileName);
 	bool Import(const String& fileName);
 
 	bool Load(const String& fileName, bool bImport=false);
-	bool Save(const String& fileName, ARCHIVE_TYPE type=ARCHIVE_BINARY_ZIP) const;
+	bool Save(const String& fileName, ARCHIVE_TYPE type=ARCHIVE_DEFAULT) const;
+
+	void SampleMeshWithVisibility(unsigned maxResolution=320);
 
 	bool SelectNeighborViews(uint32_t ID, IndexArr& points, unsigned nMinViews=3, unsigned nMinPointViews=2, float fOptimAngle=FD2R(10));
 	static bool FilterNeighborViews(ViewScoreArr& neighbors, float fMinArea=0.1f, float fMinScale=0.2f, float fMaxScale=2.4f, float fMinAngle=FD2R(3), float fMaxAngle=FD2R(45), unsigned nMaxViews=12);
 
 	bool ExportCamerasMLP(const String& fileName, const String& fileNameScene) const;
+
+	// sub-scene split and save
+	struct ImagesChunk {
+		std::unordered_set<IIndex> images;
+		AABB3f aabb;
+	};
+	typedef cList<ImagesChunk,const ImagesChunk&,2,16,uint32_t> ImagesChunkArr;
+	unsigned Split(ImagesChunkArr& chunks, float maxArea, int depthMapStep=8) const;
+	bool ExportChunks(const ImagesChunkArr& chunks, const String& path, ARCHIVE_TYPE type=ARCHIVE_DEFAULT) const;
 
 	// Dense reconstruction
 	bool DenseReconstruction(int nFusionMode=0);
@@ -111,6 +127,7 @@ public:
 		ar & images;
 		ar & pointcloud;
 		ar & mesh;
+		ar & obb;
 	}
 	#endif
 };

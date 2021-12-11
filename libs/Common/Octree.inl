@@ -8,53 +8,37 @@
 
 // D E F I N E S ///////////////////////////////////////////////////
 
-// max number of items in one cell
-#define OCTREE_CELLITEMS SIZE
-
 #ifdef _USE_OPENMP
 // minimum number of polygons for which we do multi-threading
 #define OCTREE_MIN_ITEMS_MINTHREAD 1024*2
 #endif
 
-// size of a cell
-#define OCTREE_CELLSIZE (TYPE(NOM)/TYPE(DENOM))
-// radius of a cell
-#define OCTREE_CELLRADIUS (OCTREE_CELLSIZE/2)
-
 
 // S T R U C T S ///////////////////////////////////////////////////
 
-template <typename TYPE, int DIMS, typename DATA_TYPE>
-inline TOctreeCell<TYPE,DIMS,DATA_TYPE>::TOctreeCell()
+template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE>
+inline TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE>::CELL_TYPE::CELL_TYPE()
 	:
 	m_child(NULL)
 {
 } // constructor
-template <typename TYPE, int DIMS, typename DATA_TYPE>
-inline TOctreeCell<TYPE,DIMS,DATA_TYPE>::TOctreeCell(TOctreeCell* children)
-	:
-	m_child(children)
-{
-} // constructor
-/*----------------------------------------------------------------*/
-
-template <typename TYPE, int DIMS, typename DATA_TYPE>
-inline TOctreeCell<TYPE,DIMS,DATA_TYPE>::~TOctreeCell()
+template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE>
+inline TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE>::CELL_TYPE::~CELL_TYPE()
 {
 	delete[] m_child;
 } // destructor
 /*----------------------------------------------------------------*/
 
 
-template <typename TYPE, int DIMS, typename DATA_TYPE>
-inline void TOctreeCell<TYPE,DIMS,DATA_TYPE>::Release()
+template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE>
+inline void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE>::CELL_TYPE::Release()
 {
 	delete[] m_child;
 	m_child = NULL;
-} // destructor
+} // Release
 // swap the two octrees
-template <typename TYPE, int DIMS, typename DATA_TYPE>
-inline void TOctreeCell<TYPE,DIMS,DATA_TYPE>::Swap(TOctreeCell& rhs)
+template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE>
+inline void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE>::CELL_TYPE::Swap(CELL_TYPE& rhs)
 {
 	std::swap(m_child, rhs.m_child);
 	uint8_t tmpData[dataSize];
@@ -66,8 +50,8 @@ inline void TOctreeCell<TYPE,DIMS,DATA_TYPE>::Swap(TOctreeCell& rhs)
 
 
 // compute item's index corresponding to the containing cell
-template <typename TYPE, int DIMS, typename DATA_TYPE>
-inline unsigned TOctreeCell<TYPE,DIMS,DATA_TYPE>::ComputeChild(const POINT_TYPE& item) const
+template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE>
+inline unsigned TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE>::CELL_TYPE::ComputeChild(const POINT_TYPE& item) const
 {
 	ASSERT(!IsLeaf());
 	unsigned idx = 0;
@@ -83,8 +67,8 @@ inline unsigned TOctreeCell<TYPE,DIMS,DATA_TYPE>::ComputeChild(const POINT_TYPE&
 } // ComputeChild
 /*----------------------------------------------------------------*/
 
-template <typename TYPE, int DIMS, typename DATA_TYPE>
-void TOctreeCell<TYPE,DIMS,DATA_TYPE>::ComputeCenter(POINT_TYPE centers[])
+template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE>
+void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE>::CELL_TYPE::ComputeCenter(POINT_TYPE centers[])
 {
 	if (DIMS == 1) {
 		centers[0] << -1;
@@ -109,10 +93,22 @@ void TOctreeCell<TYPE,DIMS,DATA_TYPE>::ComputeCenter(POINT_TYPE centers[])
 } // ComputeCenter
 /*----------------------------------------------------------------*/
 
+template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE>
+inline typename TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE>::POINT_TYPE TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE>::CELL_TYPE::ComputeChildCenter(const POINT_TYPE& center, TYPE radius, unsigned idxChild)
+{
+	struct CENTERARR_TYPE {
+		POINT_TYPE child[CELL_TYPE::numChildren];
+		inline CENTERARR_TYPE() { CELL_TYPE::ComputeCenter(child); }
+	};
+	static const CENTERARR_TYPE centers;
+	return center + centers.child[idxChild] * radius;
+} // ComputeChildCenter
+/*----------------------------------------------------------------*/
+
 
 // count the number of items contained by the given octree-cell
-template <typename TYPE, int DIMS, typename DATA_TYPE>
-size_t TOctreeCell<TYPE,DIMS,DATA_TYPE>::GetNumItemsHeld() const
+template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE>
+size_t TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE>::CELL_TYPE::GetNumItemsHeld() const
 {
 	if (IsLeaf())
 		return GetNumItems();
@@ -128,29 +124,31 @@ size_t TOctreeCell<TYPE,DIMS,DATA_TYPE>::GetNumItemsHeld() const
 // S T R U C T S ///////////////////////////////////////////////////
 
 // build tree with the given items
-template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE, int SIZE, int NOM, int DENOM>
-inline TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE,SIZE,NOM,DENOM>::TOctree(const ITEMARR_TYPE& items)
+template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE>
+template <typename Functor>
+inline TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE>::TOctree(const ITEMARR_TYPE& items, Functor split)
 {
-	Insert(items);
+	Insert(items, split);
 }
-template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE, int SIZE, int NOM, int DENOM>
-inline TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE,SIZE,NOM,DENOM>::TOctree(const ITEMARR_TYPE& items, const AABB_TYPE& aabb)
+template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE>
+template <typename Functor>
+inline TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE>::TOctree(const ITEMARR_TYPE& items, const AABB_TYPE& aabb, Functor split)
 {
-	Insert(items, aabb);
+	Insert(items, aabb, split);
 } // constructor
 /*----------------------------------------------------------------*/
 
 
 // destroy tree
-template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE, int SIZE, int NOM, int DENOM>
-inline void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE,SIZE,NOM,DENOM>::Release()
+template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE>
+inline void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE>::Release()
 {
 	m_indices.Release();
 	m_root.Release();
 } // Release
 // swap the two octrees
-template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE, int SIZE, int NOM, int DENOM>
-inline void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE,SIZE,NOM,DENOM>::Swap(TOctree& rhs)
+template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE>
+inline void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE>::Swap(TOctree& rhs)
 {
 	std::swap(m_items, rhs.m_items);
 	m_indices.Swap(rhs.m_indices);
@@ -160,122 +158,108 @@ inline void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE,SIZE,NOM,DENOM>::Swap(TOctr
 /*----------------------------------------------------------------*/
 
 
-// destroy tree
-template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE, int SIZE, int NOM, int DENOM>
-inline typename TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE,SIZE,NOM,DENOM>::POINT_TYPE TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE,SIZE,NOM,DENOM>::ComputeChildCenter(const POINT_TYPE& center, TYPE radius, unsigned idxChild)
-{
-	struct CENTERARR_TYPE {
-		POINT_TYPE child[CELL_TYPE::numChildren];
-		inline CENTERARR_TYPE() { CELL_TYPE::ComputeCenter(child); }
-	};
-	static const CENTERARR_TYPE centers;
-	return center + centers.child[idxChild] * radius;
-} // ComputeChildCenter
-/*----------------------------------------------------------------*/
-
 // add the given item to the tree
-template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE, int SIZE, int NOM, int DENOM>
-void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE,SIZE,NOM,DENOM>::_Insert(CELL_TYPE& cell, TYPE radius, IDXARR_TYPE childrenIndices[])
+template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE>
+template <typename Functor, bool bForceSplit>
+void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE>::_Insert(CELL_TYPE& cell, const POINT_TYPE& center, TYPE radius, IDX_TYPE start, IDX_TYPE size, _InsertData<Functor>& insertData)
 {
-	ASSERT(!cell.IsLeaf());
-	// setup each cell
-	const POINT_TYPE& center = cell.Node().center;
-	const TYPE childRadius = radius / TYPE(2);
-	for (int i=0; i<CELL_TYPE::numChildren; ++i) {
-		IDXARR_TYPE& childIndices = childrenIndices[i];
-		CELL_TYPE& child = cell.m_child[i];
-		// if this child cell needs to be divided further
-		if (childIndices.GetSize() > OCTREE_CELLITEMS && (NOM == 0 || childRadius > OCTREE_CELLRADIUS)) {
-			// proceed recursively
-			const POINT_TYPE childCenter(ComputeChildCenter(center, childRadius, i));
-			_Insert(child, childCenter, childRadius, childIndices);
-		} else {
-			// init leaf
-			typename CELL_TYPE::LEAF_TYPE& leaf = child.Leaf();
-			leaf.idxBegin = m_indices.GetSize();
-			leaf.size = (typename CELL_TYPE::SIZE_TYPE)childIndices.GetSize();
-			// store items
-			m_indices.Join(childIndices);
-			childIndices.Release();
+	ASSERT(size > 0);
+	// if this child cell needs to be divided further
+	if (bForceSplit || insertData.split(size, radius)) {
+		// init node and proceed recursively
+		cell.m_child = new CELL_TYPE[CELL_TYPE::numChildren];
+		cell.Node().center = center;
+		struct ChildData {
+			enum { ESTART=0, EEND=CELL_TYPE::numChildren, ESIZE=CELL_TYPE::numChildren*2, EALL=CELL_TYPE::numChildren*3};
+			IDX_TYPE data[EALL];
+			ChildData() { memset(data, 0, sizeof(IDX_TYPE)*EALL); }
+			inline IDX_TYPE Start(unsigned i) const { return data[ESTART+i]; }
+			inline IDX_TYPE& Start(unsigned i) { return data[ESTART+i]; }
+			inline IDX_TYPE End(unsigned i) const { return data[EEND+i]; }
+			inline IDX_TYPE& End(unsigned i) { return data[EEND+i]; }
+			inline IDX_TYPE Size(unsigned i) const { return data[ESIZE+i]; }
+			inline IDX_TYPE& Size(unsigned i) { return data[ESIZE+i]; }
+		} childD;
+		IDX_TYPE idx(start);
+		for (IDX_TYPE i=0; i<size; ++i) {
+			const unsigned idxChild(cell.ComputeChild(GetItem(idx)));
+			if (childD.Size(idxChild) == 0)
+				childD.Start(idxChild) = idx;
+			else
+				insertData.successors[childD.End(idxChild)] = idx;
+			childD.End(idxChild) = idx;
+			++childD.Size(idxChild);
+			idx = insertData.successors[idx];
 		}
+		ASSERT(idx == _InsertData<Functor>::NO_INDEX);
+		const TYPE childRadius(radius / TYPE(2));
+		for (unsigned i=0; i<CELL_TYPE::numChildren; ++i) {
+			CELL_TYPE& child = cell.m_child[i];
+			if (childD.Size(i) == 0) {
+				child.Leaf().idxBegin = m_indices.size();
+				child.Leaf().size = 0;
+				continue;
+			}
+			insertData.successors[childD.End(i)] = _InsertData<Functor>::NO_INDEX; // mark the end of child successors
+			const POINT_TYPE childCenter(CELL_TYPE::ComputeChildCenter(center, childRadius, i));
+			_Insert<Functor,false>(child, childCenter, childRadius, childD.Start(i), childD.Size(i), insertData);
+		}
+	} else {
+		// init leaf
+		cell.Leaf().idxBegin = m_indices.size();
+		cell.Leaf().size = (SIZE_TYPE)size;
+		for (IDX_TYPE idx=start; idx!=_InsertData<Functor>::NO_INDEX; idx=insertData.successors[idx])
+			m_indices.push_back(idx);
 	}
-} // _Insert
-template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE, int SIZE, int NOM, int DENOM>
-void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE,SIZE,NOM,DENOM>::_Insert(CELL_TYPE& cell, const POINT_TYPE& center, TYPE radius, IDXARR_TYPE& indices)
-{
-	ASSERT(cell.IsLeaf());
-	ASSERT(indices.GetSize() > OCTREE_CELLITEMS);
-	ASSERT(NOM == 0 || radius > OCTREE_CELLRADIUS);
-	// divide cell
-	// transform this cell in node
-	cell.m_child = new CELL_TYPE[CELL_TYPE::numChildren];
-	cell.Node().center = center;
-	// divide the items in separate indices lists corresponding to each child
-	const size_t reserveSize = indices.GetSize() / 3;
-	IDXARR_TYPE childrenIndices[CELL_TYPE::numChildren];
-	for (int i=0; i<CELL_TYPE::numChildren; ++i)
-		childrenIndices[i].Reserve(reserveSize);
-	FOREACHPTR(it, indices) {
-		const unsigned idx = cell.ComputeChild((const POINT_TYPE)m_items[*it]);
-		childrenIndices[idx].Insert(*it);
-	}
-	indices.Release();
-	// setup each cell
-	_Insert(cell, radius, childrenIndices);
 } // _Insert
 /*----------------------------------------------------------------*/
 
-template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE, int SIZE, int NOM, int DENOM>
-inline void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE,SIZE,NOM,DENOM>::Insert(const ITEMARR_TYPE& items, const AABB_TYPE& aabb)
+template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE>
+template <typename Functor>
+inline void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE>::Insert(const ITEMARR_TYPE& items, const AABB_TYPE& aabb, Functor split)
 {
 	Release();
-	m_items = items.Begin();
-	m_radius = GetRadius(aabb);
-	// build tree
+	m_items = items.data();
 	// create root as node, even if we do not need to divide
-	m_indices.Reserve(items.GetSize());
+	m_indices.Reserve(items.size());
 	// divide cell
 	m_root.m_child = new CELL_TYPE[CELL_TYPE::numChildren];
 	m_root.Node().center = aabb.GetCenter();
-	// divide the items in separate indices lists corresponding to each child
-	const size_t reserveSize = items.GetSize() / 3;
-	IDXARR_TYPE childrenIndices[CELL_TYPE::numChildren];
-	for (int i=0; i<CELL_TYPE::numChildren; ++i)
-		childrenIndices[i].Reserve(reserveSize);
-	FOREACH(i, items) {
-		const unsigned idx = m_root.ComputeChild((const POINT_TYPE)items[i]);
-		childrenIndices[idx].Insert(i);
-	}
+	m_radius = aabb.GetSize().maxCoeff()/Type(2);
+	// single connected list of next item indices
+	_InsertData<Functor> insertData = {items.size(), split};
+	std::iota(insertData.successors.begin(), insertData.successors.end(), IDX_TYPE(1));
+	insertData.successors.back() = _InsertData<Functor>::NO_INDEX;
 	// setup each cell
-	_Insert(m_root, m_radius, childrenIndices);
+	_Insert<Functor,true>(m_root, m_root.GetCenter(), m_radius, 0, items.size(), insertData);
 }
-template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE, int SIZE, int NOM, int DENOM>
-inline void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE,SIZE,NOM,DENOM>::Insert(const ITEMARR_TYPE& items)
+template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE>
+template <typename Functor>
+inline void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE>::Insert(const ITEMARR_TYPE& items, Functor split)
 {
 	ASSERT(!items.IsEmpty());
-	AABB_TYPE aabb;
 	ASSERT(sizeof(POINT_TYPE) == sizeof(typename ITEMARR_TYPE::Type));
-	aabb.Set((const POINT_TYPE*)items.Begin(), items.GetSize());
+	AABB_TYPE aabb((const POINT_TYPE*)items.data(), items.size());
 	aabb.Enlarge(ZEROTOLERANCE<TYPE>()*TYPE(10));
-	Insert(items, aabb);
+	Insert(items, aabb, split);
 } // Insert
 /*----------------------------------------------------------------*/
 
 
-template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE, int SIZE, int NOM, int DENOM>
+template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE>
 template <typename INSERTER>
-void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE,SIZE,NOM,DENOM>::_CollectCells(const CELL_TYPE& cell, INSERTER& inserter) const
+void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE>::CollectCells(const CELL_TYPE& cell, INSERTER& inserter) const
 {
 	if (cell.IsLeaf()) {
-		inserter(m_indices.Begin()+cell.Leaf().idxBegin, cell.GetNumItems());
+		inserter(m_indices.data()+cell.GetFirstItemIdx(), cell.GetNumItems());
 		return;
 	}
 	for (int i=0; i<CELL_TYPE::numChildren; ++i)
-		_CollectCells(cell.m_child[i], inserter);
+		CollectCells(cell.m_child[i], inserter);
 }
-template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE, int SIZE, int NOM, int DENOM>
+template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE>
 template <typename PARSER>
-void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE,SIZE,NOM,DENOM>::_ParseCells(CELL_TYPE& cell, TYPE radius, PARSER& parser)
+void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE>::_ParseCells(CELL_TYPE& cell, TYPE radius, PARSER& parser)
 {
 	if (cell.IsLeaf()) {
 		parser(cell, radius);
@@ -288,16 +272,16 @@ void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE,SIZE,NOM,DENOM>::_ParseCells(CELL_
 /*----------------------------------------------------------------*/
 
 // calls parser for each leaf of the octree (the IDX_TYPE operator has to be defined)
-template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE, int SIZE, int NOM, int DENOM>
+template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE>
 template <typename INSERTER>
-void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE,SIZE,NOM,DENOM>::CollectCells(INSERTER& inserter) const
+void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE>::CollectCells(INSERTER& inserter) const
 {
-	_CollectCells(m_root, inserter);
+	CollectCells(m_root, inserter);
 }
 // calls parser for each leaf of the octree (the CELL_TYPE operator has to be defined)
-template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE, int SIZE, int NOM, int DENOM>
+template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE>
 template <typename PARSER>
-void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE,SIZE,NOM,DENOM>::ParseCells(PARSER& parser)
+void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE>::ParseCells(PARSER& parser)
 {
 	_ParseCells(m_root, m_radius, parser);
 }
@@ -305,15 +289,15 @@ void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE,SIZE,NOM,DENOM>::ParseCells(PARSER
 
 
 // find all items contained by the given bounding box
-template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE, int SIZE, int NOM, int DENOM>
+template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE>
 template <typename INSERTER>
-void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE,SIZE,NOM,DENOM>::_Collect(const CELL_TYPE& cell, const AABB_TYPE& aabb, INSERTER& inserter) const
+void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE>::_Collect(const CELL_TYPE& cell, const AABB_TYPE& aabb, INSERTER& inserter) const
 {
 	if (cell.IsLeaf()) {
 		// add all items contained by the bounding-box
-		for (IDX i=0; i<cell.Leaf().size; ++i) {
-			const IDX idx = m_indices[cell.Leaf().idxBegin + i];
-			if (aabb.Intersects((const POINT_TYPE)m_items[idx]))
+		for (IDX_TYPE i=0; i<cell.Leaf().size; ++i) {
+			const IDX_TYPE idx = m_indices[cell.Leaf().idxBegin + i];
+			if (aabb.Intersects(GetItem(idx)))
 				inserter(idx);
 		}
 		return;
@@ -353,17 +337,17 @@ void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE,SIZE,NOM,DENOM>::_Collect(const CE
 	}
 } // Collect
 // find all items contained by the cells intersected by the given line
-template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE, int SIZE, int NOM, int DENOM>
+template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE>
 template <typename INSERTER, typename COLLECTOR>
-void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE,SIZE,NOM,DENOM>::_Collect(const CELL_TYPE& cell, TYPE radius, const COLLECTOR& collector, INSERTER& inserter) const
+void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE>::_Collect(const CELL_TYPE& cell, TYPE radius, const COLLECTOR& collector, INSERTER& inserter) const
 {
 	ASSERT(!cell.IsLeaf());
 	const TYPE childRadius = radius / TYPE(2);
 	for (int i=0; i<CELL_TYPE::numChildren; ++i) {
 		const CELL_TYPE& childCell = cell.m_child[i];
 		if (childCell.IsLeaf()) {
-			if (collector.Intersects(ComputeChildCenter(cell.GetCenter(), childRadius, i), childRadius))
-				inserter(m_indices.Begin()+childCell.Leaf().idxBegin, childCell.GetNumItems());
+			if (collector.Intersects(CELL_TYPE::ComputeChildCenter(cell.GetCenter(), childRadius, i), childRadius))
+				inserter(m_indices.data()+childCell.GetFirstItemIdx(), childCell.GetNumItems());
 		} else {
 			if (collector.Intersects(childCell.Node().center, childRadius))
 				_Collect(childCell, childRadius, collector, inserter);
@@ -372,66 +356,66 @@ void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE,SIZE,NOM,DENOM>::_Collect(const CE
 } // Collect
 /*----------------------------------------------------------------*/
 
-template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE, int SIZE, int NOM, int DENOM>
+template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE>
 template <typename INSERTER>
-inline void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE,SIZE,NOM,DENOM>::Collect(INSERTER& inserter, const AABB_TYPE& aabb) const
+inline void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE>::Collect(INSERTER& inserter, const AABB_TYPE& aabb) const
 {
 	_Collect(m_root, aabb, inserter);
 }
-template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE, int SIZE, int NOM, int DENOM>
-inline void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE,SIZE,NOM,DENOM>::Collect(IDXARR_TYPE& indices, const AABB_TYPE& aabb) const
+template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE>
+inline void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE>::Collect(IDXARR_TYPE& indices, const AABB_TYPE& aabb) const
 {
 	_Collect(m_root, aabb, IndexInserter(indices));
 }
 
-template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE, int SIZE, int NOM, int DENOM>
+template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE>
 template <typename INSERTER>
-inline void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE,SIZE,NOM,DENOM>::Collect(INSERTER& inserter, const POINT_TYPE& center, TYPE radius) const
+inline void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE>::Collect(INSERTER& inserter, const POINT_TYPE& center, TYPE radius) const
 {
 	_Collect(m_root, AABB_TYPE(center, radius), inserter);
 }
-template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE, int SIZE, int NOM, int DENOM>
-inline void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE,SIZE,NOM,DENOM>::Collect(IDXARR_TYPE& indices, const POINT_TYPE& center, TYPE radius) const
+template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE>
+inline void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE>::Collect(IDXARR_TYPE& indices, const POINT_TYPE& center, TYPE radius) const
 {
 	_Collect(m_root, AABB_TYPE(center, radius), IndexInserter(indices));
 }
 
-template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE, int SIZE, int NOM, int DENOM>
+template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE>
 template <typename INSERTER, typename COLLECTOR>
-inline void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE,SIZE,NOM,DENOM>::Collect(INSERTER& inserter, const COLLECTOR& collector) const
+inline void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE>::Collect(INSERTER& inserter, const COLLECTOR& collector) const
 {
 	_Collect(m_root, m_radius, collector, inserter);
 }
-template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE, int SIZE, int NOM, int DENOM>
+template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE>
 template <typename COLLECTOR>
-inline void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE,SIZE,NOM,DENOM>::Collect(IDXARR_TYPE& indices, const COLLECTOR& collector) const
+inline void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE>::Collect(IDXARR_TYPE& indices, const COLLECTOR& collector) const
 {
 	_Collect(m_root, m_radius, collector, IndexInserter(indices));
 }
 
-template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE, int SIZE, int NOM, int DENOM>
-inline void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE,SIZE,NOM,DENOM>::Collect(IDX_TYPE maxNeighbors, IDXARR_TYPE& indices, const AABB_TYPE& aabb) const
+template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE>
+inline void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE>::Collect(IDX_TYPE maxNeighbors, IDXARR_TYPE& indices, const AABB_TYPE& aabb) const
 {
 	_Collect(m_root, aabb, IndexInserter(indices));
-	if (indices.GetSize() > maxNeighbors) {
+	if (indices.size() > maxNeighbors) {
 		// keep only the closest neighbors
 		typedef TIndexScore<IDX_TYPE,TYPE> ItemIndexScore;
 		typedef cList<ItemIndexScore, const ItemIndexScore&, 0> ItemIndexScoreArr;
-		ItemIndexScoreArr indexscores(indices.GetSize());
+		ItemIndexScoreArr indexscores(indices.size());
 		const POINT_TYPE center(aabb.GetCenter());
 		FOREACH(i, indices) {
 			const IDX_TYPE& idx = indices[i];
-			const TYPE score(-(center-(const POINT_TYPE)m_items[idx]).squaredNorm());
+			const TYPE score(-(center-GetItem(idx)).squaredNorm());
 			indexscores[i] = ItemIndexScore(idx,score);
 		}
 		indices.Empty();
 		indexscores.Sort();
-		for (IDX i=0; i<maxNeighbors; ++i)
+		for (IDX_TYPE i=0; i<maxNeighbors; ++i)
 			indices.Insert(indexscores[i].idx);
 	}
 }
-template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE, int SIZE, int NOM, int DENOM>
-inline void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE,SIZE,NOM,DENOM>::Collect(IDX_TYPE maxNeighbors, IDXARR_TYPE& indices, const POINT_TYPE& center, TYPE radius) const
+template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE>
+inline void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE>::Collect(IDX_TYPE maxNeighbors, IDXARR_TYPE& indices, const POINT_TYPE& center, TYPE radius) const
 {
 	Collect(maxNeighbors, indices, AABB_TYPE(center, radius));
 } // Collect
@@ -439,9 +423,9 @@ inline void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE,SIZE,NOM,DENOM>::Collect(ID
 
 
 // walk through the tree and collect visible indices
-template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE, int SIZE, int NOM, int DENOM>
+template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE>
 template <typename FTYPE, int FDIMS, typename INSERTER>
-void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE,SIZE,NOM,DENOM>::_Traverse(const CELL_TYPE& cell, TYPE radius, const TFrustum<FTYPE,FDIMS>& frustum, INSERTER& inserter) const
+void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE>::_Traverse(const CELL_TYPE& cell, TYPE radius, const TFrustum<FTYPE,FDIMS>& frustum, INSERTER& inserter) const
 {
 	ASSERT(!cell.IsLeaf());
 	switch (frustum.Classify(cell.GetAabb(radius))) {
@@ -450,9 +434,9 @@ void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE,SIZE,NOM,DENOM>::_Traverse(const C
 		for (int i=0; i<CELL_TYPE::numChildren; ++i) {
 			const CELL_TYPE& childCell = cell.m_child[i];
 			if (childCell.IsLeaf()) {
-				const AABB_TYPE childAabb(ComputeChildCenter(cell.GetCenter(), childRadius, i), childRadius);
+				const AABB_TYPE childAabb(CELL_TYPE::ComputeChildCenter(cell.GetCenter(), childRadius, i), childRadius);
 				if (frustum.Classify(childAabb) != CULLED)
-					inserter(m_indices.Begin()+childCell.Leaf().idxBegin, childCell.GetNumItems());
+					inserter(m_indices.data()+childCell.GetFirstItemIdx(), childCell.GetNumItems());
 			} else {
 				_Traverse(childCell, childRadius, frustum, inserter);
 			}
@@ -460,14 +444,14 @@ void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE,SIZE,NOM,DENOM>::_Traverse(const C
 		break; }
 	case VISIBLE: {
 		for (int i=0; i<CELL_TYPE::numChildren; ++i)
-			_CollectCells(cell.m_child[i], inserter);
+			CollectCells(cell.m_child[i], inserter);
 		break; }
 	}
 }
 // walk through the tree and collect visible leafs
-template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE, int SIZE, int NOM, int DENOM>
+template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE>
 template <typename FTYPE, int FDIMS, typename PARSER>
-void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE,SIZE,NOM,DENOM>::_TraverseCells(CELL_TYPE& cell, TYPE radius, const TFrustum<FTYPE,FDIMS>& frustum, PARSER& parser)
+void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE>::_TraverseCells(CELL_TYPE& cell, TYPE radius, const TFrustum<FTYPE,FDIMS>& frustum, PARSER& parser)
 {
 	ASSERT(!cell.IsLeaf());
 	switch (frustum.Classify(cell.GetAabb(radius))) {
@@ -476,7 +460,7 @@ void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE,SIZE,NOM,DENOM>::_TraverseCells(CE
 		for (int i=0; i<CELL_TYPE::numChildren; ++i) {
 			const CELL_TYPE& childCell = cell.m_child[i];
 			if (childCell.IsLeaf()) {
-				const AABB_TYPE childAabb(ComputeChildCenter(cell.GetCenter(), childRadius, i), childRadius);
+				const AABB_TYPE childAabb(CELL_TYPE::ComputeChildCenter(cell.GetCenter(), childRadius, i), childRadius);
 				if (frustum.Classify(childAabb) != CULLED)
 					parser(childCell);
 			} else {
@@ -491,36 +475,253 @@ void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE,SIZE,NOM,DENOM>::_TraverseCells(CE
 	}
 }
 
-template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE, int SIZE, int NOM, int DENOM>
+template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE>
 template <typename FTYPE, int FDIMS, typename INSERTER>
-inline void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE,SIZE,NOM,DENOM>::Traverse(const TFrustum<FTYPE,FDIMS>& frustum, INSERTER& inserter) const
+inline void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE>::Traverse(const TFrustum<FTYPE,FDIMS>& frustum, INSERTER& inserter) const
 {
 	_Traverse(m_root, m_radius, frustum, inserter);
 }
-template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE, int SIZE, int NOM, int DENOM>
+template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE>
 template <typename FTYPE, int FDIMS>
-inline void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE,SIZE,NOM,DENOM>::Traverse(const TFrustum<FTYPE,FDIMS>& frustum, IDXARR_TYPE& indices) const
+inline void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE>::Traverse(const TFrustum<FTYPE,FDIMS>& frustum, IDXARR_TYPE& indices) const
 {
 	_Traverse(m_root, m_radius, frustum, IndexInserter(indices));
 }
-template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE, int SIZE, int NOM, int DENOM>
+template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE>
 template <typename FTYPE, int FDIMS, typename PARSER>
-inline void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE,SIZE,NOM,DENOM>::TraverseCells(const TFrustum<FTYPE,FDIMS>& frustum, PARSER& parser)
+inline void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE>::TraverseCells(const TFrustum<FTYPE,FDIMS>& frustum, PARSER& parser)
 {
 	_TraverseCells(m_root, m_radius, frustum, parser);
 }
-template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE, int SIZE, int NOM, int DENOM>
+template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE>
 template <typename FTYPE, int FDIMS>
-inline void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE,SIZE,NOM,DENOM>::TraverseCells(const TFrustum<FTYPE,FDIMS>& frustum, CELLPTRARR_TYPE& leaves)
+inline void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE>::TraverseCells(const TFrustum<FTYPE,FDIMS>& frustum, CELLPTRARR_TYPE& leaves)
 {
 	_TraverseCells(m_root, m_radius, frustum, CellInserter(leaves));
 } // Traverse
 /*----------------------------------------------------------------*/
 
+template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE>
+template <typename AREAESTIMATOR, typename CHUNKINSERTER>
+void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE>::_SplitVolume(const CELL_TYPE& parentCell, TYPE parentRadius, unsigned idxChild, float maxArea, AREAESTIMATOR& areaEstimator, CHUNKINSERTER& chunkInserter, const UnsignedArr& indices)
+{
+	ASSERT(!indices.empty());
+	typedef std::pair<UnsignedArr,UnsignedArr> PairIndices;
+	struct GenerateSamples {
+		const UnsignedArr& indices;
+		const unsigned numSamples;
+		const unsigned halfSamples;
+		const unsigned numCommonAxis;
+		POINT_TYPE centers[8];
+		cList<PairIndices> arrHalfIndices;
+		GenerateSamples(const UnsignedArr& _indices)
+			: indices(_indices), numSamples((unsigned)indices.size()), halfSamples(numSamples/2), numCommonAxis(halfSamples==4?1:2), arrHalfIndices(0, numSamples)
+		{
+			ASSERT(indices.size()%2 == 0 && indices.IsSorted());
+			ASSERT(halfSamples == 4 || halfSamples == 2);
+			CELL_TYPE::ComputeCenter(centers);
+			UnsignedArr samples(halfSamples);
+			for (unsigned hs=0; hs<halfSamples; ++hs) {
+				samples[0] = hs;
+				GenerateIndices(1, samples);
+			}
+		}
+		void GenerateIndices(unsigned idxSample, UnsignedArr& samples) {
+			if (idxSample == samples.size()) {
+				InsertIndices(samples);
+				return;
+			}
+			for (unsigned i=samples[idxSample-1]+1; i<numSamples; ++i) {
+				samples[idxSample] = i;
+				GenerateIndices(idxSample+1, samples);
+			}
+		}
+		void InsertIndices(const UnsignedArr& samples) {
+			UnsignedArr halfIndices(halfSamples);
+			for (unsigned s=0; s<halfSamples; ++s)
+				halfIndices[s] = indices[samples[s]];
+			// check all samples have one/two common axis
+			unsigned commonAxis(0);
+			for (unsigned a=0; a<3; ++a) {
+				unsigned na(1);
+				for (unsigned s=1; s<halfSamples; ++s) {
+					if (centers[halfIndices[0]][a] == centers[halfIndices[s]][a])
+						++na;
+				}
+				if (na == halfSamples && ++commonAxis == numCommonAxis)
+					goto CommonAxis;
+			}
+			return;
+			CommonAxis:
+			// check not complementary samples
+			for (const PairIndices& pairHalfIndices: arrHalfIndices) {
+				unsigned nCommon(0);
+				for (unsigned s=0; s<halfSamples; ++s)
+					if (halfIndices[s] == pairHalfIndices.second[s])
+						++nCommon;
+				if (nCommon == halfSamples)
+					return;
+			}
+			// generate complementary indices
+			ASSERT(halfIndices.IsSorted());
+			UnsignedArr compHalfIndices(0, halfSamples);
+			unsigned i(0);
+			for (unsigned idx: indices) {
+				if (i < halfSamples && idx == halfIndices[i])
+					++i;
+				else
+					compHalfIndices.push_back(idx);
+			}
+			ASSERT(compHalfIndices.size() == halfSamples);
+			ASSERT(compHalfIndices.IsSorted());
+			arrHalfIndices.emplace_back(std::move(halfIndices), std::move(compHalfIndices));
+		}
+	};
+	const CELL_TYPE& cell(parentCell.GetChild(idxChild));
+	const TYPE radius(parentRadius / TYPE(2));
+	// handle particular cases
+	if (cell.IsLeaf()) {
+		chunkInserter(parentCell, parentRadius, UnsignedArr{idxChild});
+		return;
+	}
+	if (indices.size() == 1) {
+		_SplitVolume(cell, radius, indices.front(), maxArea, areaEstimator, chunkInserter);
+		return;
+	}
+	if (indices.size() == 2) {
+		_SplitVolume(cell, radius, indices.front(), maxArea, areaEstimator, chunkInserter);
+		_SplitVolume(cell, radius, indices.back(), maxArea, areaEstimator, chunkInserter);
+		return;
+	}
+	// measure surface area for each child
+	float childArea[8], totalArea(0);
+	for (unsigned c=0; c<8; ++c) {
+		CollectCells(cell.GetChild(c), areaEstimator);
+		totalArea += childArea[c] = areaEstimator.PopArea();
+	}
+	if (totalArea < maxArea*1.01f) {
+		chunkInserter(parentCell, parentRadius, UnsignedArr{idxChild});
+		return;
+	}
+	// check if all parts are over the limit
+	unsigned numOverAreas(0);
+	for (unsigned c: indices)
+		if (childArea[c] == 0 || childArea[c] >= maxArea)
+			++numOverAreas;
+	if (numOverAreas == indices.size()) {
+		for (unsigned c: indices)
+			if (childArea[c] > 0)
+				_SplitVolume(cell, radius, c, maxArea, areaEstimator, chunkInserter);
+		return;
+	}
+	// split mesh children and retain the components with surface smaller than the given area
+	const cList<PairIndices> halfIndices(std::move(GenerateSamples(indices).arrHalfIndices));
+	IDX bestSplit(NO_ID);
+	float bestArea(0);
+	Point2f bestAs;
+	FOREACH(idx, halfIndices) {
+		const PairIndices& pairHalfIndices = halfIndices[idx];
+		ASSERT(pairHalfIndices.first.size() == pairHalfIndices.second.size());
+		Point2f as(Point2f::ZERO);
+		for (unsigned i=0; i<pairHalfIndices.first.size(); ++i) {
+			as[0] += childArea[pairHalfIndices.first[i]];
+			as[1] += childArea[pairHalfIndices.second[i]];
+		}
+		for (unsigned i=0; i<2; ++i) {
+			if (as[i] < maxArea && bestArea < as[i]) {
+				bestArea = as[i];
+				bestAs = as;
+				bestSplit = idx;
+			}
+		}
+	}
+	if (bestSplit != NO_ID) {
+		// store found clusters
+		const PairIndices& pairHalfIndices = halfIndices[bestSplit];
+		if (bestAs[0] < maxArea)
+			chunkInserter(cell, radius, pairHalfIndices.first);
+		else
+			_SplitVolume(parentCell, parentRadius, idxChild, maxArea, areaEstimator, chunkInserter, pairHalfIndices.first);
+		if (bestAs[1] < maxArea)
+			chunkInserter(cell, radius, pairHalfIndices.second);
+		else
+			_SplitVolume(parentCell, parentRadius, idxChild, maxArea, areaEstimator, chunkInserter, pairHalfIndices.second);
+		return;
+	}
+	// farther split each half into quarters
+	if (halfIndices.front().first.size() == 4) {
+		UnsignedArr bestQIndices[4];
+		float bestArea(0);
+		Eigen::Vector4f bestAs;
+		for (const PairIndices& pairHalfIndices: halfIndices) {
+			const cList<PairIndices> qIndicesFirst(std::move(GenerateSamples(pairHalfIndices.first).arrHalfIndices));
+			const cList<PairIndices> qIndicesSecond(std::move(GenerateSamples(pairHalfIndices.second).arrHalfIndices));
+			ASSERT(qIndicesFirst.size() == qIndicesSecond.size());
+			FOREACH(q, qIndicesFirst) {
+				const PairIndices& qFirst = qIndicesFirst[q];
+				const PairIndices& qSecond = qIndicesSecond[q];
+				Eigen::Vector4f as(Eigen::Vector4f::Zero());
+				for (unsigned i=0; i<qFirst.first.size(); ++i) {
+					as[0] += childArea[qFirst.first[i]];
+					as[1] += childArea[qFirst.second[i]];
+					as[2] += childArea[qSecond.first[i]];
+					as[3] += childArea[qSecond.second[i]];
+				}
+				float area(0);
+				for (unsigned i=0; i<4; ++i) {
+					if (as[i] < maxArea)
+						area += as[i];
+				}
+				if (bestArea < area) {
+					bestArea = area;
+					bestAs = as;
+					bestQIndices[0] = qFirst.first;
+					bestQIndices[1] = qFirst.second;
+					bestQIndices[2] = qSecond.first;
+					bestQIndices[3] = qSecond.second;
+				}
+			}
+		}
+		if (bestArea > 0) {
+			// store found clusters
+			for (unsigned i=0; i<4; ++i) {
+				if (bestAs[i] < maxArea) {
+					chunkInserter(cell, radius, bestQIndices[i]);
+				} else {
+					_SplitVolume(cell, radius, bestQIndices[i][0], maxArea, areaEstimator, chunkInserter);
+					_SplitVolume(cell, radius, bestQIndices[i][1], maxArea, areaEstimator, chunkInserter);
+				}
+			}
+			return;
+		}
+	}
+	// split each child
+	for (unsigned c: indices) {
+		if (childArea[c] == 0)
+			continue;
+		if (childArea[c] < maxArea)
+			chunkInserter(cell, radius, UnsignedArr{c});
+		else
+			_SplitVolume(cell, radius, c, maxArea, areaEstimator, chunkInserter);
+	}
+}
+template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE>
+template <typename AREAESTIMATOR, typename CHUNKINSERTER>
+void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE>::SplitVolume(float maxArea, AREAESTIMATOR& areaEstimator, CHUNKINSERTER& chunkInserter)
+{
+	CELL_TYPE parent;
+	parent.m_child = new CELL_TYPE[1];
+	parent.m_child[0] = m_root;
+	parent.Node().center = m_root.Node().center + POINT_TYPE::Constant(m_radius);
+	_SplitVolume(parent, m_radius*TYPE(2), 0, maxArea, areaEstimator, chunkInserter);
+	parent.m_child[0].m_child = NULL;
+} // SplitVolume
+/*----------------------------------------------------------------*/
+
 
 #ifndef _RELEASE
-template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE, int SIZE, int NOM, int DENOM>
-void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE,SIZE,NOM,DENOM>::_GetDebugInfo(const CELL_TYPE& cell, unsigned nDepth, DEBUGINFO& info) const
+template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE>
+void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE>::_GetDebugInfo(const CELL_TYPE& cell, unsigned nDepth, DEBUGINFO& info) const
 {
 	if (cell.IsLeaf()) {
 		if (info.minDepth > nDepth)
@@ -537,8 +738,8 @@ void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE,SIZE,NOM,DENOM>::_GetDebugInfo(con
 		_GetDebugInfo(cell.m_child[i], nDepth, info);
 }
 
-template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE, int SIZE, int NOM, int DENOM>
-void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE,SIZE,NOM,DENOM>::GetDebugInfo(DEBUGINFO* pInfo, bool bPrintStats) const
+template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE>
+void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE>::GetDebugInfo(DEBUGINFO* pInfo, bool bPrintStats) const
 {
 	DEBUGINFO localInfo;
 	DEBUGINFO& info = (pInfo ? *pInfo : localInfo);
@@ -555,8 +756,8 @@ void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE,SIZE,NOM,DENOM>::GetDebugInfo(DEBU
 } // GetDebugInfo
 /*----------------------------------------------------------------*/
 
-template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE, int SIZE, int NOM, int DENOM>
-void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE,SIZE,NOM,DENOM>::LogDebugInfo(const DEBUGINFO& info)
+template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE>
+void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE>::LogDebugInfo(const DEBUGINFO& info)
 {
 	//VERBOSE("NoItems: %d; Mem %s; MemItems %s; MemStruct %s; AvgMemStruct %.2f%%%%; NoNodes %d; NoLeaf %d; AvgLeaf %.2f%%%%; AvgDepth %.2f; MinDepth %d; MaxDepth %d",
 	VERBOSE("NumItems %d; Mem %s (%s items, %s struct - %.2f%%%%); NumNodes %d (leaves %d - %.2f%%%%); Depth %.2f (%d min, %d max)",
@@ -574,7 +775,7 @@ inline bool OctreeTest(unsigned iters, unsigned maxItems=1000, bool bRandom=true
 	srand(bRandom ? (unsigned)time(NULL) : 0);
 	typedef Eigen::Matrix<TYPE,DIMS,1> POINT_TYPE;
 	typedef SEACAVE::cList<POINT_TYPE,const POINT_TYPE&,0> TestArr;
-	typedef TOctree<TestArr,TYPE,DIMS,uint32_t,16,10,1> TestTree;
+	typedef TOctree<TestArr,TYPE,DIMS,uint32_t> TestTree;
 	const TYPE ptMinData[] = {0,0,0}, ptMaxData[] = {640,480,240};
 	typename TestTree::AABB_TYPE aabb;
 	aabb.Set(Eigen::Map<const POINT_TYPE>(ptMinData), Eigen::Map<const POINT_TYPE>(ptMaxData));
@@ -600,7 +801,9 @@ inline bool OctreeTest(unsigned iters, unsigned maxItems=1000, bool bRandom=true
 		if (DIMS > 2) pt(2) = RAND()%ROUND2INT(ptMaxData[2]);
 		const TYPE radius(TYPE(3+RAND()%30));
 		// build octree and find interest items
-		TestTree tree(items, aabb);
+		TestTree tree(items, aabb, [](typename TestTree::IDX_TYPE size, typename TestTree::Type radius) {
+			return size > 16 && radius > 10;
+		});
 		typename TestTree::IDXARR_TYPE indices;
 		tree.Collect(indices, pt, radius);
 		// find interest items by brute force
@@ -620,7 +823,7 @@ inline bool OctreeTest(unsigned iters, unsigned maxItems=1000, bool bRandom=true
 		// compare results
 		unsigned nMatches = 0;
 		FOREACH(i, trueIndices) {
-			const IDX idx = trueIndices[i];
+			const typename TestTree::IDX_TYPE idx = trueIndices[i];
 			FOREACH(j, indices) {
 				if (indices[j] == idx) {
 					++nMatches;
@@ -629,8 +832,8 @@ inline bool OctreeTest(unsigned iters, unsigned maxItems=1000, bool bRandom=true
 			}
 		}
 		nTotalMatches += nMatches;
-		nTotalMissed += trueIndices.GetSize()-nMatches;
-		nTotalExtra += indices.GetSize()-nMatches;
+		nTotalMissed += trueIndices.size()-nMatches;
+		nTotalExtra += indices.size()-nMatches;
 		#ifndef _RELEASE
 		// print stats
 		typename TestTree::DEBUGINFO_TYPE info;

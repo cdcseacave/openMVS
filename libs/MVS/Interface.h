@@ -7,12 +7,13 @@
 #include <fstream>
 #include <string>
 #include <cctype>
+#include <limits>
 
 
 // D E F I N E S ///////////////////////////////////////////////////
 
 #define MVSI_PROJECT_ID "MVSI" // identifies the project stream
-#define MVSI_PROJECT_VER ((uint32_t)5) // identifies the version of a project stream
+#define MVSI_PROJECT_VER ((uint32_t)6) // identifies the version of a project stream
 
 // set a default namespace name if none given
 #ifndef _INTERFACE_NAMESPACE
@@ -23,10 +24,6 @@
 // (should be uncommented if OpenCV is not available)
 #if !defined(_USE_OPENCV) && !defined(_USE_CUSTOM_CV)
 #define _USE_CUSTOM_CV
-#endif
-
-#ifndef NO_ID
-#define NO_ID std::numeric_limits<uint32_t>::max()
 #endif
 
 
@@ -163,6 +160,9 @@ public:
 
 
 namespace _INTERFACE_NAMESPACE {
+
+// invalid index
+constexpr uint32_t NO_ID {std::numeric_limits<uint32_t>::max()};
 
 // custom serialization
 namespace ARCHIVE {
@@ -376,7 +376,7 @@ struct Interface
 			std::string name; // camera's name
 			std::string bandName; // camera's band name, ex: RGB, BLUE, GREEN, RED, NIR, THERMAL, etc (optional)
 			uint32_t width, height; // image resolution in pixels for all images sharing this camera (optional)
-			Mat33d K; // camera's intrinsics matrix (normalized if image resolution not specified)
+			Mat33d K; // camera's intrinsics matrix (normalized if image resolution not specified), where integer coordinates is by convention the pixel center
 			Mat33d R; // camera's rotation matrix relative to the platform
 			Pos3d C; // camera's translation vector relative to the platform
 
@@ -405,8 +405,8 @@ struct Interface
 
 		// structure describing a pose along the trajectory of a platform
 		struct Pose {
-			Mat33d R; // platform's rotation matrix
-			Pos3d C; // platform's translation vector in the global coordinate system
+			Mat33d R; // platform's rotation matrix that rotates a point from world to camera coordinate system
+			Pos3d C; // platform's translation vector (position) in world coordinate system
 
 			Pose() {}
 			template <typename MAT, typename POS>
@@ -415,6 +415,23 @@ struct Interface
 			// translation vector t = -RC
 			inline Pos3d GetTranslation() const { return R*(-C); }
 			inline void SetTranslation(const Pos3d& T) { C = R.t()*(-T); }
+
+			// combine poses
+			inline Pose operator * (const Pose& P) const {
+				return Pose(R*P.R, P.R.t()*C+P.C);
+			}
+			inline Pose& operator *= (const Pose& P) {
+				R = R*P.R; C = P.R.t()*C+P.C; return *this;
+			}
+
+			// project point: world to local coordinates
+			inline Pos3d operator * (const Pos3d& X) const {
+				return R * (X - C);
+			}
+			// back-project point: local to world coordinates
+			inline Pos3d operator / (const Pos3d& X) const {
+				return R.t() * X + C;
+			}
 
 			template <class Archive>
 			void serialize(Archive& ar, const unsigned int /*version*/) {
@@ -434,15 +451,29 @@ struct Interface
 		static Mat33d ScaleK(const Mat33d& _K, double scale) {
 			Mat33d K(_K);
 			K(0,0) *= scale;
-			K(0,1) *= scale;
-			K(0,2) *= scale;
 			K(1,1) *= scale;
-			K(1,2) *= scale;
+			K(0,2) = (K(0,2)+0.5)*scale-0.5;
+			K(1,2) = (K(1,2)+0.5)*scale-0.5;
+			K(0,1) *= scale;
 			return K;
 		}
+		const Mat33d& SetFullK(uint32_t cameraID, const Mat33d& K, uint32_t width, uint32_t height, bool normalize=false) {
+			Camera& camera = cameras[cameraID];
+			if (normalize) {
+				camera.width = camera.height = 0;
+				camera.K = ScaleK(K, 1.0/(double)Camera::GetNormalizationScale(width, height));
+			} else {
+				camera.width = width; camera.height = height;
+				camera.K = K;
+			}
+			return camera.K;
+		}
 		Mat33d GetFullK(uint32_t cameraID, uint32_t width, uint32_t height) const {
-			return ScaleK(GetK(cameraID), (double)Camera::GetNormalizationScale(width, height)/
-				(cameras[cameraID].IsNormalized()?1.0:(double)cameras[cameraID].GetNormalizationScale()));
+			const Camera& camera = cameras[cameraID];
+			if (!camera.IsNormalized() && camera.width == width && camera.height == height)
+				return camera.K;
+			return ScaleK(camera.K, (double)Camera::GetNormalizationScale(width, height)/
+				(camera.IsNormalized()?1.0:(double)camera.GetNormalizationScale()));
 		}
 
 		Pose GetPose(uint32_t cameraID, uint32_t poseID) const {
@@ -475,7 +506,7 @@ struct Interface
 		uint32_t ID; // ID of this image in the global space (optional)
 
 		Image() : platformID(NO_ID), cameraID(NO_ID), poseID(NO_ID), ID(NO_ID) {}
-		
+
 		bool IsValid() const { return poseID != NO_ID; }
 
 		template <class Archive>
@@ -575,6 +606,25 @@ struct Interface
 	typedef std::vector<Color> ColorArr;
 	/*----------------------------------------------------------------*/
 
+	// structure describing a Oriented Bounding-Box (optional)
+	struct OBB {
+		Mat33d rot; // rotation from scene to OBB coordinate system
+		Pos3d ptMin; // minimal point represented in OBB coordinate system
+		Pos3d ptMax; // maximal point represented in OBB coordinate system
+
+		OBB() : rot(Mat33d::eye()), ptMin(0, 0, 0), ptMax(0, 0, 0) {}
+
+		bool IsValid() const { return ptMin.x < ptMax.x && ptMin.y < ptMax.y && ptMin.z < ptMax.z; }
+
+		template <class Archive>
+		void serialize(Archive& ar, const unsigned int /*version*/) {
+			ar & rot;
+			ar & ptMin;
+			ar & ptMax;
+		}
+	};
+	/*----------------------------------------------------------------*/
+
 	PlatformArr platforms; // array of platforms
 	ImageArr images; // array of images
 	VertexArr vertices; // array of reconstructed 3D points
@@ -584,6 +634,7 @@ struct Interface
 	NormalArr linesNormal; // array of reconstructed 3D lines' normal (optional)
 	ColorArr linesColor; // array of reconstructed 3D lines' color (optional)
 	Mat44d transform; // transformation used to convert from absolute to relative coordinate system (optional)
+	OBB obb; // minimum oriented bounding box containing the scene (optional)
 
 	Interface() : transform(Mat44d::eye()) {}
 
@@ -595,6 +646,29 @@ struct Interface
 	Platform::Pose GetPose(uint32_t imageID) const {
 		const Image& image = images[imageID];
 		return platforms[image.platformID].GetPose(image.cameraID, image.poseID);
+	}
+
+	// apply similarity transform
+	void Transform(const Mat33d& rotation, const Pos3d& translation, const double scale) {
+		for (Platform& platform : platforms) {
+			for (Platform::Pose& pose : platform.poses) {
+				pose.R = pose.R * rotation.t();
+				pose.C = rotation * pose.C * scale + translation;
+			}
+		}
+		for (Vertex& vertex : vertices) {
+			vertex.X = rotation * Pos3d(vertex.X) * scale + translation;
+		}
+		for (Normal& normal : verticesNormal) {
+			normal.n = rotation * Pos3d(normal.n);
+		}
+		for (Line& line : lines) {
+			line.pt1 = rotation * Pos3d(line.pt1) * scale + translation;
+			line.pt2 = rotation * Pos3d(line.pt2) * scale + translation;
+		}
+		for (Normal& normal : linesNormal) {
+			normal.n = rotation * Pos3d(normal.n);
+		}
 	}
 
 	template <class Archive>
@@ -610,6 +684,9 @@ struct Interface
 			ar & linesColor;
 			if (version > 1) {
 				ar & transform;
+				if (version > 5) {
+					ar & obb;
+				}
 			}
 		}
 	}

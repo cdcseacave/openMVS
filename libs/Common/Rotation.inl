@@ -522,13 +522,6 @@ inline TRMatrixBase<TYPE>::TRMatrixBase()
 {}
 
 template <typename TYPE>
-inline TRMatrixBase<TYPE>::TRMatrixBase(const TRMatrixBase<TYPE>& r)
-  : Base(r)
-{
-	ASSERT(Check(R_CONSTRAINT_ACCURACY));
-}
-
-template <typename TYPE>
 inline TRMatrixBase<TYPE>::TRMatrixBase(const Mat& mat)
   : Base(mat)
 {
@@ -558,10 +551,6 @@ inline TRMatrixBase<TYPE>::TRMatrixBase(TYPE roll, TYPE pitch, TYPE yaw)
 {
 	SetXYZ(roll, pitch, yaw);
 }
-
-template <typename TYPE>
-inline TRMatrixBase<TYPE>::~TRMatrixBase()
-{}
 
 
 template <typename TYPE>

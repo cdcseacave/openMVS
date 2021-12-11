@@ -64,6 +64,15 @@ public:
 
 	inline TYPE& operator [] (BYTE i) { ASSERT(i<=DIMS); return m_vN.data()[i]; }
 	inline TYPE operator [] (BYTE i) const { ASSERT(i<=DIMS); return m_vN.data()[i]; }
+
+	#ifdef _USE_BOOST
+	// implement BOOST serialization
+	template<class Archive>
+	void serialize(Archive& ar, const unsigned int /*version*/) {
+		ar & m_vN;
+		ar & m_fD;
+	}
+	#endif
 }; // class TPlane
 /*----------------------------------------------------------------*/
 
@@ -106,6 +115,14 @@ public:
 
 	inline TYPE& operator [] (BYTE i) { ASSERT(i<DIMS); return m_planes[i]; }
 	inline TYPE operator [] (BYTE i) const { ASSERT(i<DIMS); return m_planes[i]; }
+
+	#ifdef _USE_BOOST
+	// implement BOOST serialization
+	template<class Archive>
+	void serialize(Archive& ar, const unsigned int /*version*/) {
+		ar & m_planes;
+	}
+	#endif
 }; // class TPlane
 /*----------------------------------------------------------------*/
 

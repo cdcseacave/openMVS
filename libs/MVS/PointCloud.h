@@ -86,14 +86,17 @@ public:
 	inline bool IsValid() const { ASSERT(points.GetSize() == pointViews.GetSize() || pointViews.IsEmpty()); return !pointViews.IsEmpty(); }
 	inline size_t GetSize() const { ASSERT(points.GetSize() == pointViews.GetSize() || pointViews.IsEmpty()); return points.GetSize(); }
 
-	void RemovePoint(IDX idx);
+	void RemovePoint(IDX);
+	void RemovePointsOutside(const OBB3f&);
 
 	Box GetAABB() const;
 	Box GetAABB(const Box& bound) const;
 	Box GetAABB(unsigned minViews) const;
+	Point GetCenter() const;
 
 	bool Load(const String& fileName);
 	bool Save(const String& fileName, bool bLegacyTypes=false) const;
+	bool SaveNViews(const String& fileName, uint32_t minViews, bool bLegacyTypes=false) const;
 
 	#ifdef _USE_BOOST
 	// implement BOOST serialization

@@ -12,6 +12,19 @@
 // S T R U C T S ///////////////////////////////////////////////////
 
 template <typename TYPE, int DIMS>
+inline TOBB<TYPE,DIMS>::TOBB(bool)
+	:
+	m_rot(MATRIX::Identity()),
+	m_pos(POINT::Zero()),
+	m_ext(POINT::Zero())
+{
+}
+template <typename TYPE, int DIMS>
+inline TOBB<TYPE,DIMS>::TOBB(const MATRIX& rot, const POINT& ptMin, const POINT& ptMax)
+{
+	Set(rot, ptMin, ptMax);
+}
+template <typename TYPE, int DIMS>
 inline TOBB<TYPE,DIMS>::TOBB(const POINT* pts, size_t n)
 {
 	Set(pts, n);
@@ -23,6 +36,15 @@ inline TOBB<TYPE,DIMS>::TOBB(const POINT* pts, size_t n, const TRIANGLE* tris, s
 } // constructor
 /*----------------------------------------------------------------*/
 
+
+// build from rotation matrix from world to local, and local min/max corners
+template <typename TYPE, int DIMS>
+inline void TOBB<TYPE,DIMS>::Set(const MATRIX& rot, const POINT& ptMin, const POINT& ptMax)
+{
+	m_rot = rot;
+	m_pos = (ptMax + ptMin) * TYPE(0.5);
+	m_ext = (ptMax - ptMin) * TYPE(0.5);
+}
 
 // Inspired from "Fitting Oriented Bounding Boxes" by James Gregson
 // http://jamesgregson.blogspot.ro/2011/03/latex-test.html
@@ -140,24 +162,12 @@ template <typename TYPE, int DIMS>
 inline void TOBB<TYPE,DIMS>::SetRotation(const MATRIX& C)
 {
 	// extract the eigenvalues and eigenvectors from C
-	const Eigen::EigenSolver<MATRIX> es(C);
-	if (es.info() != Eigen::Success)
-		return;
-	const MATRIX eigvec(es.eigenvectors().real());
-	const POINT eigval(es.eigenvalues().real());
-	int indices[3] = {0,1,2};
-	std::sort(indices, indices+3, [&] (int i, int j) {
-		return eigval(i) < eigval(j);
-	});
-
+	const Eigen::SelfAdjointEigenSolver<MATRIX> es(C);
+	ASSERT(es.info() == Eigen::Success);
 	// find the right, up and forward vectors from the eigenvectors
 	// and set the rotation matrix using the eigenvectors
-	m_rot.row(0) = eigvec.col(indices[0]);
-	m_rot.row(1) = eigvec.col(indices[1]);
-	m_rot.row(2) = eigvec.col(indices[2]);
-	ASSERT(ISEQUAL(m_rot.row(0).norm(), TYPE(1)));
-	ASSERT(ISEQUAL(m_rot.row(1).norm(), TYPE(1)));
-	ASSERT(ISEQUAL(m_rot.row(2).norm(), TYPE(1)));
+	ASSERT(es.eigenvalues()(0) < es.eigenvalues()(1) && es.eigenvalues()(1) < es.eigenvalues()(2));
+	m_rot = es.eigenvectors().transpose();
 	if (m_rot.determinant() < 0)
 		m_rot = -m_rot;
 }
@@ -235,6 +245,15 @@ inline void TOBB<TYPE,DIMS>::BuildEnd()
 /*----------------------------------------------------------------*/
 
 
+// check if the oriented bounding box has positive size
+template <typename TYPE, int DIMS>
+inline bool TOBB<TYPE,DIMS>::IsValid() const
+{
+	return m_ext.minCoeff() > TYPE(0);
+} // IsValid
+/*----------------------------------------------------------------*/
+
+
 template <typename TYPE, int DIMS>
 inline void TOBB<TYPE,DIMS>::Enlarge(TYPE x)
 {
@@ -245,6 +264,22 @@ inline void TOBB<TYPE,DIMS>::EnlargePercent(TYPE x)
 {
 	m_ext *= x;
 } // Enlarge
+/*----------------------------------------------------------------*/
+
+
+// Update the box by the given pos delta.
+template <typename TYPE, int DIMS>
+inline void TOBB<TYPE,DIMS>::Translate(const POINT& d)
+{
+	m_pos += d;
+}
+// Update the box by the given transform.
+template <typename TYPE, int DIMS>
+inline void TOBB<TYPE,DIMS>::Transform(const MATRIX& m)
+{
+	m_rot = m * m_rot;
+	m_pos = m * m_pos;
+}
 /*----------------------------------------------------------------*/
 
 
@@ -294,12 +329,12 @@ inline void TOBB<TYPE,DIMS>::GetCorners(POINT pts[numCorners]) const
 			m_rot.row(2)*m_ext[2]
 		};
 		pts[0] = m_pos - pEAxis[0] - pEAxis[1] - pEAxis[2];
-		pts[1] = m_pos + pEAxis[0] - pEAxis[1] - pEAxis[2];
-		pts[2] = m_pos + pEAxis[0] + pEAxis[1] - pEAxis[2];
-		pts[3] = m_pos - pEAxis[0] + pEAxis[1] - pEAxis[2];
-		pts[4] = m_pos - pEAxis[0] - pEAxis[1] + pEAxis[2];
-		pts[5] = m_pos + pEAxis[0] - pEAxis[1] + pEAxis[2];
-		pts[6] = m_pos + pEAxis[0] + pEAxis[1] + pEAxis[2];
+		pts[1] = m_pos - pEAxis[0] - pEAxis[1] + pEAxis[2];
+		pts[2] = m_pos + pEAxis[0] - pEAxis[1] - pEAxis[2];
+		pts[3] = m_pos + pEAxis[0] - pEAxis[1] + pEAxis[2];
+		pts[4] = m_pos + pEAxis[0] + pEAxis[1] - pEAxis[2];
+		pts[5] = m_pos + pEAxis[0] + pEAxis[1] + pEAxis[2];
+		pts[6] = m_pos - pEAxis[0] + pEAxis[1] - pEAxis[2];
 		pts[7] = m_pos - pEAxis[0] + pEAxis[1] + pEAxis[2];
 	}
 } // GetCorners
@@ -307,6 +342,7 @@ inline void TOBB<TYPE,DIMS>::GetCorners(POINT pts[numCorners]) const
 template <typename TYPE, int DIMS>
 inline typename TOBB<TYPE,DIMS>::AABB TOBB<TYPE,DIMS>::GetAABB() const
 {
+	#if 0
 	if (DIMS == 2) {
 		const POINT pEAxis[2] = {
 			m_rot.row(0)*m_ext[0],
@@ -328,6 +364,11 @@ inline typename TOBB<TYPE,DIMS>::AABB TOBB<TYPE,DIMS>::GetAABB() const
 			m_pos + pEAxis[0] + pEAxis[1] + pEAxis[2]
 		);
 	}
+	#else
+	POINT pts[numCorners];
+	GetCorners(pts);
+	return AABB(pts, numCorners);
+	#endif
 } // GetAABB
 /*----------------------------------------------------------------*/
 
@@ -341,20 +382,18 @@ inline TYPE TOBB<TYPE,DIMS>::GetVolume() const
 /*----------------------------------------------------------------*/
 
 
-// Update the box by the given pos delta.
 template <typename TYPE, int DIMS>
-inline void TOBB<TYPE,DIMS>::Translate(const POINT& d)
+bool TOBB<TYPE,DIMS>::Intersects(const POINT& pt) const
 {
-	m_pos += d;
-}
-/*----------------------------------------------------------------*/
-
-
-// Update the box by the given transform.
-template <typename TYPE, int DIMS>
-inline void TOBB<TYPE,DIMS>::Transform(const MATRIX& m)
-{
-	m_rot = m * m_rot;
-	m_pos = m * m_pos;
-}
+	const POINT dist(m_rot * (pt - m_pos));
+	if (DIMS == 2) {
+		return ABS(dist[0]) <= m_ext[0]
+			&& ABS(dist[1]) <= m_ext[1];
+	}
+	if (DIMS == 3) {
+		return ABS(dist[0]) <= m_ext[0]
+			&& ABS(dist[1]) <= m_ext[1]
+			&& ABS(dist[2]) <= m_ext[2];
+	}
+} // Intersects(POINT)
 /*----------------------------------------------------------------*/

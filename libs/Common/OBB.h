@@ -42,16 +42,19 @@ public:
 	enum { numCorners = (DIMS==1 ? 2 : (DIMS==2 ? 4 : 8)) }; // 2^DIMS
 	enum { numScalar = (5*DIMS) };
 
-	MATRIX m_rot;	// rotation matrix of the transformation (orthonormal axes)
-	POINT m_pos;	// translation of the transformation (center-point)
-	POINT m_ext;	// bounding box extents (half axis length)
+	MATRIX m_rot;	// rotation matrix from world to local (orthonormal axes)
+	POINT m_pos;	// translation from local to world (center-point)
+	POINT m_ext;	// bounding box extents in local (half axis length)
 
 	//---------------------------------------
 
 	inline TOBB() {}
+	inline TOBB(bool);
+	inline TOBB(const MATRIX& rot, const POINT& ptMin, const POINT& ptMax);
 	inline TOBB(const POINT* pts, size_t n);
 	inline TOBB(const POINT* pts, size_t n, const TRIANGLE* tris, size_t s);
 
+	inline void Set(const MATRIX& rot, const POINT& ptMin, const POINT& ptMax); // build from rotation matrix from world to local, and local min/max corners
 	inline void Set(const POINT* pts, size_t n); // build from points
 	inline void Set(const POINT* pts, size_t n, const TRIANGLE* tris, size_t s); // build from triangles
 	inline void Set(const MATRIX& C, const POINT* pts, size_t n); // build from covariance matrix
@@ -61,6 +64,8 @@ public:
 	inline void BuildBegin(); // start online build for computing the rotation
 	inline void BuildAdd(const POINT&); // add a new point to the online build
 	inline void BuildEnd(); // end online build for computing the rotation
+
+	inline bool IsValid() const;
 
 	inline void Enlarge(TYPE);
 	inline void EnlargePercent(TYPE);
@@ -79,8 +84,20 @@ public:
 
 	inline TYPE GetVolume() const;
 
+	bool Intersects(const POINT&) const;
+
 	inline TYPE& operator [] (BYTE i) { ASSERT(i<numScalar); return m_rot.data()[i]; }
 	inline TYPE operator [] (BYTE i) const { ASSERT(i<numScalar); return m_rot.data()[i]; }
+
+	#ifdef _USE_BOOST
+	// implement BOOST serialization
+	template<class Archive>
+	void serialize(Archive& ar, const unsigned int /*version*/) {
+		ar & m_rot;
+		ar & m_pos;
+		ar & m_ext;
+	}
+	#endif
 }; // class TOBB
 /*----------------------------------------------------------------*/
 

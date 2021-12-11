@@ -1,7 +1,7 @@
 /*
- * InterfacePhotoScan.cpp
+ * InterfaceMetashape.cpp
  *
- * Copyright (c) 2014-2015 SEACAVE
+ * Copyright (c) 2014-2021 SEACAVE
  *
  * Author(s):
  *
@@ -31,12 +31,15 @@
 
 #include "../../libs/MVS/Common.h"
 #include "../../libs/MVS/Scene.h"
+#include "../../libs/IO/TinyXML2.h"
 #include <boost/program_options.hpp>
+
+using namespace MVS;
 
 
 // D E F I N E S ///////////////////////////////////////////////////
 
-#define APPNAME _T("InterfacePhotoScan")
+#define APPNAME _T("InterfaceMetashape") // previously PhotoScan
 #define MVS_EXT _T(".mvs")
 #define XML_EXT _T(".xml")
 #define PLY_EXT _T(".ply")
@@ -44,9 +47,11 @@
 
 // S T R U C T S ///////////////////////////////////////////////////
 
+namespace {
+
 namespace OPT {
-String strPointsFileName;
 String strInputFileName;
+String strPointsFileName;
 String strOutputFileName;
 String strOutputImageFolder;
 unsigned nArchiveType;
@@ -69,11 +74,11 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		("help,h", "produce this help message")
 		("working-folder,w", boost::program_options::value<std::string>(&WORKING_FOLDER), "working directory (default current directory)")
 		("config-file,c", boost::program_options::value<std::string>(&OPT::strConfigFileName)->default_value(APPNAME _T(".cfg")), "file name containing program options")
-		("archive-type", boost::program_options::value<unsigned>(&OPT::nArchiveType)->default_value(2), "project archive type: 0-text, 1-binary, 2-compressed binary")
-		("process-priority", boost::program_options::value<int>(&OPT::nProcessPriority)->default_value(-1), "process priority (below normal by default)")
-		("max-threads", boost::program_options::value<unsigned>(&OPT::nMaxThreads)->default_value(0), "maximum number of threads (0 for using all available cores)")
+		("archive-type", boost::program_options::value(&OPT::nArchiveType)->default_value(ARCHIVE_MVS), "project archive type: 0-text, 1-binary, 2-compressed binary")
+		("process-priority", boost::program_options::value(&OPT::nProcessPriority)->default_value(-1), "process priority (below normal by default)")
+		("max-threads", boost::program_options::value(&OPT::nMaxThreads)->default_value(0), "maximum number of threads (0 for using all available cores)")
 		#if TD_VERBOSE != TD_VERBOSE_OFF
-		("verbosity,v", boost::program_options::value<int>(&g_nVerbosityLevel)->default_value(
+		("verbosity,v", boost::program_options::value(&g_nVerbosityLevel)->default_value(
 			#if TD_VERBOSE == TD_VERBOSE_DEBUG
 			3
 			#else
@@ -86,8 +91,8 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	// group of options allowed both on command line and in config file
 	boost::program_options::options_description config("Main options");
 	config.add_options()
-		("points-file,p", boost::program_options::value<std::string>(&OPT::strPointsFileName), "input filename containing the 3D points")
 		("input-file,i", boost::program_options::value<std::string>(&OPT::strInputFileName), "input filename containing camera poses and image list")
+		("points-file,p", boost::program_options::value<std::string>(&OPT::strPointsFileName), "input filename containing the 3D points")
 		("output-file,o", boost::program_options::value<std::string>(&OPT::strOutputFileName), "output filename for storing the mesh")
 		("output-image-folder", boost::program_options::value<std::string>(&OPT::strOutputImageFolder)->default_value("undistorted_images"), "output folder to store undistorted images")
 		;
@@ -127,13 +132,11 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 
 	// validate input
 	Util::ensureValidPath(OPT::strPointsFileName);
-	Util::ensureUnifySlash(OPT::strPointsFileName);
 	Util::ensureValidPath(OPT::strInputFileName);
-	Util::ensureUnifySlash(OPT::strInputFileName);
-	Util::ensureUnifySlash(OPT::strOutputImageFolder);
-	Util::ensureDirectorySlash(OPT::strOutputImageFolder);
+	Util::ensureValidPath(OPT::strOutputImageFolder);
+	Util::ensureFolderSlash(OPT::strOutputImageFolder);
 	const String strInputFileNameExt(Util::getFileExt(OPT::strInputFileName).ToLower());
-	const bool bInvalidCommand(OPT::strInputFileName.IsEmpty() || OPT::strPointsFileName.IsEmpty());
+	const bool bInvalidCommand(OPT::strInputFileName.empty());
 	if (OPT::vm.count("help") || bInvalidCommand) {
 		boost::program_options::options_description visible("Available options");
 		visible.add(generic).add(config);
@@ -146,7 +149,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	Util::ensureValidPath(OPT::strOutputFileName);
 	Util::ensureUnifySlash(OPT::strOutputFileName);
 	if (OPT::strOutputFileName.IsEmpty())
-		OPT::strOutputFileName = Util::getFullFileName(OPT::strInputFileName) + MVS_EXT;
+		OPT::strOutputFileName = Util::getFileName(OPT::strInputFileName) + MVS_EXT;
 
 	// initialize global options
 	Process::setCurrentProcessPriority((Process::Priority)OPT::nProcessPriority);
@@ -176,11 +179,38 @@ void Finalize()
 }
 
 struct DistCoeff {
-	REAL k1, k2, k3, p1, p2, k4, k5, k6;
-	DistCoeff() : k1(0), k2(0), k3(0), p1(0), p2(0), k4(0), k5(0), k6(0) {}
+	union {
+		REAL coeff[8];
+		struct {
+			REAL k1, k2, p1, p2, k3, k4, k5, k6;
+		};
+	};
+	DistCoeff() : k1(0), k2(0), p1(0), p2(0), k3(0), k4(0), k5(0), k6(0) {}
 };
 typedef cList<DistCoeff> DistCoeffs;
 typedef cList<DistCoeffs> PlatformDistCoeffs;
+
+void ImageListParseC(const LPSTR* argv, Point3& C)
+{
+	// read position vector
+	C.x = String::FromString<REAL>(argv[0]);
+	C.y = String::FromString<REAL>(argv[1]);
+	C.z = String::FromString<REAL>(argv[2]);
+}
+
+void ImageListParseR(const LPSTR* argv, Matrix3x3& R)
+{
+	// read rotation matrix
+	R(0, 0) = String::FromString<REAL>(argv[0]);
+	R(0, 1) = String::FromString<REAL>(argv[1]);
+	R(0, 2) = String::FromString<REAL>(argv[2]);
+	R(1, 0) = String::FromString<REAL>(argv[3]);
+	R(1, 1) = String::FromString<REAL>(argv[4]);
+	R(1, 2) = String::FromString<REAL>(argv[5]);
+	R(2, 0) = String::FromString<REAL>(argv[6]);
+	R(2, 1) = String::FromString<REAL>(argv[7]);
+	R(2, 2) = String::FromString<REAL>(argv[8]);
+}
 
 void ImageListParseP(const LPSTR* argv, Matrix3x4& P)
 {
@@ -201,10 +231,8 @@ void ImageListParseP(const LPSTR* argv, Matrix3x4& P)
 
 // parse images list containing calibration and pose information
 // and load the corresponding 3D point-cloud
-bool ParseImageListXML(MVS::Scene& scene, PlatformDistCoeffs& pltDistCoeffs, size_t& nCameras, size_t& nPoses)
+bool ParseImageListXML(Scene& scene, PlatformDistCoeffs& pltDistCoeffs, size_t& nCameras, size_t& nPoses)
 {
-	using namespace MVS;
-
 	// open image list
 	nCameras = nPoses = 0;
 	const String strInputFileName(MAKE_PATH_SAFE(OPT::strInputFileName));
@@ -223,10 +251,15 @@ bool ParseImageListXML(MVS::Scene& scene, PlatformDistCoeffs& pltDistCoeffs, siz
 	doc.Parse(strCameras.c_str(), nLen);
 	if (doc.ErrorID() != tinyxml2::XML_SUCCESS)
 		goto InvalidDocument;
+	{
 	tinyxml2::XMLElement* document = doc.FirstChildElement(_T("document"))->FirstChildElement(_T("chunk"));
 	if (document == NULL)
 		goto InvalidDocument;
-	bool bPhotoScanFile(false);
+	{
+	bool bMetashapeFile(false);
+	CLISTDEF0(cv::Size) resolutions;
+	std::unordered_map<IIndex,IIndex> mapPlatformID;
+	std::unordered_map<IIndex,IIndex> mapImageID;
 
 	// parse platform and camera models
 	{
@@ -240,10 +273,10 @@ bool ParseImageListXML(MVS::Scene& scene, PlatformDistCoeffs& pltDistCoeffs, siz
 			goto InvalidDocument;
 		{
 		// add new camera
-		enum CameraModel {PHOTOSCAN=0, VSFM};
-		int model(PHOTOSCAN);
+		enum CameraModel {METASHAPE=0, VSFM};
+		int model(METASHAPE);
 		sensor->QueryIntAttribute(_T("model"), &model);
-		ASSERT(scene.platforms.GetSize() == ID);
+		mapPlatformID.emplace(ID, scene.platforms.size());
 		Platform& platform = scene.platforms.AddEmpty();
 		LPCTSTR name;
 		if ((name=sensor->Attribute(_T("label"))) != NULL)
@@ -253,11 +286,13 @@ bool ParseImageListXML(MVS::Scene& scene, PlatformDistCoeffs& pltDistCoeffs, siz
 		if (calibration == NULL)
 			goto InvalidDocument;
 		{
-		REAL scale(1);
 		if ((elem=calibration->FirstChildElement(_T("resolution"))) != NULL) {
-			scale = REAL(1)/(REAL)Camera::GetNormalizationScale(elem->UnsignedAttribute(_T("width")), elem->UnsignedAttribute(_T("height")));
-			ASSERT(model == PHOTOSCAN);
-			bPhotoScanFile = true;
+			resolutions.emplace_back(
+				elem->UnsignedAttribute(_T("width")),
+				elem->UnsignedAttribute(_T("height"))
+			);
+			ASSERT(model == METASHAPE);
+			bMetashapeFile = true;
 		}
 		Platform::Camera& camera = platform.cameras.AddEmpty();
 		camera.K = KMatrix::IDENTITY;
@@ -266,23 +301,19 @@ bool ParseImageListXML(MVS::Scene& scene, PlatformDistCoeffs& pltDistCoeffs, siz
 		DistCoeff& dc = pltDistCoeffs.AddEmpty().AddEmpty();
 		for (elem=calibration->FirstChildElement(); elem!=NULL; elem=elem->NextSiblingElement()) {
 			if (0 == _tcsicmp(elem->Value(), _T("f"))) {
-				camera.K(0,0) = camera.K(1,1) = String::FromString<REAL>(elem->GetText())*scale;
+				camera.K(0,0) = camera.K(1,1) = String::FromString<REAL>(elem->GetText());
 			} else
 			if (0 == _tcsicmp(elem->Value(), _T("fx"))) {
 				elem->QueryDoubleText(&camera.K(0,0));
-				camera.K(0,0) *= scale;
 			} else
 			if (0 == _tcsicmp(elem->Value(), _T("fy"))) {
 				elem->QueryDoubleText(&camera.K(1,1));
-				camera.K(1,1) *= scale;
 			} else
 			if (0 == _tcsicmp(elem->Value(), _T("cx"))) {
 				elem->QueryDoubleText(&camera.K(0,2));
-				camera.K(0,2) *= scale;
 			} else
 			if (0 == _tcsicmp(elem->Value(), _T("cy"))) {
 				elem->QueryDoubleText(&camera.K(1,2));
-				camera.K(1,2) *= scale;
 			} else
 			if (0 == _tcsicmp(elem->Value(), _T("k1"))) {
 				elem->QueryDoubleText(&dc.k1);
@@ -309,6 +340,13 @@ bool ParseImageListXML(MVS::Scene& scene, PlatformDistCoeffs& pltDistCoeffs, siz
 				elem->QueryDoubleText(&dc.k6);
 			}
 		}
+		if (bMetashapeFile) {
+			const cv::Size& resolution = resolutions.back();
+			camera.K(0,2) += resolution.width*REAL(0.5);
+			camera.K(1,2) += resolution.height*REAL(0.5);
+			camera.K = camera.GetScaledK(REAL(1)/Camera::GetNormalizationScale(resolution.width, resolution.height));
+			std::swap(dc.p1, dc.p2);
+		}
 		++nCameras;
 		}
 		}
@@ -331,7 +369,7 @@ bool ParseImageListXML(MVS::Scene& scene, PlatformDistCoeffs& pltDistCoeffs, siz
 			goto InvalidDocument;
 		{
 		// add new image
-		ASSERT(scene.images.GetSize() == ID);
+		mapImageID.emplace(ID, scene.images.size());
 		Image& imageData = scene.images.AddEmpty();
 		LPCTSTR name;
 		if ((name=camera->Attribute(_T("type"))) != NULL && _tcsicmp(name, _T("frame")) != 0) {
@@ -341,11 +379,16 @@ bool ParseImageListXML(MVS::Scene& scene, PlatformDistCoeffs& pltDistCoeffs, siz
 		if ((name=camera->Attribute(_T("label"))) != NULL)
 			imageData.name = name;
 		Util::ensureUnifySlash(imageData.name);
+		if (Util::getFileExt(imageData.name).empty())
+			imageData.name += _T(".jpg");
 		imageData.name = MAKE_PATH_FULL(strPath, imageData.name);
-		imageData.platformID = camera->UnsignedAttribute(_T("sensor_id"));
+		imageData.platformID = mapPlatformID.at(camera->UnsignedAttribute(_T("sensor_id")));
 		imageData.cameraID = 0; // only one camera per platform supported by this format
-		imageData.ID = ID;
-		if (!camera->BoolAttribute(_T("enabled"))) {
+		imageData.ID = mapImageID.at(ID);
+		const cv::Size& resolution = resolutions[imageData.platformID];
+		imageData.width = resolution.width;
+		imageData.height = resolution.height;
+		if (!bMetashapeFile && !camera->BoolAttribute(_T("enabled"))) {
 			imageData.poseID = NO_ID;
 			DEBUG_EXTRA("warning: uncalibrated image '%s'", name);
 			continue;
@@ -354,23 +397,65 @@ bool ParseImageListXML(MVS::Scene& scene, PlatformDistCoeffs& pltDistCoeffs, siz
 		CAutoPtrArr<LPSTR> argv;
 		if ((elem=camera->FirstChildElement(_T("transform"))) == NULL ||
 			(argv=Util::CommandLineToArgvA(elem->GetText(), argc)) == NULL ||
-			(argc != (bPhotoScanFile ? 16 : 12)))
+			(argc != (bMetashapeFile ? 16 : 12)))
 		{
 			VERBOSE("Invalid image list camera: %u", ID);
 			continue;
 		}
 		Platform& platform = scene.platforms[imageData.platformID];
-		imageData.poseID = platform.poses.GetSize();
+		imageData.poseID = platform.poses.size();
 		Platform::Pose& pose = platform.poses.AddEmpty();
 		ImageListParseP(argv, P);
 		DecomposeProjectionMatrix(P, pose.R, pose.C);
-		if (bPhotoScanFile) {
+		if (bMetashapeFile) {
 			pose.C = pose.R*(-pose.C);
 			pose.R = pose.R.t();
 		}
 		imageData.camera = platform.GetCamera(imageData.cameraID, imageData.poseID);
 		++nPoses;
 		}
+	}
+	}
+
+	// parse bounding-box
+	{
+	tinyxml2::XMLElement* region = document->FirstChildElement(_T("region"));
+	if (region == NULL)
+		goto InvalidDocument;
+	{
+	size_t argc;
+	CAutoPtrArr<LPSTR> argv;
+	Point3 C, E; Matrix3x3 R;
+	if ((elem=region->FirstChildElement(_T("center"))) == NULL ||
+		(argv=Util::CommandLineToArgvA(elem->GetText(), argc)) == NULL ||
+		argc != 3)
+	{
+		VERBOSE("Invalid image list region: %s", elem->GetText());
+		goto InvalidDocument;
+	}
+	ImageListParseC(argv, C);
+	if ((elem=region->FirstChildElement(_T("size"))) == NULL ||
+		(argv=Util::CommandLineToArgvA(elem->GetText(), argc)) == NULL ||
+		argc != 3)
+	{
+		VERBOSE("Invalid image list region: %s", elem->GetText());
+		goto InvalidDocument;
+	}
+	ImageListParseC(argv, E);
+	E *= REAL(0.5);
+	if ((elem=region->FirstChildElement(_T("R"))) == NULL ||
+		(argv=Util::CommandLineToArgvA(elem->GetText(), argc)) == NULL ||
+		argc != 9)
+	{
+		VERBOSE("Invalid image list region: %s", elem->GetText());
+		goto InvalidDocument;
+	}
+	ImageListParseR(argv, R);
+	scene.obb.m_rot = Cast<float>(R);
+	scene.obb.m_pos = Cast<float>(C);
+	scene.obb.m_ext = Cast<float>(E);
+	}
+	}
 	}
 	}
 	}
@@ -382,24 +467,14 @@ bool ParseImageListXML(MVS::Scene& scene, PlatformDistCoeffs& pltDistCoeffs, siz
 }
 
 // undistort image using Brown's model
-bool UndistortBrown(MVS::Image& imageData, uint32_t ID, const DistCoeff& dc, const String& pathData)
+bool UndistortBrown(Image& imageData, uint32_t ID, const DistCoeff& dc, const String& pathData)
 {
-	using namespace MVS;
-
 	// load image pixels
 	if (!imageData.ReloadImage())
 		return false;
 
 	// initialize intrinsics
-	cv::Vec<double,8> distCoeffs;
-	distCoeffs(0) = dc.k1;
-	distCoeffs(1) = dc.k2;
-	distCoeffs(2) = dc.p1;
-	distCoeffs(3) = dc.p2;
-	distCoeffs(4) = dc.k3;
-	distCoeffs(5) = dc.k4;
-	distCoeffs(6) = dc.k5;
-	distCoeffs(7) = dc.k6;
+	const cv::Vec<double,8>& distCoeffs = *reinterpret_cast<const cv::Vec<REAL,8>*>(dc.coeff);
 	const KMatrix prevK(imageData.camera.GetK<REAL>(imageData.width, imageData.height));
 	#if 1
 	const KMatrix& K(prevK);
@@ -424,15 +499,13 @@ bool UndistortBrown(MVS::Image& imageData, uint32_t ID, const DistCoeff& dc, con
 	// save undistorted image
 	imageData.image = imgUndist;
 	imageData.name = pathData + String::FormatString(_T("%05u.png"), ID);
-	Util::ensureDirectory(imageData.name);
+	Util::ensureFolder(imageData.name);
 	return imageData.image.Save(imageData.name);
 }
 
 // project all points in this image and keep those looking at the camera and are most in front
-void AssignPoints(const MVS::Image& imageData, uint32_t ID, MVS::PointCloud& pointcloud)
+void AssignPoints(const Image& imageData, uint32_t ID, PointCloud& pointcloud)
 {
-	using namespace MVS;
-
 	ASSERT(pointcloud.IsValid());
 	const int CHalfSize(1);
 	const int FHalfSize(5);
@@ -524,6 +597,8 @@ void AssignPoints(const MVS::Image& imageData, uint32_t ID, MVS::PointCloud& poi
 	DEBUG_ULTIMATE("\tview %3u sees %u points", ID, nNumPoints);
 }
 
+} // unnamed namespace
+
 int main(int argc, LPCTSTR* argv)
 {
 	#ifdef _DEBUGINFO
@@ -536,14 +611,17 @@ int main(int argc, LPCTSTR* argv)
 
 	TD_TIMER_START();
 
-	// read the 3D point-cloud
-	MVS::Scene scene(OPT::nMaxThreads);
-	if (!scene.pointcloud.Load(MAKE_PATH_SAFE(OPT::strPointsFileName)))
-		return EXIT_FAILURE;
-	ASSERT(!scene.pointcloud.IsValid());
-	scene.pointcloud.pointViews.Resize(scene.pointcloud.points.GetSize());
+	Scene scene(OPT::nMaxThreads);
 
-	// convert data from PhotoScan format to OpenMVS
+	// read the 3D point-cloud if available
+	if (!OPT::strPointsFileName.empty()) {
+		if (!scene.pointcloud.Load(MAKE_PATH_SAFE(OPT::strPointsFileName)))
+			return EXIT_FAILURE;
+		ASSERT(!scene.pointcloud.IsValid());
+		scene.pointcloud.pointViews.Resize(scene.pointcloud.points.GetSize());
+	}
+
+	// convert data from Metashape format to OpenMVS
 	PlatformDistCoeffs pltDistCoeffs;
 	size_t nCameras, nPoses;
 	if (!ParseImageListXML(scene, pltDistCoeffs, nCameras, nPoses))
@@ -551,12 +629,12 @@ int main(int argc, LPCTSTR* argv)
 
 	// undistort images
 	const String pathData(MAKE_PATH_FULL(WORKING_FOLDER_FULL, OPT::strOutputImageFolder));
-	Util::Progress progress(_T("Processed images"), scene.images.GetSize());
+	Util::Progress progress(_T("Processed images"), scene.images.size());
 	GET_LOGCONSOLE().Pause();
 	#ifdef _USE_OPENMP
 	bool bAbort(false);
 	#pragma omp parallel for shared(bAbort) schedule(dynamic)
-	for (int ID=0; ID<(int)scene.images.GetSize(); ++ID) {
+	for (int ID=0; ID<(int)scene.images.size(); ++ID) {
 		#pragma omp flush (bAbort)
 		if (bAbort)
 			continue;
@@ -564,7 +642,7 @@ int main(int argc, LPCTSTR* argv)
 	FOREACH(ID, scene.images) {
 	#endif
 		++progress;
-		MVS::Image& imageData = scene.images[ID];
+		Image& imageData = scene.images[ID];
 		if (!UndistortBrown(imageData, ID, pltDistCoeffs[imageData.platformID][imageData.cameraID], pathData)) {
 			#ifdef _USE_OPENMP
 			bAbort = true;
@@ -575,7 +653,8 @@ int main(int argc, LPCTSTR* argv)
 			#endif
 		}
 		imageData.UpdateCamera(scene.platforms);
-		AssignPoints(imageData, ID, scene.pointcloud);
+		if (scene.pointcloud.IsValid())
+			AssignPoints(imageData, ID, scene.pointcloud);
 	}
 	GET_LOGCONSOLE().Play();
 	#ifdef _USE_OPENMP
@@ -583,6 +662,13 @@ int main(int argc, LPCTSTR* argv)
 		return EXIT_SUCCESS;
 	#endif
 	progress.close();
+
+	// filter invalid points
+	if (!scene.pointcloud.IsEmpty()) {
+		RFOREACH(i, scene.pointcloud.points)
+			if (scene.pointcloud.pointViews[i].size() < 2)
+				scene.pointcloud.RemovePoint(i);
+	}
 
 	// write OpenMVS input data
 	scene.Save(MAKE_PATH_SAFE(OPT::strOutputFileName), (ARCHIVE_TYPE)OPT::nArchiveType);

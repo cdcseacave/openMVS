@@ -25,12 +25,23 @@ String g_strWorkingFolderFull;
 
 #ifdef _USE_BOOST
 #ifdef BOOST_NO_EXCEPTIONS
+#if (BOOST_VERSION / 100000) > 1 || (BOOST_VERSION / 100 % 1000) > 72
+#include <boost/assert/source_location.hpp>
+#endif
 namespace boost {
 	void throw_exception(std::exception const & e) {
 		VERBOSE("exception thrown: %s", e.what());
 		ASSERT("boost exception thrown" == NULL);
 		exit(EXIT_FAILURE);
 	}
+	#if (BOOST_VERSION / 100000) > 1 || (BOOST_VERSION / 100 % 1000) > 72
+	void throw_exception(std::exception const & e, boost::source_location const & loc) {
+		std::ostringstream ostr; ostr << loc;
+		VERBOSE("exception thrown at %s: %s", ostr.str().c_str(), e.what());
+		ASSERT("boost exception thrown" == NULL);
+		exit(EXIT_FAILURE);
+	}
+	#endif
 } // namespace boost
 #endif
 #endif
