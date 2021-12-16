@@ -102,6 +102,11 @@ if(OpenMVS_USE_CUDA)
 	FIND_PACKAGE(CUDA)
 	if(CUDA_FOUND)
 		ENABLE_LANGUAGE(CUDA)
+		set(CMAKE_CUDA_STANDARD 17)
+		# Suppress warnings for deprecated C++17 functions.
+		add_compile_definitions($<$<COMPILE_LANGUAGE:CUDA>:_SILENCE_CXX17_RESULT_OF_DEPRECATION_WARNING>)
+		message(WARNING "Visual Studio 16.10 (MSVC 19.29) introduced a compiler bug when compiling CUDA code with C++14. "
+						"Workaround this bug by setting the CUDA standard to C++17.")
 		if(NOT OpenMVS_MAX_CUDA_COMPATIBILITY)
 			if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
 				SET(CMAKE_CUDA_ARCHITECTURES 75)
