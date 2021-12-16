@@ -1767,6 +1767,8 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 		return false;
 	data.progress.Release();
 
+	if (ABS(data.nFusionMode) == 1)
+		return true;
 
 	#ifdef _USE_CUDA
 	// initialize CUDA
