@@ -895,6 +895,12 @@ TYPE TRay<TYPE,DIMS>::Distance(const POINT& pt) const
 {
 	return SQRT(DistanceSq(pt));
 } // Distance(POINT)
+// Get the point on the ray at distance t from origin
+template <typename TYPE, int DIMS>
+typename TRay<TYPE, DIMS>::POINT TRay<TYPE,DIMS>::GetPoint(TYPE t) const
+{
+	return m_pOrig + m_vDir * t;
+} // GetPoint
 /*----------------------------------------------------------------*/
 
 

@@ -119,6 +119,7 @@ public:
 	bool Distance(const POINT&, TYPE&) const;
 	TYPE DistanceSq(const POINT&) const;
 	TYPE Distance(const POINT&) const;
+	POINT GetPoint(TYPE) const;
 
 	TRay operator * (const MATRIX&) const;			// matrix multiplication
 	inline TRay& operator *= (const MATRIX&);		// matrix multiplication
