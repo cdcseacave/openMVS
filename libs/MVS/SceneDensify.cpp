@@ -1537,7 +1537,7 @@ DenseDepthMapData::DenseDepthMapData(Scene& _scene, int _nFusionMode)
 	if (nFusionMode < 0) {
 		STEREO::SemiGlobalMatcher::CreateThreads(scene.nMaxThreads);
 		if (nFusionMode == -1)
-			OPTDENSE::nOptimize &= ~OPTDENSE::OPTIMIZE;
+			OPTDENSE::nOptimize = 0;
 	}
 }
 DenseDepthMapData::~DenseDepthMapData()
@@ -1735,7 +1735,7 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 
 	#ifdef _USE_CUDA
 	// initialize CUDA
-	if (OPTDENSE::nCUDADevice >= 0) {
+	if (OPTDENSE::nCUDADevice >= 0 && data.nFusionMode >= 0) {
 		data.depthMaps.pmCUDA = new PatchMatchCUDA(OPTDENSE::nCUDADevice);
 		data.depthMaps.pmCUDA->Init(false);
 	}
@@ -1743,7 +1743,7 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 
 	// initialize the queue of images to be processed
 	const int nOptimize(OPTDENSE::nOptimize);
-	if (OPTDENSE::nEstimationGeometricIters)
+	if (OPTDENSE::nEstimationGeometricIters && data.nFusionMode >= 0)
 		OPTDENSE::nOptimize = 0;
 	data.idxImage = 0;
 	ASSERT(data.events.IsEmpty());
@@ -1767,50 +1767,51 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 		return false;
 	data.progress.Release();
 
-
-	#ifdef _USE_CUDA
-	// initialize CUDA
-	if (OPTDENSE::nCUDADevice >= 0 && OPTDENSE::nEstimationGeometricIters) {
-		data.depthMaps.pmCUDA->Release();
-		data.depthMaps.pmCUDA->Init(true);
-	}
-	#endif // _USE_CUDA
-	while (++data.nEstimationGeometricIter < (int)OPTDENSE::nEstimationGeometricIters) {
-		// initialize the queue of images to be geometric processed
-		if (data.nEstimationGeometricIter+1 == (int)OPTDENSE::nEstimationGeometricIters)
-			OPTDENSE::nOptimize = nOptimize;
-		data.idxImage = 0;
-		ASSERT(data.events.IsEmpty());
-		data.events.AddEvent(new EVTProcessImage(0));
-		// start working threads
-		data.progress = new Util::Progress("Geometric-consistent estimated depth-maps", data.images.GetSize());
-		GET_LOGCONSOLE().Pause();
-		if (nMaxThreads > 1) {
-			// multi-thread execution
-			cList<SEACAVE::Thread> threads(2);
-			FOREACHPTR(pThread, threads)
-				pThread->start(DenseReconstructionEstimateTmp, (void*)&data);
-			FOREACHPTR(pThread, threads)
-				pThread->join();
-		} else {
-			// single-thread execution
-			DenseReconstructionEstimate((void*)&data);
+	if (data.nFusionMode >= 0) {
+		#ifdef _USE_CUDA
+		// initialize CUDA
+		if (OPTDENSE::nCUDADevice >= 0 && OPTDENSE::nEstimationGeometricIters) {
+			data.depthMaps.pmCUDA->Release();
+			data.depthMaps.pmCUDA->Init(true);
 		}
-		GET_LOGCONSOLE().Play();
-		if (!data.events.IsEmpty())
-			return false;
-		data.progress.Release();
-		// replace raw depth-maps with the geometric-consistent ones
-		for (IIndex idx: data.images) {
-			const DepthData& depthData(data.depthMaps.arrDepthData[idx]);
-			if (!depthData.IsValid())
-				continue;
-			const String rawName(ComposeDepthFilePath(depthData.GetView().GetID(), "dmap"));
-			File::deleteFile(rawName);
-			File::renameFile(ComposeDepthFilePath(depthData.GetView().GetID(), "geo.dmap"), rawName);
+		#endif // _USE_CUDA
+		while (++data.nEstimationGeometricIter < (int)OPTDENSE::nEstimationGeometricIters) {
+			// initialize the queue of images to be geometric processed
+			if (data.nEstimationGeometricIter+1 == (int)OPTDENSE::nEstimationGeometricIters)
+				OPTDENSE::nOptimize = nOptimize;
+			data.idxImage = 0;
+			ASSERT(data.events.IsEmpty());
+			data.events.AddEvent(new EVTProcessImage(0));
+			// start working threads
+			data.progress = new Util::Progress("Geometric-consistent estimated depth-maps", data.images.GetSize());
+			GET_LOGCONSOLE().Pause();
+			if (nMaxThreads > 1) {
+				// multi-thread execution
+				cList<SEACAVE::Thread> threads(2);
+				FOREACHPTR(pThread, threads)
+					pThread->start(DenseReconstructionEstimateTmp, (void*)&data);
+				FOREACHPTR(pThread, threads)
+					pThread->join();
+			} else {
+				// single-thread execution
+				DenseReconstructionEstimate((void*)&data);
+			}
+			GET_LOGCONSOLE().Play();
+			if (!data.events.IsEmpty())
+				return false;
+			data.progress.Release();
+			// replace raw depth-maps with the geometric-consistent ones
+			for (IIndex idx: data.images) {
+				const DepthData& depthData(data.depthMaps.arrDepthData[idx]);
+				if (!depthData.IsValid())
+					continue;
+				const String rawName(ComposeDepthFilePath(depthData.GetView().GetID(), "dmap"));
+				File::deleteFile(rawName);
+				File::renameFile(ComposeDepthFilePath(depthData.GetView().GetID(), "geo.dmap"), rawName);
+			}
 		}
+		data.nEstimationGeometricIter = -1;
 	}
-	data.nEstimationGeometricIter = -1;
 
 	if ((OPTDENSE::nOptimize & OPTDENSE::ADJUST_FILTER) != 0) {
 		// initialize the queue of depth-maps to be filtered
@@ -1867,7 +1868,7 @@ void Scene::DenseReconstructionEstimate(void* pData)
 			// select views to reconstruct the depth-map for this image
 			const IIndex idx = data.images[evtImage.idxImage];
 			DepthData& depthData(data.depthMaps.arrDepthData[idx]);
-			const bool depthmapComputed(data.nFusionMode >= 0 && data.nEstimationGeometricIter < 0 && File::access(ComposeDepthFilePath(data.scene.images[idx].ID, "dmap")));
+			const bool depthmapComputed(data.nFusionMode < 0 || (data.nFusionMode >= 0 && data.nEstimationGeometricIter < 0 && File::access(ComposeDepthFilePath(data.scene.images[idx].ID, "dmap"))));
 			// initialize images pair: reference image and the best neighbor view
 			ASSERT(data.neighborsMap.IsEmpty() || data.neighborsMap[evtImage.idxImage] != NO_ID);
 			if (!data.depthMaps.InitViews(depthData, data.neighborsMap.IsEmpty()?NO_ID:data.neighborsMap[evtImage.idxImage], OPTDENSE::nNumViews, !depthmapComputed, depthmapComputed ? -1 : (data.nEstimationGeometricIter >= 0 ? 1 : 0))) {
@@ -1876,7 +1877,7 @@ void Scene::DenseReconstructionEstimate(void* pData)
 				break;
 			}
 			// try to load already compute depth-map for this image
-			if (depthmapComputed) {
+			if (depthmapComputed && data.nFusionMode >= 0) {
 				if (OPTDENSE::nOptimize & OPTDENSE::OPTIMIZE) {
 					if (!depthData.Load(ComposeDepthFilePath(depthData.GetView().GetID(), "dmap"))) {
 						VERBOSE("error: invalid depth-map '%s'", ComposeDepthFilePath(depthData.GetView().GetID(), "dmap").c_str());
