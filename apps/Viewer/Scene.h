@@ -48,8 +48,8 @@ namespace VIEWER {
 class Scene
 {
 public:
-	typedef TOctree<MVS::PointCloud::PointArr,MVS::PointCloud::Point::Type,3,uint32_t> OctreePoints;
-	typedef TOctree<MVS::Mesh::VertexArr,MVS::Mesh::Vertex::Type,3,uint32_t> OctreeMesh;
+	typedef MVS::PointCloud::Octree OctreePoints;
+	typedef MVS::Mesh::Octree OctreeMesh;
 
 public:
 	String name;

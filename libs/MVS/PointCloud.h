@@ -70,6 +70,8 @@ public:
 
 	typedef AABB3f Box;
 
+	typedef TOctree<PointArr,Point::Type,3> Octree;
+
 public:
 	PointArr points;
 	PointViewArr pointViews; // array of views for each point (ordered increasing)
@@ -109,6 +111,57 @@ public:
 		ar & colors;
 	}
 	#endif
+};
+/*----------------------------------------------------------------*/
+
+
+struct IndexDist {
+	IDX idx;
+	REAL dist;
+
+	inline IndexDist() : dist(REAL(FLT_MAX)) {}
+	inline bool IsValid() const { return dist < REAL(FLT_MAX); }
+};
+
+struct IntersectRayPoints {
+	typedef PointCloud::Octree Octree;
+	typedef typename Octree::IDX_TYPE IDX;
+	typedef TCone<REAL, 3> Cone3;
+	typedef TConeIntersect<REAL, 3> Cone3Intersect;
+
+	const PointCloud& pointcloud;
+	const Cone3 cone;
+	const Cone3Intersect coneIntersect;
+	const unsigned minViews;
+	IndexDist pick;
+
+	IntersectRayPoints(const Octree& octree, const Ray3& _ray, const PointCloud& _pointcloud, unsigned _minViews)
+		: pointcloud(_pointcloud), cone(_ray, D2R(REAL(0.5))), coneIntersect(cone), minViews(_minViews)
+	{
+		octree.Collect(*this, *this);
+	}
+
+	inline bool Intersects(const typename Octree::POINT_TYPE& center, typename Octree::Type radius) const {
+		return coneIntersect(Sphere3(center.cast<REAL>(), REAL(radius) * SQRT_3));
+	}
+
+	void operator () (const IDX* idices, IDX size) {
+		// test ray-point intersection and keep the closest
+		FOREACHRAWPTR(pIdx, idices, size) {
+			const PointCloud::Index idx(*pIdx);
+			if (!pointcloud.pointViews.IsEmpty() && pointcloud.pointViews[idx].size() < minViews)
+				continue;
+			const PointCloud::Point& X = pointcloud.points[idx];
+			REAL dist;
+			if (coneIntersect.Classify(Cast<REAL>(X), dist) == VISIBLE) {
+				ASSERT(dist >= 0);
+				if (pick.dist > dist) {
+					pick.dist = dist;
+					pick.idx = idx;
+				}
+			}
+		}
+	}
 };
 /*----------------------------------------------------------------*/
 

@@ -423,7 +423,7 @@ bool Scene::LoadViewNeighbors(const String& fileName)
 		const IIndex ID(String::FromString<IIndex>(argv[0], NO_ID));
 		ASSERT(ID != NO_ID);
 		Image& imageData = images[ID];
-		imageData.neighbors.resize(argc-1);
+		imageData.neighbors.resize(static_cast<IIndex>(argc-1));
 		FOREACH(i, imageData.neighbors) {
 			const IIndex nID(String::FromString<IIndex>(argv[i+1], NO_ID));
 			ASSERT(nID != NO_ID);

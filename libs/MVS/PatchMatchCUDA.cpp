@@ -171,8 +171,8 @@ void PatchMatchCUDA::EstimateDepthMap(DepthData& depthData)
 	TD_TIMER_STARTD();
 
 	ASSERT(depthData.images.size() > 1);
-	const size_t prevNumImages = images.size();
-	const size_t numImages = depthData.images.size();
+	const IIndex prevNumImages = (IIndex)images.size();
+	const IIndex numImages = depthData.images.size();
 	params.nNumViews = (int)numImages-1;
 	params.nInitTopK = std::min(params.nInitTopK, params.nNumViews);
 	params.fDepthMin = depthData.dMin;
@@ -187,7 +187,7 @@ void PatchMatchCUDA::EstimateDepthMap(DepthData& depthData)
 		cudaDepthArrays.resize(numImages-1);
 		textureDepths.resize(numImages-1);
 	}
-	for (size_t i = 0; i < numImages; ++i) {
+	for (IIndex i = 0; i < numImages; ++i) {
 		const DepthData::ViewData& view = depthData.images[i];
 		Image32F image = view.image;
 		Camera camera;
@@ -229,7 +229,7 @@ void PatchMatchCUDA::EstimateDepthMap(DepthData& depthData)
 		cameras[i] = std::move(camera);
 	}
 	if (params.bGeomConsistency && cudaDepthArrays.size() > numImages-1) {
-		for (size_t i = numImages; i < prevNumImages; ++i) {
+		for (IIndex i = numImages; i < prevNumImages; ++i) {
 			// free image CUDA memory
 			cudaDestroyTextureObject(textureDepths[i-1]);
 			cudaFreeArray(cudaDepthArrays[i-1]);
@@ -238,7 +238,7 @@ void PatchMatchCUDA::EstimateDepthMap(DepthData& depthData)
 		textureDepths.resize(numImages-1);
 	}
 	if (prevNumImages > numImages) {
-		for (size_t i = numImages; i < prevNumImages; ++i) {
+		for (IIndex i = numImages; i < prevNumImages; ++i) {
 			// free image CUDA memory
 			cudaDestroyTextureObject(textureImages[i]);
 			cudaFreeArray(cudaImageArrays[i]);

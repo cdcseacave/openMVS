@@ -70,6 +70,7 @@ float fSplitMaxArea;
 unsigned nArchiveType;
 int nProcessPriority;
 unsigned nMaxThreads;
+String strImagePointsFileName;
 String strExportType;
 String strConfigFileName;
 boost::program_options::variables_map vm;
@@ -131,6 +132,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		("mesh-file", boost::program_options::value<std::string>(&OPT::strMeshFileName), "mesh file name to clean (skips the reconstruction step)")
 		("mesh-export", boost::program_options::value(&OPT::bMeshExport)->default_value(false), "just export the mesh contained in loaded project")
 		("split-max-area", boost::program_options::value(&OPT::fSplitMaxArea)->default_value(0.f), "maximum surface area that a sub-mesh can contain (0 - disabled)")
+		("image-points-file", boost::program_options::value<std::string>(&OPT::strImagePointsFileName), "input filename containing the list of points from an image to project on the mesh (optional)")
 		;
 
 	boost::program_options::options_description cmdline_options;
@@ -181,6 +183,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	// initialize optional options
 	Util::ensureValidPath(OPT::strOutputFileName);
 	Util::ensureUnifySlash(OPT::strOutputFileName);
+	Util::ensureValidPath(OPT::strImagePointsFileName);
 	if (OPT::strOutputFileName.IsEmpty())
 		OPT::strOutputFileName = Util::getFileFullName(OPT::strInputFileName) + _T("_mesh.mvs");
 
@@ -215,6 +218,109 @@ void Finalize()
 
 } // unnamed namespace
 
+
+// export 3D coordinates corresponding to 2D ccordinates provided by inputFileName:
+// parse image point list; first line is the name of the image to project,
+// each consequent line store the xy coordinates to project:
+// <image-name> <number-of-points>
+// <x-coord1> <y-coord1>
+// <x-coord2> <y-coord2>
+// ...
+// 
+// for example:
+// N01.JPG 3
+// 3090, 2680
+// 3600, 2100
+// 3640, 2190
+bool Export3DProjections(Scene& scene, const String& inputFileName) {
+	SML smlPointList(_T("ImagePoints"));
+	smlPointList.Load(inputFileName);
+	const LPSMLARR& arrSmlChild = smlPointList.GetArrChildren();
+	ASSERT(arrSmlChild.size() <= 1);
+	SML::const_iterator it = smlPointList.begin();
+
+	// read image name
+	size_t argc;
+	CAutoPtrArr<LPSTR> argv;
+	while (true) {
+		argv = Util::CommandLineToArgvA(it->second.val, argc);
+		if (argc > 0 && argv[0][0] != _T('#'))
+			break;
+		if (++it == smlPointList.end())
+			return false;
+	}
+	if (argc < 2)
+		return false;
+	String imgName(argv[0]);
+	IIndex imgID(NO_ID);
+	for (const Image& imageData : scene.images) {
+		if (!imageData.IsValid())
+			continue;
+		if (imageData.name.substr(imageData.name.size() - imgName.size()) == imgName) {
+			imgID = imageData.ID;
+			break;
+		}
+	}
+	if (imgID == NO_ID) {
+		VERBOSE("Unable to find image named: %s", imgName.c_str());
+		return false;
+	}
+
+	// read image points
+	std::vector<Point2f> imagePoints;
+	while (++it != smlPointList.end()) {
+		// parse image element
+		argv = Util::CommandLineToArgvA(it->second.val, argc);
+		if (argc > 0 && argv[0][0] == _T('#'))
+			continue;
+		if (argc < 2) {
+			VERBOSE("Invalid image coordonates: %s", it->second.val.c_str());
+			continue;
+		}
+		const Point2f pt(
+			String::FromString<float>(argv[0], -1),
+			String::FromString<float>(argv[1], -1));
+		if (pt.x > 0 && pt.y > 0)
+			imagePoints.emplace_back(pt);
+	}
+	if (imagePoints.empty()) {
+		VERBOSE("Unable to read image points from: %s", imgName.c_str());
+		return false;
+	}
+
+	// prepare output file
+	String outFileName(Util::insertBeforeFileExt(inputFileName, "_3D"));
+	File oStream(outFileName, File::WRITE, File::CREATE | File::TRUNCATE);
+	if (!oStream.isOpen()) {
+		VERBOSE("Unable to open output file: %s", outFileName.c_str());
+		return false;
+	}
+
+	// print image name
+	oStream.print("%s\n", imgName.c_str());
+
+	// init mesh octree
+	const Mesh::Octree octree(scene.mesh.vertices, [](Mesh::Octree::IDX_TYPE size, Mesh::Octree::Type /*radius*/) {
+		return size > 256;
+	});
+	scene.mesh.ListIncidenteFaces();
+
+	// save 3D coord in the output file
+	const Image& imgToExport = scene.images[imgID];
+	for (const Point2f& pt : imagePoints) {
+		// define ray from camera center to each x,y image coord
+		const Ray3 ray(imgToExport.camera.C, normalized(imgToExport.camera.RayPoint<REAL>(pt)));
+		// find ray intersection with the mesh
+		const IntersectRayMesh intRay(octree, ray, scene.mesh);
+		if (intRay.pick.IsValid()) {
+			const Point3d ptHit(ray.GetPoint(intRay.pick.dist));
+			oStream.print("%.7f %.7f %.7f\n", ptHit.x, ptHit.y, ptHit.z);
+		} else 
+			oStream.print("NA\n");
+	}
+	return true;
+}
+
 int main(int argc, LPCTSTR* argv)
 {
 	#ifdef _DEBUGINFO
@@ -238,6 +344,12 @@ int main(int argc, LPCTSTR* argv)
 		Finalize();
 		return EXIT_SUCCESS;
 	}
+
+	if (!OPT::strImagePointsFileName.empty() && !scene.mesh.IsEmpty()) {
+		Export3DProjections(scene, MAKE_PATH_SAFE(OPT::strImagePointsFileName));
+		return EXIT_SUCCESS;
+	}
+
 	if (OPT::bMeshExport) {
 		// check there is a mesh to export
 		if (scene.mesh.IsEmpty())
@@ -319,6 +431,11 @@ int main(int argc, LPCTSTR* argv)
 		if (VERBOSITY_LEVEL > 2)
 			scene.ExportCamerasMLP(baseFileName+_T(".mlp"), baseFileName+OPT::strExportType);
 		#endif
+	}
+
+	if (!OPT::strImagePointsFileName.empty()) {
+		Export3DProjections(scene, MAKE_PATH_SAFE(OPT::strImagePointsFileName));
+		return EXIT_SUCCESS;
 	}
 
 	Finalize();
