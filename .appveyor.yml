@@ -2,7 +2,7 @@
 version: "{build}"
 
 image:
-  - Visual Studio 2019
+  - Visual Studio 2017
   - ubuntu1804
   - macos
 
@@ -31,7 +31,7 @@ for:
   #------------------
   matrix:
     only:
-      - image: Visual Studio 2019
+      - image: Visual Studio 2017
   # scripts that are called at very beginning, before repo cloning
   init:
     - ver
@@ -48,17 +48,17 @@ for:
     # remove outdated versions
     - vcpkg remove --outdated --recurse
     # install dependencies
-    - vcpkg install --recurse yasm-tool:x64-windows
+    - vcpkg install --recurse yasm-tool:x86-windows
     - vcpkg install --recurse --triplet %VCPKG_ARCH% zlib boost-iostreams boost-program-options boost-system boost-serialization eigen3 cgal[core] opencv vcglib glew glfw3
     - cd "%APPVEYOR_BUILD_FOLDER%"
   # preserve contents of selected directories and files across project builds
   cache:
     - 'C:\tools\vcpkg\installed'
   build_script:
-    - if "%platform%"=="Win32" set CMAKE_GENERATOR=-G"Visual Studio 16 2019"
-    - if "%platform%"=="x64"   set CMAKE_GENERATOR=-G"Visual Studio 16 2019"
+    - if "%platform%"=="Win32" set CMAKE_ARCH=-A"x86"
+    - if "%platform%"=="x64"   set CMAKE_ARCH=-A"x64"
     - mkdir bin && cd bin
-    - cmake %CMAKE_GENERATOR% -DCMAKE_BUILD_TYPE=%Configuration% -DCMAKE_TOOLCHAIN_FILE="C:\tools\vcpkg\scripts\buildsystems\vcpkg.cmake" ..
+    - cmake -G"Visual Studio 15 2017" %CMAKE_ARCH% -DCMAKE_BUILD_TYPE=%Configuration% -DCMAKE_TOOLCHAIN_FILE="C:\tools\vcpkg\scripts\buildsystems\vcpkg.cmake" ..
     - cmake --build . --target ALL_BUILD --config %Configuration% -- /maxcpucount:4
 -
   #------------------
@@ -120,5 +120,5 @@ for:
     - make
   
 on_success:
-  - cmd: 7z a OpenMVS_x64.7z "C:\projects\openmvs\bin\bin\vc16\x64\%Configuration%\*.exe" "C:\projects\openmvs\bin\bin\vc16\x64\%Configuration%\*.dll"
+  - cmd: 7z a OpenMVS_x64.7z "C:\projects\openmvs\bin\bin\vc15\x64\%Configuration%\*.exe" "C:\projects\openmvs\bin\bin\vc15\x64\%Configuration%\*.dll"
   - cmd: appveyor PushArtifact OpenMVS_x64.7z
