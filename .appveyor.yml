@@ -48,7 +48,7 @@ for:
     # remove outdated versions
     - vcpkg remove --outdated --recurse
     # install dependencies
-    - vcpkg install --recurse yasm-tool
+    #- vcpkg install --recurse yasm-tool:x64-windows
     - vcpkg install --recurse --triplet %VCPKG_ARCH% zlib boost-iostreams boost-program-options boost-system boost-serialization eigen3 cgal[core] opencv vcglib glew glfw3
     - cd "%APPVEYOR_BUILD_FOLDER%"
   # preserve contents of selected directories and files across project builds
