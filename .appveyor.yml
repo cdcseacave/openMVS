@@ -120,5 +120,5 @@ for:
     - make
   
 on_success:
-  - cmd: 7z a OpenMVS_x64.7z "C:\projects\openmvs\bin\bin\vc15\x64\%Configuration%\*.exe" "C:\projects\openmvs\bin\bin\vc15\x64\%Configuration%\*.dll"
+  - cmd: 7z a OpenMVS_x64.7z "C:\projects\openmvs\bin\bin\vc16\x64\%Configuration%\*.exe" "C:\projects\openmvs\bin\bin\vc16\x64\%Configuration%\*.dll"
   - cmd: appveyor PushArtifact OpenMVS_x64.7z
