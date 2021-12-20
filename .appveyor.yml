@@ -56,7 +56,7 @@ for:
     - 'C:\tools\vcpkg\installed'
   build_script:
     - if "%platform%"=="Win32" set CMAKE_GENERATOR=-G"Visual Studio 16 2019"
-    - if "%platform%"=="x64"   set CMAKE_GENERATOR=-G"Visual Studio 16 2019 Win64"
+    - if "%platform%"=="x64"   set CMAKE_GENERATOR='-G "Visual Studio 16 2019" -A x64'
     - mkdir bin && cd bin
     - cmake %CMAKE_GENERATOR% -DCMAKE_BUILD_TYPE=%Configuration% -DCMAKE_TOOLCHAIN_FILE="C:\tools\vcpkg\scripts\buildsystems\vcpkg.cmake" ..
     - cmake --build . --target ALL_BUILD --config %Configuration% -- /maxcpucount:4
