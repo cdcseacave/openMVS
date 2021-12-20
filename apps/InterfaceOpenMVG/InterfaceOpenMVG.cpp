@@ -38,7 +38,8 @@
 #undef R2D
 #include <openMVG/sfm/sfm_data.hpp>
 #include <openMVG/sfm/sfm_data_io.hpp>
-#include <openMVG/image/image.hpp>
+#include <openMVG/image/image_io.hpp>
+#include <openMVG/cameras/cameras.hpp>
 #endif
 
 
@@ -605,7 +606,7 @@ int main(int argc, LPCTSTR* argv)
 			String pathRoot(sfm_data.s_root_path); Util::ensureFolderSlash(pathRoot);
 			const String srcImage(MAKE_PATH_FULL(WORKING_FOLDER_FULL, pathRoot+image.name));
 			image.name = MAKE_PATH_FULL(WORKING_FOLDER_FULL, OPT::strOutputImageFolder+image.name);
-			Util::ensureDirectory(image.name);
+			Util::ensureFolder(image.name);
 			image.ID = static_cast<MVS::IIndex>(view.first);
 			image.platformID = map_intrinsic.at(view.second->id_intrinsic);
 			MVS::Platform& platform = scene.platforms[image.platformID];
