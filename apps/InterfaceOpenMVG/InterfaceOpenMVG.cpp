@@ -415,7 +415,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	Util::ensureValidPath(OPT::strInputFileName);
 	Util::ensureUnifySlash(OPT::strInputFileName);
 	Util::ensureUnifySlash(OPT::strOutputImageFolder);
-	Util::ensureDirectorySlash(OPT::strOutputImageFolder);
+	Util::ensureFolderSlash(OPT::strOutputImageFolder);
 	const String strInputFileNameExt(Util::getFileExt(OPT::strInputFileName).ToLower());
 	OPT::bOpenMVS2OpenMVG = (strInputFileNameExt == MVS_EXT);
 	#ifdef _USE_OPENMVG
@@ -440,10 +440,10 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	Util::ensureUnifySlash(OPT::strOutputFileName);
 	if (OPT::bOpenMVS2OpenMVG) {
 		if (OPT::strOutputFileName.IsEmpty())
-			OPT::strOutputFileName = Util::getFullFileName(OPT::strInputFileName);
+			OPT::strOutputFileName = Util::getFileFullName(OPT::strInputFileName);
 	} else {
 		if (OPT::strOutputFileName.IsEmpty())
-			OPT::strOutputFileName = Util::getFullFileName(OPT::strInputFileName) + MVS_EXT;
+			OPT::strOutputFileName = Util::getFileFullName(OPT::strInputFileName) + MVS_EXT;
 	}
 
 	// initialize global options
@@ -602,7 +602,7 @@ int main(int argc, LPCTSTR* argv)
 			image.name = view.second->s_Img_path;
 			Util::ensureUnifySlash(image.name);
 			Util::strTrim(image.name, PATH_SEPARATOR_STR);
-			String pathRoot(sfm_data.s_root_path); Util::ensureDirectorySlash(pathRoot);
+			String pathRoot(sfm_data.s_root_path); Util::ensureFolderSlash(pathRoot);
 			const String srcImage(MAKE_PATH_FULL(WORKING_FOLDER_FULL, pathRoot+image.name));
 			image.name = MAKE_PATH_FULL(WORKING_FOLDER_FULL, OPT::strOutputImageFolder+image.name);
 			Util::ensureDirectory(image.name);
