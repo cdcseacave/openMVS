@@ -229,24 +229,24 @@ void Finalize()
 // 
 // for example:
 // N01.JPG 3
-// 3090, 2680
-// 3600, 2100
-// 3640, 2190
+// 3090 2680
+// 3600 2100
+// 3640 2190
 bool Export3DProjections(Scene& scene, const String& inputFileName) {
 	SML smlPointList(_T("ImagePoints"));
 	smlPointList.Load(inputFileName);
 	const LPSMLARR& arrSmlChild = smlPointList.GetArrChildren();
 	ASSERT(arrSmlChild.size() <= 1);
-	SML::const_iterator it = smlPointList.begin();
+	IDX idx(0);
 
 	// read image name
 	size_t argc;
 	CAutoPtrArr<LPSTR> argv;
 	while (true) {
-		argv = Util::CommandLineToArgvA(it->second.val, argc);
+		argv = Util::CommandLineToArgvA(smlPointList.GetValue(idx).val, argc);
 		if (argc > 0 && argv[0][0] != _T('#'))
 			break;
-		if (++it == smlPointList.end())
+		if (++idx == smlPointList.size())
 			return false;
 	}
 	if (argc < 2)
@@ -268,13 +268,14 @@ bool Export3DProjections(Scene& scene, const String& inputFileName) {
 
 	// read image points
 	std::vector<Point2f> imagePoints;
-	while (++it != smlPointList.end()) {
+	while (++idx != smlPointList.size()) {
 		// parse image element
-		argv = Util::CommandLineToArgvA(it->second.val, argc);
+		const String& line(smlPointList.GetValue(idx).val);
+		argv = Util::CommandLineToArgvA(line, argc);
 		if (argc > 0 && argv[0][0] == _T('#'))
 			continue;
 		if (argc < 2) {
-			VERBOSE("Invalid image coordonates: %s", it->second.val.c_str());
+			VERBOSE("Invalid image coordonates: %s", line.c_str());
 			continue;
 		}
 		const Point2f pt(
@@ -297,7 +298,7 @@ bool Export3DProjections(Scene& scene, const String& inputFileName) {
 	}
 
 	// print image name
-	oStream.print("%s\n", imgName.c_str());
+	oStream.print("%s %u\n", imgName.c_str(), imagePoints.size());
 
 	// init mesh octree
 	const Mesh::Octree octree(scene.mesh.vertices, [](Mesh::Octree::IDX_TYPE size, Mesh::Octree::Type /*radius*/) {

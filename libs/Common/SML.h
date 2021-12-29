@@ -79,6 +79,7 @@ public:
 	IDX				GetChild(const String&) const;
 	const SMLVALUE*	GetValue(const String&) const;
 	SMLVALUE&		GetValue(const String&);
+	const SMLVALUE&	GetValue(IDX) const;
 	inline SMLVALUE& operator[] (const String& key)					{ return GetValue(key); }
 
 	// misc methods

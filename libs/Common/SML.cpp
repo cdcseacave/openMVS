@@ -376,6 +376,18 @@ SMLVALUE& SML::GetValue(const String& key)
 
 
 /**
+ * Retrieve an unnamed item by index
+ */
+const SMLVALUE& SML::GetValue(IDX idx) const
+{
+	ASSERT(idx < this->size());
+	const String szName(_T("Item") + String::ToString(idx));
+	return this->at(szName);
+}
+/*----------------------------------------------------------------*/
+
+
+/**
  * Reset items' init and release functions
  */
 void SML::SetFncItem(TFncInitItem fncInit, TFncSaveItem fncSave, TFncReleaseItem fncRelease, void* data)
