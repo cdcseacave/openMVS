@@ -36,9 +36,16 @@
 #include <boost/graph/filtered_graph.hpp>
 #include <boost/graph/connected_components.hpp>
 #ifdef _MSC_VER
-#  pragma warning(push)
-#  pragma warning(disable: 4244 4267 4305)
-#endif
+#pragma warning(push)
+#pragma warning(disable: 4244 4267 4305)
+#ifdef _SUPPORT_CPP17
+namespace std {
+template <typename ArgumentType, typename ResultType>
+struct unary_function {
+};
+} // namespace std
+#endif // _SUPPORT_CPP17
+#endif // _MSC_VER
 // VCG: mesh reconstruction post-processing
 #define _SILENCE_STDEXT_HASH_DEPRECATION_WARNINGS
 #include <vcg/complex/complex.h>

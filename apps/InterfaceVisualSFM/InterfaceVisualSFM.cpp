@@ -128,7 +128,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 
 	// print application details: version and command line
 	Util::LogBuild();
-	LOG(_T("Command line:%s"), Util::CommandLineToString(argc, argv).c_str());
+	LOG(_T("Command line: ") APPNAME _T("%s"), Util::CommandLineToString(argc, argv).c_str());
 
 	// validate input
 	Util::ensureValidPath(OPT::strInputFileName);

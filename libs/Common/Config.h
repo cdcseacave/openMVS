@@ -102,10 +102,6 @@
 #endif
 /*----------------------------------------------------------------*/
 
-#if _MSC_VER >= 1800
-#define _SUPPORT_CPP11
-#endif
-
 // Define platform type
 #if _WIN64
 #define _ENVIRONMENT64
@@ -127,10 +123,6 @@
 #define GENERAL_API
 #define GENERAL_TPL
 
-#if __cplusplus >= 201103L || (defined(__APPLE__) && __clang_major__ >= 4)
-#define _SUPPORT_CPP11
-#endif
-
 // Define platform type
 #if __x86_64__ || __ppc64__
 #define _ENVIRONMENT64
@@ -139,6 +131,17 @@
 #endif
 
 #endif // _MSC_VER
+
+
+#if __cplusplus >= 201103L || (__clang_major__ >= 4 || (__clang_major__ >= 3 && __clang_minor__ >= 3))
+#define _SUPPORT_CPP11
+#endif
+#if __cplusplus >= 201402L || (__clang_major__ >= 4 || (__clang_major__ >= 3 && __clang_minor__ >= 4))
+#define _SUPPORT_CPP14
+#endif
+#if __cplusplus >= 201703L || __clang_major__ >= 5
+#define _SUPPORT_CPP17
+#endif
 
 
 #if defined(__arm__) || defined (__arm64__) || defined(__aarch64__) || defined(_M_ARM) || defined(_M_ARMT)
@@ -255,13 +258,13 @@ namespace SEACAVE_ASSERT
 }
 
 #define STATIC_ASSERT(expression) \
-	NOWARNUNUSED typedef char CTA##__LINE__[::SEACAVE_ASSERT::compile_time_assert<(bool)(expression)>::value] 
+	NOWARNUNUSED typedef char CTA##__LINE__[::SEACAVE_ASSERT::compile_time_assert<(bool)(expression)>::value]
 
 #define ASSERT_ARE_SAME_TYPE(type1, type2) \
-	NOWARNUNUSED typedef char AAST##__LINE__[::SEACAVE_ASSERT::assert_are_same_type<type1,type2>::value] 
+	NOWARNUNUSED typedef char AAST##__LINE__[::SEACAVE_ASSERT::assert_are_same_type<type1,type2>::value]
 
 #define ASSERT_ARE_NOT_SAME_TYPE(type1, type2) \
-	NOWARNUNUSED typedef char AANST##__LINE__[::SEACAVE_ASSERT::assert_are_not_same_type<type1,type2>::value] 
+	NOWARNUNUSED typedef char AANST##__LINE__[::SEACAVE_ASSERT::assert_are_not_same_type<type1,type2>::value]
 /*----------------------------------------------------------------*/
 
 #endif // __SEACAVE_CONFIG_H__
