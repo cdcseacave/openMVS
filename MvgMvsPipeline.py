@@ -47,7 +47,7 @@ optional arguments:
                             GLOBAL = [0, 1, 2, 3, 4, 6, 11, 12, 13, 14, 15]
                             MVG_SEQ = [0, 1, 2, 3, 4, 5, 7, 8, 9]
                             MVG_GLOBAL = [0, 1, 2, 3, 4, 6, 7, 8, 9]
-                            MVS = [11, 12, 13, 14, 15]
+                            MVS = [12, 13, 14, 15]
                             MVS_SGM = [16, 17]
                             default : SEQUENTIAL
 
@@ -119,9 +119,9 @@ if not CAMERA_SENSOR_DB_DIRECTORY:
 
 PRESET = {'SEQUENTIAL': [0, 1, 2, 3, 4, 5, 11, 12, 13, 14, 15],
           'GLOBAL': [0, 1, 2, 3, 4, 6, 11, 12, 13, 14, 15],
-          'MVG_SEQ': [0, 1, 2, 3, 4, 5, 7, 8, 9],
-          'MVG_GLOBAL': [0, 1, 2, 3, 4, 6, 7, 8, 9],
-          'MVS': [11, 12, 13, 14, 15],
+          'MVG_SEQ': [0, 1, 2, 3, 4, 5, 7, 8, 9, 11],
+          'MVG_GLOBAL': [0, 1, 2, 3, 4, 6, 7, 8, 9, 11],
+          'MVS': [12, 13, 14, 15],
           'MVS_SGM': [16, 17]}
 
 PRESET_DEFAULT = 'SEQUENTIAL'
@@ -218,25 +218,25 @@ class StepsStore:
              ["-i", "%reconstruction_dir%/sfm_data.bin"]],
             ["Export to openMVS",            # 11
              os.path.join(OPENMVG_BIN, "openMVG_main_openMVG2openMVS"),
-             ["-i", "%reconstruction_dir%/sfm_data.bin", "-o", "%mvs_dir%/scene.mvs", "-d", "%mvs_dir%/images"]],
+             ["-i", "%reconstruction_dir%/sfm_data.bin", "-o", "\"%mvs_dir%/scene.mvs\"", "-d", "\"%mvs_dir%/images\""]],
             ["Densify point cloud",          # 12
              os.path.join(OPENMVS_BIN, "DensifyPointCloud"),
-             ["scene.mvs", "--dense-config-file", "Densify.ini", "--resolution-level", "1", "-w", "%mvs_dir%"]],
+             ["scene.mvs", "--dense-config-file", "Densify.ini", "--resolution-level", "1", "--number-views", "8", "-w", "\"%mvs_dir%\""]],
             ["Reconstruct the mesh",         # 13
              os.path.join(OPENMVS_BIN, "ReconstructMesh"),
-             ["scene_dense.mvs", "-w", "%mvs_dir%"]],
+             ["scene_dense.mvs", "-w", "\"%mvs_dir%\""]],
             ["Refine the mesh",              # 14
              os.path.join(OPENMVS_BIN, "RefineMesh"),
-             ["scene_dense_mesh.mvs", "--scales", "2", "-w", "%mvs_dir%"]],
+             ["scene_dense_mesh.mvs", "--scales", "1", "--gradient-step", "25.05", "-w", "\"%mvs_dir%\""]],
             ["Texture the mesh",             # 15
              os.path.join(OPENMVS_BIN, "TextureMesh"),
-             ["scene_dense_mesh_refine.mvs", "--decimate", "0.5", "-w", "%mvs_dir%"]],
+             ["scene_dense_mesh_refine.mvs", "--decimate", "0.5", "-w", "\"%mvs_dir%\""]],
             ["Estimate disparity-maps",      # 16
              os.path.join(OPENMVS_BIN, "DensifyPointCloud"),
-             ["scene.mvs", "--dense-config-file", "Densify.ini", "--fusion-mode", "-1", "-w", "%mvs_dir%"]],
+             ["scene.mvs", "--dense-config-file", "Densify.ini", "--fusion-mode", "-1", "-w", "\"%mvs_dir%\""]],
             ["Fuse disparity-maps",          # 17
              os.path.join(OPENMVS_BIN, "DensifyPointCloud"),
-             ["scene.mvs", "--dense-config-file", "Densify.ini", "--fusion-mode", "-2", "-w", "%mvs_dir%"]]
+             ["scene.mvs", "--dense-config-file", "Densify.ini", "--fusion-mode", "-2", "-w", "\"%mvs_dir%\""]]
             ]
 
     def __getitem__(self, indice):

@@ -111,7 +111,7 @@ public:
 private:
 	void ReleaseCUDA();
 	void AllocatePatchMatchCUDA(const cv::Mat1f& image);
-	void AllocateImageCUDA(size_t i, const cv::Mat1f& image, bool bHasDepthMap);
+	void AllocateImageCUDA(size_t i, const cv::Mat1f& image, bool bInitImage, bool bInitDepthMap);
 	void RunCUDA();
 
 public:

@@ -126,27 +126,36 @@ void PatchMatchCUDA::AllocatePatchMatchCUDA(const cv::Mat1f& image)
 	CUDA::checkCudaCall(cudaMalloc((void**)&cudaSelectedViews, sizeof(unsigned) * size));
 }
 
-void PatchMatchCUDA::AllocateImageCUDA(size_t i, const cv::Mat1f& image, bool bHasDepthMap)
+void PatchMatchCUDA::AllocateImageCUDA(size_t i, const cv::Mat1f& image, bool bInitImage, bool bInitDepthMap)
 {
 	const cudaChannelFormatDesc channelDesc = cudaCreateChannelDesc(32, 0, 0, 0, cudaChannelFormatKindFloat);
-	CUDA::checkCudaCall(cudaMallocArray(&cudaImageArrays[i], &channelDesc, image.cols, image.rows));
 
-	struct cudaResourceDesc resDesc;
-	memset(&resDesc, 0, sizeof(cudaResourceDesc));
-	resDesc.resType = cudaResourceTypeArray;
-	resDesc.res.array.array = cudaImageArrays[i];
+	if (bInitImage) {
+		CUDA::checkCudaCall(cudaMallocArray(&cudaImageArrays[i], &channelDesc, image.cols, image.rows));
 
-	struct cudaTextureDesc texDesc;
-	memset(&texDesc, 0, sizeof(cudaTextureDesc));
-	texDesc.addressMode[0] = cudaAddressModeWrap;
-	texDesc.addressMode[1] = cudaAddressModeWrap;
-	texDesc.filterMode = cudaFilterModeLinear;
-	texDesc.readMode  = cudaReadModeElementType;
-	texDesc.normalizedCoords = 0;
+		struct cudaResourceDesc resDesc;
+		memset(&resDesc, 0, sizeof(cudaResourceDesc));
+		resDesc.resType = cudaResourceTypeArray;
+		resDesc.res.array.array = cudaImageArrays[i];
 
-	CUDA::checkCudaCall(cudaCreateTextureObject(&textureImages[i], &resDesc, &texDesc, NULL));
+		struct cudaTextureDesc texDesc;
+		memset(&texDesc, 0, sizeof(cudaTextureDesc));
+		texDesc.addressMode[0] = cudaAddressModeWrap;
+		texDesc.addressMode[1] = cudaAddressModeWrap;
+		texDesc.filterMode = cudaFilterModeLinear;
+		texDesc.readMode  = cudaReadModeElementType;
+		texDesc.normalizedCoords = 0;
 
-	if (params.bGeomConsistency && i > 0 && bHasDepthMap) {
+		CUDA::checkCudaCall(cudaCreateTextureObject(&textureImages[i], &resDesc, &texDesc, NULL));
+	}
+
+	if (params.bGeomConsistency && i > 0) {
+		if (!bInitDepthMap) {
+			textureDepths[i-1] = 0;
+			cudaDepthArrays[i-1] = NULL;
+			return;
+		}
+
 		CUDA::checkCudaCall(cudaMallocArray(&cudaDepthArrays[i-1], &channelDesc, image.cols, image.rows));
 
 		struct cudaResourceDesc resDesc;
@@ -205,7 +214,7 @@ void PatchMatchCUDA::EstimateDepthMap(DepthData& depthData)
 		}
 		if (i >= prevNumImages) {
 			// allocate image CUDA memory
-			AllocateImageCUDA(i, image, !view.depthMap.empty());
+			AllocateImageCUDA(i, image, true, !view.depthMap.empty());
 		} else
 		if (images[i].size() != image.size()) {
 			// reallocate image CUDA memory
@@ -215,7 +224,15 @@ void PatchMatchCUDA::EstimateDepthMap(DepthData& depthData)
 				cudaDestroyTextureObject(textureDepths[i-1]);
 				cudaFreeArray(cudaDepthArrays[i-1]);
 			}
-			AllocateImageCUDA(i, image, !view.depthMap.empty());
+			AllocateImageCUDA(i, image, true, !view.depthMap.empty());
+		} else
+		if (params.bGeomConsistency && i > 0 && (view.depthMap.empty() != (cudaDepthArrays[i-1] == NULL))) {
+			// reallocate depth CUDA memory
+			if (cudaDepthArrays[i-1]) {
+				cudaDestroyTextureObject(textureDepths[i-1]);
+				cudaFreeArray(cudaDepthArrays[i-1]);
+			}
+			AllocateImageCUDA(i, image, false, !view.depthMap.empty());
 		}
 		CUDA::checkCudaCall(cudaMemcpy2DToArray(cudaImageArrays[i], 0, 0, image.ptr<float>(), image.step[0], image.cols*sizeof(float), image.rows, cudaMemcpyHostToDevice));
 		if (params.bGeomConsistency && i > 0 && !view.depthMap.empty()) {

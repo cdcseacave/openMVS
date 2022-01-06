@@ -530,7 +530,7 @@ CLISTDEF0IDX(SemiGlobalMatcher::AccumCost,int) SemiGlobalMatcher::GenerateP2s(Ac
 void SemiGlobalMatcher::Match(const Scene& scene, IIndex idxImage, IIndex numNeighbors, unsigned minResolution)
 {
 	const Image& leftImage = scene.images[idxImage];
-	const float fMinScore(MAXF(leftImage.neighbors.front().score*(OPTDENSE::fViewMinScoreRatio*0.1f), OPTDENSE::fViewMinScore));
+	const float fMinScore(MAXF(leftImage.neighbors.front().score*OPTDENSE::fViewMinScoreRatio, OPTDENSE::fViewMinScore));
 	FOREACH(idxNeighbor, leftImage.neighbors) {
 		const ViewScore& neighbor = leftImage.neighbors[idxNeighbor];
 		// exclude neighbors that over the limit or too small score
@@ -740,7 +740,7 @@ void SemiGlobalMatcher::Fuse(const Scene& scene, IIndex idxImage, IIndex numNeig
 {
 	TD_TIMER_STARTD();
 	const Image& leftImage = scene.images[idxImage];
-	const float fMinScore(MAXF(leftImage.neighbors.front().score*(OPTDENSE::fViewMinScoreRatio*0.1f), OPTDENSE::fViewMinScore));
+	const float fMinScore(MAXF(leftImage.neighbors.front().score*OPTDENSE::fViewMinScoreRatio, OPTDENSE::fViewMinScore));
 	struct PairData {
 		DepthMap depthMap;
 		DepthRangeMap depthRangeMap;
