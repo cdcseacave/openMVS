@@ -85,7 +85,7 @@ MDEFVAR_OPTDENSE_uint32(nNumViews, "Num Views", "Number of views used for depth-
 MDEFVAR_OPTDENSE_bool(bFilterAdjust, "Filter Adjust", "adjust depth estimates during filtering", "1")
 MDEFVAR_OPTDENSE_bool(bAddCorners, "Add Corners", "add support points at image corners with nearest neighbor disparities", "0")
 MDEFVAR_OPTDENSE_float(fViewMinScore, "View Min Score", "Min score to consider a neighbor images (0 - disabled)", "2.0")
-MDEFVAR_OPTDENSE_float(fViewMinScoreRatio, "View Min Score Ratio", "Min score ratio to consider a neighbor images", "0.3")
+MDEFVAR_OPTDENSE_float(fViewMinScoreRatio, "View Min Score Ratio", "Min score ratio to consider a neighbor images", "0.03")
 MDEFVAR_OPTDENSE_float(fMinArea, "Min Area", "Min shared area for accepting the depth triangulation", "0.05")
 MDEFVAR_OPTDENSE_float(fMinAngle, "Min Angle", "Min angle for accepting the depth triangulation", "3.0")
 MDEFVAR_OPTDENSE_float(fOptimAngle, "Optim Angle", "Optimal angle for computing the depth triangulation", "15.0")
@@ -1014,7 +1014,7 @@ std::pair<float,float> TriangulatePointsDelaunay(const DepthData::ViewData& imag
 		ASSERT(image.pImageData->IsValid() && ISINSIDE(image.pImageData->avgDepth, depthBounds.first, depthBounds.second));
 		const Mesh::VIndex idxFirstVertex = mesh.vertices.size();
 		VertexHandle vcorners[4];
-		for (const Point2f& x: {Point2f(0, 0), Point2f(image.image.width()-1, 0), Point2f(0, image.image.height()-1), Point2f(image.image.width()-1, image.image.height()-1)}) {
+		for (const Point2f x: {Point2i(0, 0), Point2i(image.image.width()-1, 0), Point2i(0, image.image.height()-1), Point2i(image.image.width()-1, image.image.height()-1)}) {
 			const Mesh::VIndex i(mesh.vertices.size() - idxFirstVertex);
 			(vcorners[i] = delaunay.insert(CPoint(x.x, x.y)))->info() = mesh.vertices.size();
 			mesh.vertices.emplace_back(image.camera.TransformPointI2C(Point3f(x, image.pImageData->avgDepth)));
@@ -1065,7 +1065,7 @@ std::pair<float,float> TriangulatePointsDelaunay(const DepthData::ViewData& imag
 			mesh.vertices[idxFirstVertex+i] = image.camera.TransformPointI2C(Point3(posA, depth));
 		}
 	}
-	mesh.faces.reserve(std::distance(delaunay.finite_faces_begin(),delaunay.finite_faces_end()));
+	mesh.faces.reserve(Mesh::FIndex(std::distance(delaunay.finite_faces_begin(),delaunay.finite_faces_end())));
 	for (Delaunay::Face_iterator it=delaunay.faces_begin(); it!=delaunay.faces_end(); ++it) {
 		const Delaunay::Face& face = *it;
 		mesh.faces.emplace_back(face.vertex(2)->info(), face.vertex(1)->info(), face.vertex(0)->info());

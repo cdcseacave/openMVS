@@ -3,7 +3,7 @@
 ########################################################################
 #
 # Project-wide settings
-CMAKE_MINIMUM_REQUIRED(VERSION 3.8.0)
+CMAKE_MINIMUM_REQUIRED(VERSION 3.8.2)
 IF(POLICY CMP0011)
 	CMAKE_POLICY(SET CMP0011 NEW)
 ENDIF()

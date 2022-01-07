@@ -749,6 +749,7 @@ public:
 	static String	GetCPUInfo();
 	static String	GetRAMInfo();
 	static String	GetOSInfo();
+	static String	GetDiskInfo(const String&);
 	enum CPUFNC {NA=0, SSE, AVX};
 	static const Flags ms_CPUFNC;
 

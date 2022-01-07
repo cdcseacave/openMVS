@@ -42,103 +42,6 @@ using namespace VIEWER;
 
 // S T R U C T S ///////////////////////////////////////////////////
 
-struct IndexDist {
-	IDX idx;
-	REAL dist;
-
-	inline IndexDist() : dist(REAL(FLT_MAX)) {}
-	inline bool IsValid() const { return dist < REAL(FLT_MAX); }
-};
-
-struct IntersectRayPoints {
-	typedef MVS::PointCloud Scene;
-	typedef VIEWER::Scene::OctreePoints Octree;
-	typedef typename Octree::IDX_TYPE IDX;
-	typedef TCone<REAL,3> Cone3;
-	typedef TConeIntersect<REAL,3> Cone3Intersect;
-
-	const Scene& scene;
-	const Cone3 cone;
-	const Cone3Intersect coneIntersect;
-	const unsigned minViews;
-	IndexDist pick;
-
-	IntersectRayPoints(const Octree& octree, const Ray3& _ray, const Scene& _scene, unsigned _minViews)
-		: scene(_scene), cone(_ray, D2R(REAL(0.5))), coneIntersect(cone), minViews(_minViews)
-	{
-		octree.Collect(*this, *this);
-	}
-
-	inline bool Intersects(const typename Octree::POINT_TYPE& center, typename Octree::Type radius) const {
-		return coneIntersect(Sphere3(center.cast<REAL>(), REAL(radius)*SQRT_3));
-	}
-
-	void operator () (const IDX* idices, IDX size) {
-		// test ray-point intersection and keep the closest
-		FOREACHRAWPTR(pIdx, idices, size) {
-			const MVS::PointCloud::Index idx(*pIdx);
-			if (!scene.pointViews.IsEmpty() && scene.pointViews[idx].size() < minViews)
-				continue;
-			const MVS::PointCloud::Point& X = scene.points[idx];
-			REAL dist;
-			if (coneIntersect.Classify(Cast<REAL>(X), dist) == VISIBLE) {
-				ASSERT(dist >= 0);
-				if (pick.dist > dist) {
-					pick.dist = dist;
-					pick.idx = idx;
-				}
-			}
-		}
-	}
-};
-
-struct IntersectRayMesh {
-	typedef MVS::Mesh Scene;
-	typedef VIEWER::Scene::OctreeMesh Octree;
-	typedef typename Octree::IDX_TYPE IDX;
-
-	const Scene& scene;
-	const Ray3& ray;
-	IndexDist pick;
-
-	IntersectRayMesh(const Octree& octree, const Ray3& _ray, const Scene& _scene)
-		: scene(_scene), ray(_ray)
-	{
-		octree.Collect(*this, *this);
-	}
-
-	inline bool Intersects(const typename Octree::POINT_TYPE& center, typename Octree::Type radius) const {
-		return ray.Intersects(AABB3f(center, radius));
-	}
-
-	void operator () (const IDX* idices, IDX size) {
-		// store all intersected faces only once
-		typedef std::unordered_set<MVS::Mesh::FIndex> FaceSet;
-		FaceSet set;
-		FOREACHRAWPTR(pIdx, idices, size) {
-			const MVS::Mesh::VIndex idxVertex((MVS::Mesh::VIndex)*pIdx);
-			const MVS::Mesh::FaceIdxArr& faces = scene.vertexFaces[idxVertex];
-			set.insert(faces.begin(), faces.end());
-		}
-		// test face intersection and keep the closest
-		for (MVS::Mesh::FIndex idxFace: set) {
-			const MVS::Mesh::Face& face = scene.faces[idxFace];
-			REAL dist;
-			if (ray.Intersects<true>(Triangle3(Cast<REAL>(scene.vertices[face[0]]), Cast<REAL>(scene.vertices[face[1]]), Cast<REAL>(scene.vertices[face[2]])), &dist)) {
-				ASSERT(dist >= 0);
-				if (pick.dist > dist) {
-					pick.dist = dist;
-					pick.idx = idxFace;
-				}
-			}
-		}
-	}
-};
-/*----------------------------------------------------------------*/
-
-
-// S T R U C T S ///////////////////////////////////////////////////
-
 enum EVENT_TYPE {
 	EVT_JOB = 0,
 	EVT_CLOSE,
@@ -715,7 +618,7 @@ void Scene::CastRay(const Ray3& ray, int action)
 	} else
 	if (!octMesh.IsEmpty()) {
 		// find ray intersection with the mesh
-		const IntersectRayMesh intRay(octMesh, ray, scene.mesh);
+		const MVS::IntersectRayMesh intRay(octMesh, ray, scene.mesh);
 		if (intRay.pick.IsValid()) {
 			const MVS::Mesh::Face& face = scene.mesh.faces[(MVS::Mesh::FIndex)intRay.pick.idx];
 			window.selectionPoints[0] = scene.mesh.vertices[face[0]];
@@ -737,7 +640,7 @@ void Scene::CastRay(const Ray3& ray, int action)
 	} else
 	if (!octPoints.IsEmpty()) {
 		// find ray intersection with the points
-		const IntersectRayPoints intRay(octPoints, ray, scene.pointcloud, window.minViews);
+		const MVS::IntersectRayPoints intRay(octPoints, ray, scene.pointcloud, window.minViews);
 		if (intRay.pick.IsValid()) {
 			window.selectionPoints[0] = window.selectionPoints[3] = scene.pointcloud.points[intRay.pick.idx];
 			window.selectionType = Window::SEL_POINT;

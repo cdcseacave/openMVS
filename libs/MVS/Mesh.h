@@ -321,6 +321,50 @@ struct TRasterMesh : TRasterMeshBase<DERIVED> {
 };
 /*----------------------------------------------------------------*/
 
+
+struct IntersectRayMesh {
+	typedef Mesh::Octree Octree;
+	typedef typename Octree::IDX_TYPE IDX;
+
+	const Mesh& mesh;
+	const Ray3& ray;
+	IndexDist pick;
+
+	IntersectRayMesh(const Octree& octree, const Ray3& _ray, const Mesh& _mesh)
+		: mesh(_mesh), ray(_ray)
+	{
+		octree.Collect(*this, *this);
+	}
+
+	inline bool Intersects(const typename Octree::POINT_TYPE& center, typename Octree::Type radius) const {
+		return ray.Intersects(AABB3f(center, radius));
+	}
+
+	void operator () (const IDX* idices, IDX size) {
+		// store all intersected faces only once
+		typedef std::unordered_set<Mesh::FIndex> FaceSet;
+		FaceSet set;
+		FOREACHRAWPTR(pIdx, idices, size) {
+			const Mesh::VIndex idxVertex((Mesh::VIndex)*pIdx);
+			const Mesh::FaceIdxArr& faces = mesh.vertexFaces[idxVertex];
+			set.insert(faces.begin(), faces.end());
+		}
+		// test face intersection and keep the closest
+		for (Mesh::FIndex idxFace : set) {
+			const Mesh::Face& face = mesh.faces[idxFace];
+			REAL dist;
+			if (ray.Intersects<true>(Triangle3(Cast<REAL>(mesh.vertices[face[0]]), Cast<REAL>(mesh.vertices[face[1]]), Cast<REAL>(mesh.vertices[face[2]])), &dist)) {
+				ASSERT(dist >= 0);
+				if (pick.dist > dist) {
+					pick.dist = dist;
+					pick.idx = idxFace;
+				}
+			}
+		}
+	}
+};
+/*----------------------------------------------------------------*/
+
 } // namespace MVS
 
 #endif // _MVS_MESH_H_

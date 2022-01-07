@@ -291,7 +291,7 @@ public:
 	inline iterator			Find(const Key& key)			{ return this->find(key); }
 	inline iterator			Insert(const Key& key, bool& bExisted) { return Insert(key, Type(), bExisted); }
 	inline iterator			Insert(const Key& key, const Type& val, bool& bExisted) {
-		std::pair<iterator,bool> ret = this->insert(std::pair<Key,Type>(key, val));
+		const std::pair<iterator,bool> ret(this->emplace(key, val));
 		bExisted = !ret.second;
 		return ret.first;
 	}

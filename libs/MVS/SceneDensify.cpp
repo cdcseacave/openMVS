@@ -331,7 +331,7 @@ bool DepthMapsData::InitViews(DepthData& depthData, IIndex idxNeighbor, IIndex n
 		DEBUG_EXTRA("Reference image %3u paired with image %3u", idxImage, neighbor.idx.ID);
 	} else {
 		// initialize all neighbor views too (global reconstruction is used)
-		const float fMinScore(MAXF(depthData.neighbors.First().score*(OPTDENSE::fViewMinScoreRatio*0.1f), OPTDENSE::fViewMinScore));
+		const float fMinScore(MAXF(depthData.neighbors.First().score*OPTDENSE::fViewMinScoreRatio, OPTDENSE::fViewMinScore));
 		FOREACH(idx, depthData.neighbors) {
 			const ViewScore& neighbor = depthData.neighbors[idx];
 			if ((numNeighbors && depthData.images.GetSize() > numNeighbors) ||
