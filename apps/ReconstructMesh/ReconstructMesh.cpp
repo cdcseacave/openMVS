@@ -219,7 +219,7 @@ void Finalize()
 } // unnamed namespace
 
 
-// export 3D coordinates corresponding to 2D ccordinates provided by inputFileName:
+// export 3D coordinates corresponding to 2D coordinates provided by inputFileName:
 // parse image point list; first line is the name of the image to project,
 // each consequent line store the xy coordinates to project:
 // <image-name> <number-of-points>
@@ -275,7 +275,7 @@ bool Export3DProjections(Scene& scene, const String& inputFileName) {
 		if (argc > 0 && argv[0][0] == _T('#'))
 			continue;
 		if (argc < 2) {
-			VERBOSE("Invalid image coordonates: %s", line.c_str());
+			VERBOSE("Invalid image coordinates: %s", line.c_str());
 			continue;
 		}
 		const Point2f pt(

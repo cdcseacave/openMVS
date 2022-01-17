@@ -36,8 +36,8 @@ Photogrammetry reconstruction with these steps:
     17. Fuse disparity-maps            DensifyPointCloud
 
 positional arguments:
-  input_dir                 the directory wich contains the pictures set.
-  output_dir                the directory wich will contain the resulting files.
+  input_dir                 the directory which contains the pictures set.
+  output_dir                the directory which will contain the resulting files.
 
 optional arguments:
   -h, --help                show this help message and exit
@@ -270,9 +270,9 @@ PARSER = argparse.ArgumentParser(
     "\r\n".join(("\t%i. %s\t %s" % (t, STEPS[t].info, STEPS[t].cmd) for t in range(STEPS.length())))
     )
 PARSER.add_argument('input_dir',
-                    help="the directory wich contains the pictures set.")
+                    help="the directory which contains the pictures set.")
 PARSER.add_argument('output_dir',
-                    help="the directory wich will contain the resulting files.")
+                    help="the directory which will contain the resulting files.")
 PARSER.add_argument('--steps',
                     type=int,
                     nargs="+",
@@ -297,7 +297,7 @@ def mkdir_ine(dirname):
         os.mkdir(dirname)
 
 
-# Absolute path for input and ouput dirs
+# Absolute path for input and output dirs
 CONF.input_dir = os.path.abspath(CONF.input_dir)
 CONF.output_dir = os.path.abspath(CONF.output_dir)
 
@@ -324,7 +324,7 @@ elif CONF.preset:
     try:
         CONF.steps = PRESET[CONF.preset]
     except KeyError:
-        sys.exit("Unkown preset %s, choose %s" % (CONF.preset, ' or '.join([s for s in PRESET])))
+        sys.exit("Unknown preset %s, choose %s" % (CONF.preset, ' or '.join([s for s in PRESET])))
 elif not CONF.steps:
     CONF.steps = PRESET[PRESET_DEFAULT]
 

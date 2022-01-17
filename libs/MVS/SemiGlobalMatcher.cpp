@@ -1488,7 +1488,7 @@ void SemiGlobalMatcher::ConsistencyCrossCheck(DisparityMap& l2r, const Disparity
 			pixel(-1, r, c);
 }
 
-// Discard disparities that have a hight similarity score
+// Discard disparities that have a high similarity score
 void SemiGlobalMatcher::FilterByCost(DisparityMap& disparityMap, const AccumCostMap& costMap, AccumCost th)
 {
 	ASSERT(th > 0);

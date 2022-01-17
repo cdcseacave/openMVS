@@ -66,7 +66,7 @@ template <typename TYPE> class TRMatrixBase;
 	  where (x, y, z) is the normalized direction vector of the axis
 	  and phi is the angle of rtoation.
 
-	  Some usefull quaternions:
+	  Some useful quaternions:
 	  x 	       y 	        z 	       w          Description
 	  0 	       0 	        0 	       1          Identity quaternion,
 													  no rotation
@@ -123,7 +123,7 @@ public:
 	*/
 	inline void Invert();
 
-	/** makes TQuaternion-representation uniqe, ensuring vector lies
+	/** makes TQuaternion-representation unique, ensuring vector lies
 	in upper (by real part) hemisphere. (inplace)
 	*/
 	inline void MakeUnique();
@@ -141,7 +141,7 @@ public:
 	*/
 	inline void MultLeft(const TQuaternion<TYPE> &quat);
 
-	/** rotates the given Vector qith the quaternion ( q v q* )
+	/** rotates the given Vector with the quaternion ( q v q* )
 	the resulting vector is given in res
 	@returns 0 in case of no error
 	@author Daniel Grest, June 2003

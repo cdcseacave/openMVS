@@ -2625,7 +2625,7 @@ static void RemoveConnectedComponents(Polyhedron& p, int size_threshold, float e
 	}
 }
 
-// mode : 0 - tangetial; 1 - across the normal
+// mode : 0 - tangential; 1 - across the normal
 inline Vector ComputeVectorComponent(Vector n, Vector v, int mode)
 {
 	ASSERT((mode>=0) && (mode<2));
@@ -2639,7 +2639,7 @@ inline Vector ComputeVectorComponent(Vector n, Vector v, int mode)
 static void Smooth(Polyhedron& p, double delta, int mode=0)
 {
 	// 0 - both components;
-	// 1 - tangetial;
+	// 1 - tangential;
 	// 2 - normal;
 	// 3 - second order;
 	// 4 - combined;

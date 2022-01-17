@@ -41,7 +41,7 @@
 //  - v2.2.0 Add loading 16bit PNG support. Add Sparse accessor support(Thanks
 //  to @Ybalrid)
 //  - v2.1.0 Add draco compression.
-//  - v2.0.1 Add comparsion feature(Thanks to @Selmar).
+//  - v2.0.1 Add comparison feature(Thanks to @Selmar).
 //  - v2.0.0 glTF 2.0!.
 //
 // Tiny glTF loader is using following third party libraries:
@@ -428,7 +428,7 @@ TINYGLTF_VALUE_GET(Value::Object, object_value_)
 #pragma clang diagnostic ignored "-Wpadded"
 #endif
 
-/// Agregate object for representing a color
+/// Aggregate object for representing a color
 using ColorValue = std::array<double, 4>;
 
 // === legacy interface ====
@@ -465,7 +465,7 @@ struct Parameter {
     if (it != std::end(json_double_value)) {
       return int(it->second);
     }
-    // As per the spec, if texCoord is ommited, this parameter is 0
+    // As per the spec, if texCoord is omitted, this parameter is 0
     return 0;
   }
 
@@ -477,7 +477,7 @@ struct Parameter {
     if (it != std::end(json_double_value)) {
       return it->second;
     }
-    // As per the spec, if scale is ommited, this paramter is 1
+    // As per the spec, if scale is omitted, this parameter is 1
     return 1;
   }
 
@@ -489,7 +489,7 @@ struct Parameter {
     if (it != std::end(json_double_value)) {
       return it->second;
     }
-    // As per the spec, if strenghth is ommited, this parameter is 1
+    // As per the spec, if strenghth is omitted, this parameter is 1
     return 1;
   }
 
@@ -503,7 +503,7 @@ struct Parameter {
   /// material
   ColorValue ColorFactor() const {
     return {
-        {// this agregate intialize the std::array object, and uses C++11 RVO.
+        {// this aggregate initialize the std::array object, and uses C++11 RVO.
          number_array[0], number_array[1], number_array[2],
          (number_array.size() > 3 ? number_array[3] : 1.0)}};
   }
@@ -989,7 +989,7 @@ struct Primitive {
   int indices;   // The index of the accessor that contains the indices.
   int mode;      // one of TINYGLTF_MODE_***
   std::vector<std::map<std::string, int> > targets;  // array of morph targets,
-  // where each target is a dict with attribues in ["POSITION, "NORMAL",
+  // where each target is a dict with attributes in ["POSITION, "NORMAL",
   // "TANGENT"] pointing
   // to their corresponding accessors
   ExtensionMap extensions;
@@ -1124,7 +1124,7 @@ struct Light {
   std::vector<double> color;
   double intensity{1.0};
   std::string type;
-  double range{0.0};  // 0.0 = inifinite
+  double range{0.0};  // 0.0 = infinite
   SpotLight spot;
 
   Light() : intensity(1.0), range(0.0) {}
@@ -1333,7 +1333,7 @@ class TinyGLTF {
                             unsigned int check_sections = REQUIRE_VERSION);
 
   ///
-  /// Write glTF to stream, buffers and images will be embeded
+  /// Write glTF to stream, buffers and images will be embedded
   ///
   bool WriteGltfSceneToStream(Model *model, std::ostream &stream,
                               bool prettyPrint, bool writeBinary);
@@ -1368,7 +1368,7 @@ class TinyGLTF {
   ///
   /// Set serializing default values(default = false).
   /// When true, default values are force serialized to .glTF.
-  /// This may be helpfull if you want to serialize a full description of glTF
+  /// This may be helpful if you want to serialize a full description of glTF
   /// data.
   ///
   /// TODO(LTE): Supply parsing option as function arguments to
@@ -1395,7 +1395,7 @@ class TinyGLTF {
 
   ///
   /// Specify whether preserve image channales when loading images or not.
-  /// (Not effective when the user suppy their own LoadImageData callbacks)
+  /// (Not effective when the user supply their own LoadImageData callbacks)
   ///
   void SetPreserveImageChannels(bool onoff) {
     preserve_image_channels_ = onoff;
@@ -1528,7 +1528,7 @@ class TinyGLTF {
 #endif
 #endif
 
-// Disable GCC warnigs
+// Disable GCC warnings
 #ifdef __GNUC__
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wtype-limits"
@@ -1718,7 +1718,7 @@ namespace tinygltf {
 struct LoadImageDataOption {
   // true: preserve image channels(e.g. load as RGB image if the image has RGB
   // channels) default `false`(channels are expanded to RGBA for backward
-  // compatiblity).
+  // compatibility).
   bool preserve_channels{false};
 };
 
@@ -2376,7 +2376,7 @@ bool LoadImageData(Image *image, const int image_idx, std::string *err,
 
   // It is possible that the image we want to load is a 16bit per channel image
   // We are going to attempt to load it as 16bit per channel, and if it worked,
-  // set the image data accodingly. We are casting the returned pointer into
+  // set the image data accordingly. We are casting the returned pointer into
   // unsigned char, because we are representing "bytes". But we are updating
   // the Image metadata to signal that this image uses 2 bytes (16bits) per
   // channel:
@@ -4235,7 +4235,7 @@ static bool ParseSparseAccessor(Accessor *accessor, std::string *err,
   }
 
   if (!FindMember(o, "values", values_iterator)) {
-    (*err) = "the sparse object ob ths accessor doesn't have values";
+    (*err) = "the sparse object ob this accessor doesn't have values";
     return false;
   }
 
@@ -4263,7 +4263,7 @@ static bool ParseSparseAccessor(Accessor *accessor, std::string *err,
   accessor->sparse.values.bufferView = values_buffer_view;
   accessor->sparse.values.byteOffset = values_byte_offset;
 
-  // todo check theses values
+  // todo check these values
 
   return true;
 }
@@ -4860,7 +4860,7 @@ static bool ParseMaterial(Material *material, std::string *err, const json &o,
 
   // Old code path. For backward compatibility, we still store material values
   // as Parameter. This will create duplicated information for
-  // example(pbrMetallicRoughness), but should be neglible in terms of memory
+  // example(pbrMetallicRoughness), but should be negligible in terms of memory
   // consumption.
   // TODO(syoyo): Remove in the next major release.
   material->values.clear();
@@ -5098,7 +5098,7 @@ static bool ParseSampler(Sampler *sampler, std::string *err, const json &o,
   ParseIntegerProperty(&wrapT, err, o, "wrapT", false);
   //ParseIntegerProperty(&wrapR, err, o, "wrapR", false);  // tinygltf extension
 
-  // TODO(syoyo): Check the value is alloed one.
+  // TODO(syoyo): Check the value is allowed one.
   // (e.g. we allow 9728(NEAREST), but don't allow 9727)
 
   sampler->minFilter = minFilter;
@@ -6523,7 +6523,7 @@ static void SerializeGltfBufferData(const std::vector<unsigned char> &data,
     SerializeStringProperty("uri", header + encodedData, o);
   } else {
     // Issue #229
-    // size 0 is allowd. Just emit mime header.
+    // size 0 is allowed. Just emit mime header.
     SerializeStringProperty("uri", header, o);
   }
 }
@@ -7042,7 +7042,7 @@ static void SerializeGltfMesh(Mesh &mesh, json &o) {
       JsonAddMember(primitive, "attributes", std::move(attributes));
     }
 
-    // Indicies is optional
+    // Indices is optional
     if (gltfPrimitive.indices > -1) {
       SerializeNumberProperty<int>("indices", gltfPrimitive.indices, primitive);
     }

@@ -18,7 +18,7 @@ typedef struct {
     double epsilon;   /* step used to calculate the jacobian, or 0 for user provided jacobian. */
     double stepbound; /* initial bound to steps in the outer loop. */
     int maxcall;      /* maximum number of iterations. */
-    int scale_diag;   /* UNDOCUMENTED, TESTWISE automatical diag rescaling? */
+    int scale_diag;   /* UNDOCUMENTED, TESTWISE automatic diag rescaling? */
     #ifdef LMFIT_PRINTOUT
     int printflags;   /* OR'ed to produce more noise */
     #endif
