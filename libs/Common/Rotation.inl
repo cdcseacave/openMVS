@@ -374,7 +374,7 @@ TQuaternion<TYPE> TQuaternion<TYPE>::
 	TQuaternion<TYPE> res;
 	TYPE a, b;
 	TYPE cosPhi = (TYPE)p.ScalarProduct(q);
-	//adjust angle if neccessary
+	//adjust angle if necessary
 	if (cosPhi < 0) {
 		q.MultiplyIP(-1.0);
 		cosPhi = -cosPhi;

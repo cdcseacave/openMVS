@@ -14,7 +14,7 @@ Changes in lmfit-4.0, released 16jul13
   - in consequence thereof, new parameter lists for lmcurve and lmmin
 - code cleanup:
   - ensure strict C90 compliance: no C++ comments; replace non-standard
-    struct assignement (reported by Elio Mazzocca, using LCC)
+    struct assignment (reported by Elio Mazzocca, using LCC)
   - revert malloc trick of release 3.4 (readability is more important)
   - source code comment blocks moved around, to reduce duplications
 - build scripts cleanup:
@@ -64,7 +64,7 @@ Changes in lmfit-3.0, released 2mar10 (preview 27feb10):
 - outer iteration counter starting at zero (C style)
 - replace BUG by LMFIT_DEBUG_MESSAGES and .._MATRIX to allow control by -D
 - remove redundant calculation by exchanging workspaces and lm_lmpar output
-- eliminate unncessary wa1 = -wa1 computation
+- eliminate unnecessary wa1 = -wa1 computation
 - avoid passing wa3 to wa1, choose better names for work arrays in lm_par
 - migrate documentation from brain-damaged asciidoc to pod
 - rewrote interface documentation

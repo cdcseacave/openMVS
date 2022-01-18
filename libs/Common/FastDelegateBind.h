@@ -26,7 +26,7 @@
 //
 // Add another helper, so FastDelegate can be a dropin replacement
 // for boost::bind (in a fair number of cases).
-// Note the elipses, because boost::bind() takes place holders
+// Note the ellipsis, because boost::bind() takes place holders
 // but FastDelegate does not care about them.  Getting the place holder
 // mechanism to work, and play well with boost is a bit tricky, so
 // we do the "easy" thing...

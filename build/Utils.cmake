@@ -492,7 +492,7 @@ macro(optimize_default_compiler_settings)
 	  add_extra_compiler_option(-fdiagnostics-show-option)
 	  add_extra_compiler_option(-ftemplate-backtrace-limit=0)
 	  
-	  # The -Wno-long-long is required in 64bit systems when including sytem headers.
+	  # The -Wno-long-long is required in 64bit systems when including system headers.
 	  if(X86_64)
 		add_extra_compiler_option(-Wno-long-long)
 	  endif()
