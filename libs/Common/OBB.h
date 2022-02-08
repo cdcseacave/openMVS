@@ -89,6 +89,19 @@ public:
 	inline TYPE& operator [] (BYTE i) { ASSERT(i<numScalar); return m_rot.data()[i]; }
 	inline TYPE operator [] (BYTE i) const { ASSERT(i<numScalar); return m_rot.data()[i]; }
 
+	friend std::ostream& operator << (std::ostream& st, const TOBB<TYPE,DIMS>& obb) {
+		st << obb.m_rot; st << std::endl;
+		st << obb.m_pos; st << std::endl;
+		st << obb.m_ext; st << std::endl;
+		return st;
+	}
+	friend std::istream& operator >> (std::istream& st, TOBB<TYPE,DIMS>& obb) {
+		st >> obb.m_rot;
+		st >> obb.m_pos;
+		st >> obb.m_ext;
+		return st;
+	}
+
 	#ifdef _USE_BOOST
 	// implement BOOST serialization
 	template<class Archive>

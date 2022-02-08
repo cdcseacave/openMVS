@@ -50,6 +50,8 @@ String strInputFileName;
 String strOutputFileName;
 String strViewNeighborsFileName;
 String strMeshFileName;
+String strExportROIFileName;
+String strImportROIFileName;
 String strDenseConfigFileName;
 float fMaxSubsceneArea;
 float fSampleMesh;
@@ -130,6 +132,8 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	boost::program_options::options_description hidden("Hidden options");
 	hidden.add_options()
 		("mesh-file", boost::program_options::value<std::string>(&OPT::strMeshFileName), "mesh file name used for image pair overlap estimation")
+		("export-roi-file", boost::program_options::value<std::string>(&OPT::strExportROIFileName), "ROI file name to be exported form the scene")
+		("import-roi-file", boost::program_options::value<std::string>(&OPT::strImportROIFileName), "ROI file name to be imported into the scene")
 		("dense-config-file", boost::program_options::value<std::string>(&OPT::strDenseConfigFileName), "optional configuration file for the densifier (overwritten by the command line options)")
 		;
 
@@ -180,6 +184,8 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	Util::ensureValidPath(OPT::strOutputFileName);
 	Util::ensureValidPath(OPT::strViewNeighborsFileName);
 	Util::ensureValidPath(OPT::strMeshFileName);
+	Util::ensureValidPath(OPT::strExportROIFileName);
+	Util::ensureValidPath(OPT::strImportROIFileName);
 	if (OPT::strOutputFileName.empty())
 		OPT::strOutputFileName = Util::getFileFullName(OPT::strInputFileName) + _T("_dense.mvs");
 
@@ -263,6 +269,23 @@ int main(int argc, LPCTSTR* argv)
 	// load and estimate a dense point-cloud
 	if (!scene.Load(MAKE_PATH_SAFE(OPT::strInputFileName)))
 		return EXIT_FAILURE;
+	if (!OPT::strExportROIFileName.empty() && scene.IsBounded()) {
+		std::ofstream fs(MAKE_PATH_SAFE(OPT::strExportROIFileName));
+		if (!fs)
+			return EXIT_FAILURE;
+		fs << scene.obb;
+		Finalize();
+		return EXIT_SUCCESS;
+	}
+	if (!OPT::strImportROIFileName.empty()) {
+		std::ifstream fs(MAKE_PATH_SAFE(OPT::strImportROIFileName));
+		if (!fs)
+			return EXIT_FAILURE;
+		fs >> scene.obb;
+		scene.Save(MAKE_PATH_SAFE(Util::getFileFullName(OPT::strOutputFileName))+_T(".mvs"), (ARCHIVE_TYPE)OPT::nArchiveType);
+		Finalize();
+		return EXIT_SUCCESS;
+	}
 	if (!OPT::strMeshFileName.empty())
 		scene.mesh.Load(MAKE_PATH_SAFE(OPT::strMeshFileName));
 	if (scene.pointcloud.IsEmpty() && OPT::strViewNeighborsFileName.empty() && scene.mesh.IsEmpty()) {

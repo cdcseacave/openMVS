@@ -643,7 +643,7 @@ inline float Footprint(const Camera& camera, const Point3f& X) {
 // and select the best views for reconstructing the dense point-cloud;
 // extract also all 3D points seen by the reference image;
 // (inspired by: "Multi-View Stereo for Community Photo Collections", Goesele, 2007)
-bool Scene::SelectNeighborViews(uint32_t ID, IndexArr& points, unsigned nMinViews, unsigned nMinPointViews, float fOptimAngle)
+bool Scene::SelectNeighborViews(uint32_t ID, IndexArr& points, unsigned nMinViews, unsigned nMinPointViews, float fOptimAngle, bool bInsideROI)
 {
 	ASSERT(points.IsEmpty());
 
@@ -665,13 +665,16 @@ bool Scene::SelectNeighborViews(uint32_t ID, IndexArr& points, unsigned nMinView
 	unsigned nPoints = 0;
 	imageData.avgDepth = 0;
 	const float sigmaAngle(-1.f/(2.f*SQUARE(fOptimAngle*1.3f)));
+	const bool bCheckInsideROI(bInsideROI && IsBounded());
 	FOREACH(idx, pointcloud.points) {
 		const PointCloud::ViewArr& views = pointcloud.pointViews[idx];
 		ASSERT(views.IsSorted());
 		if (views.FindFirst(ID) == PointCloud::ViewArr::NO_INDEX)
 			continue;
-		// store this point
 		const PointCloud::Point& point = pointcloud.points[idx];
+		if (bCheckInsideROI && !obb.Intersects(point))
+			continue;
+		// store this point
 		if (views.GetSize() >= nMinPointViews)
 			points.Insert((uint32_t)idx);
 		imageData.avgDepth += (float)imageData.camera.PointDepth(point);
