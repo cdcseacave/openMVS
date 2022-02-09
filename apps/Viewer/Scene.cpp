@@ -325,6 +325,11 @@ bool Scene::Export(LPCTSTR _fileName, LPCTSTR exportType, bool losslessTexture) 
 	if (VERBOSITY_LEVEL > 2 && (bPoints || bMesh))
 		scene.ExportCamerasMLP(Util::getFileFullName(lastFileName)+_T(".mlp"), lastFileName);
 	#endif
+	if (scene.IsBounded()) {
+		std::ofstream fs(baseFileName+_T("_roi.txt"));
+		if (fs)
+			fs << scene.obb;
+	}
 	return (bPoints || bMesh);
 }
 

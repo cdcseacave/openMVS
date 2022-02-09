@@ -765,7 +765,7 @@ float computePlaneSphereAngle(const delaunay_t& Tr, const facet_t& facet)
 // Next, the score is computed for all the edges of the directed graph composed of points as vertices.
 // Finally, graph-cut algorithm is used to split the tetrahedrons in inside and outside,
 // and the surface is such extracted.
-bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, unsigned nItersFixNonManifold,
+bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bUseOnlyROI, unsigned nItersFixNonManifold,
 							float kSigma, float kQual, float kb,
 							float kf, float kRel, float kAbs, float kOutl,
 							float kInf
@@ -786,8 +786,12 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, unsigne
 		std::vector<point_t> vertices(pointcloud.points.GetSize());
 		std::vector<std::ptrdiff_t> indices(pointcloud.points.GetSize());
 		// fetch points
+		if (bUseOnlyROI && !IsBounded())
+			bUseOnlyROI = false;
 		FOREACH(i, pointcloud.points) {
 			const PointCloud::Point& X(pointcloud.points[i]);
+			if (bUseOnlyROI && !obb.Intersects(X))
+				continue;
 			vertices[i] = point_t(X.x, X.y, X.z);
 			indices[i] = i;
 		}
