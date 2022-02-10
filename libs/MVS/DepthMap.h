@@ -100,7 +100,7 @@ extern unsigned nMinViewsFilter;
 extern unsigned nMinViewsFilterAdjust;
 extern unsigned nMinViewsTrustPoint;
 extern unsigned nNumViews;
-extern bool bPointInsideROI;
+extern unsigned nPointInsideROI;
 extern bool bFilterAdjust;
 extern bool bAddCorners;
 extern float fViewMinScore;

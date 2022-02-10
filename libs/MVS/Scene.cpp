@@ -643,7 +643,8 @@ inline float Footprint(const Camera& camera, const Point3f& X) {
 // and select the best views for reconstructing the dense point-cloud;
 // extract also all 3D points seen by the reference image;
 // (inspired by: "Multi-View Stereo for Community Photo Collections", Goesele, 2007)
-bool Scene::SelectNeighborViews(uint32_t ID, IndexArr& points, unsigned nMinViews, unsigned nMinPointViews, float fOptimAngle, bool bInsideROI)
+//  - nInsideROI: 0 - ignore ROI, 1 - weight more ROI points, 2 - consider only ROI points
+bool Scene::SelectNeighborViews(uint32_t ID, IndexArr& points, unsigned nMinViews, unsigned nMinPointViews, float fOptimAngle, unsigned nInsideROI)
 {
 	ASSERT(points.IsEmpty());
 
@@ -664,16 +665,21 @@ bool Scene::SelectNeighborViews(uint32_t ID, IndexArr& points, unsigned nMinView
 		nMinPointViews = nCalibratedImages;
 	unsigned nPoints = 0;
 	imageData.avgDepth = 0;
-	const float sigmaAngle(-1.f/(2.f*SQUARE(fOptimAngle*1.3f)));
-	const bool bCheckInsideROI(bInsideROI && IsBounded());
+	const float sigmaAngleSmall(-1.f/(2.f*SQUARE(fOptimAngle*0.38f)));
+	const float sigmaAngleLarge(-1.f/(2.f*SQUARE(fOptimAngle*0.7f)));
+	const bool bCheckInsideROI(nInsideROI > 0 && IsBounded());
 	FOREACH(idx, pointcloud.points) {
 		const PointCloud::ViewArr& views = pointcloud.pointViews[idx];
 		ASSERT(views.IsSorted());
 		if (views.FindFirst(ID) == PointCloud::ViewArr::NO_INDEX)
 			continue;
 		const PointCloud::Point& point = pointcloud.points[idx];
-		if (bCheckInsideROI && !obb.Intersects(point))
-			continue;
+		float wROI(1.f);
+		if (bCheckInsideROI && !obb.Intersects(point)) {
+			if (nInsideROI > 1)
+				continue;
+			wROI = 0.7f;
+		}
 		// store this point
 		if (views.GetSize() >= nMinPointViews)
 			points.Insert((uint32_t)idx);
@@ -688,7 +694,7 @@ bool Scene::SelectNeighborViews(uint32_t ID, IndexArr& points, unsigned nMinView
 			const Image& imageData2 = images[view];
 			const Point3f V2(imageData2.camera.C - Cast<REAL>(point));
 			const float fAngle(ACOS(ComputeAngle<float,float>(V1.ptr(), V2.ptr())));
-			const float wAngle(fAngle<fOptimAngle ? POW(fAngle/fOptimAngle, 1.5f) : EXP(SQUARE(fAngle-fOptimAngle)*sigmaAngle));
+			const float wAngle(EXP(SQUARE(fAngle-fOptimAngle)*(fAngle<fOptimAngle?sigmaAngleSmall:sigmaAngleLarge)));
 			const float footprint2(Footprint(imageData2.camera, point));
 			const float fScaleRatio(footprint1/footprint2);
 			float wScale;
@@ -699,7 +705,7 @@ bool Scene::SelectNeighborViews(uint32_t ID, IndexArr& points, unsigned nMinView
 			else
 				wScale = SQUARE(fScaleRatio);
 			Score& score = scores[view];
-			score.score += wAngle * wScale;
+			score.score += wAngle * wScale * wROI;
 			score.avgScale += fScaleRatio;
 			score.avgAngle += fAngle;
 			++score.points;
