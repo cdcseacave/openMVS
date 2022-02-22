@@ -378,6 +378,18 @@ bool Scene::LoadDMAP(const String& fileName)
 	image.image = imageDepth;
 	cv::resize(image.image, image.image, imageSize);
 
+	#if TD_VERBOSE != TD_VERBOSE_OFF
+	if (VERBOSITY_LEVEL > 2) {
+		ExportDepthMap(ComposeDepthFilePath(image.ID, "png"), depthMap);
+		ExportConfidenceMap(ComposeDepthFilePath(image.ID, "conf.png"), confMap);
+		ExportPointCloud(ComposeDepthFilePath(image.ID, "ply"), image, depthMap, normalMap);
+		if (VERBOSITY_LEVEL > 4) {
+			ExportNormalMap(ComposeDepthFilePath(image.ID, "normal.png"), normalMap);
+			confMap.Save(ComposeDepthFilePath(image.ID, "conf.pfm"));
+		}
+	}
+	#endif
+
 	DEBUG_EXTRA("Scene loaded from depth-map format - %dx%d size, %.2f%%%% coverage (%s):\n"
 		"\t1 images (1 calibrated) with a total of %.2f MPixels (%.2f MPixels/image)\n"
 		"\t%u points, 0 lines",
