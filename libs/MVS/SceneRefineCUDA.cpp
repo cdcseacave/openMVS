@@ -2380,14 +2380,14 @@ void MeshRefineCUDA::SubdivideMesh(uint32_t maxArea, float fDecimate, unsigned n
 	if (!bNoDecimation) {
 		if (fDecimate > 0.f) {
 			// decimate to the desired resolution
-			scene.mesh.Clean(fDecimate, 0.f, false, nCloseHoles, 0, false);
-			scene.mesh.Clean(1.f, 0.f, false, nCloseHoles, 0, true);
+			scene.mesh.Clean(fDecimate, 0.f, false, nCloseHoles, 0u, 0.f, false);
+			scene.mesh.Clean(1.f, 0.f, false, nCloseHoles, 0u, 0.f, true);
 
 			#ifdef MESHOPT_ENSUREEDGESIZE
 			// make sure there are no edges too small or too long
 			if (nEnsureEdgeSize > 0 && bNoSimplification) {
 				scene.mesh.EnsureEdgeSize();
-				scene.mesh.Clean(1.f, 0.f, false, nCloseHoles, 0, true);
+				scene.mesh.Clean(1.f, 0.f, false, nCloseHoles, 0u, 0.f, true);
 			}
 			#endif
 
@@ -2407,14 +2407,14 @@ void MeshRefineCUDA::SubdivideMesh(uint32_t maxArea, float fDecimate, unsigned n
 				maxAreas.Empty();
 
 				// decimate to the auto detected resolution
-				scene.mesh.Clean(MAXF(0.1f, medianArea/maxArea), 0.f, false, nCloseHoles, 0, false);
-				scene.mesh.Clean(1.f, 0.f, false, nCloseHoles, 0, true);
+				scene.mesh.Clean(MAXF(0.1f, medianArea/maxArea), 0.f, false, nCloseHoles, 0u, 0.f, false);
+				scene.mesh.Clean(1.f, 0.f, false, nCloseHoles, 0u, 0.f, true);
 
 				#ifdef MESHOPT_ENSUREEDGESIZE
 				// make sure there are no edges too small or too long
 				if (nEnsureEdgeSize > 0 && bNoSimplification) {
 					scene.mesh.EnsureEdgeSize();
-					scene.mesh.Clean(1.f, 0.f, false, nCloseHoles, 0, true);
+					scene.mesh.Clean(1.f, 0.f, false, nCloseHoles, 0u, 0.f, true);
 				}
 				#endif
 
@@ -2446,7 +2446,7 @@ void MeshRefineCUDA::SubdivideMesh(uint32_t maxArea, float fDecimate, unsigned n
 	#endif
 	{
 		scene.mesh.EnsureEdgeSize();
-		scene.mesh.Clean(1.f, 0.f, false, nCloseHoles, 0, true);
+		scene.mesh.Clean(1.f, 0.f, false, nCloseHoles, 0u, 0.f, true);
 	}
 	#endif
 

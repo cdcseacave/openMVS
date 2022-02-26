@@ -247,8 +247,8 @@ int main(int argc, LPCTSTR* argv)
 	// decimate to the desired resolution
 	if (OPT::fDecimateMesh < 1.f) {
 		ASSERT(OPT::fDecimateMesh > 0.f);
-		scene.mesh.Clean(OPT::fDecimateMesh, 0.f, false, OPT::nCloseHoles, 0u, false);
-		scene.mesh.Clean(1.f, 0.f, false, 0, 0u, true); // extra cleaning to remove non-manifold problems created by closing holes
+		scene.mesh.Clean(OPT::fDecimateMesh, 0.f, false, OPT::nCloseHoles, 0u, 0.f, false);
+		scene.mesh.Clean(1.f, 0.f, false, 0u, 0u, 0.f, true); // extra cleaning to remove non-manifold problems created by closing holes
 		#if TD_VERBOSE != TD_VERBOSE_OFF
 		if (VERBOSITY_LEVEL > 3)
 			scene.mesh.Save(baseFileName +_T("_decim")+OPT::strExportType);

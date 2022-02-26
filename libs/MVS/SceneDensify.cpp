@@ -592,7 +592,7 @@ bool DepthMapsData::EstimateDepthMap(IIndex idxImage, int nGeometricIter)
 
 	// initialize
 	DepthData& depthData(arrDepthData[idxImage]);
-	ASSERT(depthData.images.GetSize() > 1 && !depthData.points.IsEmpty());
+	ASSERT(depthData.images.size() > 1);
 	const DepthData::ViewData& image(depthData.images.First());
 	ASSERT(!image.image.empty() && !depthData.images[1].image.empty());
 	const Image8U::Size size(image.image.size());

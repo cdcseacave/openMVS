@@ -55,6 +55,7 @@ struct unary_function {
 #include <vcg/complex/algorithms/smooth.h>
 #include <vcg/complex/algorithms/hole.h>
 #include <vcg/complex/algorithms/polygon_support.h>
+#include <vcg/complex/algorithms/isotropic_remeshing.h>
 // VCG: mesh simplification
 #include <vcg/complex/algorithms/update/position.h>
 #include <vcg/complex/algorithms/update/bounding.h>
@@ -956,7 +957,7 @@ struct UsedTypes : public vcg::UsedTypes<
 
 class Vertex : public vcg::Vertex<UsedTypes, vcg::vertex::Coord3f, vcg::vertex::Normal3f, vcg::vertex::VFAdj, vcg::vertex::Mark, vcg::vertex::BitFlags> {};
 class Face   : public vcg::Face<  UsedTypes, vcg::face::VertexRef, vcg::face::Normal3f, vcg::face::FFAdj, vcg::face::VFAdj, vcg::face::Mark, vcg::face::BitFlags> {};
-class Edge   : public vcg::Edge<  UsedTypes, vcg::edge::VertexRef> {};
+class Edge   : public vcg::Edge<  UsedTypes, vcg::edge::VertexRef, vcg::edge::Mark, vcg::edge::BitFlags> {};
 
 class Mesh : public vcg::tri::TriMesh< std::vector<Vertex>, std::vector<Face>, std::vector<Edge> > {};
 
@@ -977,7 +978,7 @@ public:
 	static QuadricTemp &TD() { return *TDp(); }
 };
 
-typedef BasicVertexPair<Vertex> VertexPair;
+typedef vcg::tri::BasicVertexPair<Vertex> VertexPair;
 
 class TriEdgeCollapse : public vcg::tri::TriEdgeCollapseQuadric<Mesh, VertexPair, TriEdgeCollapse, QHelper> {
 public:
@@ -988,7 +989,7 @@ public:
 
 // decimate, clean and smooth mesh
 // fDecimate factor is in range (0..1], if 1 no decimation takes place
-void Mesh::Clean(float fDecimate, float fSpurious, bool bRemoveSpikes, unsigned nCloseHoles, unsigned nSmooth, bool bLastClean)
+void Mesh::Clean(float fDecimate, float fSpurious, bool bRemoveSpikes, unsigned nCloseHoles, unsigned nSmooth, float fEdgeLength, bool bLastClean)
 {
 	if (vertices.IsEmpty() || faces.IsEmpty())
 		return;
@@ -1039,7 +1040,6 @@ void Mesh::Clean(float fDecimate, float fSpurious, bool bRemoveSpikes, unsigned 
 		vcg::tri::TriEdgeCollapseQuadricParameter pp;
 		pp.QualityThr = 0.3; // Quality Threshold for penalizing bad shaped faces: the value is in the range [0..1], 0 accept any kind of face (no penalties), 0.5 penalize faces with quality < 0.5, proportionally to their shape
 		pp.PreserveBoundary = false; // the simplification process tries to not affect mesh boundaries during simplification
-		pp.BoundaryWeight = 1; // the importance of the boundary during simplification: the value is in the range (0..+inf), default (1.0) means that the boundary has the same importance as the rest; values greater than 1.0 raise boundary importance and has the effect of removing less vertices on the border
 		pp.PreserveTopology = false; // avoid all collapses that cause a topology change in the mesh (like closing holes, squeezing handles, etc); if checked the genus of the mesh should stay unchanged
 		pp.QualityWeight = false; // use the Per-Vertex quality as a weighting factor for the simplification: the weight is used as an error amplification value, so a vertex with a high quality value will not be simplified and a portion of the mesh with low quality values will be aggressively simplified
 		pp.NormalCheck = false; // try to avoid face flipping effects and try to preserve the original orientation of the surface
@@ -1206,6 +1206,28 @@ void Mesh::Clean(float fDecimate, float fSpurious, bool bRemoveSpikes, unsigned 
 		vcg::tri::Smooth<CLEAN::Mesh>::VertexCoordLaplacianHC(mesh, (int)nSmooth, false);
 		#endif
 		DEBUG_ULTIMATE("Smoothed %d vertices", mesh.vn);
+	}
+
+	// remesh
+	if (fEdgeLength > 0) {
+		vcg::tri::Clean<CLEAN::Mesh>::RemoveDuplicateVertex(mesh);
+		vcg::tri::Clean<CLEAN::Mesh>::RemoveUnreferencedVertex(mesh);
+		vcg::tri::Allocator<CLEAN::Mesh>::CompactEveryVector(mesh);
+		CLEAN::Mesh original;
+		vcg::tri::Append<CLEAN::Mesh,CLEAN::Mesh>::MeshCopy(original, mesh);
+		vcg::tri::IsotropicRemeshing<CLEAN::Mesh>::Params params;
+		params.SetTargetLen(fEdgeLength);
+		params.iter = 3;
+		params.surfDistCheck = false;
+		params.maxSurfDist = fEdgeLength * 0.4f;
+		params.cleanFlag = true;
+		params.userSelectedCreases = false;
+		try {
+			vcg::tri::IsotropicRemeshing<CLEAN::Mesh>::Do(mesh, original, params);
+		}
+		catch(vcg::MissingPreconditionException& e) {
+			VERBOSE("error: %s", e.what());
+		}
 	}
 
 	// clean mesh
