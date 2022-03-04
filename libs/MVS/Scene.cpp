@@ -446,6 +446,28 @@ bool Scene::LoadViewNeighbors(const String& fileName)
 	DEBUG_EXTRA("View neighbors list loaded (%s)", TD_TIMER_GET_FMT().c_str());
 	return true;
 } // LoadViewNeighbors
+bool Scene::SaveViewNeighbors(const String& fileName) const
+{
+	ASSERT(ImagesHaveNeighbors());
+
+	TD_TIMER_STARTD();
+	
+	File file(fileName, File::WRITE, File::CREATE | File::TRUNCATE);
+	if (!file.isOpen()) {
+		VERBOSE("error: unable to write file '%s'", fileName.c_str());
+		return false;
+	}
+	FOREACH(ID, images) {
+		const Image& imageData = images[ID];
+		file.print("%u", ID);
+		for (const ViewScore& neighbor: imageData.neighbors)
+			file.print(" %u", neighbor.idx.ID);
+		file.print("\n");
+	}
+
+	DEBUG_EXTRA("View neighbors list saved (%s)", TD_TIMER_GET_FMT().c_str());
+	return true;
+} // SaveViewNeighbors
 /*----------------------------------------------------------------*/
 
 // try to load known point-cloud or mesh files

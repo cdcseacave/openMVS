@@ -49,6 +49,7 @@ namespace OPT {
 String strInputFileName;
 String strOutputFileName;
 String strViewNeighborsFileName;
+String strOutputViewNeighborsFileName;
 String strMeshFileName;
 String strExportROIFileName;
 String strImportROIFileName;
@@ -107,8 +108,9 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	boost::program_options::options_description config("Densify options");
 	config.add_options()
 		("input-file,i", boost::program_options::value<std::string>(&OPT::strInputFileName), "input filename containing camera poses and image list")
-		("output-file,o", boost::program_options::value<std::string>(&OPT::strOutputFileName), "output filename for storing the dense point-cloud")
+		("output-file,o", boost::program_options::value<std::string>(&OPT::strOutputFileName), "output filename for storing the dense point-cloud (optional)")
 		("view-neighbors-file", boost::program_options::value<std::string>(&OPT::strViewNeighborsFileName), "input filename containing the list of views and their neighbors (optional)")
+		("output-view-neighbors-file", boost::program_options::value<std::string>(&OPT::strOutputViewNeighborsFileName), "output filename containing the generated list of views and their neighbors")
 		#ifdef _USE_CUDA
 		("cuda-device", boost::program_options::value(&nCUDADevice)->default_value(0), "CUDA device number to be used for depth-map estimation (-1 - CPU processing)")
 		#endif
@@ -183,6 +185,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	// initialize optional options
 	Util::ensureValidPath(OPT::strOutputFileName);
 	Util::ensureValidPath(OPT::strViewNeighborsFileName);
+	Util::ensureValidPath(OPT::strOutputViewNeighborsFileName);
 	Util::ensureValidPath(OPT::strMeshFileName);
 	Util::ensureValidPath(OPT::strExportROIFileName);
 	Util::ensureValidPath(OPT::strImportROIFileName);
@@ -291,6 +294,14 @@ int main(int argc, LPCTSTR* argv)
 	if (scene.pointcloud.IsEmpty() && OPT::strViewNeighborsFileName.empty() && scene.mesh.IsEmpty()) {
 		VERBOSE("error: empty initial point-cloud");
 		return EXIT_FAILURE;
+	}
+	if (!OPT::strOutputViewNeighborsFileName.empty()) {
+		if (!scene.ImagesHaveNeighbors()) {
+			VERBOSE("error: neighbor views not computed yet");
+			return EXIT_FAILURE;
+		}
+		scene.SaveViewNeighbors(MAKE_PATH_SAFE(OPT::strOutputViewNeighborsFileName));
+		return EXIT_SUCCESS;
 	}
 	if (OPT::fMaxSubsceneArea > 0) {
 		// split the scene in sub-scenes by maximum sampling area

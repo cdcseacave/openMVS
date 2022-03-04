@@ -76,6 +76,7 @@ public:
 
 	bool LoadDMAP(const String& fileName);
 	bool LoadViewNeighbors(const String& fileName);
+	bool SaveViewNeighbors(const String& fileName) const;
 	bool Import(const String& fileName);
 
 	bool Load(const String& fileName, bool bImport=false);
