@@ -54,6 +54,13 @@ optional arguments:
 Passthrough:
   Option to be passed to command lines (remove - in front of option names)
   e.g. --1 p ULTRA to use the ULTRA preset in openMVG_main_ComputeFeatures
+  For example, running the script
+  [MvgMvsPipeline.py input_dir output_dir --1 p HIGH n 8 --2 n ANNL2]
+  [--1 p HIGH n 8] where --1 refer to openMVG_main_ComputeFeatures,
+  p refers to describerPreset option which HIGH was chosen, and n refers
+  to numThreads which 8 was used. The second step (Compute matches),
+  [--2 n ANNL2] where --2 refer to openMVG_main_ComputeMatches,
+  n refers to nearest_matching_method option which ANNL2 was chosen
 """
 
 import os
@@ -282,7 +289,7 @@ PARSER.add_argument('--preset',
                     " \r\n".join([k + " = " + str(PRESET[k]) for k in PRESET]) +
                     " \r\ndefault : " + PRESET_DEFAULT)
 
-GROUP = PARSER.add_argument_group('Passthrough', description="Option to be passed to command lines (remove - in front of option names)\r\ne.g. --1 p ULTRA to use the ULTRA preset in openMVG_main_ComputeFeatures")
+GROUP = PARSER.add_argument_group('Passthrough', description="Option to be passed to command lines (remove - in front of option names)\r\ne.g. --1 p ULTRA to use the ULTRA preset in openMVG_main_ComputeFeatures\r\nFor example, running the script as follows,\r\nMvgMvsPipeline.py input_dir output_dir --1 p HIGH n 8 --2 n ANNL2\r\nwhere --1 refer to openMVG_main_ComputeFeatures, p refers to\r\ndescriberPreset option which HIGH was chosen, and n refers to\r\nnumThreads which 8 was used. --2 refer to second step (openMVG_main_ComputeMatches),\r\nn refers to nearest_matching_method option which ANNL2 was chosen")
 for n in range(STEPS.length()):
     GROUP.add_argument('--'+str(n), nargs='+')
 
