@@ -202,6 +202,18 @@ __device__ inline Point3 GeneratePerturbedNormal(const PatchMatchCUDA::Camera& c
 	return normalPerturbed.normalized();
 }
 
+// randomly perturb a normal
+__device__ inline float GeneratePerturbedDepth(float depth, RandState* randState, const float perturbation, const PatchMatchCUDA::Params& params)
+{
+	const float depthMinPerturbed = (1.f - perturbation) * depth;
+	const float depthMaxPerturbed = (1.f + perturbation) * depth;
+	float depthPerturbed;
+	do {
+		depthPerturbed = curand_uniform(randState) * (depthMaxPerturbed - depthMinPerturbed) + depthMinPerturbed;
+	} while (depthPerturbed < params.fDepthMin && depthPerturbed > params.fDepthMax);
+	return depthPerturbed;
+}
+
 // interpolate given pixel's estimate to the current position
 __device__ inline float InterpolatePixel(const PatchMatchCUDA::Camera& camera, const Point2i& p, const Point2i& np, float depth, const Point3& normal, const PatchMatchCUDA::Params& params)
 {
@@ -332,7 +344,8 @@ __device__ float ScorePlane(const ImagePixels refImage, const PatchMatchCUDA::Ca
 		return maxCost;
 	const float covarTrgRef = sumRefTrg * bilateralWeightSum - sumRef * sumTrg;
 	const float varRefTrg = sqrt(varRef * varTrg);
-	return max(0.f, min(maxCost, 1.f - covarTrgRef / varRefTrg));
+	const float ncc = 1.f - covarTrgRef / varRefTrg;
+	return max(0.f, min(maxCost, ncc));
 }
 
 // compute photometric score for all neighbor images
@@ -372,7 +385,6 @@ __device__ void ProcessPixel(const ImagePixels* images, const ImagePixels* depth
 		return;
 	const int idx = Point2Idx(p, width);
 	RandState* randState = &randStates[idx];
-	Point4& plane = planes[idx];
 
 	// adaptive sampling: 0 up-near, 1 down-near, 2 left-near, 3 right-near, 4 up-far, 5 down-far, 6 left-far, 7 right-far
 	static constexpr int2 dirs[8][11] = {
@@ -466,6 +478,8 @@ __device__ void ProcessPixel(const ImagePixels* images, const ImagePixels* depth
 	}
 
 	// propagate best neighbor plane
+	Point4& plane = planes[idx];
+	float& cost = costs[idx];
 	unsigned newSelectedViews = 0;
 	for (int imgId = 0; imgId < params.nNumViews; ++imgId)
 		if (viewWeights[imgId])
@@ -476,25 +490,20 @@ __device__ void ProcessPixel(const ImagePixels* images, const ImagePixels* depth
 	const int minCostIdx = FindMinIndex(finalCosts, 8);
 	float costVector[MAX_VIEWS];
 	MultiViewScorePlane(images, depthImages, cameras, p, plane, costVector, params);
-	float cost = AggregateMultiViewScores(viewWeights, costVector, params.nNumViews) / NUM_SAMPLES;
-	costs[idx] = cost;
+	cost = AggregateMultiViewScores(viewWeights, costVector, params.nNumViews) / NUM_SAMPLES;
 	if (finalCosts[minCostIdx] < cost && valid[minCostIdx]) {
 		plane = planes[positions[minCostIdx]];
 		plane.w() = neighborDepths[minCostIdx];
-		costs[idx] = finalCosts[minCostIdx];
+		cost = finalCosts[minCostIdx];
 		selectedViews[idx] = newSelectedViews;
 	}
 	const float depth = plane.w();
 
 	// refine estimate
-	constexpr float perturbation = 0.01f;
-	const float depthMinPerturbed = (1.f - perturbation) * depth;
-	const float depthMaxPerturbed = (1.f + perturbation) * depth;
-	float depthPerturbed;
-	do {
-		depthPerturbed = curand_uniform(randState) * (depthMaxPerturbed - depthMinPerturbed) + depthMinPerturbed;
-	} while (depthPerturbed < params.fDepthMin && depthPerturbed > params.fDepthMax);
-	const Point3 perturbedNormal = GeneratePerturbedNormal(cameras[0], p, plane.topLeftCorner<3,1>(), randState, perturbation * (float)M_PI);
+	constexpr float perturbationDepth = 0.005f;
+	constexpr float perturbationNormal = 0.01f * (float)M_PI;
+	const float depthPerturbed = GeneratePerturbedDepth(depth, randState, perturbationDepth, params);
+	const Point3 perturbedNormal = GeneratePerturbedNormal(cameras[0], p, plane.topLeftCorner<3,1>(), randState, perturbationNormal);
 	const Point3 normalRand = GenerateRandomNormal(cameras[0], p, randState);
 	int numValidPlanes = 3;
 	Point3 surfaceNormal;
@@ -526,9 +535,8 @@ __device__ void ProcessPixel(const ImagePixels* images, const ImagePixels* depth
 }
 
 // compute the score of the current plane estimate
-__global__ void InitializeScore(const cudaTextureObject_t* images, const cudaTextureObject_t* depthImages, PatchMatchCUDA::Camera* cameras, Point4* planes, float* costs, curandState* randStates, unsigned* selectedViews, const PatchMatchCUDA::Params params)
+__device__ void InitializePixelScore(const ImagePixels *images, const ImagePixels* depthImages, const PatchMatchCUDA::Camera* cameras, Point4* planes, float* costs, RandState* randStates, unsigned* selectedViews, const Point2i& p, const PatchMatchCUDA::Params params)
 {
-	const Point2i p = Point2i(blockIdx.x * blockDim.x + threadIdx.x, blockIdx.y * blockDim.y + threadIdx.y);
 	const int width = cameras[0].width;
 	const int height = cameras[0].height;
 	if (p.x() >= width || p.y() >= height)
@@ -543,13 +551,13 @@ __global__ void InitializeScore(const cudaTextureObject_t* images, const cudaTex
 		// generate random plane
 		plane.topLeftCorner<3,1>() = GenerateRandomNormal(cameras[0], p, randState);
 		plane.w() = curand_uniform(randState) * (params.fDepthMax - params.fDepthMin) + params.fDepthMin;
-	} else if (plane.topLeftCorner<3,1>().dot(ViewDirection(cameras[0], p)) >= 0.f){
+	} else if (plane.topLeftCorner<3,1>().dot(ViewDirection(cameras[0], p)) >= 0.f) {
 		// generate random normal
 		plane.topLeftCorner<3,1>() = GenerateRandomNormal(cameras[0], p, randState);
 	}
 	// compute costs
 	float costVector[MAX_VIEWS];
-	MultiViewScorePlane((const ImagePixels*)images, (const ImagePixels*)depthImages, cameras, p, plane, costVector, params);
+	MultiViewScorePlane(images, depthImages, cameras, p, plane, costVector, params);
 	// select best views
 	float costVectorSorted[MAX_VIEWS];
 	Sort(costVector, costVectorSorted, params.nNumViews);
@@ -557,22 +565,27 @@ __global__ void InitializeScore(const cudaTextureObject_t* images, const cudaTex
 	for (int i = 0; i < params.nInitTopK; ++i)
 		cost += costVectorSorted[i];
 	const float costThreshold = costVectorSorted[params.nInitTopK - 1];
-	unsigned selectedView = selectedViews[idx];
+	unsigned& selectedView = selectedViews[idx];
 	selectedView = 0;
 	for (int imgId = 0; imgId < params.nNumViews; ++imgId)
 		if (costVector[imgId] <= costThreshold)
 			SetBit(selectedView, imgId);
 	costs[idx] = cost / params.nInitTopK;
 }
+__global__ void InitializeScore(const cudaTextureObject_t* textureImages, const cudaTextureObject_t* textureDepths, const PatchMatchCUDA::Camera* cameras, Point4* planes, float* costs, curandState* randStates, unsigned* selectedViews, const PatchMatchCUDA::Params params)
+{
+	const Point2i p = Point2i(blockIdx.x * blockDim.x + threadIdx.x, blockIdx.y * blockDim.y + threadIdx.y);
+	InitializePixelScore((const ImagePixels*)textureImages, (const ImagePixels*)textureDepths, cameras, planes, costs, (RandState*)randStates, selectedViews, p, params);
+}
 
 // traverse image in a back/red checkerboard pattern
-__global__ void BlackPixelProcess(const cudaTextureObject_t* textureImages, const cudaTextureObject_t* textureDepths, PatchMatchCUDA::Camera* cameras, Point4* planes, float* costs, curandState* randStates, unsigned* selectedViews, const PatchMatchCUDA::Params params, const int iter)
+__global__ void BlackPixelProcess(const cudaTextureObject_t* textureImages, const cudaTextureObject_t* textureDepths, const PatchMatchCUDA::Camera* cameras, Point4* planes, float* costs, curandState* randStates, unsigned* selectedViews, const PatchMatchCUDA::Params params, const int iter)
 {
 	Point2i p = Point2i(blockIdx.x * blockDim.x + threadIdx.x, blockIdx.y * blockDim.y + threadIdx.y);
 	p.y() = p.y() * 2 + (threadIdx.x % 2 == 0 ? 0 : 1);
 	ProcessPixel((const ImagePixels*)textureImages, (const ImagePixels*)textureDepths, cameras, planes, costs, (RandState*)randStates, selectedViews, p, params, iter);
 }
-__global__ void RedPixelProcess(const cudaTextureObject_t* textureImages, const cudaTextureObject_t* textureDepths, PatchMatchCUDA::Camera* cameras, Point4* planes, float* costs, curandState* randStates, unsigned* selectedViews, const PatchMatchCUDA::Params params, const int iter)
+__global__ void RedPixelProcess(const cudaTextureObject_t* textureImages, const cudaTextureObject_t* textureDepths, const PatchMatchCUDA::Camera* cameras, Point4* planes, float* costs, curandState* randStates, unsigned* selectedViews, const PatchMatchCUDA::Params params, const int iter)
 {
 	Point2i p = Point2i(blockIdx.x * blockDim.x + threadIdx.x, blockIdx.y * blockDim.y + threadIdx.y);
 	p.y() = p.y() * 2 + (threadIdx.x % 2 == 0 ? 1 : 0);
@@ -583,11 +596,11 @@ __global__ void RedPixelProcess(const cudaTextureObject_t* textureImages, const 
 
 __host__ void PatchMatchCUDA::RunCUDA()
 {
-	constexpr unsigned BLOCK_W = 32;
-	constexpr unsigned BLOCK_H = (BLOCK_W / 2);
-
 	const unsigned width = cameras[0].width;
 	const unsigned height = cameras[0].height;
+
+	constexpr unsigned BLOCK_W = 32;
+	constexpr unsigned BLOCK_H = (BLOCK_W / 2);
 
 	const dim3 blockSize(BLOCK_W, BLOCK_H, 1);
 	const dim3 gridSizeInitialize((width + BLOCK_H - 1) / BLOCK_H, (height + BLOCK_H - 1) / BLOCK_H, 1);
@@ -596,10 +609,10 @@ __host__ void PatchMatchCUDA::RunCUDA()
 	InitializeScore<<<gridSizeInitialize, blockSize>>>(cudaTextureImages, cudaTextureDepths, cudaCameras, cudaDepthNormalEstimates, cudaDepthNormalCosts, cudaRandStates, cudaSelectedViews, params);
 	cudaDeviceSynchronize();
 
-	for (int i = 0; i < params.nEstimationIters; ++i) {
-		BlackPixelProcess<<<gridSizeCheckerboard, blockSize>>>(cudaTextureImages, cudaTextureDepths, cudaCameras, cudaDepthNormalEstimates, cudaDepthNormalCosts, cudaRandStates, cudaSelectedViews, params, i);
+	for (int iter = 0; iter < params.nEstimationIters; ++iter) {
+		BlackPixelProcess<<<gridSizeCheckerboard, blockSize>>>(cudaTextureImages, cudaTextureDepths, cudaCameras, cudaDepthNormalEstimates, cudaDepthNormalCosts, cudaRandStates, cudaSelectedViews, params, iter);
 		cudaDeviceSynchronize();
-		RedPixelProcess<<<gridSizeCheckerboard, blockSize>>>(cudaTextureImages, cudaTextureDepths, cudaCameras, cudaDepthNormalEstimates, cudaDepthNormalCosts, cudaRandStates, cudaSelectedViews, params, i);
+		RedPixelProcess<<<gridSizeCheckerboard, blockSize>>>(cudaTextureImages, cudaTextureDepths, cudaCameras, cudaDepthNormalEstimates, cudaDepthNormalCosts, cudaRandStates, cudaSelectedViews, params, iter);
 		cudaDeviceSynchronize();
 	}
 
