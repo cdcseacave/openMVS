@@ -95,7 +95,10 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 
 	// group of options allowed both on command line and in config file
 	#ifdef _USE_CUDA
+	const unsigned nNumViewsDefault(8);
 	unsigned nCUDADevice;
+	#else
+	const unsigned nNumViewsDefault(5);
 	#endif
 	unsigned nResolutionLevel;
 	unsigned nMaxResolution;
@@ -115,9 +118,9 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		("cuda-device", boost::program_options::value(&nCUDADevice)->default_value(0), "CUDA device number to be used for depth-map estimation (-1 - CPU processing)")
 		#endif
 		("resolution-level", boost::program_options::value(&nResolutionLevel)->default_value(1), "how many times to scale down the images before point cloud computation")
-		("max-resolution", boost::program_options::value(&nMaxResolution)->default_value(3200), "do not scale images higher than this resolution")
+		("max-resolution", boost::program_options::value(&nMaxResolution)->default_value(2560), "do not scale images higher than this resolution")
 		("min-resolution", boost::program_options::value(&nMinResolution)->default_value(640), "do not scale images lower than this resolution")
-		("number-views", boost::program_options::value(&nNumViews)->default_value(5), "number of views used for depth-map estimation (0 - all neighbor views available)")
+		("number-views", boost::program_options::value(&nNumViews)->default_value(nNumViewsDefault), "number of views used for depth-map estimation (0 - all neighbor views available)")
 		("number-views-fuse", boost::program_options::value(&nMinViewsFuse)->default_value(3), "minimum number of images that agrees with an estimate during fusion in order to consider it inlier (<2 - only merge depth-maps)")
 		("ignore-mask-label", boost::program_options::value(&nIgnoreMaskLabel)->default_value(-1), "integer value for the label to ignore in the segmentation mask (<0 - disabled)")
 		("estimate-colors", boost::program_options::value(&nEstimateColors)->default_value(2), "estimate the colors for the dense point-cloud (0 - disabled, 1 - final, 2 - estimate)")

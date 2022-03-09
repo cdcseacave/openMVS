@@ -206,7 +206,7 @@ void PatchMatchCUDA::EstimateDepthMap(DepthData& depthData)
 		camera.height = image.rows;
 		camera.width = image.cols;
 		// store camera and image
-		if (i == 0 && prevNumImages < numImages) {
+		if (i == 0 && (prevNumImages < numImages || images[0].size() != image.size())) {
 			// allocate/reallocate PatchMatch CUDA memory
 			if (prevNumImages > 0)
 				ReleaseCUDA();
