@@ -56,7 +56,6 @@ struct unary_function {
 #include <vcg/complex/algorithms/hole.h>
 #include <vcg/complex/algorithms/polygon_support.h>
 // VCG: mesh simplification
-#include <vcg/complex/algorithms/edge_collapse.h>
 #include <vcg/complex/algorithms/update/position.h>
 #include <vcg/complex/algorithms/update/bounding.h>
 #include <vcg/complex/algorithms/update/selection.h>
