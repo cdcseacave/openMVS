@@ -1735,9 +1735,12 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 
 	#ifdef _USE_CUDA
 	// initialize CUDA
-	if (OPTDENSE::nCUDADevice >= 0 && data.nFusionMode >= 0) {
-		data.depthMaps.pmCUDA = new PatchMatchCUDA(OPTDENSE::nCUDADevice);
-		data.depthMaps.pmCUDA->Init(false);
+	if (CUDA::desiredDeviceID >= 0 && data.nFusionMode >= 0) {
+		data.depthMaps.pmCUDA = new PatchMatchCUDA(CUDA::desiredDeviceID);
+		if (CUDA::devices.IsEmpty())
+			data.depthMaps.pmCUDA.Release();
+		else
+			data.depthMaps.pmCUDA->Init(false);
 	}
 	#endif // _USE_CUDA
 
@@ -1770,7 +1773,7 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 	if (data.nFusionMode >= 0) {
 		#ifdef _USE_CUDA
 		// initialize CUDA
-		if (OPTDENSE::nCUDADevice >= 0 && OPTDENSE::nEstimationGeometricIters) {
+		if (data.depthMaps.pmCUDA && OPTDENSE::nEstimationGeometricIters) {
 			data.depthMaps.pmCUDA->Release();
 			data.depthMaps.pmCUDA->Init(true);
 		}

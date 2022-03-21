@@ -2076,7 +2076,7 @@ MeshRefineCUDA::MeshRefineCUDA(Scene& _scene, unsigned _nAlternatePair, float _w
 	scene(_scene),
 	images(_scene.images)
 {
-	if (!InitKernels())
+	if (!InitKernels(CUDA::desiredDeviceID))
 		return;
 	// keep only best neighbor views for each image
 	std::unordered_set<uint64_t> mapPairs;

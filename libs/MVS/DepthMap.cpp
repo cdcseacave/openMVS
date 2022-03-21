@@ -69,9 +69,6 @@ namespace MVS {
 DEFOPT_SPACE(OPTDENSE, _T("Dense"))
 
 
-#ifdef _USE_CUDA
-DEFVAR_OPTDENSE_int32(nCUDADevice, "CUDA Device", "CUDA device number to be used for depth-map estimation (-1 - CPU processing)", "0")
-#endif // _USE_CUDA
 DEFVAR_OPTDENSE_uint32(nResolutionLevel, "Resolution Level", "How many times to scale down the images before dense reconstruction", "1")
 MDEFVAR_OPTDENSE_uint32(nMaxResolution, "Max Resolution", "Do not scale images lower than this resolution", "3200")
 MDEFVAR_OPTDENSE_uint32(nMinResolution, "Min Resolution", "Do not scale images lower than this resolution", "640")
@@ -1671,6 +1668,7 @@ bool MVS::ExportPointCloud(const String& fileName, const Image& imageData, const
 
 		// export the array of 3D points
 		Vertex vertex;
+		const Point2f scaleImage(static_cast<float>(depthMap.cols)/imageData.image.cols, static_cast<float>(depthMap.rows)/imageData.image.rows);
 		for (int j=0; j<depthMap.rows; ++j) {
 			for (int i=0; i<depthMap.cols; ++i) {
 				const Depth& depth = depthMap(j,i);
@@ -1679,7 +1677,7 @@ bool MVS::ExportPointCloud(const String& fileName, const Image& imageData, const
 					continue;
 				const Point3f X(P0.TransformPointI2W(Point3(i,j,depth)));
 				vertex.x = X.x; vertex.y = X.y; vertex.z = X.z;
-				const Pixel8U c(imageData.image.empty() ? Pixel8U::WHITE : imageData.image(j,i));
+				const Pixel8U c(imageData.image.empty() ? Pixel8U::WHITE : imageData.image(ROUND2INT(scaleImage.y*j),ROUND2INT(scaleImage.x*i)));
 				vertex.r = c.r; vertex.g = c.g; vertex.b = c.b;
 				ply.put_element(&vertex);
 			}
@@ -1839,7 +1837,7 @@ bool MVS::ImportDepthDataRaw(const String& fileName, String& imageFileName,
 		header.name != HeaderDepthDataRaw::HeaderDepthDataRawName() ||
 		(header.type & HeaderDepthDataRaw::HAS_DEPTH) == 0 ||
 		header.depthWidth <= 0 || header.depthHeight <= 0 ||
-		header.imageWidth < header.depthWidth || header.imageHeight < header.depthHeight)
+		header.imageWidth <= 0 || header.imageHeight <= 0)
 	{
 		DEBUG("error: invalid depth-data file '%s'", fileName.c_str());
 		fclose(f);

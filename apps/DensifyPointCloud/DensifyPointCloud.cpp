@@ -91,12 +91,14 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 			#endif
 			), "verbosity level")
 		#endif
+		#ifdef _USE_CUDA
+		("cuda-device", boost::program_options::value(&CUDA::desiredDeviceID)->default_value(0), "CUDA device number to be used for depth-map estimation (-1 - CPU processing)")
+		#endif
 		;
 
 	// group of options allowed both on command line and in config file
 	#ifdef _USE_CUDA
 	const unsigned nNumViewsDefault(8);
-	unsigned nCUDADevice;
 	#else
 	const unsigned nNumViewsDefault(5);
 	#endif
@@ -114,9 +116,6 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		("output-file,o", boost::program_options::value<std::string>(&OPT::strOutputFileName), "output filename for storing the dense point-cloud (optional)")
 		("view-neighbors-file", boost::program_options::value<std::string>(&OPT::strViewNeighborsFileName), "input filename containing the list of views and their neighbors (optional)")
 		("output-view-neighbors-file", boost::program_options::value<std::string>(&OPT::strOutputViewNeighborsFileName), "output filename containing the generated list of views and their neighbors")
-		#ifdef _USE_CUDA
-		("cuda-device", boost::program_options::value(&nCUDADevice)->default_value(0), "CUDA device number to be used for depth-map estimation (-1 - CPU processing)")
-		#endif
 		("resolution-level", boost::program_options::value(&nResolutionLevel)->default_value(1), "how many times to scale down the images before point cloud computation")
 		("max-resolution", boost::program_options::value(&nMaxResolution)->default_value(2560), "do not scale images higher than this resolution")
 		("min-resolution", boost::program_options::value(&nMinResolution)->default_value(640), "do not scale images lower than this resolution")
@@ -201,9 +200,6 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	OPTDENSE::init();
 	const bool bValidConfig(OPTDENSE::oConfig.Load(OPT::strDenseConfigFileName));
 	OPTDENSE::update();
-	#ifdef _USE_CUDA
-	OPTDENSE::nCUDADevice = nCUDADevice;
-	#endif
 	OPTDENSE::nResolutionLevel = nResolutionLevel;
 	OPTDENSE::nMaxResolution = nMaxResolution;
 	OPTDENSE::nMinResolution = nMinResolution;

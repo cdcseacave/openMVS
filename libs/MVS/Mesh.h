@@ -132,11 +132,11 @@ public:
 	#endif
 
 public:
+	#ifdef _USE_CUDA
 	inline Mesh() {
-		#ifdef _USE_CUDA
-		InitKernels();
-		#endif
+		InitKernels(CUDA::desiredDeviceID);
 	}
+	#endif
 
 	void Release();
 	void ReleaseExtra();

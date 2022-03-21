@@ -228,16 +228,21 @@ void Mesh::ComputeNormalFaces()
 	FOREACH(idxFace, faces)
 		faceNormals[idxFace] = normalized(FaceNormal(faces[idxFace]));
 	#else
-	reportCudaError(kernelComputeFaceNormal((int)faces.GetSize(),
-		vertices,
-		faces,
-		CUDA::KernelRT::OutputParam(faceNormals.GetDataSize()),
-		faces.GetSize()
-	));
-	reportCudaError(kernelComputeFaceNormal.GetResult(0,
-		faceNormals
-	));
-	kernelComputeFaceNormal.Reset();
+	if (kernelComputeFaceNormal.IsValid()) {
+		reportCudaError(kernelComputeFaceNormal((int)faces.GetSize(),
+			vertices,
+			faces,
+			CUDA::KernelRT::OutputParam(faceNormals.GetDataSize()),
+			faces.GetSize()
+		));
+		reportCudaError(kernelComputeFaceNormal.GetResult(0,
+			faceNormals
+		));
+		kernelComputeFaceNormal.Reset();
+	} else {
+		FOREACH(idxFace, faces)
+			faceNormals[idxFace] = normalized(FaceNormal(faces[idxFace]));
+	}
 	#endif
 }
 

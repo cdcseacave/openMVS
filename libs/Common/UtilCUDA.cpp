@@ -20,6 +20,7 @@ namespace CUDA {
 
 // S T R U C T S ///////////////////////////////////////////////////
 
+int desiredDeviceID = -1;
 Devices devices;
 
 // GPU Architecture definitions

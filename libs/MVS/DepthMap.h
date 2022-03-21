@@ -87,9 +87,6 @@ enum DepthFlags {
 	ADJUST_FILTER	= (1 << 2),
 	OPTIMIZE		= (REMOVE_SPECKLES|FILL_GAPS)
 };
-#ifdef _USE_CUDA
-extern int nCUDADevice;
-#endif // _USE_CUDA
 extern unsigned nResolutionLevel;
 extern unsigned nMaxResolution;
 extern unsigned nMinResolution;

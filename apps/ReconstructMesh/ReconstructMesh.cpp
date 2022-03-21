@@ -104,6 +104,9 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 			#endif
 			), "verbosity level")
 		#endif
+		#ifdef _USE_CUDA
+		("cuda-device", boost::program_options::value(&CUDA::desiredDeviceID)->default_value(0), "CUDA device number to be used to reconstruct the mesh (-1 - CPU processing)")
+		#endif
 		;
 
 	// group of options allowed both on command line and in config file
