@@ -918,7 +918,7 @@ unsigned Scene::Split(ImagesChunkArr& chunks, float maxArea, int depthMapStep) c
 			if (!imageData.IsValid())
 				continue;
 			DepthData depthData;
-			depthData.Load(ComposeDepthFilePath(imageData.ID, "dmap"));
+			depthData.Load(ComposeDepthFilePath(imageData.ID, "dmap"), 1);
 			if (depthData.IsEmpty())
 				continue;
 			const IIndex numPointsBegin(visibility.size());
@@ -928,30 +928,35 @@ unsigned Scene::Split(ImagesChunkArr& chunks, float maxArea, int depthMapStep) c
 					const Depth depth = depthData.depthMap(r,c);
 					if (depth <= 0)
 						continue;
-					const Point3f& X = samples.emplace_back(Cast<float>(camera.TransformPointI2W(Point3(c,r,depth))));
+					const Point3f X(Cast<float>(camera.TransformPointI2W(Point3(c,r,depth))));
+					if (IsBounded() && !obb.Intersects(X))
+						continue;
 					areas.emplace_back(Footprint(camera, X)*areaScale);
 					visibility.emplace_back(idxImage);
+					samples.emplace_back(X);
 				}
 			}
 			imageAreas[idxImage] = visibility.size()-numPointsBegin;
 		}
-		#if 0
-		const AABB3f aabb(samples.data(), samples.size());
-		#else
-		// try to find a dominant plane, and set the bounding-box center on the plane bottom
-		OBB3f obb(samples.data(), samples.size());
-		obb.m_ext(0) *= 2;
-		#if 1
-		// dump box for visualization
-		OBB3f::POINT pts[8];
-		obb.GetCorners(pts);
-		PointCloud pc;
-		for (int i=0; i<8; ++i)
-			pc.points.emplace_back(pts[i]);
-		pc.Save(MAKE_PATH("scene_obb.ply"));
-		#endif
-		const AABB3f aabb(obb.GetAABB());
-		#endif
+		const AABB3f aabb(IsBounded() ? obb.GetAABB() : [&samples]() {
+			#if 0
+			return AABB3f(samples.data(), samples.size());
+			#else
+			// try to find a dominant plane, and set the bounding-box center on the plane bottom
+			OBB3f obbSamples(samples.data(), samples.size());
+			obbSamples.m_ext(0) *= 2;
+			#if 1
+			// dump box for visualization
+			OBB3f::POINT pts[8];
+			obbSamples.GetCorners(pts);
+			PointCloud pc;
+			for (int i=0; i<8; ++i)
+				pc.points.emplace_back(pts[i]);
+			pc.Save(MAKE_PATH("scene_obb.ply"));
+			#endif
+			return obbSamples.GetAABB();
+			#endif
+		}());
 		octree.Insert(samples, aabb, [](Octree::IDX_TYPE size, Octree::Type /*radius*/) {
 			return size > 128;
 		});

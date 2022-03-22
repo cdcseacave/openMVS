@@ -239,14 +239,14 @@ bool DepthData::Save(const String& fileName) const
 	}
 	return true;
 }
-bool DepthData::Load(const String& fileName)
+bool DepthData::Load(const String& fileName, unsigned flags)
 {
 	// serialize in the saved state
 	String imageFileName;
 	IIndexArr IDs;
 	cv::Size imageSize;
 	Camera camera;
-	if (!ImportDepthDataRaw(fileName, imageFileName, IDs, imageSize, camera.K, camera.R, camera.C, dMin, dMax, depthMap, normalMap, confMap))
+	if (!ImportDepthDataRaw(fileName, imageFileName, IDs, imageSize, camera.K, camera.R, camera.C, dMin, dMax, depthMap, normalMap, confMap, flags))
 		return false;
 	ASSERT(!IsValid() || (IDs.size() == images.size() && IDs.front() == GetView().GetID()));
 	ASSERT(depthMap.size() == imageSize);

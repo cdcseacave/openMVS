@@ -240,7 +240,7 @@ struct MVS_API DepthData {
 	void ApplyIgnoreMask(const BitMatrix&);
 
 	bool Save(const String& fileName) const;
-	bool Load(const String& fileName);
+	bool Load(const String& fileName, unsigned flags=7);
 
 	unsigned GetRef();
 	unsigned IncRef(const String& fileName);

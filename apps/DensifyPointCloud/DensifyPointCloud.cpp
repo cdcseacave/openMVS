@@ -294,6 +294,8 @@ int main(int argc, LPCTSTR* argv)
 		VERBOSE("error: empty initial point-cloud");
 		return EXIT_FAILURE;
 	}
+	if (!OPT::strViewNeighborsFileName.empty())
+		scene.LoadViewNeighbors(MAKE_PATH_SAFE(OPT::strViewNeighborsFileName));
 	if (!OPT::strOutputViewNeighborsFileName.empty()) {
 		if (!scene.ImagesHaveNeighbors()) {
 			VERBOSE("error: neighbor views not computed yet");
@@ -306,7 +308,7 @@ int main(int argc, LPCTSTR* argv)
 		// split the scene in sub-scenes by maximum sampling area
 		Scene::ImagesChunkArr chunks;
 		scene.Split(chunks, OPT::fMaxSubsceneArea);
-		scene.ExportChunks(chunks, Util::getFilePath(MAKE_PATH_SAFE(OPT::strOutputFileName)), (ARCHIVE_TYPE)OPT::nArchiveType);
+		scene.ExportChunks(chunks, GET_PATH_FULL(OPT::strOutputFileName), (ARCHIVE_TYPE)OPT::nArchiveType);
 		Finalize();
 		return EXIT_SUCCESS;
 	}
@@ -327,8 +329,6 @@ int main(int argc, LPCTSTR* argv)
 		return EXIT_SUCCESS;
 	}
 	if ((ARCHIVE_TYPE)OPT::nArchiveType != ARCHIVE_MVS) {
-		if (!OPT::strViewNeighborsFileName.empty())
-			scene.LoadViewNeighbors(MAKE_PATH_SAFE(OPT::strViewNeighborsFileName));
 		TD_TIMER_START();
 		if (!scene.DenseReconstruction(OPT::nFusionMode)) {
 			if (ABS(OPT::nFusionMode) != 1)
