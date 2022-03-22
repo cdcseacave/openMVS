@@ -100,6 +100,7 @@ void Mesh::ReleaseExtra()
 	vertexFaces.Release();
 	vertexBoundary.Release();
 	faceNormals.Release();
+	faceFaces.Release();
 	faceTexcoords.Release();
 	textureDiffuse.release();
 } // ReleaseExtra
@@ -110,6 +111,7 @@ void Mesh::EmptyExtra()
 	vertexFaces.Empty();
 	vertexBoundary.Empty();
 	faceNormals.Empty();
+	faceFaces.Empty();
 	faceTexcoords.Empty();
 	textureDiffuse.release();
 } // EmptyExtra
@@ -182,6 +184,46 @@ void Mesh::ListIncidenteFaces()
 		for (int v=0; v<3; ++v) {
 			ASSERT(vertexFaces[face[v]].Find(i) == FaceIdxArr::NO_INDEX);
 			vertexFaces[face[v]].Insert(i);
+		}
+	}
+}
+
+// extract array face adjacencies for each face in the mesh (3 * number of faces);
+// each triple describes the adjacent face triangles for a given face
+// in the following edge order: v1v2, v2v3, v3v1;
+// NO_ID indicates there is no adjacent face on that edge
+void Mesh::ListIncidenteFaceFaces()
+{
+	ASSERT(vertexFaces.size() == vertices.size());
+	struct inserter_data_t {
+		const FIndex idxF;
+		FaceFaces& faces;
+		int idx;
+		inline inserter_data_t(FIndex _idxF, FaceFaces& _faces) : idxF(_idxF), faces(_faces), idx(0) {}
+		inline void operator=(FIndex f) { faces[idx++] = f; }
+	};
+	struct face_back_inserter_t {
+		inserter_data_t* data;
+		inline face_back_inserter_t(inserter_data_t& _data) : data(&_data) {}
+		inline face_back_inserter_t& operator*() { return *this; }
+		inline face_back_inserter_t& operator++() { return *this; }
+		inline void operator=(FIndex f) { if (f != data->idxF) *data = f; }
+	};
+	faceFaces.resize(faces.size());
+	FOREACH(f, faces) {
+		const Face& face = faces[f];
+		const FaceIdxArr* const pFaces[] = {&vertexFaces[face[0]], &vertexFaces[face[1]], &vertexFaces[face[2]]};
+		inserter_data_t inserterData(f, faceFaces[f]);
+		face_back_inserter_t faceBackInserter(inserterData);
+		for (int v=0; v<3; ++v) {
+			const FaceIdxArr& facesI = *pFaces[v];
+			const FaceIdxArr& facesJ = *pFaces[(v+1)%3];
+			std::set_intersection(
+				facesI.begin(), facesI.end(),
+				facesJ.begin(), facesJ.end(),
+				faceBackInserter);
+			if (inserterData.idx == v)
+				inserterData = NO_ID;
 		}
 	}
 }

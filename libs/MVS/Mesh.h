@@ -71,6 +71,9 @@ public:
 	typedef TPoint2<Type> TexCoord;
 	typedef cList<TexCoord,const TexCoord&,0,8192,FIndex> TexCoordArr;
 
+	typedef TPoint3<FIndex> FaceFaces;
+	typedef cList<FaceFaces,const FaceFaces&,0,8192,FIndex> FaceFacesArr;
+
 	// used to find adjacent face
 	struct FaceCount {
 		int count;
@@ -123,6 +126,7 @@ public:
 	BoolArr vertexBoundary; // for each vertex, stores if it is at the boundary or not (optional)
 
 	NormalArr faceNormals; // for each face, the normal to it (optional)
+	FaceFacesArr faceFaces; // for each face, the list of adjacent faces, NO_ID for border edges (optional)
 	TexCoordArr faceTexcoords; // for each face, the texture-coordinates corresponding to the contained vertices (optional)
 
 	Image8U3 textureDiffuse; // texture containing the diffuse color (optional)
@@ -150,6 +154,7 @@ public:
 
 	void ListIncidenteVertices();
 	void ListIncidenteFaces();
+	void ListIncidenteFaceFaces();
 	void ListBoundaryVertices();
 	void ComputeNormalFaces();
 	void ComputeNormalVertices();
