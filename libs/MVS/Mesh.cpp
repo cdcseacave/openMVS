@@ -3958,6 +3958,49 @@ void Mesh::Project(const Camera& camera, DepthMap& depthMap, Image8U3& image) co
 		rasterer.Project(facet);
 	}
 }
+// project mesh to the given camera plane, computing also the normal-map (in camera space)
+void Mesh::Project(const Camera& camera, DepthMap& depthMap, NormalMap& normalMap) const
+{
+	ASSERT(vertexNormals.size() == vertices.size());
+	struct RasterMesh : TRasterMesh<RasterMesh> {
+		typedef TRasterMesh<RasterMesh> Base;
+		const Mesh& mesh;
+		NormalMap& normalMap;
+		const Face::Type* idxVerts;
+		const Matrix3x3f R;
+		RasterMesh(const Mesh& _mesh, const Camera& _camera, DepthMap& _depthMap, NormalMap& _normalMap)
+			: Base(_mesh.vertices, _camera, _depthMap), mesh(_mesh), normalMap(_normalMap), R(camera.R) {}
+		inline void Clear() {
+			Base::Clear();
+			normalMap.memset(0);
+		}
+		inline void Project(const Face& facet) {
+			idxVerts = facet.ptr();
+			Base::Project(facet);
+		}
+		void Raster(const ImageRef& pt, const Point3f& bary) {
+			const Point3f pbary(PerspectiveCorrectBarycentricCoordinates(bary));
+			const Depth z(ComputeDepth(pbary));
+			ASSERT(z > Depth(0));
+			Depth& depth = depthMap(pt);
+			if (depth == Depth(0) || depth > z) {
+				depth = z;
+				normalMap(pt) = R * normalized(
+					mesh.vertexNormals[idxVerts[0]] * pbary[0]+
+					mesh.vertexNormals[idxVerts[1]] * pbary[1]+
+					mesh.vertexNormals[idxVerts[2]] * pbary[2]
+				);
+			}
+		}
+	};
+	if (normalMap.size() != depthMap.size())
+		normalMap.create(depthMap.size());
+	RasterMesh rasterer(*this, camera, depthMap, normalMap);
+	rasterer.Clear();
+	// render the entire mesh
+	for (const Face& facet: faces)
+		rasterer.Project(facet);
+}
 // project mesh to the given camera plane using orthographic projection
 void Mesh::ProjectOrtho(const Camera& camera, DepthMap& depthMap) const
 {

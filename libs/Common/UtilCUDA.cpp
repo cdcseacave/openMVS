@@ -163,6 +163,9 @@ CUresult _gpuGetMaxGflopsDeviceId(Device& bestDevice)
 // if the given device is -1, the best available device is selected
 CUresult initDevice(int deviceID)
 {
+	if (deviceID < -1)
+		return CUDA_ERROR_INVALID_DEVICE;
+
 	checkCudaError(cuInit(0));
 
 	Device device;

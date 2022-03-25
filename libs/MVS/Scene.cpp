@@ -662,6 +662,65 @@ void Scene::SampleMeshWithVisibility(unsigned maxResolution)
 } // SampleMeshWithVisibility
 /*----------------------------------------------------------------*/
 
+bool Scene::ExportMeshToDepthMaps(const String& baseName)
+{
+	ASSERT(!images.empty() && !mesh.IsEmpty());
+	const String ext(Util::getFileExt(baseName).ToLower());
+	const int nType(ext == _T(".dmap") ? 2 : (ext == _T(".pfm") ? 1 : 0));
+	if (nType == 2)
+		mesh.ComputeNormalVertices();
+	DepthMap depthMap;
+	NormalMap normalMap;
+	#ifdef SCENE_USE_OPENMP
+	bool bAbort(false);
+	#pragma omp parallel for private(depthMap, normalMap) schedule(dynamic)
+	for (int _i=0; _i<(int)images.size(); ++_i) {
+		#pragma omp flush (bAbort)
+		if (bAbort)
+			continue;
+		const IIndex idxImage((IIndex)_i);
+	#else
+	FOREACH(idxImage, images) {
+	#endif
+		Image& image = images[idxImage];
+		if (!image.IsValid())
+			continue;
+		const unsigned imageSize(image.RecomputeMaxResolution(OPTDENSE::nResolutionLevel, OPTDENSE::nMinResolution, OPTDENSE::nMaxResolution));
+		image.ResizeImage(imageSize);
+		image.UpdateCamera(platforms);
+		depthMap.create(image.GetSize());
+		if (nType == 2)
+			mesh.Project(image.camera, depthMap, normalMap);
+		else
+			mesh.Project(image.camera, depthMap);
+		const String fileName(Util::insertBeforeFileExt(baseName, String::FormatString("%04u", image.ID)));
+		if ((nType == 2 && ![&]() {
+				IIndexArr IDs(0, image.neighbors.size()+1);
+				IDs.push_back(idxImage);
+				for (const ViewScore& neighbor: image.neighbors)
+					IDs.push_back(neighbor.idx.ID);
+				return ExportDepthDataRaw(fileName, image.name, IDs, image.GetSize(), image.camera.K, image.camera.R, image.camera.C, 0.001f, FLT_MAX, depthMap, normalMap, ConfidenceMap());
+			} ()) ||
+			(nType == 1 && !depthMap.Save(fileName)) ||
+			(nType == 0 && !ExportDepthMap(fileName, depthMap)))
+		{
+			#ifdef SCENE_USE_OPENMP
+			bAbort = true;
+			#pragma omp flush (bAbort)
+			continue;
+			#else
+			return false;
+			#endif
+		}
+	}
+	#ifdef SCENE_USE_OPENMP
+	if (bAbort)
+		return false;
+	#endif
+	return true;
+} // ExportMeshToDepthMaps
+/*----------------------------------------------------------------*/
+
 
 inline float Footprint(const Camera& camera, const Point3f& X) {
 	#if 0
@@ -739,7 +798,7 @@ bool Scene::SelectNeighborViews(uint32_t ID, IndexArr& points, unsigned nMinView
 			else
 				wScale = SQUARE(fScaleRatio);
 			Score& score = scores[view];
-			score.score += wAngle * wScale * wROI;
+			score.score += MAXF(wAngle,0.1f) * wScale * wROI;
 			score.avgScale += fScaleRatio;
 			score.avgAngle += fAngle;
 			++score.points;
@@ -786,7 +845,7 @@ bool Scene::SelectNeighborViews(uint32_t ID, IndexArr& points, unsigned nMinView
 		neighbor.idx.scale = score.avgScale/score.points;
 		neighbor.idx.angle = score.avgAngle/score.points;
 		neighbor.idx.area = area;
-		neighbor.score = score.score*area;
+		neighbor.score = score.score*MAXF(area,0.01f);
 	}
 	neighbors.Sort();
 	#if TD_VERBOSE != TD_VERBOSE_OFF

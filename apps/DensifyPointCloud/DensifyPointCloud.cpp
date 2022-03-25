@@ -54,6 +54,7 @@ String strMeshFileName;
 String strExportROIFileName;
 String strImportROIFileName;
 String strDenseConfigFileName;
+String strExportDepthMapsName;
 float fMaxSubsceneArea;
 float fSampleMesh;
 int nFusionMode;
@@ -92,7 +93,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 			), "verbosity level")
 		#endif
 		#ifdef _USE_CUDA
-		("cuda-device", boost::program_options::value(&CUDA::desiredDeviceID)->default_value(0), "CUDA device number to be used for depth-map estimation (-1 - CPU processing)")
+		("cuda-device", boost::program_options::value(&CUDA::desiredDeviceID)->default_value(-1), "CUDA device number to be used for depth-map estimation (-2 - CPU processing, -1 - best GPU, >=0 - device index)")
 		#endif
 		;
 
@@ -139,6 +140,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		("export-roi-file", boost::program_options::value<std::string>(&OPT::strExportROIFileName), "ROI file name to be exported form the scene")
 		("import-roi-file", boost::program_options::value<std::string>(&OPT::strImportROIFileName), "ROI file name to be imported into the scene")
 		("dense-config-file", boost::program_options::value<std::string>(&OPT::strDenseConfigFileName), "optional configuration file for the densifier (overwritten by the command line options)")
+		("export-depth-maps-name", boost::program_options::value<std::string>(&OPT::strExportDepthMapsName), "render given mesh and save the depth-map for every image to this file name base (empty - disabled)")
 		;
 
 	boost::program_options::options_description cmdline_options;
@@ -302,6 +304,15 @@ int main(int argc, LPCTSTR* argv)
 			return EXIT_FAILURE;
 		}
 		scene.SaveViewNeighbors(MAKE_PATH_SAFE(OPT::strOutputViewNeighborsFileName));
+		return EXIT_SUCCESS;
+	}
+	if (!OPT::strExportDepthMapsName.empty() && !scene.mesh.IsEmpty()) {
+		// project mesh onto each image and save the resulted depth-maps
+		TD_TIMER_START();
+		if (!scene.ExportMeshToDepthMaps(MAKE_PATH_SAFE(OPT::strExportDepthMapsName)))
+			return EXIT_FAILURE;
+		VERBOSE("Mesh projection completed: %u depth-maps (%s)", scene.images.size(), TD_TIMER_GET_FMT().c_str());
+		Finalize();
 		return EXIT_SUCCESS;
 	}
 	if (OPT::fMaxSubsceneArea > 0) {
