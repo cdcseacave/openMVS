@@ -1109,6 +1109,54 @@ bool ExportScene(const String& strFolder, const Interface& scene)
 }
 
 
+// export camera intrinsics in txt format
+bool ExportIntrinsicsTxt(const String& fileName, const Interface& scene)
+{
+	LOG_OUT() << "Writing intrinsics: " << fileName << std::endl;
+	size_t idxValidK(MVS::NO_ID);
+	FOREACH(ID, scene.images) {
+		const Interface::Image& image = scene.images[ID];
+		if (!image.IsValid())
+			continue;
+		if (idxValidK == MVS::NO_ID) {
+			idxValidK = ID;
+			continue;
+		}
+		if (scene.GetK(idxValidK) != scene.GetK(ID)) {
+			VERBOSE("error: multiple camera models");
+			return false;
+		}
+	}
+	if (idxValidK != MVS::NO_ID) {
+		const Interface::Image& image = scene.images[idxValidK];
+		String imagefileName(image.name);
+		Util::ensureValidPath(imagefileName);
+		imagefileName = MAKE_PATH_FULL(WORKING_FOLDER_FULL, imagefileName);
+		IMAGEPTR pImage = Image::ReadImageHeader(imagefileName);
+		if (!pImage) {
+			VERBOSE("error: unable to open image file '%s'", imagefileName.c_str());
+			return false;
+		}
+		const Interface::Mat33d& K = scene.platforms[image.platformID].GetFullK(image.cameraID, pImage->GetWidth(), pImage->GetHeight());
+		Eigen::Matrix4d K4(Eigen::Matrix4d::Identity());
+		K4.topLeftCorner<3,3>() = Eigen::Map<const EMat33d>(K.val);
+		Util::ensureFolder(fileName);
+		std::ofstream out(fileName);
+		if (!out.good()) {
+			VERBOSE("error: unable to open file '%s'", fileName.c_str());
+			return false;
+		}
+		out << std::setprecision(12);
+		out << K4(0,0) << _T(" ") << K4(0,1) << _T(" ") << K4(0,2) << _T(" ") << K4(0,3) << _T("\n");
+		out << K4(1,0) << _T(" ") << K4(1,1) << _T(" ") << K4(1,2) << _T(" ") << K4(1,3) << _T("\n");
+		out << K4(2,0) << _T(" ") << K4(2,1) << _T(" ") << K4(2,2) << _T(" ") << K4(2,3) << _T("\n");
+		out << K4(3,0) << _T(" ") << K4(3,1) << _T(" ") << K4(3,2) << _T(" ") << K4(3,3) << _T("\n");
+		return !out.fail();
+	}
+	return false;
+}
+
+
 // export image poses in log format
 // see: http://redwood-data.org/indoor/fileformat.html
 // to support: https://www.tanksandtemples.org/tutorial
@@ -1229,6 +1277,7 @@ int main(int argc, LPCTSTR* argv)
 			return EXIT_FAILURE;
 		if (Util::getFileExt(OPT::strOutputFileName) == _T(".log")) {
 			// write poses in log format
+			ExportIntrinsicsTxt(MAKE_PATH_FULL(WORKING_FOLDER_FULL, String("intrinsics.txt")), scene);
 			ExportImagesLog(MAKE_PATH_SAFE(OPT::strOutputFileName), scene);
 		} else
 		if (Util::getFileExt(OPT::strOutputFileName) == _T(".camera")) {

@@ -325,12 +325,26 @@ bool Scene::Export(LPCTSTR _fileName, LPCTSTR exportType, bool losslessTexture) 
 	if (VERBOSITY_LEVEL > 2 && (bPoints || bMesh))
 		scene.ExportCamerasMLP(Util::getFileFullName(lastFileName)+_T(".mlp"), lastFileName);
 	#endif
+	AABB3f aabb(true);
 	if (scene.IsBounded()) {
 		std::ofstream fs(baseFileName+_T("_roi.txt"));
 		if (fs)
 			fs << scene.obb;
+		aabb = scene.obb.GetAABB();
+	} else {
+		if (!scene.pointcloud.IsEmpty()) {
+			aabb = scene.pointcloud.GetAABB();
+		} else
+		if (!scene.mesh.IsEmpty()) {
+			aabb = scene.mesh.GetAABB();
+		}
 	}
-	return (bPoints || bMesh);
+	if (!aabb.IsEmpty()) {
+		std::ofstream fs(baseFileName+_T("_roi_box.txt"));
+		if (fs)
+			fs << aabb;
+	}
+	return bPoints || bMesh;
 }
 
 void Scene::CompilePointCloud()
