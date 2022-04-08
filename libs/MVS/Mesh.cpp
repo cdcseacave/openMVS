@@ -115,6 +115,19 @@ void Mesh::EmptyExtra()
 	faceTexcoords.Empty();
 	textureDiffuse.release();
 } // EmptyExtra
+void Mesh::Swap(Mesh& rhs)
+{
+	vertices.Swap(rhs.vertices);
+	faces.Swap(rhs.faces);
+	vertexNormals.Swap(rhs.vertexNormals);
+	vertexVertices.Swap(rhs.vertexVertices);
+	vertexFaces.Swap(rhs.vertexFaces);
+	vertexBoundary.Swap(rhs.vertexBoundary);
+	faceNormals.Swap(rhs.faceNormals);
+	faceFaces.Swap(rhs.faceFaces);
+	faceTexcoords.Swap(rhs.faceTexcoords);
+	std::swap(textureDiffuse, rhs.textureDiffuse);
+} // Swap
 /*----------------------------------------------------------------*/
 
 

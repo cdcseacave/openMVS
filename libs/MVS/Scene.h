@@ -99,6 +99,10 @@ public:
 	unsigned Split(ImagesChunkArr& chunks, float maxArea, int depthMapStep=8) const;
 	bool ExportChunks(const ImagesChunkArr& chunks, const String& path, ARCHIVE_TYPE type=ARCHIVE_DEFAULT) const;
 
+	// Transform scene
+	bool Center(const Point3* pCenter = NULL);
+	bool Scale(const REAL* pScale = NULL);
+
 	// Dense reconstruction
 	bool DenseReconstruction(int nFusionMode=0);
 	bool ComputeDepthMaps(DenseDepthMapData& data);

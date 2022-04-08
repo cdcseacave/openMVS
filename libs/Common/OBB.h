@@ -50,10 +50,12 @@ public:
 
 	inline TOBB() {}
 	inline TOBB(bool);
+	inline TOBB(const AABB&);
 	inline TOBB(const MATRIX& rot, const POINT& ptMin, const POINT& ptMax);
 	inline TOBB(const POINT* pts, size_t n);
 	inline TOBB(const POINT* pts, size_t n, const TRIANGLE* tris, size_t s);
 
+	inline void Set(const AABB&); // build from AABB
 	inline void Set(const MATRIX& rot, const POINT& ptMin, const POINT& ptMax); // build from rotation matrix from world to local, and local min/max corners
 	inline void Set(const POINT* pts, size_t n); // build from points
 	inline void Set(const POINT* pts, size_t n, const TRIANGLE* tris, size_t s); // build from triangles

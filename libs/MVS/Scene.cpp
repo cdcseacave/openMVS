@@ -1268,3 +1268,67 @@ bool Scene::ExportChunks(const ImagesChunkArr& chunks, const String& path, ARCHI
 	return true;
 } // ExportChunks
 /*----------------------------------------------------------------*/
+
+
+// move scene such that the center is the given point;
+// if center is not given, center it to the center of the bounding-box
+bool Scene::Center(const Point3* pCenter)
+{
+	Point3 center;
+	if (pCenter)
+		center = *pCenter;
+	else if (IsBounded())
+		center = -Point3f(obb.GetCenter());
+	else if (!pointcloud.IsEmpty())
+		center = -Point3f(pointcloud.GetAABB().GetCenter());
+	else if (!mesh.IsEmpty())
+		center = -Point3f(mesh.GetAABB().GetCenter());
+	else
+		return false;
+	const Point3f centerf(Cast<float>(center));
+	if (IsBounded())
+		obb.Translate(centerf);
+	for (Platform& platform: platforms)
+		for (Platform::Pose& pose: platform.poses)
+			pose.C += center;
+	for (Image& image: images)
+		if (image.IsValid())
+			image.UpdateCamera(platforms);
+	for (PointCloud::Point& X: pointcloud.points)
+		X += centerf;
+	for (Mesh::Vertex& X: mesh.vertices)
+		X += centerf;
+	return true;
+} // Center
+
+// scale scene with the given scale;
+// if the scale is not given, scale it such that the bounding-box has largest size 1
+bool Scene::Scale(const REAL* pScale)
+{
+	REAL scale;
+	if (pScale)
+		scale = *pScale;
+	else if (IsBounded())
+		scale = REAL(1)/obb.GetSize().maxCoeff();
+	else if (!pointcloud.IsEmpty())
+		scale = REAL(1)/pointcloud.GetAABB().GetSize().maxCoeff();
+	else if (!mesh.IsEmpty())
+		scale = REAL(1)/mesh.GetAABB().GetSize().maxCoeff();
+	else
+		return false;
+	const float scalef(scale);
+	if (IsBounded())
+		obb.Transform(OBB3f::MATRIX::Identity() * scalef);
+	for (Platform& platform: platforms)
+		for (Platform::Pose& pose: platform.poses)
+			pose.C *= scale;
+	for (Image& image: images)
+		if (image.IsValid())
+			image.UpdateCamera(platforms);
+	for (PointCloud::Point& X: pointcloud.points)
+		X *= scalef;
+	for (Mesh::Vertex& X: mesh.vertices)
+		X *= scalef;
+	return true;
+} // Scale
+/*----------------------------------------------------------------*/

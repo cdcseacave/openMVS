@@ -20,6 +20,11 @@ inline TOBB<TYPE,DIMS>::TOBB(bool)
 {
 }
 template <typename TYPE, int DIMS>
+inline TOBB<TYPE,DIMS>::TOBB(const AABB& aabb)
+{
+	Set(aabb);
+}
+template <typename TYPE, int DIMS>
 inline TOBB<TYPE,DIMS>::TOBB(const MATRIX& rot, const POINT& ptMin, const POINT& ptMax)
 {
 	Set(rot, ptMin, ptMax);
@@ -36,6 +41,14 @@ inline TOBB<TYPE,DIMS>::TOBB(const POINT* pts, size_t n, const TRIANGLE* tris, s
 } // constructor
 /*----------------------------------------------------------------*/
 
+
+template <typename TYPE, int DIMS>
+inline void TOBB<TYPE,DIMS>::Set(const AABB& aabb)
+{
+	m_rot.setIdentity();
+	m_pos = aabb.GetCenter();
+	m_ext = aabb.GetSize()/TYPE(2);
+}
 
 // build from rotation matrix from world to local, and local min/max corners
 template <typename TYPE, int DIMS>

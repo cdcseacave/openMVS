@@ -145,6 +145,7 @@ public:
 	void Release();
 	void ReleaseExtra();
 	void EmptyExtra();
+	void Swap(Mesh&);
 	inline bool IsEmpty() const { return vertices.IsEmpty(); }
 	inline bool HasTexture() const { ASSERT(faceTexcoords.IsEmpty() == textureDiffuse.empty()); return !faceTexcoords.IsEmpty(); }
 
