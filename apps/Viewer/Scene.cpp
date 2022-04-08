@@ -635,7 +635,7 @@ void Scene::Draw()
 		glDepthMask(GL_FALSE);
 		glBegin(GL_LINES);
 		glColor3f(0.5f,0.1f,0.8f);
-		for (int i=0; i<obbPoints.size(); i+=2) {
+		for (IDX i=0; i<obbPoints.size(); i+=2) {
 			glVertex3fv(obbPoints[i+0].ptr());
 			glVertex3fv(obbPoints[i+1].ptr());
 		}
@@ -679,7 +679,7 @@ void Scene::TogleSceneBox()
 	if (scene.IsBounded())
 		scene.obb = OBB3f(true);
 	else if (!scene.pointcloud.IsEmpty())
-		scene.obb.Set(EnlargeAABB(scene.pointcloud.GetAABB()));
+		scene.obb.Set(EnlargeAABB(scene.pointcloud.GetAABB(window.minViews)));
 	else if (!scene.mesh.IsEmpty())
 		scene.obb.Set(EnlargeAABB(scene.mesh.GetAABB()));
 	CompileBounds();
