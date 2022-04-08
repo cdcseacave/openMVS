@@ -309,7 +309,7 @@ void Window::Key(int k, int /*scancode*/, int action, int mod)
 	case GLFW_KEY_S:
 		if (action == GLFW_RELEASE) {
 			if (clbkSaveScene != NULL)
-				clbkSaveScene(NULL);
+				clbkSaveScene(NULL, (mod & GLFW_MOD_SHIFT) != 0);
 		}
 		break;
 	case GLFW_KEY_T:

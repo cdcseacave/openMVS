@@ -94,7 +94,7 @@ public:
 
 	typedef DELEGATE<bool (LPCTSTR, LPCTSTR)> ClbkOpenScene;
 	ClbkOpenScene clbkOpenScene;
-	typedef DELEGATE<bool (LPCTSTR)> ClbkSaveScene;
+	typedef DELEGATE<bool (LPCTSTR, bool)> ClbkSaveScene;
 	ClbkSaveScene clbkSaveScene;
 	typedef DELEGATE<bool (LPCTSTR, LPCTSTR, bool)> ClbkExportScene;
 	ClbkExportScene clbkExportScene;

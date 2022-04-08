@@ -71,6 +71,7 @@ bool bNormalizeIntrinsics;
 String strInputFileName;
 String strOutputFileName;
 String strImageFolder;
+unsigned nMaxResolution;
 unsigned nArchiveType;
 int nProcessPriority;
 unsigned nMaxThreads;
@@ -111,6 +112,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		("input-file,i", boost::program_options::value<std::string>(&OPT::strInputFileName), "input COLMAP folder containing cameras, images and points files OR input MVS project file")
 		("output-file,o", boost::program_options::value<std::string>(&OPT::strOutputFileName), "output filename for storing the MVS project")
 		("image-folder", boost::program_options::value<std::string>(&OPT::strImageFolder)->default_value(COLMAP_IMAGES_FOLDER), "folder to the undistorted images")
+		("max-resolution", boost::program_options::value(&OPT::nMaxResolution)->default_value(0), "make sure image resolution are not not larger than this (0 - disabled)")
 		("normalize,f", boost::program_options::value(&OPT::bNormalizeIntrinsics)->default_value(false), "normalize intrinsics while exporting to MVS format")
 		;
 
@@ -1270,6 +1272,23 @@ int main(int argc, LPCTSTR* argv)
 	TD_TIMER_START();
 
 	if (OPT::bFromOpenMVS) {
+		if (OPT::nMaxResolution > 0) {
+			// scale and save scene images
+			MVS::Scene scene(OPT::nMaxThreads);
+			if (!scene.Load(MAKE_PATH_SAFE(OPT::strInputFileName)))
+				return EXIT_FAILURE;
+			const String folderName(Util::getFilePath(MAKE_PATH_FULL(WORKING_FOLDER_FULL, OPT::strInputFileName)) + String::FormatString("images%u" PATH_SEPARATOR_STR, OPT::nMaxResolution));
+			if (!scene.ScaleImages(OPT::nMaxResolution, 0, folderName)) {
+				DEBUG("error: can not scale scene images to '%s'", folderName.c_str());
+				return EXIT_FAILURE;
+			}
+			const String fileName(Util::insertBeforeFileExt(MAKE_PATH_SAFE(OPT::strInputFileName), _T("_new")));
+			if (!scene.Save(fileName, scene.mesh.IsEmpty() ? ARCHIVE_MVS : ARCHIVE_DEFAULT)) {
+				DEBUG("error: can not save scene to '%s'", fileName.c_str());
+				return EXIT_FAILURE;
+			}
+			return EXIT_SUCCESS;
+		}
 		// read MVS input data
 		Interface scene;
 		if (!ARCHIVE::SerializeLoad(scene, MAKE_PATH_SAFE(OPT::strInputFileName)))

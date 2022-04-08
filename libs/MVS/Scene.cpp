@@ -1331,4 +1331,34 @@ bool Scene::Scale(const REAL* pScale)
 		X *= scalef;
 	return true;
 } // Scale
+
+// scale image resolutions with the given scale or max-resolution;
+// if folderName is specified, the scaled images are stored there
+bool Scene::ScaleImages(unsigned nMaxResolution, REAL scale, const String& folderName)
+{
+	ASSERT(nMaxResolution > 0 || scale > 0);
+	Util::ensureFolder(folderName);
+	FOREACH(idx, images) {
+		Image& image = images[idx];
+		if (!image.IsValid())
+			continue;
+		unsigned nResolutionLevel(0);
+		unsigned nResolution(image.RecomputeMaxResolution(nResolutionLevel, 0));
+		if (scale > 0)
+			nResolution = ROUND2INT(nResolution*scale);
+		if (nMaxResolution > 0 && nResolution > nMaxResolution)
+			nResolution = nMaxResolution;
+		if (!image.ReloadImage(nResolution, !folderName.empty()))
+			return false;
+		image.UpdateCamera(platforms);
+		if (!folderName.empty()) {
+			if (image.ID == NO_ID)
+				image.ID = idx;
+			image.name = folderName + String::FormatString("%05u%s", image.ID, Util::getFileExt(image.name).c_str());
+			image.image.Save(image.name);
+			image.ReleaseImage();
+		}
+	}
+	return true;
+} // ScaleImages
 /*----------------------------------------------------------------*/

@@ -102,6 +102,7 @@ public:
 	// Transform scene
 	bool Center(const Point3* pCenter = NULL);
 	bool Scale(const REAL* pScale = NULL);
+	bool ScaleImages(unsigned nMaxResolution = 0, REAL scale = 0, const String& folderName = String());
 
 	// Dense reconstruction
 	bool DenseReconstruction(int nFusionMode=0);

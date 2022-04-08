@@ -161,6 +161,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 			"\tC + Ctrl: center scene\n"
 			"\tLeft/Right: select next camera to view the scene\n"
 			"\tS: save scene\n"
+			"\tS + Shift: rescale images and save scene\n"
 			"\tT: render mesh texture\n"
 			"\tW: render wire-frame mesh\n"
 			"\tV: render view rays to the selected point\n"

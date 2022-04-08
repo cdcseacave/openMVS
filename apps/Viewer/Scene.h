@@ -86,7 +86,7 @@ public:
 
 	bool Init(const cv::Size&, LPCTSTR windowName, LPCTSTR fileName=NULL, LPCTSTR meshFileName=NULL);
 	bool Open(LPCTSTR fileName, LPCTSTR meshFileName=NULL);
-	bool Save(LPCTSTR fileName=NULL);
+	bool Save(LPCTSTR fileName=NULL, bool bRescaleImages=false);
 	bool Export(LPCTSTR fileName, LPCTSTR exportType=NULL, bool losslessTexture=false) const;
 	void CompilePointCloud();
 	void CompileMesh();

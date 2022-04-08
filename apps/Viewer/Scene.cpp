@@ -225,7 +225,8 @@ bool Scene::Open(LPCTSTR fileName, LPCTSTR meshFileName)
 	DEBUG_EXTRA("Loading: '%s'", Util::getFileNameExt(fileName).c_str());
 	Empty();
 	sceneName = fileName;
-	meshName = meshFileName;
+	if (meshFileName)
+		meshName = meshFileName;
 
 	// load the scene
 	WORKING_FOLDER = Util::getFilePath(fileName);
@@ -316,14 +317,31 @@ bool Scene::Open(LPCTSTR fileName, LPCTSTR meshFileName)
 }
 
 // export the scene
-bool Scene::Save(LPCTSTR _fileName)
+bool Scene::Save(LPCTSTR _fileName, bool bRescaleImages)
 {
 	if (!IsOpen())
 		return false;
+	REAL imageScale = 0;
+	if (bRescaleImages) {
+		window.SetVisible(false);
+		std::cout << "Enter image resolution scale: ";
+		String strScale;
+		std::cin >> strScale;
+		window.SetVisible(true);
+		imageScale = strScale.From<REAL>(0);
+	}
 	const String fileName(_fileName != NULL ? String(_fileName) : Util::insertBeforeFileExt(sceneName, _T("_new")));
 	MVS::Mesh mesh;
 	if (!scene.mesh.IsEmpty() && !meshName.empty())
 		mesh.Swap(scene.mesh);
+	if (imageScale > 0 && imageScale < 1) {
+		// scale and save images
+		const String folderName(Util::getFilePath(MAKE_PATH_FULL(WORKING_FOLDER_FULL, fileName)) + String::FormatString("images%d" PATH_SEPARATOR_STR, ROUND2INT(imageScale*100)));
+		if (!scene.ScaleImages(0, imageScale, folderName)) {
+			DEBUG("error: can not scale scene images to '%s'", folderName.c_str());
+			return false;
+		}
+	}
 	if (!scene.Save(fileName, scene.mesh.IsEmpty() ? ARCHIVE_MVS : ARCHIVE_DEFAULT)) {
 		DEBUG("error: can not save scene to '%s'", fileName.c_str());
 		return false;
