@@ -355,6 +355,50 @@ void Mesh::ComputeNormalVertices()
 		normalize(*pVertexNormal);
 }
 #endif
+
+inline float AngleN(const Mesh::Normal& p1, const Mesh::Normal& p2) {
+	float t(p1.dot(p2));
+	if (t > 1) t = 1; else
+		if (t < -1) t = -1;
+	return acosf(t);
+}
+
+// Smoothen the normals for each face
+//  - fMaxGradient = the maximum angle difference between neighbor normals that is
+// allowed to take into consideration; higher angles are ignored
+//  - fOriginalWeight = weight between 0 and 1 to use for current normal value when averaging with neighbor normals
+//  - nIterations = number of times to repeat the smoothening process
+void Mesh::SmoothNormalFaces(const float fMaxGradient, const float fOriginalWeight, const int nIterations) {
+	if (faceNormals.IsEmpty()) {
+		DEBUG_EXTRA("SmoothNormalFaces:: ComputeNormalFaces()");
+		ComputeNormalFaces();
+	}
+	if (faceFaces.empty()) {
+		TD_TIMER_STARTD();
+		ListIncidenteFaceFaces();
+		DEBUG_EXTRA("SmoothNormalFaces:: ListIncidenteFaces() for %u faces took : %s.", faces.size(), TD_TIMER_GET_FMT().c_str());
+	}
+	for (int rep = 0; rep < nIterations; ++rep) {
+		FOREACH(idxFace, faces) {
+			const Face& face = faces[idxFace];
+			const Normal OriginalNormal = faceNormals[idxFace];
+
+			Normal SumNeighborNormals = Normal::ZERO;
+			for (int i = 0; i < 3; ++i) {
+				const FIndex fIdx = faceFaces[idxFace][i];
+				if (fIdx == NO_ID)
+					continue;
+				const Normal& tn = faceNormals[fIdx];
+				if (abs(AngleN(OriginalNormal, tn)) <= fMaxGradient) {
+					SumNeighborNormals += tn;
+				}
+			}
+			const Normal avgNeighborsNormal = normalized(SumNeighborNormals);
+			Normal newFaceNormal = normalized(OriginalNormal * fOriginalWeight + avgNeighborsNormal * (1 - fOriginalWeight));
+			faceNormals[idxFace] = newFaceNormal;
+		}
+	}
+}
 /*----------------------------------------------------------------*/
 
 
