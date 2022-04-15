@@ -169,6 +169,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	// initialize optional options
 	Util::ensureValidFolderPath(OPT::strImageFolder);
 	Util::ensureValidPath(OPT::strOutputFileName);
+	OPT::strImageFolder = MAKE_PATH_FULL(WORKING_FOLDER_FULL, OPT::strImageFolder);
 	const String strInputFileNameExt(Util::getFileExt(OPT::strInputFileName).ToLower());
 	OPT::bFromOpenMVS = (strInputFileNameExt == MVS_EXT);
 	if (OPT::bFromOpenMVS) {
@@ -178,8 +179,6 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		Util::ensureFolderSlash(OPT::strInputFileName);
 		if (OPT::strOutputFileName.empty())
 			OPT::strOutputFileName = OPT::strInputFileName + _T("scene") MVS_EXT;
-		else
-			OPT::strImageFolder = Util::getRelativePath(Util::getFilePath(OPT::strOutputFileName), OPT::strInputFileName+OPT::strImageFolder);
 	}
 
 	// initialize global options
@@ -963,7 +962,7 @@ bool ExportScene(const String& strFolder, const Interface& scene)
 			img.q = Eigen::Quaterniond(Eigen::Map<const EMat33d>(pose.R.val));
 			img.t = -(img.q * Eigen::Map<const EVec3d>(&pose.C.x));
 			img.idCamera = image.platformID;
-			img.name = MAKE_PATH_REL(OPT::strImageFolder, image.name);
+			img.name = MAKE_PATH_REL(OPT::strImageFolder, MAKE_PATH_FULL(WORKING_FOLDER_FULL, image.name));
 			Camera& camera = cameras[ID];
 			camera.K = Ks[image.platformID];
 			camera.R = pose.R;
