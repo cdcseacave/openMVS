@@ -49,6 +49,7 @@ namespace OPT {
 String strInputFileName;
 String strOutputFileName;
 String strMeshFileName;
+String strViewsFileName;
 float fDecimateMesh;
 unsigned nCloseHoles;
 unsigned nResolutionLevel;
@@ -124,6 +125,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	boost::program_options::options_description hidden("Hidden options");
 	hidden.add_options()
 		("mesh-file", boost::program_options::value<std::string>(&OPT::strMeshFileName), "mesh file name to texture (overwrite the existing mesh)")
+		("views-file", boost::program_options::value<std::string>(&OPT::strViewsFileName), "file name containing the list of views to be used for texturing (optional)")
 		;
 
 	boost::program_options::options_description cmdline_options;
@@ -186,6 +188,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	Util::ensureUnifySlash(OPT::strOutputFileName);
 	if (OPT::strOutputFileName.IsEmpty())
 		OPT::strOutputFileName = Util::getFileFullName(OPT::strInputFileName) + _T("_texture.mvs");
+	Util::ensureValidPath(OPT::strViewsFileName);
 
 	// initialize global options
 	Process::setCurrentProcessPriority((Process::Priority)OPT::nProcessPriority);
@@ -217,6 +220,40 @@ void Finalize()
 }
 
 } // unnamed namespace
+
+IIndexArr ParseViewsFile(const String& filename, const Scene& scene) {
+	IIndexArr views;
+	std::ifstream file(filename);
+	if (!file.good()) {
+		VERBOSE("error: unable to open views file '%s'", filename.c_str());
+		return views;
+	}
+	while (true) {
+		String imageName;
+		std::getline(file, imageName);
+		if (file.fail() || imageName.empty())
+			break;
+		LPTSTR endIdx;
+		const IDX idx(strtoul(imageName, &endIdx, 10));
+		const size_t szIndex(*endIdx == '\0' ? size_t(0) : imageName.size());
+		FOREACH(idxImage, scene.images) {
+			const Image& image = scene.images[idxImage];
+			if (szIndex == 0) {
+				// try to match by index
+				if (image.ID != idx)
+					continue;
+			} else {
+				// try to match by file name
+				const String name(Util::getFileNameExt(image.name));
+				if (name.size() < szIndex || _tcsnicmp(name, imageName, szIndex) != 0)
+					continue;
+			}
+			views.emplace_back(idxImage);
+			break;
+		}
+	}
+	return views;
+}
 
 int main(int argc, LPCTSTR* argv)
 {
@@ -257,10 +294,14 @@ int main(int argc, LPCTSTR* argv)
 			scene.mesh.Save(baseFileName +_T("_decim")+OPT::strExportType);
 		#endif
 	}
+	// fetch list of views to be used for texturing
+	IIndexArr views;
+	if (!OPT::strViewsFileName.empty())
+		views = ParseViewsFile(MAKE_PATH_SAFE(OPT::strViewsFileName), scene);
 
 	// compute mesh texture
 	TD_TIMER_START();
-	if (!scene.TextureMesh(OPT::nResolutionLevel, OPT::nMinResolution, OPT::fOutlierThreshold, OPT::fRatioDataSmoothness, OPT::bGlobalSeamLeveling, OPT::bLocalSeamLeveling, OPT::nTextureSizeMultiple, OPT::nRectPackingHeuristic, Pixel8U(OPT::nColEmpty)))
+	if (!scene.TextureMesh(OPT::nResolutionLevel, OPT::nMinResolution, OPT::fOutlierThreshold, OPT::fRatioDataSmoothness, OPT::bGlobalSeamLeveling, OPT::bLocalSeamLeveling, OPT::nTextureSizeMultiple, OPT::nRectPackingHeuristic, Pixel8U(OPT::nColEmpty), views))
 		return EXIT_FAILURE;
 	VERBOSE("Mesh texturing completed: %u vertices, %u faces (%s)", scene.mesh.vertices.GetSize(), scene.mesh.faces.GetSize(), TD_TIMER_GET_FMT().c_str());
 

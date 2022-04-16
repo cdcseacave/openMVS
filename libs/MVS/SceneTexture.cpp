@@ -370,13 +370,13 @@ public:
 
 	void ListVertexFaces();
 
-	bool ListCameraFaces(FaceDataViewArr&, float fOutlierThreshold);
+	bool ListCameraFaces(FaceDataViewArr&, float fOutlierThreshold, const IIndexArr& views);
 
 	#if TEXOPT_FACEOUTLIER != TEXOPT_FACEOUTLIER_NA
 	bool FaceOutlierDetection(FaceDataArr& faceDatas, float fOutlierThreshold) const;
 	#endif
 
-	bool FaceViewSelection(float fOutlierThreshold, float fRatioDataSmoothness);
+	bool FaceViewSelection(float fOutlierThreshold, float fRatioDataSmoothness, const IIndexArr& views);
 
 	void CreateSeamVertices();
 	void GlobalSeamLeveling();
@@ -471,15 +471,20 @@ void MeshTexture::ListVertexFaces()
 }
 
 // extract array of faces viewed by each image
-bool MeshTexture::ListCameraFaces(FaceDataViewArr& facesDatas, float fOutlierThreshold)
+bool MeshTexture::ListCameraFaces(FaceDataViewArr& facesDatas, float fOutlierThreshold, const IIndexArr& _views)
 {
 	// create faces octree
 	Mesh::Octree octree;
 	Mesh::FacesInserter::CreateOctree(octree, scene.mesh);
 
 	// extract array of faces viewed by each image
-	facesDatas.Resize(faces.GetSize());
-	Util::Progress progress(_T("Initialized views"), images.GetSize());
+	IIndexArr views(_views);
+	if (views.empty()) {
+		views.resize(images.size());
+		std::iota(views.begin(), views.end(), IIndex(0));
+	}
+	facesDatas.Resize(faces.size());
+	Util::Progress progress(_T("Initialized views"), views.size());
 	typedef float real;
 	TImage<real> imageGradMag;
 	TImage<real>::EMat mGrad[2];
@@ -488,15 +493,15 @@ bool MeshTexture::ListCameraFaces(FaceDataViewArr& facesDatas, float fOutlierThr
 	#ifdef TEXOPT_USE_OPENMP
 	bool bAbort(false);
 	#pragma omp parallel for private(imageGradMag, mGrad, faceMap, depthMap)
-	for (int_t idx=0; idx<(int_t)images.GetSize(); ++idx) {
+	for (int_t idx=0; idx<(int_t)views.size(); ++idx) {
 		#pragma omp flush (bAbort)
 		if (bAbort) {
 			++progress;
 			continue;
 		}
-		const uint32_t idxView((uint32_t)idx);
+		const IIndex idxView(views[(IIndex)idx]);
 	#else
-	FOREACH(idxView, images) {
+	for (IIndex idxView: views) {
 	#endif
 		Image& imageData = images[idxView];
 		if (!imageData.IsValid()) {
@@ -800,7 +805,7 @@ bool MeshTexture::FaceOutlierDetection(FaceDataArr& faceDatas, float thOutlier) 
 }
 #endif
 
-bool MeshTexture::FaceViewSelection(float fOutlierThreshold, float fRatioDataSmoothness)
+bool MeshTexture::FaceViewSelection(float fOutlierThreshold, float fRatioDataSmoothness, const IIndexArr& views)
 {
 	// extract array of triangles incident to each vertex
 	ListVertexFaces();
@@ -809,7 +814,7 @@ bool MeshTexture::FaceViewSelection(float fOutlierThreshold, float fRatioDataSmo
 	{
 		// list all views for each face
 		FaceDataViewArr facesDatas;
-		if (!ListCameraFaces(facesDatas, fOutlierThreshold))
+		if (!ListCameraFaces(facesDatas, fOutlierThreshold, views))
 			return false;
 
 		// create faces graph
@@ -1552,6 +1557,8 @@ void MeshTexture::PoissonBlending(const Image32F3& src, Image32F3& dst, const Im
 	for (int i = 0; i < n; ++i)
 		if (mask(i) != empty)
 			indices(i) = nnz++;
+	if (nnz <= 0)
+		return;
 
 	Colors coeffB(nnz);
 	CLISTDEF0(MatEntry) coeffA(0, nnz);
@@ -1909,14 +1916,14 @@ void MeshTexture::GenerateTexture(bool bGlobalSeamLeveling, bool bLocalSeamLevel
 }
 
 // texture mesh
-bool Scene::TextureMesh(unsigned nResolutionLevel, unsigned nMinResolution, float fOutlierThreshold, float fRatioDataSmoothness, bool bGlobalSeamLeveling, bool bLocalSeamLeveling, unsigned nTextureSizeMultiple, unsigned nRectPackingHeuristic, Pixel8U colEmpty)
+bool Scene::TextureMesh(unsigned nResolutionLevel, unsigned nMinResolution, float fOutlierThreshold, float fRatioDataSmoothness, bool bGlobalSeamLeveling, bool bLocalSeamLeveling, unsigned nTextureSizeMultiple, unsigned nRectPackingHeuristic, Pixel8U colEmpty, const IIndexArr& views)
 {
 	MeshTexture texture(*this, nResolutionLevel, nMinResolution);
 
 	// assign the best view to each face
 	{
 		TD_TIMER_STARTD();
-		if (!texture.FaceViewSelection(fOutlierThreshold, fRatioDataSmoothness))
+		if (!texture.FaceViewSelection(fOutlierThreshold, fRatioDataSmoothness, views))
 			return false;
 		DEBUG_EXTRA("Assigning the best view to each face completed: %u faces (%s)", mesh.faces.GetSize(), TD_TIMER_GET_FMT().c_str());
 	}
