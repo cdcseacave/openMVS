@@ -69,9 +69,6 @@ namespace MVS {
 DEFOPT_SPACE(OPTDENSE, _T("Dense"))
 
 
-#ifdef _USE_CUDA
-DEFVAR_OPTDENSE_int32(nCUDADevice, "CUDA Device", "CUDA device number to be used for depth-map estimation (-1 - CPU processing)", "0")
-#endif // _USE_CUDA
 DEFVAR_OPTDENSE_uint32(nResolutionLevel, "Resolution Level", "How many times to scale down the images before dense reconstruction", "1")
 MDEFVAR_OPTDENSE_uint32(nMaxResolution, "Max Resolution", "Do not scale images lower than this resolution", "3200")
 MDEFVAR_OPTDENSE_uint32(nMinResolution, "Min Resolution", "Do not scale images lower than this resolution", "640")
@@ -82,13 +79,14 @@ DEFVAR_OPTDENSE_uint32(nMinViewsFilter, "Min Views Filter", "minimum number of i
 MDEFVAR_OPTDENSE_uint32(nMinViewsFilterAdjust, "Min Views Filter Adjust", "minimum number of images that agrees with an estimate in order to consider it inlier (0 - disabled)", "1")
 MDEFVAR_OPTDENSE_uint32(nMinViewsTrustPoint, "Min Views Trust Point", "min-number of views so that the point is considered for approximating the depth-maps (<2 - random initialization)", "2")
 MDEFVAR_OPTDENSE_uint32(nNumViews, "Num Views", "Number of views used for depth-map estimation (0 - all views available)", "0", "1", "4")
+MDEFVAR_OPTDENSE_uint32(nPointInsideROI, "Point Inside ROI", "consider a point shared only if inside ROI when estimating the neighbor views (0 - ignore ROI, 1 - weight more ROI points, 2 - consider only ROI points)", "1")
 MDEFVAR_OPTDENSE_bool(bFilterAdjust, "Filter Adjust", "adjust depth estimates during filtering", "1")
 MDEFVAR_OPTDENSE_bool(bAddCorners, "Add Corners", "add support points at image corners with nearest neighbor disparities", "0")
 MDEFVAR_OPTDENSE_float(fViewMinScore, "View Min Score", "Min score to consider a neighbor images (0 - disabled)", "2.0")
 MDEFVAR_OPTDENSE_float(fViewMinScoreRatio, "View Min Score Ratio", "Min score ratio to consider a neighbor images", "0.03")
 MDEFVAR_OPTDENSE_float(fMinArea, "Min Area", "Min shared area for accepting the depth triangulation", "0.05")
 MDEFVAR_OPTDENSE_float(fMinAngle, "Min Angle", "Min angle for accepting the depth triangulation", "3.0")
-MDEFVAR_OPTDENSE_float(fOptimAngle, "Optim Angle", "Optimal angle for computing the depth triangulation", "15.0")
+MDEFVAR_OPTDENSE_float(fOptimAngle, "Optim Angle", "Optimal angle for computing the depth triangulation", "12.0")
 MDEFVAR_OPTDENSE_float(fMaxAngle, "Max Angle", "Max angle for accepting the depth triangulation", "65.0")
 MDEFVAR_OPTDENSE_float(fDescriptorMinMagnitudeThreshold, "Descriptor Min Magnitude Threshold", "minimum texture variance accepted when matching two patches (0 - disabled)", "0.01")
 MDEFVAR_OPTDENSE_float(fDepthDiffThreshold, "Depth Diff Threshold", "maximum variance allowed for the depths during refinement", "0.01")
@@ -241,14 +239,14 @@ bool DepthData::Save(const String& fileName) const
 	}
 	return true;
 }
-bool DepthData::Load(const String& fileName)
+bool DepthData::Load(const String& fileName, unsigned flags)
 {
 	// serialize in the saved state
 	String imageFileName;
 	IIndexArr IDs;
 	cv::Size imageSize;
 	Camera camera;
-	if (!ImportDepthDataRaw(fileName, imageFileName, IDs, imageSize, camera.K, camera.R, camera.C, dMin, dMax, depthMap, normalMap, confMap))
+	if (!ImportDepthDataRaw(fileName, imageFileName, IDs, imageSize, camera.K, camera.R, camera.C, dMin, dMax, depthMap, normalMap, confMap, flags))
 		return false;
 	ASSERT(!IsValid() || (IDs.size() == images.size() && IDs.front() == GetView().GetID()));
 	ASSERT(depthMap.size() == imageSize);
@@ -1670,6 +1668,7 @@ bool MVS::ExportPointCloud(const String& fileName, const Image& imageData, const
 
 		// export the array of 3D points
 		Vertex vertex;
+		const Point2f scaleImage(static_cast<float>(depthMap.cols)/imageData.image.cols, static_cast<float>(depthMap.rows)/imageData.image.rows);
 		for (int j=0; j<depthMap.rows; ++j) {
 			for (int i=0; i<depthMap.cols; ++i) {
 				const Depth& depth = depthMap(j,i);
@@ -1678,7 +1677,7 @@ bool MVS::ExportPointCloud(const String& fileName, const Image& imageData, const
 					continue;
 				const Point3f X(P0.TransformPointI2W(Point3(i,j,depth)));
 				vertex.x = X.x; vertex.y = X.y; vertex.z = X.z;
-				const Pixel8U c(imageData.image.empty() ? Pixel8U::WHITE : imageData.image(j,i));
+				const Pixel8U c(imageData.image.empty() ? Pixel8U::WHITE : imageData.image(ROUND2INT(scaleImage.y*j),ROUND2INT(scaleImage.x*i)));
 				vertex.r = c.r; vertex.g = c.g; vertex.b = c.b;
 				ply.put_element(&vertex);
 			}
@@ -1838,7 +1837,7 @@ bool MVS::ImportDepthDataRaw(const String& fileName, String& imageFileName,
 		header.name != HeaderDepthDataRaw::HeaderDepthDataRawName() ||
 		(header.type & HeaderDepthDataRaw::HAS_DEPTH) == 0 ||
 		header.depthWidth <= 0 || header.depthHeight <= 0 ||
-		header.imageWidth < header.depthWidth || header.imageHeight < header.depthHeight)
+		header.imageWidth <= 0 || header.imageHeight <= 0)
 	{
 		DEBUG("error: invalid depth-data file '%s'", fileName.c_str());
 		fclose(f);

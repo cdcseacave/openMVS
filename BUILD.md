@@ -145,7 +145,7 @@ make && sudo make install
 Library usage
 -------------------
 
-In order to use *OpenMVS* as a third-party libray in your project, first compile it as described above or simply use `vcpgk`:
+In order to use *OpenMVS* as a third-party library in your project, first compile it as described above or simply use `vcpgk`:
 ```
 vcpkg install openmvs
 ```

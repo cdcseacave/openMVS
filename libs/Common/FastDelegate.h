@@ -302,7 +302,7 @@ struct SimplifyMemFunc<SINGLE_MEMFUNCPTR_SIZE>  {
 	inline static GenericClass *Convert(X *pthis, XFuncType function_to_bind, 
 			GenericMemFuncType &bound_func) {
 #if defined __DMC__  
-		// Digital Mars doesn't allow you to cast between abitrary PMF's, 
+		// Digital Mars doesn't allow you to cast between arbitrary PMF's, 
 		// even though the standard says you can. The 32-bit compiler lets you
 		// static_cast through an int, but the DOS compiler doesn't.
 		bound_func = horrible_cast<GenericMemFuncType>(function_to_bind);
@@ -376,7 +376,7 @@ struct MicrosoftVirtualMFP {
 // returns the 'this' pointer that was used.
 
 // Define a generic class that uses virtual inheritance.
-// It has a trival member function that returns the value of the 'this' pointer.
+// It has a trivial member function that returns the value of the 'this' pointer.
 struct GenericVirtualClass : virtual public GenericClass
 {
 	typedef GenericVirtualClass * (GenericVirtualClass::*ProbePtrType)();
@@ -514,7 +514,7 @@ struct SimplifyMemFunc<SINGLE_MEMFUNCPTR_SIZE + 3*sizeof(int) >
 //
 ////////////////////////////////////////////////////////////////////////////////
 
-// DelegateMemento -- an opaque structure which can hold an arbitary delegate.
+// DelegateMemento -- an opaque structure which can hold an arbitrary delegate.
 // It knows nothing about the calling convention or number of arguments used by
 // the function pointed to.
 // It supplies comparison operators so that it can be stored in STL collections.
@@ -821,7 +821,7 @@ public:
 //   FastDelegate3<int, char *, double>
 // They can cope with any combination of parameters. The max number of parameters
 // allowed is 8, but it is trivial to increase this limit.
-// Note that we need to treat const member functions seperately.
+// Note that we need to treat const member functions separately.
 // All this class does is to enforce type safety, and invoke the delegate with
 // the correct list of parameters.
 
@@ -1979,7 +1979,7 @@ public:
 
 // Also declare overloads of a MakeDelegate() global function to 
 // reduce the need for typedefs.
-// We need seperate overloads for const and non-const member functions.
+// We need separate overloads for const and non-const member functions.
 // Also, because of the weird rule about the class of derived member function pointers,
 // implicit downcasts may need to be applied later to the 'this' pointer.
 // That's why two classes (X and Y) appear in the definitions. Y must be implicitly

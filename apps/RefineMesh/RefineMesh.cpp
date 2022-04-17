@@ -64,9 +64,6 @@ float fRatioRigidityElasticity;
 unsigned nMaxFaceArea;
 float fPlanarVertexRatio;
 float fGradientStep;
-#ifdef _USE_CUDA
-bool bUseCUDA;
-#endif
 unsigned nArchiveType;
 int nProcessPriority;
 unsigned nMaxThreads;
@@ -101,6 +98,9 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 			#endif
 			), "verbosity level")
 		#endif
+		#ifdef _USE_CUDA
+		("cuda-device", boost::program_options::value(&CUDA::desiredDeviceID)->default_value(-2), "CUDA device number to be used for mesh refinement (-2 - CPU processing, -1 - best GPU, >=0 - device index)")
+		#endif
 		;
 
 	// group of options allowed both on command line and in config file
@@ -123,9 +123,6 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		("rigidity-elasticity-ratio", boost::program_options::value(&OPT::fRatioRigidityElasticity)->default_value(0.9f), "scalar ratio used to compute the regularity gradient as a combination of rigidity and elasticity")
 		("gradient-step", boost::program_options::value(&OPT::fGradientStep)->default_value(45.05f), "gradient step to be used instead (0 - auto)")
 		("planar-vertex-ratio", boost::program_options::value(&OPT::fPlanarVertexRatio)->default_value(0.f), "threshold used to remove vertices on planar patches (0 - disabled)")
-		#ifdef _USE_CUDA
-		("use-cuda", boost::program_options::value(&OPT::bUseCUDA)->default_value(false), "refine mesh using CUDA")
-		#endif
 		;
 
 	// hidden options, allowed both on command line and
@@ -241,7 +238,7 @@ int main(int argc, LPCTSTR* argv)
 	}
 	TD_TIMER_START();
 	#ifdef _USE_CUDA
-	if (!OPT::bUseCUDA ||
+	if (CUDA::desiredDeviceID < -1 ||
 		!scene.RefineMeshCUDA(OPT::nResolutionLevel, OPT::nMinResolution, OPT::nMaxViews,
 							  OPT::fDecimateMesh, OPT::nCloseHoles, OPT::nEnsureEdgeSize,
 							  OPT::nMaxFaceArea,

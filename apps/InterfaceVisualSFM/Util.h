@@ -125,7 +125,7 @@ bool LoadNVM(std::ifstream& in, std::vector<CameraT>& camera_data, std::vector<P
             camidx.push_back(cidx);    //camera index
             ptidx.push_back(i);        //point index
 
-            //add a measurment to the vector
+            //add a measurement to the vector
             measurements.push_back(Point2D(imx, imy));
             nproj ++;
         }
@@ -268,7 +268,7 @@ bool LoadBundlerOut(const char* name, std::ifstream& in, std::vector<CameraT>& c
             camidx.push_back(cidx);    //camera index
             ptidx.push_back(i);        //point index
 
-            //add a measurment to the vector
+            //add a measurement to the vector
             measurements.push_back(Point2D(imx, -imy));
             nproj ++;
         }
@@ -638,7 +638,7 @@ bool RemoveInvisiblePoints( std::vector<CameraT>& camera_data, std::vector<Point
     if(points_removed == 0) return false;
     std::vector<int>  cv(camera_data.size(), 0);
     //should any cameras be removed ?
-    int min_observation = 20; //cameras should see at leat 20 points
+    int min_observation = 20; //cameras should see at least 20 points
 
     do
     {

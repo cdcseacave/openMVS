@@ -55,6 +55,7 @@ struct unary_function {
 #include <vcg/complex/algorithms/smooth.h>
 #include <vcg/complex/algorithms/hole.h>
 #include <vcg/complex/algorithms/polygon_support.h>
+#include <vcg/complex/algorithms/isotropic_remeshing.h>
 // VCG: mesh simplification
 #include <vcg/complex/algorithms/update/position.h>
 #include <vcg/complex/algorithms/update/bounding.h>
@@ -99,6 +100,7 @@ void Mesh::ReleaseExtra()
 	vertexFaces.Release();
 	vertexBoundary.Release();
 	faceNormals.Release();
+	faceFaces.Release();
 	faceTexcoords.Release();
 	textureDiffuse.release();
 } // ReleaseExtra
@@ -109,9 +111,23 @@ void Mesh::EmptyExtra()
 	vertexFaces.Empty();
 	vertexBoundary.Empty();
 	faceNormals.Empty();
+	faceFaces.Empty();
 	faceTexcoords.Empty();
 	textureDiffuse.release();
 } // EmptyExtra
+void Mesh::Swap(Mesh& rhs)
+{
+	vertices.Swap(rhs.vertices);
+	faces.Swap(rhs.faces);
+	vertexNormals.Swap(rhs.vertexNormals);
+	vertexVertices.Swap(rhs.vertexVertices);
+	vertexFaces.Swap(rhs.vertexFaces);
+	vertexBoundary.Swap(rhs.vertexBoundary);
+	faceNormals.Swap(rhs.faceNormals);
+	faceFaces.Swap(rhs.faceFaces);
+	faceTexcoords.Swap(rhs.faceTexcoords);
+	std::swap(textureDiffuse, rhs.textureDiffuse);
+} // Swap
 /*----------------------------------------------------------------*/
 
 
@@ -185,6 +201,46 @@ void Mesh::ListIncidenteFaces()
 	}
 }
 
+// extract array face adjacencies for each face in the mesh (3 * number of faces);
+// each triple describes the adjacent face triangles for a given face
+// in the following edge order: v1v2, v2v3, v3v1;
+// NO_ID indicates there is no adjacent face on that edge
+void Mesh::ListIncidenteFaceFaces()
+{
+	ASSERT(vertexFaces.size() == vertices.size());
+	struct inserter_data_t {
+		const FIndex idxF;
+		FaceFaces& faces;
+		int idx;
+		inline inserter_data_t(FIndex _idxF, FaceFaces& _faces) : idxF(_idxF), faces(_faces), idx(0) {}
+		inline void operator=(FIndex f) { faces[idx++] = f; }
+	};
+	struct face_back_inserter_t {
+		inserter_data_t* data;
+		inline face_back_inserter_t(inserter_data_t& _data) : data(&_data) {}
+		inline face_back_inserter_t& operator*() { return *this; }
+		inline face_back_inserter_t& operator++() { return *this; }
+		inline void operator=(FIndex f) { if (f != data->idxF) *data = f; }
+	};
+	faceFaces.resize(faces.size());
+	FOREACH(f, faces) {
+		const Face& face = faces[f];
+		const FaceIdxArr* const pFaces[] = {&vertexFaces[face[0]], &vertexFaces[face[1]], &vertexFaces[face[2]]};
+		inserter_data_t inserterData(f, faceFaces[f]);
+		face_back_inserter_t faceBackInserter(inserterData);
+		for (int v=0; v<3; ++v) {
+			const FaceIdxArr& facesI = *pFaces[v];
+			const FaceIdxArr& facesJ = *pFaces[(v+1)%3];
+			std::set_intersection(
+				facesI.begin(), facesI.end(),
+				facesJ.begin(), facesJ.end(),
+				faceBackInserter);
+			if (inserterData.idx == v)
+				inserterData = NO_ID;
+		}
+	}
+}
+
 // check each vertex if it is at the boundary or not
 // (make sure you called ListIncidenteFaces() before)
 void Mesh::ListBoundaryVertices()
@@ -227,16 +283,21 @@ void Mesh::ComputeNormalFaces()
 	FOREACH(idxFace, faces)
 		faceNormals[idxFace] = normalized(FaceNormal(faces[idxFace]));
 	#else
-	reportCudaError(kernelComputeFaceNormal((int)faces.GetSize(),
-		vertices,
-		faces,
-		CUDA::KernelRT::OutputParam(faceNormals.GetDataSize()),
-		faces.GetSize()
-	));
-	reportCudaError(kernelComputeFaceNormal.GetResult(0,
-		faceNormals
-	));
-	kernelComputeFaceNormal.Reset();
+	if (kernelComputeFaceNormal.IsValid()) {
+		reportCudaError(kernelComputeFaceNormal((int)faces.GetSize(),
+			vertices,
+			faces,
+			CUDA::KernelRT::OutputParam(faceNormals.GetDataSize()),
+			faces.GetSize()
+		));
+		reportCudaError(kernelComputeFaceNormal.GetResult(0,
+			faceNormals
+		));
+		kernelComputeFaceNormal.Reset();
+	} else {
+		FOREACH(idxFace, faces)
+			faceNormals[idxFace] = normalized(FaceNormal(faces[idxFace]));
+	}
 	#endif
 }
 
@@ -956,7 +1017,7 @@ struct UsedTypes : public vcg::UsedTypes<
 
 class Vertex : public vcg::Vertex<UsedTypes, vcg::vertex::Coord3f, vcg::vertex::Normal3f, vcg::vertex::VFAdj, vcg::vertex::Mark, vcg::vertex::BitFlags> {};
 class Face   : public vcg::Face<  UsedTypes, vcg::face::VertexRef, vcg::face::Normal3f, vcg::face::FFAdj, vcg::face::VFAdj, vcg::face::Mark, vcg::face::BitFlags> {};
-class Edge   : public vcg::Edge<  UsedTypes, vcg::edge::VertexRef> {};
+class Edge   : public vcg::Edge<  UsedTypes, vcg::edge::VertexRef, vcg::edge::Mark, vcg::edge::BitFlags> {};
 
 class Mesh : public vcg::tri::TriMesh< std::vector<Vertex>, std::vector<Face>, std::vector<Edge> > {};
 
@@ -977,7 +1038,7 @@ public:
 	static QuadricTemp &TD() { return *TDp(); }
 };
 
-typedef BasicVertexPair<Vertex> VertexPair;
+typedef vcg::tri::BasicVertexPair<Vertex> VertexPair;
 
 class TriEdgeCollapse : public vcg::tri::TriEdgeCollapseQuadric<Mesh, VertexPair, TriEdgeCollapse, QHelper> {
 public:
@@ -988,7 +1049,7 @@ public:
 
 // decimate, clean and smooth mesh
 // fDecimate factor is in range (0..1], if 1 no decimation takes place
-void Mesh::Clean(float fDecimate, float fSpurious, bool bRemoveSpikes, unsigned nCloseHoles, unsigned nSmooth, bool bLastClean)
+void Mesh::Clean(float fDecimate, float fSpurious, bool bRemoveSpikes, unsigned nCloseHoles, unsigned nSmooth, float fEdgeLength, bool bLastClean)
 {
 	if (vertices.IsEmpty() || faces.IsEmpty())
 		return;
@@ -1039,7 +1100,6 @@ void Mesh::Clean(float fDecimate, float fSpurious, bool bRemoveSpikes, unsigned 
 		vcg::tri::TriEdgeCollapseQuadricParameter pp;
 		pp.QualityThr = 0.3; // Quality Threshold for penalizing bad shaped faces: the value is in the range [0..1], 0 accept any kind of face (no penalties), 0.5 penalize faces with quality < 0.5, proportionally to their shape
 		pp.PreserveBoundary = false; // the simplification process tries to not affect mesh boundaries during simplification
-		pp.BoundaryWeight = 1; // the importance of the boundary during simplification: the value is in the range (0..+inf), default (1.0) means that the boundary has the same importance as the rest; values greater than 1.0 raise boundary importance and has the effect of removing less vertices on the border
 		pp.PreserveTopology = false; // avoid all collapses that cause a topology change in the mesh (like closing holes, squeezing handles, etc); if checked the genus of the mesh should stay unchanged
 		pp.QualityWeight = false; // use the Per-Vertex quality as a weighting factor for the simplification: the weight is used as an error amplification value, so a vertex with a high quality value will not be simplified and a portion of the mesh with low quality values will be aggressively simplified
 		pp.NormalCheck = false; // try to avoid face flipping effects and try to preserve the original orientation of the surface
@@ -1206,6 +1266,28 @@ void Mesh::Clean(float fDecimate, float fSpurious, bool bRemoveSpikes, unsigned 
 		vcg::tri::Smooth<CLEAN::Mesh>::VertexCoordLaplacianHC(mesh, (int)nSmooth, false);
 		#endif
 		DEBUG_ULTIMATE("Smoothed %d vertices", mesh.vn);
+	}
+
+	// remesh
+	if (fEdgeLength > 0) {
+		vcg::tri::Clean<CLEAN::Mesh>::RemoveDuplicateVertex(mesh);
+		vcg::tri::Clean<CLEAN::Mesh>::RemoveUnreferencedVertex(mesh);
+		vcg::tri::Allocator<CLEAN::Mesh>::CompactEveryVector(mesh);
+		CLEAN::Mesh original;
+		vcg::tri::Append<CLEAN::Mesh,CLEAN::Mesh>::MeshCopy(original, mesh);
+		vcg::tri::IsotropicRemeshing<CLEAN::Mesh>::Params params;
+		params.SetTargetLen(fEdgeLength);
+		params.iter = 3;
+		params.surfDistCheck = false;
+		params.maxSurfDist = fEdgeLength * 0.4f;
+		params.cleanFlag = true;
+		params.userSelectedCreases = false;
+		try {
+			vcg::tri::IsotropicRemeshing<CLEAN::Mesh>::Do(mesh, original, params);
+		}
+		catch(vcg::MissingPreconditionException& e) {
+			VERBOSE("error: %s", e.what());
+		}
 	}
 
 	// clean mesh
@@ -2625,7 +2707,7 @@ static void RemoveConnectedComponents(Polyhedron& p, int size_threshold, float e
 	}
 }
 
-// mode : 0 - tangetial; 1 - across the normal
+// mode : 0 - tangential; 1 - across the normal
 inline Vector ComputeVectorComponent(Vector n, Vector v, int mode)
 {
 	ASSERT((mode>=0) && (mode<2));
@@ -2639,7 +2721,7 @@ inline Vector ComputeVectorComponent(Vector n, Vector v, int mode)
 static void Smooth(Polyhedron& p, double delta, int mode=0)
 {
 	// 0 - both components;
-	// 1 - tangetial;
+	// 1 - tangential;
 	// 2 - normal;
 	// 3 - second order;
 	// 4 - combined;
@@ -3888,6 +3970,49 @@ void Mesh::Project(const Camera& camera, DepthMap& depthMap, Image8U3& image) co
 		rasterer.idxFaceTex = idxFace*3;
 		rasterer.Project(facet);
 	}
+}
+// project mesh to the given camera plane, computing also the normal-map (in camera space)
+void Mesh::Project(const Camera& camera, DepthMap& depthMap, NormalMap& normalMap) const
+{
+	ASSERT(vertexNormals.size() == vertices.size());
+	struct RasterMesh : TRasterMesh<RasterMesh> {
+		typedef TRasterMesh<RasterMesh> Base;
+		const Mesh& mesh;
+		NormalMap& normalMap;
+		const Face::Type* idxVerts;
+		const Matrix3x3f R;
+		RasterMesh(const Mesh& _mesh, const Camera& _camera, DepthMap& _depthMap, NormalMap& _normalMap)
+			: Base(_mesh.vertices, _camera, _depthMap), mesh(_mesh), normalMap(_normalMap), R(camera.R) {}
+		inline void Clear() {
+			Base::Clear();
+			normalMap.memset(0);
+		}
+		inline void Project(const Face& facet) {
+			idxVerts = facet.ptr();
+			Base::Project(facet);
+		}
+		void Raster(const ImageRef& pt, const Point3f& bary) {
+			const Point3f pbary(PerspectiveCorrectBarycentricCoordinates(bary));
+			const Depth z(ComputeDepth(pbary));
+			ASSERT(z > Depth(0));
+			Depth& depth = depthMap(pt);
+			if (depth == Depth(0) || depth > z) {
+				depth = z;
+				normalMap(pt) = R * normalized(
+					mesh.vertexNormals[idxVerts[0]] * pbary[0]+
+					mesh.vertexNormals[idxVerts[1]] * pbary[1]+
+					mesh.vertexNormals[idxVerts[2]] * pbary[2]
+				);
+			}
+		}
+	};
+	if (normalMap.size() != depthMap.size())
+		normalMap.create(depthMap.size());
+	RasterMesh rasterer(*this, camera, depthMap, normalMap);
+	rasterer.Clear();
+	// render the entire mesh
+	for (const Face& facet: faces)
+		rasterer.Project(facet);
 }
 // project mesh to the given camera plane using orthographic projection
 void Mesh::ProjectOrtho(const Camera& camera, DepthMap& depthMap) const

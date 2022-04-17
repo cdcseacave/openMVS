@@ -33,6 +33,8 @@ namespace SEACAVE {
 
 namespace CUDA {
 
+extern int desiredDeviceID;
+
 // global list of initialized devices
 struct Device {
 	CUdevice ID;

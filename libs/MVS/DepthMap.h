@@ -87,9 +87,6 @@ enum DepthFlags {
 	ADJUST_FILTER	= (1 << 2),
 	OPTIMIZE		= (REMOVE_SPECKLES|FILL_GAPS)
 };
-#ifdef _USE_CUDA
-extern int nCUDADevice;
-#endif // _USE_CUDA
 extern unsigned nResolutionLevel;
 extern unsigned nMaxResolution;
 extern unsigned nMinResolution;
@@ -100,6 +97,7 @@ extern unsigned nMinViewsFilter;
 extern unsigned nMinViewsFilterAdjust;
 extern unsigned nMinViewsTrustPoint;
 extern unsigned nNumViews;
+extern unsigned nPointInsideROI;
 extern bool bFilterAdjust;
 extern bool bAddCorners;
 extern float fViewMinScore;
@@ -242,7 +240,7 @@ struct MVS_API DepthData {
 	void ApplyIgnoreMask(const BitMatrix&);
 
 	bool Save(const String& fileName) const;
-	bool Load(const String& fileName);
+	bool Load(const String& fileName, unsigned flags=7);
 
 	unsigned GetRef();
 	unsigned IncRef(const String& fileName);

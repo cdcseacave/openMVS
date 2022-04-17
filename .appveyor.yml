@@ -48,7 +48,7 @@ for:
     # remove outdated versions
     - vcpkg remove --outdated --recurse
     # install dependencies
-    - vcpkg install --recurse --triplet %VCPKG_ARCH% zlib boost-iostreams boost-program-options boost-system boost-serialization eigen3 cgal[core] opencv vcglib glew glfw3
+    - vcpkg install --recurse --triplet %VCPKG_ARCH% zlib boost-iostreams boost-program-options boost-system boost-serialization eigen3 cgal[core] opencv glew glfw3
     - cd "%APPVEYOR_BUILD_FOLDER%"
   # preserve contents of selected directories and files across project builds
   cache:
@@ -56,8 +56,9 @@ for:
   build_script:
     - if "%platform%"=="Win32" set CMAKE_ARCH=-A"x86"
     - if "%platform%"=="x64"   set CMAKE_ARCH=-A"x64"
+    - git clone https://github.com/cdcseacave/VCG.git
     - mkdir bin && cd bin
-    - cmake -G"Visual Studio 16 2019" %CMAKE_ARCH% -DCMAKE_BUILD_TYPE=%Configuration% -DCMAKE_TOOLCHAIN_FILE="C:\tools\vcpkg\scripts\buildsystems\vcpkg.cmake" ..
+    - cmake -G"Visual Studio 16 2019" %CMAKE_ARCH% -DCMAKE_BUILD_TYPE=%Configuration% -DCMAKE_TOOLCHAIN_FILE="C:\tools\vcpkg\scripts\buildsystems\vcpkg.cmake" -DVCG_ROOT="$APPVEYOR_BUILD_FOLDER/VCG" ..
     - cmake --build . --target ALL_BUILD --config %Configuration% -- /maxcpucount:4
 -
   #------------------

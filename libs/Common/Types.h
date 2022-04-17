@@ -2718,7 +2718,7 @@ public:
 	/// Construct from an angle.
 	inline SO2(const Precision l) : mat(exp(l)) {}
 
-	/// Assigment operator from a general matrix. This also calls coerce()
+	/// Assignment operator from a general matrix. This also calls coerce()
 	/// to make sure that the matrix is a valid rotation matrix.
 	inline SO2& operator=(const Mat2& rhs) {
 		mat = rhs;

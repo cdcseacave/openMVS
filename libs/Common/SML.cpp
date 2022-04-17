@@ -362,7 +362,7 @@ const SMLVALUE* SML::GetValue(const String& key) const
 
 
 /**
- * Insert or retrieve an item; initializa it if necesary
+ * Insert or retrieve an item; initialize it if necessary
  */
 SMLVALUE& SML::GetValue(const String& key)
 {

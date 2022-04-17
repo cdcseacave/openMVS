@@ -8288,7 +8288,7 @@ class binary_reader
 
     @return whether conversion completed
 
-    @note This function needs to respect the system's endianess, because
+    @note This function needs to respect the system's endianness, because
           bytes in CBOR, MessagePack, and UBJSON are stored in network order
           (big endian) and therefore need reordering on little endian systems.
     */
@@ -8381,7 +8381,7 @@ class binary_reader
     /*!
     @param[in] format   the current format
     @param[in] detail   a detailed error message
-    @param[in] context  further contect information
+    @param[in] context  further contextual information
     @return a message string to use in the parse_error exceptions
     */
     std::string exception_message(const input_format_t format,
@@ -8427,7 +8427,7 @@ class binary_reader
     /// the number of characters read
     std::size_t chars_read = 0;
 
-    /// whether we can assume little endianess
+    /// whether we can assume little endianness
     const bool is_little_endian = little_endianess();
 
     /// the SAX parser
@@ -9707,7 +9707,7 @@ class binary_writer
     @tparam OutputIsLittleEndian Set to true if output data is
                                  required to be little endian
 
-    @note This function needs to respect the system's endianess, because bytes
+    @note This function needs to respect the system's endianness, because bytes
           in CBOR, MessagePack, and UBJSON are stored in network order (big
           endian) and therefore need reordering on little endian systems.
     */
@@ -9770,7 +9770,7 @@ class binary_writer
     }
 
   private:
-    /// whether we can assume little endianess
+    /// whether we can assume little endianness
     const bool is_little_endian = binary_reader<BasicJsonType>::little_endianess();
 
     /// the output

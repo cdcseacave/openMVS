@@ -1273,7 +1273,7 @@ void lm_qrsolv(int n, double *r, int ldr, int *ipvt, double *diag,
             qtbpj = -_sin * wa[k] + _cos * qtbpj;
             wa[k] = temp;
 
-            /** accumulate the tranformation in the row of s. **/
+            /** accumulate the transformation in the row of s. **/
 
             for (i = k + 1; i < n; i++) {
                 temp = _cos * r[k * ldr + i] + _sin * sdiag[i];

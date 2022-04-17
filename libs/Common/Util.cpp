@@ -23,7 +23,9 @@
 #include <pwd.h>
 #endif
 #ifdef _SUPPORT_CPP17
+#if !defined(__GNUC__) || (__GNUC__ > 7)
 #include <filesystem>
+#endif
 #endif // _SUPPORT_CPP17
 
 using namespace SEACAVE;
@@ -437,7 +439,7 @@ String Util::GetOSInfo()
 
 String Util::GetDiskInfo(const String& path)
 {
-	#ifdef _SUPPORT_CPP17
+	#if defined(_SUPPORT_CPP17) && (!defined(__GNUC__) || (__GNUC__ > 7))
 
 	const std::filesystem::space_info si = std::filesystem::space(path.c_str());
 	return String::FormatString("%s (%s) space", formatBytes(si.available).c_str(), formatBytes(si.capacity).c_str());

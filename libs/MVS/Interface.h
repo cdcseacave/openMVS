@@ -450,10 +450,11 @@ struct Interface
 		}
 		static Mat33d ScaleK(const Mat33d& _K, double scale) {
 			Mat33d K(_K);
+			const bool bNormalized(K(0,2) < 3 && K(1,2) < 3);
 			K(0,0) *= scale;
 			K(1,1) *= scale;
-			K(0,2) = (K(0,2)+0.5)*scale-0.5;
-			K(1,2) = (K(1,2)+0.5)*scale-0.5;
+			K(0,2) = bNormalized ? K(0,2)*scale : (K(0,2)+0.5)*scale-0.5;
+			K(1,2) = bNormalized ? K(1,2)*scale : (K(1,2)+0.5)*scale-0.5;
 			K(0,1) *= scale;
 			return K;
 		}

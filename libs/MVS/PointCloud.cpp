@@ -97,11 +97,11 @@ PointCloud::Box PointCloud::GetAABB(const Box& bound) const
 // with more than the given number of views
 PointCloud::Box PointCloud::GetAABB(unsigned minViews) const
 {
-	if (pointViews.IsEmpty())
+	if (pointViews.empty())
 		return GetAABB();
 	Box box(true);
 	FOREACH(idx, points)
-		if (pointViews[idx].GetSize() >= minViews)
+		if (pointViews[idx].size() >= minViews)
 			box.InsertFull(points[idx]);
 	return box;
 }

@@ -378,6 +378,18 @@ bool Scene::LoadDMAP(const String& fileName)
 	image.image = imageDepth;
 	cv::resize(image.image, image.image, imageSize);
 
+	#if TD_VERBOSE != TD_VERBOSE_OFF
+	if (VERBOSITY_LEVEL > 2) {
+		ExportDepthMap(ComposeDepthFilePath(image.ID, "png"), depthMap);
+		ExportConfidenceMap(ComposeDepthFilePath(image.ID, "conf.png"), confMap);
+		ExportPointCloud(ComposeDepthFilePath(image.ID, "ply"), image, depthMap, normalMap);
+		if (VERBOSITY_LEVEL > 4) {
+			ExportNormalMap(ComposeDepthFilePath(image.ID, "normal.png"), normalMap);
+			confMap.Save(ComposeDepthFilePath(image.ID, "conf.pfm"));
+		}
+	}
+	#endif
+
 	DEBUG_EXTRA("Scene loaded from depth-map format - %dx%d size, %.2f%%%% coverage (%s):\n"
 		"\t1 images (1 calibrated) with a total of %.2f MPixels (%.2f MPixels/image)\n"
 		"\t%u points, 0 lines",
@@ -434,6 +446,28 @@ bool Scene::LoadViewNeighbors(const String& fileName)
 	DEBUG_EXTRA("View neighbors list loaded (%s)", TD_TIMER_GET_FMT().c_str());
 	return true;
 } // LoadViewNeighbors
+bool Scene::SaveViewNeighbors(const String& fileName) const
+{
+	ASSERT(ImagesHaveNeighbors());
+
+	TD_TIMER_STARTD();
+	
+	File file(fileName, File::WRITE, File::CREATE | File::TRUNCATE);
+	if (!file.isOpen()) {
+		VERBOSE("error: unable to write file '%s'", fileName.c_str());
+		return false;
+	}
+	FOREACH(ID, images) {
+		const Image& imageData = images[ID];
+		file.print("%u", ID);
+		for (const ViewScore& neighbor: imageData.neighbors)
+			file.print(" %u", neighbor.idx.ID);
+		file.print("\n");
+	}
+
+	DEBUG_EXTRA("View neighbors list saved (%s)", TD_TIMER_GET_FMT().c_str());
+	return true;
+} // SaveViewNeighbors
 /*----------------------------------------------------------------*/
 
 // try to load known point-cloud or mesh files
@@ -628,6 +662,65 @@ void Scene::SampleMeshWithVisibility(unsigned maxResolution)
 } // SampleMeshWithVisibility
 /*----------------------------------------------------------------*/
 
+bool Scene::ExportMeshToDepthMaps(const String& baseName)
+{
+	ASSERT(!images.empty() && !mesh.IsEmpty());
+	const String ext(Util::getFileExt(baseName).ToLower());
+	const int nType(ext == _T(".dmap") ? 2 : (ext == _T(".pfm") ? 1 : 0));
+	if (nType == 2)
+		mesh.ComputeNormalVertices();
+	DepthMap depthMap;
+	NormalMap normalMap;
+	#ifdef SCENE_USE_OPENMP
+	bool bAbort(false);
+	#pragma omp parallel for private(depthMap, normalMap) schedule(dynamic)
+	for (int _i=0; _i<(int)images.size(); ++_i) {
+		#pragma omp flush (bAbort)
+		if (bAbort)
+			continue;
+		const IIndex idxImage((IIndex)_i);
+	#else
+	FOREACH(idxImage, images) {
+	#endif
+		Image& image = images[idxImage];
+		if (!image.IsValid())
+			continue;
+		const unsigned imageSize(image.RecomputeMaxResolution(OPTDENSE::nResolutionLevel, OPTDENSE::nMinResolution, OPTDENSE::nMaxResolution));
+		image.ResizeImage(imageSize);
+		image.UpdateCamera(platforms);
+		depthMap.create(image.GetSize());
+		if (nType == 2)
+			mesh.Project(image.camera, depthMap, normalMap);
+		else
+			mesh.Project(image.camera, depthMap);
+		const String fileName(Util::insertBeforeFileExt(baseName, String::FormatString("%04u", image.ID)));
+		if ((nType == 2 && ![&]() {
+				IIndexArr IDs(0, image.neighbors.size()+1);
+				IDs.push_back(idxImage);
+				for (const ViewScore& neighbor: image.neighbors)
+					IDs.push_back(neighbor.idx.ID);
+				return ExportDepthDataRaw(fileName, image.name, IDs, image.GetSize(), image.camera.K, image.camera.R, image.camera.C, 0.001f, FLT_MAX, depthMap, normalMap, ConfidenceMap());
+			} ()) ||
+			(nType == 1 && !depthMap.Save(fileName)) ||
+			(nType == 0 && !ExportDepthMap(fileName, depthMap)))
+		{
+			#ifdef SCENE_USE_OPENMP
+			bAbort = true;
+			#pragma omp flush (bAbort)
+			continue;
+			#else
+			return false;
+			#endif
+		}
+	}
+	#ifdef SCENE_USE_OPENMP
+	if (bAbort)
+		return false;
+	#endif
+	return true;
+} // ExportMeshToDepthMaps
+/*----------------------------------------------------------------*/
+
 
 inline float Footprint(const Camera& camera, const Point3f& X) {
 	#if 0
@@ -643,7 +736,8 @@ inline float Footprint(const Camera& camera, const Point3f& X) {
 // and select the best views for reconstructing the dense point-cloud;
 // extract also all 3D points seen by the reference image;
 // (inspired by: "Multi-View Stereo for Community Photo Collections", Goesele, 2007)
-bool Scene::SelectNeighborViews(uint32_t ID, IndexArr& points, unsigned nMinViews, unsigned nMinPointViews, float fOptimAngle)
+//  - nInsideROI: 0 - ignore ROI, 1 - weight more ROI points, 2 - consider only ROI points
+bool Scene::SelectNeighborViews(uint32_t ID, IndexArr& points, unsigned nMinViews, unsigned nMinPointViews, float fOptimAngle, unsigned nInsideROI)
 {
 	ASSERT(points.IsEmpty());
 
@@ -664,14 +758,22 @@ bool Scene::SelectNeighborViews(uint32_t ID, IndexArr& points, unsigned nMinView
 		nMinPointViews = nCalibratedImages;
 	unsigned nPoints = 0;
 	imageData.avgDepth = 0;
-	const float sigmaAngle(-1.f/(2.f*SQUARE(fOptimAngle*1.3f)));
+	const float sigmaAngleSmall(-1.f/(2.f*SQUARE(fOptimAngle*0.38f)));
+	const float sigmaAngleLarge(-1.f/(2.f*SQUARE(fOptimAngle*0.7f)));
+	const bool bCheckInsideROI(nInsideROI > 0 && IsBounded());
 	FOREACH(idx, pointcloud.points) {
 		const PointCloud::ViewArr& views = pointcloud.pointViews[idx];
 		ASSERT(views.IsSorted());
 		if (views.FindFirst(ID) == PointCloud::ViewArr::NO_INDEX)
 			continue;
-		// store this point
 		const PointCloud::Point& point = pointcloud.points[idx];
+		float wROI(1.f);
+		if (bCheckInsideROI && !obb.Intersects(point)) {
+			if (nInsideROI > 1)
+				continue;
+			wROI = 0.7f;
+		}
+		// store this point
 		if (views.GetSize() >= nMinPointViews)
 			points.Insert((uint32_t)idx);
 		imageData.avgDepth += (float)imageData.camera.PointDepth(point);
@@ -685,7 +787,7 @@ bool Scene::SelectNeighborViews(uint32_t ID, IndexArr& points, unsigned nMinView
 			const Image& imageData2 = images[view];
 			const Point3f V2(imageData2.camera.C - Cast<REAL>(point));
 			const float fAngle(ACOS(ComputeAngle<float,float>(V1.ptr(), V2.ptr())));
-			const float wAngle(fAngle<fOptimAngle ? POW(fAngle/fOptimAngle, 1.5f) : EXP(SQUARE(fAngle-fOptimAngle)*sigmaAngle));
+			const float wAngle(EXP(SQUARE(fAngle-fOptimAngle)*(fAngle<fOptimAngle?sigmaAngleSmall:sigmaAngleLarge)));
 			const float footprint2(Footprint(imageData2.camera, point));
 			const float fScaleRatio(footprint1/footprint2);
 			float wScale;
@@ -696,7 +798,7 @@ bool Scene::SelectNeighborViews(uint32_t ID, IndexArr& points, unsigned nMinView
 			else
 				wScale = SQUARE(fScaleRatio);
 			Score& score = scores[view];
-			score.score += wAngle * wScale;
+			score.score += MAXF(wAngle,0.1f) * wScale * wROI;
 			score.avgScale += fScaleRatio;
 			score.avgAngle += fAngle;
 			++score.points;
@@ -743,7 +845,7 @@ bool Scene::SelectNeighborViews(uint32_t ID, IndexArr& points, unsigned nMinView
 		neighbor.idx.scale = score.avgScale/score.points;
 		neighbor.idx.angle = score.avgAngle/score.points;
 		neighbor.idx.area = area;
-		neighbor.score = score.score*area;
+		neighbor.score = score.score*MAXF(area,0.01f);
 	}
 	neighbors.Sort();
 	#if TD_VERBOSE != TD_VERBOSE_OFF
@@ -875,7 +977,7 @@ unsigned Scene::Split(ImagesChunkArr& chunks, float maxArea, int depthMapStep) c
 			if (!imageData.IsValid())
 				continue;
 			DepthData depthData;
-			depthData.Load(ComposeDepthFilePath(imageData.ID, "dmap"));
+			depthData.Load(ComposeDepthFilePath(imageData.ID, "dmap"), 1);
 			if (depthData.IsEmpty())
 				continue;
 			const IIndex numPointsBegin(visibility.size());
@@ -885,30 +987,35 @@ unsigned Scene::Split(ImagesChunkArr& chunks, float maxArea, int depthMapStep) c
 					const Depth depth = depthData.depthMap(r,c);
 					if (depth <= 0)
 						continue;
-					const Point3f& X = samples.emplace_back(Cast<float>(camera.TransformPointI2W(Point3(c,r,depth))));
+					const Point3f X(Cast<float>(camera.TransformPointI2W(Point3(c,r,depth))));
+					if (IsBounded() && !obb.Intersects(X))
+						continue;
 					areas.emplace_back(Footprint(camera, X)*areaScale);
 					visibility.emplace_back(idxImage);
+					samples.emplace_back(X);
 				}
 			}
 			imageAreas[idxImage] = visibility.size()-numPointsBegin;
 		}
-		#if 0
-		const AABB3f aabb(samples.data(), samples.size());
-		#else
-		// try to find a dominant plane, and set the bounding-box center on the plane bottom
-		OBB3f obb(samples.data(), samples.size());
-		obb.m_ext(0) *= 2;
-		#if 1
-		// dump box for visualization
-		OBB3f::POINT pts[8];
-		obb.GetCorners(pts);
-		PointCloud pc;
-		for (int i=0; i<8; ++i)
-			pc.points.emplace_back(pts[i]);
-		pc.Save(MAKE_PATH("scene_obb.ply"));
-		#endif
-		const AABB3f aabb(obb.GetAABB());
-		#endif
+		const AABB3f aabb(IsBounded() ? obb.GetAABB() : [&samples]() {
+			#if 0
+			return AABB3f(samples.data(), samples.size());
+			#else
+			// try to find a dominant plane, and set the bounding-box center on the plane bottom
+			OBB3f obbSamples(samples.data(), samples.size());
+			obbSamples.m_ext(0) *= 2;
+			#if 1
+			// dump box for visualization
+			OBB3f::POINT pts[8];
+			obbSamples.GetCorners(pts);
+			PointCloud pc;
+			for (int i=0; i<8; ++i)
+				pc.points.emplace_back(pts[i]);
+			pc.Save(MAKE_PATH("scene_obb.ply"));
+			#endif
+			return obbSamples.GetAABB();
+			#endif
+		}());
 		octree.Insert(samples, aabb, [](Octree::IDX_TYPE size, Octree::Type /*radius*/) {
 			return size > 128;
 		});
@@ -1160,4 +1267,98 @@ bool Scene::ExportChunks(const ImagesChunkArr& chunks, const String& path, ARCHI
 	}
 	return true;
 } // ExportChunks
+/*----------------------------------------------------------------*/
+
+
+// move scene such that the center is the given point;
+// if center is not given, center it to the center of the bounding-box
+bool Scene::Center(const Point3* pCenter)
+{
+	Point3 center;
+	if (pCenter)
+		center = *pCenter;
+	else if (IsBounded())
+		center = -Point3f(obb.GetCenter());
+	else if (!pointcloud.IsEmpty())
+		center = -Point3f(pointcloud.GetAABB().GetCenter());
+	else if (!mesh.IsEmpty())
+		center = -Point3f(mesh.GetAABB().GetCenter());
+	else
+		return false;
+	const Point3f centerf(Cast<float>(center));
+	if (IsBounded())
+		obb.Translate(centerf);
+	for (Platform& platform: platforms)
+		for (Platform::Pose& pose: platform.poses)
+			pose.C += center;
+	for (Image& image: images)
+		if (image.IsValid())
+			image.UpdateCamera(platforms);
+	for (PointCloud::Point& X: pointcloud.points)
+		X += centerf;
+	for (Mesh::Vertex& X: mesh.vertices)
+		X += centerf;
+	return true;
+} // Center
+
+// scale scene with the given scale;
+// if the scale is not given, scale it such that the bounding-box has largest size 1
+bool Scene::Scale(const REAL* pScale)
+{
+	REAL scale;
+	if (pScale)
+		scale = *pScale;
+	else if (IsBounded())
+		scale = REAL(1)/obb.GetSize().maxCoeff();
+	else if (!pointcloud.IsEmpty())
+		scale = REAL(1)/pointcloud.GetAABB().GetSize().maxCoeff();
+	else if (!mesh.IsEmpty())
+		scale = REAL(1)/mesh.GetAABB().GetSize().maxCoeff();
+	else
+		return false;
+	const float scalef(scale);
+	if (IsBounded())
+		obb.Transform(OBB3f::MATRIX::Identity() * scalef);
+	for (Platform& platform: platforms)
+		for (Platform::Pose& pose: platform.poses)
+			pose.C *= scale;
+	for (Image& image: images)
+		if (image.IsValid())
+			image.UpdateCamera(platforms);
+	for (PointCloud::Point& X: pointcloud.points)
+		X *= scalef;
+	for (Mesh::Vertex& X: mesh.vertices)
+		X *= scalef;
+	return true;
+} // Scale
+
+// scale image resolutions with the given scale or max-resolution;
+// if folderName is specified, the scaled images are stored there
+bool Scene::ScaleImages(unsigned nMaxResolution, REAL scale, const String& folderName)
+{
+	ASSERT(nMaxResolution > 0 || scale > 0);
+	Util::ensureFolder(folderName);
+	FOREACH(idx, images) {
+		Image& image = images[idx];
+		if (!image.IsValid())
+			continue;
+		unsigned nResolutionLevel(0);
+		unsigned nResolution(image.RecomputeMaxResolution(nResolutionLevel, 0));
+		if (scale > 0)
+			nResolution = ROUND2INT(nResolution*scale);
+		if (nMaxResolution > 0 && nResolution > nMaxResolution)
+			nResolution = nMaxResolution;
+		if (!image.ReloadImage(nResolution, !folderName.empty()))
+			return false;
+		image.UpdateCamera(platforms);
+		if (!folderName.empty()) {
+			if (image.ID == NO_ID)
+				image.ID = idx;
+			image.name = folderName + String::FormatString("%05u%s", image.ID, Util::getFileExt(image.name).c_str());
+			image.image.Save(image.name);
+			image.ReleaseImage();
+		}
+	}
+	return true;
+} // ScaleImages
 /*----------------------------------------------------------------*/

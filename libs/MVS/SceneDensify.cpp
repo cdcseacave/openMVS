@@ -276,7 +276,7 @@ bool DepthMapsData::SelectViews(DepthData& depthData)
 	const IIndex idxImage((IIndex)(&depthData-arrDepthData.Begin()));
 	ASSERT(depthData.neighbors.IsEmpty());
 	if (scene.images[idxImage].neighbors.empty() &&
-		!scene.SelectNeighborViews(idxImage, depthData.points, OPTDENSE::nMinViews, OPTDENSE::nMinViewsTrustPoint>1?OPTDENSE::nMinViewsTrustPoint:2, FD2R(OPTDENSE::fOptimAngle)))
+		!scene.SelectNeighborViews(idxImage, depthData.points, OPTDENSE::nMinViews, OPTDENSE::nMinViewsTrustPoint>1?OPTDENSE::nMinViewsTrustPoint:2, FD2R(OPTDENSE::fOptimAngle), OPTDENSE::nPointInsideROI))
 		return false;
 	depthData.neighbors.CopyOf(scene.images[idxImage].neighbors);
 
@@ -592,7 +592,7 @@ bool DepthMapsData::EstimateDepthMap(IIndex idxImage, int nGeometricIter)
 
 	// initialize
 	DepthData& depthData(arrDepthData[idxImage]);
-	ASSERT(depthData.images.GetSize() > 1 && !depthData.points.IsEmpty());
+	ASSERT(depthData.images.size() > 1);
 	const DepthData::ViewData& image(depthData.images.First());
 	ASSERT(!image.image.empty() && !depthData.images[1].image.empty());
 	const Image8U::Size size(image.image.size());
@@ -1735,9 +1735,12 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 
 	#ifdef _USE_CUDA
 	// initialize CUDA
-	if (OPTDENSE::nCUDADevice >= 0 && data.nFusionMode >= 0) {
-		data.depthMaps.pmCUDA = new PatchMatchCUDA(OPTDENSE::nCUDADevice);
-		data.depthMaps.pmCUDA->Init(false);
+	if (CUDA::desiredDeviceID >= -1 && data.nFusionMode >= 0) {
+		data.depthMaps.pmCUDA = new PatchMatchCUDA(CUDA::desiredDeviceID);
+		if (CUDA::devices.IsEmpty())
+			data.depthMaps.pmCUDA.Release();
+		else
+			data.depthMaps.pmCUDA->Init(false);
 	}
 	#endif // _USE_CUDA
 
@@ -1770,7 +1773,7 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 	if (data.nFusionMode >= 0) {
 		#ifdef _USE_CUDA
 		// initialize CUDA
-		if (OPTDENSE::nCUDADevice >= 0 && OPTDENSE::nEstimationGeometricIters) {
+		if (data.depthMaps.pmCUDA && OPTDENSE::nEstimationGeometricIters) {
 			data.depthMaps.pmCUDA->Release();
 			data.depthMaps.pmCUDA->Init(true);
 		}

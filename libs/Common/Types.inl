@@ -3601,6 +3601,19 @@ inline Eigen::Matrix<P,R,2,O> operator*(const Eigen::Matrix<P,R,2,O>& lhs, const
 }
 /*----------------------------------------------------------------*/
 
+namespace Eigen {
+
+template <typename Derived>
+std::istream& operator >> (std::istream& st, MatrixBase<Derived>& m) {
+	for (int i = 0; i < m.rows(); ++i)
+		for (int j = 0; j < m.cols(); ++j)
+			st >> m(i, j);
+	return st;
+}
+
+} // namespace Eigen
+/*----------------------------------------------------------------*/
+
 #endif // _USE_EIGEN
 
 

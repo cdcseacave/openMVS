@@ -58,7 +58,7 @@ public:
 	// Node i must be NodeId returned by AddNode().
 	void AddNodeData(NodeId i, NodeData data);
 
-	// Adds an edge between i and j. data determins edge parameters
+	// Adds an edge between i and j. data determines edge parameters
 	// (see the corresponding message*.h file for description).
 	// Note: information in data is copied into internal memory.
 	// Cannot be called after energy construction is completed.

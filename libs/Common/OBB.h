@@ -50,10 +50,12 @@ public:
 
 	inline TOBB() {}
 	inline TOBB(bool);
+	inline TOBB(const AABB&);
 	inline TOBB(const MATRIX& rot, const POINT& ptMin, const POINT& ptMax);
 	inline TOBB(const POINT* pts, size_t n);
 	inline TOBB(const POINT* pts, size_t n, const TRIANGLE* tris, size_t s);
 
+	inline void Set(const AABB&); // build from AABB
 	inline void Set(const MATRIX& rot, const POINT& ptMin, const POINT& ptMax); // build from rotation matrix from world to local, and local min/max corners
 	inline void Set(const POINT* pts, size_t n); // build from points
 	inline void Set(const POINT* pts, size_t n, const TRIANGLE* tris, size_t s); // build from triangles
@@ -88,6 +90,19 @@ public:
 
 	inline TYPE& operator [] (BYTE i) { ASSERT(i<numScalar); return m_rot.data()[i]; }
 	inline TYPE operator [] (BYTE i) const { ASSERT(i<numScalar); return m_rot.data()[i]; }
+
+	friend std::ostream& operator << (std::ostream& st, const TOBB& obb) {
+		st << obb.m_rot; st << std::endl;
+		st << obb.m_pos; st << std::endl;
+		st << obb.m_ext; st << std::endl;
+		return st;
+	}
+	friend std::istream& operator >> (std::istream& st, TOBB& obb) {
+		st >> obb.m_rot;
+		st >> obb.m_pos;
+		st >> obb.m_ext;
+		return st;
+	}
 
 	#ifdef _USE_BOOST
 	// implement BOOST serialization

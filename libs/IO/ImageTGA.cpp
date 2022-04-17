@@ -64,7 +64,7 @@ HRESULT CImageTGA::ReadHeader()
 	((ISTREAM*)m_pStream)->setPos(0);
 	TGAINFOHEADER tgaInfo;
 	m_pStream->read(&tgaInfo, sizeof(TGAINFOHEADER));
-	if (tgaInfo.byCMType != 0) {	// palletted images not supported
+	if (tgaInfo.byCMType != 0) {	// paletted images not supported
 		LOG(LT_IMAGE, "error: invalid TGA image");
 		return _INVALIDFILE;
 	}
