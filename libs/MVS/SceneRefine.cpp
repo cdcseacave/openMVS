@@ -155,6 +155,8 @@ public:
 		const DepthMap& depthMapA, const Camera& cameraA,
 		const DepthMap& depthMapB, const Camera& cameraB,
 		const Image32F& imageB, Image32F& imageA, BitMatrix& mask);
+    static float ComputeAverageLocalInverseDepth(
+            const DepthMap& depthMap, const BitMatrix& mask);
 	static void ComputeLocalVariance(
 		const Image32F& image, const BitMatrix& mask,
 		TImage<Real>& imageMean, TImage<Real>& imageVar);
@@ -772,6 +774,28 @@ void MeshRefine::ImageMeshWarp(
 	}
 }
 
+// compute the average inverse depth (harmonic mean of depth)
+// inverse depth is proportional to the amount parallax relative to points at infinity
+float MeshRefine::ComputeAverageLocalInverseDepth(const DepthMap& depthMap, const BitMatrix& mask)
+{
+    unsigned num(0);
+    float avg(0);
+    for (int r = 0; r < depthMap.rows; ++r) {
+        for (int c = 0; c < depthMap.cols; ++c) {
+            if (!mask(r, c))
+                continue;
+            const Depth& depth = depthMap(r, c);
+            if (depth == 0)
+                continue;
+            ++num;
+            avg += 1.f / depth;
+        }
+    }
+    if (!num)
+        return 0.f;
+    return avg / num;
+}
+
 // compute local variance for each image pixel
 void MeshRefine::ComputeLocalVariance(const Image32F& image, const BitMatrix& mask, TImage<Real>& imageMean, TImage<Real>& imageVar)
 {
@@ -1167,7 +1191,18 @@ void MeshRefine::ThProcessPair(uint32_t idxImageA, uint32_t idxImageB)
 	// compute field gradient
 	GradArr _photoGrad(photoGrad.GetSize());
 	UnsignedArr _photoGradNorm(photoGrad.GetSize());
+    #if 0
+    // Based on: High Accuracy and Visibility-Consistent Dense Multiview Stereo
+	//    After weighting the contribution of each image in (10) by the square of the ratio between the average depth of the scene
+	//    and the focal length in pixels, a scalar regularity weight can be defined whose optimal value is stable across very different data sets
 	const Real RegularizationScale((Real)((REAL)(imageDataA.avgDepth*imageDataB.avgDepth)/(cameraA.GetFocalLength()*cameraB.GetFocalLength())));
+    #else
+    // The above scaling can break down for horizontal views with significant depth range and thin near-field subjects
+    // Adapt this computation by computing the average of the local inverse depth so that it scales with parallax rather than depth
+    // Also only include valid depths inside the ROI in the average
+    const float avgInvDepth(ComputeAverageLocalInverseDepth(depthMapA, mask));
+    const Real RegularizationScale( (avgInvDepth > 0) ? 1.0 / (Real) SQUARE(avgInvDepth * cameraA.GetFocalLength()) : 0.0);
+    #endif
 	ComputePhotometricGradient(faces, faceNormals, depthMapA, faceMapA, baryMapA, cameraA, cameraB, viewB, imageDZNCC, mask, _photoGrad, _photoGradNorm, RegularizationScale);
 	DST_Image(imageDZNCC);
 	DST_BitMatrix(mask);
