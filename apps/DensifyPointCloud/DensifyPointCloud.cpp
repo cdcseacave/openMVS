@@ -100,14 +100,18 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	// group of options allowed both on command line and in config file
 	#ifdef _USE_CUDA
 	const unsigned nNumViewsDefault(8);
+	const unsigned numIters(4);
 	#else
 	const unsigned nNumViewsDefault(5);
+	const unsigned numIters(3);
 	#endif
 	unsigned nResolutionLevel;
 	unsigned nMaxResolution;
 	unsigned nMinResolution;
 	unsigned nNumViews;
 	unsigned nMinViewsFuse;
+	unsigned nEstimationIters;
+	unsigned nEstimationGeometricIters;
 	unsigned nEstimateColors;
 	unsigned nEstimateNormals;
 	int nIgnoreMaskLabel;
@@ -123,6 +127,8 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		("number-views", boost::program_options::value(&nNumViews)->default_value(nNumViewsDefault), "number of views used for depth-map estimation (0 - all neighbor views available)")
 		("number-views-fuse", boost::program_options::value(&nMinViewsFuse)->default_value(3), "minimum number of images that agrees with an estimate during fusion in order to consider it inlier (<2 - only merge depth-maps)")
 		("ignore-mask-label", boost::program_options::value(&nIgnoreMaskLabel)->default_value(-1), "integer value for the label to ignore in the segmentation mask (<0 - disabled)")
+		("iters", boost::program_options::value(&nEstimationIters)->default_value(numIters), "number of patch-match iterations")
+		("geometric-iters", boost::program_options::value(&nEstimationGeometricIters)->default_value(2), "number of geometric consistent patch-match iterations (0 - disabled)")
 		("estimate-colors", boost::program_options::value(&nEstimateColors)->default_value(2), "estimate the colors for the dense point-cloud (0 - disabled, 1 - final, 2 - estimate)")
 		("estimate-normals", boost::program_options::value(&nEstimateNormals)->default_value(2), "estimate the normals for the dense point-cloud (0 - disabled, 1 - final, 2 - estimate)")
 		("sub-scene-area", boost::program_options::value(&OPT::fMaxSubsceneArea)->default_value(0.f), "split the scene in sub-scenes such that each sub-scene surface does not exceed the given maximum sampling area (0 - disabled)")
@@ -207,6 +213,8 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	OPTDENSE::nMinResolution = nMinResolution;
 	OPTDENSE::nNumViews = nNumViews;
 	OPTDENSE::nMinViewsFuse = nMinViewsFuse;
+	OPTDENSE::nEstimationIters = nEstimationIters;
+	OPTDENSE::nEstimationGeometricIters = nEstimationGeometricIters;
 	OPTDENSE::nEstimateColors = nEstimateColors;
 	OPTDENSE::nEstimateNormals = nEstimateNormals;
 	OPTDENSE::nIgnoreMaskLabel = nIgnoreMaskLabel;
