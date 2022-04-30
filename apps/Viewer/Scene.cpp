@@ -249,16 +249,21 @@ bool Scene::Open(LPCTSTR fileName, LPCTSTR meshFileName)
 	AABB3d bounds(true);
 	AABB3d imageBounds(true);
 	Point3d center(Point3d::INF);
-	if (!scene.pointcloud.IsEmpty()) {
-		bounds = scene.pointcloud.GetAABB(MINF(3u,scene.nCalibratedImages));
-		if (bounds.IsEmpty())
-			bounds = scene.pointcloud.GetAABB();
-		center = scene.pointcloud.GetCenter();
-	}
-	if (!scene.mesh.IsEmpty()) {
-		scene.mesh.ComputeNormalFaces();
-		bounds.Insert(scene.mesh.GetAABB());
-		center = scene.mesh.GetCenter();
+	if (scene.IsBounded()) {
+		bounds = AABB3d(scene.obb.GetAABB());
+		center = bounds.GetCenter();
+	} else {
+		if (!scene.pointcloud.IsEmpty()) {
+			bounds = scene.pointcloud.GetAABB(MINF(3u,scene.nCalibratedImages));
+			if (bounds.IsEmpty())
+				bounds = scene.pointcloud.GetAABB();
+			center = scene.pointcloud.GetCenter();
+		}
+		if (!scene.mesh.IsEmpty()) {
+			scene.mesh.ComputeNormalFaces();
+			bounds.Insert(scene.mesh.GetAABB());
+			center = scene.mesh.GetCenter();
+		}
 	}
 
 	// init images

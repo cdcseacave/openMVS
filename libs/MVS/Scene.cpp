@@ -1166,6 +1166,18 @@ unsigned Scene::Split(ImagesChunkArr& chunks, float maxArea, int depthMapStep) c
 		chunks.RemoveAt(cSmall);
 	}
 	#endif
+	if (IsBounded()) {
+		// make sure the chunks bounding box do not exceed the scene bounding box
+		const AABB3f aabb(obb.GetAABB());
+		RFOREACH(c, chunks) {
+			ImagesChunk& chunk = chunks[c];
+			chunk.aabb.BoundBy(aabb);
+			if (chunk.aabb.IsEmpty()) {
+				DEBUG_ULTIMATE("warning: chunk bounding box is empty");
+				chunks.RemoveAt(c);
+			}
+		}
+	}
 	DEBUG_EXTRA("Scene split (%g max-area): %u chunks (%s)", maxArea, chunks.size(), TD_TIMER_GET_FMT().c_str());
 	#if 0 || defined(_DEBUG)
 	// dump chunks for visualization
@@ -1316,7 +1328,7 @@ bool Scene::Scale(const REAL* pScale)
 		scale = REAL(1)/mesh.GetAABB().GetSize().maxCoeff();
 	else
 		return false;
-	const float scalef(scale);
+	const float scalef(static_cast<float>(scale));
 	if (IsBounded())
 		obb.Transform(OBB3f::MATRIX::Identity() * scalef);
 	for (Platform& platform: platforms)

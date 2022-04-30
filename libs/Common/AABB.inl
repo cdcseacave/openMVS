@@ -242,7 +242,7 @@ void TAABB<TYPE,DIMS>::Insert(const POINT& pt)
 }
 /*----------------------------------------------------------------*/
 
-// Update the box such that it contains the given point.
+// Update the box such that it contains the given bounding box.
 template <typename TYPE, int DIMS>
 void TAABB<TYPE,DIMS>::Insert(const TAABB& aabb)
 {
@@ -262,6 +262,31 @@ void TAABB<TYPE,DIMS>::Insert(const TAABB& aabb)
 	if (ptMin[2] > aabb.ptMin[2])
 		ptMin[2] = aabb.ptMin[2];
 	if (ptMax[2] < aabb.ptMax[2])
+		ptMax[2] = aabb.ptMax[2];
+	}
+}
+/*----------------------------------------------------------------*/
+
+// Update the box such that it does not exceed the given bounding box.
+template <typename TYPE, int DIMS>
+void TAABB<TYPE,DIMS>::BoundBy(const TAABB& aabb)
+{
+	if (ptMin[0] < aabb.ptMin[0])
+		ptMin[0] = aabb.ptMin[0];
+	if (ptMax[0] > aabb.ptMax[0])
+		ptMax[0] = aabb.ptMax[0];
+
+	if (DIMS > 1) {
+	if (ptMin[1] < aabb.ptMin[1])
+		ptMin[1] = aabb.ptMin[1];
+	if (ptMax[1] > aabb.ptMax[1])
+		ptMax[1] = aabb.ptMax[1];
+	}
+
+	if (DIMS > 2) {
+	if (ptMin[2] < aabb.ptMin[2])
+		ptMin[2] = aabb.ptMin[2];
+	if (ptMax[2] > aabb.ptMax[2])
 		ptMax[2] = aabb.ptMax[2];
 	}
 }
