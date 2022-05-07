@@ -98,7 +98,6 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	config.add_options()
 		("input-file,i", boost::program_options::value<std::string>(&OPT::strInputFileName), "input project filename containing camera poses and scene (point-cloud/mesh)")
 		("output-file,o", boost::program_options::value<std::string>(&OPT::strOutputFileName), "output filename for storing the mesh")
-		("texture-lossless", boost::program_options::value(&OPT::bLosslessTexture)->default_value(false), "export texture using a lossless image format")
 		;
 
 	// hidden options, allowed both on command line and
@@ -230,7 +229,7 @@ int main(int argc, LPCTSTR* argv)
 		return EXIT_FAILURE;
 	if (viewer.IsOpen() && !OPT::strOutputFileName.IsEmpty()) {
 		// export the scene
-		viewer.Export(MAKE_PATH_SAFE(OPT::strOutputFileName), OPT::strExportType.IsEmpty()?LPCTSTR(NULL):OPT::strExportType.c_str(), OPT::bLosslessTexture);
+		viewer.Export(MAKE_PATH_SAFE(OPT::strOutputFileName), OPT::strExportType.IsEmpty()?LPCTSTR(NULL):OPT::strExportType.c_str());
 	}
 	// enter viewer loop
 	viewer.Loop();

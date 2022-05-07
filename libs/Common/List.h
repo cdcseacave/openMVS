@@ -142,6 +142,13 @@ public:
 		_vector = (TYPE*)(operator new[] (_vectorSize * sizeof(TYPE)));
 		_ArrayCopyConstruct(_vector, rList._vector, _size);
 	}
+	#ifdef _SUPPORT_CPP11
+	// copy constructor: creates a move-copy of the given list
+	cList(cList&& rList) : _size(rList._size), _vectorSize(rList._vectorSize), _vector(rList._vector)
+	{
+		rList._Init();
+	}
+	#endif
 
 	// constructor a list from a raw data array
 	explicit inline cList(TYPE* pDataBegin, TYPE* pDataEnd) : _size((IDX)(pDataEnd-pDataBegin)), _vectorSize(_size)

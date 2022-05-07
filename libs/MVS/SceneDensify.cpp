@@ -1624,7 +1624,7 @@ bool Scene::DenseReconstruction(int nFusionMode)
 bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 {
 	// compute point-cloud from the existing mesh
-	if (pointcloud.IsEmpty() && !mesh.IsEmpty() && !ImagesHaveNeighbors()) {
+	if (!mesh.IsEmpty() && !ImagesHaveNeighbors()) {
 		SampleMeshWithVisibility();
 		mesh.Release();
 	}

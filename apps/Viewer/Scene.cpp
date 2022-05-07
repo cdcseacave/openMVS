@@ -358,7 +358,7 @@ bool Scene::Save(LPCTSTR _fileName, bool bRescaleImages)
 }
 
 // export the scene
-bool Scene::Export(LPCTSTR _fileName, LPCTSTR exportType, bool losslessTexture) const
+bool Scene::Export(LPCTSTR _fileName, LPCTSTR exportType) const
 {
 	if (!IsOpen())
 		return false;
@@ -367,7 +367,7 @@ bool Scene::Export(LPCTSTR _fileName, LPCTSTR exportType, bool losslessTexture) 
 	const String fileName(_fileName != NULL ? String(_fileName) : sceneName);
 	const String baseFileName(Util::getFileFullName(fileName));
 	const bool bPoints(scene.pointcloud.Save(lastFileName=(baseFileName+_T("_pointcloud.ply"))));
-	const bool bMesh(scene.mesh.Save(lastFileName=(baseFileName+_T("_mesh")+(exportType?exportType:(Util::getFileExt(fileName)==_T(".obj")?_T(".obj"):_T(".ply")))), true, losslessTexture));
+	const bool bMesh(scene.mesh.Save(lastFileName=(baseFileName+_T("_mesh")+(exportType?exportType:(Util::getFileExt(fileName)==_T(".obj")?_T(".obj"):_T(".ply")))), cList<String>(), true));
 	#if TD_VERBOSE != TD_VERBOSE_OFF
 	if (VERBOSITY_LEVEL > 2 && (bPoints || bMesh))
 		scene.ExportCamerasMLP(Util::getFileFullName(lastFileName)+_T(".mlp"), lastFileName);
@@ -683,10 +683,10 @@ void Scene::TogleSceneBox()
 	};
 	if (scene.IsBounded())
 		scene.obb = OBB3f(true);
-	else if (!scene.pointcloud.IsEmpty())
-		scene.obb.Set(EnlargeAABB(scene.pointcloud.GetAABB(window.minViews)));
 	else if (!scene.mesh.IsEmpty())
 		scene.obb.Set(EnlargeAABB(scene.mesh.GetAABB()));
+	else if (!scene.pointcloud.IsEmpty())
+		scene.obb.Set(EnlargeAABB(scene.pointcloud.GetAABB(window.minViews)));
 	CompileBounds();
 }
 

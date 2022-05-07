@@ -96,7 +96,7 @@ public:
 	ClbkOpenScene clbkOpenScene;
 	typedef DELEGATE<bool (LPCTSTR, bool)> ClbkSaveScene;
 	ClbkSaveScene clbkSaveScene;
-	typedef DELEGATE<bool (LPCTSTR, LPCTSTR, bool)> ClbkExportScene;
+	typedef DELEGATE<bool (LPCTSTR, LPCTSTR)> ClbkExportScene;
 	ClbkExportScene clbkExportScene;
 	typedef DELEGATE<void (void)> ClbkCenterScene;
 	ClbkCenterScene clbkCenterScene;
