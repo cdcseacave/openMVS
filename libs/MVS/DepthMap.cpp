@@ -88,7 +88,7 @@ MDEFVAR_OPTDENSE_float(fMinArea, "Min Area", "Min shared area for accepting the 
 MDEFVAR_OPTDENSE_float(fMinAngle, "Min Angle", "Min angle for accepting the depth triangulation", "3.0")
 MDEFVAR_OPTDENSE_float(fOptimAngle, "Optim Angle", "Optimal angle for computing the depth triangulation", "12.0")
 MDEFVAR_OPTDENSE_float(fMaxAngle, "Max Angle", "Max angle for accepting the depth triangulation", "65.0")
-MDEFVAR_OPTDENSE_float(fDescriptorMinMagnitudeThreshold, "Descriptor Min Magnitude Threshold", "minimum texture variance accepted when matching two patches (0 - disabled)", "0.01")
+MDEFVAR_OPTDENSE_float(fDescriptorMinMagnitudeThreshold, "Descriptor Min Magnitude Threshold", "minimum texture variance accepted when matching two patches (0 - disabled)", "0.005")
 MDEFVAR_OPTDENSE_float(fDepthDiffThreshold, "Depth Diff Threshold", "maximum variance allowed for the depths during refinement", "0.01")
 MDEFVAR_OPTDENSE_float(fNormalDiffThreshold, "Normal Diff Threshold", "maximum variance allowed for the normal during fusion (degrees)", "25")
 MDEFVAR_OPTDENSE_float(fPairwiseMul, "Pairwise Mul", "pairwise cost scale to match the unary cost", "0.3")
@@ -105,6 +105,7 @@ MDEFVAR_OPTDENSE_float(fNCCThresholdKeep, "NCC Threshold Keep", "Maximum 1-NCC s
 MDEFVAR_OPTDENSE_float(fNCCThresholdKeepCUDA, "NCC Threshold Keep CUDA", "Maximum 1-NCC score accepted for a CUDA match (differs from the CPU version cause that has planarity score integrated)", "0.9", "0.6")
 #endif // _USE_CUDA
 DEFVAR_OPTDENSE_uint32(nEstimationIters, "Estimation Iters", "Number of patch-match iterations", "3")
+DEFVAR_OPTDENSE_uint32(nEstimationSubResolutions, "SubResolution levels", "Number of lower resolution levels to estimate the depth and normals", "0")
 DEFVAR_OPTDENSE_uint32(nEstimationGeometricIters, "Estimation Geometric Iters", "Number of geometric consistent patch-match iterations (0 - disabled)", "2")
 MDEFVAR_OPTDENSE_float(fEstimationGeometricWeight, "Estimation Geometric Weight", "pairwise geometric consistency cost weight", "0.1")
 MDEFVAR_OPTDENSE_uint32(nRandomIters, "Random Iters", "Number of iterations for random assignment per pixel", "6")
@@ -120,6 +121,20 @@ MDEFVAR_OPTDENSE_float(fRandomSmoothBonus, "Random Smooth Bonus", "Score factor 
 
 
 // S T R U C T S ///////////////////////////////////////////////////
+
+//constructor from reference of DepthData
+DepthData::DepthData(const DepthData& srcDepthData) :
+	images(srcDepthData.images),
+	neighbors(srcDepthData.neighbors),
+	points(srcDepthData.points),
+	mask(srcDepthData.mask),
+	depthMap(srcDepthData.depthMap),
+	normalMap(srcDepthData.normalMap),
+	confMap(srcDepthData.confMap),
+	dMin(srcDepthData.dMin),
+	dMax(srcDepthData.dMax),
+	references(srcDepthData.references)
+{}
 
 // return normal in world-space for the given pixel
 // the 3D points can be precomputed and passed here
@@ -439,7 +454,7 @@ bool DepthEstimator::FillPixelPatch()
 	}
 	normSq0 = w.normSq0;
 	#endif
-	if (normSq0 < thMagnitudeSq)
+	if ((lowResDepthMap.empty() && normSq0 < -1.f) || (!lowResDepthMap.empty() && normSq0 < thMagnitudeSq))
 		return false;
 	reinterpret_cast<Point3&>(X0) = image0.camera.TransformPointI2C(Cast<REAL>(x0));
 	return true;
@@ -531,6 +546,16 @@ float DepthEstimator::ScorePixelImage(const DepthData::ViewData& image1, Depth d
 			}
 		}
 		score += OPTDENSE::fEstimationGeometricWeight * consistency;
+	}
+	// apply depth prior weight based on patch textureless
+	if (!lowResDepthMap.empty()) {
+		const Depth d0 = lowResDepthMap(x0);
+		if (d0 > 0) {
+			const float deltaDepth = MINF(DepthSimilarity(d0, depth), 0.5f);
+			const float smoothSigmaDepth(-1.f / (1.f * 0.02f));
+			const float factorDeltaDepth = DENSE_EXP(normSq0 * smoothSigmaDepth);
+			score += deltaDepth * factorDeltaDepth;
+		}
 	}
 	ASSERT(ISFINITE(score));
 	return score;
