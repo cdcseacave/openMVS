@@ -683,7 +683,7 @@ bool DepthMapsData::EstimateDepthMap(IIndex idxImage, int nGeometricIter)
 			// create working threads
 			idxPixel = -1;
 			ASSERT(estimators.empty());
-			while (estimators.size() < nMaxThreads)
+			while (estimators.size() < nMaxThreads) {
 				estimators.AddConstruct(iterBegin, depthData, idxPixel,
 					#if DENSE_NCC == DENSE_NCC_WEIGHTED
 					weightMap0,
@@ -691,6 +691,8 @@ bool DepthMapsData::EstimateDepthMap(IIndex idxImage, int nGeometricIter)
 					imageSum0,
 					#endif
 					coords);
+				estimators.Last().lowResDepthMap = currentSizeResDepthMap;
+			}
 			ASSERT(estimators.size() == threads.size()+1);
 			FOREACH(i, threads)
 				threads[i].start(ScoreDepthMapTmp, &estimators[i]);
