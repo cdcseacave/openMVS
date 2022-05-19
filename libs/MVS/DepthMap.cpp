@@ -105,7 +105,7 @@ MDEFVAR_OPTDENSE_float(fNCCThresholdKeep, "NCC Threshold Keep", "Maximum 1-NCC s
 MDEFVAR_OPTDENSE_float(fNCCThresholdKeepCUDA, "NCC Threshold Keep CUDA", "Maximum 1-NCC score accepted for a CUDA match (differs from the CPU version cause that has planarity score integrated)", "0.9", "0.6")
 #endif // _USE_CUDA
 DEFVAR_OPTDENSE_uint32(nEstimationIters, "Estimation Iters", "Number of patch-match iterations", "3")
-DEFVAR_OPTDENSE_uint32(nEstimationSubResolutions, "SubResolution levels", "Number of lower resolution levels to estimate the depth and normals", "0")
+DEFVAR_OPTDENSE_uint32(nEstimationSubResolutions, "SubResolution levels", "Number of lower resolution levels to estimate the depth and normals", "2")
 DEFVAR_OPTDENSE_uint32(nEstimationGeometricIters, "Estimation Geometric Iters", "Number of geometric consistent patch-match iterations (0 - disabled)", "2")
 MDEFVAR_OPTDENSE_float(fEstimationGeometricWeight, "Estimation Geometric Weight", "pairwise geometric consistency cost weight", "0.1")
 MDEFVAR_OPTDENSE_uint32(nRandomIters, "Random Iters", "Number of iterations for random assignment per pixel", "6")
@@ -454,12 +454,8 @@ bool DepthEstimator::FillPixelPatch()
 	}
 	normSq0 = w.normSq0;
 	#endif
-	if (normSq0 < thMagnitudeSq) {
-		if (lowResDepthMap.empty())
-			return false;
-		else if (lowResDepthMap(x0) <= 0)
-			return false;
-	}
+	if (normSq0 < thMagnitudeSq && (lowResDepthMap.empty() || lowResDepthMap(x0) <= 0))
+		return false;
 	reinterpret_cast<Point3&>(X0) = image0.camera.TransformPointI2C(Cast<REAL>(x0));
 	return true;
 }
