@@ -511,7 +511,7 @@ float DepthEstimator::ScorePixelImage(const DepthData::ViewData& image1, Depth d
 	const float normSq1(normSqDelta<float,float,nTexels>(texels1.data(), sum/(float)nTexels));
 	#endif
 	const float nrmSq(normSq0*normSq1);
-	if (nrmSq <= 0.f)
+	if (nrmSq <= 1e-12f)
 		return thRobust;
 	#if DENSE_NCC == DENSE_NCC_DEFAULT
 	const float num(texels0.dot(texels1));
@@ -557,10 +557,8 @@ float DepthEstimator::ScorePixelImage(const DepthData::ViewData& image1, Depth d
 			score += deltaDepth * factorDeltaDepth;
 		}
 	}
-	if (score > 2.f)
-		score = 2.f;
 	ASSERT(ISFINITE(score));
-	return score;
+	return MIN(2.f, score);
 }
 
 // compute pixel's NCC score
