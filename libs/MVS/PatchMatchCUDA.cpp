@@ -327,7 +327,7 @@ void PatchMatchCUDA::EstimateDepthMap(DepthData& depthData)
 
 		// load depth-map, normal-map and confidence-map from CUDA memory
 		const float fNCCThresholdKeep(!params.bGeomConsistency && OPTDENSE::nEstimationGeometricIters ?
-			((totalScaleNumber > 0 && scaleNumber > 0) ? 2.f : OPTDENSE::fNCCThresholdKeepCUDA * 1.5f): OPTDENSE::fNCCThresholdKeepCUDA);
+			((totalScaleNumber > 0 && scaleNumber > 0) ? 1.9f : OPTDENSE::fNCCThresholdKeep * 1.5f): OPTDENSE::fNCCThresholdKeep);
 
 		if (depthData.confMap.empty())
 			depthData.confMap.create(depthData.depthMap.size());

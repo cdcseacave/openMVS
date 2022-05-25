@@ -119,9 +119,6 @@ extern unsigned nOptimize;
 extern unsigned nEstimateColors;
 extern unsigned nEstimateNormals;
 extern float fNCCThresholdKeep;
-#ifdef _USE_CUDA
-extern float fNCCThresholdKeepCUDA;
-#endif // _USE_CUDA
 extern unsigned nEstimationIters;
 extern unsigned nEstimationSubResolutions;
 extern unsigned nEstimationGeometricIters;
