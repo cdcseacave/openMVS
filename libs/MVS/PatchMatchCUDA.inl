@@ -86,6 +86,7 @@ public:
 		float fDepthMax = 100.f;
 		int nInitTopK = 3;
 		bool bGeomConsistency = false;
+		bool bLowResProcessed = false;
 	};
 
 	struct Camera {
@@ -100,7 +101,7 @@ public:
 	PatchMatchCUDA(int device=0);
 	~PatchMatchCUDA();
 
-	void Init(bool geom_consistency);
+	void Init(bool bGeomConsistency);
 	void Release();
 
 	void EstimateDepthMap(DepthData&);
@@ -130,6 +131,7 @@ public:
 	cudaTextureObject_t* cudaTextureImages;
 	cudaTextureObject_t* cudaTextureDepths;
 	Point4* cudaDepthNormalEstimates;
+	float* cudaLowDepths;
 	float* cudaDepthNormalCosts;
 	curandState* cudaRandStates;
 	unsigned* cudaSelectedViews;

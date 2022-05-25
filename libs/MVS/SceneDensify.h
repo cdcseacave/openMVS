@@ -68,7 +68,7 @@ public:
 	void MergeDepthMaps(PointCloud& pointcloud, bool bEstimateColor, bool bEstimateNormal);
 	void FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, bool bEstimateNormal);
 
-	DepthData ScaleDepthData(const DepthData& inputDeptData, float scale);
+	static DepthData ScaleDepthData(const DepthData& inputDeptData, float scale);
 
 protected:
 	static void* STCALL ScoreDepthMapTmp(void*);
