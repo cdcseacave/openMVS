@@ -191,6 +191,7 @@ void PatchMatchCUDA::EstimateDepthMap(DepthData& depthData)
 		DepthData currentDepthData(DepthMapsData::ScaleDepthData(fullResDepthData, scale));
 		DepthData& depthData = (scaleNumber == 0 ? fullResDepthData : currentDepthData);
 		const Image8U::Size size(depthData.images.front().image.size());
+		params.bLowResProcessed = false;
 		if (scaleNumber != totalScaleNumber) {
 			params.bLowResProcessed = true;
 			cv::resize(lowResDepthMap, depthData.depthMap, size, 0, 0, cv::INTER_LINEAR);
@@ -198,7 +199,6 @@ void PatchMatchCUDA::EstimateDepthMap(DepthData& depthData)
 			CUDA::checkCudaCall(cudaMalloc((void**)&cudaLowDepths, sizeof(float) * size.area()));
 		}
 		else if (totalScaleNumber > 0) {
-			params.bLowResProcessed = false;
 			fullResDepthData.depthMap.release();
 			fullResDepthData.normalMap.release();
 		}
