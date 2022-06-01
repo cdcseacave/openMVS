@@ -13,6 +13,7 @@ endif()
 
 # Link its dependencies
 TARGET_LINK_LIBRARIES(Common ${Boost_LIBRARIES} ${OpenCV_LIBS})
+TARGET_COMPILE_OPTIONS(Common INTERFACE -fpermissive)
 
 # Install
 SET_TARGET_PROPERTIES(Common PROPERTIES

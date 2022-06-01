@@ -34,7 +34,7 @@ else()
 endif()
 FILE(GLOB LIBRARY_FILES_H "*.h" "*.inl")
 
-cxx_executable_with_flags(${VIEWER_NAME} "Apps" "${cxx_default}" "MVS;${OPENGL_LIBRARIES};${GLEW_LIBRARY};${GLFW_STATIC_LIBRARIES};GLEW::GLEW;${glfw3_LIBRARY};${GLFW3_LIBRARY};glfw;${OpenMVS_EXTRA_LIBS}" ${LIBRARY_FILES_C} ${LIBRARY_FILES_H})
+cxx_executable_with_flags(${VIEWER_NAME} "Apps" "${cxx_default}" "MVS;Common;${OPENGL_LIBRARIES};${GLEW_LIBRARY};${GLFW_STATIC_LIBRARIES};GLEW::GLEW;${glfw3_LIBRARY};${GLFW3_LIBRARY};glfw;${OpenMVS_EXTRA_LIBS}" ${LIBRARY_FILES_C} ${LIBRARY_FILES_H})
 
 # Manually set Common.h as the precompiled header
 IF(CMAKE_VERSION VERSION_GREATER_EQUAL 3.16.0)
