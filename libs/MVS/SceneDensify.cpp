@@ -620,10 +620,10 @@ bool DepthMapsData::EstimateDepthMap(IIndex idxImage, int nGeometricIter)
 	// init threads
 	ASSERT(nMaxThreads > 0);
 	cList<DepthEstimator> estimators;
-	estimators.Reserve(nMaxThreads);
+	estimators.reserve(nMaxThreads);
 	cList<SEACAVE::Thread> threads;
 	if (nMaxThreads > 1)
-		threads.Resize(nMaxThreads-1); // current thread is also used
+		threads.resize(nMaxThreads-1); // current thread is also used
 	volatile Thread::safe_t idxPixel;
 
 	// Multi-Resolution : 
@@ -687,7 +687,7 @@ bool DepthMapsData::EstimateDepthMap(IIndex idxImage, int nGeometricIter)
 			idxPixel = -1;
 			ASSERT(estimators.empty());
 			while (estimators.size() < nMaxThreads) {
-				estimators.AddConstruct(iterBegin, depthData, idxPixel,
+				estimators.emplace_back(iterBegin, depthData, idxPixel,
 					#if DENSE_NCC == DENSE_NCC_WEIGHTED
 					weightMap0,
 					#else
@@ -703,7 +703,7 @@ bool DepthMapsData::EstimateDepthMap(IIndex idxImage, int nGeometricIter)
 			// wait for the working threads to close
 			FOREACHPTR(pThread, threads)
 				pThread->join();
-			estimators.Release();
+			estimators.clear();
 			#if TD_VERBOSE != TD_VERBOSE_OFF
 			// save rough depth map as image
 			if (g_nVerbosityLevel > 4 && nGeometricIter < 0) {
@@ -720,7 +720,7 @@ bool DepthMapsData::EstimateDepthMap(IIndex idxImage, int nGeometricIter)
 			idxPixel = -1;
 			ASSERT(estimators.empty());
 			while (estimators.size() < nMaxThreads) {
-				estimators.AddConstruct(iter, depthData, idxPixel,
+				estimators.emplace_back(iter, depthData, idxPixel,
 					#if DENSE_NCC == DENSE_NCC_WEIGHTED
 					weightMap0,
 					#else
@@ -736,7 +736,7 @@ bool DepthMapsData::EstimateDepthMap(IIndex idxImage, int nGeometricIter)
 			// wait for the working threads to close
 			FOREACHPTR(pThread, threads)
 				pThread->join();
-			estimators.Release();
+			estimators.clear();
 			#if 1 && TD_VERBOSE != TD_VERBOSE_OFF
 			// save intermediate depth map as image
 			if (g_nVerbosityLevel > 4) {
@@ -749,6 +749,7 @@ bool DepthMapsData::EstimateDepthMap(IIndex idxImage, int nGeometricIter)
 			}
 			#endif
 		}
+
 		if (scaleNumber == 0) {
 			if (totalScaleNumber > 0) {
 				fullResDepthData.images = depthData.images;
@@ -773,7 +774,7 @@ bool DepthMapsData::EstimateDepthMap(IIndex idxImage, int nGeometricIter)
 		idxPixel = -1;
 		ASSERT(estimators.empty());
 		while (estimators.size() < nMaxThreads)
-			estimators.AddConstruct(0, depthData, idxPixel,
+			estimators.emplace_back(0, depthData, idxPixel,
 				#if DENSE_NCC == DENSE_NCC_WEIGHTED
 				weightMap0,
 				#else
@@ -787,7 +788,7 @@ bool DepthMapsData::EstimateDepthMap(IIndex idxImage, int nGeometricIter)
 		// wait for the working threads to close
 		FOREACHPTR(pThread, threads)
 			pThread->join();
-		estimators.Release();
+		estimators.clear();
 		OPTDENSE::fNCCThresholdKeep = fNCCThresholdKeep;
 	}
 
