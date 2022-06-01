@@ -1603,6 +1603,7 @@ public:
 			memcpy(_vector+index, _vector+(--_size), sizeof(TYPE));
 	}
 	inline void Empty() {
+		_ArrayDestruct(_vector, _size);
 		_size = 0;
 	}
 	inline void Sort() {
