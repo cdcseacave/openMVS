@@ -337,11 +337,11 @@ __device__ float ScorePlane(const ImagePixels refImage, const PatchMatchCUDA::Ca
 
 	const float varRef = sumRefRef * bilateralWeightSum - sumRef * sumRef;
 	if (lowDepth <= 0 && varRef < 1e-8f)
-			return maxCost;
+		return maxCost;
 	const float varTrg = sumTrgTrg * bilateralWeightSum - sumTrg * sumTrg;
 	const float varRefTrg = varRef * varTrg;
 	if (varRefTrg < 1e-16f)
-			return maxCost;
+		return maxCost;
 	const float covarTrgRef = sumRefTrg * bilateralWeightSum - sumRef * sumTrg;
 	float ncc = 1.f - covarTrgRef / sqrt(varRefTrg);
 
