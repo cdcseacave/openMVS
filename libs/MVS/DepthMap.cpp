@@ -100,7 +100,7 @@ MDEFVAR_OPTDENSE_int32(nIgnoreMaskLabel, "Ignore Mask Label", "label id used dur
 MDEFVAR_OPTDENSE_uint32(nOptimize, "Optimize", "should we filter the extracted depth-maps?", "7") // see DepthFlags
 MDEFVAR_OPTDENSE_uint32(nEstimateColors, "Estimate Colors", "should we estimate the colors for the dense point-cloud?", "2", "0", "1")
 MDEFVAR_OPTDENSE_uint32(nEstimateNormals, "Estimate Normals", "should we estimate the normals for the dense point-cloud?", "0", "1", "2")
-MDEFVAR_OPTDENSE_float(fNCCThresholdKeep, "NCC Threshold Keep", "Maximum 1-NCC score accepted for a match", "1.15", "0.3")
+MDEFVAR_OPTDENSE_float(fNCCThresholdKeep, "NCC Threshold Keep", "Maximum 1-NCC score accepted for a match", "0.9", "0.5")
 DEFVAR_OPTDENSE_uint32(nEstimationIters, "Estimation Iters", "Number of patch-match iterations", "3")
 DEFVAR_OPTDENSE_uint32(nEstimationSubResolutions, "SubResolution levels", "Number of lower resolution levels to estimate the depth and normals", "2")
 DEFVAR_OPTDENSE_uint32(nEstimationGeometricIters, "Estimation Geometric Iters", "Number of geometric consistent patch-match iterations (0 - disabled)", "2")
@@ -396,10 +396,10 @@ DepthEstimator::DepthEstimator(
 	thMagnitudeSq(OPTDENSE::fDescriptorMinMagnitudeThreshold>0?SQUARE(OPTDENSE::fDescriptorMinMagnitudeThreshold):-1.f),
 	angle1Range(FD2R(OPTDENSE::fRandomAngle1Range)),
 	angle2Range(FD2R(OPTDENSE::fRandomAngle2Range)),
-	thRobust(OPTDENSE::fNCCThresholdKeep),
-	thConfSmall(OPTDENSE::fNCCThresholdKeep *0.2f),
-	thConfBig(OPTDENSE::fNCCThresholdKeep *0.5f),
-	thConfRand(OPTDENSE::fNCCThresholdKeep *0.9f)
+	thConfSmall(OPTDENSE::fNCCThresholdKeep*0.12f), // default 0.11
+	thConfBig(OPTDENSE::fNCCThresholdKeep*0.25f), // default 0.22
+	thConfRand(OPTDENSE::fNCCThresholdKeep*0.55f), // default 0.5
+	thRobust(OPTDENSE::fNCCThresholdKeep*4.f/3.f) // default 1.2
 	#if DENSE_REFINE == DENSE_REFINE_EXACT
 	, thPerturbation(1.f/POW(2.f,float(nIter+1)))
 	#endif
