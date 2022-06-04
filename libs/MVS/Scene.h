@@ -104,6 +104,9 @@ public:
 	bool Scale(const REAL* pScale = NULL);
 	bool ScaleImages(unsigned nMaxResolution = 0, REAL scale = 0, const String& folderName = String());
 
+    // detect and set region-of-interest
+    bool DetectROI(float scale=1.f);
+
 	// Dense reconstruction
 	bool DenseReconstruction(int nFusionMode=0);
 	bool ComputeDepthMaps(DenseDepthMapData& data);
