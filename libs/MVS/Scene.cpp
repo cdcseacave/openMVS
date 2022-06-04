@@ -451,7 +451,7 @@ bool Scene::SaveViewNeighbors(const String& fileName) const
 	ASSERT(ImagesHaveNeighbors());
 
 	TD_TIMER_STARTD();
-	
+
 	File file(fileName, File::WRITE, File::CREATE | File::TRUNCATE);
 	if (!file.isOpen()) {
 		VERBOSE("error: unable to write file '%s'", fileName.c_str());
@@ -1373,4 +1373,90 @@ bool Scene::ScaleImages(unsigned nMaxResolution, REAL scale, const String& folde
 	}
 	return true;
 } // ScaleImages
+
+/*----------------------------------------------------------------*/
+// detect region-of-interest based on camera positions, directions and sparse points
+// scale specifies the ratio of the ROI's diameter
+bool Scene::DetectROI(float scale)
+{
+    typedef CLISTDEF0IDX(Camera, uint32_t) CamArr;
+    CamArr camArr;
+    FOREACH(i, images) {
+        const Image &imageData = images[i];
+        if (!imageData.IsValid())
+            continue;
+        camArr.emplace_back(imageData.camera);
+    }
+    unsigned nCams = camArr.size();
+    if (nCams < 3)
+        return false;
+
+    // compute the camera center and the direction median
+    typedef CLISTDEF0IDX(float, IDX) Scalars;
+    Scalars x(nCams), y(nCams), z(nCams), nx(nCams), ny(nCams), nz(nCams);
+    FOREACH(i, camArr) {
+        Point3f camC(camArr[i].C);
+        x[i] = camC.x;
+        y[i] = camC.y;
+        z[i] = camC.z;
+        Point3f camDirect(camArr[i].Direction());
+        nx[i] = camDirect.x;
+        ny[i] = camDirect.y;
+        nz[i] = camDirect.z;
+    }
+    CMatrix camCenter(x.GetMedian(), y.GetMedian(), z.GetMedian());
+    Point3f camDirectMed(nx.GetMedian(), ny.GetMedian(), nz.GetMedian());
+    VERBOSE("The median camera position (%f,%f,%f), direction (%f,%f,%f)",
+            camCenter.x, camCenter.y, camCenter.z, camDirectMed.x, camDirectMed.y, camDirectMed.z);
+
+    // estimate scene center and radius by the camera center and the median of camera directions
+    Scalars camDepthArr(nCams);
+    FOREACH(i, camArr) {
+        Point3f ptCam(camArr[i].R * (camCenter - camArr[i].C));
+        camDepthArr[i] = ptCam.z;
+    }
+    float depthMedian = camDepthArr.GetMedian();
+    CMatrix camShiftCoeff;
+    for (uint32_t i = 0; i < 3; ++i)
+        camShiftCoeff[i] = TAN(ASIN(CLAMP(camDirectMed[i], -0.99f, 0.99f)));
+    CMatrix sceneCenter = camCenter + camShiftCoeff * depthMedian;
+    VERBOSE("The estimated scene center is (%f,%f,%f)",
+            sceneCenter.x, sceneCenter.y, sceneCenter.z);
+    FOREACH(i, camArr) {
+        Point3f ptCam(camArr[i].R * (sceneCenter - camArr[i].C));
+        camDepthArr[i] = ptCam.z;
+    }
+    depthMedian = camDepthArr.GetMedian();
+    VERBOSE("The estimated scene radius is %f", depthMedian);
+
+    // select points in the ROI
+    Point3fArr ptsInROI;
+    FOREACH(i, pointcloud.points) {
+        const PointCloud::Point &point = pointcloud.points[i];
+        const PointCloud::ViewArr &views = pointcloud.pointViews[i];
+        FOREACH(j, views) {
+            const Image &imageData = images[views[j]];
+            if (!imageData.IsValid())
+                continue;
+            const Camera &camera = imageData.camera;
+            Point3f ptCam(camera.R * (CMatrix(point) - camera.C));
+            if (ptCam.z < depthMedian * 2.0f * scale) {
+                ptsInROI.emplace_back(point);
+                break;
+            }
+        }
+    }
+    AABB3f aabbROI;
+    if (!ptsInROI.empty()) {
+        aabbROI.Set(ptsInROI.begin(), ptsInROI.size());
+        VERBOSE("Set the ROI by the estimated core points");
+    } else {
+        aabbROI.Set((const Point3f::EVec) Point3f(sceneCenter), depthMedian * scale);
+        VERBOSE("Set the ROI obb by the estimated scene center (%f,%f,%f) and radius %f",
+                sceneCenter.x, sceneCenter.y, sceneCenter.z, depthMedian);
+    }
+    obb.Set(aabbROI);
+
+    return true;
+} // DetectROI
 /*----------------------------------------------------------------*/
