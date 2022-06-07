@@ -137,7 +137,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		("fusion-mode", boost::program_options::value(&OPT::nFusionMode)->default_value(0), "depth map fusion mode (-2 - fuse disparity-maps, -1 - export disparity-maps only, 0 - depth-maps & fusion, 1 - export depth-maps only)")
 		("filter-point-cloud", boost::program_options::value(&OPT::thFilterPointCloud)->default_value(0), "filter dense point-cloud based on visibility (0 - disabled)")
 		("export-number-views", boost::program_options::value(&OPT::nExportNumViews)->default_value(0), "export points with >= number of views (0 - disabled)")
-        ("roi-mode", boost::program_options::value(&OPT::nROIMode)->default_value(-1), "set region-of-interest mode for scene trim (-1 - unbounded scene, 0 - wrap-around scene)")
+        ("roi-mode", boost::program_options::value(&OPT::nROIMode)->default_value(0), "set region-of-interest mode (-1 - unbounded scene without trim, 0 - wrap-around scene with auto trim)")
         ;
 
 	// hidden options, allowed both on command line and

@@ -1388,9 +1388,10 @@ bool Scene::DetectROI(float scale)
         camArr.emplace_back(imageData.camera);
     }
     unsigned nCams = camArr.size();
-    if (nCams < 3)
+    if (nCams < 3) {
+        VERBOSE("error: not enough valid views for the ROI detection");
         return false;
-
+    }
     // compute the camera center and the direction median
     typedef CLISTDEF0IDX(float, IDX) Scalars;
     Scalars x(nCams), y(nCams), z(nCams), nx(nCams), ny(nCams), nz(nCams);
@@ -1406,29 +1407,36 @@ bool Scene::DetectROI(float scale)
     }
     CMatrix camCenter(x.GetMedian(), y.GetMedian(), z.GetMedian());
     Point3f camDirectMed(nx.GetMedian(), ny.GetMedian(), nz.GetMedian());
-    VERBOSE("The median camera position (%f,%f,%f), direction (%f,%f,%f)",
-            camCenter.x, camCenter.y, camCenter.z, camDirectMed.x, camDirectMed.y, camDirectMed.z);
-
-    // estimate scene center and radius by the camera center and the median of camera directions
+    if (VERBOSITY_LEVEL > 2)
+        VERBOSE("The camera positions median is (%f,%f,%f), directions median is (%f,%f,%f)",
+                camCenter.x, camCenter.y, camCenter.z, camDirectMed.x, camDirectMed.y, camDirectMed.z);
     Scalars camDepthArr(nCams);
     FOREACH(i, camArr) {
         Point3f ptCam(camArr[i].R * (camCenter - camArr[i].C));
         camDepthArr[i] = ptCam.z;
     }
+    // estimate scene center and radius
     float depthMedian = camDepthArr.GetMedian();
     CMatrix camShiftCoeff;
     for (uint32_t i = 0; i < 3; ++i)
-        camShiftCoeff[i] = TAN(ASIN(CLAMP(camDirectMed[i], -0.99f, 0.99f)));
+        camShiftCoeff[i] = TAN(ASIN(CLAMP(camDirectMed[i], -0.999f, 0.999f)));
     CMatrix sceneCenter = camCenter + camShiftCoeff * depthMedian;
-    VERBOSE("The estimated scene center is (%f,%f,%f)",
-            sceneCenter.x, sceneCenter.y, sceneCenter.z);
+    uint32_t nNegDepth = 0;
     FOREACH(i, camArr) {
         Point3f ptCam(camArr[i].R * (sceneCenter - camArr[i].C));
         camDepthArr[i] = ptCam.z;
+        if (ptCam.z <= 0)
+            nNegDepth++;
+    }
+    // return if ROI cannot be detected accurately
+    if (nNegDepth >= camArr.size() / 3) {
+        VERBOSE("Inaccurate ROI detection. The scene will be treated as unbounded (no ROI)");
+        return true;
     }
     depthMedian = camDepthArr.GetMedian();
-    VERBOSE("The estimated scene radius is %f", depthMedian);
-
+    if (VERBOSITY_LEVEL > 2)
+        VERBOSE("The estimated scene center is (%f,%f,%f), radius is %f",
+                sceneCenter.x, sceneCenter.y, sceneCenter.z, depthMedian);
     // select points in the ROI
     Point3fArr ptsInROI;
     FOREACH(i, pointcloud.points) {
@@ -1450,13 +1458,12 @@ bool Scene::DetectROI(float scale)
     if (!ptsInROI.empty()) {
         aabbROI.Set(ptsInROI.begin(), ptsInROI.size());
         VERBOSE("Set the ROI by the estimated core points");
-    } else {
+    }
+    else {
         aabbROI.Set((const Point3f::EVec) Point3f(sceneCenter), depthMedian * scale);
-        VERBOSE("Set the ROI obb by the estimated scene center (%f,%f,%f) and radius %f",
-                sceneCenter.x, sceneCenter.y, sceneCenter.z, depthMedian);
+        VERBOSE("Set the ROI obb by the estimated scene center and radius");
     }
     obb.Set(aabbROI);
-
     return true;
 } // DetectROI
 /*----------------------------------------------------------------*/
