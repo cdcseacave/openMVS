@@ -1945,7 +1945,7 @@ typedef Mesh::FIndex FIndex;
 class MeshRefineCUDA {
 public:
 	typedef Mesh::FaceIdxArr CameraFaces;
-	typedef SEACAVE::cList<CameraFaces,const CameraFaces&,2> CameraFacesArr;
+	typedef CLISTDEF2(CameraFaces) CameraFacesArr;
 
 	// store necessary data about a view
 	struct View {
@@ -1958,7 +1958,7 @@ public:
 		inline View() {}
 		inline View(View&) {}
 	};
-	typedef SEACAVE::cList<View,const View&,2> ViewsArr;
+	typedef CLISTDEF2(View) ViewsArr;
 
 	struct CameraCUDA {
 		Matrix3x4f P;

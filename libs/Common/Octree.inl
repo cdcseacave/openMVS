@@ -774,7 +774,7 @@ inline bool OctreeTest(unsigned iters, unsigned maxItems=1000, bool bRandom=true
 	STATIC_ASSERT(DIMS > 0 && DIMS <= 3);
 	srand(bRandom ? (unsigned)time(NULL) : 0);
 	typedef Eigen::Matrix<TYPE,DIMS,1> POINT_TYPE;
-	typedef SEACAVE::cList<POINT_TYPE,const POINT_TYPE&,0> TestArr;
+	typedef CLISTDEF0(POINT_TYPE) TestArr;
 	typedef TOctree<TestArr,TYPE,DIMS,uint32_t> TestTree;
 	const TYPE ptMinData[] = {0,0,0}, ptMaxData[] = {640,480,240};
 	typename TestTree::AABB_TYPE aabb;

@@ -1746,8 +1746,8 @@ typedef TDMatrix<int32_t> DMatrix32S;
 typedef TDMatrix<uint32_t> DMatrix32U;
 typedef TDMatrix<float> DMatrix32F;
 typedef TDMatrix<double> DMatrix64F;
-typedef SEACAVE::cList<DMatrix, const DMatrix&, 2> DMatrixArr;
-typedef SEACAVE::cList<cv::Mat, const cv::Mat&, 2> MatArr;
+typedef CLISTDEF2(DMatrix) DMatrixArr;
+typedef CLISTDEF2(cv::Mat) MatArr;
 /*----------------------------------------------------------------*/
 
 
@@ -1799,7 +1799,7 @@ typedef TDVector<int32_t> DVector32S;
 typedef TDVector<uint32_t> DVector32U;
 typedef TDVector<float> DVector32F;
 typedef TDVector<double> DVector64F;
-typedef SEACAVE::cList<DVector, const DVector&, 2> DVectorArr;
+typedef CLISTDEF2(DVector) DVectorArr;
 /*----------------------------------------------------------------*/
 
 
@@ -2462,7 +2462,7 @@ struct TIndexScore {
 };
 /*----------------------------------------------------------------*/
 typedef TIndexScore<uint32_t, float> IndexScore;
-typedef SEACAVE::cList<IndexScore, const IndexScore&, 0> IndexScoreArr;
+typedef CLISTDEF0(IndexScore) IndexScoreArr;
 /*----------------------------------------------------------------*/
 
 
@@ -2514,7 +2514,7 @@ struct PairIdx {
 	inline bool operator==(const PairIdx& r) const { return (idx == r.idx); }
 };
 /*----------------------------------------------------------------*/
-typedef SEACAVE::cList<PairIdx, const PairIdx&, 0> PairIdxArr;
+typedef CLISTDEF0(PairIdx) PairIdxArr;
 inline PairIdx MakePairIdx(uint32_t idxImageA, uint32_t idxImageB) {
 	return (idxImageA<idxImageB ? PairIdx(idxImageA, idxImageB) : PairIdx(idxImageB, idxImageA));
 }
