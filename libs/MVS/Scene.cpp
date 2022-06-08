@@ -1406,10 +1406,12 @@ bool Scene::DetectROI(float scale)
         nz[i] = camDirect.z;
     }
     CMatrix camCenter(x.GetMedian(), y.GetMedian(), z.GetMedian());
-    Point3f camDirectMed(nx.GetMedian(), ny.GetMedian(), nz.GetMedian());
+    CMatrix camDirectMed(nx.GetMedian(), ny.GetMedian(), nz.GetMedian());
+    float camDirectMedLen = (float) ((const CMatrix ::EVec) camDirectMed).norm();
+    camDirectMed /= camDirectMedLen;
     if (VERBOSITY_LEVEL > 2)
-        VERBOSE("The camera positions median is (%f,%f,%f), directions median is (%f,%f,%f)",
-                camCenter.x, camCenter.y, camCenter.z, camDirectMed.x, camDirectMed.y, camDirectMed.z);
+        VERBOSE("The camera positions median is (%f,%f,%f), directions median and norm is (%f,%f,%f), %f",
+                camCenter.x, camCenter.y, camCenter.z, camDirectMed.x, camDirectMed.y, camDirectMed.z, camDirectMedLen);
     Scalars camDepthArr(nCams);
     FOREACH(i, camArr) {
         Point3f ptCam(camArr[i].R * (camCenter - camArr[i].C));
@@ -1417,14 +1419,12 @@ bool Scene::DetectROI(float scale)
     }
     // estimate scene center and radius
     float depthMedian = camDepthArr.GetMedian();
-    CMatrix camShiftCoeff;
-    for (uint32_t i = 0; i < 3; ++i)
-        camShiftCoeff[i] = TAN(ASIN(CLAMP(camDirectMed[i], -0.999f, 0.999f)));
-    CMatrix sceneCenter = camCenter + camShiftCoeff * depthMedian;
+    float camShiftCoeff =TAN(ASIN(CLAMP(camDirectMedLen, -0.999f, 0.999f)));
+    CMatrix sceneCenter = camCenter + camShiftCoeff * depthMedian * camDirectMed;
     uint32_t nNegDepth = 0;
     FOREACH(i, camArr) {
         Point3f ptCam(camArr[i].R * (sceneCenter - camArr[i].C));
-        camDepthArr[i] = ptCam.z;
+        camDepthArr[i] = fabs(ptCam.z);
         if (ptCam.z <= 0)
             nNegDepth++;
     }
