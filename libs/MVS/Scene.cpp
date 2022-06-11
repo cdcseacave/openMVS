@@ -1382,7 +1382,7 @@ bool Scene::EstimateROI(float scale)
 {
     CameraArr cameras;
     FOREACH(i, images) {
-        const Image &imageData = images[i];
+        const Image& imageData = images[i];
         if (!imageData.IsValid())
             continue;
         cameras.emplace_back(imageData.camera);
@@ -1406,7 +1406,7 @@ bool Scene::EstimateROI(float scale)
     }
     const CMatrix camCenter(x.GetMedian(), y.GetMedian(), z.GetMedian());
     CMatrix camDirectMed(nx.GetMedian(), ny.GetMedian(), nz.GetMedian());
-    const auto camDirectMedLen = (float)norm(camDirectMed);
+    const float camDirectMedLen = (float)norm(camDirectMed);
     camDirectMed /= camDirectMedLen;
     #if TD_VERBOSE != TD_VERBOSE_OFF
     if (VERBOSITY_LEVEL > 2)
@@ -1422,10 +1422,10 @@ bool Scene::EstimateROI(float scale)
     const CMatrix sceneCenter = camCenter + camShiftCoeff * depthMedian * camDirectMed;
     uint32_t nNegDepth = 0;
     FOREACH(i, cameras) {
-        const auto camDepth = (float)cameras[i].PointDepth(sceneCenter);
-        cameraDepths[i] = fabs(camDepth);
+        const float camDepth = (float)cameras[i].PointDepth(sceneCenter);
+        cameraDepths[i] = ABS(camDepth);
         if (camDepth <= 0)
-            nNegDepth++;
+            ++nNegDepth;
     }
     // return if ROI cannot be estimated accurately
     if (nNegDepth >= cameras.size() / 3) {
@@ -1441,13 +1441,13 @@ bool Scene::EstimateROI(float scale)
     // select points in the ROI
     Point3fArr ptsInROI;
     FOREACH(i, pointcloud.points) {
-        const PointCloud::Point &point = pointcloud.points[i];
-        const PointCloud::ViewArr &views = pointcloud.pointViews[i];
+        const PointCloud::Point& point = pointcloud.points[i];
+        const PointCloud::ViewArr& views = pointcloud.pointViews[i];
         FOREACH(j, views) {
-            const Image &imageData = images[views[j]];
+            const Image& imageData = images[views[j]];
             if (!imageData.IsValid())
                 continue;
-            const Camera &camera = imageData.camera;
+            const Camera& camera = imageData.camera;
             if (camera.PointDepth(point) < sceneRadius * 2.0f * scale) {
                 ptsInROI.emplace_back(point);
                 break;
@@ -1460,7 +1460,7 @@ bool Scene::EstimateROI(float scale)
         VERBOSE("Set the ROI by the estimated core points");
     } else {
         aabbROI.Set((const Point3f::EVec) Point3f(sceneCenter), sceneRadius * scale);
-        VERBOSE("Set the ROI obb by the estimated scene center and radius");
+        VERBOSE("Set the ROI by the estimated scene center and radius");
     }
     obb.Set(aabbROI);
     return true;
