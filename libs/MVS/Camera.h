@@ -420,7 +420,7 @@ public:
 	BOOST_SERIALIZATION_SPLIT_MEMBER()
 	#endif
 };
-typedef SEACAVE::cList<Camera, const Camera&, 0> CameraArr;
+typedef CLISTDEF0IDX(Camera,uint32_t) CameraArr;
 /*----------------------------------------------------------------*/
 
 MVS_API void DecomposeProjectionMatrix(const PMatrix& P, KMatrix& K, RMatrix& R, CMatrix& C);

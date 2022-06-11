@@ -52,7 +52,7 @@ public:
 	typedef IDX Index;
 
 	typedef TPoint3<float> Point;
-	typedef SEACAVE::cList<Point,const Point&,2,8192> PointArr;
+	typedef SEACAVE::cList<Point,const Point&,0,8192> PointArr;
 
 	typedef uint32_t View;
 	typedef SEACAVE::cList<View,const View,0,4,uint32_t> ViewArr;
