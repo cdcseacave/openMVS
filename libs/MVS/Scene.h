@@ -105,7 +105,7 @@ public:
 	bool ScaleImages(unsigned nMaxResolution = 0, REAL scale = 0, const String& folderName = String());
 
     // Estimate and set region-of-interest
-    bool EstimateROI(float scale=1.f);
+    bool EstimateROI(int nEstimateROI=0, float scale=1.f);
 
 	// Dense reconstruction
 	bool DenseReconstruction(int nFusionMode=0);
