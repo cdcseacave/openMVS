@@ -403,7 +403,7 @@ bool ParseImageListXML(tinyxml2::XMLDocument& doc, Scene& scene, PlatformDistCoe
 		++nPoses;
 		}
 	}
-	scene.nCalibratedImages = nPoses;
+	scene.nCalibratedImages = (unsigned)nPoses;
 	}
 
 	// parse bounding-box
@@ -565,9 +565,9 @@ bool ParseBlocksExchangeXML(tinyxml2::XMLDocument& doc, Scene& scene, PlatformDi
 			imageData.camera = platform.GetCamera(imageData.cameraID, imageData.poseID);
 			// set depth stats
 			if ((elem=photo->FirstChildElement("MedianDepth")) != NULL)
-				imageData.avgDepth = elem->DoubleText();
+				imageData.avgDepth = (float)elem->DoubleText();
 			else if (photo->FirstChildElement("NearDepth") != NULL && photo->FirstChildElement("FarDepth") != NULL)
-				imageData.avgDepth = (photo->FirstChildElement("NearDepth")->DoubleText() + photo->FirstChildElement("FarDepth")->DoubleText())/2;
+				imageData.avgDepth = (float)((photo->FirstChildElement("NearDepth")->DoubleText() + photo->FirstChildElement("FarDepth")->DoubleText())/2);
 			mapImageID.emplace(imageData.ID, static_cast<IIndex>(scene.images.size()));
 			scene.images.emplace_back(std::move(imageData));
 			++nPoses;
@@ -575,7 +575,7 @@ bool ParseBlocksExchangeXML(tinyxml2::XMLDocument& doc, Scene& scene, PlatformDi
 	}
 	if (scene.images.size() < 2)
 		return false;
-	scene.nCalibratedImages = nPoses;
+	scene.nCalibratedImages = (unsigned)nPoses;
 	// transform poses to a local coordinate system
 	const bool bLocalCoords(document->FirstChildElement("SRSId") == NULL ||
 		((elem=blocksExchange->FirstChildElement("SpatialReferenceSystems")) != NULL && (elem=elem->FirstChildElement("SRS")) != NULL && (elem=elem->FirstChildElement("Name")) != NULL && _tcsncmp(elem->GetText(), "Local Coordinates", 17) == 0));
@@ -596,9 +596,9 @@ bool ParseBlocksExchangeXML(tinyxml2::XMLDocument& doc, Scene& scene, PlatformDi
 		if ((elem=tiepoint->FirstChildElement("Position")) == NULL)
 			continue;
 		scene.pointcloud.points.emplace_back(
-			elem->FirstChildElement("x")->DoubleText(),
-			elem->FirstChildElement("y")->DoubleText(),
-			elem->FirstChildElement("z")->DoubleText());
+			(float)elem->FirstChildElement("x")->DoubleText(),
+			(float)elem->FirstChildElement("y")->DoubleText(),
+			(float)elem->FirstChildElement("z")->DoubleText());
 		if (!bLocalCoords)
 			scene.pointcloud.points.back() -= Cast<float>(center);
 		if ((elem=tiepoint->FirstChildElement("Color")) != NULL)
