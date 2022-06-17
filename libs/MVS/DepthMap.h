@@ -261,6 +261,7 @@ struct MVS_API DepthData {
 		ar & depthMap;
 		ar & normalMap;
 		ar & confMap;
+		ar & viewsMap;
 		ar & dMin;
 		ar & dMax;
 	}
