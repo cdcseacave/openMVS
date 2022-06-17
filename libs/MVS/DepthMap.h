@@ -228,6 +228,7 @@ struct MVS_API DepthData {
 		depthMap.release();
 		normalMap.release();
 		confMap.release();
+		viewsMap.release();
 	}
 
 	inline bool IsValid() const {
