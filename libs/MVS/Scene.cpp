@@ -321,7 +321,8 @@ bool Scene::LoadDMAP(const String& fileName)
 	DepthMap depthMap;
 	NormalMap normalMap;
 	ConfidenceMap confMap;
-	if (!ImportDepthDataRaw(fileName, imageFileName, IDs, imageSize, camera.K, camera.R, camera.C, dMin, dMax, depthMap, normalMap, confMap))
+	ViewsMap viewsMap;
+	if (!ImportDepthDataRaw(fileName, imageFileName, IDs, imageSize, camera.K, camera.R, camera.C, dMin, dMax, depthMap, normalMap, confMap, viewsMap))
 		return false;
 
 	// create image
@@ -699,7 +700,7 @@ bool Scene::ExportMeshToDepthMaps(const String& baseName)
 				IDs.push_back(idxImage);
 				for (const ViewScore& neighbor: image.neighbors)
 					IDs.push_back(neighbor.idx.ID);
-				return ExportDepthDataRaw(fileName, image.name, IDs, image.GetSize(), image.camera.K, image.camera.R, image.camera.C, 0.001f, FLT_MAX, depthMap, normalMap, ConfidenceMap());
+				return ExportDepthDataRaw(fileName, image.name, IDs, image.GetSize(), image.camera.K, image.camera.R, image.camera.C, 0.001f, FLT_MAX, depthMap, normalMap, ConfidenceMap(), ViewsMap());
 			} ()) ||
 			(nType == 1 && !depthMap.Save(fileName)) ||
 			(nType == 0 && !ExportDepthMap(fileName, depthMap)))

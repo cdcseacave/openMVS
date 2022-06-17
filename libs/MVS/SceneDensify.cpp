@@ -385,9 +385,10 @@ bool DepthMapsData::InitViews(DepthData& depthData, IIndex idxNeighbor, IIndex n
 			Depth dMin, dMax;
 			NormalMap normalMap;
 			ConfidenceMap confMap;
+			ViewsMap viewsMap;
 			ImportDepthDataRaw(ComposeDepthFilePath(view.GetID(), "dmap"),
 				imageFileName, IDs, imageSize, view.cameraDepthMap.K, view.cameraDepthMap.R, view.cameraDepthMap.C,
-				dMin, dMax, view.depthMap, normalMap, confMap, 1);
+				dMin, dMax, view.depthMap, normalMap, confMap, viewsMap, 1);
 		}
 		view.Init(viewRef.camera);
 	}
@@ -399,9 +400,10 @@ bool DepthMapsData::InitViews(DepthData& depthData, IIndex idxNeighbor, IIndex n
 		cv::Size imageSize;
 		Camera camera;
 		ConfidenceMap confMap;
+		ViewsMap viewsMap;
 		if (!ImportDepthDataRaw(ComposeDepthFilePath(viewRef.GetID(), "dmap"),
 				imageFileName, IDs, imageSize, camera.K, camera.R, camera.C, depthData.dMin, depthData.dMax,
-				depthData.depthMap, depthData.normalMap, confMap, 3))
+				depthData.depthMap, depthData.normalMap, confMap, viewsMap, 3))
 			return false;
 		ASSERT(viewRef.image.size() == depthData.depthMap.size());
 	} else if (loadDepthMaps == 0) {

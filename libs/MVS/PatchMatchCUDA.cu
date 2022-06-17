@@ -380,8 +380,7 @@ __device__ inline float AggregateMultiViewScores(const unsigned* viewWeights, co
 	for (int imgId = 0; imgId < numViews; ++imgId)
 		if (viewWeights[imgId])
 			cost += viewWeights[imgId] * costVector[imgId];
-	//return max(0.f, min(2.f, cost)); ;
-	return cost;
+	return cost / NUM_SAMPLES;
 }
 
 // propagate and refine the plane estimate for the current pixel employing the asymmetric approach described in:
@@ -498,11 +497,11 @@ __device__ void ProcessPixel(const ImagePixels* images, const ImagePixels* depth
 			SetBit(newSelectedViews, imgId);
 	float finalCosts[8];
 	for (int posId = 0; posId < 8; ++posId)
-		finalCosts[posId] = AggregateMultiViewScores(viewWeights, costArray[posId], params.nNumViews) / NUM_SAMPLES;
+		finalCosts[posId] = AggregateMultiViewScores(viewWeights, costArray[posId], params.nNumViews);
 	const int minCostIdx = FindMinIndex(finalCosts, 8);
 	float costVector[MAX_VIEWS];
 	MultiViewScorePlane(images, depthImages, cameras, p, plane, lowDepth, costVector, params);
-	cost = AggregateMultiViewScores(viewWeights, costVector, params.nNumViews) / NUM_SAMPLES;
+	cost = AggregateMultiViewScores(viewWeights, costVector, params.nNumViews);
 	if (finalCosts[minCostIdx] < cost && valid[minCostIdx]) {
 		plane = planes[positions[minCostIdx]];
 		plane.w() = neighborDepths[minCostIdx];
@@ -538,7 +537,7 @@ __device__ void ProcessPixel(const ImagePixels* images, const ImagePixels* depth
 		newPlane.topLeftCorner<3,1>() = normals[i];
 		newPlane.w() = depths[i];
 		MultiViewScorePlane(images, depthImages, cameras, p, newPlane, lowDepth, costVector, params);
-		const float costPlane = AggregateMultiViewScores(viewWeights, costVector, params.nNumViews) / NUM_SAMPLES;
+		const float costPlane = AggregateMultiViewScores(viewWeights, costVector, params.nNumViews);
 		if (cost > costPlane) {
 			cost = costPlane;
 			plane = newPlane;
@@ -606,10 +605,27 @@ __global__ void RedPixelProcess(const cudaTextureObject_t* textureImages, const 
 	p.y() = p.y() * 2 + (threadIdx.x % 2 == 0 ? 1 : 0);
 	ProcessPixel((const ImagePixels*)textureImages, (const ImagePixels*)textureDepths, cameras, planes, lowDepths, costs, (RandState*)randStates, selectedViews, p, params, iter);
 }
+
+// filter depth/normals
+__global__ void FilterPlanes(Point4* planes, float* costs, unsigned* selectedViews, int width, int height, const PatchMatchCUDA::Params params)
+{
+	const Point2i p = Point2i(blockIdx.x * blockDim.x + threadIdx.x, blockIdx.y * blockDim.y + threadIdx.y);
+	if (p.x() >= width || p.y() >= height)
+		return;
+	const int idx = Point2Idx(p, width);
+	// filter estimates if the score is not good enough
+	Point4& plane = planes[idx];
+	float conf = costs[idx];
+	if (plane.w() <= 0 || conf >= params.fThresholdKeepCost) {
+		conf = 0;
+		plane = Point4::Zero();
+		selectedViews[idx] = 0;
+	}
+}
 /*----------------------------------------------------------------*/
 
 
-__host__ void PatchMatchCUDA::RunCUDA()
+__host__ void PatchMatchCUDA::RunCUDA(float* ptrCostMap, uint32_t* ptrViewsMap)
 {
 	const unsigned width = cameras[0].width;
 	const unsigned height = cameras[0].height;
@@ -618,10 +634,10 @@ __host__ void PatchMatchCUDA::RunCUDA()
 	constexpr unsigned BLOCK_H = (BLOCK_W / 2);
 
 	const dim3 blockSize(BLOCK_W, BLOCK_H, 1);
-	const dim3 gridSizeInitialize((width + BLOCK_H - 1) / BLOCK_H, (height + BLOCK_H - 1) / BLOCK_H, 1);
+	const dim3 gridSizeFull((width + BLOCK_H - 1) / BLOCK_H, (height + BLOCK_H - 1) / BLOCK_H, 1);
 	const dim3 gridSizeCheckerboard((width + BLOCK_W - 1) / BLOCK_W, ((height / 2) + BLOCK_H - 1) / BLOCK_H, 1);
 
-	InitializeScore<<<gridSizeInitialize, blockSize>>>(cudaTextureImages, cudaTextureDepths, cudaCameras, cudaDepthNormalEstimates, cudaLowDepths, cudaDepthNormalCosts, cudaRandStates, cudaSelectedViews, params);
+	InitializeScore<<<gridSizeFull, blockSize>>>(cudaTextureImages, cudaTextureDepths, cudaCameras, cudaDepthNormalEstimates, cudaLowDepths, cudaDepthNormalCosts, cudaRandStates, cudaSelectedViews, params);
 	cudaDeviceSynchronize();
 
 	for (int iter = 0; iter < params.nEstimationIters; ++iter) {
@@ -631,8 +647,15 @@ __host__ void PatchMatchCUDA::RunCUDA()
 		cudaDeviceSynchronize();
 	}
 
+	if (params.fThresholdKeepCost > 0)
+		FilterPlanes<<<gridSizeFull, blockSize>>>(cudaDepthNormalEstimates, cudaDepthNormalCosts, cudaSelectedViews, width, height, params);
+
 	cudaMemcpy(depthNormalEstimates, cudaDepthNormalEstimates, sizeof(Point4) * width * height, cudaMemcpyDeviceToHost);
-	cudaMemcpy(depthNormalCosts, cudaDepthNormalCosts, sizeof(float) * width * height, cudaMemcpyDeviceToHost);
+	if (ptrCostMap)
+		cudaMemcpy(ptrCostMap, cudaDepthNormalCosts, sizeof(float) * width * height, cudaMemcpyDeviceToHost);
+	if (ptrViewsMap)
+		cudaMemcpy(ptrViewsMap, cudaSelectedViews, sizeof(uint32_t) * width * height, cudaMemcpyDeviceToHost);
+
 	cudaDeviceSynchronize();
 }
 /*----------------------------------------------------------------*/

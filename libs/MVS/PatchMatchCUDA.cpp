@@ -92,7 +92,6 @@ void PatchMatchCUDA::ReleaseCUDA()
 		cudaFree(cudaTextureDepths);
 
 	delete[] depthNormalEstimates;
-	delete[] depthNormalCosts;
 }
 
 void PatchMatchCUDA::Init(bool bGeomConsistency)
@@ -118,11 +117,9 @@ void PatchMatchCUDA::AllocatePatchMatchCUDA(const cv::Mat1f& image)
 	depthNormalEstimates = new Point4[size];
 	CUDA::checkCudaCall(cudaMalloc((void**)&cudaDepthNormalEstimates, sizeof(Point4) * size));
 
-	depthNormalCosts = new float[size];
 	CUDA::checkCudaCall(cudaMalloc((void**)&cudaDepthNormalCosts, sizeof(float) * size));
-
-	CUDA::checkCudaCall(cudaMalloc((void**)&cudaRandStates, sizeof(curandState) * size));
 	CUDA::checkCudaCall(cudaMalloc((void**)&cudaSelectedViews, sizeof(unsigned) * size));
+	CUDA::checkCudaCall(cudaMalloc((void**)&cudaRandStates, sizeof(curandState) * size));
 }
 
 void PatchMatchCUDA::AllocateImageCUDA(size_t i, const cv::Mat1f& image, bool bInitImage, bool bInitDepthMap)
@@ -180,11 +177,29 @@ void PatchMatchCUDA::EstimateDepthMap(DepthData& depthData)
 
 	ASSERT(depthData.images.size() > 1);
 
-	// Multi-Resolution : 
+	// multi-resolution
 	DepthData& fullResDepthData(depthData);
 	const unsigned totalScaleNumber(params.bGeomConsistency ? 0u : OPTDENSE::nEstimationSubResolutions);
 	DepthMap lowResDepthMap;
 	NormalMap lowResNormalMap;
+	ViewsMap lowResViewsMap;
+	IIndex prevNumImages = (IIndex)images.size();
+	const IIndex numImages = depthData.images.size();
+	params.nNumViews = (int)numImages - 1;
+	params.nInitTopK = std::min(params.nInitTopK, params.nNumViews);
+	params.fDepthMin = depthData.dMin;
+	params.fDepthMax = depthData.dMax;
+	if (prevNumImages < numImages) {
+		images.resize(numImages);
+		cameras.resize(numImages);
+		cudaImageArrays.resize(numImages);
+		textureImages.resize(numImages);
+	}
+	if (params.bGeomConsistency && cudaDepthArrays.size() < numImages - 1) {
+		cudaDepthArrays.resize(numImages - 1);
+		textureDepths.resize(numImages - 1);
+	}
+	const int maxPixelViews(MINF(params.nNumViews, 4));
 	for (int scaleNumber = totalScaleNumber; scaleNumber >= 0; --scaleNumber) {
 		// initialize
 		const float scale = 1.f / POWI(2, scaleNumber);
@@ -193,33 +208,49 @@ void PatchMatchCUDA::EstimateDepthMap(DepthData& depthData)
 		const Image8U::Size size(depthData.images.front().image.size());
 		params.bLowResProcessed = false;
 		if (scaleNumber != totalScaleNumber) {
+			// all resolutions, but the smallest one, if multi-resolution is enabled
 			params.bLowResProcessed = true;
 			cv::resize(lowResDepthMap, depthData.depthMap, size, 0, 0, cv::INTER_LINEAR);
 			cv::resize(lowResNormalMap, depthData.normalMap, size, 0, 0, cv::INTER_NEAREST);
+			cv::resize(lowResViewsMap, depthData.viewsMap, size, 0, 0, cv::INTER_NEAREST);
 			CUDA::checkCudaCall(cudaMalloc((void**)&cudaLowDepths, sizeof(float) * size.area()));
+		} else {
+			if (totalScaleNumber > 0) {
+				// smallest resolution, when multi-resolution is enabled
+				fullResDepthData.depthMap.release();
+				fullResDepthData.normalMap.release();
+				fullResDepthData.confMap.release();
+				fullResDepthData.viewsMap.release();
+			}
+			// smallest resolution if multi-resolution is enabled; highest otherwise
+			if (depthData.viewsMap.empty())
+				depthData.viewsMap.create(size);
 		}
-		else if (totalScaleNumber > 0) {
-			fullResDepthData.depthMap.release();
-			fullResDepthData.normalMap.release();
-			fullResDepthData.confMap.release();
+		if (scaleNumber == 0) {
+			// highest resolution
+			if (depthData.confMap.empty())
+				depthData.confMap.create(size);
 		}
 
-		const IIndex prevNumImages = (IIndex)images.size();
-		const IIndex numImages = depthData.images.size();
-		params.nNumViews = (int)numImages - 1;
-		params.nInitTopK = std::min(params.nInitTopK, params.nNumViews);
-		params.fDepthMin = depthData.dMin;
-		params.fDepthMax = depthData.dMax;
-		if (prevNumImages < numImages) {
-			images.resize(numImages);
-			cameras.resize(numImages);
-			cudaImageArrays.resize(numImages);
-			textureImages.resize(numImages);
+		// set keep threshold to:
+		params.fThresholdKeepCost = OPTDENSE::fNCCThresholdKeep;
+		if (totalScaleNumber) {
+			// multi-resolution enabled
+			if (scaleNumber > 0 && scaleNumber != totalScaleNumber) {
+				// all sub-resolutions, but the smallest and highest
+				params.fThresholdKeepCost = 0.f; // disable filtering
+			} else if (scaleNumber == totalScaleNumber || (!params.bGeomConsistency && OPTDENSE::nEstimationGeometricIters)) {
+				// smallest sub-resolution OR highest resolution and geometric consistency is not running but enabled
+				params.fThresholdKeepCost = OPTDENSE::fNCCThresholdKeep*1.2f;
+			}
+		} else {
+			// multi-resolution disabled
+			if (!params.bGeomConsistency && OPTDENSE::nEstimationGeometricIters) {
+				// geometric consistency is not running but enabled
+				params.fThresholdKeepCost = OPTDENSE::fNCCThresholdKeep*1.2f;
+			}
 		}
-		if (params.bGeomConsistency && cudaDepthArrays.size() < numImages - 1) {
-			cudaDepthArrays.resize(numImages - 1);
-			textureDepths.resize(numImages - 1);
-		}
+
 		for (IIndex i = 0; i < numImages; ++i) {
 			const DepthData::ViewData& view = depthData.images[i];
 			Image32F image = view.image;
@@ -289,6 +320,7 @@ void PatchMatchCUDA::EstimateDepthMap(DepthData& depthData)
 			cudaImageArrays.resize(numImages);
 			textureImages.resize(numImages);
 		}
+		prevNumImages = numImages;
 
 		// setup CUDA memory
 		CUDA::checkCudaCall(cudaMemcpy(cudaTextureImages, textureImages.data(), sizeof(cudaTextureObject_t) * numImages, cudaMemcpyHostToDevice));
@@ -319,48 +351,45 @@ void PatchMatchCUDA::EstimateDepthMap(DepthData& depthData)
 		}
 
 		// run CUDA patch-match
-		RunCUDA();
+		ASSERT(!depthData.viewsMap.empty());
+		RunCUDA(depthData.confMap.getData(), (uint32_t*)depthData.viewsMap.getData());
 		CUDA::checkCudaCall(cudaGetLastError());
 		if (params.bLowResProcessed)
 			CUDA::checkCudaCall(cudaFree(cudaLowDepths));
 
 		// load depth-map, normal-map and confidence-map from CUDA memory
-		// set keep threshold to:
-		//  OPTDENSE::fNCCThresholdKeep: if geometric consistency is enabled
-		//  OPTDENSE::fNCCThresholdKeep*1.5: if estimating at max-resolution or min-resolution
-		//  2: keep the entire depth-map if estimating at sub-resolutions
-		const float fNCCThresholdKeep(!params.bGeomConsistency && OPTDENSE::nEstimationGeometricIters ?
-			(scaleNumber>0 && scaleNumber!=totalScaleNumber ? 2.f : OPTDENSE::fNCCThresholdKeep*1.2f): OPTDENSE::fNCCThresholdKeep);
-		if (depthData.confMap.empty() && scaleNumber == 0)
-			depthData.confMap.create(depthData.depthMap.size());
 		for (int r = 0; r < depthData.depthMap.rows; ++r) {
 			for (int c = 0; c < depthData.depthMap.cols; ++c) {
 				const int index = r * depthData.depthMap.cols + c;
 				const Point4& depthNormal = depthNormalEstimates[index];
-				ASSERT(std::isfinite(depthNormal.w()));
-				// check if the score is good enough
-				// and that the cross-estimates is close enough to the current estimate
-				float conf = depthNormalCosts[index];
-				ASSERT(std::isfinite(conf));
-				if (depthNormal.w() <= 0 || conf >= fNCCThresholdKeep) {
-					conf = 0;
-					depthData.depthMap(r, c) = 0;
-					depthData.normalMap(r, c) = Normal::ZERO;
-				} else {
-					const Depth depth = depthNormal.w();
-					depthData.depthMap(r, c) = depth;
-					if (depth > depthData.dMax)
-						depthData.dMax = depth;
-					if (depth < depthData.dMin)
-						depthData.dMin = depth;
-					depthData.normalMap(r, c) = depthNormal.topLeftCorner<3, 1>();
-					if (scaleNumber == 0) {
-						// converted ZNCC [0-2] score, where 0 is best, to [0-1] confidence, where 1 is best
-						conf = conf >= 1.f ? 0.f : 1.f - conf;
-					}
+				const Depth depth = depthNormal.w();
+				ASSERT(std::isfinite(depth));
+				ASSERT(depth==0 || ISINSIDE(depth, depthData.dMin, depthData.dMax));
+				depthData.depthMap(r, c) = depth;
+				depthData.normalMap(r, c) = depthNormal.topLeftCorner<3, 1>();
+				if (scaleNumber == 0) {
+					// converted ZNCC [0-2] score, where 0 is best, to [0-1] confidence, where 1 is best
+					ASSERT(!depthData.confMap.empty());
+					float& conf = depthData.confMap(r, c);
+					conf = conf >= 1.f ? 0.f : 1.f - conf;
+					// map pixel views from bit-mask to index
+					ASSERT(!depthData.viewsMap.empty());
+					ViewsID& views = depthData.viewsMap(r, c);
+					if (depth > 0) {
+						const uint32_t bitviews(*reinterpret_cast<const uint32_t*>(views.val));
+						int j = 0;
+						for (int i = 0; i < 32; ++i) {
+							if (bitviews & (1 << i)) {
+								views[j] = i;
+								if (++j == maxPixelViews)
+									break;
+							}
+						}
+						while (j < 4)
+							views[j++] = 255;
+					} else
+						views = ViewsID(255, 255, 255, 255);
 				}
-				if (!depthData.confMap.empty())
-					depthData.confMap(r, c) = conf;
 			}
 		}
 		
@@ -368,6 +397,7 @@ void PatchMatchCUDA::EstimateDepthMap(DepthData& depthData)
 		if (scaleNumber > 0) {
 			lowResDepthMap = depthData.depthMap;
 			lowResNormalMap = depthData.normalMap;
+			lowResViewsMap = depthData.viewsMap;
 		}
 	}
 

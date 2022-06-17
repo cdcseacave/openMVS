@@ -74,6 +74,10 @@
 
 
 // S T R U C T S ///////////////////////////////////////////////////
+namespace MVS {
+	typedef TMatrix<uint8_t, 4, 1> ViewsID;
+}
+DEFINE_CVDATATYPE(MVS::ViewsID)
 
 namespace MVS {
 
@@ -134,6 +138,8 @@ extern float fRandomSmoothBonus;
 } // namespace OPTDENSE
 /*----------------------------------------------------------------*/
 
+
+typedef TImage<ViewsID> ViewsMap;
 
 template <int nTexels>
 struct WeightedPatchFix {
@@ -204,6 +210,7 @@ struct MVS_API DepthData {
 	DepthMap depthMap; // depth-map
 	NormalMap normalMap; // normal-map in camera space
 	ConfidenceMap confMap; // confidence-map
+	ViewsMap viewsMap; // view-IDs map (indexing images vector starting after first view)
 	float dMin, dMax; // global depth range for this image
 	unsigned references; // how many times this depth-map is referenced (on 0 can be safely unloaded)
 	CriticalSection cs; // used to count references
@@ -239,7 +246,7 @@ struct MVS_API DepthData {
 	void ApplyIgnoreMask(const BitMatrix&);
 
 	bool Save(const String& fileName) const;
-	bool Load(const String& fileName, unsigned flags=7);
+	bool Load(const String& fileName, unsigned flags=15);
 
 	unsigned GetRef();
 	unsigned IncRef(const String& fileName);
@@ -491,12 +498,12 @@ MVS_API bool ExportDepthDataRaw(const String&, const String& imageFileName,
 	const IIndexArr&, const cv::Size& imageSize,
 	const KMatrix&, const RMatrix&, const CMatrix&,
 	Depth dMin, Depth dMax,
-	const DepthMap&, const NormalMap&, const ConfidenceMap&);
+	const DepthMap&, const NormalMap&, const ConfidenceMap&, const ViewsMap&);
 MVS_API bool ImportDepthDataRaw(const String&, String& imageFileName,
 	IIndexArr&, cv::Size& imageSize,
 	KMatrix&, RMatrix&, CMatrix&,
 	Depth& dMin, Depth& dMax,
-	DepthMap&, NormalMap&, ConfidenceMap&, unsigned flags=7);
+	DepthMap&, NormalMap&, ConfidenceMap&, ViewsMap&, unsigned flags=15);
 
 MVS_API void CompareDepthMaps(const DepthMap& depthMap, const DepthMap& depthMapGT, uint32_t idxImage, float threshold=0.01f);
 MVS_API void CompareNormalMaps(const NormalMap& normalMap, const NormalMap& normalMapGT, uint32_t idxImage);

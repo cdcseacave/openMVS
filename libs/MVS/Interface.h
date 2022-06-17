@@ -703,14 +703,16 @@ struct Interface
 //  - image-file-name is the path to the reference color image
 //  - image-IDs are the reference view ID and neighbor view IDs used to estimate the depth-map
 //  - camera/rotation/position matrices (row-major) is the absolute pose corresponding to the reference view
-//  - depth-map represents the pixel depth
-//  - normal-map (optional) represents the 3D point normal in camera space; same resolution as the depth-map
-//  - confidence-map (optional) represents the 3D point confidence (usually a value in [0,1]); same resolution as the depth-map
+//  - depth-map: the pixels' depth
+//  - normal-map (optional): the 3D point normal in camera space; same resolution as the depth-map
+//  - confidence-map (optional): the 3D point confidence (usually a value in [0,1]); same resolution as the depth-map
+//  - views-map (optional): the pixels' views, indexing image-IDs starting after first view (up to 4); same resolution as the depth-map
 struct HeaderDepthDataRaw {
 	enum {
 		HAS_DEPTH = (1<<0),
 		HAS_NORMAL = (1<<1),
 		HAS_CONF = (1<<2),
+		HAS_VIEWS = (1 << 3),
 	};
 	uint16_t name; // file type
 	uint8_t type; // content type
