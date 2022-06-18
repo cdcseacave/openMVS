@@ -90,6 +90,7 @@ enum DepthFlags {
 extern unsigned nResolutionLevel;
 extern unsigned nMaxResolution;
 extern unsigned nMinResolution;
+extern unsigned nSubResolutionLevels;
 extern unsigned nMinViews;
 extern unsigned nMaxViews;
 extern unsigned nMinViewsFuse;
@@ -119,9 +120,6 @@ extern unsigned nOptimize;
 extern unsigned nEstimateColors;
 extern unsigned nEstimateNormals;
 extern float fNCCThresholdKeep;
-#ifdef _USE_CUDA
-extern float fNCCThresholdKeepCUDA;
-#endif // _USE_CUDA
 extern unsigned nEstimationIters;
 extern unsigned nEstimationGeometricIters;
 extern float fEstimationGeometricWeight;
@@ -211,6 +209,7 @@ struct MVS_API DepthData {
 	CriticalSection cs; // used to count references
 
 	inline DepthData() : references(0) {}
+	DepthData(const DepthData&);
 
 	inline void ReleaseImages() {
 		for (ViewData& image: images) {
@@ -340,6 +339,7 @@ struct MVS_API DepthEstimator {
 	#if DENSE_NCC == DENSE_NCC_WEIGHTED
 	WeightMap& weightMap0;
 	#endif
+	DepthMap lowResDepthMap;
 
 	const unsigned nIteration; // current PatchMatch iteration
 	const DepthData::ViewDataArr images; // neighbor images used
