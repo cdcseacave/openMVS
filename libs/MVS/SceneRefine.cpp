@@ -96,7 +96,7 @@ public:
 		DepthMap depthMap; // depth-map
 		BaryMap baryMap; // barycentric coordinates
 	};
-	typedef SEACAVE::cList<View,const View&,2> ViewsArr;
+	typedef CLISTDEF2(View) ViewsArr;
 
 	// used to render a mesh for optimization
 	struct RasterMesh : TRasterMesh<RasterMesh> {
@@ -411,7 +411,7 @@ void MeshRefine::ListVertexFacesPost()
 void MeshRefine::ListCameraFaces()
 {
 	// extract array of faces viewed by each camera
-	typedef SEACAVE::cList<Mesh::FaceIdxArr,const Mesh::FaceIdxArr&,2> CameraFacesArr;
+	typedef CLISTDEF2(Mesh::FaceIdxArr) CameraFacesArr;
 	CameraFacesArr arrCameraFaces(images.GetSize()); {
 		Mesh::Octree octree;
 		Mesh::FacesInserter::CreateOctree(octree, scene.mesh);

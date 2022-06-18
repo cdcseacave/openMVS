@@ -57,6 +57,7 @@ String strDenseConfigFileName;
 String strExportDepthMapsName;
 float fMaxSubsceneArea;
 float fSampleMesh;
+int nEstimateROI;
 int nFusionMode;
 int thFilterPointCloud;
 int nExportNumViews;
@@ -138,7 +139,8 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		("fusion-mode", boost::program_options::value(&OPT::nFusionMode)->default_value(0), "depth map fusion mode (-2 - fuse disparity-maps, -1 - export disparity-maps only, 0 - depth-maps & fusion, 1 - export depth-maps only)")
 		("filter-point-cloud", boost::program_options::value(&OPT::thFilterPointCloud)->default_value(0), "filter dense point-cloud based on visibility (0 - disabled)")
 		("export-number-views", boost::program_options::value(&OPT::nExportNumViews)->default_value(0), "export points with >= number of views (0 - disabled)")
-		;
+        ("estimate-roi", boost::program_options::value(&OPT::nEstimateROI)->default_value(2), "estimate and set region-of-interest (0 - disabled, 1 - enabled, 2 - adaptive)")
+        ;
 
 	// hidden options, allowed both on command line and
 	// in config file, but will not be shown to the user
@@ -284,7 +286,9 @@ int main(int argc, LPCTSTR* argv)
 	// load and estimate a dense point-cloud
 	if (!scene.Load(MAKE_PATH_SAFE(OPT::strInputFileName)))
 		return EXIT_FAILURE;
-	if (!OPT::strExportROIFileName.empty() && scene.IsBounded()) {
+    if (!scene.EstimateROI(OPT::nEstimateROI, 1.f))
+        return EXIT_FAILURE;
+    if (!OPT::strExportROIFileName.empty() && scene.IsBounded()) {
 		std::ofstream fs(MAKE_PATH_SAFE(OPT::strExportROIFileName));
 		if (!fs)
 			return EXIT_FAILURE;
