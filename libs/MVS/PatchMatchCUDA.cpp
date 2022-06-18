@@ -185,7 +185,7 @@ void PatchMatchCUDA::EstimateDepthMap(DepthData& depthData)
 	ViewsMap lowResViewsMap;
 	IIndex prevNumImages = (IIndex)images.size();
 	const IIndex numImages = depthData.images.size();
-	params.nNumViews = (int)numImages - 1;
+	params.nNumViews = (int)numImages-1;
 	params.nInitTopK = std::min(params.nInitTopK, params.nNumViews);
 	params.fDepthMin = depthData.dMin;
 	params.fDepthMax = depthData.dMax;
@@ -195,9 +195,9 @@ void PatchMatchCUDA::EstimateDepthMap(DepthData& depthData)
 		cudaImageArrays.resize(numImages);
 		textureImages.resize(numImages);
 	}
-	if (params.bGeomConsistency && cudaDepthArrays.size() < numImages - 1) {
-		cudaDepthArrays.resize(numImages - 1);
-		textureDepths.resize(numImages - 1);
+	if (params.bGeomConsistency && cudaDepthArrays.size() < (size_t)params.nNumViews) {
+		cudaDepthArrays.resize(params.nNumViews);
+		textureDepths.resize(params.nNumViews);
 	}
 	const int maxPixelViews(MINF(params.nNumViews, 4));
 	for (int scaleNumber = totalScaleNumber; scaleNumber >= 0; --scaleNumber) {
@@ -276,16 +276,16 @@ void PatchMatchCUDA::EstimateDepthMap(DepthData& depthData)
 				cudaDestroyTextureObject(textureImages[i]);
 				cudaFreeArray(cudaImageArrays[i]);
 				if (params.bGeomConsistency && i > 0) {
-					cudaDestroyTextureObject(textureDepths[i - 1]);
-					cudaFreeArray(cudaDepthArrays[i - 1]);
+					cudaDestroyTextureObject(textureDepths[i-1]);
+					cudaFreeArray(cudaDepthArrays[i-1]);
 				}
 				AllocateImageCUDA(i, image, true, !view.depthMap.empty());
 			} else
-			if (params.bGeomConsistency && i > 0 && (view.depthMap.empty() != (cudaDepthArrays[i - 1] == NULL))) {
+			if (params.bGeomConsistency && i > 0 && (view.depthMap.empty() != (cudaDepthArrays[i-1] == NULL))) {
 				// reallocate depth CUDA memory
-				if (cudaDepthArrays[i - 1]) {
-					cudaDestroyTextureObject(textureDepths[i - 1]);
-					cudaFreeArray(cudaDepthArrays[i - 1]);
+				if (cudaDepthArrays[i-1]) {
+					cudaDestroyTextureObject(textureDepths[i-1]);
+					cudaFreeArray(cudaDepthArrays[i-1]);
 				}
 				AllocateImageCUDA(i, image, false, !view.depthMap.empty());
 			}
@@ -295,7 +295,7 @@ void PatchMatchCUDA::EstimateDepthMap(DepthData& depthData)
 				DepthMap depthMap(view.depthMap);
 				if (depthMap.size() != image.size())
 					cv::resize(depthMap, depthMap, image.size(), 0, 0, cv::INTER_LINEAR);
-				CUDA::checkCudaCall(cudaMemcpy2DToArray(cudaDepthArrays[i - 1], 0, 0, depthMap.ptr<float>(), depthMap.step[0], sizeof(float) * depthMap.cols, depthMap.rows, cudaMemcpyHostToDevice));
+				CUDA::checkCudaCall(cudaMemcpy2DToArray(cudaDepthArrays[i-1], 0, 0, depthMap.ptr<float>(), depthMap.step[0], sizeof(float) * depthMap.cols, depthMap.rows, cudaMemcpyHostToDevice));
 			}
 			images[i] = std::move(image);
 			cameras[i] = std::move(camera);
@@ -303,11 +303,11 @@ void PatchMatchCUDA::EstimateDepthMap(DepthData& depthData)
 		if (params.bGeomConsistency && cudaDepthArrays.size() > numImages - 1) {
 			for (IIndex i = numImages; i < prevNumImages; ++i) {
 				// free image CUDA memory
-				cudaDestroyTextureObject(textureDepths[i - 1]);
-				cudaFreeArray(cudaDepthArrays[i - 1]);
+				cudaDestroyTextureObject(textureDepths[i-1]);
+				cudaFreeArray(cudaDepthArrays[i-1]);
 			}
-			cudaDepthArrays.resize(numImages - 1);
-			textureDepths.resize(numImages - 1);
+			cudaDepthArrays.resize(params.nNumViews);
+			textureDepths.resize(params.nNumViews);
 		}
 		if (prevNumImages > numImages) {
 			for (IIndex i = numImages; i < prevNumImages; ++i) {
@@ -328,7 +328,7 @@ void PatchMatchCUDA::EstimateDepthMap(DepthData& depthData)
 		if (params.bGeomConsistency) {
 			// set previously computed depth-maps
 			ASSERT(depthData.depthMap.size() == depthData.GetView().image.size());
-			CUDA::checkCudaCall(cudaMemcpy(cudaTextureDepths, textureDepths.data(), sizeof(cudaTextureObject_t) * (numImages - 1), cudaMemcpyHostToDevice));
+			CUDA::checkCudaCall(cudaMemcpy(cudaTextureDepths, textureDepths.data(), sizeof(cudaTextureObject_t) * params.nNumViews, cudaMemcpyHostToDevice));
 		}
 
 		// load depth-map and normal-map into CUDA memory
