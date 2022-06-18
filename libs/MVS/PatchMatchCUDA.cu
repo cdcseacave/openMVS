@@ -348,9 +348,9 @@ __device__ float ScorePlane(const ImagePixels refImage, const PatchMatchCUDA::Ca
 
 	// apply depth prior weight based on patch textureless
 	if (lowDepth > 0) {
+		constexpr float smoothSigmaDepth(-1.f / (1.f * 0.02f));
 		const float depth = plane.w();
 		const float deltaDepth = MIN((abs(lowDepth - depth) / lowDepth), 0.5f);
-		const float smoothSigmaDepth(-1.f / (1.f * 0.02f));
 		const float factorDeltaDepth = exp(varRef * smoothSigmaDepth);
 		ncc += deltaDepth * factorDeltaDepth;
 	}
@@ -530,7 +530,7 @@ __device__ void ProcessPixel(const ImagePixels* images, const ImagePixels* depth
 		surfaceNormal = ComputeDepthGradient(cameras[0].K, depth, p, ndepths);
 		numValidPlanes = 4;
 	}
-	const int numPlanes = 4;
+	constexpr int numPlanes = 4;
 	const float depths[numPlanes] = {depthPerturbed, depth, depth, depth};
 	const Point3 normals[numPlanes] = {plane.topLeftCorner<3,1>(), perturbedNormal, normalRand, surfaceNormal};
 	for (int i = 0; i < numValidPlanes; ++i) {
