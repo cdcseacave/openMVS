@@ -1381,7 +1381,7 @@ bool Scene::ScaleImages(unsigned nMaxResolution, REAL scale, const String& folde
 // scale specifies the ratio of the ROI's diameter
 bool Scene::EstimateROI(int nEstimateROI, float scale)
 {
-	ASSERT(nEstimateROI >= 0 || nEstimateROI <= 2 || scale > 0);
+	ASSERT(nEstimateROI >= 0 && nEstimateROI <= 2 && scale > 0);
 	if (nEstimateROI == 0) {
 		DEBUG_ULTIMATE("The scene will be considered as unbounded (no ROI)");
 		return true;
@@ -1451,14 +1451,13 @@ bool Scene::EstimateROI(int nEstimateROI, float scale)
 			if (!imageData.IsValid())
 				continue;
 			const Camera& camera = imageData.camera;
-			if (camera.PointDepth(point) < sceneRadius * 2.0f * scale) {
+			if (camera.PointDepth(point) < sceneRadius * 2.0f) {
 				ptsInROI.emplace_back(point);
 				break;
 			}
 		}
 	}
-	;
-	obb.Set(AABB3f(ptsInROI.begin(), ptsInROI.size()));
+	obb.Set(AABB3f(ptsInROI.begin(), ptsInROI.size()).EnlargePercent(scale));
 	#if TD_VERBOSE != TD_VERBOSE_OFF
 	if (VERBOSITY_LEVEL > 2) {
 		VERBOSE("Set the ROI with the AABB of position (%f,%f,%f) and extent (%f,%f,%f)",
