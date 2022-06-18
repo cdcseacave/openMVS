@@ -94,6 +94,7 @@ enum DepthFlags {
 extern unsigned nResolutionLevel;
 extern unsigned nMaxResolution;
 extern unsigned nMinResolution;
+extern unsigned nSubResolutionLevels;
 extern unsigned nMinViews;
 extern unsigned nMaxViews;
 extern unsigned nMinViewsFuse;

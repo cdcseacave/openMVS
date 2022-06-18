@@ -182,7 +182,7 @@ bool DepthMapsData::SelectViews(IIndexArr& images, IIndexArr& imagesMap, IIndexA
 	typedef MRFEnergy<TypeGeneral> MRFEnergyType;
 	CAutoPtr<MRFEnergyType> energy(new MRFEnergyType(TypeGeneral::GlobalSize()));
 	CAutoPtrArr<MRFEnergyType::NodeId> nodes(new MRFEnergyType::NodeId[_num_nodes]);
-	typedef SEACAVE::cList<TypeGeneral::REAL, const TypeGeneral::REAL&, 0> EnergyCostArr;
+	typedef SEACAVE::cList<TypeGeneral::REAL, TypeGeneral::REAL, 0> EnergyCostArr;
 	// unary costs: inverse proportional to the image pair score
 	EnergyCostArr arrUnary(_num_labels);
 	for (IIndex n=0; n<_num_nodes; ++n) {
@@ -632,7 +632,7 @@ bool DepthMapsData::EstimateDepthMap(IIndex idxImage, int nGeometricIter)
 
 	// Multi-Resolution : 
 	DepthData& fullResDepthData(arrDepthData[idxImage]);
-	const unsigned totalScaleNumber(nGeometricIter < 0 ? OPTDENSE::nEstimationSubResolutions : 0u);
+	const unsigned totalScaleNumber(nGeometricIter < 0 ? OPTDENSE::nSubResolutionLevels : 0u);
 	DepthMap lowResDepthMap;
 	NormalMap lowResNormalMap;
 	#if DENSE_NCC == DENSE_NCC_WEIGHTED
@@ -767,7 +767,7 @@ bool DepthMapsData::EstimateDepthMap(IIndex idxImage, int nGeometricIter)
 	{
 		const float fNCCThresholdKeep(OPTDENSE::fNCCThresholdKeep);
 		if (nGeometricIter < 0 && OPTDENSE::nEstimationGeometricIters)
-			OPTDENSE::fNCCThresholdKeep *= 1.5f;
+			OPTDENSE::fNCCThresholdKeep *= 1.333f;
 		// create working threads
 		idxPixel = -1;
 		ASSERT(estimators.empty());
