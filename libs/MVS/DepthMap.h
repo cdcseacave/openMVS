@@ -90,6 +90,7 @@ enum DepthFlags {
 extern unsigned nResolutionLevel;
 extern unsigned nMaxResolution;
 extern unsigned nMinResolution;
+extern unsigned nSubResolutionLevels;
 extern unsigned nMinViews;
 extern unsigned nMaxViews;
 extern unsigned nMinViewsFuse;
@@ -119,11 +120,7 @@ extern unsigned nOptimize;
 extern unsigned nEstimateColors;
 extern unsigned nEstimateNormals;
 extern float fNCCThresholdKeep;
-#ifdef _USE_CUDA
-extern float fNCCThresholdKeepCUDA;
-#endif // _USE_CUDA
 extern unsigned nEstimationIters;
-extern unsigned nEstimationSubResolutions;
 extern unsigned nEstimationGeometricIters;
 extern float fEstimationGeometricWeight;
 extern unsigned nRandomIters;

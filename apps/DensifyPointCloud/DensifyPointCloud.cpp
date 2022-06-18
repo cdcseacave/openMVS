@@ -111,7 +111,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	unsigned nMinResolution;
 	unsigned nNumViews;
 	unsigned nMinViewsFuse;
-	unsigned nEstimationSubResolutions;
+	unsigned nSubResolutionLevels;
 	unsigned nEstimationIters;
 	unsigned nEstimationGeometricIters;
 	unsigned nEstimateColors;
@@ -126,11 +126,11 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		("resolution-level", boost::program_options::value(&nResolutionLevel)->default_value(1), "how many times to scale down the images before point cloud computation")
 		("max-resolution", boost::program_options::value(&nMaxResolution)->default_value(2560), "do not scale images higher than this resolution")
 		("min-resolution", boost::program_options::value(&nMinResolution)->default_value(640), "do not scale images lower than this resolution")
+		("sub-resolution-levels", boost::program_options::value(&nSubResolutionLevels)->default_value(2), "number of patch-match sub-resolution iterations (0 - disabled)")
 		("number-views", boost::program_options::value(&nNumViews)->default_value(nNumViewsDefault), "number of views used for depth-map estimation (0 - all neighbor views available)")
 		("number-views-fuse", boost::program_options::value(&nMinViewsFuse)->default_value(3), "minimum number of images that agrees with an estimate during fusion in order to consider it inlier (<2 - only merge depth-maps)")
 		("ignore-mask-label", boost::program_options::value(&nIgnoreMaskLabel)->default_value(-1), "integer value for the label to ignore in the segmentation mask (<0 - disabled)")
 		("iters", boost::program_options::value(&nEstimationIters)->default_value(numIters), "number of patch-match iterations")
-		("sub-resolution-levels", boost::program_options::value(&nEstimationSubResolutions)->default_value(2), "number of patch-match sub-resolution iterations (0 - disabled)")
 		("geometric-iters", boost::program_options::value(&nEstimationGeometricIters)->default_value(2), "number of geometric consistent patch-match iterations (0 - disabled)")
 		("estimate-colors", boost::program_options::value(&nEstimateColors)->default_value(2), "estimate the colors for the dense point-cloud (0 - disabled, 1 - final, 2 - estimate)")
 		("estimate-normals", boost::program_options::value(&nEstimateNormals)->default_value(2), "estimate the normals for the dense point-cloud (0 - disabled, 1 - final, 2 - estimate)")
@@ -215,10 +215,10 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	OPTDENSE::nResolutionLevel = nResolutionLevel;
 	OPTDENSE::nMaxResolution = nMaxResolution;
 	OPTDENSE::nMinResolution = nMinResolution;
+	OPTDENSE::nSubResolutionLevels = nSubResolutionLevels;
 	OPTDENSE::nNumViews = nNumViews;
 	OPTDENSE::nMinViewsFuse = nMinViewsFuse;
 	OPTDENSE::nEstimationIters = nEstimationIters;
-	OPTDENSE::nEstimationSubResolutions = nEstimationSubResolutions;
 	OPTDENSE::nEstimationGeometricIters = nEstimationGeometricIters;
 	OPTDENSE::nEstimateColors = nEstimateColors;
 	OPTDENSE::nEstimateNormals = nEstimateNormals;
