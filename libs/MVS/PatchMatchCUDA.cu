@@ -298,7 +298,8 @@ __device__ inline float GeometricConsistencyWeight(const ImagePixels depthImage,
 // compute photometric score using weighted ZNCC
 __device__ float ScorePlane(const ImagePixels refImage, const PatchMatchCUDA::Camera& refCamera, const ImagePixels trgImage, const PatchMatchCUDA::Camera& trgCamera, const Point2i& p, const Point4& plane, const float lowDepth, const PatchMatchCUDA::Params& params)
 {
-	constexpr float maxCost = 1.5f;
+	constexpr float maxCost = 1.2f;
+	
 	Matrix3 H = ComputeHomography(refCamera, trgCamera, p.cast<float>(), plane);
 	const Point2 pt = (H * p.cast<float>().homogeneous()).hnormalized();
 	if (pt.x() >= trgCamera.width || pt.x() < 0.f || pt.y() >= trgCamera.height || pt.y() < 0.f)

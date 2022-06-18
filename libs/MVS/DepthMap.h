@@ -125,7 +125,6 @@ extern unsigned nEstimateColors;
 extern unsigned nEstimateNormals;
 extern float fNCCThresholdKeep;
 extern unsigned nEstimationIters;
-extern unsigned nEstimationSubResolutions;
 extern unsigned nEstimationGeometricIters;
 extern float fEstimationGeometricWeight;
 extern unsigned nRandomIters;

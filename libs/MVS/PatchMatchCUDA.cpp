@@ -179,7 +179,7 @@ void PatchMatchCUDA::EstimateDepthMap(DepthData& depthData)
 
 	// multi-resolution
 	DepthData& fullResDepthData(depthData);
-	const unsigned totalScaleNumber(params.bGeomConsistency ? 0u : OPTDENSE::nEstimationSubResolutions);
+	const unsigned totalScaleNumber(params.bGeomConsistency ? 0u : OPTDENSE::nSubResolutionLevels);
 	DepthMap lowResDepthMap;
 	NormalMap lowResNormalMap;
 	ViewsMap lowResViewsMap;
