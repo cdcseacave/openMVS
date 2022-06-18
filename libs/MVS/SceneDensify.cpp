@@ -385,9 +385,10 @@ bool DepthMapsData::InitViews(DepthData& depthData, IIndex idxNeighbor, IIndex n
 			Depth dMin, dMax;
 			NormalMap normalMap;
 			ConfidenceMap confMap;
+			ViewsMap viewsMap;
 			ImportDepthDataRaw(ComposeDepthFilePath(view.GetID(), "dmap"),
 				imageFileName, IDs, imageSize, view.cameraDepthMap.K, view.cameraDepthMap.R, view.cameraDepthMap.C,
-				dMin, dMax, view.depthMap, normalMap, confMap, 1);
+				dMin, dMax, view.depthMap, normalMap, confMap, viewsMap, 1);
 		}
 		view.Init(viewRef.camera);
 	}
@@ -399,9 +400,10 @@ bool DepthMapsData::InitViews(DepthData& depthData, IIndex idxNeighbor, IIndex n
 		cv::Size imageSize;
 		Camera camera;
 		ConfidenceMap confMap;
+		ViewsMap viewsMap;
 		if (!ImportDepthDataRaw(ComposeDepthFilePath(viewRef.GetID(), "dmap"),
 				imageFileName, IDs, imageSize, camera.K, camera.R, camera.C, depthData.dMin, depthData.dMax,
-				depthData.depthMap, depthData.normalMap, confMap, 3))
+				depthData.depthMap, depthData.normalMap, confMap, viewsMap, 3))
 			return false;
 		ASSERT(viewRef.image.size() == depthData.depthMap.size());
 	} else if (loadDepthMaps == 0) {
@@ -573,11 +575,14 @@ DepthData DepthMapsData::ScaleDepthData(const DepthData& inputDeptData, float sc
 	DepthData rescaledDepthData(inputDeptData);
 	FOREACH (idxView, rescaledDepthData.images) {
 		DepthData::ViewData& viewData = rescaledDepthData.images[idxView];
+		ASSERT(viewData.depthMap.empty() || viewData.image.size() == viewData.depthMap.size());
 		cv::resize(viewData.image, viewData.image, cv::Size(), scale, scale, cv::INTER_AREA);
-		viewData.camera = viewData.pImageData->GetCamera(scene.platforms, viewData.image.size());
+		viewData.camera = viewData.pImageData->camera;
+		viewData.camera.K = viewData.camera.GetScaledK(viewData.pImageData->GetSize(), viewData.image.size());
 		if (!viewData.depthMap.empty()) {
-			cv::resize(viewData.depthMap, viewData.depthMap, cv::Size(), scale, scale, cv::INTER_AREA);
-			viewData.cameraDepthMap = viewData.pImageData->GetCamera(scene.platforms, viewData.depthMap.size());
+			cv::resize(viewData.depthMap, viewData.depthMap, viewData.image.size(), 0, 0, cv::INTER_AREA);
+			viewData.cameraDepthMap = viewData.pImageData->camera;
+			viewData.cameraDepthMap.K = viewData.cameraDepthMap.GetScaledK(viewData.pImageData->GetSize(), viewData.image.size());
 		}
 		viewData.Init(rescaledDepthData.images[0].camera);
 	}

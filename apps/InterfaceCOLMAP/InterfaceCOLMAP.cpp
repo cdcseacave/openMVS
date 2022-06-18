@@ -860,9 +860,10 @@ bool ImportScene(const String& strFolder, const String& strOutFolder, Interface&
 					}, normalMap);
 				}
 				MVS::ConfidenceMap confMap;
+				MVS::ViewsMap viewsMap;
 				const auto depthMM(std::minmax_element(colDepthMap.data_.cbegin(), colDepthMap.data_.cend()));
 				const MVS::Depth dMin(*depthMM.first), dMax(*depthMM.second);
-				if (!ExportDepthDataRaw(strOutFolder+String::FormatString("depth%04u.dmap", image.ID), MAKE_PATH_FULL(strOutFolder, image.name), IDs, depthMap.size(), K, pose.R, pose.C, dMin, dMax, depthMap, normalMap, confMap))
+				if (!ExportDepthDataRaw(strOutFolder+String::FormatString("depth%04u.dmap", image.ID), MAKE_PATH_FULL(strOutFolder, image.name), IDs, depthMap.size(), K, pose.R, pose.C, dMin, dMax, depthMap, normalMap, confMap, viewsMap))
 					return false;
 			}
 		}

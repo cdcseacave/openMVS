@@ -1721,8 +1721,8 @@ public:
 	}
 
 	/// pointer to the beginning of the matrix data
-	inline const TYPE* getData() const { ASSERT(cv::Mat::isContinuous()); return (const TYPE*)data; }
-	inline TYPE* getData() { ASSERT(cv::Mat::isContinuous()); return (TYPE*)data; }
+	inline const TYPE* getData() const { ASSERT(cv::Mat::empty() || cv::Mat::isContinuous()); return (const TYPE*)data; }
+	inline TYPE* getData() { ASSERT(cv::Mat::empty() || cv::Mat::isContinuous()); return (TYPE*)data; }
 
 	#ifdef _USE_EIGEN
 	// Access point as Eigen::Map equivalent

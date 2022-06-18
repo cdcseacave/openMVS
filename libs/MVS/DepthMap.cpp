@@ -68,7 +68,6 @@ using namespace MVS;
 namespace MVS {
 DEFOPT_SPACE(OPTDENSE, _T("Dense"))
 
-
 DEFVAR_OPTDENSE_uint32(nResolutionLevel, "Resolution Level", "How many times to scale down the images before dense reconstruction", "1")
 MDEFVAR_OPTDENSE_uint32(nMaxResolution, "Max Resolution", "Do not scale images lower than this resolution", "3200")
 MDEFVAR_OPTDENSE_uint32(nMinResolution, "Min Resolution", "Do not scale images lower than this resolution", "640")
@@ -98,7 +97,7 @@ MDEFVAR_OPTDENSE_int32(nOptimizerMaxIters, "Optimizer Max Iters", "MRF optimizer
 MDEFVAR_OPTDENSE_uint32(nSpeckleSize, "Speckle Size", "maximal size of a speckle (small speckles get removed)", "100")
 MDEFVAR_OPTDENSE_uint32(nIpolGapSize, "Interpolate Gap Size", "interpolate small gaps (left<->right, top<->bottom)", "7")
 MDEFVAR_OPTDENSE_int32(nIgnoreMaskLabel, "Ignore Mask Label", "label id used during ignore mask filter (<0 - disabled)", "-1")
-MDEFVAR_OPTDENSE_uint32(nOptimize, "Optimize", "should we filter the extracted depth-maps?", "7") // see DepthFlags
+DEFVAR_OPTDENSE_uint32(nOptimize, "Optimize", "should we filter the extracted depth-maps?", "7") // see DepthFlags
 MDEFVAR_OPTDENSE_uint32(nEstimateColors, "Estimate Colors", "should we estimate the colors for the dense point-cloud?", "2", "0", "1")
 MDEFVAR_OPTDENSE_uint32(nEstimateNormals, "Estimate Normals", "should we estimate the normals for the dense point-cloud?", "0", "1", "2")
 MDEFVAR_OPTDENSE_float(fNCCThresholdKeep, "NCC Threshold Keep", "Maximum 1-NCC score accepted for a match", "0.9", "0.5")
@@ -241,7 +240,7 @@ bool DepthData::Save(const String& fileName) const
 		for (const ViewData& image: images)
 			IDs.push_back(image.GetID());
 		const ViewData& image0 = GetView();
-		if (!ExportDepthDataRaw(fileNameTmp, image0.pImageData->name, IDs, depthMap.size(), image0.camera.K, image0.camera.R, image0.camera.C, dMin, dMax, depthMap, normalMap, confMap))
+		if (!ExportDepthDataRaw(fileNameTmp, image0.pImageData->name, IDs, depthMap.size(), image0.camera.K, image0.camera.R, image0.camera.C, dMin, dMax, depthMap, normalMap, confMap, viewsMap))
 			return false;
 	}
 	if (!File::renameFile(fileNameTmp, fileName)) {
@@ -258,7 +257,7 @@ bool DepthData::Load(const String& fileName, unsigned flags)
 	IIndexArr IDs;
 	cv::Size imageSize;
 	Camera camera;
-	if (!ImportDepthDataRaw(fileName, imageFileName, IDs, imageSize, camera.K, camera.R, camera.C, dMin, dMax, depthMap, normalMap, confMap, flags))
+	if (!ImportDepthDataRaw(fileName, imageFileName, IDs, imageSize, camera.K, camera.R, camera.C, dMin, dMax, depthMap, normalMap, confMap, viewsMap, flags))
 		return false;
 	ASSERT(!IsValid() || (IDs.size() == images.size() && IDs.front() == GetView().GetID()));
 	ASSERT(depthMap.size() == imageSize);
@@ -1773,18 +1772,19 @@ bool MVS::ExportPointCloud(const String& fileName, const Image& imageData, const
 } // ExportPointCloud
 /*----------------------------------------------------------------*/
 
-
 bool MVS::ExportDepthDataRaw(const String& fileName, const String& imageFileName,
 	const IIndexArr& IDs, const cv::Size& imageSize,
 	const KMatrix& K, const RMatrix& R, const CMatrix& C,
 	Depth dMin, Depth dMax,
-	const DepthMap& depthMap, const NormalMap& normalMap, const ConfidenceMap& confMap)
+	const DepthMap& depthMap, const NormalMap& normalMap, const ConfidenceMap& confMap, const ViewsMap& viewsMap)
 {
+	ASSERT(IDs.size() > 1 && IDs.size() < 256);
 	ASSERT(!depthMap.empty());
 	ASSERT(confMap.empty() || depthMap.size() == confMap.size());
+	ASSERT(viewsMap.empty() || depthMap.size() == viewsMap.size());
 	ASSERT(depthMap.width() <= imageSize.width && depthMap.height() <= imageSize.height);
 
-	FILE *f = fopen(fileName, "wb");
+	FILE* f = fopen(fileName, "wb");
 	if (f == NULL) {
 		DEBUG("error: opening file '%s' for writing depth-data", fileName.c_str());
 		return false;
@@ -1804,6 +1804,8 @@ bool MVS::ExportDepthDataRaw(const String& fileName, const String& imageFileName
 		header.type |= HeaderDepthDataRaw::HAS_NORMAL;
 	if (!confMap.empty())
 		header.type |= HeaderDepthDataRaw::HAS_CONF;
+	if (!viewsMap.empty())
+		header.type |= HeaderDepthDataRaw::HAS_VIEWS;
 	fwrite(&header, sizeof(HeaderDepthDataRaw), 1, f);
 
 	// write image file name
@@ -1836,6 +1838,10 @@ bool MVS::ExportDepthDataRaw(const String& fileName, const String& imageFileName
 	if ((header.type & HeaderDepthDataRaw::HAS_CONF) != 0)
 		fwrite(confMap.getData(), sizeof(float), confMap.area(), f);
 
+	// write views-map
+	if ((header.type & HeaderDepthDataRaw::HAS_VIEWS) != 0)
+		fwrite(viewsMap.getData(), sizeof(uint8_t)*4, viewsMap.area(), f);
+
 	const bool bRet(ferror(f) == 0);
 	fclose(f);
 	return bRet;
@@ -1845,9 +1851,9 @@ bool MVS::ImportDepthDataRaw(const String& fileName, String& imageFileName,
 	IIndexArr& IDs, cv::Size& imageSize,
 	KMatrix& K, RMatrix& R, CMatrix& C,
 	Depth& dMin, Depth& dMax,
-	DepthMap& depthMap, NormalMap& normalMap, ConfidenceMap& confMap, unsigned flags)
+	DepthMap& depthMap, NormalMap& normalMap, ConfidenceMap& confMap, ViewsMap& viewsMap, unsigned flags)
 {
-	FILE *f = fopen(fileName, "rb");
+	FILE* f = fopen(fileName, "rb");
 	if (f == NULL) {
 		DEBUG("error: opening file '%s' for reading depth-data", fileName.c_str());
 		return false;
@@ -1859,10 +1865,9 @@ bool MVS::ImportDepthDataRaw(const String& fileName, String& imageFileName,
 		header.name != HeaderDepthDataRaw::HeaderDepthDataRawName() ||
 		(header.type & HeaderDepthDataRaw::HAS_DEPTH) == 0 ||
 		header.depthWidth <= 0 || header.depthHeight <= 0 ||
-		header.imageWidth <= 0 || header.imageHeight <= 0)
+		header.imageWidth < header.depthWidth || header.imageHeight < header.depthHeight)
 	{
 		DEBUG("error: invalid depth-data file '%s'", fileName.c_str());
-		fclose(f);
 		return false;
 	}
 
@@ -1871,12 +1876,13 @@ bool MVS::ImportDepthDataRaw(const String& fileName, String& imageFileName,
 	uint16_t nFileNameSize;
 	fread(&nFileNameSize, sizeof(uint16_t), 1, f);
 	imageFileName.resize(nFileNameSize);
-	fread(&imageFileName[0u], sizeof(char), nFileNameSize, f);
+	fread(imageFileName.data(), sizeof(char), nFileNameSize, f);
 
 	// read neighbor IDs
 	STATIC_ASSERT(sizeof(uint32_t) == sizeof(IIndex));
 	uint32_t nIDs;
 	fread(&nIDs, sizeof(IIndex), 1, f);
+	ASSERT(nIDs > 0 && nIDs < 256);
 	IDs.resize(nIDs);
 	fread(IDs.data(), sizeof(IIndex), nIDs, f);
 
@@ -1913,6 +1919,16 @@ bool MVS::ImportDepthDataRaw(const String& fileName, String& imageFileName,
 		if ((flags & HeaderDepthDataRaw::HAS_CONF) != 0) {
 			confMap.create(header.depthHeight, header.depthWidth);
 			fread(confMap.getData(), sizeof(float), confMap.area(), f);
+		} else {
+			fseek(f, sizeof(float)*header.depthWidth*header.depthHeight, SEEK_CUR);
+		}
+	}
+
+	// read visibility-map
+	if ((header.type & HeaderDepthDataRaw::HAS_VIEWS) != 0) {
+		if ((flags & HeaderDepthDataRaw::HAS_VIEWS) != 0) {
+			viewsMap.create(header.depthHeight, header.depthWidth);
+			fread(viewsMap.getData(), sizeof(uint8_t)*4, viewsMap.area(), f);
 		}
 	}
 
