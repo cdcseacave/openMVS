@@ -286,9 +286,9 @@ int main(int argc, LPCTSTR* argv)
 	// load and estimate a dense point-cloud
 	if (!scene.Load(MAKE_PATH_SAFE(OPT::strInputFileName)))
 		return EXIT_FAILURE;
-    if (!scene.EstimateROI(OPT::nEstimateROI, 1.f))
-        return EXIT_FAILURE;
-    if (!OPT::strExportROIFileName.empty() && scene.IsBounded()) {
+	if (!scene.EstimateROI(OPT::nEstimateROI, 1.1f))
+		return EXIT_FAILURE;
+	if (!OPT::strExportROIFileName.empty() && scene.IsBounded()) {
 		std::ofstream fs(MAKE_PATH_SAFE(OPT::strExportROIFileName));
 		if (!fs)
 			return EXIT_FAILURE;
