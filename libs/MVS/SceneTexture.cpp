@@ -370,11 +370,13 @@ public:
 
 	void ListVertexFaces();
 
-	bool ListCameraFaces(FaceDataViewArr&, float fOutlierThreshold, const IIndexArr& views);
+    bool ListCameraFaces(FaceDataViewArr&, float fOutlierThreshold, const IIndexArr& views) const;
 
 	#if TEXOPT_FACEOUTLIER != TEXOPT_FACEOUTLIER_NA
 	bool FaceOutlierDetection(FaceDataArr& faceDatas, float fOutlierThreshold) const;
 	#endif
+
+	bool FaceOutlierDetectionWithPointCovisibility(FaceDataViewArr& facesDatas, const IIndexArr& views, size_t topN, const PointCloud::PointArr& points, const PointCloud::PointViewArr& pointViews) const;
 
 	bool FaceViewSelection(float fOutlierThreshold, float fRatioDataSmoothness, const IIndexArr& views);
 
@@ -471,7 +473,7 @@ void MeshTexture::ListVertexFaces()
 }
 
 // extract array of faces viewed by each image
-bool MeshTexture::ListCameraFaces(FaceDataViewArr& facesDatas, float fOutlierThreshold, const IIndexArr& _views)
+bool MeshTexture::ListCameraFaces(FaceDataViewArr& facesDatas, float fOutlierThreshold, const IIndexArr& _views) const
 {
 	// create faces octree
 	Mesh::Octree octree;
@@ -617,6 +619,10 @@ bool MeshTexture::ListCameraFaces(FaceDataViewArr& facesDatas, float fOutlierThr
 	progress.close();
 
 	#if TEXOPT_FACEOUTLIER != TEXOPT_FACEOUTLIER_NA
+	if (scene.pointcloud.points.size() > 0) {
+		FaceOutlierDetectionWithPointCovisibility(facesDatas, views, 10, scene.pointcloud.points, scene.pointcloud.pointViews);
+	}
+
 	if (fOutlierThreshold > 0) {
 		// try to detect outlier views for each face
 		// (views for which the face is occluded by a dynamic object in the scene, ex. pedestrians)
@@ -625,6 +631,91 @@ bool MeshTexture::ListCameraFaces(FaceDataViewArr& facesDatas, float fOutlierThr
 	}
 	#endif
 	return true;
+}
+
+bool MeshTexture::FaceOutlierDetectionWithPointCovisibility(FaceDataViewArr& facesDatas, const IIndexArr& views, size_t topN, const PointCloud::PointArr& points, const PointCloud::PointViewArr& pointViews) const {
+    std::unordered_set<unsigned> valid_views;
+    for (IIndex idxView: views) {
+        valid_views.insert(idxView);
+    }
+
+	// construct octree for point cloud
+    MVS::PointCloud::Octree octPoints(points, [](MVS::PointCloud::Octree::IDX_TYPE size, MVS::PointCloud::Octree::Type /*radius*/) {
+        return size > 512;
+    });
+
+	// find views seeing face
+	std::unordered_map<unsigned, std::unordered_set<unsigned>> face_obs_views;
+    FOREACH(i, faces) {
+        const Face& face = faces[i];
+        PointCloud::Point pts[3];
+        for (int v=0; v<3; ++v) {
+            pts[v] = vertices[face[v]];
+        }
+
+        // search in a small sphere first
+        PointCloud::Point center = (pts[0] + pts[1] + pts[2]) / 3;
+        float radius = std::max(std::max(cv::norm(pts[0] - center), cv::norm(pts[1] - center)), cv::norm(pts[2] - center));
+
+        // search dense points in this sphere
+		MVS::PointCloud::Octree::IDXARR_TYPE point_indices;
+        octPoints.Collect(point_indices, center, radius);
+
+        if (point_indices.size() < 2) {
+            // search the nearest points
+            octPoints.Collect(50, point_indices, center, radius * 10);
+            if (point_indices.size() < 2) {
+                continue;
+            }
+        }
+
+        std::unordered_map<int, int> view_obs_times;
+        for (const auto& point_idx : point_indices) {
+            const auto& view_indices = pointViews[point_idx];
+            for (const auto& view_idx : view_indices) {
+                ++view_obs_times[view_idx];
+            }
+        }
+
+        std::vector<std::pair<int, int>> view_obs_times_sorted;
+        for (const auto& pair : view_obs_times) {
+			if(valid_views.count(pair.first)) {
+            	view_obs_times_sorted.emplace_back(pair.first, pair.second);
+			}
+        }
+        std::sort(view_obs_times_sorted.begin(), view_obs_times_sorted.end(), [](const std::pair<int, int>& obs1, const std::pair<int, int>& obs2) {
+            return obs1.second > obs2.second;
+        });
+
+        size_t max_views = std::min(view_obs_times_sorted.size(), topN);
+        for (size_t idx_view = 0; idx_view < max_views; idx_view++) {
+            face_obs_views[i].insert(view_obs_times_sorted[idx_view].first);
+		}
+    }
+
+	// try to detect outlier views for each face
+	// (views for which the face is occluded by a dynamic object in the scene, ex. pedestrians)
+	FOREACH(idxFace, facesDatas) {
+		FaceDataArr& faceDatas = facesDatas[idxFace];
+		unsigned obsNumber = faceDatas.GetSize();
+
+		if (!face_obs_views.count(idxFace)) {
+			continue;
+		}
+		const auto& inlier_views = face_obs_views.at(idxFace);
+		std::vector<bool> inliers(obsNumber, true);
+		FOREACH(i, faceDatas) {
+			auto idxView = faceDatas[i].idxView;
+			if (!inlier_views.count(idxView)) {
+				inliers[i] = false;
+			}
+		}
+
+		// remove outliers
+		RFOREACH(i, faceDatas)
+			if (!inliers[i])
+				faceDatas.RemoveAt(i);
+	}
 }
 
 #if TEXOPT_FACEOUTLIER == TEXOPT_FACEOUTLIER_MEDIAN

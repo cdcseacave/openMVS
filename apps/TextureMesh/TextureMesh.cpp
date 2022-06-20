@@ -272,6 +272,7 @@ int main(int argc, LPCTSTR* argv)
 	if (!OPT::strMeshFileName.IsEmpty()) {
 		// load given mesh
 		scene.mesh.Load(MAKE_PATH_SAFE(OPT::strMeshFileName));
+        scene.mesh.Clean(1.f, 0.f, false, 0u, 0u, 0.f, true); // extra cleaning to remove non-manifold problems
 	}
 	if (scene.mesh.IsEmpty()) {
 		VERBOSE("error: empty initial mesh");
