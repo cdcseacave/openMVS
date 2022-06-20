@@ -365,7 +365,7 @@ inline void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE>::Collect(INSERTER& inserte
 template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE>
 inline void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE>::Collect(IDXARR_TYPE& indices, const AABB_TYPE& aabb) const
 {
-	_Collect(m_root, aabb, IndexInserter(indices));
+    _Collect(m_root, aabb, IndexInserter(indices));
 }
 
 template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE>
@@ -377,7 +377,8 @@ inline void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE>::Collect(INSERTER& inserte
 template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE>
 inline void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE>::Collect(IDXARR_TYPE& indices, const POINT_TYPE& center, TYPE radius) const
 {
-	_Collect(m_root, AABB_TYPE(center, radius), IndexInserter(indices));
+    IndexInserter inserter(indices);
+    _Collect(m_root, AABB_TYPE(center, radius), inserter);
 }
 
 template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE>
@@ -390,13 +391,15 @@ template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE>
 template <typename COLLECTOR>
 inline void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE>::Collect(IDXARR_TYPE& indices, const COLLECTOR& collector) const
 {
-	_Collect(m_root, m_radius, collector, IndexInserter(indices));
+    IndexInserter inserter(indices);
+    _Collect(m_root, m_radius, collector, inserter);
 }
 
 template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE>
 inline void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE>::Collect(IDX_TYPE maxNeighbors, IDXARR_TYPE& indices, const AABB_TYPE& aabb) const
 {
-	_Collect(m_root, aabb, IndexInserter(indices));
+    IndexInserter inserter(indices);
+    _Collect(m_root, aabb, inserter);
 	if (indices.size() > maxNeighbors) {
 		// keep only the closest neighbors
 		typedef TIndexScore<IDX_TYPE,TYPE> ItemIndexScore;
