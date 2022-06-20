@@ -355,6 +355,10 @@ int main(int argc, LPCTSTR* argv)
 		return EXIT_SUCCESS;
 	}
 	if ((ARCHIVE_TYPE)OPT::nArchiveType != ARCHIVE_MVS) {
+		#if TD_VERBOSE != TD_VERBOSE_OFF
+		if (VERBOSITY_LEVEL > 1 && !scene.pointcloud.IsEmpty())
+			scene.pointcloud.PrintStatistics(scene.images.data(), &scene.obb);
+		#endif
 		TD_TIMER_START();
 		if (!scene.DenseReconstruction(OPT::nFusionMode)) {
 			if (ABS(OPT::nFusionMode) != 1)

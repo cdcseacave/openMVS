@@ -35,6 +35,8 @@
 
 // I N C L U D E S /////////////////////////////////////////////////
 
+#include "Image.h"
+
 
 // D E F I N E S ///////////////////////////////////////////////////
 
@@ -99,6 +101,8 @@ public:
 	bool Load(const String& fileName);
 	bool Save(const String& fileName, bool bLegacyTypes=false) const;
 	bool SaveNViews(const String& fileName, uint32_t minViews, bool bLegacyTypes=false) const;
+
+	void PrintStatistics(const Image* pImages = NULL, const OBB3f* pObb = NULL) const;
 
 	#ifdef _USE_BOOST
 	// implement BOOST serialization

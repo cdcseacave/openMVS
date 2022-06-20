@@ -3512,7 +3512,7 @@ void Mesh::CloseHoleQuality(VertexIdxArr& verts)
 			const Normal n(mesh.FaceNormal(face));
 			// compute the angle between the two existing edges of the face
 			// (the angle computation takes into account the case of reversed face)
-			angle = ACOS(ComputeAngle<float,float>(mesh.vertices[face[1]].ptr(), mesh.vertices[face[0]].ptr(), mesh.vertices[face[2]].ptr()));
+			angle = ACOS(ComputeAngle(mesh.vertices[face[1]].ptr(), mesh.vertices[face[0]].ptr(), mesh.vertices[face[2]].ptr()));
 			if (n.dot(mesh.VertexNormal(face[1])) < 0)
 				angle = float(2*M_PI) - angle;
 			// compute quality as a composition of dihedral angle and area/sum(edge^2);
@@ -3541,10 +3541,10 @@ void Mesh::CloseHoleQuality(VertexIdxArr& verts)
 			else {
 				const Normal n0(mesh.FaceNormal(mesh.faces[indices[0]]));
 				if (indices.GetSize() == 1)
-					dihedral = ACOS(ComputeAngle<float,float>(n.ptr(), n0.ptr()));
+					dihedral = ACOS(ComputeAngle(n.ptr(), n0.ptr()));
 				else {
 					const Normal n1(mesh.FaceNormal(mesh.faces[indices[1]]));
-					dihedral = MAXF(ACOS(ComputeAngle<float,float>(n.ptr(), n0.ptr())), ACOS(ComputeAngle<float,float>(n.ptr(), n1.ptr())));
+					dihedral = MAXF(ACOS(ComputeAngle(n.ptr(), n0.ptr())), ACOS(ComputeAngle(n.ptr(), n1.ptr())));
 				}
 			}
 			aspectRatio = ComputeTriangleQuality(mesh.vertices[face[0]], mesh.vertices[face[1]], mesh.vertices[face[2]]);

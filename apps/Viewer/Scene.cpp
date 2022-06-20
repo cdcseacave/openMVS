@@ -239,6 +239,8 @@ bool Scene::Open(LPCTSTR fileName, LPCTSTR meshFileName)
 	}
 	if (scene.IsEmpty())
 		return false;
+	if (!scene.pointcloud.IsEmpty())
+		scene.pointcloud.PrintStatistics(scene.images.data(), &scene.obb);
 
 	#if 1
 	// create octree structure used to accelerate selection functionality
@@ -427,6 +429,8 @@ void Scene::CompileMesh()
 	if (scene.mesh.IsEmpty())
 		return;
 	ReleaseMesh();
+	if (scene.mesh.faceNormals.empty())
+		scene.mesh.ComputeNormalFaces();
 	listMesh = glGenLists(1);
 	glNewList(listMesh, GL_COMPILE);
 	// compile mesh

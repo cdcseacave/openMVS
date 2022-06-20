@@ -1465,7 +1465,7 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, b
 				PointCloud::ViewArr& views = pointcloud.pointViews.AddEmpty();
 				views.Insert(idxImage);
 				PointCloud::WeightArr& weights = pointcloud.pointWeights.AddEmpty();
-				REAL confidence(weights.emplace_back(Conf2Weight(depthData.confMap(x),depth)));
+				REAL confidence(weights.emplace_back(Conf2Weight(depthData.confMap.empty() ? 1.f : depthData.confMap(x),depth)));
 				ProjArr& pointProjs = projs.AddEmpty();
 				pointProjs.Insert(Proj(x));
 				const PointCloud::Normal normal(bNormalMap ? Cast<Normal::Type>(imageData.camera.R.t()*Cast<REAL>(depthData.normalMap(x))) : Normal(0,0,-1));
@@ -1501,7 +1501,7 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, b
 						if (normal.dot(normalB) > normalError) {
 							// add view to the 3D point
 							ASSERT(views.FindFirst(idxImageB) == PointCloud::ViewArr::NO_INDEX);
-							const float confidenceB(Conf2Weight(depthDataB.confMap(xB),depthB));
+							const float confidenceB(Conf2Weight(depthDataB.confMap.empty() ? 1.f : depthDataB.confMap(xB),depthB));
 							const IIndex idx(views.InsertSort(idxImageB));
 							weights.InsertAt(idx, confidenceB);
 							pointProjs.InsertAt(idx, Proj(xB));

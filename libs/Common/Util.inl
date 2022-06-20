@@ -413,7 +413,7 @@ FORCEINLINE TYPE AngleFromRotationMatrix(const TMatrix<TYPE,3,3>& R) {
 // given two 3D vectors,
 // compute the angle between them
 // returns cos(angle)
-template<typename TYPE1, typename TYPE2>
+template<typename TYPE1, typename TYPE2 = TYPE1>
 inline TYPE2 ComputeAngle(const TYPE1* V1, const TYPE1* V2) {
 	// compute the angle between the rays
 	return CLAMP(TYPE2((V1[0]*V2[0]+V1[1]*V2[1]+V1[2]*V2[2])/SQRT((V1[0]*V1[0]+V1[1]*V1[1]+V1[2]*V1[2])*(V2[0]*V2[0]+V2[1]*V2[1]+V2[2]*V2[2]))), TYPE2(-1), TYPE2(1));
@@ -421,7 +421,7 @@ inline TYPE2 ComputeAngle(const TYPE1* V1, const TYPE1* V2) {
 // given three 3D points,
 // compute the angle between the vectors formed by the first point with the other two
 // returns cos(angle)
-template<typename TYPE1, typename TYPE2>
+template<typename TYPE1, typename TYPE2 = TYPE1>
 inline TYPE2 ComputeAngle(const TYPE1* B, const TYPE1* X1, const TYPE1* X2) {
 	// create the two vectors
 	const TYPE1 V1[] = {X1[0]-B[0], X1[1]-B[1], X1[2]-B[2]};
@@ -431,7 +431,7 @@ inline TYPE2 ComputeAngle(const TYPE1* B, const TYPE1* X1, const TYPE1* X2) {
 // given four 3D points,
 // compute the angle between the two vectors formed by the first and second pair of points
 // returns cos(angle)
-template<typename TYPE1, typename TYPE2>
+template<typename TYPE1, typename TYPE2 = TYPE1>
 inline TYPE2 ComputeAngle(const TYPE1* X1, const TYPE1* C1, const TYPE1* X2, const TYPE1* C2) {
 	// subtract out the camera center
 	const TYPE1 V1[] = {X1[0]-C1[0], X1[1]-C1[1], X1[2]-C1[2]};
@@ -790,69 +790,8 @@ inline void ComputeMeanStdOffline(const TYPE* values, size_t size, TYPEW& mean, 
 	stddev = SQRT(variance);
 } // ComputeMeanStdOffline
 // same as above, but uses one pass only (online)
-template<typename TYPE, typename TYPEW=TYPE, typename ARGTYPE=const TYPE&>
-struct MeanStdOnline {
-	TYPEW mean;
-	TYPEW stddev;
-	size_t size;
-	MeanStdOnline() : mean(0), stddev(0), size(0) {}
-	MeanStdOnline(const TYPE* values, size_t _size) : mean(0), stddev(0), size(0) {
-		Compute(values, _size);
-	}
-	void Update(ARGTYPE v) {
-		const TYPEW val(v);
-		const TYPEW delta(val-mean);
-		mean += delta / (float)(++size);
-		stddev += delta * (val-mean);
-	}
-	void Compute(const TYPE* values, size_t _size) {
-		for (size_t i=0; i<_size; ++i)
-			Update(values[i]);
-	}
-	TYPEW GetMean() const { return mean; }
-	TYPEW GetVariance() const { return (stddev / (float)(size - 1)); }
-	TYPEW GetStdDev() const { return SQRT(GetVariance()); }
-};
 template<typename TYPE, typename TYPEW>
 inline void ComputeMeanStdOnline(const TYPE* values, size_t size, TYPEW& mean, TYPEW& stddev) {
-	ASSERT(size > 0);
-	mean = TYPEW(0);
-	stddev = TYPEW(0);
-	for (size_t i=0; i<size; ++i) {
-		const TYPEW val(values[i]);
-		const TYPEW delta(val-mean);
-		mean += delta / (i+1);
-		stddev += delta * (val-mean);
-	}
-	const TYPEW variance(stddev / (float)(size - 1));
-	stddev = SQRT(variance);
-} // ComputeMeanStdOnline
-// same as above, but less stable in general (and faster)
-template<typename TYPE, typename TYPEW=TYPE, typename ARGTYPE=const TYPE&>
-struct MeanStdOnlineFast {
-	TYPEW sum;
-	TYPEW sumSq;
-	size_t size;
-	MeanStdOnlineFast() : sum(0), sumSq(0), size(0) {}
-	MeanStdOnlineFast(const TYPE* values, size_t _size) : sum(0), sumSq(0), size(0) {
-		Compute(values, _size);
-	}
-	void Update(ARGTYPE v) {
-		const TYPEW val(v);
-		sum += val;
-		sumSq += SQUARE(val);
-		++size;
-	}
-	void Compute(const TYPE* values, size_t _size) {
-		for (size_t i=0; i<_size; ++i)
-			Update(values[i]);
-	}
-	TYPEW GetMean() const { return sum / (float)size; }
-	TYPEW GetVariance() const { return (sumSq - SQUARE(sum) / (float)size) / (float)(size - 1); }
-	TYPEW GetStdDev() const { return SQRT(GetVariance()); }
-};
-template<typename TYPE, typename TYPEW>
-inline void ComputeMeanStdOnlineFast(const TYPE* values, size_t size, TYPEW& mean, TYPEW& stddev) {
 	ASSERT(size > 0);
 	TYPEW sum(0), sumSq(0);
 	FOREACHRAWPTR(pVal, values, size) {
@@ -865,8 +804,59 @@ inline void ComputeMeanStdOnlineFast(const TYPE* values, size_t size, TYPEW& mea
 	const TYPEW variance((sumSq - SQUARE(sum) * invSize) / (float)(size - 1));
 	stddev = SQRT(variance);
 } // ComputeMeanStdOnlineFast
-#define ComputeMeanStd ComputeMeanStdOnlineFast
-#define MeanStd MeanStdOnlineFast
+#define ComputeMeanStd ComputeMeanStdOnline
+// same as above, but an interactive version
+template<typename TYPE, typename TYPEW=TYPE, typename ARGTYPE=const TYPE&, typename TYPER=REAL>
+struct MeanStd {
+	typedef TYPE Type;
+	typedef TYPEW TypeW;
+	typedef TYPER TypeR;
+	typedef ARGTYPE ArgType;
+	TYPEW sum, sumSq;
+	size_t size;
+	MeanStd() : sum(0), sumSq(0), size(0) {}
+	MeanStd(const Type* values, size_t _size) : MeanStd() { Compute(values, _size); }
+	void Update(ArgType v) {
+		const TYPEW val(static_cast<TYPEW>(v));
+		sum += val;
+		sumSq += SQUARE(val);
+		++size;
+	}
+	void Compute(const Type* values, size_t _size) {
+		for (size_t i=0; i<_size; ++i)
+			Update(values[i]);
+	}
+	TYPEW GetSum() const { return sum; }
+	TYPEW GetMean() const { return static_cast<TYPEW>(sum / static_cast<TypeR>(size)); }
+	TYPEW GetRMS() const { return static_cast<TYPEW>(SQRT(sumSq / static_cast<TypeR>(size))); }
+	TYPEW GetVarianceN() const { return static_cast<TYPEW>(sumSq - SQUARE(sum) / static_cast<TypeR>(size)); }
+	TYPEW GetVariance() const { return static_cast<TYPEW>(GetVarianceN() / static_cast<TypeR>(size)); }
+	TYPEW GetStdDev() const { return SQRT(GetVariance()); }
+	void Clear() { sum = sumSq = TYPEW(0); size = 0; }
+};
+// same as above, but records also min/max values
+template<typename TYPE, typename TYPEW=TYPE, typename ARGTYPE=const TYPE&, typename TYPER=REAL>
+struct MeanStdMinMax : MeanStd<TYPE,TYPEW,ARGTYPE,TYPER> {
+	typedef MeanStd<TYPE,TYPEW,ARGTYPE,TYPER> Base;
+	typedef TYPE Type;
+	typedef TYPEW TypeW;
+	typedef TYPER TypeR;
+	typedef ARGTYPE ArgType;
+	Type minVal, maxVal;
+	MeanStdMinMax() : minVal(std::numeric_limits<Type>::max()), maxVal(std::numeric_limits<Type>::lowest()) {}
+	MeanStdMinMax(const Type* values, size_t _size) : MeanStdMinMax() { Compute(values, _size); }
+	void Update(ArgType v) {
+		if (minVal > v)
+			minVal = v;
+		if (maxVal < v)
+			maxVal = v;
+		Base::Update(v);
+	}
+	void Compute(const Type* values, size_t _size) {
+		for (size_t i=0; i<_size; ++i)
+			Update(values[i]);
+	}
+};
 /*----------------------------------------------------------------*/
 
 // given an array of values, compute the X84 threshold as in:
