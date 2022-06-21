@@ -92,6 +92,7 @@ public:
 
 	void RemovePoint(IDX);
 	void RemovePointsOutside(const OBB3f&);
+	void RemoveMinViews(uint32_t thMinViews);
 
 	Box GetAABB() const;
 	Box GetAABB(const Box& bound) const;

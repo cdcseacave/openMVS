@@ -73,6 +73,12 @@ void PointCloud::RemovePointsOutside(const OBB3f& obb) {
 		if (!obb.Intersects(points[i]))
 			RemovePoint(i);
 }
+void PointCloud::RemoveMinViews(uint32_t thMinViews) {
+	ASSERT(!pointViews.empty());
+	RFOREACH(i, points)
+		if (pointViews[i].size() < thMinViews)
+			RemovePoint(i);
+}
 /*----------------------------------------------------------------*/
 
 

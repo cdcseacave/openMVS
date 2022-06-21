@@ -138,7 +138,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		("sample-mesh", boost::program_options::value(&OPT::fSampleMesh)->default_value(0.f), "uniformly samples points on a mesh (0 - disabled, <0 - number of points, >0 - sample density per square unit)")
 		("fusion-mode", boost::program_options::value(&OPT::nFusionMode)->default_value(0), "depth map fusion mode (-2 - fuse disparity-maps, -1 - export disparity-maps only, 0 - depth-maps & fusion, 1 - export depth-maps only)")
 		("filter-point-cloud", boost::program_options::value(&OPT::thFilterPointCloud)->default_value(0), "filter dense point-cloud based on visibility (0 - disabled)")
-		("export-number-views", boost::program_options::value(&OPT::nExportNumViews)->default_value(0), "export points with >= number of views (0 - disabled)")
+		("export-number-views", boost::program_options::value(&OPT::nExportNumViews)->default_value(0), "export points with >= number of views (0 - disabled, <0 - save MVS project too)")
         ("estimate-roi", boost::program_options::value(&OPT::nEstimateROI)->default_value(2), "estimate and set region-of-interest (0 - disabled, 1 - enabled, 2 - adaptive)")
         ;
 
@@ -349,8 +349,17 @@ int main(int argc, LPCTSTR* argv)
 	}
 	if (OPT::nExportNumViews && scene.pointcloud.IsValid()) {
 		// export point-cloud containing only points with N+ views
-		const String baseFileName(MAKE_PATH_SAFE(Util::getFileFullName(OPT::strOutputFileName)));
-		scene.pointcloud.SaveNViews(baseFileName+String::FormatString(_T("_%dviews.ply"), OPT::nExportNumViews), (IIndex)OPT::nExportNumViews);
+		const String baseFileName(MAKE_PATH_SAFE(Util::getFileFullName(OPT::strOutputFileName))+
+			String::FormatString(_T("_%dviews"), ABS(OPT::nExportNumViews)));
+		if (OPT::nExportNumViews > 0) {
+			// export point-cloud containing only points with N+ views
+			scene.pointcloud.SaveNViews(baseFileName+_T(".ply"), (IIndex)OPT::nExportNumViews);
+		} else {
+			// save scene and export point-cloud containing only points with N+ views
+			scene.pointcloud.RemoveMinViews((IIndex)-OPT::nExportNumViews);
+			scene.Save(baseFileName+_T(".mvs"), (ARCHIVE_TYPE)OPT::nArchiveType);
+			scene.pointcloud.Save(baseFileName+_T(".ply"));
+		}
 		Finalize();
 		return EXIT_SUCCESS;
 	}
