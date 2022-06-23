@@ -671,8 +671,10 @@ bool DepthMapsData::EstimateDepthMap(IIndex idxImage, int nGeometricIter)
 		#endif
 		if (prevDepthMapSize != size) {
 			BitMatrix mask;
-			if (OPTDENSE::nIgnoreMaskLabel >= 0 && DepthEstimator::ImportIgnoreMask(*depthData.GetView().pImageData, depthData.depthMap.size(), mask, (uint16_t)OPTDENSE::nIgnoreMaskLabel))
+			if (OPTDENSE::nIgnoreMaskLabel >= 0){
+				DepthEstimator::ImportIgnoreMask(*depthData.GetView().pImageData, depthData.depthMap.size(), mask, (uint16_t)OPTDENSE::nIgnoreMaskLabel);
 				depthData.ApplyIgnoreMask(mask);
+			}
 			DepthEstimator::MapMatrix2ZigzagIdx(size, coords, mask, MAXF(64,(int)nMaxThreads*8));
 			#if 0
 			// show pixels to be processed

@@ -298,6 +298,10 @@ unsigned DepthData::DecRef()
 bool DepthEstimator::ImportIgnoreMask(const Image& image0, const Image8U::Size& size, BitMatrix& bmask, uint16_t nIgnoreMaskLabel)
 {
 	ASSERT(image0.IsValid() && !image0.image.empty());
+
+	bmask.create(size);
+	bmask.memset(0xFF);
+
 	if (image0.maskName.empty())
 		return false;
 	Image16U mask;
@@ -306,8 +310,6 @@ bool DepthEstimator::ImportIgnoreMask(const Image& image0, const Image8U::Size& 
 		return false;
 	}
 	cv::resize(mask, mask, size, 0, 0, cv::INTER_NEAREST);
-	bmask.create(size);
-	bmask.memset(0xFF);
 	for (int r=0; r<size.height; ++r) {
 		for (int c=0; c<size.width; ++c) {
 			if (mask(r,c) == nIgnoreMaskLabel)
