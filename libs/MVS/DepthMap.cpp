@@ -82,6 +82,7 @@ MDEFVAR_OPTDENSE_uint32(nNumViews, "Num Views", "Number of views used for depth-
 MDEFVAR_OPTDENSE_uint32(nPointInsideROI, "Point Inside ROI", "consider a point shared only if inside ROI when estimating the neighbor views (0 - ignore ROI, 1 - weight more ROI points, 2 - consider only ROI points)", "1")
 MDEFVAR_OPTDENSE_bool(bFilterAdjust, "Filter Adjust", "adjust depth estimates during filtering", "1")
 MDEFVAR_OPTDENSE_bool(bAddCorners, "Add Corners", "add support points at image corners with nearest neighbor disparities", "0")
+MDEFVAR_OPTDENSE_bool(bInitDepthFromSparse, "Init Only Sparse", "activate to init depth only with sparse points(no interpolation)", "0")
 MDEFVAR_OPTDENSE_float(fViewMinScore, "View Min Score", "Min score to consider a neighbor images (0 - disabled)", "2.0")
 MDEFVAR_OPTDENSE_float(fViewMinScoreRatio, "View Min Score Ratio", "Min score ratio to consider a neighbor images", "0.03")
 MDEFVAR_OPTDENSE_float(fMinArea, "Min Area", "Min shared area for accepting the depth triangulation", "0.05")
@@ -1109,7 +1110,7 @@ std::pair<float,float> TriangulatePointsDelaunay(const DepthData::ViewData& imag
 // and interpolating normal and depth for all pixels
 bool MVS::TriangulatePoints2DepthMap(
 	const DepthData::ViewData& image, const PointCloud& pointcloud, const IndexArr& points,
-	DepthMap& depthMap, NormalMap& normalMap, Depth& dMin, Depth& dMax, bool bAddCorners)
+	DepthMap& depthMap, NormalMap& normalMap, Depth& dMin, Depth& dMax, bool bAddCorners, bool bSparseOnly)
 {
 	ASSERT(image.pImageData != NULL);
 
@@ -1163,12 +1164,26 @@ bool MVS::TriangulatePoints2DepthMap(
 			projs[face[1]],
 			projs[face[2]], rasterer);
 	}
+	// erase interpolate and just project sparse pointcloud into depthmap
+	if (bSparseOnly) {
+		depthMap.memset(0);
+		FOREACH(pIdx, points) {
+			const Point3f p(pointcloud.points[points[pIdx]]);
+			const Point2f x(projs[pIdx]);
+			if (ISINSIDE(x.x, 0.f, (float)(depthMap.cols - 1)) && ISINSIDE(x.y, 0.f, (float)(depthMap.rows - 1))) {
+				dMin = thDepth.first;
+				dMax = thDepth.second;
+				const Depth d = MAX(dMin, MIN(dMax, image.camera.PointDepth(p)));
+				depthMap.at<Depth>(x) = d;
+			}
+		}
+	}
 	return true;
 } // TriangulatePoints2DepthMap
 // same as above, but does not estimate the normal-map
 bool MVS::TriangulatePoints2DepthMap(
 	const DepthData::ViewData& image, const PointCloud& pointcloud, const IndexArr& points,
-	DepthMap& depthMap, Depth& dMin, Depth& dMax, bool bAddCorners)
+	DepthMap& depthMap, Depth& dMin, Depth& dMax, bool bAddCorners, bool bSparseOnly)
 {
 	ASSERT(image.pImageData != NULL);
 
@@ -1205,6 +1220,20 @@ bool MVS::TriangulatePoints2DepthMap(
 			projs[face[0]],
 			projs[face[1]],
 			projs[face[2]], rasterer);
+	}
+	// erase interpolate and just project sparse pointcloud into depthmap
+	if (!bSparseOnly) {
+		depthMap.memset(0);
+		FOREACH(pIdx, points) {
+			const Point3f p(pointcloud.points[points[pIdx]]);
+			const Point2f x(projs[pIdx]);
+			if (ISINSIDE(x.x, 0.f, (float)(depthMap.cols - 1)) && ISINSIDE(x.y, 0.f, (float)(depthMap.rows - 1))) {
+				dMin = thDepth.first;
+				dMax = thDepth.second;
+				const Depth d = MAX(dMin, MIN(dMax, image.camera.PointDepth(p)));
+				depthMap.at<Depth>(x) = d;
+			}
+		}
 	}
 	return true;
 } // TriangulatePoints2DepthMap
