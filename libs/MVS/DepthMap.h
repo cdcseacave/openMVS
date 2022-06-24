@@ -437,6 +437,7 @@ struct MVS_API DepthEstimator {
 	inline Normal RandomNormal(const Point3f& viewRay) {
 		Normal normal;
 		Dir2Normal(Point2f(rnd.randomRange(FD2R(0.f),FD2R(180.f)), rnd.randomRange(FD2R(90.f),FD2R(180.f))), normal);
+		ASSERT(ISEQUAL(norm(normal), 1.f));
 		return normal.dot(viewRay) > 0 ? -normal : normal;
 	}
 
@@ -446,6 +447,7 @@ struct MVS_API DepthEstimator {
 		const float cosAngLen(normal.dot(viewDir));
 		if (cosAngLen >= 0)
 			normal = RMatrixBaseF(normal.cross(viewDir), MINF((ACOS(cosAngLen/norm(viewDir))-FD2R(90.f))*1.01f, -0.001f)) * normal;
+		ASSERT(ISEQUAL(norm(normal), 1.f));
 	}
 
 	static bool ImportIgnoreMask(const Image&, const Image8U::Size&, BitMatrix&, uint16_t nIgnoreMaskLabel);

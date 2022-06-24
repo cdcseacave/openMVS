@@ -504,6 +504,7 @@ void* STCALL DepthMapsData::ScoreDepthMapTmp(void* arg)
 			// replace invalid normal with random values
 			normal = estimator.RandomNormal(viewDir);
 		}
+		ASSERT(ISEQUAL(norm(normal), 1.f));
 		estimator.confMap0(x) = estimator.ScorePixel(depth, normal);
 	}
 	return NULL;
@@ -587,7 +588,7 @@ DepthData DepthMapsData::ScaleDepthData(const DepthData& inputDeptData, float sc
 		viewData.Init(rescaledDepthData.images[0].camera);
 	}
 	if (!rescaledDepthData.depthMap.empty())
-		cv::resize(rescaledDepthData.depthMap, rescaledDepthData.depthMap, cv::Size(), scale, scale, cv::INTER_LINEAR);
+		cv::resize(rescaledDepthData.depthMap, rescaledDepthData.depthMap, cv::Size(), scale, scale, cv::INTER_NEAREST);
 	if (!rescaledDepthData.normalMap.empty())
 		cv::resize(rescaledDepthData.normalMap, rescaledDepthData.normalMap, cv::Size(), scale, scale, cv::INTER_NEAREST);
 	return rescaledDepthData;
@@ -651,7 +652,7 @@ bool DepthMapsData::EstimateDepthMap(IIndex idxImage, int nGeometricIter)
 		ASSERT(!image.image.empty() && !depthData.images[1].image.empty());
 		const Image8U::Size size(image.image.size());
 		if (scaleNumber != totalScaleNumber) {
-			cv::resize(lowResDepthMap, depthData.depthMap, size, 0, 0, cv::INTER_LINEAR);
+			cv::resize(lowResDepthMap, depthData.depthMap, size, 0, 0, OPTDENSE::nIgnoreMaskLabel >= 0 ? cv::INTER_NEAREST : cv::INTER_LINEAR);
 			cv::resize(lowResNormalMap, depthData.normalMap, size, 0, 0, cv::INTER_NEAREST);
 			depthData.depthMap.copyTo(currentSizeResDepthMap);
 		}
@@ -669,9 +670,9 @@ bool DepthMapsData::EstimateDepthMap(IIndex idxImage, int nGeometricIter)
 		#else
 		cv::integral(image.image, imageSum0, CV_64F);
 		#endif
-		if (prevDepthMapSize != size) {
+		if (prevDepthMapSize != size || OPTDENSE::nIgnoreMaskLabel >= 0) {
 			BitMatrix mask;
-			if (OPTDENSE::nIgnoreMaskLabel >= 0 && DepthEstimator::ImportIgnoreMask(*depthData.GetView().pImageData, depthData.depthMap.size(), mask, (uint16_t)OPTDENSE::nIgnoreMaskLabel))
+			if (OPTDENSE::nIgnoreMaskLabel >= 0 && DepthEstimator::ImportIgnoreMask(*image.pImageData, depthData.depthMap.size(), mask, (uint16_t)OPTDENSE::nIgnoreMaskLabel))
 				depthData.ApplyIgnoreMask(mask);
 			DepthEstimator::MapMatrix2ZigzagIdx(size, coords, mask, MAXF(64,(int)nMaxThreads*8));
 			#if 0
@@ -682,8 +683,7 @@ bool DepthMapsData::EstimateDepthMap(IIndex idxImage, int nGeometricIter)
 				cmask(x.y, x.x) = 255;
 			cmask.Show("cmask");
 			#endif
-			if (mask.empty())
-				prevDepthMapSize = size;
+			prevDepthMapSize = size;
 		}
 
 		// initialize the reference confidence map (NCC score map) with the score of the current estimates

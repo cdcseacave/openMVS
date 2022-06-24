@@ -517,6 +517,7 @@ float DepthEstimator::ScorePixelImage(const DepthData::ViewData& image1, Depth d
 	#if DENSE_SMOOTHNESS != DENSE_SMOOTHNESS_NA
 	// encourage smoothness
 	for (const NeighborEstimate& neighbor: neighborsClose) {
+		ASSERT(neighbor.depth > 0);
 		#if DENSE_SMOOTHNESS == DENSE_SMOOTHNESS_PLANE
 		const float factorDepth(DENSE_EXP(SQUARE(plane.Distance(neighbor.X)/depth) * smoothSigmaDepth));
 		#else
@@ -639,6 +640,7 @@ void DepthEstimator::ProcessPixel(IDX idx)
 			const Depth ndepth(depthMap0(nx));
 			if (ndepth > 0) {
 				#if DENSE_SMOOTHNESS != DENSE_SMOOTHNESS_NA
+				ASSERT(ISEQUAL(norm(normalMap0(nx)), 1.f));
 				neighbors.emplace_back(nx);
 				neighborsClose.emplace_back(NeighborEstimate{ndepth,normalMap0(nx)
 					#if DENSE_SMOOTHNESS == DENSE_SMOOTHNESS_PLANE
@@ -655,6 +657,7 @@ void DepthEstimator::ProcessPixel(IDX idx)
 			const Depth ndepth(depthMap0(nx));
 			if (ndepth > 0) {
 				#if DENSE_SMOOTHNESS != DENSE_SMOOTHNESS_NA
+				ASSERT(ISEQUAL(norm(normalMap0(nx)), 1.f));
 				neighbors.emplace_back(nx);
 				neighborsClose.emplace_back(NeighborEstimate{ndepth,normalMap0(nx)
 					#if DENSE_SMOOTHNESS == DENSE_SMOOTHNESS_PLANE
@@ -670,22 +673,26 @@ void DepthEstimator::ProcessPixel(IDX idx)
 		if (x0.x < size.width-nSizeHalfWindow) {
 			const ImageRef nx(x0.x+1, x0.y);
 			const Depth ndepth(depthMap0(nx));
-			if (ndepth > 0)
+			if (ndepth > 0) {
+				ASSERT(ISEQUAL(norm(normalMap0(nx)), 1.f));
 				neighborsClose.emplace_back(NeighborEstimate{ndepth,normalMap0(nx)
 					#if DENSE_SMOOTHNESS == DENSE_SMOOTHNESS_PLANE
 					, Cast<float>(image0.camera.TransformPointI2C(Point3(nx, ndepth)))
 					#endif
 				});
+			}
 		}
 		if (x0.y < size.height-nSizeHalfWindow) {
 			const ImageRef nx(x0.x, x0.y+1);
 			const Depth ndepth(depthMap0(nx));
-			if (ndepth > 0)
+			if (ndepth > 0) {
+				ASSERT(ISEQUAL(norm(normalMap0(nx)), 1.f));
 				neighborsClose.emplace_back(NeighborEstimate{ndepth,normalMap0(nx)
 					#if DENSE_SMOOTHNESS == DENSE_SMOOTHNESS_PLANE
 					, Cast<float>(image0.camera.TransformPointI2C(Point3(nx, ndepth)))
 					#endif
 				});
+			}
 		}
 		#endif
 	} else {
@@ -696,6 +703,7 @@ void DepthEstimator::ProcessPixel(IDX idx)
 			const Depth ndepth(depthMap0(nx));
 			if (ndepth > 0) {
 				#if DENSE_SMOOTHNESS != DENSE_SMOOTHNESS_NA
+				ASSERT(ISEQUAL(norm(normalMap0(nx)), 1.f));
 				neighbors.emplace_back(nx);
 				neighborsClose.emplace_back(NeighborEstimate{ndepth,normalMap0(nx)
 					#if DENSE_SMOOTHNESS == DENSE_SMOOTHNESS_PLANE
@@ -712,6 +720,7 @@ void DepthEstimator::ProcessPixel(IDX idx)
 			const Depth ndepth(depthMap0(nx));
 			if (ndepth > 0) {
 				#if DENSE_SMOOTHNESS != DENSE_SMOOTHNESS_NA
+				ASSERT(ISEQUAL(norm(normalMap0(nx)), 1.f));
 				neighbors.emplace_back(nx);
 				neighborsClose.emplace_back(NeighborEstimate{ndepth,normalMap0(nx)
 					#if DENSE_SMOOTHNESS == DENSE_SMOOTHNESS_PLANE
@@ -727,22 +736,26 @@ void DepthEstimator::ProcessPixel(IDX idx)
 		if (x0.x > nSizeHalfWindow) {
 			const ImageRef nx(x0.x-1, x0.y);
 			const Depth ndepth(depthMap0(nx));
-			if (ndepth > 0)
+			if (ndepth > 0) {
+				ASSERT(ISEQUAL(norm(normalMap0(nx)), 1.f));
 				neighborsClose.emplace_back(NeighborEstimate{ndepth,normalMap0(nx)
 					#if DENSE_SMOOTHNESS == DENSE_SMOOTHNESS_PLANE
 					, Cast<float>(image0.camera.TransformPointI2C(Point3(nx, ndepth)))
 					#endif
 				});
+			}
 		}
 		if (x0.y > nSizeHalfWindow) {
 			const ImageRef nx(x0.x, x0.y-1);
 			const Depth ndepth(depthMap0(nx));
-			if (ndepth > 0)
+			if (ndepth > 0) {
+				ASSERT(ISEQUAL(norm(normalMap0(nx)), 1.f));
 				neighborsClose.emplace_back(NeighborEstimate{ndepth,normalMap0(nx)
 					#if DENSE_SMOOTHNESS == DENSE_SMOOTHNESS_PLANE
 					, Cast<float>(image0.camera.TransformPointI2C(Point3(nx, ndepth)))
 					#endif
 				});
+			}
 		}
 		#endif
 	}
@@ -763,7 +776,7 @@ void DepthEstimator::ProcessPixel(IDX idx)
 		if (confMap0(nx) >= OPTDENSE::fNCCThresholdKeep)
 			continue;
 		#if DENSE_SMOOTHNESS != DENSE_SMOOTHNESS_NA
-		NeighborEstimate& neighbor = neighborsClose[n];
+		NeighborEstimate neighbor = neighborsClose[n];
 		#endif
 		neighbor.depth = InterpolatePixel(nx, neighbor.depth, neighbor.normal);
 		CorrectNormal(neighbor.normal);

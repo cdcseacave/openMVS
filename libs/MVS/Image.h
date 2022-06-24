@@ -135,7 +135,7 @@ public:
 		ar & ID;
 		const String relName(MAKE_PATH_REL(WORKING_FOLDER_FULL, name));
 		ar & relName;
-		const String relMaskName(MAKE_PATH_REL(WORKING_FOLDER_FULL, maskName));
+		const String relMaskName(maskName.empty() ? String() : MAKE_PATH_REL(WORKING_FOLDER_FULL, maskName));
 		ar & relMaskName;
 		ar & width & height;
 		ar & neighbors;
@@ -150,7 +150,7 @@ public:
 		ar & name;
 		name = MAKE_PATH_FULL(WORKING_FOLDER_FULL, name);
 		ar & maskName;
-		maskName = MAKE_PATH_FULL(WORKING_FOLDER_FULL, maskName);
+		maskName = maskName.empty() ? String() : MAKE_PATH_FULL(WORKING_FOLDER_FULL, maskName);
 		ar & width & height;
 		ar & neighbors;
 		ar & avgDepth;
