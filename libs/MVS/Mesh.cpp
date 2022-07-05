@@ -3631,6 +3631,20 @@ void Mesh::CloseHoleQuality(VertexIdxArr& verts)
 }
 /*----------------------------------------------------------------*/
 
+// crop mesh such that none of its faces is touching or outside the given bounding-box
+void Mesh::RemoveFacesOutside(const OBB3f& obb) {
+	ASSERT(obb.IsValid());
+	VertexIdxArr vertexRemove;
+	FOREACH(i, vertices)
+		if (!obb.Intersects(vertices[i]))
+			vertexRemove.emplace_back(i);
+	if (!vertexRemove.empty()) {
+		if (vertices.size() != vertexFaces.size())
+			ListIncidenteFaces();
+		RemoveVertices(vertexRemove, true);
+	}
+}
+
 // remove the given list of faces
 void Mesh::RemoveFaces(FaceIdxArr& facesRemove, bool bUpdateLists)
 {
@@ -3645,7 +3659,7 @@ void Mesh::RemoveFaces(FaceIdxArr& facesRemove, bool bUpdateLists)
 			idxLast = idxF;
 		}
 	} else {
-		ASSERT(vertices.GetSize() == vertexFaces.GetSize());
+		ASSERT(vertices.size() == vertexFaces.size());
 		RFOREACHPTR(pIdxF, facesRemove) {
 			const FIndex idxF(*pIdxF);
 			if (idxLast == idxF)
@@ -3680,10 +3694,10 @@ void Mesh::RemoveFaces(FaceIdxArr& facesRemove, bool bUpdateLists)
 	vertexVertices.Release();
 }
 
-// remove the given list of vertices
+// remove the given list of vertices, together with all faces containing them
 void Mesh::RemoveVertices(VertexIdxArr& vertexRemove, bool bUpdateLists)
 {
-	ASSERT(vertices.GetSize() == vertexFaces.GetSize());
+	ASSERT(vertices.size() == vertexFaces.size());
 	vertexRemove.Sort();
 	VIndex idxLast(VertexIdxArr::NO_INDEX);
 	if (!bUpdateLists) {
@@ -3691,7 +3705,7 @@ void Mesh::RemoveVertices(VertexIdxArr& vertexRemove, bool bUpdateLists)
 			const VIndex idxV(*pIdxV);
 			if (idxLast == idxV)
 				continue;
-			const VIndex idxVM(vertices.GetSize()-1);
+			const VIndex idxVM(vertices.size()-1);
 			if (idxV < idxVM) {
 				// update all faces of the moved vertex
 				const FaceIdxArr& vf(vertexFaces[idxVM]);
@@ -3709,7 +3723,7 @@ void Mesh::RemoveVertices(VertexIdxArr& vertexRemove, bool bUpdateLists)
 		const VIndex idxV(*pIdxV);
 		if (idxLast == idxV)
 			continue;
-		const VIndex idxVM(vertices.GetSize()-1);
+		const VIndex idxVM(vertices.size()-1);
 		if (idxV < idxVM) {
 			// update all faces of the moved vertex
 			const FaceIdxArr& vf(vertexFaces[idxVM]);
@@ -3725,7 +3739,8 @@ void Mesh::RemoveVertices(VertexIdxArr& vertexRemove, bool bUpdateLists)
 		vertices.RemoveAt(idxV);
 		idxLast = idxV;
 	}
-	RemoveFaces(facesRemove);
+	if (!facesRemove.empty())
+		RemoveFaces(facesRemove);
 }
 
 // remove all vertices that are not assigned to any face

@@ -176,6 +176,7 @@ public:
 	void Decimate(VertexIdxArr& verticesRemove);
 	void CloseHole(VertexIdxArr& vertsLoop);
 	void CloseHoleQuality(VertexIdxArr& vertsLoop);
+	void RemoveFacesOutside(const OBB3f&);
 	void RemoveFaces(FaceIdxArr& facesRemove, bool bUpdateLists=false);
 	void RemoveVertices(VertexIdxArr& vertexRemove, bool bUpdateLists=false);
 	VIndex RemoveUnreferencedVertices(bool bUpdateLists=false);

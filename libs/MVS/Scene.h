@@ -108,7 +108,7 @@ public:
 	bool EstimateROI(int nEstimateROI=0, float scale=1.f);
 
 	// Dense reconstruction
-	bool DenseReconstruction(int nFusionMode=0);
+	bool DenseReconstruction(int nFusionMode=0, bool bCrop2ROI=true, float fBorderROI=0);
 	bool ComputeDepthMaps(DenseDepthMapData& data);
 	void DenseReconstructionEstimate(void*);
 	void DenseReconstructionFilter(void*);

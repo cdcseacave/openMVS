@@ -57,6 +57,8 @@ String strDenseConfigFileName;
 String strExportDepthMapsName;
 float fMaxSubsceneArea;
 float fSampleMesh;
+float fBorderROI;
+bool bCrop2ROI;
 int nEstimateROI;
 int nFusionMode;
 int thFilterPointCloud;
@@ -139,7 +141,9 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		("fusion-mode", boost::program_options::value(&OPT::nFusionMode)->default_value(0), "depth map fusion mode (-2 - fuse disparity-maps, -1 - export disparity-maps only, 0 - depth-maps & fusion, 1 - export depth-maps only)")
 		("filter-point-cloud", boost::program_options::value(&OPT::thFilterPointCloud)->default_value(0), "filter dense point-cloud based on visibility (0 - disabled)")
 		("export-number-views", boost::program_options::value(&OPT::nExportNumViews)->default_value(0), "export points with >= number of views (0 - disabled, <0 - save MVS project too)")
+        ("roi-border", boost::program_options::value(&OPT::fBorderROI)->default_value(0), "add a border to the region-of-interest when cropping the scene (0 - disabled, >0 - percentage, <0 - absolute)")
         ("estimate-roi", boost::program_options::value(&OPT::nEstimateROI)->default_value(2), "estimate and set region-of-interest (0 - disabled, 1 - enabled, 2 - adaptive)")
+        ("crop-to-roi", boost::program_options::value(&OPT::bCrop2ROI)->default_value(true), "crop scene using the region-of-interest")
         ;
 
 	// hidden options, allowed both on command line and
@@ -369,7 +373,7 @@ int main(int argc, LPCTSTR* argv)
 			scene.pointcloud.PrintStatistics(scene.images.data(), &scene.obb);
 		#endif
 		TD_TIMER_START();
-		if (!scene.DenseReconstruction(OPT::nFusionMode)) {
+		if (!scene.DenseReconstruction(OPT::nFusionMode, OPT::bCrop2ROI, OPT::fBorderROI)) {
 			if (ABS(OPT::nFusionMode) != 1)
 				return EXIT_FAILURE;
 			VERBOSE("Depth-maps estimated (%s)", TD_TIMER_GET_FMT().c_str());
