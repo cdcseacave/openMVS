@@ -105,7 +105,7 @@ extern unsigned nNumViews;
 extern unsigned nPointInsideROI;
 extern bool bFilterAdjust;
 extern bool bAddCorners;
-extern bool bInitDepthFromSparse;
+extern bool bInitSparse;
 extern float fViewMinScore;
 extern float fViewMinScoreRatio;
 extern float fMinArea;
