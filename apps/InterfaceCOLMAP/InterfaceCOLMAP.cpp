@@ -130,7 +130,6 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		boost::program_options::store(boost::program_options::command_line_parser((int)argc, argv).options(cmdline_options).positional(p).run(), OPT::vm);
 		boost::program_options::notify(OPT::vm);
 		Util::ensureValidPath(OPT::strInputFileName);
-		WORKING_FOLDER = (File::isFolder(OPT::strInputFileName) ? OPT::strInputFileName : Util::getFilePath(OPT::strInputFileName));
 		INIT_WORKING_FOLDER;
 		// parse configuration file
 		std::ifstream ifs(MAKE_PATH_SAFE(OPT::strConfigFileName));
