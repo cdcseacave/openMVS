@@ -631,13 +631,22 @@ public:
 
 	inline TYPE&	GetNth(IDX index)
 	{
+		ASSERT(index < _size);
 		TYPE* const nth(Begin()+index);
 		std::nth_element(Begin(), nth, End());
 		return *nth;
 	}
-	inline TYPE&	GetMedian()
+	template <typename RTYPE = typename std::conditional<std::is_floating_point<TYPE>::value,TYPE,REAL>::type>
+	inline RTYPE	GetMedian()
 	{
-		return GetNth(_size >> 1);
+		ASSERT(_size > 0);
+		if (_size%2)
+			return static_cast<RTYPE>(GetNth(_size >> 1));
+		TYPE* const nth(Begin() + (_size>>1));
+		std::nth_element(Begin(), nth, End());
+		TYPE* const nth1(nth-1);
+		std::nth_element(Begin(), nth1, nth);
+		return (static_cast<RTYPE>(*nth1) + static_cast<RTYPE>(*nth)) / RTYPE(2);
 	}
 
 	inline TYPE		GetMean()
