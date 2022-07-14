@@ -1384,7 +1384,7 @@ bool Scene::EstimateROI(int nEstimateROI, float scale)
 	ASSERT(nEstimateROI >= 0 && nEstimateROI <= 2 && scale > 0);
 	if (nEstimateROI == 0) {
 		DEBUG_ULTIMATE("The scene will be considered as unbounded (no ROI)");
-		return true;
+		return false;
 	}
 	if (!pointcloud.IsValid()) {
 		VERBOSE("error: no valid point-cloud for the ROI estimation");
@@ -1400,7 +1400,7 @@ bool Scene::EstimateROI(int nEstimateROI, float scale)
 	const unsigned nCameras = cameras.size();
 	if (nCameras < 3) {
 		VERBOSE("warning: not enough valid views for the ROI estimation");
-		return true;
+		return false;
 	}
 	// compute the camera center and the direction median
 	FloatArr x(nCameras), y(nCameras), z(nCameras), nx(nCameras), ny(nCameras), nz(nCameras);
@@ -1421,7 +1421,7 @@ bool Scene::EstimateROI(int nEstimateROI, float scale)
 		camDirectMean /= camDirectMeanLen;
 	if (camDirectMeanLen > FSQRT_2 / 2.f && nEstimateROI == 2) {
 		VERBOSE("The camera directions mean is unbalanced; the scene will be considered unbounded (no ROI)");
-		return true;
+		return false;
 	}
 	DEBUG_ULTIMATE("The camera positions median is (%f,%f,%f), directions mean and norm are (%f,%f,%f), %f",
 				   camCenter.x, camCenter.y, camCenter.z, camDirectMean.x, camDirectMean.y, camDirectMean.z, camDirectMeanLen);
@@ -1434,8 +1434,8 @@ bool Scene::EstimateROI(int nEstimateROI, float scale)
 	const CMatrix sceneCenter = camCenter + camShiftCoeff * camDistMed * camDirectMean;
 	FOREACH(i, cameras) {
 		if (cameras[i].PointDepth(sceneCenter) <= 0 && nEstimateROI == 2) {
-			VERBOSE("Find a camera not pointing towards the scene center; the scene will be considered unbounded (no ROI)");
-			return true;
+			VERBOSE("Found a camera not pointing towards the scene center; the scene will be considered unbounded (no ROI)");
+			return false;
 		}
 		cameraDistances[i] = (float)cameras[i].Distance(sceneCenter);
 	}
