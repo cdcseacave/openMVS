@@ -34,7 +34,6 @@
 #include "RectsBinPack.h"
 // connected components
 #include <boost/graph/adjacency_list.hpp>
-#include <boost/graph/filtered_graph.hpp>
 #include <boost/graph/connected_components.hpp>
 
 using namespace MVS;
@@ -827,7 +826,6 @@ bool MeshTexture::FaceViewSelection(float fOutlierThreshold, float fRatioDataSmo
 				const Mesh::FIndex idx((Mesh::FIndex)boost::add_vertex(graph));
 				ASSERT(idx == idxFace);
 			}
-			Mesh::FaceIdxArr afaces;
 			FOREACH(idxFace, faces) {
 				const Mesh::FaceFaces& afaces = faceFaces[idxFace];
 				for (int v=0; v<3; ++v) {
