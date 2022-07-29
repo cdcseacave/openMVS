@@ -1179,12 +1179,14 @@ template<typename _Tp>
 inline bool   ISFINITE(const _Tp* x, size_t n)	{ for (size_t i=0; i<n; ++i) if (ISINFORNAN(x[i])) return false; return true; }
 
 template<typename _Tp>
-inline bool   ISINSIDE(_Tp v,_Tp l0,_Tp l1)	{ return (l0 <= v && v < l1); }
+inline bool   ISINSIDE(_Tp v,_Tp l0,_Tp l1)	{ ASSERT(l0<l1); return l0 <= v && v < l1; }
+template<typename _Tp>
+inline bool   ISINSIDES(_Tp v,_Tp l0,_Tp l1)	{ return l0 < l1 ? ISINSIDE(v, l0, l1) : ISINSIDE(v, l1, l0); }
 
 template<typename _Tp>
-inline _Tp    CLAMP(_Tp v, _Tp c0, _Tp c1)	{ ASSERT(c0<=c1); return MINF(MAXF(v, c0), c1); }
+inline _Tp    CLAMP(_Tp v, _Tp l0, _Tp l1)	{ ASSERT(l0<=l1); return MINF(MAXF(v, l0), l1); }
 template<typename _Tp>
-inline _Tp    CLAMPS(_Tp v, _Tp c0, _Tp c1)	{ if (c0 <= c1) return CLAMP(v, c0, c1); return CLAMP(v, c1, c0); }
+inline _Tp    CLAMPS(_Tp v, _Tp l0, _Tp l1)	{ return l0 <= l1 ? CLAMP(v, l0, l1) : CLAMP(v, l1, l0); }
 
 template<typename _Tp>
 inline _Tp    SIGN(_Tp x)					{ if (x > _Tp(0)) return _Tp(1); if (x < _Tp(0)) return _Tp(-1); return _Tp(0); }
