@@ -35,6 +35,8 @@
 
 // I N C L U D E S /////////////////////////////////////////////////
 
+#include "Image.h"
+
 
 // D E F I N E S ///////////////////////////////////////////////////
 
@@ -52,7 +54,7 @@ public:
 	typedef IDX Index;
 
 	typedef TPoint3<float> Point;
-	typedef SEACAVE::cList<Point,const Point&,2,8192> PointArr;
+	typedef SEACAVE::cList<Point,const Point&,0,8192> PointArr;
 
 	typedef uint32_t View;
 	typedef SEACAVE::cList<View,const View,0,4,uint32_t> ViewArr;
@@ -90,6 +92,7 @@ public:
 
 	void RemovePoint(IDX);
 	void RemovePointsOutside(const OBB3f&);
+	void RemoveMinViews(uint32_t thMinViews);
 
 	Box GetAABB() const;
 	Box GetAABB(const Box& bound) const;
@@ -99,6 +102,8 @@ public:
 	bool Load(const String& fileName);
 	bool Save(const String& fileName, bool bLegacyTypes=false) const;
 	bool SaveNViews(const String& fileName, uint32_t minViews, bool bLegacyTypes=false) const;
+
+	void PrintStatistics(const Image* pImages = NULL, const OBB3f* pObb = NULL) const;
 
 	#ifdef _USE_BOOST
 	// implement BOOST serialization

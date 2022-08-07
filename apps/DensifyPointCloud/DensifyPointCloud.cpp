@@ -57,6 +57,7 @@ String strDenseConfigFileName;
 String strExportDepthMapsName;
 float fMaxSubsceneArea;
 float fSampleMesh;
+int nEstimateROI;
 int nFusionMode;
 int thFilterPointCloud;
 int nExportNumViews;
@@ -110,6 +111,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	unsigned nMinResolution;
 	unsigned nNumViews;
 	unsigned nMinViewsFuse;
+	unsigned nSubResolutionLevels;
 	unsigned nEstimationIters;
 	unsigned nEstimationGeometricIters;
 	unsigned nEstimateColors;
@@ -124,6 +126,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		("resolution-level", boost::program_options::value(&nResolutionLevel)->default_value(1), "how many times to scale down the images before point cloud computation")
 		("max-resolution", boost::program_options::value(&nMaxResolution)->default_value(2560), "do not scale images higher than this resolution")
 		("min-resolution", boost::program_options::value(&nMinResolution)->default_value(640), "do not scale images lower than this resolution")
+		("sub-resolution-levels", boost::program_options::value(&nSubResolutionLevels)->default_value(2), "number of patch-match sub-resolution iterations (0 - disabled)")
 		("number-views", boost::program_options::value(&nNumViews)->default_value(nNumViewsDefault), "number of views used for depth-map estimation (0 - all neighbor views available)")
 		("number-views-fuse", boost::program_options::value(&nMinViewsFuse)->default_value(3), "minimum number of images that agrees with an estimate during fusion in order to consider it inlier (<2 - only merge depth-maps)")
 		("ignore-mask-label", boost::program_options::value(&nIgnoreMaskLabel)->default_value(-1), "integer value for the label to ignore in the segmentation mask (<0 - disabled)")
@@ -135,8 +138,9 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		("sample-mesh", boost::program_options::value(&OPT::fSampleMesh)->default_value(0.f), "uniformly samples points on a mesh (0 - disabled, <0 - number of points, >0 - sample density per square unit)")
 		("fusion-mode", boost::program_options::value(&OPT::nFusionMode)->default_value(0), "depth map fusion mode (-2 - fuse disparity-maps, -1 - export disparity-maps only, 0 - depth-maps & fusion, 1 - export depth-maps only)")
 		("filter-point-cloud", boost::program_options::value(&OPT::thFilterPointCloud)->default_value(0), "filter dense point-cloud based on visibility (0 - disabled)")
-		("export-number-views", boost::program_options::value(&OPT::nExportNumViews)->default_value(0), "export points with >= number of views (0 - disabled)")
-		;
+		("export-number-views", boost::program_options::value(&OPT::nExportNumViews)->default_value(0), "export points with >= number of views (0 - disabled, <0 - save MVS project too)")
+        ("estimate-roi", boost::program_options::value(&OPT::nEstimateROI)->default_value(2), "estimate and set region-of-interest (0 - disabled, 1 - enabled, 2 - adaptive)")
+        ;
 
 	// hidden options, allowed both on command line and
 	// in config file, but will not be shown to the user
@@ -211,6 +215,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	OPTDENSE::nResolutionLevel = nResolutionLevel;
 	OPTDENSE::nMaxResolution = nMaxResolution;
 	OPTDENSE::nMinResolution = nMinResolution;
+	OPTDENSE::nSubResolutionLevels = nSubResolutionLevels;
 	OPTDENSE::nNumViews = nNumViews;
 	OPTDENSE::nMinViewsFuse = nMinViewsFuse;
 	OPTDENSE::nEstimationIters = nEstimationIters;
@@ -281,20 +286,22 @@ int main(int argc, LPCTSTR* argv)
 	// load and estimate a dense point-cloud
 	if (!scene.Load(MAKE_PATH_SAFE(OPT::strInputFileName)))
 		return EXIT_FAILURE;
-	if (!OPT::strExportROIFileName.empty() && scene.IsBounded()) {
-		std::ofstream fs(MAKE_PATH_SAFE(OPT::strExportROIFileName));
-		if (!fs)
-			return EXIT_FAILURE;
-		fs << scene.obb;
-		Finalize();
-		return EXIT_SUCCESS;
-	}
 	if (!OPT::strImportROIFileName.empty()) {
 		std::ifstream fs(MAKE_PATH_SAFE(OPT::strImportROIFileName));
 		if (!fs)
 			return EXIT_FAILURE;
 		fs >> scene.obb;
 		scene.Save(MAKE_PATH_SAFE(Util::getFileFullName(OPT::strOutputFileName))+_T(".mvs"), (ARCHIVE_TYPE)OPT::nArchiveType);
+		Finalize();
+		return EXIT_SUCCESS;
+	}
+	if (!scene.IsBounded())
+		scene.EstimateROI(OPT::nEstimateROI, 1.1f);
+	if (!OPT::strExportROIFileName.empty() && scene.IsBounded()) {
+		std::ofstream fs(MAKE_PATH_SAFE(OPT::strExportROIFileName));
+		if (!fs)
+			return EXIT_FAILURE;
+		fs << scene.obb;
 		Finalize();
 		return EXIT_SUCCESS;
 	}
@@ -342,12 +349,25 @@ int main(int argc, LPCTSTR* argv)
 	}
 	if (OPT::nExportNumViews && scene.pointcloud.IsValid()) {
 		// export point-cloud containing only points with N+ views
-		const String baseFileName(MAKE_PATH_SAFE(Util::getFileFullName(OPT::strOutputFileName)));
-		scene.pointcloud.SaveNViews(baseFileName+String::FormatString(_T("_%dviews.ply"), OPT::nExportNumViews), (IIndex)OPT::nExportNumViews);
+		const String baseFileName(MAKE_PATH_SAFE(Util::getFileFullName(OPT::strOutputFileName))+
+			String::FormatString(_T("_%dviews"), ABS(OPT::nExportNumViews)));
+		if (OPT::nExportNumViews > 0) {
+			// export point-cloud containing only points with N+ views
+			scene.pointcloud.SaveNViews(baseFileName+_T(".ply"), (IIndex)OPT::nExportNumViews);
+		} else {
+			// save scene and export point-cloud containing only points with N+ views
+			scene.pointcloud.RemoveMinViews((IIndex)-OPT::nExportNumViews);
+			scene.Save(baseFileName+_T(".mvs"), (ARCHIVE_TYPE)OPT::nArchiveType);
+			scene.pointcloud.Save(baseFileName+_T(".ply"));
+		}
 		Finalize();
 		return EXIT_SUCCESS;
 	}
 	if ((ARCHIVE_TYPE)OPT::nArchiveType != ARCHIVE_MVS) {
+		#if TD_VERBOSE != TD_VERBOSE_OFF
+		if (VERBOSITY_LEVEL > 1 && !scene.pointcloud.IsEmpty())
+			scene.pointcloud.PrintStatistics(scene.images.data(), &scene.obb);
+		#endif
 		TD_TIMER_START();
 		if (!scene.DenseReconstruction(OPT::nFusionMode)) {
 			if (ABS(OPT::nFusionMode) != 1)

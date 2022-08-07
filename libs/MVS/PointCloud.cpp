@@ -73,6 +73,12 @@ void PointCloud::RemovePointsOutside(const OBB3f& obb) {
 		if (!obb.Intersects(points[i]))
 			RemovePoint(i);
 }
+void PointCloud::RemoveMinViews(uint32_t thMinViews) {
+	ASSERT(!pointViews.empty());
+	RFOREACH(i, points)
+		if (pointViews[i].size() < thMinViews)
+			RemovePoint(i);
+}
 /*----------------------------------------------------------------*/
 
 
@@ -320,4 +326,160 @@ bool PointCloud::SaveNViews(const String& fileName, uint32_t minViews, bool bLeg
 	DEBUG_EXTRA("Point-cloud saved: %u points with at least %u views each (%s)", numPoints, minViews, TD_TIMER_GET_FMT().c_str());
 	return true;
 } // SaveNViews
+/*----------------------------------------------------------------*/
+
+
+// print various statistics about the point cloud
+void PointCloud::PrintStatistics(const Image* pImages, const OBB3f* pObb) const
+{
+	String strPoints;
+	if (pObb && pObb->IsValid()) {
+		// print points distribution
+		size_t nInsidePoints(0);
+		MeanStdMinMax<double> accInside, accOutside;
+		FOREACH(idx, points) {
+			const bool bInsideROI(pObb->Intersects(points[idx]));
+			if (bInsideROI)
+				++nInsidePoints;
+			if (!pointViews.empty()) {
+				if (bInsideROI)
+					accInside.Update(pointViews[idx].size());
+				else
+					accOutside.Update(pointViews[idx].size());
+			}
+		}
+		strPoints = String::FormatString(
+			"\n - points info:"
+			"\n\t%u points inside ROI (%.2f%%)",
+			nInsidePoints, 100.0*nInsidePoints/GetSize()
+		);
+		if (!pointViews.empty()) {
+			strPoints += String::FormatString(
+				"\n\t inside ROI track length: %g min / %g mean (%g std) / %g max"
+				"\n\toutside ROI track length: %g min / %g mean (%g std) / %g max",
+				accInside.minVal, accInside.GetMean(), accInside.GetStdDev(), accInside.maxVal,
+				accOutside.minVal, accOutside.GetMean(), accOutside.GetStdDev(), accOutside.maxVal
+			);
+		}
+	}
+	String strViews;
+	if (!pointViews.empty()) {
+		// print views distribution
+		size_t nViews(0);
+		size_t nPoints1m(0), nPoints2(0), nPoints3(0), nPoints4p(0);
+		size_t nPointsOpposedViews(0);
+		MeanStdMinMax<double> acc;
+		FOREACH(idx, points) {
+			const PointCloud::ViewArr& views = pointViews[idx];
+			nViews += views.size();
+			switch (views.size()) {
+			case 0:
+			case 1:
+				++nPoints1m;
+				break;
+			case 2:
+				++nPoints2;
+				break;
+			case 3:
+				++nPoints3;
+				break;
+			default:
+				++nPoints4p;
+			}
+			acc.Update(views.size());
+		}
+		strViews = String::FormatString(
+			"\n - visibility info (%u views - %.2f views/point)%s:"
+			"\n\t% 9u points with 1- views (%.2f%%)"
+			"\n\t% 9u points with 2  views (%.2f%%)"
+			"\n\t% 9u points with 3  views (%.2f%%)"
+			"\n\t% 9u points with 4+ views (%.2f%%)"
+			"\n\t%g min / %g mean (%g std) / %g max",
+			nViews, (REAL)nViews/GetSize(),
+			nPointsOpposedViews ? String::FormatString(" (%u (%.2f%%) points with opposed views)", nPointsOpposedViews, 100.f*nPointsOpposedViews/GetSize()).c_str() : "",
+			nPoints1m, 100.f*nPoints1m/GetSize(), nPoints2, 100.f*nPoints2/GetSize(), nPoints3, 100.f*nPoints3/GetSize(), nPoints4p, 100.f*nPoints4p/GetSize(),
+			acc.minVal, acc.GetMean(), acc.GetStdDev(), acc.maxVal
+		);
+	}
+	String strNormals;
+	if (!normals.empty()) {
+		if (!pointViews.empty() && pImages != NULL) {
+			// print normal/views angle distribution
+			size_t nViews(0);
+			size_t nPointsm(0), nPoints3(0), nPoints10(0), nPoints25(0), nPoints40(0), nPoints60(0), nPoints90p(0);
+			const REAL thCosAngle3(COS(D2R(3.f)));
+			const REAL thCosAngle10(COS(D2R(10.f)));
+			const REAL thCosAngle25(COS(D2R(25.f)));
+			const REAL thCosAngle40(COS(D2R(40.f)));
+			const REAL thCosAngle60(COS(D2R(60.f)));
+			const REAL thCosAngle90(COS(D2R(90.f)));
+			FOREACH(idx, points) {
+				const PointCloud::Point& X = points[idx];
+				const PointCloud::Normal& N = normals[idx];
+				const PointCloud::ViewArr& views = pointViews[idx];
+				nViews += views.size();
+				for (IIndex idxImage: views) {
+					const Point3f X2Cam(Cast<float>(pImages[idxImage].camera.C)-X);
+					const REAL cosAngle(ComputeAngle(X2Cam.ptr(), N.ptr()));
+					if (cosAngle <= thCosAngle90)
+						++nPoints90p;
+					else if (cosAngle <= thCosAngle60)
+						++nPoints60;
+					else if (cosAngle <= thCosAngle40)
+						++nPoints40;
+					else if (cosAngle <= thCosAngle25)
+						++nPoints25;
+					else if (cosAngle <= thCosAngle10)
+						++nPoints10;
+					else if (cosAngle <= thCosAngle3)
+						++nPoints3;
+					else
+						++nPointsm;
+				}
+			}
+			strNormals = String::FormatString(
+				"\n - normals visibility info:"
+				"\n\t% 9u points with 3- degrees (%.2f%%)"
+				"\n\t% 9u points with 10 degrees (%.2f%%)"
+				"\n\t% 9u points with 25 degrees (%.2f%%)"
+				"\n\t% 9u points with 40 degrees (%.2f%%)"
+				"\n\t% 9u points with 60 degrees (%.2f%%)"
+				"\n\t% 9u points with 90+ degrees (%.2f%%)",
+				nPointsm, 100.f*nPointsm/nViews, nPoints3, 100.f*nPoints3/nViews, nPoints10, 100.f*nPoints10/nViews,
+				nPoints40, 100.f*nPoints40/nViews, nPoints60, 100.f*nPoints60/nViews, nPoints90p, 100.f*nPoints90p/nViews
+			);
+		} else {
+			strNormals = "\n - normals info";
+		}
+	}
+	String strWeights;
+	if (!pointWeights.empty()) {
+		// print weights statistics
+		MeanStdMinMax<double> acc;
+		for (const PointCloud::WeightArr& weights: pointWeights) {
+			float avgWeight(0);
+			for (PointCloud::Weight w: weights)
+				avgWeight += w;
+			acc.Update(avgWeight/weights.size());
+		}
+		strWeights = String::FormatString(
+			"\n - weights info:"
+			"\n\t%g min / %g mean (%g std) / %g max",
+			acc.minVal, acc.GetMean(), acc.GetStdDev(), acc.maxVal
+		);
+	}
+	String strColors;
+	if (!colors.empty()) {
+		// print colors statistics
+		strColors = "\n - colors";
+	}
+	VERBOSE("Point-cloud composed of %u points with:%s%s%s%s",
+		GetSize(),
+		strPoints.c_str(),
+		strViews.c_str(),
+		strNormals.c_str(),
+		strWeights.c_str(),
+		strColors.c_str()
+	);
+} // PrintStatistics
 /*----------------------------------------------------------------*/

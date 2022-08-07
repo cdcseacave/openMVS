@@ -365,7 +365,8 @@ inline void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE>::Collect(INSERTER& inserte
 template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE>
 inline void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE>::Collect(IDXARR_TYPE& indices, const AABB_TYPE& aabb) const
 {
-	_Collect(m_root, aabb, IndexInserter(indices));
+	IndexInserter inserter(indices);
+	_Collect(m_root, aabb, inserter);
 }
 
 template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE>
@@ -377,7 +378,8 @@ inline void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE>::Collect(INSERTER& inserte
 template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE>
 inline void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE>::Collect(IDXARR_TYPE& indices, const POINT_TYPE& center, TYPE radius) const
 {
-	_Collect(m_root, AABB_TYPE(center, radius), IndexInserter(indices));
+	IndexInserter inserter(indices);
+	_Collect(m_root, AABB_TYPE(center, radius), inserter);
 }
 
 template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE>
@@ -390,7 +392,8 @@ template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE>
 template <typename COLLECTOR>
 inline void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE>::Collect(IDXARR_TYPE& indices, const COLLECTOR& collector) const
 {
-	_Collect(m_root, m_radius, collector, IndexInserter(indices));
+	IndexInserter inserter(indices);
+	_Collect(m_root, m_radius, collector, inserter);
 }
 
 template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE>
@@ -774,7 +777,7 @@ inline bool OctreeTest(unsigned iters, unsigned maxItems=1000, bool bRandom=true
 	STATIC_ASSERT(DIMS > 0 && DIMS <= 3);
 	srand(bRandom ? (unsigned)time(NULL) : 0);
 	typedef Eigen::Matrix<TYPE,DIMS,1> POINT_TYPE;
-	typedef SEACAVE::cList<POINT_TYPE,const POINT_TYPE&,0> TestArr;
+	typedef CLISTDEF0(POINT_TYPE) TestArr;
 	typedef TOctree<TestArr,TYPE,DIMS,uint32_t> TestTree;
 	const TYPE ptMinData[] = {0,0,0}, ptMaxData[] = {640,480,240};
 	typename TestTree::AABB_TYPE aabb;

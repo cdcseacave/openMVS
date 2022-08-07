@@ -321,7 +321,8 @@ bool Scene::LoadDMAP(const String& fileName)
 	DepthMap depthMap;
 	NormalMap normalMap;
 	ConfidenceMap confMap;
-	if (!ImportDepthDataRaw(fileName, imageFileName, IDs, imageSize, camera.K, camera.R, camera.C, dMin, dMax, depthMap, normalMap, confMap))
+	ViewsMap viewsMap;
+	if (!ImportDepthDataRaw(fileName, imageFileName, IDs, imageSize, camera.K, camera.R, camera.C, dMin, dMax, depthMap, normalMap, confMap, viewsMap))
 		return false;
 
 	// create image
@@ -451,7 +452,7 @@ bool Scene::SaveViewNeighbors(const String& fileName) const
 	ASSERT(ImagesHaveNeighbors());
 
 	TD_TIMER_STARTD();
-	
+
 	File file(fileName, File::WRITE, File::CREATE | File::TRUNCATE);
 	if (!file.isOpen()) {
 		VERBOSE("error: unable to write file '%s'", fileName.c_str());
@@ -699,7 +700,7 @@ bool Scene::ExportMeshToDepthMaps(const String& baseName)
 				IDs.push_back(idxImage);
 				for (const ViewScore& neighbor: image.neighbors)
 					IDs.push_back(neighbor.idx.ID);
-				return ExportDepthDataRaw(fileName, image.name, IDs, image.GetSize(), image.camera.K, image.camera.R, image.camera.C, 0.001f, FLT_MAX, depthMap, normalMap, ConfidenceMap());
+				return ExportDepthDataRaw(fileName, image.name, IDs, image.GetSize(), image.camera.K, image.camera.R, image.camera.C, 0.001f, FLT_MAX, depthMap, normalMap, ConfidenceMap(), ViewsMap());
 			} ()) ||
 			(nType == 1 && !depthMap.Save(fileName)) ||
 			(nType == 0 && !ExportDepthMap(fileName, depthMap)))
@@ -786,7 +787,7 @@ bool Scene::SelectNeighborViews(uint32_t ID, IndexArr& points, unsigned nMinView
 				continue;
 			const Image& imageData2 = images[view];
 			const Point3f V2(imageData2.camera.C - Cast<REAL>(point));
-			const float fAngle(ACOS(ComputeAngle<float,float>(V1.ptr(), V2.ptr())));
+			const float fAngle(ACOS(ComputeAngle(V1.ptr(), V2.ptr())));
 			const float wAngle(EXP(SQUARE(fAngle-fOptimAngle)*(fAngle<fOptimAngle?sigmaAngleSmall:sigmaAngleLarge)));
 			const float footprint2(Footprint(imageData2.camera, point));
 			const float fScaleRatio(footprint1/footprint2);
@@ -1373,4 +1374,98 @@ bool Scene::ScaleImages(unsigned nMaxResolution, REAL scale, const String& folde
 	}
 	return true;
 } // ScaleImages
+/*----------------------------------------------------------------*/
+
+
+// estimate region-of-interest based on camera positions, directions and sparse points
+// scale specifies the ratio of the ROI's diameter
+bool Scene::EstimateROI(int nEstimateROI, float scale)
+{
+	ASSERT(nEstimateROI >= 0 && nEstimateROI <= 2 && scale > 0);
+	if (nEstimateROI == 0) {
+		DEBUG_ULTIMATE("The scene will be considered as unbounded (no ROI)");
+		return false;
+	}
+	if (!pointcloud.IsValid()) {
+		VERBOSE("error: no valid point-cloud for the ROI estimation");
+		return false;
+	}
+	CameraArr cameras;
+	FOREACH(i, images) {
+		const Image& imageData = images[i];
+		if (!imageData.IsValid())
+			continue;
+		cameras.emplace_back(imageData.camera);
+	}
+	const unsigned nCameras = cameras.size();
+	if (nCameras < 3) {
+		VERBOSE("warning: not enough valid views for the ROI estimation");
+		return false;
+	}
+	// compute the camera center and the direction median
+	FloatArr x(nCameras), y(nCameras), z(nCameras), nx(nCameras), ny(nCameras), nz(nCameras);
+	FOREACH(i, cameras) {
+		const Point3f camC(cameras[i].C);
+		x[i] = camC.x;
+		y[i] = camC.y;
+		z[i] = camC.z;
+		const Point3f camDirect(cameras[i].Direction());
+		nx[i] = camDirect.x;
+		ny[i] = camDirect.y;
+		nz[i] = camDirect.z;
+	}
+	const CMatrix camCenter(x.GetMedian(), y.GetMedian(), z.GetMedian());
+	CMatrix camDirectMean(nx.GetMean(), ny.GetMean(), nz.GetMean());
+	const float camDirectMeanLen = (float)norm(camDirectMean);
+	if (!ISZERO(camDirectMeanLen))
+		camDirectMean /= camDirectMeanLen;
+	if (camDirectMeanLen > FSQRT_2 / 2.f && nEstimateROI == 2) {
+		VERBOSE("The camera directions mean is unbalanced; the scene will be considered unbounded (no ROI)");
+		return false;
+	}
+	DEBUG_ULTIMATE("The camera positions median is (%f,%f,%f), directions mean and norm are (%f,%f,%f), %f",
+				   camCenter.x, camCenter.y, camCenter.z, camDirectMean.x, camDirectMean.y, camDirectMean.z, camDirectMeanLen);
+	FloatArr cameraDistances(nCameras);
+	FOREACH(i, cameras)
+		cameraDistances[i] = (float)cameras[i].Distance(camCenter);
+	// estimate scene center and radius
+	const float camDistMed = cameraDistances.GetMedian();
+	const float camShiftCoeff = TAN(ASIN(CLAMP(camDirectMeanLen, 0.f, 0.999f)));
+	const CMatrix sceneCenter = camCenter + camShiftCoeff * camDistMed * camDirectMean;
+	FOREACH(i, cameras) {
+		if (cameras[i].PointDepth(sceneCenter) <= 0 && nEstimateROI == 2) {
+			VERBOSE("Found a camera not pointing towards the scene center; the scene will be considered unbounded (no ROI)");
+			return false;
+		}
+		cameraDistances[i] = (float)cameras[i].Distance(sceneCenter);
+	}
+	const float sceneRadius = cameraDistances.GetMax();
+	DEBUG_ULTIMATE("The estimated scene center is (%f,%f,%f), radius is %f",
+				   sceneCenter.x, sceneCenter.y, sceneCenter.z, sceneRadius);
+	Point3fArr ptsInROI;
+	FOREACH(i, pointcloud.points) {
+		const PointCloud::Point& point = pointcloud.points[i];
+		const PointCloud::ViewArr& views = pointcloud.pointViews[i];
+		FOREACH(j, views) {
+			const Image& imageData = images[views[j]];
+			if (!imageData.IsValid())
+				continue;
+			const Camera& camera = imageData.camera;
+			if (camera.PointDepth(point) < sceneRadius * 2.0f) {
+				ptsInROI.emplace_back(point);
+				break;
+			}
+		}
+	}
+	obb.Set(AABB3f(ptsInROI.begin(), ptsInROI.size()).EnlargePercent(scale));
+	#if TD_VERBOSE != TD_VERBOSE_OFF
+	if (VERBOSITY_LEVEL > 2) {
+		VERBOSE("Set the ROI with the AABB of position (%f,%f,%f) and extent (%f,%f,%f)",
+			    obb.m_pos[0], obb.m_pos[1], obb.m_pos[2], obb.m_ext[0], obb.m_ext[1], obb.m_ext[2]);
+	} else {
+		VERBOSE("Set the ROI by the estimated core points");
+	}
+	#endif
+	return true;
+} // EstimateROI
 /*----------------------------------------------------------------*/

@@ -108,8 +108,11 @@ inline TAABB<TYPE,DIMS>& TAABB<TYPE,DIMS>::Enlarge(TYPE x)
 template <typename TYPE, int DIMS>
 inline TAABB<TYPE,DIMS>& TAABB<TYPE,DIMS>::EnlargePercent(TYPE x)
 {
-	ptMin *= x;
-	ptMax *= x;
+	POINT ptSize;
+	GetSize(ptSize);
+	ptSize *= (x - TYPE(1.)) / TYPE(2.);
+	ptMin -= ptSize;
+	ptMax += ptSize;
 	return *this;
 } // Enlarge
 /*----------------------------------------------------------------*/

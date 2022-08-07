@@ -1389,7 +1389,7 @@ SemiGlobalMatcher::Index SemiGlobalMatcher::Disparity2RangeMap(const DisparityMa
 					range.minDisp = -range.maxDisp;
 					numDisp = range.numDisp();
 				} else {
-					const Disparity disp(disps.GetMedian()*2);
+					const Disparity disp(disps.GetMedian<Disparity>()*2);
 					const auto minmax(disps.GetMinMax());
 					numDisp = (minmax.second-minmax.first)*2;
 					if (numDisp < minNumDisp) {
