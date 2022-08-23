@@ -1,16 +1,12 @@
-FROM ubuntu:18.04
+FROM ubuntu:22.04
 
+ARG MASTER
 ARG USER_ID
 ARG GROUP_ID
 
-# Initialize the environment 
-RUN apt update
-RUN apt install -y cmake git vim
-
 # Prepare and empty machine for building:
 RUN apt-get update -yq
-RUN apt-get install -yq
-RUN apt-get -y install git mercurial cmake libpng-dev libjpeg-dev libtiff-dev libglu1-mesa-dev
+RUN apt-get -yq install build-essential git cmake libpng-dev libjpeg-dev libtiff-dev libglu1-mesa-dev
 
 # Eigen 
 RUN git clone https://gitlab.com/libeigen/eigen --branch 3.4
@@ -27,16 +23,13 @@ RUN apt-get -y install libboost-iostreams-dev libboost-program-options-dev libbo
 RUN DEBIAN_FRONTEND=noninteractive apt-get install -yq libopencv-dev
 
 # CGAL
-RUN apt-get -y install libcgal-dev libcgal-qt5-dev
+RUN apt-get -yq install libcgal-dev libcgal-qt5-dev
 
 # VCGLib
 RUN git clone https://github.com/cdcseacave/VCG.git vcglib
 
-# Build from stable openMVS release
-RUN git clone https://github.com/cdcseacave/openMVS.git --branch master
-
-# Uncomment below (and comment above) to use the latest commit from the develop branch
-#RUN git clone https://github.com/cdcseacave/openMVS.git --branch develop
+# Build from stable openMVS release or the latest commit from the develop branch
+RUN if [[ -n "$MASTER" ]] ; then git clone https://github.com/cdcseacave/openMVS.git --branch master ; else git clone https://github.com/cdcseacave/openMVS.git --branch develop ; fi
 
 RUN mkdir openMVS_build
 RUN cd openMVS_build &&\
@@ -48,8 +41,8 @@ RUN cd openMVS_build &&\
 	make install
 
 # Set permissions such that the output files can be accessed by the current user (optional)
-RUN addgroup --gid $GROUP_ID user
-RUN adduser --disabled-password --gecos '' --uid $USER_ID --gid $GROUP_ID user
+RUN addgroup --gid $GROUP_ID user &&\
+	adduser --disabled-password --gecos '' --uid $USER_ID --gid $GROUP_ID user
 USER user
 
 # Add binaries to path
