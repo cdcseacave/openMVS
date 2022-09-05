@@ -133,6 +133,7 @@ DepthMapsData::DepthMapsData(Scene& _scene)
 {
 } // constructor
 
+
 DepthMapsData::~DepthMapsData()
 {
 } // destructor
@@ -609,13 +610,6 @@ DepthData DepthMapsData::ScaleDepthData(const DepthData& inputDeptData, float sc
 //  - nGeometricIter: current geometric-consistent estimation iteration (-1 - normal patch-match)
 bool DepthMapsData::EstimateDepthMap(IIndex idxImage, int nGeometricIter)
 {
-	#ifdef _USE_CUDA
-	if (pmCUDA) {
-		pmCUDA->EstimateDepthMap(arrDepthData[idxImage]);
-		return true;
-	}
-	#endif // _USE_CUDA
-
 	TD_TIMER_STARTD();
 
 	const unsigned nMaxThreads(scene.nMaxThreads);
@@ -631,7 +625,7 @@ bool DepthMapsData::EstimateDepthMap(IIndex idxImage, int nGeometricIter)
 		threads.resize(nMaxThreads-1); // current thread is also used
 	volatile Thread::safe_t idxPixel;
 
-	// Multi-Resolution : 
+	// Multi-Resolution :
 	DepthData& fullResDepthData(arrDepthData[idxImage]);
 	const unsigned totalScaleNumber(nGeometricIter < 0 ? OPTDENSE::nSubResolutionLevels : 0u);
 	DepthMap lowResDepthMap;
@@ -938,7 +932,7 @@ bool DepthMapsData::GapInterpolation(DepthData& depthData)
 					const Depth avg((depthFirst+depth)*0.5f);
 					do {
 						depthMap(v,u_curr) = avg;
-					} while (++u_curr<u);						
+					} while (++u_curr<u);
 					#else
 					// interpolate values
 					const Depth diff((depth-depthFirst)/(count+1));
@@ -948,7 +942,7 @@ bool DepthMapsData::GapInterpolation(DepthData& depthData)
 						do {
 							depthMap(v,u_curr) = (d+=diff);
 							if (!confMap.empty()) confMap(v,u_curr) = c;
-						} while (++u_curr<u);						
+						} while (++u_curr<u);
 					} else {
 						Point2f dir1, dir2;
 						Normal2Dir(normalMap(v,u_first), dir1);
@@ -959,7 +953,7 @@ bool DepthMapsData::GapInterpolation(DepthData& depthData)
 							dir1 += dirDiff;
 							Dir2Normal(dir1, normalMap(v,u_curr));
 							if (!confMap.empty()) confMap(v,u_curr) = c;
-						} while (++u_curr<u);						
+						} while (++u_curr<u);
 					}
 					#endif
 				}
@@ -1004,7 +998,7 @@ bool DepthMapsData::GapInterpolation(DepthData& depthData)
 					const Depth avg((depthFirst+depth)*0.5f);
 					do {
 						depthMap(v_curr,u) = avg;
-					} while (++v_curr<v);						
+					} while (++v_curr<v);
 					#else
 					// interpolate values
 					const Depth diff((depth-depthFirst)/(count+1));
@@ -1014,7 +1008,7 @@ bool DepthMapsData::GapInterpolation(DepthData& depthData)
 						do {
 							depthMap(v_curr,u) = (d+=diff);
 							if (!confMap.empty()) confMap(v_curr,u) = c;
-						} while (++v_curr<v);						
+						} while (++v_curr<v);
 					} else {
 						Point2f dir1, dir2;
 						Normal2Dir(normalMap(v_first,u), dir1);
@@ -1025,7 +1019,7 @@ bool DepthMapsData::GapInterpolation(DepthData& depthData)
 							dir1 += dirDiff;
 							Dir2Normal(dir1, normalMap(v_curr,u));
 							if (!confMap.empty()) confMap(v_curr,u) = c;
-						} while (++v_curr<v);						
+						} while (++v_curr<v);
 					}
 					#endif
 				}
@@ -1596,7 +1590,7 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, b
 // S T R U C T S ///////////////////////////////////////////////////
 
 DenseDepthMapData::DenseDepthMapData(Scene& _scene, int _nFusionMode)
-	: scene(_scene), depthMaps(_scene), idxImage(0), sem(1), nEstimationGeometricIter(-1), nFusionMode(_nFusionMode)
+	: scene(_scene), depthMaps(_scene), nEstimationGeometricIter(-1), nFusionMode(_nFusionMode)
 {
 	if (nFusionMode < 0) {
 		STEREO::SemiGlobalMatcher::CreateThreads(scene.nMaxThreads);
@@ -1604,18 +1598,40 @@ DenseDepthMapData::DenseDepthMapData(Scene& _scene, int _nFusionMode)
 			OPTDENSE::nOptimize = 0;
 	}
 }
+/*
+DenseDepthMapData::DenseDepthMapData(const DenseDepthMapData& data):
+	scene(data.scene), depthMaps(data.depthMaps), idxImage(data.idxImage), sem(1), nEstimationGeometricIter(data.nEstimationGeometricIter), toIdxImage(data.toIdxImage), nFusionMode(data.nFusionMode)
+{
+	
+}
+*/
 DenseDepthMapData::~DenseDepthMapData()
 {
 	if (nFusionMode < 0)
 		STEREO::SemiGlobalMatcher::DestroyThreads();
 }
 
-void DenseDepthMapData::SignalCompleteDepthmapFilter()
+void ProcessingStatus::SignalCompleteDepthmapFilter()
 {
 	ASSERT(idxImage > 0);
 	if (Thread::safeDec(idxImage) == 0)
-		sem.Signal((unsigned)images.GetSize()*2);
+		sem.Signal((unsigned)data->images.GetSize()*2);
 }
+
+ProcessingStatus::ProcessingStatus(DenseDepthMapData* data, const size_t startIdx, const size_t endIdx) : sem(1)
+{
+	this->data = data;
+	this->idxImage = startIdx;
+	this->toIdxImage = endIdx;
+	
+}
+
+ProcessingStatus::ProcessingStatus(const ProcessingStatus& status) : data(status.data), sem(1), toIdxImage(status.toIdxImage), idxImage(status.idxImage),
+	pmCUDA(status.pmCUDA), progress(status.progress)
+{
+
+}
+
 /*----------------------------------------------------------------*/
 
 
@@ -1759,6 +1775,8 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 		VERBOSE("Preparing images for dense reconstruction completed: %d images (%s)", images.GetSize(), TD_TIMER_GET_FMT().c_str());
 	}
 
+	//data2.neighborsMap = data.neighborsMap;
+
 	// select images to be used for dense reconstruction
 	{
 		TD_TIMER_START();
@@ -1796,7 +1814,28 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 		VERBOSE("Selecting images for dense reconstruction completed: %d images (%s)", data.images.GetSize(), TD_TIMER_GET_FMT().c_str());
 	}
 	}
+			/*
+	size_t midPoint = data.images.size() / 2;
+			
+	auto data2 = DenseDepthMapData(data);
+	data2.depthMaps.pmCUDA = new PatchMatchCUDA(1);
+	data2.depthMaps.pmCUDA->Init(false);
+	data2.idxImage = midPoint;
+	data2.toIdxImage = data.images.size() - 1;
+	data2.events.AddEvent(new EVTProcessImage(data2.idxImage));
+	*/
+	const size_t midPoint = data.images.size() / 2;
 
+	const auto status = new ProcessingStatus(&data, 0, midPoint - 1);
+	//const auto status = new ProcessingStatus(&data, 0, data.images.size() - 1);
+	status->pmCUDA = new PatchMatchCUDA(0);
+	status->pmCUDA->Init(false);
+
+	const auto status2 = new ProcessingStatus(&data, midPoint, data.images.size() - 1);
+	status2->pmCUDA = new PatchMatchCUDA(1);
+	status2->pmCUDA->Init(false);
+
+		/*
 	#ifdef _USE_CUDA
 	// initialize CUDA
 	if (CUDA::desiredDeviceID >= -1 && data.nFusionMode >= 0) {
@@ -1807,197 +1846,272 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 			data.depthMaps.pmCUDA->Init(false);
 	}
 	#endif // _USE_CUDA
+	*/
 
 	// initialize the queue of images to be processed
 	const int nOptimize(OPTDENSE::nOptimize);
 	if (OPTDENSE::nEstimationGeometricIters && data.nFusionMode >= 0)
 		OPTDENSE::nOptimize = 0;
-	data.idxImage = 0;
-	ASSERT(data.events.IsEmpty());
-	data.events.AddEvent(new EVTProcessImage(0));
+	//data.idxImage = 0;
+	//data.toIdxImage = data.images.size() - 1;
+	//data.toIdxImage = midPoint - 1;//data.images.size() - 1;
+	//data.toIdxImage = midPoint - 1;
+	//ASSERT(data.events.IsEmpty());
+	ASSERT(status->events.IsEmpty());
+	status->events.AddEvent(new EVTProcessImage(0));
+			//data.events.AddEvent(new EVTProcessImage(0));
 	// start working threads
-	data.progress = new Util::Progress("Estimated depth-maps", data.images.GetSize());
-	GET_LOGCONSOLE().Pause();
+	//data.progress = new Util::Progress("Estimated depth-maps", data.images.GetSize());
+
+	const Timer::SysType start(Timer::GetSysTime());
+
+	ASSERT(status2->events.IsEmpty());
+	status2->events.AddEvent(new EVTProcessImage(midPoint));
+	
+	//GET_LOGCONSOLE().Pause();
 	if (nMaxThreads > 1) {
 		// multi-thread execution
-		cList<SEACAVE::Thread> threads(2);
+		cList<SEACAVE::Thread> threads(3);
+		cList<SEACAVE::Thread> threads2(3);
+
 		FOREACHPTR(pThread, threads)
-			pThread->start(DenseReconstructionEstimateTmp, (void*)&data);
+			pThread->start(DenseReconstructionEstimateTmp, status);
+
+		FOREACHPTR(pThread, threads2)
+			pThread->start(DenseReconstructionEstimateTmp, status2);
+			
 		FOREACHPTR(pThread, threads)
 			pThread->join();
+		
+		FOREACHPTR(pThread, threads2)
+			pThread->join();
+			
 	} else {
 		// single-thread execution
-		DenseReconstructionEstimate((void*)&data);
-	}
-	GET_LOGCONSOLE().Play();
-	if (!data.events.IsEmpty())
-		return false;
-	data.progress.Release();
-
-	if (data.nFusionMode >= 0) {
-		#ifdef _USE_CUDA
-		// initialize CUDA
-		if (data.depthMaps.pmCUDA && OPTDENSE::nEstimationGeometricIters) {
-			data.depthMaps.pmCUDA->Release();
-			data.depthMaps.pmCUDA->Init(true);
-		}
-		#endif // _USE_CUDA
-		while (++data.nEstimationGeometricIter < (int)OPTDENSE::nEstimationGeometricIters) {
-			// initialize the queue of images to be geometric processed
-			if (data.nEstimationGeometricIter+1 == (int)OPTDENSE::nEstimationGeometricIters)
-				OPTDENSE::nOptimize = nOptimize;
-			data.idxImage = 0;
-			ASSERT(data.events.IsEmpty());
-			data.events.AddEvent(new EVTProcessImage(0));
-			// start working threads
-			data.progress = new Util::Progress("Geometric-consistent estimated depth-maps", data.images.GetSize());
-			GET_LOGCONSOLE().Pause();
-			if (nMaxThreads > 1) {
-				// multi-thread execution
-				cList<SEACAVE::Thread> threads(2);
-				FOREACHPTR(pThread, threads)
-					pThread->start(DenseReconstructionEstimateTmp, (void*)&data);
-				FOREACHPTR(pThread, threads)
-					pThread->join();
-			} else {
-				// single-thread execution
-				DenseReconstructionEstimate((void*)&data);
-			}
-			GET_LOGCONSOLE().Play();
-			if (!data.events.IsEmpty())
-				return false;
-			data.progress.Release();
-			// replace raw depth-maps with the geometric-consistent ones
-			for (IIndex idx: data.images) {
-				const DepthData& depthData(data.depthMaps.arrDepthData[idx]);
-				if (!depthData.IsValid())
-					continue;
-				const String rawName(ComposeDepthFilePath(depthData.GetView().GetID(), "dmap"));
-				File::deleteFile(rawName);
-				File::renameFile(ComposeDepthFilePath(depthData.GetView().GetID(), "geo.dmap"), rawName);
-			}
-		}
-		data.nEstimationGeometricIter = -1;
+		DenseReconstructionEstimate(status);
 	}
 
-	if ((OPTDENSE::nOptimize & OPTDENSE::ADJUST_FILTER) != 0) {
-		// initialize the queue of depth-maps to be filtered
-		data.sem.Clear();
-		data.idxImage = data.images.GetSize();
-		ASSERT(data.events.IsEmpty());
-		FOREACH(i, data.images)
-			data.events.AddEvent(new EVTFilterDepthMap(i));
-		// start working threads
-		data.progress = new Util::Progress("Filtered depth-maps", data.images.GetSize());
-		GET_LOGCONSOLE().Pause();
-		if (nMaxThreads > 1) {
-			// multi-thread execution
-			cList<SEACAVE::Thread> threads(MINF(nMaxThreads, (unsigned)data.images.GetSize()));
-			FOREACHPTR(pThread, threads)
-				pThread->start(DenseReconstructionFilterTmp, (void*)&data);
-			FOREACHPTR(pThread, threads)
-				pThread->join();
-		} else {
-			// single-thread execution
-			DenseReconstructionFilter((void*)&data);
-		}
-		GET_LOGCONSOLE().Play();
-		if (!data.events.IsEmpty())
-			return false;
-		data.progress.Release();
-	}
+	delete status;
+	//delete status2;
+
+	const Timer::Type elapsed(Timer::SysTime2TimeMs(Timer::GetSysTime() - start));
+	VERBOSE("Elapsed %f", elapsed);
+
+	////GET_LOGCONSOLE().Play();
+	//if (!data.events.IsEmpty()) {
+	//	VERBOSE("Events queue is not empty, exiting");
+	//	return false;
+	//}
+	//data.progress.Release();
+
+	//if (data.nFusionMode >= 0) {
+	//	#ifdef _USE_CUDA
+	//	// initialize CUDA
+	//	if (data.depthMaps.pmCUDA && OPTDENSE::nEstimationGeometricIters) {
+	//		data.depthMaps.pmCUDA->Release();
+	//		data.depthMaps.pmCUDA->Init(true);
+	//	}
+	//	#endif // _USE_CUDA
+	//	while (++data.nEstimationGeometricIter < (int)OPTDENSE::nEstimationGeometricIters) {
+	//		// initialize the queue of images to be geometric processed
+	//		if (data.nEstimationGeometricIter+1 == (int)OPTDENSE::nEstimationGeometricIters)
+	//			OPTDENSE::nOptimize = nOptimize;
+	//		data.idxImage = 0;
+	//		data.toIdxImage = data.images.size() - 1;
+	//		ASSERT(data.events.IsEmpty());
+	//		data.events.AddEvent(new EVTProcessImage(0));
+	//		// start working threads
+	//		data.progress = new Util::Progress("Geometric-consistent estimated depth-maps", data.images.GetSize());
+	//		GET_LOGCONSOLE().Pause();
+	//		if (nMaxThreads > 1) {
+	//			// multi-thread execution
+	//			cList<SEACAVE::Thread> threads(2);
+	//			FOREACHPTR(pThread, threads)
+	//				pThread->start(DenseReconstructionEstimateTmp, (void*)&data);
+	//			FOREACHPTR(pThread, threads)
+	//				pThread->join();
+	//		} else {
+	//			// single-thread execution
+	//			DenseReconstructionEstimate((void*)&data);
+	//		}
+	//		GET_LOGCONSOLE().Play();
+	//		if (!data.events.IsEmpty()) {
+	//			VERBOSE("Events queue is not empty, exiting");
+	//			return false;
+	//		}
+	//		data.progress.Release();
+	//		// replace raw depth-maps with the geometric-consistent ones
+	//		for (IIndex idx: data.images) {
+	//			const DepthData& depthData(data.depthMaps.arrDepthData[idx]);
+	//			if (!depthData.IsValid())
+	//				continue;
+	//			const String rawName(ComposeDepthFilePath(depthData.GetView().GetID(), "dmap"));
+	//			File::deleteFile(rawName);
+	//			File::renameFile(ComposeDepthFilePath(depthData.GetView().GetID(), "geo.dmap"), rawName);
+	//		}
+	//	}
+	//	data.nEstimationGeometricIter = -1;
+	//}
+
+	//if ((OPTDENSE::nOptimize & OPTDENSE::ADJUST_FILTER) != 0) {
+	//	// initialize the queue of depth-maps to be filtered
+	//	data.sem.Clear();
+	//	data.idxImage = data.images.GetSize();
+	//	ASSERT(data.events.IsEmpty());
+	//	FOREACH(i, data.images)
+	//		data.events.AddEvent(new EVTFilterDepthMap(i));
+	//	// start working threads
+	//	data.progress = new Util::Progress("Filtered depth-maps", data.images.GetSize());
+	//	GET_LOGCONSOLE().Pause();
+	//	if (nMaxThreads > 1) {
+	//		// multi-thread execution
+	//		cList<SEACAVE::Thread> threads(MINF(nMaxThreads, (unsigned)data.images.GetSize()));
+	//		FOREACHPTR(pThread, threads)
+	//			pThread->start(DenseReconstructionFilterTmp, (void*)&data);
+	//		FOREACHPTR(pThread, threads)
+	//			pThread->join();
+	//	} else {
+	//		// single-thread execution
+	//		DenseReconstructionFilter((void*)&data);
+	//	}
+	//	GET_LOGCONSOLE().Play();
+	//	if (!data.events.IsEmpty()) {
+	//		VERBOSE("Events queue is not empty, exiting");
+	//		return false;
+	//	}
+	//	data.progress.Release();
+	//}
 	return true;
 } // ComputeDepthMaps
 /*----------------------------------------------------------------*/
 
 void* DenseReconstructionEstimateTmp(void* arg) {
-	const DenseDepthMapData& dataThreads = *((const DenseDepthMapData*)arg);
-	dataThreads.scene.DenseReconstructionEstimate(arg);
-	return NULL;
+	//const DenseDepthMapData& dataThreads = *((const DenseDepthMapData*)arg);
+	//const ProcessingStatus dataThreads = *((ProcessingStatus*)arg);
+
+	const auto ptr = static_cast<ProcessingStatus*>(arg);
+
+	VERBOSE("Thread %d started", __THREAD__);
+	ptr->data->scene.DenseReconstructionEstimate(ptr);
+	//dataThreads.data->scene.DenseReconstructionEstimate(arg);
+	return nullptr;
 }
 
 // initialize the dense reconstruction with the sparse point cloud
 void Scene::DenseReconstructionEstimate(void* pData)
 {
-	DenseDepthMapData& data = *((DenseDepthMapData*)pData);
+	auto status = static_cast<ProcessingStatus*>(pData);
+	//DenseDepthMapData& data = *((DenseDepthMapData*)pData);
 	while (true) {
-		CAutoPtr<Event> evt(data.events.GetEvent());
+		CAutoPtr<Event> evt(status->events.GetEvent());
 		switch (evt->GetID()) {
 		case EVT_PROCESSIMAGE: {
 			const EVTProcessImage& evtImage = *((EVTProcessImage*)(Event*)evt);
-			if (evtImage.idxImage >= data.images.size()) {
+			VERBOSE("%d, %d] EVT_PROCESSIMAGE", __THREAD__, evtImage.idxImage);
+
+			//if (evtImage.idxImage >= data.images.size()) {
+			if (evtImage.idxImage > status->toIdxImage) {
 				if (nMaxThreads > 1) {
 					// close working threads
-					data.events.AddEvent(new EVTClose);
+					status->events.AddEvent(new EVTClose);
+					status->events.AddEvent(new EVTClose);
 				}
 				return;
 			}
 			// select views to reconstruct the depth-map for this image
-			const IIndex idx = data.images[evtImage.idxImage];
-			DepthData& depthData(data.depthMaps.arrDepthData[idx]);
-			const bool depthmapComputed(data.nFusionMode < 0 || (data.nFusionMode >= 0 && data.nEstimationGeometricIter < 0 && File::access(ComposeDepthFilePath(data.scene.images[idx].ID, "dmap"))));
+			const IIndex idx = status->data->images[evtImage.idxImage];
+			DepthData& depthData(status->data->depthMaps.arrDepthData[idx]);
+			const bool depthmapComputed(status->data->nFusionMode < 0 || (status->data->nFusionMode >= 0 && status->data->nEstimationGeometricIter < 0 && File::access(ComposeDepthFilePath(status->data->scene.images[idx].ID, "dmap"))));
 			// initialize images pair: reference image and the best neighbor view
-			ASSERT(data.neighborsMap.IsEmpty() || data.neighborsMap[evtImage.idxImage] != NO_ID);
-			if (!data.depthMaps.InitViews(depthData, data.neighborsMap.IsEmpty()?NO_ID:data.neighborsMap[evtImage.idxImage], OPTDENSE::nNumViews, !depthmapComputed, depthmapComputed ? -1 : (data.nEstimationGeometricIter >= 0 ? 1 : 0))) {
+			//ASSERT(data.neighborsMap.IsEmpty() || data.neighborsMap[evtImage.idxImage] != NO_ID);
+			if (!status->data->depthMaps.InitViews(depthData, status->data->neighborsMap.IsEmpty()?NO_ID: status->data->neighborsMap[evtImage.idxImage], OPTDENSE::nNumViews, !depthmapComputed, depthmapComputed ? -1 : (status->data->nEstimationGeometricIter >= 0 ? 1 : 0))) {
 				// process next image
-				data.events.AddEvent(new EVTProcessImage((IIndex)Thread::safeInc(data.idxImage)));
+				status->events.AddEvent(new EVTProcessImage((IIndex)Thread::safeInc(status->idxImage)));
 				break;
 			}
 			// try to load already compute depth-map for this image
-			if (depthmapComputed && data.nFusionMode >= 0) {
+			if (depthmapComputed && status->data->nFusionMode >= 0) {
 				if (OPTDENSE::nOptimize & OPTDENSE::OPTIMIZE) {
 					if (!depthData.Load(ComposeDepthFilePath(depthData.GetView().GetID(), "dmap"))) {
 						VERBOSE("error: invalid depth-map '%s'", ComposeDepthFilePath(depthData.GetView().GetID(), "dmap").c_str());
 						exit(EXIT_FAILURE);
 					}
 					// optimize depth-map
-					data.events.AddEventFirst(new EVTOptimizeDepthMap(evtImage.idxImage));
+					status->events.AddEventFirst(new EVTOptimizeDepthMap(evtImage.idxImage));
 				}
 				// process next image
-				data.events.AddEvent(new EVTProcessImage((uint32_t)Thread::safeInc(data.idxImage)));
+				status->events.AddEvent(new EVTProcessImage((uint32_t)Thread::safeInc(status->idxImage)));
 			} else {
 				// estimate depth-map
-				data.events.AddEventFirst(new EVTEstimateDepthMap(evtImage.idxImage));
+				status->events.AddEventFirst(new EVTEstimateDepthMap(evtImage.idxImage));
 			}
 			break; }
 
 		case EVT_ESTIMATEDEPTHMAP: {
 			const EVTEstimateDepthMap& evtImage = *((EVTEstimateDepthMap*)(Event*)evt);
+			VERBOSE("%d, %d] EVT_ESTIMATEDEPTHMAP", __THREAD__, evtImage.idxImage);
+
 			// request next image initialization to be performed while computing this depth-map
-			data.events.AddEvent(new EVTProcessImage((uint32_t)Thread::safeInc(data.idxImage)));
+			status->events.AddEvent(new EVTProcessImage((uint32_t)Thread::safeInc(status->idxImage)));
 			// extract depth map
-			data.sem.Wait();
-			if (data.nFusionMode >= 0) {
+
+			status->sem.Wait();
+
+			VERBOSE("%d, %d] Semaphore OK -> EVT_ESTIMATEDEPTHMAP", __THREAD__, evtImage.idxImage);
+			const Timer::SysType start(Timer::GetSysTime());
+
+
+			if (status->data->nFusionMode >= 0) {
 				// extract depth-map using Patch-Match algorithm
-				data.depthMaps.EstimateDepthMap(data.images[evtImage.idxImage], data.nEstimationGeometricIter);
+
+#ifdef _USE_CUDA
+				if (status->pmCUDA)
+					status->pmCUDA->EstimateDepthMap(status->data->depthMaps.arrDepthData[status->data->images[evtImage.idxImage]]);
+					//status->pmCUDA->EstimateDepthMap(status->data->depthMaps.arrDepthData[evtImage.idxImage]);
+				else				
+					status->data->depthMaps.EstimateDepthMap(status->data->images[evtImage.idxImage], status->data->nEstimationGeometricIter);
+				
+#else
+				status.data->depthMaps.EstimateDepthMap(data.images[evtImage.idxImage], data.nEstimationGeometricIter);
+#endif // _USE_CUDA
+
+				
 			} else {
 				// extract disparity-maps using SGM algorithm
-				if (data.nFusionMode == -1) {
-					data.sgm.Match(*this, data.images[evtImage.idxImage], OPTDENSE::nNumViews);
+				if (status->data->nFusionMode == -1) {
+					status->data->sgm.Match(*this, status->data->images[evtImage.idxImage], OPTDENSE::nNumViews);
 				} else {
 					// fuse existing disparity-maps
-					const IIndex idx(data.images[evtImage.idxImage]);
-					DepthData& depthData(data.depthMaps.arrDepthData[idx]);
-					data.sgm.Fuse(*this, data.images[evtImage.idxImage], OPTDENSE::nNumViews, 2, depthData.depthMap, depthData.confMap);
+					const IIndex idx(status->data->images[evtImage.idxImage]);
+					DepthData& depthData(status->data->depthMaps.arrDepthData[idx]);
+					status->data->sgm.Fuse(*this, status->data->images[evtImage.idxImage], OPTDENSE::nNumViews, 2, depthData.depthMap, depthData.confMap);
 					if (OPTDENSE::nEstimateNormals == 2)
 						EstimateNormalMap(depthData.images.front().camera.K, depthData.depthMap, depthData.normalMap);
 					depthData.dMin = ZEROTOLERANCE<float>(); depthData.dMax = FLT_MAX;
 				}
 			}
-			data.sem.Signal();
+
+			const Timer::Type elapsed(Timer::SysTime2TimeMs(Timer::GetSysTime() - start));
+
+			VERBOSE("%d, %d] Semaphore SIGNALED -> EVT_ESTIMATEDEPTHMAP in %f", __THREAD__, evtImage.idxImage, elapsed);
+
+			status->sem.Signal();
+
 			if (OPTDENSE::nOptimize & OPTDENSE::OPTIMIZE) {
 				// optimize depth-map
-				data.events.AddEventFirst(new EVTOptimizeDepthMap(evtImage.idxImage));
+				status->events.AddEventFirst(new EVTOptimizeDepthMap(evtImage.idxImage));
 			} else {
 				// save depth-map
-				data.events.AddEventFirst(new EVTSaveDepthMap(evtImage.idxImage));
+				status->events.AddEventFirst(new EVTSaveDepthMap(evtImage.idxImage));
 			}
 			break; }
 
 		case EVT_OPTIMIZEDEPTHMAP: {
 			const EVTOptimizeDepthMap& evtImage = *((EVTOptimizeDepthMap*)(Event*)evt);
-			const IIndex idx = data.images[evtImage.idxImage];
-			DepthData& depthData(data.depthMaps.arrDepthData[idx]);
+			VERBOSE("%d, %d] EVT_OPTIMIZEDEPTHMAP", __THREAD__, evtImage.idxImage);
+
+			const IIndex idx = status->data->images[evtImage.idxImage];
+			DepthData& depthData(status->data->depthMaps.arrDepthData[idx]);
 			#if TD_VERBOSE != TD_VERBOSE_OFF
 			// save depth map as image
 			if (g_nVerbosityLevel > 3)
@@ -2006,24 +2120,26 @@ void Scene::DenseReconstructionEstimate(void* pData)
 			// apply filters
 			if (OPTDENSE::nOptimize & (OPTDENSE::REMOVE_SPECKLES)) {
 				TD_TIMER_START();
-				if (data.depthMaps.RemoveSmallSegments(depthData)) {
+				if (status->data->depthMaps.RemoveSmallSegments(depthData)) {
 					DEBUG_ULTIMATE("Depth-map %3u filtered: remove small segments (%s)", depthData.GetView().GetID(), TD_TIMER_GET_FMT().c_str());
 				}
 			}
 			if (OPTDENSE::nOptimize & (OPTDENSE::FILL_GAPS)) {
 				TD_TIMER_START();
-				if (data.depthMaps.GapInterpolation(depthData)) {
+				if (status->data->depthMaps.GapInterpolation(depthData)) {
 					DEBUG_ULTIMATE("Depth-map %3u filtered: gap interpolation (%s)", depthData.GetView().GetID(), TD_TIMER_GET_FMT().c_str());
 				}
 			}
 			// save depth-map
-			data.events.AddEventFirst(new EVTSaveDepthMap(evtImage.idxImage));
+			status->events.AddEventFirst(new EVTSaveDepthMap(evtImage.idxImage));
 			break; }
 
 		case EVT_SAVEDEPTHMAP: {
 			const EVTSaveDepthMap& evtImage = *((EVTSaveDepthMap*)(Event*)evt);
-			const IIndex idx = data.images[evtImage.idxImage];
-			DepthData& depthData(data.depthMaps.arrDepthData[idx]);
+			VERBOSE("%d, %d] EVT_SAVEDEPTHMAP", __THREAD__, evtImage.idxImage);
+
+			const IIndex idx = status->data->images[evtImage.idxImage];
+			DepthData& depthData(status->data->depthMaps.arrDepthData[idx]);
 			#if TD_VERBOSE != TD_VERBOSE_OFF
 			// save depth map as image
 			if (g_nVerbosityLevel > 2) {
@@ -2038,13 +2154,15 @@ void Scene::DenseReconstructionEstimate(void* pData)
 			#endif
 			// save compute depth-map for this image
 			if (!depthData.depthMap.empty())
-				depthData.Save(ComposeDepthFilePath(depthData.GetView().GetID(), data.nEstimationGeometricIter < 0 ? "dmap" : "geo.dmap"));
+				depthData.Save(ComposeDepthFilePath(depthData.GetView().GetID(), status->data->nEstimationGeometricIter < 0 ? "dmap" : "geo.dmap"));
 			depthData.ReleaseImages();
 			depthData.Release();
-			data.progress->operator++();
+			//data.progress->operator++();
 			break; }
 
 		case EVT_CLOSE: {
+			VERBOSE("%d] EVT_CLOSE", __THREAD__);
+
 			return; }
 
 		default:
@@ -2054,100 +2172,100 @@ void Scene::DenseReconstructionEstimate(void* pData)
 } // DenseReconstructionEstimate
 /*----------------------------------------------------------------*/
 
-void* DenseReconstructionFilterTmp(void* arg) {
-	DenseDepthMapData& dataThreads = *((DenseDepthMapData*)arg);
-	dataThreads.scene.DenseReconstructionFilter(arg);
-	return NULL;
-}
-
-// filter estimated depth-maps
-void Scene::DenseReconstructionFilter(void* pData)
-{
-	DenseDepthMapData& data = *((DenseDepthMapData*)pData);
-	CAutoPtr<Event> evt;
-	while ((evt=data.events.GetEvent(0)) != NULL) {
-		switch (evt->GetID()) {
-		case EVT_FILTERDEPTHMAP: {
-			const EVTFilterDepthMap& evtImage = *((EVTFilterDepthMap*)(Event*)evt);
-			const IIndex idx = data.images[evtImage.idxImage];
-			DepthData& depthData(data.depthMaps.arrDepthData[idx]);
-			if (!depthData.IsValid()) {
-				data.SignalCompleteDepthmapFilter();
-				break;
-			}
-			// make sure all depth-maps are loaded
-			depthData.IncRef(ComposeDepthFilePath(depthData.GetView().GetID(), "dmap"));
-			const unsigned numMaxNeighbors(8);
-			IIndexArr idxNeighbors(0, depthData.neighbors.GetSize());
-			FOREACH(n, depthData.neighbors) {
-				const IIndex idxView = depthData.neighbors[n].idx.ID;
-				DepthData& depthDataPair = data.depthMaps.arrDepthData[idxView];
-				if (!depthDataPair.IsValid())
-					continue;
-				if (depthDataPair.IncRef(ComposeDepthFilePath(depthDataPair.GetView().GetID(), "dmap")) == 0) {
-					// signal error and terminate
-					data.events.AddEventFirst(new EVTFail);
-					return;
-				}
-				idxNeighbors.Insert(n);
-				if (idxNeighbors.GetSize() == numMaxNeighbors)
-					break;
-			}
-			// filter the depth-map for this image
-			if (data.depthMaps.FilterDepthMap(depthData, idxNeighbors, OPTDENSE::bFilterAdjust)) {
-				// load the filtered maps after all depth-maps were filtered
-				data.events.AddEvent(new EVTAdjustDepthMap(evtImage.idxImage));
-			}
-			// unload referenced depth-maps
-			FOREACHPTR(pIdxNeighbor, idxNeighbors) {
-				const IIndex idxView = depthData.neighbors[*pIdxNeighbor].idx.ID;
-				DepthData& depthDataPair = data.depthMaps.arrDepthData[idxView];
-				depthDataPair.DecRef();
-			}
-			depthData.DecRef();
-			data.SignalCompleteDepthmapFilter();
-			break; }
-
-		case EVT_ADJUSTDEPTHMAP: {
-			const EVTAdjustDepthMap& evtImage = *((EVTAdjustDepthMap*)(Event*)evt);
-			const IIndex idx = data.images[evtImage.idxImage];
-			DepthData& depthData(data.depthMaps.arrDepthData[idx]);
-			ASSERT(depthData.IsValid());
-			data.sem.Wait();
-			// load filtered maps
-			if (depthData.IncRef(ComposeDepthFilePath(depthData.GetView().GetID(), "dmap")) == 0 ||
-				!LoadDepthMap(ComposeDepthFilePath(depthData.GetView().GetID(), "filtered.dmap"), depthData.depthMap) ||
-				!LoadConfidenceMap(ComposeDepthFilePath(depthData.GetView().GetID(), "filtered.cmap"), depthData.confMap))
-			{
-				// signal error and terminate
-				data.events.AddEventFirst(new EVTFail);
-				return;
-			}
-			ASSERT(depthData.GetRef() == 1);
-			File::deleteFile(ComposeDepthFilePath(depthData.GetView().GetID(), "filtered.dmap").c_str());
-			File::deleteFile(ComposeDepthFilePath(depthData.GetView().GetID(), "filtered.cmap").c_str());
-			#if TD_VERBOSE != TD_VERBOSE_OFF
-			// save depth map as image
-			if (g_nVerbosityLevel > 2) {
-				ExportDepthMap(ComposeDepthFilePath(depthData.GetView().GetID(), "filtered.png"), depthData.depthMap);
-				ExportPointCloud(ComposeDepthFilePath(depthData.GetView().GetID(), "filtered.ply"), *depthData.images.First().pImageData, depthData.depthMap, depthData.normalMap);
-			}
-			#endif
-			// save filtered depth-map for this image
-			depthData.Save(ComposeDepthFilePath(depthData.GetView().GetID(), "dmap"));
-			depthData.DecRef();
-			data.progress->operator++();
-			break; }
-
-		case EVT_FAIL: {
-			data.events.AddEventFirst(new EVTFail);
-			return; }
-
-		default:
-			ASSERT("Should not happen!" == NULL);
-		}
-	}
-} // DenseReconstructionFilter
+//void* DenseReconstructionFilterTmp(void* arg) {
+//	DenseDepthMapData& dataThreads = *((DenseDepthMapData*)arg);
+//	dataThreads.scene.DenseReconstructionFilter(arg);
+//	return NULL;
+//}
+//
+//// filter estimated depth-maps
+//void Scene::DenseReconstructionFilter(void* pData)
+//{
+//	DenseDepthMapData& data = *((DenseDepthMapData*)pData);
+//	CAutoPtr<Event> evt;
+//	while ((evt=data.events.GetEvent(0)) != NULL) {
+//		switch (evt->GetID()) {
+//		case EVT_FILTERDEPTHMAP: {
+//			const EVTFilterDepthMap& evtImage = *((EVTFilterDepthMap*)(Event*)evt);
+//			const IIndex idx = data.images[evtImage.idxImage];
+//			DepthData& depthData(data.depthMaps.arrDepthData[idx]);
+//			if (!depthData.IsValid()) {
+//				data.SignalCompleteDepthmapFilter();
+//				break;
+//			}
+//			// make sure all depth-maps are loaded
+//			depthData.IncRef(ComposeDepthFilePath(depthData.GetView().GetID(), "dmap"));
+//			const unsigned numMaxNeighbors(8);
+//			IIndexArr idxNeighbors(0, depthData.neighbors.GetSize());
+//			FOREACH(n, depthData.neighbors) {
+//				const IIndex idxView = depthData.neighbors[n].idx.ID;
+//				DepthData& depthDataPair = data.depthMaps.arrDepthData[idxView];
+//				if (!depthDataPair.IsValid())
+//					continue;
+//				if (depthDataPair.IncRef(ComposeDepthFilePath(depthDataPair.GetView().GetID(), "dmap")) == 0) {
+//					// signal error and terminate
+//					data.events.AddEventFirst(new EVTFail);
+//					return;
+//				}
+//				idxNeighbors.Insert(n);
+//				if (idxNeighbors.GetSize() == numMaxNeighbors)
+//					break;
+//			}
+//			// filter the depth-map for this image
+//			if (data.depthMaps.FilterDepthMap(depthData, idxNeighbors, OPTDENSE::bFilterAdjust)) {
+//				// load the filtered maps after all depth-maps were filtered
+//				data.events.AddEvent(new EVTAdjustDepthMap(evtImage.idxImage));
+//			}
+//			// unload referenced depth-maps
+//			FOREACHPTR(pIdxNeighbor, idxNeighbors) {
+//				const IIndex idxView = depthData.neighbors[*pIdxNeighbor].idx.ID;
+//				DepthData& depthDataPair = data.depthMaps.arrDepthData[idxView];
+//				depthDataPair.DecRef();
+//			}
+//			depthData.DecRef();
+//			data.SignalCompleteDepthmapFilter();
+//			break; }
+//
+//		case EVT_ADJUSTDEPTHMAP: {
+//			const EVTAdjustDepthMap& evtImage = *((EVTAdjustDepthMap*)(Event*)evt);
+//			const IIndex idx = data.images[evtImage.idxImage];
+//			DepthData& depthData(data.depthMaps.arrDepthData[idx]);
+//			ASSERT(depthData.IsValid());
+//			data.sem.Wait();
+//			// load filtered maps
+//			if (depthData.IncRef(ComposeDepthFilePath(depthData.GetView().GetID(), "dmap")) == 0 ||
+//				!LoadDepthMap(ComposeDepthFilePath(depthData.GetView().GetID(), "filtered.dmap"), depthData.depthMap) ||
+//				!LoadConfidenceMap(ComposeDepthFilePath(depthData.GetView().GetID(), "filtered.cmap"), depthData.confMap))
+//			{
+//				// signal error and terminate
+//				data.events.AddEventFirst(new EVTFail);
+//				return;
+//			}
+//			ASSERT(depthData.GetRef() == 1);
+//			File::deleteFile(ComposeDepthFilePath(depthData.GetView().GetID(), "filtered.dmap").c_str());
+//			File::deleteFile(ComposeDepthFilePath(depthData.GetView().GetID(), "filtered.cmap").c_str());
+//			#if TD_VERBOSE != TD_VERBOSE_OFF
+//			// save depth map as image
+//			if (g_nVerbosityLevel > 2) {
+//				ExportDepthMap(ComposeDepthFilePath(depthData.GetView().GetID(), "filtered.png"), depthData.depthMap);
+//				ExportPointCloud(ComposeDepthFilePath(depthData.GetView().GetID(), "filtered.ply"), *depthData.images.First().pImageData, depthData.depthMap, depthData.normalMap);
+//			}
+//			#endif
+//			// save filtered depth-map for this image
+//			depthData.Save(ComposeDepthFilePath(depthData.GetView().GetID(), "dmap"));
+//			depthData.DecRef();
+//			data.progress->operator++();
+//			break; }
+//
+//		case EVT_FAIL: {
+//			data.events.AddEventFirst(new EVTFail);
+//			return; }
+//
+//		default:
+//			ASSERT("Should not happen!" == NULL);
+//		}
+//	}
+//} // DenseReconstructionFilter
 /*----------------------------------------------------------------*/
 
 // filter point-cloud based on camera-point visibility intersections

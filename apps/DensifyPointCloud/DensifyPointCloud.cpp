@@ -94,7 +94,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 			), "verbosity level")
 		#endif
 		#ifdef _USE_CUDA
-		("cuda-device", boost::program_options::value(&CUDA::desiredDeviceID)->default_value(-1), "CUDA device number to be used for depth-map estimation (-2 - CPU processing, -1 - best GPU, >=0 - device index)")
+		("cuda-device", boost::program_options::value(&CUDA::desiredDeviceID)->default_value(-1), "CUDA device number to be used for depth-map estimation (-3 - All GPUs, -2 - CPU processing, -1 - best GPU, >=0 - device index)")
 		#endif
 		;
 

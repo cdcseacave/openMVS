@@ -41,7 +41,7 @@
 // S T R U C T S ///////////////////////////////////////////////////
 
 namespace MVS {
-	
+
 // Forward declarations
 class MVS_API Scene;
 #ifdef _USE_CUDA
@@ -85,11 +85,6 @@ public:
 	Image8U::Size prevDepthMapSizeTrg; // ... same for target image
 	DepthEstimator::MapRefArr coords; // map pixel index to zigzag matrix coordinates
 	DepthEstimator::MapRefArr coordsTrg; // ... same for target image
-
-	#ifdef _USE_CUDA
-	// used internally to estimate the depth-maps using CUDA
-	CAutoPtr<PatchMatchCUDA> pmCUDA;
-	#endif // _USE_CUDA
 };
 /*----------------------------------------------------------------*/
 
@@ -98,10 +93,7 @@ struct MVS_API DenseDepthMapData {
 	IIndexArr images;
 	IIndexArr neighborsMap;
 	DepthMapsData depthMaps;
-	volatile Thread::safe_t idxImage;
-	SEACAVE::EventQueue events; // internal events queue (processed by the working threads)
-	Semaphore sem;
-	CAutoPtr<Util::Progress> progress;
+
 	int nEstimationGeometricIter;
 	int nFusionMode;
 	STEREO::SemiGlobalMatcher sgm;
@@ -109,8 +101,29 @@ struct MVS_API DenseDepthMapData {
 	DenseDepthMapData(Scene& _scene, int _nFusionMode=0);
 	~DenseDepthMapData();
 
-	void SignalCompleteDepthmapFilter();
 };
+
+struct MVS_API ProcessingStatus
+{
+	DenseDepthMapData *data;
+	Semaphore sem;
+	CAutoPtr<Util::Progress> progress;
+	volatile Thread::safe_t idxImage;
+	size_t toIdxImage;
+	EventQueue events; // internal events queue (processed by the working threads)
+
+#ifdef _USE_CUDA
+	// used internally to estimate the depth-maps using CUDA
+	CAutoPtr<PatchMatchCUDA> pmCUDA;
+#endif // _USE_CUDA
+
+	void SignalCompleteDepthmapFilter();
+
+	ProcessingStatus(DenseDepthMapData* data, size_t startIdx, size_t endIdx);
+	ProcessingStatus(const ProcessingStatus&);
+
+};
+
 /*----------------------------------------------------------------*/
 
 } // namespace MVS
