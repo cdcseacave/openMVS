@@ -128,6 +128,26 @@ void Mesh::Swap(Mesh& rhs)
 	faceTexcoords.Swap(rhs.faceTexcoords);
 	std::swap(textureDiffuse, rhs.textureDiffuse);
 } // Swap
+// combine this mesh with the given mesh, without removing duplicate vertices
+void Mesh::Join(const Mesh& mesh)
+{
+	ASSERT(!HasTexture() && !mesh.HasTexture());
+	vertexVertices.Release();
+	vertexFaces.Release();
+	vertexBoundary.Release();
+	faceFaces.Release();
+	if (IsEmpty()) {
+		*this = mesh;
+		return;
+	}
+	const VIndex offsetV(vertices.size());
+	vertices.Join(mesh.vertices);
+	vertexNormals.Join(mesh.vertexNormals);
+	faces.ReserveExtra(mesh.faces.size());
+	for (const Face& face: mesh.faces)
+		faces.emplace_back(face.x+offsetV, face.y+offsetV, face.z+offsetV);
+	faceNormals.Join(mesh.faceNormals);
+}
 /*----------------------------------------------------------------*/
 
 
@@ -1394,6 +1414,9 @@ bool Mesh::Load(const String& fileName)
 	if (ext == _T(".obj"))
 		ret = LoadOBJ(fileName);
 	else
+	if (ext == _T(".gltf") || ext == _T(".glb"))
+		ret = LoadGLTF(fileName, ext == _T(".glb"));
+	else
 		ret = LoadPLY(fileName);
 	if (!ret)
 		return false;
@@ -1543,6 +1566,80 @@ bool Mesh::LoadOBJ(const String& fileName)
 	ObjModel::MaterialLib::Material* pMaterial(model.GetMaterial(group.material_name));
 	if (pMaterial && pMaterial->LoadDiffuseMap())
 		cv::swap(textureDiffuse, pMaterial->diffuse_map);
+	return true;
+}
+// import the mesh as a GLTF file
+bool Mesh::LoadGLTF(const String& fileName, bool bBinary)
+{
+	ASSERT(!fileName.IsEmpty());
+	Release();
+
+	// load model
+	tinygltf::Model gltfModel; {
+		tinygltf::TinyGLTF loader;
+		std::string err, warn;
+		if (bBinary ?
+			!loader.LoadBinaryFromFile(&gltfModel, &err, &warn, fileName) :
+			!loader.LoadASCIIFromFile(&gltfModel, &err, &warn, fileName))
+			return false;
+		if (!err.empty()) {
+			VERBOSE("error: %s", err.c_str());
+			return false;
+		}
+		if (!warn.empty())
+			DEBUG("warning: %s", warn.c_str());
+	}
+	
+	// parse model
+	for (const tinygltf::Mesh& gltfMesh : gltfModel.meshes) {
+		for (const tinygltf::Primitive& gltfPrimitive : gltfMesh.primitives) {
+			if (gltfPrimitive.mode != TINYGLTF_MODE_TRIANGLES)
+				continue;
+			Mesh mesh;
+			// read vertices
+			{
+				const tinygltf::Accessor& gltfAccessor = gltfModel.accessors[gltfPrimitive.attributes.at("POSITION")];
+				if (gltfAccessor.type != TINYGLTF_TYPE_VEC3)
+					continue;
+				const tinygltf::BufferView& gltfBufferView = gltfModel.bufferViews[gltfAccessor.bufferView];
+				const tinygltf::Buffer& buffer = gltfModel.buffers[gltfBufferView.buffer];
+				const uint8_t* pData = buffer.data.data() + gltfBufferView.byteOffset + gltfAccessor.byteOffset;
+				mesh.vertices.resize((VIndex)gltfAccessor.count);
+				if (gltfAccessor.componentType == TINYGLTF_COMPONENT_TYPE_FLOAT) {
+					ASSERT(gltfBufferView.byteLength == sizeof(Vertex) * gltfAccessor.count);
+					memcpy(mesh.vertices.data(), pData, gltfBufferView.byteLength);
+				}
+				else if (gltfAccessor.componentType == TINYGLTF_COMPONENT_TYPE_DOUBLE) {
+					for (int i = 0; i < gltfAccessor.count; ++i)
+						mesh.vertices[i] = ((const Point3d*)pData)[i];
+				}
+				else {
+					VERBOSE("error: unsupported vertices (component type)");
+					continue;
+				}
+			}
+			// read faces
+			{
+				const tinygltf::Accessor& gltfAccessor = gltfModel.accessors[gltfPrimitive.indices];
+				if (gltfAccessor.type != TINYGLTF_TYPE_SCALAR)
+					continue;
+				const tinygltf::BufferView& gltfBufferView = gltfModel.bufferViews[gltfAccessor.bufferView];
+				const tinygltf::Buffer& buffer = gltfModel.buffers[gltfBufferView.buffer];
+				const uint8_t* pData = buffer.data.data() + gltfBufferView.byteOffset + gltfAccessor.byteOffset;
+				mesh.faces.resize((FIndex)(gltfAccessor.count/3));
+				if (gltfAccessor.componentType == TINYGLTF_COMPONENT_TYPE_INT ||
+					gltfAccessor.componentType == TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT) {
+					ASSERT(gltfBufferView.byteLength == sizeof(uint32_t) * gltfAccessor.count);
+					memcpy(mesh.faces.data(), pData, gltfBufferView.byteLength);
+				}
+				else {
+					VERBOSE("error: unsupported faces (component type)");
+					continue;
+				}
+			}
+			Join(mesh);
+		}
+	}
 	return true;
 } // Load
 /*----------------------------------------------------------------*/
