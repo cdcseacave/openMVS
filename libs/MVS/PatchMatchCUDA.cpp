@@ -174,8 +174,6 @@ void PatchMatchCUDA::AllocateImageCUDA(size_t i, const cv::Mat1f& image, bool bI
 void PatchMatchCUDA::EstimateDepthMap(DepthData& depthData)
 {
 
-	//VERBOSE("%d] PatchMatchCUDA::EstimateDepthMap -> %d", __THREAD__, this->deviceID);
-
 	TD_TIMER_STARTD();
 
 	ASSERT(depthData.images.size() > 1);
