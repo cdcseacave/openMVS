@@ -119,8 +119,7 @@ struct MVS_API ProcessingStatus
 
 	void SignalCompleteDepthmapFilter();
 
-	ProcessingStatus(DenseDepthMapData* data, size_t startIdx, size_t endIdx);
-	ProcessingStatus(const ProcessingStatus&);
+	ProcessingStatus(DenseDepthMapData* data, size_t startIdx, size_t endIdx, int deviceId, bool geomConsistency);
 
 };
 

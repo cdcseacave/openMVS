@@ -89,6 +89,7 @@ public:
 		bool bGeomConsistency = false;
 		bool bLowResProcessed = false;
 		float fThresholdKeepCost = 0;
+		int iDevice = 0;
 	};
 
 	struct Camera {

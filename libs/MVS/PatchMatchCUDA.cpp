@@ -46,8 +46,9 @@ using namespace MVS;
 PatchMatchCUDA::PatchMatchCUDA(int device)
 {
 	// initialize CUDA device if needed
-	if (CUDA::devices.IsEmpty())
-		CUDA::initDevice(device);
+	//if (CUDA::devices.IsEmpty())
+	CUDA::initDevice(device);
+	this->params.iDevice = device;
 }
 
 PatchMatchCUDA::~PatchMatchCUDA()
@@ -176,15 +177,19 @@ void PatchMatchCUDA::EstimateDepthMap(DepthData& depthData)
 
 	TD_TIMER_STARTD();
 
+	cudaSetDevice(this->params.iDevice);
+
 	ASSERT(depthData.images.size() > 1);
 
+	//VERBOSE("%lld;%d;%d;EVT_ESTIMATEDEPTHMAP_INIT;0", Timer::GetSysTime(), __THREAD__, 0);
+	
 	// multi-resolution
 	DepthData& fullResDepthData(depthData);
 	const unsigned totalScaleNumber(params.bGeomConsistency ? 0u : OPTDENSE::nSubResolutionLevels);
 	DepthMap lowResDepthMap;
 	NormalMap lowResNormalMap;
 	ViewsMap lowResViewsMap;
-	IIndex prevNumImages = (IIndex)images.size();
+	auto prevNumImages = (IIndex)images.size();
 	const IIndex numImages = depthData.images.size();
 	params.nNumViews = (int)numImages-1;
 	params.nInitTopK = std::min(params.nInitTopK, params.nNumViews);
@@ -200,8 +205,15 @@ void PatchMatchCUDA::EstimateDepthMap(DepthData& depthData)
 		cudaDepthArrays.resize(params.nNumViews);
 		textureDepths.resize(params.nNumViews);
 	}
+
+	//VERBOSE("%lld;%d;%d;EVT_ESTIMATEDEPTHMAP_INIT;1", Timer::GetSysTime(), __THREAD__, 0);
+
+
 	const int maxPixelViews(MINF(params.nNumViews, 4));
 	for (int scaleNumber = totalScaleNumber; scaleNumber >= 0; --scaleNumber) {
+
+		//VERBOSE("%lld;%d;%d;EVT_ESTIMATEDEPTHMAP_CUDA_INIT;0", Timer::GetSysTime(), __THREAD__, scaleNumber);
+		
 		// initialize
 		const float scale = 1.f / POWI(2, scaleNumber);
 		DepthData currentDepthData(DepthMapsData::ScaleDepthData(fullResDepthData, scale));
@@ -252,7 +264,12 @@ void PatchMatchCUDA::EstimateDepthMap(DepthData& depthData)
 			}
 		}
 
+		//VERBOSE("%lld;%d;%d;EVT_ESTIMATEDEPTHMAP_CUDA_INIT;1", Timer::GetSysTime(), __THREAD__, scaleNumber);
+		
 		for (IIndex i = 0; i < numImages; ++i) {
+
+			//VERBOSE("%lld;%d;%d;EVT_ESTIMATEDEPTHMAP_CUDA_IMAGE;0", Timer::GetSysTime(), __THREAD__, i);
+
 			const DepthData::ViewData& view = depthData.images[i];
 			Image32F image = view.image;
 			Camera camera;
@@ -300,7 +317,13 @@ void PatchMatchCUDA::EstimateDepthMap(DepthData& depthData)
 			}
 			images[i] = std::move(image);
 			cameras[i] = std::move(camera);
+
+			//VERBOSE("%lld;%d;%d;EVT_ESTIMATEDEPTHMAP_CUDA_IMAGE;1", Timer::GetSysTime(), __THREAD__, i);
+
 		}
+
+		//VERBOSE("%lld;%d;%d;EVT_ESTIMATEDEPTHMAP_CUDA_SETUP;0", Timer::GetSysTime(), __THREAD__, scaleNumber);
+		
 		if (params.bGeomConsistency && cudaDepthArrays.size() > numImages - 1) {
 			for (IIndex i = numImages; i < prevNumImages; ++i) {
 				// free image CUDA memory
@@ -351,6 +374,9 @@ void PatchMatchCUDA::EstimateDepthMap(DepthData& depthData)
 			CUDA::checkCudaCall(cudaMemcpy(cudaLowDepths, depthData.depthMap.ptr<float>(), sizeof(float) * depthData.depthMap.size().area(), cudaMemcpyHostToDevice));
 		}
 
+		//VERBOSE("%lld;%d;%d;EVT_ESTIMATEDEPTHMAP_CUDA_SETUP;1", Timer::GetSysTime(), __THREAD__, scaleNumber);
+		//VERBOSE("%lld;%d;%d;EVT_ESTIMATEDEPTHMAP_CUDA_RUN;0", Timer::GetSysTime(), __THREAD__, scaleNumber);
+		
 		// run CUDA patch-match
 		ASSERT(!depthData.viewsMap.empty());
 		RunCUDA(depthData.confMap.getData(), (uint32_t*)depthData.viewsMap.getData());
@@ -400,6 +426,8 @@ void PatchMatchCUDA::EstimateDepthMap(DepthData& depthData)
 			lowResNormalMap = depthData.normalMap;
 			lowResViewsMap = depthData.viewsMap;
 		}
+		//VERBOSE("%lld;%d;%d;EVT_ESTIMATEDEPTHMAP_CUDA_RUN;1", Timer::GetSysTime(), __THREAD__, scaleNumber);
+
 	}
 
 	DEBUG_EXTRA("Depth-map for image %3u %s: %dx%d (%s)", depthData.images.front().GetID(),
@@ -409,70 +437,5 @@ void PatchMatchCUDA::EstimateDepthMap(DepthData& depthData)
 		images.front().cols, images.front().rows, TD_TIMER_GET_FMT().c_str());
 }
 /*----------------------------------------------------------------*/
-/*
-PatchMatchMultipleCUDA::PatchMatchMultipleCUDA(const int* devices, int numDevices)
-{
-
-	this->index = -1;
-
-	for (auto n = 0; n < numDevices; n++)
-	{
-		const auto dev = devices[n];
-		this->procs.push_back(new PatchMatchCUDA(dev));
-		this->semaphores.push_back(new Semaphore(1));
-		CUDA::initDevice(dev);
-	}
-}
-
-PatchMatchMultipleCUDA::~PatchMatchMultipleCUDA()
-{
-	Release();
-}
-
-void PatchMatchMultipleCUDA::Release()
-{
-	for (auto n = 0; n < this->procs.size(); n++)
-	{
-		this->procs[n]->Release();
-		delete this->procs[n];
-		this->semaphores[n]->Clear();
-		delete this->semaphores[n];
-	}
-	
-}
-
-void PatchMatchMultipleCUDA::Init(bool bGeomConsistency)
-{
-	VERBOSE("Initializing %i procs", procs.size());
-
-	FOREACH(i, procs) {
-		procs[i]->Init(bGeomConsistency);		
-	}
-}
-
-void PatchMatchMultipleCUDA::EstimateDepthMap(DepthData& depthData)
-{
-	//printf("Ciao\n");
-
-	//VERBOSE("EstimateDepthMap");
-	
-	Thread::safeInc(index);
-	const auto idx = index % procs.size();
-
-	semaphores[idx]->Wait();
-	VERBOSE("%d] Running on device %i", __THREAD__, idx);
-
-	const Timer::SysType start(Timer::GetSysTime());
-
-	procs[idx]->EstimateDepthMap(depthData);
-
-	const Timer::Type elapsed(Timer::SysTime2TimeMs(Timer::GetSysTime() - start));
-
-	VERBOSE("%d] Done CUDA on device %d in %f", __THREAD__, idx, elapsed);
-
-	semaphores[idx]->Signal();
-	
-}
-*/
 
 #endif // _USE_CUDA
