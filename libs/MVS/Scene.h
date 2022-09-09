@@ -111,7 +111,7 @@ public:
 	bool DenseReconstruction(int nFusionMode=0);
 	bool ComputeDepthMaps(DenseDepthMapData& data);
 	void DenseReconstructionEstimate(void*);
-	//void DenseReconstructionFilter(void*);
+	void DenseReconstructionFilter(void*);
 	void PointCloudFilter(int thRemove=-1);
 
 	// Mesh reconstruction

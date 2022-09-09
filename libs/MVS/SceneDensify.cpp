@@ -1814,10 +1814,10 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 
 	const size_t midPoint = data.images.size() / 2;
 
-	auto status = new ProcessingStatus(&data, 0, midPoint - 1, 0, false);
 	//const auto status = new ProcessingStatus(&data, 0, data.images.size() - 1);
 
-	auto status2 = new ProcessingStatus(&data, midPoint, data.images.size() - 1, 1, false);
+	const auto status = new ProcessingStatus(&data, 0, midPoint - 1, 0, false);
+	const auto status2 = new ProcessingStatus(&data, midPoint, data.images.size() - 1, 1, false);
 	
 		/*
 	#ifdef _USE_CUDA
@@ -1836,23 +1836,20 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 	const int nOptimize(OPTDENSE::nOptimize);
 	if (OPTDENSE::nEstimationGeometricIters && data.nFusionMode >= 0)
 		OPTDENSE::nOptimize = 0;
-	//data.idxImage = 0;
-	//data.toIdxImage = data.images.size() - 1;
-	//data.toIdxImage = midPoint - 1;//data.images.size() - 1;
-	//data.toIdxImage = midPoint - 1;
-	//ASSERT(data.events.IsEmpty());
+
 	ASSERT(status->events.IsEmpty());
 	status->events.AddEvent(new EVTProcessImage(0));
-			//data.events.AddEvent(new EVTProcessImage(0));
-	// start working threads
-	//data.progress = new Util::Progress("Estimated depth-maps", data.images.GetSize());
 
-	const Timer::SysType start(Timer::GetSysTime());
+	// start working threads
+	status->progress = new Util::Progress("Estimated depth-maps", data.images.GetSize());
 
 	ASSERT(status2->events.IsEmpty());
 	status2->events.AddEvent(new EVTProcessImage(midPoint));
+
+	status2->progress = new Util::Progress("Estimated depth-maps", data.images.GetSize());
+
 	
-	//GET_LOGCONSOLE().Pause();
+	GET_LOGCONSOLE().Pause();
 	if (nMaxThreads > 1) {
 		// multi-thread execution
 		cList<SEACAVE::Thread> threads(2);
@@ -1875,68 +1872,73 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 		DenseReconstructionEstimate(status);
 	}
 
-	delete status;
+	//delete status;
+	//delete status2;
+
+	//status = new ProcessingStatus(&data, 0, midPoint - 1, 0, false);
+	////const auto status = new ProcessingStatus(&data, 0, data.images.size() - 1);
+
+	//status2 = new ProcessingStatus(&data, midPoint, data.images.size() - 1, 1, false);
+	
+	GET_LOGCONSOLE().Play();
+	if (!status->events.IsEmpty()) {
+		VERBOSE("Events queue is not empty, exiting");
+		return false;
+	}
+
+	if (!status->events.IsEmpty()) {
+		VERBOSE("Events queue is not empty, exiting");
+		return false;
+	}
+
+	status2->progress.Release();
 	delete status2;
 
-	status = new ProcessingStatus(&data, 0, midPoint - 1, 0, false);
-	//const auto status = new ProcessingStatus(&data, 0, data.images.size() - 1);
-
-	status2 = new ProcessingStatus(&data, midPoint, data.images.size() - 1, 1, false);
-
-
-	const Timer::Type elapsed(Timer::SysTime2TimeMs(Timer::GetSysTime() - start));
-	VERBOSE("Elapsed %f", elapsed);
-
-	//GET_LOGCONSOLE().Play();
-	if (!status->events.IsEmpty()) {
-		VERBOSE("Events queue is not empty, exiting");
-		return false;
-	}
-
-	if (!status->events.IsEmpty()) {
-		VERBOSE("Events queue is not empty, exiting");
-		return false;
-	}
-
-
-	//data.progress.Release();
+	status->progress.Release();
 
 	if (data.nFusionMode >= 0) {
+
 		#ifdef _USE_CUDA
 		// initialize CUDA
-		if (data.depthMaps.pmCUDA && OPTDENSE::nEstimationGeometricIters) {
-			data.depthMaps.pmCUDA->Release();
-			data.depthMaps.pmCUDA->Init(true);
+		if (status->pmCUDA && OPTDENSE::nEstimationGeometricIters) {
+			status->pmCUDA->Release();
+			status->pmCUDA->Init(true);
 		}
+
+		//if (status2->pmCUDA && OPTDENSE::nEstimationGeometricIters) {
+		//	status2->pmCUDA->Release();
+		//	status2->pmCUDA->Init(true);
+		//}
 		#endif // _USE_CUDA
+
 		while (++data.nEstimationGeometricIter < (int)OPTDENSE::nEstimationGeometricIters) {
 			// initialize the queue of images to be geometric processed
 			if (data.nEstimationGeometricIter+1 == (int)OPTDENSE::nEstimationGeometricIters)
 				OPTDENSE::nOptimize = nOptimize;
-			data.idxImage = 0;
-			data.toIdxImage = data.images.size() - 1;
-			ASSERT(data.events.IsEmpty());
-			data.events.AddEvent(new EVTProcessImage(0));
+			status->idxImage = 0;
+			status->toIdxImage = data.images.size() - 1;
+			ASSERT(status->events.IsEmpty());
+			status->events.AddEvent(new EVTProcessImage(0));
 			// start working threads
-			data.progress = new Util::Progress("Geometric-consistent estimated depth-maps", data.images.GetSize());
+			status->progress = new Util::Progress("Geometric-consistent estimated depth-maps", data.images.GetSize());
 			GET_LOGCONSOLE().Pause();
 			if (nMaxThreads > 1) {
 				// multi-thread execution
 				cList<SEACAVE::Thread> threads(2);
 				FOREACHPTR(pThread, threads)
-					pThread->start(DenseReconstructionEstimateTmp, (void*)&data);
+					pThread->start(DenseReconstructionEstimateTmp, status);
 				FOREACHPTR(pThread, threads)
 					pThread->join();
 			} else {
 				// single-thread execution
-				DenseReconstructionEstimate((void*)&data);
+				DenseReconstructionEstimate(status);
 			}
 			GET_LOGCONSOLE().Play();
-			if (!data.events.IsEmpty()) {
+			if (!status->events.IsEmpty()) {
 				VERBOSE("Events queue is not empty, exiting");
 				return false;
 			}
-			data.progress.Release();
+			status->progress.Release();
 			// replace raw depth-maps with the geometric-consistent ones
 			for (IIndex idx: data.images) {
 				const DepthData& depthData(data.depthMaps.arrDepthData[idx]);
@@ -1952,45 +1954,43 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 
 	if ((OPTDENSE::nOptimize & OPTDENSE::ADJUST_FILTER) != 0) {
 		// initialize the queue of depth-maps to be filtered
-		data.sem.Clear();
-		data.idxImage = data.images.GetSize();
-		ASSERT(data.events.IsEmpty());
+		status->sem.Clear();
+		status->idxImage = data.images.GetSize();
+		ASSERT(status->events.IsEmpty());
 		FOREACH(i, data.images)
-			data.events.AddEvent(new EVTFilterDepthMap(i));
+			status->events.AddEvent(new EVTFilterDepthMap(i));
 		// start working threads
-		data.progress = new Util::Progress("Filtered depth-maps", data.images.GetSize());
+		status->progress = new Util::Progress("Filtered depth-maps", data.images.GetSize());
 		GET_LOGCONSOLE().Pause();
 		if (nMaxThreads > 1) {
 			// multi-thread execution
 			cList<SEACAVE::Thread> threads(MINF(nMaxThreads, (unsigned)data.images.GetSize()));
 			FOREACHPTR(pThread, threads)
-				pThread->start(DenseReconstructionFilterTmp, (void*)&data);
+				pThread->start(DenseReconstructionFilterTmp, status);
 			FOREACHPTR(pThread, threads)
 				pThread->join();
 		} else {
 			// single-thread execution
-			DenseReconstructionFilter((void*)&data);
+			DenseReconstructionFilter(status);
 		}
 		GET_LOGCONSOLE().Play();
-		if (!data.events.IsEmpty()) {
+		if (!status->events.IsEmpty()) {
 			VERBOSE("Events queue is not empty, exiting");
 			return false;
 		}
-		data.progress.Release();
+		status->progress.Release();
 	}
+
+	delete status;
+
 	return true;
 } // ComputeDepthMaps
 /*----------------------------------------------------------------*/
 
 void* DenseReconstructionEstimateTmp(void* arg) {
-	//const DenseDepthMapData& dataThreads = *((const DenseDepthMapData*)arg);
-	//const ProcessingStatus dataThreads = *((ProcessingStatus*)arg);
-
 	const auto ptr = static_cast<ProcessingStatus*>(arg);
 
-	VERBOSE("Thread %d started", __THREAD__);
 	ptr->data->scene.DenseReconstructionEstimate(ptr);
-	//dataThreads.data->scene.DenseReconstructionEstimate(arg);
 	return nullptr;
 }
 
@@ -1998,40 +1998,36 @@ void* DenseReconstructionEstimateTmp(void* arg) {
 void Scene::DenseReconstructionEstimate(void* pData)
 {
 	auto status = static_cast<ProcessingStatus*>(pData);
-	//DenseDepthMapData& data = *((DenseDepthMapData*)pData);
+
 	while (true) {
-		CAutoPtr<Event> evt(status->events.GetEvent());
+		CAutoPtr evt(status->events.GetEvent());
 		switch (evt->GetID()) {
 		case EVT_PROCESSIMAGE: {
 			const EVTProcessImage& evtImage = *((EVTProcessImage*)(Event*)evt);
-			VERBOSE("%lld;%d;%d;EVT_PROCESSIMAGE;0", Timer::GetSysTime(), __THREAD__, evtImage.idxImage);
-
-			//const Timer::SysType start(Timer::GetSysTime());
-			
-			//if (evtImage.idxImage >= data.images.size()) {
+			//VERBOSE("%lld;%d;%d;EVT_PROCESSIMAGE;0", Timer::GetSysTime(), __THREAD__, evtImage.idxImage);
+				
 			if (evtImage.idxImage > status->toIdxImage) {
 				if (nMaxThreads > 1) {
 					// close working threads
 					status->events.AddEvent(new EVTClose);
-					//status->events.AddEvent(new EVTClose);
 				}
 
-				VERBOSE("%lld;%d;%d;EVT_PROCESSIMAGE;1", Timer::GetSysTime(), __THREAD__, evtImage.idxImage);
+				//VERBOSE("%lld;%d;%d;EVT_PROCESSIMAGE;1", Timer::GetSysTime(), __THREAD__, evtImage.idxImage);
 
 				return;
 			}
+
 			// select views to reconstruct the depth-map for this image
 			const IIndex idx = status->data->images[evtImage.idxImage];
 			DepthData& depthData(status->data->depthMaps.arrDepthData[idx]);
 			const bool depthmapComputed(status->data->nFusionMode < 0 || (status->data->nFusionMode >= 0 && status->data->nEstimationGeometricIter < 0 && File::access(ComposeDepthFilePath(status->data->scene.images[idx].ID, "dmap"))));
+
 			// initialize images pair: reference image and the best neighbor view
-			//ASSERT(data.neighborsMap.IsEmpty() || data.neighborsMap[evtImage.idxImage] != NO_ID);
+			ASSERT(status->data->neighborsMap.IsEmpty() || status->data->neighborsMap[evtImage.idxImage] != NO_ID);
 			if (!status->data->depthMaps.InitViews(depthData, status->data->neighborsMap.IsEmpty()?NO_ID: status->data->neighborsMap[evtImage.idxImage], OPTDENSE::nNumViews, !depthmapComputed, depthmapComputed ? -1 : (status->data->nEstimationGeometricIter >= 0 ? 1 : 0))) {
 				// process next image
 
-				//const Timer::Type elapsed(Timer::SysTime2TimeMs(Timer::GetSysTime() - start));
-
-				VERBOSE("%lld;%d;%d;EVT_PROCESSIMAGE;1", Timer::GetSysTime(), __THREAD__, evtImage.idxImage);
+				//VERBOSE("%lld;%d;%d;EVT_PROCESSIMAGE;1", Timer::GetSysTime(), __THREAD__, evtImage.idxImage);
 
 				status->events.AddEvent(new EVTProcessImage((IIndex)Thread::safeInc(status->idxImage)));
 				break;
@@ -2040,7 +2036,7 @@ void Scene::DenseReconstructionEstimate(void* pData)
 			if (depthmapComputed && status->data->nFusionMode >= 0) {
 				if (OPTDENSE::nOptimize & OPTDENSE::OPTIMIZE) {
 					if (!depthData.Load(ComposeDepthFilePath(depthData.GetView().GetID(), "dmap"))) {
-						VERBOSE("error: invalid depth-map '%s'", ComposeDepthFilePath(depthData.GetView().GetID(), "dmap").c_str());
+						//VERBOSE("error: invalid depth-map '%s'", ComposeDepthFilePath(depthData.GetView().GetID(), "dmap").c_str());
 						exit(EXIT_FAILURE);
 					}
 					// optimize depth-map
@@ -2053,7 +2049,7 @@ void Scene::DenseReconstructionEstimate(void* pData)
 				status->events.AddEventFirst(new EVTEstimateDepthMap(evtImage.idxImage));
 			}
 
-			VERBOSE("%lld;%d;%d;EVT_PROCESSIMAGE;1", Timer::GetSysTime(), __THREAD__, evtImage.idxImage);
+			//VERBOSE("%lld;%d;%d;EVT_PROCESSIMAGE;1", Timer::GetSysTime(), __THREAD__, evtImage.idxImage);
 
 
 			break; }
@@ -2067,8 +2063,8 @@ void Scene::DenseReconstructionEstimate(void* pData)
 			// extract depth map
 
 			status->sem.Wait();
-			VERBOSE("%lld;%d;%d;EVT_ESTIMATEDEPTHMAP;1", Timer::GetSysTime(), __THREAD__, evtImage.idxImage);
-			VERBOSE("%lld;%d;%d;EVT_ESTIMATEDEPTHMAP_RUN;0", Timer::GetSysTime(), __THREAD__, evtImage.idxImage);
+			//VERBOSE("%lld;%d;%d;EVT_ESTIMATEDEPTHMAP;1", Timer::GetSysTime(), __THREAD__, evtImage.idxImage);
+			//VERBOSE("%lld;%d;%d;EVT_ESTIMATEDEPTHMAP_RUN;0", Timer::GetSysTime(), __THREAD__, evtImage.idxImage);
 
 			if (status->data->nFusionMode >= 0) {
 				// extract depth-map using Patch-Match algorithm
@@ -2076,12 +2072,11 @@ void Scene::DenseReconstructionEstimate(void* pData)
 #ifdef _USE_CUDA
 				if (status->pmCUDA)
 					status->pmCUDA->EstimateDepthMap(status->data->depthMaps.arrDepthData[status->data->images[evtImage.idxImage]]);
-					//status->pmCUDA->EstimateDepthMap(status->data->depthMaps.arrDepthData[evtImage.idxImage]);
 				else				
 					status->data->depthMaps.EstimateDepthMap(status->data->images[evtImage.idxImage], status->data->nEstimationGeometricIter);
 				
 #else
-				status.data->depthMaps.EstimateDepthMap(data.images[evtImage.idxImage], data.nEstimationGeometricIter);
+				status->data->depthMaps.EstimateDepthMap(status->data->images[evtImage.idxImage], status->data->nEstimationGeometricIter);
 #endif // _USE_CUDA
 
 				
@@ -2110,13 +2105,13 @@ void Scene::DenseReconstructionEstimate(void* pData)
 				status->events.AddEventFirst(new EVTSaveDepthMap(evtImage.idxImage));
 			}
 
-			VERBOSE("%lld;%d;%d;EVT_ESTIMATEDEPTHMAP_RUN;1", Timer::GetSysTime(), __THREAD__, evtImage.idxImage);
+			//VERBOSE("%lld;%d;%d;EVT_ESTIMATEDEPTHMAP_RUN;1", Timer::GetSysTime(), __THREAD__, evtImage.idxImage);
 
 			break; }
 
 		case EVT_OPTIMIZEDEPTHMAP: {
 			const EVTOptimizeDepthMap& evtImage = *((EVTOptimizeDepthMap*)(Event*)evt);
-			VERBOSE("%lld;%d;%d;EVT_OPTIMIZEDEPTHMAP;0", Timer::GetSysTime(), __THREAD__, evtImage.idxImage);
+			//VERBOSE("%lld;%d;%d;EVT_OPTIMIZEDEPTHMAP;0", Timer::GetSysTime(), __THREAD__, evtImage.idxImage);
 
 			const IIndex idx = status->data->images[evtImage.idxImage];
 			DepthData& depthData(status->data->depthMaps.arrDepthData[idx]);
@@ -2142,12 +2137,12 @@ void Scene::DenseReconstructionEstimate(void* pData)
 			// save depth-map
 			status->events.AddEventFirst(new EVTSaveDepthMap(evtImage.idxImage));
 
-			VERBOSE("%lld;%d;%d;EVT_OPTIMIZEDEPTHMAP;1", Timer::GetSysTime(), __THREAD__, evtImage.idxImage);
+			//VERBOSE("%lld;%d;%d;EVT_OPTIMIZEDEPTHMAP;1", Timer::GetSysTime(), __THREAD__, evtImage.idxImage);
 			break; }
 
 		case EVT_SAVEDEPTHMAP: {
 			const EVTSaveDepthMap& evtImage = *((EVTSaveDepthMap*)(Event*)evt);
-			VERBOSE("%lld;%d;%d;EVT_SAVEDEPTHMAP;0", Timer::GetSysTime(), __THREAD__, evtImage.idxImage);
+			//VERBOSE("%lld;%d;%d;EVT_SAVEDEPTHMAP;0", Timer::GetSysTime(), __THREAD__, evtImage.idxImage);
 
 			const Timer::SysType start(Timer::GetSysTime());
 			
@@ -2170,16 +2165,16 @@ void Scene::DenseReconstructionEstimate(void* pData)
 				depthData.Save(ComposeDepthFilePath(depthData.GetView().GetID(), status->data->nEstimationGeometricIter < 0 ? "dmap" : "geo.dmap"));
 			depthData.ReleaseImages();
 			depthData.Release();
-			//data.progress->operator++();
+			status->progress->operator++();
 
-			VERBOSE("%lld;%d;%d;EVT_SAVEDEPTHMAP;1", Timer::GetSysTime(), __THREAD__, evtImage.idxImage);
+			//VERBOSE("%lld;%d;%d;EVT_SAVEDEPTHMAP;1", Timer::GetSysTime(), __THREAD__, evtImage.idxImage);
 
 
 			break; }
 
 		case EVT_CLOSE: {
-			VERBOSE("%lld;%d;%d;EVT_CLOSE;0", Timer::GetSysTime(), __THREAD__);
-			VERBOSE("%lld;%d;%d;EVT_CLOSE;1", Timer::GetSysTime(), __THREAD__);
+			//VERBOSE("%lld;%d;%d;EVT_CLOSE;0", Timer::GetSysTime(), __THREAD__);
+			//VERBOSE("%lld;%d;%d;EVT_CLOSE;1", Timer::GetSysTime(), __THREAD__);
 
 			return; }
 
@@ -2191,24 +2186,27 @@ void Scene::DenseReconstructionEstimate(void* pData)
 /*----------------------------------------------------------------*/
 
 void* DenseReconstructionFilterTmp(void* arg) {
-	DenseDepthMapData& dataThreads = *((DenseDepthMapData*)arg);
-	dataThreads.scene.DenseReconstructionFilter(arg);
-	return NULL;
+
+	const auto ptr = static_cast<ProcessingStatus*>(arg);
+
+	ptr->data->scene.DenseReconstructionFilter(ptr);
+	return nullptr;
 }
 
 // filter estimated depth-maps
 void Scene::DenseReconstructionFilter(void* pData)
 {
-	DenseDepthMapData& data = *((DenseDepthMapData*)pData);
+	const auto status = static_cast<ProcessingStatus*>(pData);
+
 	CAutoPtr<Event> evt;
-	while ((evt=data.events.GetEvent(0)) != NULL) {
+	while ((evt=status->events.GetEvent(0)) != NULL) {
 		switch (evt->GetID()) {
 		case EVT_FILTERDEPTHMAP: {
 			const EVTFilterDepthMap& evtImage = *((EVTFilterDepthMap*)(Event*)evt);
-			const IIndex idx = data.images[evtImage.idxImage];
-			DepthData& depthData(data.depthMaps.arrDepthData[idx]);
+			const IIndex idx = status->data->images[evtImage.idxImage];
+			DepthData& depthData(status->data->depthMaps.arrDepthData[idx]);
 			if (!depthData.IsValid()) {
-				data.SignalCompleteDepthmapFilter();
+				status->SignalCompleteDepthmapFilter();
 				break;
 			}
 			// make sure all depth-maps are loaded
@@ -2217,12 +2215,12 @@ void Scene::DenseReconstructionFilter(void* pData)
 			IIndexArr idxNeighbors(0, depthData.neighbors.GetSize());
 			FOREACH(n, depthData.neighbors) {
 				const IIndex idxView = depthData.neighbors[n].idx.ID;
-				DepthData& depthDataPair = data.depthMaps.arrDepthData[idxView];
+				DepthData& depthDataPair = status->data->depthMaps.arrDepthData[idxView];
 				if (!depthDataPair.IsValid())
 					continue;
 				if (depthDataPair.IncRef(ComposeDepthFilePath(depthDataPair.GetView().GetID(), "dmap")) == 0) {
 					// signal error and terminate
-					data.events.AddEventFirst(new EVTFail);
+					status->events.AddEventFirst(new EVTFail);
 					return;
 				}
 				idxNeighbors.Insert(n);
@@ -2230,33 +2228,33 @@ void Scene::DenseReconstructionFilter(void* pData)
 					break;
 			}
 			// filter the depth-map for this image
-			if (data.depthMaps.FilterDepthMap(depthData, idxNeighbors, OPTDENSE::bFilterAdjust)) {
+			if (status->data->depthMaps.FilterDepthMap(depthData, idxNeighbors, OPTDENSE::bFilterAdjust)) {
 				// load the filtered maps after all depth-maps were filtered
-				data.events.AddEvent(new EVTAdjustDepthMap(evtImage.idxImage));
+				status->events.AddEvent(new EVTAdjustDepthMap(evtImage.idxImage));
 			}
 			// unload referenced depth-maps
 			FOREACHPTR(pIdxNeighbor, idxNeighbors) {
 				const IIndex idxView = depthData.neighbors[*pIdxNeighbor].idx.ID;
-				DepthData& depthDataPair = data.depthMaps.arrDepthData[idxView];
+				DepthData& depthDataPair = status->data->depthMaps.arrDepthData[idxView];
 				depthDataPair.DecRef();
 			}
 			depthData.DecRef();
-			data.SignalCompleteDepthmapFilter();
+			status->SignalCompleteDepthmapFilter();
 			break; }
 
 		case EVT_ADJUSTDEPTHMAP: {
 			const EVTAdjustDepthMap& evtImage = *((EVTAdjustDepthMap*)(Event*)evt);
-			const IIndex idx = data.images[evtImage.idxImage];
-			DepthData& depthData(data.depthMaps.arrDepthData[idx]);
+			const IIndex idx = status->data->images[evtImage.idxImage];
+			DepthData& depthData(status->data->depthMaps.arrDepthData[idx]);
 			ASSERT(depthData.IsValid());
-			data.sem.Wait();
+			status->sem.Wait();
 			// load filtered maps
 			if (depthData.IncRef(ComposeDepthFilePath(depthData.GetView().GetID(), "dmap")) == 0 ||
 				!LoadDepthMap(ComposeDepthFilePath(depthData.GetView().GetID(), "filtered.dmap"), depthData.depthMap) ||
 				!LoadConfidenceMap(ComposeDepthFilePath(depthData.GetView().GetID(), "filtered.cmap"), depthData.confMap))
 			{
 				// signal error and terminate
-				data.events.AddEventFirst(new EVTFail);
+				status->events.AddEventFirst(new EVTFail);
 				return;
 			}
 			ASSERT(depthData.GetRef() == 1);
@@ -2272,11 +2270,11 @@ void Scene::DenseReconstructionFilter(void* pData)
 			// save filtered depth-map for this image
 			depthData.Save(ComposeDepthFilePath(depthData.GetView().GetID(), "dmap"));
 			depthData.DecRef();
-			data.progress->operator++();
+			status->progress->operator++();
 			break; }
 
 		case EVT_FAIL: {
-			data.events.AddEventFirst(new EVTFail);
+			status->events.AddEventFirst(new EVTFail);
 			return; }
 
 		default:
