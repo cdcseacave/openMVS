@@ -107,7 +107,7 @@ struct MVS_API ProcessingStatus
 {
 	DenseDepthMapData *data;
 	Semaphore sem;
-	CAutoPtr<Util::Progress> progress;
+	Util::Progress* progress;
 	volatile Thread::safe_t idxImage;
 	size_t toIdxImage;
 	EventQueue events; // internal events queue (processed by the working threads)
@@ -120,7 +120,19 @@ struct MVS_API ProcessingStatus
 	void SignalCompleteDepthmapFilter();
 
 	ProcessingStatus(DenseDepthMapData* data, size_t startIdx, size_t endIdx, int deviceId, bool geomConsistency);
+	ProcessingStatus(DenseDepthMapData* data, size_t startIdx, size_t endIdx);
 
+	~ProcessingStatus();
+
+};
+
+struct MVS_API ProcessingPipeline
+{
+	ProcessingStatus status;
+	cList<SEACAVE::Thread> threads;
+
+	ProcessingPipeline(DenseDepthMapData* data, size_t startIdx, size_t endIdx, int deviceId, bool geomConsistency);
+	ProcessingPipeline(DenseDepthMapData* data, size_t startIdx, size_t endIdx);
 };
 
 /*----------------------------------------------------------------*/
