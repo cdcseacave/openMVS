@@ -1745,7 +1745,22 @@ bool Scene::RunSingleThreaded(DenseDepthMapData& data, int gpuId = DesiredDevice
 }
 
 bool Scene::RunMultiThreaded(DenseDepthMapData& data, int gpuId = DesiredDevice::CPU) {
-	VERBOSE((gpuId == DesiredDevice::CPU) ? "Running MT on CPU" : "Running MT on GPU");
+	
+	switch (gpuId) {
+		case DesiredDevice::CPU:
+			VERBOSE("Running MT on CPU");
+			break;
+		case DesiredDevice::BestGPU:
+			VERBOSE("Running on best GPU");
+			break;
+		case DesiredDevice::AllGPUs:
+			gpuId = DesiredDevice::BestGPU;
+			VERBOSE("Running on best GPU");
+			break;
+		default:
+			VERBOSE("Running MT on GPU %d", gpuId);
+			break;
+	}
 
 	GET_LOGCONSOLE().Pause();
 
@@ -1980,10 +1995,16 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 	const auto useCuda = data.nFusionMode >= 0;
 	const auto desiredDeviceID = CUDA::desiredDeviceID;
 
+	int device_count;
+	if (CUDA::getDevicesCount(&device_count) != CUDA_SUCCESS) {
+		VERBOSE("Cannot get CUDA devices count");
+		return false;
+	}
+
 	bool res = false;
 
 	res = isMultiThreaded ?
-		(useCuda ? ((desiredDeviceID == DesiredDevice::AllGPUs) ?
+		(useCuda ? ((desiredDeviceID == DesiredDevice::AllGPUs && device_count > 1) ?
 			this->RunMultiGPU(data) :
 			this->RunMultiThreaded(data, desiredDeviceID)) :
 			this->RunMultiThreaded(data)) :

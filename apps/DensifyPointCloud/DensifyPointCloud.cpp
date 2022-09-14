@@ -200,6 +200,13 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	if (OPT::strInputFileName.empty())
 		return false;
 
+#ifdef _USE_CUDA
+	if (!CUDA::validateCudaDevice(CUDA::desiredDeviceID)) {
+		LOG("Invalid CUDA device");
+		return false;
+	}
+#endif
+
 	// initialize optional options
 	Util::ensureValidPath(OPT::strOutputFileName);
 	Util::ensureValidPath(OPT::strViewNeighborsFileName);

@@ -175,6 +175,20 @@ CUresult getDevicesCount(int *device_count) {
 
 }
 
+bool validateCudaDevice(int desiredDevice) {
+
+	if (desiredDevice < -3) return false;
+
+	int count;
+	if (getDevicesCount(&count) != CUDA_SUCCESS) return false;
+
+	if (!count) return false;	
+	if (desiredDevice > count - 1) return false;
+
+	return true;
+
+}
+
 // initialize the given CUDA device and add it to the array of initialized devices;
 // if the given device is -1, the best available device is selected
 CUresult initDevice(int deviceID)
