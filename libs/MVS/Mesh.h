@@ -146,6 +146,7 @@ public:
 	void ReleaseExtra();
 	void EmptyExtra();
 	void Swap(Mesh&);
+	void Join(const Mesh&);
 	inline bool IsEmpty() const { return vertices.IsEmpty(); }
 	inline bool HasTexture() const { ASSERT(faceTexcoords.IsEmpty() == textureDiffuse.empty()); return !faceTexcoords.IsEmpty(); }
 
@@ -176,6 +177,7 @@ public:
 	void Decimate(VertexIdxArr& verticesRemove);
 	void CloseHole(VertexIdxArr& vertsLoop);
 	void CloseHoleQuality(VertexIdxArr& vertsLoop);
+	void RemoveFacesOutside(const OBB3f&);
 	void RemoveFaces(FaceIdxArr& facesRemove, bool bUpdateLists=false);
 	void RemoveVertices(VertexIdxArr& vertexRemove, bool bUpdateLists=false);
 	VIndex RemoveUnreferencedVertices(bool bUpdateLists=false);
@@ -226,6 +228,7 @@ public:
 protected:
 	bool LoadPLY(const String& fileName);
 	bool LoadOBJ(const String& fileName);
+	bool LoadGLTF(const String& fileName, bool bBinary=true);
 
 	bool SavePLY(const String& fileName, const cList<String>& comments=cList<String>(), bool bBinary=true) const;
 	bool SaveOBJ(const String& fileName) const;

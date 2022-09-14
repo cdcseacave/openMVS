@@ -1658,7 +1658,7 @@ ProcessingPipeline::ProcessingPipeline(DenseDepthMapData* data, const size_t sta
 static void* DenseReconstructionEstimateTmp(void*);
 static void* DenseReconstructionFilterTmp(void*);
 
-bool Scene::DenseReconstruction(int nFusionMode)
+bool Scene::DenseReconstruction(int nFusionMode, bool bCrop2ROI, float fBorderROI)
 {
 	DenseDepthMapData data(*this, nFusionMode);
 
@@ -1700,10 +1700,11 @@ bool Scene::DenseReconstruction(int nFusionMode)
 	#endif
 
 	if (!pointcloud.IsEmpty()) {
-		if (IsBounded()) {
+		if (bCrop2ROI && IsBounded()) {
 			TD_TIMER_START();
 			const size_t numPoints = pointcloud.GetSize();
-			pointcloud.RemovePointsOutside(obb);
+			const OBB3f ROI(fBorderROI == 0 ? obb : (fBorderROI > 0 ? OBB3f(obb).EnlargePercent(fBorderROI) : OBB3f(obb).Enlarge(-fBorderROI)));
+			pointcloud.RemovePointsOutside(ROI);
 			VERBOSE("Point-cloud trimmed to ROI: %u points removed (%s)",
 				numPoints-pointcloud.GetSize(), TD_TIMER_GET_FMT().c_str());
 		}

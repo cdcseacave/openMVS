@@ -54,6 +54,8 @@ public:
 	inline TOBB(const MATRIX& rot, const POINT& ptMin, const POINT& ptMax);
 	inline TOBB(const POINT* pts, size_t n);
 	inline TOBB(const POINT* pts, size_t n, const TRIANGLE* tris, size_t s);
+	template <typename CTYPE>
+	inline TOBB(const TOBB<CTYPE, DIMS>&);
 
 	inline void Set(const AABB&); // build from AABB
 	inline void Set(const MATRIX& rot, const POINT& ptMin, const POINT& ptMax); // build from rotation matrix from world to local, and local min/max corners
@@ -69,8 +71,8 @@ public:
 
 	inline bool IsValid() const;
 
-	inline void Enlarge(TYPE);
-	inline void EnlargePercent(TYPE);
+	inline TOBB& Enlarge(TYPE);
+	inline TOBB& EnlargePercent(TYPE);
 
 	inline void Translate(const POINT&);
 	inline void Transform(const MATRIX&);

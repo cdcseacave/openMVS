@@ -480,8 +480,8 @@ bool Scene::Import(const String& fileName)
 		Release();
 		return LoadDMAP(fileName);
 	}
-	if (ext == _T(".obj")) {
-		// import mesh from obj file
+	if (ext == _T(".obj") || ext == _T(".gltf") || ext == _T(".glb")) {
+		// import mesh from obj/gltf file
 		Release();
 		return mesh.Load(fileName);
 	}
