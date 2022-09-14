@@ -159,6 +159,22 @@ CUresult _gpuGetMaxGflopsDeviceId(Device& bestDevice)
 	return CUDA_SUCCESS;
 }
 
+CUresult getDevicesCount(int *device_count) {
+	checkCudaError(cuInit(0));
+
+	int cnt = 0;
+	checkCudaError(cuDeviceGetCount(&cnt));
+	if (device_count == 0) {
+		VERBOSE("CUDA error: no devices supporting CUDA");
+		return CUDA_ERROR_NO_DEVICE;
+	}
+
+	*device_count = cnt;
+
+	return CUDA_SUCCESS;
+
+}
+
 // initialize the given CUDA device and add it to the array of initialized devices;
 // if the given device is -1, the best available device is selected
 CUresult initDevice(int deviceID)

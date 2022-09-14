@@ -101,6 +101,8 @@ inline T align(T o, T a) {
 // if the given device is -1, the best available device is selected
 CUresult initDevice(int deviceID=-1);
 
+CUresult getDevicesCount(int *device_count);
+
 // load/read module (program) from file/string and compile it
 enum JIT { AUTO=0, STRING=1, FILE=2 };
 CUresult ptxJIT(LPCSTR program, CUmodule& hModule, int mode=JIT::AUTO);

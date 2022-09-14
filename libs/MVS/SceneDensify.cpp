@@ -1785,40 +1785,63 @@ bool Scene::RunMultiGPU(DenseDepthMapData& data) {
 	GET_LOGCONSOLE().Pause();
 	
 	const size_t midPoint = data.images.size() / 2;
-	
-	auto pipeline1 = new ProcessingPipeline(&data, 0, midPoint - 1, 0, false);
-	auto pipeline2 = new ProcessingPipeline(&data, midPoint, data.images.size() - 1, 1, false);
-	
-	auto edmProgress = new Util::Progress("Estimated depth-maps", data.images.GetSize());
-	
-	ASSERT(pipeline1->status.events.IsEmpty());
-	pipeline1->status.events.AddEvent(new EVTProcessImage(0));
-	pipeline1->status.progress = edmProgress;
-	
-	// start working threads
-	
-	ASSERT(pipeline2->status.events.IsEmpty());
-	pipeline2->status.events.AddEvent(new EVTProcessImage(midPoint));
-	pipeline2->status.progress = edmProgress;
-	
-	FOREACHPTR(pThread, pipeline1->threads)
-		pThread->start(DenseReconstructionEstimateTmp, &pipeline1->status);
-	
-	FOREACHPTR(pThread, pipeline2->threads)
-		pThread->start(DenseReconstructionEstimateTmp, &pipeline2->status);
-	
-	FOREACHPTR(pThread, pipeline1->threads)
-		pThread->join();
-	
-	FOREACHPTR(pThread, pipeline2->threads)
-		pThread->join();
-	
-	const auto finalized = pipeline1->status.events.IsEmpty() && pipeline1->status.events.IsEmpty();
-	
-	delete edmProgress;
 
-	delete pipeline1;
-	delete pipeline2;
+	int device_count = 0;
+
+	auto res = CUDA::getDevicesCount(&device_count);
+
+	if (res != CUDA_SUCCESS && device_count == 0) {
+		VERBOSE("CUDA error: no devices supporting CUDA");
+		return false;
+	}
+
+	auto edmProgress = new Util::Progress("Estimated depth-maps", data.images.GetSize());
+
+	cList<ProcessingPipeline*> pipelines(device_count);
+
+	const auto cnt = images.size();
+
+	int span = MAX(cnt / device_count, 1);
+	int residuals = device_count < cnt ? cnt % device_count : 0;
+	int iters = MIN(device_count, cnt);
+
+	int startIdx = 0;
+
+	for (int device = 0; device < iters; device++) {
+
+		const auto residual = residuals-- > 0 ? 1 : 0;
+		const auto endIdx = (device + 1) * span + residual - 1;
+
+		auto pipeline = new ProcessingPipeline(&data, startIdx, endIdx, device, false);
+
+		pipelines.AddAt(device, pipeline);
+
+		ASSERT(pipeline.status.events.IsEmpty());
+		pipeline->status.events.AddEvent(new EVTProcessImage(startIdx));
+		pipeline->status.progress = edmProgress;
+
+		FOREACHPTR(pThread, pipeline->threads)
+			pThread->start(DenseReconstructionEstimateTmp, &pipeline->status);
+
+		startIdx = endIdx + 1 - residual;
+	}
+
+	bool finalized = true;
+
+	for (int device = 0; device < iters; device++) {
+
+		auto pipeline = pipelines[device];
+
+		FOREACHPTR(pThread, pipeline->threads)
+			pThread->join();
+
+		finalized &= pipeline->status.events.IsEmpty();
+
+		delete pipeline;
+	}
+
+	delete edmProgress;
+	pipelines.Release();
 
 	GET_LOGCONSOLE().Play();
 
