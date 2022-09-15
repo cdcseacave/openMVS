@@ -1,10 +1,12 @@
 FIND_PACKAGE(OpenMVG QUIET)
 IF (OPENMVG_FOUND)
+	find_package(Ceres REQUIRED)
 	INCLUDE_DIRECTORIES(${OPENMVG_INCLUDE_DIRS})
+
 	add_definitions(-D_USE_OPENMVG)
-	set(LIBS_DEPEND "MVS;${OPENMVG_LIBRARIES}")
+	set(LIBS_DEPEND "MVS;Common;OpenMVG::openMVG_sfm;OpenMVG::openMVG_camera;OpenMVG::openMVG_image")
 ELSE()
-	set(LIBS_DEPEND "MVS")
+	set(LIBS_DEPEND "MVS;Common")
 	MESSAGE("OPENMVG_NOT FOUND : OpenMVG importer with JSON support will not be build")
 ENDIF()
 
