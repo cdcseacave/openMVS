@@ -237,19 +237,17 @@ bool Scene::Open(LPCTSTR fileName, LPCTSTR meshFileName)
 		// load given mesh
 		scene.mesh.Load(meshFileName);
 	}
-	if (scene.IsEmpty())
-		return false;
 	if (!scene.pointcloud.IsEmpty())
 		scene.pointcloud.PrintStatistics(scene.images.data(), &scene.obb);
 
 	#if 1
 	// create octree structure used to accelerate selection functionality
-	events.AddEvent(new EVTComputeOctree(this));
+	if (!scene.IsEmpty())
+		events.AddEvent(new EVTComputeOctree(this));
 	#endif
 
 	// init scene
 	AABB3d bounds(true);
-	AABB3d imageBounds(true);
 	Point3d center(Point3d::INF);
 	if (scene.IsBounded()) {
 		bounds = AABB3d(scene.obb.GetAABB());
@@ -269,6 +267,7 @@ bool Scene::Open(LPCTSTR fileName, LPCTSTR meshFileName)
 	}
 
 	// init images
+	AABB3d imageBounds(true);
 	images.Reserve(scene.images.size());
 	FOREACH(idxImage, scene.images) {
 		const MVS::Image& imageData = scene.images[idxImage];
@@ -277,6 +276,8 @@ bool Scene::Open(LPCTSTR fileName, LPCTSTR meshFileName)
 		images.emplace_back(idxImage);
 		imageBounds.InsertFull(imageData.camera.C);
 	}
+	if (bounds.IsEmpty())
+		bounds = imageBounds;
 
 	// init and load texture
 	if (scene.mesh.HasTexture()) {
@@ -316,7 +317,7 @@ bool Scene::Open(LPCTSTR fileName, LPCTSTR meshFileName)
 	window.clbkTogleSceneBox = DELEGATEBINDCLASS(Window::ClbkTogleSceneBox, &Scene::TogleSceneBox, this);
 	if (scene.IsBounded())
 		window.clbkCompileBounds = DELEGATEBINDCLASS(Window::ClbkCompileBounds, &Scene::CompileBounds, this);
-	if (!bounds.IsEmpty())
+	if (!scene.IsEmpty())
 		window.clbkRayScene = DELEGATEBINDCLASS(Window::ClbkRayScene, &Scene::CastRay, this);
 	window.Reset(!scene.pointcloud.IsEmpty()&&!scene.mesh.IsEmpty()?Window::SPR_NONE:Window::SPR_ALL,
 		MINF(2u,images.size()));
