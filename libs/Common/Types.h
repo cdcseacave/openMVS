@@ -39,6 +39,9 @@
 #else
 #include <stdint.h>
 #endif
+#ifdef _SUPPORT_CPP17
+#include <filesystem>
+#endif
 #include <new>
 #include <string>
 #include <codecvt>
