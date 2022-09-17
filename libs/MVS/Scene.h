@@ -82,6 +82,7 @@ public:
 	bool Load(const String& fileName, bool bImport=false);
 	bool Save(const String& fileName, ARCHIVE_TYPE type=ARCHIVE_DEFAULT) const;
 
+	bool EstimateNeighborViewsPointCloud(unsigned maxResolution=16);
 	void SampleMeshWithVisibility(unsigned maxResolution=320);
 	bool ExportMeshToDepthMaps(const String& baseName);
 

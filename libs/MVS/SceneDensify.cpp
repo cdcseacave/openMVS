@@ -1693,6 +1693,12 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 		SampleMeshWithVisibility();
 		mesh.Release();
 	}
+	
+	// compute point-cloud from the existing mesh
+	if (IsEmpty() && !ImagesHaveNeighbors()) {
+		VERBOSE("warning: empty point-cloud, rough neighbor views selection based on image pairs baseline");
+		EstimateNeighborViewsPointCloud();
+	}
 
 	{
 	// maps global view indices to our list of views to be processed

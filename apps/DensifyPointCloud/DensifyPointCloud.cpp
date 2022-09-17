@@ -311,10 +311,6 @@ int main(int argc, LPCTSTR* argv)
 	}
 	if (!OPT::strMeshFileName.empty())
 		scene.mesh.Load(MAKE_PATH_SAFE(OPT::strMeshFileName));
-	if (scene.pointcloud.IsEmpty() && OPT::strViewNeighborsFileName.empty() && scene.mesh.IsEmpty()) {
-		VERBOSE("error: empty initial point-cloud");
-		return EXIT_FAILURE;
-	}
 	if (!OPT::strViewNeighborsFileName.empty())
 		scene.LoadViewNeighbors(MAKE_PATH_SAFE(OPT::strViewNeighborsFileName));
 	if (!OPT::strOutputViewNeighborsFileName.empty()) {

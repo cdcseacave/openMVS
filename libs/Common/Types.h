@@ -1607,16 +1607,17 @@ public:
 	inline int area() const { ASSERT(dims == 2); return cols*rows; }
 
 	/// Is this coordinate inside the 2D matrix?
-	inline bool isInside(const Size& pt) const {
-		return pt.width>=0 && pt.height>=0 && pt.width<Base::size().width && pt.height<Base::size().height;
+	template <typename T>
+	static inline typename std::enable_if<std::is_integral<T>::value,bool>::type isInside(const cv::Point_<T>& pt, const cv::Size& size) {
+		return pt.x>=T(0) && pt.y>=T(0) && pt.x<T(size.width) && pt.y<T(size.height);
 	}
 	template <typename T>
-	inline typename std::enable_if<std::is_integral<T>::value,bool>::type isInside(const cv::Point_<T>& pt) const {
-		return pt.x>=0 && pt.y>=0 && pt.x<Base::size().width && pt.y<Base::size().height;
+	static inline typename std::enable_if<std::is_floating_point<T>::value,bool>::type isInside(const cv::Point_<T>& pt, const cv::Size& size) {
+		return pt.x>=T(0) && pt.y>=T(0) && pt.x<=T(size.width) && pt.y<=T(size.height);
 	}
 	template <typename T>
-	inline typename std::enable_if<std::is_floating_point<T>::value,bool>::type isInside(const cv::Point_<T>& pt) const {
-		return pt.x>=T(0) && pt.y>=T(0) && pt.x<=T(Base::size().width) && pt.y<=T(Base::size().height);
+	inline bool isInside(const cv::Point_<T>& pt) const {
+		return isInside<T>(pt, Base::size());
 	}
 
 	/// Is this coordinate inside the 2D matrix, and not too close to the edges?
