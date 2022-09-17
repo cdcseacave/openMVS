@@ -33,6 +33,7 @@
 #include "Scene.h"
 #define _USE_OPENCV
 #include "Interface.h"
+#include "../Math/SimilarityTransform.h"
 
 using namespace MVS;
 
@@ -1432,6 +1433,59 @@ bool Scene::ScaleImages(unsigned nMaxResolution, REAL scale, const String& folde
 	}
 	return true;
 } // ScaleImages
+
+// apply similarity transform
+void Scene::Transform(const Matrix3x3& rotation, const Point3& translation, REAL scale) {
+	const Matrix3x3 rotationScale(rotation * scale);
+	for (Platform& platform : platforms) {
+		for (Platform::Pose& pose : platform.poses) {
+			pose.R = pose.R * rotation.t();
+			pose.C = rotationScale * pose.C + translation;
+		}
+	}
+	for (Image& image : images) {
+		image.UpdateCamera(platforms);
+	}
+	FOREACH(i, pointcloud.points) {
+		pointcloud.points[i] = rotationScale * Cast<REAL>(pointcloud.points[i]) + translation;
+		if (!pointcloud.normals.empty())
+			pointcloud.normals[i] = rotation * Cast<REAL>(pointcloud.normals[i]);
+	}
+	if (obb.IsValid()) {
+		obb.Transform(Cast<float>(rotationScale));
+		obb.Translate(Cast<float>(translation));
+	}
+}
+
+// transform this scene such that it best aligns with the given scene based on the camera positions
+bool Scene::AlignTo(const Scene& scene)
+{
+	if (images.size() < 3) {
+		DEBUG("error: insufficient number of cameras to perform a similarity transform alignment");
+		return false;
+	}
+	if (images.size() != scene.images.size()) {
+		DEBUG("error: the two scenes differ in number of cameras");
+		return false;
+	}
+	CLISTDEF0(Point3) points, pointsRef;
+	FOREACH(idx, images) {
+		const Image& image = images[idx];
+		if (!image.IsValid())
+			continue;
+		const Image& imageRef = scene.images[idx];
+		if (!imageRef.IsValid())
+			continue;
+		points.emplace_back(image.camera.C);
+		pointsRef.emplace_back(imageRef.camera.C);
+	}
+	Matrix4x4 transform;
+	SimilarityTransform(points, pointsRef, transform);
+	Matrix3x3 rotation; Point3 translation; REAL scale;
+	DecomposeSimilarityTransform(transform, rotation, translation, scale);
+	Transform(rotation, translation, scale);
+	return true;
+} // AlignTo
 /*----------------------------------------------------------------*/
 
 

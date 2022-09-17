@@ -1,7 +1,7 @@
 /*
 * DepthMap.h
 *
-* Copyright (c) 2014-2015 SEACAVE
+* Copyright (c) 2014-2022 SEACAVE
 *
 * Author(s):
 *
@@ -35,7 +35,6 @@
 
 // I N C L U D E S /////////////////////////////////////////////////
 
-#include "Image.h"
 #include "PointCloud.h"
 
 

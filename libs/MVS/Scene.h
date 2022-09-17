@@ -1,7 +1,7 @@
 /*
 * Scene.h
 *
-* Copyright (c) 2014-2015 SEACAVE
+* Copyright (c) 2014-2022 SEACAVE
 *
 * Author(s):
 *
@@ -104,6 +104,8 @@ public:
 	bool Center(const Point3* pCenter = NULL);
 	bool Scale(const REAL* pScale = NULL);
 	bool ScaleImages(unsigned nMaxResolution = 0, REAL scale = 0, const String& folderName = String());
+	void Transform(const Matrix3x3& rotation, const Point3& translation, REAL scale);
+	bool AlignTo(const Scene&);
 
 	// Estimate and set region-of-interest
 	bool EstimateROI(int nEstimateROI=0, float scale=1.f);
