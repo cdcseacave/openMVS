@@ -399,6 +399,15 @@ void PatchMatchCUDA::EstimateDepthMap(DepthData& depthData)
 			lowResNormalMap = depthData.normalMap;
 			lowResViewsMap = depthData.viewsMap;
 		}
+		
+		// Apply ignore mask
+		if (OPTDENSE::nIgnoreMaskLabel >= 0) {
+			const DepthData::ViewData& view = depthData.GetView();
+
+			BitMatrix mask;
+			if (OPTDENSE::nIgnoreMaskLabel >= 0 && DepthEstimator::ImportIgnoreMask(*view.pImageData, depthData.depthMap.size(), mask, (uint16_t)OPTDENSE::nIgnoreMaskLabel))
+				depthData.ApplyIgnoreMask(mask);
+		}
 	}
 
 	DEBUG_EXTRA("Depth-map for image %3u %s: %dx%d (%s)", depthData.images.front().GetID(),
