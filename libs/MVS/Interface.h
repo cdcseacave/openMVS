@@ -643,6 +643,15 @@ struct Interface
 		const Image& image = images[imageID];
 		return platforms[image.platformID].GetK(image.cameraID);
 	}
+	Mat33d GetFullK(uint32_t imageID, uint32_t width, uint32_t height) const {
+		const Image& image = images[imageID];
+		return platforms[image.platformID].GetFullK(image.cameraID, width, height);
+	}
+
+	const Platform::Camera& GetCamera(uint32_t imageID) const {
+		const Image& image = images[imageID];
+		return platforms[image.platformID].cameras[image.cameraID];
+	}
 
 	Platform::Pose GetPose(uint32_t imageID) const {
 		const Image& image = images[imageID];
