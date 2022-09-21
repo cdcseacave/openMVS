@@ -51,7 +51,9 @@ namespace MVS {
 // (as opposite to standard form t which is negated and has the rotation of the camera already applied P = K[R|t]);
 // the world and camera coordinates system is right handed,
 // with x pointing right, y pointing down, and z pointing forward
-// (see: R. Hartley, "Multiple View Geometry," 2004, pp. 156.)
+// (see: R. Hartley, "Multiple View Geometry," 2004, pp. 156.);
+// the projection in image coordinates uses the convention that the center of a pixel is defined at integer coordinates,
+// i.e. the center is at (0, 0) and the top left corner is at (-0.5, -0.5)
 class MVS_API CameraIntern
 {
 public:
