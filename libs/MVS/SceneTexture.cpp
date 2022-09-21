@@ -1744,14 +1744,19 @@ void MeshTexture::GenerateTexture(bool bGlobalSeamLeveling, bool bLocalSeamLevel
 		TexturePatch& texturePatch = *pTexturePatch;
 	#endif
 		const Image& imageData = images[texturePatch.label];
-		// project vertices and compute bounding-box
+		// project vertices and compute bounding-box;
+		// account for diferences in pixel center convention: while OpenMVS uses the same convention as OpenCV and DirectX 9 where the center
+		// of a pixel is defined at integer coordinates, i.e. the center is at (0, 0) and the top left corner is at (-0.5, -0.5),
+		// DirectX 10+, OpenGL, and Vulkan convention is the center of a pixel is defined at half coordinates, i.e. the center is at (0.5, 0.5)
+		// and the top left corner is at (0, 0)
+		const TexCoord halfPixel(0.5f, 0.5f);
 		AABB2f aabb(true);
 		FOREACHPTR(pIdxFace, texturePatch.faces) {
 			const FIndex idxFace(*pIdxFace);
 			const Face& face = faces[idxFace];
 			TexCoord* texcoords = faceTexcoords.Begin()+idxFace*3;
 			for (int i=0; i<3; ++i) {
-				texcoords[i] = imageData.camera.ProjectPointP(vertices[face[i]]);
+				texcoords[i] = imageData.camera.ProjectPointP(vertices[face[i]]) + halfPixel;
 				ASSERT(imageData.image.isInsideWithBorder(texcoords[i], border));
 				aabb.InsertFull(texcoords[i]);
 			}
@@ -1869,7 +1874,7 @@ void MeshTexture::GenerateTexture(bool bGlobalSeamLeveling, bool bLocalSeamLevel
 		}
 
 		// create texture image
-		const float invNorm(1.f/(float)(textureSize-1));
+		const float invNorm(1.f/(float)textureSize);
 		textureDiffuse.create(textureSize, textureSize);
 		textureDiffuse.setTo(cv::Scalar(colEmpty.b, colEmpty.g, colEmpty.r));
 		#ifdef TEXOPT_USE_OPENMP
