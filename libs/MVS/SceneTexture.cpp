@@ -1748,12 +1748,13 @@ void MeshTexture::GenerateTexture(bool bGlobalSeamLeveling, bool bLocalSeamLevel
 		const Image& imageData = images[texturePatch.label];
 		// project vertices and compute bounding-box
 		AABB2f aabb(true);
+		const TexCoord halfPixel(0.5f, 0.5f);
 		FOREACHPTR(pIdxFace, texturePatch.faces) {
 			const FIndex idxFace(*pIdxFace);
 			const Face& face = faces[idxFace];
 			TexCoord* texcoords = faceTexcoords.Begin()+idxFace*3;
 			for (int i=0; i<3; ++i) {
-				texcoords[i] = imageData.camera.ProjectPointP(vertices[face[i]]);
+				texcoords[i] = imageData.camera.ProjectPointP(vertices[face[i]]) + halfPixel;
 				ASSERT(imageData.image.isInsideWithBorder(texcoords[i], border));
 				aabb.InsertFull(texcoords[i]);
 			}
@@ -1871,7 +1872,7 @@ void MeshTexture::GenerateTexture(bool bGlobalSeamLeveling, bool bLocalSeamLevel
 		}
 
 		// create texture image
-		const float invNorm(1.f/(float)(textureSize-1));
+		const float invNorm(1.f/(float)textureSize);
 		textureDiffuse.create(textureSize, textureSize);
 		textureDiffuse.setTo(cv::Scalar(colEmpty.b, colEmpty.g, colEmpty.r));
 		#ifdef TEXOPT_USE_OPENMP
