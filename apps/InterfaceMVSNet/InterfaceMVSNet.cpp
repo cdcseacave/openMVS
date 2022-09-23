@@ -246,7 +246,7 @@ void ImageListParse(const LPSTR* argv, Matrix3x4& P)
 //  DEPTH_MIN DEPTH_INTERVAL (DEPTH_NUM DEPTH_MAX)
 bool ParseSceneMVSNet(Scene& scene)
 {
-	#ifdef _SUPPORT_CPP17
+	#if defined(_SUPPORT_CPP17) && (!defined(__GNUC__) || (__GNUC__ > 7))
 	String strPath(MAKE_PATH_FULL(WORKING_FOLDER_FULL, OPT::strInputFileName));
 	Util::ensureValidFolderPath(strPath);
 	const std::filesystem::path path(static_cast<std::string&>(strPath));

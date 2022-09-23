@@ -40,7 +40,9 @@
 #include <stdint.h>
 #endif
 #ifdef _SUPPORT_CPP17
+#if !defined(__GNUC__) || (__GNUC__ > 7)
 #include <filesystem>
+#endif
 #endif
 #include <new>
 #include <string>
