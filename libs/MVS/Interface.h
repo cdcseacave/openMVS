@@ -710,7 +710,7 @@ struct Interface
 //  - depth-map-resolution, for now only the same resolution as the image is supported
 //  - min/max-depth of the values in the depth-map
 //  - image-file-name is the path to the reference color image
-//  - image-IDs are the reference view ID and neighbor view IDs used to estimate the depth-map
+//  - image-IDs are the reference view ID and neighbor view IDs used to estimate the depth-map (global ID)
 //  - camera/rotation/position matrices (row-major) is the absolute pose corresponding to the reference view
 //  - depth-map: the pixels' depth
 //  - normal-map (optional): the 3D point normal in camera space; same resolution as the depth-map
