@@ -24,7 +24,7 @@ DensifyPointCloud scene_0000.mvs --dense-config-file Densify.ini
 ............
 DensifyPointCloud scene_000n.mvs --dense-config-file Densify.ini
 
-This script hepls to automate the process of calling DensifyPointCloud/ReconstructMesh on all sub-scenes.
+This script helps to automate the process of calling DensifyPointCloud/ReconstructMesh on all sub-scenes.
 
 usage: MvsScalablePipeline.py openMVS_module input_scene <options>
 
@@ -138,10 +138,13 @@ PARSER.add_argument('passthrough', nargs=argparse.REMAINDER, help="Option to be 
 
 PARSER.parse_args(namespace=CONF)  # store args in the ConfContainer
 
+suffix = os.path.basename(CONF.input_scene).replace('scene_XXXX','')
+CONF.input_scene = CONF.input_scene.replace('_dense','').replace('_mesh','').replace('_refine','').replace('_texture','')
+
 # Absolute path for input directory
 if len(CONF.input_scene) < 10 or CONF.input_scene[-9:] != '_XXXX.mvs':
-    sys.exit("%s: incalid scene name" % CONF.input_scene)
-CONF.input_scene = os.path.abspath(CONF.input_scene[:-9]+'_{counter:04d}.mvs')
+    sys.exit("%s: invalid scene name" % CONF.input_scene)
+CONF.input_scene = os.path.abspath(CONF.input_scene[:-9]+'_{counter:04d}'+suffix)
 
 for module_name in CONF.openMVS_modules.split(','):
     printout("# Module {} start #".format(module_name), colour=RED, effect=BOLD)
