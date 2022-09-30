@@ -35,6 +35,7 @@ import os
 import subprocess
 import sys
 import argparse
+import glob
 
 DEBUG = False
 
@@ -130,7 +131,7 @@ PARSER = argparse.ArgumentParser(
     description="Scalable MVS reconstruction with these steps: \r\n" +
     "MvsScalablePipeline.py openMVS_module input_scene <options>\r\n"
     )
-PARSER.add_argument('openMVS_modules',
+PARSER.add_argument('openMVS_module',
                     help="the OpenMVS module to use: DensifyPointCloud, ReconstructMesh, etc.")
 PARSER.add_argument('input_scene',
                     help="the scene name reg to process: scene_XXXX.mvs")
@@ -144,31 +145,36 @@ CONF.input_scene = CONF.input_scene.replace('_dense','').replace('_mesh','').rep
 # Absolute path for input directory
 if len(CONF.input_scene) < 10 or CONF.input_scene[-9:] != '_XXXX.mvs':
     sys.exit("%s: invalid scene name" % CONF.input_scene)
-CONF.input_scene = os.path.abspath(CONF.input_scene[:-9]+'_{counter:04d}'+suffix)
 
-for module_name in CONF.openMVS_modules.split(','):
-    printout("# Module {} start #".format(module_name), colour=RED, effect=BOLD)
-    i = 0
-    while os.path.exists(CONF.input_scene.format(counter=i)):
-        scene_name = CONF.input_scene.format(counter=i)
-        printout("# Process: %s" % os.path.basename(scene_name), colour=GREEN, effect=NO_EFFECT)
+match CONF.openMVS_module:
+  case 'ReconstructMesh':
+    moduleSuffix = '_mesh.mvs'
+  case 'RefineMesh':
+    moduleSuffix = '_refine.mvs'
+  case 'TextureMesh':
+    moduleSuffix = '_texture.mvs'
+  case _:
+    moduleSuffix = '_dense.mvs'
 
-        # create a commandline for the current step
-        cmdline = [os.path.join(OPENMVS_BIN, module_name), scene_name] + CONF.passthrough
-        print('Cmd: ' + ' '.join(cmdline))
+printout("# Module {} start #".format(CONF.openMVS_module), colour=RED, effect=BOLD)
+for scene_name in glob.glob(os.path.abspath(os.path.join(os.path.dirname(CONF.input_scene), 'scene_[0-9][0-9][0-9][0-9]'+suffix))):
+  if os.path.exists(os.path.splitext(scene_name)[0] + moduleSuffix) == False:
+    printout("# Process: %s" % os.path.basename(scene_name), colour=GREEN, effect=NO_EFFECT)
 
-        if not DEBUG:
-            # Launch the current step
-            try:
-                pStep = subprocess.Popen(cmdline)
-                pStep.wait()
-                if pStep.returncode != 0:
-                    printout("# Warning: step failed", colour=RED, effect=BOLD)
-                    break
-            except KeyboardInterrupt:
-                sys.exit('\r\nProcess canceled by user, all files remains')
-        else:
-            print('\t'.join(cmdline))
+    # create a commandline for the current step
+    cmdline = [os.path.join(OPENMVS_BIN, CONF.openMVS_module), scene_name] + CONF.passthrough
+    print('Cmd: ' + ' '.join(cmdline))
 
-        i += 1
-    printout("# Module {} end #".format(module_name), colour=RED, effect=BOLD)
+    if not DEBUG:
+        # Launch the current step
+        try:
+            pStep = subprocess.Popen(cmdline)
+            pStep.wait()
+            if pStep.returncode != 0:
+                printout("# Warning: step failed", colour=RED, effect=BOLD)
+        except KeyboardInterrupt:
+            sys.exit('\r\nProcess canceled by user, all files remains')
+    else:
+        print('\t'.join(cmdline))
+
+printout("# Module {} end #".format(CONF.openMVS_module), colour=RED, effect=BOLD)
