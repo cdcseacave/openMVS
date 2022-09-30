@@ -348,11 +348,11 @@ __device__ float ScorePlane(const ImagePixels refImage, const PatchMatchCUDA::Ca
 
 	// apply depth prior weight based on patch textureless
 	if (lowDepth > 0) {
+		const float depth(plane.w());
+		const float deltaDepth(MIN((abs(lowDepth-depth) / lowDepth), 0.5f));
 		constexpr float smoothSigmaDepth(-1.f / (1.f * 0.02f));
-		const float depth = plane.w();
-		const float deltaDepth = MIN((abs(lowDepth - depth) / lowDepth), 0.5f);
-		const float factorDeltaDepth = exp(varRef * smoothSigmaDepth);
-		ncc += deltaDepth * factorDeltaDepth;
+		const float factorDeltaDepth(exp(varRef * smoothSigmaDepth));
+		ncc = (1.f-factorDeltaDepth)*ncc + factorDeltaDepth*deltaDepth;
 	}
 	return max(0.f, min(2.f, ncc));
 }
