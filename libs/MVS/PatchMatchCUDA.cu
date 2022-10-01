@@ -350,7 +350,7 @@ __device__ float ScorePlane(const ImagePixels refImage, const PatchMatchCUDA::Ca
 	if (lowDepth > 0) {
 		const float depth(plane.w());
 		const float deltaDepth(MIN((abs(lowDepth-depth) / lowDepth), 0.5f));
-		constexpr float smoothSigmaDepth(-1.f / (1.f * 0.02f));
+		constexpr float smoothSigmaDepth(-1.f / (1.f * 0.02f)); // 0.12: patch texture variance below 0.02 (0.12^2) is considered texture-less
 		const float factorDeltaDepth(exp(varRef * smoothSigmaDepth));
 		ncc = (1.f-factorDeltaDepth)*ncc + factorDeltaDepth*deltaDepth;
 	}
