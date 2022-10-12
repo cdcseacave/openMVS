@@ -943,7 +943,9 @@ bool MeshTexture::FaceViewSelection(float fOutlierThreshold, float fRatioDataSmo
 					TRWSInference& inference = inferences[components[f]];
 					if (inference.IsEmpty())
 						continue;
-					D.MemsetValue(MaxEnergy);
+					// invisible faces are given a data cost 3 times the edge costs
+					// 3 as each face can have at most 3 edges
+					D.MemsetValue(MaxEnergy * 3);
 					const FaceDataArr& faceDatas = facesDatas[f];
 					FOREACHPTR(pFaceData, faceDatas) {
 						const FaceData& faceData = *pFaceData;
