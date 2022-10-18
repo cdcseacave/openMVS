@@ -108,6 +108,13 @@ if(OpenMVS_USE_CUDA)
 			message("Working around windows build failure with visual studio. Visual studio 16.10 introduced a compiler bug with compilng CUDA code with C++14. Set the cuda standard to 17 as a workaround.")
 			set(CMAKE_CUDA_STANDARD 17)
 		endif()
+		EXECUTE_PROCESS(COMMAND "${CMAKE_CUDA_COMPILER}" --list-gpu-arch 
+				OUTPUT_VARIABLE LIST_GPU_ARCH 
+				ERROR_QUIET)
+		if(NOT LIST_GPU_ARCH AND OpenMVS_MAX_CUDA_COMPATIBILITY)
+			message(WARNING "Cannot compile for max CUDA compatibility, nvcc does not support --list-gpu-arch")
+			set(OpenMVS_MAX_CUDA_COMPATIBILITY NO)
+		endif()
 		if(NOT OpenMVS_MAX_CUDA_COMPATIBILITY)
 			if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
 				SET(CMAKE_CUDA_ARCHITECTURES 75)
@@ -117,9 +124,6 @@ if(OpenMVS_USE_CUDA)
 			# https://arnon.dk/matching-sm-architectures-arch-and-gencode-for-various-nvidia-cards/
 
 			# Extract list of arch and gencodes
-			EXECUTE_PROCESS(COMMAND "${CMAKE_CUDA_COMPILER}" --list-gpu-arch 
-				OUTPUT_VARIABLE LIST_GPU_ARCH 
-				ERROR_QUIET)
 			STRING(REPLACE "\r" "" LIST_GPU_ARCH ${LIST_GPU_ARCH})
 			STRING(REPLACE "\n" ";" LIST_GPU_ARCH ${LIST_GPU_ARCH})
 
