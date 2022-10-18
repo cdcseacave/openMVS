@@ -1622,8 +1622,11 @@ ProcessingStatus::ProcessingStatus(DenseDepthMapData* data, const size_t startId
 	this->idxImage = startIdx;
 	this->toIdxImage = endIdx;
 
+#ifdef _USE_CUDA
 	this->pmCUDA = new PatchMatchCUDA(deviceId);
 	this->pmCUDA->Init(geomConsistency);
+#endif
+
 }
 
 ProcessingStatus::ProcessingStatus(DenseDepthMapData* data, const size_t startIdx, const size_t endIdx) : sem(1)
@@ -1632,14 +1635,17 @@ ProcessingStatus::ProcessingStatus(DenseDepthMapData* data, const size_t startId
 	this->idxImage = startIdx;
 	this->toIdxImage = endIdx;
 
+#ifdef _USE_CUDA
 	this->pmCUDA = nullptr;
+#endif
+
 }
 
 
 ProcessingPipeline::ProcessingPipeline(DenseDepthMapData* data, const size_t startIdx, const size_t endIdx, const int deviceId, const bool geomConsistency) :
 	status(data, startIdx, endIdx, deviceId, geomConsistency), threads(2)
 {
-	
+
 }
 
 ProcessingPipeline::ProcessingPipeline(DenseDepthMapData* data, const size_t startIdx, const size_t endIdx) :
@@ -1720,9 +1726,9 @@ bool Scene::DenseReconstruction(int nFusionMode, bool bCrop2ROI, float fBorderRO
 bool Scene::RunSingleThreaded(DenseDepthMapData& data, int gpuId = DesiredDevice::CPU) {
 
 	VERBOSE("Running single threaded on CPU");
-	
+
 	GET_LOGCONSOLE().Pause();
-	
+
 	auto status = gpuId != DesiredDevice::CPU ?
 			new ProcessingStatus(&data, 0, this->images.size(), gpuId, false) :
 			new ProcessingStatus(&data, 0, this->images.size());
@@ -1733,7 +1739,7 @@ bool Scene::RunSingleThreaded(DenseDepthMapData& data, int gpuId = DesiredDevice
 
 	// single-thread execution
 	DenseReconstructionEstimate(status);
-	
+
 	GET_LOGCONSOLE().Play();
 	if (!status->events.IsEmpty()) {
 		VERBOSE("Events queue is not empty, exiting");
@@ -1745,7 +1751,7 @@ bool Scene::RunSingleThreaded(DenseDepthMapData& data, int gpuId = DesiredDevice
 }
 
 bool Scene::RunMultiThreaded(DenseDepthMapData& data, int gpuId = DesiredDevice::CPU) {
-	
+
 	switch (gpuId) {
 		case DesiredDevice::CPU:
 			VERBOSE("Running MT on CPU");
@@ -1768,7 +1774,7 @@ bool Scene::RunMultiThreaded(DenseDepthMapData& data, int gpuId = DesiredDevice:
 	auto pipeline = (gpuId == DesiredDevice::CPU) ?
 						new ProcessingPipeline(&data, 0, this->images.size() - 1) :
 						new ProcessingPipeline(&data, 0, this->images.size() -1, gpuId, false);
-								
+
 	pipeline->status.progress = new Util::Progress("Estimated depth-maps", data.images.GetSize());
 
 	ASSERT(pipeline->status.events.IsEmpty());
@@ -1797,9 +1803,9 @@ bool Scene::RunMultiThreaded(DenseDepthMapData& data, int gpuId = DesiredDevice:
 
 bool Scene::RunMultiGPU(DenseDepthMapData& data) {
 	VERBOSE("Using multiple GPUs");
-	
+
 	GET_LOGCONSOLE().Pause();
-	
+
 	const size_t midPoint = data.images.size() / 2;
 
 	int device_count = 0;
@@ -2008,7 +2014,7 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 			this->RunMultiGPU(data) :
 			this->RunMultiThreaded(data, desiredDeviceID)) :
 			this->RunMultiThreaded(data)) :
-		this->RunSingleThreaded(data, useCuda ? desiredDeviceID : -1);	
+		this->RunSingleThreaded(data, useCuda ? desiredDeviceID : -1);
 
 	if (!res) {
 		VERBOSE("An error occurred during depth maps estimation");
@@ -2027,10 +2033,10 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 	}
 
 #endif
-	
+
 #ifdef _USE_CUDA
 
-	auto status = OPTDENSE::nEstimationGeometricIters ? 
+	auto status = OPTDENSE::nEstimationGeometricIters ?
 				new ProcessingStatus(&data, 0, images.size() - 1, CUDA::desiredDeviceID, true) :
 				new ProcessingStatus(&data, 0, images.size() - 1);
 
@@ -2139,7 +2145,7 @@ void Scene::DenseReconstructionEstimate(void* pData)
 		case EVT_PROCESSIMAGE: {
 			const EVTProcessImage& evtImage = *((EVTProcessImage*)(Event*)evt);
 			DEBUG_ULTIMATE("%lld;%d;%d;EVT_PROCESSIMAGE;0", Timer::GetSysTime(), __THREAD__, evtImage.idxImage);
-				
+
 			if (evtImage.idxImage > status->toIdxImage) {
 				if (nMaxThreads > 1) {
 					// close working threads
@@ -2206,14 +2212,14 @@ void Scene::DenseReconstructionEstimate(void* pData)
 #ifdef _USE_CUDA
 				if (status->pmCUDA)
 					status->pmCUDA->EstimateDepthMap(status->data->depthMaps.arrDepthData[status->data->images[evtImage.idxImage]]);
-				else				
+				else
 					status->data->depthMaps.EstimateDepthMap(status->data->images[evtImage.idxImage], status->data->nEstimationGeometricIter);
-				
+
 #else
 				status->data->depthMaps.EstimateDepthMap(status->data->images[evtImage.idxImage], status->data->nEstimationGeometricIter);
 #endif // _USE_CUDA
 
-				
+
 			} else {
 				// extract disparity-maps using SGM algorithm
 				if (status->data->nFusionMode == -1) {
@@ -2267,7 +2273,7 @@ void Scene::DenseReconstructionEstimate(void* pData)
 					DEBUG_ULTIMATE("Depth-map %3u filtered: gap interpolation (%s)", depthData.GetView().GetID(), TD_TIMER_GET_FMT().c_str());
 				}
 			}
-					
+
 			// save depth-map
 			status->events.AddEventFirst(new EVTSaveDepthMap(evtImage.idxImage));
 
@@ -2279,7 +2285,7 @@ void Scene::DenseReconstructionEstimate(void* pData)
 			DEBUG_ULTIMATE("%lld;%d;%d;EVT_SAVEDEPTHMAP;0", Timer::GetSysTime(), __THREAD__, evtImage.idxImage);
 
 			const Timer::SysType start(Timer::GetSysTime());
-			
+
 			const IIndex idx = status->data->images[evtImage.idxImage];
 			DepthData& depthData(status->data->depthMaps.arrDepthData[idx]);
 			#if TD_VERBOSE != TD_VERBOSE_OFF
