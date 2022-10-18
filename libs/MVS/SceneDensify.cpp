@@ -1801,6 +1801,8 @@ bool Scene::RunMultiThreaded(DenseDepthMapData& data, int gpuId = DesiredDevice:
 	return true;
 }
 
+#ifdef _USE_CUDA
+
 bool Scene::RunMultiGPU(DenseDepthMapData& data) {
 	VERBOSE("Using multiple GPUs");
 
@@ -1874,6 +1876,8 @@ bool Scene::RunMultiGPU(DenseDepthMapData& data) {
 
 	return true;
 }
+
+#endif
 
 // do first half of dense reconstruction: depth map computation
 // results are saved to "data"
