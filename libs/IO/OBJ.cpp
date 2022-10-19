@@ -61,7 +61,8 @@ bool ObjModel::MaterialLib::Save(const String& prefix, bool texLossless) const
 	for (int_t i = 0; i < (int_t)materials.size(); ++i) {
 		const Material& mat = materials[i];
 		// save material description
-		out << "newmtl " << mat.name << "\n"
+		std::stringstream ss;
+		ss << "newmtl " << mat.name << "\n"
 			<< "Ka 1.000000 1.000000 1.000000" << "\n"
 			<< "Kd " << mat.Kd.r << " " << mat.Kd.g << " " << mat.Kd.b << "\n"
 			<< "Ks 0.000000 0.000000 0.000000" << "\n"
@@ -69,11 +70,14 @@ bool ObjModel::MaterialLib::Save(const String& prefix, bool texLossless) const
 			<< "illum 1" << "\n"
 			<< "Ns 1.000000" << "\n";
 		// save material maps
-		if (mat.diffuse_map.empty())
+		if (mat.diffuse_map.empty()) {
+			out << ss.str();
 			continue;
+		}
 		if (mat.diffuse_name.IsEmpty())
 			const_cast<String&>(mat.diffuse_name) = name+"_"+mat.name+"_map_Kd."+(texLossless?"png":"jpg");
-		out << "map_Kd " << mat.diffuse_name << "\n";
+		ss << "map_Kd " << mat.diffuse_name << "\n";
+		out << ss.str();
 		const bool bRet(mat.diffuse_map.Save(pathName+mat.diffuse_name));
 		#ifdef OBJ_USE_OPENMP
 		#pragma omp critical
