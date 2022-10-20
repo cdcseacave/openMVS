@@ -1894,8 +1894,9 @@ void MeshTexture::GenerateTexture(bool bGlobalSeamLeveling, bool bLocalSeamLevel
 				const Image& imageData = images[texturePatch.label];
 				cv::Mat patch(imageData.image(texturePatch.rect));
 				if (rect.width != texturePatch.rect.width) {
-					// flip patch and texture-coordinates
+					// rotate patch, flip texture-coordinates
 					patch = patch.t();
+					cv::flip(patch, patch, 0);
 					x = 1; y = 0;
 				}
 				patch.copyTo(textureDiffuse(rect));
@@ -1907,6 +1908,8 @@ void MeshTexture::GenerateTexture(bool bGlobalSeamLeveling, bool bLocalSeamLevel
 				TexCoord* texcoords = faceTexcoords.Begin()+idxFace*3;
 				for (int v=0; v<3; ++v) {
 					TexCoord& texcoord = texcoords[v];
+					// account for patch flipping
+					if (y == 0) texcoord[y] = rect.height - texcoord[y];
 					// translate, normalize and flip Y axis
 					texcoord = TexCoord(
 						(texcoord[x]+offset.x)*invNorm,
