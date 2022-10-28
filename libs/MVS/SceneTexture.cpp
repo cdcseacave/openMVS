@@ -517,6 +517,7 @@ bool MeshTexture::ListCameraFaces(FaceDataViewArr& facesDatas, float fOutlierThr
 			#pragma omp flush (bAbort)
 			continue;
 			#else
+            octree.Release();
 			return false;
 			#endif
 		}
@@ -611,8 +612,10 @@ bool MeshTexture::ListCameraFaces(FaceDataViewArr& facesDatas, float fOutlierThr
 		++progress;
 	}
 	#ifdef TEXOPT_USE_OPENMP
-	if (bAbort)
+	if (bAbort) {
+        octree.Release();
 		return false;
+	}
 	#endif
 	progress.close();
 
@@ -624,6 +627,7 @@ bool MeshTexture::ListCameraFaces(FaceDataViewArr& facesDatas, float fOutlierThr
 			FaceOutlierDetection(*pFaceDatas, fOutlierThreshold);
 	}
 	#endif
+    octree.Release();
 	return true;
 }
 

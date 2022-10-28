@@ -108,6 +108,7 @@ public:
 
 public:
 	inline TOctree() {}
+	inline ~TOctree() { Release(); }
 	template <typename Functor>
 	inline TOctree(const ITEMARR_TYPE&, Functor split);
 	template <typename Functor>

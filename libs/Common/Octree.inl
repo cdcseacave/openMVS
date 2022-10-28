@@ -25,7 +25,11 @@ inline TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE>::CELL_TYPE::CELL_TYPE()
 template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE>
 inline TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE>::CELL_TYPE::~CELL_TYPE()
 {
-	delete[] m_child;
+    if (m_child != NULL)
+    {
+        delete[] m_child;
+        m_child = NULL;
+    }
 } // destructor
 /*----------------------------------------------------------------*/
 
@@ -33,8 +37,11 @@ inline TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE>::CELL_TYPE::~CELL_TYPE()
 template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE>
 inline void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE>::CELL_TYPE::Release()
 {
-	delete[] m_child;
-	m_child = NULL;
+    if (m_child != NULL)
+    {
+        delete[] m_child;
+        m_child = NULL;
+    }
 } // Release
 // swap the two octrees
 template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE>
@@ -167,6 +174,8 @@ void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE>::_Insert(CELL_TYPE& cell, const P
 	// if this child cell needs to be divided further
 	if (bForceSplit || insertData.split(size, radius)) {
 		// init node and proceed recursively
+		cell.Release();
+
 		cell.m_child = new CELL_TYPE[CELL_TYPE::numChildren];
 		cell.Node().center = center;
 		struct ChildData {

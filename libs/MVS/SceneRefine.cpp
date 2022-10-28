@@ -424,6 +424,7 @@ void MeshRefine::ListCameraFaces()
 			Mesh::FacesInserter inserter(arrCameraFaces[ID]);
 			octree.Traverse(frustum, inserter);
 		}
+        octree.Release();
 	}
 
 	// project mesh to each camera plane
