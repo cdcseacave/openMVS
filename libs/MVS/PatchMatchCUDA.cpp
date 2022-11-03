@@ -71,11 +71,13 @@ void PatchMatchCUDA::Release()
 {
 	if (images.empty())
 		return;
+
 	FOREACH(i, cudaImageArrays) {
 		cudaDestroyTextureObject(textureImages[i]);
 		cudaFreeArray(cudaImageArrays[i]);
 	}
 	cudaImageArrays.clear();
+
 	if (params.bGeomConsistency) {
 		FOREACH(i, cudaDepthArrays) {
 			cudaDestroyTextureObject(textureDepths[i]);
@@ -83,8 +85,10 @@ void PatchMatchCUDA::Release()
 		}
 		cudaDepthArrays.clear();
 	}
+
 	images.clear();
 	cameras.clear();
+
 	ReleaseCUDA();
 }
 
@@ -98,6 +102,7 @@ void PatchMatchCUDA::ReleaseCUDA()
 	cudaFree(cudaSelectedViews);
 	if (params.bGeomConsistency)
 		cudaFree(cudaTextureDepths);
+
 	delete[] depthNormalEstimates;
 }
 
@@ -261,7 +266,6 @@ void PatchMatchCUDA::EstimateDepthMap(DepthData& depthData)
 			}
 		}
 
-
 		for (IIndex i = 0; i < numImages; ++i)
 		{
 			const DepthData::ViewData& view = depthData.images[i];
@@ -312,7 +316,6 @@ void PatchMatchCUDA::EstimateDepthMap(DepthData& depthData)
 			images[i] = std::move(image);
 			cameras[i] = std::move(camera);
 		}
-
 		if (params.bGeomConsistency && cudaDepthArrays.size() > numImages - 1) {
 			for (IIndex i = numImages; i < prevNumImages; ++i) {
 				// free image CUDA memory

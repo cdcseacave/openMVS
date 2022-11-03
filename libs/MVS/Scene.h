@@ -69,6 +69,7 @@ public:
 	OBB3f obb; // optional region-of-interest; oriented bounding box containing the entire scene
 
 	unsigned nCalibratedImages; // number of valid images
+
 	unsigned nMaxThreads; // maximum number of threads used to distribute the work load
 
 public:

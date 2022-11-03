@@ -93,7 +93,6 @@ struct MVS_API DenseDepthMapData {
 	IIndexArr images;
 	IIndexArr neighborsMap;
 	DepthMapsData depthMaps;
-
 	int nEstimationGeometricIter;
 	int nFusionMode;
 	STEREO::SemiGlobalMatcher sgm;

@@ -2231,7 +2231,6 @@ void* DenseReconstructionFilterTmp(void* arg)
 void Scene::DenseReconstructionFilter(void* pData)
 {
 	const auto status = static_cast<ProcessingStatus*>(pData);
-
 	CAutoPtr<Event> evt;
 	while ((evt=status->events.GetEvent(0)) != NULL) {
 		switch (evt->GetID()) {
