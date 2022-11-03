@@ -1618,10 +1618,10 @@ ProcessingStatus::ProcessingStatus(DenseDepthMapData* data, const size_t startId
 	this->data = data;
 	this->idxImage = startIdx;
 	this->toIdxImage = endIdx;
-#ifdef _USE_CUDA
+	#ifdef _USE_CUDA
 	this->pmCUDA = new PatchMatchCUDA(deviceId);
 	this->pmCUDA->Init(geomConsistency);
-#endif
+	#endif
 }
 
 ProcessingStatus::ProcessingStatus(DenseDepthMapData* data, const size_t startIdx, const size_t endIdx) : sem(1)
@@ -1629,9 +1629,9 @@ ProcessingStatus::ProcessingStatus(DenseDepthMapData* data, const size_t startId
 	this->data = data;
 	this->idxImage = startIdx;
 	this->toIdxImage = endIdx;
-#ifdef _USE_CUDA
+	#ifdef _USE_CUDA
 	this->pmCUDA = nullptr;
-#endif
+	#endif
 }
 
 ProcessingPipeline::ProcessingPipeline(DenseDepthMapData* data, const size_t startIdx, const size_t endIdx, const int deviceId, const bool geomConsistency) :
@@ -1833,7 +1833,7 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 		SampleMeshWithVisibility();
 		mesh.Release();
 	}
-	
+
 	// compute point-cloud from the existing mesh
 	if (IsEmpty() && !ImagesHaveNeighbors()) {
 		VERBOSE("warning: empty point-cloud, rough neighbor views selection based on image pairs baseline");
@@ -1849,30 +1849,30 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 			TD_TIMER_START();
 			data.images.Reserve(images.GetSize());
 			imagesMap.Resize(images.GetSize());
-#ifdef DENSE_USE_OPENMP
+			#ifdef DENSE_USE_OPENMP
 			bool bAbort(false);
-#pragma omp parallel for shared(data, bAbort)
+			#pragma omp parallel for shared(data, bAbort)
 			for (int_t ID = 0; ID < (int_t)images.GetSize(); ++ID) {
-#pragma omp flush (bAbort)
+				#pragma omp flush (bAbort)
 				if (bAbort)
 					continue;
 				const IIndex idxImage((IIndex)ID);
-#else
+			#else
 			FOREACH(idxImage, images) {
-#endif
+			#endif
 				// skip invalid, uncalibrated or discarded images
 				Image& imageData = images[idxImage];
 				if (!imageData.IsValid()) {
-#ifdef DENSE_USE_OPENMP
-#pragma omp critical
-#endif
+					#ifdef DENSE_USE_OPENMP
+					#pragma omp critical
+					#endif
 					imagesMap[idxImage] = NO_ID;
 					continue;
 				}
 				// map image index
-#ifdef DENSE_USE_OPENMP
-#pragma omp critical
-#endif
+				#ifdef DENSE_USE_OPENMP
+				#pragma omp critical
+				#endif
 				{
 					imagesMap[idxImage] = data.images.GetSize();
 					data.images.Insert(idxImage);
@@ -1881,13 +1881,13 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 				unsigned nResolutionLevel(OPTDENSE::nResolutionLevel);
 				const unsigned nMaxResolution(imageData.RecomputeMaxResolution(nResolutionLevel, OPTDENSE::nMinResolution, OPTDENSE::nMaxResolution));
 				if (!imageData.ReloadImage(nMaxResolution)) {
-#ifdef DENSE_USE_OPENMP
+					#ifdef DENSE_USE_OPENMP
 					bAbort = true;
-#pragma omp flush (bAbort)
+					#pragma omp flush (bAbort)
 					continue;
-#else
+					#else
 					return false;
-#endif
+					#endif
 				}
 				imageData.UpdateCamera(platforms);
 				// print image camera
@@ -1895,11 +1895,11 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 				DEBUG_LEVEL(3, "R%d = \n%s", idxImage, cvMat2String(imageData.camera.R).c_str());
 				DEBUG_LEVEL(3, "C%d = \n%s", idxImage, cvMat2String(imageData.camera.C).c_str());
 			}
-#ifdef DENSE_USE_OPENMP
+			#ifdef DENSE_USE_OPENMP
 			if (bAbort || data.images.IsEmpty()) {
-#else
+			#else
 			if (data.images.IsEmpty()) {
-#endif
+			#endif
 				VERBOSE("error: preparing images for dense reconstruction failed (errors loading images)");
 				return false;
 			}
@@ -1911,20 +1911,20 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 			TD_TIMER_START();
 			// for each image, find all useful neighbor views
 			IIndexArr invalidIDs;
-#ifdef DENSE_USE_OPENMP
-#pragma omp parallel for shared(data, invalidIDs)
+			#ifdef DENSE_USE_OPENMP
+			#pragma omp parallel for shared(data, invalidIDs)
 			for (int_t ID = 0; ID < (int_t)data.images.GetSize(); ++ID) {
 				const IIndex idx((IIndex)ID);
-#else
+			#else
 			FOREACH(idx, data.images) {
-#endif
+			#endif
 				const IIndex idxImage(data.images[idx]);
 				ASSERT(imagesMap[idxImage] != NO_ID);
 				DepthData& depthData(data.depthMaps.arrDepthData[idxImage]);
 				if (!data.depthMaps.SelectViews(depthData)) {
-#ifdef DENSE_USE_OPENMP
-#pragma omp critical
-#endif
+					#ifdef DENSE_USE_OPENMP
+					#pragma omp critical
+					#endif
 					invalidIDs.InsertSort(idx);
 				}
 			}
@@ -1948,7 +1948,7 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 	if (OPTDENSE::nEstimationGeometricIters && data.nFusionMode >= 0)
 		OPTDENSE::nOptimize = 0;
 	const auto isMultiThreaded = nMaxThreads > 1;
-#ifdef _USE_CUDA
+	#ifdef _USE_CUDA
 	const auto useCuda = data.nFusionMode >= 0;
 	const auto desiredDeviceID = CUDA::desiredDeviceID;
 	int device_count;
@@ -1967,7 +1967,7 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 		VERBOSE("An error occurred during depth maps estimation");
 		return false;
 	}
-#else
+	#else
 	const auto res = isMultiThreaded ?
 		this->RunMultiThreaded(data) :
 		this->RunSingleThreaded(data);
@@ -1975,15 +1975,15 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 		VERBOSE("An error occurred during depth maps estimation");
 		return false;
 	}
-#endif
+	#endif
 
-#ifdef _USE_CUDA
+	#ifdef _USE_CUDA
 	auto status = OPTDENSE::nEstimationGeometricIters ?
 				new ProcessingStatus(&data, 0, images.size() - 1, CUDA::desiredDeviceID, true) :
 				new ProcessingStatus(&data, 0, images.size() - 1);
-#else
+	#else
 	auto status = new ProcessingStatus(&data, 0, images.size() - 1);
-#endif // _USE_CUDA
+	#endif // _USE_CUDA
 
 	if (data.nFusionMode >= 0) {
 		while (++data.nEstimationGeometricIter < (int)OPTDENSE::nEstimationGeometricIters) {
