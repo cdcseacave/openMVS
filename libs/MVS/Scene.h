@@ -1,7 +1,7 @@
 /*
 * Scene.h
 *
-* Copyright (c) 2014-2015 SEACAVE
+* Copyright (c) 2014-2022 SEACAVE
 *
 * Author(s):
 *
@@ -92,6 +92,7 @@ public:
 	bool Load(const String& fileName, bool bImport=false);
 	bool Save(const String& fileName, ARCHIVE_TYPE type=ARCHIVE_DEFAULT) const;
 
+	bool EstimateNeighborViewsPointCloud(unsigned maxResolution=16);
 	void SampleMeshWithVisibility(unsigned maxResolution=320);
 	bool ExportMeshToDepthMaps(const String& baseName);
 
@@ -113,6 +114,8 @@ public:
 	bool Center(const Point3* pCenter = NULL);
 	bool Scale(const REAL* pScale = NULL);
 	bool ScaleImages(unsigned nMaxResolution = 0, REAL scale = 0, const String& folderName = String());
+	void Transform(const Matrix3x3& rotation, const Point3& translation, REAL scale);
+	bool AlignTo(const Scene&);
 
 	// Estimate and set region-of-interest
 	bool EstimateROI(int nEstimateROI=0, float scale=1.f);

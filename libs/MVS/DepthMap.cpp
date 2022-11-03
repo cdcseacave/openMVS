@@ -82,7 +82,7 @@ MDEFVAR_OPTDENSE_uint32(nNumViews, "Num Views", "Number of views used for depth-
 MDEFVAR_OPTDENSE_uint32(nPointInsideROI, "Point Inside ROI", "consider a point shared only if inside ROI when estimating the neighbor views (0 - ignore ROI, 1 - weight more ROI points, 2 - consider only ROI points)", "1")
 MDEFVAR_OPTDENSE_bool(bFilterAdjust, "Filter Adjust", "adjust depth estimates during filtering", "1")
 MDEFVAR_OPTDENSE_bool(bAddCorners, "Add Corners", "add support points at image corners with nearest neighbor disparities", "0")
-MDEFVAR_OPTDENSE_bool(bInitSparse, "Init Sparse", "init depth-map only with the sparse points (no interpolation)", "0")
+MDEFVAR_OPTDENSE_bool(bInitSparse, "Init Sparse", "init depth-map only with the sparse points (no interpolation)", "1")
 MDEFVAR_OPTDENSE_float(fViewMinScore, "View Min Score", "Min score to consider a neighbor images (0 - disabled)", "2.0")
 MDEFVAR_OPTDENSE_float(fViewMinScoreRatio, "View Min Score Ratio", "Min score ratio to consider a neighbor images", "0.03")
 MDEFVAR_OPTDENSE_float(fMinArea, "Min Area", "Min shared area for accepting the depth triangulation", "0.05")
@@ -1820,6 +1820,7 @@ bool MVS::ExportPointCloud(const String& fileName, const Image& imageData, const
 } // ExportPointCloud
 /*----------------------------------------------------------------*/
 
+//  - IDs are the reference view ID and neighbor view IDs used to estimate the depth-map (global ID)
 bool MVS::ExportDepthDataRaw(const String& fileName, const String& imageFileName,
 	const IIndexArr& IDs, const cv::Size& imageSize,
 	const KMatrix& K, const RMatrix& R, const CMatrix& C,

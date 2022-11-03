@@ -33,6 +33,7 @@
 #include "Scene.h"
 #define _USE_OPENCV
 #include "Interface.h"
+#include "../Math/SimilarityTransform.h"
 
 using namespace MVS;
 
@@ -723,6 +724,62 @@ bool Scene::ExportMeshToDepthMaps(const String& baseName)
 /*----------------------------------------------------------------*/
 
 
+// create a virtual point-cloud to be used to initialize the neighbor view
+// from image pair points at the intersection of the viewing directions
+bool Scene::EstimateNeighborViewsPointCloud(unsigned maxResolution)
+{
+	constexpr Depth minPercentDepthPerturb(0.3f);
+	constexpr Depth maxPercentDepthPerturb(1.3f);
+	const auto ProjectGridToImage = [&](IIndex idI, IIndex idJ, Depth depth) {
+		const Depth minDepthPerturb(depth * minPercentDepthPerturb);
+		const Depth maxDepthPerturb(depth * maxPercentDepthPerturb);
+		const Image& imageData = images[idI];
+		const Image& imageData2 = images[idJ];
+		const float stepW((float)imageData.width / maxResolution);
+		const float stepH((float)imageData.height / maxResolution);
+		for (unsigned r = 0; r < maxResolution; ++r) {
+			for (unsigned c = 0; c < maxResolution; ++c) {
+				const Point2f x(c*stepW + stepW/2, r*stepH + stepH/2);
+				const Depth depthPerturb(randomRange(minDepthPerturb, maxDepthPerturb));
+				const Point3 X(imageData.camera.TransformPointI2W(Point3(x.x, x.y, depthPerturb)));
+				const Point3 X2(imageData2.camera.TransformPointW2C(X));
+				if (X2.z < 0)
+					continue;
+				const Point2f x2(imageData2.camera.TransformPointC2I(X2));
+				if (!Image8U::isInside(x2, imageData2.GetSize()))
+					continue;
+				pointcloud.points.emplace_back(X);
+				pointcloud.pointViews.emplace_back(idI < idJ ? PointCloud::ViewArr{idI, idJ} : PointCloud::ViewArr{idJ, idI});
+			}
+		}
+	};
+	pointcloud.Release();
+	FOREACH(i, images) {
+		const Image& imageData = images[i];
+		if (!imageData.IsValid())
+			continue;
+		FOREACH(j, images) {
+			if (i == j)
+				continue;
+			const Image& imageData2 = images[j];
+			Point3 X;
+			TriangulatePoint3D(
+				imageData.camera.K, imageData2.camera.K,
+				imageData.camera.R, imageData2.camera.R,
+				imageData.camera.C, imageData2.camera.C,
+				Point2::ZERO, Point2::ZERO, X);
+			const Depth depth((Depth)imageData.camera.PointDepth(X));
+			const Depth depth2((Depth)imageData2.camera.PointDepth(X));
+			if (depth <= 0 || depth2 <= 0)
+				continue;
+			ProjectGridToImage(i, j, depth);
+			ProjectGridToImage(j, i, depth2);
+		}
+	}
+	return true;
+} // EstimateNeighborViewsPointCloud
+/*----------------------------------------------------------------*/
+
 inline float Footprint(const Camera& camera, const Point3f& X) {
 	#if 0
 	const REAL fSphereRadius(1);
@@ -870,16 +927,18 @@ bool Scene::SelectNeighborViews(uint32_t ID, IndexArr& points, unsigned nMinView
 bool Scene::FilterNeighborViews(ViewScoreArr& neighbors, float fMinArea, float fMinScale, float fMaxScale, float fMinAngle, float fMaxAngle, unsigned nMaxViews)
 {
 	// remove invalid neighbor views
+	const unsigned nMinViews(MAXF(4u, nMaxViews*3/4));
 	RFOREACH(n, neighbors) {
 		const ViewScore& neighbor = neighbors[n];
-		if (neighbor.idx.area < fMinArea ||
-			!ISINSIDE(neighbor.idx.scale, fMinScale, fMaxScale) ||
-			!ISINSIDE(neighbor.idx.angle, fMinAngle, fMaxAngle))
+		if (neighbors.size() > nMinViews &&
+			(neighbor.idx.area < fMinArea ||
+			 !ISINSIDE(neighbor.idx.scale, fMinScale, fMaxScale) ||
+			 !ISINSIDE(neighbor.idx.angle, fMinAngle, fMaxAngle)))
 			neighbors.RemoveAtMove(n);
 	}
-	if (neighbors.GetSize() > nMaxViews)
-		neighbors.Resize(nMaxViews);
-	return !neighbors.IsEmpty();
+	if (neighbors.size() > nMaxViews)
+		neighbors.resize(nMaxViews);
+	return !neighbors.empty();
 } // FilterNeighborViews
 /*----------------------------------------------------------------*/
 
@@ -1374,6 +1433,59 @@ bool Scene::ScaleImages(unsigned nMaxResolution, REAL scale, const String& folde
 	}
 	return true;
 } // ScaleImages
+
+// apply similarity transform
+void Scene::Transform(const Matrix3x3& rotation, const Point3& translation, REAL scale) {
+	const Matrix3x3 rotationScale(rotation * scale);
+	for (Platform& platform : platforms) {
+		for (Platform::Pose& pose : platform.poses) {
+			pose.R = pose.R * rotation.t();
+			pose.C = rotationScale * pose.C + translation;
+		}
+	}
+	for (Image& image : images) {
+		image.UpdateCamera(platforms);
+	}
+	FOREACH(i, pointcloud.points) {
+		pointcloud.points[i] = rotationScale * Cast<REAL>(pointcloud.points[i]) + translation;
+		if (!pointcloud.normals.empty())
+			pointcloud.normals[i] = rotation * Cast<REAL>(pointcloud.normals[i]);
+	}
+	if (obb.IsValid()) {
+		obb.Transform(Cast<float>(rotationScale));
+		obb.Translate(Cast<float>(translation));
+	}
+}
+
+// transform this scene such that it best aligns with the given scene based on the camera positions
+bool Scene::AlignTo(const Scene& scene)
+{
+	if (images.size() < 3) {
+		DEBUG("error: insufficient number of cameras to perform a similarity transform alignment");
+		return false;
+	}
+	if (images.size() != scene.images.size()) {
+		DEBUG("error: the two scenes differ in number of cameras");
+		return false;
+	}
+	CLISTDEF0(Point3) points, pointsRef;
+	FOREACH(idx, images) {
+		const Image& image = images[idx];
+		if (!image.IsValid())
+			continue;
+		const Image& imageRef = scene.images[idx];
+		if (!imageRef.IsValid())
+			continue;
+		points.emplace_back(image.camera.C);
+		pointsRef.emplace_back(imageRef.camera.C);
+	}
+	Matrix4x4 transform;
+	SimilarityTransform(points, pointsRef, transform);
+	Matrix3x3 rotation; Point3 translation; REAL scale;
+	DecomposeSimilarityTransform(transform, rotation, translation, scale);
+	Transform(rotation, translation, scale);
+	return true;
+} // AlignTo
 /*----------------------------------------------------------------*/
 
 

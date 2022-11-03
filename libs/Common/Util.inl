@@ -13,6 +13,23 @@ namespace SEACAVE {
 
 // I N L I N E /////////////////////////////////////////////////////
 
+// normalize inhomogeneous 2D point by the given camera intrinsics K
+// K is assumed to be the [3,3] triangular matrix with: fx, fy, s, cx, cy and scale 1
+template<typename TYPE1, typename TYPE2, typename TYPE3>
+inline void NormalizeProjection(const TYPE1* K, const TYPE2* x, TYPE3* n) {
+	ASSERT(ISZERO(K[3]) && ISZERO(K[6]) && ISZERO(K[7]) && ISEQUAL(K[8], TYPE1(1)));
+	n[0] = TYPE3(K[0]*x[0] + K[1]*x[1] + K[2]);
+	n[1] = TYPE3(            K[4]*x[1] + K[5]);
+} // NormalizeProjection
+// same as above, but using K inverse
+template<typename TYPE1, typename TYPE2, typename TYPE3>
+inline void NormalizeProjectionInv(const TYPE1* K, const TYPE2* x, TYPE3* n) {
+	ASSERT(ISZERO(K[3]) && ISZERO(K[6]) && ISZERO(K[7]) && ISEQUAL(K[8], TYPE1(1)));
+	n[0] = TYPE3((K[4]*x[0] - K[1]*x[1] + (K[5]*K[1]-K[2]*K[4])) / (K[0]*K[4]));
+	n[1] = TYPE3((x[1] - K[5]) / K[4]);
+} // NormalizeProjectionInv
+/*----------------------------------------------------------------*/
+
 // compute relative pose of the given two cameras
 template<typename TYPE>
 inline void ComputeRelativeRotation(const TMatrix<TYPE,3,3>& Ri, const TMatrix<TYPE,3,3>& Rj, TMatrix<TYPE,3,3>& Rij) {
@@ -23,6 +40,57 @@ inline void ComputeRelativePose(const TMatrix<TYPE,3,3>& Ri, const TPoint3<TYPE>
 	Rij = Rj * Ri.t();
 	Cij = Ri * (Cj - Ci);
 } // ComputeRelativePose
+/*----------------------------------------------------------------*/
+
+// Triangulate the position of a 3D point
+// given two corresponding normalized projections and the pose of the second camera relative to the first one;
+// returns the triangulated 3D point from the point of view of the first camera
+template<typename TYPE1, typename TYPE2>
+bool TriangulatePoint3D(
+	const TMatrix<TYPE1,3,3>& R, const TPoint3<TYPE1>& C,
+	const TPoint2<TYPE2>& pt1, const TPoint2<TYPE2>& pt2,
+	TPoint3<TYPE1>& X
+) {
+	// convert image points to 3-vectors (of unit length)
+	// used to describe landmark observations/bearings in camera frames
+	const TPoint3<TYPE1> f1(pt1.x,pt1.y,1);
+	const TPoint3<TYPE1> f2(pt2.x,pt2.y,1);
+	const TPoint3<TYPE1> f2_unrotated = R.t() * f2;
+	const TPoint2<TYPE1> b(C.dot(f1), C.dot(f2_unrotated));
+	// optimized inversion of A
+	const TYPE1 a = normSq(f1);
+	const TYPE1 c = f1.dot(f2_unrotated);
+	const TYPE1 d = -normSq(f2_unrotated);
+	const TYPE1 det = a*d+c*c;
+	if (ABS(det) < EPSILONTOLERANCE<TYPE1>())
+		return false;
+	const TYPE1 invDet = TYPE1(1)/det;
+	const TPoint2<TYPE1> lambda((d*b.x+c*b.y)*invDet, (a*b.y-c*b.x)*invDet);
+	const TPoint3<TYPE1> xm = lambda.x * f1;
+	const TPoint3<TYPE1> xn = C + lambda.y * f2_unrotated;
+	X = (xm + xn)*TYPE1(0.5);
+	return true;
+} // TriangulatePoint3D
+// same as above, but using the two camera poses;
+// returns the 3D point in world coordinates
+template<typename TYPE1, typename TYPE2>
+bool TriangulatePoint3D(
+	const TMatrix<TYPE1,3,3>& K1, const TMatrix<TYPE1,3,3>& K2,
+	const TMatrix<TYPE1,3,3>& R1, const TMatrix<TYPE1,3,3>& R2,
+	const TPoint3<TYPE1>& C1, const TPoint3<TYPE1>& C2,
+	const TPoint2<TYPE2>& x1, const TPoint2<TYPE2>& x2,
+	TPoint3<TYPE1>& X
+) {
+	TPoint2<TYPE1> pt1, pt2;
+	NormalizeProjectionInv(K1.val, x1.ptr(), pt1.ptr());
+	NormalizeProjectionInv(K2.val, x2.ptr(), pt2.ptr());
+	TMatrix<TYPE1,3,3> R; TPoint3<TYPE1> C;
+	ComputeRelativePose(R1, C1, R2, C2, R, C);
+	if (!TriangulatePoint3D(R, C, pt1, pt2, X))
+		return false;
+	X = R1.t() * X + C1;
+	return true;
+} // TriangulatePoint3D
 /*----------------------------------------------------------------*/
 
 // compute the homography matrix transforming points from image A to image B,
