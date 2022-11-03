@@ -214,8 +214,7 @@ void PatchMatchCUDA::EstimateDepthMap(DepthData& depthData)
 	}
 
 	const int maxPixelViews(MINF(params.nNumViews, 4));
-	for (int scaleNumber = totalScaleNumber; scaleNumber >= 0; --scaleNumber)
-	{
+	for (int scaleNumber = totalScaleNumber; scaleNumber >= 0; --scaleNumber) {
 		// initialize
 		const float scale = 1.f / POWI(2, scaleNumber);
 		DepthData currentDepthData(DepthMapsData::ScaleDepthData(fullResDepthData, scale));
@@ -266,8 +265,7 @@ void PatchMatchCUDA::EstimateDepthMap(DepthData& depthData)
 			}
 		}
 
-		for (IIndex i = 0; i < numImages; ++i)
-		{
+		for (IIndex i = 0; i < numImages; ++i) {
 			const DepthData::ViewData& view = depthData.images[i];
 			Image32F image = view.image;
 			Camera camera;
