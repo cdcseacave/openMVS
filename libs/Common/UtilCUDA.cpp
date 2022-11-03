@@ -159,7 +159,8 @@ CUresult _gpuGetMaxGflopsDeviceId(Device& bestDevice)
 	return CUDA_SUCCESS;
 }
 
-CUresult getDevicesCount(int *device_count) {
+CUresult getDevicesCount(int *device_count)
+{
 	checkCudaError(cuInit(0));
 
 	int cnt = 0;
@@ -170,23 +171,17 @@ CUresult getDevicesCount(int *device_count) {
 	}
 
 	*device_count = cnt;
-
 	return CUDA_SUCCESS;
-
 }
 
-bool validateCudaDevice(int desiredDevice) {
-
-	if (desiredDevice < -3) return false;
-
+bool validateCudaDevice(int desidered_device)
+{
+	if (desidered_device < -3) return false;
 	int count;
 	if (getDevicesCount(&count) != CUDA_SUCCESS) return false;
-
-	if (!count) return false;	
-	if (desiredDevice > count - 1) return false;
-
+	if (!count) return false;
+	if (desidered_device > count - 1) return false;
 	return true;
-
 }
 
 // initialize the given CUDA device and add it to the array of initialized devices;

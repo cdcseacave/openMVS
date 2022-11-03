@@ -75,7 +75,6 @@ struct DepthData;
 
 class PatchMatchCUDA {
 public:
-	
 	typedef Eigen::Matrix<float,3,1> Point3;
 	typedef Eigen::Matrix<float,4,1> Point4;
 	typedef Eigen::Matrix<float,3,3> Matrix3;
@@ -113,7 +112,6 @@ public:
 	float GetCost(const int index);
 
 private:
-
 	void ReleaseCUDA();
 	void AllocatePatchMatchCUDA(const cv::Mat1f& image);
 	void AllocateImageCUDA(size_t i, const cv::Mat1f& image, bool bInitImage, bool bInitDepthMap);
@@ -139,7 +137,6 @@ public:
 	curandState* cudaRandStates;
 	uint32_t* cudaSelectedViews;
 };
-
 /*----------------------------------------------------------------*/
 
 } // namespace MVS

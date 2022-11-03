@@ -103,7 +103,7 @@ CUresult initDevice(int deviceID=-1);
 
 CUresult getDevicesCount(int *device_count);
 
-bool validateCudaDevice(int desiredDevice);
+bool validateCudaDevice(int desidered_device);
 
 // load/read module (program) from file/string and compile it
 enum JIT { AUTO=0, STRING=1, FILE=2 };
@@ -236,7 +236,7 @@ public:
 	}
 	void Release();
 	CUresult Reset(unsigned flags = CU_EVENT_DEFAULT);
-		
+
 	inline operator CUevent() const {
 		return hEvent;
 	}

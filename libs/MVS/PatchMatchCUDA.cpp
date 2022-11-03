@@ -46,11 +46,9 @@ using namespace MVS;
 PatchMatchCUDA::PatchMatchCUDA(int device)
 {
 	// initialize CUDA device if needed
-
 	// -2 (CPU) and -3 (ALL GPUS) are invalid values here
 	if (device < -1)
 		return;
-
 	// Let CUDA::initDevice find the best device to use
 	if (device == -1)
 	{
@@ -58,14 +56,10 @@ PatchMatchCUDA::PatchMatchCUDA(int device)
 		this->params.iDevice = CUDA::devices.Last().ID;
 		return;
 	}
-
 	// Check if device was already initialized
-	if (std::find_if(CUDA::devices.begin(), CUDA::devices.end(), [device](const CUDA::Device& d) { return d.ID == device; }) != CUDA::devices.end()) {
+	if (std::find_if(CUDA::devices.begin(), CUDA::devices.end(), [device](const CUDA::Device& d) { return d.ID == device; }) != CUDA::devices.end())
 		CUDA::initDevice(device);
-	}
-
 	this->params.iDevice = device;
-
 }
 
 PatchMatchCUDA::~PatchMatchCUDA()
@@ -75,16 +69,13 @@ PatchMatchCUDA::~PatchMatchCUDA()
 
 void PatchMatchCUDA::Release()
 {
-
 	if (images.empty())
 		return;
-
 	FOREACH(i, cudaImageArrays) {
 		cudaDestroyTextureObject(textureImages[i]);
 		cudaFreeArray(cudaImageArrays[i]);
 	}
 	cudaImageArrays.clear();
-
 	if (params.bGeomConsistency) {
 		FOREACH(i, cudaDepthArrays) {
 			cudaDestroyTextureObject(textureDepths[i]);
@@ -92,10 +83,8 @@ void PatchMatchCUDA::Release()
 		}
 		cudaDepthArrays.clear();
 	}
-
 	images.clear();
 	cameras.clear();
-
 	ReleaseCUDA();
 }
 
@@ -109,7 +98,6 @@ void PatchMatchCUDA::ReleaseCUDA()
 	cudaFree(cudaSelectedViews);
 	if (params.bGeomConsistency)
 		cudaFree(cudaTextureDepths);
-
 	delete[] depthNormalEstimates;
 }
 
@@ -194,9 +182,7 @@ void PatchMatchCUDA::EstimateDepthMap(DepthData& depthData)
 {
 
 	TD_TIMER_STARTD();
-
 	cudaSetDevice(this->params.iDevice);
-
 	ASSERT(depthData.images.size() > 1);
 
 	// multi-resolution
@@ -205,7 +191,7 @@ void PatchMatchCUDA::EstimateDepthMap(DepthData& depthData)
 	DepthMap lowResDepthMap;
 	NormalMap lowResNormalMap;
 	ViewsMap lowResViewsMap;
-	auto prevNumImages = (IIndex)images.size();
+	IIndex prevNumImages = (IIndex)images.size();
 	const IIndex numImages = depthData.images.size();
 	params.nNumViews = (int)numImages-1;
 	params.nInitTopK = std::min(params.nInitTopK, params.nNumViews);
@@ -223,8 +209,8 @@ void PatchMatchCUDA::EstimateDepthMap(DepthData& depthData)
 	}
 
 	const int maxPixelViews(MINF(params.nNumViews, 4));
-	for (int scaleNumber = totalScaleNumber; scaleNumber >= 0; --scaleNumber) {
-
+	for (int scaleNumber = totalScaleNumber; scaleNumber >= 0; --scaleNumber)
+	{
 		// initialize
 		const float scale = 1.f / POWI(2, scaleNumber);
 		DepthData currentDepthData(DepthMapsData::ScaleDepthData(fullResDepthData, scale));
@@ -276,8 +262,8 @@ void PatchMatchCUDA::EstimateDepthMap(DepthData& depthData)
 		}
 
 
-		for (IIndex i = 0; i < numImages; ++i) {
-
+		for (IIndex i = 0; i < numImages; ++i)
+		{
 			const DepthData::ViewData& view = depthData.images[i];
 			Image32F image = view.image;
 			Camera camera;
@@ -325,7 +311,6 @@ void PatchMatchCUDA::EstimateDepthMap(DepthData& depthData)
 			}
 			images[i] = std::move(image);
 			cameras[i] = std::move(camera);
-
 		}
 
 		if (params.bGeomConsistency && cudaDepthArrays.size() > numImages - 1) {
@@ -427,7 +412,6 @@ void PatchMatchCUDA::EstimateDepthMap(DepthData& depthData)
 			lowResNormalMap = depthData.normalMap;
 			lowResViewsMap = depthData.viewsMap;
 		}
-
 	}
 
 	DEBUG_EXTRA("Depth-map for image %3u %s: %dx%d (%s)", depthData.images.front().GetID(),
