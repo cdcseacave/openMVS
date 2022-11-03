@@ -656,10 +656,12 @@ void Scene::SampleMeshWithVisibility(unsigned maxResolution)
 		}
 	}
 	RFOREACH(idx, pointcloud.points) {
-		if (pointcloud.pointViews[idx].size() < 2)
+		if (pointcloud.pointViews[idx].size() < 2) {
 			pointcloud.RemovePoint(idx);
-		else
-			pointcloud.points[idx] = mesh.vertices[(Mesh::VIndex)idx];
+			continue;
+		}
+		pointcloud.points[idx] = mesh.vertices[(Mesh::VIndex)idx];
+		pointcloud.pointViews[idx].Sort();
 	}
 } // SampleMeshWithVisibility
 /*----------------------------------------------------------------*/
