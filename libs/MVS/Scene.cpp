@@ -799,20 +799,20 @@ inline float Footprint(const Camera& camera, const Point3f& X) {
 //  - nInsideROI: 0 - ignore ROI, 1 - weight more ROI points, 2 - consider only ROI points
 bool Scene::SelectNeighborViews(uint32_t ID, IndexArr& points, unsigned nMinViews, unsigned nMinPointViews, float fOptimAngle, unsigned nInsideROI)
 {
-	ASSERT(points.IsEmpty());
+	ASSERT(points.empty());
 
 	// extract the estimated 3D points and the corresponding 2D projections for the reference image
 	Image& imageData = images[ID];
 	ASSERT(imageData.IsValid());
 	ViewScoreArr& neighbors = imageData.neighbors;
-	ASSERT(neighbors.IsEmpty());
+	ASSERT(neighbors.empty());
 	struct Score {
 		float score;
 		float avgScale;
 		float avgAngle;
 		uint32_t points;
 	};
-	CLISTDEF0(Score) scores(images.GetSize());
+	CLISTDEF0(Score) scores(images.size());
 	scores.Memset(0);
 	if (nMinPointViews > nCalibratedImages)
 		nMinPointViews = nCalibratedImages;
@@ -833,10 +833,14 @@ bool Scene::SelectNeighborViews(uint32_t ID, IndexArr& points, unsigned nMinView
 				continue;
 			wROI = 0.7f;
 		}
+		const Depth depth((float)imageData.camera.PointDepth(point));
+		ASSERT(depth > 0);
+		if (depth <= 0)
+			continue;
 		// store this point
-		if (views.GetSize() >= nMinPointViews)
-			points.Insert((uint32_t)idx);
-		imageData.avgDepth += (float)imageData.camera.PointDepth(point);
+		if (views.size() >= nMinPointViews)
+			points.push_back((uint32_t)idx);
+		imageData.avgDepth += depth;
 		++nPoints;
 		// score shared views
 		const Point3f V1(imageData.camera.C - Cast<REAL>(point));
@@ -868,7 +872,7 @@ bool Scene::SelectNeighborViews(uint32_t ID, IndexArr& points, unsigned nMinView
 	ASSERT(nPoints > 3);
 
 	// select best neighborViews
-	Point2fArr projs(0, points.GetSize());
+	Point2fArr projs(0, points.size());
 	FOREACH(IDB, images) {
 		const Image& imageDataB = images[IDB];
 		if (!imageDataB.IsValid())
@@ -880,7 +884,7 @@ bool Scene::SelectNeighborViews(uint32_t ID, IndexArr& points, unsigned nMinView
 		// compute how well the matched features are spread out (image covered area)
 		const Point2f boundsA(imageData.GetSize());
 		const Point2f boundsB(imageDataB.GetSize());
-		ASSERT(projs.IsEmpty());
+		ASSERT(projs.empty());
 		for (uint32_t idx: points) {
 			const PointCloud::ViewArr& views = pointcloud.pointViews[idx];
 			ASSERT(views.IsSorted());
@@ -888,15 +892,15 @@ bool Scene::SelectNeighborViews(uint32_t ID, IndexArr& points, unsigned nMinView
 			if (views.FindFirst(IDB) == PointCloud::ViewArr::NO_INDEX)
 				continue;
 			const PointCloud::Point& point = pointcloud.points[idx];
-			Point2f& ptA = projs.AddConstruct(imageData.camera.ProjectPointP(point));
+			Point2f& ptA = projs.emplace_back(imageData.camera.ProjectPointP(point));
 			Point2f ptB = imageDataB.camera.ProjectPointP(point);
 			if (!imageData.camera.IsInside(ptA, boundsA) || !imageDataB.camera.IsInside(ptB, boundsB))
 				projs.RemoveLast();
 		}
-		ASSERT(projs.GetSize() <= score.points);
-		if (projs.IsEmpty())
+		ASSERT(projs.size() <= score.points);
+		if (projs.empty())
 			continue;
-		const float area(ComputeCoveredArea<float,2,16,false>((const float*)projs.Begin(), projs.GetSize(), boundsA.ptr()));
+		const float area(ComputeCoveredArea<float,2,16,false>((const float*)projs.data(), projs.size(), boundsA.ptr()));
 		projs.Empty();
 		// store image score
 		ViewScore& neighbor = neighbors.AddEmpty();
@@ -914,10 +918,10 @@ bool Scene::SelectNeighborViews(uint32_t ID, IndexArr& points, unsigned nMinView
 		String msg;
 		FOREACH(n, neighbors)
 			msg += String::FormatString(" %3u(%upts,%.2fscl)", neighbors[n].idx.ID, neighbors[n].idx.points, neighbors[n].idx.scale);
-		VERBOSE("Reference image %3u sees %u views:%s (%u shared points)", ID, neighbors.GetSize(), msg.c_str(), nPoints);
+		VERBOSE("Reference image %3u sees %u views:%s (%u shared points)", ID, neighbors.size(), msg.c_str(), nPoints);
 	}
 	#endif
-	if (points.GetSize() <= 3 || neighbors.GetSize() < MINF(nMinViews,nCalibratedImages-1)) {
+	if (points.size() <= 3 || neighbors.size() < MINF(nMinViews,nCalibratedImages-1)) {
 		DEBUG_EXTRA("error: reference image %3u has not enough images in view", ID);
 		return false;
 	}
