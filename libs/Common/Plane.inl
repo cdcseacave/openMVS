@@ -70,11 +70,87 @@ inline void TPlane<TYPE,DIMS>::Set(const TYPE p[DIMS+1])
 
 
 template <typename TYPE, int DIMS>
+inline void TPlane<TYPE,DIMS>::Invalidate()
+{
+	m_fD = std::numeric_limits<TYPE>::max();
+} // Invalidate
+template <typename TYPE, int DIMS>
+inline bool TPlane<TYPE,DIMS>::IsValid() const
+{
+	return m_fD != std::numeric_limits<TYPE>::max();
+} // IsValid
+/*----------------------------------------------------------------*/
+
+
+// least squares refinement of the line to the given 3D point set
+// (return the number of iterations)
+template <typename TYPE, int DIMS>
+int TPlane<TYPE,DIMS>::Optimize(const POINT* points, size_t size, int maxIters, double threshold)
+{
+	ASSERT(size >= numParams);
+	struct OptimizationFunctor {
+		const POINT* points;
+		const size_t size;
+		const double threshold;
+		// construct with the data points
+		OptimizationFunctor(const POINT* _points, size_t _size, double _th)
+			: points(_points), size(_size), threshold(_th) { ASSERT(size < std::numeric_limits<int>::max()); }
+		static void Residuals(const double* x, int nPoints, const void* pData, double* fvec, double* fjac, int* /*info*/) {
+			const OptimizationFunctor& data = *reinterpret_cast<const OptimizationFunctor*>(pData);
+			ASSERT((size_t)nPoints == data.size && fvec != NULL && fjac == NULL);
+			TPlane<double,DIMS> plane; {
+				Point3d N;
+				plane.m_fD = x[0];
+				Dir2Normal(reinterpret_cast<const Point2d&>(x[1]), N);
+				plane.m_vN = N;
+			}
+			for (size_t i=0; i<data.size; ++i)
+				fvec[i] = MINF(plane.DistanceAbs(data.points[i].template cast<double>()), data.threshold);
+		}
+	} functor(points, size, threshold);
+	double arrParams[numParams]; {
+		arrParams[0] = (double)m_fD;
+		const Point3d N(m_vN.x(), m_vN.y(), m_vN.z());
+		Normal2Dir(N, reinterpret_cast<Point2d&>(arrParams[1]));
+	}
+	lm_control_struct control = {1.e-6, 1.e-7, 1.e-8, 1.e-8, 100.0, maxIters}; // lm_control_float;
+	lm_status_struct status;
+	lmmin(numParams, arrParams, (int)size, &functor, OptimizationFunctor::Residuals, &control, &status);
+	switch (status.info) {
+	//case 4:
+	case 5:
+	case 6:
+	case 7:
+	case 8:
+	case 9:
+	case 10:
+	case 11:
+	case 12:
+		DEBUG_ULTIMATE("error: refine plane: %s", lm_infmsg[status.info]);
+		return 0;
+	}
+	{
+		Point3d N;
+		m_fD = (TYPE)arrParams[0];
+		Dir2Normal(reinterpret_cast<const Point2d&>(arrParams[1]), N);
+		m_vN = Cast<TYPE>(N);
+	}
+	return status.nfev;
+} // Optimize
+/*----------------------------------------------------------------*/
+
+
+template <typename TYPE, int DIMS>
 inline void TPlane<TYPE,DIMS>::Negate()
 {
 	m_vN = -m_vN;
 	m_fD = -m_fD;
-}
+} // Negate
+template <typename TYPE, int DIMS>
+inline TPlane<TYPE,DIMS> TPlane<TYPE,DIMS>::Negated() const
+{
+	return TPlane(-m_vN, -m_fD);
+} // Negated
 /*----------------------------------------------------------------*/
 
 
@@ -95,6 +171,15 @@ template <typename TYPE, int DIMS>
 inline TYPE TPlane<TYPE,DIMS>::DistanceAbs(const POINT& p) const
 {
 	return ABS(Distance(p));
+}
+/*----------------------------------------------------------------*/
+
+
+// Calculate point's projection on this plane (closest point to this plane).
+template <typename TYPE, int DIMS>
+inline typename TPlane<TYPE,DIMS>::POINT TPlane<TYPE,DIMS>::ProjectPoint(const POINT& p) const
+{
+	return p - m_vN*Distance(p);
 }
 /*----------------------------------------------------------------*/
 
@@ -250,6 +335,55 @@ bool TPlane<TYPE,DIMS>::Intersects(const AABB& aabb) const
 
 	return false;
 } // Intersects(AABB)
+/*----------------------------------------------------------------*/
+
+
+// same as above, but online version
+template <typename TYPE, typename TYPEW>
+FitPlaneOnline<TYPE,TYPEW>::FitPlaneOnline()
+	: sumX(0), sumSqX(0), sumXY(0), sumXZ(0), sumY(0), sumSqY(0), sumYZ(0), sumZ(0), sumSqZ(0), size(0)
+{
+}
+template <typename TYPE, typename TYPEW>
+void FitPlaneOnline<TYPE,TYPEW>::Update(const TPoint3<TYPE>& P)
+{
+	const TYPEW X((TYPEW)P.x), Y((TYPEW)P.y), Z((TYPEW)P.z);
+	sumX += X; sumSqX += X*X; sumXY += X*Y; sumXZ += X*Z;
+	sumY += Y; sumSqY += Y*Y; sumYZ += Y*Z;
+	sumZ += Z; sumSqZ += Z*Z;
+	++size;
+}
+template <typename TYPE, typename TYPEW>
+TPoint3<TYPEW> FitPlaneOnline<TYPE,TYPEW>::GetPlane(TPoint3<TYPEW>& avg, TPoint3<TYPEW>& dir) const
+{
+	const TYPEW avgX(sumX/(TYPEW)size), avgY(sumY/(TYPEW)size), avgZ(sumZ/(TYPEW)size);
+	// assemble covariance (lower-triangular) matrix
+	typedef Eigen::Matrix<TYPEW,3,3> Mat3x3;
+	Mat3x3 A;
+	A(0,0) = sumSqX - TYPEW(2)*sumX*avgX + avgX*avgX*(TYPEW)size;
+	A(1,0) = sumXY - sumX*avgY - avgX*sumY + avgX*avgY*(TYPEW)size;
+	A(1,1) = sumSqY - TYPEW(2)*sumY*avgY + avgY*avgY*(TYPEW)size;
+	A(2,0) = sumXZ - sumX*avgZ - avgX*sumZ + avgX*avgZ*(TYPEW)size;
+	A(2,1) = sumYZ - sumY*avgZ - avgY*sumZ + avgY*avgZ*(TYPEW)size;
+	A(2,2) = sumSqZ - TYPEW(2)*sumZ*avgZ + avgZ*avgZ*(TYPEW)size;
+	// the plane normal is simply the eigenvector corresponding to least eigenvalue
+	const Eigen::SelfAdjointEigenSolver<Mat3x3> es(A);
+	ASSERT(ISEQUAL(es.eigenvectors().col(0).norm(), TYPEW(1)));
+	avg = TPoint3<TYPEW>(avgX,avgY,avgZ);
+	dir = es.eigenvectors().col(0);
+	const TYPEW* const vals(es.eigenvalues().data());
+	ASSERT(vals[0] <= vals[1] && vals[1] <= vals[2]);
+	return *reinterpret_cast<const TPoint3<TYPEW>*>(vals);
+}
+template <typename TYPE, typename TYPEW>
+template <typename TYPEE>
+TPoint3<TYPEE> FitPlaneOnline<TYPE,TYPEW>::GetPlane(TPlane<TYPEE,3>& plane) const
+{
+	TPoint3<TYPEW> avg, dir;
+	const TPoint3<TYPEW> quality(GetPlane(avg, dir));
+	plane.Set(TPoint3<TYPEE>(dir), TPoint3<TYPEE>(avg));
+	return TPoint3<TYPEE>(quality);
+}
 /*----------------------------------------------------------------*/
 
 

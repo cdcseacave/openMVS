@@ -913,46 +913,52 @@ FORCEINLINE int CRound2Int(const double& x) {
 	return c.i;
 }
 #endif
-FORCEINLINE int Floor2Int(float x) {
+template <typename INTTYPE=int>
+FORCEINLINE INTTYPE Floor2Int(float x) {
 	#ifdef _FAST_FLOAT2INT
 	return CRound2Int(double(x)-_float2int_doublemagicroundeps);
 	#else
-	return int(floor(x));
+	return static_cast<INTTYPE>(floor(x));
 	#endif
 }
-FORCEINLINE int Floor2Int(double x) {
+template <typename INTTYPE=int>
+FORCEINLINE INTTYPE Floor2Int(double x) {
 	#ifdef _FAST_FLOAT2INT
 	return CRound2Int(x-_float2int_doublemagicroundeps);
 	#else
-	return int(floor(x));
+	return static_cast<INTTYPE>(floor(x));
 	#endif
 }
-FORCEINLINE int Ceil2Int(float x) {
+template <typename INTTYPE=int>
+FORCEINLINE INTTYPE Ceil2Int(float x) {
 	#ifdef _FAST_FLOAT2INT
 	return CRound2Int(double(x)+_float2int_doublemagicroundeps);
 	#else
-	return int(ceil(x));
+	return static_cast<INTTYPE>(ceil(x));
 	#endif
 }
-FORCEINLINE int Ceil2Int(double x) {
+template <typename INTTYPE=int>
+FORCEINLINE INTTYPE Ceil2Int(double x) {
 	#ifdef _FAST_FLOAT2INT
 	return CRound2Int(x+_float2int_doublemagicroundeps);
 	#else
-	return int(ceil(x));
+	return static_cast<INTTYPE>(ceil(x));
 	#endif
 }
-FORCEINLINE int Round2Int(float x) {
+template <typename INTTYPE=int>
+FORCEINLINE INTTYPE Round2Int(float x) {
 	#ifdef _FAST_FLOAT2INT
 	return CRound2Int(double(x)+_float2int_doublemagicdelta);
 	#else
-	return int(floor(x+.5f));
+	return static_cast<INTTYPE>(floor(x+.5f));
 	#endif
 }
-FORCEINLINE int Round2Int(double x) {
+template <typename INTTYPE=int>
+FORCEINLINE INTTYPE Round2Int(double x) {
 	#ifdef _FAST_FLOAT2INT
 	return CRound2Int(x+_float2int_doublemagicdelta);
 	#else
-	return int(floor(x+.5));
+	return static_cast<INTTYPE>(floor(x+.5));
 	#endif
 }
 /*----------------------------------------------------------------*/

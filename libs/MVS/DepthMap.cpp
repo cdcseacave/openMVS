@@ -802,6 +802,9 @@ void DepthEstimator::ProcessPixel(IDX idx)
 		idxScaleRange = 1;
 	else if (conf >= thConfRand) {
 		// try completely random values in order to find an initial estimate
+		#if DENSE_SMOOTHNESS != DENSE_SMOOTHNESS_NA
+		neighborsClose.Empty();
+		#endif
 		for (unsigned iter=0; iter<OPTDENSE::nRandomIters; ++iter) {
 			const Depth ndepth(RandomDepth(dMinSqr, dMaxSqr));
 			const Normal nnormal(RandomNormal(viewDir));
@@ -1248,41 +1251,47 @@ bool MVS::TriangulatePoints2DepthMap(
 
 namespace MVS {
 
-class PlaneSolverAdaptor
+
+template <typename TYPE>
+class TPlaneSolverAdaptor
 {
 public:
 	enum { MINIMUM_SAMPLES = 3 };
 	enum { MAX_MODELS = 1 };
 
-	typedef Plane Model;
-	typedef cList<Model> Models;
+	typedef TYPE Type;
+	typedef TPoint3<TYPE> Point;
+	typedef CLISTDEF0(Point) Points;
+	typedef TPlane<TYPE,3> Model;
+	typedef CLISTDEF0(Model) Models;
 
-	PlaneSolverAdaptor(const Point3Arr& points)
+	TPlaneSolverAdaptor(const Points& points)
 		: points_(points)
 	{
 	}
-	PlaneSolverAdaptor(const Point3Arr& points, float w, float h, float d)
+	TPlaneSolverAdaptor(const Points& points, float w, float h, float d)
 		: points_(points)
 	{
 		// LogAlpha0 is used to make error data scale invariant
 		// Ratio of containing diagonal image rectangle over image area
 		const float D = SQRT(w*w + h*h + d*d); // diameter
 		const float A = w*h*d+1.f; // volume
-		logalpha0_ = LOG10(2.0f*D/A*0.5f);
+		logalpha0_ = LOG10(2.f*D/A*0.5f);
 	}
 
 	inline bool Fit(const std::vector<size_t>& samples, Models& models) const {
-		Point3 points[3];
-		for (size_t i=0; i<samples.size(); ++i)
+		ASSERT(samples.size() == MINIMUM_SAMPLES);
+		Point points[MINIMUM_SAMPLES];
+		for (size_t i=0; i<MINIMUM_SAMPLES; ++i)
 			points[i] = points_[samples[i]];
 		if (CheckCollinearity(points, 3))
 			return false;
 		models.Resize(1);
-		models[0] = Plane(points[0], points[1], points[2]);
+		models[0] = Model(points[0], points[1], points[2]);
 		return true;
 	}
 
-	inline void EvaluateModel(const Model &model) {
+	inline void EvaluateModel(const Model& model) {
 		model2evaluate = model;
 	}
 
@@ -1290,89 +1299,126 @@ public:
 		return SQUARE(model2evaluate.Distance(points_[sample]));
 	}
 
-	inline size_t NumSamples() const { return static_cast<size_t>(points_.GetSize()); }
+	static double Error(const Model& plane, const Points& points) {
+		double e(0);
+		for (const Point& X: points)
+			e += plane.DistanceAbs(X);
+		return e/points.size();
+	}
+
+	inline size_t NumSamples() const { return static_cast<size_t>(points_.size()); }
 	inline double logalpha0() const { return logalpha0_; }
 	inline double multError() const { return 0.5; }
 
 protected:
-	const Point3Arr& points_; // Normalized input data
+	const Points& points_; // Normalized input data
 	double logalpha0_; // Alpha0 is used to make the error adaptive to the image size
 	Model model2evaluate; // current model to be evaluated
 };
 
 // Robustly estimate the plane that fits best the given points
-template <typename Sampler, bool bFixThreshold>
-unsigned TEstimatePlane(const Point3Arr& points, Plane& plane, double& maxThreshold, bool arrInliers[], size_t maxIters)
+template <typename TYPE, typename Sampler, bool bFixThreshold>
+unsigned TEstimatePlane(const CLISTDEF0(TPoint3<TYPE>)& points, TPlane<TYPE,3>& plane, double& maxThreshold, bool arrInliers[], size_t maxIters)
 {
-	const unsigned nPoints = (unsigned)points.GetSize();
+	typedef TPlaneSolverAdaptor<TYPE> PlaneSolverAdaptor;
+
+	plane.Invalidate();
+	
+	const unsigned nPoints = (unsigned)points.size();
 	if (nPoints < PlaneSolverAdaptor::MINIMUM_SAMPLES) {
 		ASSERT("too few points" == NULL);
 		return 0;
 	}
 
 	// normalize points
-	Matrix4x4 H;
-	Point3Arr normPoints;
+	TMatrix<TYPE,4,4> H;
+	typename PlaneSolverAdaptor::Points normPoints;
 	NormalizePoints(points, normPoints, &H);
 
 	// plane robust estimation
 	std::vector<size_t> vec_inliers;
 	Sampler sampler;
 	if (bFixThreshold) {
+		if (maxThreshold == 0)
+			maxThreshold = 0.35/H(0,0);
 		PlaneSolverAdaptor kernel(normPoints);
-		RANSAC(kernel, sampler, vec_inliers, plane, maxThreshold!=0?maxThreshold*H(0,0):0.35, 0.99, maxIters);
+		RANSAC(kernel, sampler, vec_inliers, plane, maxThreshold*H(0,0), 0.99, maxIters);
 		DEBUG_LEVEL(3, "Robust plane: %u/%u points", vec_inliers.size(), nPoints);
 	} else {
+		if (maxThreshold != DBL_MAX)
+			maxThreshold *= H(0,0);
 		PlaneSolverAdaptor kernel(normPoints, 1, 1, 1);
 		const std::pair<double,double> ACRansacOut(ACRANSAC(kernel, sampler, vec_inliers, plane, maxThreshold, 0.99, maxIters));
 		const double& thresholdSq = ACRansacOut.first;
-		maxThreshold = SQRT(thresholdSq);
-		DEBUG_LEVEL(3, "Auto-robust plane: %u/%u points (%g threshold)", vec_inliers.size(), nPoints, maxThreshold/H(0,0));
+		maxThreshold = SQRT(thresholdSq)/H(0,0);
+		DEBUG_LEVEL(3, "Auto-robust plane: %u/%u points (%g threshold)", vec_inliers.size(), nPoints, maxThreshold);
 	}
-	const unsigned inliers_count = (unsigned)vec_inliers.size();
+	unsigned inliers_count = (unsigned)vec_inliers.size();
 	if (inliers_count < PlaneSolverAdaptor::MINIMUM_SAMPLES)
 		return 0;
 
 	// fit plane to all the inliers
-	Point3Arr normInliers(inliers_count);
-	for (uint32_t i=0; i<inliers_count; ++i)
-		normInliers[i] = normPoints[vec_inliers[i]];
-	FitPlane(normInliers.GetData(), normInliers.GetSize(), plane);
-	// if a list of inliers is requested, copy it
-	if (arrInliers) {
-		memset(arrInliers, 0, sizeof(bool)*nPoints);
-		for (uint32_t i=0; i<inliers_count; ++i)
-			arrInliers[vec_inliers[i]] = true;
-	}
+	FitPlaneOnline<TYPE> fitPlane;
+	for (unsigned i=0; i<inliers_count; ++i)
+		fitPlane.Update(normPoints[vec_inliers[i]]);
+	fitPlane.GetPlane(plane);
 
 	// un-normalize plane
-	plane.m_fD /= H(0,0);
-	maxThreshold /= H(0,0);
+	plane.m_fD = (plane.m_fD+plane.m_vN.dot(typename PlaneSolverAdaptor::Model::POINT(H(0,3),H(1,3),H(2,3))))/H(0,0);
 
+	// if a list of inliers is requested, copy it
+	if (arrInliers) {
+		inliers_count = 0;
+		for (unsigned i=0; i<nPoints; ++i)
+			if ((arrInliers[i] = (plane.DistanceAbs(points[i]) <= maxThreshold)) == true)
+				++inliers_count;
+	}
 	return inliers_count;
 } // TEstimatePlane
 
 } // namespace MVS
 
 // Robustly estimate the plane that fits best the given points
-unsigned MVS::EstimatePlane(const Point3Arr& points, Plane& plane, double& maxThreshold, bool arrInliers[], size_t maxIters)
+unsigned MVS::EstimatePlane(const Point3dArr& points, Planed& plane, double& maxThreshold, bool arrInliers[], size_t maxIters)
 {
-	return TEstimatePlane<UniformSampler,false>(points, plane, maxThreshold, arrInliers, maxIters);
+	return TEstimatePlane<double,UniformSampler,false>(points, plane, maxThreshold, arrInliers, maxIters);
 } // EstimatePlane
 // Robustly estimate the plane that fits best the given points, making sure the first point is part of the solution (if any)
-unsigned MVS::EstimatePlaneLockFirstPoint(const Point3Arr& points, Plane& plane, double& maxThreshold, bool arrInliers[], size_t maxIters)
+unsigned MVS::EstimatePlaneLockFirstPoint(const Point3dArr& points, Planed& plane, double& maxThreshold, bool arrInliers[], size_t maxIters)
 {
-	return TEstimatePlane<UniformSamplerLockFirst,false>(points, plane, maxThreshold, arrInliers, maxIters);
+	return TEstimatePlane<double,UniformSamplerLockFirst,false>(points, plane, maxThreshold, arrInliers, maxIters);
 } // EstimatePlaneLockFirstPoint
 // Robustly estimate the plane that fits best the given points using a known threshold
-unsigned MVS::EstimatePlaneTh(const Point3Arr& points, Plane& plane, double maxThreshold, bool arrInliers[], size_t maxIters)
+unsigned MVS::EstimatePlaneTh(const Point3dArr& points, Planed& plane, double maxThreshold, bool arrInliers[], size_t maxIters)
 {
-	return TEstimatePlane<UniformSampler,true>(points, plane, maxThreshold, arrInliers, maxIters);
+	return TEstimatePlane<double,UniformSampler,true>(points, plane, maxThreshold, arrInliers, maxIters);
 } // EstimatePlaneTh
 // Robustly estimate the plane that fits best the given points using a known threshold, making sure the first point is part of the solution (if any)
-unsigned MVS::EstimatePlaneThLockFirstPoint(const Point3Arr& points, Plane& plane, double maxThreshold, bool arrInliers[], size_t maxIters)
+unsigned MVS::EstimatePlaneThLockFirstPoint(const Point3dArr& points, Planed& plane, double maxThreshold, bool arrInliers[], size_t maxIters)
 {
-	return TEstimatePlane<UniformSamplerLockFirst,true>(points, plane, maxThreshold, arrInliers, maxIters);
+	return TEstimatePlane<double,UniformSamplerLockFirst,true>(points, plane, maxThreshold, arrInliers, maxIters);
+} // EstimatePlaneThLockFirstPoint
+/*----------------------------------------------------------------*/
+
+// Robustly estimate the plane that fits best the given points
+unsigned MVS::EstimatePlane(const Point3fArr& points, Planef& plane, double& maxThreshold, bool arrInliers[], size_t maxIters)
+{
+	return TEstimatePlane<float,UniformSampler,false>(points, plane, maxThreshold, arrInliers, maxIters);
+} // EstimatePlane
+// Robustly estimate the plane that fits best the given points, making sure the first point is part of the solution (if any)
+unsigned MVS::EstimatePlaneLockFirstPoint(const Point3fArr& points, Planef& plane, double& maxThreshold, bool arrInliers[], size_t maxIters)
+{
+	return TEstimatePlane<float,UniformSamplerLockFirst,false>(points, plane, maxThreshold, arrInliers, maxIters);
+} // EstimatePlaneLockFirstPoint
+// Robustly estimate the plane that fits best the given points using a known threshold
+unsigned MVS::EstimatePlaneTh(const Point3fArr& points, Planef& plane, double maxThreshold, bool arrInliers[], size_t maxIters)
+{
+	return TEstimatePlane<float,UniformSampler,true>(points, plane, maxThreshold, arrInliers, maxIters);
+} // EstimatePlaneTh
+// Robustly estimate the plane that fits best the given points using a known threshold, making sure the first point is part of the solution (if any)
+unsigned MVS::EstimatePlaneThLockFirstPoint(const Point3fArr& points, Planef& plane, double maxThreshold, bool arrInliers[], size_t maxIters)
+{
+	return TEstimatePlane<float,UniformSamplerLockFirst,true>(points, plane, maxThreshold, arrInliers, maxIters);
 } // EstimatePlaneThLockFirstPoint
 /*----------------------------------------------------------------*/
 

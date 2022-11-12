@@ -31,6 +31,7 @@
 
 #include "Common.h"
 #include "PointCloud.h"
+#include "DepthMap.h"
 
 using namespace MVS;
 
@@ -128,6 +129,79 @@ PointCloud::Point PointCloud::GetCenter() const
 		z[i] = X.z;
 	}
 	return Point(x.GetMedian(), y.GetMedian(), z.GetMedian());
+}
+/*----------------------------------------------------------------*/
+
+
+// estimate the ground-plane as the plane agreeing with most points
+//  - planeThreshold: threshold used to estimate the ground plane (0 - auto)
+Planef PointCloud::EstimateGroundPlane(const ImageArr& images, float planeThreshold, const String& fileExportPlane) const
+{
+	ASSERT(!IsEmpty());
+
+	// remove some random points to speed up plane fitting
+	const unsigned randMinPoints(100000);
+	PointArr workPoints;
+	const PointArr* pPoints;
+	if (GetSize() > randMinPoints) {
+		#ifndef _RELEASE
+		SEACAVE::Random rnd(SEACAVE::Random::default_seed);
+		#else
+		SEACAVE::Random rnd;
+		#endif
+		const REAL randPointsRatio(MAXF(REAL(1e-4),(REAL)randMinPoints/GetSize()));
+		const SEACAVE::Random::result_type randPointsTh(CEIL2INT<SEACAVE::Random::result_type>(randPointsRatio*SEACAVE::Random::max()));
+		workPoints.reserve(CEIL2INT<PointArr::IDX>(randPointsRatio*GetSize()));
+		for (const Point& X: points)
+			if (rnd() <= randPointsTh)
+				workPoints.emplace_back(X);
+		pPoints = &workPoints;
+	} else {
+		pPoints = &points;
+	}
+
+	// fit plane to the point-cloud
+	Planef plane;
+	const float minInliersRatio(0.05f);
+	double threshold(planeThreshold>0 ? (double)planeThreshold : DBL_MAX);
+	const unsigned numInliers(planeThreshold > 0 ? EstimatePlaneTh(*pPoints, plane, threshold) : EstimatePlane(*pPoints, plane, threshold));
+	if (numInliers < MINF(ROUND2INT<unsigned>(minInliersRatio*pPoints->size()), 1000u)) {
+		plane.Invalidate();
+		return plane;
+	}
+
+	// refine plane to inliers
+	plane.Optimize((const Planef::POINT*)pPoints->data(), pPoints->size(), 100, threshold);
+
+	// make sure the plane is well oriented, negate plane normal if it faces same direction as cameras on average
+	if (!images.empty()) {
+		FloatArr cosView(0, images.size());
+		for (const Image& imageData: images) {
+			if (!imageData.IsValid())
+				continue;
+			cosView.push_back(plane.m_vN.dot((const Point3f::EVecMap&)Cast<float>(imageData.camera.Direction())));
+		}
+		if (cosView.GetMedian() > 0)
+			plane.Negate();
+	}
+
+	// export points on the found plane if requested
+	if (!fileExportPlane.empty()) {
+		PointCloud pc;
+		const Point orig(Point(plane.m_vN)*-plane.m_fD);
+		pc.colors.emplace_back(Color::RED);
+		pc.points.emplace_back(orig);
+		for (const Point& X: *pPoints) {
+			const float dist(plane.DistanceAbs(X));
+			if (dist < threshold) {
+				pc.points.emplace_back(X);
+				const uint8_t color((uint8_t)(255.f*(1.f-dist/threshold)));
+				pc.colors.emplace_back(color, color, color);
+			}
+		}
+		pc.Save(fileExportPlane);
+	}
+	return plane;
 }
 /*----------------------------------------------------------------*/
 

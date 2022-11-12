@@ -413,7 +413,7 @@ int TQuaternion<TYPE>::SetXYZ(TYPE radX, TYPE radY, TYPE radZ)
 	q_x.Mult(q_y);
 	q_x.Mult(q_z);
 
-	(*this) = q_x;
+	*this = q_x;
 
 	return 0;
 }
@@ -432,7 +432,7 @@ int TQuaternion<TYPE>::SetZYX(TYPE radX, TYPE radY, TYPE radZ)
 	q_z.Mult(q_y);
 	q_z.Mult(q_x);
 
-	(*this) = q_z;
+	*this = q_z;
 
 	return 0;
 }
@@ -551,6 +551,11 @@ inline TRMatrixBase<TYPE>::TRMatrixBase(TYPE roll, TYPE pitch, TYPE yaw)
 {
 	SetXYZ(roll, pitch, yaw);
 }
+template <typename TYPE>
+inline TRMatrixBase<TYPE>::TRMatrixBase(const Vec& dir0, const Vec& dir1)
+{
+	SetFromDir2Dir(dir0, dir1);
+}
 
 
 template <typename TYPE>
@@ -580,7 +585,7 @@ void TRMatrixBase<TYPE>::SetXYZ(TYPE PhiX, TYPE PhiY, TYPE PhiZ)
 	Rx(2,1) = -Rx(1,2); //sin(PhiX);
 	Rx(2,2) = Rx(1,1); //cos(PhiX);
 
-	(*this) = Rx*Ry*Rz;
+	*this = Rx*Ry*Rz;
 	#else
 	const TYPE sin_x = sin(PhiX);
 	const TYPE sin_y = sin(PhiY);
@@ -627,7 +632,7 @@ void TRMatrixBase<TYPE>::SetZYX(TYPE PhiX, TYPE PhiY, TYPE PhiZ)
   Rx(2,1) = -Rx(1,2); //sin(PhiX);
   Rx(2,2) = Rx(1,1); //cos(PhiX);
 
-  (*this) = Rz*Ry*Rx;
+  *this = Rz*Ry*Rx;
 }
 
 
@@ -657,7 +662,7 @@ void TRMatrixBase<TYPE>::SetYXZ(TYPE PhiY, TYPE PhiX, TYPE PhiZ)
   Rx(2,1) = -Rx(1,2); //sin(PhiX);
   Rx(2,2) = Rx(1,1); //cos(PhiX);
 
-  (*this) = Ry*Rx*Rz;
+  *this = Ry*Rx*Rz;
 }
 
 
@@ -687,7 +692,7 @@ void TRMatrixBase<TYPE>::SetZXY(TYPE PhiX, TYPE PhiY, TYPE PhiZ)
   Rx(2,1) = -Rx(1,2); //sin(PhiX);
   Rx(2,2) = Rx(1,1); //cos(PhiX);
 
-  (*this) = Rz*Rx*Ry;
+  *this = Rz*Rx*Ry;
 }
 
 
@@ -697,7 +702,7 @@ void TRMatrixBase<TYPE>::Set(const Vec& wa, TYPE phi)
 {
   // zero rotation  results in identity matrix
   if (ISZERO(phi)) {
-	(*this) = Base::IDENTITY;
+	*this = Base::IDENTITY;
 	return;
   }
 
@@ -720,7 +725,7 @@ void TRMatrixBase<TYPE>::Set(const Vec& wa, TYPE phi)
 
   const Mat Sin_O(Omega *  sin(phi));
   const Mat Cos_O_O((Omega * Omega) * (TYPE(1)-cos(phi)));
-  (*this) = Base::IDENTITY + Sin_O + Cos_O_O;
+  *this = Base::IDENTITY + Sin_O + Cos_O_O;
 }
 
 
@@ -1164,7 +1169,34 @@ void TRMatrixBase<TYPE>::SetFromHV(const Vec& xxx, const Vec& yyy)
 	// compute y base orthogonal in rhs
 	const Vec y0(normalized(cross(z0, x0)));
 
-	(*this).SetFromColumnVectors(x0,  y0,  z0);
+	SetFromColumnVectors(x0,  y0,  z0);
+}
+
+
+template <typename TYPE>
+TRMatrixBase<TYPE>& TRMatrixBase<TYPE>::SetFromDir2Dir(const Vec& dir0, const Vec& dir1)
+{
+	ASSERT(ISEQUAL(norm(dir0), TYPE(1)));
+	ASSERT(ISEQUAL(norm(dir1), TYPE(1)));
+	const TYPE cos01(CLAMP(dir1.dot(dir0), TYPE(-1), TYPE(1)));
+	const TYPE sin01Sq(TYPE(1) - SQUARE(cos01));
+	if (sin01Sq > EPSILONTOLERANCE<TYPE>()) {
+		const Vec v(cross(dir0, dir1));
+		const Mat V(CreateCrossProductMatrix3T<TYPE>(v));
+		*this = Mat::IDENTITY + V + (V*V)*((TYPE(1)-cos01)/sin01Sq);
+	} else {
+		*this = Mat::ZERO;
+		if (cos01 > TYPE(0)) {
+			Base::operator()(0,0) = TYPE(1);
+			Base::operator()(1,1) = TYPE(1);
+			Base::operator()(2,2) = TYPE(1);
+		} else {
+			Base::operator()(0,0) = TYPE(-1);
+			Base::operator()(1,1) = TYPE(-1);
+			Base::operator()(2,2) = TYPE(-1);
+		}
+	}
+	return *this;
 }
 
 
@@ -1202,7 +1234,7 @@ inline void TRMatrixBase<TYPE>::SetRotationAxisAngle(const Vec& rot)
 {
 	#if 0
 	// set rotation using Rodriguez formula
-	(*this) = Mat::IDENTITY;
+	*this = Mat::IDENTITY;
 	const TYPE thetaSq = normSq(rot);
 	if (thetaSq < TYPE(1e-12))
 		return;
@@ -1254,7 +1286,7 @@ inline void TRMatrixBase<TYPE>::SetRotationAxisAngle(const Vec& rot)
 		val[8] = TYPE(1);
 	}
 	#else
-	(*this) = Eigen::SO3<TYPE>(rot).get_matrix();
+	*this = Eigen::SO3<TYPE>(rot).get_matrix();
 	#endif
 }
 
@@ -1262,7 +1294,7 @@ template <typename TYPE>
 inline void TRMatrixBase<TYPE>::Apply(const Vec& delta)
 {
 	const TRMatrixBase dR(delta);
-	(*this) = dR * (*this);
+	*this = dR * (*this);
 }
 
 template <typename TYPE>

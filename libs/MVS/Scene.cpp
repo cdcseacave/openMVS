@@ -1457,6 +1457,14 @@ void Scene::Transform(const Matrix3x3& rotation, const Point3& translation, REAL
 		if (!pointcloud.normals.empty())
 			pointcloud.normals[i] = rotation * Cast<REAL>(pointcloud.normals[i]);
 	}
+	FOREACH(i, mesh.vertices) {
+		mesh.vertices[i] = rotationScale * Cast<REAL>(mesh.vertices[i]) + translation;
+		if (!mesh.vertexNormals.empty())
+			mesh.vertexNormals[i] = rotation * Cast<REAL>(mesh.vertexNormals[i]);
+	}
+	FOREACH(i, mesh.faceNormals) {
+		mesh.faceNormals[i] = rotation * Cast<REAL>(mesh.faceNormals[i]);
+	}
 	if (obb.IsValid()) {
 		obb.Transform(Cast<float>(rotationScale));
 		obb.Translate(Cast<float>(translation));
@@ -1492,6 +1500,37 @@ bool Scene::AlignTo(const Scene& scene)
 	Transform(rotation, translation, scale);
 	return true;
 } // AlignTo
+
+// estimate ground plane, transform scene such that it is positioned at origin, and compute the volume of the mesh;
+//  - planeThreshold: threshold used to estimate the ground plane (0 - auto)
+//  - sampleMesh: uniformly samples points on the mesh (0 - disabled, <0 - number of points, >0 - sample density per square unit)
+// returns <0 if an error occurred
+REAL Scene::ComputeLeveledVolume(float planeThreshold, float sampleMesh, unsigned upAxis, bool verbose)
+{
+	ASSERT(!mesh.IsEmpty());
+	if (planeThreshold >= 0 && !mesh.IsWatertight()) {
+		// assume the mesh is opened only at the contact with the ground plane;
+		// move mesh such that the ground plane is at the origin so that the volume can be computed
+		TD_TIMER_START();
+		Planef groundPlane(mesh.EstimateGroundPlane(images, sampleMesh, planeThreshold, verbose?MAKE_PATH("ground_plane.ply"):String()));
+		if (!groundPlane.IsValid()) {
+			VERBOSE("error: can not estimate the ground plane");
+			return -1;
+		}
+		const Point3f up(upAxis==0?1.f:0.f, upAxis==1?1.f:0.f, upAxis==2?1.f:0.f);
+		if (groundPlane.m_vN.dot(Point3f::EVec(up)) < 0.f)
+			groundPlane.Negate();
+		VERBOSE("Ground plane estimated at: (%.2f,%.2f,%.2f) %.2f (%s)",
+			groundPlane.m_vN.x(), groundPlane.m_vN.y(), groundPlane.m_vN.z(), groundPlane.m_fD, TD_TIMER_GET_FMT().c_str());
+		// transform the scene such that the up vector aligns with ground plane normal,
+		// and the mesh center projected on the ground plane is at the origin
+		const Matrix3x3 rotation(RMatrix(Cast<REAL>(up), Cast<REAL>(Point3f(groundPlane.m_vN))));
+		const Point3 translation(-Cast<REAL>(Point3f(groundPlane.ProjectPoint(mesh.GetCenter()))));
+		const REAL scale(1);
+		Transform(rotation, translation, scale);
+	}
+	return mesh.ComputeVolume();
+}
 /*----------------------------------------------------------------*/
 
 

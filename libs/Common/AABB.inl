@@ -91,7 +91,7 @@ template <typename TYPE, int DIMS>
 inline bool TAABB<TYPE,DIMS>::IsEmpty() const
 {
 	for (int i=0; i<DIMS; ++i)
-		if (ptMin[i] > ptMax[i])
+		if (ptMin[i] >= ptMax[i])
 			return true;
 	return false;
 } // IsEmpty

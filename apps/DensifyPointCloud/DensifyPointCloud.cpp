@@ -281,7 +281,7 @@ int main(int argc, LPCTSTR* argv)
 		if (OPT::fSampleMesh > 0)
 			scene.mesh.SamplePoints(OPT::fSampleMesh, 0, pointcloud);
 		else
-			scene.mesh.SamplePoints((unsigned)ROUND2INT(-OPT::fSampleMesh), pointcloud);
+			scene.mesh.SamplePoints(ROUND2INT<unsigned>(-OPT::fSampleMesh), pointcloud);
 		VERBOSE("Sample mesh completed: %u points (%s)", pointcloud.GetSize(), TD_TIMER_GET_FMT().c_str());
 		pointcloud.Save(MAKE_PATH_SAFE(Util::getFileFullName(OPT::strOutputFileName))+_T(".ply"));
 		Finalize();

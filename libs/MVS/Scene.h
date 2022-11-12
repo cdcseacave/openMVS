@@ -106,6 +106,7 @@ public:
 	bool ScaleImages(unsigned nMaxResolution = 0, REAL scale = 0, const String& folderName = String());
 	void Transform(const Matrix3x3& rotation, const Point3& translation, REAL scale);
 	bool AlignTo(const Scene&);
+	REAL ComputeLeveledVolume(float planeThreshold=0, float sampleMesh=-100000, unsigned upAxis=2, bool verbose=true);
 
 	// Estimate and set region-of-interest
 	bool EstimateROI(int nEstimateROI=0, float scale=1.f);

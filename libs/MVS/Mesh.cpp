@@ -151,6 +151,19 @@ void Mesh::Join(const Mesh& mesh)
 /*----------------------------------------------------------------*/
 
 
+bool Mesh::IsWatertight()
+{
+	if (vertexBoundary.empty()) {
+		if (vertexFaces.empty())
+			ListIncidenteFaces();
+		ListBoundaryVertices();
+	}
+	for (const bool b : vertexBoundary)
+		if (b)
+			return false;
+	return true;
+}
+
 // compute the axis-aligned bounding-box of the mesh
 Mesh::Box Mesh::GetAABB() const
 {
@@ -3912,6 +3925,27 @@ void Mesh::ConvertTexturePerVertex(Mesh& mesh) const
 /*----------------------------------------------------------------*/
 
 
+// estimate the ground-plane as the plane agreeing with most vertices
+//  - sampleMesh: uniformly samples points on the mesh (0 - disabled, <0 - number of points, >0 - sample density per square unit)
+//  - planeThreshold: threshold used to estimate the ground plane (0 - auto)
+Planef Mesh::EstimateGroundPlane(const ImageArr& images, float sampleMesh, float planeThreshold, const String& fileExportPlane) const
+{
+	ASSERT(!IsEmpty());
+	PointCloud pointcloud;
+	if (sampleMesh != 0) {
+		// create the point cloud by sampling the mesh
+		if (sampleMesh > 0)
+			SamplePoints(sampleMesh, 0, pointcloud);
+		else
+			SamplePoints(ROUND2INT<unsigned>(-sampleMesh), pointcloud);
+	} else {
+		// create the point cloud containing all vertices
+		for (const Vertex& X: vertices)
+			pointcloud.points.emplace_back(X);
+	}
+	return pointcloud.EstimateGroundPlane(images, planeThreshold, fileExportPlane);
+}
+/*----------------------------------------------------------------*/
 
 
 // computes the centroid of the given mesh face

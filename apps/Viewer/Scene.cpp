@@ -276,6 +276,8 @@ bool Scene::Open(LPCTSTR fileName, LPCTSTR meshFileName)
 		images.emplace_back(idxImage);
 		imageBounds.InsertFull(imageData.camera.C);
 	}
+	if (imageBounds.IsEmpty())
+		imageBounds.Enlarge(0.5);
 	if (bounds.IsEmpty())
 		bounds = imageBounds;
 
@@ -513,18 +515,8 @@ void Scene::Draw()
 			Image& image = images[idx];
 			const MVS::Image& imageData = scene.images[image.idx];
 			const MVS::Camera& camera = imageData.camera;
-			// change coordinates system to the camera space
-			glPushMatrix();
-			glMultMatrixd((GLdouble*)TransL2W((const Matrix3x3::EMat)camera.R, -(const Point3::EVec)camera.C).data());
-			glPointSize(window.pointSize+1.f);
-			glDisable(GL_TEXTURE_2D);
-			// draw camera position and image center
-			const double scaleFocal(window.camera.scaleF);
-			glBegin(GL_POINTS);
-			glColor3f(1,0,0); glVertex3f(0,0,0); // camera position
-			glColor3f(0,1,0); glVertex3f(0,0,(float)scaleFocal); // image center
-			glEnd();
 			// cache image corner coordinates
+			const double scaleFocal(window.camera.scaleF);
 			const Point2d pp(camera.GetPrincipalPoint());
 			const double focal(camera.GetFocalLength()/scaleFocal);
 			const double cx(-pp.x/focal);
@@ -535,6 +527,17 @@ void Scene::Draw()
 			const Point3d ic2(cx, py, scaleFocal);
 			const Point3d ic3(px, py, scaleFocal);
 			const Point3d ic4(px, cy, scaleFocal);
+			// change coordinates system to the camera space
+			glPushMatrix();
+			glMultMatrixd((GLdouble*)TransL2W((const Matrix3x3::EMat)camera.R, -(const Point3::EVec)camera.C).data());
+			glPointSize(window.pointSize+1.f);
+			glDisable(GL_TEXTURE_2D);
+			// draw camera position and image center
+			glBegin(GL_POINTS);
+			glColor3f(1,0,0); glVertex3f(0,0,0); // camera position
+			glColor3f(0,1,0); glVertex3f(0,0,(float)scaleFocal); // image center
+			glColor3f(0,0,1); glVertex3d((0.5*imageData.width-pp.x)/focal, cy, scaleFocal); // image up
+			glEnd();
 			// draw image thumbnail
 			const bool bSelectedImage(idx == window.camera.currentCamID);
 			if (bSelectedImage) {

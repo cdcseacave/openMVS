@@ -50,6 +50,10 @@ namespace OPT {
 	String strInputFileName;
 	String strOutputFileName;
 	String strAlignFileName;
+	bool bComputeVolume;
+	float fPlaneThreshold;
+	float fSampleMesh;
+	unsigned nUpAxis;
 	unsigned nArchiveType;
 	int nProcessPriority;
 	unsigned nMaxThreads;
@@ -90,6 +94,10 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		("input-file,i", boost::program_options::value<std::string>(&OPT::strInputFileName), "input scene filename")
 		("output-file,o", boost::program_options::value<std::string>(&OPT::strOutputFileName), "output filename for storing the scene")
 		("align-file,o", boost::program_options::value<std::string>(&OPT::strAlignFileName), "input scene filename to which the scene will be cameras aligned")
+		("compute-volume", boost::program_options::value(&OPT::bComputeVolume)->default_value(false), "compute the volume of the given watertight mesh, or else try to estimate the ground plane and assume the mesh is bounded by it")
+		("plane-threshold", boost::program_options::value(&OPT::fPlaneThreshold)->default_value(0.f), "threshold used to estimate the ground plane (<0 - disabled, 0 - auto, >0 - desired threshold)")
+		("sample-mesh", boost::program_options::value(&OPT::fSampleMesh)->default_value(-100000.f), "uniformly samples points on a mesh (0 - disabled, <0 - number of points, >0 - sample density per square unit)")
+		("up-axis", boost::program_options::value(&OPT::nUpAxis)->default_value(2), "scene axis considered to point upwards (0 - x, 1 - y, 2 - z)")
 		;
 
 	boost::program_options::options_description cmdline_options;
@@ -129,7 +137,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	Util::ensureValidPath(OPT::strInputFileName);
 	Util::ensureValidPath(OPT::strAlignFileName);
 	const String strInputFileNameExt(Util::getFileExt(OPT::strInputFileName).ToLower());
-	const bool bInvalidCommand(OPT::strInputFileName.empty() || OPT::strAlignFileName.empty());
+	const bool bInvalidCommand(OPT::strInputFileName.empty() || (OPT::strAlignFileName.empty() && !OPT::bComputeVolume));
 	if (OPT::vm.count("help") || bInvalidCommand) {
 		boost::program_options::options_description visible("Available options");
 		visible.add(generic).add(config);
@@ -188,7 +196,7 @@ int main(int argc, LPCTSTR* argv)
 	Scene scene(OPT::nMaxThreads);
 
 	// load given scene
-	if (!scene.Load(MAKE_PATH_SAFE(OPT::strInputFileName)))
+	if (!scene.Load(MAKE_PATH_SAFE(OPT::strInputFileName), OPT::bComputeVolume))
 		return EXIT_FAILURE;
 
 	if (!OPT::strAlignFileName.empty()) {
@@ -198,10 +206,21 @@ int main(int argc, LPCTSTR* argv)
 			return EXIT_FAILURE;
 		if (!scene.AlignTo(sceneRef))
 			return EXIT_FAILURE;
-		VERBOSE("Scene aligned to the given reference scene");
+		VERBOSE("Scene aligned to the given reference scene (%s)", TD_TIMER_GET_FMT().c_str());
 	}
 
-	// write OpenMVS input data
+	if (OPT::bComputeVolume && !scene.mesh.IsEmpty()) {
+		// compute the mesh volume
+		const REAL volume(scene.ComputeLeveledVolume(OPT::fPlaneThreshold, OPT::fSampleMesh, OPT::nUpAxis));
+		if (volume < 0)
+			return EXIT_FAILURE;
+		OPT::nArchiveType = ARCHIVE_DEFAULT;
+		VERBOSE("Mesh volume: %g (%s)", volume, TD_TIMER_GET_FMT().c_str());
+		scene.mesh.Save(Util::getFileFullName(MAKE_PATH_SAFE(OPT::strOutputFileName)) + _T(".ply"));
+		return EXIT_SUCCESS;
+	}
+
+	// write transformed scene
 	scene.Save(MAKE_PATH_SAFE(OPT::strOutputFileName), (ARCHIVE_TYPE)OPT::nArchiveType);
 
 	Finalize();

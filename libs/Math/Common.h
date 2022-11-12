@@ -24,6 +24,8 @@
 #define MATH_TPL GENERAL_TPL
 #endif
 
+#include "LMFit/lmmin.h"
+
 
 // D E F I N E S ///////////////////////////////////////////////////
 

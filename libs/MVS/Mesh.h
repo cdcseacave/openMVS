@@ -147,8 +147,9 @@ public:
 	void EmptyExtra();
 	void Swap(Mesh&);
 	void Join(const Mesh&);
-	inline bool IsEmpty() const { return vertices.IsEmpty(); }
-	inline bool HasTexture() const { ASSERT(faceTexcoords.IsEmpty() == textureDiffuse.empty()); return !faceTexcoords.IsEmpty(); }
+	inline bool IsEmpty() const { return vertices.empty(); }
+	bool IsWatertight();
+	inline bool HasTexture() const { ASSERT(faceTexcoords.empty() == textureDiffuse.empty()); return !faceTexcoords.empty(); }
 
 	Box GetAABB() const;
 	Box GetAABB(const Box& bound) const;
@@ -195,6 +196,8 @@ public:
 			n += normalized(FaceNormal(faces[*pIdxF]));
 		return n;
 	}
+
+	Planef EstimateGroundPlane(const ImageArr& images, float sampleMesh=0, float planeThreshold=0, const String& fileExportPlane="") const;
 
 	Vertex ComputeCentroid(FIndex) const;
 	Type ComputeArea(FIndex) const;
