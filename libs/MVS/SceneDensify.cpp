@@ -1713,8 +1713,8 @@ bool Scene::RunSingleThreaded(DenseDepthMapData& data, int gpuId = DesiredDevice
 	VERBOSE("Running single threaded on CPU");
 	GET_LOGCONSOLE().Pause();
 	auto status = gpuId != DesiredDevice::CPU ?
-			new ProcessingStatus(&data, 0, this->images.size(), gpuId, false) :
-			new ProcessingStatus(&data, 0, this->images.size());
+			new ProcessingStatus(&data, 0, this->images.size() - 1, gpuId, false) :
+			new ProcessingStatus(&data, 0, this->images.size() - 1);
 	status->progress = new Util::Progress("Estimated depth-maps", data.images.GetSize());
 	status->events.AddEvent(new EVTProcessImage(0));
 	// single-thread execution
@@ -1741,14 +1741,14 @@ bool Scene::RunMultiThreaded(DenseDepthMapData& data, int gpuId = DesiredDevice:
 			VERBOSE("Running on best GPU");
 			break;
 		default:
-			VERBOSE("Running MT on GPU %d", gpuId);
+			VERBOSE("Running MT on GPU %d", gpuId); 
 			break;
 	}
 	GET_LOGCONSOLE().Pause();
 	// multi-thread execution
 	auto pipeline = (gpuId == DesiredDevice::CPU) ?
 						new ProcessingPipeline(&data, 0, this->images.size() - 1) :
-						new ProcessingPipeline(&data, 0, this->images.size() -1, gpuId, false);
+						new ProcessingPipeline(&data, 0, this->images.size() - 1, gpuId, false);
 	pipeline->status.progress = new Util::Progress("Estimated depth-maps", data.images.GetSize());
 	ASSERT(pipeline->status.events.IsEmpty());
 	pipeline->status.events.AddEvent(new EVTProcessImage(0));
