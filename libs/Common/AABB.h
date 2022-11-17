@@ -62,6 +62,7 @@ public:
 		   void InsertFull(const POINT&);
 		   void Insert(const POINT&);
 		   void Insert(const TAABB&);
+		   void BoundBy(const TAABB&);
 
 	inline void Translate(const POINT&);
 	inline void Transform(const MATRIX&);

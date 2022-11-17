@@ -23,6 +23,15 @@
 #ifndef MATH_TPL
 #define MATH_TPL GENERAL_TPL
 #endif
-/*----------------------------------------------------------------*/
+
+#include "LMFit/lmmin.h"
+
+
+// D E F I N E S ///////////////////////////////////////////////////
+
+
+// P R O T O T Y P E S /////////////////////////////////////////////
+
+using namespace SEACAVE;
 
 #endif // __MATH_COMMON_H__

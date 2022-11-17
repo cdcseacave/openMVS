@@ -1,7 +1,7 @@
 /*
 * Scene.h
 *
-* Copyright (c) 2014-2015 SEACAVE
+* Copyright (c) 2014-2022 SEACAVE
 *
 * Author(s):
 *
@@ -82,6 +82,7 @@ public:
 	bool Load(const String& fileName, bool bImport=false);
 	bool Save(const String& fileName, ARCHIVE_TYPE type=ARCHIVE_DEFAULT) const;
 
+	bool EstimateNeighborViewsPointCloud(unsigned maxResolution=16);
 	void SampleMeshWithVisibility(unsigned maxResolution=320);
 	bool ExportMeshToDepthMaps(const String& baseName);
 
@@ -103,9 +104,15 @@ public:
 	bool Center(const Point3* pCenter = NULL);
 	bool Scale(const REAL* pScale = NULL);
 	bool ScaleImages(unsigned nMaxResolution = 0, REAL scale = 0, const String& folderName = String());
+	void Transform(const Matrix3x3& rotation, const Point3& translation, REAL scale);
+	bool AlignTo(const Scene&);
+	REAL ComputeLeveledVolume(float planeThreshold=0, float sampleMesh=-100000, unsigned upAxis=2, bool verbose=true);
+
+	// Estimate and set region-of-interest
+	bool EstimateROI(int nEstimateROI=0, float scale=1.f);
 
 	// Dense reconstruction
-	bool DenseReconstruction(int nFusionMode=0);
+	bool DenseReconstruction(int nFusionMode=0, bool bCrop2ROI=true, float fBorderROI=0);
 	bool ComputeDepthMaps(DenseDepthMapData& data);
 	void DenseReconstructionEstimate(void*);
 	void DenseReconstructionFilter(void*);
@@ -124,7 +131,7 @@ public:
 	#endif
 
 	// Mesh texturing
-	bool TextureMesh(unsigned nResolutionLevel, unsigned nMinResolution, float fOutlierThreshold=0.f, float fRatioDataSmoothness=0.3f, bool bGlobalSeamLeveling=true, bool bLocalSeamLeveling=true, unsigned nTextureSizeMultiple=0, unsigned nRectPackingHeuristic=3, Pixel8U colEmpty=Pixel8U(255,127,39));
+	bool TextureMesh(unsigned nResolutionLevel, unsigned nMinResolution, float fOutlierThreshold=0.f, float fRatioDataSmoothness=0.3f, bool bGlobalSeamLeveling=true, bool bLocalSeamLeveling=true, unsigned nTextureSizeMultiple=0, unsigned nRectPackingHeuristic=3, Pixel8U colEmpty=Pixel8U(255,127,39), const IIndexArr& views=IIndexArr());
 
 	#ifdef _USE_BOOST
 	// implement BOOST serialization

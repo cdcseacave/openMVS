@@ -142,6 +142,13 @@ public:
 		_vector = (TYPE*)(operator new[] (_vectorSize * sizeof(TYPE)));
 		_ArrayCopyConstruct(_vector, rList._vector, _size);
 	}
+	#ifdef _SUPPORT_CPP11
+	// copy constructor: creates a move-copy of the given list
+	cList(cList&& rList) : _size(rList._size), _vectorSize(rList._vectorSize), _vector(rList._vector)
+	{
+		rList._Init();
+	}
+	#endif
 
 	// constructor a list from a raw data array
 	explicit inline cList(TYPE* pDataBegin, TYPE* pDataEnd) : _size((IDX)(pDataEnd-pDataBegin)), _vectorSize(_size)
@@ -624,13 +631,22 @@ public:
 
 	inline TYPE&	GetNth(IDX index)
 	{
+		ASSERT(index < _size);
 		TYPE* const nth(Begin()+index);
 		std::nth_element(Begin(), nth, End());
 		return *nth;
 	}
-	inline TYPE&	GetMedian()
+	template <typename RTYPE = typename std::conditional<std::is_floating_point<TYPE>::value,TYPE,REAL>::type>
+	inline RTYPE	GetMedian()
 	{
-		return GetNth(_size >> 1);
+		ASSERT(_size > 0);
+		if (_size%2)
+			return static_cast<RTYPE>(GetNth(_size >> 1));
+		TYPE* const nth(Begin() + (_size>>1));
+		std::nth_element(Begin(), nth, End());
+		TYPE* const nth1(nth-1);
+		std::nth_element(Begin(), nth1, nth);
+		return (static_cast<RTYPE>(*nth1) + static_cast<RTYPE>(*nth)) / RTYPE(2);
 	}
 
 	inline TYPE		GetMean()
@@ -1596,6 +1612,7 @@ public:
 			memcpy(_vector+index, _vector+(--_size), sizeof(TYPE));
 	}
 	inline void Empty() {
+		_ArrayDestruct(_vector, _size);
 		_size = 0;
 	}
 	inline void Sort() {

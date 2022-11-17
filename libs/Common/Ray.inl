@@ -30,6 +30,12 @@ inline void TTriangle<TYPE,DIMS>::Set(const POINT& p0, const POINT& p1, const PO
 /*----------------------------------------------------------------*/
 
 
+// get center
+template <typename TYPE, int DIMS>
+inline typename TTriangle<TYPE,DIMS>::POINT TTriangle<TYPE,DIMS>::GetCenter() const
+{
+	return (a + b + c) / TYPE(3);
+}
 // get AABB
 template <typename TYPE, int DIMS>
 inline typename TTriangle<TYPE,DIMS>::AABB TTriangle<TYPE,DIMS>::GetAABB() const
@@ -139,18 +145,18 @@ bool TRay<TYPE,DIMS>::Intersects(const TRIANGLE& tri, TYPE *t) const
 	// if close to 0 ray is parallel
 	const VECTOR pvec(m_vDir.cross(edge2));
 	const TYPE det(edge1.dot(pvec));
-	if ((bCull && (det < ZEROTOLERANCE<TYPE>())) || ISZERO(det))
+	if ((bCull && det < ZEROTOLERANCE<TYPE>()) || (!bCull && ISZERO(det)))
 		return false;
 
 	// distance to plane, < 0 means beyond plane
 	const VECTOR tvec(m_pOrig - tri.a);
 	const TYPE u(tvec.dot(pvec));
-	if (u < TYPE(0) || u > det)
+	if ((bCull && !ISINSIDE(u, -ZEROTOLERANCE<TYPE>(), det+ZEROTOLERANCE<TYPE>())) || (!bCull && (det > TYPE(0) ? (u < -ZEROTOLERANCE<TYPE>() || u > det+ZEROTOLERANCE<TYPE>()) : (u > ZEROTOLERANCE<TYPE>() || u < det-ZEROTOLERANCE<TYPE>()))))
 		return false;
 
 	const VECTOR qvec(tvec.cross(edge1));
 	const TYPE v(m_vDir.dot(qvec));
-	if (v < TYPE(0) || u+v > det)
+	if ((bCull && (v < -ZEROTOLERANCE<TYPE>() || u+v > det+ZEROTOLERANCE<TYPE>())) || (!bCull && (det > TYPE(0) ? (v < -ZEROTOLERANCE<TYPE>() || u+v > det+ZEROTOLERANCE<TYPE>()) : (v > ZEROTOLERANCE<TYPE>() || u+v < det-ZEROTOLERANCE<TYPE>()))))
 		return false;
 
 	if (t)
@@ -160,115 +166,17 @@ bool TRay<TYPE,DIMS>::Intersects(const TRIANGLE& tri, TYPE *t) const
 } // Intersects(Tri)
 /*----------------------------------------------------------------*/
 
-// test for intersection with triangle at certain length (line segment),
-// same as above but test distance to intersection vs segment length.
+// test for intersection with triangle at certain length (line segment);
+// same as above, but test distance to intersection vs segment length
 template <typename TYPE, int DIMS>
 template <bool bCull>
 bool TRay<TYPE,DIMS>::Intersects(const TRIANGLE& tri, TYPE fL, TYPE *t) const
 {
-	const VECTOR edge1(tri.b - tri.a);
-	const VECTOR edge2(tri.c - tri.a);
-
-	// if close to 0 ray is parallel
-	const VECTOR pvec(m_vDir.cross(edge2));
-	const TYPE det(edge1.dot(pvec));
-	if ((bCull && (det < ZEROTOLERANCE<TYPE>())) || ISZERO(det))
-		return false;
-
-	// distance to plane, < 0 means beyond plane
-	const VECTOR tvec(m_pOrig - tri.a);
-	const TYPE u(tvec.dot(pvec));
-	if (u < TYPE(0) || u > det)
-		return false;
-
-	const VECTOR qvec(tvec.cross(edge1));
-	const TYPE v(m_vDir.dot(qvec));
-	if (v < TYPE(0) || u+v > det)
-		return false;
-
-	if (t) {
-		*t = (edge2.dot(qvec)) / det;
-		// collision but not on segment?
-		if (*t > fL) return false;
-	}
-	else {
-		// collision but not on segment?
-		if ((edge2.dot(qvec)) / det > fL) return false;
-	}
-
-	return true;
-} // Intersects(Tri at length)
-/*----------------------------------------------------------------*/
-
-
-// test for intersection with triangle
-template <typename TYPE, int DIMS>
-bool TRay<TYPE,DIMS>::Intersects(const POINT& p0, const POINT& p1, const POINT& p2, bool bCull, TYPE *t) const
-{
-	const VECTOR edge1(p1 - p0);
-	const VECTOR edge2(p2 - p0);
-
-	// if close to 0 ray is parallel
-	const VECTOR pvec = m_vDir.cross(edge2);
-	const TYPE det = edge1.dot(pvec);
-	if ((bCull && (det < ZEROTOLERANCE<TYPE>())) || ISZERO(det))
-		return false;
-
-	// distance to plane, < 0 means beyond plane
-	const VECTOR tvec = m_pOrig - p0;
-	const TYPE u = tvec * pvec;
-	if (u < TYPE(0) || u > det)
-		return false;
-
-	const VECTOR qvec = tvec.cross(edge1);
-	const TYPE v = m_vDir.dot(qvec);
-	if (v < TYPE(0) || u+v > det)
-		return false;
-
-	if (t)
-		*t = (edge2.dot(qvec)) / det;
-
-	return true;
-} // Intersects(Tri)
-/*----------------------------------------------------------------*/
-
-
-// test for intersection with triangle at certain length (line segment),
-// same as above but test distance to intersection vs segment length.
-template <typename TYPE, int DIMS>
-bool TRay<TYPE,DIMS>::Intersects(const POINT& p0, const POINT& p1, const POINT& p2, bool bCull, TYPE fL, TYPE *t) const
-{
-	const VECTOR edge1(p1 - p0);
-	const VECTOR edge2(p2 - p0);
-
-	// if close to 0 ray is parallel
-	const VECTOR pvec = m_vDir.cross(edge2);
-	const TYPE det = edge1.dot(pvec);
-	if ((bCull && (det < ZEROTOLERANCE<TYPE>())) || ISZERO(det))
-		return false;
-
-	// distance to plane, < 0 means beyond plane
-	const VECTOR tvec = m_pOrig - p0;
-	const TYPE u = tvec.dot(pvec);
-	if (u < 0.0f || u > det)
-		return false;
-
-	const VECTOR qvec = tvec.cross(edge1);
-	const TYPE v = m_vDir.dot(qvec);
-	if (v < TYPE(0) || u+v > det)
-		return false;
-
-	if (t) {
-		*t = (edge2.dot(qvec)) / det;
-		// collision but not on segment?
-		if (*t > fL) return false;
-	}
-	else {
-		// collision but not on segment?
-		if ((edge2.dot(qvec)) / det > fL) return false;
-	}
-
-	return true;
+	TYPE _t;
+	TYPE* const pt(t ? t : &_t);
+	Intersects(tri, pt);
+	// collision but not on segment?
+	return *pt <= fL;
 } // Intersects(Tri at length)
 /*----------------------------------------------------------------*/
 
@@ -1007,3 +915,32 @@ GCLASS TConeIntersect<TYPE,DIMS>::Classify(const POINT& p, TYPE& t) const
 	return PLANAR;
 } // Classify
 /*----------------------------------------------------------------*/
+
+#ifndef _RELEASE
+template <typename TYPE>
+bool TestRayTriangleIntersection() {
+	typedef SEACAVE::TTriangle<TYPE,3> Triangle;
+	typedef SEACAVE::TRay<TYPE,3> Ray;
+	typedef typename Ray::POINT Point;
+	typedef typename Point::Scalar Type;
+	const Type scale(10);
+	const Triangle triangle(Point::Random()*scale, Point::Random()*scale, Point::Random()*scale);
+	Type t;
+	const Point center(triangle.GetCenter());
+	const Ray rayCenter(Point::Random()*scale, center, true);
+	if (!rayCenter.Intersects<false>(triangle, &t))
+		return false;
+	const Point _center(rayCenter.GetPoint(t));
+	if (!ISEQUAL(TPoint3<Type>(_center), TPoint3<Type>(center)))
+		return false;
+	const BYTE o((BYTE)(RAND()%3));
+	const Point side((triangle[o]+triangle[(o+1)%3]) / TYPE(2));
+	const Ray raySide(rayCenter.m_pOrig, side, true);
+	if (!raySide.Intersects<false>(triangle, &t))
+		return false;
+	const Point _side(raySide.GetPoint(t));
+	if (!ISEQUAL(TPoint3<Type>(_side), TPoint3<Type>(side)))
+		return false;
+	return true;
+}
+#endif

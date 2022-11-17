@@ -291,7 +291,7 @@ void Window::Key(int k, int /*scancode*/, int action, int mod)
 		break;
 	case GLFW_KEY_E:
 		if (action == GLFW_RELEASE && clbkExportScene != NULL)
-			clbkExportScene(NULL, NULL, false);
+			clbkExportScene(NULL, NULL);
 		break;
 	case GLFW_KEY_P:
 		switch (sparseType) {

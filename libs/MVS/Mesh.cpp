@@ -128,8 +128,41 @@ void Mesh::Swap(Mesh& rhs)
 	faceTexcoords.Swap(rhs.faceTexcoords);
 	std::swap(textureDiffuse, rhs.textureDiffuse);
 } // Swap
+// combine this mesh with the given mesh, without removing duplicate vertices
+void Mesh::Join(const Mesh& mesh)
+{
+	ASSERT(!HasTexture() && !mesh.HasTexture());
+	vertexVertices.Release();
+	vertexFaces.Release();
+	vertexBoundary.Release();
+	faceFaces.Release();
+	if (IsEmpty()) {
+		*this = mesh;
+		return;
+	}
+	const VIndex offsetV(vertices.size());
+	vertices.Join(mesh.vertices);
+	vertexNormals.Join(mesh.vertexNormals);
+	faces.ReserveExtra(mesh.faces.size());
+	for (const Face& face: mesh.faces)
+		faces.emplace_back(face.x+offsetV, face.y+offsetV, face.z+offsetV);
+	faceNormals.Join(mesh.faceNormals);
+}
 /*----------------------------------------------------------------*/
 
+
+bool Mesh::IsWatertight()
+{
+	if (vertexBoundary.empty()) {
+		if (vertexFaces.empty())
+			ListIncidenteFaces();
+		ListBoundaryVertices();
+	}
+	for (const bool b : vertexBoundary)
+		if (b)
+			return false;
+	return true;
+}
 
 // compute the axis-aligned bounding-box of the mesh
 Mesh::Box Mesh::GetAABB() const
@@ -1438,6 +1471,9 @@ bool Mesh::Load(const String& fileName)
 	if (ext == _T(".obj"))
 		ret = LoadOBJ(fileName);
 	else
+	if (ext == _T(".gltf") || ext == _T(".glb"))
+		ret = LoadGLTF(fileName, ext == _T(".glb"));
+	else
 		ret = LoadPLY(fileName);
 	if (!ret)
 		return false;
@@ -1587,6 +1623,80 @@ bool Mesh::LoadOBJ(const String& fileName)
 	ObjModel::MaterialLib::Material* pMaterial(model.GetMaterial(group.material_name));
 	if (pMaterial && pMaterial->LoadDiffuseMap())
 		cv::swap(textureDiffuse, pMaterial->diffuse_map);
+	return true;
+}
+// import the mesh as a GLTF file
+bool Mesh::LoadGLTF(const String& fileName, bool bBinary)
+{
+	ASSERT(!fileName.IsEmpty());
+	Release();
+
+	// load model
+	tinygltf::Model gltfModel; {
+		tinygltf::TinyGLTF loader;
+		std::string err, warn;
+		if (bBinary ?
+			!loader.LoadBinaryFromFile(&gltfModel, &err, &warn, fileName) :
+			!loader.LoadASCIIFromFile(&gltfModel, &err, &warn, fileName))
+			return false;
+		if (!err.empty()) {
+			VERBOSE("error: %s", err.c_str());
+			return false;
+		}
+		if (!warn.empty())
+			DEBUG("warning: %s", warn.c_str());
+	}
+	
+	// parse model
+	for (const tinygltf::Mesh& gltfMesh : gltfModel.meshes) {
+		for (const tinygltf::Primitive& gltfPrimitive : gltfMesh.primitives) {
+			if (gltfPrimitive.mode != TINYGLTF_MODE_TRIANGLES)
+				continue;
+			Mesh mesh;
+			// read vertices
+			{
+				const tinygltf::Accessor& gltfAccessor = gltfModel.accessors[gltfPrimitive.attributes.at("POSITION")];
+				if (gltfAccessor.type != TINYGLTF_TYPE_VEC3)
+					continue;
+				const tinygltf::BufferView& gltfBufferView = gltfModel.bufferViews[gltfAccessor.bufferView];
+				const tinygltf::Buffer& buffer = gltfModel.buffers[gltfBufferView.buffer];
+				const uint8_t* pData = buffer.data.data() + gltfBufferView.byteOffset + gltfAccessor.byteOffset;
+				mesh.vertices.resize((VIndex)gltfAccessor.count);
+				if (gltfAccessor.componentType == TINYGLTF_COMPONENT_TYPE_FLOAT) {
+					ASSERT(gltfBufferView.byteLength == sizeof(Vertex) * gltfAccessor.count);
+					memcpy(mesh.vertices.data(), pData, gltfBufferView.byteLength);
+				}
+				else if (gltfAccessor.componentType == TINYGLTF_COMPONENT_TYPE_DOUBLE) {
+					for (int i = 0; i < gltfAccessor.count; ++i)
+						mesh.vertices[i] = ((const Point3d*)pData)[i];
+				}
+				else {
+					VERBOSE("error: unsupported vertices (component type)");
+					continue;
+				}
+			}
+			// read faces
+			{
+				const tinygltf::Accessor& gltfAccessor = gltfModel.accessors[gltfPrimitive.indices];
+				if (gltfAccessor.type != TINYGLTF_TYPE_SCALAR)
+					continue;
+				const tinygltf::BufferView& gltfBufferView = gltfModel.bufferViews[gltfAccessor.bufferView];
+				const tinygltf::Buffer& buffer = gltfModel.buffers[gltfBufferView.buffer];
+				const uint8_t* pData = buffer.data.data() + gltfBufferView.byteOffset + gltfAccessor.byteOffset;
+				mesh.faces.resize((FIndex)(gltfAccessor.count/3));
+				if (gltfAccessor.componentType == TINYGLTF_COMPONENT_TYPE_INT ||
+					gltfAccessor.componentType == TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT) {
+					ASSERT(gltfBufferView.byteLength == sizeof(uint32_t) * gltfAccessor.count);
+					memcpy(mesh.faces.data(), pData, gltfBufferView.byteLength);
+				}
+				else {
+					VERBOSE("error: unsupported faces (component type)");
+					continue;
+				}
+			}
+			Join(mesh);
+		}
+	}
 	return true;
 } // Load
 /*----------------------------------------------------------------*/
@@ -3556,7 +3666,7 @@ void Mesh::CloseHoleQuality(VertexIdxArr& verts)
 			const Normal n(mesh.FaceNormal(face));
 			// compute the angle between the two existing edges of the face
 			// (the angle computation takes into account the case of reversed face)
-			angle = ACOS(ComputeAngle<float,float>(mesh.vertices[face[1]].ptr(), mesh.vertices[face[0]].ptr(), mesh.vertices[face[2]].ptr()));
+			angle = ACOS(ComputeAngle(mesh.vertices[face[1]].ptr(), mesh.vertices[face[0]].ptr(), mesh.vertices[face[2]].ptr()));
 			if (n.dot(mesh.VertexNormal(face[1])) < 0)
 				angle = float(2*M_PI) - angle;
 			// compute quality as a composition of dihedral angle and area/sum(edge^2);
@@ -3585,10 +3695,10 @@ void Mesh::CloseHoleQuality(VertexIdxArr& verts)
 			else {
 				const Normal n0(mesh.FaceNormal(mesh.faces[indices[0]]));
 				if (indices.GetSize() == 1)
-					dihedral = ACOS(ComputeAngle<float,float>(n.ptr(), n0.ptr()));
+					dihedral = ACOS(ComputeAngle(n.ptr(), n0.ptr()));
 				else {
 					const Normal n1(mesh.FaceNormal(mesh.faces[indices[1]]));
-					dihedral = MAXF(ACOS(ComputeAngle<float,float>(n.ptr(), n0.ptr())), ACOS(ComputeAngle<float,float>(n.ptr(), n1.ptr())));
+					dihedral = MAXF(ACOS(ComputeAngle(n.ptr(), n0.ptr())), ACOS(ComputeAngle(n.ptr(), n1.ptr())));
 				}
 			}
 			aspectRatio = ComputeTriangleQuality(mesh.vertices[face[0]], mesh.vertices[face[1]], mesh.vertices[face[2]]);
@@ -3675,6 +3785,20 @@ void Mesh::CloseHoleQuality(VertexIdxArr& verts)
 }
 /*----------------------------------------------------------------*/
 
+// crop mesh such that none of its faces is touching or outside the given bounding-box
+void Mesh::RemoveFacesOutside(const OBB3f& obb) {
+	ASSERT(obb.IsValid());
+	VertexIdxArr vertexRemove;
+	FOREACH(i, vertices)
+		if (!obb.Intersects(vertices[i]))
+			vertexRemove.emplace_back(i);
+	if (!vertexRemove.empty()) {
+		if (vertices.size() != vertexFaces.size())
+			ListIncidenteFaces();
+		RemoveVertices(vertexRemove, true);
+	}
+}
+
 // remove the given list of faces
 void Mesh::RemoveFaces(FaceIdxArr& facesRemove, bool bUpdateLists)
 {
@@ -3686,10 +3810,13 @@ void Mesh::RemoveFaces(FaceIdxArr& facesRemove, bool bUpdateLists)
 			if (idxLast == idxF)
 				continue;
 			faces.RemoveAt(idxF);
+			if (!faceTexcoords.IsEmpty()) {
+				faceTexcoords.RemoveAt(idxF * 3, 3);
+			}
 			idxLast = idxF;
 		}
 	} else {
-		ASSERT(vertices.GetSize() == vertexFaces.GetSize());
+		ASSERT(vertices.size() == vertexFaces.size());
 		RFOREACHPTR(pIdxF, facesRemove) {
 			const FIndex idxF(*pIdxF);
 			if (idxLast == idxF)
@@ -3718,16 +3845,19 @@ void Mesh::RemoveFaces(FaceIdxArr& facesRemove, bool bUpdateLists)
 				}
 			}
 			faces.RemoveAt(idxF);
+			if (!faceTexcoords.IsEmpty()) {
+				faceTexcoords.RemoveAt(idxF * 3, 3);
+			}
 			idxLast = idxF;
 		}
 	}
 	vertexVertices.Release();
 }
 
-// remove the given list of vertices
+// remove the given list of vertices, together with all faces containing them
 void Mesh::RemoveVertices(VertexIdxArr& vertexRemove, bool bUpdateLists)
 {
-	ASSERT(vertices.GetSize() == vertexFaces.GetSize());
+	ASSERT(vertices.size() == vertexFaces.size());
 	vertexRemove.Sort();
 	VIndex idxLast(VertexIdxArr::NO_INDEX);
 	if (!bUpdateLists) {
@@ -3735,7 +3865,7 @@ void Mesh::RemoveVertices(VertexIdxArr& vertexRemove, bool bUpdateLists)
 			const VIndex idxV(*pIdxV);
 			if (idxLast == idxV)
 				continue;
-			const VIndex idxVM(vertices.GetSize()-1);
+			const VIndex idxVM(vertices.size()-1);
 			if (idxV < idxVM) {
 				// update all faces of the moved vertex
 				const FaceIdxArr& vf(vertexFaces[idxVM]);
@@ -3753,7 +3883,7 @@ void Mesh::RemoveVertices(VertexIdxArr& vertexRemove, bool bUpdateLists)
 		const VIndex idxV(*pIdxV);
 		if (idxLast == idxV)
 			continue;
-		const VIndex idxVM(vertices.GetSize()-1);
+		const VIndex idxVM(vertices.size()-1);
 		if (idxV < idxVM) {
 			// update all faces of the moved vertex
 			const FaceIdxArr& vf(vertexFaces[idxVM]);
@@ -3769,7 +3899,8 @@ void Mesh::RemoveVertices(VertexIdxArr& vertexRemove, bool bUpdateLists)
 		vertices.RemoveAt(idxV);
 		idxLast = idxV;
 	}
-	RemoveFaces(facesRemove);
+	if (!facesRemove.empty())
+		RemoveFaces(facesRemove);
 }
 
 // remove all vertices that are not assigned to any face
@@ -3838,6 +3969,27 @@ void Mesh::ConvertTexturePerVertex(Mesh& mesh) const
 /*----------------------------------------------------------------*/
 
 
+// estimate the ground-plane as the plane agreeing with most vertices
+//  - sampleMesh: uniformly samples points on the mesh (0 - disabled, <0 - number of points, >0 - sample density per square unit)
+//  - planeThreshold: threshold used to estimate the ground plane (0 - auto)
+Planef Mesh::EstimateGroundPlane(const ImageArr& images, float sampleMesh, float planeThreshold, const String& fileExportPlane) const
+{
+	ASSERT(!IsEmpty());
+	PointCloud pointcloud;
+	if (sampleMesh != 0) {
+		// create the point cloud by sampling the mesh
+		if (sampleMesh > 0)
+			SamplePoints(sampleMesh, 0, pointcloud);
+		else
+			SamplePoints(ROUND2INT<unsigned>(-sampleMesh), pointcloud);
+	} else {
+		// create the point cloud containing all vertices
+		for (const Vertex& X: vertices)
+			pointcloud.points.emplace_back(X);
+	}
+	return pointcloud.EstimateGroundPlane(images, planeThreshold, fileExportPlane);
+}
+/*----------------------------------------------------------------*/
 
 
 // computes the centroid of the given mesh face

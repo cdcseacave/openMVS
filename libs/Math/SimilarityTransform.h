@@ -1,7 +1,7 @@
 /*
-* PatchMatchCUDA.h
+* SimilarityTransform.h
 *
-* Copyright (c) 2014-2021 SEACAVE
+* Copyright (c) 2014-2022 SEACAVE
 *
 * Author(s):
 *
@@ -29,19 +29,11 @@
 *      containing it.
 */
 
-#ifndef _MVS_PATCHMATCHCUDA_H_
-#define _MVS_PATCHMATCHCUDA_H_
-
-#ifdef _USE_CUDA
+#ifndef _MVS_SIMILARITY_TRANSFORM_H_
+#define _MVS_SIMILARITY_TRANSFORM_H_
 
 
 // I N C L U D E S /////////////////////////////////////////////////
-
-#include "SceneDensify.h"
-#pragma push_macro("EIGEN_DEFAULT_DENSE_INDEX_TYPE")
-#undef EIGEN_DEFAULT_DENSE_INDEX_TYPE
-#include "PatchMatchCUDA.inl"
-#pragma pop_macro("EIGEN_DEFAULT_DENSE_INDEX_TYPE")
 
 
 // D E F I N E S ///////////////////////////////////////////////////
@@ -51,8 +43,13 @@
 
 namespace MVS {
 
+// find the similarity transform that best aligns the given two sets of corresponding 3D points
+bool SimilarityTransform(const CLISTDEF0(Point3)& points, const CLISTDEF0(Point3)& pointsRef, Matrix4x4& transform);
+
+// decompose similarity transform into rotation, translation and scale
+void DecomposeSimilarityTransform(const Matrix4x4& transform, Matrix3x3& R, Point3& t, REAL& s);
+/*----------------------------------------------------------------*/
+
 } // namespace MVS
 
-#endif // _USE_CUDA
-
-#endif // _MVS_PATCHMATCHCUDA_H_
+#endif // _MVS_SIMILARITY_TRANSFORM_H_

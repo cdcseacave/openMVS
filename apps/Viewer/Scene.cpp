@@ -237,31 +237,37 @@ bool Scene::Open(LPCTSTR fileName, LPCTSTR meshFileName)
 		// load given mesh
 		scene.mesh.Load(meshFileName);
 	}
-	if (scene.IsEmpty())
-		return false;
+	if (!scene.pointcloud.IsEmpty())
+		scene.pointcloud.PrintStatistics(scene.images.data(), &scene.obb);
 
 	#if 1
 	// create octree structure used to accelerate selection functionality
-	events.AddEvent(new EVTComputeOctree(this));
+	if (!scene.IsEmpty())
+		events.AddEvent(new EVTComputeOctree(this));
 	#endif
 
 	// init scene
 	AABB3d bounds(true);
-	AABB3d imageBounds(true);
 	Point3d center(Point3d::INF);
-	if (!scene.pointcloud.IsEmpty()) {
-		bounds = scene.pointcloud.GetAABB(MINF(3u,scene.nCalibratedImages));
-		if (bounds.IsEmpty())
-			bounds = scene.pointcloud.GetAABB();
-		center = scene.pointcloud.GetCenter();
-	}
-	if (!scene.mesh.IsEmpty()) {
-		scene.mesh.ComputeNormalFaces();
-		bounds.Insert(scene.mesh.GetAABB());
-		center = scene.mesh.GetCenter();
+	if (scene.IsBounded()) {
+		bounds = AABB3d(scene.obb.GetAABB());
+		center = bounds.GetCenter();
+	} else {
+		if (!scene.pointcloud.IsEmpty()) {
+			bounds = scene.pointcloud.GetAABB(MINF(3u,scene.nCalibratedImages));
+			if (bounds.IsEmpty())
+				bounds = scene.pointcloud.GetAABB();
+			center = scene.pointcloud.GetCenter();
+		}
+		if (!scene.mesh.IsEmpty()) {
+			scene.mesh.ComputeNormalFaces();
+			bounds.Insert(scene.mesh.GetAABB());
+			center = scene.mesh.GetCenter();
+		}
 	}
 
 	// init images
+	AABB3d imageBounds(true);
 	images.Reserve(scene.images.size());
 	FOREACH(idxImage, scene.images) {
 		const MVS::Image& imageData = scene.images[idxImage];
@@ -270,6 +276,10 @@ bool Scene::Open(LPCTSTR fileName, LPCTSTR meshFileName)
 		images.emplace_back(idxImage);
 		imageBounds.InsertFull(imageData.camera.C);
 	}
+	if (imageBounds.IsEmpty())
+		imageBounds.Enlarge(0.5);
+	if (bounds.IsEmpty())
+		bounds = imageBounds;
 
 	// init and load texture
 	if (scene.mesh.HasTexture()) {
@@ -309,7 +319,7 @@ bool Scene::Open(LPCTSTR fileName, LPCTSTR meshFileName)
 	window.clbkTogleSceneBox = DELEGATEBINDCLASS(Window::ClbkTogleSceneBox, &Scene::TogleSceneBox, this);
 	if (scene.IsBounded())
 		window.clbkCompileBounds = DELEGATEBINDCLASS(Window::ClbkCompileBounds, &Scene::CompileBounds, this);
-	if (!bounds.IsEmpty())
+	if (!scene.IsEmpty())
 		window.clbkRayScene = DELEGATEBINDCLASS(Window::ClbkRayScene, &Scene::CastRay, this);
 	window.Reset(!scene.pointcloud.IsEmpty()&&!scene.mesh.IsEmpty()?Window::SPR_NONE:Window::SPR_ALL,
 		MINF(2u,images.size()));
@@ -353,7 +363,7 @@ bool Scene::Save(LPCTSTR _fileName, bool bRescaleImages)
 }
 
 // export the scene
-bool Scene::Export(LPCTSTR _fileName, LPCTSTR exportType, bool losslessTexture) const
+bool Scene::Export(LPCTSTR _fileName, LPCTSTR exportType) const
 {
 	if (!IsOpen())
 		return false;
@@ -362,7 +372,7 @@ bool Scene::Export(LPCTSTR _fileName, LPCTSTR exportType, bool losslessTexture) 
 	const String fileName(_fileName != NULL ? String(_fileName) : sceneName);
 	const String baseFileName(Util::getFileFullName(fileName));
 	const bool bPoints(scene.pointcloud.Save(lastFileName=(baseFileName+_T("_pointcloud.ply"))));
-	const bool bMesh(scene.mesh.Save(lastFileName=(baseFileName+_T("_mesh")+(exportType?exportType:(Util::getFileExt(fileName)==_T(".obj")?_T(".obj"):_T(".ply")))), true, losslessTexture));
+	const bool bMesh(scene.mesh.Save(lastFileName=(baseFileName+_T("_mesh")+(exportType?exportType:(Util::getFileExt(fileName)==_T(".obj")?_T(".obj"):_T(".ply")))), cList<String>(), true));
 	#if TD_VERBOSE != TD_VERBOSE_OFF
 	if (VERBOSITY_LEVEL > 2 && (bPoints || bMesh))
 		scene.ExportCamerasMLP(Util::getFileFullName(lastFileName)+_T(".mlp"), lastFileName);
@@ -422,6 +432,8 @@ void Scene::CompileMesh()
 	if (scene.mesh.IsEmpty())
 		return;
 	ReleaseMesh();
+	if (scene.mesh.faceNormals.empty())
+		scene.mesh.ComputeNormalFaces();
 	listMesh = glGenLists(1);
 	glNewList(listMesh, GL_COMPILE);
 	// compile mesh
@@ -503,18 +515,8 @@ void Scene::Draw()
 			Image& image = images[idx];
 			const MVS::Image& imageData = scene.images[image.idx];
 			const MVS::Camera& camera = imageData.camera;
-			// change coordinates system to the camera space
-			glPushMatrix();
-			glMultMatrixd((GLdouble*)TransL2W((const Matrix3x3::EMat)camera.R, -(const Point3::EVec)camera.C).data());
-			glPointSize(window.pointSize+1.f);
-			glDisable(GL_TEXTURE_2D);
-			// draw camera position and image center
-			const double scaleFocal(window.camera.scaleF);
-			glBegin(GL_POINTS);
-			glColor3f(1,0,0); glVertex3f(0,0,0); // camera position
-			glColor3f(0,1,0); glVertex3f(0,0,(float)scaleFocal); // image center
-			glEnd();
 			// cache image corner coordinates
+			const double scaleFocal(window.camera.scaleF);
 			const Point2d pp(camera.GetPrincipalPoint());
 			const double focal(camera.GetFocalLength()/scaleFocal);
 			const double cx(-pp.x/focal);
@@ -525,6 +527,17 @@ void Scene::Draw()
 			const Point3d ic2(cx, py, scaleFocal);
 			const Point3d ic3(px, py, scaleFocal);
 			const Point3d ic4(px, cy, scaleFocal);
+			// change coordinates system to the camera space
+			glPushMatrix();
+			glMultMatrixd((GLdouble*)TransL2W((const Matrix3x3::EMat)camera.R, -(const Point3::EVec)camera.C).data());
+			glPointSize(window.pointSize+1.f);
+			glDisable(GL_TEXTURE_2D);
+			// draw camera position and image center
+			glBegin(GL_POINTS);
+			glColor3f(1,0,0); glVertex3f(0,0,0); // camera position
+			glColor3f(0,1,0); glVertex3f(0,0,(float)scaleFocal); // image center
+			glColor3f(0,0,1); glVertex3d((0.5*imageData.width-pp.x)/focal, cy, scaleFocal); // image up
+			glEnd();
 			// draw image thumbnail
 			const bool bSelectedImage(idx == window.camera.currentCamID);
 			if (bSelectedImage) {
@@ -678,10 +691,10 @@ void Scene::TogleSceneBox()
 	};
 	if (scene.IsBounded())
 		scene.obb = OBB3f(true);
-	else if (!scene.pointcloud.IsEmpty())
-		scene.obb.Set(EnlargeAABB(scene.pointcloud.GetAABB(window.minViews)));
 	else if (!scene.mesh.IsEmpty())
 		scene.obb.Set(EnlargeAABB(scene.mesh.GetAABB()));
+	else if (!scene.pointcloud.IsEmpty())
+		scene.obb.Set(EnlargeAABB(scene.pointcloud.GetAABB(window.minViews)));
 	CompileBounds();
 }
 

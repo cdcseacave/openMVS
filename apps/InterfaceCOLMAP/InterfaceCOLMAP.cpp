@@ -130,7 +130,6 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		boost::program_options::store(boost::program_options::command_line_parser((int)argc, argv).options(cmdline_options).positional(p).run(), OPT::vm);
 		boost::program_options::notify(OPT::vm);
 		Util::ensureValidPath(OPT::strInputFileName);
-		WORKING_FOLDER = (File::isFolder(OPT::strInputFileName) ? OPT::strInputFileName : Util::getFilePath(OPT::strInputFileName));
 		INIT_WORKING_FOLDER;
 		// parse configuration file
 		std::ifstream ifs(MAKE_PATH_SAFE(OPT::strConfigFileName));
@@ -169,6 +168,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	// initialize optional options
 	Util::ensureValidFolderPath(OPT::strImageFolder);
 	Util::ensureValidPath(OPT::strOutputFileName);
+	OPT::strImageFolder = MAKE_PATH_FULL(WORKING_FOLDER_FULL, OPT::strImageFolder);
 	const String strInputFileNameExt(Util::getFileExt(OPT::strInputFileName).ToLower());
 	OPT::bFromOpenMVS = (strInputFileNameExt == MVS_EXT);
 	if (OPT::bFromOpenMVS) {
@@ -178,8 +178,6 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		Util::ensureFolderSlash(OPT::strInputFileName);
 		if (OPT::strOutputFileName.empty())
 			OPT::strOutputFileName = OPT::strInputFileName + _T("scene") MVS_EXT;
-		else
-			OPT::strImageFolder = Util::getRelativePath(Util::getFilePath(OPT::strOutputFileName), OPT::strInputFileName+OPT::strImageFolder);
 	}
 
 	// initialize global options
@@ -861,9 +859,10 @@ bool ImportScene(const String& strFolder, const String& strOutFolder, Interface&
 					}, normalMap);
 				}
 				MVS::ConfidenceMap confMap;
+				MVS::ViewsMap viewsMap;
 				const auto depthMM(std::minmax_element(colDepthMap.data_.cbegin(), colDepthMap.data_.cend()));
 				const MVS::Depth dMin(*depthMM.first), dMax(*depthMM.second);
-				if (!ExportDepthDataRaw(strOutFolder+String::FormatString("depth%04u.dmap", image.ID), MAKE_PATH_FULL(strOutFolder, image.name), IDs, depthMap.size(), K, pose.R, pose.C, dMin, dMax, depthMap, normalMap, confMap))
+				if (!ExportDepthDataRaw(strOutFolder+String::FormatString("depth%04u.dmap", image.ID), MAKE_PATH_FULL(strOutFolder, image.name), IDs, depthMap.size(), K, pose.R, pose.C, dMin, dMax, depthMap, normalMap, confMap, viewsMap))
 					return false;
 			}
 		}
@@ -950,7 +949,7 @@ bool ExportScene(const String& strFolder, const Interface& scene)
 	const uint32_t avgPointsPerSmallView(3000), avgPointsPerLargeView(12000);
 	{
 		images.resize(scene.images.size());
-		cameras.resize(scene.images.size());
+		cameras.resize((unsigned)scene.images.size());
 		for (uint32_t ID=0; ID<(uint32_t)scene.images.size(); ++ID) {
 			const Interface::Image& image = scene.images[ID];
 			if (image.poseID == MVS::NO_ID)
@@ -963,7 +962,7 @@ bool ExportScene(const String& strFolder, const Interface& scene)
 			img.q = Eigen::Quaterniond(Eigen::Map<const EMat33d>(pose.R.val));
 			img.t = -(img.q * Eigen::Map<const EVec3d>(&pose.C.x));
 			img.idCamera = image.platformID;
-			img.name = MAKE_PATH_REL(OPT::strImageFolder, image.name);
+			img.name = MAKE_PATH_REL(OPT::strImageFolder, MAKE_PATH_FULL(WORKING_FOLDER_FULL, image.name));
 			Camera& camera = cameras[ID];
 			camera.K = Ks[image.platformID];
 			camera.R = pose.R;
@@ -1115,8 +1114,8 @@ bool ExportScene(const String& strFolder, const Interface& scene)
 bool ExportIntrinsicsTxt(const String& fileName, const Interface& scene)
 {
 	LOG_OUT() << "Writing intrinsics: " << fileName << std::endl;
-	size_t idxValidK(MVS::NO_ID);
-	FOREACH(ID, scene.images) {
+	uint32_t idxValidK(MVS::NO_ID);
+	for (uint32_t ID=0; ID<(uint32_t)scene.images.size(); ++ID) {
 		const Interface::Image& image = scene.images[ID];
 		if (!image.IsValid())
 			continue;

@@ -571,58 +571,58 @@ FORCEINLINE bool ISEQUAL(const cv::Matx<TYPE,m,n>& v1, const cv::Matx<TYPE,m,n>&
 }
 
 // round
-template <typename TYPE>
-FORCEINLINE SEACAVE::TPoint2<int32_t> Floor2Int(const cv::Point_<TYPE>& v)
+template <typename TYPE, typename INTTYPE=int>
+FORCEINLINE SEACAVE::TPoint2<INTTYPE> Floor2Int(const cv::Point_<TYPE>& v)
 {
-	return SEACAVE::TPoint2<int32_t>(FLOOR2INT(v.x), FLOOR2INT(v.y));
+	return SEACAVE::TPoint2<INTTYPE>(FLOOR2INT(v.x), FLOOR2INT(v.y));
 }
-template <typename TYPE>
-FORCEINLINE SEACAVE::TPoint2<int32_t> Ceil2Int(const cv::Point_<TYPE>& v)
+template <typename TYPE, typename INTTYPE=int>
+FORCEINLINE SEACAVE::TPoint2<INTTYPE> Ceil2Int(const cv::Point_<TYPE>& v)
 {
-	return SEACAVE::TPoint2<int32_t>(CEIL2INT(v.x), CEIL2INT(v.y));
+	return SEACAVE::TPoint2<INTTYPE>(CEIL2INT(v.x), CEIL2INT(v.y));
 }
-template <typename TYPE>
-FORCEINLINE SEACAVE::TPoint2<int32_t> Round2Int(const cv::Point_<TYPE>& v)
+template <typename TYPE, typename INTTYPE=int>
+FORCEINLINE SEACAVE::TPoint2<INTTYPE> Round2Int(const cv::Point_<TYPE>& v)
 {
-	return SEACAVE::TPoint2<int32_t>(ROUND2INT(v.x), ROUND2INT(v.y));
-}
-
-template <typename TYPE>
-FORCEINLINE SEACAVE::TPoint3<int32_t> Floor2Int(const cv::Point3_<TYPE>& v)
-{
-	return SEACAVE::TPoint3<int32_t>(FLOOR2INT(v.x), FLOOR2INT(v.y), FLOOR2INT(v.z));
-}
-template <typename TYPE>
-FORCEINLINE SEACAVE::TPoint3<int32_t> Ceil2Int(const cv::Point3_<TYPE>& v)
-{
-	return SEACAVE::TPoint3<int32_t>(CEIL2INT(v.x), CEIL2INT(v.y), CEIL2INT(v.z));
-}
-template <typename TYPE>
-FORCEINLINE SEACAVE::TPoint3<int32_t> Round2Int(const cv::Point3_<TYPE>& v)
-{
-	return SEACAVE::TPoint3<int32_t>(ROUND2INT(v.x), ROUND2INT(v.y), ROUND2INT(v.z));
+	return SEACAVE::TPoint2<INTTYPE>(ROUND2INT(v.x), ROUND2INT(v.y));
 }
 
-template <typename TYPE, int m, int n>
-FORCEINLINE SEACAVE::TMatrix<TYPE,m,n> Floor2Int(const cv::Matx<TYPE,m,n>& v)
+template <typename TYPE, typename INTTYPE=int>
+FORCEINLINE SEACAVE::TPoint3<INTTYPE> Floor2Int(const cv::Point3_<TYPE>& v)
 {
-	SEACAVE::TMatrix<TYPE,m,n> nv;
+	return SEACAVE::TPoint3<INTTYPE>(FLOOR2INT(v.x), FLOOR2INT(v.y), FLOOR2INT(v.z));
+}
+template <typename TYPE, typename INTTYPE=int>
+FORCEINLINE SEACAVE::TPoint3<INTTYPE> Ceil2Int(const cv::Point3_<TYPE>& v)
+{
+	return SEACAVE::TPoint3<INTTYPE>(CEIL2INT(v.x), CEIL2INT(v.y), CEIL2INT(v.z));
+}
+template <typename TYPE, typename INTTYPE=int>
+FORCEINLINE SEACAVE::TPoint3<INTTYPE> Round2Int(const cv::Point3_<TYPE>& v)
+{
+	return SEACAVE::TPoint3<INTTYPE>(ROUND2INT(v.x), ROUND2INT(v.y), ROUND2INT(v.z));
+}
+
+template <typename TYPE, int m, int n, typename INTTYPE=int>
+FORCEINLINE SEACAVE::TMatrix<INTTYPE,m,n> Floor2Int(const cv::Matx<TYPE,m,n>& v)
+{
+	SEACAVE::TMatrix<INTTYPE,m,n> nv;
 	for (int i=0; i<m*n; ++i)
 		nv.val[i] = Floor2Int(v.val[i]);
 	return nv;
 }
-template <typename TYPE, int m, int n>
-FORCEINLINE SEACAVE::TMatrix<TYPE,m,n> Ceil2Int(const cv::Matx<TYPE,m,n>& v)
+template <typename TYPE, int m, int n, typename INTTYPE=int>
+FORCEINLINE SEACAVE::TMatrix<INTTYPE,m,n> Ceil2Int(const cv::Matx<TYPE,m,n>& v)
 {
-	SEACAVE::TMatrix<TYPE,m,n> nv;
+	SEACAVE::TMatrix<INTTYPE,m,n> nv;
 	for (int i=0; i<m*n; ++i)
 		nv.val[i] = Ceil2Int(v.val[i]);
 	return nv;
 }
-template <typename TYPE, int m, int n>
-FORCEINLINE SEACAVE::TMatrix<TYPE,m,n> Round2Int(const cv::Matx<TYPE,m,n>& v)
+template <typename TYPE, int m, int n, typename INTTYPE=int>
+FORCEINLINE SEACAVE::TMatrix<INTTYPE,m,n> Round2Int(const cv::Matx<TYPE,m,n>& v)
 {
-	SEACAVE::TMatrix<TYPE,m,n> nv;
+	SEACAVE::TMatrix<INTTYPE,m,n> nv;
 	for (int i=0; i<m*n; ++i)
 		nv.val[i] = Round2Int(v.val[i]);
 	return nv;

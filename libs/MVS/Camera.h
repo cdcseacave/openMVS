@@ -51,7 +51,9 @@ namespace MVS {
 // (as opposite to standard form t which is negated and has the rotation of the camera already applied P = K[R|t]);
 // the world and camera coordinates system is right handed,
 // with x pointing right, y pointing down, and z pointing forward
-// (see: R. Hartley, "Multiple View Geometry," 2004, pp. 156.)
+// (see: R. Hartley, "Multiple View Geometry," 2004, pp. 156.);
+// the projection in image coordinates uses the convention that the center of a pixel is defined at integer coordinates,
+// i.e. the center is at (0, 0) and the top left corner is at (-0.5, -0.5)
 class MVS_API CameraIntern
 {
 public:
@@ -201,16 +203,10 @@ public:
 
 	// normalize inhomogeneous 2D point by the given camera intrinsics K
 	// K is assumed to be the [3,3] triangular matrix with: fx, fy, s, cx, cy and scale 1
-	template<typename TYPE1, typename TYPE2, typename TYPE3>
-	static inline void NormalizeProjection(const TYPE1* K, const TYPE2* x, TYPE3* n) {
-		n[0] = TYPE3(K[0]*x[0] + K[1]*x[1] + K[2]);
-		n[1] = TYPE3(            K[4]*x[1] + K[5]);
-	}
 	template <typename TYPE>
 	inline TPoint2<TYPE> NormalizeProjection(const TPoint2<TYPE>& proj) const {
 		TPoint2<TYPE> pt;
-		const TMatrix<TYPE,3,3> invK(GetInvK<TYPE>());
-		NormalizeProjection(invK.val, proj.ptr(), pt.ptr());
+		NormalizeProjectionInv(GetInvK<TYPE>(), proj.ptr(), pt.ptr());
 		return pt;
 	}
 
@@ -420,7 +416,7 @@ public:
 	BOOST_SERIALIZATION_SPLIT_MEMBER()
 	#endif
 };
-typedef SEACAVE::cList<Camera, const Camera&, 0> CameraArr;
+typedef CLISTDEF0IDX(Camera,uint32_t) CameraArr;
 /*----------------------------------------------------------------*/
 
 MVS_API void DecomposeProjectionMatrix(const PMatrix& P, KMatrix& K, RMatrix& R, CMatrix& C);

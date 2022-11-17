@@ -1,7 +1,7 @@
 /*
- * Viewer.cpp
+ * TransformScene.cpp
  *
- * Copyright (c) 2014-2015 SEACAVE
+ * Copyright (c) 2014-2021 SEACAVE
  *
  * Author(s):
  *
@@ -29,17 +29,17 @@
  *      containing it.
  */
 
-#include "Common.h"
+#include "../../libs/MVS/Common.h"
+#include "../../libs/MVS/Scene.h"
 #include <boost/program_options.hpp>
 
-#include "Scene.h"
-
-using namespace VIEWER;
+using namespace MVS;
 
 
 // D E F I N E S ///////////////////////////////////////////////////
 
-#define APPNAME _T("Viewer")
+#define APPNAME _T("TransformScene")
+#define MVS_EXT _T(".mvs")
 
 
 // S T R U C T S ///////////////////////////////////////////////////
@@ -47,20 +47,18 @@ using namespace VIEWER;
 namespace {
 
 namespace OPT {
-String strInputFileName;
-String strOutputFileName;
-String strMeshFileName;
-bool bLosslessTexture;
-unsigned nArchiveType;
-int nProcessPriority;
-unsigned nMaxThreads;
-unsigned nMaxMemory;
-String strExportType;
-String strConfigFileName;
-#if TD_VERBOSE != TD_VERBOSE_OFF
-bool bLogFile;
-#endif
-boost::program_options::variables_map vm;
+	String strInputFileName;
+	String strOutputFileName;
+	String strAlignFileName;
+	bool bComputeVolume;
+	float fPlaneThreshold;
+	float fSampleMesh;
+	unsigned nUpAxis;
+	unsigned nArchiveType;
+	int nProcessPriority;
+	unsigned nMaxThreads;
+	String strConfigFileName;
+	boost::program_options::variables_map vm;
 } // namespace OPT
 
 // initialize and parse the command line parameters
@@ -76,42 +74,37 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		("help,h", "produce this help message")
 		("working-folder,w", boost::program_options::value<std::string>(&WORKING_FOLDER), "working directory (default current directory)")
 		("config-file,c", boost::program_options::value<std::string>(&OPT::strConfigFileName)->default_value(APPNAME _T(".cfg")), "file name containing program options")
-		("export-type", boost::program_options::value<std::string>(&OPT::strExportType), "file type used to export the 3D scene (ply or obj)")
-		("archive-type", boost::program_options::value(&OPT::nArchiveType)->default_value(ARCHIVE_DEFAULT), "project archive type: 0-text, 1-binary, 2-compressed binary")
-		("process-priority", boost::program_options::value(&OPT::nProcessPriority)->default_value(0), "process priority (normal by default)")
-		("max-threads", boost::program_options::value(&OPT::nMaxThreads)->default_value(0), "maximum number of threads that this process should use (0 - use all available cores)")
-		("max-memory", boost::program_options::value(&OPT::nMaxMemory)->default_value(0), "maximum amount of memory in MB that this process should use (0 - use all available memory)")
+		("archive-type", boost::program_options::value(&OPT::nArchiveType)->default_value(ARCHIVE_MVS), "project archive type: 0-text, 1-binary, 2-compressed binary")
+		("process-priority", boost::program_options::value(&OPT::nProcessPriority)->default_value(-1), "process priority (below normal by default)")
+		("max-threads", boost::program_options::value(&OPT::nMaxThreads)->default_value(0), "maximum number of threads (0 for using all available cores)")
 		#if TD_VERBOSE != TD_VERBOSE_OFF
-		("log-file", boost::program_options::value(&OPT::bLogFile)->default_value(false), "dump log to a file")
 		("verbosity,v", boost::program_options::value(&g_nVerbosityLevel)->default_value(
 			#if TD_VERBOSE == TD_VERBOSE_DEBUG
 			3
 			#else
 			2
 			#endif
-			), "verbosity level")
+		), "verbosity level")
 		#endif
 		;
 
 	// group of options allowed both on command line and in config file
-	boost::program_options::options_description config("Viewer options");
+	boost::program_options::options_description config("Main options");
 	config.add_options()
-		("input-file,i", boost::program_options::value<std::string>(&OPT::strInputFileName), "input project filename containing camera poses and scene (point-cloud/mesh)")
-		("output-file,o", boost::program_options::value<std::string>(&OPT::strOutputFileName), "output filename for storing the mesh")
-		;
-
-	// hidden options, allowed both on command line and
-	// in config file, but will not be shown to the user
-	boost::program_options::options_description hidden("Hidden options");
-	hidden.add_options()
-		("mesh-file", boost::program_options::value<std::string>(&OPT::strMeshFileName), "mesh file name to texture (overwrite the existing mesh)")
+		("input-file,i", boost::program_options::value<std::string>(&OPT::strInputFileName), "input scene filename")
+		("output-file,o", boost::program_options::value<std::string>(&OPT::strOutputFileName), "output filename for storing the scene")
+		("align-file,o", boost::program_options::value<std::string>(&OPT::strAlignFileName), "input scene filename to which the scene will be cameras aligned")
+		("compute-volume", boost::program_options::value(&OPT::bComputeVolume)->default_value(false), "compute the volume of the given watertight mesh, or else try to estimate the ground plane and assume the mesh is bounded by it")
+		("plane-threshold", boost::program_options::value(&OPT::fPlaneThreshold)->default_value(0.f), "threshold used to estimate the ground plane (<0 - disabled, 0 - auto, >0 - desired threshold)")
+		("sample-mesh", boost::program_options::value(&OPT::fSampleMesh)->default_value(-100000.f), "uniformly samples points on a mesh (0 - disabled, <0 - number of points, >0 - sample density per square unit)")
+		("up-axis", boost::program_options::value(&OPT::nUpAxis)->default_value(2), "scene axis considered to point upwards (0 - x, 1 - y, 2 - z)")
 		;
 
 	boost::program_options::options_description cmdline_options;
-	cmdline_options.add(generic).add(config).add(hidden);
+	cmdline_options.add(generic).add(config);
 
 	boost::program_options::options_description config_file_options;
-	config_file_options.add(config).add(hidden);
+	config_file_options.add(config);
 
 	boost::program_options::positional_options_description p;
 	p.add("input-file", -1);
@@ -133,11 +126,8 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		return false;
 	}
 
-	#if TD_VERBOSE != TD_VERBOSE_OFF
 	// initialize the log file
-	if (OPT::bLogFile)
-		OPEN_LOGFILE((MAKE_PATH(APPNAME _T("-")+Util::getUniqueName(0)+_T(".log"))).c_str());
-	#endif
+	OPEN_LOGFILE(MAKE_PATH(APPNAME _T("-") + Util::getUniqueName(0) + _T(".log")).c_str());
 
 	// print application details: version and command line
 	Util::LogBuild();
@@ -145,39 +135,22 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 
 	// validate input
 	Util::ensureValidPath(OPT::strInputFileName);
-	if (OPT::vm.count("help")) {
+	Util::ensureValidPath(OPT::strAlignFileName);
+	const String strInputFileNameExt(Util::getFileExt(OPT::strInputFileName).ToLower());
+	const bool bInvalidCommand(OPT::strInputFileName.empty() || (OPT::strAlignFileName.empty() && !OPT::bComputeVolume));
+	if (OPT::vm.count("help") || bInvalidCommand) {
 		boost::program_options::options_description visible("Available options");
 		visible.add(generic).add(config);
-		GET_LOG() << _T("\n"
-			"Visualize any know point-cloud/mesh formats or MVS projects. Supply files through command line or Drag&Drop.\n"
-			"Keys:\n"
-			"\tE: export scene\n"
-			"\tR: reset scene\n"
-			"\tB: render bounds\n"
-			"\tB + Shift: togle bounds\n"
-			"\tC: render cameras\n"
-			"\tC + Shift: render camera trajectory\n"
-			"\tC + Ctrl: center scene\n"
-			"\tLeft/Right: select next camera to view the scene\n"
-			"\tS: save scene\n"
-			"\tS + Shift: rescale images and save scene\n"
-			"\tT: render mesh texture\n"
-			"\tW: render wire-frame mesh\n"
-			"\tV: render view rays to the selected point\n"
-			"\tV + Shift: render points seen by the current view\n"
-			"\tUp/Down: adjust point size\n"
-			"\tUp/Down + Shift: adjust minimum number of views accepted when displaying a point or line\n"
-			"\t+/-: adjust camera thumbnail transparency\n"
-			"\t+/- + Shift: adjust camera cones' length\n"
-			"\n")
-			<< visible;
+		GET_LOG() << visible;
 	}
-	if (!OPT::strExportType.IsEmpty())
-		OPT::strExportType = OPT::strExportType.ToLower() == _T("obj") ? _T(".obj") : _T(".ply");
+	if (bInvalidCommand)
+		return false;
 
 	// initialize optional options
 	Util::ensureValidPath(OPT::strOutputFileName);
-	Util::ensureValidPath(OPT::strMeshFileName);
+	Util::ensureUnifySlash(OPT::strOutputFileName);
+	if (OPT::strOutputFileName.IsEmpty())
+		OPT::strOutputFileName = Util::getFileName(OPT::strInputFileName) + "_transformed" MVS_EXT;
 
 	// initialize global options
 	Process::setCurrentProcessPriority((Process::Priority)OPT::nProcessPriority);
@@ -190,8 +163,6 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	// start memory dumper
 	MiniDumper::Create(APPNAME, WORKING_FOLDER);
 	#endif
-
-	Util::Init();
 	return true;
 }
 
@@ -203,8 +174,7 @@ void Finalize()
 	Util::LogMemoryInfo();
 	#endif
 
-	if (OPT::bLogFile)
-		CLOSE_LOGFILE();
+	CLOSE_LOGFILE();
 	CLOSE_LOGCONSOLE();
 	CLOSE_LOG();
 }
@@ -221,18 +191,37 @@ int main(int argc, LPCTSTR* argv)
 	if (!Initialize(argc, argv))
 		return EXIT_FAILURE;
 
-	// create viewer
-	Scene viewer;
-	if (!viewer.Init(cv::Size(1280, 720), APPNAME,
-			OPT::strInputFileName.IsEmpty() ? NULL : MAKE_PATH_SAFE(OPT::strInputFileName).c_str(),
-			OPT::strMeshFileName.IsEmpty() ? NULL : MAKE_PATH_SAFE(OPT::strMeshFileName).c_str()))
+	TD_TIMER_START();
+
+	Scene scene(OPT::nMaxThreads);
+
+	// load given scene
+	if (!scene.Load(MAKE_PATH_SAFE(OPT::strInputFileName), OPT::bComputeVolume))
 		return EXIT_FAILURE;
-	if (viewer.IsOpen() && !OPT::strOutputFileName.IsEmpty()) {
-		// export the scene
-		viewer.Export(MAKE_PATH_SAFE(OPT::strOutputFileName), OPT::strExportType.IsEmpty()?LPCTSTR(NULL):OPT::strExportType.c_str());
+
+	if (!OPT::strAlignFileName.empty()) {
+		// transform this scene such that it best aligns with the given scene based on the camera positions
+		Scene sceneRef(OPT::nMaxThreads);
+		if (!sceneRef.Load(MAKE_PATH_SAFE(OPT::strAlignFileName)))
+			return EXIT_FAILURE;
+		if (!scene.AlignTo(sceneRef))
+			return EXIT_FAILURE;
+		VERBOSE("Scene aligned to the given reference scene (%s)", TD_TIMER_GET_FMT().c_str());
 	}
-	// enter viewer loop
-	viewer.Loop();
+
+	if (OPT::bComputeVolume && !scene.mesh.IsEmpty()) {
+		// compute the mesh volume
+		const REAL volume(scene.ComputeLeveledVolume(OPT::fPlaneThreshold, OPT::fSampleMesh, OPT::nUpAxis));
+		if (volume < 0)
+			return EXIT_FAILURE;
+		OPT::nArchiveType = ARCHIVE_DEFAULT;
+		VERBOSE("Mesh volume: %g (%s)", volume, TD_TIMER_GET_FMT().c_str());
+		scene.mesh.Save(Util::getFileFullName(MAKE_PATH_SAFE(OPT::strOutputFileName)) + _T(".ply"));
+		return EXIT_SUCCESS;
+	}
+
+	// write transformed scene
+	scene.Save(MAKE_PATH_SAFE(OPT::strOutputFileName), (ARCHIVE_TYPE)OPT::nArchiveType);
 
 	Finalize();
 	return EXIT_SUCCESS;

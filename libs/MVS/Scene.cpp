@@ -33,6 +33,7 @@
 #include "Scene.h"
 #define _USE_OPENCV
 #include "Interface.h"
+#include "../Math/SimilarityTransform.h"
 
 using namespace MVS;
 
@@ -321,7 +322,8 @@ bool Scene::LoadDMAP(const String& fileName)
 	DepthMap depthMap;
 	NormalMap normalMap;
 	ConfidenceMap confMap;
-	if (!ImportDepthDataRaw(fileName, imageFileName, IDs, imageSize, camera.K, camera.R, camera.C, dMin, dMax, depthMap, normalMap, confMap))
+	ViewsMap viewsMap;
+	if (!ImportDepthDataRaw(fileName, imageFileName, IDs, imageSize, camera.K, camera.R, camera.C, dMin, dMax, depthMap, normalMap, confMap, viewsMap))
 		return false;
 
 	// create image
@@ -451,7 +453,7 @@ bool Scene::SaveViewNeighbors(const String& fileName) const
 	ASSERT(ImagesHaveNeighbors());
 
 	TD_TIMER_STARTD();
-	
+
 	File file(fileName, File::WRITE, File::CREATE | File::TRUNCATE);
 	if (!file.isOpen()) {
 		VERBOSE("error: unable to write file '%s'", fileName.c_str());
@@ -479,8 +481,8 @@ bool Scene::Import(const String& fileName)
 		Release();
 		return LoadDMAP(fileName);
 	}
-	if (ext == _T(".obj")) {
-		// import mesh from obj file
+	if (ext == _T(".obj") || ext == _T(".gltf") || ext == _T(".glb")) {
+		// import mesh from obj/gltf file
 		Release();
 		return mesh.Load(fileName);
 	}
@@ -654,10 +656,12 @@ void Scene::SampleMeshWithVisibility(unsigned maxResolution)
 		}
 	}
 	RFOREACH(idx, pointcloud.points) {
-		if (pointcloud.pointViews[idx].size() < 2)
+		if (pointcloud.pointViews[idx].size() < 2) {
 			pointcloud.RemovePoint(idx);
-		else
-			pointcloud.points[idx] = mesh.vertices[(Mesh::VIndex)idx];
+			continue;
+		}
+		pointcloud.points[idx] = mesh.vertices[(Mesh::VIndex)idx];
+		pointcloud.pointViews[idx].Sort();
 	}
 } // SampleMeshWithVisibility
 /*----------------------------------------------------------------*/
@@ -699,7 +703,7 @@ bool Scene::ExportMeshToDepthMaps(const String& baseName)
 				IDs.push_back(idxImage);
 				for (const ViewScore& neighbor: image.neighbors)
 					IDs.push_back(neighbor.idx.ID);
-				return ExportDepthDataRaw(fileName, image.name, IDs, image.GetSize(), image.camera.K, image.camera.R, image.camera.C, 0.001f, FLT_MAX, depthMap, normalMap, ConfidenceMap());
+				return ExportDepthDataRaw(fileName, image.name, IDs, image.GetSize(), image.camera.K, image.camera.R, image.camera.C, 0.001f, FLT_MAX, depthMap, normalMap, ConfidenceMap(), ViewsMap());
 			} ()) ||
 			(nType == 1 && !depthMap.Save(fileName)) ||
 			(nType == 0 && !ExportDepthMap(fileName, depthMap)))
@@ -722,6 +726,62 @@ bool Scene::ExportMeshToDepthMaps(const String& baseName)
 /*----------------------------------------------------------------*/
 
 
+// create a virtual point-cloud to be used to initialize the neighbor view
+// from image pair points at the intersection of the viewing directions
+bool Scene::EstimateNeighborViewsPointCloud(unsigned maxResolution)
+{
+	constexpr Depth minPercentDepthPerturb(0.3f);
+	constexpr Depth maxPercentDepthPerturb(1.3f);
+	const auto ProjectGridToImage = [&](IIndex idI, IIndex idJ, Depth depth) {
+		const Depth minDepthPerturb(depth * minPercentDepthPerturb);
+		const Depth maxDepthPerturb(depth * maxPercentDepthPerturb);
+		const Image& imageData = images[idI];
+		const Image& imageData2 = images[idJ];
+		const float stepW((float)imageData.width / maxResolution);
+		const float stepH((float)imageData.height / maxResolution);
+		for (unsigned r = 0; r < maxResolution; ++r) {
+			for (unsigned c = 0; c < maxResolution; ++c) {
+				const Point2f x(c*stepW + stepW/2, r*stepH + stepH/2);
+				const Depth depthPerturb(randomRange(minDepthPerturb, maxDepthPerturb));
+				const Point3 X(imageData.camera.TransformPointI2W(Point3(x.x, x.y, depthPerturb)));
+				const Point3 X2(imageData2.camera.TransformPointW2C(X));
+				if (X2.z < 0)
+					continue;
+				const Point2f x2(imageData2.camera.TransformPointC2I(X2));
+				if (!Image8U::isInside(x2, imageData2.GetSize()))
+					continue;
+				pointcloud.points.emplace_back(X);
+				pointcloud.pointViews.emplace_back(idI < idJ ? PointCloud::ViewArr{idI, idJ} : PointCloud::ViewArr{idJ, idI});
+			}
+		}
+	};
+	pointcloud.Release();
+	FOREACH(i, images) {
+		const Image& imageData = images[i];
+		if (!imageData.IsValid())
+			continue;
+		FOREACH(j, images) {
+			if (i == j)
+				continue;
+			const Image& imageData2 = images[j];
+			Point3 X;
+			TriangulatePoint3D(
+				imageData.camera.K, imageData2.camera.K,
+				imageData.camera.R, imageData2.camera.R,
+				imageData.camera.C, imageData2.camera.C,
+				Point2::ZERO, Point2::ZERO, X);
+			const Depth depth((Depth)imageData.camera.PointDepth(X));
+			const Depth depth2((Depth)imageData2.camera.PointDepth(X));
+			if (depth <= 0 || depth2 <= 0)
+				continue;
+			ProjectGridToImage(i, j, depth);
+			ProjectGridToImage(j, i, depth2);
+		}
+	}
+	return true;
+} // EstimateNeighborViewsPointCloud
+/*----------------------------------------------------------------*/
+
 inline float Footprint(const Camera& camera, const Point3f& X) {
 	#if 0
 	const REAL fSphereRadius(1);
@@ -739,20 +799,20 @@ inline float Footprint(const Camera& camera, const Point3f& X) {
 //  - nInsideROI: 0 - ignore ROI, 1 - weight more ROI points, 2 - consider only ROI points
 bool Scene::SelectNeighborViews(uint32_t ID, IndexArr& points, unsigned nMinViews, unsigned nMinPointViews, float fOptimAngle, unsigned nInsideROI)
 {
-	ASSERT(points.IsEmpty());
+	ASSERT(points.empty());
 
 	// extract the estimated 3D points and the corresponding 2D projections for the reference image
 	Image& imageData = images[ID];
 	ASSERT(imageData.IsValid());
 	ViewScoreArr& neighbors = imageData.neighbors;
-	ASSERT(neighbors.IsEmpty());
+	ASSERT(neighbors.empty());
 	struct Score {
 		float score;
 		float avgScale;
 		float avgAngle;
 		uint32_t points;
 	};
-	CLISTDEF0(Score) scores(images.GetSize());
+	CLISTDEF0(Score) scores(images.size());
 	scores.Memset(0);
 	if (nMinPointViews > nCalibratedImages)
 		nMinPointViews = nCalibratedImages;
@@ -773,10 +833,14 @@ bool Scene::SelectNeighborViews(uint32_t ID, IndexArr& points, unsigned nMinView
 				continue;
 			wROI = 0.7f;
 		}
+		const Depth depth((float)imageData.camera.PointDepth(point));
+		ASSERT(depth > 0);
+		if (depth <= 0)
+			continue;
 		// store this point
-		if (views.GetSize() >= nMinPointViews)
-			points.Insert((uint32_t)idx);
-		imageData.avgDepth += (float)imageData.camera.PointDepth(point);
+		if (views.size() >= nMinPointViews)
+			points.push_back((uint32_t)idx);
+		imageData.avgDepth += depth;
 		++nPoints;
 		// score shared views
 		const Point3f V1(imageData.camera.C - Cast<REAL>(point));
@@ -786,7 +850,7 @@ bool Scene::SelectNeighborViews(uint32_t ID, IndexArr& points, unsigned nMinView
 				continue;
 			const Image& imageData2 = images[view];
 			const Point3f V2(imageData2.camera.C - Cast<REAL>(point));
-			const float fAngle(ACOS(ComputeAngle<float,float>(V1.ptr(), V2.ptr())));
+			const float fAngle(ACOS(ComputeAngle(V1.ptr(), V2.ptr())));
 			const float wAngle(EXP(SQUARE(fAngle-fOptimAngle)*(fAngle<fOptimAngle?sigmaAngleSmall:sigmaAngleLarge)));
 			const float footprint2(Footprint(imageData2.camera, point));
 			const float fScaleRatio(footprint1/footprint2);
@@ -808,7 +872,7 @@ bool Scene::SelectNeighborViews(uint32_t ID, IndexArr& points, unsigned nMinView
 	ASSERT(nPoints > 3);
 
 	// select best neighborViews
-	Point2fArr projs(0, points.GetSize());
+	Point2fArr projs(0, points.size());
 	FOREACH(IDB, images) {
 		const Image& imageDataB = images[IDB];
 		if (!imageDataB.IsValid())
@@ -820,7 +884,7 @@ bool Scene::SelectNeighborViews(uint32_t ID, IndexArr& points, unsigned nMinView
 		// compute how well the matched features are spread out (image covered area)
 		const Point2f boundsA(imageData.GetSize());
 		const Point2f boundsB(imageDataB.GetSize());
-		ASSERT(projs.IsEmpty());
+		ASSERT(projs.empty());
 		for (uint32_t idx: points) {
 			const PointCloud::ViewArr& views = pointcloud.pointViews[idx];
 			ASSERT(views.IsSorted());
@@ -828,15 +892,15 @@ bool Scene::SelectNeighborViews(uint32_t ID, IndexArr& points, unsigned nMinView
 			if (views.FindFirst(IDB) == PointCloud::ViewArr::NO_INDEX)
 				continue;
 			const PointCloud::Point& point = pointcloud.points[idx];
-			Point2f& ptA = projs.AddConstruct(imageData.camera.ProjectPointP(point));
+			Point2f& ptA = projs.emplace_back(imageData.camera.ProjectPointP(point));
 			Point2f ptB = imageDataB.camera.ProjectPointP(point);
 			if (!imageData.camera.IsInside(ptA, boundsA) || !imageDataB.camera.IsInside(ptB, boundsB))
 				projs.RemoveLast();
 		}
-		ASSERT(projs.GetSize() <= score.points);
-		if (projs.IsEmpty())
+		ASSERT(projs.size() <= score.points);
+		if (projs.empty())
 			continue;
-		const float area(ComputeCoveredArea<float,2,16,false>((const float*)projs.Begin(), projs.GetSize(), boundsA.ptr()));
+		const float area(ComputeCoveredArea<float,2,16,false>((const float*)projs.data(), projs.size(), boundsA.ptr()));
 		projs.Empty();
 		// store image score
 		ViewScore& neighbor = neighbors.AddEmpty();
@@ -854,10 +918,10 @@ bool Scene::SelectNeighborViews(uint32_t ID, IndexArr& points, unsigned nMinView
 		String msg;
 		FOREACH(n, neighbors)
 			msg += String::FormatString(" %3u(%upts,%.2fscl)", neighbors[n].idx.ID, neighbors[n].idx.points, neighbors[n].idx.scale);
-		VERBOSE("Reference image %3u sees %u views:%s (%u shared points)", ID, neighbors.GetSize(), msg.c_str(), nPoints);
+		VERBOSE("Reference image %3u sees %u views:%s (%u shared points)", ID, neighbors.size(), msg.c_str(), nPoints);
 	}
 	#endif
-	if (points.GetSize() <= 3 || neighbors.GetSize() < MINF(nMinViews,nCalibratedImages-1)) {
+	if (points.size() <= 3 || neighbors.size() < MINF(nMinViews,nCalibratedImages-1)) {
 		DEBUG_EXTRA("error: reference image %3u has not enough images in view", ID);
 		return false;
 	}
@@ -869,16 +933,18 @@ bool Scene::SelectNeighborViews(uint32_t ID, IndexArr& points, unsigned nMinView
 bool Scene::FilterNeighborViews(ViewScoreArr& neighbors, float fMinArea, float fMinScale, float fMaxScale, float fMinAngle, float fMaxAngle, unsigned nMaxViews)
 {
 	// remove invalid neighbor views
+	const unsigned nMinViews(MAXF(4u, nMaxViews*3/4));
 	RFOREACH(n, neighbors) {
 		const ViewScore& neighbor = neighbors[n];
-		if (neighbor.idx.area < fMinArea ||
-			!ISINSIDE(neighbor.idx.scale, fMinScale, fMaxScale) ||
-			!ISINSIDE(neighbor.idx.angle, fMinAngle, fMaxAngle))
+		if (neighbors.size() > nMinViews &&
+			(neighbor.idx.area < fMinArea ||
+			 !ISINSIDE(neighbor.idx.scale, fMinScale, fMaxScale) ||
+			 !ISINSIDE(neighbor.idx.angle, fMinAngle, fMaxAngle)))
 			neighbors.RemoveAtMove(n);
 	}
-	if (neighbors.GetSize() > nMaxViews)
-		neighbors.Resize(nMaxViews);
-	return !neighbors.IsEmpty();
+	if (neighbors.size() > nMaxViews)
+		neighbors.resize(nMaxViews);
+	return !neighbors.empty();
 } // FilterNeighborViews
 /*----------------------------------------------------------------*/
 
@@ -1166,6 +1232,18 @@ unsigned Scene::Split(ImagesChunkArr& chunks, float maxArea, int depthMapStep) c
 		chunks.RemoveAt(cSmall);
 	}
 	#endif
+	if (IsBounded()) {
+		// make sure the chunks bounding box do not exceed the scene bounding box
+		const AABB3f aabb(obb.GetAABB());
+		RFOREACH(c, chunks) {
+			ImagesChunk& chunk = chunks[c];
+			chunk.aabb.BoundBy(aabb);
+			if (chunk.aabb.IsEmpty()) {
+				DEBUG_ULTIMATE("warning: chunk bounding box is empty");
+				chunks.RemoveAt(c);
+			}
+		}
+	}
 	DEBUG_EXTRA("Scene split (%g max-area): %u chunks (%s)", maxArea, chunks.size(), TD_TIMER_GET_FMT().c_str());
 	#if 0 || defined(_DEBUG)
 	// dump chunks for visualization
@@ -1316,7 +1394,7 @@ bool Scene::Scale(const REAL* pScale)
 		scale = REAL(1)/mesh.GetAABB().GetSize().maxCoeff();
 	else
 		return false;
-	const float scalef(scale);
+	const float scalef(static_cast<float>(scale));
 	if (IsBounded())
 		obb.Transform(OBB3f::MATRIX::Identity() * scalef);
 	for (Platform& platform: platforms)
@@ -1361,4 +1439,190 @@ bool Scene::ScaleImages(unsigned nMaxResolution, REAL scale, const String& folde
 	}
 	return true;
 } // ScaleImages
+
+// apply similarity transform
+void Scene::Transform(const Matrix3x3& rotation, const Point3& translation, REAL scale) {
+	const Matrix3x3 rotationScale(rotation * scale);
+	for (Platform& platform : platforms) {
+		for (Platform::Pose& pose : platform.poses) {
+			pose.R = pose.R * rotation.t();
+			pose.C = rotationScale * pose.C + translation;
+		}
+	}
+	for (Image& image : images) {
+		image.UpdateCamera(platforms);
+	}
+	FOREACH(i, pointcloud.points) {
+		pointcloud.points[i] = rotationScale * Cast<REAL>(pointcloud.points[i]) + translation;
+		if (!pointcloud.normals.empty())
+			pointcloud.normals[i] = rotation * Cast<REAL>(pointcloud.normals[i]);
+	}
+	FOREACH(i, mesh.vertices) {
+		mesh.vertices[i] = rotationScale * Cast<REAL>(mesh.vertices[i]) + translation;
+		if (!mesh.vertexNormals.empty())
+			mesh.vertexNormals[i] = rotation * Cast<REAL>(mesh.vertexNormals[i]);
+	}
+	FOREACH(i, mesh.faceNormals) {
+		mesh.faceNormals[i] = rotation * Cast<REAL>(mesh.faceNormals[i]);
+	}
+	if (obb.IsValid()) {
+		obb.Transform(Cast<float>(rotationScale));
+		obb.Translate(Cast<float>(translation));
+	}
+}
+
+// transform this scene such that it best aligns with the given scene based on the camera positions
+bool Scene::AlignTo(const Scene& scene)
+{
+	if (images.size() < 3) {
+		DEBUG("error: insufficient number of cameras to perform a similarity transform alignment");
+		return false;
+	}
+	if (images.size() != scene.images.size()) {
+		DEBUG("error: the two scenes differ in number of cameras");
+		return false;
+	}
+	CLISTDEF0(Point3) points, pointsRef;
+	FOREACH(idx, images) {
+		const Image& image = images[idx];
+		if (!image.IsValid())
+			continue;
+		const Image& imageRef = scene.images[idx];
+		if (!imageRef.IsValid())
+			continue;
+		points.emplace_back(image.camera.C);
+		pointsRef.emplace_back(imageRef.camera.C);
+	}
+	Matrix4x4 transform;
+	SimilarityTransform(points, pointsRef, transform);
+	Matrix3x3 rotation; Point3 translation; REAL scale;
+	DecomposeSimilarityTransform(transform, rotation, translation, scale);
+	Transform(rotation, translation, scale);
+	return true;
+} // AlignTo
+
+// estimate ground plane, transform scene such that it is positioned at origin, and compute the volume of the mesh;
+//  - planeThreshold: threshold used to estimate the ground plane (0 - auto)
+//  - sampleMesh: uniformly samples points on the mesh (0 - disabled, <0 - number of points, >0 - sample density per square unit)
+// returns <0 if an error occurred
+REAL Scene::ComputeLeveledVolume(float planeThreshold, float sampleMesh, unsigned upAxis, bool verbose)
+{
+	ASSERT(!mesh.IsEmpty());
+	if (planeThreshold >= 0 && !mesh.IsWatertight()) {
+		// assume the mesh is opened only at the contact with the ground plane;
+		// move mesh such that the ground plane is at the origin so that the volume can be computed
+		TD_TIMER_START();
+		Planef groundPlane(mesh.EstimateGroundPlane(images, sampleMesh, planeThreshold, verbose?MAKE_PATH("ground_plane.ply"):String()));
+		if (!groundPlane.IsValid()) {
+			VERBOSE("error: can not estimate the ground plane");
+			return -1;
+		}
+		const Point3f up(upAxis==0?1.f:0.f, upAxis==1?1.f:0.f, upAxis==2?1.f:0.f);
+		if (groundPlane.m_vN.dot(Point3f::EVec(up)) < 0.f)
+			groundPlane.Negate();
+		VERBOSE("Ground plane estimated at: (%.2f,%.2f,%.2f) %.2f (%s)",
+			groundPlane.m_vN.x(), groundPlane.m_vN.y(), groundPlane.m_vN.z(), groundPlane.m_fD, TD_TIMER_GET_FMT().c_str());
+		// transform the scene such that the up vector aligns with ground plane normal,
+		// and the mesh center projected on the ground plane is at the origin
+		const Matrix3x3 rotation(RMatrix(Cast<REAL>(up), Cast<REAL>(Point3f(groundPlane.m_vN))));
+		const Point3 translation(-Cast<REAL>(Point3f(groundPlane.ProjectPoint(mesh.GetCenter()))));
+		const REAL scale(1);
+		Transform(rotation, translation, scale);
+	}
+	return mesh.ComputeVolume();
+}
+/*----------------------------------------------------------------*/
+
+
+// estimate region-of-interest based on camera positions, directions and sparse points
+// scale specifies the ratio of the ROI's diameter
+bool Scene::EstimateROI(int nEstimateROI, float scale)
+{
+	ASSERT(nEstimateROI >= 0 && nEstimateROI <= 2 && scale > 0);
+	if (nEstimateROI == 0) {
+		DEBUG_ULTIMATE("The scene will be considered as unbounded (no ROI)");
+		return false;
+	}
+	if (!pointcloud.IsValid()) {
+		VERBOSE("error: no valid point-cloud for the ROI estimation");
+		return false;
+	}
+	CameraArr cameras;
+	FOREACH(i, images) {
+		const Image& imageData = images[i];
+		if (!imageData.IsValid())
+			continue;
+		cameras.emplace_back(imageData.camera);
+	}
+	const unsigned nCameras = cameras.size();
+	if (nCameras < 3) {
+		VERBOSE("warning: not enough valid views for the ROI estimation");
+		return false;
+	}
+	// compute the camera center and the direction median
+	FloatArr x(nCameras), y(nCameras), z(nCameras), nx(nCameras), ny(nCameras), nz(nCameras);
+	FOREACH(i, cameras) {
+		const Point3f camC(cameras[i].C);
+		x[i] = camC.x;
+		y[i] = camC.y;
+		z[i] = camC.z;
+		const Point3f camDirect(cameras[i].Direction());
+		nx[i] = camDirect.x;
+		ny[i] = camDirect.y;
+		nz[i] = camDirect.z;
+	}
+	const CMatrix camCenter(x.GetMedian(), y.GetMedian(), z.GetMedian());
+	CMatrix camDirectMean(nx.GetMean(), ny.GetMean(), nz.GetMean());
+	const float camDirectMeanLen = (float)norm(camDirectMean);
+	if (!ISZERO(camDirectMeanLen))
+		camDirectMean /= camDirectMeanLen;
+	if (camDirectMeanLen > FSQRT_2 / 2.f && nEstimateROI == 2) {
+		VERBOSE("The camera directions mean is unbalanced; the scene will be considered unbounded (no ROI)");
+		return false;
+	}
+	DEBUG_ULTIMATE("The camera positions median is (%f,%f,%f), directions mean and norm are (%f,%f,%f), %f",
+				   camCenter.x, camCenter.y, camCenter.z, camDirectMean.x, camDirectMean.y, camDirectMean.z, camDirectMeanLen);
+	FloatArr cameraDistances(nCameras);
+	FOREACH(i, cameras)
+		cameraDistances[i] = (float)cameras[i].Distance(camCenter);
+	// estimate scene center and radius
+	const float camDistMed = cameraDistances.GetMedian();
+	const float camShiftCoeff = TAN(ASIN(CLAMP(camDirectMeanLen, 0.f, 0.999f)));
+	const CMatrix sceneCenter = camCenter + camShiftCoeff * camDistMed * camDirectMean;
+	FOREACH(i, cameras) {
+		if (cameras[i].PointDepth(sceneCenter) <= 0 && nEstimateROI == 2) {
+			VERBOSE("Found a camera not pointing towards the scene center; the scene will be considered unbounded (no ROI)");
+			return false;
+		}
+		cameraDistances[i] = (float)cameras[i].Distance(sceneCenter);
+	}
+	const float sceneRadius = cameraDistances.GetMax();
+	DEBUG_ULTIMATE("The estimated scene center is (%f,%f,%f), radius is %f",
+				   sceneCenter.x, sceneCenter.y, sceneCenter.z, sceneRadius);
+	Point3fArr ptsInROI;
+	FOREACH(i, pointcloud.points) {
+		const PointCloud::Point& point = pointcloud.points[i];
+		const PointCloud::ViewArr& views = pointcloud.pointViews[i];
+		FOREACH(j, views) {
+			const Image& imageData = images[views[j]];
+			if (!imageData.IsValid())
+				continue;
+			const Camera& camera = imageData.camera;
+			if (camera.PointDepth(point) < sceneRadius * 2.0f) {
+				ptsInROI.emplace_back(point);
+				break;
+			}
+		}
+	}
+	obb.Set(AABB3f(ptsInROI.begin(), ptsInROI.size()).EnlargePercent(scale));
+	#if TD_VERBOSE != TD_VERBOSE_OFF
+	if (VERBOSITY_LEVEL > 2) {
+		VERBOSE("Set the ROI with the AABB of position (%f,%f,%f) and extent (%f,%f,%f)",
+			    obb.m_pos[0], obb.m_pos[1], obb.m_pos[2], obb.m_ext[0], obb.m_ext[1], obb.m_ext[2]);
+	} else {
+		VERBOSE("Set the ROI by the estimated core points");
+	}
+	#endif
+	return true;
+} // EstimateROI
 /*----------------------------------------------------------------*/
