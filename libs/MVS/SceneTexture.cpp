@@ -185,16 +185,8 @@ struct MeshTexture {
 	};
 	typedef cList<FaceData,const FaceData&,0,8,uint32_t> FaceDataArr; // store information about one face seen from several views
 	typedef cList<FaceDataArr,const FaceDataArr&,2,1024,FIndex> FaceDataViewArr; // store data for all the faces of the mesh
-	typedef cList<Mesh::FaceIdxArr, const Mesh::FaceIdxArr&,2,8192,FIndex> FaceFaceIdxsArr;
 
-#if USE_VIRTUAL_FACES
-	// virtual faces for texture process
-	typedef cList<Mesh::FaceIdxArr, const Mesh::FaceIdxArr&,2,8192, FIndex> VirtualFacesArr; // stores each virtual face as an array of mesh face ID
-	FaceDataViewArr virtualFacesDatas;
-	VirtualFacesArr virtualFaces;
-	Mesh::FaceIdxArr mapFaceToVirtualFace; // for each mesh face ID, store the virtual face ID witch contains it
-	FaceFaceIdxsArr virtualFaceNeighbors; // for each virtual face, the list of virtual faces with at least one vertex in common
-#endif
+	typedef cList<Mesh::FaceIdxArr, const Mesh::FaceIdxArr&,2,1024, FIndex> ChartFaceIdxsArr;
 
 	// used to assign a view to a face
 	typedef uint32_t Label;
@@ -340,11 +332,7 @@ public:
 	#endif
 
 	bool FaceViewSelection(float fOutlierThreshold, float fRatioDataSmoothness, const IIndexArr& views);
-	// order the camera view scores with highest score first and return the list of first <listSize> cameras
-	// angleToQualityRatio represents the ratio in witch we combine normal angle to quality for a face to obtain the selection score
-	//  - a ratio of 1 means only angle is considered
-	//  - a ratio of 0.5 means angle and quality are equally important
-	//  - a ratio of 0 means only camera quality is considered when sorting
+	void CreateVirtualFaces(const FaceDataViewArr& facesDatas, FaceDataViewArr& virtualFacesDatas, ChartFaceIdxsArr& virtualFaces);
 	void SelectBestView(IIndexArr& cameraList, const unsigned short listSize, const FIndex fid, const FaceDataArr& faceDatas, const float angleToQualityRatio);
 	bool FaceIsViewed(const FaceDataArr& faceDatas, const IIndexArr& cameraList);
 	void CreateSeamVertices(); 
@@ -439,6 +427,11 @@ void MeshTexture::ListVertexFaces()
 	scene.mesh.ListIncidenteFaceFaces();
 }
 
+// order the camera view scores with highest score first and return the list of first <listSize> cameras
+// angleToQualityRatio represents the ratio in witch we combine normal angle to quality for a face to obtain the selection score
+//  - a ratio of 1 means only angle is considered
+//  - a ratio of 0.5 means angle and quality are equally important
+//  - a ratio of 0 means only camera quality is considered when sorting
 void MeshTexture::SelectBestView(IIndexArr& cameraList, const unsigned short listSize, const FIndex fid, const MeshTexture::FaceDataArr& faceDatas, const float angleToQualityRatio) {
 	cameraList.clear();
 	cameraList.resize(MIN(listSize, faceDatas.size()));
@@ -480,10 +473,8 @@ void MeshTexture::SelectBestView(IIndexArr& cameraList, const unsigned short lis
 
 	// combine podium scores to get overall podium
 	// and sort the scores in smallest to highest to get the best overall camera for current virtual face
-	std::vector<float> scores(images.size());
-	for (float& s : scores) {
-		s = 0;
-	}
+	CLISTDEF0IDX(float,IIndex) scores(images.size());
+	scores.Memset(0);
 	FOREACH(sIdx, faceDatas) {
 		scores[faceDatas[anglePodium[sIdx]].idxView] += angleToQualityRatio * (sIdx+1);
 		scores[faceDatas[qualityPodium[sIdx]].idxView] += (1 - angleToQualityRatio) * (sIdx+1);
@@ -491,7 +482,7 @@ void MeshTexture::SelectBestView(IIndexArr& cameraList, const unsigned short lis
 	IIndexArr overallPodium(images.size());
 	overallPodium.MemsetValue(-1);
 	FOREACH(iIdx, scores) {
-		const uint32_t cameraScore = scores[iIdx];
+		const float cameraScore = scores[iIdx];
 		if (cameraScore > 0) {
 			FOREACH(pIdx, overallPodium) {
 				if (overallPodium[pIdx] == -1) {
@@ -515,16 +506,15 @@ bool MeshTexture::FaceIsViewed(const FaceDataArr& faceDatas, const IIndexArr& ca
 	if (cameraList.empty())
 		return false;	
 	size_t camFoundCounter(0);
-	for (FaceData faceData : faceDatas) {
+	for (const FaceData& faceData : faceDatas) {
 		const IIndex cfCam = faceData.idxView;
 		for (IIndex camId : cameraList) {
 			if (cfCam == camId) {
-				++camFoundCounter;
+				if (++camFoundCounter == cameraList.size())
+					return true;	
 				break;
 			}
 		}
-		if (camFoundCounter == cameraList.size())
-			break;
 	}
 	return camFoundCounter == cameraList.size();
 }
@@ -716,22 +706,26 @@ bool MeshTexture::ListCameraFaces(FaceDataViewArr& facesDatas, float fOutlierThr
 			FaceOutlierDetection(faceDatas, fOutlierThreshold);
 	}
 	#endif
+	return true;
+}
 
-#if USE_VIRTUAL_FACES
-	// build virtual faces with:
-	// - similar normal
-	// - high(configurable) percentage of common images that see them
+// build virtual faces with:
+// - similar normal
+// - high(configurable) percentage of common images that see them
+void MeshTexture::CreateVirtualFaces(const FaceDataViewArr& facesDatas, FaceDataViewArr& virtualFacesDatas, ChartFaceIdxsArr& virtualFaces)
+{
 	Mesh::FaceIdxArr remainingFaces;
 	remainingFaces.Resize(faces.size());
 	std::iota(remainingFaces.begin(), remainingFaces.end(), 0);
 	std::vector<bool> selectedFaces(faces.size(), false);
-	const float thMaxNormalDeviation(COS(D2R(15.f)));
+	const float thMaxNormalDeviation(COS(FD2R(15.f)));
 	cQueue<FIndex, FIndex, 0> currentVirtualFaceQueue;
 	std::unordered_set<FIndex> queuedFaces;
 	do {
-		// remove seed for DEBUG
+		#ifdef _RELEASE
 		std::srand(std::time(nullptr)); // use current time as seed for random generator
-		const size_t startPos = RAND() % remainingFaces.size();
+		#endif
+		const FIndex startPos = RAND() % remainingFaces.size();
 		const FIndex virtualFaceCenterFaceID = remainingFaces[startPos];
 		ASSERT(currentVirtualFaceQueue.IsEmpty());
 		Mesh::FaceIdxArr virtualFace;
@@ -740,7 +734,7 @@ bool MeshTexture::ListCameraFaces(FaceDataViewArr& facesDatas, float fOutlierThr
 		FaceDataArr virtualFaceDatas;
 		IIndexArr selectedCams;
 		// config here the number of common faces and selection process for cameras to be selected
-		SelectBestView(selectedCams, 2, virtualFaceCenterFaceID, centerFaceDatas, 0.67);
+		SelectBestView(selectedCams, 2, virtualFaceCenterFaceID, centerFaceDatas, 0.67f);
 		queuedFaces.clear();
 		if (centerFaceDatas.empty()) {
 			virtualFace.emplace_back(virtualFaceCenterFaceID);
@@ -823,8 +817,6 @@ bool MeshTexture::ListCameraFaces(FaceDataViewArr& facesDatas, float fOutlierThr
 		virtualFacesDatas.emplace_back(std::move(virtualFaceDatas));
 		virtualFaces.emplace_back(std::move(virtualFace));
 	} while (!remainingFaces.empty());
-#endif
-	return true;
 }
 
 #if TEXOPT_FACEOUTLIER == TEXOPT_FACEOUTLIER_MEDIAN
@@ -1024,8 +1016,10 @@ bool MeshTexture::FaceViewSelection(float fOutlierThreshold, float fRatioDataSmo
 		Graph graph;
 #if USE_VIRTUAL_FACES
 		// 1) create FaceToVirtualFaceMap
-		mapFaceToVirtualFace.Empty();
-		mapFaceToVirtualFace.Resize(faces.size());
+		FaceDataViewArr virtualFacesDatas;
+		ChartFaceIdxsArr virtualFaces; // stores each virtual face as an array of mesh face ID
+		CreateVirtualFaces(facesDatas, virtualFacesDatas, virtualFaces);
+		Mesh::FaceIdxArr mapFaceToVirtualFace(faces.size()); // for each mesh face ID, store the virtual face ID witch contains it
 		size_t controlCounter(0);
 		FOREACH(idxVF, virtualFaces) {
 			const Mesh::FaceIdxArr& vf = virtualFaces[idxVF];
@@ -1036,9 +1030,9 @@ bool MeshTexture::FaceViewSelection(float fOutlierThreshold, float fRatioDataSmo
 		}
 		ASSERT(controlCounter == faces.size());
 		// 2) create function to find virtual faces neighbors
+		ChartFaceIdxsArr virtualFaceNeighbors; // for each virtual face, the list of virtual faces with at least one vertex in common
 		{
-			virtualFaceNeighbors.Empty();
-			virtualFaceNeighbors.Resize(virtualFaces.size());
+			virtualFaceNeighbors.resize(virtualFaces.size());
 			FOREACH(idxVF, virtualFaces) {
 				const Mesh::FaceIdxArr& vf = virtualFaces[idxVF];
 				Mesh::FaceIdxArr& vfNeighbors = virtualFaceNeighbors[idxVF];
@@ -1197,6 +1191,7 @@ bool MeshTexture::FaceViewSelection(float fOutlierThreshold, float fRatioDataSmo
 			faceFaces.Release();
 			ASSERT((Mesh::FIndex)boost::num_vertices(graph) == faces.size());
 		}
+
 		// assign the best view to each face
 		LabelArr labels(faces.size());
 		components.Resize(faces.size());
