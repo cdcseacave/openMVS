@@ -125,8 +125,6 @@ struct TRWSInference {
 }
 #endif
 
-// enable/disable construct and use of virtual faces for texturing instead of actual mesh faces
-#define USE_VIRTUAL_FACES 1
 
 // S T R U C T S ///////////////////////////////////////////////////
 
@@ -186,7 +184,7 @@ struct MeshTexture {
 	typedef cList<FaceData,const FaceData&,0,8,uint32_t> FaceDataArr; // store information about one face seen from several views
 	typedef cList<FaceDataArr,const FaceDataArr&,2,1024,FIndex> FaceDataViewArr; // store data for all the faces of the mesh
 
-	typedef cList<Mesh::FaceIdxArr, const Mesh::FaceIdxArr&,2,1024, FIndex> ChartFaceIdxsArr;
+	typedef cList<Mesh::FaceIdxArr, const Mesh::FaceIdxArr&,2,1024, FIndex> VirtualFaceIdxsArr; // store face indices for each virtual face
 
 	// used to assign a view to a face
 	typedef uint32_t Label;
@@ -330,12 +328,13 @@ public:
 	#if TEXOPT_FACEOUTLIER != TEXOPT_FACEOUTLIER_NA
 	bool FaceOutlierDetection(FaceDataArr& faceDatas, float fOutlierThreshold) const;
 	#endif
+	
+	void CreateVirtualFaces(const FaceDataViewArr& facesDatas, FaceDataViewArr& virtualFacesDatas, VirtualFaceIdxsArr& virtualFaces, unsigned minCommonCameras=2, float thMaxNormalDeviation=25.f) const;
+	IIndexArr SelectBestView(const FaceDataArr& faceDatas, FIndex fid, unsigned minCommonCameras, float angleToQualityRatio) const;
 
-	bool FaceViewSelection(float fOutlierThreshold, float fRatioDataSmoothness, const IIndexArr& views);
-	void CreateVirtualFaces(const FaceDataViewArr& facesDatas, FaceDataViewArr& virtualFacesDatas, ChartFaceIdxsArr& virtualFaces);
-	void SelectBestView(IIndexArr& cameraList, const unsigned short listSize, const FIndex fid, const FaceDataArr& faceDatas, const float angleToQualityRatio);
-	bool FaceIsViewed(const FaceDataArr& faceDatas, const IIndexArr& cameraList);
-	void CreateSeamVertices(); 
+	bool FaceViewSelection(bool bVirtualFaces, float fOutlierThreshold, float fRatioDataSmoothness, const IIndexArr& views);
+	
+	void CreateSeamVertices();
 	void GlobalSeamLeveling();
 	void LocalSeamLeveling();
 	void GenerateTexture(bool bGlobalSeamLeveling, bool bLocalSeamLeveling, unsigned nTextureSizeMultiple, unsigned nRectPackingHeuristic, Pixel8U colEmpty);
@@ -427,109 +426,12 @@ void MeshTexture::ListVertexFaces()
 	scene.mesh.ListIncidenteFaceFaces();
 }
 
-// order the camera view scores with highest score first and return the list of first <listSize> cameras
-// angleToQualityRatio represents the ratio in witch we combine normal angle to quality for a face to obtain the selection score
-//  - a ratio of 1 means only angle is considered
-//  - a ratio of 0.5 means angle and quality are equally important
-//  - a ratio of 0 means only camera quality is considered when sorting
-void MeshTexture::SelectBestView(IIndexArr& cameraList, const unsigned short listSize, const FIndex fid, const MeshTexture::FaceDataArr& faceDatas, const float angleToQualityRatio) {
-	cameraList.clear();
-	cameraList.resize(MIN(listSize, faceDatas.size()));
-	cameraList.MemsetValue(0);
-	if (faceDatas.empty())
-		return;
-	IIndexArr qualityPodium(faceDatas.size());
-	IIndexArr anglePodium(faceDatas.size());
-	std::iota(qualityPodium.begin(), qualityPodium.end(), 0);
-	std::iota(anglePodium.begin(), anglePodium.end(), 0);
-
-	// sort qualityPodium in relation to faceDatas[index].quality decreasing
-	qualityPodium.Sort([&faceDatas](IIndex i, IIndex j) {
-		return faceDatas[i].quality > faceDatas[j].quality;
-	});
-
-	// sort anglePodium in relation to face angle to camera increasing
-	const Face& f = faces[fid];
-	Point3 faceCenter = Point3::ZERO;
-	for (int k = 0; k < 3; ++k) {
-		const Point3 v = vertices[f[k]];
-		faceCenter += v;
-	}
-	faceCenter = faceCenter / 3;
-	std::vector<float> cameraAngles;
-	FOREACH(fdIdx, faceDatas) {
-		const FaceData& faceData = faceDatas[fdIdx];
-		const IIndex camIdx = faceData.idxView;
-		const Image& imageData = images[camIdx];
-		Point3f camDir = imageData.camera.C - faceCenter;
-		Normal faceNormal = scene.mesh.faceNormals[fid];
-		const float cosFaceToCam(ComputeAngle<float, float>(camDir.ptr(), faceNormal.ptr()));
-		const float camAngle(FR2D(ACOS(cosFaceToCam)));
-		cameraAngles.emplace_back(camAngle);
-	}
-	anglePodium.Sort([&cameraAngles](IIndex i, IIndex j) {
-		return cameraAngles[i] < cameraAngles[j];
-	});
-
-	// combine podium scores to get overall podium
-	// and sort the scores in smallest to highest to get the best overall camera for current virtual face
-	CLISTDEF0IDX(float,IIndex) scores(images.size());
-	scores.Memset(0);
-	FOREACH(sIdx, faceDatas) {
-		scores[faceDatas[anglePodium[sIdx]].idxView] += angleToQualityRatio * (sIdx+1);
-		scores[faceDatas[qualityPodium[sIdx]].idxView] += (1 - angleToQualityRatio) * (sIdx+1);
-	}
-	IIndexArr overallPodium(images.size());
-	overallPodium.MemsetValue(-1);
-	FOREACH(iIdx, scores) {
-		const float cameraScore = scores[iIdx];
-		if (cameraScore > 0) {
-			FOREACH(pIdx, overallPodium) {
-				if (overallPodium[pIdx] == -1) {
-					overallPodium[pIdx] = iIdx;
-					break;
-				}
-				if (cameraScore < scores[overallPodium[pIdx]]) {
-					overallPodium.InsertAt(pIdx, iIdx);
-					break;
-				}
-			}
-		}
-	}
-	FOREACH(pIdx, cameraList) {
-		cameraList[pIdx] = overallPodium[pIdx];
-	}
-	return;
-}
-
-bool MeshTexture::FaceIsViewed(const FaceDataArr& faceDatas, const IIndexArr& cameraList) {
-	if (cameraList.empty())
-		return false;	
-	size_t camFoundCounter(0);
-	for (const FaceData& faceData : faceDatas) {
-		const IIndex cfCam = faceData.idxView;
-		for (IIndex camId : cameraList) {
-			if (cfCam == camId) {
-				if (++camFoundCounter == cameraList.size())
-					return true;	
-				break;
-			}
-		}
-	}
-	return camFoundCounter == cameraList.size();
-}
-
 // extract array of faces viewed by each image
 bool MeshTexture::ListCameraFaces(FaceDataViewArr& facesDatas, float fOutlierThreshold, const IIndexArr& _views)
 {
 	// create faces octree
 	Mesh::Octree octree;
 	Mesh::FacesInserter::CreateOctree(octree, scene.mesh);
-
-	// Compute Face Normals and smoothen all planar normals
-	scene.mesh.ComputeNormalFaces();
-	scene.mesh.ComputeNormalVertices();
-	scene.mesh.SmoothNormalFaces(15.0f, 0.3f, 5);
 
 	// extract array of faces viewed by each image
 	IIndexArr views(_views);
@@ -595,8 +497,8 @@ bool MeshTexture::ListCameraFaces(FaceDataViewArr& facesDatas, float fOutlierThr
 		cv::filter2D(imageGradMag, grad[1], cv::DataType<real>::type, kernel.t());
 		#endif
 		(TImage<real>::EMatMap)imageGradMag = (mGrad[0].cwiseAbs2()+mGrad[1].cwiseAbs2()).cwiseSqrt();
-		// apply strong blur on the gradient to lower glossy effects onto faceQuality score
-		cv::GaussianBlur(imageGradMag, imageGradMag, cv::Size(31, 31), 0, 0, cv::BORDER_DEFAULT);
+		// apply some blur on the gradient to lower noise/glossiness effects onto face-quality score
+		cv::GaussianBlur(imageGradMag, imageGradMag, cv::Size(15, 15), 0, 0, cv::BORDER_DEFAULT);
 		// select faces inside view frustum
 		Mesh::FaceIdxArr cameraFaces;
 		Mesh::FacesInserter inserter(cameraFaces);
@@ -660,31 +562,23 @@ bool MeshTexture::ListCameraFaces(FaceDataViewArr& facesDatas, float fOutlierThr
 			}
 		}
 		// adjust face quality with camera angle relative to face normal
-		// tries to increase chances of a camera with perpendicular view on the SURFACE(smoothened normals) to be selected
+		// tries to increase chances of a camera with perpendicular view on the surface (smoothened normals) to be selected
 		FOREACH(idxFace, facesDatas) {
 			FaceDataArr& faceDatas = facesDatas[idxFace];
 			if (faceDatas.empty() || faceDatas.back().idxView != idxView)
 				continue;
 			const Face& f = faces[idxFace];
-			Point3 faceCenter = Point3::ZERO;
-			for (int k = 0; k < 3; ++k) {
-				const Point3 v = vertices[f[k]];
-				faceCenter += v;
-			}
-			faceCenter = faceCenter / 3;
-			Point3f camDir = imageData.camera.C - faceCenter;
-			Normal faceNormal = scene.mesh.faceNormals[idxFace];
-			const float cosFaceToCam(ComputeAngle<float, float>(camDir.ptr(), faceNormal.ptr()));
-			//const float angleFaceToCam(FR2D(ACOS(cosFaceToCam)));
-			const float abscosFaceToCam(CLAMP(cosFaceToCam, 0.f, 1.f));
-			const float fQualityCoefficient(abscosFaceToCam*abscosFaceToCam);
-			faceDatas.Last().quality *= fQualityCoefficient;
+			const Vertex faceCenter((vertices[f[0]] + vertices[f[1]] + vertices[f[2]]) / 3.f);
+			const Point3f camDir(Cast<Mesh::Type>(imageData.camera.C) - faceCenter);
+			const Normal& faceNormal = scene.mesh.faceNormals[idxFace];
+			const float cosFaceCam(MAXF(0.001f, ComputeAngle(camDir.ptr(), faceNormal.ptr())));
+			faceDatas.back().quality *= SQUARE(cosFaceCam);
 		}
 		#if TEXOPT_FACEOUTLIER != TEXOPT_FACEOUTLIER_NA
 		FOREACH(idxFace, areas) {
 			const uint32_t& area = areas[idxFace];
 			if (area > 0) {
-				Color& color = facesDatas[idxFace].Last().color;
+				Color& color = facesDatas[idxFace].back().color;
 				color = RGB2YCBCR(Color(color * (1.f/(float)area)));
 			}
 		}
@@ -709,61 +603,116 @@ bool MeshTexture::ListCameraFaces(FaceDataViewArr& facesDatas, float fOutlierThr
 	return true;
 }
 
+// order the camera view scores with highest score first and return the list of first <minCommonCameras> cameras
+// angleToQualityRatio represents the ratio in witch we combine normal angle to quality for a face to obtain the selection score
+//  - a ratio of 1 means only angle is considered
+//  - a ratio of 0.5 means angle and quality are equally important
+//  - a ratio of 0 means only camera quality is considered when sorting
+IIndexArr MeshTexture::SelectBestView(const FaceDataArr& faceDatas, FIndex fid, unsigned minCommonCameras, float angleToQualityRatio) const
+{
+	ASSERT(!faceDatas.empty());
+
+	// sort qualityPodium in relation to faceDatas[index].quality decreasing
+	IIndexArr qualityPodium(faceDatas.size());
+	std::iota(qualityPodium.begin(), qualityPodium.end(), 0);
+	qualityPodium.Sort([&faceDatas](IIndex i, IIndex j) {
+		return faceDatas[i].quality > faceDatas[j].quality;
+	});
+
+	// sort anglePodium in relation to face angle to camera increasing
+	const Face& f = faces[fid];
+	const Vertex faceCenter((vertices[f[0]] + vertices[f[1]] + vertices[f[2]]) / 3.f);
+	CLISTDEF0IDX(float,IIndex) cameraAngles(0, faceDatas.size());
+	for (const FaceData& faceData: faceDatas) {
+		const Image& imageData = images[faceData.idxView];
+		const Point3f camDir(Cast<Mesh::Type>(imageData.camera.C) - faceCenter);
+		const Normal& faceNormal = scene.mesh.faceNormals[fid];
+		const float cosFaceCam(ComputeAngle(camDir.ptr(), faceNormal.ptr()));
+		cameraAngles.emplace_back(cosFaceCam);
+	}
+	IIndexArr anglePodium(faceDatas.size());
+	std::iota(anglePodium.begin(), anglePodium.end(), 0);
+	anglePodium.Sort([&cameraAngles](IIndex i, IIndex j) {
+		return cameraAngles[i] > cameraAngles[j];
+	});
+
+	// combine podium scores to get overall podium
+	// and sort the scores in smallest to highest to get the best overall camera for current virtual face
+	CLISTDEF0IDX(float,IIndex) scores(faceDatas.size());
+	scores.Memset(0);
+	FOREACH(sIdx, faceDatas) {
+		scores[anglePodium[sIdx]] += angleToQualityRatio * (sIdx+1);
+		scores[qualityPodium[sIdx]] += (1.f - angleToQualityRatio) * (sIdx+1);
+	}
+	IIndexArr scorePodium(faceDatas.size());
+	std::iota(scorePodium.begin(), scorePodium.end(), 0);
+	scorePodium.Sort([&scores](IIndex i, IIndex j) {
+		return scores[i] < scores[j];
+	});
+	IIndexArr cameras(MIN(minCommonCameras, faceDatas.size()));
+	FOREACH(i, cameras)
+		cameras[i] = faceDatas[scorePodium[i]].idxView;
+	return cameras;
+}
+
+static bool IsFaceVisible(const MeshTexture::FaceDataArr& faceDatas, const IIndexArr& cameraList) {
+	size_t camFoundCounter(0);
+	for (const MeshTexture::FaceData& faceData : faceDatas) {
+		const IIndex cfCam = faceData.idxView;
+		for (IIndex camId : cameraList) {
+			if (cfCam == camId) {
+				if (++camFoundCounter == cameraList.size())
+					return true;	
+				break;
+			}
+		}
+	}
+	return camFoundCounter == cameraList.size();
+}
+
 // build virtual faces with:
 // - similar normal
-// - high(configurable) percentage of common images that see them
-void MeshTexture::CreateVirtualFaces(const FaceDataViewArr& facesDatas, FaceDataViewArr& virtualFacesDatas, ChartFaceIdxsArr& virtualFaces)
+// - high percentage of common images that see them
+void MeshTexture::CreateVirtualFaces(const FaceDataViewArr& facesDatas, FaceDataViewArr& virtualFacesDatas, VirtualFaceIdxsArr& virtualFaces, unsigned minCommonCameras, float thMaxNormalDeviation) const
 {
-	Mesh::FaceIdxArr remainingFaces;
-	remainingFaces.Resize(faces.size());
+	const float cosMaxNormalDeviation(COS(FD2R(thMaxNormalDeviation)));
+	Mesh::FaceIdxArr remainingFaces(faces.size());
 	std::iota(remainingFaces.begin(), remainingFaces.end(), 0);
 	std::vector<bool> selectedFaces(faces.size(), false);
-	const float thMaxNormalDeviation(COS(FD2R(15.f)));
 	cQueue<FIndex, FIndex, 0> currentVirtualFaceQueue;
 	std::unordered_set<FIndex> queuedFaces;
 	do {
-		#ifdef _RELEASE
-		std::srand(std::time(nullptr)); // use current time as seed for random generator
-		#endif
 		const FIndex startPos = RAND() % remainingFaces.size();
 		const FIndex virtualFaceCenterFaceID = remainingFaces[startPos];
 		ASSERT(currentVirtualFaceQueue.IsEmpty());
-		Mesh::FaceIdxArr virtualFace;
-		const Normal& vfCenterNormal = scene.mesh.faceNormals[virtualFaceCenterFaceID];
+		const Normal& normalCenter = scene.mesh.faceNormals[virtualFaceCenterFaceID];
 		const FaceDataArr& centerFaceDatas = facesDatas[virtualFaceCenterFaceID];
+		// select the common cameras
+		Mesh::FaceIdxArr virtualFace;
 		FaceDataArr virtualFaceDatas;
-		IIndexArr selectedCams;
-		// config here the number of common faces and selection process for cameras to be selected
-		SelectBestView(selectedCams, 2, virtualFaceCenterFaceID, centerFaceDatas, 0.67f);
-		queuedFaces.clear();
 		if (centerFaceDatas.empty()) {
 			virtualFace.emplace_back(virtualFaceCenterFaceID);
 			selectedFaces[virtualFaceCenterFaceID] = true;
 			const auto posToErase = remainingFaces.FindFirst(virtualFaceCenterFaceID);
 			ASSERT(posToErase != Mesh::FaceIdxArr::NO_INDEX);
 			remainingFaces.RemoveAtMove(posToErase);
-		}
-		else {
+		} else {
+			const IIndexArr selectedCams = SelectBestView(centerFaceDatas, virtualFaceCenterFaceID, minCommonCameras, 0.67f);
 			currentVirtualFaceQueue.AddTail(virtualFaceCenterFaceID);
+			queuedFaces.clear();
 			do {
 				const FIndex currentFaceId = currentVirtualFaceQueue.GetHead();
 				currentVirtualFaceQueue.PopHead();
 				// check for condition to add in current virtual face
-				// normal angle smaller than 15 degrees
+				// normal angle smaller than thMaxNormalDeviation degrees
 				const Normal& faceNormal = scene.mesh.faceNormals[currentFaceId];
-				const float cosFaceToCenter(ComputeAngle<float, float>(vfCenterNormal.ptr(), faceNormal.ptr()));
-				{
-					bool debugMe = false;
-					if (currentFaceId == 10500)
-						debugMe = true;
-				}
-				if (cosFaceToCenter < thMaxNormalDeviation)
+				const float cosFaceToCenter(ComputeAngleN(normalCenter.ptr(), faceNormal.ptr()));
+				if (cosFaceToCenter < cosMaxNormalDeviation)
 					continue;
-				//check if current face is seen by all cameras in selectedCams
-				const FaceDataArr& faceDatas = facesDatas[currentFaceId];
-				if (!FaceIsViewed(faceDatas, selectedCams))
+				// check if current face is seen by all cameras in selectedCams
+				ASSERT(!selectedCams.empty());
+				if (!IsFaceVisible(facesDatas[currentFaceId], selectedCams))
 					continue;
-
 				// remove it from remaining faces and add it to the virtual face
 				{
 					const auto posToErase = remainingFaces.FindFirst(currentFaceId);
@@ -784,32 +733,32 @@ void MeshTexture::CreateVirtualFaces(const FaceDataViewArr& facesDatas, FaceData
 					}
 				}
 			} while (!currentVirtualFaceQueue.IsEmpty());
-
 			// compute virtual face quality and create virtual face
-			FOREACH(iIdx, selectedCams) {
-				FaceData& faceData = virtualFaceDatas.AddEmpty();
-				faceData.quality = 0;
-				faceData.idxView = selectedCams[iIdx];
+			for (IIndex idxView: selectedCams) {
+				FaceData& virtualFaceData = virtualFaceDatas.AddEmpty();
+				virtualFaceData.quality = 0;
+				virtualFaceData.idxView = idxView;
 				#if TEXOPT_FACEOUTLIER != TEXOPT_FACEOUTLIER_NA
-				faceData.color = Point3f::ZERO;
+				virtualFaceData.color = Point3f::ZERO;
 				#endif
-				int processedFaces(0);
+				unsigned processedFaces(0);
 				for (FIndex fid : virtualFace) {
-					const FaceDataArr& centerFaceDatas = facesDatas[fid];
-					FOREACH(fdIdx, centerFaceDatas) {
-						if (centerFaceDatas[fdIdx].idxView == selectedCams[iIdx]) {
-							faceData.quality += centerFaceDatas[fdIdx].quality;
+					const FaceDataArr& faceDatas = facesDatas[fid];
+					for (FaceData& faceData: faceDatas) {
+						if (faceData.idxView == idxView) {
+							virtualFaceData.quality += faceData.quality;
 							#if TEXOPT_FACEOUTLIER != TEXOPT_FACEOUTLIER_NA
-							faceData.color += centerFaceDatas[fdIdx].color;
+							virtualFaceData.color += faceData.color;
 							#endif
 							++processedFaces;
 							break;
 						}
 					}
 				}
-				faceData.quality /= processedFaces;
+				ASSERT(processedFaces > 0);
+				virtualFaceData.quality /= processedFaces;
 				#if TEXOPT_FACEOUTLIER != TEXOPT_FACEOUTLIER_NA
-				faceData.color /= processedFaces;
+				virtualFaceData.color /= processedFaces;
 				#endif
 			}
 			ASSERT(!virtualFaceDatas.empty());
@@ -997,13 +946,16 @@ bool MeshTexture::FaceOutlierDetection(FaceDataArr& faceDatas, float thOutlier) 
 }
 #endif
 
-bool MeshTexture::FaceViewSelection(float fOutlierThreshold, float fRatioDataSmoothness, const IIndexArr& views)
+bool MeshTexture::FaceViewSelection(bool bVirtualFaces, float fOutlierThreshold, float fRatioDataSmoothness, const IIndexArr& views)
 {
 	// extract array of triangles incident to each vertex
 	ListVertexFaces();
 
 	// create texture patches
 	{
+		// compute face normals and smoothen them
+		scene.mesh.SmoothNormalFaces();
+
 		// list all views for each face
 		FaceDataViewArr facesDatas;
 		if (!ListCameraFaces(facesDatas, fOutlierThreshold, views))
@@ -1014,47 +966,49 @@ bool MeshTexture::FaceViewSelection(float fOutlierThreshold, float fRatioDataSmo
 		typedef boost::graph_traits<Graph>::edge_iterator EdgeIter;
 		typedef boost::graph_traits<Graph>::out_edge_iterator EdgeOutIter;
 		Graph graph;
-#if USE_VIRTUAL_FACES
-		// 1) create FaceToVirtualFaceMap
-		FaceDataViewArr virtualFacesDatas;
-		ChartFaceIdxsArr virtualFaces; // stores each virtual face as an array of mesh face ID
-		CreateVirtualFaces(facesDatas, virtualFacesDatas, virtualFaces);
-		Mesh::FaceIdxArr mapFaceToVirtualFace(faces.size()); // for each mesh face ID, store the virtual face ID witch contains it
-		size_t controlCounter(0);
-		FOREACH(idxVF, virtualFaces) {
-			const Mesh::FaceIdxArr& vf = virtualFaces[idxVF];
-			for (FIndex idxFace : vf) {
-				mapFaceToVirtualFace[idxFace] = idxVF;
-				++controlCounter;
-			}
-		}
-		ASSERT(controlCounter == faces.size());
-		// 2) create function to find virtual faces neighbors
-		ChartFaceIdxsArr virtualFaceNeighbors; // for each virtual face, the list of virtual faces with at least one vertex in common
-		{
-			virtualFaceNeighbors.resize(virtualFaces.size());
+		LabelArr labels;
+
+		// construct and use virtual faces for patch creation instead of actual mesh faces;
+		// the virtual faces are composed of coplanar triangles sharing same views
+		if (bVirtualFaces) {
+			// 1) create FaceToVirtualFaceMap
+			FaceDataViewArr virtualFacesDatas;
+			VirtualFaceIdxsArr virtualFaces; // stores each virtual face as an array of mesh face ID
+			CreateVirtualFaces(facesDatas, virtualFacesDatas, virtualFaces);
+			Mesh::FaceIdxArr mapFaceToVirtualFace(faces.size()); // for each mesh face ID, store the virtual face ID witch contains it
+			size_t controlCounter(0);
 			FOREACH(idxVF, virtualFaces) {
 				const Mesh::FaceIdxArr& vf = virtualFaces[idxVF];
-				Mesh::FaceIdxArr& vfNeighbors = virtualFaceNeighbors[idxVF];
 				for (FIndex idxFace : vf) {
-					const Mesh::FaceFaces& adjFaces = faceFaces[idxFace];
-					for (int i = 0; i < 3; ++i) {
-						const FIndex fAdj(adjFaces[i]);
-						if (fAdj == NO_ID)
-							continue;
-						if (mapFaceToVirtualFace[fAdj] == idxVF)
-							continue;
-						if (fAdj != idxFace && vfNeighbors.Find(mapFaceToVirtualFace[fAdj]) == Mesh::FaceIdxArr::NO_INDEX) {
-							vfNeighbors.emplace_back(mapFaceToVirtualFace[fAdj]);
+					mapFaceToVirtualFace[idxFace] = idxVF;
+					++controlCounter;
+				}
+			}
+			ASSERT(controlCounter == faces.size());
+			// 2) create function to find virtual faces neighbors
+			VirtualFaceIdxsArr virtualFaceNeighbors; { // for each virtual face, the list of virtual faces with at least one vertex in common
+				virtualFaceNeighbors.resize(virtualFaces.size());
+				FOREACH(idxVF, virtualFaces) {
+					const Mesh::FaceIdxArr& vf = virtualFaces[idxVF];
+					Mesh::FaceIdxArr& vfNeighbors = virtualFaceNeighbors[idxVF];
+					for (FIndex idxFace : vf) {
+						const Mesh::FaceFaces& adjFaces = faceFaces[idxFace];
+						for (int i = 0; i < 3; ++i) {
+							const FIndex fAdj(adjFaces[i]);
+							if (fAdj == NO_ID)
+								continue;
+							if (mapFaceToVirtualFace[fAdj] == idxVF)
+								continue;
+							if (fAdj != idxFace && vfNeighbors.Find(mapFaceToVirtualFace[fAdj]) == Mesh::FaceIdxArr::NO_INDEX) {
+								vfNeighbors.emplace_back(mapFaceToVirtualFace[fAdj]);
+							}
 						}
 					}
 				}
 			}
-		}
-		// 3) use virtual faces to build graph in "FaceViewSelection"
-		// 4) assign images to virtual faces
-		// 5) spread image ID to each mesh face from virtual face
-		{
+			// 3) use virtual faces to build the graph
+			// 4) assign images to virtual faces
+			// 5) spread image ID to each mesh face from virtual face
 			FOREACH(idxFace, virtualFaces) {
 				const Mesh::FIndex idx((Mesh::FIndex)boost::add_vertex(graph));
 				ASSERT(idx == idxFace);
@@ -1072,274 +1026,250 @@ bool MeshTexture::FaceViewSelection(float fOutlierThreshold, float fRatioDataSmo
 				}
 			}
 			ASSERT((Mesh::FIndex)boost::num_vertices(graph) == virtualFaces.size());
-		}
-		// assign the best view to each face
-		LabelArr labels(faces.size());
-		components.Resize(faces.size());
-		{
-			// normalize quality values
-			float maxQuality(0);
-			for (const FaceDataArr& faceDatas: virtualFacesDatas) {
-				for (const FaceData& faceData: faceDatas)
-					if (maxQuality < faceData.quality)
-						maxQuality = faceData.quality;
-			}
-			Histogram32F hist(std::make_pair(0.f, maxQuality), 1000);
-			for (const FaceDataArr& faceDatas: virtualFacesDatas) {
-				for (const FaceData& faceData: faceDatas)
-					hist.Add(faceData.quality);
-			}
-			const float normQuality(hist.GetApproximatePermille(0.95f));
+			// assign the best view to each face
+			labels.resize(faces.size());
+			components.resize(faces.size()); {
+				// normalize quality values
+				float maxQuality(0);
+				for (const FaceDataArr& faceDatas: virtualFacesDatas) {
+					for (const FaceData& faceData: faceDatas)
+						if (maxQuality < faceData.quality)
+							maxQuality = faceData.quality;
+				}
+				Histogram32F hist(std::make_pair(0.f, maxQuality), 1000);
+				for (const FaceDataArr& faceDatas: virtualFacesDatas) {
+					for (const FaceData& faceData: faceDatas)
+						hist.Add(faceData.quality);
+				}
+				const float normQuality(hist.GetApproximatePermille(0.95f));
 
-			#if TEXOPT_INFERENCE == TEXOPT_INFERENCE_LBP
-			// initialize inference structures
-			const LBPInference::EnergyType MaxEnergy(fRatioDataSmoothness*LBPInference::MaxEnergy);
-			LBPInference inference; {
-				inference.SetNumNodes(virtualFaces.size());
-				inference.SetSmoothCost(SmoothnessPotts);
-				EdgeOutIter ei, eie;
-				FOREACH(f, virtualFaces) {
-					for (boost::tie(ei, eie) = boost::out_edges(f, graph); ei != eie; ++ei) {
-						ASSERT(f == (FIndex)ei->m_source);
-						const FIndex fAdj((FIndex)ei->m_target);
-						ASSERT(components.empty() || components[f] == components[fAdj]);
-						if (f < fAdj) // add edges only once
-							inference.SetNeighbors(f, fAdj);
+				#if TEXOPT_INFERENCE == TEXOPT_INFERENCE_LBP
+				// initialize inference structures
+				const LBPInference::EnergyType MaxEnergy(fRatioDataSmoothness*LBPInference::MaxEnergy);
+				LBPInference inference; {
+					inference.SetNumNodes(virtualFaces.size());
+					inference.SetSmoothCost(SmoothnessPotts);
+					EdgeOutIter ei, eie;
+					FOREACH(f, virtualFaces) {
+						for (boost::tie(ei, eie) = boost::out_edges(f, graph); ei != eie; ++ei) {
+							ASSERT(f == (FIndex)ei->m_source);
+							const FIndex fAdj((FIndex)ei->m_target);
+							ASSERT(components.empty() || components[f] == components[fAdj]);
+							if (f < fAdj) // add edges only once
+								inference.SetNeighbors(f, fAdj);
+						}
+						// set costs for label 0 (undefined)
+						inference.SetDataCost((Label)0, f, MaxEnergy);
 					}
-					// set costs for label 0 (undefined)
-					inference.SetDataCost((Label)0, f, MaxEnergy);
 				}
-			}
 
-			// set data costs for all labels (except label 0 - undefined)
-			FOREACH(f, virtualFacesDatas) {
-				const FaceDataArr& faceDatas = virtualFacesDatas[f];
-				for (const FaceData& faceData: faceDatas) {
-					const Label label((Label)faceData.idxView+1);
-					const float normalizedQuality(faceData.quality>=normQuality ? 1.f : faceData.quality/normQuality);
-					const float dataCost((1.f-normalizedQuality)*MaxEnergy);
-					inference.SetDataCost(label, f, dataCost);
+				// set data costs for all labels (except label 0 - undefined)
+				FOREACH(f, virtualFacesDatas) {
+					const FaceDataArr& faceDatas = virtualFacesDatas[f];
+					for (const FaceData& faceData: faceDatas) {
+						const Label label((Label)faceData.idxView+1);
+						const float normalizedQuality(faceData.quality>=normQuality ? 1.f : faceData.quality/normQuality);
+						const float dataCost((1.f-normalizedQuality)*MaxEnergy);
+						inference.SetDataCost(label, f, dataCost);
+					}
 				}
+
+				// assign the optimal view (label) to each face
+				// (label 0 is reserved as undefined)
+				inference.Optimize();
+
+				// extract resulting labeling
+				LabelArr virtualLabels(virtualFaces.size());
+				virtualLabels.Memset(0xFF);
+				FOREACH(l, virtualLabels) {
+					const Label label(inference.GetLabel(l));
+					ASSERT(label < images.GetSize()+1);
+					if (label > 0)
+						virtualLabels[l] = label-1;
+				}
+				FOREACH(l, labels) {
+					labels[l] = virtualLabels[mapFaceToVirtualFace[l]];
+				}
+				#endif
 			}
 
-			// assign the optimal view (label) to each face
-			// (label 0 is reserved as undefined)
-			inference.Optimize();
-
-			// extract resulting labeling
-			LabelArr virtualLabels(virtualFaces.size());
-			virtualLabels.Memset(0xFF);
-			FOREACH(l, virtualLabels) {
-				const Label label(inference.GetLabel(l));
-				ASSERT(label < images.GetSize()+1);
-				if (label > 0)
-					virtualLabels[l] = label-1;
-			}
-			FOREACH(l, labels) {
-				labels[l] = virtualLabels[mapFaceToVirtualFace[l]];
-			}
-			#endif
-		}
-
-		{
 			graph.clear();
-			FOREACH(idxFace, faces) {
-				const Mesh::FIndex idx((Mesh::FIndex)boost::add_vertex(graph));
-				ASSERT(idx == idxFace);
-			}
-			FOREACH(idxFace, faces) {
-				const Mesh::FaceFaces& afaces = faceFaces[idxFace];
-				for (int v=0; v<3; ++v) {
-					const FIndex idxFaceAdj = afaces[v];
-					if (idxFaceAdj == NO_ID || idxFace >= idxFaceAdj)
-						continue;
-					const bool bInvisibleFace(facesDatas[idxFace].IsEmpty());
-					const bool bInvisibleFaceAdj(facesDatas[idxFaceAdj].IsEmpty());
-					if (bInvisibleFace || bInvisibleFaceAdj) {
-						if (bInvisibleFace != bInvisibleFaceAdj)
-							seamEdges.AddConstruct(idxFace, idxFaceAdj);
-						continue;
-					}
-					boost::add_edge(idxFace, idxFaceAdj, graph);
-				}
-			}
-			faceFaces.Release();
-			ASSERT((Mesh::FIndex)boost::num_vertices(graph) == faces.size());
 		}
-#else
-		{
-			FOREACH(idxFace, faces) {
-				const Mesh::FIndex idx((Mesh::FIndex)boost::add_vertex(graph));
-				ASSERT(idx == idxFace);
-			}
-			FOREACH(idxFace, faces) {
-				const Mesh::FaceFaces& afaces = faceFaces[idxFace];
-				for (int v=0; v<3; ++v) {
-					const FIndex idxFaceAdj = afaces[v];
-					if (idxFaceAdj == NO_ID || idxFace >= idxFaceAdj)
-						continue;
-					const bool bInvisibleFace(facesDatas[idxFace].IsEmpty());
-					const bool bInvisibleFaceAdj(facesDatas[idxFaceAdj].IsEmpty());
-					if (bInvisibleFace || bInvisibleFaceAdj) {
-						if (bInvisibleFace != bInvisibleFaceAdj)
-							seamEdges.emplace_back(idxFace, idxFaceAdj);
-						continue;
-					}
-					boost::add_edge(idxFace, idxFaceAdj, graph);
-				}
-			}
-			faceFaces.Release();
-			ASSERT((Mesh::FIndex)boost::num_vertices(graph) == faces.size());
+		
+		// create the graph of faces: each vertex is a face and the edges are the edges shared by the faces
+		FOREACH(idxFace, faces) {
+			const Mesh::FIndex idx((Mesh::FIndex)boost::add_vertex(graph));
+			ASSERT(idx == idxFace);
 		}
-
-		// assign the best view to each face
-		LabelArr labels(faces.size());
-		components.Resize(faces.size());
-		{
-			// normalize quality values
-			float maxQuality(0);
-			for (const FaceDataArr& faceDatas: facesDatas) {
-				for (const FaceData& faceData: faceDatas)
-					if (maxQuality < faceData.quality)
-						maxQuality = faceData.quality;
-			}
-			Histogram32F hist(std::make_pair(0.f, maxQuality), 1000);
-			for (const FaceDataArr& faceDatas: facesDatas) {
-				for (const FaceData& faceData: faceDatas)
-					hist.Add(faceData.quality);
-			}
-			const float normQuality(hist.GetApproximatePermille(0.95f));
-
-			#if TEXOPT_INFERENCE == TEXOPT_INFERENCE_LBP
-			// initialize inference structures
-			const LBPInference::EnergyType MaxEnergy(fRatioDataSmoothness*LBPInference::MaxEnergy);
-			LBPInference inference; {
-				inference.SetNumNodes(faces.size());
-				inference.SetSmoothCost(SmoothnessPotts);
-				EdgeOutIter ei, eie;
-				FOREACH(f, faces) {
-					for (boost::tie(ei, eie) = boost::out_edges(f, graph); ei != eie; ++ei) {
-						ASSERT(f == (FIndex)ei->m_source);
-						const FIndex fAdj((FIndex)ei->m_target);
-						ASSERT(components.empty() || components[f] == components[fAdj]);
-						if (f < fAdj) // add edges only once
-							inference.SetNeighbors(f, fAdj);
-					}
-					// set costs for label 0 (undefined)
-					inference.SetDataCost((Label)0, f, MaxEnergy);
-				}
-			}
-
-			// set data costs for all labels (except label 0 - undefined)
-			FOREACH(f, facesDatas) {
-				const FaceDataArr& faceDatas = facesDatas[f];
-				for (const FaceData& faceData: faceDatas) {
-					const Label label((Label)faceData.idxView+1);
-					const float normalizedQuality(faceData.quality>=normQuality ? 1.f : faceData.quality/normQuality);
-					const float dataCost((1.f-normalizedQuality)*MaxEnergy);
-					inference.SetDataCost(label, f, dataCost);
-				}
-			}
-
-			// assign the optimal view (label) to each face
-			// (label 0 is reserved as undefined)
-			inference.Optimize();
-
-			// extract resulting labeling
-			labels.Memset(0xFF);
-			FOREACH(l, labels) {
-				const Label label(inference.GetLabel(l));
-				ASSERT(label < images.GetSize()+1);
-				if (label > 0)
-					labels[l] = label-1;
-			}
-			#endif
-
-			#if TEXOPT_INFERENCE == TEXOPT_INFERENCE_TRWS
-			// find connected components
-			const FIndex nComponents(boost::connected_components(graph, components.data()));
-
-			// map face ID from global to component space
-			typedef cList<NodeID, NodeID, 0, 128, NodeID> NodeIDs;
-			NodeIDs nodeIDs(faces.GetSize());
-			NodeIDs sizes(nComponents);
-			sizes.Memset(0);
-			FOREACH(c, components)
-				nodeIDs[c] = sizes[components[c]]++;
-
-			// initialize inference structures
-			const LabelID numLabels(images.GetSize()+1);
-			CLISTDEFIDX(TRWSInference, FIndex) inferences(nComponents);
-			FOREACH(s, sizes) {
-				const NodeID numNodes(sizes[s]);
-				ASSERT(numNodes > 0);
-				if (numNodes <= 1)
+		FOREACH(idxFace, faces) {
+			const Mesh::FaceFaces& afaces = faceFaces[idxFace];
+			for (int v=0; v<3; ++v) {
+				const FIndex idxFaceAdj = afaces[v];
+				if (idxFaceAdj == NO_ID || idxFace >= idxFaceAdj)
 					continue;
-				TRWSInference& inference = inferences[s];
-				inference.Init(numNodes, numLabels);
+				const bool bInvisibleFace(facesDatas[idxFace].IsEmpty());
+				const bool bInvisibleFaceAdj(facesDatas[idxFaceAdj].IsEmpty());
+				if (bInvisibleFace || bInvisibleFaceAdj) {
+					if (bInvisibleFace != bInvisibleFaceAdj)
+						seamEdges.emplace_back(idxFace, idxFaceAdj);
+					continue;
+				}
+				boost::add_edge(idxFace, idxFaceAdj, graph);
 			}
+		}
+		faceFaces.Release();
+		ASSERT((Mesh::FIndex)boost::num_vertices(graph) == faces.size());
 
-			// set data costs
+		// start patch creation starting directly from individual faces
+		if (!bVirtualFaces) {
+			// assign the best view to each face
+			labels.resize(faces.size());
+			components.resize(faces.size());
 			{
-				// add nodes
-				CLISTDEF0(EnergyType) D(numLabels);
+				// normalize quality values
+				float maxQuality(0);
+				for (const FaceDataArr& faceDatas: facesDatas) {
+					for (const FaceData& faceData: faceDatas)
+						if (maxQuality < faceData.quality)
+							maxQuality = faceData.quality;
+				}
+				Histogram32F hist(std::make_pair(0.f, maxQuality), 1000);
+				for (const FaceDataArr& faceDatas: facesDatas) {
+					for (const FaceData& faceData: faceDatas)
+						hist.Add(faceData.quality);
+				}
+				const float normQuality(hist.GetApproximatePermille(0.95f));
+
+				#if TEXOPT_INFERENCE == TEXOPT_INFERENCE_LBP
+				// initialize inference structures
+				const LBPInference::EnergyType MaxEnergy(fRatioDataSmoothness*LBPInference::MaxEnergy);
+				LBPInference inference; {
+					inference.SetNumNodes(faces.size());
+					inference.SetSmoothCost(SmoothnessPotts);
+					EdgeOutIter ei, eie;
+					FOREACH(f, faces) {
+						for (boost::tie(ei, eie) = boost::out_edges(f, graph); ei != eie; ++ei) {
+							ASSERT(f == (FIndex)ei->m_source);
+							const FIndex fAdj((FIndex)ei->m_target);
+							ASSERT(components.empty() || components[f] == components[fAdj]);
+							if (f < fAdj) // add edges only once
+								inference.SetNeighbors(f, fAdj);
+						}
+						// set costs for label 0 (undefined)
+						inference.SetDataCost((Label)0, f, MaxEnergy);
+					}
+				}
+
+				// set data costs for all labels (except label 0 - undefined)
 				FOREACH(f, facesDatas) {
-					TRWSInference& inference = inferences[components[f]];
-					if (inference.IsEmpty())
-						continue;
-					D.MemsetValue(MaxEnergy);
 					const FaceDataArr& faceDatas = facesDatas[f];
 					for (const FaceData& faceData: faceDatas) {
-						const Label label((Label)faceData.idxView);
+						const Label label((Label)faceData.idxView+1);
 						const float normalizedQuality(faceData.quality>=normQuality ? 1.f : faceData.quality/normQuality);
-						const EnergyType dataCost(MaxEnergy*(1.f-normalizedQuality));
-						D[label] = dataCost;
+						const float dataCost((1.f-normalizedQuality)*MaxEnergy);
+						inference.SetDataCost(label, f, dataCost);
 					}
-					const NodeID nodeID(nodeIDs[f]);
-					inference.AddNode(nodeID, D.Begin());
 				}
-				// add edges
-				EdgeOutIter ei, eie;
-				FOREACH(f, faces) {
-					TRWSInference& inference = inferences[components[f]];
+
+				// assign the optimal view (label) to each face
+				// (label 0 is reserved as undefined)
+				inference.Optimize();
+
+				// extract resulting labeling
+				labels.Memset(0xFF);
+				FOREACH(l, labels) {
+					const Label label(inference.GetLabel(l));
+					ASSERT(label < images.size()+1);
+					if (label > 0)
+						labels[l] = label-1;
+				}
+				#endif
+
+				#if TEXOPT_INFERENCE == TEXOPT_INFERENCE_TRWS
+				// find connected components
+				const FIndex nComponents(boost::connected_components(graph, components.data()));
+
+				// map face ID from global to component space
+				typedef cList<NodeID, NodeID, 0, 128, NodeID> NodeIDs;
+				NodeIDs nodeIDs(faces.GetSize());
+				NodeIDs sizes(nComponents);
+				sizes.Memset(0);
+				FOREACH(c, components)
+					nodeIDs[c] = sizes[components[c]]++;
+
+				// initialize inference structures
+				const LabelID numLabels(images.GetSize()+1);
+				CLISTDEFIDX(TRWSInference, FIndex) inferences(nComponents);
+				FOREACH(s, sizes) {
+					const NodeID numNodes(sizes[s]);
+					ASSERT(numNodes > 0);
+					if (numNodes <= 1)
+						continue;
+					TRWSInference& inference = inferences[s];
+					inference.Init(numNodes, numLabels);
+				}
+
+				// set data costs
+				{
+					// add nodes
+					CLISTDEF0(EnergyType) D(numLabels);
+					FOREACH(f, facesDatas) {
+						TRWSInference& inference = inferences[components[f]];
+						if (inference.IsEmpty())
+							continue;
+						D.MemsetValue(MaxEnergy);
+						const FaceDataArr& faceDatas = facesDatas[f];
+						for (const FaceData& faceData: faceDatas) {
+							const Label label((Label)faceData.idxView);
+							const float normalizedQuality(faceData.quality>=normQuality ? 1.f : faceData.quality/normQuality);
+							const EnergyType dataCost(MaxEnergy*(1.f-normalizedQuality));
+							D[label] = dataCost;
+						}
+						const NodeID nodeID(nodeIDs[f]);
+						inference.AddNode(nodeID, D.Begin());
+					}
+					// add edges
+					EdgeOutIter ei, eie;
+					FOREACH(f, faces) {
+						TRWSInference& inference = inferences[components[f]];
+						if (inference.IsEmpty())
+							continue;
+						for (boost::tie(ei, eie) = boost::out_edges(f, graph); ei != eie; ++ei) {
+							ASSERT(f == (FIndex)ei->m_source);
+							const FIndex fAdj((FIndex)ei->m_target);
+							ASSERT(components[f] == components[fAdj]);
+							if (f < fAdj) // add edges only once
+								inference.AddEdge(nodeIDs[f], nodeIDs[fAdj]);
+						}
+					}
+				}
+
+				// assign the optimal view (label) to each face
+				#ifdef TEXOPT_USE_OPENMP
+				#pragma omp parallel for schedule(dynamic)
+				for (int i=0; i<(int)inferences.GetSize(); ++i) {
+				#else
+				FOREACH(i, inferences) {
+				#endif
+					TRWSInference& inference = inferences[i];
 					if (inference.IsEmpty())
 						continue;
-					for (boost::tie(ei, eie) = boost::out_edges(f, graph); ei != eie; ++ei) {
-						ASSERT(f == (FIndex)ei->m_source);
-						const FIndex fAdj((FIndex)ei->m_target);
-						ASSERT(components[f] == components[fAdj]);
-						if (f < fAdj) // add edges only once
-							inference.AddEdge(nodeIDs[f], nodeIDs[fAdj]);
-					}
+					inference.Optimize();
 				}
+				// extract resulting labeling
+				labels.Memset(0xFF);
+				FOREACH(l, labels) {
+					TRWSInference& inference = inferences[components[l]];
+					if (inference.IsEmpty())
+						continue;
+					const Label label(inference.GetLabel(nodeIDs[l]));
+					ASSERT(label >= 0 && label < numLabels);
+					if (label < images.GetSize())
+						labels[l] = label;
+				}
+				#endif
 			}
-
-			// assign the optimal view (label) to each face
-			#ifdef TEXOPT_USE_OPENMP
-			#pragma omp parallel for schedule(dynamic)
-			for (int i=0; i<(int)inferences.GetSize(); ++i) {
-			#else
-			FOREACH(i, inferences) {
-			#endif
-				TRWSInference& inference = inferences[i];
-				if (inference.IsEmpty())
-					continue;
-				inference.Optimize();
-			}
-			// extract resulting labeling
-			labels.Memset(0xFF);
-			FOREACH(l, labels) {
-				TRWSInference& inference = inferences[components[l]];
-				if (inference.IsEmpty())
-					continue;
-				const Label label(inference.GetLabel(nodeIDs[l]));
-				ASSERT(label >= 0 && label < numLabels);
-				if (label < images.GetSize())
-					labels[l] = label;
-			}
-			#endif
 		}
-#endif
 
 		// create texture patches
 		{
@@ -2287,14 +2217,14 @@ void MeshTexture::GenerateTexture(bool bGlobalSeamLeveling, bool bLocalSeamLevel
 }
 
 // texture mesh
-bool Scene::TextureMesh(unsigned nResolutionLevel, unsigned nMinResolution, float fOutlierThreshold, float fRatioDataSmoothness, bool bGlobalSeamLeveling, bool bLocalSeamLeveling, unsigned nTextureSizeMultiple, unsigned nRectPackingHeuristic, Pixel8U colEmpty, const IIndexArr& views)
+bool Scene::TextureMesh(unsigned nResolutionLevel, unsigned nMinResolution, float fOutlierThreshold, float fRatioDataSmoothness, bool bVirtualFaces, bool bGlobalSeamLeveling, bool bLocalSeamLeveling, unsigned nTextureSizeMultiple, unsigned nRectPackingHeuristic, Pixel8U colEmpty, const IIndexArr& views)
 {
 	MeshTexture texture(*this, nResolutionLevel, nMinResolution);
 
 	// assign the best view to each face
 	{
 		TD_TIMER_STARTD();
-		if (!texture.FaceViewSelection(fOutlierThreshold, fRatioDataSmoothness, views))
+		if (!texture.FaceViewSelection(bVirtualFaces, fOutlierThreshold, fRatioDataSmoothness, views))
 			return false;
 		DEBUG_EXTRA("Assigning the best view to each face completed: %u faces (%s)", mesh.faces.GetSize(), TD_TIMER_GET_FMT().c_str());
 	}

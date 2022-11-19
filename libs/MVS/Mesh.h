@@ -161,13 +161,8 @@ public:
 	void ListBoundaryVertices();
 	void ComputeNormalFaces();
 	void ComputeNormalVertices();
-	
-	// Smoothen the normals for each face
-	//  - fMaxGradient = the maximum angle difference between neighbor normals that is
-	// allowed to take into consideration; higher angles are ignored
-	//  - fOriginalWeight = weight between 0 and 1 to use for current normal value when averaging with neighbor normals
-	//  - nIterations = number of times to repeat the smoothening process
-	void SmoothNormalFaces(const float fMaxGradient = 30.0f, const float fOriginalWeight = 0.5f, const int nIterations = 2);
+
+	void SmoothNormalFaces(float fMaxGradient=25.f, float fOriginalWeight=0.5f, unsigned nIterations=3);
 
 	void GetEdgeFaces(VIndex, VIndex, FaceIdxArr&) const;
 	void GetFaceFaces(FIndex, FaceIdxArr&) const;

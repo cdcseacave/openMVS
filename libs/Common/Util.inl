@@ -483,9 +483,13 @@ FORCEINLINE TYPE AngleFromRotationMatrix(const TMatrix<TYPE,3,3>& R) {
 // returns cos(angle)
 template<typename TYPE1, typename TYPE2 = TYPE1>
 inline TYPE2 ComputeAngle(const TYPE1* V1, const TYPE1* V2) {
-	// compute the angle between the rays
 	return CLAMP(TYPE2((V1[0]*V2[0]+V1[1]*V2[1]+V1[2]*V2[2])/SQRT((V1[0]*V1[0]+V1[1]*V1[1]+V1[2]*V1[2])*(V2[0]*V2[0]+V2[1]*V2[1]+V2[2]*V2[2]))), TYPE2(-1), TYPE2(1));
 } // ComputeAngle
+// same as above, but with the vectors normalized
+template<typename TYPE1, typename TYPE2 = TYPE1>
+inline TYPE2 ComputeAngleN(const TYPE1* V1, const TYPE1* V2) {
+	return CLAMP(TYPE2(V1[0]*V2[0]+V1[1]*V2[1]+V1[2]*V2[2]), TYPE2(-1), TYPE2(1));
+} // ComputeAngleN
 // given three 3D points,
 // compute the angle between the vectors formed by the first point with the other two
 // returns cos(angle)
