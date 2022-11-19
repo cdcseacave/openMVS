@@ -25,6 +25,7 @@
 #endif
 
 #include "LMFit/lmmin.h"
+#include "RobustNorms.h"
 
 
 // D E F I N E S ///////////////////////////////////////////////////

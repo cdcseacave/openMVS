@@ -628,11 +628,11 @@ constexpr T& NEGATE(T& a) {
 }
 template<typename T>
 constexpr T SQUARE(const T& a) {
-	return (a * a);
+	return a * a;
 }
 template<typename T>
 constexpr T CUBE(const T& a) {
-	return (a * a * a);
+	return a * a * a;
 }
 template<typename T>
 inline T SQRT(const T& a) {

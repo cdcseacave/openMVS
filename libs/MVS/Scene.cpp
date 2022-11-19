@@ -1524,8 +1524,8 @@ REAL Scene::ComputeLeveledVolume(float planeThreshold, float sampleMesh, unsigne
 			groundPlane.m_vN.x(), groundPlane.m_vN.y(), groundPlane.m_vN.z(), groundPlane.m_fD, TD_TIMER_GET_FMT().c_str());
 		// transform the scene such that the up vector aligns with ground plane normal,
 		// and the mesh center projected on the ground plane is at the origin
-		const Matrix3x3 rotation(RMatrix(Cast<REAL>(up), Cast<REAL>(Point3f(groundPlane.m_vN))));
-		const Point3 translation(-Cast<REAL>(Point3f(groundPlane.ProjectPoint(mesh.GetCenter()))));
+		const Matrix3x3 rotation(RMatrix(Cast<REAL>(up), Cast<REAL>(Point3f(groundPlane.m_vN))).t());
+		const Point3 translation(rotation*-Cast<REAL>(Point3f(groundPlane.ProjectPoint(mesh.GetCenter()))));
 		const REAL scale(1);
 		Transform(rotation, translation, scale);
 	}

@@ -32,8 +32,6 @@
 #include "Common.h"
 #include "SimilarityTransform.h"
 
-using namespace MVS;
-
 
 // D E F I N E S ///////////////////////////////////////////////////
 
@@ -41,7 +39,7 @@ using namespace MVS;
 // S T R U C T S ///////////////////////////////////////////////////
 
 // find the similarity transform that best aligns the given two sets of corresponding 3D points
-bool MVS::SimilarityTransform(const CLISTDEF0(Point3)& points, const CLISTDEF0(Point3)& pointsRef, Matrix4x4& transform)
+bool SEACAVE::SimilarityTransform(const CLISTDEF0(Point3)& points, const CLISTDEF0(Point3)& pointsRef, Matrix4x4& transform)
 {
 	ASSERT(points.size() == pointsRef.size());
 	typedef Eigen::Matrix<REAL,3,Eigen::Dynamic> PointsVec;
@@ -56,7 +54,7 @@ bool MVS::SimilarityTransform(const CLISTDEF0(Point3)& points, const CLISTDEF0(P
 } // SimilarityTransform
 /*----------------------------------------------------------------*/
 
-void MVS::DecomposeSimilarityTransform(const Matrix4x4& transform, Matrix3x3& R, Point3& t, REAL& s)
+void SEACAVE::DecomposeSimilarityTransform(const Matrix4x4& transform, Matrix3x3& R, Point3& t, REAL& s)
 {
 	const Eigen::Transform<REAL,3,Eigen::Affine,Eigen::RowMajor> T(static_cast<const Matrix4x4::EMat&>(transform));
 	Eigen::Matrix<REAL,3,3> scaling;

@@ -91,10 +91,10 @@ int TPlane<TYPE,DIMS>::Optimize(const POINT* points, size_t size, int maxIters, 
 	struct OptimizationFunctor {
 		const POINT* points;
 		const size_t size;
-		const double threshold;
+		const RobustNorm::GemanMcClure<double> robust;
 		// construct with the data points
 		OptimizationFunctor(const POINT* _points, size_t _size, double _th)
-			: points(_points), size(_size), threshold(_th) { ASSERT(size < std::numeric_limits<int>::max()); }
+			: points(_points), size(_size), robust(_th) { ASSERT(size < std::numeric_limits<int>::max()); }
 		static void Residuals(const double* x, int nPoints, const void* pData, double* fvec, double* fjac, int* /*info*/) {
 			const OptimizationFunctor& data = *reinterpret_cast<const OptimizationFunctor*>(pData);
 			ASSERT((size_t)nPoints == data.size && fvec != NULL && fjac == NULL);
@@ -105,7 +105,7 @@ int TPlane<TYPE,DIMS>::Optimize(const POINT* points, size_t size, int maxIters, 
 				plane.m_vN = N;
 			}
 			for (size_t i=0; i<data.size; ++i)
-				fvec[i] = MINF(plane.DistanceAbs(data.points[i].template cast<double>()), data.threshold);
+				fvec[i] = data.robust(plane.Distance(data.points[i].template cast<double>()));
 		}
 	} functor(points, size, threshold);
 	double arrParams[numParams]; {
@@ -113,7 +113,7 @@ int TPlane<TYPE,DIMS>::Optimize(const POINT* points, size_t size, int maxIters, 
 		const Point3d N(m_vN.x(), m_vN.y(), m_vN.z());
 		Normal2Dir(N, reinterpret_cast<Point2d&>(arrParams[1]));
 	}
-	lm_control_struct control = {1.e-6, 1.e-7, 1.e-8, 1.e-8, 100.0, maxIters}; // lm_control_float;
+	lm_control_struct control = {1.e-6, 1.e-7, 1.e-8, 1.e-7, 100.0, maxIters}; // lm_control_float;
 	lm_status_struct status;
 	lmmin(numParams, arrParams, (int)size, &functor, OptimizationFunctor::Residuals, &control, &status);
 	switch (status.info) {
