@@ -96,7 +96,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		("align-file,o", boost::program_options::value<std::string>(&OPT::strAlignFileName), "input scene filename to which the scene will be cameras aligned")
 		("compute-volume", boost::program_options::value(&OPT::bComputeVolume)->default_value(false), "compute the volume of the given watertight mesh, or else try to estimate the ground plane and assume the mesh is bounded by it")
 		("plane-threshold", boost::program_options::value(&OPT::fPlaneThreshold)->default_value(0.f), "threshold used to estimate the ground plane (<0 - disabled, 0 - auto, >0 - desired threshold)")
-		("sample-mesh", boost::program_options::value(&OPT::fSampleMesh)->default_value(-100000.f), "uniformly samples points on a mesh (0 - disabled, <0 - number of points, >0 - sample density per square unit)")
+		("sample-mesh", boost::program_options::value(&OPT::fSampleMesh)->default_value(-300000.f), "uniformly samples points on a mesh (0 - disabled, <0 - number of points, >0 - sample density per square unit)")
 		("up-axis", boost::program_options::value(&OPT::nUpAxis)->default_value(2), "scene axis considered to point upwards (0 - x, 1 - y, 2 - z)")
 		;
 
@@ -212,12 +212,11 @@ int main(int argc, LPCTSTR* argv)
 	if (OPT::bComputeVolume && !scene.mesh.IsEmpty()) {
 		// compute the mesh volume
 		const REAL volume(scene.ComputeLeveledVolume(OPT::fPlaneThreshold, OPT::fSampleMesh, OPT::nUpAxis));
-		if (volume < 0)
-			return EXIT_FAILURE;
-		OPT::nArchiveType = ARCHIVE_DEFAULT;
 		VERBOSE("Mesh volume: %g (%s)", volume, TD_TIMER_GET_FMT().c_str());
 		scene.mesh.Save(Util::getFileFullName(MAKE_PATH_SAFE(OPT::strOutputFileName)) + _T(".ply"));
-		return EXIT_SUCCESS;
+		if (scene.images.empty())
+			return EXIT_SUCCESS;
+		OPT::nArchiveType = ARCHIVE_DEFAULT;
 	}
 
 	// write transformed scene

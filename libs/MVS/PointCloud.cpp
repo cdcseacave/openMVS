@@ -140,7 +140,7 @@ Planef PointCloud::EstimateGroundPlane(const ImageArr& images, float planeThresh
 	ASSERT(!IsEmpty());
 
 	// remove some random points to speed up plane fitting
-	const unsigned randMinPoints(100000);
+	const unsigned randMinPoints(150000);
 	PointArr workPoints;
 	const PointArr* pPoints;
 	if (GetSize() > randMinPoints) {
@@ -169,9 +169,16 @@ Planef PointCloud::EstimateGroundPlane(const ImageArr& images, float planeThresh
 		plane.Invalidate();
 		return plane;
 	}
+	if (planeThreshold <= 0)
+		DEBUG("Ground plane estimated threshold: %g", threshold);
 
 	// refine plane to inliers
-	plane.Optimize((const Planef::POINT*)pPoints->data(), pPoints->size(), 100, threshold);
+	CLISTDEF0(Planef::POINT) inliers;
+	const float maxThreshold(static_cast<float>(threshold * 2));
+	for (const Point& X: *pPoints)
+		if (plane.DistanceAbs(X) < maxThreshold)
+			inliers.emplace_back(X);
+	plane.Optimize(inliers.data(), inliers.size(), 100, threshold);
 
 	// make sure the plane is well oriented, negate plane normal if it faces same direction as cameras on average
 	if (!images.empty()) {

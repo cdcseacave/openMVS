@@ -29,8 +29,8 @@
 *      containing it.
 */
 
-#ifndef _MVS_SIMILARITY_TRANSFORM_H_
-#define _MVS_SIMILARITY_TRANSFORM_H_
+#ifndef _SEACAVE_SIMILARITY_TRANSFORM_H_
+#define _SEACAVE_SIMILARITY_TRANSFORM_H_
 
 
 // I N C L U D E S /////////////////////////////////////////////////
@@ -41,7 +41,7 @@
 
 // S T R U C T S ///////////////////////////////////////////////////
 
-namespace MVS {
+namespace SEACAVE {
 
 // find the similarity transform that best aligns the given two sets of corresponding 3D points
 bool SimilarityTransform(const CLISTDEF0(Point3)& points, const CLISTDEF0(Point3)& pointsRef, Matrix4x4& transform);
@@ -50,6 +50,6 @@ bool SimilarityTransform(const CLISTDEF0(Point3)& points, const CLISTDEF0(Point3
 void DecomposeSimilarityTransform(const Matrix4x4& transform, Matrix3x3& R, Point3& t, REAL& s);
 /*----------------------------------------------------------------*/
 
-} // namespace MVS
+} // namespace SEACAVE
 
-#endif // _MVS_SIMILARITY_TRANSFORM_H_
+#endif // _SEACAVE_SIMILARITY_TRANSFORM_H_
