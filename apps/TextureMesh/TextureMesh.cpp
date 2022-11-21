@@ -54,9 +54,9 @@ float fDecimateMesh;
 unsigned nCloseHoles;
 unsigned nResolutionLevel;
 unsigned nMinResolution;
+unsigned minCommonCameras;
 float fOutlierThreshold;
 float fRatioDataSmoothness;
-bool bVirtualFaces;
 bool bGlobalSeamLeveling;
 bool bLocalSeamLeveling;
 unsigned nTextureSizeMultiple;
@@ -113,7 +113,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		("min-resolution", boost::program_options::value(&OPT::nMinResolution)->default_value(640), "do not scale images lower than this resolution")
 		("outlier-threshold", boost::program_options::value(&OPT::fOutlierThreshold)->default_value(6e-2f), "threshold used to find and remove outlier face textures (0 - disabled)")
 		("cost-smoothness-ratio", boost::program_options::value(&OPT::fRatioDataSmoothness)->default_value(0.1f), "ratio used to adjust the preference for more compact patches (1 - best quality/worst compactness, ~0 - worst quality/best compactness)")
-		("virtual-faces", boost::program_options::value(&OPT::bVirtualFaces)->default_value(false), "generate texture patches using virtual faces composed of coplanar triangles")
+		("virtual-face-images", boost::program_options::value(&OPT::minCommonCameras)->default_value(0), "generate texture patches using virtual faces composed of coplanar triangles sharing at least this number of views (0 - disabled, 3 - good value)")
 		("global-seam-leveling", boost::program_options::value(&OPT::bGlobalSeamLeveling)->default_value(true), "generate uniform texture patches using global seam leveling")
 		("local-seam-leveling", boost::program_options::value(&OPT::bLocalSeamLeveling)->default_value(true), "generate uniform texture patch borders using local seam leveling")
 		("texture-size-multiple", boost::program_options::value(&OPT::nTextureSizeMultiple)->default_value(0), "texture size should be a multiple of this value (0 - power of two)")
@@ -303,7 +303,7 @@ int main(int argc, LPCTSTR* argv)
 
 	// compute mesh texture
 	TD_TIMER_START();
-	if (!scene.TextureMesh(OPT::nResolutionLevel, OPT::nMinResolution, OPT::fOutlierThreshold, OPT::fRatioDataSmoothness, OPT::bVirtualFaces, OPT::bGlobalSeamLeveling, OPT::bLocalSeamLeveling, OPT::nTextureSizeMultiple, OPT::nRectPackingHeuristic, Pixel8U(OPT::nColEmpty), views))
+	if (!scene.TextureMesh(OPT::nResolutionLevel, OPT::nMinResolution, OPT::minCommonCameras, OPT::fOutlierThreshold, OPT::fRatioDataSmoothness, OPT::bGlobalSeamLeveling, OPT::bLocalSeamLeveling, OPT::nTextureSizeMultiple, OPT::nRectPackingHeuristic, Pixel8U(OPT::nColEmpty), views))
 		return EXIT_FAILURE;
 	VERBOSE("Mesh texturing completed: %u vertices, %u faces (%s)", scene.mesh.vertices.GetSize(), scene.mesh.faces.GetSize(), TD_TIMER_GET_FMT().c_str());
 

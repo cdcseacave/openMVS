@@ -330,9 +330,9 @@ public:
 	#endif
 	
 	void CreateVirtualFaces(const FaceDataViewArr& facesDatas, FaceDataViewArr& virtualFacesDatas, VirtualFaceIdxsArr& virtualFaces, unsigned minCommonCameras=2, float thMaxNormalDeviation=25.f) const;
-	IIndexArr SelectBestView(const FaceDataArr& faceDatas, FIndex fid, unsigned minCommonCameras, float angleToQualityRatio) const;
+	IIndexArr SelectBestView(const FaceDataArr& faceDatas, FIndex fid, unsigned minCommonCameras, float ratioAngleToQuality) const;
 
-	bool FaceViewSelection(bool bVirtualFaces, float fOutlierThreshold, float fRatioDataSmoothness, const IIndexArr& views);
+	bool FaceViewSelection(unsigned minCommonCameras, float fOutlierThreshold, float fRatioDataSmoothness, const IIndexArr& views);
 	
 	void CreateSeamVertices();
 	void GlobalSeamLeveling();
@@ -604,14 +604,39 @@ bool MeshTexture::ListCameraFaces(FaceDataViewArr& facesDatas, float fOutlierThr
 }
 
 // order the camera view scores with highest score first and return the list of first <minCommonCameras> cameras
-// angleToQualityRatio represents the ratio in witch we combine normal angle to quality for a face to obtain the selection score
+// ratioAngleToQuality represents the ratio in witch we combine normal angle to quality for a face to obtain the selection score
 //  - a ratio of 1 means only angle is considered
 //  - a ratio of 0.5 means angle and quality are equally important
 //  - a ratio of 0 means only camera quality is considered when sorting
-IIndexArr MeshTexture::SelectBestView(const FaceDataArr& faceDatas, FIndex fid, unsigned minCommonCameras, float angleToQualityRatio) const
+IIndexArr MeshTexture::SelectBestView(const FaceDataArr& faceDatas, FIndex fid, unsigned minCommonCameras, float ratioAngleToQuality) const
 {
 	ASSERT(!faceDatas.empty());
+	#if 1
+	
+	// compute scores based on the view quality and its angle to the face normal
+	float maxQuality = 0;
+	for (const FaceData& faceData: faceDatas)
+		maxQuality = MAXF(maxQuality, faceData.quality);
+	const Face& f = faces[fid];
+	const Vertex faceCenter((vertices[f[0]] + vertices[f[1]] + vertices[f[2]]) / 3.f);
+	CLISTDEF0IDX(float,IIndex) scores(faceDatas.size());
+	FOREACH(idxFaceData, faceDatas) {
+		const FaceData& faceData = faceDatas[idxFaceData];
+		const Image& imageData = images[faceData.idxView];
+		const Point3f camDir(Cast<Mesh::Type>(imageData.camera.C) - faceCenter);
+		const Normal& faceNormal = scene.mesh.faceNormals[fid];
+		const float cosFaceCam(ComputeAngle(camDir.ptr(), faceNormal.ptr()));
+		scores[idxFaceData] = ratioAngleToQuality*cosFaceCam + (1.f-ratioAngleToQuality)*faceData.quality/maxQuality;
+	}
+	// and sort the scores from to highest to smallest to get the best overall cameras
+	IIndexArr scorePodium(faceDatas.size());
+	std::iota(scorePodium.begin(), scorePodium.end(), 0);
+	scorePodium.Sort([&scores](IIndex i, IIndex j) {
+		return scores[i] > scores[j];
+	});
 
+	#else
+	
 	// sort qualityPodium in relation to faceDatas[index].quality decreasing
 	IIndexArr qualityPodium(faceDatas.size());
 	std::iota(qualityPodium.begin(), qualityPodium.end(), 0);
@@ -641,14 +666,16 @@ IIndexArr MeshTexture::SelectBestView(const FaceDataArr& faceDatas, FIndex fid, 
 	CLISTDEF0IDX(float,IIndex) scores(faceDatas.size());
 	scores.Memset(0);
 	FOREACH(sIdx, faceDatas) {
-		scores[anglePodium[sIdx]] += angleToQualityRatio * (sIdx+1);
-		scores[qualityPodium[sIdx]] += (1.f - angleToQualityRatio) * (sIdx+1);
+		scores[anglePodium[sIdx]] += ratioAngleToQuality * (sIdx+1);
+		scores[qualityPodium[sIdx]] += (1.f - ratioAngleToQuality) * (sIdx+1);
 	}
 	IIndexArr scorePodium(faceDatas.size());
 	std::iota(scorePodium.begin(), scorePodium.end(), 0);
 	scorePodium.Sort([&scores](IIndex i, IIndex j) {
 		return scores[i] < scores[j];
 	});
+	
+	#endif
 	IIndexArr cameras(MIN(minCommonCameras, faceDatas.size()));
 	FOREACH(i, cameras)
 		cameras[i] = faceDatas[scorePodium[i]].idxView;
@@ -675,6 +702,7 @@ static bool IsFaceVisible(const MeshTexture::FaceDataArr& faceDatas, const IInde
 // - high percentage of common images that see them
 void MeshTexture::CreateVirtualFaces(const FaceDataViewArr& facesDatas, FaceDataViewArr& virtualFacesDatas, VirtualFaceIdxsArr& virtualFaces, unsigned minCommonCameras, float thMaxNormalDeviation) const
 {
+	const float ratioAngleToQuality(0.67f);
 	const float cosMaxNormalDeviation(COS(FD2R(thMaxNormalDeviation)));
 	Mesh::FaceIdxArr remainingFaces(faces.size());
 	std::iota(remainingFaces.begin(), remainingFaces.end(), 0);
@@ -697,7 +725,7 @@ void MeshTexture::CreateVirtualFaces(const FaceDataViewArr& facesDatas, FaceData
 			ASSERT(posToErase != Mesh::FaceIdxArr::NO_INDEX);
 			remainingFaces.RemoveAtMove(posToErase);
 		} else {
-			const IIndexArr selectedCams = SelectBestView(centerFaceDatas, virtualFaceCenterFaceID, minCommonCameras, 0.67f);
+			const IIndexArr selectedCams = SelectBestView(centerFaceDatas, virtualFaceCenterFaceID, minCommonCameras, ratioAngleToQuality);
 			currentVirtualFaceQueue.AddTail(virtualFaceCenterFaceID);
 			queuedFaces.clear();
 			do {
@@ -946,7 +974,7 @@ bool MeshTexture::FaceOutlierDetection(FaceDataArr& faceDatas, float thOutlier) 
 }
 #endif
 
-bool MeshTexture::FaceViewSelection(bool bVirtualFaces, float fOutlierThreshold, float fRatioDataSmoothness, const IIndexArr& views)
+bool MeshTexture::FaceViewSelection(unsigned minCommonCameras, float fOutlierThreshold, float fRatioDataSmoothness, const IIndexArr& views)
 {
 	// extract array of triangles incident to each vertex
 	ListVertexFaces();
@@ -970,11 +998,12 @@ bool MeshTexture::FaceViewSelection(bool bVirtualFaces, float fOutlierThreshold,
 
 		// construct and use virtual faces for patch creation instead of actual mesh faces;
 		// the virtual faces are composed of coplanar triangles sharing same views
-		if (bVirtualFaces) {
+		const bool bUseVirtualFaces(minCommonCameras > 0);
+		if (bUseVirtualFaces) {
 			// 1) create FaceToVirtualFaceMap
 			FaceDataViewArr virtualFacesDatas;
 			VirtualFaceIdxsArr virtualFaces; // stores each virtual face as an array of mesh face ID
-			CreateVirtualFaces(facesDatas, virtualFacesDatas, virtualFaces);
+			CreateVirtualFaces(facesDatas, virtualFacesDatas, virtualFaces, minCommonCameras);
 			Mesh::FaceIdxArr mapFaceToVirtualFace(faces.size()); // for each mesh face ID, store the virtual face ID witch contains it
 			size_t controlCounter(0);
 			FOREACH(idxVF, virtualFaces) {
@@ -1121,7 +1150,7 @@ bool MeshTexture::FaceViewSelection(bool bVirtualFaces, float fOutlierThreshold,
 		ASSERT((Mesh::FIndex)boost::num_vertices(graph) == faces.size());
 
 		// start patch creation starting directly from individual faces
-		if (!bVirtualFaces) {
+		if (!bUseVirtualFaces) {
 			// assign the best view to each face
 			labels.resize(faces.size());
 			components.resize(faces.size());
@@ -2217,14 +2246,15 @@ void MeshTexture::GenerateTexture(bool bGlobalSeamLeveling, bool bLocalSeamLevel
 }
 
 // texture mesh
-bool Scene::TextureMesh(unsigned nResolutionLevel, unsigned nMinResolution, float fOutlierThreshold, float fRatioDataSmoothness, bool bVirtualFaces, bool bGlobalSeamLeveling, bool bLocalSeamLeveling, unsigned nTextureSizeMultiple, unsigned nRectPackingHeuristic, Pixel8U colEmpty, const IIndexArr& views)
+//  - minCommonCameras: generate texture patches using virtual faces composed of coplanar triangles sharing at least this number of views (0 - disabled, 3 - good value)
+bool Scene::TextureMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsigned minCommonCameras, float fOutlierThreshold, float fRatioDataSmoothness, bool bGlobalSeamLeveling, bool bLocalSeamLeveling, unsigned nTextureSizeMultiple, unsigned nRectPackingHeuristic, Pixel8U colEmpty, const IIndexArr& views)
 {
 	MeshTexture texture(*this, nResolutionLevel, nMinResolution);
 
 	// assign the best view to each face
 	{
 		TD_TIMER_STARTD();
-		if (!texture.FaceViewSelection(bVirtualFaces, fOutlierThreshold, fRatioDataSmoothness, views))
+		if (!texture.FaceViewSelection(minCommonCameras, fOutlierThreshold, fRatioDataSmoothness, views))
 			return false;
 		DEBUG_EXTRA("Assigning the best view to each face completed: %u faces (%s)", mesh.faces.GetSize(), TD_TIMER_GET_FMT().c_str());
 	}
