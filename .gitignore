@@ -36,3 +36,4 @@ CMakeSettings.json
 .vscode/
 out/
 bin*/
+make*/

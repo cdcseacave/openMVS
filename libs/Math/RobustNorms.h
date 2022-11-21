@@ -127,7 +127,7 @@ struct Tukey {
 	inline Tukey(const TYPE& _threshold)
 		: threshold(_threshold), thresholdCb6(CUBE(_threshold)/TYPE(6)), invThreshold(TYPE(1)/threshold), sqrtThresholdCb6(std::sqrt(thresholdCb6)) { ASSERT(_threshold > 0); }
 	inline TYPE operator()(const TYPE& r) const {
-		return std::abs(r) < threshold ? std::sqrt(thresholdSq6*(TYPE(1)-CUBE(TYPE(1)-SQUARE(r*invThreshold)))) : sqrtThresholdCb6;
+		return std::abs(r) < threshold ? std::sqrt(thresholdCb6*(TYPE(1)-CUBE(TYPE(1)-SQUARE(r*invThreshold)))) : sqrtThresholdCb6;
 	}
 	const TYPE threshold;
 	const TYPE thresholdCb6;
@@ -136,6 +136,32 @@ struct Tukey {
 };
 
 } // namespace RobustNorm
+/*----------------------------------------------------------------*/
+
+
+// makes sure the inverse NCC score does not exceed 0.3
+#if 0
+template <typename T>
+inline T robustincc(const T x) { return x / (T(1) + T(3) * x); }
+template <typename T>
+inline T robustinccg(const T x) { return T(1)/SQUARE(T(1) + T(3) * x); }
+template <typename T>
+inline T unrobustincc(const T y) { return y / (T(1) - T(3) * y); }
+#elif 0
+template <typename T>
+inline T robustincc(const T x) { return T(1)-EXP(x*x*T(-4)); }
+template <typename T>
+inline T robustinccg(const T x) { return T(8)*x*EXP(x*x*T(-4)); }
+template <typename T>
+inline T unrobustincc(const T y) { return SQRT(-LOGN(T(1) - y))/T(2); }
+#else
+template <typename T>
+inline T robustincc(const T x) { return x/SQRT(T(0.3)+x*x); }
+template <typename T>
+inline T robustinccg(const T x) { return T(0.3)/((T(0.3)+x*x)*SQRT(T(0.3)+x*x)); }
+template <typename T>
+inline T unrobustincc(const T y) { return (SQRT(30)*y)/(T(10)*SQRT(T(1) - y*y)); }
+#endif
 /*----------------------------------------------------------------*/
 
 } // namespace SEACAVE

@@ -642,7 +642,7 @@ bool DepthMapsData::EstimateDepthMap(IIndex idxImage, int nGeometricIter)
 	Image64F imageSum0;
 	#endif
 	DepthMap currentSizeResDepthMap;
-	for (int scaleNumber = totalScaleNumber; scaleNumber>=0; scaleNumber--) {
+	for (unsigned scaleNumber = totalScaleNumber+1; scaleNumber-- > 0; ) {
 		// initialize
 		float scale = 1.f / POWI(2, scaleNumber);
 		DepthData currentDepthData(ScaleDepthData(fullResDepthData, scale));

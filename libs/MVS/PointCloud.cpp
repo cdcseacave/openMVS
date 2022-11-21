@@ -178,7 +178,7 @@ Planef PointCloud::EstimateGroundPlane(const ImageArr& images, float planeThresh
 	for (const Point& X: *pPoints)
 		if (plane.DistanceAbs(X) < maxThreshold)
 			inliers.emplace_back(X);
-	plane.Optimize(inliers.data(), inliers.size(), 100, threshold);
+	OptimizePlane(plane, inliers.data(), inliers.size(), 100, static_cast<float>(threshold));
 
 	// make sure the plane is well oriented, negate plane normal if it faces same direction as cameras on average
 	if (!images.empty()) {

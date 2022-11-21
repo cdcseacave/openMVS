@@ -651,7 +651,7 @@ inline T LOG10(const T& a) {
 	return T(log10(a));
 }
 template<typename T>
-constexpr T powi(T base, int exp) {
+constexpr T powi(T base, unsigned exp) {
 	T result(1);
 	while (exp) {
 		if (exp & 1)
@@ -661,15 +661,15 @@ constexpr T powi(T base, int exp) {
 	}
 	return result;
 }
-constexpr int log2i(int val) {
+constexpr int log2i(unsigned val) {
 	int ret = -1;
-	while (val > 0) {
+	while (val) {
 		val >>= 1;
-		ret++;
+		++ret;
 	}
 	return ret;
 }
-template <int N> constexpr inline int log2i() { return 1+log2i<(N>>1)>(); }
+template <unsigned N> constexpr inline int log2i() { return 1+log2i<(N>>1)>(); }
 template <>   constexpr inline int log2i<0>() { return -1; }
 template <>   constexpr inline int log2i<1>() { return 0; }
 template <>   constexpr inline int log2i<2>() { return 1; }
@@ -2801,6 +2801,7 @@ protected:
 #endif // _USE_EIGEN
 
 #include "Types.inl"
+#include "Util.inl"
 #include "Rotation.h"
 #include "Sphere.h"
 #include "AABB.h"
@@ -2808,7 +2809,6 @@ protected:
 #include "Plane.h"
 #include "Ray.h"
 #include "Octree.h"
-#include "Util.inl"
 #include "UtilCUDA.h"
 
 #endif // __SEACAVE_TYPES_H__

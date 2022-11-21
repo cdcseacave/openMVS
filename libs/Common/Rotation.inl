@@ -1524,4 +1524,40 @@ void TRMatrixBase<TYPE>::EnforceOrthogonality()
 }
 /*----------------------------------------------------------------*/
 
+
+// if the matrix is a rotation, then the the transpose should be the inverse
+template<typename TYPE>
+inline bool IsRotationMatrix(const TMatrix<TYPE,3,3>& R) {
+	ASSERT(sizeof(TMatrix<TYPE,3,3>) == sizeof(TRMatrixBase<TYPE>));
+	return ((const TRMatrixBase<TYPE>&)R).IsValid();
+} // IsRotationMatrix
+template<typename TYPE, int O>
+inline bool IsRotationMatrix(const Eigen::Matrix<TYPE,3,3,O>& R) {
+	// the trace should be three and the determinant should be one
+	return (ISEQUAL(R.determinant(), TYPE(1)) && ISEQUAL((R*R.transpose()).trace(), TYPE(3)));
+} // IsRotationMatrix
+/*----------------------------------------------------------------*/
+
+// enforce matrix orthogonality
+template<typename TYPE>
+inline void EnsureRotationMatrix(TMatrix<TYPE,3,3>& R) {
+	ASSERT(sizeof(TMatrix<TYPE,3,3>) == sizeof(TRMatrixBase<TYPE>));
+	((TRMatrixBase<TYPE>&)R).EnforceOrthogonality();
+} // EnsureRotationMatrix
+/*----------------------------------------------------------------*/
+
+
+// compute the distance on SO(3) between the two given rotations
+// using log(R) as in: "Efficient and Robust Large-Scale Rotation Averaging", 2013
+// same result as above, but returns directly the angle
+template<typename TYPE>
+inline TYPE ComputeAngleSO3(const TMatrix<TYPE,3,3>& I) {
+	return TYPE(norm(((const TRMatrixBase<TYPE>&)I).GetRotationAxisAngle()));
+} // ComputeAngleSO3
+template<typename TYPE>
+FORCEINLINE TYPE ComputeAngleSO3(const TMatrix<TYPE,3,3>& R1, const TMatrix<TYPE,3,3>& R2) {
+	return ComputeAngleSO3(TMatrix<TYPE,3,3>(R1*R2.t()));
+} // ComputeAngleSO3
+/*----------------------------------------------------------------*/
+
 } // namespace SEACAVE

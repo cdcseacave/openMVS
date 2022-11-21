@@ -1292,8 +1292,8 @@ bool Scene::RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsig
 	// run the mesh optimization on multiple scales (coarse to fine)
 	for (unsigned nScale=0; nScale<nScales; ++nScale) {
 		// init images
-		const Real scale(POWI(fScaleStep, (int)(nScales-nScale-1)));
-		const Real step(POWI(2.f, (int)(nScales-nScale)));
+		const Real scale(POWI(fScaleStep, nScales-nScale-1));
+		const Real step(POWI(2.f, nScales-nScale));
 		DEBUG_ULTIMATE("Refine mesh at: %.2f image scale", scale);
 		if (!refine.InitImages(scale, Real(0.12)*step+Real(0.2)))
 			return false;

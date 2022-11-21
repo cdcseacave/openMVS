@@ -82,64 +82,6 @@ inline bool TPlane<TYPE,DIMS>::IsValid() const
 /*----------------------------------------------------------------*/
 
 
-// least squares refinement of the line to the given 3D point set
-// (return the number of iterations)
-template <typename TYPE, int DIMS>
-int TPlane<TYPE,DIMS>::Optimize(const POINT* points, size_t size, int maxIters, double threshold)
-{
-	ASSERT(size >= numParams);
-	struct OptimizationFunctor {
-		const POINT* points;
-		const size_t size;
-		const RobustNorm::GemanMcClure<double> robust;
-		// construct with the data points
-		OptimizationFunctor(const POINT* _points, size_t _size, double _th)
-			: points(_points), size(_size), robust(_th) { ASSERT(size < std::numeric_limits<int>::max()); }
-		static void Residuals(const double* x, int nPoints, const void* pData, double* fvec, double* fjac, int* /*info*/) {
-			const OptimizationFunctor& data = *reinterpret_cast<const OptimizationFunctor*>(pData);
-			ASSERT((size_t)nPoints == data.size && fvec != NULL && fjac == NULL);
-			TPlane<double,DIMS> plane; {
-				Point3d N;
-				plane.m_fD = x[0];
-				Dir2Normal(reinterpret_cast<const Point2d&>(x[1]), N);
-				plane.m_vN = N;
-			}
-			for (size_t i=0; i<data.size; ++i)
-				fvec[i] = data.robust(plane.Distance(data.points[i].template cast<double>()));
-		}
-	} functor(points, size, threshold);
-	double arrParams[numParams]; {
-		arrParams[0] = (double)m_fD;
-		const Point3d N(m_vN.x(), m_vN.y(), m_vN.z());
-		Normal2Dir(N, reinterpret_cast<Point2d&>(arrParams[1]));
-	}
-	lm_control_struct control = {1.e-6, 1.e-7, 1.e-8, 1.e-7, 100.0, maxIters}; // lm_control_float;
-	lm_status_struct status;
-	lmmin(numParams, arrParams, (int)size, &functor, OptimizationFunctor::Residuals, &control, &status);
-	switch (status.info) {
-	//case 4:
-	case 5:
-	case 6:
-	case 7:
-	case 8:
-	case 9:
-	case 10:
-	case 11:
-	case 12:
-		DEBUG_ULTIMATE("error: refine plane: %s", lm_infmsg[status.info]);
-		return 0;
-	}
-	{
-		Point3d N;
-		m_fD = (TYPE)arrParams[0];
-		Dir2Normal(reinterpret_cast<const Point2d&>(arrParams[1]), N);
-		m_vN = Cast<TYPE>(N);
-	}
-	return status.nfev;
-} // Optimize
-/*----------------------------------------------------------------*/
-
-
 template <typename TYPE, int DIMS>
 inline void TPlane<TYPE,DIMS>::Negate()
 {
@@ -383,6 +325,43 @@ TPoint3<TYPEE> FitPlaneOnline<TYPE,TYPEW>::GetPlane(TPlane<TYPEE,3>& plane) cons
 	const TPoint3<TYPEW> quality(GetPlane(avg, dir));
 	plane.Set(TPoint3<TYPEE>(dir), TPoint3<TYPEE>(avg));
 	return TPoint3<TYPEE>(quality);
+}
+/*----------------------------------------------------------------*/
+
+
+// Least squares fits a plane to a 3D point set.
+// See http://www.geometrictools.com/Documentation/LeastSquaresFitting.pdf
+// Returns a fitting quality (1 - lambda_min/lambda_max):
+//  1 is best (zero variance orthogonally to the fitting line)
+//  0 is worst (isotropic case, returns a plane with default direction)
+template <typename TYPE>
+TYPE FitPlane(const TPoint3<TYPE>* points, size_t size, TPlane<TYPE>& plane) {
+	// compute a point on the plane, which is shown to be the centroid of the points
+	const Eigen::Map< const Eigen::Matrix<TYPE,Eigen::Dynamic,3,Eigen::RowMajor> > vPoints((const TYPE*)points, size, 3);
+	const TPoint3<TYPE> c(vPoints.colwise().mean());
+
+	// assemble covariance matrix; matrix numbering:
+	// 0          
+	// 1 2
+	// 3 4 5          
+	Eigen::Matrix<TYPE,3,3,Eigen::RowMajor> A(Eigen::Matrix<TYPE,3,3,Eigen::RowMajor>::Zero());
+	FOREACHRAWPTR(pPt, points, size) {
+		const TPoint3<TYPE> X(*pPt - c);
+		A(0,0) += X.x*X.x;
+		A(1,0) += X.x*X.y;
+		A(1,1) += X.y*X.y;
+		A(2,0) += X.x*X.z;
+		A(2,1) += X.y*X.z;
+		A(2,2) += X.z*X.z;
+	}
+
+	// the plane normal is simply the eigenvector corresponding to least eigenvalue
+	const Eigen::SelfAdjointEigenSolver< Eigen::Matrix<TYPE,3,3,Eigen::RowMajor> > es(A);
+	ASSERT(ISEQUAL(es.eigenvectors().col(0).norm(), TYPE(1)));
+	plane.Set(es.eigenvectors().col(0), c);
+	const TYPE* const vals(es.eigenvalues().data());
+	ASSERT(vals[0] <= vals[1] && vals[1] <= vals[2]);
+	return TYPE(1) - vals[0]/vals[1];
 }
 /*----------------------------------------------------------------*/
 

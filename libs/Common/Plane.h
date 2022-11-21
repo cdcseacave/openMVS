@@ -53,8 +53,6 @@ public:
 	inline void Invalidate();
 	inline bool IsValid() const;
 
-	int Optimize(const POINT*, size_t, int maxIters=100, double threshold=std::numeric_limits<double>::max());
-
 	inline void Negate();
 	inline TPlane Negated() const;
 
