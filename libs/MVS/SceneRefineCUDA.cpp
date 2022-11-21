@@ -2799,8 +2799,8 @@ bool Scene::RefineMeshCUDA(unsigned nResolutionLevel, unsigned nMinResolution, u
 	// run the mesh optimization on multiple scales (coarse to fine)
 	for (unsigned nScale=0; nScale<nScales; ++nScale) {
 		// init images
-		const float scale(POWI(fScaleStep, (int)(nScales-nScale-1)));
-		const float step(POWI(2.f, (int)(nScales-nScale)));
+		const float scale(POWI(fScaleStep, nScales-nScale-1));
+		const float step(POWI(2.f, nScales-nScale));
 		DEBUG_ULTIMATE("Refine mesh at: %.2f image scale", scale);
 		if (!refine.InitImages(scale, 0.12f*step+0.2f))
 			return false;

@@ -1623,7 +1623,7 @@ bool Mesh::LoadGLTF(const String& fileName, bool bBinary)
 					memcpy(mesh.vertices.data(), pData, gltfBufferView.byteLength);
 				}
 				else if (gltfAccessor.componentType == TINYGLTF_COMPONENT_TYPE_DOUBLE) {
-					for (int i = 0; i < gltfAccessor.count; ++i)
+					for (VIndex i = 0; i < gltfAccessor.count; ++i)
 						mesh.vertices[i] = ((const Point3d*)pData)[i];
 				}
 				else {

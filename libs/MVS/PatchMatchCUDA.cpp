@@ -200,7 +200,7 @@ void PatchMatchCUDA::EstimateDepthMap(DepthData& depthData)
 		textureDepths.resize(params.nNumViews);
 	}
 	const int maxPixelViews(MINF(params.nNumViews, 4));
-	for (int scaleNumber = totalScaleNumber; scaleNumber >= 0; --scaleNumber) {
+	for (unsigned scaleNumber = totalScaleNumber+1; scaleNumber-- > 0; ) {
 		// initialize
 		const float scale = 1.f / POWI(2, scaleNumber);
 		DepthData currentDepthData(DepthMapsData::ScaleDepthData(fullResDepthData, scale));

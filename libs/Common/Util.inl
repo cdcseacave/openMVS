@@ -177,28 +177,6 @@ inline TMatrix<TYPE,3,3> CreateF(const TMatrix<TYPE,3,3>& R, const TMatrix<TYPE,
 /*----------------------------------------------------------------*/
 
 
-// if the matrix is a rotation, then the the transpose should be the inverse
-template<typename TYPE>
-inline bool IsRotationMatrix(const TMatrix<TYPE,3,3>& R) {
-	ASSERT(sizeof(TMatrix<TYPE,3,3>) == sizeof(TRMatrixBase<TYPE>));
-	return ((const TRMatrixBase<TYPE>&)R).IsValid();
-} // IsRotationMatrix
-template<typename TYPE, int O>
-inline bool IsRotationMatrix(const Eigen::Matrix<TYPE,3,3,O>& R) {
-	// the trace should be three and the determinant should be one
-	return (ISEQUAL(R.determinant(), TYPE(1)) && ISEQUAL((R*R.transpose()).trace(), TYPE(3)));
-} // IsRotationMatrix
-/*----------------------------------------------------------------*/
-
-// enforce matrix orthogonality
-template<typename TYPE>
-inline void EnsureRotationMatrix(TMatrix<TYPE,3,3>& R) {
-	ASSERT(sizeof(TMatrix<TYPE,3,3>) == sizeof(TRMatrixBase<TYPE>));
-	((TRMatrixBase<TYPE>&)R).EnforceOrthogonality();
-} // EnsureRotationMatrix
-/*----------------------------------------------------------------*/
-
-
 // compute the angle between the two rotations given
 // as in: "Disambiguating Visual Relations Using Loop Constraints", 2010
 // returns cos(angle) (same as cos(ComputeAngleSO3(I))
@@ -210,17 +188,6 @@ template<typename TYPE>
 FORCEINLINE TYPE ComputeAngle(const TMatrix<TYPE,3,3>& R1, const TMatrix<TYPE,3,3>& R2) {
 	return ComputeAngle(TMatrix<TYPE,3,3>(R1*R2.t()));
 } // ComputeAngle
-// compute the distance on SO(3) between the two given rotations
-// using log(R) as in: "Efficient and Robust Large-Scale Rotation Averaging", 2013
-// same result as above, but returns directly the angle
-template<typename TYPE>
-inline TYPE ComputeAngleSO3(const TMatrix<TYPE,3,3>& I) {
-	return TYPE(norm(((const TRMatrixBase<TYPE>&)I).GetRotationAxisAngle()));
-} // ComputeAngleSO3
-template<typename TYPE>
-FORCEINLINE TYPE ComputeAngleSO3(const TMatrix<TYPE,3,3>& R1, const TMatrix<TYPE,3,3>& R2) {
-	return ComputeAngleSO3(TMatrix<TYPE,3,3>(R1*R2.t()));
-} // ComputeAngleSO3
 /*----------------------------------------------------------------*/
 
 
@@ -1221,145 +1188,6 @@ void NormalizePoints(const CLISTDEF0(TPoint3<TYPE>)& pointsIn, CLISTDEF0(TPoint3
 		H(2,2) =  scale;
 	}
 }
-/*----------------------------------------------------------------*/
-
-
-// Least squares fits a plane to a 3D point set.
-// See http://www.geometrictools.com/Documentation/LeastSquaresFitting.pdf
-// Returns a fitting quality (1 - lambda_min/lambda_max):
-//  1 is best (zero variance orthogonally to the fitting line)
-//  0 is worst (isotropic case, returns a plane with default direction)
-template <typename TYPE>
-TYPE FitPlane(const TPoint3<TYPE>* points, size_t size, TPlane<TYPE>& plane) {
-	// compute a point on the plane, which is shown to be the centroid of the points
-	const Eigen::Map< const Eigen::Matrix<TYPE,Eigen::Dynamic,3,Eigen::RowMajor> > vPoints((const TYPE*)points, size, 3);
-	const TPoint3<TYPE> c(vPoints.colwise().mean());
-
-	// assemble covariance matrix; matrix numbering:
-	// 0          
-	// 1 2
-	// 3 4 5          
-	Eigen::Matrix<TYPE,3,3,Eigen::RowMajor> A(Eigen::Matrix<TYPE,3,3,Eigen::RowMajor>::Zero());
-	FOREACHRAWPTR(pPt, points, size) {
-		const TPoint3<TYPE> X(*pPt - c);
-		A(0,0) += X.x*X.x;
-		A(1,0) += X.x*X.y;
-		A(1,1) += X.y*X.y;
-		A(2,0) += X.x*X.z;
-		A(2,1) += X.y*X.z;
-		A(2,2) += X.z*X.z;
-	}
-
-	// the plane normal is simply the eigenvector corresponding to least eigenvalue
-	const Eigen::SelfAdjointEigenSolver< Eigen::Matrix<TYPE,3,3,Eigen::RowMajor> > es(A);
-	ASSERT(ISEQUAL(es.eigenvectors().col(0).norm(), TYPE(1)));
-	plane.Set(es.eigenvectors().col(0), c);
-	const TYPE* const vals(es.eigenvalues().data());
-	ASSERT(vals[0] <= vals[1] && vals[1] <= vals[2]);
-	return TYPE(1) - vals[0]/vals[1];
-}
-/*----------------------------------------------------------------*/
-
-
-template<typename TYPE>
-struct CLeastSquares {
-	inline TYPE operator()(const TYPE) const {
-		return TYPE(1);
-	}
-};
-
-/*
-template<typename TYPE>
-struct CHuber_TorrMurray {
-	inline TYPE operator()(const TYPE d) const {
-		const TYPE b = 0.02;
-
-		const TYPE d_abs = ABS(d);
-		if (d_abs < b)
-			return TYPE(1);
-		if (d_abs < 3 * b)
-			return b / d; //I think this is possibly wrong--should use 1/root(d)
-		return TYPE(0); //TODO, probably best to just return SIGMA/d;
-	}
-};
-*/
-
-template<typename TYPE>
-struct CHuber {
-	inline CHuber(TYPE _threshold = 0.005) : threshold(_threshold) {}
-	inline TYPE operator()(const TYPE d) const {
-		const TYPE d_abs(ABS(d));
-		if (d_abs < threshold)
-			return TYPE(1);
-		return SQRT(threshold * (TYPE(2) * d_abs - threshold)) / d_abs;
-	}
-	const TYPE threshold;
-};
-
-template<typename TYPE>
-struct CBlakeZisserman { // Blake-Zisserman Gaussian + uniform
-	inline CBlakeZisserman(TYPE _threshold = 0.005) : threshold(_threshold) {}
-	inline TYPE operator()(const TYPE d) const {
-		const TYPE SD_INV = TYPE(1) / (0.5 * threshold);
-		const TYPE eps = exp(-SQUARE(threshold * SD_INV)); //Equally likely to be inlier or outlier at thresh
-		const TYPE d_abs = ABS(d) + 1e-12;
-		const TYPE zeroPoint = log(TYPE(1) + eps); //Needed for LS...
-
-		const TYPE dCost_sq = zeroPoint - log(exp(-SQUARE(d * SD_INV)) + eps);
-		ASSERT(dCost_sq >= 0); // Cost computation failed?
-
-		return SQRT(dCost_sq) / d_abs;
-	}
-	const TYPE threshold;
-};
-
-template<typename TYPE>
-struct CPseudoHuber {
-	inline CPseudoHuber(TYPE _threshold = 0.005) : threshold(_threshold) {}
-	inline TYPE operator()(const TYPE d) const {
-		const TYPE b_sq = SQUARE(threshold);
-		const TYPE d_abs = ABS(d) + 1e-12;
-
-		//C(delta) = 2*b^2*(sqrt(1+(delta/b)^2) - 1);
-		return SQRT(TYPE(2) * b_sq * (sqrt(1 + SQUARE(d * (1.0 / threshold))) - 1)) / d_abs;
-	}
-	const TYPE threshold;
-};
-
-template<typename TYPE>
-struct CL1 {
-	inline TYPE operator()(const TYPE d) const {
-		return TYPE(1) / (SQRT(ABS(d)) + 1e-12);
-	}
-};
-
-typedef CBlakeZisserman<REAL> CRobustNorm;
-/*----------------------------------------------------------------*/
-
-
-// makes sure the inverse NCC score does not exceed 0.3
-#if 0
-template <typename T>
-inline T robustincc(const T x) { return x / (T(1) + T(3) * x); }
-template <typename T>
-inline T robustinccg(const T x) { return T(1)/SQUARE(T(1) + T(3) * x); }
-template <typename T>
-inline T unrobustincc(const T y) { return y / (T(1) - T(3) * y); }
-#elif 0
-template <typename T>
-inline T robustincc(const T x) { return T(1)-EXP(x*x*T(-4)); }
-template <typename T>
-inline T robustinccg(const T x) { return T(8)*x*EXP(x*x*T(-4)); }
-template <typename T>
-inline T unrobustincc(const T y) { return SQRT(-LOGN(T(1) - y))/T(2); }
-#else
-template <typename T>
-inline T robustincc(const T x) { return x/SQRT(T(0.3)+x*x); }
-template <typename T>
-inline T robustinccg(const T x) { return T(0.3)/((T(0.3)+x*x)*SQRT(T(0.3)+x*x)); }
-template <typename T>
-inline T unrobustincc(const T y) { return (SQRT(30)*y)/(T(10)*SQRT(T(1) - y*y)); }
-#endif
 /*----------------------------------------------------------------*/
 
 } // namespace SEACAVE

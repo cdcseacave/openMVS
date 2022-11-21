@@ -522,7 +522,7 @@ int MaxRectsBinPack::ComputeTextureSize(const RectArr& rects, int mult)
 		return ((sizeTex+mult-1)/mult)*mult;
 	}
 	// ... as power of two
-	return POWI((int)2, CEIL2INT(LOGN((float)sizeTex) / LOGN(2.f)));
+	return POWI(2, CEIL2INT<unsigned>(LOGN((float)sizeTex) / LOGN(2.f)));
 }
 /*----------------------------------------------------------------*/
 

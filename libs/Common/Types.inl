@@ -41,7 +41,7 @@ INT_TYPE cvRANSACUpdateNumIters(REAL_TYPE p, REAL_TYPE ep, INT_TYPE modelPoints,
 		return 0;
 	num = SEACAVE::LOGN(num);
 	denom = SEACAVE::LOGN(denom);
-	return (denom >= 0 || -num >= (-denom)*maxIters ? maxIters : (INT_TYPE)ROUND2INT(num/denom));
+	return (denom >= 0 || -num >= (-denom)*maxIters ? maxIters : ROUND2INT<INT_TYPE>(num/denom));
 }
 #endif
 
