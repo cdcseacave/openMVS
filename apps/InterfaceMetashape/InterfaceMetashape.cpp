@@ -824,7 +824,7 @@ int main(int argc, LPCTSTR* argv)
 			#pragma omp flush (bAbort)
 			continue;
 			#else
-			return false;
+			return EXIT_FAILURE;
 			#endif
 		}
 		imageData.UpdateCamera(scene.platforms);
@@ -834,7 +834,7 @@ int main(int argc, LPCTSTR* argv)
 	GET_LOGCONSOLE().Play();
 	#ifdef _USE_OPENMP
 	if (bAbort)
-		return EXIT_SUCCESS;
+		return EXIT_FAILURE;
 	#endif
 	progress.close();
 

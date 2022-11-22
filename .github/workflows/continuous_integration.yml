@@ -41,12 +41,8 @@ jobs:
       - name: Restore artifacts, or setup vcpkg for building artifacts
         uses: lukka/run-vcpkg@v10.6
         with:
-          # Location of the vcpkg as submodule of the repository.
           vcpkgDirectory: '${{ github.workspace }}/vcpkg'
           vcpkgGitCommitId: '4cb4a5c5ddcb9de0c83c85837ee6974c8333f032'
-          # Since the cache must be invalidated when content of the vcpkg.json file changes, let's
-          # compute its hash and append this to the computed cache's key.
-          appendedCacheKey: ${{ hashFiles( '**/vcpkg.json' ) }}
 
       - name: Install Ubuntu dependencies
         if: matrix.os == 'ubuntu-latest'
@@ -75,30 +71,11 @@ jobs:
         run: |
           ctest -j$(nproc) --build-config ${{ matrix.build-type }}
 
-      - name: Zip Windows release
-        if: matrix.os == 'windows-latest'
-        uses: TheDoctor0/zip-release@0.6.2
-        with:
-          type: 'zip'
-          directory: ${{ github.workspace }}/make/bin/
-          recursive_exclusions: '*.exp'
-          filename: 'OpenMVS_Windows.zip'
-
       - name: Deploy Windows release
         if: matrix.os == 'windows-latest'
-        uses: WebFreak001/deploy-nightly@v1.2.0
-        id: deploynightly
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: actions/upload-artifact@v3
         with:
-          upload_url: https://uploads.github.com/repos/cdcseacave/openMVS/releases/64600462/assets{?name,label}
-          release_id: 64600462
-          asset_path: ${{ github.workspace }}/make/bin/OpenMVS_Windows.zip
-          asset_name: OpenMVS_Windows_x64_$$.zip
-          asset_content_type: application/zip
-          max_releases: 7
-
-      - name: Display Windows release link
-        if: matrix.os == 'windows-latest'
-        run: |
-          echo ${{steps.deploynightly.outputs.url}}
+          name: OpenMVS_Windows_Release_x64
+          path: |
+            ${{ github.workspace }}/make/bin/**/x64
+            !${{ github.workspace }}/make/bin/**/*.exp
