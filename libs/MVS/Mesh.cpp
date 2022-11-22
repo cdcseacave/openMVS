@@ -360,12 +360,6 @@ void Mesh::ComputeNormalVertices()
 // The normal of a vertex v computed as a weighted sum f the incident face normals.
 // The weight is simply the angle of the involved wedge. Described in:
 // G. Thurmer, C. A. Wuthrich "Computing vertex normals from polygonal facets", Journal of Graphics Tools, 1998
-inline float AngleN(const Mesh::Normal& p1, const Mesh::Normal& p2) {
-	float t(p1.dot(p2));
-	if (t>1) t = 1; else
-	if (t<-1) t = -1;
-	return acosf(t);
-}
 void Mesh::ComputeNormalVertices()
 {
 	ASSERT(!faceNormals.IsEmpty());
@@ -380,14 +374,49 @@ void Mesh::ComputeNormalVertices()
 		const Normal e0(normalized(v1-v0));
 		const Normal e1(normalized(v2-v1));
 		const Normal e2(normalized(v0-v2));
-		vertexNormals[face[0]] += t*AngleN(e0, -e2);
-		vertexNormals[face[1]] += t*AngleN(-e0, e1);
-		vertexNormals[face[2]] += t*AngleN(-e1, e2);
+		vertexNormals[face[0]] += t*ACOS(-ComputeAngleN(e0.ptr(), e2.ptr()));
+		vertexNormals[face[1]] += t*ACOS(-ComputeAngleN(e0.ptr(), e1.ptr()));
+		vertexNormals[face[2]] += t*ACOS(-ComputeAngleN(e1.ptr(), e2.ptr()));
 	}
 	FOREACHPTR(pVertexNormal, vertexNormals)
 		normalize(*pVertexNormal);
 }
 #endif
+
+// Smoothen the normals for each face
+//  - fMaxGradient: maximum angle (in degrees) difference between neighbor normals that is
+//    allowed to take into consideration; higher angles are ignored
+//  - fOriginalWeight: weight (0..1] to use for current normal value when averaging with neighbor normals
+//  - nIterations: number of times to repeat the smoothening process
+void Mesh::SmoothNormalFaces(float fMaxGradient, float fOriginalWeight, unsigned nIterations) {
+	if (faceNormals.size() != faces.size())
+		ComputeNormalFaces();
+	if (vertexFaces.size() != vertices.size())
+		ListIncidenteFaces();
+	if (faceFaces.size() != faces.size())
+		ListIncidenteFaceFaces();
+	const float cosMaxGradient = COS(FD2R(fMaxGradient));
+	for (unsigned rep = 0; rep < nIterations; ++rep) {
+		NormalArr newFaceNormals(faceNormals.size());
+		FOREACH(idxFace, faces) {
+			const Face& face = faces[idxFace];
+			const Normal& originalNormal = faceNormals[idxFace];
+			Normal sumNeighborNormals = Normal::ZERO;
+			for (int i = 0; i < 3; ++i) {
+				const FIndex fIdx = faceFaces[idxFace][i];
+				if (fIdx == NO_ID)
+					continue;
+				const Normal& neighborNormal = faceNormals[fIdx];
+				if (ComputeAngleN(originalNormal.ptr(), neighborNormal.ptr()) >= cosMaxGradient)
+					sumNeighborNormals += neighborNormal;
+			}
+			const Normal avgNeighborsNormal = normalized(sumNeighborNormals);
+			const Normal newFaceNormal = normalized(originalNormal * fOriginalWeight + avgNeighborsNormal * (1.f - fOriginalWeight));
+			newFaceNormals[idxFace] = newFaceNormal;
+		}
+		newFaceNormals.Swap(faceNormals);
+	}
+}
 /*----------------------------------------------------------------*/
 
 
