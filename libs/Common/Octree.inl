@@ -167,6 +167,7 @@ void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE>::_Insert(CELL_TYPE& cell, const P
 	// if this child cell needs to be divided further
 	if (bForceSplit || insertData.split(size, radius)) {
 		// init node and proceed recursively
+		ASSERT(cell.m_child == NULL);
 		cell.m_child = new CELL_TYPE[CELL_TYPE::numChildren];
 		cell.Node().center = center;
 		struct ChildData {
@@ -223,15 +224,14 @@ inline void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE>::Insert(const ITEMARR_TYPE
 	// create root as node, even if we do not need to divide
 	m_indices.Reserve(items.size());
 	// divide cell
-	m_root.m_child = new CELL_TYPE[CELL_TYPE::numChildren];
-	m_root.Node().center = aabb.GetCenter();
+	const POINT_TYPE center = aabb.GetCenter();
 	m_radius = aabb.GetSize().maxCoeff()/Type(2);
 	// single connected list of next item indices
 	_InsertData<Functor> insertData = {items.size(), split};
 	std::iota(insertData.successors.begin(), insertData.successors.end(), IDX_TYPE(1));
 	insertData.successors.back() = _InsertData<Functor>::NO_INDEX;
 	// setup each cell
-	_Insert<Functor,true>(m_root, m_root.GetCenter(), m_radius, 0, items.size(), insertData);
+	_Insert<Functor,true>(m_root, center, m_radius, 0, items.size(), insertData);
 }
 template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE>
 template <typename Functor>
