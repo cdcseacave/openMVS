@@ -176,6 +176,10 @@ if(Boost_FOUND)
 	LIST(APPEND OpenMVS_DEFINITIONS -D_USE_BOOST)
 	ADD_DEFINITIONS(${Boost_DEFINITIONS})
 	LINK_DIRECTORIES(${Boost_LIBRARY_DIRS})
+	if(NOT MSVC AND DEFINED CMAKE_TOOLCHAIN_FILE)
+		# work around this missing library link in vcpkg
+		LIST(APPEND Boost_LIBRARIES zstd)
+	endif()
 	SET(_USE_BOOST TRUE)
 endif()
 
