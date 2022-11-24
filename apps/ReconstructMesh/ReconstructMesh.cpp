@@ -246,8 +246,7 @@ void Finalize()
 bool Export3DProjections(Scene& scene, const String& inputFileName) {
 	SML smlPointList(_T("ImagePoints"));
 	smlPointList.Load(inputFileName);
-	const LPSMLARR& arrSmlChild = smlPointList.GetArrChildren();
-	ASSERT(arrSmlChild.size() <= 1);
+	ASSERT(smlPointList.GetArrChildren().size() <= 1);
 	IDX idx(0);
 
 	// read image name

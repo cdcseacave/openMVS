@@ -18,6 +18,7 @@
     "glfw3",
     "libpng",
     "opencv",
+	"opengl",
     "tiff",
     "vcglib",
     "zlib"

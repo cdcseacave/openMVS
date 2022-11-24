@@ -354,6 +354,10 @@ int main(int argc, LPCTSTR* argv)
 	// write OpenMVS input data
 	scene.Save(MAKE_PATH_SAFE(OPT::strOutputFileName), (ARCHIVE_TYPE)OPT::nArchiveType);
 
+	VERBOSE("Imported data: %u platforms, %u images, %u vertices (%s)",
+		scene.platforms.size(), scene.images.size(), scene.pointcloud.GetSize(),
+		TD_TIMER_GET_FMT().c_str());
+
 	Finalize();
 	return EXIT_SUCCESS;
 }
