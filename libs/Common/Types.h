@@ -1206,18 +1206,18 @@ template<typename _Tp>
 inline _Tp    ABS(_Tp    x)					{ return std::abs(x); }
 
 template<typename _Tp>
-inline _Tp    ZEROTOLERANCE()				{ return _Tp(0); }
+constexpr _Tp    ZEROTOLERANCE()			{ return _Tp(0); }
 template<>
-inline float  ZEROTOLERANCE()				{ return FZERO_TOLERANCE; }
+constexpr float  ZEROTOLERANCE()			{ return FZERO_TOLERANCE; }
 template<>
-inline double ZEROTOLERANCE()				{ return ZERO_TOLERANCE; }
+constexpr double ZEROTOLERANCE()			{ return ZERO_TOLERANCE; }
 
 template<typename _Tp>
-inline _Tp    EPSILONTOLERANCE()			{ return std::numeric_limits<_Tp>::epsilon(); }
+constexpr _Tp    EPSILONTOLERANCE()			{ return std::numeric_limits<_Tp>::epsilon(); }
 template<>
-inline float  EPSILONTOLERANCE()			{ return 0.00001f; }
+constexpr float  EPSILONTOLERANCE()			{ return 0.00001f; }
 template<>
-inline double EPSILONTOLERANCE()			{ return 1e-10; }
+constexpr double EPSILONTOLERANCE()			{ return 1e-10; }
 
 inline bool   ISZERO(float  x)				{ return ABS(x) < FZERO_TOLERANCE; }
 inline bool   ISZERO(double x)				{ return ABS(x) < ZERO_TOLERANCE; }

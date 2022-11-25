@@ -916,31 +916,32 @@ GCLASS TConeIntersect<TYPE,DIMS>::Classify(const POINT& p, TYPE& t) const
 } // Classify
 /*----------------------------------------------------------------*/
 
-#ifndef _RELEASE
 template <typename TYPE>
-bool TestRayTriangleIntersection() {
+bool TestRayTriangleIntersection(unsigned iters) {
 	typedef SEACAVE::TTriangle<TYPE,3> Triangle;
 	typedef SEACAVE::TRay<TYPE,3> Ray;
 	typedef typename Ray::POINT Point;
 	typedef typename Point::Scalar Type;
-	const Type scale(10);
-	const Triangle triangle(Point::Random()*scale, Point::Random()*scale, Point::Random()*scale);
-	Type t;
-	const Point center(triangle.GetCenter());
-	const Ray rayCenter(Point::Random()*scale, center, true);
-	if (!rayCenter.Intersects<false>(triangle, &t))
-		return false;
-	const Point _center(rayCenter.GetPoint(t));
-	if (!ISEQUAL(TPoint3<Type>(_center), TPoint3<Type>(center)))
-		return false;
-	const BYTE o((BYTE)(RAND()%3));
-	const Point side((triangle[o]+triangle[(o+1)%3]) / TYPE(2));
-	const Ray raySide(rayCenter.m_pOrig, side, true);
-	if (!raySide.Intersects<false>(triangle, &t))
-		return false;
-	const Point _side(raySide.GetPoint(t));
-	if (!ISEQUAL(TPoint3<Type>(_side), TPoint3<Type>(side)))
-		return false;
+	constexpr Type zeroEps(ZEROTOLERANCE<Type>() * 1000);
+	for (unsigned iter=0; iter<iters; ++iter) {
+		const Type scale(10);
+		const Triangle triangle(Point::Random()*scale, Point::Random()*scale, Point::Random()*scale);
+		Type t;
+		const Point center(triangle.GetCenter());
+		const Ray rayCenter(Point::Random()*scale, center, true);
+		if (!rayCenter.Intersects<false>(triangle, &t))
+			return false;
+		const Point _center(rayCenter.GetPoint(t));
+		if ((_center-center).norm() > zeroEps)
+			return false;
+		const BYTE o((BYTE)(RAND()%3));
+		const Point side((triangle[o]+triangle[(o+1)%3]) / TYPE(2));
+		const Ray raySide(rayCenter.m_pOrig, side, true);
+		if (!raySide.Intersects<false>(triangle, &t))
+			return false;
+		const Point _side(raySide.GetPoint(t));
+		if ((_side-side).norm() > zeroEps)
+			return false;
+	}
 	return true;
 }
-#endif

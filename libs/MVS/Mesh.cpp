@@ -399,7 +399,6 @@ void Mesh::SmoothNormalFaces(float fMaxGradient, float fOriginalWeight, unsigned
 	for (unsigned rep = 0; rep < nIterations; ++rep) {
 		NormalArr newFaceNormals(faceNormals.size());
 		FOREACH(idxFace, faces) {
-			const Face& face = faces[idxFace];
 			const Normal& originalNormal = faceNormals[idxFace];
 			Normal sumNeighborNormals = Normal::ZERO;
 			for (int i = 0; i < 3; ++i) {

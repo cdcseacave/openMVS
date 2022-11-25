@@ -197,7 +197,6 @@ protected:
 	CELL_TYPE m_root; // first cell of the tree (always of Node type)
 	TYPE m_radius; // size of the sphere containing all cells
 
-#ifndef _RELEASE
 public:
 	typedef struct DEBUGINFO_TYPE {
 		size_t memSize;		// total memory used
@@ -225,7 +224,6 @@ public:
 
 protected:
 	void _GetDebugInfo(const CELL_TYPE&, unsigned, DEBUGINFO&) const;
-#endif
 }; // class TOctree
 /*----------------------------------------------------------------*/
 

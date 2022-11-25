@@ -47,6 +47,7 @@ SET(OpenMVS_USE_FAST_INVSQRT OFF CACHE BOOL "Use an optimized code to compute th
 SET(OpenMVS_USE_FAST_CBRT ON CACHE BOOL "Use an optimized code to compute the cubic root")
 SET(OpenMVS_USE_SSE ON CACHE BOOL "Enable SSE optimizations")
 SET(OpenMVS_MAX_CUDA_COMPATIBILITY OFF CACHE BOOL "Build for maximum CUDA device compatibility")
+SET(OpenMVS_ENABLE_TESTS ON CACHE BOOL "Enable test code")
 
 # Define helper functions and macros.
 INCLUDE(build/Utils.cmake)
@@ -245,9 +246,16 @@ if(OpenMVS_BUILD_TOOLS)
 endif()
 ADD_SUBDIRECTORY(docs)
 
+if (OpenMVS_ENABLE_TESTS)
+	# enable testing functionality
+	ENABLE_TESTING()
+	# define tests
+	ADD_TEST(NAME Tests COMMAND $<TARGET_FILE:Tests>)
+endif()
+
 # Export the package for use from the build-tree
 # (this registers the build-tree with a global CMake-registry)
-export(PACKAGE OpenMVS)
+EXPORT(PACKAGE OpenMVS)
 
 # Install the export set for use with the install-tree
 INSTALL(EXPORT OpenMVSTargets

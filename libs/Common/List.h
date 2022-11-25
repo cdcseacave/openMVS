@@ -1424,106 +1424,93 @@ inline bool ValidIDX(const IDX_TYPE& idx) {
 
 
 // some test functions
-// run cListTest(99999);
-#if 0
-inline bool cListTestIter(unsigned elems) {
-	std::vector<int> arrR;
-	cList<int, int, 0> arr0;
-	cList<int, int, 1> arr1;
-	cList<int, int, 2> arr2;
-	cList<int, int, 1> arrC;
-	for (unsigned i=0; i<elems; ++i) {
-		const int e = RAND();
-		arrR.push_back(e);
-		arr0.InsertSort(e);
-		arr1.InsertSort(e);
-		arr2.InsertSort(e);
-		arrC.Insert(e);
-	}
-	std::sort(arrR.begin(), arrR.end());
-	arrC.Sort([](int a, int b) { return a<b; });
-	for (size_t i=0; i<arrR.size(); ++i) {
-		const int e = arrR[i];
-		if (arrC[i] != e ||
-			arr0[i] != e ||
-			arr1[i] != e ||
-			arr2[i] != e)
-		{
-			ASSERT("there is a problem" == NULL);
-			return false;
-		}
-	}
-	for (size_t i=0; i<6; ++i) {
-		const unsigned nDel = RAND()%arrR.size();
-		arrR.erase(arrR.begin()+nDel);
-		arr0.RemoveAtMove(nDel);
-		arr1.RemoveAtMove(nDel);
-		arr2.RemoveAtMove(nDel);
-	}
-	if (arrR.size() != arr0.GetSize() ||
-		arrR.size() != arr1.GetSize() ||
-		arrR.size() != arr2.GetSize())
-	{
-		ASSERT("there is a problem" == NULL);
-		return false;
-	}
-	for (size_t i=0; i<6; ++i) {
-		const unsigned nDel = RAND()%arrR.size();
-		const unsigned nCount = 1+RAND()%(arrR.size()/10+1);
-		if (nDel + nCount >= arrR.size())
-			continue;
-		arrR.erase(arrR.begin()+nDel, arrR.begin()+nDel+nCount);
-		arr0.RemoveAtMove(nDel, nCount);
-		arr1.RemoveAtMove(nDel, nCount);
-		arr2.RemoveAtMove(nDel, nCount);
-	}
-	if (arrR.size() != arr0.GetSize() ||
-		arrR.size() != arr1.GetSize() ||
-		arrR.size() != arr2.GetSize())
-	{
-		ASSERT("there is a problem" == NULL);
-		return false;
-	}
-	for (size_t i=0; i<arrR.size(); ++i) {
-		const int e = arrR[i];
-		if (arr0[i] != e ||
-			arr1[i] != e ||
-			arr2[i] != e)
-		{
-			ASSERT("there is a problem" == NULL);
-			return false;
-		}
-	}
-	cList<int, int, 1> arrS(1+RAND()%(2*elems));
-	for (size_t i=0; i<6; ++i) {
-		arrS.Insert(RAND());
-	}
-	arrS.RemoveLast(RAND()%arrS.GetSize());
-	arrS.CopyOf(&arrR[0], arrR.size());
-	for (size_t i=0; i<6; ++i) {
-		arrS.Insert(RAND());
-	}
-	arrS.RemoveLast(6);
-	for (size_t i=0; i<arrR.size(); ++i) {
-		const int e = arrR[i];
-		if (arrS[i] != e)
-		{
-			ASSERT("there is a problem" == NULL);
-			return false;
-		}
-	}
-	return true;
-}
+template <bool dummy>
 inline bool cListTest(unsigned iters) {
-	srand((unsigned)time(NULL));
 	for (unsigned i=0; i<iters; ++i) {
 		const unsigned elems = 100+RAND()%1000;
-		if (!cListTestIter(elems))
+		std::vector<int> arrR;
+		cList<int, int, 0> arr0;
+		cList<int, int, 1> arr1;
+		cList<int, int, 2> arr2;
+		cList<int, int, 1> arrC;
+		for (unsigned i=0; i<elems; ++i) {
+			const int e = RAND();
+			arrR.push_back(e);
+			arr0.InsertSort(e);
+			arr1.InsertSort(e);
+			arr2.InsertSort(e);
+			arrC.Insert(e);
+		}
+		std::sort(arrR.begin(), arrR.end());
+		arrC.Sort([](int a, int b) { return a<b; });
+		for (size_t i=0; i<arrR.size(); ++i) {
+			const int e = arrR[i];
+			if (arrC[i] != e ||
+				arr0[i] != e ||
+				arr1[i] != e ||
+				arr2[i] != e) {
+				ASSERT("there is a problem" == NULL);
+				return false;
+			}
+		}
+		for (size_t i=0; i<6; ++i) {
+			const unsigned nDel = RAND()%arrR.size();
+			arrR.erase(arrR.begin()+nDel);
+			arr0.RemoveAtMove(nDel);
+			arr1.RemoveAtMove(nDel);
+			arr2.RemoveAtMove(nDel);
+		}
+		if (arrR.size() != arr0.GetSize() ||
+			arrR.size() != arr1.GetSize() ||
+			arrR.size() != arr2.GetSize()) {
+			ASSERT("there is a problem" == NULL);
 			return false;
+		}
+		for (size_t i=0; i<6; ++i) {
+			const unsigned nDel = RAND()%arrR.size();
+			const unsigned nCount = 1+RAND()%(arrR.size()/10+1);
+			if (nDel + nCount >= arrR.size())
+				continue;
+			arrR.erase(arrR.begin()+nDel, arrR.begin()+nDel+nCount);
+			arr0.RemoveAtMove(nDel, nCount);
+			arr1.RemoveAtMove(nDel, nCount);
+			arr2.RemoveAtMove(nDel, nCount);
+		}
+		if (arrR.size() != arr0.GetSize() ||
+			arrR.size() != arr1.GetSize() ||
+			arrR.size() != arr2.GetSize()) {
+			ASSERT("there is a problem" == NULL);
+			return false;
+		}
+		for (size_t i=0; i<arrR.size(); ++i) {
+			const int e = arrR[i];
+			if (arr0[i] != e ||
+				arr1[i] != e ||
+				arr2[i] != e) {
+				ASSERT("there is a problem" == NULL);
+				return false;
+			}
+		}
+		cList<int, int, 1> arrS(1+RAND()%(2*elems));
+		for (size_t i=0; i<6; ++i) {
+			arrS.Insert(RAND());
+		}
+		arrS.RemoveLast(RAND()%arrS.GetSize());
+		arrS.CopyOf(&arrR[0], arrR.size());
+		for (size_t i=0; i<6; ++i) {
+			arrS.Insert(RAND());
+		}
+		arrS.RemoveLast(6);
+		for (size_t i=0; i<arrR.size(); ++i) {
+			const int e = arrR[i];
+			if (arrS[i] != e) {
+				ASSERT("there is a problem" == NULL);
+				return false;
+			}
+		}
 	}
 	return true;
 }
-#endif
 /*----------------------------------------------------------------*/
 
 

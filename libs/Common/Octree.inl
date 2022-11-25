@@ -722,7 +722,6 @@ void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE>::SplitVolume(float maxArea, AREAE
 /*----------------------------------------------------------------*/
 
 
-#ifndef _RELEASE
 template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE>
 void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE>::_GetDebugInfo(const CELL_TYPE& cell, unsigned nDepth, DEBUGINFO& info) const
 {
@@ -796,12 +795,11 @@ inline bool OctreeTest(unsigned iters, unsigned maxItems=1000, bool bRandom=true
 		TestArr items(elems);
 		FOREACH(i, items)
 			for (int j=0; j<DIMS; ++j)
-				items[i](j) = RAND()%ROUND2INT(ptMaxData[j]);
+				items[i](j) = static_cast<TYPE>(RAND()%ROUND2INT(ptMaxData[j]));
 		// random query point
 		POINT_TYPE pt;
-		pt(0) = RAND()%ROUND2INT(ptMaxData[0]);
-		if (DIMS > 1) pt(1) = RAND()%ROUND2INT(ptMaxData[1]);
-		if (DIMS > 2) pt(2) = RAND()%ROUND2INT(ptMaxData[2]);
+		for (int j=0; j<DIMS; ++j)
+			pt(j) = static_cast<TYPE>(RAND()%ROUND2INT(ptMaxData[j]));
 		const TYPE radius(TYPE(3+RAND()%30));
 		// build octree and find interest items
 		TestTree tree(items, aabb, [](typename TestTree::IDX_TYPE size, typename TestTree::Type radius) {
@@ -835,8 +833,8 @@ inline bool OctreeTest(unsigned iters, unsigned maxItems=1000, bool bRandom=true
 			}
 		}
 		nTotalMatches += nMatches;
-		nTotalMissed += trueIndices.size()-nMatches;
-		nTotalExtra += indices.size()-nMatches;
+		nTotalMissed += (unsigned)trueIndices.size()-nMatches;
+		nTotalExtra += (unsigned)indices.size()-nMatches;
 		#ifndef _RELEASE
 		// print stats
 		typename TestTree::DEBUGINFO_TYPE info;
@@ -850,4 +848,3 @@ inline bool OctreeTest(unsigned iters, unsigned maxItems=1000, bool bRandom=true
 	#endif
 	return (nTotalMissed == 0 && nTotalExtra == 0);
 }
-#endif
