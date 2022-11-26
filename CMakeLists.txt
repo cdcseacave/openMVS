@@ -250,7 +250,8 @@ if (OpenMVS_ENABLE_TESTS)
 	# enable testing functionality
 	ENABLE_TESTING()
 	# define tests
-	ADD_TEST(NAME Tests COMMAND $<TARGET_FILE:Tests>)
+	ADD_TEST(NAME UnitTests COMMAND $<TARGET_FILE:Tests> "0")
+	ADD_TEST(NAME PipelineTest COMMAND $<TARGET_FILE:Tests> "1")
 endif()
 
 # Export the package for use from the build-tree

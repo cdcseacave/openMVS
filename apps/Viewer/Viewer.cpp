@@ -50,7 +50,6 @@ namespace OPT {
 String strInputFileName;
 String strOutputFileName;
 String strMeshFileName;
-bool bLosslessTexture;
 unsigned nArchiveType;
 int nProcessPriority;
 unsigned nMaxThreads;

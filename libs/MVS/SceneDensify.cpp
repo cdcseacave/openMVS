@@ -523,7 +523,7 @@ void* STCALL DepthMapsData::EndDepthMapTmp(void* arg)
 {
 	DepthEstimator& estimator = *((DepthEstimator*)arg);
 	IDX idx;
-	const float fOptimAngle(FD2R(OPTDENSE::fOptimAngle));
+	MAYBEUNUSED const float fOptimAngle(FD2R(OPTDENSE::fOptimAngle));
 	while ((idx=(IDX)Thread::safeInc(estimator.idxPixel)) < estimator.coords.GetSize()) {
 		const ImageRef& x = estimator.coords[idx];
 		ASSERT(estimator.depthMap0(x) >= 0);

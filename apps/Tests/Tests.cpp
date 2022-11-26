@@ -32,40 +32,90 @@
 #include "../../libs/MVS/Common.h"
 #include "../../libs/MVS/Scene.h"
 
+using namespace MVS;
+
 
 // D E F I N E S ///////////////////////////////////////////////////
 
 
 // S T R U C T S ///////////////////////////////////////////////////
 
-// test MVS functionality
+// test various algorithms independently
+bool UnitTests()
+{
+	TD_TIMER_START();
+	if (!SEACAVE::cListTest<true>(100)) {
+		VERBOSE("ERROR: cListTest failed!");
+		return false;
+	}
+	if (!SEACAVE::OctreeTest<double,2>(100)) {
+		VERBOSE("ERROR: OctreeTest<double,2> failed!");
+		return false;
+	}
+	if (!SEACAVE::OctreeTest<float,3>(100)) {
+		VERBOSE("ERROR: OctreeTest<float,3> failed!");
+		return false;
+	}
+	if (!SEACAVE::TestRayTriangleIntersection<float>(1000)) {
+		VERBOSE("ERROR: TestRayTriangleIntersection<float> failed!");
+		return false;
+	}
+	if (!SEACAVE::TestRayTriangleIntersection<double>(1000)) {
+		VERBOSE("ERROR: TestRayTriangleIntersection<double> failed!");
+		return false;
+	}
+	VERBOSE("All unit tests passed (%s)", TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
+
+// test MVS stages on a small sample dataset
+bool PipelineTest()
+{
+	TD_TIMER_START();
+	Scene scene;
+	if (!scene.Load(MAKE_PATH("scene.mvs"))) {
+		VERBOSE("ERROR: TestDataset failed loading the scene!");
+		return false;
+	}
+	OPTDENSE::init();
+	if (!scene.DenseReconstruction() || scene.pointcloud.GetSize() < 200000u) {
+		VERBOSE("ERROR: TestDataset failed estimating dense point cloud!");
+		return false;
+	}
+	if (!scene.ReconstructMesh() || scene.mesh.faces.size() < 80000u) {
+		VERBOSE("ERROR: TestDataset failed reconstructing the mesh!");
+		return false;
+	}
+	constexpr float decimate = 0.5f;
+	scene.mesh.Clean(decimate);
+	if (!ISINSIDE(scene.mesh.faces.size(), 35000u, 50000u)) {
+		VERBOSE("ERROR: TestDataset failed cleaning the mesh!");
+		return false;
+	}
+	if (!scene.TextureMesh(0, 0) || !scene.mesh.HasTexture()) {
+		VERBOSE("ERROR: TestDataset failed texturing the mesh!");
+		return false;
+	}
+	VERBOSE("All pipeline stages passed (%s)", TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
+// test OpenMVS functionality
 int main(int argc, LPCTSTR* argv)
 {
 	OPEN_LOG();
 	OPEN_LOGCONSOLE();
 	Util::Init();
-	TD_TIMER_START();
-	if (!SEACAVE::cListTest<true>(100)) {
-		VERBOSE("ERROR: cListTest failed!");
-		return EXIT_FAILURE;
+	WORKING_FOLDER = _DATA_PATH;
+	INIT_WORKING_FOLDER;
+	if (argc < 2 || std::atoi(argv[1]) == 0) {
+		if (!UnitTests())
+			return EXIT_FAILURE;
+	} else {
+		if (!PipelineTest())
+			return EXIT_FAILURE;
 	}
-	if (!SEACAVE::OctreeTest<double,2>(100)) {
-		VERBOSE("ERROR: OctreeTest<double,2> failed!");
-		return EXIT_FAILURE;
-	}
-	if (!SEACAVE::OctreeTest<float,3>(100)) {
-		VERBOSE("ERROR: OctreeTest<float,3> failed!");
-		return EXIT_FAILURE;
-	}
-	if (!SEACAVE::TestRayTriangleIntersection<float>(1000)) {
-		VERBOSE("ERROR: TestRayTriangleIntersection<float> failed!");
-		return EXIT_FAILURE;
-	}
-	if (!SEACAVE::TestRayTriangleIntersection<double>(1000)) {
-		VERBOSE("ERROR: TestRayTriangleIntersection<double> failed!");
-		return EXIT_FAILURE;
-	}
-	VERBOSE("All tests passed (%s)", TD_TIMER_GET_FMT().c_str());
 	CLOSE_LOGCONSOLE();
 	CLOSE_LOG();
 	return EXIT_SUCCESS;

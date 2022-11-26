@@ -419,8 +419,7 @@ bool Scene::LoadViewNeighbors(const String& fileName)
 	// parse image list
 	SML smlImages(_T("ImageNeighbors"));
 	smlImages.Load(fileName);
-	const LPSMLARR&	arrSmlChild = smlImages.GetArrChildren();
-	ASSERT(arrSmlChild.size() <= 1);
+	ASSERT(smlImages.GetArrChildren().size() <= 1);
 
 	// fetch image IDs list
 	size_t argc;

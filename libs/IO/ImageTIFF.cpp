@@ -76,10 +76,10 @@ extern "C" {
 	static tmsize_t _tiffisReadProc(thandle_t fd, void* buf, tmsize_t size);
 	static tmsize_t _tiffosWriteProc(thandle_t fd, void* buf, tmsize_t size);
 	static tmsize_t _tiffisWriteProc(thandle_t, void*, tmsize_t);
-	static uint64   _tiffosSeekProc(thandle_t fd, uint64 off, int whence);
-	static uint64   _tiffisSeekProc(thandle_t fd, uint64 off, int whence);
-	static uint64   _tiffosSizeProc(thandle_t fd);
-	static uint64   _tiffisSizeProc(thandle_t fd);
+	static uint64_t _tiffosSeekProc(thandle_t fd, uint64_t off, int whence);
+	static uint64_t _tiffisSeekProc(thandle_t fd, uint64_t off, int whence);
+	static uint64_t _tiffosSizeProc(thandle_t fd);
+	static uint64_t _tiffisSizeProc(thandle_t fd);
 	static int      _tiffosCloseProc(thandle_t fd);
 	static int      _tiffisCloseProc(thandle_t fd);
 	static int 	    _tiffDummyMapProc(thandle_t, void** base, toff_t* size);
@@ -132,26 +132,26 @@ extern "C" {
 		return 0;
 	}
 
-	static uint64 _tiffosSeekProc(thandle_t fd, uint64 off, int whence)
+	static uint64_t _tiffosSeekProc(thandle_t fd, uint64_t off, int whence)
 	{
 		tiffos_data	*data = reinterpret_cast<tiffos_data *>(fd);
 		OSTREAM* os = data->stream;
 
 		// if the stream has already failed, don't do anything
 		if (os == NULL)
-			return static_cast<uint64>(-1);
+			return static_cast<uint64_t>(-1);
 
 		bool bSucceeded(true);
 		switch (whence) {
 		case SEEK_SET:
 		{
 			// Compute 64-bit offset
-			uint64 new_offset = static_cast<uint64>(data->start_pos) + off;
+			uint64_t new_offset = static_cast<uint64_t>(data->start_pos) + off;
 
 			// Verify that value does not overflow
 			size_f_t offset = static_cast<size_f_t>(new_offset);
-			if (static_cast<uint64>(offset) != new_offset)
-				return static_cast<uint64>(-1);
+			if (static_cast<uint64_t>(offset) != new_offset)
+				return static_cast<uint64_t>(-1);
 
 			bSucceeded = os->setPos(offset);
 			break;
@@ -160,8 +160,8 @@ extern "C" {
 		{
 			// Verify that value does not overflow
 			size_f_t offset = static_cast<size_f_t>(off);
-			if (static_cast<uint64>(offset) != off)
-				return static_cast<uint64>(-1);
+			if (static_cast<uint64_t>(offset) != off)
+				return static_cast<uint64_t>(-1);
 
 			bSucceeded = os->setPos(os->getPos()+offset);
 			break;
@@ -170,8 +170,8 @@ extern "C" {
 		{
 			// Verify that value does not overflow
 			size_f_t offset = static_cast<size_f_t>(off);
-			if (static_cast<uint64>(offset) != off)
-				return static_cast<uint64>(-1);
+			if (static_cast<uint64_t>(offset) != off)
+				return static_cast<uint64_t>(-1);
 
 			bSucceeded = os->setPos(os->getSize()-offset);
 			break;
@@ -199,23 +199,23 @@ extern "C" {
 			}
 
 			// only do something if desired seek position is valid
-			if ((static_cast<uint64>(origin) + off) > static_cast<uint64>(data->start_pos)) {
-				uint64	num_fill;
+			if ((static_cast<uint64_t>(origin) + off) > static_cast<uint64_t>(data->start_pos)) {
+				uint64_t	num_fill;
 				// extend the stream to the expected size
 				os->setPos(os->getSize());
-				num_fill = (static_cast<uint64>(origin)) + off - os->getPos();
+				num_fill = (static_cast<uint64_t>(origin)) + off - os->getPos();
 				const char dummy = '\0';
-				for (uint64 i = 0; i < num_fill; i++)
+				for (uint64_t i = 0; i < num_fill; i++)
 					os->write(&dummy, 1);
 				// retry the seek
-				os->setPos(static_cast<size_f_t>(static_cast<uint64>(origin) + off));
+				os->setPos(static_cast<size_f_t>(static_cast<uint64_t>(origin) + off));
 			}
 		}
 
-		return static_cast<uint64>(os->getPos());
+		return static_cast<uint64_t>(os->getPos());
 	}
 
-	static uint64 _tiffisSeekProc(thandle_t fd, uint64 off, int whence)
+	static uint64_t _tiffisSeekProc(thandle_t fd, uint64_t off, int whence)
 	{
 		tiffis_data	*data = reinterpret_cast<tiffis_data *>(fd);
 		ISTREAM* is = data->stream;
@@ -224,12 +224,12 @@ extern "C" {
 		case SEEK_SET:
 		{
 			// Compute 64-bit offset
-			uint64 new_offset = static_cast<uint64>(data->start_pos) + off;
+			uint64_t new_offset = static_cast<uint64_t>(data->start_pos) + off;
 
 			// Verify that value does not overflow
 			size_f_t offset = static_cast<size_f_t>(new_offset);
-			if (static_cast<uint64>(offset) != new_offset)
-				return static_cast<uint64>(-1);
+			if (static_cast<uint64_t>(offset) != new_offset)
+				return static_cast<uint64_t>(-1);
 
 			is->setPos(offset);
 			break;
@@ -238,8 +238,8 @@ extern "C" {
 		{
 			// Verify that value does not overflow
 			size_f_t offset = static_cast<size_f_t>(off);
-			if (static_cast<uint64>(offset) != off)
-				return static_cast<uint64>(-1);
+			if (static_cast<uint64_t>(offset) != off)
+				return static_cast<uint64_t>(-1);
 
 			is->setPos(is->getPos()+offset);
 			break;
@@ -248,27 +248,27 @@ extern "C" {
 		{
 			// Verify that value does not overflow
 			size_f_t offset = static_cast<size_f_t>(off);
-			if (static_cast<uint64>(offset) != off)
-				return static_cast<uint64>(-1);
+			if (static_cast<uint64_t>(offset) != off)
+				return static_cast<uint64_t>(-1);
 
 			is->setPos(is->getSize()-offset);
 			break;
 		}
 		}
 
-		return (uint64)(is->getPos() - data->start_pos);
+		return (uint64_t)(is->getPos() - data->start_pos);
 	}
 
-	static uint64 _tiffosSizeProc(thandle_t fd)
+	static uint64_t _tiffosSizeProc(thandle_t fd)
 	{
 		tiffos_data	*data = reinterpret_cast<tiffos_data *>(fd);
-		return (uint64)data->stream->getSize();
+		return (uint64_t)data->stream->getSize();
 	}
 
-	static uint64 _tiffisSizeProc(thandle_t fd)
+	static uint64_t _tiffisSizeProc(thandle_t fd)
 	{
 		tiffis_data	*data = reinterpret_cast<tiffis_data *>(fd);
-		return (uint64)data->stream->getSize();
+		return (uint64_t)data->stream->getSize();
 	}
 
 	static int _tiffosCloseProc(thandle_t fd)
@@ -448,7 +448,7 @@ HRESULT CImageTIFF::ReadData(void* pData, PIXELFORMAT dataFormat, Size nStride, 
 {
 	if (m_state && m_width && m_height) {
 		TIFF* tif = (TIFF*)m_state;
-		uint32 tile_width0 = m_width, tile_height0 = 0;
+		uint32_t tile_width0 = m_width, tile_height0 = 0;
 		int is_tiled = TIFFIsTiled(tif);
 		uint16 photometric;
 		TIFFGetField(tif, TIFFTAG_PHOTOMETRIC, &photometric);
@@ -477,14 +477,14 @@ HRESULT CImageTIFF::ReadData(void* pData, PIXELFORMAT dataFormat, Size nStride, 
 				tile_width0 = m_width;
 
 			if (tile_height0 <= 0 ||
-				(!is_tiled && tile_height0 == std::numeric_limits<uint32>::max()))
+				(!is_tiled && tile_height0 == std::numeric_limits<uint32_t>::max()))
 				tile_height0 = m_height;
 
 			uint8_t* data = (uint8_t*)pData;
 			if (!is_tiled && tile_height0 == 1 && dataFormat == m_format && nStride == m_stride) {
 				// read image directly to the data buffer
 				for (Size j=0; j<m_height; ++j, data+=lineWidth)
-					if (!TIFFReadRGBAStrip(tif, j, (uint32*)data)) {
+					if (!TIFFReadRGBAStrip(tif, j, (uint32_t*)data)) {
 						Close();
 						return _INVALIDFILE;
 					}
@@ -494,13 +494,13 @@ HRESULT CImageTIFF::ReadData(void* pData, PIXELFORMAT dataFormat, Size nStride, 
 				CLISTDEF0(uint8_t) _buffer(buffer_size);
 				uint8_t* buffer = _buffer.Begin();
 
-				for (uint32 y = 0; y < m_height; y += tile_height0, data += lineWidth*tile_height0) {
-					uint32 tile_height = tile_height0;
+				for (uint32_t y = 0; y < m_height; y += tile_height0, data += lineWidth*tile_height0) {
+					uint32_t tile_height = tile_height0;
 					if (y + tile_height > m_height)
 						tile_height = m_height - y;
 
-					for (uint32 x = 0; x < m_width; x += tile_width0) {
-						uint32 tile_width = tile_width0;
+					for (uint32_t x = 0; x < m_width; x += tile_width0) {
+						uint32_t tile_width = tile_width0;
 						if (x + tile_width > m_width)
 							tile_width = m_width - x;
 
@@ -510,9 +510,9 @@ HRESULT CImageTIFF::ReadData(void* pData, PIXELFORMAT dataFormat, Size nStride, 
 						{
 							uint8_t* bstart = buffer;
 							if (!is_tiled)
-								ok = TIFFReadRGBAStrip(tif, y, (uint32*)buffer);
+								ok = TIFFReadRGBAStrip(tif, y, (uint32_t*)buffer);
 							else {
-								ok = TIFFReadRGBATile(tif, x, y, (uint32*)buffer);
+								ok = TIFFReadRGBATile(tif, x, y, (uint32_t*)buffer);
 								//Tiles fill the buffer from the bottom up
 								bstart += (tile_height0 - tile_height) * tile_width0 * 4;
 							}
@@ -521,7 +521,7 @@ HRESULT CImageTIFF::ReadData(void* pData, PIXELFORMAT dataFormat, Size nStride, 
 								return _INVALIDFILE;
 							}
 
-							for (uint32 i = 0; i < tile_height; ++i) {
+							for (uint32_t i = 0; i < tile_height; ++i) {
 								uint8_t* dst = data + x*3 + lineWidth*(tile_height - i - 1);
 								uint8_t* src = bstart + i*tile_width0*4;
 								if (!FilterFormat(dst, dataFormat, nStride, src, m_format, m_stride, tile_width)) {

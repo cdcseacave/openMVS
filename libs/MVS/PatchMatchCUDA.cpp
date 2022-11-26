@@ -364,7 +364,6 @@ void PatchMatchCUDA::EstimateDepthMap(DepthData& depthData)
 				const Point4& depthNormal = depthNormalEstimates[index];
 				const Depth depth = depthNormal.w();
 				ASSERT(std::isfinite(depth));
-				ASSERT(depth==0 || ISINSIDE(depth, depthData.dMin, depthData.dMax));
 				depthData.depthMap(r, c) = depth;
 				depthData.normalMap(r, c) = depthNormal.topLeftCorner<3, 1>();
 				if (scaleNumber == 0) {

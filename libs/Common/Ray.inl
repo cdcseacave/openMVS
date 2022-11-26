@@ -929,7 +929,7 @@ bool TestRayTriangleIntersection(unsigned iters) {
 		Type t;
 		const Point center(triangle.GetCenter());
 		const Ray rayCenter(Point::Random()*scale, center, true);
-		if (!rayCenter.Intersects<false>(triangle, &t))
+		if (!rayCenter.template Intersects<false>(triangle, &t))
 			return false;
 		const Point _center(rayCenter.GetPoint(t));
 		if ((_center-center).norm() > zeroEps)
@@ -937,7 +937,7 @@ bool TestRayTriangleIntersection(unsigned iters) {
 		const BYTE o((BYTE)(RAND()%3));
 		const Point side((triangle[o]+triangle[(o+1)%3]) / TYPE(2));
 		const Ray raySide(rayCenter.m_pOrig, side, true);
-		if (!raySide.Intersects<false>(triangle, &t))
+		if (!raySide.template Intersects<false>(triangle, &t))
 			return false;
 		const Point _side(raySide.GetPoint(t));
 		if ((_side-side).norm() > zeroEps)

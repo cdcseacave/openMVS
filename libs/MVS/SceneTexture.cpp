@@ -1039,7 +1039,7 @@ bool MeshTexture::FaceViewSelection(unsigned minCommonCameras, float fOutlierThr
 			// 4) assign images to virtual faces
 			// 5) spread image ID to each mesh face from virtual face
 			FOREACH(idxFace, virtualFaces) {
-				const Mesh::FIndex idx((Mesh::FIndex)boost::add_vertex(graph));
+				MAYBEUNUSED const Mesh::FIndex idx((Mesh::FIndex)boost::add_vertex(graph));
 				ASSERT(idx == idxFace);
 			}
 			FOREACH(idxVirtualFace, virtualFaces) {
@@ -1127,7 +1127,7 @@ bool MeshTexture::FaceViewSelection(unsigned minCommonCameras, float fOutlierThr
 		
 		// create the graph of faces: each vertex is a face and the edges are the edges shared by the faces
 		FOREACH(idxFace, faces) {
-			const Mesh::FIndex idx((Mesh::FIndex)boost::add_vertex(graph));
+			MAYBEUNUSED const Mesh::FIndex idx((Mesh::FIndex)boost::add_vertex(graph));
 			ASSERT(idx == idxFace);
 		}
 		FOREACH(idxFace, faces) {
