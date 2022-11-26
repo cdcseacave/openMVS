@@ -41,10 +41,10 @@ template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE>
 inline void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE>::CELL_TYPE::Swap(CELL_TYPE& rhs)
 {
 	std::swap(m_child, rhs.m_child);
-	uint8_t tmpData[dataSize];
-	memcpy(tmpData, m_data, dataSize);
-	memcpy(m_data, rhs.m_data, dataSize);
-	memcpy(rhs.m_data, tmpData, dataSize);
+	if (IsLeaf())
+		std::swap(m_leaf, rhs.m_leaf);
+	else
+		std::swap(m_node, rhs.m_node);
 } // Swap
 /*----------------------------------------------------------------*/
 
@@ -714,7 +714,8 @@ void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE>::SplitVolume(float maxArea, AREAE
 {
 	CELL_TYPE parent;
 	parent.m_child = new CELL_TYPE[1];
-	parent.m_child[0] = m_root;
+	parent.m_child[0].m_child = m_root.m_child;
+	parent.m_child[0].Node() = m_root.Node();
 	parent.Node().center = m_root.Node().center + POINT_TYPE::Constant(m_radius);
 	_SplitVolume(parent, m_radius*TYPE(2), 0, maxArea, areaEstimator, chunkInserter);
 	parent.m_child[0].m_child = NULL;

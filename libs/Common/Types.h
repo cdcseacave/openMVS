@@ -1397,8 +1397,8 @@ public:
 	inline TYPE* ptr() { return &x; }
 
 	// 1D element access
-	inline const TYPE& operator [](size_t i) const { ASSERT(i>=0 && i<3); return ptr()[i]; }
-	inline TYPE& operator [](size_t i) { ASSERT(i>=0 && i<3); return ptr()[i]; }
+	inline const TYPE& operator [](BYTE i) const { ASSERT(i<3); return ptr()[i]; }
+	inline TYPE& operator [](BYTE i) { ASSERT(i<3); return ptr()[i]; }
 
 	// Access point as vector equivalent
 	inline operator const Vec& () const { return *((const Vec*)this); }

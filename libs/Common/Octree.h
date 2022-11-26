@@ -57,7 +57,6 @@ public:
 			SIZE_TYPE size; // number of items contained by this cell in the global array
 			DATA_TYPE data; // user data associated with this leaf
 		} LEAF_TYPE;
-		enum { dataSize = (sizeof(NODE_TYPE)>sizeof(LEAF_TYPE) ? sizeof(NODE_TYPE) : sizeof(LEAF_TYPE)) };
 		enum { numChildren = (2<<(DIMS-1)) };
 
 	public:
@@ -73,10 +72,10 @@ public:
 
 		inline bool	IsLeaf() const { return (m_child==NULL); }
 		inline const CELL_TYPE& GetChild(int i) const { ASSERT(!IsLeaf() && i<numChildren); return m_child[i]; }
-		inline const NODE_TYPE& Node() const { ASSERT(!IsLeaf()); return *reinterpret_cast<const NODE_TYPE*>(m_data); }
-		inline NODE_TYPE& Node() { ASSERT(!IsLeaf()); return *reinterpret_cast<NODE_TYPE*>(m_data); }
-		inline const LEAF_TYPE& Leaf() const { ASSERT(IsLeaf()); return *reinterpret_cast<const LEAF_TYPE*>(m_data); }
-		inline LEAF_TYPE& Leaf() { ASSERT(IsLeaf()); return *reinterpret_cast<LEAF_TYPE*>(m_data); }
+		inline const NODE_TYPE& Node() const { ASSERT(!IsLeaf()); return m_node; }
+		inline NODE_TYPE& Node() { ASSERT(!IsLeaf()); return m_node; }
+		inline const LEAF_TYPE& Leaf() const { ASSERT(IsLeaf()); return m_leaf; }
+		inline LEAF_TYPE& Leaf() { ASSERT(IsLeaf()); return m_leaf; }
 		inline const POINT_TYPE& GetCenter() const { return Node().center; }
 		inline AABB_TYPE GetAabb(TYPE radius) const { return AABB_TYPE(Node().center, radius); }
 		inline AABB_TYPE GetChildAabb(unsigned idxChild, TYPE radius) const { const TYPE childRadius(radius / TYPE(2)); return AABB_TYPE(ComputeChildCenter(Node().center, childRadius, idxChild), childRadius); }
@@ -89,7 +88,10 @@ public:
 
 	public:
 		CELL_TYPE* m_child; // if not a leaf, 2^DIMS child objects
-		uint8_t m_data[dataSize]; // a LEAF_TYPE or NODE_TYPE object, if it is a leaf or not respectively
+		union { // a LEAF_TYPE or NODE_TYPE object, if it is a leaf or not respectively
+			NODE_TYPE m_node;
+			LEAF_TYPE m_leaf;
+		};
 	};
 	typedef SEACAVE::cList<CELL_TYPE*,CELL_TYPE*,0,256,IDX_TYPE> CELLPTRARR_TYPE;
 
