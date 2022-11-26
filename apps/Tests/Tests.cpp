@@ -70,7 +70,7 @@ bool UnitTests()
 
 
 // test MVS stages on a small sample dataset
-bool PipelineTest()
+bool PipelineTest(bool verbose=false)
 {
 	TD_TIMER_START();
 	Scene scene;
@@ -79,17 +79,22 @@ bool PipelineTest()
 		return false;
 	}
 	OPTDENSE::init();
+	OPTDENSE::bRemoveDmaps = true;
 	if (!scene.DenseReconstruction() || scene.pointcloud.GetSize() < 200000u) {
 		VERBOSE("ERROR: TestDataset failed estimating dense point cloud!");
 		return false;
 	}
-	if (!scene.ReconstructMesh() || scene.mesh.faces.size() < 80000u) {
+	if (verbose)
+		scene.pointcloud.Save(MAKE_PATH("scene_dense.ply"));
+	if (!scene.ReconstructMesh() || scene.mesh.faces.size() < 75000u) {
 		VERBOSE("ERROR: TestDataset failed reconstructing the mesh!");
 		return false;
 	}
+	if (verbose)
+		scene.mesh.Save(MAKE_PATH("scene_dense_mesh.ply"));
 	constexpr float decimate = 0.5f;
 	scene.mesh.Clean(decimate);
-	if (!ISINSIDE(scene.mesh.faces.size(), 35000u, 50000u)) {
+	if (!ISINSIDE(scene.mesh.faces.size(), 35000u, 45000u)) {
 		VERBOSE("ERROR: TestDataset failed cleaning the mesh!");
 		return false;
 	}
@@ -97,6 +102,8 @@ bool PipelineTest()
 		VERBOSE("ERROR: TestDataset failed texturing the mesh!");
 		return false;
 	}
+	if (verbose)
+		scene.mesh.Save(MAKE_PATH("scene_dense_mesh_texture.ply"));
 	VERBOSE("All pipeline stages passed (%s)", TD_TIMER_GET_FMT().c_str());
 	return true;
 }

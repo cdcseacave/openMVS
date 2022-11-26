@@ -1680,6 +1680,16 @@ bool Scene::DenseReconstruction(int nFusionMode, bool bCrop2ROI, float fBorderRO
 		if (pointcloud.normals.IsEmpty() && OPTDENSE::nEstimateNormals == 1)
 			EstimatePointNormals(images, pointcloud);
 	}
+
+	if (OPTDENSE::bRemoveDmaps) {
+		// delete all depth-map files
+		FOREACH(i, images) {
+			const DepthData& depthData = data.depthMaps.arrDepthData[i];
+			if (!depthData.IsValid())
+				continue;
+			File::deleteFile(ComposeDepthFilePath(depthData.GetView().GetID(), "dmap"));
+		}
+	}
 	return true;
 } // DenseReconstruction
 /*----------------------------------------------------------------*/

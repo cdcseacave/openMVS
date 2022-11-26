@@ -118,7 +118,9 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	unsigned nEstimationGeometricIters;
 	unsigned nEstimateColors;
 	unsigned nEstimateNormals;
+	unsigned nOptimize;
 	int nIgnoreMaskLabel;
+	bool bRemoveDmaps;
 	boost::program_options::options_description config("Densify options");
 	config.add_options()
 		("input-file,i", boost::program_options::value<std::string>(&OPT::strInputFileName), "input filename containing camera poses and image list")
@@ -138,12 +140,14 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		("estimate-normals", boost::program_options::value(&nEstimateNormals)->default_value(2), "estimate the normals for the dense point-cloud (0 - disabled, 1 - final, 2 - estimate)")
 		("sub-scene-area", boost::program_options::value(&OPT::fMaxSubsceneArea)->default_value(0.f), "split the scene in sub-scenes such that each sub-scene surface does not exceed the given maximum sampling area (0 - disabled)")
 		("sample-mesh", boost::program_options::value(&OPT::fSampleMesh)->default_value(0.f), "uniformly samples points on a mesh (0 - disabled, <0 - number of points, >0 - sample density per square unit)")
-		("fusion-mode", boost::program_options::value(&OPT::nFusionMode)->default_value(0), "depth map fusion mode (-2 - fuse disparity-maps, -1 - export disparity-maps only, 0 - depth-maps & fusion, 1 - export depth-maps only)")
+		("fusion-mode", boost::program_options::value(&OPT::nFusionMode)->default_value(0), "depth-maps fusion mode (-2 - fuse disparity-maps, -1 - export disparity-maps only, 0 - depth-maps & fusion, 1 - export depth-maps only)")
+		("postprocess-dmaps", boost::program_options::value(&nOptimize)->default_value(7), "flags used to filter the depth-maps after estimation (0 - disabled, 1 - remove-speckles, 2 - fill-gaps, 4 - adjust-filter)")
 		("filter-point-cloud", boost::program_options::value(&OPT::thFilterPointCloud)->default_value(0), "filter dense point-cloud based on visibility (0 - disabled)")
 		("export-number-views", boost::program_options::value(&OPT::nExportNumViews)->default_value(0), "export points with >= number of views (0 - disabled, <0 - save MVS project too)")
         ("roi-border", boost::program_options::value(&OPT::fBorderROI)->default_value(0), "add a border to the region-of-interest when cropping the scene (0 - disabled, >0 - percentage, <0 - absolute)")
         ("estimate-roi", boost::program_options::value(&OPT::nEstimateROI)->default_value(2), "estimate and set region-of-interest (0 - disabled, 1 - enabled, 2 - adaptive)")
         ("crop-to-roi", boost::program_options::value(&OPT::bCrop2ROI)->default_value(true), "crop scene using the region-of-interest")
+        ("remove-dmaps", boost::program_options::value(&bRemoveDmaps)->default_value(false), "remove depth-maps after fusion")
         ;
 
 	// hidden options, allowed both on command line and
@@ -226,7 +230,9 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	OPTDENSE::nEstimationGeometricIters = nEstimationGeometricIters;
 	OPTDENSE::nEstimateColors = nEstimateColors;
 	OPTDENSE::nEstimateNormals = nEstimateNormals;
+	OPTDENSE::nOptimize = nOptimize;
 	OPTDENSE::nIgnoreMaskLabel = nIgnoreMaskLabel;
+	OPTDENSE::bRemoveDmaps = bRemoveDmaps;
 	if (!bValidConfig && !OPT::strDenseConfigFileName.empty())
 		OPTDENSE::oConfig.Save(OPT::strDenseConfigFileName);
 
