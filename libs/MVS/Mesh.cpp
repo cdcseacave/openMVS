@@ -83,6 +83,21 @@ using namespace MVS;
 
 // D E F I N E S ///////////////////////////////////////////////////
 
+// uncomment to enable multi-threading based on OpenMP
+#ifdef _USE_OPENMP
+#define MESH_USE_OPENMP
+#endif
+
+// select fast ray-face intersection search method
+#define USE_MESH_BF 0 // brute-force
+#define USE_MESH_OCTREE 1 // octree (misses some triangles)
+#define USE_MESH_BVH 2 // BVH (misses some triangles)
+#define USE_MESH_INT USE_MESH_BF
+
+#if USE_MESH_INT == USE_MESH_BVH
+#include <unsupported/Eigen/BVH>
+#endif
+
 
 // S T R U C T S ///////////////////////////////////////////////////
 
@@ -224,7 +239,7 @@ void Mesh::ListIncidenteVertices()
 void Mesh::ListIncidenteFaces()
 {
 	vertexFaces.Empty();
-	vertexFaces.Resize(vertices.GetSize());
+	vertexFaces.resize(vertices.size());
 	FOREACH(i, faces) {
 		const Face& face = faces[i];
 		for (int v=0; v<3; ++v) {
@@ -339,7 +354,7 @@ void Mesh::ComputeNormalFaces()
 // computes the vertex normal as the area weighted face normals average
 void Mesh::ComputeNormalVertices()
 {
-	vertexNormals.Resize(vertices.GetSize());
+	vertexNormals.resize(vertices.size());
 	vertexNormals.Memset(0);
 	for (const Face& face: faces) {
 		const Vertex& v0 = vertices[face[0]];
@@ -1399,6 +1414,55 @@ void Mesh::Clean(float fDecimate, float fSpurious, bool bRemoveSpikes, unsigned 
 /*----------------------------------------------------------------*/
 
 
+// project vertices and compute bounding-box;
+// account for diferences in pixel center convention: while OpenMVS uses the same convention as OpenCV and DirectX 9 where the center
+// of a pixel is defined at integer coordinates, i.e. the center is at (0, 0) and the top left corner is at (-0.5, -0.5),
+// DirectX 10+, OpenGL, and Vulkan convention is the center of a pixel is defined at half coordinates, i.e. the center is at (0.5, 0.5)
+// and the top left corner is at (0, 0)
+static const Mesh::TexCoord halfPixel(0.5f, 0.5f);
+
+// translate, normalize and flip Y axis of the texture coordinates
+void Mesh::FaceTexcoordsNormalize(TexCoordArr& newFaceTexcoords, bool flipY) const
+{
+	ASSERT(!faceTexcoords.empty() && !textureDiffuse.empty());
+	const TexCoord invNorm(1.f/(float)textureDiffuse.cols, 1.f/(float)textureDiffuse.rows);
+	newFaceTexcoords.resize(faceTexcoords.size());
+	if (flipY) {
+		FOREACH(i, faceTexcoords) {
+			const TexCoord& texcoord = faceTexcoords[i];
+			newFaceTexcoords[i] = TexCoord(
+				(texcoord.x+halfPixel.x)*invNorm.x,
+				1.f-(texcoord.y+halfPixel.y)*invNorm.y
+			);
+		}
+	} else {
+		FOREACH(i, faceTexcoords)
+			newFaceTexcoords[i] = (faceTexcoords[i]+halfPixel)*invNorm;
+	}
+} // FaceTexcoordsNormalize
+
+// flip Y axis, unnormalize and translate back texture coordinates
+void Mesh::FaceTexcoordsUnnormalize(TexCoordArr& newFaceTexcoords, bool flipY) const
+{
+	ASSERT(!faceTexcoords.empty() && !textureDiffuse.empty());
+	const TexCoord scale((float)textureDiffuse.cols, (float)textureDiffuse.rows);
+	newFaceTexcoords.resize(faceTexcoords.size());
+	if (flipY) {
+		FOREACH(i, faceTexcoords) {
+			const TexCoord& texcoord = faceTexcoords[i];
+			newFaceTexcoords[i] = TexCoord(
+				texcoord.x*scale.x-halfPixel.x,
+				(1.f-texcoord.y)*scale.y-halfPixel.y
+			);
+		}
+	} else {
+		FOREACH(i, faceTexcoords)
+			newFaceTexcoords[i] = faceTexcoords[i]*scale - halfPixel;
+	}
+} // FaceTexcoordsUnnormalize
+/*----------------------------------------------------------------*/
+
+
 // define a PLY file format composed only of vertices and triangles
 namespace BasicPLY {
 	// list of property information for a vertex
@@ -1496,7 +1560,7 @@ bool Mesh::LoadPLY(const String& fileName)
 		int elem_count;
 		LPCSTR elem_name = ply.setup_element_read(i, &elem_count);
 		if (PLY::equal_strings(BasicPLY::elem_names[0], elem_name)) {
-			ASSERT(vertices.GetSize() == (VIndex)elem_count);
+			ASSERT(vertices.size() == (VIndex)elem_count);
 			ply.setup_property(BasicPLY::vert_props[0]);
 			ply.setup_property(BasicPLY::vert_props[1]);
 			ply.setup_property(BasicPLY::vert_props[2]);
@@ -1504,7 +1568,7 @@ bool Mesh::LoadPLY(const String& fileName)
 				ply.get_element(pVert);
 		} else
 		if (PLY::equal_strings(BasicPLY::elem_names[1], elem_name)) {
-			ASSERT(faces.GetSize() == (FIndex)elem_count);
+			ASSERT(faces.size() == (FIndex)elem_count);
 			if (ply.find_property(ply.elems[i], BasicPLY::face_tex_props[1].name.c_str()) == -1) {
 				// load vertex indices
 				BasicPLY::Face face;
@@ -1520,7 +1584,7 @@ bool Mesh::LoadPLY(const String& fileName)
 				}
 			} else {
 				// load vertex indices and texture coordinates
-				faceTexcoords.Resize((FIndex)elem_count*3);
+				faceTexcoords.resize((FIndex)elem_count*3);
 				BasicPLY::FaceTex face;
 				ply.setup_property(BasicPLY::face_tex_props[0]);
 				ply.setup_property(BasicPLY::face_tex_props[1]);
@@ -1530,13 +1594,13 @@ bool Mesh::LoadPLY(const String& fileName)
 						DEBUG_EXTRA("error: unsupported mesh file (face not triangle)");
 						return false;
 					}
-					memcpy(faces.Begin()+f, face.face.pFace, sizeof(VIndex)*3);
+					memcpy(faces.data()+f, face.face.pFace, sizeof(VIndex)*3);
 					delete[] face.face.pFace;
 					if (face.tex.num != 6) {
 						DEBUG_EXTRA("error: unsupported mesh file (texture coordinates not per face vertex)");
 						return false;
 					}
-					memcpy(faceTexcoords.Begin()+f*3, face.tex.pTex, sizeof(TexCoord)*3);
+					memcpy(faceTexcoords.data()+f*3, face.tex.pTex, sizeof(TexCoord)*3);
 					delete[] face.tex.pTex;
 				}
 				// load the texture
@@ -1547,6 +1611,10 @@ bool Mesh::LoadPLY(const String& fileName)
 						break;
 					}
 				}
+				// flip Y axis, unnormalize and translate back texture coordinates
+				TexCoordArr unnormFaceTexcoords;
+				FaceTexcoordsUnnormalize(unnormFaceTexcoords, true);
+				faceTexcoords.Swap(unnormFaceTexcoords);
 			}
 		} else {
 			ply.get_other_element();
@@ -1590,13 +1658,13 @@ bool Mesh::LoadOBJ(const String& fileName)
 	faces.Reserve((FIndex)group.faces.size());
 	for (const ObjModel::Face& f: group.faces) {
 		ASSERT(f.vertices[0] != NO_ID);
-		faces.AddConstruct(f.vertices[0], f.vertices[1], f.vertices[2]);
+		faces.emplace_back(f.vertices[0], f.vertices[1], f.vertices[2]);
 		if (f.texcoords[0] != NO_ID) {
 			for (int i=0; i<3; ++i)
-				faceTexcoords.AddConstruct(model.get_texcoords()[f.texcoords[i]]);
+				faceTexcoords.emplace_back(model.get_texcoords()[f.texcoords[i]]);
 		}
 		if (f.normals[0] != NO_ID) {
-			Normal& n = faceNormals.AddConstruct(Normal::ZERO);
+			Normal& n = faceNormals.emplace_back(Normal::ZERO);
 			for (int i=0; i<3; ++i)
 				n += normalized(model.get_normals()[f.normals[i]]);
 			normalize(n);
@@ -1607,6 +1675,13 @@ bool Mesh::LoadOBJ(const String& fileName)
 	ObjModel::MaterialLib::Material* pMaterial(model.GetMaterial(group.material_name));
 	if (pMaterial && pMaterial->LoadDiffuseMap())
 		cv::swap(textureDiffuse, pMaterial->diffuse_map);
+	
+	// flip Y axis, unnormalize and translate back texture coordinates
+	if (!faceTexcoords.empty()) {
+		TexCoordArr unnormFaceTexcoords;
+		FaceTexcoordsUnnormalize(unnormFaceTexcoords, true);
+		faceTexcoords.Swap(unnormFaceTexcoords);
+	}
 	return true;
 }
 // import the mesh as a GLTF file
@@ -1706,11 +1781,11 @@ bool Mesh::Save(const String& fileName, const cList<String>& comments, bool bBin
 // export the mesh as a PLY file
 bool Mesh::SavePLY(const String& fileName, const cList<String>& comments, bool bBinary) const
 {
-	ASSERT(!fileName.IsEmpty());
+	ASSERT(!fileName.empty());
 	Util::ensureFolder(fileName);
 
 	// create PLY object
-	const size_t bufferSize(vertices.GetSize()*(4*3/*pos*/+2/*eol*/) + faces.GetSize()*(1*1/*len*/+4*3/*idx*/+2/*eol*/) + 2048/*extra size*/);
+	const size_t bufferSize(vertices.size()*(4*3/*pos*/+2/*eol*/) + faces.size()*(1*1/*len*/+4*3/*idx*/+2/*eol*/) + 2048/*extra size*/);
 	PLY ply;
 	if (!ply.write(fileName, 2, BasicPLY::elem_names, bBinary?PLY::BINARY_LE:PLY::ASCII, bufferSize)) {
 		DEBUG_EXTRA("error: can not create the mesh file");
@@ -1723,12 +1798,12 @@ bool Mesh::SavePLY(const String& fileName, const cList<String>& comments, bool b
 
 	// export texture file name as comment if needed
 	String textureFileName;
-	if (!faceTexcoords.IsEmpty() && !textureDiffuse.empty()) {
+	if (!faceTexcoords.empty() && !textureDiffuse.empty()) {
 		textureFileName = Util::getFileFullName(fileName)+_T(".png");
 		ply.append_comment((_T("TextureFile ")+Util::getFileNameExt(textureFileName)).c_str());
 	}
 
-	if (vertexNormals.IsEmpty()) {
+	if (vertexNormals.empty()) {
 		// describe what properties go into the vertex elements
 		ply.describe_property(BasicPLY::elem_names[0], 3, BasicPLY::vert_props);
 
@@ -1736,7 +1811,7 @@ bool Mesh::SavePLY(const String& fileName, const cList<String>& comments, bool b
 		FOREACHPTR(pVert, vertices)
 			ply.put_element(pVert);
 	} else {
-		ASSERT(vertices.GetSize() == vertexNormals.GetSize());
+		ASSERT(vertices.size() == vertexNormals.size());
 
 		// describe what properties go into the vertex elements
 		ply.describe_property(BasicPLY::elem_names[0], 6, BasicPLY::vert_normal_props);
@@ -1752,7 +1827,7 @@ bool Mesh::SavePLY(const String& fileName, const cList<String>& comments, bool b
 	if (ply.get_current_element_count() == 0)
 		return false;
 
-	if (faceTexcoords.IsEmpty()) {
+	if (faceTexcoords.empty()) {
 		// describe what properties go into the vertex elements
 		ply.describe_property(BasicPLY::elem_names[1], 1, BasicPLY::face_props);
 
@@ -1763,7 +1838,11 @@ bool Mesh::SavePLY(const String& fileName, const cList<String>& comments, bool b
 			ply.put_element(&face);
 		}
 	} else {
-		ASSERT(faceTexcoords.GetSize() == faces.GetSize()*3);
+		ASSERT(faceTexcoords.size() == faces.size()*3);
+
+		// translate, normalize and flip Y axis of the texture coordinates
+		TexCoordArr normFaceTexcoords;
+		FaceTexcoordsNormalize(normFaceTexcoords, true);
 
 		// describe what properties go into the vertex elements
 		ply.describe_property(BasicPLY::elem_names[1], 2, BasicPLY::face_tex_props);
@@ -1771,8 +1850,8 @@ bool Mesh::SavePLY(const String& fileName, const cList<String>& comments, bool b
 		// export the array of faces
 		BasicPLY::FaceTex face = {{3},{6}};
 		FOREACH(f, faces) {
-			face.face.pFace = faces.Begin()+f;
-			face.tex.pTex = faceTexcoords.Begin()+f*3;
+			face.face.pFace = faces.data()+f;
+			face.tex.pTex = normFaceTexcoords.data()+f*3;
 			ply.put_element(&face);
 		}
 
@@ -1789,7 +1868,7 @@ bool Mesh::SavePLY(const String& fileName, const cList<String>& comments, bool b
 // export the mesh as a OBJ file
 bool Mesh::SaveOBJ(const String& fileName) const
 {
-	ASSERT(!fileName.IsEmpty());
+	ASSERT(!fileName.empty());
 	Util::ensureFolder(fileName);
 
 	// create the OBJ model
@@ -1797,35 +1876,38 @@ bool Mesh::SaveOBJ(const String& fileName) const
 
 	// store vertices
 	ASSERT(sizeof(ObjModel::Vertex) == sizeof(Vertex));
-	model.get_vertices().insert(model.get_vertices().begin(), vertices.Begin(), vertices.End());
+	model.get_vertices().insert(model.get_vertices().begin(), vertices.begin(), vertices.end());
 
 	// store vertex normals
 	ASSERT(sizeof(ObjModel::Normal) == sizeof(Normal));
 	ASSERT(model.get_vertices().size() < std::numeric_limits<VIndex>::max());
-	if (!vertexNormals.IsEmpty()) {
-		ASSERT(vertexNormals.GetSize() == vertices.GetSize());
-		model.get_normals().insert(model.get_normals().begin(), vertexNormals.Begin(), vertexNormals.End());
+	if (!vertexNormals.empty()) {
+		ASSERT(vertexNormals.size() == vertices.size());
+		model.get_normals().insert(model.get_normals().begin(), vertexNormals.begin(), vertexNormals.end());
 	}
 
 	// store face texture coordinates
 	ASSERT(sizeof(ObjModel::TexCoord) == sizeof(TexCoord));
-	if (!faceTexcoords.IsEmpty()) {
-		ASSERT(faceTexcoords.GetSize() == faces.GetSize()*3);
-		model.get_texcoords().insert(model.get_texcoords().begin(), faceTexcoords.Begin(), faceTexcoords.End());
+	if (!faceTexcoords.empty()) {
+		// translate, normalize and flip Y axis of the texture coordinates
+		TexCoordArr normFaceTexcoords;
+		FaceTexcoordsNormalize(normFaceTexcoords, true);
+		ASSERT(normFaceTexcoords.size() == faces.size()*3);
+		model.get_texcoords().insert(model.get_texcoords().begin(), normFaceTexcoords.begin(), normFaceTexcoords.end());
 	}
 
 	// store faces
 	ObjModel::Group& group = model.AddGroup(_T("material_0"));
-	group.faces.reserve(faces.GetSize());
+	group.faces.reserve(faces.size());
 	FOREACH(idxFace, faces) {
 		const Face& face = faces[idxFace];
 		ObjModel::Face f;
 		memset(&f, 0xFF, sizeof(ObjModel::Face));
 		for (int i=0; i<3; ++i) {
 			f.vertices[i] = face[i];
-			if (!faceTexcoords.IsEmpty())
+			if (!faceTexcoords.empty())
 				f.texcoords[i] = idxFace*3+i;
-			if (!vertexNormals.IsEmpty())
+			if (!vertexNormals.empty())
 				f.normals[i] = face[i];
 		}
 		group.faces.push_back(f);
@@ -1936,18 +2018,15 @@ bool Mesh::SaveGLTF(const String& fileName, bool bBinary) const
 		vertexTexcoordAccessor.count = mesh.faceTexcoords.size();
 		vertexTexcoordAccessor.type = TINYGLTF_TYPE_VEC2;
 		gltfModel.accessors.emplace_back(std::move(vertexTexcoordAccessor));
-		// setup texture coordinates (flip Y)
+		// setup texture coordinates
 		STATIC_ASSERT(2 * sizeof(TexCoord::Type) == sizeof(TexCoord)); // TexCoordArr should be continuous
 		ASSERT(mesh.vertices.size() == mesh.faceTexcoords.size());
 		tinygltf::BufferView vertexTexcoordBufferView;
 		vertexTexcoordBufferView.name = "vertexTexcoordBufferView";
 		vertexTexcoordBufferView.buffer = (int)gltfModel.buffers.size();
-		TexCoordArr flipTexcoords(mesh.faceTexcoords.size());
-		FOREACH(i, mesh.faceTexcoords) {
-			flipTexcoords[i].x = mesh.faceTexcoords[i].x;
-			flipTexcoords[i].y = 1.f - mesh.faceTexcoords[i].y;
-		}
-		ExtendBufferGLTF(flipTexcoords.data(), flipTexcoords.size(), gltfBuffer,
+		TexCoordArr normFaceTexcoords;
+		mesh.FaceTexcoordsNormalize(normFaceTexcoords, false);
+		ExtendBufferGLTF(normFaceTexcoords.data(), normFaceTexcoords.size(), gltfBuffer,
 			vertexTexcoordBufferView.byteOffset, vertexTexcoordBufferView.byteLength);
 		gltfModel.bufferViews.emplace_back(std::move(vertexTexcoordBufferView));
 		// setup texture
@@ -3788,15 +3867,14 @@ void Mesh::RemoveFaces(FaceIdxArr& facesRemove, bool bUpdateLists)
 {
 	facesRemove.Sort();
 	FIndex idxLast(FaceIdxArr::NO_INDEX);
-	if (!bUpdateLists || vertexFaces.IsEmpty()) {
+	if (!bUpdateLists || vertexFaces.empty()) {
 		RFOREACHPTR(pIdxF, facesRemove) {
 			const FIndex idxF(*pIdxF);
 			if (idxLast == idxF)
 				continue;
 			faces.RemoveAt(idxF);
-			if (!faceTexcoords.IsEmpty()) {
+			if (!faceTexcoords.empty())
 				faceTexcoords.RemoveAt(idxF * 3, 3);
-			}
 			idxLast = idxF;
 		}
 	} else {
@@ -3829,9 +3907,8 @@ void Mesh::RemoveFaces(FaceIdxArr& facesRemove, bool bUpdateLists)
 				}
 			}
 			faces.RemoveAt(idxF);
-			if (!faceTexcoords.IsEmpty()) {
+			if (!faceTexcoords.empty())
 				faceTexcoords.RemoveAt(idxF * 3, 3);
-			}
 			idxLast = idxF;
 		}
 	}
@@ -4091,7 +4168,7 @@ void Mesh::SamplePoints(REAL samplingDensity, unsigned mumPointsTheoretic, Point
 				const TexCoord& TA = faceTexcoords[idxTexCoord+1];
 				const TexCoord& TB = faceTexcoords[idxTexCoord+2];
 				const TexCoord xt(TO + static_cast<TexCoord::Type>(x)*(TA - TO) + static_cast<TexCoord::Type>(y)*(TB - TO));
-				pointcloud.colors.emplace_back(textureDiffuse.sampleSafe(Point2f(xt.x*textureDiffuse.width(), (1.f-xt.y)*textureDiffuse.height())));
+				pointcloud.colors.emplace_back(textureDiffuse.sampleSafe(xt));
 			}
 		}
 	}
@@ -4114,7 +4191,7 @@ void Mesh::Project(const Camera& camera, DepthMap& depthMap) const
 }
 void Mesh::Project(const Camera& camera, DepthMap& depthMap, Image8U3& image) const
 {
-	ASSERT(!faceTexcoords.IsEmpty() && !textureDiffuse.empty());
+	ASSERT(!faceTexcoords.empty() && !textureDiffuse.empty());
 	struct RasterMesh : TRasterMesh<RasterMesh> {
 		typedef TRasterMesh<RasterMesh> Base;
 		const Mesh& mesh;
@@ -4137,7 +4214,7 @@ void Mesh::Project(const Camera& camera, DepthMap& depthMap, Image8U3& image) co
 				xt  = mesh.faceTexcoords[idxFaceTex+0] * pbary[0];
 				xt += mesh.faceTexcoords[idxFaceTex+1] * pbary[1];
 				xt += mesh.faceTexcoords[idxFaceTex+2] * pbary[2];
-				image(pt) = mesh.textureDiffuse.sampleSafe(Point2f(xt.x*mesh.textureDiffuse.width(), (1.f-xt.y)*mesh.textureDiffuse.height()));
+				image(pt) = mesh.textureDiffuse.sampleSafe(xt);
 			}
 		}
 	};
@@ -4220,7 +4297,7 @@ void Mesh::ProjectOrtho(const Camera& camera, DepthMap& depthMap) const
 }
 void Mesh::ProjectOrtho(const Camera& camera, DepthMap& depthMap, Image8U3& image) const
 {
-	ASSERT(!faceTexcoords.IsEmpty() && !textureDiffuse.empty());
+	ASSERT(!faceTexcoords.empty() && !textureDiffuse.empty());
 	struct RasterMesh : TRasterMesh<RasterMesh> {
 		typedef TRasterMesh<RasterMesh> Base;
 		const Mesh& mesh;
@@ -4246,7 +4323,7 @@ void Mesh::ProjectOrtho(const Camera& camera, DepthMap& depthMap, Image8U3& imag
 				xt  = mesh.faceTexcoords[idxFaceTex+0] * bary[0];
 				xt += mesh.faceTexcoords[idxFaceTex+1] * bary[1];
 				xt += mesh.faceTexcoords[idxFaceTex+2] * bary[2];
-				image(pt) = mesh.textureDiffuse.sampleSafe(Point2f(xt.x*mesh.textureDiffuse.width(), (1.f-xt.y)*mesh.textureDiffuse.height()));
+				image(pt) = mesh.textureDiffuse.sampleSafe(xt);
 			}
 		}
 	};
@@ -4370,6 +4447,162 @@ Mesh Mesh::SubMesh(const FaceIdxArr& chunk) const
 	mesh.FixNonManifold();
 	return mesh;
 } // SubMesh
+/*----------------------------------------------------------------*/
+
+
+
+// transfer the texture of this mesh to the new mesh;
+// the two meshes should be aligned and the new mesh to have UV-coordinates
+#if USE_MESH_INT == USE_MESH_BVH
+struct FaceBox {
+	Eigen::AlignedBox3f box;
+	Mesh::FIndex idxFace;
+};
+inline Eigen::AlignedBox3f bounding_box(const FaceBox& faceBox) {
+	return faceBox.box;
+}
+#endif
+bool Mesh::TransferTexture(Mesh& mesh, unsigned textureSize)
+{
+	ASSERT(HasTexture() && mesh.HasTexture());
+	if (vertexFaces.size() != vertices.size())
+		ListIncidenteFaces();
+	if (mesh.vertexNormals.size() != mesh.vertices.size())
+		mesh.ComputeNormalVertices();
+	if (mesh.textureDiffuse.empty())
+		mesh.textureDiffuse.create(textureSize, textureSize);
+	#if USE_MESH_INT == USE_MESH_BVH
+	std::vector<FaceBox> boxes;
+	boxes.reserve(faces.size());
+	FOREACH(idxFace, faces)
+		boxes.emplace_back([this](FIndex idxFace) {
+			const Face& face = faces[idxFace];
+			Eigen::AlignedBox3f box;
+			box.extend<Eigen::Vector3f>(vertices[face[0]]);
+			box.extend<Eigen::Vector3f>(vertices[face[1]]);
+			box.extend<Eigen::Vector3f>(vertices[face[2]]);
+			return FaceBox{box, idxFace};
+		} (idxFace));
+	typedef Eigen::KdBVH<Type,3,FaceBox> BVH;
+	BVH tree(boxes.begin(), boxes.end());
+	#endif
+	struct IntersectRayMesh {
+		const Mesh& mesh;
+		const Ray3f& ray;
+		IndexDist pick;
+		IntersectRayMesh(const Mesh& _mesh, const Ray3f& _ray)
+			: mesh(_mesh), ray(_ray) {
+			#if USE_MESH_INT == USE_MESH_BF
+			FOREACH(idxFace, mesh.faces)
+				IntersectsRayFace(idxFace);
+			#endif
+		}
+		inline void IntersectsRayFace(FIndex idxFace) {
+			const Face& face = mesh.faces[idxFace];
+			Type dist;
+			if (ray.Intersects<true>(Triangle3f(mesh.vertices[face[0]], mesh.vertices[face[1]], mesh.vertices[face[2]]), &dist)) {
+				ASSERT(dist >= 0);
+				if (pick.dist > dist) {
+					pick.dist = dist;
+					pick.idx = idxFace;
+				}
+			}
+		}
+		#if USE_MESH_INT == USE_MESH_BVH
+		inline bool intersectVolume(const BVH::Volume &volume) {
+			return ray.Intersects(AABB3f(volume.min(), volume.max()));
+		}
+		inline bool intersectObject(const BVH::Object &object) {
+			IntersectsRayFace(object.idxFace);
+			return false;
+		}
+		#endif
+	};
+	#if USE_MESH_INT == USE_MESH_BF || USE_MESH_INT == USE_MESH_BVH
+	const float diagonal(GetAABB().GetSize().norm());
+	#elif USE_MESH_INT == USE_MESH_OCTREE
+	const Octree octree(vertices, [](Octree::IDX_TYPE size, Octree::Type /*radius*/) {
+		return size > 8;
+	});
+	const float diagonal(octree.GetAabb().GetSize().norm());
+	struct OctreeIntersectRayMesh : IntersectRayMesh {
+		OctreeIntersectRayMesh(const Octree& octree, const Mesh& _mesh, const Ray3f& _ray)
+			: IntersectRayMesh(_mesh, _ray) {
+			octree.Collect(*this, *this);
+		}
+		inline bool Intersects(const Octree::POINT_TYPE& center, Octree::Type radius) const {
+			return ray.Intersects(AABB3f(center, radius));
+		}
+		void operator () (const Octree::IDX_TYPE* idices, Octree::IDX_TYPE size) {
+			// store all contained faces only once
+			std::unordered_set<FIndex> set;
+			FOREACHRAWPTR(pIdx, idices, size) {
+				const VIndex idxVertex((VIndex)*pIdx);
+				const FaceIdxArr& faces = mesh.vertexFaces[idxVertex];
+				set.insert(faces.begin(), faces.end());
+			}
+			// test face intersection and keep the closest
+			for (FIndex idxFace : set)
+				IntersectsRayFace(idxFace);
+		}
+	};
+	#endif
+	#ifdef MESH_USE_OPENMP
+	#pragma omp parallel for schedule(dynamic)
+	for (int_t i=0; i<(int_t)mesh.faces.size(); ++i) {
+		const FIndex idxFace((FIndex)i);
+	#else
+	FOREACH(idxFace, mesh.faces) {
+	#endif
+		struct RasterTraiangle {
+			#if USE_MESH_INT == USE_MESH_OCTREE
+			const Octree& octree;
+			#elif USE_MESH_INT == USE_MESH_BVH
+			BVH& tree;
+			#endif
+			const Mesh& meshRef;
+			Mesh& meshTrg;
+			const Face& face;
+			float diagonal;
+			inline cv::Size Size() const { return meshTrg.textureDiffuse.size(); }
+			inline void operator()(const ImageRef& pt, const Point3f& bary) {
+				ASSERT(meshTrg.textureDiffuse.isInside(pt));
+				const Vertex X(meshTrg.vertices[face[0]]*bary.x + meshTrg.vertices[face[1]]*bary.y + meshTrg.vertices[face[2]]*bary.z);
+				const Normal N(normalized(meshTrg.vertexNormals[face[0]]*bary.x + meshTrg.vertexNormals[face[1]]*bary.y + meshTrg.vertexNormals[face[2]]*bary.z));
+				const Ray3f ray(Vertex(X+N*diagonal), Normal(-N));
+				#if USE_MESH_INT == USE_MESH_BF
+				const IntersectRayMesh intRay(meshRef, ray);
+				#elif USE_MESH_INT == USE_MESH_BVH
+				IntersectRayMesh intRay(meshRef, ray);
+				Eigen::BVIntersect(tree, intRay);
+				#else
+				const OctreeIntersectRayMesh intRay(octree, meshRef, ray);
+				#endif
+				if (intRay.pick.IsValid()) {
+					const FIndex refIdxFace((FIndex)intRay.pick.idx);
+					const Face& refFace = meshRef.faces[refIdxFace];
+					const Vertex refX(ray.GetPoint((Type)intRay.pick.dist));
+					const Vertex baryRef(CorrectBarycentricCoordinates(BarycentricCoordinatesUV(meshRef.vertices[refFace[0]], meshRef.vertices[refFace[1]], meshRef.vertices[refFace[2]], refX)));
+					const TexCoord* tri = meshRef.faceTexcoords.data()+refIdxFace*3;
+					const TexCoord x(tri[0]*baryRef.x + tri[1]*baryRef.y + tri[2]*baryRef.z);
+					const Pixel8U color(meshRef.textureDiffuse.sample(x));
+					meshTrg.textureDiffuse(pt) = color;
+				}
+			}
+		#if USE_MESH_INT == USE_MESH_BF
+		} data{*this, mesh, mesh.faces[idxFace], diagonal};
+		#elif USE_MESH_INT == USE_MESH_BVH
+		} data{tree, *this, mesh, mesh.faces[idxFace], diagonal};
+		#else
+		} data{octree, *this, mesh, mesh.faces[idxFace], diagonal};
+		#endif
+		// render triangle and for each pixel interpolate the color
+		// from the triangle corners using barycentric coordinates
+		const TexCoord* tri = mesh.faceTexcoords.data()+idxFace*3;
+		Image8U::RasterizeTriangleBary(tri[0], tri[1], tri[2], data);
+	}
+	return true;
+} // TransferTexture
 /*----------------------------------------------------------------*/
 
 

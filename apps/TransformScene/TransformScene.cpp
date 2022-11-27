@@ -50,6 +50,7 @@ namespace OPT {
 	String strInputFileName;
 	String strOutputFileName;
 	String strAlignFileName;
+	String strTransferTextureFileName;
 	bool bComputeVolume;
 	float fPlaneThreshold;
 	float fSampleMesh;
@@ -93,7 +94,8 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	config.add_options()
 		("input-file,i", boost::program_options::value<std::string>(&OPT::strInputFileName), "input scene filename")
 		("output-file,o", boost::program_options::value<std::string>(&OPT::strOutputFileName), "output filename for storing the scene")
-		("align-file,o", boost::program_options::value<std::string>(&OPT::strAlignFileName), "input scene filename to which the scene will be cameras aligned")
+		("align-file,a", boost::program_options::value<std::string>(&OPT::strAlignFileName), "input scene filename to which the scene will be cameras aligned")
+		("transfer-texture-file,t", boost::program_options::value<std::string>(&OPT::strTransferTextureFileName), "input mesh filename to which the texture of the scene's mesh will be transfered to (the two meshes should be aligned and the new mesh to have UV-map)")
 		("compute-volume", boost::program_options::value(&OPT::bComputeVolume)->default_value(false), "compute the volume of the given watertight mesh, or else try to estimate the ground plane and assume the mesh is bounded by it")
 		("plane-threshold", boost::program_options::value(&OPT::fPlaneThreshold)->default_value(0.f), "threshold used to estimate the ground plane (<0 - disabled, 0 - auto, >0 - desired threshold)")
 		("sample-mesh", boost::program_options::value(&OPT::fSampleMesh)->default_value(-300000.f), "uniformly samples points on a mesh (0 - disabled, <0 - number of points, >0 - sample density per square unit)")
@@ -136,8 +138,9 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	// validate input
 	Util::ensureValidPath(OPT::strInputFileName);
 	Util::ensureValidPath(OPT::strAlignFileName);
+	Util::ensureValidPath(OPT::strTransferTextureFileName);
 	const String strInputFileNameExt(Util::getFileExt(OPT::strInputFileName).ToLower());
-	const bool bInvalidCommand(OPT::strInputFileName.empty() || (OPT::strAlignFileName.empty() && !OPT::bComputeVolume));
+	const bool bInvalidCommand(OPT::strInputFileName.empty() || (OPT::strAlignFileName.empty() && OPT::strTransferTextureFileName.empty() && !OPT::bComputeVolume));
 	if (OPT::vm.count("help") || bInvalidCommand) {
 		boost::program_options::options_description visible("Available options");
 		visible.add(generic).add(config);
@@ -196,7 +199,7 @@ int main(int argc, LPCTSTR* argv)
 	Scene scene(OPT::nMaxThreads);
 
 	// load given scene
-	if (!scene.Load(MAKE_PATH_SAFE(OPT::strInputFileName), OPT::bComputeVolume))
+	if (!scene.Load(MAKE_PATH_SAFE(OPT::strInputFileName), !OPT::strTransferTextureFileName.empty() || OPT::bComputeVolume))
 		return EXIT_FAILURE;
 
 	if (!OPT::strAlignFileName.empty()) {
@@ -207,6 +210,19 @@ int main(int argc, LPCTSTR* argv)
 		if (!scene.AlignTo(sceneRef))
 			return EXIT_FAILURE;
 		VERBOSE("Scene aligned to the given reference scene (%s)", TD_TIMER_GET_FMT().c_str());
+	}
+
+	if (!OPT::strTransferTextureFileName.empty()) {
+		// transfer the texture of the scene's mesh to the new mesh;
+		// the two meshes should be aligned and the new mesh to have UV-coordinates
+		Mesh newMesh;
+		if (!newMesh.Load(MAKE_PATH_SAFE(OPT::strTransferTextureFileName)))
+			return EXIT_FAILURE;
+		if (!scene.mesh.TransferTexture(newMesh))
+			return EXIT_FAILURE;
+		newMesh.Save(Util::getFileFullName(MAKE_PATH_SAFE(OPT::strOutputFileName)) + _T(".ply"));
+		VERBOSE("Texture transfered (%s)", TD_TIMER_GET_FMT().c_str());
+		return EXIT_SUCCESS;
 	}
 
 	if (OPT::bComputeVolume && !scene.mesh.IsEmpty()) {

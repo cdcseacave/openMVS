@@ -186,6 +186,9 @@ public:
 	VIndex RemoveUnreferencedVertices(bool bUpdateLists=false);
 	void ConvertTexturePerVertex(Mesh&) const;
 
+	void FaceTexcoordsNormalize(TexCoordArr& newFaceTexcoords, bool flipY=true) const;
+	void FaceTexcoordsUnnormalize(TexCoordArr& newFaceTexcoords, bool flipY=true) const;
+
 	inline Normal FaceNormal(const Face& f) const {
 		return ComputeTriangleNormal(vertices[f[0]], vertices[f[1]], vertices[f[2]]);
 	}
@@ -219,6 +222,8 @@ public:
 
 	bool Split(FacesChunkArr&, float maxArea);
 	Mesh SubMesh(const FaceIdxArr& faces) const;
+
+	bool TransferTexture(Mesh& mesh, unsigned textureSize=1024);
 
 	// file IO
 	bool Load(const String& fileName);

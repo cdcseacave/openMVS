@@ -280,7 +280,7 @@ int main(int argc, LPCTSTR* argv)
 	Scene scene(OPT::nMaxThreads);
 	if (OPT::fSampleMesh != 0) {
 		// sample input mesh and export the obtained point-cloud
-		if (!scene.mesh.Load(MAKE_PATH_SAFE(OPT::strInputFileName)))
+		if (!scene.Load(MAKE_PATH_SAFE(OPT::strInputFileName), true) || scene.mesh.IsEmpty())
 			return EXIT_FAILURE;
 		TD_TIMER_START();
 		PointCloud pointcloud;

@@ -434,6 +434,10 @@ void Scene::CompileMesh()
 	ReleaseMesh();
 	if (scene.mesh.faceNormals.empty())
 		scene.mesh.ComputeNormalFaces();
+	// translate, normalize and flip Y axis of the texture coordinates
+	MVS::Mesh::TexCoordArr normFaceTexcoords;
+	if (scene.mesh.HasTexture())
+		scene.mesh.FaceTexcoordsNormalize(normFaceTexcoords, true);
 	listMesh = glGenLists(1);
 	glNewList(listMesh, GL_COMPILE);
 	// compile mesh
@@ -447,8 +451,8 @@ void Scene::CompileMesh()
 		const MVS::Mesh::Normal& n = scene.mesh.faceNormals[i];
 		glNormal3fv(n.ptr());
 		for (int j = 0; j < 3; ++j) {
-			if (!scene.mesh.faceTexcoords.IsEmpty() && window.bRenderTexture) {
-				const MVS::Mesh::TexCoord& t = scene.mesh.faceTexcoords[i * 3 + j];
+			if (!normFaceTexcoords.empty() && window.bRenderTexture) {
+				const MVS::Mesh::TexCoord& t = normFaceTexcoords[i * 3 + j];
 				glTexCoord2fv(t.ptr());
 			}
 			const MVS::Mesh::Vertex& p = scene.mesh.vertices[face[j]];
@@ -496,9 +500,9 @@ void Scene::Draw()
 	if (listMesh) {
 		glEnable(GL_DEPTH_TEST);
 		glEnable(GL_CULL_FACE);
-		if (!scene.mesh.faceTexcoords.IsEmpty() && window.bRenderTexture) {
+		if (!scene.mesh.faceTexcoords.empty() && window.bRenderTexture) {
 			glEnable(GL_TEXTURE_2D);
-			textures.First().Bind();
+			textures.front().Bind();
 			glCallList(listMesh);
 			glDisable(GL_TEXTURE_2D);
 		} else {
@@ -730,7 +734,7 @@ void Scene::CastRay(const Ray3& ray, int action)
 			window.selectionPoints[0] = scene.mesh.vertices[face[0]];
 			window.selectionPoints[1] = scene.mesh.vertices[face[1]];
 			window.selectionPoints[2] = scene.mesh.vertices[face[2]];
-			window.selectionPoints[3] = (ray.m_pOrig + ray.m_vDir*intRay.pick.dist).cast<float>();
+			window.selectionPoints[3] = ray.GetPoint(intRay.pick.dist).cast<float>();
 			window.selectionType = Window::SEL_TRIANGLE;
 			window.selectionTime = now;
 			window.selectionIdx = intRay.pick.idx;

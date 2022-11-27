@@ -1949,17 +1949,15 @@ void MeshTexture::LocalSeamLeveling()
 		Image8U mask(image.size()); {
 			mask.memset(0);
 			struct RasterMesh {
-				const TexCoord* tri;
 				Image8U& image;
-				inline RasterMesh(Image8U& _image) : image(_image) {}
 				inline void operator()(const ImageRef& pt) {
 					ASSERT(image.isInside(pt));
 					image(pt) = interior;
 				}
-			} data(mask);
+			} data{mask};
 			for (const FIndex idxFace: texturePatch.faces) {
-				data.tri = faceTexcoords.data()+idxFace*3;
-				ColorMap::RasterizeTriangle(data.tri[0], data.tri[1], data.tri[2], data);
+				const TexCoord* tri = faceTexcoords.data()+idxFace*3;
+				ColorMap::RasterizeTriangle(tri[0], tri[1], tri[2], data);
 			}
 		}
 		// render the patch border meeting neighbor patches
@@ -2076,18 +2074,12 @@ void MeshTexture::GenerateTexture(bool bGlobalSeamLeveling, bool bLocalSeamLevel
 		TexturePatch& texturePatch = *pTexturePatch;
 	#endif
 		const Image& imageData = images[texturePatch.label];
-		// project vertices and compute bounding-box;
-		// account for diferences in pixel center convention: while OpenMVS uses the same convention as OpenCV and DirectX 9 where the center
-		// of a pixel is defined at integer coordinates, i.e. the center is at (0, 0) and the top left corner is at (-0.5, -0.5),
-		// DirectX 10+, OpenGL, and Vulkan convention is the center of a pixel is defined at half coordinates, i.e. the center is at (0.5, 0.5)
-		// and the top left corner is at (0, 0)
-		const TexCoord halfPixel(0.5f, 0.5f);
 		AABB2f aabb(true);
 		for (const FIndex idxFace: texturePatch.faces) {
 			const Face& face = faces[idxFace];
-			TexCoord* texcoords = faceTexcoords.Begin()+idxFace*3;
+			TexCoord* texcoords = faceTexcoords.data()+idxFace*3;
 			for (int i=0; i<3; ++i) {
-				texcoords[i] = imageData.camera.ProjectPointP(vertices[face[i]]) + halfPixel;
+				texcoords[i] = imageData.camera.ProjectPointP(vertices[face[i]]);
 				ASSERT(imageData.image.isInsideWithBorder(texcoords[i], border));
 				aabb.InsertFull(texcoords[i]);
 			}
@@ -2103,7 +2095,7 @@ void MeshTexture::GenerateTexture(bool bGlobalSeamLeveling, bool bLocalSeamLevel
 		ASSERT(imageData.image.isInside(texturePatch.rect.br()));
 		const TexCoord offset(texturePatch.rect.tl());
 		for (const FIndex idxFace: texturePatch.faces) {
-			TexCoord* texcoords = faceTexcoords.Begin()+idxFace*3;
+			TexCoord* texcoords = faceTexcoords.data()+idxFace*3;
 			for (int v=0; v<3; ++v)
 				texcoords[v] -= offset;
 		}
@@ -2114,7 +2106,7 @@ void MeshTexture::GenerateTexture(bool bGlobalSeamLeveling, bool bLocalSeamLevel
 		const int sizePatch(border*2+1);
 		texturePatch.rect = cv::Rect(0,0, sizePatch,sizePatch);
 		for (const FIndex idxFace: texturePatch.faces) {
-			TexCoord* texcoords = faceTexcoords.Begin()+idxFace*3;
+			TexCoord* texcoords = faceTexcoords.data()+idxFace*3;
 			for (int i=0; i<3; ++i)
 				texcoords[i] = TexCoord(0.5f, 0.5f);
 		}
@@ -2195,23 +2187,22 @@ void MeshTexture::GenerateTexture(bool bGlobalSeamLeveling, bool bLocalSeamLevel
 			default:
 				ABORT("error: unknown RectsBinPack type");
 			}
-			DEBUG_ULTIMATE("\tpacking texture completed: %u patches, %u texture-size (%s)", rects.GetSize(), textureSize, TD_TIMER_GET_FMT().c_str());
+			DEBUG_ULTIMATE("\tpacking texture completed: %u patches, %u texture-size (%s)", rects.size(), textureSize, TD_TIMER_GET_FMT().c_str());
 			if (bPacked)
 				break;
 			textureSize *= 2;
 		}
 
 		// create texture image
-		const float invNorm(1.f/(float)textureSize);
 		textureDiffuse.create(textureSize, textureSize);
 		textureDiffuse.setTo(cv::Scalar(colEmpty.b, colEmpty.g, colEmpty.r));
 		#ifdef TEXOPT_USE_OPENMP
 		#pragma omp parallel for schedule(dynamic)
-		for (int_t i=0; i<(int_t)texturePatches.GetSize(); ++i) {
-		#else
-		FOREACH(i, texturePatches) {
-		#endif
+		for (int_t i=0; i<(int_t)texturePatches.size(); ++i) {
 			const uint32_t idxPatch((uint32_t)i);
+		#else
+		FOREACH(idxPatch, texturePatches) {
+		#endif
 			const TexturePatch& texturePatch = texturePatches[idxPatch];
 			const RectsBinPack::Rect& rect = rects[idxPatch];
 			// copy patch image
@@ -2234,10 +2225,9 @@ void MeshTexture::GenerateTexture(bool bGlobalSeamLeveling, bool bLocalSeamLevel
 				TexCoord* texcoords = faceTexcoords.data()+idxFace*3;
 				for (int v=0; v<3; ++v) {
 					TexCoord& texcoord = texcoords[v];
-					// translate, normalize and flip Y axis
 					texcoord = TexCoord(
-						(texcoord[x]+offset.x)*invNorm,
-						1.f-(texcoord[y]+offset.y)*invNorm
+						texcoord[x]+offset.x,
+						texcoord[y]+offset.y
 					);
 				}
 			}
