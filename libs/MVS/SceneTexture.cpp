@@ -337,7 +337,7 @@ public:
 	void CreateSeamVertices();
 	void GlobalSeamLeveling();
 	void LocalSeamLeveling();
-	void GenerateTexture(bool bGlobalSeamLeveling, bool bLocalSeamLeveling, unsigned nTextureSizeMultiple, unsigned nRectPackingHeuristic, Pixel8U colEmpty);
+	void GenerateTexture(bool bGlobalSeamLeveling, bool bLocalSeamLeveling, unsigned nTextureSizeMultiple, unsigned nRectPackingHeuristic, Pixel8U colEmpty, float fSharpnessWeight);
 
 	template <typename PIXEL>
 	static inline PIXEL RGB2YCBCR(const PIXEL& v) {
@@ -2059,7 +2059,7 @@ void MeshTexture::LocalSeamLeveling()
 	}
 }
 
-void MeshTexture::GenerateTexture(bool bGlobalSeamLeveling, bool bLocalSeamLeveling, unsigned nTextureSizeMultiple, unsigned nRectPackingHeuristic, Pixel8U colEmpty)
+void MeshTexture::GenerateTexture(bool bGlobalSeamLeveling, bool bLocalSeamLeveling, unsigned nTextureSizeMultiple, unsigned nRectPackingHeuristic, Pixel8U colEmpty, float fSharpnessWeight)
 {
 	// project patches in the corresponding view and compute texture-coordinates and bounding-box
 	const int border(2);
@@ -2232,12 +2232,22 @@ void MeshTexture::GenerateTexture(bool bGlobalSeamLeveling, bool bLocalSeamLevel
 				}
 			}
 		}
+		// apply some sharpening
+		if (fSharpnessWeight > 0) {
+			constexpr double sigma = 1.5;
+			Image8U3 blurryTextureDiffuse;
+			cv::GaussianBlur(textureDiffuse, blurryTextureDiffuse, cv::Size(), sigma);
+			cv::addWeighted(textureDiffuse, 1+fSharpnessWeight, blurryTextureDiffuse, -fSharpnessWeight, 0, textureDiffuse);
+		}
 	}
 }
 
 // texture mesh
 //  - minCommonCameras: generate texture patches using virtual faces composed of coplanar triangles sharing at least this number of views (0 - disabled, 3 - good value)
-bool Scene::TextureMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsigned minCommonCameras, float fOutlierThreshold, float fRatioDataSmoothness, bool bGlobalSeamLeveling, bool bLocalSeamLeveling, unsigned nTextureSizeMultiple, unsigned nRectPackingHeuristic, Pixel8U colEmpty, const IIndexArr& views)
+//  - fSharpnessWeight: sharpness weight to be applied on the texture (0 - disabled, 0.5 - good value)
+bool Scene::TextureMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsigned minCommonCameras, float fOutlierThreshold, float fRatioDataSmoothness,
+	bool bGlobalSeamLeveling, bool bLocalSeamLeveling, unsigned nTextureSizeMultiple, unsigned nRectPackingHeuristic, Pixel8U colEmpty, float fSharpnessWeight,
+	const IIndexArr& views)
 {
 	MeshTexture texture(*this, nResolutionLevel, nMinResolution);
 
@@ -2252,7 +2262,7 @@ bool Scene::TextureMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsi
 	// generate the texture image and atlas
 	{
 		TD_TIMER_STARTD();
-		texture.GenerateTexture(bGlobalSeamLeveling, bLocalSeamLeveling, nTextureSizeMultiple, nRectPackingHeuristic, colEmpty);
+		texture.GenerateTexture(bGlobalSeamLeveling, bLocalSeamLeveling, nTextureSizeMultiple, nRectPackingHeuristic, colEmpty, fSharpnessWeight);
 		DEBUG_EXTRA("Generating texture atlas and image completed: %u patches, %u image size (%s)", texture.texturePatches.GetSize(), mesh.textureDiffuse.width(), TD_TIMER_GET_FMT().c_str());
 	}
 

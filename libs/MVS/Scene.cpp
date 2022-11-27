@@ -645,7 +645,7 @@ void Scene::SampleMeshWithVisibility(unsigned maxResolution)
 			const Point3f xz(camera.TransformPointW2I3(Cast<REAL>(mesh.vertices[idxVertex])));
 			if (xz.z <= 0)
 				continue;
-			const Point2f& x(reinterpret_cast<const Point2f&>(xz));
+			const Point2f x(xz.x, xz.y);
 			if (depthMap.isInsideWithBorder<float,1>(x) && xz.z * thFrontDepth < depthMap(ROUND2INT(x))) {
 				#ifdef SCENE_USE_OPENMP
 				#pragma omp critical

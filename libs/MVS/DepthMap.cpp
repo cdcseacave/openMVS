@@ -454,7 +454,7 @@ bool DepthEstimator::FillPixelPatch()
 	#endif
 	if (normSq0 < thMagnitudeSq && (lowResDepthMap.empty() || lowResDepthMap(x0) <= 0))
 		return false;
-	reinterpret_cast<Point3&>(X0) = image0.camera.TransformPointI2C(Cast<REAL>(x0));
+	X0 = image0.camera.TransformPointI2C(Cast<REAL>(x0));
 	return true;
 }
 
@@ -532,7 +532,7 @@ float DepthEstimator::ScorePixelImage(const DepthData::ViewData& image1, Depth d
 	if (!image1.depthMap.empty()) {
 		ASSERT(OPTDENSE::fEstimationGeometricWeight > 0);
 		float consistency(4.f);
-		const Point3f X1(image1.Tl*Point3f(float(X0(0))*depth,float(X0(1))*depth,depth)+image1.Tm); // Kj * Rj * (Ri.t() * X + Ci - Cj)
+		const Point3f X1(image1.Tl*Point3f(float(X0.x)*depth,float(X0.y)*depth,depth)+image1.Tm); // Kj * Rj * (Ri.t() * X + Ci - Cj)
 		if (X1.z > 0) {
 			const Point2f x1(X1);
 			if (image1.depthMap.isInsideWithBorder<float,1>(x1)) {
@@ -563,7 +563,7 @@ float DepthEstimator::ScorePixelImage(const DepthData::ViewData& image1, Depth d
 // compute pixel's NCC score
 float DepthEstimator::ScorePixel(Depth depth, const Normal& normal)
 {
-	ASSERT(depth > 0 && normal.dot(Cast<float>(static_cast<const Point3&>(X0))) <= 0);
+	ASSERT(depth > 0 && normal.dot(Cast<float>(X0)) <= 0);
 	// compute score for this pixel as seen in each view
 	ASSERT(scores.size() == images.size());
 	FOREACH(idxView, images)
@@ -764,7 +764,7 @@ void DepthEstimator::ProcessPixel(IDX idx)
 	float& conf = confMap0(x0);
 	Depth& depth = depthMap0(x0);
 	Normal& normal = normalMap0(x0);
-	const Normal viewDir(Cast<float>(reinterpret_cast<const Point3&>(X0)));
+	const Normal viewDir(Cast<float>(X0));
 	ASSERT(depth > 0 && normal.dot(viewDir) <= 0);
 	#if DENSE_REFINE == DENSE_REFINE_ITER
 	// check if any of the neighbor estimates are better then the current estimate
@@ -948,7 +948,7 @@ Depth DepthEstimator::InterpolatePixel(const ImageRef& nx, Depth depth, const No
 		#else
 		const Point3 planeN(normal);
 		const REAL planeD(planeN.dot(image0.camera.TransformPointI2C(Point3(nx, depth))));
-		depthNew = (Depth)(planeD / planeN.dot(reinterpret_cast<const Point3&>(X0)));
+		depthNew = (Depth)(planeD / planeN.dot(X0));
 		#endif
 	}
 	#endif
@@ -960,10 +960,10 @@ Depth DepthEstimator::InterpolatePixel(const ImageRef& nx, Depth depth, const No
 void DepthEstimator::InitPlane(Depth depth, const Normal& normal)
 {
 	#if 0
-	plane.Set(reinterpret_cast<const Vec3f&>(normal), Vec3f(depth*Cast<float>(X0)));
+	plane.Set(normal, Normal(Cast<float>(X0)*depth));
 	#else
-	plane.m_vN = reinterpret_cast<const Vec3f&>(normal);
-	plane.m_fD = -depth*reinterpret_cast<const Vec3f&>(normal).dot(Cast<float>(X0));
+	plane.m_vN = normal;
+	plane.m_fD = -depth*normal.dot(Cast<float>(X0));
 	#endif
 }
 #endif
@@ -979,7 +979,7 @@ DepthEstimator::PixelEstimate DepthEstimator::PerturbEstimate(const PixelEstimat
 	ptbEst.depth = CLAMP(rnd.randomUniform(minDepth, maxDepth), dMin, dMax);
 
 	// perturb normal
-	const Normal viewDir(Cast<float>(static_cast<const Point3&>(X0)));
+	const Normal viewDir(Cast<float>(X0));
 	std::uniform_real_distribution<float> urd(-1.f, 1.f);
 	const int numMaxTrials = 3;
 	int numTrials = 0;
@@ -1023,7 +1023,6 @@ std::pair<float,float> TriangulatePointsDelaunay(const DepthData::ViewData& imag
 	typedef CGAL::Delaunay_triangulation_2<kernel_t, triangulation_data_structure_t> Delaunay;
 	typedef Delaunay::Face_circulator FaceCirculator;
 	typedef Delaunay::Face_handle FaceHandle;
-	typedef Delaunay::Vertex_circulator VertexCirculator;
 	typedef Delaunay::Vertex_handle VertexHandle;
 	typedef kernel_t::Point_2 CPoint;
 
@@ -1543,7 +1542,7 @@ void MVS::EstimatePointNormals(const ImageArr& images, PointCloud& pointcloud, i
 	// fetch the point set
 	std::vector<PointVectorPair> pointvectors(pointcloud.points.GetSize());
 	FOREACH(i, pointcloud.points)
-		(Point3d&)(pointvectors[i].first) = pointcloud.points[i];
+		reinterpret_cast<Point3d&>(pointvectors[i].first) = pointcloud.points[i];
 	// estimates normals direction;
 	// Note: pca_estimate_normals() requires an iterator over points
 	// as well as property maps to access each point's position and normal.
@@ -1571,7 +1570,7 @@ void MVS::EstimatePointNormals(const ImageArr& images, PointCloud& pointcloud, i
 		PointCloud::Normal& normal = pointcloud.normals[i];
 		const PointCloud::Point& point = pointcloud.points[i];
 		const PointCloud::ViewArr& views= pointcloud.pointViews[i];
-		normal = (const Point3d&)(pointvectors[i].second);
+		normal = reinterpret_cast<const Point3d&>(pointvectors[i].second);
 		// correct normal orientation
 		ASSERT(!views.IsEmpty());
 		const Image& imageData = images[views.First()];

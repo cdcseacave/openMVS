@@ -327,7 +327,7 @@ struct MVS_API DepthEstimator {
 	#if DENSE_SMOOTHNESS != DENSE_SMOOTHNESS_NA
 	CLISTDEF0IDX(NeighborEstimate,IIndex) neighborsClose; // close neighbor pixel depths to be used for smoothing
 	#endif
-	Vec3 X0;	      //
+	Point3 X0;	      //
 	ImageRef x0;	  // constants during one pixel loop
 	float normSq0;	  //
 	#if DENSE_NCC != DENSE_NCC_WEIGHTED
