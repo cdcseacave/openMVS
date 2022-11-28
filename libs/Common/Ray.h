@@ -41,6 +41,7 @@ public:
 
 	inline void Set(const POINT&, const POINT&, const POINT&);
 
+	inline POINT GetCenter() const;
 	inline AABB GetAABB() const;
 	inline PLANE GetPlane() const;
 
@@ -85,10 +86,6 @@ public:
 	bool Intersects(const TRIANGLE&, TYPE *t) const;
 	template <bool bCull>
 	bool Intersects(const TRIANGLE&, TYPE fL, TYPE *t) const;
-	bool Intersects(const POINT&, const POINT&, const POINT&,
-					bool bCull, TYPE *t) const;
-	bool Intersects(const POINT&, const POINT&, const POINT&,
-					bool bCull, TYPE fL, TYPE *t) const;
 	bool Intersects(const PLANE& plane, bool bCull,
 					TYPE *t, POINT* pPtHit) const;
 	inline TYPE IntersectsDist(const PLANE& plane) const;

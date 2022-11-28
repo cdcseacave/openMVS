@@ -22,11 +22,6 @@
 #endif
 #include <pwd.h>
 #endif
-#ifdef _SUPPORT_CPP17
-#if !defined(__GNUC__) || (__GNUC__ > 7)
-#include <filesystem>
-#endif
-#endif // _SUPPORT_CPP17
 
 using namespace SEACAVE;
 

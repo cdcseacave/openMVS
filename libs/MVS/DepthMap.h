@@ -1,7 +1,7 @@
 /*
 * DepthMap.h
 *
-* Copyright (c) 2014-2015 SEACAVE
+* Copyright (c) 2014-2022 SEACAVE
 *
 * Author(s):
 *
@@ -35,7 +35,6 @@
 
 // I N C L U D E S /////////////////////////////////////////////////
 
-#include "Image.h"
 #include "PointCloud.h"
 
 
@@ -74,6 +73,10 @@
 
 
 // S T R U C T S ///////////////////////////////////////////////////
+namespace MVS {
+	typedef TMatrix<uint8_t, 4, 1> ViewsID;
+}
+DEFINE_CVDATATYPE(MVS::ViewsID)
 
 namespace MVS {
 
@@ -90,6 +93,7 @@ enum DepthFlags {
 extern unsigned nResolutionLevel;
 extern unsigned nMaxResolution;
 extern unsigned nMinResolution;
+extern unsigned nSubResolutionLevels;
 extern unsigned nMinViews;
 extern unsigned nMaxViews;
 extern unsigned nMinViewsFuse;
@@ -100,6 +104,8 @@ extern unsigned nNumViews;
 extern unsigned nPointInsideROI;
 extern bool bFilterAdjust;
 extern bool bAddCorners;
+extern bool bInitSparse;
+extern bool bRemoveDmaps;
 extern float fViewMinScore;
 extern float fViewMinScoreRatio;
 extern float fMinArea;
@@ -119,9 +125,6 @@ extern unsigned nOptimize;
 extern unsigned nEstimateColors;
 extern unsigned nEstimateNormals;
 extern float fNCCThresholdKeep;
-#ifdef _USE_CUDA
-extern float fNCCThresholdKeepCUDA;
-#endif // _USE_CUDA
 extern unsigned nEstimationIters;
 extern unsigned nEstimationGeometricIters;
 extern float fEstimationGeometricWeight;
@@ -136,6 +139,8 @@ extern float fRandomSmoothBonus;
 } // namespace OPTDENSE
 /*----------------------------------------------------------------*/
 
+
+typedef TImage<ViewsID> ViewsMap;
 
 template <int nTexels>
 struct WeightedPatchFix {
@@ -187,6 +192,7 @@ struct MVS_API DepthData {
 		}
 
 		static bool NeedScaleImage(float scale) {
+			ASSERT(scale > 0);
 			return ABS(scale-1.f) >= 0.15f;
 		}
 		template <typename IMAGE>
@@ -206,11 +212,13 @@ struct MVS_API DepthData {
 	DepthMap depthMap; // depth-map
 	NormalMap normalMap; // normal-map in camera space
 	ConfidenceMap confMap; // confidence-map
+	ViewsMap viewsMap; // view-IDs map (indexing images vector starting after first view)
 	float dMin, dMax; // global depth range for this image
 	unsigned references; // how many times this depth-map is referenced (on 0 can be safely unloaded)
 	CriticalSection cs; // used to count references
 
 	inline DepthData() : references(0) {}
+	DepthData(const DepthData&);
 
 	inline void ReleaseImages() {
 		for (ViewData& image: images) {
@@ -222,6 +230,7 @@ struct MVS_API DepthData {
 		depthMap.release();
 		normalMap.release();
 		confMap.release();
+		viewsMap.release();
 	}
 
 	inline bool IsValid() const {
@@ -240,7 +249,7 @@ struct MVS_API DepthData {
 	void ApplyIgnoreMask(const BitMatrix&);
 
 	bool Save(const String& fileName) const;
-	bool Load(const String& fileName, unsigned flags=7);
+	bool Load(const String& fileName, unsigned flags=15);
 
 	unsigned GetRef();
 	unsigned IncRef(const String& fileName);
@@ -254,6 +263,7 @@ struct MVS_API DepthData {
 		ar & depthMap;
 		ar & normalMap;
 		ar & confMap;
+		ar & viewsMap;
 		ar & dMin;
 		ar & dMax;
 	}
@@ -317,7 +327,7 @@ struct MVS_API DepthEstimator {
 	#if DENSE_SMOOTHNESS != DENSE_SMOOTHNESS_NA
 	CLISTDEF0IDX(NeighborEstimate,IIndex) neighborsClose; // close neighbor pixel depths to be used for smoothing
 	#endif
-	Vec3 X0;	      //
+	Point3 X0;	      //
 	ImageRef x0;	  // constants during one pixel loop
 	float normSq0;	  //
 	#if DENSE_NCC != DENSE_NCC_WEIGHTED
@@ -340,6 +350,7 @@ struct MVS_API DepthEstimator {
 	#if DENSE_NCC == DENSE_NCC_WEIGHTED
 	WeightMap& weightMap0;
 	#endif
+	DepthMap lowResDepthMap;
 
 	const unsigned nIteration; // current PatchMatch iteration
 	const DepthData::ViewDataArr images; // neighbor images used
@@ -428,6 +439,7 @@ struct MVS_API DepthEstimator {
 	inline Normal RandomNormal(const Point3f& viewRay) {
 		Normal normal;
 		Dir2Normal(Point2f(rnd.randomRange(FD2R(0.f),FD2R(180.f)), rnd.randomRange(FD2R(90.f),FD2R(180.f))), normal);
+		ASSERT(ISEQUAL(norm(normal), 1.f));
 		return normal.dot(viewRay) > 0 ? -normal : normal;
 	}
 
@@ -437,6 +449,7 @@ struct MVS_API DepthEstimator {
 		const float cosAngLen(normal.dot(viewDir));
 		if (cosAngLen >= 0)
 			normal = RMatrixBaseF(normal.cross(viewDir), MINF((ACOS(cosAngLen/norm(viewDir))-FD2R(90.f))*1.01f, -0.001f)) * normal;
+		ASSERT(ISEQUAL(norm(normal), 1.f));
 	}
 
 	static bool ImportIgnoreMask(const Image&, const Image8U::Size&, BitMatrix&, uint16_t nIgnoreMaskLabel);
@@ -459,15 +472,23 @@ struct MVS_API DepthEstimator {
 // Tools
 bool TriangulatePoints2DepthMap(
 	const DepthData::ViewData& image, const PointCloud& pointcloud, const IndexArr& points,
-	DepthMap& depthMap, NormalMap& normalMap, Depth& dMin, Depth& dMax, bool bAddCorners);
+	DepthMap& depthMap, NormalMap& normalMap, Depth& dMin, Depth& dMax, bool bAddCorners, bool bSparseOnly=false);
 bool TriangulatePoints2DepthMap(
 	const DepthData::ViewData& image, const PointCloud& pointcloud, const IndexArr& points,
-	DepthMap& depthMap, Depth& dMin, Depth& dMax, bool bAddCorners);
+	DepthMap& depthMap, Depth& dMin, Depth& dMax, bool bAddCorners, bool bSparseOnly=false);
 
+// Robustly estimate the plane that fits best the given points
 MVS_API unsigned EstimatePlane(const Point3Arr&, Plane&, double& maxThreshold, bool arrInliers[]=NULL, size_t maxIters=0);
 MVS_API unsigned EstimatePlaneLockFirstPoint(const Point3Arr&, Plane&, double& maxThreshold, bool arrInliers[]=NULL, size_t maxIters=0);
 MVS_API unsigned EstimatePlaneTh(const Point3Arr&, Plane&, double maxThreshold, bool arrInliers[]=NULL, size_t maxIters=0);
 MVS_API unsigned EstimatePlaneThLockFirstPoint(const Point3Arr&, Plane&, double maxThreshold, bool arrInliers[]=NULL, size_t maxIters=0);
+MATH_API int OptimizePlane(Planed& plane, const Eigen::Vector3d* points, size_t size, int maxIters, double threshold);
+// same for float points
+MATH_API unsigned EstimatePlane(const Point3fArr&, Planef&, double& maxThreshold, bool arrInliers[]=NULL, size_t maxIters=0);
+MATH_API unsigned EstimatePlaneLockFirstPoint(const Point3fArr&, Planef&, double& maxThreshold, bool arrInliers[]=NULL, size_t maxIters=0);
+MATH_API unsigned EstimatePlaneTh(const Point3fArr&, Planef&, double maxThreshold, bool arrInliers[]=NULL, size_t maxIters=0);
+MATH_API unsigned EstimatePlaneThLockFirstPoint(const Point3fArr&, Planef&, double maxThreshold, bool arrInliers[]=NULL, size_t maxIters=0);
+MATH_API int OptimizePlane(Planef& plane, const Eigen::Vector3f* points, size_t size, int maxIters, float threshold);
 
 MVS_API void EstimatePointColors(const ImageArr& images, PointCloud& pointcloud);
 MVS_API void EstimatePointNormals(const ImageArr& images, PointCloud& pointcloud, int numNeighbors=16/*K-nearest neighbors*/);
@@ -491,12 +512,12 @@ MVS_API bool ExportDepthDataRaw(const String&, const String& imageFileName,
 	const IIndexArr&, const cv::Size& imageSize,
 	const KMatrix&, const RMatrix&, const CMatrix&,
 	Depth dMin, Depth dMax,
-	const DepthMap&, const NormalMap&, const ConfidenceMap&);
+	const DepthMap&, const NormalMap&, const ConfidenceMap&, const ViewsMap&);
 MVS_API bool ImportDepthDataRaw(const String&, String& imageFileName,
 	IIndexArr&, cv::Size& imageSize,
 	KMatrix&, RMatrix&, CMatrix&,
 	Depth& dMin, Depth& dMax,
-	DepthMap&, NormalMap&, ConfidenceMap&, unsigned flags=7);
+	DepthMap&, NormalMap&, ConfidenceMap&, ViewsMap&, unsigned flags=15);
 
 MVS_API void CompareDepthMaps(const DepthMap& depthMap, const DepthMap& depthMapGT, uint32_t idxImage, float threshold=0.01f);
 MVS_API void CompareNormalMaps(const NormalMap& normalMap, const NormalMap& normalMapGT, uint32_t idxImage);

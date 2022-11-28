@@ -49,7 +49,7 @@ typedef uint32_t IIndex;
 typedef cList<IIndex, IIndex, 0, 16, IIndex> IIndexArr;
 
 struct MVS_API ViewInfo {
-	IIndex ID; // image ID
+	IIndex ID; // image local-ID (the index in the scene images list)
 	uint32_t points; // number of 3D points shared with the reference image
 	float scale; // image scale relative to the reference image
 	float angle; // image angle relative to the reference image (radians)
@@ -78,7 +78,7 @@ public:
 	uint32_t platformID; // ID of the associated platform
 	uint32_t cameraID; // ID of the associated camera on the associated platform
 	uint32_t poseID; // ID of the pose of the associated platform
-	uint32_t ID; // global ID of the image
+	uint32_t ID; // global ID of the image (the ID given outside the current scene - ex. the index in the full list of image files)
 	String name; // image file name (relative path)
 	String maskName; // segmentation file name (optional)
 	Camera camera; // view's pose
@@ -135,7 +135,7 @@ public:
 		ar & ID;
 		const String relName(MAKE_PATH_REL(WORKING_FOLDER_FULL, name));
 		ar & relName;
-		const String relMaskName(MAKE_PATH_REL(WORKING_FOLDER_FULL, maskName));
+		const String relMaskName(maskName.empty() ? String() : MAKE_PATH_REL(WORKING_FOLDER_FULL, maskName));
 		ar & relMaskName;
 		ar & width & height;
 		ar & neighbors;
@@ -150,7 +150,7 @@ public:
 		ar & name;
 		name = MAKE_PATH_FULL(WORKING_FOLDER_FULL, name);
 		ar & maskName;
-		maskName = MAKE_PATH_FULL(WORKING_FOLDER_FULL, maskName);
+		maskName = maskName.empty() ? String() : MAKE_PATH_FULL(WORKING_FOLDER_FULL, maskName);
 		ar & width & height;
 		ar & neighbors;
 		ar & avgDepth;

@@ -39,6 +39,15 @@ inline TOBB<TYPE,DIMS>::TOBB(const POINT* pts, size_t n, const TRIANGLE* tris, s
 {
 	Set(pts, n, tris, s);
 } // constructor
+template <typename TYPE, int DIMS>
+template <typename CTYPE>
+inline TOBB<TYPE,DIMS>::TOBB(const TOBB<CTYPE,DIMS>& rhs)
+	:
+	m_rot(rhs.m_rot.template cast<TYPE>()),
+	m_pos(rhs.m_pos.template cast<TYPE>()),
+	m_ext(rhs.m_ext.template cast<TYPE>())
+{
+} // copy constructor
 /*----------------------------------------------------------------*/
 
 
@@ -268,14 +277,16 @@ inline bool TOBB<TYPE,DIMS>::IsValid() const
 
 
 template <typename TYPE, int DIMS>
-inline void TOBB<TYPE,DIMS>::Enlarge(TYPE x)
+inline TOBB<TYPE,DIMS>& TOBB<TYPE,DIMS>::Enlarge(TYPE x)
 {
-	m_ext.array() -= x;
+	m_ext.array() += x;
+	return *this;
 }
 template <typename TYPE, int DIMS>
-inline void TOBB<TYPE,DIMS>::EnlargePercent(TYPE x)
+inline TOBB<TYPE,DIMS>& TOBB<TYPE,DIMS>::EnlargePercent(TYPE x)
 {
 	m_ext *= x;
+	return *this;
 } // Enlarge
 /*----------------------------------------------------------------*/
 

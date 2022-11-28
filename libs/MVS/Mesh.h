@@ -146,8 +146,10 @@ public:
 	void ReleaseExtra();
 	void EmptyExtra();
 	void Swap(Mesh&);
-	inline bool IsEmpty() const { return vertices.IsEmpty(); }
-	inline bool HasTexture() const { ASSERT(faceTexcoords.IsEmpty() == textureDiffuse.empty()); return !faceTexcoords.IsEmpty(); }
+	void Join(const Mesh&);
+	inline bool IsEmpty() const { return vertices.empty(); }
+	bool IsWatertight();
+	inline bool HasTexture() const { ASSERT(faceTexcoords.empty() == textureDiffuse.empty()); return !faceTexcoords.empty(); }
 
 	Box GetAABB() const;
 	Box GetAABB(const Box& bound) const;
@@ -159,6 +161,8 @@ public:
 	void ListBoundaryVertices();
 	void ComputeNormalFaces();
 	void ComputeNormalVertices();
+
+	void SmoothNormalFaces(float fMaxGradient=25.f, float fOriginalWeight=0.5f, unsigned nIterations=3);
 
 	void GetEdgeFaces(VIndex, VIndex, FaceIdxArr&) const;
 	void GetFaceFaces(FIndex, FaceIdxArr&) const;
@@ -176,10 +180,14 @@ public:
 	void Decimate(VertexIdxArr& verticesRemove);
 	void CloseHole(VertexIdxArr& vertsLoop);
 	void CloseHoleQuality(VertexIdxArr& vertsLoop);
+	void RemoveFacesOutside(const OBB3f&);
 	void RemoveFaces(FaceIdxArr& facesRemove, bool bUpdateLists=false);
 	void RemoveVertices(VertexIdxArr& vertexRemove, bool bUpdateLists=false);
 	VIndex RemoveUnreferencedVertices(bool bUpdateLists=false);
 	void ConvertTexturePerVertex(Mesh&) const;
+
+	void FaceTexcoordsNormalize(TexCoordArr& newFaceTexcoords, bool flipY=true) const;
+	void FaceTexcoordsUnnormalize(TexCoordArr& newFaceTexcoords, bool flipY=true) const;
 
 	inline Normal FaceNormal(const Face& f) const {
 		return ComputeTriangleNormal(vertices[f[0]], vertices[f[1]], vertices[f[2]]);
@@ -193,6 +201,8 @@ public:
 			n += normalized(FaceNormal(faces[*pIdxF]));
 		return n;
 	}
+
+	Planef EstimateGroundPlane(const ImageArr& images, float sampleMesh=0, float planeThreshold=0, const String& fileExportPlane="") const;
 
 	Vertex ComputeCentroid(FIndex) const;
 	Type ComputeArea(FIndex) const;
@@ -213,6 +223,8 @@ public:
 	bool Split(FacesChunkArr&, float maxArea);
 	Mesh SubMesh(const FaceIdxArr& faces) const;
 
+	bool TransferTexture(Mesh& mesh, unsigned textureSize=1024);
+
 	// file IO
 	bool Load(const String& fileName);
 	bool Save(const String& fileName, const cList<String>& comments=cList<String>(), bool bBinary=true) const;
@@ -226,6 +238,7 @@ public:
 protected:
 	bool LoadPLY(const String& fileName);
 	bool LoadOBJ(const String& fileName);
+	bool LoadGLTF(const String& fileName, bool bBinary=true);
 
 	bool SavePLY(const String& fileName, const cList<String>& comments=cList<String>(), bool bBinary=true) const;
 	bool SaveOBJ(const String& fileName) const;

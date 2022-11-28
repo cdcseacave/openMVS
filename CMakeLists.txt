@@ -30,8 +30,8 @@ ENDIF()
 PROJECT(OpenMVS)
 
 SET(OpenMVS_MAJOR_VERSION 2)
-SET(OpenMVS_MINOR_VERSION 0)
-SET(OpenMVS_PATCH_VERSION 1)
+SET(OpenMVS_MINOR_VERSION 1)
+SET(OpenMVS_PATCH_VERSION 0)
 SET(OpenMVS_VERSION ${OpenMVS_MAJOR_VERSION}.${OpenMVS_MINOR_VERSION}.${OpenMVS_PATCH_VERSION})
 
 # List configuration options
@@ -47,6 +47,7 @@ SET(OpenMVS_USE_FAST_INVSQRT OFF CACHE BOOL "Use an optimized code to compute th
 SET(OpenMVS_USE_FAST_CBRT ON CACHE BOOL "Use an optimized code to compute the cubic root")
 SET(OpenMVS_USE_SSE ON CACHE BOOL "Enable SSE optimizations")
 SET(OpenMVS_MAX_CUDA_COMPATIBILITY OFF CACHE BOOL "Build for maximum CUDA device compatibility")
+SET(OpenMVS_ENABLE_TESTS ON CACHE BOOL "Enable test code")
 
 # Define helper functions and macros.
 INCLUDE(build/Utils.cmake)
@@ -108,6 +109,13 @@ if(OpenMVS_USE_CUDA)
 			message("Working around windows build failure with visual studio. Visual studio 16.10 introduced a compiler bug with compilng CUDA code with C++14. Set the cuda standard to 17 as a workaround.")
 			set(CMAKE_CUDA_STANDARD 17)
 		endif()
+		EXECUTE_PROCESS(COMMAND "${CMAKE_CUDA_COMPILER}" --list-gpu-arch 
+				OUTPUT_VARIABLE LIST_GPU_ARCH 
+				ERROR_QUIET)
+		if(NOT LIST_GPU_ARCH AND OpenMVS_MAX_CUDA_COMPATIBILITY)
+			message(WARNING "Cannot compile for max CUDA compatibility, nvcc does not support --list-gpu-arch")
+			set(OpenMVS_MAX_CUDA_COMPATIBILITY NO)
+		endif()
 		if(NOT OpenMVS_MAX_CUDA_COMPATIBILITY)
 			if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
 				SET(CMAKE_CUDA_ARCHITECTURES 75)
@@ -117,9 +125,6 @@ if(OpenMVS_USE_CUDA)
 			# https://arnon.dk/matching-sm-architectures-arch-and-gencode-for-various-nvidia-cards/
 
 			# Extract list of arch and gencodes
-			EXECUTE_PROCESS(COMMAND "${CMAKE_CUDA_COMPILER}" --list-gpu-arch 
-				OUTPUT_VARIABLE LIST_GPU_ARCH 
-				ERROR_QUIET)
 			STRING(REPLACE "\r" "" LIST_GPU_ARCH ${LIST_GPU_ARCH})
 			STRING(REPLACE "\n" ";" LIST_GPU_ARCH ${LIST_GPU_ARCH})
 
@@ -172,6 +177,10 @@ if(Boost_FOUND)
 	LIST(APPEND OpenMVS_DEFINITIONS -D_USE_BOOST)
 	ADD_DEFINITIONS(${Boost_DEFINITIONS})
 	LINK_DIRECTORIES(${Boost_LIBRARY_DIRS})
+	if(NOT MSVC AND DEFINED CMAKE_TOOLCHAIN_FILE)
+		# work around this missing library link in vcpkg
+		LIST(APPEND Boost_LIBRARIES zstd)
+	endif()
 	SET(_USE_BOOST TRUE)
 endif()
 
@@ -237,9 +246,17 @@ if(OpenMVS_BUILD_TOOLS)
 endif()
 ADD_SUBDIRECTORY(docs)
 
+if (OpenMVS_ENABLE_TESTS)
+	# enable testing functionality
+	ENABLE_TESTING()
+	# define tests
+	ADD_TEST(NAME UnitTests COMMAND $<TARGET_FILE:Tests> "0")
+	ADD_TEST(NAME PipelineTest COMMAND $<TARGET_FILE:Tests> "1")
+endif()
+
 # Export the package for use from the build-tree
 # (this registers the build-tree with a global CMake-registry)
-export(PACKAGE OpenMVS)
+EXPORT(PACKAGE OpenMVS)
 
 # Install the export set for use with the install-tree
 INSTALL(EXPORT OpenMVSTargets

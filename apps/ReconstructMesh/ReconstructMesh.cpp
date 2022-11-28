@@ -68,6 +68,8 @@ bool bRemoveSpikes;
 unsigned nCloseHoles;
 unsigned nSmoothMesh;
 float fEdgeLength;
+bool bCrop2ROI;
+float fBorderROI;
 float fSplitMaxArea;
 unsigned nArchiveType;
 int nProcessPriority;
@@ -130,6 +132,8 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		("close-holes", boost::program_options::value(&OPT::nCloseHoles)->default_value(30), "try to close small holes in the reconstructed surface (0 - disabled)")
 		("smooth", boost::program_options::value(&OPT::nSmoothMesh)->default_value(2), "number of iterations to smooth the reconstructed surface (0 - disabled)")
 		("edge-length", boost::program_options::value(&OPT::fEdgeLength)->default_value(0.f), "remesh such that the average edge length is this size (0 - disabled)")
+		("roi-border", boost::program_options::value(&OPT::fBorderROI)->default_value(0), "add a border to the region-of-interest when cropping the scene (0 - disabled, >0 - percentage, <0 - absolute)")
+		("crop-to-roi", boost::program_options::value(&OPT::bCrop2ROI)->default_value(true), "crop scene using the region-of-interest")
 		;
 
 	// hidden options, allowed both on command line and
@@ -242,8 +246,7 @@ void Finalize()
 bool Export3DProjections(Scene& scene, const String& inputFileName) {
 	SML smlPointList(_T("ImagePoints"));
 	smlPointList.Load(inputFileName);
-	const LPSMLARR& arrSmlChild = smlPointList.GetArrChildren();
-	ASSERT(arrSmlChild.size() <= 1);
+	ASSERT(smlPointList.GetArrChildren().size() <= 1);
 	IDX idx(0);
 
 	// read image name
@@ -370,6 +373,11 @@ int main(int argc, LPCTSTR* argv)
 			scene.ExportCamerasMLP(baseFileName+_T(".mlp"), fileName);
 		#endif
 	} else {
+		const OBB3f initialOBB(scene.obb);
+		if (OPT::fBorderROI > 0)
+			scene.obb.EnlargePercent(OPT::fBorderROI);
+		else if (OPT::fBorderROI < 0)
+			scene.obb.Enlarge(-OPT::fBorderROI);
 		if (OPT::strMeshFileName.IsEmpty() && scene.mesh.IsEmpty()) {
 			// reset image resolution to the original size and
 			// make sure the image neighbors are initialized before deleting the point-cloud
@@ -427,10 +435,19 @@ int main(int argc, LPCTSTR* argv)
 		}
 
 		// clean the mesh
+		if (OPT::bCrop2ROI && scene.IsBounded()) {
+			TD_TIMER_START();
+			const size_t numVertices = scene.mesh.vertices.size();
+			const size_t numFaces = scene.mesh.faces.size();
+			scene.mesh.RemoveFacesOutside(scene.obb);
+			VERBOSE("Mesh trimmed to ROI: %u vertices and %u faces removed (%s)",
+				numVertices-scene.mesh.vertices.size(), numFaces-scene.mesh.faces.size(), TD_TIMER_GET_FMT().c_str());
+		}
 		const float fDecimate(OPT::nTargetFaceNum ? static_cast<float>(OPT::nTargetFaceNum) / scene.mesh.faces.size() : OPT::fDecimateMesh);
 		scene.mesh.Clean(fDecimate, OPT::fRemoveSpurious, OPT::bRemoveSpikes, OPT::nCloseHoles, OPT::nSmoothMesh, OPT::fEdgeLength, false);
 		scene.mesh.Clean(1.f, 0.f, OPT::bRemoveSpikes, OPT::nCloseHoles, 0u, 0.f, false); // extra cleaning trying to close more holes
 		scene.mesh.Clean(1.f, 0.f, false, 0u, 0u, 0.f, true); // extra cleaning to remove non-manifold problems created by closing holes
+		scene.obb = initialOBB;
 
 		// save the final mesh
 		scene.Save(baseFileName+_T(".mvs"), (ARCHIVE_TYPE)OPT::nArchiveType);

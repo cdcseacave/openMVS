@@ -142,9 +142,14 @@
 #if __cplusplus >= 201703L || __clang_major__ >= 5
 #define _SUPPORT_CPP17
 #endif
+#if __cplusplus >= 202002L || __clang_major__ >= 10
+#define _SUPPORT_CPP20
+#endif
 
 
-#if defined(__arm__) || defined (__arm64__) || defined(__aarch64__) || defined(_M_ARM) || defined(_M_ARMT)
+#if defined(__powerpc__)
+#define _PLATFORM_PPC 1
+#elif defined(__arm__) || defined (__arm64__) || defined(__aarch64__) || defined(_M_ARM) || defined(_M_ARMT)
 #define _PLATFORM_ARM 1
 #else
 #define _PLATFORM_X86 1
@@ -166,7 +171,7 @@
 #	define RESTRICT  __restrict //applied to a function parameter
 #	define MEMALLOC __declspec(noalias) __declspec(restrict)
 #	define DEPRECATED __declspec(deprecated)
-#	define NOWARNUNUSED
+#	define MAYBEUNUSED
 #	define HOT
 #	define COLD
 #	define THREADLOCAL __declspec(thread)
@@ -179,7 +184,7 @@
 #	define RESTRICT  __restrict__
 #	define MEMALLOC __attribute__ ((__malloc__))
 #	define DEPRECATED __attribute__ ((__deprecated__))
-#	define NOWARNUNUSED __attribute__ ((unused))
+#	define MAYBEUNUSED __attribute__ ((unused))
 #	define HOT __attribute__((hot)) __attribute__((optimize("-O3"))) __attribute__((optimize("-ffast-math"))) //optimize for speed, even in debug
 #	define COLD __attribute__((cold)) //optimize for size
 #	define THREADLOCAL __thread
@@ -192,7 +197,7 @@
 #	define RESTRICT
 #	define MEMALLOC
 #	define DEPRECATED
-#	define NOWARNUNUSED
+#	define MAYBEUNUSED
 #	define HOT
 #	define COLD
 #	define THREADLOCAL __thread
@@ -201,6 +206,10 @@
 
 #ifndef _SUPPORT_CPP11
 #	define constexpr inline
+#endif
+#ifdef _SUPPORT_CPP17
+#	undef MAYBEUNUSED
+#	define MAYBEUNUSED [[maybe_unused]]
 #endif
 
 #define SAFE_DELETE(p)		{ if (p!=NULL) { delete (p);     (p)=NULL; } }
@@ -258,13 +267,13 @@ namespace SEACAVE_ASSERT
 }
 
 #define STATIC_ASSERT(expression) \
-	NOWARNUNUSED typedef char CTA##__LINE__[::SEACAVE_ASSERT::compile_time_assert<(bool)(expression)>::value]
+	MAYBEUNUSED typedef char CTA##__LINE__[::SEACAVE_ASSERT::compile_time_assert<(bool)(expression)>::value]
 
 #define ASSERT_ARE_SAME_TYPE(type1, type2) \
-	NOWARNUNUSED typedef char AAST##__LINE__[::SEACAVE_ASSERT::assert_are_same_type<type1,type2>::value]
+	MAYBEUNUSED typedef char AAST##__LINE__[::SEACAVE_ASSERT::assert_are_same_type<type1,type2>::value]
 
 #define ASSERT_ARE_NOT_SAME_TYPE(type1, type2) \
-	NOWARNUNUSED typedef char AANST##__LINE__[::SEACAVE_ASSERT::assert_are_not_same_type<type1,type2>::value]
+	MAYBEUNUSED typedef char AANST##__LINE__[::SEACAVE_ASSERT::assert_are_not_same_type<type1,type2>::value]
 /*----------------------------------------------------------------*/
 
 #endif // __SEACAVE_CONFIG_H__

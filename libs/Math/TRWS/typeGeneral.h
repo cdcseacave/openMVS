@@ -480,20 +480,17 @@ inline TypeGeneral::REAL TypeGeneral::Edge::UpdateMessage(GlobalSize Kglobal, Lo
 	{
 		assert(Ksource.m_K == Kdest.m_K);
 
-		int k, kMin;
+		int k;
 
 		m_message->m_data[0] = gamma*source->m_data[0] - m_message->m_data[0];
-		kMin = 0;
 		vMin = m_message->m_data[0];
 
 		for (k=1; k<Ksource.m_K; k++)
 		{
 			m_message->m_data[k] = gamma*source->m_data[k] - m_message->m_data[k];
-			kMin = 0;
 			vMin = buf->m_data[0];
 			if (vMin > m_message->m_data[k])
 			{
-				kMin = k;
 				vMin = m_message->m_data[k];
 			}
 		}

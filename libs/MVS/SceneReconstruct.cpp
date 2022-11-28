@@ -1100,10 +1100,11 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 		// create graph
 		MaxFlow<cell_size_t,edge_cap_t> graph(delaunay.number_of_cells());
 		// set weights
+		constexpr edge_cap_t maxCap(FLT_MAX*0.0001f);
 		for (delaunay_t::All_cells_iterator ci=delaunay.all_cells_begin(), ce=delaunay.all_cells_end(); ci!=ce; ++ci) {
 			const cell_size_t ciID(ci->info());
 			const cell_info_t& ciInfo(infoCells[ciID]);
-			graph.AddNode(ciID, ciInfo.s, ciInfo.t);
+			graph.AddNode(ciID, ciInfo.s, MINF(ciInfo.t, maxCap));
 			for (int i=0; i<4; ++i) {
 				const cell_handle_t cj(ci->neighbor(i));
 				const cell_size_t cjID(cj->info());

@@ -296,6 +296,9 @@ public:
 	/** @brief Initialization with the rotation from roll/pitch/yaw (in rad) */
 	inline TRMatrixBase(TYPE roll, TYPE pitch, TYPE yaw);
 
+	/** @brief Initialization with the rotation from direction dir0 to direction dir1 */
+	inline TRMatrixBase(const Vec& dir0, const Vec& dir1);
+
 	template <typename T> inline TRMatrixBase& operator = (const cv::Matx<T,3,3>& rhs) { BaseBase::operator = (rhs); return *this; }
 	inline TRMatrixBase& operator = (const cv::Mat& rhs) { BaseBase::operator = (rhs); return *this; }
 	#ifdef _USE_EIGEN
@@ -458,6 +461,12 @@ public:
 
 		@author jw */
 	void SetFromHV(const Vec& xh, const Vec& vy);
+
+	/** @brief Create rotation matrix that rotates from dir0 to dir1
+		@param dir0 represents the first (reference) direction vector
+		@param dir1 represents the second (target) direction vector
+		@author cDc */
+	TRMatrixBase& SetFromDir2Dir(const Vec& dir0, const Vec& dir1);
 
 	/** @brief Calculates quaternion representation for this rotation matrix
 		@attention Scalar part of quaternion will always be non-negative

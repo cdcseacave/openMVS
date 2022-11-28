@@ -41,10 +41,10 @@ template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE>
 inline void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE>::CELL_TYPE::Swap(CELL_TYPE& rhs)
 {
 	std::swap(m_child, rhs.m_child);
-	uint8_t tmpData[dataSize];
-	memcpy(tmpData, m_data, dataSize);
-	memcpy(m_data, rhs.m_data, dataSize);
-	memcpy(rhs.m_data, tmpData, dataSize);
+	if (IsLeaf())
+		std::swap(m_leaf, rhs.m_leaf);
+	else
+		std::swap(m_node, rhs.m_node);
 } // Swap
 /*----------------------------------------------------------------*/
 
@@ -167,6 +167,7 @@ void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE>::_Insert(CELL_TYPE& cell, const P
 	// if this child cell needs to be divided further
 	if (bForceSplit || insertData.split(size, radius)) {
 		// init node and proceed recursively
+		ASSERT(cell.m_child == NULL);
 		cell.m_child = new CELL_TYPE[CELL_TYPE::numChildren];
 		cell.Node().center = center;
 		struct ChildData {
@@ -223,15 +224,14 @@ inline void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE>::Insert(const ITEMARR_TYPE
 	// create root as node, even if we do not need to divide
 	m_indices.Reserve(items.size());
 	// divide cell
-	m_root.m_child = new CELL_TYPE[CELL_TYPE::numChildren];
-	m_root.Node().center = aabb.GetCenter();
+	const POINT_TYPE center = aabb.GetCenter();
 	m_radius = aabb.GetSize().maxCoeff()/Type(2);
 	// single connected list of next item indices
 	_InsertData<Functor> insertData = {items.size(), split};
 	std::iota(insertData.successors.begin(), insertData.successors.end(), IDX_TYPE(1));
 	insertData.successors.back() = _InsertData<Functor>::NO_INDEX;
 	// setup each cell
-	_Insert<Functor,true>(m_root, m_root.GetCenter(), m_radius, 0, items.size(), insertData);
+	_Insert<Functor,true>(m_root, center, m_radius, 0, items.size(), insertData);
 }
 template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE>
 template <typename Functor>
@@ -365,7 +365,8 @@ inline void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE>::Collect(INSERTER& inserte
 template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE>
 inline void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE>::Collect(IDXARR_TYPE& indices, const AABB_TYPE& aabb) const
 {
-	_Collect(m_root, aabb, IndexInserter(indices));
+	IndexInserter inserter(indices);
+	_Collect(m_root, aabb, inserter);
 }
 
 template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE>
@@ -377,7 +378,8 @@ inline void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE>::Collect(INSERTER& inserte
 template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE>
 inline void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE>::Collect(IDXARR_TYPE& indices, const POINT_TYPE& center, TYPE radius) const
 {
-	_Collect(m_root, AABB_TYPE(center, radius), IndexInserter(indices));
+	IndexInserter inserter(indices);
+	_Collect(m_root, AABB_TYPE(center, radius), inserter);
 }
 
 template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE>
@@ -390,7 +392,8 @@ template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE>
 template <typename COLLECTOR>
 inline void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE>::Collect(IDXARR_TYPE& indices, const COLLECTOR& collector) const
 {
-	_Collect(m_root, m_radius, collector, IndexInserter(indices));
+	IndexInserter inserter(indices);
+	_Collect(m_root, m_radius, collector, inserter);
 }
 
 template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE>
@@ -711,7 +714,8 @@ void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE>::SplitVolume(float maxArea, AREAE
 {
 	CELL_TYPE parent;
 	parent.m_child = new CELL_TYPE[1];
-	parent.m_child[0] = m_root;
+	parent.m_child[0].m_child = m_root.m_child;
+	parent.m_child[0].Node() = m_root.Node();
 	parent.Node().center = m_root.Node().center + POINT_TYPE::Constant(m_radius);
 	_SplitVolume(parent, m_radius*TYPE(2), 0, maxArea, areaEstimator, chunkInserter);
 	parent.m_child[0].m_child = NULL;
@@ -719,7 +723,6 @@ void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE>::SplitVolume(float maxArea, AREAE
 /*----------------------------------------------------------------*/
 
 
-#ifndef _RELEASE
 template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE>
 void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE>::_GetDebugInfo(const CELL_TYPE& cell, unsigned nDepth, DEBUGINFO& info) const
 {
@@ -774,7 +777,7 @@ inline bool OctreeTest(unsigned iters, unsigned maxItems=1000, bool bRandom=true
 	STATIC_ASSERT(DIMS > 0 && DIMS <= 3);
 	srand(bRandom ? (unsigned)time(NULL) : 0);
 	typedef Eigen::Matrix<TYPE,DIMS,1> POINT_TYPE;
-	typedef SEACAVE::cList<POINT_TYPE,const POINT_TYPE&,0> TestArr;
+	typedef CLISTDEF0(POINT_TYPE) TestArr;
 	typedef TOctree<TestArr,TYPE,DIMS,uint32_t> TestTree;
 	const TYPE ptMinData[] = {0,0,0}, ptMaxData[] = {640,480,240};
 	typename TestTree::AABB_TYPE aabb;
@@ -793,12 +796,11 @@ inline bool OctreeTest(unsigned iters, unsigned maxItems=1000, bool bRandom=true
 		TestArr items(elems);
 		FOREACH(i, items)
 			for (int j=0; j<DIMS; ++j)
-				items[i](j) = RAND()%ROUND2INT(ptMaxData[j]);
+				items[i](j) = static_cast<TYPE>(RAND()%ROUND2INT(ptMaxData[j]));
 		// random query point
 		POINT_TYPE pt;
-		pt(0) = RAND()%ROUND2INT(ptMaxData[0]);
-		if (DIMS > 1) pt(1) = RAND()%ROUND2INT(ptMaxData[1]);
-		if (DIMS > 2) pt(2) = RAND()%ROUND2INT(ptMaxData[2]);
+		for (int j=0; j<DIMS; ++j)
+			pt(j) = static_cast<TYPE>(RAND()%ROUND2INT(ptMaxData[j]));
 		const TYPE radius(TYPE(3+RAND()%30));
 		// build octree and find interest items
 		TestTree tree(items, aabb, [](typename TestTree::IDX_TYPE size, typename TestTree::Type radius) {
@@ -832,8 +834,8 @@ inline bool OctreeTest(unsigned iters, unsigned maxItems=1000, bool bRandom=true
 			}
 		}
 		nTotalMatches += nMatches;
-		nTotalMissed += trueIndices.size()-nMatches;
-		nTotalExtra += indices.size()-nMatches;
+		nTotalMissed += (unsigned)trueIndices.size()-nMatches;
+		nTotalExtra += (unsigned)indices.size()-nMatches;
 		#ifndef _RELEASE
 		// print stats
 		typename TestTree::DEBUGINFO_TYPE info;
@@ -847,4 +849,3 @@ inline bool OctreeTest(unsigned iters, unsigned maxItems=1000, bool bRandom=true
 	#endif
 	return (nTotalMissed == 0 && nTotalExtra == 0);
 }
-#endif

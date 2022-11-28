@@ -596,7 +596,7 @@ void SemiGlobalMatcher::Match(const Scene& scene, IIndex idxImage, IIndex numNei
 				const REAL _scale(scale*0.5);
 				Matrix3x3 _H(H); Matrix4x4 _Q(Q);
 				Image::ScaleStereoRectification(_H, _Q, _scale);
-				ExportDisparityDataRawFull(String::FormatString("%s_%d.dimap", pairName.c_str(), log2i(ROUND2INT(REAL(1)/_scale))), leftDisparityMap, costMap, Image8U::computeResize(leftImage.GetSize(), _scale), H, _Q, 1);
+				ExportDisparityDataRawFull(String::FormatString("%s_%d.dimap", pairName.c_str(), LOG2I(ROUND2INT<unsigned>(REAL(1)/_scale))), leftDisparityMap, costMap, Image8U::computeResize(leftImage.GetSize(), _scale), H, _Q, 1);
 			}
 			#endif
 			// initialize
@@ -1389,7 +1389,7 @@ SemiGlobalMatcher::Index SemiGlobalMatcher::Disparity2RangeMap(const DisparityMa
 					range.minDisp = -range.maxDisp;
 					numDisp = range.numDisp();
 				} else {
-					const Disparity disp(disps.GetMedian()*2);
+					const Disparity disp(disps.GetMedian<Disparity>()*2);
 					const auto minmax(disps.GetMinMax());
 					numDisp = (minmax.second-minmax.first)*2;
 					if (numDisp < minNumDisp) {

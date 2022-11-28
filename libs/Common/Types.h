@@ -39,6 +39,11 @@
 #else
 #include <stdint.h>
 #endif
+#ifdef _SUPPORT_CPP17
+#if !defined(__GNUC__) || (__GNUC__ > 7)
+#include <filesystem>
+#endif
+#endif
 #include <new>
 #include <string>
 #include <codecvt>
@@ -623,11 +628,11 @@ constexpr T& NEGATE(T& a) {
 }
 template<typename T>
 constexpr T SQUARE(const T& a) {
-	return (a * a);
+	return a * a;
 }
 template<typename T>
 constexpr T CUBE(const T& a) {
-	return (a * a * a);
+	return a * a * a;
 }
 template<typename T>
 inline T SQRT(const T& a) {
@@ -646,7 +651,7 @@ inline T LOG10(const T& a) {
 	return T(log10(a));
 }
 template<typename T>
-constexpr T powi(T base, int exp) {
+constexpr T powi(T base, unsigned exp) {
 	T result(1);
 	while (exp) {
 		if (exp & 1)
@@ -656,15 +661,15 @@ constexpr T powi(T base, int exp) {
 	}
 	return result;
 }
-constexpr int log2i(int val) {
+constexpr int log2i(unsigned val) {
 	int ret = -1;
-	while (val > 0) {
+	while (val) {
 		val >>= 1;
-		ret++;
+		++ret;
 	}
 	return ret;
 }
-template <int N> constexpr inline int log2i() { return 1+log2i<(N>>1)>(); }
+template <unsigned N> constexpr inline int log2i() { return 1+log2i<(N>>1)>(); }
 template <>   constexpr inline int log2i<0>() { return -1; }
 template <>   constexpr inline int log2i<1>() { return 0; }
 template <>   constexpr inline int log2i<2>() { return 1; }
@@ -908,46 +913,52 @@ FORCEINLINE int CRound2Int(const double& x) {
 	return c.i;
 }
 #endif
-FORCEINLINE int Floor2Int(float x) {
+template <typename INTTYPE=int>
+FORCEINLINE INTTYPE Floor2Int(float x) {
 	#ifdef _FAST_FLOAT2INT
 	return CRound2Int(double(x)-_float2int_doublemagicroundeps);
 	#else
-	return int(floor(x));
+	return static_cast<INTTYPE>(floor(x));
 	#endif
 }
-FORCEINLINE int Floor2Int(double x) {
+template <typename INTTYPE=int>
+FORCEINLINE INTTYPE Floor2Int(double x) {
 	#ifdef _FAST_FLOAT2INT
 	return CRound2Int(x-_float2int_doublemagicroundeps);
 	#else
-	return int(floor(x));
+	return static_cast<INTTYPE>(floor(x));
 	#endif
 }
-FORCEINLINE int Ceil2Int(float x) {
+template <typename INTTYPE=int>
+FORCEINLINE INTTYPE Ceil2Int(float x) {
 	#ifdef _FAST_FLOAT2INT
 	return CRound2Int(double(x)+_float2int_doublemagicroundeps);
 	#else
-	return int(ceil(x));
+	return static_cast<INTTYPE>(ceil(x));
 	#endif
 }
-FORCEINLINE int Ceil2Int(double x) {
+template <typename INTTYPE=int>
+FORCEINLINE INTTYPE Ceil2Int(double x) {
 	#ifdef _FAST_FLOAT2INT
 	return CRound2Int(x+_float2int_doublemagicroundeps);
 	#else
-	return int(ceil(x));
+	return static_cast<INTTYPE>(ceil(x));
 	#endif
 }
-FORCEINLINE int Round2Int(float x) {
+template <typename INTTYPE=int>
+FORCEINLINE INTTYPE Round2Int(float x) {
 	#ifdef _FAST_FLOAT2INT
 	return CRound2Int(double(x)+_float2int_doublemagicdelta);
 	#else
-	return int(floor(x+.5f));
+	return static_cast<INTTYPE>(floor(x+.5f));
 	#endif
 }
-FORCEINLINE int Round2Int(double x) {
+template <typename INTTYPE=int>
+FORCEINLINE INTTYPE Round2Int(double x) {
 	#ifdef _FAST_FLOAT2INT
 	return CRound2Int(x+_float2int_doublemagicdelta);
 	#else
-	return int(floor(x+.5));
+	return static_cast<INTTYPE>(floor(x+.5));
 	#endif
 }
 /*----------------------------------------------------------------*/
@@ -1179,12 +1190,14 @@ template<typename _Tp>
 inline bool   ISFINITE(const _Tp* x, size_t n)	{ for (size_t i=0; i<n; ++i) if (ISINFORNAN(x[i])) return false; return true; }
 
 template<typename _Tp>
-inline bool   ISINSIDE(_Tp v,_Tp l0,_Tp l1)	{ return (l0 <= v && v < l1); }
+inline bool   ISINSIDE(_Tp v,_Tp l0,_Tp l1)	{ ASSERT(l0<l1); return l0 <= v && v < l1; }
+template<typename _Tp>
+inline bool   ISINSIDES(_Tp v,_Tp l0,_Tp l1)	{ return l0 < l1 ? ISINSIDE(v, l0, l1) : ISINSIDE(v, l1, l0); }
 
 template<typename _Tp>
-inline _Tp    CLAMP(_Tp v, _Tp c0, _Tp c1)	{ ASSERT(c0<=c1); return MINF(MAXF(v, c0), c1); }
+inline _Tp    CLAMP(_Tp v, _Tp l0, _Tp l1)	{ ASSERT(l0<=l1); return MINF(MAXF(v, l0), l1); }
 template<typename _Tp>
-inline _Tp    CLAMPS(_Tp v, _Tp c0, _Tp c1)	{ if (c0 <= c1) return CLAMP(v, c0, c1); return CLAMP(v, c1, c0); }
+inline _Tp    CLAMPS(_Tp v, _Tp l0, _Tp l1)	{ return l0 <= l1 ? CLAMP(v, l0, l1) : CLAMP(v, l1, l0); }
 
 template<typename _Tp>
 inline _Tp    SIGN(_Tp x)					{ if (x > _Tp(0)) return _Tp(1); if (x < _Tp(0)) return _Tp(-1); return _Tp(0); }
@@ -1193,18 +1206,18 @@ template<typename _Tp>
 inline _Tp    ABS(_Tp    x)					{ return std::abs(x); }
 
 template<typename _Tp>
-inline _Tp    ZEROTOLERANCE()				{ return _Tp(0); }
+constexpr _Tp    ZEROTOLERANCE()			{ return _Tp(0); }
 template<>
-inline float  ZEROTOLERANCE()				{ return FZERO_TOLERANCE; }
+constexpr float  ZEROTOLERANCE()			{ return FZERO_TOLERANCE; }
 template<>
-inline double ZEROTOLERANCE()				{ return ZERO_TOLERANCE; }
+constexpr double ZEROTOLERANCE()			{ return ZERO_TOLERANCE; }
 
 template<typename _Tp>
-inline _Tp    EPSILONTOLERANCE()			{ return std::numeric_limits<_Tp>::epsilon(); }
+constexpr _Tp    EPSILONTOLERANCE()			{ return std::numeric_limits<_Tp>::epsilon(); }
 template<>
-inline float  EPSILONTOLERANCE()			{ return 0.00001f; }
+constexpr float  EPSILONTOLERANCE()			{ return 0.00001f; }
 template<>
-inline double EPSILONTOLERANCE()			{ return 1e-10; }
+constexpr double EPSILONTOLERANCE()			{ return 1e-10; }
 
 inline bool   ISZERO(float  x)				{ return ABS(x) < FZERO_TOLERANCE; }
 inline bool   ISZERO(double x)				{ return ABS(x) < ZERO_TOLERANCE; }
@@ -1384,8 +1397,8 @@ public:
 	inline TYPE* ptr() { return &x; }
 
 	// 1D element access
-	inline const TYPE& operator [](size_t i) const { ASSERT(i>=0 && i<3); return ptr()[i]; }
-	inline TYPE& operator [](size_t i) { ASSERT(i>=0 && i<3); return ptr()[i]; }
+	inline const TYPE& operator [](BYTE i) const { ASSERT(i<3); return ptr()[i]; }
+	inline TYPE& operator [](BYTE i) { ASSERT(i<3); return ptr()[i]; }
 
 	// Access point as vector equivalent
 	inline operator const Vec& () const { return *((const Vec*)this); }
@@ -1602,16 +1615,17 @@ public:
 	inline int area() const { ASSERT(dims == 2); return cols*rows; }
 
 	/// Is this coordinate inside the 2D matrix?
-	inline bool isInside(const Size& pt) const {
-		return pt.width>=0 && pt.height>=0 && pt.width<Base::size().width && pt.height<Base::size().height;
+	template <typename T>
+	static inline typename std::enable_if<std::is_integral<T>::value,bool>::type isInside(const cv::Point_<T>& pt, const cv::Size& size) {
+		return pt.x>=T(0) && pt.y>=T(0) && pt.x<T(size.width) && pt.y<T(size.height);
 	}
 	template <typename T>
-	inline typename std::enable_if<std::is_integral<T>::value,bool>::type isInside(const cv::Point_<T>& pt) const {
-		return pt.x>=0 && pt.y>=0 && pt.x<Base::size().width && pt.y<Base::size().height;
+	static inline typename std::enable_if<std::is_floating_point<T>::value,bool>::type isInside(const cv::Point_<T>& pt, const cv::Size& size) {
+		return pt.x>=T(0) && pt.y>=T(0) && pt.x<=T(size.width) && pt.y<=T(size.height);
 	}
 	template <typename T>
-	inline typename std::enable_if<std::is_floating_point<T>::value,bool>::type isInside(const cv::Point_<T>& pt) const {
-		return pt.x>=T(0) && pt.y>=T(0) && pt.x<=T(Base::size().width) && pt.y<=T(Base::size().height);
+	inline bool isInside(const cv::Point_<T>& pt) const {
+		return isInside<T>(pt, Base::size());
 	}
 
 	/// Is this coordinate inside the 2D matrix, and not too close to the edges?
@@ -1721,8 +1735,8 @@ public:
 	}
 
 	/// pointer to the beginning of the matrix data
-	inline const TYPE* getData() const { ASSERT(cv::Mat::isContinuous()); return (const TYPE*)data; }
-	inline TYPE* getData() { ASSERT(cv::Mat::isContinuous()); return (TYPE*)data; }
+	inline const TYPE* getData() const { ASSERT(cv::Mat::empty() || cv::Mat::isContinuous()); return (const TYPE*)data; }
+	inline TYPE* getData() { ASSERT(cv::Mat::empty() || cv::Mat::isContinuous()); return (TYPE*)data; }
 
 	#ifdef _USE_EIGEN
 	// Access point as Eigen::Map equivalent
@@ -1746,8 +1760,8 @@ typedef TDMatrix<int32_t> DMatrix32S;
 typedef TDMatrix<uint32_t> DMatrix32U;
 typedef TDMatrix<float> DMatrix32F;
 typedef TDMatrix<double> DMatrix64F;
-typedef SEACAVE::cList<DMatrix, const DMatrix&, 2> DMatrixArr;
-typedef SEACAVE::cList<cv::Mat, const cv::Mat&, 2> MatArr;
+typedef CLISTDEF2(DMatrix) DMatrixArr;
+typedef CLISTDEF2(cv::Mat) MatArr;
 /*----------------------------------------------------------------*/
 
 
@@ -1799,7 +1813,7 @@ typedef TDVector<int32_t> DVector32S;
 typedef TDVector<uint32_t> DVector32U;
 typedef TDVector<float> DVector32F;
 typedef TDVector<double> DVector64F;
-typedef SEACAVE::cList<DVector, const DVector&, 2> DVectorArr;
+typedef CLISTDEF2(DVector) DVectorArr;
 /*----------------------------------------------------------------*/
 
 
@@ -2462,7 +2476,7 @@ struct TIndexScore {
 };
 /*----------------------------------------------------------------*/
 typedef TIndexScore<uint32_t, float> IndexScore;
-typedef SEACAVE::cList<IndexScore, const IndexScore&, 0> IndexScoreArr;
+typedef CLISTDEF0(IndexScore) IndexScoreArr;
 /*----------------------------------------------------------------*/
 
 
@@ -2514,7 +2528,7 @@ struct PairIdx {
 	inline bool operator==(const PairIdx& r) const { return (idx == r.idx); }
 };
 /*----------------------------------------------------------------*/
-typedef SEACAVE::cList<PairIdx, const PairIdx&, 0> PairIdxArr;
+typedef CLISTDEF0(PairIdx) PairIdxArr;
 inline PairIdx MakePairIdx(uint32_t idxImageA, uint32_t idxImageB) {
 	return (idxImageA<idxImageB ? PairIdx(idxImageA, idxImageB) : PairIdx(idxImageB, idxImageA));
 }
@@ -2787,6 +2801,7 @@ protected:
 #endif // _USE_EIGEN
 
 #include "Types.inl"
+#include "Util.inl"
 #include "Rotation.h"
 #include "Sphere.h"
 #include "AABB.h"
@@ -2794,7 +2809,6 @@ protected:
 #include "Plane.h"
 #include "Ray.h"
 #include "Octree.h"
-#include "Util.inl"
 #include "UtilCUDA.h"
 
 #endif // __SEACAVE_TYPES_H__

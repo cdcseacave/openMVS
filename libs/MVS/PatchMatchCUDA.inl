@@ -86,6 +86,8 @@ public:
 		float fDepthMax = 100.f;
 		int nInitTopK = 3;
 		bool bGeomConsistency = false;
+		bool bLowResProcessed = false;
+		float fThresholdKeepCost = 0;
 	};
 
 	struct Camera {
@@ -100,7 +102,7 @@ public:
 	PatchMatchCUDA(int device=0);
 	~PatchMatchCUDA();
 
-	void Init(bool geom_consistency);
+	void Init(bool bGeomConsistency);
 	void Release();
 
 	void EstimateDepthMap(DepthData&);
@@ -112,7 +114,7 @@ private:
 	void ReleaseCUDA();
 	void AllocatePatchMatchCUDA(const cv::Mat1f& image);
 	void AllocateImageCUDA(size_t i, const cv::Mat1f& image, bool bInitImage, bool bInitDepthMap);
-	void RunCUDA();
+	void RunCUDA(float* ptrCostMap=NULL, uint32_t* ptrViewsMap=NULL);
 
 public:
 	Params params;
@@ -122,7 +124,6 @@ public:
 	std::vector<cudaTextureObject_t> textureImages;
 	std::vector<cudaTextureObject_t> textureDepths;
 	Point4* depthNormalEstimates;
-	float* depthNormalCosts;
 
 	Camera *cudaCameras;
 	std::vector<cudaArray_t> cudaImageArrays;
@@ -130,9 +131,10 @@ public:
 	cudaTextureObject_t* cudaTextureImages;
 	cudaTextureObject_t* cudaTextureDepths;
 	Point4* cudaDepthNormalEstimates;
+	float* cudaLowDepths;
 	float* cudaDepthNormalCosts;
 	curandState* cudaRandStates;
-	unsigned* cudaSelectedViews;
+	uint32_t* cudaSelectedViews;
 };
 /*----------------------------------------------------------------*/
 
