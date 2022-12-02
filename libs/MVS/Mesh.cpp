@@ -4462,144 +4462,203 @@ inline Eigen::AlignedBox3f bounding_box(const FaceBox& faceBox) {
 	return faceBox.box;
 }
 #endif
-bool Mesh::TransferTexture(Mesh& mesh, unsigned textureSize)
+bool Mesh::TransferTexture(Mesh& mesh, unsigned borderSize, unsigned textureSize)
 {
 	ASSERT(HasTexture() && mesh.HasTexture());
-	if (vertexFaces.size() != vertices.size())
-		ListIncidenteFaces();
-	if (mesh.vertexNormals.size() != mesh.vertices.size())
-		mesh.ComputeNormalVertices();
 	if (mesh.textureDiffuse.empty())
 		mesh.textureDiffuse.create(textureSize, textureSize);
-	#if USE_MESH_INT == USE_MESH_BVH
-	std::vector<FaceBox> boxes;
-	boxes.reserve(faces.size());
-	FOREACH(idxFace, faces)
-		boxes.emplace_back([this](FIndex idxFace) {
-			const Face& face = faces[idxFace];
-			Eigen::AlignedBox3f box;
-			box.extend<Eigen::Vector3f>(vertices[face[0]]);
-			box.extend<Eigen::Vector3f>(vertices[face[1]]);
-			box.extend<Eigen::Vector3f>(vertices[face[2]]);
-			return FaceBox{box, idxFace};
-		} (idxFace));
-	typedef Eigen::KdBVH<Type,3,FaceBox> BVH;
-	BVH tree(boxes.begin(), boxes.end());
-	#endif
-	struct IntersectRayMesh {
-		const Mesh& mesh;
-		const Ray3f& ray;
-		IndexDist pick;
-		IntersectRayMesh(const Mesh& _mesh, const Ray3f& _ray)
-			: mesh(_mesh), ray(_ray) {
-			#if USE_MESH_INT == USE_MESH_BF
-			FOREACH(idxFace, mesh.faces)
-				IntersectsRayFace(idxFace);
-			#endif
-		}
-		inline void IntersectsRayFace(FIndex idxFace) {
-			const Face& face = mesh.faces[idxFace];
-			Type dist;
-			if (ray.Intersects<true>(Triangle3f(mesh.vertices[face[0]], mesh.vertices[face[1]], mesh.vertices[face[2]]), &dist)) {
-				ASSERT(dist >= 0);
-				if (pick.dist > dist) {
-					pick.dist = dist;
-					pick.idx = idxFace;
-				}
-			}
-		}
-		#if USE_MESH_INT == USE_MESH_BVH
-		inline bool intersectVolume(const BVH::Volume &volume) {
-			return ray.Intersects(AABB3f(volume.min(), volume.max()));
-		}
-		inline bool intersectObject(const BVH::Object &object) {
-			IntersectsRayFace(object.idxFace);
-			return false;
-		}
+	Image8U mask(mesh.textureDiffuse.size(), uint8_t(255));
+	if (vertices == mesh.vertices && faces == mesh.faces) {
+		// the two meshes are identical, only the texture coordinates are different;
+		// directly transfer the texture onto the new coordinates
+		#ifndef MESH_USE_OPENMP
+		#pragma omp parallel for schedule(dynamic)
+		for (int_t i=0; i<(int_t)mesh.faces.size(); ++i) {
+			const FIndex idxFace((FIndex)i);
+		#else
+		FOREACH(idxFace, mesh.faces) {
 		#endif
-	};
-	#if USE_MESH_INT == USE_MESH_BF || USE_MESH_INT == USE_MESH_BVH
-	const float diagonal(GetAABB().GetSize().norm());
-	#elif USE_MESH_INT == USE_MESH_OCTREE
-	const Octree octree(vertices, [](Octree::IDX_TYPE size, Octree::Type /*radius*/) {
-		return size > 8;
-	});
-	const float diagonal(octree.GetAabb().GetSize().norm());
-	struct OctreeIntersectRayMesh : IntersectRayMesh {
-		OctreeIntersectRayMesh(const Octree& octree, const Mesh& _mesh, const Ray3f& _ray)
-			: IntersectRayMesh(_mesh, _ray) {
-			octree.Collect(*this, *this);
-		}
-		inline bool Intersects(const Octree::POINT_TYPE& center, Octree::Type radius) const {
-			return ray.Intersects(AABB3f(center, radius));
-		}
-		void operator () (const Octree::IDX_TYPE* idices, Octree::IDX_TYPE size) {
-			// store all contained faces only once
-			std::unordered_set<FIndex> set;
-			FOREACHRAWPTR(pIdx, idices, size) {
-				const VIndex idxVertex((VIndex)*pIdx);
-				const FaceIdxArr& faces = mesh.vertexFaces[idxVertex];
-				set.insert(faces.begin(), faces.end());
-			}
-			// test face intersection and keep the closest
-			for (FIndex idxFace : set)
-				IntersectsRayFace(idxFace);
-		}
-	};
-	#endif
-	#ifdef MESH_USE_OPENMP
-	#pragma omp parallel for schedule(dynamic)
-	for (int_t i=0; i<(int_t)mesh.faces.size(); ++i) {
-		const FIndex idxFace((FIndex)i);
-	#else
-	FOREACH(idxFace, mesh.faces) {
-	#endif
-		struct RasterTraiangle {
-			#if USE_MESH_INT == USE_MESH_OCTREE
-			const Octree& octree;
-			#elif USE_MESH_INT == USE_MESH_BVH
-			BVH& tree;
-			#endif
-			const Mesh& meshRef;
-			Mesh& meshTrg;
-			const Face& face;
-			float diagonal;
-			inline cv::Size Size() const { return meshTrg.textureDiffuse.size(); }
-			inline void operator()(const ImageRef& pt, const Point3f& bary) {
-				ASSERT(meshTrg.textureDiffuse.isInside(pt));
-				const Vertex X(meshTrg.vertices[face[0]]*bary.x + meshTrg.vertices[face[1]]*bary.y + meshTrg.vertices[face[2]]*bary.z);
-				const Normal N(normalized(meshTrg.vertexNormals[face[0]]*bary.x + meshTrg.vertexNormals[face[1]]*bary.y + meshTrg.vertexNormals[face[2]]*bary.z));
-				const Ray3f ray(Vertex(X+N*diagonal), Normal(-N));
-				#if USE_MESH_INT == USE_MESH_BF
-				const IntersectRayMesh intRay(meshRef, ray);
-				#elif USE_MESH_INT == USE_MESH_BVH
-				IntersectRayMesh intRay(meshRef, ray);
-				Eigen::BVIntersect(tree, intRay);
-				#else
-				const OctreeIntersectRayMesh intRay(octree, meshRef, ray);
-				#endif
-				if (intRay.pick.IsValid()) {
-					const FIndex refIdxFace((FIndex)intRay.pick.idx);
-					const Face& refFace = meshRef.faces[refIdxFace];
-					const Vertex refX(ray.GetPoint((Type)intRay.pick.dist));
-					const Vertex baryRef(CorrectBarycentricCoordinates(BarycentricCoordinatesUV(meshRef.vertices[refFace[0]], meshRef.vertices[refFace[1]], meshRef.vertices[refFace[2]], refX)));
-					const TexCoord* tri = meshRef.faceTexcoords.data()+refIdxFace*3;
-					const TexCoord x(tri[0]*baryRef.x + tri[1]*baryRef.y + tri[2]*baryRef.z);
+			struct RasterTriangle {
+				const Mesh& meshRef;
+				Mesh& meshTrg;
+				Image8U& mask;
+				const TexCoord* tri;
+				inline cv::Size Size() const { return meshTrg.textureDiffuse.size(); }
+				inline void operator()(const ImageRef& pt, const Point3f& bary) {
+					ASSERT(meshTrg.textureDiffuse.isInside(pt));
+					const TexCoord x(tri[0]*bary.x + tri[1]*bary.y + tri[2]*bary.z);
 					const Pixel8U color(meshRef.textureDiffuse.sample(x));
 					meshTrg.textureDiffuse(pt) = color;
+					mask(pt) = 0;
+				}
+			} data{*this, mesh, mask, faceTexcoords.data()+idxFace*3};
+			// render triangle and for each pixel interpolate the color
+			// from the triangle corners using barycentric coordinates
+			const TexCoord* tri = mesh.faceTexcoords.data()+idxFace*3;
+			Image8U::RasterizeTriangleBary(tri[0], tri[1], tri[2], data);
+		}
+	} else {
+		// the two meshes are different, transfer the texture by finding the closest point
+		// on the two surfaces
+		if (vertexFaces.size() != vertices.size())
+			ListIncidenteFaces();
+		if (mesh.vertexNormals.size() != mesh.vertices.size())
+			mesh.ComputeNormalVertices();
+		#if USE_MESH_INT == USE_MESH_BVH
+		std::vector<FaceBox> boxes;
+		boxes.reserve(faces.size());
+		FOREACH(idxFace, faces)
+			boxes.emplace_back([this](FIndex idxFace) {
+				const Face& face = faces[idxFace];
+				Eigen::AlignedBox3f box;
+				box.extend<Eigen::Vector3f>(vertices[face[0]]);
+				box.extend<Eigen::Vector3f>(vertices[face[1]]);
+				box.extend<Eigen::Vector3f>(vertices[face[2]]);
+				return FaceBox{box, idxFace};
+			} (idxFace));
+		typedef Eigen::KdBVH<Type,3,FaceBox> BVH;
+		BVH tree(boxes.begin(), boxes.end());
+		#endif
+		struct IntersectRayMesh {
+			const Mesh& mesh;
+			const Ray3f& ray;
+			IndexDist pick;
+			IntersectRayMesh(const Mesh& _mesh, const Ray3f& _ray)
+				: mesh(_mesh), ray(_ray) {
+				#if USE_MESH_INT == USE_MESH_BF
+				FOREACH(idxFace, mesh.faces)
+					IntersectsRayFace(idxFace);
+				#endif
+			}
+			inline void IntersectsRayFace(FIndex idxFace) {
+				const Face& face = mesh.faces[idxFace];
+				Type dist;
+				if (ray.Intersects<true>(Triangle3f(mesh.vertices[face[0]], mesh.vertices[face[1]], mesh.vertices[face[2]]), &dist)) {
+					ASSERT(dist >= 0);
+					if (pick.dist > dist) {
+						pick.dist = dist;
+						pick.idx = idxFace;
+					}
 				}
 			}
-		#if USE_MESH_INT == USE_MESH_BF
-		} data{*this, mesh, mesh.faces[idxFace], diagonal};
-		#elif USE_MESH_INT == USE_MESH_BVH
-		} data{tree, *this, mesh, mesh.faces[idxFace], diagonal};
-		#else
-		} data{octree, *this, mesh, mesh.faces[idxFace], diagonal};
+			#if USE_MESH_INT == USE_MESH_BVH
+			inline bool intersectVolume(const BVH::Volume &volume) {
+				return ray.Intersects(AABB3f(volume.min(), volume.max()));
+			}
+			inline bool intersectObject(const BVH::Object &object) {
+				IntersectsRayFace(object.idxFace);
+				return false;
+			}
+			#endif
+		};
+		#if USE_MESH_INT == USE_MESH_BF || USE_MESH_INT == USE_MESH_BVH
+		const float diagonal(GetAABB().GetSize().norm());
+		#elif USE_MESH_INT == USE_MESH_OCTREE
+		const Octree octree(vertices, [](Octree::IDX_TYPE size, Octree::Type /*radius*/) {
+			return size > 8;
+		});
+		const float diagonal(octree.GetAabb().GetSize().norm());
+		struct OctreeIntersectRayMesh : IntersectRayMesh {
+			OctreeIntersectRayMesh(const Octree& octree, const Mesh& _mesh, const Ray3f& _ray)
+				: IntersectRayMesh(_mesh, _ray) {
+				octree.Collect(*this, *this);
+			}
+			inline bool Intersects(const Octree::POINT_TYPE& center, Octree::Type radius) const {
+				return ray.Intersects(AABB3f(center, radius));
+			}
+			void operator () (const Octree::IDX_TYPE* idices, Octree::IDX_TYPE size) {
+				// store all contained faces only once
+				std::unordered_set<FIndex> set;
+				FOREACHRAWPTR(pIdx, idices, size) {
+					const VIndex idxVertex((VIndex)*pIdx);
+					const FaceIdxArr& faces = mesh.vertexFaces[idxVertex];
+					set.insert(faces.begin(), faces.end());
+				}
+				// test face intersection and keep the closest
+				for (FIndex idxFace : set)
+					IntersectsRayFace(idxFace);
+			}
+		};
 		#endif
-		// render triangle and for each pixel interpolate the color
-		// from the triangle corners using barycentric coordinates
-		const TexCoord* tri = mesh.faceTexcoords.data()+idxFace*3;
-		Image8U::RasterizeTriangleBary(tri[0], tri[1], tri[2], data);
+		#ifdef MESH_USE_OPENMP
+		#pragma omp parallel for schedule(dynamic)
+		for (int_t i=0; i<(int_t)mesh.faces.size(); ++i) {
+			const FIndex idxFace((FIndex)i);
+		#else
+		FOREACH(idxFace, mesh.faces) {
+		#endif
+			struct RasterTriangle {
+				#if USE_MESH_INT == USE_MESH_OCTREE
+				const Octree& octree;
+				#elif USE_MESH_INT == USE_MESH_BVH
+				BVH& tree;
+				#endif
+				const Mesh& meshRef;
+				Mesh& meshTrg;
+				Image8U& mask;
+				const Face& face;
+				float diagonal;
+				inline cv::Size Size() const { return meshTrg.textureDiffuse.size(); }
+				inline void operator()(const ImageRef& pt, const Point3f& bary) {
+					ASSERT(meshTrg.textureDiffuse.isInside(pt));
+					const Vertex X(meshTrg.vertices[face[0]]*bary.x + meshTrg.vertices[face[1]]*bary.y + meshTrg.vertices[face[2]]*bary.z);
+					const Normal N(normalized(meshTrg.vertexNormals[face[0]]*bary.x + meshTrg.vertexNormals[face[1]]*bary.y + meshTrg.vertexNormals[face[2]]*bary.z));
+					const Ray3f ray(Vertex(X+N*diagonal), Normal(-N));
+					#if USE_MESH_INT == USE_MESH_BF
+					const IntersectRayMesh intRay(meshRef, ray);
+					#elif USE_MESH_INT == USE_MESH_BVH
+					IntersectRayMesh intRay(meshRef, ray);
+					Eigen::BVIntersect(tree, intRay);
+					#else
+					const OctreeIntersectRayMesh intRay(octree, meshRef, ray);
+					#endif
+					if (intRay.pick.IsValid()) {
+						const FIndex refIdxFace((FIndex)intRay.pick.idx);
+						const Face& refFace = meshRef.faces[refIdxFace];
+						const Vertex refX(ray.GetPoint((Type)intRay.pick.dist));
+						const Vertex baryRef(CorrectBarycentricCoordinates(BarycentricCoordinatesUV(meshRef.vertices[refFace[0]], meshRef.vertices[refFace[1]], meshRef.vertices[refFace[2]], refX)));
+						const TexCoord* tri = meshRef.faceTexcoords.data()+refIdxFace*3;
+						const TexCoord x(tri[0]*baryRef.x + tri[1]*baryRef.y + tri[2]*baryRef.z);
+						const Pixel8U color(meshRef.textureDiffuse.sample(x));
+						meshTrg.textureDiffuse(pt) = color;
+						mask(pt) = 0;
+					}
+				}
+			#if USE_MESH_INT == USE_MESH_BF
+			} data{*this, mesh, mask, mesh.faces[idxFace], diagonal};
+			#elif USE_MESH_INT == USE_MESH_BVH
+			} data{tree, *this, mesh, mask, mesh.faces[idxFace], diagonal};
+			#else
+			} data{octree, *this, mesh, mask, mesh.faces[idxFace], diagonal};
+			#endif
+			// render triangle and for each pixel interpolate the color
+			// from the triangle corners using barycentric coordinates
+			const TexCoord* tri = mesh.faceTexcoords.data()+idxFace*3;
+			Image8U::RasterizeTriangleBary(tri[0], tri[1], tri[2], data);
+		}
+	}
+	// fill border
+	if (borderSize > 0) {
+		ASSERT(mask.size().area() == mesh.textureDiffuse.size().area());
+		const int border(static_cast<int>(borderSize));
+		CLISTDEF0(int) idx_valid_pixels;
+		idx_valid_pixels.push_back(-1);
+		ASSERT(mask.isContinuous());
+		const int size(mask.size().area());
+		for (int i=0; i<size; ++i)
+			if (!mask(i))
+				idx_valid_pixels.push_back(i);
+		Image32F dists; cv::Mat_<int32_t> labels;
+		cv::distanceTransform(mask, dists, labels, cv::DIST_L1, 3, cv::DIST_LABEL_PIXEL);
+		ASSERT(mesh.textureDiffuse.isContinuous());
+		for (int i=0; i<size; ++i) {
+			const int dist = static_cast<int>(dists(i));
+			if (dist > 0 && dist <= border) {
+				const int label(labels(i));
+				const int idx_closest_pixel(idx_valid_pixels[label]);
+				mesh.textureDiffuse(i) = mesh.textureDiffuse(idx_closest_pixel);
+			}
+		}
 	}
 	return true;
 } // TransferTexture

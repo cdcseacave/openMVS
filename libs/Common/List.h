@@ -285,6 +285,15 @@ public:
 		_vector[idx1] = _vector[idx2];
 		_vector[idx2] = tmp;
 	}
+	
+	inline bool		operator==(const cList& rList) const {
+		if (_size != rList._size)
+			return false;
+		for (IDX i = 0; i < _size; ++i)
+			if (_vector[i] != rList._vector[i])
+				return false;
+		return true;
+	}
 
 	// Set the allocated memory (normally used for types without constructor).
 	inline void		Memset(uint8_t val)
@@ -1573,6 +1582,14 @@ public:
 	inline TYPE& operator[](IDX index) {
 		ASSERT(index < _size);
 		return _vector[index];
+	}
+	inline bool operator==(const cListFixed& rList) const {
+		if (_size != rList._size)
+			return false;
+		for (IDX i = 0; i < _size; ++i)
+			if (_vector[i] != rList._vector[i])
+				return false;
+		return true;
 	}
 	inline TYPE& AddEmpty() {
 		ASSERT(_size < N);

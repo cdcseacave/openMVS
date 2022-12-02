@@ -223,7 +223,7 @@ public:
 	bool Split(FacesChunkArr&, float maxArea);
 	Mesh SubMesh(const FaceIdxArr& faces) const;
 
-	bool TransferTexture(Mesh& mesh, unsigned textureSize=1024);
+	bool TransferTexture(Mesh& mesh, unsigned borderSize=3, unsigned textureSize=1024);
 
 	// file IO
 	bool Load(const String& fileName);
