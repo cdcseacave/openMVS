@@ -58,6 +58,7 @@ namespace OPT {
 	unsigned nArchiveType;
 	int nProcessPriority;
 	unsigned nMaxThreads;
+	String strExportType;
 	String strConfigFileName;
 	boost::program_options::variables_map vm;
 } // namespace OPT
@@ -75,6 +76,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		("help,h", "produce this help message")
 		("working-folder,w", boost::program_options::value<std::string>(&WORKING_FOLDER), "working directory (default current directory)")
 		("config-file,c", boost::program_options::value<std::string>(&OPT::strConfigFileName)->default_value(APPNAME _T(".cfg")), "file name containing program options")
+		("export-type", boost::program_options::value<std::string>(&OPT::strExportType)->default_value(_T("ply")), "file type used to export the 3D scene (ply, obj, glb or gltf)")
 		("archive-type", boost::program_options::value(&OPT::nArchiveType)->default_value(ARCHIVE_MVS), "project archive type: 0-text, 1-binary, 2-compressed binary")
 		("process-priority", boost::program_options::value(&OPT::nProcessPriority)->default_value(-1), "process priority (below normal by default)")
 		("max-threads", boost::program_options::value(&OPT::nMaxThreads)->default_value(0), "maximum number of threads (0 for using all available cores)")
@@ -148,6 +150,17 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	}
 	if (bInvalidCommand)
 		return false;
+	OPT::strExportType = OPT::strExportType.ToLower();
+	if (OPT::strExportType == _T("obj"))
+		OPT::strExportType =  _T(".obj");
+	else
+	if (OPT::strExportType == _T("glb"))
+		OPT::strExportType =  _T(".glb");
+	else
+	if (OPT::strExportType == _T("gltf"))
+		OPT::strExportType =  _T(".gltf");
+	else
+		OPT::strExportType =  _T(".ply");
 
 	// initialize optional options
 	Util::ensureValidPath(OPT::strOutputFileName);
@@ -220,7 +233,7 @@ int main(int argc, LPCTSTR* argv)
 			return EXIT_FAILURE;
 		if (!scene.mesh.TransferTexture(newMesh))
 			return EXIT_FAILURE;
-		newMesh.Save(Util::getFileFullName(MAKE_PATH_SAFE(OPT::strOutputFileName)) + _T(".ply"));
+		newMesh.Save(Util::getFileFullName(MAKE_PATH_SAFE(OPT::strOutputFileName)) + OPT::strExportType);
 		VERBOSE("Texture transfered (%s)", TD_TIMER_GET_FMT().c_str());
 		return EXIT_SUCCESS;
 	}
@@ -229,7 +242,7 @@ int main(int argc, LPCTSTR* argv)
 		// compute the mesh volume
 		const REAL volume(scene.ComputeLeveledVolume(OPT::fPlaneThreshold, OPT::fSampleMesh, OPT::nUpAxis));
 		VERBOSE("Mesh volume: %g (%s)", volume, TD_TIMER_GET_FMT().c_str());
-		scene.mesh.Save(Util::getFileFullName(MAKE_PATH_SAFE(OPT::strOutputFileName)) + _T(".ply"));
+		scene.mesh.Save(Util::getFileFullName(MAKE_PATH_SAFE(OPT::strOutputFileName)) + OPT::strExportType);
 		if (scene.images.empty())
 			return EXIT_SUCCESS;
 		OPT::nArchiveType = ARCHIVE_DEFAULT;
