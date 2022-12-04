@@ -23,8 +23,10 @@
 // cList index type
 #ifdef _SUPPORT_CPP11
 #define ARR2IDX(arr) typename std::remove_reference<decltype(arr)>::type::size_type
+#define SIZE2IDX(arr) typename std::remove_const<typename std::remove_reference<decltype(arr)>::type>::type
 #else
 #define ARR2IDX(arr) IDX
+#define SIZE2IDX(arr) IDX
 #endif
 
 // cList iterator by index
@@ -44,10 +46,10 @@
 
 // raw data array iterator by index
 #ifndef FOREACHRAW
-#define FOREACHRAW(var, sz) for (IDX var=0, var##Size=(sz); var<var##Size; ++var)
+#define FOREACHRAW(var, sz) for (SIZE2IDX(sz) var=0, var##Size=(sz); var<var##Size; ++var)
 #endif
 #ifndef RFOREACHRAW
-#define RFOREACHRAW(var, sz) for (IDX var=sz; var-->0; )
+#define RFOREACHRAW(var, sz) for (SIZE2IDX(sz) var=sz; var-->0; )
 #endif
 // raw data array iterator by pointer
 #ifndef FOREACHRAWPTR

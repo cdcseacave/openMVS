@@ -4462,22 +4462,24 @@ inline Eigen::AlignedBox3f bounding_box(const FaceBox& faceBox) {
 	return faceBox.box;
 }
 #endif
-bool Mesh::TransferTexture(Mesh& mesh, unsigned borderSize, unsigned textureSize)
+bool Mesh::TransferTexture(Mesh& mesh, const FaceIdxArr& faceSubsetIndices, unsigned borderSize, unsigned textureSize)
 {
 	ASSERT(HasTexture() && mesh.HasTexture());
 	if (mesh.textureDiffuse.empty())
 		mesh.textureDiffuse.create(textureSize, textureSize);
 	Image8U mask(mesh.textureDiffuse.size(), uint8_t(255));
+	const FIndex num_faces(faceSubsetIndices.empty() ? faces.size() : faceSubsetIndices.size());
 	if (vertices == mesh.vertices && faces == mesh.faces) {
 		// the two meshes are identical, only the texture coordinates are different;
 		// directly transfer the texture onto the new coordinates
 		#ifndef MESH_USE_OPENMP
 		#pragma omp parallel for schedule(dynamic)
-		for (int_t i=0; i<(int_t)mesh.faces.size(); ++i) {
-			const FIndex idxFace((FIndex)i);
+		for (int_t i=0; i<(int_t)num_faces; ++i) {
+			const FIndex idx((FIndex)i);
 		#else
-		FOREACH(idxFace, mesh.faces) {
+		FOREACHRAW(idx, num_faces) {
 		#endif
+			const FIndex idxFace(faceSubsetIndices.empty() ? idx : faceSubsetIndices[idx]);
 			struct RasterTriangle {
 				const Mesh& meshRef;
 				Mesh& meshTrg;
@@ -4582,11 +4584,12 @@ bool Mesh::TransferTexture(Mesh& mesh, unsigned borderSize, unsigned textureSize
 		#endif
 		#ifdef MESH_USE_OPENMP
 		#pragma omp parallel for schedule(dynamic)
-		for (int_t i=0; i<(int_t)mesh.faces.size(); ++i) {
-			const FIndex idxFace((FIndex)i);
+		for (int_t i=0; i<(int_t)num_faces; ++i) {
+			const FIndex idx((FIndex)i);
 		#else
-		FOREACH(idxFace, mesh.faces) {
+		FOREACHRAW(idx, num_faces) {
 		#endif
+			const FIndex idxFace(faceSubsetIndices.empty() ? idx : faceSubsetIndices[idx]);
 			struct RasterTriangle {
 				#if USE_MESH_INT == USE_MESH_OCTREE
 				const Octree& octree;
