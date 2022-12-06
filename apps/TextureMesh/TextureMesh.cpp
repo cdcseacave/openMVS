@@ -305,7 +305,9 @@ int main(int argc, LPCTSTR* argv)
 
 	// compute mesh texture
 	TD_TIMER_START();
-	if (!scene.TextureMesh(OPT::nResolutionLevel, OPT::nMinResolution, OPT::minCommonCameras, OPT::fOutlierThreshold, OPT::fRatioDataSmoothness, OPT::bGlobalSeamLeveling, OPT::bLocalSeamLeveling, OPT::nTextureSizeMultiple, OPT::nRectPackingHeuristic, Pixel8U(OPT::nColEmpty), OPT::fSharpnessWeight, views))
+	if (!scene.TextureMesh(OPT::nResolutionLevel, OPT::nMinResolution, OPT::minCommonCameras, OPT::fOutlierThreshold, OPT::fRatioDataSmoothness,
+						   OPT::bGlobalSeamLeveling, OPT::bLocalSeamLeveling, OPT::nTextureSizeMultiple, OPT::nRectPackingHeuristic, Pixel8U(OPT::nColEmpty),
+						   OPT::fSharpnessWeight, views))
 		return EXIT_FAILURE;
 	VERBOSE("Mesh texturing completed: %u vertices, %u faces (%s)", scene.mesh.vertices.GetSize(), scene.mesh.faces.GetSize(), TD_TIMER_GET_FMT().c_str());
 

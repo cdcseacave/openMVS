@@ -910,7 +910,7 @@ bool ExportScene(const String& strFolder, const Interface& scene)
 					LOG("error: no image using camera %u of platform %u", 0, ID);
 					continue;
 				}
-				IMAGEPTR ptrImage(Image::ReadImageHeader(MAKE_PATH_SAFE(pImage->name.c_str())));
+				IMAGEPTR ptrImage(Image::ReadImageHeader(MAKE_PATH_SAFE(pImage->name)));
 				if (ptrImage == NULL)
 					return false;
 				cam.width = ptrImage->GetWidth();

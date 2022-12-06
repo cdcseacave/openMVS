@@ -142,8 +142,8 @@ public:
 		}
 	};
 
-	typedef MVS_API Point2f DepthRange;
-	typedef MVS_API TImage<DepthRange> DepthRangeMap;
+	typedef Point2f DepthRange;
+	typedef TImage<DepthRange> DepthRangeMap;
 
 public:
 	SemiGlobalMatcher(SgmSubpixelMode subpixelMode=SUBPIXEL_LC_BLEND, Disparity subpixelSteps=4, AccumCost P1=3, AccumCost P2=4, float P2alpha=14, float P2beta=38);

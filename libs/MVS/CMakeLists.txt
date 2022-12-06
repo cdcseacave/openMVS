@@ -32,6 +32,9 @@ if(_USE_CUDA)
 	LIST(APPEND LIBRARY_FILES_C ${LIBRARY_FILES_CUDA})
 endif()
 
+GET_FILENAME_COMPONENT(PATH_PythonWrapper_cpp ${CMAKE_CURRENT_SOURCE_DIR}/PythonWrapper.cpp ABSOLUTE)
+LIST(REMOVE_ITEM LIBRARY_FILES_C "${PATH_PythonWrapper_cpp}")
+
 cxx_library_with_type(MVS "Libs" "" "${cxx_default}"
 	${LIBRARY_FILES_C} ${LIBRARY_FILES_H}
 )
@@ -43,9 +46,25 @@ endif()
 
 # Link its dependencies
 if(_USE_CUDA)
-	set_target_properties(MVS PROPERTIES CUDA_ARCHITECTURES "50;72;75")
+	SET_TARGET_PROPERTIES(MVS PROPERTIES CUDA_ARCHITECTURES "50;72;75")
 endif()
 TARGET_LINK_LIBRARIES(MVS PRIVATE Common Math IO CGAL::CGAL ${CERES_LIBRARIES} ${CUDA_CUDA_LIBRARY})
+
+if(OpenMVS_USE_PYTHON)
+	# Create the Python wrapper
+	cxx_library_with_type(pyOpenMVS "Libs" "SHARED" "${cxx_default}"
+		${PATH_PythonWrapper_cpp}
+	)
+	# Link its dependencies
+	if(_USE_CUDA)
+		SET_TARGET_PROPERTIES(pyOpenMVS PROPERTIES CUDA_ARCHITECTURES "50;72;75")
+	endif()
+	TARGET_LINK_LIBRARIES(pyOpenMVS PRIVATE MVS ${OpenMVS_EXTRA_LIBS})
+	# Suppress prefix "lib" because Python does not allow this prefix
+	SET_TARGET_PROPERTIES(pyOpenMVS PROPERTIES PREFIX "")
+	# Install
+	INSTALL(TARGETS pyOpenMVS DESTINATION "${PYTHON_INSTALL_PATH}")
+endif()
 
 # Install
 SET_TARGET_PROPERTIES(MVS PROPERTIES
