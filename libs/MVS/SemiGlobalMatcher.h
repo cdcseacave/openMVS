@@ -178,7 +178,9 @@ protected:
 	static void FlipDirection(const DisparityMap& l2r, DisparityMap& r2l);
 	static void UpscaleMask(MaskMap& maskMap, const cv::Size& size2x);
 	void RefineDisparityMap(DisparityMap& disparityMap) const;
+	#ifndef _RELEASE
 	void DisplayState(const cv::Size& size) const;
+	#endif
 
 	static CLISTDEF0IDX(AccumCost,int) GenerateP2s(AccumCost P2, float P2alpha, float P2beta);
 	static void Depth2DisparityMap(const DepthMap&, const Matrix3x3& invH, const Matrix4x4& invQ, Disparity subpixelSteps, DisparityMap&);
