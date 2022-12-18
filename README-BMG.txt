@@ -1,0 +1,3 @@
+# How to build for BMG use case
+
+1. ....
