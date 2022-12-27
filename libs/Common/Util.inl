@@ -177,6 +177,97 @@ inline TMatrix<TYPE,3,3> CreateF(const TMatrix<TYPE,3,3>& R, const TMatrix<TYPE,
 /*----------------------------------------------------------------*/
 
 
+// computes an RQ decomposition of 3x3 matrices as in:
+// "Computing euler angles from a rotation matrix", Gregory G Slabaugh, 1999
+template <typename Scalar>
+inline void RQDecomp3x3(Eigen::Matrix<Scalar,3,3> M, Eigen::Matrix<Scalar,3,3>& R, Eigen::Matrix<Scalar,3,3>& Q) {
+	// find Givens rotation for x axis:
+	//       | 1  0  0 |
+	//  Qx = | 0  c  s |, c = m33/sqrt(m32^2 + m33^2), s = m32/sqrt(m32^2 + m33^2)
+	//       | 0 -s  c |
+	Eigen::Matrix<Scalar,2,1> cs = Eigen::Matrix<Scalar,2,1>(M(2,2), M(2,1)).normalized();
+	Eigen::Matrix<Scalar,3,3> Qx{ {1, 0, 0}, {0, cs.x(), cs.y()}, {0, -cs.y(), cs.x()} };
+	R.noalias() = M * Qx;
+	ASSERT(std::abs(R(2,1)) < FLT_EPSILON);
+	R(2,1) = 0;
+	// find Givens rotation for y axis:
+	//       | c  0 -s |
+	//  Qy = | 0  1  0 |, c = m33/sqrt(m31^2 + m33^2), s = -m31/sqrt(m31^2 + m33^2)
+	//       | s  0  c |
+	cs = Eigen::Matrix<Scalar,2,1>(R(2,2), -R(2,0)).normalized();
+	Eigen::Matrix<Scalar,3,3> Qy{ {cs.x(), 0, -cs.y()}, {0, 1, 0}, {cs.y(), 0, cs.x()} };
+	M.noalias() = R * Qy;
+	ASSERT(std::abs(M(2,0)) < FLT_EPSILON);
+	M(2,0) = 0;
+	// find Givens rotation for z axis:
+	//       | c  s  0 |
+	//  Qz = |-s  c  0 |, c = m22/sqrt(m21^2 + m22^2), s = m21/sqrt(m21^2 + m22^2)
+	//       | 0  0  1 |
+	cs = Eigen::Matrix<Scalar,2,1>(M(1,1), M(1,0)).normalized();
+	Eigen::Matrix<Scalar,3,3> Qz{ {cs.x(), cs.y(), 0}, {-cs.y(), cs.x(), 0}, {0, 0, 1} };
+	R.noalias() = M * Qz;
+	ASSERT(std::abs(R(1,0)) < FLT_EPSILON);
+	R(1,0) = 0;
+	// solve the decomposition ambiguity:
+	//  - diagonal entries of R, except the last one, shall be positive
+	//  - rotate R by 180 degree if necessary
+	if (R(0,0) < 0) {
+		if (R(1,1) < 0) {
+			// rotate around z for 180 degree:
+			//  |-1,  0,  0|
+			//  | 0, -1,  0|
+			//  | 0,  0,  1|
+			R(0,0) *= -1;
+			R(0,1) *= -1;
+			R(1,1) *= -1;
+			Qz(0,0) *= -1;
+			Qz(0,1) *= -1;
+			Qz(1,0) *= -1;
+			Qz(1,1) *= -1;
+		} else {
+			// rotate around y for 180 degree:
+			//  |-1,  0,  0|
+			//  | 0,  1,  0|
+			//  | 0,  0, -1|
+			R(0,0) *= -1;
+			R(0,2) *= -1;
+			R(1,2) *= -1;
+			R(2,2) *= -1;
+			Qz.transposeInPlace();
+			Qy(0,0) *= -1;
+			Qy(0,2) *= -1;
+			Qy(2,0) *= -1;
+			Qy(2,2) *= -1;
+		}
+	} else if (R(1,1) < 0) {
+		// rotate around x for 180 degree:
+		//  | 1,  0,  0|
+		//  | 0, -1,  0|
+		//  | 0,  0, -1|
+		R(0,1) *= -1;
+		R(0,2) *= -1;
+		R(1,1) *= -1;
+		R(1,2) *= -1;
+		R(2,2) *= -1;
+		Qz.transposeInPlace();
+		Qy.transposeInPlace();
+		Qx(1,1) *= -1;
+		Qx(1,2) *= -1;
+		Qx(2,1) *= -1;
+		Qx(2,2) *= -1;
+	}
+	// calculate orthogonal matrix
+	Q.noalias() = Qz.transpose() * Qy.transpose() * Qx.transpose();
+}
+template <typename TYPE>
+inline void RQDecomp3x3(const TMatrix<TYPE,3,3>& M, TMatrix<TYPE,3,3>& R, TMatrix<TYPE,3,3>& Q) {
+	Eigen::Matrix<TYPE,3,3> _M((TMatrix<TYPE,3,3>::CEMatMap)M), _R((TMatrix<TYPE,3,3>::CEMatMap)R), _Q((TMatrix<TYPE,3,3>::CEMatMap)Q);
+	RQDecomp3x3<TYPE>(_M, _R, _Q);
+	R = _R; Q = _Q;
+} // RQDecomp3x3
+/*----------------------------------------------------------------*/
+
+
 // compute the angle between the two rotations given
 // as in: "Disambiguating Visual Relations Using Loop Constraints", 2010
 // returns cos(angle) (same as cos(ComputeAngleSO3(I))

@@ -137,8 +137,7 @@ void MVS::DecomposeProjectionMatrix(const PMatrix& P, KMatrix& K, RMatrix& R, CM
 	const Vec4 hC(P.RightNullVector());
 	C = CMatrix(hC[0],hC[1],hC[2]) * INVERT(hC[3]);
 	// perform RQ decomposition
-	const cv::Mat mP(3,4,cv::DataType<REAL>::type,const_cast<REAL*>(P.val));
-	cv::RQDecomp3x3(mP(cv::Rect(0,0, 3,3)), K, R);
+	RQDecomp3x3<REAL>(cv::Mat(3,4,cv::DataType<REAL>::type,const_cast<REAL*>(P.val))(cv::Rect(0,0, 3,3)), K, R);
 	// normalize calibration matrix
 	K *= INVERT(K(2,2));
 	// ensure positive focal length
