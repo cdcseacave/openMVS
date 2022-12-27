@@ -39,7 +39,7 @@ jobs:
         uses: actions/checkout@v3
 
       - name: Restore artifacts, or setup vcpkg for building artifacts
-        uses: lukka/run-vcpkg@v10.6
+        uses: lukka/run-vcpkg@v10
         with:
           vcpkgDirectory: '${{ github.workspace }}/vcpkg'
           vcpkgGitCommitId: '4cb4a5c5ddcb9de0c83c85837ee6974c8333f032'

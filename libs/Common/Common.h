@@ -94,7 +94,7 @@ extern String g_strWorkingFolderFull; // full path to current folder
 #define MAKE_PATH(str)		SEACAVE::Util::getSimplifiedPath(WORKING_FOLDER+SEACAVE::String(str)) // add working directory to the given file name
 #define MAKE_PATH_SAFE(str)	(SEACAVE::Util::isFullPath((str).c_str()) ? SEACAVE::String(str) : MAKE_PATH(str)) // add working directory to the given file name only if not full path already
 #define MAKE_PATH_FULL(p,s) (SEACAVE::Util::isFullPath((s).c_str()) ? SEACAVE::String(s) : SEACAVE::Util::getSimplifiedPath((p)+(s))) // add the given path to the given file name
-#define MAKE_PATH_REL(p,s)	((s).compare(0,(p).size(),p) ? SEACAVE::String(s) : SEACAVE::String(SEACAVE::String((s).substr((p).size())))) // remove the given path from the given file name
+#define MAKE_PATH_REL(p,s)	SEACAVE::Util::getRelativePath(p,s) // remove the given path from the given file name
 #define GET_PATH_FULL(str)	(SEACAVE::Util::isFullPath((str).c_str()) ? SEACAVE::Util::getFilePath(str) : SEACAVE::Util::getSimplifiedPath(WORKING_FOLDER_FULL+SEACAVE::Util::getFilePath(str))) // retrieve the full path to the given file
 
 

@@ -261,7 +261,8 @@ inline void RQDecomp3x3(Eigen::Matrix<Scalar,3,3> M, Eigen::Matrix<Scalar,3,3>& 
 }
 template <typename TYPE>
 inline void RQDecomp3x3(const TMatrix<TYPE,3,3>& M, TMatrix<TYPE,3,3>& R, TMatrix<TYPE,3,3>& Q) {
-	Eigen::Matrix<TYPE,3,3> _M((TMatrix<TYPE,3,3>::CEMatMap)M), _R((TMatrix<TYPE,3,3>::CEMatMap)R), _Q((TMatrix<TYPE,3,3>::CEMatMap)Q);
+	const Eigen::Matrix<TYPE,3,3> _M((typename TMatrix<TYPE,3,3>::CEMatMap)M);
+	Eigen::Matrix<TYPE,3,3> _R, _Q;
 	RQDecomp3x3<TYPE>(_M, _R, _Q);
 	R = _R; Q = _Q;
 } // RQDecomp3x3
