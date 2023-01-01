@@ -56,7 +56,7 @@ This program includes works distributed under the terms of another license(s) an
     Licensed under the [MSR-SSLA license](http://research.microsoft.com/en-us/um/people/antr/vrr/vrr/license.htm).
 
 *   __ibfs__<br />
-    [http://www.cs.tau.ac.il/~sagihed/ibfs](http://www.cs.tau.ac.il/~sagihed/ibfs)
+    [http://www.cs.tau.ac.il/~sagihed/ibfs](https://web.archive.org/web/20170703042834/http://www.cs.tau.ac.il/~sagihed/ibfs/)
     Copyright (c) Haim Kaplan and Sagi Hed.
     This software can be used for research purposes only.
 
