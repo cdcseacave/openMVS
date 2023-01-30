@@ -341,10 +341,11 @@ inline void TOBB<TYPE,DIMS>::GetCorners(POINT pts[numCorners]) const
 			m_rot.row(0)*m_ext[0],
 			m_rot.row(1)*m_ext[1]
 		};
-		pts[0] = m_pos - pEAxis[0] - pEAxis[1];
-		pts[1] = m_pos + pEAxis[0] - pEAxis[1];
-		pts[2] = m_pos + pEAxis[0] + pEAxis[1];
-		pts[3] = m_pos - pEAxis[0] + pEAxis[1];
+		const POINT pos(m_rot.transpose()*m_pos);
+		pts[0] = pos - pEAxis[0] - pEAxis[1];
+		pts[1] = pos + pEAxis[0] - pEAxis[1];
+		pts[2] = pos + pEAxis[0] + pEAxis[1];
+		pts[3] = pos - pEAxis[0] + pEAxis[1];
 	}
 	if (DIMS == 3) {
 		const POINT pEAxis[3] = {
@@ -352,47 +353,24 @@ inline void TOBB<TYPE,DIMS>::GetCorners(POINT pts[numCorners]) const
 			m_rot.row(1)*m_ext[1],
 			m_rot.row(2)*m_ext[2]
 		};
-		pts[0] = m_pos - pEAxis[0] - pEAxis[1] - pEAxis[2];
-		pts[1] = m_pos - pEAxis[0] - pEAxis[1] + pEAxis[2];
-		pts[2] = m_pos + pEAxis[0] - pEAxis[1] - pEAxis[2];
-		pts[3] = m_pos + pEAxis[0] - pEAxis[1] + pEAxis[2];
-		pts[4] = m_pos + pEAxis[0] + pEAxis[1] - pEAxis[2];
-		pts[5] = m_pos + pEAxis[0] + pEAxis[1] + pEAxis[2];
-		pts[6] = m_pos - pEAxis[0] + pEAxis[1] - pEAxis[2];
-		pts[7] = m_pos - pEAxis[0] + pEAxis[1] + pEAxis[2];
+		const POINT pos(m_rot.transpose()*m_pos);
+		pts[0] = pos - pEAxis[0] - pEAxis[1] - pEAxis[2];
+		pts[1] = pos - pEAxis[0] - pEAxis[1] + pEAxis[2];
+		pts[2] = pos + pEAxis[0] - pEAxis[1] - pEAxis[2];
+		pts[3] = pos + pEAxis[0] - pEAxis[1] + pEAxis[2];
+		pts[4] = pos + pEAxis[0] + pEAxis[1] - pEAxis[2];
+		pts[5] = pos + pEAxis[0] + pEAxis[1] + pEAxis[2];
+		pts[6] = pos - pEAxis[0] + pEAxis[1] - pEAxis[2];
+		pts[7] = pos - pEAxis[0] + pEAxis[1] + pEAxis[2];
 	}
 } // GetCorners
 // constructs the corner of the aligned bounding box in world space
 template <typename TYPE, int DIMS>
 inline typename TOBB<TYPE,DIMS>::AABB TOBB<TYPE,DIMS>::GetAABB() const
 {
-	#if 0
-	if (DIMS == 2) {
-		const POINT pEAxis[2] = {
-			m_rot.row(0)*m_ext[0],
-			m_rot.row(1)*m_ext[1]
-		};
-		return AABB(
-			m_pos - pEAxis[0] - pEAxis[1],
-			m_pos + pEAxis[0] + pEAxis[1]
-		);
-	}
-	if (DIMS == 3) {
-		const POINT pEAxis[3] = {
-			m_rot.row(0)*m_ext[0],
-			m_rot.row(1)*m_ext[1],
-			m_rot.row(2)*m_ext[2]
-		};
-		return AABB(
-			m_pos - pEAxis[0] - pEAxis[1] - pEAxis[2],
-			m_pos + pEAxis[0] + pEAxis[1] + pEAxis[2]
-		);
-	}
-	#else
 	POINT pts[numCorners];
 	GetCorners(pts);
 	return AABB(pts, numCorners);
-	#endif
 } // GetAABB
 /*----------------------------------------------------------------*/
 
