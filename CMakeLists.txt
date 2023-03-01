@@ -58,6 +58,10 @@ ComposePackageLibSuffix()
 ConfigCompilerAndLinker()
 ConfigLibrary()
 
+if (MSVC)
+	add_compile_options(/MP)
+endif()
+
 # Find dependencies:
 SET(CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/build/Modules)
 
