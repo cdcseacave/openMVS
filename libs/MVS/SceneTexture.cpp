@@ -43,7 +43,7 @@ using namespace MVS;
 
 // uncomment to enable multi-threading based on OpenMP
 #ifdef _USE_OPENMP
-#define TEXOPT_USE_OPENMP
+//#define TEXOPT_USE_OPENMP
 #endif
 
 // uncomment to use SparseLU for solving the linear systems
@@ -295,7 +295,7 @@ struct MeshTexture {
 		// sample the edge with linear weights
 		void AddEdge(const TexCoord& p0, const TexCoord& p1) {
 			const TexCoord p01(p1 - p0);
-			const float length(norm(p01));
+			const float length(MAXF(norm(p01), 1.f));
 			ASSERT(length > 0.f);
 			const int nSamples(ROUND2INT(MAXF(length, 1.f) * 2.f)-1);
 			AccumColor edgeAccumColor;
@@ -510,7 +510,8 @@ bool MeshTexture::ListCameraFaces(FaceDataViewArr& facesDatas, float fOutlierThr
 		depthMap.create(imageData.height, imageData.width);
 		RasterMesh rasterer(vertices, imageData.camera, depthMap, faceMap);
 		rasterer.Clear();
-		for (auto idxFace : cameraFaces) {
+		//for (auto idxFace : cameraFaces) {
+		FOREACH(idxFace, faces) {
 			const Face& facet = faces[idxFace];
 			rasterer.idxFace = idxFace;
 			rasterer.Project(facet);
@@ -2080,7 +2081,18 @@ void MeshTexture::GenerateTexture(bool bGlobalSeamLeveling, bool bLocalSeamLevel
 			TexCoord* texcoords = faceTexcoords.data()+idxFace*3;
 			for (int i=0; i<3; ++i) {
 				texcoords[i] = imageData.camera.ProjectPointP(vertices[face[i]]);
-				ASSERT(imageData.image.isInsideWithBorder(texcoords[i], border));
+				//ASSERT(imageData.image.isInsideWithBorder(texcoords[i], border));
+				if (!imageData.image.isInsideWithBorder(texcoords[i], border)) {
+					// crop texture coordinates to the image border
+					if (texcoords[i].x < border)
+						texcoords[i].x = border;
+					else if (texcoords[i].x+border+1 >= imageData.image.cols)
+						texcoords[i].x = (float)(imageData.image.cols-1-border);
+					if (texcoords[i].y < border)
+						texcoords[i].y = border;
+					else if (texcoords[i].y+border+1 >= imageData.image.rows)
+						texcoords[i].y = (float)(imageData.image.rows-1-border);
+				}
 				aabb.InsertFull(texcoords[i]);
 			}
 		}

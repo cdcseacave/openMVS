@@ -32,6 +32,8 @@
 #include "../../libs/MVS/Common.h"
 #include "../../libs/MVS/Scene.h"
 #include <boost/program_options.hpp>
+#define _USE_OPENCV
+#include "../../libs/MVS/Interface.h"
 
 using namespace MVS;
 
@@ -268,6 +270,80 @@ int main(int argc, LPCTSTR* argv)
 
 	if (!Initialize(argc, argv))
 		return EXIT_FAILURE;
+	if (0) {
+		MVS::Interface scene;
+		scene.platforms.resize(3);
+		scene.images.resize(3);
+		{
+			const uint32_t ID = 0;
+			MVS::Interface::Platform::Camera& camera = scene.platforms[ID].cameras.emplace_back();
+			camera.width = camera.height = 224;
+			camera.K = MVS::Interface::Mat33d::eye();
+			camera.K(0,0) = 62.11754;
+			camera.K(1,1) = -62.11754;
+			camera.K(0,2) = 109.78258;
+			camera.K(1,2) = 85.88967;
+			camera.R = MVS::Interface::Mat33d::eye();
+			camera.C = MVS::Interface::Pos3d(0,0,0);
+			MVS::Interface::Platform::Pose& pose = scene.platforms[ID].poses.emplace_back();
+			pose.R = MVS::Interface::Mat33d(
+				0.9972367, 0.04000191, 0.06259948,
+				-0.03036393, 0.9885255, -0.1479706,
+				-0.0678003, 0.14566097, 0.98700863);
+			pose.C = MVS::Interface::Pos3d(0,0,0);
+			MVS::Interface::Image& image = scene.images[ID];
+			image.ID = image.platformID = ID;
+			image.cameraID = image.poseID = 0;
+			image.name = "front_crop.jpg";
+		}
+		{
+			const uint32_t ID = 1;
+			MVS::Interface::Platform::Camera& camera = scene.platforms[ID].cameras.emplace_back();
+			camera.width = camera.height = 224;
+			camera.K = MVS::Interface::Mat33d::eye();
+			camera.K(0,0) = 66.75305;
+			camera.K(1,1) = -66.75305;
+			camera.K(0,2) = 66.62814;
+			camera.K(1,2) = 91.57733;
+			camera.R = MVS::Interface::Mat33d::eye();
+			camera.C = MVS::Interface::Pos3d(0,0,0);
+			MVS::Interface::Platform::Pose& pose = scene.platforms[ID].poses.emplace_back();
+			pose.R = MVS::Interface::Mat33d(
+				0.7767185, 0.0945544, 0.6227101,
+				-0.05138003, 0.99488425, -0.08697927,
+				-0.6277488,  0.03556355, 0.7776032);
+			pose.C = MVS::Interface::Pos3d(0,0,0);
+			MVS::Interface::Image& image = scene.images[ID];
+			image.ID = image.platformID = ID;
+			image.cameraID = image.poseID = 0;
+			image.name = "left_crop.jpg";
+		}
+		{
+			const uint32_t ID = 2;
+			MVS::Interface::Platform::Camera& camera = scene.platforms[ID].cameras.emplace_back();
+			camera.width = camera.height = 224;
+			camera.K = MVS::Interface::Mat33d::eye();
+			camera.K(0,0) = 66.14642;
+			camera.K(1,1) = -66.14642;
+			camera.K(0,2) = 154.36371;
+			camera.K(1,2) = 86.53764;
+			camera.R = MVS::Interface::Mat33d::eye();
+			camera.C = MVS::Interface::Pos3d(0,0,0);
+			MVS::Interface::Platform::Pose& pose = scene.platforms[ID].poses.emplace_back();
+			pose.R = MVS::Interface::Mat33d(
+				0.8050092, -0.0757333, -0.58840865,
+				0.00452209, 0.992573, -0.12156603,
+				0.59324515, 0.09520093, 0.7993729);
+			pose.C = MVS::Interface::Pos3d(0,0,0);
+			MVS::Interface::Image& image = scene.images[ID];
+			image.ID = image.platformID = ID;
+			image.cameraID = image.poseID = 0;
+			image.name = "right_crop.jpg";
+		}
+		if (!ARCHIVE::SerializeSave(scene, MAKE_PATH_SAFE(OPT::strOutputFileName)))
+			return EXIT_FAILURE;
+		return EXIT_SUCCESS;
+	}
 
 	Scene scene(OPT::nMaxThreads);
 	// load and texture the mesh

@@ -265,13 +265,13 @@ public:
 	inline TPoint2<TYPE> ProjectPointRT(const TPoint3<TYPE>& X) const {
 		const TPoint3<TYPE> q(R * (X - C));
 		const TYPE invZ(INVERT(q.z));
-		return TPoint2<TYPE>(q.x*invZ, q.y*invZ);
+		return TPoint2<TYPE>(q.x/**invZ*/, q.y/**invZ*/);
 	}
 	template <typename TYPE>
 	inline TPoint2<TYPE> ProjectPoint(const TPoint3<TYPE>& X) const {
 		const TPoint3<TYPE> q(K * (R * (X - C)));
 		const TYPE invZ(INVERT(q.z));
-		return TPoint2<TYPE>(q.x*invZ, q.y*invZ);
+		return TPoint2<TYPE>(q.x/**invZ*/, q.y/**invZ*/);
 	}
 	template <typename TYPE>
 	inline TPoint3<TYPE> ProjectPointP3(const TPoint3<TYPE>& X) const {
@@ -285,7 +285,7 @@ public:
 	inline TPoint2<TYPE> ProjectPointP(const TPoint3<TYPE>& X) const {
 		const TPoint3<TYPE> q(ProjectPointP3(X));
 		const TYPE invZ(INVERT(q.z));
-		return TPoint2<TYPE>(q.x*invZ, q.y*invZ);
+		return TPoint2<TYPE>(q.x/**invZ*/, q.y/**invZ*/);
 	}
 
 	// transform from image pixel coords to view plane coords
@@ -345,13 +345,13 @@ public:
 	template <typename TYPE>
 	inline TPoint2<TYPE> TransformPointC2V(const TPoint3<TYPE>& X) const {
 		return TPoint2<TYPE>(
-			TYPE(K(0,0)*X.x/X.z),
-			TYPE(K(1,1)*X.y/X.z) );
+			TYPE(K(0,0)*X.x/*/X.z*/),
+			TYPE(K(1,1)*X.y/*/X.z*/) );
 	}
 	// project from the camera space to image pixels
 	template <typename TYPE>
 	inline TPoint2<TYPE> TransformPointC2I(const TPoint3<TYPE>& X) const {
-		return TransformPointC2I(TPoint2<TYPE>(X.x/X.z, X.y/X.z));
+		return TransformPointC2I(TPoint2<TYPE>(X.x/*/X.z*/, X.y/*/X.z*/));
 	}
 	template <typename TYPE>
 	inline TPoint3<TYPE> TransformPointW2C(const TPoint3<TYPE>& X) const {
