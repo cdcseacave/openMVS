@@ -14,7 +14,11 @@
 
 You can also build the docker image from scratch based on the **Dockerfile** (perhaps with your own changes / modifications) using:
 
-        ./buildFromScratch.sh /path/where/your/SFM/results/are
+```sh
+./buildFromScratch.sh /path/where/your/SFM/results/are
+# With CUDA support:
+./buildFromScratch_CUDA.sh /path/where/your/SFM/results/are
+```
 
 ## NOTES
 
