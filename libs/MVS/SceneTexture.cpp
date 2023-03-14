@@ -2080,7 +2080,7 @@ void MeshTexture::GenerateTexture(bool bGlobalSeamLeveling, bool bLocalSeamLevel
 			const Face& face = faces[idxFace];
 			TexCoord* texcoords = faceTexcoords.data()+idxFace*3;
 			for (int i=0; i<3; ++i) {
-				texcoords[i] = imageData.camera.ProjectPointP(vertices[face[i]]);
+				texcoords[i] = imageData.camera.TransformPointW2I(Cast<REAL>(vertices[face[i]]));
 				//ASSERT(imageData.image.isInsideWithBorder(texcoords[i], border));
 				if (!imageData.image.isInsideWithBorder(texcoords[i], border)) {
 					// crop texture coordinates to the image border

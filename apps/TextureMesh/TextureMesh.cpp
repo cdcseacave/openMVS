@@ -364,6 +364,16 @@ int main(int argc, LPCTSTR* argv)
 	}
 
 	{
+		//Point3 X(-1.32013178e+00,  5.93548357e-01,  1.05550873e+00);
+		Point3 X(-0.30027923, -0.43903857, 2.15636635);
+		Point2 x = scene.images[0].camera.TransformPointW2I(X);
+		Point3 _X = scene.images[0].camera.TransformPointI2W(x);
+		scene.images[0].ReloadImage();
+		Pixel8U c = scene.images[0].image(x);
+		scene.images[0].image.release();
+	}
+
+	{
 	// decimate to the desired resolution
 	if (OPT::fDecimateMesh < 1.f) {
 		ASSERT(OPT::fDecimateMesh > 0.f);

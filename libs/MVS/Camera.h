@@ -307,9 +307,9 @@ public:
 	template <typename TYPE>
 	inline TPoint3<TYPE> TransformPointI2C(const TPoint3<TYPE>& X) const {
 		return TPoint3<TYPE>(
-			TYPE((X.x-K(0,2))*X.z/K(0,0)),
-			TYPE((X.y-K(1,2))*X.z/K(1,1)),
-			X.z );
+			TYPE((X.x-K(0,2))/**X.z*//K(0,0)),
+			TYPE((X.y-K(1,2))/**X.z*//K(1,1)),
+			1/*X.z*/ );
 	}
 	template <typename TYPE>
 	inline TPoint3<TYPE> TransformPointC2W(const TPoint3<TYPE>& X) const {
