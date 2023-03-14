@@ -55,6 +55,7 @@ String strExportROIFileName;
 String strImportROIFileName;
 String strDenseConfigFileName;
 String strExportDepthMapsName;
+String strMaskPath;
 float fMaxSubsceneArea;
 float fSampleMesh;
 float fBorderROI;
@@ -134,6 +135,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		("number-views", boost::program_options::value(&nNumViews)->default_value(nNumViewsDefault), "number of views used for depth-map estimation (0 - all neighbor views available)")
 		("number-views-fuse", boost::program_options::value(&nMinViewsFuse)->default_value(3), "minimum number of images that agrees with an estimate during fusion in order to consider it inlier (<2 - only merge depth-maps)")
 		("ignore-mask-label", boost::program_options::value(&nIgnoreMaskLabel)->default_value(-1), "integer value for the label to ignore in the segmentation mask; the mask for each image is stored in the MVS scene or next to each image with '.mask.png' extension (<0 - disabled)")
+		("mask-path", boost::program_options::value<std::string>(&OPT::strMaskPath), "path to folder containing mask images with '.mask.png' extension")
 		("iters", boost::program_options::value(&nEstimationIters)->default_value(numIters), "number of patch-match iterations")
 		("geometric-iters", boost::program_options::value(&nEstimationGeometricIters)->default_value(2), "number of geometric consistent patch-match iterations (0 - disabled)")
 		("estimate-colors", boost::program_options::value(&nEstimateColors)->default_value(2), "estimate the colors for the dense point-cloud (0 - disabled, 1 - final, 2 - estimate)")
@@ -296,6 +298,20 @@ int main(int argc, LPCTSTR* argv)
 	// load and estimate a dense point-cloud
 	if (!scene.Load(MAKE_PATH_SAFE(OPT::strInputFileName)))
 		return EXIT_FAILURE;
+	if (!OPT::strMaskPath.empty()) {
+		OPT::strMaskPath = Util::ensureValidFolderPath(OPT::strMaskPath);
+		for (Image& image : scene.images) {
+			if (!image.maskName.empty()) {
+				VERBOSE("Image %s has non-empty maskName %s", image.name.c_str(), image.maskName.c_str());
+				return EXIT_FAILURE;
+			}
+			image.maskName = OPT::strMaskPath + Util::getFileName(image.name) + ".mask.png";
+			if (!File::access(image.maskName)) {
+				VERBOSE("Mask image %s not found", image.maskName.c_str());
+				return EXIT_FAILURE;
+			}
+		}
+	}
 	if (!OPT::strImportROIFileName.empty()) {
 		std::ifstream fs(MAKE_PATH_SAFE(OPT::strImportROIFileName));
 		if (!fs)
