@@ -1,4 +1,4 @@
-FROM nvidia/cuda:11.7.1-devel-ubuntu22.04
+FROM ubuntu:22.04
 
 ARG MASTER
 ARG USER_ID
@@ -6,23 +6,21 @@ ARG GROUP_ID
 
 # Prepare and empty machine for building:
 RUN apt-get update -yq
-RUN apt-get -yq install build-essential git cmake libpng-dev libjpeg-dev libtiff-dev libglu1-mesa-dev
-
-ENV PATH=/usr/local/cuda/bin:$PATH
+RUN apt-get -yq install build-essential git cmake vim libpng-dev libjpeg-dev libtiff-dev libglu1-mesa-dev libglew-dev libglfw3-dev
 
 # Eigen 
 RUN git clone https://gitlab.com/libeigen/eigen --branch 3.4
 RUN mkdir eigen_build
 RUN cd eigen_build &&\
-	cmake . ../eigen -DCUDA_TOOLKIT_ROOT_DIR=/usr/local/cuda/ &&\
+	cmake . ../eigen &&\
 	make && make install &&\
 	cd ..
 
 # Boost
-RUN apt-get -yq install libboost-iostreams-dev libboost-program-options-dev libboost-system-dev libboost-serialization-dev
+RUN apt-get -y install libboost-iostreams-dev libboost-program-options-dev libboost-system-dev libboost-serialization-dev
 
 # OpenCV
-RUN DEBIAN_FRONTEND=noninteractive apt-get -yq install libopencv-dev
+RUN DEBIAN_FRONTEND=noninteractive apt-get install -yq libopencv-dev
 
 # CGAL
 RUN apt-get -yq install libcgal-dev libcgal-qt5-dev
@@ -35,7 +33,7 @@ RUN if [[ -n "$MASTER" ]] ; then git clone https://github.com/cdcseacave/openMVS
 
 RUN mkdir openMVS_build
 RUN cd openMVS_build &&\
-	cmake . ../openMVS -DCMAKE_BUILD_TYPE=Release -DVCG_ROOT=/vcglib -DOpenMVS_USE_CUDA=ON -DCMAKE_LIBRARY_PATH=/usr/local/cuda/lib64/stubs/ -DCUDA_TOOLKIT_ROOT_DIR=/usr/local/cuda/ -DCUDA_INCLUDE_DIRS=/usr/local/cuda/include/ -DCUDA_CUDART_LIBRARY=/usr/local/cuda/lib64 -DCUDA_NVCC_EXECUTABLE=/usr/local/cuda/bin/
+	cmake . ../openMVS -DCMAKE_BUILD_TYPE=Release -DVCG_ROOT=/vcglib -DOpenMVS_USE_CUDA=OFF
 
 # Install OpenMVS library
 RUN cd openMVS_build &&\
