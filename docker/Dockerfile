@@ -6,7 +6,7 @@ ARG GROUP_ID
 
 # Prepare and empty machine for building:
 RUN apt-get update -yq
-RUN apt-get -yq install build-essential git cmake libpng-dev libjpeg-dev libtiff-dev libglu1-mesa-dev
+RUN apt-get -yq install build-essential git cmake libpng-dev libjpeg-dev libtiff-dev libglu1-mesa-dev libglew-dev libglfw3-dev
 
 # Eigen 
 RUN git clone https://gitlab.com/libeigen/eigen --branch 3.4
