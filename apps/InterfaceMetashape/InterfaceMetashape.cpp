@@ -803,7 +803,7 @@ int main(int argc, LPCTSTR* argv)
 
 	// undistort images
 	const String pathData(MAKE_PATH_FULL(WORKING_FOLDER_FULL, OPT::strOutputImageFolder));
-	const bool bAssignPoints(!scene.pointcloud.IsEmpty() && !scene.pointcloud.IsValid());
+	const bool bAssignPoints(!scene.pointcloud.IsEmpty() && scene.pointcloud.IsValid());
 	Util::Progress progress(_T("Processed images"), scene.images.size());
 	GET_LOGCONSOLE().Pause();
 	#ifdef _USE_OPENMP
