@@ -1280,7 +1280,7 @@ protected:
 bool Scene::RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsigned nMaxViews,
 					   float fDecimateMesh, unsigned nCloseHoles, unsigned nEnsureEdgeSize, unsigned nMaxFaceArea,
 					   unsigned nScales, float fScaleStep,
-					   unsigned nReduceMemory, unsigned nAlternatePair, float fRegularityWeight, float fRatioRigidityElasticity, float fThPlanarVertex, float fGradientStep)
+					   unsigned nAlternatePair, float fRegularityWeight, float fRatioRigidityElasticity, float fGradientStep, float fThPlanarVertex, unsigned nReduceMemory)
 {
 	if (pointcloud.IsEmpty() && !ImagesHaveNeighbors())
 		SampleMeshWithVisibility();

@@ -24,6 +24,12 @@
     "zlib"
   ],
   "features": {
+    "python": {
+      "description": "Python bindings for OpenMVS",
+      "dependencies": [
+        "boost-python"
+      ]
+    },
     "cuda": {
       "description": "CUDA support for OpenMVS",
       "dependencies": [

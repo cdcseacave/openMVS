@@ -23,8 +23,10 @@
 // cList index type
 #ifdef _SUPPORT_CPP11
 #define ARR2IDX(arr) typename std::remove_reference<decltype(arr)>::type::size_type
+#define SIZE2IDX(arr) typename std::remove_const<typename std::remove_reference<decltype(arr)>::type>::type
 #else
 #define ARR2IDX(arr) IDX
+#define SIZE2IDX(arr) IDX
 #endif
 
 // cList iterator by index
@@ -44,10 +46,10 @@
 
 // raw data array iterator by index
 #ifndef FOREACHRAW
-#define FOREACHRAW(var, sz) for (IDX var=0, var##Size=(sz); var<var##Size; ++var)
+#define FOREACHRAW(var, sz) for (SIZE2IDX(sz) var=0, var##Size=(sz); var<var##Size; ++var)
 #endif
 #ifndef RFOREACHRAW
-#define RFOREACHRAW(var, sz) for (IDX var=sz; var-->0; )
+#define RFOREACHRAW(var, sz) for (SIZE2IDX(sz) var=sz; var-->0; )
 #endif
 // raw data array iterator by pointer
 #ifndef FOREACHRAWPTR
@@ -284,6 +286,15 @@ public:
 		TYPE tmp = _vector[idx1];
 		_vector[idx1] = _vector[idx2];
 		_vector[idx2] = tmp;
+	}
+	
+	inline bool		operator==(const cList& rList) const {
+		if (_size != rList._size)
+			return false;
+		for (IDX i = 0; i < _size; ++i)
+			if (_vector[i] != rList._vector[i])
+				return false;
+		return true;
 	}
 
 	// Set the allocated memory (normally used for types without constructor).
@@ -1573,6 +1584,14 @@ public:
 	inline TYPE& operator[](IDX index) {
 		ASSERT(index < _size);
 		return _vector[index];
+	}
+	inline bool operator==(const cListFixed& rList) const {
+		if (_size != rList._size)
+			return false;
+		for (IDX i = 0; i < _size; ++i)
+			if (_vector[i] != rList._vector[i])
+				return false;
+		return true;
 	}
 	inline TYPE& AddEmpty() {
 		ASSERT(_size < N);

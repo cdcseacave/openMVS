@@ -866,7 +866,7 @@ void SemiGlobalMatcher::Match(const ViewData& leftImage, const ViewData& rightIm
 	const cv::Size sizeValid(size.width-2*halfWindowSizeX, size.height-2*halfWindowSizeY);
 	ASSERT(leftImage.imageColor.size() == size);
 
-	#if 0
+	#if 0 && !defined(_RELEASE)
 	// display search info (average disparity and range)
 	DisplayState(sizeValid);
 	#endif
@@ -1811,6 +1811,7 @@ void SemiGlobalMatcher::RefineDisparityMap(DisparityMap& disparityMap) const
 }
 
 
+#ifndef _RELEASE
 // extract disparity and range from the pixel-map
 void SemiGlobalMatcher::DisplayState(const cv::Size& size) const
 {
@@ -1831,6 +1832,7 @@ void SemiGlobalMatcher::DisplayState(const cv::Size& size) const
 
 	cv::destroyAllWindows();
 }
+#endif
 
 // Compute the disparity-map for the rectified image from the given depth-map of the un-rectified image;
 // the disparity map needs to be already constructed at the desired size (valid size, excluding the border)
