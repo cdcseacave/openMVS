@@ -4280,7 +4280,7 @@ void Mesh::ProjectOrtho(const Camera& camera, DepthMap& depthMap) const
 			: Base(_vertices, _camera, _depthMap) {}
 		inline bool ProjectVertex(const Mesh::Vertex& pt, int v) {
 			return (ptc[v] = camera.TransformPointW2C(Cast<REAL>(pt))).z > 0 &&
-				depthMap.isInsideWithBorder<float,3>(pti[v] = camera.TransformPointC2I(Point2(ptc[v].x,ptc[v].y)));
+				depthMap.isInsideWithBorder<float,3>(pti[v] = camera.TransformPointOrthoC2I(ptc[v]));
 		}
 		void Raster(const ImageRef& pt, const Point3f& bary) {
 			const Depth z(ComputeDepth(bary));
@@ -4312,7 +4312,7 @@ void Mesh::ProjectOrtho(const Camera& camera, DepthMap& depthMap, Image8U3& imag
 		}
 		inline bool ProjectVertex(const Mesh::Vertex& pt, int v) {
 			return (ptc[v] = camera.TransformPointW2C(Cast<REAL>(pt))).z > 0 &&
-				depthMap.isInsideWithBorder<float,3>(pti[v] = camera.TransformPointC2I(Point2(ptc[v].x,ptc[v].y)));
+				depthMap.isInsideWithBorder<float,3>(pti[v] = camera.TransformPointOrthoC2I(ptc[v]));
 		}
 		void Raster(const ImageRef& pt, const Point3f& bary) {
 			const Depth z(ComputeDepth(bary));
