@@ -16,6 +16,16 @@ while [[ $# -gt 0 ]]; do
             shift
             shift
             ;;
+        --user_id)
+            USER_ID="$2"
+            shift
+            shift
+            ;;
+        --group_id)
+            GROUP_ID="$2"
+            shift
+            shift
+            ;;
         *)
             echo "Unknown argument: $key"
             exit 1
@@ -31,6 +41,12 @@ else
     echo "Building without CUDA support"
     EIGEN_BUILD_ARG=""
     OPENMVS_BUILD_ARG="-DOpenMVS_USE_CUDA=OFF"
+fi
+
+if [[ "$MASTER" == "1" ]]; then
+    echo "Pulling from master branch"
+else
+    echo "Pulling from develop branch"
 fi
 
 apt-get update -yq
@@ -70,7 +86,7 @@ cd openMVS_build &&\
 # Install OpenMVS library
 make -j4 &&\
     make install &&\
-    cd .. && rm -rf openMVS_build openMVS vcglib
+    cd .. && rm -rf openMVS_build vcglib
 
 # Set permissions such that the output files can be accessed by the current user (optional)
 echo "Setting permissions for user $USER_ID:$GROUP_ID"
