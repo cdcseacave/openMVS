@@ -2201,7 +2201,10 @@ public:
 
 	bool Load(const String&);
 	bool Save(const String&) const;
+
+	#ifndef _RELEASE
 	void Show(const String& winname, int delay=0, bool bDestroy=true) const;
+	#endif
 
 	#ifdef _USE_BOOST
 	// serialize

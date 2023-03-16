@@ -34,6 +34,22 @@ public:
 	inline String(size_t n, value_type v) : Base(n, v) {}
 	inline String(LPCTSTR sz, size_t count) : Base(sz, count) {}
 	inline String(LPCTSTR sz, size_t offset, size_t count) : Base(sz, offset, count) {}
+	#ifdef _SUPPORT_CPP11
+	inline String(Base&& rhs) : Base(std::forward<Base>(rhs)) {}
+	inline String(String&& rhs) : Base(std::forward<Base>(rhs)) {}
+	inline String(const String& rhs) : Base(rhs) {}
+
+	inline String& operator=(Base&& rhs) { Base::operator=(std::forward<Base>(rhs)); return *this; }
+	inline String& operator=(String&& rhs) { Base::operator=(std::forward<Base>(rhs)); return *this; }
+	inline String& operator=(TCHAR rhs) { Base::operator=(rhs); return *this; }
+	inline String& operator=(LPCTSTR rhs) { Base::operator=(rhs); return *this; }
+	inline String& operator=(const String& rhs) { Base::operator=(rhs); return *this; }
+	#endif
+
+	inline String& operator+=(TCHAR rhs) { *this = (*this) + rhs; return *this; }
+	inline String& operator+=(LPCTSTR rhs) { *this = (*this) + rhs; return *this; }
+	inline String& operator+=(const Base& rhs) { *this = (*this) + rhs; return *this; }
+	inline String& operator+=(const String& rhs) { *this = (*this) + rhs; return *this; }
 
 	inline void Release() { return clear(); }
 	inline bool IsEmpty() const { return empty(); }
@@ -187,6 +203,26 @@ protected:
 	}
 #endif
 };
+/*----------------------------------------------------------------*/
+
+inline String operator+(const String& lhs, TCHAR rhs) { return std::operator+(lhs, rhs); }
+inline String operator+(const String& lhs, LPCTSTR rhs) { return std::operator+(lhs, rhs); }
+inline String operator+(const String& lhs, const std::string& rhs) { return std::operator+(lhs, rhs); }
+inline String operator+(TCHAR lhs, const String& rhs) { return std::operator+(lhs, rhs); }
+inline String operator+(LPCTSTR lhs, const String& rhs) { return std::operator+(lhs, rhs); }
+inline String operator+(const std::string& lhs, const String& rhs) { return std::operator+(lhs, rhs); }
+inline String operator+(const String& lhs, const String& rhs) { return std::operator+(lhs, rhs); }
+#ifdef _SUPPORT_CPP11
+inline String operator+(String&& lhs, TCHAR rhs) { return std::operator+(std::forward<String::Base>(lhs), rhs); }
+inline String operator+(String&& lhs, LPCTSTR rhs) { return std::operator+(std::forward<String::Base>(lhs), rhs); }
+inline String operator+(String&& lhs, const std::string& rhs) { return std::operator+(std::forward<String::Base>(lhs), rhs); }
+inline String operator+(TCHAR lhs, String&& rhs) { return std::operator+(lhs, std::forward<String::Base>(rhs)); }
+inline String operator+(LPCTSTR lhs, String&& rhs) { return std::operator+(lhs, std::forward<String::Base>(rhs)); }
+inline String operator+(const std::string& lhs, String&& rhs) { return std::operator+(lhs, std::forward<String::Base>(rhs)); }
+inline String operator+(const String& lhs, String&& rhs) { return std::operator+(lhs, std::forward<String::Base>(rhs)); }
+inline String operator+(String&& lhs, const String& rhs) { return std::operator+(std::forward<String::Base>(lhs), rhs); }
+inline String operator+(String&& lhs, String&& rhs) { return std::operator+(std::forward<String::Base>(lhs), std::forward<String::Base>(rhs)); }
+#endif
 /*----------------------------------------------------------------*/
 
 } // namespace SEACAVE

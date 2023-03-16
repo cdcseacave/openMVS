@@ -64,3 +64,45 @@ endif()
 add_executable(your_project source_code.cpp)
 target_link_libraries(your_project PRIVATE OpenMVS::MVS)
 ```
+
+-------------------
+Python API
+-------------------
+
+The Python API can be enable by setting the `OpenMVS_USE_PYTHON` option to `ON` when running `cmake`. The Python API is built as a shared library and can be used in any Python project. Example:
+```
+import pyOpenMVS
+    
+def run_mvs():
+    # set the working folder; all files used next are relative to this folder (optional)
+    pyOpenMVS.set_working_folder("folder/containing/the/scene")
+    # create an empty scene
+    scene = pyOpenMVS.Scene()
+    # load a MVS scene from a file
+    if not scene.load("scene.mvs"):
+        print("ERROR: scene could not be loaded")
+        return
+    # estimate depth-maps and fuse them into a point-cloud
+    if not scene.dense_reconstruction():
+        print("ERROR: could not dense reconstruct the scene")
+        return
+    scene.save_pointcloud("pointcloud.ply")
+    # reconstruct a mesh from the point-cloud
+    if not scene.reconstruct_mesh():
+        print("ERROR: could not reconstruct the mesh for this scene")
+        return
+    scene.save_mesh("mesh.ply")
+    # refine the mesh using gradient descent optimization (optional)
+    if not scene.refine_mesh():
+        print("ERROR: could not refine the mesh for this scene")
+        return
+    scene.save_mesh("refined_mesh.ply")
+    # texture the mesh using the input images
+    if not scene.texture_mesh():
+        print("ERROR: could not texture the mesh for this scene")
+        return
+    scene.save_mesh("textured_mesh.ply")
+
+if __name__ == "__main__":
+    run_mvs()
+```

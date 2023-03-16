@@ -39,10 +39,10 @@ jobs:
         uses: actions/checkout@v3
 
       - name: Restore artifacts, or setup vcpkg for building artifacts
-        uses: lukka/run-vcpkg@v10.6
+        uses: lukka/run-vcpkg@v10
         with:
           vcpkgDirectory: '${{ github.workspace }}/vcpkg'
-          vcpkgGitCommitId: '4cb4a5c5ddcb9de0c83c85837ee6974c8333f032'
+          vcpkgGitCommitId: 'a7b6122f6b6504d16d96117336a0562693579933'
 
       - name: Install Ubuntu dependencies
         if: matrix.os == 'ubuntu-latest'
@@ -57,7 +57,7 @@ jobs:
 
       - name: Configure CMake
         run: |
-          cmake -S . -B make -DCMAKE_BUILD_TYPE=${{ matrix.build-type }} -DVCPKG_TARGET_TRIPLET=${{ matrix.triplet }}
+          cmake -S . -B make -DCMAKE_BUILD_TYPE=${{ matrix.build-type }} -DVCPKG_TARGET_TRIPLET=${{ matrix.triplet }} -DOpenMVS_USE_CUDA=OFF
 
       - name: Build
         working-directory: ./make

@@ -71,7 +71,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	// group of options allowed only on command line
 	boost::program_options::options_description generic("Generic options");
 	generic.add_options()
-		("help,h", "produce this help message")
+		("help,h", "imports SfM scene stored either in Metashape Agisoft/BlocksExchange or ContextCapture BlocksExchange XML format")
 		("working-folder,w", boost::program_options::value<std::string>(&WORKING_FOLDER), "working directory (default current directory)")
 		("config-file,c", boost::program_options::value<std::string>(&OPT::strConfigFileName)->default_value(APPNAME _T(".cfg")), "file name containing program options")
 		("archive-type", boost::program_options::value(&OPT::nArchiveType)->default_value(ARCHIVE_MVS), "project archive type: 0-text, 1-binary, 2-compressed binary")
@@ -186,6 +186,7 @@ struct DistCoeff {
 		};
 	};
 	DistCoeff() : k1(0), k2(0), p1(0), p2(0), k3(0), k4(0), k5(0), k6(0) {}
+	bool HasDistortion() const { return k1 != 0 || k2 != 0 || k3 != 0 || k4 != 0 || k5 != 0 || k6 != 0; }
 };
 typedef cList<DistCoeff> DistCoeffs;
 typedef cList<DistCoeffs> PlatformDistCoeffs;
@@ -512,16 +513,18 @@ bool ParseBlocksExchangeXML(tinyxml2::XMLDocument& doc, Scene& scene, PlatformDi
 		// parse distortion parameters
 		DistCoeff& dc = pltDistCoeffs.AddEmpty().AddEmpty(); {
 			const tinyxml2::XMLElement* distortion=photogroup->FirstChildElement("Distortion");
-			if ((elem=distortion->FirstChildElement("K1")) != NULL)
-				dc.k1 = elem->DoubleText();
-			if ((elem=distortion->FirstChildElement("K2")) != NULL)
-				dc.k2 = elem->DoubleText();
-			if ((elem=distortion->FirstChildElement("K3")) != NULL)
-				dc.k3 = elem->DoubleText();
-			if ((elem=distortion->FirstChildElement("P1")) != NULL)
-				dc.p2 = elem->DoubleText();
-			if ((elem=distortion->FirstChildElement("P2")) != NULL)
-				dc.p1 = elem->DoubleText();
+			if (distortion) {
+				if ((elem=distortion->FirstChildElement("K1")) != NULL)
+					dc.k1 = elem->DoubleText();
+				if ((elem=distortion->FirstChildElement("K2")) != NULL)
+					dc.k2 = elem->DoubleText();
+				if ((elem=distortion->FirstChildElement("K3")) != NULL)
+					dc.k3 = elem->DoubleText();
+				if ((elem=distortion->FirstChildElement("P1")) != NULL)
+					dc.p2 = elem->DoubleText();
+				if ((elem=distortion->FirstChildElement("P2")) != NULL)
+					dc.p1 = elem->DoubleText();
+			}
 		}
 		++nCameras;
 		for (const tinyxml2::XMLElement* photo=photogroup->FirstChildElement("Photo"); photo!=NULL; photo=photo->NextSiblingElement()) {
@@ -643,6 +646,10 @@ bool ParseSceneXML(Scene& scene, PlatformDistCoeffs& pltDistCoeffs, size_t& nCam
 // undistort image using Brown's model
 bool UndistortBrown(Image& imageData, uint32_t ID, const DistCoeff& dc, const String& pathData)
 {
+	// do we need to undistort?
+	if (!dc.HasDistortion())
+		return true;
+
 	// load image pixels
 	if (!imageData.ReloadImage())
 		return false;
@@ -803,7 +810,7 @@ int main(int argc, LPCTSTR* argv)
 
 	// undistort images
 	const String pathData(MAKE_PATH_FULL(WORKING_FOLDER_FULL, OPT::strOutputImageFolder));
-	const bool bAssignPoints(!scene.pointcloud.IsEmpty() && !scene.pointcloud.IsValid());
+	const bool bAssignPoints(scene.pointcloud.IsEmpty() || !scene.pointcloud.IsValid());
 	Util::Progress progress(_T("Processed images"), scene.images.size());
 	GET_LOGCONSOLE().Pause();
 	#ifdef _USE_OPENMP

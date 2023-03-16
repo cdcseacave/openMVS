@@ -646,12 +646,8 @@ macro(optimize_default_compiler_settings)
 
 	# Extra link libs if the user selects building static libs:
 	# Android does not need these settings because they are already set by toolchain file
-	if(CMAKE_COMPILER_IS_GNUCXX AND NOT ANDROID)
-		if(BUILD_SHARED_LIBS)
-			set(BUILD_EXTRA_FLAGS "${BUILD_EXTRA_FLAGS} -fPIC")
-		else()
-			set(BUILD_EXTRA_LINKER_LIBS "${BUILD_EXTRA_LINKER_LIBS} stdc++")
-		endif()
+	if(CMAKE_COMPILER_IS_GNUCXX AND NOT ANDROID AND NOT BUILD_SHARED_LIBS)
+		set(BUILD_EXTRA_LINKER_LIBS "${BUILD_EXTRA_LINKER_LIBS} stdc++")
 	endif()
 
 	# Add user supplied extra options (optimization, etc...)
@@ -839,6 +835,9 @@ function(cxx_library_with_type name folder type cxx_flags)
   endif()
   # Set project folder
   set_target_properties("${name}" PROPERTIES FOLDER "${folder}")
+  if(BUILD_SHARED_LIBS OR PARTIAL_BUILD_SHARED_LIBS)
+    set_target_properties("${name}" PROPERTIES POSITION_INDEPENDENT_CODE ON)
+  endif()
 endfunction()
 
 # cxx_executable_with_flags(name cxx_flags libs srcs...)
