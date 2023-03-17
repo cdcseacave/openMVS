@@ -148,7 +148,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	// initialize optional options
 	Util::ensureValidPath(OPT::strOutputFileName);
 	Util::ensureUnifySlash(OPT::strOutputFileName);
-	if (OPT::strOutputFileName.IsEmpty())
+	if (OPT::strOutputFileName.empty())
 		OPT::strOutputFileName = Util::getFileName(OPT::strInputFileName) + MVS_EXT;
 
 	// initialize global options
@@ -660,7 +660,7 @@ bool UndistortBrown(Image& imageData, uint32_t ID, const DistCoeff& dc, const St
 	#if 1
 	const KMatrix& K(prevK);
 	#else
-	const KMatrix K(cv::getOptimalNewCameraMatrix(prevK, distCoeffs, imageData.GetSize(), 0.0, cv::Size(), NULL, true));
+	const KMatrix K(cv::getOptimalNewCameraMatrix(prevK, distCoeffs, imageData.size(), 0.0, cv::Size(), NULL, true));
 	ASSERT(K(0,2) == Camera::ComposeK(prevK(0,0), prevK(1,1), imageData.width(), imageData.height())(0,2));
 	ASSERT(K(1,2) == Camera::ComposeK(prevK(0,0), prevK(1,1), imageData.width(), imageData.height())(1,2));
 	if (K.IsEqual(prevK)) {
@@ -693,7 +693,7 @@ void AssignPoints(const Image& imageData, uint32_t ID, PointCloud& pointcloud)
 	const Depth thCloseDepth(0.1f);
 
 	// sort points by depth
-	IndexScoreArr points(0, pointcloud.points.GetSize());
+	IndexScoreArr points(0, pointcloud.points.size());
 	FOREACH(p, pointcloud.points) {
 		const PointCloud::Point& X(pointcloud.points[p]);
 		const float d((float)imageData.camera.PointDepth(X));
@@ -717,7 +717,7 @@ void AssignPoints(const Image& imageData, uint32_t ID, PointCloud& pointcloud)
 		ASSERT(Xc.z > 0);
 		// skip point if the (cos) angle between
 		// its normal and the point to view vector is negative
-		if (!pointcloud.normals.IsEmpty() && Xc.dot(pointcloud.normals[pPD->idx]) > 0)
+		if (!pointcloud.normals.empty() && Xc.dot(pointcloud.normals[pPD->idx]) > 0)
 			continue;
 		const Point2f x(imageData.camera.TransformPointC2I(Xc));
 		const ImageRef ir(ROUND2INT(x));
@@ -794,23 +794,21 @@ int main(int argc, LPCTSTR* argv)
 
 	Scene scene(OPT::nMaxThreads);
 
-	// read the 3D point-cloud if available
-	if (!OPT::strPointsFileName.empty()) {
-		if (!scene.pointcloud.Load(MAKE_PATH_SAFE(OPT::strPointsFileName)))
-			return EXIT_FAILURE;
-		ASSERT(!scene.pointcloud.IsValid());
-		scene.pointcloud.pointViews.Resize(scene.pointcloud.points.GetSize());
-	}
-
 	// convert data from Metashape format to OpenMVS
 	PlatformDistCoeffs pltDistCoeffs;
 	size_t nCameras(0), nPoses(0);
 	if (!ParseSceneXML(scene, pltDistCoeffs, nCameras, nPoses))
 		return EXIT_FAILURE;
 
+	// read the 3D point-cloud if available
+	if (!OPT::strPointsFileName.empty() && !scene.pointcloud.Load(MAKE_PATH_SAFE(OPT::strPointsFileName)))
+		return EXIT_FAILURE;
+	const bool bAssignPoints(!scene.pointcloud.IsEmpty() && !scene.pointcloud.IsValid());
+	if (bAssignPoints)
+		scene.pointcloud.pointViews.resize(scene.pointcloud.GetSize());
+
 	// undistort images
 	const String pathData(MAKE_PATH_FULL(WORKING_FOLDER_FULL, OPT::strOutputImageFolder));
-	const bool bAssignPoints(scene.pointcloud.IsEmpty() || !scene.pointcloud.IsValid());
 	Util::Progress progress(_T("Processed images"), scene.images.size());
 	GET_LOGCONSOLE().Pause();
 	#ifdef _USE_OPENMP

@@ -86,9 +86,9 @@ public:
 
 	void Release();
 
-	inline bool IsEmpty() const { ASSERT(points.GetSize() == pointViews.GetSize() || pointViews.IsEmpty()); return points.IsEmpty(); }
-	inline bool IsValid() const { ASSERT(points.GetSize() == pointViews.GetSize() || pointViews.IsEmpty()); return !pointViews.IsEmpty(); }
-	inline size_t GetSize() const { ASSERT(points.GetSize() == pointViews.GetSize() || pointViews.IsEmpty()); return points.GetSize(); }
+	inline bool IsEmpty() const { ASSERT(points.size() == pointViews.size() || pointViews.empty()); return points.empty(); }
+	inline bool IsValid() const { ASSERT(points.size() == pointViews.size() || pointViews.empty()); return !pointViews.empty(); }
+	inline size_t GetSize() const { ASSERT(points.size() == pointViews.size() || pointViews.empty()); return points.size(); }
 
 	void RemovePoint(IDX);
 	void RemovePointsOutside(const OBB3f&);
@@ -156,7 +156,7 @@ struct IntersectRayPoints {
 		// test ray-point intersection and keep the closest
 		FOREACHRAWPTR(pIdx, idices, size) {
 			const PointCloud::Index idx(*pIdx);
-			if (!pointcloud.pointViews.IsEmpty() && pointcloud.pointViews[idx].size() < minViews)
+			if (!pointcloud.pointViews.empty() && pointcloud.pointViews[idx].size() < minViews)
 				continue;
 			const PointCloud::Point& X = pointcloud.points[idx];
 			REAL dist;
