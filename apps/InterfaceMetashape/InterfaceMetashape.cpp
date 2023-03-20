@@ -571,6 +571,8 @@ bool ParseBlocksExchangeXML(tinyxml2::XMLDocument& doc, Scene& scene, PlatformDi
 				imageData.avgDepth = (float)elem->DoubleText();
 			else if (photo->FirstChildElement("NearDepth") != NULL && photo->FirstChildElement("FarDepth") != NULL)
 				imageData.avgDepth = (float)((photo->FirstChildElement("NearDepth")->DoubleText() + photo->FirstChildElement("FarDepth")->DoubleText())/2);
+			else
+				imageData.avgDepth = 0;
 			mapImageID.emplace(imageData.ID, static_cast<IIndex>(scene.images.size()));
 			scene.images.emplace_back(std::move(imageData));
 			++nPoses;
@@ -699,7 +701,7 @@ void AssignPoints(const Image& imageData, uint32_t ID, PointCloud& pointcloud)
 		const float d((float)imageData.camera.PointDepth(X));
 		if (d <= 0)
 			continue;
-		points.AddConstruct((uint32_t)p, d);
+		points.emplace_back((uint32_t)p, d);
 	}
 	points.Sort();
 
@@ -843,18 +845,46 @@ int main(int argc, LPCTSTR* argv)
 	#endif
 	progress.close();
 
-	// filter invalid points
-	if (!scene.pointcloud.IsEmpty()) {
+	if (scene.pointcloud.IsValid()) {
+		// filter invalid points
 		RFOREACH(i, scene.pointcloud.points)
 			if (scene.pointcloud.pointViews[i].size() < 2)
 				scene.pointcloud.RemovePoint(i);
+		// compute average scene depth per image
+		if (!std::any_of(scene.images.begin(), scene.images.end(), [](const Image& imageData) { return imageData.avgDepth > 0; })) {
+			std::vector<float> avgDepths(scene.images.size(), 0.f);
+			std::vector<uint32_t> numDepths(scene.images.size(), 0u);
+			FOREACH(idxPoint, scene.pointcloud.points) {
+				const Point3 X(scene.pointcloud.points[idxPoint]);
+				for (const PointCloud::View& idxImage: scene.pointcloud.pointViews[idxPoint]) {
+					const Image& imageData = scene.images[idxImage];
+					const float depth((float)imageData.camera.PointDepth(X));
+					if (depth <= 0) {
+						avgDepths[idxImage] += depth;
+						++numDepths[idxImage];
+					}
+				}
+			}
+			FOREACH(idxImage, scene.images) {
+				Image& imageData = scene.images[idxImage];
+				if (numDepths[idxImage] > 0)
+					imageData.avgDepth = avgDepths[idxImage] / numDepths[idxImage];
+			}
+		}
 	}
+
+	// print average scene depth per image stats
+	MeanStdMinMax<float,double> acc;
+	for (const Image& imageData: scene.images)
+		if (imageData.avgDepth > 0)
+			acc.Update(imageData.avgDepth);
 
 	// write OpenMVS input data
 	scene.Save(MAKE_PATH_SAFE(OPT::strOutputFileName), (ARCHIVE_TYPE)OPT::nArchiveType);
 
-	VERBOSE("Exported data: %u platforms, %u cameras, %u poses, %u images, %u vertices (%s)",
+	VERBOSE("Exported data: %u platforms, %u cameras, %u poses, %u images, %u vertices, %g min / %g mean (%g std) / %g max average scene depth per image (%s)",
 			scene.platforms.size(), nCameras, nPoses, scene.images.size(), scene.pointcloud.GetSize(),
+			acc.minVal, acc.GetMean(), acc.GetStdDev(), acc.maxVal,
 			TD_TIMER_GET_FMT().c_str());
 
 	Finalize();
