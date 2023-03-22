@@ -1,2 +1,0 @@
-
-docker build -t openmvs-ubuntu:latest --build-arg USER_ID=$(id -u) --build-arg GROUP_ID=$(id -g) -f docker/gpu/Dockerfile.cuda .

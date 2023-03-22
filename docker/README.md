@@ -16,20 +16,13 @@
 
 You can also build the docker image from scratch based on the **Dockerfile** (perhaps with your own changes / modifications) using:
 
+```sh
+./buildFromScratch.sh --workspace /path/where/your/SFM/results/are
+# With CUDA support:
+./buildFromScratch.sh --cuda --workspace /path/where/your/SFM/results/are
+# From master branch:
+./buildFromScratch.sh --master --workspace /path/where/your/SFM/results/are
 ```
-docker/cpu/build
-docker/cpu/run /path/to/your/SFM/results/are
-```
-
-### Build for CUDA
-
-```
-docker/gpu/build
-docker/gpu/run /path/to/your/SFM/results/are
-```
-
-The files will be mounted to `/opt/src/` inside the docker
-
 
 ## NOTES
 
