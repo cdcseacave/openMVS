@@ -270,9 +270,9 @@ void UndistortImage(const Camera& camera, const REAL& k1, const Image8U3 imgIn, 
 		for (int u=0; u<w; ++u) {
 			// compute corresponding coordinates in the distorted image
 			pt.x = (float)u; pt.y = (float)v;
-			Camera::NormalizeProjection(invK.val, pt.ptr(), pt.ptr());
+			NormalizeProjection(invK.val, pt.ptr(), pt.ptr());
 			pt = DistortPointR1(pt, k1);
-			Camera::NormalizeProjection(K.val, pt.ptr(), pt.ptr());
+			NormalizeProjection(K.val, pt.ptr(), pt.ptr());
 
 			// if coordinates in range
 			Pixel8U& col = imgOut(v,u);

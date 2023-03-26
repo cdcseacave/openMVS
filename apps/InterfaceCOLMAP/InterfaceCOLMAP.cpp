@@ -89,7 +89,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	// group of options allowed only on command line
 	boost::program_options::options_description generic("Generic options");
 	generic.add_options()
-		("help,h", "produce this help message")
+		("help,h", "imports SfM or MVS scene stored in COLMAP undistoreted format OR exports MVS scene to COLMAP format")
 		("working-folder,w", boost::program_options::value<std::string>(&WORKING_FOLDER), "working directory (default current directory)")
 		("config-file,c", boost::program_options::value<std::string>(&OPT::strConfigFileName)->default_value(APPNAME _T(".cfg")), "file name containing program options")
 		("archive-type", boost::program_options::value(&OPT::nArchiveType)->default_value(ARCHIVE_DEFAULT), "project archive type: 0-text, 1-binary, 2-compressed binary")
