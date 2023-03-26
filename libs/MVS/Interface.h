@@ -386,6 +386,21 @@ struct Interface
 			static uint32_t GetNormalizationScale(uint32_t width, uint32_t height) { return std::max(width, height); }
 			uint32_t GetNormalizationScale() const { return GetNormalizationScale(width, height); }
 
+			// project point: camera to image (homogeneous) coordinates
+			inline Pos3d operator * (const Pos3d& X) const {
+				return Pos3d(
+					K(0,2)+K(0,0)*X.x/X.z,
+					K(1,2)+K(1,1)*X.y/X.z,
+					1.0);
+			}
+			// back-project point: image (z is the depth) to camera coordinates
+			inline Pos3d operator / (const Pos3d& x) const {
+				return Pos3d(
+					(x.x-K(0,2))*x.z/K(0,0),
+					(x.y-K(1,2))*x.z/K(1,1),
+					1.0);
+			}
+
 			template <class Archive>
 			void serialize(Archive& ar, const unsigned int version) {
 				ar & name;
