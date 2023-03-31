@@ -1356,7 +1356,7 @@ void Mesh::Clean(float fDecimate, float fSpurious, bool bRemoveSpikes, unsigned 
 		params.iter = 3;
 		params.surfDistCheck = false;
 		params.maxSurfDist = fEdgeLength * 0.4f;
-		params.cleanFlag = true;
+		params.cleanFlag = false;
 		params.userSelectedCreases = false;
 		try {
 			vcg::tri::IsotropicRemeshing<CLEAN::Mesh>::Do(mesh, original, params);
