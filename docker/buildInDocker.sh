@@ -50,7 +50,8 @@ else
 fi
 
 apt-get update -yq
-apt-get -yq install build-essential git cmake libpng-dev libjpeg-dev libtiff-dev libglu1-mesa-dev
+
+apt-get -yq install build-essential git cmake libpng-dev libjpeg-dev libtiff-dev libglu1-mesa-dev libglew-dev libglfw3-dev
 
 # Eigen
 git clone https://gitlab.com/libeigen/eigen --branch 3.4
