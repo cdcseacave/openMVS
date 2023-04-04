@@ -312,7 +312,7 @@ bool DepthEstimator::ImportIgnoreMask(const Image& image0, const Image8U::Size& 
 	bmask.memset(0xFF);
 	for (int r=0; r<size.height; ++r) {
 		for (int c=0; c<size.width; ++c) {
-			if (mask(r,c) == nIgnoreMaskLabel)
+			if (mask(r,c) <= nIgnoreMaskLabel)
 				bmask.unset(r,c);
 		}
 	}
