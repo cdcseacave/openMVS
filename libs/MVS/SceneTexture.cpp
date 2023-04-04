@@ -541,7 +541,7 @@ bool MeshTexture::ListCameraFaces(FaceDataViewArr& facesDatas, float fOutlierThr
 				ASSERT((idxFace == NO_ID && depthMap(j,i) == 0) || (idxFace != NO_ID && depthMap(j,i) > 0));
 				if (idxFace == NO_ID)
 					continue;
-				if (&mask && !mask.isSet(j, i)) {
+				if (!mask.empty() && !mask.isSet(j, i)) {
 					continue;
 				}
 				FaceDataArr& faceDatas = facesDatas[idxFace];
