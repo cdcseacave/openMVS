@@ -1625,3 +1625,341 @@ bool Scene::EstimateROI(int nEstimateROI, float scale)
 	return true;
 } // EstimateROI
 /*----------------------------------------------------------------*/
+
+
+
+// calculate the center(X,Y) of the cylinder, the radius and min/max Z
+// from camera position and sparse point cloud, if that exists
+void Scene::ComputeTowerCylinder(Point2f& centerPoint, float& fRadius, float& fROIRadius, float& zMin, float& zMax, float& minCamZ) {
+	AABB3f aabbOutsideCameras(true);
+	std::vector<Point2f> cameras2D(images.size());
+	FOREACH (imgIdx, images) {
+		const Eigen::Vector3f camPos(Cast<float>(images[imgIdx].camera.C));
+		aabbOutsideCameras.InsertFull(camPos);
+		cameras2D[imgIdx] = Point2f(camPos.x(), camPos.y());
+	}
+	// get the height of the lowest camera
+	minCamZ = aabbOutsideCameras.ptMin.z();
+	// fit center line
+	cv::Vec4f centerLine;
+	cv::fitLine(cameras2D, centerLine, cv::DistanceTypes::DIST_HUBER, 0, 0.1, 0.01);
+	centerPoint = Point2f(centerLine[2], centerLine[3]);
+
+	// assumes the ROI is vertical and the scene has absolute orientation (positive Z is up)
+	//ASSERT(IsRelativeCoordinateSystem());
+	zMin = MINF(aabbOutsideCameras.ptMax.z(), aabbOutsideCameras.ptMin.z()) - 5;
+	// if sparse point cloud is loaded use lowest point as zMin
+	float fMinPointsZ = std::numeric_limits<float>::max();
+	float fMaxPointsZ = std::numeric_limits<float>::lowest();
+	FOREACH (pIdx, pointcloud.points) {
+		if (!obb.IsValid() || obb.Intersects(pointcloud.points[pIdx])) {
+			const float pz = pointcloud.points[pIdx].z;
+			if (pz < fMinPointsZ)
+				fMinPointsZ = pz;
+			if (pz > fMaxPointsZ)
+				fMaxPointsZ = pz;			
+		}
+	}
+	zMin = MINF(zMin, fMinPointsZ);
+	//{
+	//	// adjust zMin to groundplane
+	//	Planef groundPlane = pointcloud.EstimateGroundPlane(images);
+	//	if (!groundPlane.IsValid()) {
+	//		VERBOSE("error: can not estimate the ground plane");
+	//		return;
+	//	}
+	//	const float fDistToGround(groundPlane.Distance(Point3f(0, 0, zMin)));
+	//	if(fDistToGround < 0)
+	//		zMin -= fDistToGround;
+	//}
+	zMax = MAXF(aabbOutsideCameras.ptMax.z(), fMaxPointsZ);
+
+	// calculate median distance from tower center to cameras
+	cList<float> cameraDistancesToMiddle(cameras2D.size());
+	FOREACH (camIdx, cameras2D) {
+		cameraDistancesToMiddle[camIdx] = norm(cameras2D[camIdx] - centerPoint);
+	}
+	const float fMedianDistance = cameraDistancesToMiddle.GetMedian();
+	fRadius = MAXF(0.2f, (fMedianDistance - 1.f) / 3.f);
+
+	// get the average of highest 85 to 95% of the highest distances to center
+	if(!cameraDistancesToMiddle.empty()) {
+		float avgTopDistance(0);
+		cameraDistancesToMiddle.Sort();
+		const size_t topIdx(CEIL2INT(cameraDistancesToMiddle.size() * 0.95f));
+		const size_t botIdx(FLOOR2INT(cameraDistancesToMiddle.size() * 0.85f));
+		for (size_t i = botIdx; i < topIdx; ++i) {
+			avgTopDistance += cameraDistancesToMiddle[i];
+		}
+		avgTopDistance /= (topIdx - botIdx);
+		fROIRadius = avgTopDistance;
+	} else {
+		fROIRadius = fRadius;
+	}
+} // ComputeTowerCylinder
+
+size_t Scene::DrawCircle(PointCloud::PointArr &outCircle, const Point3f circleCenter, const float circleRadius, const unsigned nTargetPoints, const float fStartAngle, const float fAngleBetweenPoints, bool bHasNormals, bool bHasColors, bool bHasWeights) {
+	size_t countPoints(0);
+	outCircle.Release();
+	for (unsigned pIdx = 0; pIdx < nTargetPoints; ++pIdx) {
+		const float fAngle(fStartAngle + fAngleBetweenPoints * pIdx);
+		ASSERT(fAngle <= FTWO_PI);
+		const Normal n(cos(fAngle), sin(fAngle), 0);
+		ASSERT(ISEQUAL(norm(n), 1.f));
+		const Point3f newPoint(circleCenter + circleRadius * n);
+		// select cameras seeing this point
+		PointCloud::ViewArr views;
+		FOREACH(idxImg, images) {
+			const Image& image = images[idxImg];
+			const Point3f xz(image.camera.TransformPointW2I3(Cast<REAL>(newPoint)));
+			const Point2f x(xz.x, xz.y);
+			if (!Image8U::isInside<float>(x, image.GetSize()) ||
+				xz.z <= 0)
+				continue;
+			if (n.dot(Cast<float>(image.camera.RayPoint<REAL>(x))) >= 0)
+				continue;
+			views.emplace_back(idxImg);
+		}
+		if (views.size() >= 2) {
+			pointcloud.points.emplace_back(newPoint);
+			outCircle.emplace_back(newPoint);
+			pointcloud.pointViews.emplace_back(views);
+			if (bHasNormals)
+				pointcloud.normals.emplace_back(n);
+			if (bHasColors)
+				pointcloud.colors.emplace_back(Pixel8U::YELLOW);
+			if (bHasWeights)
+				pointcloud.pointWeights.emplace_back(PointCloud::Weight(1));
+			++countPoints;
+		}
+	}
+	return countPoints;
+}
+
+size_t Scene::BuildTowerMesh(const PointCloud origPointCloud, const Point2f centerPoint, const float fRadius, const float fROIRadius, const float zMin, const float zMax, const float minCamZ, bool bFixRadius) {
+	const unsigned nTargetDensity(10);
+	const unsigned nTargetCircles((zMax - zMin) * nTargetDensity); // how many circles in cylinder
+	const float fCircleFrequence((zMax - zMin) / nTargetCircles); // the distance between neighbor circles
+	const bool bHasNormals(pointcloud.normals.size() == pointcloud.GetSize());
+	const bool bHasColors(pointcloud.colors.size() == pointcloud.GetSize());
+	const bool bHasWeights(pointcloud.pointWeights.size() == pointcloud.GetSize());
+	size_t countPoints(0);
+	PointCloud::PointArr circlePoints;
+	Mesh::VertexVerticesArr meshCircles;
+	if (bFixRadius) {
+		const unsigned nTargetPoints(MAX(10, ROUND2INT(FTWO_PI * fRadius * nTargetDensity))); // how many points on each circle
+		const float fAngleBetweenPoints(FTWO_PI / nTargetPoints); // the angle between neighbor points on the circle	
+		for (unsigned cIdx = 0; cIdx < nTargetCircles; ++cIdx) {
+			const Point3f circleCenter(centerPoint, zMin + fCircleFrequence * cIdx); // center point of the circle
+			const float fStartAngle(fAngleBetweenPoints * SEACAVE::random()); // starting angle for the first point
+			countPoints += DrawCircle(circlePoints, circleCenter, fRadius, nTargetPoints, fStartAngle, fAngleBetweenPoints, bHasNormals, bHasColors, bHasWeights);
+			if (!circlePoints.IsEmpty()) {
+				//add points to vertex  list
+				Mesh::VertexIdxArr circleVertices;
+				Mesh::VIndex vIdx = mesh.vertices.size();
+				FOREACH(pIdx, circlePoints) {
+					const Point3f& p = circlePoints[pIdx];
+					mesh.vertices.emplace_back(p);
+					circleVertices.emplace_back(vIdx);
+					++vIdx;
+				}
+				meshCircles.emplace_back(circleVertices);
+			}
+		}
+	} else {
+		std::vector<cList<float>> sliceDistances(nTargetCircles);
+		for (Point3f P : origPointCloud.points) {
+			const float d(norm(Point2f(P.x, P.y) - centerPoint));
+			if (d <= fROIRadius) {
+				const float fIdx((zMax - P.z) * nTargetDensity);
+				int bIdx(FLOOR2INT(fIdx));
+				int tIdx(FLOOR2INT(fIdx+0.5f));
+				if (bIdx == tIdx) {
+					if (bIdx > 0)
+						bIdx--;
+				}
+				if (tIdx >= (int)nTargetCircles) {
+					tIdx = nTargetCircles - 1;
+				}
+				if (bIdx < (int)nTargetCircles - 1)
+					sliceDistances[bIdx].emplace_back(d);
+				if (tIdx > 0)
+					sliceDistances[tIdx].emplace_back(d);
+			}
+		}
+		cList<float> circleRadii;
+		for (unsigned cIdx = 0; cIdx < nTargetCircles; ++cIdx) {
+			const float circleZ(zMax - fCircleFrequence * cIdx);
+			cList<float>& pDistances = sliceDistances[cIdx];
+			float circleRadius(fRadius);
+			if (circleZ < minCamZ) {
+				// use fixed radius under lowest camera position
+				circleRadius = fRadius;
+			} else {
+				if (pDistances.size() > 2) {
+					float avgTopDistance(0);
+					pDistances.Sort();
+					const size_t topIdx(MIN(pDistances.size() - 1, CEIL2INT(pDistances.size() * 0.95f)));
+					const size_t botIdx(MAX(1, FLOOR2INT(pDistances.size() * 0.85f)));
+					for (size_t i = botIdx; i < topIdx; ++i) {
+						avgTopDistance += pDistances[i];
+					}
+					avgTopDistance /= (topIdx - botIdx);
+					if (avgTopDistance < fROIRadius * 0.8f) {
+						circleRadius = avgTopDistance;
+					}
+				}
+			}
+			circleRadii.emplace_back(circleRadius);
+		}
+		// smoothen radii
+		if (circleRadii.size() > 2) {
+			for (int ri = 1; ri < circleRadii.size() - 1; ++ri) {
+				const float aboveRad(circleRadii[ri - 1]);
+				float& circleRadius = circleRadii[ri];
+				const float beloweRad(circleRadii[ri + 1]);
+				const float AbvCrtDeltaPrc = ABS(aboveRad - circleRadius) / aboveRad;
+				const float BelCrtDeltaPrc = ABS(circleRadius - beloweRad) / circleRadius;
+				//if (AbvCrtDeltaPrc < 0.075 || BelCrtDeltaPrc < 0.075)
+				//	continue;
+				// set current radius as average of the most similar values in the closest 7 neighbors
+				if (ri > 2 && ri < circleRadii.size() - 5) {
+					cList<float> neighSeven(7);
+					FOREACH(i, neighSeven) {
+						neighSeven[i] = circleRadii[ri - 2 + i];
+					}
+					neighSeven.Sort();
+					const float medianRadius(neighSeven.GetMedian());
+					circleRadius = ABS(medianRadius-aboveRad) < ABS(medianRadius-beloweRad) ? aboveRad : beloweRad;
+				}
+				else {
+					circleRadius =(aboveRad + beloweRad) / 2.0f;
+				}
+			}
+		}
+		// add circles
+		FOREACH(rIdx, circleRadii) {
+			float circleRadius(circleRadii[rIdx]);
+			const float circleZ(zMax - fCircleFrequence * rIdx);
+			const Point3f circleCenter(centerPoint, circleZ); // center point of the circle
+			const unsigned nTargetPoints(MAX(10, ROUND2INT(FTWO_PI * circleRadius * nTargetDensity))); // how many points on each circle
+			const float fAngleBetweenPoints(FTWO_PI / nTargetPoints); // the angle between neighbor points on the circle
+			const float fStartAngle(fAngleBetweenPoints * SEACAVE::random()); // starting angle for the first point
+			countPoints += DrawCircle(circlePoints, circleCenter, circleRadius, nTargetPoints, fStartAngle, fAngleBetweenPoints, bHasNormals, bHasColors, bHasWeights);
+			if (!circlePoints.IsEmpty()) {
+				//add points to vertex  list
+				Mesh::VertexIdxArr circleVertices;
+				Mesh::VIndex vIdx = mesh.vertices.size();
+				FOREACH(pIdx, circlePoints) {
+					const Point3f& p = circlePoints[pIdx];
+					mesh.vertices.emplace_back(p);
+					circleVertices.emplace_back(vIdx);
+					++vIdx;
+				}
+				meshCircles.emplace_back(circleVertices);
+			}
+		}
+	}
+	
+	// Build faces from meshCircles
+	for (size_t cIdx = 1; cIdx < meshCircles.size(); ++cIdx) {
+		if (meshCircles[cIdx - 1].size() > 1 || meshCircles[cIdx].size() > 1) {
+			Mesh::VertexIdxArr& topPoints = meshCircles[cIdx - 1];
+			Mesh::VertexIdxArr& botPoints = meshCircles[cIdx];
+			// build faces with all the points in the two lists
+			bool bInverted(false);
+			if (topPoints.size() > botPoints.size()) {
+				topPoints.swap(botPoints);
+				bInverted = true;
+			}
+			const float topStep(1.0f / topPoints.size());
+			const float botStep(1.0f / botPoints.size());
+			for (size_t ti=0, bi=0; ti < topPoints.size() && bi<botPoints.size(); ++ti) {
+				do {
+					const Mesh::VIndex v0(topPoints[ti]);
+					const Mesh::VIndex v1(botPoints[bi]);
+					const Mesh::VIndex v2(botPoints[(++bi)%botPoints.size()]);
+					if (!bInverted)
+						mesh.faces.emplace_back(v0, v1, v2);
+					else
+						mesh.faces.emplace_back(v0, v2, v1);
+				} while (bi<botPoints.size() && (ti+1)*topStep > (bi+1)*botStep);
+				if (topPoints.size() > 1) {
+					const Mesh::VIndex v0(topPoints[ti]);
+					const Mesh::VIndex v1(botPoints[bi%botPoints.size()]);
+					const Mesh::VIndex v2(topPoints[(ti+1)%topPoints.size()]);
+					if (!bInverted)
+						mesh.faces.emplace_back(v0, v1, v2);
+					else
+						mesh.faces.emplace_back(v0, v2, v1);
+				}
+				if (topPoints.size() != botPoints.size()) {
+					// add closing face
+					const Mesh::VIndex v0(topPoints[0]);
+					const Mesh::VIndex v1(botPoints[botPoints.size()-1]);
+					const Mesh::VIndex v2(botPoints[0]);
+					if (!bInverted)
+						mesh.faces.emplace_back(v0, v1, v2);
+					else
+						mesh.faces.emplace_back(v0, v2, v1);
+				}
+			}
+			if (bInverted) {
+				topPoints.swap(botPoints);
+			}
+		}
+	}
+	mesh.Save("towermesh_dbg.ply");
+	pointcloud.Save("cylinder.ply");
+	return countPoints;
+}
+
+
+// remove all points in the point-cloud with points on a cylinder placed in the middle of scene's cameras
+// this function assumes the scene was geo-localized and units are meters
+size_t Scene::InitTowerScene() {
+	float fRadius;
+	float fROIRadius;
+	float zMax, zMin, minCamZ;
+	Point2f centerPoint;
+	ComputeTowerCylinder(centerPoint, fRadius, fROIRadius, zMin, zMax, minCamZ);
+	// add nTargetPoints points on each circle
+	size_t countPoints(0);
+	countPoints = BuildTowerMesh(pointcloud, centerPoint, fRadius, fROIRadius, zMin, zMax, minCamZ, false);
+	if (VERBOSITY_LEVEL > 1) {
+		pointcloud.Save(MAKE_PATH(_T("tower.ply")));
+		if (VERBOSITY_LEVEL > 2) {
+			Save(MAKE_PATH(_T("scene_tower.mvs")));
+		}
+	}
+
+	//// select neighbors on the point-cloud with synthetic points
+	//Initialize(mulDistance, true, OPTDENSE::nResolutionLevel, OPTDENSE::nMinResolution, OPTDENSE::nMaxResolution,
+	//	OPTDENSE::nMinViews, OPTDENSE::nMinViewsTrustPoint > 1 ? OPTDENSE::nMinViewsTrustPoint : 2,
+	//	D2R(OPTDENSE::fOptimAngle), fncSetViewPoints);
+	//// revert to original sparse point cloud and initialize the list of sparse points seen by each image
+	//if (OPTDENSE::nTowerMode >= 3) {
+	//	pointcloud.Swap(origPointCloud);
+	//	if (OPTDENSE::nTowerMode == 4) {
+	//		countPoints = AddTowerToPointcloud(origPointCloud, centerPoint, fRadius, fROIRadius, zMin, zMax, minCamZ, OPTDENSE::nFixedTowerRadius==1||OPTDENSE::nFixedTowerRadius==2);
+	//	}
+	//	#ifdef _USE_OPENMP
+	//	#pragma omp parallel for schedule(dynamic)
+	//	for (int_t idx=0; idx<(int_t)images.size(); ++idx) {
+	//		const IIndex idxImage((IIndex)idx);
+	//	#else
+	//	FOREACH(idxImage, images) {
+	//	#endif
+	//		Image& imageData = GetImage(idxImage);
+	//		if (!imageData.IsValid())
+	//			continue;
+	//		IndexArr points;
+	//		GetPointsInView(idxImage, OPTDENSE::nMinViews, false, points);
+	//		ComputeAvgSceneDepth(idxImage, OPTDENSE::nMinViews, points);
+	//		ASSERT(fncSetViewPoints)
+	//		fncSetViewPoints(idxImage, points);
+	//	}
+	//}
+
+	return countPoints;
+} // InitTowerScene

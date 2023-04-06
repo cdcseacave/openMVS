@@ -331,6 +331,9 @@ int main(int argc, LPCTSTR* argv)
 		Finalize();
 		return EXIT_SUCCESS;
 	}
+	{
+		scene.InitTowerScene();
+	}
 	if (!OPT::strMeshFileName.empty())
 		scene.mesh.Load(MAKE_PATH_SAFE(OPT::strMeshFileName));
 	if (!OPT::strViewNeighborsFileName.empty())
