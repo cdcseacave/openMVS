@@ -446,7 +446,6 @@ bool MeshTexture::ListCameraFaces(FaceDataViewArr& facesDatas, float fOutlierThr
 	TImage<real>::EMat mGrad[2];
 	FaceMap faceMap;
 	DepthMap depthMap;
-	BitMatrix mask;
 	#ifdef TEXOPT_USE_OPENMP
 	bool bAbort(false);
 	#pragma omp parallel for private(imageGradMag, mGrad, faceMap, depthMap)
@@ -521,14 +520,16 @@ bool MeshTexture::ListCameraFaces(FaceDataViewArr& facesDatas, float fOutlierThr
 		CLISTDEF0IDX(uint32_t,FIndex) areas(faces.GetSize());
 		areas.Memset(0);
 		#endif
-		#ifdef TEXOPT_USE_OPENMP
-		#pragma omp critical
-		#endif
 
+		BitMatrix mask;
 		if (nIgnoreMaskLabel >= 0)
 		{
 			DepthEstimator::ImportIgnoreMask(imageData, faceMap.size(), mask, (uint16_t)nIgnoreMaskLabel);
 		}
+
+		#ifdef TEXOPT_USE_OPENMP
+		#pragma omp critical
+		#endif
 		{
 		// faceQuality is influenced by :
 		// + area: the higher the area the more gradient scores will be added to the face quality
@@ -541,7 +542,7 @@ bool MeshTexture::ListCameraFaces(FaceDataViewArr& facesDatas, float fOutlierThr
 				ASSERT((idxFace == NO_ID && depthMap(j,i) == 0) || (idxFace != NO_ID && depthMap(j,i) > 0));
 				if (idxFace == NO_ID)
 					continue;
-				if (mask.empty() && !mask.isSet(j, i)) {
+				if (!mask.empty() && !mask.isSet(j, i)) {
 					continue;
 				}
 				FaceDataArr& faceDatas = facesDatas[idxFace];
