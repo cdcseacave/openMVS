@@ -554,19 +554,7 @@ bool MeshTexture::ListCameraFaces(FaceDataViewArr& facesDatas, float fOutlierThr
 				}
 			}
 		}
-		/*for (int i = imageCopy.rows - 2; i > 0; i--) {
-			for (int j = imageCopy.cols - 2; j > 0; j--) {
-				if (imageCopy.at<uint8_t>(i, j) == 0 &&
-					(rasterer.mask.at<uint8_t>(i + 1, j) != 0 || rasterer.mask.at<uint8_t>(i - 1, j) != 0 || rasterer.mask.at<uint8_t>(i, j + 1) != 0 || rasterer.mask.at<uint8_t>(i, j - 1) != 0)) {
-					rasterer.mask.at<uint8_t>(i, j) = 255;
-				}
-			}
-		}*/
 		cv::imwrite(std::to_string(idx) + ".png", rasterer.mask);
-		/*for (int i = 1; i < rasterer.mask.rows - 1; i++)
-			for (int j = 1; j < rasterer.mask.cols - 1; j++)
-				rasterer.mask.at<uint8_t>(i, j) = (rasterer.mask.at<uint8_t>(i + 1, j) + rasterer.mask.at<uint8_t>(i, j + 1) + rasterer.mask.at<uint8_t>(i, j - 1) + rasterer.mask.at<uint8_t>(i - 1, j)) / 4;
-		rasterer.mask = rasterer.mask <= 64;*/
 		rasterer.Clear();
 		for (auto idxFace : cameraFaces) {
 			rasterer.validFace = true;
