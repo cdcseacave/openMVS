@@ -155,7 +155,7 @@ struct MeshTexture {
 		bool validFace;
 
 		RasterMesh(const Mesh::VertexArr& _vertices, const Camera& _camera, DepthMap& _depthMap, FaceMap& _faceMap)
-			: Base(_vertices, _camera, _depthMap), faceMap(_faceMap), validFace(true) {}
+			: Base(_vertices, _camera, _depthMap), faceMap(_faceMap) {}
 		void Clear() {
 			Base::Clear();
 			faceMap.memset((uint8_t)NO_ID);
@@ -165,10 +165,10 @@ struct MeshTexture {
 			const Depth z(ComputeDepth(pbary));
 			ASSERT(z > Depth(0));
 			Depth& depth = depthMap(pt);
-			if (mask.at<uint8_t>(pt.y, pt.x) != 0 && validFace)
-				validFace = false;
 			if (depth == 0 || depth > z) {
 				depth = z;
+				if (mask(pt.y, pt.x) != 0 && validFace)
+					validFace = false;
 				if (validFace)
 					faceMap(pt) = idxFace;
 				else
@@ -519,10 +519,9 @@ bool MeshTexture::ListCameraFaces(FaceDataViewArr& facesDatas, float fOutlierThr
 		faceMap.create(imageData.height, imageData.width);
 		depthMap.create(imageData.height, imageData.width);
 		RasterMesh rasterer(vertices, imageData.camera, depthMap, faceMap);
-		//Creating mask for the image border
+		// creating mask for the image border
 		cv::cvtColor(imageData.image, rasterer.mask, cv::COLOR_BGR2GRAY);
-		rasterer.mask -= 1; // This line gets rid of white spots in the middle of the image
-
+		rasterer.mask -= 1; // this line gets rid of white spots in the middle of the image
 		cv::floodFill(rasterer.mask, cv::Point(0, 0), 255);
 		cv::floodFill(rasterer.mask, cv::Point(0, rasterer.mask.rows / 2), 255);
 		cv::floodFill(rasterer.mask, cv::Point(0, rasterer.mask.rows - 1), 255);
@@ -531,16 +530,12 @@ bool MeshTexture::ListCameraFaces(FaceDataViewArr& facesDatas, float fOutlierThr
 		cv::floodFill(rasterer.mask, cv::Point(rasterer.mask.cols - 1, rasterer.mask.rows / 2), 255);
 		cv::floodFill(rasterer.mask, cv::Point(rasterer.mask.cols - 1, 0), 255);
 		cv::floodFill(rasterer.mask, cv::Point(rasterer.mask.cols / 2, 0), 255);
-
 		cv::Mat kernel = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(3, 3));
 		cv::erode(rasterer.mask, rasterer.mask, kernel);
-
 		cv::threshold(rasterer.mask, rasterer.mask, 254, 255, cv::THRESH_BINARY);
-
-
-
-		if (VERBOSITY_LEVEL > 2)
-			cv::imwrite(std::to_string(idx) + ".jpg", rasterer.mask);
+		if (VERBOSITY_LEVEL > 2) {
+			cv::imwrite(String::FormatString("invalidMask{0}.png", idx), rasterer.mask);
+		}
 		rasterer.Clear();
 		for (auto idxFace : cameraFaces) {
 			rasterer.validFace = true;
