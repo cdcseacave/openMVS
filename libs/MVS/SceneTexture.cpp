@@ -151,9 +151,8 @@ struct MeshTexture {
 		typedef TRasterMesh<RasterMesh> Base;
 		FaceMap& faceMap;
 		FIndex idxFace;
-		cv::Mat mask;
+		Image8U mask;
 		bool validFace;
-		std::vector<ImageRef> prevPixels;
 
 		RasterMesh(const Mesh::VertexArr& _vertices, const Camera& _camera, DepthMap& _depthMap, FaceMap& _faceMap)
 			: Base(_vertices, _camera, _depthMap), faceMap(_faceMap), validFace(true) {}
@@ -161,30 +160,20 @@ struct MeshTexture {
 			Base::Clear();
 			faceMap.memset((uint8_t)NO_ID);
 		}
-		// TODO: EDIT THIS FUNCTION TO FILTER
 		void Raster(const ImageRef& pt, const Point3f& bary) {
 			const Point3f pbary(PerspectiveCorrectBarycentricCoordinates(bary));
 			const Depth z(ComputeDepth(pbary));
 			ASSERT(z > Depth(0));
 			Depth& depth = depthMap(pt);
-			if (!validFace) {
-				depth = -1;
-				faceMap(pt) = -1;
-				return;
-			}
-			if (mask.at<uint8_t>(pt.y, pt.x) != 0)
+			if (mask.at<uint8_t>(pt.y, pt.x) != 0 && validFace)
 				validFace = false;
 			if (depth == 0 || depth > z) {
-				prevPixels.push_back(pt);
 				depth = z;
-				faceMap(pt) = idxFace;
+				if (validFace)
+					faceMap(pt) = idxFace;
+				else
+					faceMap(pt) = -1;
 			}
-			if (!validFace)
-				for (int i = 0; i < prevPixels.size(); i++) {
-
-					depthMap(prevPixels[i]) = -1;
-					faceMap(prevPixels[i]) = -1;
-				}
 		}
 	};
 
@@ -531,37 +520,35 @@ bool MeshTexture::ListCameraFaces(FaceDataViewArr& facesDatas, float fOutlierThr
 		depthMap.create(imageData.height, imageData.width);
 		RasterMesh rasterer(vertices, imageData.camera, depthMap, faceMap);
 		//Creating mask for the image border
-		rasterer.mask = cv::Mat::zeros(imageData.height, imageData.width, CV_8U);
-		cv::Mat imageCopy = imageData.image.clone();
-		cv::cvtColor(imageCopy, imageCopy, cv::COLOR_BGR2GRAY);
-		for (int i = 0; i < imageCopy.rows; i++) {
-			rasterer.mask.at<uint8_t>(i, 0) = imageCopy.at<uint8_t>(i, 0) == 0;
-			rasterer.mask.at<uint8_t>(i, imageCopy.cols - 1) = imageCopy.at<uint8_t>(i, imageCopy.cols - 1) == 0;
-		}
-		for (int j = 0; j < imageCopy.cols; j++) {
-			rasterer.mask.at<uint8_t>(0, j) = imageCopy.at<uint8_t>(0, j) == 0;
-			rasterer.mask.at<uint8_t>(imageCopy.rows - 1, j) = imageCopy.at<uint8_t>(imageCopy.rows - 1, j) == 0;
-		}
-		for (int i = 1; i < imageCopy.rows - 1; i++) {
-			for (int j = 1; j < imageCopy.cols - 1; j++) {
-				if (imageCopy.at<uint8_t>(i, j) == 0 &&
-					(rasterer.mask.at<uint8_t>(i + 1, j) != 0 || rasterer.mask.at<uint8_t>(i - 1, j) != 0 || rasterer.mask.at<uint8_t>(i, j + 1) != 0 || rasterer.mask.at<uint8_t>(i, j - 1) != 0)) {
-					rasterer.mask.at<uint8_t>(i, j) = 255;
-				}
-				if (imageCopy.at<uint8_t>(imageCopy.rows - 1 - i, imageCopy.cols - 1 - j) == 0 &&
-					(rasterer.mask.at<uint8_t>(imageCopy.rows - 1 - i + 1, imageCopy.cols - 1 - j) != 0 || rasterer.mask.at<uint8_t>(imageCopy.rows - 1 - i - 1, imageCopy.cols - 1 - j) != 0 || rasterer.mask.at<uint8_t>(imageCopy.rows - 1 - i, imageCopy.cols - 1 - j + 1) != 0 || rasterer.mask.at<uint8_t>(imageCopy.rows - 1 - i, imageCopy.cols - 1 - j - 1) != 0)) {
-					rasterer.mask.at<uint8_t>(imageCopy.rows - 1 - i, imageCopy.cols - 1 - j) = 255;
-				}
-			}
-		}
-		cv::imwrite(std::to_string(idx) + ".png", rasterer.mask);
+		cv::cvtColor(imageData.image, rasterer.mask, cv::COLOR_BGR2GRAY);
+		rasterer.mask -= 1; // This line gets rid of white spots in the middle of the image
+
+		cv::floodFill(rasterer.mask, cv::Point(0, 0), 255);
+		cv::floodFill(rasterer.mask, cv::Point(0, rasterer.mask.rows / 2), 255);
+		cv::floodFill(rasterer.mask, cv::Point(0, rasterer.mask.rows - 1), 255);
+		cv::floodFill(rasterer.mask, cv::Point(rasterer.mask.cols / 2, rasterer.mask.rows - 1), 255);
+		cv::floodFill(rasterer.mask, cv::Point(rasterer.mask.cols - 1, rasterer.mask.rows - 1), 255);
+		cv::floodFill(rasterer.mask, cv::Point(rasterer.mask.cols - 1, rasterer.mask.rows / 2), 255);
+		cv::floodFill(rasterer.mask, cv::Point(rasterer.mask.cols - 1, 0), 255);
+		cv::floodFill(rasterer.mask, cv::Point(rasterer.mask.cols / 2, 0), 255);
+
+		cv::Mat kernel = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(3, 3));
+		cv::erode(rasterer.mask, rasterer.mask, kernel);
+
+		cv::threshold(rasterer.mask, rasterer.mask, 254, 255, cv::THRESH_BINARY);
+
+
+
+		if (VERBOSITY_LEVEL > 2)
+			cv::imwrite(std::to_string(idx) + ".jpg", rasterer.mask);
 		rasterer.Clear();
 		for (auto idxFace : cameraFaces) {
 			rasterer.validFace = true;
-			rasterer.prevPixels.clear();
 			const Face& facet = faces[idxFace];
 			rasterer.idxFace = idxFace;
 			rasterer.Project(facet);
+			if(!rasterer.validFace)
+				rasterer.Project(facet);
 		}
 		// compute the projection area of visible faces
 		#if TEXOPT_FACEOUTLIER != TEXOPT_FACEOUTLIER_NA
