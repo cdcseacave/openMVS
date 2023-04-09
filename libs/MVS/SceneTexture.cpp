@@ -167,9 +167,7 @@ struct MeshTexture {
 			Depth& depth = depthMap(pt);
 			if (depth == 0 || depth > z) {
 				depth = z;
-				if (mask(pt.y, pt.x) != 0 && validFace)
-					validFace = false;
-				if (validFace)
+				if (validFace && (validFace = mask(pt) != 0))
 					faceMap(pt) = idxFace;
 				else
 					faceMap(pt) = -1;
@@ -520,21 +518,24 @@ bool MeshTexture::ListCameraFaces(FaceDataViewArr& facesDatas, float fOutlierThr
 		depthMap.create(imageData.height, imageData.width);
 		RasterMesh rasterer(vertices, imageData.camera, depthMap, faceMap);
 		// creating mask for the image border
-		cv::cvtColor(imageData.image, rasterer.mask, cv::COLOR_BGR2GRAY);
-		rasterer.mask -= 1; // this line gets rid of white spots in the middle of the image
-		cv::floodFill(rasterer.mask, cv::Point(0, 0), 255);
-		cv::floodFill(rasterer.mask, cv::Point(0, rasterer.mask.rows / 2), 255);
-		cv::floodFill(rasterer.mask, cv::Point(0, rasterer.mask.rows - 1), 255);
-		cv::floodFill(rasterer.mask, cv::Point(rasterer.mask.cols / 2, rasterer.mask.rows - 1), 255);
-		cv::floodFill(rasterer.mask, cv::Point(rasterer.mask.cols - 1, rasterer.mask.rows - 1), 255);
-		cv::floodFill(rasterer.mask, cv::Point(rasterer.mask.cols - 1, rasterer.mask.rows / 2), 255);
-		cv::floodFill(rasterer.mask, cv::Point(rasterer.mask.cols - 1, 0), 255);
-		cv::floodFill(rasterer.mask, cv::Point(rasterer.mask.cols / 2, 0), 255);
+		rasterer.mask = Image8U(imageData.height + 2, imageData.width + 2);
+		rasterer.mask = rasterer.mask != rasterer.mask;
+		Image8U imageCopy;
+		cv::cvtColor(imageData.image, imageCopy, cv::COLOR_BGR2GRAY);
+		imageCopy -= 1; // this line gets rid of white spots in the middle of the image
+		cv::floodFill(imageCopy, rasterer.mask, cv::Point(0, 0), 255);
+		cv::floodFill(imageCopy, rasterer.mask, cv::Point(0, imageCopy.rows / 2), 255);
+		cv::floodFill(imageCopy, rasterer.mask, cv::Point(0, imageCopy.rows - 1), 255);
+		cv::floodFill(imageCopy, rasterer.mask, cv::Point(imageCopy.cols / 2, imageCopy.rows - 1), 255);
+		cv::floodFill(imageCopy, rasterer.mask, cv::Point(imageCopy.cols - 1, imageCopy.rows - 1), 255);
+		cv::floodFill(imageCopy, rasterer.mask, cv::Point(imageCopy.cols - 1, imageCopy.rows / 2), 255);
+		cv::floodFill(imageCopy, rasterer.mask, cv::Point(imageCopy.cols - 1, 0), 255);
+		cv::floodFill(imageCopy, rasterer.mask, cv::Point(imageCopy.cols / 2, 0), 255);
 		cv::Mat kernel = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(3, 3));
 		cv::erode(rasterer.mask, rasterer.mask, kernel);
-		cv::threshold(rasterer.mask, rasterer.mask, 254, 255, cv::THRESH_BINARY);
+		rasterer.mask = rasterer.mask == 0;
 		if (VERBOSITY_LEVEL > 2) {
-			cv::imwrite(String::FormatString("invalidMask{0}.png", idx), rasterer.mask);
+			cv::imwrite(String::FormatString("invalidMask%d.png", idx), rasterer.mask);
 		}
 		rasterer.Clear();
 		for (auto idxFace : cameraFaces) {
