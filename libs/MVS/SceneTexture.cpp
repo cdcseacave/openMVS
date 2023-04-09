@@ -532,7 +532,6 @@ bool MeshTexture::ListCameraFaces(FaceDataViewArr& facesDatas, float fOutlierThr
 		if (imageCopy(0, imageCopy.cols - 1) == 0) cv::floodFill(imageCopy, rasterer.mask, cv::Point(imageCopy.cols - 1, 0), 255, &rect, cv::Scalar(0), cv::Scalar(1));
 		if (imageCopy(0, imageCopy.cols / 2) == 0) cv::floodFill(imageCopy, rasterer.mask, cv::Point(imageCopy.cols / 2, 0), 255, &rect, cv::Scalar(0), cv::Scalar(1));
 		cv::Mat kernel = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(3, 3));
-		//cv::erode(rasterer.mask, rasterer.mask, kernel);
 		rasterer.mask = rasterer.mask == 0;
 		if (VERBOSITY_LEVEL > 2) {
 			cv::imwrite(String::FormatString("invalidMask%d.png", idx), rasterer.mask);
