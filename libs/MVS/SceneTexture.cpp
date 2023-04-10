@@ -151,6 +151,9 @@ struct MeshTexture {
 		typedef TRasterMesh<RasterMesh> Base;
 		FaceMap& faceMap;
 		FIndex idxFace;
+		Image8U mask;
+		bool validFace;
+
 		RasterMesh(const Mesh::VertexArr& _vertices, const Camera& _camera, DepthMap& _depthMap, FaceMap& _faceMap)
 			: Base(_vertices, _camera, _depthMap), faceMap(_faceMap) {}
 		void Clear() {
@@ -164,10 +167,15 @@ struct MeshTexture {
 			Depth& depth = depthMap(pt);
 			if (depth == 0 || depth > z) {
 				depth = z;
-				faceMap(pt) = idxFace;
+				if (validFace && (validFace = mask(pt) != 0))
+					faceMap(pt) = idxFace;
+				else
+					faceMap(pt) = -1;
 			}
 		}
 	};
+
+	
 
 	// used to represent a pixel color
 	typedef Point3f Color;
@@ -509,11 +517,33 @@ bool MeshTexture::ListCameraFaces(FaceDataViewArr& facesDatas, float fOutlierThr
 		faceMap.create(imageData.height, imageData.width);
 		depthMap.create(imageData.height, imageData.width);
 		RasterMesh rasterer(vertices, imageData.camera, depthMap, faceMap);
+		// creating mask for the image border
+		rasterer.mask = Image8U(imageData.height + 2, imageData.width + 2);
+		rasterer.mask.memset(0);
+		Image8U imageCopy;
+		cv::Rect rect;
+		cv::cvtColor(imageData.image, imageCopy, cv::COLOR_BGR2GRAY);
+		if (imageCopy(0, 0) == 0) cv::floodFill(imageCopy, rasterer.mask, cv::Point(0, 0), 255, &rect, cv::Scalar(0), cv::Scalar(1));
+		if (imageCopy(imageCopy.rows / 2, 0) == 0) cv::floodFill(imageCopy, rasterer.mask, cv::Point(0, imageCopy.rows / 2), 255, &rect, cv::Scalar(0), cv::Scalar(1));
+		if (imageCopy(imageCopy.rows - 1, 0) == 0) cv::floodFill(imageCopy, rasterer.mask, cv::Point(0, imageCopy.rows - 1), 255, &rect, cv::Scalar(0), cv::Scalar(1));
+		if (imageCopy(imageCopy.rows - 1, imageCopy.cols / 2) == 0) cv::floodFill(imageCopy, rasterer.mask, cv::Point(imageCopy.cols / 2, imageCopy.rows - 1), 255, &rect, cv::Scalar(0), cv::Scalar(1));
+		if (imageCopy(imageCopy.rows - 1, imageCopy.cols - 1) == 0) cv::floodFill(imageCopy, rasterer.mask, cv::Point(imageCopy.cols - 1, imageCopy.rows - 1), 255, &rect, cv::Scalar(0), cv::Scalar(1));
+		if (imageCopy(imageCopy.rows / 2, imageCopy.cols - 1) == 0) cv::floodFill(imageCopy, rasterer.mask, cv::Point(imageCopy.cols - 1, imageCopy.rows / 2), 255, &rect, cv::Scalar(0), cv::Scalar(1));
+		if (imageCopy(0, imageCopy.cols - 1) == 0) cv::floodFill(imageCopy, rasterer.mask, cv::Point(imageCopy.cols - 1, 0), 255, &rect, cv::Scalar(0), cv::Scalar(1));
+		if (imageCopy(0, imageCopy.cols / 2) == 0) cv::floodFill(imageCopy, rasterer.mask, cv::Point(imageCopy.cols / 2, 0), 255, &rect, cv::Scalar(0), cv::Scalar(1));
+		cv::Mat kernel = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(3, 3));
+		rasterer.mask = rasterer.mask == 0;
+		if (VERBOSITY_LEVEL > 2) {
+			cv::imwrite(String::FormatString("invalidMask%d.png", idx), rasterer.mask);
+		}
 		rasterer.Clear();
 		for (auto idxFace : cameraFaces) {
+			rasterer.validFace = true;
 			const Face& facet = faces[idxFace];
 			rasterer.idxFace = idxFace;
 			rasterer.Project(facet);
+			if(!rasterer.validFace)
+				rasterer.Project(facet);
 		}
 		// compute the projection area of visible faces
 		#if TEXOPT_FACEOUTLIER != TEXOPT_FACEOUTLIER_NA
