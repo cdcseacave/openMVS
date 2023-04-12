@@ -534,7 +534,7 @@ bool MeshTexture::ListCameraFaces(FaceDataViewArr& facesDatas, float fOutlierThr
 		cv::Mat kernel = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(3, 3));
 		rasterer.mask = rasterer.mask == 0;
 		if (VERBOSITY_LEVEL > 2) {
-			cv::imwrite(String::FormatString("invalidMask%d.png", idx), rasterer.mask);
+			cv::imwrite(String::FormatString("invalidMask%04d.png", idx), rasterer.mask);
 		}
 		rasterer.Clear();
 		for (auto idxFace : cameraFaces) {
@@ -542,7 +542,7 @@ bool MeshTexture::ListCameraFaces(FaceDataViewArr& facesDatas, float fOutlierThr
 			const Face& facet = faces[idxFace];
 			rasterer.idxFace = idxFace;
 			rasterer.Project(facet);
-			if(!rasterer.validFace)
+			if (!rasterer.validFace)
 				rasterer.Project(facet);
 		}
 		// compute the projection area of visible faces
