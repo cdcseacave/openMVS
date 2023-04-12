@@ -64,6 +64,8 @@ unsigned nRectPackingHeuristic;
 uint32_t nColEmpty;
 float fSharpnessWeight;
 int nIgnoreMaskLabel;
+bool bEstimateMasks;
+int nMaskErode;
 unsigned nOrthoMapResolution;
 unsigned nArchiveType;
 int nProcessPriority;
@@ -124,6 +126,8 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		("sharpness-weight", boost::program_options::value(&OPT::fSharpnessWeight)->default_value(0.5f), "amount of sharpness to be applied on the texture (0 - disabled)")
 		("orthographic-image-resolution", boost::program_options::value(&OPT::nOrthoMapResolution)->default_value(0), "orthographic image resolution to be generated from the textured mesh - the mesh is expected to be already geo-referenced or at least properly oriented (0 - disabled)")
 		("ignore-mask-label", boost::program_options::value(&OPT::nIgnoreMaskLabel)->default_value(-1), "integer value for the label to ignore in the segmentation mask; the mask for each image is stored in the MVS scene or next to each image with '.mask.png' extension (<0 - disabled)")
+		("estimate-masks", boost::program_options::value(&OPT::bEstimateMasks)->default_value(true), "estimate the masks for lens distortion")
+		("mask-erode", boost::program_options::value(&OPT::nMaskErode)->default_value(10), "pixels for eroding mask")
 		;
 
 	// hidden options, allowed both on command line and
@@ -309,7 +313,7 @@ int main(int argc, LPCTSTR* argv)
 	TD_TIMER_START();
 	if (!scene.TextureMesh(OPT::nResolutionLevel, OPT::nMinResolution, OPT::minCommonCameras, OPT::fOutlierThreshold, OPT::fRatioDataSmoothness,
 						   OPT::bGlobalSeamLeveling, OPT::bLocalSeamLeveling, OPT::nTextureSizeMultiple, OPT::nRectPackingHeuristic, Pixel8U(OPT::nColEmpty),
-						   OPT::fSharpnessWeight, OPT::nIgnoreMaskLabel, views))
+						   OPT::fSharpnessWeight, OPT::nIgnoreMaskLabel, OPT::bEstimateMasks, OPT::nMaskErode, views))
 		return EXIT_FAILURE;
 	VERBOSE("Mesh texturing completed: %u vertices, %u faces (%s)", scene.mesh.vertices.GetSize(), scene.mesh.faces.GetSize(), TD_TIMER_GET_FMT().c_str());
 

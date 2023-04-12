@@ -167,7 +167,7 @@ struct MeshTexture {
 			Depth& depth = depthMap(pt);
 			if (depth == 0 || depth > z) {
 				depth = z;
-				if (validFace && (validFace = mask(pt) != 0))
+				if (mask.empty() || (validFace && (validFace = mask(pt) != 0)))
 					faceMap(pt) = idxFace;
 				else
 					faceMap(pt) = -1;
@@ -331,7 +331,7 @@ public:
 
 	void ListVertexFaces();
 
-	bool ListCameraFaces(FaceDataViewArr&, float fOutlierThreshold, int nIgnoreMaskLabel, const IIndexArr& views);
+	bool ListCameraFaces(FaceDataViewArr&, float fOutlierThreshold, int nIgnoreMaskLabel, bool bEstimateMasks,int nMaskErode, const IIndexArr& views);
 
 	#if TEXOPT_FACEOUTLIER != TEXOPT_FACEOUTLIER_NA
 	bool FaceOutlierDetection(FaceDataArr& faceDatas, float fOutlierThreshold) const;
@@ -340,7 +340,7 @@ public:
 	void CreateVirtualFaces(const FaceDataViewArr& facesDatas, FaceDataViewArr& virtualFacesDatas, VirtualFaceIdxsArr& virtualFaces, unsigned minCommonCameras=2, float thMaxNormalDeviation=25.f) const;
 	IIndexArr SelectBestView(const FaceDataArr& faceDatas, FIndex fid, unsigned minCommonCameras, float ratioAngleToQuality) const;
 
-	bool FaceViewSelection(unsigned minCommonCameras, float fOutlierThreshold, float fRatioDataSmoothness, int nIgnoreMaskLabel, const IIndexArr& views);
+	bool FaceViewSelection(unsigned minCommonCameras, float fOutlierThreshold, float fRatioDataSmoothness, int nIgnoreMaskLabel, bool bEstimateMasks, int nMaskErode, const IIndexArr& views);
 	
 	void CreateSeamVertices();
 	void GlobalSeamLeveling();
@@ -435,7 +435,7 @@ void MeshTexture::ListVertexFaces()
 }
 
 // extract array of faces viewed by each image
-bool MeshTexture::ListCameraFaces(FaceDataViewArr& facesDatas, float fOutlierThreshold, int nIgnoreMaskLabel, const IIndexArr& _views)
+bool MeshTexture::ListCameraFaces(FaceDataViewArr& facesDatas, float fOutlierThreshold, int nIgnoreMaskLabel, bool bEstimateMasks,int nMaskErode, const IIndexArr& _views)
 {
 	// create faces octree
 	Mesh::Octree octree;
@@ -517,24 +517,42 @@ bool MeshTexture::ListCameraFaces(FaceDataViewArr& facesDatas, float fOutlierThr
 		faceMap.create(imageData.height, imageData.width);
 		depthMap.create(imageData.height, imageData.width);
 		RasterMesh rasterer(vertices, imageData.camera, depthMap, faceMap);
-		// creating mask for the image border
-		rasterer.mask = Image8U(imageData.height + 2, imageData.width + 2);
-		rasterer.mask.memset(0);
-		Image8U imageCopy;
-		cv::Rect rect;
-		cv::cvtColor(imageData.image, imageCopy, cv::COLOR_BGR2GRAY);
-		if (imageCopy(0, 0) == 0) cv::floodFill(imageCopy, rasterer.mask, cv::Point(0, 0), 255, &rect, cv::Scalar(0), cv::Scalar(1));
-		if (imageCopy(imageCopy.rows / 2, 0) == 0) cv::floodFill(imageCopy, rasterer.mask, cv::Point(0, imageCopy.rows / 2), 255, &rect, cv::Scalar(0), cv::Scalar(1));
-		if (imageCopy(imageCopy.rows - 1, 0) == 0) cv::floodFill(imageCopy, rasterer.mask, cv::Point(0, imageCopy.rows - 1), 255, &rect, cv::Scalar(0), cv::Scalar(1));
-		if (imageCopy(imageCopy.rows - 1, imageCopy.cols / 2) == 0) cv::floodFill(imageCopy, rasterer.mask, cv::Point(imageCopy.cols / 2, imageCopy.rows - 1), 255, &rect, cv::Scalar(0), cv::Scalar(1));
-		if (imageCopy(imageCopy.rows - 1, imageCopy.cols - 1) == 0) cv::floodFill(imageCopy, rasterer.mask, cv::Point(imageCopy.cols - 1, imageCopy.rows - 1), 255, &rect, cv::Scalar(0), cv::Scalar(1));
-		if (imageCopy(imageCopy.rows / 2, imageCopy.cols - 1) == 0) cv::floodFill(imageCopy, rasterer.mask, cv::Point(imageCopy.cols - 1, imageCopy.rows / 2), 255, &rect, cv::Scalar(0), cv::Scalar(1));
-		if (imageCopy(0, imageCopy.cols - 1) == 0) cv::floodFill(imageCopy, rasterer.mask, cv::Point(imageCopy.cols - 1, 0), 255, &rect, cv::Scalar(0), cv::Scalar(1));
-		if (imageCopy(0, imageCopy.cols / 2) == 0) cv::floodFill(imageCopy, rasterer.mask, cv::Point(imageCopy.cols / 2, 0), 255, &rect, cv::Scalar(0), cv::Scalar(1));
-		cv::Mat kernel = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(3, 3));
-		rasterer.mask = rasterer.mask == 0;
-		if (VERBOSITY_LEVEL > 2) {
-			cv::imwrite(String::FormatString("invalidMask%d.png", idx), rasterer.mask);
+		if (nIgnoreMaskLabel >= 0) {
+			//read mask
+			ASSERT(imageData.IsValid() && !imageData.image.empty());
+			const String maskFileName(imageData.maskName.empty() ? Util::getFileFullName(imageData.name) + ".mask.png" : imageData.maskName);
+			cv::Mat mask = cv::imread(maskFileName);
+			if(!mask.empty()){
+				cv::resize(mask, mask, faceMap.size());
+				cv::cvtColor(mask, mask, cv::COLOR_BGR2GRAY);
+				cv::threshold(mask, rasterer.mask, nIgnoreMaskLabel + 0.5, 255, cv::THRESH_BINARY);
+			}
+			
+		}
+		if (bEstimateMasks && rasterer.mask.empty()) {
+			// creating mask for the image border
+			rasterer.mask = Image8U(imageData.height + 2, imageData.width + 2);
+			rasterer.mask.memset(0);
+			Image8U imageCopy;
+			cv::Rect rect;
+			cv::cvtColor(imageData.image, imageCopy, cv::COLOR_BGR2GRAY);
+			if (imageCopy(0, 0) == 0) cv::floodFill(imageCopy, rasterer.mask, cv::Point(0, 0), 255, &rect, cv::Scalar(0), cv::Scalar(1));
+			if (imageCopy(imageCopy.rows / 2, 0) == 0) cv::floodFill(imageCopy, rasterer.mask, cv::Point(0, imageCopy.rows / 2), 255, &rect, cv::Scalar(0), cv::Scalar(1));
+			if (imageCopy(imageCopy.rows - 1, 0) == 0) cv::floodFill(imageCopy, rasterer.mask, cv::Point(0, imageCopy.rows - 1), 255, &rect, cv::Scalar(0), cv::Scalar(1));
+			if (imageCopy(imageCopy.rows - 1, imageCopy.cols / 2) == 0) cv::floodFill(imageCopy, rasterer.mask, cv::Point(imageCopy.cols / 2, imageCopy.rows - 1), 255, &rect, cv::Scalar(0), cv::Scalar(1));
+			if (imageCopy(imageCopy.rows - 1, imageCopy.cols - 1) == 0) cv::floodFill(imageCopy, rasterer.mask, cv::Point(imageCopy.cols - 1, imageCopy.rows - 1), 255, &rect, cv::Scalar(0), cv::Scalar(1));
+			if (imageCopy(imageCopy.rows / 2, imageCopy.cols - 1) == 0) cv::floodFill(imageCopy, rasterer.mask, cv::Point(imageCopy.cols - 1, imageCopy.rows / 2), 255, &rect, cv::Scalar(0), cv::Scalar(1));
+			if (imageCopy(0, imageCopy.cols - 1) == 0) cv::floodFill(imageCopy, rasterer.mask, cv::Point(imageCopy.cols - 1, 0), 255, &rect, cv::Scalar(0), cv::Scalar(1));
+			if (imageCopy(0, imageCopy.cols / 2) == 0) cv::floodFill(imageCopy, rasterer.mask, cv::Point(imageCopy.cols / 2, 0), 255, &rect, cv::Scalar(0), cv::Scalar(1));
+			rasterer.mask = rasterer.mask == 0;
+			if (VERBOSITY_LEVEL > 2) {
+				cv::imwrite(String::FormatString("invalidMask%04u.png", idx), rasterer.mask);
+			}
+		}
+		// erode mask to exclude pixels at the edges
+		if (nMaskErode > 0 && !rasterer.mask.empty()) {
+			cv::Mat kernel = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(nMaskErode, nMaskErode));
+			cv::erode(rasterer.mask, rasterer.mask, kernel);
 		}
 		rasterer.Clear();
 		for (auto idxFace : cameraFaces) {
@@ -551,12 +569,6 @@ bool MeshTexture::ListCameraFaces(FaceDataViewArr& facesDatas, float fOutlierThr
 		areas.Memset(0);
 		#endif
 
-		BitMatrix mask;
-		if (nIgnoreMaskLabel >= 0)
-		{
-			DepthEstimator::ImportIgnoreMask(imageData, faceMap.size(), mask, (uint16_t)nIgnoreMaskLabel);
-		}
-
 		#ifdef TEXOPT_USE_OPENMP
 		#pragma omp critical
 		#endif
@@ -572,9 +584,6 @@ bool MeshTexture::ListCameraFaces(FaceDataViewArr& facesDatas, float fOutlierThr
 				ASSERT((idxFace == NO_ID && depthMap(j,i) == 0) || (idxFace != NO_ID && depthMap(j,i) > 0));
 				if (idxFace == NO_ID)
 					continue;
-				if (!mask.empty() && !mask.isSet(j, i)) {
-					continue;
-				}
 				FaceDataArr& faceDatas = facesDatas[idxFace];
 				#if TEXOPT_FACEOUTLIER != TEXOPT_FACEOUTLIER_NA
 				uint32_t& area = areas[idxFace];
@@ -1014,7 +1023,7 @@ bool MeshTexture::FaceOutlierDetection(FaceDataArr& faceDatas, float thOutlier) 
 }
 #endif
 
-bool MeshTexture::FaceViewSelection(unsigned minCommonCameras, float fOutlierThreshold, float fRatioDataSmoothness,int nIgnoreMaskLabel, const IIndexArr& views)
+bool MeshTexture::FaceViewSelection(unsigned minCommonCameras, float fOutlierThreshold, float fRatioDataSmoothness,int nIgnoreMaskLabel, bool bEstimateMasks,int nMaskErode, const IIndexArr& views)
 {
 	// extract array of triangles incident to each vertex
 	ListVertexFaces();
@@ -1026,7 +1035,7 @@ bool MeshTexture::FaceViewSelection(unsigned minCommonCameras, float fOutlierThr
 
 		// list all views for each face
 		FaceDataViewArr facesDatas;
-		if (!ListCameraFaces(facesDatas, fOutlierThreshold, nIgnoreMaskLabel, views))
+		if (!ListCameraFaces(facesDatas, fOutlierThreshold, nIgnoreMaskLabel, bEstimateMasks, nMaskErode, views))
 			return false;
 
 		// create faces graph
@@ -2287,14 +2296,14 @@ void MeshTexture::GenerateTexture(bool bGlobalSeamLeveling, bool bLocalSeamLevel
 //  - fSharpnessWeight: sharpness weight to be applied on the texture (0 - disabled, 0.5 - good value)
 bool Scene::TextureMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsigned minCommonCameras, float fOutlierThreshold, float fRatioDataSmoothness,
 	bool bGlobalSeamLeveling, bool bLocalSeamLeveling, unsigned nTextureSizeMultiple, unsigned nRectPackingHeuristic, Pixel8U colEmpty, float fSharpnessWeight,
-	int nIgnoreMaskLabel, const IIndexArr& views)
+	int nIgnoreMaskLabel, bool bEstimateMasks, int nMaskErode, const IIndexArr& views)
 {
 	MeshTexture texture(*this, nResolutionLevel, nMinResolution);
 
 	// assign the best view to each face
 	{
 		TD_TIMER_STARTD();
-		if (!texture.FaceViewSelection(minCommonCameras, fOutlierThreshold, fRatioDataSmoothness, nIgnoreMaskLabel, views))
+		if (!texture.FaceViewSelection(minCommonCameras, fOutlierThreshold, fRatioDataSmoothness, nIgnoreMaskLabel, bEstimateMasks, nMaskErode, views))
 			return false;
 		DEBUG_EXTRA("Assigning the best view to each face completed: %u faces (%s)", mesh.faces.GetSize(), TD_TIMER_GET_FMT().c_str());
 	}
