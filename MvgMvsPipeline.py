@@ -3,16 +3,17 @@
 #
 # Created by @FlachyJoe
 """
-This script is for an easy use of OpenMVG and OpenMVS
+This script is for an easy use of OpenMVG, COLMAP, and OpenMVS
 
 usage: MvgMvs_Pipeline.py [-h] [--steps STEPS [STEPS ...]] [--preset PRESET]
                           [--0 0 [0 ...]] [--1 1 [1 ...]] [--2 2 [2 ...]]
                           [--3 3 [3 ...]] [--4 4 [4 ...]] [--5 5 [5 ...]]
                           [--6 6 [6 ...]] [--7 7 [7 ...]] [--8 8 [8 ...]]
                           [--9 9 [9 ...]] [--10 10 [10 ...]] [--11 11 [11 ...]]
-                          [--12 12 [12 ...]] [--13 13 [13 ...]]
-                          [--14 14 [14 ...]] [--15 15 [15 ...]]
-                          [--16 16 [16 ...]] [--17 17 [17 ...]]
+                          [--12 12 [12 ...]] [--13 13 [13 ...]] [--14 14 [14 ...]]
+                          [--15 15 [15 ...]] [--16 16 [16 ...]] [--17 17 [17 ...]]
+                          [--18 18 [18 ...]] [--19 19 [19 ...]] [--20 20 [20 ...]]
+                          [--21 21 [21 ...]] [--22 22 [22 ...]]
                           input_dir output_dir
 
 Photogrammetry reconstruction with these steps:
@@ -21,19 +22,24 @@ Photogrammetry reconstruction with these steps:
     2. Compute pairs                   openMVG_main_PairGenerator
     3. Compute matches                 openMVG_main_ComputeMatches
     4. Filter matches                  openMVG_main_GeometricFilter
-    5. Incremental reconstruction      openMVG_main_IncrementalSfM
-    6. Global reconstruction           openMVG_main_GlobalSfM
+    5. Incremental reconstruction      openMVG_main_SfM
+    6. Global reconstruction           openMVG_main_SfM
     7. Colorize Structure              openMVG_main_ComputeSfM_DataColor
     8. Structure from Known Poses      openMVG_main_ComputeStructureFromKnownPoses
     9. Colorized robust triangulation  openMVG_main_ComputeSfM_DataColor
     10. Control Points Registration    ui_openMVG_control_points_registration
     11. Export to openMVS              openMVG_main_openMVG2openMVS
-    12. Densify point-cloud            DensifyPointCloud
-    13. Reconstruct the mesh           ReconstructMesh
-    14. Refine the mesh                RefineMesh
-    15. Texture the mesh               TextureMesh
-    16. Estimate disparity-maps        DensifyPointCloud
-    17. Fuse disparity-maps            DensifyPointCloud
+    12. Feature Extractor              colmap
+    13. Exhaustive Matcher             colmap
+    14. Mapper                         colmap
+    15. Image Undistorter              colmap
+    16. Export to openMVS              interfaceCOLMAP
+    17. Densify point-cloud            DensifyPointCloud
+    18. Reconstruct the mesh           ReconstructMesh
+    19. Refine the mesh                RefineMesh
+    20. Texture the mesh               TextureMesh
+    21. Estimate disparity-maps        DensifyPointCloud
+    22. Fuse disparity-maps            DensifyPointCloud
 
 positional arguments:
   input_dir                 the directory which contains the pictures set.
@@ -43,20 +49,22 @@ optional arguments:
   -h, --help                show this help message and exit
   --steps STEPS [STEPS ...] steps to process
   --preset PRESET           steps list preset in
-                            SEQUENTIAL = [0, 1, 2, 3, 4, 5, 11, 12, 13, 14, 15]
-                            GLOBAL = [0, 1, 2, 3, 4, 6, 11, 12, 13, 14, 15]
-                            MVG_SEQ = [0, 1, 2, 3, 4, 5, 7, 8, 9]
-                            MVG_GLOBAL = [0, 1, 2, 3, 4, 6, 7, 8, 9]
-                            MVS = [12, 13, 14, 15]
-                            MVS_SGM = [16, 17]
+                            SEQUENTIAL = [0, 1, 2, 3, 4, 5, 11, 17, 18, 19, 20]
+                            GLOBAL = [0, 1, 2, 3, 4, 6, 11, 17, 18, 19, 20]
+                            MVG_SEQ = [0, 1, 2, 3, 4, 5, 7, 8, 9, 11]
+                            MVG_GLOBAL = [0, 1, 2, 3, 4, 6, 7, 8, 9, 11]
+                            COLMAP_MVS = [12, 13, 14, 15, 16, 17, 18, 19, 20]
+                            COLMAP = [12, 13, 14, 15, 16]
+                            MVS = [17, 18, 19, 20]
+                            MVS_SGM = [21, 22]
                             default : SEQUENTIAL
 
 Passthrough:
   Option to be passed to command lines (remove - in front of option names)
   e.g. --1 p ULTRA to use the ULTRA preset in openMVG_main_ComputeFeatures
   For example, running the script
-  [MvgMvsPipeline.py input_dir output_dir --steps 0 1 2 3 4 5 11 12 13 15 --1 p HIGH n 8 --3 n HNSWL2]
-  [--steps 0 1 2 3 4 5 11 12 13 15] runs only the desired steps
+  [MvgMvsPipeline.py input_dir output_dir --steps 0 1 2 3 4 5 11 17 18 20 --1 p HIGH n 8 --3 n HNSWL2]
+  [--steps 0 1 2 3 4 5 11 17 18 20] runs only the desired steps
   [--1 p HIGH n 8] where --1 refer to openMVG_main_ComputeFeatures,
   p refers to describerPreset option and set to HIGH, and n refers
   to numThreads and set to 8. The second step (Compute matches),
@@ -110,29 +118,34 @@ def find(afile):
     return None
 
 
-# Try to find openMVG and openMVS binaries in PATH
+# Try to find openMVG, COLMAP, and openMVS binaries in PATH
 OPENMVG_BIN = whereis("openMVG_main_SfMInit_ImageListing")
+COLMAP_BIN = whereis("colmap")
 OPENMVS_BIN = whereis("ReconstructMesh")
 
 # Try to find openMVG camera sensor database
 CAMERA_SENSOR_DB_FILE = "sensor_width_camera_database.txt"
 CAMERA_SENSOR_DB_DIRECTORY = find(CAMERA_SENSOR_DB_FILE)
 
-# Ask user for openMVG and openMVS directories if not found
+# Ask user for openMVG, COLMAP, and openMVS directories if not found
 if not OPENMVG_BIN:
     OPENMVG_BIN = input("openMVG binary folder?\n")
+if not COLMAP_BIN:
+    COLMAP_BIN = input("COLMAP binary folder?\n")
 if not OPENMVS_BIN:
     OPENMVS_BIN = input("openMVS binary folder?\n")
 if not CAMERA_SENSOR_DB_DIRECTORY:
     CAMERA_SENSOR_DB_DIRECTORY = input("openMVG camera database (%s) folder?\n" % CAMERA_SENSOR_DB_FILE)
 
 
-PRESET = {'SEQUENTIAL': [0, 1, 2, 3, 4, 5, 11, 12, 13, 14, 15],
-          'GLOBAL': [0, 1, 2, 3, 4, 6, 11, 12, 13, 14, 15],
+PRESET = {'SEQUENTIAL': [0, 1, 2, 3, 4, 5, 11, 17, 18, 19, 20],
+          'GLOBAL': [0, 1, 2, 3, 4, 6, 11, 17, 18, 19, 20],
           'MVG_SEQ': [0, 1, 2, 3, 4, 5, 7, 8, 9, 11],
           'MVG_GLOBAL': [0, 1, 2, 3, 4, 6, 7, 8, 9, 11],
-          'MVS': [12, 13, 14, 15],
-          'MVS_SGM': [16, 17]}
+          'COLMAP_MVS': [12, 13, 14, 15, 16, 17, 18, 19, 20],
+          'COLMAP': [12, 13, 14, 15, 16],
+          'MVS': [17, 18, 19, 20],
+          'MVS_SGM': [21, 22]}
 
 PRESET_DEFAULT = 'SEQUENTIAL'
 
@@ -229,22 +242,37 @@ class StepsStore:
             ["Export to openMVS",            # 11
              os.path.join(OPENMVG_BIN, "openMVG_main_openMVG2openMVS"),
              ["-i", "%reconstruction_dir%"+FOLDER_DELIM+"sfm_data.bin", "-o", "%mvs_dir%"+FOLDER_DELIM+"scene.mvs", "-d", "%mvs_dir%"+FOLDER_DELIM+"images"]],
-            ["Densify point cloud",          # 12
+            ["Feature Extractor",            # 12
+             os.path.join(COLMAP_BIN, "colmap"),
+             ["feature_extractor", "--database_path", "%matches_dir%"+FOLDER_DELIM+"database.db", "--image_path", "%input_dir%"]],
+            ["Exhaustive Matcher",           # 13
+             os.path.join(COLMAP_BIN, "colmap"),
+             ["exhaustive_matcher", "--database_path", "%matches_dir%"+FOLDER_DELIM+"database.db"]],
+            ["Mapper",                       # 14
+             os.path.join(COLMAP_BIN, "colmap"),
+             ["mapper", "--database_path", "%matches_dir%"+FOLDER_DELIM+"database.db", "--image_path", "%input_dir%", "--output_path", "%reconstruction_dir%"]],
+            ["Image Undistorter",            # 15
+             os.path.join(COLMAP_BIN, "colmap"),
+             ["image_undistorter", "--image_path", "%input_dir%", "--input_path", "%reconstruction_dir%"+FOLDER_DELIM+"0", "--output_path", "%reconstruction_dir%"+FOLDER_DELIM+"dense", "--output_type", "COLMAP"]],
+            ["Export to openMVS",            # 16
+             os.path.join(OPENMVS_BIN, "interfaceCOLMAP"),
+             ["-i", "%reconstruction_dir%"+FOLDER_DELIM+"dense", "-o", "scene.mvs", "--image-folder", "%reconstruction_dir%"+FOLDER_DELIM+"dense"+FOLDER_DELIM+"images", "-w", "\"%mvs_dir%\""]],
+            ["Densify point cloud",          # 17
              os.path.join(OPENMVS_BIN, "DensifyPointCloud"),
              ["scene.mvs", "--dense-config-file", "Densify.ini", "--resolution-level", "1", "--number-views", "8", "-w", "\"%mvs_dir%\""]],
-            ["Reconstruct the mesh",         # 13
+            ["Reconstruct the mesh",         # 18
              os.path.join(OPENMVS_BIN, "ReconstructMesh"),
              ["scene_dense.mvs", "-w", "\"%mvs_dir%\""]],
-            ["Refine the mesh",              # 14
+            ["Refine the mesh",              # 19
              os.path.join(OPENMVS_BIN, "RefineMesh"),
              ["scene_dense_mesh.mvs", "--scales", "1", "--gradient-step", "25.05", "-w", "\"%mvs_dir%\""]],
-            ["Texture the mesh",             # 15
+            ["Texture the mesh",             # 20
              os.path.join(OPENMVS_BIN, "TextureMesh"),
              ["scene_dense_mesh_refine.mvs", "--decimate", "0.5", "-w", "\"%mvs_dir%\""]],
-            ["Estimate disparity-maps",      # 16
+            ["Estimate disparity-maps",      # 21
              os.path.join(OPENMVS_BIN, "DensifyPointCloud"),
              ["scene.mvs", "--dense-config-file", "Densify.ini", "--fusion-mode", "-1", "-w", "\"%mvs_dir%\""]],
-            ["Fuse disparity-maps",          # 17
+            ["Fuse disparity-maps",          # 22
              os.path.join(OPENMVS_BIN, "DensifyPointCloud"),
              ["scene.mvs", "--dense-config-file", "Densify.ini", "--fusion-mode", "-2", "-w", "\"%mvs_dir%\""]]
             ]
@@ -358,10 +386,10 @@ if 4 in CONF.steps:    # GeometricFilter
         STEPS.replace_opt(4, FOLDER_DELIM+"matches.f.bin", FOLDER_DELIM+"matches.e.bin")
         STEPS[4].opt.extend(["-g", "e"])
 
-if 15 in CONF.steps:    # TextureMesh
-    if 14 not in CONF.steps:  # RefineMesh
+if 20 in CONF.steps:    # TextureMesh
+    if 19 not in CONF.steps:  # RefineMesh
         # RefineMesh step is not run, use ReconstructMesh output
-        STEPS.replace_opt(15, "scene_dense_mesh_refine.mvs", "scene_dense_mesh.mvs")
+        STEPS.replace_opt(20, "scene_dense_mesh_refine.mvs", "scene_dense_mesh.mvs")
 
 for cstep in CONF.steps:
     printout("#%i. %s" % (cstep, STEPS[cstep].info), effect=INVERSE)
