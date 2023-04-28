@@ -33,7 +33,7 @@ Photogrammetry reconstruction with these steps:
     13. Exhaustive Matcher             colmap
     14. Mapper                         colmap
     15. Image Undistorter              colmap
-    16. Export to openMVS              interfaceCOLMAP
+    16. Export to openMVS              InterfaceCOLMAP
     17. Densify point-cloud            DensifyPointCloud
     18. Reconstruct the mesh           ReconstructMesh
     19. Refine the mesh                RefineMesh
@@ -136,7 +136,9 @@ if not OPENMVS_BIN:
     OPENMVS_BIN = input("openMVS binary folder?\n")
 if not CAMERA_SENSOR_DB_DIRECTORY:
     CAMERA_SENSOR_DB_DIRECTORY = input("openMVG camera database (%s) folder?\n" % CAMERA_SENSOR_DB_FILE)
-
+COLMAP_BIN = os.path.join(COLMAP_BIN, "colmap")
+if sys.platform.startswith('win'):
+    COLMAP_BIN += ".bat"
 
 PRESET = {'SEQUENTIAL': [0, 1, 2, 3, 4, 5, 11, 17, 18, 19, 20],
           'GLOBAL': [0, 1, 2, 3, 4, 6, 11, 17, 18, 19, 20],
@@ -243,19 +245,19 @@ class StepsStore:
              os.path.join(OPENMVG_BIN, "openMVG_main_openMVG2openMVS"),
              ["-i", "%reconstruction_dir%"+FOLDER_DELIM+"sfm_data.bin", "-o", "%mvs_dir%"+FOLDER_DELIM+"scene.mvs", "-d", "%mvs_dir%"+FOLDER_DELIM+"images"]],
             ["Feature Extractor",            # 12
-             os.path.join(COLMAP_BIN, "colmap"),
+             COLMAP_BIN,
              ["feature_extractor", "--database_path", "%matches_dir%"+FOLDER_DELIM+"database.db", "--image_path", "%input_dir%"]],
             ["Exhaustive Matcher",           # 13
-             os.path.join(COLMAP_BIN, "colmap"),
+             COLMAP_BIN,
              ["exhaustive_matcher", "--database_path", "%matches_dir%"+FOLDER_DELIM+"database.db"]],
             ["Mapper",                       # 14
-             os.path.join(COLMAP_BIN, "colmap"),
+             COLMAP_BIN,
              ["mapper", "--database_path", "%matches_dir%"+FOLDER_DELIM+"database.db", "--image_path", "%input_dir%", "--output_path", "%reconstruction_dir%"]],
             ["Image Undistorter",            # 15
-             os.path.join(COLMAP_BIN, "colmap"),
+             COLMAP_BIN,
              ["image_undistorter", "--image_path", "%input_dir%", "--input_path", "%reconstruction_dir%"+FOLDER_DELIM+"0", "--output_path", "%reconstruction_dir%"+FOLDER_DELIM+"dense", "--output_type", "COLMAP"]],
             ["Export to openMVS",            # 16
-             os.path.join(OPENMVS_BIN, "interfaceCOLMAP"),
+             os.path.join(OPENMVS_BIN, "InterfaceCOLMAP"),
              ["-i", "%reconstruction_dir%"+FOLDER_DELIM+"dense", "-o", "scene.mvs", "--image-folder", "%reconstruction_dir%"+FOLDER_DELIM+"dense"+FOLDER_DELIM+"images", "-w", "\"%mvs_dir%\""]],
             ["Densify point cloud",          # 17
              os.path.join(OPENMVS_BIN, "DensifyPointCloud"),
