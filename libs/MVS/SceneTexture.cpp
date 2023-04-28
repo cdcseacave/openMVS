@@ -203,6 +203,7 @@ struct MeshTexture {
 		Label label; // view index
 		Mesh::FaceIdxArr faces; // indices of the faces contained by the patch
 		RectsBinPack::Rect rect; // the bounding box in the view containing the patch
+		unsigned textureIndex; // the index of the texture in the texture atlas
 	};
 	typedef cList<TexturePatch,const TexturePatch&,1,1024,FIndex> TexturePatchArr;
 
@@ -345,7 +346,7 @@ public:
 	void CreateSeamVertices();
 	void GlobalSeamLeveling();
 	void LocalSeamLeveling();
-	void GenerateTexture(bool bGlobalSeamLeveling, bool bLocalSeamLeveling, unsigned nTextureSizeMultiple, unsigned nRectPackingHeuristic, Pixel8U colEmpty, float fSharpnessWeight);
+	void GenerateTexture(bool bGlobalSeamLeveling, bool bLocalSeamLeveling, unsigned nTextureSizeMultiple, unsigned nRectPackingHeuristic, Pixel8U colEmpty, float fSharpnessWeight, unsigned maxTextureSize);
 
 	template <typename PIXEL>
 	static inline PIXEL RGB2YCBCR(const PIXEL& v) {
@@ -2089,7 +2090,7 @@ void MeshTexture::LocalSeamLeveling()
 	}
 }
 
-void MeshTexture::GenerateTexture(bool bGlobalSeamLeveling, bool bLocalSeamLeveling, unsigned nTextureSizeMultiple, unsigned nRectPackingHeuristic, Pixel8U colEmpty, float fSharpnessWeight)
+void MeshTexture::GenerateTexture(bool bGlobalSeamLeveling, bool bLocalSeamLeveling, unsigned nTextureSizeMultiple, unsigned nRectPackingHeuristic, Pixel8U colEmpty, float fSharpnessWeight, unsigned maxTextureSize)
 {
 	// project patches in the corresponding view and compute texture-coordinates and bounding-box
 	const int border(2);
@@ -2189,85 +2190,127 @@ void MeshTexture::GenerateTexture(bool bGlobalSeamLeveling, bool bLocalSeamLevel
 
 	// create texture
 	{
-		// arrange texture patches to fit the smallest possible texture image
-		RectsBinPack::RectArr rects(texturePatches.GetSize());
-		FOREACH(i, texturePatches)
-			rects[i] = texturePatches[i].rect;
-		int textureSize(RectsBinPack::ComputeTextureSize(rects, nTextureSizeMultiple));
-		// increase texture size till all patches fit
-		while (true) {
-			TD_TIMER_STARTD();
-			bool bPacked(false);
-			const unsigned typeRectsBinPack(nRectPackingHeuristic/100);
-			const unsigned typeSplit((nRectPackingHeuristic-typeRectsBinPack*100)/10);
-			const unsigned typeHeuristic(nRectPackingHeuristic%10);
-			switch (typeRectsBinPack) {
-			case 0: {
-				MaxRectsBinPack pack(textureSize, textureSize);
-				bPacked = pack.Insert(rects, (MaxRectsBinPack::FreeRectChoiceHeuristic)typeHeuristic);
-				break; }
-			case 1: {
-				SkylineBinPack pack(textureSize, textureSize, typeSplit!=0);
-				bPacked = pack.Insert(rects, (SkylineBinPack::LevelChoiceHeuristic)typeHeuristic);
-				break; }
-			case 2: {
-				GuillotineBinPack pack(textureSize, textureSize);
-				bPacked = pack.Insert(rects, false, (GuillotineBinPack::FreeRectChoiceHeuristic)typeHeuristic, (GuillotineBinPack::GuillotineSplitHeuristic)typeSplit);
-				break; }
-			default:
-				ABORT("error: unknown RectsBinPack type");
-			}
-			DEBUG_ULTIMATE("\tpacking texture completed: %u patches, %u texture-size (%s)", rects.size(), textureSize, TD_TIMER_GET_FMT().c_str());
-			if (bPacked)
-				break;
-			textureSize *= 2;
+		int tIndex = 0;
+		TexturePatchArr remainingPatches(texturePatches);
+		if (maxTextureSize != 0) {
+			DEBUG_EXTRA("Overriding nRectPackingHeuristic to best fit patches for multiple textures");
+			nRectPackingHeuristic = 1;
 		}
+		while (true)
+		{
+			// arrange texture patches to fit the smallest possible texture image
+			TexturePatchArr patchesToTexture(0);
+			RectsBinPack::RectArr rectsToTexture(0);
+			RectsBinPack::RectArr rects(remainingPatches.GetSize());
+			FOREACH(i, remainingPatches) {
+				if (maxTextureSize != 0 && (remainingPatches[i].rect.width > maxTextureSize || remainingPatches[i].rect.height > maxTextureSize))
+					ABORT("Patch is bigger than the maxTextureSize");
+				rects[i] = remainingPatches[i].rect;
+			}
+			int textureSize = RectsBinPack::ComputeTextureSize(rects, nTextureSizeMultiple);;
+			// increase texture size till all patches fit
+			while (true) {
+				TD_TIMER_STARTD();
+				bool bPacked(false);
+				const unsigned typeRectsBinPack(nRectPackingHeuristic / 100);
+				const unsigned typeSplit((nRectPackingHeuristic - typeRectsBinPack * 100) / 10);
+				const unsigned typeHeuristic(nRectPackingHeuristic % 10);
+				switch (typeRectsBinPack) {
+				case 0: {
+					MaxRectsBinPack pack(textureSize, textureSize);
+					bPacked = pack.Insert(rects, (MaxRectsBinPack::FreeRectChoiceHeuristic)typeHeuristic);
+					break; }
+				case 1: {
+					SkylineBinPack pack(textureSize, textureSize, typeSplit != 0);
+					bPacked = pack.Insert(rects, (SkylineBinPack::LevelChoiceHeuristic)typeHeuristic);
+					break; }
+				case 2: {
+					GuillotineBinPack pack(textureSize, textureSize);
+					bPacked = pack.Insert(rects, false, (GuillotineBinPack::FreeRectChoiceHeuristic)typeHeuristic, (GuillotineBinPack::GuillotineSplitHeuristic)typeSplit);
+					break; }
+				default:
+					ABORT("error: unknown RectsBinPack type");
+				}
+				DEBUG_ULTIMATE("\tpacking texture completed: %u patches, %u texture-size (%s)", rects.size(), textureSize, TD_TIMER_GET_FMT().c_str());
+				if (bPacked) {
+					if (maxTextureSize != 0 && textureSize > maxTextureSize) {
+						textureSize = maxTextureSize;
+						// separate remaining patches and texture patches
+						TexturePatchArr tempRemainingPatches;
+						RectsBinPack::RectArr tempRects;
+						FOREACH(i, remainingPatches) {
+							if (rects[i].width + rects[i].x > textureSize || rects[i].height + rects[i].y > textureSize)
+								tempRemainingPatches.Insert(remainingPatches[i]);
+							else {
+								remainingPatches[i].textureIndex = tIndex;
+								rectsToTexture.Insert(rects[i]);
+								patchesToTexture.Insert(remainingPatches[i]);
+							}
+						}
+						remainingPatches = tempRemainingPatches;
+						break;
+					}
+					else {
+						patchesToTexture = remainingPatches;
+						rectsToTexture = rects;
+						remainingPatches = TexturePatchArr(0);
+						break;
+					}
+				}
+				textureSize *= 2;
+			}
 
-		// create texture image
-		textureDiffuse.create(textureSize, textureSize);
-		textureDiffuse.setTo(cv::Scalar(colEmpty.b, colEmpty.g, colEmpty.r));
-		#ifdef TEXOPT_USE_OPENMP
-		#pragma omp parallel for schedule(dynamic)
-		for (int_t i=0; i<(int_t)texturePatches.size(); ++i) {
-			const uint32_t idxPatch((uint32_t)i);
-		#else
-		FOREACH(idxPatch, texturePatches) {
-		#endif
-			const TexturePatch& texturePatch = texturePatches[idxPatch];
-			const RectsBinPack::Rect& rect = rects[idxPatch];
-			// copy patch image
-			ASSERT((rect.width == texturePatch.rect.width && rect.height == texturePatch.rect.height) ||
-				   (rect.height == texturePatch.rect.width && rect.width == texturePatch.rect.height));
-			int x(0), y(1);
-			if (texturePatch.label != NO_ID) {
-				const Image& imageData = images[texturePatch.label];
-				cv::Mat patch(imageData.image(texturePatch.rect));
-				if (rect.width != texturePatch.rect.width) {
-					// flip patch and texture-coordinates
-					patch = patch.t();
-					x = 1; y = 0;
+			// create texture image
+			textureDiffuse.create(textureSize, textureSize);
+			textureDiffuse.setTo(cv::Scalar(colEmpty.b, colEmpty.g, colEmpty.r));
+			#ifdef TEXOPT_USE_OPENMP
+			#pragma omp parallel for schedule(dynamic)
+			for (int_t i = 0; i < (int_t)patchesToTexture.size(); ++i) {
+				const uint32_t idxPatch((uint32_t)i);
+			#else
+			FOREACH(idxPatch, texturePatches) {
+			#endif
+				const TexturePatch& texturePatch = patchesToTexture[idxPatch];
+				const RectsBinPack::Rect& rect = rectsToTexture[idxPatch];
+				// copy patch image
+				ASSERT((rect.width == texturePatch.rect.width && rect.height == texturePatch.rect.height) ||
+					(rect.height == texturePatch.rect.width && rect.width == texturePatch.rect.height));
+				int x(0), y(1);
+				if (texturePatch.label != NO_ID) {
+					const Image& imageData = images[texturePatch.label];
+					cv::Mat patch(imageData.image(texturePatch.rect));
+					if (rect.width != texturePatch.rect.width) {
+						// flip patch and texture-coordinates
+						patch = patch.t();
+						x = 1; y = 0;
+					}
+					patch.copyTo(textureDiffuse(rect));
 				}
-				patch.copyTo(textureDiffuse(rect));
-			}
-			// compute final texture coordinates
-			const TexCoord offset(rect.tl());
-			for (const FIndex idxFace: texturePatch.faces) {
-				TexCoord* texcoords = faceTexcoords.data()+idxFace*3;
-				for (int v=0; v<3; ++v) {
-					TexCoord& texcoord = texcoords[v];
-					texcoord = TexCoord(
-						texcoord[x]+offset.x,
-						texcoord[y]+offset.y
-					);
+				// compute final texture coordinates
+				const TexCoord offset(rect.tl());
+				for (const FIndex idxFace : texturePatch.faces) {
+					TexCoord* texcoords = faceTexcoords.data() + idxFace * 3;
+					for (int v = 0; v < 3; ++v) {
+						TexCoord& texcoord = texcoords[v];
+						texcoord = TexCoord(
+							texcoord[x] + offset.x,
+							texcoord[y] + offset.y
+						);
+					}
 				}
 			}
-		}
-		// apply some sharpening
-		if (fSharpnessWeight > 0) {
-			constexpr double sigma = 1.5;
-			Image8U3 blurryTextureDiffuse;
-			cv::GaussianBlur(textureDiffuse, blurryTextureDiffuse, cv::Size(), sigma);
-			cv::addWeighted(textureDiffuse, 1+fSharpnessWeight, blurryTextureDiffuse, -fSharpnessWeight, 0, textureDiffuse);
+			// apply some sharpening
+			if (fSharpnessWeight > 0) {
+				constexpr double sigma = 1.5;
+				Image8U3 blurryTextureDiffuse;
+				cv::GaussianBlur(textureDiffuse, blurryTextureDiffuse, cv::Size(), sigma);
+				cv::addWeighted(textureDiffuse, 1 + fSharpnessWeight, blurryTextureDiffuse, -fSharpnessWeight, 0, textureDiffuse);
+			}
+			cv::imwrite(String::FormatString("texture%04d.png", tIndex), textureDiffuse);
+			DEBUG_EXTRA("%d", remainingPatches.size());
+			if (remainingPatches.size() == 0)
+				break;
+			tIndex++;
 		}
 	}
 }
@@ -2277,7 +2320,7 @@ void MeshTexture::GenerateTexture(bool bGlobalSeamLeveling, bool bLocalSeamLevel
 //  - fSharpnessWeight: sharpness weight to be applied on the texture (0 - disabled, 0.5 - good value)
 bool Scene::TextureMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsigned minCommonCameras, float fOutlierThreshold, float fRatioDataSmoothness,
 	bool bGlobalSeamLeveling, bool bLocalSeamLeveling, unsigned nTextureSizeMultiple, unsigned nRectPackingHeuristic, Pixel8U colEmpty, float fSharpnessWeight,
-	const IIndexArr& views)
+	const IIndexArr& views, unsigned maxTextureSize)
 {
 	MeshTexture texture(*this, nResolutionLevel, nMinResolution);
 
@@ -2292,7 +2335,7 @@ bool Scene::TextureMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsi
 	// generate the texture image and atlas
 	{
 		TD_TIMER_STARTD();
-		texture.GenerateTexture(bGlobalSeamLeveling, bLocalSeamLeveling, nTextureSizeMultiple, nRectPackingHeuristic, colEmpty, fSharpnessWeight);
+		texture.GenerateTexture(bGlobalSeamLeveling, bLocalSeamLeveling, nTextureSizeMultiple, nRectPackingHeuristic, colEmpty, fSharpnessWeight, maxTextureSize);
 		DEBUG_EXTRA("Generating texture atlas and image completed: %u patches, %u image size (%s)", texture.texturePatches.GetSize(), mesh.textureDiffuse.width(), TD_TIMER_GET_FMT().c_str());
 	}
 

@@ -67,6 +67,7 @@ unsigned nOrthoMapResolution;
 unsigned nArchiveType;
 int nProcessPriority;
 unsigned nMaxThreads;
+unsigned maxTextureSize;
 String strExportType;
 String strConfigFileName;
 boost::program_options::variables_map vm;
@@ -89,6 +90,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		("archive-type", boost::program_options::value(&OPT::nArchiveType)->default_value(ARCHIVE_DEFAULT), "project archive type: 0-text, 1-binary, 2-compressed binary")
 		("process-priority", boost::program_options::value(&OPT::nProcessPriority)->default_value(-1), "process priority (below normal by default)")
 		("max-threads", boost::program_options::value(&OPT::nMaxThreads)->default_value(0), "maximum number of threads (0 for using all available cores)")
+		("max-texture-size", boost::program_options::value(&OPT::maxTextureSize)->default_value(0), "maximum height and width of texture image(s) (0 for one texture image)")
 		#if TD_VERBOSE != TD_VERBOSE_OFF
 		("verbosity,v", boost::program_options::value(&g_nVerbosityLevel)->default_value(
 			#if TD_VERBOSE == TD_VERBOSE_DEBUG
@@ -307,7 +309,7 @@ int main(int argc, LPCTSTR* argv)
 	TD_TIMER_START();
 	if (!scene.TextureMesh(OPT::nResolutionLevel, OPT::nMinResolution, OPT::minCommonCameras, OPT::fOutlierThreshold, OPT::fRatioDataSmoothness,
 						   OPT::bGlobalSeamLeveling, OPT::bLocalSeamLeveling, OPT::nTextureSizeMultiple, OPT::nRectPackingHeuristic, Pixel8U(OPT::nColEmpty),
-						   OPT::fSharpnessWeight, views))
+						   OPT::fSharpnessWeight, views, OPT::maxTextureSize))
 		return EXIT_FAILURE;
 	VERBOSE("Mesh texturing completed: %u vertices, %u faces (%s)", scene.mesh.vertices.GetSize(), scene.mesh.faces.GetSize(), TD_TIMER_GET_FMT().c_str());
 
