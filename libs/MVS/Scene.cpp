@@ -59,6 +59,11 @@ void Scene::Release()
 	mesh.Release();
 }
 
+bool Scene::IsValid() const
+{
+	return !platforms.IsEmpty() && !images.IsEmpty();
+}
+
 bool Scene::IsEmpty() const
 {
 	return pointcloud.IsEmpty() && mesh.IsEmpty();
@@ -122,6 +127,7 @@ bool Scene::LoadInterface(const String & fileName)
 	for (const Interface::Image& image: obj.images) {
 		const uint32_t ID(images.size());
 		Image& imageData = images.AddEmpty();
+		imageData.ID = (image.ID == NO_ID ? ID : image.ID);
 		imageData.name = image.name;
 		Util::ensureUnifySlash(imageData.name);
 		imageData.name = MAKE_PATH_FULL(WORKING_FOLDER_FULL, imageData.name);
@@ -137,7 +143,6 @@ bool Scene::LoadInterface(const String & fileName)
 		}
 		imageData.platformID = image.platformID;
 		imageData.cameraID = image.cameraID;
-		imageData.ID = (image.ID == NO_ID ? ID : image.ID);
 		// init camera
 		const Interface::Platform::Camera& camera = obj.platforms[image.platformID].cameras[image.cameraID];
 		if (camera.HasResolution()) {
@@ -1440,7 +1445,8 @@ bool Scene::ScaleImages(unsigned nMaxResolution, REAL scale, const String& folde
 } // ScaleImages
 
 // apply similarity transform
-void Scene::Transform(const Matrix3x3& rotation, const Point3& translation, REAL scale) {
+void Scene::Transform(const Matrix3x3& rotation, const Point3& translation, REAL scale)
+{
 	const Matrix3x3 rotationScale(rotation * scale);
 	for (Platform& platform : platforms) {
 		for (Platform::Pose& pose : platform.poses) {
@@ -1449,7 +1455,8 @@ void Scene::Transform(const Matrix3x3& rotation, const Point3& translation, REAL
 		}
 	}
 	for (Image& image : images) {
-		image.UpdateCamera(platforms);
+		if (image.IsValid())
+			image.UpdateCamera(platforms);
 	}
 	FOREACH(i, pointcloud.points) {
 		pointcloud.points[i] = rotationScale * Cast<REAL>(pointcloud.points[i]) + translation;
@@ -1469,6 +1476,25 @@ void Scene::Transform(const Matrix3x3& rotation, const Point3& translation, REAL
 		obb.Translate(Cast<float>(translation));
 	}
 }
+void Scene::Transform(const Matrix3x4& transform)
+{
+	#if 1
+	Matrix3x3 mscale, rotation;
+	RQDecomp3x3<REAL>(cv::Mat(3,4,cv::DataType<REAL>::type,const_cast<REAL*>(transform.val))(cv::Rect(0,0, 3,3)), mscale, rotation);
+	const Point3 translation = transform.col(3);
+	#else
+	Eigen::Matrix<REAL,4,4> transform4x4 = Eigen::Matrix<REAL,4,4>::Identity();
+	transform4x4.topLeftCorner<3,4>() = static_cast<const Matrix3x4::CEMatMap>(transform);
+	Eigen::Transform<REAL, 3, Eigen::Isometry> transformIsometry(transform4x4);
+	Eigen::Matrix<REAL,3,3> mrotation;
+	Eigen::Matrix<REAL,3,3> mscale;
+	transformIsometry.computeRotationScaling(&mrotation, &mscale);
+	const Point3 translation = transformIsometry.translation();
+	const Matrix3x3 rotation = mrotation;
+	#endif
+	ASSERT(mscale(0,0) > 0 && ISEQUAL(mscale(0,0), mscale(1,1)) && ISEQUAL(mscale(0,0), mscale(2,2)));
+	Transform(rotation, translation, mscale(0,0));
+} // Transform
 
 // transform this scene such that it best aligns with the given scene based on the camera positions
 bool Scene::AlignTo(const Scene& scene)

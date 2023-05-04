@@ -50,6 +50,7 @@ namespace OPT {
 	String strInputFileName;
 	String strOutputFileName;
 	String strAlignFileName;
+	String strTransformFileName;
 	String strTransferTextureFileName;
 	String strIndicesFileName;
 	bool bComputeVolume;
@@ -98,7 +99,8 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		("input-file,i", boost::program_options::value<std::string>(&OPT::strInputFileName), "input scene filename")
 		("output-file,o", boost::program_options::value<std::string>(&OPT::strOutputFileName), "output filename for storing the scene")
 		("align-file,a", boost::program_options::value<std::string>(&OPT::strAlignFileName), "input scene filename to which the scene will be cameras aligned")
-		("transfer-texture-file,t", boost::program_options::value<std::string>(&OPT::strTransferTextureFileName), "input mesh filename to which the texture of the scene's mesh will be transfered to (the two meshes should be aligned and the new mesh to have UV-map)")
+		("transform-file,t", boost::program_options::value<std::string>(&OPT::strTransformFileName), "input transform filename by which the scene will transformed")
+		("transfer-texture-file", boost::program_options::value<std::string>(&OPT::strTransferTextureFileName), "input mesh filename to which the texture of the scene's mesh will be transfered to (the two meshes should be aligned and the new mesh to have UV-map)")
 		("indices-file", boost::program_options::value<std::string>(&OPT::strIndicesFileName), "input indices filename to be used with ex. texture transfer to select a subset of the scene's mesh")
 		("compute-volume", boost::program_options::value(&OPT::bComputeVolume)->default_value(false), "compute the volume of the given watertight mesh, or else try to estimate the ground plane and assume the mesh is bounded by it")
 		("plane-threshold", boost::program_options::value(&OPT::fPlaneThreshold)->default_value(0.f), "threshold used to estimate the ground plane (<0 - disabled, 0 - auto, >0 - desired threshold)")
@@ -142,10 +144,12 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	// validate input
 	Util::ensureValidPath(OPT::strInputFileName);
 	Util::ensureValidPath(OPT::strAlignFileName);
+	Util::ensureValidPath(OPT::strTransformFileName);
 	Util::ensureValidPath(OPT::strTransferTextureFileName);
 	Util::ensureValidPath(OPT::strIndicesFileName);
 	const String strInputFileNameExt(Util::getFileExt(OPT::strInputFileName).ToLower());
-	const bool bInvalidCommand(OPT::strInputFileName.empty() || (OPT::strAlignFileName.empty() && OPT::strTransferTextureFileName.empty() && !OPT::bComputeVolume));
+	const bool bInvalidCommand(OPT::strInputFileName.empty() ||
+		(OPT::strAlignFileName.empty() && OPT::strTransformFileName.empty() && OPT::strTransferTextureFileName.empty() && !OPT::bComputeVolume));
 	if (OPT::vm.count("help") || bInvalidCommand) {
 		boost::program_options::options_description visible("Available options");
 		visible.add(generic).add(config);
@@ -215,7 +219,7 @@ int main(int argc, LPCTSTR* argv)
 	Scene scene(OPT::nMaxThreads);
 
 	// load given scene
-	if (!scene.Load(MAKE_PATH_SAFE(OPT::strInputFileName), !OPT::strTransferTextureFileName.empty() || OPT::bComputeVolume))
+	if (!scene.Load(MAKE_PATH_SAFE(OPT::strInputFileName), !OPT::strTransformFileName.empty() || !OPT::strTransferTextureFileName.empty() || OPT::bComputeVolume))
 		return EXIT_FAILURE;
 
 	if (!OPT::strAlignFileName.empty()) {
@@ -226,6 +230,31 @@ int main(int argc, LPCTSTR* argv)
 		if (!scene.AlignTo(sceneRef))
 			return EXIT_FAILURE;
 		VERBOSE("Scene aligned to the given reference scene (%s)", TD_TIMER_GET_FMT().c_str());
+	}
+
+	if (!OPT::strTransformFileName.empty()) {
+		// transform this scene by the given transform matrix
+		std::ifstream file(MAKE_PATH_SAFE(OPT::strTransformFileName));
+		std::string strLine;
+		std::vector<double> transformValues;
+		while (std::getline(file, strLine)) {
+			errno = 0;
+			char* strEnd{};
+			const double v = std::strtod(strLine.c_str(), &strEnd);
+			if (errno == ERANGE || strEnd == strLine.c_str())
+				continue;
+			transformValues.push_back(v);
+		}
+		if (transformValues.size() != 12 &&
+			(transformValues.size() != 16 || transformValues[12] != 0 || transformValues[13] != 0 || transformValues[14] != 0 || transformValues[15] != 1)) {
+			VERBOSE("error: invalid transform");
+			return EXIT_FAILURE;
+		}
+		Matrix3x4 transform;
+		for (unsigned i=0; i<12; ++i)
+			transform[i] = transformValues[i];
+		scene.Transform(transform);
+		VERBOSE("Scene transformed by the given transformation matrix (%s)", TD_TIMER_GET_FMT().c_str());
 	}
 
 	if (!OPT::strTransferTextureFileName.empty()) {
@@ -263,7 +292,12 @@ int main(int argc, LPCTSTR* argv)
 	}
 
 	// write transformed scene
-	scene.Save(MAKE_PATH_SAFE(OPT::strOutputFileName), (ARCHIVE_TYPE)OPT::nArchiveType);
+	if (scene.IsValid())
+		scene.Save(MAKE_PATH_SAFE(OPT::strOutputFileName), (ARCHIVE_TYPE)OPT::nArchiveType);
+	else if (!scene.pointcloud.IsEmpty())
+		scene.pointcloud.Save(Util::getFileFullName(MAKE_PATH_SAFE(OPT::strOutputFileName)) + ".ply");
+	else if (!scene.mesh.IsEmpty())
+		scene.mesh.Save(Util::getFileFullName(MAKE_PATH_SAFE(OPT::strOutputFileName)) + ".ply");
 
 	Finalize();
 	return EXIT_SUCCESS;
