@@ -151,7 +151,7 @@ struct MeshTexture {
 		typedef TRasterMesh<RasterMesh> Base;
 		FaceMap& faceMap;
 		FIndex idxFace;
-		Image8U mask;
+		Image8U invalidMask;
 		bool validFace;
 
 		RasterMesh(const Mesh::VertexArr& _vertices, const Camera& _camera, DepthMap& _depthMap, FaceMap& _faceMap)
@@ -167,15 +167,10 @@ struct MeshTexture {
 			Depth& depth = depthMap(pt);
 			if (depth == 0 || depth > z) {
 				depth = z;
-				if (validFace && (validFace = mask(pt) != 0))
-					faceMap(pt) = idxFace;
-				else
-					faceMap(pt) = -1;
+				faceMap(pt) = validFace && (validFace = (invalidMask(pt) == 0)) ? idxFace : NO_ID;
 			}
 		}
 	};
-
-	
 
 	// used to represent a pixel color
 	typedef Point3f Color;
@@ -517,25 +512,27 @@ bool MeshTexture::ListCameraFaces(FaceDataViewArr& facesDatas, float fOutlierThr
 		faceMap.create(imageData.height, imageData.width);
 		depthMap.create(imageData.height, imageData.width);
 		RasterMesh rasterer(vertices, imageData.camera, depthMap, faceMap);
-		// creating mask for the lens distortion
-		rasterer.mask = Image8U(imageData.height + 2, imageData.width + 2);
-		rasterer.mask.memset(0);
-		Image8U imageCopy;
-		cv::Rect rect;
-		cv::cvtColor(imageData.image, imageCopy, cv::COLOR_BGR2GRAY);
-		if (imageCopy(0, 0) == 0) cv::floodFill(imageCopy, rasterer.mask, cv::Point(0, 0), 255, &rect, cv::Scalar(0), cv::Scalar(1));
-		if (imageCopy(imageCopy.rows / 2, 0) == 0) cv::floodFill(imageCopy, rasterer.mask, cv::Point(0, imageCopy.rows / 2), 255, &rect, cv::Scalar(0), cv::Scalar(1));
-		if (imageCopy(imageCopy.rows - 1, 0) == 0) cv::floodFill(imageCopy, rasterer.mask, cv::Point(0, imageCopy.rows - 1), 255, &rect, cv::Scalar(0), cv::Scalar(1));
-		if (imageCopy(imageCopy.rows - 1, imageCopy.cols / 2) == 0) cv::floodFill(imageCopy, rasterer.mask, cv::Point(imageCopy.cols / 2, imageCopy.rows - 1), 255, &rect, cv::Scalar(0), cv::Scalar(1));
-		if (imageCopy(imageCopy.rows - 1, imageCopy.cols - 1) == 0) cv::floodFill(imageCopy, rasterer.mask, cv::Point(imageCopy.cols - 1, imageCopy.rows - 1), 255, &rect, cv::Scalar(0), cv::Scalar(1));
-		if (imageCopy(imageCopy.rows / 2, imageCopy.cols - 1) == 0) cv::floodFill(imageCopy, rasterer.mask, cv::Point(imageCopy.cols - 1, imageCopy.rows / 2), 255, &rect, cv::Scalar(0), cv::Scalar(1));
-		if (imageCopy(0, imageCopy.cols - 1) == 0) cv::floodFill(imageCopy, rasterer.mask, cv::Point(imageCopy.cols - 1, 0), 255, &rect, cv::Scalar(0), cv::Scalar(1));
-		if (imageCopy(0, imageCopy.cols / 2) == 0) cv::floodFill(imageCopy, rasterer.mask, cv::Point(imageCopy.cols / 2, 0), 255, &rect, cv::Scalar(0), cv::Scalar(1));
-		rasterer.mask = rasterer.mask == 0;
-		if (VERBOSITY_LEVEL > 2) {
-			cv::imwrite(String::FormatString("invalidMask%04d.png", idx), rasterer.mask);
-		}
 		rasterer.Clear();
+		// creating mask for the lens distortion
+		rasterer.invalidMask.create(imageData.height + 2, imageData.width + 2);
+		rasterer.invalidMask.memset(0);
+		Image8U imageGray;
+		cv::cvtColor(imageData.image, imageGray, cv::COLOR_BGR2GRAY);
+		const cv::Scalar upDiff(3);
+		const int flags(8 | (255 << 8));
+		if (imageGray(0, 0) == 0) cv::floodFill(imageGray, rasterer.invalidMask, cv::Point(0, 0), 255, NULL, cv::Scalar(0), upDiff, flags);
+		if (imageGray(imageGray.rows / 2, 0) == 0) cv::floodFill(imageGray, rasterer.invalidMask, cv::Point(0, imageGray.rows / 2), 255, NULL, cv::Scalar(0), upDiff, flags);
+		if (imageGray(imageGray.rows - 1, 0) == 0) cv::floodFill(imageGray, rasterer.invalidMask, cv::Point(0, imageGray.rows - 1), 255, NULL, cv::Scalar(0), upDiff, flags);
+		if (imageGray(imageGray.rows - 1, imageGray.cols / 2) == 0) cv::floodFill(imageGray, rasterer.invalidMask, cv::Point(imageGray.cols / 2, imageGray.rows - 1), 255, NULL, cv::Scalar(0), upDiff, flags);
+		if (imageGray(imageGray.rows - 1, imageGray.cols - 1) == 0) cv::floodFill(imageGray, rasterer.invalidMask, cv::Point(imageGray.cols - 1, imageGray.rows - 1), 255, NULL, cv::Scalar(0), upDiff, flags);
+		if (imageGray(imageGray.rows / 2, imageGray.cols - 1) == 0) cv::floodFill(imageGray, rasterer.invalidMask, cv::Point(imageGray.cols - 1, imageGray.rows / 2), 255, NULL, cv::Scalar(0), upDiff, flags);
+		if (imageGray(0, imageGray.cols - 1) == 0) cv::floodFill(imageGray, rasterer.invalidMask, cv::Point(imageGray.cols - 1, 0), 255, NULL, cv::Scalar(0), upDiff, flags);
+		if (imageGray(0, imageGray.cols / 2) == 0) cv::floodFill(imageGray, rasterer.invalidMask, cv::Point(imageGray.cols / 2, 0), 255, NULL, cv::Scalar(0), upDiff, flags);
+		rasterer.invalidMask = rasterer.invalidMask(cv::Rect(1,1, imageData.width,imageData.height));
+		#if TD_VERBOSE != TD_VERBOSE_OFF
+		if (VERBOSITY_LEVEL > 2)
+			cv::imwrite(String::FormatString("invalidMask%04d.png", idxView), rasterer.invalidMask);
+		#endif
 		for (auto idxFace : cameraFaces) {
 			rasterer.validFace = true;
 			const Face& facet = faces[idxFace];
