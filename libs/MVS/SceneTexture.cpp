@@ -151,6 +151,9 @@ struct MeshTexture {
 		typedef TRasterMesh<RasterMesh> Base;
 		FaceMap& faceMap;
 		FIndex idxFace;
+		Image8U invalidMask;
+		bool validFace;
+
 		RasterMesh(const Mesh::VertexArr& _vertices, const Camera& _camera, DepthMap& _depthMap, FaceMap& _faceMap)
 			: Base(_vertices, _camera, _depthMap), faceMap(_faceMap) {}
 		void Clear() {
@@ -164,7 +167,7 @@ struct MeshTexture {
 			Depth& depth = depthMap(pt);
 			if (depth == 0 || depth > z) {
 				depth = z;
-				faceMap(pt) = idxFace;
+				faceMap(pt) = validFace && (validFace = (invalidMask(pt) == 0)) ? idxFace : NO_ID;
 			}
 		}
 	};
@@ -394,6 +397,37 @@ public:
 	Scene& scene; // the mesh vertices and faces
 };
 
+// creating an invalid mask for the given image corresponding to
+// the invalid pixels generated during image correction for the lens distortion;
+// the returned mask has the same size as the image and is set to non-zero for invalid pixels
+static Image8U DetectInvalidImageRegions(const Image8U3& image)
+{
+	const cv::Scalar upDiff(3);
+	const int flags(8 | (255 << 8));
+	Image8U invalidMask(image.rows + 2, image.cols + 2);
+	invalidMask.memset(0);
+	Image8U imageGray;
+	cv::cvtColor(image, imageGray, cv::COLOR_BGR2GRAY);
+	if (imageGray(0, 0) == 0)
+		cv::floodFill(imageGray, invalidMask, cv::Point(0, 0), 255, NULL, cv::Scalar(0), upDiff, flags);
+	if (imageGray(image.rows / 2, 0) == 0)
+		cv::floodFill(imageGray, invalidMask, cv::Point(0, image.rows / 2), 255, NULL, cv::Scalar(0), upDiff, flags);
+	if (imageGray(image.rows - 1, 0) == 0)
+		cv::floodFill(imageGray, invalidMask, cv::Point(0, image.rows - 1), 255, NULL, cv::Scalar(0), upDiff, flags);
+	if (imageGray(image.rows - 1, image.cols / 2) == 0)
+		cv::floodFill(imageGray, invalidMask, cv::Point(image.cols / 2, image.rows - 1), 255, NULL, cv::Scalar(0), upDiff, flags);
+	if (imageGray(image.rows - 1, image.cols - 1) == 0)
+		cv::floodFill(imageGray, invalidMask, cv::Point(image.cols - 1, image.rows - 1), 255, NULL, cv::Scalar(0), upDiff, flags);
+	if (imageGray(image.rows / 2, image.cols - 1) == 0)
+		cv::floodFill(imageGray, invalidMask, cv::Point(image.cols - 1, image.rows / 2), 255, NULL, cv::Scalar(0), upDiff, flags);
+	if (imageGray(0, image.cols - 1) == 0)
+		cv::floodFill(imageGray, invalidMask, cv::Point(image.cols - 1, 0), 255, NULL, cv::Scalar(0), upDiff, flags);
+	if (imageGray(0, image.cols / 2) == 0)
+		cv::floodFill(imageGray, invalidMask, cv::Point(image.cols / 2, 0), 255, NULL, cv::Scalar(0), upDiff, flags);
+	invalidMask = invalidMask(cv::Rect(1,1, imageGray.cols,imageGray.rows));
+	return invalidMask;
+}
+
 MeshTexture::MeshTexture(Scene& _scene, unsigned _nResolutionLevel, unsigned _nMinResolution)
 	:
 	nResolutionLevel(_nResolutionLevel),
@@ -510,10 +544,18 @@ bool MeshTexture::ListCameraFaces(FaceDataViewArr& facesDatas, float fOutlierThr
 		depthMap.create(imageData.height, imageData.width);
 		RasterMesh rasterer(vertices, imageData.camera, depthMap, faceMap);
 		rasterer.Clear();
+		rasterer.invalidMask = DetectInvalidImageRegions(imageData.image);
+		#if TD_VERBOSE != TD_VERBOSE_OFF
+		if (VERBOSITY_LEVEL > 2)
+			cv::imwrite(String::FormatString("invalidMask%04d.png", idxView), rasterer.invalidMask);
+		#endif
 		for (auto idxFace : cameraFaces) {
+			rasterer.validFace = true;
 			const Face& facet = faces[idxFace];
 			rasterer.idxFace = idxFace;
 			rasterer.Project(facet);
+			if (!rasterer.validFace)
+				rasterer.Project(facet);
 		}
 		// compute the projection area of visible faces
 		#if TEXOPT_FACEOUTLIER != TEXOPT_FACEOUTLIER_NA
