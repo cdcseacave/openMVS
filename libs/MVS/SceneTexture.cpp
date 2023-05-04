@@ -518,7 +518,7 @@ bool MeshTexture::ListCameraFaces(FaceDataViewArr& facesDatas, float fOutlierThr
 		faceMap.create(imageData.height, imageData.width);
 		depthMap.create(imageData.height, imageData.width);
 		RasterMesh rasterer(vertices, imageData.camera, depthMap, faceMap);
-		// creating mask for the image border
+		// creating mask for the lens distortion
 		rasterer.mask = Image8U(imageData.height + 2, imageData.width + 2);
 		rasterer.mask.memset(0);
 		Image8U imageCopy;
@@ -532,7 +532,6 @@ bool MeshTexture::ListCameraFaces(FaceDataViewArr& facesDatas, float fOutlierThr
 		if (imageCopy(imageCopy.rows / 2, imageCopy.cols - 1) == 0) cv::floodFill(imageCopy, rasterer.mask, cv::Point(imageCopy.cols - 1, imageCopy.rows / 2), 255, &rect, cv::Scalar(0), cv::Scalar(1));
 		if (imageCopy(0, imageCopy.cols - 1) == 0) cv::floodFill(imageCopy, rasterer.mask, cv::Point(imageCopy.cols - 1, 0), 255, &rect, cv::Scalar(0), cv::Scalar(1));
 		if (imageCopy(0, imageCopy.cols / 2) == 0) cv::floodFill(imageCopy, rasterer.mask, cv::Point(imageCopy.cols / 2, 0), 255, &rect, cv::Scalar(0), cv::Scalar(1));
-		cv::Mat kernel = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(3, 3));
 		rasterer.mask = rasterer.mask == 0;
 		if (VERBOSITY_LEVEL > 2) {
 			cv::imwrite(String::FormatString("invalidMask%04d.png", idx), rasterer.mask);
