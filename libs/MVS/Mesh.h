@@ -56,9 +56,11 @@ public:
 	typedef uint32_t VIndex;
 	typedef TPoint3<VIndex> Face;
 	typedef uint32_t FIndex;
+	typedef uint32_t FTexIndex;
 
 	typedef cList<Vertex,const Vertex&,0,8192,VIndex> VertexArr;
 	typedef cList<Face,const Face&,0,8192,FIndex> FaceArr;
+	typedef cList<FTexIndex, FTexIndex, 0, 8192, FTexIndex> FaceTexIdxArr;
 
 	typedef cList<VIndex,VIndex,0,8,VIndex> VertexIdxArr;
 	typedef cList<FIndex,FIndex,0,8,FIndex> FaceIdxArr;
@@ -128,6 +130,7 @@ public:
 	NormalArr faceNormals; // for each face, the normal to it (optional)
 	FaceFacesArr faceFaces; // for each face, the list of adjacent faces, NO_ID for border edges (optional)
 	TexCoordArr faceTexcoords; // for each face, the texture-coordinates corresponding to the contained vertices (optional)
+	FaceTexIdxArr faceTexIdxArr; // for each face, the index of the texture (optional)
 
 	Image8U3 textureDiffuse; // texture containing the diffuse color (optional)
 

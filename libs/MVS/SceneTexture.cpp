@@ -203,7 +203,6 @@ struct MeshTexture {
 		Label label; // view index
 		Mesh::FaceIdxArr faces; // indices of the faces contained by the patch
 		RectsBinPack::Rect rect; // the bounding box in the view containing the patch
-		unsigned textureIndex; // the index of the texture in the texture atlas
 	};
 	typedef cList<TexturePatch,const TexturePatch&,1,1024,FIndex> TexturePatchArr;
 
@@ -393,6 +392,7 @@ public:
 	BoolArr& vertexBoundary; // for each vertex, stores if it is at the boundary or not
 	Mesh::FaceFacesArr& faceFaces; // for each face, the list of adjacent faces, NO_ID for border edges (optional)
 	Mesh::TexCoordArr& faceTexcoords; // for each face, the texture-coordinates of the vertices
+	Mesh::FaceTexIdxArr& faceTexIdxArr; // for each face, the texture image index
 	Image8U3& textureDiffuse; // texture containing the diffuse color
 
 	// constant the entire time
@@ -414,6 +414,7 @@ MeshTexture::MeshTexture(Scene& _scene, unsigned _nResolutionLevel, unsigned _nM
 	textureDiffuse(_scene.mesh.textureDiffuse),
 	vertices(_scene.mesh.vertices),
 	faces(_scene.mesh.faces),
+	faceTexIdxArr(_scene.mesh.faceTexIdxArr),
 	images(_scene.images),
 	scene(_scene)
 {
@@ -2195,6 +2196,7 @@ void MeshTexture::GenerateTexture(bool bGlobalSeamLeveling, bool bLocalSeamLevel
 			DEBUG_EXTRA("Overriding nRectPackingHeuristic to best fit patches for multiple textures");
 			nRectPackingHeuristic = 1;
 		}
+		faceTexIdxArr.resize(faces.size());
 		while (true)
 		{
 			// arrange texture patches to fit the smallest possible texture image
@@ -2241,7 +2243,8 @@ void MeshTexture::GenerateTexture(bool bGlobalSeamLeveling, bool bLocalSeamLevel
 							if (rects[i].width + rects[i].x > textureSize || rects[i].height + rects[i].y > textureSize)
 								tempRemainingPatches.Insert(remainingPatches[i]);
 							else {
-								remainingPatches[i].textureIndex = tIndex;
+								FOREACH(j, remainingPatches[i].faces)
+									faceTexIdxArr[remainingPatches[i].faces[j]] = tIndex;
 								rectsToTexture.Insert(rects[i]);
 								patchesToTexture.Insert(remainingPatches[i]);
 							}
@@ -2306,7 +2309,6 @@ void MeshTexture::GenerateTexture(bool bGlobalSeamLeveling, bool bLocalSeamLevel
 				cv::addWeighted(textureDiffuse, 1 + fSharpnessWeight, blurryTextureDiffuse, -fSharpnessWeight, 0, textureDiffuse);
 			}
 			cv::imwrite(String::FormatString("texture%04d.png", tIndex), textureDiffuse);
-			DEBUG_EXTRA("%d", remainingPatches.size());
 			if (remainingPatches.size() == 0)
 				break;
 			tIndex++;
