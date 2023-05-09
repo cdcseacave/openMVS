@@ -528,7 +528,8 @@ bool ParseBlocksExchangeXML(tinyxml2::XMLDocument& doc, Scene& scene, PlatformDi
 		}
 		++nCameras;
 		for (const tinyxml2::XMLElement* photo=photogroup->FirstChildElement("Photo"); photo!=NULL; photo=photo->NextSiblingElement()) {
-			Image imageData;
+			const IIndex idxImage = scene.images.size();
+			Image& imageData = scene.images.AddEmpty();
 			imageData.platformID = platformID;
 			imageData.cameraID = 0; // only one camera per platform supported by this format
 			imageData.poseID = NO_ID;
@@ -536,6 +537,7 @@ bool ParseBlocksExchangeXML(tinyxml2::XMLDocument& doc, Scene& scene, PlatformDi
 			imageData.name = photo->FirstChildElement("ImagePath")->GetText();
 			Util::ensureUnifySlash(imageData.name);
 			imageData.name = MAKE_PATH_FULL(strPath, imageData.name);
+			mapImageID.emplace(imageData.ID, idxImage);
 			// set image resolution
 			const cv::Size& resolution = resolutions[imageData.platformID];
 			imageData.width = resolution.width;
@@ -573,8 +575,6 @@ bool ParseBlocksExchangeXML(tinyxml2::XMLDocument& doc, Scene& scene, PlatformDi
 				imageData.avgDepth = (float)((photo->FirstChildElement("NearDepth")->DoubleText() + photo->FirstChildElement("FarDepth")->DoubleText())/2);
 			else
 				imageData.avgDepth = 0;
-			mapImageID.emplace(imageData.ID, static_cast<IIndex>(scene.images.size()));
-			scene.images.emplace_back(std::move(imageData));
 			++nPoses;
 		}
 	}
@@ -825,6 +825,8 @@ int main(int argc, LPCTSTR* argv)
 	#endif
 		++progress;
 		Image& imageData = scene.images[ID];
+		if (!imageData.IsValid())
+			continue;
 		if (!UndistortBrown(imageData, ID, pltDistCoeffs[imageData.platformID][imageData.cameraID], pathData)) {
 			#ifdef _USE_OPENMP
 			bAbort = true;

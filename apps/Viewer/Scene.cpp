@@ -235,7 +235,10 @@ bool Scene::Open(LPCTSTR fileName, LPCTSTR meshFileName)
 		return false;
 	if (meshFileName) {
 		// load given mesh
-		scene.mesh.Load(meshFileName);
+		if (!scene.mesh.Load(meshFileName)) {
+			// try to load as a point-cloud
+			scene.pointcloud.Load(meshFileName);
+		}
 	}
 	if (!scene.pointcloud.IsEmpty())
 		scene.pointcloud.PrintStatistics(scene.images.data(), &scene.obb);
