@@ -398,6 +398,54 @@ void Mesh::ComputeNormalVertices()
 }
 #endif
 
+uint32_t Mesh::ComputeTexturePatchFaces(FaceIdxArr& face_patch_ids) const {
+	ASSERT(faceTexcoords.size() == faces.size() * 3);
+	face_patch_ids.Resize(faces.GetSize());
+	face_patch_ids.MemsetValue(NO_ID);
+	std::stack<FIndex> stack_faces;
+	uint32_t patch_id = 0;
+	FOREACH(idx_face, faces) {
+		if (face_patch_ids[idx_face] != NO_ID)
+			continue;
+		face_patch_ids[idx_face] = patch_id;
+		stack_faces.push(idx_face);
+		do {
+			FIndex iF = stack_faces.top();
+			stack_faces.pop();
+			const Mesh::FaceFaces& ffaces = faceFaces[iF];
+			for (int i = 0; i < 3; ++i) {
+				const FIndex iFAdj = ffaces[i];
+				if (iFAdj == NO_ID || face_patch_ids[iFAdj] != NO_ID)
+					continue;
+				VIndex iV0, iV1; //indexes of a common vertex
+				for (int v0 = 0; v0 < 3; ++v0) {
+					const Face& f = faces[iF];
+					const Face& fAdj = faces[iFAdj];
+					bool bCommon = false;
+					for (int v1 = 0; v1 < 3; ++v1) {
+						if (f[v0] == fAdj[v1]) {
+							iV0 = v0;
+							iV1 = v1;
+							bCommon = true;
+							break;
+						}
+					}
+					if (bCommon)
+						break;
+				}
+				const TexCoord tcV = faceTexcoords[iF * 3 + iV0];
+				const TexCoord tcAdj = faceTexcoords[iFAdj * 3 + iV1];
+				if (tcV.x == tcAdj.x && tcV.y == tcAdj.y) {
+					face_patch_ids[iFAdj] = patch_id;
+					stack_faces.push(iFAdj);
+				}
+			}
+		} while (!stack_faces.empty());
+		++patch_id;
+	}
+	return patch_id;
+} // ComputeTexturePatchFaces
+
 // Smoothen the normals for each face
 //  - fMaxGradient: maximum angle (in degrees) difference between neighbor normals that is
 //    allowed to take into consideration; higher angles are ignored

@@ -161,6 +161,7 @@ public:
 	void ListBoundaryVertices();
 	void ComputeNormalFaces();
 	void ComputeNormalVertices();
+	uint32_t ComputeTexturePatchFaces(FaceIdxArr& face_patch_ids) const;
 
 	void SmoothNormalFaces(float fMaxGradient=25.f, float fOriginalWeight=0.5f, unsigned nIterations=3);
 
