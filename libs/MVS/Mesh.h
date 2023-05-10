@@ -210,6 +210,8 @@ public:
 	REAL ComputeArea() const;
 	REAL ComputeVolume() const;
 
+	String PlotTexturePatch(const FIndex dbgFaceId) const;
+
 	void SamplePoints(unsigned numberOfPoints, PointCloud&) const;
 	void SamplePoints(REAL samplingDensity, PointCloud&) const;
 	void SamplePoints(REAL samplingDensity, unsigned mumPointsTheoretic, PointCloud&) const;

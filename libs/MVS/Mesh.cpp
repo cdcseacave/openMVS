@@ -4134,6 +4134,41 @@ REAL Mesh::ComputeVolume() const
 		volume += ComputeTriangleVolume(vertices[face[0]], vertices[face[1]], vertices[face[2]]);
 	return volume;
 }
+
+String Mesh::PlotTexturePatch(const FIndex dbgFaceId) const {
+	// split texture in patches
+	Mesh::FaceIdxArr face_patch_ids;
+	ComputeTexturePatchFaces(face_patch_ids);
+	// get the list of all faces from the same patch as debug face
+	cList<Mesh::FIndex> patchFaces;
+	const uint32_t dbgPatchId(face_patch_ids[dbgFaceId]);
+	FOREACH(idx_face, face_patch_ids) {
+		if (dbgPatchId == face_patch_ids[idx_face])
+			patchFaces.emplace_back(idx_face);
+	}
+	const Mesh::Face fDbg = faces[dbgFaceId];
+	cv::Mat imgDbg(textureDiffuse);
+	AABB2f boundingBox(true);
+	FOREACH(fIdx, patchFaces) {
+		const Mesh::FIndex& fId = patchFaces[fIdx];
+		const Mesh::TexCoord& texDbgCoordsV0 = faceTexcoords[fId * 3]; boundingBox.Insert(texDbgCoordsV0);
+		const Mesh::TexCoord& texDbgCoordsV1 = faceTexcoords[fId * 3 + 1]; boundingBox.Insert(texDbgCoordsV1);
+		const Mesh::TexCoord& texDbgCoordsV2 = faceTexcoords[fId * 3 + 2]; boundingBox.Insert(texDbgCoordsV2);
+		cv::line(imgDbg, texDbgCoordsV0, texDbgCoordsV1, cv::Scalar(50, 50, 250));
+		cv::line(imgDbg, texDbgCoordsV0, texDbgCoordsV2, cv::Scalar(50, 50, 250));
+		cv::line(imgDbg, texDbgCoordsV2, texDbgCoordsV1, cv::Scalar(50, 50, 250));
+		if (fId == dbgFaceId) {
+			cv::circle(imgDbg, texDbgCoordsV0, 3, cv::Scalar(100, 150, 250), 2);
+			cv::circle(imgDbg, texDbgCoordsV1, 3, cv::Scalar(100, 150, 250), 2);
+			cv::circle(imgDbg, texDbgCoordsV2, 3, cv::Scalar(100, 150, 250), 2);
+		}
+	}
+	cv::Rect sourceRect(FLOOR(boundingBox.ptMin.x()), FLOOR(boundingBox.ptMin.y()), CEIL(boundingBox.ptMax.x() - boundingBox.ptMin.x()), CEIL(boundingBox.ptMax.y() - boundingBox.ptMin.y())); // ROI of the patch
+	cv::Mat target = imgDbg(sourceRect).clone();
+	String sImgName = String::FormatString("dbgPatch_%d_%d.jpg", dbgPatchId, dbgFaceId);
+	cv::imwrite(MAKE_PATH_SAFE(sImgName), target);
+	return sImgName;
+}
 /*----------------------------------------------------------------*/
 
 
