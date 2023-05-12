@@ -4135,10 +4135,11 @@ REAL Mesh::ComputeVolume() const
 	return volume;
 }
 
-String Mesh::PlotTexturePatch(const FIndex dbgFaceId) const {
+String Mesh::PlotTexturePatch(const FIndex dbgFaceId, FaceIdxArr& face_patch_ids, cv::Mat& imgOut, const bool bSaveToFile) const {
 	// split texture in patches
-	Mesh::FaceIdxArr face_patch_ids;
-	ComputeTexturePatchFaces(face_patch_ids);
+	if (face_patch_ids.size() != faces.size()) {
+		ComputeTexturePatchFaces(face_patch_ids);
+	}
 	// get the list of all faces from the same patch as debug face
 	cList<Mesh::FIndex> patchFaces;
 	const uint32_t dbgPatchId(face_patch_ids[dbgFaceId]);
@@ -4147,7 +4148,8 @@ String Mesh::PlotTexturePatch(const FIndex dbgFaceId) const {
 			patchFaces.emplace_back(idx_face);
 	}
 	const Mesh::Face fDbg = faces[dbgFaceId];
-	cv::Mat imgDbg(textureDiffuse);
+	cv::Mat imgDbg;
+	textureDiffuse.copyTo(imgDbg);
 	AABB2f boundingBox(true);
 	FOREACH(fIdx, patchFaces) {
 		const Mesh::FIndex& fId = patchFaces[fIdx];
@@ -4164,10 +4166,13 @@ String Mesh::PlotTexturePatch(const FIndex dbgFaceId) const {
 		}
 	}
 	cv::Rect sourceRect(FLOOR(boundingBox.ptMin.x()), FLOOR(boundingBox.ptMin.y()), CEIL(boundingBox.ptMax.x() - boundingBox.ptMin.x()), CEIL(boundingBox.ptMax.y() - boundingBox.ptMin.y())); // ROI of the patch
-	cv::Mat target = imgDbg(sourceRect).clone();
-	String sImgName = String::FormatString("dbgPatch_%d_%d.jpg", dbgPatchId, dbgFaceId);
-	cv::imwrite(MAKE_PATH_SAFE(sImgName), target);
-	return sImgName;
+	imgDbg(sourceRect).copyTo(imgOut);
+	if (bSaveToFile) {
+		String sImgName = String::FormatString("dbgPatch_%d_%d.jpg", dbgPatchId, dbgFaceId);
+		cv::imwrite(MAKE_PATH_SAFE(sImgName), imgOut);
+		return sImgName;
+	}
+	return String();
 }
 /*----------------------------------------------------------------*/
 

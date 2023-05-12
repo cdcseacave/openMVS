@@ -60,6 +60,7 @@ public:
 	Window window;
 	ImageArr images; // scene photos
 	ImageArr textures; // mesh textures
+	MVS::Mesh::FaceIdxArr face_patch_ids;
 
 	OctreePoints octPoints;
 	OctreeMesh octMesh;
@@ -97,7 +98,7 @@ public:
 
 	void Center();
 	void TogleSceneBox();
-	void CastRay(const Ray3&, int);
+	void CastRay(const Ray3&, int, int);
 protected:
 	static void* ThreadWorker(void*);
 };
