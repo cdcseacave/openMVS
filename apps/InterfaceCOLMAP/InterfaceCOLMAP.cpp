@@ -68,6 +68,7 @@ namespace {
 namespace OPT {
 bool bFromOpenMVS; // conversion direction
 bool bNormalizeIntrinsics;
+bool bForceSparsePointCloud;
 String strInputFileName;
 String strOutputFileName;
 String strImageFolder;
@@ -114,6 +115,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		("image-folder", boost::program_options::value<std::string>(&OPT::strImageFolder)->default_value(COLMAP_IMAGES_FOLDER), "folder to the undistorted images")
 		("max-resolution", boost::program_options::value(&OPT::nMaxResolution)->default_value(0), "make sure image resolution are not not larger than this (0 - disabled)")
 		("normalize,f", boost::program_options::value(&OPT::bNormalizeIntrinsics)->default_value(false), "normalize intrinsics while exporting to MVS format")
+		("force-points,p", boost::program_options::value(&OPT::bForceSparsePointCloud)->default_value(false), "force exporting point-cloud as sparse points also even if dense point-cloud detected")
 		;
 
 	boost::program_options::options_description cmdline_options;
@@ -956,7 +958,7 @@ bool ImportScene(const String& strFolder, const String& strOutFolder, Interface&
 }
 
 
-bool ExportScene(const String& strFolder, const Interface& scene, bool binary = true)
+bool ExportScene(const String& strFolder, const Interface& scene, bool bForceSparsePointCloud = false, bool binary = true)
 {
 	Util::ensureFolder(strFolder+COLMAP_SPARSE_FOLDER);
 
@@ -1068,7 +1070,7 @@ bool ExportScene(const String& strFolder, const Interface& scene, bool binary = 
 
 	// auto-select dense or sparse mode based on number of points
 	const bool bSparsePointCloud(scene.vertices.size() < (size_t)maxNumPointsSparse);
-	if (bSparsePointCloud) {
+	if (bSparsePointCloud || bForceSparsePointCloud) {
 		// write points list
 		{
 			const String filenamePoints(strFolder+(binary?COLMAP_POINTS_BIN:COLMAP_POINTS_TXT));
@@ -1154,7 +1156,8 @@ bool ExportScene(const String& strFolder, const Interface& scene, bool binary = 
 		Util::ensureFolder(strFolder+COLMAP_STEREO_CONSISTENCYGRAPHS_FOLDER);
 		Util::ensureFolder(strFolder+COLMAP_STEREO_DEPTHMAPS_FOLDER);
 		Util::ensureFolder(strFolder+COLMAP_STEREO_NORMALMAPS_FOLDER);
-	} else {
+	}
+	if (!bSparsePointCloud) {
 		// export dense point-cloud
 		const String filenameDensePoints(strFolder+COLMAP_DENSE_POINTS);
 		const String filenameDenseVisPoints(strFolder+COLMAP_DENSE_POINTS_VISIBILITY);
@@ -1416,7 +1419,7 @@ int main(int argc, LPCTSTR* argv)
 		} else {
 			// write COLMAP input data
 			Util::ensureFolderSlash(OPT::strOutputFileName);
-			ExportScene(MAKE_PATH_SAFE(OPT::strOutputFileName), scene);
+			ExportScene(MAKE_PATH_SAFE(OPT::strOutputFileName), scene, OPT::bForceSparsePointCloud);
 		}
 		VERBOSE("Input data exported: %u images & %u vertices (%s)", scene.images.size(), scene.vertices.size(), TD_TIMER_GET_FMT().c_str());
 	} else {
