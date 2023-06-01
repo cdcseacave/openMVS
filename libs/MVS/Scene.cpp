@@ -89,13 +89,13 @@ bool Scene::LoadInterface(const String & fileName)
 
 	// import platforms and cameras
 	ASSERT(!obj.platforms.empty());
-	platforms.Reserve((uint32_t)obj.platforms.size());
+	platforms.reserve((uint32_t)obj.platforms.size());
 	for (const Interface::Platform& itPlatform: obj.platforms) {
-		Platform& platform = platforms.AddEmpty();
+		Platform& platform = platforms.emplace_back();
 		platform.name = itPlatform.name;
-		platform.cameras.Reserve((uint32_t)itPlatform.cameras.size());
+		platform.cameras.reserve((uint32_t)itPlatform.cameras.size());
 		for (const Interface::Platform::Camera& itCamera: itPlatform.cameras) {
-			Platform::Camera& camera = platform.cameras.AddEmpty();
+			Platform::Camera& camera = platform.cameras.emplace_back();
 			camera.K = itCamera.K;
 			camera.R = itCamera.R;
 			camera.C = itCamera.C;
@@ -106,27 +106,27 @@ bool Scene::LoadInterface(const String & fileName)
 			}
 			DEBUG_EXTRA("Camera model loaded: platform %u; camera %2u; f %.3fx%.3f; poses %u", platforms.size()-1, platform.cameras.size()-1, camera.K(0,0), camera.K(1,1), itPlatform.poses.size());
 		}
-		ASSERT(platform.cameras.GetSize() == itPlatform.cameras.size());
-		platform.poses.Reserve((uint32_t)itPlatform.poses.size());
+		ASSERT(platform.cameras.size() == itPlatform.cameras.size());
+		platform.poses.reserve((uint32_t)itPlatform.poses.size());
 		for (const Interface::Platform::Pose& itPose: itPlatform.poses) {
-			Platform::Pose& pose = platform.poses.AddEmpty();
+			Platform::Pose& pose = platform.poses.emplace_back();
 			pose.R = itPose.R;
 			pose.C = itPose.C;
 		}
-		ASSERT(platform.poses.GetSize() == itPlatform.poses.size());
+		ASSERT(platform.poses.size() == itPlatform.poses.size());
 	}
-	ASSERT(platforms.GetSize() == obj.platforms.size());
-	if (platforms.IsEmpty())
+	ASSERT(platforms.size() == obj.platforms.size());
+	if (platforms.empty())
 		return false;
 
 	// import images
 	nCalibratedImages = 0;
 	size_t nTotalPixels(0);
 	ASSERT(!obj.images.empty());
-	images.Reserve((uint32_t)obj.images.size());
+	images.reserve((uint32_t)obj.images.size());
 	for (const Interface::Image& image: obj.images) {
 		const uint32_t ID(images.size());
-		Image& imageData = images.AddEmpty();
+		Image& imageData = images.emplace_back();
 		imageData.ID = (image.ID == NO_ID ? ID : image.ID);
 		imageData.name = image.name;
 		Util::ensureUnifySlash(imageData.name);
@@ -160,26 +160,26 @@ bool Scene::LoadInterface(const String & fileName)
 		nTotalPixels += imageData.width * imageData.height;
 		DEBUG_ULTIMATE("Image loaded %3u: %s", ID, Util::getFileNameExt(imageData.name).c_str());
 	}
-	if (images.GetSize() < 2)
+	if (images.size() < 2)
 		return false;
 
 	// import 3D points
 	if (!obj.vertices.empty()) {
 		bool bValidWeights(false);
-		pointcloud.points.Resize(obj.vertices.size());
-		pointcloud.pointViews.Resize(obj.vertices.size());
-		pointcloud.pointWeights.Resize(obj.vertices.size());
+		pointcloud.points.resize(obj.vertices.size());
+		pointcloud.pointViews.resize(obj.vertices.size());
+		pointcloud.pointWeights.resize(obj.vertices.size());
 		FOREACH(i, pointcloud.points) {
 			const Interface::Vertex& vertex = obj.vertices[i];
 			PointCloud::Point& point = pointcloud.points[i];
 			point = vertex.X;
 			PointCloud::ViewArr& views = pointcloud.pointViews[i];
-			views.Resize((PointCloud::ViewArr::IDX)vertex.views.size());
+			views.resize((PointCloud::ViewArr::IDX)vertex.views.size());
 			PointCloud::WeightArr& weights = pointcloud.pointWeights[i];
-			weights.Resize((PointCloud::ViewArr::IDX)vertex.views.size());
-			CLISTDEF0(PointCloud::ViewArr::IDX) indices(views.GetSize());
-			std::iota(indices.Begin(), indices.End(), 0);
-			std::sort(indices.Begin(), indices.End(), [&](IndexArr::Type i0, IndexArr::Type i1) -> bool {
+			weights.resize((PointCloud::ViewArr::IDX)vertex.views.size());
+			CLISTDEF0(PointCloud::ViewArr::IDX) indices(views.size());
+			std::iota(indices.begin(), indices.end(), 0);
+			std::sort(indices.begin(), indices.end(), [&](IndexArr::Type i0, IndexArr::Type i1) -> bool {
 				return vertex.views[i0].imageID < vertex.views[i1].imageID;
 			});
 			ASSERT(vertex.views.size() >= 2);
@@ -210,8 +210,8 @@ bool Scene::LoadInterface(const String & fileName)
 				"\t%u images (%u calibrated) with a total of %.2f MPixels (%.2f MPixels/image)\n"
 				"\t%u points, %u vertices, %u faces",
 				TD_TIMER_GET_FMT().c_str(),
-				images.GetSize(), nCalibratedImages, (double)nTotalPixels/(1024.0*1024.0), (double)nTotalPixels/(1024.0*1024.0*nCalibratedImages),
-				pointcloud.points.GetSize(), mesh.vertices.GetSize(), mesh.faces.GetSize());
+				images.size(), nCalibratedImages, (double)nTotalPixels/(1024.0*1024.0), (double)nTotalPixels/(1024.0*1024.0*nCalibratedImages),
+				pointcloud.points.size(), mesh.vertices.size(), mesh.faces.size());
 	return true;
 } // LoadInterface
 
@@ -221,29 +221,29 @@ bool Scene::SaveInterface(const String & fileName, int version) const
 	Interface obj;
 
 	// export platforms
-	obj.platforms.reserve(platforms.GetSize());
+	obj.platforms.reserve(platforms.size());
 	for (const Platform& platform: platforms) {
 		Interface::Platform plat;
-		plat.cameras.reserve(platform.cameras.GetSize());
+		plat.cameras.reserve(platform.cameras.size());
 		for (const Platform::Camera& camera: platform.cameras) {
 			Interface::Platform::Camera cam;
 			cam.K = camera.K;
 			cam.R = camera.R;
 			cam.C = camera.C;
-			plat.cameras.push_back(cam);
+			plat.cameras.emplace_back(cam);
 		}
-		plat.poses.reserve(platform.poses.GetSize());
+		plat.poses.reserve(platform.poses.size());
 		for (const Platform::Pose& pose: platform.poses) {
 			Interface::Platform::Pose p;
 			p.R = pose.R;
 			p.C = pose.C;
-			plat.poses.push_back(p);
+			plat.poses.emplace_back(p);
 		}
-		obj.platforms.push_back(plat);
+		obj.platforms.emplace_back(std::move(plat));
 	}
 
 	// export images
-	obj.images.resize(images.GetSize());
+	obj.images.resize(images.size());
 	FOREACH(i, images) {
 		const Image& imageData = images[i];
 		MVS::Interface::Image& image = obj.images[i];
@@ -262,14 +262,14 @@ bool Scene::SaveInterface(const String & fileName, int version) const
 	}
 
 	// export 3D points
-	obj.vertices.resize(pointcloud.points.GetSize());
+	obj.vertices.resize(pointcloud.points.size());
 	FOREACH(i, pointcloud.points) {
 		const PointCloud::Point& point = pointcloud.points[i];
 		const PointCloud::ViewArr& views = pointcloud.pointViews[i];
 		MVS::Interface::Vertex& vertex = obj.vertices[i];
 		ASSERT(sizeof(vertex.X.x) == sizeof(point.x));
 		vertex.X = point;
-		vertex.views.resize(views.GetSize());
+		vertex.views.resize(views.size());
 		views.ForEach([&](PointCloud::ViewArr::IDX v) {
 			MVS::Interface::Vertex::View& view = vertex.views[v];
 			view.imageID = views[v];
@@ -277,7 +277,7 @@ bool Scene::SaveInterface(const String & fileName, int version) const
 		});
 	}
 	if (!pointcloud.normals.IsEmpty()) {
-		obj.verticesNormal.resize(pointcloud.normals.GetSize());
+		obj.verticesNormal.resize(pointcloud.normals.size());
 		FOREACH(i, pointcloud.normals) {
 			const PointCloud::Normal& normal = pointcloud.normals[i];
 			MVS::Interface::Normal& vertexNormal = obj.verticesNormal[i];
@@ -285,7 +285,7 @@ bool Scene::SaveInterface(const String & fileName, int version) const
 		}
 	}
 	if (!pointcloud.colors.IsEmpty()) {
-		obj.verticesColor.resize(pointcloud.colors.GetSize());
+		obj.verticesColor.resize(pointcloud.colors.size());
 		FOREACH(i, pointcloud.colors) {
 			const PointCloud::Color& color = pointcloud.colors[i];
 			MVS::Interface::Color& vertexColor = obj.verticesColor[i];
@@ -306,8 +306,8 @@ bool Scene::SaveInterface(const String & fileName, int version) const
 				"\t%u images (%u calibrated)\n"
 				"\t%u points, %u vertices, %u faces",
 				TD_TIMER_GET_FMT().c_str(),
-				images.GetSize(), nCalibratedImages,
-				pointcloud.points.GetSize(), mesh.vertices.GetSize(), mesh.faces.GetSize());
+				images.size(), nCalibratedImages,
+				pointcloud.points.size(), mesh.vertices.size(), mesh.faces.size());
 	return true;
 } // SaveInterface
 /*----------------------------------------------------------------*/

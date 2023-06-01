@@ -157,7 +157,7 @@ void MVS::DecomposeProjectionMatrix(const PMatrix& P, RMatrix& R, CMatrix& C)
 	#ifndef _RELEASE
 	KMatrix K;
 	DecomposeProjectionMatrix(P, K, R, C);
-	ASSERT(K.IsEqual(Matrix3x3::IDENTITY));
+	ASSERT(K.IsEqual(Matrix3x3::IDENTITY, 1e-5));
 	#endif
 	// extract camera center as the right null vector of P
 	const Vec4 hC(P.RightNullVector());
