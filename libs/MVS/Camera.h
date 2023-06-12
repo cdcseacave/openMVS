@@ -423,6 +423,7 @@ MVS_API void DecomposeProjectionMatrix(const PMatrix& P, KMatrix& K, RMatrix& R,
 MVS_API void DecomposeProjectionMatrix(const PMatrix& P, RMatrix& R, CMatrix& C);
 MVS_API void AssembleProjectionMatrix(const KMatrix& K, const RMatrix& R, const CMatrix& C, PMatrix& P);
 MVS_API void AssembleProjectionMatrix(const RMatrix& R, const CMatrix& C, PMatrix& P);
+MVS_API Point3 ComputeCamerasFocusPoint(const CameraArr& cameras, const Point3* pInitialFocus=NULL);
 /*----------------------------------------------------------------*/
 
 } // namespace MVS
