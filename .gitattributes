@@ -1,0 +1,5 @@
+# Ensure shell scripts uses the correct line ending.
+Dockerfile  eol=lf
+*.sh        eol=lf
+*.bat       eol=crlf
+*.cmd       eol=crlf

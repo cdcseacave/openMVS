@@ -250,6 +250,7 @@ bool ParseSceneMVSNet(Scene& scene)
 	String strPath(MAKE_PATH_FULL(WORKING_FOLDER_FULL, OPT::strInputFileName));
 	Util::ensureValidFolderPath(strPath);
 	const std::filesystem::path path(static_cast<std::string&>(strPath));
+	IIndex prevPlatformID = NO_ID;
 	for (const std::filesystem::directory_entry& entry : std::filesystem::directory_iterator(path / MVSNET_IMAGES_FOLDER)) {
 		if (entry.path().extension() != MVSNET_IMAGES_EXT)
 			continue;
@@ -292,12 +293,18 @@ bool ParseSceneMVSNet(Scene& scene)
 		Matrix3x3 K;
 		ImageListParse(argv, K);
 		// setup camera
-		const IIndex platformID = scene.platforms.size();
-		Platform& platform = scene.platforms.emplace_back();
-		Platform::Camera& camera = platform.cameras.AddEmpty();
-		camera.K = K;
-		camera.R = RMatrix::IDENTITY;
-		camera.C = CMatrix::ZERO;
+		IIndex platformID;
+		if (prevPlatformID == NO_ID || !K.IsEqual(scene.platforms[prevPlatformID].cameras[0].K, 1e-3)) {
+			prevPlatformID = platformID = scene.platforms.size();
+			Platform& platform = scene.platforms.emplace_back();
+			Platform::Camera& camera = platform.cameras.emplace_back();
+			camera.K = K;
+			camera.R = RMatrix::IDENTITY;
+			camera.C = CMatrix::ZERO;
+		} else {
+			platformID = prevPlatformID;
+		}
+		Platform& platform = scene.platforms[platformID];
 		// setup image
 		const IIndex ID = scene.images.size();
 		Image& imageData = scene.images.emplace_back();
@@ -315,11 +322,9 @@ bool ParseSceneMVSNet(Scene& scene)
 		imageData.scale = 1;
 		// set camera pose
 		imageData.poseID = platform.poses.size();
-		Platform::Pose& pose = platform.poses.AddEmpty();
+		Platform::Pose& pose = platform.poses.emplace_back();
 		DecomposeProjectionMatrix(P, pose.R, pose.C);
 		imageData.camera = platform.GetCamera(imageData.cameraID, imageData.poseID);
-		const float resolutionScale = Camera::GetNormalizationScale(imageData.width, imageData.height);
-		camera.K = camera.GetScaledK(REAL(1)/resolutionScale);
 	}
 	if (scene.images.size() < 2)
 		return false;

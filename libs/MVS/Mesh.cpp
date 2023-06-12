@@ -1551,6 +1551,7 @@ bool Mesh::LoadPLY(const String& fileName)
 		}
 	}
 	if (vertices.IsEmpty() || faces.IsEmpty()) {
+		Release();
 		DEBUG_EXTRA("error: invalid mesh file");
 		return false;
 	}

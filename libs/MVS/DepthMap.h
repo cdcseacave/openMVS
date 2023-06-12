@@ -452,7 +452,7 @@ struct MVS_API DepthEstimator {
 		ASSERT(ISEQUAL(norm(normal), 1.f));
 	}
 
-	static bool ImportIgnoreMask(const Image&, const Image8U::Size&, BitMatrix&, uint16_t nIgnoreMaskLabel);
+	static bool ImportIgnoreMask(const Image&, const Image8U::Size&, uint16_t nIgnoreMaskLabel, BitMatrix&, Image8U* =NULL);
 	static void MapMatrix2ZigzagIdx(const Image8U::Size& size, DepthEstimator::MapRefArr& coords, const BitMatrix& mask, int rawStride=16);
 
 	const float smoothBonusDepth, smoothBonusNormal;

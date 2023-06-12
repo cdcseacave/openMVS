@@ -404,7 +404,7 @@ void PatchMatchCUDA::EstimateDepthMap(DepthData& depthData)
 	if (OPTDENSE::nIgnoreMaskLabel >= 0) {
 		const DepthData::ViewData& view = depthData.GetView();
 		BitMatrix mask;
-		if (DepthEstimator::ImportIgnoreMask(*view.pImageData, depthData.depthMap.size(), mask, (uint16_t)OPTDENSE::nIgnoreMaskLabel))
+		if (DepthEstimator::ImportIgnoreMask(*view.pImageData, depthData.depthMap.size(), (uint16_t)OPTDENSE::nIgnoreMaskLabel, mask))
 			depthData.ApplyIgnoreMask(mask);
 	}
 

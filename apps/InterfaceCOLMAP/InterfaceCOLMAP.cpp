@@ -68,6 +68,7 @@ namespace {
 namespace OPT {
 bool bFromOpenMVS; // conversion direction
 bool bNormalizeIntrinsics;
+bool bForceSparsePointCloud;
 String strInputFileName;
 String strOutputFileName;
 String strImageFolder;
@@ -114,6 +115,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		("image-folder", boost::program_options::value<std::string>(&OPT::strImageFolder)->default_value(COLMAP_IMAGES_FOLDER), "folder to the undistorted images")
 		("max-resolution", boost::program_options::value(&OPT::nMaxResolution)->default_value(0), "make sure image resolution are not not larger than this (0 - disabled)")
 		("normalize,f", boost::program_options::value(&OPT::bNormalizeIntrinsics)->default_value(false), "normalize intrinsics while exporting to MVS format")
+		("force-points,p", boost::program_options::value(&OPT::bForceSparsePointCloud)->default_value(false), "force exporting point-cloud as sparse points also even if dense point-cloud detected")
 		;
 
 	boost::program_options::options_description cmdline_options;
@@ -220,22 +222,19 @@ typedef uint64_t image_pair_t;
 typedef uint32_t point2D_t;
 typedef uint64_t point3D_t;
 
-typedef std::unordered_map<camera_t,String> CameraModelMap;
-CameraModelMap mapCameraModel;
-
-void DefineCameraModels() {
-	COLMAP::mapCameraModel.emplace(0, "SIMPLE_PINHOLE");
-	COLMAP::mapCameraModel.emplace(1, "PINHOLE");
-	COLMAP::mapCameraModel.emplace(2, "SIMPLE_RADIAL");
-	COLMAP::mapCameraModel.emplace(3, "RADIAL");
-	COLMAP::mapCameraModel.emplace(4, "OPENCV");
-	COLMAP::mapCameraModel.emplace(5, "OPENCV_FISHEYE");
-	COLMAP::mapCameraModel.emplace(6, "FULL_OPENCV");
-	COLMAP::mapCameraModel.emplace(7, "FOV");
-	COLMAP::mapCameraModel.emplace(8, "SIMPLE_RADIAL_FISHEYE");
-	COLMAP::mapCameraModel.emplace(9, "RADIAL_FISHEYE");
-	COLMAP::mapCameraModel.emplace(10, "THIN_PRISM_FISHEYE");
-}
+const std::vector<String> mapCameraModel = {
+	"SIMPLE_PINHOLE",
+	"PINHOLE",
+	"SIMPLE_RADIAL",
+	"RADIAL",
+	"OPENCV",
+	"OPENCV_FISHEYE",
+	"FULL_OPENCV",
+	"FOV",
+	"SIMPLE_RADIAL_FISHEYE",
+	"RADIAL_FISHEYE",
+	"THIN_PRISM_FISHEYE"
+};
 
 // tools
 bool NextLine(std::istream& stream, std::istringstream& in, bool bIgnoreEmpty=true) {
@@ -256,7 +255,7 @@ struct Camera {
 	String model; // camera model name
 	uint32_t width, height; // camera resolution
 	std::vector<REAL> params; // camera parameters
-	bool parsedNumCameras = false;
+	uint64_t numCameras{0}; // only for binary format
 
 	Camera() {}
 	Camera(uint32_t _ID) : ID(_ID) {}
@@ -287,6 +286,12 @@ struct Camera {
 		return ReadTXT(stream);
 	}	
 
+	bool Write(std::ostream& stream, bool binary) {
+		if (binary)
+			return WriteBIN(stream);
+		return WriteTXT(stream);
+	}
+
 	// Camera list with one line of data per camera:
 	//   CAMERA_ID, MODEL, WIDTH, HEIGHT, PARAMS[]
 	bool ReadTXT(std::istream& stream) {
@@ -310,14 +315,13 @@ struct Camera {
 		if (stream.peek() == EOF)
 			return false;
 
-		if (!parsedNumCameras) {
+		if (numCameras == 0) {
 			// Read the first entry in the binary file
-			ReadBinaryLittleEndian<uint64_t>(&stream);
-			parsedNumCameras = true;
+			numCameras = ReadBinaryLittleEndian<uint64_t>(&stream);
 		}
 
 		ID = ReadBinaryLittleEndian<camera_t>(&stream)-1;
-		model = mapCameraModel.at(ReadBinaryLittleEndian<int>(&stream));
+		model = mapCameraModel[ReadBinaryLittleEndian<int>(&stream)];
 		width = (uint32_t)ReadBinaryLittleEndian<uint64_t>(&stream);
 		height = (uint32_t)ReadBinaryLittleEndian<uint64_t>(&stream);
 		if (model != _T("PINHOLE"))
@@ -327,7 +331,7 @@ struct Camera {
 		return true;
 	}
 
-	bool Write(std::ostream& out) const {
+	bool WriteTXT(std::ostream& out) const {
 		out << ID+1 << _T(" ") << model << _T(" ") << width << _T(" ") << height;
 		if (out.fail())
 			return false;
@@ -338,6 +342,23 @@ struct Camera {
 		}
 		out << std::endl;
 		return true;
+	}
+
+	bool WriteBIN(std::ostream& stream) {
+		if (numCameras != 0) {
+			// Write the first entry in the binary file
+			WriteBinaryLittleEndian<uint64_t>(&stream, numCameras);
+			numCameras = 0;
+		}
+
+		WriteBinaryLittleEndian<camera_t>(&stream, ID+1);
+		const int64 modelId(std::distance(mapCameraModel.begin(), std::find(mapCameraModel.begin(), mapCameraModel.end(), model)));
+		WriteBinaryLittleEndian<int>(&stream, (int)modelId);
+		WriteBinaryLittleEndian<uint64_t>(&stream, width);
+		WriteBinaryLittleEndian<uint64_t>(&stream, height);
+		for (REAL param: params)
+			WriteBinaryLittleEndian<double>(&stream, param);
+		return !stream.fail();
 	}
 };
 typedef std::vector<Camera> Cameras;
@@ -353,7 +374,7 @@ struct Image {
 	uint32_t idCamera; // ID of the associated camera
 	String name; // image file name
 	std::vector<Proj> projs; // known image projections
-	bool parsedNumRegImages = false;
+	uint64_t numRegImages{0}; // only for binary format
 
 	Image() {}
 	Image(uint32_t _ID) : ID(_ID) {}
@@ -363,6 +384,12 @@ struct Image {
 		if (binary)
 			return ReadBIN(stream); 
 		return ReadTXT(stream); 
+	}
+
+	bool Write(std::ostream& stream, bool binary) {
+		if (binary)
+			return WriteBIN(stream);
+		return WriteTXT(stream);
 	}
 
 	// Image list with two lines of data per image:
@@ -388,6 +415,7 @@ struct Image {
 			in >> proj.p(0) >> proj.p(1) >> (int&)proj.idPoint;
 			if (in.fail())
 				break;
+			--proj.idPoint;
 			projs.emplace_back(proj);
 		}
 		return true;
@@ -399,10 +427,9 @@ struct Image {
 		if (stream.peek() == EOF)
 			return false;
 
-		if (!parsedNumRegImages) {
+		if (!numRegImages) {
 			// Read the first entry in the binary file
-			ReadBinaryLittleEndian<uint64_t>(&stream);
-			parsedNumRegImages = true;
+			numRegImages = ReadBinaryLittleEndian<uint64_t>(&stream);
 		}
 
 		ID = ReadBinaryLittleEndian<image_t>(&stream)-1;
@@ -416,13 +443,13 @@ struct Image {
 		idCamera = ReadBinaryLittleEndian<camera_t>(&stream)-1;
 
 		name = "";
-		char nameChar;
-		do {
+		while (true) {
+			char nameChar;
 			stream.read(&nameChar, 1);
-			if (nameChar != '\0') {
-				name += nameChar;
-			}
-		} while (nameChar != '\0');
+			if (nameChar == '\0')
+				break;
+			name += nameChar;
+		}
 		Util::ensureValidPath(name);
 
 		const size_t numPoints2D = ReadBinaryLittleEndian<uint64_t>(&stream);
@@ -431,13 +458,13 @@ struct Image {
 			Proj proj;
 			proj.p(0) = (float)ReadBinaryLittleEndian<double>(&stream);
 			proj.p(1) = (float)ReadBinaryLittleEndian<double>(&stream);
-			proj.idPoint = (uint32_t)ReadBinaryLittleEndian<point3D_t>(&stream);
+			proj.idPoint = (uint32_t)ReadBinaryLittleEndian<point3D_t>(&stream)-1;
 			projs.emplace_back(proj);
 		}
 		return true;
 	}
 
-	bool Write(std::ostream& out) const {
+	bool WriteTXT(std::ostream& out) const {
 		out << ID+1 << _T(" ")
 			<< q.w() << _T(" ") << q.x() << _T(" ") << q.y() << _T(" ") << q.z() << _T(" ")
 			<< t(0) << _T(" ") << t(1) << _T(" ") << t(2) << _T(" ")
@@ -450,6 +477,37 @@ struct Image {
 		}
 		out << std::endl;
 		return !out.fail();
+	}
+
+	bool WriteBIN(std::ostream& stream) {
+		if (numRegImages != 0) {
+			// Write the first entry in the binary file
+			WriteBinaryLittleEndian<uint64_t>(&stream, numRegImages);
+			numRegImages = 0;
+		}
+
+		WriteBinaryLittleEndian<image_t>(&stream, ID+1);
+
+		WriteBinaryLittleEndian<double>(&stream, q.w());
+		WriteBinaryLittleEndian<double>(&stream, q.x());
+		WriteBinaryLittleEndian<double>(&stream, q.y());
+		WriteBinaryLittleEndian<double>(&stream, q.z());
+
+		WriteBinaryLittleEndian<double>(&stream, t(0));
+		WriteBinaryLittleEndian<double>(&stream, t(1));
+		WriteBinaryLittleEndian<double>(&stream, t(2));
+
+		WriteBinaryLittleEndian<camera_t>(&stream, idCamera+1);
+
+		stream.write(name.c_str(), name.size()+1);
+
+		WriteBinaryLittleEndian<uint64_t>(&stream, projs.size());
+		for (const Proj& proj: projs) {
+			WriteBinaryLittleEndian<double>(&stream, proj.p(0));
+			WriteBinaryLittleEndian<double>(&stream, proj.p(1));
+			WriteBinaryLittleEndian<point3D_t>(&stream, proj.idPoint+1);
+		}
+		return !stream.fail();
 	}
 };
 typedef std::vector<Image> Images;
@@ -464,7 +522,7 @@ struct Point {
 	Interface::Col3 c; // BGR color
 	float e; // error
 	std::vector<Track> tracks; // point track
-	bool parsedNumPoints3D = false;
+	uint64_t numPoints3D{0}; // only for binary format
 
 	Point() {}
 	Point(uint32_t _ID) : ID(_ID) {}
@@ -474,6 +532,12 @@ struct Point {
 		if (binary)
 			return ReadBIN(stream);
 		return ReadTXT(stream);
+	}
+
+	bool Write(std::ostream& stream, bool binary) {
+		if (binary)
+			return WriteBIN(stream);
+		return WriteTXT(stream);
 	}
 
 	// 3D point list with one line of data per point:
@@ -511,10 +575,9 @@ struct Point {
 		if (stream.peek() == EOF)
 			return false;
 
-		if (!parsedNumPoints3D) {
+		if (!numPoints3D) {
 			// Read the first entry in the binary file
-			ReadBinaryLittleEndian<uint64_t>(&stream);
-			parsedNumPoints3D = true;
+			numPoints3D = ReadBinaryLittleEndian<uint64_t>(&stream);
 		}
 
 		int r,g,b;
@@ -541,7 +604,7 @@ struct Point {
 		return !tracks.empty();
 	}
 
-	bool Write(std::ostream& out) const {
+	bool WriteTXT(std::ostream& out) const {
 		ASSERT(!tracks.empty());
 		const int r(c.z),g(c.y),b(c.x);
 		out << ID+1 << _T(" ")
@@ -555,6 +618,31 @@ struct Point {
 		}
 		out << std::endl;
 		return !out.fail();
+	}
+
+	bool WriteBIN(std::ostream& stream) {
+		ASSERT(!tracks.empty());
+		if (numPoints3D != 0) {
+			// Write the first entry in the binary file
+			WriteBinaryLittleEndian<uint64_t>(&stream, numPoints3D);
+			numPoints3D = 0;
+		}
+
+		WriteBinaryLittleEndian<point3D_t>(&stream, ID+1);
+		WriteBinaryLittleEndian<double>(&stream, p.x);
+		WriteBinaryLittleEndian<double>(&stream, p.y);
+		WriteBinaryLittleEndian<double>(&stream, p.z);
+		WriteBinaryLittleEndian<uint8_t>(&stream, c.z);
+		WriteBinaryLittleEndian<uint8_t>(&stream, c.y);
+		WriteBinaryLittleEndian<uint8_t>(&stream, c.x);
+		WriteBinaryLittleEndian<double>(&stream, e);
+
+		WriteBinaryLittleEndian<uint64_t>(&stream, tracks.size());
+		for (const Track& track: tracks) {
+			WriteBinaryLittleEndian<image_t>(&stream, track.idImage+1);
+			WriteBinaryLittleEndian<point2D_t>(&stream, track.idProj+1);
+		}
+		return !stream.fail();
 	}
 };
 typedef std::vector<Point> Points;
@@ -624,7 +712,6 @@ bool DetermineInputSource(const String& filenameTXT, const String& filenameBIN, 
 
 bool ImportScene(const String& strFolder, const String& strOutFolder, Interface& scene)
 {
-	COLMAP::DefineCameraModels();
 	// read camera list
 	typedef std::unordered_map<uint32_t,uint32_t> CamerasMap;
 	CamerasMap mapCameras;
@@ -871,7 +958,7 @@ bool ImportScene(const String& strFolder, const String& strOutFolder, Interface&
 }
 
 
-bool ExportScene(const String& strFolder, const Interface& scene)
+bool ExportScene(const String& strFolder, const Interface& scene, bool bForceSparsePointCloud = false, bool binary = true)
 {
 	Util::ensureFolder(strFolder+COLMAP_SPARSE_FOLDER);
 
@@ -879,16 +966,22 @@ bool ExportScene(const String& strFolder, const Interface& scene)
 	CLISTDEF0IDX(KMatrix,uint32_t) Ks;
 	CLISTDEF0IDX(COLMAP::Camera,uint32_t) cams;
 	{
-		const String filenameCameras(strFolder+COLMAP_CAMERAS_TXT);
+		const String filenameCameras(strFolder+(binary?COLMAP_CAMERAS_BIN:COLMAP_CAMERAS_TXT));
 		LOG_OUT() << "Writing cameras: " << filenameCameras << std::endl;
-		std::ofstream file(filenameCameras);
+		std::ofstream file(filenameCameras, binary ? std::ios::trunc|std::ios::binary : std::ios::trunc);
 		if (!file.good()) {
 			VERBOSE("error: unable to open file '%s'", filenameCameras.c_str());
 			return false;
 		}
-		file << _T("# Camera list with one line of data per camera:") << std::endl;
-		file << _T("#   CAMERA_ID, MODEL, WIDTH, HEIGHT, PARAMS[]") << std::endl;
 		COLMAP::Camera cam;
+		if (binary) {
+			cam.numCameras = 0;
+			for (const Interface::Platform& platform: scene.platforms)
+				cam.numCameras += (uint32_t)platform.cameras.size();
+		} else {
+			file << _T("# Camera list with one line of data per camera:") << std::endl;
+			file << _T("#   CAMERA_ID, MODEL, WIDTH, HEIGHT, PARAMS[]") << std::endl;
+		}
 		cam.model = _T("PINHOLE");
 		cam.params.resize(4);
 		for (uint32_t ID=0; ID<(uint32_t)scene.platforms.size(); ++ID) {
@@ -929,7 +1022,7 @@ bool ExportScene(const String& strFolder, const Interface& scene)
 				cam.params[2] = camera.K(0,2);
 				cam.params[3] = camera.K(1,2);
 			}
-			if (!cam.Write(file))
+			if (!cam.Write(file, binary))
 				return false;
 			KMatrix& K = Ks.emplace_back(KMatrix::IDENTITY);
 			K(0,0) = cam.params[0];
@@ -977,18 +1070,23 @@ bool ExportScene(const String& strFolder, const Interface& scene)
 
 	// auto-select dense or sparse mode based on number of points
 	const bool bSparsePointCloud(scene.vertices.size() < (size_t)maxNumPointsSparse);
-	if (bSparsePointCloud) {
+	if (bSparsePointCloud || bForceSparsePointCloud) {
 		// write points list
 		{
-			const String filenamePoints(strFolder+COLMAP_POINTS_TXT);
+			const String filenamePoints(strFolder+(binary?COLMAP_POINTS_BIN:COLMAP_POINTS_TXT));
 			LOG_OUT() << "Writing points: " << filenamePoints << std::endl;
-			std::ofstream file(filenamePoints);
+			std::ofstream file(filenamePoints, binary ? std::ios::trunc|std::ios::binary : std::ios::trunc);
 			if (!file.good()) {
 				VERBOSE("error: unable to open file '%s'", filenamePoints.c_str());
 				return false;
 			}
-			file << _T("# 3D point list with one line of data per point:") << std::endl;
-			file << _T("#   POINT3D_ID, X, Y, Z, R, G, B, ERROR, TRACK[] as (IMAGE_ID, POINT2D_IDX)") << std::endl;
+			uint64_t numPoints3D = 0;
+			if (binary) {
+				numPoints3D = scene.vertices.size();
+			} else {
+				file << _T("# 3D point list with one line of data per point:") << std::endl;
+				file << _T("#   POINT3D_ID, X, Y, Z, R, G, B, ERROR, TRACK[] as (IMAGE_ID, POINT2D_IDX)") << std::endl;
+			}
 			for (uint32_t ID=0; ID<(uint32_t)scene.vertices.size(); ++ID) {
 				const Interface::Vertex& vertex = scene.vertices[ID];
 				COLMAP::Point point;
@@ -1005,7 +1103,11 @@ bool ExportScene(const String& strFolder, const Interface& scene)
 				}
 				point.c = scene.verticesColor.empty() ? Interface::Col3(255,255,255) : scene.verticesColor[ID].c;
 				point.e = 0;
-				if (!point.Write(file))
+				if (numPoints3D != 0) {
+					point.numPoints3D = numPoints3D;
+					numPoints3D = 0;
+				}
+				if (!point.Write(file, binary))
 					return false;
 			}
 		}
@@ -1054,7 +1156,8 @@ bool ExportScene(const String& strFolder, const Interface& scene)
 		Util::ensureFolder(strFolder+COLMAP_STEREO_CONSISTENCYGRAPHS_FOLDER);
 		Util::ensureFolder(strFolder+COLMAP_STEREO_DEPTHMAPS_FOLDER);
 		Util::ensureFolder(strFolder+COLMAP_STEREO_NORMALMAPS_FOLDER);
-	} else {
+	}
+	if (!bSparsePointCloud) {
 		// export dense point-cloud
 		const String filenameDensePoints(strFolder+COLMAP_DENSE_POINTS);
 		const String filenameDenseVisPoints(strFolder+COLMAP_DENSE_POINTS_VISIBILITY);
@@ -1089,20 +1192,33 @@ bool ExportScene(const String& strFolder, const Interface& scene)
 
 	// write images list
 	{
-		const String filenameImages(strFolder+COLMAP_IMAGES_TXT);
+		const String filenameImages(strFolder+(binary?COLMAP_IMAGES_BIN:COLMAP_IMAGES_TXT));
 		LOG_OUT() << "Writing images: " << filenameImages << std::endl;
-		std::ofstream file(filenameImages);
+		std::ofstream file(filenameImages, binary ? std::ios::trunc|std::ios::binary : std::ios::trunc);
 		if (!file.good()) {
 			VERBOSE("error: unable to open file '%s'", filenameImages.c_str());
 			return false;
 		}
-		file << _T("# Image list with two lines of data per image:") << std::endl;
-		file << _T("#   IMAGE_ID, QW, QX, QY, QZ, TX, TY, TZ, CAMERA_ID, NAME") << std::endl;
-		file << _T("#   POINTS2D[] as (X, Y, POINT3D_ID)") << std::endl;
-		for (const COLMAP::Image& img: images) {
+		uint64_t numRegImages = 0;
+		if (binary) {
+			for (const COLMAP::Image& img: images) {
+				if (bSparsePointCloud && img.projs.empty())
+					continue;
+				++numRegImages;
+			}
+		} else {
+			file << _T("# Image list with two lines of data per image:") << std::endl;
+			file << _T("#   IMAGE_ID, QW, QX, QY, QZ, TX, TY, TZ, CAMERA_ID, NAME") << std::endl;
+			file << _T("#   POINTS2D[] as (X, Y, POINT3D_ID)") << std::endl;
+		}
+		for (COLMAP::Image& img: images) {
 			if (bSparsePointCloud && img.projs.empty())
 				continue;
-			if (!img.Write(file))
+			if (numRegImages != 0) {
+				img.numRegImages = numRegImages;
+				numRegImages = 0;
+			}
+			if (!img.Write(file, binary))
 				return false;
 		}
 	}
@@ -1303,7 +1419,7 @@ int main(int argc, LPCTSTR* argv)
 		} else {
 			// write COLMAP input data
 			Util::ensureFolderSlash(OPT::strOutputFileName);
-			ExportScene(MAKE_PATH_SAFE(OPT::strOutputFileName), scene);
+			ExportScene(MAKE_PATH_SAFE(OPT::strOutputFileName), scene, OPT::bForceSparsePointCloud);
 		}
 		VERBOSE("Input data exported: %u images & %u vertices (%s)", scene.images.size(), scene.vertices.size(), TD_TIMER_GET_FMT().c_str());
 	} else {
