@@ -1631,13 +1631,33 @@ bool Scene::EstimateROI(int nEstimateROI, float scale)
 // calculate the center(X,Y) of the cylinder, the radius and min/max Z
 // from camera position and sparse point cloud, if that exists
 void Scene::ComputeTowerCylinder(Point2f& centerPoint, float& fRadius, float& fROIRadius, float& zMin, float& zMax, float& minCamZ) {
+
+
 	AABB3f aabbOutsideCameras(true);
 	std::vector<Point2f> cameras2D(images.size());
-	FOREACH (imgIdx, images) {
+	std::vector<Point3f> cameras3D(images.size());
+	FOREACH(imgIdx, images) {
 		const Eigen::Vector3f camPos(Cast<float>(images[imgIdx].camera.C));
 		aabbOutsideCameras.InsertFull(camPos);
 		cameras2D[imgIdx] = Point2f(camPos.x(), camPos.y());
+		cameras3D[imgIdx] = Point3f(camPos.x(), camPos.y(), camPos.z());
 	}
+	cv::Vec6f centerLine3d;
+	cv::fitLine(cameras3D, centerLine3d, cv::DistanceTypes::DIST_HUBER, 0, 0.1, 0.01);
+
+	Point3f dir(centerLine3d[0], centerLine3d[1], centerLine3d[2]);
+	Point3f p0(centerLine3d[3], centerLine3d[4], centerLine3d[5]);
+	Point3f p1 = p0 - dir * p0.z;
+	Point3f p2 = p1 + dir * (aabbOutsideCameras.ptMax.z() - aabbOutsideCameras.ptMin.z());
+	mesh.vertices.emplace_back(p0);
+	mesh.vertices.emplace_back(p1);
+	mesh.vertices.emplace_back(p2);
+	mesh.faces.emplace_back(0, 1, 2);
+	cList<String> com;
+	mesh.Save("centerline_dbg.ply", com, false);
+	mesh.Release();
+	ExportLine("centerLine3d.ply", p1, p2, Point3i(30,30,240));
+	
 	// get the height of the lowest camera
 	minCamZ = aabbOutsideCameras.ptMin.z();
 	// fit center line
@@ -1963,3 +1983,67 @@ size_t Scene::InitTowerScene() {
 
 	return countPoints;
 } // InitTowerScene
+
+// define a PLY file format composed only of vertices and edges
+namespace LinePLY {
+	// vertex definition
+	struct Vertex {
+		float x, y, z;
+		uint8_t r, g, b;
+	};
+	// list of property information for a vertex
+	static PLY::PlyProperty vert_props[] = {
+		{"x", PLY::Float32, PLY::Float32, offsetof(Vertex,x), 0, 0, 0, 0},
+		{"y", PLY::Float32, PLY::Float32, offsetof(Vertex,y), 0, 0, 0, 0},
+		{"z", PLY::Float32, PLY::Float32, offsetof(Vertex,z), 0, 0, 0, 0},
+		{"red", PLY::Uint8, PLY::Uint8, offsetof(Vertex,r), 0, 0, 0, 0},
+		{"green", PLY::Uint8, PLY::Uint8, offsetof(Vertex,g), 0, 0, 0, 0},
+		{"blue", PLY::Uint8, PLY::Uint8, offsetof(Vertex,b), 0, 0, 0, 0},
+	};
+	// edge definition
+	struct Edge {
+		int v1, v2;
+		uint8_t r, g, b;
+	};
+	// list of property information for a edge
+	static PLY::PlyProperty edge_props[] = {
+		{"vertex1", PLY::Float32, PLY::Float32, offsetof(Vertex,x), 0, 0, 0, 0},
+		{"vertex2", PLY::Float32, PLY::Float32, offsetof(Vertex,y), 0, 0, 0, 0},
+		{"red", PLY::Uint8, PLY::Uint8, offsetof(Vertex,r), 0, 0, 0, 0},
+		{"green", PLY::Uint8, PLY::Uint8, offsetof(Vertex,g), 0, 0, 0, 0},
+		{"blue", PLY::Uint8, PLY::Uint8, offsetof(Vertex,b), 0, 0, 0, 0},
+	};
+	// list of the kinds of elements in the PLY
+	static const char* elem_names[] = {
+		"vertex", "edge"
+	};
+} // namespace LinePLY
+
+void Scene::ExportLine(const String& fileName, const Point3f& p1, const Point3f& p2, const Point3i& color) const {
+	// create PLY object
+	ASSERT(!fileName.IsEmpty());
+	Util::ensureFolder(fileName);
+	const size_t memBufferSize(2 * (8 * 3/*pos*/ + 3 * 3/*color*/ + 6/*space*/ + 2/*eol*/) + 2048/*extra size*/);
+	PLY ply;
+	if (!ply.write(fileName, 2, LinePLY::elem_names, PLY::ASCII, memBufferSize))
+		return;
+	// describe what properties go into the vertex elements
+	ply.describe_property("vertex", 6, LinePLY::vert_props);
+	LinePLY::Vertex v;
+	v.r = (uint8_t)(color.x); v.g = (uint8_t)(color.y); v.b = (uint8_t)(color.z);
+	v.x = p1.x; v.y = p1.y; v.z = p1.z;
+	ply.put_element(&v);
+	v.x = p2.x; v.y = p2.y; v.z = p2.z;
+	ply.put_element(&v);
+	
+	// describe what properties go into the edge elements
+	ply.describe_property("edge", 5, LinePLY::edge_props);
+	LinePLY::Edge edge;
+	edge.r = (uint8_t)(color.x); edge.g = (uint8_t)(color.y); edge.b = (uint8_t)(color.z);
+	edge.v1 = (int)0; edge.v2 = (int)1;
+	ply.put_element(&edge);
+	
+	// write to file
+	ply.header_complete();
+	return;
+}

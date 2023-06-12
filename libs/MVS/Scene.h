@@ -116,7 +116,8 @@ public:
 	size_t InitTowerScene();
 	size_t DrawCircle(PointCloud::PointArr& outCircle, const Point3f circleCenter, const float circleRadius, const unsigned nTargetPoints, const float fStartAngle, const float fAngleBetweenPoints, bool bHasNormals, bool bHasColors, bool bHasWeights);
 	size_t BuildTowerMesh(const PointCloud origPointCloud, const Point2f centerPoint, const float fRadius, const float fROIRadius, const float zMin, const float zMax, const float minCamZ, bool bFixRadius = false);
-
+	void ExportLine(const String& fileName, const Point3f& p1, const Point3f& p2, const Point3i& color) const;
+	
 	// Dense reconstruction
 	bool DenseReconstruction(int nFusionMode=0, bool bCrop2ROI=true, float fBorderROI=0);
 	bool ComputeDepthMaps(DenseDepthMapData& data);
