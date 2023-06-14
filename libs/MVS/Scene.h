@@ -91,6 +91,7 @@ public:
 	static bool FilterNeighborViews(ViewScoreArr& neighbors, float fMinArea=0.1f, float fMinScale=0.2f, float fMaxScale=2.4f, float fMinAngle=FD2R(3), float fMaxAngle=FD2R(45), unsigned nMaxViews=12);
 
 	bool ExportCamerasMLP(const String& fileName, const String& fileNameScene) const;
+	static bool ExportLinesPLY(const String& fileName, const CLISTDEF0IDX(Line3f,uint32_t)& lines, const Pixel8U* colors = NULL);
 
 	// sub-scene split and save
 	struct ImagesChunk {
@@ -118,7 +119,6 @@ public:
 	size_t InitTowerScene();
 	size_t DrawCircle(PointCloud::PointArr& outCircle, const Point3f circleCenter, const float circleRadius, const unsigned nTargetPoints, const float fStartAngle, const float fAngleBetweenPoints, bool bHasNormals, bool bHasColors, bool bHasWeights);
 	size_t BuildTowerMesh(const PointCloud origPointCloud, const Point2f centerPoint, const float fRadius, const float fROIRadius, const float zMin, const float zMax, const float minCamZ, bool bFixRadius = false);
-	void ExportLine(const String& fileName, const Point3f& p1, const Point3f& p2, const Point3i& color) const;
 	
 	// Dense reconstruction
 	bool DenseReconstruction(int nFusionMode=0, bool bCrop2ROI=true, float fBorderROI=0);

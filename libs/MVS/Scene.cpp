@@ -1018,6 +1018,78 @@ bool Scene::ExportCamerasMLP(const String& fileName, const String& fileNameScene
 
 	return true;
 } // ExportCamerasMLP
+
+bool Scene::ExportLinesPLY(const String& fileName, const CLISTDEF0IDX(Line3f,uint32_t)& lines, const Pixel8U* colors) {
+	// define a PLY file format composed only of vertices and edges
+	// vertex definition
+	struct PLYVertex {
+		float x, y, z;
+	};
+	// list of property information for a vertex
+	static PLY::PlyProperty vert_props[] = {
+		{"x", PLY::Float32, PLY::Float32, offsetof(PLYVertex,x), 0, 0, 0, 0},
+		{"y", PLY::Float32, PLY::Float32, offsetof(PLYVertex,y), 0, 0, 0, 0},
+		{"z", PLY::Float32, PLY::Float32, offsetof(PLYVertex,z), 0, 0, 0, 0},
+	};
+	// edge definition
+	struct PLYEdge {
+		int v1, v2;
+		uint8_t r, g, b;
+	};
+	// list of property information for a edge
+	static PLY::PlyProperty edge_props[] = {
+		{"vertex1", PLY::Uint32, PLY::Uint32, offsetof(PLYEdge,v1), 0, 0, 0, 0},
+		{"vertex2", PLY::Uint32, PLY::Uint32, offsetof(PLYEdge,v2), 0, 0, 0, 0},
+		{"red", PLY::Uint8, PLY::Uint8, offsetof(PLYEdge,r), 0, 0, 0, 0},
+		{"green", PLY::Uint8, PLY::Uint8, offsetof(PLYEdge,g), 0, 0, 0, 0},
+		{"blue", PLY::Uint8, PLY::Uint8, offsetof(PLYEdge,b), 0, 0, 0, 0},
+	};
+	// list of the kinds of elements in the PLY
+	static const char* elem_names[] = {
+		"vertex", "edge"
+	};
+
+	// create PLY object
+	ASSERT(!fileName.empty());
+	Util::ensureFolder(fileName);
+	const size_t memBufferSize(2 * (8 * 3/*pos*/ + 3 * 3/*color*/ + 6/*space*/ + 2/*eol*/) + 2048/*extra size*/);
+	PLY ply;
+	if (!ply.write(fileName, lines.size(), elem_names, PLY::ASCII, memBufferSize))
+		return false;
+
+	// describe what properties go into the vertex elements
+	ply.describe_property("vertex", 3, vert_props);
+	PLYVertex v;
+	FOREACH(i, lines) {
+		const Line3f& line = lines[i];
+		v.x = line.pt1.x(); v.y = line.pt1.y(); v.z = line.pt1.z();
+		ply.put_element(&v);
+		v.x = line.pt2.x(); v.y = line.pt2.y(); v.z = line.pt2.z();
+		ply.put_element(&v);
+	}
+	
+	// describe what properties go into the edge elements
+	if (colors) {
+		ply.describe_property("edge", 5, edge_props);
+		PLYEdge edge;
+		FOREACH(i, lines) {
+			const Pixel8U& color = colors[i];
+			edge.r = color.r; edge.g = color.g; edge.b = color.b;
+			edge.v1 = i*2+0; edge.v2 = i*2+1;
+			ply.put_element(&edge);
+		}
+	} else {
+		ply.describe_property("edge", 2, edge_props);
+		PLYEdge edge;
+		FOREACH(i, lines) {
+			edge.v1 = i*2+0; edge.v2 = i*2+1;
+			ply.put_element(&edge);
+		}
+	}
+	
+	// write to file
+	return ply.header_complete();
+} // ExportLinesPLY
 /*----------------------------------------------------------------*/
 
 
@@ -1675,7 +1747,11 @@ void Scene::ComputeTowerCylinder(Point2f& centerPoint, float& fRadius, float& fR
 	Point3f p0(centerLine3d[3], centerLine3d[4], centerLine3d[5]);
 	Point3f p1 = p0 - dir * ABS(p0.z);
 	Point3f p2 = p1 + dir * (aabbOutsideCameras.ptMax.z() - aabbOutsideCameras.ptMin.z());
-	ExportLine("centerLine3d.ply", p1, p2, Point3i(30,30,240));
+	CLISTDEF0IDX(Line3f,uint32_t) lines;
+	lines.emplace_back(p1, p2);
+	CLISTDEF0IDX(Pixel8U,uint32_t) colors;
+	colors.emplace_back(30,30,240);
+	ExportLinesPLY("centerLine3d.ply", lines, colors.data());
 	
 	// get the height of the lowest camera
 	minCamZ = aabbOutsideCameras.ptMin.z();
@@ -2002,67 +2078,3 @@ size_t Scene::InitTowerScene() {
 
 	return countPoints;
 } // InitTowerScene
-
-// define a PLY file format composed only of vertices and edges
-namespace LinePLY {
-	// vertex definition
-	struct Vertex {
-		float x, y, z;
-		uint8_t r, g, b;
-	};
-	// list of property information for a vertex
-	static PLY::PlyProperty vert_props[] = {
-		{"x", PLY::Float32, PLY::Float32, offsetof(Vertex,x), 0, 0, 0, 0},
-		{"y", PLY::Float32, PLY::Float32, offsetof(Vertex,y), 0, 0, 0, 0},
-		{"z", PLY::Float32, PLY::Float32, offsetof(Vertex,z), 0, 0, 0, 0},
-		{"red", PLY::Uint8, PLY::Uint8, offsetof(Vertex,r), 0, 0, 0, 0},
-		{"green", PLY::Uint8, PLY::Uint8, offsetof(Vertex,g), 0, 0, 0, 0},
-		{"blue", PLY::Uint8, PLY::Uint8, offsetof(Vertex,b), 0, 0, 0, 0},
-	};
-	// edge definition
-	struct Edge {
-		int v1, v2;
-		uint8_t r, g, b;
-	};
-	// list of property information for a edge
-	static PLY::PlyProperty edge_props[] = {
-		{"vertex1", PLY::Uint32, PLY::Uint32, offsetof(Vertex,x), 0, 0, 0, 0},
-		{"vertex2", PLY::Uint32, PLY::Uint32, offsetof(Vertex,y), 0, 0, 0, 0},
-		{"red", PLY::Uint8, PLY::Uint8, offsetof(Vertex,r), 0, 0, 0, 0},
-		{"green", PLY::Uint8, PLY::Uint8, offsetof(Vertex,g), 0, 0, 0, 0},
-		{"blue", PLY::Uint8, PLY::Uint8, offsetof(Vertex,b), 0, 0, 0, 0},
-	};
-	// list of the kinds of elements in the PLY
-	static const char* elem_names[] = {
-		"vertex", "edge"
-	};
-} // namespace LinePLY
-
-void Scene::ExportLine(const String& fileName, const Point3f& p1, const Point3f& p2, const Point3i& color) const {
-	// create PLY object
-	ASSERT(!fileName.IsEmpty());
-	Util::ensureFolder(fileName);
-	const size_t memBufferSize(2 * (8 * 3/*pos*/ + 3 * 3/*color*/ + 6/*space*/ + 2/*eol*/) + 2048/*extra size*/);
-	PLY ply;
-	if (!ply.write(fileName, 2, LinePLY::elem_names, PLY::ASCII, memBufferSize))
-		return;
-	// describe what properties go into the vertex elements
-	ply.describe_property("vertex", 6, LinePLY::vert_props);
-	LinePLY::Vertex v;
-	v.r = (uint8_t)(color.x); v.g = (uint8_t)(color.y); v.b = (uint8_t)(color.z);
-	v.x = p1.x; v.y = p1.y; v.z = p1.z;
-	ply.put_element(&v);
-	v.x = p2.x; v.y = p2.y; v.z = p2.z;
-	ply.put_element(&v);
-	
-	// describe what properties go into the edge elements
-	ply.describe_property("edge", 5, LinePLY::edge_props);
-	LinePLY::Edge edge;
-	edge.r = (uint8_t)(color.x); edge.g = (uint8_t)(color.y); edge.b = (uint8_t)(color.z);
-	edge.v1 = 0; edge.v2 = 1;
-	ply.put_element(&edge);
-	
-	// write to file
-	ply.header_complete();
-	return;
-}
