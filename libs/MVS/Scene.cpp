@@ -1673,15 +1673,8 @@ void Scene::ComputeTowerCylinder(Point2f& centerPoint, float& fRadius, float& fR
 
 	Point3f dir(centerLine3d[0], centerLine3d[1], centerLine3d[2]);
 	Point3f p0(centerLine3d[3], centerLine3d[4], centerLine3d[5]);
-	Point3f p1 = p0 - dir * p0.z;
+	Point3f p1 = p0 - dir * ABS(p0.z);
 	Point3f p2 = p1 + dir * (aabbOutsideCameras.ptMax.z() - aabbOutsideCameras.ptMin.z());
-	mesh.vertices.emplace_back(p0);
-	mesh.vertices.emplace_back(p1);
-	mesh.vertices.emplace_back(p2);
-	mesh.faces.emplace_back(0, 1, 2);
-	cList<String> com;
-	mesh.Save("centerline_dbg.ply", com, false);
-	mesh.Release();
 	ExportLine("centerLine3d.ply", p1, p2, Point3i(30,30,240));
 	
 	// get the height of the lowest camera
@@ -2033,8 +2026,8 @@ namespace LinePLY {
 	};
 	// list of property information for a edge
 	static PLY::PlyProperty edge_props[] = {
-		{"vertex1", PLY::Float32, PLY::Float32, offsetof(Vertex,x), 0, 0, 0, 0},
-		{"vertex2", PLY::Float32, PLY::Float32, offsetof(Vertex,y), 0, 0, 0, 0},
+		{"vertex1", PLY::Uint32, PLY::Uint32, offsetof(Vertex,x), 0, 0, 0, 0},
+		{"vertex2", PLY::Uint32, PLY::Uint32, offsetof(Vertex,y), 0, 0, 0, 0},
 		{"red", PLY::Uint8, PLY::Uint8, offsetof(Vertex,r), 0, 0, 0, 0},
 		{"green", PLY::Uint8, PLY::Uint8, offsetof(Vertex,g), 0, 0, 0, 0},
 		{"blue", PLY::Uint8, PLY::Uint8, offsetof(Vertex,b), 0, 0, 0, 0},
@@ -2066,7 +2059,7 @@ void Scene::ExportLine(const String& fileName, const Point3f& p1, const Point3f&
 	ply.describe_property("edge", 5, LinePLY::edge_props);
 	LinePLY::Edge edge;
 	edge.r = (uint8_t)(color.x); edge.g = (uint8_t)(color.y); edge.b = (uint8_t)(color.z);
-	edge.v1 = (int)0; edge.v2 = (int)1;
+	edge.v1 = 0; edge.v2 = 1;
 	ply.put_element(&edge);
 	
 	// write to file
