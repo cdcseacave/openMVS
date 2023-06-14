@@ -91,7 +91,7 @@ public:
 	static bool FilterNeighborViews(ViewScoreArr& neighbors, float fMinArea=0.1f, float fMinScale=0.2f, float fMaxScale=2.4f, float fMinAngle=FD2R(3), float fMaxAngle=FD2R(45), unsigned nMaxViews=12);
 
 	bool ExportCamerasMLP(const String& fileName, const String& fileNameScene) const;
-	static bool ExportLinesPLY(const String& fileName, const CLISTDEF0IDX(Line3f,uint32_t)& lines, const Pixel8U* colors = NULL);
+	static bool ExportLinesPLY(const String& fileName, const CLISTDEF0IDX(Line3f,uint32_t)& lines, const Pixel8U* colors=NULL, bool bBinary=true);
 
 	// sub-scene split and save
 	struct ImagesChunk {

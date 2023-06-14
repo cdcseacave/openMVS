@@ -1019,7 +1019,7 @@ bool Scene::ExportCamerasMLP(const String& fileName, const String& fileNameScene
 	return true;
 } // ExportCamerasMLP
 
-bool Scene::ExportLinesPLY(const String& fileName, const CLISTDEF0IDX(Line3f,uint32_t)& lines, const Pixel8U* colors) {
+bool Scene::ExportLinesPLY(const String& fileName, const CLISTDEF0IDX(Line3f,uint32_t)& lines, const Pixel8U* colors, bool bBinary) {
 	// define a PLY file format composed only of vertices and edges
 	// vertex definition
 	struct PLYVertex {
@@ -1054,7 +1054,7 @@ bool Scene::ExportLinesPLY(const String& fileName, const CLISTDEF0IDX(Line3f,uin
 	Util::ensureFolder(fileName);
 	const size_t memBufferSize(2 * (8 * 3/*pos*/ + 3 * 3/*color*/ + 6/*space*/ + 2/*eol*/) + 2048/*extra size*/);
 	PLY ply;
-	if (!ply.write(fileName, lines.size(), elem_names, PLY::ASCII, memBufferSize))
+	if (!ply.write(fileName, 2, elem_names, bBinary?PLY::BINARY_LE:PLY::ASCII, memBufferSize))
 		return false;
 
 	// describe what properties go into the vertex elements
