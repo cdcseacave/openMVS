@@ -62,6 +62,7 @@ float fBorderROI;
 bool bCrop2ROI;
 int nEstimateROI;
 int nFusionMode;
+float fEstimateScale;
 int thFilterPointCloud;
 int nExportNumViews;
 int nArchiveType;
@@ -140,6 +141,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		("geometric-iters", boost::program_options::value(&nEstimationGeometricIters)->default_value(2), "number of geometric consistent patch-match iterations (0 - disabled)")
 		("estimate-colors", boost::program_options::value(&nEstimateColors)->default_value(2), "estimate the colors for the dense point-cloud (0 - disabled, 1 - final, 2 - estimate)")
 		("estimate-normals", boost::program_options::value(&nEstimateNormals)->default_value(2), "estimate the normals for the dense point-cloud (0 - disabled, 1 - final, 2 - estimate)")
+		("estimate-scale", boost::program_options::value(&OPT::fEstimateScale)->default_value(0.f), "estimate the point-scale for the dense point-cloud (scale multiplier, 0 - disabled)")
 		("sub-scene-area", boost::program_options::value(&OPT::fMaxSubsceneArea)->default_value(0.f), "split the scene in sub-scenes such that each sub-scene surface does not exceed the given maximum sampling area (0 - disabled)")
 		("sample-mesh", boost::program_options::value(&OPT::fSampleMesh)->default_value(0.f), "uniformly samples points on a mesh (0 - disabled, <0 - number of points, >0 - sample density per square unit)")
 		("fusion-mode", boost::program_options::value(&OPT::nFusionMode)->default_value(0), "depth-maps fusion mode (-2 - fuse disparity-maps, -1 - export disparity-maps only, 0 - depth-maps & fusion, 1 - export depth-maps only)")
@@ -382,6 +384,20 @@ int main(int argc, LPCTSTR* argv)
 			scene.Save(baseFileName+_T(".mvs"), (ARCHIVE_TYPE)OPT::nArchiveType);
 			scene.pointcloud.Save(baseFileName+_T(".ply"));
 		}
+		Finalize();
+		return EXIT_SUCCESS;
+	}
+	if (OPT::fEstimateScale > 0 && !scene.pointcloud.IsEmpty() && !scene.images.empty()) {
+		// simply export existing point-cloud with scale
+		if (scene.pointcloud.normals.empty()) {
+			if (!scene.pointcloud.IsValid()) {
+				VERBOSE("error: can not estimate normals as the point-cloud is not valid");
+				return EXIT_FAILURE;
+			}
+			EstimatePointNormals(scene.images, scene.pointcloud);
+		}
+		const String baseFileName(MAKE_PATH_SAFE(Util::getFileFullName(OPT::strOutputFileName)));
+		scene.pointcloud.SaveWithScale(baseFileName+_T("_scale.ply"), scene.images, OPT::fEstimateScale);
 		Finalize();
 		return EXIT_SUCCESS;
 	}

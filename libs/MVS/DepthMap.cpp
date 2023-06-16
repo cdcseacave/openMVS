@@ -1540,6 +1540,8 @@ void MVS::EstimatePointNormals(const ImageArr& images, PointCloud& pointcloud, i
 {
 	TD_TIMER_START();
 
+	ASSERT(pointcloud.IsValid());
+
 	typedef CGAL::Simple_cartesian<double> kernel_t;
 	typedef kernel_t::Point_3 point_t;
 	typedef kernel_t::Vector_3 vector_t;

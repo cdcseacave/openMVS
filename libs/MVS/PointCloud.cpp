@@ -223,6 +223,8 @@ namespace BasicPLY {
 		Point p;
 		Color c;
 		Normal n;
+		float scale;
+		float confidence;
 	};
 	static const PLY::PlyProperty vert_props[] = {
 		{"x",     PLY::Float32, PLY::Float32, offsetof(PointColNormal,p.x), 0, 0, 0, 0},
@@ -233,7 +235,9 @@ namespace BasicPLY {
 		{"blue",  PLY::Uint8,   PLY::Uint8,   offsetof(PointColNormal,c.b), 0, 0, 0, 0},
 		{"nx",    PLY::Float32, PLY::Float32, offsetof(PointColNormal,n.x), 0, 0, 0, 0},
 		{"ny",    PLY::Float32, PLY::Float32, offsetof(PointColNormal,n.y), 0, 0, 0, 0},
-		{"nz",    PLY::Float32, PLY::Float32, offsetof(PointColNormal,n.z), 0, 0, 0, 0}
+		{"nz",    PLY::Float32, PLY::Float32, offsetof(PointColNormal,n.z), 0, 0, 0, 0},
+		{"scale", PLY::Float32, PLY::Float32, offsetof(PointColNormal,scale), 0, 0, 0, 0},
+		{"confidence", PLY::Float32, PLY::Float32, offsetof(PointColNormal,confidence), 0, 0, 0, 0}
 	};
 	// list of the kinds of elements in the PLY
 	static const char* elem_names[] = {
@@ -296,7 +300,7 @@ bool PointCloud::Load(const String& fileName)
 } // Load
 
 // save the dense point cloud as PLY file
-bool PointCloud::Save(const String& fileName, bool bLegacyTypes) const
+bool PointCloud::Save(const String& fileName, bool bLegacyTypes, bool bBinary) const
 {
 	if (points.IsEmpty())
 		return false;
@@ -308,7 +312,7 @@ bool PointCloud::Save(const String& fileName, bool bLegacyTypes) const
 	PLY ply;
 	if (bLegacyTypes)
 		ply.set_legacy_type_names();
-	if (!ply.write(fileName, 1, BasicPLY::elem_names, PLY::BINARY_LE, 64*1024))
+	if (!ply.write(fileName, 1, BasicPLY::elem_names, bBinary?PLY::BINARY_LE:PLY::ASCII, 64*1024))
 		return false;
 
 	if (normals.IsEmpty()) {
@@ -353,7 +357,7 @@ bool PointCloud::Save(const String& fileName, bool bLegacyTypes) const
 } // Save
 
 // save the dense point cloud having >=N views as PLY file
-bool PointCloud::SaveNViews(const String& fileName, uint32_t minViews, bool bLegacyTypes) const
+bool PointCloud::SaveNViews(const String& fileName, uint32_t minViews, bool bLegacyTypes, bool bBinary) const
 {
 	if (points.IsEmpty())
 		return false;
@@ -365,7 +369,7 @@ bool PointCloud::SaveNViews(const String& fileName, uint32_t minViews, bool bLeg
 	PLY ply;
 	if (bLegacyTypes)
 		ply.set_legacy_type_names();
-	if (!ply.write(fileName, 1, BasicPLY::elem_names, PLY::BINARY_LE, 64*1024))
+	if (!ply.write(fileName, 1, BasicPLY::elem_names, bBinary?PLY::BINARY_LE:PLY::ASCII, 64*1024))
 		return false;
 
 	if (normals.IsEmpty()) {
@@ -407,6 +411,90 @@ bool PointCloud::SaveNViews(const String& fileName, uint32_t minViews, bool bLeg
 	DEBUG_EXTRA("Point-cloud saved: %u points with at least %u views each (%s)", numPoints, minViews, TD_TIMER_GET_FMT().c_str());
 	return true;
 } // SaveNViews
+
+// save the dense point cloud + scale as PLY file
+bool PointCloud::SaveWithScale(const String& fileName, const ImageArr& images, float scaleMult, bool bLegacyTypes, bool bBinary) const
+{
+	if (points.empty())
+		return false;
+
+	TD_TIMER_STARTD();
+
+	// create PLY object
+	ASSERT(!fileName.empty());
+	Util::ensureFolder(fileName);
+	PLY ply;
+	if (bLegacyTypes)
+		ply.set_legacy_type_names();
+	if (!ply.write(fileName, 1, BasicPLY::elem_names, bBinary?PLY::BINARY_LE:PLY::ASCII, 64*1024))
+		return false;
+
+	// describe what properties go into the vertex elements
+	ply.describe_property(BasicPLY::elem_names[0], 11, BasicPLY::vert_props);
+
+	// export the array of 3D points
+	BasicPLY::PointColNormal vertex;
+	FOREACH(i, points) {
+		// export the vertex position, normal and scale
+		vertex.p = points[i];
+		if (colors.empty())
+			vertex.c = Color::WHITE;
+		else
+			vertex.c = colors[i];
+		if (normals.empty())
+			vertex.n = Vec3f::ZERO;
+		else
+			vertex.n = normals[i];
+		#if 0
+		// one sample per view
+		vertex.confidence = 1;
+		for (IIndex idxView: pointViews[i]) {
+			const float scale((float)images[idxView].camera.GetFootprintWorld(Cast<REAL>(vertex.p)));
+			ASSERT(scale > 0);
+			vertex.scale = scale*scaleMult;
+			ply.put_element(&vertex);
+		}
+		#else
+		// one sample per point
+		vertex.scale = FLT_MAX;
+		if (pointWeights.empty()) {
+			vertex.confidence = (float)pointViews[i].size();
+			for (IIndex idxView: pointViews[i]) {
+				const float scale((float)images[idxView].camera.GetFootprintWorld(Cast<REAL>(vertex.p)));
+				ASSERT(scale > 0);
+				if (vertex.scale > scale)
+					vertex.scale = scale;
+			}
+		} else {
+			vertex.confidence = 0;
+			float scaleWeightBest = FLT_MAX;
+			FOREACH(j, pointViews[i]) {
+				const IIndex idxView = pointViews[i][j];
+				const float scale((float)images[idxView].camera.GetFootprintWorld(Cast<REAL>(vertex.p)));
+				ASSERT(scale > 0);
+				const float conf(pointWeights[i][j]);
+				const float scaleWeight(scale/conf);
+				if (scaleWeightBest > scaleWeight) {
+					scaleWeightBest = scaleWeight;
+					vertex.scale = scale;
+					vertex.confidence = conf;
+				}
+			}
+		}
+		ASSERT(vertex.scale != FLT_MAX);
+		vertex.scale *= scaleMult;
+		ply.put_element(&vertex);
+		#endif
+	}
+	ASSERT(ply.get_current_element_count() == (int)points.size());
+
+	// write the header
+	if (!ply.header_complete())
+		return false;
+
+	DEBUG_EXTRA("Point-cloud saved: %u points with scale (%s)", points.size(), TD_TIMER_GET_FMT().c_str());
+	return true;
+} // SaveWithScale
 /*----------------------------------------------------------------*/
 
 
