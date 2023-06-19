@@ -44,6 +44,7 @@ using namespace MVS;
 #define APPNAME _T("InterfaceCOLMAP")
 #define MVS_EXT _T(".mvs")
 #define COLMAP_IMAGES_FOLDER _T("images/")
+#define COLMAP_MASKS_FOLDER _T("masks/")
 #define COLMAP_SPARSE_FOLDER _T("sparse/")
 #define COLMAP_CAMERAS_TXT COLMAP_SPARSE_FOLDER _T("cameras.txt")
 #define COLMAP_IMAGES_TXT COLMAP_SPARSE_FOLDER _T("images.txt")
@@ -72,6 +73,7 @@ bool bForceSparsePointCloud;
 String strInputFileName;
 String strOutputFileName;
 String strImageFolder;
+String strMaskFolder;
 unsigned nMaxResolution;
 unsigned nArchiveType;
 int nProcessPriority;
@@ -113,6 +115,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		("input-file,i", boost::program_options::value<std::string>(&OPT::strInputFileName), "input COLMAP folder containing cameras, images and points files OR input MVS project file")
 		("output-file,o", boost::program_options::value<std::string>(&OPT::strOutputFileName), "output filename for storing the MVS project")
 		("image-folder", boost::program_options::value<std::string>(&OPT::strImageFolder)->default_value(COLMAP_IMAGES_FOLDER), "folder to the undistorted images")
+		("mask-folder", boost::program_options::value<std::string>(&OPT::strMaskFolder)->default_value(COLMAP_MASKS_FOLDER), "folder to the undistorted image masks")
 		("max-resolution", boost::program_options::value(&OPT::nMaxResolution)->default_value(0), "make sure image resolution are not not larger than this (0 - disabled)")
 		("normalize,f", boost::program_options::value(&OPT::bNormalizeIntrinsics)->default_value(false), "normalize intrinsics while exporting to MVS format")
 		("force-points,p", boost::program_options::value(&OPT::bForceSparsePointCloud)->default_value(false), "force exporting point-cloud as sparse points also even if dense point-cloud detected")
@@ -171,6 +174,10 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	Util::ensureValidFolderPath(OPT::strImageFolder);
 	Util::ensureValidPath(OPT::strOutputFileName);
 	OPT::strImageFolder = MAKE_PATH_FULL(WORKING_FOLDER_FULL, OPT::strImageFolder);
+
+	Util::ensureValidFolderPath(OPT::strMaskFolder);
+	OPT::strMaskFolder = MAKE_PATH_FULL(WORKING_FOLDER_FULL, OPT::strMaskFolder);
+
 	const String strInputFileNameExt(Util::getFileExt(OPT::strInputFileName).ToLower());
 	OPT::bFromOpenMVS = (strInputFileNameExt == MVS_EXT);
 	if (OPT::bFromOpenMVS) {
@@ -787,6 +794,8 @@ bool ImportScene(const String& strFolder, const String& strOutFolder, Interface&
 			Eigen::Map<EVec3d>(&pose.C.x) = -(imageColmap.q.inverse() * imageColmap.t);
 			Interface::Image image;
 			image.name = MAKE_PATH_REL(strOutFolder,OPT::strImageFolder+imageColmap.name);
+            image.maskName = MAKE_PATH_REL(strOutFolder, OPT::strMaskFolder + imageColmap.name + ".png");
+            LOG_OUT() << "Loading image: " << image.name << ", " << image.maskName << std::endl;
 			image.platformID = mapCameras.at(imageColmap.idCamera);
 			image.cameraID = 0;
 			image.ID = imageColmap.ID;
