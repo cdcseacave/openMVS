@@ -1728,8 +1728,14 @@ bool Scene::EstimateROI(int nEstimateROI, float scale)
 
 // calculate the center(X,Y) of the cylinder, the radius and min/max Z
 // from camera position and sparse point cloud, if that exists
-void Scene::ComputeTowerCylinder(Point2f& centerPoint, float& fRadius, float& fROIRadius, float& zMin, float& zMax, float& minCamZ) {
+// returns result of checks if the scene camera positions satisfies tower criteria:
+//	- cameras fit a long and slim bounding box
+//  - majority of cameras focus toward a middle line
+bool Scene::ComputeTowerCylinder(Point2f& centerPoint, float& fRadius, float& fROIRadius, float& zMin, float& zMax, float& minCamZ, const int towerMode) {
 
+	// disregard tower mode for scenes with less than 20 cameras
+	if (towerMode<0 && images.size() < 20)
+		return false;
 
 	AABB3f aabbOutsideCameras(true);
 	std::vector<Point2f> cameras2D(images.size());
@@ -1742,7 +1748,26 @@ void Scene::ComputeTowerCylinder(Point2f& centerPoint, float& fRadius, float& fR
 		cameras3D[imgIdx] = Point3f(camPos.x(), camPos.y(), camPos.z());
 		camHeigths.InsertSortUnique(camPos.z());
 	}
-	
+	// check if ROI is mostly long and narrow on one direction
+	// delta between axis should have ratios similar to [r; (1+/-0.25)r; >3r]
+	const float LenX = ABS(aabbOutsideCameras.ptMax.x()-aabbOutsideCameras.ptMin.x());
+	const float LenY = ABS(aabbOutsideCameras.ptMax.y()-aabbOutsideCameras.ptMin.y());
+	const float LenZ = ABS(aabbOutsideCameras.ptMax.z()-aabbOutsideCameras.ptMin.z());
+	if (ABS(LenX - LenY) / ABS(LenX + LenY) < 0.25 && ABS(LenX - LenY) / ABS(LenX - LenZ) < 0.1 && ABS(LenX - LenY) / ABS(LenY - LenZ) < 0.1)
+		printf(" Z axis is the longest and fits tower profile");
+	else if (ABS(LenX - LenZ) / ABS(LenX + LenZ) < 0.25 && ABS(LenX - LenZ) / ABS(LenX - LenY) < 0.1 && ABS(LenX - LenZ) / ABS(LenY - LenZ) < 0.1)
+		printf(" Y axis is the longest and fits tower profile");
+	else if (ABS(LenZ - LenY) / ABS(LenZ + LenY) < 0.25 && ABS(LenZ - LenY) / ABS(LenX - LenZ) < 0.1 && ABS(LenZ - LenY) / ABS(LenY - LenX) < 0.1)
+		printf(" X axis is the longest and fits tower profile");
+	else {
+		if (towerMode < 0)
+			return false;
+	}
+	//TODO:
+	// Rotate scene so that longest axis is Z and recalculate Length on X, Y and Z axis(reused later)
+
+	// determine a rough approximation for the center line as
+	// the line connecting the center of the top and bottom half of cameras positions 
 	const float midZ = camHeigths.GetMedian();
 	cList<float> cTopXs, cTopYs, cBotXs, cBotYs;
 	FOREACH(imgIdx, images) {
@@ -1758,6 +1783,8 @@ void Scene::ComputeTowerCylinder(Point2f& centerPoint, float& fRadius, float& fR
 	}
 	const Point3f topCenter(cTopXs.GetMedian(), cTopYs.GetMedian(), aabbOutsideCameras.ptMax.z());
 	const Point3f botCenter(cBotXs.GetMedian(), cBotYs.GetMedian(), aabbOutsideCameras.ptMin.z());
+	// TODO: put the best center line approximation in the camCenterLine
+	Line3f camCenterLine(topCenter, botCenter);
 	CLISTDEF0IDX(Line3f, uint32_t) midlines;
 	midlines.emplace_back(topCenter, botCenter);
 	ExportLinesPLY("midLine3d.ply", midlines);
@@ -1836,8 +1863,13 @@ void Scene::ComputeTowerCylinder(Point2f& centerPoint, float& fRadius, float& fR
 				Planef midPlane(Point3f(0, 0, midCamZ), Point3f(0, 1, midCamZ), Point3f(1, 0, midCamZ));
 				Point3f fp(midLine.GetRay().Intersects(midPlane));
 				Point3 focusPoint(fp);
-
+				if (imgIdx == 16)
+					printf("debug focus point behind cameras");
 				focusPoint = ComputeCamerasFocusPoint(cams, &focusPoint);
+				//if (focusPoint.x > -2.338 && focusPoint.x < -2.336 &&
+				//	focusPoint.y > 4.481 && focusPoint.y < 4.483 &&
+				//	focusPoint.z > -5.97 && focusPoint.z < -5.95)
+				//	printf("cameras: %d, %d, %d, %d, %d", sortedCamId.at<int>(imgIdx, 0), sortedCamId.at<int>(imgIdx, 1), sortedCamId.at<int>(imgIdx, 2), sortedCamId.at<int>(imgIdx, 3), sortedCamId.at<int>(imgIdx, 4));
 				focusPoints.emplace_back(focusPoint);
 			}
 			{
@@ -1851,6 +1883,23 @@ void Scene::ComputeTowerCylinder(Point2f& centerPoint, float& fRadius, float& fR
 						focLines.Insert(Line3f(focusPoints[i], focusPoints[i - 1]));
 				}
 				ExportLinesPLY("focusPoints.ply", focLines, focColors.data());
+			}
+			// check focus point avg distance to center line is less than HALF of the bigger of the two small lengths of camera bounding box
+			// exclude top and bottom 5% distances
+			cList<float> distsToCenter;
+			for (int i = 0; i < focusPoints.size(); ++i) {
+				const float d = camCenterLine.Distance(focusPoints[i]);
+				distsToCenter.InsertSort(d);
+			}
+			REAL avgDist(0);
+			const size_t cutLen = CEIL(distsToCenter.size()*0.05);
+			for (int i=cutLen; i<distsToCenter.size()-cutLen; i++){
+				avgDist+=distsToCenter[i];
+			}
+			avgDist = avgDist/(REAL)(distsToCenter.size()-2*cutLen);
+			if (towerMode<0 && avgDist * 2.f > MAXF(LenX, LenY)) {
+				DEBUG("Avg distance focus points to center line[%.3f] is NOT less than HALF of LenX[%.3f] and LenY[%.3f]", avgDist, LenX, LenY);
+				return false;
 			}
 		}
 	}
@@ -1878,6 +1927,7 @@ void Scene::ComputeTowerCylinder(Point2f& centerPoint, float& fRadius, float& fR
 	} else {
 		fROIRadius = fRadius;
 	}
+	return true;
 } // ComputeTowerCylinder
 
 size_t Scene::DrawCircle(PointCloud::PointArr &outCircle, const Point3f circleCenter, const float circleRadius, const unsigned nTargetPoints, const float fStartAngle, const float fAngleBetweenPoints, bool bHasNormals, bool bHasColors, bool bHasWeights) {
@@ -2099,12 +2149,15 @@ size_t Scene::BuildTowerMesh(const PointCloud origPointCloud, const Point2f cent
 
 // remove all points in the point-cloud with points on a cylinder placed in the middle of scene's cameras
 // this function assumes the scene was geo-localized and units are meters
-size_t Scene::InitTowerScene() {
+size_t Scene::InitTowerScene(const int towerMode) {
 	float fRadius;
 	float fROIRadius;
 	float zMax, zMin, minCamZ;
 	Point2f centerPoint;
-	ComputeTowerCylinder(centerPoint, fRadius, fROIRadius, zMin, zMax, minCamZ);
+	if (!ComputeTowerCylinder(centerPoint, fRadius, fROIRadius, zMin, zMax, minCamZ, towerMode))
+		return 0;
+	DEBUG("Scene camera positions identified ROI as a tower, select neighbors as if ROI is a tower");
+
 	// add nTargetPoints points on each circle
 	size_t countPoints(0);
 	countPoints = BuildTowerMesh(pointcloud, centerPoint, fRadius, fROIRadius, zMin, zMax, minCamZ, false);
@@ -2114,7 +2167,6 @@ size_t Scene::InitTowerScene() {
 			Save(MAKE_PATH(_T("scene_tower.mvs")));
 		}
 	}
-
 	//// select neighbors on the point-cloud with synthetic points
 	//Initialize(mulDistance, true, OPTDENSE::nResolutionLevel, OPTDENSE::nMinResolution, OPTDENSE::nMaxResolution,
 	//	OPTDENSE::nMinViews, OPTDENSE::nMinViewsTrustPoint > 1 ? OPTDENSE::nMinViewsTrustPoint : 2,

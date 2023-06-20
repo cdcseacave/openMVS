@@ -115,8 +115,8 @@ public:
 	bool EstimateROI(int nEstimateROI=0, float scale=1.f);
 	
 	// Tower scene
-	void ComputeTowerCylinder(Point2f& centerPoint, float& fRadius, float& fROIRadius, float& zMin, float& zMax, float& minCamZ);
-	size_t InitTowerScene();
+	bool ComputeTowerCylinder(Point2f& centerPoint, float& fRadius, float& fROIRadius, float& zMin, float& zMax, float& minCamZ, const int towerMode);
+	size_t InitTowerScene(const int towerMode);
 	size_t DrawCircle(PointCloud::PointArr& outCircle, const Point3f circleCenter, const float circleRadius, const unsigned nTargetPoints, const float fStartAngle, const float fAngleBetweenPoints, bool bHasNormals, bool bHasColors, bool bHasWeights);
 	size_t BuildTowerMesh(const PointCloud origPointCloud, const Point2f centerPoint, const float fRadius, const float fROIRadius, const float zMin, const float zMax, const float minCamZ, bool bFixRadius = false);
 	
