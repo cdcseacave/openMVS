@@ -1734,63 +1734,33 @@ void Scene::ComputeTowerCylinder(Point2f& centerPoint, float& fRadius, float& fR
 	AABB3f aabbOutsideCameras(true);
 	std::vector<Point2f> cameras2D(images.size());
 	std::vector<Point3f> cameras3D(images.size());
+	cList<float>camHeigths;
 	FOREACH(imgIdx, images) {
 		const Eigen::Vector3f camPos(Cast<float>(images[imgIdx].camera.C));
 		aabbOutsideCameras.InsertFull(camPos);
 		cameras2D[imgIdx] = Point2f(camPos.x(), camPos.y());
 		cameras3D[imgIdx] = Point3f(camPos.x(), camPos.y(), camPos.z());
+		camHeigths.InsertSortUnique(camPos.z());
 	}
-	cv::Vec6f centerLine3d;
-	cv::fitLine(cameras3D, centerLine3d, cv::DistanceTypes::DIST_HUBER, 0, 0.1, 0.01);
-
-	Point3f dir(centerLine3d[0], centerLine3d[1], centerLine3d[2]);
-	Point3f p0(centerLine3d[3], centerLine3d[4], centerLine3d[5]);
-	Point3f p1 = p0 - dir * ABS(p0.z);
-	Point3f p2 = p1 + dir * (aabbOutsideCameras.ptMax.z() - aabbOutsideCameras.ptMin.z());
-	CLISTDEF0IDX(Line3f,uint32_t) lines;
-	lines.emplace_back(p1, p2);
-	CLISTDEF0IDX(Pixel8U,uint32_t) colors;
-	colors.emplace_back(30,30,240);
-	ExportLinesPLY("centerLine3d.ply", lines, colors.data());
 	
-	// find line of focus points for each 16 closest cameras
-	cv::Mat camDistaceMat = cv::Mat::zeros(images.size(), images.size(), CV_32F);
+	const float midZ = camHeigths.GetMedian();
+	cList<float> cTopXs, cTopYs, cBotXs, cBotYs;
 	FOREACH(imgIdx, images) {
-		const Point3 cam0(images[imgIdx].camera.C);
-		camDistaceMat.at<float>(imgIdx, imgIdx) = 0.f;
-		for (int i = imgIdx + 1; i < images.size(); i++) {
-			const Point3 camI(images[i].camera.C);
-			camDistaceMat.at<float>(imgIdx, i) = (float)normSq(cam0 - camI);
-			camDistaceMat.at<float>(i, imgIdx) = camDistaceMat.at<float>(imgIdx, i);
+		const Eigen::Vector3f camPos(Cast<float>(images[imgIdx].camera.C));
+		if (camPos.z() > midZ) {
+			cTopXs.InsertSortUnique(camPos.x());
+			cTopYs.InsertSortUnique(camPos.y());
+		}
+		else {
+			cBotXs.InsertSortUnique(camPos.x());
+			cBotYs.InsertSortUnique(camPos.y());
 		}
 	}
-	cv::Mat sortedCamId;
-	cv::sortIdx(camDistaceMat, sortedCamId, cv::SORT_EVERY_ROW + cv::SORT_ASCENDING);
-	const int maxNeighbors = MIN(16, images.size() - 1);
-	const Point3 centerP(centerLine3d[3], centerLine3d[4], centerLine3d[5]);
-	std::vector<Point3f> focusPoints;
-	FOREACH(imgIdx, images) {
-		CameraArr cams;
-		for (int i = 1; i <= maxNeighbors; i++) {
-			const int camIdx = sortedCamId.at<int>(imgIdx, i);
-			cams.emplace_back(images[camIdx].camera);
-		}
-		Point3 focusPoint(centerP);
-		focusPoint = ComputeCamerasFocusPoint(cams, &focusPoint);
-		focusPoints.emplace_back(focusPoint);
-	}
-	{
-		// debug - export focus points
-		CLISTDEF0IDX(Line3f, uint32_t) focLines;
-		CLISTDEF0IDX(Pixel8U, uint32_t) focColors;
-		focColors.emplace_back(230, 10, 10);
-
-		for (int i = 1; i < focusPoints.size(); ++i) {
-			if(!ISZERO(norm(focusPoints[i] - focusPoints[i-1])))
-				focLines.Insert(Line3f(focusPoints[i], focusPoints[i - 1]));
-		}
-		ExportLinesPLY("focusPoints.ply", focLines, focColors.data());
-	}
+	const Point3f topCenter(cTopXs.GetMedian(), cTopYs.GetMedian(), aabbOutsideCameras.ptMax.z());
+	const Point3f botCenter(cBotXs.GetMedian(), cBotYs.GetMedian(), aabbOutsideCameras.ptMin.z());
+	CLISTDEF0IDX(Line3f, uint32_t) midlines;
+	midlines.emplace_back(topCenter, botCenter);
+	ExportLinesPLY("midLine3d.ply", midlines);
 
 	// get the height of the lowest camera
 	minCamZ = aabbOutsideCameras.ptMin.z();
@@ -1815,19 +1785,77 @@ void Scene::ComputeTowerCylinder(Point2f& centerPoint, float& fRadius, float& fR
 		}
 	}
 	zMin = MINF(zMin, fMinPointsZ);
-	//{
-	//	// adjust zMin to groundplane
-	//	Planef groundPlane = pointcloud.EstimateGroundPlane(images);
-	//	if (!groundPlane.IsValid()) {
-	//		VERBOSE("error: can not estimate the ground plane");
-	//		return;
-	//	}
-	//	const float fDistToGround(groundPlane.Distance(Point3f(0, 0, zMin)));
-	//	if(fDistToGround < 0)
-	//		zMin -= fDistToGround;
-	//}
 	zMax = MAXF(aabbOutsideCameras.ptMax.z(), fMaxPointsZ);
 
+
+	{
+		cv::Vec6f centerLine3d;
+		cv::fitLine(cameras3D, centerLine3d, cv::DistanceTypes::DIST_L2, 0, 0.0001, 0.01);
+
+		const Point3f dir(centerLine3d[0], centerLine3d[1], centerLine3d[2]);
+		const Point3f p0(centerLine3d[3], centerLine3d[4], centerLine3d[5]);
+		const Point3f p1 = (p0-dir*(p0.z-zMin));
+		const Point3f p2 = (p1+dir*(zMax-zMin));
+		const Point3f p11 = (p0-dir*(p0.z-zMin)/dir.z);
+		const Point3f p22 = (p1+dir*(zMax-zMin)/dir.z);
+		CLISTDEF0IDX(Line3f, uint32_t) lines;
+		lines.emplace_back(p1, p2);
+		lines.emplace_back(p11, p22);
+		CLISTDEF0IDX(Pixel8U, uint32_t) colors;
+		colors.emplace_back(30, 30, 240);
+		ExportLinesPLY("centerLine3d.ply", lines, colors.data());
+		{
+			// find line of focus points for each 16 closest cameras
+			cv::Mat camDistaceMat = cv::Mat::zeros(images.size(), images.size(), CV_32F);
+			FOREACH(imgIdx, images) {
+				const Point3 cam0(images[imgIdx].camera.C);
+				camDistaceMat.at<float>(imgIdx, imgIdx) = 0.f;
+				for (int i = imgIdx + 1; i < images.size(); i++) {
+					const Point3 camI(images[i].camera.C);
+					camDistaceMat.at<float>(imgIdx, i) = (float)normSq(cam0 - camI);
+					camDistaceMat.at<float>(i, imgIdx) = camDistaceMat.at<float>(imgIdx, i);
+				}
+			}
+			cv::Mat sortedCamId;
+			cv::sortIdx(camDistaceMat, sortedCamId, cv::SORT_EVERY_ROW + cv::SORT_ASCENDING);
+			const int maxNeighbors = MIN(5, images.size() - 1);
+			const Point3 centerP(centerLine3d[3], centerLine3d[4], centerLine3d[5]);
+			std::vector<Point3f> focusPoints;
+			FOREACH(imgIdx, images) {
+				CameraArr cams;
+				cList<float> camZs;
+				for (int i = 1; i <= maxNeighbors; i++) {
+					const int camIdx = sortedCamId.at<int>(imgIdx, i);
+					cams.emplace_back(images[camIdx].camera);
+					const Eigen::Vector3f camPos(Cast<float>(images[camIdx].camera.C));
+					camZs.InsertSortUnique(camPos.z());
+				}
+				//Point3 focusPoint(centerP);
+				Line3f midLine(topCenter, botCenter);
+				const float midCamZ = camZs.GetMedian();
+				Planef midPlane(Point3f(0, 0, midCamZ), Point3f(0, 1, midCamZ), Point3f(1, 0, midCamZ));
+				Point3f fp(midLine.GetRay().Intersects(midPlane));
+				Point3 focusPoint(fp);
+
+				focusPoint = ComputeCamerasFocusPoint(cams, &focusPoint);
+				focusPoints.emplace_back(focusPoint);
+			}
+			{
+				// debug - export focus points
+				CLISTDEF0IDX(Line3f, uint32_t) focLines;
+				CLISTDEF0IDX(Pixel8U, uint32_t) focColors;
+				focColors.emplace_back(230, 10, 10);
+
+				for (int i = 1; i < focusPoints.size(); ++i) {
+					if (!ISZERO(norm(focusPoints[i] - focusPoints[i - 1])))
+						focLines.Insert(Line3f(focusPoints[i], focusPoints[i - 1]));
+				}
+				ExportLinesPLY("focusPoints.ply", focLines, focColors.data());
+			}
+		}
+	}
+
+	
 	// calculate median distance from tower center to cameras
 	cList<float> cameraDistancesToMiddle(cameras2D.size());
 	FOREACH (camIdx, cameras2D) {
