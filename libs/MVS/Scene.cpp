@@ -786,16 +786,6 @@ bool Scene::EstimateNeighborViewsPointCloud(unsigned maxResolution)
 } // EstimateNeighborViewsPointCloud
 /*----------------------------------------------------------------*/
 
-inline float Footprint(const Camera& camera, const Point3f& X) {
-	#if 0
-	const REAL fSphereRadius(1);
-	const Point3 cX(camera.TransformPointW2C(Cast<REAL>(X)));
-	return (float)norm(camera.TransformPointC2I(Point3(cX.x+fSphereRadius,cX.y,cX.z))-camera.TransformPointC2I(cX))+std::numeric_limits<float>::epsilon();
-	#else
-	return (float)(camera.GetFocalLength()/camera.PointDepth(X));
-	#endif
-}
-
 // compute visibility for the reference image
 // and select the best views for reconstructing the dense point-cloud;
 // extract also all 3D points seen by the reference image;
@@ -848,7 +838,7 @@ bool Scene::SelectNeighborViews(uint32_t ID, IndexArr& points, unsigned nMinView
 		++nPoints;
 		// score shared views
 		const Point3f V1(imageData.camera.C - Cast<REAL>(point));
-		const float footprint1(Footprint(imageData.camera, point));
+		const float footprint1(imageData.camera.GetFootprintImage(point));
 		for (const PointCloud::View& view: views) {
 			if (view == ID)
 				continue;
@@ -856,7 +846,7 @@ bool Scene::SelectNeighborViews(uint32_t ID, IndexArr& points, unsigned nMinView
 			const Point3f V2(imageData2.camera.C - Cast<REAL>(point));
 			const float fAngle(ACOS(ComputeAngle(V1.ptr(), V2.ptr())));
 			const float wAngle(EXP(SQUARE(fAngle-fOptimAngle)*(fAngle<fOptimAngle?sigmaAngleSmall:sigmaAngleLarge)));
-			const float footprint2(Footprint(imageData2.camera, point));
+			const float footprint2(imageData2.camera.GetFootprintImage(point));
 			const float fScaleRatio(footprint1/footprint2);
 			float wScale;
 			if (fScaleRatio > 1.6f)
@@ -1132,7 +1122,7 @@ unsigned Scene::Split(ImagesChunkArr& chunks, float maxArea, int depthMapStep) c
 					const Point3f X(Cast<float>(camera.TransformPointI2W(Point3(c,r,depth))));
 					if (IsBounded() && !obb.Intersects(X))
 						continue;
-					areas.emplace_back(Footprint(camera, X)*areaScale);
+					areas.emplace_back(camera.GetFootprintImage(X)*areaScale);
 					visibility.emplace_back(idxImage);
 					samples.emplace_back(X);
 				}
