@@ -45,6 +45,8 @@ public:
 	inline void Set(const POINT& pt1, const POINT& pt2);
 
 	int Optimize(const POINT*, size_t, int maxIters=100);
+	template <typename RobustNormFunctor>
+	int Optimize(const POINT*, size_t, const RobustNormFunctor& robust, int maxIters=100);
 
 	inline TYPE GetLength() const;
 	inline TYPE GetLengthSq() const;
@@ -61,6 +63,7 @@ public:
 	inline TYPE DistanceSq(const POINT&) const;
 	inline TYPE Distance(const POINT&) const;
 
+	inline TYPE Classify(const POINT&) const;
 	inline POINT ProjectPoint(const POINT&) const;
 
 	inline TYPE& operator [] (BYTE i) { ASSERT(i<numScalar); return pt1.data()[i]; }
@@ -75,6 +78,12 @@ public:
 	}
 	#endif
 }; // class TLine
+/*----------------------------------------------------------------*/
+
+template <typename TYPE, typename TYPEW=TYPE>
+struct FitLineOnline : FitPlaneOnline<TYPE,TYPEW,true> {
+	template <typename TYPEE> TPoint3<TYPEE> GetLine(TLine<TYPEE,3>& line) const;
+};
 /*----------------------------------------------------------------*/
 
 

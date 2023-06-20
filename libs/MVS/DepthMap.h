@@ -482,13 +482,11 @@ MVS_API unsigned EstimatePlane(const Point3Arr&, Plane&, double& maxThreshold, b
 MVS_API unsigned EstimatePlaneLockFirstPoint(const Point3Arr&, Plane&, double& maxThreshold, bool arrInliers[]=NULL, size_t maxIters=0);
 MVS_API unsigned EstimatePlaneTh(const Point3Arr&, Plane&, double maxThreshold, bool arrInliers[]=NULL, size_t maxIters=0);
 MVS_API unsigned EstimatePlaneThLockFirstPoint(const Point3Arr&, Plane&, double maxThreshold, bool arrInliers[]=NULL, size_t maxIters=0);
-MATH_API int OptimizePlane(Planed& plane, const Eigen::Vector3d* points, size_t size, int maxIters, double threshold);
 // same for float points
 MATH_API unsigned EstimatePlane(const Point3fArr&, Planef&, double& maxThreshold, bool arrInliers[]=NULL, size_t maxIters=0);
 MATH_API unsigned EstimatePlaneLockFirstPoint(const Point3fArr&, Planef&, double& maxThreshold, bool arrInliers[]=NULL, size_t maxIters=0);
 MATH_API unsigned EstimatePlaneTh(const Point3fArr&, Planef&, double maxThreshold, bool arrInliers[]=NULL, size_t maxIters=0);
 MATH_API unsigned EstimatePlaneThLockFirstPoint(const Point3fArr&, Planef&, double maxThreshold, bool arrInliers[]=NULL, size_t maxIters=0);
-MATH_API int OptimizePlane(Planef& plane, const Eigen::Vector3f* points, size_t size, int maxIters, float threshold);
 
 MVS_API void EstimatePointColors(const ImageArr& images, PointCloud& pointcloud);
 MVS_API void EstimatePointNormals(const ImageArr& images, PointCloud& pointcloud, int numNeighbors=16/*K-nearest neighbors*/);

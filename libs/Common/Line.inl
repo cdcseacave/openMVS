@@ -37,16 +37,19 @@ inline void TLine<TYPE,DIMS>::Set(const POINT& _pt1, const POINT& _pt2)
 // least squares refinement of the line to the given 3D point set
 // (return the number of iterations)
 template <typename TYPE, int DIMS>
-int TLine<TYPE,DIMS>::Optimize(const POINT* points, size_t size, int maxIters)
+template <typename RobustNormFunctor>
+int TLine<TYPE,DIMS>::Optimize(const POINT* points, size_t size, const RobustNormFunctor& robust, int maxIters)
 {
+	ASSERT(DIMS == 3);
 	ASSERT(size >= numParams);
 	struct OptimizationFunctor {
 		const POINT* points;
 		size_t size;
 		double scale;
+		const RobustNormFunctor& robust;
 		// construct with the data points
-		OptimizationFunctor(const POINT* _points, size_t _size)
-			: points(_points), size(_size) { ASSERT(size < std::numeric_limits<int>::max()); }
+		OptimizationFunctor(const POINT* _points, size_t _size, const RobustNormFunctor& _robust)
+			: points(_points), size(_size), robust(_robust) { ASSERT(size < std::numeric_limits<int>::max()); }
 		static void Residuals(const double* x, int nPoints, const void* pData, double* fvec, double* fjac, int* /*info*/) {
 			const OptimizationFunctor& data = *reinterpret_cast<const OptimizationFunctor*>(pData);
 			ASSERT((size_t)nPoints == data.size && fvec != NULL && fjac == NULL);
@@ -56,18 +59,18 @@ int TLine<TYPE,DIMS>::Optimize(const POINT* points, size_t size, int maxIters)
 			DirScale2Vector(x+DIMS, &data.scale, line.pt2.data());
 			line.pt2 += line.pt1;
 			for (size_t i=0; i<data.size; ++i)
-				fvec[i] = line.Distance(data.points[i].template cast<double>());
+				fvec[i] = data.robust(line.Distance(data.points[i].template cast<double>()));
 		}
-	} functor(points, size);
+	} functor(points, size, robust);
 	double arrParams[numParams];
 	for (int j=0; j<DIMS; ++j)
 		arrParams[j] = (double)pt1(j);
 	POINT dir(pt2-pt1);
 	Vector2DirScale(dir.data(), arrParams+DIMS, &functor.scale);
-	lm_control_struct control = {1.e-6, 1.e-7, 1.e-8, 1.e-8, 100.0, maxIters, true}; // lm_control_float;
+	lm_control_struct control = {1.e-6, 1.e-7, 1.e-8, 1.e-8, 100.0, maxIters}; // lm_control_float;
 	lm_status_struct status;
 	lmmin(numParams, arrParams, (int)size, &functor, OptimizationFunctor::Residuals, &control, &status);
-	switch (status.outcome) {
+	switch (status.info) {
 	//case 4:
 	case 5:
 	case 6:
@@ -77,7 +80,7 @@ int TLine<TYPE,DIMS>::Optimize(const POINT* points, size_t size, int maxIters)
 	case 10:
 	case 11:
 	case 12:
-		DEBUG_ULTIMATE("error: refine line: %s", lm_infmsg[status.outcome]);
+		DEBUG_ULTIMATE("error: refine line: %s", lm_infmsg[status.info]);
 		return 0;
 	}
 	for (int j=0; j<DIMS; ++j)
@@ -85,6 +88,12 @@ int TLine<TYPE,DIMS>::Optimize(const POINT* points, size_t size, int maxIters)
 	DirScale2Vector(arrParams+DIMS, &functor.scale, dir.data());
 	pt2 = pt1+dir;
 	return status.nfev;
+}
+template <typename TYPE, int DIMS>
+int TLine<TYPE,DIMS>::Optimize(const POINT* points, size_t size, int maxIters)
+{
+	const auto RobustNormFunctor = [](double x) { return x; };
+	return Optimize(points, size, robust, maxIters);
 } // Optimize
 /*----------------------------------------------------------------*/
 
@@ -171,12 +180,36 @@ inline TYPE TLine<TYPE,DIMS>::Distance(const POINT& pt) const
 /*----------------------------------------------------------------*/
 
 
+// Computes the position on the line segment of the point projection.
+// Returns 0 if it coincides with the first point, and 1 if it coincides with the second point.
+template <typename TYPE, int DIMS>
+inline TYPE TLine<TYPE,DIMS>::Classify(const POINT& p) const
+{
+	const VECTOR vL(pt2 - pt1);
+	ASSERT(!ISZERO(vL.squaredNorm()));
+	const VECTOR vP(p - pt1);
+	return vL.dot(vP) / vL.squaredNorm();
+} // Classify(POINT)
 // Calculate point's projection on this line (closest point to this line).
 template <typename TYPE, int DIMS>
 inline typename TLine<TYPE,DIMS>::POINT TLine<TYPE,DIMS>::ProjectPoint(const POINT& p) const
 {
 	const VECTOR vL(pt2 - pt1);
+	ASSERT(!ISZERO(vL.squaredNorm()));
 	const VECTOR vP(p - pt1);
 	return pt1 + vL * (vL.dot(vP) / vL.squaredNorm());
 } // ProjectPoint
+/*----------------------------------------------------------------*/
+
+
+template <typename TYPE, typename TYPEW>
+template <typename TYPEE>
+TPoint3<TYPEE> FitLineOnline<TYPE,TYPEW>::GetLine(TLine<TYPEE,3>& line) const
+{
+	TPoint3<TYPEW> avg, dir;
+	const TPoint3<TYPEW> quality(this->GetModel(avg, dir));
+	const TPoint3<TYPEW> pt2(avg+dir);
+	line.Set(TPoint3<TYPEE>(avg), TPoint3<TYPEE>(pt2));
+	return TPoint3<TYPEE>(quality);
+}
 /*----------------------------------------------------------------*/
