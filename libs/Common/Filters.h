@@ -103,7 +103,7 @@ public:
 				if (this->s->write(buf, bufSize) == STREAM_ERROR)
 					return STREAM_ERROR;
 				pos = 0;
-				if (len >= bufSize) {
+				if (len < bufSize) {
 					if (this->s->write(b, len) == STREAM_ERROR)
 						return STREAM_ERROR;
 					break;
