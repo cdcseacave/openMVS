@@ -92,8 +92,8 @@ int TLine<TYPE,DIMS>::Optimize(const POINT* points, size_t size, const RobustNor
 template <typename TYPE, int DIMS>
 int TLine<TYPE,DIMS>::Optimize(const POINT* points, size_t size, int maxIters)
 {
-	const auto RobustNormFunctor = [](double x) { return x; };
-	return Optimize(points, size, robust, maxIters);
+	const auto identity = [](double x) { return x; };
+	return Optimize(points, size, identity, maxIters);
 } // Optimize
 /*----------------------------------------------------------------*/
 

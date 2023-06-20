@@ -302,17 +302,22 @@ int main(int argc, LPCTSTR* argv)
 	const float segmentSize = threshold * 1.2f;
 	Line3f lineInliers(line.pt1-dir*segmentSize, line.pt1+dir*segmentSize);
 	PointCloud pcInliers;
-	//for (size_t i = 0; i < pc.GetSize(); ++i)
-	//	if (line.Distance(pc.points[i]) < threshold)
-	//		pcInliers.points.push_back(pc.points[i]);
-	for (size_t i = 0; i < pc.GetSize(); ++i) {
-		const auto t = lineInliers.Classify(pc.points[i]);
-		if (t > 0 && t < 1)
-			pcInliers.points.push_back(pc.points[i]);
+	bool bUseRobust = false;
+	if (bUseRobust) {
+		for (size_t i = 0; i < pc.GetSize(); ++i)
+			if (line.Distance(pc.points[i]) < threshold)
+				pcInliers.points.push_back(pc.points[i]);
+		const RobustNorm::Cauchy<double> robust(threshold);
+		line.Optimize(reinterpret_cast<const Line3f::POINT*>(pcInliers.points.data()), pcInliers.GetSize(), robust);
+	} else {
+		for (size_t i = 0; i < pc.GetSize(); ++i) {
+			const auto t = lineInliers.Classify(pc.points[i]);
+			if (t > 0 && t < 1)
+				pcInliers.points.push_back(pc.points[i]);
+		}
+		line.Optimize(reinterpret_cast<const Line3f::POINT*>(pcInliers.points.data()), pcInliers.GetSize());
 	}
 	pcInliers.Save("D:\\Downloads\\scene_cams_line_inliers.ply");
-	const RobustNorm::Cauchy<double> robust(threshold);
-	line.Optimize(reinterpret_cast<const Line3f::POINT*>(pcInliers.points.data()), pcInliers.GetSize(), robust);
 	lines.Release();
 	dir = line.pt2-line.pt1;
 	lines.emplace_back(line.pt1-dir*5, line.pt1+dir*5);
