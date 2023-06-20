@@ -299,8 +299,6 @@ int main(int argc, LPCTSTR* argv)
 	lines.emplace_back(line.pt1-dir*5, line.pt1+dir*5);
 	Scene::ExportLinesPLY("D:\\Downloads\\scene_cams_line.ply", lines);
 	const double threshold = 3.5; // TODO: Set depending on the cameras around the tower radius
-	const float segmentSize = threshold * 1.2f;
-	Line3f lineInliers(line.pt1-dir*segmentSize, line.pt1+dir*segmentSize);
 	PointCloud pcInliers;
 	bool bUseRobust = false;
 	if (bUseRobust) {
@@ -310,12 +308,22 @@ int main(int argc, LPCTSTR* argv)
 		const RobustNorm::Cauchy<double> robust(threshold);
 		line.Optimize(reinterpret_cast<const Line3f::POINT*>(pcInliers.points.data()), pcInliers.GetSize(), robust);
 	} else {
+		float segmentSize = threshold * 1.2f;
+		Line3f lineInliers(line.pt1-dir*segmentSize, line.pt1+dir*segmentSize);
 		for (size_t i = 0; i < pc.GetSize(); ++i) {
 			const auto t = lineInliers.Classify(pc.points[i]);
 			if (t > 0 && t < 1)
 				pcInliers.points.push_back(pc.points[i]);
 		}
 		line.Optimize(reinterpret_cast<const Line3f::POINT*>(pcInliers.points.data()), pcInliers.GetSize());
+		pcInliers.Release();
+		for (size_t i = 0; i < pc.GetSize(); ++i)
+			if (line.Distance(pc.points[i]) < threshold)
+				pcInliers.points.push_back(pc.points[i]);
+		FitLineOnline<float> fitline;
+		for (size_t i = 0; i < pcInliers.GetSize(); ++i)
+			fitline.Update(pcInliers.points[i]);
+		fitline.GetLine(line);
 	}
 	pcInliers.Save("D:\\Downloads\\scene_cams_line_inliers.ply");
 	lines.Release();
