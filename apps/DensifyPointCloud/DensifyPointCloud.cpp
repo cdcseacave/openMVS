@@ -61,6 +61,7 @@ float fSampleMesh;
 float fBorderROI;
 bool bCrop2ROI;
 int nEstimateROI;
+int	nTowerMode;
 int nFusionMode;
 int thFilterPointCloud;
 int nExportNumViews;
@@ -157,6 +158,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	boost::program_options::options_description hidden("Hidden options");
 	hidden.add_options()
 		("mesh-file", boost::program_options::value<std::string>(&OPT::strMeshFileName), "mesh file name used for image pair overlap estimation")
+		("tower-mode", boost::program_options::value(&OPT::nTowerMode)->default_value(-3), "add a cylinder of points in the center of ROI((negatif)=autodetect, 0 - disabled, 1 - replace, 2 - append, 3 - select neighbors)")
 		("export-roi-file", boost::program_options::value<std::string>(&OPT::strExportROIFileName), "ROI file name to be exported form the scene")
 		("import-roi-file", boost::program_options::value<std::string>(&OPT::strImportROIFileName), "ROI file name to be imported into the scene")
 		("dense-config-file", boost::program_options::value<std::string>(&OPT::strDenseConfigFileName), "optional configuration file for the densifier (overwritten by the command line options)")
@@ -298,6 +300,17 @@ int main(int argc, LPCTSTR* argv)
 	// load and estimate a dense point-cloud
 	if (!scene.Load(MAKE_PATH_SAFE(OPT::strInputFileName)))
 		return EXIT_FAILURE;
+	//{
+	//	PointCloud camsPts;
+	//	FOREACH(imgIdx, scene.images) {
+	//		const Point3 cam0(scene.images[imgIdx].camera.C);
+	//		camsPts.points.emplace_back(cam0);
+	//		const Point3 nrmal = scene.images[imgIdx].camera.Direction();
+	//		camsPts.normals.emplace_back(nrmal);
+	//	}
+	//	camsPts.Save(MAKE_PATH_SAFE(Util::getFileFullName(OPT::strInputFileName)) + _T("_cams.ply"));
+	//	camsPts.Release();
+	//}
 	if (!OPT::strMaskPath.empty()) {
 		Util::ensureValidFolderPath(OPT::strMaskPath);
 		for (Image& image : scene.images) {
@@ -331,8 +344,8 @@ int main(int argc, LPCTSTR* argv)
 		Finalize();
 		return EXIT_SUCCESS;
 	}
-	{
-		scene.InitTowerScene();
+	if (OPT::nTowerMode!=0) {
+		scene.InitTowerScene(OPT::nTowerMode);
 	}
 	if (!OPT::strMeshFileName.empty())
 		scene.mesh.Load(MAKE_PATH_SAFE(OPT::strMeshFileName));
