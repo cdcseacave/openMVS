@@ -273,6 +273,77 @@ void Finalize()
 
 } // unnamed namespace
 
+int LineOptimize(Line3f& line, const Line3f::POINT* points, size_t size, int maxIters=100)
+{
+	using POINT=Line3f::POINT;
+	using TYPE=Line3f::POINT::Scalar;
+	constexpr size_t numParams=Line3f::numParams;
+	constexpr int DIMS=3;
+	ASSERT(size >= numParams);
+	using RobustNormFunctor=RobustNorm::Cauchy<double>;
+	const RobustNormFunctor robust(3);
+	struct OptimizationFunctor {
+		const POINT* points;
+		size_t size;
+		double scale;
+		const RobustNormFunctor& robust;
+		// construct with the data points
+		OptimizationFunctor(const POINT* _points, size_t _size, const RobustNormFunctor& _robust)
+			: points(_points), size(_size), robust(_robust) { ASSERT(size < std::numeric_limits<int>::max()); }
+		static void Residuals(const double* x, int nPoints, const void* pData, double* fvec, double* fjac, int* /*info*/) {
+			const OptimizationFunctor& data = *reinterpret_cast<const OptimizationFunctor*>(pData);
+			const size_t numPairs = data.size/2;
+			ASSERT((size_t)nPoints == data.size+numPairs+1 && fvec != NULL && fjac == NULL);
+			TLine<double,DIMS> line;
+			for (int j=0; j<DIMS; ++j)
+				line.pt1(j) = x[j];
+			DirScale2Vector(x+DIMS, &data.scale, line.pt2.data());
+			line.pt2 += line.pt1;
+			DoubleArr dists(data.size);
+			for (size_t i=0; i<data.size; ++i) {
+				const double dist = line.Distance(data.points[i].template cast<double>());
+				fvec[i] = data.robust(dist);
+				dists[i] = dist;
+			}
+			dists.Sort();
+			double total = 0;
+			for (size_t i=0; i<numPairs; ++i) {
+				total += dists[2*i+0] + dists[2*i+1];
+				const double diff = dists[2*i+1] - dists[2*i+0];
+				fvec[data.size+i] = data.robust(diff*10);
+			}
+			fvec[data.size+numPairs] = data.robust(total*data.size);
+		}
+	} functor(points, size, robust);
+	const size_t numPairs = size/2;
+	double arrParams[numParams];
+	for (int j=0; j<DIMS; ++j)
+		arrParams[j] = (double)line.pt1(j);
+	POINT dir(line.pt2-line.pt1);
+	Vector2DirScale(dir.data(), arrParams+DIMS, &functor.scale);
+	lm_control_struct control = {1.e-6, 1.e-7, 1.e-8, 1.e-8, 100.0, maxIters}; // lm_control_float;
+	lm_status_struct status;
+	lmmin(numParams, arrParams, (int)(size+numPairs+1), &functor, OptimizationFunctor::Residuals, &control, &status);
+	switch (status.info) {
+	//case 4:
+	case 5:
+	case 6:
+	case 7:
+	case 8:
+	case 9:
+	case 10:
+	case 11:
+	case 12:
+		DEBUG_ULTIMATE("error: refine line: %s", lm_infmsg[status.info]);
+		return 0;
+	}
+	for (int j=0; j<DIMS; ++j)
+		line.pt1(j) = (TYPE)arrParams[j];
+	DirScale2Vector(arrParams+DIMS, &functor.scale, dir.data());
+	line.pt2 = line.pt1+dir;
+	return status.nfev;
+}
+
 int main(int argc, LPCTSTR* argv)
 {
 	#ifdef _DEBUGINFO
@@ -298,6 +369,7 @@ int main(int argc, LPCTSTR* argv)
 	Line3f::POINT dir = line.pt2-line.pt1;
 	lines.emplace_back(line.pt1-dir*5, line.pt1+dir*5);
 	Scene::ExportLinesPLY("D:\\Downloads\\scene_cams_line.ply", lines);
+	//LineOptimize(line, reinterpret_cast<const Line3f::POINT*>(pc.points.data()), pc.GetSize());
 	const double threshold = 3.5; // TODO: Set depending on the cameras around the tower radius
 	PointCloud pcInliers;
 	bool bUseRobust = false;
