@@ -160,7 +160,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	boost::program_options::options_description hidden("Hidden options");
 	hidden.add_options()
 		("mesh-file", boost::program_options::value<std::string>(&OPT::strMeshFileName), "mesh file name used for image pair overlap estimation")
-		("tower-mode", boost::program_options::value(&OPT::nTowerMode)->default_value(-3), "add a cylinder of points in the center of ROI((negatif)=autodetect, 0 - disabled, 1 - replace, 2 - append, 3 - select neighbors)")
+		("tower-mode", boost::program_options::value(&OPT::nTowerMode)->default_value(3), "add a cylinder of points in the center of ROI; scene assume to be Z-up oriented (0 - disabled, 1 - replace, 2 - append, 3 - select neighbors, <0 - force tower mode)")
 		("export-roi-file", boost::program_options::value<std::string>(&OPT::strExportROIFileName), "ROI file name to be exported form the scene")
 		("import-roi-file", boost::program_options::value<std::string>(&OPT::strImportROIFileName), "ROI file name to be imported into the scene")
 		("dense-config-file", boost::program_options::value<std::string>(&OPT::strDenseConfigFileName), "optional configuration file for the densifier (overwritten by the command line options)")
@@ -273,77 +273,6 @@ void Finalize()
 
 } // unnamed namespace
 
-int LineOptimize(Line3f& line, const Line3f::POINT* points, size_t size, int maxIters=100)
-{
-	using POINT=Line3f::POINT;
-	using TYPE=Line3f::POINT::Scalar;
-	constexpr size_t numParams=Line3f::numParams;
-	constexpr int DIMS=3;
-	ASSERT(size >= numParams);
-	using RobustNormFunctor=RobustNorm::Cauchy<double>;
-	const RobustNormFunctor robust(3);
-	struct OptimizationFunctor {
-		const POINT* points;
-		size_t size;
-		double scale;
-		const RobustNormFunctor& robust;
-		// construct with the data points
-		OptimizationFunctor(const POINT* _points, size_t _size, const RobustNormFunctor& _robust)
-			: points(_points), size(_size), robust(_robust) { ASSERT(size < std::numeric_limits<int>::max()); }
-		static void Residuals(const double* x, int nPoints, const void* pData, double* fvec, double* fjac, int* /*info*/) {
-			const OptimizationFunctor& data = *reinterpret_cast<const OptimizationFunctor*>(pData);
-			const size_t numPairs = data.size/2;
-			ASSERT((size_t)nPoints == data.size+numPairs+1 && fvec != NULL && fjac == NULL);
-			TLine<double,DIMS> line;
-			for (int j=0; j<DIMS; ++j)
-				line.pt1(j) = x[j];
-			DirScale2Vector(x+DIMS, &data.scale, line.pt2.data());
-			line.pt2 += line.pt1;
-			DoubleArr dists(data.size);
-			for (size_t i=0; i<data.size; ++i) {
-				const double dist = line.Distance(data.points[i].template cast<double>());
-				fvec[i] = data.robust(dist);
-				dists[i] = dist;
-			}
-			dists.Sort();
-			double total = 0;
-			for (size_t i=0; i<numPairs; ++i) {
-				total += dists[2*i+0] + dists[2*i+1];
-				const double diff = dists[2*i+1] - dists[2*i+0];
-				fvec[data.size+i] = data.robust(diff*10);
-			}
-			fvec[data.size+numPairs] = data.robust(total*data.size);
-		}
-	} functor(points, size, robust);
-	const size_t numPairs = size/2;
-	double arrParams[numParams];
-	for (int j=0; j<DIMS; ++j)
-		arrParams[j] = (double)line.pt1(j);
-	POINT dir(line.pt2-line.pt1);
-	Vector2DirScale(dir.data(), arrParams+DIMS, &functor.scale);
-	lm_control_struct control = {1.e-6, 1.e-7, 1.e-8, 1.e-8, 100.0, maxIters}; // lm_control_float;
-	lm_status_struct status;
-	lmmin(numParams, arrParams, (int)(size+numPairs+1), &functor, OptimizationFunctor::Residuals, &control, &status);
-	switch (status.info) {
-	//case 4:
-	case 5:
-	case 6:
-	case 7:
-	case 8:
-	case 9:
-	case 10:
-	case 11:
-	case 12:
-		DEBUG_ULTIMATE("error: refine line: %s", lm_infmsg[status.info]);
-		return 0;
-	}
-	for (int j=0; j<DIMS; ++j)
-		line.pt1(j) = (TYPE)arrParams[j];
-	DirScale2Vector(arrParams+DIMS, &functor.scale, dir.data());
-	line.pt2 = line.pt1+dir;
-	return status.nfev;
-}
-
 int main(int argc, LPCTSTR* argv)
 {
 	#ifdef _DEBUGINFO
@@ -353,55 +282,6 @@ int main(int argc, LPCTSTR* argv)
 
 	if (!Initialize(argc, argv))
 		return EXIT_FAILURE;
-
-	PointCloud pc;
-	pc.Load("D:\\Downloads\\scene_cams.ply");
-	FitLineOnline<float> fitline;
-	for (size_t i = 0; i < pc.GetSize(); ++i)
-		fitline.Update(pc.points[i]);
-	Line3f line;
-	Point3f quality = fitline.GetLine(line);
-	if (quality.y/quality.z > 0.6f || quality.x/quality.y < 0.7f) {
-		// does not seem to be a line
-		return false;
-	}
-	CLISTDEF0IDX(Line3f,uint32_t) lines;
-	Line3f::POINT dir = line.pt2-line.pt1;
-	lines.emplace_back(line.pt1-dir*5, line.pt1+dir*5);
-	Scene::ExportLinesPLY("D:\\Downloads\\scene_cams_line.ply", lines);
-	//LineOptimize(line, reinterpret_cast<const Line3f::POINT*>(pc.points.data()), pc.GetSize());
-	const double threshold = 3.5; // TODO: Set depending on the cameras around the tower radius
-	PointCloud pcInliers;
-	bool bUseRobust = false;
-	if (bUseRobust) {
-		for (size_t i = 0; i < pc.GetSize(); ++i)
-			if (line.Distance(pc.points[i]) < threshold)
-				pcInliers.points.push_back(pc.points[i]);
-		const RobustNorm::Cauchy<double> robust(threshold);
-		line.Optimize(reinterpret_cast<const Line3f::POINT*>(pcInliers.points.data()), pcInliers.GetSize(), robust);
-	} else {
-		float segmentSize = threshold * 1.2f;
-		Line3f lineInliers(line.pt1-dir*segmentSize, line.pt1+dir*segmentSize);
-		for (size_t i = 0; i < pc.GetSize(); ++i) {
-			const auto t = lineInliers.Classify(pc.points[i]);
-			if (t > 0 && t < 1)
-				pcInliers.points.push_back(pc.points[i]);
-		}
-		line.Optimize(reinterpret_cast<const Line3f::POINT*>(pcInliers.points.data()), pcInliers.GetSize());
-		pcInliers.Release();
-		for (size_t i = 0; i < pc.GetSize(); ++i)
-			if (line.Distance(pc.points[i]) < threshold)
-				pcInliers.points.push_back(pc.points[i]);
-		FitLineOnline<float> fitline;
-		for (size_t i = 0; i < pcInliers.GetSize(); ++i)
-			fitline.Update(pcInliers.points[i]);
-		fitline.GetLine(line);
-	}
-	pcInliers.Save("D:\\Downloads\\scene_cams_line_inliers.ply");
-	lines.Release();
-	dir = line.pt2-line.pt1;
-	lines.emplace_back(line.pt1-dir*5, line.pt1+dir*5);
-	Scene::ExportLinesPLY("D:\\Downloads\\scene_cams_line_opt.ply", lines);
 
 	Scene scene(OPT::nMaxThreads);
 	if (OPT::fSampleMesh != 0) {
@@ -422,17 +302,6 @@ int main(int argc, LPCTSTR* argv)
 	// load and estimate a dense point-cloud
 	if (!scene.Load(MAKE_PATH_SAFE(OPT::strInputFileName)))
 		return EXIT_FAILURE;
-	//{
-	//	PointCloud camsPts;
-	//	FOREACH(imgIdx, scene.images) {
-	//		const Point3 cam0(scene.images[imgIdx].camera.C);
-	//		camsPts.points.emplace_back(cam0);
-	//		const Point3 nrmal = scene.images[imgIdx].camera.Direction();
-	//		camsPts.normals.emplace_back(nrmal);
-	//	}
-	//	camsPts.Save(MAKE_PATH_SAFE(Util::getFileFullName(OPT::strInputFileName)) + _T("_cams.ply"));
-	//	camsPts.Release();
-	//}
 	if (!OPT::strMaskPath.empty()) {
 		Util::ensureValidFolderPath(OPT::strMaskPath);
 		for (Image& image : scene.images) {
