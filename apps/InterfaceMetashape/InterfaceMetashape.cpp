@@ -93,7 +93,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	config.add_options()
 		("input-file,i", boost::program_options::value<std::string>(&OPT::strInputFileName), "input filename containing camera poses and image list")
 		("points-file,p", boost::program_options::value<std::string>(&OPT::strPointsFileName), "input filename containing the 3D points")
-		("output-file,o", boost::program_options::value<std::string>(&OPT::strOutputFileName), "output filename for storing the mesh")
+		("output-file,o", boost::program_options::value<std::string>(&OPT::strOutputFileName), "output filename for storing the scene")
 		("output-image-folder", boost::program_options::value<std::string>(&OPT::strOutputImageFolder)->default_value("undistorted_images"), "output folder to store undistorted images")
 		;
 
@@ -133,9 +133,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	// validate input
 	Util::ensureValidPath(OPT::strPointsFileName);
 	Util::ensureValidPath(OPT::strInputFileName);
-	Util::ensureValidPath(OPT::strOutputImageFolder);
-	Util::ensureFolderSlash(OPT::strOutputImageFolder);
-	const String strInputFileNameExt(Util::getFileExt(OPT::strInputFileName).ToLower());
+	Util::ensureValidFolderPath(OPT::strOutputImageFolder);
 	const bool bInvalidCommand(OPT::strInputFileName.empty());
 	if (OPT::vm.count("help") || bInvalidCommand) {
 		boost::program_options::options_description visible("Available options");
@@ -146,8 +144,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		return false;
 
 	// initialize optional options
-	Util::ensureValidPath(OPT::strOutputFileName);
-	Util::ensureUnifySlash(OPT::strOutputFileName);
+	Util::ensureValidFolderPath(OPT::strOutputFileName);
 	if (OPT::strOutputFileName.empty())
 		OPT::strOutputFileName = Util::getFileName(OPT::strInputFileName) + MVS_EXT;
 

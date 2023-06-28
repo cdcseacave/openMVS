@@ -746,7 +746,7 @@ struct HeaderDepthDataRaw {
 	float dMin, dMax; // depth range for this view
 	// image file name length followed by the characters: uint16_t nFileNameSize; char* FileName
 	// number of view IDs followed by view ID and neighbor view IDs: uint32_t nIDs; uint32_t* IDs
-	// camera, rotation and position matrices (row-major): double K[3][3], R[3][3], C[3]
+	// camera, rotation and position matrices (row-major) at image resolution: double K[3][3], R[3][3], C[3]
 	// depth, normal, confidence maps: float depthMap[height][width], normalMap[height][width][3], confMap[height][width]
 	inline HeaderDepthDataRaw() : name(0), type(0), padding(0) {}
 	static uint16_t HeaderDepthDataRawName() { return *reinterpret_cast<const uint16_t*>("DR"); }

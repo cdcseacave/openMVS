@@ -410,7 +410,7 @@ public:
 		const TPoint3<TYPE> camX(TransformPointW2C(X));
 		return norm(TransformPointC2I(TPoint3<TYPE>(camX.x+fSphereRadius,camX.y,camX.z))-TransformPointC2I(camX));
 		#else
-		return (TYPE)(GetFocalLength() / PointDepth(X));
+		return static_cast<TYPE>(GetFocalLength() / PointDepth(X));
 		#endif
 	}
 	// compute the surface the projected pixel covers at the given depth

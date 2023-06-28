@@ -183,6 +183,8 @@ void MVS::AssembleProjectionMatrix(const RMatrix& R, const CMatrix& C, PMatrix& 
 	Eigen::Map<Matrix3x3::EMat,0,Eigen::Stride<4,0> >(P.val) = (const Matrix3x3::EMat)R;
 	Eigen::Map<Point3::EVec,0,Eigen::Stride<0,4> >(P.val+3) = ((const Matrix3x3::EMat)R) * (-((const Point3::EVec)C));
 } // AssembleProjectionMatrix
+/*----------------------------------------------------------------*/
+
 // compute the focus of attention of a set of cameras; only cameras
 // that have the focus of attention in front of them are considered
 Point3 MVS::ComputeCamerasFocusPoint(const CameraArr& cameras, const Point3* pInitialFocus)
