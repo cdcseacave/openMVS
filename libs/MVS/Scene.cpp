@@ -1742,8 +1742,10 @@ bool Scene::EstimateROI(int nEstimateROI, float scale)
 bool Scene::ComputeTowerCylinder(Point2f& centerPoint, float& fRadius, float& fROIRadius, float& zMin, float& zMax, float& minCamZ, const int towerMode) {
 
 	// disregard tower mode for scenes with less than 20 cameras
-	if (towerMode>0 && images.size() < 20)
+	if (towerMode > 0 && images.size() < 20) {
+		DEBUG("Too few images to be a tower: '%d'", images.size());
 		return false;
+	}
 
 	AABB3f aabbOutsideCameras(true);
 	std::vector<Point2f> cameras2D(images.size());
@@ -1759,10 +1761,12 @@ bool Scene::ComputeTowerCylinder(Point2f& centerPoint, float& fRadius, float& fR
 	Line3f camCenterLine;
 	Point3f quality = fitline.GetLine(camCenterLine);
 	// check if ROI is mostly long and narrow on one direction
-	if (quality.y / quality.z > 0.7f || quality.x / quality.y < 0.8f) {
+	if (quality.y / quality.z > 0.6f || quality.x / quality.y < 0.8f) {
 		// does not seem to be a line
-		if (towerMode>0)
+		if (towerMode > 0) {
+			DEBUG("does not seem to be a tower: X(%.2f), Y(%.2f), Z(%.2f)", quality.x, quality.y, quality.z);
 			return false;
+		}
 	}
 
 	// get the height of the lowest camera
@@ -1905,7 +1909,7 @@ PointCloud Scene::BuildTowerMesh(const PointCloud& origPointCloud, const Point2f
 					float avgTopDistance(0);
 					pDistances.Sort();
 					const size_t topIdx(MIN(pDistances.size() - 1, CEIL2INT(pDistances.size() * 0.95f)));
-					const size_t botIdx(MAX(1, FLOOR2INT(pDistances.size() * 0.85f)));
+					const size_t botIdx(MAX(1, FLOOR2INT(pDistances.size() * 0.5f)));
 					for (size_t i = botIdx; i < topIdx; ++i) {
 						avgTopDistance += pDistances[i];
 					}
