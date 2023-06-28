@@ -41,6 +41,17 @@ using namespace MVS;
 
 // S T R U C T S ///////////////////////////////////////////////////
 
+PointCloud& MVS::PointCloud::Swap(PointCloud& rhs)
+{
+	points.Swap(rhs.points);
+	pointViews.Swap(rhs.pointViews);
+	pointWeights.Swap(rhs.pointWeights);
+	normals.Swap(rhs.normals);
+	colors.Swap(rhs.colors);
+	return *this;
+}
+/*----------------------------------------------------------------*/
+
 void PointCloud::Release()
 {
 	points.Release();

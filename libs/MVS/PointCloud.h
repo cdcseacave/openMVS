@@ -82,7 +82,7 @@ public:
 	ColorArr colors;
 
 public:
-	inline PointCloud() {}
+	PointCloud& Swap(PointCloud&);
 
 	void Release();
 

@@ -117,7 +117,7 @@ public:
 	
 	// Tower scene
 	bool ComputeTowerCylinder(Point2f& centerPoint, float& fRadius, float& fROIRadius, float& zMin, float& zMax, float& minCamZ, const int towerMode);
-	size_t InitTowerScene(const int towerMode);
+	void InitTowerScene(const int towerMode);
 	size_t DrawCircle(PointCloud& pc,PointCloud::PointArr& outCircle, const Point3f& circleCenter, const float circleRadius, const unsigned nTargetPoints, const float fStartAngle, const float fAngleBetweenPoints);
 	PointCloud BuildTowerMesh(const PointCloud& origPointCloud, const Point2f& centerPoint, const float fRadius, const float fROIRadius, const float zMin, const float zMax, const float minCamZ, bool bFixRadius = false);
 	
