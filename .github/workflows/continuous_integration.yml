@@ -39,10 +39,10 @@ jobs:
         uses: actions/checkout@v3
 
       - name: Restore artifacts, or setup vcpkg for building artifacts
-        uses: lukka/run-vcpkg@v10
+        uses: lukka/run-vcpkg@v11
         with:
           vcpkgDirectory: '${{ github.workspace }}/vcpkg'
-          vcpkgGitCommitId: '1e90576cf5e931fa1b59ea289b9615fef6441306'
+          vcpkgGitCommitId: 'f6a5d4e8eb7476b8d7fc12a56dff300c1c986131'
 
       - name: Install Ubuntu dependencies
         if: matrix.os == 'ubuntu-latest'
