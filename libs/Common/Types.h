@@ -2811,6 +2811,7 @@ protected:
 #include "OBB.h"
 #include "Plane.h"
 #include "Ray.h"
+#include "Line.h"
 #include "Octree.h"
 #include "UtilCUDA.h"
 

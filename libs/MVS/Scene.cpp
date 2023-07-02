@@ -862,66 +862,84 @@ bool Scene::SelectNeighborViews(uint32_t ID, IndexArr& points, unsigned nMinView
 			++score.points;
 		}
 	}
-	imageData.avgDepth /= nPoints;
-	ASSERT(nPoints > 3);
+	if(nPoints > 3)
+		imageData.avgDepth /= nPoints;
 
 	// select best neighborViews
-	Point2fArr projs(0, points.size());
-	FOREACH(IDB, images) {
-		const Image& imageDataB = images[IDB];
-		if (!imageDataB.IsValid())
-			continue;
-		const Score& score = scores[IDB];
-		if (score.points < 3)
-			continue;
-		ASSERT(ID != IDB);
-		// compute how well the matched features are spread out (image covered area)
-		const Point2f boundsA(imageData.GetSize());
-		const Point2f boundsB(imageDataB.GetSize());
-		ASSERT(projs.empty());
-		for (uint32_t idx: points) {
-			const PointCloud::ViewArr& views = pointcloud.pointViews[idx];
-			ASSERT(views.IsSorted());
-			ASSERT(views.FindFirst(ID) != PointCloud::ViewArr::NO_INDEX);
-			if (views.FindFirst(IDB) == PointCloud::ViewArr::NO_INDEX)
+	if (neighbors.empty()) {
+		Point2fArr projs(0, points.size());
+		FOREACH(IDB, images) {
+			const Image& imageDataB = images[IDB];
+			if (!imageDataB.IsValid())
 				continue;
-			const PointCloud::Point& point = pointcloud.points[idx];
-			Point2f& ptA = projs.emplace_back(imageData.camera.ProjectPointP(point));
-			Point2f ptB = imageDataB.camera.ProjectPointP(point);
-			if (!imageData.camera.IsInside(ptA, boundsA) || !imageDataB.camera.IsInside(ptB, boundsB))
-				projs.RemoveLast();
+			const Score& score = scores[IDB];
+			if (score.points < 3)
+				continue;
+			ASSERT(ID != IDB);
+			// compute how well the matched features are spread out (image covered area)
+			const Point2f boundsA(imageData.GetSize());
+			const Point2f boundsB(imageDataB.GetSize());
+			ASSERT(projs.empty());
+			for (uint32_t idx: points) {
+				const PointCloud::ViewArr& views = pointcloud.pointViews[idx];
+				ASSERT(views.IsSorted());
+				ASSERT(views.FindFirst(ID) != PointCloud::ViewArr::NO_INDEX);
+				if (views.FindFirst(IDB) == PointCloud::ViewArr::NO_INDEX)
+					continue;
+				const PointCloud::Point& point = pointcloud.points[idx];
+				Point2f& ptA = projs.emplace_back(imageData.camera.ProjectPointP(point));
+				Point2f ptB = imageDataB.camera.ProjectPointP(point);
+				if (!imageData.camera.IsInside(ptA, boundsA) || !imageDataB.camera.IsInside(ptB, boundsB))
+					projs.RemoveLast();
+			}
+			ASSERT(projs.size() <= score.points);
+			if (projs.empty())
+				continue;
+			const float area(ComputeCoveredArea<float,2,16,false>((const float*)projs.data(), projs.size(), boundsA.ptr()));
+			projs.Empty();
+			// store image score
+			ViewScore& neighbor = neighbors.AddEmpty();
+			neighbor.idx.ID = IDB;
+			neighbor.idx.points = score.points;
+			neighbor.idx.scale = score.avgScale/score.points;
+			neighbor.idx.angle = score.avgAngle/score.points;
+			neighbor.idx.area = area;
+			neighbor.score = score.score*MAXF(area,0.01f);
 		}
-		ASSERT(projs.size() <= score.points);
-		if (projs.empty())
-			continue;
-		const float area(ComputeCoveredArea<float,2,16,false>((const float*)projs.data(), projs.size(), boundsA.ptr()));
-		projs.Empty();
-		// store image score
-		ViewScore& neighbor = neighbors.AddEmpty();
-		neighbor.idx.ID = IDB;
-		neighbor.idx.points = score.points;
-		neighbor.idx.scale = score.avgScale/score.points;
-		neighbor.idx.angle = score.avgAngle/score.points;
-		neighbor.idx.area = area;
-		neighbor.score = score.score*MAXF(area,0.01f);
+		neighbors.Sort();
+		#if TD_VERBOSE != TD_VERBOSE_OFF
+		// print neighbor views
+		if (VERBOSITY_LEVEL > 2) {
+			String msg;
+			FOREACH(n, neighbors)
+				msg += String::FormatString(" %3u(%upts,%.2fscl)", neighbors[n].idx.ID, neighbors[n].idx.points, neighbors[n].idx.scale);
+			VERBOSE("Reference image %3u sees %u views:%s (%u shared points)", ID, neighbors.size(), msg.c_str(), nPoints);
+		}
+		#endif
 	}
-	neighbors.Sort();
-	#if TD_VERBOSE != TD_VERBOSE_OFF
-	// print neighbor views
-	if (VERBOSITY_LEVEL > 2) {
-		String msg;
-		FOREACH(n, neighbors)
-			msg += String::FormatString(" %3u(%upts,%.2fscl)", neighbors[n].idx.ID, neighbors[n].idx.points, neighbors[n].idx.scale);
-		VERBOSE("Reference image %3u sees %u views:%s (%u shared points)", ID, neighbors.size(), msg.c_str(), nPoints);
-	}
-	#endif
 	if (points.size() <= 3 || neighbors.size() < MINF(nMinViews,nCalibratedImages-1)) {
 		DEBUG_EXTRA("error: reference image %3u has not enough images in view", ID);
 		return false;
 	}
 	return true;
 } // SelectNeighborViews
+
+void Scene::SelectNeighborViews(unsigned nMinViews, unsigned nMinPointViews, float fOptimAngle, unsigned nInsideROI)
+{
+	#ifdef DENSE_USE_OPENMP
+	#pragma omp parallel for shared(data, bAbort)
+	for (int_t ID=0; ID<(int_t)images.GetSize(); ++ID) {
+		const IIndex idxImage((IIndex)ID);
+	#else
+	FOREACH(idxImage, images) {
+	#endif
+		// select image neighbors
+		IndexArr points;
+		SelectNeighborViews(idxImage, points, nMinViews, nMinPointViews, fOptimAngle, nInsideROI);
+	}
+} // SelectNeighborViews
 /*----------------------------------------------------------------*/
+
 
 // keep only the best neighbors for the reference image
 bool Scene::FilterNeighborViews(ViewScoreArr& neighbors, float fMinArea, float fMinScale, float fMaxScale, float fMinAngle, float fMaxAngle, unsigned nMaxViews)
@@ -1008,6 +1026,78 @@ bool Scene::ExportCamerasMLP(const String& fileName, const String& fileNameScene
 
 	return true;
 } // ExportCamerasMLP
+
+bool Scene::ExportLinesPLY(const String& fileName, const CLISTDEF0IDX(Line3f,uint32_t)& lines, const Pixel8U* colors, bool bBinary) {
+	// define a PLY file format composed only of vertices and edges
+	// vertex definition
+	struct PLYVertex {
+		float x, y, z;
+	};
+	// list of property information for a vertex
+	static PLY::PlyProperty vert_props[] = {
+		{"x", PLY::Float32, PLY::Float32, offsetof(PLYVertex,x), 0, 0, 0, 0},
+		{"y", PLY::Float32, PLY::Float32, offsetof(PLYVertex,y), 0, 0, 0, 0},
+		{"z", PLY::Float32, PLY::Float32, offsetof(PLYVertex,z), 0, 0, 0, 0},
+	};
+	// edge definition
+	struct PLYEdge {
+		int v1, v2;
+		uint8_t r, g, b;
+	};
+	// list of property information for a edge
+	static PLY::PlyProperty edge_props[] = {
+		{"vertex1", PLY::Uint32, PLY::Uint32, offsetof(PLYEdge,v1), 0, 0, 0, 0},
+		{"vertex2", PLY::Uint32, PLY::Uint32, offsetof(PLYEdge,v2), 0, 0, 0, 0},
+		{"red", PLY::Uint8, PLY::Uint8, offsetof(PLYEdge,r), 0, 0, 0, 0},
+		{"green", PLY::Uint8, PLY::Uint8, offsetof(PLYEdge,g), 0, 0, 0, 0},
+		{"blue", PLY::Uint8, PLY::Uint8, offsetof(PLYEdge,b), 0, 0, 0, 0},
+	};
+	// list of the kinds of elements in the PLY
+	static const char* elem_names[] = {
+		"vertex", "edge"
+	};
+
+	// create PLY object
+	ASSERT(!fileName.empty());
+	Util::ensureFolder(fileName);
+	const size_t memBufferSize(2 * (8 * 3/*pos*/ + 3 * 3/*color*/ + 6/*space*/ + 2/*eol*/) + 2048/*extra size*/);
+	PLY ply;
+	if (!ply.write(fileName, 2, elem_names, bBinary?PLY::BINARY_LE:PLY::ASCII, memBufferSize))
+		return false;
+
+	// describe what properties go into the vertex elements
+	ply.describe_property("vertex", 3, vert_props);
+	PLYVertex v;
+	FOREACH(i, lines) {
+		const Line3f& line = lines[i];
+		v.x = line.pt1.x(); v.y = line.pt1.y(); v.z = line.pt1.z();
+		ply.put_element(&v);
+		v.x = line.pt2.x(); v.y = line.pt2.y(); v.z = line.pt2.z();
+		ply.put_element(&v);
+	}
+	
+	// describe what properties go into the edge elements
+	if (colors) {
+		ply.describe_property("edge", 5, edge_props);
+		PLYEdge edge;
+		FOREACH(i, lines) {
+			const Pixel8U& color = colors[i];
+			edge.r = color.r; edge.g = color.g; edge.b = color.b;
+			edge.v1 = i*2+0; edge.v2 = i*2+1;
+			ply.put_element(&edge);
+		}
+	} else {
+		ply.describe_property("edge", 2, edge_props);
+		PLYEdge edge;
+		FOREACH(i, lines) {
+			edge.v1 = i*2+0; edge.v2 = i*2+1;
+			ply.put_element(&edge);
+		}
+	}
+	
+	// write to file
+	return ply.header_complete();
+} // ExportLinesPLY
 /*----------------------------------------------------------------*/
 
 
@@ -1641,3 +1731,351 @@ bool Scene::EstimateROI(int nEstimateROI, float scale)
 	return true;
 } // EstimateROI
 /*----------------------------------------------------------------*/
+
+
+// calculate the center(X,Y) of the cylinder, the radius and min/max Z
+// from camera position and sparse point cloud, if that exists
+// returns result of checks if the scene camera positions satisfies tower criteria:
+//	- cameras fit a long and slim bounding box
+//  - majority of cameras focus toward a middle line
+bool Scene::ComputeTowerCylinder(Point2f& centerPoint, float& fRadius, float& fROIRadius, float& zMin, float& zMax, float& minCamZ, const int towerMode)
+{
+	// disregard tower mode for scenes with less than 20 cameras
+	if (towerMode > 0 && images.size() < 20) {
+		DEBUG("error: too few images to be a tower: '%d'", images.size());
+		return false;
+	}
+
+	AABB3f aabbOutsideCameras(true);
+	CLISTDEF0(Point2f) cameras2D(images.size());
+	FloatArr camHeigths;
+	FitLineOnline<float> fitline;
+	FOREACH(imgIdx, images) {
+		const Eigen::Vector3f camPos(Cast<float>(images[imgIdx].camera.C));
+		fitline.Update(camPos);
+		aabbOutsideCameras.InsertFull(camPos);
+		cameras2D[imgIdx] = Point2f(camPos.x(), camPos.y());
+		camHeigths.InsertSortUnique(camPos.z());
+	}
+	Line3f camCenterLine;
+	Point3f quality = fitline.GetLine(camCenterLine);
+	// check if ROI is mostly long and narrow on one direction
+	if (quality.y / quality.z > 0.6f || quality.x / quality.y < 0.8f) {
+		// does not seem to be a line
+		if (towerMode > 0) {
+			DEBUG("error: does not seem to be a tower: X(%.2f), Y(%.2f), Z(%.2f)", quality.x, quality.y, quality.z);
+			return false;
+		}
+	}
+
+	// get the height of the lowest camera
+	minCamZ = aabbOutsideCameras.ptMin.z();
+	centerPoint = ((camCenterLine.pt1+camCenterLine.pt2)*0.5f).topLeftCorner<2,1>();
+	zMin = MINF(aabbOutsideCameras.ptMax.z(), aabbOutsideCameras.ptMin.z()) - 5;
+	// if sparse point cloud is loaded use lowest point as zMin
+	float fMinPointsZ = std::numeric_limits<float>::max();
+	float fMaxPointsZ = std::numeric_limits<float>::lowest();
+	FOREACH(pIdx, pointcloud.points) {
+		if (!obb.IsValid() || obb.Intersects(pointcloud.points[pIdx])) {
+			const float pz = pointcloud.points[pIdx].z;
+			if (pz < fMinPointsZ)
+				fMinPointsZ = pz;
+			if (pz > fMaxPointsZ)
+				fMaxPointsZ = pz;			
+		}
+	}
+	zMin = MINF(zMin, fMinPointsZ);
+	zMax = MAXF(aabbOutsideCameras.ptMax.z(), fMaxPointsZ);
+	
+	// calculate tower radius as median distance from tower center to cameras
+	FloatArr cameraDistancesToMiddle(cameras2D.size());
+	FOREACH (camIdx, cameras2D)
+		cameraDistancesToMiddle[camIdx] = norm(cameras2D[camIdx] - centerPoint);
+	const float fMedianDistance = cameraDistancesToMiddle.GetMedian();
+	fRadius = MAXF(0.2f, (fMedianDistance - 1.f) / 3.f);
+	// get the average of top 85 to 95% of the highest distances to center
+	if (!cameraDistancesToMiddle.empty()) {
+		float avgTopDistance(0);
+		cameraDistancesToMiddle.Sort();
+		const size_t topIdx(CEIL2INT(cameraDistancesToMiddle.size() * 0.95f));
+		const size_t botIdx(FLOOR2INT(cameraDistancesToMiddle.size() * 0.85f));
+		for (size_t i = botIdx; i < topIdx; ++i) {
+			avgTopDistance += cameraDistancesToMiddle[i];
+		}
+		avgTopDistance /= topIdx - botIdx;
+		fROIRadius = avgTopDistance;
+	} else {
+		fROIRadius = fRadius;
+	}
+	return true;
+} // ComputeTowerCylinder
+
+size_t Scene::DrawCircle(PointCloud& pc, PointCloud::PointArr& outCircle, const Point3f& circleCenter, const float circleRadius, const unsigned nTargetPoints, const float fStartAngle, const float fAngleBetweenPoints)
+{
+	outCircle.Release();
+	for (unsigned pIdx = 0; pIdx < nTargetPoints; ++pIdx) {
+		const float fAngle(fStartAngle + fAngleBetweenPoints * pIdx);
+		ASSERT(fAngle <= FTWO_PI);
+		const Normal n(cos(fAngle), sin(fAngle), 0);
+		ASSERT(ISEQUAL(norm(n), 1.f));
+		const Point3f newPoint(circleCenter + circleRadius * n);
+		// select cameras seeing this point
+		PointCloud::ViewArr views;
+		FOREACH(idxImg, images) {
+			const Image& image = images[idxImg];
+			const Point3f xz(image.camera.TransformPointW2I3(Cast<REAL>(newPoint)));
+			const Point2f x(xz.x, xz.y);
+			if (!Image8U::isInside<float>(x, image.GetSize()) ||
+				xz.z <= 0)
+				continue;
+			if (n.dot(Cast<float>(image.camera.RayPoint<REAL>(x))) >= 0)
+				continue;
+			views.emplace_back(idxImg);
+		}
+		if (views.size() >= 2) {
+			outCircle.emplace_back(newPoint);
+			pc.points.emplace_back(newPoint);
+			pc.pointViews.emplace_back(views);
+			pc.normals.emplace_back(n);
+			pc.colors.emplace_back(Pixel8U::YELLOW);
+			pc.pointWeights.emplace_back(PointCloud::WeightArr{1.f});
+		}
+	}
+	return outCircle.size();
+} // DrawCircle
+
+PointCloud Scene::BuildTowerMesh(const PointCloud& origPointCloud, const Point2f& centerPoint, const float fRadius, const float fROIRadius, const float zMin, const float zMax, const float minCamZ, bool bFixRadius)
+{
+	const unsigned nTargetDensity(10);
+	const unsigned nTargetCircles(ROUND2INT((zMax - zMin) * nTargetDensity)); // how many circles in cylinder
+	const float fCircleFrequence((zMax - zMin) / nTargetCircles); // the distance between neighbor circles
+	PointCloud towerPC;
+	PointCloud::PointArr circlePoints;
+	Mesh::VertexVerticesArr meshCircles;
+	if (bFixRadius) {
+		const unsigned nTargetPoints(MAX(10, ROUND2INT(FTWO_PI * fRadius * nTargetDensity))); // how many points on each circle
+		const float fAngleBetweenPoints(FTWO_PI / nTargetPoints); // the angle between neighbor points on the circle	
+		for (unsigned cIdx = 0; cIdx < nTargetCircles; ++cIdx) {
+			const Point3f circleCenter(centerPoint, zMin + fCircleFrequence * cIdx); // center point of the circle
+			const float fStartAngle(fAngleBetweenPoints * SEACAVE::random()); // starting angle for the first point
+			DrawCircle(towerPC, circlePoints, circleCenter, fRadius, nTargetPoints, fStartAngle, fAngleBetweenPoints);
+			if (!circlePoints.empty()) {
+				// add points to vertex  list
+				Mesh::VertexIdxArr circleVertices;
+				Mesh::VIndex vIdx = mesh.vertices.size();
+				for (const Point3f& p: circlePoints) {
+					mesh.vertices.emplace_back(p);
+					circleVertices.emplace_back(vIdx++);
+				}
+				meshCircles.emplace_back(circleVertices);
+			}
+		}
+	} else {
+		cList<FloatArr> sliceDistances(nTargetCircles);
+		for (const Point3f& P : origPointCloud.points) {
+			const float d(norm(Point2f(P.x, P.y) - centerPoint));
+			if (d <= fROIRadius) {
+				const float fIdx((zMax - P.z) * nTargetDensity);
+				int bIdx(FLOOR2INT(fIdx));
+				int tIdx(FLOOR2INT(fIdx+0.5f));
+				if (bIdx == tIdx && bIdx > 0)
+					bIdx--;
+				if (tIdx >= (int)nTargetCircles)
+					tIdx = nTargetCircles - 1;
+				if (bIdx < (int)nTargetCircles - 1)
+					sliceDistances[bIdx].emplace_back(d);
+				if (tIdx > 0)
+					sliceDistances[tIdx].emplace_back(d);
+			}
+		}
+		FloatArr circleRadii;
+		for (unsigned cIdx = 0; cIdx < nTargetCircles; ++cIdx) {
+			const float circleZ(zMax - fCircleFrequence * cIdx);
+			FloatArr& pDistances = sliceDistances[cIdx];
+			float circleRadius(fRadius);
+			if (circleZ < minCamZ) {
+				// use fixed radius under lowest camera position
+				circleRadius = fRadius;
+			} else {
+				if (pDistances.size() > 2) {
+					pDistances.Sort();
+					const size_t topIdx(MIN(pDistances.size() - 1, CEIL2INT(pDistances.size() * 0.95f)));
+					const size_t botIdx(MAX(1, FLOOR2INT(pDistances.size() * 0.5f)));
+					float avgTopDistance(0);
+					for (size_t i = botIdx; i < topIdx; ++i)
+						avgTopDistance += pDistances[i];
+					avgTopDistance /= topIdx - botIdx;
+					if (avgTopDistance < fROIRadius * 0.8f)
+						circleRadius = avgTopDistance;
+				}
+			}
+			circleRadii.emplace_back(circleRadius);
+		}
+		// smoothen radii
+		if (circleRadii.size() > 2) {
+			for (int ri = 1; ri < circleRadii.size() - 1; ++ri) {
+				const float aboveRad(circleRadii[ri - 1]);
+				float& circleRadius = circleRadii[ri];
+				const float beloweRad(circleRadii[ri + 1]);
+				const float AbvCrtDeltaPrc = ABS(aboveRad - circleRadius) / aboveRad;
+				const float BelCrtDeltaPrc = ABS(circleRadius - beloweRad) / circleRadius;
+				// set current radius as average of the most similar values in the closest 7 neighbors
+				if (ri > 2 && ri < circleRadii.size() - 5) {
+					FloatArr neighSeven(7);
+					FOREACH(i, neighSeven)
+						neighSeven[i] = circleRadii[ri - 2 + i];
+					neighSeven.Sort();
+					const float medianRadius(neighSeven.GetMedian());
+					circleRadius = ABS(medianRadius-aboveRad) < ABS(medianRadius-beloweRad) ? aboveRad : beloweRad;
+				}
+				else {
+					circleRadius = (aboveRad + beloweRad) / 2.f;
+				}
+			}
+		}
+		// add circles
+		FOREACH(rIdx, circleRadii) {
+			float circleRadius(circleRadii[rIdx]);
+			const float circleZ(zMax - fCircleFrequence * rIdx);
+			const Point3f circleCenter(centerPoint, circleZ); // center point of the circle
+			const unsigned nTargetPoints(MAX(10, ROUND2INT(FTWO_PI * circleRadius * nTargetDensity))); // how many points on each circle
+			const float fAngleBetweenPoints(FTWO_PI / nTargetPoints); // the angle between neighbor points on the circle
+			const float fStartAngle(fAngleBetweenPoints * SEACAVE::random()); // starting angle for the first point
+			DrawCircle(towerPC, circlePoints, circleCenter, circleRadius, nTargetPoints, fStartAngle, fAngleBetweenPoints);
+			if (!circlePoints.IsEmpty()) {
+				//add points to vertex  list
+				Mesh::VertexIdxArr circleVertices;
+				Mesh::VIndex vIdx = mesh.vertices.size();
+				FOREACH(pIdx, circlePoints) {
+					const Point3f& p = circlePoints[pIdx];
+					mesh.vertices.emplace_back(p);
+					circleVertices.emplace_back(vIdx);
+					++vIdx;
+				}
+				meshCircles.emplace_back(circleVertices);
+			}
+		}
+	}
+	
+	#if TD_VERBOSE != TD_VERBOSE_OFF
+	if (VERBOSITY_LEVEL > 2) {
+		// Build faces from meshCircles
+		for (Mesh::VIndex cIdx = 1; cIdx < meshCircles.size(); ++cIdx) {
+			if (meshCircles[cIdx - 1].size() > 1 || meshCircles[cIdx].size() > 1) {
+				Mesh::VertexIdxArr& topPoints = meshCircles[cIdx - 1];
+				Mesh::VertexIdxArr& botPoints = meshCircles[cIdx];
+				// build faces with all the points in the two lists
+				bool bInverted(false);
+				if (topPoints.size() > botPoints.size()) {
+					topPoints.swap(botPoints);
+					bInverted = true;
+				}
+				const float topStep(1.0f / topPoints.size());
+				const float botStep(1.0f / botPoints.size());
+				for (Mesh::VIndex ti=0, bi=0; ti < topPoints.size() && bi<botPoints.size(); ++ti) {
+					do {
+						const Mesh::VIndex& v0(topPoints[ti]);
+						const Mesh::VIndex& v1(botPoints[bi]);
+						const Mesh::VIndex& v2(botPoints[(++bi)%botPoints.size()]);
+						if (!bInverted)
+							mesh.faces.emplace_back(v0, v1, v2);
+						else
+							mesh.faces.emplace_back(v0, v2, v1);
+					} while (bi<botPoints.size() && (ti+1)*topStep > (bi+1)*botStep);
+					if (topPoints.size() > 1) {
+						const Mesh::VIndex& v0(topPoints[ti]);
+						const Mesh::VIndex& v1(botPoints[bi%botPoints.size()]);
+						const Mesh::VIndex& v2(topPoints[(ti+1)%topPoints.size()]);
+						if (!bInverted)
+							mesh.faces.emplace_back(v0, v1, v2);
+						else
+							mesh.faces.emplace_back(v0, v2, v1);
+					}
+					if (topPoints.size() != botPoints.size()) {
+						// add closing face
+						const Mesh::VIndex& v0(topPoints[0]);
+						const Mesh::VIndex& v1(botPoints[botPoints.size()-1]);
+						const Mesh::VIndex& v2(botPoints[0]);
+						if (!bInverted)
+							mesh.faces.emplace_back(v0, v1, v2);
+						else
+							mesh.faces.emplace_back(v0, v2, v1);
+					}
+				}
+				if (bInverted) {
+					topPoints.swap(botPoints);
+				}
+			}
+		}
+		mesh.Save("towermesh_dbg.ply");
+		towerPC.Save("cylinder.ply");
+	}
+	#endif
+	return towerPC;
+}
+
+
+// compute points on a cylinder placed in the middle of scene's cameras
+// this function assumes the scene is Z-up and units are meters
+//  - towerMode:  0 - disabled, 1 - replace, 2 - append, 3 - select neighbors, 4 - select neighbors and append, <0 - force tower mode
+void Scene::InitTowerScene(const int towerMode)
+{
+	float fRadius;
+	float fROIRadius;
+	float zMax, zMin, minCamZ;
+	Point2f centerPoint;
+	if (!ComputeTowerCylinder(centerPoint, fRadius, fROIRadius, zMin, zMax, minCamZ, towerMode))
+		return;
+	DEBUG("Scene camera positions identified ROI as a tower, select neighbors as if ROI is a tower");
+
+	// add nTargetPoints points on each circle
+	PointCloud towerPC(BuildTowerMesh(pointcloud, centerPoint, fRadius, fROIRadius, zMin, zMax, minCamZ, false));
+
+	switch (ABS(towerMode)) {
+	case 1: { // replace
+		pointcloud = std::move(towerPC);
+		break;
+	}
+	case 2: { // append
+		bool bHasNormal(pointcloud.normals.size() == pointcloud.GetSize());
+		bool bHasColor(pointcloud.colors.size() == pointcloud.GetSize());
+		bool bHasWeights(pointcloud.pointWeights.size() == pointcloud.GetSize());
+		FOREACH(idxPoint, towerPC.points) {
+			pointcloud.points.emplace_back(towerPC.points[idxPoint]);
+			pointcloud.pointViews.emplace_back(towerPC.pointViews[idxPoint]);
+			if (bHasNormal)
+				pointcloud.normals.emplace_back(towerPC.normals[idxPoint]);
+			if (bHasColor)
+				pointcloud.colors.emplace_back(towerPC.colors[idxPoint]);
+			if (bHasWeights)
+				pointcloud.pointWeights.emplace_back(towerPC.pointWeights[idxPoint]);
+		}
+		break;
+	}
+	case 3: { // select neighbors and remove added points
+		pointcloud.Swap(towerPC);
+		SelectNeighborViews(OPTDENSE::nMinViews, OPTDENSE::nMinViewsTrustPoint>1?OPTDENSE::nMinViewsTrustPoint:2, FD2R(OPTDENSE::fOptimAngle), OPTDENSE::nPointInsideROI);
+		pointcloud.Swap(towerPC);
+		break;
+	}
+	case 4: { // select neighbors
+		pointcloud.Swap(towerPC);
+		SelectNeighborViews(OPTDENSE::nMinViews, OPTDENSE::nMinViewsTrustPoint>1?OPTDENSE::nMinViewsTrustPoint:2, FD2R(OPTDENSE::fOptimAngle), OPTDENSE::nPointInsideROI);
+		pointcloud.Swap(towerPC);
+		bool bHasNormal(pointcloud.normals.size() == pointcloud.GetSize());
+		bool bHasColor(pointcloud.colors.size() == pointcloud.GetSize());
+		bool bHasWeights(pointcloud.pointWeights.size() == pointcloud.GetSize());
+		FOREACH(idxPoint, towerPC.points) {
+			pointcloud.points.emplace_back(towerPC.points[idxPoint]);
+			pointcloud.pointViews.emplace_back(towerPC.pointViews[idxPoint]);
+			if (bHasNormal)
+				pointcloud.normals.emplace_back(towerPC.normals[idxPoint]);
+			if (bHasColor)
+				pointcloud.colors.emplace_back(towerPC.colors[idxPoint]);
+			if (bHasWeights)
+				pointcloud.pointWeights.emplace_back(towerPC.pointWeights[idxPoint]);
+		}
+		break;
+	}
+	}
+} // InitTowerScene

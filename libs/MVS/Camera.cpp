@@ -185,6 +185,50 @@ void MVS::AssembleProjectionMatrix(const RMatrix& R, const CMatrix& C, PMatrix& 
 } // AssembleProjectionMatrix
 /*----------------------------------------------------------------*/
 
+// compute the focus of attention of a set of cameras; only cameras
+// that have the focus of attention in front of them are considered
+Point3 MVS::ComputeCamerasFocusPoint(const CameraArr& cameras, const Point3* pInitialFocus)
+{
+	// set initial focus point
+	Point3 focus;
+	if (pInitialFocus == NULL) {
+		// initialize focus point to the average camera center
+		focus = Point3::ZERO;
+		for (const Camera& camera: cameras)
+			focus += camera.C;
+		focus /= cameras.size();
+		// compute average distance to the cameras
+		REAL avgDist = 0;
+		for (const Camera& camera: cameras)
+			avgDist += SQRT(camera.DistanceSq(focus));
+		avgDist /= cameras.size();
+		// move focus point to the average distance in front of first camera
+		focus = cameras.front().C + cameras.front().Direction()*avgDist;
+	} else
+		focus = *pInitialFocus;
+	// compute focus point as the point in front of the active cameras,
+	// closest to the view direction of each camera
+	uint32_t numActive = 0;
+	Point3::EVec smp(Point3::EVec::Zero());
+	Matrix3x3::EMat smTm(Matrix3x3::EMat::Zero());
+	for (const Camera& camera: cameras) {
+		if (!camera.IsInFront(focus))
+			continue;
+		// https://en.wikipedia.org/wiki/Line–line_intersection#In_more_than_two_dimensions
+		const Point3::EVec dir = camera.Direction();
+		const Matrix3x3::EMat m(Matrix3x3::EMat::Identity() - dir * dir.transpose());
+		const Matrix3x3::EMat mTm(m.transpose() * m);
+		const Point3::EVec s = mTm * Point3::EVec(camera.C);
+		smp += s;
+		smTm += mTm;
+		++numActive;
+	}
+	if (numActive >= 2)
+		focus = smTm.inverse() * smp;
+	return focus;
+} // ComputeCamerasFocusPoint
+/*----------------------------------------------------------------*/
+
 
 
 namespace MVS {

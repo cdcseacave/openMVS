@@ -1256,64 +1256,6 @@ bool MVS::TriangulatePoints2DepthMap(
 
 namespace MVS {
 
-// least squares refinement of the given plane to the 3D point set
-// (return the number of iterations)
-template <typename TYPE>
-int OptimizePlane(TPlane<TYPE,3>& plane, const Eigen::Matrix<TYPE,3,1>* points, size_t size, int maxIters, TYPE threshold)
-{
-	typedef TPlane<TYPE,3> PLANE;
-	typedef Eigen::Matrix<TYPE,3,1> POINT;
-	ASSERT(size >= PLANE::numParams);
-	struct OptimizationFunctor {
-		const POINT* points;
-		const size_t size;
-		const RobustNorm::GemanMcClure<double> robust;
-		// construct with the data points
-		OptimizationFunctor(const POINT* _points, size_t _size, double _th)
-			: points(_points), size(_size), robust(_th) { ASSERT(size < (size_t)std::numeric_limits<int>::max()); }
-		static void Residuals(const double* x, int nPoints, const void* pData, double* fvec, double* fjac, int* /*info*/) {
-			const OptimizationFunctor& data = *reinterpret_cast<const OptimizationFunctor*>(pData);
-			ASSERT((size_t)nPoints == data.size && fvec != NULL && fjac == NULL);
-			TPlane<double,3> plane; {
-				Point3d N;
-				plane.m_fD = x[0];
-				Dir2Normal(reinterpret_cast<const Point2d&>(x[1]), N);
-				plane.m_vN = N;
-			}
-			for (size_t i=0; i<data.size; ++i)
-				fvec[i] = data.robust(plane.Distance(data.points[i].template cast<double>()));
-		}
-	} functor(points, size, threshold);
-	double arrParams[PLANE::numParams]; {
-		arrParams[0] = (double)plane.m_fD;
-		const Point3d N(plane.m_vN.x(), plane.m_vN.y(), plane.m_vN.z());
-		Normal2Dir(N, reinterpret_cast<Point2d&>(arrParams[1]));
-	}
-	lm_control_struct control = {1.e-6, 1.e-7, 1.e-8, 1.e-7, 100.0, maxIters}; // lm_control_float;
-	lm_status_struct status;
-	lmmin(PLANE::numParams, arrParams, (int)size, &functor, OptimizationFunctor::Residuals, &control, &status);
-	switch (status.info) {
-	//case 4:
-	case 5:
-	case 6:
-	case 7:
-	case 8:
-	case 9:
-	case 10:
-	case 11:
-	case 12:
-		DEBUG_ULTIMATE("error: refine plane: %s", lm_infmsg[status.info]);
-		return 0;
-	}
-	{
-		Point3d N;
-		plane.m_fD = (TYPE)arrParams[0];
-		Dir2Normal(reinterpret_cast<const Point2d&>(arrParams[1]), N);
-		plane.m_vN = Cast<TYPE>(N);
-	}
-	return status.nfev;
-}
-
 template <typename TYPE>
 class TPlaneSolverAdaptor
 {
@@ -1460,11 +1402,6 @@ unsigned MVS::EstimatePlaneThLockFirstPoint(const Point3dArr& points, Planed& pl
 {
 	return TEstimatePlane<double,UniformSamplerLockFirst,true>(points, plane, maxThreshold, arrInliers, maxIters);
 } // EstimatePlaneThLockFirstPoint
-// least squares refinement of the given plane to the 3D point set
-int MVS::OptimizePlane(Planed& plane, const Eigen::Vector3d* points, size_t size, int maxIters, double threshold)
-{
-	return OptimizePlane<double>(plane, points, size, maxIters, threshold);
-} // OptimizePlane
 /*----------------------------------------------------------------*/
 
 // Robustly estimate the plane that fits best the given points
@@ -1487,11 +1424,6 @@ unsigned MVS::EstimatePlaneThLockFirstPoint(const Point3fArr& points, Planef& pl
 {
 	return TEstimatePlane<float,UniformSamplerLockFirst,true>(points, plane, maxThreshold, arrInliers, maxIters);
 } // EstimatePlaneThLockFirstPoint
-// least squares refinement of the given plane to the 3D point set
-int MVS::OptimizePlane(Planef& plane, const Eigen::Vector3f* points, size_t size, int maxIters, float threshold)
-{
-	return OptimizePlane<float>(plane, points, size, maxIters, threshold);
-} // OptimizePlane
 /*----------------------------------------------------------------*/
 
 
