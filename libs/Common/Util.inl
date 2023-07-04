@@ -1189,7 +1189,7 @@ inline void ExampleKDE() {
 		File f;
 		SamplesInserter(const String& fileName)
 			: f(fileName, File::WRITE, File::CREATE | File::TRUNCATE) {}
-		inline void operator () (Real x, Real y) {
+		inline void operator() (Real x, Real y) {
 			f.print("%g\t%g\n", x, y);
 		}
 		inline bool SamplePeak(bool bMaxRegion) const {

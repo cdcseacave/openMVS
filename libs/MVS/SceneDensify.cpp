@@ -2218,7 +2218,7 @@ void Scene::PointCloudFilter(int thRemove)
 		inline bool Intersects(const Octree::POINT_TYPE& center, Octree::Type radius) const {
 			return coneIntersect(Sphere(center, radius*Real(SQRT_3)));
 		}
-		inline void operator () (const IDX* idices, IDX size) {
+		inline void operator() (const IDX* idices, IDX size) {
 			const Real thSimilar(0.01f);
 			Real dist;
 			FOREACHRAWPTR(pIdx, idices, size) {

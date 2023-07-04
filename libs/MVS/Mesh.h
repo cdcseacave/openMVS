@@ -360,7 +360,7 @@ struct IntersectRayMesh {
 		return ray.Intersects(AABB3f(center, radius));
 	}
 
-	void operator () (const IDX* idices, IDX size) {
+	void operator() (const IDX* idices, IDX size) {
 		// store all intersected faces only once
 		typedef std::unordered_set<Mesh::FIndex> FaceSet;
 		FaceSet set;

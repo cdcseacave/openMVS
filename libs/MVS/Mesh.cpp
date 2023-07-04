@@ -4569,7 +4569,7 @@ bool Mesh::TransferTexture(Mesh& mesh, const FaceIdxArr& faceSubsetIndices, unsi
 			inline bool Intersects(const Octree::POINT_TYPE& center, Octree::Type radius) const {
 				return ray.Intersects(AABB3f(center, radius));
 			}
-			void operator () (const Octree::IDX_TYPE* idices, Octree::IDX_TYPE size) {
+			void operator() (const Octree::IDX_TYPE* idices, Octree::IDX_TYPE size) {
 				// store all contained faces only once
 				std::unordered_set<FIndex> set;
 				FOREACHRAWPTR(pIdx, idices, size) {

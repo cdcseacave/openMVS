@@ -153,7 +153,7 @@ struct IntersectRayPoints {
 		return coneIntersect(Sphere3(center.cast<REAL>(), REAL(radius) * SQRT_3));
 	}
 
-	void operator () (const IDX* idices, IDX size) {
+	void operator() (const IDX* idices, IDX size) {
 		// test ray-point intersection and keep the closest
 		FOREACHRAWPTR(pIdx, idices, size) {
 			const PointCloud::Index idx(*pIdx);
