@@ -2803,6 +2803,7 @@ protected:
 
 #endif // _USE_EIGEN
 
+#include "../Math/LMFit/lmmin.h"
 #include "Types.inl"
 #include "Util.inl"
 #include "Rotation.h"

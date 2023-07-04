@@ -223,9 +223,9 @@ bool ParseImage(Scene& scene, const String& imagePath, const String& cameraPath,
 	const Eigen::Matrix4d P{
 		(T_cam_arkitcam * T_session_arkitcam.inverse()).matrix()
 	};
-	pose.R = P.template topLeftCorner<3, 3>();
+	pose.R = P.topLeftCorner<3, 3>().eval();
 	pose.R.EnforceOrthogonality();
-	const Point3d t = P.template topRightCorner<3, 1>();
+	const Point3d t = P.topRightCorner<3, 1>().eval();
 	pose.C = pose.R.t() * (-t);
 	imageData.camera = platform.GetCamera(imageData.cameraID, imageData.poseID);
 	// set image neighbors if available

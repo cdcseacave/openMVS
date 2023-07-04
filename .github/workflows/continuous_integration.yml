@@ -42,7 +42,7 @@ jobs:
         uses: lukka/run-vcpkg@v11
         with:
           vcpkgDirectory: '${{ github.workspace }}/vcpkg'
-          vcpkgGitCommitId: 'f6a5d4e8eb7476b8d7fc12a56dff300c1c986131'
+          vcpkgGitCommitId: '4a3c366f2d0d0eaf034bfa649124768df7cfe813'
 
       - name: Install Ubuntu dependencies
         if: matrix.os == 'ubuntu-latest'

@@ -144,7 +144,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		return false;
 
 	// initialize optional options
-	Util::ensureValidFolderPath(OPT::strOutputFileName);
+	Util::ensureValidPath(OPT::strOutputFileName);
 	if (OPT::strOutputFileName.empty())
 		OPT::strOutputFileName = Util::getFileName(OPT::strInputFileName) + MVS_EXT;
 
@@ -858,7 +858,7 @@ int main(int argc, LPCTSTR* argv)
 				for (const PointCloud::View& idxImage: scene.pointcloud.pointViews[idxPoint]) {
 					const Image& imageData = scene.images[idxImage];
 					const float depth((float)imageData.camera.PointDepth(X));
-					if (depth <= 0) {
+					if (depth > 0) {
 						avgDepths[idxImage] += depth;
 						++numDepths[idxImage];
 					}
