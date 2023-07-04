@@ -24,6 +24,9 @@
 // Boost support
 #cmakedefine _USE_BOOST
 
+// Boost with Python support
+#cmakedefine _USE_BOOST_PYTHON
+
 // Eigen Matrix & Linear Algebra Library
 #cmakedefine _USE_EIGEN
 
@@ -52,6 +55,9 @@
 
 // Fast float to int support
 #cmakedefine _USE_FAST_FLOAT2INT
+
+// Fast INVSQRT support
+#cmakedefine _USE_FAST_INVSQRT
 
 // Fast CBRT support
 #cmakedefine _USE_FAST_CBRT

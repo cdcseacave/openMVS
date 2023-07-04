@@ -10,6 +10,8 @@
 
 // Configure everything that needs to be globally known
 
+#include "ConfigLocal.h"
+
 
 // D E F I N E S ///////////////////////////////////////////////////
 
