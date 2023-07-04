@@ -54,6 +54,8 @@ namespace OPT {
 String strInputFileName;
 String strOutputFileName;
 String strMeshFileName;
+String strImportROIFileName;
+String strImagePointsFileName;
 bool bMeshExport;
 float fDistInsert;
 bool bUseOnlyROI;
@@ -74,7 +76,6 @@ float fSplitMaxArea;
 unsigned nArchiveType;
 int nProcessPriority;
 unsigned nMaxThreads;
-String strImagePointsFileName;
 String strExportType;
 String strConfigFileName;
 boost::program_options::variables_map vm;
@@ -143,6 +144,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		("mesh-file", boost::program_options::value<std::string>(&OPT::strMeshFileName), "mesh file name to clean (skips the reconstruction step)")
 		("mesh-export", boost::program_options::value(&OPT::bMeshExport)->default_value(false), "just export the mesh contained in loaded project")
 		("split-max-area", boost::program_options::value(&OPT::fSplitMaxArea)->default_value(0.f), "maximum surface area that a sub-mesh can contain (0 - disabled)")
+		("import-roi-file", boost::program_options::value<std::string>(&OPT::strImportROIFileName), "ROI file name to be imported into the scene")
 		("image-points-file", boost::program_options::value<std::string>(&OPT::strImagePointsFileName), "input filename containing the list of points from an image to project on the mesh (optional)")
 		;
 
@@ -181,7 +183,6 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 
 	// validate input
 	Util::ensureValidPath(OPT::strInputFileName);
-	Util::ensureUnifySlash(OPT::strInputFileName);
 	if (OPT::vm.count("help") || OPT::strInputFileName.IsEmpty()) {
 		boost::program_options::options_description visible("Available options");
 		visible.add(generic).add(config_main).add(config_clean);
@@ -193,7 +194,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 
 	// initialize optional options
 	Util::ensureValidPath(OPT::strOutputFileName);
-	Util::ensureUnifySlash(OPT::strOutputFileName);
+	Util::ensureValidPath(OPT::strImportROIFileName);
 	Util::ensureValidPath(OPT::strImagePointsFileName);
 	if (OPT::strOutputFileName.IsEmpty())
 		OPT::strOutputFileName = Util::getFileFullName(OPT::strInputFileName) + _T("_mesh.mvs");
@@ -344,7 +345,7 @@ int main(int argc, LPCTSTR* argv)
 
 	Scene scene(OPT::nMaxThreads);
 	// load project
-	if (!scene.Load(MAKE_PATH_SAFE(OPT::strInputFileName), OPT::fSplitMaxArea > 0 || OPT::fDecimateMesh < 1 || OPT::nTargetFaceNum > 0))
+	if (!scene.Load(MAKE_PATH_SAFE(OPT::strInputFileName), OPT::fSplitMaxArea > 0 || OPT::fDecimateMesh < 1 || OPT::nTargetFaceNum > 0 || !OPT::strImportROIFileName.empty()))
 		return EXIT_FAILURE;
 	const String baseFileName(MAKE_PATH_SAFE(Util::getFileFullName(OPT::strOutputFileName)));
 	if (OPT::fSplitMaxArea > 0) {
@@ -354,6 +355,24 @@ int main(int argc, LPCTSTR* argv)
 			scene.mesh.Save(chunks, baseFileName);
 		Finalize();
 		return EXIT_SUCCESS;
+	}
+
+	if (!OPT::strImportROIFileName.empty()) {
+		std::ifstream fs(MAKE_PATH_SAFE(OPT::strImportROIFileName));
+		if (!fs)
+			return EXIT_FAILURE;
+		fs >> scene.obb;
+		if (OPT::bCrop2ROI && !scene.mesh.IsEmpty() && !scene.IsValid()) {
+			TD_TIMER_START();
+			const size_t numVertices = scene.mesh.vertices.size();
+			const size_t numFaces = scene.mesh.faces.size();
+			scene.mesh.RemoveFacesOutside(scene.obb);
+			VERBOSE("Mesh trimmed to ROI: %u vertices and %u faces removed (%s)",
+				numVertices-scene.mesh.vertices.size(), numFaces-scene.mesh.faces.size(), TD_TIMER_GET_FMT().c_str());
+			scene.mesh.Save(baseFileName+OPT::strExportType);
+			Finalize();
+			return EXIT_SUCCESS;
+		}
 	}
 
 	if (!OPT::strImagePointsFileName.empty() && !scene.mesh.IsEmpty()) {

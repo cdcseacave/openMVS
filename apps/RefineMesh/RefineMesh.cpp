@@ -167,7 +167,6 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 
 	// validate input
 	Util::ensureValidPath(OPT::strInputFileName);
-	Util::ensureUnifySlash(OPT::strInputFileName);
 	if (OPT::vm.count("help") || OPT::strInputFileName.IsEmpty()) {
 		boost::program_options::options_description visible("Available options");
 		visible.add(generic).add(config);
@@ -179,7 +178,6 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 
 	// initialize optional options
 	Util::ensureValidPath(OPT::strOutputFileName);
-	Util::ensureUnifySlash(OPT::strOutputFileName);
 	if (OPT::strOutputFileName.IsEmpty())
 		OPT::strOutputFileName = Util::getFileFullName(OPT::strInputFileName) + _T("_refine.mvs");
 
