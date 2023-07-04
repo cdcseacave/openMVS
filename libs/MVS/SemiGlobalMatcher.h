@@ -142,8 +142,8 @@ public:
 		}
 	};
 
-	typedef MVS_API Point2f DepthRange;
-	typedef MVS_API TImage<DepthRange> DepthRangeMap;
+	typedef Point2f DepthRange;
+	typedef TImage<DepthRange> DepthRangeMap;
 
 public:
 	SemiGlobalMatcher(SgmSubpixelMode subpixelMode=SUBPIXEL_LC_BLEND, Disparity subpixelSteps=4, AccumCost P1=3, AccumCost P2=4, float P2alpha=14, float P2beta=38);
@@ -178,7 +178,9 @@ protected:
 	static void FlipDirection(const DisparityMap& l2r, DisparityMap& r2l);
 	static void UpscaleMask(MaskMap& maskMap, const cv::Size& size2x);
 	void RefineDisparityMap(DisparityMap& disparityMap) const;
+	#ifndef _RELEASE
 	void DisplayState(const cv::Size& size) const;
+	#endif
 
 	static CLISTDEF0IDX(AccumCost,int) GenerateP2s(AccumCost P2, float P2alpha, float P2beta);
 	static void Depth2DisparityMap(const DepthMap&, const Matrix3x3& invH, const Matrix4x4& invQ, Disparity subpixelSteps, DisparityMap&);

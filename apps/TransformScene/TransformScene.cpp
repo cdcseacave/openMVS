@@ -50,7 +50,9 @@ namespace OPT {
 	String strInputFileName;
 	String strOutputFileName;
 	String strAlignFileName;
+	String strTransformFileName;
 	String strTransferTextureFileName;
+	String strIndicesFileName;
 	bool bComputeVolume;
 	float fPlaneThreshold;
 	float fSampleMesh;
@@ -58,6 +60,7 @@ namespace OPT {
 	unsigned nArchiveType;
 	int nProcessPriority;
 	unsigned nMaxThreads;
+	String strExportType;
 	String strConfigFileName;
 	boost::program_options::variables_map vm;
 } // namespace OPT
@@ -75,6 +78,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		("help,h", "produce this help message")
 		("working-folder,w", boost::program_options::value<std::string>(&WORKING_FOLDER), "working directory (default current directory)")
 		("config-file,c", boost::program_options::value<std::string>(&OPT::strConfigFileName)->default_value(APPNAME _T(".cfg")), "file name containing program options")
+		("export-type", boost::program_options::value<std::string>(&OPT::strExportType)->default_value(_T("ply")), "file type used to export the 3D scene (ply, obj, glb or gltf)")
 		("archive-type", boost::program_options::value(&OPT::nArchiveType)->default_value(ARCHIVE_MVS), "project archive type: 0-text, 1-binary, 2-compressed binary")
 		("process-priority", boost::program_options::value(&OPT::nProcessPriority)->default_value(-1), "process priority (below normal by default)")
 		("max-threads", boost::program_options::value(&OPT::nMaxThreads)->default_value(0), "maximum number of threads (0 for using all available cores)")
@@ -95,7 +99,9 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		("input-file,i", boost::program_options::value<std::string>(&OPT::strInputFileName), "input scene filename")
 		("output-file,o", boost::program_options::value<std::string>(&OPT::strOutputFileName), "output filename for storing the scene")
 		("align-file,a", boost::program_options::value<std::string>(&OPT::strAlignFileName), "input scene filename to which the scene will be cameras aligned")
-		("transfer-texture-file,t", boost::program_options::value<std::string>(&OPT::strTransferTextureFileName), "input mesh filename to which the texture of the scene's mesh will be transfered to (the two meshes should be aligned and the new mesh to have UV-map)")
+		("transform-file,t", boost::program_options::value<std::string>(&OPT::strTransformFileName), "input transform filename by which the scene will transformed")
+		("transfer-texture-file", boost::program_options::value<std::string>(&OPT::strTransferTextureFileName), "input mesh filename to which the texture of the scene's mesh will be transfered to (the two meshes should be aligned and the new mesh to have UV-map)")
+		("indices-file", boost::program_options::value<std::string>(&OPT::strIndicesFileName), "input indices filename to be used with ex. texture transfer to select a subset of the scene's mesh")
 		("compute-volume", boost::program_options::value(&OPT::bComputeVolume)->default_value(false), "compute the volume of the given watertight mesh, or else try to estimate the ground plane and assume the mesh is bounded by it")
 		("plane-threshold", boost::program_options::value(&OPT::fPlaneThreshold)->default_value(0.f), "threshold used to estimate the ground plane (<0 - disabled, 0 - auto, >0 - desired threshold)")
 		("sample-mesh", boost::program_options::value(&OPT::fSampleMesh)->default_value(-300000.f), "uniformly samples points on a mesh (0 - disabled, <0 - number of points, >0 - sample density per square unit)")
@@ -138,9 +144,12 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	// validate input
 	Util::ensureValidPath(OPT::strInputFileName);
 	Util::ensureValidPath(OPT::strAlignFileName);
+	Util::ensureValidPath(OPT::strTransformFileName);
 	Util::ensureValidPath(OPT::strTransferTextureFileName);
+	Util::ensureValidPath(OPT::strIndicesFileName);
 	const String strInputFileNameExt(Util::getFileExt(OPT::strInputFileName).ToLower());
-	const bool bInvalidCommand(OPT::strInputFileName.empty() || (OPT::strAlignFileName.empty() && OPT::strTransferTextureFileName.empty() && !OPT::bComputeVolume));
+	const bool bInvalidCommand(OPT::strInputFileName.empty() ||
+		(OPT::strAlignFileName.empty() && OPT::strTransformFileName.empty() && OPT::strTransferTextureFileName.empty() && !OPT::bComputeVolume));
 	if (OPT::vm.count("help") || bInvalidCommand) {
 		boost::program_options::options_description visible("Available options");
 		visible.add(generic).add(config);
@@ -148,10 +157,20 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	}
 	if (bInvalidCommand)
 		return false;
+	OPT::strExportType = OPT::strExportType.ToLower();
+	if (OPT::strExportType == _T("obj"))
+		OPT::strExportType =  _T(".obj");
+	else
+	if (OPT::strExportType == _T("glb"))
+		OPT::strExportType =  _T(".glb");
+	else
+	if (OPT::strExportType == _T("gltf"))
+		OPT::strExportType =  _T(".gltf");
+	else
+		OPT::strExportType =  _T(".ply");
 
 	// initialize optional options
 	Util::ensureValidPath(OPT::strOutputFileName);
-	Util::ensureUnifySlash(OPT::strOutputFileName);
 	if (OPT::strOutputFileName.IsEmpty())
 		OPT::strOutputFileName = Util::getFileName(OPT::strInputFileName) + "_transformed" MVS_EXT;
 
@@ -199,7 +218,7 @@ int main(int argc, LPCTSTR* argv)
 	Scene scene(OPT::nMaxThreads);
 
 	// load given scene
-	if (!scene.Load(MAKE_PATH_SAFE(OPT::strInputFileName), !OPT::strTransferTextureFileName.empty() || OPT::bComputeVolume))
+	if (!scene.Load(MAKE_PATH_SAFE(OPT::strInputFileName), !OPT::strTransformFileName.empty() || !OPT::strTransferTextureFileName.empty() || OPT::bComputeVolume))
 		return EXIT_FAILURE;
 
 	if (!OPT::strAlignFileName.empty()) {
@@ -212,15 +231,51 @@ int main(int argc, LPCTSTR* argv)
 		VERBOSE("Scene aligned to the given reference scene (%s)", TD_TIMER_GET_FMT().c_str());
 	}
 
+	if (!OPT::strTransformFileName.empty()) {
+		// transform this scene by the given transform matrix
+		std::ifstream file(MAKE_PATH_SAFE(OPT::strTransformFileName));
+		std::string strLine;
+		std::vector<double> transformValues;
+		while (std::getline(file, strLine)) {
+			errno = 0;
+			char* strEnd{};
+			const double v = std::strtod(strLine.c_str(), &strEnd);
+			if (errno == ERANGE || strEnd == strLine.c_str())
+				continue;
+			transformValues.push_back(v);
+		}
+		if (transformValues.size() != 12 &&
+			(transformValues.size() != 16 || transformValues[12] != 0 || transformValues[13] != 0 || transformValues[14] != 0 || transformValues[15] != 1)) {
+			VERBOSE("error: invalid transform");
+			return EXIT_FAILURE;
+		}
+		Matrix3x4 transform;
+		for (unsigned i=0; i<12; ++i)
+			transform[i] = transformValues[i];
+		scene.Transform(transform);
+		VERBOSE("Scene transformed by the given transformation matrix (%s)", TD_TIMER_GET_FMT().c_str());
+	}
+
 	if (!OPT::strTransferTextureFileName.empty()) {
 		// transfer the texture of the scene's mesh to the new mesh;
 		// the two meshes should be aligned and the new mesh to have UV-coordinates
 		Mesh newMesh;
 		if (!newMesh.Load(MAKE_PATH_SAFE(OPT::strTransferTextureFileName)))
 			return EXIT_FAILURE;
-		if (!scene.mesh.TransferTexture(newMesh))
+		Mesh::FaceIdxArr faceSubsetIndices;
+		if (!OPT::strIndicesFileName.empty()) {
+			std::ifstream in(OPT::strIndicesFileName.c_str());
+			while (true) {
+				String index;
+				in >> index;
+				if (!in.good())
+					break;
+				faceSubsetIndices.emplace_back(index.From<Mesh::FIndex>());
+			}
+		}
+		if (!scene.mesh.TransferTexture(newMesh, faceSubsetIndices))
 			return EXIT_FAILURE;
-		newMesh.Save(Util::getFileFullName(MAKE_PATH_SAFE(OPT::strOutputFileName)) + _T(".ply"));
+		newMesh.Save(Util::getFileFullName(MAKE_PATH_SAFE(OPT::strOutputFileName)) + OPT::strExportType);
 		VERBOSE("Texture transfered (%s)", TD_TIMER_GET_FMT().c_str());
 		return EXIT_SUCCESS;
 	}
@@ -229,14 +284,19 @@ int main(int argc, LPCTSTR* argv)
 		// compute the mesh volume
 		const REAL volume(scene.ComputeLeveledVolume(OPT::fPlaneThreshold, OPT::fSampleMesh, OPT::nUpAxis));
 		VERBOSE("Mesh volume: %g (%s)", volume, TD_TIMER_GET_FMT().c_str());
-		scene.mesh.Save(Util::getFileFullName(MAKE_PATH_SAFE(OPT::strOutputFileName)) + _T(".ply"));
+		scene.mesh.Save(Util::getFileFullName(MAKE_PATH_SAFE(OPT::strOutputFileName)) + OPT::strExportType);
 		if (scene.images.empty())
 			return EXIT_SUCCESS;
 		OPT::nArchiveType = ARCHIVE_DEFAULT;
 	}
 
 	// write transformed scene
-	scene.Save(MAKE_PATH_SAFE(OPT::strOutputFileName), (ARCHIVE_TYPE)OPT::nArchiveType);
+	if (scene.IsValid())
+		scene.Save(MAKE_PATH_SAFE(OPT::strOutputFileName), (ARCHIVE_TYPE)OPT::nArchiveType);
+	else if (!scene.pointcloud.IsEmpty())
+		scene.pointcloud.Save(Util::getFileFullName(MAKE_PATH_SAFE(OPT::strOutputFileName)) + ".ply");
+	else if (!scene.mesh.IsEmpty())
+		scene.mesh.Save(Util::getFileFullName(MAKE_PATH_SAFE(OPT::strOutputFileName)) + ".ply");
 
 	Finalize();
 	return EXIT_SUCCESS;

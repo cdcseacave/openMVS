@@ -50,6 +50,10 @@ public:
 	inline void Set(const POINT&, const POINT&, const POINT&);
 	inline void Set(const TYPE p[DIMS+1]);
 
+	int Optimize(const POINT*, size_t, int maxIters=100);
+	template <typename RobustNormFunctor>
+	int Optimize(const POINT*, size_t, const RobustNormFunctor& robust, int maxIters=100);
+
 	inline void Invalidate();
 	inline bool IsValid() const;
 
@@ -85,7 +89,7 @@ public:
 }; // class TPlane
 /*----------------------------------------------------------------*/
 
-template <typename TYPE, typename TYPEW=TYPE>
+template <typename TYPE, typename TYPEW=TYPE, bool bFitLineMode=false>
 struct FitPlaneOnline {
 	TYPEW sumX, sumSqX, sumXY, sumXZ;
 	TYPEW sumY, sumSqY, sumYZ;
@@ -93,7 +97,7 @@ struct FitPlaneOnline {
 	size_t size;
 	FitPlaneOnline();
 	void Update(const TPoint3<TYPE>& P);
-	TPoint3<TYPEW> GetPlane(TPoint3<TYPEW>& avg, TPoint3<TYPEW>& dir) const;
+	TPoint3<TYPEW> GetModel(TPoint3<TYPEW>& avg, TPoint3<TYPEW>& dir) const;
 	template <typename TYPEE> TPoint3<TYPEE> GetPlane(TPlane<TYPEE,3>& plane) const;
 };
 /*----------------------------------------------------------------*/

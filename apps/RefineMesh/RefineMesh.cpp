@@ -115,14 +115,14 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		("close-holes", boost::program_options::value(&OPT::nCloseHoles)->default_value(30), "try to close small holes in the input surface (0 - disabled)")
 		("ensure-edge-size", boost::program_options::value(&OPT::nEnsureEdgeSize)->default_value(1), "ensure edge size and improve vertex valence of the input surface (0 - disabled, 1 - auto, 2 - force)")
 		("max-face-area", boost::program_options::value(&OPT::nMaxFaceArea)->default_value(32), "maximum face area projected in any pair of images that is not subdivided (0 - disabled)")
-		("scales", boost::program_options::value(&OPT::nScales)->default_value(3), "how many iterations to run mesh optimization on multi-scale images")
+		("scales", boost::program_options::value(&OPT::nScales)->default_value(2), "how many iterations to run mesh optimization on multi-scale images")
 		("scale-step", boost::program_options::value(&OPT::fScaleStep)->default_value(0.5f), "image scale factor used at each mesh optimization step")
-		("reduce-memory", boost::program_options::value(&OPT::nReduceMemory)->default_value(1), "recompute some data in order to reduce memory requirements")
 		("alternate-pair", boost::program_options::value(&OPT::nAlternatePair)->default_value(0), "refine mesh using an image pair alternatively as reference (0 - both, 1 - alternate, 2 - only left, 3 - only right)")
 		("regularity-weight", boost::program_options::value(&OPT::fRegularityWeight)->default_value(0.2f), "scalar regularity weight to balance between photo-consistency and regularization terms during mesh optimization")
 		("rigidity-elasticity-ratio", boost::program_options::value(&OPT::fRatioRigidityElasticity)->default_value(0.9f), "scalar ratio used to compute the regularity gradient as a combination of rigidity and elasticity")
 		("gradient-step", boost::program_options::value(&OPT::fGradientStep)->default_value(45.05f), "gradient step to be used instead (0 - auto)")
 		("planar-vertex-ratio", boost::program_options::value(&OPT::fPlanarVertexRatio)->default_value(0.f), "threshold used to remove vertices on planar patches (0 - disabled)")
+		("reduce-memory", boost::program_options::value(&OPT::nReduceMemory)->default_value(1), "recompute some data in order to reduce memory requirements")
 		;
 
 	// hidden options, allowed both on command line and
@@ -167,7 +167,6 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 
 	// validate input
 	Util::ensureValidPath(OPT::strInputFileName);
-	Util::ensureUnifySlash(OPT::strInputFileName);
 	if (OPT::vm.count("help") || OPT::strInputFileName.IsEmpty()) {
 		boost::program_options::options_description visible("Available options");
 		visible.add(generic).add(config);
@@ -179,7 +178,6 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 
 	// initialize optional options
 	Util::ensureValidPath(OPT::strOutputFileName);
-	Util::ensureUnifySlash(OPT::strOutputFileName);
 	if (OPT::strOutputFileName.IsEmpty())
 		OPT::strOutputFileName = Util::getFileFullName(OPT::strInputFileName) + _T("_refine.mvs");
 
@@ -252,11 +250,12 @@ int main(int argc, LPCTSTR* argv)
 						  OPT::fDecimateMesh, OPT::nCloseHoles, OPT::nEnsureEdgeSize,
 						  OPT::nMaxFaceArea,
 						  OPT::nScales, OPT::fScaleStep,
-						  OPT::nReduceMemory, OPT::nAlternatePair,
+						  OPT::nAlternatePair,
 						  OPT::fRegularityWeight,
 						  OPT::fRatioRigidityElasticity,
+						  OPT::fGradientStep,
 						  OPT::fPlanarVertexRatio,
-						  OPT::fGradientStep))
+						  OPT::nReduceMemory))
 		return EXIT_FAILURE;
 	VERBOSE("Mesh refinement completed: %u vertices, %u faces (%s)", scene.mesh.vertices.GetSize(), scene.mesh.faces.GetSize(), TD_TIMER_GET_FMT().c_str());
 

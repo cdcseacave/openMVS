@@ -23,8 +23,10 @@
 // cList index type
 #ifdef _SUPPORT_CPP11
 #define ARR2IDX(arr) typename std::remove_reference<decltype(arr)>::type::size_type
+#define SIZE2IDX(arr) typename std::remove_const<typename std::remove_reference<decltype(arr)>::type>::type
 #else
 #define ARR2IDX(arr) IDX
+#define SIZE2IDX(arr) IDX
 #endif
 
 // cList iterator by index
@@ -44,10 +46,10 @@
 
 // raw data array iterator by index
 #ifndef FOREACHRAW
-#define FOREACHRAW(var, sz) for (IDX var=0, var##Size=(sz); var<var##Size; ++var)
+#define FOREACHRAW(var, sz) for (SIZE2IDX(sz) var=0, var##Size=(sz); var<var##Size; ++var)
 #endif
 #ifndef RFOREACHRAW
-#define RFOREACHRAW(var, sz) for (IDX var=sz; var-->0; )
+#define RFOREACHRAW(var, sz) for (SIZE2IDX(sz) var=sz; var-->0; )
 #endif
 // raw data array iterator by pointer
 #ifndef FOREACHRAWPTR
@@ -170,15 +172,15 @@ public:
 	}
 
 	// copy the content from the given list
-	inline	cList&	operator=(const cList& rList)
+	inline cList&	operator=(const cList& rList)
 	{
 		return CopyOf(rList);
 	}
 
-	inline	cList&	CopyOf(const cList& rList, bool bForceResize=false)
+	inline cList&	CopyOf(const cList& rList, bool bForceResize=false)
 	{
 		if (this == &rList)
-			return (*this);
+			return *this;
 		if (bForceResize || _vectorSize < rList._vectorSize) {
 			_Release();
 			_vectorSize = rList._vectorSize;
@@ -194,13 +196,13 @@ public:
 			}
 		}
 		_size = rList._size;
-		return (*this);
+		return *this;
 	}
 
-	inline	cList&	CopyOf(const TYPE* pData, IDX nSize, bool bForceResize=false)
+	inline cList&	CopyOf(const TYPE* pData, IDX nSize, bool bForceResize=false)
 	{
 		if (_vector == pData)
-			return (*this);
+			return *this;
 		if (bForceResize || _vectorSize < nSize) {
 			_Release();
 			_vectorSize = nSize;
@@ -216,56 +218,72 @@ public:
 			}
 		}
 		_size = nSize;
-		return (*this);
+		return *this;
 	}
 
 	// release current list and swap the content with the given list
-	inline	cList&	CopyOfRemove(cList& rList)
+	inline cList&	CopyOfRemove(cList& rList)
 	{
 		if (this == &rList)
-			return (*this);
+			return *this;
 		_Release();
 		_size = rList._size;
 		_vectorSize = rList._vectorSize;
 		_vector = rList._vector;
 		rList._vector = NULL;
 		rList._size = rList._vectorSize = 0;
-		return (*this);
+		return *this;
 	}
 
-	inline	void	Join(const cList& rList)
+	inline cList&	Join(const cList& rList)
 	{
 		if (this == &rList || rList._size == 0)
-			return;
+			return *this;
 		const IDX newSize = _size + rList._size;
 		Reserve(newSize);
 		_ArrayCopyConstruct(_vector+_size, rList._vector, rList._size);
 		_size = newSize;
+		return *this;
 	}
-	inline	void	Join(const TYPE* pData, IDX nSize)
+	inline cList&	Join(const TYPE* pData, IDX nSize)
 	{
 		const IDX newSize = _size + nSize;
 		Reserve(newSize);
 		_ArrayCopyConstruct(_vector+_size, pData, nSize);
 		_size = newSize;
+		return *this;
 	}
 
-	inline	void	JoinRemove(cList& rList)
+	template <typename Functor>
+	inline cList&	JoinFunctor(IDX nSize, const Functor& functor) {
+		Reserve(_size + nSize);
+		if (useConstruct) {
+			for (IDX n=0; n<nSize; ++n)
+				new(_vector+_size++) TYPE(functor(n));
+		} else {
+			for (IDX n=0; n<nSize; ++n)
+				*(_vector+_size++) = functor(n);
+		}
+		return *this;
+	}
+
+	inline cList&	JoinRemove(cList& rList)
 	{
 		if (this == &rList || rList._size == 0)
-			return;
+			return *this;
 		const IDX newSize(_size + rList._size);
 		Reserve(newSize);
 		_ArrayMoveConstruct<true>(_vector+_size, rList._vector, rList._size);
 		_size = newSize;
 		rList._size = 0;
+		return *this;
 	}
 
 	// Swap the elements of the two lists.
-	inline	void	Swap(cList& rList)
+	inline cList&	Swap(cList& rList)
 	{
 		if (this == &rList)
-			return;
+			return *this;
 		const IDX tmpSize = _size;
 		_size = rList._size;
 		rList._size = tmpSize;
@@ -275,15 +293,25 @@ public:
 		TYPE* const tmpVector = _vector;
 		_vector = rList._vector;
 		rList._vector = tmpVector;
+		return *this;
 	}
 
 	// Swap the two elements.
-	inline	void	Swap(IDX idx1, IDX idx2)
+	inline void		Swap(IDX idx1, IDX idx2)
 	{
 		ASSERT(idx1 < _size && idx2 < _size);
 		TYPE tmp = _vector[idx1];
 		_vector[idx1] = _vector[idx2];
 		_vector[idx2] = tmp;
+	}
+	
+	inline bool		operator==(const cList& rList) const {
+		if (_size != rList._size)
+			return false;
+		for (IDX i = 0; i < _size; ++i)
+			if (_vector[i] != rList._vector[i])
+				return false;
+		return true;
 	}
 
 	// Set the allocated memory (normally used for types without constructor).
@@ -1573,6 +1601,14 @@ public:
 	inline TYPE& operator[](IDX index) {
 		ASSERT(index < _size);
 		return _vector[index];
+	}
+	inline bool operator==(const cListFixed& rList) const {
+		if (_size != rList._size)
+			return false;
+		for (IDX i = 0; i < _size; ++i)
+			if (_vector[i] != rList._vector[i])
+				return false;
+		return true;
 	}
 	inline TYPE& AddEmpty() {
 		ASSERT(_size < N);

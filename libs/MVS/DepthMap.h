@@ -452,7 +452,7 @@ struct MVS_API DepthEstimator {
 		ASSERT(ISEQUAL(norm(normal), 1.f));
 	}
 
-	static bool ImportIgnoreMask(const Image&, const Image8U::Size&, BitMatrix&, uint16_t nIgnoreMaskLabel);
+	static bool ImportIgnoreMask(const Image&, const Image8U::Size&, uint16_t nIgnoreMaskLabel, BitMatrix&, Image8U* =NULL);
 	static void MapMatrix2ZigzagIdx(const Image8U::Size& size, DepthEstimator::MapRefArr& coords, const BitMatrix& mask, int rawStride=16);
 
 	const float smoothBonusDepth, smoothBonusNormal;
@@ -482,13 +482,11 @@ MVS_API unsigned EstimatePlane(const Point3Arr&, Plane&, double& maxThreshold, b
 MVS_API unsigned EstimatePlaneLockFirstPoint(const Point3Arr&, Plane&, double& maxThreshold, bool arrInliers[]=NULL, size_t maxIters=0);
 MVS_API unsigned EstimatePlaneTh(const Point3Arr&, Plane&, double maxThreshold, bool arrInliers[]=NULL, size_t maxIters=0);
 MVS_API unsigned EstimatePlaneThLockFirstPoint(const Point3Arr&, Plane&, double maxThreshold, bool arrInliers[]=NULL, size_t maxIters=0);
-MATH_API int OptimizePlane(Planed& plane, const Eigen::Vector3d* points, size_t size, int maxIters, double threshold);
 // same for float points
 MATH_API unsigned EstimatePlane(const Point3fArr&, Planef&, double& maxThreshold, bool arrInliers[]=NULL, size_t maxIters=0);
 MATH_API unsigned EstimatePlaneLockFirstPoint(const Point3fArr&, Planef&, double& maxThreshold, bool arrInliers[]=NULL, size_t maxIters=0);
 MATH_API unsigned EstimatePlaneTh(const Point3fArr&, Planef&, double maxThreshold, bool arrInliers[]=NULL, size_t maxIters=0);
 MATH_API unsigned EstimatePlaneThLockFirstPoint(const Point3fArr&, Planef&, double maxThreshold, bool arrInliers[]=NULL, size_t maxIters=0);
-MATH_API int OptimizePlane(Planef& plane, const Eigen::Vector3f* points, size_t size, int maxIters, float threshold);
 
 MVS_API void EstimatePointColors(const ImageArr& images, PointCloud& pointcloud);
 MVS_API void EstimatePointNormals(const ImageArr& images, PointCloud& pointcloud, int numNeighbors=16/*K-nearest neighbors*/);

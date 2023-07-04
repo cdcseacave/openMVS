@@ -55,12 +55,15 @@ String strExportROIFileName;
 String strImportROIFileName;
 String strDenseConfigFileName;
 String strExportDepthMapsName;
+String strMaskPath;
 float fMaxSubsceneArea;
 float fSampleMesh;
 float fBorderROI;
 bool bCrop2ROI;
 int nEstimateROI;
+int	nTowerMode;
 int nFusionMode;
+float fEstimateScale;
 int thFilterPointCloud;
 int nExportNumViews;
 int nArchiveType;
@@ -133,11 +136,13 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		("sub-resolution-levels", boost::program_options::value(&nSubResolutionLevels)->default_value(2), "number of patch-match sub-resolution iterations (0 - disabled)")
 		("number-views", boost::program_options::value(&nNumViews)->default_value(nNumViewsDefault), "number of views used for depth-map estimation (0 - all neighbor views available)")
 		("number-views-fuse", boost::program_options::value(&nMinViewsFuse)->default_value(3), "minimum number of images that agrees with an estimate during fusion in order to consider it inlier (<2 - only merge depth-maps)")
-		("ignore-mask-label", boost::program_options::value(&nIgnoreMaskLabel)->default_value(-1), "integer value for the label to ignore in the segmentation mask (<0 - disabled)")
+		("ignore-mask-label", boost::program_options::value(&nIgnoreMaskLabel)->default_value(-1), "label value to ignore in the image mask, stored in the MVS scene or next to each image with '.mask.png' extension (<0 - disabled)")
+		("mask-path", boost::program_options::value<std::string>(&OPT::strMaskPath), "path to folder containing mask images with '.mask.png' extension")
 		("iters", boost::program_options::value(&nEstimationIters)->default_value(numIters), "number of patch-match iterations")
 		("geometric-iters", boost::program_options::value(&nEstimationGeometricIters)->default_value(2), "number of geometric consistent patch-match iterations (0 - disabled)")
 		("estimate-colors", boost::program_options::value(&nEstimateColors)->default_value(2), "estimate the colors for the dense point-cloud (0 - disabled, 1 - final, 2 - estimate)")
 		("estimate-normals", boost::program_options::value(&nEstimateNormals)->default_value(2), "estimate the normals for the dense point-cloud (0 - disabled, 1 - final, 2 - estimate)")
+		("estimate-scale", boost::program_options::value(&OPT::fEstimateScale)->default_value(0.f), "estimate the point-scale for the dense point-cloud (scale multiplier, 0 - disabled)")
 		("sub-scene-area", boost::program_options::value(&OPT::fMaxSubsceneArea)->default_value(0.f), "split the scene in sub-scenes such that each sub-scene surface does not exceed the given maximum sampling area (0 - disabled)")
 		("sample-mesh", boost::program_options::value(&OPT::fSampleMesh)->default_value(0.f), "uniformly samples points on a mesh (0 - disabled, <0 - number of points, >0 - sample density per square unit)")
 		("fusion-mode", boost::program_options::value(&OPT::nFusionMode)->default_value(0), "depth-maps fusion mode (-2 - fuse disparity-maps, -1 - export disparity-maps only, 0 - depth-maps & fusion, 1 - export depth-maps only)")
@@ -148,6 +153,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
         ("estimate-roi", boost::program_options::value(&OPT::nEstimateROI)->default_value(2), "estimate and set region-of-interest (0 - disabled, 1 - enabled, 2 - adaptive)")
         ("crop-to-roi", boost::program_options::value(&OPT::bCrop2ROI)->default_value(true), "crop scene using the region-of-interest")
         ("remove-dmaps", boost::program_options::value(&bRemoveDmaps)->default_value(false), "remove depth-maps after fusion")
+		("tower-mode", boost::program_options::value(&OPT::nTowerMode)->default_value(3), "add a cylinder of points in the center of ROI; scene assume to be Z-up oriented (0 - disabled, 1 - replace, 2 - append, 3 - select neighbors, <0 - force tower mode)")
         ;
 
 	// hidden options, allowed both on command line and
@@ -296,6 +302,20 @@ int main(int argc, LPCTSTR* argv)
 	// load and estimate a dense point-cloud
 	if (!scene.Load(MAKE_PATH_SAFE(OPT::strInputFileName)))
 		return EXIT_FAILURE;
+	if (!OPT::strMaskPath.empty()) {
+		Util::ensureValidFolderPath(OPT::strMaskPath);
+		for (Image& image : scene.images) {
+			if (!image.maskName.empty()) {
+				VERBOSE("error: Image %s has non-empty maskName %s", image.name.c_str(), image.maskName.c_str());
+				return EXIT_FAILURE;
+			}
+			image.maskName = OPT::strMaskPath + Util::getFileName(image.name) + ".mask.png";
+			if (!File::access(image.maskName)) {
+				VERBOSE("error: Mask image %s not found", image.maskName.c_str());
+				return EXIT_FAILURE;
+			}
+		}
+	}
 	if (!OPT::strImportROIFileName.empty()) {
 		std::ifstream fs(MAKE_PATH_SAFE(OPT::strImportROIFileName));
 		if (!fs)
@@ -315,6 +335,8 @@ int main(int argc, LPCTSTR* argv)
 		Finalize();
 		return EXIT_SUCCESS;
 	}
+	if (OPT::nTowerMode!=0)
+		scene.InitTowerScene(OPT::nTowerMode);
 	if (!OPT::strMeshFileName.empty())
 		scene.mesh.Load(MAKE_PATH_SAFE(OPT::strMeshFileName));
 	if (!OPT::strViewNeighborsFileName.empty())
@@ -366,6 +388,20 @@ int main(int argc, LPCTSTR* argv)
 			scene.Save(baseFileName+_T(".mvs"), (ARCHIVE_TYPE)OPT::nArchiveType);
 			scene.pointcloud.Save(baseFileName+_T(".ply"));
 		}
+		Finalize();
+		return EXIT_SUCCESS;
+	}
+	if (OPT::fEstimateScale > 0 && !scene.pointcloud.IsEmpty() && !scene.images.empty()) {
+		// simply export existing point-cloud with scale
+		if (scene.pointcloud.normals.empty()) {
+			if (!scene.pointcloud.IsValid()) {
+				VERBOSE("error: can not estimate normals as the point-cloud is not valid");
+				return EXIT_FAILURE;
+			}
+			EstimatePointNormals(scene.images, scene.pointcloud);
+		}
+		const String baseFileName(MAKE_PATH_SAFE(Util::getFileFullName(OPT::strOutputFileName)));
+		scene.pointcloud.SaveWithScale(baseFileName+_T("_scale.ply"), scene.images, OPT::fEstimateScale);
 		Finalize();
 		return EXIT_SUCCESS;
 	}

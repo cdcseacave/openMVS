@@ -48,6 +48,13 @@ namespace SEACAVE {
 namespace RobustNorm {
 
 template<typename TYPE>
+struct Identity {
+	inline TYPE operator()(const TYPE& r) const {
+		return r;
+	}
+};
+
+template<typename TYPE>
 struct L1 {
 	inline TYPE operator()(const TYPE& r) const {
 		return r / (std::sqrt(std::abs(r)) + TYPE(1e-12));

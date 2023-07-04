@@ -151,6 +151,9 @@ struct MeshTexture {
 		typedef TRasterMesh<RasterMesh> Base;
 		FaceMap& faceMap;
 		FIndex idxFace;
+		Image8U mask;
+		bool validFace;
+
 		RasterMesh(const Mesh::VertexArr& _vertices, const Camera& _camera, DepthMap& _depthMap, FaceMap& _faceMap)
 			: Base(_vertices, _camera, _depthMap), faceMap(_faceMap) {}
 		void Clear() {
@@ -164,7 +167,7 @@ struct MeshTexture {
 			Depth& depth = depthMap(pt);
 			if (depth == 0 || depth > z) {
 				depth = z;
-				faceMap(pt) = idxFace;
+				faceMap(pt) = validFace && (validFace = (mask(pt) != 0)) ? idxFace : NO_ID;
 			}
 		}
 	};
@@ -323,7 +326,7 @@ public:
 
 	void ListVertexFaces();
 
-	bool ListCameraFaces(FaceDataViewArr&, float fOutlierThreshold, const IIndexArr& views);
+	bool ListCameraFaces(FaceDataViewArr&, float fOutlierThreshold, int nIgnoreMaskLabel, const IIndexArr& views);
 
 	#if TEXOPT_FACEOUTLIER != TEXOPT_FACEOUTLIER_NA
 	bool FaceOutlierDetection(FaceDataArr& faceDatas, float fOutlierThreshold) const;
@@ -332,7 +335,7 @@ public:
 	void CreateVirtualFaces(const FaceDataViewArr& facesDatas, FaceDataViewArr& virtualFacesDatas, VirtualFaceIdxsArr& virtualFaces, unsigned minCommonCameras=2, float thMaxNormalDeviation=25.f) const;
 	IIndexArr SelectBestView(const FaceDataArr& faceDatas, FIndex fid, unsigned minCommonCameras, float ratioAngleToQuality) const;
 
-	bool FaceViewSelection(unsigned minCommonCameras, float fOutlierThreshold, float fRatioDataSmoothness, const IIndexArr& views);
+	bool FaceViewSelection(unsigned minCommonCameras, float fOutlierThreshold, float fRatioDataSmoothness, int nIgnoreMaskLabel, const IIndexArr& views);
 	
 	void CreateSeamVertices();
 	void GlobalSeamLeveling();
@@ -394,6 +397,37 @@ public:
 	Scene& scene; // the mesh vertices and faces
 };
 
+// creating an invalid mask for the given image corresponding to
+// the invalid pixels generated during image correction for the lens distortion;
+// the returned mask has the same size as the image and is set to zero for invalid pixels
+static Image8U DetectInvalidImageRegions(const Image8U3& image)
+{
+	const cv::Scalar upDiff(3);
+	const int flags(8 | (255 << 8));
+	Image8U mask(image.rows + 2, image.cols + 2);
+	mask.memset(0);
+	Image8U imageGray;
+	cv::cvtColor(image, imageGray, cv::COLOR_BGR2GRAY);
+	if (imageGray(0, 0) == 0)
+		cv::floodFill(imageGray, mask, cv::Point(0, 0), 255, NULL, cv::Scalar(0), upDiff, flags);
+	if (imageGray(image.rows / 2, 0) == 0)
+		cv::floodFill(imageGray, mask, cv::Point(0, image.rows / 2), 255, NULL, cv::Scalar(0), upDiff, flags);
+	if (imageGray(image.rows - 1, 0) == 0)
+		cv::floodFill(imageGray, mask, cv::Point(0, image.rows - 1), 255, NULL, cv::Scalar(0), upDiff, flags);
+	if (imageGray(image.rows - 1, image.cols / 2) == 0)
+		cv::floodFill(imageGray, mask, cv::Point(image.cols / 2, image.rows - 1), 255, NULL, cv::Scalar(0), upDiff, flags);
+	if (imageGray(image.rows - 1, image.cols - 1) == 0)
+		cv::floodFill(imageGray, mask, cv::Point(image.cols - 1, image.rows - 1), 255, NULL, cv::Scalar(0), upDiff, flags);
+	if (imageGray(image.rows / 2, image.cols - 1) == 0)
+		cv::floodFill(imageGray, mask, cv::Point(image.cols - 1, image.rows / 2), 255, NULL, cv::Scalar(0), upDiff, flags);
+	if (imageGray(0, image.cols - 1) == 0)
+		cv::floodFill(imageGray, mask, cv::Point(image.cols - 1, 0), 255, NULL, cv::Scalar(0), upDiff, flags);
+	if (imageGray(0, image.cols / 2) == 0)
+		cv::floodFill(imageGray, mask, cv::Point(image.cols / 2, 0), 255, NULL, cv::Scalar(0), upDiff, flags);
+	mask = (mask(cv::Rect(1,1, imageGray.cols,imageGray.rows)) == 0);
+	return mask;
+}
+
 MeshTexture::MeshTexture(Scene& _scene, unsigned _nResolutionLevel, unsigned _nMinResolution)
 	:
 	nResolutionLevel(_nResolutionLevel),
@@ -427,7 +461,7 @@ void MeshTexture::ListVertexFaces()
 }
 
 // extract array of faces viewed by each image
-bool MeshTexture::ListCameraFaces(FaceDataViewArr& facesDatas, float fOutlierThreshold, const IIndexArr& _views)
+bool MeshTexture::ListCameraFaces(FaceDataViewArr& facesDatas, float fOutlierThreshold, int nIgnoreMaskLabel, const IIndexArr& _views)
 {
 	// create faces octree
 	Mesh::Octree octree;
@@ -506,20 +540,36 @@ bool MeshTexture::ListCameraFaces(FaceDataViewArr& facesDatas, float fOutlierThr
 		const Frustum frustum(Frustum::MATRIX3x4(((PMatrix::CEMatMap)imageData.camera.P).cast<float>()), (float)imageData.width, (float)imageData.height);
 		octree.Traverse(frustum, inserter);
 		// project all triangles in this view and keep the closest ones
-		faceMap.create(imageData.height, imageData.width);
-		depthMap.create(imageData.height, imageData.width);
+		faceMap.create(imageData.GetSize());
+		depthMap.create(imageData.GetSize());
 		RasterMesh rasterer(vertices, imageData.camera, depthMap, faceMap);
+		if (nIgnoreMaskLabel >= 0) {
+			// import mask
+			BitMatrix bmask;
+			DepthEstimator::ImportIgnoreMask(imageData, imageData.GetSize(), (uint16_t)OPTDENSE::nIgnoreMaskLabel, bmask, &rasterer.mask);
+		} else if (nIgnoreMaskLabel == -1) {
+			// creating mask to discard invalid regions created during image radial undistortion
+			rasterer.mask = DetectInvalidImageRegions(imageData.image);
+			#if TD_VERBOSE != TD_VERBOSE_OFF
+			if (VERBOSITY_LEVEL > 2)
+				cv::imwrite(String::FormatString("umask%04d.png", idxView), rasterer.mask);
+			#endif
+		}
 		rasterer.Clear();
 		for (auto idxFace : cameraFaces) {
+			rasterer.validFace = true;
 			const Face& facet = faces[idxFace];
 			rasterer.idxFace = idxFace;
 			rasterer.Project(facet);
+			if (!rasterer.validFace)
+				rasterer.Project(facet);
 		}
 		// compute the projection area of visible faces
 		#if TEXOPT_FACEOUTLIER != TEXOPT_FACEOUTLIER_NA
 		CLISTDEF0IDX(uint32_t,FIndex) areas(faces.GetSize());
 		areas.Memset(0);
 		#endif
+
 		#ifdef TEXOPT_USE_OPENMP
 		#pragma omp critical
 		#endif
@@ -974,7 +1024,7 @@ bool MeshTexture::FaceOutlierDetection(FaceDataArr& faceDatas, float thOutlier) 
 }
 #endif
 
-bool MeshTexture::FaceViewSelection(unsigned minCommonCameras, float fOutlierThreshold, float fRatioDataSmoothness, const IIndexArr& views)
+bool MeshTexture::FaceViewSelection(unsigned minCommonCameras, float fOutlierThreshold, float fRatioDataSmoothness, int nIgnoreMaskLabel, const IIndexArr& views)
 {
 	// extract array of triangles incident to each vertex
 	ListVertexFaces();
@@ -986,7 +1036,7 @@ bool MeshTexture::FaceViewSelection(unsigned minCommonCameras, float fOutlierThr
 
 		// list all views for each face
 		FaceDataViewArr facesDatas;
-		if (!ListCameraFaces(facesDatas, fOutlierThreshold, views))
+		if (!ListCameraFaces(facesDatas, fOutlierThreshold, nIgnoreMaskLabel, views))
 			return false;
 
 		// create faces graph
@@ -2245,16 +2295,17 @@ void MeshTexture::GenerateTexture(bool bGlobalSeamLeveling, bool bLocalSeamLevel
 // texture mesh
 //  - minCommonCameras: generate texture patches using virtual faces composed of coplanar triangles sharing at least this number of views (0 - disabled, 3 - good value)
 //  - fSharpnessWeight: sharpness weight to be applied on the texture (0 - disabled, 0.5 - good value)
+//  - nIgnoreMaskLabel: label value to ignore in the image mask, stored in the MVS scene or next to each image with '.mask.png' extension (-1 - auto estimate mask for lens distortion, -2 - disabled)
 bool Scene::TextureMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsigned minCommonCameras, float fOutlierThreshold, float fRatioDataSmoothness,
 	bool bGlobalSeamLeveling, bool bLocalSeamLeveling, unsigned nTextureSizeMultiple, unsigned nRectPackingHeuristic, Pixel8U colEmpty, float fSharpnessWeight,
-	const IIndexArr& views)
+	int nIgnoreMaskLabel, const IIndexArr& views)
 {
 	MeshTexture texture(*this, nResolutionLevel, nMinResolution);
 
 	// assign the best view to each face
 	{
 		TD_TIMER_STARTD();
-		if (!texture.FaceViewSelection(minCommonCameras, fOutlierThreshold, fRatioDataSmoothness, views))
+		if (!texture.FaceViewSelection(minCommonCameras, fOutlierThreshold, fRatioDataSmoothness, nIgnoreMaskLabel, views))
 			return false;
 		DEBUG_EXTRA("Assigning the best view to each face completed: %u faces (%s)", mesh.faces.GetSize(), TD_TIMER_GET_FMT().c_str());
 	}

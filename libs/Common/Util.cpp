@@ -667,6 +667,13 @@ bool OSSupportsAVX()
 // print details about the current build and PC
 void Util::LogBuild()
 {
+	LOG(_T("OpenMVS %s v%u.%u.%u"),
+		#ifdef _ENVIRONMENT64
+		_T("x64"),
+		#else
+		_T("x32"),
+		#endif
+		OpenMVS_MAJOR_VERSION, OpenMVS_MINOR_VERSION, OpenMVS_PATCH_VERSION);
 	#if TD_VERBOSE == TD_VERBOSE_OFF
 	LOG(_T("Build date: ") __DATE__);
 	#else

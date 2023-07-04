@@ -22,12 +22,12 @@ namespace Sampler {
 // Note: The following functors generalize the sampling to more than two neighbors
 // They all contains the width variable that specify the number of neighbors used for sampling
 //
-// All contain the operator () with the following definition:
+// All contain the operator() with the following definition:
 //
 //   @brief Computes weight associated to neighboring pixels
 //   @author Romuald Perrot <perrot.romuald_AT_gmail.com>
 //   @param x Sampling position
-//   @param[out] weigth Sampling factors associated to the neighboring
+//   @param[out] weight Sampling factors associated to the neighboring
 //   @note weight must be at least width length
 // Linear sampling (ie: linear interpolation between two pixels)
 template <typename TYPE>
@@ -39,9 +39,9 @@ struct Linear {
 
 	inline Linear() {}
 	
-	inline void operator () (const TYPE x, TYPE* const weigth) const {
-		weigth[0] = TYPE(1) - x;
-		weigth[1] = x;
+	inline void operator() (const TYPE x, TYPE* const weight) const {
+		weight[0] = TYPE(1) - x;
+		weight[1] = x;
 	}
 };
 
@@ -70,19 +70,19 @@ struct Cubic {
 	const TYPE sharpness;
 	inline Cubic(const TYPE& _sharpness=TYPE(0.5)) : sharpness(_sharpness) {}
 
-	inline void operator () (const TYPE x, TYPE* const weigth) const {
+	inline void operator() (const TYPE x, TYPE* const weight) const {
 		// remember :
 		// A      B    x  C       D
 
-		// weigth[0] -> weight for A
+		// weight[0] -> weight for A
 		// weight[1] -> weight for B
 		// weight[2] -> weight for C
-		// weight[3] -> weigth for D
+		// weight[3] -> weight for D
 
-		weigth[0] = CubicInter12(x + TYPE(1));
-		weigth[1] = CubicInter01(x);
-		weigth[2] = CubicInter01(TYPE(1) - x);
-		weigth[3] = CubicInter12(TYPE(2) - x);
+		weight[0] = CubicInter12(x + TYPE(1));
+		weight[1] = CubicInter01(x);
+		weight[2] = CubicInter01(TYPE(1) - x);
+		weight[3] = CubicInter12(TYPE(2) - x);
 	}
 
 	// Cubic interpolation for x (in [0,1])
@@ -170,11 +170,11 @@ struct Spline16 {
 
 	inline Spline16() {}
 
-	inline void operator () (const TYPE x, TYPE* const weigth) const {
-		weigth[0] = ((TYPE(-1) / TYPE(3) * x + TYPE(4) / TYPE(5)) * x - TYPE(7) / TYPE(15)) * x;
-		weigth[1] = ((x - TYPE(9) / TYPE(5)) * x - TYPE(1) / TYPE(5)) * x + TYPE(1);
-		weigth[2] = ((TYPE(6) / TYPE(5) - x) * x + TYPE(4) / TYPE(5)) * x;
-		weigth[3] = ((TYPE(1) / TYPE(3) * x - TYPE(1) / TYPE(5)) * x - TYPE(2) / TYPE(15)) * x;
+	inline void operator() (const TYPE x, TYPE* const weight) const {
+		weight[0] = ((TYPE(-1) / TYPE(3) * x + TYPE(4) / TYPE(5)) * x - TYPE(7) / TYPE(15)) * x;
+		weight[1] = ((x - TYPE(9) / TYPE(5)) * x - TYPE(1) / TYPE(5)) * x + TYPE(1);
+		weight[2] = ((TYPE(6) / TYPE(5) - x) * x + TYPE(4) / TYPE(5)) * x;
+		weight[3] = ((TYPE(1) / TYPE(3) * x - TYPE(1) / TYPE(5)) * x - TYPE(2) / TYPE(15)) * x;
 	}
 };
 
@@ -189,13 +189,13 @@ struct Spline36 {
 
 	inline Spline36() {}
 
-	inline void operator () (const TYPE x, TYPE* const weigth) const {
-		weigth[0] = ((TYPE(1) / TYPE(11) * x - TYPE(45) / TYPE(209)) * x + TYPE(26) / TYPE(209)) * x;
-		weigth[1] = ((TYPE(-6) / TYPE(11) * x + TYPE(270) / TYPE(209)) * x - TYPE(156) / TYPE(209)) * x;
-		weigth[2] = ((TYPE(13) / TYPE(11) * x - TYPE(453) / TYPE(209)) * x - TYPE(3) / TYPE(209)) * x + TYPE(1);
-		weigth[3] = ((TYPE(-13) / TYPE(11) * x + TYPE(288) / TYPE(209)) * x + TYPE(168) / TYPE(209)) * x;
-		weigth[4] = ((TYPE(6) / TYPE(11) * x - TYPE(72) / TYPE(209)) * x - TYPE(42) / TYPE(209)) * x;
-		weigth[5] = ((TYPE(-1) / TYPE(11) * x + TYPE(12) / TYPE(209)) * x + TYPE(7) / TYPE(209)) * x;
+	inline void operator() (const TYPE x, TYPE* const weight) const {
+		weight[0] = ((TYPE(1) / TYPE(11) * x - TYPE(45) / TYPE(209)) * x + TYPE(26) / TYPE(209)) * x;
+		weight[1] = ((TYPE(-6) / TYPE(11) * x + TYPE(270) / TYPE(209)) * x - TYPE(156) / TYPE(209)) * x;
+		weight[2] = ((TYPE(13) / TYPE(11) * x - TYPE(453) / TYPE(209)) * x - TYPE(3) / TYPE(209)) * x + TYPE(1);
+		weight[3] = ((TYPE(-13) / TYPE(11) * x + TYPE(288) / TYPE(209)) * x + TYPE(168) / TYPE(209)) * x;
+		weight[4] = ((TYPE(6) / TYPE(11) * x - TYPE(72) / TYPE(209)) * x - TYPE(42) / TYPE(209)) * x;
+		weight[5] = ((TYPE(-1) / TYPE(11) * x + TYPE(12) / TYPE(209)) * x + TYPE(7) / TYPE(209)) * x;
 	}
 };
 
@@ -210,15 +210,15 @@ struct Spline64 {
 
 	inline Spline64() {}
 
-	inline void operator () (const TYPE x, TYPE* const weigth) const {
-		weigth[0] = ((TYPE(-1) / TYPE(41) * x + TYPE(168) / TYPE(2911)) * x - TYPE(97) / TYPE(2911)) * x;
-		weigth[1] = ((TYPE(6) / TYPE(41) * x - TYPE(1008) / TYPE(2911)) * x +  TYPE(582) / TYPE(2911)) * x;
-		weigth[2] = ((TYPE(-24) / TYPE(41) * x + TYPE(4032) / TYPE(2911)) * x - TYPE(2328) / TYPE(2911)) * x;
-		weigth[3] = ((TYPE(49) / TYPE(41) * x - TYPE(6387) / TYPE(2911)) * x - TYPE(3) / TYPE(2911)) * x + TYPE(1);
-		weigth[4] = ((TYPE(-49) / TYPE(41) * x + TYPE(4050) / TYPE(2911)) * x + TYPE(2340) / TYPE(2911)) * x;
-		weigth[5] = ((TYPE(24) / TYPE(41) * x - TYPE(1080) / TYPE(2911)) * x - TYPE(624) / TYPE(2911)) * x;
-		weigth[6] = ((TYPE(-6) / TYPE(41) * x + TYPE(270) / TYPE(2911)) * x + TYPE(156) / TYPE(2911)) * x;
-		weigth[7] = ((TYPE(1) / TYPE(41) * x - TYPE(45) / TYPE(2911)) * x - TYPE(26) / TYPE(2911)) * x;
+	inline void operator() (const TYPE x, TYPE* const weight) const {
+		weight[0] = ((TYPE(-1) / TYPE(41) * x + TYPE(168) / TYPE(2911)) * x - TYPE(97) / TYPE(2911)) * x;
+		weight[1] = ((TYPE(6) / TYPE(41) * x - TYPE(1008) / TYPE(2911)) * x +  TYPE(582) / TYPE(2911)) * x;
+		weight[2] = ((TYPE(-24) / TYPE(41) * x + TYPE(4032) / TYPE(2911)) * x - TYPE(2328) / TYPE(2911)) * x;
+		weight[3] = ((TYPE(49) / TYPE(41) * x - TYPE(6387) / TYPE(2911)) * x - TYPE(3) / TYPE(2911)) * x + TYPE(1);
+		weight[4] = ((TYPE(-49) / TYPE(41) * x + TYPE(4050) / TYPE(2911)) * x + TYPE(2340) / TYPE(2911)) * x;
+		weight[5] = ((TYPE(24) / TYPE(41) * x - TYPE(1080) / TYPE(2911)) * x - TYPE(624) / TYPE(2911)) * x;
+		weight[6] = ((TYPE(-6) / TYPE(41) * x + TYPE(270) / TYPE(2911)) * x + TYPE(156) / TYPE(2911)) * x;
+		weight[7] = ((TYPE(1) / TYPE(41) * x - TYPE(45) / TYPE(2911)) * x - TYPE(26) / TYPE(2911)) * x;
 	}
 };
 

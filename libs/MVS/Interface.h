@@ -386,6 +386,21 @@ struct Interface
 			static uint32_t GetNormalizationScale(uint32_t width, uint32_t height) { return std::max(width, height); }
 			uint32_t GetNormalizationScale() const { return GetNormalizationScale(width, height); }
 
+			// project point: camera to image (homogeneous) coordinates
+			inline Pos3d operator * (const Pos3d& X) const {
+				return Pos3d(
+					K(0,2)+K(0,0)*X.x/X.z,
+					K(1,2)+K(1,1)*X.y/X.z,
+					1.0);
+			}
+			// back-project point: image (z is the depth) to camera coordinates
+			inline Pos3d operator / (const Pos3d& x) const {
+				return Pos3d(
+					(x.x-K(0,2))*x.z/K(0,0),
+					(x.y-K(1,2))*x.z/K(1,1),
+					1.0);
+			}
+
 			template <class Archive>
 			void serialize(Archive& ar, const unsigned int version) {
 				ar & name;
@@ -731,7 +746,7 @@ struct HeaderDepthDataRaw {
 	float dMin, dMax; // depth range for this view
 	// image file name length followed by the characters: uint16_t nFileNameSize; char* FileName
 	// number of view IDs followed by view ID and neighbor view IDs: uint32_t nIDs; uint32_t* IDs
-	// camera, rotation and position matrices (row-major): double K[3][3], R[3][3], C[3]
+	// camera, rotation and position matrices (row-major) at image resolution: double K[3][3], R[3][3], C[3]
 	// depth, normal, confidence maps: float depthMap[height][width], normalMap[height][width][3], confMap[height][width]
 	inline HeaderDepthDataRaw() : name(0), type(0), padding(0) {}
 	static uint16_t HeaderDepthDataRawName() { return *reinterpret_cast<const uint16_t*>("DR"); }

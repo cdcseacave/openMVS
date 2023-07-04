@@ -2201,7 +2201,10 @@ public:
 
 	bool Load(const String&);
 	bool Save(const String&) const;
+
+	#ifndef _RELEASE
 	void Show(const String& winname, int delay=0, bool bDestroy=true) const;
+	#endif
 
 	#ifdef _USE_BOOST
 	// serialize
@@ -2800,6 +2803,7 @@ protected:
 
 #endif // _USE_EIGEN
 
+#include "../Math/LMFit/lmmin.h"
 #include "Types.inl"
 #include "Util.inl"
 #include "Rotation.h"
@@ -2808,6 +2812,7 @@ protected:
 #include "OBB.h"
 #include "Plane.h"
 #include "Ray.h"
+#include "Line.h"
 #include "Octree.h"
 #include "UtilCUDA.h"
 

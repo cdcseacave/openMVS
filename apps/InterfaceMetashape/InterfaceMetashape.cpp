@@ -71,7 +71,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	// group of options allowed only on command line
 	boost::program_options::options_description generic("Generic options");
 	generic.add_options()
-		("help,h", "produce this help message")
+		("help,h", "imports SfM scene stored either in Metashape Agisoft/BlocksExchange or ContextCapture BlocksExchange XML format")
 		("working-folder,w", boost::program_options::value<std::string>(&WORKING_FOLDER), "working directory (default current directory)")
 		("config-file,c", boost::program_options::value<std::string>(&OPT::strConfigFileName)->default_value(APPNAME _T(".cfg")), "file name containing program options")
 		("archive-type", boost::program_options::value(&OPT::nArchiveType)->default_value(ARCHIVE_MVS), "project archive type: 0-text, 1-binary, 2-compressed binary")
@@ -93,7 +93,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	config.add_options()
 		("input-file,i", boost::program_options::value<std::string>(&OPT::strInputFileName), "input filename containing camera poses and image list")
 		("points-file,p", boost::program_options::value<std::string>(&OPT::strPointsFileName), "input filename containing the 3D points")
-		("output-file,o", boost::program_options::value<std::string>(&OPT::strOutputFileName), "output filename for storing the mesh")
+		("output-file,o", boost::program_options::value<std::string>(&OPT::strOutputFileName), "output filename for storing the scene")
 		("output-image-folder", boost::program_options::value<std::string>(&OPT::strOutputImageFolder)->default_value("undistorted_images"), "output folder to store undistorted images")
 		;
 
@@ -133,9 +133,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	// validate input
 	Util::ensureValidPath(OPT::strPointsFileName);
 	Util::ensureValidPath(OPT::strInputFileName);
-	Util::ensureValidPath(OPT::strOutputImageFolder);
-	Util::ensureFolderSlash(OPT::strOutputImageFolder);
-	const String strInputFileNameExt(Util::getFileExt(OPT::strInputFileName).ToLower());
+	Util::ensureValidFolderPath(OPT::strOutputImageFolder);
 	const bool bInvalidCommand(OPT::strInputFileName.empty());
 	if (OPT::vm.count("help") || bInvalidCommand) {
 		boost::program_options::options_description visible("Available options");
@@ -147,8 +145,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 
 	// initialize optional options
 	Util::ensureValidPath(OPT::strOutputFileName);
-	Util::ensureUnifySlash(OPT::strOutputFileName);
-	if (OPT::strOutputFileName.IsEmpty())
+	if (OPT::strOutputFileName.empty())
 		OPT::strOutputFileName = Util::getFileName(OPT::strInputFileName) + MVS_EXT;
 
 	// initialize global options
@@ -186,6 +183,7 @@ struct DistCoeff {
 		};
 	};
 	DistCoeff() : k1(0), k2(0), p1(0), p2(0), k3(0), k4(0), k5(0), k6(0) {}
+	bool HasDistortion() const { return k1 != 0 || k2 != 0 || k3 != 0 || k4 != 0 || k5 != 0 || k6 != 0; }
 };
 typedef cList<DistCoeff> DistCoeffs;
 typedef cList<DistCoeffs> PlatformDistCoeffs;
@@ -512,20 +510,23 @@ bool ParseBlocksExchangeXML(tinyxml2::XMLDocument& doc, Scene& scene, PlatformDi
 		// parse distortion parameters
 		DistCoeff& dc = pltDistCoeffs.AddEmpty().AddEmpty(); {
 			const tinyxml2::XMLElement* distortion=photogroup->FirstChildElement("Distortion");
-			if ((elem=distortion->FirstChildElement("K1")) != NULL)
-				dc.k1 = elem->DoubleText();
-			if ((elem=distortion->FirstChildElement("K2")) != NULL)
-				dc.k2 = elem->DoubleText();
-			if ((elem=distortion->FirstChildElement("K3")) != NULL)
-				dc.k3 = elem->DoubleText();
-			if ((elem=distortion->FirstChildElement("P1")) != NULL)
-				dc.p2 = elem->DoubleText();
-			if ((elem=distortion->FirstChildElement("P2")) != NULL)
-				dc.p1 = elem->DoubleText();
+			if (distortion) {
+				if ((elem=distortion->FirstChildElement("K1")) != NULL)
+					dc.k1 = elem->DoubleText();
+				if ((elem=distortion->FirstChildElement("K2")) != NULL)
+					dc.k2 = elem->DoubleText();
+				if ((elem=distortion->FirstChildElement("K3")) != NULL)
+					dc.k3 = elem->DoubleText();
+				if ((elem=distortion->FirstChildElement("P1")) != NULL)
+					dc.p2 = elem->DoubleText();
+				if ((elem=distortion->FirstChildElement("P2")) != NULL)
+					dc.p1 = elem->DoubleText();
+			}
 		}
 		++nCameras;
 		for (const tinyxml2::XMLElement* photo=photogroup->FirstChildElement("Photo"); photo!=NULL; photo=photo->NextSiblingElement()) {
-			Image imageData;
+			const IIndex idxImage = scene.images.size();
+			Image& imageData = scene.images.AddEmpty();
 			imageData.platformID = platformID;
 			imageData.cameraID = 0; // only one camera per platform supported by this format
 			imageData.poseID = NO_ID;
@@ -533,6 +534,7 @@ bool ParseBlocksExchangeXML(tinyxml2::XMLDocument& doc, Scene& scene, PlatformDi
 			imageData.name = photo->FirstChildElement("ImagePath")->GetText();
 			Util::ensureUnifySlash(imageData.name);
 			imageData.name = MAKE_PATH_FULL(strPath, imageData.name);
+			mapImageID.emplace(imageData.ID, idxImage);
 			// set image resolution
 			const cv::Size& resolution = resolutions[imageData.platformID];
 			imageData.width = resolution.width;
@@ -568,8 +570,8 @@ bool ParseBlocksExchangeXML(tinyxml2::XMLDocument& doc, Scene& scene, PlatformDi
 				imageData.avgDepth = (float)elem->DoubleText();
 			else if (photo->FirstChildElement("NearDepth") != NULL && photo->FirstChildElement("FarDepth") != NULL)
 				imageData.avgDepth = (float)((photo->FirstChildElement("NearDepth")->DoubleText() + photo->FirstChildElement("FarDepth")->DoubleText())/2);
-			mapImageID.emplace(imageData.ID, static_cast<IIndex>(scene.images.size()));
-			scene.images.emplace_back(std::move(imageData));
+			else
+				imageData.avgDepth = 0;
 			++nPoses;
 		}
 	}
@@ -643,6 +645,10 @@ bool ParseSceneXML(Scene& scene, PlatformDistCoeffs& pltDistCoeffs, size_t& nCam
 // undistort image using Brown's model
 bool UndistortBrown(Image& imageData, uint32_t ID, const DistCoeff& dc, const String& pathData)
 {
+	// do we need to undistort?
+	if (!dc.HasDistortion())
+		return true;
+
 	// load image pixels
 	if (!imageData.ReloadImage())
 		return false;
@@ -653,7 +659,7 @@ bool UndistortBrown(Image& imageData, uint32_t ID, const DistCoeff& dc, const St
 	#if 1
 	const KMatrix& K(prevK);
 	#else
-	const KMatrix K(cv::getOptimalNewCameraMatrix(prevK, distCoeffs, imageData.GetSize(), 0.0, cv::Size(), NULL, true));
+	const KMatrix K(cv::getOptimalNewCameraMatrix(prevK, distCoeffs, imageData.size(), 0.0, cv::Size(), NULL, true));
 	ASSERT(K(0,2) == Camera::ComposeK(prevK(0,0), prevK(1,1), imageData.width(), imageData.height())(0,2));
 	ASSERT(K(1,2) == Camera::ComposeK(prevK(0,0), prevK(1,1), imageData.width(), imageData.height())(1,2));
 	if (K.IsEqual(prevK)) {
@@ -686,13 +692,13 @@ void AssignPoints(const Image& imageData, uint32_t ID, PointCloud& pointcloud)
 	const Depth thCloseDepth(0.1f);
 
 	// sort points by depth
-	IndexScoreArr points(0, pointcloud.points.GetSize());
+	IndexScoreArr points(0, pointcloud.points.size());
 	FOREACH(p, pointcloud.points) {
 		const PointCloud::Point& X(pointcloud.points[p]);
 		const float d((float)imageData.camera.PointDepth(X));
 		if (d <= 0)
 			continue;
-		points.AddConstruct((uint32_t)p, d);
+		points.emplace_back((uint32_t)p, d);
 	}
 	points.Sort();
 
@@ -710,7 +716,7 @@ void AssignPoints(const Image& imageData, uint32_t ID, PointCloud& pointcloud)
 		ASSERT(Xc.z > 0);
 		// skip point if the (cos) angle between
 		// its normal and the point to view vector is negative
-		if (!pointcloud.normals.IsEmpty() && Xc.dot(pointcloud.normals[pPD->idx]) > 0)
+		if (!pointcloud.normals.empty() && Xc.dot(pointcloud.normals[pPD->idx]) > 0)
 			continue;
 		const Point2f x(imageData.camera.TransformPointC2I(Xc));
 		const ImageRef ir(ROUND2INT(x));
@@ -787,23 +793,21 @@ int main(int argc, LPCTSTR* argv)
 
 	Scene scene(OPT::nMaxThreads);
 
-	// read the 3D point-cloud if available
-	if (!OPT::strPointsFileName.empty()) {
-		if (!scene.pointcloud.Load(MAKE_PATH_SAFE(OPT::strPointsFileName)))
-			return EXIT_FAILURE;
-		ASSERT(!scene.pointcloud.IsValid());
-		scene.pointcloud.pointViews.Resize(scene.pointcloud.points.GetSize());
-	}
-
 	// convert data from Metashape format to OpenMVS
 	PlatformDistCoeffs pltDistCoeffs;
 	size_t nCameras(0), nPoses(0);
 	if (!ParseSceneXML(scene, pltDistCoeffs, nCameras, nPoses))
 		return EXIT_FAILURE;
 
+	// read the 3D point-cloud if available
+	if (!OPT::strPointsFileName.empty() && !scene.pointcloud.Load(MAKE_PATH_SAFE(OPT::strPointsFileName)))
+		return EXIT_FAILURE;
+	const bool bAssignPoints(!scene.pointcloud.IsEmpty() && !scene.pointcloud.IsValid());
+	if (bAssignPoints)
+		scene.pointcloud.pointViews.resize(scene.pointcloud.GetSize());
+
 	// undistort images
 	const String pathData(MAKE_PATH_FULL(WORKING_FOLDER_FULL, OPT::strOutputImageFolder));
-	const bool bAssignPoints(!scene.pointcloud.IsEmpty() && !scene.pointcloud.IsValid());
 	Util::Progress progress(_T("Processed images"), scene.images.size());
 	GET_LOGCONSOLE().Pause();
 	#ifdef _USE_OPENMP
@@ -818,6 +822,8 @@ int main(int argc, LPCTSTR* argv)
 	#endif
 		++progress;
 		Image& imageData = scene.images[ID];
+		if (!imageData.IsValid())
+			continue;
 		if (!UndistortBrown(imageData, ID, pltDistCoeffs[imageData.platformID][imageData.cameraID], pathData)) {
 			#ifdef _USE_OPENMP
 			bAbort = true;
@@ -838,18 +844,46 @@ int main(int argc, LPCTSTR* argv)
 	#endif
 	progress.close();
 
-	// filter invalid points
-	if (!scene.pointcloud.IsEmpty()) {
+	if (scene.pointcloud.IsValid()) {
+		// filter invalid points
 		RFOREACH(i, scene.pointcloud.points)
 			if (scene.pointcloud.pointViews[i].size() < 2)
 				scene.pointcloud.RemovePoint(i);
+		// compute average scene depth per image
+		if (!std::any_of(scene.images.begin(), scene.images.end(), [](const Image& imageData) { return imageData.avgDepth > 0; })) {
+			std::vector<float> avgDepths(scene.images.size(), 0.f);
+			std::vector<uint32_t> numDepths(scene.images.size(), 0u);
+			FOREACH(idxPoint, scene.pointcloud.points) {
+				const Point3 X(scene.pointcloud.points[idxPoint]);
+				for (const PointCloud::View& idxImage: scene.pointcloud.pointViews[idxPoint]) {
+					const Image& imageData = scene.images[idxImage];
+					const float depth((float)imageData.camera.PointDepth(X));
+					if (depth > 0) {
+						avgDepths[idxImage] += depth;
+						++numDepths[idxImage];
+					}
+				}
+			}
+			FOREACH(idxImage, scene.images) {
+				Image& imageData = scene.images[idxImage];
+				if (numDepths[idxImage] > 0)
+					imageData.avgDepth = avgDepths[idxImage] / numDepths[idxImage];
+			}
+		}
 	}
+
+	// print average scene depth per image stats
+	MeanStdMinMax<float,double> acc;
+	for (const Image& imageData: scene.images)
+		if (imageData.avgDepth > 0)
+			acc.Update(imageData.avgDepth);
 
 	// write OpenMVS input data
 	scene.Save(MAKE_PATH_SAFE(OPT::strOutputFileName), (ARCHIVE_TYPE)OPT::nArchiveType);
 
-	VERBOSE("Exported data: %u platforms, %u cameras, %u poses, %u images, %u vertices (%s)",
+	VERBOSE("Exported data: %u platforms, %u cameras, %u poses, %u images, %u vertices, %g min / %g mean (%g std) / %g max average scene depth per image (%s)",
 			scene.platforms.size(), nCameras, nPoses, scene.images.size(), scene.pointcloud.GetSize(),
+			acc.minVal, acc.GetMean(), acc.GetStdDev(), acc.maxVal,
 			TD_TIMER_GET_FMT().c_str());
 
 	Finalize();

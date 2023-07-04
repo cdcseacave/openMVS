@@ -389,6 +389,7 @@ bool DepthMapsData::InitViews(DepthData& depthData, IIndex idxNeighbor, IIndex n
 			ImportDepthDataRaw(ComposeDepthFilePath(view.GetID(), "dmap"),
 				imageFileName, IDs, imageSize, view.cameraDepthMap.K, view.cameraDepthMap.R, view.cameraDepthMap.C,
 				dMin, dMax, view.depthMap, normalMap, confMap, viewsMap, 1);
+			ASSERT(viewRef.image.size() == view.depthMap.size());
 		}
 		view.Init(viewRef.camera);
 	}
@@ -406,6 +407,11 @@ bool DepthMapsData::InitViews(DepthData& depthData, IIndex idxNeighbor, IIndex n
 				depthData.depthMap, depthData.normalMap, confMap, viewsMap, 3))
 			return false;
 		ASSERT(viewRef.image.size() == depthData.depthMap.size());
+		ASSERT(depthData.normalMap.empty() || viewRef.image.size() == depthData.normalMap.size());
+		if (depthData.normalMap.empty()) {
+			// estimate normal map
+			EstimateNormalMap(viewRef.camera.K, depthData.depthMap, depthData.normalMap);
+		}
 	} else if (loadDepthMaps == 0) {
 		// initialize depth and normal maps
 		if (OPTDENSE::nMinViewsTrustPoint < 2 || depthData.points.empty()) {
@@ -672,10 +678,10 @@ bool DepthMapsData::EstimateDepthMap(IIndex idxImage, int nGeometricIter)
 		#endif
 		if (prevDepthMapSize != size || OPTDENSE::nIgnoreMaskLabel >= 0) {
 			BitMatrix mask;
-			if (OPTDENSE::nIgnoreMaskLabel >= 0 && DepthEstimator::ImportIgnoreMask(*image.pImageData, depthData.depthMap.size(), mask, (uint16_t)OPTDENSE::nIgnoreMaskLabel))
+			if (OPTDENSE::nIgnoreMaskLabel >= 0 && DepthEstimator::ImportIgnoreMask(*image.pImageData, depthData.depthMap.size(), (uint16_t)OPTDENSE::nIgnoreMaskLabel, mask))
 				depthData.ApplyIgnoreMask(mask);
 			DepthEstimator::MapMatrix2ZigzagIdx(size, coords, mask, MAXF(64,(int)nMaxThreads*8));
-			#if 0
+			#if 0 && !defined(_RELEASE)
 			// show pixels to be processed
 			Image8U cmask(size);
 			cmask.memset(0);
@@ -2212,7 +2218,7 @@ void Scene::PointCloudFilter(int thRemove)
 		inline bool Intersects(const Octree::POINT_TYPE& center, Octree::Type radius) const {
 			return coneIntersect(Sphere(center, radius*Real(SQRT_3)));
 		}
-		inline void operator () (const IDX* idices, IDX size) {
+		inline void operator() (const IDX* idices, IDX size) {
 			const Real thSimilar(0.01f);
 			Real dist;
 			FOREACHRAWPTR(pIdx, idices, size) {

@@ -91,10 +91,10 @@ extern String g_strWorkingFolderFull; // full path to current folder
 #define WORKING_FOLDER_FULL	g_strWorkingFolderFull // full path to current folder
 #endif
 #define INIT_WORKING_FOLDER	{SEACAVE::Util::ensureValidFolderPath(WORKING_FOLDER); WORKING_FOLDER_FULL = SEACAVE::Util::getFullPath(WORKING_FOLDER);} // initialize working folders
-#define MAKE_PATH(str)		SEACAVE::Util::getSimplifiedPath(WORKING_FOLDER+(str)) // add working directory to the given file name
-#define MAKE_PATH_SAFE(str)	(SEACAVE::Util::isFullPath(str) ? SEACAVE::String(str) : MAKE_PATH(str)) // add working directory to the given file name only if not full path already
+#define MAKE_PATH(str)		SEACAVE::Util::getSimplifiedPath(WORKING_FOLDER+SEACAVE::String(str)) // add working directory to the given file name
+#define MAKE_PATH_SAFE(str)	(SEACAVE::Util::isFullPath((str).c_str()) ? SEACAVE::String(str) : MAKE_PATH(str)) // add working directory to the given file name only if not full path already
 #define MAKE_PATH_FULL(p,s) (SEACAVE::Util::isFullPath((s).c_str()) ? SEACAVE::String(s) : SEACAVE::Util::getSimplifiedPath((p)+(s))) // add the given path to the given file name
-#define MAKE_PATH_REL(p,s)	((s).compare(0,(p).size(),p) ? SEACAVE::String(s) : SEACAVE::String(SEACAVE::String((s).substr((p).size())))) // remove the given path from the given file name
+#define MAKE_PATH_REL(p,s)	SEACAVE::Util::getRelativePath(p,s) // remove the given path from the given file name
 #define GET_PATH_FULL(str)	(SEACAVE::Util::isFullPath((str).c_str()) ? SEACAVE::Util::getFilePath(str) : SEACAVE::Util::getSimplifiedPath(WORKING_FOLDER_FULL+SEACAVE::Util::getFilePath(str))) // retrieve the full path to the given file
 
 
@@ -188,6 +188,8 @@ typedef TOBB<float, 2> OBB2f;
 typedef TOBB<float, 3> OBB3f;
 typedef TRay<float, 2> Ray2f;
 typedef TRay<float, 3> Ray3f;
+typedef TLine<float, 2> Line2f;
+typedef TLine<float, 3> Line3f;
 typedef TTriangle<float, 2> Triangle2f;
 typedef TTriangle<float, 3> Triangle3f;
 typedef TPlane<float> Planef;
@@ -209,6 +211,8 @@ typedef TOBB<double, 2> OBB2d;
 typedef TOBB<double, 3> OBB3d;
 typedef TRay<double, 2> Ray2d;
 typedef TRay<double, 3> Ray3d;
+typedef TLine<double, 2> Line2d;
+typedef TLine<double, 3> Line3d;
 typedef TTriangle<double, 2> Triangle2d;
 typedef TTriangle<double, 3> Triangle3d;
 typedef TPlane<double> Planed;
@@ -230,6 +234,8 @@ typedef TOBB<REAL, 2> OBB2;
 typedef TOBB<REAL, 3> OBB3;
 typedef TRay<REAL, 2> Ray2;
 typedef TRay<REAL, 3> Ray3;
+typedef TLine<REAL, 2> Line2;
+typedef TLine<REAL, 3> Line3;
 typedef TTriangle<REAL, 2> Triangle2;
 typedef TTriangle<REAL, 3> Triangle3;
 typedef TPlane<REAL> Plane;

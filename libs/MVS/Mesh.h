@@ -223,7 +223,7 @@ public:
 	bool Split(FacesChunkArr&, float maxArea);
 	Mesh SubMesh(const FaceIdxArr& faces) const;
 
-	bool TransferTexture(Mesh& mesh, unsigned textureSize=1024);
+	bool TransferTexture(Mesh& mesh, const FaceIdxArr& faceSubsetIndices={}, unsigned borderSize=3, unsigned textureSize=1024);
 
 	// file IO
 	bool Load(const String& fileName);
@@ -360,7 +360,7 @@ struct IntersectRayMesh {
 		return ray.Intersects(AABB3f(center, radius));
 	}
 
-	void operator () (const IDX* idices, IDX size) {
+	void operator() (const IDX* idices, IDX size) {
 		// store all intersected faces only once
 		typedef std::unordered_set<Mesh::FIndex> FaceSet;
 		FaceSet set;

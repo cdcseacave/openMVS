@@ -63,6 +63,7 @@ unsigned nTextureSizeMultiple;
 unsigned nRectPackingHeuristic;
 uint32_t nColEmpty;
 float fSharpnessWeight;
+int nIgnoreMaskLabel;
 unsigned nOrthoMapResolution;
 unsigned nArchiveType;
 int nProcessPriority;
@@ -122,6 +123,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		("empty-color", boost::program_options::value(&OPT::nColEmpty)->default_value(0x00FF7F27), "color used for faces not covered by any image")
 		("sharpness-weight", boost::program_options::value(&OPT::fSharpnessWeight)->default_value(0.5f), "amount of sharpness to be applied on the texture (0 - disabled)")
 		("orthographic-image-resolution", boost::program_options::value(&OPT::nOrthoMapResolution)->default_value(0), "orthographic image resolution to be generated from the textured mesh - the mesh is expected to be already geo-referenced or at least properly oriented (0 - disabled)")
+		("ignore-mask-label", boost::program_options::value(&OPT::nIgnoreMaskLabel)->default_value(-1), "label value to ignore in the image mask, stored in the MVS scene or next to each image with '.mask.png' extension (-1 - auto estimate mask for lens distortion, -2 - disabled)")
 		;
 
 	// hidden options, allowed both on command line and
@@ -167,7 +169,6 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 
 	// validate input
 	Util::ensureValidPath(OPT::strInputFileName);
-	Util::ensureUnifySlash(OPT::strInputFileName);
 	if (OPT::vm.count("help") || OPT::strInputFileName.IsEmpty()) {
 		boost::program_options::options_description visible("Available options");
 		visible.add(generic).add(config);
@@ -189,7 +190,6 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 
 	// initialize optional options
 	Util::ensureValidPath(OPT::strOutputFileName);
-	Util::ensureUnifySlash(OPT::strOutputFileName);
 	if (OPT::strOutputFileName.IsEmpty())
 		OPT::strOutputFileName = Util::getFileFullName(OPT::strInputFileName) + _T("_texture.mvs");
 	Util::ensureValidPath(OPT::strViewsFileName);
@@ -305,7 +305,9 @@ int main(int argc, LPCTSTR* argv)
 
 	// compute mesh texture
 	TD_TIMER_START();
-	if (!scene.TextureMesh(OPT::nResolutionLevel, OPT::nMinResolution, OPT::minCommonCameras, OPT::fOutlierThreshold, OPT::fRatioDataSmoothness, OPT::bGlobalSeamLeveling, OPT::bLocalSeamLeveling, OPT::nTextureSizeMultiple, OPT::nRectPackingHeuristic, Pixel8U(OPT::nColEmpty), OPT::fSharpnessWeight, views))
+	if (!scene.TextureMesh(OPT::nResolutionLevel, OPT::nMinResolution, OPT::minCommonCameras, OPT::fOutlierThreshold, OPT::fRatioDataSmoothness,
+						   OPT::bGlobalSeamLeveling, OPT::bLocalSeamLeveling, OPT::nTextureSizeMultiple, OPT::nRectPackingHeuristic, Pixel8U(OPT::nColEmpty),
+						   OPT::fSharpnessWeight, OPT::nIgnoreMaskLabel, views))
 		return EXIT_FAILURE;
 	VERBOSE("Mesh texturing completed: %u vertices, %u faces (%s)", scene.mesh.vertices.GetSize(), scene.mesh.faces.GetSize(), TD_TIMER_GET_FMT().c_str());
 
