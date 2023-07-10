@@ -1962,6 +1962,14 @@ void Scene::DenseReconstructionEstimate(void* pData)
 			}
 			// try to load already compute depth-map for this image
 			if (depthmapComputed && data.nFusionMode >= 0) {
+				if (depthData.Load(ComposeDepthFilePath(depthData.GetView().GetID(), "dmap"))) {
+					DepthMap& depthMap = depthData.depthMap;
+					Image& image = images[idx];
+					if(image.width != static_cast<uint32_t>(depthMap.width()) || image.height != static_cast<uint32_t>(depthMap.height())){
+						cv::resize(depthMap, depthMap, cv::Size(image.width, image.height), 0, 0, cv::INTER_CUBIC);
+						depthData.Save(ComposeDepthFilePath(depthData.GetView().GetID(), "dmap"));						
+					}
+				}
 				if (OPTDENSE::nOptimize & OPTDENSE::OPTIMIZE) {
 					if (!depthData.Load(ComposeDepthFilePath(depthData.GetView().GetID(), "dmap"))) {
 						VERBOSE("error: invalid depth-map '%s'", ComposeDepthFilePath(depthData.GetView().GetID(), "dmap").c_str());
