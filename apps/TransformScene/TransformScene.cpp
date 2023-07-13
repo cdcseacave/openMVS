@@ -236,8 +236,8 @@ int main(int argc, LPCTSTR* argv)
 		std::ifstream file(MAKE_PATH_SAFE(OPT::strTransformFileName));
 		std::string value;
 		std::vector<double> transformValues;
-		double v = 0.;
 		while (file >> value) {
+			double v;
                         try {
                                 v = std::stod(value);
                         }
