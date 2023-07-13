@@ -234,16 +234,18 @@ int main(int argc, LPCTSTR* argv)
 	if (!OPT::strTransformFileName.empty()) {
 		// transform this scene by the given transform matrix
 		std::ifstream file(MAKE_PATH_SAFE(OPT::strTransformFileName));
-		std::string strLine;
+		std::string value;
 		std::vector<double> transformValues;
-		while (std::getline(file, strLine)) {
-			errno = 0;
-			char* strEnd{};
-			const double v = std::strtod(strLine.c_str(), &strEnd);
-			if (errno == ERANGE || strEnd == strLine.c_str())
-				continue;
-			transformValues.push_back(v);
-		}
+		while (file >> value) {
+			double v;
+                        try {
+                                v = std::stod(value);
+                        }
+                        catch (...) {
+                                continue;
+                        }
+                        transformValues.push_back(v);
+                }
 		if (transformValues.size() != 12 &&
 			(transformValues.size() != 16 || transformValues[12] != 0 || transformValues[13] != 0 || transformValues[14] != 0 || transformValues[15] != 1)) {
 			VERBOSE("error: invalid transform");
