@@ -1899,8 +1899,8 @@ PointCloud Scene::BuildTowerMesh(const PointCloud& origPointCloud, const Point2f
 			} else {
 				if (pDistances.size() > 2) {
 					pDistances.Sort();
-					const size_t topIdx(MIN(pDistances.size() - 1, CEIL2INT(pDistances.size() * 0.95f)));
-					const size_t botIdx(MAX(1, FLOOR2INT(pDistances.size() * 0.5f)));
+					const size_t topIdx(MIN(pDistances.size() - 1, CEIL2INT<size_t>(pDistances.size() * 0.95f)));
+					const size_t botIdx(MAX(1u, FLOOR2INT<unsigned>(pDistances.size() * 0.5f)));
 					float avgTopDistance(0);
 					for (size_t i = botIdx; i < topIdx; ++i)
 						avgTopDistance += pDistances[i];
@@ -1913,23 +1913,21 @@ PointCloud Scene::BuildTowerMesh(const PointCloud& origPointCloud, const Point2f
 		}
 		// smoothen radii
 		if (circleRadii.size() > 2) {
-			for (int ri = 1; ri < circleRadii.size() - 1; ++ri) {
+			for (size_t ri = 1; ri < circleRadii.size() - 1; ++ri) {
 				const float aboveRad(circleRadii[ri - 1]);
 				float& circleRadius = circleRadii[ri];
-				const float beloweRad(circleRadii[ri + 1]);
+				const float belowRad(circleRadii[ri + 1]);
 				const float AbvCrtDeltaPrc = ABS(aboveRad - circleRadius) / aboveRad;
-				const float BelCrtDeltaPrc = ABS(circleRadius - beloweRad) / circleRadius;
+				const float BelCrtDeltaPrc = ABS(circleRadius - belowRad) / circleRadius;
 				// set current radius as average of the most similar values in the closest 7 neighbors
 				if (ri > 2 && ri < circleRadii.size() - 5) {
 					FloatArr neighSeven(7);
 					FOREACH(i, neighSeven)
 						neighSeven[i] = circleRadii[ri - 2 + i];
-					neighSeven.Sort();
 					const float medianRadius(neighSeven.GetMedian());
-					circleRadius = ABS(medianRadius-aboveRad) < ABS(medianRadius-beloweRad) ? aboveRad : beloweRad;
-				}
-				else {
-					circleRadius = (aboveRad + beloweRad) / 2.f;
+					circleRadius = ABS(medianRadius-aboveRad) < ABS(medianRadius-belowRad) ? aboveRad : belowRad;
+				} else {
+					circleRadius = (aboveRad + belowRad) / 2.f;
 				}
 			}
 		}

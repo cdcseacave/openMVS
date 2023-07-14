@@ -4105,7 +4105,7 @@ void Mesh::SamplePoints(REAL samplingDensity, PointCloud& pointcloud) const
 {
 	// compute the total area to deduce the number of points
 	const REAL area(ComputeArea());
-	const unsigned theoreticNumberOfPoints((unsigned)CEIL2INT(area * samplingDensity));
+	const unsigned theoreticNumberOfPoints(CEIL2INT<unsigned>(area * samplingDensity));
 	return SamplePoints(samplingDensity, theoreticNumberOfPoints, pointcloud);
 }
 void Mesh::SamplePoints(REAL samplingDensity, unsigned mumPointsTheoretic, PointCloud& pointcloud) const
