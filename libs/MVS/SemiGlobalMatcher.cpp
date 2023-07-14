@@ -49,7 +49,7 @@ using namespace STEREO;
 #ifdef _USE_FILTER_DEMO
 #include "opencv2/ximgproc/disparity_filter.hpp"
 
-const cv::String keys =
+const String keys =
 "{help h usage ? |        | print this message                                                }"
 "{GT             |None    | optional ground-truth disparity (MPI-Sintel or Middlebury format) }"
 "{dst_path       |None    | optional path to save the resulting filtered disparity map        }"
@@ -93,12 +93,12 @@ int disparityFiltering(cv::Mat left, cv::Mat right, int argc, const LPCSTR* argv
 		return 0;
 	}
 
-	cv::String GT_path = parser.get<cv::String>("GT");
-	cv::String dst_path = parser.get<cv::String>("dst_path");
-	cv::String dst_raw_path = parser.get<cv::String>("dst_raw_path");
-	cv::String dst_conf_path = parser.get<cv::String>("dst_conf_path");
-	cv::String algo = parser.get<cv::String>("algorithm");
-	cv::String filter = parser.get<cv::String>("filter");
+	String GT_path = parser.get<String>("GT");
+	String dst_path = parser.get<String>("dst_path");
+	String dst_raw_path = parser.get<String>("dst_raw_path");
+	String dst_conf_path = parser.get<String>("dst_conf_path");
+	String algo = parser.get<String>("algorithm");
+	String filter = parser.get<String>("filter");
 	bool no_display = parser.has("no-display");
 	bool no_downscale = parser.has("no-downscale");
 	int max_disp = parser.get<int>("max_disparity");
