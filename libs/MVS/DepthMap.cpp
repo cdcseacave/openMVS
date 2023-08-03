@@ -1164,7 +1164,7 @@ bool MVS::TriangulatePoints2DepthMap(
 			Mesh::Face face;
 			RasterDepth(const Mesh::NormalArr& _vertexNormals, const Camera& _camera, DepthMap& _depthMap, NormalMap& _normalMap)
 				: Base(_camera, _depthMap), vertexNormals(_vertexNormals), normalMap(_normalMap) {}
-			inline void operator()(const ImageRef& pt, const Point3f& bary) {
+			inline void operator()(const ImageRef& pt, const Point3f& bary, const unsigned) {
 				const Point3f pbary(PerspectiveCorrectBarycentricCoordinates(bary));
 				const Depth z(ComputeDepth(pbary));
 				ASSERT(z > Depth(0));
@@ -1229,7 +1229,7 @@ bool MVS::TriangulatePoints2DepthMap(
 			using Base::depthMap;
 			RasterDepth(const Camera& _camera, DepthMap& _depthMap)
 				: Base(_camera, _depthMap) {}
-			inline void operator()(const ImageRef& pt, const Point3f& bary) {
+			inline void operator()(const ImageRef& pt, const Point3f& bary, const unsigned) {
 				const Point3f pbary(PerspectiveCorrectBarycentricCoordinates(bary));
 				const Depth z(ComputeDepth(pbary));
 				ASSERT(z > Depth(0));

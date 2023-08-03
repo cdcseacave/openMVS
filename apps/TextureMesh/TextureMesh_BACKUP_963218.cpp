@@ -318,8 +318,13 @@ int main(int argc, LPCTSTR* argv)
 	VERBOSE("Mesh texturing completed: %u vertices, %u faces (%s)", scene.mesh.vertices.GetSize(), scene.mesh.faces.GetSize(), TD_TIMER_GET_FMT().c_str());
 
 	// save the final mesh
+<<<<<<< HEAD
 	scene.mesh.Save(baseFileName+OPT::strExportType);
-
+=======
+        bool bBinary = OPT::nArchiveType > 0;
+	scene.Save(baseFileName+_T(".mvs"), (ARCHIVE_TYPE)OPT::nArchiveType);
+	scene.mesh.Save(baseFileName+OPT::strExportType, cList<String>(), bBinary);
+>>>>>>> f397c70 (Added argument for maximum texture size)
 	#if TD_VERBOSE != TD_VERBOSE_OFF
 	if (VERBOSITY_LEVEL > 2)
 		scene.ExportCamerasMLP(baseFileName+_T(".mlp"), baseFileName+OPT::strExportType);

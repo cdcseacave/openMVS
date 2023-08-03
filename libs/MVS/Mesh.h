@@ -56,6 +56,7 @@ public:
 	typedef uint32_t VIndex;
 	typedef TPoint3<VIndex> Face;
 	typedef uint32_t FIndex;
+	typedef uint32_t TexIndex; // Texture index
 
 	typedef SEACAVE::cList<Vertex,const Vertex&,0,8192,VIndex> VertexArr;
 	typedef SEACAVE::cList<Face,const Face&,0,8192,FIndex> FaceArr;
@@ -69,10 +70,8 @@ public:
 	typedef SEACAVE::cList<Normal,const Normal&,0,8192,FIndex> NormalArr;
 
 	typedef TPoint2<Type> TexCoord;
-	typedef SEACAVE::cList<TexCoord,const TexCoord&,0,8192,FIndex> TexCoordArr;
-
-	typedef uint8_t TexChunk;
-	typedef SEACAVE::cList<TexChunk,const TexChunk&,0,8192,FIndex> TexChunkArr;
+	typedef cList<TexCoord,const TexCoord&,0,8192,FIndex> TexCoordArr;
+	typedef cList<TexIndex,const TexIndex&,0,8192,FIndex> TexIndexArr;
 
 	typedef TPoint3<FIndex> FaceFaces;
 	typedef SEACAVE::cList<FaceFaces,const FaceFaces&,0,8192,FIndex> FaceFacesArr;
@@ -131,8 +130,9 @@ public:
 	NormalArr faceNormals; // for each face, the normal to it (optional)
 	FaceFacesArr faceFaces; // for each face, the list of adjacent faces, NO_ID for border edges (optional)
 	TexCoordArr faceTexcoords; // for each face, the texture-coordinates corresponding to the contained vertices (optional)
+	TexIndexArr faceTexindices; // for each face, the corresponding id of the texture (optional)
 
-	Image8U3 textureDiffuse; // texture containing the diffuse color (optional)
+        std::vector<Image8U3> texturesDiffuse; // texture containing the diffuse color (optional)
 
 	#ifdef _USE_CUDA
 	static CUDA::KernelRT kernelComputeFaceNormal;
@@ -152,7 +152,10 @@ public:
 	void Join(const Mesh&);
 	inline bool IsEmpty() const { return vertices.empty(); }
 	bool IsWatertight();
-	inline bool HasTexture() const { ASSERT(faceTexcoords.empty() == textureDiffuse.empty()); return !faceTexcoords.empty(); }
+	inline bool HasTexture() const {
+		ASSERT(faceTexcoords.empty() == texturesDiffuse.empty());
+		return !faceTexcoords.empty();
+	}
 
 	Box GetAABB() const;
 	Box GetAABB(const Box& bound) const;
@@ -187,6 +190,7 @@ public:
 	void RemoveFaces(FaceIdxArr& facesRemove, bool bUpdateLists=false);
 	void RemoveVertices(VertexIdxArr& vertexRemove, bool bUpdateLists=false);
 	VIndex RemoveUnreferencedVertices(bool bUpdateLists=false);
+	std::vector<Mesh> SplitMeshPerTextureBlob() const;
 	void ConvertTexturePerVertex(Mesh&) const;
 
 	void FaceTexcoordsNormalize(TexCoordArr& newFaceTexcoords, bool flipY=true) const;
@@ -264,7 +268,8 @@ protected:
 		ar & vertexBoundary;
 		ar & faceNormals;
 		ar & faceTexcoords;
-		ar & textureDiffuse;
+		ar & faceTexindices;
+		ar & texturesDiffuse;
 	}
 	#endif
 };
@@ -310,7 +315,7 @@ struct TRasterMeshBase {
 		if (depth == 0 || depth > z)
 			depth = z;
 	}
-	inline void operator()(const ImageRef& pt, const Point3f& bary) {
+	inline void operator()(const ImageRef& pt, const Point3f& bary, const unsigned) {
 		static_cast<DERIVED*>(this)->Raster(pt, bary);
 	}
 };
