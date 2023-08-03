@@ -2603,7 +2603,7 @@ void TImage<TYPE>::RasterizeTriangle(const TPoint2<T>& v1, const TPoint2<T>& v2,
 // https://www.scratchapixel.com/lessons/3d-basic-rendering/rasterization-practical-implementation
 template <typename TYPE>
 template <typename T, typename PARSER>
-void TImage<TYPE>::RasterizeTriangleBary(const TPoint2<T>& v1, const TPoint2<T>& v2, const TPoint2<T>& v3, PARSER& parser)
+void TImage<TYPE>::RasterizeTriangleBary(const TPoint2<T>& v1, const TPoint2<T>& v2, const TPoint2<T>& v3, PARSER& parser, const unsigned texIdx)
 {
 	// compute bounding-box fully containing the triangle
 	const TPoint2<T> boxMin(MINF3(v1.x, v2.x, v3.x), MINF3(v1.y, v2.y, v3.y));
@@ -2636,7 +2636,7 @@ void TImage<TYPE>::RasterizeTriangleBary(const TPoint2<T>& v1, const TPoint2<T>&
 			const T b3(EdgeFunction(v1, v2, p));
 			if (b3 < 0)
 				continue;
-			parser(pt, TPoint3<T>(b1, b2, b3) * invArea);
+			parser(pt, TPoint3<T>(b1, b2, b3) * invArea, texIdx);
 		}
 	}
 }
