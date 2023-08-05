@@ -122,8 +122,9 @@ void* Scene::ThreadWorker(void*) {
 SEACAVE::EventQueue Scene::events;
 SEACAVE::Thread Scene::thread;
 
-Scene::Scene()
+Scene::Scene(ARCHIVE_TYPE _nArchiveType)
 	:
+	nArchiveType(_nArchiveType),
 	listPointCloud(0),
 	listMesh(0)
 {
@@ -355,7 +356,7 @@ bool Scene::Save(LPCTSTR _fileName, bool bRescaleImages)
 			return false;
 		}
 	}
-	if (!scene.Save(fileName, scene.mesh.IsEmpty() ? ARCHIVE_MVS : ARCHIVE_DEFAULT)) {
+	if (!scene.Save(fileName, nArchiveType)) {
 		DEBUG("error: can not save scene to '%s'", fileName.c_str());
 		return false;
 	}
@@ -374,7 +375,7 @@ bool Scene::Export(LPCTSTR _fileName, LPCTSTR exportType) const
 	String lastFileName;
 	const String fileName(_fileName != NULL ? String(_fileName) : sceneName);
 	const String baseFileName(Util::getFileFullName(fileName));
-	const bool bPoints(scene.pointcloud.Save(lastFileName=(baseFileName+_T("_pointcloud.ply"))));
+	const bool bPoints(scene.pointcloud.Save(lastFileName=(baseFileName+_T("_pointcloud.ply")), nArchiveType==ARCHIVE_MVS));
 	const bool bMesh(scene.mesh.Save(lastFileName=(baseFileName+_T("_mesh")+(exportType?exportType:(Util::getFileExt(fileName)==_T(".obj")?_T(".obj"):_T(".ply")))), cList<String>(), true));
 	#if TD_VERBOSE != TD_VERBOSE_OFF
 	if (VERBOSITY_LEVEL > 2 && (bPoints || bMesh))

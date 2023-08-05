@@ -131,6 +131,16 @@ public:
 		return invK;
 	}
 
+	// scale image pixel coordinates with the given scale such that it accounts for
+	// the convention that the center of a pixel is defined at integer coordinates
+	template<typename TYPE>
+	static inline TPoint2<TYPE> ScaleImagePixel(const TPoint2<TYPE>& x, TYPE s) {
+		return TPoint2<TYPE>(
+			(x.x+TYPE(0.5))*s-TYPE(0.5),
+			(x.y+TYPE(0.5))*s-TYPE(0.5)
+		);
+	}
+
 	// return scaled K (assuming standard K format)
 	template<typename TYPE>
 	static inline TMatrix<TYPE,3,3> ScaleK(const TMatrix<TYPE,3,3>& K, TYPE s) {

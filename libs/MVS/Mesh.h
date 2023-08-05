@@ -57,22 +57,25 @@ public:
 	typedef TPoint3<VIndex> Face;
 	typedef uint32_t FIndex;
 
-	typedef cList<Vertex,const Vertex&,0,8192,VIndex> VertexArr;
-	typedef cList<Face,const Face&,0,8192,FIndex> FaceArr;
+	typedef SEACAVE::cList<Vertex,const Vertex&,0,8192,VIndex> VertexArr;
+	typedef SEACAVE::cList<Face,const Face&,0,8192,FIndex> FaceArr;
 
-	typedef cList<VIndex,VIndex,0,8,VIndex> VertexIdxArr;
-	typedef cList<FIndex,FIndex,0,8,FIndex> FaceIdxArr;
-	typedef cList<VertexIdxArr,const VertexIdxArr&,2,8192,VIndex> VertexVerticesArr;
-	typedef cList<FaceIdxArr,const FaceIdxArr&,2,8192,VIndex> VertexFacesArr;
+	typedef SEACAVE::cList<VIndex,VIndex,0,8,VIndex> VertexIdxArr;
+	typedef SEACAVE::cList<FIndex,FIndex,0,8,FIndex> FaceIdxArr;
+	typedef SEACAVE::cList<VertexIdxArr,const VertexIdxArr&,2,8192,VIndex> VertexVerticesArr;
+	typedef SEACAVE::cList<FaceIdxArr,const FaceIdxArr&,2,8192,VIndex> VertexFacesArr;
 
 	typedef TPoint3<Type> Normal;
-	typedef cList<Normal,const Normal&,0,8192,FIndex> NormalArr;
+	typedef SEACAVE::cList<Normal,const Normal&,0,8192,FIndex> NormalArr;
 
 	typedef TPoint2<Type> TexCoord;
-	typedef cList<TexCoord,const TexCoord&,0,8192,FIndex> TexCoordArr;
+	typedef SEACAVE::cList<TexCoord,const TexCoord&,0,8192,FIndex> TexCoordArr;
+
+	typedef uint8_t TexChunk;
+	typedef SEACAVE::cList<TexChunk,const TexChunk&,0,8192,FIndex> TexChunkArr;
 
 	typedef TPoint3<FIndex> FaceFaces;
-	typedef cList<FaceFaces,const FaceFaces&,0,8192,FIndex> FaceFacesArr;
+	typedef SEACAVE::cList<FaceFaces,const FaceFaces&,0,8192,FIndex> FaceFacesArr;
 
 	// used to find adjacent face
 	struct FaceCount {
@@ -114,7 +117,7 @@ public:
 		FaceIdxArr faces;
 		Box box;
 	};
-	typedef cList<FaceChunk,const FaceChunk&,2,16,uint32_t> FacesChunkArr;
+	typedef SEACAVE::cList<FaceChunk,const FaceChunk&,2,16,uint32_t> FacesChunkArr;
 
 public:
 	VertexArr vertices;
@@ -240,7 +243,7 @@ protected:
 	bool LoadOBJ(const String& fileName);
 	bool LoadGLTF(const String& fileName, bool bBinary=true);
 
-	bool SavePLY(const String& fileName, const cList<String>& comments=cList<String>(), bool bBinary=true) const;
+	bool SavePLY(const String& fileName, const cList<String>& comments=cList<String>(), bool bBinary=true, bool bTexLossless=true) const;
 	bool SaveOBJ(const String& fileName) const;
 	bool SaveGLTF(const String& fileName, bool bBinary=true) const;
 

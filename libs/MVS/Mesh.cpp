@@ -1464,51 +1464,110 @@ void Mesh::FaceTexcoordsUnnormalize(TexCoordArr& newFaceTexcoords, bool flipY) c
 
 
 // define a PLY file format composed only of vertices and triangles
+namespace MeshInternal {
 namespace BasicPLY {
-	// list of property information for a vertex
-	static const PLY::PlyProperty vert_props[] = {
-		{"x", PLY::Float32, PLY::Float32, offsetof(Mesh::Vertex,x), 0, 0, 0, 0},
-		{"y", PLY::Float32, PLY::Float32, offsetof(Mesh::Vertex,y), 0, 0, 0, 0},
-		{"z", PLY::Float32, PLY::Float32, offsetof(Mesh::Vertex,z), 0, 0, 0, 0}
-	};
-	struct VertexNormal {
-		Mesh::Vertex v;
-		Mesh::Normal n;
-	};
-	static const PLY::PlyProperty vert_normal_props[] = {
-		{ "x", PLY::Float32, PLY::Float32, offsetof(VertexNormal,v.x), 0, 0, 0, 0},
-		{ "y", PLY::Float32, PLY::Float32, offsetof(VertexNormal,v.y), 0, 0, 0, 0},
-		{ "z", PLY::Float32, PLY::Float32, offsetof(VertexNormal,v.z), 0, 0, 0, 0},
-		{"nx", PLY::Float32, PLY::Float32, offsetof(VertexNormal,n.x), 0, 0, 0, 0},
-		{"ny", PLY::Float32, PLY::Float32, offsetof(VertexNormal,n.y), 0, 0, 0, 0},
-		{"nz", PLY::Float32, PLY::Float32, offsetof(VertexNormal,n.z), 0, 0, 0, 0}
-	};
-	// list of property information for a face
-	struct Face {
-		uint8_t num;
-		Mesh::Face* pFace;
-	};
-	static const PLY::PlyProperty face_props[] = {
-		{"vertex_indices", PLY::Uint32, PLY::Uint32, offsetof(Face,pFace), 1, PLY::Uint8, PLY::Uint8, offsetof(Face,num)}
-	};
-	struct TexCoord {
-		uint8_t num;
-		Mesh::TexCoord* pTex;
-	};
-	struct FaceTex {
-		Face face;
-		TexCoord tex;
-	};
-	static const PLY::PlyProperty face_tex_props[] = {
-		{"vertex_indices", PLY::Uint32, PLY::Uint32, offsetof(FaceTex,face.pFace), 1, PLY::Uint8, PLY::Uint8, offsetof(FaceTex,face.num)},
-		{"texcoord", PLY::Float32, PLY::Float32, offsetof(FaceTex,tex.pTex), 1, PLY::Uint8, PLY::Uint8, offsetof(FaceTex,tex.num)}
-	};
 	// list of the kinds of elements in the PLY
 	static const char* elem_names[] = {
 		"vertex",
 		"face"
 	};
+	// list of property information for a vertex
+	struct Vertex {
+		Mesh::Vertex v;
+		Mesh::Normal n;
+		static void InitLoadProps(PLY& ply, int elem_count,
+			Mesh::VertexArr& vertices, Mesh::NormalArr& vertexNormals)
+		{
+			PLY::PlyElement* elm = ply.find_element(elem_names[0]);
+			const size_t nMaxProps(SizeOfArray(props));
+			for (size_t p=0; p<nMaxProps; ++p) {
+				if (ply.find_property(elm, props[p].name.c_str()) < 0)
+					continue;
+				ply.setup_property(props[p]);
+				switch (p) {
+				case 0: vertices.resize((IDX)elem_count); break;
+				case 3: vertexNormals.resize((IDX)elem_count); break;
+				}
+			}
+		}
+		static void Select(PLY& ply) {
+			ply.put_element_setup(elem_names[0]);
+		}
+		static void InitSaveProps(PLY& ply, int elem_count,
+			bool bNormals)
+		{
+			ply.describe_property(elem_names[0], 3, props+0);
+			if (bNormals)
+				ply.describe_property(elem_names[0], 3, props+3);
+			if (elem_count)
+				ply.element_count(elem_names[0], elem_count);
+		}
+		static const PLY::PlyProperty props[9];
+	};
+	const PLY::PlyProperty Vertex::props[] = {
+		{"x",             PLY::Float32, PLY::Float32, offsetof(Vertex,v.x), 0, 0, 0, 0},
+		{"y",             PLY::Float32, PLY::Float32, offsetof(Vertex,v.y), 0, 0, 0, 0},
+		{"z",             PLY::Float32, PLY::Float32, offsetof(Vertex,v.z), 0, 0, 0, 0},
+		{"nx",            PLY::Float32, PLY::Float32, offsetof(Vertex,n.x), 0, 0, 0, 0},
+		{"ny",            PLY::Float32, PLY::Float32, offsetof(Vertex,n.y), 0, 0, 0, 0},
+		{"nz",            PLY::Float32, PLY::Float32, offsetof(Vertex,n.z), 0, 0, 0, 0}
+	};
+	// list of property information for a face
+	struct Face {
+		struct FaceIndices {
+			uint8_t num;
+			Mesh::Face* pFace;
+		} face;
+		struct TexCoord {
+			uint8_t num;
+			Mesh::TexCoord* pTex;
+		} tex;
+		Mesh::TexChunk chunk;
+		float weight;
+		static void InitLoadProps(PLY& ply, int elem_count,
+			Mesh::FaceArr& faces, Mesh::TexCoordArr& faceTexcoords, Mesh::TexChunkArr& faceTextureChunks)
+		{
+			PLY::PlyElement* elm = ply.find_element(elem_names[1]);
+			const size_t nMaxProps(SizeOfArray(props));
+			for (size_t p=0; p<nMaxProps; ++p) {
+				if (ply.find_property(elm, props[p].name.c_str()) < 0)
+					continue;
+				ply.setup_property(props[p]);
+				switch (p) {
+				case 0: faces.resize((IDX)elem_count); break;
+				case 1: faceTexcoords.resize((IDX)elem_count*3); break;
+				case 2: faceTextureChunks.resize((IDX)elem_count); break;
+				}
+			}
+		}
+		static void Select(PLY& ply) {
+			ply.put_element_setup(elem_names[1]);
+		}
+		static void InitSaveProps(
+			PLY& ply, int elem_count,
+			bool bFaces, bool bTexcoord, bool bTexnumber, bool bFaceweight=false)
+		{
+			if (bFaces)
+				ply.describe_property(elem_names[1], props[0]);
+			if (bTexcoord)
+				ply.describe_property(elem_names[1], props[1]);
+			if (bTexnumber)
+				ply.describe_property(elem_names[1], props[2]);
+			if (bFaceweight)
+				ply.describe_property(elem_names[1], props[3]);
+			if (elem_count)
+				ply.element_count(elem_names[1], elem_count);
+		}
+		static const PLY::PlyProperty props[4];
+	};
+	const PLY::PlyProperty Face::props[] = {
+		{"vertex_indices", PLY::Uint32,  PLY::Uint32,  offsetof(Face,face.pFace), 1, PLY::Uint8, PLY::Uint8, offsetof(Face,face.num)},
+		{"texcoord",       PLY::Float32, PLY::Float32, offsetof(Face,tex.pTex),   1, PLY::Uint8, PLY::Uint8, offsetof(Face,tex.num)},
+		{"texnumber",      PLY::Int32,   PLY::Uint8,   offsetof(Face,chunk),      0, 0,          0,          0},
+		{"weight",         PLY::Float32, PLY::Float32, offsetof(Face,weight),     0, 0,          0,          0},
+	};
 } // namespace BasicPLY
+} // namespace MeshInternal
 
 // import the mesh from the given file
 bool Mesh::Load(const String& fileName)
@@ -1535,68 +1594,62 @@ bool Mesh::LoadPLY(const String& fileName)
 	Release();
 
 	// open PLY file and read header
+	using namespace MeshInternal;
 	PLY ply;
 	if (!ply.read(fileName)) {
 		DEBUG_EXTRA("error: invalid PLY file");
 		return false;
 	}
-	for (int i = 0; i < (int)ply.elems.size(); ++i) {
+	for (int i = 0; i < ply.get_elements_count(); ++i) {
 		int elem_count;
 		LPCSTR elem_name = ply.setup_element_read(i, &elem_count);
 		if (PLY::equal_strings(BasicPLY::elem_names[0], elem_name)) {
-			vertices.Resize(elem_count);
+			vertices.resize(elem_count);
 		} else
 		if (PLY::equal_strings(BasicPLY::elem_names[1], elem_name)) {
-			faces.Resize(elem_count);
+			faces.resize(elem_count);
 		}
 	}
+	if (vertices.empty() && faces.empty())
+		return true;
 	if (vertices.IsEmpty() || faces.IsEmpty()) {
-		Release();
 		DEBUG_EXTRA("error: invalid mesh file");
 		return false;
 	}
 
 	// read PLY body
-	for (int i = 0; i < (int)ply.elems.size(); i++) {
+	for (int i = 0; i < ply.get_elements_count(); i++) {
 		int elem_count;
 		LPCSTR elem_name = ply.setup_element_read(i, &elem_count);
 		if (PLY::equal_strings(BasicPLY::elem_names[0], elem_name)) {
 			ASSERT(vertices.size() == (VIndex)elem_count);
-			ply.setup_property(BasicPLY::vert_props[0]);
-			ply.setup_property(BasicPLY::vert_props[1]);
-			ply.setup_property(BasicPLY::vert_props[2]);
-			FOREACHPTR(pVert, vertices)
-				ply.get_element(pVert);
+			BasicPLY::Vertex::InitLoadProps(ply, elem_count, vertices, vertexNormals);
+			if (vertexNormals.empty()) {
+				for (Vertex& vert: vertices)
+					ply.get_element(&vert);
+			} else {
+				BasicPLY::Vertex vertex;
+				for (int v=0; v<elem_count; ++v) {
+					ply.get_element(&vertex);
+					vertices[v] = vertex.v;
+					vertexNormals[v] = vertex.n;
+				}
+			}
 		} else
 		if (PLY::equal_strings(BasicPLY::elem_names[1], elem_name)) {
 			ASSERT(faces.size() == (FIndex)elem_count);
-			if (ply.find_property(ply.elems[i], BasicPLY::face_tex_props[1].name.c_str()) == -1) {
-				// load vertex indices
-				BasicPLY::Face face;
-				ply.setup_property(BasicPLY::face_props[0]);
-				FOREACHPTR(pFace, faces) {
-					ply.get_element(&face);
-					if (face.num != 3) {
-						DEBUG_EXTRA("error: unsupported mesh file (face not triangle)");
-						return false;
-					}
-					memcpy(pFace, face.pFace, sizeof(VIndex)*3);
-					delete[] face.pFace;
+			TexChunkArr faceTextureChunks; // TODO: replace with mesh texture chunks when implemented
+			BasicPLY::Face::InitLoadProps(ply, elem_count, faces, faceTexcoords, faceTextureChunks);
+			BasicPLY::Face face;
+			FOREACH(f, faces) {
+				ply.get_element(&face);
+				if (face.face.num != 3) {
+					DEBUG_EXTRA("error: unsupported mesh file (face not triangle)");
+					return false;
 				}
-			} else {
-				// load vertex indices and texture coordinates
-				faceTexcoords.resize((FIndex)elem_count*3);
-				BasicPLY::FaceTex face;
-				ply.setup_property(BasicPLY::face_tex_props[0]);
-				ply.setup_property(BasicPLY::face_tex_props[1]);
-				FOREACH(f, faces) {
-					ply.get_element(&face);
-					if (face.face.num != 3) {
-						DEBUG_EXTRA("error: unsupported mesh file (face not triangle)");
-						return false;
-					}
-					memcpy(faces.data()+f, face.face.pFace, sizeof(VIndex)*3);
-					delete[] face.face.pFace;
+				memcpy(faces.data()+f, face.face.pFace, sizeof(Face));
+				delete[] face.face.pFace;
+				if (!faceTexcoords.empty()) {
 					if (face.tex.num != 6) {
 						DEBUG_EXTRA("error: unsupported mesh file (texture coordinates not per face vertex)");
 						return false;
@@ -1604,6 +1657,10 @@ bool Mesh::LoadPLY(const String& fileName)
 					memcpy(faceTexcoords.data()+f*3, face.tex.pTex, sizeof(TexCoord)*3);
 					delete[] face.tex.pTex;
 				}
+				if (!faceTextureChunks.empty())
+					faceTextureChunks[f] = face.chunk;
+			}
+			if (!faceTexcoords.empty()) {
 				// load the texture
 				for (const std::string& comment: ply.get_comments()) {
 					if (_tcsncmp(comment.c_str(), _T("TextureFile "), 12) == 0) {
@@ -1780,76 +1837,66 @@ bool Mesh::Save(const String& fileName, const cList<String>& comments, bool bBin
 	return true;
 }
 // export the mesh as a PLY file
-bool Mesh::SavePLY(const String& fileName, const cList<String>& comments, bool bBinary) const
+bool Mesh::SavePLY(const String& fileName, const cList<String>& comments, bool bBinary, bool bTexLossless) const
 {
 	ASSERT(!fileName.empty());
 	Util::ensureFolder(fileName);
 
 	// create PLY object
-	const size_t bufferSize(vertices.size()*(4*3/*pos*/+2/*eol*/) + faces.size()*(1*1/*len*/+4*3/*idx*/+2/*eol*/) + 2048/*extra size*/);
+	using namespace MeshInternal;
 	PLY ply;
-	if (!ply.write(fileName, 2, BasicPLY::elem_names, bBinary?PLY::BINARY_LE:PLY::ASCII, bufferSize)) {
+	if (!ply.write(fileName, 2, BasicPLY::elem_names, bBinary?PLY::BINARY_LE:PLY::ASCII)) {
 		DEBUG_EXTRA("error: can not create the mesh file");
 		return false;
 	}
 
 	// export comments
-	FOREACHPTR(pStr, comments)
-		ply.append_comment(pStr->c_str());
+	for (const String& comment: comments)
+		ply.append_comment(comment);
 
 	// export texture file name as comment if needed
 	String textureFileName;
 	if (!faceTexcoords.empty() && !textureDiffuse.empty()) {
-		textureFileName = Util::getFileFullName(fileName)+_T(".png");
+		textureFileName = Util::getFileFullName(fileName)+(bTexLossless?_T(".png"):_T(".jpg"));
 		ply.append_comment((_T("TextureFile ")+Util::getFileNameExt(textureFileName)).c_str());
 	}
 
-	if (vertexNormals.empty()) {
-		// describe what properties go into the vertex elements
-		ply.describe_property(BasicPLY::elem_names[0], 3, BasicPLY::vert_props);
+	// describe what properties go into vertex and face elements
+	ASSERT(vertexNormals.empty() || vertexNormals.size() == vertices.size());
+	BasicPLY::Vertex::InitSaveProps(ply, (int)vertices.size(), !vertexNormals.empty());
+	BasicPLY::Face::InitSaveProps(ply, (int)faces.size(), !faces.empty(), !faceTexcoords.empty(), false);
+	if (!ply.header_complete())
+		return false;
 
-		// export the array of vertices
+	// export the array of vertices
+	BasicPLY::Vertex::Select(ply);
+	if (vertexNormals.empty()) {
 		FOREACHPTR(pVert, vertices)
 			ply.put_element(pVert);
 	} else {
-		ASSERT(vertices.size() == vertexNormals.size());
-
-		// describe what properties go into the vertex elements
-		ply.describe_property(BasicPLY::elem_names[0], 6, BasicPLY::vert_normal_props);
-
-		// export the array of vertices
-		BasicPLY::VertexNormal vn;
+		BasicPLY::Vertex v;
 		FOREACH(i, vertices) {
-			vn.v = vertices[i];
-			vn.n = vertexNormals[i];
-			ply.put_element(&vn);
+			v.v = vertices[i];
+			v.n = vertexNormals[i];
+			ply.put_element(&v);
 		}
 	}
-	if (ply.get_current_element_count() == 0)
-		return false;
+	ASSERT(ply.get_current_element_count() == (int)vertices.size());
 
+	// export the array of faces
+	BasicPLY::Face::Select(ply);
+	BasicPLY::Face face = {{3},{6}};
 	if (faceTexcoords.empty()) {
-		// describe what properties go into the vertex elements
-		ply.describe_property(BasicPLY::elem_names[1], 1, BasicPLY::face_props);
-
-		// export the array of faces
-		BasicPLY::Face face = {3};
 		FOREACHPTR(pFace, faces) {
-			face.pFace = pFace;
+			face.face.pFace = const_cast<Face*>(pFace);
 			ply.put_element(&face);
 		}
 	} else {
-		ASSERT(faceTexcoords.size() == faces.size()*3);
-
 		// translate, normalize and flip Y axis of the texture coordinates
 		TexCoordArr normFaceTexcoords;
 		FaceTexcoordsNormalize(normFaceTexcoords, true);
 
-		// describe what properties go into the vertex elements
-		ply.describe_property(BasicPLY::elem_names[1], 2, BasicPLY::face_tex_props);
-
 		// export the array of faces
-		BasicPLY::FaceTex face = {{3},{6}};
 		FOREACH(f, faces) {
 			face.face.pFace = faces.data()+f;
 			face.tex.pTex = normFaceTexcoords.data()+f*3;
@@ -1860,11 +1907,9 @@ bool Mesh::SavePLY(const String& fileName, const cList<String>& comments, bool b
 		if (!textureDiffuse.empty())
 			textureDiffuse.Save(textureFileName);
 	}
-	if (ply.get_current_element_count() == 0)
-		return false;
+	ASSERT(ply.get_current_element_count() == (int)faces.size());
 
-	// write to file
-	return ply.header_complete();
+	return true;
 }
 // export the mesh as a OBJ file
 bool Mesh::SaveOBJ(const String& fileName) const
@@ -2111,24 +2156,24 @@ bool Mesh::Save(const VertexArr& vertices, const String& fileName, bool bBinary)
 	Util::ensureFolder(fileName);
 
 	// create PLY object
-	const size_t bufferSize(vertices.GetSize()*(4*3/*pos*/+2/*eol*/) + 2048/*extra size*/);
+	using namespace MeshInternal;
 	PLY ply;
-	if (!ply.write(fileName, 1, BasicPLY::elem_names, bBinary?PLY::BINARY_LE:PLY::ASCII, bufferSize)) {
+	if (!ply.write(fileName, 1, BasicPLY::elem_names, bBinary?PLY::BINARY_LE:PLY::ASCII)) {
 		DEBUG_EXTRA("error: can not create the mesh file");
 		return false;
 	}
 
-	// describe what properties go into the vertex elements
-	ply.describe_property(BasicPLY::elem_names[0], 3, BasicPLY::vert_props);
+	// describe what properties go into vertex and face elements
+	BasicPLY::Vertex::InitSaveProps(ply, (int)vertices.size(), false);
+	if (!ply.header_complete())
+		return false;
 
 	// export the array of vertices
 	FOREACHPTR(pVert, vertices)
 		ply.put_element(pVert);
-	if (ply.get_current_element_count() == 0)
-		return false;
+	ASSERT(ply.get_current_element_count() == (int)vertices.size());
 
-	// write to file
-	return ply.header_complete();
+	return true;
 }
 /*----------------------------------------------------------------*/
 

@@ -47,8 +47,8 @@ namespace {
 
 namespace OPT {
 String strInputFileName;
-String strOutputFileName;
 String strMeshFileName;
+String strOutputFileName;
 unsigned nResolutionLevel;
 unsigned nMinResolution;
 unsigned nMaxViews;
@@ -86,7 +86,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		("working-folder,w", boost::program_options::value<std::string>(&WORKING_FOLDER), "working directory (default current directory)")
 		("config-file,c", boost::program_options::value<std::string>(&OPT::strConfigFileName)->default_value(APPNAME _T(".cfg")), "file name containing program options")
 		("export-type", boost::program_options::value<std::string>(&OPT::strExportType)->default_value(_T("ply")), "file type used to export the 3D scene (ply or obj)")
-		("archive-type", boost::program_options::value(&OPT::nArchiveType)->default_value(ARCHIVE_DEFAULT), "project archive type: 0-text, 1-binary, 2-compressed binary")
+		("archive-type", boost::program_options::value(&OPT::nArchiveType)->default_value(ARCHIVE_MVS), "project archive type: -1-interface, 0-text, 1-binary, 2-compressed binary")
 		("process-priority", boost::program_options::value(&OPT::nProcessPriority)->default_value(-1), "process priority (below normal by default)")
 		("max-threads", boost::program_options::value(&OPT::nMaxThreads)->default_value(0), "maximum number of threads (0 for using all available cores)")
 		#if TD_VERBOSE != TD_VERBOSE_OFF
@@ -107,6 +107,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	boost::program_options::options_description config("Refine options");
 	config.add_options()
 		("input-file,i", boost::program_options::value<std::string>(&OPT::strInputFileName), "input filename containing camera poses and image list")
+		("mesh-file,m", boost::program_options::value<std::string>(&OPT::strMeshFileName), "mesh file name to refine (overwrite existing mesh)")
 		("output-file,o", boost::program_options::value<std::string>(&OPT::strOutputFileName), "output filename for storing the mesh")
 		("resolution-level", boost::program_options::value(&OPT::nResolutionLevel)->default_value(0), "how many times to scale down the images before mesh refinement")
 		("min-resolution", boost::program_options::value(&OPT::nMinResolution)->default_value(640), "do not scale images lower than this resolution")
@@ -125,18 +126,11 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		("reduce-memory", boost::program_options::value(&OPT::nReduceMemory)->default_value(1), "recompute some data in order to reduce memory requirements")
 		;
 
-	// hidden options, allowed both on command line and
-	// in config file, but will not be shown to the user
-	boost::program_options::options_description hidden("Hidden options");
-	hidden.add_options()
-		("mesh-file", boost::program_options::value<std::string>(&OPT::strMeshFileName), "mesh file name to refine (overwrite the existing mesh)")
-		;
-
 	boost::program_options::options_description cmdline_options;
-	cmdline_options.add(generic).add(config).add(hidden);
+	cmdline_options.add(generic).add(config);
 
 	boost::program_options::options_description config_file_options;
-	config_file_options.add(config).add(hidden);
+	config_file_options.add(config);
 
 	boost::program_options::positional_options_description p;
 	p.add("input-file", -1);
@@ -167,18 +161,21 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 
 	// validate input
 	Util::ensureValidPath(OPT::strInputFileName);
-	if (OPT::vm.count("help") || OPT::strInputFileName.IsEmpty()) {
+	if (OPT::vm.count("help") || OPT::strInputFileName.empty()) {
 		boost::program_options::options_description visible("Available options");
 		visible.add(generic).add(config);
 		GET_LOG() << visible;
 	}
-	if (OPT::strInputFileName.IsEmpty())
+	if (OPT::strInputFileName.empty())
 		return false;
 	OPT::strExportType = OPT::strExportType.ToLower() == _T("obj") ? _T(".obj") : _T(".ply");
 
 	// initialize optional options
+	Util::ensureValidPath(OPT::strMeshFileName);
 	Util::ensureValidPath(OPT::strOutputFileName);
-	if (OPT::strOutputFileName.IsEmpty())
+	if (OPT::strMeshFileName.empty() && OPT::nArchiveType == ARCHIVE_MVS)
+		OPT::strMeshFileName = Util::getFileFullName(OPT::strInputFileName) + _T(".ply");
+	if (OPT::strOutputFileName.empty())
 		OPT::strOutputFileName = Util::getFileFullName(OPT::strInputFileName) + _T("_refine.mvs");
 
 	// initialize global options
@@ -224,11 +221,12 @@ int main(int argc, LPCTSTR* argv)
 
 	Scene scene(OPT::nMaxThreads);
 	// load and refine the coarse mesh
-	if (!scene.Load(MAKE_PATH_SAFE(OPT::strInputFileName)))
+	const Scene::SCENE_TYPE sceneType(scene.Load(MAKE_PATH_SAFE(OPT::strInputFileName)));
+	if (sceneType == Scene::SCENE_NA)
 		return EXIT_FAILURE;
-	if (!OPT::strMeshFileName.IsEmpty()) {
-		// load given coarse mesh
-		scene.mesh.Load(MAKE_PATH_SAFE(OPT::strMeshFileName));
+	if (!OPT::strMeshFileName.empty() && !scene.mesh.Load(MAKE_PATH_SAFE(OPT::strMeshFileName))) {
+		VERBOSE("error: cannot load mesh file");
+		return EXIT_FAILURE;
 	}
 	if (scene.mesh.IsEmpty()) {
 		VERBOSE("error: empty initial mesh");
@@ -261,12 +259,13 @@ int main(int argc, LPCTSTR* argv)
 
 	// save the final mesh
 	const String baseFileName(MAKE_PATH_SAFE(Util::getFileFullName(OPT::strOutputFileName)));
-	scene.Save(baseFileName+_T(".mvs"), (ARCHIVE_TYPE)OPT::nArchiveType);
 	scene.mesh.Save(baseFileName+OPT::strExportType);
 	#if TD_VERBOSE != TD_VERBOSE_OFF
 	if (VERBOSITY_LEVEL > 2)
 		scene.ExportCamerasMLP(baseFileName+_T(".mlp"), baseFileName+OPT::strExportType);
 	#endif
+	if (OPT::nArchiveType != ARCHIVE_MVS || sceneType != Scene::SCENE_INTERFACE)
+		scene.Save(baseFileName+_T(".mvs"), (ARCHIVE_TYPE)OPT::nArchiveType);
 
 	Finalize();
 	return EXIT_SUCCESS;

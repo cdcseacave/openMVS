@@ -2091,9 +2091,9 @@ MeshRefineCUDA::MeshRefineCUDA(Scene& _scene, unsigned _nAlternatePair, float _w
 			continue;
 		ViewScoreArr neighbors(imageData.neighbors);
 		Scene::FilterNeighborViews(neighbors, fMinArea, fMinScale, fMaxScale, fMinAngle, fMaxAngle, nMaxViews);
-		FOREACHPTR(pNeighbor, neighbors) {
-			ASSERT(images[pNeighbor->idx.ID].IsValid());
-			mapPairs.insert(MakePairIdx((uint32_t)idxImage, pNeighbor->idx.ID));
+		for (const ViewScore& neighbor: neighbors) {
+			ASSERT(images[neighbor.ID].IsValid());
+			mapPairs.insert(MakePairIdx((uint32_t)idxImage, neighbor.ID));
 		}
 	}
 	pairs.Reserve(mapPairs.size());

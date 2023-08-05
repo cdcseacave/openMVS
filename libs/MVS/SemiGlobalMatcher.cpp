@@ -534,12 +534,12 @@ void SemiGlobalMatcher::Match(const Scene& scene, IIndex idxImage, IIndex numNei
 	FOREACH(idxNeighbor, leftImage.neighbors) {
 		const ViewScore& neighbor = leftImage.neighbors[idxNeighbor];
 		// exclude neighbors that over the limit or too small score
-		ASSERT(scene.images[neighbor.idx.ID].IsValid());
+		ASSERT(scene.images[neighbor.ID].IsValid());
 		if ((numNeighbors && idxNeighbor >= numNeighbors) ||
 			(neighbor.score < fMinScore))
 			break;
 		// check if the disparity-map was already estimated for the same image pairs
-		const Image& rightImage = scene.images[neighbor.idx.ID];
+		const Image& rightImage = scene.images[neighbor.ID];
 		const String pairName(MAKE_PATH(String::FormatString("%04u_%04u", leftImage.ID, rightImage.ID)));
 		if (File::isPresent((pairName+".dimap").c_str()) || File::isPresent(MAKE_PATH(String::FormatString("%04u_%04u.dimap", rightImage.ID, leftImage.ID))))
 			continue;
@@ -555,7 +555,7 @@ void SemiGlobalMatcher::Match(const Scene& scene, IIndex idxImage, IIndex numNei
 			const PointCloud::ViewArr& views = scene.pointcloud.pointViews[idxPoint];
 			if (views.FindFirst(idxImage) != PointCloud::ViewArr::NO_INDEX) {
 				points.push_back((uint32_t)idxPoint);
-				if (views.FindFirst(neighbor.idx.ID) != PointCloud::ViewArr::NO_INDEX) {
+				if (views.FindFirst(neighbor.ID) != PointCloud::ViewArr::NO_INDEX) {
 					const Point3 X(scene.pointcloud.points[idxPoint]);
 					leftPoints.emplace_back(leftImage.camera.TransformPointW2I3(X));
 					rightPoints.emplace_back(rightImage.camera.TransformPointW2I3(X));
@@ -753,12 +753,12 @@ void SemiGlobalMatcher::Fuse(const Scene& scene, IIndex idxImage, IIndex numNeig
 	FOREACH(idxNeighbor, leftImage.neighbors) {
 		const ViewScore& neighbor = leftImage.neighbors[idxNeighbor];
 		// exclude neighbors that over the limit or too small score
-		ASSERT(scene.images[neighbor.idx.ID].IsValid());
+		ASSERT(scene.images[neighbor.ID].IsValid());
 		if ((numNeighbors && idxNeighbor >= numNeighbors) ||
 			(neighbor.score < fMinScore))
 			break;
 		// check if the disparity-map was estimated for this images pair
-		const Image& rightImage = scene.images[neighbor.idx.ID];
+		const Image& rightImage = scene.images[neighbor.ID];
 		Disparity subpixelSteps;
 		cv::Size imageSize; Matrix3x3 H; Matrix4x4 Q;
 		DisparityMap disparityMap; AccumCostMap costMap;
@@ -2354,7 +2354,7 @@ bool MVS::STEREO::ExportCamerasEngin(const Scene& scene, const String& fileName)
 			image.neighbors.size()
 		);
 		for (const auto& neighbor: image.neighbors)
-			f.print(" %u", neighbor.idx.ID);
+			f.print(" %u", neighbor.ID);
 		f.print("\n");
 	}
 

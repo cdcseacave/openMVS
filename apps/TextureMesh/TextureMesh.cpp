@@ -47,8 +47,8 @@ namespace {
 
 namespace OPT {
 String strInputFileName;
-String strOutputFileName;
 String strMeshFileName;
+String strOutputFileName;
 String strViewsFileName;
 float fDecimateMesh;
 unsigned nCloseHoles;
@@ -87,7 +87,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		("working-folder,w", boost::program_options::value<std::string>(&WORKING_FOLDER), "working directory (default current directory)")
 		("config-file,c", boost::program_options::value<std::string>(&OPT::strConfigFileName)->default_value(APPNAME _T(".cfg")), "file name containing program options")
 		("export-type", boost::program_options::value<std::string>(&OPT::strExportType)->default_value(_T("ply")), "file type used to export the 3D scene (ply, obj, glb or gltf)")
-		("archive-type", boost::program_options::value(&OPT::nArchiveType)->default_value(ARCHIVE_DEFAULT), "project archive type: 0-text, 1-binary, 2-compressed binary")
+		("archive-type", boost::program_options::value(&OPT::nArchiveType)->default_value(ARCHIVE_MVS), "project archive type: -1-interface, 0-text, 1-binary, 2-compressed binary")
 		("process-priority", boost::program_options::value(&OPT::nProcessPriority)->default_value(-1), "process priority (below normal by default)")
 		("max-threads", boost::program_options::value(&OPT::nMaxThreads)->default_value(0), "maximum number of threads (0 for using all available cores)")
 		#if TD_VERBOSE != TD_VERBOSE_OFF
@@ -108,6 +108,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	boost::program_options::options_description config("Texture options");
 	config.add_options()
 		("input-file,i", boost::program_options::value<std::string>(&OPT::strInputFileName), "input filename containing camera poses and image list")
+		("mesh-file,m", boost::program_options::value<std::string>(&OPT::strMeshFileName), "mesh file name to texture (overwrite existing mesh)")
 		("output-file,o", boost::program_options::value<std::string>(&OPT::strOutputFileName), "output filename for storing the mesh")
 		("decimate", boost::program_options::value(&OPT::fDecimateMesh)->default_value(1.f), "decimation factor in range [0..1] to be applied to the input surface before refinement (0 - auto, 1 - disabled)")
 		("close-holes", boost::program_options::value(&OPT::nCloseHoles)->default_value(30), "try to close small holes in the input surface (0 - disabled)")
@@ -130,7 +131,6 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	// in config file, but will not be shown to the user
 	boost::program_options::options_description hidden("Hidden options");
 	hidden.add_options()
-		("mesh-file", boost::program_options::value<std::string>(&OPT::strMeshFileName), "mesh file name to texture (overwrite the existing mesh)")
 		("views-file", boost::program_options::value<std::string>(&OPT::strViewsFileName), "file name containing the list of views to be used for texturing (optional)")
 		;
 
@@ -169,12 +169,12 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 
 	// validate input
 	Util::ensureValidPath(OPT::strInputFileName);
-	if (OPT::vm.count("help") || OPT::strInputFileName.IsEmpty()) {
+	if (OPT::vm.count("help") || OPT::strInputFileName.empty()) {
 		boost::program_options::options_description visible("Available options");
 		visible.add(generic).add(config);
 		GET_LOG() << visible;
 	}
-	if (OPT::strInputFileName.IsEmpty())
+	if (OPT::strInputFileName.empty())
 		return false;
 	OPT::strExportType = OPT::strExportType.ToLower();
 	if (OPT::strExportType == _T("obj"))
@@ -189,10 +189,13 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		OPT::strExportType =  _T(".ply");
 
 	// initialize optional options
+	Util::ensureValidPath(OPT::strMeshFileName);
 	Util::ensureValidPath(OPT::strOutputFileName);
-	if (OPT::strOutputFileName.IsEmpty())
-		OPT::strOutputFileName = Util::getFileFullName(OPT::strInputFileName) + _T("_texture.mvs");
 	Util::ensureValidPath(OPT::strViewsFileName);
+	if (OPT::strMeshFileName.empty() && OPT::nArchiveType == ARCHIVE_MVS)
+		OPT::strMeshFileName = Util::getFileFullName(OPT::strInputFileName) + _T(".ply");
+	if (OPT::strOutputFileName.empty())
+		OPT::strOutputFileName = Util::getFileFullName(OPT::strInputFileName) + _T("_texture.mvs");
 
 	// initialize global options
 	Process::setCurrentProcessPriority((Process::Priority)OPT::nProcessPriority);
@@ -271,11 +274,12 @@ int main(int argc, LPCTSTR* argv)
 
 	Scene scene(OPT::nMaxThreads);
 	// load and texture the mesh
-	if (!scene.Load(MAKE_PATH_SAFE(OPT::strInputFileName)))
+	const Scene::SCENE_TYPE sceneType(scene.Load(MAKE_PATH_SAFE(OPT::strInputFileName)));
+	if (sceneType == Scene::SCENE_NA)
 		return EXIT_FAILURE;
-	if (!OPT::strMeshFileName.IsEmpty()) {
-		// load given mesh
-		scene.mesh.Load(MAKE_PATH_SAFE(OPT::strMeshFileName));
+	if (!OPT::strMeshFileName.empty() && !scene.mesh.Load(MAKE_PATH_SAFE(OPT::strMeshFileName))) {
+		VERBOSE("error: cannot load mesh file");
+		return EXIT_FAILURE;
 	}
 	if (scene.mesh.IsEmpty()) {
 		VERBOSE("error: empty initial mesh");
@@ -312,12 +316,13 @@ int main(int argc, LPCTSTR* argv)
 	VERBOSE("Mesh texturing completed: %u vertices, %u faces (%s)", scene.mesh.vertices.GetSize(), scene.mesh.faces.GetSize(), TD_TIMER_GET_FMT().c_str());
 
 	// save the final mesh
-	scene.Save(baseFileName+_T(".mvs"), (ARCHIVE_TYPE)OPT::nArchiveType);
 	scene.mesh.Save(baseFileName+OPT::strExportType);
 	#if TD_VERBOSE != TD_VERBOSE_OFF
 	if (VERBOSITY_LEVEL > 2)
 		scene.ExportCamerasMLP(baseFileName+_T(".mlp"), baseFileName+OPT::strExportType);
 	#endif
+	if (OPT::nArchiveType != ARCHIVE_MVS || sceneType != Scene::SCENE_INTERFACE)
+		scene.Save(baseFileName+_T(".mvs"), (ARCHIVE_TYPE)OPT::nArchiveType);
 	}
 
 	if (OPT::nOrthoMapResolution) {

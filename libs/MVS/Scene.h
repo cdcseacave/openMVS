@@ -80,7 +80,13 @@ public:
 	bool SaveViewNeighbors(const String& fileName) const;
 	bool Import(const String& fileName);
 
-	bool Load(const String& fileName, bool bImport=false);
+	enum SCENE_TYPE {
+		SCENE_NA = 0,
+		SCENE_INTERFACE = 1,
+		SCENE_MVS = 2,
+		SCENE_IMPORT = 3,
+	};
+	SCENE_TYPE Load(const String& fileName, bool bImport=false);
 	bool Save(const String& fileName, ARCHIVE_TYPE type=ARCHIVE_DEFAULT) const;
 
 	bool EstimateNeighborViewsPointCloud(unsigned maxResolution=16);

@@ -31,8 +31,6 @@
 
 #include "Common.h"
 #include "Scene.h"
-#define _USE_OPENCV
-#include "Interface.h"
 #include "../Math/SimilarityTransform.h"
 
 using namespace MVS;
@@ -156,6 +154,9 @@ bool Scene::LoadInterface(const String & fileName)
 				return false;
 		}
 		imageData.UpdateCamera(platforms);
+		// init neighbors
+		imageData.neighbors.CopyOf(image.viewScores.data(), (uint32_t)image.viewScores.size());
+		imageData.avgDepth = image.avgDepth;
 		++nCalibratedImages;
 		nTotalPixels += imageData.width * imageData.height;
 		DEBUG_ULTIMATE("Image loaded %3u: %s", ID, Util::getFileNameExt(imageData.name).c_str());
@@ -259,6 +260,8 @@ bool Scene::SaveInterface(const String & fileName, int version) const
 			if (!platform.cameras[image.cameraID].HasResolution())
 				platform.SetFullK(image.cameraID, imageData.camera.K, imageData.width, imageData.height);
 		}
+		image.viewScores = std::vector<MVS::Interface::Image::ViewScore>(imageData.neighbors.begin(), imageData.neighbors.end());
+		image.avgDepth = imageData.avgDepth;
 	}
 
 	// export 3D points
@@ -445,7 +448,7 @@ bool Scene::LoadViewNeighbors(const String& fileName)
 		FOREACH(i, imageData.neighbors) {
 			const IIndex nID(String::FromString<IIndex>(argv[i+1], NO_ID));
 			ASSERT(nID != NO_ID);
-			imageData.neighbors[i] = ViewScore{ViewInfo{nID, 0, 1.f, FD2R(15.f), 0.5f}, 3.f};
+			imageData.neighbors[i] = ViewScore{nID, 0, 1.f, FD2R(15.f), 0.5f, 3.f};
 		}
 	}
 
@@ -467,7 +470,7 @@ bool Scene::SaveViewNeighbors(const String& fileName) const
 		const Image& imageData = images[ID];
 		file.print("%u", ID);
 		for (const ViewScore& neighbor: imageData.neighbors)
-			file.print(" %u", neighbor.idx.ID);
+			file.print(" %u", neighbor.ID);
 		file.print("\n");
 	}
 
@@ -500,7 +503,7 @@ bool Scene::Import(const String& fileName)
 			DEBUG_EXTRA("error: invalid PLY file");
 			return false;
 		}
-		for (int i = 0; i < (int)ply.elems.size(); ++i) {
+		for (int i = 0; i < ply.get_elements_count(); ++i) {
 			int elem_count;
 			LPCSTR elem_name = ply.setup_element_read(i, &elem_count);
 			if (PLY::equal_strings("vertex", elem_name)) {
@@ -520,7 +523,7 @@ bool Scene::Import(const String& fileName)
 } // Import
 /*----------------------------------------------------------------*/
 
-bool Scene::Load(const String& fileName, bool bImport)
+Scene::SCENE_TYPE Scene::Load(const String& fileName, bool bImport)
 {
 	TD_TIMER_STARTD();
 	Release();
@@ -529,25 +532,25 @@ bool Scene::Load(const String& fileName, bool bImport)
 	// open the input stream
 	std::ifstream fs(fileName, std::ios::in | std::ios::binary);
 	if (!fs.is_open())
-		return false;
+		return SCENE_NA;
 	// load project header ID
 	char szHeader[4];
 	fs.read(szHeader, 4);
 	if (!fs || _tcsncmp(szHeader, PROJECT_ID, 4) != 0) {
 		fs.close();
 		if (bImport && Import(fileName))
-			return true;
+			return SCENE_IMPORT;
 		if (LoadInterface(fileName))
-			return true;
+			return SCENE_INTERFACE;
 		VERBOSE("error: invalid project");
-		return false;
+		return SCENE_NA;
 	}
 	// load project version
 	uint32_t nVer;
 	fs.read((char*)&nVer, sizeof(uint32_t));
 	if (!fs || nVer != PROJECT_VER) {
 		VERBOSE("error: different project version");
-		return false;
+		return SCENE_NA;
 	}
 	// load stream type
 	uint32_t nType;
@@ -557,7 +560,7 @@ bool Scene::Load(const String& fileName, bool bImport)
 	fs.read((char*)&nReserved, sizeof(uint64_t));
 	// serialize in the current state
 	if (!SerializeLoad(*this, fs, (ARCHIVE_TYPE)nType))
-		return false;
+		return SCENE_NA;
 	// init images
 	nCalibratedImages = 0;
 	size_t nTotalPixels(0);
@@ -575,9 +578,13 @@ bool Scene::Load(const String& fileName, bool bImport)
 				TD_TIMER_GET_FMT().c_str(),
 				images.GetSize(), nCalibratedImages, (double)nTotalPixels/(1024.0*1024.0), (double)nTotalPixels/(1024.0*1024.0*nCalibratedImages),
 				pointcloud.points.GetSize(), mesh.vertices.GetSize(), mesh.faces.GetSize());
-	return true;
+	return SCENE_MVS;
 	#else
-	return false;
+	if (bImport && Import(fileName))
+		return SCENE_IMPORT;
+	if (LoadInterface(fileName))
+		return SCENE_INTERFACE;
+	return SCENE_NA;
 	#endif
 } // Load
 
@@ -706,7 +713,7 @@ bool Scene::ExportMeshToDepthMaps(const String& baseName)
 				IIndexArr IDs(0, image.neighbors.size()+1);
 				IDs.push_back(idxImage);
 				for (const ViewScore& neighbor: image.neighbors)
-					IDs.push_back(neighbor.idx.ID);
+					IDs.push_back(neighbor.ID);
 				return ExportDepthDataRaw(fileName, image.name, IDs, image.GetSize(), image.camera.K, image.camera.R, image.camera.C, 0.001f, FLT_MAX, depthMap, normalMap, ConfidenceMap(), ViewsMap());
 			} ()) ||
 			(nType == 1 && !depthMap.Save(fileName)) ||
@@ -899,20 +906,22 @@ bool Scene::SelectNeighborViews(uint32_t ID, IndexArr& points, unsigned nMinView
 			projs.Empty();
 			// store image score
 			ViewScore& neighbor = neighbors.AddEmpty();
-			neighbor.idx.ID = IDB;
-			neighbor.idx.points = score.points;
-			neighbor.idx.scale = score.avgScale/score.points;
-			neighbor.idx.angle = score.avgAngle/score.points;
-			neighbor.idx.area = area;
+			neighbor.ID = IDB;
+			neighbor.points = score.points;
+			neighbor.scale = score.avgScale/score.points;
+			neighbor.angle = score.avgAngle/score.points;
+			neighbor.area = area;
 			neighbor.score = score.score*MAXF(area,0.01f);
 		}
-		neighbors.Sort();
+		neighbors.Sort([](const ViewScore& i, const ViewScore& j) {
+			return i.score > j.score;
+		});
 		#if TD_VERBOSE != TD_VERBOSE_OFF
 		// print neighbor views
 		if (VERBOSITY_LEVEL > 2) {
 			String msg;
 			FOREACH(n, neighbors)
-				msg += String::FormatString(" %3u(%upts,%.2fscl)", neighbors[n].idx.ID, neighbors[n].idx.points, neighbors[n].idx.scale);
+				msg += String::FormatString(" %3u(%upts,%.2fscl)", neighbors[n].ID, neighbors[n].points, neighbors[n].scale);
 			VERBOSE("Reference image %3u sees %u views:%s (%u shared points)", ID, neighbors.size(), msg.c_str(), nPoints);
 		}
 		#endif
@@ -949,9 +958,9 @@ bool Scene::FilterNeighborViews(ViewScoreArr& neighbors, float fMinArea, float f
 	RFOREACH(n, neighbors) {
 		const ViewScore& neighbor = neighbors[n];
 		if (neighbors.size() > nMinViews &&
-			(neighbor.idx.area < fMinArea ||
-			 !ISINSIDE(neighbor.idx.scale, fMinScale, fMaxScale) ||
-			 !ISINSIDE(neighbor.idx.angle, fMinAngle, fMaxAngle)))
+			(neighbor.area < fMinArea ||
+			 !ISINSIDE(neighbor.scale, fMinScale, fMaxScale) ||
+			 !ISINSIDE(neighbor.angle, fMinAngle, fMaxAngle)))
 			neighbors.RemoveAtMove(n);
 	}
 	if (neighbors.size() > nMaxViews)
@@ -1389,13 +1398,13 @@ bool Scene::ExportChunks(const ImagesChunkArr& chunks, const String& path, ARCHI
 		for (Image& image: subset.images) {
 			RFOREACH(i, image.neighbors) {
 				ViewScore& neighbor = image.neighbors[i];
-				const auto itImage(mapImages.find(neighbor.idx.ID));
+				const auto itImage(mapImages.find(neighbor.ID));
 				if (itImage == mapImages.end()) {
 					image.neighbors.RemoveAtMove(i);
 					continue;
 				}
 				ASSERT(itImage->second < subset.images.size());
-				neighbor.idx.ID = itImage->second;
+				neighbor.ID = itImage->second;
 			}
 		}
 		// extract point-cloud
@@ -1742,7 +1751,7 @@ bool Scene::ComputeTowerCylinder(Point2f& centerPoint, float& fRadius, float& fR
 {
 	// disregard tower mode for scenes with less than 20 cameras
 	if (towerMode > 0 && images.size() < 20) {
-		DEBUG("error: too few images to be a tower: '%d'", images.size());
+		DEBUG_ULTIMATE("error: too few images to be a tower: '%d'", images.size());
 		return false;
 	}
 
@@ -1763,7 +1772,7 @@ bool Scene::ComputeTowerCylinder(Point2f& centerPoint, float& fRadius, float& fR
 	if (quality.y / quality.z > 0.6f || quality.x / quality.y < 0.8f) {
 		// does not seem to be a line
 		if (towerMode > 0) {
-			DEBUG("error: does not seem to be a tower: X(%.2f), Y(%.2f), Z(%.2f)", quality.x, quality.y, quality.z);
+			DEBUG_ULTIMATE("error: does not seem to be a tower: X(%.2f), Y(%.2f), Z(%.2f)", quality.x, quality.y, quality.z);
 			return false;
 		}
 	}

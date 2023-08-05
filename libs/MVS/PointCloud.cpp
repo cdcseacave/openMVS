@@ -226,46 +226,95 @@ Planef PointCloud::EstimateGroundPlane(const ImageArr& images, float planeThresh
 
 
 // define a PLY file format composed only of vertices
+namespace PointCloudInternal {
 namespace BasicPLY {
-	typedef PointCloud::Point Point;
-	typedef PointCloud::Color Color;
-	typedef PointCloud::Normal Normal;
-	// list of property information for a vertex
-	struct PointColNormal {
-		Point p;
-		Color c;
-		Normal n;
-		float scale;
-		float confidence;
-	};
-	static const PLY::PlyProperty vert_props[] = {
-		{"x",     PLY::Float32, PLY::Float32, offsetof(PointColNormal,p.x), 0, 0, 0, 0},
-		{"y",     PLY::Float32, PLY::Float32, offsetof(PointColNormal,p.y), 0, 0, 0, 0},
-		{"z",     PLY::Float32, PLY::Float32, offsetof(PointColNormal,p.z), 0, 0, 0, 0},
-		{"red",   PLY::Uint8,   PLY::Uint8,   offsetof(PointColNormal,c.r), 0, 0, 0, 0},
-		{"green", PLY::Uint8,   PLY::Uint8,   offsetof(PointColNormal,c.g), 0, 0, 0, 0},
-		{"blue",  PLY::Uint8,   PLY::Uint8,   offsetof(PointColNormal,c.b), 0, 0, 0, 0},
-		{"nx",    PLY::Float32, PLY::Float32, offsetof(PointColNormal,n.x), 0, 0, 0, 0},
-		{"ny",    PLY::Float32, PLY::Float32, offsetof(PointColNormal,n.y), 0, 0, 0, 0},
-		{"nz",    PLY::Float32, PLY::Float32, offsetof(PointColNormal,n.z), 0, 0, 0, 0},
-		{"scale", PLY::Float32, PLY::Float32, offsetof(PointColNormal,scale), 0, 0, 0, 0},
-		{"confidence", PLY::Float32, PLY::Float32, offsetof(PointColNormal,confidence), 0, 0, 0, 0}
-	};
 	// list of the kinds of elements in the PLY
 	static const char* elem_names[] = {
 		"vertex"
 	};
+	// list of property information for a vertex
+	struct Vertex {
+		PointCloud::Point p;
+		PointCloud::Color c;
+		PointCloud::Normal n;
+		struct Views {
+			uint8_t num;
+			uint32_t* pIndices;
+			float* pWeights;
+		} views;
+		float confidence;
+		float scale;
+		static void InitLoadProps(PLY& ply, int elem_count,
+			PointCloud::PointArr& points, PointCloud::ColorArr& colors, PointCloud::NormalArr& normals, PointCloud::PointViewArr& views, PointCloud::PointWeightArr& weights)
+		{
+			PLY::PlyElement* elm = ply.find_element(elem_names[0]);
+			const size_t nMaxProps(SizeOfArray(props));
+			for (size_t p=0; p<nMaxProps; ++p) {
+				if (ply.find_property(elm, props[p].name.c_str()) < 0)
+					continue;
+				ply.setup_property(props[p]);
+				switch (p) {
+				case 0: points.resize((IDX)elem_count); break;
+				case 3: case 13: colors.resize((IDX)elem_count); break;
+				case 6: normals.resize((IDX)elem_count); break;
+				case 9: views.resize((IDX)elem_count); break;
+				case 10: weights.resize((IDX)elem_count); break;
+				}
+			}
+		}
+		static void InitSaveProps(PLY& ply, int elem_count,
+			bool bColors, bool bNormals, bool bViews, bool bWeights, bool bConfidence=false, bool bScale=false)
+		{
+			ply.describe_property(elem_names[0], 3, props+0);
+			if (bColors)
+				ply.describe_property(elem_names[0], 3, props+3);
+			if (bNormals)
+				ply.describe_property(elem_names[0], 3, props+6);
+			if (bViews)
+				ply.describe_property(elem_names[0], props[9]);
+			if (bWeights)
+				ply.describe_property(elem_names[0], props[10]);
+			if (bConfidence)
+				ply.describe_property(elem_names[0], props[11]);
+			if (bScale)
+				ply.describe_property(elem_names[0], props[12]);
+			if (elem_count)
+				ply.element_count(elem_names[0], elem_count);
+		}
+		static const PLY::PlyProperty props[16];
+	};
+	const PLY::PlyProperty Vertex::props[16] = {
+		{"x",             PLY::Float32, PLY::Float32, offsetof(Vertex,p.x), 0, 0, 0, 0},
+		{"y",             PLY::Float32, PLY::Float32, offsetof(Vertex,p.y), 0, 0, 0, 0},
+		{"z",             PLY::Float32, PLY::Float32, offsetof(Vertex,p.z), 0, 0, 0, 0},
+		{"red",           PLY::Uint8,   PLY::Uint8,   offsetof(Vertex,c.r), 0, 0, 0, 0},
+		{"green",         PLY::Uint8,   PLY::Uint8,   offsetof(Vertex,c.g), 0, 0, 0, 0},
+		{"blue",          PLY::Uint8,   PLY::Uint8,   offsetof(Vertex,c.b), 0, 0, 0, 0},
+		{"nx",            PLY::Float32, PLY::Float32, offsetof(Vertex,n.x), 0, 0, 0, 0},
+		{"ny",            PLY::Float32, PLY::Float32, offsetof(Vertex,n.y), 0, 0, 0, 0},
+		{"nz",            PLY::Float32, PLY::Float32, offsetof(Vertex,n.z), 0, 0, 0, 0},
+		{"view_indices",  PLY::Uint32,  PLY::Uint32,  offsetof(Vertex,views.pIndices), 1, PLY::Uint8, PLY::Uint8, offsetof(Vertex,views.num)},
+		{"view_weights",  PLY::Float32, PLY::Float32, offsetof(Vertex,views.pWeights), 1, PLY::Uint8, PLY::Uint8, offsetof(Vertex,views.num)},
+		{"confidence",    PLY::Float32, PLY::Float32, offsetof(Vertex,confidence), 0, 0, 0, 0},
+		{"value",         PLY::Float32, PLY::Float32, offsetof(Vertex,scale), 0, 0, 0, 0},
+		// duplicates
+		{"diffuse_red",   PLY::Uint8,   PLY::Uint8,   offsetof(Vertex,c.r), 0, 0, 0, 0},
+		{"diffuse_green", PLY::Uint8,   PLY::Uint8,   offsetof(Vertex,c.g), 0, 0, 0, 0},
+		{"diffuse_blue",  PLY::Uint8,   PLY::Uint8,   offsetof(Vertex,c.b), 0, 0, 0, 0}
+	};
 } // namespace BasicPLY
+} // namespace PointCloudInternal
 
 // load the dense point cloud from a PLY file
 bool PointCloud::Load(const String& fileName)
 {
 	TD_TIMER_STARTD();
 
-	ASSERT(!fileName.IsEmpty());
+	ASSERT(!fileName.empty());
 	Release();
 
 	// open PLY file and read header
+	using namespace PointCloudInternal;
 	PLY ply;
 	if (!ply.read(fileName)) {
 		DEBUG_EXTRA("error: invalid PLY file");
@@ -273,98 +322,82 @@ bool PointCloud::Load(const String& fileName)
 	}
 
 	// read PLY body
-	BasicPLY::PointColNormal vertex;
-	for (int i = 0; i < (int)ply.elems.size(); i++) {
+	for (int i = 0; i < ply.get_elements_count(); i++) {
 		int elem_count;
 		LPCSTR elem_name = ply.setup_element_read(i, &elem_count);
 		if (PLY::equal_strings(BasicPLY::elem_names[0], elem_name)) {
-			PLY::PlyElement* elm = ply.find_element(elem_name);
-			const size_t nMaxProps(SizeOfArray(BasicPLY::vert_props));
-			for (size_t p=0; p<nMaxProps; ++p) {
-				if (ply.find_property(elm, BasicPLY::vert_props[p].name.c_str()) < 0)
-					continue;
-				ply.setup_property(BasicPLY::vert_props[p]);
-				switch (p) {
-				case 0: points.Resize((IDX)elem_count); break;
-				case 3: colors.Resize((IDX)elem_count); break;
-				case 6: normals.Resize((IDX)elem_count); break;
-				}
-			}
+			BasicPLY::Vertex::InitLoadProps(ply, elem_count, points, colors, normals, pointViews, pointWeights);
+			BasicPLY::Vertex vertex;
 			for (int v=0; v<elem_count; ++v) {
 				ply.get_element(&vertex);
 				points[v] = vertex.p;
-				if (!colors.IsEmpty())
+				if (!colors.empty())
 					colors[v] = vertex.c;
-				if (!normals.IsEmpty())
+				if (!normals.empty())
 					normals[v] = vertex.n;
+				if (!pointViews.empty())
+					pointViews[v].CopyOfRemove(ViewArr(vertex.views.num, vertex.views.pIndices));
+				if (!pointWeights.empty())
+					pointWeights[v].CopyOfRemove(WeightArr(vertex.views.num, vertex.views.pWeights));
 			}
 		} else {
 			ply.get_other_element();
 		}
 	}
-	if (points.IsEmpty()) {
+	if (points.empty()) {
 		DEBUG_EXTRA("error: invalid point-cloud");
 		return false;
 	}
 
-	DEBUG_EXTRA("Point-cloud loaded: %u points (%s)", points.GetSize(), TD_TIMER_GET_FMT().c_str());
+	DEBUG_EXTRA("Point-cloud '%s' loaded: %u points (%s)", Util::getFileNameExt(fileName).c_str(), points.size(), TD_TIMER_GET_FMT().c_str());
 	return true;
 } // Load
 
 // save the dense point cloud as PLY file
-bool PointCloud::Save(const String& fileName, bool bLegacyTypes, bool bBinary) const
+bool PointCloud::Save(const String& fileName, bool bViews, bool bLegacyTypes, bool bBinary) const
 {
-	if (points.IsEmpty())
+	if (points.empty())
 		return false;
 	TD_TIMER_STARTD();
 
 	// create PLY object
-	ASSERT(!fileName.IsEmpty());
+	ASSERT(!fileName.empty());
 	Util::ensureFolder(fileName);
+	using namespace PointCloudInternal;
 	PLY ply;
 	if (bLegacyTypes)
 		ply.set_legacy_type_names();
-	if (!ply.write(fileName, 1, BasicPLY::elem_names, bBinary?PLY::BINARY_LE:PLY::ASCII, 64*1024))
+	if (!ply.write(fileName, 1, BasicPLY::elem_names, bBinary?PLY::BINARY_LE:PLY::ASCII))
 		return false;
 
-	if (normals.IsEmpty()) {
-		// describe what properties go into the vertex elements
-		ply.describe_property(BasicPLY::elem_names[0], 6, BasicPLY::vert_props);
+	// write the header
+	BasicPLY::Vertex::InitSaveProps(ply, (int)points.size(), !colors.empty(), !normals.empty(),
+		bViews && !pointViews.empty(), bViews && !pointWeights.empty());
+	if (!ply.header_complete())
+		return false;
 
-		// write the header
-		ply.element_count(BasicPLY::elem_names[0], (int)points.GetSize());
-		if (!ply.header_complete())
-			return false;
-
-		// export the array of 3D points
-		BasicPLY::PointColNormal vertex;
-		FOREACH(i, points) {
-			// export the vertex position, normal and color
-			vertex.p = points[i];
-			vertex.c = (!colors.IsEmpty() ? colors[i] : Color::WHITE);
-			ply.put_element(&vertex);
-		}
-	} else {
-		// describe what properties go into the vertex elements
-		ply.describe_property(BasicPLY::elem_names[0], 9, BasicPLY::vert_props);
-
-		// write the header
-		ply.element_count(BasicPLY::elem_names[0], (int)points.GetSize());
-		if (!ply.header_complete())
-			return false;
-
-		// export the array of 3D points
-		BasicPLY::PointColNormal vertex;
-		FOREACH(i, points) {
-			// export the vertex position, normal and color
-			vertex.p = points[i];
+	// export the array of 3D points
+	BasicPLY::Vertex vertex;
+	FOREACH(i, points) {
+		// export the vertex position, color, normal and views
+		vertex.p = points[i];
+		if (!colors.empty())
+			vertex.c = colors[i];
+		if (!normals.empty())
 			vertex.n = normals[i];
-			vertex.c = (!colors.IsEmpty() ? colors[i] : Color::WHITE);
-			ply.put_element(&vertex);
+		if (!pointViews.empty()) {
+			vertex.views.num = pointViews[i].size();
+			vertex.views.pIndices = pointViews[i].data();
 		}
+		if (!pointWeights.empty()) {
+			ASSERT(vertex.views.num == pointWeights[i].size());
+			vertex.views.pWeights = pointWeights[i].data();
+		}
+		ply.put_element(&vertex);
 	}
+	ASSERT(ply.get_current_element_count() == (int)points.size());
 
-	DEBUG_EXTRA("Point-cloud saved: %u points (%s)", points.GetSize(), TD_TIMER_GET_FMT().c_str());
+	DEBUG_EXTRA("Point-cloud '%s' saved: %u points (%s)", Util::getFileNameExt(fileName).c_str(), points.GetSize(), TD_TIMER_GET_FMT().c_str());
 	return true;
 } // Save
 
@@ -378,39 +411,39 @@ bool PointCloud::SaveNViews(const String& fileName, uint32_t minViews, bool bLeg
 	// create PLY object
 	ASSERT(!fileName.IsEmpty());
 	Util::ensureFolder(fileName);
+	using namespace PointCloudInternal;
 	PLY ply;
 	if (bLegacyTypes)
 		ply.set_legacy_type_names();
 	if (!ply.write(fileName, 1, BasicPLY::elem_names, bBinary?PLY::BINARY_LE:PLY::ASCII, 64*1024))
 		return false;
 
+	BasicPLY::Vertex vertex;
 	if (normals.IsEmpty()) {
 		// describe what properties go into the vertex elements
-		ply.describe_property(BasicPLY::elem_names[0], 6, BasicPLY::vert_props);
+		ply.describe_property(BasicPLY::elem_names[0], 6, BasicPLY::Vertex::props);
 
 		// export the array of 3D points
-		BasicPLY::PointColNormal vertex;
 		FOREACH(i, points) {
 			if (pointViews[i].size() < minViews)
 				continue;
-			// export the vertex position, normal and color
+			// export the vertex position and color
 			vertex.p = points[i];
-			vertex.c = (!colors.IsEmpty() ? colors[i] : Color::WHITE);
+			vertex.c = colors.empty() ? Pixel8U::WHITE : colors[i];
 			ply.put_element(&vertex);
 		}
 	} else {
 		// describe what properties go into the vertex elements
-		ply.describe_property(BasicPLY::elem_names[0], 9, BasicPLY::vert_props);
+		ply.describe_property(BasicPLY::elem_names[0], 9, BasicPLY::Vertex::props);
 
 		// export the array of 3D points
-		BasicPLY::PointColNormal vertex;
 		FOREACH(i, points) {
 			if (pointViews[i].size() < minViews)
 				continue;
 			// export the vertex position, normal and color
 			vertex.p = points[i];
 			vertex.n = normals[i];
-			vertex.c = (!colors.IsEmpty() ? colors[i] : Color::WHITE);
+			vertex.c = colors.empty() ? Pixel8U::WHITE : colors[i];
 			ply.put_element(&vertex);
 		}
 	}
@@ -435,27 +468,24 @@ bool PointCloud::SaveWithScale(const String& fileName, const ImageArr& images, f
 	// create PLY object
 	ASSERT(!fileName.empty());
 	Util::ensureFolder(fileName);
+	using namespace PointCloudInternal;
 	PLY ply;
 	if (bLegacyTypes)
 		ply.set_legacy_type_names();
-	if (!ply.write(fileName, 1, BasicPLY::elem_names, bBinary?PLY::BINARY_LE:PLY::ASCII, 64*1024))
+	if (!ply.write(fileName, 1, BasicPLY::elem_names, bBinary?PLY::BINARY_LE:PLY::ASCII))
 		return false;
 
-	// describe what properties go into the vertex elements
-	ply.describe_property(BasicPLY::elem_names[0], 11, BasicPLY::vert_props);
-
 	// export the array of 3D points
-	BasicPLY::PointColNormal vertex;
+	BasicPLY::Vertex::InitSaveProps(ply, (int)points.size(), !colors.empty(), !normals.empty(), false, false, true, true);
+	if (!ply.header_complete())
+		return false;
+	BasicPLY::Vertex vertex;
 	FOREACH(i, points) {
 		// export the vertex position, normal and scale
 		vertex.p = points[i];
-		if (colors.empty())
-			vertex.c = Color::WHITE;
-		else
+		if (!colors.empty())
 			vertex.c = colors[i];
-		if (normals.empty())
-			vertex.n = Vec3f::ZERO;
-		else
+		if (!normals.empty())
 			vertex.n = normals[i];
 		#if 0
 		// one sample per view
@@ -499,10 +529,6 @@ bool PointCloud::SaveWithScale(const String& fileName, const ImageArr& images, f
 		#endif
 	}
 	ASSERT(ply.get_current_element_count() == (int)points.size());
-
-	// write the header
-	if (!ply.header_complete())
-		return false;
 
 	DEBUG_EXTRA("Point-cloud saved: %u points with scale (%s)", points.size(), TD_TIMER_GET_FMT().c_str());
 	return true;

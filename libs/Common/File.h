@@ -75,15 +75,25 @@
 #include <dirent.h>
 #define _taccess access
 #endif
+#ifdef __APPLE__
+#define fdatasync fsync
+#endif
 
 
 // D E F I N E S ///////////////////////////////////////////////////
 
-/* size of the stored file size variable */
+// size of the stored file size variable
 #ifdef LARGEFILESIZE
 #define FILESIZE	size_f_t
 #else
 #define FILESIZE	size_t
+#endif
+
+// invalid file handle
+#ifdef _MSC_VER
+#define FILE_INVALID_HANDLE INVALID_HANDLE_VALUE
+#else
+#define FILE_INVALID_HANDLE int(-1)
 #endif
 
 
@@ -106,11 +116,54 @@ public:
 		TRUNCATE = 0x04
 	} FMCREATE;
 
-	typedef enum FMFALGS_TYPE {
-		NOBUFFER = 0x01,
-		RANDOM = 0x02,
-		SEQUENTIAL = 0x03
-	} FMFALGS;
+	typedef enum FMFLAGS_TYPE {
+		SYNC = 0x01,
+		NOBUFFER = 0x02,
+		RANDOM = 0x04,
+		SEQUENTIAL = 0x08
+	} FMFLAGS;
+
+	inline File() : h(FILE_INVALID_HANDLE) {
+		#ifndef _RELEASE
+		breakRead = -1;
+		breakWrite = -1;
+		#endif
+	}
+	inline File(LPCTSTR aFileName, int access, int mode, int flags=0) : h(FILE_INVALID_HANDLE) {
+		#ifndef _RELEASE
+		breakRead = -1;
+		breakWrite = -1;
+		#endif
+		File::open(aFileName, access, mode, flags);
+	}
+
+	virtual ~File() {
+		File::close();
+	}
+
+	#ifdef _SUPPORT_CPP11
+	inline File(File&& rhs) : h(rhs.h) {
+		#ifndef _RELEASE
+		breakRead = rhs.breakRead;
+		breakWrite = rhs.breakWrite;
+		#endif
+		rhs.h = FILE_INVALID_HANDLE;
+	}
+
+	inline File& operator=(File&& rhs) {
+		h = rhs.h;
+		#ifndef _RELEASE
+		breakRead = rhs.breakRead;
+		breakWrite = rhs.breakWrite;
+		#endif
+		rhs.h = FILE_INVALID_HANDLE;
+		return *this;
+	}
+	#endif
+
+	bool isOpen() const {
+		return h != FILE_INVALID_HANDLE;
+	}
 
 #ifdef _MSC_VER
 	typedef enum FMACCESS_TYPE {
@@ -120,30 +173,15 @@ public:
 	} FMACCESS;
 
 	typedef enum FMCHECKACCESS_TYPE {
-		CA_EXIST	= 0, // existence
-		CA_WRITE	= 2, // write
-		CA_READ		= 4, // read
-		CA_RW		= CA_READ | CA_WRITE
+		CA_EXIST	= F_OK, // existence
+		CA_WRITE	= W_OK, // write
+		CA_READ		= R_OK, // read
+		CA_RW		= R_OK | W_OK,
 	} FMCHECKACCESS;
-
-	File() : h(INVALID_HANDLE_VALUE) {
-		#ifndef _RELEASE
-		breakRead = -1;
-		breakWrite = -1;
-		#endif
-	}
-
-	File(LPCTSTR aFileName, int access, int mode, int flags=0) : h(INVALID_HANDLE_VALUE) {
-		#ifndef _RELEASE
-		breakRead = -1;
-		breakWrite = -1;
-		#endif
-		open(aFileName, access, mode, flags);
-	}
 
 	/**
 	 * Open the file specified.
-	 * If there are errors, h is set to INVALID_HANDLE_VALUE.
+	 * If there are errors, h is set to FILE_INVALID_HANDLE.
 	 * Use isOpen() to check.
 	 */
 	virtual void open(LPCTSTR aFileName, int access, int mode, int flags=0) {
@@ -164,6 +202,8 @@ public:
 		}
 
 		DWORD f = 0;
+		if (flags & SYNC)
+			f |= FILE_FLAG_WRITE_THROUGH;
 		if (flags & NOBUFFER)
 			f |= FILE_FLAG_NO_BUFFERING;
 		if (flags & RANDOM)
@@ -174,17 +214,16 @@ public:
 		h = ::CreateFile(aFileName, access, FILE_SHARE_READ, NULL, m, f, NULL);
 	}
 
-	bool isOpen() { return h != INVALID_HANDLE_VALUE; };
-
 	virtual void close() {
 		if (isOpen()) {
 			FlushFileBuffers(h);
 			CloseHandle(h);
-			h = INVALID_HANDLE_VALUE;
+			h = FILE_INVALID_HANDLE;
 		}
 	}
 
 	uint32_t getLastModified() {
+		ASSERT(isOpen());
 		FILETIME f = {0};
 		::GetFileTime(h, NULL, NULL, &f);
 		return convertTime(&f);
@@ -203,7 +242,8 @@ public:
 		return 0;
 	}
 
-	virtual size_f_t getSize() const {
+	size_f_t getSize() const override {
+		ASSERT(isOpen());
 		DWORD x;
 		DWORD l = ::GetFileSize(h, &x);
 		if ((l == INVALID_FILE_SIZE) && (GetLastError() != NO_ERROR))
@@ -224,7 +264,8 @@ public:
 		return true;
 	}
 
-	virtual size_f_t getPos() const {
+	size_f_t getPos() const override {
+		ASSERT(isOpen());
 		LONG x = 0;
 		const DWORD l = ::SetFilePointer(h, 0, &x, FILE_CURRENT);
 		if (l == INVALID_SET_FILE_POINTER)
@@ -232,22 +273,26 @@ public:
 		return (size_f_t)l | ((size_f_t)x)<<32;
 	}
 
-	virtual bool setPos(size_f_t pos) {
+	bool setPos(size_f_t pos) override {
+		ASSERT(isOpen());
 		LONG x = (LONG) (pos>>32);
 		return (::SetFilePointer(h, (DWORD)(pos & 0xffffffff), &x, FILE_BEGIN) != INVALID_SET_FILE_POINTER);
 	}
 
 	virtual bool setEndPos(size_f_t pos) {
+		ASSERT(isOpen());
 		LONG x = (LONG) (pos>>32);
 		return (::SetFilePointer(h, (DWORD)(pos & 0xffffffff), &x, FILE_END) != INVALID_SET_FILE_POINTER);
 	}
 
 	virtual bool movePos(size_f_t pos) {
+		ASSERT(isOpen());
 		LONG x = (LONG) (pos>>32);
 		return (::SetFilePointer(h, (DWORD)(pos & 0xffffffff), &x, FILE_CURRENT) != INVALID_SET_FILE_POINTER);
 	}
 
-	virtual size_t read(void* buf, size_t len) {
+	size_t read(void* buf, size_t len) override {
+		ASSERT(isOpen());
 		#ifndef _RELEASE
 		if (breakRead != (size_t)(-1)) {
 			if (breakRead <= len) {
@@ -264,7 +309,8 @@ public:
 		return x;
 	}
 
-	virtual size_t write(const void* buf, size_t len) {
+	size_t write(const void* buf, size_t len) override {
+		ASSERT(isOpen());
 		#ifndef _RELEASE
 		if (breakWrite != (size_t)(-1)) {
 			if (breakWrite <= len) {
@@ -286,15 +332,13 @@ public:
 		return (SetEndOfFile(h) != FALSE);
 	}
 
-	virtual size_t flush() {
-		if (isOpen())
-			return 0;
-		if (!FlushFileBuffers(h))
-			return STREAM_ERROR;
-		return 0;
+	size_t flush() override {
+		ASSERT(isOpen());
+		return (FlushFileBuffers(h) ? 0 : STREAM_ERROR);
 	}
 
 	virtual bool getInfo(BY_HANDLE_FILE_INFORMATION* fileInfo) {
+		ASSERT(isOpen());
 		return (GetFileInformationByHandle(h, fileInfo) != FALSE);
 	}
 
@@ -320,7 +364,7 @@ public:
 
 	static size_f_t getSize(LPCTSTR aFileName) {
 		const HANDLE fh = ::CreateFile(aFileName, FILE_READ_ATTRIBUTES, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_FLAG_NO_BUFFERING, NULL);
-		if (fh == INVALID_HANDLE_VALUE)
+		if (fh == FILE_INVALID_HANDLE)
 			return SIZE_NA;
 		DWORD x;
 		DWORD l = ::GetFileSize(fh, &x);
@@ -331,17 +375,16 @@ public:
 	}
 
 
-	static size_f_t findFiles(const String& _strPath, const String& strMask, bool bProcessSubdir, FileInfoArr& arrFiles)
-	{	// List all the files.
+	static size_f_t findFiles(const String& _strPath, const String& strMask, bool bProcessSubdir, FileInfoArr& arrFiles) {
+		// List all the files.
 		WIN32_FIND_DATA fd;
 		HANDLE hFind;
 		size_f_t totalSize = 0;
 		String strPath(_strPath);
 		Util::ensureFolderSlash(strPath);
-		// Find all the files in this folder.
+		//Find all the files in this folder.
 		hFind = FindFirstFile((strPath + strMask).c_str(), &fd);
-		if (hFind != INVALID_HANDLE_VALUE)
-		{
+		if (hFind != FILE_INVALID_HANDLE) {
 			do {
 				// this is a file that can be used
 				if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
@@ -356,16 +399,14 @@ public:
 				#endif
 				fileInfo.attrib = fd.dwFileAttributes;
 				totalSize += fileInfo.size;
-			}
-			while (FindNextFile(hFind, &fd));
+			} while (FindNextFile(hFind, &fd));
 			FindClose(hFind);
 		}
-		// Process the subfolders also...
+		//Process the subfolders also...
 		if (!bProcessSubdir)
 			return totalSize;
 		hFind = FindFirstFile((strPath + '*').c_str(), &fd);
-		if (hFind != INVALID_HANDLE_VALUE)
-		{
+		if (hFind != FILE_INVALID_HANDLE) {
 			do {
 				// if SUBDIR then process that too
 				if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY))
@@ -376,8 +417,7 @@ public:
 					continue;
 				// Process all subfolders recursively
 				totalSize += findFiles(strPath + fd.cFileName + PATH_SEPARATOR, strMask, true, arrFiles);
-			}
-			while (FindNextFile(hFind, &fd));
+			} while (FindNextFile(hFind, &fd));
 			FindClose(hFind);
 		}
 		return totalSize;
@@ -399,24 +439,9 @@ public:
 		CA_EXEC		= X_OK, // execute
 	} FMCHECKACCESS;
 
-	File() : h(-1) {
-		#ifndef _RELEASE
-		breakRead = -1;
-		breakWrite = -1;
-		#endif
-	}
-
-	File(LPCTSTR aFileName, int access, int mode, int flags=0) : h(-1) {
-		#ifndef _RELEASE
-		breakRead = -1;
-		breakWrite = -1;
-		#endif
-		open(aFileName, access, mode, flags);
-	}
-
 	/**
 	 * Open the file specified.
-	 * If there are errors, h is set to -1.
+	 * If there are errors, h is set to FILE_INVALID_HANDLE.
 	 * Use isOpen() to check.
 	 */
 	virtual void open(LPCTSTR aFileName, int access, int mode, int flags=0) {
@@ -437,47 +462,49 @@ public:
 		if (mode & TRUNCATE)
 			m |= O_TRUNC;
 
+		if (flags & SYNC)
+			m |= O_DSYNC;
 		#ifndef __APPLE__
 		if (flags & NOBUFFER)
 			m |= O_DIRECT;
 		#endif
-		h = ::open(aFileName, m, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
+		h = ::open(aFileName, m, S_IRUSR | S_IWUSR);
 	}
 
-	bool isOpen() { return h != -1; };
-
 	virtual void close() {
-		if (h != -1) {
+		if (h != FILE_INVALID_HANDLE) {
 			::close(h);
-			h = -1;
+			h = FILE_INVALID_HANDLE;
 		}
 	}
 
 	uint32_t getLastModified() {
+		ASSERT(isOpen());
 		struct stat s;
 		if (::fstat(h, &s) == -1)
 			return 0;
-
 		return (uint32_t)s.st_mtime;
 	}
 
-	virtual size_f_t getSize() const {
+	size_f_t getSize() const override {
+		ASSERT(isOpen());
 		struct stat s;
 		if (::fstat(h, &s) == -1)
 			return SIZE_NA;
-
 		return (size_f_t)s.st_size;
 	}
 
-	virtual size_f_t getPos() const {
-		return (size_f_t) lseek(h, 0, SEEK_CUR);
+	size_f_t getPos() const override {
+		ASSERT(isOpen());
+		return (size_f_t)lseek(h, 0, SEEK_CUR);
 	}
 
-	virtual bool setPos(size_f_t pos) { return lseek(h, (off_t)pos, SEEK_SET) != (off_t)-1; };
-	virtual void setEndPos(size_f_t pos) { lseek(h, (off_t)pos, SEEK_END); };
-	virtual void movePos(size_f_t pos) { lseek(h, (off_t)pos, SEEK_CUR); };
+	bool setPos(size_f_t pos) override { ASSERT(isOpen()); return lseek(h, (off_t)pos, SEEK_SET) != (off_t)-1; }
+	virtual bool setEndPos(size_f_t pos) { ASSERT(isOpen()); return lseek(h, (off_t)pos, SEEK_END) != (off_t)-1; }
+	virtual bool movePos(size_f_t pos) { ASSERT(isOpen()); return lseek(h, (off_t)pos, SEEK_CUR) != (off_t)-1; }
 
-	virtual size_t read(void* buf, size_t len) {
+	size_t read(void* buf, size_t len) override {
+		ASSERT(isOpen());
 		#ifndef _RELEASE
 		if (breakRead != (size_t)(-1)) {
 			if (breakRead <= len) {
@@ -494,7 +521,8 @@ public:
 		return (size_t)x;
 	}
 
-	virtual size_t write(const void* buf, size_t len) {
+	size_t write(const void* buf, size_t len) override {
+		ASSERT(isOpen());
 		#ifndef _RELEASE
 		if (breakWrite != (size_t)(-1)) {
 			if (breakWrite <= len) {
@@ -514,14 +542,17 @@ public:
 	}
 
 	virtual bool setEOF() {
+		ASSERT(isOpen());
 		return (ftruncate(h, (off_t)getPos()) != -1);
 	}
 	virtual bool setSize(size_f_t newSize) {
+		ASSERT(isOpen());
 		return (ftruncate(h, (off_t)newSize) != -1);
 	}
 
-	virtual size_t flush() {
-		return fsync(h);
+	size_t flush() override {
+		ASSERT(isOpen());
+		return fdatasync(h);
 	}
 
 	static void deleteFile(LPCTSTR aFileName) { ::remove(aFileName); }
@@ -538,10 +569,10 @@ public:
 	}
 
 	static size_f_t getSize(LPCTSTR aFileName) {
-		struct stat s;
-		if (stat(aFileName, &s) == -1)
+		struct stat buf;
+		if (stat(aFileName, &buf) != 0)
 			return SIZE_NA;
-		return s.st_size;
+		return buf.st_size;
 	}
 
 #endif // _MSC_VER
@@ -576,6 +607,38 @@ public:
 		return S_ISREG(buf.st_mode) || S_ISLNK(buf.st_mode) || S_ISSOCK(buf.st_mode) || S_ISFIFO(buf.st_mode);
 	}
 
+	// time the file was originally created
+	static time_t getCreated(LPCTSTR path) {
+		struct stat buf;
+		if (stat(path, &buf) != 0) return 0;
+		return buf.st_ctime;
+	}
+	// time the file was last modified
+	static time_t getModified(LPCTSTR path) {
+		struct stat buf;
+		if (stat(path, &buf) != 0) return 0;
+		return buf.st_mtime;
+	}
+	// time the file was accessed
+	static time_t getAccessed(LPCTSTR path) {
+		struct stat buf;
+		if (stat(path, &buf) != 0) return 0;
+		return buf.st_atime;
+	}
+
+	// set the current folder
+	static bool setCurrentFolder(LPCTSTR path) {
+		if (!isFolder(path))
+			return false;
+		#ifdef _MSC_VER
+		// Windows implementation - this returns non-zero for success
+		return (SetCurrentDirectory(path) != 0);
+		#else
+		// Unix implementation - this returns zero for success
+		return (chdir(path) == 0);
+		#endif
+	}
+
 	template <class VECTOR>
 	inline size_t write(const VECTOR& arr) {
 		const typename VECTOR::IDX nSize(arr.GetSize());
@@ -593,12 +656,10 @@ public:
 		return nBytes;
 	}
 
-	virtual ~File() {
-		File::close();
-	}
-
-	static LPCSTR getClassType() { return "File"; }
-	virtual LPCSTR getClassName() const { return File::getClassType(); }
+	enum { LAYER_ID_IN=3 };
+	InputStream* getInputStream(int typ=InputStream::LAYER_ID_IN) override { return (typ == LAYER_ID_IN ? static_cast<InputStream*>(this) : IOStream::getInputStream(typ)); }
+	enum { LAYER_ID_OUT=3 };
+	OutputStream* getOutputStream(int typ=OutputStream::LAYER_ID_OUT) override { return (typ == LAYER_ID_OUT ? static_cast<OutputStream*>(this) : IOStream::getOutputStream(typ)); }
 
 protected:
 	#ifdef _MSC_VER

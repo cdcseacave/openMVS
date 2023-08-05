@@ -1056,9 +1056,9 @@ void MeshRefine::ThSelectNeighbors(uint32_t idxImage, std::unordered_set<uint64_
 	ViewScoreArr neighbors(imageData.neighbors);
 	Scene::FilterNeighborViews(neighbors, fMinArea, fMinScale, fMaxScale, fMinAngle, fMaxAngle, nMaxViews);
 	Lock l(cs);
-	FOREACHPTR(pNeighbor, neighbors) {
-		ASSERT(images[pNeighbor->idx.ID].IsValid());
-		mapPairs.insert(MakePairIdx((uint32_t)idxImage, pNeighbor->idx.ID));
+	for (const ViewScore& neighbor: neighbors) {
+		ASSERT(images[neighbor.ID].IsValid());
+		mapPairs.insert(MakePairIdx((uint32_t)idxImage, neighbor.ID));
 	}
 }
 void MeshRefine::ThInitImage(uint32_t idxImage, Real scale, Real sigma)

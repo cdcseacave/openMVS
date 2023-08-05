@@ -72,7 +72,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		("help,h", "imports SfM scene stored Polycam format")
 		("working-folder,w", boost::program_options::value<std::string>(&WORKING_FOLDER), "working directory (default current directory)")
 		("config-file,c", boost::program_options::value<std::string>(&OPT::strConfigFileName)->default_value(APPNAME _T(".cfg")), "file name containing program options")
-		("archive-type", boost::program_options::value(&OPT::nArchiveType)->default_value(ARCHIVE_MVS), "project archive type: 0-text, 1-binary, 2-compressed binary")
+		("archive-type", boost::program_options::value(&OPT::nArchiveType)->default_value(ARCHIVE_MVS), "project archive type: -1-interface, 0-text, 1-binary, 2-compressed binary")
 		("process-priority", boost::program_options::value(&OPT::nProcessPriority)->default_value(-1), "process priority (below normal by default)")
 		("max-threads", boost::program_options::value(&OPT::nMaxThreads)->default_value(0), "maximum number of threads (0 for using all available cores)")
 		#if TD_VERBOSE != TD_VERBOSE_OFF
@@ -236,7 +236,7 @@ bool ParseImage(Scene& scene, const String& imagePath, const String& cameraPath,
 			const String neighborName = std::to_string(timestamp);
 			const IIndex neighborID = mapImageName.at(neighborName);
 			if (neighborID != imageData.ID)
-				imageData.neighbors.emplace_back(ViewScore{ViewInfo{neighborID, 0, 1.f, FD2R(15.f), 0.5f}, 3.f});
+				imageData.neighbors.emplace_back(ViewScore{neighborID, 0, 1.f, FD2R(15.f), 0.5f, 3.f});
 		}
 	}
 	// load and convert depth-map
@@ -249,7 +249,7 @@ bool ParseImage(Scene& scene, const String& imagePath, const String& cameraPath,
 	}
 	IIndexArr IDs = {imageData.ID};
 	IDs.JoinFunctor(imageData.neighbors.size(), [&imageData](IIndex i) {
-		return imageData.neighbors[i].idx.ID;
+		return imageData.neighbors[i].ID;
 	});
 	double dMin, dMax;
 	cv::minMaxIdx(depthMap, &dMin, &dMax, NULL, NULL, depthMap > 0);

@@ -52,6 +52,7 @@ namespace {
 
 namespace OPT {
 String strInputFileName;
+String strPointCloudFileName;
 String strOutputFileName;
 String strMeshFileName;
 String strImportROIFileName;
@@ -95,7 +96,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		("working-folder,w", boost::program_options::value<std::string>(&WORKING_FOLDER), "working directory (default current directory)")
 		("config-file,c", boost::program_options::value<std::string>(&OPT::strConfigFileName)->default_value(APPNAME _T(".cfg")), "file name containing program options")
 		("export-type", boost::program_options::value<std::string>(&OPT::strExportType)->default_value(_T("ply")), "file type used to export the 3D scene (ply or obj)")
-		("archive-type", boost::program_options::value(&OPT::nArchiveType)->default_value(ARCHIVE_DEFAULT), "project archive type: 0-text, 1-binary, 2-compressed binary")
+		("archive-type", boost::program_options::value(&OPT::nArchiveType)->default_value(ARCHIVE_MVS), "project archive type: -1-interface, 0-text, 1-binary, 2-compressed binary")
 		("process-priority", boost::program_options::value(&OPT::nProcessPriority)->default_value(-1), "process priority (below normal by default)")
 		("max-threads", boost::program_options::value(&OPT::nMaxThreads)->default_value(0), "maximum number of threads (0 for using all available cores)")
 		#if TD_VERBOSE != TD_VERBOSE_OFF
@@ -116,6 +117,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	boost::program_options::options_description config_main("Reconstruct options");
 	config_main.add_options()
 		("input-file,i", boost::program_options::value<std::string>(&OPT::strInputFileName), "input filename containing camera poses and image list")
+		("pointcloud-file,p", boost::program_options::value<std::string>(&OPT::strPointCloudFileName), "dense point-cloud with views file name to reconstruct (overwrite existing point-cloud)")
 		("output-file,o", boost::program_options::value<std::string>(&OPT::strOutputFileName), "output filename for storing the mesh")
 		("min-point-distance,d", boost::program_options::value(&OPT::fDistInsert)->default_value(2.5f), "minimum distance in pixels between the projection of two 3D points to consider them different while triangulating (0 - disabled)")
 		("integrate-only-roi", boost::program_options::value(&OPT::bUseOnlyROI)->default_value(false), "use only the points inside the ROI")
@@ -183,20 +185,24 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 
 	// validate input
 	Util::ensureValidPath(OPT::strInputFileName);
-	if (OPT::vm.count("help") || OPT::strInputFileName.IsEmpty()) {
+	if (OPT::vm.count("help") || OPT::strInputFileName.empty()) {
 		boost::program_options::options_description visible("Available options");
 		visible.add(generic).add(config_main).add(config_clean);
 		GET_LOG() << visible;
 	}
-	if (OPT::strInputFileName.IsEmpty())
+	if (OPT::strInputFileName.empty())
 		return false;
 	OPT::strExportType = OPT::strExportType.ToLower() == _T("obj") ? _T(".obj") : _T(".ply");
 
 	// initialize optional options
+	Util::ensureValidPath(OPT::strPointCloudFileName);
 	Util::ensureValidPath(OPT::strOutputFileName);
 	Util::ensureValidPath(OPT::strImportROIFileName);
 	Util::ensureValidPath(OPT::strImagePointsFileName);
-	if (OPT::strOutputFileName.IsEmpty())
+	Util::ensureValidPath(OPT::strMeshFileName);
+	if (OPT::strPointCloudFileName.empty() && OPT::nArchiveType == ARCHIVE_MVS)
+		OPT::strPointCloudFileName = Util::getFileFullName(OPT::strInputFileName) + _T(".ply");
+	if (OPT::strOutputFileName.empty())
 		OPT::strOutputFileName = Util::getFileFullName(OPT::strInputFileName) + _T("_mesh.mvs");
 
 	// initialize global options
@@ -345,8 +351,18 @@ int main(int argc, LPCTSTR* argv)
 
 	Scene scene(OPT::nMaxThreads);
 	// load project
-	if (!scene.Load(MAKE_PATH_SAFE(OPT::strInputFileName), OPT::fSplitMaxArea > 0 || OPT::fDecimateMesh < 1 || OPT::nTargetFaceNum > 0 || !OPT::strImportROIFileName.empty()))
+	const Scene::SCENE_TYPE sceneType(scene.Load(MAKE_PATH_SAFE(OPT::strInputFileName),
+		OPT::fSplitMaxArea > 0 || OPT::fDecimateMesh < 1 || OPT::nTargetFaceNum > 0 || !OPT::strImportROIFileName.empty()));
+	if (sceneType == Scene::SCENE_NA)
 		return EXIT_FAILURE;
+	if (!OPT::strPointCloudFileName.empty() && !scene.pointcloud.Load(MAKE_PATH_SAFE(OPT::strPointCloudFileName))) {
+		VERBOSE("error: cannot load point-cloud file");
+		return EXIT_FAILURE;
+	}
+	if (!OPT::strMeshFileName.empty() && !scene.mesh.Load(MAKE_PATH_SAFE(OPT::strMeshFileName))) {
+		VERBOSE("error: cannot load mesh file");
+		return EXIT_FAILURE;
+	}
 	const String baseFileName(MAKE_PATH_SAFE(Util::getFileFullName(OPT::strOutputFileName)));
 	if (OPT::fSplitMaxArea > 0) {
 		// split mesh using max-area constraint
@@ -397,13 +413,13 @@ int main(int argc, LPCTSTR* argv)
 			scene.obb.EnlargePercent(OPT::fBorderROI);
 		else if (OPT::fBorderROI < 0)
 			scene.obb.Enlarge(-OPT::fBorderROI);
-		if (OPT::strMeshFileName.IsEmpty() && scene.mesh.IsEmpty()) {
+		if (OPT::strMeshFileName.empty() && scene.mesh.IsEmpty()) {
 			// reset image resolution to the original size and
 			// make sure the image neighbors are initialized before deleting the point-cloud
 			#ifdef RECMESH_USE_OPENMP
 			bool bAbort(false);
 			#pragma omp parallel for
-			for (int_t idx=0; idx<(int_t)scene.images.GetSize(); ++idx) {
+			for (int_t idx=0; idx<(int_t)scene.images.size(); ++idx) {
 				#pragma omp flush (bAbort)
 				if (bAbort)
 					continue;
@@ -426,7 +442,7 @@ int main(int argc, LPCTSTR* argv)
 				}
 				imageData.UpdateCamera(scene.platforms);
 				// select neighbor views
-				if (imageData.neighbors.IsEmpty()) {
+				if (imageData.neighbors.empty()) {
 					IndexArr points;
 					scene.SelectNeighborViews(idxImage, points);
 				}
@@ -448,7 +464,7 @@ int main(int argc, LPCTSTR* argv)
 				scene.mesh.Save(baseFileName+_T("_raw")+OPT::strExportType);
 			}
 			#endif
-		} else if (!OPT::strMeshFileName.IsEmpty()) {
+		} else if (!OPT::strMeshFileName.empty()) {
 			// load existing mesh to clean
 			scene.mesh.Load(MAKE_PATH_SAFE(OPT::strMeshFileName));
 		}
@@ -469,12 +485,13 @@ int main(int argc, LPCTSTR* argv)
 		scene.obb = initialOBB;
 
 		// save the final mesh
-		scene.Save(baseFileName+_T(".mvs"), (ARCHIVE_TYPE)OPT::nArchiveType);
 		scene.mesh.Save(baseFileName+OPT::strExportType);
 		#if TD_VERBOSE != TD_VERBOSE_OFF
 		if (VERBOSITY_LEVEL > 2)
 			scene.ExportCamerasMLP(baseFileName+_T(".mlp"), baseFileName+OPT::strExportType);
 		#endif
+		if (OPT::nArchiveType != ARCHIVE_MVS || sceneType != Scene::SCENE_INTERFACE)
+			scene.Save(baseFileName+_T(".mvs"), (ARCHIVE_TYPE)OPT::nArchiveType);
 	}
 
 	if (!OPT::strImagePointsFileName.empty()) {

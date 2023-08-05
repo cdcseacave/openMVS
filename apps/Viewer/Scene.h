@@ -52,6 +52,7 @@ public:
 	typedef MVS::Mesh::Octree OctreeMesh;
 
 public:
+	ARCHIVE_TYPE nArchiveType;
 	String name;
 
 	String sceneName;
@@ -73,7 +74,7 @@ public:
 	static SEACAVE::Thread thread; // worker thread
 
 public:
-	Scene();
+	explicit Scene(ARCHIVE_TYPE _nArchiveType = ARCHIVE_MVS);
 	~Scene();
 
 	void Empty();
