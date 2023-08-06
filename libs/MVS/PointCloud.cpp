@@ -335,10 +335,14 @@ bool PointCloud::Load(const String& fileName)
 					colors[v] = vertex.c;
 				if (!normals.empty())
 					normals[v] = vertex.n;
-				if (!pointViews.empty())
-					pointViews[v].CopyOfRemove(ViewArr(vertex.views.num, vertex.views.pIndices));
-				if (!pointWeights.empty())
-					pointWeights[v].CopyOfRemove(WeightArr(vertex.views.num, vertex.views.pWeights));
+				if (!pointViews.empty()) {
+					ViewArr pv(vertex.views.num, vertex.views.pIndices);
+					pointViews[v].CopyOfRemove(pv);
+				}
+				if (!pointWeights.empty()){
+					WeightArr pw(vertex.views.num, vertex.views.pWeights);
+					pointWeights[v].CopyOfRemove(pw);
+				}
 			}
 		} else {
 			ply.get_other_element();

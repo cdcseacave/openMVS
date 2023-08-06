@@ -348,6 +348,7 @@ bool ParseSceneMVSNet(Scene& scene, const std::filesystem::path& path)
 //   |--transforms.json
 bool ParseSceneNerfstudio(Scene& scene, const std::filesystem::path& path)
 {
+	#if defined(_SUPPORT_CPP17) && (!defined(__GNUC__) || (__GNUC__ > 7))
 	const nlohmann::json data = nlohmann::json::parse(std::ifstream(path.string()));
 	if (data.empty())
 		return false;
@@ -369,13 +370,16 @@ bool ParseSceneNerfstudio(Scene& scene, const std::filesystem::path& path)
 	const nlohmann::json& frames = data["frames"];
 	for (const nlohmann::json& frame: frames) {
 		// set image
-		const IIndex imageID = scene.images.size();
+		//TODO: get image ID from frame JSON
+		const IIndex imageID = scene.images.size(); 
+		const std::string strFileName((path / String::FormatString(_T("/%05u.jpg"), imageID)));
+		printf("strFileName = %s\n", strFileName.c_str());
 		Image& imageData = scene.images.AddEmpty();
 		imageData.platformID = platformID;
 		imageData.cameraID = 0; // only one camera per platform supported by this format
 		imageData.poseID = NO_ID;
 		imageData.ID = imageID;
-		imageData.name = strFileName+".jpg";
+		imageData.name = strFileName;
 		ASSERT(Util::isFullPath(imageData.name));
 		// set image resolution
 		imageData.width = resolution.width;
