@@ -349,12 +349,10 @@ bool ParseSceneMVSNet(Scene& scene, const std::filesystem::path& path)
 bool ParseSceneNerfstudio(Scene& scene, const std::filesystem::path& path)
 {
 	#if defined(_SUPPORT_CPP17) && (!defined(__GNUC__) || (__GNUC__ > 7))
-	const nlohmann::json data = nlohmann::json::parse(std::ifstream(path.string()));
+	const nlohmann::json data = nlohmann::json::parse(std::ifstream((path / NERFSTUDIO_TRANSFORMS).string()));
 	if (data.empty())
 		return false;
 	// parse camera
-	if (data["camera_model"].get<std::string>() != "SIMPLE_PINHOLE")
-		return false;
 	const cv::Size resolution(data["w"].get<uint32_t>(), data["h"].get<uint32_t>());
 	const IIndex platformID = scene.platforms.size();
 	Platform& platform = scene.platforms.emplace_back();
@@ -366,14 +364,29 @@ bool ParseSceneNerfstudio(Scene& scene, const std::filesystem::path& path)
 	camera.K(1,1) = data["fl_y"].get<REAL>();
 	camera.K(0,2) = data["cx"].get<REAL>();
 	camera.K(1,2) = data["cy"].get<REAL>();
+	const String cameraModel = data["camera_model"].get<std::string>();
+	if (cameraModel == "SIMPLE_PINHOLE") {
+	} else
+	if (cameraModel == "OPENCV") {
+		const REAL k1 = data["k1"].get<REAL>();
+		const REAL k2 = data["k2"].get<REAL>();
+		const REAL p1 = data["p1"].get<REAL>();
+		const REAL p2 = data["p2"].get<REAL>();
+		if (k1 != 0 || k2 != 0 || p1 != 0 || p2 != 0) {
+			VERBOSE("error: radial distortion not supported");
+			return false;
+		}
+	} else {
+		VERBOSE("error: camera model not supported");
+		return false;
+	}
 	// parse images
 	const nlohmann::json& frames = data["frames"];
 	for (const nlohmann::json& frame: frames) {
 		// set image
-		//TODO: get image ID from frame JSON
+		// frames expected to be ordered in JSON
 		const IIndex imageID = scene.images.size(); 
-		const std::string strFileName((path / String::FormatString(_T("/%05u.jpg"), imageID)));
-		printf("strFileName = %s\n", strFileName.c_str());
+		const String strFileName((path / frame["file_path"].get<std::string>()).string());
 		Image& imageData = scene.images.AddEmpty();
 		imageData.platformID = platformID;
 		imageData.cameraID = 0; // only one camera per platform supported by this format
@@ -388,39 +401,51 @@ bool ParseSceneNerfstudio(Scene& scene, const std::filesystem::path& path)
 		// set camera pose
 		imageData.poseID = platform.poses.size();
 		Platform::Pose& pose = platform.poses.AddEmpty();
-		const auto Ps = data["camera_view_matrix"].get<std::vector<std::vector<double>>>();
-		//const auto Ps = data["cam2world"].get<std::vector<std::vector<double>>>();
+		const auto Ps = frame["transform_matrix"].get<std::vector<std::vector<double>>>();
 		const Eigen::Matrix4d P{
-			{Ps[0][0], Ps[1][0], Ps[2][0], Ps[3][0]},
-			{Ps[0][1], Ps[1][1], Ps[2][1], Ps[3][1]},
-			{Ps[0][2], Ps[1][2], Ps[2][2], Ps[3][2]},
-			{Ps[0][3], Ps[1][3], Ps[2][3], Ps[3][3]}
+			{Ps[0][0], Ps[0][1], Ps[0][2], Ps[0][3]},
+			{Ps[1][0], Ps[1][1], Ps[1][2], Ps[1][3]},
+			{Ps[2][0], Ps[2][1], Ps[2][2], Ps[2][3]},
+			{Ps[3][0], Ps[3][1], Ps[3][2], Ps[3][3]}
 		};
 		pose.R = P.topLeftCorner<3, 3>().eval();
 		pose.R.EnforceOrthogonality();
 		const Point3d t = P.topRightCorner<3, 1>().eval();
-		//pose.C = t;
 		pose.C = pose.R.t() * (-t);
-		//pose.R = pose.R.t();
-		const auto qs = data["quaternion_world_xyzw"].get<std::vector<double>>();
-		Eigen::Quaterniond q(qs[3], qs[0], qs[1], qs[2]);
-		pose.R = q.matrix();
-		{
-		const auto Ps = data["cam2world"].get<std::vector<std::vector<double>>>();
-		Eigen::Matrix4d iP{
-			{Ps[1][0], Ps[0][0], -Ps[2][0], Ps[3][0]},
-			{-Ps[1][2], -Ps[0][2], Ps[2][2], -Ps[3][2]},
-			{Ps[1][1], Ps[0][1], -Ps[2][1], Ps[3][1]},
-			{Ps[1][3], Ps[0][3], -Ps[2][3], Ps[3][3]}
-		};
-		Eigen::Matrix4d P = iP.inverse();
-		pose.R = P.topLeftCorner<3, 3>().eval();
-		pose.R.EnforceOrthogonality();
-		const Point3d t = P.topRightCorner<3, 1>().eval();
-		//pose.C = t;
-		pose.C = pose.R.t() * (-t);
-		}
 		imageData.camera = platform.GetCamera(imageData.cameraID, imageData.poseID);
+		// try reading depth-map and normal-map
+		DepthMap depthMap; {
+			const String depthPath(path.parent_path() / String::FormatString("outputs/depth%04u.exr", imageID));
+			const cv::Mat imgDepthMap = cv::imread(depthPath, cv::IMREAD_UNCHANGED);
+			if (imgDepthMap.empty()) {
+				VERBOSE("Unable to load depthmap %s.", depthPath.c_str());
+				continue;
+			}
+			imgDepthMap.convertTo(depthMap, CV_32FC1);
+		}
+		const NormalMap normalMap; {
+			const String normalPath(path.parent_path() / String::FormatString("outputs/normal%04u.exr", imageID));
+			const cv::Mat imgNormalMap = cv::imread(normalPath, cv::IMREAD_UNCHANGED);
+			if (imgNormalMap.empty()) {
+				VERBOSE("Unable to load normalMap %s.", normalPath.c_str());
+				continue;
+			}
+			imgNormalMap.convertTo(normalMap, CV_32FC3);
+		}
+		const ConfidenceMap confMap;
+		const ViewsMap viewsMap;
+		const IIndexArr IDs = {imageID};
+		double dMin, dMax;
+		cv::minMaxIdx(depthMap, &dMin, &dMax, NULL, NULL, depthMap > 0);
+		const String dmapPath(path.parent_path() / String::FormatString("depth%04u.dmap", imageID));
+		if (!ExportDepthDataRaw(dmapPath,
+			imageData.name, IDs, resolution,
+			camera.K, pose.R, pose.C,
+			(float)dMin, (float)dMax,
+			depthMap, normalMap, confMap, viewsMap)) {
+				VERBOSE("Unable to save dmap: %s", dmapPath);
+				continue;
+			}
 	}
 	if (scene.images.size() < 2)
 		return false;
