@@ -415,7 +415,7 @@ bool ParseSceneNerfstudio(Scene& scene, const std::filesystem::path& path)
 		imageData.camera = platform.GetCamera(imageData.cameraID, imageData.poseID);
 		// try reading depth-map and normal-map
 		DepthMap depthMap; {
-			const String depthPath(path.parent_path() / String::FormatString("outputs/depth%04u.exr", imageID));
+			const String depthPath((path.parent_path() / String::FormatString("outputs/depth%04u.exr", imageID).c_str()).string());
 			const cv::Mat imgDepthMap = cv::imread(depthPath, cv::IMREAD_UNCHANGED);
 			if (imgDepthMap.empty()) {
 				VERBOSE("Unable to load depthmap %s.", depthPath.c_str());
@@ -423,8 +423,8 @@ bool ParseSceneNerfstudio(Scene& scene, const std::filesystem::path& path)
 			}
 			imgDepthMap.convertTo(depthMap, CV_32FC1);
 		}
-		const NormalMap normalMap; {
-			const String normalPath(path.parent_path() / String::FormatString("outputs/normal%04u.exr", imageID));
+		NormalMap normalMap; {
+			const String normalPath((path.parent_path() / String::FormatString("outputs/normal%04u.exr", imageID).c_str()).string());
 			const cv::Mat imgNormalMap = cv::imread(normalPath, cv::IMREAD_UNCHANGED);
 			if (imgNormalMap.empty()) {
 				VERBOSE("Unable to load normalMap %s.", normalPath.c_str());
@@ -437,7 +437,7 @@ bool ParseSceneNerfstudio(Scene& scene, const std::filesystem::path& path)
 		const IIndexArr IDs = {imageID};
 		double dMin, dMax;
 		cv::minMaxIdx(depthMap, &dMin, &dMax, NULL, NULL, depthMap > 0);
-		const String dmapPath(path.parent_path() / String::FormatString("depth%04u.dmap", imageID));
+		const String dmapPath((path.parent_path() / String::FormatString("depth%04u.dmap", imageID).c_str()).string());
 		if (!ExportDepthDataRaw(dmapPath,
 			imageData.name, IDs, resolution,
 			camera.K, pose.R, pose.C,
