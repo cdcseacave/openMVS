@@ -367,7 +367,8 @@ bool ParseSceneNerfstudio(Scene& scene, const std::filesystem::path& path)
 	const String cameraModel = data["camera_model"].get<std::string>();
 	if (cameraModel == "SIMPLE_PINHOLE") {
 	} else
-	if (cameraModel == "OPENCV") {
+	// check ZERO radial distortion for all "PERSPECTIVE" type cameras
+	if (cameraModel == "PINHOLE" || cameraModel == "SIMPLE_RADIAL" || cameraModel == "RADIAL" || cameraModel == "OPENCV") {
 		const REAL k1 = data["k1"].get<REAL>();
 		const REAL k2 = data["k2"].get<REAL>();
 		const REAL p1 = data["p1"].get<REAL>();
