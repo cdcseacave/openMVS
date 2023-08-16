@@ -403,12 +403,23 @@ bool ParseSceneNerfstudio(Scene& scene, const std::filesystem::path& path)
 		imageData.poseID = platform.poses.size();
 		Platform::Pose& pose = platform.poses.AddEmpty();
 		const auto Ps = frame["transform_matrix"].get<std::vector<std::vector<double>>>();
-		const Eigen::Matrix4d P{
+		Eigen::Matrix4d P{
 			{Ps[0][0], Ps[0][1], Ps[0][2], Ps[0][3]},
 			{Ps[1][0], Ps[1][1], Ps[1][2], Ps[1][3]},
 			{Ps[2][0], Ps[2][1], Ps[2][2], Ps[2][3]},
 			{Ps[3][0], Ps[3][1], Ps[3][2], Ps[3][3]}
 		};
+
+		// Revert nerfStudio conversion
+		//    # Convert from COLMAP's camera coordinate system (OpenCV) to ours (OpenGL)
+        //    c2w[0:3, 1:3] *= -1
+        //    c2w = c2w[np.array([1, 0, 2, 3]), :]
+        //    c2w[2, :] *= -1
+		P.row(2) *= -1;
+		P.row(0).swap(P.row(1));
+		P.col(2) *= -1;
+		P.col(1) *= -1;
+		
 		pose.R = P.topLeftCorner<3, 3>().eval();
 		pose.R.EnforceOrthogonality();
 		const Point3d t = P.topRightCorner<3, 1>().eval();
