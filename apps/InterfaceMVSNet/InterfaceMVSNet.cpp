@@ -419,7 +419,8 @@ bool ParseSceneNerfstudio(Scene& scene, const std::filesystem::path& path)
 		P.row(0).swap(P.row(1));
 		P.col(2) *= -1;
 		P.col(1) *= -1;
-		
+		P = P.inverse();
+
 		pose.R = P.topLeftCorner<3, 3>().eval();
 		pose.R.EnforceOrthogonality();
 		const Point3d t = P.topRightCorner<3, 1>().eval();
