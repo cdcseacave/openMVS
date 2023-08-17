@@ -525,38 +525,24 @@ bool ParseSceneRTMV(Scene& scene, const std::filesystem::path& path)
 		// set camera pose
 		imageData.poseID = platform.poses.size();
 		Platform::Pose& pose = platform.poses.AddEmpty();
-		const auto Ps = data["camera_view_matrix"].get<std::vector<std::vector<double>>>();
-		//const auto Ps = data["cam2world"].get<std::vector<std::vector<double>>>();
-		const Eigen::Matrix4d P{
+		const auto Ps = data["cam2world"].get<std::vector<std::vector<double>>>();
+		Eigen::Matrix4d P{
 			{Ps[0][0], Ps[1][0], Ps[2][0], Ps[3][0]},
 			{Ps[0][1], Ps[1][1], Ps[2][1], Ps[3][1]},
 			{Ps[0][2], Ps[1][2], Ps[2][2], Ps[3][2]},
 			{Ps[0][3], Ps[1][3], Ps[2][3], Ps[3][3]}
 		};
+		// apply the same transforms as nerfStudio converter
+		P.row(2) *= -1;
+		P.row(0).swap(P.row(1));
+		P.col(2) *= -1;
+		P.col(1) *= -1;
+		P = P.inverse();
+
 		pose.R = P.topLeftCorner<3, 3>().eval();
 		pose.R.EnforceOrthogonality();
 		const Point3d t = P.topRightCorner<3, 1>().eval();
-		//pose.C = t;
 		pose.C = pose.R.t() * (-t);
-		//pose.R = pose.R.t();
-		const auto qs = data["quaternion_world_xyzw"].get<std::vector<double>>();
-		Eigen::Quaterniond q(qs[3], qs[0], qs[1], qs[2]);
-		pose.R = q.matrix();
-		{
-		const auto Ps = data["cam2world"].get<std::vector<std::vector<double>>>();
-		Eigen::Matrix4d iP{
-			{Ps[1][0], Ps[0][0], -Ps[2][0], Ps[3][0]},
-			{-Ps[1][2], -Ps[0][2], Ps[2][2], -Ps[3][2]},
-			{Ps[1][1], Ps[0][1], -Ps[2][1], Ps[3][1]},
-			{Ps[1][3], Ps[0][3], -Ps[2][3], Ps[3][3]}
-		};
-		Eigen::Matrix4d P = iP.inverse();
-		pose.R = P.topLeftCorner<3, 3>().eval();
-		pose.R.EnforceOrthogonality();
-		const Point3d t = P.topRightCorner<3, 1>().eval();
-		//pose.C = t;
-		pose.C = pose.R.t() * (-t);
-		}
 		imageData.camera = platform.GetCamera(imageData.cameraID, imageData.poseID);
 	}
 	if (scene.images.size() < 2)
