@@ -221,17 +221,14 @@ void ImageListParse(const LPSTR* argv, Matrix3x4& P)
 //     |--xxx.jpg
 //     |--xxx.jpg
 //     ....
-//     |--xxx.jpg
 //   |--cams
 //     |--xxx_cam.txt
 //     |--xxx_cam.txt
 //     ....
-//     |--xxx_cam.txt
 //   |--render_cams
 //     |--xxx_cam.txt
 //     |--xxx_cam.txt
 //     ....
-//     |--xxx_cam.txt
 //
 // where the camera parameter of one image stored in a cam.txt file contains the camera
 // extrinsic E = [R|t], intrinsic K and the depth range:
@@ -344,11 +341,13 @@ bool ParseSceneMVSNet(Scene& scene, const std::filesystem::path& path)
 //     |--xxx.jpg
 //     |--xxx.jpg
 //     ....
-//     |--xxx.jpg
+//   |--outputs (optional)
+//     |--depthxxxx.exr
+//     |--normalxxxx.exr
+//     ....
 //   |--transforms.json
 bool ParseSceneNerfstudio(Scene& scene, const std::filesystem::path& path)
 {
-	#if defined(_SUPPORT_CPP17) && (!defined(__GNUC__) || (__GNUC__ > 7))
 	const nlohmann::json data = nlohmann::json::parse(std::ifstream((path / NERFSTUDIO_TRANSFORMS).string()));
 	if (data.empty())
 		return false;
@@ -399,7 +398,7 @@ bool ParseSceneNerfstudio(Scene& scene, const std::filesystem::path& path)
 		imageData.width = resolution.width;
 		imageData.height = resolution.height;
 		imageData.scale = 1;
-		// set camera pose
+		// load camera pose
 		imageData.poseID = platform.poses.size();
 		Platform::Pose& pose = platform.poses.AddEmpty();
 		const auto Ps = frame["transform_matrix"].get<std::vector<std::vector<double>>>();
@@ -409,22 +408,19 @@ bool ParseSceneNerfstudio(Scene& scene, const std::filesystem::path& path)
 			{Ps[2][0], Ps[2][1], Ps[2][2], Ps[2][3]},
 			{Ps[3][0], Ps[3][1], Ps[3][2], Ps[3][3]}
 		};
-
-		// Revert nerfStudio conversion
-		//    # Convert from COLMAP's camera coordinate system (OpenCV) to ours (OpenGL)
-        //    c2w[0:3, 1:3] *= -1
-        //    c2w = c2w[np.array([1, 0, 2, 3]), :]
-        //    c2w[2, :] *= -1
+		// revert nerfstudio conversion:
+		// convert from COLMAP's camera coordinate system (OpenCV) to ours (OpenGL)
+        //   c2w[0:3, 1:3] *= -1
+        //   c2w = c2w[np.array([1, 0, 2, 3]), :]
+        //   c2w[2, :] *= -1
 		P.row(2) *= -1;
 		P.row(0).swap(P.row(1));
 		P.col(2) *= -1;
 		P.col(1) *= -1;
-		P = P.inverse();
-
-		pose.R = P.topLeftCorner<3, 3>().eval();
+		// set camera pose
+		pose.R = P.topLeftCorner<3, 3>().transpose().eval();
 		pose.R.EnforceOrthogonality();
-		const Point3d t = P.topRightCorner<3, 1>().eval();
-		pose.C = pose.R.t() * (-t);
+		pose.C = P.topRightCorner<3, 1>().eval();
 		imageData.camera = platform.GetCamera(imageData.cameraID, imageData.poseID);
 		// try reading depth-map and normal-map
 		DepthMap depthMap; {
@@ -455,19 +451,16 @@ bool ParseSceneNerfstudio(Scene& scene, const std::filesystem::path& path)
 			imageData.name, IDs, resolution,
 			camera.K, pose.R, pose.C,
 			(float)dMin, (float)dMax,
-			depthMap, normalMap, confMap, viewsMap)) {
-				VERBOSE("Unable to save dmap: %s", dmapPath);
-				continue;
-			}
+			depthMap, normalMap, confMap, viewsMap))
+		{
+			VERBOSE("Unable to save dmap: %s", dmapPath);
+			continue;
+		}
 	}
 	if (scene.images.size() < 2)
 		return false;
 	scene.nCalibratedImages = (unsigned)scene.images.size();
 	return true;
-	#else
-	VERBOSE("error: C++17 is required to parse MVSNet format");
-	return false;
-	#endif // _SUPPORT_CPP17
 }
 
 // RTMV scene format: http://www.cs.umd.edu/~mmeshry/projects/rtmv
@@ -475,8 +468,6 @@ bool ParseSceneNerfstudio(Scene& scene, const std::filesystem::path& path)
 //   |--xxx.jpg
 //   |--xxx.json
 //   ....
-//   |--xxx.jpg
-//   |--xxx.json
 bool ParseSceneRTMV(Scene& scene, const std::filesystem::path& path)
 {
 	#if defined(_SUPPORT_CPP17) && (!defined(__GNUC__) || (__GNUC__ > 7))
@@ -522,7 +513,7 @@ bool ParseSceneRTMV(Scene& scene, const std::filesystem::path& path)
 		imageData.width = resolution.width;
 		imageData.height = resolution.height;
 		imageData.scale = 1;
-		// set camera pose
+		// load camera pose
 		imageData.poseID = platform.poses.size();
 		Platform::Pose& pose = platform.poses.AddEmpty();
 		const auto Ps = data["cam2world"].get<std::vector<std::vector<double>>>();
@@ -532,17 +523,15 @@ bool ParseSceneRTMV(Scene& scene, const std::filesystem::path& path)
 			{Ps[0][2], Ps[1][2], Ps[2][2], Ps[3][2]},
 			{Ps[0][3], Ps[1][3], Ps[2][3], Ps[3][3]}
 		};
-		// apply the same transforms as nerfStudio converter
+		// apply the same transforms as nerfstudio converter
 		P.row(2) *= -1;
 		P.row(0).swap(P.row(1));
 		P.col(2) *= -1;
 		P.col(1) *= -1;
-		P = P.inverse();
-
-		pose.R = P.topLeftCorner<3, 3>().eval();
+		// set camera pose
+		pose.R = P.topLeftCorner<3, 3>().transpose().eval();
 		pose.R.EnforceOrthogonality();
-		const Point3d t = P.topRightCorner<3, 1>().eval();
-		pose.C = pose.R.t() * (-t);
+		pose.C = P.topRightCorner<3, 1>().eval();
 		imageData.camera = platform.GetCamera(imageData.cameraID, imageData.poseID);
 	}
 	if (scene.images.size() < 2)
