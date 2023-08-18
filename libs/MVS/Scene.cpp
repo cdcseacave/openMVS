@@ -1799,7 +1799,7 @@ bool Scene::ComputeTowerCylinder(Point2f& centerPoint, float& fRadius, float& fR
 	// calculate tower radius as median distance from tower center to cameras
 	FloatArr cameraDistancesToMiddle(cameras2D.size());
 	FOREACH (camIdx, cameras2D)
-		cameraDistancesToMiddle[camIdx] = norm(cameras2D[camIdx] - centerPoint);
+		cameraDistancesToMiddle[camIdx] = (float)norm(cameras2D[camIdx] - centerPoint);
 	const float fMedianDistance = cameraDistancesToMiddle.GetMedian();
 	fRadius = MAXF(0.2f, (fMedianDistance - 1.f) / 3.f);
 	// get the average of top 85 to 95% of the highest distances to center
@@ -1882,7 +1882,7 @@ PointCloud Scene::BuildTowerMesh(const PointCloud& origPointCloud, const Point2f
 	} else {
 		cList<FloatArr> sliceDistances(nTargetCircles);
 		for (const Point3f& P : origPointCloud.points) {
-			const float d(norm(Point2f(P.x, P.y) - centerPoint));
+			const float d((float)norm(Point2f(P.x, P.y) - centerPoint));
 			if (d <= fROIRadius) {
 				const float fIdx((zMax - P.z) * nTargetDensity);
 				int bIdx(FLOOR2INT(fIdx));

@@ -1,6 +1,6 @@
 {
   "name": "openmvs",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "description": "OpenMVS: open Multi-View Stereo reconstruction library",
   "homepage": "https://cdcseacave.github.io/openMVS",
   "dependencies": [
@@ -17,6 +17,13 @@
     "glew",
     "glfw3",
     "libpng",
+    {
+      "name": "opencv",
+      "features": [
+        "eigen",
+        "openexr"
+      ]
+    },
     "opencv",
 	"opengl",
     "tiff",
