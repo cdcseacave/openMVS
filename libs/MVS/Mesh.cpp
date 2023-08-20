@@ -4518,7 +4518,7 @@ bool Mesh::TransferTexture(Mesh& mesh, const FaceIdxArr& faceSubsetIndices, unsi
 	if (vertices == mesh.vertices && faces == mesh.faces) {
 		// the two meshes are identical, only the texture coordinates are different;
 		// directly transfer the texture onto the new coordinates
-		#ifndef MESH_USE_OPENMP
+		#ifdef MESH_USE_OPENMP
 		#pragma omp parallel for schedule(dynamic)
 		for (int_t i=0; i<(int_t)num_faces; ++i) {
 			const FIndex idx((FIndex)i);

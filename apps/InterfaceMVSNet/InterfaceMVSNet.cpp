@@ -40,6 +40,11 @@ using namespace MVS;
 
 // D E F I N E S ///////////////////////////////////////////////////
 
+// uncomment to enable multi-threading based on OpenMP
+#ifdef _USE_OPENMP
+#define MVSNET_USE_OPENMP
+#endif
+
 #define APPNAME _T("InterfaceMVSNet")
 #define MVS_EXT _T(".mvs")
 #define MVSNET_IMAGES_FOLDER _T("images")
@@ -214,6 +219,20 @@ void ImageListParse(const LPSTR* argv, Matrix3x4& P)
 	P(2, 3) = String::FromString<REAL>(argv[11]);
 }
 
+// convert a range-map to depth-map
+void RangeToDepthMap(const Image32F& rangeMap, const Camera& camera, DepthMap& depthMap)
+{
+	depthMap.create(rangeMap.size());
+	for (int y = 0; y < depthMap.rows; ++y) {
+		const float* const rangeRow = rangeMap.ptr<float>(y);
+		float* const depthRow = depthMap.ptr<float>(y);
+		for (int x = 0; x < depthMap.cols; ++x) {
+			const float range = rangeRow[x];
+			depthRow[x] = (Depth)(range <= 0 ? 0 : normalized(camera.TransformPointI2C(Point2(x,y))).z*range);
+		}
+	}
+}
+
 // parse scene stored in MVSNet format composed of undistorted images and camera poses
 // for example see GigaVision benchmark (http://gigamvs.net):
 // |--sceneX
@@ -381,6 +400,8 @@ bool ParseSceneNerfstudio(Scene& scene, const std::filesystem::path& path)
 		return false;
 	}
 	// parse images
+	String workPath(path.parent_path().string());
+	Util::ensureFolderSlash(workPath);
 	const nlohmann::json& frames = data["frames"];
 	for (const nlohmann::json& frame: frames) {
 		// set image
@@ -400,7 +421,7 @@ bool ParseSceneNerfstudio(Scene& scene, const std::filesystem::path& path)
 		imageData.scale = 1;
 		// load camera pose
 		imageData.poseID = platform.poses.size();
-		Platform::Pose& pose = platform.poses.AddEmpty();
+		Platform::Pose& pose = platform.poses.emplace_back();
 		const auto Ps = frame["transform_matrix"].get<std::vector<std::vector<double>>>();
 		Eigen::Matrix4d P{
 			{Ps[0][0], Ps[0][1], Ps[0][2], Ps[0][3]},
@@ -425,28 +446,27 @@ bool ParseSceneNerfstudio(Scene& scene, const std::filesystem::path& path)
 		// try reading depth-map and normal-map
 		DepthMap depthMap; {
 			const String depthPath((path.parent_path() / String::FormatString("outputs/depth%04u.exr", imageID).c_str()).string());
-			const cv::Mat imgDepthMap = cv::imread(depthPath, cv::IMREAD_UNCHANGED);
-			if (imgDepthMap.empty()) {
+			const Image32F rangeMap = cv::imread(depthPath, cv::IMREAD_UNCHANGED);
+			if (rangeMap.empty()) {
 				VERBOSE("Unable to load depthmap %s.", depthPath.c_str());
 				continue;
 			}
-			imgDepthMap.convertTo(depthMap, CV_32FC1);
+			RangeToDepthMap(rangeMap, imageData.camera, depthMap);
 		}
 		NormalMap normalMap; {
 			const String normalPath((path.parent_path() / String::FormatString("outputs/normal%04u.exr", imageID).c_str()).string());
-			const cv::Mat imgNormalMap = cv::imread(normalPath, cv::IMREAD_UNCHANGED);
-			if (imgNormalMap.empty()) {
+			normalMap = cv::imread(normalPath, cv::IMREAD_UNCHANGED);
+			if (normalMap.empty()) {
 				VERBOSE("Unable to load normalMap %s.", normalPath.c_str());
 				continue;
 			}
-			imgNormalMap.convertTo(normalMap, CV_32FC3);
 		}
 		const ConfidenceMap confMap;
 		const ViewsMap viewsMap;
 		const IIndexArr IDs = {imageID};
 		double dMin, dMax;
 		cv::minMaxIdx(depthMap, &dMin, &dMax, NULL, NULL, depthMap > 0);
-		const String dmapPath((path.parent_path() / String::FormatString("depth%04u.dmap", imageID).c_str()).string());
+		const String dmapPath(workPath + String::FormatString("depth%04u.dmap", imageID));
 		if (!ExportDepthDataRaw(dmapPath,
 			imageData.name, IDs, resolution,
 			camera.K, pose.R, pose.C,
@@ -465,18 +485,42 @@ bool ParseSceneNerfstudio(Scene& scene, const std::filesystem::path& path)
 
 // RTMV scene format: http://www.cs.umd.edu/~mmeshry/projects/rtmv
 // |--sceneX
-//   |--xxx.jpg
+//   |--xxx.exr
+//   |--xxx.seg.exr
+//   |--xxx.depth.exr
 //   |--xxx.json
 //   ....
 bool ParseSceneRTMV(Scene& scene, const std::filesystem::path& path)
 {
+	String strImagePath((path / "images").string());
+	Util::ensureFolderSlash(strImagePath);
+	Util::ensureFolder(strImagePath);
+	String workPath(path.parent_path().string());
+	Util::ensureFolderSlash(workPath);
+	std::vector<String> strImageNames;
 	#if defined(_SUPPORT_CPP17) && (!defined(__GNUC__) || (__GNUC__ > 7))
-	IIndex prevPlatformID = NO_ID;
 	for (const std::filesystem::directory_entry& entry : std::filesystem::directory_iterator(path)) {
 		if (entry.path().extension() != RTMV_CAMERAS_EXT)
 			continue;
+		strImageNames.emplace_back(entry.path().stem().string());
+	}
+	#else
+	VERBOSE("error: C++17 is required to parse RTMV format");
+	return false;
+	#endif // _SUPPORT_CPP17
+	IIndex prevPlatformID = NO_ID;
+	scene.images.resize((IIndex)strImageNames.size());
+	scene.platforms.reserve((IIndex)strImageNames.size());
+	#ifdef MVSNET_USE_OPENMP
+	#pragma omp parallel for schedule(dynamic)
+	for (int_t i=0; i<(int_t)strImageNames.size(); ++i) {
+	#else
+	FOREACH(i, strImageNames) {
+	#endif
+		const IIndex imageID((IIndex)i);
+		const String& strImageName(strImageNames[imageID]);
 		// parse camera
-		const std::string strFileName((path / entry.path().stem()).string());
+		const String strFileName((path / strImageName.c_str()).string());
 		const nlohmann::json dataCamera = nlohmann::json::parse(std::ifstream(strFileName+RTMV_CAMERAS_EXT));
 		if (dataCamera.empty())
 			continue;
@@ -490,32 +534,58 @@ bool ParseSceneRTMV(Scene& scene, const std::filesystem::path& path)
 		K(1,2) = data["intrinsics"]["cy"].get<REAL>();
 		IIndex platformID;
 		if (prevPlatformID == NO_ID || !K.IsEqual(scene.platforms[prevPlatformID].cameras[0].K, 1e-3)) {
+			#ifdef MVSNET_USE_OPENMP
+			#pragma omp critical
+			#endif
+			{
 			prevPlatformID = platformID = scene.platforms.size();
 			Platform& platform = scene.platforms.emplace_back();
 			Platform::Camera& camera = platform.cameras.emplace_back();
+			platform.poses.reserve((IIndex)strImageNames.size());
 			camera.K = K;
 			camera.R = RMatrix::IDENTITY;
 			camera.C = CMatrix::ZERO;
+			}
 		} else {
 			platformID = prevPlatformID;
 		}
 		Platform& platform = scene.platforms[platformID];
 		// set image
-		const IIndex imageID = scene.images.size();
-		Image& imageData = scene.images.AddEmpty();
+		Image& imageData = scene.images[imageID];
 		imageData.platformID = platformID;
 		imageData.cameraID = 0; // only one camera per platform supported by this format
 		imageData.poseID = NO_ID;
 		imageData.ID = imageID;
-		imageData.name = strFileName+".jpg";
+		imageData.name = strImagePath+strImageName+".jpg";
 		ASSERT(Util::isFullPath(imageData.name));
+		{
+			cv::Mat image = cv::imread(strFileName+".exr", cv::IMREAD_UNCHANGED);
+			ASSERT(image.type() == CV_32FC4);
+			std::vector<cv::Mat> channels;
+			cv::split(image, channels);
+			cv::merge(std::vector<cv::Mat>{channels[0], channels[1], channels[2]}, image);
+			image.convertTo(imageData.image, CV_8UC3, 255);
+		}
+		ASSERT(resolution == imageData.image.size());
+		if (imageData.image.empty()) {
+			VERBOSE("Unable to load image %s.", (strFileName+".exr").c_str());
+			continue;
+		}
+		cv::imwrite(imageData.name, imageData.image);
+		imageData.ReleaseImage();
 		// set image resolution
 		imageData.width = resolution.width;
 		imageData.height = resolution.height;
 		imageData.scale = 1;
 		// load camera pose
-		imageData.poseID = platform.poses.size();
-		Platform::Pose& pose = platform.poses.AddEmpty();
+		#ifdef MVSNET_USE_OPENMP
+		#pragma omp critical
+		#endif
+		{
+			imageData.poseID = platform.poses.size();
+			platform.poses.emplace_back();
+		}
+		Platform::Pose& pose = platform.poses[imageData.poseID];
 		const auto Ps = data["cam2world"].get<std::vector<std::vector<double>>>();
 		Eigen::Matrix4d P{
 			{Ps[0][0], Ps[1][0], Ps[2][0], Ps[3][0]},
@@ -533,15 +603,55 @@ bool ParseSceneRTMV(Scene& scene, const std::filesystem::path& path)
 		pose.R.EnforceOrthogonality();
 		pose.C = P.topRightCorner<3, 1>().eval();
 		imageData.camera = platform.GetCamera(imageData.cameraID, imageData.poseID);
+		// try reading the segmentation mask
+		{
+			cv::Mat imgMask = cv::imread(strFileName+".seg.exr", cv::IMREAD_UNCHANGED);
+			if (imgMask.empty()) {
+				VERBOSE("Unable to load segmentation mask %s.", (strFileName+".seg.exr").c_str());
+				continue;
+			}
+			ASSERT(imgMask.type() == CV_32FC4);
+			ASSERT(resolution == imgMask.size());
+			std::vector<cv::Mat> channels;
+			cv::split(imgMask, channels);
+			channels[0].convertTo(imgMask, CV_16U);
+			imageData.maskName = strImagePath+strImageName+".mask.png";
+			cv::imwrite(imageData.maskName, imgMask);
+		}
+		// try reading the depth-map
+		DepthMap depthMap; {
+			const cv::Mat imgDepthMap = cv::imread(strFileName+".depth.exr", cv::IMREAD_UNCHANGED);
+			if (imgDepthMap.empty()) {
+				VERBOSE("Unable to load depthmap %s.", (strFileName+".depth.exr").c_str());
+				continue;
+			}
+			ASSERT(imgDepthMap.type() == CV_32FC4);
+			ASSERT(resolution == imgDepthMap.size());
+			std::vector<cv::Mat> channels;
+			cv::split(imgDepthMap, channels);
+			RangeToDepthMap(channels[0], imageData.camera, depthMap);
+		}
+		const NormalMap normalMap;
+		const ConfidenceMap confMap;
+		const ViewsMap viewsMap;
+		const IIndexArr IDs = {imageID};
+		double dMin, dMax;
+		cv::minMaxIdx(depthMap, &dMin, &dMax, NULL, NULL, depthMap > 0);
+		const String dmapPath(workPath + String::FormatString("depth%04u.dmap", imageID));
+		if (!ExportDepthDataRaw(dmapPath,
+			imageData.name, IDs, resolution,
+			K, pose.R, pose.C,
+			(float)dMin, (float)dMax,
+			depthMap, normalMap, confMap, viewsMap))
+		{
+			VERBOSE("Unable to save dmap: %s", dmapPath);
+			continue;
+		}
 	}
 	if (scene.images.size() < 2)
 		return false;
 	scene.nCalibratedImages = (unsigned)scene.images.size();
 	return true;
-	#else
-	VERBOSE("error: C++17 is required to parse MVSNet format");
-	return false;
-	#endif // _SUPPORT_CPP17
 }
 
 bool ParseScene(Scene& scene)
