@@ -605,9 +605,9 @@ bool ParseBlocksExchangeXML(tinyxml2::XMLDocument& doc, Scene& scene, PlatformDi
 			scene.pointcloud.points.back() -= Cast<float>(center);
 		if ((elem=tiepoint->FirstChildElement("Color")) != NULL)
 			scene.pointcloud.colors.emplace_back(
-				(uint8_t)std::clamp(elem->FirstChildElement("Blue")->DoubleText()*255, 0.0, 255.0),
-				(uint8_t)std::clamp(elem->FirstChildElement("Green")->DoubleText()*255, 0.0, 255.0),
-				(uint8_t)std::clamp(elem->FirstChildElement("Red")->DoubleText()*255, 0.0, 255.0));
+				(uint8_t)CLAMP(elem->FirstChildElement("Red")->DoubleText()*255, 0.0, 255.0),
+				(uint8_t)CLAMP(elem->FirstChildElement("Green")->DoubleText()*255, 0.0, 255.0),
+				(uint8_t)CLAMP(elem->FirstChildElement("Blue")->DoubleText()*255, 0.0, 255.0));
 		PointCloud::ViewArr views;
 		for (const tinyxml2::XMLElement* view=tiepoint->FirstChildElement("Measurement"); view!=NULL; view=view->NextSiblingElement())
 			views.emplace_back(mapImageID.at(view->FirstChildElement("PhotoId")->UnsignedText()));
@@ -678,7 +678,7 @@ bool UndistortBrown(Image& imageData, uint32_t ID, const DistCoeff& dc, const St
 
 	// save undistorted image
 	imageData.image = imgUndist;
-	imageData.name = pathData + String::FormatString(_T("%05u.png"), ID);
+	imageData.name = pathData + String::FormatString(_T("%05u.jpg"), ID);
 	Util::ensureFolder(imageData.name);
 	return imageData.image.Save(imageData.name);
 }

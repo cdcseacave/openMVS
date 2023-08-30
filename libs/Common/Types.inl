@@ -3040,7 +3040,7 @@ bool TImage<TYPE>::Save(const String& fileName) const
 	} else
 	if (ext == ".jpg") {
 		compression_params.push_back(cv::IMWRITE_JPEG_QUALITY);
-		compression_params.push_back(80);
+		compression_params.push_back(95);
 	} else
 	if (ext == ".pfm") {
 		if (Base::depth() != CV_32F)
