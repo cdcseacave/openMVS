@@ -454,9 +454,9 @@ void Window::Drop(int count, const char** paths)
 		String fileName(paths[0]);
 		Util::ensureUnifySlash(fileName);
 		if (count > 1) {
-			String meshFileName(paths[1]);
-			Util::ensureUnifySlash(meshFileName);
-			clbkOpenScene(fileName, meshFileName);
+			String geometryFileName(paths[1]);
+			Util::ensureUnifySlash(geometryFileName);
+			clbkOpenScene(fileName, geometryFileName);
 		} else {
 			clbkOpenScene(fileName, NULL);
 		}

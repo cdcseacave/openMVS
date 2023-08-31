@@ -68,6 +68,7 @@ bool bFromOpenMVS; // conversion direction
 bool bNormalizeIntrinsics;
 bool bForceSparsePointCloud;
 String strInputFileName;
+String strPointCloudFileName;
 String strOutputFileName;
 String strImageFolder;
 unsigned nArchiveType;
@@ -108,10 +109,11 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	boost::program_options::options_description config("Main options");
 	config.add_options()
 		("input-file,i", boost::program_options::value<std::string>(&OPT::strInputFileName), "input COLMAP folder containing cameras, images and points files OR input MVS project file")
+		("pointcloud-file,p", boost::program_options::value<std::string>(&OPT::strPointCloudFileName), "point-cloud with views file name (overwrite existing point-cloud)")
 		("output-file,o", boost::program_options::value<std::string>(&OPT::strOutputFileName), "output filename for storing the MVS project")
 		("image-folder", boost::program_options::value<std::string>(&OPT::strImageFolder)->default_value(COLMAP_IMAGES_FOLDER), "folder to the undistorted images")
 		("normalize,f", boost::program_options::value(&OPT::bNormalizeIntrinsics)->default_value(false), "normalize intrinsics while exporting to MVS format")
-		("force-points,p", boost::program_options::value(&OPT::bForceSparsePointCloud)->default_value(false), "force exporting point-cloud as sparse points also even if dense point-cloud detected")
+		("force-points,e", boost::program_options::value(&OPT::bForceSparsePointCloud)->default_value(false), "force exporting point-cloud as sparse points also even if dense point-cloud detected")
 		;
 
 	boost::program_options::options_description cmdline_options;
@@ -127,7 +129,6 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		// parse command line options
 		boost::program_options::store(boost::program_options::command_line_parser((int)argc, argv).options(cmdline_options).positional(p).run(), OPT::vm);
 		boost::program_options::notify(OPT::vm);
-		Util::ensureValidPath(OPT::strInputFileName);
 		INIT_WORKING_FOLDER;
 		// parse configuration file
 		std::ifstream ifs(MAKE_PATH_SAFE(OPT::strConfigFileName));
@@ -149,6 +150,8 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	LOG(_T("Command line: ") APPNAME _T("%s"), Util::CommandLineToString(argc, argv).c_str());
 
 	// validate input
+	Util::ensureValidPath(OPT::strInputFileName);
+	Util::ensureValidPath(OPT::strPointCloudFileName);
 	const bool bInvalidCommand(OPT::strInputFileName.empty());
 	if (OPT::vm.count("help") || bInvalidCommand) {
 		boost::program_options::options_description visible("Available options");
@@ -949,6 +952,46 @@ bool ImportScene(const String& strFolder, const String& strOutFolder, Interface&
 }
 
 
+bool ImportPointCloud(const String& strPointCloudFileName, Interface& scene)
+{
+	PointCloud pointcloud;
+	if (!pointcloud.Load(strPointCloudFileName)) {
+		VERBOSE("error: cannot load point-cloud file");
+		return false;
+	}
+	if (!pointcloud.IsValid()) {
+		VERBOSE("error: loaded point-cloud does not have visibility information");
+		return false;
+	}
+	// replace scene point-cloud with the loaded one
+	scene.vertices.clear();
+	scene.verticesColor.clear();
+	scene.verticesNormal.clear();
+	scene.vertices.reserve(pointcloud.points.size());
+	if (!pointcloud.colors.empty())
+		scene.verticesColor.reserve(pointcloud.points.size());
+	if (!pointcloud.normals.empty())
+		scene.verticesNormal.reserve(pointcloud.points.size());
+	FOREACH(i, pointcloud.points) {
+		Interface::Vertex vertex;
+		vertex.X = pointcloud.points[i];
+		vertex.views.reserve(pointcloud.pointViews[i].size());
+		FOREACH(j, pointcloud.pointViews[i]) {
+			Interface::Vertex::View& view = vertex.views.emplace_back();
+			view.imageID = pointcloud.pointViews[i][j];
+			view.confidence = (pointcloud.pointWeights.empty() ? 0.f : pointcloud.pointWeights[i][j]);
+		}
+		scene.vertices.emplace_back(std::move(vertex));
+		if (!pointcloud.colors.empty()) {
+			const Pixel8U& c = pointcloud.colors[i];
+			scene.verticesColor.emplace_back(Interface::Color{Interface::Col3{c.b, c.g, c.r}});
+		}
+		if (!pointcloud.normals.empty())
+			scene.verticesNormal.emplace_back(Interface::Normal{pointcloud.normals[i]});
+	}
+	return true;
+}
+
 bool ExportScene(const String& strFolder, const Interface& scene, bool bForceSparsePointCloud = false, bool binary = true)
 {
 	Util::ensureFolder(strFolder+COLMAP_SPARSE_FOLDER);
@@ -1392,6 +1435,8 @@ int main(int argc, LPCTSTR* argv)
 			ExportImagesCamera((OPT::strOutputFileName=Util::getFileFullName(MAKE_PATH_FULL(WORKING_FOLDER_FULL, OPT::strOutputFileName)))+PATH_SEPARATOR, scene);
 		} else {
 			// write COLMAP input data
+			if (!OPT::strPointCloudFileName.empty() && !ImportPointCloud(MAKE_PATH_SAFE(OPT::strPointCloudFileName), scene))
+				return EXIT_FAILURE;
 			Util::ensureFolderSlash(OPT::strOutputFileName);
 			ExportScene(MAKE_PATH_SAFE(OPT::strOutputFileName), scene, OPT::bForceSparsePointCloud);
 		}

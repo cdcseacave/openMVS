@@ -148,7 +148,7 @@ void Scene::Empty()
 	images.Release();
 	scene.Release();
 	sceneName.clear();
-	meshName.clear();
+	geometryName.clear();
 }
 void Scene::Release()
 {
@@ -177,7 +177,7 @@ void Scene::ReleaseMesh()
 	}
 }
 
-bool Scene::Init(const cv::Size& size, LPCTSTR windowName, LPCTSTR fileName, LPCTSTR meshFileName)
+bool Scene::Init(const cv::Size& size, LPCTSTR windowName, LPCTSTR fileName, LPCTSTR geometryFileName)
 {
 	ASSERT(scene.IsEmpty());
 
@@ -216,29 +216,36 @@ bool Scene::Init(const cv::Size& size, LPCTSTR windowName, LPCTSTR fileName, LPC
 	// open scene or init empty scene
 	window.SetCamera(Camera());
 	if (fileName != NULL)
-		Open(fileName, meshFileName);
+		Open(fileName, geometryFileName);
 	window.SetVisible(true);
 	return true;
 }
-bool Scene::Open(LPCTSTR fileName, LPCTSTR meshFileName)
+bool Scene::Open(LPCTSTR fileName, LPCTSTR geometryFileName)
 {
 	ASSERT(fileName);
 	DEBUG_EXTRA("Loading: '%s'", Util::getFileNameExt(fileName).c_str());
 	Empty();
 	sceneName = fileName;
-	if (meshFileName)
-		meshName = meshFileName;
 
 	// load the scene
 	WORKING_FOLDER = Util::getFilePath(fileName);
 	INIT_WORKING_FOLDER;
 	if (!scene.Load(fileName, true))
 		return false;
-	if (meshFileName) {
-		// load given mesh
-		if (!scene.mesh.Load(meshFileName)) {
-			// try to load as a point-cloud
-			scene.pointcloud.Load(meshFileName);
+	if (geometryFileName) {
+		// try to load given mesh
+		MVS::Mesh mesh;
+		MVS::PointCloud pointcloud;
+		if (mesh.Load(geometryFileName)) {
+			scene.mesh.Swap(mesh);
+			geometryName = geometryFileName;
+			geometryMesh = true;
+		} else
+		// try to load as a point-cloud
+		if (pointcloud.Load(geometryFileName)) {
+			scene.pointcloud.Swap(pointcloud);
+			geometryName = geometryFileName;
+			geometryMesh = false;
 		}
 	}
 	if (!scene.pointcloud.IsEmpty())
@@ -346,8 +353,11 @@ bool Scene::Save(LPCTSTR _fileName, bool bRescaleImages)
 	}
 	const String fileName(_fileName != NULL ? String(_fileName) : Util::insertBeforeFileExt(sceneName, _T("_new")));
 	MVS::Mesh mesh;
-	if (!scene.mesh.IsEmpty() && !meshName.empty())
+	if (!scene.mesh.IsEmpty() && !geometryName.empty() && geometryMesh)
 		mesh.Swap(scene.mesh);
+	MVS::PointCloud pointcloud;
+	if (!scene.pointcloud.IsEmpty() && !geometryName.empty() && !geometryMesh)
+		pointcloud.Swap(scene.pointcloud);
 	if (imageScale > 0 && imageScale < 1) {
 		// scale and save images
 		const String folderName(Util::getFilePath(MAKE_PATH_FULL(WORKING_FOLDER_FULL, fileName)) + String::FormatString("images%d" PATH_SEPARATOR_STR, ROUND2INT(imageScale*100)));
@@ -362,6 +372,8 @@ bool Scene::Save(LPCTSTR _fileName, bool bRescaleImages)
 	}
 	if (!mesh.IsEmpty())
 		scene.mesh.Swap(mesh);
+	if (!pointcloud.IsEmpty())
+		scene.pointcloud.Swap(pointcloud);
 	sceneName = fileName;
 	return true;
 }

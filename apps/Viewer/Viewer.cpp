@@ -48,8 +48,8 @@ namespace {
 
 namespace OPT {
 String strInputFileName;
+String strGeometryFileName;
 String strOutputFileName;
-String strMeshFileName;
 unsigned nArchiveType;
 int nProcessPriority;
 unsigned nMaxThreads;
@@ -96,21 +96,15 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	boost::program_options::options_description config("Viewer options");
 	config.add_options()
 		("input-file,i", boost::program_options::value<std::string>(&OPT::strInputFileName), "input project filename containing camera poses and scene (point-cloud/mesh)")
+		("geometry-file,g", boost::program_options::value<std::string>(&OPT::strGeometryFileName), "mesh or point-cloud with views file name (overwrite existing geometry)")
 		("output-file,o", boost::program_options::value<std::string>(&OPT::strOutputFileName), "output filename for storing the mesh")
 		;
 
-	// hidden options, allowed both on command line and
-	// in config file, but will not be shown to the user
-	boost::program_options::options_description hidden("Hidden options");
-	hidden.add_options()
-		("mesh-file", boost::program_options::value<std::string>(&OPT::strMeshFileName), "mesh file name to texture (overwrite the existing mesh)")
-		;
-
 	boost::program_options::options_description cmdline_options;
-	cmdline_options.add(generic).add(config).add(hidden);
+	cmdline_options.add(generic).add(config);
 
 	boost::program_options::options_description config_file_options;
-	config_file_options.add(config).add(hidden);
+	config_file_options.add(config);
 
 	boost::program_options::positional_options_description p;
 	p.add("input-file", -1);
@@ -171,12 +165,12 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 			"\n")
 			<< visible;
 	}
-	if (!OPT::strExportType.IsEmpty())
+	if (!OPT::strExportType.empty())
 		OPT::strExportType = OPT::strExportType.ToLower() == _T("obj") ? _T(".obj") : _T(".ply");
 
 	// initialize optional options
+	Util::ensureValidPath(OPT::strGeometryFileName);
 	Util::ensureValidPath(OPT::strOutputFileName);
-	Util::ensureValidPath(OPT::strMeshFileName);
 
 	// initialize global options
 	Process::setCurrentProcessPriority((Process::Priority)OPT::nProcessPriority);
@@ -223,12 +217,12 @@ int main(int argc, LPCTSTR* argv)
 	// create viewer
 	Scene viewer;
 	if (!viewer.Init(cv::Size(1280, 720), APPNAME,
-			OPT::strInputFileName.IsEmpty() ? NULL : MAKE_PATH_SAFE(OPT::strInputFileName).c_str(),
-			OPT::strMeshFileName.IsEmpty() ? NULL : MAKE_PATH_SAFE(OPT::strMeshFileName).c_str()))
+			OPT::strInputFileName.empty() ? NULL : MAKE_PATH_SAFE(OPT::strInputFileName).c_str(),
+			OPT::strGeometryFileName.empty() ? NULL : MAKE_PATH_SAFE(OPT::strGeometryFileName).c_str()))
 		return EXIT_FAILURE;
-	if (viewer.IsOpen() && !OPT::strOutputFileName.IsEmpty()) {
+	if (viewer.IsOpen() && !OPT::strOutputFileName.empty()) {
 		// export the scene
-		viewer.Export(MAKE_PATH_SAFE(OPT::strOutputFileName), OPT::strExportType.IsEmpty()?LPCTSTR(NULL):OPT::strExportType.c_str());
+		viewer.Export(MAKE_PATH_SAFE(OPT::strOutputFileName), OPT::strExportType.empty()?LPCTSTR(NULL):OPT::strExportType.c_str());
 	}
 	// enter viewer loop
 	viewer.Loop();

@@ -27,6 +27,7 @@ SET(OpenMVS_USE_FAST_INVSQRT OFF CACHE BOOL "Use an optimized code to compute th
 SET(OpenMVS_USE_FAST_CBRT ON CACHE BOOL "Use an optimized code to compute the cubic root")
 SET(OpenMVS_MAX_CUDA_COMPATIBILITY OFF CACHE BOOL "Build for maximum CUDA device compatibility")
 SET(OpenMVS_ENABLE_TESTS ON CACHE BOOL "Enable test code")
+SET(OpenMVS_USE_SSE ON CACHE BOOL "Enable SSE optimizations")
 
 # Load automatically VCPKG toolchain if available
 IF(NOT DEFINED CMAKE_TOOLCHAIN_FILE AND DEFINED ENV{VCPKG_ROOT})
@@ -50,13 +51,15 @@ ENDIF()
 # ${OpenMVS_BINARY_DIR}.
 PROJECT(OpenMVS)
 
-cmake_policy(SET CMP0127 NEW)
-cmake_dependent_option(OpenMVS_USE_SSE "Enable SSE optimizations" ON "NOT CMAKE_SYSTEM_PROCESSOR MATCHES \"^(arm|ARM|aarch64|AARCH64).\"" OFF)
-
 SET(OpenMVS_MAJOR_VERSION 2)
 SET(OpenMVS_MINOR_VERSION 2)
 SET(OpenMVS_PATCH_VERSION 0)
 SET(OpenMVS_VERSION ${OpenMVS_MAJOR_VERSION}.${OpenMVS_MINOR_VERSION}.${OpenMVS_PATCH_VERSION})
+
+# Disable SSE on unsuported platforms
+IF(CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm|ARM|aarch64|AARCH64)")
+	SET(OpenMVS_USE_SSE OFF)
+ENDIF()
 
 # Define helper functions and macros.
 INCLUDE(build/Utils.cmake)
