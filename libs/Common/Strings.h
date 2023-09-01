@@ -41,10 +41,10 @@ public:
 
 	inline String& operator=(Base&& rhs) { Base::operator=(std::forward<Base>(rhs)); return *this; }
 	inline String& operator=(String&& rhs) { Base::operator=(std::forward<Base>(rhs)); return *this; }
+	#endif
 	inline String& operator=(TCHAR rhs) { Base::operator=(rhs); return *this; }
 	inline String& operator=(LPCTSTR rhs) { Base::operator=(rhs); return *this; }
 	inline String& operator=(const String& rhs) { Base::operator=(rhs); return *this; }
-	#endif
 
 	inline String& operator+=(TCHAR rhs) { *this = (*this) + rhs; return *this; }
 	inline String& operator+=(LPCTSTR rhs) { *this = (*this) + rhs; return *this; }

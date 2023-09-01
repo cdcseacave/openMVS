@@ -457,7 +457,10 @@ public:
 	}
 
 	static String getFilePath(const String& path) {
-		const String::size_type i = path.rfind(PATH_SEPARATOR);
+		const String::size_type size = path.size();
+		if (size < 3)
+			return String();
+		const String::size_type i = path.rfind(PATH_SEPARATOR, size-2);
 		return (i != String::npos) ? path.substr(0, i+1) : String();
 	}
 	static String getFileFullName(const String& path) {

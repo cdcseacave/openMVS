@@ -2143,7 +2143,11 @@ public:
 	inline TImage(const Size& sz) : Base(sz) {}
 	inline TImage(const Size& sz, const TYPE& v) : Base(sz, v) {}
 	inline TImage(const Size& sz, TYPE* _data, size_t _step=Base::AUTO_STEP) : Base(sz.height, sz.width, _data, _step) {}
+	#ifdef _SUPPORT_CPP11
+	inline TImage(cv::Mat&& rhs) : Base(std::forward<cv::Mat>(rhs)) {}
 
+	inline TImage& operator = (cv::Mat&& rhs) { BaseBase::operator=(std::forward<cv::Mat>(rhs)); return *this; }
+	#endif
 	inline TImage& operator = (const Base& rhs) { BaseBase::operator=(rhs); return *this; }
 	inline TImage& operator = (const BaseBase& rhs) { BaseBase::operator=(rhs); return *this; }
 	inline TImage& operator = (const cv::MatExpr& rhs) { BaseBase::operator=(rhs); return *this; }
