@@ -41,9 +41,9 @@ def loadDMAP(dmap_path):
     
     depth_length = depth_width * depth_height
     depth_map = np.asarray(struct.unpack('%df' % depth_length, dmap.read(4 * depth_length))).reshape(depth_height, depth_width)
-    normal_map = np.asarray(struct.unpack('%df' % depth_length * 3, dmap.read(4 * depth_length * 3))).reshape(depth_height, depth_width, 3) if has_normal else None
-    confidence_map = np.asarray(struct.unpack('%df' % depth_length, dmap.read(4 * depth_length))).reshape(depth_height, depth_width) if has_conf else None
-    views_map = np.asarray(struct.unpack('%dB' % depth_length * 4, dmap.read(depth_length * 4))).reshape(depth_height, depth_width, 4) if has_views else None
+    normal_map = np.asarray(struct.unpack('%df' % depth_length * 3, dmap.read(4 * depth_length * 3))).reshape(depth_height, depth_width, 3) if has_normal else np.asarray([])
+    confidence_map = np.asarray(struct.unpack('%df' % depth_length, dmap.read(4 * depth_length))).reshape(depth_height, depth_width) if has_conf else np.asarray([])
+    views_map = np.asarray(struct.unpack('%dB' % depth_length * 4, dmap.read(depth_length * 4))).reshape(depth_height, depth_width, 4) if has_views else np.asarray([])
   
   data = {
     'image_width': image_width,
@@ -72,12 +72,12 @@ def main():
   
   dmap = loadDMAP(args.input)
   
-  try:
+  if dmap['depth_map'].any():
     pyvips.Image.new_from_array(np.uint8(dmap['depth_map'] * (1 / dmap['depth_max']) * 255)).write_to_file('depth_map.png')
+  if dmap['normal_map'].any():
     pyvips.Image.new_from_array(np.uint8((dmap['normal_map'] @ -dmap['R'].T + 1) * 0.5 * 255)).write_to_file('normal_map.png')
+  if dmap['confidence_map'].any():
     pyvips.Image.new_from_array(np.uint8(dmap['confidence_map'] * (1 / dmap['confidence_map'].max()) * 255)).write_to_file('confidence_map.png')
-  except:
-    pass
 
 if __name__ == '__main__':
   main()
