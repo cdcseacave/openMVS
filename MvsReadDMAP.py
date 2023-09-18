@@ -1,5 +1,5 @@
 '''
-This script is an example for reading .dmap files.
+Python example for reading DMAP files.
 
 usage: MvsReadDMAP.py [-h] [--input INPUT]
 '''
