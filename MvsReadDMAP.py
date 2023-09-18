@@ -17,7 +17,7 @@ def loadDMAP(dmap_path):
     
     has_depth = content_type > 0
     has_normal = content_type in [3, 7, 11, 15]
-    has_conf = content_type in [6, 7, 13, 15]
+    has_conf = content_type in [5, 7, 13, 15]
     has_views = content_type in [9, 11, 13, 15]
     
     image_width, image_height = struct.unpack('2I', dmap.read(8))
@@ -72,8 +72,7 @@ def main():
   
   dmap = loadDMAP(args.input)
   
-  if dmap['depth_map'].any():
-    pyvips.Image.new_from_array(np.uint8(dmap['depth_map'] * (1 / dmap['depth_max']) * 255)).write_to_file('depth_map.png')
+  pyvips.Image.new_from_array(np.uint8(dmap['depth_map'] * (1 / dmap['depth_max']) * 255)).write_to_file('depth_map.png')
   if dmap['normal_map'].any():
     pyvips.Image.new_from_array(np.uint8((dmap['normal_map'] @ -dmap['R'].T + 1) * 0.5 * 255)).write_to_file('normal_map.png')
   if dmap['confidence_map'].any():
