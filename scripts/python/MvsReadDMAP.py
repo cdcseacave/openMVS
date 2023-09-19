@@ -32,6 +32,7 @@ def main():
   
   dmap_paths = glob(os.path.join(args.input, '*.dmap'))
   
+  os.makedirs(args.output, exist_ok = True)
   os.chdir(args.output)
   
   with ProcessPoolExecutor(max_workers=args.threads) as executor:
