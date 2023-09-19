@@ -893,7 +893,7 @@ CImage* CImage::Create(LPCTSTR szName, IMCREATE mode)
 		pImage = new CImagePNG();
 	#endif
 	#ifdef _IMAGE_JPG
-	else if (_tcsncicmp(fext, _T(".jpg"), 4) == 0)
+	else if (_tcsncicmp(fext, _T(".jpg"), 4) == 0 || _tcsncicmp(fext, _T(".jpeg"), 5) == 0)
 		pImage = new CImageJPG();
 	#endif
 	#ifdef _IMAGE_TIFF
