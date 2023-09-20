@@ -30,7 +30,7 @@ def loadDMAP(dmap_path):
     file_name = dmap.read(file_name_length).decode()
     
     view_ids_length = np.frombuffer(dmap.read(4), dtype=np.dtype('I'))[0]
-    view_ids = np.frombuffer(dmap.read(4 * view_ids_length), dtype=np.dtype('I'))
+    reference_view_id, *neighbor_view_ids = np.frombuffer(dmap.read(4 * view_ids_length), dtype=np.dtype('I'))
     
     K = np.frombuffer(dmap.read(72), dtype=np.dtype('d')).reshape(3, 3)
     R = np.frombuffer(dmap.read(72), dtype=np.dtype('d')).reshape(3, 3)
@@ -53,7 +53,8 @@ def loadDMAP(dmap_path):
     'depth_min': depth_min,
     'depth_max': depth_max,
     'file_name': file_name,
-    'view_ids': view_ids,
+    'reference_view_id': reference_view_id,
+    'neighbor_view_ids': neighbor_view_ids,
     'K': K,
     'R': R,
     'C': C,
