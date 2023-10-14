@@ -26,43 +26,46 @@ def loadDMAP(dmap_path):
     
     depth_min, depth_max = np.frombuffer(dmap.read(8), dtype=np.dtype('f'))
     
-    file_name_length = np.frombuffer(dmap.read(2), dtype=np.dtype('H'))[0]
-    file_name = dmap.read(file_name_length).decode()
+    file_name_size = np.frombuffer(dmap.read(2), dtype=np.dtype('H'))[0]
+    file_name = dmap.read(file_name_size).decode()
     
-    view_ids_length = np.frombuffer(dmap.read(4), dtype=np.dtype('I'))[0]
-    reference_view_id, *neighbor_view_ids = np.frombuffer(dmap.read(4 * view_ids_length), dtype=np.dtype('I'))
+    view_ids_size = np.frombuffer(dmap.read(4), dtype=np.dtype('I'))[0]
+    reference_view_id, *neighbor_view_ids = np.frombuffer(dmap.read(4 * view_ids_size), dtype=np.dtype('I'))
     
     K = np.frombuffer(dmap.read(72), dtype=np.dtype('d')).reshape(3, 3)
     R = np.frombuffer(dmap.read(72), dtype=np.dtype('d')).reshape(3, 3)
     C = np.frombuffer(dmap.read(24), dtype=np.dtype('d'))
     
-    depth_length = depth_width * depth_height
-    depth_map = np.frombuffer(dmap.read(4 * depth_length), dtype=np.dtype('f')).reshape(depth_height, depth_width)
-    normal_map = np.frombuffer(dmap.read(4 * depth_length * 3), dtype=np.dtype('f')).reshape(depth_height, depth_width, 3) if has_normal else np.asarray([])
-    confidence_map = np.frombuffer(dmap.read(4 * depth_length), dtype=np.dtype('f')).reshape(depth_height, depth_width) if has_conf else np.asarray([])
-    views_map = np.frombuffer(dmap.read(depth_length * 4), dtype=np.dtype('B')).reshape(depth_height, depth_width, 4) if has_views else np.asarray([])
-  
-  data = {
-    'has_normal': has_normal,
-    'has_conf': has_conf,
-    'has_views': has_views,
-    'image_width': image_width,
-    'image_height': image_height,
-    'depth_width': depth_width,
-    'depth_height': depth_height,
-    'depth_min': depth_min,
-    'depth_max': depth_max,
-    'file_name': file_name,
-    'reference_view_id': reference_view_id,
-    'neighbor_view_ids': neighbor_view_ids,
-    'K': K,
-    'R': R,
-    'C': C,
-    'depth_map': depth_map,
-    'normal_map': normal_map,
-    'confidence_map': confidence_map,
-    'views_map': views_map
-  }
+    data = {
+      'has_normal': has_normal,
+      'has_conf': has_conf,
+      'has_views': has_views,
+      'image_width': image_width,
+      'image_height': image_height,
+      'depth_width': depth_width,
+      'depth_height': depth_height,
+      'depth_min': depth_min,
+      'depth_max': depth_max,
+      'file_name': file_name,
+      'reference_view_id': reference_view_id,
+      'neighbor_view_ids': neighbor_view_ids,
+      'K': K,
+      'R': R,
+      'C': C
+    }
+    
+    map_size = depth_width * depth_height
+    depth_map = np.frombuffer(dmap.read(4 * map_size), dtype=np.dtype('f')).reshape(depth_height, depth_width)
+    data.update({'depth_map': depth_map})
+    if has_normal:
+      normal_map = np.frombuffer(dmap.read(4 * map_size * 3), dtype=np.dtype('f')).reshape(depth_height, depth_width, 3)
+      data.update({'normal_map': normal_map})
+    if has_conf:
+      confidence_map = np.frombuffer(dmap.read(4 * map_size), dtype=np.dtype('f')).reshape(depth_height, depth_width)
+      data.update({'confidence_map': confidence_map})
+    if has_views:
+      views_map = np.frombuffer(dmap.read(map_size * 4), dtype=np.dtype('B')).reshape(depth_height, depth_width, 4)
+      data.update({'views_map': views_map})
   
   return data
 
