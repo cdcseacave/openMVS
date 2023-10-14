@@ -15,11 +15,11 @@ def main():
   parser.add_argument('-o', '--output', type=str, required=True, help='Path to the output json file')
   args = parser.parse_args()
   
-  data = loadMVSInterface(args.input)
+  mvs = loadMVSInterface(args.input)
   
-  for platform_index in range(len(data['platforms'])):
-    for camera_index in range(len(data['platforms'][platform_index]['cameras'])):
-      camera = data['platforms'][platform_index]['cameras'][camera_index]
+  for platform_index in range(len(mvs['platforms'])):
+    for camera_index in range(len(mvs['platforms'][platform_index]['cameras'])):
+      camera = mvs['platforms'][platform_index]['cameras'][camera_index]
       image_max = max(camera['width'], camera['height'])
       fx = camera['K'][0][0] / image_max
       fy = camera['K'][1][1] / image_max
@@ -29,7 +29,7 @@ def main():
   os.makedirs(os.path.dirname(args.output), exist_ok = True)
   
   with open(args.output, 'w') as file:
-    json.dump(data, file, indent=2)
+    json.dump(mvs, file, indent=2)
 
 if __name__ == '__main__':
   main()
