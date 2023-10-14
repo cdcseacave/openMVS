@@ -1,8 +1,7 @@
 '''
 OpenMVS python utilities.
 
-E.g., from MvsUtils import loadDMAP
-E.g., from MvsUtils import loadMVSInterface
+E.g., from MvsUtils import loadDMAP, loadMVSInterface
 '''
 
 import numpy as np
