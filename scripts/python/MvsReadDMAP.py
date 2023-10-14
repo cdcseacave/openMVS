@@ -1,5 +1,5 @@
 '''
-Example usage of MvsUtils.py for exporting dmap file content.
+Example usage of MvsUtils.py for reading DMAP file content.
 
 usage: MvsReadDMAP.py [-h] [--input INPUT] [--output OUTPUT]
 '''
