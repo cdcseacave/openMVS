@@ -1,5 +1,5 @@
 '''
-Example usage of MvsUtils.py for exporting MVS interface archive content.
+Example usage of MvsUtils.py for reading MVS interface archive content.
 
 usage: MvsReadMVS.py [-h] [--input INPUT] [--output OUTPUT]
 '''
