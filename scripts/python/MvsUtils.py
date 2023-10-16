@@ -134,9 +134,9 @@ def loadMVSInterface(archive_path):
         data['images'][image_index].update({'min_depth': min_depth, 'avg_depth': avg_depth, 'max_depth': max_depth, 'view_scores': []})
         view_score_size = np.frombuffer(mvs.read(8), dtype=np.dtype('Q'))[0]
         for _ in range(view_score_size):
-          view_score_id, view_score_points = np.frombuffer(mvs.read(8), dtype=np.dtype('I')).tolist()
-          view_score_scale, view_score_angle, view_score_area, view_score_score = np.frombuffer(mvs.read(16), dtype=np.dtype('f')).tolist()
-          data['images'][image_index]['view_scores'].append({'id': view_score_id, 'points': view_score_points, 'scale': view_score_scale, 'angle': view_score_angle, 'area': view_score_area, 'score': view_score_score})
+          id, points = np.frombuffer(mvs.read(8), dtype=np.dtype('I')).tolist()
+          scale, angle, area, score = np.frombuffer(mvs.read(16), dtype=np.dtype('f')).tolist()
+          data['images'][image_index]['view_scores'].append({'id': id, 'points': points, 'scale': scale, 'angle': angle, 'area': area, 'score': score})
     
     vertices_size = np.frombuffer(mvs.read(8), dtype=np.dtype('Q'))[0]
     for vertex_index in range(vertices_size):
