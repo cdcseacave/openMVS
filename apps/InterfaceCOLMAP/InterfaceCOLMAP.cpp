@@ -741,10 +741,11 @@ bool ImportScene(const String& strFolder, const String& strOutFolder, Interface&
 			Interface::Platform::Camera camera;
 			camera.name = colmapCamera.model;
 			camera.K = Interface::Mat33d::eye();
+			// account for different pixel center conventions as COLMAP uses pixel center at (0.5,0.5) 
 			camera.K(0,0) = colmapCamera.params[0];
 			camera.K(1,1) = colmapCamera.params[1];
-			camera.K(0,2) = colmapCamera.params[2];
-			camera.K(1,2) = colmapCamera.params[3];
+			camera.K(0,2) = colmapCamera.params[2]-REAL(0.5);
+			camera.K(1,2) = colmapCamera.params[3]-REAL(0.5);
 			camera.R = Interface::Mat33d::eye();
 			camera.C = Interface::Pos3d(0,0,0);
 			if (OPT::bNormalizeIntrinsics) {
@@ -1023,6 +1024,7 @@ bool ExportScene(const String& strFolder, const Interface& scene, bool bForceSpa
 			ASSERT(platform.cameras.size() == 1); // only one camera per platform supported
 			const Interface::Platform::Camera& camera = platform.cameras[0];
 			cam.ID = ID;
+			KMatrix K;
 			if (camera.width == 0 || camera.height == 0) {
 				// find one image using this camera
 				const Interface::Image* pImage(NULL);
@@ -1043,26 +1045,20 @@ bool ExportScene(const String& strFolder, const Interface& scene, bool bForceSpa
 				cam.width = ptrImage->GetWidth();
 				cam.height = ptrImage->GetHeight();
 				// unnormalize camera intrinsics
-				const Interface::Mat33d K(platform.GetFullK(0, cam.width, cam.height));
-				cam.params[0] = K(0,0);
-				cam.params[1] = K(1,1);
-				cam.params[2] = K(0,2);
-				cam.params[3] = K(1,2);
+				K = platform.GetFullK(0, cam.width, cam.height);
 			} else {
 				cam.width = camera.width;
 				cam.height = camera.height;
-				cam.params[0] = camera.K(0,0);
-				cam.params[1] = camera.K(1,1);
-				cam.params[2] = camera.K(0,2);
-				cam.params[3] = camera.K(1,2);
+				K = camera.K;
 			}
+			// account for different pixel center conventions as COLMAP uses pixel center at (0.5,0.5) 
+			cam.params[0] = K(0,0);
+			cam.params[1] = K(1,1);
+			cam.params[2] = K(0,2)+REAL(0.5);
+			cam.params[3] = K(1,2)+REAL(0.5);
 			if (!cam.Write(file, binary))
 				return false;
-			KMatrix& K = Ks.emplace_back(KMatrix::IDENTITY);
-			K(0,0) = cam.params[0];
-			K(1,1) = cam.params[1];
-			K(0,2) = cam.params[2];
-			K(1,2) = cam.params[3];
+			Ks.emplace_back(K);
 			cams.emplace_back(cam);
 		}
 	}
@@ -1133,6 +1129,9 @@ bool ExportScene(const String& strFolder, const Interface& scene, bool bForceSpa
 					proj.idPoint = ID;
 					const Point3 X(vertex.X);
 					ProjectVertex_3x4_3_2(cameras[view.imageID].P.val, X.ptr(), proj.p.data());
+					// account for different pixel center conventions as COLMAP uses pixel center at (0.5,0.5) 
+					proj.p[0] += REAL(0.5);
+					proj.p[1] += REAL(0.5);
 					img.projs.emplace_back(proj);
 				}
 				point.c = scene.verticesColor.empty() ? Interface::Col3(255,255,255) : scene.verticesColor[ID].c;
