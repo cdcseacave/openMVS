@@ -4511,10 +4511,12 @@ inline Eigen::AlignedBox3f bounding_box(const FaceBox& faceBox) {
 bool Mesh::TransferTexture(Mesh& mesh, const FaceIdxArr& faceSubsetIndices, unsigned borderSize, unsigned textureSize)
 {
 	ASSERT(HasTexture() && mesh.HasTexture());
-	if (mesh.textureDiffuse.empty())
+	if (mesh.textureDiffuse.empty()) {
 		mesh.textureDiffuse.create(textureSize, textureSize);
+		mesh.textureDiffuse.memset(0);
+	}
 	Image8U mask(mesh.textureDiffuse.size(), uint8_t(255));
-	const FIndex num_faces(faceSubsetIndices.empty() ? faces.size() : faceSubsetIndices.size());
+	const FIndex num_faces(faceSubsetIndices.empty() ? mesh.faces.size() : faceSubsetIndices.size());
 	if (vertices == mesh.vertices && faces == mesh.faces) {
 		// the two meshes are identical, only the texture coordinates are different;
 		// directly transfer the texture onto the new coordinates
@@ -4581,10 +4583,9 @@ bool Mesh::TransferTexture(Mesh& mesh, const FaceIdxArr& faceSubsetIndices, unsi
 			inline void IntersectsRayFace(FIndex idxFace) {
 				const Face& face = mesh.faces[idxFace];
 				Type dist;
-				if (ray.Intersects<true>(Triangle3f(mesh.vertices[face[0]], mesh.vertices[face[1]], mesh.vertices[face[2]]), &dist)) {
-					ASSERT(dist >= 0);
-					if (pick.dist > dist) {
-						pick.dist = dist;
+				if (ray.Intersects<false>(Triangle3f(mesh.vertices[face[0]], mesh.vertices[face[1]], mesh.vertices[face[2]]), &dist)) {
+					if (pick.dist > ABS(dist)) {
+						pick.dist = ABS(dist);
 						pick.idx = idxFace;
 					}
 				}
@@ -4600,12 +4601,10 @@ bool Mesh::TransferTexture(Mesh& mesh, const FaceIdxArr& faceSubsetIndices, unsi
 			#endif
 		};
 		#if USE_MESH_INT == USE_MESH_BF || USE_MESH_INT == USE_MESH_BVH
-		const float diagonal(GetAABB().GetSize().norm());
 		#elif USE_MESH_INT == USE_MESH_OCTREE
 		const Octree octree(vertices, [](Octree::IDX_TYPE size, Octree::Type /*radius*/) {
 			return size > 8;
 		});
-		const float diagonal(octree.GetAabb().GetSize().norm());
 		struct OctreeIntersectRayMesh : IntersectRayMesh {
 			OctreeIntersectRayMesh(const Octree& octree, const Mesh& _mesh, const Ray3f& _ray)
 				: IntersectRayMesh(_mesh, _ray) {
@@ -4646,13 +4645,16 @@ bool Mesh::TransferTexture(Mesh& mesh, const FaceIdxArr& faceSubsetIndices, unsi
 				Mesh& meshTrg;
 				Image8U& mask;
 				const Face& face;
-				float diagonal;
 				inline cv::Size Size() const { return meshTrg.textureDiffuse.size(); }
 				inline void operator()(const ImageRef& pt, const Point3f& bary) {
 					ASSERT(meshTrg.textureDiffuse.isInside(pt));
-					const Vertex X(meshTrg.vertices[face[0]]*bary.x + meshTrg.vertices[face[1]]*bary.y + meshTrg.vertices[face[2]]*bary.z);
-					const Normal N(normalized(meshTrg.vertexNormals[face[0]]*bary.x + meshTrg.vertexNormals[face[1]]*bary.y + meshTrg.vertexNormals[face[2]]*bary.z));
-					const Ray3f ray(Vertex(X+N*diagonal), Normal(-N));
+					const Vertex X(meshTrg.vertices[face[0]]*bary.x
+								 + meshTrg.vertices[face[1]]*bary.y
+								 + meshTrg.vertices[face[2]]*bary.z);
+					const Normal N(normalized(meshTrg.vertexNormals[face[0]]*bary.x
+											+ meshTrg.vertexNormals[face[1]]*bary.y
+											+ meshTrg.vertexNormals[face[2]]*bary.z));
+					const Ray3f ray((Vertex(X)), Normal(N));
 					#if USE_MESH_INT == USE_MESH_BF
 					const IntersectRayMesh intRay(meshRef, ray);
 					#elif USE_MESH_INT == USE_MESH_BVH
@@ -4674,11 +4676,11 @@ bool Mesh::TransferTexture(Mesh& mesh, const FaceIdxArr& faceSubsetIndices, unsi
 					}
 				}
 			#if USE_MESH_INT == USE_MESH_BF
-			} data{*this, mesh, mask, mesh.faces[idxFace], diagonal};
+			} data{*this, mesh, mask, mesh.faces[idxFace]};
 			#elif USE_MESH_INT == USE_MESH_BVH
-			} data{tree, *this, mesh, mask, mesh.faces[idxFace], diagonal};
+			} data{tree, *this, mesh, mask, mesh.faces[idxFace]};
 			#else
-			} data{octree, *this, mesh, mask, mesh.faces[idxFace], diagonal};
+			} data{octree, *this, mesh, mask, mesh.faces[idxFace]};
 			#endif
 			// render triangle and for each pixel interpolate the color
 			// from the triangle corners using barycentric coordinates
