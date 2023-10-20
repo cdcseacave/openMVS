@@ -294,6 +294,14 @@ bool Scene::Open(LPCTSTR fileName, LPCTSTR geometryFileName)
 
 	// init and load texture
 	if (scene.mesh.HasTexture()) {
+		Image8U3 atlas;
+		const cv::Size size = scene.mesh.texturesDiffuse.front().size();
+		atlas.create(size.height, size.width * scene.mesh.texturesDiffuse.size());
+		FOREACH(i, scene.mesh.texturesDiffuse) {
+			Image8U3& texture = scene.mesh.texturesDiffuse[i];
+			const cv::Size size = texture.size();
+			texture.copyTo(atlas(cv::Rect(i * size.width, 0, size.width, size.height)));
+		}
 		Image& image = textures.AddEmpty();
 		ASSERT(image.idx == NO_ID);
 		#if 0
@@ -302,7 +310,7 @@ bool Scene::Open(LPCTSTR fileName, LPCTSTR geometryFileName)
 		scene.mesh.textureDiffuse.release();
 		#else // preserve texture, used only to be able to export the mesh
 		Image8U3 textureDiffuse;
-		cv::flip(scene.mesh.textureDiffuse, textureDiffuse, 0);
+		cv::flip(atlas, textureDiffuse, 0);
 		image.SetImage(textureDiffuse);
 		#endif
 		image.GenerateMipmap();
@@ -452,8 +460,16 @@ void Scene::CompileMesh()
 		scene.mesh.ComputeNormalFaces();
 	// translate, normalize and flip Y axis of the texture coordinates
 	MVS::Mesh::TexCoordArr normFaceTexcoords;
-	if (scene.mesh.HasTexture())
+	if (scene.mesh.HasTexture()) {
 		scene.mesh.FaceTexcoordsNormalize(normFaceTexcoords, true);
+		FOREACH(i, normFaceTexcoords) {
+			const MVS::Mesh::TexIndex texIdx(scene.mesh.GetFaceTexxtureIndex(i/3));
+			normFaceTexcoords[i] = MVS::Mesh::TexCoord(
+				(normFaceTexcoords[i].x + texIdx) / (float)scene.mesh.texturesDiffuse.size(),
+				normFaceTexcoords[i].y
+			);
+		}
+	}
 	listMesh = glGenLists(1);
 	glNewList(listMesh, GL_COMPILE);
 	// compile mesh
@@ -518,7 +534,7 @@ void Scene::Draw()
 		glEnable(GL_CULL_FACE);
 		if (!scene.mesh.faceTexcoords.empty() && window.bRenderTexture) {
 			glEnable(GL_TEXTURE_2D);
-			textures.front().Bind();
+			textures.back().Bind();
 			glCallList(listMesh);
 			glDisable(GL_TEXTURE_2D);
 		} else {

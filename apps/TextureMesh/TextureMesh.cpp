@@ -68,6 +68,7 @@ unsigned nOrthoMapResolution;
 unsigned nArchiveType;
 int nProcessPriority;
 unsigned nMaxThreads;
+int nMaxTextureSize;
 String strExportType;
 String strConfigFileName;
 boost::program_options::variables_map vm;
@@ -125,6 +126,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		("sharpness-weight", boost::program_options::value(&OPT::fSharpnessWeight)->default_value(0.5f), "amount of sharpness to be applied on the texture (0 - disabled)")
 		("orthographic-image-resolution", boost::program_options::value(&OPT::nOrthoMapResolution)->default_value(0), "orthographic image resolution to be generated from the textured mesh - the mesh is expected to be already geo-referenced or at least properly oriented (0 - disabled)")
 		("ignore-mask-label", boost::program_options::value(&OPT::nIgnoreMaskLabel)->default_value(-1), "label value to ignore in the image mask, stored in the MVS scene or next to each image with '.mask.png' extension (-1 - auto estimate mask for lens distortion, -2 - disabled)")
+		("max-texture-size", boost::program_options::value(&OPT::nMaxTextureSize)->default_value(8192), "maximum texture size, split it in multiple textures of this size if needed (0 - unbounded)")
 		;
 
 	// hidden options, allowed both on command line and
@@ -286,7 +288,7 @@ int main(int argc, LPCTSTR* argv)
 		return EXIT_FAILURE;
 	}
 	const String baseFileName(MAKE_PATH_SAFE(Util::getFileFullName(OPT::strOutputFileName)));
-	if (OPT::nOrthoMapResolution && !scene.mesh.textureDiffuse.empty()) {
+	if (OPT::nOrthoMapResolution && !scene.mesh.HasTexture()) {
 		// the input mesh is already textured and an orthographic projection was requested
 		goto ProjectOrtho;
 	}
@@ -311,7 +313,7 @@ int main(int argc, LPCTSTR* argv)
 	TD_TIMER_START();
 	if (!scene.TextureMesh(OPT::nResolutionLevel, OPT::nMinResolution, OPT::minCommonCameras, OPT::fOutlierThreshold, OPT::fRatioDataSmoothness,
 						   OPT::bGlobalSeamLeveling, OPT::bLocalSeamLeveling, OPT::nTextureSizeMultiple, OPT::nRectPackingHeuristic, Pixel8U(OPT::nColEmpty),
-						   OPT::fSharpnessWeight, OPT::nIgnoreMaskLabel, views))
+						   OPT::fSharpnessWeight, OPT::nIgnoreMaskLabel, OPT::nMaxTextureSize, views))
 		return EXIT_FAILURE;
 	VERBOSE("Mesh texturing completed: %u vertices, %u faces (%s)", scene.mesh.vertices.GetSize(), scene.mesh.faces.GetSize(), TD_TIMER_GET_FMT().c_str());
 
