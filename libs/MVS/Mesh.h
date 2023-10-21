@@ -131,7 +131,7 @@ public:
 
 	NormalArr faceNormals; // for each face, the normal to it (optional)
 	FaceFacesArr faceFaces; // for each face, the list of adjacent faces, NO_ID for border edges (optional)
-	TexCoordArr faceTexcoords; // for each face, the texture-coordinates corresponding to its vertices, 3x num faces (optional)
+	TexCoordArr faceTexcoords; // for each face, the texture-coordinates corresponding to its vertices, 3x num faces OR for each vertex (optional)
 	TexIndexArr faceTexindices; // for each face, the corresponding index of the texture (optional)
 
 	Image8U3Arr texturesDiffuse; // textures containing the diffuse color (optional)
@@ -154,7 +154,8 @@ public:
 	void Join(const Mesh&);
 	bool IsEmpty() const { return vertices.empty(); }
 	bool IsWatertight();
-	bool HasTexture() const { ASSERT(faces.size()*3 == faceTexcoords.size()); return !faceTexcoords.empty() && !texturesDiffuse.empty(); }
+	bool HasTexture() const { ASSERT(faces.size()*3 == faceTexcoords.size() || vertices.size() == faceTexcoords.size()); return !faceTexcoords.empty() && !texturesDiffuse.empty(); }
+	bool HasTextureCoordinatesPerVertex() const { return !faceTexcoords.empty() && vertices.size() == faceTexcoords.size(); }
 
 	Box GetAABB() const;
 	Box GetAABB(const Box& bound) const;

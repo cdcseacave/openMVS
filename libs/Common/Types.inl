@@ -2617,9 +2617,11 @@ void TImage<TYPE>::RasterizeTriangleBary(const TPoint2<T>& v1, const TPoint2<T>&
 	ImageRef boxMinI(FLOOR2INT(boxMin));
 	ImageRef boxMaxI(CEIL2INT(boxMax));
 	Base::clip(boxMinI, boxMaxI, size);
-	// parse all pixels inside the bounding-box
+	// ignore back oriented triangles (negative area)
 	const T area(EdgeFunction(v1, v2, v3));
-	ASSERTM(area < 0, "UV triangle of negative area");
+	if (area <= 0)
+		return;
+	// parse all pixels inside the bounding-box
 	const T invArea(T(1) / area);
 	for (int y = boxMinI.y; y <= boxMaxI.y; ++y) {
 		for (int x = boxMinI.x; x <= boxMaxI.x; ++x) {

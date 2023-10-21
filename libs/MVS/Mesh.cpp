@@ -1748,10 +1748,8 @@ bool Mesh::LoadOBJ(const String& fileName)
 		}
 		// store texture
 		ObjModel::MaterialLib::Material* pMaterial(model.GetMaterial(group.material_name));
-		if (pMaterial && pMaterial->LoadDiffuseMap()) {
-			texturesDiffuse.emplace_back();
-			cv::swap(texturesDiffuse.back(), pMaterial->diffuse_map);
-		}
+		if (pMaterial && pMaterial->LoadDiffuseMap())
+			texturesDiffuse.emplace_back(pMaterial->diffuse_map);
 	}
 
 	// flip Y axis, unnormalize and translate back texture coordinates
@@ -2017,8 +2015,8 @@ bool Mesh::SaveGLTF(const String& fileName, bool bBinary) const
 		}
 	} else {
 		Mesh convertedMesh;
-		meshes.emplace_back(*this).ConvertTexturePerVertex(convertedMesh);
-		meshes.back().Swap(convertedMesh);
+		ConvertTexturePerVertex(convertedMesh);
+		meshes.emplace_back(std::move(convertedMesh));
 	}
 
 	// create GLTF model
@@ -2030,7 +2028,8 @@ bool Mesh::SaveGLTF(const String& fileName, bool bBinary) const
 	gltfMesh.name = "mesh";
 
 	for (size_t meshId = 0; meshId < meshes.size(); meshId++) {
-		auto &mesh = meshes[meshId];
+		const Mesh& mesh = meshes[meshId];
+		ASSERT(mesh.HasTextureCoordinatesPerVertex());
 		tinygltf::Primitive gltfPrimitive;
 		// setup vertices
 		{
@@ -4532,11 +4531,14 @@ Mesh Mesh::SubMesh(const FaceIdxArr& chunk) const
 	Mesh mesh;
 	mesh.vertices = vertices;
 	mesh.faces.reserve(chunk.size());
+	if (!faceTexcoords.empty())
+		mesh.faceTexcoords.reserve(chunk.size()*3);
 	for (FIndex idxFace: chunk) {
 		mesh.faces.emplace_back(faces[idxFace]);
 		if (!faceTexcoords.empty()) {
-			for (int i = 0; i < 3; i++)
-				mesh.faceTexcoords.emplace_back(faceTexcoords[idxFace*3+1]);
+			const TexCoord* tri = faceTexcoords.data()+idxFace*3;
+			for (int i = 0; i < 3; ++i)
+				mesh.faceTexcoords.emplace_back(tri[i]);
 		}
 	}
 	mesh.ListIncidenteFaces();
@@ -4546,23 +4548,20 @@ Mesh Mesh::SubMesh(const FaceIdxArr& chunk) const
 } // SubMesh
 /*----------------------------------------------------------------*/
 
-// extract one sub-mesh for each texture, i.e. for each value of faceTexindices.
-// If the mesh has no texture an exception is thrown
+// extract one sub-mesh for each texture, i.e. for each value of faceTexindices;
 std::vector<Mesh> Mesh::SplitMeshPerTextureBlob() const {
 
-	if (!HasTexture())
-		throw std::runtime_error("Mesh has no texture");
-	if (texturesDiffuse.size() == 1 || faceTexindices.empty())
+	ASSERT(HasTexture());
+	if (texturesDiffuse.size() == 1)
 		return {*this};
 	ASSERT(faceTexindices.size() == faces.size());
 	std::vector<Mesh> submeshes;
 	submeshes.reserve(texturesDiffuse.size());
 	FOREACH(texId, texturesDiffuse) {
 		FaceIdxArr chunk;
-		FOREACH(faceId, faceTexindices) {
-			if (faceTexindices[faceId] == texId) {
-				chunk.push_back(faceId);
-			}
+		FOREACH(idxFace, faceTexindices) {
+			if (faceTexindices[idxFace] == texId)
+				chunk.push_back(idxFace);
 		}
 		Mesh submesh = SubMesh(chunk);
 		submesh.texturesDiffuse.emplace_back(texturesDiffuse[texId]);

@@ -559,7 +559,7 @@ bool MeshTexture::ListCameraFaces(FaceDataViewArr& facesDatas, float fOutlierThr
 			#endif
 		}
 		rasterer.Clear();
-		for (auto idxFace : cameraFaces) {
+		for (FIndex idxFace : cameraFaces) {
 			rasterer.validFace = true;
 			const Face& facet = faces[idxFace];
 			rasterer.idxFace = idxFace;
@@ -2224,7 +2224,7 @@ void MeshTexture::GenerateTexture(bool bGlobalSeamLeveling, bool bLocalSeamLevel
 		}
 
 		// pack patches: one pack per texture file
-		std::vector<RectsBinPack::RectWIdxArr> placedRects; {
+		CLISTDEF2IDX(RectsBinPack::RectWIdxArr, TexIndex) placedRects; {
 			// increase texture size till all patches fit
 			const unsigned typeRectsBinPack(nRectPackingHeuristic/100);
 			const unsigned typeSplit((nRectPackingHeuristic-typeRectsBinPack*100)/10);
@@ -2275,15 +2275,15 @@ void MeshTexture::GenerateTexture(bool bGlobalSeamLeveling, bool bLocalSeamLevel
 		#ifdef TEXOPT_USE_OPENMP
 		#pragma omp parallel for schedule(dynamic)
 		for (int_t i=0; i<(int_t)placedRects.size(); ++i) {
-			for (int_t j=0; j<(int_t)placedRects[i].size(); ++j) {
-				const uint32_t idxTexture((uint32_t)i);
+			for (int_t j=0; j<(int_t)placedRects[(TexIndex)i].size(); ++j) {
+				const TexIndex idxTexture((TexIndex)i);
 				const uint32_t idxPlacedPatch((uint32_t)j);
 		#else
 		FOREACH(idxTexture, placedRects) {
 			FOREACH(idxPlacedPatch, placedRects[idxTexture]) {
 		#endif
 				const TexturePatch& texturePatch = texturePatches[placedRects[idxTexture][idxPlacedPatch].patchIdx];
-				RectsBinPack::Rect rect = placedRects[idxTexture][idxPlacedPatch].rect;
+				const RectsBinPack::Rect& rect = placedRects[idxTexture][idxPlacedPatch].rect;
 				// copy patch image
 				ASSERT((rect.width == texturePatch.rect.width && rect.height == texturePatch.rect.height) ||
 					(rect.height == texturePatch.rect.width && rect.width == texturePatch.rect.height));
