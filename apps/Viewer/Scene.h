@@ -68,7 +68,7 @@ public:
 	Point3fArr obbPoints;
 
 	GLuint listPointCloud;
-	GLuint listMesh;
+	CLISTDEF0IDX(GLuint,MVS::Mesh::TexIndex) listMeshes;
 
 	// multi-threading
 	static SEACAVE::EventQueue events; // internal events queue (processed by the working threads)

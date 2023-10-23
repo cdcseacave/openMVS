@@ -1435,7 +1435,7 @@ void Mesh::FaceTexcoordsNormalize(TexCoordArr& newFaceTexcoords, bool flipY) con
 	if (flipY) {
 		FOREACH(i, faceTexcoords) {
 			const TexCoord& texcoord = faceTexcoords[i];
-			const TexCoord& invNorm = invNorms[GetFaceTexxtureIndex(i/3)];
+			const TexCoord& invNorm = invNorms[GetFaceTextureIndex(i/3)];
 			newFaceTexcoords[i] = TexCoord(
 				(texcoord.x+halfPixel.x)*invNorm.x,
 				1.f-(texcoord.y+halfPixel.y)*invNorm.y
@@ -1443,7 +1443,7 @@ void Mesh::FaceTexcoordsNormalize(TexCoordArr& newFaceTexcoords, bool flipY) con
 		}
 	} else {
 		FOREACH(i, faceTexcoords) {
-			const TexCoord& invNorm = invNorms[GetFaceTexxtureIndex(i/3)];
+			const TexCoord& invNorm = invNorms[GetFaceTextureIndex(i/3)];
 			newFaceTexcoords[i] = (faceTexcoords[i]+halfPixel)*invNorm;
 		}
 	}
@@ -1462,7 +1462,7 @@ void Mesh::FaceTexcoordsUnnormalize(TexCoordArr& newFaceTexcoords, bool flipY) c
 	if (flipY) {
 		FOREACH(i, faceTexcoords) {
 			const TexCoord& texcoord = faceTexcoords[i];
-			const TexCoord& scale = scales[GetFaceTexxtureIndex(i/3)];
+			const TexCoord& scale = scales[GetFaceTextureIndex(i/3)];
 			newFaceTexcoords[i] = TexCoord(
 				texcoord.x*scale.x-halfPixel.x,
 				(1.f-texcoord.y)*scale.y-halfPixel.y
@@ -1470,7 +1470,7 @@ void Mesh::FaceTexcoordsUnnormalize(TexCoordArr& newFaceTexcoords, bool flipY) c
 		}
 	} else {
 		FOREACH(i, faceTexcoords) {
-			const TexCoord& scale = scales[GetFaceTexxtureIndex(i/3)];
+			const TexCoord& scale = scales[GetFaceTextureIndex(i/3)];
 			newFaceTexcoords[i] = faceTexcoords[i]*scale - halfPixel;
 		}
 	}
