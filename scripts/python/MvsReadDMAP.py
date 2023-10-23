@@ -1,5 +1,5 @@
 '''
-Example usage of MvsUtils.py for exporting dmap file content.
+Example usage of MvsUtils.py for reading DMAP file content.
 
 usage: MvsReadDMAP.py [-h] [--input INPUT] [--output OUTPUT]
 '''
@@ -25,9 +25,9 @@ def exportDMAPContent(dmap_path):
 
 def main():
   parser = ArgumentParser()
-  parser.add_argument('-i', '--input', type=str, required=True, help='path to the depth map directory')
-  parser.add_argument('-t', '--threads', type=int, default=int(os.cpu_count() * 0.5) - 1, help='number of parallel computations')
-  parser.add_argument('-o', '--output', type=str, required=True, help='path to the output directory')
+  parser.add_argument('-i', '--input', type=str, required=True, help='Path to the DMAP file directory')
+  parser.add_argument('-t', '--threads', type=int, default=int(os.cpu_count() * 0.5) - 1, help='Number of parallel computations')
+  parser.add_argument('-o', '--output', type=str, required=True, help='Path to the output directory')
   args = parser.parse_args()
   
   dmap_paths = glob(os.path.join(args.input, '*.dmap'))
