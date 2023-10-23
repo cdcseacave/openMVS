@@ -71,8 +71,9 @@ public:
 	typedef TPoint2<Type> TexCoord;
 	typedef SEACAVE::cList<TexCoord,const TexCoord&,0,8192,FIndex> TexCoordArr;
 
-	typedef uint8_t TexChunk;
-	typedef SEACAVE::cList<TexChunk,const TexChunk&,0,8192,FIndex> TexChunkArr;
+	typedef uint8_t TexIndex;
+	typedef SEACAVE::cList<TexIndex,const TexIndex&,0,8192,FIndex> TexIndexArr;
+	typedef SEACAVE::cList<Image8U3,const Image8U3&,2,4,TexIndex> Image8U3Arr;
 
 	typedef TPoint3<FIndex> FaceFaces;
 	typedef SEACAVE::cList<FaceFaces,const FaceFaces&,0,8192,FIndex> FaceFacesArr;
@@ -130,9 +131,10 @@ public:
 
 	NormalArr faceNormals; // for each face, the normal to it (optional)
 	FaceFacesArr faceFaces; // for each face, the list of adjacent faces, NO_ID for border edges (optional)
-	TexCoordArr faceTexcoords; // for each face, the texture-coordinates corresponding to the contained vertices (optional)
+	TexCoordArr faceTexcoords; // for each face, the texture-coordinates corresponding to its vertices, 3x num faces OR for each vertex (optional)
+	TexIndexArr faceTexindices; // for each face, the corresponding index of the texture (optional)
 
-	Image8U3 textureDiffuse; // texture containing the diffuse color (optional)
+	Image8U3Arr texturesDiffuse; // textures containing the diffuse color (optional)
 
 	#ifdef _USE_CUDA
 	static CUDA::KernelRT kernelComputeFaceNormal;
@@ -150,9 +152,10 @@ public:
 	void EmptyExtra();
 	void Swap(Mesh&);
 	void Join(const Mesh&);
-	inline bool IsEmpty() const { return vertices.empty(); }
+	bool IsEmpty() const { return vertices.empty(); }
 	bool IsWatertight();
-	inline bool HasTexture() const { ASSERT(faceTexcoords.empty() == textureDiffuse.empty()); return !faceTexcoords.empty(); }
+	bool HasTexture() const { ASSERT(faces.size()*3 == faceTexcoords.size() || vertices.size() == faceTexcoords.size()); return !faceTexcoords.empty() && !texturesDiffuse.empty(); }
+	bool HasTextureCoordinatesPerVertex() const { return !faceTexcoords.empty() && vertices.size() == faceTexcoords.size(); }
 
 	Box GetAABB() const;
 	Box GetAABB(const Box& bound) const;
@@ -187,8 +190,10 @@ public:
 	void RemoveFaces(FaceIdxArr& facesRemove, bool bUpdateLists=false);
 	void RemoveVertices(VertexIdxArr& vertexRemove, bool bUpdateLists=false);
 	VIndex RemoveUnreferencedVertices(bool bUpdateLists=false);
+	std::vector<Mesh> SplitMeshPerTextureBlob() const;
 	void ConvertTexturePerVertex(Mesh&) const;
 
+	TexIndex GetFaceTextureIndex(FIndex idxF) const { return faceTexindices.empty() ? 0 : faceTexindices[idxF]; }
 	void FaceTexcoordsNormalize(TexCoordArr& newFaceTexcoords, bool flipY=true) const;
 	void FaceTexcoordsUnnormalize(TexCoordArr& newFaceTexcoords, bool flipY=true) const;
 
@@ -264,7 +269,8 @@ protected:
 		ar & vertexBoundary;
 		ar & faceNormals;
 		ar & faceTexcoords;
-		ar & textureDiffuse;
+		ar & faceTexindices;
+		ar & texturesDiffuse;
 	}
 	#endif
 };

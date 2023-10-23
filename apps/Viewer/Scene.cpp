@@ -125,8 +125,7 @@ SEACAVE::Thread Scene::thread;
 Scene::Scene(ARCHIVE_TYPE _nArchiveType)
 	:
 	nArchiveType(_nArchiveType),
-	listPointCloud(0),
-	listMesh(0)
+	listPointCloud(0)
 {
 }
 Scene::~Scene()
@@ -171,9 +170,10 @@ void Scene::ReleasePointCloud()
 }
 void Scene::ReleaseMesh()
 {
-	if (listMesh) {
-		glDeleteLists(listMesh, 1);
-		listMesh = 0;
+	if (!listMeshes.empty()) {
+		for (GLuint listMesh: listMeshes)
+			glDeleteLists(listMesh, 1);
+		listMeshes.Release();
 	}
 }
 
@@ -294,18 +294,21 @@ bool Scene::Open(LPCTSTR fileName, LPCTSTR geometryFileName)
 
 	// init and load texture
 	if (scene.mesh.HasTexture()) {
-		Image& image = textures.AddEmpty();
-		ASSERT(image.idx == NO_ID);
-		#if 0
-		cv::flip(scene.mesh.textureDiffuse, scene.mesh.textureDiffuse, 0);
-		image.SetImage(scene.mesh.textureDiffuse);
-		scene.mesh.textureDiffuse.release();
-		#else // preserve texture, used only to be able to export the mesh
-		Image8U3 textureDiffuse;
-		cv::flip(scene.mesh.textureDiffuse, textureDiffuse, 0);
-		image.SetImage(textureDiffuse);
-		#endif
-		image.GenerateMipmap();
+		FOREACH(i, scene.mesh.texturesDiffuse) {
+			Image& image = textures.emplace_back();
+			ASSERT(image.idx == NO_ID);
+			#if 0
+			Image8U3& textureDiffuse = scene.mesh.texturesDiffuse[i];
+			cv::flip(textureDiffuse, textureDiffuse, 0);
+			image.SetImage(textureDiffuse);
+			textureDiffuse.release();
+			#else // preserve texture, used only to be able to export the mesh
+			Image8U3 textureDiffuse;
+			cv::flip(scene.mesh.texturesDiffuse[i], textureDiffuse, 0);
+			image.SetImage(textureDiffuse);
+			#endif
+			image.GenerateMipmap();
+		}
 	}
 
 	// init display lists
@@ -423,15 +426,15 @@ void Scene::CompilePointCloud()
 	glNewList(listPointCloud, GL_COMPILE);
 	ASSERT((window.sparseType&(Window::SPR_POINTS|Window::SPR_LINES)) != 0);
 	// compile point-cloud
-	if (!scene.pointcloud.IsEmpty() && (window.sparseType&Window::SPR_POINTS) != 0) {
+	if ((window.sparseType&Window::SPR_POINTS) != 0) {
 		ASSERT_ARE_SAME_TYPE(float, MVS::PointCloud::Point::Type);
 		glBegin(GL_POINTS);
 		glColor3f(1.f,1.f,1.f);
 		FOREACH(i, scene.pointcloud.points) {
-			if (!scene.pointcloud.pointViews.IsEmpty() &&
+			if (!scene.pointcloud.pointViews.empty() &&
 				scene.pointcloud.pointViews[i].size() < window.minViews)
 				continue;
-			if (!scene.pointcloud.colors.IsEmpty()) {
+			if (!scene.pointcloud.colors.empty()) {
 				const MVS::PointCloud::Color& c = scene.pointcloud.colors[i];
 				glColor3ub(c.r,c.g,c.b);
 			}
@@ -452,31 +455,37 @@ void Scene::CompileMesh()
 		scene.mesh.ComputeNormalFaces();
 	// translate, normalize and flip Y axis of the texture coordinates
 	MVS::Mesh::TexCoordArr normFaceTexcoords;
-	if (scene.mesh.HasTexture())
+	if (scene.mesh.HasTexture() && window.bRenderTexture)
 		scene.mesh.FaceTexcoordsNormalize(normFaceTexcoords, true);
-	listMesh = glGenLists(1);
-	glNewList(listMesh, GL_COMPILE);
-	// compile mesh
-	ASSERT_ARE_SAME_TYPE(float, MVS::Mesh::Vertex::Type);
-	ASSERT_ARE_SAME_TYPE(float, MVS::Mesh::Normal::Type);
-	ASSERT_ARE_SAME_TYPE(float, MVS::Mesh::TexCoord::Type);
-	glColor3f(1.f, 1.f, 1.f);
-	glBegin(GL_TRIANGLES);
-	FOREACH(i, scene.mesh.faces) {
-		const MVS::Mesh::Face& face = scene.mesh.faces[i];
-		const MVS::Mesh::Normal& n = scene.mesh.faceNormals[i];
-		glNormal3fv(n.ptr());
-		for (int j = 0; j < 3; ++j) {
-			if (!normFaceTexcoords.empty() && window.bRenderTexture) {
-				const MVS::Mesh::TexCoord& t = normFaceTexcoords[i * 3 + j];
-				glTexCoord2fv(t.ptr());
+	MVS::Mesh::TexIndex texIdx(0);
+	do {
+		GLuint& listMesh = listMeshes.emplace_back(glGenLists(1));
+		listMesh = glGenLists(1);
+		glNewList(listMesh, GL_COMPILE);
+		// compile mesh
+		ASSERT_ARE_SAME_TYPE(float, MVS::Mesh::Vertex::Type);
+		ASSERT_ARE_SAME_TYPE(float, MVS::Mesh::Normal::Type);
+		ASSERT_ARE_SAME_TYPE(float, MVS::Mesh::TexCoord::Type);
+		glColor3f(1.f, 1.f, 1.f);
+		glBegin(GL_TRIANGLES);
+		FOREACH(idxFace, scene.mesh.faces) {
+			if (!scene.mesh.faceTexindices.empty() && scene.mesh.faceTexindices[idxFace] != texIdx)
+				continue;
+			const MVS::Mesh::Face& face = scene.mesh.faces[idxFace];
+			const MVS::Mesh::Normal& n = scene.mesh.faceNormals[idxFace];
+			glNormal3fv(n.ptr());
+			for (int j = 0; j < 3; ++j) {
+				if (!normFaceTexcoords.empty()) {
+					const MVS::Mesh::TexCoord& t = normFaceTexcoords[idxFace*3 + j];
+					glTexCoord2fv(t.ptr());
+				}
+				const MVS::Mesh::Vertex& p = scene.mesh.vertices[face[j]];
+				glVertex3fv(p.ptr());
 			}
-			const MVS::Mesh::Vertex& p = scene.mesh.vertices[face[j]];
-			glVertex3fv(p.ptr());
 		}
-	}
-	glEnd();
-	glEndList();
+		glEnd();
+		glEndList();
+	} while (++texIdx < scene.mesh.texturesDiffuse.size());
 }
 
 void Scene::CompileBounds()
@@ -513,17 +522,20 @@ void Scene::Draw()
 		glCallList(listPointCloud);
 	}
 	// render mesh
-	if (listMesh) {
+	if (!listMeshes.empty()) {
 		glEnable(GL_DEPTH_TEST);
 		glEnable(GL_CULL_FACE);
 		if (!scene.mesh.faceTexcoords.empty() && window.bRenderTexture) {
 			glEnable(GL_TEXTURE_2D);
-			textures.front().Bind();
-			glCallList(listMesh);
+			FOREACH(i, listMeshes) {
+				textures[i].Bind();
+				glCallList(listMeshes[i]);
+			}
 			glDisable(GL_TEXTURE_2D);
 		} else {
 			glEnable(GL_LIGHTING);
-			glCallList(listMesh);
+			for (GLuint listMesh: listMeshes)
+				glCallList(listMesh);
 			glDisable(GL_LIGHTING);
 		}
 	}
