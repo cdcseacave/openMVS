@@ -1157,9 +1157,7 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 	}
 
 	// fix non-manifold vertices and edges
-	for (unsigned i=0; i<nItersFixNonManifold; ++i)
-		if (!mesh.FixNonManifold())
-			break;
+	mesh.FixNonManifold();
 	return true;
 }
 /*----------------------------------------------------------------*/

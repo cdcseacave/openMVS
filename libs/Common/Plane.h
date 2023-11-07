@@ -127,8 +127,6 @@ public:
 	//---------------------------------------
 
 	inline TFrustum() {}
-	inline TFrustum(const MATRIX4x4&);
-	inline TFrustum(const MATRIX3x4&);
 	inline TFrustum(const MATRIX4x4&, TYPE width, TYPE height, TYPE nearZ=TYPE(0.0001), TYPE farZ=TYPE(1000));
 	inline TFrustum(const MATRIX3x4&, TYPE width, TYPE height, TYPE nearZ=TYPE(0.0001), TYPE farZ=TYPE(1000));
 

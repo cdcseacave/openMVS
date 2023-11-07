@@ -666,6 +666,29 @@ FORCEINLINE bool ISFINITE(const Eigen::Matrix<TYPE,R,C>& m)
 {
 	return ISFINITE(m.data(), m.size());
 }
+
+
+// initializing both scalar and matrix variables
+template <typename Scalar, typename Value>
+FORCEINLINE Scalar INITTO(const Scalar*, Value v)
+{
+	return static_cast<Scalar>(v);
+}
+template <typename Scalar, typename Value>
+FORCEINLINE TPoint2<Scalar> INITTO(const TPoint2<Scalar>*, Value v)
+{
+	return TPoint2<Scalar>(static_cast<Scalar>(v));
+}
+template <typename Scalar, typename Value>
+FORCEINLINE TPoint3<Scalar> INITTO(const TPoint3<Scalar>*, Value v)
+{
+	return TPoint3<Scalar>(static_cast<Scalar>(v));
+}
+template <typename Scalar, int Rows, int Cols, typename Value>
+FORCEINLINE Eigen::Matrix<Scalar,Rows,Cols> INITTO(const Eigen::Matrix<Scalar,Rows,Cols>*, Value v)
+{
+	return Eigen::Matrix<Scalar,Rows,Cols>::Constant(static_cast<Scalar>(v));
+}
 /*----------------------------------------------------------------*/
 
 template <typename TYPE>

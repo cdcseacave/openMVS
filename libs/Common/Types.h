@@ -2403,7 +2403,7 @@ struct TAccumulator {
 	AccumType value;
 	WeightType weight;
 
-	inline TAccumulator() : value(0), weight(0) {}
+	inline TAccumulator() : value(INITTO(static_cast<Type*>(NULL), 0)), weight(0) {}
 	inline TAccumulator(const Type& v, const WeightType& w) : value(v), weight(w) {}
 	inline bool IsEmpty() const { return weight <= 0; }
 	// adds the given weighted value to the internal value
