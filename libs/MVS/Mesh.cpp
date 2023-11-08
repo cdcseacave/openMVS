@@ -1011,26 +1011,36 @@ static const Mesh::TexCoord halfPixel(0.5f, 0.5f);
 // translate, normalize and flip Y axis of the texture coordinates
 void Mesh::FaceTexcoordsNormalize(TexCoordArr& newFaceTexcoords, bool flipY) const
 {
-	ASSERT(HasTexture());
-	TexCoordArr invNorms(texturesDiffuse.size());
-	FOREACH(i, texturesDiffuse) {
-		ASSERT(!texturesDiffuse[i].empty());
-		invNorms[i] = TexCoord(1.f/(float)texturesDiffuse[i].cols, 1.f/(float)texturesDiffuse[i].rows);
-	}
+	ASSERT(HasTextureCoordinates());
 	newFaceTexcoords.resize(faceTexcoords.size());
-	if (flipY) {
-		FOREACH(i, faceTexcoords) {
-			const TexCoord& texcoord = faceTexcoords[i];
-			const TexCoord& invNorm = invNorms[GetFaceTextureIndex(i/3)];
-			newFaceTexcoords[i] = TexCoord(
-				(texcoord.x+halfPixel.x)*invNorm.x,
-				1.f-(texcoord.y+halfPixel.y)*invNorm.y
-			);
-		}
+	if (texturesDiffuse.empty()) {
+		if (flipY) {
+			FOREACH(i, faceTexcoords) {
+				const TexCoord& texcoord = faceTexcoords[i];
+				newFaceTexcoords[i] = TexCoord(texcoord.x, 1.f-texcoord.y);
+			}
+		} else
+			newFaceTexcoords = faceTexcoords;
 	} else {
-		FOREACH(i, faceTexcoords) {
-			const TexCoord& invNorm = invNorms[GetFaceTextureIndex(i/3)];
-			newFaceTexcoords[i] = (faceTexcoords[i]+halfPixel)*invNorm;
+		TexCoordArr invNorms(texturesDiffuse.size());
+		FOREACH(i, texturesDiffuse) {
+			ASSERT(!texturesDiffuse[i].empty());
+			invNorms[i] = TexCoord(1.f/(float)texturesDiffuse[i].cols, 1.f/(float)texturesDiffuse[i].rows);
+		}
+		if (flipY) {
+			FOREACH(i, faceTexcoords) {
+				const TexCoord& texcoord = faceTexcoords[i];
+				const TexCoord& invNorm = invNorms[GetFaceTextureIndex(i/3)];
+				newFaceTexcoords[i] = TexCoord(
+					(texcoord.x+halfPixel.x)*invNorm.x,
+					1.f-(texcoord.y+halfPixel.y)*invNorm.y
+				);
+			}
+		} else {
+			FOREACH(i, faceTexcoords) {
+				const TexCoord& invNorm = invNorms[GetFaceTextureIndex(i/3)];
+				newFaceTexcoords[i] = (faceTexcoords[i]+halfPixel)*invNorm;
+			}
 		}
 	}
 } // FaceTexcoordsNormalize
@@ -1038,26 +1048,36 @@ void Mesh::FaceTexcoordsNormalize(TexCoordArr& newFaceTexcoords, bool flipY) con
 // flip Y axis, unnormalize and translate back texture coordinates
 void Mesh::FaceTexcoordsUnnormalize(TexCoordArr& newFaceTexcoords, bool flipY) const
 {
-	ASSERT(HasTexture());
-	TexCoordArr scales(texturesDiffuse.size());
-	FOREACH(i, texturesDiffuse) {
-		ASSERT(!texturesDiffuse[i].empty());
-		scales[i] = TexCoord((float)texturesDiffuse[i].cols, (float)texturesDiffuse[i].rows);
-	}
+	ASSERT(HasTextureCoordinates());
 	newFaceTexcoords.resize(faceTexcoords.size());
-	if (flipY) {
-		FOREACH(i, faceTexcoords) {
-			const TexCoord& texcoord = faceTexcoords[i];
-			const TexCoord& scale = scales[GetFaceTextureIndex(i/3)];
-			newFaceTexcoords[i] = TexCoord(
-				texcoord.x*scale.x-halfPixel.x,
-				(1.f-texcoord.y)*scale.y-halfPixel.y
-			);
-		}
+	if (texturesDiffuse.empty()) {
+		if (flipY) {
+			FOREACH(i, faceTexcoords) {
+				const TexCoord& texcoord = faceTexcoords[i];
+				newFaceTexcoords[i] = TexCoord(texcoord.x, 1.f-texcoord.y);
+			}
+		} else
+			newFaceTexcoords = faceTexcoords;
 	} else {
-		FOREACH(i, faceTexcoords) {
-			const TexCoord& scale = scales[GetFaceTextureIndex(i/3)];
-			newFaceTexcoords[i] = faceTexcoords[i]*scale - halfPixel;
+		TexCoordArr scales(texturesDiffuse.size());
+		FOREACH(i, texturesDiffuse) {
+			ASSERT(!texturesDiffuse[i].empty());
+			scales[i] = TexCoord((float)texturesDiffuse[i].cols, (float)texturesDiffuse[i].rows);
+		}
+		if (flipY) {
+			FOREACH(i, faceTexcoords) {
+				const TexCoord& texcoord = faceTexcoords[i];
+				const TexCoord& scale = scales[GetFaceTextureIndex(i/3)];
+				newFaceTexcoords[i] = TexCoord(
+					texcoord.x*scale.x-halfPixel.x,
+					(1.f-texcoord.y)*scale.y-halfPixel.y
+				);
+			}
+		} else {
+			FOREACH(i, faceTexcoords) {
+				const TexCoord& scale = scales[GetFaceTextureIndex(i/3)];
+				newFaceTexcoords[i] = faceTexcoords[i]*scale - halfPixel;
+			}
 		}
 	}
 } // FaceTexcoordsUnnormalize

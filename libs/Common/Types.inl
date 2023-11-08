@@ -2625,7 +2625,7 @@ void TImage<TYPE>::RasterizeTriangle(const TPoint2<T>& v1, const TPoint2<T>& v2,
 // same as above, but raster a triangle using barycentric coordinates:
 // https://www.scratchapixel.com/lessons/3d-basic-rendering/rasterization-practical-implementation
 template <typename TYPE>
-template <typename T, typename PARSER>
+template <typename T, typename PARSER, bool CULL>
 void TImage<TYPE>::RasterizeTriangleBary(const TPoint2<T>& v1, const TPoint2<T>& v2, const TPoint2<T>& v3, PARSER& parser)
 {
 	// compute bounding-box fully containing the triangle
@@ -2642,7 +2642,7 @@ void TImage<TYPE>::RasterizeTriangleBary(const TPoint2<T>& v1, const TPoint2<T>&
 	Base::clip(boxMinI, boxMaxI, size);
 	// ignore back oriented triangles (negative area)
 	const T area(EdgeFunction(v1, v2, v3));
-	if (area <= 0)
+	if (CULL && area <= 0)
 		return;
 	// parse all pixels inside the bounding-box
 	const T invArea(T(1) / area);
@@ -2653,17 +2653,17 @@ void TImage<TYPE>::RasterizeTriangleBary(const TPoint2<T>& v1, const TPoint2<T>&
 			// discard point if not in triangle;
 			// testing only for negative barycentric coordinates
 			// guarantees all will be in [0,1] at the end of all checks
-			const T b1(EdgeFunction(v2, v3, p));
+			const T b1(EdgeFunction(v2, v3, p) * invArea);
 			if (b1 < 0)
 				continue;
-			const T b2(EdgeFunction(v3, v1, p));
+			const T b2(EdgeFunction(v3, v1, p) * invArea);
 			if (b2 < 0)
 				continue;
-			const T b3(EdgeFunction(v1, v2, p));
+			const T b3(EdgeFunction(v1, v2, p) * invArea);
 			if (b3 < 0)
 				continue;
 			// output pixel
-			parser(pt, TPoint3<T>(b1, b2, b3) * invArea);
+			parser(pt, TPoint3<T>(b1, b2, b3));
 		}
 	}
 }
@@ -3047,6 +3047,8 @@ bool TImage<TYPE>::Load(const String& fileName)
 			cv::cvtColor(img, img, cv::COLOR_BGRA2GRAY);
 		else if (img.channels() == 1 && Base::channels() == 4)
 			cv::cvtColor(img, img, cv::COLOR_GRAY2BGRA);
+		else if (img.channels() == 4 && Base::channels() == 3)
+			cv::cvtColor(img, img, cv::COLOR_BGRA2BGR);
 	}
 	if (img.type() == Base::type())
 		cv::swap(img, *this);

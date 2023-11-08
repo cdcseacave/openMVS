@@ -2188,7 +2188,7 @@ public:
 
 	template <typename T, typename PARSER>
 	static void RasterizeTriangle(const TPoint2<T>& v1, const TPoint2<T>& v2, const TPoint2<T>& v3, PARSER& parser);
-	template <typename T, typename PARSER>
+	template <typename T, typename PARSER, bool CULL=true>
 	static void RasterizeTriangleBary(const TPoint2<T>& v1, const TPoint2<T>& v2, const TPoint2<T>& v3, PARSER& parser);
 	template <typename T, typename PARSER>
 	static void RasterizeTriangleDepth(TPoint3<T> p1, TPoint3<T> p2, TPoint3<T> p3, PARSER& parser);
