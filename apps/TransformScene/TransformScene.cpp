@@ -179,10 +179,10 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	Util::ensureValidPath(OPT::strPointCloudFileName);
 	Util::ensureValidPath(OPT::strMeshFileName);
 	Util::ensureValidPath(OPT::strOutputFileName);
-	if (OPT::strMeshFileName.empty() && OPT::nArchiveType == ARCHIVE_MVS)
+	if (OPT::strMeshFileName.empty() && OPT::nArchiveType == ARCHIVE_MVS && strInputFileNameExt == MVS_EXT)
 		OPT::strMeshFileName = Util::getFileFullName(OPT::strInputFileName) + _T(".ply");
 	if (OPT::strOutputFileName.empty())
-		OPT::strOutputFileName = Util::getFileName(OPT::strInputFileName) + "_transformed" MVS_EXT;
+		OPT::strOutputFileName = Util::getFileName(OPT::strInputFileName) + _T("_transformed") MVS_EXT;
 
 	// initialize global options
 	Process::setCurrentProcessPriority((Process::Priority)OPT::nProcessPriority);

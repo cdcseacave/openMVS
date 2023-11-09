@@ -145,7 +145,7 @@ bool TRay<TYPE,DIMS>::Intersects(const TRIANGLE& tri, TYPE *t) const
 	// if close to 0 ray is parallel
 	const VECTOR pvec(m_vDir.cross(edge2));
 	const TYPE det(edge1.dot(pvec));
-	if ((bCull && det < ZEROTOLERANCE<TYPE>()) || (!bCull && ISZERO(det)))
+	if ((bCull ? det : ABS(det)) < ZEROTOLERANCE<TYPE>() * TYPE(0.001))
 		return false;
 
 	// distance to plane, < 0 means beyond plane

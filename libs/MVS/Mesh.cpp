@@ -92,7 +92,7 @@ using namespace MVS;
 #define USE_MESH_BF 0 // brute-force
 #define USE_MESH_OCTREE 1 // octree (misses some triangles)
 #define USE_MESH_BVH 2 // BVH (misses some triangles)
-#define USE_MESH_INT USE_MESH_BF
+#define USE_MESH_INT USE_MESH_BVH
 
 #if USE_MESH_INT == USE_MESH_BVH
 #include <unsupported/Eigen/BVH>
@@ -4188,9 +4188,16 @@ inline Eigen::AlignedBox3f bounding_box(const FaceBox& faceBox) {
 #endif
 bool Mesh::TransferTexture(Mesh& mesh, const FaceIdxArr& faceSubsetIndices, unsigned borderSize, unsigned textureSize)
 {
-	ASSERT(HasTexture() && mesh.HasTexture());
-	if (mesh.texturesDiffuse.empty())
+	ASSERT(HasTexture() && mesh.HasTextureCoordinates());
+	if (mesh.texturesDiffuse.empty()) {
+		// create the texture at specified resolution and
+		// scale the UV-coordinates to the new resolution (assuming normalized coordinates)
 		mesh.texturesDiffuse.emplace_back(textureSize, textureSize).memset(0);
+		for (TexCoord& tex: mesh.faceTexcoords) {
+			ASSERT(tex.x <= 1 && tex.y <= 1);
+			tex *= (Mesh::Type)textureSize;
+		}
+	}
 	Image8U mask(mesh.texturesDiffuse.back().size(), uint8_t(255));
 	const FIndex num_faces(faceSubsetIndices.empty() ? mesh.faces.size() : faceSubsetIndices.size());
 	if (vertices == mesh.vertices && faces == mesh.faces) {
@@ -4222,7 +4229,7 @@ bool Mesh::TransferTexture(Mesh& mesh, const FaceIdxArr& faceSubsetIndices, unsi
 			// render triangle and for each pixel interpolate the color
 			// from the triangle corners using barycentric coordinates
 			const TexCoord* tri = mesh.faceTexcoords.data()+idxFace*3;
-			Image8U::RasterizeTriangleBary(tri[0], tri[1], tri[2], data);
+			Image8U::RasterizeTriangleBary<TexCoord::Type,RasterTriangle,false>(tri[0], tri[1], tri[2], data);
 		}
 	} else {
 		// the two meshes are different, transfer the texture by finding the closest point
@@ -4260,7 +4267,8 @@ bool Mesh::TransferTexture(Mesh& mesh, const FaceIdxArr& faceSubsetIndices, unsi
 			inline void IntersectsRayFace(FIndex idxFace) {
 				const Face& face = mesh.faces[idxFace];
 				Type dist;
-				if (ray.Intersects<false>(Triangle3f(mesh.vertices[face[0]], mesh.vertices[face[1]], mesh.vertices[face[2]]), &dist)) {
+				if (ray.Intersects<false>(Triangle3f(
+					mesh.vertices[face.x], mesh.vertices[face.y], mesh.vertices[face.z]), &dist)) {
 					if (pick.dist > ABS(dist)) {
 						pick.dist = ABS(dist);
 						pick.idx = idxFace;
@@ -4326,12 +4334,12 @@ bool Mesh::TransferTexture(Mesh& mesh, const FaceIdxArr& faceSubsetIndices, unsi
 				inline cv::Size Size() const { return meshTrg.texturesDiffuse.back().size(); }
 				inline void operator()(const ImageRef& pt, const Point3f& bary) {
 					ASSERT(meshTrg.texturesDiffuse[texId].isInside(pt));
-					const Vertex X(meshTrg.vertices[face[0]]*bary.x
-								 + meshTrg.vertices[face[1]]*bary.y
-								 + meshTrg.vertices[face[2]]*bary.z);
-					const Normal N(normalized(meshTrg.vertexNormals[face[0]]*bary.x
-											+ meshTrg.vertexNormals[face[1]]*bary.y
-											+ meshTrg.vertexNormals[face[2]]*bary.z));
+					const Vertex X(meshTrg.vertices[face.x]*bary.x
+								 + meshTrg.vertices[face.y]*bary.y
+								 + meshTrg.vertices[face.z]*bary.z);
+					const Normal N(normalized(meshTrg.vertexNormals[face.x]*bary.x
+											+ meshTrg.vertexNormals[face.y]*bary.y
+											+ meshTrg.vertexNormals[face.z]*bary.z));
 					const Ray3f ray(X, N);
 					#if USE_MESH_INT == USE_MESH_BF
 					const IntersectRayMesh intRay(meshRef, ray);
@@ -4354,16 +4362,16 @@ bool Mesh::TransferTexture(Mesh& mesh, const FaceIdxArr& faceSubsetIndices, unsi
 					}
 				}
 			#if USE_MESH_INT == USE_MESH_BF
-			} data{*this, mesh, mask, mesh.faces[idxFace], mesh.faceTexindices[idxFace]};
+			} data{*this, mesh, mask, mesh.faces[idxFace], mesh.GetFaceTextureIndex(idxFace)};
 			#elif USE_MESH_INT == USE_MESH_BVH
-			} data{tree, *this, mesh, mask, mesh.faces[idxFace], mesh.faceTexindices[idxFace]};
+			} data{tree, *this, mesh, mask, mesh.faces[idxFace], mesh.GetFaceTextureIndex(idxFace)};
 			#else
-			} data{octree, *this, mesh, mask, mesh.faces[idxFace], mesh.faceTexindices[idxFace]};
+			} data{octree, *this, mesh, mask, mesh.faces[idxFace], mesh.GetFaceTextureIndex(idxFace)};
 			#endif
 			// render triangle and for each pixel interpolate the color
 			// from the triangle corners using barycentric coordinates
 			const TexCoord* tri = mesh.faceTexcoords.data()+idxFace*3;
-			Image8U::RasterizeTriangleBary(tri[0], tri[1], tri[2], data);
+			Image8U::RasterizeTriangleBary<TexCoord::Type,RasterTriangle,false>(tri[0], tri[1], tri[2], data);
 		}
 	}
 	// fill border
