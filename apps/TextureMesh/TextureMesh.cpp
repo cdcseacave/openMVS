@@ -203,7 +203,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 	Util::ensureValidPath(OPT::strMeshFileName);
 	Util::ensureValidPath(OPT::strOutputFileName);
 	Util::ensureValidPath(OPT::strViewsFileName);
-	if (OPT::strMeshFileName.empty() && OPT::nArchiveType == ARCHIVE_MVS)
+	if (OPT::strMeshFileName.empty() && (ARCHIVE_TYPE)OPT::nArchiveType == ARCHIVE_MVS)
 		OPT::strMeshFileName = Util::getFileFullName(OPT::strInputFileName) + _T(".ply");
 	if (OPT::strOutputFileName.empty())
 		OPT::strOutputFileName = Util::getFileFullName(OPT::strInputFileName) + _T("_texture.mvs");
@@ -318,7 +318,7 @@ int main(int argc, LPCTSTR* argv)
 	if (VERBOSITY_LEVEL > 2)
 		scene.ExportCamerasMLP(baseFileName+_T(".mlp"), baseFileName+OPT::strExportType);
 	#endif
-	if (OPT::nArchiveType != ARCHIVE_MVS || sceneType != Scene::SCENE_INTERFACE)
+	if ((ARCHIVE_TYPE)OPT::nArchiveType != ARCHIVE_MVS || sceneType != Scene::SCENE_INTERFACE)
 		scene.Save(baseFileName+_T(".mvs"), (ARCHIVE_TYPE)OPT::nArchiveType);
 	}
 

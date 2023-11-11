@@ -465,7 +465,7 @@ bool ParseSceneNerfstudio(Scene& scene, const String& strPath)
 			(float)dMin, (float)dMax,
 			depthMap, normalMap, confMap, viewsMap))
 		{
-			VERBOSE("Unable to save dmap: %s", dmapPath);
+			VERBOSE("Unable to save dmap: %s", dmapPath.c_str());
 			continue;
 		}
 	}
@@ -633,7 +633,7 @@ bool ParseSceneRTMV(Scene& scene, const String& strPath)
 			(float)dMin, (float)dMax,
 			depthMap, normalMap, confMap, viewsMap))
 		{
-			VERBOSE("Unable to save dmap: %s", dmapPath);
+			VERBOSE("Unable to save dmap: %s", dmapPath.c_str());
 			continue;
 		}
 	}

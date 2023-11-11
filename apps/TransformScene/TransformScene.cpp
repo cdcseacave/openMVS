@@ -188,7 +188,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 	Util::ensureValidPath(OPT::strPointCloudFileName);
 	Util::ensureValidPath(OPT::strMeshFileName);
 	Util::ensureValidPath(OPT::strOutputFileName);
-	if (OPT::strMeshFileName.empty() && OPT::nArchiveType == ARCHIVE_MVS && strInputFileNameExt == MVS_EXT)
+	if (OPT::strMeshFileName.empty() && (ARCHIVE_TYPE)OPT::nArchiveType == ARCHIVE_MVS && strInputFileNameExt == MVS_EXT)
 		OPT::strMeshFileName = Util::getFileFullName(OPT::strInputFileName) + _T(".ply");
 	if (OPT::strOutputFileName.empty())
 		OPT::strOutputFileName = Util::getFileName(OPT::strInputFileName) + _T("_transformed") MVS_EXT;
@@ -318,9 +318,9 @@ int main(int argc, LPCTSTR* argv)
 	// write transformed scene
 	if (scene.IsValid())
 		scene.Save(MAKE_PATH_SAFE(OPT::strOutputFileName), (ARCHIVE_TYPE)OPT::nArchiveType);
-	if (!scene.IsValid() || OPT::nArchiveType == ARCHIVE_MVS) {
+	if (!scene.IsValid() || (ARCHIVE_TYPE)OPT::nArchiveType == ARCHIVE_MVS) {
 		if (!scene.pointcloud.IsEmpty())
-			scene.pointcloud.Save(baseFileName + _T(".ply"), OPT::nArchiveType==ARCHIVE_MVS);
+			scene.pointcloud.Save(baseFileName + _T(".ply"), (ARCHIVE_TYPE)OPT::nArchiveType == ARCHIVE_MVS);
 		if (!scene.mesh.IsEmpty())
 			scene.mesh.Save(baseFileName + OPT::strExportType);
 	}

@@ -106,7 +106,7 @@ MaxRectsBinPack::RectWIdxArr MaxRectsBinPack::Insert(RectWIdxArr& unplacedRects,
 			IDX privBestRectIndex = NO_IDX;
 			Rect privBestNode;
 			#pragma omp for nowait
-			for (int_t i=0; i<(int_t)unplacedRects.GetSize(); ++i) {
+			for (int_t i=0; i<(int_t)unplacedRects.size(); ++i) {
 				int score1, score2;
 				Rect newNode(ScoreRect(unplacedRects[i].rect.width, unplacedRects[i].rect.height, method, score1, score2));
 				if (score1 < privBestScore1 || (score1 == privBestScore1 && score2 < privBestScore2)) {
@@ -127,9 +127,9 @@ MaxRectsBinPack::RectWIdxArr MaxRectsBinPack::Insert(RectWIdxArr& unplacedRects,
 			}
 		}
 		#else
-		FOREACH(i, rects) {
+		FOREACH(i, unplacedRects) {
 			int score1, score2;
-			Rect newNode(ScoreRect(rects[i].width, rects[i].height, method, score1, score2));
+			Rect newNode(ScoreRect(unplacedRects[i].rect.width, unplacedRects[i].rect.height, method, score1, score2));
 			if (score1 < bestScore1 || (score1 == bestScore1 && score2 < bestScore2)) {
 				bestScore1 = score1;
 				bestScore2 = score2;

@@ -120,7 +120,7 @@ LPTSTR Timer::GetClock(uint8_t* nHH, uint8_t* nMM, LPTSTR szChar) const
 	if (szChar == NULL)
 		return NULL;
 
-	_stprintf(szChar, "%.2d:%.2d:%.2d", m_nHH, m_nMM, m_nSS);
+	_sntprintf(szChar, 32, "%.2d:%.2d:%.2d", m_nHH, m_nMM, m_nSS);
 	return szChar;
 } // GetClock
 /*----------------------------------------------------------------*/

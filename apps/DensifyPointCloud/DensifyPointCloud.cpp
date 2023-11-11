@@ -401,12 +401,12 @@ int main(int argc, LPCTSTR* argv)
 		return EXIT_SUCCESS;
 	}
 	PointCloud sparsePointCloud;
-	if (OPT::nArchiveType != ARCHIVE_MVS || sceneType == Scene::SCENE_INTERFACE) {
+	if ((ARCHIVE_TYPE)OPT::nArchiveType != ARCHIVE_MVS || sceneType == Scene::SCENE_INTERFACE) {
 		#if TD_VERBOSE != TD_VERBOSE_OFF
 		if (VERBOSITY_LEVEL > 1 && !scene.pointcloud.IsEmpty())
 			scene.pointcloud.PrintStatistics(scene.images.data(), &scene.obb);
 		#endif
-		if (OPT::nArchiveType == ARCHIVE_MVS)
+		if ((ARCHIVE_TYPE)OPT::nArchiveType == ARCHIVE_MVS)
 			sparsePointCloud = scene.pointcloud;
 		TD_TIMER_START();
 		if (!scene.DenseReconstruction(OPT::nFusionMode, OPT::bCrop2ROI, OPT::fBorderROI)) {
@@ -420,12 +420,12 @@ int main(int argc, LPCTSTR* argv)
 
 	// save the final point-cloud
 	const String baseFileName(MAKE_PATH_SAFE(Util::getFileFullName(OPT::strOutputFileName)));
-	scene.pointcloud.Save(baseFileName+_T(".ply"), OPT::nArchiveType==ARCHIVE_MVS);
+	scene.pointcloud.Save(baseFileName+_T(".ply"), (ARCHIVE_TYPE)OPT::nArchiveType == ARCHIVE_MVS);
 	#if TD_VERBOSE != TD_VERBOSE_OFF
 	if (VERBOSITY_LEVEL > 2)
 		scene.ExportCamerasMLP(baseFileName+_T(".mlp"), baseFileName+_T(".ply"));
 	#endif
-	if (OPT::nArchiveType == ARCHIVE_MVS)
+	if ((ARCHIVE_TYPE)OPT::nArchiveType == ARCHIVE_MVS)
 		scene.pointcloud.Swap(sparsePointCloud);
 	scene.Save(baseFileName+_T(".mvs"), (ARCHIVE_TYPE)OPT::nArchiveType);
 	return EXIT_SUCCESS;

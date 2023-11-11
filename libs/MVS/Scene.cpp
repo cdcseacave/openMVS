@@ -1926,8 +1926,6 @@ PointCloud Scene::BuildTowerMesh(const PointCloud& origPointCloud, const Point2f
 				const float aboveRad(circleRadii[ri - 1]);
 				float& circleRadius = circleRadii[ri];
 				const float belowRad(circleRadii[ri + 1]);
-				const float AbvCrtDeltaPrc = ABS(aboveRad - circleRadius) / aboveRad;
-				const float BelCrtDeltaPrc = ABS(circleRadius - belowRad) / circleRadius;
 				// set current radius as average of the most similar values in the closest 7 neighbors
 				if (ri > 2 && ri < circleRadii.size() - 5) {
 					FloatArr neighSeven(7);
