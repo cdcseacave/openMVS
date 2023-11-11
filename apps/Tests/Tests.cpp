@@ -37,6 +37,8 @@ using namespace MVS;
 
 // D E F I N E S ///////////////////////////////////////////////////
 
+#define APPNAME _T("Tests")
+
 
 // S T R U C T S ///////////////////////////////////////////////////
 
@@ -113,7 +115,7 @@ int main(int argc, LPCTSTR* argv)
 {
 	OPEN_LOG();
 	OPEN_LOGCONSOLE();
-	Util::Init();
+	MVS::Initialize(APPNAME);
 	WORKING_FOLDER = _DATA_PATH;
 	INIT_WORKING_FOLDER;
 	if (argc < 2 || std::atoi(argv[1]) == 0) {
@@ -123,6 +125,7 @@ int main(int argc, LPCTSTR* argv)
 		if (!PipelineTest())
 			return EXIT_FAILURE;
 	}
+	MVS::Finalize();
 	CLOSE_LOGCONSOLE();
 	CLOSE_LOG();
 	return EXIT_SUCCESS;

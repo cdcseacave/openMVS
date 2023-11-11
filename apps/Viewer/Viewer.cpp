@@ -62,8 +62,17 @@ bool bLogFile;
 boost::program_options::variables_map vm;
 } // namespace OPT
 
+class Application {
+public:
+	Application() {}
+	~Application() { Finalize(); }
+
+	bool Initialize(size_t argc, LPCTSTR* argv);
+	void Finalize();
+}; // Application
+
 // initialize and parse the command line parameters
-bool Initialize(size_t argc, LPCTSTR* argv)
+bool Application::Initialize(size_t argc, LPCTSTR* argv)
 {
 	// initialize log and console
 	OPEN_LOG();
@@ -172,29 +181,14 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	Util::ensureValidPath(OPT::strGeometryFileName);
 	Util::ensureValidPath(OPT::strOutputFileName);
 
-	// initialize global options
-	Process::setCurrentProcessPriority((Process::Priority)OPT::nProcessPriority);
-	#ifdef _USE_OPENMP
-	if (OPT::nMaxThreads != 0)
-		omp_set_num_threads(OPT::nMaxThreads);
-	#endif
-
-	#ifdef _USE_BREAKPAD
-	// start memory dumper
-	MiniDumper::Create(APPNAME, WORKING_FOLDER);
-	#endif
-
-	Util::Init();
+	MVS::Initialize(APPNAME, OPT::nMaxThreads, OPT::nProcessPriority);
 	return true;
 }
 
 // finalize application instance
-void Finalize()
+void Application::Finalize()
 {
-	#if TD_VERBOSE != TD_VERBOSE_OFF
-	// print memory statistics
-	Util::LogMemoryInfo();
-	#endif
+	MVS::Finalize();
 
 	if (OPT::bLogFile)
 		CLOSE_LOGFILE();
@@ -211,7 +205,8 @@ int main(int argc, LPCTSTR* argv)
 	_CrtSetDbgFlag(_CRTDBG_ALLOC_MEM_DF | _CRTDBG_LEAK_CHECK_DF);// | _CRTDBG_CHECK_ALWAYS_DF);
 	#endif
 
-	if (!Initialize(argc, argv))
+	Application application;
+	if (!application.Initialize(argc, argv))
 		return EXIT_FAILURE;
 
 	// create viewer
@@ -226,8 +221,6 @@ int main(int argc, LPCTSTR* argv)
 	}
 	// enter viewer loop
 	viewer.Loop();
-
-	Finalize();
 	return EXIT_SUCCESS;
 }
 /*----------------------------------------------------------------*/
