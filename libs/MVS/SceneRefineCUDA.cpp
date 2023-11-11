@@ -2308,8 +2308,7 @@ void MeshRefineCUDA::ListCameraFaces()
 			const Image& imageData = images[ID];
 			if (!imageData.IsValid())
 				continue;
-			typedef TFrustum<float,5> Frustum;
-			const Frustum frustum(Frustum::MATRIX3x4(((PMatrix::CEMatMap)imageData.camera.P).cast<float>()), (float)imageData.width, (float)imageData.height);
+			const TFrustum<float,5> frustum(Matrix3x4f(imageData.camera.P), (float)imageData.width, (float)imageData.height);
 			Mesh::FacesInserter inserter(arrCameraFaces[ID]);
 			octree.Traverse(frustum, inserter);
 		}

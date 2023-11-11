@@ -183,7 +183,7 @@ void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE>::_Insert(CELL_TYPE& cell, const P
 		} childD;
 		IDX_TYPE idx(start);
 		for (IDX_TYPE i=0; i<size; ++i) {
-			const unsigned idxChild(cell.ComputeChild(GetItem(idx)));
+			const unsigned idxChild(cell.ComputeChild(m_items[idx]));
 			if (childD.Size(idxChild) == 0)
 				childD.Start(idxChild) = idx;
 			else
@@ -297,7 +297,7 @@ void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE>::_Collect(const CELL_TYPE& cell, 
 		// add all items contained by the bounding-box
 		for (IDX_TYPE i=0; i<cell.Leaf().size; ++i) {
 			const IDX_TYPE idx = m_indices[cell.Leaf().idxBegin + i];
-			if (aabb.Intersects(GetItem(idx)))
+			if (aabb.Intersects(m_items[idx]))
 				inserter(idx);
 		}
 		return;
@@ -408,7 +408,7 @@ inline void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE>::Collect(IDX_TYPE maxNeigh
 		const POINT_TYPE center(aabb.GetCenter());
 		FOREACH(i, indices) {
 			const IDX_TYPE& idx = indices[i];
-			const TYPE score(-(center-GetItem(idx)).squaredNorm());
+			const TYPE score(-(center-m_items[idx]).squaredNorm());
 			indexscores[i] = ItemIndexScore(idx,score);
 		}
 		indices.Empty();

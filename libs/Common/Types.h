@@ -1182,10 +1182,10 @@ inline void sse_prefetch(const void* p) {_mm_prefetch((const char*)p, _MM_HINT_N
 
 // C L A S S E S ///////////////////////////////////////////////////
 
-inline bool   ISINFORNAN(float x)			{ return (std::isinf(x) || std::isnan(x)); }
-inline bool   ISINFORNAN(double x)			{ return (std::isinf(x) || std::isnan(x)); }
-inline bool   ISFINITE(float x)				{ return (!std::isinf(x) && !std::isnan(x)); }
-inline bool   ISFINITE(double x)			{ return (!std::isinf(x) && !std::isnan(x)); }
+inline bool   ISINFORNAN(float x)			{ return std::isinf(x) || std::isnan(x); }
+inline bool   ISINFORNAN(double x)			{ return std::isinf(x) || std::isnan(x); }
+inline bool   ISFINITE(float x)				{ return std::isfinite(x); }
+inline bool   ISFINITE(double x)			{ return std::isfinite(x); }
 template<typename _Tp>
 inline bool   ISFINITE(const _Tp* x, size_t n)	{ for (size_t i=0; i<n; ++i) if (ISINFORNAN(x[i])) return false; return true; }
 
@@ -1267,6 +1267,7 @@ public:
 	#ifdef _USE_EIGEN
 	EIGEN_MAKE_ALIGNED_OPERATOR_NEW_IF_VECTORIZABLE_FIXED_SIZE(TYPE,2)
 	typedef Eigen::Matrix<TYPE,2,1> EVec;
+	typedef Eigen::Map<const EVec> CEVecMap;
 	typedef Eigen::Map<EVec> EVecMap;
 	#endif
 
@@ -1283,7 +1284,7 @@ public:
 	template <typename T> inline TPoint2(const cv::Matx<T,2,1>& rhs) : Base(rhs(0),rhs(1)) {}
 	template <typename T> inline TPoint2(const cv::Matx<T,1,2>& rhs) : Base(rhs(0),rhs(1)) {}
 	#ifdef _USE_EIGEN
-	inline TPoint2(const EVec& rhs) { operator EVec& () = rhs; }
+	inline TPoint2(const EVec& rhs) { operator EVecMap () = rhs; }
 	#endif
 	explicit inline TPoint2(const TYPE& _x) : Base(_x,_x) {}
 	inline TPoint2(const TYPE& _x, const TYPE& _y) : Base(_x,_y) {}
@@ -1293,7 +1294,7 @@ public:
 	template <typename T> inline TPoint2& operator = (const cv::Matx<T,2,1>& rhs) { operator Vec& () = rhs; return *this; }
 	template <typename T> inline TPoint2& operator = (const cv::Matx<T,1,2>& rhs) { operator VecT& () = rhs; return *this; }
 	#ifdef _USE_EIGEN
-	inline TPoint2& operator = (const EVec& rhs) { operator EVec& () = rhs; return *this; }
+	inline TPoint2& operator = (const EVec& rhs) { operator EVecMap () = rhs; return *this; }
 	#endif
 
 	// conversion to another data type
@@ -1321,10 +1322,9 @@ public:
 
 	#ifdef _USE_EIGEN
 	// Access point as Eigen equivalent
-	inline operator const EVec& () const { return *((const EVec*)this); }
-	inline operator EVec& () { return *((EVec*)this); }
+	inline operator EVec () const { return CEVecMap((const TYPE*)this); }
 	// Access point as Eigen::Map equivalent
-	inline operator const EVecMap () const { return EVecMap((TYPE*)this); }
+	inline operator const CEVecMap () const { return CEVecMap((const TYPE*)this); }
 	inline operator EVecMap () { return EVecMap((TYPE*)this); }
 	#endif
 
@@ -1359,6 +1359,7 @@ public:
 	#ifdef _USE_EIGEN
 	EIGEN_MAKE_ALIGNED_OPERATOR_NEW_IF_VECTORIZABLE_FIXED_SIZE(TYPE,3)
 	typedef Eigen::Matrix<TYPE,3,1> EVec;
+	typedef Eigen::Map<const EVec> CEVecMap;
 	typedef Eigen::Map<EVec> EVecMap;
 	#endif
 
@@ -1375,7 +1376,7 @@ public:
 	template <typename T> inline TPoint3(const cv::Matx<T,3,1>& rhs) : Base(rhs(0),rhs(1),rhs(2)) {}
 	template <typename T> inline TPoint3(const cv::Matx<T,1,3>& rhs) : Base(rhs(0),rhs(1),rhs(2)) {}
 	#ifdef _USE_EIGEN
-	inline TPoint3(const EVec& rhs) { operator EVec& () = rhs; }
+	inline TPoint3(const EVec& rhs) { operator EVecMap () = rhs; }
 	#endif
 	explicit inline TPoint3(const TYPE& _x) : Base(_x,_x,_x) {}
 	inline TPoint3(const TYPE& _x, const TYPE& _y, const TYPE& _z) : Base(_x,_y,_z) {}
@@ -1386,7 +1387,7 @@ public:
 	template <typename T> inline TPoint3& operator = (const cv::Matx<T,3,1>& rhs)  { operator Vec& () = rhs; return *this; }
 	template <typename T> inline TPoint3& operator = (const cv::Matx<T,1,3>& rhs)  { operator VecT& () = rhs; return *this; }
 	#ifdef _USE_EIGEN
-	inline TPoint3& operator = (const EVec& rhs) { operator EVec& () = rhs; return *this; }
+	inline TPoint3& operator = (const EVec& rhs) { operator EVecMap () = rhs; return *this; }
 	#endif
 
 	// conversion to another data type
@@ -1401,19 +1402,18 @@ public:
 	inline TYPE& operator [](BYTE i) { ASSERT(i<3); return ptr()[i]; }
 
 	// Access point as vector equivalent
-	inline operator const Vec& () const { return *((const Vec*)this); }
-	inline operator Vec& () { return *((Vec*)this); }
+	inline operator const Vec& () const { return *reinterpret_cast<const Vec*>(this); }
+	inline operator Vec& () { return *reinterpret_cast<Vec*>(this); }
 
 	// Access point as transposed vector equivalent
-	inline operator const VecT& () const { return *((const VecT*)this); }
-	inline operator VecT& () { return *((VecT*)this); }
+	inline operator const VecT& () const { return *reinterpret_cast<const VecT*>(this); }
+	inline operator VecT& () { return *reinterpret_cast<VecT*>(this); }
 
 	#ifdef _USE_EIGEN
 	// Access point as Eigen equivalent
-	inline operator const EVec& () const { return *((const EVec*)this); }
-	inline operator EVec& () { return *((EVec*)this); }
+	inline operator EVec () const { return CEVecMap((const TYPE*)this); }
 	// Access point as Eigen::Map equivalent
-	inline operator const EVecMap () const { return EVecMap((TYPE*)this); }
+	inline operator const EVecMap () const { return CEVecMap((const TYPE*)this); }
 	inline operator EVecMap () { return EVecMap((TYPE*)this); }
 	#endif
 
@@ -1470,7 +1470,7 @@ public:
 	template <typename T> inline TMatrix(const cv::Point3_<T>& rhs) : Base(rhs.x, rhs.y, rhs.z) {}
 	inline TMatrix(const cv::Mat& rhs) : Base(rhs) {}
 	#ifdef _USE_EIGEN
-	inline TMatrix(const EMat& rhs) { operator EMat& () = rhs; }
+	inline TMatrix(const EMat& rhs) { operator EMatMap () = rhs; }
 	#endif
 
 	TMatrix(TYPE v0); //!< 1x1 matrix
@@ -1507,7 +1507,7 @@ public:
 	template <typename T> inline TMatrix& operator = (const cv::Matx<T,m,n>& rhs) { Base::operator = (rhs); return *this; }
 	inline TMatrix& operator = (const cv::Mat& rhs) { Base::operator = (rhs); return *this; }
 	#ifdef _USE_EIGEN
-	inline TMatrix& operator = (const EMat& rhs) { operator EMat& () = rhs; return *this; }
+	inline TMatrix& operator = (const EMat& rhs) { operator EMatMap () = rhs; return *this; }
 	#endif
 
 	inline bool IsEqual(const Base&) const;
@@ -1518,13 +1518,12 @@ public:
 	inline TYPE& operator [](size_t i) { ASSERT(i<elems); return val[i]; }
 
 	// Access point as vector equivalent
-	inline operator const Vec& () const { return *((const Vec*)this); }
-	inline operator Vec& () { return *((Vec*)this); }
+	inline operator const Vec& () const { return *reinterpret_cast<const Vec*>(this); }
+	inline operator Vec& () { return *reinterpret_cast<Vec*>(this); }
 
 	#ifdef _USE_EIGEN
 	// Access point as Eigen equivalent
-	inline operator const EMat& () const { return *((const EMat*)this); }
-	inline operator EMat& () { return *((EMat*)this); }
+	inline operator EMat () const { return CEMatMap((const TYPE*)val); }
 	// Access point as Eigen::Map equivalent
 	inline operator CEMatMap() const { return CEMatMap((const TYPE*)val); }
 	inline operator EMatMap () { return EMatMap((TYPE*)val); }
@@ -1560,6 +1559,7 @@ public:
 	typedef cv::Size Size;
 	#ifdef _USE_EIGEN
 	typedef Eigen::Matrix<TYPE,Eigen::Dynamic,Eigen::Dynamic,Eigen::RowMajor> EMat;
+	typedef Eigen::Map<const EMat> CEMatMap;
 	typedef Eigen::Map<EMat> EMatMap;
 	#endif
 
@@ -1739,8 +1739,10 @@ public:
 	inline TYPE* getData() { ASSERT(cv::Mat::empty() || cv::Mat::isContinuous()); return (TYPE*)data; }
 
 	#ifdef _USE_EIGEN
+	// Access point as Eigen equivalent
+	inline operator EMat () const { return CEMatMap(getData(), rows, cols); }
 	// Access point as Eigen::Map equivalent
-	inline operator const EMatMap () const { return EMatMap(getData(), rows, cols); }
+	inline operator const CEMatMap () const { return CEMatMap(getData(), rows, cols); }
 	inline operator EMatMap () { return EMatMap(getData(), rows, cols); }
 	#endif
 

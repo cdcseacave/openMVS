@@ -155,7 +155,7 @@ public:
 	bool IsEmpty() const { return vertices.empty(); }
 	bool IsWatertight();
 	bool HasTexture() const { return HasTextureCoordinates() && !texturesDiffuse.empty(); }
-	bool HasTextureCoordinates() const { ASSERT(faces.size()*3 == faceTexcoords.size() || vertices.size() == faceTexcoords.size()); return !faceTexcoords.empty(); }
+	bool HasTextureCoordinates() const { ASSERT(faceTexcoords.empty() || faces.size()*3 == faceTexcoords.size() || vertices.size() == faceTexcoords.size()); return !faceTexcoords.empty(); }
 	bool HasTextureCoordinatesPerVertex() const { return !faceTexcoords.empty() && vertices.size() == faceTexcoords.size(); }
 
 	Box GetAABB() const;
