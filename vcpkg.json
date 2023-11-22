@@ -24,8 +24,7 @@
         "openexr"
       ]
     },
-    "opencv",
-	"opengl",
+    "opengl",
     "tiff",
     "vcglib",
     "zlib"

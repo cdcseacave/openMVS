@@ -350,7 +350,9 @@ int main(int argc, LPCTSTR* argv)
 		OPT::fSplitMaxArea > 0 || OPT::fDecimateMesh < 1 || OPT::nTargetFaceNum > 0 || !OPT::strImportROIFileName.empty()));
 	if (sceneType == Scene::SCENE_NA)
 		return EXIT_FAILURE;
-	if (!OPT::strPointCloudFileName.empty() && !scene.pointcloud.Load(MAKE_PATH_SAFE(OPT::strPointCloudFileName))) {
+	if (!OPT::strPointCloudFileName.empty() && (File::isFile(MAKE_PATH_SAFE(OPT::strPointCloudFileName)) ?
+		!scene.pointcloud.Load(MAKE_PATH_SAFE(OPT::strPointCloudFileName)) :
+		!scene.pointcloud.IsValid())) {
 		VERBOSE("error: cannot load point-cloud file");
 		return EXIT_FAILURE;
 	}
