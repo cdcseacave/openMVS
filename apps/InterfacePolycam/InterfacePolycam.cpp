@@ -237,28 +237,30 @@ bool ParseImage(Scene& scene, const String& imagePath, const String& cameraPath,
 		}
 	}
 	// load and convert depth-map
-	DepthMap depthMap; {
-		constexpr double depthScale{1000.0};
-		const cv::Mat imgDepthMap = cv::imread(depthPath, cv::IMREAD_ANYDEPTH);
-		if (imgDepthMap.empty())
+	if (!depthPath.empty()) {
+		DepthMap depthMap; {
+			constexpr double depthScale{1000.0};
+			const cv::Mat imgDepthMap = cv::imread(depthPath, cv::IMREAD_ANYDEPTH);
+			if (imgDepthMap.empty())
+				return false;
+			imgDepthMap.convertTo(depthMap, CV_32FC1, 1.0/depthScale);
+		}
+		IIndexArr IDs = {imageData.ID};
+		IDs.JoinFunctor(imageData.neighbors.size(), [&imageData](IIndex i) {
+			return imageData.neighbors[i].ID;
+		});
+		double dMin, dMax;
+		cv::minMaxIdx(depthMap, &dMin, &dMax, NULL, NULL, depthMap > 0);
+		const NormalMap normalMap;
+		const ConfidenceMap confMap;
+		const ViewsMap viewsMap;
+		if (!ExportDepthDataRaw(MAKE_PATH(String::FormatString("depth%04u.dmap", imageData.ID)),
+			imageData.name, IDs, resolution,
+			camera.K, pose.R, pose.C,
+			(float)dMin, (float)dMax,
+			depthMap, normalMap, confMap, viewsMap))
 			return false;
-		imgDepthMap.convertTo(depthMap, CV_32FC1, 1.0/depthScale);
 	}
-	IIndexArr IDs = {imageData.ID};
-	IDs.JoinFunctor(imageData.neighbors.size(), [&imageData](IIndex i) {
-		return imageData.neighbors[i].ID;
-	});
-	double dMin, dMax;
-	cv::minMaxIdx(depthMap, &dMin, &dMax, NULL, NULL, depthMap > 0);
-	const NormalMap normalMap;
-	const ConfidenceMap confMap;
-	const ViewsMap viewsMap;
-	if (!ExportDepthDataRaw(MAKE_PATH(String::FormatString("depth%04u.dmap", imageData.ID)),
-		imageData.name, IDs, resolution,
-		camera.K, pose.R, pose.C,
-		(float)dMin, (float)dMax,
-		depthMap, normalMap, confMap, viewsMap))
-		return false;
 	return true;
 }
 
@@ -266,23 +268,24 @@ bool ParseImage(Scene& scene, const String& imagePath, const String& cameraPath,
 bool ParseScene(Scene& scene, const String& scenePath)
 {
 	#if defined(_SUPPORT_CPP17) && (!defined(__GNUC__) || (__GNUC__ > 7))
-	size_t numCorrectedFolders(0), numFolders(0);
+	size_t numCorrectedFolders(0), numCorrectedDepthFolders(0), numFolders(0), numDepthFolders(0);
 	for (const auto& file: std::filesystem::directory_iterator(scenePath.c_str())) {
 		if (file.path().stem() == "corrected_cameras" ||
-			file.path().stem() == "corrected_depth" ||
 			file.path().stem() == "corrected_images")
 			++numCorrectedFolders;
-		else
-		if (file.path().stem() == "cameras" ||
-			file.path().stem() == "depth" ||
+		else if (file.path().stem() == "corrected_depth")
+			++numCorrectedDepthFolders;
+		else if (file.path().stem() == "cameras" ||
 			file.path().stem() == "images")
 			++numFolders;
+		else if (file.path().stem() == "depth")
+			++numDepthFolders;
 	}
-	if (numFolders != 3) {
+	if (numFolders != 2) {
 		VERBOSE("Invalid scene folder");
 		return false;
 	}
-	if (numCorrectedFolders == 3) {
+	if (numCorrectedFolders == 2) {
 		// corrected data
 		CLISTDEFIDX(String, IIndex) imagePaths;
 		for (const auto& file: std::filesystem::directory_iterator((scenePath + "corrected_images").c_str()))
@@ -297,7 +300,7 @@ bool ParseScene(Scene& scene, const String& scenePath)
 		for (const String& imagePath: imagePaths) {
 			const String imageName = Util::getFileName(imagePath);
 			const String cameraPath(scenePath + "corrected_cameras" + PATH_SEPARATOR_STR + imageName + JSON_EXT);
-			const String depthPath(scenePath + "corrected_depth" + PATH_SEPARATOR_STR + imageName + DEPTH_EXT);
+			const String depthPath(numCorrectedDepthFolders ? scenePath + "corrected_depth" + PATH_SEPARATOR_STR + imageName + DEPTH_EXT : String());
 			if (!ParseImage(scene, imagePath, cameraPath, depthPath, mapImageName))
 				return false;
 		}
@@ -316,7 +319,7 @@ bool ParseScene(Scene& scene, const String& scenePath)
 		for (const String& imagePath: imagePaths) {
 			const String imageName = Util::getFileName(imagePath);
 			const String cameraPath(scenePath + "cameras" + PATH_SEPARATOR_STR + imageName + JSON_EXT);
-			const String depthPath(scenePath + "depth" + PATH_SEPARATOR_STR + imageName + DEPTH_EXT);
+			const String depthPath(numDepthFolders ? scenePath + "depth" + PATH_SEPARATOR_STR + imageName + DEPTH_EXT : String());
 			if (!ParseImage(scene, imagePath, cameraPath, depthPath, mapImageName))
 				return false;
 		}
