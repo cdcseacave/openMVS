@@ -77,6 +77,7 @@ void Window::ReleaseClbk()
 	clbkCompileMesh.reset();
 	clbkCompileBounds.reset();
 	clbkTogleSceneBox.reset();
+	clbkCropToBounds.reset();
 }
 
 bool Window::Init(const cv::Size& _size, LPCTSTR name)
@@ -268,7 +269,10 @@ void Window::Key(int k, int /*scancode*/, int action, int mod)
 		break;
 	case GLFW_KEY_B:
 		if (action == GLFW_RELEASE) {
-			if (mod & GLFW_MOD_SHIFT) {
+			if (mod & GLFW_MOD_CONTROL) {
+				if (clbkCropToBounds != NULL)
+					clbkCropToBounds();
+			} else if (mod & GLFW_MOD_SHIFT) {
 				if (clbkTogleSceneBox != NULL)
 					clbkTogleSceneBox();
 			} else {

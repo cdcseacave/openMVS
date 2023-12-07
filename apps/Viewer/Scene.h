@@ -93,6 +93,7 @@ public:
 	void CompilePointCloud();
 	void CompileMesh();
 	void CompileBounds();
+	void CropToBounds();
 
 	void Draw();
 	void Loop();

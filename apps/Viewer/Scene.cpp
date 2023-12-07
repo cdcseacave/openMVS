@@ -331,6 +331,7 @@ bool Scene::Open(LPCTSTR fileName, LPCTSTR geometryFileName)
 	window.clbkCompilePointCloud = DELEGATEBINDCLASS(Window::ClbkCompilePointCloud, &Scene::CompilePointCloud, this);
 	window.clbkCompileMesh = DELEGATEBINDCLASS(Window::ClbkCompileMesh, &Scene::CompileMesh, this);
 	window.clbkTogleSceneBox = DELEGATEBINDCLASS(Window::ClbkTogleSceneBox, &Scene::TogleSceneBox, this);
+	window.clbkCropToBounds = DELEGATEBINDCLASS(Window::ClbkCropToBounds, &Scene::CropToBounds, this);
 	if (scene.IsBounded())
 		window.clbkCompileBounds = DELEGATEBINDCLASS(Window::ClbkCompileBounds, &Scene::CompileBounds, this);
 	if (!scene.IsEmpty())
@@ -509,6 +510,17 @@ void Scene::CompileBounds()
 			obbPoints.emplace_back(corners[indices[i*2+1]]);
 		}
 	}
+}
+
+void Scene::CropToBounds()
+{
+	if (!IsOpen())
+		return;
+	if (!scene.IsBounded())
+		return;
+	scene.pointcloud.RemovePointsOutside(scene.obb);
+	scene.mesh.RemoveFacesOutside(scene.obb);
+	Center();
 }
 
 void Scene::Draw()
