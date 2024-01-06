@@ -574,33 +574,33 @@ FORCEINLINE bool ISEQUAL(const cv::Matx<TYPE,m,n>& v1, const cv::Matx<TYPE,m,n>&
 template <typename TYPE, typename INTTYPE=int>
 FORCEINLINE SEACAVE::TPoint2<INTTYPE> Floor2Int(const cv::Point_<TYPE>& v)
 {
-	return SEACAVE::TPoint2<INTTYPE>(FLOOR2INT(v.x), FLOOR2INT(v.y));
+	return SEACAVE::TPoint2<INTTYPE>(FLOOR2INT<INTTYPE>(v.x), FLOOR2INT<INTTYPE>(v.y));
 }
 template <typename TYPE, typename INTTYPE=int>
 FORCEINLINE SEACAVE::TPoint2<INTTYPE> Ceil2Int(const cv::Point_<TYPE>& v)
 {
-	return SEACAVE::TPoint2<INTTYPE>(CEIL2INT(v.x), CEIL2INT(v.y));
+	return SEACAVE::TPoint2<INTTYPE>(CEIL2INT<INTTYPE>(v.x), CEIL2INT<INTTYPE>(v.y));
 }
 template <typename TYPE, typename INTTYPE=int>
 FORCEINLINE SEACAVE::TPoint2<INTTYPE> Round2Int(const cv::Point_<TYPE>& v)
 {
-	return SEACAVE::TPoint2<INTTYPE>(ROUND2INT(v.x), ROUND2INT(v.y));
+	return SEACAVE::TPoint2<INTTYPE>(ROUND2INT<INTTYPE>(v.x), ROUND2INT<INTTYPE>(v.y));
 }
 
 template <typename TYPE, typename INTTYPE=int>
 FORCEINLINE SEACAVE::TPoint3<INTTYPE> Floor2Int(const cv::Point3_<TYPE>& v)
 {
-	return SEACAVE::TPoint3<INTTYPE>(FLOOR2INT(v.x), FLOOR2INT(v.y), FLOOR2INT(v.z));
+	return SEACAVE::TPoint3<INTTYPE>(FLOOR2INT<INTTYPE>(v.x), FLOOR2INT<INTTYPE>(v.y), FLOOR2INT<INTTYPE>(v.z));
 }
 template <typename TYPE, typename INTTYPE=int>
 FORCEINLINE SEACAVE::TPoint3<INTTYPE> Ceil2Int(const cv::Point3_<TYPE>& v)
 {
-	return SEACAVE::TPoint3<INTTYPE>(CEIL2INT(v.x), CEIL2INT(v.y), CEIL2INT(v.z));
+	return SEACAVE::TPoint3<INTTYPE>(CEIL2INT<INTTYPE>(v.x), CEIL2INT<INTTYPE>(v.y), CEIL2INT<INTTYPE>(v.z));
 }
 template <typename TYPE, typename INTTYPE=int>
 FORCEINLINE SEACAVE::TPoint3<INTTYPE> Round2Int(const cv::Point3_<TYPE>& v)
 {
-	return SEACAVE::TPoint3<INTTYPE>(ROUND2INT(v.x), ROUND2INT(v.y), ROUND2INT(v.z));
+	return SEACAVE::TPoint3<INTTYPE>(ROUND2INT<INTTYPE>(v.x), ROUND2INT<INTTYPE>(v.y), ROUND2INT<INTTYPE>(v.z));
 }
 
 template <typename TYPE, int m, int n, typename INTTYPE=int>
@@ -608,7 +608,7 @@ FORCEINLINE SEACAVE::TMatrix<INTTYPE,m,n> Floor2Int(const cv::Matx<TYPE,m,n>& v)
 {
 	SEACAVE::TMatrix<INTTYPE,m,n> nv;
 	for (int i=0; i<m*n; ++i)
-		nv.val[i] = Floor2Int(v.val[i]);
+		nv.val[i] = FLOOR2INT<INTTYPE>(v.val[i]);
 	return nv;
 }
 template <typename TYPE, int m, int n, typename INTTYPE=int>
@@ -616,7 +616,7 @@ FORCEINLINE SEACAVE::TMatrix<INTTYPE,m,n> Ceil2Int(const cv::Matx<TYPE,m,n>& v)
 {
 	SEACAVE::TMatrix<INTTYPE,m,n> nv;
 	for (int i=0; i<m*n; ++i)
-		nv.val[i] = Ceil2Int(v.val[i]);
+		nv.val[i] = CEIL2INT<INTTYPE>(v.val[i]);
 	return nv;
 }
 template <typename TYPE, int m, int n, typename INTTYPE=int>
@@ -624,7 +624,7 @@ FORCEINLINE SEACAVE::TMatrix<INTTYPE,m,n> Round2Int(const cv::Matx<TYPE,m,n>& v)
 {
 	SEACAVE::TMatrix<INTTYPE,m,n> nv;
 	for (int i=0; i<m*n; ++i)
-		nv.val[i] = Round2Int(v.val[i]);
+		nv.val[i] = ROUND2INT<INTTYPE>(v.val[i]);
 	return nv;
 }
 

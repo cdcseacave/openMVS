@@ -2400,13 +2400,13 @@ void MeshRefineCUDA::SubdivideMesh(uint32_t maxArea, float fDecimate, unsigned n
 			ListFaceAreas(maxAreas);
 			ASSERT(!maxAreas.IsEmpty());
 
-			const float maxArea((float)(maxArea > 0 ? maxArea : 64));
+			const float maxAreaf((float)(maxArea > 0 ? maxArea : 64));
 			const float medianArea(6.f*(float)Mesh::AreaArr(maxAreas).GetMedian());
-			if (medianArea < maxArea) {
+			if (medianArea < maxAreaf) {
 				maxAreas.Empty();
 
 				// decimate to the auto detected resolution
-				scene.mesh.Clean(MAXF(0.1f, medianArea/maxArea), 0.f, false, nCloseHoles, 0u, 0.f, false);
+				scene.mesh.Clean(MAXF(0.1f, medianArea/maxAreaf), 0.f, false, nCloseHoles, 0u, 0.f, false);
 				scene.mesh.Clean(1.f, 0.f, false, nCloseHoles, 0u, 0.f, true);
 
 				#ifdef MESHOPT_ENSUREEDGESIZE
