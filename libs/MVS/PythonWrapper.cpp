@@ -29,6 +29,8 @@
 *      containing it.
 */
 
+#include "ConfigLocal.h"
+
 #ifdef _USE_BOOST_PYTHON
 
 #undef _USRDLL

@@ -205,9 +205,9 @@ class GENERAL_API Util
 public:
 	static String getAppName() {
 		#ifdef _MSC_VER
-		TCHAR buf[MAX_PATH+1];
-		GetModuleFileName(NULL, buf, MAX_PATH);
-		return ensureUnifySlash(String(buf));
+		String buf(MAX_PATH+1, '\0');
+		GetModuleFileName(NULL, &buf.front(), MAX_PATH);
+		return ensureUnifySlash(buf);
 		#else // _MSC_VER
 		LPTSTR home = getenv("HOME");
 		if (home == NULL)

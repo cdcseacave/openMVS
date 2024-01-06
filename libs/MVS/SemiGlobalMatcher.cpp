@@ -1871,7 +1871,8 @@ void SemiGlobalMatcher::Disparity2DepthMap(const DisparityMap& disparityMap, con
 		auto pixel = [&](int, int r, int c) {
 			const ImageRef x(c,r); Point2f u;
 			ProjectVertex_3x3_2_2(H.val, x.ptr(), u.ptr());
-			u.x -= halfWindowSizeX; u.y -= halfWindowSizeY;
+			u.x -= (float)halfWindowSizeX;
+			u.y -= (float)halfWindowSizeY;
 			float disparity;
 			if (!disparityMap.sampleSafe(disparity, u, [](Disparity d) { return d != NO_DISP; })) {
 				depthMap(x) = 0;
@@ -1897,7 +1898,8 @@ void SemiGlobalMatcher::Disparity2DepthMap(const DisparityMap& disparityMap, con
 		auto pixel = [&](int, int r, int c) {
 			const ImageRef x(c,r); Point2f u;
 			ProjectVertex_3x3_2_2(H.val, x.ptr(), u.ptr());
-			u.x -= halfWindowSizeX; u.y -= halfWindowSizeY;
+			u.x -= (float)halfWindowSizeX;
+			u.y -= (float)halfWindowSizeY;
 			float disparity;
 			if (!disparityMap.sampleSafe(disparity, u, [](Disparity d) { return d != NO_DISP; }))
 				depthMap(x) = 0;

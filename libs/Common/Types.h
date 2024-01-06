@@ -1298,7 +1298,7 @@ public:
 	#endif
 
 	// conversion to another data type
-	template <typename T> inline operator TPoint2<T> () const { return TPoint2<T>(x,y); }
+	template <typename T> inline operator TPoint2<T> () const { return TPoint2<T>((T)x,(T)y); }
 
 	// pointer to the first element access
 	inline const TYPE* ptr() const { return &x; }
@@ -1391,7 +1391,7 @@ public:
 	#endif
 
 	// conversion to another data type
-	template <typename T> inline operator TPoint3<T> () const { return TPoint3<T>(x,y,z); }
+	template <typename T> inline operator TPoint3<T> () const { return TPoint3<T>((T)x,(T)y,(T)z); }
 
 	// pointer to the first element access
 	inline const TYPE* ptr() const { return &x; }
