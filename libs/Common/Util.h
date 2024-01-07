@@ -205,9 +205,9 @@ class GENERAL_API Util
 public:
 	static String getAppName() {
 		#ifdef _MSC_VER
-		TCHAR buf[MAX_PATH+1];
-		GetModuleFileName(NULL, buf, MAX_PATH);
-		return ensureUnifySlash(String(buf));
+		String buf(MAX_PATH+1, '\0');
+		GetModuleFileName(NULL, &buf.front(), MAX_PATH);
+		return ensureUnifySlash(buf);
 		#else // _MSC_VER
 		LPTSTR home = getenv("HOME");
 		if (home == NULL)
@@ -457,7 +457,10 @@ public:
 	}
 
 	static String getFilePath(const String& path) {
-		const String::size_type i = path.rfind(PATH_SEPARATOR);
+		const String::size_type size = path.size();
+		if (size < 3)
+			return String();
+		const String::size_type i = path.rfind(PATH_SEPARATOR, size-2);
 		return (i != String::npos) ? path.substr(0, i+1) : String();
 	}
 	static String getFileFullName(const String& path) {
@@ -595,34 +598,34 @@ public:
 		uint32_t rez = (uint32_t)(sTime / ((int64_t)24*3600*1000));
 		if (rez) {
 			++nrNumbers;
-			len += _stprintf(buf+len, "%ud", rez);
+			len += _sntprintf(buf+len, 128, "%ud", rez);
 		}
 		if (nAproximate > 3 && nrNumbers > 0)
 			return buf;
 		rez = (uint32_t)((sTime%((int64_t)24*3600*1000)) / (3600*1000));
 		if (rez) {
 			++nrNumbers;
-			len += _stprintf(buf+len, "%uh", rez);
+			len += _sntprintf(buf+len, 128, "%uh", rez);
 		}
 		if (nAproximate > 2 && nrNumbers > 0)
 			return buf;
 		rez = (uint32_t)((sTime%((int64_t)3600*1000)) / (60*1000));
 		if (rez) {
 			++nrNumbers;
-			len += _stprintf(buf+len, "%um", rez);
+			len += _sntprintf(buf+len, 128, "%um", rez);
 		}
 		if (nAproximate > 1 && nrNumbers > 0)
 			return buf;
 		rez = (uint32_t)((sTime%((int64_t)60*1000)) / (1*1000));
 		if (rez) {
 			++nrNumbers;
-			len += _stprintf(buf+len, "%us", rez);
+			len += _sntprintf(buf+len, 128, "%us", rez);
 		}
 		if (nAproximate > 0 && nrNumbers > 0)
 			return buf;
 		rez = (uint32_t)(sTime%((int64_t)1*1000));
 		if (rez || !nrNumbers)
-			len += _stprintf(buf+len, "%ums", rez);
+			len += _sntprintf(buf+len, 128, "%ums", rez);
 
 		return String(buf, len);
 	}

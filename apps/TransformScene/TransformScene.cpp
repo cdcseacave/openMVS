@@ -48,6 +48,8 @@ namespace {
 
 namespace OPT {
 	String strInputFileName;
+	String strPointCloudFileName;
+	String strMeshFileName;
 	String strOutputFileName;
 	String strAlignFileName;
 	String strTransformFileName;
@@ -56,6 +58,7 @@ namespace OPT {
 	bool bComputeVolume;
 	float fPlaneThreshold;
 	float fSampleMesh;
+	unsigned nMaxResolution;
 	unsigned nUpAxis;
 	unsigned nArchiveType;
 	int nProcessPriority;
@@ -65,8 +68,17 @@ namespace OPT {
 	boost::program_options::variables_map vm;
 } // namespace OPT
 
+class Application {
+public:
+	Application() {}
+	~Application() { Finalize(); }
+
+	bool Initialize(size_t argc, LPCTSTR* argv);
+	void Finalize();
+}; // Application
+
 // initialize and parse the command line parameters
-bool Initialize(size_t argc, LPCTSTR* argv)
+bool Application::Initialize(size_t argc, LPCTSTR* argv)
 {
 	// initialize log and console
 	OPEN_LOG();
@@ -79,7 +91,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		("working-folder,w", boost::program_options::value<std::string>(&WORKING_FOLDER), "working directory (default current directory)")
 		("config-file,c", boost::program_options::value<std::string>(&OPT::strConfigFileName)->default_value(APPNAME _T(".cfg")), "file name containing program options")
 		("export-type", boost::program_options::value<std::string>(&OPT::strExportType)->default_value(_T("ply")), "file type used to export the 3D scene (ply, obj, glb or gltf)")
-		("archive-type", boost::program_options::value(&OPT::nArchiveType)->default_value(ARCHIVE_MVS), "project archive type: 0-text, 1-binary, 2-compressed binary")
+		("archive-type", boost::program_options::value(&OPT::nArchiveType)->default_value(ARCHIVE_MVS), "project archive type: -1-interface, 0-text, 1-binary, 2-compressed binary")
 		("process-priority", boost::program_options::value(&OPT::nProcessPriority)->default_value(-1), "process priority (below normal by default)")
 		("max-threads", boost::program_options::value(&OPT::nMaxThreads)->default_value(0), "maximum number of threads (0 for using all available cores)")
 		#if TD_VERBOSE != TD_VERBOSE_OFF
@@ -97,6 +109,8 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	boost::program_options::options_description config("Main options");
 	config.add_options()
 		("input-file,i", boost::program_options::value<std::string>(&OPT::strInputFileName), "input scene filename")
+		("pointcloud-file,p", boost::program_options::value<std::string>(&OPT::strPointCloudFileName), "dense point-cloud with views file name to transform (overwrite existing point-cloud)")
+		("mesh-file,m", boost::program_options::value<std::string>(&OPT::strMeshFileName), "mesh file name to transform (overwrite existing mesh)")
 		("output-file,o", boost::program_options::value<std::string>(&OPT::strOutputFileName), "output filename for storing the scene")
 		("align-file,a", boost::program_options::value<std::string>(&OPT::strAlignFileName), "input scene filename to which the scene will be cameras aligned")
 		("transform-file,t", boost::program_options::value<std::string>(&OPT::strTransformFileName), "input transform filename by which the scene will transformed")
@@ -105,6 +119,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		("compute-volume", boost::program_options::value(&OPT::bComputeVolume)->default_value(false), "compute the volume of the given watertight mesh, or else try to estimate the ground plane and assume the mesh is bounded by it")
 		("plane-threshold", boost::program_options::value(&OPT::fPlaneThreshold)->default_value(0.f), "threshold used to estimate the ground plane (<0 - disabled, 0 - auto, >0 - desired threshold)")
 		("sample-mesh", boost::program_options::value(&OPT::fSampleMesh)->default_value(-300000.f), "uniformly samples points on a mesh (0 - disabled, <0 - number of points, >0 - sample density per square unit)")
+		("max-resolution", boost::program_options::value(&OPT::nMaxResolution)->default_value(0), "make sure image resolution are not not larger than this (0 - disabled)")
 		("up-axis", boost::program_options::value(&OPT::nUpAxis)->default_value(2), "scene axis considered to point upwards (0 - x, 1 - y, 2 - z)")
 		;
 
@@ -170,31 +185,22 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		OPT::strExportType =  _T(".ply");
 
 	// initialize optional options
+	Util::ensureValidPath(OPT::strPointCloudFileName);
+	Util::ensureValidPath(OPT::strMeshFileName);
 	Util::ensureValidPath(OPT::strOutputFileName);
-	if (OPT::strOutputFileName.IsEmpty())
-		OPT::strOutputFileName = Util::getFileName(OPT::strInputFileName) + "_transformed" MVS_EXT;
+	if (OPT::strMeshFileName.empty() && (ARCHIVE_TYPE)OPT::nArchiveType == ARCHIVE_MVS && strInputFileNameExt == MVS_EXT)
+		OPT::strMeshFileName = Util::getFileFullName(OPT::strInputFileName) + _T(".ply");
+	if (OPT::strOutputFileName.empty())
+		OPT::strOutputFileName = Util::getFileName(OPT::strInputFileName) + _T("_transformed") MVS_EXT;
 
-	// initialize global options
-	Process::setCurrentProcessPriority((Process::Priority)OPT::nProcessPriority);
-	#ifdef _USE_OPENMP
-	if (OPT::nMaxThreads != 0)
-		omp_set_num_threads(OPT::nMaxThreads);
-	#endif
-
-	#ifdef _USE_BREAKPAD
-	// start memory dumper
-	MiniDumper::Create(APPNAME, WORKING_FOLDER);
-	#endif
+	MVS::Initialize(APPNAME, OPT::nMaxThreads, OPT::nProcessPriority);
 	return true;
 }
 
 // finalize application instance
-void Finalize()
+void Application::Finalize()
 {
-	#if TD_VERBOSE != TD_VERBOSE_OFF
-	// print memory statistics
-	Util::LogMemoryInfo();
-	#endif
+	MVS::Finalize();
 
 	CLOSE_LOGFILE();
 	CLOSE_LOGCONSOLE();
@@ -210,7 +216,8 @@ int main(int argc, LPCTSTR* argv)
 	_CrtSetDbgFlag(_CRTDBG_ALLOC_MEM_DF | _CRTDBG_LEAK_CHECK_DF);// | _CRTDBG_CHECK_ALWAYS_DF);
 	#endif
 
-	if (!Initialize(argc, argv))
+	Application application;
+	if (!application.Initialize(argc, argv))
 		return EXIT_FAILURE;
 
 	TD_TIMER_START();
@@ -218,8 +225,19 @@ int main(int argc, LPCTSTR* argv)
 	Scene scene(OPT::nMaxThreads);
 
 	// load given scene
-	if (!scene.Load(MAKE_PATH_SAFE(OPT::strInputFileName), !OPT::strTransformFileName.empty() || !OPT::strTransferTextureFileName.empty() || OPT::bComputeVolume))
+	const Scene::SCENE_TYPE sceneType(scene.Load(MAKE_PATH_SAFE(OPT::strInputFileName),
+		!OPT::strTransformFileName.empty() || !OPT::strTransferTextureFileName.empty() || OPT::bComputeVolume));
+	if (sceneType == Scene::SCENE_NA)
 		return EXIT_FAILURE;
+	if (!OPT::strPointCloudFileName.empty() && !scene.pointcloud.Load(MAKE_PATH_SAFE(OPT::strPointCloudFileName))) {
+		VERBOSE("error: cannot load point-cloud file");
+		return EXIT_FAILURE;
+	}
+	if (!OPT::strMeshFileName.empty() && !scene.mesh.Load(MAKE_PATH_SAFE(OPT::strMeshFileName))) {
+		VERBOSE("error: cannot load mesh file");
+		return EXIT_FAILURE;
+	}
+	const String baseFileName(MAKE_PATH_SAFE(Util::getFileFullName(OPT::strOutputFileName)));
 
 	if (!OPT::strAlignFileName.empty()) {
 		// transform this scene such that it best aligns with the given scene based on the camera positions
@@ -234,16 +252,18 @@ int main(int argc, LPCTSTR* argv)
 	if (!OPT::strTransformFileName.empty()) {
 		// transform this scene by the given transform matrix
 		std::ifstream file(MAKE_PATH_SAFE(OPT::strTransformFileName));
-		std::string strLine;
+		std::string value;
 		std::vector<double> transformValues;
-		while (std::getline(file, strLine)) {
-			errno = 0;
-			char* strEnd{};
-			const double v = std::strtod(strLine.c_str(), &strEnd);
-			if (errno == ERANGE || strEnd == strLine.c_str())
-				continue;
-			transformValues.push_back(v);
-		}
+		while (file >> value) {
+			double v;
+                        try {
+                                v = std::stod(value);
+                        }
+                        catch (...) {
+                                continue;
+                        }
+                        transformValues.push_back(v);
+                }
 		if (transformValues.size() != 12 &&
 			(transformValues.size() != 16 || transformValues[12] != 0 || transformValues[13] != 0 || transformValues[14] != 0 || transformValues[15] != 1)) {
 			VERBOSE("error: invalid transform");
@@ -275,30 +295,35 @@ int main(int argc, LPCTSTR* argv)
 		}
 		if (!scene.mesh.TransferTexture(newMesh, faceSubsetIndices))
 			return EXIT_FAILURE;
-		newMesh.Save(Util::getFileFullName(MAKE_PATH_SAFE(OPT::strOutputFileName)) + OPT::strExportType);
+		newMesh.Save(baseFileName + OPT::strExportType);
 		VERBOSE("Texture transfered (%s)", TD_TIMER_GET_FMT().c_str());
 		return EXIT_SUCCESS;
+	}
+
+	if (OPT::nMaxResolution > 0) {
+		// scale scene images
+		const String folderName(Util::getFilePath(MAKE_PATH_FULL(WORKING_FOLDER_FULL, OPT::strInputFileName)) + String::FormatString("images%u" PATH_SEPARATOR_STR, OPT::nMaxResolution));
+		if (!scene.ScaleImages(OPT::nMaxResolution, 0, folderName)) {
+			DEBUG("error: can not scale scene images to '%s'", folderName.c_str());
+			return EXIT_FAILURE;
+		}
 	}
 
 	if (OPT::bComputeVolume && !scene.mesh.IsEmpty()) {
 		// compute the mesh volume
 		const REAL volume(scene.ComputeLeveledVolume(OPT::fPlaneThreshold, OPT::fSampleMesh, OPT::nUpAxis));
 		VERBOSE("Mesh volume: %g (%s)", volume, TD_TIMER_GET_FMT().c_str());
-		scene.mesh.Save(Util::getFileFullName(MAKE_PATH_SAFE(OPT::strOutputFileName)) + OPT::strExportType);
-		if (scene.images.empty())
-			return EXIT_SUCCESS;
-		OPT::nArchiveType = ARCHIVE_DEFAULT;
 	}
 
 	// write transformed scene
 	if (scene.IsValid())
 		scene.Save(MAKE_PATH_SAFE(OPT::strOutputFileName), (ARCHIVE_TYPE)OPT::nArchiveType);
-	else if (!scene.pointcloud.IsEmpty())
-		scene.pointcloud.Save(Util::getFileFullName(MAKE_PATH_SAFE(OPT::strOutputFileName)) + ".ply");
-	else if (!scene.mesh.IsEmpty())
-		scene.mesh.Save(Util::getFileFullName(MAKE_PATH_SAFE(OPT::strOutputFileName)) + ".ply");
-
-	Finalize();
+	if (!scene.IsValid() || (ARCHIVE_TYPE)OPT::nArchiveType == ARCHIVE_MVS) {
+		if (!scene.pointcloud.IsEmpty())
+			scene.pointcloud.Save(baseFileName + _T(".ply"), (ARCHIVE_TYPE)OPT::nArchiveType == ARCHIVE_MVS);
+		if (!scene.mesh.IsEmpty())
+			scene.mesh.Save(baseFileName + OPT::strExportType);
+	}
 	return EXIT_SUCCESS;
 }
 /*----------------------------------------------------------------*/

@@ -102,7 +102,7 @@ public:
 	Planef EstimateGroundPlane(const ImageArr& images, float planeThreshold=0, const String& fileExportPlane="") const;
 
 	bool Load(const String& fileName);
-	bool Save(const String& fileName, bool bLegacyTypes=false, bool bBinary=true) const;
+	bool Save(const String& fileName, bool bViews=false, bool bLegacyTypes=false, bool bBinary=true) const;
 	bool SaveNViews(const String& fileName, uint32_t minViews, bool bLegacyTypes=false, bool bBinary=true) const;
 	bool SaveWithScale(const String& fileName, const ImageArr& images, float scaleMult, bool bLegacyTypes=false, bool bBinary=true) const;
 

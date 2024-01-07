@@ -61,8 +61,17 @@ String strConfigFileName;
 boost::program_options::variables_map vm;
 } // namespace OPT
 
+class Application {
+public:
+	Application() {}
+	~Application() { Finalize(); }
+
+	bool Initialize(size_t argc, LPCTSTR* argv);
+	void Finalize();
+}; // Application
+
 // initialize and parse the command line parameters
-bool Initialize(size_t argc, LPCTSTR* argv)
+bool Application::Initialize(size_t argc, LPCTSTR* argv)
 {
 	// initialize log and console
 	OPEN_LOG();
@@ -74,7 +83,7 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 		("help,h", "imports SfM scene stored either in Metashape Agisoft/BlocksExchange or ContextCapture BlocksExchange XML format")
 		("working-folder,w", boost::program_options::value<std::string>(&WORKING_FOLDER), "working directory (default current directory)")
 		("config-file,c", boost::program_options::value<std::string>(&OPT::strConfigFileName)->default_value(APPNAME _T(".cfg")), "file name containing program options")
-		("archive-type", boost::program_options::value(&OPT::nArchiveType)->default_value(ARCHIVE_MVS), "project archive type: 0-text, 1-binary, 2-compressed binary")
+		("archive-type", boost::program_options::value(&OPT::nArchiveType)->default_value(ARCHIVE_MVS), "project archive type: -1-interface, 0-text, 1-binary, 2-compressed binary")
 		("process-priority", boost::program_options::value(&OPT::nProcessPriority)->default_value(-1), "process priority (below normal by default)")
 		("max-threads", boost::program_options::value(&OPT::nMaxThreads)->default_value(0), "maximum number of threads (0 for using all available cores)")
 		#if TD_VERBOSE != TD_VERBOSE_OFF
@@ -148,27 +157,14 @@ bool Initialize(size_t argc, LPCTSTR* argv)
 	if (OPT::strOutputFileName.empty())
 		OPT::strOutputFileName = Util::getFileName(OPT::strInputFileName) + MVS_EXT;
 
-	// initialize global options
-	Process::setCurrentProcessPriority((Process::Priority)OPT::nProcessPriority);
-	#ifdef _USE_OPENMP
-	if (OPT::nMaxThreads != 0)
-		omp_set_num_threads(OPT::nMaxThreads);
-	#endif
-
-	#ifdef _USE_BREAKPAD
-	// start memory dumper
-	MiniDumper::Create(APPNAME, WORKING_FOLDER);
-	#endif
+	MVS::Initialize(APPNAME, OPT::nMaxThreads, OPT::nProcessPriority);
 	return true;
 }
 
 // finalize application instance
-void Finalize()
+void Application::Finalize()
 {
-	#if TD_VERBOSE != TD_VERBOSE_OFF
-	// print memory statistics
-	Util::LogMemoryInfo();
-	#endif
+	MVS::Finalize();
 
 	CLOSE_LOGFILE();
 	CLOSE_LOGCONSOLE();
@@ -605,9 +601,9 @@ bool ParseBlocksExchangeXML(tinyxml2::XMLDocument& doc, Scene& scene, PlatformDi
 			scene.pointcloud.points.back() -= Cast<float>(center);
 		if ((elem=tiepoint->FirstChildElement("Color")) != NULL)
 			scene.pointcloud.colors.emplace_back(
-				(uint8_t)std::clamp(elem->FirstChildElement("Blue")->DoubleText()*255, 0.0, 255.0),
-				(uint8_t)std::clamp(elem->FirstChildElement("Green")->DoubleText()*255, 0.0, 255.0),
-				(uint8_t)std::clamp(elem->FirstChildElement("Red")->DoubleText()*255, 0.0, 255.0));
+				(uint8_t)CLAMP(elem->FirstChildElement("Red")->DoubleText()*255, 0.0, 255.0),
+				(uint8_t)CLAMP(elem->FirstChildElement("Green")->DoubleText()*255, 0.0, 255.0),
+				(uint8_t)CLAMP(elem->FirstChildElement("Blue")->DoubleText()*255, 0.0, 255.0));
 		PointCloud::ViewArr views;
 		for (const tinyxml2::XMLElement* view=tiepoint->FirstChildElement("Measurement"); view!=NULL; view=view->NextSiblingElement())
 			views.emplace_back(mapImageID.at(view->FirstChildElement("PhotoId")->UnsignedText()));
@@ -678,7 +674,7 @@ bool UndistortBrown(Image& imageData, uint32_t ID, const DistCoeff& dc, const St
 
 	// save undistorted image
 	imageData.image = imgUndist;
-	imageData.name = pathData + String::FormatString(_T("%05u.png"), ID);
+	imageData.name = pathData + String::FormatString(_T("%05u.jpg"), ID);
 	Util::ensureFolder(imageData.name);
 	return imageData.image.Save(imageData.name);
 }
@@ -786,7 +782,8 @@ int main(int argc, LPCTSTR* argv)
 	_CrtSetDbgFlag(_CRTDBG_ALLOC_MEM_DF | _CRTDBG_LEAK_CHECK_DF);// | _CRTDBG_CHECK_ALWAYS_DF);
 	#endif
 
-	if (!Initialize(argc, argv))
+	Application application;
+	if (!application.Initialize(argc, argv))
 		return EXIT_FAILURE;
 
 	TD_TIMER_START();
@@ -885,8 +882,6 @@ int main(int argc, LPCTSTR* argv)
 			scene.platforms.size(), nCameras, nPoses, scene.images.size(), scene.pointcloud.GetSize(),
 			acc.minVal, acc.GetMean(), acc.GetStdDev(), acc.maxVal,
 			TD_TIMER_GET_FMT().c_str());
-
-	Finalize();
 	return EXIT_SUCCESS;
 }
 /*----------------------------------------------------------------*/

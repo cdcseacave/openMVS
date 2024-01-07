@@ -57,22 +57,26 @@ public:
 	typedef TPoint3<VIndex> Face;
 	typedef uint32_t FIndex;
 
-	typedef cList<Vertex,const Vertex&,0,8192,VIndex> VertexArr;
-	typedef cList<Face,const Face&,0,8192,FIndex> FaceArr;
+	typedef SEACAVE::cList<Vertex,const Vertex&,0,8192,VIndex> VertexArr;
+	typedef SEACAVE::cList<Face,const Face&,0,8192,FIndex> FaceArr;
 
-	typedef cList<VIndex,VIndex,0,8,VIndex> VertexIdxArr;
-	typedef cList<FIndex,FIndex,0,8,FIndex> FaceIdxArr;
-	typedef cList<VertexIdxArr,const VertexIdxArr&,2,8192,VIndex> VertexVerticesArr;
-	typedef cList<FaceIdxArr,const FaceIdxArr&,2,8192,VIndex> VertexFacesArr;
+	typedef SEACAVE::cList<VIndex,VIndex,0,8,VIndex> VertexIdxArr;
+	typedef SEACAVE::cList<FIndex,FIndex,0,8,FIndex> FaceIdxArr;
+	typedef SEACAVE::cList<VertexIdxArr,const VertexIdxArr&,2,8192,VIndex> VertexVerticesArr;
+	typedef SEACAVE::cList<FaceIdxArr,const FaceIdxArr&,2,8192,VIndex> VertexFacesArr;
 
 	typedef TPoint3<Type> Normal;
-	typedef cList<Normal,const Normal&,0,8192,FIndex> NormalArr;
+	typedef SEACAVE::cList<Normal,const Normal&,0,8192,FIndex> NormalArr;
 
 	typedef TPoint2<Type> TexCoord;
-	typedef cList<TexCoord,const TexCoord&,0,8192,FIndex> TexCoordArr;
+	typedef SEACAVE::cList<TexCoord,const TexCoord&,0,8192,FIndex> TexCoordArr;
+
+	typedef uint8_t TexIndex;
+	typedef SEACAVE::cList<TexIndex,const TexIndex&,0,8192,FIndex> TexIndexArr;
+	typedef SEACAVE::cList<Image8U3,const Image8U3&,2,4,TexIndex> Image8U3Arr;
 
 	typedef TPoint3<FIndex> FaceFaces;
-	typedef cList<FaceFaces,const FaceFaces&,0,8192,FIndex> FaceFacesArr;
+	typedef SEACAVE::cList<FaceFaces,const FaceFaces&,0,8192,FIndex> FaceFacesArr;
 
 	// used to find adjacent face
 	struct FaceCount {
@@ -114,7 +118,7 @@ public:
 		FaceIdxArr faces;
 		Box box;
 	};
-	typedef cList<FaceChunk,const FaceChunk&,2,16,uint32_t> FacesChunkArr;
+	typedef SEACAVE::cList<FaceChunk,const FaceChunk&,2,16,uint32_t> FacesChunkArr;
 
 public:
 	VertexArr vertices;
@@ -122,14 +126,15 @@ public:
 
 	NormalArr vertexNormals; // for each vertex, the normal to the surface in that point (optional)
 	VertexVerticesArr vertexVertices; // for each vertex, the list of adjacent vertices (optional)
-	VertexFacesArr vertexFaces; // for each vertex, the list of faces containing it (optional)
+	VertexFacesArr vertexFaces; // for each vertex, the ordered list of faces containing it (optional)
 	BoolArr vertexBoundary; // for each vertex, stores if it is at the boundary or not (optional)
 
 	NormalArr faceNormals; // for each face, the normal to it (optional)
 	FaceFacesArr faceFaces; // for each face, the list of adjacent faces, NO_ID for border edges (optional)
-	TexCoordArr faceTexcoords; // for each face, the texture-coordinates corresponding to the contained vertices (optional)
+	TexCoordArr faceTexcoords; // for each face, the texture-coordinates corresponding to its vertices, 3x num faces OR for each vertex (optional)
+	TexIndexArr faceTexindices; // for each face, the corresponding index of the texture (optional)
 
-	Image8U3 textureDiffuse; // texture containing the diffuse color (optional)
+	Image8U3Arr texturesDiffuse; // textures containing the diffuse color (optional)
 
 	#ifdef _USE_CUDA
 	static CUDA::KernelRT kernelComputeFaceNormal;
@@ -147,9 +152,11 @@ public:
 	void EmptyExtra();
 	void Swap(Mesh&);
 	void Join(const Mesh&);
-	inline bool IsEmpty() const { return vertices.empty(); }
+	bool IsEmpty() const { return vertices.empty(); }
 	bool IsWatertight();
-	inline bool HasTexture() const { ASSERT(faceTexcoords.empty() == textureDiffuse.empty()); return !faceTexcoords.empty(); }
+	bool HasTexture() const { return HasTextureCoordinates() && !texturesDiffuse.empty(); }
+	bool HasTextureCoordinates() const { ASSERT(faceTexcoords.empty() || faces.size()*3 == faceTexcoords.size() || vertices.size() == faceTexcoords.size()); return !faceTexcoords.empty(); }
+	bool HasTextureCoordinatesPerVertex() const { return !faceTexcoords.empty() && vertices.size() == faceTexcoords.size(); }
 
 	Box GetAABB() const;
 	Box GetAABB(const Box& bound) const;
@@ -167,10 +174,12 @@ public:
 	void GetEdgeFaces(VIndex, VIndex, FaceIdxArr&) const;
 	void GetFaceFaces(FIndex, FaceIdxArr&) const;
 	void GetEdgeVertices(FIndex, FIndex, uint32_t vs0[2], uint32_t vs1[2]) const;
+	bool GetEdgeOrientation(FIndex, VIndex, VIndex) const;
+	FIndex GetEdgeAdjacentFace(FIndex, VIndex, VIndex) const;
 	void GetAdjVertices(VIndex, VertexIdxArr&) const;
 	void GetAdjVertexFaces(VIndex, VIndex, FaceIdxArr&) const;
 
-	bool FixNonManifold();
+	unsigned FixNonManifold(float magDisplacementDuplicateVertices = 0.01f, VertexIdxArr* duplicatedVertices = NULL);
 	void Clean(float fDecimate=0.7f, float fSpurious=10.f, bool bRemoveSpikes=true, unsigned nCloseHoles=30, unsigned nSmoothMesh=2, float fEdgeLength=0, bool bLastClean=true);
 
 	void EnsureEdgeSize(float minEdge=-0.5f, float maxEdge=-4.f, float collapseRatio=0.2, float degenerate_angle_deg=150, int mode=1, int max_iters=50);
@@ -184,8 +193,10 @@ public:
 	void RemoveFaces(FaceIdxArr& facesRemove, bool bUpdateLists=false);
 	void RemoveVertices(VertexIdxArr& vertexRemove, bool bUpdateLists=false);
 	VIndex RemoveUnreferencedVertices(bool bUpdateLists=false);
+	std::vector<Mesh> SplitMeshPerTextureBlob() const;
 	void ConvertTexturePerVertex(Mesh&) const;
 
+	TexIndex GetFaceTextureIndex(FIndex idxF) const { return faceTexindices.empty() ? 0 : faceTexindices[idxF]; }
 	void FaceTexcoordsNormalize(TexCoordArr& newFaceTexcoords, bool flipY=true) const;
 	void FaceTexcoordsUnnormalize(TexCoordArr& newFaceTexcoords, bool flipY=true) const;
 
@@ -223,7 +234,7 @@ public:
 	bool Split(FacesChunkArr&, float maxArea);
 	Mesh SubMesh(const FaceIdxArr& faces) const;
 
-	bool TransferTexture(Mesh& mesh, const FaceIdxArr& faceSubsetIndices={}, unsigned borderSize=3, unsigned textureSize=1024);
+	bool TransferTexture(Mesh& mesh, const FaceIdxArr& faceSubsetIndices={}, unsigned borderSize=3, unsigned textureSize=4096);
 
 	// file IO
 	bool Load(const String& fileName);
@@ -240,7 +251,7 @@ protected:
 	bool LoadOBJ(const String& fileName);
 	bool LoadGLTF(const String& fileName, bool bBinary=true);
 
-	bool SavePLY(const String& fileName, const cList<String>& comments=cList<String>(), bool bBinary=true) const;
+	bool SavePLY(const String& fileName, const cList<String>& comments=cList<String>(), bool bBinary=true, bool bTexLossless=true) const;
 	bool SaveOBJ(const String& fileName) const;
 	bool SaveGLTF(const String& fileName, bool bBinary=true) const;
 
@@ -261,7 +272,8 @@ protected:
 		ar & vertexBoundary;
 		ar & faceNormals;
 		ar & faceTexcoords;
-		ar & textureDiffuse;
+		ar & faceTexindices;
+		ar & texturesDiffuse;
 	}
 	#endif
 };

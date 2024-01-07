@@ -160,11 +160,10 @@ public:
 	inline const CELL_TYPE& GetRoot() const { return m_root; }
 	inline TYPE GetRadius() const { return m_radius; }
 	inline AABB_TYPE GetAabb() const { return m_root.GetAabb(m_radius); }
-	inline bool IsEmpty() const { return m_indices.IsEmpty(); }
-	inline size_t GetNumItems() const { return m_indices.GetSize(); }
+	inline bool IsEmpty() const { return m_indices.empty(); }
+	inline size_t GetNumItems() const { return m_indices.size(); }
 	inline const IDXARR_TYPE& GetIndexArr() const { return m_indices; }
 	inline const ITEM_TYPE* GetItems() const { return m_items; }
-	inline const POINT_TYPE& GetItem(IDX_TYPE idx) const { ASSERT(m_items != NULL); return m_items[idx]; }
 	inline void ResetItems() { m_items = NULL; }
 
 protected:

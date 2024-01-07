@@ -131,6 +131,16 @@ public:
 		return invK;
 	}
 
+	// scale image pixel coordinates with the given scale such that it accounts for
+	// the convention that the center of a pixel is defined at integer coordinates
+	template<typename TYPE>
+	static inline TPoint2<TYPE> ScaleImagePixel(const TPoint2<TYPE>& x, TYPE s) {
+		return TPoint2<TYPE>(
+			(x.x+TYPE(0.5))*s-TYPE(0.5),
+			(x.y+TYPE(0.5))*s-TYPE(0.5)
+		);
+	}
+
 	// return scaled K (assuming standard K format)
 	template<typename TYPE>
 	static inline TMatrix<TYPE,3,3> ScaleK(const TMatrix<TYPE,3,3>& K, TYPE s) {
@@ -199,6 +209,27 @@ public:
 		return ComposeInvK(
 			TYPE(K(0,0)*scale), TYPE(K(1,1)*scale),
 			width, height );
+	}
+
+	// return the OpenGL projection matrix corresponding to K:
+	// - flip: if true, flip the y axis to match OpenGL image convention
+	template<typename TYPE>
+	static inline TMatrix<TYPE,4,4> ProjectionMatrixOpenGL(const TMatrix<TYPE,3,3>& K, const cv::Size& size, TYPE nearZ, TYPE farZ, bool flip = true) {
+		// based on https://strawlab.org/2011/11/05/augmented-reality-with-OpenGL
+		const TYPE fx(K(0,0)), fy(K(1,1));
+		const TYPE cx(K(0,2)+0.5f), cy(K(1,2)+0.5f);
+		const TYPE skew(K(0,1));
+		const TYPE ihw(TYPE(2)/size.width), ihh(TYPE(2)/size.height);
+		const TYPE iy(flip ? TYPE(-1) : TYPE(1));
+		const TYPE ilen(TYPE(1)/(farZ-nearZ));
+		return TMatrix<TYPE,4,4>(
+			fx*ihw, skew*ihw, cx*ihw-TYPE(1), 0,
+			0, iy*fy*ihh, iy*(cy*ihh-TYPE(1)), 0,
+			0, 0, (farZ+nearZ)*ilen, -TYPE(2)*farZ*nearZ*ilen,
+			0, 0, 1, 0);
+	}
+	inline Matrix4x4 GetProjectionMatrixOpenGL(const cv::Size& size, REAL nearZ, REAL farZ, bool flipY = true) const {
+		return ProjectionMatrixOpenGL(K, size, nearZ, farZ, flipY);
 	}
 
 	// normalize inhomogeneous 2D point by the given camera intrinsics K

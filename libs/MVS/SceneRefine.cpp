@@ -419,8 +419,7 @@ void MeshRefine::ListCameraFaces()
 			const Image& imageData = images[ID];
 			if (!imageData.IsValid())
 				continue;
-			typedef TFrustum<float,5> Frustum;
-			const Frustum frustum(Frustum::MATRIX3x4(((PMatrix::CEMatMap)imageData.camera.P).cast<float>()), (float)imageData.width, (float)imageData.height);
+			const TFrustum<float,5> frustum(Matrix3x4f(imageData.camera.P), (float)imageData.width, (float)imageData.height);
 			Mesh::FacesInserter inserter(arrCameraFaces[ID]);
 			octree.Traverse(frustum, inserter);
 		}
@@ -1056,9 +1055,9 @@ void MeshRefine::ThSelectNeighbors(uint32_t idxImage, std::unordered_set<uint64_
 	ViewScoreArr neighbors(imageData.neighbors);
 	Scene::FilterNeighborViews(neighbors, fMinArea, fMinScale, fMaxScale, fMinAngle, fMaxAngle, nMaxViews);
 	Lock l(cs);
-	FOREACHPTR(pNeighbor, neighbors) {
-		ASSERT(images[pNeighbor->idx.ID].IsValid());
-		mapPairs.insert(MakePairIdx((uint32_t)idxImage, pNeighbor->idx.ID));
+	for (const ViewScore& neighbor: neighbors) {
+		ASSERT(images[neighbor.ID].IsValid());
+		mapPairs.insert(MakePairIdx((uint32_t)idxImage, neighbor.ID));
 	}
 }
 void MeshRefine::ThInitImage(uint32_t idxImage, Real scale, Real sigma)

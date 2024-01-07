@@ -574,33 +574,33 @@ FORCEINLINE bool ISEQUAL(const cv::Matx<TYPE,m,n>& v1, const cv::Matx<TYPE,m,n>&
 template <typename TYPE, typename INTTYPE=int>
 FORCEINLINE SEACAVE::TPoint2<INTTYPE> Floor2Int(const cv::Point_<TYPE>& v)
 {
-	return SEACAVE::TPoint2<INTTYPE>(FLOOR2INT(v.x), FLOOR2INT(v.y));
+	return SEACAVE::TPoint2<INTTYPE>(FLOOR2INT<INTTYPE>(v.x), FLOOR2INT<INTTYPE>(v.y));
 }
 template <typename TYPE, typename INTTYPE=int>
 FORCEINLINE SEACAVE::TPoint2<INTTYPE> Ceil2Int(const cv::Point_<TYPE>& v)
 {
-	return SEACAVE::TPoint2<INTTYPE>(CEIL2INT(v.x), CEIL2INT(v.y));
+	return SEACAVE::TPoint2<INTTYPE>(CEIL2INT<INTTYPE>(v.x), CEIL2INT<INTTYPE>(v.y));
 }
 template <typename TYPE, typename INTTYPE=int>
 FORCEINLINE SEACAVE::TPoint2<INTTYPE> Round2Int(const cv::Point_<TYPE>& v)
 {
-	return SEACAVE::TPoint2<INTTYPE>(ROUND2INT(v.x), ROUND2INT(v.y));
+	return SEACAVE::TPoint2<INTTYPE>(ROUND2INT<INTTYPE>(v.x), ROUND2INT<INTTYPE>(v.y));
 }
 
 template <typename TYPE, typename INTTYPE=int>
 FORCEINLINE SEACAVE::TPoint3<INTTYPE> Floor2Int(const cv::Point3_<TYPE>& v)
 {
-	return SEACAVE::TPoint3<INTTYPE>(FLOOR2INT(v.x), FLOOR2INT(v.y), FLOOR2INT(v.z));
+	return SEACAVE::TPoint3<INTTYPE>(FLOOR2INT<INTTYPE>(v.x), FLOOR2INT<INTTYPE>(v.y), FLOOR2INT<INTTYPE>(v.z));
 }
 template <typename TYPE, typename INTTYPE=int>
 FORCEINLINE SEACAVE::TPoint3<INTTYPE> Ceil2Int(const cv::Point3_<TYPE>& v)
 {
-	return SEACAVE::TPoint3<INTTYPE>(CEIL2INT(v.x), CEIL2INT(v.y), CEIL2INT(v.z));
+	return SEACAVE::TPoint3<INTTYPE>(CEIL2INT<INTTYPE>(v.x), CEIL2INT<INTTYPE>(v.y), CEIL2INT<INTTYPE>(v.z));
 }
 template <typename TYPE, typename INTTYPE=int>
 FORCEINLINE SEACAVE::TPoint3<INTTYPE> Round2Int(const cv::Point3_<TYPE>& v)
 {
-	return SEACAVE::TPoint3<INTTYPE>(ROUND2INT(v.x), ROUND2INT(v.y), ROUND2INT(v.z));
+	return SEACAVE::TPoint3<INTTYPE>(ROUND2INT<INTTYPE>(v.x), ROUND2INT<INTTYPE>(v.y), ROUND2INT<INTTYPE>(v.z));
 }
 
 template <typename TYPE, int m, int n, typename INTTYPE=int>
@@ -608,7 +608,7 @@ FORCEINLINE SEACAVE::TMatrix<INTTYPE,m,n> Floor2Int(const cv::Matx<TYPE,m,n>& v)
 {
 	SEACAVE::TMatrix<INTTYPE,m,n> nv;
 	for (int i=0; i<m*n; ++i)
-		nv.val[i] = Floor2Int(v.val[i]);
+		nv.val[i] = FLOOR2INT<INTTYPE>(v.val[i]);
 	return nv;
 }
 template <typename TYPE, int m, int n, typename INTTYPE=int>
@@ -616,7 +616,7 @@ FORCEINLINE SEACAVE::TMatrix<INTTYPE,m,n> Ceil2Int(const cv::Matx<TYPE,m,n>& v)
 {
 	SEACAVE::TMatrix<INTTYPE,m,n> nv;
 	for (int i=0; i<m*n; ++i)
-		nv.val[i] = Ceil2Int(v.val[i]);
+		nv.val[i] = CEIL2INT<INTTYPE>(v.val[i]);
 	return nv;
 }
 template <typename TYPE, int m, int n, typename INTTYPE=int>
@@ -624,7 +624,7 @@ FORCEINLINE SEACAVE::TMatrix<INTTYPE,m,n> Round2Int(const cv::Matx<TYPE,m,n>& v)
 {
 	SEACAVE::TMatrix<INTTYPE,m,n> nv;
 	for (int i=0; i<m*n; ++i)
-		nv.val[i] = Round2Int(v.val[i]);
+		nv.val[i] = ROUND2INT<INTTYPE>(v.val[i]);
 	return nv;
 }
 
@@ -665,6 +665,29 @@ template <typename TYPE, int R, int C>
 FORCEINLINE bool ISFINITE(const Eigen::Matrix<TYPE,R,C>& m)
 {
 	return ISFINITE(m.data(), m.size());
+}
+
+
+// initializing both scalar and matrix variables
+template <typename Scalar, typename Value>
+FORCEINLINE Scalar INITTO(const Scalar*, Value v)
+{
+	return static_cast<Scalar>(v);
+}
+template <typename Scalar, typename Value>
+FORCEINLINE TPoint2<Scalar> INITTO(const TPoint2<Scalar>*, Value v)
+{
+	return TPoint2<Scalar>(static_cast<Scalar>(v));
+}
+template <typename Scalar, typename Value>
+FORCEINLINE TPoint3<Scalar> INITTO(const TPoint3<Scalar>*, Value v)
+{
+	return TPoint3<Scalar>(static_cast<Scalar>(v));
+}
+template <typename Scalar, int Rows, int Cols, typename Value>
+FORCEINLINE Eigen::Matrix<Scalar,Rows,Cols> INITTO(const Eigen::Matrix<Scalar,Rows,Cols>*, Value v)
+{
+	return Eigen::Matrix<Scalar,Rows,Cols>::Constant(static_cast<Scalar>(v));
 }
 /*----------------------------------------------------------------*/
 
@@ -2602,7 +2625,7 @@ void TImage<TYPE>::RasterizeTriangle(const TPoint2<T>& v1, const TPoint2<T>& v2,
 // same as above, but raster a triangle using barycentric coordinates:
 // https://www.scratchapixel.com/lessons/3d-basic-rendering/rasterization-practical-implementation
 template <typename TYPE>
-template <typename T, typename PARSER>
+template <typename T, typename PARSER, bool CULL>
 void TImage<TYPE>::RasterizeTriangleBary(const TPoint2<T>& v1, const TPoint2<T>& v2, const TPoint2<T>& v3, PARSER& parser)
 {
 	// compute bounding-box fully containing the triangle
@@ -2613,30 +2636,34 @@ void TImage<TYPE>::RasterizeTriangleBary(const TPoint2<T>& v1, const TPoint2<T>&
 	if (boxMax.x < T(0) || boxMin.x > T(size.width - 1) ||
 		boxMax.y < T(0) || boxMin.y > T(size.height - 1))
 		return;
-	// ignore back oriented triangles (negative area)
-	const T area(EdgeFunction(v1, v2, v3));
-	if (area <= 0)
-		return;
 	// clip bounding-box to be fully contained by the image
 	ImageRef boxMinI(FLOOR2INT(boxMin));
 	ImageRef boxMaxI(CEIL2INT(boxMax));
 	Base::clip(boxMinI, boxMaxI, size);
+	// ignore back oriented triangles (negative area)
+	const T area(EdgeFunction(v1, v2, v3));
+	if (CULL && area <= 0)
+		return;
 	// parse all pixels inside the bounding-box
 	const T invArea(T(1) / area);
 	for (int y = boxMinI.y; y <= boxMaxI.y; ++y) {
 		for (int x = boxMinI.x; x <= boxMaxI.x; ++x) {
 			const ImageRef pt(x, y);
 			const TPoint2<T> p(Cast<T>(pt));
-			const T b1(EdgeFunction(v2, v3, p));
+			// discard point if not in triangle;
+			// testing only for negative barycentric coordinates
+			// guarantees all will be in [0,1] at the end of all checks
+			const T b1(EdgeFunction(v2, v3, p) * invArea);
 			if (b1 < 0)
 				continue;
-			const T b2(EdgeFunction(v3, v1, p));
+			const T b2(EdgeFunction(v3, v1, p) * invArea);
 			if (b2 < 0)
 				continue;
-			const T b3(EdgeFunction(v1, v2, p));
+			const T b3(EdgeFunction(v1, v2, p) * invArea);
 			if (b3 < 0)
 				continue;
-			parser(pt, TPoint3<T>(b1, b2, b3) * invArea);
+			// output pixel
+			parser(pt, TPoint3<T>(b1, b2, b3));
 		}
 	}
 }
@@ -3020,6 +3047,8 @@ bool TImage<TYPE>::Load(const String& fileName)
 			cv::cvtColor(img, img, cv::COLOR_BGRA2GRAY);
 		else if (img.channels() == 1 && Base::channels() == 4)
 			cv::cvtColor(img, img, cv::COLOR_GRAY2BGRA);
+		else if (img.channels() == 4 && Base::channels() == 3)
+			cv::cvtColor(img, img, cv::COLOR_BGRA2BGR);
 	}
 	if (img.type() == Base::type())
 		cv::swap(img, *this);
@@ -3040,7 +3069,7 @@ bool TImage<TYPE>::Save(const String& fileName) const
 	} else
 	if (ext == ".jpg") {
 		compression_params.push_back(cv::IMWRITE_JPEG_QUALITY);
-		compression_params.push_back(80);
+		compression_params.push_back(95);
 	} else
 	if (ext == ".pfm") {
 		if (Base::depth() != CV_32F)

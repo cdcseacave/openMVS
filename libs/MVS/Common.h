@@ -58,8 +58,15 @@
 
 using namespace SEACAVE;
 
+#define _USE_OPENCV
+#define _DISABLE_NO_ID
+#include "Interface.h"
+
 namespace MVS {
 
+// Initialize / close the library; should be called at the beginning and end of the program
+void Initialize(LPCTSTR appname, unsigned nMaxThreads=0, int nProcessPriority=0);
+void Finalize();
 /*----------------------------------------------------------------*/
 
 } // namespace MVS

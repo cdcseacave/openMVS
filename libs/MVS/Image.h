@@ -46,28 +46,8 @@
 namespace MVS {
 
 typedef uint32_t IIndex;
-typedef cList<IIndex, IIndex, 0, 16, IIndex> IIndexArr;
-
-struct MVS_API ViewInfo {
-	IIndex ID; // image local-ID (the index in the scene images list)
-	uint32_t points; // number of 3D points shared with the reference image
-	float scale; // image scale relative to the reference image
-	float angle; // image angle relative to the reference image (radians)
-	float area; // common image area relative to the reference image (ratio)
-
-	#ifdef _USE_BOOST
-				// implement BOOST serialization
-	template<class Archive>
-	void serialize(Archive& ar, const unsigned int /*version*/) {
-		ar & ID;
-		ar & points;
-		ar & scale;
-		ar & angle;
-		ar & area;
-	}
-	#endif
-};
-typedef MVS_API TIndexScore<ViewInfo, float> ViewScore;
+typedef SEACAVE::cList<IIndex, IIndex, 0, 16, IIndex> IIndexArr;
+typedef _INTERFACE_NAMESPACE::Interface::Image::ViewScore ViewScore;
 typedef MVS_API CLISTDEF0IDX(ViewScore, IIndex) ViewScoreArr;
 /*----------------------------------------------------------------*/
 
@@ -89,7 +69,7 @@ public:
 	float avgDepth; // average depth of the points seen by this camera
 
 public:
-	inline Image() : poseID(NO_ID), width(0), height(0) {}
+	inline Image() : poseID(NO_ID), width(0), height(0), avgDepth(0) {}
 
 	inline bool IsValid() const { return poseID != NO_ID; }
 	inline bool HasResolution() const { return width > 0 && height > 0; }

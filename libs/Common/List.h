@@ -61,11 +61,11 @@
 
 // constructs a cList reference to a given raw data array
 #ifndef CLISTREFRAW
-#define CLISTREFRAW(CLIST, var, arr, sz) uint8_t _ArrData##var[sizeof(CLIST)]; new(_ArrData##var) CLIST(sz, arr); const CLIST& var(*((const CLIST*)_ArrData##var))
+#define CLISTREFRAW(CLIST, var, arr, sz) uint8_t _ArrData##var[sizeof(CLIST)]; new(_ArrData##var) CLIST(sz, const_cast<CLIST::Type*>(arr)); const CLIST& var(*reinterpret_cast<const CLIST*>(_ArrData##var))
 #endif
 // constructs a cList reference to a given std::_vector
 #ifndef CLISTREFVECTOR
-#define CLISTREFVECTOR(CLIST, var, vec) uint8_t _ArrData##var[sizeof(CLIST)]; new(_ArrData##var) CLIST(vec.size(), &vec[0]); const CLIST& var(*((const CLIST*)_ArrData##var))
+#define CLISTREFVECTOR(CLIST, var, vec) uint8_t _ArrData##var[sizeof(CLIST)]; new(_ArrData##var) CLIST(vec.size(), const_cast<CLIST::Type*>(&vec[0])); const CLIST& var(*reinterpret_cast<const CLIST*>(_ArrData##var))
 #endif
 
 #define CLISTDEF0(TYPE) SEACAVE::cList< TYPE, const TYPE&, 0 >

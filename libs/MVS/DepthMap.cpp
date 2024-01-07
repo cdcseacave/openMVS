@@ -32,8 +32,6 @@
 #include "Common.h"
 #include "DepthMap.h"
 #include "Mesh.h"
-#define _USE_OPENCV
-#include "Interface.h"
 #include "../Common/AutoEstimator.h"
 // CGAL: depth-map initialization
 #include <CGAL/Simple_cartesian.h>

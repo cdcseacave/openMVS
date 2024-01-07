@@ -55,7 +55,7 @@ String cvMat2String(const TYPE* M, uint32_t rows, uint32_t cols, uint32_t step, 
 	for (uint32_t i=0; i<rows; ++i) {
 		const TYPE* Mi = M+i*step;
 		for (uint32_t j=0; j<cols; ++j) {
-			_stprintf(buf, format, Mi[j]);
+			_sntprintf(buf, 32, format, Mi[j]);
 			str += buf;
 		}
 		str += _T("\n");

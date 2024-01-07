@@ -316,7 +316,6 @@ public:
 	inline KernelRT() : hKernel(NULL) {}
 	inline KernelRT(const ModuleRTPtr& _ptrModule, LPCSTR functionName) : ptrModule(_ptrModule) { Reset(functionName); }
 	inline KernelRT(LPCSTR program, LPCSTR functionName, int mode=JIT::AUTO) { Reset(program, functionName, mode); }
-	inline ~KernelRT() { Release(); }
 
 	inline bool IsValid() const {
 		ASSERT(hKernel == NULL || (ptrModule != NULL && ptrModule->IsValid()));

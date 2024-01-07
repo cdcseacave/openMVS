@@ -88,12 +88,10 @@ MaxRectsBinPack::Rect MaxRectsBinPack::Insert(int width, int height, FreeRectCho
 	return newNode;
 }
 
-bool MaxRectsBinPack::Insert(RectArr& rects, FreeRectChoiceHeuristic method)
+MaxRectsBinPack::RectWIdxArr MaxRectsBinPack::Insert(RectWIdxArr& unplacedRects, FreeRectChoiceHeuristic method)
 {
-	cList<IDX, IDX, 0> indices(rects.GetSize());
-	std::iota(indices.Begin(), indices.End(), 0);
-	RectArr newRects(rects.GetSize());
-	while (!rects.IsEmpty()) {
+	RectWIdxArr placedRects;
+	while (!unplacedRects.IsEmpty()) {
 		int bestScore1 = std::numeric_limits<int>::max();
 		int bestScore2 = std::numeric_limits<int>::max();
 		IDX bestRectIndex = NO_IDX;
@@ -108,9 +106,9 @@ bool MaxRectsBinPack::Insert(RectArr& rects, FreeRectChoiceHeuristic method)
 			IDX privBestRectIndex = NO_IDX;
 			Rect privBestNode;
 			#pragma omp for nowait
-			for (int_t i=0; i<(int_t)rects.GetSize(); ++i) {
+			for (int_t i=0; i<(int_t)unplacedRects.size(); ++i) {
 				int score1, score2;
-				Rect newNode(ScoreRect(rects[i].width, rects[i].height, method, score1, score2));
+				Rect newNode(ScoreRect(unplacedRects[i].rect.width, unplacedRects[i].rect.height, method, score1, score2));
 				if (score1 < privBestScore1 || (score1 == privBestScore1 && score2 < privBestScore2)) {
 					privBestScore1 = score1;
 					privBestScore2 = score2;
@@ -129,9 +127,9 @@ bool MaxRectsBinPack::Insert(RectArr& rects, FreeRectChoiceHeuristic method)
 			}
 		}
 		#else
-		FOREACH(i, rects) {
+		FOREACH(i, unplacedRects) {
 			int score1, score2;
-			Rect newNode(ScoreRect(rects[i].width, rects[i].height, method, score1, score2));
+			Rect newNode(ScoreRect(unplacedRects[i].rect.width, unplacedRects[i].rect.height, method, score1, score2));
 			if (score1 < bestScore1 || (score1 == bestScore1 && score2 < bestScore2)) {
 				bestScore1 = score1;
 				bestScore2 = score2;
@@ -141,24 +139,18 @@ bool MaxRectsBinPack::Insert(RectArr& rects, FreeRectChoiceHeuristic method)
 		}
 		#endif
 
-		// if no place found...
+		// if no place found, return the placed rectangles list
 		if (bestRectIndex == NO_IDX) {
-			// restore the original rectangles
-			FOREACH(j, rects)
-				newRects[indices[j]] = rects[j];
-			rects.Swap(newRects);
-			return false;
+			break;
 		}
 
 		// store rectangle
 		PlaceRect(bestNode);
 
-		newRects[indices[bestRectIndex]] = bestNode;
-		rects.RemoveAt(bestRectIndex);
-		indices.RemoveAt(bestRectIndex);
+		placedRects.Insert(RectWIdx{bestNode, unplacedRects[bestRectIndex].patchIdx});
+		unplacedRects.RemoveAt(bestRectIndex);
 	}
-	rects.Swap(newRects);
-	return true;
+	return placedRects;
 }
 
 void MaxRectsBinPack::PlaceRect(const Rect &node)
@@ -524,6 +516,13 @@ int MaxRectsBinPack::ComputeTextureSize(const RectArr& rects, int mult)
 	// ... as power of two
 	return POWI(2, CEIL2INT<unsigned>(LOGN((float)sizeTex) / LOGN(2.f)));
 }
+
+int MaxRectsBinPack::ComputeTextureSize(const RectWIdxArr& rectsWIdx, int mult) {
+	RectArr rects(rectsWIdx.GetSize());
+	FOREACH(i, rectsWIdx)
+		rects[i] = rectsWIdx[i].rect;
+	return ComputeTextureSize(rects, mult);
+}
 /*----------------------------------------------------------------*/
 
 
@@ -563,7 +562,7 @@ void GuillotineBinPack::Init(int width, int height)
 	freeRectangles.push_back(n);
 }
 
-bool GuillotineBinPack::Insert(RectArr& rects, bool merge,
+GuillotineBinPack::RectWIdxArr GuillotineBinPack::Insert(RectWIdxArr& unplacedRects, bool merge,
 							   FreeRectChoiceHeuristic rectChoice, GuillotineSplitHeuristic splitMethod)
 {
 	// Remember variables about the best packing choice we have made so far during the iteration process.
@@ -571,19 +570,18 @@ bool GuillotineBinPack::Insert(RectArr& rects, bool merge,
 	size_t bestRect = 0;
 	bool bestFlipped = false;
 
-	// Pack rectangles one at a time until we have cleared the rects array of all rectangles.
-	// rects will get destroyed in the process.
-	cList<IDX, IDX, 0> indices(rects.GetSize());
-	std::iota(indices.Begin(), indices.End(), 0);
-	RectArr newRects(rects.GetSize());
-	while (!rects.IsEmpty()) {
+	// Pack rectangles one at a time until we have cleared the rects array of all rectangles or there is no space.
+	// unplacedRects will get destroyed in the process.
+	RectWIdxArr placedRects;
+	while (!unplacedRects.IsEmpty()) {
 		// Stores the penalty score of the best rectangle placement - bigger=worse, smaller=better.
 		int bestScore = std::numeric_limits<int>::max();
 
 		for (size_t i = 0; i < freeRectangles.size(); ++i) {
-			for (size_t j = 0; j < rects.GetSize(); ++j) {
+			for (size_t j = 0; j < unplacedRects.GetSize(); ++j) {
+				Rect currentRect = unplacedRects[j].rect;
 				// If this rectangle is a perfect match, we pick it instantly.
-				if (rects[j].width == freeRectangles[i].width && rects[j].height == freeRectangles[i].height) {
+				if (currentRect.width == freeRectangles[i].width && currentRect.height == freeRectangles[i].height) {
 					bestFreeRect = i;
 					bestRect = j;
 					bestFlipped = false;
@@ -592,7 +590,7 @@ bool GuillotineBinPack::Insert(RectArr& rects, bool merge,
 					break;
 				}
 				// If flipping this rectangle is a perfect match, pick that then.
-				else if (rects[j].height == freeRectangles[i].width && rects[j].width == freeRectangles[i].height) {
+				else if (currentRect.height == freeRectangles[i].width && currentRect.width == freeRectangles[i].height) {
 					bestFreeRect = i;
 					bestRect = j;
 					bestFlipped = true;
@@ -601,8 +599,8 @@ bool GuillotineBinPack::Insert(RectArr& rects, bool merge,
 					break;
 				}
 				// Try if we can fit the rectangle upright.
-				else if (rects[j].width <= freeRectangles[i].width && rects[j].height <= freeRectangles[i].height) {
-					int score = ScoreByHeuristic(rects[j].width, rects[j].height, freeRectangles[i], rectChoice);
+				else if (currentRect.width <= freeRectangles[i].width && currentRect.height <= freeRectangles[i].height) {
+					int score = ScoreByHeuristic(currentRect.width, currentRect.height, freeRectangles[i], rectChoice);
 					if (score < bestScore) {
 						bestFreeRect = i;
 						bestRect = j;
@@ -611,8 +609,8 @@ bool GuillotineBinPack::Insert(RectArr& rects, bool merge,
 					}
 				}
 				// If not, then perhaps flipping sideways will make it fit?
-				else if (rects[j].height <= freeRectangles[i].width && rects[j].width <= freeRectangles[i].height) {
-					int score = ScoreByHeuristic(rects[j].height, rects[j].width, freeRectangles[i], rectChoice);
+				else if (currentRect.height <= freeRectangles[i].width && currentRect.width <= freeRectangles[i].height) {
+					int score = ScoreByHeuristic(currentRect.height, currentRect.width, freeRectangles[i], rectChoice);
 					if (score < bestScore) {
 						bestFreeRect = i;
 						bestRect = j;
@@ -625,19 +623,15 @@ bool GuillotineBinPack::Insert(RectArr& rects, bool merge,
 
 		// If we didn't manage to find any rectangle to pack, abort.
 		if (bestScore == std::numeric_limits<int>::max()) {
-			// restore the original rectangles
-			FOREACH(j, rects)
-				newRects[indices[j]] = rects[j];
-			rects.Swap(newRects);
-			return false;
+			break;
 		}
 
 		// Otherwise, we're good to go and do the actual packing.
 		Rect newNode;
 		newNode.x = freeRectangles[bestFreeRect].x;
 		newNode.y = freeRectangles[bestFreeRect].y;
-		newNode.width = rects[bestRect].width;
-		newNode.height = rects[bestRect].height;
+		newNode.width = unplacedRects[bestRect].rect.width;
+		newNode.height = unplacedRects[bestRect].rect.height;
 
 		if (bestFlipped)
 			std::swap(newNode.width, newNode.height);
@@ -647,9 +641,8 @@ bool GuillotineBinPack::Insert(RectArr& rects, bool merge,
 		freeRectangles.erase(freeRectangles.begin() + bestFreeRect);
 
 		// Remove the rectangle we just packed from the input list.
-		newRects[indices[bestRect]] = newNode;
-		rects.RemoveAt(bestRect);
-		indices.RemoveAt(bestRect);
+		placedRects.Insert(MaxRectsBinPack::RectWIdx{newNode, unplacedRects[bestRect].patchIdx});
+		unplacedRects.RemoveAt(bestRect);
 
 		// Perform a Rectangle Merge step if desired.
 		if (merge)
@@ -661,7 +654,7 @@ bool GuillotineBinPack::Insert(RectArr& rects, bool merge,
 		// Check that we're really producing correct packings here.
 		ASSERT(disjointRects.Add(newNode) == true);
 	}
-	return true;
+	return placedRects;
 }
 
 GuillotineBinPack::Rect GuillotineBinPack::Insert(int width, int height, bool merge, FreeRectChoiceHeuristic rectChoice, GuillotineSplitHeuristic splitMethod)
@@ -984,12 +977,10 @@ void SkylineBinPack::Init(int width, int height, bool useWasteMap_)
 	}
 }
 
-bool SkylineBinPack::Insert(RectArr& rects, LevelChoiceHeuristic method)
+SkylineBinPack::RectWIdxArr SkylineBinPack::Insert(RectWIdxArr& unplacedRects, LevelChoiceHeuristic method)
 {
-	cList<IDX, IDX, 0> indices(rects.GetSize());
-	std::iota(indices.Begin(), indices.End(), 0);
-	RectArr newRects(rects.GetSize());
-	while (!rects.IsEmpty()) {
+	RectWIdxArr placedRects;
+	while (!unplacedRects.IsEmpty()) {
 		int bestScore1 = std::numeric_limits<int>::max();
 		int bestScore2 = std::numeric_limits<int>::max();
 		int bestSkylineIndex = -1;
@@ -1005,9 +996,9 @@ bool SkylineBinPack::Insert(RectArr& rects, LevelChoiceHeuristic method)
 			IDX privBestRectIndex = NO_IDX;
 			Rect privBestNode;
 			#pragma omp for nowait
-			for (int_t i=0; i<(int_t)rects.GetSize(); ++i) {
+			for (int_t i=0; i<(int_t)unplacedRects.GetSize(); ++i) {
 				int score1, score2, index;
-				Rect newNode(ScoreRect(rects[i].width, rects[i].height, method, score1, score2, index));
+				Rect newNode(ScoreRect(unplacedRects[i].rect.width, unplacedRects[i].rect.height, method, score1, score2, index));
 				if (score1 < privBestScore1 || (score1 == privBestScore1 && score2 < privBestScore2)) {
 					privBestScore1 = score1;
 					privBestScore2 = score2;
@@ -1028,9 +1019,9 @@ bool SkylineBinPack::Insert(RectArr& rects, LevelChoiceHeuristic method)
 			}
 		}
 		#else
-		FOREACH(i, rects) {
+		FOREACH(i, unplacedRects) {
 			int score1, score2, index;
-			Rect newNode(ScoreRect(rects[i].width, rects[i].height, method, score1, score2, index));
+			Rect newNode(ScoreRect(unplacedRects[i].rect.width, unplacedRects[i].rect.height, method, score1, score2, index));
 			if (score1 < bestScore1 || (score1 == bestScore1 && score2 < bestScore2)) {
 				bestNode = newNode;
 				bestScore1 = score1;
@@ -1041,13 +1032,9 @@ bool SkylineBinPack::Insert(RectArr& rects, LevelChoiceHeuristic method)
 		}
 		#endif
 
-		// if no place found...
+		// if no place found, give up
 		if (bestRectIndex == NO_IDX) {
-			// restore the original rectangles
-			FOREACH(j, rects)
-				newRects[indices[j]] = rects[j];
-			rects.Swap(newRects);
-			return false;
+			break;
 		}
 
 		// Perform the actual packing.
@@ -1056,14 +1043,12 @@ bool SkylineBinPack::Insert(RectArr& rects, LevelChoiceHeuristic method)
 		disjointRects.Add(bestNode);
 		#endif
 		AddSkylineLevel(bestSkylineIndex, bestNode);
-		usedSurfaceArea += rects[bestRectIndex].area();
+		usedSurfaceArea += unplacedRects[bestRectIndex].rect.area();
 
-		newRects[indices[bestRectIndex]] = bestNode;
-		rects.RemoveAt(bestRectIndex);
-		indices.RemoveAt(bestRectIndex);
+		placedRects.Insert(MaxRectsBinPack::RectWIdx{bestNode, unplacedRects[bestRectIndex].patchIdx});
+		unplacedRects.RemoveAt(bestRectIndex);
 	}
-	rects.Swap(newRects);
-	return true;
+	return placedRects;
 }
 
 SkylineBinPack::Rect SkylineBinPack::Insert(int width, int height, LevelChoiceHeuristic method)

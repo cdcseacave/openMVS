@@ -36,6 +36,12 @@ template <typename TYPE, int DIMS>
 inline TPlane<TYPE,DIMS>::TPlane(const TYPE p[DIMS+1])
 {
 	Set(p);
+}
+// Construct plane given its standard equation: Ax + By + Cz + D = 0
+template <typename TYPE, int DIMS>
+inline TPlane<TYPE,DIMS>::TPlane(const Eigen::Matrix<TYPE,DIMS+1,1>& v)
+{
+	Set(v);
 } // constructors
 /*----------------------------------------------------------------*/
 
@@ -64,7 +70,14 @@ inline void TPlane<TYPE,DIMS>::Set(const TYPE p[DIMS+1])
 {
 	const Eigen::Map<const VECTOR> vN(p);
 	const TYPE invD(INVERT(vN.norm()));
-	Set(vN*invD, p[3]*invD);
+	Set(vN*invD, p[DIMS]*invD);
+}
+template <typename TYPE, int DIMS>
+inline void TPlane<TYPE,DIMS>::Set(const Eigen::Matrix<TYPE,DIMS+1,1>& v)
+{
+	const VECTOR vN = v.template topLeftCorner<3,1>();
+	const TYPE invD(INVERT(vN.norm()));
+	Set(vN*invD, v(DIMS)*invD);
 } // Set
 /*----------------------------------------------------------------*/
 
@@ -437,16 +450,6 @@ TYPE FitPlane(const TPoint3<TYPE>* points, size_t size, TPlane<TYPE>& plane) {
 
 // Construct frustum given a projection matrix.
 template <typename TYPE, int DIMS>
-inline TFrustum<TYPE,DIMS>::TFrustum(const MATRIX4x4& m)
-{
-	Set<0>(m);
-}
-template <typename TYPE, int DIMS>
-inline TFrustum<TYPE,DIMS>::TFrustum(const MATRIX3x4& m)
-{
-	Set<0>(m);
-}
-template <typename TYPE, int DIMS>
 inline TFrustum<TYPE,DIMS>::TFrustum(const MATRIX4x4& m, TYPE w, TYPE h, TYPE n, TYPE f)
 {
 	Set(m, w, h, n, f);
@@ -459,124 +462,66 @@ inline TFrustum<TYPE,DIMS>::TFrustum(const MATRIX3x4& m, TYPE w, TYPE h, TYPE n,
 /*----------------------------------------------------------------*/
 
 
-/**
- * Retrieve active frustum planes, normals pointing outwards.
- * -> IN/OUT: RDFRUSTUM - address to 6 planes
- */
-template <typename TYPE, int DIMS>
-template <int MODE>
-void TFrustum<TYPE,DIMS>::Set(const MATRIX4x4& m)
-{
-	// left plane
-	m_planes[0].Set(-(m.col(3)+m.col(0)));
-	// right plane
-	if (DIMS > 1)
-	m_planes[1].Set(-(m.col(3)-m.col(0)));
-	// top plane
-	if (DIMS > 2)
-	m_planes[2].Set(-(m.col(3)+m.col(1)));
-	// bottom plane
-	if (DIMS > 3)
-	m_planes[3].Set(-(m.col(3)-m.col(1)));
-	// near plane
-	if (DIMS > 4)
-	m_planes[4].Set(MODE ? -(m.col(3)+m.col(2)) : -m.col(2));
-	// far plane
-	if (DIMS > 5)
-	m_planes[5].Set(-(m.col(3)-m.col(2)));
-}
-// same as above, but the last row of the matrix is (0,0,0,1)
-template <typename TYPE, int DIMS>
-template <int MODE>
-void TFrustum<TYPE,DIMS>::Set(const MATRIX3x4& m)
-{
-	// left plane
-	m_planes[0].Set(VECTOR4(
-		-(m(0,3)+m(0,0)),
-		-(m(1,3)+m(1,0)),
-		-(m(2,3)+m(2,0)),
-		-TYPE(1)
-	));
-	// right plane
-	if (DIMS > 1)
-	m_planes[1].Set(VECTOR4(
-		-(m(0,3)-m(0,0)),
-		-(m(1,3)-m(1,0)),
-		-(m(2,3)-m(2,0)),
-		-TYPE(1)
-	));
-	// top plane
-	if (DIMS > 2)
-	m_planes[2].Set(VECTOR4(
-		-(m(0,3)+m(0,1)),
-		-(m(1,3)+m(1,1)),
-		-(m(2,3)+m(2,1)),
-		-TYPE(1)
-	));
-	// bottom plane
-	if (DIMS > 3)
-	m_planes[3].Set(VECTOR4(
-		-(m(0,3)-m(0,1)),
-		-(m(1,3)-m(1,1)),
-		-(m(2,3)-m(2,1)),
-		-TYPE(1)
-	));
-	// near plane
-	if (DIMS > 4)
-	m_planes[4].Set(MODE ?
-		VECTOR4(
-		-(m(0,3)+m(0,2)),
-		-(m(1,3)+m(1,2)),
-		-(m(2,3)+m(2,2)),
-		-TYPE(1))
-		:
-		VECTOR4(
-		-m(0,2),
-		-m(1,2),
-		-m(2,2),
-		TYPE(0))
-	);
-	// far plane
-	if (DIMS > 5)
-	m_planes[5].Set(VECTOR4(
-		-(m(0,3)-m(0,2)),
-		-(m(1,3)-m(1,2)),
-		-(m(2,3)-m(2,2)),
-		-TYPE(1)
-	));
-}
-// same as above, but from SfM projection matrix and image plane details
+// Set frustum planes, normals pointing outwards, from SfM projection matrix and image plane details
 template <typename TYPE, int DIMS>
 void TFrustum<TYPE,DIMS>::Set(const MATRIX4x4& m, TYPE w, TYPE h, TYPE n, TYPE f)
 {
-	const VECTOR4 ltn(0,0,n,1), rtn(w*n,0,n,1), lbn(0,h*n,n,1), rbn(w*n,h*n,n,1);
-	const VECTOR4 ltf(0,0,f,1), rtf(w*f,0,f,1), lbf(0,h*f,f,1), rbf(w*f,h*f,f,1);
+	const VECTOR ltn(0,0,n), rtn(w*n,0,n), lbn(0,h*n,n), rbn(w*n,h*n,n);
+	const VECTOR ltf(0,0,f), rtf(w*f,0,f), lbf(0,h*f,f), rbf(w*f,h*f,f);
 	const MATRIX4x4 inv(m.inverse());
-	const VECTOR4 ltn3D(inv*ltn), rtn3D(inv*rtn), lbn3D(inv*lbn), rbn3D(inv*rbn);
-	const VECTOR4 ltf3D(inv*ltf), rtf3D(inv*rtf), lbf3D(inv*lbf), rbf3D(inv*rbf);
-	m_planes[0].Set(ltn3D.template topRows<3>(), ltf3D.template topRows<3>(), lbf3D.template topRows<3>());
-	if (DIMS > 1)
-	m_planes[1].Set(rtn3D.template topRows<3>(), rbf3D.template topRows<3>(), rtf3D.template topRows<3>());
-	if (DIMS > 2)
-	m_planes[2].Set(ltn3D.template topRows<3>(), rtf3D.template topRows<3>(), ltf3D.template topRows<3>());
-	if (DIMS > 3)
-	m_planes[3].Set(lbn3D.template topRows<3>(), lbf3D.template topRows<3>(), rbf3D.template topRows<3>());
-	if (DIMS > 4)
-	m_planes[4].Set(ltn3D.template topRows<3>(), lbn3D.template topRows<3>(), rbn3D.template topRows<3>());
-	if (DIMS > 5)
-	m_planes[5].Set(ltf3D.template topRows<3>(), rtf3D.template topRows<3>(), rbf3D.template topRows<3>());
+	const VECTOR corners[] = {
+		(inv*ltn.homogeneous()).template topRows<3>(),
+		(inv*rtn.homogeneous()).template topRows<3>(),
+		(inv*lbn.homogeneous()).template topRows<3>(),
+		(inv*rbn.homogeneous()).template topRows<3>(),
+		(inv*ltf.homogeneous()).template topRows<3>(),
+		(inv*rtf.homogeneous()).template topRows<3>(),
+		(inv*lbf.homogeneous()).template topRows<3>(),
+		(inv*rbf.homogeneous()).template topRows<3>()
+	};
+	Set(corners);
 }
 template <typename TYPE, int DIMS>
 void TFrustum<TYPE,DIMS>::Set(const MATRIX3x4& m, TYPE w, TYPE h, TYPE n, TYPE f)
 {
 	MATRIX4x4 M(MATRIX4x4::Identity());
-	#ifdef __GNUC__
-	M.topLeftCorner(3,4) = m;
-	#else
 	M.template topLeftCorner<3,4>() = m;
-	#endif
 	Set(M, w, h, n, f);
+}
+// Set frustum planes, normals pointing outwards, from the given corners
+template <typename TYPE, int DIMS>
+void TFrustum<TYPE,DIMS>::Set(const VECTOR corners[numCorners])
+{
+	// left clipping plane
+	m_planes[0].Set(corners[0], corners[4], corners[6]);
+	if (DIMS > 1) // right clipping plane
+	m_planes[1].Set(corners[1], corners[7], corners[5]);
+	if (DIMS > 2) // top clipping plane
+	m_planes[2].Set(corners[0], corners[5], corners[4]);
+	if (DIMS > 3) // bottom clipping plane
+	m_planes[3].Set(corners[2], corners[6], corners[7]);
+	if (DIMS > 4) // near clipping plane
+	m_planes[4].Set(corners[0], corners[2], corners[3]);
+	if (DIMS > 5) // far clipping plane
+	m_planes[5].Set(corners[4], corners[5], corners[7]);
 } // Set
+// Set frustum planes, normals pointing outwards, from the OpenGL projection-view matrix
+template <typename TYPE, int DIMS>
+void TFrustum<TYPE,DIMS>::SetProjectionGL(const MATRIX4x4& mProjectionView)
+{
+	// left clipping plane
+	m_planes[0].Set(-mProjectionView.row(3) - mProjectionView.row(0));
+	if (DIMS > 1) // right clipping plane
+	m_planes[1].Set(-mProjectionView.row(3) + mProjectionView.row(0));
+	if (DIMS > 2) // top clipping plane
+	m_planes[2].Set(-mProjectionView.row(3) + mProjectionView.row(1));
+	if (DIMS > 3) // bottom clipping plane
+	m_planes[3].Set(-mProjectionView.row(3) - mProjectionView.row(1));
+	if (DIMS > 4) // near clipping plane
+	m_planes[4].Set(-mProjectionView.row(3) - mProjectionView.row(2));
+	if (DIMS > 5) // far clipping plane
+	m_planes[5].Set(-mProjectionView.row(3) + mProjectionView.row(2));
+}
 /*----------------------------------------------------------------*/
 
 

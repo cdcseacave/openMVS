@@ -11,18 +11,13 @@
 
 // I N C L U D E S /////////////////////////////////////////////////
 
+#include "AutoPtr.h"
+
 
 // D E F I N E S ///////////////////////////////////////////////////
 
 #define SIZE_NA					((size_f_t)-1)
 #define STREAM_ERROR			((size_t)-1)
-
-#define FILE_WRITE_MINBUF_SIZE	(128*1024)						// The min size the file write buffer should allocate.
-#define FILE_WRITE_MAXBUF_SIZE	(100*1024*1024)					// The max size the file write buffer should allocate.
-#define FILE_READ_MINBUF_SIZE	(512*1024)						// The min size the file read buffer should allocate.
-#define FILE_READ_MAXBUF_SIZE	(200*1024*1024)					// The max size the file read buffer should allocate.
-
-#define LAYER_BASE				0
 
 
 namespace SEACAVE {
@@ -41,6 +36,12 @@ typedef IOStream IOSTREAM;
 class GENERAL_API NOINITVTABLE Stream {
 public:
 	virtual ~Stream() { }
+
+	// Identify stream type
+	virtual InputStream* getInputStream(int) { return NULL; }
+	virtual OutputStream* getOutputStream(int) { return NULL; }
+	virtual IOStream* getIOStream(int, int) { return NULL; }
+
 	// Get the length of the stream.
 	//         SIZE_NA if there were errors.
 	virtual size_f_t	getSize() const = 0;
@@ -49,6 +50,21 @@ public:
 	// Get the current position in the stream (offset from the beginning).
 	//         SIZE_NA if there were errors.
 	virtual size_f_t	getPos() const = 0;
+};
+
+class GENERAL_API NOINITVTABLE InputStream : public Stream {
+public:
+	virtual ~InputStream() { }
+	/**
+	 * Call this function until it returns 0 to get all bytes.
+	 * @return The number of bytes read. len reflects the number of bytes
+	 *		   actually read from the stream source in this call.
+	 *         STREAM_ERROR if there were errors.
+	 */
+	virtual size_t	read(void* buf, size_t len) = 0;
+
+	enum { LAYER_ID_IN=0 };
+	InputStream* getInputStream(int typ=LAYER_ID_IN) override { return (typ == LAYER_ID_IN ? this : (InputStream*)NULL); }
 };
 
 class GENERAL_API NOINITVTABLE OutputStream : public Stream {
@@ -70,12 +86,10 @@ public:
 		if (len > 2048) {
 			const size_t count((size_t)_vsctprintf(szFormat, args));
 			ASSERT(count != (size_t)-1);
-			TCHAR* const buffer(new TCHAR[count]);
-			_vsntprintf(buffer, count, szFormat, args);
+			CAutoPtrArr<TCHAR> szBufferDyn(new TCHAR[count+1]);
+			_vsntprintf(szBufferDyn, count+1, szFormat, args);
 			va_end(args);
-			const size_t size(write(buffer, count));
-			delete[] buffer;
-			return size;
+			return write(szBufferDyn, count);
 		}
 		va_end(args);
 		return write(szBuffer, len);
@@ -100,75 +114,128 @@ public:
 	 */
 	virtual size_t	flush() = 0;
 
-	virtual OutputStream* getOutputStream(int typ) { return (typ == LAYER_BASE ? this : NULL); }
-};
-
-class GENERAL_API NOINITVTABLE InputStream : public Stream {
-public:
-	virtual ~InputStream() { }
-	/**
-	 * Call this function until it returns 0 to get all bytes.
-	 * @return The number of bytes read. len reflects the number of bytes
-	 *		   actually read from the stream source in this call.
-	 *         STREAM_ERROR if there were errors.
-	 */
-	virtual size_t	read(void* buf, size_t len) = 0;
-
-	virtual InputStream* getInputStream(int typ) { return (typ == LAYER_BASE ? this : NULL); }
+	enum { LAYER_ID_OUT=0 };
+	OutputStream* getOutputStream(int typ=LAYER_ID_OUT) override { return (typ == LAYER_ID_OUT ? this : (OutputStream*)NULL); }
 };
 
 class GENERAL_API NOINITVTABLE IOStream : public InputStream, public OutputStream {
 public:
-	static LPCSTR getClassType() { return "IOStream"; }
-	virtual LPCSTR getClassName() const { return IOStream::getClassType(); }
+	InputStream* getInputStream(int typ=LAYER_ID_IN) override { return InputStream::getInputStream(typ); }
+	OutputStream* getOutputStream(int typ=LAYER_ID_OUT) override { return OutputStream::getOutputStream(typ); }
+	IOStream* getIOStream(int typIn=LAYER_ID_IN, int typOut=LAYER_ID_OUT) override {
+		return ((InputStream*)this)->getInputStream(typIn) != NULL &&
+			((OutputStream*)this)->getOutputStream(typOut) != NULL ? this : (IOStream*)NULL;
+	}
 };
+/*----------------------------------------------------------------*/
 
-template<bool managed>
-class LayerOutputStream : public OutputStream {
+
+
+template<bool managed=true>
+class LayerInputStream : public InputStream {
 public:
-	LayerOutputStream(OutputStream* aStream) : s(aStream) {}
-	virtual ~LayerOutputStream() { if (managed) delete s; }
+	LayerInputStream(InputStream* aStream) : s(aStream) { ASSERT(s != NULL); }
+	virtual ~LayerInputStream() noexcept { if (managed) delete s; }
 
-	OutputStream* getOutputStream(int typ) { return s->getOutputStream(typ); }
+	InputStream* getInputStream(int typ=InputStream::LAYER_ID_IN) override { return s->getInputStream(typ); }
 
-	size_f_t	getSize() const {
+	size_t		read(void* wbuf, size_t len) override {
+		return s->read(wbuf, len);
+	}
+
+	size_f_t	getSize() const override {
 		return s->getSize();
 	}
 
-	bool		setPos(size_f_t wpos) {
+	bool		setPos(size_f_t wpos) override {
 		return s->setPos(wpos);
 	}
 
-	size_f_t	getPos() const {
+	size_f_t	getPos() const override {
+		return s->getPos();
+	}
+
+protected:
+	InputStream* const s;
+};
+
+template<bool managed=true>
+class LayerOutputStream : public OutputStream {
+public:
+	LayerOutputStream(OutputStream* aStream) : s(aStream) {}
+	virtual ~LayerOutputStream() noexcept { if (managed) delete s; }
+
+	OutputStream* getOutputStream(int typ=OutputStream::LAYER_ID_OUT) override { return s->getOutputStream(typ); }
+
+	size_t		write(const void* buf, size_t len) override {
+		return s->write(buf, len);
+	}
+
+	size_t		flush() override {
+		return s->flush();
+	}
+
+	size_f_t	getSize() const override {
+		return s->getSize();
+	}
+
+	bool		setPos(size_f_t wpos) override {
+		return s->setPos(wpos);
+	}
+
+	size_f_t	getPos() const override {
 		return s->getPos();
 	}
 
 protected:
 	OutputStream* const s;
 };
+/*----------------------------------------------------------------*/
 
-template<bool managed>
-class LayerInputStream : public InputStream {
+
+
+template<bool managed=true>
+class LayerIOStream : public IOStream {
 public:
-	LayerInputStream(InputStream* aStream) : s(aStream) { ASSERT(s != NULL); }
-	virtual ~LayerInputStream() { if (managed) delete s; }
+	LayerIOStream(InputStream* aStream) : s(aStream), sIn(aStream), sOut(NULL) { ASSERT(aStream != NULL); }
+	LayerIOStream(OutputStream* aStream) : s(aStream), sIn(NULL), sOut(aStream) { ASSERT(aStream != NULL); }
+	LayerIOStream(InputStream* streamIn, OutputStream* streamOut) : s(NULL), sIn(streamIn), sOut(streamOut) { ASSERT(sIn != NULL || sOut != NULL); }
+	virtual ~LayerIOStream() noexcept { if (managed) { delete sIn; delete sOut; } }
 
-	InputStream* getInputStream(int typ) { return s->getInputStream(typ); }
+	InputStream* getInputStream(int typ=InputStream::LAYER_ID_IN) override { return (sIn ? sIn->getInputStream(typ) : NULL); }
+	OutputStream* getOutputStream(int typ=OutputStream::LAYER_ID_OUT) override { return (sOut ? sOut->getOutputStream(typ) : NULL); }
 
-	size_f_t	getSize() const {
+	size_f_t	getSize() const override {
 		return s->getSize();
 	}
 
-	bool		setPos(size_f_t wpos) {
+	bool		setPos(size_f_t wpos) override {
 		return s->setPos(wpos);
 	}
 
-	size_f_t	getPos() const {
+	size_f_t	getPos() const override {
 		return s->getPos();
 	}
 
+	size_t		read(void* wbuf, size_t len) override {
+		return sIn->read(wbuf, len);
+	}
+
+	size_t		write(const void* buf, size_t len) override {
+		return sOut->write(buf, len);
+	}
+
+	size_t		flush() override {
+		return sOut->flush();
+	}
+
+	operator InputStream* () const { return sIn; }
+	operator OutputStream* () const { return sOut; }
+
 protected:
-	InputStream* const s;
+	Stream* const s;
+	InputStream* const sIn;
+	OutputStream* const sOut;
 };
 /*----------------------------------------------------------------*/
 

@@ -57,8 +57,17 @@ namespace MVS {
 class MaxRectsBinPack
 {
 public:
+	// A simple rectangle
 	typedef cv::Rect Rect;
+	// A rectangle that stores an index of origin
+	typedef struct {
+	    Rect rect;
+	    uint32_t patchIdx;
+	} RectWIdx;
+	/// A list of rectangles
 	typedef CLISTDEF0(Rect) RectArr;
+	/// A list of rectangles along their original indices
+	typedef CLISTDEF0(RectWIdx) RectWIdxArr;
 
 	/// Instantiates a bin of size (0,0). Call Init to create a new bin.
 	MaxRectsBinPack();
@@ -84,7 +93,7 @@ public:
 	/// @param rects [IN/OUT] The list of rectangles to insert; the rectangles will be modified with the new coordinates in the process.
 	/// @param method The rectangle placement rule to use when packing.
 	/// returns true if all rectangles were inserted
-	bool Insert(RectArr& rects, FreeRectChoiceHeuristic method=RectBestShortSideFit);
+	RectWIdxArr Insert(RectWIdxArr& rects, FreeRectChoiceHeuristic method=RectBestShortSideFit);
 
 	/// Inserts a single rectangle into the bin, possibly rotated.
 	Rect Insert(int width, int height, FreeRectChoiceHeuristic method=RectBestShortSideFit);
@@ -94,6 +103,7 @@ public:
 
 	/// Computes an approximate texture atlas size.
 	static int ComputeTextureSize(const RectArr& rects, int mult=0);
+	static int ComputeTextureSize(const RectWIdxArr& rects, int mult=0);
 
 	/// Returns true if a is contained/on the border in b.
 	static inline bool IsContainedIn(const Rect& a, const Rect& b) {
@@ -190,8 +200,12 @@ public:
 class GuillotineBinPack
 {
 public:
+	// A simple rectangle
 	typedef cv::Rect Rect;
+	/// A list of rectangles
 	typedef CLISTDEF0(Rect) RectArr;
+	/// A list of rectangles along their original indices
+	typedef CLISTDEF0(MaxRectsBinPack::RectWIdx) RectWIdxArr;
 
 	/// The initial bin size will be (0,0). Call Init to set the bin size.
 	GuillotineBinPack();
@@ -243,7 +257,7 @@ public:
 	/// @param merge If true, performs Rectangle Merge operations during the packing process.
 	/// @param rectChoice The free rectangle choice heuristic rule to use.
 	/// @param splitMethod The free rectangle split heuristic rule to use.
-	bool Insert(RectArr& rects, bool merge,
+	RectWIdxArr Insert(RectWIdxArr& rects, bool merge,
 				FreeRectChoiceHeuristic rectChoice, GuillotineSplitHeuristic splitMethod);
 
 	/// Computes the ratio of used/total surface area. 0.00 means no space is yet used, 1.00 means the whole bin is used.
@@ -311,8 +325,12 @@ protected:
 class SkylineBinPack
 {
 public:
+	// A simple rectangle
 	typedef cv::Rect Rect;
+	/// A list of rectangles
 	typedef CLISTDEF0(Rect) RectArr;
+	/// A list of rectangles along their original indices
+	typedef CLISTDEF0(MaxRectsBinPack::RectWIdx) RectWIdxArr;
 
 	/// Instantiates a bin of size (0,0). Call Init to create a new bin.
 	SkylineBinPack();
@@ -335,7 +353,7 @@ public:
 	/// Inserts the given list of rectangles in an offline/batch mode, possibly rotated.
 	/// @param rects [in/out] The list of rectangles to insert. This vector will be update in the process.
 	/// @param method The rectangle placement rule to use when packing.
-	bool Insert(RectArr& rects, LevelChoiceHeuristic method);
+	RectWIdxArr Insert(RectWIdxArr& rects, LevelChoiceHeuristic method);
 
 	/// Inserts a single rectangle into the bin, possibly rotated.
 	Rect Insert(int width, int height, LevelChoiceHeuristic method);

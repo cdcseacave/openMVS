@@ -29,6 +29,8 @@
 *      containing it.
 */
 
+#include "ConfigLocal.h"
+
 #ifdef _USE_BOOST_PYTHON
 
 #undef _USRDLL
@@ -52,9 +54,12 @@ class Scene : public MVS::Scene
 {
 public:
 	Scene(unsigned _nMaxThreads=0) : MVS::Scene(_nMaxThreads) {
-		Util::Init();
 		INIT_WORKING_FOLDER;
+		MVS::Initialize("pyMVS", _nMaxThreads);
 		MVS::OPTDENSE::init();
+	}
+	~Scene() {
+		MVS::Finalize();
 	}
 
 	bool pyLoad(const std::string& fileName, bool bImport=false) {

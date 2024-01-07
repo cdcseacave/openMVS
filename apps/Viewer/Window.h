@@ -110,6 +110,8 @@ public:
 	ClbkCompileBounds clbkCompileBounds;
 	typedef DELEGATE<void (void)> ClbkTogleSceneBox;
 	ClbkTogleSceneBox clbkTogleSceneBox;
+	typedef DELEGATE<void (void)> ClbkCropToBounds;
+	ClbkCropToBounds clbkCropToBounds;
 
 	typedef std::unordered_map<GLFWwindow*,Window*> WindowsMap;
 	static WindowsMap g_mapWindows;

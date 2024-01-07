@@ -122,10 +122,10 @@ void* Scene::ThreadWorker(void*) {
 SEACAVE::EventQueue Scene::events;
 SEACAVE::Thread Scene::thread;
 
-Scene::Scene()
+Scene::Scene(ARCHIVE_TYPE _nArchiveType)
 	:
-	listPointCloud(0),
-	listMesh(0)
+	nArchiveType(_nArchiveType),
+	listPointCloud(0)
 {
 }
 Scene::~Scene()
@@ -147,7 +147,7 @@ void Scene::Empty()
 	images.Release();
 	scene.Release();
 	sceneName.clear();
-	meshName.clear();
+	geometryName.clear();
 }
 void Scene::Release()
 {
@@ -170,13 +170,14 @@ void Scene::ReleasePointCloud()
 }
 void Scene::ReleaseMesh()
 {
-	if (listMesh) {
-		glDeleteLists(listMesh, 1);
-		listMesh = 0;
+	if (!listMeshes.empty()) {
+		for (GLuint listMesh: listMeshes)
+			glDeleteLists(listMesh, 1);
+		listMeshes.Release();
 	}
 }
 
-bool Scene::Init(const cv::Size& size, LPCTSTR windowName, LPCTSTR fileName, LPCTSTR meshFileName)
+bool Scene::Init(const cv::Size& size, LPCTSTR windowName, LPCTSTR fileName, LPCTSTR geometryFileName)
 {
 	ASSERT(scene.IsEmpty());
 
@@ -215,29 +216,36 @@ bool Scene::Init(const cv::Size& size, LPCTSTR windowName, LPCTSTR fileName, LPC
 	// open scene or init empty scene
 	window.SetCamera(Camera());
 	if (fileName != NULL)
-		Open(fileName, meshFileName);
+		Open(fileName, geometryFileName);
 	window.SetVisible(true);
 	return true;
 }
-bool Scene::Open(LPCTSTR fileName, LPCTSTR meshFileName)
+bool Scene::Open(LPCTSTR fileName, LPCTSTR geometryFileName)
 {
 	ASSERT(fileName);
 	DEBUG_EXTRA("Loading: '%s'", Util::getFileNameExt(fileName).c_str());
 	Empty();
 	sceneName = fileName;
-	if (meshFileName)
-		meshName = meshFileName;
 
 	// load the scene
 	WORKING_FOLDER = Util::getFilePath(fileName);
 	INIT_WORKING_FOLDER;
 	if (!scene.Load(fileName, true))
 		return false;
-	if (meshFileName) {
-		// load given mesh
-		if (!scene.mesh.Load(meshFileName)) {
-			// try to load as a point-cloud
-			scene.pointcloud.Load(meshFileName);
+	if (geometryFileName) {
+		// try to load given mesh
+		MVS::Mesh mesh;
+		MVS::PointCloud pointcloud;
+		if (mesh.Load(geometryFileName)) {
+			scene.mesh.Swap(mesh);
+			geometryName = geometryFileName;
+			geometryMesh = true;
+		} else
+		// try to load as a point-cloud
+		if (pointcloud.Load(geometryFileName)) {
+			scene.pointcloud.Swap(pointcloud);
+			geometryName = geometryFileName;
+			geometryMesh = false;
 		}
 	}
 	if (!scene.pointcloud.IsEmpty())
@@ -286,18 +294,21 @@ bool Scene::Open(LPCTSTR fileName, LPCTSTR meshFileName)
 
 	// init and load texture
 	if (scene.mesh.HasTexture()) {
-		Image& image = textures.AddEmpty();
-		ASSERT(image.idx == NO_ID);
-		#if 0
-		cv::flip(scene.mesh.textureDiffuse, scene.mesh.textureDiffuse, 0);
-		image.SetImage(scene.mesh.textureDiffuse);
-		scene.mesh.textureDiffuse.release();
-		#else // preserve texture, used only to be able to export the mesh
-		Image8U3 textureDiffuse;
-		cv::flip(scene.mesh.textureDiffuse, textureDiffuse, 0);
-		image.SetImage(textureDiffuse);
-		#endif
-		image.GenerateMipmap();
+		FOREACH(i, scene.mesh.texturesDiffuse) {
+			Image& image = textures.emplace_back();
+			ASSERT(image.idx == NO_ID);
+			#if 0
+			Image8U3& textureDiffuse = scene.mesh.texturesDiffuse[i];
+			cv::flip(textureDiffuse, textureDiffuse, 0);
+			image.SetImage(textureDiffuse);
+			textureDiffuse.release();
+			#else // preserve texture, used only to be able to export the mesh
+			Image8U3 textureDiffuse;
+			cv::flip(scene.mesh.texturesDiffuse[i], textureDiffuse, 0);
+			image.SetImage(textureDiffuse);
+			#endif
+			image.GenerateMipmap();
+		}
 	}
 
 	// init display lists
@@ -320,6 +331,7 @@ bool Scene::Open(LPCTSTR fileName, LPCTSTR meshFileName)
 	window.clbkCompilePointCloud = DELEGATEBINDCLASS(Window::ClbkCompilePointCloud, &Scene::CompilePointCloud, this);
 	window.clbkCompileMesh = DELEGATEBINDCLASS(Window::ClbkCompileMesh, &Scene::CompileMesh, this);
 	window.clbkTogleSceneBox = DELEGATEBINDCLASS(Window::ClbkTogleSceneBox, &Scene::TogleSceneBox, this);
+	window.clbkCropToBounds = DELEGATEBINDCLASS(Window::ClbkCropToBounds, &Scene::CropToBounds, this);
 	if (scene.IsBounded())
 		window.clbkCompileBounds = DELEGATEBINDCLASS(Window::ClbkCompileBounds, &Scene::CompileBounds, this);
 	if (!scene.IsEmpty())
@@ -345,8 +357,11 @@ bool Scene::Save(LPCTSTR _fileName, bool bRescaleImages)
 	}
 	const String fileName(_fileName != NULL ? String(_fileName) : Util::insertBeforeFileExt(sceneName, _T("_new")));
 	MVS::Mesh mesh;
-	if (!scene.mesh.IsEmpty() && !meshName.empty())
+	if (!scene.mesh.IsEmpty() && !geometryName.empty() && geometryMesh)
 		mesh.Swap(scene.mesh);
+	MVS::PointCloud pointcloud;
+	if (!scene.pointcloud.IsEmpty() && !geometryName.empty() && !geometryMesh)
+		pointcloud.Swap(scene.pointcloud);
 	if (imageScale > 0 && imageScale < 1) {
 		// scale and save images
 		const String folderName(Util::getFilePath(MAKE_PATH_FULL(WORKING_FOLDER_FULL, fileName)) + String::FormatString("images%d" PATH_SEPARATOR_STR, ROUND2INT(imageScale*100)));
@@ -355,12 +370,14 @@ bool Scene::Save(LPCTSTR _fileName, bool bRescaleImages)
 			return false;
 		}
 	}
-	if (!scene.Save(fileName, scene.mesh.IsEmpty() ? ARCHIVE_MVS : ARCHIVE_DEFAULT)) {
+	if (!scene.Save(fileName, nArchiveType)) {
 		DEBUG("error: can not save scene to '%s'", fileName.c_str());
 		return false;
 	}
 	if (!mesh.IsEmpty())
 		scene.mesh.Swap(mesh);
+	if (!pointcloud.IsEmpty())
+		scene.pointcloud.Swap(pointcloud);
 	sceneName = fileName;
 	return true;
 }
@@ -374,7 +391,7 @@ bool Scene::Export(LPCTSTR _fileName, LPCTSTR exportType) const
 	String lastFileName;
 	const String fileName(_fileName != NULL ? String(_fileName) : sceneName);
 	const String baseFileName(Util::getFileFullName(fileName));
-	const bool bPoints(scene.pointcloud.Save(lastFileName=(baseFileName+_T("_pointcloud.ply"))));
+	const bool bPoints(scene.pointcloud.Save(lastFileName=(baseFileName+_T("_pointcloud.ply")), nArchiveType==ARCHIVE_MVS));
 	const bool bMesh(scene.mesh.Save(lastFileName=(baseFileName+_T("_mesh")+(exportType?exportType:(Util::getFileExt(fileName)==_T(".obj")?_T(".obj"):_T(".ply")))), cList<String>(), true));
 	#if TD_VERBOSE != TD_VERBOSE_OFF
 	if (VERBOSITY_LEVEL > 2 && (bPoints || bMesh))
@@ -410,15 +427,15 @@ void Scene::CompilePointCloud()
 	glNewList(listPointCloud, GL_COMPILE);
 	ASSERT((window.sparseType&(Window::SPR_POINTS|Window::SPR_LINES)) != 0);
 	// compile point-cloud
-	if (!scene.pointcloud.IsEmpty() && (window.sparseType&Window::SPR_POINTS) != 0) {
+	if ((window.sparseType&Window::SPR_POINTS) != 0) {
 		ASSERT_ARE_SAME_TYPE(float, MVS::PointCloud::Point::Type);
 		glBegin(GL_POINTS);
 		glColor3f(1.f,1.f,1.f);
 		FOREACH(i, scene.pointcloud.points) {
-			if (!scene.pointcloud.pointViews.IsEmpty() &&
+			if (!scene.pointcloud.pointViews.empty() &&
 				scene.pointcloud.pointViews[i].size() < window.minViews)
 				continue;
-			if (!scene.pointcloud.colors.IsEmpty()) {
+			if (!scene.pointcloud.colors.empty()) {
 				const MVS::PointCloud::Color& c = scene.pointcloud.colors[i];
 				glColor3ub(c.r,c.g,c.b);
 			}
@@ -439,31 +456,37 @@ void Scene::CompileMesh()
 		scene.mesh.ComputeNormalFaces();
 	// translate, normalize and flip Y axis of the texture coordinates
 	MVS::Mesh::TexCoordArr normFaceTexcoords;
-	if (scene.mesh.HasTexture())
+	if (scene.mesh.HasTexture() && window.bRenderTexture)
 		scene.mesh.FaceTexcoordsNormalize(normFaceTexcoords, true);
-	listMesh = glGenLists(1);
-	glNewList(listMesh, GL_COMPILE);
-	// compile mesh
-	ASSERT_ARE_SAME_TYPE(float, MVS::Mesh::Vertex::Type);
-	ASSERT_ARE_SAME_TYPE(float, MVS::Mesh::Normal::Type);
-	ASSERT_ARE_SAME_TYPE(float, MVS::Mesh::TexCoord::Type);
-	glColor3f(1.f, 1.f, 1.f);
-	glBegin(GL_TRIANGLES);
-	FOREACH(i, scene.mesh.faces) {
-		const MVS::Mesh::Face& face = scene.mesh.faces[i];
-		const MVS::Mesh::Normal& n = scene.mesh.faceNormals[i];
-		glNormal3fv(n.ptr());
-		for (int j = 0; j < 3; ++j) {
-			if (!normFaceTexcoords.empty() && window.bRenderTexture) {
-				const MVS::Mesh::TexCoord& t = normFaceTexcoords[i * 3 + j];
-				glTexCoord2fv(t.ptr());
+	MVS::Mesh::TexIndex texIdx(0);
+	do {
+		GLuint& listMesh = listMeshes.emplace_back(glGenLists(1));
+		listMesh = glGenLists(1);
+		glNewList(listMesh, GL_COMPILE);
+		// compile mesh
+		ASSERT_ARE_SAME_TYPE(float, MVS::Mesh::Vertex::Type);
+		ASSERT_ARE_SAME_TYPE(float, MVS::Mesh::Normal::Type);
+		ASSERT_ARE_SAME_TYPE(float, MVS::Mesh::TexCoord::Type);
+		glColor3f(1.f, 1.f, 1.f);
+		glBegin(GL_TRIANGLES);
+		FOREACH(idxFace, scene.mesh.faces) {
+			if (!scene.mesh.faceTexindices.empty() && scene.mesh.faceTexindices[idxFace] != texIdx)
+				continue;
+			const MVS::Mesh::Face& face = scene.mesh.faces[idxFace];
+			const MVS::Mesh::Normal& n = scene.mesh.faceNormals[idxFace];
+			glNormal3fv(n.ptr());
+			for (int j = 0; j < 3; ++j) {
+				if (!normFaceTexcoords.empty()) {
+					const MVS::Mesh::TexCoord& t = normFaceTexcoords[idxFace*3 + j];
+					glTexCoord2fv(t.ptr());
+				}
+				const MVS::Mesh::Vertex& p = scene.mesh.vertices[face[j]];
+				glVertex3fv(p.ptr());
 			}
-			const MVS::Mesh::Vertex& p = scene.mesh.vertices[face[j]];
-			glVertex3fv(p.ptr());
 		}
-	}
-	glEnd();
-	glEndList();
+		glEnd();
+		glEndList();
+	} while (++texIdx < scene.mesh.texturesDiffuse.size());
 }
 
 void Scene::CompileBounds()
@@ -489,6 +512,17 @@ void Scene::CompileBounds()
 	}
 }
 
+void Scene::CropToBounds()
+{
+	if (!IsOpen())
+		return;
+	if (!scene.IsBounded())
+		return;
+	scene.pointcloud.RemovePointsOutside(scene.obb);
+	scene.mesh.RemoveFacesOutside(scene.obb);
+	Center();
+}
+
 void Scene::Draw()
 {
 	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -500,17 +534,20 @@ void Scene::Draw()
 		glCallList(listPointCloud);
 	}
 	// render mesh
-	if (listMesh) {
+	if (!listMeshes.empty()) {
 		glEnable(GL_DEPTH_TEST);
 		glEnable(GL_CULL_FACE);
 		if (!scene.mesh.faceTexcoords.empty() && window.bRenderTexture) {
 			glEnable(GL_TEXTURE_2D);
-			textures.front().Bind();
-			glCallList(listMesh);
+			FOREACH(i, listMeshes) {
+				textures[i].Bind();
+				glCallList(listMeshes[i]);
+			}
 			glDisable(GL_TEXTURE_2D);
 		} else {
 			glEnable(GL_LIGHTING);
-			glCallList(listMesh);
+			for (GLuint listMesh: listMeshes)
+				glCallList(listMesh);
 			glDisable(GL_LIGHTING);
 		}
 	}
