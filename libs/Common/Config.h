@@ -126,7 +126,7 @@
 #define GENERAL_TPL
 
 // Define platform type
-#if __x86_64__ || __ppc64__
+#if defined(__x86_64__) || defined(__ppc64__) || defined(__aarch64__) || defined(__arm64__) || defined(__mips64)
 #define _ENVIRONMENT64
 #else
 #define _ENVIRONMENT32

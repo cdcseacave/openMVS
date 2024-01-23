@@ -49,6 +49,20 @@
 #define W_OK 2
 #define R_OK 4
 // Posix-style macros for Windows
+#ifndef STATS
+#ifdef _WIN64
+#define STATS _stat64
+#else
+#define STATS stat
+#endif
+#endif
+#ifndef FSTAT
+#ifdef _WIN64
+#define FSTAT _fstat64
+#else
+#define FSTAT fstat
+#endif
+#endif
 #ifndef S_ISREG
 #define S_ISREG(mode)  ((mode & _S_IFMT) == _S_IFREG)
 #endif
@@ -73,6 +87,20 @@
 #else
 #include <unistd.h>
 #include <dirent.h>
+#ifndef STATS
+#if defined(_ENVIRONMENT64) && !defined(__APPLE__)
+#define STATS stat64
+#else
+#define STATS stat
+#endif
+#endif
+#ifndef FSTAT
+#if defined(_ENVIRONMENT64) && !defined(__APPLE__)
+#define FSTAT fstat64
+#else
+#define FSTAT fstat
+#endif
+#endif
 #define _taccess access
 #endif
 #ifdef __APPLE__
@@ -480,16 +508,16 @@ public:
 
 	uint32_t getLastModified() {
 		ASSERT(isOpen());
-		struct stat s;
-		if (::fstat(h, &s) == -1)
+		struct STATS s;
+		if (::FSTAT(h, &s) == -1)
 			return 0;
 		return (uint32_t)s.st_mtime;
 	}
 
 	size_f_t getSize() const override {
 		ASSERT(isOpen());
-		struct stat s;
-		if (::fstat(h, &s) == -1)
+		struct STATS s;
+		if (::FSTAT(h, &s) == -1)
 			return SIZE_NA;
 		return (size_f_t)s.st_size;
 	}
@@ -569,8 +597,8 @@ public:
 	}
 
 	static size_f_t getSize(LPCTSTR aFileName) {
-		struct stat buf;
-		if (stat(aFileName, &buf) != 0)
+		struct STATS buf;
+		if (STATS(aFileName, &buf) != 0)
 			return SIZE_NA;
 		return buf.st_size;
 	}
@@ -580,16 +608,16 @@ public:
 	// test for whether there's something (i.e. folder or file) with this name
 	// and what access mode is supported
 	static bool isPresent(LPCTSTR path) {
-		struct stat buf;
-		return stat(path, &buf) == 0;
+		struct STATS buf;
+		return STATS(path, &buf) == 0;
 	}
 	static bool access(LPCTSTR path, int mode=CA_EXIST) {
 		return ::_taccess(path, mode) == 0;
 	}
 	// test for whether there's something present and its a folder
 	static bool isFolder(LPCTSTR path) {
-		struct stat buf;
-		if (!(stat(path, &buf) == 0))
+		struct STATS buf;
+		if (!(STATS(path, &buf) == 0))
 			return false;
 		// If the object is present, see if it is a directory
 		// this is the Posix-approved way of testing
@@ -598,8 +626,8 @@ public:
 	// test for whether there's something present and its a file
 	// a file can be a regular file, a symbolic link, a FIFO or a socket, but not a device
 	static bool isFile(LPCTSTR path) {
-		struct stat buf;
-		if (!(stat(path, &buf) == 0))
+		struct STATS buf;
+		if (!(STATS(path, &buf) == 0))
 			return false;
 		// If the object is present, see if it is a file or file-like object
 		// Note that devices are neither folders nor files
@@ -609,20 +637,20 @@ public:
 
 	// time the file was originally created
 	static time_t getCreated(LPCTSTR path) {
-		struct stat buf;
-		if (stat(path, &buf) != 0) return 0;
+		struct STATS buf;
+		if (STATS(path, &buf) != 0) return 0;
 		return buf.st_ctime;
 	}
 	// time the file was last modified
 	static time_t getModified(LPCTSTR path) {
-		struct stat buf;
-		if (stat(path, &buf) != 0) return 0;
+		struct STATS buf;
+		if (STATS(path, &buf) != 0) return 0;
 		return buf.st_mtime;
 	}
 	// time the file was accessed
 	static time_t getAccessed(LPCTSTR path) {
-		struct stat buf;
-		if (stat(path, &buf) != 0) return 0;
+		struct STATS buf;
+		if (STATS(path, &buf) != 0) return 0;
 		return buf.st_atime;
 	}
 
