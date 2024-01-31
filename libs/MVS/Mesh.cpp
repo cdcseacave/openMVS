@@ -1320,12 +1320,12 @@ bool Mesh::LoadOBJ(const String& fileName)
 	}
 
 	// store vertices
-	ASSERT(sizeof(ObjModel::Vertex) == sizeof(Vertex));
+	STATIC_ASSERT(sizeof(ObjModel::Vertex) == sizeof(Vertex));
 	ASSERT(model.get_vertices().size() < std::numeric_limits<VIndex>::max());
 	vertices.CopyOf(&model.get_vertices()[0], (VIndex)model.get_vertices().size());
 
 	// store vertex normals
-	ASSERT(sizeof(ObjModel::Normal) == sizeof(Normal));
+	STATIC_ASSERT(sizeof(ObjModel::Normal) == sizeof(Normal));
 	ASSERT(model.get_vertices().size() < std::numeric_limits<VIndex>::max());
 	if (!model.get_normals().empty()) {
 		ASSERT(model.get_normals().size() == model.get_vertices().size());
@@ -1333,6 +1333,7 @@ bool Mesh::LoadOBJ(const String& fileName)
 	}
 
 	// store faces
+	ASSERT_ARE_SAME_TYPE(ObjModel::TexCoord, TexCoord);
 	FOREACH(groupIdx, model.get_groups()) {
 		const auto& group = model.get_groups()[groupIdx];
 		ASSERT(group.faces.size() < std::numeric_limits<FIndex>::max());
@@ -1547,11 +1548,11 @@ bool Mesh::SaveOBJ(const String& fileName) const
 	ObjModel model;
 
 	// store vertices
-	ASSERT(sizeof(ObjModel::Vertex) == sizeof(Vertex));
+	STATIC_ASSERT(sizeof(ObjModel::Vertex) == sizeof(Vertex));
 	model.get_vertices().insert(model.get_vertices().begin(), vertices.begin(), vertices.end());
 
 	// store vertex normals
-	ASSERT(sizeof(ObjModel::Normal) == sizeof(Normal));
+	STATIC_ASSERT(sizeof(ObjModel::Normal) == sizeof(Normal));
 	ASSERT(model.get_vertices().size() < std::numeric_limits<VIndex>::max());
 	if (!vertexNormals.empty()) {
 		ASSERT(vertexNormals.size() == vertices.size());
@@ -1559,7 +1560,7 @@ bool Mesh::SaveOBJ(const String& fileName) const
 	}
 
 	// store face texture coordinates
-	ASSERT(sizeof(ObjModel::TexCoord) == sizeof(TexCoord));
+	STATIC_ASSERT(sizeof(ObjModel::TexCoord) == sizeof(TexCoord));
 	if (!faceTexcoords.empty()) {
 		// translate, normalize and flip Y axis of the texture coordinates
 		TexCoordArr normFaceTexcoords;
@@ -1569,14 +1570,13 @@ bool Mesh::SaveOBJ(const String& fileName) const
 	}
 
 	// store faces
-	FOREACH(idxTexture, texturesDiffuse) {
-		ObjModel::Group& group = model.AddGroup(_T("material_" + std::to_string(idxTexture)));
-		group.faces.reserve(faces.size());
+	TexIndex idxTexture(0);
+	do {
+		ObjModel::Group& group = model.AddGroup(HasTexture() ? String::FormatString("material_%02u", idxTexture) : String(""));
+		group.faces.reserve(texturesDiffuse.empty() ? faces.size() : faces.size()/texturesDiffuse.size());
 		FOREACH(idxFace, faces) {
-			const auto texIdx = faceTexindices[idxFace];
-			if (texIdx != idxTexture)
-			    continue;
-
+			if (!faceTexindices.empty() && faceTexindices[idxFace] != idxTexture)
+				continue;
 			const Face& face = faces[idxFace];
 			ObjModel::Face f;
 			memset(&f, 0xFF, sizeof(ObjModel::Face));
@@ -1587,12 +1587,16 @@ bool Mesh::SaveOBJ(const String& fileName) const
 				if (!vertexNormals.empty())
 					f.normals[i] = face[i];
 			}
-			group.faces.push_back(f);
+			group.faces.emplace_back(f);
 		}
-		ObjModel::MaterialLib::Material* pMaterial(model.GetMaterial(group.material_name));
-		ASSERT(pMaterial != NULL);
-		pMaterial->diffuse_map = texturesDiffuse[idxTexture];
-	}
+
+		// store texture
+		if (HasTexture()) {
+			ObjModel::MaterialLib::Material* pMaterial(model.GetMaterial(group.material_name));
+			ASSERT(pMaterial != NULL);
+			pMaterial->diffuse_map = texturesDiffuse[idxTexture];
+		}
+	} while (++idxTexture < texturesDiffuse.size());
 
 	return model.Save(fileName);
 }
@@ -3684,7 +3688,7 @@ void Mesh::ConvertTexturePerVertex(Mesh& mesh) const
 		// with the same position, but different texture coordinates
 		const Face& face = faces[idxF];
 		Face& newface = mesh.faces[idxF];
-		const TexIndex ti = !faceTexindices.empty() ? faceTexindices[idxF] : 0;
+		const TexIndex ti = GetFaceTextureIndex(idxF);
 		for (int i=0; i<3; ++i) {
 			const TexCoord& tc = faceTexcoords[idxF*3+i];
 			VIndex idxV(face[i]);
