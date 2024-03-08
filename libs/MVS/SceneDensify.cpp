@@ -33,6 +33,7 @@
 #include "Scene.h"
 #include "SceneDensify.h"
 #include "PatchMatchCUDA.h"
+#include "DepthMap.h"
 // MRF: view selection
 #include "../Math/TRWS/MRFEnergy.h"
 
@@ -2017,9 +2018,17 @@ void Scene::DenseReconstructionEstimate(void* pData)
 			}
 			// try to load already compute depth-map for this image
 			if (depthmapComputed && data.nFusionMode >= 0) {
+				const std::string depthMapName(ComposeDepthFilePath(data.scene.images[idx].ID, "dmap"));
+				cv::Size depthMapSize;
+				if (GetDepthMapHeaderSize(depthMapName, depthMapSize) && depthMapSize != data.scene.images[idx].GetSize()) {
+					depthData.Load(depthMapName);
+					DepthMap& depthMap = depthData.depthMap;
+					cv::resize(depthMap, depthMap, data.scene.images[idx].GetSize(), 0, 0, cv::INTER_NEAREST);
+					depthData.Save(depthMapName);
+				}
 				if (OPTDENSE::nOptimize & OPTDENSE::OPTIMIZE) {
-					if (!depthData.Load(ComposeDepthFilePath(depthData.GetView().GetID(), "dmap"))) {
-						VERBOSE("error: invalid depth-map '%s'", ComposeDepthFilePath(depthData.GetView().GetID(), "dmap").c_str());
+					if (!depthData.Load(depthMapName)) {
+						VERBOSE("error: invalid depth-map '%s'", depthMapName.c_str());
 						exit(EXIT_FAILURE);
 					}
 					// optimize depth-map
