@@ -370,7 +370,7 @@ void Window::Key(GLFWwindow* window, int k, int scancode, int action, int mod)
 	g_mapWindows[window]->Key(k, scancode, action, mod);
 }
 
-void Window::MouseButton(int button, int action, int /*mods*/)
+void Window::MouseButton(int button, int action, int mods)
 {
 	switch (button) {
 	case GLFW_MOUSE_BUTTON_LEFT: {
@@ -398,7 +398,7 @@ void Window::MouseButton(int button, int action, int /*mods*/)
 			const Eigen::Vector3d start(invV.topRightCorner<3,1>());
 			const Eigen::Vector4d ray_wor(invV*ray_eye);
 			const Eigen::Vector3d dir(ray_wor.topRows<3>().normalized());
-			clbkRayScene(Ray3d(start, dir), action);
+			clbkRayScene(Ray3d(start, dir), action, mods);
 		}
 	} break;
 	case GLFW_MOUSE_BUTTON_MIDDLE: {

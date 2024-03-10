@@ -168,6 +168,7 @@ public:
 	void ListBoundaryVertices();
 	void ComputeNormalFaces();
 	void ComputeNormalVertices();
+	uint32_t ComputeTexturePatchFaces(FaceIdxArr& face_patch_ids) const;
 
 	void SmoothNormalFaces(float fMaxGradient=25.f, float fOriginalWeight=0.5f, unsigned nIterations=3);
 
@@ -219,6 +220,8 @@ public:
 	Type ComputeArea(FIndex) const;
 	REAL ComputeArea() const;
 	REAL ComputeVolume() const;
+
+	String PlotTexturePatch(const FIndex dbgFaceId, FaceIdxArr& face_patch_ids=FaceIdxArr(), cv::Mat& imgOut=cv::Mat(), const bool bSaveToFile=true) const;
 
 	void SamplePoints(unsigned numberOfPoints, PointCloud&) const;
 	void SamplePoints(REAL samplingDensity, PointCloud&) const;
