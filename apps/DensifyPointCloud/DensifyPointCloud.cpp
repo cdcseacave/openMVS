@@ -341,14 +341,7 @@ int main(int argc, LPCTSTR* argv)
 		scene.mesh.Load(MAKE_PATH_SAFE(OPT::strMeshFileName));
 	if (!OPT::strViewNeighborsFileName.empty())
 		scene.LoadViewNeighbors(MAKE_PATH_SAFE(OPT::strViewNeighborsFileName));
-	if (!OPT::strOutputViewNeighborsFileName.empty()) {
-		if (!scene.ImagesHaveNeighbors()) {
-			VERBOSE("error: neighbor views not computed yet");
-			return EXIT_FAILURE;
-		}
-		scene.SaveViewNeighbors(MAKE_PATH_SAFE(OPT::strOutputViewNeighborsFileName));
-		return EXIT_SUCCESS;
-	}
+
 	if (!OPT::strExportDepthMapsName.empty() && !scene.mesh.IsEmpty()) {
 		// project mesh onto each image and save the resulted depth-maps
 		TD_TIMER_START();
@@ -416,6 +409,13 @@ int main(int argc, LPCTSTR* argv)
 			return EXIT_SUCCESS;
 		}
 		VERBOSE("Densifying point-cloud completed: %u points (%s)", scene.pointcloud.GetSize(), TD_TIMER_GET_FMT().c_str());
+	}
+	if (!OPT::strOutputViewNeighborsFileName.empty()) {
+		if (!scene.ImagesHaveNeighbors()) {
+			VERBOSE("error: neighbor views not computed yet");
+			return EXIT_FAILURE;
+		}
+		scene.SaveViewNeighbors(MAKE_PATH_SAFE(OPT::strOutputViewNeighborsFileName));
 	}
 
 	// save the final point-cloud
