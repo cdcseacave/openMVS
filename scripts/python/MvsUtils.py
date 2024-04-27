@@ -1,7 +1,7 @@
 '''
 OpenMVS python utilities.
 
-E.g., from MvsUtils import loadDMAP, loadMVSInterface
+Ex: from MvsUtils import loadDMAP, saveDMAP, loadMVSInterface
 '''
 
 import numpy as np
@@ -68,6 +68,73 @@ def loadDMAP(dmap_path):
       data.update({'views_map': views_map})
   
   return data
+
+
+def saveDMAP(data: dict, dmap_path: Path|str):
+  assert 'depth_map' in data, 'depth_map is required'
+  assert 'image_width' in data and data['image_width'] > 0, 'image_width is required'
+  assert 'image_height' in data and data['image_height'] > 0, 'image_height is required'
+  assert 'depth_width' in data and data['depth_width'] > 0, 'depth_width is required'
+  assert 'depth_height' in data and data['depth_height'] > 0, 'depth_height is required'
+
+  assert 'depth_min' in data, 'depth_min is required'
+  assert 'depth_max' in data, 'depth_max is required'
+
+  assert 'file_name' in data, 'file_name is required'
+  assert 'reference_view_id' in data, 'reference_view_id is required'
+  assert 'neighbor_view_ids' in data, 'neighbor_view_ids is required'
+
+  assert 'K' in data, 'K is required'
+  assert 'R' in data, 'R is required'
+  assert 'C' in data, 'C is required'
+
+  content_type = 1
+  if 'normal_map' in data:
+    content_type += 2
+  if 'confidence_map' in data:
+    content_type += 4
+  if 'views_map' in data:
+    content_type += 8
+
+  with open(dmap_path, 'wb') as dmap:
+    dmap.write('DR'.encode())
+
+    dmap.write(np.array([content_type], dtype=np.dtype('B')))
+    dmap.write(np.array([0], dtype=np.dtype('B')))
+
+    dmap.write(np.array([data['image_width'], data['image_height']], dtype=np.dtype('I')))
+    dmap.write(np.array([data['depth_width'], data['depth_height']], dtype=np.dtype('I')))
+
+    dmap.write(np.array([data['depth_min'], data['depth_max']], dtype=np.dtype('f')))
+
+    file_name = data['file_name']
+    dmap.write(np.array([len(file_name)], dtype=np.dtype('H')))
+    dmap.write(file_name.encode())
+
+    view_ids = [data['reference_view_id']] + data['neighbor_view_ids']
+    dmap.write(np.array([len(view_ids)], dtype=np.dtype('I')))
+    dmap.write(np.array(view_ids, dtype=np.dtype('I')))
+
+    K = data['K']
+    R = data['R']
+    C = data['C']
+    dmap.write(K.tobytes())
+    dmap.write(R.tobytes())
+    dmap.write(C.tobytes())
+
+    depth_map = data['depth_map']
+    dmap.write(depth_map.tobytes())
+
+    if 'normal_map' in data:
+      normal_map = data['normal_map']
+      dmap.write(normal_map.tobytes())
+    if 'confidence_map' in data:
+      confidence_map = data['confidence_map']
+      dmap.write(confidence_map.tobytes())
+    if 'views_map' in data:
+      views_map = data['views_map']
+      dmap.write(views_map.tobytes())
+
 
 def loadMVSInterface(archive_path):
   with open(archive_path, 'rb') as mvs:
