@@ -73,6 +73,10 @@ Camera& Camera::operator= (const CameraIntern& camera)
 	C = camera.C;
 	return *this;
 }
+Camera Camera::GetScaled(REAL s) const
+{
+	return Camera(GetScaledK(s), R, C);
+}
 /*----------------------------------------------------------------*/
 
 

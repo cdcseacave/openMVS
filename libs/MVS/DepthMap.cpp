@@ -299,7 +299,7 @@ unsigned DepthData::DecRef()
 //  - pMask: optional output mask; if defined, the mask is returned in this image instead of the BitMatrix
 bool DepthEstimator::ImportIgnoreMask(const Image& image0, const Image8U::Size& size, uint16_t nIgnoreMaskLabel, BitMatrix& bmask, Image8U* pMask)
 {
-	ASSERT(image0.IsValid() && !image0.image.empty());
+	ASSERT(image0.IsValid());
 	const String maskFileName(image0.maskName.empty() ? Util::getFileFullName(image0.name)+".mask.png" : image0.maskName);
 	Image16U mask;
 	if (!mask.Load(maskFileName)) {

@@ -92,11 +92,11 @@
 /*----------------------------------------------------------------*/
 #ifdef _USRDLL
   #ifdef Common_EXPORTS
-    #define GENERAL_API EXPORT_API
-    #define GENERAL_TPL
+	#define GENERAL_API EXPORT_API
+	#define GENERAL_TPL
   #else
-    #define GENERAL_API IMPORT_API
-    #define GENERAL_TPL extern
+	#define GENERAL_API IMPORT_API
+	#define GENERAL_TPL extern
   #endif
 #else
   #define GENERAL_API

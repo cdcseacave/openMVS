@@ -272,6 +272,8 @@ public:
 
 	Camera& operator= (const CameraIntern& camera);
 
+	Camera GetScaled(REAL s) const; // return a scaled camera
+
 	void ComposeP_RC(); // compose P from R and C only
 	void ComposeP(); // compose P from K, R and C
 	void DecomposeP_RC(); // decompose P in R and C, keep K unchanged

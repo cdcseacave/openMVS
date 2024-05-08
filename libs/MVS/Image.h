@@ -64,7 +64,7 @@ public:
 	Camera camera; // view's pose
 	uint32_t width, height; // image size
 	Image8U3 image; // image color pixels
-	ViewScoreArr neighbors; // scored neighbor images
+	ViewScoreArr neighbors; // scored neighbor images (image indices ordered by score)
 	float scale; // image scale relative to the original size
 	float avgDepth; // average depth of the points seen by this camera
 

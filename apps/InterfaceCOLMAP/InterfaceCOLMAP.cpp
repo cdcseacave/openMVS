@@ -294,6 +294,7 @@ struct Camera {
 		in >> ID >> model >> width >> height;
 		if (in.fail())
 			return false;
+		ASSERT(ID > 0);
 		--ID;
 		if (model != _T("PINHOLE"))
 			return false;
@@ -313,10 +314,12 @@ struct Camera {
 			numCameras = ReadBinaryLittleEndian<uint64_t>(&stream);
 		}
 
-		ID = ReadBinaryLittleEndian<camera_t>(&stream)-1;
+		ID = ReadBinaryLittleEndian<camera_t>(&stream);
 		model = mapCameraModel[ReadBinaryLittleEndian<int>(&stream)];
 		width = (uint32_t)ReadBinaryLittleEndian<uint64_t>(&stream);
 		height = (uint32_t)ReadBinaryLittleEndian<uint64_t>(&stream);
+		ASSERT(ID > 0);
+		--ID;
 		if (model != _T("PINHOLE"))
 			return false;
 		params.resize(4);
@@ -398,6 +401,7 @@ struct Image {
 			>> idCamera >> name;
 		if (in.fail())
 			return false;
+		ASSERT(ID > 0 && idCamera > 0);
 		--ID; --idCamera;
 		Util::ensureValidPath(name);
 		if (!NextLine(stream, in, false))
@@ -408,6 +412,7 @@ struct Image {
 			in >> proj.p(0) >> proj.p(1) >> (int&)proj.idPoint;
 			if (in.fail())
 				break;
+			ASSERT(proj.idPoint > 0);
 			--proj.idPoint;
 			projs.emplace_back(proj);
 		}
@@ -425,7 +430,7 @@ struct Image {
 			numRegImages = ReadBinaryLittleEndian<uint64_t>(&stream);
 		}
 
-		ID = ReadBinaryLittleEndian<image_t>(&stream)-1;
+		ID = ReadBinaryLittleEndian<image_t>(&stream);
 		q.w() = ReadBinaryLittleEndian<double>(&stream);
 		q.x() = ReadBinaryLittleEndian<double>(&stream);
 		q.y() = ReadBinaryLittleEndian<double>(&stream);
@@ -433,7 +438,9 @@ struct Image {
 		t(0) = ReadBinaryLittleEndian<double>(&stream);
 		t(1) = ReadBinaryLittleEndian<double>(&stream);
 		t(2) = ReadBinaryLittleEndian<double>(&stream);
-		idCamera = ReadBinaryLittleEndian<camera_t>(&stream)-1;
+		idCamera = ReadBinaryLittleEndian<camera_t>(&stream);
+		ASSERT(ID > 0 && idCamera > 0);
+		--ID; --idCamera;
 
 		name = "";
 		while (true) {
@@ -451,7 +458,9 @@ struct Image {
 			Proj proj;
 			proj.p(0) = (float)ReadBinaryLittleEndian<double>(&stream);
 			proj.p(1) = (float)ReadBinaryLittleEndian<double>(&stream);
-			proj.idPoint = (uint32_t)ReadBinaryLittleEndian<point3D_t>(&stream)-1;
+			proj.idPoint = (uint32_t)ReadBinaryLittleEndian<point3D_t>(&stream);
+			ASSERT(proj.idPoint > 0);
+			--proj.idPoint;
 			projs.emplace_back(proj);
 		}
 		return true;
@@ -549,6 +558,7 @@ struct Point {
 		c.z = CLAMP(r,0,255);
 		if (in.fail())
 			return false;
+		ASSERT(ID > 0);
 		--ID;
 		tracks.clear();
 		while (true) {
@@ -556,6 +566,7 @@ struct Point {
 			in >> track.idImage >> track.idProj;
 			if (in.fail())
 				break;
+			ASSERT(track.idImage > 0 && track.idProj > 0);
 			--track.idImage; --track.idProj;
 			tracks.emplace_back(track);
 		}
@@ -574,7 +585,7 @@ struct Point {
 		}
 
 		int r,g,b;
-		ID = (uint32_t)ReadBinaryLittleEndian<point3D_t>(&stream)-1;
+		ID = (uint32_t)ReadBinaryLittleEndian<point3D_t>(&stream);
 		p.x = (float)ReadBinaryLittleEndian<double>(&stream);
 		p.y = (float)ReadBinaryLittleEndian<double>(&stream);
 		p.z = (float)ReadBinaryLittleEndian<double>(&stream);
@@ -585,15 +596,19 @@ struct Point {
 		c.x = CLAMP(b,0,255);
 		c.y = CLAMP(g,0,255);
 		c.z = CLAMP(r,0,255);
-		
+		ASSERT(ID > 0);
+		--ID;
+
 		const size_t trackLength = ReadBinaryLittleEndian<uint64_t>(&stream);
 		tracks.clear();
 		for (size_t j = 0; j < trackLength; ++j) {
 			Track track;
-			track.idImage = ReadBinaryLittleEndian<image_t>(&stream)-1;
-			track.idProj = ReadBinaryLittleEndian<point2D_t>(&stream)-1;
+			track.idImage = ReadBinaryLittleEndian<image_t>(&stream);
+			track.idProj = ReadBinaryLittleEndian<point2D_t>(&stream);
+			ASSERT(track.idImage > 0 && track.idProj > 0);
+			--track.idImage; --track.idProj;
 			tracks.emplace_back(track);
-    	}
+		}
 		return !tracks.empty();
 	}
 

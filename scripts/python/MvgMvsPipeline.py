@@ -256,7 +256,7 @@ class StepsStore:
              ["mapper", "--database_path", "%matches_dir%"+FOLDER_DELIM+"database.db", "--image_path", "%input_dir%", "--output_path", "%reconstruction_dir%"]],
             ["Model Aligner",                # 15
              COLMAP_BIN,
-             ["model_aligner", "--input_path", "%reconstruction_dir%"+FOLDER_DELIM+"0", "--database_path", "%matches_dir%"+FOLDER_DELIM+"database.db", "--output_path", "%reconstruction_dir%"+FOLDER_DELIM+"0", "--ref_is_gps=1", "--robust_alignment_max_error=2.0", "--alignment_type=enu", "--transform_path", "%reconstruction_dir%"+FOLDER_DELIM+"transform.txt"]],
+             ["model_aligner", "--input_path", "%reconstruction_dir%"+FOLDER_DELIM+"0", "--database_path", "%matches_dir%"+FOLDER_DELIM+"database.db", "--output_path", "%reconstruction_dir%"+FOLDER_DELIM+"0", "--ref_is_gps=1", "--alignment_max_error=2.0", "--alignment_type=enu", "--transform_path", "%reconstruction_dir%"+FOLDER_DELIM+"transform.txt"]],
             ["Image Undistorter",            # 16
              COLMAP_BIN,
              ["image_undistorter", "--image_path", "%input_dir%", "--input_path", "%reconstruction_dir%"+FOLDER_DELIM+"0", "--output_path", "%reconstruction_dir%"+FOLDER_DELIM+"dense", "--output_type", "COLMAP"]],

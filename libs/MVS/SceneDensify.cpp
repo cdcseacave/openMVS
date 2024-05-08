@@ -285,7 +285,8 @@ bool DepthMapsData::SelectViews(DepthData& depthData)
 	const float fMinScale(0.2f), fMaxScale(3.2f);
 	const float fMinAngle(FD2R(OPTDENSE::fMinAngle));
 	const float fMaxAngle(FD2R(OPTDENSE::fMaxAngle));
-	if (!Scene::FilterNeighborViews(depthData.neighbors, fMinArea, fMinScale, fMaxScale, fMinAngle, fMaxAngle, OPTDENSE::nMaxViews)) {
+	const unsigned nMaxViews(MAXF(OPTDENSE::nMaxViews, OPTDENSE::nNumViews));
+	if (!Scene::FilterNeighborViews(depthData.neighbors, fMinArea, fMinScale, fMaxScale, fMinAngle, fMaxAngle, nMaxViews)) {
 		DEBUG_EXTRA("error: reference image %3u has no good images in view", idxImage);
 		return false;
 	}
@@ -332,8 +333,7 @@ bool DepthMapsData::InitViews(DepthData& depthData, IIndex idxNeighbor, IIndex n
 	} else {
 		// initialize all neighbor views too (global reconstruction is used)
 		const float fMinScore(MAXF(depthData.neighbors.First().score*OPTDENSE::fViewMinScoreRatio, OPTDENSE::fViewMinScore));
-		FOREACH(idx, depthData.neighbors) {
-			const ViewScore& neighbor = depthData.neighbors[idx];
+		for (const ViewScore& neighbor: depthData.neighbors) {
 			if ((numNeighbors && depthData.images.GetSize() > numNeighbors) ||
 				(neighbor.score < fMinScore))
 				break;
