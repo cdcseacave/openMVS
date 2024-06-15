@@ -126,7 +126,7 @@ if(OpenMVS_USE_CUDA)
 		endif()
 		if(NOT OpenMVS_MAX_CUDA_COMPATIBILITY)
 			if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
-				SET(CMAKE_CUDA_ARCHITECTURES 75)
+				SET(CMAKE_CUDA_ARCHITECTURES 86)
 			endif()
 		else()
 			# Build for maximum compatibility
