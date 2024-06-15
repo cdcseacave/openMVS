@@ -7,6 +7,9 @@ FILE(GLOB LIBRARY_FILES_H "*.h" "*.inl")
 
 cxx_executable_with_flags(TextureMesh "Apps" "${cxx_default}" "MVS;${OpenMVS_EXTRA_LIBS}" ${LIBRARY_FILES_C} ${LIBRARY_FILES_H})
 
+# Ensure libCommon, libIO, and other dependencies are linked using the plain signature
+target_link_libraries(TextureMesh Common IO)  # Add tinyxml2 if required
+
 # Install
 INSTALL(TARGETS TextureMesh
 	EXPORT OpenMVSTargets

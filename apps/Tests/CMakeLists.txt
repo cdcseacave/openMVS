@@ -9,6 +9,9 @@ ADD_DEFINITIONS(-D_DATA_PATH="${CMAKE_CURRENT_SOURCE_DIR}/data/")
 
 cxx_executable_with_flags(Tests "Apps" "${cxx_default}" "MVS;${OpenMVS_EXTRA_LIBS}" ${LIBRARY_FILES_C} ${LIBRARY_FILES_H})
 
+# Ensure libCommon, libIO, and other dependencies are linked using the plain signature
+target_link_libraries(Tests Common IO)  # Add tinyxml2 if required
+
 # Install
 INSTALL(TARGETS Tests
 	EXPORT OpenMVSTargets
