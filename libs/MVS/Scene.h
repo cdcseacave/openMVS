@@ -100,7 +100,7 @@ public:
 	bool ExportCamerasMLP(const String& fileName, const String& fileNameScene) const;
 	static bool ExportLinesPLY(const String& fileName, const CLISTDEF0IDX(Line3f,uint32_t)& lines, const Pixel8U* colors=NULL, bool bBinary=true);
 
-	// sub-scene split and save
+	// Sub-scene split and save
 	struct ImagesChunk {
 		std::unordered_set<IIndex> images;
 		AABB3f aabb;
@@ -117,6 +117,7 @@ public:
 	void Transform(const Matrix3x4& transform);
 	bool AlignTo(const Scene&);
 	REAL ComputeLeveledVolume(float planeThreshold=0, float sampleMesh=-100000, unsigned upAxis=2, bool verbose=true);
+	void AddNoiseCameraPoses(float epsPosition, float epsRotation);
 
 	// Estimate and set region-of-interest
 	bool EstimateROI(int nEstimateROI=0, float scale=1.f);

@@ -56,6 +56,8 @@ namespace OPT {
 	String strTransferTextureFileName;
 	String strIndicesFileName;
 	bool bComputeVolume;
+	float fEpsNoisePosition;
+	float fEpsNoiseRotation;
 	float fPlaneThreshold;
 	float fSampleMesh;
 	unsigned nMaxResolution;
@@ -117,6 +119,8 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("transfer-texture-file", boost::program_options::value<std::string>(&OPT::strTransferTextureFileName), "input mesh filename to which the texture of the scene's mesh will be transfered to (the two meshes should be aligned and the new mesh to have UV-map)")
 		("indices-file", boost::program_options::value<std::string>(&OPT::strIndicesFileName), "input indices filename to be used with ex. texture transfer to select a subset of the scene's mesh")
 		("compute-volume", boost::program_options::value(&OPT::bComputeVolume)->default_value(false), "compute the volume of the given watertight mesh, or else try to estimate the ground plane and assume the mesh is bounded by it")
+		("eps-noise-position", boost::program_options::value(&OPT::fEpsNoisePosition)->default_value(0.f), "add noise to camera positions (0 - disabled)")
+		("eps-noise-rotation", boost::program_options::value(&OPT::fEpsNoiseRotation)->default_value(0.f), "add noise to camera rotations (0 - disabled)")
 		("plane-threshold", boost::program_options::value(&OPT::fPlaneThreshold)->default_value(0.f), "threshold used to estimate the ground plane (<0 - disabled, 0 - auto, >0 - desired threshold)")
 		("sample-mesh", boost::program_options::value(&OPT::fSampleMesh)->default_value(-300000.f), "uniformly samples points on a mesh (0 - disabled, <0 - number of points, >0 - sample density per square unit)")
 		("max-resolution", boost::program_options::value(&OPT::nMaxResolution)->default_value(0), "make sure image resolution are not not larger than this (0 - disabled)")
@@ -229,6 +233,12 @@ int main(int argc, LPCTSTR* argv)
 		!OPT::strTransformFileName.empty() || !OPT::strTransferTextureFileName.empty() || OPT::bComputeVolume));
 	if (sceneType == Scene::SCENE_NA)
 		return EXIT_FAILURE;
+	if (OPT::fEpsNoisePosition > 0 || OPT::fEpsNoiseRotation > 0) {
+		scene.pointcloud.Release();
+		scene.AddNoiseCameraPoses(OPT::fEpsNoisePosition, FD2R(OPT::fEpsNoiseRotation));
+		scene.Save(MAKE_PATH_SAFE(Util::getFileFullName(OPT::strOutputFileName)) + _T(".mvs"), (ARCHIVE_TYPE)OPT::nArchiveType);
+		return EXIT_SUCCESS;
+	}
 	if (!OPT::strPointCloudFileName.empty() && !scene.pointcloud.Load(MAKE_PATH_SAFE(OPT::strPointCloudFileName))) {
 		VERBOSE("error: cannot load point-cloud file");
 		return EXIT_FAILURE;
@@ -256,14 +266,14 @@ int main(int argc, LPCTSTR* argv)
 		std::vector<double> transformValues;
 		while (file >> value) {
 			double v;
-                        try {
-                                v = std::stod(value);
-                        }
-                        catch (...) {
-                                continue;
-                        }
-                        transformValues.push_back(v);
-                }
+			try {
+				v = std::stod(value);
+			}
+			catch (...) {
+				continue;
+			}
+			transformValues.push_back(v);
+		}
 		if (transformValues.size() != 12 &&
 			(transformValues.size() != 16 || transformValues[12] != 0 || transformValues[13] != 0 || transformValues[14] != 0 || transformValues[15] != 1)) {
 			VERBOSE("error: invalid transform");

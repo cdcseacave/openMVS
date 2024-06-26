@@ -1644,6 +1644,24 @@ REAL Scene::ComputeLeveledVolume(float planeThreshold, float sampleMesh, unsigne
 	}
 	return mesh.ComputeVolume();
 }
+
+// add noise to camera poses:
+//  - epsPosition: noise in camera position (in scene units)
+//  - epsRotation: noise in camera rotation (in radians)
+void Scene::AddNoiseCameraPoses(float epsPosition, float epsRotation)
+{
+	for (Platform& platform: platforms) {
+		for (Platform::Pose& pose: platform.poses) {
+			pose.C += Point3((Point3::EVec::Random() * epsPosition).eval());
+			pose.R = RMatrix(RMatrix::Vec(Point3((epsRotation * Point3::EVec::Random()).eval()))) * pose.R;
+		}
+	}
+	for (Image& imageData: images) {
+		if (!imageData.IsValid())
+			continue;
+		imageData.UpdateCamera(platforms);
+	}
+}
 /*----------------------------------------------------------------*/
 
 
