@@ -2037,6 +2037,28 @@ bool MVS::ImportDepthDataRaw(const String& fileName, String& imageFileName,
 } // ImportDepthDataRaw
 /*----------------------------------------------------------------*/
 
+bool MVS::GetDepthMapHeaderSize(const String& fileName, cv::Size& size)
+{
+	FILE* f = fopen(fileName, "rb");
+	if (f == NULL) {
+		DEBUG("error: opening file '%s' for reading depth-data", fileName.c_str());
+		return false;
+	}
+	// read header
+	HeaderDepthDataRaw header;
+	if (fread(&header, sizeof(HeaderDepthDataRaw), 1, f) != 1 ||
+		header.name != HeaderDepthDataRaw::HeaderDepthDataRawName() ||
+		(header.type & HeaderDepthDataRaw::HAS_DEPTH) == 0 ||
+		header.depthWidth <= 0 || header.depthHeight <= 0 ||
+		header.imageWidth < header.depthWidth || header.imageHeight < header.depthHeight)
+	{
+		DEBUG("error: invalid depth-data file '%s'", fileName.c_str());
+		return false;
+	}
+	size = cv::Size(header.depthWidth, header.depthHeight);
+	fclose(f);
+	return true;
+}
 
 // compare the estimated and ground-truth depth-maps
 void MVS::CompareDepthMaps(const DepthMap& depthMap, const DepthMap& depthMapGT, uint32_t idxImage, float threshold)
