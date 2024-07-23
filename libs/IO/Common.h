@@ -36,6 +36,9 @@
 #ifdef _USE_TIFF
 #define _IMAGE_TIFF		// add TIFF support
 #endif
+#ifdef _USE_PPM
+#define _IMAGE_PPM      // add PPM support
+#endif
 
 #include "ImageSCI.h"
 #ifdef _IMAGE_BMP
@@ -55,6 +58,9 @@
 #endif
 #ifdef _IMAGE_TIFF
 #include "ImageTIFF.h"
+#endif
+#ifdef _IMAGE_PPM
+#include "ImagePPM.h"
 #endif
 #include "PLY.h"
 #include "OBJ.h"

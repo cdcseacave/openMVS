@@ -42,6 +42,9 @@
 // TIFF codec
 #cmakedefine _USE_TIFF
 
+// PPM codec
+#cmakedefine _USE_PPM
+
 // OpenGL support
 #cmakedefine _USE_OPENGL
 
