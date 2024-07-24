@@ -900,6 +900,10 @@ CImage* CImage::Create(LPCTSTR szName, IMCREATE mode)
 	else if (_tcsncicmp(fext, _T(".tif"), 4) == 0 || _tcsncicmp(fext, _T(".tiff"), 5) == 0)
 		pImage = new CImageTIFF();
 	#endif
+    #ifdef _IMAGE_PPM
+    else if (_tcsncicmp(fext, _T(".ppm"), 4) == 0)
+		pImage = new CImagePPM();
+    #endif
 	else
 		goto UNKNOWN_FORMAT;
 

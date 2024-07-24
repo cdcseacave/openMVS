@@ -23,6 +23,8 @@ if(TIFF_FOUND)
 else()
 	SET(TIFF_LIBRARIES "")
 endif()
+# Since we always have the OpenCV library
+SET(_USE_PPM TRUE CACHE INTERNAL "")
 
 # List sources files
 FILE(GLOB LIBRARY_FILES_C "*.cpp")
