@@ -33,8 +33,6 @@
 #include "Scene.h"
 #include "SceneDensify.h"
 #include "PatchMatchCUDA.h"
-// MRF: view selection
-#include "../Math/TRWS/MRFEnergy.h"
 
 using namespace MVS;
 
@@ -136,135 +134,6 @@ DepthMapsData::DepthMapsData(Scene& _scene)
 DepthMapsData::~DepthMapsData()
 {
 } // destructor
-/*----------------------------------------------------------------*/
-
-
-// globally choose the best target view for each image,
-// trying in the same time the selected image pairs to cover the whole scene;
-// the map of selected neighbors for each image is returned in neighborsMap.
-// For each view a list of neighbor views ordered by number of shared sparse points and overlapped image area is given.
-// Next a graph is formed such that the vertices are the views and two vertices are connected by an edge if the two views have each other as neighbors.
-// For each vertex, a list of possible labels is created using the list of neighbor views and scored accordingly (the score is normalized by the average score).
-// For each existing edge, the score is defined such that pairing the same two views for any two vertices is discouraged (a constant high penalty is applied for such edges).
-// This primal-dual defined problem, even if NP hard, can be solved by a Belief Propagation like algorithm, obtaining in general a solution close enough to optimality.
-bool DepthMapsData::SelectViews(IIndexArr& images, IIndexArr& imagesMap, IIndexArr& neighborsMap)
-{
-	// find all pair of images valid for dense reconstruction
-	typedef std::unordered_map<uint64_t,float> PairAreaMap;
-	PairAreaMap edges;
-	double totScore(0);
-	unsigned numScores(0);
-	FOREACH(i, images) {
-		const IIndex idx(images[i]);
-		ASSERT(imagesMap[idx] != NO_ID);
-		const ViewScoreArr& neighbors(arrDepthData[idx].neighbors);
-		ASSERT(neighbors.size() <= OPTDENSE::nMaxViews);
-		// register edges
-		for (const ViewScore& neighbor: neighbors) {
-			const IIndex idx2(neighbor.ID);
-			ASSERT(imagesMap[idx2] != NO_ID);
-			edges[MakePairIdx(idx,idx2)] = neighbor.area;
-			totScore += neighbor.score;
-			++numScores;
-		}
-	}
-	if (edges.empty())
-		return false;
-	const float avgScore((float)(totScore/(double)numScores));
-
-	// run global optimization
-	const float fPairwiseMul = OPTDENSE::fPairwiseMul; // default 0.3
-	const float fEmptyUnaryMult = 6.f;
-	const float fEmptyPairwise = 8.f*OPTDENSE::fPairwiseMul;
-	const float fSamePairwise = 24.f*OPTDENSE::fPairwiseMul;
-	const IIndex _num_labels = OPTDENSE::nMaxViews+1; // N neighbors and an empty state
-	const IIndex _num_nodes = images.size();
-	typedef MRFEnergy<TypeGeneral> MRFEnergyType;
-	CAutoPtr<MRFEnergyType> energy(new MRFEnergyType(TypeGeneral::GlobalSize()));
-	CAutoPtrArr<MRFEnergyType::NodeId> nodes(new MRFEnergyType::NodeId[_num_nodes]);
-	typedef SEACAVE::cList<TypeGeneral::REAL, TypeGeneral::REAL, 0> EnergyCostArr;
-	// unary costs: inverse proportional to the image pair score
-	EnergyCostArr arrUnary(_num_labels);
-	for (IIndex n=0; n<_num_nodes; ++n) {
-		const ViewScoreArr& neighbors(arrDepthData[images[n]].neighbors);
-		FOREACH(k, neighbors)
-			arrUnary[k] = avgScore/neighbors[k].score; // use average score to normalize the values (not to depend so much on the number of features in the scene)
-		arrUnary[neighbors.size()] = fEmptyUnaryMult*(neighbors.empty()?avgScore*0.01f:arrUnary[neighbors.size()-1]);
-		nodes[n] = energy->AddNode(TypeGeneral::LocalSize(neighbors.size()+1), TypeGeneral::NodeData(arrUnary.data()));
-	}
-	// pairwise costs: as ratios between the area to be covered and the area actually covered
-	EnergyCostArr arrPairwise(_num_labels*_num_labels);
-	for (PairAreaMap::const_reference edge: edges) {
-		const PairIdx pair(edge.first);
-		const float area(edge.second);
-		const ViewScoreArr& neighborsI(arrDepthData[pair.i].neighbors);
-		const ViewScoreArr& neighborsJ(arrDepthData[pair.j].neighbors);
-		arrPairwise.Empty();
-		FOREACHPTR(pNj, neighborsJ) {
-			const IIndex i(pNj->ID);
-			const float areaJ(area/pNj->area);
-			FOREACHPTR(pNi, neighborsI) {
-				const IIndex j(pNi->ID);
-				const float areaI(area/pNi->area);
-				arrPairwise.Insert(pair.i == i && pair.j == j ? fSamePairwise : fPairwiseMul*(areaI+areaJ));
-			}
-			arrPairwise.Insert(fEmptyPairwise+fPairwiseMul*areaJ);
-		}
-		for (const ViewScore& Ni: neighborsI) {
-			const float areaI(area/Ni.area);
-			arrPairwise.Insert(fPairwiseMul*areaI+fEmptyPairwise);
-		}
-		arrPairwise.Insert(fEmptyPairwise*2);
-		const IIndex nodeI(imagesMap[pair.i]);
-		const IIndex nodeJ(imagesMap[pair.j]);
-		energy->AddEdge(nodes[nodeI], nodes[nodeJ], TypeGeneral::EdgeData(TypeGeneral::GENERAL, arrPairwise.Begin()));
-	}
-
-	// minimize energy
-	MRFEnergyType::Options options;
-	options.m_eps = OPTDENSE::fOptimizerEps;
-	options.m_iterMax = OPTDENSE::nOptimizerMaxIters;
-	#ifndef _RELEASE
-	options.m_printIter = 1;
-	options.m_printMinIter = 1;
-	#endif
-	#if 1
-	TypeGeneral::REAL energyVal, lowerBound;
-	energy->Minimize_TRW_S(options, lowerBound, energyVal);
-	#else
-	TypeGeneral::REAL energyVal;
-	energy->Minimize_BP(options, energyVal);
-	#endif
-
-	// extract optimized depth map
-	neighborsMap.Resize(_num_nodes);
-	for (IIndex n=0; n<_num_nodes; ++n) {
-		const ViewScoreArr& neighbors(arrDepthData[images[n]].neighbors);
-		IIndex& idxNeighbor = neighborsMap[n];
-		const IIndex label((IIndex)energy->GetSolution(nodes[n]));
-		ASSERT(label <= neighbors.GetSize());
-		if (label == neighbors.GetSize()) {
-			idxNeighbor = NO_ID; // empty
-		} else {
-			idxNeighbor = label;
-			DEBUG_ULTIMATE("\treference image %3u paired with target image %3u (idx %2u)", images[n], neighbors[label].ID, label);
-		}
-	}
-
-	// remove all images with no valid neighbors
-	RFOREACH(i, neighborsMap) {
-		if (neighborsMap[i] == NO_ID) {
-			// remove image with no neighbors
-			for (IIndex& imageMap: imagesMap)
-				if (imageMap != NO_ID && imageMap > i)
-					--imageMap;
-			imagesMap[images[i]] = NO_ID;
-			images.RemoveAtMove(i);
-			neighborsMap.RemoveAtMove(i);
-		}
-	}
-	return !images.IsEmpty();
-} // SelectViews
 /*----------------------------------------------------------------*/
 
 // compute visibility for the reference image (the first image in "images")
@@ -1858,11 +1727,6 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 			imagesMap[data.images.Last()] = idx;
 			imagesMap[data.images[idx]] = NO_ID;
 			data.images.RemoveAt(idx);
-		}
-		// globally select a target view for each reference image
-		if (OPTDENSE::nNumViews == 1 && !data.depthMaps.SelectViews(data.images, imagesMap, data.neighborsMap)) {
-			VERBOSE("error: no valid images to be dense reconstructed");
-			return false;
 		}
 		ASSERT(!data.images.IsEmpty());
 		VERBOSE("Selecting images for dense reconstruction completed: %d images (%s)", data.images.GetSize(), TD_TIMER_GET_FMT().c_str());

@@ -72,18 +72,10 @@
 #endif
 
 // Function delegate functionality
-#ifdef _SUPPORT_CPP11
-#include "FastDelegateCPP11.h"
+#include "FastDelegate.h"
 #define DELEGATE fastdelegate::delegate
 #define DELEGATEBIND(DLGT, FNC) DLGT::from< FNC >()
 #define DELEGATEBINDCLASS(DLGT, FNC, OBJ) DLGT::from(*OBJ, FNC)
-#else
-#include "FastDelegate.h"
-#include "FastDelegateBind.h"
-#define DELEGATE fastdelegate::FastDelegate
-#define DELEGATEBIND(DLGT, FNC) fastdelegate::bind(FNC)
-#define DELEGATEBINDCLASS(DLGT, FNC, OBJ) fastdelegate::bind(FNC, OBJ)
-#endif
 
 // include usual boost libraries
 #ifdef _USE_BOOST
@@ -433,7 +425,6 @@ typedef class GENERAL_API cList<double, double, 0>      DoubleArr;
 #include "EventQueue.h"
 #include "SML.h"
 #include "ConfigTable.h"
-#include "HTMLDoc.h"
 
 
 // D E F I N E S ///////////////////////////////////////////////////

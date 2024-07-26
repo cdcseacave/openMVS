@@ -13,27 +13,13 @@ This program includes works distributed under the terms of another license(s) an
     Copyright (c) 2007 SEACAVE SRL.
     Licensed under a [Boost license](http://www.boost.org/users/license.html).
 
-*   __easyexif__<br />
-    [https://github.com/mayanklahiri/easyexif](https://github.com/mayanklahiri/easyexif)
-    Copyright (c) 2010 Mayank Lahiri.
-    Distributed under the [New BSD License](http://opensource.org/licenses/BSD-3-Clause).
-
 *   __histogram__<br />
     Copyright (c) Jansson Consulting & Pierre Moulon.
-    Licensed under the [MPL2 license](http://opensource.org/licenses/MPL-2.0).
-
-*   __htmlDoc__<br />
-    Copyright (c) Pierre Moulon.
     Licensed under the [MPL2 license](http://opensource.org/licenses/MPL-2.0).
 
 *   __ACRANSAC__<br />
     Copyright (c) Pierre Moulon.
     Licensed under the [MPL2 license](http://opensource.org/licenses/MPL-2.0).
-
-*   __stlplus3__<br />
-    [http://stlplus.sourceforge.net](http://stlplus.sourceforge.net)
-    Copyright (c) 1999-2004 Southampton University, 2004 onwards Andy Rushton. All rights reserved.
-    Licensed under the [BSD license](http://opensource.org/licenses/bsd-license.php).
 
 *   __rectangle-bin-packing__<br />
     [http://clb.demon.fi/projects/rectangle-bin-packing](http://clb.demon.fi/projects/rectangle-bin-packing)
@@ -49,11 +35,6 @@ This program includes works distributed under the terms of another license(s) an
     [http://apps.jcns.fz-juelich.de/doku/sc/lmfit](http://apps.jcns.fz-juelich.de/doku/sc/lmfit)
     Copyright (c) Joachim Wuttke.
     Licensed under the [FreeBSD license](http://opensource.org/licenses/BSD-2-Clause).
-
-*   __TRWS__<br />
-    [http://pub.ist.ac.at/~vnk/software.html](http://pub.ist.ac.at/~vnk/software.html)
-    Copyright (c) Vladimir Kolmogorov.
-    Licensed under the [MSR-SSLA license](http://research.microsoft.com/en-us/um/people/antr/vrr/vrr/license.htm).
 
 *   __ibfs__<br />
     [http://www.cs.tau.ac.il/~sagihed/ibfs](http://www.cs.tau.ac.il/~sagihed/ibfs)

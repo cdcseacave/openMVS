@@ -55,7 +55,6 @@ public:
 	DepthMapsData(Scene& _scene);
 	~DepthMapsData();
 
-	bool SelectViews(IIndexArr& images, IIndexArr& imagesMap, IIndexArr& neighborsMap);
 	bool SelectViews(DepthData& depthData);
 	bool InitViews(DepthData& depthData, IIndex idxNeighbor, IIndex numNeighbors, bool loadImages, int loadDepthMaps);
 	bool InitDepthMap(DepthData& depthData);
