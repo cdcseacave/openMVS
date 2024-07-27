@@ -32,32 +32,38 @@ jobs:
             triplet: x64-linux-release
             build-type: Release
           - os: macos-latest
-            triplet: x64-osx
+            triplet: arm64-osx
             build-type: Release
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Restore artifacts, or setup vcpkg for building artifacts
         uses: lukka/run-vcpkg@v11
         with:
           vcpkgDirectory: '${{ github.workspace }}/vcpkg'
-          vcpkgGitCommitId: '4a3c366f2d0d0eaf034bfa649124768df7cfe813'
+          vcpkgGitCommitId: '1de2026f28ead93ff1773e6e680387643e914ea1'
 
       - name: Install Ubuntu dependencies
         if: matrix.os == 'ubuntu-latest'
         run: |
           sudo apt-get update -y
-          sudo apt-get install -y autoconf-archive libxmu-dev libdbus-1-dev libxtst-dev libxi-dev libxinerama-dev libxcursor-dev xorg-dev libgl-dev libglu1-mesa-dev pkg-config
+          sudo apt-get install -y autoconf-archive libxmu-dev libdbus-1-dev libxtst-dev libxi-dev libxinerama-dev libxcursor-dev xorg-dev libgl-dev libglu1-mesa-dev pkg-config ninja-build
 
       - name: Install macOS dependencies
         if: matrix.os == 'macOS-latest'
         run: |
-          brew install automake autoconf-archive
+          brew install automake autoconf autoconf-archive libtool ninja
 
-      - name: Configure CMake
+      - name: Configure CMake for Windows
+        if: matrix.os == 'windows-latest'
         run: |
           cmake -S . -B make -DCMAKE_BUILD_TYPE=${{ matrix.build-type }} -DVCPKG_TARGET_TRIPLET=${{ matrix.triplet }} -DOpenMVS_USE_CUDA=OFF
+
+      - name: Configure CMake for Ubuntu and macOS
+        if: matrix.os != 'windows-latest'
+        run: |
+          cmake -S . -B make -DCMAKE_BUILD_TYPE=${{ matrix.build-type }} -DVCPKG_TARGET_TRIPLET=${{ matrix.triplet }} -DOpenMVS_USE_CUDA=OFF -G Ninja
 
       - name: Build
         working-directory: ./make
