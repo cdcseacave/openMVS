@@ -129,6 +129,7 @@ DepthData::DepthData(const DepthData& srcDepthData) :
 	confMap(srcDepthData.confMap),
 	dMin(srcDepthData.dMin),
 	dMax(srcDepthData.dMax),
+	size(srcDepthData.size),
 	references(srcDepthData.references)
 {}
 
@@ -261,6 +262,7 @@ bool DepthData::Load(const String& fileName, unsigned flags)
 		return false;
 	ASSERT(!IsValid() || (IDs.size() == images.size() && IDs.front() == GetView().GetID()));
 	ASSERT(depthMap.size() == imageSize);
+	ASSERT(depthMap.size() == size);
 	return true;
 }
 /*----------------------------------------------------------------*/
@@ -286,6 +288,23 @@ unsigned DepthData::DecRef()
 	if (--references == 0)
 		Release();
 	return references;
+}
+/*----------------------------------------------------------------*/
+
+
+// Compute the memory size occupied by the depth-data images (in bytes)
+size_t MVS::DepthData::GetMemorySize() const
+{
+	if (IsEmpty())
+		return 0;
+	size_t nBytes = depthMap.memory_size();
+	if (!normalMap.empty())
+		nBytes += normalMap.memory_size();
+	if (!confMap.empty())
+		nBytes += confMap.memory_size();
+	if (!viewsMap.empty())
+		nBytes += viewsMap.memory_size();
+	return nBytes;
 }
 /*----------------------------------------------------------------*/
 

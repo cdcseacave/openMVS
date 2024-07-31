@@ -13,7 +13,6 @@
 
 namespace std {
 
-//namespace tr1 {
 // Specializations for unordered containers
 template <> struct hash<SEACAVE::ImageRef>
 {
@@ -23,7 +22,20 @@ template <> struct hash<SEACAVE::ImageRef>
 		return std::hash<uint64_t>()((const uint64_t&)v);
 	}
 };
-//} // namespace tr1
+
+// Adds the given key-value pair in the map, overwriting the current value if the key exists
+template <typename Key, typename T>
+void MapPut(std::map<Key, T>* map, const Key& key, const T& value) {
+	auto result = map->emplace(key, value);
+	if (!result.second)
+		result.first->second = value;
+}
+template <typename Key, typename T>
+void MapPut(std::unordered_map<Key, T>* map, const Key& key, const T& value) {
+	auto result = map->emplace(key, value);
+	if (!result.second)
+		result.first->second = value;
+}
 
 } // namespace std
 

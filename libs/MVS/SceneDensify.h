@@ -63,6 +63,8 @@ public:
 	bool RemoveSmallSegments(DepthData& depthData);
 	bool GapInterpolation(DepthData& depthData);
 
+	void EstimateNormalMaps();
+
 	bool FilterDepthMap(DepthData& depthData, const IIndexArr& idxNeighbors, bool bAdjust=true);
 	void MergeDepthMaps(PointCloud& pointcloud, bool bEstimateColor, bool bEstimateNormal);
 	void FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, bool bEstimateNormal);

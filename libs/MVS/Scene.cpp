@@ -845,15 +845,19 @@ bool Scene::SelectNeighborViews(uint32_t ID, IndexArr& points, unsigned nMinView
 		++nPoints;
 		// score shared views
 		const Point3f V1(imageData.camera.C - Cast<REAL>(point));
-		const float footprint1(imageData.camera.GetFootprintImage(point));
+		const float footprint1(imageData.camera.GetFootprintImage(depth));
 		for (const PointCloud::View& view: views) {
 			if (view == ID)
 				continue;
 			const Image& imageData2 = images[view];
+			const Depth depth2((float)imageData2.camera.PointDepth(point));
+			ASSERT(depth2 > 0);
+			if (depth2 <= 0)
+				continue;
 			const Point3f V2(imageData2.camera.C - Cast<REAL>(point));
 			const float fAngle(ACOS(ComputeAngle(V1.ptr(), V2.ptr())));
 			const float wAngle(EXP(SQUARE(fAngle-fOptimAngle)*(fAngle<fOptimAngle?sigmaAngleSmall:sigmaAngleLarge)));
-			const float footprint2(imageData2.camera.GetFootprintImage(point));
+			const float footprint2(imageData2.camera.GetFootprintImage(depth2));
 			const float fScaleRatio(footprint1/footprint2);
 			float wScale;
 			if (fScaleRatio > 1.6f)

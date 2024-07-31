@@ -759,6 +759,16 @@ public:
 	static void		LogBuild();
 	static void		LogMemoryInfo();
 
+	struct MemoryInfo {
+		size_t totalPhysical;
+		size_t freePhysical;
+		size_t totalVirtual;
+		size_t freeVirtual;
+		MemoryInfo(size_t tP = 0, size_t fP = 0, size_t tV = 0, size_t fV = 0)
+			: totalPhysical(tP), freePhysical(fP), totalVirtual(tV), freeVirtual(fV) {}
+	};
+	static MemoryInfo GetMemoryInfo();
+
 	static LPSTR* CommandLineToArgvA(LPCSTR CmdLine, size_t& _argc);
 	static String CommandLineToString(size_t argc, LPCTSTR* argv) {
 		String strCmdLine;

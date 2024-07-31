@@ -214,6 +214,7 @@ struct MVS_API DepthData {
 	ConfidenceMap confMap; // confidence-map
 	ViewsMap viewsMap; // view-IDs map (indexing images vector starting after first view)
 	float dMin, dMax; // global depth range for this image
+	cv::Size size; // image size used to estimate this depth-map
 	unsigned references; // how many times this depth-map is referenced (on 0 can be safely unloaded)
 	CriticalSection cs; // used to count references
 
@@ -254,6 +255,8 @@ struct MVS_API DepthData {
 	unsigned GetRef();
 	unsigned IncRef(const String& fileName);
 	unsigned DecRef();
+
+	size_t GetMemorySize() const;
 
 	#ifdef _USE_BOOST
 	// implement BOOST serialization

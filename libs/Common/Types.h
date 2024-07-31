@@ -59,14 +59,17 @@
 #include <set>
 #include <unordered_map>
 #include <unordered_set>
+#include <optional>
 #include <vector>
 #include <list>
 #include <queue>
 #include <deque>
 #include <iterator>
+#include <chrono>
 #include <cmath>
 #include <ctime>
 #include <random>
+#include <thread>
 #ifdef _USE_OPENMP
 #include <omp.h>
 #endif
@@ -1604,6 +1607,8 @@ public:
 	inline size_t elem_stride() const { ASSERT(dims == 2 && step[1] == sizeof(TYPE)); return step[1]; }
 	/// Compute the area of the 2D matrix
 	inline int area() const { ASSERT(dims == 2); return cols*rows; }
+	/// Compute the memory size of this matrix (in bytes)
+	inline size_t memory_size() const { return cv::Mat::total() * cv::Mat::elemSize(); }
 
 	/// Is this coordinate inside the 2D matrix?
 	template <typename T>

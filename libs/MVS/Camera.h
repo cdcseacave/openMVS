@@ -437,6 +437,10 @@ public:
 
 	// compute the projection scale in this camera of the given world point
 	template <typename TYPE>
+	inline TYPE GetFootprintImage(TYPE depth) const {
+		return static_cast<TYPE>(GetFocalLength() / depth);
+	}
+	template <typename TYPE>
 	inline TYPE GetFootprintImage(const TPoint3<TYPE>& X) const {
 		#if 0
 		const TYPE fSphereRadius(1);

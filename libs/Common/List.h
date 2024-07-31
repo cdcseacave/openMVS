@@ -1257,10 +1257,15 @@ protected:
 	{
 		ASSERT(newVectorSize > _vectorSize);
 		// grow by 50% or at least to minNewVectorSize
-		const IDX expoVectorSize(_vectorSize + (_vectorSize>>1));
+		IDX expoVectorSize(_vectorSize + (_vectorSize>>1));
+		// cap growth for very large vectors
+		const IDX maxGrowCapacity(3*1024*1024*1024ull/*3GB*/);
+		const IDX growCapacity((expoVectorSize - _vectorSize) * sizeof(TYPE));
+		if (growCapacity > maxGrowCapacity)
+			expoVectorSize = _vectorSize + maxGrowCapacity / sizeof(TYPE);
+		// allocate a larger chunk of memory, copy the data and delete the old chunk
 		if (newVectorSize < expoVectorSize)
 			newVectorSize = expoVectorSize;
-		// allocate a larger chunk of memory, copy the data and delete the old chunk
 		TYPE* const tmp(_vector);
 		_vector = (TYPE*) operator new[] (newVectorSize * sizeof(TYPE));
 		_ArrayMoveConstruct<true>(_vector, tmp, _size);

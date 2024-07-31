@@ -264,48 +264,12 @@ String Util::GetCPUInfo()
 	#endif
 	return cpu;
 }
-/*----------------------------------------------------------------*/
 
 String Util::GetRAMInfo()
 {
-	#if defined(_MSC_VER)
-
-	#ifdef _WIN64
-	MEMORYSTATUSEX memoryStatus;
-	memset(&memoryStatus, sizeof(MEMORYSTATUSEX), 0);
-	memoryStatus.dwLength = sizeof(memoryStatus);
-	::GlobalMemoryStatusEx(&memoryStatus);
-	const size_t nTotalPhys((size_t)memoryStatus.ullTotalPhys);
-	const size_t nTotalVirtual((size_t)memoryStatus.ullTotalVirtual);
-	#else
-	MEMORYSTATUS memoryStatus;
-	memset(&memoryStatus, sizeof(MEMORYSTATUS), 0);
-	memoryStatus.dwLength = sizeof(MEMORYSTATUS);
-	::GlobalMemoryStatus(&memoryStatus);
-	const size_t nTotalPhys((size_t)memoryStatus.dwTotalPhys);
-	const size_t nTotalVirtual((size_t)memoryStatus.dwTotalVirtual);
-	#endif
-
-	#elif defined(__APPLE__)
-
-	int mib[2] = {CTL_HW, HW_MEMSIZE};
-	const unsigned namelen = sizeof(mib) / sizeof(mib[0]);
-	size_t len = sizeof(size_t);
-	size_t nTotalPhys;
-	sysctl(mib, namelen, &nTotalPhys, &len, NULL, 0);
-	const size_t nTotalVirtual(nTotalPhys);
-
-	#else // __GNUC__
-
-	struct sysinfo info;
-	sysinfo(&info);
-	const size_t nTotalPhys((size_t)info.totalram);
-	const size_t nTotalVirtual((size_t)info.totalswap);
-
-	#endif // _MSC_VER
-	return formatBytes(nTotalPhys) + _T(" Physical Memory ") + formatBytes(nTotalVirtual) + _T(" Virtual Memory");
+	const MemoryInfo memInfo(GetMemoryInfo());
+	return formatBytes(memInfo.totalPhysical) + _T(" Physical Memory ") + formatBytes(memInfo.totalVirtual) + _T(" Virtual Memory");
 }
-/*----------------------------------------------------------------*/
 
 String Util::GetOSInfo()
 {
@@ -430,7 +394,6 @@ String Util::GetOSInfo()
 
 	#endif // _MSC_VER
 }
-/*----------------------------------------------------------------*/
 
 String Util::GetDiskInfo(const String& path)
 {
@@ -732,6 +695,62 @@ void Util::LogMemoryInfo()
 {
 }
 #endif // _PLATFORM_X86
+
+
+
+// get the total & free physical & virtual memory (in bytes)
+Util::MemoryInfo Util::GetMemoryInfo()
+{
+	#if defined(_MSC_VER)                   // windows
+
+	#ifdef _WIN64
+	MEMORYSTATUSEX status;
+	status.dwLength = sizeof(MEMORYSTATUSEX);
+	if (::GlobalMemoryStatusEx(&status) == FALSE) {
+		ASSERT(false);
+		return MemoryInfo();
+	}
+	return MemoryInfo(status.ullTotalPhys, status.ullAvailPhys, status.ullTotalVirtual, status.ullAvailVirtual);
+	#else
+	MEMORYSTATUS status;
+	status.dwLength = sizeof(MEMORYSTATUS);
+	if (::GlobalMemoryStatus(&status) == FALSE) {
+		ASSERT(false);
+		return MemoryInfo();
+	}
+	return MemoryInfo(status.dwTotalPhys, status.dwAvailPhys, status.dwTotalVirtual, status.dwAvailVirtual);
+	#endif
+
+
+	#elif defined(__APPLE__)                // mac
+
+	int mib[2] ={CTL_HW, HW_MEMSIZE};
+	u_int namelen = sizeof(mib) / sizeof(mib[0]);
+	size_t len = sizeof(size_t);
+	size_t total_mem;
+	if (sysctl(mib, namelen, &total_mem, &len, NULL, 0) < 0) {
+		ASSERT(false);
+		return MemoryInfo();
+	}
+	return MemoryInfo(total_mem);
+
+	#else // __GNUC__                       // linux
+
+	struct sysinfo info;
+	if (sysinfo(&info) != 0) {
+		ASSERT(false);
+		return MemoryInfo();
+	}
+	return MemoryInfo(
+		(size_t)info.totalram*(size_t)info.mem_unit,
+		(size_t)info.freeram*(size_t)info.mem_unit,
+		(size_t)info.totalswap*(size_t)info.mem_unit,
+		(size_t)info.freeswap*(size_t)info.mem_unit
+	);
+
+	#endif
+}
+/*----------------------------------------------------------------*/
 
 
 // Parses a ASCII command line string and returns an array of pointers to the command line arguments,
