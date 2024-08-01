@@ -1317,6 +1317,14 @@ size_t GetAvailableMemory(const DepthDataArr& arrDepthData, const std::unordered
 	const size_t safetyMemory(MAXF(ROUND2INT<size_t>(memInfo.totalPhysical * 0.08), size_t(1*1024*1024*1024ull)/*1GB*/));
 	const size_t neededMemory(neededPointCloudMemory + safetyMemory);
 	const size_t minDMapsMemory(resolution / numDMaps * 8/*min dmaps in memory*/ * (1/*depth*/ + 3/*normal*/ + 1/*confidence*/) * 4/*bytes*/);
+	// print all variables above
+	std::cout << "memInfo.freePhysical: " << memInfo.freePhysical << std::endl;
+	std::cout << "memInfo.totalPhysical: " << memInfo.totalPhysical << std::endl;
+	std::cout << "neededPointCloudMemory: " << neededPointCloudMemory << std::endl;
+	std::cout << "freeMemory: " << freeMemory << std::endl;
+	std::cout << "safetyMemory: " << safetyMemory << std::endl;
+	std::cout << "neededMemory: " << neededMemory << std::endl;
+	std::cout << "minDMapsMemory: " << minDMapsMemory << std::endl;
 	if (freeMemory < neededMemory) {
 		DEBUG("warning: not enough memory to cache depth-maps (%luMB needed, %luMB available)", neededMemory/1024/1024, freeMemory/1024/1024);
 		return MINF(currentCacheMemory, minDMapsMemory);
