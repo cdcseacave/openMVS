@@ -1298,9 +1298,15 @@ public:
 	inline const TYPE* ptr() const { return &x; }
 	inline TYPE* ptr() { return &x; }
 
+	// iterator base access to enable range-based for loops
+	inline const TYPE* begin() const { return &x; }
+	inline const TYPE* end() const { return &x+3; }
+
 	// 1D element access
-	inline const TYPE& operator [](size_t i) const { ASSERT(i>=0 && i<2); return ptr()[i]; }
-	inline TYPE& operator [](size_t i) { ASSERT(i>=0 && i<2); return ptr()[i]; }
+	inline const TYPE& operator ()(int i) const { ASSERT(i>=0 && i<2); return ptr()[i]; }
+	inline TYPE& operator ()(int i) { ASSERT(i>=0 && i<2); return ptr()[i]; }
+	inline const TYPE& operator [](int i) const { ASSERT(i>=0 && i<2); return ptr()[i]; }
+	inline TYPE& operator [](int i) { ASSERT(i>=0 && i<2); return ptr()[i]; }
 
 	// Access point as Size equivalent
 	inline operator const Size& () const { return *((const Size*)this); }
@@ -1391,9 +1397,15 @@ public:
 	inline const TYPE* ptr() const { return &x; }
 	inline TYPE* ptr() { return &x; }
 
+	// iterator base access to enable range-based for loops
+	inline const TYPE* begin() const { return &x; }
+	inline const TYPE* end() const { return &x+3; }
+
 	// 1D element access
-	inline const TYPE& operator [](BYTE i) const { ASSERT(i<3); return ptr()[i]; }
-	inline TYPE& operator [](BYTE i) { ASSERT(i<3); return ptr()[i]; }
+	inline const TYPE& operator ()(int i) const { ASSERT(i>=0 && i<3); return ptr()[i]; }
+	inline TYPE& operator ()(int i) { ASSERT(i>=0 && i<3); return ptr()[i]; }
+	inline const TYPE& operator [](int i) const { ASSERT(i>=0 && i<3); return ptr()[i]; }
+	inline TYPE& operator [](int i) { ASSERT(i>=0 && i<3); return ptr()[i]; }
 
 	// Access point as vector equivalent
 	inline operator const Vec& () const { return *reinterpret_cast<const Vec*>(this); }

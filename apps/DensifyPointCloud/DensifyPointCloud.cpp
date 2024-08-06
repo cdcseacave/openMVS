@@ -131,6 +131,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 	unsigned nEstimationGeometricIters;
 	unsigned nEstimateColors;
 	unsigned nEstimateNormals;
+	unsigned nFuseFilter;
 	unsigned nOptimize;
 	int nIgnoreMaskLabel;
 	bool bRemoveDmaps;
@@ -146,7 +147,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("min-resolution", boost::program_options::value(&nMinResolution)->default_value(640), "do not scale images lower than this resolution")
 		("sub-resolution-levels", boost::program_options::value(&nSubResolutionLevels)->default_value(2), "number of patch-match sub-resolution iterations (0 - disabled)")
 		("number-views", boost::program_options::value(&nNumViews)->default_value(nNumViewsDefault), "number of views used for depth-map estimation (0 - all neighbor views available)")
-		("number-views-fuse", boost::program_options::value(&nMinViewsFuse)->default_value(3), "minimum number of images that agrees with an estimate during fusion in order to consider it inlier (<2 - only merge depth-maps)")
+		("number-views-fuse", boost::program_options::value(&nMinViewsFuse)->default_value(2), "minimum number of images that agrees with an estimate during fusion in order to consider it inlier (<2 - only merge depth-maps)")
 		("ignore-mask-label", boost::program_options::value(&nIgnoreMaskLabel)->default_value(-1), "label value to ignore in the image mask, stored in the MVS scene or next to each image with '.mask.png' extension (<0 - disabled)")
 		("mask-path", boost::program_options::value<std::string>(&OPT::strMaskPath), "path to folder containing mask images with '.mask.png' extension")
 		("iters", boost::program_options::value(&nEstimationIters)->default_value(numIters), "number of patch-match iterations")
@@ -157,6 +158,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("sub-scene-area", boost::program_options::value(&OPT::fMaxSubsceneArea)->default_value(0.f), "split the scene in sub-scenes such that each sub-scene surface does not exceed the given maximum sampling area (0 - disabled)")
 		("sample-mesh", boost::program_options::value(&OPT::fSampleMesh)->default_value(0.f), "uniformly samples points on a mesh (0 - disabled, <0 - number of points, >0 - sample density per square unit)")
 		("fusion-mode", boost::program_options::value(&OPT::nFusionMode)->default_value(0), "depth-maps fusion mode (-2 - fuse disparity-maps, -1 - export disparity-maps only, 0 - depth-maps & fusion, 1 - export depth-maps only)")
+		("fusion-filter", boost::program_options::value(&nFuseFilter)->default_value(2), "filter used to fuse the depth-maps (0 - merge, 1 - fuse, 2 - dense-fuse)")
 		("postprocess-dmaps", boost::program_options::value(&nOptimize)->default_value(7), "flags used to filter the depth-maps after estimation (0 - disabled, 1 - remove-speckles, 2 - fill-gaps, 4 - adjust-filter)")
 		("filter-point-cloud", boost::program_options::value(&OPT::thFilterPointCloud)->default_value(0), "filter dense point-cloud based on visibility (0 - disabled)")
 		("export-number-views", boost::program_options::value(&OPT::nExportNumViews)->default_value(0), "export points with >= number of views (0 - disabled, <0 - save MVS project too)")
@@ -248,6 +250,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 	OPTDENSE::nEstimationGeometricIters = nEstimationGeometricIters;
 	OPTDENSE::nEstimateColors = nEstimateColors;
 	OPTDENSE::nEstimateNormals = nEstimateNormals;
+	OPTDENSE::nFuseFilter = nFuseFilter;
 	OPTDENSE::nOptimize = nOptimize;
 	OPTDENSE::nIgnoreMaskLabel = nIgnoreMaskLabel;
 	OPTDENSE::bRemoveDmaps = bRemoveDmaps;

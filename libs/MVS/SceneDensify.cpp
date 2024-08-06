@@ -1295,7 +1295,7 @@ void DepthMapsData::MergeDepthMaps(PointCloud& pointcloud, bool bEstimateColor, 
 
 // compute available memory to be used for depth-data caching
 //  - numDMapsReserveFusion: maximum number of depth-maps for which to reserve memory for fusion
-size_t GetAvailableMemory(const DepthDataArr& arrDepthData, const std::unordered_set<unsigned>& fusedDMaps, IIndex numDMapsReserveFusion, size_t currentCacheMemory = 0)
+size_t GetAvailableMemory(const DepthDataArr& arrDepthData, const BoolArr& fusedDMaps, IIndex numDMapsReserveFusion, size_t currentCacheMemory = 0)
 {
 	size_t resolution(0);
 	IIndex numDMaps(0);
@@ -1303,7 +1303,7 @@ size_t GetAvailableMemory(const DepthDataArr& arrDepthData, const std::unordered
 		const DepthData& depthData = arrDepthData[idxImage];
 		if (!depthData.IsValid())
 			continue;
-		if (fusedDMaps.count(idxImage))
+		if (fusedDMaps[idxImage])
 			continue;
 		resolution += depthData.size.area();
 		if (++numDMaps >= numDMapsReserveFusion)
@@ -1325,7 +1325,7 @@ size_t GetAvailableMemory(const DepthDataArr& arrDepthData, const std::unordered
 } // GetAvailableMemory
 
 // finds the best depth-map to fuse next that maximizes the number of neighbors already in cache
-std::tuple<unsigned, unsigned, unsigned> FetchBestNextDMapIndex(const DepthDataArr& arrDepthData, DMapCache& cacheDMaps, std::unordered_set<unsigned>& fusedDMaps) {
+std::tuple<unsigned, unsigned, unsigned> FetchBestNextDMapIndex(const DepthDataArr& arrDepthData, const DMapCache& cacheDMaps, const BoolArr& fusedDMaps) {
 	const IIndexArr cachedImages = cacheDMaps.GetCachedImageIndices(true);
 	IIndex bestImageIdx = NO_ID;
 	unsigned bestImageScore = 0, bestImageSize = std::numeric_limits<unsigned>::max();
@@ -1333,7 +1333,7 @@ std::tuple<unsigned, unsigned, unsigned> FetchBestNextDMapIndex(const DepthDataA
 		const DepthData& depthData = arrDepthData[idxImage];
 		if (!depthData.IsValid())
 			continue;
-		if (fusedDMaps.count(idxImage))
+		if (fusedDMaps[idxImage])
 			continue;
 		ASSERT(!depthData.neighbors.empty());
 		IIndexArr cachedNeighbors;
@@ -1379,15 +1379,15 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, b
 	typedef SEACAVE::cList<ProjArr,const ProjArr&,1,65536> ProjsArr;
 
 	// fuse all depth-maps, processing the best connected images first
-	const unsigned nMinViewsFuse(MINF(OPTDENSE::nMinViewsFuse, scene.images.size()));
+	const unsigned nMinViewsFuse(MINF(OPTDENSE::nMinViewsFuse, arrDepthData.size()));
 	const float normalError(COS(FD2R(OPTDENSE::fNormalDiffThreshold)));
 	const IIndex numDMapsReserveFusion(10);
 	CLISTDEF0(Depth*) invalidDepths(0, 32);
 	size_t nDepths(0);
 	typedef TImage<cuint32_t> DepthIndex;
 	typedef cList<DepthIndex> DepthIndexArr;
-	DepthIndexArr arrDepthIdx(scene.images.size());
-	const size_t nPointsEstimate(scene.images.size() * 9000); //TODO: better estimate number of points
+	DepthIndexArr arrDepthIdx(arrDepthData.size());
+	const size_t nPointsEstimate(arrDepthData.size() * 9000); //TODO: better estimate number of points
 	ProjsArr projs(0, nPointsEstimate);
 	pointcloud.points.reserve(nPointsEstimate);
 	pointcloud.pointViews.reserve(nPointsEstimate);
@@ -1399,12 +1399,14 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, b
 		pointcloud.normals.reserve(nPointsEstimate);
 		depthDataLoadFlags |= HeaderDepthDataRaw::HAS_NORMAL;
 	}
-	Util::Progress progress(_T("Fused depth-maps"), scene.images.size());
+	Util::Progress progress(_T("Fused depth-maps"), arrDepthData.size());
 	GET_LOGCONSOLE().Pause();
-	std::unordered_set<IIndex> fusedDMaps;
+	BoolArr fusedDMaps(arrDepthData.size());
+	fusedDMaps.Memset(0);
 	DMapCache cacheDMaps(arrDepthData, depthDataLoadFlags, GetAvailableMemory(arrDepthData, fusedDMaps, numDMapsReserveFusion));
 	unsigned totalNumImageNeighborsInCache = 0, totalNumImagesInCache = 0;
-	while (fusedDMaps.size() < arrDepthData.size()) {
+	IIndex numDMapsFused = 0;
+	for (; numDMapsFused < arrDepthData.size(); ++numDMapsFused) {
 		TD_TIMER_STARTD();
 		// find the best depth-map to fuse next as the one with the most neighbors already in cache
 		const auto [idxImage, numImageNeighborsInCache, numImagesInCache] = FetchBestNextDMapIndex(arrDepthData, cacheDMaps, fusedDMaps);
@@ -1412,7 +1414,6 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, b
 			break; // no more depth-maps to fuse (only invalid depth-maps left)
 		totalNumImageNeighborsInCache += numImageNeighborsInCache;
 		totalNumImagesInCache += numImagesInCache;
-		fusedDMaps.emplace(idxImage);
 		// fuse depth-map
 		cacheDMaps.UseImage(idxImage);
 		cacheDMaps.SkipMemoryCheckIdxImage(idxImage);
@@ -1422,6 +1423,7 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, b
 		if (bEstimateNormal && depthData.normalMap.empty())
 			EstimateNormalMaps();
 		ASSERT(!depthData.images.empty() && !depthData.neighbors.empty());
+		IIndex numNeighbors(0);
 		#ifdef DENSE_USE_OPENMP
 		#pragma omp parallel for
 		for (int64_t i=0; i<(int64_t)depthData.neighbors.size(); ++i) {
@@ -1435,6 +1437,12 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, b
 			cacheDMaps.UseImage(neighbor.ID);
 			if (depthDataB.IsEmpty())
 				continue;
+			if (++numNeighbors >= OPTDENSE::nMaxViewsFuse)
+				#ifdef DENSE_USE_OPENMP
+				continue;
+				#else
+				break;
+				#endif
 			DepthIndex& depthIdxs = arrDepthIdx[neighbor.ID];
 			if (!depthIdxs.empty())
 				continue;
@@ -1442,12 +1450,12 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, b
 			depthIdxs.memset((uint8_t)NO_ID);
 		}
 		ASSERT(!depthData.IsEmpty());
-		ASSERT(depthData.depthMap.size() == depthData.size);
 		const Image& imageData = *depthData.images.front().pImageData;
 		ASSERT(&imageData-scene.images.data() == idxImage);
+		ASSERT(depthData.depthMap.size() == depthData.size && imageData.GetSize() == depthData.size);
 		DepthIndex& depthIdxs = arrDepthIdx[idxImage];
 		if (depthIdxs.empty()) {
-			depthIdxs.create(imageData.GetSize());
+			depthIdxs.create(depthData.size);
 			depthIdxs.memset((uint8_t)NO_ID);
 		}
 		const size_t nNumPointsPrev(pointcloud.points.size());
@@ -1551,13 +1559,14 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, b
 				}
 			}
 		}
+		fusedDMaps[idxImage] = true;
 		ASSERT(pointcloud.points.size() == pointcloud.pointViews.size() && pointcloud.points.size() == pointcloud.pointWeights.size() && pointcloud.points.size() == projs.size());
 		DEBUG_ULTIMATE("Depths map for reference image %3u fused using %u depths maps: %u new points, %u/%u cached images (%s)",
 			idxImage, depthData.images.size()-1, pointcloud.points.size()-nNumPointsPrev, numImageNeighborsInCache, numImagesInCache, TD_TIMER_GET_FMT().c_str());
-		progress.display(fusedDMaps.size());
+		progress.display(numDMapsFused);
 		// ensure enough memory is available for the next depth-maps chunk
 		cacheDMaps.SkipMemoryCheckIdxImage();
-		if (fusedDMaps.size() % numDMapsReserveFusion == 0)
+		if (numDMapsFused % numDMapsReserveFusion == 0)
 			cacheDMaps.SetMaxMemory(GetAvailableMemory(arrDepthData, fusedDMaps, numDMapsReserveFusion, cacheDMaps.GetUsedMemory()));
 	}
 	GET_LOGCONSOLE().Play();
@@ -1566,9 +1575,9 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, b
 	cacheDMaps.ClearCache();	
 
 	DEBUG_EXTRA("Depth-maps fused and filtered: %u depth-maps, %u depths, %u points (%d%%%%), %.2f hits in %.2f cached (%s)",
-		fusedDMaps.size(), nDepths, pointcloud.points.size(), ROUND2INT((100.f*pointcloud.points.size())/nDepths),
-		static_cast<double>(totalNumImageNeighborsInCache) / fusedDMaps.size(),
-		static_cast<double>(totalNumImagesInCache) / fusedDMaps.size(), TD_TIMER_GET_FMT().c_str());
+		numDMapsFused, nDepths, pointcloud.points.size(), ROUND2INT((100.f*pointcloud.points.size())/nDepths),
+		static_cast<double>(totalNumImageNeighborsInCache) / numDMapsFused,
+		static_cast<double>(totalNumImagesInCache) / numDMapsFused, TD_TIMER_GET_FMT().c_str());
 
 	if (bEstimateNormal && !pointcloud.points.empty() && pointcloud.normals.empty()) {
 		// estimate normal also if requested (quite expensive if normal-maps not available)
@@ -1597,6 +1606,252 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, b
 		DEBUG_EXTRA("Normals estimated for the dense point-cloud: %u normals (%s)", pointcloud.GetSize(), TD_TIMER_GET_FMT().c_str());
 	}
 } // FuseDepthMaps
+
+
+// fuse all valid depth-maps in the same 3D point cloud;
+// join points very likely to represent the same 3D point and
+// filter out points blocking the view
+void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, bool _bEstimateNormal)
+{
+	TD_TIMER_STARTD();
+
+	typedef SEACAVE::BitMatrix UseMask;
+	typedef CLISTDEFIDX(UseMask,IIndex) UseMaskArr;
+
+	// fuse all depth-maps, processing the best connected images first
+	const unsigned nMinViewsFuse(MINF(OPTDENSE::nMinViewsFuse, arrDepthData.size()));
+	const float normalError(COS(FD2R(OPTDENSE::fNormalDiffThreshold)));
+	const float minConfidence(1.f - OPTDENSE::fNCCThresholdKeep);
+	const float maxReprojErrorSq(SQUARE(OPTDENSE::fDepthReprojectionErrorThreshold));
+	const IIndex numDMapsReserveFusion(10);
+	const bool bEstimateNormal(true); // always estimate normals as they are needed for the fusion
+	size_t nDepths(0);
+	UseMaskArr arrUseMask(arrDepthData.size());
+	const size_t nPointsEstimate(arrDepthData.size() * 9000); //TODO: better estimate number of points
+	pointcloud.points.reserve(nPointsEstimate);
+	pointcloud.pointViews.reserve(nPointsEstimate);
+	pointcloud.pointWeights.reserve(nPointsEstimate);
+	unsigned depthDataLoadFlags(HeaderDepthDataRaw::HAS_DEPTH | HeaderDepthDataRaw::HAS_CONF);
+	if (bEstimateColor)
+		pointcloud.colors.reserve(nPointsEstimate);
+	if (bEstimateNormal) {
+		pointcloud.normals.reserve(nPointsEstimate);
+		depthDataLoadFlags |= HeaderDepthDataRaw::HAS_NORMAL;
+	}
+	Util::Progress progress(_T("Dense fused depth-maps"), arrDepthData.size());
+	GET_LOGCONSOLE().Pause();
+	BoolArr fusedDMaps(arrDepthData.size());
+	fusedDMaps.Memset(0);
+	DMapCache cacheDMaps(arrDepthData, depthDataLoadFlags, GetAvailableMemory(arrDepthData, fusedDMaps, numDMapsReserveFusion));
+	unsigned totalNumImageNeighborsInCache = 0, totalNumImagesInCache = 0;
+	BoolArr neighbors(arrDepthData.size());
+	PointCloud::Point refPoint;
+	PointCloud::Normal refNormal;
+	CLISTDEF0IDX(float, unsigned) fusedPoints[3];
+	PointCloud::ViewArr fusedViews;
+	FloatArr fusedWeights;
+	Point3d fusedNormal;
+	Pixel32F fusedColor;
+	const auto FusePoint = [&](IIndex ID, const ImageRef& x, unsigned fuseDepth) -> void {
+		const auto lambda = [&](IIndex ID, const ImageRef& x, unsigned fuseDepth, const auto& FusePointImpl) -> void {
+			const DepthData& depthData = arrDepthData[ID];
+			if (!Image8U::isInside(x, depthData.size))
+				return;
+			// ignore pixel if not estimated
+			ASSERT(depthData.depthMap.size() == depthData.size);
+			const Depth depth = depthData.depthMap(x);
+			if (depth <= Depth(0))
+				return;
+			ASSERT(ISINSIDE(depth, depthData.dMin * 0.95f, depthData.dMax * 1.05f));
+			// ignore pixel if already fused
+			UseMask& useMask = arrUseMask[ID];
+			if (useMask(x))
+				return;
+			// ignore pixel if not confident
+			const float conf(depthData.confMap.empty() ? 1.f : depthData.confMap(x));
+			if (conf < minConfidence)
+				return;
+			const DepthData::ViewData& image = depthData.GetView();
+			// if the fusion depth is greater than zero, the initial reference pixel
+			// has already been added and we need to check for consistency
+			PointCloud::Normal normal;
+			if (fuseDepth > 0) {
+				// project reference point into current view
+				const Point3f pt(image.camera.ProjectPointP3(refPoint));
+				// check if depth agrees with current depth
+				ASSERT(pt.z > Depth(0) || !IsDepthSimilar(depth, pt.z, OPTDENSE::fDepthDiffThreshold));
+				if (!IsDepthSimilar(depth, pt.z, OPTDENSE::fDepthDiffThreshold))
+					return;
+				// check reprojection error of the reference point in the current view
+				const Point2f diff(pt.x / pt.z - float(x.x), pt.y / pt.z - float(x.y));
+				if (normSq(diff) > maxReprojErrorSq)
+					return;
+				// check if normals agree
+				normal = image.camera.R.t() * Cast<REAL>(depthData.normalMap(x));
+				ASSERT(ISEQUAL(norm(normal), 1.f));
+				if (refNormal.dot(normal) < normalError)
+					return;
+			} else {
+				normal = image.camera.R.t() * Cast<REAL>(depthData.normalMap(x));
+				ASSERT(ISEQUAL(norm(normal), 1.f));
+			}
+			// set the current pixel as visited
+			useMask.set(x);
+			// compute 3D location of the current depth
+			const PointCloud::Point X(image.camera.TransformPointI2W(Point3(REAL(x.x), REAL(x.y), REAL(depth))));
+			// accumulate statistics for fused point
+			{
+				fusedPoints[0].push_back(X(0));
+				fusedPoints[1].push_back(X(1));
+				fusedPoints[2].push_back(X(2));
+				const float weight(Conf2Weight(conf, depth));
+				const auto it(fusedViews.InsertSortUnique(ID));
+				if (it.second)
+					fusedWeights[it.first] += weight;
+				else
+					fusedWeights.InsertAt(it.first, weight);
+				if (bEstimateNormal)
+					fusedNormal += Cast<double>(normal);
+				if (bEstimateColor)
+					fusedColor += Cast<float>(image.pImageData->image(x));
+			}
+			// remember the first pixel as the reference.
+			if (fuseDepth == 0) {
+				refPoint = X;
+				refNormal = normal;
+			}
+			// do not traverse the graph infinitely in one branch and
+			// limit the maximum number of pixels fused in one point
+			// to avoid stack overflow
+			if (++fuseDepth >= OPTDENSE::nMaxFuseDepth || fusedPoints[0].size() >= OPTDENSE::nMaxPointsFuse)
+				return;
+			// traverse the neighbors graph by projecting the point into other views
+			for (const ViewScore& neighbor : image.pImageData->neighbors) {
+				const IIndex nextID(neighbor.ID);
+				ASSERT(nextID != ID);
+				if (!neighbors[nextID])
+					continue;
+				const DepthData& nextDepthData = arrDepthData[nextID];
+				const ImageRef nextx(ROUND2INT(nextDepthData.GetCamera().ProjectPointP(X)));
+				FusePointImpl(nextID, nextx, fuseDepth, FusePointImpl);
+			}
+		};
+		lambda(ID, x, fuseDepth, lambda);
+	};
+	// loop over each depth-map
+	IIndex numDMapsFused = 0;
+	for (; numDMapsFused < arrDepthData.size(); ++numDMapsFused) {
+		TD_TIMER_STARTD();
+		// find the best depth-map to fuse next as the one with the most neighbors already in cache
+		const auto [idxImage, numImageNeighborsInCache, numImagesInCache] = FetchBestNextDMapIndex(arrDepthData, cacheDMaps, fusedDMaps);
+		if (idxImage == NO_ID)
+			break; // no more depth-maps to fuse (only invalid depth-maps left)
+		totalNumImageNeighborsInCache += numImageNeighborsInCache;
+		totalNumImagesInCache += numImagesInCache;
+		// fuse depth-map
+		cacheDMaps.UseImage(idxImage);
+		cacheDMaps.SkipMemoryCheckIdxImage(idxImage);
+		const DepthData& depthData(arrDepthData[idxImage]);
+		ASSERT(depthData.GetView().GetLocalID(scene.images) == idxImage);
+		ASSERT(!depthData.IsEmpty());
+		if (bEstimateNormal && depthData.normalMap.empty())
+			EstimateNormalMaps();
+		// make sure all neighbors are cached
+		neighbors.Memset(0);
+		neighbors[idxImage] = true;
+		IIndex numNeighbors(0);
+		ASSERT(!depthData.images.empty() && !depthData.neighbors.empty());
+		#ifdef DENSE_USE_OPENMP
+		#pragma omp parallel for
+		for (int64_t i=0; i<(int64_t)depthData.neighbors.size(); ++i) {
+			const ViewScore& neighbor = depthData.neighbors[(IIndex)i];
+		#else
+		for (const ViewScore& neighbor: depthData.neighbors) {
+		#endif
+			const DepthData& depthDataB(arrDepthData[neighbor.ID]);
+			if (!depthDataB.IsValid())
+				continue;
+			cacheDMaps.UseImage(neighbor.ID);
+			if (depthDataB.IsEmpty())
+				continue;
+			neighbors[neighbor.ID] = true;
+			if (++numNeighbors >= OPTDENSE::nMaxViewsFuse)
+				#ifdef DENSE_USE_OPENMP
+				continue;
+				#else
+				break;
+				#endif
+			UseMask& useMask = arrUseMask[neighbor.ID];
+			if (!useMask.empty())
+				continue;
+			useMask.create(depthDataB.depthMap.size());
+			useMask.memset(0);
+		}
+		ASSERT(!depthData.IsEmpty());
+		const Image& imageData = *depthData.images.front().pImageData;
+		ASSERT(&imageData-scene.images.data() == idxImage);
+		ASSERT(depthData.depthMap.size() == depthData.size && imageData.GetSize() == depthData.size);
+		UseMask& useMask = arrUseMask[idxImage];
+		if (useMask.empty()) {
+			useMask.create(depthData.size);
+			useMask.memset(0);
+		}
+		// try to fuse each depth estimate
+		const size_t nNumPointsPrev(pointcloud.points.size());
+		for (int i=0; i<depthData.size.height; ++i) {
+			for (int j=0; j<depthData.size.width; ++j) {
+				FusePoint(idxImage, ImageRef(j,i), 0);
+				if (fusedPoints[0].size() >= OPTDENSE::nMinPixelsFuse && fusedViews.size() >= nMinViewsFuse) {
+					// create the corresponding 3D point
+					pointcloud.points.emplace_back(
+						fusedPoints[0].GetMedian(),
+						fusedPoints[1].GetMedian(),
+						fusedPoints[2].GetMedian()
+					);
+					ASSERT(fusedViews.size() == fusedWeights.size());
+					PointCloud::WeightArr& weights = pointcloud.pointWeights.AddEmpty();
+					for (float weight: fusedWeights)
+						weights.push_back(weight);
+					pointcloud.pointViews.emplace_back(fusedViews);
+					if (bEstimateNormal)
+						pointcloud.normals.emplace_back(normalized(fusedNormal));
+					if (bEstimateColor)
+						pointcloud.colors.emplace_back((fusedColor/(float)fusedPoints[0].size()).cast<uint8_t>());
+				}
+				if (!fusedViews.empty()) {
+					nDepths += fusedViews.size();
+					fusedPoints[0].clear();
+					fusedPoints[1].clear();
+					fusedPoints[2].clear();
+					fusedViews.clear();
+					fusedWeights.clear();
+					fusedNormal = Point3d::ZERO;
+					fusedColor = Pixel32F::BLACK;
+				}
+			}
+		}
+		fusedDMaps[idxImage] = true;
+		ASSERT(pointcloud.points.size() == pointcloud.pointViews.size() && pointcloud.points.size() == pointcloud.pointWeights.size());
+		DEBUG_ULTIMATE("Depths map for reference image %3u fused using %u depths maps: %u new points, %u/%u cached images (%s)",
+			idxImage, depthData.images.size() - 1, pointcloud.points.size() - nNumPointsPrev, numImageNeighborsInCache, numImagesInCache, TD_TIMER_GET_FMT().c_str());
+		progress.display(numDMapsFused);
+		// ensure enough memory is available for the next depth-maps chunk
+		cacheDMaps.SkipMemoryCheckIdxImage();
+		if (numDMapsFused % numDMapsReserveFusion == 0)
+			cacheDMaps.SetMaxMemory(GetAvailableMemory(arrDepthData, fusedDMaps, numDMapsReserveFusion, cacheDMaps.GetUsedMemory()));
+	}
+	GET_LOGCONSOLE().Play();
+	progress.close();
+	arrUseMask.Release();
+	cacheDMaps.ClearCache();
+	if (!_bEstimateNormal)
+		pointcloud.normals.Release();
+
+	DEBUG_EXTRA("Depth-maps dense fused and filtered: %u depth-maps, %u depths, %u points (%d%%%%), %.2f hits in %.2f cached (%s)",
+		numDMapsFused, nDepths, pointcloud.points.size(), ROUND2INT((100.f*pointcloud.points.size())/nDepths),
+		static_cast<double>(totalNumImageNeighborsInCache) / numDMapsFused,
+		static_cast<double>(totalNumImagesInCache) / numDMapsFused, TD_TIMER_GET_FMT().c_str());
+} // DenseFuseDepthMaps
 /*----------------------------------------------------------------*/
 
 
@@ -1645,12 +1900,18 @@ bool Scene::DenseReconstruction(int nFusionMode, bool bCrop2ROI, float fBorderRO
 
 	// fuse all depth-maps
 	pointcloud.Release();
-	if (OPTDENSE::nMinViewsFuse < 2) {
+	switch (OPTDENSE::nFuseFilter) {
+	case OPTDENSE::FUSE_NOFILTER:
 		// merge depth-maps
 		data.depthMaps.MergeDepthMaps(pointcloud, OPTDENSE::nEstimateColors == 2, OPTDENSE::nEstimateNormals == 2);
-	} else {
+		break;
+	case OPTDENSE::FUSE_FILTER:
 		// fuse depth-maps
 		data.depthMaps.FuseDepthMaps(pointcloud, OPTDENSE::nEstimateColors == 2, OPTDENSE::nEstimateNormals == 2);
+		break;
+	case OPTDENSE::FUSE_DENSEFILTER:
+		// dense fuse depth-maps
+		data.depthMaps.DenseFuseDepthMaps(pointcloud, OPTDENSE::nEstimateColors == 2, OPTDENSE::nEstimateNormals == 2);
 	}
 	#if TD_VERBOSE != TD_VERBOSE_OFF
 	if (g_nVerbosityLevel > 2) {

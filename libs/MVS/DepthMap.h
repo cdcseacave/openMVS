@@ -90,6 +90,11 @@ enum DepthFlags {
 	ADJUST_FILTER	= (1 << 2),
 	OPTIMIZE		= (REMOVE_SPECKLES|FILL_GAPS)
 };
+enum FuseMode {
+	FUSE_NOFILTER = 0,
+	FUSE_FILTER,
+	FUSE_DENSEFILTER,
+};
 extern unsigned nResolutionLevel;
 extern unsigned nMaxResolution;
 extern unsigned nMinResolution;
@@ -97,10 +102,14 @@ extern unsigned nSubResolutionLevels;
 extern unsigned nMinViews;
 extern unsigned nMaxViews;
 extern unsigned nMinViewsFuse;
+extern unsigned nMaxViewsFuse;
 extern unsigned nMinViewsFilter;
 extern unsigned nMinViewsFilterAdjust;
 extern unsigned nMinViewsTrustPoint;
 extern unsigned nNumViews;
+extern unsigned nMinPixelsFuse;
+extern unsigned nMaxPointsFuse;
+extern unsigned nMaxFuseDepth;
 extern unsigned nPointInsideROI;
 extern bool bFilterAdjust;
 extern bool bAddCorners;
@@ -113,6 +122,7 @@ extern float fMinAngle;
 extern float fOptimAngle;
 extern float fMaxAngle;
 extern float fDescriptorMinMagnitudeThreshold;
+extern float fDepthReprojectionErrorThreshold;
 extern float fDepthDiffThreshold;
 extern float fNormalDiffThreshold;
 extern float fPairwiseMul;
@@ -122,6 +132,7 @@ extern unsigned nSpeckleSize;
 extern unsigned nIpolGapSize;
 extern int nIgnoreMaskLabel;
 extern unsigned nOptimize;
+extern unsigned nFuseFilter;
 extern unsigned nEstimateColors;
 extern unsigned nEstimateNormals;
 extern float fNCCThresholdKeep;
