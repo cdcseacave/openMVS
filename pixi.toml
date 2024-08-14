@@ -1,0 +1,34 @@
+[project]
+name = "openMVS"
+version = "0.1.0"
+description = "Add a short description here"
+channels = ["conda-forge"]
+platforms = ["linux-64"]
+
+[tasks]
+
+[dependencies]
+python = ">=3.12.5,<4"
+eigen = ">=3.4.0,<4"
+opencv = ">=4.10.0,<5"
+cgal = ">=5.6.1,<6"
+boost = ">=1.84.0,<2"
+ceres-solver = ">=2.2.0,<3"
+libjpeg-turbo = ">=3.0.0,<4"
+cmake = "3.28.1.*"
+cxx-compiler = "1.7.0.*"
+libtiff = "4.6.0.*"
+zlib = ">=1.3.1,<2"
+libpng = ">=1.6.43,<2"
+glew = ">=2.1.0,<3"
+mesa = ">=2.3.0,<3"
+glfw = ">=3.4,<4"
+build = ">=0.7.0,<0.8"
+qt = ">=5.15.8,<6"
+suitesparse = ">=7.8.1,<8"
+tbb = ">=2021.12.0,<2022"
+libgcc = ">=7.2.0,<8"
+libgcc-ng = ">=14.1.0,<15"
+libblas = ">=3.9.0,<4"
+liblapack = ">=3.9.0,<4"
+binutils = ">=2.40,<3"
