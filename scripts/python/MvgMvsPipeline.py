@@ -119,13 +119,13 @@ def find(afile):
 
 
 # Try to find openMVG, COLMAP, and openMVS binaries in PATH
-OPENMVG_BIN = whereis("openMVG_main_SfMInit_ImageListing")
+OPENMVG_BIN = "/home/waqar/reconstruction/openMVG_build/Linux-x86_64-Release/" #whereis("openMVG_main_SfMInit_ImageListing")
 COLMAP_BIN = whereis("colmap")
-OPENMVS_BIN = whereis("ReconstructMesh")
+OPENMVS_BIN = "/home/waqar/reconstruction/openMVS_build/bin/" #whereis("ReconstructMesh")
 
 # Try to find openMVG camera sensor database
 CAMERA_SENSOR_DB_FILE = "sensor_width_camera_database.txt"
-CAMERA_SENSOR_DB_DIRECTORY = find(CAMERA_SENSOR_DB_FILE)
+CAMERA_SENSOR_DB_DIRECTORY = "/home/waqar/reconstruction/scripts/" #find(CAMERA_SENSOR_DB_FILE)
 
 # Ask user for openMVG, COLMAP, and openMVS directories if not found
 if not OPENMVG_BIN:
