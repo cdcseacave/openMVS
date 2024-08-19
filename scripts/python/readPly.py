@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Shows how to use the Rerun SDK to log a textured 3D mesh from a .ply file and its associated texture."""
+#pip install rerun-sdk trimesh pillow
+#python your_script.py --mesh-path path_to_your_mesh.ply --texture-path path_to_your_texture.png
 
 from __future__ import annotations
 
