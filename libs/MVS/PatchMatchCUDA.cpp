@@ -108,18 +108,18 @@ void PatchMatchCUDA::Init(bool bGeomConsistency)
 void PatchMatchCUDA::AllocatePatchMatchCUDA(const cv::Mat1f& image)
 {
 	const size_t num_images = images.size();
-	CUDA::checkCudaCall(cudaMalloc((void**)&cudaTextureImages, sizeof(cudaTextureObject_t) * num_images));
-	CUDA::checkCudaCall(cudaMalloc((void**)&cudaCameras, sizeof(Camera) * num_images));
+	CUDA_CHECK(cudaMalloc((void**)&cudaTextureImages, sizeof(cudaTextureObject_t) * num_images));
+	CUDA_CHECK(cudaMalloc((void**)&cudaCameras, sizeof(Camera) * num_images));
 	if (params.bGeomConsistency)
-		CUDA::checkCudaCall(cudaMalloc((void**)&cudaTextureDepths, sizeof(cudaTextureObject_t) * (num_images-1)));
+		CUDA_CHECK(cudaMalloc((void**)&cudaTextureDepths, sizeof(cudaTextureObject_t) * (num_images-1)));
 
 	const size_t size = image.size().area();
 	depthNormalEstimates = new Point4[size];
-	CUDA::checkCudaCall(cudaMalloc((void**)&cudaDepthNormalEstimates, sizeof(Point4) * size));
+	CUDA_CHECK(cudaMalloc((void**)&cudaDepthNormalEstimates, sizeof(Point4) * size));
 
-	CUDA::checkCudaCall(cudaMalloc((void**)&cudaDepthNormalCosts, sizeof(float) * size));
-	CUDA::checkCudaCall(cudaMalloc((void**)&cudaSelectedViews, sizeof(unsigned) * size));
-	CUDA::checkCudaCall(cudaMalloc((void**)&cudaRandStates, sizeof(curandState) * size));
+	CUDA_CHECK(cudaMalloc((void**)&cudaDepthNormalCosts, sizeof(float) * size));
+	CUDA_CHECK(cudaMalloc((void**)&cudaSelectedViews, sizeof(unsigned) * size));
+	CUDA_CHECK(cudaMalloc((void**)&cudaRandStates, sizeof(curandState) * size));
 }
 
 void PatchMatchCUDA::AllocateImageCUDA(size_t i, const cv::Mat1f& image, bool bInitImage, bool bInitDepthMap)
@@ -127,7 +127,7 @@ void PatchMatchCUDA::AllocateImageCUDA(size_t i, const cv::Mat1f& image, bool bI
 	const cudaChannelFormatDesc channelDesc = cudaCreateChannelDesc(32, 0, 0, 0, cudaChannelFormatKindFloat);
 
 	if (bInitImage) {
-		CUDA::checkCudaCall(cudaMallocArray(&cudaImageArrays[i], &channelDesc, image.cols, image.rows));
+		CUDA_CHECK(cudaMallocArray(&cudaImageArrays[i], &channelDesc, image.cols, image.rows));
 
 		struct cudaResourceDesc resDesc;
 		memset(&resDesc, 0, sizeof(cudaResourceDesc));
@@ -142,7 +142,7 @@ void PatchMatchCUDA::AllocateImageCUDA(size_t i, const cv::Mat1f& image, bool bI
 		texDesc.readMode  = cudaReadModeElementType;
 		texDesc.normalizedCoords = 0;
 
-		CUDA::checkCudaCall(cudaCreateTextureObject(&textureImages[i], &resDesc, &texDesc, NULL));
+		CUDA_CHECK(cudaCreateTextureObject(&textureImages[i], &resDesc, &texDesc, NULL));
 	}
 
 	if (params.bGeomConsistency && i > 0) {
@@ -152,7 +152,7 @@ void PatchMatchCUDA::AllocateImageCUDA(size_t i, const cv::Mat1f& image, bool bI
 			return;
 		}
 
-		CUDA::checkCudaCall(cudaMallocArray(&cudaDepthArrays[i-1], &channelDesc, image.cols, image.rows));
+		CUDA_CHECK(cudaMallocArray(&cudaDepthArrays[i-1], &channelDesc, image.cols, image.rows));
 
 		struct cudaResourceDesc resDesc;
 		memset(&resDesc, 0, sizeof(cudaResourceDesc));
@@ -167,7 +167,7 @@ void PatchMatchCUDA::AllocateImageCUDA(size_t i, const cv::Mat1f& image, bool bI
 		texDesc.readMode  = cudaReadModeElementType;
 		texDesc.normalizedCoords = 0;
 
-		CUDA::checkCudaCall(cudaCreateTextureObject(&textureDepths[i-1], &resDesc, &texDesc, NULL));
+		CUDA_CHECK(cudaCreateTextureObject(&textureDepths[i-1], &resDesc, &texDesc, NULL));
 	}
 }
 
@@ -213,7 +213,7 @@ void PatchMatchCUDA::EstimateDepthMap(DepthData& depthData)
 			cv::resize(lowResDepthMap, depthData.depthMap, size, 0, 0, cv::INTER_LINEAR);
 			cv::resize(lowResNormalMap, depthData.normalMap, size, 0, 0, cv::INTER_NEAREST);
 			cv::resize(lowResViewsMap, depthData.viewsMap, size, 0, 0, cv::INTER_NEAREST);
-			CUDA::checkCudaCall(cudaMalloc((void**)&cudaLowDepths, sizeof(float) * size.area()));
+			CUDA_CHECK(cudaMalloc((void**)&cudaLowDepths, sizeof(float) * size.area()));
 		} else {
 			if (totalScaleNumber > 0) {
 				// smallest resolution, when multi-resolution is enabled
@@ -289,13 +289,13 @@ void PatchMatchCUDA::EstimateDepthMap(DepthData& depthData)
 				}
 				AllocateImageCUDA(i, image, false, !view.depthMap.empty());
 			}
-			CUDA::checkCudaCall(cudaMemcpy2DToArray(cudaImageArrays[i], 0, 0, image.ptr<float>(), image.step[0], image.cols * sizeof(float), image.rows, cudaMemcpyHostToDevice));
+			CUDA_CHECK(cudaMemcpy2DToArray(cudaImageArrays[i], 0, 0, image.ptr<float>(), image.step[0], image.cols * sizeof(float), image.rows, cudaMemcpyHostToDevice));
 			if (params.bGeomConsistency && i > 0 && !view.depthMap.empty()) {
 				// set previously computed depth-map
 				DepthMap depthMap(view.depthMap);
 				if (depthMap.size() != image.size())
 					cv::resize(depthMap, depthMap, image.size(), 0, 0, cv::INTER_LINEAR);
-				CUDA::checkCudaCall(cudaMemcpy2DToArray(cudaDepthArrays[i-1], 0, 0, depthMap.ptr<float>(), depthMap.step[0], sizeof(float) * depthMap.cols, depthMap.rows, cudaMemcpyHostToDevice));
+				CUDA_CHECK(cudaMemcpy2DToArray(cudaDepthArrays[i-1], 0, 0, depthMap.ptr<float>(), depthMap.step[0], sizeof(float) * depthMap.cols, depthMap.rows, cudaMemcpyHostToDevice));
 			}
 			images[i] = std::move(image);
 			cameras[i] = std::move(camera);
@@ -323,12 +323,12 @@ void PatchMatchCUDA::EstimateDepthMap(DepthData& depthData)
 		prevNumImages = numImages;
 
 		// setup CUDA memory
-		CUDA::checkCudaCall(cudaMemcpy(cudaTextureImages, textureImages.data(), sizeof(cudaTextureObject_t) * numImages, cudaMemcpyHostToDevice));
-		CUDA::checkCudaCall(cudaMemcpy(cudaCameras, cameras.data(), sizeof(Camera) * numImages, cudaMemcpyHostToDevice));
+		CUDA_CHECK(cudaMemcpy(cudaTextureImages, textureImages.data(), sizeof(cudaTextureObject_t) * numImages, cudaMemcpyHostToDevice));
+		CUDA_CHECK(cudaMemcpy(cudaCameras, cameras.data(), sizeof(Camera) * numImages, cudaMemcpyHostToDevice));
 		if (params.bGeomConsistency) {
 			// set previously computed depth-maps
 			ASSERT(depthData.depthMap.size() == depthData.GetView().image.size());
-			CUDA::checkCudaCall(cudaMemcpy(cudaTextureDepths, textureDepths.data(), sizeof(cudaTextureObject_t) * params.nNumViews, cudaMemcpyHostToDevice));
+			CUDA_CHECK(cudaMemcpy(cudaTextureDepths, textureDepths.data(), sizeof(cudaTextureObject_t) * params.nNumViews, cudaMemcpyHostToDevice));
 		}
 
 		// load depth-map and normal-map into CUDA memory
@@ -342,20 +342,20 @@ void PatchMatchCUDA::EstimateDepthMap(DepthData& depthData)
 				depthNormal.w() = depthData.depthMap(r, c);
 			}
 		}
-		CUDA::checkCudaCall(cudaMemcpy(cudaDepthNormalEstimates, depthNormalEstimates, sizeof(Point4) * depthData.depthMap.size().area(), cudaMemcpyHostToDevice));
+		CUDA_CHECK(cudaMemcpy(cudaDepthNormalEstimates, depthNormalEstimates, sizeof(Point4) * depthData.depthMap.size().area(), cudaMemcpyHostToDevice));
 
 		// load low resolution depth-map into CUDA memory
 		if (params.bLowResProcessed) {
 			ASSERT(depthData.depthMap.isContinuous());
-			CUDA::checkCudaCall(cudaMemcpy(cudaLowDepths, depthData.depthMap.ptr<float>(), sizeof(float) * depthData.depthMap.size().area(), cudaMemcpyHostToDevice));
+			CUDA_CHECK(cudaMemcpy(cudaLowDepths, depthData.depthMap.ptr<float>(), sizeof(float) * depthData.depthMap.size().area(), cudaMemcpyHostToDevice));
 		}
 
 		// run CUDA patch-match
 		ASSERT(!depthData.viewsMap.empty());
 		RunCUDA(depthData.confMap.getData(), (uint32_t*)depthData.viewsMap.getData());
-		CUDA::checkCudaCall(cudaGetLastError());
+		CUDA_CHECK(cudaGetLastError());
 		if (params.bLowResProcessed)
-			CUDA::checkCudaCall(cudaFree(cudaLowDepths));
+			CUDA_CHECK(cudaFree(cudaLowDepths));
 
 		// load depth-map, normal-map and confidence-map from CUDA memory
 		for (int r = 0; r < depthData.depthMap.rows; ++r) {
