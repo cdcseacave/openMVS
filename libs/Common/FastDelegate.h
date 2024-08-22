@@ -26,12 +26,6 @@
 #include <type_traits>
 #include <utility>
 
-// VC work around for constexpr and noexcept: VC2013 and below do not support these 2 keywords
-#if defined(_MSC_VER) && (_MSC_VER <= 1800)
-#define constexpr const
-#define noexcept throw()
-#endif
-
 namespace fastdelegate
 {
 

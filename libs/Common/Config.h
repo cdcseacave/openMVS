@@ -206,9 +206,6 @@
 #	define FORCEINLINE inline
 #endif
 
-#ifndef _SUPPORT_CPP11
-#	define constexpr inline
-#endif
 #ifdef _SUPPORT_CPP17
 #	undef MAYBEUNUSED
 #	define MAYBEUNUSED [[maybe_unused]]
@@ -224,37 +221,36 @@
 
 #ifdef _MSC_VER
 #define _DEBUGINFO
-#define _CRTDBG_MAP_ALLOC	//enable this to show also the filename (DEBUG_NEW should also be defined in each file)
+#define _CRTDBG_MAP_ALLOC //enable this to show also the filename (DEBUG_NEW should also be defined in each file)
 #include <cstdlib>
 #include <crtdbg.h>
 #ifdef _INC_CRTDBG
-#define ASSERT(exp)	{if (!(exp) && 1 == _CrtDbgReport(_CRT_ASSERT, __FILE__, __LINE__, NULL, #exp)) _CrtDbgBreak();}
+#define ASSERT(exp, ...) {if (!(exp) && 1 == _CrtDbgReport(_CRT_ASSERT, __FILE__, __LINE__, NULL, #exp)) _CrtDbgBreak();}
 #else
-#define ASSERT(exp)	{if (!(exp)) __debugbreak();}
+#define ASSERT(exp, ...) {if (!(exp)) __debugbreak();}
 #endif // _INC_CRTDBG
 #define TRACE(...) {TCHAR buffer[2048];	_sntprintf(buffer, 2048, __VA_ARGS__); OutputDebugString(buffer);}
 #else // _MSC_VER
 #include <assert.h>
-#define ASSERT(exp)	assert(exp)
+#define ASSERT(exp, ...) assert(exp)
 #define TRACE(...)
 #endif // _MSC_VER
 
 #else
 
 #ifdef _RELEASE
-#define ASSERT(exp)
+#define ASSERT(exp, ...)
 #else
 #ifdef _MSC_VER
-#define ASSERT(exp) {if (!(exp)) __debugbreak();}
+#define ASSERT(exp, ...) {if (!(exp)) __debugbreak();}
 #else // _MSC_VER
-#define ASSERT(exp) {if (!(exp)) __builtin_trap();}
+#define ASSERT(exp, ...) {if (!(exp)) __builtin_trap();}
 #endif // _MSC_VER
 #endif
 #define TRACE(...)
 
 #endif // _DEBUG
 
-#define ASSERTM(exp, msg) ASSERT(exp)
 
 namespace SEACAVE_ASSERT
 {

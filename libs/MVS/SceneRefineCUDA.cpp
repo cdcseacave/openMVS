@@ -1951,10 +1951,10 @@ public:
 	struct View {
 		Image32F imageHost; // store temporarily the image pixels
 		Image8U::Size size;
-		CUDA::ArrayRT16F image;
-		CUDA::MemDevice depthMap;
-		CUDA::MemDevice faceMap;
-		CUDA::MemDevice baryMap;
+		SEACAVE::CUDA::ArrayRT16F image;
+		SEACAVE::CUDA::MemDevice depthMap;
+		SEACAVE::CUDA::MemDevice faceMap;
+		SEACAVE::CUDA::MemDevice baryMap;
 		inline View() {}
 		inline View(View&) {}
 	};
@@ -2000,8 +2000,8 @@ public:
 	void ImageMeshWarp(
 		const Camera& cameraA, const Camera& cameraB, const Image8U::Size& size,
 		uint32_t idxImageA, uint32_t idxImageB);
-	void ComputeLocalVariance(const CUDA::ArrayRT16F& image, const Image8U::Size& size,
-		CUDA::MemDevice& imageMean, CUDA::MemDevice& imageVar);
+	void ComputeLocalVariance(const SEACAVE::CUDA::ArrayRT16F& image, const Image8U::Size& size,
+		SEACAVE::CUDA::MemDevice& imageMean, SEACAVE::CUDA::MemDevice& imageVar);
 	void ComputeLocalZNCC(const Image8U::Size& size);
 	void ComputePhotometricGradient(const Camera& cameraA, const Camera& cameraB, const Image8U::Size& size,
 		uint32_t idxImageA, uint32_t idxImageB, uint32_t numVertices, float RegularizationScale);
@@ -2023,45 +2023,45 @@ public:
 	ViewsArr views; // views' data
 	PairIdxArr pairs; // image pairs used to refine the mesh
 
-	CUDA::ModuleRTPtr module;
-	CUDA::KernelRT kernelProjectMesh;
-	CUDA::KernelRT kernelCrossCheckProjection;
-	CUDA::KernelRT kernelImageMeshWarp;
-	CUDA::KernelRT kernelComputeImageMean;
-	CUDA::KernelRT kernelComputeImageVar;
-	CUDA::KernelRT kernelComputeImageCov;
-	CUDA::KernelRT kernelComputeImageZNCC;
-	CUDA::KernelRT kernelComputeImageDZNCC;
-	CUDA::KernelRT kernelComputePhotometricGradient;
-	CUDA::KernelRT kernelUpdatePhotoGradNorm;
-	CUDA::KernelRT kernelComputeSmoothnessGradient;
-	CUDA::KernelRT kernelCombineGradients;
-	CUDA::KernelRT kernelCombineAllGradients;
+	SEACAVE::CUDA::ModuleRTPtr module;
+	SEACAVE::CUDA::KernelRT kernelProjectMesh;
+	SEACAVE::CUDA::KernelRT kernelCrossCheckProjection;
+	SEACAVE::CUDA::KernelRT kernelImageMeshWarp;
+	SEACAVE::CUDA::KernelRT kernelComputeImageMean;
+	SEACAVE::CUDA::KernelRT kernelComputeImageVar;
+	SEACAVE::CUDA::KernelRT kernelComputeImageCov;
+	SEACAVE::CUDA::KernelRT kernelComputeImageZNCC;
+	SEACAVE::CUDA::KernelRT kernelComputeImageDZNCC;
+	SEACAVE::CUDA::KernelRT kernelComputePhotometricGradient;
+	SEACAVE::CUDA::KernelRT kernelUpdatePhotoGradNorm;
+	SEACAVE::CUDA::KernelRT kernelComputeSmoothnessGradient;
+	SEACAVE::CUDA::KernelRT kernelCombineGradients;
+	SEACAVE::CUDA::KernelRT kernelCombineAllGradients;
 
-	CUDA::MemDevice vertices;
-	CUDA::MemDevice vertexVertices;
-	CUDA::MemDevice faces;
-	CUDA::MemDevice faceNormals;
-	CUDA::TextureRT16F texImageRef;
-	CUDA::SurfaceRT16F surfImageRef;
-	CUDA::SurfaceRT16F surfImageProjRef;
-	CUDA::MemDevice mask;
-	CUDA::MemDevice imageMeanA;
-	CUDA::MemDevice imageVarA;
-	CUDA::ArrayRT16F imageAB;
-	CUDA::MemDevice imageMeanAB;
-	CUDA::MemDevice imageVarAB;
-	CUDA::MemDevice imageCov;
-	CUDA::MemDevice imageZNCC;
-	CUDA::MemDevice imageDZNCC;
-	CUDA::MemDevice photoGrad;
-	CUDA::MemDevice photoGradNorm;
-	CUDA::MemDevice photoGradPixels;
-	CUDA::MemDevice vertexVerticesCont;
-	CUDA::MemDevice vertexVerticesSizes;
-	CUDA::MemDevice vertexVerticesPointers;
-	CUDA::MemDevice smoothGrad1;
-	CUDA::MemDevice smoothGrad2;
+	SEACAVE::CUDA::MemDevice vertices;
+	SEACAVE::CUDA::MemDevice vertexVertices;
+	SEACAVE::CUDA::MemDevice faces;
+	SEACAVE::CUDA::MemDevice faceNormals;
+	SEACAVE::CUDA::TextureRT16F texImageRef;
+	SEACAVE::CUDA::SurfaceRT16F surfImageRef;
+	SEACAVE::CUDA::SurfaceRT16F surfImageProjRef;
+	SEACAVE::CUDA::MemDevice mask;
+	SEACAVE::CUDA::MemDevice imageMeanA;
+	SEACAVE::CUDA::MemDevice imageVarA;
+	SEACAVE::CUDA::ArrayRT16F imageAB;
+	SEACAVE::CUDA::MemDevice imageMeanAB;
+	SEACAVE::CUDA::MemDevice imageVarAB;
+	SEACAVE::CUDA::MemDevice imageCov;
+	SEACAVE::CUDA::MemDevice imageZNCC;
+	SEACAVE::CUDA::MemDevice imageDZNCC;
+	SEACAVE::CUDA::MemDevice photoGrad;
+	SEACAVE::CUDA::MemDevice photoGradNorm;
+	SEACAVE::CUDA::MemDevice photoGradPixels;
+	SEACAVE::CUDA::MemDevice vertexVerticesCont;
+	SEACAVE::CUDA::MemDevice vertexVerticesSizes;
+	SEACAVE::CUDA::MemDevice vertexVerticesPointers;
+	SEACAVE::CUDA::MemDevice smoothGrad1;
+	SEACAVE::CUDA::MemDevice smoothGrad2;
 
 	enum { HalfSize = 2 }; // half window size used to compute ZNCC
 };
@@ -2076,7 +2076,7 @@ MeshRefineCUDA::MeshRefineCUDA(Scene& _scene, unsigned _nAlternatePair, float _w
 	scene(_scene),
 	images(_scene.images)
 {
-	if (!InitKernels(CUDA::desiredDeviceID))
+	if (!InitKernels(SEACAVE::CUDA::desiredDeviceID))
 		return;
 	// keep only best neighbor views for each image
 	std::unordered_set<uint64_t> mapPairs;
@@ -2110,13 +2110,13 @@ bool MeshRefineCUDA::InitKernels(int device)
 	STATIC_ASSERT(sizeof(CameraCUDA) == 176);
 
 	// initialize CUDA device if needed
-	if (CUDA::devices.IsEmpty() && CUDA::initDevice(device) != CUDA_SUCCESS)
+	if (SEACAVE::CUDA::devices.IsEmpty() && SEACAVE::CUDA::initDevice(device) != CUDA_SUCCESS)
 		return false;
 
 	// initialize CUDA kernels
 	if (module != NULL && module->IsValid())
 		return true;
-	module = new CUDA::ModuleRT(g_szMeshRefineModule);
+	module = new SEACAVE::CUDA::ModuleRT(g_szMeshRefineModule);
 	if (!module->IsValid()) {
 		module.Release();
 		return false;
@@ -2615,8 +2615,8 @@ void MeshRefineCUDA::ImageMeshWarp(
 }
 
 // compute local variance for each image pixel
-void MeshRefineCUDA::ComputeLocalVariance(const CUDA::ArrayRT16F& image, const Image8U::Size& size,
-	CUDA::MemDevice& imageMean, CUDA::MemDevice& imageVar)
+void MeshRefineCUDA::ComputeLocalVariance(const SEACAVE::CUDA::ArrayRT16F& image, const Image8U::Size& size,
+	SEACAVE::CUDA::MemDevice& imageMean, SEACAVE::CUDA::MemDevice& imageVar)
 {
 	surfImageRef.Bind(image);
 	reportCudaError(kernelComputeImageMean(size,

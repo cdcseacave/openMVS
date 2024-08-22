@@ -1,5 +1,5 @@
 /*
-* PatchMatchCUDA.cpp
+* PatchMatch.cpp
 *
 * Copyright (c) 2014-2021 SEACAVE
 *
@@ -35,7 +35,6 @@
 
 #ifdef _USE_CUDA
 
-using namespace MVS;
 
 
 // D E F I N E S ///////////////////////////////////////////////////
@@ -43,19 +42,23 @@ using namespace MVS;
 
 // S T R U C T S ///////////////////////////////////////////////////
 
-PatchMatchCUDA::PatchMatchCUDA(int device)
+namespace MVS {
+
+namespace CUDA {
+
+PatchMatch::PatchMatch(int device)
 {
 	// initialize CUDA device if needed
-	if (CUDA::devices.IsEmpty())
-		CUDA::initDevice(device);
+	if (SEACAVE::CUDA::devices.IsEmpty())
+		SEACAVE::CUDA::initDevice(device);
 }
 
-PatchMatchCUDA::~PatchMatchCUDA()
+PatchMatch::~PatchMatch()
 {
 	Release();
 }
 
-void PatchMatchCUDA::Release()
+void PatchMatch::Release()
 {
 	if (images.empty())
 		return;
@@ -80,7 +83,7 @@ void PatchMatchCUDA::Release()
 	ReleaseCUDA();
 }
 
-void PatchMatchCUDA::ReleaseCUDA()
+void PatchMatch::ReleaseCUDA()
 {
 	cudaFree(cudaTextureImages);
 	cudaFree(cudaCameras);
@@ -94,7 +97,7 @@ void PatchMatchCUDA::ReleaseCUDA()
 	delete[] depthNormalEstimates;
 }
 
-void PatchMatchCUDA::Init(bool bGeomConsistency)
+void PatchMatch::Init(bool bGeomConsistency)
 {
 	if (bGeomConsistency) {
 		params.bGeomConsistency = true;
@@ -105,7 +108,7 @@ void PatchMatchCUDA::Init(bool bGeomConsistency)
 	}
 }
 
-void PatchMatchCUDA::AllocatePatchMatchCUDA(const cv::Mat1f& image)
+void PatchMatch::AllocatePatchMatchCUDA(const cv::Mat1f& image)
 {
 	const size_t num_images = images.size();
 	CUDA_CHECK(cudaMalloc((void**)&cudaTextureImages, sizeof(cudaTextureObject_t) * num_images));
@@ -122,7 +125,7 @@ void PatchMatchCUDA::AllocatePatchMatchCUDA(const cv::Mat1f& image)
 	CUDA_CHECK(cudaMalloc((void**)&cudaRandStates, sizeof(curandState) * size));
 }
 
-void PatchMatchCUDA::AllocateImageCUDA(size_t i, const cv::Mat1f& image, bool bInitImage, bool bInitDepthMap)
+void PatchMatch::AllocateImageCUDA(size_t i, const cv::Mat1f& image, bool bInitImage, bool bInitDepthMap)
 {
 	const cudaChannelFormatDesc channelDesc = cudaCreateChannelDesc(32, 0, 0, 0, cudaChannelFormatKindFloat);
 
@@ -171,7 +174,7 @@ void PatchMatchCUDA::AllocateImageCUDA(size_t i, const cv::Mat1f& image, bool bI
 	}
 }
 
-void PatchMatchCUDA::EstimateDepthMap(DepthData& depthData)
+void PatchMatch::EstimateDepthMap(DepthData& depthData)
 {
 	TD_TIMER_STARTD();
 
@@ -253,13 +256,12 @@ void PatchMatchCUDA::EstimateDepthMap(DepthData& depthData)
 
 		for (IIndex i = 0; i < numImages; ++i) {
 			const DepthData::ViewData& view = depthData.images[i];
-			Image32F image = view.image;
-			Camera camera;
-			camera.K = Eigen::Map<const SEACAVE::Matrix3x3::EMat>(view.camera.K.val).cast<float>();
-			camera.R = Eigen::Map<const SEACAVE::Matrix3x3::EMat>(view.camera.R.val).cast<float>();
-			camera.C = Eigen::Map<const SEACAVE::Point3::EVec>(view.camera.C.ptr()).cast<float>();
-			camera.height = image.rows;
-			camera.width = image.cols;
+			const Image32F image = view.image;
+			const Camera camera(
+				Eigen::Map<const SEACAVE::Matrix3x3::EMat>(view.camera.K.val).cast<float>(),
+				Eigen::Map<const SEACAVE::Matrix3x3::EMat>(view.camera.R.val).cast<float>(),
+				Eigen::Map<const SEACAVE::Point3::EVec>(view.camera.C.ptr()).cast<float>(),
+				image.rows, image.cols);
 			// store camera and image
 			if (i == 0 && (prevNumImages < numImages || images[0].size() != image.size())) {
 				// allocate/reallocate PatchMatch CUDA memory
@@ -415,5 +417,9 @@ void PatchMatchCUDA::EstimateDepthMap(DepthData& depthData)
 		images.front().cols, images.front().rows, TD_TIMER_GET_FMT().c_str());
 }
 /*----------------------------------------------------------------*/
+
+} // namespace CUDA
+
+} // namespace MVS
 
 #endif // _USE_CUDA

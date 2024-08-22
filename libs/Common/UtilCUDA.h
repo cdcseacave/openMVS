@@ -67,8 +67,8 @@ inline CUresult __reportCudaError(CUresult result, LPCSTR errorMessage) {
 	ASSERT("CudaError" == NULL);
 	return result;
 }
-#define reportCudaError(val) CUDA::__reportCudaError(val, #val)
-#define checkCudaError(val) { const CUresult ret(CUDA::__reportCudaError(val, #val)); if (ret != CUDA_SUCCESS) return ret; }
+#define reportCudaError(val) SEACAVE::CUDA::__reportCudaError(val, #val)
+#define checkCudaError(val) { const CUresult ret(SEACAVE::CUDA::__reportCudaError(val, #val)); if (ret != CUDA_SUCCESS) return ret; }
 
 // outputs the proper CUDA error code and abort in the event that a CUDA host call returns an error
 inline void __ensureCudaResult(CUresult result, LPCSTR errorMessage) {
@@ -77,7 +77,7 @@ inline void __ensureCudaResult(CUresult result, LPCSTR errorMessage) {
 	ASSERT("CudaAbort" == NULL);
 	exit(EXIT_FAILURE);
 }
-#define ensureCudaResult(val) CUDA::__ensureCudaResult(val, #val)
+#define ensureCudaResult(val) SEACAVE::CUDA::__ensureCudaResult(val, #val)
 /*----------------------------------------------------------------*/
 
 // rounds up addr to the align boundary

@@ -43,32 +43,29 @@
 // patch stepping
 #define nSizeStep 2
 
-using namespace MVS;
 
-typedef Eigen::Matrix<int,2,1> Point2i;
-typedef Eigen::Matrix<float,2,1> Point2;
-typedef Eigen::Matrix<float,3,1> Point3;
-typedef Eigen::Matrix<float,4,1> Point4;
-typedef Eigen::Matrix<float,3,3> Matrix3;
+namespace MVS {
+
+namespace CUDA {
 
 #define ImagePixels cudaTextureObject_t
 #define RandState curandState
 
 // square the given value
-__device__ inline constexpr float Square(float v) {
+__device__ constexpr float Square(float v) {
 	return v * v;
 }
 
 // set/check a bit
-__device__ inline constexpr void SetBit(unsigned& input, unsigned i) {
+__device__ constexpr void SetBit(unsigned& input, unsigned i) {
 	input |= (1u << i);
 }
-__device__ inline constexpr int IsBitSet(unsigned input, unsigned i) {
+__device__ constexpr int IsBitSet(unsigned input, unsigned i) {
 	return (input >> i) & 1u;
 }
 
 // swap the given values
-__device__ inline constexpr void Swap(float& v0, float& v1) {
+__device__ constexpr void Swap(float& v0, float& v1) {
 	const float tmp = v0;
 	v0 = v1;
 	v1 = tmp;
@@ -80,27 +77,6 @@ __device__ inline int Point2Idx(const Point2i& p, int width) {
 }
 __device__ inline Point2i Idx2Point(int idx, int width) {
 	return Point2i(idx % width, idx / width);
-}
-
-// project and back-project a 3D point
-__device__ inline Point2 ProjectPoint(const PatchMatchCUDA::Camera& camera, const Point3& X) {
-	const Point3 x = camera.K * camera.R * (X - camera.C);
-	return x.hnormalized();
-}
-__device__ inline Point3 BackProjectPointCamera(const PatchMatchCUDA::Camera& camera, const Point2& p, const float depth = 1.f) {
-	return Point3(
-		depth * (p.x() - camera.K(0,2)) / camera.K(0,0),
-		depth * (p.y() - camera.K(1,2)) / camera.K(1,1),
-		depth);
-}
-__device__ inline Point3 BackProjectPoint(const PatchMatchCUDA::Camera& camera, const Point2& p, const float depth) {
-	const Point3 camX = BackProjectPointCamera(camera, p, depth);
-	return camera.R.transpose() * camX + camera.C;
-}
-
-// compute camera ray direction for the given pixel
-__device__ inline Point3 ViewDirection(const PatchMatchCUDA::Camera& camera, const Point2i& p) {
-	return BackProjectPointCamera(camera, p.cast<float>()).normalized();
 }
 
 // sort the given values array using bubble sort algorithm
@@ -149,7 +125,7 @@ __device__ inline void PDF2CDF(float* probs, const int numProbs) {
 
 
 // generate a random normal
-__device__ inline Point3 GenerateRandomNormal(const PatchMatchCUDA::Camera& camera, const Point2i& p, RandState* randState)
+__device__ inline Point3 GenerateRandomNormal(const CUDA::Camera& camera, const Point2i& p, RandState* randState)
 {
 	float q1, q2, s;
 	do {
@@ -163,16 +139,16 @@ __device__ inline Point3 GenerateRandomNormal(const PatchMatchCUDA::Camera& came
 		2.f * q2 * sq,
 		1.f - 2.f * s);
 
-	const Point3 viewDirection = ViewDirection(camera, p);
+	const Point3 viewDirection = camera.model.ViewDirection(p);
 	if (normal.dot(viewDirection) > 0.f)
 		normal = -normal;
 	return normal.normalized();
 }
 
 // randomly perturb a normal
-__device__ inline Point3 GeneratePerturbedNormal(const PatchMatchCUDA::Camera& camera, const Point2i& p, const Point3& normal, RandState* randState, const float perturbation)
+__device__ inline Point3 GeneratePerturbedNormal(const CUDA::Camera& camera, const Point2i& p, const Point3& normal, RandState* randState, const float perturbation)
 {
-	const Point3 viewDirection = ViewDirection(camera, p);
+	const Point3 viewDirection = camera.model.ViewDirection(p);
 
 	const float a1 = (curand_uniform(randState) - 0.5f) * perturbation;
 	const float a2 = (curand_uniform(randState) - 0.5f) * perturbation;
@@ -203,7 +179,7 @@ __device__ inline Point3 GeneratePerturbedNormal(const PatchMatchCUDA::Camera& c
 }
 
 // randomly perturb a normal
-__device__ inline float GeneratePerturbedDepth(float depth, RandState* randState, const float perturbation, const PatchMatchCUDA::Params& params)
+__device__ inline float GeneratePerturbedDepth(float depth, RandState* randState, const float perturbation, const PatchMatch::Params& params)
 {
 	const float depthMinPerturbed = (1.f - perturbation) * depth;
 	const float depthMaxPerturbed = (1.f + perturbation) * depth;
@@ -215,34 +191,34 @@ __device__ inline float GeneratePerturbedDepth(float depth, RandState* randState
 }
 
 // interpolate given pixel's estimate to the current position
-__device__ inline float InterpolatePixel(const PatchMatchCUDA::Camera& camera, const Point2i& p, const Point2i& np, float depth, const Point3& normal, const PatchMatchCUDA::Params& params)
+__device__ inline float InterpolatePixel(const CUDA::Camera& camera, const Point2i& p, const Point2i& np, float depth, const Point3& normal, const PatchMatch::Params& params)
 {
 	float depthNew;
 	if (p.x() == np.x()) {
-		const float nx1 = (p.y() - camera.K(1,2)) / camera.K(1,1);
+		const float nx1 = (p.y() - camera.model.p.y()) / camera.model.f.y();
 		const float denom = normal.z() + nx1 * normal.y();
 		if (abs(denom) < FLT_EPSILON)
 			return depth;
-		const float x1 = (np.y() - camera.K(1,2)) / camera.K(1,1);
+		const float x1 = (np.y() - camera.model.p.y()) / camera.model.f.y();
 		const float nom = depth * (normal.z() + x1 * normal.y());
 		depthNew = nom / denom;
 	} else if (p.y() == np.y()) {
-		const float nx1 = (p.x() - camera.K(0,2)) / camera.K(0,0);
+		const float nx1 = (p.x() - camera.model.p.x()) / camera.model.f.x();
 		const float denom = normal.z() + nx1 * normal.x();
 		if (abs(denom) < FLT_EPSILON)
 			return depth;
-		const float x1 = (np.x() - camera.K(0,2)) / camera.K(0,0);
+		const float x1 = (np.x() - camera.model.p.x()) / camera.model.f.x();
 		const float nom = depth * (normal.z() + x1 * normal.x());
 		depthNew = nom / denom;
 	} else {
-		const float planeD = normal.dot(BackProjectPointCamera(camera, np.cast<float>(), depth));
-		depthNew = planeD / normal.dot(BackProjectPointCamera(camera, p.cast<float>()));
+		const float planeD = normal.dot(camera.model.TransformPointI2C(np.cast<float>(), depth));
+		depthNew = planeD / normal.dot(camera.model.TransformPointI2C(p.cast<float>()));
 	}
 	return (depthNew >= params.fDepthMin && depthNew <= params.fDepthMax) ? depthNew : depth;
 }
 
 // compute normal to the surface given the 4 neighbors
-__device__ inline Point3 ComputeDepthGradient(const Matrix3& K, float depth, const Point2i& pos, const Point4& ndepth) {
+__device__ inline Point3 ComputeDepthGradient(const LinearCameraModel& model, float depth, const Point2i& pos, const Point4& ndepth) {
 	constexpr float2 nposg[4] = {{0,-1}, {0,1}, {-1,0}, {1,0}};
 	Point2 dg(0,0);
 	// add neighbor depths at the gradient locations
@@ -252,19 +228,19 @@ __device__ inline Point3 ComputeDepthGradient(const Matrix3& K, float depth, con
 	const Point2 d = dg*0.5f;
 	// compute normal from depth gradient
 	return Point3(
-		K(0,0)*d.x(),
-		K(1,1)*d.y(),
-		(K(0,2)-pos.x())*d.x()+(K(1,2)-pos.y())*d.y()-depth).normalized();
+		model.f.x()*d.x(),
+		model.f.y()*d.y(),
+		(model.p.x()-pos.x())*d.x()+(model.p.y()-pos.y())*d.y()-depth).normalized();
 }
 
 // compose tho homography matrix that transforms a point from reference to source camera through the given plane
-__device__ inline Matrix3 ComputeHomography(const PatchMatchCUDA::Camera& refCamera, const PatchMatchCUDA::Camera& trgCamera, const Point2& p, const Point4& plane)
+__device__ inline Matrix3 ComputeHomography(const CUDA::Camera& refCamera, const CUDA::Camera& trgCamera, const Point2& p, const Point4& plane)
 {
-	const Point3 X = BackProjectPointCamera(refCamera, p, plane.w());
+	const Point3 X = refCamera.model.TransformPointI2C(p, plane.w());
 	const Point3 normal = plane.topLeftCorner<3,1>();
-	const Point3 t = (refCamera.C - trgCamera.C) / (normal.dot(X));
-	const Matrix3 H = trgCamera.R * (refCamera.R.transpose() + t*normal.transpose());
-	return trgCamera.K * H * refCamera.K.inverse();
+	const Point3 t = (refCamera.pose.C - trgCamera.pose.C) / (normal.dot(X));
+	const Matrix3 H = trgCamera.pose.R * (refCamera.pose.R.transpose() + t*normal.transpose());
+	return trgCamera.model.K() * H * refCamera.model.K().inverse();
 }
 
 // weight a neighbor texel based on color similarity and distance to the center texel
@@ -278,31 +254,31 @@ __device__ inline float ComputeBilateralWeight(int xDist, int yDist, float pix, 
 }
 
 // compute the geometric consistency weight
-__device__ inline float GeometricConsistencyWeight(const ImagePixels depthImage, const PatchMatchCUDA::Camera& refCamera, const PatchMatchCUDA::Camera& trgCamera, const Point4& plane, const Point2i& p)
+__device__ inline float GeometricConsistencyWeight(const ImagePixels depthImage, const CUDA::Camera& refCamera, const CUDA::Camera& trgCamera, const Point4& plane, const Point2i& p)
 {
 	if (depthImage == NULL)
 		return 0.f;
 	constexpr float maxDist = 4.f;
-	const Point3 forwardPoint = BackProjectPoint(refCamera, p.cast<float>(), plane.w());
-	const Point2 trgPt = ProjectPoint(trgCamera, forwardPoint);
+	const Point3 forwardPoint = refCamera.TransformPointI2W(p.cast<float>(), plane.w());
+	const Point2 trgPt = trgCamera.TransformPointW2I(forwardPoint);
 	const float trgDepth = tex2D<float>(depthImage, trgPt.x() + 0.5f, trgPt.y() + 0.5f);
 	if (trgDepth == 0.f)
 		return maxDist;
-	const Point3 trgX = BackProjectPoint(trgCamera, trgPt, trgDepth);
-	const Point2 backwardPoint = ProjectPoint(refCamera, trgX);
+	const Point3 trgX = trgCamera.TransformPointI2W(trgPt, trgDepth);
+	const Point2 backwardPoint = refCamera.TransformPointW2I(trgX);
 	const Point2 diff = p.cast<float>() - backwardPoint;
 	const float dist = diff.norm();
 	return min(maxDist, sqrt(dist*(dist+2.f)));
 }
 
 // compute photometric score using weighted ZNCC
-__device__ float ScorePlane(const ImagePixels refImage, const PatchMatchCUDA::Camera& refCamera, const ImagePixels trgImage, const PatchMatchCUDA::Camera& trgCamera, const Point2i& p, const Point4& plane, const float lowDepth, const PatchMatchCUDA::Params& params)
+__device__ float ScorePlane(const ImagePixels refImage, const CUDA::Camera& refCamera, const ImagePixels trgImage, const CUDA::Camera& trgCamera, const Point2i& p, const Point4& plane, const float lowDepth, const PatchMatch::Params& params)
 {
 	constexpr float maxCost = 1.2f;
 	
 	Matrix3 H = ComputeHomography(refCamera, trgCamera, p.cast<float>(), plane);
 	const Point2 pt = (H * p.cast<float>().homogeneous()).hnormalized();
-	if (pt.x() >= trgCamera.width || pt.x() < 0.f || pt.y() >= trgCamera.height || pt.y() < 0.f)
+	if (pt.x() >= trgCamera.size.x() || pt.x() < 0.f || pt.y() >= trgCamera.size.y() || pt.y() < 0.f)
 		return maxCost;
 	Point3 X = H * Point2(p.x()-nSizeHalfWindow, p.y()-nSizeHalfWindow).homogeneous();
 	Point3 baseX(X);
@@ -358,7 +334,7 @@ __device__ float ScorePlane(const ImagePixels refImage, const PatchMatchCUDA::Ca
 }
 
 // compute photometric score for all neighbor images
-__device__ inline void MultiViewScorePlane(const ImagePixels *images, const ImagePixels* depthImages, const PatchMatchCUDA::Camera* cameras, const Point2i& p, const Point4& plane, const float lowDepth, float* costVector, const PatchMatchCUDA::Params& params)
+__device__ inline void MultiViewScorePlane(const ImagePixels *images, const ImagePixels* depthImages, const CUDA::Camera* cameras, const Point2i& p, const Point4& plane, const float lowDepth, float* costVector, const PatchMatch::Params& params)
 {
 	for (int imgId = 1; imgId <= params.nNumViews; ++imgId)
 		costVector[imgId-1] = ScorePlane(images[0], cameras[0], images[imgId], cameras[imgId], p, plane, lowDepth, params);
@@ -367,7 +343,7 @@ __device__ inline void MultiViewScorePlane(const ImagePixels *images, const Imag
 			costVector[imgId] += 0.1f * GeometricConsistencyWeight(depthImages[imgId], cameras[0], cameras[imgId+1], plane, p);
 }
 // same as above, but interpolate the plane to current pixel position
-__device__ inline float MultiViewScoreNeighborPlane(const ImagePixels* images, const ImagePixels* depthImages, const PatchMatchCUDA::Camera* cameras, const Point2i& p, const Point2i& np, Point4 plane, const float lowDepth, float* costVector, const PatchMatchCUDA::Params& params)
+__device__ inline float MultiViewScoreNeighborPlane(const ImagePixels* images, const ImagePixels* depthImages, const CUDA::Camera* cameras, const Point2i& p, const Point2i& np, Point4 plane, const float lowDepth, float* costVector, const PatchMatch::Params& params)
 {
 	plane.w() = InterpolatePixel(cameras[0], p, np, plane.w(), plane.topLeftCorner<3,1>(), params);
 	MultiViewScorePlane(images, depthImages, cameras, p, plane, lowDepth, costVector, params);
@@ -386,10 +362,10 @@ __device__ inline float AggregateMultiViewScores(const unsigned* viewWeights, co
 
 // propagate and refine the plane estimate for the current pixel employing the asymmetric approach described in:
 // "Multi-View Stereo with Asymmetric Checkerboard Propagation and Multi-Hypothesis Joint View Selection", 2018
-__device__ void ProcessPixel(const ImagePixels* images, const ImagePixels* depthImages, const PatchMatchCUDA::Camera* cameras, Point4* planes, const float* lowDepths, float* costs, RandState* randStates, unsigned* selectedViews, const Point2i& p, const PatchMatchCUDA::Params& params, const int iter)
+__device__ void ProcessPixel(const ImagePixels* images, const ImagePixels* depthImages, const CUDA::Camera* cameras, Point4* planes, const float* lowDepths, float* costs, RandState* randStates, unsigned* selectedViews, const Point2i& p, const PatchMatch::Params& params, const int iter)
 {
-	int width = cameras[0].width;
-	int height = cameras[0].height;
+	const int width = cameras[0].size.x();
+	const int height = cameras[0].size.y();
 	if (p.x() >= width || p.y() >= height)
 		return;
 	const int idx = Point2Idx(p, width);
@@ -527,7 +503,7 @@ __device__ void ProcessPixel(const ImagePixels* images, const ImagePixels* depth
 			planes[neighborPositions[2]].w(),
 			planes[neighborPositions[3]].w()
 		);
-		surfaceNormal = ComputeDepthGradient(cameras[0].K, depth, p, ndepths);
+		surfaceNormal = ComputeDepthGradient(cameras[0].model, depth, p, ndepths);
 		numValidPlanes = 4;
 	}
 	constexpr int numPlanes = 4;
@@ -547,10 +523,10 @@ __device__ void ProcessPixel(const ImagePixels* images, const ImagePixels* depth
 }
 
 // compute the score of the current plane estimate
-__device__ void InitializePixelScore(const ImagePixels *images, const ImagePixels* depthImages, const PatchMatchCUDA::Camera* cameras, Point4* planes, const float* lowDepths, float* costs, RandState* randStates, unsigned* selectedViews, const Point2i& p, const PatchMatchCUDA::Params params)
+__device__ void InitializePixelScore(const ImagePixels *images, const ImagePixels* depthImages, const CUDA::Camera* cameras, Point4* planes, const float* lowDepths, float* costs, RandState* randStates, unsigned* selectedViews, const Point2i& p, const PatchMatch::Params params)
 {
-	const int width = cameras[0].width;
-	const int height = cameras[0].height;
+	const int width = cameras[0].size.x();
+	const int height = cameras[0].size.y();
 	if (p.x() >= width || p.y() >= height)
 		return;
 	const int idx = Point2Idx(p, width);
@@ -566,7 +542,7 @@ __device__ void InitializePixelScore(const ImagePixels *images, const ImagePixel
 		// generate random plane
 		plane.topLeftCorner<3,1>() = GenerateRandomNormal(cameras[0], p, randState);
 		plane.w() = curand_uniform(randState) * (params.fDepthMax - params.fDepthMin) + params.fDepthMin;
-	} else if (plane.topLeftCorner<3,1>().dot(ViewDirection(cameras[0], p)) >= 0.f) {
+	} else if (plane.topLeftCorner<3,1>().dot(cameras[0].model.ViewDirection(p)) >= 0.f) {
 		// generate random normal
 		plane.topLeftCorner<3,1>() = GenerateRandomNormal(cameras[0], p, randState);
 	}
@@ -587,20 +563,20 @@ __device__ void InitializePixelScore(const ImagePixels *images, const ImagePixel
 			SetBit(selectedView, imgId);
 	costs[idx] = cost / params.nInitTopK;
 }
-__global__ void InitializeScore(const cudaTextureObject_t* textureImages, const cudaTextureObject_t* textureDepths, const PatchMatchCUDA::Camera* cameras, Point4* planes, const float* lowDepths, float* costs, curandState* randStates, unsigned* selectedViews, const PatchMatchCUDA::Params params)
+__global__ void InitializeScore(const cudaTextureObject_t* textureImages, const cudaTextureObject_t* textureDepths, const CUDA::Camera* cameras, Point4* planes, const float* lowDepths, float* costs, curandState* randStates, unsigned* selectedViews, const PatchMatch::Params params)
 {
 	const Point2i p = Point2i(blockIdx.x * blockDim.x + threadIdx.x, blockIdx.y * blockDim.y + threadIdx.y);
 	InitializePixelScore((const ImagePixels*)textureImages, (const ImagePixels*)textureDepths, cameras, planes, lowDepths, costs, (RandState*)randStates, selectedViews, p, params);
 }
 
 // traverse image in a back/red checkerboard pattern
-__global__ void BlackPixelProcess(const cudaTextureObject_t* textureImages, const cudaTextureObject_t* textureDepths, const PatchMatchCUDA::Camera* cameras, Point4* planes, const float* lowDepths, float* costs, curandState* randStates, unsigned* selectedViews, const PatchMatchCUDA::Params params, const int iter)
+__global__ void BlackPixelProcess(const cudaTextureObject_t* textureImages, const cudaTextureObject_t* textureDepths, const CUDA::Camera* cameras, Point4* planes, const float* lowDepths, float* costs, curandState* randStates, unsigned* selectedViews, const PatchMatch::Params params, const int iter)
 {
 	Point2i p = Point2i(blockIdx.x * blockDim.x + threadIdx.x, blockIdx.y * blockDim.y + threadIdx.y);
 	p.y() = p.y() * 2 + (threadIdx.x % 2 == 0 ? 0 : 1);
 	ProcessPixel((const ImagePixels*)textureImages, (const ImagePixels*)textureDepths, cameras, planes, lowDepths, costs, (RandState*)randStates, selectedViews, p, params, iter);
 }
-__global__ void RedPixelProcess(const cudaTextureObject_t* textureImages, const cudaTextureObject_t* textureDepths, const PatchMatchCUDA::Camera* cameras, Point4* planes, const float* lowDepths, float* costs, curandState* randStates, unsigned* selectedViews, const PatchMatchCUDA::Params params, const int iter)
+__global__ void RedPixelProcess(const cudaTextureObject_t* textureImages, const cudaTextureObject_t* textureDepths, const CUDA::Camera* cameras, Point4* planes, const float* lowDepths, float* costs, curandState* randStates, unsigned* selectedViews, const PatchMatch::Params params, const int iter)
 {
 	Point2i p = Point2i(blockIdx.x * blockDim.x + threadIdx.x, blockIdx.y * blockDim.y + threadIdx.y);
 	p.y() = p.y() * 2 + (threadIdx.x % 2 == 0 ? 1 : 0);
@@ -608,7 +584,7 @@ __global__ void RedPixelProcess(const cudaTextureObject_t* textureImages, const 
 }
 
 // filter depth/normals
-__global__ void FilterPlanes(Point4* planes, float* costs, unsigned* selectedViews, int width, int height, const PatchMatchCUDA::Params params)
+__global__ void FilterPlanes(Point4* planes, float* costs, unsigned* selectedViews, int width, int height, const PatchMatch::Params params)
 {
 	const Point2i p = Point2i(blockIdx.x * blockDim.x + threadIdx.x, blockIdx.y * blockDim.y + threadIdx.y);
 	if (p.x() >= width || p.y() >= height)
@@ -626,10 +602,10 @@ __global__ void FilterPlanes(Point4* planes, float* costs, unsigned* selectedVie
 /*----------------------------------------------------------------*/
 
 
-__host__ void PatchMatchCUDA::RunCUDA(float* ptrCostMap, uint32_t* ptrViewsMap)
+__host__ void PatchMatch::RunCUDA(float* ptrCostMap, uint32_t* ptrViewsMap)
 {
-	const unsigned width = cameras[0].width;
-	const unsigned height = cameras[0].height;
+	const unsigned width = cameras[0].size.x();
+	const unsigned height = cameras[0].size.y();
 
 	constexpr unsigned BLOCK_W = 32;
 	constexpr unsigned BLOCK_H = (BLOCK_W / 2);
@@ -660,3 +636,7 @@ __host__ void PatchMatchCUDA::RunCUDA(float* ptrCostMap, uint32_t* ptrViewsMap)
 	cudaDeviceSynchronize();
 }
 /*----------------------------------------------------------------*/
+
+} // namespace CUDA
+
+} // namespace MVS

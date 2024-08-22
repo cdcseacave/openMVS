@@ -137,13 +137,13 @@ public:
 	Image8U3Arr texturesDiffuse; // textures containing the diffuse color (optional)
 
 	#ifdef _USE_CUDA
-	static CUDA::KernelRT kernelComputeFaceNormal;
+	static SEACAVE::CUDA::KernelRT kernelComputeFaceNormal;
 	#endif
 
 public:
 	#ifdef _USE_CUDA
 	inline Mesh() {
-		InitKernels(CUDA::desiredDeviceID);
+		InitKernels(SEACAVE::CUDA::desiredDeviceID);
 	}
 	#endif
 

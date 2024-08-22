@@ -45,7 +45,9 @@ namespace MVS {
 // Forward declarations
 class MVS_API Scene;
 #ifdef _USE_CUDA
-class PatchMatchCUDA;
+namespace CUDA {
+class PatchMatch;
+} // namespace CUDA
 #endif // _USE_CUDA
 
 // structure used to compute all depth-maps
@@ -90,7 +92,7 @@ public:
 
 	#ifdef _USE_CUDA
 	// used internally to estimate the depth-maps using CUDA
-	CAutoPtr<PatchMatchCUDA> pmCUDA;
+	CAutoPtr<MVS::CUDA::PatchMatch> pmCUDA;
 	#endif // _USE_CUDA
 };
 /*----------------------------------------------------------------*/

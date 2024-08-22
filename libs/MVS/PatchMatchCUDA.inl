@@ -35,23 +35,7 @@
 
 // I N C L U D E S /////////////////////////////////////////////////
 
-#define _USE_MATH_DEFINES
-#include <cmath>
-#include <cstdint>
-#include <float.h>
-#include <string>
-#include <vector>
-
-// Eigen
-#define EIGEN_DEFAULT_DENSE_INDEX_TYPE int
-#include <Eigen/Dense>
-
-// CUDA toolkit
-#include <cuda_runtime.h>
-#include <cuda_runtime_api.h>
-#include <cuda_texture_types.h>
-#include <curand_kernel.h>
-#include <vector_types.h>
+#include "CameraCUDA.h"
 
 // OpenCV
 #include <opencv2/core.hpp>
@@ -65,20 +49,12 @@
 
 namespace MVS {
 
-#if __CUDA_ARCH__ > 0
-#define __CDC__CUDA__ARCH__ 1
-#else
-#undef __CDC__CUDA__ARCH__
-#endif
-
 struct DepthData;
 
-class PatchMatchCUDA {
-public:
-	typedef Eigen::Matrix<float,3,1> Point3;
-	typedef Eigen::Matrix<float,4,1> Point4;
-	typedef Eigen::Matrix<float,3,3> Matrix3;
+namespace CUDA {
 
+class PatchMatch {
+public:
 	struct Params {
 		int nNumViews = 5;
 		int nEstimationIters = 3;
@@ -90,17 +66,9 @@ public:
 		float fThresholdKeepCost = 0;
 	};
 
-	struct Camera {
-		Matrix3 K;
-		Matrix3 R;
-		Point3 C;
-		int height;
-		int width;
-	};
-
 public:
-	PatchMatchCUDA(int device=0);
-	~PatchMatchCUDA();
+	PatchMatch(int device=0);
+	~PatchMatch();
 
 	void Init(bool bGeomConsistency);
 	void Release();
@@ -137,6 +105,8 @@ public:
 	uint32_t* cudaSelectedViews;
 };
 /*----------------------------------------------------------------*/
+
+} // namespace CUDA
 
 } // namespace MVS
 

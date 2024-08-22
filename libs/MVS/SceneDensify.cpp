@@ -2080,9 +2080,9 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 
 	#ifdef _USE_CUDA
 	// initialize CUDA
-	if (CUDA::desiredDeviceID >= -1 && data.nFusionMode >= 0) {
-		data.depthMaps.pmCUDA = new PatchMatchCUDA(CUDA::desiredDeviceID);
-		if (CUDA::devices.IsEmpty())
+	if (SEACAVE::CUDA::desiredDeviceID >= -1 && data.nFusionMode >= 0) {
+		data.depthMaps.pmCUDA = new MVS::CUDA::PatchMatch(SEACAVE::CUDA::desiredDeviceID);
+		if (SEACAVE::CUDA::devices.IsEmpty())
 			data.depthMaps.pmCUDA.Release();
 		else
 			data.depthMaps.pmCUDA->Init(false);

@@ -24,6 +24,12 @@
 
 // D E F I N E S ///////////////////////////////////////////////////
 
+#if __CUDA_ARCH__ > 0
+#define __CDC__CUDA__ARCH__ 1
+#else
+#undef __CDC__CUDA__ARCH__
+#endif
+
 #ifndef VERBOSE
 #define DEFINE_VERBOSE 1
 #define VERBOSE(...) fprintf(stderr, __VA_ARGS__)
