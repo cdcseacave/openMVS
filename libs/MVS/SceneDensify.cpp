@@ -1069,7 +1069,7 @@ bool DepthMapsData::FilterDepthMap(DepthData& depthDataRef, const IIndexArr& idx
 				if (nPosViews >= nMinViewsAdjust && posConf > negConf && ISINSIDE(avgDepth/=posConf, depthDataRef.dMin, depthDataRef.dMax)) {
 					// consider this pixel an inlier
 					newDepthMap(xRef) = avgDepth;
-					newConfMap(xRef) = posConf - negConf;
+					newConfMap(xRef) = (posConf - negConf)/(nPosViews + nNegViews + 1);
 				} else {
 					// consider this pixel an outlier
 					DiscardDepth:
