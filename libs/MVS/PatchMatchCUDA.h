@@ -38,10 +38,7 @@
 // I N C L U D E S /////////////////////////////////////////////////
 
 #include "SceneDensify.h"
-#pragma push_macro("EIGEN_DEFAULT_DENSE_INDEX_TYPE")
-#undef EIGEN_DEFAULT_DENSE_INDEX_TYPE
 #include "PatchMatchCUDA.inl"
-#pragma pop_macro("EIGEN_DEFAULT_DENSE_INDEX_TYPE")
 
 
 // D E F I N E S ///////////////////////////////////////////////////

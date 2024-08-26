@@ -163,8 +163,7 @@
 #endif
 
 
-
-//optimization flags
+// optimization flags
 #if defined(_MSC_VER)
 #	define ALIGN(n) __declspec(align(n))
 #	define NOINITVTABLE __declspec(novtable) //disable generating code to initialize the vfptr in the constructor(s) and destructor of the class
@@ -229,7 +228,7 @@
 #else
 #define ASSERT(exp, ...) {if (!(exp)) __debugbreak();}
 #endif // _INC_CRTDBG
-#define TRACE(...) {TCHAR buffer[2048];	_sntprintf(buffer, 2048, __VA_ARGS__); OutputDebugString(buffer);}
+#define TRACE(...) {TCHAR buffer[2048]; _sntprintf(buffer, 2048, __VA_ARGS__); OutputDebugString(buffer);}
 #else // _MSC_VER
 #include <assert.h>
 #define ASSERT(exp, ...) assert(exp)

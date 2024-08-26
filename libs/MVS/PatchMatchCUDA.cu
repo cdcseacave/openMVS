@@ -51,32 +51,12 @@ namespace CUDA {
 #define ImagePixels cudaTextureObject_t
 #define RandState curandState
 
-// square the given value
-__device__ constexpr float Square(float v) {
-	return v * v;
-}
-
 // set/check a bit
 __device__ constexpr void SetBit(unsigned& input, unsigned i) {
 	input |= (1u << i);
 }
 __device__ constexpr int IsBitSet(unsigned input, unsigned i) {
 	return (input >> i) & 1u;
-}
-
-// swap the given values
-__device__ constexpr void Swap(float& v0, float& v1) {
-	const float tmp = v0;
-	v0 = v1;
-	v1 = tmp;
-}
-
-// convert 2d to 1d coordinates and back
-__device__ inline int Point2Idx(const Point2i& p, int width) {
-	return p.y() * width + p.x();
-}
-__device__ inline Point2i Idx2Point(int idx, int width) {
-	return Point2i(idx % width, idx / width);
 }
 
 // sort the given values array using bubble sort algorithm
@@ -565,20 +545,20 @@ __device__ void InitializePixelScore(const ImagePixels *images, const ImagePixel
 }
 __global__ void InitializeScore(const cudaTextureObject_t* textureImages, const cudaTextureObject_t* textureDepths, const CUDA::Camera* cameras, Point4* planes, const float* lowDepths, float* costs, curandState* randStates, unsigned* selectedViews, const PatchMatch::Params params)
 {
-	const Point2i p = Point2i(blockIdx.x * blockDim.x + threadIdx.x, blockIdx.y * blockDim.y + threadIdx.y);
+	const Point2i p = GetThreadIndex2();
 	InitializePixelScore((const ImagePixels*)textureImages, (const ImagePixels*)textureDepths, cameras, planes, lowDepths, costs, (RandState*)randStates, selectedViews, p, params);
 }
 
 // traverse image in a back/red checkerboard pattern
 __global__ void BlackPixelProcess(const cudaTextureObject_t* textureImages, const cudaTextureObject_t* textureDepths, const CUDA::Camera* cameras, Point4* planes, const float* lowDepths, float* costs, curandState* randStates, unsigned* selectedViews, const PatchMatch::Params params, const int iter)
 {
-	Point2i p = Point2i(blockIdx.x * blockDim.x + threadIdx.x, blockIdx.y * blockDim.y + threadIdx.y);
+	Point2i p = GetThreadIndex2();
 	p.y() = p.y() * 2 + (threadIdx.x % 2 == 0 ? 0 : 1);
 	ProcessPixel((const ImagePixels*)textureImages, (const ImagePixels*)textureDepths, cameras, planes, lowDepths, costs, (RandState*)randStates, selectedViews, p, params, iter);
 }
 __global__ void RedPixelProcess(const cudaTextureObject_t* textureImages, const cudaTextureObject_t* textureDepths, const CUDA::Camera* cameras, Point4* planes, const float* lowDepths, float* costs, curandState* randStates, unsigned* selectedViews, const PatchMatch::Params params, const int iter)
 {
-	Point2i p = Point2i(blockIdx.x * blockDim.x + threadIdx.x, blockIdx.y * blockDim.y + threadIdx.y);
+	Point2i p = GetThreadIndex2();
 	p.y() = p.y() * 2 + (threadIdx.x % 2 == 0 ? 1 : 0);
 	ProcessPixel((const ImagePixels*)textureImages, (const ImagePixels*)textureDepths, cameras, planes, lowDepths, costs, (RandState*)randStates, selectedViews, p, params, iter);
 }
@@ -586,7 +566,7 @@ __global__ void RedPixelProcess(const cudaTextureObject_t* textureImages, const 
 // filter depth/normals
 __global__ void FilterPlanes(Point4* planes, float* costs, unsigned* selectedViews, int width, int height, const PatchMatch::Params params)
 {
-	const Point2i p = Point2i(blockIdx.x * blockDim.x + threadIdx.x, blockIdx.y * blockDim.y + threadIdx.y);
+	const Point2i p = GetThreadIndex2();
 	if (p.x() >= width || p.y() >= height)
 		return;
 	const int idx = Point2Idx(p, width);

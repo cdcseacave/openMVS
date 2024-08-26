@@ -1,5 +1,5 @@
 /*
-* CameraCUDA.h
+* Camera.h
 *
 * Copyright (c) 2014-2024 SEACAVE
 *
@@ -35,25 +35,10 @@
 
 // I N C L U D E S /////////////////////////////////////////////////
 
-#define _USE_MATH_DEFINES
-#include <cmath>
-#include <cstdint>
-#include <float.h>
 #include <string>
 #include <vector>
 
-// Eigen
-#define EIGEN_DEFAULT_DENSE_INDEX_TYPE int
-#include <Eigen/Dense>
-
-// CUDA toolkit
-#include <cuda_runtime.h>
-#include <cuda_runtime_api.h>
-#include <cuda_texture_types.h>
-#include <curand_kernel.h>
-#include <vector_types.h>
-
-#include "../Common/UtilCUDADevice.h"
+#include "Maths.h"
 
 
 // D E F I N E S ///////////////////////////////////////////////////
@@ -64,12 +49,6 @@
 namespace MVS {
 
 namespace CUDA {
-
-typedef Eigen::Matrix<int,2,1> Point2i;
-typedef Eigen::Matrix<float,2,1> Point2;
-typedef Eigen::Matrix<float,3,1> Point3;
-typedef Eigen::Matrix<float,4,1> Point4;
-typedef Eigen::Matrix<float,3,3> Matrix3;
 
 // Linear camera model
 struct LinearCameraModel {

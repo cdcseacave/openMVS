@@ -1,5 +1,5 @@
 /*
-* PatchMatch.cpp
+* PatchMatchCUDA.cpp
 *
 * Copyright (c) 2014-2021 SEACAVE
 *
@@ -261,7 +261,7 @@ void PatchMatch::EstimateDepthMap(DepthData& depthData)
 				Eigen::Map<const SEACAVE::Matrix3x3::EMat>(view.camera.K.val).cast<float>(),
 				Eigen::Map<const SEACAVE::Matrix3x3::EMat>(view.camera.R.val).cast<float>(),
 				Eigen::Map<const SEACAVE::Point3::EVec>(view.camera.C.ptr()).cast<float>(),
-				image.rows, image.cols);
+				image.cols, image.rows);
 			// store camera and image
 			if (i == 0 && (prevNumImages < numImages || images[0].size() != image.size())) {
 				// allocate/reallocate PatchMatch CUDA memory

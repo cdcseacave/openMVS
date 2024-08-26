@@ -272,7 +272,8 @@ public:
 
 	Camera& operator= (const CameraIntern& camera);
 
-	Camera GetScaled(REAL s) const; // return a scaled camera
+	Camera GetScaled(REAL s) const; // return a camera scaled by the given factor
+	Camera GetScaled(const cv::Size& size, const cv::Size& newSize) const; // return a camera scaled to the given resolution
 
 	void ComposeP_RC(); // compose P from R and C only
 	void ComposeP(); // compose P from K, R and C

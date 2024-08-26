@@ -12,6 +12,7 @@
 // I N C L U D E S /////////////////////////////////////////////////
 
 #include <utility>
+#include <type_traits>
 
 
 // D E F I N E S ///////////////////////////////////////////////////
@@ -1152,6 +1153,17 @@ public:
 				_ArrayMoveCopy<false>(_vector+index, vectorEnd, count);
 			}
 		}
+	}
+
+	// remove duplicated values; the values are expected to be sorted, set bSort if not
+	template <bool bSort=true>
+	inline void		RemoveDuplicates()
+	{
+		if (bSort)
+			Sort();
+		const IDX index(std::unique(Begin(), End()) - Begin());
+		if (index < _size)
+			RemoveLast(_size-index);
 	}
 
 	inline void		RemoveAtMove(IDX index)

@@ -77,6 +77,10 @@ Camera Camera::GetScaled(REAL s) const
 {
 	return Camera(GetScaledK(s), R, C);
 }
+Camera Camera::GetScaled(const cv::Size& size, const cv::Size& newSize) const
+{
+	return Camera(GetScaledK(size, newSize), R, C);
+}
 /*----------------------------------------------------------------*/
 
 

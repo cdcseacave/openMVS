@@ -35,7 +35,7 @@
 
 // I N C L U D E S /////////////////////////////////////////////////
 
-#include "CameraCUDA.h"
+#include "CUDA/Camera.h"
 
 // OpenCV
 #include <opencv2/core.hpp>
