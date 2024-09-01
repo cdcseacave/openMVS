@@ -399,11 +399,11 @@ bool MeshRefine::InitImages(Real scale, Real sigma)
 void MeshRefine::ListVertexFacesPre()
 {
 	scene.mesh.EmptyExtra();
-	scene.mesh.ListIncidenteFaces();
+	scene.mesh.ListIncidentFaces();
 }
 void MeshRefine::ListVertexFacesPost()
 {
-	scene.mesh.ListIncidenteVertices();
+	scene.mesh.ListIncidentVertices();
 	scene.mesh.ListBoundaryVertices();
 }
 

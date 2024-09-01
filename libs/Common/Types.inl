@@ -13,17 +13,63 @@
 
 namespace std {
 
-// Specializations for unordered containers
-template <> struct hash<SEACAVE::ImageRef>
-{
-	typedef SEACAVE::ImageRef argument_type;
-	typedef size_t result_type;
-	result_type operator()(const argument_type& v) const {
-		return std::hash<uint64_t>()((const uint64_t&)v);
+// combine hash values (as in boost)
+namespace {
+template <class T>
+inline void hash_combine(std::size_t& seed, T const& v) {
+	seed ^= std::hash<T>()(v) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+}
+template <class Tuple, size_t Index = std::tuple_size<Tuple>::value - 1>
+struct HashValueImpl {
+	static void apply(size_t& seed, Tuple const& tuple) {
+		HashValueImpl<Tuple, Index - 1>::apply(seed, tuple);
+		hash_combine(seed, std::get<Index>(tuple));
+	}
+};
+template <class Tuple>
+struct HashValueImpl<Tuple, 0> {
+	static void apply(size_t& seed, Tuple const& tuple) { hash_combine(seed, std::get<0>(tuple)); }
+};
+} // namespace
+
+// hash specialization for pairs/tuples
+template <typename T, typename U>
+struct hash<std::pair<T, U>> {
+	std::size_t operator()(const std::pair<T, U>& x) const {
+		size_t seed = std::hash<T>()(x.first);
+		hash_combine<U>(seed, x.second);
+		return seed;
+	}
+};
+template <typename... T>
+struct hash<std::tuple<T...>> {
+	size_t operator()(const std::tuple<T...>& t) const {
+		size_t seed = 0;
+		HashValueImpl<std::tuple<T...>>::apply(seed, t);
+		return seed;
 	}
 };
 
-// Adds the given key-value pair in the map, overwriting the current value if the key exists
+// hash specializations for OpenCV points
+template <typename T>
+struct hash<cv::Point_<T>> {
+	size_t operator()(const cv::Point_<T>& v) const {
+		size_t seed = std::hash<T>()(v.x);
+		std::hash_combine(seed, v.y);
+		return seed;
+	}
+};
+template <typename T>
+struct hash<cv::Point3_<T>> {
+	size_t operator()(const cv::Point3_<T>& v) const {
+		size_t seed = std::hash<T>()(v.x);
+		std::hash_combine(seed, v.y);
+		std::hash_combine(seed, v.z);
+		return seed;
+	}
+};
+
+// adds the given key-value pair in the map, overwriting the current value if the key exists
 template <typename Key, typename T>
 void MapPut(std::map<Key, T>* map, const Key& key, const T& value) {
 	auto result = map->emplace(key, value);

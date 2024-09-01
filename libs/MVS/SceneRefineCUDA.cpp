@@ -2259,12 +2259,12 @@ bool MeshRefineCUDA::InitImages(float scale, float sigma)
 void MeshRefineCUDA::ListVertexFacesPre()
 {
 	scene.mesh.EmptyExtra();
-	scene.mesh.ListIncidenteFaces();
+	scene.mesh.ListIncidentFaces();
 	reportCudaError(faces.Reset(scene.mesh.faces));
 }
 void MeshRefineCUDA::ListVertexFacesPost()
 {
-	scene.mesh.ListIncidenteVertices();
+	scene.mesh.ListIncidentVertices();
 	scene.mesh.ListBoundaryVertices();
 	ASSERT(!scene.mesh.vertices.IsEmpty() && scene.mesh.vertices.GetSize() == scene.mesh.vertexVertices.GetSize());
 	// set vertex vertices

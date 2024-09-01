@@ -149,9 +149,10 @@ public:
 
 	void Release();
 	void ReleaseExtra();
+	void ReleaseComputable();
 	void EmptyExtra();
-	void Swap(Mesh&);
-	void Join(const Mesh&);
+	Mesh& Swap(Mesh&);
+	Mesh& Join(const Mesh&);
 	bool IsEmpty() const { return vertices.empty(); }
 	bool IsWatertight();
 	bool HasTexture() const { return HasTextureCoordinates() && !texturesDiffuse.empty(); }
@@ -162,9 +163,9 @@ public:
 	Box GetAABB(const Box& bound) const;
 	Vertex GetCenter() const;
 
-	void ListIncidenteVertices();
-	void ListIncidenteFaces();
-	void ListIncidenteFaceFaces();
+	void ListIncidentVertices();
+	void ListIncidentFaces();
+	void ListIncidentFaceFaces();
 	void ListBoundaryVertices();
 	void ComputeNormalFaces();
 	void ComputeNormalVertices();
@@ -179,7 +180,7 @@ public:
 	void GetAdjVertices(VIndex, VertexIdxArr&) const;
 	void GetAdjVertexFaces(VIndex, VIndex, FaceIdxArr&) const;
 
-	unsigned FixNonManifold(float magDisplacementDuplicateVertices = 0.01f, VertexIdxArr* duplicatedVertices = NULL);
+	unsigned FixNonManifold(float magDisplacementDuplicateVertices=0.01f, VertexIdxArr* duplicatedVertices=NULL);
 	void Clean(float fDecimate=0.7f, float fSpurious=10.f, bool bRemoveSpikes=true, unsigned nCloseHoles=30, unsigned nSmoothMesh=2, float fEdgeLength=0, bool bLastClean=true);
 
 	void EnsureEdgeSize(float minEdge=-0.5f, float maxEdge=-4.f, float collapseRatio=0.2, float degenerate_angle_deg=150, int mode=1, int max_iters=50);
@@ -189,9 +190,12 @@ public:
 	void Decimate(VertexIdxArr& verticesRemove);
 	void CloseHole(VertexIdxArr& vertsLoop);
 	void CloseHoleQuality(VertexIdxArr& vertsLoop);
+	FIndex RemoveDegenerateFaces(Type thArea=1e-5f);
+	FIndex RemoveDegenerateFaces(unsigned maxIterations, Type thArea=1e-5f);
 	void RemoveFacesOutside(const OBB3f&);
 	void RemoveFaces(FaceIdxArr& facesRemove, bool bUpdateLists=false);
 	void RemoveVertices(VertexIdxArr& vertexRemove, bool bUpdateLists=false);
+	VIndex RemoveDuplicatedVertices(VertexIdxArr* duplicatedVertices=NULL);
 	VIndex RemoveUnreferencedVertices(bool bUpdateLists=false);
 	std::vector<Mesh> SplitMeshPerTextureBlob() const;
 	void ConvertTexturePerVertex(Mesh&) const;

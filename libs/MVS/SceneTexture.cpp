@@ -409,9 +409,9 @@ MeshTexture::~MeshTexture()
 void MeshTexture::ListVertexFaces()
 {
 	scene.mesh.EmptyExtra();
-	scene.mesh.ListIncidenteFaces();
+	scene.mesh.ListIncidentFaces();
 	scene.mesh.ListBoundaryVertices();
-	scene.mesh.ListIncidenteFaceFaces();
+	scene.mesh.ListIncidentFaceFaces();
 }
 
 // extract array of faces viewed by each image
@@ -1660,7 +1660,7 @@ void MeshTexture::ProcessMask(Image8U& mask, int stripWidth)
 	// compute the set of valid pixels at the border of the texture patch
 	#define ISEMPTY(mask, x,y) (mask(y,x) == empty)
 	const int width(mask.width()), height(mask.height());
-	typedef std::unordered_set<ImageRef> PixelSet;
+	typedef std::unordered_set<ImageRef,std::hash<ImageRef::Base>> PixelSet;
 	PixelSet borderPixels;
 	for (int y=0; y<height; ++y) {
 		for (int x=0; x<width; ++x) {

@@ -256,13 +256,12 @@ struct Camera {
 
 	struct CameraHash {
 		size_t operator()(const Camera& camera) const {
-			const size_t h1(std::hash<String>()(camera.model));
-			const size_t h2(std::hash<uint32_t>()(camera.width));
-			const size_t h3(std::hash<uint32_t>()(camera.height));
-			size_t h(h1 ^ ((h2 ^ (h3 << 1)) << 1));
+			size_t seed = std::hash<String>()(camera.model);
+			std::hash_combine(seed, camera.width);
+			std::hash_combine(seed, camera.height);
 			for (REAL p: camera.params)
-				h = std::hash<REAL>()(p) ^ (h << 1);
-			return h;
+				std::hash_combine(seed, p);
+			return seed;
 		}
 	};
 	struct CameraEqualTo {

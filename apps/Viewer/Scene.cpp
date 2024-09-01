@@ -84,7 +84,7 @@ public:
 			Scene::OctreeMesh octMesh(scene.mesh.vertices, [](Scene::OctreeMesh::IDX_TYPE size, Scene::OctreeMesh::Type /*radius*/) {
 				return size > 256;
 			});
-			scene.mesh.ListIncidenteFaces();
+			scene.mesh.ListIncidentFaces();
 			pScene->octMesh.Swap(octMesh);
 		} else
 		if (!scene.pointcloud.IsEmpty()) {

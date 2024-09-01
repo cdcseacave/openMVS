@@ -110,15 +110,19 @@ void Mesh::Release()
 } // Release
 void Mesh::ReleaseExtra()
 {
+	ReleaseComputable();
 	vertexNormals.Release();
-	vertexVertices.Release();
-	vertexFaces.Release();
-	vertexBoundary.Release();
 	faceNormals.Release();
-	faceFaces.Release();
 	faceTexcoords.Release();
 	texturesDiffuse.Release();
 } // ReleaseExtra
+void Mesh::ReleaseComputable()
+{
+	vertexVertices.Release();
+	vertexFaces.Release();
+	vertexBoundary.Release();
+	faceFaces.Release();
+} // ReleaseComputable
 void Mesh::EmptyExtra()
 {
 	vertexNormals.Empty();
@@ -130,7 +134,7 @@ void Mesh::EmptyExtra()
 	faceTexcoords.Empty();
 	texturesDiffuse.Empty();
 } // EmptyExtra
-void Mesh::Swap(Mesh& rhs)
+Mesh& Mesh::Swap(Mesh& rhs)
 {
 	vertices.Swap(rhs.vertices);
 	faces.Swap(rhs.faces);
@@ -143,18 +147,21 @@ void Mesh::Swap(Mesh& rhs)
 	faceTexcoords.Swap(rhs.faceTexcoords);
 	faceTexindices.Swap(rhs.faceTexindices);
 	std::swap(texturesDiffuse, rhs.texturesDiffuse);
+	return *this;
 } // Swap
 // combine this mesh with the given mesh, without removing duplicate vertices
-void Mesh::Join(const Mesh& mesh)
+Mesh& Mesh::Join(const Mesh& mesh)
 {
 	ASSERT(!HasTexture() && !mesh.HasTexture());
+	if (mesh.IsEmpty())
+		return *this;
 	vertexVertices.Release();
 	vertexFaces.Release();
 	vertexBoundary.Release();
 	faceFaces.Release();
 	if (IsEmpty()) {
 		*this = mesh;
-		return;
+		return *this;
 	}
 	const VIndex offsetV(vertices.size());
 	vertices.Join(mesh.vertices);
@@ -163,6 +170,7 @@ void Mesh::Join(const Mesh& mesh)
 	for (const Face& face: mesh.faces)
 		faces.emplace_back(face.x+offsetV, face.y+offsetV, face.z+offsetV);
 	faceNormals.Join(mesh.faceNormals);
+	return *this;
 }
 /*----------------------------------------------------------------*/
 
@@ -171,7 +179,7 @@ bool Mesh::IsWatertight()
 {
 	if (vertexBoundary.empty()) {
 		if (vertexFaces.empty())
-			ListIncidenteFaces();
+			ListIncidentFaces();
 		ListBoundaryVertices();
 	}
 	for (const bool b : vertexBoundary)
@@ -219,7 +227,7 @@ Mesh::Vertex Mesh::GetCenter() const
 
 
 // extract array of vertices incident to each vertex
-void Mesh::ListIncidenteVertices()
+void Mesh::ListIncidentVertices()
 {
 	vertexVertices.clear();
 	vertexVertices.resize(vertices.size());
@@ -237,15 +245,17 @@ void Mesh::ListIncidenteVertices()
 }
 
 // extract the (ordered) array of triangles incident to each vertex
-void Mesh::ListIncidenteFaces()
+void Mesh::ListIncidentFaces()
 {
 	vertexFaces.clear();
 	vertexFaces.resize(vertices.size());
-	FOREACH(i, faces) {
-		const Face& face = faces[i];
+	FOREACH(iF, faces) {
+		const Face& face = faces[iF];
 		for (int v=0; v<3; ++v) {
-			ASSERT(vertexFaces[face[v]].Find(i) == FaceIdxArr::NO_INDEX);
-			vertexFaces[face[v]].emplace_back(i);
+			FaceIdxArr& vfs = vertexFaces[face[v]];
+			ASSERT(vfs.Find(iF) == FaceIdxArr::NO_INDEX || vfs.Find(iF) == vfs.size()-1/*for degenerate faces*/);
+			if (vfs.empty() || vfs.back() != iF)
+				vfs.emplace_back(iF);
 		}
 	}
 }
@@ -254,7 +264,7 @@ void Mesh::ListIncidenteFaces()
 // each triple describes the adjacent face triangles for a given face
 // in the following edge order: v1v2, v2v3, v3v1;
 // NO_ID indicates there is no adjacent face on that edge
-void Mesh::ListIncidenteFaceFaces()
+void Mesh::ListIncidentFaceFaces()
 {
 	ASSERT(vertexFaces.size() == vertices.size());
 	struct inserter_data_t {
@@ -291,7 +301,7 @@ void Mesh::ListIncidenteFaceFaces()
 }
 
 // check each vertex if it is at the boundary or not
-// (make sure you called ListIncidenteFaces() before)
+// (make sure you called ListIncidentFaces() before)
 void Mesh::ListBoundaryVertices()
 {
 	vertexBoundary.clear();
@@ -408,9 +418,9 @@ void Mesh::SmoothNormalFaces(float fMaxGradient, float fOriginalWeight, unsigned
 	if (faceNormals.size() != faces.size())
 		ComputeNormalFaces();
 	if (vertexFaces.size() != vertices.size())
-		ListIncidenteFaces();
+		ListIncidentFaces();
 	if (faceFaces.size() != faces.size())
-		ListIncidenteFaceFaces();
+		ListIncidentFaceFaces();
 	const float cosMaxGradient = COS(FD2R(fMaxGradient));
 	for (unsigned rep = 0; rep < nIterations; ++rep) {
 		NormalArr newFaceNormals(faceNormals.size());
@@ -560,7 +570,7 @@ unsigned Mesh::FixNonManifold(float magDisplacementDuplicateVertices, VertexIdxA
 {
 	ASSERT(!vertices.empty() && !faces.empty());
 	if (vertexFaces.size() != vertices.size())
-		ListIncidenteFaces();
+		ListIncidentFaces();
 	// iterate over all vertices and separates the components
 	// incident to the same vertex by duplicating the vertex
 	unsigned numNonManifoldIssues(0);
@@ -665,7 +675,10 @@ unsigned Mesh::FixNonManifold(float magDisplacementDuplicateVertices, VertexIdxA
 			}
 		}
 	}
-	vertexFaces.Release();
+	if (numNonManifoldIssues > 0) {
+		vertexFaces.Release();
+		DEBUG_ULTIMATE("Removed %u non-manifold issues", numNonManifoldIssues);
+	}
 	return numNonManifoldIssues;
 }
 /*----------------------------------------------------------------*/
@@ -1484,7 +1497,7 @@ bool Mesh::SavePLY(const String& fileName, const cList<String>& comments, bool b
 	// export texture file name as comment if needed
 	if (HasTexture()) {
 		FOREACH(texId, texturesDiffuse) {
-		    const String textureFileName(Util::getFileFullName(fileName) + std::to_string(texId).c_str() + (bTexLossless?_T(".png"):_T(".jpg")));
+		    const String textureFileName(Util::getFileFullName(fileName) + std::to_string((unsigned)texId).c_str() + (bTexLossless?_T(".png"):_T(".jpg")));
 		    ply.append_comment((_T("TextureFile ")+Util::getFileNameExt(textureFileName)).c_str());
 		    texturesDiffuse[texId].Save(textureFileName);
 		}
@@ -3538,6 +3551,135 @@ void Mesh::CloseHoleQuality(VertexIdxArr& verts)
 }
 /*----------------------------------------------------------------*/
 
+
+// remove degenerate faces, with one or more identical vertices or very close vertices (0 - disabled);
+// unreferenced vertices and non-manifold edges/vertices can be created,
+// so should be followed by RemoveUnreferencedVertices() and FixNonManifold()
+Mesh::FIndex Mesh::RemoveDegenerateFaces(Type thArea) {
+	if (vertexFaces.size() != vertices.size())
+		ListIncidentFaces();
+	const Type thDoubleAreaSq = SQUARE(thArea * 2);
+	FaceIdxArr facesRemove;
+	typedef std::pair<VIndex/*replace with*/, VIndex> Vertex2Vertex;
+	CLISTDEF0(Vertex2Vertex) vertexPairs;
+	RFOREACH(idxFace, faces) {
+		const Face& face = faces[idxFace];
+		// check first case when one or more vertices have same index
+		if (face[0] == face[1] || face[0] == face[2] || face[1] == face[2]) {
+			// just remove the face
+			facesRemove.emplace_back(idxFace);
+			continue;
+		}
+		if (thDoubleAreaSq <= 0)
+			continue;
+		// check if the face has almost 0 area (see EdgeFunction())
+		const Vertex& v0 = vertices[face[0]];
+		const Vertex& v1 = vertices[face[1]];
+		const Vertex& v2 = vertices[face[2]];
+		const Vertex A(v2 - v0);
+		const Vertex B(v1 - v0);
+		const Type doubleAreaSq = normSq(B.cross(A));
+		if (doubleAreaSq <= thDoubleAreaSq) {
+			// remove the face
+			facesRemove.emplace_back(idxFace);
+			const Type lenghSqA = normSq(A);
+			const Type lenghSqB = normSq(B);
+			const Type lenghSqC = normSq(v2 - v1);
+			// remove two of the vertices,
+			// moving all adjacent face to the remaining vertex
+			if (lenghSqA <= thArea && lenghSqB <= thArea) {
+				vertexPairs.emplace_back(face[2], face[0]);
+				vertexPairs.emplace_back(face[1], face[0]);
+			}
+			else if (lenghSqA <= thArea && lenghSqC <= thArea) {
+				vertexPairs.emplace_back(face[0], face[2]);
+				vertexPairs.emplace_back(face[1], face[2]);
+			}
+			else if (lenghSqB <= thArea && lenghSqC <= thArea) {
+				vertexPairs.emplace_back(face[0], face[1]);
+				vertexPairs.emplace_back(face[2], face[1]);
+			} else
+			// remove one of the vertices,
+			// moving all adjacent face to the closest remaining vertices
+			if (lenghSqA <= thArea) {
+				vertexPairs.emplace_back(face[2], face[0]);
+			}
+			else if (lenghSqB <= thArea) {
+				vertexPairs.emplace_back(face[1], face[0]);
+			}
+			else if (lenghSqC <= thArea) {
+				vertexPairs.emplace_back(face[1], face[2]);
+			} else {
+				// the vertices are (almost) collinear, remove the smallest edge
+				if (lenghSqA < lenghSqB) {
+					if (lenghSqA < lenghSqC)
+						vertexPairs.emplace_back(face[2], face[0]);
+					else
+						vertexPairs.emplace_back(face[2], face[1]);
+				} else {
+					if (lenghSqB < lenghSqC)
+						vertexPairs.emplace_back(face[1], face[0]);
+					else
+						vertexPairs.emplace_back(face[2], face[1]);
+				}
+			}
+		}
+	}
+	if (facesRemove.empty())
+		return 0;
+	RemoveFaces(facesRemove, true);
+	if (vertexPairs.empty()) {
+		DEBUG("Removed %u degenerate faces", facesRemove.size());
+		return facesRemove.size();
+	}
+	// replace first vertex with the second
+	VertexIdxArr mapRemovedVerts(vertices.size());
+	mapRemovedVerts.MemsetValue(NO_ID);
+	const auto TraceMovedVertex = [&mapRemovedVerts](IIndex idx) {
+		while (mapRemovedVerts[idx] != NO_ID)
+			idx = mapRemovedVerts[idx];
+		return idx;
+	};
+	vertexPairs.RemoveDuplicates();
+	RFOREACHPTR(ptrIdxPair, vertexPairs) {
+		Vertex2Vertex p = *ptrIdxPair;
+		p.first = TraceMovedVertex(p.first);
+		p.second = TraceMovedVertex(p.second);
+		if (p.first == p.second)
+			continue;
+		FaceIdxArr& firstVfs = vertexFaces[p.first];
+		for (const FIndex idxFace : firstVfs) {
+			Face& face = faces[idxFace];
+			for (VIndex i = 0; i < 3; ++i)
+				if (face[i] == p.first)
+					face[i] = p.second;
+		}
+		FaceIdxArr& secondVfs = vertexFaces[p.second];
+		secondVfs.Join(firstVfs);
+		secondVfs.RemoveDuplicates();
+		firstVfs.Release();
+		mapRemovedVerts[p.first] = p.second;
+	}
+	const FIndex numRemovedFaces = facesRemove.size() + RemoveDegenerateFaces(0.f);
+	if (numRemovedFaces > 0)
+		DEBUG_ULTIMATE("Removed %u zero-area faces", numRemovedFaces);
+	return numRemovedFaces;
+}
+
+// removing zero-area-faces can generate some new zero-area-faces,
+// so iterate till no zero-area faces are encountered or max number of iterations is reached
+Mesh::FIndex Mesh::RemoveDegenerateFaces(unsigned maxIterations, Type thArea) {
+	FIndex totalNumRemovedFaces = 0;
+	for (unsigned iter=0; iter<maxIterations; ++iter) {
+		const FIndex numRemovedFaces = RemoveDegenerateFaces(thArea);
+		if (numRemovedFaces == 0)
+			break;
+		totalNumRemovedFaces += numRemovedFaces;
+	}
+	return totalNumRemovedFaces;
+}
+/*----------------------------------------------------------------*/
+
 // crop mesh such that none of its faces is touching or outside the given bounding-box
 void Mesh::RemoveFacesOutside(const OBB3f& obb) {
 	ASSERT(obb.IsValid());
@@ -3547,7 +3689,7 @@ void Mesh::RemoveFacesOutside(const OBB3f& obb) {
 			vertexRemove.emplace_back(i);
 	if (!vertexRemove.empty()) {
 		if (vertices.size() != vertexFaces.size())
-			ListIncidenteFaces();
+			ListIncidentFaces();
 		RemoveVertices(vertexRemove, true);
 	}
 }
@@ -3654,6 +3796,60 @@ void Mesh::RemoveVertices(VertexIdxArr& vertexRemove, bool bUpdateLists)
 		RemoveFaces(facesRemove);
 }
 
+// remove duplicate vertices (equal coordinates);
+// return the number of removed vertices, and optionally the list of duplicated vertices
+Mesh::VIndex Mesh::RemoveDuplicatedVertices(VertexIdxArr* duplicatedVertices) {
+	// create a map of unique vertices
+	VIndex numUniqueVertices(0);
+    VertexIdxArr mapVertices(vertices.size()); {
+		std::unordered_map<Vertex,VIndex,std::hash<Vertex::Base>> mapVertexIndex;
+		FOREACH(i, vertices) {
+			const Vertex& vertex = vertices[i];
+			const auto ret = mapVertexIndex.emplace(vertex, (VIndex)mapVertexIndex.size());
+			if (ret.second) {
+				// new vertex found
+				mapVertices[i] = i;
+			} else {
+				// duplicate vertex found
+				mapVertices[i] = ret.first->second;
+				if (duplicatedVertices)
+					duplicatedVertices->push_back(i);
+			}
+		}
+		numUniqueVertices = (VIndex)mapVertexIndex.size();
+		if (numUniqueVertices == vertices.size())
+			return 0;
+		ReleaseComputable();
+	}
+    // update the vertices and vertexNormals arrays
+    VertexArr newVertices(0, numUniqueVertices);
+    VertexArr newVertexNormals;
+	if (!vertexNormals.empty())
+		newVertexNormals.reserve(numUniqueVertices);
+	FOREACH(i, vertices) {
+		VIndex& uniqueIndex = mapVertices[i];
+		if (uniqueIndex != i)
+			continue;
+		uniqueIndex = newVertices.size();
+        newVertices.emplace_back(vertices[i]);
+		if (!vertexNormals.empty())
+			newVertexNormals.emplace_back(vertexNormals[i]);
+    }
+    vertices = std::move(newVertices);
+	if (!vertexNormals.empty())
+		vertexNormals = std::move(newVertexNormals);
+    // update the vertex indices in the faces
+    for (Face& face: faces) {
+        for (int i = 0; i < 3; ++i) {
+            face[i] = mapVertices[face[i]];
+			ASSERT(face[i] != NO_ID);
+        }
+    }
+    const VIndex numDuplicated(mapVertices.size() - vertices.size());
+	DEBUG_ULTIMATE("Removed %u duplicated vertices", numDuplicated);
+	return numDuplicated;
+}
+
 // remove all vertices that are not assigned to any face
 // (require vertexFaces)
 Mesh::VIndex Mesh::RemoveUnreferencedVertices(bool bUpdateLists)
@@ -3667,6 +3863,7 @@ Mesh::VIndex Mesh::RemoveUnreferencedVertices(bool bUpdateLists)
 	if (vertexRemove.empty())
 		return 0;
 	RemoveVertices(vertexRemove, bUpdateLists);
+	DEBUG_ULTIMATE("Removed %u unreferenced vertices", vertexRemove.size());
 	return vertexRemove.size();
 }
 
@@ -4149,7 +4346,7 @@ Mesh Mesh::SubMesh(const FaceIdxArr& chunk) const
 				mesh.faceTexcoords.emplace_back(tri[i]);
 		}
 	}
-	mesh.ListIncidenteFaces();
+	mesh.ListIncidentFaces();
 	mesh.RemoveUnreferencedVertices();
 	mesh.FixNonManifold();
 	return mesh;
@@ -4239,7 +4436,7 @@ bool Mesh::TransferTexture(Mesh& mesh, const FaceIdxArr& faceSubsetIndices, unsi
 		// the two meshes are different, transfer the texture by finding the closest point
 		// on the two surfaces
 		if (vertexFaces.size() != vertices.size())
-			ListIncidenteFaces();
+			ListIncidentFaces();
 		if (mesh.vertexNormals.size() != mesh.vertices.size())
 			mesh.ComputeNormalVertices();
 		#if USE_MESH_INT == USE_MESH_BVH
