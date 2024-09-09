@@ -3,15 +3,21 @@
 ########################################################################
 #
 # Project-wide settings
-CMAKE_MINIMUM_REQUIRED(VERSION 3.8.2)
+CMAKE_MINIMUM_REQUIRED(VERSION 3.10)
 IF(POLICY CMP0011)
 	CMAKE_POLICY(SET CMP0011 NEW)
+ENDIF()
+IF(POLICY CMP0072)
+	CMAKE_POLICY(SET CMP0072 NEW)
 ENDIF()
 IF(POLICY CMP0074)
 	CMAKE_POLICY(SET CMP0074 NEW)
 ENDIF()
 IF(POLICY CMP0104)
 	CMAKE_POLICY(SET CMP0104 NEW)
+ENDIF()
+IF(POLICY CMP0146)
+	CMAKE_POLICY(SET CMP0146 OLD) # not required, but forced by OpenCV old support for CUDA
 ENDIF()
 
 # List configuration options
@@ -49,14 +55,14 @@ ENDIF()
 # CMake files in this project can refer to the root source directory
 # as ${OpenMVS_SOURCE_DIR} and to the root binary directory as
 # ${OpenMVS_BINARY_DIR}.
-PROJECT(OpenMVS)
+PROJECT(OpenMVS LANGUAGES CXX)
 
 SET(OpenMVS_MAJOR_VERSION 2)
 SET(OpenMVS_MINOR_VERSION 3)
 SET(OpenMVS_PATCH_VERSION 0)
 SET(OpenMVS_VERSION ${OpenMVS_MAJOR_VERSION}.${OpenMVS_MINOR_VERSION}.${OpenMVS_PATCH_VERSION})
 
-# Disable SSE on unsuported platforms
+# Disable SSE on unsupported platforms
 IF(CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm|ARM|aarch64|AARCH64)")
 	SET(OpenMVS_USE_SSE OFF)
 ENDIF()
@@ -95,9 +101,6 @@ if(OpenMVS_USE_OPENMP)
 endif()
 
 if(OpenMVS_USE_OPENGL)
-	if(POLICY CMP0072)
-		cmake_policy(SET CMP0072 NEW)
-	endif()
 	FIND_PACKAGE(OpenGL)
 	if(OPENGL_FOUND)
 		INCLUDE_DIRECTORIES(${OPENGL_INCLUDE_DIR})
@@ -109,15 +112,20 @@ if(OpenMVS_USE_OPENGL)
 endif()
 
 if(OpenMVS_USE_CUDA)
-	if(POLICY CMP0146)
-		cmake_policy(SET CMP0146 NEW)
-	endif()
-	FIND_PACKAGE(CUDA)
-	if(CUDA_FOUND)
+	INCLUDE(CheckLanguage)
+	CHECK_LANGUAGE(CUDA)
+	if(CMAKE_CUDA_COMPILER)
+		SET(CUDA_FOUND TRUE)
+		if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
+			SET(CMAKE_CUDA_ARCHITECTURES "native")
+		endif()
 		ENABLE_LANGUAGE(CUDA)
+		# not required, but forced by OpenCV old support for CUDA
+		FIND_PACKAGE(CUDA REQUIRED)
 		# CUDA-11.x can not be compiled using C++14 standard on Windows
-		string(REGEX MATCH "^[0-9]+" CUDA_MAJOR ${CMAKE_CUDA_COMPILER_VERSION})
-		if(${CUDA_MAJOR} GREATER 10)
+		string(REGEX MATCH "^[0-9]+" CUDA_VERSION_MAJOR ${CMAKE_CUDA_COMPILER_VERSION})
+		string(REGEX REPLACE "([0-9]+)\\.([0-9]+).*" "\\2" CUDA_VERSION_MINOR ${CMAKE_CUDA_COMPILER_VERSION})
+		if(${CUDA_VERSION_MAJOR} GREATER 10)
 			SET(CMAKE_CUDA_STANDARD 17)
 		endif()
 		EXECUTE_PROCESS(COMMAND "${CMAKE_CUDA_COMPILER}" --list-gpu-arch 
@@ -159,6 +167,7 @@ if(OpenMVS_USE_CUDA)
 		SET(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} --expt-relaxed-constexpr")
 		INCLUDE_DIRECTORIES(${CUDA_INCLUDE_DIRS})
 		SET(_USE_CUDA TRUE)
+		MESSAGE("-- Found CUDA: " ${CMAKE_CUDA_COMPILER_VERSION} " with GPU arch: " ${CMAKE_CUDA_ARCHITECTURES})
 	else()
 		SET(CUDA_CUDA_LIBRARY "")
 		MESSAGE("-- Can't find CUDA. Continuing without it.")
