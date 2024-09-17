@@ -137,8 +137,8 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 	LOG(_T("Command line: ") APPNAME _T("%s"), Util::CommandLineToString(argc, argv).c_str());
 
 	// validate input
-	Util::ensureValidFolderPath(OPT::strInputFileName);
 	const bool bInvalidCommand(OPT::strInputFileName.empty());
+	Util::ensureValidFolderPath(OPT::strInputFileName);
 	if (OPT::vm.count("help") || bInvalidCommand) {
 		boost::program_options::options_description visible("Available options");
 		visible.add(generic).add(config);
@@ -225,6 +225,7 @@ bool ParseImage(Scene& scene, const String& imagePath, const String& cameraPath,
 	const Point3d t = P.topRightCorner<3, 1>().eval();
 	pose.C = pose.R.t() * (-t);
 	imageData.camera = platform.GetCamera(imageData.cameraID, imageData.poseID);
+	++scene.nCalibratedImages;
 	// set image neighbors if available
 	nlohmann::json::const_iterator itNeighbors = data.find("neighbors");
 	if (itNeighbors != data.end()) {
@@ -285,6 +286,7 @@ bool ParseScene(Scene& scene, const String& scenePath)
 		VERBOSE("Invalid scene folder");
 		return false;
 	}
+	scene.nCalibratedImages = 0;
 	if (numCorrectedFolders == 2) {
 		// corrected data
 		CLISTDEFIDX(String, IIndex) imagePaths;

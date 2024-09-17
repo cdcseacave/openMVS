@@ -6,9 +6,6 @@
 // OpenMVS compiled as static or dynamic libs
 #cmakedefine BUILD_SHARED_LIBS
 
-// Define to 1 if you have the <inttypes.h> header file
-#cmakedefine01 HAVE_INTTYPES_H
-
 // Define to 1 if exceptions are enabled
 #cmakedefine01 _HAS_EXCEPTIONS
 

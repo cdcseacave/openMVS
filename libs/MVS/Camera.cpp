@@ -84,12 +84,32 @@ Camera Camera::GetScaled(const cv::Size& size, const cv::Size& newSize) const
 /*----------------------------------------------------------------*/
 
 
+Matrix4x4 Camera::GetP() const {
+	Matrix4x4 P4;
+	for (int i = 0; i < 3; ++i)
+		for (int j = 0; j < 4; ++j)
+			P4(i, j) = P(i, j);
+	P4(3, 0) = P4(3, 1) = P4(3, 2) = 0;
+	P4(3, 3) = 1;
+	return P4;
+} // GetP
+Matrix4x4 Camera::GetRC() const {
+	Matrix3x4 P3;
+	AssembleProjectionMatrix(R, C, P3);
+	Matrix4x4 RC4;
+	for (int i = 0; i < 3; ++i)
+		for (int j = 0; j < 4; ++j)
+			RC4(i, j) = P3(i, j);
+	RC4(3, 0) = RC4(3, 1) = RC4(3, 2) = 0;
+	RC4(3, 3) = 1;
+	return RC4;
+} // GetRC
+/*----------------------------------------------------------------*/
+
 void Camera::ComposeP_RC()
 {
 	AssembleProjectionMatrix(R, C, P);
 } // ComposeP_RC
-/*----------------------------------------------------------------*/
-
 void Camera::ComposeP()
 {
 	AssembleProjectionMatrix(K, R, C, P);
@@ -100,8 +120,6 @@ void Camera::DecomposeP_RC()
 {
 	DecomposeProjectionMatrix(P, R, C);
 } // DecomposeP_RC
-/*----------------------------------------------------------------*/
-
 void Camera::DecomposeP()
 {
 	DecomposeProjectionMatrix(P, K, R, C);

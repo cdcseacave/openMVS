@@ -275,6 +275,8 @@ public:
 	Camera GetScaled(REAL s) const; // return a camera scaled by the given factor
 	Camera GetScaled(const cv::Size& size, const cv::Size& newSize) const; // return a camera scaled to the given resolution
 
+	Matrix4x4 GetP() const; // the composed projection matrix (4x4) assuming valid P
+	Matrix4x4 GetRC() const; // the composed transform matrix (4x4)
 	void ComposeP_RC(); // compose P from R and C only
 	void ComposeP(); // compose P from K, R and C
 	void DecomposeP_RC(); // decompose P in R and C, keep K unchanged

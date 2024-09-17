@@ -710,9 +710,6 @@ macro(optimize_default_compiler_settings)
 		string(REPLACE "/Zm1000" "" ${flags} "${${flags}}")
 	  endforeach()
 	endif()
-	if(CMAKE_C_COMPILER_ID)
-		CHECK_INCLUDE_FILE("inttypes.h" HAVE_INTTYPES_H)
-	endif()
 endmacro()
 
 

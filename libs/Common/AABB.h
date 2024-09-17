@@ -29,6 +29,7 @@ public:
 	typedef TYPE Type;
 	typedef Eigen::Matrix<TYPE,DIMS,1> POINT;
 	typedef Eigen::Matrix<TYPE,DIMS,DIMS,Eigen::RowMajor> MATRIX;
+	typedef Eigen::AlignedBox<TYPE,DIMS> ALIGNEDBOX;
 	enum { numChildren = (2<<(DIMS-1)) };
 	enum { numCorners = (DIMS==1 ? 2 : (DIMS==2 ? 4 : 8)) }; // 2^DIMS
 	enum { numScalar = (2*DIMS) };
@@ -39,18 +40,20 @@ public:
 
 	inline TAABB() {}
 	inline TAABB(bool);
-	inline TAABB(const POINT& _pt);
+	inline TAABB(const POINT& pt);
 	inline TAABB(const POINT& _ptMin, const POINT& _ptMax);
 	inline TAABB(const POINT& center, const TYPE& radius);
+	inline TAABB(const ALIGNEDBOX& box);
 	template <typename TPoint>
 	inline TAABB(const TPoint* pts, size_t n);
 	template <typename CTYPE>
 	inline TAABB(const TAABB<CTYPE, DIMS>&);
 
 	inline void Reset();
-	inline void Set(const POINT& _pt);
+	inline void Set(const POINT& pt);
 	inline void Set(const POINT& _ptMin, const POINT& _ptMax);
 	inline void Set(const POINT& center, const TYPE& radius);
+	inline void Set(const ALIGNEDBOX& box);
 	template <typename TPoint>
 	inline void Set(const TPoint* pts, size_t n);
 
@@ -66,6 +69,8 @@ public:
 
 	inline void Translate(const POINT&);
 	inline void Transform(const MATRIX&);
+
+	inline ALIGNEDBOX GetAlignedBox() const;
 
 	inline POINT GetCenter() const;
 	inline void GetCenter(POINT&) const;

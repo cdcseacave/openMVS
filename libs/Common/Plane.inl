@@ -1,3 +1,4 @@
+#include "Plane.h"
 ////////////////////////////////////////////////////////////////////
 // Plane.inl
 //
@@ -175,6 +176,22 @@ inline TPlane<TYPE,DIMS> TPlane<TYPE,DIMS>::Negated() const
 /*----------------------------------------------------------------*/
 
 
+// transform plane from one coordinate system to another
+template <typename TYPE, int DIMS>
+inline TPlane<TYPE,DIMS> TPlane<TYPE,DIMS>::Transformed(const MATRIX& m) const
+{
+	const POINT p(m_vN * -m_fD);
+	const POINT pt((m * p.homogeneous()).hnormalized());
+	return TPlane(m.template topLeftCorner<DIMS,DIMS>() * m_vN, pt);
+} // Transformed
+template <typename TYPE, int DIMS>
+inline TPlane<TYPE,DIMS>& TPlane<TYPE,DIMS>::Transform(const MATRIX& m)
+{
+	return *this = Transformed(m);
+} // Transform
+/*----------------------------------------------------------------*/
+
+
 template <typename TYPE, int DIMS>
 inline TYPE TPlane<TYPE,DIMS>::Distance(const TPlane& p) const
 {
@@ -210,8 +227,8 @@ template <typename TYPE, int DIMS>
 inline GCLASS TPlane<TYPE,DIMS>::Classify(const POINT& p) const
 {
 	const TYPE f(Distance(p));
-	if (f >  ZEROTOLERANCE<TYPE,DIMS>()) return FRONT;
-	if (f < -ZEROTOLERANCE<TYPE,DIMS>()) return BACK;
+	if (f >  ZEROTOLERANCE<TYPE>()) return FRONT;
+	if (f < -ZEROTOLERANCE<TYPE>()) return BACK;
 	return PLANAR;
 }
 /*----------------------------------------------------------------*/
@@ -266,7 +283,7 @@ bool TPlane<TYPE,DIMS>::Intersects(const TPlane& plane, RAY& ray) const
 	// if crossproduct of normals 0 than planes parallel
 	const VECTOR vCross(m_vN.cross(plane.m_vN));
 	const TYPE fSqrLength(vCross.squaredNorm());
-	if (fSqrLength < ZEROTOLERANCE<TYPE,DIMS>()) 
+	if (fSqrLength < ZEROTOLERANCE<TYPE>()) 
 		return false;
 
 	// find line of intersection
