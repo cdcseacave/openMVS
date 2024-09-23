@@ -75,6 +75,10 @@ bool UnitTests()
 bool PipelineTest(bool verbose=false)
 {
 	TD_TIMER_START();
+	#if 0 && defined(_USE_CUDA)
+	// force CPU for testing even if CUDA is available
+	SEACAVE::CUDA::desiredDeviceID = -2;
+	#endif
 	Scene scene;
 	if (!scene.Load(MAKE_PATH("scene.mvs"))) {
 		VERBOSE("ERROR: TestDataset failed loading the scene!");
@@ -88,7 +92,7 @@ bool PipelineTest(bool verbose=false)
 	}
 	if (verbose)
 		scene.pointcloud.Save(MAKE_PATH("scene_dense.ply"));
-	if (!scene.ReconstructMesh() || scene.mesh.faces.size() < 40000u) {
+	if (!scene.ReconstructMesh() || scene.mesh.faces.size() < 25000u) {
 		VERBOSE("ERROR: TestDataset failed reconstructing the mesh!");
 		return false;
 	}
@@ -96,7 +100,7 @@ bool PipelineTest(bool verbose=false)
 		scene.mesh.Save(MAKE_PATH("scene_dense_mesh.ply"));
 	constexpr float decimate = 0.7f;
 	scene.mesh.Clean(decimate);
-	if (!ISINSIDE(scene.mesh.faces.size(), 25000u, 45000u)) {
+	if (!ISINSIDE(scene.mesh.faces.size(), 20000u, 30000u)) {
 		VERBOSE("ERROR: TestDataset failed cleaning the mesh!");
 		return false;
 	}

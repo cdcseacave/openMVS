@@ -1176,8 +1176,8 @@ void TRMatrixBase<TYPE>::SetFromHV(const Vec& xxx, const Vec& yyy)
 template <typename TYPE>
 TRMatrixBase<TYPE>& TRMatrixBase<TYPE>::SetFromDir2Dir(const Vec& dir0, const Vec& dir1)
 {
-	ASSERT(ISEQUAL(norm(dir0), TYPE(1)));
-	ASSERT(ISEQUAL(norm(dir1), TYPE(1)));
+	ASSERT(ISEQUAL(norm(dir0), TYPE(1)), "Norm = ", norm(dir0));
+	ASSERT(ISEQUAL(norm(dir1), TYPE(1)), "Norm = ", norm(dir1));
 	const TYPE cos01(CLAMP(dir1.dot(dir0), TYPE(-1), TYPE(1)));
 	const TYPE sin01Sq(TYPE(1) - SQUARE(cos01));
 	if (sin01Sq > EPSILONTOLERANCE<TYPE>()) {
@@ -1203,8 +1203,8 @@ TRMatrixBase<TYPE>& TRMatrixBase<TYPE>::SetFromDir2Dir(const Vec& dir0, const Ve
 template <typename TYPE>
 void TRMatrixBase<TYPE>::SetFromDirUpGL(const Vec& viewDir, const Vec& viewUp)
 {
-	ASSERT(ISEQUAL(norm(viewDir), TYPE(1)));
-	ASSERT(ISEQUAL(norm(viewUp), TYPE(1)));
+	ASSERT(ISEQUAL(norm(viewDir), TYPE(1)), "Norm = ", norm(viewDir));
+	ASSERT(ISEQUAL(norm(viewUp), TYPE(1)), "Norm = ", norm(viewUp));
 	const Vec right(normalized(cross(viewDir, viewUp)));
 	const Vec up(normalized(cross(right, viewDir)));
 	const Vec forward(viewDir * TYPE(-1)); // convert to right handed system
@@ -1214,8 +1214,8 @@ void TRMatrixBase<TYPE>::SetFromDirUpGL(const Vec& viewDir, const Vec& viewUp)
 template <typename TYPE>
 void TRMatrixBase<TYPE>::SetFromDirUp(const Vec& viewDir, const Vec& viewUp)
 {
-	ASSERT(ISEQUAL(norm(viewDir), TYPE(1)));
-	ASSERT(ISEQUAL(norm(viewUp), TYPE(1)));
+	ASSERT(ISEQUAL(norm(viewDir), TYPE(1)), "Norm = ", norm(viewDir));
+	ASSERT(ISEQUAL(norm(viewUp), TYPE(1)), "Norm = ", norm(viewUp));
 	const Vec right(normalized(cross(viewDir, viewUp)));
 	const Vec up(normalized(cross(viewDir, right)));
 	const Vec& forward(viewDir);

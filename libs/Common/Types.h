@@ -378,6 +378,25 @@ typedef TAliasCast<double,int32_t> CastD2I;
 #endif
 
 
+// functions simplifying the task of printing messages
+namespace SEACAVE {
+// print the given message composed of any number of arguments to the given stream
+template<typename... Args>
+std::ostringstream& PrintMessageToStream(std::ostringstream& oss, Args&&... args) {
+	// fold expression to insert all arguments into the stream
+	(oss << ... << args);
+	return oss;
+}
+// print the given message composed of any number of arguments to a string
+template<typename... Args>
+std::string PrintMessageToString(Args&&... args) {
+	std::ostringstream oss;
+	(oss << ... << args);
+	return oss.str();
+}
+} // namespace SEACAVE
+
+
 // I N C L U D E S /////////////////////////////////////////////////
 
 #include "Strings.h"
@@ -681,13 +700,13 @@ constexpr T factorial(T n) {
 }
 template<typename T>
 constexpr T combinations(const T& n, const T& k) {
-	ASSERT(n >= k);
+	SIMPLE_ASSERT(n >= k);
 	#if 1
 	T num = n;
 	const T den = factorial(k);
 	for (T i=n-k+1; i<n; ++i)
 		num *= i;
-	ASSERT(num%den == 0);
+	SIMPLE_ASSERT(num%den == 0);
 	return num/den;
 	#else
 	return factorial(n) / (factorial(k)*factorial(n-k));

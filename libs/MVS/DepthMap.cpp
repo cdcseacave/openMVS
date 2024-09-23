@@ -663,130 +663,57 @@ void DepthEstimator::ProcessPixel(IDX idx)
 	#if DENSE_SMOOTHNESS != DENSE_SMOOTHNESS_NA
 	neighborsClose.Empty();
 	#endif
+	const auto AddDirectionNeighbor = [this] (const ImageRef& nx) {
+		const Depth ndepth(depthMap0(nx));
+		if (ndepth > 0) {
+			#if DENSE_SMOOTHNESS != DENSE_SMOOTHNESS_NA
+			ASSERT(ISEQUAL(norm(normalMap0(nx)), 1.f), "Norm = ", norm(normalMap0(nx)));
+			neighbors.emplace_back(nx);
+			neighborsClose.emplace_back(NeighborEstimate{ndepth, normalMap0(nx)
+				#if DENSE_SMOOTHNESS == DENSE_SMOOTHNESS_PLANE
+				, Cast<float>(image0.camera.TransformPointI2C(Point3(nx, ndepth)))
+				#endif
+			});
+			#else
+			neighbors.emplace_back(NeighborData{nx,ndepth,normalMap0(nx)});
+			#endif
+		}
+	};
+	const auto AddDirection = [this] (const ImageRef& nx) {
+		const Depth ndepth(depthMap0(nx));
+		if (ndepth > 0) {
+			ASSERT(ISEQUAL(norm(normalMap0(nx)), 1.f), "Norm = ", norm(normalMap0(nx)));
+			neighborsClose.emplace_back(NeighborEstimate{ndepth, normalMap0(nx)
+				#if DENSE_SMOOTHNESS == DENSE_SMOOTHNESS_PLANE
+				, Cast<float>(image0.camera.TransformPointI2C(Point3(nx, ndepth)))
+				#endif
+				});
+		}
+ 	};
 	if (dir == LT2RB) {
 		// direction from left-top to right-bottom corner
-		if (x0.x > nSizeHalfWindow) {
-			const ImageRef nx(x0.x-1, x0.y);
-			const Depth ndepth(depthMap0(nx));
-			if (ndepth > 0) {
-				#if DENSE_SMOOTHNESS != DENSE_SMOOTHNESS_NA
-				ASSERT(ISEQUAL(norm(normalMap0(nx)), 1.f));
-				neighbors.emplace_back(nx);
-				neighborsClose.emplace_back(NeighborEstimate{ndepth,normalMap0(nx)
-					#if DENSE_SMOOTHNESS == DENSE_SMOOTHNESS_PLANE
-					, Cast<float>(image0.camera.TransformPointI2C(Point3(nx, ndepth)))
-					#endif
-				});
-				#else
-				neighbors.emplace_back(NeighborData{nx,ndepth,normalMap0(nx)});
-				#endif
-			}
-		}
-		if (x0.y > nSizeHalfWindow) {
-			const ImageRef nx(x0.x, x0.y-1);
-			const Depth ndepth(depthMap0(nx));
-			if (ndepth > 0) {
-				#if DENSE_SMOOTHNESS != DENSE_SMOOTHNESS_NA
-				ASSERT(ISEQUAL(norm(normalMap0(nx)), 1.f));
-				neighbors.emplace_back(nx);
-				neighborsClose.emplace_back(NeighborEstimate{ndepth,normalMap0(nx)
-					#if DENSE_SMOOTHNESS == DENSE_SMOOTHNESS_PLANE
-					, Cast<float>(image0.camera.TransformPointI2C(Point3(nx, ndepth)))
-					#endif
-				});
-				#else
-				neighbors.emplace_back(NeighborData{nx,ndepth,normalMap0(nx)});
-				#endif
-			}
-		}
+		if (x0.x > nSizeHalfWindow)
+			AddDirectionNeighbor(ImageRef(x0.x-1, x0.y));
+		if (x0.y > nSizeHalfWindow)
+			AddDirectionNeighbor(ImageRef(x0.x, x0.y-1));
 		#if DENSE_SMOOTHNESS != DENSE_SMOOTHNESS_NA
-		if (x0.x < size.width-nSizeHalfWindow) {
-			const ImageRef nx(x0.x+1, x0.y);
-			const Depth ndepth(depthMap0(nx));
-			if (ndepth > 0) {
-				ASSERT(ISEQUAL(norm(normalMap0(nx)), 1.f));
-				neighborsClose.emplace_back(NeighborEstimate{ndepth,normalMap0(nx)
-					#if DENSE_SMOOTHNESS == DENSE_SMOOTHNESS_PLANE
-					, Cast<float>(image0.camera.TransformPointI2C(Point3(nx, ndepth)))
-					#endif
-				});
-			}
-		}
-		if (x0.y < size.height-nSizeHalfWindow) {
-			const ImageRef nx(x0.x, x0.y+1);
-			const Depth ndepth(depthMap0(nx));
-			if (ndepth > 0) {
-				ASSERT(ISEQUAL(norm(normalMap0(nx)), 1.f));
-				neighborsClose.emplace_back(NeighborEstimate{ndepth,normalMap0(nx)
-					#if DENSE_SMOOTHNESS == DENSE_SMOOTHNESS_PLANE
-					, Cast<float>(image0.camera.TransformPointI2C(Point3(nx, ndepth)))
-					#endif
-				});
-			}
-		}
+		if (x0.x < size.width-nSizeHalfWindow)
+			AddDirection(ImageRef(x0.x+1, x0.y));
+		if (x0.y < size.height-nSizeHalfWindow)
+			AddDirection(ImageRef(x0.x, x0.y+1));
 		#endif
 	} else {
 		ASSERT(dir == RB2LT);
 		// direction from right-bottom to left-top corner
-		if (x0.x < size.width-nSizeHalfWindow) {
-			const ImageRef nx(x0.x+1, x0.y);
-			const Depth ndepth(depthMap0(nx));
-			if (ndepth > 0) {
-				#if DENSE_SMOOTHNESS != DENSE_SMOOTHNESS_NA
-				ASSERT(ISEQUAL(norm(normalMap0(nx)), 1.f));
-				neighbors.emplace_back(nx);
-				neighborsClose.emplace_back(NeighborEstimate{ndepth,normalMap0(nx)
-					#if DENSE_SMOOTHNESS == DENSE_SMOOTHNESS_PLANE
-					, Cast<float>(image0.camera.TransformPointI2C(Point3(nx, ndepth)))
-					#endif
-				});
-				#else
-				neighbors.emplace_back(NeighborData{nx,ndepth,normalMap0(nx)});
-				#endif
-			}
-		}
-		if (x0.y < size.height-nSizeHalfWindow) {
-			const ImageRef nx(x0.x, x0.y+1);
-			const Depth ndepth(depthMap0(nx));
-			if (ndepth > 0) {
-				#if DENSE_SMOOTHNESS != DENSE_SMOOTHNESS_NA
-				ASSERT(ISEQUAL(norm(normalMap0(nx)), 1.f));
-				neighbors.emplace_back(nx);
-				neighborsClose.emplace_back(NeighborEstimate{ndepth,normalMap0(nx)
-					#if DENSE_SMOOTHNESS == DENSE_SMOOTHNESS_PLANE
-					, Cast<float>(image0.camera.TransformPointI2C(Point3(nx, ndepth)))
-					#endif
-				});
-				#else
-				neighbors.emplace_back(NeighborData{nx,ndepth,normalMap0(nx)});
-				#endif
-			}
-		}
+		if (x0.x < size.width-nSizeHalfWindow)
+			AddDirectionNeighbor(ImageRef(x0.x+1, x0.y));
+		if (x0.y < size.height-nSizeHalfWindow)
+			AddDirectionNeighbor(ImageRef(x0.x, x0.y+1));
 		#if DENSE_SMOOTHNESS != DENSE_SMOOTHNESS_NA
-		if (x0.x > nSizeHalfWindow) {
-			const ImageRef nx(x0.x-1, x0.y);
-			const Depth ndepth(depthMap0(nx));
-			if (ndepth > 0) {
-				ASSERT(ISEQUAL(norm(normalMap0(nx)), 1.f));
-				neighborsClose.emplace_back(NeighborEstimate{ndepth,normalMap0(nx)
-					#if DENSE_SMOOTHNESS == DENSE_SMOOTHNESS_PLANE
-					, Cast<float>(image0.camera.TransformPointI2C(Point3(nx, ndepth)))
-					#endif
-				});
-			}
-		}
-		if (x0.y > nSizeHalfWindow) {
-			const ImageRef nx(x0.x, x0.y-1);
-			const Depth ndepth(depthMap0(nx));
-			if (ndepth > 0) {
-				ASSERT(ISEQUAL(norm(normalMap0(nx)), 1.f));
-				neighborsClose.emplace_back(NeighborEstimate{ndepth,normalMap0(nx)
-					#if DENSE_SMOOTHNESS == DENSE_SMOOTHNESS_PLANE
-					, Cast<float>(image0.camera.TransformPointI2C(Point3(nx, ndepth)))
-					#endif
-				});
-			}
-		}
+		if (x0.x > nSizeHalfWindow)
+			AddDirection(ImageRef(x0.x-1, x0.y));
+		if (x0.y > nSizeHalfWindow)
+			AddDirection(ImageRef(x0.x, x0.y-1));
 		#endif
 	}
 	float& conf = confMap0(x0);
@@ -1027,7 +954,7 @@ DepthEstimator::PixelEstimate DepthEstimator::PerturbEstimate(const PixelEstimat
 		}
 		perturbation *= 0.5f;
 	}
-	ASSERT(ISEQUAL(norm(ptbEst.normal), 1.f));
+	ASSERT(ISEQUAL(norm(ptbEst.normal), 1.f), "Norm = ", norm(ptbEst.normal));
 
 	return ptbEst;
 }

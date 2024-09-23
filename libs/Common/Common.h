@@ -78,6 +78,12 @@ namespace SEACAVE { extern int g_nVerbosityLevel; }
 #define LOG_ERR() GET_LOG() //or std::cerr
 
 
+#ifdef PRINT_ASSERT_MSG
+#undef PRINT_ASSERT_MSG
+#define PRINT_ASSERT_MSG(exp, ...) {std::cout << SEACAVE::PrintMessageToString("ASSERTION FAILED: (" #exp ") ", __VA_ARGS__) << std::endl;}
+#endif
+
+
 // macros simplifying the task of composing file paths;
 // WORKING_FOLDER and WORKING_FOLDER_FULL must be defined as strings
 // containing the relative/full path to the working folder
@@ -86,7 +92,7 @@ namespace SEACAVE {
 class String;
 extern String g_strWorkingFolder; // empty by default (current folder)
 extern String g_strWorkingFolderFull; // full path to current folder
-}
+} // namespace SEACAVE
 #define WORKING_FOLDER		g_strWorkingFolder // empty by default (current folder)
 #define WORKING_FOLDER_FULL	g_strWorkingFolderFull // full path to current folder
 #endif

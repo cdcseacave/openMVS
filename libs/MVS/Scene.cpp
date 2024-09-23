@@ -1847,7 +1847,7 @@ size_t Scene::DrawCircle(PointCloud& pc, PointCloud::PointArr& outCircle, const 
 		const float fAngle(fStartAngle + fAngleBetweenPoints * pIdx);
 		ASSERT(fAngle <= FTWO_PI);
 		const Normal n(cos(fAngle), sin(fAngle), 0);
-		ASSERT(ISEQUAL(norm(n), 1.f));
+		ASSERT(ISEQUAL(norm(n), 1.f), "Norm = ", norm(n));
 		const Point3f newPoint(circleCenter + circleRadius * n);
 		// select cameras seeing this point
 		PointCloud::ViewArr views;

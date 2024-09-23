@@ -381,7 +381,7 @@ void* STCALL DepthMapsData::ScoreDepthMapTmp(void* arg)
 			// replace invalid normal with random values
 			normal = estimator.RandomNormal(viewDir);
 		}
-		ASSERT(ISEQUAL(norm(normal), 1.f));
+		ASSERT(ISEQUAL(norm(normal), 1.f), "Norm = ", norm(normal));
 		estimator.confMap0(x) = estimator.ScorePixel(depth, normal);
 	}
 	return NULL;
@@ -1481,7 +1481,7 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, b
 				ProjArr& pointProjs = projs.emplace_back();
 				pointProjs.emplace_back(Proj(x));
 				const PointCloud::Normal normal(!depthData.normalMap.empty() ? Cast<Normal::Type>(imageData.camera.R.t() * Cast<REAL>(depthData.normalMap(x))) : Normal(0, 0, -1));
-				ASSERT(ISEQUAL(norm(normal), 1.f));
+				ASSERT(ISEQUAL(norm(normal), 1.f), "Norm = ", norm(normal));
 				// check the projection in the neighbor depth-maps
 				Point3 X(point*confidence);
 				Pixel32F C(Cast<float>(imageData.image(x))*confidence);
@@ -1509,7 +1509,7 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, b
 					if (IsDepthSimilar(pt.z, depthB, OPTDENSE::fDepthDiffThreshold)) {
 						// check if normals agree
 						const PointCloud::Normal normalB(!depthData.normalMap.empty() ? Cast<Normal::Type>(imageDataB.camera.R.t() * Cast<REAL>(depthDataB.normalMap(xB))) : Normal(0, 0, -1));
-						ASSERT(ISEQUAL(norm(normalB), 1.f));
+						ASSERT(ISEQUAL(norm(normalB), 1.f), "Norm = ", norm(normalB));
 						if (normal.dot(normalB) > normalError) {
 							// add view to the 3D point
 							ASSERT(views.FindFirst(idxImageB) == PointCloud::ViewArr::NO_INDEX);
@@ -1688,12 +1688,12 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 					return;
 				// check if normals agree
 				normal = image.camera.R.t() * Cast<REAL>(depthData.normalMap(x));
-				ASSERT(ISEQUAL(norm(normal), 1.f));
+				ASSERT(ISEQUAL(norm(normal), 1.f), "Norm = ", norm(normal));
 				if (refNormal.dot(normal) < normalError)
 					return;
 			} else {
 				normal = image.camera.R.t() * Cast<REAL>(depthData.normalMap(x));
-				ASSERT(ISEQUAL(norm(normal), 1.f));
+				ASSERT(ISEQUAL(norm(normal), 1.f), "Norm = ", norm(normal));
 			}
 			// set the current pixel as visited
 			useMask.set(x);
