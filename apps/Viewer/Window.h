@@ -100,7 +100,7 @@ public:
 	ClbkExportScene clbkExportScene;
 	typedef DELEGATE<void (void)> ClbkCenterScene;
 	ClbkCenterScene clbkCenterScene;
-	typedef DELEGATE<void (const Ray3&, int)> ClbkRayScene;
+	typedef DELEGATE<void (const Ray3&, int, int)> ClbkRayScene;
 	ClbkRayScene clbkRayScene;
 	typedef DELEGATE<void (void)> ClbkCompilePointCloud;
 	ClbkCompilePointCloud clbkCompilePointCloud;

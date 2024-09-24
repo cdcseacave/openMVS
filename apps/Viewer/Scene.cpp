@@ -743,7 +743,7 @@ void Scene::TogleSceneBox()
 }
 
 
-void Scene::CastRay(const Ray3& ray, int action)
+void Scene::CastRay(const Ray3& ray, int action, int mods)
 {
 	if (!IsOctreeValid())
 		return;
@@ -784,6 +784,19 @@ void Scene::CastRay(const Ray3& ray, int action)
 				face[1], window.selectionPoints[1].x, window.selectionPoints[1].y, window.selectionPoints[1].z,
 				face[2], window.selectionPoints[2].x, window.selectionPoints[2].y, window.selectionPoints[2].z
 			);
+			if ((mods&(GLFW_MOD_CONTROL|GLFW_MOD_SHIFT)) && scene.mesh.HasTexture()) {
+				String dbgOut;
+				cv::Mat dbgImg;
+				scene.mesh.ListIncidenteFaces();
+				scene.mesh.ListIncidenteFaceFaces();
+				const bool bSaveToFile = (mods&GLFW_MOD_ALT);
+				dbgOut = scene.mesh.PlotTexturePatch((MVS::Mesh::FIndex)intRay.pick.idx, face_patch_ids, dbgImg, bSaveToFile);
+				if (!dbgOut.IsEmpty()) {
+					DEBUG_EXTRA("Saved texture patch as %s", dbgOut.c_str());
+				} else {
+					cv::imshow(dbgOut, dbgImg);	
+				}
+			}
 		} else {
 			window.selectionType = Window::SEL_NA;
 		}
