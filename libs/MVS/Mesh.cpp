@@ -1461,6 +1461,8 @@ bool Mesh::LoadGLTF(const String& fileName, bool bBinary)
 // export the mesh to the given file
 bool Mesh::Save(const String& fileName, const cList<String>& comments, bool bBinary) const
 {
+	if (IsEmpty())
+		return false;
 	TD_TIMER_STARTD();
 	const String ext(Util::getFileExt(fileName).ToLower());
 	bool ret;

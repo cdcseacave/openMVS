@@ -360,7 +360,7 @@ bool PointCloud::Load(const String& fileName)
 // save the dense point cloud as PLY file
 bool PointCloud::Save(const String& fileName, bool bViews, bool bLegacyTypes, bool bBinary) const
 {
-	if (points.empty())
+	if (IsEmpty())
 		return false;
 	TD_TIMER_STARTD();
 

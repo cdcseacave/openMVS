@@ -1613,7 +1613,7 @@ bool MVS::LoadConfidenceMap(const String& fileName, ConfidenceMap& confMap)
 // export depth map as an image (dark - far depth, light - close depth)
 Image8U3 MVS::DepthMap2Image(const DepthMap& depthMap, Depth minDepth, Depth maxDepth)
 {
-	ASSERT(!depthMap.empty());
+	ASSERT(!depthMap.empty() && depthMap.isContinuous());
 	// find min and max values
 	if (minDepth == FLT_MAX && maxDepth == 0) {
 		cList<Depth,Depth,0> depths(0, depthMap.area());
@@ -1653,6 +1653,7 @@ bool MVS::ExportNormalMap(const String& fileName, const NormalMap& normalMap)
 {
 	if (normalMap.empty())
 		return false;
+	ASSERT(normalMap.isContinuous());
 	Image8U3 img(normalMap.size());
 	for (int i=normalMap.area(); --i >= 0; ) {
 		img[i] = [](const Normal& n) {
@@ -1673,6 +1674,7 @@ bool MVS::ExportNormalMap(const String& fileName, const NormalMap& normalMap)
 bool MVS::ExportConfidenceMap(const String& fileName, const ConfidenceMap& confMap)
 {
 	// find min and max values
+	ASSERT(confMap.empty() || confMap.isContinuous());
 	FloatArr confs(0, confMap.area());
 	for (int i=confMap.area(); --i >= 0; ) {
 		const float conf = confMap[i];

@@ -1637,7 +1637,7 @@ public:
 	/// What is the elem stride of the matrix?
 	inline size_t elem_stride() const { ASSERT(dims == 2 && step[1] == sizeof(TYPE)); return step[1]; }
 	/// Compute the area of the 2D matrix
-	inline int area() const { ASSERT(dims == 2); return cols*rows; }
+	inline int area() const { ASSERT(dims == 0 || dims == 2); return cols*rows; }
 	/// Compute the memory size of this matrix (in bytes)
 	inline size_t memory_size() const { return cv::Mat::total() * cv::Mat::elemSize(); }
 
