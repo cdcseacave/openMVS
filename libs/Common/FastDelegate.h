@@ -146,7 +146,7 @@ public:
     {
         using functor_type = typename ::std::decay<T>::type;
 
-        if ((sizeof(functor_type) > store_size_) || !store_.unique())
+        if ((sizeof(functor_type) > store_size_) || store_.use_count() != 1)
         {
             store_.reset(operator new(sizeof(functor_type)), functor_deleter<functor_type>);
             store_size_ = sizeof(functor_type);

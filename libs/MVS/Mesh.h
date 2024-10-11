@@ -190,8 +190,8 @@ public:
 	void Decimate(VertexIdxArr& verticesRemove);
 	void CloseHole(VertexIdxArr& vertsLoop);
 	void CloseHoleQuality(VertexIdxArr& vertsLoop);
-	FIndex RemoveDegenerateFaces(Type thArea=1e-5f);
-	FIndex RemoveDegenerateFaces(unsigned maxIterations, Type thArea=1e-5f);
+	FIndex RemoveDegenerateFaces(Type thArea=1e-10f);
+	FIndex RemoveDegenerateFaces(unsigned maxIterations, Type thArea=1e-10f);
 	void RemoveFacesOutside(const OBB3f&);
 	void RemoveFaces(FaceIdxArr& facesRemove, bool bUpdateLists=false);
 	void RemoveVertices(VertexIdxArr& vertexRemove, bool bUpdateLists=false);
