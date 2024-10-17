@@ -1358,81 +1358,8 @@ bool Scene::ExportChunks(const ImagesChunkArr& chunks, const String& path, ARCHI
 {
 	FOREACH(chunkID, chunks) {
 		const ImagesChunk& chunk = chunks[chunkID];
-		Scene subset;
-		subset.nCalibratedImages = (IIndex)chunk.images.size();
-		// extract chunk images
-		typedef std::unordered_map<IIndex,IIndex> MapIIndex;
-		MapIIndex mapPlatforms(platforms.size());
-		MapIIndex mapImages(images.size());
-		FOREACH(idxImage, images) {
-			if (chunk.images.find(idxImage) == chunk.images.end())
-				continue;
-			const Image& image = images[idxImage];
-			if (!image.IsValid())
-				continue;
-			// copy platform
-			const Platform& platform = platforms[image.platformID];
-			MapIIndex::iterator itSubPlatformMVS = mapPlatforms.find(image.platformID);
-			uint32_t subPlatformID;
-			if (itSubPlatformMVS == mapPlatforms.end()) {
-				ASSERT(subset.platforms.size() == mapPlatforms.size());
-				subPlatformID = subset.platforms.size();
-				mapPlatforms.emplace(image.platformID, subPlatformID);
-				Platform subPlatform;
-				subPlatform.name = platform.name;
-				subPlatform.cameras = platform.cameras;
-				subset.platforms.emplace_back(std::move(subPlatform));
-			} else {
-				subPlatformID = itSubPlatformMVS->second;
-			}
-			Platform& subPlatform = subset.platforms[subPlatformID];
-			// copy image
-			const IIndex idxImageNew((IIndex)mapImages.size());
-			mapImages[idxImage] = idxImageNew;
-			Image subImage(image);
-			subImage.platformID = subPlatformID;
-			subImage.poseID = subPlatform.poses.size();
-			subImage.ID = idxImage;
-			subset.images.emplace_back(std::move(subImage));
-			// copy pose
-			subPlatform.poses.emplace_back(platform.poses[image.poseID]);
-		}
-		// map image IDs from global to local
-		for (Image& image: subset.images) {
-			RFOREACH(i, image.neighbors) {
-				ViewScore& neighbor = image.neighbors[i];
-				const auto itImage(mapImages.find(neighbor.ID));
-				if (itImage == mapImages.end()) {
-					image.neighbors.RemoveAtMove(i);
-					continue;
-				}
-				ASSERT(itImage->second < subset.images.size());
-				neighbor.ID = itImage->second;
-			}
-		}
-		// extract point-cloud
-		FOREACH(idxPoint, pointcloud.points) {
-			PointCloud::ViewArr subViews;
-			PointCloud::WeightArr subWeights;
-			const PointCloud::ViewArr& views = pointcloud.pointViews[idxPoint];
-			FOREACH(i, views) {
-				const IIndex idxImage(views[i]);
-				const auto itImage(mapImages.find(idxImage));
-				if (itImage == mapImages.end())
-					continue;
-				subViews.emplace_back(itImage->second);
-				if (!pointcloud.pointWeights.empty())
-					subWeights.emplace_back(pointcloud.pointWeights[idxPoint][i]);
-			}
-			if (subViews.size() < 2)
-				continue;
-			subset.pointcloud.points.emplace_back(pointcloud.points[idxPoint]);
-			subset.pointcloud.pointViews.emplace_back(std::move(subViews));
-			if (!pointcloud.pointWeights.empty())
-				subset.pointcloud.pointWeights.emplace_back(std::move(subWeights));
-			if (!pointcloud.colors.empty())
-				subset.pointcloud.colors.emplace_back(pointcloud.colors[idxPoint]);
-		}
+		IIndexArr idxImages(chunk.images.begin(), chunk.images.end(), true);
+		Scene subset = SubScene(idxImages);
 		// set scene ROI
 		subset.obb.Set(OBB3f::MATRIX::Identity(), chunk.aabb.ptMin, chunk.aabb.ptMax);
 		// serialize out the current state
@@ -1665,6 +1592,128 @@ void Scene::AddNoiseCameraPoses(float epsPosition, float epsRotation)
 			continue;
 		imageData.UpdateCamera(platforms);
 	}
+}
+
+// fetch sub-scene composed of the given image indices
+Scene Scene::SubScene(const IIndexArr& idxImages) const
+{
+	ASSERT(!idxImages.empty());
+	Scene subScene(nMaxThreads);
+	subScene.obb = obb;
+	subScene.nCalibratedImages = 0;
+	// export images and poses
+	std::unordered_map<IIndex,IIndex> mapImages;
+	std::unordered_map<uint32_t,uint32_t> mapPlatforms;
+	std::unordered_map<PairIdx,PairIdx> mapPlatformCamera;
+	for (IIndex idxImage: idxImages) {
+		const Image& image = images[idxImage];
+		if (!image.IsValid())
+			continue;
+		const Platform& platform = platforms[image.platformID];
+		const Platform::Camera& camera = platform.cameras[image.cameraID];
+		const auto platformIt(mapPlatforms.emplace(image.platformID, (uint32_t)mapPlatforms.size()));
+		const uint32_t platformID(platformIt.first->second);
+		if (platformIt.second) {
+			// create new platform
+			Platform& subPlatform = subScene.platforms.AddEmpty();
+			subPlatform.name = platform.name;
+		}
+		Platform& subPlatform = subScene.platforms[platformID];
+		const auto platformCameraIt(mapPlatformCamera.emplace(PairIdx(image.platformID,image.cameraID), PairIdx(platformID,subPlatform.cameras.size())));
+		if (platformCameraIt.second) {
+			// create new camera
+			subPlatform.cameras.emplace_back(camera);
+		}
+		mapImages.emplace(idxImage, subScene.images.size());
+		Image& subImage = subScene.images.emplace_back(image);
+		if (subImage.ID == NO_ID)
+			subImage.ID = idxImage;
+		subImage.platformID = platformCameraIt.first->second.i;
+		subImage.cameraID = platformCameraIt.first->second.j;
+		if (!image.IsValid())
+			continue;
+		subImage.poseID = subPlatform.poses.size();
+		subPlatform.poses.emplace_back(platform.poses[image.poseID]);
+		++subScene.nCalibratedImages;
+	}
+	ASSERT(!mapImages.empty());
+	if (mapImages.size() < 2 || subScene.nCalibratedImages == nCalibratedImages)
+		return *this;
+	// remap image neighbors
+	for (Image& image: subScene.images) {
+		ASSERT(image.IsValid());
+		RFOREACH(idxN, image.neighbors) {
+			ViewScore& neighbor = image.neighbors[idxN];
+			const auto itImage(mapImages.find(neighbor.ID));
+			if (itImage == mapImages.end()) {
+				image.neighbors.RemoveAtMove(idxN);
+				continue;
+			}
+			ASSERT(itImage->second < subScene.images.size());
+			neighbor.ID = itImage->second;
+		}
+	}
+	// export points
+	FOREACH(idxPoint, pointcloud.points) {
+		PointCloud::ViewArr subPointViews;
+		PointCloud::WeightArr subPointWeights;
+		const PointCloud::ViewArr& views = pointcloud.pointViews[idxPoint];
+		FOREACH(idxView, views) {
+			const PointCloud::View idxImage = views[idxView];
+			const auto it(mapImages.find(idxImage));
+			if (it == mapImages.end())
+				continue;
+			subPointViews.push_back(it->second);
+			if (!pointcloud.pointWeights.empty())
+				subPointWeights.push_back(pointcloud.pointWeights[idxPoint][idxView]);
+		}
+		if (subPointViews.size() < 2)
+			continue;
+		subScene.pointcloud.points.emplace_back(pointcloud.points[idxPoint]);
+		subScene.pointcloud.pointViews.emplace_back(std::move(subPointViews));
+		if (!subPointWeights.empty())
+			subScene.pointcloud.pointWeights.emplace_back(std::move(subPointWeights));
+		if (!pointcloud.normals.empty())
+			subScene.pointcloud.normals.emplace_back(pointcloud.normals[idxPoint]);
+		if (!pointcloud.colors.empty())
+			subScene.pointcloud.colors.emplace_back(pointcloud.colors[idxPoint]);
+	}
+	subScene.mesh = mesh;
+	return subScene;
+}
+
+// remove all points outside the given bounding-box and keep only the cameras that see the remaining points
+//  - minNumPoints: minimum number of points to keep the camera
+Scene& Scene::CropToROI(const OBB3f& obb, unsigned minNumPoints)
+{
+	ASSERT(obb.IsValid());
+	// remove geometry outside the ROI
+	if (!pointcloud.IsEmpty())
+		pointcloud.RemovePointsOutside(obb);
+	if (!mesh.IsEmpty())
+		mesh.RemoveFacesOutside(obb);
+	// remove cameras that do not see any points
+	if (minNumPoints == 0 || !pointcloud.IsValid())
+		return *this;
+	UnsignedArr visibility(images.size());
+	visibility.Memset(0);
+	for (const PointCloud::ViewArr& views: pointcloud.pointViews) {
+		for (const PointCloud::View& idxImage: views) {
+			const Image& imageData = images[idxImage];
+			if (!imageData.IsValid())
+				continue;
+			++visibility[idxImage];
+		}
+	}
+	IIndexArr idxImages;
+	FOREACH(idxImage, images) {
+		const Image& imageData = images[idxImage];
+		if (!imageData.IsValid())
+			continue;
+		if (visibility[idxImage] >= minNumPoints)
+			idxImages.emplace_back(idxImage);
+	}
+	return *this = SubScene(idxImages);
 }
 /*----------------------------------------------------------------*/
 

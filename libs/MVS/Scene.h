@@ -118,6 +118,8 @@ public:
 	bool AlignTo(const Scene&);
 	REAL ComputeLeveledVolume(float planeThreshold=0, float sampleMesh=-100000, unsigned upAxis=2, bool verbose=true);
 	void AddNoiseCameraPoses(float epsPosition, float epsRotation);
+	Scene SubScene(const IIndexArr& idxImages) const;
+	Scene& CropToROI(const OBB3f&, unsigned minNumPoints = 3);
 
 	// Estimate and set region-of-interest
 	bool EstimateROI(int nEstimateROI=0, float scale=1.f);
