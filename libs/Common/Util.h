@@ -598,34 +598,34 @@ public:
 		uint32_t rez = (uint32_t)(sTime / ((int64_t)24*3600*1000));
 		if (rez) {
 			++nrNumbers;
-			len += _sntprintf(buf+len, 128, "%ud", rez);
+			len += _sntprintf(buf, 128, "%ud", rez);
 		}
 		if (nAproximate > 3 && nrNumbers > 0)
 			return buf;
 		rez = (uint32_t)((sTime%((int64_t)24*3600*1000)) / (3600*1000));
 		if (rez) {
 			++nrNumbers;
-			len += _sntprintf(buf+len, 128, "%uh", rez);
+			len += _sntprintf(buf+len, 128-len, "%uh", rez);
 		}
 		if (nAproximate > 2 && nrNumbers > 0)
 			return buf;
 		rez = (uint32_t)((sTime%((int64_t)3600*1000)) / (60*1000));
 		if (rez) {
 			++nrNumbers;
-			len += _sntprintf(buf+len, 128, "%um", rez);
+			len += _sntprintf(buf+len, 128-len, "%um", rez);
 		}
 		if (nAproximate > 1 && nrNumbers > 0)
 			return buf;
 		rez = (uint32_t)((sTime%((int64_t)60*1000)) / (1*1000));
 		if (rez) {
 			++nrNumbers;
-			len += _sntprintf(buf+len, 128, "%us", rez);
+			len += _sntprintf(buf+len, 128-len, "%us", rez);
 		}
 		if (nAproximate > 0 && nrNumbers > 0)
 			return buf;
 		rez = (uint32_t)(sTime%((int64_t)1*1000));
 		if (rez || !nrNumbers)
-			len += _sntprintf(buf+len, 128, "%ums", rez);
+			len += _sntprintf(buf+len, 128-len, "%ums", rez);
 
 		return String(buf, len);
 	}

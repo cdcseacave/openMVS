@@ -54,6 +54,7 @@ String strOutputViewNeighborsFileName;
 String strMeshFileName;
 String strExportROIFileName;
 String strImportROIFileName;
+String strCropROIFileName;
 String strDenseConfigFileName;
 String strExportDepthMapsName;
 String strMaskPath;
@@ -176,6 +177,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("mesh-file", boost::program_options::value<std::string>(&OPT::strMeshFileName), "mesh file name used for image pair overlap estimation")
 		("export-roi-file", boost::program_options::value<std::string>(&OPT::strExportROIFileName), "ROI file name to be exported form the scene")
 		("import-roi-file", boost::program_options::value<std::string>(&OPT::strImportROIFileName), "ROI file name to be imported into the scene")
+		("crop-roi-file", boost::program_options::value<std::string>(&OPT::strCropROIFileName), "ROI file name to crop the scene keeping only the points inside ROI and the cameras seeing them")
 		("dense-config-file", boost::program_options::value<std::string>(&OPT::strDenseConfigFileName), "optional configuration file for the densifier (overwritten by the command line options)")
 		("export-depth-maps-name", boost::program_options::value<std::string>(&OPT::strExportDepthMapsName), "render given mesh and save the depth-map for every image to this file name base (empty - disabled)")
 		;
@@ -231,6 +233,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 	Util::ensureValidPath(OPT::strMeshFileName);
 	Util::ensureValidPath(OPT::strExportROIFileName);
 	Util::ensureValidPath(OPT::strImportROIFileName);
+	Util::ensureValidPath(OPT::strCropROIFileName);
 	if (OPT::strOutputFileName.empty())
 		OPT::strOutputFileName = Util::getFileFullName(OPT::strInputFileName) + _T("_dense.mvs");
 
@@ -320,6 +323,15 @@ int main(int argc, LPCTSTR* argv)
 				return EXIT_FAILURE;
 			}
 		}
+	}
+	if (!OPT::strCropROIFileName.empty()) {
+		std::ifstream fs(MAKE_PATH_SAFE(OPT::strCropROIFileName));
+		if (!fs)
+			return EXIT_FAILURE;
+		fs >> scene.obb;
+		scene.CropToROI(scene.obb);
+		scene.Save(MAKE_PATH_SAFE(Util::getFileFullName(OPT::strOutputFileName))+_T(".mvs"), (ARCHIVE_TYPE)OPT::nArchiveType);
+		return EXIT_SUCCESS;
 	}
 	if (!OPT::strImportROIFileName.empty()) {
 		std::ifstream fs(MAKE_PATH_SAFE(OPT::strImportROIFileName));

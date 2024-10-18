@@ -227,16 +227,16 @@
 #include <crtdbg.h>
 #ifdef _INC_CRTDBG
 #define SIMPLE_ASSERT(exp) {if (!(exp) && 1 == _CrtDbgReport(_CRT_ASSERT, __FILE__, __LINE__, NULL, #exp)) _CrtDbgBreak();}
-#define ASSERT(exp, ...) {static bool bIgnore(false); if (!bIgnore && !(exp)) {PRINT_ASSERT_MSG(exp, __VA_ARGS__); if (!(bIgnore = !(1 == _CrtDbgReport(_CRT_ASSERT, __FILE__, __LINE__, NULL, #exp)))) _CrtDbgBreak();}}
+#define ASSERT(exp, ...) {static bool bIgnore(false); if (!bIgnore && !(exp)) {PRINT_ASSERT_MSG(exp, ##__VA_ARGS__); if (!(bIgnore = !(1 == _CrtDbgReport(_CRT_ASSERT, __FILE__, __LINE__, NULL, #exp)))) _CrtDbgBreak();}}
 #else
 #define SIMPLE_ASSERT(exp) {if (!(exp)) __debugbreak();}
-#define ASSERT(exp, ...) {if (!(exp)) {PRINT_ASSERT_MSG(exp, __VA_ARGS__); __debugbreak();}}
+#define ASSERT(exp, ...) {if (!(exp)) {PRINT_ASSERT_MSG(exp, ##__VA_ARGS__); __debugbreak();}}
 #endif // _INC_CRTDBG
 #define TRACE(...) {TCHAR buffer[2048]; _sntprintf(buffer, 2048, __VA_ARGS__); OutputDebugString(buffer);}
 #else // _MSC_VER
 #include <assert.h>
 #define SIMPLE_ASSERT(exp) {if (!(exp)) assert(exp);}
-#define ASSERT(exp, ...) {if (!(exp)) {PRINT_ASSERT_MSG(exp, __VA_ARGS__); assert(exp);}}
+#define ASSERT(exp, ...) {if (!(exp)) {PRINT_ASSERT_MSG(exp, ##__VA_ARGS__); assert(exp);}}
 #define TRACE(...)
 #endif // _MSC_VER
 
@@ -248,10 +248,10 @@
 #else
 #ifdef _MSC_VER
 #define SIMPLE_ASSERT(exp) {if (!(exp)) __debugbreak();}
-#define ASSERT(exp, ...) {if (!(exp)) {PRINT_ASSERT_MSG(exp, __VA_ARGS__); __debugbreak();}}
+#define ASSERT(exp, ...) {if (!(exp)) {PRINT_ASSERT_MSG(exp, ##__VA_ARGS__); __debugbreak();}}
 #else // _MSC_VER
 #define SIMPLE_ASSERT(exp) {if (!(exp)) __builtin_trap();}
-#define ASSERT(exp, ...) {if (!(exp)) {PRINT_ASSERT_MSG(exp, __VA_ARGS__); __builtin_trap();}}
+#define ASSERT(exp, ...) {if (!(exp)) {PRINT_ASSERT_MSG(exp, ##__VA_ARGS__); __builtin_trap();}}
 #endif // _MSC_VER
 #endif
 #define TRACE(...)

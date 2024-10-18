@@ -68,6 +68,12 @@ struct hash<cv::Point3_<T>> {
 		return seed;
 	}
 };
+template <>
+struct hash<SEACAVE::PairIdx> {
+	size_t operator()(const SEACAVE::PairIdx& v) const {
+		return std::hash<SEACAVE::PairIdx::PairIndex>()(v.idx);
+	}
+};
 
 // adds the given key-value pair in the map, overwriting the current value if the key exists
 template <typename Key, typename T>

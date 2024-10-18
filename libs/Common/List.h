@@ -135,6 +135,15 @@ public:
 		_ArrayConstruct(_vector, size);
 	}
 
+	// construct a list from the contents of the range [first, last)
+	template <class InputIt>
+	cList(InputIt first, InputIt last, bool /*dummy*/) : _size(std::distance(first, last)), _vectorSize(_size), _vector((TYPE*)operator new[](static_cast<size_t>(_size) * sizeof(TYPE)))
+	{
+		while (first != last)
+			Insert(*first++);
+	}
+
+
 	// copy constructor: creates a deep-copy of the given list
 	cList(const cList& rList) : _size(rList._size), _vectorSize(rList._vectorSize), _vector(NULL)
 	{

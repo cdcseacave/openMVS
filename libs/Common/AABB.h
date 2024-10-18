@@ -96,8 +96,8 @@ public:
 	inline TYPE operator [] (BYTE i) const { ASSERT(i<numScalar); return ptMin.data()[i]; }
 
 	friend std::ostream& operator << (std::ostream& st, const TAABB& obb) {
-		st << obb.ptMin; st << std::endl;
-		st << obb.ptMax; st << std::endl;
+		st << obb.ptMin.transpose() << std::endl;
+		st << obb.ptMax.transpose() << std::endl;
 		return st;
 	}
 	friend std::istream& operator >> (std::istream& st, TAABB& obb) {

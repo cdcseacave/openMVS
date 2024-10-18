@@ -94,9 +94,9 @@ public:
 	inline TYPE operator [] (BYTE i) const { ASSERT(i<numScalar); return m_rot.data()[i]; }
 
 	friend std::ostream& operator << (std::ostream& st, const TOBB& obb) {
-		st << obb.m_rot; st << std::endl;
-		st << obb.m_pos; st << std::endl;
-		st << obb.m_ext; st << std::endl;
+		st << obb.m_rot << std::endl;
+		st << obb.m_pos.transpose() << std::endl;
+		st << obb.m_ext.transpose() << std::endl;
 		return st;
 	}
 	friend std::istream& operator >> (std::istream& st, TOBB& obb) {
