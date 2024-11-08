@@ -111,9 +111,9 @@ public:
 			faceMap.memset((uint8_t)NO_ID);
 			baryMap.memset(0);
 		}
-		void Raster(const ImageRef& pt, const Point3f& bary) {
-			const Point3f pbary(PerspectiveCorrectBarycentricCoordinates(bary));
-			const Depth z(ComputeDepth(pbary));
+		void Raster(const ImageRef& pt, const Triangle& t, const Point3f& bary) {
+			const Point3f pbary(PerspectiveCorrectBarycentricCoordinates(t, bary));
+			const Depth z(ComputeDepth(t, pbary));
 			ASSERT(z > Depth(0));
 			Depth& depth = depthMap(pt);
 			if (depth == 0 || depth > z) {
@@ -734,11 +734,13 @@ void MeshRefine::ProjectMesh(
 	baryMap.create(size);
 	// project all triangles on this image and keep the closest ones
 	RasterMesh rasterer(vertices, camera, depthMap, faceMap, baryMap);
+	RasterMesh::Triangle triangle;
+	RasterMesh::TriangleRasterizer triangleRasterizer(triangle, rasterer);
 	rasterer.Clear();
 	for (auto idxFace : cameraFaces) {
 		const Face& facet = faces[idxFace];
 		rasterer.idxFace = idxFace;
-		rasterer.Project(facet);
+		rasterer.Project(facet, triangleRasterizer);
 	}
 }
 

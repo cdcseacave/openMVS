@@ -4078,9 +4078,11 @@ void Mesh::Project(const Camera& camera, DepthMap& depthMap) const
 			: Base(_vertices, _camera, _depthMap) {}
 	};
 	RasterMesh rasterer(vertices, camera, depthMap);
+	RasterMesh::Triangle triangle;
+	RasterMesh::TriangleRasterizer triangleRasterizer(triangle, rasterer);
 	rasterer.Clear();
 	for (const Face& facet: faces)
-		rasterer.Project(facet);
+		rasterer.Project(facet, triangleRasterizer);
 }
 void Mesh::Project(const Camera& camera, DepthMap& depthMap, Image8U3& image) const
 {
@@ -4097,9 +4099,9 @@ void Mesh::Project(const Camera& camera, DepthMap& depthMap, Image8U3& image) co
 			Base::Clear();
 			image.memset(0);
 		}
-		void Raster(const ImageRef& pt, const Point3f& bary) {
-			const Point3f pbary(PerspectiveCorrectBarycentricCoordinates(bary));
-			const Depth z(ComputeDepth(pbary));
+		void Raster(const ImageRef& pt, const Triangle& t, const Point3f& bary) {
+			const Point3f pbary(PerspectiveCorrectBarycentricCoordinates(t, bary));
+			const Depth z(ComputeDepth(t, pbary));
 			ASSERT(z > Depth(0));
 			Depth& depth = depthMap(pt);
 			if (depth == 0 || depth > z) {
@@ -4115,11 +4117,13 @@ void Mesh::Project(const Camera& camera, DepthMap& depthMap, Image8U3& image) co
 	if (image.size() != depthMap.size())
 		image.create(depthMap.size());
 	RasterMesh rasterer(*this, camera, depthMap, image);
+	RasterMesh::Triangle triangle;
+	RasterMesh::TriangleRasterizer triangleRasterizer(triangle, rasterer);
 	rasterer.Clear();
 	FOREACH(idxFace, faces) {
 		const Face& facet = faces[idxFace];
 		rasterer.idxFaceTex = idxFace*3;
-		rasterer.Project(facet);
+		rasterer.Project(facet, triangleRasterizer);
 	}
 }
 // project mesh to the given camera plane, computing also the normal-map (in camera space)
@@ -4138,13 +4142,13 @@ void Mesh::Project(const Camera& camera, DepthMap& depthMap, NormalMap& normalMa
 			Base::Clear();
 			normalMap.memset(0);
 		}
-		inline void Project(const Face& facet) {
+		inline void Project(const Face& facet, TriangleRasterizer& tr) {
 			idxVerts = facet.ptr();
-			Base::Project(facet);
+			Base::Project(facet, tr);
 		}
-		void Raster(const ImageRef& pt, const Point3f& bary) {
-			const Point3f pbary(PerspectiveCorrectBarycentricCoordinates(bary));
-			const Depth z(ComputeDepth(pbary));
+		void Raster(const ImageRef& pt, const Triangle& t, const Point3f& bary) {
+			const Point3f pbary(PerspectiveCorrectBarycentricCoordinates(t, bary));
+			const Depth z(ComputeDepth(t, pbary));
 			ASSERT(z > Depth(0));
 			Depth& depth = depthMap(pt);
 			if (depth == Depth(0) || depth > z) {
@@ -4160,10 +4164,12 @@ void Mesh::Project(const Camera& camera, DepthMap& depthMap, NormalMap& normalMa
 	if (normalMap.size() != depthMap.size())
 		normalMap.create(depthMap.size());
 	RasterMesh rasterer(*this, camera, depthMap, normalMap);
+	RasterMesh::Triangle triangle;
+	RasterMesh::TriangleRasterizer triangleRasterizer(triangle, rasterer);
 	rasterer.Clear();
 	// render the entire mesh
 	for (const Face& facet: faces)
-		rasterer.Project(facet);
+		rasterer.Project(facet, triangleRasterizer);
 }
 // project mesh to the given camera plane using orthographic projection
 void Mesh::ProjectOrtho(const Camera& camera, DepthMap& depthMap) const
@@ -4172,12 +4178,12 @@ void Mesh::ProjectOrtho(const Camera& camera, DepthMap& depthMap) const
 		typedef TRasterMesh<RasterMesh> Base;
 		RasterMesh(const VertexArr& _vertices, const Camera& _camera, DepthMap& _depthMap)
 			: Base(_vertices, _camera, _depthMap) {}
-		inline bool ProjectVertex(const Mesh::Vertex& pt, int v) {
-			return (ptc[v] = camera.TransformPointW2C(Cast<REAL>(pt))).z > 0 &&
-				depthMap.isInsideWithBorder<float,3>(pti[v] = camera.TransformPointOrthoC2I(ptc[v]));
+		inline bool ProjectVertex(const Mesh::Vertex& pt, int v, Triangle& t) {
+			return (t.ptc[v] = camera.TransformPointW2C(Cast<REAL>(pt))).z > 0 &&
+				depthMap.isInsideWithBorder<float,3>(t.pti[v] = camera.TransformPointOrthoC2I(t.ptc[v]));
 		}
-		void Raster(const ImageRef& pt, const Point3f& bary) {
-			const Depth z(ComputeDepth(bary));
+		void Raster(const ImageRef& pt, const Triangle& t, const Point3f& bary) {
+			const Depth z(ComputeDepth(t, bary));
 			ASSERT(z > Depth(0));
 			Depth& depth = depthMap(pt);
 			if (depth == 0 || depth > z)
@@ -4185,9 +4191,11 @@ void Mesh::ProjectOrtho(const Camera& camera, DepthMap& depthMap) const
 		}
 	};
 	RasterMesh rasterer(vertices, camera, depthMap);
+	RasterMesh::Triangle triangle;
+	RasterMesh::TriangleRasterizer triangleRasterizer(triangle, rasterer);
 	rasterer.Clear();
 	for (const Face& facet: faces)
-		rasterer.Project(facet);
+		rasterer.Project(facet, triangleRasterizer);
 }
 void Mesh::ProjectOrtho(const Camera& camera, DepthMap& depthMap, Image8U3& image) const
 {
@@ -4204,12 +4212,12 @@ void Mesh::ProjectOrtho(const Camera& camera, DepthMap& depthMap, Image8U3& imag
 			Base::Clear();
 			image.memset(0);
 		}
-		inline bool ProjectVertex(const Mesh::Vertex& pt, int v) {
-			return (ptc[v] = camera.TransformPointW2C(Cast<REAL>(pt))).z > 0 &&
-				depthMap.isInsideWithBorder<float,3>(pti[v] = camera.TransformPointOrthoC2I(ptc[v]));
+		inline bool ProjectVertex(const Mesh::Vertex& pt, int v, Triangle& t) {
+			return (t.ptc[v] = camera.TransformPointW2C(Cast<REAL>(pt))).z > 0 &&
+				depthMap.isInsideWithBorder<float,3>(t.pti[v] = camera.TransformPointOrthoC2I(t.ptc[v]));
 		}
-		void Raster(const ImageRef& pt, const Point3f& bary) {
-			const Depth z(ComputeDepth(bary));
+		void Raster(const ImageRef& pt, const Triangle& t, const Point3f& bary) {
+			const Depth z(ComputeDepth(t, bary));
 			ASSERT(z > Depth(0));
 			Depth& depth = depthMap(pt);
 			if (depth == 0 || depth > z) {
@@ -4225,11 +4233,13 @@ void Mesh::ProjectOrtho(const Camera& camera, DepthMap& depthMap, Image8U3& imag
 	if (image.size() != depthMap.size())
 		image.create(depthMap.size());
 	RasterMesh rasterer(*this, camera, depthMap, image);
+	RasterMesh::Triangle triangle;
+	RasterMesh::TriangleRasterizer triangleRasterizer(triangle, rasterer);
 	rasterer.Clear();
 	FOREACH(idxFace, faces) {
 		const Face& facet = faces[idxFace];
 		rasterer.idxFaceTex = idxFace*3;
-		rasterer.Project(facet);
+		rasterer.Project(facet, triangleRasterizer);
 	}
 }
 // assuming the mesh is properly oriented, ortho-project it to a camera looking from top to down

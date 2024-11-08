@@ -287,12 +287,15 @@ protected:
 // used to render a 3D triangle
 template <typename DERIVED>
 struct TRasterMeshBase {
+	typedef DERIVED Rasterizer;
+
+	struct Triangle {
+		Point3 ptc[3];
+		Point2f pti[3];
+	};
+	
 	const Camera& camera;
-
 	DepthMap& depthMap;
-
-	Point3 ptc[3];
-	Point2f pti[3];
 
 	TRasterMeshBase(const Camera& _camera, DepthMap& _depthMap)
 		: camera(_camera), depthMap(_depthMap) {}
@@ -304,27 +307,39 @@ struct TRasterMeshBase {
 		return depthMap.size();
 	}
 
-	inline bool ProjectVertex(const Point3f& pt, int v) {
-		return (ptc[v] = camera.TransformPointW2C(Cast<REAL>(pt))).z > 0 &&
-			depthMap.isInsideWithBorder<float,3>(pti[v] = camera.TransformPointC2I(ptc[v]));
+	inline bool ProjectVertex(const Point3f& pt, int v, Triangle& t) {
+		return (t.ptc[v] = camera.TransformPointW2C(Cast<REAL>(pt))).z > 0 &&
+			depthMap.isInsideWithBorder<float,3>(t.pti[v] = camera.TransformPointC2I(t.ptc[v]));
 	}
 
-	inline Point3f PerspectiveCorrectBarycentricCoordinates(const Point3f& bary) {
-		return SEACAVE::PerspectiveCorrectBarycentricCoordinates(bary, (float)ptc[0].z, (float)ptc[1].z, (float)ptc[2].z);
+	inline Point3f PerspectiveCorrectBarycentricCoordinates(const Triangle& t, const Point3f& bary) {
+		return SEACAVE::PerspectiveCorrectBarycentricCoordinates(bary, (float)t.ptc[0].z, (float)t.ptc[1].z, (float)t.ptc[2].z);
 	}
-	inline float ComputeDepth(const Point3f& pbary) {
-		return pbary[0]*(float)ptc[0].z + pbary[1]*(float)ptc[1].z + pbary[2]*(float)ptc[2].z;
+	inline float ComputeDepth(const Triangle& t, const Point3f& pbary) {
+		return pbary[0]*(float)t.ptc[0].z + pbary[1]*(float)t.ptc[1].z + pbary[2]*(float)t.ptc[2].z;
 	}
-	void Raster(const ImageRef& pt, const Point3f& bary) {
-		const Point3f pbary(PerspectiveCorrectBarycentricCoordinates(bary));
-		const Depth z(ComputeDepth(pbary));
+	void Raster(const ImageRef& pt, const Triangle& t, const Point3f& bary) {
+		const Point3f pbary(PerspectiveCorrectBarycentricCoordinates(t, bary));
+		const Depth z(ComputeDepth(t, pbary));
 		ASSERT(z > Depth(0));
 		Depth& depth = depthMap(pt);
 		if (depth == 0 || depth > z)
 			depth = z;
 	}
-	inline void operator()(const ImageRef& pt, const Point3f& bary) {
-		static_cast<DERIVED*>(this)->Raster(pt, bary);
+
+	struct TriangleRasterizer {
+		Triangle& triangle;
+		Rasterizer& rasterizer;
+		TriangleRasterizer(Triangle& t, Rasterizer& r) : triangle(t), rasterizer(r) {}
+		inline cv::Size Size() const {
+			return rasterizer.Size();
+		}
+		inline void operator()(const ImageRef& pt, const Point3f& bary) const {
+			rasterizer.Raster(pt, triangle, bary);
+		}
+	};
+	inline TriangleRasterizer CreateTriangleRasterizer(Triangle& triangle) {
+		return TriangleRasterizer(triangle, *static_cast<DERIVED*>(this));
 	}
 };
 
@@ -332,27 +347,30 @@ struct TRasterMeshBase {
 template <typename DERIVED>
 struct TRasterMesh : TRasterMeshBase<DERIVED> {
 	typedef TRasterMeshBase<DERIVED> Base;
+	using typename Base::Triangle;
+	using typename Base::TriangleRasterizer;
 
 	using Base::camera;
 	using Base::depthMap;
-
-	using Base::ptc;
-	using Base::pti;
 
 	const Mesh::VertexArr& vertices;
 
 	TRasterMesh(const Mesh::VertexArr& _vertices, const Camera& _camera, DepthMap& _depthMap)
 		: Base(_camera, _depthMap), vertices(_vertices) {}
 
-	void Project(const Mesh::Face& facet) {
+	void Project(const Mesh::Face& facet, TriangleRasterizer& tr) {
 		// project face vertices to image plane
 		for (int v=0; v<3; ++v) {
 			// skip face if not completely inside
-			if (!static_cast<DERIVED*>(this)->ProjectVertex(vertices[facet[v]], v))
+			if (!static_cast<DERIVED*>(this)->ProjectVertex(vertices[facet[v]], v, tr.triangle))
 				return;
 		}
 		// draw triangle
-		Image8U3::RasterizeTriangleBary(pti[0], pti[1], pti[2], *this);
+		Image8U3::RasterizeTriangleBary(tr.triangle.pti[0], tr.triangle.pti[1], tr.triangle.pti[2], tr);
+	}
+	void Project(const Mesh::Face& facet) {
+		Triangle triangle;
+		Project(facet, this->CreateTriangleRasterizer(triangle));
 	}
 };
 /*----------------------------------------------------------------*/

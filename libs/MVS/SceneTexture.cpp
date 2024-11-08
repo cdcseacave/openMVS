@@ -112,9 +112,9 @@ struct MeshTexture {
 			Base::Clear();
 			faceMap.memset((uint8_t)NO_ID);
 		}
-		void Raster(const ImageRef& pt, const Point3f& bary) {
-			const Point3f pbary(PerspectiveCorrectBarycentricCoordinates(bary));
-			const Depth z(ComputeDepth(pbary));
+		void Raster(const ImageRef& pt, const Triangle& t, const Point3f& bary) {
+			const Point3f pbary(PerspectiveCorrectBarycentricCoordinates(t, bary));
+			const Depth z(ComputeDepth(t, pbary));
 			ASSERT(z > Depth(0));
 			Depth& depth = depthMap(pt);
 			if (depth == 0 || depth > z) {
@@ -496,6 +496,8 @@ bool MeshTexture::ListCameraFaces(FaceDataViewArr& facesDatas, float fOutlierThr
 		faceMap.create(imageData.GetSize());
 		depthMap.create(imageData.GetSize());
 		RasterMesh rasterer(vertices, imageData.camera, depthMap, faceMap);
+		RasterMesh::Triangle triangle;
+		RasterMesh::TriangleRasterizer triangleRasterizer(triangle, rasterer);
 		if (nIgnoreMaskLabel >= 0) {
 			// import mask
 			BitMatrix bmask;
@@ -513,9 +515,9 @@ bool MeshTexture::ListCameraFaces(FaceDataViewArr& facesDatas, float fOutlierThr
 			rasterer.validFace = true;
 			const Face& facet = faces[idxFace];
 			rasterer.idxFace = idxFace;
-			rasterer.Project(facet);
+			rasterer.Project(facet, triangleRasterizer);
 			if (!rasterer.validFace)
-				rasterer.Project(facet);
+				rasterer.Project(facet, triangleRasterizer);
 		}
 		// compute the projection area of visible faces
 		#if TEXOPT_FACEOUTLIER != TEXOPT_FACEOUTLIER_NA
