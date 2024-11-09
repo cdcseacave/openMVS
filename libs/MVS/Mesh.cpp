@@ -4727,3 +4727,85 @@ bool Mesh::InitKernels(int device)
 }
 /*----------------------------------------------------------------*/
 #endif
+
+
+// test mesh projection on the image using multi-threaded and single-threaded rasterization
+bool MVS::TestMeshProjectionMT(const Mesh& mesh, const Image& image) {
+	// used to render the mesh
+	typedef TImage<cuint32_t> FaceMap;
+	struct RasterMesh : TRasterMesh<RasterMesh> {
+		typedef TRasterMesh<RasterMesh> Base;
+		FaceMap& faceMap;
+		RasterMesh(const Mesh::VertexArr& _vertices, const Camera& _camera, DepthMap& _depthMap, FaceMap& _faceMap)
+			: Base(_vertices, _camera, _depthMap), faceMap(_faceMap) {}
+		void Clear() {
+			Base::Clear();
+			faceMap.memset((uint8_t)NO_ID);
+		}
+		void Raster(const ImageRef& pt, const Triangle& t, const Point3f& bary, Mesh::FIndex idxFace) {
+			const Point3f pbary(PerspectiveCorrectBarycentricCoordinates(t, bary));
+			const Depth z(ComputeDepth(t, pbary));
+			ASSERT(z > Depth(0));
+			Depth& depth = depthMap(pt);
+			if (depth == 0 || depth > z) {
+				depth = z;
+				faceMap(pt) = idxFace;
+			}
+		}
+	};
+	struct TriangleRasterizer {
+		RasterMesh* rasterizer;
+		RasterMesh::Triangle triangle;
+		Mesh::FIndex idxFace;
+		inline cv::Size Size() const {
+			return rasterizer->Size();
+		}
+		inline void operator()(const ImageRef& pt, const Point3f& bary) const {
+			rasterizer->Raster(pt, triangle, bary, idxFace);
+		}
+	};
+	// project mesh on the image
+	DepthMap depthMapMT(image.GetSize());
+	FaceMap faceMapMT(image.GetSize());
+	{	// multi-threaded rasterization
+		RasterMesh rasterer(mesh.vertices, image.camera, depthMapMT, faceMapMT);
+		TriangleRasterizer triangleRasterizer{&rasterer};
+		rasterer.Clear();
+		#pragma omp parallel for firstprivate(triangleRasterizer) schedule(dynamic)
+		for (int_t i=0; i<(int_t)mesh.faces.size(); ++i) {
+			const Mesh::FIndex idxFace = (Mesh::FIndex)i;
+			const Mesh::Face& facet = mesh.faces[idxFace];
+			triangleRasterizer.idxFace = idxFace;
+			rasterer.Project(facet, triangleRasterizer);
+		}
+	}
+	DepthMap depthMapST(image.GetSize());
+	FaceMap faceMapST(image.GetSize());
+	{	// single-threaded rasterization
+		RasterMesh rasterer(mesh.vertices, image.camera, depthMapST, faceMapST);
+		TriangleRasterizer triangleRasterizer{&rasterer};
+		rasterer.Clear();
+		FOREACH(idxFace, mesh.faces) {
+			const Mesh::Face& facet = mesh.faces[idxFace];
+			triangleRasterizer.idxFace = idxFace;
+			rasterer.Project(facet, triangleRasterizer);
+		}
+	}
+	// compare results
+	unsigned numDiffDepths(0), numDiffFaces(0);
+	for (int y = 0; y<depthMapST.rows; ++y) {
+		for (int x = 0; x<depthMapST.cols; ++x) {
+			const Depth depthMT = depthMapMT(y,x);
+			const Depth depthST = depthMapST(y,x);
+			if (depthMT != depthST)
+				++numDiffDepths;
+			const cuint32_t faceMT = faceMapMT(y,x);
+			const cuint32_t faceST = faceMapST(y,x);
+			if (faceMT != faceST)
+				++numDiffFaces;
+		}
+	}
+	VERBOSE("Mesh rasterization: %u different depths, %u different faces", numDiffDepths, numDiffFaces);
+	return numDiffDepths == 0 && numDiffFaces == 0;
+}
+/*----------------------------------------------------------------*/

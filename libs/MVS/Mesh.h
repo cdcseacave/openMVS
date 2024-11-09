@@ -348,7 +348,6 @@ template <typename DERIVED>
 struct TRasterMesh : TRasterMeshBase<DERIVED> {
 	typedef TRasterMeshBase<DERIVED> Base;
 	using typename Base::Triangle;
-	using typename Base::TriangleRasterizer;
 
 	using Base::camera;
 	using Base::depthMap;
@@ -358,6 +357,7 @@ struct TRasterMesh : TRasterMeshBase<DERIVED> {
 	TRasterMesh(const Mesh::VertexArr& _vertices, const Camera& _camera, DepthMap& _depthMap)
 		: Base(_camera, _depthMap), vertices(_vertices) {}
 
+	template <typename TriangleRasterizer>
 	void Project(const Mesh::Face& facet, TriangleRasterizer& tr) {
 		// project face vertices to image plane
 		for (int v=0; v<3; ++v) {
@@ -373,6 +373,8 @@ struct TRasterMesh : TRasterMeshBase<DERIVED> {
 		Project(facet, this->CreateTriangleRasterizer(triangle));
 	}
 };
+
+bool TestMeshProjectionMT(const Mesh& mesh, const Image& image);
 /*----------------------------------------------------------------*/
 
 
