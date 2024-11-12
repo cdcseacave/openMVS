@@ -121,9 +121,7 @@ public:
 	void AddNoiseCameraPoses(float epsPosition, float epsRotation);
 	Scene SubScene(const IIndexArr& idxImages) const;
 	Scene& CropToROI(const OBB3f&, unsigned minNumPoints = 3);
-
-	// Estimate and set region-of-interest
-	bool EstimateROI(int nEstimateROI=0, float scale=1.f);
+	bool EstimateROI(float weightROI=1.1f, bool use2dCovariance=false);
 	
 	// Tower scene
 	bool ComputeTowerCylinder(Point2f& centerPoint, float& fRadius, float& fROIRadius, float& zMin, float& zMax, float& minCamZ, const int towerMode);

@@ -1172,8 +1172,8 @@ unsigned Scene::Split(ImagesChunkArr& chunks, float maxArea, int depthMapStep) c
 				continue;
 			const IIndex numPointsBegin(visibility.size());
 			const Camera camera(imageData.GetCamera(platforms, depthData.depthMap.size()));
-			for (int r=(depthData.depthMap.rows%depthMapStep)/2; r<depthData.depthMap.rows; r+=depthMapStep) {
-				for (int c=(depthData.depthMap.cols%depthMapStep)/2; c<depthData.depthMap.cols; c+=depthMapStep) {
+			for (int r=(depthData.depthMap.rows%depthMapStep)/2; r<depthData.depthMap.rows; r++) {
+				for (int c=(depthData.depthMap.cols%depthMapStep)/2; c<depthData.depthMap.cols; c++) {
 					const Depth depth = depthData.depthMap(r,c);
 					if (depth <= 0)
 						continue;
@@ -1743,102 +1743,157 @@ Scene& Scene::CropToROI(const OBB3f& obb, unsigned minNumPoints)
 	}
 	return *this = SubScene(idxImages);
 }
-/*----------------------------------------------------------------*/
 
-
-// estimate region-of-interest based on camera positions, directions and sparse points
-// scale specifies the ratio of the ROI's diameter
-bool Scene::EstimateROI(int nEstimateROI, float scale)
+// estimate the region-of-interest (ROI) based on the known poses and sparse point-cloud
+//  - weightROI: controls how tite the ROI is set
+//  - use2dCovariance: assumes the scene is oriented Z up
+bool Scene::EstimateROI(float weightROI, bool use2dCovariance)
 {
-	ASSERT(nEstimateROI >= 0 && nEstimateROI <= 2 && scale > 0);
-	if (nEstimateROI == 0) {
-		DEBUG_ULTIMATE("The scene will be considered as unbounded (no ROI)");
+	if (!pointcloud.IsValid() || pointcloud.points.size() < 100 || images.size() < 10)
 		return false;
-	}
-	if (!pointcloud.IsValid()) {
-		VERBOSE("error: no valid point-cloud for the ROI estimation");
-		return false;
-	}
-	CameraArr cameras;
-	FOREACH(i, images) {
-		const Image& imageData = images[i];
-		if (!imageData.IsValid())
+
+	const int patternCenterBand = 2;
+	const float patternRadius = 0.7f;
+	const float patternOutsideWeight = 0.5f;
+	const unsigned numPointsPerImage = 500;
+
+	// extract 3D point-cloud
+	PointCloud::PointArr points(0, numPointsPerImage * images.size());
+	FloatArr pointScales(0, numPointsPerImage * images.size());
+	FloatArr pointWeights(0, numPointsPerImage * images.size());
+	FOREACH(idxImage, images) {
+		const Image& image = images[idxImage];
+		if (!image.IsValid())
 			continue;
-		cameras.emplace_back(imageData.camera);
-	}
-	const unsigned nCameras = cameras.size();
-	if (nCameras < 3) {
-		VERBOSE("warning: not enough valid views for the ROI estimation");
-		return false;
-	}
-	// compute the camera center and the direction median
-	FloatArr x(nCameras), y(nCameras), z(nCameras), nx(nCameras), ny(nCameras), nz(nCameras);
-	FOREACH(i, cameras) {
-		const Point3f camC(cameras[i].C);
-		x[i] = camC.x;
-		y[i] = camC.y;
-		z[i] = camC.z;
-		const Point3f camDirect(cameras[i].Direction());
-		nx[i] = camDirect.x;
-		ny[i] = camDirect.y;
-		nz[i] = camDirect.z;
-	}
-	const CMatrix camCenter(x.GetMedian(), y.GetMedian(), z.GetMedian());
-	CMatrix camDirectMean(nx.GetMean(), ny.GetMean(), nz.GetMean());
-	const float camDirectMeanLen = (float)norm(camDirectMean);
-	if (!ISZERO(camDirectMeanLen))
-		camDirectMean /= camDirectMeanLen;
-	if (camDirectMeanLen > FSQRT_2 / 2.f && nEstimateROI == 2) {
-		VERBOSE("The camera directions mean is unbalanced; the scene will be considered unbounded (no ROI)");
-		return false;
-	}
-	DEBUG_ULTIMATE("The camera positions median is (%f,%f,%f), directions mean and norm are (%f,%f,%f), %f",
-				   camCenter.x, camCenter.y, camCenter.z, camDirectMean.x, camDirectMean.y, camDirectMean.z, camDirectMeanLen);
-	FloatArr cameraDistances(nCameras);
-	FOREACH(i, cameras)
-		cameraDistances[i] = (float)cameras[i].Distance(camCenter);
-	// estimate scene center and radius
-	const float camDistMed = cameraDistances.GetMedian();
-	const float camShiftCoeff = TAN(ASIN(CLAMP(camDirectMeanLen, 0.f, 0.999f)));
-	const CMatrix sceneCenter = camCenter + camShiftCoeff * camDistMed * camDirectMean;
-	FOREACH(i, cameras) {
-		if (cameras[i].PointDepth(sceneCenter) <= 0 && nEstimateROI == 2) {
-			VERBOSE("Found a camera not pointing towards the scene center; the scene will be considered unbounded (no ROI)");
-			return false;
-		}
-		cameraDistances[i] = (float)cameras[i].Distance(sceneCenter);
-	}
-	const float sceneRadius = cameraDistances.GetMax();
-	DEBUG_ULTIMATE("The estimated scene center is (%f,%f,%f), radius is %f",
-				   sceneCenter.x, sceneCenter.y, sceneCenter.z, sceneRadius);
-	Point3fArr ptsInROI;
-	FOREACH(i, pointcloud.points) {
-		const PointCloud::Point& point = pointcloud.points[i];
-		const PointCloud::ViewArr& views = pointcloud.pointViews[i];
-		FOREACH(j, views) {
-			const Image& imageData = images[views[j]];
-			if (!imageData.IsValid())
-				continue;
-			const Camera& camera = imageData.camera;
-			if (camera.PointDepth(point) < sceneRadius * 2.0f) {
-				ptsInROI.emplace_back(point);
-				break;
+		const unsigned numPointsStart(points.size());
+		DepthArr pointDepths(0, numPointsPerImage);
+		const int patternAbsRadiusSq(ROUND2INT(SQUARE(patternRadius * MINF(image.width, image.height))));
+		FOREACH(idxPoint, pointcloud.points) {
+			const PointCloud::ViewArr& views = pointcloud.pointViews[idxPoint];
+			if (views.FindFirst(idxImage) != PointCloud::ViewArr::NO_INDEX) {
+				const Point3f& X(pointcloud.points[idxPoint]);
+				const Point3 camX(image.camera.TransformPointW2C(Cast<REAL>(X)));
+				const Point2i pt(ROUND2INT(image.camera.TransformPointC2I(camX)));
+				if (!Image8U::isInside(pt, image.GetSize()))
+					continue;
+				const Point2i ptc(pt.x-image.width/2, pt.y-image.height/2);
+				if (normSq(ptc) > patternAbsRadiusSq)
+					continue;
+				points.emplace_back(X);
+				pointDepths.emplace_back((Depth)camX.z);
+				pointScales.emplace_back(image.camera.GetFootprintImage((Depth)camX.z));
+				pointWeights.emplace_back(ABS(ptc.x)<patternCenterBand && ABS(ptc.y)<patternCenterBand ? 1.f : patternOutsideWeight);
 			}
 		}
+		// increase point weights for the points close to the camera
+		const Depth thDepth = pointDepths.GetNth((pointDepths.size() + 5) / 10);
+		FOREACH(i, pointDepths) {
+			const Depth depth = pointDepths[i];
+			if (depth > thDepth)
+				pointWeights[numPointsStart+i] *= 0.1f;
+		}
 	}
-	obb.Set(AABB3f(ptsInROI.begin(), ptsInROI.size()).EnlargePercent(scale));
+	if (pointScales.size() < 30)
+		return false;
+
+	// dump ROI candidate points
 	#if TD_VERBOSE != TD_VERBOSE_OFF
 	if (VERBOSITY_LEVEL > 2) {
-		VERBOSE("Set the ROI with the AABB of position (%f,%f,%f) and extent (%f,%f,%f)",
-			    obb.m_pos[0], obb.m_pos[1], obb.m_pos[2], obb.m_ext[0], obb.m_ext[1], obb.m_ext[2]);
-	} else {
-		VERBOSE("Set the ROI by the estimated core points");
+		PointCloud pc;
+		pc.points = points;
+		pc.Save(MAKE_PATH("roi_raw.ply"));
 	}
 	#endif
+
+	// keep points within mean depth
+	const std::pair<Depth,Depth> ret = ComputeX84Threshold(pointScales.data(), pointScales.size(), 0.9f);
+	const Depth thScale(ret.first - ret.second);
+	RFOREACH(i, points) {
+		if (pointScales[i] < thScale) {
+			points.RemoveAt(i);
+			pointWeights.RemoveAt(i);
+		}
+	}
+	pointScales.Release();
+
+	// dump ROI points
+	#if TD_VERBOSE != TD_VERBOSE_OFF
+	if (VERBOSITY_LEVEL > 2) {
+		PointCloud pc;
+		pc.points = points;
+		pc.Save(MAKE_PATH("roi.ply"));
+	}
+	#endif
+
+	// compute the center
+	TAccumulator<Point3f> accum;
+	FOREACH(i, points)
+		accum.Add(points[i], pointWeights[i]);
+	const Point3f center(accum.Normalized());
+
+	// compute rotation
+	Matrix3x3f R;
+	if (use2dCovariance) {
+		// compute the covariance matrix
+		Eigen::Matrix2d C(Eigen::Matrix2d::Zero());
+		for (const Point3f& p: points) {
+			const Point3f X(p - center);
+			C(0,0) += X(0)*X(0);
+			C(1,0) += X(0)*X(2);
+			C(1,1) += X(2)*X(2);
+		}
+
+		// extract the eigenvalues and eigenvectors from the covariance matrix
+		const Eigen::SelfAdjointEigenSolver<Eigen::Matrix2d> es(C);
+		ASSERT(es.info() == Eigen::Success);
+		const Eigen::Matrix2d R2(es.eigenvectors().transpose());
+
+		// find the right, up and forward vectors from the eigenvectors
+		// and set the rotation matrix using the eigenvectors
+		ASSERT(es.eigenvalues()(0) < es.eigenvalues()(1));
+		R <<
+			R2(0,0), 0, R2(0,1),
+			0, 1, 0,
+			R2(1,0), 0, R2(1,1);
+	} else {
+		// compute the covariance matrix
+		Eigen::Matrix3d C(Eigen::Matrix3d::Zero());
+		for (const Point3f& p: points) {
+			const Point3f X(p - center);
+			C(0,0) += X(0)*X(0);
+			C(1,0) += X(0)*X(1);
+			C(2,0) += X(0)*X(2);
+			C(1,1) += X(1)*X(1);
+			C(2,1) += X(1)*X(2);
+			C(2,2) += X(2)*X(2);
+		}
+
+		// extract the eigenvalues and eigenvectors from the covariance matrix
+		const Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> es(C);
+		ASSERT(es.info() == Eigen::Success);
+
+		// find the right, up and forward vectors from the eigenvectors
+		// and set the rotation matrix using the eigenvectors
+		ASSERT(es.eigenvalues()(0) < es.eigenvalues()(1) && es.eigenvalues()(1) < es.eigenvalues()(2));
+		R = es.eigenvectors().transpose().cast<float>();
+	}
+	// enforce matrix orthogonality
+	EnsureRotationMatrix(R);
+
+	// compute extent
+	AABB3f aabb(points.front());
+	for (const Point3f& p: points)
+		aabb.Insert(Point3f(R * p));
+
+	// create oriented bounding-box
+	obb.m_rot = R;
+	obb.m_pos = static_cast<Matrix3x3f::CEMatMap>(R).transpose() * aabb.GetCenter();
+	obb.m_ext = aabb.GetSize() * (0.5f * weightROI);
+	VERBOSE("Set the ROI with the AABB of position (%f,%f,%f) and extent (%f,%f,%f)",
+			obb.m_pos[0], obb.m_pos[1], obb.m_pos[2], obb.m_ext[0], obb.m_ext[1], obb.m_ext[2]);
 	return true;
 } // EstimateROI
 /*----------------------------------------------------------------*/
-
 
 // calculate the center(X,Y) of the cylinder, the radius and min/max Z
 // from camera position and sparse point cloud, if that exists

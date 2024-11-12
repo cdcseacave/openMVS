@@ -187,7 +187,8 @@ public:
 		return InvK(K);
 	}
 
-	// returns full K and the inverse of K (assuming standard K format)
+	// return full K and the inverse of K (assuming standard K format);
+	// the given resolution must be of the same aspect ratio as the normalized camera
 	template<typename TYPE>
 	inline TMatrix<TYPE,3,3> GetK(uint32_t width, uint32_t height) const {
 		ASSERT(width>0 && height>0);

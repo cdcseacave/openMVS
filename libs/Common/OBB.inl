@@ -80,11 +80,8 @@ inline void TOBB<TYPE,DIMS>::Set(const POINT* pts, size_t n)
 {
 	ASSERT(n >= DIMS);
 
-	// loop over the points to find the mean point
-	// location and to build the covariance matrix;
-	// note that we only have
-	// to build terms for the upper triangular 
-	// portion since the matrix is symmetric
+	// loop over the points to find the mean point location and to build the covariance matrix;
+	// note: only the upper triangular terms are computed since the matrix is symmetric
 	POINT mu(POINT::Zero());
 	TYPE cxx=0, cxy=0, cxz=0, cyy=0, cyz=0, czz=0;
 	for (size_t i=0; i<n; ++i) {
@@ -202,24 +199,15 @@ inline void TOBB<TYPE,DIMS>::SetBounds(const POINT* pts, size_t n)
 	ASSERT(ISEQUAL((m_rot*m_rot.transpose()).trace(), TYPE(3)) && ISEQUAL(m_rot.determinant(), TYPE(1)));
 
 	// build the bounding box extents in the rotated frame
-	const TYPE tmax = std::numeric_limits<TYPE>::max();
-	POINT minim(tmax, tmax, tmax), maxim(-tmax, -tmax, -tmax);
-	for (size_t i=0; i<n; ++i) {
-		const POINT p_prime(m_rot * pts[i]);
-		if (minim(0) > p_prime(0)) minim(0) = p_prime(0);
-		if (minim(1) > p_prime(1)) minim(1) = p_prime(1);
-		if (minim(2) > p_prime(2)) minim(2) = p_prime(2);
-		if (maxim(0) < p_prime(0)) maxim(0) = p_prime(0);
-		if (maxim(1) < p_prime(1)) maxim(1) = p_prime(1);
-		if (maxim(2) < p_prime(2)) maxim(2) = p_prime(2);
-	}
+	AABB aabb(m_rot * pts[0]);
+	for (size_t i=1; i<n; ++i)
+		aabb.Insert(m_rot * pts[i]);
 
 	// set the center of the OBB to be the average of the 
 	// minimum and maximum, and the extents be half of the
 	// difference between the minimum and maximum
-	const POINT center((maxim+minim)*TYPE(0.5));
-	m_pos = m_rot.transpose() * center;
-	m_ext = (maxim-minim)*TYPE(0.5);
+	m_pos = m_rot.transpose() * aabb.GetCenter();
+	m_ext = aabb.GetSize() * TYPE(0.5);
 } // Set
 /*----------------------------------------------------------------*/
 
@@ -341,11 +329,10 @@ inline void TOBB<TYPE,DIMS>::GetCorners(POINT pts[numCorners]) const
 			m_rot.row(0)*m_ext[0],
 			m_rot.row(1)*m_ext[1]
 		};
-		const POINT pos(m_rot.transpose()*m_pos);
-		pts[0] = pos - pEAxis[0] - pEAxis[1];
-		pts[1] = pos + pEAxis[0] - pEAxis[1];
-		pts[2] = pos + pEAxis[0] + pEAxis[1];
-		pts[3] = pos - pEAxis[0] + pEAxis[1];
+		pts[0] = m_pos - pEAxis[0] - pEAxis[1];
+		pts[1] = m_pos + pEAxis[0] - pEAxis[1];
+		pts[2] = m_pos + pEAxis[0] + pEAxis[1];
+		pts[3] = m_pos - pEAxis[0] + pEAxis[1];
 	}
 	if (DIMS == 3) {
 		const POINT pEAxis[3] = {
@@ -353,15 +340,14 @@ inline void TOBB<TYPE,DIMS>::GetCorners(POINT pts[numCorners]) const
 			m_rot.row(1)*m_ext[1],
 			m_rot.row(2)*m_ext[2]
 		};
-		const POINT pos(m_rot.transpose()*m_pos);
-		pts[0] = pos - pEAxis[0] - pEAxis[1] - pEAxis[2];
-		pts[1] = pos - pEAxis[0] - pEAxis[1] + pEAxis[2];
-		pts[2] = pos + pEAxis[0] - pEAxis[1] - pEAxis[2];
-		pts[3] = pos + pEAxis[0] - pEAxis[1] + pEAxis[2];
-		pts[4] = pos + pEAxis[0] + pEAxis[1] - pEAxis[2];
-		pts[5] = pos + pEAxis[0] + pEAxis[1] + pEAxis[2];
-		pts[6] = pos - pEAxis[0] + pEAxis[1] - pEAxis[2];
-		pts[7] = pos - pEAxis[0] + pEAxis[1] + pEAxis[2];
+		pts[0] = m_pos - pEAxis[0] - pEAxis[1] - pEAxis[2];
+		pts[1] = m_pos - pEAxis[0] - pEAxis[1] + pEAxis[2];
+		pts[2] = m_pos + pEAxis[0] - pEAxis[1] - pEAxis[2];
+		pts[3] = m_pos + pEAxis[0] - pEAxis[1] + pEAxis[2];
+		pts[4] = m_pos + pEAxis[0] + pEAxis[1] - pEAxis[2];
+		pts[5] = m_pos + pEAxis[0] + pEAxis[1] + pEAxis[2];
+		pts[6] = m_pos - pEAxis[0] + pEAxis[1] - pEAxis[2];
+		pts[7] = m_pos - pEAxis[0] + pEAxis[1] + pEAxis[2];
 	}
 } // GetCorners
 // constructs the corner of the aligned bounding box in world space

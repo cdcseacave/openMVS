@@ -485,11 +485,11 @@ struct MVS_API DepthEstimator {
 
 // Tools
 bool TriangulatePoints2DepthMap(
-	const DepthData::ViewData& image, const PointCloud& pointcloud, const IndexArr& points,
-	DepthMap& depthMap, NormalMap& normalMap, Depth& dMin, Depth& dMax, bool bAddCorners, bool bSparseOnly=false);
+	const Camera& camera, const cv::Size& size, const PointCloud& pointcloud, const IndexArr& points,
+	DepthMap& depthMap, NormalMap& normalMap, Depth& dMin, Depth& dMax, float avgDepth=0, bool bSparseOnly=false);
 bool TriangulatePoints2DepthMap(
-	const DepthData::ViewData& image, const PointCloud& pointcloud, const IndexArr& points,
-	DepthMap& depthMap, Depth& dMin, Depth& dMax, bool bAddCorners, bool bSparseOnly=false);
+	const Camera& camera, const cv::Size& size, const PointCloud& pointcloud, const IndexArr& points,
+	DepthMap& depthMap, Depth& dMin, Depth& dMax, float avgDepth=0, bool bSparseOnly=false);
 
 // Robustly estimate the plane that fits best the given points
 MVS_API unsigned EstimatePlane(const Point3Arr&, Plane&, double& maxThreshold, bool arrInliers[]=NULL, size_t maxIters=0);

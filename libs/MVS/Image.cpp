@@ -40,7 +40,25 @@ using namespace MVS;
 
 // S T R U C T S ///////////////////////////////////////////////////
 
-IMAGEPTR Image::OpenImage(const String& fileName)
+// compute the image resolution scale such that the largest size is not more than the given size, preserving aspect ratio;
+// the image size must be already initialized
+REAL Image::GetSizeScale(unsigned nMaxResolution) const
+{
+	ASSERT(HasResolution());
+	const unsigned nResolution(MAXF(width,height));
+	if (nMaxResolution == 0 || nResolution <= nMaxResolution)
+		return 1.f;
+	return (REAL)nMaxResolution / nResolution;
+}
+// get the image resolution with the largest size not more than the given size, preserving aspect ratio;
+// the image size must be already initialized
+cv::Size MVS::Image::GetSize(unsigned nMaxResolution) const
+{
+	return Image8U::computeResize(GetSize(), GetSizeScale(nMaxResolution));
+} // GetSize
+/*----------------------------------------------------------------*/
+
+IMAGEPTR Image::OpenImage(const String &fileName)
 {
 	#if 0
 	if (Util::isFullPath(fileName))
@@ -50,7 +68,6 @@ IMAGEPTR Image::OpenImage(const String& fileName)
 	return IMAGEPTR(CImage::Create(fileName, CImage::READ));
 	#endif
 } // OpenImage
-/*----------------------------------------------------------------*/
 
 IMAGEPTR Image::ReadImageHeader(const String& fileName)
 {
@@ -61,7 +78,6 @@ IMAGEPTR Image::ReadImageHeader(const String& fileName)
 	}
 	return pImage;
 } // ReadImageHeader
-/*----------------------------------------------------------------*/
 
 IMAGEPTR Image::ReadImage(const String& fileName, Image8U3& image)
 {
@@ -70,7 +86,6 @@ IMAGEPTR Image::ReadImage(const String& fileName, Image8U3& image)
 		pImage.Release();
 	return pImage;
 } // ReadImage
-/*----------------------------------------------------------------*/
 
 bool Image::ReadImage(IMAGEPTR pImage, Image8U3& image)
 {
@@ -106,7 +121,6 @@ bool Image::LoadImage(const String& fileName, unsigned nMaxResolution)
 	scale = ResizeImage(nMaxResolution);
 	return true;
 } // LoadImage
-/*----------------------------------------------------------------*/
 
 // open the stored image file name and read again the image data
 bool Image::ReloadImage(unsigned nMaxResolution, bool bLoadPixels)
@@ -142,9 +156,10 @@ float Image::ResizeImage(unsigned nMaxResolution)
 		width = image.width();
 		height = image.height();
 	}
-	if (nMaxResolution == 0 || MAXF(width,height) <= nMaxResolution)
+	const unsigned nResolution(MAXF(width,height));
+	if (nMaxResolution == 0 || nResolution <= nMaxResolution)
 		return 1.f;
-	const REAL scale(width > height ? (REAL)nMaxResolution/width : (REAL)nMaxResolution/height);
+	const REAL scale((REAL)nMaxResolution/nResolution);
 	const cv::Size scaledSize(Image8U::computeResize(GetSize(), scale));
 	width = (uint32_t)scaledSize.width;
 	height = (uint32_t)scaledSize.height;
@@ -152,7 +167,6 @@ float Image::ResizeImage(unsigned nMaxResolution)
 		cv::resize(image, image, scaledSize, 0, 0, cv::INTER_AREA);
 	return static_cast<float>(scale);
 } // ResizeImage
-/*----------------------------------------------------------------*/
 
 // compute image scale for a given max and min resolution, using the current image file data
 unsigned Image::RecomputeMaxResolution(unsigned& level, unsigned minImageSize, unsigned maxImageSize) const
@@ -184,8 +198,11 @@ Image Image::GetImage(const PlatformArr& platforms, double scale, bool bUseImage
 	}
 	return scaledImage;
 } // GetImage
-// compute the camera extrinsics from the platform pose and the relative camera pose to the platform
-Camera Image::GetCamera(const PlatformArr& platforms, const Image8U::Size& resolution) const
+
+// compute the camera extrinsics from the platform pose and the relative camera pose to the platform;
+//  - forceAspect: if true, the aspect ratio of the camera is forced to match the given resolution
+//                 otherwise the aspect ratio of the given resolution is expected to be the same
+Camera Image::GetCamera(const PlatformArr& platforms, const cv::Size& resolution, bool forceAspect) const
 {
 	ASSERT(platformID != NO_ID);
 	ASSERT(cameraID != NO_ID);
@@ -196,15 +213,25 @@ Camera Image::GetCamera(const PlatformArr& platforms, const Image8U::Size& resol
 	Camera camera(platform.GetCamera(cameraID, poseID));
 
 	// compute the unnormalized camera
-	camera.K = camera.GetK<REAL>(resolution.width, resolution.height);
+	if (forceAspect) {
+		// given resolution might be of different aspect ratio;
+		// compute the camera with the same aspect ratio as the given resolution
+		camera.K = camera.GetK<REAL>(width, height);
+		camera.K = camera.GetScaledK(cv::Size(width, height), resolution);
+	} else {
+		// given resolution is expected to be of the same aspect ratio as the normalized camera
+		camera.K = camera.GetK<REAL>(resolution.width, resolution.height);
+	}
 	camera.ComposeP();
 
 	return camera;
 } // GetCamera
+
 void Image::UpdateCamera(const PlatformArr& platforms)
 {
-	camera = GetCamera(platforms, Image8U::Size(width, height));
+	camera = GetCamera(platforms, cv::Size(width, height));
 } // UpdateCamera
+
 // computes camera's field of view for the given direction
 REAL Image::ComputeFOV(int dir) const
 {

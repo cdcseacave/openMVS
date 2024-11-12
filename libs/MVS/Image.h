@@ -73,7 +73,9 @@ public:
 
 	inline bool IsValid() const { return poseID != NO_ID; }
 	inline bool HasResolution() const { return width > 0 && height > 0; }
-	inline Image8U::Size GetSize() const { return Image8U::Size(width, height); }
+	inline cv::Size GetSize() const { return cv::Size(width, height); }
+	REAL GetSizeScale(unsigned nMaxResolution) const;
+	cv::Size GetSize(unsigned nMaxResolution) const;
 
 	// read image data from the file
 	static IMAGEPTR OpenImage(const String& fileName);
@@ -87,7 +89,7 @@ public:
 	unsigned RecomputeMaxResolution(unsigned& level, unsigned minImageSize, unsigned maxImageSize=INT_MAX) const;
 
 	Image GetImage(const PlatformArr& platforms, double scale, bool bUseImage=true) const;
-	Camera GetCamera(const PlatformArr& platforms, const Image8U::Size& resolution) const;
+	Camera GetCamera(const PlatformArr& platforms, const cv::Size& resolution, bool forceAspect=false) const;
 	void UpdateCamera(const PlatformArr& platforms);
 	REAL ComputeFOV(int dir) const;
 

@@ -968,9 +968,11 @@ DepthEstimator::PixelEstimate DepthEstimator::PerturbEstimate(const PixelEstimat
 namespace CGAL {
 }
 
-// triangulate in-view points, generating a 2D mesh
+// triangulate in-view points, generating a 2D mesh;
+//  - avgDepth (optional): average depth of the image, used to estimate the depth of the image corners
 // return also the estimated depth boundaries (min and max depth)
-std::pair<float,float> TriangulatePointsDelaunay(const DepthData::ViewData& image, const PointCloud& pointcloud, const IndexArr& points, Mesh& mesh, Point2fArr& projs, bool bAddCorners)
+std::pair<float,float> TriangulatePointsDelaunay(const Camera& camera, const cv::Size& size, const PointCloud& pointcloud, const IndexArr& points,
+	Mesh& mesh, Point2fArr& projs, float avgDepth=0.f)
 {
 	typedef CGAL::Simple_cartesian<double> kernel_t;
 	typedef CGAL::Triangulation_vertex_base_with_info_2<Mesh::VIndex, kernel_t> vertex_base_t;
@@ -988,10 +990,10 @@ std::pair<float,float> TriangulatePointsDelaunay(const DepthData::ViewData& imag
 	projs.reserve(mesh.vertices.capacity());
 	Delaunay delaunay;
 	for (uint32_t idx: points) {
-		const Point3f pt(image.camera.ProjectPointP3(pointcloud.points[idx]));
+		const Point3f pt(camera.ProjectPointP3(pointcloud.points[idx]));
 		const Point3f x(pt.x/pt.z, pt.y/pt.z, pt.z);
 		delaunay.insert(CPoint(x.x, x.y))->info() = mesh.vertices.size();
-		mesh.vertices.emplace_back(image.camera.TransformPointI2C(x));
+		mesh.vertices.emplace_back(camera.TransformPointI2C(x));
 		projs.emplace_back(x.x, x.y);
 		if (depthBounds.first > pt.z)
 			depthBounds.first = pt.z;
@@ -1000,15 +1002,15 @@ std::pair<float,float> TriangulatePointsDelaunay(const DepthData::ViewData& imag
 	}
 	// if full size depth-map requested
 	const size_t numPoints(3);
-	if (bAddCorners && points.size() >= numPoints) {
+	if (avgDepth > 0 && points.size() >= numPoints) {
 		// add the four image corners at the average depth
-		ASSERT(image.pImageData->IsValid() && ISINSIDE(image.pImageData->avgDepth, depthBounds.first, depthBounds.second));
+		ASSERT(ISINSIDE(avgDepth, depthBounds.first, depthBounds.second));
 		const Mesh::VIndex idxFirstVertex = mesh.vertices.size();
 		VertexHandle vcorners[4];
-		for (const Point2f x: {Point2i(0, 0), Point2i(image.image.width()-1, 0), Point2i(0, image.image.height()-1), Point2i(image.image.width()-1, image.image.height()-1)}) {
+		for (const Point2f x: {Point2i(0, 0), Point2i(size.width-1, 0), Point2i(0, size.height-1), Point2i(size.width-1, size.height-1)}) {
 			const Mesh::VIndex i(mesh.vertices.size() - idxFirstVertex);
 			(vcorners[i] = delaunay.insert(CPoint(x.x, x.y)))->info() = mesh.vertices.size();
-			mesh.vertices.emplace_back(image.camera.TransformPointI2C(Point3f(x, image.pImageData->avgDepth)));
+			mesh.vertices.emplace_back(camera.TransformPointI2C(Point3f(x, avgDepth)));
 			projs.emplace_back(x);
 		}
 		// compute average depth from the closest 3 directly connected faces,
@@ -1053,7 +1055,7 @@ std::pair<float,float> TriangulatePointsDelaunay(const DepthData::ViewData& imag
 			vecDists *= 1.f/vecDists.sum();
 			FloatMap vecDepths(&depths[0].idx, numPoints);
 			const float depth(vecDepths.dot(vecDists));
-			mesh.vertices[idxFirstVertex+i] = image.camera.TransformPointI2C(Point3(posA, depth));
+			mesh.vertices[idxFirstVertex+i] = camera.TransformPointI2C(Point3(posA, depth));
 		}
 	}
 	mesh.faces.reserve(Mesh::FIndex(std::distance(delaunay.finite_faces_begin(),delaunay.finite_faces_end())));
@@ -1067,23 +1069,21 @@ std::pair<float,float> TriangulatePointsDelaunay(const DepthData::ViewData& imag
 // roughly estimate depth and normal maps by triangulating the sparse point cloud
 // and interpolating normal and depth for all pixels
 bool MVS::TriangulatePoints2DepthMap(
-	const DepthData::ViewData& image, const PointCloud& pointcloud, const IndexArr& points,
-	DepthMap& depthMap, NormalMap& normalMap, Depth& dMin, Depth& dMax, bool bAddCorners, bool bSparseOnly)
+	const Camera& camera, const cv::Size& size, const PointCloud& pointcloud, const IndexArr& points,
+	DepthMap& depthMap, NormalMap& normalMap, Depth& dMin, Depth& dMax, float avgDepth, bool bSparseOnly)
 {
-	ASSERT(image.pImageData != NULL);
-
 	// triangulate in-view points
 	Mesh mesh;
 	Point2fArr projs;
-	const std::pair<float,float> thDepth(TriangulatePointsDelaunay(image, pointcloud, points, mesh, projs, bAddCorners));
+	const std::pair<float,float> thDepth(TriangulatePointsDelaunay(camera, size, pointcloud, points, mesh, projs, avgDepth));
 	dMin = thDepth.first;
 	dMax = thDepth.second;
 
 	// create rough depth-map by interpolating inside triangles
-	const Camera& camera = image.camera;
+	const bool bAddCorners(avgDepth > 0);
 	mesh.ComputeNormalVertices();
-	depthMap.create(image.image.size());
-	normalMap.create(image.image.size());
+	depthMap.create(size);
+	normalMap.create(size);
 	if (!bAddCorners || bSparseOnly) {
 		depthMap.memset(0);
 		normalMap.memset(0);
@@ -1145,21 +1145,19 @@ bool MVS::TriangulatePoints2DepthMap(
 } // TriangulatePoints2DepthMap
 // same as above, but does not estimate the normal-map
 bool MVS::TriangulatePoints2DepthMap(
-	const DepthData::ViewData& image, const PointCloud& pointcloud, const IndexArr& points,
-	DepthMap& depthMap, Depth& dMin, Depth& dMax, bool bAddCorners, bool bSparseOnly)
+	const Camera& camera, const cv::Size& size, const PointCloud& pointcloud, const IndexArr& points,
+	DepthMap& depthMap, Depth& dMin, Depth& dMax, float avgDepth, bool bSparseOnly)
 {
-	ASSERT(image.pImageData != NULL);
-
 	// triangulate in-view points
 	Mesh mesh;
 	Point2fArr projs;
-	const std::pair<float,float> thDepth(TriangulatePointsDelaunay(image, pointcloud, points, mesh, projs, bAddCorners));
+	const std::pair<float,float> thDepth(TriangulatePointsDelaunay(camera, size, pointcloud, points, mesh, projs, avgDepth));
 	dMin = thDepth.first;
 	dMax = thDepth.second;
 
 	// create rough depth-map by interpolating inside triangles
-	const Camera& camera = image.camera;
-	depthMap.create(image.image.size());
+	const bool bAddCorners(avgDepth > 0);
+	depthMap.create(size);
 	if (!bAddCorners || bSparseOnly)
 		depthMap.memset(0);
 	if (bSparseOnly) {
