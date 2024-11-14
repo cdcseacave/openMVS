@@ -121,7 +121,7 @@ public:
 	void AddNoiseCameraPoses(float epsPosition, float epsRotation);
 	Scene SubScene(const IIndexArr& idxImages) const;
 	Scene& CropToROI(const OBB3f&, unsigned minNumPoints = 3);
-	bool EstimateROI(float weightROI=1.1f, bool use2dCovariance=false);
+	bool EstimateROI(float weightROI=1.1f, float downweightFar=0.1f, bool useDepthMaps=false, bool use2dCovariance=false);
 	
 	// Tower scene
 	bool ComputeTowerCylinder(Point2f& centerPoint, float& fRadius, float& fROIRadius, float& zMin, float& zMax, float& minCamZ, const int towerMode);
@@ -130,7 +130,7 @@ public:
 	PointCloud BuildTowerMesh(const PointCloud& origPointCloud, const Point2f& centerPoint, const float fRadius, const float fROIRadius, const float zMin, const float zMax, const float minCamZ, bool bFixRadius = false);
 	
 	// Dense reconstruction
-	bool DenseReconstruction(int nFusionMode=0, bool bCrop2ROI=true, float fBorderROI=0);
+	bool DenseReconstruction(int nFusionMode=0, float fWeightROI=0, bool bCrop2ROI=true, float fBorderROI=0);
 	bool ComputeDepthMaps(DenseDepthMapData& data);
 	void DenseReconstructionEstimate(void*);
 	void DenseReconstructionFilter(void*);

@@ -1890,7 +1890,7 @@ void DenseDepthMapData::SignalCompleteDepthmapFilter()
 static void* DenseReconstructionEstimateTmp(void*);
 static void* DenseReconstructionFilterTmp(void*);
 
-bool Scene::DenseReconstruction(int nFusionMode, bool bCrop2ROI, float fBorderROI)
+bool Scene::DenseReconstruction(int nFusionMode, float fWeightROI, bool bCrop2ROI, float fBorderROI)
 {
 	DenseDepthMapData data(*this, nFusionMode);
 
@@ -1938,6 +1938,8 @@ bool Scene::DenseReconstruction(int nFusionMode, bool bCrop2ROI, float fBorderRO
 	#endif
 
 	if (!pointcloud.IsEmpty()) {
+		if (fWeightROI > 0)
+			EstimateROI(fWeightROI, 0.1f, true);
 		if (bCrop2ROI && IsBounded()) {
 			TD_TIMER_START();
 			const size_t numPoints = pointcloud.GetSize();

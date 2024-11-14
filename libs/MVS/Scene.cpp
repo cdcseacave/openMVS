@@ -1746,8 +1746,10 @@ Scene& Scene::CropToROI(const OBB3f& obb, unsigned minNumPoints)
 
 // estimate the region-of-interest (ROI) based on the known poses and sparse point-cloud
 //  - weightROI: controls how tite the ROI is set
+//  - downweightFar: downweights points far from the camera (0 - disabled)
+//  - useDepthMaps: uses depth-maps to estimate the ROI; loads depth-maps from disk if available OR estimates them from the sparse point-cloud
 //  - use2dCovariance: assumes the scene is oriented Z up
-bool Scene::EstimateROI(float weightROI, bool use2dCovariance)
+bool Scene::EstimateROI(float weightROI, float downweightFar, bool useDepthMaps, bool use2dCovariance)
 {
 	if (!pointcloud.IsValid() || pointcloud.points.size() < 100 || images.size() < 10)
 		return false;
@@ -1755,42 +1757,149 @@ bool Scene::EstimateROI(float weightROI, bool use2dCovariance)
 	const int patternCenterBand = 2;
 	const float patternRadius = 0.7f;
 	const float patternOutsideWeight = 0.5f;
-	const unsigned numPointsPerImage = 500;
 
-	// extract 3D point-cloud
-	PointCloud::PointArr points(0, numPointsPerImage * images.size());
-	FloatArr pointScales(0, numPointsPerImage * images.size());
-	FloatArr pointWeights(0, numPointsPerImage * images.size());
-	FOREACH(idxImage, images) {
-		const Image& image = images[idxImage];
-		if (!image.IsValid())
-			continue;
-		const unsigned numPointsStart(points.size());
-		DepthArr pointDepths(0, numPointsPerImage);
-		const int patternAbsRadiusSq(ROUND2INT(SQUARE(patternRadius * MINF(image.width, image.height))));
-		FOREACH(idxPoint, pointcloud.points) {
-			const PointCloud::ViewArr& views = pointcloud.pointViews[idxPoint];
-			if (views.FindFirst(idxImage) != PointCloud::ViewArr::NO_INDEX) {
-				const Point3f& X(pointcloud.points[idxPoint]);
-				const Point3 camX(image.camera.TransformPointW2C(Cast<REAL>(X)));
-				const Point2i pt(ROUND2INT(image.camera.TransformPointC2I(camX)));
-				if (!Image8U::isInside(pt, image.GetSize()))
-					continue;
-				const Point2i ptc(pt.x-image.width/2, pt.y-image.height/2);
-				if (normSq(ptc) > patternAbsRadiusSq)
-					continue;
-				points.emplace_back(X);
-				pointDepths.emplace_back((Depth)camX.z);
-				pointScales.emplace_back(image.camera.GetFootprintImage((Depth)camX.z));
-				pointWeights.emplace_back(ABS(ptc.x)<patternCenterBand && ABS(ptc.y)<patternCenterBand ? 1.f : patternOutsideWeight);
-			}
-		}
-		// increase point weights for the points close to the camera
+	// increase point weights for the points close to the camera
+	const auto PromoteClosePoints = [](DepthArr& pointDepths, FloatArr& pointWeights, unsigned numPointsStart, float downweightFar) {
 		const Depth thDepth = pointDepths.GetNth((pointDepths.size() + 5) / 10);
 		FOREACH(i, pointDepths) {
 			const Depth depth = pointDepths[i];
 			if (depth > thDepth)
-				pointWeights[numPointsStart+i] *= 0.1f;
+				pointWeights[numPointsStart+i] *= downweightFar;
+		}
+	};
+
+	// extract 3D point-cloud
+	PointCloud::PointArr points;
+	FloatArr pointScales;
+	FloatArr pointWeights;
+	if (!useDepthMaps) {
+		// use the sparse point-cloud directly
+		const int numPointsPerImage = 500;
+		points.reserve(numPointsPerImage * images.size());
+		pointScales.reserve(numPointsPerImage * images.size());
+		pointWeights.reserve(numPointsPerImage * images.size());
+		FOREACH(idxImage, images) {
+			const Image& image = images[idxImage];
+			if (!image.IsValid())
+				continue;
+			const unsigned numPointsStart(points.size());
+			DepthArr pointDepths(0, numPointsPerImage);
+			const int patternAbsRadiusSq(ROUND2INT(SQUARE(patternRadius * MINF(image.width, image.height))));
+			FOREACH(idxPoint, pointcloud.points) {
+				const PointCloud::ViewArr& views = pointcloud.pointViews[idxPoint];
+				if (views.FindFirst(idxImage) != PointCloud::ViewArr::NO_INDEX) {
+					const Point3f& X(pointcloud.points[idxPoint]);
+					const Point3 camX(image.camera.TransformPointW2C(Cast<REAL>(X)));
+					const Point2i pt(ROUND2INT(image.camera.TransformPointC2I(camX)));
+					if (!Image8U::isInside(pt, image.GetSize()))
+						continue;
+					const Point2i ptc(pt.x-image.width/2, pt.y-image.height/2);
+					if (normSq(ptc) > patternAbsRadiusSq)
+						continue;
+					points.emplace_back(X);
+					pointDepths.emplace_back((Depth)camX.z);
+					pointScales.emplace_back(image.camera.GetFootprintImage((Depth)camX.z));
+					pointWeights.emplace_back(ABS(ptc.x)<patternCenterBand && ABS(ptc.y)<patternCenterBand ? 1.f : patternOutsideWeight);
+				}
+			}
+			if (downweightFar > 0)
+				PromoteClosePoints(pointDepths, pointWeights, numPointsStart, downweightFar);
+		}
+	} else {
+		// try to use available depth-maps or estimate them from the sparse point-cloud
+		const int maxSizeDM = 64;
+		const cv::Size sizeDM(images.front().GetSize(maxSizeDM));
+		const cv::Size sizeDM2(sizeDM / 2);
+		const int patternAbsRadiusSq(ROUND2INT(SQUARE(patternRadius * MINF(sizeDM2.width, sizeDM2.height))));
+		// sample mostly from the center of the image
+		std::vector<Point2i> patternPoints;
+		for (int y = 1; y < sizeDM.height-1; ++y) {
+			for (int x = 1; x < sizeDM.width-1; ++x) {
+				if (normSq(Point2i(x-sizeDM2.width, y-sizeDM2.height)) > patternAbsRadiusSq)
+					continue;
+				patternPoints.emplace_back(x, y);
+			}
+		}
+		const size_t numCenterPixels(patternPoints.size());
+		{
+			const int y = sizeDM2.height;
+			for (int x = 1; x < sizeDM.width-1; ++x) {
+				if (normSq(Point2i(x-sizeDM2.width, y-sizeDM2.height)) < patternAbsRadiusSq)
+					continue;
+				patternPoints.emplace_back(x, y);
+			}
+		}
+		{
+			const int x = sizeDM2.width;
+			for (int y = 1; y < sizeDM.height-1; ++y) {
+				if (normSq(Point2i(x-sizeDM2.width, y-sizeDM2.height)) < patternAbsRadiusSq)
+					continue;
+				patternPoints.emplace_back(x, y);
+			}
+		}
+		// try to load depth-map data
+		const auto LoadDepthMap = [](IIndex ID, const cv::Size& sizeDM) {
+			DepthMap depthMap;
+			String imageFileName;
+			IIndexArr IDs;
+			cv::Size imageSize;
+			Camera camera;
+			Depth dMin, dMax;
+			NormalMap normalMap;
+			ConfidenceMap confMap;
+			ViewsMap viewsMap;
+			if (!ImportDepthDataRaw(ComposeDepthFilePath(ID, "dmap"),
+				imageFileName, IDs, imageSize, camera.K, camera.R, camera.C,
+				dMin, dMax, depthMap, normalMap, confMap, viewsMap, 1))
+				return depthMap;
+			cv::resize(depthMap, depthMap, sizeDM, 0, 0, cv::INTER_NEAREST);
+			return depthMap;
+		};
+		// extract 3D point-cloud
+		points.reserve(patternPoints.size() * images.size());
+		pointScales.reserve(patternPoints.size() * images.size());
+		pointWeights.reserve(patternPoints.size() * images.size());
+		FOREACH(idxImage, images) {
+			const Image& image = images[idxImage];
+			if (!image.IsValid())
+				continue;
+			const Camera camera(image.GetCamera(platforms, sizeDM, true));
+			const unsigned numPointsStart(points.size());
+			DepthMap depthMap = LoadDepthMap(image.ID, sizeDM);
+			if (depthMap.empty()) {
+				// fetch pairs of corresponding image points
+				IndexArr pointIndices;
+				FOREACH(idxPoint, pointcloud.points) {
+					const PointCloud::ViewArr& views = pointcloud.pointViews[idxPoint];
+					if (views.FindFirst(idxImage) != PointCloud::ViewArr::NO_INDEX)
+						pointIndices.push_back(idxPoint);
+				}
+				// estimate a coarse depth-map from the sparse point-cloud
+				Depth dMin, dMax;
+				TriangulatePoints2DepthMap(camera, sizeDM, pointcloud, pointIndices, depthMap, dMin, dMax, image.avgDepth);
+			}
+			// sample points from the depth-map
+			DepthArr pointDepths(0, patternPoints.size());
+			FOREACH(i, patternPoints) {
+				const Point2i& pt = patternPoints[i];
+				const Depth depth = depthMap(pt);
+				if (depth <= 0)
+					continue;
+				if (depthMap(pt.y-1,pt.x) <= 0)
+					continue;
+				if (depthMap(pt.y+1,pt.x) <= 0)
+					continue;
+				if (depthMap(pt.y,pt.x-1) <= 0)
+					continue;
+				if (depthMap(pt.y,pt.x+1) <= 0)
+					continue;
+				points.emplace_back(camera.TransformPointI2W(Point3(pt.x, pt.y, depth)));
+				pointScales.emplace_back(image.camera.GetFootprintImage(depth));
+				pointWeights.emplace_back(i < numCenterPixels ? 1.f : patternOutsideWeight);
+				pointDepths.emplace_back(depth);
+			}
+			if (downweightFar > 0)
+				PromoteClosePoints(pointDepths, pointWeights, numPointsStart, downweightFar);
 		}
 	}
 	if (pointScales.size() < 30)

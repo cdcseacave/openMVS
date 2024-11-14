@@ -62,6 +62,7 @@ float fMaxSubsceneArea;
 float fSampleMesh;
 float fBorderROI;
 float fWeightROI;
+float fWeightDenseROI;
 bool bCrop2ROI;
 int	nTowerMode;
 int nFusionMode;
@@ -165,6 +166,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("export-number-views", boost::program_options::value(&OPT::nExportNumViews)->default_value(0), "export points with >= number of views (0 - disabled, <0 - save MVS project too)")
 		("roi-border", boost::program_options::value(&OPT::fBorderROI)->default_value(0), "add a border to the region-of-interest when cropping the scene (0 - disabled, >0 - percentage, <0 - absolute)")
 		("estimate-roi", boost::program_options::value(&OPT::fWeightROI)->default_value(1.1f), "estimate and set region-of-interest (0 - disabled)")
+		("estimate-dense-roi", boost::program_options::value(&OPT::fWeightDenseROI)->default_value(0.f), "estimate and set region-of-interest from depth-maps (0 - disabled)")
 		("crop-to-roi", boost::program_options::value(&OPT::bCrop2ROI)->default_value(true), "crop scene using the region-of-interest")
 		("remove-dmaps", boost::program_options::value(&bRemoveDmaps)->default_value(false), "remove depth-maps after fusion")
 		("tower-mode", boost::program_options::value(&OPT::nTowerMode)->default_value(4), "add a cylinder of points in the center of ROI; scene assume to be Z-up oriented (0 - disabled, 1 - replace, 2 - append, 3 - select neighbors, 4 - select neighbors & append, <0 - force tower mode)")
@@ -348,7 +350,7 @@ int main(int argc, LPCTSTR* argv)
 		scene.Save(MAKE_PATH_SAFE(Util::getFileFullName(OPT::strOutputFileName))+_T(".mvs"), (ARCHIVE_TYPE)OPT::nArchiveType);
 		return EXIT_SUCCESS;
 	}
-	if (!scene.IsBounded())
+	if (!scene.IsBounded() && OPT::fWeightROI > 0)
 		scene.EstimateROI(OPT::fWeightROI);
 	if (!OPT::strExportROIFileName.empty() && scene.IsBounded()) {
 		std::ofstream fs(MAKE_PATH_SAFE(OPT::strExportROIFileName));
@@ -431,7 +433,7 @@ int main(int argc, LPCTSTR* argv)
 		if ((ARCHIVE_TYPE)OPT::nArchiveType == ARCHIVE_MVS)
 			sparsePointCloud = scene.pointcloud;
 		TD_TIMER_START();
-		if (!scene.DenseReconstruction(OPT::nFusionMode, OPT::bCrop2ROI, OPT::fBorderROI)) {
+		if (!scene.DenseReconstruction(OPT::nFusionMode, OPT::fWeightDenseROI, OPT::bCrop2ROI, OPT::fBorderROI)) {
 			if (ABS(OPT::nFusionMode) != 1)
 				return EXIT_FAILURE;
 			VERBOSE("Depth-maps estimated (%s)", TD_TIMER_GET_FMT().c_str());

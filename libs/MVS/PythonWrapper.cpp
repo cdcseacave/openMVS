@@ -80,9 +80,9 @@ public:
 		return mesh.Save(MAKE_PATH_SAFE(fileName));
 	}
 
-	bool pyDenseReconstruction(unsigned nResolutionLevel=1, int nFusionMode=0, bool bCrop2ROI=true, float fBorderROI=0) {
+	bool pyDenseReconstruction(unsigned nResolutionLevel=1, int nFusionMode=0, float fWeightROI=0, bool bCrop2ROI=true, float fBorderROI=0) {
 		MVS::OPTDENSE::nResolutionLevel = nResolutionLevel;
-		return DenseReconstruction(nFusionMode, bCrop2ROI, fBorderROI);
+		return DenseReconstruction(nFusionMode, fWeightROI, bCrop2ROI, fBorderROI);
 	}
 	bool pyReconstructMesh(float distInsert=2, bool bUseFreeSpaceSupport=false, bool bUseOnlyROI=false) {
 		return ReconstructMesh(distInsert, bUseFreeSpaceSupport, bUseOnlyROI);
@@ -126,7 +126,7 @@ BOOST_PYTHON_MODULE(pyOpenMVS) {
 		.def("transform", static_cast<void (Scene:: *)(const Matrix3x3&, const Point3&, REAL)>(&Scene::Transform))
 		.def("transform34", static_cast<void (Scene:: *)(const Matrix3x4&)>(&Scene::Transform))
 		.def("align_to", &Scene::AlignTo)
-		.def("dense_reconstruction", &Scene::pyDenseReconstruction, (arg("resolution_level")=0, arg("fusion_mode")=0, arg("crop_to_roi")=true, arg("roi_border")=0.f))
+		.def("dense_reconstruction", &Scene::pyDenseReconstruction, (arg("resolution_level")=0, arg("fusion_mode")=0, arg("weight_roi")=0.f, arg("crop_to_roi")=true, arg("roi_border")=0.f))
 		.def("reconstruct_mesh", &Scene::pyReconstructMesh, (arg("dist_insert")=2, arg("use_free_space_support")=false, arg("use_only_roi")=false))
 		.def("clean_mesh", &Scene::pyCleanMesh, (arg("decimate")=1.f, arg("remove_spurious")=20.f, arg("remove_spikes")=true, arg("close_holes")=30, arg("smooth_mesh")=2, arg("edge_length")=0.f, arg("crop_to_roi")=true))
 		.def("refine_mesh", &Scene::pyRefineMesh, (arg("resolution_level")=0, arg("ensure_edge_size")=1, arg("max_face_area")=32, arg("scales")=2, arg("scale_step")=0.5f, arg("regularity_weight")=0.2f))
