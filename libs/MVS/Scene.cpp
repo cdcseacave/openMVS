@@ -1782,7 +1782,7 @@ bool Scene::EstimateROI(float weightROI, float downweightFar, bool useDepthMaps,
 			const Image& image = images[idxImage];
 			if (!image.IsValid())
 				continue;
-			const unsigned numPointsStart(points.size());
+			const unsigned numPointsStart((uint32_t)points.size());
 			DepthArr pointDepths(0, numPointsPerImage);
 			const int patternAbsRadiusSq(ROUND2INT(SQUARE(patternRadius * MINF(image.width, image.height))));
 			FOREACH(idxPoint, pointcloud.points) {
@@ -1864,7 +1864,7 @@ bool Scene::EstimateROI(float weightROI, float downweightFar, bool useDepthMaps,
 			if (!image.IsValid())
 				continue;
 			const Camera camera(image.GetCamera(platforms, sizeDM, true));
-			const unsigned numPointsStart(points.size());
+			const unsigned numPointsStart((uint32_t)points.size());
 			DepthMap depthMap = LoadDepthMap(image.ID, sizeDM);
 			if (depthMap.empty()) {
 				// fetch pairs of corresponding image points
@@ -1872,7 +1872,7 @@ bool Scene::EstimateROI(float weightROI, float downweightFar, bool useDepthMaps,
 				FOREACH(idxPoint, pointcloud.points) {
 					const PointCloud::ViewArr& views = pointcloud.pointViews[idxPoint];
 					if (views.FindFirst(idxImage) != PointCloud::ViewArr::NO_INDEX)
-						pointIndices.push_back(idxPoint);
+						pointIndices.push_back((uint32_t)idxPoint);
 				}
 				// estimate a coarse depth-map from the sparse point-cloud
 				Depth dMin, dMax;
@@ -1904,7 +1904,6 @@ bool Scene::EstimateROI(float weightROI, float downweightFar, bool useDepthMaps,
 	}
 	if (pointScales.size() < 30)
 		return false;
-
 	// dump ROI candidate points
 	#if TD_VERBOSE != TD_VERBOSE_OFF
 	if (VERBOSITY_LEVEL > 2) {
@@ -1924,7 +1923,6 @@ bool Scene::EstimateROI(float weightROI, float downweightFar, bool useDepthMaps,
 		}
 	}
 	pointScales.Release();
-
 	// dump ROI points
 	#if TD_VERBOSE != TD_VERBOSE_OFF
 	if (VERBOSITY_LEVEL > 2) {
@@ -1939,7 +1937,6 @@ bool Scene::EstimateROI(float weightROI, float downweightFar, bool useDepthMaps,
 	FOREACH(i, points)
 		accum.Add(points[i], pointWeights[i]);
 	const Point3f center(accum.Normalized());
-
 	// compute rotation
 	Matrix3x3f R;
 	if (use2dCovariance) {
@@ -1951,12 +1948,10 @@ bool Scene::EstimateROI(float weightROI, float downweightFar, bool useDepthMaps,
 			C(1,0) += X(0)*X(2);
 			C(1,1) += X(2)*X(2);
 		}
-
 		// extract the eigenvalues and eigenvectors from the covariance matrix
 		const Eigen::SelfAdjointEigenSolver<Eigen::Matrix2d> es(C);
 		ASSERT(es.info() == Eigen::Success);
 		const Eigen::Matrix2d R2(es.eigenvectors().transpose());
-
 		// find the right, up and forward vectors from the eigenvectors
 		// and set the rotation matrix using the eigenvectors
 		ASSERT(es.eigenvalues()(0) < es.eigenvalues()(1));
@@ -1976,11 +1971,9 @@ bool Scene::EstimateROI(float weightROI, float downweightFar, bool useDepthMaps,
 			C(2,1) += X(1)*X(2);
 			C(2,2) += X(2)*X(2);
 		}
-
 		// extract the eigenvalues and eigenvectors from the covariance matrix
 		const Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> es(C);
 		ASSERT(es.info() == Eigen::Success);
-
 		// find the right, up and forward vectors from the eigenvectors
 		// and set the rotation matrix using the eigenvectors
 		ASSERT(es.eigenvalues()(0) < es.eigenvalues()(1) && es.eigenvalues()(1) < es.eigenvalues()(2));
@@ -1993,12 +1986,11 @@ bool Scene::EstimateROI(float weightROI, float downweightFar, bool useDepthMaps,
 	AABB3f aabb(points.front());
 	for (const Point3f& p: points)
 		aabb.Insert(Point3f(R * p));
-
 	// create oriented bounding-box
 	obb.m_rot = R;
 	obb.m_pos = static_cast<Matrix3x3f::CEMatMap>(R).transpose() * aabb.GetCenter();
 	obb.m_ext = aabb.GetSize() * (0.5f * weightROI);
-	VERBOSE("Set the ROI with the AABB of position (%f,%f,%f) and extent (%f,%f,%f)",
+	VERBOSE("ROI estimated with position (%f,%f,%f) and extent (%f,%f,%f)",
 			obb.m_pos[0], obb.m_pos[1], obb.m_pos[2], obb.m_ext[0], obb.m_ext[1], obb.m_ext[2]);
 	return true;
 } // EstimateROI
