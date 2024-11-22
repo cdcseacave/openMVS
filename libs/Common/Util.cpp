@@ -152,10 +152,28 @@ String Util::GetOSInfo()
 	#ifndef _WIN32_WINNT_WIN10
 	#define _WIN32_WINNT_WIN10 0x0A00
 	if (IsWindowsVersionOrGreater(HIBYTE(_WIN32_WINNT_WIN10), LOBYTE(_WIN32_WINNT_WIN10), 0))
-	#else
-	if (IsWindows10OrGreater())
-	#endif
 		os = _T("Windows 10+");
+	#else
+	// helper function to check for Windows 11+
+	const auto IsWindows11OrGreater = []() -> bool {
+		OSVERSIONINFOEXW osvi { sizeof(OSVERSIONINFOEXW) };
+		DWORDLONG dwlConditionMask = 0;
+		// Windows 11 starts at build 22000
+		osvi.dwMajorVersion = 10;
+		osvi.dwMinorVersion = 0;
+		osvi.dwBuildNumber = 22000;
+		VER_SET_CONDITION(dwlConditionMask, VER_MAJORVERSION, VER_GREATER_EQUAL);
+		VER_SET_CONDITION(dwlConditionMask, VER_MINORVERSION, VER_GREATER_EQUAL);
+		VER_SET_CONDITION(dwlConditionMask, VER_BUILDNUMBER, VER_GREATER_EQUAL);
+		return VerifyVersionInfoW(&osvi, 
+			VER_MAJORVERSION | VER_MINORVERSION | VER_BUILDNUMBER, 
+			dwlConditionMask) != FALSE;
+	};
+	if (IsWindows11OrGreater())
+		os = _T("Windows 11+");
+	else if (IsWindows10OrGreater())
+		os = _T("Windows 10");
+	#endif
 	else if (IsWindows8Point1OrGreater())
 		os = _T("Windows 8.1");
 	else if (IsWindows8OrGreater())
