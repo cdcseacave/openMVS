@@ -1,5 +1,6 @@
 if(MSVC)
-	FILE(GLOB LIBRARY_FILES_C "*.cpp" "*.rc")
+	create_rc_files(InterfaceMVSNet)
+	FILE(GLOB LIBRARY_FILES_C "*.cpp" "${CMAKE_CURRENT_BINARY_DIR}/*.rc")
 else()
 	FILE(GLOB LIBRARY_FILES_C "*.cpp")
 endif()

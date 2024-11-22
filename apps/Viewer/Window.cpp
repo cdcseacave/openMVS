@@ -32,6 +32,11 @@
 #include "Common.h"
 #include "Window.h"
 
+#ifdef _MSC_VER
+#define GLFW_EXPOSE_NATIVE_WIN32
+#include <GLFW/glfw3native.h>
+#endif
+
 using namespace VIEWER;
 
 
@@ -98,6 +103,15 @@ bool Window::Init(const cv::Size& _size, LPCTSTR name)
 	glfwSetScrollCallback(window, Window::Scroll);
 	glfwSetDropCallback(window, Window::Drop);
 	g_mapWindows[window] = this;
+
+	#ifdef _MSC_VER
+	// set application icon from resources
+	const HICON hIcon = ::LoadIcon(::GetModuleHandle(NULL), MAKEINTRESOURCE(101));
+	const HWND hwnd = glfwGetWin32Window(window);
+	::SendMessage(hwnd, WM_SETICON, ICON_SMALL, (LPARAM)hIcon);
+	::SendMessage(hwnd, WM_SETICON, ICON_BIG, (LPARAM)hIcon);
+	::DestroyIcon(hIcon);
+	#endif
 
 	Reset();
 	return true;

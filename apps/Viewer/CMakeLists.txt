@@ -28,7 +28,8 @@ endif()
 
 # List sources files
 if(MSVC)
-	FILE(GLOB LIBRARY_FILES_C "*.cpp" "*.rc")
+	create_rc_files(${VIEWER_NAME} "${CMAKE_CURRENT_SOURCE_DIR}/Viewer.ico")
+	FILE(GLOB LIBRARY_FILES_C "*.cpp" "${CMAKE_CURRENT_BINARY_DIR}/*.rc")
 else()
 	FILE(GLOB LIBRARY_FILES_C "*.cpp")
 endif()
