@@ -699,54 +699,6 @@ public:
 	}
 
 
-	/**
-	 * IPRT - CRC64.
-	 *
-	 * The method to compute the CRC64 is referred to as CRC-64-ISO:
-	 *     http://en.wikipedia.org/wiki/Cyclic_redundancy_check
-	 * The generator polynomial is x^64 + x^4 + x^3 + x + 1.
-	 *     Reverse polynom: 0xd800000000000000ULL
-	 *     
-	 * As in: http://www.virtualbox.org/svn/vbox/trunk/src/VBox/Runtime/common/checksum/crc64.cpp
-	 */
-
-	/**
-	 * Calculate CRC64 for a memory block.
-	 *
-	 * @returns CRC64 for the memory block.
-	 * @param   pv      Pointer to the memory block.
-	 * @param   cb      Size of the memory block in bytes.
-	 */
-	static uint64_t CRC64(const void *pv, size_t cb);
-
-	/**
-	 * Start a multiblock CRC64 calculation.
-	 *
-	 * @returns Start CRC64.
-	 */
-	static uint64_t CRC64Start() {
-		return 0ULL;
-	}
-	/**
-	 * Processes a multiblock of a CRC64 calculation.
-	 *
-	 * @returns Intermediate CRC64 value.
-	 * @param   uCRC64  Current CRC64 intermediate value.
-	 * @param   pv      The data block to process.
-	 * @param   cb      The size of the data block in bytes.
-	 */
-	static uint64_t CRC64Process(uint64_t uCRC64, const void *pv, size_t cb);
-	/**
-	 * Complete a multiblock CRC64 calculation.
-	 *
-	 * @returns CRC64 value.
-	 * @param   uCRC64  Current CRC64 intermediate value.
-	 */
-	static uint64_t CRC64Finish(uint64_t uCRC64) {
-		return uCRC64;
-	}
-
-
 	static void		Init();
 
 	static String	GetCPUInfo();

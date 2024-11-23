@@ -370,10 +370,10 @@ int main(int argc, LPCTSTR* argv)
 	}
 
 	if (!OPT::strImportROIFileName.empty()) {
-		std::ifstream fs(MAKE_PATH_SAFE(OPT::strImportROIFileName));
-		if (!fs)
+		if (!scene.LoadROI(MAKE_PATH_SAFE(OPT::strImportROIFileName))) {
+			VERBOSE("error: cannot load ROI file");
 			return EXIT_FAILURE;
-		fs >> scene.obb;
+		}
 		if (OPT::bCrop2ROI && !scene.mesh.IsEmpty() && !scene.IsValid()) {
 			TD_TIMER_START();
 			const size_t numVertices = scene.mesh.vertices.size();

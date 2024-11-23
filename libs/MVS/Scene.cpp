@@ -316,6 +316,34 @@ bool Scene::SaveInterface(const String & fileName, int version) const
 /*----------------------------------------------------------------*/
 
 
+// load region-of-interest from a text file
+bool Scene::LoadROI(const String& fileName)
+{
+	TD_TIMER_STARTD();
+
+	std::ifstream fs(fileName);
+	if (!fs)
+		return false;
+	// try to read OBB
+	fs >> obb;
+	if (fs.fail()) {
+		// reset fs to the beginning position
+		fs.clear();
+		fs.seekg(0, std::ios::beg);
+		// try to read AABB
+		AABB3f box;
+		fs >> box;
+		if (fs.fail())
+			return false;
+		obb = OBB3f(box);
+	}
+
+	DEBUG_EXTRA("Region-of-interest loaded from file '%s' (%s)",
+				fileName.c_str(), TD_TIMER_GET_FMT().c_str());
+	return true;
+} // LoadROI
+/*----------------------------------------------------------------*/
+
 // load depth-map and generate a Multi-View Stereo scene
 bool Scene::LoadDMAP(const String& fileName)
 {

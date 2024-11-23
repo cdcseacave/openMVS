@@ -104,7 +104,9 @@ bool PipelineTest(bool verbose=false)
 		VERBOSE("ERROR: TestDataset failed cleaning the mesh!");
 		return false;
 	}
+	#ifdef _USE_OPENMP
 	TestMeshProjectionMT(scene.mesh, scene.images[1]);
+	#endif
 	if (!scene.TextureMesh(0, 0) || !scene.mesh.HasTexture()) {
 		VERBOSE("ERROR: TestDataset failed texturing the mesh!");
 		return false;

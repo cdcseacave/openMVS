@@ -835,6 +835,50 @@ macro(ConfigLibrary)
 	endforeach()
 endmacro()
 
+function(create_rc_files name)
+  # Create the manifest file
+  file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/app.manifest" 
+    "<?xml version='1.0' encoding='UTF-8' standalone='yes'?>
+    <assembly manifestVersion='1.0' xmlns='urn:schemas-microsoft-com:asm.v1'>
+      <assemblyIdentity type='win32' name='${name}' version='1.0.0.0'/>
+      <trustInfo xmlns='urn:schemas-microsoft-com:asm.v2'>
+        <security>
+          <requestedPrivileges xmlns='urn:schemas-microsoft-com:asm.v3'>
+            <requestedExecutionLevel level='asInvoker' uiAccess='false'/>
+          </requestedPrivileges>
+        </security>
+      </trustInfo>
+      <compatibility xmlns='urn:schemas-microsoft-com:compatibility.v1'>
+        <application>
+          <!-- Windows Vista -->
+          <supportedOS Id='{e2011457-1546-43c5-a5fe-008deee3d3f0}'/>
+          <!-- Windows 7 -->
+          <supportedOS Id='{35138b9a-5d96-4fbd-8e2d-a2440225f93a}'/>
+          <!-- Windows 8 -->
+          <supportedOS Id='{4a2f28e3-53b9-4441-ba9c-d69d4a4a6e38}'/>
+          <!-- Windows 8.1 -->
+          <supportedOS Id='{1f676c76-80e1-4239-95bb-83d0f6d0da78}'/>
+          <!-- Windows 10 and Windows 11 -->
+          <supportedOS Id='{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}'/>
+        </application>
+      </compatibility>
+    </assembly>
+  ")
+
+  # Create an RC file that includes the manifest
+  if(NOT "${ARGN}" STREQUAL "")
+    set(RC_ICO "
+      #define IDI_ICON_APP 101
+      IDI_ICON_APP ICON DISCARDABLE \"${ARGN}\"
+	")
+  endif()
+  file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/app.rc"
+    "#include <windows.h>
+    1 RT_MANIFEST \"app.manifest\"
+    ${RC_ICO}
+  ")
+endfunction()
+
 # Defines the main libraries.  User tests should link
 # with one of them.
 function(cxx_library_with_type name folder type cxx_flags)
@@ -870,4 +914,13 @@ function(cxx_executable_with_flags name folder cxx_flags libs)
   endforeach()
   # Set project folder
   set_target_properties("${name}" PROPERTIES FOLDER "${folder}")
+  if (MSVC)
+    # Check if any of the files listed in ARGN has the extension .rc
+    foreach (file ${ARGN})
+      if (file MATCHES "\\.rc$")
+        set_target_properties("${name}" PROPERTIES LINK_FLAGS "/MANIFEST:NO")
+        break()
+      endif()
+    endforeach()
+  endif()
 endfunction()

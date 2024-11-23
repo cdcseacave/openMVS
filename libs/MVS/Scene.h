@@ -75,6 +75,7 @@ public:
 	bool LoadInterface(const String& fileName);
 	bool SaveInterface(const String& fileName, int version=-1) const;
 
+	bool LoadROI(const String& fileName);
 	bool LoadDMAP(const String& fileName);
 	bool LoadViewNeighbors(const String& fileName);
 	bool SaveViewNeighbors(const String& fileName) const;

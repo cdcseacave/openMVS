@@ -325,19 +325,26 @@ int main(int argc, LPCTSTR* argv)
 		}
 	}
 	if (!OPT::strCropROIFileName.empty()) {
-		std::ifstream fs(MAKE_PATH_SAFE(OPT::strCropROIFileName));
-		if (!fs)
+		if (!scene.LoadROI(MAKE_PATH_SAFE(OPT::strCropROIFileName))) {
+			VERBOSE("error: cannot load ROI file");
 			return EXIT_FAILURE;
-		fs >> scene.obb;
+		}
 		scene.CropToROI(scene.obb);
-		scene.Save(MAKE_PATH_SAFE(Util::getFileFullName(OPT::strOutputFileName))+_T(".mvs"), (ARCHIVE_TYPE)OPT::nArchiveType);
+		const String baseFileName(MAKE_PATH_SAFE(Util::getFileFullName(OPT::strOutputFileName)));
+		if (!OPT::strPointCloudFileName.empty() && (ARCHIVE_TYPE)OPT::nArchiveType == ARCHIVE_MVS) {
+			// save only the cropped dense point-cloud
+			scene.pointcloud.Save(baseFileName+_T(".ply"), true);
+		} else {
+			// save the cropped scene
+			scene.Save(baseFileName+_T(".mvs"), (ARCHIVE_TYPE)OPT::nArchiveType);
+		}
 		return EXIT_SUCCESS;
 	}
 	if (!OPT::strImportROIFileName.empty()) {
-		std::ifstream fs(MAKE_PATH_SAFE(OPT::strImportROIFileName));
-		if (!fs)
+		if (!scene.LoadROI(MAKE_PATH_SAFE(OPT::strImportROIFileName))) {
+			VERBOSE("error: cannot load ROI file");
 			return EXIT_FAILURE;
-		fs >> scene.obb;
+		}
 		scene.Save(MAKE_PATH_SAFE(Util::getFileFullName(OPT::strOutputFileName))+_T(".mvs"), (ARCHIVE_TYPE)OPT::nArchiveType);
 		return EXIT_SUCCESS;
 	}

@@ -4729,6 +4729,7 @@ bool Mesh::InitKernels(int device)
 #endif
 
 
+#ifdef _USE_OPENMP
 // test mesh projection on the image using multi-threaded and single-threaded rasterization
 bool MVS::TestMeshProjectionMT(const Mesh& mesh, const Image& image) {
 	// used to render the mesh
@@ -4809,3 +4810,4 @@ bool MVS::TestMeshProjectionMT(const Mesh& mesh, const Image& image) {
 	return numDiffDepths == 0 && numDiffFaces == 0;
 }
 /*----------------------------------------------------------------*/
+#endif // _USE_OPENMP
