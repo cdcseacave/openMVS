@@ -14,8 +14,6 @@
       "default-features": false
     },
     "eigen3",
-    "glew",
-    "glfw3",
     "libpng",
     {
       "name": "opencv",
@@ -24,16 +22,16 @@
         "openexr"
       ]
     },
-    "opengl",
     "tiff",
     "vcglib",
     "zlib"
   ],
   "features": {
-    "python": {
-      "description": "Python bindings for OpenMVS",
+    "viewer": {
+      "description": "Viewer support in OpenMVS",
       "dependencies": [
-        "boost-python"
+        "glad",
+        "glfw3"
       ]
     },
     "cuda": {
@@ -42,8 +40,11 @@
         "cuda"
       ]
     },
-    "openmp": {
-      "description": "OpenMP support for OpenMVS"
+    "python": {
+      "description": "Python bindings for OpenMVS",
+      "dependencies": [
+        "boost-python"
+      ]
     }
   }
 }

@@ -39,9 +39,6 @@
 // TIFF codec
 #cmakedefine _USE_TIFF
 
-// OpenGL support
-#cmakedefine _USE_OPENGL
-
 // OpenCL support
 #cmakedefine _USE_OPENCL
 #cmakedefine _USE_OPENCL_STATIC

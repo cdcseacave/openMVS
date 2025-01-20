@@ -35,17 +35,12 @@
 
 // I N C L U D E S /////////////////////////////////////////////////
 
-#include <GL/glew.h>
 #include "../../libs/MVS/Common.h"
 #include "../../libs/MVS/Scene.h"
 
-#if defined(_MSC_VER)
-#include <gl/GLU.h>
-#elif defined(__APPLE__)
-#include <OpenGL/glu.h>
-#else
-#include <GL/glu.h>
-#endif
+#define GLAD_GL_IMPLEMENTATION
+#include <glad/glad.h>
+#define GLFW_INCLUDE_NONE 
 #include <GLFW/glfw3.h>
 
 

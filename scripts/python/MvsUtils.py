@@ -125,7 +125,7 @@ def saveDMAP(data: dict, dmap_path: str):
     if 'confidence_map' in data:
       data['confidence_map'].astype(np.float32).tofile(dmap)
     if 'views_map' in data:
-      data['views_map'].astype(np.float32).tofile(dmap)
+      data['views_map'].astype(np.uint8).tofile(dmap)
 
 
 def loadMVSInterface(archive_path):

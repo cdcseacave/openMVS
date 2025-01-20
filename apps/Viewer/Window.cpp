@@ -62,9 +62,6 @@ Window::~Window()
 void Window::Release()
 {
 	if (IsValid()) {
-		#ifdef _USE_NUKLEAR
-		nk_glfw3_shutdown();
-		#endif
 		glfwDestroyWindow(window);
 		window = NULL;
 	}
@@ -202,14 +199,6 @@ void Window::UpdateMousePosition(double xpos, double ypos)
 	const int h(camera.size.height);
 	pos.x() = (2.0 * pos.x() - w) / w;
 	pos.y() = (h - 2.0 * pos.y()) / h;
-}
-
-
-void Window::GetFrame(Image8U3& image) const
-{
-	image.create(GetSize());
-	glReadPixels(0, 0, image.width(), image.height(), GL_BGR_EXT, GL_UNSIGNED_BYTE, image.ptr());
-	cv::flip(image, image, 0);
 }
 
 

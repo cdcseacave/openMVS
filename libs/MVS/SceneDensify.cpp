@@ -924,14 +924,10 @@ bool DepthMapsData::FilterDepthMap(DepthData& depthDataRef, const IIndexArr& idx
 
 	// count valid neighbor depth-maps
 	ASSERT(depthDataRef.IsValid() && !depthDataRef.IsEmpty());
-	const IIndex N = idxNeighbors.GetSize();
+	const IIndex N = idxNeighbors.size();
 	ASSERT(OPTDENSE::nMinViewsFilter > 0 && scene.nCalibratedImages > 1);
-	const IIndex nMinViews(MINF(OPTDENSE::nMinViewsFilter,scene.nCalibratedImages-1));
-	const IIndex nMinViewsAdjust(MINF(OPTDENSE::nMinViewsFilterAdjust,scene.nCalibratedImages-1));
-	if (N < nMinViews || N < nMinViewsAdjust) {
-		DEBUG("error: depth map %3u can not be filtered", depthDataRef.GetView().GetID());
-		return false;
-	}
+	const IIndex nMinViews(MINF(OPTDENSE::nMinViewsFilter, N));
+	const IIndex nMinViewsAdjust(MINF(OPTDENSE::nMinViewsFilterAdjust, N));
 
 	// project all neighbor depth-maps to this image
 	const DepthData::ViewData& imageRef = depthDataRef.images.First();

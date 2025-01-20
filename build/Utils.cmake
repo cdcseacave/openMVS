@@ -62,8 +62,6 @@ macro(GetOperatingSystemArchitectureBitness)
 		if(CMAKE_SYSTEM_PROCESSOR MATCHES "powerpc")
 			set(${MY_VAR_PREFIX}_ARCHITECTURE "ppc")
 		endif()
-	#elseif(CMAKE_SYSTEM_NAME STREQUAL "Solaris")
-		#set(${MY_VAR_PREFIX}_BUILD "solaris8") # What about solaris9 and solaris10 ?
 	endif()
 
 	# Detect Microsoft compiler:
@@ -450,7 +448,7 @@ macro(optimize_default_compiler_settings)
 	endif()
 	set(CMAKE_CXX_STANDARD_REQUIRED ON)
 	set(CMAKE_CXX_EXTENSIONS OFF)
-	message("Compiling with C++${CMAKE_CXX_STANDARD}")
+	message(STATUS "Compiling with C++${CMAKE_CXX_STANDARD}")
 
 	if(FLG_COMPILER_IS_GNU)
 	  # High level of warnings.

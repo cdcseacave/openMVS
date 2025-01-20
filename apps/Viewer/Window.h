@@ -139,8 +139,6 @@ public:
 	void UpdateView(const Eigen::Matrix3d& R, const Eigen::Vector3d& t);
 	void UpdateMousePosition(double xpos, double ypos);
 
-	void GetFrame(Image8U3&) const;
-
 	cv::Size GetSize() const;
 	void Resize(const cv::Size&);
 	static void Resize(GLFWwindow* window, int width, int height);
