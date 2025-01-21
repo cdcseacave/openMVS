@@ -1568,6 +1568,69 @@ bool MVS::EstimateNormalMap(const Matrix3x3f& K, const DepthMap& depthMap, Norma
 } // EstimateNormalMap
 /*----------------------------------------------------------------*/
 
+// estimate confidence map from depth-map variation in a window. The estimated confidence is the mean of the depth differences to the 3 closer pixel to the central pixel.
+void MVS::EstimateConfidenceFromDepth(const DepthData& depthData, ConfidenceMap& confMap, const int winHalfSize, const int n) {
+	const DepthMap& depthMap = depthData.depthMap;
+	float dDepth = depthData.dMax - depthData.dMin;
+	confMap.create(depthMap.size());
+	confMap.memset(0);
+	int cmpt = 0;
+	#pragma omp parallel for
+	for(int i = 0; i<depthMap.cols; i++) {
+		for (int j = 0; j<depthMap.rows; j++) {
+			if (depthMap(i,j) <= 0)
+				continue;
+			cList<double> depthDiffValues;
+			for (int k = -winHalfSize; k<=winHalfSize; k++)
+				for (int l = -winHalfSize; l<=winHalfSize; l++) {
+					if (i+k >= 0 && i+k < depthMap.rows && i+l >= 0 && j+l < depthMap.cols && depthMap(i+k,j+l) > 0 && !(k == 0 && l == 0)) {
+						depthDiffValues.push_back(abs(depthMap(i,j) - depthMap(i+k,j+l)));
+					}
+				}
+			depthDiffValues.Sort();
+			float confidence = 0;
+			int s = std::min(n,(int)depthDiffValues.size());
+			for (int k = 0; k < s; k++) {
+				confidence += depthDiffValues[k]/depthDiffValues.GetSize();
+			}
+			confMap(i,j) = std::exp(-2000*confidence/dDepth);
+		}
+	}
+} // EstimateConfidenceFromDepth
+/*----------------------------------------------------------------*/
+
+// estimate confidence map from normal variance in a window
+void MVS::EstimateConfidenceFromNormal(const DepthData& depthData, ConfidenceMap& confMap,const int winHalfSize) {
+	const NormalMap& normalMap = depthData.normalMap;
+	confMap.create(normalMap.size());
+	confMap.memset(0);
+	#pragma omp parallel for
+	for(int i = 0; i < normalMap.rows; i++) {
+		for (int j = 0; j< normalMap.cols; j++) {
+			if (depthData.depthMap(i,j) <= 0)
+				continue;
+			Point3f mean(0,0,0);
+			float theta = 0;
+			int count = 0;
+			for (int k = -winHalfSize; k<=winHalfSize; k++) {
+				for (int l = -winHalfSize; l<=winHalfSize; l++) {
+					if (i+k >= 0 && i+k < normalMap.rows && j+l>=0 && j+l < normalMap.cols && depthData.depthMap(i+k,j+l) > 0) {
+						mean += normalMap(i+k,j+l);
+						count++;
+					}
+				}
+			}
+			mean /= count;
+			for (int k = -winHalfSize; k<=winHalfSize; k++) {
+				for (int l = -winHalfSize; l<=winHalfSize; l++) {
+					if (i+k >= 0 && i+k < normalMap.rows && j+l >= 0 && j+l < normalMap.cols && depthData.depthMap(i+k,j+l) > 0)
+							theta += pow(acos(mean.dot(normalMap(i+k,j+l))),2);
+				}
+			}
+			confMap(i,j) = pow(1 - theta/(count*acos(-1)),2);
+		}
+	}
+}
 
 // save the depth map in our .dmap file format
 bool MVS::SaveDepthMap(const String& fileName, const DepthMap& depthMap)

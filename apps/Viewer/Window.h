@@ -82,6 +82,16 @@ public:
 	bool bRenderTexture;
 	bool bRenderBounds;
 
+	enum COLORSOURCE{
+		COL_NONE = 0,
+		COL_IMAGE,
+		COL_DEPTH,
+		COL_CONFIDENCE,
+		COL_COMPOSITE,
+		COL_NORMAL
+	};
+	COLORSOURCE colorSource;
+
 	enum SELECTION {
 		SEL_NA = 0,
 		SEL_POINT,
@@ -102,7 +112,7 @@ public:
 	ClbkCenterScene clbkCenterScene;
 	typedef DELEGATE<void (const Ray3&, int)> ClbkRayScene;
 	ClbkRayScene clbkRayScene;
-	typedef DELEGATE<void (void)> ClbkCompilePointCloud;
+	typedef DELEGATE<void (COLORSOURCE)> ClbkCompilePointCloud;
 	ClbkCompilePointCloud clbkCompilePointCloud;
 	typedef DELEGATE<void (void)> ClbkCompileMesh;
 	ClbkCompileMesh clbkCompileMesh;

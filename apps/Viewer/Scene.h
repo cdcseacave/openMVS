@@ -90,7 +90,7 @@ public:
 	bool Open(LPCTSTR fileName, LPCTSTR geometryFileName=NULL);
 	bool Save(LPCTSTR fileName=NULL, bool bRescaleImages=false);
 	bool Export(LPCTSTR fileName, LPCTSTR exportType=NULL) const;
-	void CompilePointCloud();
+	void CompilePointCloud(Window::COLORSOURCE colorSource = Window::COLORSOURCE::COL_IMAGE);
 	void CompileMesh();
 	void CompileBounds();
 	void CropToBounds();

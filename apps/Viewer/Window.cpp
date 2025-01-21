@@ -152,8 +152,9 @@ void Window::Reset(SPARSE _sparseType, unsigned _minViews)
 	bRenderBounds = false;
 	selectionType = SEL_NA;
 	selectionIdx = NO_IDX;
+	colorSource = COL_IMAGE;
 	if (clbkCompilePointCloud != NULL)
-		clbkCompilePointCloud();
+		clbkCompilePointCloud(colorSource);
 	if (clbkCompileMesh != NULL)
 		clbkCompileMesh();
 	glfwPostEmptyEvent();
@@ -236,7 +237,7 @@ void Window::Key(int k, int /*scancode*/, int action, int mod)
 				if (minViews > 2) {
 					minViews--;
 					if (clbkCompilePointCloud != NULL)
-						clbkCompilePointCloud();
+						clbkCompilePointCloud(colorSource);
 				}
 			} else {
 				pointSize = MAXF(pointSize-0.5f, 0.5f);
@@ -248,7 +249,7 @@ void Window::Key(int k, int /*scancode*/, int action, int mod)
 			if (mod & GLFW_MOD_SHIFT) {
 				minViews++;
 				if (clbkCompilePointCloud != NULL)
-					clbkCompilePointCloud();
+					clbkCompilePointCloud(colorSource);
 			} else {
 				pointSize += 0.5f;
 			}
@@ -307,7 +308,7 @@ void Window::Key(int k, int /*scancode*/, int action, int mod)
 		case SPR_ALL: sparseType = SPR_POINTS; break;
 		}
 		if (clbkCompilePointCloud != NULL)
-			clbkCompilePointCloud();
+			clbkCompilePointCloud(colorSource);
 		break;
 	case GLFW_KEY_R:
 		if (action == GLFW_RELEASE)
@@ -366,7 +367,50 @@ void Window::Key(int k, int /*scancode*/, int action, int mod)
 				cameraBlend = MINF(cameraBlend+0.1f, 1.f);
 		}
 		break;
+	case GLFW_KEY_F1 :
+		if (action == GLFW_RELEASE) {
+			colorSource = COL_NONE;
+			if (clbkCompilePointCloud != NULL)
+				clbkCompilePointCloud(colorSource);
+		}
+		break;
+	case GLFW_KEY_F2 :
+		if (action == GLFW_RELEASE) {
+			colorSource = COL_IMAGE;
+			if (clbkCompilePointCloud != NULL)
+				clbkCompilePointCloud(colorSource);
+		}
+		break;
+	case GLFW_KEY_F3:
+		if (action == GLFW_RELEASE) {
+			colorSource = COL_CONFIDENCE;
+			if (clbkCompilePointCloud != NULL)
+				clbkCompilePointCloud(colorSource);
+		}
+		break;
+	case GLFW_KEY_F4:
+		if (action == GLFW_RELEASE) {
+			colorSource = COL_DEPTH;
+			if (clbkCompilePointCloud != NULL)
+				clbkCompilePointCloud(colorSource);
+		}
+		break;
+	case GLFW_KEY_F5:
+		if (action == GLFW_RELEASE) {
+			colorSource = COL_COMPOSITE;
+			if (clbkCompilePointCloud != NULL)
+				clbkCompilePointCloud(colorSource);
+		}
+		break;
+	case GLFW_KEY_F6:
+		if (action == GLFW_RELEASE) {
+			colorSource = COL_NORMAL;
+			if (clbkCompilePointCloud != NULL)
+				clbkCompilePointCloud(colorSource);
+		}
+		break;
 	}
+	
 }
 void Window::Key(GLFWwindow* window, int k, int scancode, int action, int mod)
 {
