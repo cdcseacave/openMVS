@@ -367,14 +367,14 @@ void Window::Key(int k, int /*scancode*/, int action, int mod)
 				cameraBlend = MINF(cameraBlend+0.1f, 1.f);
 		}
 		break;
-	case GLFW_KEY_F1 :
+	case GLFW_KEY_F1:
 		if (action == GLFW_RELEASE) {
 			colorSource = COL_NONE;
 			if (clbkCompilePointCloud != NULL)
 				clbkCompilePointCloud(colorSource);
 		}
 		break;
-	case GLFW_KEY_F2 :
+	case GLFW_KEY_F2:
 		if (action == GLFW_RELEASE) {
 			colorSource = COL_IMAGE;
 			if (clbkCompilePointCloud != NULL)

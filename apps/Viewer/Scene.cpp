@@ -419,8 +419,7 @@ bool Scene::Export(LPCTSTR _fileName, LPCTSTR exportType) const
 	return bPoints || bMesh;
 }
 
-void Scene::CompilePointCloud(Window::COLORSOURCE colorSource)
-{
+void Scene::CompilePointCloud(Window::COLORSOURCE colorSource) {
 	if (scene.pointcloud.IsEmpty())
 		return;
 	ReleasePointCloud();
@@ -431,17 +430,13 @@ void Scene::CompilePointCloud(Window::COLORSOURCE colorSource)
 	if ((window.sparseType&Window::SPR_POINTS) != 0) {
 		ASSERT_ARE_SAME_TYPE(float, MVS::PointCloud::Point::Type);
 		glBegin(GL_POINTS);
-		glColor3f(1.f,1.f,1.f);
+		glColor3f(1.f, 1.f, 1.f);
 		MVS::DepthData depthData;
 		MVS::DepthMap& depthMap = depthData.depthMap;
 		MVS::ConfidenceMap confMap;
-		if (colorSource == Window::COLORSOURCE::COL_DEPTH || colorSource == Window::COLORSOURCE::COL_COMPOSITE) {
-			depthData.Load(sceneName, 1);
-			MVS::EstimateConfidenceFromDepth(depthData, confMap, 1, 3);
-		}
-		if (colorSource == Window::COLORSOURCE::COL_NORMAL) {
-			depthData.Load(sceneName, 3);
-			MVS::EstimateConfidenceFromNormal(depthData, confMap, 1);
+		if (colorSource == Window::COLORSOURCE::COL_DEPTH || colorSource == Window::COLORSOURCE::COL_COMPOSITE || colorSource == Window::COLORSOURCE::COL_NORMAL) {
+			depthData.Load(sceneName, colorSource == Window::COLORSOURCE::COL_NORMAL ? 3 : 1);
+			colorSource == Window::COLORSOURCE::COL_NORMAL ? MVS::EstimateConfidenceFromNormal(depthData, confMap, 1) : MVS::EstimateConfidenceFromDepth(depthData, confMap, 1, 3);
 		}
 		int cmpt = 0;
 		FOREACH(i, scene.pointcloud.points) {
@@ -450,28 +445,26 @@ void Scene::CompilePointCloud(Window::COLORSOURCE colorSource)
 				continue;
 			if (!scene.pointcloud.colors.empty() && colorSource == Window::COLORSOURCE::COL_IMAGE) {
 				const MVS::PointCloud::Color& c = scene.pointcloud.colors[i];
-				glColor3ub(c.r,c.g,c.b);
+				glColor3ub(c.r, c.g, c.b);
 			}
 			if (colorSource == Window::COLORSOURCE::COL_DEPTH || colorSource == Window::COLORSOURCE::COL_COMPOSITE || colorSource == Window::COLORSOURCE::COL_NORMAL) {
 				int j = cmpt/depthMap.cols;
 				int k = cmpt%depthMap.cols;
-				while (depthMap(j,k) <= 0) {
+				while (depthMap(j, k) <= 0) {
 					cmpt++;
 					j = cmpt/depthMap.cols;
 					k = cmpt%depthMap.cols;
 				}
-				float conf = confMap(j,k);
-				if (colorSource == Window::COLORSOURCE::COL_COMPOSITE)
-					conf = 0.7*conf + 0.3*scene.pointcloud.pointWeights[i][0];
-				Pixel8U c = Pixel8U::gray2color(conf);
-				glColor3ub(c.r,c.g,c.b);
+				float confidence = colorSource == Window::COLORSOURCE::COL_COMPOSITE ? 0.7*confMap(j, k) + 0.3*scene.pointcloud.pointWeights[i][0] : confMap(j, k);
+				Pixel8U c = Pixel8U::gray2color(confidence);
+				glColor3ub(c.r, c.g, c.b);
 				cmpt++;
 			}
 			if (colorSource == Window::COLORSOURCE::COL_CONFIDENCE) {
-				if (!scene.pointcloud.pointWeights.empty())	{
-					float conf = scene.pointcloud.pointWeights[i][0];
-					Pixel8U c = Pixel8U::gray2color(conf);
-					glColor3ub(c.r,c.g,c.b);
+				if (!scene.pointcloud.pointWeights.empty()) {
+					float confidence = scene.pointcloud.pointWeights[i][0];
+					Pixel8U c = Pixel8U::gray2color(confidence);
+					glColor3ub(c.r, c.g, c.b);
 				}
 			}
 			const MVS::PointCloud::Point& X = scene.pointcloud.points[i];

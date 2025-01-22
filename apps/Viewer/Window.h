@@ -82,7 +82,7 @@ public:
 	bool bRenderTexture;
 	bool bRenderBounds;
 
-	enum COLORSOURCE{
+	enum COLORSOURCE {
 		COL_NONE = 0,
 		COL_IMAGE,
 		COL_DEPTH,
