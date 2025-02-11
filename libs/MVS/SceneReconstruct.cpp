@@ -39,7 +39,7 @@
 #include <CGAL/Spatial_sort_traits_adapter_3.h>
 #include <CGAL/AABB_tree.h>
 #include <CGAL/AABB_traits.h>
-#include <CGAL/AABB_triangle_primitive_3.h>
+#include <CGAL/AABB_triangle_primitive.h>
 #include <CGAL/Polyhedron_3.h>
 
 using namespace MVS;
