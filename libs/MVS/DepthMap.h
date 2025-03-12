@@ -466,8 +466,8 @@ struct MVS_API DepthEstimator {
 		ASSERT(ISEQUAL(norm(normal), 1.f), "Norm = ", norm(normal));
 	}
 
-	static bool ImportIgnoreMask(const Image&, const Image8U::Size&, uint16_t nIgnoreMaskLabel, BitMatrix&, Image8U* =NULL);
-	static void MapMatrix2ZigzagIdx(const Image8U::Size& size, DepthEstimator::MapRefArr& coords, const BitMatrix& mask, int rawStride=16);
+	static bool ImportIgnoreMask(const Image&, const cv::Size&, uint8_t nIgnoreMaskLabel, BitMatrix&, Image8U* =NULL);
+	static void MapMatrix2ZigzagIdx(const cv::Size& size, DepthEstimator::MapRefArr& coords, const BitMatrix& mask, int rawStride=16);
 
 	const float smoothBonusDepth, smoothBonusNormal;
 	const float smoothSigmaDepth, smoothSigmaNormal;
@@ -503,6 +503,8 @@ MATH_API unsigned EstimatePlaneTh(const Point3fArr&, Planef&, double maxThreshol
 MATH_API unsigned EstimatePlaneThLockFirstPoint(const Point3fArr&, Planef&, double maxThreshold, bool arrInliers[]=NULL, size_t maxIters=0);
 
 MVS_API void EstimatePointColors(const ImageArr& images, PointCloud& pointcloud);
+MVS_API void EstimatePointSegmentation(const ImageArr& images, PointCloud& pointcloud, unsigned minViews=2);
+MVS_API unsigned ColorPointSegmentation(PointCloud& pointcloud);
 MVS_API void EstimatePointNormals(const ImageArr& images, PointCloud& pointcloud, int numNeighbors=16/*K-nearest neighbors*/);
 
 MVS_API bool EstimateNormalMap(const Matrix3x3f& K, const DepthMap&, NormalMap&);

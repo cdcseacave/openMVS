@@ -2233,59 +2233,63 @@ void TDVector<TYPE>::getKroneckerProduct(const TDVector<TYPE>& arg, TDVector<TYP
 
 // Color ramp code from "Colour Ramping for Data Visualisation"
 // (see http://paulbourke.net/texture_colour/colourspace)
-template <typename TYPE/*PixelType*/>
-template <typename VT/*ValueType*/>
-TPixel<TYPE> TPixel<TYPE>::colorRamp(VT v, VT vmin, VT vmax)
+template <typename TYPE>
+TPixel<TYPE> TPixel<TYPE>::colorRamp(WT v, WT vmin, WT vmax)
 {
 	if (v < vmin)
 		v = vmin;
 	if (v > vmax)
 		v = vmax;
-	const TYPE dv((TYPE)(vmax - vmin));
-	TPixel<TYPE> c(1,1,1); // white
-	if (v < vmin + (VT)(TYPE(0.25) * dv)) {
-		c.r = TYPE(0);
-		c.g = TYPE(4) * (v - vmin) / dv;
-	} else if (v < vmin + (VT)(TYPE(0.5) * dv)) {
-		c.r = TYPE(0);
-		c.b = TYPE(1) + TYPE(4) * (vmin + TYPE(0.25) * dv - v) / dv;
-	} else if (v < vmin + (VT)(TYPE(0.75) * dv)) {
-		c.r = TYPE(4) * (v - vmin - TYPE(0.5) * dv) / dv;
-		c.b = TYPE(0);
+	const WT dv(vmax - vmin);
+	TPixel<WT> c(TPixel<WT>::WHITE);
+	if (v < vmin + WT(0.25) * dv) {
+		c.r = WT(0);
+		c.g = WT(4) * (v - vmin) / dv;
+	} else if (v < vmin + WT(0.5) * dv) {
+		c.r = WT(0);
+		c.b = WT(1) + WT(4) * (vmin + WT(0.25) * dv - v) / dv;
+	} else if (v < vmin + WT(0.75) * dv) {
+		c.r = WT(4) * (v - vmin - WT(0.5) * dv) / dv;
+		c.b = WT(0);
 	} else {
-		c.g = TYPE(1) + TYPE(4) * (vmin + TYPE(0.75) * dv - v) / dv;
-		c.b = TYPE(0);
+		c.g = WT(1) + WT(4) * (vmin + WT(0.75) * dv - v) / dv;
+		c.b = WT(0);
 	}
-	return c;
+	return c.template cast<TYPE>();
 }
 
-// Gray values are expected in the range [0, 1] and converted to RGB values.
+// Gray values are expected in the range [0, 1] and converted to RGB values
 template <typename TYPE>
-TPixel<TYPE> TPixel<TYPE>::gray2color(ALT gray)
+TPixel<TYPE> TPixel<TYPE>::gray2color(WT gray)
 {
-	ASSERT(ALT(0) <= gray && gray <= ALT(1));
-	// Jet colormap inspired by Matlab.
-	auto const Interpolate = [](ALT val, ALT y0, ALT x0, ALT y1, ALT x1) -> ALT {
+	ASSERT(WT(0) <= gray && gray <= WT(1));
+	// Jet colormap inspired by Matlab
+	const auto Interpolate = [](WT val, WT y0, WT x0, WT y1, WT x1) -> WT {
 		return (val - x0) * (y1 - y0) / (x1 - x0) + y0;
 	};
-	auto const  Base = [&Interpolate](ALT val) -> ALT {
-		if (val <= ALT(0.125)) {
-			return ALT(0);
-		} else if (val <= ALT(0.375)) {
-			return Interpolate(ALT(2) * val - ALT(1), ALT(0), ALT(-0.75), ALT(1), ALT(-0.25));
-		} else if (val <= ALT(0.625)) {
-			return ALT(1);
-		} else if (val <= ALT(0.87)) {
-			return Interpolate(ALT(2) * val - ALT(1), ALT(1), ALT(0.25), ALT(0), ALT(0.75));
-		} else {
-			return ALT(0);
-		}
+	const auto Base = [&Interpolate](WT val) -> WT {
+		if (val <= WT(0.125))
+			return WT(0);
+		if (val <= WT(0.375))
+			return Interpolate(WT(2) * val - WT(1), WT(0), WT(-0.75), WT(1), WT(-0.25));
+		if (val <= WT(0.625))
+			return WT(1);
+		if (val <= WT(0.87))
+			return Interpolate(WT(2) * val - WT(1), WT(1), WT(0.25), WT(0), WT(0.75));
+		return WT(0);
 	};
 	return TPixel<TYPE>().set(
-		Base(gray + ALT(0.25)),
+		Base(gray + WT(0.25)),
 		Base(gray),
-		Base(gray - ALT(0.25))
+		Base(gray - WT(0.25))
 	);
+}
+
+// Generate random color
+template <typename TYPE>
+TPixel<TYPE> TPixel<TYPE>::random()
+{
+	return gray2color(RANDOM<WT>());
 }
 /*----------------------------------------------------------------*/
 

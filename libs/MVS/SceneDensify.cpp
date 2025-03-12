@@ -171,7 +171,7 @@ bool DepthMapsData::SelectViews(DepthData& depthData)
 // otherwise all are initialized;
 // if loadImages, the image data is also setup
 // if loadDepthMaps is 1, the depth-maps are loaded from disk,
-// if 0, the reference depth-map is initialized from sparse point cloud,
+// if 0, the reference depth-map is initialized from sparse point-cloud,
 // and if -1, the depth-maps are not initialized
 // returns false if there are no good neighbors to estimate the depth-map
 bool DepthMapsData::InitViews(DepthData& depthData, IIndex idxNeighbor, IIndex numNeighbors, bool loadImages, int loadDepthMaps)
@@ -330,7 +330,7 @@ bool DepthMapsData::InitViews(DepthData& depthData, IIndex idxNeighbor, IIndex n
 } // InitViews
 /*----------------------------------------------------------------*/
 
-// roughly estimate depth and normal maps by triangulating the sparse point cloud
+// roughly estimate depth and normal maps by triangulating the sparse point-cloud
 // and interpolating normal and depth for all pixels
 bool DepthMapsData::InitDepthMap(DepthData& depthData)
 {
@@ -549,7 +549,7 @@ bool DepthMapsData::EstimateDepthMap(IIndex idxImage, int nGeometricIter)
 		#endif
 		if (prevDepthMapSize != size || OPTDENSE::nIgnoreMaskLabel >= 0) {
 			BitMatrix mask;
-			if (OPTDENSE::nIgnoreMaskLabel >= 0 && DepthEstimator::ImportIgnoreMask(*image.pImageData, depthData.depthMap.size(), (uint16_t)OPTDENSE::nIgnoreMaskLabel, mask))
+			if (OPTDENSE::nIgnoreMaskLabel >= 0 && DepthEstimator::ImportIgnoreMask(*image.pImageData, depthData.depthMap.size(), (uint8_t)OPTDENSE::nIgnoreMaskLabel, mask))
 				depthData.ApplyIgnoreMask(mask);
 			DepthEstimator::MapMatrix2ZigzagIdx(size, coords, mask, MAXF(64,(int)nMaxThreads*8));
 			#if 0 && !defined(_RELEASE)
@@ -1210,7 +1210,7 @@ void DepthMapsData::EstimateNormalMaps()
 } // EstimateNormalMaps
 
 
-// fuse all depth-maps by simply projecting them in a 3D point cloud
+// fuse all depth-maps by simply projecting them in a 3D point-cloud
 // in the world coordinate space
 void DepthMapsData::MergeDepthMaps(PointCloud& pointcloud, bool bEstimateColor, bool bEstimateNormal)
 {
@@ -1342,7 +1342,7 @@ std::tuple<unsigned, unsigned, unsigned> FetchBestNextDMapIndex(const DepthDataA
 	return std::make_tuple(bestImageIdx, bestImageScore, static_cast<unsigned>(cachedImages.size()));
 } // FetchBestNextDMapIndex
 
-// fuse all valid depth-maps in the same 3D point cloud;
+// fuse all valid depth-maps in the same 3D point-cloud;
 // join points very likely to represent the same 3D point and
 // filter out points blocking the view
 void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, bool bEstimateNormal)
@@ -1594,7 +1594,7 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, b
 } // FuseDepthMaps
 
 
-// fuse all valid depth-maps in the same 3D point cloud;
+// fuse all valid depth-maps in the same 3D point-cloud;
 // join points very likely to represent the same 3D point and
 // filter out points blocking the view
 void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, bool _bEstimateNormal)
@@ -2184,7 +2184,7 @@ void* DenseReconstructionEstimateTmp(void* arg) {
 	return NULL;
 }
 
-// initialize the dense reconstruction with the sparse point cloud
+// initialize the dense reconstruction with the sparse point-cloud
 void Scene::DenseReconstructionEstimate(void* pData)
 {
 	DenseDepthMapData& data = *((DenseDepthMapData*)pData);

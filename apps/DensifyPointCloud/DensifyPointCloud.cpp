@@ -67,6 +67,7 @@ int	nTowerMode;
 int nFusionMode;
 unsigned nNormalizeCoordinates;
 float fEstimateScale;
+int nEstimateSegmentation;
 int thFilterPointCloud;
 int nExportNumViews;
 int nArchiveType;
@@ -141,22 +142,23 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 	config.add_options()
 		("input-file,i", boost::program_options::value<std::string>(&OPT::strInputFileName), "input filename containing camera poses and image list")
 		("pointcloud-file,p", boost::program_options::value<std::string>(&OPT::strPointCloudFileName), "sparse point-cloud with views file name to densify (overwrite existing point-cloud)")
+		("mask-path,m", boost::program_options::value<std::string>(&OPT::strMaskPath), "path to folder containing mask images with '.mask.png' extension")
 		("output-file,o", boost::program_options::value<std::string>(&OPT::strOutputFileName), "output filename for storing the dense point-cloud (optional)")
 		("view-neighbors-file", boost::program_options::value<std::string>(&OPT::strViewNeighborsFileName), "input filename containing the list of views and their neighbors (optional)")
 		("output-view-neighbors-file", boost::program_options::value<std::string>(&OPT::strOutputViewNeighborsFileName), "output filename containing the generated list of views and their neighbors")
-		("resolution-level", boost::program_options::value(&nResolutionLevel)->default_value(1), "how many times to scale down the images before point cloud computation")
+		("resolution-level", boost::program_options::value(&nResolutionLevel)->default_value(1), "how many times to scale down the images before point-cloud computation")
 		("max-resolution", boost::program_options::value(&nMaxResolution)->default_value(2560), "do not scale images higher than this resolution")
 		("min-resolution", boost::program_options::value(&nMinResolution)->default_value(640), "do not scale images lower than this resolution")
 		("sub-resolution-levels", boost::program_options::value(&nSubResolutionLevels)->default_value(2), "number of patch-match sub-resolution iterations (0 - disabled)")
 		("number-views", boost::program_options::value(&nNumViews)->default_value(nNumViewsDefault), "number of views used for depth-map estimation (0 - all neighbor views available)")
 		("number-views-fuse", boost::program_options::value(&nMinViewsFuse)->default_value(2), "minimum number of images that agrees with an estimate during fusion in order to consider it inlier (<2 - only merge depth-maps)")
 		("ignore-mask-label", boost::program_options::value(&nIgnoreMaskLabel)->default_value(-1), "label value to ignore in the image mask, stored in the MVS scene or next to each image with '.mask.png' extension (<0 - disabled)")
-		("mask-path", boost::program_options::value<std::string>(&OPT::strMaskPath), "path to folder containing mask images with '.mask.png' extension")
 		("iters", boost::program_options::value(&nEstimationIters)->default_value(numIters), "number of patch-match iterations")
 		("geometric-iters", boost::program_options::value(&nEstimationGeometricIters)->default_value(2), "number of geometric consistent patch-match iterations (0 - disabled)")
 		("estimate-colors", boost::program_options::value(&nEstimateColors)->default_value(2), "estimate the colors for the dense point-cloud (0 - disabled, 1 - final, 2 - estimate)")
 		("estimate-normals", boost::program_options::value(&nEstimateNormals)->default_value(2), "estimate the normals for the dense point-cloud (0 - disabled, 1 - final, 2 - estimate)")
 		("estimate-scale", boost::program_options::value(&OPT::fEstimateScale)->default_value(0.f), "estimate the point-scale for the dense point-cloud (scale multiplier, 0 - disabled)")
+		("estimate-segmentation", boost::program_options::value(&OPT::nEstimateSegmentation)->default_value(0), "estimate segmentation of the dense point-cloud based on the image segmentation masks; num views to agree (0 - disabled, <0 - only segmentation)")
 		("sub-scene-area", boost::program_options::value(&OPT::fMaxSubsceneArea)->default_value(0.f), "split the scene in sub-scenes such that each sub-scene surface does not exceed the given maximum sampling area (0 - disabled)")
 		("sample-mesh", boost::program_options::value(&OPT::fSampleMesh)->default_value(0.f), "uniformly samples points on a mesh (0 - disabled, <0 - number of points, >0 - sample density per square unit)")
 		("fusion-mode", boost::program_options::value(&OPT::nFusionMode)->default_value(0), "depth-maps fusion mode (-2 - fuse disparity-maps, -1 - export disparity-maps only, 0 - depth-maps & fusion, 1 - export depth-maps only)")
@@ -433,7 +435,7 @@ int main(int argc, LPCTSTR* argv)
 		VERBOSE("Scene coordinates normalized");
 	}
 	PointCloud sparsePointCloud;
-	if ((ARCHIVE_TYPE)OPT::nArchiveType != ARCHIVE_MVS || sceneType == Scene::SCENE_INTERFACE) {
+	if (OPT::nEstimateSegmentation >= 0 && ((ARCHIVE_TYPE)OPT::nArchiveType != ARCHIVE_MVS || sceneType == Scene::SCENE_INTERFACE)) {
 		// estimate depth-maps and densify the point-cloud
 		#if TD_VERBOSE != TD_VERBOSE_OFF
 		if (VERBOSITY_LEVEL > 1 && !scene.pointcloud.IsEmpty())
@@ -450,6 +452,13 @@ int main(int argc, LPCTSTR* argv)
 		}
 		VERBOSE("Densifying point-cloud completed: %u points (%s)", scene.pointcloud.GetSize(), TD_TIMER_GET_FMT().c_str());
 	}
+	if (OPT::nEstimateSegmentation != 0 && !scene.pointcloud.IsEmpty() && !scene.images.empty() && !scene.images.front().maskName.empty()) {
+		// segment point-cloud using image segmentation masks
+		for (Image& image: scene.images)
+			if (image.mask.empty() && !image.mask.Load(image.GetMaskFileName()))
+				VERBOSE("error: cannot load mask image %s", image.GetMaskFileName().c_str());
+		EstimatePointSegmentation(scene.images, scene.pointcloud, ABS(OPT::nEstimateSegmentation));
+	}
 
 	// save the final point-cloud
 	const String baseFileName(MAKE_PATH_SAFE(Util::getFileFullName(OPT::strOutputFileName)));
@@ -461,6 +470,16 @@ int main(int argc, LPCTSTR* argv)
 	if ((ARCHIVE_TYPE)OPT::nArchiveType == ARCHIVE_MVS)
 		scene.pointcloud.Swap(sparsePointCloud);
 	scene.Save(baseFileName+_T(".mvs"), (ARCHIVE_TYPE)OPT::nArchiveType);
+	#if TD_VERBOSE != TD_VERBOSE_OFF
+	if ((ARCHIVE_TYPE)OPT::nArchiveType == ARCHIVE_MVS)
+		scene.pointcloud.Swap(sparsePointCloud);
+	if (VERBOSITY_LEVEL > 2 && !scene.pointcloud.labels.empty()) {
+		// save the point-cloud with colored segmentation,
+		// by overwriting the existing colors with random colors, one for each label
+		ColorPointSegmentation(scene.pointcloud);
+		scene.pointcloud.Save(baseFileName+_T("_labels.ply"));
+	}
+	#endif
 	return EXIT_SUCCESS;
 }
 /*----------------------------------------------------------------*/

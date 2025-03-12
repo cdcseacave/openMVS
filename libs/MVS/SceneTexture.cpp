@@ -501,7 +501,7 @@ bool MeshTexture::ListCameraFaces(FaceDataViewArr& facesDatas, float fOutlierThr
 		if (nIgnoreMaskLabel >= 0) {
 			// import mask
 			BitMatrix bmask;
-			DepthEstimator::ImportIgnoreMask(imageData, imageData.GetSize(), (uint16_t)OPTDENSE::nIgnoreMaskLabel, bmask, &rasterer.mask);
+			DepthEstimator::ImportIgnoreMask(imageData, imageData.GetSize(), (uint8_t)OPTDENSE::nIgnoreMaskLabel, bmask, &rasterer.mask);
 		} else if (nIgnoreMaskLabel == -1) {
 			// creating mask to discard invalid regions created during image radial undistortion
 			rasterer.mask = DetectInvalidImageRegions(imageData.image);

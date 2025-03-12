@@ -70,16 +70,21 @@ public:
 	typedef Pixel8U Color;
 	typedef CLISTDEF0IDX(Color,Index) ColorArr;
 
+	typedef uint8_t Label;
+	typedef CLISTDEF0IDX(Label,Index) LabelArr;
+	enum : Label { LABEL_NONE = 0 };
+
 	typedef AABB3f Box;
 
 	typedef TOctree<PointArr,Point::Type,3> Octree;
 
 public:
-	PointArr points;
+	PointArr points; // array of 3D points in world-space
 	PointViewArr pointViews; // array of views for each point (ordered increasing)
-	PointWeightArr pointWeights;
-	NormalArr normals;
-	ColorArr colors;
+	PointWeightArr pointWeights; // array of weights for each point, one per view
+	NormalArr normals; // array of normals for each point
+	ColorArr colors; // array of colors for each point
+	LabelArr labels; // array of segmentation labels for each point
 
 public:
 	PointCloud& Swap(PointCloud&);

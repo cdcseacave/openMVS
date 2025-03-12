@@ -1845,43 +1845,38 @@ typedef CLISTDEF2(DVector) DVectorArr;
 #define _COLORMODE _COLORMODE_BGR
 #endif
 
-template<typename TYPE> class ColorType
-{
-public:
+template<typename TYPE> struct ColorType {
 	typedef TYPE value_type;
 	typedef value_type alt_type;
+	typedef value_type work_type;
 	static const value_type ONE;
 	static const alt_type ALTONE;
 };
-template<> class ColorType<uint8_t>
-{
-public:
+template<> struct ColorType<uint8_t> {
 	typedef uint8_t value_type;
 	typedef float alt_type;
+	typedef float work_type;
 	static const value_type ONE;
 	static const alt_type ALTONE;
 };
-template<> class ColorType<uint32_t>
-{
-public:
+template<> struct ColorType<uint32_t> {
 	typedef uint32_t value_type;
 	typedef float alt_type;
+	typedef float work_type;
 	static const value_type ONE;
 	static const alt_type ALTONE;
 };
-template<> class ColorType<float>
-{
-public:
+template<> struct ColorType<float> {
 	typedef float value_type;
 	typedef uint8_t alt_type;
+	typedef float work_type;
 	static const value_type ONE;
 	static const alt_type ALTONE;
 };
-template<> class ColorType<double>
-{
-public:
+template<> struct ColorType<double> {
 	typedef double value_type;
 	typedef uint8_t alt_type;
+	typedef float work_type;
 	static const value_type ONE;
 	static const alt_type ALTONE;
 };
@@ -1910,6 +1905,7 @@ struct TPixel {
 		TYPE c[3];
 	};
 	typedef typename ColorType<TYPE>::alt_type ALT;
+	typedef typename ColorType<TYPE>::work_type WT;
 	typedef TYPE Type;
 	typedef TPoint3<TYPE> Pnt;
 	static const TPixel BLACK;
@@ -1991,9 +1987,9 @@ struct TPixel {
 	template<typename T> inline TPixel& operator-=(T v) { return (*this = operator-(v)); }
 	inline uint32_t toDWORD() const { return RGBA((uint8_t)r, (uint8_t)g, (uint8_t)b, (uint8_t)0); }
 	// tools
-	template <typename VT>
-	static TPixel colorRamp(VT v, VT vmin, VT vmax);
-	static TPixel gray2color(ALT v);
+	static TPixel colorRamp(WT v, WT vmin, WT vmax);
+	static TPixel gray2color(WT v);
+	static TPixel random();
 	#ifdef _USE_BOOST
 	// serialize
 	template <class Archive>

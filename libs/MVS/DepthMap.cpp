@@ -326,13 +326,13 @@ size_t MVS::DepthData::GetMemorySize() const
 // the mask for each image is stored in the MVS scene or next to each image with '.mask.png' extension;
 // the mask marks as false (or 0) pixels that should be ignored
 //  - pMask: optional output mask; if defined, the mask is returned in this image instead of the BitMatrix
-bool DepthEstimator::ImportIgnoreMask(const Image& image0, const Image8U::Size& size, uint16_t nIgnoreMaskLabel, BitMatrix& bmask, Image8U* pMask)
+bool DepthEstimator::ImportIgnoreMask(const Image& image0, const cv::Size& size, uint8_t nIgnoreMaskLabel, BitMatrix& bmask, Image8U* pMask)
 {
 	ASSERT(image0.IsValid());
-	const String maskFileName(image0.maskName.empty() ? Util::getFileFullName(image0.name)+".mask.png" : image0.maskName);
-	Image16U mask;
-	if (!mask.Load(maskFileName)) {
-		DEBUG("warning: can not load the segmentation mask '%s'", maskFileName.c_str());
+	Image8U& mask = const_cast<Image8U&>(image0.mask);
+	const bool bMaskEmpty = mask.empty();
+	if (bMaskEmpty && !mask.Load(image0.GetMaskFileName())) {
+		DEBUG("warning: can not load the segmentation mask '%s'", image0.GetMaskFileName().c_str());
 		return false;
 	}
 	cv::resize(mask, mask, size, 0, 0, cv::INTER_NEAREST);
@@ -348,6 +348,8 @@ bool DepthEstimator::ImportIgnoreMask(const Image& image0, const Image8U::Size& 
 			}
 		}
 	}
+	if (bMaskEmpty)
+		mask.release();
 	return true;
 } // ImportIgnoreMask
 
@@ -355,13 +357,13 @@ bool DepthEstimator::ImportIgnoreMask(const Image& image0, const Image8U::Size& 
 //                         1 2 3
 //  1 2 4 7 5 3 6 8 9 -->  4 5 6
 //                         7 8 9
-void DepthEstimator::MapMatrix2ZigzagIdx(const Image8U::Size& size, DepthEstimator::MapRefArr& coords, const BitMatrix& mask, int rawStride)
+void DepthEstimator::MapMatrix2ZigzagIdx(const cv::Size& size, DepthEstimator::MapRefArr& coords, const BitMatrix& mask, int rawStride)
 {
 	typedef DepthEstimator::MapRef MapRef;
 	const int w = size.width;
 	const int w1 = size.width-1;
-	coords.Empty();
-	coords.Reserve(size.area());
+	coords.clear();
+	coords.reserve(size.area());
 	for (int dy=0, h=rawStride; dy<size.height; dy+=h) {
 		if (h*2 > size.height - dy)
 			h = size.height - dy;
@@ -370,7 +372,7 @@ void DepthEstimator::MapMatrix2ZigzagIdx(const Image8U::Size& size, DepthEstimat
 		for (int i=0, ei=w*h; i<ei; ++i) {
 			const MapRef pt(x.x, x.y+dy);
 			if (mask.empty() || mask.isSet(pt))
-				coords.Insert(pt);
+				coords.push_back(pt);
 			if (x.x-- == 0 || ++x.y == h) {
 				if (++lastX < w) {
 					x.x = lastX;
@@ -1068,7 +1070,7 @@ std::pair<float,float> TriangulatePointsDelaunay(const DepthData::ViewData& imag
 	return depthBounds;
 }
 
-// roughly estimate depth and normal maps by triangulating the sparse point cloud
+// roughly estimate depth and normal maps by triangulating the sparse point-cloud
 // and interpolating normal and depth for all pixels
 bool MVS::TriangulatePoints2DepthMap(
 	const DepthData::ViewData& image, const PointCloud& pointcloud, const IndexArr& points,
@@ -1384,12 +1386,12 @@ unsigned MVS::EstimatePlaneThLockFirstPoint(const Point3fArr& points, Planef& pl
 /*----------------------------------------------------------------*/
 
 
-// estimate the colors of the given dense point cloud
+// estimate the colors of the given dense point-cloud
 void MVS::EstimatePointColors(const ImageArr& images, PointCloud& pointcloud)
 {
 	TD_TIMER_START();
 
-	pointcloud.colors.Resize(pointcloud.points.GetSize());
+	pointcloud.colors.resize(pointcloud.points.size());
 	FOREACH(i, pointcloud.colors) {
 		PointCloud::Color& color = pointcloud.colors[i];
 		const PointCloud::Point& point = pointcloud.points[i];
@@ -1420,8 +1422,93 @@ void MVS::EstimatePointColors(const ImageArr& images, PointCloud& pointcloud)
 		}
 	}
 
-	DEBUG_ULTIMATE("Estimate dense point cloud colors: %u colors (%s)", pointcloud.colors.GetSize(), TD_TIMER_GET_FMT().c_str());
+	DEBUG_ULTIMATE("Estimate dense point-cloud colors: %u colors (%s)", pointcloud.colors.size(), TD_TIMER_GET_FMT().c_str());
 } // EstimatePointColors
+/*----------------------------------------------------------------*/
+
+// estimate the segmentation labels of the given dense point-cloud using the given image masks
+void MVS::EstimatePointSegmentation(const ImageArr& images, PointCloud& pointcloud, unsigned minViews)
+{
+	TD_TIMER_START();
+
+	ASSERT(minViews > 0 && pointcloud.IsValid());
+	ASSERT(!images.empty() && !images.front().mask.empty());
+
+	// estimate the segmentation labels for each point by projecting it into the point views and
+	// setting the label by voting for the most frequent label in image masks
+	pointcloud.labels.resize(pointcloud.points.size());
+	#ifdef DEPTHMAP_USE_OPENMP
+	#pragma omp parallel for
+	for (int_t _i=0; _i<(int_t)pointcloud.labels.size(); ++_i) {
+		const PointCloud::Index i = (PointCloud::Index)_i;
+	#else
+	FOREACH(i, pointcloud.labels) {
+	#endif
+		PointCloud::Label& label = pointcloud.labels[i];
+		const PointCloud::Point& point = pointcloud.points[i];
+		const PointCloud::ViewArr& views = pointcloud.pointViews[i];
+		// compute vertex label
+		std::unordered_map<PointCloud::Label, unsigned> labelVotes;
+		FOREACHPTR(pView, views) {
+			const Image& imageData = images[*pView];
+			ASSERT(imageData.IsValid());
+			if (imageData.mask.empty())
+				continue;
+			// get image mask label
+			const ImageRef proj(ROUND2INT(imageData.camera.ProjectPointP(point)));
+			if (!imageData.mask.isInside(proj))
+				continue;
+			const PointCloud::Label& maskLabel = imageData.mask(proj);
+			++labelVotes[maskLabel];
+		}
+		if (labelVotes.empty()) {
+			// set a dummy label
+			label = PointCloud::LABEL_NONE;
+			continue;
+		}
+		// get the most frequent label
+		label = labelVotes.begin()->first;
+		for (const auto& vote: labelVotes)
+			if (labelVotes[label] < vote.second)
+				label = vote.first;
+		if (labelVotes[label] < minViews)
+			label = PointCloud::LABEL_NONE;
+	}
+
+	DEBUG_ULTIMATE("Estimate dense point-cloud segmentation labels (%s)", TD_TIMER_GET_FMT().c_str());
+} // EstimatePointSegmentation
+
+// overwrite point-cloud's colors with random colors, one for each segmentation label
+// return the number of unique labels
+unsigned MVS::ColorPointSegmentation(PointCloud& pointcloud)
+{
+	ASSERT(!pointcloud.IsEmpty() && !pointcloud.labels.empty());
+	ASSERT(pointcloud.colors.empty() || pointcloud.colors.size() == pointcloud.points.size());
+
+	// get the unique segmentation labels
+	std::set<PointCloud::Label> labels;
+	for (PointCloud::Label label: pointcloud.labels)
+		labels.insert(label);
+	const unsigned numLabels = (unsigned)labels.size();
+
+	// generate pseudo-random colors for each label:
+	// divide [0,1] into numLabels equal intervals and assign them to each label
+	std::unordered_map<PointCloud::Label, PointCloud::Color> labelColors;
+	const double step = 1.0/MAXF(numLabels-1, 2u);
+	double gray = 0;
+	for (PointCloud::Label label: labels) {
+		labelColors[label] = Pixel8U::gray2color((float)gray);
+		gray += step;
+	}
+	labelColors[PointCloud::LABEL_NONE] = Pixel8U::BLACK;
+
+	// overwrite point-cloud's colors with random colors
+	pointcloud.colors.resize(pointcloud.points.size());
+	FOREACH(i, pointcloud.colors)
+		pointcloud.colors[i] = labelColors[pointcloud.labels[i]];
+
+	return numLabels;
+} // ColorPointSegmentation
 /*----------------------------------------------------------------*/
 
 // estimates the normals through PCA over the K nearest neighbors
@@ -1462,7 +1549,7 @@ void MVS::EstimatePointNormals(const ImageArr& images, PointCloud& pointcloud, i
 	);
 	#endif
 	// store the point normals
-	pointcloud.normals.Resize(pointcloud.points.GetSize());
+	pointcloud.normals.resize(pointcloud.points.size());
 	FOREACH(i, pointcloud.normals) {
 		PointCloud::Normal& normal = pointcloud.normals[i];
 		const PointCloud::Point& point = pointcloud.points[i];
@@ -1470,13 +1557,13 @@ void MVS::EstimatePointNormals(const ImageArr& images, PointCloud& pointcloud, i
 		const vector_t& N = pointvectors[i].second;
 		normal = Normal(N.x(), N.y(), N.z());
 		// correct normal orientation
-		ASSERT(!views.IsEmpty());
-		const Image& imageData = images[views.First()];
+		ASSERT(!views.empty());
+		const Image& imageData = images[views.front()];
 		if (normal.dot(Cast<float>(imageData.camera.C)-point) < 0)
 			normal = -normal;
 	}
 
-	DEBUG_ULTIMATE("Estimate dense point cloud normals: %u normals (%s)", pointcloud.normals.GetSize(), TD_TIMER_GET_FMT().c_str());
+	DEBUG_ULTIMATE("Estimate dense point-cloud normals: %u normals (%s)", pointcloud.normals.size(), TD_TIMER_GET_FMT().c_str());
 } // EstimatePointNormals
 /*----------------------------------------------------------------*/
 
@@ -1813,7 +1900,7 @@ bool MVS::ExportConfidenceMap(const String& fileName, const ConfidenceMap& confM
 } // ExportConfidenceMap
 /*----------------------------------------------------------------*/
 
-// export point cloud
+// export point-cloud
 bool MVS::ExportPointCloud(const String& fileName, const Image& imageData, const DepthMap& depthMap, const NormalMap& normalMap)
 {
 	ASSERT(!depthMap.empty());

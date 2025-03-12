@@ -3932,13 +3932,13 @@ Planef Mesh::EstimateGroundPlane(const ImageArr& images, float sampleMesh, float
 	ASSERT(!IsEmpty());
 	PointCloud pointcloud;
 	if (sampleMesh != 0) {
-		// create the point cloud by sampling the mesh
+		// create the point-cloud by sampling the mesh
 		if (sampleMesh > 0)
 			SamplePoints(sampleMesh, 0, pointcloud);
 		else
 			SamplePoints(ROUND2INT<unsigned>(-sampleMesh), pointcloud);
 	} else {
-		// create the point cloud containing all vertices
+		// create the point-cloud containing all vertices
 		for (const Vertex& X: vertices)
 			pointcloud.points.emplace_back(X);
 	}

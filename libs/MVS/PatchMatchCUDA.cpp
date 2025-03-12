@@ -406,7 +406,7 @@ void PatchMatch::EstimateDepthMap(DepthData& depthData)
 	if (OPTDENSE::nIgnoreMaskLabel >= 0) {
 		const DepthData::ViewData& view = depthData.GetView();
 		BitMatrix mask;
-		if (DepthEstimator::ImportIgnoreMask(*view.pImageData, depthData.depthMap.size(), (uint16_t)OPTDENSE::nIgnoreMaskLabel, mask))
+		if (DepthEstimator::ImportIgnoreMask(*view.pImageData, depthData.depthMap.size(), (uint8_t)OPTDENSE::nIgnoreMaskLabel, mask))
 			depthData.ApplyIgnoreMask(mask);
 	}
 

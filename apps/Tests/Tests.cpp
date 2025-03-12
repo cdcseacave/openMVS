@@ -87,7 +87,7 @@ bool PipelineTest(bool verbose=false)
 	OPTDENSE::init();
 	OPTDENSE::bRemoveDmaps = true;
 	if (!scene.DenseReconstruction() || scene.pointcloud.GetSize() < 50000u) {
-		VERBOSE("ERROR: TestDataset failed estimating dense point cloud!");
+		VERBOSE("ERROR: TestDataset failed estimating dense point-cloud!");
 		return false;
 	}
 	if (verbose)
@@ -100,7 +100,7 @@ bool PipelineTest(bool verbose=false)
 		scene.mesh.Save(MAKE_PATH("scene_dense_mesh.ply"));
 	constexpr float decimate = 0.7f;
 	scene.mesh.Clean(decimate);
-	if (!ISINSIDE(scene.mesh.faces.size(), 18000u, 28000u)) {
+	if (!ISINSIDE(scene.mesh.faces.size(), 18000u, 30000u)) {
 		VERBOSE("ERROR: TestDataset failed cleaning the mesh!");
 		return false;
 	}

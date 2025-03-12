@@ -192,7 +192,7 @@ protected:
 
 // S T R U C T S ///////////////////////////////////////////////////
 
-// construct the mesh out of the dense point cloud using Delaunay tetrahedralization & graph-cut method
+// construct the mesh out of the dense point-cloud using Delaunay tetrahedralization & graph-cut method
 // see "Exploiting Visibility Information in Surface Reconstruction to Preserve Weakly Supported Surfaces", Jancosek and Pajdla, 2015
 namespace DELAUNAY {
 typedef CGAL::Exact_predicates_inexact_constructions_kernel kernel_t;

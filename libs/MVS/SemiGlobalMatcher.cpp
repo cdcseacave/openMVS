@@ -2224,7 +2224,7 @@ bool SemiGlobalMatcher::ExportDisparityMap(const String& fileName, const Dispari
 } // ExportDisparityMap
 
 
-// export point cloud
+// export point-cloud
 bool SemiGlobalMatcher::ExportPointCloud(const String& fileName, const Image& imageData, const DisparityMap& disparityMap, const Matrix4x4& Q, Disparity subpixelSteps)
 {
 	ASSERT(!disparityMap.empty());

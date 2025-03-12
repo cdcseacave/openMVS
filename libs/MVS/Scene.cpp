@@ -1895,7 +1895,7 @@ bool Scene::EstimateROI(int nEstimateROI, float scale)
 
 
 // calculate the center(X,Y) of the cylinder, the radius and min/max Z
-// from camera position and sparse point cloud, if that exists
+// from camera position and sparse point-cloud, if that exists
 // returns result of checks if the scene camera positions satisfies tower criteria:
 //	- cameras fit a long and slim bounding box
 //  - majority of cameras focus toward a middle line
@@ -1933,7 +1933,7 @@ bool Scene::ComputeTowerCylinder(Point2f& centerPoint, float& fRadius, float& fR
 	minCamZ = aabbOutsideCameras.ptMin.z();
 	centerPoint = ((camCenterLine.pt1+camCenterLine.pt2)*0.5f).topLeftCorner<2,1>();
 	zMin = MINF(aabbOutsideCameras.ptMax.z(), aabbOutsideCameras.ptMin.z()) - 5;
-	// if sparse point cloud is loaded use lowest point as zMin
+	// if sparse point-cloud is loaded use lowest point as zMin
 	float fMinPointsZ = std::numeric_limits<float>::max();
 	float fMaxPointsZ = std::numeric_limits<float>::lowest();
 	FOREACH(pIdx, pointcloud.points) {

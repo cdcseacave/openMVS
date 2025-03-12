@@ -545,9 +545,11 @@ void Util::LogBuild()
 	#ifdef _SUPPORT_CPP17
 	LOG((_T("Disk: ") + Util::GetDiskInfo(WORKING_FOLDER_FULL)).c_str());
 	#endif
+	#ifdef _USE_SSE
 	if (!SIMD_ENABLED.isSet(Util::SSE)) LOG(_T("warning: no SSE compatible CPU or OS detected"));
 	else if (!SIMD_ENABLED.isSet(Util::AVX)) LOG(_T("warning: no AVX compatible CPU or OS detected"));
 	else LOG(_T("SSE & AVX compatible CPU & OS detected"));
+	#endif
 }
 
 // print information about the memory usage
