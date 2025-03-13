@@ -101,7 +101,7 @@ def segmentImages(images_path, output_path, onnx_file, labels_file, sigmoid_thre
 	print("Starting segmentation ...")
 	for image in tqdm(all_images):
 		input_image = os.path.join(images_path, image)
-		output_image = os.path.join(output_path, os.path.splitext(image)[0] + 'mask.png')
+		output_image = os.path.join(output_path, os.path.splitext(image)[0] + '.mask.png')
 		
 		if(not os.path.exists(input_image)):
 			print(input_image," doesn't exist")
