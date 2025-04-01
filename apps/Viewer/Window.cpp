@@ -62,9 +62,6 @@ Window::~Window()
 void Window::Release()
 {
 	if (IsValid()) {
-		#ifdef _USE_NUKLEAR
-		nk_glfw3_shutdown();
-		#endif
 		glfwDestroyWindow(window);
 		window = NULL;
 	}
@@ -155,6 +152,8 @@ void Window::Reset(SPARSE _sparseType, unsigned _minViews)
 	bRenderBounds = false;
 	selectionType = SEL_NA;
 	selectionIdx = NO_IDX;
+	colorSource = COL_IMAGE;
+	colorThreshold = 0.5f;
 	if (clbkCompilePointCloud != NULL)
 		clbkCompilePointCloud();
 	if (clbkCompileMesh != NULL)
@@ -202,14 +201,6 @@ void Window::UpdateMousePosition(double xpos, double ypos)
 	const int h(camera.size.height);
 	pos.x() = (2.0 * pos.x() - w) / w;
 	pos.y() = (h - 2.0 * pos.y()) / h;
-}
-
-
-void Window::GetFrame(Image8U3& image) const
-{
-	image.create(GetSize());
-	glReadPixels(0, 0, image.width(), image.height(), GL_BGR_EXT, GL_UNSIGNED_BYTE, image.ptr());
-	cv::flip(image, image, 0);
 }
 
 
@@ -359,25 +350,73 @@ void Window::Key(int k, int /*scancode*/, int action, int mod)
 		break;
 	case GLFW_KEY_KP_SUBTRACT:
 		if (action == GLFW_RELEASE) {
-			if (mod & GLFW_MOD_CONTROL)
+			if (mod & GLFW_MOD_CONTROL) {
 				camera.SetFOV(camera.fov-5.f);
-			else if (mod & GLFW_MOD_SHIFT)
+			} else if (mod & GLFW_MOD_SHIFT) {
 				camera.scaleF *= 0.9f;
-			else
+			} else if (mod & GLFW_MOD_ALT) {
+				if (colorSource != COL_IMAGE && colorThreshold > 0.f) {
+					colorThreshold = MAXF(colorThreshold-0.1f, 0.f);
+					clbkCompilePointCloud();
+				}
+			} else {
 				cameraBlend = MAXF(cameraBlend-0.1f, 0.f);
+			}
 		}
 		break;
 	case GLFW_KEY_KP_ADD:
 		if (action == GLFW_RELEASE) {
-			if (mod & GLFW_MOD_CONTROL)
+			if (mod & GLFW_MOD_CONTROL) {
 				camera.SetFOV(camera.fov+5.f);
-			else if (mod & GLFW_MOD_SHIFT)
+			} else if (mod & GLFW_MOD_SHIFT) {
 				camera.scaleF *= 1.1111f;
-			else
+			} else if (mod & GLFW_MOD_ALT) {
+				if (colorSource != COL_IMAGE) {
+					colorThreshold += 0.1f;
+					clbkCompilePointCloud();
+				}
+			} else {
 				cameraBlend = MINF(cameraBlend+0.1f, 1.f);
+			}
+		}
+		break;
+	case GLFW_KEY_F1:
+		if (action == GLFW_RELEASE) {
+			colorSource = COL_IMAGE;
+			if (clbkCompilePointCloud != NULL)
+				clbkCompilePointCloud();
+		}
+		break;
+	case GLFW_KEY_F2:
+		if (action == GLFW_RELEASE) {
+			colorSource = COL_CONFIDENCE;
+			if (clbkCompilePointCloud != NULL)
+				clbkCompilePointCloud();
+		}
+		break;
+	case GLFW_KEY_F3:
+		if (action == GLFW_RELEASE) {
+			colorSource = COL_DEPTH;
+			if (clbkCompilePointCloud != NULL)
+				clbkCompilePointCloud();
+		}
+		break;
+	case GLFW_KEY_F4:
+		if (action == GLFW_RELEASE) {
+			colorSource = COL_COMPOSITE;
+			if (clbkCompilePointCloud != NULL)
+				clbkCompilePointCloud();
+		}
+		break;
+	case GLFW_KEY_F5:
+		if (action == GLFW_RELEASE) {
+			colorSource = COL_NORMAL;
+			if (clbkCompilePointCloud != NULL)
+				clbkCompilePointCloud();
 		}
 		break;
 	}
+	
 }
 void Window::Key(GLFWwindow* window, int k, int scancode, int action, int mod)
 {

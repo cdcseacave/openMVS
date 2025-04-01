@@ -28,7 +28,7 @@ This script helps to automate the process of calling DensifyPointCloud/Reconstru
 
 usage: MvsScalablePipeline.py openMVS_module input_scene <options>
 
-ex: MvsScalablePipeline.py DensifyPointCloud scene_XXXX.mvs --number-views-fuse 2
+ex: DensifyPointCloud scene_XXXX.mvs --number-views-fuse 2
 """
 
 import os
@@ -110,9 +110,9 @@ def printout(text, colour=WHITE, background=BLACK, effect=NO_EFFECT):
     """
     if HAS_COLOURS:
         seq = "\x1b[%d;%d;%dm" % (effect, 30+colour, 40+background) + text + "\x1b[0m"
-        sys.stdout.write(seq+'\r\n')
+        sys.stdout.write(seq+'\n')
     else:
-        sys.stdout.write(text+'\r\n')
+        sys.stdout.write(text+'\n')
 
 
 # store config and data in
@@ -128,9 +128,9 @@ CONF = ConfContainer()
 # ARGS
 PARSER = argparse.ArgumentParser(
     formatter_class=argparse.RawTextHelpFormatter,
-    description="Scalable MVS reconstruction with these steps: \r\n" +
-    "MvsScalablePipeline.py openMVS_module input_scene <options>\r\n"
-    )
+    description="Scalable MVS reconstruction with these steps:\n" +
+    "MvsScalablePipeline.py openMVS_module input_scene <options>\n"
+)
 PARSER.add_argument('openMVS_module',
                     help="the OpenMVS module to use: DensifyPointCloud, ReconstructMesh, etc.")
 PARSER.add_argument('input_scene',
@@ -173,7 +173,7 @@ for scene_name in glob.glob(os.path.abspath(os.path.join(os.path.dirname(CONF.in
             if pStep.returncode != 0:
                 printout("# Warning: step failed", colour=RED, effect=BOLD)
         except KeyboardInterrupt:
-            sys.exit('\r\nProcess canceled by user, all files remains')
+            sys.exit('\nProcess canceled by user, all files remains')
     else:
         print('\t'.join(cmdline))
 

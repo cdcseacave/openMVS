@@ -1,12 +1,68 @@
+#!/usr/bin/python3
+# -*- encoding: utf-8 -*-
 '''
 OpenMVS python utilities.
 
-Ex: from MvsUtils import loadDMAP, saveDMAP, loadMVSInterface
+Install:
+  pip install numpy
+
+Example usage:
+  from MvsUtils import loadDMAP, saveDMAP, loadMVSInterface
 '''
 
 import numpy as np
 
+
+def scale_K(K, sx, sy):
+  '''
+  Scale the intrinsic camera matrix K.
+  Args:
+    K (numpy.ndarray): The intrinsic camera matrix (3x3).
+    sx (float): Scale factor for x-axis.
+    sy (float): Scale factor for y-axis.
+  Returns:
+    numpy.ndarray: The scaled intrinsic camera matrix (3x3).
+  '''
+  return np.array([
+    [K[0, 0]*sx, K[0, 1]*sx, (K[0, 2]+0.5)*sx-0.5],
+    [0.0,  K[1, 1]*sy, (K[1, 2]+0.5)*sy-0.5],
+    [0.0, 0.0, 1.0]
+  ], dtype=np.float64)
+
+
+def sample_depth_map(depth_map, x):
+  """
+  Sample the depth map at the given coordinates using bilinear interpolation.
+  Args:
+    depth_map (numpy.ndarray): The depth map.
+    x (numpy.ndarray): The real number coordinates to sample from.
+  Returns:
+    float: The sampled depth value;
+      0.0 if the coordinates are out of bounds or if the sampled depth is zero.
+  """
+  x0 = int(x[0])
+  y0 = int(x[1])
+  x1 = x0 + 1
+  y1 = y0 + 1
+  if x0 < 0 or y0 < 0 or x1 >= depth_map.shape[1] or y1 >= depth_map.shape[0]:
+    return 0.0
+  dx = x[0] - x0
+  dy = x[1] - y0
+  depth = (
+    (depth_map[y0, x0] * (1.0 - dx) + depth_map[y0, x1] * dx) * (1.0 - dy) +
+    (depth_map[y1, x0] * (1.0 - dx) + depth_map[y1, x1] * dx) * dy
+  )
+  return depth
+
+
 def loadDMAP(dmap_path: str):
+  """
+  Load and parse a DMAP (Depth Map) file.
+  Args:
+    dmap_path (str): The path to the DMAP file.
+  Returns:
+    A dictionary containing the parsed DMAP data.
+  """
   with open(dmap_path, 'rb') as dmap:
     file_type = dmap.read(2).decode()
     content_type = np.frombuffer(dmap.read(1), dtype=np.uint8)
@@ -35,6 +91,8 @@ def loadDMAP(dmap_path: str):
     K = np.frombuffer(dmap.read(72), dtype=np.float64).reshape(3, 3)
     R = np.frombuffer(dmap.read(72), dtype=np.float64).reshape(3, 3)
     C = np.frombuffer(dmap.read(24), dtype=np.float64)
+
+    depth_K = scale_K(K, depth_width / image_width, depth_height / image_height)
     
     data = {
       'has_normal': has_normal,
@@ -49,6 +107,7 @@ def loadDMAP(dmap_path: str):
       'file_name': file_name,
       'reference_view_id': reference_view_id,
       'neighbor_view_ids': neighbor_view_ids,
+      'depth_K': depth_K,
       'K': K,
       'R': R,
       'C': C
@@ -71,6 +130,12 @@ def loadDMAP(dmap_path: str):
 
 
 def saveDMAP(data: dict, dmap_path: str):
+  """
+  Save a depth map (DMAP) file.
+  Args:
+    data (dict): A dictionary containing the depth map data.
+    dmap_path (str): The path to save the DMAP file.
+  """
   assert 'depth_map' in data, 'depth_map is required'
   assert 'image_width' in data and data['image_width'] > 0, 'image_width is required'
   assert 'image_height' in data and data['image_height'] > 0, 'image_height is required'
@@ -115,9 +180,9 @@ def saveDMAP(data: dict, dmap_path: str):
     dmap.write(np.array([len(view_ids)], dtype=np.uint32))
     dmap.write(np.array(view_ids, dtype=np.uint32))
 
-    data['K'].astype(np.float64).tofile(dmap)
-    data['R'].astype(np.float64).tofile(dmap)
-    data['C'].astype(np.float64).tofile(dmap)
+    np.array(data['K'], dtype=np.float64).tofile(dmap)
+    np.array(data['R'], dtype=np.float64).tofile(dmap)
+    np.array(data['C'], dtype=np.float64).tofile(dmap)
 
     data['depth_map'].astype(np.float32).tofile(dmap)
     if 'normal_map' in data:
@@ -125,14 +190,14 @@ def saveDMAP(data: dict, dmap_path: str):
     if 'confidence_map' in data:
       data['confidence_map'].astype(np.float32).tofile(dmap)
     if 'views_map' in data:
-      data['views_map'].astype(np.float32).tofile(dmap)
+      data['views_map'].astype(np.uint8).tofile(dmap)
 
 
 def loadMVSInterface(archive_path):
   """
   Load and parse an MVS (Multi-View Stereo) interface file.
-  Parameters:
-  archive_path (str): The path to the MVS archive file.
+  Args:
+    archive_path (str): The path to the MVS archive file.
   Returns:
   A dictionary containing the parsed MVS data, including project stream version, platforms, images, vertices, vertices normal, vertices color, lines, lines normal, lines color, transform, and obb (oriented bounding box).
   The dictionary structure includes:
@@ -308,6 +373,7 @@ def loadMVSInterface(archive_path):
   
   return data
 
+
 def saveMVSInterface(data: dict, archive_path: str):
   """
   Save a scene as an MVS (Multi-View Stereo) interface file.
@@ -326,6 +392,9 @@ def saveMVSInterface(data: dict, archive_path: str):
     }
     ... populate scene (at least with platforms/cameras and images) ...
     saveMVSInterface(scene, 'scene.mvs')
+  Args:
+    data (dict): A dictionary containing the MVS data.
+    archive_path (str): The path to save the MVS archive file.
   """
   with open(archive_path, 'wb') as mvs:
     mvs.write('MVSI'.encode())

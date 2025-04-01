@@ -56,7 +56,8 @@ public:
 	ImageArr images; // images, each referencing a platform's camera pose
 	PointCloud pointcloud; // point-cloud (sparse or dense), each containing the point position and the views seeing it
 	Mesh mesh; // mesh, represented as vertices and triangles, constructed from the input point-cloud
-	OBB3f obb; // optional region-of-interest; oriented bounding box containing the entire scene
+	OBB3f obb; // region-of-interest represented as oriented bounding box containing the entire scene (optional)
+	Matrix4x4 transform; // transformation used to convert from absolute to relative coordinate system (optional)
 
 	unsigned nCalibratedImages; // number of valid images
 
@@ -114,6 +115,7 @@ public:
 	bool Center(const Point3* pCenter = NULL);
 	bool Scale(const REAL* pScale = NULL);
 	bool ScaleImages(unsigned nMaxResolution = 0, REAL scale = 0, const String& folderName = String());
+	Matrix4x4 ComputeNormalizationTransform(bool bScale = false) const;
 	void Transform(const Matrix3x3& rotation, const Point3& translation, REAL scale);
 	void Transform(const Matrix3x4& transform);
 	bool AlignTo(const Scene&);
@@ -165,6 +167,7 @@ public:
 		ar & pointcloud;
 		ar & mesh;
 		ar & obb;
+		ar & transform;
 	}
 	#endif
 };

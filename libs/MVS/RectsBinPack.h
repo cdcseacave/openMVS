@@ -32,7 +32,7 @@
 /**
 Initial version created by:
 
-@author Jukka Jylänki
+@author Jukka Jylï¿½nki
 
 @brief Implements different bin packer algorithms that use the MAXRECTS, SKYLINE and GUILLOTINE data structures.
 
@@ -81,7 +81,7 @@ public:
 
 	/// Specifies the different heuristic rules that can be used when deciding where to place a new rectangle.
 	enum FreeRectChoiceHeuristic {
-		RectBestShortSideFit, ///< -BSSF: Positions the rectangle against the short side of a free rectangle into which it fits the best.
+		RectBestShortSideFit = 0, ///< -BSSF: Positions the rectangle against the short side of a free rectangle into which it fits the best.
 		RectBestLongSideFit, ///< -BLSF: Positions the rectangle against the long side of a free rectangle into which it fits the best.
 		RectBestAreaFit, ///< -BAF: Positions the rectangle into the smallest free rect into which it fits.
 		RectBottomLeftRule, ///< -BL: Does the Tetris placement.
@@ -219,9 +219,8 @@ public:
 
 	/// Specifies the different choice heuristics that can be used when deciding which of the free subrectangles
 	/// to place the to-be-packed rectangle into.
-	enum FreeRectChoiceHeuristic
-	{
-		RectBestAreaFit, ///< -BAF
+	enum FreeRectChoiceHeuristic {
+		RectBestAreaFit = 0, ///< -BAF
 		RectBestShortSideFit, ///< -BSSF
 		RectBestLongSideFit, ///< -BLSF
 		RectWorstAreaFit, ///< -WAF
@@ -232,9 +231,8 @@ public:
 
 	/// Specifies the different choice heuristics that can be used when the packer needs to decide whether to
 	/// subdivide the remaining free space in horizontal or vertical direction.
-	enum GuillotineSplitHeuristic
-	{
-		SplitShorterLeftoverAxis, ///< -SLAS
+	enum GuillotineSplitHeuristic {
+		SplitShorterLeftoverAxis = 0, ///< -SLAS
 		SplitLongerLeftoverAxis, ///< -LLAS
 		SplitMinimizeArea, ///< -MINAS, Try to make a single big rectangle at the expense of making the other small.
 		SplitMaximizeArea, ///< -MAXAS, Try to make both remaining rectangles as even-sized as possible.
@@ -343,9 +341,8 @@ public:
 	void Init(int binWidth, int binHeight, bool useWasteMap);
 
 	/// Defines the different heuristic rules that can be used to decide how to make the rectangle placements.
-	enum LevelChoiceHeuristic
-	{
-		LevelBottomLeft,
+	enum LevelChoiceHeuristic {
+		LevelBottomLeft = 0,
 		LevelMinWasteFit,
 		LevelLast
 	};

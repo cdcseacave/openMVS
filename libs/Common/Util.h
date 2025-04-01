@@ -183,10 +183,10 @@ public:
 		std::ostringstream os;
 		os.precision(3);
 		os << sTitle << "\n";
-		const size_t n(Freq.size());
-		for (size_t i = 0; i < n; ++i)
+		os << "<" << Start << "\t|\t" << Underflow << "\n";
+		for (size_t i = 0, n = Freq.size(); i < n; ++i)
 			os << static_cast<float>(End-Start)/n*static_cast<float>(i) << "\t|\t" << Freq[i] << "\n";
-		os << End << "\n";
+		os << ">=" << End << "\t|\t" << Overflow << "\n";
 		return os.str();
 	}
 

@@ -55,6 +55,7 @@ String strMeshFileName;
 String strExportROIFileName;
 String strImportROIFileName;
 String strCropROIFileName;
+String strExportDMAPSPathName;
 String strDenseConfigFileName;
 String strExportDepthMapsName;
 String strMaskPath;
@@ -66,7 +67,9 @@ float fWeightDenseROI;
 bool bCrop2ROI;
 int	nTowerMode;
 int nFusionMode;
+unsigned nNormalizeCoordinates;
 float fEstimateScale;
+int nEstimateSegmentation;
 int thFilterPointCloud;
 int nExportNumViews;
 int nArchiveType;
@@ -141,27 +144,28 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 	config.add_options()
 		("input-file,i", boost::program_options::value<std::string>(&OPT::strInputFileName), "input filename containing camera poses and image list")
 		("pointcloud-file,p", boost::program_options::value<std::string>(&OPT::strPointCloudFileName), "sparse point-cloud with views file name to densify (overwrite existing point-cloud)")
+		("mask-path,m", boost::program_options::value<std::string>(&OPT::strMaskPath), "path to folder containing mask images with '.mask.png' extension")
 		("output-file,o", boost::program_options::value<std::string>(&OPT::strOutputFileName), "output filename for storing the dense point-cloud (optional)")
 		("view-neighbors-file", boost::program_options::value<std::string>(&OPT::strViewNeighborsFileName), "input filename containing the list of views and their neighbors (optional)")
 		("output-view-neighbors-file", boost::program_options::value<std::string>(&OPT::strOutputViewNeighborsFileName), "output filename containing the generated list of views and their neighbors")
-		("resolution-level", boost::program_options::value(&nResolutionLevel)->default_value(1), "how many times to scale down the images before point cloud computation")
+		("resolution-level", boost::program_options::value(&nResolutionLevel)->default_value(1), "how many times to scale down the images before point-cloud computation")
 		("max-resolution", boost::program_options::value(&nMaxResolution)->default_value(2560), "do not scale images higher than this resolution")
 		("min-resolution", boost::program_options::value(&nMinResolution)->default_value(640), "do not scale images lower than this resolution")
 		("sub-resolution-levels", boost::program_options::value(&nSubResolutionLevels)->default_value(2), "number of patch-match sub-resolution iterations (0 - disabled)")
 		("number-views", boost::program_options::value(&nNumViews)->default_value(nNumViewsDefault), "number of views used for depth-map estimation (0 - all neighbor views available)")
 		("number-views-fuse", boost::program_options::value(&nMinViewsFuse)->default_value(2), "minimum number of images that agrees with an estimate during fusion in order to consider it inlier (<2 - only merge depth-maps)")
 		("ignore-mask-label", boost::program_options::value(&nIgnoreMaskLabel)->default_value(-1), "label value to ignore in the image mask, stored in the MVS scene or next to each image with '.mask.png' extension (<0 - disabled)")
-		("mask-path", boost::program_options::value<std::string>(&OPT::strMaskPath), "path to folder containing mask images with '.mask.png' extension")
 		("iters", boost::program_options::value(&nEstimationIters)->default_value(numIters), "number of patch-match iterations")
 		("geometric-iters", boost::program_options::value(&nEstimationGeometricIters)->default_value(2), "number of geometric consistent patch-match iterations (0 - disabled)")
 		("estimate-colors", boost::program_options::value(&nEstimateColors)->default_value(2), "estimate the colors for the dense point-cloud (0 - disabled, 1 - final, 2 - estimate)")
 		("estimate-normals", boost::program_options::value(&nEstimateNormals)->default_value(2), "estimate the normals for the dense point-cloud (0 - disabled, 1 - final, 2 - estimate)")
 		("estimate-scale", boost::program_options::value(&OPT::fEstimateScale)->default_value(0.f), "estimate the point-scale for the dense point-cloud (scale multiplier, 0 - disabled)")
+		("estimate-segmentation", boost::program_options::value(&OPT::nEstimateSegmentation)->default_value(0), "estimate segmentation of the dense point-cloud based on the image segmentation masks; num views to agree (0 - disabled, <0 - only segmentation)")
 		("sub-scene-area", boost::program_options::value(&OPT::fMaxSubsceneArea)->default_value(0.f), "split the scene in sub-scenes such that each sub-scene surface does not exceed the given maximum sampling area (0 - disabled)")
 		("sample-mesh", boost::program_options::value(&OPT::fSampleMesh)->default_value(0.f), "uniformly samples points on a mesh (0 - disabled, <0 - number of points, >0 - sample density per square unit)")
 		("fusion-mode", boost::program_options::value(&OPT::nFusionMode)->default_value(0), "depth-maps fusion mode (-2 - fuse disparity-maps, -1 - export disparity-maps only, 0 - depth-maps & fusion, 1 - export depth-maps only)")
 		("fusion-filter", boost::program_options::value(&nFuseFilter)->default_value(2), "filter used to fuse the depth-maps (0 - merge, 1 - fuse, 2 - dense-fuse)")
-		("postprocess-dmaps", boost::program_options::value(&nOptimize)->default_value(7), "flags used to filter the depth-maps after estimation (0 - disabled, 1 - remove-speckles, 2 - fill-gaps, 4 - adjust-filter)")
+		("postprocess-dmaps", boost::program_options::value(&nOptimize)->default_value(0), "flags used to filter the depth-maps after estimation (0 - disabled, 1 - remove-speckles, 2 - fill-gaps, 4 - adjust-confidence)")
 		("filter-point-cloud", boost::program_options::value(&OPT::thFilterPointCloud)->default_value(0), "filter dense point-cloud based on visibility (0 - disabled)")
 		("export-number-views", boost::program_options::value(&OPT::nExportNumViews)->default_value(0), "export points with >= number of views (0 - disabled, <0 - save MVS project too)")
 		("roi-border", boost::program_options::value(&OPT::fBorderROI)->default_value(0), "add a border to the region-of-interest when cropping the scene (0 - disabled, >0 - percentage, <0 - absolute)")
@@ -170,6 +174,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("crop-to-roi", boost::program_options::value(&OPT::bCrop2ROI)->default_value(true), "crop scene using the region-of-interest")
 		("remove-dmaps", boost::program_options::value(&bRemoveDmaps)->default_value(false), "remove depth-maps after fusion")
 		("tower-mode", boost::program_options::value(&OPT::nTowerMode)->default_value(4), "add a cylinder of points in the center of ROI; scene assume to be Z-up oriented (0 - disabled, 1 - replace, 2 - append, 3 - select neighbors, 4 - select neighbors & append, <0 - force tower mode)")
+		("normalize-coordinates", boost::program_options::value(&OPT::nNormalizeCoordinates)->default_value(0), "normalize scene coordinates and output the inverse transform to file (0 - disabled, 1 - center, 2 - center & scale)")
 		;
 
 	// hidden options, allowed both on command line and
@@ -180,6 +185,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("export-roi-file", boost::program_options::value<std::string>(&OPT::strExportROIFileName), "ROI file name to be exported form the scene")
 		("import-roi-file", boost::program_options::value<std::string>(&OPT::strImportROIFileName), "ROI file name to be imported into the scene")
 		("crop-roi-file", boost::program_options::value<std::string>(&OPT::strCropROIFileName), "ROI file name to crop the scene keeping only the points inside ROI and the cameras seeing them")
+		("export-dmaps", boost::program_options::value<std::string>(&OPT::strExportDMAPSPathName), "path name where DMAPs depth-maps will be exported as PNG depth-maps (empty - disabled)")
 		("dense-config-file", boost::program_options::value<std::string>(&OPT::strDenseConfigFileName), "optional configuration file for the densifier (overwritten by the command line options)")
 		("export-depth-maps-name", boost::program_options::value<std::string>(&OPT::strExportDepthMapsName), "render given mesh and save the depth-map for every image to this file name base (empty - disabled)")
 		;
@@ -308,6 +314,34 @@ int main(int argc, LPCTSTR* argv)
 	const Scene::SCENE_TYPE sceneType(scene.Load(MAKE_PATH_SAFE(OPT::strInputFileName)));
 	if (sceneType == Scene::SCENE_NA)
 		return EXIT_FAILURE;
+	if (!OPT::strExportDMAPSPathName.empty() && scene.IsValid()) {
+		// export depth-maps as PNG images
+		Util::ensureValidFolderPath(OPT::strExportDMAPSPathName);
+		Util::ensureFolder(OPT::strExportDMAPSPathName);
+		for (const Image& image: scene.images) {
+			// load known depth-map
+			String imageFileName;
+			IIndexArr IDs;
+			cv::Size imageSize;
+			Camera camera;
+			Depth dMin, dMax;
+			DepthMap depthMap;
+			NormalMap normalMap;
+			ConfidenceMap confMap;
+			ViewsMap viewsMap;
+			if (!ImportDepthDataRaw(ComposeDepthFilePath(image.ID, "dmap"),
+				imageFileName, IDs, imageSize, camera.K, camera.R, camera.C,
+				dMin, dMax, depthMap, normalMap, confMap, viewsMap, 1))
+				return EXIT_FAILURE;
+			// save depth-map as PNG
+			Image16U depthMap16U;
+			depthMap.convertTo(depthMap16U, CV_16U, 1000.f);
+			const String depthMapFileName(OPT::strExportDMAPSPathName + Util::getFileName(image.name)+_T(".png"));
+			if (!depthMap16U.Save(depthMapFileName))
+				return EXIT_FAILURE;
+		}
+		return EXIT_SUCCESS;
+	}
 	if (!OPT::strPointCloudFileName.empty() && !scene.pointcloud.Load(MAKE_PATH_SAFE(OPT::strPointCloudFileName))) {
 		VERBOSE("error: cannot load point-cloud file");
 		return EXIT_FAILURE;
@@ -347,8 +381,10 @@ int main(int argc, LPCTSTR* argv)
 			VERBOSE("error: cannot load ROI file");
 			return EXIT_FAILURE;
 		}
-		scene.Save(MAKE_PATH_SAFE(Util::getFileFullName(OPT::strOutputFileName))+_T(".mvs"), (ARCHIVE_TYPE)OPT::nArchiveType);
-		return EXIT_SUCCESS;
+		if (!OPT::bCrop2ROI) {
+			scene.Save(MAKE_PATH_SAFE(Util::getFileFullName(OPT::strOutputFileName))+_T(".mvs"), (ARCHIVE_TYPE)OPT::nArchiveType);
+			return EXIT_SUCCESS;
+		}
 	}
 	if (!scene.IsBounded() && OPT::fWeightROI > 0)
 		scene.EstimateROI(OPT::fWeightROI);
@@ -424,8 +460,15 @@ int main(int argc, LPCTSTR* argv)
 		scene.pointcloud.SaveWithScale(baseFileName+_T("_scale.ply"), scene.images, OPT::fEstimateScale);
 		return EXIT_SUCCESS;
 	}
+	if (OPT::nNormalizeCoordinates > 0) {
+		// normalize scene coordinates
+		const Matrix4x4 normalizeTransform = scene.ComputeNormalizationTransform(OPT::nNormalizeCoordinates == 2).inv();
+		scene.Transform(*reinterpret_cast<const Matrix3x4*>(normalizeTransform.val));
+		VERBOSE("Scene coordinates normalized");
+	}
 	PointCloud sparsePointCloud;
-	if ((ARCHIVE_TYPE)OPT::nArchiveType != ARCHIVE_MVS || sceneType == Scene::SCENE_INTERFACE) {
+	if (OPT::nEstimateSegmentation >= 0 && ((ARCHIVE_TYPE)OPT::nArchiveType != ARCHIVE_MVS || sceneType == Scene::SCENE_INTERFACE)) {
+		// estimate depth-maps and densify the point-cloud
 		#if TD_VERBOSE != TD_VERBOSE_OFF
 		if (VERBOSITY_LEVEL > 1 && !scene.pointcloud.IsEmpty())
 			scene.pointcloud.PrintStatistics(scene.images.data(), &scene.obb);
@@ -441,6 +484,13 @@ int main(int argc, LPCTSTR* argv)
 		}
 		VERBOSE("Densifying point-cloud completed: %u points (%s)", scene.pointcloud.GetSize(), TD_TIMER_GET_FMT().c_str());
 	}
+	if (OPT::nEstimateSegmentation != 0 && !scene.pointcloud.IsEmpty() && !scene.images.empty() && !scene.images.front().maskName.empty()) {
+		// segment point-cloud using image segmentation masks
+		for (Image& image: scene.images)
+			if (image.mask.empty() && !image.mask.Load(image.GetMaskFileName()))
+				VERBOSE("error: cannot load mask image %s", image.GetMaskFileName().c_str());
+		EstimatePointSegmentation(scene.images, scene.pointcloud, ABS(OPT::nEstimateSegmentation));
+	}
 
 	// save the final point-cloud
 	const String baseFileName(MAKE_PATH_SAFE(Util::getFileFullName(OPT::strOutputFileName)));
@@ -452,6 +502,16 @@ int main(int argc, LPCTSTR* argv)
 	if ((ARCHIVE_TYPE)OPT::nArchiveType == ARCHIVE_MVS)
 		scene.pointcloud.Swap(sparsePointCloud);
 	scene.Save(baseFileName+_T(".mvs"), (ARCHIVE_TYPE)OPT::nArchiveType);
+	#if TD_VERBOSE != TD_VERBOSE_OFF
+	if ((ARCHIVE_TYPE)OPT::nArchiveType == ARCHIVE_MVS)
+		scene.pointcloud.Swap(sparsePointCloud);
+	if (VERBOSITY_LEVEL > 2 && !scene.pointcloud.labels.empty()) {
+		// save the point-cloud with colored segmentation,
+		// by overwriting the existing colors with random colors, one for each label
+		ColorPointSegmentation(scene.pointcloud);
+		scene.pointcloud.Save(baseFileName+_T("_labels.ply"));
+	}
+	#endif
 	return EXIT_SUCCESS;
 }
 /*----------------------------------------------------------------*/

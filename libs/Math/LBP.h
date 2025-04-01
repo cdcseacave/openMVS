@@ -44,8 +44,6 @@ public:
 
 	typedef EnergyType (STCALL *FncSmoothCost)(NodeID, NodeID, LabelID, LabelID);
 
-	enum { MaxEnergy = 1000 };
-
 protected:
 	struct DirectedEdge {
 		NodeID nodeID1;
@@ -61,7 +59,6 @@ protected:
 		std::vector<LabelID> labels;
 		std::vector<EnergyType> dataCosts;
 		std::vector<EdgeID> incomingEdges;
-		inline Node() : label(0), dataCost(MaxEnergy) {}
 	};
 
 	std::vector<DirectedEdge> edges;
@@ -145,10 +142,10 @@ public:
 					for (size_t k = 0; k < labels1.size(); ++k) {
 						const LabelID label1(labels1[k]);
 						EnergyType energy(nodes[edge.nodeID1].dataCosts[k] + fncSmoothCost(edge.nodeID1, edge.nodeID2, label1, label2));
-						const std::vector<EdgeID>& incoming_edges1 = nodes[edge.nodeID1].incomingEdges;
-						for (size_t n = 0; n < incoming_edges1.size(); ++n) {
-							const DirectedEdge& pre_edge = edges[incoming_edges1[n]];
-							if (pre_edge.nodeID1 == edge.nodeID2) continue;
+						for (EdgeID idxIncomingEdge: nodes[edge.nodeID1].incomingEdges) {
+							const DirectedEdge& pre_edge = edges[idxIncomingEdge];
+							if (pre_edge.nodeID1 == edge.nodeID2)
+								continue;
 							energy += pre_edge.oldMsgs[k];
 						}
 						if (minEnergy > energy)
@@ -179,9 +176,9 @@ public:
 			EnergyType minEnergy(std::numeric_limits<EnergyType>::max());
 			for (size_t j = 0; j < node.labels.size(); ++j) {
 				EnergyType energy(node.dataCosts[j]);
-				for (EdgeID incoming_edge_idx : node.incomingEdges)
-					energy += edges[incoming_edge_idx].oldMsgs[j];
-				if (energy < minEnergy) {
+				for (EdgeID idxIncomingEdge: node.incomingEdges)
+					energy += edges[idxIncomingEdge].oldMsgs[j];
+				if (minEnergy > energy) {
 					minEnergy = energy;
 					node.label = node.labels[j];
 					node.dataCost = node.dataCosts[j];

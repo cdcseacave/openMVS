@@ -88,11 +88,8 @@ public:
 		return ReconstructMesh(distInsert, bUseFreeSpaceSupport, bUseOnlyROI);
 	}
 	void pyCleanMesh(float fDecimate=1.f, float fRemoveSpurious=20.f, bool bRemoveSpikes=true, unsigned nCloseHoles=30, unsigned nSmoothMesh=2, float fEdgeLength=0.f, bool bCrop2ROI=false) {
-		if (bCrop2ROI && IsBounded()) {
-			const size_t numVertices = mesh.vertices.size();
-			const size_t numFaces = mesh.faces.size();
+		if (bCrop2ROI && IsBounded())
 			mesh.RemoveFacesOutside(obb);
-		}
 		mesh.Clean(fDecimate, fRemoveSpurious, bRemoveSpikes, nCloseHoles, nSmoothMesh, fEdgeLength, false);
 		mesh.Clean(1.f, 0.f, bRemoveSpikes, nCloseHoles, 0u, 0.f, false); // extra cleaning trying to close more holes
 		mesh.Clean(1.f, 0.f, false, 0u, 0u, 0.f, true); // extra cleaning to remove non-manifold problems created by closing holes

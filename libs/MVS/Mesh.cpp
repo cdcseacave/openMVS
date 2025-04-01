@@ -1214,7 +1214,8 @@ bool Mesh::Load(const String& fileName)
 		ret = LoadPLY(fileName);
 	if (!ret)
 		return false;
-	DEBUG_EXTRA("Mesh loaded: %u vertices, %u faces (%s)", vertices.size(), faces.size(), TD_TIMER_GET_FMT().c_str());
+	DEBUG_EXTRA("Mesh '%s' loaded: %u vertices, %u faces (%s)",
+		Util::getFileNameExt(fileName).c_str(), vertices.size(), faces.size(), TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 // import the mesh as a PLY file
@@ -1471,7 +1472,8 @@ bool Mesh::Save(const String& fileName, const cList<String>& comments, bool bBin
 		ret = SavePLY(ext != _T(".ply") ? String(fileName+_T(".ply")) : fileName, comments, bBinary);
 	if (!ret)
 		return false;
-	DEBUG_EXTRA("Mesh saved: %u vertices, %u faces (%s)", vertices.size(), faces.size(), TD_TIMER_GET_FMT().c_str());
+	DEBUG_EXTRA("Mesh '%s' saved: %u vertices, %u faces (%s)",
+		Util::getFileNameExt(fileName).c_str(), vertices.size(), faces.size(), TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 // export the mesh as a PLY file
@@ -3930,13 +3932,13 @@ Planef Mesh::EstimateGroundPlane(const ImageArr& images, float sampleMesh, float
 	ASSERT(!IsEmpty());
 	PointCloud pointcloud;
 	if (sampleMesh != 0) {
-		// create the point cloud by sampling the mesh
+		// create the point-cloud by sampling the mesh
 		if (sampleMesh > 0)
 			SamplePoints(sampleMesh, 0, pointcloud);
 		else
 			SamplePoints(ROUND2INT<unsigned>(-sampleMesh), pointcloud);
 	} else {
-		// create the point cloud containing all vertices
+		// create the point-cloud containing all vertices
 		for (const Vertex& X: vertices)
 			pointcloud.points.emplace_back(X);
 	}

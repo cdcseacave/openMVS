@@ -82,6 +82,16 @@ public:
 	bool bRenderTexture;
 	bool bRenderBounds;
 
+	enum COLORSOURCE {
+		COL_IMAGE = 0,
+		COL_DEPTH,
+		COL_CONFIDENCE,
+		COL_COMPOSITE,
+		COL_NORMAL
+	};
+	COLORSOURCE colorSource;
+	float colorThreshold;
+
 	enum SELECTION {
 		SEL_NA = 0,
 		SEL_POINT,
@@ -138,8 +148,6 @@ public:
 	void UpdateView(const ImageArr&, const MVS::ImageArr&);
 	void UpdateView(const Eigen::Matrix3d& R, const Eigen::Vector3d& t);
 	void UpdateMousePosition(double xpos, double ypos);
-
-	void GetFrame(Image8U3&) const;
 
 	cv::Size GetSize() const;
 	void Resize(const cv::Size&);

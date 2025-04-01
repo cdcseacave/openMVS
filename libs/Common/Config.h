@@ -147,6 +147,9 @@
 #if __cplusplus >= 202002L || __clang_major__ >= 10
 #define _SUPPORT_CPP20
 #endif
+#if __cplusplus >= 202302L || __clang_major__ >= 16
+#define _SUPPORT_CPP23
+#endif
 
 
 #if defined(__powerpc__)

@@ -171,7 +171,7 @@ bool DepthMapsData::SelectViews(DepthData& depthData)
 // otherwise all are initialized;
 // if loadImages, the image data is also setup
 // if loadDepthMaps is 1, the depth-maps are loaded from disk,
-// if 0, the reference depth-map is initialized from sparse point cloud,
+// if 0, the reference depth-map is initialized from sparse point-cloud,
 // and if -1, the depth-maps are not initialized
 // returns false if there are no good neighbors to estimate the depth-map
 bool DepthMapsData::InitViews(DepthData& depthData, IIndex idxNeighbor, IIndex numNeighbors, bool loadImages, int loadDepthMaps)
@@ -330,7 +330,7 @@ bool DepthMapsData::InitViews(DepthData& depthData, IIndex idxNeighbor, IIndex n
 } // InitViews
 /*----------------------------------------------------------------*/
 
-// roughly estimate depth and normal maps by triangulating the sparse point cloud
+// roughly estimate depth and normal maps by triangulating the sparse point-cloud
 // and interpolating normal and depth for all pixels
 bool DepthMapsData::InitDepthMap(DepthData& depthData)
 {
@@ -551,7 +551,7 @@ bool DepthMapsData::EstimateDepthMap(IIndex idxImage, int nGeometricIter)
 		#endif
 		if (prevDepthMapSize != size || OPTDENSE::nIgnoreMaskLabel >= 0) {
 			BitMatrix mask;
-			if (OPTDENSE::nIgnoreMaskLabel >= 0 && DepthEstimator::ImportIgnoreMask(*image.pImageData, depthData.depthMap.size(), (uint16_t)OPTDENSE::nIgnoreMaskLabel, mask))
+			if (OPTDENSE::nIgnoreMaskLabel >= 0 && DepthEstimator::ImportIgnoreMask(*image.pImageData, depthData.depthMap.size(), (uint8_t)OPTDENSE::nIgnoreMaskLabel, mask))
 				depthData.ApplyIgnoreMask(mask);
 			DepthEstimator::MapMatrix2ZigzagIdx(size, coords, mask, MAXF(64,(int)nMaxThreads*8));
 			#if 0 && !defined(_RELEASE)
@@ -919,24 +919,98 @@ bool DepthMapsData::GapInterpolation(DepthData& depthData)
 /*----------------------------------------------------------------*/
 
 
-// filter depth-map, one pixel at a time, using confidence based fusion or neighbor pixels
-bool DepthMapsData::FilterDepthMap(DepthData& depthDataRef, const IIndexArr& idxNeighbors, bool bAdjust)
+// adjust confidence-map based on the depth-map and the confidence-maps of the neighbor depth-maps
+bool DepthMapsData::AdjustConfidenceFast(DepthData& depthDataRef, const IIndexArr& idxNeighbors)
+{
+	TD_TIMER_STARTD();
+
+	// set confidence as the similarity of the depth values in the neighbor depth-maps
+	// to the depth value from the reference depth-map
+	ASSERT(depthDataRef.IsValid() && !depthDataRef.IsEmpty() && !idxNeighbors.empty());
+	ASSERT(depthDataRef.confMap.size() == depthDataRef.depthMap.size());
+	constexpr Depth thDepthSimilarity(0.01f);
+	constexpr Depth sigmaDepthDiff(1.f / (-2.f * SQUARE(thDepthSimilarity)));
+	const DepthData::ViewData& imageRef = depthDataRef.GetView();
+	ConfidenceMap newConfMap(depthDataRef.depthMap.size());
+	#if TD_VERBOSE != TD_VERBOSE_OFF
+	unsigned nProcessed(0), nDiscarded(0);
+	#endif
+	for (int r=0; r<depthDataRef.depthMap.rows; ++r) {
+		for (int c=0; c<depthDataRef.depthMap.cols; ++c) {
+			const Depth& depthRef = depthDataRef.depthMap(r,c);
+			if (depthRef <= 0) {
+				newConfMap(r,c) = 0;
+				continue;
+			}
+			const Point3 X(imageRef.camera.TransformPointI2W(Point3(c,r,depthRef)));
+			const float confPhotoRef(depthDataRef.confMap(r,c));
+			// check if the point's depth is similar to the depth in the neighbor depth-maps
+			// and keep the smallest difference
+			Depth minDiff(1.f);
+			float bestConf(0), negBestConf1(0), negBestConf2(0);
+			for (IIndex idxN: idxNeighbors) {
+				const DepthData& depthData = arrDepthData[idxN];
+				const DepthData::ViewData& image = depthData.GetView();
+				const Point3 camX(image.camera.TransformPointW2C(X));
+				if (camX.z <= 0)
+					continue;
+				const ImageRef x(ROUND2INT(image.camera.TransformPointC2I(camX)));
+				if (!depthData.depthMap.isInside(x))
+					continue;
+				const Depth depth(depthData.depthMap(x));
+				if (depth <= 0)
+					continue;
+				const Depth diff(DepthSimilarity((Depth)camX.z, depth));
+				const float conf(depthData.confMap(x));
+				if (diff > thDepthSimilarity) {
+					if (negBestConf1 < conf) {
+						negBestConf2 = negBestConf1;
+						negBestConf1 = conf;
+					} else if (negBestConf2 < conf)
+						negBestConf2 = conf;
+				}
+				if (minDiff > diff || (minDiff == diff && bestConf < conf)) {
+					minDiff = diff;
+					bestConf = conf;
+				}
+			}
+			// set confidence based on the depth difference;
+			// if confidence-map is available, the final confidence is a combination of the photometric and similarity confidence
+			const float confPhoto = MINF(confPhotoRef, bestConf);
+			const float confSimilarity = EXP(SQUARE(minDiff) * sigmaDepthDiff);
+			const float negBestConfs(negBestConf1 + negBestConf2);
+			const bool bKeep(confPhoto > negBestConfs);
+			newConfMap(r,c) = bKeep ? 0.3f*confPhoto + 0.7f*confSimilarity : (negBestConfs > 0.f ? 0.1f*confPhoto/negBestConfs : 0.f);
+			#if TD_VERBOSE != TD_VERBOSE_OFF
+			if (confSimilarity <= 0.5f)
+				++nDiscarded;
+			++nProcessed;
+			#endif
+		}
+	}
+	if (!SaveConfidenceMap(ComposeDepthFilePath(imageRef.GetID(), "adjusted.fast.cmap"), newConfMap))
+		return false;
+
+	DEBUG("Confidence-map %3u fast-adjusted using %u other images: %u/%u depths discarded (%s)",
+		imageRef.GetID(), idxNeighbors.size(), nDiscarded, nProcessed, TD_TIMER_GET_FMT().c_str());
+	return true;
+} // AdjustConfidenceFast
+/*----------------------------------------------------------------*/
+
+// filter confidence-map, one pixel at a time, using confidence based fusion of neighbor pixels
+bool DepthMapsData::AdjustConfidence(DepthData& depthDataRef, const IIndexArr& idxNeighbors)
 {
 	TD_TIMER_STARTD();
 
 	// count valid neighbor depth-maps
 	ASSERT(depthDataRef.IsValid() && !depthDataRef.IsEmpty());
-	const IIndex N = idxNeighbors.GetSize();
+	const IIndex N = idxNeighbors.size();
 	ASSERT(OPTDENSE::nMinViewsFilter > 0 && scene.nCalibratedImages > 1);
-	const IIndex nMinViews(MINF(OPTDENSE::nMinViewsFilter,scene.nCalibratedImages-1));
-	const IIndex nMinViewsAdjust(MINF(OPTDENSE::nMinViewsFilterAdjust,scene.nCalibratedImages-1));
-	if (N < nMinViews || N < nMinViewsAdjust) {
-		DEBUG("error: depth map %3u can not be filtered", depthDataRef.GetView().GetID());
-		return false;
-	}
+	const IIndex nMinViews(MINF(OPTDENSE::nMinViewsFilter, N));
+	const IIndex nMinViewsAdjust(MINF(OPTDENSE::nMinViewsFilterAdjust, N));
 
 	// project all neighbor depth-maps to this image
-	const DepthData::ViewData& imageRef = depthDataRef.images.First();
+	const DepthData::ViewData& imageRef = depthDataRef.GetView();
 	const Image8U::Size sizeRef(depthDataRef.depthMap.size());
 	const Camera& cameraRef = imageRef.camera;
 	DepthMapArr depthMaps(N);
@@ -946,16 +1020,13 @@ bool DepthMapsData::FilterDepthMap(DepthData& depthDataRef, const IIndexArr& idx
 		depthMap.create(sizeRef);
 		depthMap.memset(0);
 		ConfidenceMap& confMap = confMaps[n];
-		if (bAdjust) {
-			confMap.create(sizeRef);
-			confMap.memset(0);
-		}
-		const IIndex idxView = depthDataRef.neighbors[idxNeighbors[(IIndex)n]].ID;
+		confMap.create(sizeRef);
+		confMap.memset(0);
+		const IIndex idxView = idxNeighbors[n];
 		const DepthData& depthData = arrDepthData[idxView];
-		const Camera& camera = depthData.images.First().camera;
-		const Image8U::Size size(depthData.depthMap.size());
-		for (int i=0; i<size.height; ++i) {
-			for (int j=0; j<size.width; ++j) {
+		const Camera& camera = depthData.GetView().camera;
+		for (int i=0; i<depthData.depthMap.rows; ++i) {
+			for (int j=0; j<depthData.depthMap.cols; ++j) {
 				const ImageRef x(j,i);
 				const Depth depth(depthData.depthMap(x));
 				if (depth == 0)
@@ -974,8 +1045,7 @@ bool DepthMapsData::FilterDepthMap(DepthData& depthDataRef, const IIndexArr& idx
 				if (depthRef != 0 && depthRef < camX.z)
 					continue;
 				depthRef = camX.z;
-				if (bAdjust)
-					confMap(xRef) = depthData.confMap(x);
+				confMap(xRef) = depthData.confMap(x);
 				#else
 				// set depth on the 4 pixels around the image projection
 				const Point2 imgX(cameraRef.TransformPointC2I(camX));
@@ -993,8 +1063,7 @@ bool DepthMapsData::FilterDepthMap(DepthData& depthDataRef, const IIndexArr& idx
 					if (depthRef != 0 && depthRef < (Depth)camX.z)
 						continue;
 					depthRef = (Depth)camX.z;
-					if (bAdjust)
-						confMap(xRef) = depthData.confMap(x);
+					confMap(xRef) = depthData.confMap(x);
 				}
 				#endif
 			}
@@ -1011,165 +1080,82 @@ bool DepthMapsData::FilterDepthMap(DepthData& depthDataRef, const IIndexArr& idx
 	#if TD_VERBOSE != TD_VERBOSE_OFF
 	size_t nProcessed(0), nDiscarded(0);
 	#endif
-	if (bAdjust) {
-		// average similar depths, and decrease confidence if depths do not agree
-		// (inspired by: "Real-Time Visibility-Based Fusion of Depth Maps", Merrell, 2007)
-		for (int i=0; i<sizeRef.height; ++i) {
-			for (int j=0; j<sizeRef.width; ++j) {
-				const ImageRef xRef(j,i);
-				const Depth depth(depthDataRef.depthMap(xRef));
-				if (depth == 0) {
-					newDepthMap(xRef) = 0;
-					newConfMap(xRef) = 0;
-					continue;
-				}
-				ASSERT(depth > 0);
-				#if TD_VERBOSE != TD_VERBOSE_OFF
-				++nProcessed;
-				#endif
-				// update best depth and confidence estimate with all estimates
-				float posConf(depthDataRef.confMap(xRef)), negConf(0);
-				Depth avgDepth(depth*posConf);
-				unsigned nPosViews(0), nNegViews(0);
-				unsigned n(N);
-				do {
-					const Depth d(depthMaps[--n](xRef));
-					if (d == 0) {
-						if (nPosViews + nNegViews + n < nMinViews)
-							goto DiscardDepth;
-						continue;
-					}
-					ASSERT(d > 0);
-					if (IsDepthSimilar(depth, d, thDepthDiff)) {
-						// average similar depths
-						const float c(confMaps[n](xRef));
-						avgDepth += d*c;
-						posConf += c;
-						++nPosViews;
-					} else {
-						// penalize confidence
-						if (depth > d) {
-							// occlusion
-							negConf += confMaps[n](xRef);
-						} else {
-							// free-space violation
-							const DepthData& depthData = arrDepthData[depthDataRef.neighbors[idxNeighbors[n]].ID];
-							const Camera& camera = depthData.images.First().camera;
-							const Point3 X(cameraRef.TransformPointI2W(Point3(xRef.x,xRef.y,depth)));
-							const ImageRef x(ROUND2INT(camera.TransformPointW2I(X)));
-							if (depthData.confMap.isInside(x)) {
-								const float c(depthData.confMap(x));
-								negConf += (c > 0 ? c : confMaps[n](xRef));
-							} else
-								negConf += confMaps[n](xRef);
-						}
-						++nNegViews;
-					}
-				} while (n);
-				ASSERT(nPosViews+nNegViews >= nMinViews);
-				// if enough good views and positive confidence...
-				if (nPosViews >= nMinViewsAdjust && posConf > negConf && ISINSIDE(avgDepth/=posConf, depthDataRef.dMin, depthDataRef.dMax)) {
-					// consider this pixel an inlier
-					newDepthMap(xRef) = avgDepth;
-					newConfMap(xRef) = 1.f - MINF(((negConf+0.2f) * nPosViews) / (posConf * MAXF(nNegViews,1u)), 1.f);
-				} else {
-					// consider this pixel an outlier
-					DiscardDepth:
-					newDepthMap(xRef) = 0;
-					newConfMap(xRef) = 0;
-					#if TD_VERBOSE != TD_VERBOSE_OFF
-					++nDiscarded;
-					#endif
-				}
+	// average similar depths, and decrease confidence if depths do not agree
+	// (inspired by: "Real-Time Visibility-Based Fusion of Depth Maps", Merrell, 2007)
+	for (int i=0; i<sizeRef.height; ++i) {
+		for (int j=0; j<sizeRef.width; ++j) {
+			const ImageRef xRef(j,i);
+			const Depth depth(depthDataRef.depthMap(xRef));
+			if (depth == 0) {
+				newDepthMap(xRef) = 0;
+				newConfMap(xRef) = 0;
+				continue;
 			}
-		}
-	} else {
-		// remove depth if it does not agree with enough neighbors
-		const float thDepthDiffStrict(OPTDENSE::fDepthDiffThreshold*0.8f);
-		const unsigned nMinGoodViewsProc(75), nMinGoodViewsDeltaProc(65);
-		const unsigned nDeltas(4);
-		const unsigned nMinViewsDelta(nMinViews*(nDeltas-2));
-		const ImageRef xDs[nDeltas] = { ImageRef(-1,0), ImageRef(1,0), ImageRef(0,-1), ImageRef(0,1) };
-		for (int i=0; i<sizeRef.height; ++i) {
-			for (int j=0; j<sizeRef.width; ++j) {
-				const ImageRef xRef(j,i);
-				const Depth depth(depthDataRef.depthMap(xRef));
-				if (depth == 0) {
-					newDepthMap(xRef) = 0;
-					newConfMap(xRef) = 0;
+			ASSERT(depth > 0);
+			#if TD_VERBOSE != TD_VERBOSE_OFF
+			++nProcessed;
+			#endif
+			// update best depth and confidence estimate with all estimates
+			float posConf(depthDataRef.confMap(xRef)), negConf(0);
+			Depth avgDepth(depth*posConf);
+			unsigned nPosViews(0), nNegViews(0);
+			unsigned n(N);
+			do {
+				const Depth d(depthMaps[--n](xRef));
+				if (d == 0) {
+					if (nPosViews + nNegViews + n < nMinViews)
+						goto DiscardDepth;
 					continue;
 				}
-				ASSERT(depth > 0);
+				ASSERT(d > 0);
+				if (IsDepthSimilar(depth, d, thDepthDiff)) {
+					// average similar depths
+					const float c(confMaps[n](xRef));
+					avgDepth += d*c;
+					posConf += c;
+					++nPosViews;
+				} else {
+					// penalize confidence
+					if (depth > d) {
+						// occlusion
+						negConf += confMaps[n](xRef);
+					} else {
+						// free-space violation
+						const DepthData& depthData = arrDepthData[idxNeighbors[n]];
+						const Camera& camera = depthData.GetView().camera;
+						const Point3 X(cameraRef.TransformPointI2W(Point3(xRef.x,xRef.y,depth)));
+						const ImageRef x(ROUND2INT(camera.TransformPointW2I(X)));
+						if (depthData.confMap.isInside(x)) {
+							const float c(depthData.confMap(x));
+							negConf += (c > 0 ? c : confMaps[n](xRef));
+						} else
+							negConf += confMaps[n](xRef);
+					}
+					++nNegViews;
+				}
+			} while (n);
+			ASSERT(nPosViews+nNegViews >= nMinViews);
+			// if enough good views and positive confidence...
+			if (nPosViews >= nMinViewsAdjust && posConf > negConf && ISINSIDE(avgDepth/=posConf, depthDataRef.dMin, depthDataRef.dMax)) {
+				// consider this pixel an inlier
+				newConfMap(xRef) = 1.f - MINF(((negConf+0.2f) * nPosViews) / (posConf * MAXF(nNegViews,1u)), 1.f);
+			} else {
+				// consider this pixel an outlier
+				DiscardDepth:
+				newConfMap(xRef) = 0;
 				#if TD_VERBOSE != TD_VERBOSE_OFF
-				++nProcessed;
+				++nDiscarded;
 				#endif
-				// check if very similar with the neighbors projected to this pixel
-				{
-					unsigned nGoodViews(0);
-					unsigned nViews(0);
-					unsigned n(N);
-					do {
-						const Depth d(depthMaps[--n](xRef));
-						if (d > 0) {
-							// valid view
-							++nViews;
-							if (IsDepthSimilar(depth, d, thDepthDiffStrict)) {
-								// agrees with this neighbor
-								++nGoodViews;
-							}
-						}
-					} while (n);
-					if (nGoodViews < nMinViews || nGoodViews < nViews*nMinGoodViewsProc/100) {
-						#if TD_VERBOSE != TD_VERBOSE_OFF
-						++nDiscarded;
-						#endif
-						newDepthMap(xRef) = 0;
-						newConfMap(xRef) = 0;
-						continue;
-					}
-				}
-				// check if similar with the neighbors projected around this pixel
-				{
-					unsigned nGoodViews(0);
-					unsigned nViews(0);
-					for (unsigned d=0; d<nDeltas; ++d) {
-						const ImageRef xDRef(xRef+xDs[d]);
-						unsigned n(N);
-						do {
-							const Depth d(depthMaps[--n](xDRef));
-							if (d > 0) {
-								// valid view
-								++nViews;
-								if (IsDepthSimilar(depth, d, thDepthDiff)) {
-									// agrees with this neighbor
-									++nGoodViews;
-								}
-							}
-						} while (n);
-					}
-					if (nGoodViews < nMinViewsDelta || nGoodViews < nViews*nMinGoodViewsDeltaProc/100) {
-						#if TD_VERBOSE != TD_VERBOSE_OFF
-						++nDiscarded;
-						#endif
-						newDepthMap(xRef) = 0;
-						newConfMap(xRef) = 0;
-						continue;
-					}
-				}
-				// enough good views, keep it
-				newDepthMap(xRef) = depth;
-				newConfMap(xRef) = depthDataRef.confMap(xRef);
 			}
 		}
 	}
-	if (!SaveDepthMap(ComposeDepthFilePath(imageRef.GetID(), "filtered.dmap"), newDepthMap) ||
-		!SaveConfidenceMap(ComposeDepthFilePath(imageRef.GetID(), "filtered.cmap"), newConfMap))
+	if (!SaveConfidenceMap(ComposeDepthFilePath(imageRef.GetID(), "adjusted.cmap"), newConfMap))
 		return false;
 
-	DEBUG("Depth map %3u filtered using %u other images: %u/%u depths discarded (%s)",
+	DEBUG("Confidence-map %3u adjusted using %u other images: %u/%u depths discarded (%s)",
 		imageRef.GetID(), N, nDiscarded, nProcessed, TD_TIMER_GET_FMT().c_str());
 	return true;
-} // FilterDepthMap
+} // AdjustConfidence
 /*----------------------------------------------------------------*/
 
 
@@ -1226,7 +1212,7 @@ void DepthMapsData::EstimateNormalMaps()
 } // EstimateNormalMaps
 
 
-// fuse all depth-maps by simply projecting them in a 3D point cloud
+// fuse all depth-maps by simply projecting them in a 3D point-cloud
 // in the world coordinate space
 void DepthMapsData::MergeDepthMaps(PointCloud& pointcloud, bool bEstimateColor, bool bEstimateNormal)
 {
@@ -1282,7 +1268,7 @@ void DepthMapsData::MergeDepthMaps(PointCloud& pointcloud, bool bEstimateColor, 
 		depthData.DecRef();
 		++nDepthMaps;
 		ASSERT(pointcloud.points.size() == pointcloud.pointViews.size());
-		DEBUG_ULTIMATE("Depths map for reference image %3u merged using %u depths maps: %u new points (%s)",
+		DEBUG_ULTIMATE("Depth-map for reference image %3u merged using %u depth-maps: %u new points (%s)",
 			idxImage, depthData.images.size()-1, pointcloud.points.size()-nNumPointsPrev, TD_TIMER_GET_FMT().c_str());
 		progress.display(idxImage+1);
 	}
@@ -1358,7 +1344,7 @@ std::tuple<unsigned, unsigned, unsigned> FetchBestNextDMapIndex(const DepthDataA
 	return std::make_tuple(bestImageIdx, bestImageScore, static_cast<unsigned>(cachedImages.size()));
 } // FetchBestNextDMapIndex
 
-// fuse all valid depth-maps in the same 3D point cloud;
+// fuse all valid depth-maps in the same 3D point-cloud;
 // join points very likely to represent the same 3D point and
 // filter out points blocking the view
 void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, bool bEstimateNormal)
@@ -1563,7 +1549,7 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, b
 		}
 		fusedDMaps[idxImage] = true;
 		ASSERT(pointcloud.points.size() == pointcloud.pointViews.size() && pointcloud.points.size() == pointcloud.pointWeights.size() && pointcloud.points.size() == projs.size());
-		DEBUG_ULTIMATE("Depths map for reference image %3u fused using %u depths maps: %u new points, %u/%u cached images (%s)",
+		DEBUG_ULTIMATE("Depth-map for reference image %3u fused using %u depth-maps: %u new points, %u/%u cached images (%s)",
 			idxImage, depthData.images.size()-1, pointcloud.points.size()-nNumPointsPrev, numImageNeighborsInCache, numImagesInCache, TD_TIMER_GET_FMT().c_str());
 		progress.display(numDMapsFused);
 		// ensure enough memory is available for the next depth-maps chunk
@@ -1610,7 +1596,7 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, b
 } // FuseDepthMaps
 
 
-// fuse all valid depth-maps in the same 3D point cloud;
+// fuse all valid depth-maps in the same 3D point-cloud;
 // join points very likely to represent the same 3D point and
 // filter out points blocking the view
 void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, bool _bEstimateNormal)
@@ -1742,7 +1728,7 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 	};
 	// loop over each depth-map
 	IIndex numDMapsFused = 0;
-	for (; numDMapsFused < arrDepthData.size(); ++numDMapsFused) {
+	while (true) {
 		TD_TIMER_STARTD();
 		// find the best depth-map to fuse next as the one with the most neighbors already in cache
 		const auto [idxImage, numImageNeighborsInCache, numImagesInCache] = FetchBestNextDMapIndex(arrDepthData, cacheDMaps, fusedDMaps);
@@ -1750,6 +1736,7 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 			break; // no more depth-maps to fuse (only invalid depth-maps left)
 		totalNumImageNeighborsInCache += numImageNeighborsInCache;
 		totalNumImagesInCache += numImagesInCache;
+		++numDMapsFused;
 		// fuse depth-map
 		cacheDMaps.UseImage(idxImage);
 		cacheDMaps.SkipMemoryCheckIdxImage(idxImage);
@@ -1834,7 +1821,7 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 		}
 		fusedDMaps[idxImage] = true;
 		ASSERT(pointcloud.points.size() == pointcloud.pointViews.size() && pointcloud.points.size() == pointcloud.pointWeights.size());
-		DEBUG_ULTIMATE("Depths map for reference image %3u fused using %u depths maps: %u new points, %u/%u cached images (%s)",
+		DEBUG_ULTIMATE("Depth-map for reference image %3u fused using %u depth-maps: %u new points, %u/%u cached images (%s)",
 			idxImage, depthData.images.size() - 1, pointcloud.points.size() - nNumPointsPrev, numImageNeighborsInCache, numImagesInCache, TD_TIMER_GET_FMT().c_str());
 		progress.display(numDMapsFused);
 		// ensure enough memory is available for the next depth-maps chunk
@@ -2165,7 +2152,7 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 		data.nEstimationGeometricIter = -1;
 	}
 
-	if ((OPTDENSE::nOptimize & OPTDENSE::ADJUST_FILTER) != 0) {
+	if ((OPTDENSE::nOptimize & (OPTDENSE::ADJUST_CONFIDENCE | OPTDENSE::ADJUST_CONFIDENCE_FAST)) != 0) {
 		// initialize the queue of depth-maps to be filtered
 		data.sem.Clear();
 		data.idxImage = data.images.GetSize();
@@ -2201,7 +2188,7 @@ void* DenseReconstructionEstimateTmp(void* arg) {
 	return NULL;
 }
 
-// initialize the dense reconstruction with the sparse point cloud
+// initialize the dense reconstruction with the sparse point-cloud
 void Scene::DenseReconstructionEstimate(void* pData)
 {
 	DenseDepthMapData& data = *((DenseDepthMapData*)pData);
@@ -2322,8 +2309,9 @@ void Scene::DenseReconstructionEstimate(void* pData)
 			}
 			#endif
 			// save compute depth-map for this image
-			if (!depthData.depthMap.empty())
-				depthData.Save(ComposeDepthFilePath(depthData.GetView().GetID(), data.nEstimationGeometricIter < 0 ? "dmap" : "geo.dmap"));
+			if (!depthData.depthMap.empty() &&
+				!depthData.Save(ComposeDepthFilePath(depthData.GetView().GetID(), data.nEstimationGeometricIter < 0 ? "dmap" : "geo.dmap")))
+				exit(EXIT_FAILURE);
 			depthData.ReleaseImages();
 			depthData.Release();
 			data.progress->operator++();
@@ -2364,9 +2352,8 @@ void Scene::DenseReconstructionFilter(void* pData)
 			depthData.IncRef(ComposeDepthFilePath(depthData.GetView().GetID(), "dmap"));
 			const unsigned numMaxNeighbors(8);
 			IIndexArr idxNeighbors(0, depthData.neighbors.GetSize());
-			FOREACH(n, depthData.neighbors) {
-				const IIndex idxView = depthData.neighbors[n].ID;
-				DepthData& depthDataPair = data.depthMaps.arrDepthData[idxView];
+			for (const ViewScore& neighbor: depthData.neighbors) {
+				DepthData& depthDataPair = data.depthMaps.arrDepthData[neighbor.ID];
 				if (!depthDataPair.IsValid())
 					continue;
 				if (depthDataPair.IncRef(ComposeDepthFilePath(depthDataPair.GetView().GetID(), "dmap")) == 0) {
@@ -2374,19 +2361,19 @@ void Scene::DenseReconstructionFilter(void* pData)
 					data.events.AddEventFirst(new EVTFail);
 					return;
 				}
-				idxNeighbors.Insert(n);
-				if (idxNeighbors.GetSize() == numMaxNeighbors)
+				idxNeighbors.push_back(neighbor.ID);
+				if (idxNeighbors.size() == numMaxNeighbors)
 					break;
 			}
 			// filter the depth-map for this image
-			if (data.depthMaps.FilterDepthMap(depthData, idxNeighbors, OPTDENSE::bFilterAdjust)) {
+			if (((OPTDENSE::nOptimize & OPTDENSE::ADJUST_CONFIDENCE_FAST) != 0 && data.depthMaps.AdjustConfidenceFast(depthData, idxNeighbors)) |
+				((OPTDENSE::nOptimize & OPTDENSE::ADJUST_CONFIDENCE) != 0 && data.depthMaps.AdjustConfidence(depthData, idxNeighbors))) {
 				// load the filtered maps after all depth-maps were filtered
 				data.events.AddEvent(new EVTAdjustDepthMap(evtImage.idxImage));
 			}
 			// unload referenced depth-maps
-			FOREACHPTR(pIdxNeighbor, idxNeighbors) {
-				const IIndex idxView = depthData.neighbors[*pIdxNeighbor].ID;
-				DepthData& depthDataPair = data.depthMaps.arrDepthData[idxView];
+			for (IIndex idxNeighbor: idxNeighbors) {
+				DepthData& depthDataPair = data.depthMaps.arrDepthData[idxNeighbor];
 				depthDataPair.DecRef();
 			}
 			depthData.DecRef();
@@ -2400,26 +2387,49 @@ void Scene::DenseReconstructionFilter(void* pData)
 			ASSERT(depthData.IsValid());
 			data.sem.Wait();
 			// load filtered maps
+			ConfidenceMap confMapFast, confMap;
 			if (depthData.IncRef(ComposeDepthFilePath(depthData.GetView().GetID(), "dmap")) == 0 ||
-				!LoadDepthMap(ComposeDepthFilePath(depthData.GetView().GetID(), "filtered.dmap"), depthData.depthMap) ||
-				!LoadConfidenceMap(ComposeDepthFilePath(depthData.GetView().GetID(), "filtered.cmap"), depthData.confMap))
+				!(LoadConfidenceMap(ComposeDepthFilePath(depthData.GetView().GetID(), "adjusted.fast.cmap"), confMapFast) |
+				  LoadConfidenceMap(ComposeDepthFilePath(depthData.GetView().GetID(), "adjusted.cmap"), confMap)))
 			{
 				// signal error and terminate
 				data.events.AddEventFirst(new EVTFail);
 				return;
 			}
 			ASSERT(depthData.GetRef() == 1);
-			File::deleteFile(ComposeDepthFilePath(depthData.GetView().GetID(), "filtered.dmap").c_str());
-			File::deleteFile(ComposeDepthFilePath(depthData.GetView().GetID(), "filtered.cmap").c_str());
+			if (!confMapFast.empty())
+				File::deleteFile(ComposeDepthFilePath(depthData.GetView().GetID(), "adjusted.fast.cmap").c_str());
+			if (!confMap.empty())
+				File::deleteFile(ComposeDepthFilePath(depthData.GetView().GetID(), "adjusted.cmap").c_str());
+			if (confMapFast.empty()) {
+				depthData.confMap = std::move(confMap);
+			} else if (confMap.empty()) {
+				depthData.confMap = std::move(confMapFast);
+			} else {
+				// set confidence-map as the best confidence if both confMap and congMapFast are set
+				for (int r = 0; r<depthData.confMap.rows; ++r) {
+					for (int c = 0; c<depthData.confMap.cols; ++c) {
+						const float conf = confMap(r,c);
+						const float confFast = confMapFast(r,c);
+						depthData.confMap(r,c) = conf > 0 && confFast > 0 ? MAXF(conf, confFast) : 0.f;
+					}
+				}
+				confMapFast.release();
+				confMap.release();
+			}
 			#if TD_VERBOSE != TD_VERBOSE_OFF
 			// save depth map as image
 			if (g_nVerbosityLevel > 2) {
-				ExportDepthMap(ComposeDepthFilePath(depthData.GetView().GetID(), "filtered.png"), depthData.depthMap);
-				ExportPointCloud(ComposeDepthFilePath(depthData.GetView().GetID(), "filtered.ply"), *depthData.images.First().pImageData, depthData.depthMap, depthData.normalMap);
+				DepthMap depthMap(depthData.depthMap.clone());
+				NormalMap normalMap(depthData.normalMap.clone());
+				FilterDepthMap(depthMap, normalMap, depthData.confMap);
+				ExportDepthMap(ComposeDepthFilePath(depthData.GetView().GetID(), "filtered.png"), depthMap);
+				ExportPointCloud(ComposeDepthFilePath(depthData.GetView().GetID(), "filtered.ply"), *depthData.images.First().pImageData, depthMap, normalMap);
 			}
 			#endif
 			// save filtered depth-map for this image
-			depthData.Save(ComposeDepthFilePath(depthData.GetView().GetID(), "dmap"));
+			if (!depthData.Save(ComposeDepthFilePath(depthData.GetView().GetID(), "dmap")))
+				exit(EXIT_FAILURE);
 			depthData.DecRef();
 			data.progress->operator++();
 			break; }

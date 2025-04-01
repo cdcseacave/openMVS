@@ -171,6 +171,8 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 			"\tUp/Down + Shift: adjust minimum number of views accepted when displaying a point or line\n"
 			"\t+/-: adjust camera thumbnail transparency\n"
 			"\t+/- + Shift: adjust camera cones' length\n"
+			"\t+/- + Ctrl: adjust camera FOV\n"
+			"\t+/- + Alt: adjust points confidence visibility threshold\n"
 			"\n")
 			<< visible;
 	}

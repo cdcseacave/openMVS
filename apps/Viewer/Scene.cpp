@@ -186,8 +186,9 @@ bool Scene::Init(const cv::Size& size, LPCTSTR windowName, LPCTSTR fileName, LPC
 		return false;
 	if (!window.Init(size, windowName))
 		return false;
-	if (glewInit() != GLEW_OK)
+	if (gladLoadGL() == GL_FALSE)
 		return false;
+    VERBOSE("OpenGL: %s %s", glGetString(GL_RENDERER), glGetString(GL_VERSION));
 	name = windowName;
 	window.clbkOpenScene = DELEGATEBINDCLASS(Window::ClbkOpenScene, &Scene::Open, this);
 
@@ -196,10 +197,10 @@ bool Scene::Init(const cv::Size& size, LPCTSTR windowName, LPCTSTR fileName, LPC
 	glEnable(GL_DEPTH_TEST);
 	glClearColor(0.f, 0.5f, 0.9f, 1.f);
 
-	static const float light0_ambient[] = {0.1f, 0.1f, 0.1f, 1.0f};
-	static const float light0_diffuse[] = {1.0f, 1.0f, 1.0f, 1.0f};
-	static const float light0_position[] = {0.0f, 0.0f, 1000.0f, 0.0f};
-	static const float light0_specular[] = {0.4f, 0.4f, 0.4f, 1.0f};
+	static const float light0_ambient[] = {0.1f, 0.1f, 0.1f, 1.f};
+	static const float light0_diffuse[] = {1.f, 1.f, 1.f, 1.f};
+	static const float light0_position[] = {0.f, 0.f, 1000.f, 0.f};
+	static const float light0_specular[] = {0.4f, 0.4f, 0.4f, 1.f};
 
 	glLightfv(GL_LIGHT0, GL_AMBIENT, light0_ambient);
 	glLightfv(GL_LIGHT0, GL_DIFFUSE, light0_diffuse);
@@ -311,11 +312,6 @@ bool Scene::Open(LPCTSTR fileName, LPCTSTR geometryFileName)
 		}
 	}
 
-	// init display lists
-	// compile point-cloud
-	CompilePointCloud();
-	// compile mesh
-	CompileMesh();
 	// compile bounding-box
 	CompileBounds();
 
@@ -430,19 +426,63 @@ void Scene::CompilePointCloud()
 	if ((window.sparseType&Window::SPR_POINTS) != 0) {
 		ASSERT_ARE_SAME_TYPE(float, MVS::PointCloud::Point::Type);
 		glBegin(GL_POINTS);
-		glColor3f(1.f,1.f,1.f);
+		glColor3f(1.f, 1.f, 1.f);
+		MVS::DepthData depthData;
+		MVS::DepthMap& depthMap = depthData.depthMap;
+		MVS::ConfidenceMap confMap;
+		if (window.colorSource == Window::COLORSOURCE::COL_DEPTH || window.colorSource == Window::COLORSOURCE::COL_COMPOSITE || window.colorSource == Window::COLORSOURCE::COL_NORMAL) {
+			if (!depthData.Load(sceneName, window.colorSource == Window::COLORSOURCE::COL_NORMAL ? 3 : 1)) {
+				DEBUG("warning: can not load depth-map");
+				window.colorSource = Window::COLORSOURCE::COL_IMAGE;
+			} else {
+				window.colorSource == Window::COLORSOURCE::COL_NORMAL ?
+					MVS::EstimateConfidenceFromNormal(depthData, confMap, 1) :
+					MVS::EstimateConfidenceFromDepth(depthData, confMap, 1, 3);
+			}
+		}
+		int j, k, cmpt(0);
+		unsigned numPoints(0);
 		FOREACH(i, scene.pointcloud.points) {
 			if (!scene.pointcloud.pointViews.empty() &&
 				scene.pointcloud.pointViews[i].size() < window.minViews)
 				continue;
-			if (!scene.pointcloud.colors.empty()) {
+			if (!scene.pointcloud.colors.empty() && window.colorSource == Window::COLORSOURCE::COL_IMAGE) {
 				const MVS::PointCloud::Color& c = scene.pointcloud.colors[i];
-				glColor3ub(c.r,c.g,c.b);
+				glColor3ub(c.r, c.g, c.b);
+			}
+			if (window.colorSource == Window::COLORSOURCE::COL_DEPTH || window.colorSource == Window::COLORSOURCE::COL_COMPOSITE || window.colorSource == Window::COLORSOURCE::COL_NORMAL) {
+				do {
+					j = cmpt/depthMap.cols;
+					k = cmpt%depthMap.cols;
+					cmpt++;
+				} while (depthMap(j, k) <= 0);
+				const float confidence = window.colorSource == Window::COLORSOURCE::COL_COMPOSITE ?
+					0.3f*confMap(j, k) + 0.7f*scene.pointcloud.pointWeights[i][0] :
+					confMap(j, k);
+				if (confidence < window.colorThreshold)
+					continue;
+				const Pixel8U c = Pixel8U::gray2color(confidence);
+				glColor3ub(c.r, c.g, c.b);
+			}
+			if (window.colorSource == Window::COLORSOURCE::COL_CONFIDENCE && !scene.pointcloud.pointWeights.empty()) {
+				const float confidence = scene.pointcloud.pointWeights[i][0];
+				if (confidence < window.colorThreshold)
+					continue;
+				const Pixel8U c = Pixel8U::gray2color(confidence);
+				glColor3ub(c.r, c.g, c.b);
 			}
 			const MVS::PointCloud::Point& X = scene.pointcloud.points[i];
 			glVertex3fv(X.ptr());
+			++numPoints;
 		}
 		glEnd();
+		DEBUG("Point-cloud %.2f%%%% with %s color source and %.2f confidence threshold compiled",
+			100.f*(float)numPoints/scene.pointcloud.GetSize(),
+			window.colorSource == Window::COLORSOURCE::COL_DEPTH ? "depth" :
+			window.colorSource == Window::COLORSOURCE::COL_CONFIDENCE ? "confidence" :
+			window.colorSource == Window::COLORSOURCE::COL_COMPOSITE ? "composite" :
+			window.colorSource == Window::COLORSOURCE::COL_NORMAL ? "normal" :
+			"image", window.colorThreshold);
 	}
 	glEndList();
 }
@@ -487,6 +527,7 @@ void Scene::CompileMesh()
 		glEnd();
 		glEndList();
 	} while (++texIdx < scene.mesh.texturesDiffuse.size());
+	DEBUG("%s compiled", scene.mesh.HasTexture() ? "Textured mesh" : "Mesh");
 }
 
 void Scene::CompileBounds()
@@ -574,14 +615,6 @@ void Scene::Draw()
 			// change coordinates system to the camera space
 			glPushMatrix();
 			glMultMatrixd((GLdouble*)TransL2W((const Matrix3x3::EMat)camera.R, -(const Point3::EVec)camera.C).data());
-			glPointSize(window.pointSize+1.f);
-			glDisable(GL_TEXTURE_2D);
-			// draw camera position and image center
-			glBegin(GL_POINTS);
-			glColor3f(1,0,0); glVertex3f(0,0,0); // camera position
-			glColor3f(0,1,0); glVertex3f(0,0,(float)scaleFocal); // image center
-			glColor3f(0,0,1); glVertex3d((0.5*imageData.width-pp.x)/focal, cy, scaleFocal); // image up
-			glEnd();
 			// draw image thumbnail
 			const bool bSelectedImage(idx == window.camera.currentCamID);
 			if (bSelectedImage) {
@@ -614,7 +647,9 @@ void Scene::Draw()
 					}
 				}
 			}
+			glDisable(GL_TEXTURE_2D);
 			// draw camera frame
+			glLineWidth(2.f);
 			glColor3f(bSelectedImage ? 0.f : 1.f, 1.f, 0.f);
 			glBegin(GL_LINES);
 			glVertex3d(0,0,0); glVertex3dv(ic1.ptr());
@@ -625,6 +660,13 @@ void Scene::Draw()
 			glVertex3dv(ic2.ptr()); glVertex3dv(ic3.ptr());
 			glVertex3dv(ic3.ptr()); glVertex3dv(ic4.ptr());
 			glVertex3dv(ic4.ptr()); glVertex3dv(ic1.ptr());
+			glEnd();
+			// draw camera position and image center
+			glPointSize(window.pointSize+3.f);
+			glBegin(GL_POINTS);
+			glColor3f(1,0,0); glVertex3f(0,0,0); // camera position
+			glColor3f(0,1,0); glVertex3f(0,0,(float)scaleFocal); // image center
+			glColor3f(0,0,1); glVertex3d((0.5*imageData.width-pp.x)/focal, cy, scaleFocal); // image up
 			glEnd();
 			// restore coordinate system
 			glPopMatrix();
@@ -651,6 +693,7 @@ void Scene::Draw()
 			}
 			// render camera trajectory
 			if (window.bRenderCameraTrajectory && ptrPrevC) {
+				glLineWidth(1.f);
 				glBegin(GL_LINES);
 				glColor3f(1.f,0.5f,0.f);
 				glVertex3dv(ptrPrevC->ptr());
@@ -673,6 +716,7 @@ void Scene::Draw()
 		glEnd();
 		if (window.bRenderViews && window.selectionType == Window::SEL_POINT) {
 			if (!scene.pointcloud.pointViews.empty()) {
+				glLineWidth(1.f);
 				glBegin(GL_LINES);
 				const MVS::PointCloud::ViewArr& views = scene.pointcloud.pointViews[(MVS::PointCloud::Index)window.selectionIdx];
 				ASSERT(!views.empty());
@@ -690,6 +734,7 @@ void Scene::Draw()
 	// render oriented-bounding-box
 	if (!obbPoints.empty()) {
 		glDepthMask(GL_FALSE);
+		glLineWidth(2.f);
 		glBegin(GL_LINES);
 		glColor3f(0.5f,0.1f,0.8f);
 		for (IDX i=0; i<obbPoints.size(); i+=2) {
@@ -698,6 +743,48 @@ void Scene::Draw()
 		}
 		glEnd();
 		glDepthMask(GL_TRUE);
+	}
+	// draw coordinate axes
+	{
+		constexpr int axisWindowSize(200);
+		constexpr float axisLength(1.5f);
+		GLfloat matrix[16];
+		glGetFloatv(GL_MODELVIEW_MATRIX, matrix);
+		glPushMatrix();
+		glPushAttrib(GL_VIEWPORT_BIT);
+		// draw at bottom-right corner and scale down
+		glViewport(window.size.width - axisWindowSize, 0, axisWindowSize, axisWindowSize);
+		glLoadIdentity();
+		glTranslatef(0.f, 0.f, -3.f);
+		matrix[12] = matrix[13] = matrix[14] = 0.f;
+		glMultMatrixf(matrix);
+		glLineWidth(4.f);
+		// X axis (Red)
+		glBegin(GL_LINES);
+		glColor3f(1.f, 0.f, 0.f);
+		glVertex3f(0.f, 0.f, 0.f);
+		glVertex3f(axisLength, 0.f, 0.f);
+		// Y axis (Green)
+		glColor3f(0.f, 1.f, 0.f);
+		glVertex3f(0.f, 0.f, 0.f);
+		glVertex3f(0.f, axisLength, 0.f);
+		// Z axis (Blue)
+		glColor3f(0.f, 0.f, 1.f);
+		glVertex3f(0.f, 0.f, 0.f);
+		glVertex3f(0.f, 0.f, axisLength);
+		glEnd();
+		// draw small spheres at axis ends for better visibility
+		glPointSize(10.f);
+		glBegin(GL_POINTS);
+		glColor3f(1.f, 0.f, 0.f);
+		glVertex3f(axisLength, 0.f, 0.f);
+		glColor3f(0.f, 1.f, 0.f);
+		glVertex3f(0.f, axisLength, 0.f);
+		glColor3f(0.f, 0.f, 1.f);
+		glVertex3f(0.f, 0.f, axisLength);
+		glEnd();
+		glPopAttrib();
+		glPopMatrix();
 	}
 	glfwSwapBuffers(window.GetWindow());
 }
@@ -805,10 +892,12 @@ void Scene::CastRay(const Ray3& ray, int action)
 					const MVS::PointCloud::ViewArr& views = scene.pointcloud.pointViews[intRay.pick.idx];
 					ASSERT(!views.empty());
 					String strViews(String::FormatString("\n\tviews: %u", views.size()));
-					for (MVS::PointCloud::View idxImage: views) {
+					FOREACH(v, views) {
+						const MVS::PointCloud::View idxImage = views[v];
 						const MVS::Image& imageData = scene.images[idxImage];
 						const Point2 x(imageData.camera.TransformPointW2I(Cast<REAL>(window.selectionPoints[0])));
-						strViews += String::FormatString("\n\t\t%s (%.2f %.2f)", Util::getFileNameExt(imageData.name).c_str(), x.x, x.y);
+						const float conf = scene.pointcloud.pointWeights.empty() ? 0.f : scene.pointcloud.pointWeights[intRay.pick.idx][v];
+						strViews += String::FormatString("\n\t\t%s (%.2f %.2f pixel, %.2f conf)", Util::getFileNameExt(imageData.name).c_str(), x.x, x.y, conf);
 					}
 					return strViews;
 				}().c_str()

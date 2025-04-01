@@ -85,10 +85,11 @@ DECOPT_SPACE(OPTDENSE)
 namespace OPTDENSE {
 // configuration variables
 enum DepthFlags {
-	REMOVE_SPECKLES	= (1 << 0),
-	FILL_GAPS		= (1 << 1),
-	ADJUST_FILTER	= (1 << 2),
-	OPTIMIZE		= (REMOVE_SPECKLES|FILL_GAPS)
+	REMOVE_SPECKLES        = (1 << 0),
+	FILL_GAPS              = (1 << 1),
+	ADJUST_CONFIDENCE_FAST = (1 << 2),
+	ADJUST_CONFIDENCE      = (1 << 3),
+	OPTIMIZE               = (REMOVE_SPECKLES|FILL_GAPS)
 };
 enum FuseMode {
 	FUSE_NOFILTER = 0,
@@ -111,7 +112,6 @@ extern unsigned nMinPixelsFuse;
 extern unsigned nMaxPointsFuse;
 extern unsigned nMaxFuseDepth;
 extern unsigned nPointInsideROI;
-extern bool bFilterAdjust;
 extern bool bAddCorners;
 extern bool bInitSparse;
 extern bool bRemoveDmaps;
@@ -466,8 +466,8 @@ struct MVS_API DepthEstimator {
 		ASSERT(ISEQUAL(norm(normal), 1.f), "Norm = ", norm(normal));
 	}
 
-	static bool ImportIgnoreMask(const Image&, const Image8U::Size&, uint16_t nIgnoreMaskLabel, BitMatrix&, Image8U* =NULL);
-	static void MapMatrix2ZigzagIdx(const Image8U::Size& size, DepthEstimator::MapRefArr& coords, const BitMatrix& mask, int rawStride=16);
+	static bool ImportIgnoreMask(const Image&, const cv::Size&, uint8_t nIgnoreMaskLabel, BitMatrix&, Image8U* =NULL);
+	static void MapMatrix2ZigzagIdx(const cv::Size& size, DepthEstimator::MapRefArr& coords, const BitMatrix& mask, int rawStride=16);
 
 	const float smoothBonusDepth, smoothBonusNormal;
 	const float smoothSigmaDepth, smoothSigmaNormal;
@@ -503,9 +503,13 @@ MATH_API unsigned EstimatePlaneTh(const Point3fArr&, Planef&, double maxThreshol
 MATH_API unsigned EstimatePlaneThLockFirstPoint(const Point3fArr&, Planef&, double maxThreshold, bool arrInliers[]=NULL, size_t maxIters=0);
 
 MVS_API void EstimatePointColors(const ImageArr& images, PointCloud& pointcloud);
+MVS_API void EstimatePointSegmentation(const ImageArr& images, PointCloud& pointcloud, unsigned minViews=2);
+MVS_API unsigned ColorPointSegmentation(PointCloud& pointcloud);
 MVS_API void EstimatePointNormals(const ImageArr& images, PointCloud& pointcloud, int numNeighbors=16/*K-nearest neighbors*/);
 
 MVS_API bool EstimateNormalMap(const Matrix3x3f& K, const DepthMap&, NormalMap&);
+MVS_API void EstimateConfidenceFromDepth(const DepthData& depthData, ConfidenceMap& confMap, int winHalfSize=1, int n=3);
+MVS_API void EstimateConfidenceFromNormal(const DepthData& depthData, ConfidenceMap& confMap, int winHalfSize=1);
 
 MVS_API bool SaveDepthMap(const String& fileName, const DepthMap& depthMap);
 MVS_API bool LoadDepthMap(const String& fileName, DepthMap& depthMap);
@@ -514,6 +518,7 @@ MVS_API bool LoadNormalMap(const String& fileName, NormalMap& normalMap);
 MVS_API bool SaveConfidenceMap(const String& fileName, const ConfidenceMap& confMap);
 MVS_API bool LoadConfidenceMap(const String& fileName, ConfidenceMap& confMap);
 
+MVS_API unsigned FilterDepthMap(DepthMap& depthMap, NormalMap& normalMap, const ConfidenceMap& confMap, float thConfidence=0.5f);
 MVS_API Image8U3 DepthMap2Image(const DepthMap& depthMap, Depth minDepth=FLT_MAX, Depth maxDepth=0);
 MVS_API bool ExportDepthMap(const String& fileName, const DepthMap& depthMap, Depth minDepth=FLT_MAX, Depth maxDepth=0);
 MVS_API bool ExportNormalMap(const String& fileName, const NormalMap& normalMap);

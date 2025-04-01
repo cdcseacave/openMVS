@@ -207,10 +207,13 @@ bool Scene::LoadInterface(const String & fileName)
 	// import region of interest
 	obb.Set(Matrix3x3f(obj.obb.rot), Point3f(obj.obb.ptMin), Point3f(obj.obb.ptMax));
 
-	DEBUG_EXTRA("Scene loaded from interface format (%s):\n"
+	// import transform
+	transform = obj.transform;
+
+	DEBUG_EXTRA("Scene loaded in interface format from '%s' (%s):\n"
 				"\t%u images (%u calibrated) with a total of %.2f MPixels (%.2f MPixels/image)\n"
 				"\t%u points, %u vertices, %u faces",
-				TD_TIMER_GET_FMT().c_str(),
+				Util::getFileNameExt(fileName).c_str(), TD_TIMER_GET_FMT().c_str(),
 				images.size(), nCalibratedImages, (double)nTotalPixels/(1024.0*1024.0), (double)nTotalPixels/(1024.0*1024.0*nCalibratedImages),
 				pointcloud.points.size(), mesh.vertices.size(), mesh.faces.size());
 	return true;
@@ -301,14 +304,17 @@ bool Scene::SaveInterface(const String & fileName, int version) const
 	obj.obb.ptMin = Point3f((obb.m_pos-obb.m_ext).eval());
 	obj.obb.ptMax = Point3f((obb.m_pos+obb.m_ext).eval());
 
+	// export transform
+	obj.transform = transform;
+
 	// serialize out the current state
 	if (!ARCHIVE::SerializeSave(obj, fileName, version>=0?uint32_t(version):MVSI_PROJECT_VER))
 		return false;
 
-	DEBUG_EXTRA("Scene saved to interface format (%s):\n"
+	DEBUG_EXTRA("Scene saved in interface format to '%s' (%s):\n"
 				"\t%u images (%u calibrated)\n"
 				"\t%u points, %u vertices, %u faces",
-				TD_TIMER_GET_FMT().c_str(),
+				Util::getFileNameExt(fileName).c_str(), TD_TIMER_GET_FMT().c_str(),
 				images.size(), nCalibratedImages,
 				pointcloud.points.size(), mesh.vertices.size(), mesh.faces.size());
 	return true;
@@ -429,10 +435,10 @@ bool Scene::LoadDMAP(const String& fileName)
 	#endif
 
 	DEBUG_EXTRA("Scene loaded from depth-map format - %dx%d size, %.2f%%%% coverage (%s):\n"
-		"\t1 images (1 calibrated) with a total of %.2f MPixels (%.2f MPixels/image)\n"
+		"\t1 images (%u neighbors, %.2f FOV) with a total of %.2f MPixels (%.2f MPixels/image)\n"
 		"\t%u points, 0 lines",
 		depthMap.width(), depthMap.height(), 100.0*pointcloud.GetSize()/depthMap.area(), TD_TIMER_GET_FMT().c_str(),
-		(double)image.image.area()/(1024.0*1024.0), (double)image.image.area()/(1024.0*1024.0*nCalibratedImages),
+		IDs.size()-1, R2D(image.ComputeFOV()), (double)image.image.area()/(1024.0*1024.0), (double)image.image.area()/(1024.0*1024.0*nCalibratedImages),
 		pointcloud.GetSize());
 	return true;
 } // LoadDMAP
@@ -1491,6 +1497,50 @@ bool Scene::ScaleImages(unsigned nMaxResolution, REAL scale, const String& folde
 	return true;
 } // ScaleImages
 
+// compute translation and scale (optional) such that the scene coordinates center at 0 and
+// most scene geomatry is in the unit cube ([-0.5,0.5]^3);
+// return the transformation matrix that restores the scene to its original coordinates
+Matrix4x4 Scene::ComputeNormalizationTransform(bool bScale) const
+{
+	ASSERT(!pointcloud.IsEmpty() || !mesh.IsEmpty());
+	// compute the center of the scene geometry (point-cloud or mesh)
+	Point3 center = Point3::ZERO;
+	if (!mesh.IsEmpty()) {
+		for (const Mesh::Vertex& X: mesh.vertices)
+			center += Cast<REAL>(X);
+		center /= static_cast<REAL>(mesh.vertices.size());
+	} else {
+		for (const PointCloud::Point& X: pointcloud.points)
+			center += Cast<REAL>(X);
+		center /= static_cast<REAL>(pointcloud.points.size());
+	}
+	// compute the scale of the scene geometry (point-cloud or mesh)
+	REAL scale = 1;
+	if (bScale) {
+		REAL avgDist = 0;
+		if (!mesh.IsEmpty()) {
+			for (const Mesh::Vertex& X: mesh.vertices)
+				avgDist += norm(Cast<REAL>(X)-center);
+			avgDist /= static_cast<REAL>(mesh.vertices.size());
+		} else {
+			for (const PointCloud::Point& X: pointcloud.points)
+				avgDist += norm(Cast<REAL>(X)-center);
+			avgDist /= static_cast<REAL>(pointcloud.points.size());
+		}
+		scale = REAL(2) * avgDist;
+	}
+	// compute the transformation matrix
+	Matrix4x4 transform = Matrix4x4::ZERO;
+	transform(0,0) = scale;
+	transform(1,1) = scale;
+	transform(2,2) = scale;
+	transform(0,3) = center.x;
+	transform(1,3) = center.y;
+	transform(2,3) = center.z;
+	transform(3,3) = 1;
+    return transform;
+} // ComputeNormalizationTransform
+
 // apply similarity transform
 void Scene::Transform(const Matrix3x3& rotation, const Point3& translation, REAL scale)
 {
@@ -1522,6 +1572,10 @@ void Scene::Transform(const Matrix3x3& rotation, const Point3& translation, REAL
 		obb.Transform(Cast<float>(rotationScale));
 		obb.Translate(Cast<float>(translation));
 	}
+	transform = Matrix4x4::IDENTITY;
+	Matrix4x4::EMatMap mapTransform(transform);
+	mapTransform.topLeftCorner<3,3>() = static_cast<Matrix3x3::CEMatMap>(rotationScale);
+	mapTransform.topRightCorner<3,1>() = static_cast<Point3::CEVecMap>(translation);
 }
 void Scene::Transform(const Matrix3x4& transform)
 {
@@ -1997,7 +2051,7 @@ bool Scene::EstimateROI(float weightROI, float downweightFar, bool useDepthMaps,
 /*----------------------------------------------------------------*/
 
 // calculate the center(X,Y) of the cylinder, the radius and min/max Z
-// from camera position and sparse point cloud, if that exists
+// from camera position and sparse point-cloud, if that exists
 // returns result of checks if the scene camera positions satisfies tower criteria:
 //	- cameras fit a long and slim bounding box
 //  - majority of cameras focus toward a middle line
@@ -2035,7 +2089,7 @@ bool Scene::ComputeTowerCylinder(Point2f& centerPoint, float& fRadius, float& fR
 	minCamZ = aabbOutsideCameras.ptMin.z();
 	centerPoint = ((camCenterLine.pt1+camCenterLine.pt2)*0.5f).topLeftCorner<2,1>();
 	zMin = MINF(aabbOutsideCameras.ptMax.z(), aabbOutsideCameras.ptMin.z()) - 5;
-	// if sparse point cloud is loaded use lowest point as zMin
+	// if sparse point-cloud is loaded use lowest point as zMin
 	float fMinPointsZ = std::numeric_limits<float>::max();
 	float fMaxPointsZ = std::numeric_limits<float>::lowest();
 	FOREACH(pIdx, pointcloud.points) {

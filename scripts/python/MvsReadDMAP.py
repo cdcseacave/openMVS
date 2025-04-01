@@ -1,3 +1,5 @@
+#!/usr/bin/python3
+# -*- encoding: utf-8 -*-
 '''
 Example usage of MvsUtils.py for reading DMAP file content.
 

@@ -38,8 +38,8 @@
 #include <CGAL/Triangulation_cell_base_with_info_3.h>
 #include <CGAL/Spatial_sort_traits_adapter_3.h>
 #include <CGAL/AABB_tree.h>
-#include <CGAL/AABB_traits.h>
-#include <CGAL/AABB_triangle_primitive.h>
+#include <CGAL/AABB_traits_3.h>
+#include <CGAL/AABB_triangle_primitive_3.h>
 #include <CGAL/Polyhedron_3.h>
 
 using namespace MVS;
@@ -192,7 +192,7 @@ protected:
 
 // S T R U C T S ///////////////////////////////////////////////////
 
-// construct the mesh out of the dense point cloud using Delaunay tetrahedralization & graph-cut method
+// construct the mesh out of the dense point-cloud using Delaunay tetrahedralization & graph-cut method
 // see "Exploiting Visibility Information in Surface Reconstruction to Preserve Weakly Supported Surfaces", Jancosek and Pajdla, 2015
 namespace DELAUNAY {
 typedef CGAL::Exact_predicates_inexact_constructions_kernel kernel_t;

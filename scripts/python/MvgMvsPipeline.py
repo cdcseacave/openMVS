@@ -1,20 +1,20 @@
 #!/usr/bin/python3
 # -*- encoding: utf-8 -*-
-#
-# Created by @FlachyJoe
 """
 This script is for an easy use of OpenMVG, COLMAP, and OpenMVS
 
-usage: MvgMvs_Pipeline.py [-h] [--steps STEPS [STEPS ...]] [--preset PRESET]
-                          [--0 0 [0 ...]] [--1 1 [1 ...]] [--2 2 [2 ...]]
-                          [--3 3 [3 ...]] [--4 4 [4 ...]] [--5 5 [5 ...]]
-                          [--6 6 [6 ...]] [--7 7 [7 ...]] [--8 8 [8 ...]]
-                          [--9 9 [9 ...]] [--10 10 [10 ...]] [--11 11 [11 ...]]
-                          [--12 12 [12 ...]] [--13 13 [13 ...]] [--14 14 [14 ...]]
-                          [--15 15 [15 ...]] [--16 16 [16 ...]] [--17 17 [17 ...]]
-                          [--18 18 [18 ...]] [--19 19 [19 ...]] [--20 20 [20 ...]]
-                          [--21 21 [21 ...]] [--22 22 [22 ...]] [--23 23 [23 ...]]
-                          input_dir output_dir
+Example usage:
+  python3 MvgMvs_Pipeline.py [-h]
+    input_dir output_dir
+    [--steps STEPS [STEPS ...]] [--preset PRESET]
+    [--0 0 [0 ...]] [--1 1 [1 ...]] [--2 2 [2 ...]]
+    [--3 3 [3 ...]] [--4 4 [4 ...]] [--5 5 [5 ...]]
+    [--6 6 [6 ...]] [--7 7 [7 ...]] [--8 8 [8 ...]]
+    [--9 9 [9 ...]] [--10 10 [10 ...]] [--11 11 [11 ...]]
+    [--12 12 [12 ...]] [--13 13 [13 ...]] [--14 14 [14 ...]]
+    [--15 15 [15 ...]] [--16 16 [16 ...]] [--17 17 [17 ...]]
+    [--18 18 [18 ...]] [--19 19 [19 ...]] [--20 20 [20 ...]]
+    [--21 21 [21 ...]] [--22 22 [22 ...]] [--23 23 [23 ...]]
 
 Photogrammetry reconstruction with these steps:
     0. Intrinsics analysis             openMVG_main_SfMInit_ImageListing
@@ -42,11 +42,11 @@ Photogrammetry reconstruction with these steps:
     22. Estimate disparity-maps        DensifyPointCloud
     23. Fuse disparity-maps            DensifyPointCloud
 
-positional arguments:
+Positional arguments:
   input_dir                 the directory which contains the pictures set.
   output_dir                the directory which will contain the resulting files.
 
-optional arguments:
+Optional arguments:
   -h, --help                show this help message and exit
   --steps STEPS [STEPS ...] steps to process
   --preset PRESET           steps list preset in
@@ -71,6 +71,8 @@ Passthrough:
   to numThreads and set to 8. The second step (Compute matches),
   [--3 n HNSWL2] where --3 refer to openMVG_main_ComputeMatches,
   n refers to nearest_matching_method option and set to HNSWL2
+
+Created by @FlachyJoe
 """
 
 import os
@@ -183,9 +185,9 @@ def printout(text, colour=WHITE, background=BLACK, effect=NO_EFFECT):
     """
     if HAS_COLOURS:
         seq = "\x1b[%d;%d;%dm" % (effect, 30+colour, 40+background) + text + "\x1b[0m"
-        sys.stdout.write(seq+'\r\n')
+        sys.stdout.write(seq+'\n')
     else:
-        sys.stdout.write(text+'\r\n')
+        sys.stdout.write(text+'\n')
 
 
 # OBJECTS to store config and data in
@@ -319,9 +321,9 @@ STEPS = StepsStore()
 # ARGS
 PARSER = argparse.ArgumentParser(
     formatter_class=argparse.RawTextHelpFormatter,
-    description="Photogrammetry reconstruction with these steps: \r\n" +
-    "\r\n".join(("\t%i. %s\t %s" % (t, STEPS[t].info, STEPS[t].cmd) for t in range(STEPS.length())))
-    )
+    description="Photogrammetry reconstruction with these steps:\n" +
+    "\n".join(("\t%i. %s\t %s" % (t, STEPS[t].info, STEPS[t].cmd) for t in range(STEPS.length())))
+)
 PARSER.add_argument('input_dir',
                     help="the directory which contains the pictures set.")
 PARSER.add_argument('output_dir',
@@ -331,11 +333,11 @@ PARSER.add_argument('--steps',
                     nargs="+",
                     help="steps to process")
 PARSER.add_argument('--preset',
-                    help="steps list preset in \r\n" +
-                    " \r\n".join([k + " = " + str(PRESET[k]) for k in PRESET]) +
-                    " \r\ndefault : " + PRESET_DEFAULT)
+                    help="steps list preset in\n" +
+                    " \n".join([k + " = " + str(PRESET[k]) for k in PRESET]) +
+                    " \ndefault : " + PRESET_DEFAULT)
 
-GROUP = PARSER.add_argument_group('Passthrough', description="Option to be passed to command lines (remove - in front of option names)\r\ne.g. --1 p ULTRA to use the ULTRA preset in openMVG_main_ComputeFeatures\r\nFor example, running the script as follows,\r\nMvgMvsPipeline.py input_dir output_dir --1 p HIGH n 8 --3 n ANNL2\r\nwhere --1 refer to openMVG_main_ComputeFeatures, p refers to\r\ndescriberPreset option which HIGH was chosen, and n refers to\r\nnumThreads which 8 was used. --3 refer to second step (openMVG_main_ComputeMatches),\r\nn refers to nearest_matching_method option which ANNL2 was chosen")
+GROUP = PARSER.add_argument_group('Passthrough', description="Option to be passed to command lines (remove - in front of option names)\nex. --1 p ULTRA to use the ULTRA preset in openMVG_main_ComputeFeatures\nFor example, running the script as follows,\nMvgMvsPipeline.py input_dir output_dir --1 p HIGH n 8 --3 n ANNL2\nwhere --1 refer to openMVG_main_ComputeFeatures, p refers to\ndescriberPreset option which HIGH was chosen, and n refers to\nnumThreads which 8 was used. --3 refer to second step (openMVG_main_ComputeMatches),\nn refers to nearest_matching_method option which ANNL2 was chosen")
 for n in range(STEPS.length()):
     GROUP.add_argument('--'+str(n), nargs='+')
 
@@ -440,9 +442,9 @@ for cstep in CONF.steps:
                 if subprocess.run(cmdline, check=True).returncode != 0:
                     break
             else:
-                sys.exit('\r\nProcess failed at step %i' % cstep)
+                sys.exit('\nProcess failed at step %i' % cstep)
         except KeyboardInterrupt:
-            sys.exit('\r\nProcess canceled by user at step %i, all files remains' % cstep)
+            sys.exit('\nProcess canceled by user at step %i, all files remains' % cstep)
     else:
         print('\t'.join(cmdline))
 
