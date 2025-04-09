@@ -33,6 +33,12 @@
 #include "Scene.h"
 #include "../Math/SimilarityTransform.h"
 
+#include <CGAL/Simple_cartesian.h>
+#include <CGAL/Search_traits_3.h>
+#include <CGAL/Orthogonal_k_neighbor_search.h>
+#include <CGAL/Kd_tree.h>
+#include <CGAL/Fuzzy_sphere.h>
+
 using namespace MVS;
 
 
@@ -1808,17 +1814,174 @@ void PromoteClosePoints(DepthArr& pointDepths, FloatArr& pointWeights, unsigned 
     }
 }
 
+void minMaxScale(FloatArr &arr)
+{
+    if (arr.empty())
+        return;
+    const auto [minVal, maxVal] = arr.GetMinMax();
+    const float range = maxVal - minVal;
+    if (range == 0.0f)
+        return;
+    for (size_t i = 0; i < arr.size(); ++i) {
+        arr[i] = (arr[i] - minVal) / range;
+    }
+}
+
+// Example function to export points + additional float properties to a PLY file
+bool ExportPLY(const PointCloud::PointArr &points,
+               const std::map<std::string, FloatArr> &floatProperties,
+               const std::string &filename)
+{
+    const size_t numPoints = points.size();
+
+    // Check each property array to ensure it has 'numPoints' entries
+    for (const auto &kv : floatProperties) {
+        if (kv.second.size() != numPoints) {
+            std::cerr << "[ExportPLY] Error: Property '" << kv.first
+                      << "' has size " << kv.second.size()
+                      << ", expected " << numPoints << ".\n";
+            return false;
+        }
+    }
+
+    // Open a file stream
+    std::ofstream ofs(filename.c_str());
+    if (!ofs) {
+        std::cerr << "[ExportPLY] Error: Cannot open file '" << filename << "' for writing.\n";
+        return false;
+    }
+
+    // Write ASCII PLY header
+    // (You can adapt to 'binary_little_endian 1.0' if needed.)
+    ofs << "ply\n";
+    ofs << "format ascii 1.0\n";
+    ofs << "comment Exported by ExportPLY\n";
+    ofs << "element vertex " << numPoints << "\n";
+
+    // Standard x, y, z
+    ofs << "property float x\n";
+    ofs << "property float y\n";
+    ofs << "property float z\n";
+
+    // Additional properties
+    for (const auto &kv : floatProperties) {
+        // PLY property names typically avoid spaces or special symbols
+        ofs << "property float " << kv.first << "\n";
+    }
+
+    ofs << "end_header\n";
+
+    // Write vertex data
+    // Each line: x y z <prop1> <prop2> ...
+    for (size_t i = 0; i < numPoints; ++i) {
+
+        ofs << points[i].x << " " << points[i].y << " " << points[i].z;
+
+        // For each property, write the corresponding float
+        for (const auto &kv : floatProperties) {
+            ofs << " " << kv.second[i];
+        }
+        ofs << "\n";
+    }
+
+    ofs.close();
+    if (!ofs.good()) {
+        std::cerr << "[ExportPLY] Warning: Issues occurred when writing file '"
+                  << filename << "'.\n";
+        return false;
+    }
+
+    return true;
+}
+
+
+float radialWeight2D(int width, int height, int x, int y, float alpha=2) {
+    float x_center = (width - 1) * 0.5f;
+    float y_center = (height - 1) * 0.5f;
+
+    float R = std::sqrt(x_center * x_center + y_center * y_center);
+
+    float dx = x - x_center;
+    float dy = y - y_center;
+    float distance = std::sqrt(dx * dx + dy * dy);
+
+    float r = distance / R;
+
+    float weight = 1.0f - std::pow(r, alpha);
+    return (weight > 0.0f) ? weight : 0.0f;
+}
+
+FloatArr ComputeMeanDistanceToClosestN(const PointCloud::PointArr &pts, int numberOfNeighbors)
+{
+    FloatArr meanDistances(pts.size());
+    meanDistances.MemsetValue(0);
+
+    typedef CGAL::Simple_cartesian<double>                  K;
+    typedef CGAL::Search_traits_3<K>                       TreeTraits;
+    typedef CGAL::Orthogonal_k_neighbor_search<TreeTraits> K_neighbor_search;
+    typedef K_neighbor_search::Tree                        Tree;
+    typedef K_neighbor_search::Distance                    Distance;
+
+    std::vector<K::Point_3> cgalPoints;
+    cgalPoints.reserve(pts.size());
+
+    // Convert each 3D point to a CGAL point
+    for (size_t i = 0; i < pts.size(); ++i)
+    {
+        cgalPoints.emplace_back(
+                static_cast<double>(pts[i].x),
+                static_cast<double>(pts[i].y),
+                static_cast<double>(pts[i].z)
+        );
+    }
+
+    // Build a KD-tree for neighbor searches
+    Tree tree(cgalPoints.begin(), cgalPoints.end());
+
+    // For each point, find its N nearest neighbors and compute average distance
+    for (size_t i = 0; i < cgalPoints.size(); ++i)
+    {
+        K_neighbor_search search(tree, cgalPoints[i], numberOfNeighbors);
+        double sumDist = 0.0;
+        int count = 0;
+        for (auto it = search.begin(); it != search.end(); ++it)
+        {
+            double dist = std::sqrt(it->second);  // it->second is squared distance
+            sumDist += dist;
+            count++;
+        }
+        if (count > 0)
+        {
+            double meanDist = sumDist / static_cast<double>(count);
+            meanDistances[i] = static_cast<float>(meanDist);
+        }
+    }
+
+    return meanDistances;
+}
+
 void Scene::ROIPointWeightsFromSparse(PointCloud::PointArr &points, FloatArr &pointScales, FloatArr &pointWeights, float downweightFar) {
+
+    std::cout << "Estimating ROI from sparse point-cloud" << std::endl;
 
     const int patternCenterBand = 2;
     const float patternRadius = 0.7f;
     const float patternOutsideWeight = 0.5f;
 
-    FloatArr imageCenterWeight;
-    FloatArr depthWeight;
-    FloatArr numberOfViews;
-    const int numberOfNeighbors = 16;
+    const float depthWeightScale = 1.f;
+
+    FloatArr imageCenterWeights;
+    FloatArr depthWeights;
+    FloatArr numberOfViewsWeights;
     FloatArr meanDistanceToClosestN;
+
+//    imageCenterWeights.MemsetValue(0);
+//    depthWeights.MemsetValue(0);
+//    numberOfViewsWeights.MemsetValue(0);
+
+    const int numberOfNeighbors = 16;
+
+    FloatArr pointcloudMeanDistanceToClosestN = ComputeMeanDistanceToClosestN(pointcloud.points, numberOfNeighbors);
 
     // use the sparse point-cloud directly
     const int numPointsPerImage = 500;
@@ -1842,18 +2005,60 @@ void Scene::ROIPointWeightsFromSparse(PointCloud::PointArr &points, FloatArr &po
             if (!Image8U::isInside(pt, image.GetSize()))
                 continue;
             const Point2i ptc(pt.x - image.width / 2, pt.y - image.height / 2);
-            if (normSq(ptc) > patternAbsRadiusSq)
-                continue;
+
             points.emplace_back(X);
             pointDepths.emplace_back((Depth) camX.z);
-            depthWeight.emplace_back((Depth) camX.z));
+
+            const float depthWeight = 1.0f / (1.0f + depthWeightScale * camX.z);
+            depthWeights.emplace_back(depthWeight);
+
+            const float numberOfViewsWeight = views.size();
+            numberOfViewsWeights.emplace_back(numberOfViewsWeight);
+
+            const float imageCenterWeight = radialWeight2D(image.width, image.height, pt.x, pt.y, 2.0f);
+            imageCenterWeights.emplace_back(imageCenterWeight);
+
+            const float meanDistanceWeight = 1.0f / (1.0f + pointcloudMeanDistanceToClosestN[idxPoint]);
+            meanDistanceToClosestN.emplace_back(meanDistanceWeight);
+
             pointScales.emplace_back(image.camera.GetFootprintImage((Depth) camX.z));
             pointWeights.emplace_back(
                     ABS(ptc.x) < patternCenterBand && ABS(ptc.y) < patternCenterBand ? 1.f : patternOutsideWeight);
         }
-        if (downweightFar > 0)
-            PromoteClosePoints(pointDepths, pointWeights, numPointsStart, downweightFar);
+//        if (downweightFar > 0)
+//            PromoteClosePoints(pointDepths, pointWeights, numPointsStart, downweightFar);
     }
+
+
+    minMaxScale(imageCenterWeights);
+    minMaxScale(depthWeights);
+    minMaxScale(numberOfViewsWeights);
+    minMaxScale(meanDistanceToClosestN);
+    minMaxScale(pointScales);
+
+    for (size_t i = 0; i < points.size(); ++i) {
+        numberOfViewsWeights[i] = 1.f - numberOfViewsWeights[i];
+    }
+
+    std::cout << "Processing complete. Properties summary:" << std::endl;
+    std::cout << "Number of points: " << points.size() << std::endl;
+    std::cout << "Image center weights: " << imageCenterWeights.size() << std::endl;
+    std::cout << "Depth weights: " << depthWeights.size() << std::endl;
+    std::cout << "Number of views weights: " << numberOfViewsWeights.size() << std::endl;
+    std::cout << "Mean distance to closest N: " << meanDistanceToClosestN.size() << std::endl;
+    std::cout << "Point weights: " << pointWeights.size() << std::endl;
+    std::cout << "Point scales: " << pointScales.size() << std::endl;
+    std::cout << "Exporting to PLY..." << std::endl;
+
+    ExportPLY(points, {
+        {"imageCenterWeights", imageCenterWeights},
+        {"depthWeights", depthWeights},
+        {"numberOfViewsWeights", numberOfViewsWeights},
+        {"meanDistanceToClosestN", meanDistanceToClosestN},
+        {"pointWeights", pointWeights},
+        {"pointScales", pointScales}
+    }, "output.ply");
+
 }
 
 // estimate the region-of-interest (ROI) based on the known poses and sparse point-cloud
@@ -2101,6 +2306,8 @@ bool Scene::EstimateROI(float weightROI, float downweightFar, bool useDepthMaps,
 	obb.m_ext = aabb.GetSize() * (0.5f * weightROI);
 	VERBOSE("ROI estimated with position (%f,%f,%f) and extent (%f,%f,%f)",
 			obb.m_pos[0], obb.m_pos[1], obb.m_pos[2], obb.m_ext[0], obb.m_ext[1], obb.m_ext[2]);
+
+    throw std::runtime_error("ROI estimation complete");
 	return true;
 } // EstimateROI
 /*----------------------------------------------------------------*/
