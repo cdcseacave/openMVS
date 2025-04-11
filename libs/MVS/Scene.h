@@ -123,8 +123,8 @@ public:
 	void AddNoiseCameraPoses(float epsPosition, float epsRotation);
 	Scene SubScene(const IIndexArr& idxImages) const;
 	Scene& CropToROI(const OBB3f&, unsigned minNumPoints = 3);
-	bool EstimateROI(float weightROI=1.1f, float downweightFar=0.1f, bool useDepthMaps=false, bool use2dCovariance=false);
-    void ROIPointWeightsFromSparse(PointCloud::PointArr &points, FloatArr &pointScales, FloatArr &pointWeights, float downweightFar);
+	bool EstimateROI(float weightROI=1.1f, bool use2dCovariance=false);
+	void ROIPointWeightsFromSparse(PointCloud::PointArr &points, FloatArr &pointWeights);
 
 	// Tower scene
 	bool ComputeTowerCylinder(Point2f& centerPoint, float& fRadius, float& fROIRadius, float& zMin, float& zMax, float& minCamZ, const int towerMode);

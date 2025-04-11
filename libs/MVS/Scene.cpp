@@ -1814,8 +1814,7 @@ void PromoteClosePoints(DepthArr& pointDepths, FloatArr& pointWeights, unsigned 
     }
 }
 
-void minMaxScale(FloatArr &arr)
-{
+void MinMaxScale(FloatArr &arr) {
     if (arr.empty())
         return;
     const auto [minVal, maxVal] = arr.GetMinMax();
@@ -1894,8 +1893,32 @@ bool ExportPLY(const PointCloud::PointArr &points,
     return true;
 }
 
+// Winsorize a vector in place: limits values below the lower percentile and above the upper percentile
+void Winsorize(FloatArr& data, float lower_percentile, float upper_percentile) {
+    if (data.empty() || lower_percentile < 0.0 || upper_percentile > 100.0 || lower_percentile > upper_percentile) {
+        throw std::invalid_argument("Invalid input or percentile range");
+    }
 
-float radialWeight2D(int width, int height, int x, int y, float alpha=2) {
+    FloatArr sorted_data(data);
+    std::sort(sorted_data.begin(), sorted_data.end());
+
+    size_t n = sorted_data.size();
+    size_t lower_index = static_cast<size_t>(lower_percentile / 100.0 * (n - 1));
+    size_t upper_index = static_cast<size_t>(upper_percentile / 100.0 * (n - 1));
+
+    float lower_value = sorted_data[lower_index];
+    float upper_value = sorted_data[upper_index];
+
+    for (auto& value : data) {
+        if (value < lower_value) {
+            value = lower_value;
+        } else if (value > upper_value) {
+            value = upper_value;
+        }
+    }
+}
+
+float RadialWeight2D(int width, int height, int x, int y, float alpha=2) {
     float x_center = (width - 1) * 0.5f;
     float y_center = (height - 1) * 0.5f;
 
@@ -1960,44 +1983,40 @@ FloatArr ComputeMeanDistanceToClosestN(const PointCloud::PointArr &pts, int numb
     return meanDistances;
 }
 
-void Scene::ROIPointWeightsFromSparse(PointCloud::PointArr &points, FloatArr &pointScales, FloatArr &pointWeights, float downweightFar) {
-
-    std::cout << "Estimating ROI from sparse point-cloud" << std::endl;
-
-    const int patternCenterBand = 2;
-    const float patternRadius = 0.7f;
-    const float patternOutsideWeight = 0.5f;
-
-    const float depthWeightScale = 1.f;
-
-    FloatArr imageCenterWeights;
-    FloatArr depthWeights;
-    FloatArr numberOfViewsWeights;
-    FloatArr meanDistanceToClosestN;
-
-//    imageCenterWeights.MemsetValue(0);
-//    depthWeights.MemsetValue(0);
-//    numberOfViewsWeights.MemsetValue(0);
-
+void Scene::ROIPointWeightsFromSparse(PointCloud::PointArr &points, FloatArr &pointWeights) {
     const int numberOfNeighbors = 16;
+    const float meanNeighborDistanceWLambda = 0.25f;
+    const float imageCenterWLambda = 0.25f;
+    const float numberOfViewsWLambda = 0;
+    const float depthWLambda = 1.f - meanNeighborDistanceWLambda - imageCenterWLambda - numberOfViewsWLambda;
+
+    points.CopyOf(pointcloud.points);
+
+    FloatArr imageCenterWeights(points.size());
+    FloatArr depthWeights(points.size());
+    FloatArr numberOfViewsWeights(points.size());
+    FloatArr meanDistanceToClosestN(points.size());
+
+    imageCenterWeights.MemsetValue(0);
+    depthWeights.MemsetValue(0);
 
     FloatArr pointcloudMeanDistanceToClosestN = ComputeMeanDistanceToClosestN(pointcloud.points, numberOfNeighbors);
 
     // use the sparse point-cloud directly
     const int numPointsPerImage = 500;
-    points.reserve(numPointsPerImage * images.size());
-    pointScales.reserve(numPointsPerImage * images.size());
-    pointWeights.reserve(numPointsPerImage * images.size());
-    FOREACH(idxImage, images) {
-        const Image &image = images[idxImage];
-        if (!image.IsValid())
-            continue;
-        const unsigned numPointsStart((uint32_t) points.size());
-        DepthArr pointDepths(0, numPointsPerImage);
-        const int patternAbsRadiusSq(ROUND2INT(SQUARE(patternRadius * MINF(image.width, image.height))));
-        FOREACH(idxPoint, pointcloud.points) {
-            const PointCloud::ViewArr &views = pointcloud.pointViews[idxPoint];
-            if (views.FindFirst(idxImage) == PointCloud::ViewArr::NO_INDEX)
+    pointWeights.resize(points.size());
+
+    FOREACH(idxPoint, pointcloud.points) {
+        const PointCloud::ViewArr &views = pointcloud.pointViews[idxPoint];
+        numberOfViewsWeights[idxPoint] = views.size();
+
+        const float meanDistanceWeight = 1.0f / (1.0f + pointcloudMeanDistanceToClosestN[idxPoint]);
+        meanDistanceToClosestN[idxPoint] = meanDistanceWeight;
+
+        FOREACH(idxView, views) {
+            int idxImage = views[idxView];
+            const Image &image = images[idxImage];
+            if (!image.IsValid())
                 continue;
             const Point3f &X(pointcloud.points[idxPoint]);
             const Point3 camX(image.camera.TransformPointW2C(Cast<REAL>(X)));
@@ -2006,217 +2025,61 @@ void Scene::ROIPointWeightsFromSparse(PointCloud::PointArr &points, FloatArr &po
                 continue;
             const Point2i ptc(pt.x - image.width / 2, pt.y - image.height / 2);
 
-            points.emplace_back(X);
-            pointDepths.emplace_back((Depth) camX.z);
+            const float depthWeight = 1.0f / (1.0f + camX.z);
+            depthWeights[idxPoint] += depthWeight;
 
-            const float depthWeight = 1.0f / (1.0f + depthWeightScale * camX.z);
-            depthWeights.emplace_back(depthWeight);
-
-            const float numberOfViewsWeight = views.size();
-            numberOfViewsWeights.emplace_back(numberOfViewsWeight);
-
-            const float imageCenterWeight = radialWeight2D(image.width, image.height, pt.x, pt.y, 2.0f);
-            imageCenterWeights.emplace_back(imageCenterWeight);
-
-            const float meanDistanceWeight = 1.0f / (1.0f + pointcloudMeanDistanceToClosestN[idxPoint]);
-            meanDistanceToClosestN.emplace_back(meanDistanceWeight);
-
-            pointScales.emplace_back(image.camera.GetFootprintImage((Depth) camX.z));
-            pointWeights.emplace_back(
-                    ABS(ptc.x) < patternCenterBand && ABS(ptc.y) < patternCenterBand ? 1.f : patternOutsideWeight);
+            const float imageCenterWeight = RadialWeight2D(image.width, image.height, pt.x, pt.y, 2.0f);
+            imageCenterWeights[idxPoint] += imageCenterWeight;
         }
-//        if (downweightFar > 0)
-//            PromoteClosePoints(pointDepths, pointWeights, numPointsStart, downweightFar);
     }
-
-
-    minMaxScale(imageCenterWeights);
-    minMaxScale(depthWeights);
-    minMaxScale(numberOfViewsWeights);
-    minMaxScale(meanDistanceToClosestN);
-    minMaxScale(pointScales);
 
     for (size_t i = 0; i < points.size(); ++i) {
-        numberOfViewsWeights[i] = 1.f - numberOfViewsWeights[i];
+        depthWeights[i] /= numberOfViewsWeights[i];
+        imageCenterWeights[i] /= numberOfViewsWeights[i];
     }
 
-    std::cout << "Processing complete. Properties summary:" << std::endl;
-    std::cout << "Number of points: " << points.size() << std::endl;
-    std::cout << "Image center weights: " << imageCenterWeights.size() << std::endl;
-    std::cout << "Depth weights: " << depthWeights.size() << std::endl;
-    std::cout << "Number of views weights: " << numberOfViewsWeights.size() << std::endl;
-    std::cout << "Mean distance to closest N: " << meanDistanceToClosestN.size() << std::endl;
-    std::cout << "Point weights: " << pointWeights.size() << std::endl;
-    std::cout << "Point scales: " << pointScales.size() << std::endl;
-    std::cout << "Exporting to PLY..." << std::endl;
+    // Set top 1% and bottom 1% to max and min respectively
+    Winsorize(imageCenterWeights, 0.1f, 99.9f);
+    Winsorize(depthWeights, 0.1f, 99.9f);
+    Winsorize(meanDistanceToClosestN, 0.1f, 99.9f);
+
+    MinMaxScale(imageCenterWeights);
+    MinMaxScale(depthWeights);
+    MinMaxScale(numberOfViewsWeights);
+    MinMaxScale(meanDistanceToClosestN);
+
+    for (size_t i = 0; i < points.size(); ++i) {
+        pointWeights[i] = imageCenterWLambda * imageCenterWeights[i] +
+                          depthWLambda * depthWeights[i] +
+                          numberOfViewsWLambda * numberOfViewsWeights[i] +
+                          meanNeighborDistanceWLambda * meanDistanceToClosestN[i];
+    }
 
     ExportPLY(points, {
         {"imageCenterWeights", imageCenterWeights},
         {"depthWeights", depthWeights},
         {"numberOfViewsWeights", numberOfViewsWeights},
         {"meanDistanceToClosestN", meanDistanceToClosestN},
-        {"pointWeights", pointWeights},
-        {"pointScales", pointScales}
+        {"pointWeights", pointWeights}
     }, "output.ply");
 
 }
 
 // estimate the region-of-interest (ROI) based on the known poses and sparse point-cloud
 //  - weightROI: controls how tite the ROI is set
-//  - downweightFar: downweights points far from the camera (0 - disabled)
-//  - useDepthMaps: uses depth-maps to estimate the ROI; loads depth-maps from disk if available OR estimates them from the sparse point-cloud
 //  - use2dCovariance: assumes the scene is oriented Z up
-bool Scene::EstimateROI(float weightROI, float downweightFar, bool useDepthMaps, bool use2dCovariance)
+bool Scene::EstimateROI(float weightROI, bool use2dCovariance)
 {
-    std::cout << "ESTIMATING ROI: weightROI=" << weightROI << " downweightFar=" << downweightFar << " useDepthMaps=" << useDepthMaps << " use2dCovariance=" << use2dCovariance << std::endl;
-
 	if (!pointcloud.IsValid() || pointcloud.points.size() < 100 || images.size() < 10)
 		return false;
 
-	const int patternCenterBand = 2;
-	const float patternRadius = 0.7f;
-	const float patternOutsideWeight = 0.5f;
-
 	// extract 3D point-cloud
 	PointCloud::PointArr points;
-	FloatArr pointScales;
 	FloatArr pointWeights;
 
-    if (!useDepthMaps) {
-#if 1
-        ROIPointWeightsFromSparse(points, pointScales, pointWeights, downweightFar);
-#else
-        // use the sparse point-cloud directly
-        const int numPointsPerImage = 500;
-        points.reserve(numPointsPerImage * images.size());
-        pointScales.reserve(numPointsPerImage * images.size());
-        pointWeights.reserve(numPointsPerImage * images.size());
-        FOREACH(idxImage, images) {
-            const Image &image = images[idxImage];
-            if (!image.IsValid())
-                continue;
-            const unsigned numPointsStart((uint32_t) points.size());
-            DepthArr pointDepths(0, numPointsPerImage);
-            const int patternAbsRadiusSq(ROUND2INT(SQUARE(patternRadius * MINF(image.width, image.height))));
-            FOREACH(idxPoint, pointcloud.points) {
-                const PointCloud::ViewArr &views = pointcloud.pointViews[idxPoint];
-                if (views.FindFirst(idxImage) == PointCloud::ViewArr::NO_INDEX)
-                    continue;
-                const Point3f &X(pointcloud.points[idxPoint]);
-                const Point3 camX(image.camera.TransformPointW2C(Cast<REAL>(X)));
-                const Point2i pt(ROUND2INT(image.camera.TransformPointC2I(camX)));
-                if (!Image8U::isInside(pt, image.GetSize()))
-                    continue;
-                const Point2i ptc(pt.x - image.width / 2, pt.y - image.height / 2);
-                if (normSq(ptc) > patternAbsRadiusSq)
-                    continue;
-                points.emplace_back(X);
-                pointDepths.emplace_back((Depth) camX.z);
-                pointScales.emplace_back(image.camera.GetFootprintImage((Depth) camX.z));
-                pointWeights.emplace_back(
-                        ABS(ptc.x) < patternCenterBand && ABS(ptc.y) < patternCenterBand ? 1.f : patternOutsideWeight);
-            }
-            if (downweightFar > 0)
-                PromoteClosePoints(pointDepths, pointWeights, numPointsStart, downweightFar);
-#endif
-	} else {
-		// try to use available depth-maps or estimate them from the sparse point-cloud
-		const int maxSizeDM = 64;
-		const cv::Size sizeDM(images.front().GetSize(maxSizeDM));
-		const cv::Size sizeDM2(sizeDM / 2);
-		const int patternAbsRadiusSq(ROUND2INT(SQUARE(patternRadius * MINF(sizeDM2.width, sizeDM2.height))));
-		// sample mostly from the center of the image
-		std::vector<Point2i> patternPoints;
-		for (int y = 1; y < sizeDM.height-1; ++y) {
-			for (int x = 1; x < sizeDM.width-1; ++x) {
-				if (normSq(Point2i(x-sizeDM2.width, y-sizeDM2.height)) > patternAbsRadiusSq)
-					continue;
-				patternPoints.emplace_back(x, y);
-			}
-		}
-		const size_t numCenterPixels(patternPoints.size());
-		{
-			const int y = sizeDM2.height;
-			for (int x = 1; x < sizeDM.width-1; ++x) {
-				if (normSq(Point2i(x-sizeDM2.width, y-sizeDM2.height)) < patternAbsRadiusSq)
-					continue;
-				patternPoints.emplace_back(x, y);
-			}
-		}
-		{
-			const int x = sizeDM2.width;
-			for (int y = 1; y < sizeDM.height-1; ++y) {
-				if (normSq(Point2i(x-sizeDM2.width, y-sizeDM2.height)) < patternAbsRadiusSq)
-					continue;
-				patternPoints.emplace_back(x, y);
-			}
-		}
-		// try to load depth-map data
-		const auto LoadDepthMap = [](IIndex ID, const cv::Size& sizeDM) {
-			DepthMap depthMap;
-			String imageFileName;
-			IIndexArr IDs;
-			cv::Size imageSize;
-			Camera camera;
-			Depth dMin, dMax;
-			NormalMap normalMap;
-			ConfidenceMap confMap;
-			ViewsMap viewsMap;
-			if (!ImportDepthDataRaw(ComposeDepthFilePath(ID, "dmap"),
-				imageFileName, IDs, imageSize, camera.K, camera.R, camera.C,
-				dMin, dMax, depthMap, normalMap, confMap, viewsMap, 1))
-				return depthMap;
-			cv::resize(depthMap, depthMap, sizeDM, 0, 0, cv::INTER_NEAREST);
-			return depthMap;
-		};
-		// extract 3D point-cloud
-		points.reserve(patternPoints.size() * images.size());
-		pointScales.reserve(patternPoints.size() * images.size());
-		pointWeights.reserve(patternPoints.size() * images.size());
-		FOREACH(idxImage, images) {
-			const Image& image = images[idxImage];
-			if (!image.IsValid())
-				continue;
-			const Camera camera(image.GetCamera(platforms, sizeDM, true));
-			const unsigned numPointsStart((uint32_t)points.size());
-			DepthMap depthMap = LoadDepthMap(image.ID, sizeDM);
-			if (depthMap.empty()) {
-				// fetch pairs of corresponding image points
-				IndexArr pointIndices;
-				FOREACH(idxPoint, pointcloud.points) {
-					const PointCloud::ViewArr& views = pointcloud.pointViews[idxPoint];
-					if (views.FindFirst(idxImage) != PointCloud::ViewArr::NO_INDEX)
-						pointIndices.push_back((uint32_t)idxPoint);
-				}
-				// estimate a coarse depth-map from the sparse point-cloud
-				Depth dMin, dMax;
-				TriangulatePoints2DepthMap(camera, sizeDM, pointcloud, pointIndices, depthMap, dMin, dMax, image.avgDepth);
-			}
-			// sample points from the depth-map
-			DepthArr pointDepths(0, patternPoints.size());
-			FOREACH(i, patternPoints) {
-				const Point2i& pt = patternPoints[i];
-				const Depth depth = depthMap(pt);
-				if (depth <= 0)
-					continue;
-				if (depthMap(pt.y-1,pt.x) <= 0)
-					continue;
-				if (depthMap(pt.y+1,pt.x) <= 0)
-					continue;
-				if (depthMap(pt.y,pt.x-1) <= 0)
-					continue;
-				if (depthMap(pt.y,pt.x+1) <= 0)
-					continue;
-				points.emplace_back(camera.TransformPointI2W(Point3(pt.x, pt.y, depth)));
-				pointScales.emplace_back(image.camera.GetFootprintImage(depth));
-				pointWeights.emplace_back(i < numCenterPixels ? 1.f : patternOutsideWeight);
-				pointDepths.emplace_back(depth);
-			}
-			if (downweightFar > 0)
-				PromoteClosePoints(pointDepths, pointWeights, numPointsStart, downweightFar);
-		}
-	}
-	if (pointScales.size() < 30)
+    ROIPointWeightsFromSparse(points, pointWeights);
+
+	if (pointWeights.size() < 30)
 		return false;
 	// dump ROI candidate points
 	#if TD_VERBOSE != TD_VERBOSE_OFF
@@ -2227,16 +2090,17 @@ bool Scene::EstimateROI(float weightROI, float downweightFar, bool useDepthMaps,
 	}
 	#endif
 
-	// keep points within mean depth
-	const std::pair<Depth,Depth> ret = ComputeX84Threshold(pointScales.data(), pointScales.size(), 0.9f);
+	const std::pair<Depth,Depth> ret = ComputeX84Threshold(pointWeights.data(), pointWeights.size(), 0.9f);
 	const Depth thScale(ret.first - ret.second);
+    DEBUG_ULTIMATE("ROI Weight median: %f, trust region: %f, threshold: %f", ret.first, ret.second, thScale);
+
 	RFOREACH(i, points) {
-		if (pointScales[i] < thScale) {
+		if (pointWeights[i] < thScale) {
 			points.RemoveAt(i);
 			pointWeights.RemoveAt(i);
 		}
 	}
-	pointScales.Release();
+    pointWeights.Release();
 	// dump ROI points
 	#if TD_VERBOSE != TD_VERBOSE_OFF
 	if (VERBOSITY_LEVEL > 2) {
@@ -2249,7 +2113,7 @@ bool Scene::EstimateROI(float weightROI, float downweightFar, bool useDepthMaps,
 	// compute the center
 	TAccumulator<Point3f> accum;
 	FOREACH(i, points)
-		accum.Add(points[i], pointWeights[i]);
+		accum.Add(points[i], 1.f);
 	const Point3f center(accum.Normalized());
 	// compute rotation
 	Matrix3x3f R;
@@ -2307,7 +2171,6 @@ bool Scene::EstimateROI(float weightROI, float downweightFar, bool useDepthMaps,
 	VERBOSE("ROI estimated with position (%f,%f,%f) and extent (%f,%f,%f)",
 			obb.m_pos[0], obb.m_pos[1], obb.m_pos[2], obb.m_ext[0], obb.m_ext[1], obb.m_ext[2]);
 
-    throw std::runtime_error("ROI estimation complete");
 	return true;
 } // EstimateROI
 /*----------------------------------------------------------------*/

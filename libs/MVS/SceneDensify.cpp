@@ -1926,7 +1926,7 @@ bool Scene::DenseReconstruction(int nFusionMode, float fWeightROI, bool bCrop2RO
 
 	if (!pointcloud.IsEmpty()) {
 		if (fWeightROI > 0)
-			EstimateROI(fWeightROI, 0.1f, true);
+			EstimateROI(fWeightROI, true);
 		if (bCrop2ROI && IsBounded()) {
 			TD_TIMER_START();
 			const size_t numPoints = pointcloud.GetSize();
