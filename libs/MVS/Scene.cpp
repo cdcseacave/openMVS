@@ -1826,73 +1826,6 @@ void MinMaxScale(FloatArr &arr) {
     }
 }
 
-// Example function to export points + additional float properties to a PLY file
-bool ExportPLY(const PointCloud::PointArr &points,
-               const std::map<std::string, FloatArr> &floatProperties,
-               const std::string &filename)
-{
-    const size_t numPoints = points.size();
-
-    // Check each property array to ensure it has 'numPoints' entries
-    for (const auto &kv : floatProperties) {
-        if (kv.second.size() != numPoints) {
-            std::cerr << "[ExportPLY] Error: Property '" << kv.first
-                      << "' has size " << kv.second.size()
-                      << ", expected " << numPoints << ".\n";
-            return false;
-        }
-    }
-
-    // Open a file stream
-    std::ofstream ofs(filename.c_str());
-    if (!ofs) {
-        std::cerr << "[ExportPLY] Error: Cannot open file '" << filename << "' for writing.\n";
-        return false;
-    }
-
-    // Write ASCII PLY header
-    // (You can adapt to 'binary_little_endian 1.0' if needed.)
-    ofs << "ply\n";
-    ofs << "format ascii 1.0\n";
-    ofs << "comment Exported by ExportPLY\n";
-    ofs << "element vertex " << numPoints << "\n";
-
-    // Standard x, y, z
-    ofs << "property float x\n";
-    ofs << "property float y\n";
-    ofs << "property float z\n";
-
-    // Additional properties
-    for (const auto &kv : floatProperties) {
-        // PLY property names typically avoid spaces or special symbols
-        ofs << "property float " << kv.first << "\n";
-    }
-
-    ofs << "end_header\n";
-
-    // Write vertex data
-    // Each line: x y z <prop1> <prop2> ...
-    for (size_t i = 0; i < numPoints; ++i) {
-
-        ofs << points[i].x << " " << points[i].y << " " << points[i].z;
-
-        // For each property, write the corresponding float
-        for (const auto &kv : floatProperties) {
-            ofs << " " << kv.second[i];
-        }
-        ofs << "\n";
-    }
-
-    ofs.close();
-    if (!ofs.good()) {
-        std::cerr << "[ExportPLY] Warning: Issues occurred when writing file '"
-                  << filename << "'.\n";
-        return false;
-    }
-
-    return true;
-}
-
 // Winsorize a vector in place: limits values below the lower percentile and above the upper percentile
 void Winsorize(FloatArr& data, float lower_percentile, float upper_percentile) {
     if (data.empty() || lower_percentile < 0.0 || upper_percentile > 100.0 || lower_percentile > upper_percentile) {
@@ -2054,15 +1987,6 @@ void Scene::ROIPointWeightsFromSparse(PointCloud::PointArr &points, FloatArr &po
                           numberOfViewsWLambda * numberOfViewsWeights[i] +
                           meanNeighborDistanceWLambda * meanDistanceToClosestN[i];
     }
-
-    ExportPLY(points, {
-        {"imageCenterWeights", imageCenterWeights},
-        {"depthWeights", depthWeights},
-        {"numberOfViewsWeights", numberOfViewsWeights},
-        {"meanDistanceToClosestN", meanDistanceToClosestN},
-        {"pointWeights", pointWeights}
-    }, "output.ply");
-
 }
 
 // estimate the region-of-interest (ROI) based on the known poses and sparse point-cloud
