@@ -2085,7 +2085,7 @@ bool Scene::EstimateROI(float weightROI, bool use2dCovariance)
 	EnsureRotationMatrix(R);
 
 	// compute extent
-	AABB3f aabb(points.front());
+	AABB3f aabb(Point3f(R * points.front()));
 	for (const Point3f& p: points)
 		aabb.Insert(Point3f(R * p));
 	// create oriented bounding-box
