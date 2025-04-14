@@ -409,6 +409,54 @@ void Mesh::ComputeNormalVertices()
 }
 #endif
 
+uint32_t Mesh::ComputeTexturePatchFaces(FaceIdxArr& face_patch_ids) const {
+	ASSERT(faceTexcoords.size() == faces.size() * 3);
+	face_patch_ids.Resize(faces.GetSize());
+	face_patch_ids.MemsetValue(NO_ID);
+	std::stack<FIndex> stack_faces;
+	uint32_t patch_id = 0;
+	FOREACH(idx_face, faces) {
+		if (face_patch_ids[idx_face] != NO_ID)
+			continue;
+		face_patch_ids[idx_face] = patch_id;
+		stack_faces.push(idx_face);
+		do {
+			FIndex iF = stack_faces.top();
+			stack_faces.pop();
+			const Mesh::FaceFaces& ffaces = faceFaces[iF];
+			for (int i = 0; i < 3; ++i) {
+				const FIndex iFAdj = ffaces[i];
+				if (iFAdj == NO_ID || face_patch_ids[iFAdj] != NO_ID)
+					continue;
+				VIndex iV0, iV1; //indexes of a common vertex
+				for (int v0 = 0; v0 < 3; ++v0) {
+					const Face& f = faces[iF];
+					const Face& fAdj = faces[iFAdj];
+					bool bCommon = false;
+					for (int v1 = 0; v1 < 3; ++v1) {
+						if (f[v0] == fAdj[v1]) {
+							iV0 = v0;
+							iV1 = v1;
+							bCommon = true;
+							break;
+						}
+					}
+					if (bCommon)
+						break;
+				}
+				const TexCoord tcV = faceTexcoords[iF * 3 + iV0];
+				const TexCoord tcAdj = faceTexcoords[iFAdj * 3 + iV1];
+				if (tcV.x == tcAdj.x && tcV.y == tcAdj.y) {
+					face_patch_ids[iFAdj] = patch_id;
+					stack_faces.push(iFAdj);
+				}
+			}
+		} while (!stack_faces.empty());
+		++patch_id;
+	}
+	return patch_id;
+} // ComputeTexturePatchFaces
+
 // Smoothen the normals for each face
 //  - fMaxGradient: maximum angle (in degrees) difference between neighbor normals that is
 //    allowed to take into consideration; higher angles are ignored
@@ -3978,6 +4026,46 @@ REAL Mesh::ComputeVolume() const
 	for (const Face& face: faces)
 		volume += ComputeTriangleVolume(vertices[face[0]], vertices[face[1]], vertices[face[2]]);
 	return volume;
+}
+
+String Mesh::PlotTexturePatch(const FIndex dbgFaceId, FaceIdxArr& face_patch_ids, cv::Mat& imgOut, const bool bSaveToFile) const {
+	// split texture in patches
+	if (face_patch_ids.size() != faces.size()) {
+		ComputeTexturePatchFaces(face_patch_ids);
+	}
+	// get the list of all faces from the same patch as debug face
+	cList<Mesh::FIndex> patchFaces;
+	const uint32_t dbgPatchId(face_patch_ids[dbgFaceId]);
+	FOREACH(idx_face, face_patch_ids) {
+		if (dbgPatchId == face_patch_ids[idx_face])
+			patchFaces.emplace_back(idx_face);
+	}
+	const Mesh::Face fDbg = faces[dbgFaceId];
+	cv::Mat imgDbg;
+	textureDiffuse.copyTo(imgDbg);
+	AABB2f boundingBox(true);
+	FOREACH(fIdx, patchFaces) {
+		const Mesh::FIndex& fId = patchFaces[fIdx];
+		const Mesh::TexCoord& texDbgCoordsV0 = faceTexcoords[fId * 3]; boundingBox.Insert(texDbgCoordsV0);
+		const Mesh::TexCoord& texDbgCoordsV1 = faceTexcoords[fId * 3 + 1]; boundingBox.Insert(texDbgCoordsV1);
+		const Mesh::TexCoord& texDbgCoordsV2 = faceTexcoords[fId * 3 + 2]; boundingBox.Insert(texDbgCoordsV2);
+		cv::line(imgDbg, texDbgCoordsV0, texDbgCoordsV1, cv::Scalar(50, 50, 250));
+		cv::line(imgDbg, texDbgCoordsV0, texDbgCoordsV2, cv::Scalar(50, 50, 250));
+		cv::line(imgDbg, texDbgCoordsV2, texDbgCoordsV1, cv::Scalar(50, 50, 250));
+		if (fId == dbgFaceId) {
+			cv::circle(imgDbg, texDbgCoordsV0, 3, cv::Scalar(100, 150, 250), 2);
+			cv::circle(imgDbg, texDbgCoordsV1, 3, cv::Scalar(100, 150, 250), 2);
+			cv::circle(imgDbg, texDbgCoordsV2, 3, cv::Scalar(100, 150, 250), 2);
+		}
+	}
+	cv::Rect sourceRect(FLOOR(boundingBox.ptMin.x()), FLOOR(boundingBox.ptMin.y()), CEIL(boundingBox.ptMax.x() - boundingBox.ptMin.x()), CEIL(boundingBox.ptMax.y() - boundingBox.ptMin.y())); // ROI of the patch
+	imgDbg(sourceRect).copyTo(imgOut);
+	if (bSaveToFile) {
+		String sImgName = String::FormatString("dbgPatch_%d_%d.jpg", dbgPatchId, dbgFaceId);
+		cv::imwrite(MAKE_PATH_SAFE(sImgName), imgOut);
+		return sImgName;
+	}
+	return String();
 }
 /*----------------------------------------------------------------*/
 
