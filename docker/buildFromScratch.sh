@@ -10,7 +10,7 @@ while [[ $# -gt 0 ]]; do
     key="$1"
     case $key in
         --cuda)
-            CUDA_BUILD_ARGS="--build-arg CUDA=1 --build-arg BASE_IMAGE=nvidia/cuda:11.8.0-devel-ubuntu22.04"
+            CUDA_BUILD_ARGS="--build-arg CUDA=1 --build-arg BASE_IMAGE=nvidia/cuda:12.9.1-devel-ubuntu24.04"
 
             CUDA_RUNTIME_ARGS="--gpus all -e NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics"
 

@@ -36,7 +36,7 @@ done
 if [[ "$CUDA" == "1" ]]; then
     echo "Building with CUDA support"
     EIGEN_BUILD_ARG="-DCUDA_TOOLKIT_ROOT_DIR=/usr/local/cuda/"
-    OPENMVS_BUILD_ARG="-DOpenMVS_USE_CUDA=ON -DCMAKE_LIBRARY_PATH=/usr/local/cuda/lib64/stubs/ -DCUDA_TOOLKIT_ROOT_DIR=/usr/local/cuda/ -DCUDA_INCLUDE_DIRS=/usr/local/cuda/include/ -DCUDA_CUDART_LIBRARY=/usr/local/cuda/lib64 -DCUDA_NVCC_EXECUTABLE=/usr/local/cuda/bin/"
+    OPENMVS_BUILD_ARG="-DOpenMVS_USE_CUDA=ON -DCMAKE_LIBRARY_PATH=/usr/local/cuda/lib64/stubs/ -DCUDA_TOOLKIT_ROOT_DIR=/usr/local/cuda/ -DCUDA_INCLUDE_DIRS=/usr/local/cuda/include/ -DCUDA_CUDART_LIBRARY=/usr/local/cuda/lib64 -DCUDA_NVCC_EXECUTABLE=/usr/local/cuda/bin/ -DCMAKE_CUDA_ARCHITECTURES=all -DEIGEN3_INCLUDE_DIR=/usr/local/include/eigen3"
 else
     echo "Building without CUDA support"
     EIGEN_BUILD_ARG=""
@@ -49,9 +49,9 @@ else
     echo "Pulling from develop branch"
 fi
 
-apt-get update -yq
+DEBIAN_FRONTEND=noninteractive apt-get update -yq
 
-apt-get -yq install build-essential git cmake libpng-dev libjpeg-dev libtiff-dev libglu1-mesa-dev libglew-dev libglfw3-dev
+DEBIAN_FRONTEND=noninteractive apt-get -yq install build-essential git cmake libpng-dev libjpeg-dev libtiff-dev libglu1-mesa-dev libglew-dev libglfw3-dev
 
 # Eigen
 git clone https://gitlab.com/libeigen/eigen --branch 3.4
@@ -62,13 +62,25 @@ cd eigen_build &&\
     cd .. && rm -rf eigen_build eigen
 
 # Boost
-apt-get -y install libboost-iostreams-dev libboost-program-options-dev libboost-system-dev libboost-serialization-dev
+DEBIAN_FRONTEND=noninteractive apt-get -yq install libboost-iostreams-dev libboost-program-options-dev libboost-system-dev libboost-serialization-dev
 
 # OpenCV
 DEBIAN_FRONTEND=noninteractive apt-get install -yq libopencv-dev
 
-# CGAL
-apt-get -yq install libcgal-dev libcgal-qt5-dev
+# CGAL (dependences not needed to (not) build CGAL, but for using some parts of it)
+DEBIAN_FRONTEND=noninteractive apt-get -yq install libboost-program-options-dev libboost-system-dev libboost-thread-dev libgmp-dev libmpfr-dev zlib1g-dev
+
+git clone https://github.com/cgal/cgal --branch=v6.0.1
+mkdir cgal_build
+cd cgal_build &&\
+    cmake . ../cgal &&\
+    make && make install &&\
+    cd .. && rm -rf cgal_build cgal
+
+
+
+# Python
+DEBIAN_FRONTEND=noninteractive apt-get -yq install python3-dev
 
 # VCGLib
 git clone https://github.com/cdcseacave/VCG.git vcglib
