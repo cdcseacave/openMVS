@@ -51,7 +51,7 @@ fi
 
 DEBIAN_FRONTEND=noninteractive apt-get update -yq
 
-DEBIAN_FRONTEND=noninteractive apt-get -yq install build-essential git cmake libpng-dev libjpeg-dev libtiff-dev libglu1-mesa-dev libglew-dev libglfw3-dev
+DEBIAN_FRONTEND=noninteractive apt-get -yq install build-essential git cmake libpng-dev libjpeg-dev libtiff-dev libglu1-mesa-dev libglew-dev libglfw3-dev && rm -rf /var/lib/apt/lists/*
 
 # Eigen
 git clone https://gitlab.com/libeigen/eigen --branch 3.4
