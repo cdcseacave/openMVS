@@ -67,7 +67,7 @@ DEBIAN_FRONTEND=noninteractive apt-get -yq install libboost-iostreams-dev libboo
 # OpenCV
 DEBIAN_FRONTEND=noninteractive apt-get install -yq libopencv-dev
 
-# CGAL (dependences not needed to (not) build CGAL, but for using some parts of it)
+# CGAL (dependencies not needed to (not) build CGAL, but for using some parts of it)
 DEBIAN_FRONTEND=noninteractive apt-get -yq install libboost-program-options-dev libboost-system-dev libboost-thread-dev libgmp-dev libmpfr-dev zlib1g-dev
 
 git clone https://github.com/cgal/cgal --branch=v6.0.1
