@@ -986,6 +986,7 @@ void Scene::SelectNeighborViews(unsigned nMinViews, unsigned nMinPointViews, flo
 } // SelectNeighborViews
 /*----------------------------------------------------------------*/
 
+} // <-- forgotten closing bracket
 
 // keep only the best neighbors for the reference image
 bool Scene::FilterNeighborViews(ViewScoreArr& neighbors, float fMinArea, float fMinScale, float fMaxScale, float fMinAngle, float fMaxAngle, unsigned nMaxViews)
