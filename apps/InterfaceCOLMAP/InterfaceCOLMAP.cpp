@@ -306,12 +306,10 @@ struct Camera {
 		params.resize(4);
 		if (model == _T("PINHOLE")) {
 			in >> params[0] >> params[1] >> params[2] >> params[3];
-		} 
-		else if (model == _T("SIMPLE_PINHOLE")) {
+		} else if (model == _T("SIMPLE_PINHOLE")) {
 			in >> params[0] >> params[2] >> params[3];
 			params[1] = params[0];
-		}
-		else
+		} else
 			return false;
 		return !in.fail();
 	}
@@ -334,16 +332,14 @@ struct Camera {
 		params.resize(4);
 		if (model == _T("PINHOLE")) {
 			ReadBinaryLittleEndian<double>(&stream, &params);
-		} 
-		else if (model == _T("SIMPLE_PINHOLE")) {
+		} else if (model == _T("SIMPLE_PINHOLE")) {
 			std::vector<REAL> tmp_params(3);
 			ReadBinaryLittleEndian<double>(&stream, &tmp_params);
 			params[0] = tmp_params[0];
 			params[1] = tmp_params[0];
 			params[2] = tmp_params[1];
 			params[3] = tmp_params[2];
-		}
-		else
+		} else
 			return false;
 		return true;
 	}
