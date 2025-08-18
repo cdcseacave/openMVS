@@ -1809,7 +1809,8 @@ bool Scene::ExportChunks(const ImagesChunkArr& chunks, const String& path, ARCHI
 {
 	FOREACH(chunkID, chunks) {
 		const ImagesChunk& chunk = chunks[chunkID];
-		IIndexArr idxImages(chunk.images.begin(), chunk.images.end(), true);
+		IIndexArr idxImages((uint32_t)chunk.images.size());
+		std::iota(idxImages.begin(), idxImages.end(), 0u);
 		Scene subset = SubScene(idxImages);
 		// set scene ROI
 		subset.obb.Set(OBB3f::MATRIX::Identity(), chunk.aabb.ptMin, chunk.aabb.ptMax);
