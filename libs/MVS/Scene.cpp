@@ -1293,7 +1293,7 @@ bool Scene::SelectNeighborViews(uint32_t ID, IndexArr& points, unsigned nMinView
 		const PointCloud::Point& point = pointcloud.points[idx];
 		const Depth depth((float)imageData.camera.PointDepth(point));
 		ASSERT(depth > 0);
-		if (depth <= 0)
+		if (depth <= 0.01)
 			continue;
 		// store this point
 		if (views.size() >= nMinPointViews)
@@ -1312,7 +1312,7 @@ bool Scene::SelectNeighborViews(uint32_t ID, IndexArr& points, unsigned nMinView
 			const Image& imageData2 = images[view];
 			const Depth depth2((float)imageData2.camera.PointDepth(point));
 			ASSERT(depth2 > 0);
-			if (depth2 <= 0)
+			if (depth2 <= 0.01)
 				continue;
 			const Point3f V2(imageData2.camera.C - Cast<REAL>(point));
 			const float fAngle(ACOS(ComputeAngle(V1.ptr(), V2.ptr())));
