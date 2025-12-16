@@ -637,11 +637,11 @@ macro(optimize_default_compiler_settings)
 
 	  if(NOT MSVC64)
 		# 64-bit MSVC compiler uses SSE/SSE2 by default
-		if(ENABLE_SSE)
-		  set(BUILD_EXTRA_FLAGS "${BUILD_EXTRA_FLAGS} /arch:SSE")
-		endif()
 		if(ENABLE_SSE2)
 		  set(BUILD_EXTRA_FLAGS "${BUILD_EXTRA_FLAGS} /arch:SSE2")
+		elseif(ENABLE_SSE)
+		  set(BUILD_EXTRA_FLAGS "${BUILD_EXTRA_FLAGS} /arch:SSE")
+		endif()
 		endif()
 	  endif()
 
