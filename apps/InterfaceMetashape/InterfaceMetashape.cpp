@@ -625,7 +625,7 @@ bool ParseSceneXML(Scene& scene, PlatformDistCoeffs& pltDistCoeffs, size_t& nCam
 		}
 		const size_t nLen(pStream->getSize());
 		String str; str.resize(nLen);
-		pStream->read(&str[0], nLen);
+		pStream->read(str.data(), nLen);
 		doc.Parse(str.c_str(), nLen);
 	}
 	if (doc.ErrorID() != tinyxml2::XML_SUCCESS) {
