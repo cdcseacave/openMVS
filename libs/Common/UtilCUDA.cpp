@@ -52,8 +52,10 @@ int _convertSMVer2Cores(int major, int minor)
 		{0x75, 64 }, // Turing Generation (SM 7.5) TU1xx class
 		{0x80, 64 }, // Ampere Generation (SM 8.0) GA100 class
 		{0x86, 128}, // Ampere Generation (SM 8.6) GA102-GA107 class
-		{0x89, 128}, // Ada Generation (SM 8.9) AD106 class
+		{0x87, 128}, // Ampere Generation (SM 8.7) Jetson Orin
+		{0x89, 128}, // Ada Generation (SM 8.9) AD102-AD107 class
 		{0x90, 128}, // Hopper Generation (SM 9.0) GH100 class
+		{0xC0, 128}, // Blackwell Generation (SM 12.0) GB202-GB207 class
 		{-1, -1}
 	};
 
