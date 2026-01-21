@@ -1,0 +1,123 @@
+# This recipe is known to work under Ubuntu 16.04 (yet, the generated .snap
+# file will work on any Linux distribution having snap installed).
+name: openmvs
+version: '0.7.0-fa0c2d8-0'
+summary: OpenMVS - open Multi-View Stereo reconstruction library
+description: |
+  OpenMVS (Multi-View Stereo) is a library for computer-vision scientists and
+  especially targeted to the Multi-View Stereo reconstruction community. While
+  there are mature and complete open-source projects targeting
+  Structure-from-Motion pipelines (like OpenMVG) which recover camera poses and
+  a sparse 3D point-cloud from an input set of images, there are none
+  addressing the last part of the photogrammetry chain-flow. OpenMVS aims at
+  filling that gap by providing a complete set of algorithms to recover the
+  full surface of the scene to be reconstructed. The input is a set of camera
+  poses plus the sparse point-cloud and the output is a textured mesh.
+
+grade: stable
+confinement: strict
+
+apps:
+  DensifyPointCloud:
+    command: DensifyPointCloud
+    # browser-support interface for setpriority syscall
+    plugs: [home,browser-support]
+  InterfaceVisualSFM:
+    command: InterfaceVisualSFM
+    plugs: [home,browser-support]
+  ReconstructMesh:
+    command: ReconstructMesh
+    plugs: [home,browser-support]
+  RefineMesh:
+    command: RefineMesh
+    plugs: [home,browser-support]
+  TextureMesh:
+    command: TextureMesh
+    plugs: [home,browser-support]
+
+parts:
+  openmvs:
+    after: [ceres,eigen,vcglib]
+    plugin: cmake
+    source: https://github.com/cdcseacave/openMVS.git
+    source-commit: fa0c2d8be6847d3185827f650ce7a202bb8a44e1
+    build-packages:
+      - libboost-iostreams-dev
+      - libboost-program-options-dev
+      - libboost-system-dev
+      - libboost-serialization-dev
+      - libopencv-dev
+      - libglu1-mesa-dev
+      - libpng12-dev
+      - libjpeg-dev
+      - libtiff5-dev
+      - libcgal-dev
+      - libcgal-qt5-dev
+    stage-packages:
+      - libgl1-mesa-glx
+    build: |
+      mkdir openMVS_build
+      cd openMVS_build
+      cmake -DCMAKE_INSTALL_PREFIX=$SNAPCRAFT_PART_INSTALL \
+            -DBUILD_SHARED_LIBS=ON \
+            -DCMAKE_SKIP_RPATH=ON \
+            -DCMAKE_BUILD_TYPE=Release -DVCG_DIR="$SNAPCRAFT_STAGE" \
+            ..
+      make -j8
+    install: |
+      cd openMVS_build/bin
+      mkdir -p $SNAPCRAFT_PART_INSTALL/bin
+      for prog in DensifyPointCloud  InterfaceVisualSFM  ReconstructMesh  RefineMesh  TextureMesh
+      do
+          cp "$prog" $SNAPCRAFT_PART_INSTALL/bin
+      done
+      cd ../lib
+      mkdir -p $SNAPCRAFT_PART_INSTALL/lib
+      cp *.so $SNAPCRAFT_PART_INSTALL/lib
+  vcglib:
+    plugin: dump
+    source: https://github.com/cdcseacave/VCG.git
+    source-commit: a306cdf07738d735e86d9f0fd84d46459c1405c5
+    prime: [ -* ]
+  ceres:
+    after: [suitesparse,eigen]
+    plugin: cmake
+    source: https://ceres-solver.googlesource.com/ceres-solver
+    source-type: git
+    build-packages:
+      - cmake
+      - g++
+      - libgoogle-glog-dev
+      - libatlas-base-dev
+    build: |
+      mkdir build
+      cd build
+      cmake -DCMAKE_INSTALL_PREFIX=$SNAPCRAFT_PART_INSTALL -DBUILD_SHARED_LIBS=ON \
+            -DCMAKE_SKIP_RPATH=ON \
+            ..
+      make -j8
+    install: |
+      cd build
+      make install
+    prime:
+      - lib/libceres*
+  eigen:
+    plugin: cmake
+    source: http://bitbucket.org/eigen/eigen/get/3.2.10.tar.bz2
+    prime: [ -* ]
+  suitesparse:
+    plugin: make
+    source: http://faculty.cse.tamu.edu/davis/SuiteSparse/SuiteSparse-4.5.4.tar.gz
+    build-packages:
+      - chrpath
+      - libmetis-dev
+      - libopenblas-dev
+    install: |
+      make install INSTALL=$SNAPCRAFT_PART_INSTALL
+      for l in $SNAPCRAFT_PART_INSTALL/lib/*
+      do
+          chrpath -d "$l"
+      done
+    prime:
+      - lib/*
+
