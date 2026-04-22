@@ -1,9 +1,9 @@
 # PoseLib Bearing Vector Estimators for Spherical Cameras
 
-**Version:** 1.0  
-**Date:** April 2026  
-**Author:** SfM Pipeline Extension  
-**Status:** Design Phase  
+**Version:** 1.0
+**Date:** April 2026
+**Author:** SfM Pipeline Extension
+**Status:** Design Phase
 
 ## Executive Summary
 
@@ -109,7 +109,7 @@ class Solver {
     void generate_models(std::vector<Model> *models);           // Sample & solve
     double score_model(const Model &model, size_t *inlier_count) const;  // Residual
     void refine_model(Model *model) const;                      // LO refinement
-    
+
     const size_t sample_sz;    // e.g., 5 for 5-point
     const size_t num_data;     // Total data points
 };
@@ -276,7 +276,7 @@ class RelativePoseBearingEstimator {
           opt(ransac_opt),
           x1(bearings1),
           x2(bearings2),
-          sampler(num_data, sample_sz, opt.seed, 
+          sampler(num_data, sample_sz, opt.seed,
                   opt.progressive_sampling, opt.max_prosac_iterations) {
         x1s.resize(sample_sz);
         x2s.resize(sample_sz);
@@ -483,8 +483,8 @@ void RelativePoseBearingEstimator::refine_model(poselib::CameraPose *pose) const
 - **PoseLiBearingVector.cpp:** ~200 lines (generate_models, score_model, entry-point functions).
 - **Integration in PairsMatcher.cpp & Resection.cpp:** ~50 lines total (conditionals + helper calls).
 
-**Total new code:** ~400 lines.  
-**Lines reusing PoseLib:** ~1000+ (RANSAC loop, sampling, solvers, statistics).  
+**Total new code:** ~400 lines.
+**Lines reusing PoseLib:** ~1000+ (RANSAC loop, sampling, solvers, statistics).
 **Reuse ratio:** ~71% (1000 / 1400).
 
 ---
@@ -718,6 +718,6 @@ Our estimator classes plug directly into this template.
 
 ---
 
-**Document Version:** 1.0  
-**Last Updated:** April 10, 2026  
+**Document Version:** 1.0
+**Last Updated:** April 10, 2026
 **Status:** Design Phase — Ready for Implementation Review
