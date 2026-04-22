@@ -792,10 +792,10 @@ bool SFM::ExportMVS(const String& fileName, const Scene& scene, ExportMVSConfig 
 		outImg.platformID = platformID;
 		outImg.cameraID = 0; // single camera per platform
 		outImg.poseID = poseID; // may be NO_ID
-		outImg.ID = img.ID; // preserve global ID
-		const uint32_t mvsID = (uint32_t)iface.images.size();
+		// Assign export-order IDs to keep IDs unique and contiguous in mixed scenes.
+		outImg.ID = (uint32_t)iface.images.size();
 		iface.images.emplace_back(std::move(outImg));
-		sfmToMvsImage[i].push_back(mvsID);
+		sfmToMvsImage[i].push_back(outImg.ID);
 	}
 
 	// ----- Phase 3: render + write cube-map face pixels -----

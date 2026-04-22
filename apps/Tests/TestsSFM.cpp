@@ -1168,16 +1168,37 @@ struct FaceColorSample {
 };
 
 // Pixel8U(r, g, b) — TPixel takes R first (named args by channel).
-static std::array<FaceColorSample, 6> kFacePatches = {{
-	{ Point3( 0,  0,  1), Pixel8U(  0,   0, 255) }, // +Z blue
-	{ Point3( 0,  0, -1), Pixel8U(255,   0,   0) }, // -Z red
-	{ Point3( 1,  0,  0), Pixel8U(  0, 255,   0) }, // +X green
-	{ Point3(-1,  0,  0), Pixel8U(255, 255,   0) }, // -X yellow
-	{ Point3( 0,  1,  0), Pixel8U(255, 255, 255) }, // +Y up white
-	{ Point3( 0, -1,  0), Pixel8U(128, 128, 128) }, // -Y down gray
+static const std::array<Pixel8U, 6> kFaceColors = {{
+	Pixel8U(  0,   0, 255), // +Z blue
+	Pixel8U(255,   0,   0), // -Z red
+	Pixel8U(  0, 255,   0), // +X green
+	Pixel8U(255, 255,   0), // -X yellow
+	Pixel8U(255, 255, 255), // +Y up white
+	Pixel8U(128, 128, 128), // -Y down gray
 }};
 
-static void BuildCheckerboardEquirect(Image8U3& src, int width, int height)
+static std::array<FaceColorSample, 6> BuildFaceCenterSamples(const SphereCubeMap::TangentFacesGeometry& geom)
+{
+	ASSERT(geom.numFaces == 6);
+	std::array<FaceColorSample, 6> samples;
+	const REAL f = geom.K(0,0);
+	const REAL cx = geom.K(0,2);
+	const REAL cy = geom.K(1,2);
+	const int u = geom.faceSize / 2;
+	const int v = geom.faceSize / 2;
+	const Point3 centerRayFace((REAL(u) - cx) / f, (REAL(v) - cy) / f, REAL(1));
+	for (int k = 0; k < 6; ++k) {
+		samples[k].bodyDir = normalized(geom.rotations[k].t() * centerRayFace);
+		samples[k].color = kFaceColors[k];
+	}
+	return samples;
+}
+
+static void BuildCheckerboardEquirect(
+	Image8U3& src,
+	int width,
+	int height,
+	const std::array<FaceColorSample, 6>& samples)
 {
 	src.create(height, width);
 	// Paint a default dark gray background.
@@ -1187,7 +1208,7 @@ static void BuildCheckerboardEquirect(Image8U3& src, int width, int height)
 	SphericalCamera sphCam(cv::Size(width, height));
 	const int patchHalfW = std::max(2, width / 20);
 	const int patchHalfH = std::max(2, height / 20);
-	for (const FaceColorSample& sample : kFacePatches) {
+	for (const FaceColorSample& sample : samples) {
 		const auto [p, ok] = sphCam.Project(sample.bodyDir);
 		if (!ok)
 			continue;
@@ -1204,18 +1225,32 @@ static void BuildCheckerboardEquirect(Image8U3& src, int width, int height)
 	}
 }
 
+static void BuildCheckerboardEquirect(Image8U3& src, int width, int height)
+{
+	static const std::array<FaceColorSample, 6> kAxisSamples = {{
+		{ Point3( 0,  0,  1), kFaceColors[0] },
+		{ Point3( 0,  0, -1), kFaceColors[1] },
+		{ Point3( 1,  0,  0), kFaceColors[2] },
+		{ Point3(-1,  0,  0), kFaceColors[3] },
+		{ Point3( 0,  1,  0), kFaceColors[4] },
+		{ Point3( 0, -1,  0), kFaceColors[5] },
+	}};
+	BuildCheckerboardEquirect(src, width, height, kAxisSamples);
+}
+
 } // namespace
 
 bool CubeMapFaceRenderTest()
 {
 	VERBOSE("\n=== CubeMapFaceRenderTest: equirectangular -> 6 pinhole faces ===");
 
-	// Synthesize a 512x256 equirectangular source with one colored patch per face.
-	Image8U3 src;
-	BuildCheckerboardEquirect(src, 512, 256);
-
 	const int faceSize = 128;
 	const auto geom = SphereCubeMap::MakeTangentFacesGeometry(6, faceSize);
+	const auto samples = BuildFaceCenterSamples(geom);
+
+	// Synthesize a 512x256 equirectangular source with one colored patch per face.
+	Image8U3 src;
+	BuildCheckerboardEquirect(src, 512, 256, samples);
 	const std::vector<Image8U3> facesVec =
 		SphereCubeMap::SphericalToTangentialFaces<Pixel8U>(src, geom);
 	for (unsigned k = 0; k < 6; ++k) {
@@ -1228,7 +1263,7 @@ bool CubeMapFaceRenderTest()
 		// Read the central pixel of the face; it should be dominated by
 		// the color assigned to face k's body direction.
 		const Pixel8U& center = face(faceSize/2, faceSize/2);
-		const Pixel8U& expected = kFacePatches[k].color;
+		const Pixel8U& expected = kFaceColors[k];
 		const int db = std::abs((int)center.b - (int)expected.b);
 		const int dg = std::abs((int)center.g - (int)expected.g);
 		const int dr = std::abs((int)center.r - (int)expected.r);
@@ -1308,14 +1343,15 @@ bool CubeMapBridgeGeometryTest()
 
 	// Verify each face camera intrinsics and rotation.
 	const auto rotations = SphereCubeMap::FaceRotations(6);
+	const Matrix3x3 expectedK = SphereCubeMap::FaceIntrinsics(1024, 6);
 	for (unsigned k = 0; k < 6; ++k) {
 		const auto& cam = platform.cameras[k];
 		if (cam.width != 1024 || cam.height != 1024) {
 			VERBOSE("CubeMapBridgeGeometryTest FAILED: face %u size %ux%u != 1024x1024", k, cam.width, cam.height);
 			return false;
 		}
-		if (std::abs(cam.K(0,0) - 512.0) > 1e-9 || std::abs(cam.K(1,1) - 512.0) > 1e-9 ||
-		    std::abs(cam.K(0,2) - 512.0) > 1e-9 || std::abs(cam.K(1,2) - 512.0) > 1e-9) {
+		if (std::abs(cam.K(0,0) - expectedK(0,0)) > 1e-9 || std::abs(cam.K(1,1) - expectedK(1,1)) > 1e-9 ||
+		    std::abs(cam.K(0,2) - expectedK(0,2)) > 1e-9 || std::abs(cam.K(1,2) - expectedK(1,2)) > 1e-9) {
 			VERBOSE("CubeMapBridgeGeometryTest FAILED: face %u K mismatch", k);
 			return false;
 		}
@@ -1417,8 +1453,10 @@ bool CubeMapBridgeEndToEndTest()
 
 	// Synthesize a 256x128 equirectangular source image with one colored
 	// patch per face (same helper the render test uses) and save it as .jxl.
+	const auto geom = SphereCubeMap::MakeTangentFacesGeometry(6, 128);
+	const auto samples = BuildFaceCenterSamples(geom);
 	Image8U3 src;
-	BuildCheckerboardEquirect(src, 256, 128);
+	BuildCheckerboardEquirect(src, 256, 128, samples);
 	const String srcFileName(String(tmpDir) + _T("/source.jxl"));
 	if (!src.Save(srcFileName)) {
 		VERBOSE("CubeMapBridgeEndToEndTest FAILED: cannot save source image '%s'", srcFileName.c_str());
@@ -1470,7 +1508,7 @@ bool CubeMapBridgeEndToEndTest()
 			return false;
 		}
 		const Pixel8U& center = face(cfg.sphericalFaceSize/2, cfg.sphericalFaceSize/2);
-		const Pixel8U& expected = kFacePatches[k].color;
+		const Pixel8U& expected = kFaceColors[k];
 		// JXL is lossless for default settings but allow generous tolerance
 		// because the equirectangular source is only 256x128 so the 5% patch
 		// is only ~12 pixels wide — bilinear sampling at the face center may

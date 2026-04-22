@@ -323,7 +323,9 @@ FeaturesExtractor::FeaturesExtractor(Scene& _scene, const FeatureExtractionConfi
 }
 
 FeaturesExtractor::~FeaturesExtractor() {
+	#ifdef _USE_SIFTGPU
 	SiftGPUFeatureCoordinator::Release();
+	#endif // _USE_SIFTGPU
 }
 
 
