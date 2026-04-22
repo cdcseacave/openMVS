@@ -609,7 +609,7 @@ bool FeaturesExtractor::ExtractImageSpherical(Image& image, cv::Ptr<cv::Feature2
 		return false;
 	}
 	const std::vector<Image8U3> faceImages =
-		SphereCubeMap::SphericalToTangentialFaces<Pixel8U>(image.pixels, geom);
+		SphereCubeMap::SphericalToTangentialFaces<Pixel8U>(image.GetImage8U3(), geom);
 
 	const REAL f = geom.K(0,0), cx = geom.K(0,2), cy = geom.K(1,2);
 	const SphericalCamera sphCam(image.pixels.size());

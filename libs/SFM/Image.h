@@ -89,6 +89,12 @@ public:
 	// Release image pixels to free memory
 	void ReleasePixels() { pixels.release(); }
 
+	// Return a BGR/8U view of the image pixels suitable for pipeline stages
+	// that expect CV_8UC3. If pixels are already BGR/8U the returned Image8U3
+	// shares OpenCV's ref-counted buffer (no copy); otherwise grayscale/BGRA/
+	// floating-point inputs are converted into a freshly-allocated buffer.
+	Image8U3 GetImage8U3() const;
+
 	// Select top keypoints/descriptors using grid-based spatial distribution and keypoint response
 	//  - maxKeypoints: maximum number of keypoints to select
 	// Returns vector of indices into keypoints/descriptors arrays

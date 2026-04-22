@@ -65,7 +65,9 @@ public:
 
 public:
 	Camera() : size(0, 0) {}
-	Camera(const cv::Size& _size) : size(_size) {}
+	Camera(const cv::Size& _size) : size(_size) {
+		ASSERT(_size.width > 0 && _size.height > 0);
+	}
 	virtual ~Camera() {}
 
 	// Metadata setters
@@ -320,7 +322,7 @@ public:
 
 	SphericalCamera(const cv::Size& _size) : Camera(_size) {
 		// Equirectangular images must cover 360x180 degrees, so width = 2 * height.
-		ASSERT(_size.width == 2 * _size.height);
+		ASSERT(_size.width > 0 && _size.width == 2 * _size.height);
 	}
 
 	virtual ~SphericalCamera() {}

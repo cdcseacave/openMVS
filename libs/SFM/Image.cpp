@@ -76,6 +76,22 @@ bool Image::LoadPixels(bool gray)
 	return true;
 }
 
+Image8U3 Image::GetImage8U3() const
+{
+	// Fast path: already BGR/8U, return a shared view (no copy).
+	if (pixels.channels() == 3 && pixels.depth() == CV_8U)
+		return Image8U3(pixels);
+	// Else convert: grayscale -> BGR, BGRA -> BGR, float/etc -> CV_8UC3.
+	cv::Mat converted;
+	if (pixels.channels() == 1)
+		cv::cvtColor(pixels, converted, cv::COLOR_GRAY2BGR);
+	else if (pixels.channels() == 4)
+		cv::cvtColor(pixels, converted, cv::COLOR_BGRA2BGR);
+	else
+		pixels.convertTo(converted, CV_8UC3);
+	return Image8U3(converted);
+}
+
 bool Image::SavePixels() const
 {
 	if (!HasPixels()) {

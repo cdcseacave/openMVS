@@ -584,21 +584,10 @@ unsigned RenderAndSaveSphericalFaces(
 			continue;
 		}
 
-		// Wrap pixels in an Image8U3 view, converting format if needed.
-		Image8U3 source;
-		if (img.pixels.channels() == 3 && img.pixels.depth() == CV_8U) {
-			source = Image8U3(img.pixels);
-		} else {
-			cv::Mat converted;
-			if (img.pixels.channels() == 1)      cv::cvtColor(img.pixels, converted, cv::COLOR_GRAY2BGR);
-			else if (img.pixels.channels() == 4) cv::cvtColor(img.pixels, converted, cv::COLOR_BGRA2BGR);
-			else                                 img.pixels.convertTo(converted, CV_8UC3);
-			source = Image8U3(converted);
-		}
-
-		// Render all N faces in one call, consuming the shared geometry.
+		// Normalize pixel format to BGR/8U if needed and
+		// render all N faces in one call, consuming the shared geometry
 		const std::vector<Image8U3> faces =
-			SphericalToTangentialFaces<Pixel8U>(source, geometry);
+			SphericalToTangentialFaces<Pixel8U>(img.GetImage8U3(), geometry);
 
 		const String stem = Util::getFileName(img.fileName);
 		for (int k = 0; k < (int)faces.size(); ++k) {
@@ -794,8 +783,8 @@ bool SFM::ExportMVS(const String& fileName, const Scene& scene, ExportMVSConfig 
 		outImg.poseID = poseID; // may be NO_ID
 		// Assign export-order IDs to keep IDs unique and contiguous in mixed scenes.
 		outImg.ID = (uint32_t)iface.images.size();
-		iface.images.emplace_back(std::move(outImg));
 		sfmToMvsImage[i].push_back(outImg.ID);
+		iface.images.emplace_back(std::move(outImg));
 	}
 
 	// ----- Phase 3: render + write cube-map face pixels -----
