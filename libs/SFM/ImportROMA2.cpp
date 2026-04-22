@@ -595,9 +595,9 @@ unsigned SFM::ImportROMA2DepthMaps(
 					// Convert depth map pixel to reference image coordinates
 					const Point2f pixelRef = CoordFromTo(pt, depthSize, refImage.GetSize());
 
-					// Unproject pixel coordinates to normalized camera coordinates
-					const Point3 rayRef = refImage.pCamera->Unproject(pixelRef).homogeneous();
-					const Point3 rayNeigh = neighImage.pCamera->Unproject(pixelNeigh).homogeneous();
+					// Unproject pixel coordinates to 3D bearing-ray points in camera space
+					const Point3 rayRef = refImage.pCamera->Unproject(Cast<REAL>(pixelRef));
+					const Point3 rayNeigh = neighImage.pCamera->Unproject(Cast<REAL>(pixelNeigh));
 
 					// Check ray's angle; ignore if near parallel as the depth can not be computed accurately
 					const Point3 rayNeighRef = relPose.R.t() * rayNeigh;

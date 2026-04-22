@@ -59,6 +59,7 @@ unsigned nRefineCalibration;
 unsigned nBlurSize;
 unsigned nMaxFeaturesPerCell;
 unsigned nMinFeaturesPerCell;
+unsigned nCubemapFaces;
 int nArchiveType;
 int nProcessPriority;
 unsigned nMaxThreads;
@@ -88,7 +89,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("help,h", "produce this help message")
 		("working-folder,w", boost::program_options::value<std::string>(&WORKING_FOLDER), "working directory (default current directory)")
 		("config-file,c", boost::program_options::value<std::string>(&OPT::strConfigFileName)->default_value(APPNAME _T(".cfg")), "file name containing program options")
-		("archive-type", boost::program_options::value(&OPT::nArchiveType)->default_value(2), "project archive type: 0-text, 1-binary, 2-compressed binary")
+		("archive-type", boost::program_options::value(&OPT::nArchiveType)->default_value(ARCHIVE_DEFAULT), "project archive type: 0-text, 1-binary, 2-compressed binary")
 		("process-priority", boost::program_options::value(&OPT::nProcessPriority)->default_value(-1), "process priority (below normal by default)")
 		("max-threads", boost::program_options::value(&OPT::nMaxThreads)->default_value(0), "maximum number of threads (0 for using all available cores)")
 		#if TD_VERBOSE != TD_VERBOSE_OFF
@@ -111,7 +112,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("input-file,i", boost::program_options::value<std::string>(&OPT::strInputFileName), "input video file path")
 		("output-file,o", boost::program_options::value<std::string>(&OPT::strOutputFileName), "output scene file path")
 		("output-directory,d", boost::program_options::value<std::string>(&OPT::strOutputDirectory)->default_value("keyframes"), "output directory for keyframe images")
-		("detector-type,t", boost::program_options::value<std::string>(&OPT::strDetectorType)->default_value("SIFT"), "feature detector type: AKAZE, ORB, or SIFT")
+		("detector-type,t", boost::program_options::value<std::string>(&OPT::strDetectorType)->default_value("SIFT"), "feature detector type: AKAZE, ORB, SIFT or SIFTGPU")
 		("overlap-threshold", boost::program_options::value(&OPT::fOverlapThreshold)->default_value(0.85f), "minimum overlap threshold between consecutive keyframes (0.0-1.0)")
 		("focal-length,f", boost::program_options::value(&OPT::fFocalLength)->default_value(0.f), "known focal length in pixels (<=0 for auto-calibration from fundamental matrices)")
 		("pp-offset-x", boost::program_options::value(&OPT::fPPOffsetX)->default_value(0.f), "principal point X offset from image center in pixels")
@@ -121,6 +122,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("blur-size", boost::program_options::value(&OPT::nBlurSize)->default_value(0), "Gaussian blur kernel size applied to images used for optical flow (0 = disabled)")
 		("max-features-per-cell", boost::program_options::value(&OPT::nMaxFeaturesPerCell)->default_value(3000), "maximum features per grid cell (3x3 grid)")
 		("min-features-per-cell", boost::program_options::value(&OPT::nMinFeaturesPerCell)->default_value(500), "minimum features per cell before adjusting sensitivity")
+		("cubemap-faces", boost::program_options::value(&OPT::nCubemapFaces)->default_value(6), "number of tangent-pinhole faces used for spherical feature extraction (4, 6, 8, 12 or 20)")
 		;
 
 	boost::program_options::options_description cmdline_options;
@@ -166,14 +168,14 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 	}
 
 	if (OPT::strOutputFileName.empty())
-		OPT::strOutputFileName = Util::getFileFullName(OPT::strInputFileName) + _T("_scene.sfm");
+		OPT::strOutputFileName = Util::getFilePath(OPT::strInputFileName) + _T("scene_tracked.sfm");
 	else
 		Util::ensureValidPath(OPT::strOutputFileName);
 	Util::ensureValidFolderPath(OPT::strOutputDirectory);
 
 	// validate detector type
-	if (OPT::strDetectorType != "AKAZE" && OPT::strDetectorType != "ORB" && OPT::strDetectorType != "SIFT") {
-		VERBOSE("error: invalid detector type '%s' (must be AKAZE, ORB, or SIFT)", OPT::strDetectorType.c_str());
+	if (FeatureTypeFromString(OPT::strDetectorType) == FeatureType::NONE) {
+		VERBOSE("error: invalid detector type '%s' (must be AKAZE, ORB, SIFT, or SIFTGPU)", OPT::strDetectorType.c_str());
 		return false;
 	}
 
@@ -219,6 +221,7 @@ int main(int argc, LPCTSTR* argv)
 	config.overlapThreshold = OPT::fOverlapThreshold;
 	config.maxFeaturesPerCell = OPT::nMaxFeaturesPerCell;
 	config.minFeaturesPerCell = OPT::nMinFeaturesPerCell;
+	config.cubemapFaces = OPT::nCubemapFaces;
 	config.blurSize = OPT::nBlurSize;
 	config.outputDirectory = MAKE_PATH_FULL(WORKING_FOLDER_FULL, OPT::strOutputDirectory);
 	config.focalLength = OPT::fFocalLength;

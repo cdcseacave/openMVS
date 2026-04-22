@@ -222,16 +222,16 @@ std::pair<float, float> SFM::ComputeTracksMeanReprojectionError(Scene& scene)
 			const double pixelError = norm(projected - kppt);
 			sumPixelError += pixelError;
 			// Angular error
-			const Point3 observedRay = img.pCamera->Unproject(kppt).homogeneous();
-			const double angularError = ACOS(ComputeAngle(observedRay.ptr(), Xcam.ptr()));
-			sumAngularError += angularError;
+			const Point3 observedRay = img.pCamera->UnprojectNormalized(kppt);
+			const double cosAngularError = ComputeAngle(observedRay.ptr(), Xcam.ptr());
+			sumAngularError += cosAngularError;
 			++numErrors;
 		}
 		++numTracks;
 	}
 	double avgAngular = 0.0, avgPixel = 0.0;
 	if (numErrors > 0) {
-		avgAngular = R2D(sumAngularError / numErrors);
+		avgAngular = R2D(ACOS(sumAngularError / numErrors));
 		avgPixel = sumPixelError / numErrors;
 	}
 	DEBUG_EXTRA("Mean reprojection error: %.2f pixels (%.2f deg) from %u tracks (%.2f views/track)",
@@ -240,55 +240,51 @@ std::pair<float, float> SFM::ComputeTracksMeanReprojectionError(Scene& scene)
 }
 
 std::pair<float, float> SFM::FilterTracks(Scene& scene,
-	float maxReprojErrorPixels, float maxReprojErrorDegrees, float minAngleDegrees,
+	float maxReprojErrorPixels, float minAngleDegrees,
 	float multDepthNear, float multDepthFar)
 {
-	// Convert degree thresholds to radians for angle comparison
 	const float minAngleRadians = D2R(minAngleDegrees);
-	const float maxReprojErrorRadians = D2R(maxReprojErrorDegrees);
 
 	// Process each track
 	MeanStdMinMax<REAL> trackCompletenessStats;
 	double sumAngularError = 0.0, sumPixelError = 0.0;
 	uint32_t numInlierTracks = 0, numInlierErrors = 0;
-	FloatArr depths(0, MAXF(scene.status.nTracks, 100u));
+	FloatArr dists(0, MAXF(scene.status.nTracks, 100u));
 	for (Track& track : scene.tracks) {
 		track.numInliers = 0;
 		if (!track.IsValid())
 			continue;
 
 		// Partition observations into inliers and outliers
-		double sumTrackAngularError = 0.0, sumTrackPixelError = 0.0, sumTrackDepth = 0.0;
+		double sumTrackAngularError = 0.0, sumTrackPixelError = 0.0, sumTrackDist = 0.0;
 		FOREACH(obsIdx, track.observations) {
 			const Observation& obs = track.observations[obsIdx];
 			const Image& img = scene.images[obs.imageID];
 			ASSERT(img.HasCamera());
 			if (!img.IsValid())
 				continue;
-			// Compute pixel reprojection error
+			// Angular reprojection error — unified gate that works for both pinhole and spherical
+			// (equirectangular pixel distance doesn't correspond linearly to angular separation).
+			// Pinhole cheirality is handled automatically: a back-facing Xcam yields a negative
+			// dot product with the front-facing observedRay, so cos < 0 < minCosAngularError.
 			const Point3 Xcam = img.TransformPointW2C(track.position);
-			const auto [projected, valid] = img.pCamera->Project(Xcam);
-			if (!valid)
-				continue; // invalid observation
 			const cv::KeyPoint& kp = img.keypoints[obs.featureID];
+			const Point3 observedRay = img.pCamera->UnprojectNormalized(Cast<REAL>(kp.pt));
+			const REAL cosAngularError = ComputeAngle(observedRay.ptr(), Xcam.ptr());
+			const REAL minCosAngularError = COS(img.pCamera->PixelErrorToAngular(maxReprojErrorPixels));
+			if (cosAngularError < minCosAngularError)
+				continue; // outlier or behind the camera observation
+			// Accepted — compute projection for pixel-error stats (well-defined now: cheirality passed above)
+			const Point2 projected = img.pCamera->Project(Xcam).first;
 			const float pixelError = norm(Cast<float>(projected) - kp.pt);
-			if (pixelError > maxReprojErrorPixels)
-				continue; // outlier observation
-			// Compute angular reprojection error
-			const Point3 observedRay = img.pCamera->Unproject(Cast<REAL>(kp.pt)).homogeneous();
-			const REAL angularError = ACOS(ComputeAngle(observedRay.ptr(), Xcam.ptr()));
-			if (maxReprojErrorDegrees >= 0) {
-				const float maxAngularError(maxReprojErrorDegrees > 0 ? maxReprojErrorRadians :
-					img.pCamera->PixelErrorToAngular(maxReprojErrorPixels));
-				if (angularError > maxAngularError)
-					continue; // outlier observation
-			}
-			// This is an inlier observation, move it to the front
+			// Move inlier to the front of the observation list
 			if (track.numInliers < obsIdx)
 				std::swap(track.observations[track.numInliers], track.observations[obsIdx]);
 			sumTrackPixelError += pixelError;
-			sumTrackAngularError += angularError;
-			sumTrackDepth += Xcam.z;
+			sumTrackAngularError += cosAngularError;
+			// Euclidean distance from camera center — always non-negative and
+			// well-defined for any central camera, including spherical
+			sumTrackDist += (float)norm(Xcam);
 			++track.numInliers;
 		}
 
@@ -307,37 +303,37 @@ std::pair<float, float> SFM::FilterTracks(Scene& scene,
 		numInlierErrors += track.numInliers;
 		sumPixelError += sumTrackPixelError;
 		sumAngularError += sumTrackAngularError;
-		depths.push_back(sumTrackDepth / track.numInliers);
+		dists.push_back(sumTrackDist / track.numInliers);
 		trackCompletenessStats.Update((REAL)track.numInliers / track.observations.size());
 		++numInlierTracks;
 	}
 
 	// Remove far tracks based on depth statistics
 	uint32_t filteredTracksNear = 0, filteredTracksFar = 0;
-	if (depths.size() > 1000 && (multDepthNear > 0.f || multDepthFar > 0.f)) {
-		// Compute median depth
-		const float medianDepth = FloatArr(depths).GetMedian();
-		// Define minimum/maximum allowed depth
-		const float minAllowedDepthNear = multDepthNear * medianDepth;
-		const float maxAllowedDepthFar = multDepthFar > 0 ? multDepthFar * medianDepth : FLT_MAX;
-		// Filter tracks based on depth
+	if (dists.size() > 1000 && (multDepthNear > 0.f || multDepthFar > 0.f)) {
+		// Compute median distance
+		const float medianDist = FloatArr(dists).GetMedian();
+		// Define minimum/maximum allowed distance
+		const float minAllowedDistNear = multDepthNear * medianDist;
+		const float maxAllowedDistFar = multDepthFar > 0 ? multDepthFar * medianDist : FLT_MAX;
+		// Filter tracks based on distance
 		uint32_t idxInlier = 0;
 		for (Track& track : scene.tracks) {
 			if (!track.IsInlier())
 				continue;
-			const float avgDepth = depths[idxInlier++];
-			if (avgDepth < minAllowedDepthNear) {
+			const float avgDist = dists[idxInlier++];
+			if (avgDist < minAllowedDistNear) {
 				track.numInliers = 0; // mark track as outlier
 				++filteredTracksNear;
-			} else if (avgDepth > maxAllowedDepthFar) {
+			} else if (avgDist > maxAllowedDistFar) {
 				track.numInliers = 0; // mark track as outlier
 				++filteredTracksFar;
 			}
 		}
 		if (filteredTracksNear > 0 || filteredTracksFar > 0) {
 			numInlierTracks -= (filteredTracksNear + filteredTracksFar);
-			DEBUG_EXTRA("Filtered %u tracks (%u near, %u far) based on depth threshold [%.2f near, %.2f far] (median %.2f)",
-				filteredTracksNear + filteredTracksFar, filteredTracksNear, filteredTracksFar, minAllowedDepthNear, maxAllowedDepthFar, medianDepth);
+			DEBUG_EXTRA("Filtered %u tracks (%u near, %u far) based on distance threshold [%.2f near, %.2f far] (median %.2f)",
+				filteredTracksNear + filteredTracksFar, filteredTracksNear, filteredTracksFar, minAllowedDistNear, maxAllowedDistFar, medianDist);
 		}
 	}
 	scene.status.nTracks = numInlierTracks;
@@ -345,11 +341,11 @@ std::pair<float, float> SFM::FilterTracks(Scene& scene,
 	// Compute mean errors
 	REAL avgAngular = 0.0, avgPixel = 0.0;
 	if (numInlierErrors > 0) {
-		avgAngular = R2D(sumAngularError / numInlierErrors);
+		avgAngular = R2D(ACOS(sumAngularError / numInlierErrors));
 		avgPixel = sumPixelError / numInlierErrors;
 	}
-	DEBUG_EXTRA("Tracks filtered: %u/%u inliers, mean reprojection error %.2f pixels (%.2f th), angular %.2g deg (%.2g th), %.2f views/track (completeness: %.2f mean, %.2f stddev)",
-		numInlierTracks, scene.tracks.size(), avgPixel, maxReprojErrorPixels, avgAngular, maxReprojErrorDegrees, numInlierErrors / (double)numInlierTracks, trackCompletenessStats.GetMean()*100, trackCompletenessStats.GetStdDev()*100);
+	DEBUG_EXTRA("Tracks filtered: %u/%u inliers, mean reprojection error %.2f pixels (%.2f th), angular %.2g deg, %.2f views/track (completeness: %.2f mean, %.2f stddev)",
+		numInlierTracks, scene.tracks.size(), avgPixel, maxReprojErrorPixels, avgAngular, numInlierErrors / (double)numInlierTracks, trackCompletenessStats.GetMean()*100, trackCompletenessStats.GetStdDev()*100);
 	return std::make_pair(avgPixel, avgAngular);
 }
 

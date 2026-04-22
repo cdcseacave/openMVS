@@ -34,10 +34,6 @@
 
 // D E F I N E S ///////////////////////////////////////////////////
 
-#pragma push_macro("VERBOSE")
-#undef VERBOSE
-#define VERBOSE(...) LOG(lt, __VA_ARGS__)
-
 
 // S T R U C T S ///////////////////////////////////////////////////
 
@@ -98,5 +94,3 @@ bool PipelineTest(bool verbose)
 /*----------------------------------------------------------------*/
 
 } // namespace MVS
-
-#pragma pop_macro("VERBOSE")

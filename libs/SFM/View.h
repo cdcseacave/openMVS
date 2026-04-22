@@ -144,18 +144,16 @@ public:
 		return pCamera->Project(Xc);
 	}
 
-	// Unproject a 2D image point and depth to a 3D ray in world coordinates
+	// Unproject a 2D image point and depth to a 3D point in world coordinates
 	inline Point3 UnprojectPoint(const Point2& x, REAL d = REAL(1)) const {
 		ASSERT(HasCamera());
-		// Unproject to camera coordinates, then transform to world
-		const Point2 rayC = pCamera->Unproject(x);
-		return TransformPointC2W(Point3(rayC.x*d, rayC.y*d, d));
+		return TransformPointC2W(pCamera->Unproject(x) * d);
 	}
 
 	// Returns the ray from camera center through the given 2D point, in world coordinates
 	inline Point3 Ray(const Point2& x) const {
 		ASSERT(HasCamera());
-		return RayCameraToWorld(pCamera->Unproject(x).homogeneous());
+		return RayCameraToWorld(pCamera->Unproject(x));
 	}
 	inline Point3 RayNormalized(const Point2& x) const {
 		ASSERT(HasCamera());

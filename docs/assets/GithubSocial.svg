@@ -1,0 +1,441 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 640" width="1280" height="640">
+  <!-- ============================================================
+       OpenMVS - GitHub Social Preview (1280x640)
+       Concept: Multi-View Stereo reconstruction pipeline.
+       A ring of cameras (frustums) looking at a central scene that
+       morphs left→right from sparse points → dense points →
+       wireframe mesh → textured mesh.
+       ============================================================ -->
+
+  <defs>
+    <!-- Background: deep navy vignette (matches VisionWiki family) -->
+    <radialGradient id="bgGrad" cx="50%" cy="50%" r="75%">
+      <stop offset="0%"  stop-color="#1a2238"/>
+      <stop offset="55%" stop-color="#0d1324"/>
+      <stop offset="100%" stop-color="#05070f"/>
+    </radialGradient>
+
+    <!-- Soft teal/cyan glow behind the reconstruction -->
+    <radialGradient id="sceneGlow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%"  stop-color="#6df0ff" stop-opacity="0.28"/>
+      <stop offset="45%" stop-color="#8a6dff" stop-opacity="0.12"/>
+      <stop offset="100%" stop-color="#000000" stop-opacity="0"/>
+    </radialGradient>
+
+    <!-- Title gradient (cyan→violet→orange) -->
+    <linearGradient id="titleGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%"   stop-color="#6df0ff"/>
+      <stop offset="55%"  stop-color="#a56bff"/>
+      <stop offset="100%" stop-color="#ff8a3d"/>
+    </linearGradient>
+
+    <!-- Textured face gradients (hint at "texturing" stage) -->
+    <linearGradient id="tex1" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%"   stop-color="#ffb04a"/>
+      <stop offset="100%" stop-color="#e0462c"/>
+    </linearGradient>
+    <linearGradient id="tex2" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%"   stop-color="#ff8a3d"/>
+      <stop offset="100%" stop-color="#b8341a"/>
+    </linearGradient>
+    <linearGradient id="tex3" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%"   stop-color="#d76cff"/>
+      <stop offset="100%" stop-color="#6a2bb2"/>
+    </linearGradient>
+    <linearGradient id="tex4" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%"   stop-color="#36c6ff"/>
+      <stop offset="100%" stop-color="#1b57a8"/>
+    </linearGradient>
+    <linearGradient id="tex5" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%"   stop-color="#2dd4bf"/>
+      <stop offset="100%" stop-color="#0f6d66"/>
+    </linearGradient>
+
+    <!-- Ground ellipse gradient -->
+    <radialGradient id="groundGrad" cx="50%" cy="50%" r="50%">
+      <stop offset="0%"   stop-color="#36c6ff" stop-opacity="0.25"/>
+      <stop offset="100%" stop-color="#36c6ff" stop-opacity="0"/>
+    </radialGradient>
+
+    <!-- Node glow -->
+    <filter id="nodeGlow" x="-100%" y="-100%" width="300%" height="300%">
+      <feGaussianBlur stdDeviation="1.6" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+
+    <!-- Camera frustum stroke -->
+    <linearGradient id="camStroke" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%"   stop-color="#8ce8ff"/>
+      <stop offset="100%" stop-color="#2dd4bf"/>
+    </linearGradient>
+
+    <!-- House materials (for the textured half of the house) -->
+    <linearGradient id="wallLight" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%"   stop-color="#f5d59a"/>
+      <stop offset="100%" stop-color="#b58553"/>
+    </linearGradient>
+    <linearGradient id="wallShade" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%"   stop-color="#d5a877"/>
+      <stop offset="100%" stop-color="#7a5833"/>
+    </linearGradient>
+    <linearGradient id="roofGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%"   stop-color="#ff9d4a"/>
+      <stop offset="100%" stop-color="#b2351a"/>
+    </linearGradient>
+    <linearGradient id="doorColor" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%"   stop-color="#7a4a22"/>
+      <stop offset="100%" stop-color="#3a2310"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1280" height="640" fill="url(#bgGrad)"/>
+
+  <!-- Faint calibration grid -->
+  <g stroke="#ffffff" stroke-opacity="0.035" stroke-width="1">
+    <path d="M0 80 H1280 M0 160 H1280 M0 240 H1280 M0 320 H1280 M0 400 H1280 M0 480 H1280 M0 560 H1280"/>
+    <path d="M80 0 V640 M160 0 V640 M240 0 V640 M320 0 V640 M400 0 V640 M480 0 V640 M560 0 V640 M640 0 V640 M720 0 V640 M800 0 V640 M880 0 V640 M960 0 V640 M1040 0 V640 M1120 0 V640 M1200 0 V640"/>
+  </g>
+
+  <!-- Ambient scene glow -->
+  <ellipse cx="360" cy="340" rx="330" ry="260" fill="url(#sceneGlow)"/>
+
+  <!-- =========================================================
+       LEFT: 3D RECONSTRUCTION SCENE
+       Cameras around a central object, object transitions:
+       left = sparse points, center = dense points / wireframe,
+       right = textured mesh faces. Center near (360, 340).
+       ========================================================= -->
+  <g transform="translate(360 340)">
+
+    <!-- Ground plane ellipse (reference) -->
+    <ellipse cx="0" cy="165" rx="260" ry="40" fill="url(#groundGrad)" opacity="0.9"/>
+    <ellipse cx="0" cy="165" rx="260" ry="40" fill="none" stroke="#36c6ff" stroke-opacity="0.35" stroke-width="1.2" stroke-dasharray="3 4"/>
+
+    <!-- ===== Camera frustums around the scene (MVS = many views) ===== -->
+    <!-- Helper visual: each camera = small body + triangular frustum pointing inward -->
+
+    <!-- Camera 1: top-left, pointing down-right toward center -->
+    <g transform="translate(-235 -140) rotate(28)">
+      <rect x="-14" y="-10" width="20" height="18" rx="2" fill="#0d1324" stroke="url(#camStroke)" stroke-width="1.6"/>
+      <circle cx="-2" cy="-1" r="4" fill="none" stroke="url(#camStroke)" stroke-width="1.4"/>
+      <path d="M 6 -8 L 70 -30 L 70 28 L 6 6 Z" fill="#6df0ff" fill-opacity="0.05" stroke="url(#camStroke)" stroke-width="1.4" stroke-linejoin="round"/>
+    </g>
+
+    <!-- Camera 2: top-right, pointing down-left -->
+    <g transform="translate(235 -140) rotate(152)">
+      <rect x="-14" y="-10" width="20" height="18" rx="2" fill="#0d1324" stroke="url(#camStroke)" stroke-width="1.6"/>
+      <circle cx="-2" cy="-1" r="4" fill="none" stroke="url(#camStroke)" stroke-width="1.4"/>
+      <path d="M 6 -8 L 70 -30 L 70 28 L 6 6 Z" fill="#6df0ff" fill-opacity="0.05" stroke="url(#camStroke)" stroke-width="1.4" stroke-linejoin="round"/>
+    </g>
+
+    <!-- Camera 3: left-mid -->
+    <g transform="translate(-270 40) rotate(-10)">
+      <rect x="-14" y="-10" width="20" height="18" rx="2" fill="#0d1324" stroke="url(#camStroke)" stroke-width="1.6"/>
+      <circle cx="-2" cy="-1" r="4" fill="none" stroke="url(#camStroke)" stroke-width="1.4"/>
+      <path d="M 6 -8 L 70 -26 L 70 24 L 6 6 Z" fill="#6df0ff" fill-opacity="0.05" stroke="url(#camStroke)" stroke-width="1.4" stroke-linejoin="round"/>
+    </g>
+
+    <!-- Camera 4: right-mid -->
+    <g transform="translate(270 40) rotate(190)">
+      <rect x="-14" y="-10" width="20" height="18" rx="2" fill="#0d1324" stroke="url(#camStroke)" stroke-width="1.6"/>
+      <circle cx="-2" cy="-1" r="4" fill="none" stroke="url(#camStroke)" stroke-width="1.4"/>
+      <path d="M 6 -8 L 70 -26 L 70 24 L 6 6 Z" fill="#6df0ff" fill-opacity="0.05" stroke="url(#camStroke)" stroke-width="1.4" stroke-linejoin="round"/>
+    </g>
+
+    <!-- Camera 5: top-center (slightly behind) -->
+    <g transform="translate(0 -210) rotate(90)">
+      <rect x="-14" y="-10" width="20" height="18" rx="2" fill="#0d1324" stroke="url(#camStroke)" stroke-width="1.6"/>
+      <circle cx="-2" cy="-1" r="4" fill="none" stroke="url(#camStroke)" stroke-width="1.4"/>
+      <path d="M 6 -8 L 64 -24 L 64 22 L 6 6 Z" fill="#6df0ff" fill-opacity="0.05" stroke="url(#camStroke)" stroke-width="1.4" stroke-linejoin="round"/>
+    </g>
+
+    <!-- Sight-lines from cameras toward the center (subtle dashed rays) -->
+    <g stroke="#8ce8ff" stroke-opacity="0.18" stroke-width="1" stroke-dasharray="3 5">
+      <line x1="-170" y1="-110" x2="-40" y2="-20"/>
+      <line x1="170"  y1="-110" x2="40"  y2="-20"/>
+      <line x1="-200" y1="40"   x2="-40" y2="20"/>
+      <line x1="200"  y1="40"   x2="40"  y2="20"/>
+      <line x1="0"    y1="-150" x2="0"   y2="-30"/>
+    </g>
+
+    <!-- ===== Central object: MVS pipeline morph =====
+         Three visual zones forming one 3D-ish blob:
+         • Left third: SPARSE POINTS (few dots)
+         • Middle third: DENSE POINTS / WIREFRAME
+         • Right third: TEXTURED MESH FACES
+    -->
+
+    <!-- ===== Input images stack — raw photos fed to SfM ===== -->
+    <g transform="translate(-240 -10)">
+      <!-- Photo 3 (back) -->
+      <g transform="rotate(-14)">
+        <rect x="-22" y="-16" width="44" height="32" rx="2.5"
+              fill="#101a33" stroke="#8ce8ff" stroke-opacity="0.85" stroke-width="1.4"/>
+        <!-- mini landscape -->
+        <path d="M -19 9 L -8 -3 L 4 6 L 16 -5 L 19 10 Z" fill="#36c6ff" fill-opacity="0.4"/>
+        <circle cx="-10" cy="-7" r="2" fill="#ffd57a" opacity="0.75"/>
+      </g>
+      <!-- Photo 2 (mid) -->
+      <g transform="translate(10 8) rotate(6)">
+        <rect x="-22" y="-16" width="44" height="32" rx="2.5"
+              fill="#0c1428" stroke="#8ce8ff" stroke-opacity="0.9" stroke-width="1.4"/>
+        <path d="M -19 9 L -6 -4 L 6 7 L 18 -5 L 19 10 Z" fill="#2dd4bf" fill-opacity="0.4"/>
+        <circle cx="8" cy="-7" r="2" fill="#ffd57a" opacity="0.75"/>
+      </g>
+      <!-- Photo 1 (front) -->
+      <g transform="translate(20 16) rotate(22)">
+        <rect x="-22" y="-16" width="44" height="32" rx="2.5"
+              fill="#14203a" stroke="#ffd57a" stroke-opacity="0.9" stroke-width="1.6"/>
+        <path d="M -19 9 L -8 -3 L 4 6 L 16 -5 L 19 10 Z" fill="#ffb04a" fill-opacity="0.45"/>
+        <circle cx="10" cy="-7" r="2" fill="#ffffff" opacity="0.85"/>
+      </g>
+    </g>
+
+    <!-- ===== Sparse points (SfM output) ===== -->
+    <g fill="#8ce8ff" filter="url(#nodeGlow)">
+      <circle cx="-150" cy="-40" r="1.8" opacity="0.9"/>
+      <circle cx="-135" cy="-20" r="1.5" opacity="0.75"/>
+      <circle cx="-158" cy="10"  r="1.6" opacity="0.8"/>
+      <circle cx="-130" cy="30"  r="1.3" opacity="0.7"/>
+      <circle cx="-145" cy="55"  r="1.7" opacity="0.85"/>
+      <circle cx="-122" cy="80"  r="1.4" opacity="0.7"/>
+      <circle cx="-168" cy="80"  r="1.2" opacity="0.6"/>
+      <circle cx="-110" cy="-15" r="1.5" opacity="0.8"/>
+      <circle cx="-105" cy="55"  r="1.3" opacity="0.65"/>
+      <circle cx="-98"  cy="5"   r="1.5" opacity="0.75"/>
+      <circle cx="-180" cy="-10" r="1.2" opacity="0.6"/>
+    </g>
+
+    <!-- =========================================================
+         HOUSE: isometric, half WIREFRAME (left) / half TEXTURED (right)
+         3D vertices (with depth projection dx=+0.33z, dy=-0.30z):
+           A  FL-bot (-60, 35)       A' BL-bot (-40, 14)
+           B  FR-bot ( 60, 35)       B' BR-bot ( 80, 14)
+           C  FR-top ( 60,-25)       C' BR-top ( 80,-46)
+           D  FL-top (-60,-25)       D' BL-top (-40,-46)
+           P  Front peak (0,-60)     P' Back peak (23,-81)
+           Mb Mid-bottom  (0,35)     M  Mid-top  (0,-25)
+         ========================================================= -->
+    <g>
+      <!-- ====== TEXTURED HALF (right of x=0) ====== -->
+
+      <!-- Right wall (side) -->
+      <polygon points="60,35 80,14 80,-46 60,-25"
+               fill="url(#wallShade)" stroke="#ffffff" stroke-opacity="0.35" stroke-width="0.9" stroke-linejoin="round"/>
+      <!-- Right-side window (trapezoid following wall perspective) -->
+      <polygon points="67,-18 76,-27 76,-7 67,2"
+               fill="#6df0ff" fill-opacity="0.85"
+               stroke="#ffffff" stroke-opacity="0.55" stroke-width="0.6"/>
+      <!-- Window mullions (cross) -->
+      <g stroke="#0d1324" stroke-width="0.7" stroke-opacity="0.8">
+        <line x1="71.5" y1="-22.5" x2="71.5" y2="-2.5"/>
+        <line x1="67"   y1="-12"   x2="76"   y2="-17"/>
+      </g>
+
+      <!-- Right roof slope -->
+      <polygon points="0,-60 60,-25 80,-46 23,-81"
+               fill="url(#roofGrad)" stroke="#ffffff" stroke-opacity="0.35" stroke-width="0.9" stroke-linejoin="round"/>
+      <!-- Roof shingle hint (thin diagonal lines) -->
+      <g stroke="#ffffff" stroke-opacity="0.18" stroke-width="0.6">
+        <line x1="15" y1="-65" x2="65" y2="-33"/>
+        <line x1="30" y1="-72" x2="72" y2="-40"/>
+        <line x1="45" y1="-80" x2="78" y2="-48"/>
+      </g>
+
+      <!-- Right half of front face -->
+      <polygon points="0,35 60,35 60,-25 0,-60"
+               fill="url(#wallLight)" stroke="#ffffff" stroke-opacity="0.35" stroke-width="0.9" stroke-linejoin="round"/>
+      <!-- Door on front-right -->
+      <path d="M 22 35 L 22 10 Q 22 6 26 6 L 36 6 Q 40 6 40 10 L 40 35 Z"
+            fill="url(#doorColor)" stroke="#ffffff" stroke-opacity="0.45" stroke-width="0.7"/>
+      <!-- Doorknob -->
+      <circle cx="36.5" cy="22" r="0.9" fill="#ffd57a"/>
+      <!-- Front window (right side) -->
+      <rect x="46" y="-12" width="12" height="12" rx="0.6"
+            fill="#6df0ff" fill-opacity="0.85" stroke="#ffffff" stroke-opacity="0.55" stroke-width="0.6"/>
+      <g stroke="#0d1324" stroke-width="0.7" stroke-opacity="0.8">
+        <line x1="52" y1="-12" x2="52" y2="0"/>
+        <line x1="46" y1="-6"  x2="58" y2="-6"/>
+      </g>
+
+      <!-- Ridge seam line (where textured meets wireframe) -->
+      <line x1="0" y1="-60" x2="23" y2="-81"
+            stroke="#ffffff" stroke-opacity="0.45" stroke-width="1"/>
+
+      <!-- ====== WIREFRAME HALF (left of x=0) ====== -->
+
+      <!-- Left roof slope (quadrilateral) — wireframe -->
+      <g stroke="#a56bff" stroke-opacity="0.95" stroke-width="1.35" fill="none" stroke-linejoin="round">
+        <polygon points="0,-60 -60,-25 -40,-46 23,-81"/>
+        <!-- Mesh subdivisions -->
+        <line x1="-30" y1="-42.5" x2="-8" y2="-71" stroke-opacity="0.55"/>
+        <line x1="-50" y1="-35.5" x2="12" y2="-63.5" stroke-opacity="0.55"/>
+        <line x1="-20" y1="-52.5" x2="-50" y2="-35.5" stroke-opacity="0.4"/>
+      </g>
+
+      <!-- Left half of front face (pentagon: A, Mbot, P, D) — wireframe -->
+      <g stroke="#a56bff" stroke-opacity="0.95" stroke-width="1.35" fill="none" stroke-linejoin="round">
+        <!-- outline -->
+        <polygon points="-60,35 0,35 0,-60 -60,-25"/>
+        <!-- radial subdivisions from center C(-30,-5) -->
+        <line x1="-30" y1="-5" x2="-60" y2="35"  stroke-opacity="0.55"/>
+        <line x1="-30" y1="-5" x2="0"   y2="35"  stroke-opacity="0.55"/>
+        <line x1="-30" y1="-5" x2="0"   y2="-60" stroke-opacity="0.55"/>
+        <line x1="-30" y1="-5" x2="-60" y2="-25" stroke-opacity="0.55"/>
+        <!-- extra edge subdivisions -->
+        <line x1="-60" y1="5"  x2="0"   y2="5"   stroke-opacity="0.45"/>
+        <line x1="-30" y1="35" x2="-30" y2="-42.5" stroke-opacity="0.45"/>
+        <line x1="-60" y1="-25" x2="0" y2="-25"  stroke-opacity="0.5"/>
+      </g>
+
+      <!-- Window outline on left (wireframe) — indicates same structure, different stage -->
+      <g stroke="#c8a5ff" stroke-opacity="0.9" stroke-width="1" fill="none">
+        <rect x="-50" y="-12" width="14" height="14"/>
+        <line x1="-43" y1="-12" x2="-43" y2="2"/>
+        <line x1="-50" y1="-5"  x2="-36" y2="-5"/>
+      </g>
+
+      <!-- Left-back vertical seam (back corner of house, dashed) -->
+      <line x1="-40" y1="14" x2="-40" y2="-46"
+            stroke="#a56bff" stroke-opacity="0.55" stroke-width="1" stroke-dasharray="3 3"/>
+      <line x1="-60" y1="35" x2="-40" y2="14"
+            stroke="#a56bff" stroke-opacity="0.55" stroke-width="1" stroke-dasharray="3 3"/>
+
+      <!-- Dense point cloud dots on the wireframe half (MVS densification hint) -->
+      <g fill="#6df0ff" filter="url(#nodeGlow)">
+        <circle cx="-55" cy="28"  r="1.2" opacity="0.85"/>
+        <circle cx="-45" cy="18"  r="1.1" opacity="0.8"/>
+        <circle cx="-30" cy="25"  r="1.3" opacity="0.9"/>
+        <circle cx="-15" cy="20"  r="1.1" opacity="0.8"/>
+        <circle cx="-8"  cy="10"  r="1.1" opacity="0.8"/>
+        <circle cx="-55" cy="0"   r="1.2" opacity="0.85"/>
+        <circle cx="-30" cy="-5"  r="1.2" opacity="0.85"/>
+        <circle cx="-10" cy="-18" r="1.1" opacity="0.8"/>
+        <circle cx="-25" cy="-30" r="1.1" opacity="0.8"/>
+        <circle cx="-48" cy="-20" r="1.1" opacity="0.8"/>
+        <circle cx="-5"  cy="-38" r="1"   opacity="0.75"/>
+        <!-- on left roof slope -->
+        <circle cx="-25" cy="-48" r="1"   opacity="0.75"/>
+        <circle cx="-8"  cy="-55" r="1"   opacity="0.75"/>
+        <circle cx="-42" cy="-36" r="1"   opacity="0.75"/>
+        <circle cx="10"  cy="-66" r="1"   opacity="0.75"/>
+        <circle cx="-20" cy="-62" r="0.9" opacity="0.7"/>
+      </g>
+    </g>
+
+    <!-- Bottom shadow dots for ground contact -->
+    <g fill="#36c6ff" opacity="0.25">
+      <circle cx="-40" cy="155" r="1.2"/>
+      <circle cx="0"   cy="163" r="1.4"/>
+      <circle cx="40"  cy="160" r="1.2"/>
+      <circle cx="80"  cy="155" r="1"/>
+      <circle cx="-80" cy="150" r="1"/>
+    </g>
+  </g>
+
+  <!-- =========================================================
+       PIPELINE LEGEND (tiny labels under the scene)
+       ========================================================= -->
+  <g font-family="DejaVu Sans, Helvetica, Arial, sans-serif" font-size="11" font-weight="700"
+     letter-spacing="1.5" fill="#8b93a7" text-anchor="middle">
+    <text x="145" y="510">IMAGES</text>
+    <text x="275" y="510">SFM · SPARSE</text>
+    <text x="430" y="510">DENSE · MESH</text>
+    <text x="570" y="510">TEXTURED</text>
+    <!-- arrows between stages -->
+    <g stroke="#8b93a7" stroke-width="1.2" fill="none" stroke-linecap="round">
+      <!-- IMAGES → SFM -->
+      <path d="M 178 506 L 220 506"/>
+      <path d="M 212 501 L 220 506 L 212 511"/>
+      <!-- SFM → DENSE -->
+      <path d="M 333 506 L 375 506"/>
+      <path d="M 367 501 L 375 506 L 367 511"/>
+      <!-- DENSE → TEXTURED -->
+      <path d="M 488 506 L 530 506"/>
+      <path d="M 522 501 L 530 506 L 522 511"/>
+    </g>
+  </g>
+
+  <!-- =========================================================
+       RIGHT: TITLE + TAGLINE + KEYWORDS
+       ========================================================= -->
+  <g transform="translate(680 0)" font-family="DejaVu Sans, Helvetica, Arial, sans-serif">
+
+    <!-- Eyebrow (moved up for breathing room above the title) -->
+    <g transform="translate(0 140)">
+      <rect x="0" y="0" width="10" height="10" rx="2" fill="#2dd4bf"/>
+      <text x="22" y="10" font-size="16" font-weight="700" fill="#8ce8ff" letter-spacing="3">
+        MULTI-VIEW · STEREO · LIBRARY
+      </text>
+    </g>
+
+    <!-- Title: OpenMVS -->
+    <text x="0" y="265" font-size="100" font-weight="800" fill="url(#titleGrad)" letter-spacing="-2">
+      OpenMVS
+    </text>
+
+    <!-- Underline accent -->
+    <rect x="0" y="285" width="250" height="5" rx="2.5" fill="#ff8a3d"/>
+
+    <!-- Tagline (verbatim from README, split for readability) -->
+    <text x="0" y="345" font-size="26" font-weight="500" fill="#e8ecf4">
+      Open Multi-View Stereo reconstruction
+    </text>
+    <text x="0" y="380" font-size="26" font-weight="500" fill="#e8ecf4">
+      library — images to textured 3D meshes.
+    </text>
+
+    <!-- Keyword chips: the full pipeline stages (SfM now included) -->
+    <g font-size="13" font-weight="700" transform="translate(0 425)">
+      <!-- Structure from Motion (NEW) -->
+      <g>
+        <rect x="0" y="0" width="168" height="30" rx="15" fill="#ffffff" fill-opacity="0.06" stroke="#ffd36b" stroke-opacity="0.7"/>
+        <text x="84" y="20" text-anchor="middle" fill="#ffe39a">Structure from Motion</text>
+      </g>
+      <!-- Dense Point Cloud -->
+      <g transform="translate(180 0)">
+        <rect x="0" y="0" width="150" height="30" rx="15" fill="#ffffff" fill-opacity="0.06" stroke="#36c6ff" stroke-opacity="0.6"/>
+        <text x="75" y="20" text-anchor="middle" fill="#8ce8ff">Dense Point Cloud</text>
+      </g>
+      <!-- Mesh Reconstruction -->
+      <g transform="translate(342 0)">
+        <rect x="0" y="0" width="168" height="30" rx="15" fill="#ffffff" fill-opacity="0.06" stroke="#a56bff" stroke-opacity="0.6"/>
+        <text x="84" y="20" text-anchor="middle" fill="#e6c8ff">Mesh Reconstruction</text>
+      </g>
+      <!-- Mesh Refinement -->
+      <g transform="translate(0 40)">
+        <rect x="0" y="0" width="138" height="30" rx="15" fill="#ffffff" fill-opacity="0.06" stroke="#2dd4bf" stroke-opacity="0.6"/>
+        <text x="69" y="20" text-anchor="middle" fill="#9ef0dc">Mesh Refinement</text>
+      </g>
+      <!-- Mesh Texturing -->
+      <g transform="translate(150 40)">
+        <rect x="0" y="0" width="128" height="30" rx="15" fill="#ffffff" fill-opacity="0.06" stroke="#ff8a3d" stroke-opacity="0.6"/>
+        <text x="64" y="20" text-anchor="middle" fill="#ffd1a6">Mesh Texturing</text>
+      </g>
+      <!-- C++ / Open Source -->
+      <g transform="translate(290 40)">
+        <rect x="0" y="0" width="148" height="30" rx="15" fill="#ffffff" fill-opacity="0.06" stroke="#ffffff" stroke-opacity="0.35"/>
+        <text x="74" y="20" text-anchor="middle" fill="#cfd5e2">C++ · Open Source</text>
+      </g>
+    </g>
+
+    <!-- Footer: repo handle -->
+    <g transform="translate(0 550)" font-size="16" fill="#8b93a7" font-weight="500">
+      <g transform="translate(0 -12) scale(0.9)" fill="#8b93a7">
+        <path d="M12 .5C5.65.5.5 5.65.5 12c0 5.08 3.29 9.39 7.86 10.91.57.1.78-.25.78-.55 0-.27-.01-1.16-.02-2.11-3.2.7-3.88-1.37-3.88-1.37-.52-1.32-1.27-1.67-1.27-1.67-1.04-.71.08-.7.08-.7 1.15.08 1.76 1.18 1.76 1.18 1.02 1.75 2.68 1.25 3.34.95.1-.74.4-1.25.72-1.54-2.55-.29-5.24-1.28-5.24-5.7 0-1.26.45-2.29 1.19-3.1-.12-.29-.51-1.47.11-3.06 0 0 .97-.31 3.18 1.18.92-.26 1.91-.38 2.9-.39.98.01 1.97.13 2.9.39 2.21-1.49 3.18-1.18 3.18-1.18.62 1.59.23 2.77.11 3.06.74.81 1.19 1.84 1.19 3.1 0 4.44-2.7 5.41-5.27 5.69.41.36.78 1.06.78 2.14 0 1.55-.01 2.79-.01 3.17 0 .3.21.66.79.55A11.5 11.5 0 0 0 23.5 12C23.5 5.65 18.35.5 12 .5Z"/>
+      </g>
+      <text x="30" y="0">github.com/cdcseacave/openMVS</text>
+    </g>
+  </g>
+
+  <!-- Decorative scattered stars / keypoints in margins -->
+  <g fill="#ffffff">
+    <circle cx="60"   cy="90"  r="1.1" opacity="0.45"/>
+    <circle cx="120"  cy="50"  r="1.0" opacity="0.35"/>
+    <circle cx="40"   cy="470" r="1.2" opacity="0.5"/>
+    <circle cx="90"   cy="590" r="1.0" opacity="0.4"/>
+    <circle cx="1230" cy="90"  r="1.0" opacity="0.4"/>
+    <circle cx="1180" cy="620" r="1.1" opacity="0.45"/>
+  </g>
+</svg>

@@ -101,7 +101,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("help,h", "produce this help message")
 		("working-folder,w", boost::program_options::value<std::string>(&WORKING_FOLDER), "working directory (default current directory)")
 		("config-file,c", boost::program_options::value<std::string>(&OPT::strConfigFileName)->default_value(APPNAME _T(".cfg")), "file name containing program options")
-		("archive-type", boost::program_options::value(&OPT::nArchiveType)->default_value(2), "project archive type: 0-text, 1-binary, 2-compressed binary")
+		("archive-type", boost::program_options::value(&OPT::nArchiveType)->default_value(ARCHIVE_DEFAULT), "project archive type: 0-text, 1-binary, 2-compressed binary")
 		("process-priority", boost::program_options::value(&OPT::nProcessPriority)->default_value(-1), "process priority (below normal by default)")
 		("max-threads", boost::program_options::value(&OPT::nMaxThreads)->default_value(0), "maximum number of threads (0 for using all available cores)")
 		#if TD_VERBOSE != TD_VERBOSE_OFF
@@ -123,7 +123,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("source,s", boost::program_options::value<std::string>(&OPT::strSource), "source folder or semicolon-separated list of images")
 		("output-file,o", boost::program_options::value<std::string>(&OPT::strOutputFileName), "output scene file path")
 		("export-mvs", boost::program_options::value<std::string>(&OPT::strOutputFileNameMVS), "output MVS file path (optional)")
-		("detector-type,t", boost::program_options::value<std::string>(&OPT::strDetectorType)->default_value("SIFT"), "feature detector type: AKAZE, ORB, or SIFT")
+		("detector-type,t", boost::program_options::value<std::string>(&OPT::strDetectorType)->default_value("SIFTGPU"), "feature detector type: AKAZE, ORB, SIFT or SIFTGPU")
 		("import-poses-csv", boost::program_options::value<std::string>(&OPT::strImportPosesCSV)->default_value("poses.csv"), "import camera poses from CSV file (optional)")
 		("export-poses-csv", boost::program_options::value<std::string>(&OPT::strExportPosesCSV), "export camera poses to CSV file (optional)")
 		("import-poses-mode", boost::program_options::value(&OPT::importPosesMode)->default_value(0), "mode for importing camera poses from CSV: 0=none, 1=all, 2=extrinsics only, 3=positions only")
@@ -146,7 +146,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("k2", boost::program_options::value(&OPT::k2)->default_value(0.f), "force k2 distortion coefficient for specified images (0 = not used)")
 		("image-indices", boost::program_options::value<std::string>(&OPT::strImageIndices), "image indices to apply forced parameters (e.g., '0 5-10 15', empty = all images)")
 		("max-views-per-cluster", boost::program_options::value(&OPT::maxViewsPerCluster)->default_value(200), "maximum images per cluster for hierarchical reconstruction (0 = disable clustering)")
-		("use-global-solver", boost::program_options::value<bool>(&OPT::bUseGlobalSolver)->default_value(true), "use global solver for calibration, istead of hierarhical solver")
+		("use-global-solver", boost::program_options::value<bool>(&OPT::bUseGlobalSolver)->default_value(false), "use global solver for calibration, istead of hierarhical solver")
 		("extract-colors", boost::program_options::value<bool>(&OPT::bExtractColors)->default_value(false), "extract colors for reconstructed points")
 		("undistort-alpha", boost::program_options::value<float>(&OPT::undistortAlpha)->default_value(0.6f), "alpha parameter for undistortion (0=zoomed in, 1=all pixels retained)")
 		("align-gps-threshold", boost::program_options::value<float>(&OPT::thAlignGPS)->default_value(5.f), "maximum distance in meters for aligning GPS positions to reconstruction poses (0 = disabled)")
@@ -289,9 +289,14 @@ int main(int argc, LPCTSTR* argv)
 		return EXIT_FAILURE;
 	}
 	// Export MVS scene
-	if (!OPT::strOutputFileNameMVS.empty() && !ExportMVS(MAKE_PATH_SAFE(OPT::strOutputFileNameMVS), scene, MAKE_PATH("undistorted"), OPT::undistortAlpha)) {
-		VERBOSE("error: failed to export MVS file to %s", OPT::strOutputFileNameMVS.c_str());
-		return EXIT_FAILURE;
+	if (!OPT::strOutputFileNameMVS.empty()) {
+		SFM::ExportMVSConfig cfg;
+		cfg.undistortImageDir = MAKE_PATH("undistorted");
+		cfg.undistortAlpha    = OPT::undistortAlpha;
+		if (!ExportMVS(MAKE_PATH_SAFE(OPT::strOutputFileNameMVS), scene, cfg)) {
+			VERBOSE("error: failed to export MVS file to %s", OPT::strOutputFileNameMVS.c_str());
+			return EXIT_FAILURE;
+		}
 	}
 	// Generate depth-maps from ROMA2 NPZ files
 	CLISTDEF2(String) depthMapFiles;

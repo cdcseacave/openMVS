@@ -82,8 +82,8 @@ public:
 	// returns projected point and a bool indicating if point is valid (ex. in front of camera for pinhole)
 	virtual std::pair<Point2, bool> Project(const Point3& X) const = 0;
 
-	// Unproject a 2D image point to a 3D ray in camera coordinates (w/ & w/o normalization)
-	virtual Point2 Unproject(const Point2& x) const = 0;
+	// Unproject a 2D image point to a 3D point on the bearing ray in camera coordinates (w/ & w/o normalization)
+	virtual Point3 Unproject(const Point2& x) const = 0;
 	virtual Point3 UnprojectNormalized(const Point2& x) const = 0;
 
 	// Get camera type
@@ -105,7 +105,7 @@ public:
 
 	// Check if camera has valid parameters
 	virtual bool IsValid() const { return !size.empty(); }
-	
+
 	// Check if camera supports distortion and has valid distortion parameters
 	virtual bool HasDistortion() const { return false; }
 
@@ -138,6 +138,13 @@ public:
 	// Convert pixel-based error threshold to angular threshold (radians)
 	// This accounts for image resolution and (for pinhole) focal length
 	virtual REAL PixelErrorToAngular(REAL pixelError) const = 0;
+
+	// Relative feature localization noise compared to a baseline pinhole camera.
+	// Returns a multiplier on pixel-based reprojection thresholds that callers
+	// (PnP RANSAC, match filters, etc.) should apply when a single global pixel
+	// threshold is tuned for pinhole but the camera model produces noisier
+	// feature positions. Default 1 (pinhole baseline); overridden per model.
+	virtual REAL GetFeatureNoiseScale() const { return REAL(1); }
 
 	#ifdef _USE_BOOST
 	// implement BOOST serialization
@@ -200,8 +207,8 @@ public:
 	// Project 3D point to 2D with distortion
 	virtual std::pair<Point2, bool> Project(const Point3& X) const override;
 
-	// Unproject 2D point to 3D ray (inverse of undistorted projection)
-	virtual Point2 Unproject(const Point2& x) const override;
+	// Unproject 2D point to 3D ray (inverse of undistorted projection, z=1)
+	virtual Point3 Unproject(const Point2& x) const override;
 	virtual Point3 UnprojectNormalized(const Point2& x) const override;
 
 	virtual CameraType GetType() const override { return CameraType::PINHOLE; }
@@ -311,7 +318,10 @@ class SFM_API SphericalCamera : public Camera
 public:
 	SphericalCamera() {}
 
-	SphericalCamera(const cv::Size& _size) : Camera(_size) {}
+	SphericalCamera(const cv::Size& _size) : Camera(_size) {
+		// Equirectangular images must cover 360x180 degrees, so width = 2 * height.
+		ASSERT(_size.width == 2 * _size.height);
+	}
 
 	virtual ~SphericalCamera() {}
 
@@ -323,9 +333,10 @@ public:
 	// Project 3D point to 2D using equirectangular projection
 	virtual std::pair<Point2, bool> Project(const Point3& X) const override;
 
-	// Unproject 2D point to 3D ray using equirectangular projection
+	// Unproject 2D point to 3D ray using equirectangular projection;
+	// Unproject returns a Point3 scaled so that |z|=1
 	Point2 MapImageToSpherical(const Point2& x) const;
-	virtual Point2 Unproject(const Point2& x) const override;
+	virtual Point3 Unproject(const Point2& x) const override;
 	virtual Point3 UnprojectNormalized(const Point2& x) const override;
 
 	virtual CameraType GetType() const override { return CameraType::SPHERICAL; }
@@ -348,6 +359,12 @@ public:
 
 	// Convert pixel error to angular error (radians)
 	virtual REAL PixelErrorToAngular(REAL pixelError) const override;
+
+	// Cube-face SIFT extraction produces features with ~2x the pixel-space
+	// localization noise of a pinhole pipeline (face-seam sampling plus
+	// off-center descriptor warping), so pixel-calibrated thresholds widen
+	// by this factor for the equirectangular model.
+	virtual REAL GetFeatureNoiseScale() const override { return REAL(2); }
 
 	#ifdef _USE_BOOST
 	// implement BOOST serialization

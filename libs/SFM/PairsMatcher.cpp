@@ -342,12 +342,14 @@ bool PairsMatcher::GeometricFilter(
 	}
 	ASSERT(img1.HasCamera() && img2.HasCamera());
 
-	// Configure RANSAC options
-	poselib::RansacOptions ransacOpt;
-	ransacOpt.max_epipolar_error = config.maxEpipolarError; // reprojection error threshold
-	ransacOpt.min_iterations = 100; // min iterations
-	ransacOpt.max_iterations = 10000; // max iterations
-	poselib::BundleOptions bundleOpt;
+	// Configure RANSAC options.
+	// PoseLib master: RelativePoseOptions wraps RansacOptions + BundleOptions and
+	// holds the inlier threshold (max_error) directly. The estimate_* free functions
+	// no longer take a separate BundleOptions parameter.
+	poselib::RelativePoseOptions opt;
+	opt.max_error = config.maxEpipolarError; // reprojection error threshold
+	opt.ransac.min_iterations = 100; // min iterations
+	opt.ransac.max_iterations = 10000; // max iterations
 	std::vector<char> inliers;
 
 	// Lambda to fetch matched points from the pair
@@ -409,9 +411,9 @@ bool PairsMatcher::GeometricFilter(
 
 		// Use shared-focal relative pose estimator
 		poselib::ImagePair plImagePair;
-		ransacOpt.real_focal_check = true;
+		opt.real_focal_check = true;
 		poselib::RansacStats stats = poselib::estimate_shared_focal_relative_pose(
-			pts1, pts2, pp, ransacOpt, bundleOpt, &plImagePair, &inliers);
+			pts1, pts2, pp, opt, &plImagePair, &inliers);
 		if (stats.num_inliers < config.minMatches) {
 			pair.InvalidateMatches();
 			return false;
@@ -435,72 +437,64 @@ bool PairsMatcher::GeometricFilter(
 		const KMatrix K1 = cam1.GetK();
 		const KMatrix K2 = cam2.GetK();
 
-		#if 1
-		// Scale RANSAC thresholds according to focal lengths
-		ransacOpt.max_epipolar_error *= 0.5 / cam1.GetFocalLength() + 0.5 / cam2.GetFocalLength();
+		// Unified bearing-vector relative pose path: works for any central camera
+		// model. Convert the pixel-space Sampson threshold to an angular threshold
+		// by averaging the per-camera angular equivalents (the Sampson-on-sphere
+		// residual is measured in radians, so the average is a valid combined
+		// threshold for a stereo pair with possibly different pixel resolutions):
+		//   angle_k = cam_k.PixelErrorToAngular(pixel_threshold)
+		//   angle   = 0.5 * (angle_1 + angle_2)
+		// For pinhole this reduces to 0.5/focal_1 + 0.5/focal_2 in the small-angle
+		// limit (previous hand-rolled scaling). RelativePoseOptions stores this
+		// angle directly in opt.max_error (Sampson residual is radians-scaled).
+		const REAL pxErr = opt.max_error;
+		const REAL angle1 = cam1.PixelErrorToAngular(pxErr);
+		const REAL angle2 = cam2.PixelErrorToAngular(pxErr);
+		opt.SetMaxErrorFromAngle(0.5 * (angle1 + angle2));
 
-		// Extract matched keypoints and convert directly to undistorted normalized coordinates
+		// Extract matched keypoints and convert directly to 3D unit bearing vectors
 		const float minFeatureDistanceSq = SQUARE(config.minFeatureDistance);
-		std::vector<poselib::Point2D> pts1, pts2;
-		pts1.reserve(pair.matches.size());
-		pts2.reserve(pair.matches.size());
+		std::vector<poselib::Point3D> bearings1, bearings2;
+		bearings1.reserve(pair.matches.size());
+		bearings2.reserve(pair.matches.size());
 		for (const auto& m : pair.matches) {
 			const cv::Point2f& pt1 = img1.keypoints[m.queryIdx].pt;
 			const cv::Point2f& pt2 = img2.keypoints[m.trainIdx].pt;
 			if (minFeatureDistanceSq > 0 && normSq(pt1 - pt2) < minFeatureDistanceSq)
 				continue; // skip matches that are too close
-			// Unproject removes intrinsics and distortion -> normalized undistorted coordinates
-			pts1.emplace_back(cam1.Unproject(pt1));
-			pts2.emplace_back(cam2.Unproject(pt2));
+			bearings1.emplace_back(cam1.UnprojectNormalized(Cast<REAL>(pt1)));
+			bearings2.emplace_back(cam2.UnprojectNormalized(Cast<REAL>(pt2)));
 		}
 
-		#if 0
-		// Use NullCameraModel for all camera types with undistorted normalized coordinates
-		std::vector<double> emptyParams;
-		poselib::Camera plCam1(poselib::NullCameraModel::model_id, emptyParams, cam1.GetWidth(), cam1.GetHeight());
-		poselib::Camera plCam2(poselib::NullCameraModel::model_id, emptyParams, cam2.GetWidth(), cam2.GetHeight());
-		#else
-		// Use PinholeCameraModel for all camera types with undistorted normalized coordinates
-		// Parameters: [focal_x, focal_y, principal_point_x, principal_point_y]
-		// (if NullCameraModel is not implemented yet in the main PoseLib version)
-		std::vector<double> emptyParams{1.0, 1.0, 0.0, 0.0};
-		poselib::Camera plCam1(poselib::PinholeCameraModel::model_id, emptyParams, cam1.GetWidth(), cam1.GetHeight());
-		poselib::Camera plCam2(poselib::PinholeCameraModel::model_id, emptyParams, cam2.GetWidth(), cam2.GetHeight());
-		#endif
-		#else
-		// Fallback for pinhole cameras: use pixel coordinates with SimplePinholeCameraModel
-		const auto [pts1, pts2] = FetchPoints();
-
-		// Create poselib cameras with PinholeCameraModel
-		// Parameters: [focal_x, focal_y, principal_point_x, principal_point_y]
-		std::vector<double> params1{K1(0,0), K1(1,1), K1(0,2), K1(1,2)};
-		std::vector<double> params2{K2(0,0), K2(1,1), K2(0,2), K2(1,2)};
-		poselib::Camera plCam1(poselib::PinholeCameraModel::model_id, params1, cam1.GetWidth(), cam1.GetHeight());
-		poselib::Camera plCam2(poselib::PinholeCameraModel::model_id, params2, cam2.GetWidth(), cam2.GetHeight());
-		#endif
-
-		// Standard relative pose estimation with undistorted normalized coordinates
 		poselib::CameraPose plPose;
 		if (pair.relativePose.has_value()) {
 			// Initialize with existing pose (from PreMatch) to guide RANSAC
 			plPose = poselib::CameraPose(pair.relativePose->R, pair.relativePose->GetT());
-			ransacOpt.score_initial_model = true;
+			opt.ransac.score_initial_model = true;
 		}
-		poselib::RansacStats stats = poselib::estimate_relative_pose(
-			pts1, pts2,
-			plCam1, plCam2,
-			ransacOpt,
-			bundleOpt,
+		// Cheirality check stays at its default (enabled) — it's bearing-native and
+		// works for both pinhole and spherical back-hemisphere features. Without it,
+		// the four (R, ±t), (R', ±t) decompositions of the essential matrix all have
+		// identical Sampson scores and RANSAC picks whichever one the 5-point solver
+		// returned first.
+		poselib::RansacStats stats = poselib::estimate_relative_pose_bearings(
+			bearings1, bearings2,
+			opt,
 			&plPose,
 			&inliers);
 		if (stats.num_inliers < config.minMatches) {
 			pair.InvalidateMatches();
 			return false;
 		}
-		// For spherical cameras F is not meaningful; only compose F when both are pinhole
-		const bool hasPinhole(cam1.GetType() == CameraType::PINHOLE || cam2.GetType() == CameraType::PINHOLE);
-		const KMatrix *pK1 = hasPinhole ? &K1 : nullptr;
-		const KMatrix *pK2 = hasPinhole ? &K2 : nullptr;
+		// F is only geometrically meaningful when BOTH cameras are pinhole —
+		// SphericalCamera::GetK() returns IDENTITY, so composing F from a mixed
+		// pair yields garbage. Pass null Ks unless both sides are pinhole; the
+		// downstream consumers that rely on F (e.g. MatchGeometric descriptor
+		// filtering, ViewGraphCalibrator) check pair.F.has_value() and take
+		// the bearing/E path when F is absent.
+		const bool bothPinhole(cam1.GetType() == CameraType::PINHOLE && cam2.GetType() == CameraType::PINHOLE);
+		const KMatrix *pK1 = bothPinhole ? &K1 : nullptr;
+		const KMatrix *pK2 = bothPinhole ? &K2 : nullptr;
 		return FinalizeRelative(plPose, pK1, pK2, inliers, stats.num_inliers);
 	}
 
@@ -510,9 +504,9 @@ bool PairsMatcher::GeometricFilter(
 	if (pair.F.has_value()) {
 		// Initialize with existing fundamental matrix (from PreMatch) to guide RANSAC
 		F = pair.F.value();
-		ransacOpt.score_initial_model = true;
+		opt.ransac.score_initial_model = true;
 	}
-	poselib::RansacStats stats = poselib::estimate_fundamental(pts1, pts2, ransacOpt, bundleOpt, &F, &inliers);
+	poselib::RansacStats stats = poselib::estimate_fundamental(pts1, pts2, opt, &F, &inliers);
 	if (stats.num_inliers < config.minMatches) {
 		pair.InvalidateMatches();
 		return false;

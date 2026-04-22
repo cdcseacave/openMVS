@@ -85,6 +85,13 @@ struct SFM_API FeatureExtractionConfig {
 	String importOpenMVGDir; // directory to import OpenMVG features from (optional)
 	String exportOpenMVGDir; // directory to export OpenMVG features to (optional)
 
+	// Spherical / cube-map feature extraction (applied per-image when the
+	// image's camera is a SphericalCamera). See SphereCubeMap for the set
+	// of supported face counts.
+	int   cubemapFaces = 6;             // 4 | 6 | 8 | 12 | 20
+	int   cubemapFaceSize = 0;          // 0 = auto: max(1024, equirect_width/4)
+	float cubemapDedupAngleDeg = 0.25f; // angular-NMS threshold across face seams
+
 	int GetMaxNumFeatures() const {
 		// Total max features per image = maxFeaturesPerCell * 3 * 3 grid
 		return maxFeaturesPerCell * 3 * 3; // 3x3 grid
@@ -127,9 +134,10 @@ public:
 	 * @brief Extract features from a single image
 	 * @param image Image to extract features from
 	 * @param detector Feature detector to use (nullptr to create internally)
+	 * @param skipIO If true, skip OpenMVG import/export (used for internal calls on cube-map faces)
 	 * @return true if features were extracted successfully
 	 */
-	bool ExtractImage(Image& image, cv::Ptr<cv::Feature2D>& detector);
+	bool ExtractImage(Image& image, cv::Ptr<cv::Feature2D>& detector, bool skipIO = false);
 
 	/**
 	 * @brief Convert SIFT descriptors to RootSIFT and quantize to uint8_t
@@ -155,6 +163,11 @@ public:
 	static bool ImportFeaturesOpenMVG(const String& inputDir, Image& image);
 
 private:
+	// Spherical path: render N tangent faces via SphereCubeMap::SphericalToTangentialFaces,
+	// recursively run the pinhole ExtractImage on each face with skipIO=true,
+	// then reproject + angular-NMS-dedup back to equirectangular coordinates.
+	bool ExtractImageSpherical(Image& image, cv::Ptr<cv::Feature2D>& detector);
+
 	Scene& scene;
 	FeatureExtractionConfig config;
 };

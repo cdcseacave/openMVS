@@ -223,6 +223,10 @@ bool Image::LoadMetadata(float defaultFocalRatio)
 
 	// Instantiate per-image camera
 	if (isSpherical) {
+		if (w != 2 * h) {
+			VERBOSE("warning: image '%s' is marked spherical but has %dx%d; equirectangular input requires width == 2 * height",
+				Util::getFileName(fileName).c_str(), w, h);
+		}
 		SphericalCamera* cam = new SphericalCamera(cv::Size(w, h));
 		pCamera = cam;
 	} else {

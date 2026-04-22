@@ -25,7 +25,9 @@
 #include "Common.h"
 #include "FeaturesExtractor.h"
 #include "Scene.h"
+#include "SphereCubeMap.h"
 #include <opencv2/features2d.hpp>
+#include <opencv2/imgproc.hpp>
 
 #ifdef _USE_SIFTGPU
 #include <glad/glad.h>
@@ -48,23 +50,115 @@ DEFINE_LOG_NAME(lt, _T("FeatExtr"));
 
 
 #ifdef _USE_SIFTGPU
+namespace {
+
 /**
- * @brief Coordinates SiftGPU feature extraction using thread pool
+ * @brief Coordinates SiftGPU feature extraction
  *
- * Implements producer-consumer pattern:
- * - Main thread: Executes GPU operations (SiftGPU::RunSIFT)
- * - Worker threads: Pre-load images and post-process features in parallel
+ * Owns the persistent GPU context and exposes both a synchronous per-image
+ * entry point (ExtractImage) and a pipelined bulk driver (ProcessImages).
+ * Both share the same per-image primitives — only the scheduling differs:
+ * - Per-image: run GPU + post-process, both on the calling thread.
+ * - Bulk: run GPU on the main thread, dispatch post-processing to the
+ *   thread pool so it overlaps with the next image's GPU work. Next
+ *   image's pixels are prefetched via the thread pool in parallel.
+ *
+ * File-local singleton: the GPU context lives for the process and is
+ * shared across all FeaturesExtractor instances that use SIFTGPU.
  */
 class SiftGPUFeatureCoordinator
 {
 public:
-	SiftGPUFeatureCoordinator(FeaturesExtractor& _extractor)
+	// Singleton accessor: lazily constructs and initializes the coordinator on
+	// first call, binding it to the given extractor's config + scene. Subsequent
+	// calls reuse the existing singleton and ignore the passed extractor — if
+	// you need to rebind to a different FeaturesExtractor (e.g. with a different
+	// useCUDA setting), call Release() first. Returns nullptr on init failure.
+	static SiftGPUFeatureCoordinator* GetCoordinator(FeaturesExtractor& extractor) {
+		if (!instance) {
+			std::unique_ptr<SiftGPUFeatureCoordinator> candidate(new SiftGPUFeatureCoordinator(extractor));
+			if (!candidate->Initialize())
+				return nullptr;
+			instance = std::move(candidate);
+		}
+		return instance.get();
+	}
+
+	// Destroy the singleton and release the GPU context.
+	static void Release() {
+		instance.reset();
+	}
+
+	// Singletons are non-copyable / non-movable.
+	SiftGPUFeatureCoordinator(const SiftGPUFeatureCoordinator&) = delete;
+	SiftGPUFeatureCoordinator& operator=(const SiftGPUFeatureCoordinator&) = delete;
+	SiftGPUFeatureCoordinator(SiftGPUFeatureCoordinator&&) = delete;
+	SiftGPUFeatureCoordinator& operator=(SiftGPUFeatureCoordinator&&) = delete;
+
+	// Synchronous per-image extraction path; caller manages scheduling.
+	// Runs GPU call and post-processing on the calling thread — used by
+	// FeaturesExtractor::ExtractImage for keyframe-style workflows that
+	// process one frame at a time.
+	bool ExtractImage(Image& img, bool skipIO = false) {
+		CLISTDEF0IDX(SiftGPU::SiftKeypoint,uint32_t) keys;
+		FloatArr descs;
+		if (!RunSIFTOnImage(img, keys, descs))
+			return false;
+		StoreFeatures(img, keys, descs, skipIO);
+		return !img.keypoints.empty();
+	}
+
+	// Bulk driver: pipelines image prefetch and post-processing around the
+	// serialized GPU call to keep the device busy.
+	size_t ProcessImages(Util::Progress& progress) {
+		std::atomic<size_t> numFeatures(0);
+		Scene& scene = extractor.GetScene();
+		FOREACH(i, scene.images) {
+			++progress;
+			Image& img = scene.images[i];
+			// Skip if already processed
+			if (img.HasFeatures() && img.HasDescriptors())
+				continue;
+			// Spherical images can't be fed to SIFTGPU directly — they need
+			// per-face tangent extraction. Delegate to the per-image driver,
+			// which recursively re-enters this coordinator for each face.
+			if (img.pCamera && img.pCamera->GetType() == CameraType::SPHERICAL) {
+				cv::Ptr<cv::Feature2D> unusedDet;
+				if (extractor.ExtractImage(img, unusedDet))
+					numFeatures.fetch_add(img.keypoints.size(), std::memory_order_relaxed);
+				continue;
+			}
+			// Pre-load next image (async task)
+			if (i + 1 < scene.images.size()) {
+				Image& imgNext = scene.images[i+1];
+				scene.threadPool.detach_task([&imgNext]() {
+					if (!imgNext.HasPixels())
+						imgNext.LoadPixels(true);
+				});
+			}
+			// Main-thread GPU call; skip image on failure
+			CLISTDEF0IDX(SiftGPU::SiftKeypoint,uint32_t) keys;
+			FloatArr descs;
+			if (!RunSIFTOnImage(img, keys, descs))
+				continue;
+			// Offload post-processing to thread pool so it overlaps with
+			// the next image's GPU work (async task)
+			scene.threadPool.detach_task(
+				[this, &img, keys = std::move(keys), descs = std::move(descs), &numFeatures]() {
+					numFeatures.fetch_add(StoreFeatures(img, keys, descs), std::memory_order_relaxed);
+				});
+		}
+		// Wait for all post-processing tasks to complete
+		scene.threadPool.wait();
+		return numFeatures.load(std::memory_order_relaxed);
+	}
+
+private:
+	explicit SiftGPUFeatureCoordinator(FeaturesExtractor& _extractor)
 		: extractor(_extractor) {}
 
 	// Initialize SiftGPU context (returns false on failure)
 	bool Initialize() {
-		gpu = std::make_unique<SiftGPU>();
-
 		constexpr unsigned maxImageSize = 5120;
 		constexpr int firstOctave = -1;
 		constexpr int octaveResolution = 3;
@@ -113,14 +207,14 @@ public:
 
 		std::vector<const char*> argv;
 		for (const auto& a : args) argv.push_back(a.c_str());
-		gpu->ParseParam(argv.size(), argv.data());
+		gpu.ParseParam(argv.size(), argv.data());
 
-		if (gpu->CreateContextGL() != SiftGPU::SIFTGPU_FULL_SUPPORTED) {
+		if (gpu.CreateContextGL() != SiftGPU::SIFTGPU_FULL_SUPPORTED) {
 			VERBOSE("error: SiftGPU not fully supported");
 			return false;
 		}
 		const int maxNumFeaturesPerImage = extractor.GetConfig().GetMaxNumFeatures();
-		const int maxNumFeaturesPerImageGPU = gpu->GetMaxNumFeatures();
+		const int maxNumFeaturesPerImageGPU = gpu.GetMaxNumFeatures();
 		if (maxNumFeaturesPerImageGPU < maxNumFeaturesPerImage) {
 			constexpr LPCTSTR warningMessage = "warning: SiftGPU only supports a maximum of %d features per image"
 				#ifdef _USE_CUDA
@@ -131,95 +225,95 @@ public:
 			extractor.GetConfig().SetMaxNumFeatures(maxNumFeaturesPerImageGPU);
 		}
 		DEBUG_EXTRA("SiftGPU initialized: %s mode (%d max-features-per-image)",
-			gpu->GetLanguage() == SiftGPU::SIFTGPULANG_CUDA ? "CUDA" : (gpu->GetLanguage() == SiftGPU::SIFTGPULANG_OPENCL ? "OpenCL" : "GLSL"), maxNumFeaturesPerImageGPU);
+			gpu.GetLanguage() == SiftGPU::SIFTGPULANG_CUDA ? "CUDA" : (gpu.GetLanguage() == SiftGPU::SIFTGPULANG_OPENCL ? "OpenCL" : "GLSL"), maxNumFeaturesPerImageGPU);
 		return true;
 	}
 
-	// Process all images using GPU + async post-processing
-	size_t ProcessImages(Util::Progress& progress) {
-		std::atomic<size_t> numFeatures(0);
-		FOREACH(i, extractor.GetScene().images) {
-			++progress;
-			Image& img = extractor.GetScene().images[i];
-			// Skip if already processed
-			if (img.HasFeatures() && img.HasDescriptors())
-				continue;
-			// Pre-load next image (async task)
-			if (i + 1 < extractor.GetScene().images.size()) {
-				Image& imgNext = extractor.GetScene().images[i+1];
-				extractor.GetScene().threadPool.detach_task([&imgNext]() {
-					if (!imgNext.HasPixels())
-						imgNext.LoadPixels(true);
-				});
-			}
-			// Ensure current image is loaded
-			if (!img.HasPixels() && !img.LoadPixels(true)) {
-				VERBOSE("error: no pixels loaded for image %u", img.ID);
-				continue;
-			}
-			// GPU processing (main thread, blocking)
-			if (!gpu->RunSIFT(img.pixels.cols, img.pixels.rows, img.pixels.data, GL_LUMINANCE, GL_UNSIGNED_BYTE)) {
-				VERBOSE("error: SiftGPU failed on image %u", img.ID);
-				continue;
-			}
-			// Download GPU results
-			const int num = gpu->GetFeatureNum();
-			CLISTDEF0IDX(SiftGPU::SiftKeypoint,uint32_t) keys(num);
-			FloatArr descs(num * 128);
-			gpu->GetFeatureVector(keys.data(), descs.data());
-			// Submit post-processing task (captures GPU results by value)
-			extractor.GetScene().threadPool.detach_task([this, &img, keys = std::move(keys), descs = std::move(descs), &numFeatures]() {
-				// Grid-based feature filtering
-				const int cellWidth = img.pixels.cols / 3;
-				const int cellHeight = img.pixels.rows / 3;
-				std::vector<Unsigned32Arr> grid(9);
-				FOREACH(k, keys) {
-					const int cx = (int)keys[k].x / cellWidth;
-					const int cy = (int)keys[k].y / cellHeight;
-					if (cx >= 0 && cx < 3 && cy >= 0 && cy < 3)
-						grid[cy * 3 + cx].push_back(k);
-				}
-				// Select best features from each cell
-				Unsigned32Arr selected;
-				selected.reserve(MINF(keys.size(), (uint32_t)extractor.GetConfig().maxFeaturesPerCell * 9));
-				for (int c = 0; c < 9; ++c) {
-					Unsigned32Arr& cells = grid[c];
-					if (cells.size() > (uint32_t)extractor.GetConfig().maxFeaturesPerCell) {
-						std::partial_sort(cells.begin(), cells.begin() + extractor.GetConfig().maxFeaturesPerCell, cells.end(),
-							[&keys](int a, int b) { return keys[a].s > keys[b].s; });
-						cells.resize(extractor.GetConfig().maxFeaturesPerCell);
-					}
-					selected.JoinRemove(cells);
-				}
-				// Store keypoints and descriptors
-				img.keypoints.resize(selected.size());
-				img.descriptors.create((int)selected.size(), 128, CV_8U);
-				FOREACH(k, selected) {
-					const uint32_t idx = selected[k];
-					const SiftGPU::SiftKeypoint& sk = keys[idx];
-					img.keypoints[k] = cv::KeyPoint(sk.x, sk.y, sk.s, sk.o, 0.1f);
-					// RootSIFT conversion
-					cv::Mat siftRow(1, 128, CV_32F, const_cast<float*>(&descs[idx * 128]));
-					FeaturesExtractor::ConvertToRootSIFT(siftRow).copyTo(img.descriptors.row((int)k));
-				}
-				numFeatures.fetch_add(img.keypoints.size(), std::memory_order_relaxed);
-				if (extractor.GetConfig().releaseImagePixels)
-					img.ReleasePixels();
-				DEBUG_ULTIMATE("Extracted features for image % 4u: % 6u features using %s (%.2f%s focal-length)",
-					img.ID, img.keypoints.size(), FeatureTypeToString(extractor.GetConfig().detectorType).c_str(), img.pCamera->GetFocalLength(), img.TrustIntrinsics() ? "" : "*");
-				if (!extractor.GetConfig().exportOpenMVGDir.empty())
-					FeaturesExtractor::ExportFeaturesOpenMVG(extractor.GetConfig().exportOpenMVGDir, img);
-			});
+	// Main-thread GPU work: ensure pixels are loaded, run SIFT, download results.
+	// SiftGPU's context is bound to a single thread, so this must never be called
+	// concurrently against the same coordinator.
+	bool RunSIFTOnImage(Image& img,
+		CLISTDEF0IDX(SiftGPU::SiftKeypoint,uint32_t)& keys,
+		FloatArr& descs)
+	{
+		if (!img.HasPixels() && !img.LoadPixels(true)) {
+			VERBOSE("error: no pixels loaded for image %u", img.ID);
+			return false;
 		}
-		// Wait for all post-processing tasks to complete
-		extractor.GetScene().threadPool.wait();
-		return numFeatures.load(std::memory_order_relaxed);
+		if (!gpu.RunSIFT(img.pixels.cols, img.pixels.rows, img.pixels.data, GL_LUMINANCE, GL_UNSIGNED_BYTE)) {
+			VERBOSE("error: SiftGPU failed on image %u", img.ID);
+			return false;
+		}
+		const int num = gpu.GetFeatureNum();
+		keys.Resize(num);
+		descs.Resize(num * 128);
+		gpu.GetFeatureVector(keys.data(), descs.data());
+		return true;
 	}
 
-private:
+	// Pure-CPU post-processing: grid-based filtering + RootSIFT + store on Image.
+	// Reads config from the bound extractor; safe to run on a worker thread
+	// (bulk path) or on the calling thread (per-image path) as long as no two
+	// invocations target the same Image concurrently.
+	// Returns the number of features stored.
+	size_t StoreFeatures(Image& img,
+		const CLISTDEF0IDX(SiftGPU::SiftKeypoint,uint32_t)& keys,
+		const FloatArr& descs,
+		bool skipIO = false)
+	{
+		const FeatureExtractionConfig& cfg = extractor.GetConfig();
+		// Grid-based feature filtering
+		const int cellWidth = img.pixels.cols / 3;
+		const int cellHeight = img.pixels.rows / 3;
+		std::vector<Unsigned32Arr> grid(9);
+		FOREACH(k, keys) {
+			const int cx = (int)keys[k].x / cellWidth;
+			const int cy = (int)keys[k].y / cellHeight;
+			if (cx >= 0 && cx < 3 && cy >= 0 && cy < 3)
+				grid[cy * 3 + cx].push_back(k);
+		}
+		// Select best features from each cell
+		Unsigned32Arr selected;
+		selected.reserve(MINF(keys.size(), (uint32_t)cfg.maxFeaturesPerCell * 9));
+		for (int c = 0; c < 9; ++c) {
+			Unsigned32Arr& cells = grid[c];
+			if (cells.size() > (uint32_t)cfg.maxFeaturesPerCell) {
+				std::partial_sort(cells.begin(), cells.begin() + cfg.maxFeaturesPerCell, cells.end(),
+					[&keys](int a, int b) { return keys[a].s > keys[b].s; });
+				cells.resize(cfg.maxFeaturesPerCell);
+			}
+			selected.JoinRemove(cells);
+		}
+		// Store keypoints and descriptors
+		img.keypoints.resize(selected.size());
+		img.descriptors.create((int)selected.size(), 128, CV_8U);
+		FOREACH(k, selected) {
+			const uint32_t idx = selected[k];
+			const SiftGPU::SiftKeypoint& sk = keys[idx];
+			img.keypoints[k] = cv::KeyPoint(sk.x, sk.y, sk.s, sk.o, 0.1f);
+			// RootSIFT conversion
+			cv::Mat siftRow(1, 128, CV_32F, const_cast<float*>(&descs[idx * 128]));
+			FeaturesExtractor::ConvertToRootSIFT(siftRow).copyTo(img.descriptors.row((int)k));
+		}
+		const size_t numFeatures = img.keypoints.size();
+		if (cfg.releaseImagePixels)
+			img.ReleasePixels();
+		DEBUG_ULTIMATE("Extracted features for image % 4u: % 6u features using %s (%.2f%s focal-length)",
+			img.ID, numFeatures, FeatureTypeToString(cfg.detectorType).c_str(), img.pCamera->GetFocalLength(), img.TrustIntrinsics() ? "" : "*");
+		if (!skipIO && !cfg.exportOpenMVGDir.empty())
+			FeaturesExtractor::ExportFeaturesOpenMVG(cfg.exportOpenMVGDir, img);
+		return numFeatures;
+	}
+
 	FeaturesExtractor& extractor;
-	std::unique_ptr<SiftGPU> gpu;
+	SiftGPU gpu;
+	static std::unique_ptr<SiftGPUFeatureCoordinator> instance;
 };
+
+// Singleton instance storage
+std::unique_ptr<SiftGPUFeatureCoordinator> SiftGPUFeatureCoordinator::instance;
+
+} // namespace
 #endif // _USE_SIFTGPU
 
 
@@ -228,7 +322,9 @@ FeaturesExtractor::FeaturesExtractor(Scene& _scene, const FeatureExtractionConfi
 {
 }
 
-FeaturesExtractor::~FeaturesExtractor() = default;
+FeaturesExtractor::~FeaturesExtractor() {
+	SiftGPUFeatureCoordinator::Release();
+}
 
 
 size_t FeaturesExtractor::Extract()
@@ -240,14 +336,15 @@ size_t FeaturesExtractor::Extract()
 	size_t numFeatures = 0;
 	#ifdef _USE_SIFTGPU
 	if (config.detectorType == FeatureType::SIFTGPU) {
-		// Use coordinator for producer-consumer pattern with thread pool
-		SiftGPUFeatureCoordinator coordinator(*this);
-		if (!coordinator.Initialize()) {
+		// Lazily initialize the singleton GPU coordinator and run the bulk driver.
+		SiftGPUFeatureCoordinator* coordinator = SiftGPUFeatureCoordinator::GetCoordinator(*this);
+		if (!coordinator) {
 			GET_LOGCONSOLE().Play();
 			progress.close();
 			return 0;
 		}
-		numFeatures = coordinator.ProcessImages(progress);
+		numFeatures = coordinator->ProcessImages(progress);
+		SiftGPUFeatureCoordinator::Release(); // destroy singleton and release GPU context
 	} else
 	#endif // _USE_SIFTGPU
 	{
@@ -277,14 +374,28 @@ size_t FeaturesExtractor::Extract()
 	return numFeatures;
 }
 
-bool FeaturesExtractor::ExtractImage(Image& image, cv::Ptr<cv::Feature2D>& detector)
+bool FeaturesExtractor::ExtractImage(Image& image, cv::Ptr<cv::Feature2D>& detector, bool skipIO)
 {
-	if (!config.importOpenMVGDir.empty() && ImportFeaturesOpenMVG(config.importOpenMVGDir, image)) {
+	if (!skipIO && !config.importOpenMVGDir.empty() && ImportFeaturesOpenMVG(config.importOpenMVGDir, image)) {
 		image.ReleasePixels(); // free pixel memory after feature extraction
 		DEBUG_ULTIMATE("Imported features for image % 4u: % 6u features (%.2f focal-length)",
 			image.ID, image.keypoints.size(), image.pCamera->GetFocalLength());
 		return !image.keypoints.empty();
 	}
+
+	if (image.pCamera && image.pCamera->GetType() == CameraType::SPHERICAL)
+		return ExtractImageSpherical(image, detector);
+
+	#ifdef _USE_SIFTGPU
+	if (config.detectorType == FeatureType::SIFTGPU) {
+		// detector is unused on the GPU path; the SiftGPU context is owned by
+		// the singleton coordinator in FeaturesExtractor.cpp.
+		SiftGPUFeatureCoordinator* coordinator = SiftGPUFeatureCoordinator::GetCoordinator(*this);
+		if (!coordinator)
+			return false;
+		return coordinator->ExtractImage(image, skipIO);
+	}
+	#endif
 
 	if (!image.HasPixels() && !image.LoadPixels(true)) {
 		VERBOSE("FeaturesExtractor::ExtractImage: no pixels loaded for image %u", image.ID);
@@ -435,7 +546,7 @@ bool FeaturesExtractor::ExtractImage(Image& image, cv::Ptr<cv::Feature2D>& detec
 	DEBUG_ULTIMATE("Extracted features for image % 4u: % 6u features using %s (%.2f%s focal-length)",
 	    image.ID, image.keypoints.size(), FeatureTypeToString(config.detectorType).c_str(), image.pCamera->GetFocalLength(), image.TrustIntrinsics() ? "" : "*");
 
-	if (!config.exportOpenMVGDir.empty())
+	if (!skipIO && !config.exportOpenMVGDir.empty())
 		ExportFeaturesOpenMVG(config.exportOpenMVGDir, image);
 	return !image.keypoints.empty();
 }
@@ -460,6 +571,174 @@ cv::Mat FeaturesExtractor::ConvertToRootSIFT(const cv::Mat& siftDesc)
 		normalized.convertTo(rootsiftDesc.row(i), CV_8U, 512.0);
 	}
 	return rootsiftDesc;
+}
+/*----------------------------------------------------------------*/
+
+
+bool FeaturesExtractor::ExtractImageSpherical(Image& image, cv::Ptr<cv::Feature2D>& detector)
+{
+	// Spherical driver: render N tangent-pinhole faces via the unified
+	// SphereCubeMap::SphericalToTangentialFaces entry point (same one MVS
+	// export uses), then delegate per-face feature extraction to the existing
+	// pinhole code path via ExtractImage(face, detector, /*skipIO=*/true).
+	// No detector logic is duplicated here; this function only handles the
+	// sphere↔face geometry, the per-face wrapping, and the angular-NMS dedup
+	// across face seams.
+	ASSERT(image.pCamera && image.pCamera->GetType() == CameraType::SPHERICAL);
+	if (!image.HasPixels() && !image.LoadPixels(false)) {
+		VERBOSE("FeaturesExtractor::ExtractImageSpherical: no pixels loaded for image %u", image.ID);
+		return false;
+	}
+
+	// Face-set geometry from config, with sane defaults.
+	const int numFaces = (config.cubemapFaces > 0 ? config.cubemapFaces : 6);
+	const int faceSize = (config.cubemapFaceSize > 0
+	                      ? config.cubemapFaceSize
+	                      : MAXF(1024, image.pixels.cols / 4));
+
+	// Split API: build geometry once (rotations + K), then render per-image.
+	// Geometry is cheap and doesn't depend on pixels — MVS export shares the
+	// same builder across all spherical images in a scene; we still rebuild
+	// per-call here because ExtractImageSpherical runs one image at a time.
+	const SphereCubeMap::TangentFacesGeometry geom =
+		SphereCubeMap::MakeTangentFacesGeometry(numFaces, faceSize);
+	if (geom.numFaces == 0) {
+		VERBOSE("FeaturesExtractor::ExtractImageSpherical: unsupported numFaces=%d for image %u", numFaces, image.ID);
+		return false;
+	}
+	const std::vector<Image8U3> faceImages =
+		SphereCubeMap::SphericalToTangentialFaces<Pixel8U>(image.pixels, geom);
+
+	const REAL f = geom.K(0,0), cx = geom.K(0,2), cy = geom.K(1,2);
+	const SphericalCamera sphCam(image.pixels.size());
+
+	// One shared PinholeCamera for every synthesized face Image — all faces
+	// have identical intrinsics. The SPHERICAL-dispatch check at the top of
+	// ExtractImage only fires for SphericalCamera, so wrapping faces in
+	// a PinholeCamera guarantees the recursion terminates on the pinhole path.
+	// CameraPtr is a raw Camera*; View::~View frees pCamera only when
+	// cameraID == NO_ID, so we give each face a valid cameraID (0) and keep
+	// ownership on a local unique_ptr that outlives every faceImage.
+	std::unique_ptr<PinholeCamera> faceCamera = std::make_unique<PinholeCamera>(
+		cv::Size(faceSize, faceSize), f, f, cx, cy);
+	Camera* const pFaceCam = faceCamera.get();
+
+	struct Entry { Point3 bearing; cv::KeyPoint kp; cv::Mat descRow; };
+	std::vector<Entry> all;
+	all.reserve(size_t(numFaces) * MAXF(1, config.GetMaxNumFeatures()));
+
+	for (int k = 0; k < geom.numFaces; ++k) {
+		// Convert face to grayscale — SIFTGPU's GL_LUMINANCE path requires
+		// single-channel input; CPU detectors are unaffected either way.
+		cv::Mat faceGray;
+		cv::cvtColor(faceImages[k], faceGray, cv::COLOR_BGR2GRAY);
+
+		// Synthesize a pinhole Image that satisfies ExtractImage's contract.
+		// Pixels are already loaded so LoadPixels() is not re-invoked;
+		// fileName is empty so the suppressed OpenMVG I/O is also a path no-op.
+		// cameraID = 0 (not NO_ID) so View::~View doesn't attempt to free the
+		// shared faceCamera when faceImage goes out of scope below.
+		Image faceImage;
+		faceImage.cameraID = 0;
+		faceImage.pCamera  = pFaceCam;
+		faceImage.pixels   = faceGray;
+		faceImage.ID       = NO_ID;
+		faceImage.fileName.clear();
+
+		// Recursive call: every bit of detection logic (3x3 grid, retry,
+		// RootSIFT, response normalization, SiftGPU dispatch) runs on this face
+		// via the same code path a real pinhole image takes — no duplication.
+		if (!ExtractImage(faceImage, detector, /*skipIO=*/true))
+			continue;
+
+		// Reproject face keypoints onto the equirectangular image.
+		const Matrix3x3 R_face_T = geom.rotations[k].t();
+		for (size_t i = 0; i < faceImage.keypoints.size(); ++i) {
+			const cv::KeyPoint& fkp = faceImage.keypoints[i];
+			const Point3 b_body = R_face_T * Point3((REAL(fkp.pt.x) - cx) / f,
+			                                        (REAL(fkp.pt.y) - cy) / f,
+			                                        REAL(1));
+			const auto [eq_pt, ok] = sphCam.Project(b_body);
+			if (!ok)
+				continue;
+			cv::KeyPoint eq_kp((float)eq_pt.x, (float)eq_pt.y,
+			                   fkp.size, fkp.angle, fkp.response, k /*octave=faceID*/);
+			all.push_back({normalized(b_body), eq_kp, faceImage.descriptors.row((int)i).clone()});
+		}
+		// faceImage/face go out of scope; their pixel buffers and descriptor
+		// rows (cloned above) are released.
+	}
+
+	image.keypoints.clear();
+	image.descriptors.release();
+	if (all.empty()) {
+		if (config.releaseImagePixels)
+			image.ReleasePixels();
+		return false;
+	}
+
+	// Angular-NMS across face seams. Sort by keypoint response (descending),
+	// accept if the bearing is > cubemapDedupAngleDeg from all accepted.
+	// A 3D octree over the unit-sphere bearings turns the per-candidate
+	// neighborhood check into a chord-distance ball query; with SIFTGPU
+	// producing tens of thousands of features per face the naive linear
+	// scan over the growing kept list dominated runtime on 360 inputs.
+	const REAL dedupCos = COS(D2R(REAL(config.cubemapDedupAngleDeg)));
+	// chord²(θ) = 2(1 - cos θ) for unit vectors; query radius is the chord length.
+	const REAL dedupChord = SQRT(MAXF(REAL(0), REAL(2) * (REAL(1) - dedupCos)));
+	typedef CLISTDEF0(Point3::EVec) Bearings3;
+	Bearings3 bearings(all.size());
+	FOREACH(i, all)
+		bearings[i] = all[i].bearing;
+	typedef TOctree<Bearings3, REAL, 3> BearingOctree;
+	BearingOctree octree(bearings,
+		[dedupChord](BearingOctree::IDX_TYPE n, BearingOctree::Type r) {
+			return n > 16 && r > dedupChord;
+		});
+	std::vector<size_t> order(all.size());
+	std::iota(order.begin(), order.end(), size_t(0));
+	std::sort(order.begin(), order.end(),
+		[&](size_t a, size_t b) { return all[a].kp.response > all[b].kp.response; });
+	std::vector<char> accepted(all.size(), 0);
+	std::vector<size_t> keptIdx;
+	keptIdx.reserve(all.size());
+	for (size_t idx : order) {
+		BearingOctree::IDXARR_TYPE neighbors;
+		octree.Collect(neighbors, bearings[idx], dedupChord);
+		bool dup = false;
+		for (const BearingOctree::IDX_TYPE j : neighbors) {
+			if ((size_t)j == idx || !accepted[j])
+				continue;
+			if (all[idx].bearing.dot(all[j].bearing) > dedupCos) {
+				dup = true;
+				break;
+			}
+		}
+		if (!dup) {
+			accepted[idx] = 1;
+			keptIdx.push_back(idx);
+		}
+	}
+
+	image.keypoints.reserve(keptIdx.size());
+	std::vector<cv::Mat> descRows;
+	descRows.reserve(keptIdx.size());
+	for (size_t idx : keptIdx) {
+		image.keypoints.push_back(all[idx].kp);
+		descRows.push_back(all[idx].descRow);
+	}
+	cv::vconcat(descRows, image.descriptors);
+
+	if (config.releaseImagePixels)
+		image.ReleasePixels();
+
+	DEBUG_ULTIMATE("Extracted features for image % 4u: % 6u features using %s cubemap (%d faces x %d px)",
+		image.ID, image.keypoints.size(),
+		FeatureTypeToString(config.detectorType).c_str(), numFaces, faceSize);
+
+	if (!config.exportOpenMVGDir.empty())
+		ExportFeaturesOpenMVG(config.exportOpenMVGDir, image);
+	return !image.keypoints.empty();
 }
 /*----------------------------------------------------------------*/
 

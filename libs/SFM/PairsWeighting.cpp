@@ -39,22 +39,33 @@ float ComputeIntrinsicWeight(ImagePair& pair, const Image& img1, const Image& im
 	const auto [points1, points2] = pair.GetMatchedPoints(img1, img2);
 
 	// Grid Coverage Score (N_eff)
-	// Divide image into 10x10 grid
+	// Divide each view into gridSize x gridSize cells:
+	//  - pinhole  : uniform pixel grid (each cell = equal pixel area)
+	//  - spherical: equal-solid-angle bins on the unit sphere via (azimuth, sin(latitude));
+	//               each cell covers 4*pi/gridSize^2 sr, and azimuth binning wraps
+	//               across the equirectangular seam (u=0 ~ u=W)
+	const auto binFeature = [gridSize](const Point2f& p, const Image& img) {
+		int gx, gy;
+		if (img.pCamera->GetType() == CameraType::SPHERICAL) {
+			const Point3 b = img.pCamera->UnprojectNormalized(Cast<REAL>(p));
+			const REAL azimuth = ATAN2(b.x, b.z); // [-pi, pi]
+			gx = MINF((int)((azimuth + REAL(M_PI)) / (REAL(2) * REAL(M_PI)) * REAL(gridSize)), gridSize - 1);
+			gy = MINF((int)((b.y + REAL(1)) * REAL(0.5) * REAL(gridSize)), gridSize - 1);
+		} else {
+			gx = (int)(p.x / (float)img.GetWidth() * gridSize);
+			gy = (int)(p.y / (float)img.GetHeight() * gridSize);
+		}
+		return std::make_pair(gx, gy);
+	};
 	std::vector<bool> grid1(gridSize * gridSize, false);
 	std::vector<bool> grid2(gridSize * gridSize, false);
-	const float w1 = (float)img1.GetWidth();
-	const float h1 = (float)img1.GetHeight();
-	const float w2 = (float)img2.GetWidth();
-	const float h2 = (float)img2.GetHeight();
 	for (const auto& p : points1) {
-		int gx = (int)(p.x / w1 * gridSize);
-		int gy = (int)(p.y / h1 * gridSize);
+		auto [gx, gy] = binFeature(p, img1);
 		if (gx >= 0 && gx < gridSize && gy >= 0 && gy < gridSize)
 			grid1[gy * gridSize + gx] = true;
 	}
 	for (const auto& p : points2) {
-		int gx = (int)(p.x / w2 * gridSize);
-		int gy = (int)(p.y / h2 * gridSize);
+		auto [gx, gy] = binFeature(p, img2);
 		if (gx >= 0 && gx < gridSize && gy >= 0 && gy < gridSize)
 			grid2[gy * gridSize + gx] = true;
 	}

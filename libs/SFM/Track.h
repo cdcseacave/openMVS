@@ -130,9 +130,13 @@ SFM_API std::pair<float, float> ComputeTracksMeanReprojectionError(Scene& scene)
 
 /**
  * @brief Filter tracks based on various criteria
+ *
+ * Reprojection error is always evaluated in the angular domain — the pixel threshold is
+ * converted per-camera via Camera::PixelErrorToAngular, so the same check works uniformly
+ * for pinhole and spherical (equirectangular pixel distance has no linear angular meaning).
+ *
  * @param scene Scene containing tracks to filter
- * @param maxReprojErrorPixels Maximum allowed reprojection error in pixels
- * @param maxReprojErrorDegrees Maximum allowed reprojection error in degrees: <0 disabled, 0 from error in pixels, >0 specified threshold
+ * @param maxReprojErrorPixels Maximum allowed reprojection error in pixels (converted to angle per camera)
  * @param minAngleDegrees Minimum required angle between any two observations in degrees
  * @param multDepthNear Multiplier for near depth threshold based on median depth (0 disabled)
  * @param multDepthFar Multiplier for far depth threshold based on median depth (0 disabled)
@@ -140,7 +144,6 @@ SFM_API std::pair<float, float> ComputeTracksMeanReprojectionError(Scene& scene)
  */
 SFM_API std::pair<float, float> FilterTracks(Scene& scene,
 	float maxReprojErrorPixels = 3.f,
-	float maxReprojErrorDegrees = 0.f,
 	float minAngleDegrees = 2.f,
 	float multDepthNear = 0.05f,
 	float multDepthFar = 20.f);

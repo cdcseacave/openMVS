@@ -50,14 +50,34 @@ float ComputeFeatureOverlap(
 	return static_cast<float>(trackedCount) / prevPoints.size();
 }
 
-// Compute overlap area using homography transformation
+// Compute overlap area using homography (pinhole) or angular displacement (spherical)
 float ComputeHomographyOverlap(
 	const std::vector<Point2f>& prevPoints,
 	const std::vector<Point2f>& currPoints,
 	const std::vector<uchar>& status,
-	const cv::Size& imageSize)
+	const cv::Size& imageSize,
+	const Camera& camera)
 {
-	// Collect inlier points
+	if (camera.GetType() == CameraType::SPHERICAL) {
+		// Spherical path: compute median angular displacement on the unit sphere.
+		// Bearings are obtained from equirectangular pixel coords via Unproject.
+		// Result mapped to [0,1] via exp(-medianAngle / (pi/4)) so the existing
+		// overlapThreshold (0.85) has compatible semantics.
+		REALArr angles(0, status.size());
+		FOREACH(i, status) {
+			if (!status[i])
+				continue;
+			const Point3 b1 = camera.UnprojectNormalized(Cast<REAL>(prevPoints[i]));
+			const Point3 b2 = camera.UnprojectNormalized(Cast<REAL>(currPoints[i]));
+			angles.push_back(CLAMP(b1.dot(b2), REAL(-1), REAL(1)));
+		}
+		if (angles.empty())
+			return 0.f;
+		const REAL medianAngle = ACOS(angles.GetMedian());
+		return static_cast<float>(EXP(-medianAngle / (REAL(M_PI) / 4)));
+	}
+
+	// Pinhole path: homography-based overlap area
 	std::vector<Point2f> prevInliers, currInliers;
 	FOREACH(i, status) {
 		if (status[i]) {
@@ -103,89 +123,159 @@ struct CachedFrame {
 };
 
 #ifdef SFM_DEBUG_MATCHING
-// Debug visualization
+// Sample and draw the great-circle epipolar curve defined by E*b1 on image 2,
+// splitting the polyline across the equirectangular longitude seam for spherical cameras.
+// Works for any central camera via Camera::Project.
+// displayScale multiplies projected pixel coords (for drawing on a downscaled canvas);
+// wrap-split and projection math remain in original image coords.
+static void DrawSphericalEpipolarCurve(
+	cv::Mat& canvas, int xOffset, float displayScale,
+	const Camera& cam2, const Matrix3x3& E, const Point3& b1,
+	const cv::Scalar& color,
+	int numSamples = 256)
+{
+	// Epipolar plane normal in camera 2 frame: n = E * b1
+	// (done via Matrix3x3 * Point3, then hop to Eigen for basis math)
+	const Point3 nPt = E * b1;
+	const double nNorm = norm(nPt);
+	if (nNorm < 1e-9)
+		return;
+
+	// Orthonormal basis {u, v} spanning the plane perpendicular to n
+	const Eigen::Vector3d nu = nPt / nNorm;
+	const Eigen::Vector3d axis = (ABS(nu.z()) < 0.9) ? Eigen::Vector3d::UnitZ() : Eigen::Vector3d::UnitX();
+	const Eigen::Vector3d u = axis.cross(nu).normalized();
+	const Eigen::Vector3d v = nu.cross(u);
+
+	// Sample bearings around the great circle and project through cam2
+	std::vector<cv::Point2f> pts(numSamples);
+	std::vector<uint8_t> valid(numSamples);
+	for (int i = 0; i < numSamples; ++i) {
+		const double t = (2.0 * M_PI) * i / numSamples;
+		const Eigen::Vector3d b2e = COS(t) * u + SIN(t) * v;
+		const Point3 b2(b2e);
+		const auto res = cam2.Project(b2);
+		pts[i] = res.first;
+		valid[i] = res.second ? 1 : 0;
+	}
+
+	// Connect consecutive samples, skipping seam wraps (|dx| > width/2) and back-facing rays
+	const double wrapThr = cam2.GetWidth() * 0.5;
+	for (int i = 0; i < numSamples; ++i) {
+		const int j = (i + 1) % numSamples;
+		if (!valid[i] || !valid[j])
+			continue;
+		if (ABS(pts[i].x - pts[j].x) > wrapThr)
+			continue;
+		cv::line(canvas,
+			cv::Point2f(pts[i].x * displayScale + (float)xOffset, pts[i].y * displayScale),
+			cv::Point2f(pts[j].x * displayScale + (float)xOffset, pts[j].y * displayScale),
+			color, 1);
+	}
+}
+
+// Debug visualization: tracked points, final matches, and epipolar overlay.
+// Pinhole pairs draw straight F-lines on image 2; any spherical side draws great-circle curves via E.
+// resolutionLevel: number of times to halve image resolution before drawing (0 = full-res, 2 = quarter-res),
+//                  so overlay strokes stay visible after window downscaling.
 void DrawMatchesWithEpipolar(
-	const cv::Mat& img1,
-	const cv::Mat& img2,
-	const std::vector<cv::KeyPoint>& keypoints1,
-	const std::vector<cv::KeyPoint>& keypoints2,
+	const Image& img1, const Image& img2,
 	const std::vector<Point2f>& trackedPoints1,
 	const std::vector<Point2f>& trackedPoints2,
 	const std::vector<uchar>& trackStatus,
 	const std::vector<DMatch>& matches,
-	const Matrix3x3& F,
+	const std::optional<Matrix3x3>& F,
+	const std::optional<Matrix3x3>& E,
+	unsigned resolutionLevel = 0,
 	float trackedPercent = 0.01f,
 	float matchedPercent = 0.01f)
 {
-	// Clamp percentages
 	trackedPercent = CLAMP(trackedPercent, 0.f, 1.f);
 	matchedPercent = CLAMP(matchedPercent, 0.f, 1.f);
+	const float s = 1.f / (float)(1 << resolutionLevel);
 
-	// Prepare random generator for colors and sampling
-	// Use a single std::default_random_engine for all sampling and shuffles
+	// Pre-downscale canvases (pyrDown applies a 5x5 Gaussian then halves — avoids aliasing).
+	cv::Mat canvas1 = img1.pixels, canvas2 = img2.pixels;
+	for (unsigned lvl = 0; lvl < resolutionLevel; ++lvl) {
+		cv::pyrDown(canvas1, canvas1);
+		cv::pyrDown(canvas2, canvas2);
+	}
+
 	std::default_random_engine rng(0);
 	std::uniform_int_distribution<int> colDist(0, 255);
 
-	// --- Tracked visualization (tracked points & their tracks) ---
+	// --- Tracked visualization (camera-model independent) ---
 	cv::Mat displayTracked;
-	cv::hconcat(img1, img2, displayTracked);
-	const int offset = img1.cols;
+	cv::hconcat(canvas1, canvas2, displayTracked);
+	const int offset = canvas1.cols;
 
-	// Collect indices of valid tracked points
 	std::vector<int> trackedIdx;
 	for (size_t i = 0; i < trackStatus.size(); ++i)
 		if (trackStatus[i]) trackedIdx.push_back((int)i);
 	int nTrackedToDraw = CEIL2INT(trackedIdx.size() * trackedPercent);
 	nTrackedToDraw = CLAMP(nTrackedToDraw, 0, (int)trackedIdx.size());
 
-	// Random shuffle and pick subset
 	std::shuffle(trackedIdx.begin(), trackedIdx.end(), rng);
 	for (int k = 0; k < nTrackedToDraw; ++k) {
 		int i = trackedIdx[k];
 		const cv::Point2f& p1 = trackedPoints1[i];
 		const cv::Point2f& p2 = trackedPoints2[i];
 		cv::Scalar col(colDist(rng), colDist(rng), colDist(rng));
-		cv::circle(displayTracked, p1, 5, col, 2);
-		cv::circle(displayTracked, cv::Point2f(p2.x + offset, p2.y), 5, col, 2);
-		cv::line(displayTracked, p1, cv::Point2f(p2.x + offset, p2.y), col, 1);
+		cv::circle(displayTracked, cv::Point2f(p1.x*s, p1.y*s), 5, col, 2);
+		cv::circle(displayTracked, cv::Point2f(p2.x*s + offset, p2.y*s), 5, col, 2);
+		cv::line(displayTracked, cv::Point2f(p1.x*s, p1.y*s), cv::Point2f(p2.x*s + offset, p2.y*s), col, 1);
 	}
 
 	const int numTracked = (int)trackedIdx.size();
 	cv::putText(displayTracked, cv::format("Tracked (drawn %d/%d)", nTrackedToDraw, numTracked),
 		cv::Point(10, 30), cv::FONT_HERSHEY_SIMPLEX, 0.8, cv::Scalar(255, 255, 255), 2);
 
-	// --- Keypoint matches + epipolar lines visualization ---
+	// --- Keypoint matches + epipolar overlay ---
 	cv::Mat displayMatches;
-	cv::hconcat(img1, img2, displayMatches);
+	cv::hconcat(canvas1, canvas2, displayMatches);
 
-	// Draw epipolar lines (sample up to 20 lines or fewer) with same color
-	if (F != Matrix3x3::zeros()) {
-		const int maxLines = 20;
-		const int available = (int)keypoints1.size();
-		const int numSamples = MINF(maxLines, available);
+	// Sample up to 20 keypoints for epipolar overlay (same budget as before)
+	const int maxLines = 20;
+	const int available = (int)img1.keypoints.size();
+	const int numEpiSamples = MINF(maxLines, available);
+	std::vector<int> sampleIdx(available);
+	for (int i = 0; i < available; ++i)
+		sampleIdx[i] = i;
+	std::shuffle(sampleIdx.begin(), sampleIdx.end(), rng);
+	const cv::Scalar epiCol(200, 255, 200); // light green
 
-		// create a vector of indices to sample
-		std::vector<int> sampleIdx(available);
-		for (int i = 0; i < available; ++i)
-			sampleIdx[i] = i;
-		std::shuffle(sampleIdx.begin(), sampleIdx.end(), rng);
-		cv::Scalar col(200, 255, 200); // light green
-		for (int ii = 0; ii < numSamples; ++ii) {
+	if (img1.pCamera->GetType() == CameraType::SPHERICAL || img2.pCamera->GetType() == CameraType::SPHERICAL) {
+		// Great-circle overlay via bearing vectors and the essential matrix
+		if (E.has_value()) {
+			for (int ii = 0; ii < numEpiSamples; ++ii) {
+				const cv::Point2f& pt1 = img1.keypoints[sampleIdx[ii]].pt;
+				const Point3 b1 = img1.pCamera->UnprojectNormalized(Point2(pt1.x, pt1.y));
+				DrawSphericalEpipolarCurve(displayMatches, offset, s, *img2.pCamera, E.value(), b1, epiCol);
+			}
+		}
+	} else if (F.has_value()) {
+		// Pinhole: straight epipolar line from F*(x,y,1)
+		const Matrix3x3& Fmat = F.value();
+		const int w = img2.pixels.cols, h = img2.pixels.rows;
+		for (int ii = 0; ii < numEpiSamples; ++ii) {
 			int idx = sampleIdx[ii];
-			const cv::Point2f& pt1 = keypoints1[idx].pt;
+			const cv::Point2f& pt1 = img1.keypoints[idx].pt;
 			Point3 pt1_h(pt1.x, pt1.y, 1.0);
-			Point3 line = F * pt1_h;
+			Point3 line = Fmat * pt1_h;
 			cv::Point2f p1, p2;
-			if (fabs(line.y) > 1e-6) {
+			if (ABS(line.y) > 1e-6) {
 				p1 = cv::Point2f(0, (float)(-line.z / line.y));
-				p2 = cv::Point2f((float)img2.cols, (float)(-(line.x * img2.cols + line.z) / line.y));
-			} else if (fabs(line.x) > 1e-6) {
+				p2 = cv::Point2f((float)w, (float)(-(line.x * w + line.z) / line.y));
+			} else if (ABS(line.x) > 1e-6) {
 				p1 = cv::Point2f((float)(-line.z / line.x), 0);
-				p2 = cv::Point2f((float)(-line.z / line.x), (float)img2.rows);
+				p2 = cv::Point2f((float)(-line.z / line.x), (float)h);
 			} else {
 				continue;
 			}
-			cv::line(displayMatches, cv::Point2f(p1.x + offset, p1.y), cv::Point2f(p2.x + offset, p2.y), col, 1);
+			cv::line(displayMatches,
+				cv::Point2f(p1.x*s + offset, p1.y*s),
+				cv::Point2f(p2.x*s + offset, p2.y*s),
+				epiCol, 1);
 		}
 	}
 
@@ -199,12 +289,12 @@ void DrawMatchesWithEpipolar(
 
 	for (int k = 0; k < nMatchesToDraw; ++k) {
 		const DMatch& match = matches[matchIdx[k]];
-		const cv::Point2f& pt1 = keypoints1[match.queryIdx].pt;
-		const cv::Point2f& pt2 = keypoints2[match.trainIdx].pt;
+		const cv::Point2f& pt1 = img1.keypoints[match.queryIdx].pt;
+		const cv::Point2f& pt2 = img2.keypoints[match.trainIdx].pt;
 		cv::Scalar col(colDist(rng), colDist(rng), colDist(rng));
-		cv::circle(displayMatches, pt1, 5, col, 2);
-		cv::circle(displayMatches, cv::Point2f(pt2.x + offset, pt2.y), 5, col, 2);
-		cv::line(displayMatches, pt1, cv::Point2f(pt2.x + offset, pt2.y), col, 1);
+		cv::circle(displayMatches, cv::Point2f(pt1.x*s, pt1.y*s), 5, col, 2);
+		cv::circle(displayMatches, cv::Point2f(pt2.x*s + offset, pt2.y*s), 5, col, 2);
+		cv::line(displayMatches, cv::Point2f(pt1.x*s, pt1.y*s), cv::Point2f(pt2.x*s + offset, pt2.y*s), col, 1);
 	}
 
 	cv::putText(displayMatches, cv::format("Matches (drawn %d/%d)", nMatchesToDraw, (int)matches.size()),
@@ -219,6 +309,7 @@ void DrawMatchesWithEpipolar(
 	cv::destroyAllWindows();
 }
 #endif
+
 
 // Keyframe post-processing event: save image and run matching (runs in background worker)
 class KeyframePostProcessEvent : public SEACAVE::Event {
@@ -295,10 +386,9 @@ public:
 				prevID, currID, pair.GetNumFilteredInliers());
 
 			#ifdef SFM_DEBUG_MATCHING
-			DrawMatchesWithEpipolar(prevImg.pixels, currImg.pixels,
-				prevImg.keypoints, currImg.keypoints,
+			DrawMatchesWithEpipolar(prevImg, currImg,
 				trackedPrevPts, trackedCurrPts, trackedStatus,
-				pair.matches, F);
+				pair.matches, pair.F, pair.E, /*resolutionLevel=*/ 2);
 			#endif
 		}
 
@@ -436,6 +526,10 @@ bool ExtractFromVideo(const String& videoPath, const KeyframeConfig& config, Sce
 	const unsigned totalFrames = (unsigned)video.get(cv::CAP_PROP_FRAME_COUNT);
 	DEBUG("Video: %dx%d @ %.2f fps, %d frames, %d s",
 		frameWidth, frameHeight, fps, totalFrames, ROUND2INT(totalFrames / fps));
+	if (config.cameraType == CameraType::SPHERICAL && frameWidth != 2 * frameHeight) {
+		VERBOSE("warning: video '%s' is declared spherical but has %dx%d; equirectangular input requires width == 2 * height",
+			videoPath.c_str(), frameWidth, frameHeight);
+	}
 
 	// Ensure output directory exists
 	ASSERT(Util::isFullPath(config.outputDirectory));
@@ -478,6 +572,7 @@ bool ExtractFromVideo(const String& videoPath, const KeyframeConfig& config, Sce
 	extractConfig.minFeaturesPerCell = config.minFeaturesPerCell;
 	extractConfig.releaseImagePixels = false; // we will manage image pixel release ourselves
 	extractConfig.useCUDA = config.useCUDA;
+	extractConfig.cubemapFaces = (int)config.cubemapFaces;
 	FeaturesExtractor extractor(scene, extractConfig);
 
 	// Configure PairsMatcher for feature matching
@@ -593,7 +688,7 @@ bool ExtractFromVideo(const String& videoPath, const KeyframeConfig& config, Sce
 
 			// Compute overlap metrics (always relative to fixed keyframe positions)
 			overlapRatio = ComputeFeatureOverlap(keyframePoints, currPoints, status, currFrame.size());
-			overlapArea = ComputeHomographyOverlap(keyframePoints, currPoints, status, currFrame.size());
+			overlapArea = ComputeHomographyOverlap(keyframePoints, currPoints, status, currFrame.size(), *pCamera);
 
 			// Compute sharpness for this frame and push into small rolling cache
 			EnqueueFrame2Cache();

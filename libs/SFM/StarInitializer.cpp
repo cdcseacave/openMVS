@@ -72,7 +72,7 @@ bool StarInitializer::EstimateGlobalScale(
 
 	// 1. Iterate all pairs in the scene
 	const REAL maxCosAngle = COS(D2R(0.5f));
-	const float reprojThresholdSq = SQUARE(6.f);
+	const REAL reprojPixelThreshold = 6;
 	FOREACH(pairIdx, scene.pairs) {
 		// Only consider pairs where both views are in our set
 		const ImagePair& pair = scene.pairs[pairIdx];
@@ -84,32 +84,35 @@ bool StarInitializer::EstimateGlobalScale(
 		// Triangulate all matches
 		const Image& img1 = scene.images[pair.ID1];
 		const Image& img2 = scene.images[pair.ID2];
+		const Camera& cam1 = *img1.pCamera;
+		const Camera& cam2 = *img2.pCamera;
 		const Pose3D& relPose = pair.relativePose.value();
+		// Angular reprojection threshold (works for both pinhole and spherical; pixel metric breaks on equirectangular)
+		const REAL cosReprojAngle = COS(REAL(0.5) * (cam1.PixelErrorToAngular(reprojPixelThreshold) + cam2.PixelErrorToAngular(reprojPixelThreshold)));
 		for (const DMatch& match : pair.matches) {
 			const Point2f& pt1 = img1.keypoints[match.queryIdx].pt;
 			const Point2f& pt2 = img2.keypoints[match.trainIdx].pt;
-			// Unproject to camera rays (not normalized, but Unproject handles intrinsics)
-			// Note: Unproject returns a point on the ray with z=1
-			const Point2 p1Cam = img1.pCamera->Unproject(Cast<REAL>(pt1));
-			const Point2 p2Cam = img2.pCamera->Unproject(Cast<REAL>(pt2));
-			// Triangulate in Camera 1 frame
+			// Observed unit bearings (works for both camera types)
+			const Point3 b1 = cam1.UnprojectNormalized(Cast<REAL>(pt1));
+			const Point3 b2 = cam2.UnprojectNormalized(Cast<REAL>(pt2));
+			// Triangulate in Camera 1 frame (midpoint on unit bearings)
 			Point3 Xlocal;
-			if (!TriangulatePoint3D(relPose.R, relPose.C, p1Cam.homogeneous(), p2Cam.homogeneous(), Xlocal))
+			if (!TriangulatePoint3D(relPose.R, relPose.C, b1, b2, Xlocal))
 				continue;
-			// Cheirality check (only for pinhole cameras)
-			// Project back to Img1, check depth in Cam1 coord system: z
-			const auto [proj1, valid1] = img1.pCamera->Project(Xlocal);
-			if (!valid1)
+			// Cheirality + angular reprojection in Cam1
+			const REAL nX = norm(Xlocal);
+			if (nX < ZEROTOLERANCE<REAL>())
 				continue;
-			const float reprojErr1 = normSq(Cast<float>(proj1) - pt1);
-			// Project back to Img2, after pose transforms in Cam2 coord system, check depth in Cam2: (relPose.R * (X - relPose.C)).z
+			const REAL cosErr1 = b1.dot(Xlocal / nX);
+			if (cosErr1 < cosReprojAngle)
+				continue;
+			// Cheirality + angular reprojection in Cam2
 			const Point3 Xcam2 = relPose.TransformPointW2C(Xlocal);
-			const auto [proj2, valid2] = img2.pCamera->Project(Xcam2);
-			if (!valid2)
+			const REAL nXc2 = norm(Xcam2);
+			if (nXc2 < ZEROTOLERANCE<REAL>())
 				continue;
-			const float reprojErr2 = normSq(Cast<float>(proj2) - pt2);
-			// 4. Reprojection error check
-			if (reprojThresholdSq > 0 && (reprojErr1 > reprojThresholdSq || reprojErr2 > reprojThresholdSq))
+			const REAL cosErr2 = b2.dot(Xcam2 / nXc2);
+			if (cosErr2 < cosReprojAngle)
 				continue;
 			// Angle check
 			const Point3 V1 = Xlocal; // ray from C1 to X
@@ -380,7 +383,7 @@ bool StarInitializer::Initialize(
 	float maxReprojError = MAXF(config.maxReprojError-1, 1.f);
 	float minAngleThreshold = MINF(config.minAngleThreshold+0.5f, 3.f);
 	TriangulateTracks(scene, true, maxReprojError, minAngleThreshold);
-	FilterTracks(scene, maxReprojError, 0, minAngleThreshold);
+	FilterTracks(scene, maxReprojError, minAngleThreshold);
 	if (scene.status.nTracks < 100) {
 		VERBOSE("error: insufficient triangulated tracks after BA (%u)", scene.status.nTracks);
 		return false;
@@ -398,7 +401,7 @@ bool StarInitializer::Initialize(
 	maxReprojError = MAXF(config.maxReprojError-2, 1.f);
 	minAngleThreshold = MINF(config.minAngleThreshold+1.f, 3.f);
 	TriangulateTracks(scene, true, maxReprojError, minAngleThreshold);
-	FilterTracks(scene, maxReprojError, 0, minAngleThreshold);
+	FilterTracks(scene, maxReprojError, minAngleThreshold);
 	scene.status.nCalibratedImages = connectedViews.size() + 1;
 	scene.status.nState.set(Scene::Status::STATE::CALIBRATED);
 	VERBOSE("Star initialization complete: %u views, %u tracks (%s)",

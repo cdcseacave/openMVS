@@ -69,12 +69,12 @@ bool BundleAdjustment::Adjust(Scene& scene, const BAConfig& config)
 	for (const Image& img : scene.images) {
 		if (!img.IsValid())
 			continue;
-		const auto it = intrinsicParams.emplace(img.pCamera, DoubleArr());
-		if (!it.second)
-			continue; // already processed
 		CameraType model = img.GetCameraType();
 		if (model != CameraType::PINHOLE)
 			continue;
+		const auto it = intrinsicParams.emplace(img.pCamera, DoubleArr());
+		if (!it.second)
+			continue; // already processed
 		const PinholeCamera* pinholeCamera = static_cast<const PinholeCamera*>(img.pCamera);
 		it.first->second.resize(12);
 		double* intr = it.first->second.data();
@@ -191,7 +191,7 @@ bool BundleAdjustment::Adjust(Scene& scene, const BAConfig& config)
 	}
 
 	// Set intrinsic parameter constraints (if refining intrinsics)
-	if (config.IsRefiningIntrinsics()) {
+	if (config.IsRefiningIntrinsics() && !intrinsicParams.empty()) {
 		// Build subset manifold for each camera based on refinement flags
 		// Intrinsic layout: [fx, fy/fx, cx, cy, k1, k2, k3, p1, p2, k4, k5, k6]
 		std::vector<int> constantParams;
@@ -237,8 +237,7 @@ bool BundleAdjustment::Adjust(Scene& scene, const BAConfig& config)
 		bool bIntrinsicManifoldUsed = false;
 		bool bInternIntrinsicManifoldUsed = false;
 		for (auto& pair : intrinsicParams) {
-			if (pair.second.empty())
-				continue;
+			ASSERT(!pair.second.empty());
 			auto intrManifold = (pair.first->GetType() == CameraType::PINHOLE && !static_cast<const PinholeCamera*>(pair.first)->useAdditionalDistortion ?
 				internIntrinsicManifold : intrinsicManifold);
 			if (intrManifold == intrinsicManifold)
@@ -267,11 +266,10 @@ bool BundleAdjustment::Adjust(Scene& scene, const BAConfig& config)
 			DEBUG("Fixed intrinsic parameters: %s", paramStr.c_str());
 		}
 		#endif
-	} else {
+	} else if (!intrinsicParams.empty()) {
 		// Not refining intrinsics: set all intrinsic blocks constant
 		for (auto& pair : intrinsicParams) {
-			if (pair.second.empty())
-				continue;
+			ASSERT(!pair.second.empty());
 			problem.SetParameterBlockConstant(pair.second.data());
 		}
 		DEBUG("Fixed all intrinsic parameters");
@@ -452,7 +450,7 @@ bool BundleAdjustment::Adjust(Scene& scene, const BAConfig& config)
 			QuaternionAndCenterToPose3D(poseParams.data() + i * 7, scene.images[i]);
 
 	// Update camera intrinsics if refined
-	if (config.IsRefiningIntrinsics()) {
+	if (config.IsRefiningIntrinsics() && !intrinsicParams.empty()) {
 		for (auto& pair : intrinsicParams) {
 			Camera* cam = const_cast<Camera*>(pair.first);
 			PinholeCamera* pinholeCamera = dynamic_cast<PinholeCamera*>(cam);
@@ -534,17 +532,18 @@ bool BundleAdjustment::AdjustLocal(
 	}
 
 	// Intrinsic parameters: always fixed in local BA (not refined)
+	// Each pinhole camera has 12 params: [fx, fy, cx, cy, k1, k2, k3, p1, p2, k4, k5, k6]
 	std::unordered_map<const Camera*, DoubleArr> intrinsicParams;
 	for (IIndex imgID : allImages) {
 		const Image& img = scene.images[imgID];
 		if (!img.IsValid())
 			continue;
-		const auto it = intrinsicParams.emplace(img.pCamera, DoubleArr());
-		if (!it.second)
-			continue; // already processed
 		CameraType model = img.GetCameraType();
 		if (model != CameraType::PINHOLE)
 			continue;
+		const auto it = intrinsicParams.emplace(img.pCamera, DoubleArr());
+		if (!it.second)
+			continue; // already processed
 		const PinholeCamera* pinholeCamera = static_cast<const PinholeCamera*>(img.pCamera);
 		it.first->second.resize(12);
 		double* intr = it.first->second.data();
@@ -637,9 +636,13 @@ bool BundleAdjustment::AdjustLocal(
 	#endif
 
 	// 4. Set fixed parameters
-	// All intrinsics are constant in local BA
-	for (auto& pair : intrinsicParams)
-		problem.SetParameterBlockConstant(pair.second.data());
+	if (!intrinsicParams.empty()) {
+		for (auto& pair : intrinsicParams) {
+			ASSERT(!pair.second.empty());
+			problem.SetParameterBlockConstant(pair.second.data());
+		}
+		DEBUG("Fixed all intrinsic parameters");
+	}
 
 	// Fixed images
 	for (uint32_t imgID : fixedImages) {

@@ -75,7 +75,7 @@ class ImagePair {
 
 ### Incremental Reconstruction (`Scene::Reconstruct`)
 ```
-Extract features (AKAZE/ORB/SIFT) -> Match pairs (VOCABULARY/EXHAUSTIVE/SEQUENTIAL)
+Extract features (AKAZE/ORB/SIFT/SIFTGPU) -> Match pairs (VOCABULARY/EXHAUSTIVE/SEQUENTIAL)
 -> Geometric verification (E/F/H + RANSAC) -> View graph calibration (focal estimation)
 -> Build tracks (union-find) -> Filter tracks + weak images
 -> Star initialization (reference view) -> Resect remaining images (incremental)

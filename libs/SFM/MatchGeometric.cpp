@@ -82,65 +82,137 @@ bool SFM::MatchFeaturesGeometric(
 	typedef TOctree<Point2fs, float, 2> Octree2f;
 	Octree2f octree(kpts2, [](Octree2f::IDX_TYPE n, Octree2f::Type r) { return n > 16 && r > 8.f; });
 
-	// For each keypoint in image1, find candidates in image2
-	const Matrix3x3f F = pair.F.value();
 	const float matchRatio = pairsMatcher.GetConfig().matchRatio;
 	const int normType = pairsMatcher.GetConfig().descriptorsAreBinary ? cv::NORM_HAMMING : cv::NORM_L2;
-	FOREACH(i, img1.keypoints) {
-		const Point2f& pt1 = img1.keypoints[i].pt;
 
-		// Compute epipolar line in image2: L = F * pt1
-		const Point3f line = F * pt1.homogeneous();
-		const float normFactor = SQRT(line.x*line.x + line.y*line.y);
-		if (normFactor < FZERO_TOLERANCE)
-			continue;
+	// Descriptor-based winner selection shared between the F-based and E-based paths.
+	const auto SelectAndAppendBest = [&](std::vector<cv::DMatch>& candidates, size_t i) {
+		if (candidates.empty())
+			return;
+		if (candidates.size() == 1) {
+			pair.matches.push_back(candidates[0]);
+			return;
+		}
+		cv::Mat desc1 = img1.descriptors.row((int)i);
+		for (auto& candidate : candidates) {
+			cv::Mat desc2 = img2.descriptors.row(candidate.trainIdx);
+			candidate.distance = (float)cv::norm(desc1, desc2, normType);
+		}
+		std::sort(candidates.begin(), candidates.end(),
+			[](const cv::DMatch& a, const cv::DMatch& b) {
+				return a.distance < b.distance;
+			});
+		// Ratio test: best must be meaningfully better than second-best.
+		if (candidates[0].distance < matchRatio * candidates[1].distance)
+			pair.matches.push_back(candidates[0]);
+	};
 
-		// Find candidate matches near the epipolar line AND (if tracked) close to expectedPt2
-		std::vector<cv::DMatch> candidates;
-		if (trackStatus[i]) {
-			const Point2f& expectedPt2 = trackedPoints2[i];
-			Octree2f::IDXARR_TYPE neighbors;
-			octree.Collect(neighbors, expectedPt2, spatialThreshold);
-			if (neighbors.empty())
-				goto BruteForceFallback;
-			for (const Octree2f::IDX_TYPE idx : neighbors) {
-				const cv::Point2f& pt2 = img2.keypoints[idx].pt;
-				const float distance = ABS(line.x * pt2.x + line.y * pt2.y + line.z) / normFactor;
-				if (distance < epipolarThreshold)
-					candidates.emplace_back((int)i, (int)idx, 0.f);
-			}
-		} else {
-			BruteForceFallback:
-			// fallback: scan all keypoints2 and use only epipolar constraint
-			for (size_t j = 0; j < img2.keypoints.size(); ++j) {
+	// Branch on pair.F availability. PairsMatcher::GeometricFilter only sets
+	// pair.F when BOTH cameras are pinhole — for spherical or mixed pairs
+	// the fundamental matrix is not geometrically meaningful (SphericalCamera::GetK
+	// returns IDENTITY), and pair.F is left empty. We dispatch:
+	//   - F present  -> pinhole pixel-space epipolar line distance (unchanged)
+	//   - F absent   -> bearing-space Sampson-on-sphere residual with an
+	//                   angular threshold derived per-camera from epipolarThreshold.
+	// For pinhole bearings the Sampson-on-sphere formula reduces exactly to the
+	// pinhole Sampson form (up to linear scaling), so the two paths agree on
+	// pinhole inputs up to the unit of the threshold. Keeping the F path
+	// separate preserves zero-regression on all pinhole tests.
+	if (pair.F.has_value()) {
+		const Matrix3x3f F = pair.F.value();
+		FOREACH(i, img1.keypoints) {
+			const Point2f& pt1 = img1.keypoints[i].pt;
+
+			// Compute epipolar line in image2: L = F * pt1
+			const Point3f line = F * pt1.homogeneous();
+			const float normFactor = SQRT(line.x*line.x + line.y*line.y);
+			if (normFactor < FZERO_TOLERANCE)
+				continue;
+
+			// Find candidate matches near the epipolar line AND (if tracked) close to expectedPt2
+			std::vector<cv::DMatch> candidates;
+			const auto TestCandidate = [&](size_t j) {
 				const cv::Point2f& pt2 = img2.keypoints[j].pt;
 				const float distance = ABS(line.x * pt2.x + line.y * pt2.y + line.z) / normFactor;
 				if (distance < epipolarThreshold)
 					candidates.emplace_back((int)i, (int)j, 0.f);
-			}
-		}
-		if (candidates.empty())
-			continue;
+			};
 
-		if (candidates.size() == 1) {
-			// Only one candidate, accept it
-			pair.matches.push_back(candidates[0]);
-		} else {
-			// Compute descriptor distances for candidates
-			cv::Mat desc1 = img1.descriptors.row((int)i);
-			for (auto& candidate : candidates) {
-				cv::Mat desc2 = img2.descriptors.row(candidate.trainIdx);
-				// Compute Hamming distance for binary descriptors, L2 otherwise
-				candidate.distance = (float)cv::norm(desc1, desc2, normType);
+			if (trackStatus[i]) {
+				const Point2f& expectedPt2 = trackedPoints2[i];
+				Octree2f::IDXARR_TYPE neighbors;
+				octree.Collect(neighbors, expectedPt2, spatialThreshold);
+				if (neighbors.empty())
+					goto PBruteForceFallback;
+				for (const Octree2f::IDX_TYPE idx : neighbors)
+					TestCandidate(idx);
+			} else {
+				PBruteForceFallback:
+				// fallback: scan all keypoints2 and use only epipolar constraint
+				FOREACH(j, img2.keypoints)
+					TestCandidate(j);
 			}
-			// Sort candidates by descriptor distance
-			std::sort(candidates.begin(), candidates.end(),
-				[](const cv::DMatch& a, const cv::DMatch& b) {
-					return a.distance < b.distance;
-				});
-			// Apply ratio test on candidates
-			if (candidates[0].distance < matchRatio * candidates[1].distance)
-				pair.matches.push_back(candidates[0]);
+			SelectAndAppendBest(candidates, (size_t)i);
+		}
+	} else if (pair.E.has_value()) {
+		// Spherical / mixed path: E-matrix + bearing vectors.
+		// Convert the pixel epipolar threshold to a symmetric angular threshold
+		// (same averaging convention as PairsMatcher::GeometricFilter). The
+		// Sampson-on-sphere residual is radians-scaled in the small-error limit,
+		// so we compare r² against angleThreshold².
+		const Eigen::Matrix3d E = pair.E.value(); // implicit TMatrix<double,3,3> -> Eigen::Matrix3d
+		const REAL angle1 = img1.pCamera->PixelErrorToAngular((REAL)epipolarThreshold);
+		const REAL angle2 = img2.pCamera->PixelErrorToAngular((REAL)epipolarThreshold);
+		const double angleThreshold = 0.5 * (double)(angle1 + angle2);
+		const double angleThresholdSq = angleThreshold * angleThreshold;
+
+		// Precompute unit bearing vectors for all keypoints in both images once.
+		// Each bearing costs a single Unproject call, and we reuse them across
+		// many candidate probes (up to #img2_keypoints per img1 keypoint in the
+		// brute-force case), so hoisting them out of the inner loop is a real win.
+		std::vector<Eigen::Vector3d> bearings1(img1.keypoints.size());
+		std::vector<Eigen::Vector3d> bearings2(img2.keypoints.size());
+		FOREACH(i, img1.keypoints)
+			bearings1[i] = img1.pCamera->UnprojectNormalized(Cast<REAL>(img1.keypoints[i].pt));
+		FOREACH(i, img2.keypoints)
+			bearings2[i] = img2.pCamera->UnprojectNormalized(Cast<REAL>(img2.keypoints[i].pt));
+
+		FOREACH(i, img1.keypoints) {
+			const Eigen::Vector3d& b1 = bearings1[i];
+			const Eigen::Vector3d Eb1 = E * b1;
+			// Sampson (x,y)-subspace term from the "left" bearing — constant across
+			// all candidates j for this i.
+			const double Cx = Eb1.x() * Eb1.x() + Eb1.y() * Eb1.y();
+			if (Cx < 1e-14)
+				continue; // degenerate epipolar plane (bearing aligned with baseline)
+
+			// Candidate test closure using Sampson-on-sphere.
+			std::vector<cv::DMatch> candidates;
+			const auto TestCandidate = [&](size_t j) {
+				const Eigen::Vector3d& b2 = bearings2[j];
+				const double C = b2.dot(Eb1);
+				const Eigen::Vector3d Etb2 = E.transpose() * b2;
+				const double Cy = Etb2.x() * Etb2.x() + Etb2.y() * Etb2.y();
+				const double r2 = (C * C) / (Cx + Cy);
+				if (r2 < angleThresholdSq)
+					candidates.emplace_back((int)i, (int)j, 0.f);
+			};
+
+			if (trackStatus[i]) {
+				const Point2f& expectedPt2 = trackedPoints2[i];
+				Octree2f::IDXARR_TYPE neighbors;
+				octree.Collect(neighbors, expectedPt2, spatialThreshold);
+				if (neighbors.empty())
+					goto SBruteForceFallback;
+				for (const Octree2f::IDX_TYPE idx : neighbors)
+					TestCandidate(idx);
+			} else {
+				SBruteForceFallback:
+				// fallback: scan all keypoints2 and use only epipolar constraint
+				FOREACH(j, img2.keypoints)
+					TestCandidate(j);
+			}
+			SelectAndAppendBest(candidates, (size_t)i);
 		}
 	}
 	if (pair.matches.size() < pairsMatcher.GetConfig().minMatches) {

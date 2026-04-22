@@ -70,7 +70,11 @@ IIndexArr Resection::SelectNextImages(IIndexScores& unregistered) const
 	Image& img = scene.images[imageID];
 	ASSERT(img.HasCamera() && !img.HasPose());
 
-	std::vector<poselib::Point2D> points2D;
+	// Unified bearing-vector PnP path: works for any central camera model
+	// (pinhole, spherical / equirectangular, fisheye). The bearings come from
+	// Camera::UnprojectNormalized which already returns unit vectors carrying
+	// hemisphere information (sign(z)) for spherical cameras.
+	std::vector<poselib::Point3D> bearings;
 	std::vector<poselib::Point3D> points3D;
 	for (const Track& track : scene.tracks) {
 		if (!track.IsInlier())
@@ -78,39 +82,33 @@ IIndexArr Resection::SelectNextImages(IIndexScores& unregistered) const
 		for (const Observation& obs : track.observations) {
 			if (obs.imageID == imageID) {
 				const Point2 kp = img.keypoints[obs.featureID].pt;
-				points2D.emplace_back(img.pCamera->Unproject(kp));
+				bearings.emplace_back(img.pCamera->UnprojectNormalized(kp));
 				points3D.push_back(track.position);
 				break;
 			}
 		}
 	}
-	const unsigned n = (unsigned)points2D.size();
+	const unsigned n = (unsigned)bearings.size();
 	if (n < config.minInliers)
 		return {0, n};
 
-	#if 0
-	// Use NullCameraModel for all camera types with undistorted normalized coordinates
-	std::vector<double> emptyParams;
-	poselib::Camera plCam(poselib::NullCameraModel::model_id, emptyParams, img.GetWidth(), img.GetHeight());
-	#else
-	// Use PinholeCameraModel for all camera types with undistorted normalized coordinates
-	// Parameters: [focal_x, focal_y, principal_point_x, principal_point_y]
-	// (if NullCameraModel is not implemented yet in the main PoseLib version)
-	std::vector<double> emptyParams{1.0, 1.0, 0.0, 0.0};
-	poselib::Camera plCam(poselib::PinholeCameraModel::model_id, emptyParams, img.GetWidth(), img.GetHeight());
-	#endif
-
-	poselib::RansacOptions ransacOpt;
-	ransacOpt.max_iterations = config.ransac.max_iterations;
-	ransacOpt.min_iterations = config.ransac.min_iterations;
-	ransacOpt.success_prob = config.ransac.confidence;
-	ransacOpt.max_reproj_error = config.ransac.threshold / img.pCamera->GetFocalLength();
-	poselib::BundleOptions bundleOpt;
+	// Convert the pixel-space reprojection threshold to an angular threshold
+	// on the unit sphere via the camera's PixelErrorToAngular helper, then
+	// let AbsolutePoseOptions convert to the chord-distance metric its
+	// scoring function uses internally. The per-camera noise scale widens
+	// the pinhole-tuned threshold for models (e.g. spherical cube-face SIFT)
+	// whose feature positions have higher pixel-space uncertainty.
+	poselib::AbsolutePoseOptions opt;
+	opt.ransac.max_iterations = config.ransac.max_iterations;
+	opt.ransac.min_iterations = config.ransac.min_iterations;
+	opt.ransac.success_prob = config.ransac.confidence;
+	opt.SetMaxErrorFromAngle(img.pCamera->PixelErrorToAngular(
+		config.ransac.threshold * img.pCamera->GetFeatureNoiseScale()));
 
 	std::vector<char> inliers;
 	poselib::CameraPose camPose;
-	poselib::RansacStats stats = poselib::estimate_absolute_pose(
-		points2D, points3D, plCam, ransacOpt, bundleOpt, &camPose, &inliers);
+	poselib::RansacStats stats = poselib::estimate_absolute_pose_bearings(
+		bearings, points3D, opt, &camPose, &inliers);
 
 	const unsigned numInliers = (unsigned)stats.num_inliers;
 	if (numInliers < config.minInliers)
@@ -213,7 +211,7 @@ bool Resection::RegisterImages()
 				if (config.minRefineExtIntrs > 0 && scene.status.nCalibratedImages + registeredCount >= config.minRefineExtIntrs)
 					config.fullBAConfig.RefineExtendedIntrinsics();
 				BundleAdjustment::Adjust(scene, config.fullBAConfig);
-				FilterTracks(scene, config.maxReprojError, 0, config.minAngleThreshold, config.multDepthNear, config.multDepthFar);
+				FilterTracks(scene, config.maxReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar);
 				lastRegistered.clear();
 				avgInliersRatio.Clear();
 				sinceFullBA = 0;
@@ -226,13 +224,13 @@ bool Resection::RegisterImages()
 				const IIndexArr fixedViewIDs = BuildLocalWindow(lastRegistered);
 				ASSERT(!fixedViewIDs.empty());
 				BundleAdjustment::AdjustLocal(scene, lastRegistered, fixedViewIDs, config.localBAConfig);
-				FilterTracks(scene, config.maxReprojError, 0, config.minAngleThreshold, config.multDepthNear, config.multDepthFar);
+				FilterTracks(scene, config.maxReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar);
 				lastRegistered.clear();
 				break; // restart selection of next images
 			} else if (n+1 == nextIDs.size() || (config.triangulateEvery > 0 && (lastRegistered.size() % config.triangulateEvery) == 0)) {
 				// Update scene with new points every N registered images
 				TriangulateTracks(scene, true, config.maxReprojError, config.minAngleThreshold);
-				FilterTracks(scene, config.maxReprojError, 0, config.minAngleThreshold, config.multDepthNear, config.multDepthFar);
+				FilterTracks(scene, config.maxReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar);
 				break; // restart selection of next images
 			}
 		}
@@ -247,7 +245,7 @@ bool Resection::RegisterImages()
 	config.fullBAConfig.maxIterations = 100;
 	config.fullBAConfig.RefineExtendedIntrinsics();
 	BundleAdjustment::Adjust(scene, config.fullBAConfig);
-	FilterTracks(scene, config.maxReprojError, 0, config.minAngleThreshold, config.multDepthNear, config.multDepthFar);
+	FilterTracks(scene, config.maxReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar);
 
 	// Update scene status
 	scene.status.nCalibratedImages += registeredCount;

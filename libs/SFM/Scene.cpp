@@ -34,10 +34,6 @@ using namespace SFM;
 #define SCENE_USE_OPENMP
 #endif
 
-#pragma push_macro("VERBOSE")
-#undef VERBOSE
-#define VERBOSE(...) LOG(lt, __VA_ARGS__)
-
 
 // S T R U C T S ///////////////////////////////////////////////////
 
@@ -512,8 +508,14 @@ bool Scene::Reconstruct(const String& source, const ReconstructionConfig& config
 		return true;
 	}
 
-	Save(MAKE_PATH("scene_pre_reconstruction.sfm"), config.importCfg.archiveType);
+	#if TD_VERBOSE != TD_VERBOSE_OFF
+	if (VERBOSITY_LEVEL > 2) {
+		// Save intermediate scene after matching for debugging
+		Save(MAKE_PATH("scene_pre_reconstruction.sfm"), config.importCfg.archiveType);
+	}
+	#endif
 	#else
+	// Shortcut features and matching by directly loading a pre-reconstruction scene (for debugging)
 	Load(MAKE_PATH("scene_pre_reconstruction.sfm"), config.importCfg.archiveType);
 	#endif
 
@@ -527,9 +529,9 @@ bool Scene::Reconstruct(const String& source, const ReconstructionConfig& config
 	finalBaCfg.refineFocalLength = (config.baIntrinsicFlags & ReconstructionConfig::INTRINSIC_FOCAL_LENGTH) != 0;
 	finalBaCfg.refineRadialDistortion123 = (config.baIntrinsicFlags & ReconstructionConfig::INTRINSIC_RADIAL_DIST_123) != 0;
 	BundleAdjustment::Adjust(*this, finalBaCfg);
-	FilterTracks(*this, config.maxReprojError, 0.f, config.minAngleThreshold, config.multDepthNear, config.multDepthFar);
+	FilterTracks(*this, config.maxReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar);
 	TriangulateTracks(*this, true, config.maxReprojError, config.minAngleThreshold);
-	FilterTracks(*this, config.maxReprojError, 0.f, config.minAngleThreshold, config.multDepthNear, config.multDepthFar);
+	FilterTracks(*this, config.maxReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar);
 	status.nState.set(Status::STATE::CALIBRATED);
 
 	// Final global bundle adjustment
@@ -539,7 +541,7 @@ bool Scene::Reconstruct(const String& source, const ReconstructionConfig& config
 	finalBaCfg.refineRadialDistortion456 = (config.baIntrinsicFlags & ReconstructionConfig::INTRINSIC_RADIAL_DIST_456) != 0;
 	finalBaCfg.refinePrincipalPoint = (config.baIntrinsicFlags & ReconstructionConfig::INTRINSIC_PRINCIPAL_POINT) != 0;
 	BundleAdjustment::Adjust(*this, finalBaCfg);
-	FilterTracks(*this, config.maxFineReprojError, 0.f, config.minAngleThreshold, config.multDepthNear, config.multDepthFar);
+	FilterTracks(*this, config.maxFineReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar);
 
 	// Filter weakly connected images and resection remaining images into the reconstruction
 	FilterWeaklyConnectedImages(*this);
@@ -609,7 +611,7 @@ bool Scene::ReconstructHierarchical(const ReconstructionConfig& config)
 		baCfg.refineTangentialDistortion = (config.baIntrinsicFlags & ReconstructionConfig::INTRINSIC_TANGENTIAL_DIST) != 0;
 		baCfg.refineRadialDistortion456 = (config.baIntrinsicFlags & ReconstructionConfig::INTRINSIC_RADIAL_DIST_456) != 0;
 		BundleAdjustment::Adjust(subScene, baCfg);
-		FilterTracks(subScene, config.maxReprojError, 0.f, config.minAngleThreshold, config.multDepthNear, config.multDepthFar);
+		FilterTracks(subScene, config.maxReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar);
 	});
 	threadPool.wait();
 	#if 0
@@ -688,7 +690,7 @@ bool Scene::ReconstructGlobal(const ReconstructionConfig& config)
 	}
 
 	// 3. Update Status
-	FilterTracks(*this, 6.f, 0.f, 1.f);
+	FilterTracks(*this, 6.f, 1.f);
 	status.nCalibratedImages = 0;
 	for (const Image& img : images)
 		if (img.IsValid())
@@ -700,13 +702,13 @@ bool Scene::ReconstructGlobal(const ReconstructionConfig& config)
 	baCfg.refinePosesRotation = false;
 	baCfg.maxIterations = 12;
 	BundleAdjustment::Adjust(*this, baCfg);
-	FilterTracks(*this, config.maxReprojError, 0.f, config.minAngleThreshold, config.multDepthNear, config.multDepthFar);
+	FilterTracks(*this, config.maxReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar);
 
 	// Bundle Adjustment with full pose and structure refinement
 	baCfg.refinePosesRotation = true;
 	baCfg.maxIterations = 25;
 	BundleAdjustment::Adjust(*this, baCfg);
-	FilterTracks(*this, config.maxReprojError, 0.f, config.minAngleThreshold, config.multDepthNear, config.multDepthFar);
+	FilterTracks(*this, config.maxReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar);
 	TriangulateTracks(*this, true, config.maxReprojError, config.minAngleThreshold);
 
 	DEBUG("Global reconstruction complete: %u/%u images, %u/%u points (%s)",
@@ -1307,5 +1309,3 @@ bool SFM::CompareScenes(const Scene& scene, const String& gtFile, bool matchByNa
 	return true;
 }
 /*----------------------------------------------------------------*/
-
-#pragma pop_macro("VERBOSE")

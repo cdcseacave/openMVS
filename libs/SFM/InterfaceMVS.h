@@ -1,7 +1,7 @@
 ////////////////////////////////////////////////////////////////////
 // InterfaceMVS.h
 //
-// Copyright 2007 cDc@seacave
+// Copyright 2026 cDc@seacave
 // Distributed under the Boost Software License, Version 1.0
 // (See http://www.boost.org/LICENSE_1_0.txt)
 
@@ -63,25 +63,60 @@ bool ExportDepthDataRaw(const String& fileName, const String& imageFileName,
  */
 bool ImportMVS(const String& fileName, Scene& scene, bool loadColors=true);
 
+// Configuration bundle for ExportMVS. All fields have sane defaults so the
+// common case is just `SFM::ExportMVS(path, scene)`. Individual knobs can
+// be overridden with designated initializers, e.g.
+//   SFM::ExportMVS(path, scene, { .undistortImageDir = "undist",
+//                                 .sphericalNumFaces = 20 });
+struct SFM_API ExportMVSConfig {
+	// Optional directory to store undistorted images (created if missing).
+	// If empty, no undistortion is performed (original image paths are exported as-is).
+	// For scenes with spherical cameras, this directory doubles as the output
+	// root for the rendered cube-map face files; when left empty the faces
+	// are written next to the .mvs output file.
+	String undistortImageDir;
+
+	// Output image file extension (for undistorted images and spherical faces).
+	String extension = _T(".jxl");
+
+	// Alpha parameter for undistortion (0 = zoomed in, 1 = keep all pixels).
+	// Only applies when undistortImageDir is set.
+	float undistortAlpha = 0.6f;
+
+	// When true, export only tracks with numInliers > 1 (otherwise any
+	// track with ≥ 2 observations is exported).
+	bool onlyInlierTracks = true;
+
+	// Export per-point colors if available on the scene.
+	bool includeColors = true;
+
+	// Cube-map expansion parameters for spherical cameras. Ignored when the
+	// scene has no spherical cameras. See SphereCubeMap::FaceRotations for the
+	// supported face counts {4, 6, 8, 12, 20}.
+	int    sphericalFaceSize  = 1024;       // square face resolution in pixels
+	int    sphericalNumFaces  = 6;          // 4 | 6 | 8 | 12 | 20
+};
+
 /**
  * @brief Export current SfM scene to an MVS::Interface (.mvs) project file.
- * All images are exported; images without pose keep poseID=NO_ID.
- * Intrinsics are always written in full pixel space (no normalization).
- * Optionally undistorts pinhole images (ignoring distortion thereafter).
+ *
+ * Pinhole scenes are written as-is (one platform with a single mounted
+ * camera per SFM camera, optionally undistorted).
+ *
+ * If the scene contains any spherical cameras, each spherical source image
+ * is automatically expanded into a cube-map rig of N virtual pinhole faces
+ * (config.sphericalNumFaces, default 6) that are rendered to disk alongside
+ * the existing pinhole images. All faces of one source spherical image
+ * share the source pose on the rig platform.
+ *
  * @param fileName output .mvs file path
- * @param scene input SfM scene to export
- * @param undistortImageDir optional directory to store undistorted images (created if missing);
- *        if empty, do not perform undistortion and export undistorted image files
- * @param undistortAlpha alpha parameter for undistortion (0=zoomed in, 1=all pixels retained)
- * @param onlyInlierTracks export only tracks with numInliers>1 when true (otherwise >=2 observations)
- * @param includeColors export per-point color if available
+ * @param scene    input SfM scene to export
+ * @param config   export configuration (undistortion, track-inlier filter,
+ *                 color export, spherical cube-map options)
  * @return true on success
  */
 bool ExportMVS(const String& fileName, const Scene& scene,
-	String undistortImageDir={},
-	float undistortAlpha=0.6f,
-	bool onlyInlierTracks=true,
-	bool includeColors=true);
+	ExportMVSConfig config = {});
 /*----------------------------------------------------------------*/
 
 } // namespace SFM

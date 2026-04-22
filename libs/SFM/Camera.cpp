@@ -41,7 +41,7 @@ std::pair<Point2, bool> PinholeCamera::Project(const Point3& X) const
 	);
 }
 
-Point2 PinholeCamera::Unproject(const Point2& x) const
+Point3 PinholeCamera::Unproject(const Point2& x) const
 {
 	ASSERT(IsValid());
 	// Remove intrinsics
@@ -52,13 +52,13 @@ Point2 PinholeCamera::Unproject(const Point2& x) const
 	// Remove distortion if enabled
 	if (HasDistortion())
 		p = Undistort(p);
-	// Return (not normalized) ray
-	return p;
+	// Return ray as a 3D point on the z=1 normalized plane
+	return p.homogeneous();
 }
 Point3 PinholeCamera::UnprojectNormalized(const Point2& x) const
 {
 	// Return (normalized) ray
-	return normalized(Unproject(x).homogeneous());
+	return normalized(Unproject(x));
 }
 
 KMatrix PinholeCamera::GetK() const
@@ -219,6 +219,7 @@ std::pair<Point2, bool> SphericalCamera::Project(const Point3& X) const
 
 	// Convert 3D point to spherical coordinates
 	const REAL r = norm(X);
+	ASSERT(ISFINITE(r));
 	if (r < REAL(1e-10))
 		return std::make_pair(Point2(size.width, size.height)/2, false);
 
@@ -244,15 +245,35 @@ Point2 SphericalCamera::MapImageToSpherical(const Point2& x) const
 	return Point2(theta, phi);
 }
 
-Point2 SphericalCamera::Unproject(const Point2& x) const
+Point3 SphericalCamera::Unproject(const Point2& x) const
 {
-	// Map image coordinates to spherical angles
+	// Map image coordinates to spherical angles (x or theta = longitude, y or phi = latitude)
 	const Point2 sph = MapImageToSpherical(x);
 
-	// Convert spherical to Cartesian (not normalized ray)
-	return Point2(
-		TAN(sph.x),
-		TAN(sph.y) / COS(sph.x)
+	// Convert spherical to Cartesian (not normalized ray);
+	// Compute true unit bearing vector in camera space:
+	//   d = (sin(theta)*cos(phi),  sin(phi),  cos(theta)*cos(phi))
+	// Then scale so |d.z| = 1, preserving sign(d.z) = sign(cos(theta))
+	// (since phi is in [-pi/2, pi/2], cos(phi) >= 0 always).
+	//
+	// For the FRONT hemisphere (cos(theta) > 0) this matches the pinhole
+	// (X/Z, Y/Z, +1) form exactly, so pinhole callers see no behavior change.
+	// For the BACK hemisphere (cos(theta) < 0) we return (-tan(theta),
+	// -tan(phi)/cos(theta), -1); the (x, y) sign flip combined with z = -1
+	// produces a 3D vector that points along the true back-facing bearing
+	// (not the aliased front-hemisphere direction the old 2D form gave).
+	//
+	// Singular at the equator sides (cos(theta) = 0, pixel x = W/4 or 3W/4
+	// on the vertical midline) and the poles (cos(phi) = 0, pixel y = 0 or H),
+	// which are measure-zero subsets of the image. Callers needing a strictly
+	// unit bearing vector should use UnprojectNormalized() instead — it has
+	// no singularity on the sphere.
+	const REAL cosTheta = COS(sph.x);
+	const REAL sign = (cosTheta >= REAL(0)) ? REAL(1) : REAL(-1);
+	return Point3(
+		TAN(sph.x) * sign,
+		TAN(sph.y) * sign / cosTheta,
+		sign
 	);
 }
 Point3 SphericalCamera::UnprojectNormalized(const Point2& x) const

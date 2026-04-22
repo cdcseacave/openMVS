@@ -215,65 +215,79 @@ unsigned ImagePair::FilterMatches(const Image& img1, const Image& img2, float mi
 
 	// Prepare relative pose data
 	const Pose3D& relPose = relativePose.value();
+	const Camera& cam1 = *img1.pCamera;
+	const Camera& cam2 = *img2.pCamera;
 
-	// Precompute epipoles
-	const bool filterEpipoles = (epipoleThresh > 0 && img1.HasCamera() && img2.HasCamera());
-	Point2f e1(1e5f, 1e5f), e2(1e5f, 1e5f); // infinity
-	if (filterEpipoles) {
-		// Epipole 1: Projection of C2 (relPose.C) in Cam1
-		// Cam1 is World, so X=relPose.C
-		const auto [p1, valid1] = img1.pCamera->Project(relPose.C);
-		if (valid1)
-			e1 = p1;
-		// Epipole 2: Projection of C1 (0,0,0) in Cam2
-		// C1 in Cam2 frame is t.
-		const auto [p2, valid2] = img2.pCamera->Project(relPose.GetT());
-		if (valid2)
-			e2 = p2;
+	// Convert pixel-based thresholds to angular (radians) so equirectangular images are handled correctly:
+	// a pixel metric near the poles/±π seam doesn't correspond linearly to angular separation.
+	// For pinhole this is equivalent to the pixel distance check within atan(δ/f) ≈ δ/f.
+	const REAL cosReprojAngle = reprojThreshold > 0 ?
+		COS(REAL(0.5) * (cam1.PixelErrorToAngular(reprojThreshold) + cam2.PixelErrorToAngular(reprojThreshold))) :
+		REAL(-1);
+
+	// Precompute epipole directions (unit bearings) in each camera frame
+	Point3 epipoleDir1(Point3::ZERO), epipoleDir2(Point3::ZERO);
+	REAL cosEpipoleAngle = REAL(2); // > 1 means epipole filter never triggers
+	if (epipoleThresh > 0) {
+		cosEpipoleAngle = COS(REAL(0.5) * (cam1.PixelErrorToAngular(epipoleThresh) + cam2.PixelErrorToAngular(epipoleThresh)));
+		// Epipole 1 direction: C2 position in Cam1 frame = relPose.C
+		const REAL nC = norm(relPose.C);
+		if (nC > ZEROTOLERANCE<REAL>())
+			epipoleDir1 = relPose.C / nC;
+		// Epipole 2 direction: C1 (origin) in Cam2 frame = relPose.GetT()
+		const Point3 t = relPose.GetT();
+		const REAL nT = norm(t);
+		if (nT > ZEROTOLERANCE<REAL>())
+			epipoleDir2 = t / nT;
 	}
 
 	// Filter matches
 	const REAL maxCosAngle = COS(D2R(minAngle));
-	const float reprojThresholdSq = SQUARE(reprojThreshold);
 	const auto [pts1, pts2] = GetMatchedPoints(img1, img2);
 	std::vector<char> mask(matches.size(), 0);
 	TAccumulator<float> angleAccumulator; // cos-angle weighted average
 	unsigned numInliers = 0;
 	FOREACH(i, matches) {
-		const Point2f& p1 = pts1[i];
-		const Point2f& p2 = pts2[i];
-		// 1. Epipole filtering
-		if (filterEpipoles && (norm(p1 - e1) < epipoleThresh || norm(p2 - e2) < epipoleThresh))
+		// Observed unit bearings (works for both pinhole and spherical)
+		const Point3 b1 = cam1.UnprojectNormalized(Cast<REAL>(pts1[i]));
+		const Point3 b2 = cam2.UnprojectNormalized(Cast<REAL>(pts2[i]));
+		// 1. Epipole filtering (angular distance to epipole direction)
+		if (epipoleThresh > 0 &&
+			(b1.dot(epipoleDir1) > cosEpipoleAngle || b2.dot(epipoleDir2) > cosEpipoleAngle))
 			continue;
-		// 2. Triangulate (Linear LS)
-		const Point2 p1Cam = img1.pCamera->Unproject(Cast<REAL>(p1));
-		const Point2 p2Cam = img2.pCamera->Unproject(Cast<REAL>(p2));
+		// 2. Triangulate (midpoint is scale-invariant on unit bearings)
 		Point3 X;
-		if (!TriangulatePoint3D(relPose.R, relPose.C, p1Cam.homogeneous(), p2Cam.homogeneous(), X))
+		if (!TriangulatePoint3D(relPose.R, relPose.C, b1, b2, X))
 			continue;
-		// 3. Cheirality check (only for pinhole cameras)
-		// Project back to Img1, check depth in Cam1 coord system: z
-		const auto [proj1, valid1] = img1.pCamera->Project(X);
-		if (!valid1)
+		// 3. Cheirality + angular reprojection in Cam1
+		const REAL nX = norm(X);
+		if (nX < ZEROTOLERANCE<REAL>())
 			continue;
-		const float reprojErr1 = normSq(Cast<float>(proj1) - p1);
-		// Project back to Img2, after pose transforms in Cam2 coord system, check depth in Cam2: (relPose.R * (X - relPose.C)).z
+		const Point3 b1Proj = X / nX;
+		const REAL cosErr1 = b1.dot(b1Proj);
+		if (cosErr1 <= 0) // >= 90° from observation (behind camera for pinhole / antipodal for spherical)
+			continue;
+		// 4. Cheirality + angular reprojection in Cam2
 		const Point3 Xcam2 = relPose.TransformPointW2C(X);
-		const auto [proj2, valid2] = img2.pCamera->Project(Xcam2);
-		if (!valid2)
+		const REAL nXc2 = norm(Xcam2);
+		if (nXc2 < ZEROTOLERANCE<REAL>())
 			continue;
-		const float reprojErr2 = normSq(Cast<float>(proj2) - p2);
-		// 4. Reprojection error check
-		if (reprojThreshold > 0 && (reprojErr1 > reprojThresholdSq || reprojErr2 > reprojThresholdSq))
+		const Point3 b2Proj = Xcam2 / nXc2;
+		const REAL cosErr2 = b2.dot(b2Proj);
+		if (cosErr2 <= 0)
 			continue;
-		// 5. Angle check
-		const Point3 V1 = X; // ray from C1 to X
-		const Point3 V2 = X - relPose.C; // ray from C2 to X
-		REAL cosAngle = ComputeAngle(V1.ptr(), V2.ptr());
+		// 5. Reprojection error threshold (angular)
+		if (reprojThreshold > 0 && (cosErr1 < cosReprojAngle || cosErr2 < cosReprojAngle))
+			continue;
+		// 6. Triangulation angle check
+		const Point3 V1 = X; // ray from C1 to X (in Cam1 frame)
+		const Point3 V2 = X - relPose.C; // ray from C2 to X (in Cam1 frame)
+		const REAL cosAngle = ComputeAngle(V1.ptr(), V2.ptr());
 		if (minAngle > 0 && cosAngle > maxCosAngle)
 			continue;
-		// Accepted as inlier
-		angleAccumulator.Add(cosAngle, 1.f / MAXF(reprojErr1, reprojErr2));
+		// Accepted as inlier; weight mean by inverse angular residual (mirrors 1/pixelErr² semantics)
+		const float oneMinusCos = (float)(REAL(1) - MINF(cosErr1, cosErr2));
+		angleAccumulator.Add((float)cosAngle, 1.f / MAXF(oneMinusCos, 1e-10f));
 		mask[i] = 1;
 		++numInliers;
 	}

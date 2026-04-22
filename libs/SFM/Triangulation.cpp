@@ -30,12 +30,17 @@ unsigned SFM::TriangulateDLT(
 		ASSERT(obs.imageID < images.size());
 		const Image& img = images[obs.imageID];
 		ASSERT(img.HasCamera() && obs.featureID < img.keypoints.size());
+		// TriangulateDLT is pinhole-only: the linear system assumes the 2D point
+		// lies on the z=1 normalized plane, which is front-hemisphere biased and
+		// cannot represent back-hemisphere observations of a spherical camera.
+		// Use TriangulateSkewLLS() for non-pinhole cameras.
+		ASSERT(img.pCamera->GetType() == CameraType::PINHOLE);
 		// Build projection matrix P = R*[I|-C]
 		projMatrices.push_back(img.GetPfromRC());
-		// Get normalized 2D point
+		// Get the intrinsics normalized 2D point
 		const cv::KeyPoint& kp = img.keypoints[obs.featureID];
-		const Point2 ray = img.pCamera->Unproject(Cast<REAL>(kp.pt));
-		points2D.emplace_back(ray);
+		const Point3 ray = img.pCamera->Unproject(Cast<REAL>(kp.pt));
+		points2D.emplace_back(ray.x, ray.y);
 	}
 
 	// Triangulate using linear multi-view DLT (solve A*X=0)
@@ -132,26 +137,21 @@ unsigned SFM::TriangulateSkewLLS(
 {
 	ASSERT(track.IsValid());
 
-	// Collect normalized directions in camera space and R, t from each camera
+	// Collect normalized directions in camera space and R, t from each camera.
+	// Invariant throughout: cams[j] corresponds to track.observations[j].
+	// We maintain this by always performing the same swap on both arrays.
 	struct CameraData {
 		Matrix3x3::EMat DR; // D_cross * R
 		Point3::EVec Dt; // -D_cross * t
 	};
-	CLISTDEF0IDX(uint32_t, uint32_t) mapIndices(track.observations.size());
 	CLISTDEF0IDX(CameraData, uint32_t) cams(0, track.observations.size());
 	FOREACH(obsIdx, track.observations) {
-		mapIndices[obsIdx] = obsIdx;
 		const Observation& obs = track.observations[obsIdx];
 		ASSERT(obs.imageID < images.size());
 		const Image& img = images[obs.imageID];
 		ASSERT(img.HasCamera() && obs.featureID < img.keypoints.size());
 		if (!img.IsValid())
 			continue;
-		// This is a candidate observation, move it to the front
-		if (cams.size() < obsIdx) {
-			std::swap(track.observations[cams.size()], track.observations[obsIdx]);
-			std::swap(mapIndices[cams.size()], mapIndices[obsIdx]);
-		}
 		// Ray direction in camera coordinates (unproject)
 		const cv::KeyPoint& kp = img.keypoints[obs.featureID];
 		const Point3 dir = img.pCamera->UnprojectNormalized(Cast<REAL>(kp.pt));
@@ -162,6 +162,8 @@ unsigned SFM::TriangulateSkewLLS(
 			-dir.y, dir.x, 0);
 		const Matrix3x3 DR = Dcross * img.R;
 		const Point3 Dt = -Dcross * img.GetT();
+		if (cams.size() < obsIdx)
+			std::swap(track.observations[cams.size()], track.observations[obsIdx]);
 		cams.emplace_back(DR, Dt);
 	}
 	if (cams.size() < minInliers)
@@ -180,11 +182,12 @@ unsigned SFM::TriangulateSkewLLS(
 	}
 	// Solve least-squares with SVD
 	track.position = A.jacobiSvd(Eigen::ComputeThinU | Eigen::ComputeThinV).solve(bvec);
+	ASSERT(ISFINITE(track.position));
 
-	// Validate by reprojection and depth
+	// Validate by cheirality and reprojection,
+	// moving inliers to the front of both cams and observations
 	track.numInliers = 0;
-	FOREACH(i, cams) {
-		const uint32_t obsIdx = mapIndices[i];
+	FOREACH(obsIdx, cams) {
 		const Observation& obs = track.observations[obsIdx];
 		const Image& img = images[obs.imageID];
 		const auto [proj, valid] = img.ProjectPoint(track.position);
@@ -197,7 +200,7 @@ unsigned SFM::TriangulateSkewLLS(
 		// This is an inlier observation, move it to the front
 		if (track.numInliers < obsIdx) {
 			std::swap(track.observations[track.numInliers], track.observations[obsIdx]);
-			std::swap(mapIndices[track.numInliers], mapIndices[obsIdx]);
+			std::swap(cams[track.numInliers], cams[obsIdx]);
 		}
 		++track.numInliers;
 	}
@@ -208,18 +211,19 @@ unsigned SFM::TriangulateSkewLLS(
 	if (minAngle < minAngleThreshold)
 		return 0;
 
-	// Refine with only inliers (optional)
+	// Refine using only inliers (now at positions 0..numInliers-1 of both arrays)
 	if (track.numInliers < cams.size()) {
 		Eigen::MatrixXd A2(2*track.numInliers, 3);
 		Eigen::VectorXd b2(2*track.numInliers);
 		for (uint32_t k = 0; k < (uint32_t)track.numInliers; ++k) {
-			const CameraData& cam = cams[mapIndices[k]];
+			const CameraData& cam = cams[k];
 			A2.row(2 * k + 0) = cam.DR.row(0);
 			b2(2 * k + 0) = cam.Dt(0);
 			A2.row(2 * k + 1) = cam.DR.row(1);
 			b2(2 * k + 1) = cam.Dt(1);
 		}
 		track.position = A2.jacobiSvd(Eigen::ComputeThinU | Eigen::ComputeThinV).solve(b2);
+		ASSERT(ISFINITE(track.position));
 	}
 	return track.numInliers;
 }

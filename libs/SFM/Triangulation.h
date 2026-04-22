@@ -25,8 +25,18 @@ class SFM_API Scene;
 /**
 	* @brief DLT-based triangulation for a single track.
 	* It assumes all track observations are valid (the corresponding view has pose).
+	*
+	* NOTE: This function is PINHOLE-ONLY. It uses the 2D Camera::Unproject() output
+	* as a point on the z=1 normalized plane and builds the standard DLT linear system
+	* A*X=0 from the full 3x4 projection matrix P = K*[R|t]. For spherical (equirectangular)
+	* cameras the 2D unproject is front-hemisphere biased (it aliases back-hemisphere
+	* features onto the front), so this formulation cannot represent observations with
+	* |longitude| > pi/2. Use TriangulateSkewLLS() instead — it operates on 3D unit
+	* bearing vectors from Camera::UnprojectNormalized() and is singularity-free for
+	* all camera models.
+	*
 	* @param track The track to triangulate.
-	* @param images Scene images with cameras and poses
+	* @param images Scene images with pinhole cameras and poses
 	* @param reprojThreshold Reprojection error threshold (pixels)
 	* @param minAngleThreshold Minimum angle between rays (degrees)
 	* @param minInliers Minimum number of inlier views

@@ -488,7 +488,7 @@ bool GlobalAlignment::MergeTransformedScenes(
 
 	// Merge sub-scene tracks and connect them via cross-sub-scene pairs
 	MergeTracksWithCrossSubScenePairs();
-	FilterTracks(scene, 16.f, 0.f, 0.5f);
+	FilterTracks(scene, 16.f, 0.5f);
 
 	DEBUG("Merged %u transformed sub-scenes (%u tracks, %u calibrated images)",
 		(unsigned)subScenes.size(), (unsigned)scene.tracks.size(), scene.status.nCalibratedImages);

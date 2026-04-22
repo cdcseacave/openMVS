@@ -41,10 +41,6 @@
 
 #define APPNAME _T("Tests")
 
-#pragma push_macro("VERBOSE")
-#undef VERBOSE
-#define VERBOSE(...) LOG(lt, __VA_ARGS__)
-
 
 // S T R U C T S ///////////////////////////////////////////////////
 
@@ -136,6 +132,24 @@ int main(int argc, LPCTSTR* argv)
 			return EXIT_FAILURE;
 		if (!SFM::PipelineTest())
 			return EXIT_FAILURE;
+		if (!SFM::ReconstructSphericalSyntheticTest())
+			return EXIT_FAILURE;
+		if (!SFM::PairsMatcherSphericalTest())
+			return EXIT_FAILURE;
+		if (!SFM::MatchGeometricSphericalTest())
+			return EXIT_FAILURE;
+		if (!SFM::CubeMapFaceRenderTest())
+			return EXIT_FAILURE;
+		if (!SFM::CubeMapBridgeGeometryTest())
+			return EXIT_FAILURE;
+		if (!SFM::CubeMapBridgeEndToEndTest())
+			return EXIT_FAILURE;
+		if (!SFM::CubeMapBridgeMVSLoadTest())
+			return EXIT_FAILURE;
+		if (!SFM::CubeMapBridgeMixedSceneTest())
+			return EXIT_FAILURE;
+		if (!SFM::CubeMapBridgeDropTopBottomTest())
+			return EXIT_FAILURE;
 		if (!SFM::ReconstructTest())
 			return EXIT_FAILURE;
 		// Hierarchical SFM tests - Phase 1: Scene Clustering
@@ -184,5 +198,3 @@ int main(int argc, LPCTSTR* argv)
 	return EXIT_SUCCESS;
 }
 /*----------------------------------------------------------------*/
-
-#pragma pop_macro("VERBOSE")

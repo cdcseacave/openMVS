@@ -38,13 +38,14 @@
 #include "../../libs/SFM/BundleAdjustment.h"
 #include "../../libs/SFM/SceneCluster.h"
 #include "../../libs/SFM/GlobalAlignment.h"
+#include "../../libs/SFM/MatchGeometric.h"
+#include "../../libs/SFM/SphereCubeMap.h"
+#include "../../libs/SFM/InterfaceMVS.h"
+#include "../../libs/MVS.h"
+#include <filesystem>
 
 
 // D E F I N E S ///////////////////////////////////////////////////
-
-#pragma push_macro("VERBOSE")
-#undef VERBOSE
-#define VERBOSE(...) LOG(lt, __VA_ARGS__)
 
 
 // S T R U C T S ///////////////////////////////////////////////////
@@ -626,6 +627,1193 @@ void SimulateSubSceneReconstruction(
 			TriangulateSkewLLS(track, subScene.images);
 		}
 	}
+}
+/*----------------------------------------------------------------*/
+
+
+// ===============================================================================
+// Spherical camera full-hemisphere reconstruction test
+// Exercises the triangulation + BA pipeline on a spherical scene where 3D points
+// are distributed in ALL directions around the cameras (front, back, sides), so
+// that observations span the full equirectangular image including longitudes
+// |theta| > pi/2. This is the regression harness for the S^2 -> R^2 singularity
+// in SphericalCamera::Unproject and the pinhole DLT in TriangulateDLT.
+// ===============================================================================
+bool ReconstructSphericalSyntheticTest()
+{
+	VERBOSE("\n=== ReconstructSphericalSyntheticTest: full-hemisphere spherical scene ===");
+
+	// Build a spherical scene manually so we control 3D point placement directly.
+	Scene sceneGT;
+	const int width = 2048, height = 1024;
+	sceneGT.cameras.emplace_back(new SphericalCamera(cv::Size(width, height)));
+
+	// 6 cameras arranged in a small 3D cluster near origin, all sharing identity
+	// rotation. With identity rotation + small translation, points on the far
+	// side of origin land at camera-space Z < 0 (the equirectangular "back half").
+	const unsigned numImages = 6;
+	const Point3 camCenters[numImages] = {
+		Point3(-0.6,  0.0, -0.3),
+		Point3( 0.6,  0.0, -0.3),
+		Point3(-0.6,  0.0,  0.3),
+		Point3( 0.6,  0.0,  0.3),
+		Point3( 0.0, -0.4,  0.0),
+		Point3( 0.0,  0.4,  0.0),
+	};
+	for (unsigned i = 0; i < numImages; ++i) {
+		Pose3D pose;
+		pose.C = camCenters[i];
+		pose.R = Matrix3x3::IDENTITY;
+		sceneGT.images.emplace_back(static_cast<IIndex>(i), String(), pose, 0, sceneGT.cameras[0]);
+	}
+	sceneGT.status.nCalibratedImages = sceneGT.images.size();
+
+	// Generate 3D points uniformly on a sphere of radius ~5 around origin. With
+	// the camera cluster at origin and points at distance 5 in all directions,
+	// every point is visible from every camera, and roughly half the observations
+	// fall in the camera-space Z < 0 "back" hemisphere of the equirectangular image.
+	const unsigned numPoints = 80;
+	std::mt19937 rng(1337);
+	std::uniform_real_distribution<REAL> cosThetaDist(REAL(-1), REAL(1));
+	std::uniform_real_distribution<REAL> phiDist(REAL(-M_PI), REAL(M_PI));
+	std::uniform_real_distribution<REAL> radiusDist(REAL(4.5), REAL(5.5));
+	for (unsigned p = 0; p < numPoints; ++p) {
+		const REAL r = radiusDist(rng);
+		const REAL ct = cosThetaDist(rng);
+		const REAL st = SQRT(REAL(1) - ct*ct);
+		const REAL ph = phiDist(rng);
+		const Point3 X(r * st * COS(ph), r * ct, r * st * SIN(ph));
+
+		Track track(X);
+		for (unsigned v = 0; v < numImages; ++v) {
+			Image& img = sceneGT.images[v];
+			const auto [proj, valid] = img.ProjectPoint(X);
+			if (!valid || !Image8U::isInside(proj, img.GetSize()))
+				continue;
+			const uint32_t featID = static_cast<uint32_t>(img.keypoints.size());
+			img.keypoints.emplace_back(Cast<float>(proj), 0.f, 0.f, 10.f);
+			track.observations.emplace_back(img.ID, featID);
+		}
+		if (track.observations.size() < 2) {
+			// Drop the keypoints we just added — track is unusable
+			for (const auto& obs : track.observations)
+				sceneGT.images[obs.imageID].keypoints.pop_back();
+			continue;
+		}
+		track.numInliers = static_cast<uint8_t>(track.observations.size());
+		sceneGT.tracks.emplace_back(std::move(track));
+	}
+	sceneGT.status.nTracks = sceneGT.tracks.size();
+	sceneGT.status.nState.set(Scene::Status::STATE::FEATURES_EXTRACTED);
+
+	// Count back-hemisphere observations: camera-space Z < 0.
+	// This is the coverage check — the test only catches G1 if at least some
+	// observations fall in the back hemisphere of the equirectangular image.
+	unsigned totalObs = 0, backObs = 0;
+	for (const Track& track : sceneGT.tracks) {
+		for (const auto& obs : track.observations) {
+			const Image& img = sceneGT.images[obs.imageID];
+			const Point3 Xcam = img.TransformPointW2C(track.position);
+			++totalObs;
+			if (Xcam.z < 0)
+				++backObs;
+		}
+	}
+	VERBOSE("Scene: %u images, %u tracks, %u observations (%u back-hemisphere, %.1f%%)",
+	        (unsigned)sceneGT.images.size(), (unsigned)sceneGT.tracks.size(),
+	        totalObs, backObs, totalObs > 0 ? 100.0 * backObs / totalObs : 0.0);
+	if (backObs < totalObs / 4) {
+		VERBOSE("ReconstructSphericalSyntheticTest FAILED: scene setup produced too few back-hemisphere observations (%u/%u); "
+		        "test must exercise the full sphere to expose G1", backObs, totalObs);
+		return false;
+	}
+
+	// Clone scene and clear track positions — force fresh triangulation
+	// from the 2D observations + GT poses. This is the entry point that
+	// exercises the pinhole-plane DLT formulation in TriangulateDLT.
+	Scene scene = sceneGT;
+	for (Track& track : scene.tracks)
+		track.position = Point3(REAL(0), REAL(0), REAL(0));
+
+	// Triangulate all tracks. Use a generous reprojection threshold (20 pixels
+	// on a 2048-wide equirectangular image ≈ 3.5°) and a low minimum triangulation
+	// angle (0.5°) so the test isolates G1/G2 failure modes rather than geometric
+	// insufficiency.
+	const unsigned inlierTracks = TriangulateTracks(scene, /*outliersOnly=*/false, /*reprojThreshold=*/20.f, /*minAngleThreshold=*/0.5f);
+	VERBOSE("TriangulateTracks: %u inlier tracks of %u total",
+	        inlierTracks, (unsigned)scene.tracks.size());
+
+	// Measure 3D recovery error against ground truth
+	REAL sum3D = 0, max3D = 0;
+	unsigned recovered = 0;
+	for (IIndex t = 0; t < scene.tracks.size(); ++t) {
+		const Point3& rec = scene.tracks[t].position;
+		const Point3& gt = sceneGT.tracks[t].position;
+		const REAL err = norm(rec - gt);
+		sum3D += err;
+		max3D = MAX(max3D, err);
+		if (err < REAL(0.1))
+			++recovered;
+	}
+	const REAL mean3D = scene.tracks.size() > 0 ? sum3D / scene.tracks.size() : REAL(0);
+	VERBOSE("Triangulation 3D recovery: %u/%u within 0.1m, mean %.4f m, max %.4f m",
+	        recovered, (unsigned)scene.tracks.size(), mean3D, max3D);
+
+	// Also measure reprojection error of the triangulated points.
+	// meanAng is reported in degrees by ComputeTracksMeanReprojectionError.
+	const auto [meanReprojErr, meanAng] = ComputeTracksMeanReprojectionError(scene);
+	VERBOSE("Triangulation reprojection error: mean %.4f px (angular %.4f deg)",
+	        meanReprojErr, meanAng);
+
+	// Strict success criterion: at least 95% of tracks must recover to within
+	// 10cm of ground truth with sub-pixel reprojection error AND near-zero
+	// angular error. The angular metric is the critical one for spherical
+	// cameras: ComputeTracksMeanReprojectionError currently uses the 2D
+	// Camera::Unproject + .homogeneous() form to build the observed ray, which
+	// aliases back-hemisphere observations onto the front hemisphere. For a
+	// perfectly recovered scene with full-sphere point coverage, this produces
+	// ~90 degrees of "angular error" instead of ~0 — the fingerprint of G1.
+	const unsigned expectedRecovered = static_cast<unsigned>(scene.tracks.size() * 0.95);
+	if (recovered < expectedRecovered) {
+		VERBOSE("ReconstructSphericalSyntheticTest FAILED: only %u/%u tracks recovered within 0.1m (expected >= %u)",
+		        recovered, (unsigned)scene.tracks.size(), expectedRecovered);
+		return false;
+	}
+	if (meanReprojErr > REAL(1.0)) {
+		VERBOSE("ReconstructSphericalSyntheticTest FAILED: mean reprojection error %.4f px exceeds 1.0 px threshold",
+		        meanReprojErr);
+		return false;
+	}
+	if (meanAng > REAL(1.0)) {
+		VERBOSE("ReconstructSphericalSyntheticTest FAILED: mean angular error %.4f deg exceeds 1.0 deg threshold. "
+		        "This exposes G1: ComputeTracksMeanReprojectionError uses the 2D Camera::Unproject() form to "
+		        "build the observed bearing ray; for back-hemisphere features on a spherical camera, the "
+		        "aliasing produces ~180 deg error that averages to ~90 deg across a full-sphere scene. "
+		        "The fix is to use Camera::UnprojectNormalized() which returns a 3D unit bearing vector "
+		        "that is singularity-free and not front-hemisphere-biased.",
+		        meanAng);
+		return false;
+	}
+
+	// Run global BA on the triangulated scene and verify it converges and
+	// improves (or at least preserves) the reconstruction.
+	BAConfig baCfg;
+	baCfg.maxIterations = 30;
+	baCfg.robustThreshold = 2.f;
+	if (!BundleAdjustment::Adjust(scene, baCfg)) {
+		VERBOSE("ReconstructSphericalSyntheticTest FAILED: BundleAdjustment::Adjust returned false");
+		return false;
+	}
+	const auto [baMeanErr, baMeanAng] = ComputeTracksMeanReprojectionError(scene);
+	VERBOSE("Post-BA reprojection error: mean %.4f px (angular %.4f deg)", baMeanErr, baMeanAng);
+	if (baMeanErr > REAL(1.0)) {
+		VERBOSE("ReconstructSphericalSyntheticTest FAILED: post-BA reprojection error %.4f px exceeds 1.0 px threshold",
+		        baMeanErr);
+		return false;
+	}
+	if (baMeanAng > REAL(1.0)) {
+		VERBOSE("ReconstructSphericalSyntheticTest FAILED: post-BA mean angular error %.4f deg exceeds 1.0 deg threshold",
+		        baMeanAng);
+		return false;
+	}
+
+	VERBOSE("ReconstructSphericalSyntheticTest PASSED");
+	return true;
+}
+/*----------------------------------------------------------------*/
+
+
+// ===============================================================================
+// Helper: Build a synthetic full-sphere scene for PairsMatcher / Resection tests.
+// Two (or more) spherical cameras are placed in a cluster near the origin; 3D
+// points are distributed uniformly on a sphere of radius 5 around origin so
+// every camera sees ~50% back-hemisphere observations. Keypoints and pair
+// matches are populated from the ground-truth projections.
+// ===============================================================================
+static void BuildSphericalTwoViewScene(Scene& scene, Pose3D& poseRel)
+{
+	const int width = 2048, height = 1024;
+	scene.cameras.emplace_back(new SphericalCamera(cv::Size(width, height)));
+
+	// Two spherical cameras in a tight cluster — baseline chosen so the
+	// relative pose has a well-defined translation direction but both
+	// cameras still see essentially the whole sphere.
+	const Point3 camCenters[2] = {
+		Point3(-0.5, 0.0, 0.0),
+		Point3( 0.5, 0.0, 0.2),
+	};
+	for (unsigned i = 0; i < 2; ++i) {
+		Pose3D pose;
+		pose.C = camCenters[i];
+		pose.R = Matrix3x3::IDENTITY;
+		scene.images.emplace_back(static_cast<IIndex>(i), String(), pose, 0, scene.cameras[0]);
+	}
+	scene.status.nCalibratedImages = scene.images.size();
+
+	// Relative pose from img0 to img1 (ground truth)
+	poseRel = scene.images[1] / scene.images[0];
+
+	// Uniform sphere sampling: 120 points on a sphere of radius ~5 around origin.
+	const unsigned numPoints = 120;
+	std::mt19937 rng(2027);
+	std::uniform_real_distribution<REAL> cosThetaDist(REAL(-1), REAL(1));
+	std::uniform_real_distribution<REAL> phiDist(REAL(-M_PI), REAL(M_PI));
+	std::uniform_real_distribution<REAL> radiusDist(REAL(4.5), REAL(5.5));
+	for (unsigned p = 0; p < numPoints; ++p) {
+		const REAL r = radiusDist(rng);
+		const REAL ct = cosThetaDist(rng);
+		const REAL st = SQRT(REAL(1) - ct*ct);
+		const REAL ph = phiDist(rng);
+		const Point3 X(r * st * COS(ph), r * ct, r * st * SIN(ph));
+
+		Track track(X);
+		for (unsigned v = 0; v < scene.images.size(); ++v) {
+			Image& img = scene.images[v];
+			const auto [proj, valid] = img.ProjectPoint(X);
+			if (!valid || !Image8U::isInside(proj, img.GetSize()))
+				continue;
+			const uint32_t featID = static_cast<uint32_t>(img.keypoints.size());
+			img.keypoints.emplace_back(Cast<float>(proj), 0.f, 0.f, 10.f);
+			track.observations.emplace_back(img.ID, featID);
+		}
+		if (track.observations.size() < 2) {
+			for (const auto& obs : track.observations)
+				scene.images[obs.imageID].keypoints.pop_back();
+			continue;
+		}
+		track.numInliers = static_cast<uint8_t>(track.observations.size());
+		scene.tracks.emplace_back(std::move(track));
+	}
+	scene.status.nTracks = scene.tracks.size();
+	scene.status.nState.set(Scene::Status::STATE::FEATURES_EXTRACTED);
+}
+
+
+// ===============================================================================
+// PairsMatcher spherical relative pose test: end-to-end integration test for
+// the PairsMatcher -> poselib::estimate_relative_pose_bearings path. Exercises
+// RANSAC scoring, cheirality-off behavior for spherical, and the Sampson-on-sphere
+// Jacobian in refine_relpose_bearing.
+// ===============================================================================
+bool PairsMatcherSphericalTest()
+{
+	VERBOSE("\n=== PairsMatcherSphericalTest: spherical relative pose via bearings ===");
+
+	Scene scene;
+	Pose3D poseRelGT;
+	BuildSphericalTwoViewScene(scene, poseRelGT);
+	VERBOSE("Built scene: %u images, %u tracks", (unsigned)scene.images.size(), (unsigned)scene.tracks.size());
+
+	// Populate matches for the pair from the ground-truth track observations.
+	ImagePair pair(0, 1);
+	for (const Track& track : scene.tracks) {
+		uint32_t feat0 = NO_ID, feat1 = NO_ID;
+		for (const auto& obs : track.observations) {
+			if (obs.imageID == 0) feat0 = obs.featureID;
+			else if (obs.imageID == 1) feat1 = obs.featureID;
+		}
+		if (feat0 != NO_ID && feat1 != NO_ID)
+			pair.matches.emplace_back(feat0, feat1);
+	}
+	VERBOSE("Built pair with %u matches", pair.GetNumMatches());
+
+	// Run geometric verification via MatchGeometric (the "calibrated" branch of
+	// PairsMatcher::MatchPair). This is the site that was rewritten in Phase 3.
+	MatchConfig matchCfg;
+	matchCfg.minMatches = 8;
+	matchCfg.maxEpipolarError = 5.f;
+	PairsMatcher matcher(scene, matchCfg);
+	if (!matcher.MatchPair(scene.images[0], scene.images[1], pair)) {
+		VERBOSE("PairsMatcherSphericalTest FAILED: MatchPair returned false");
+		return false;
+	}
+	if (!pair.relativePose.has_value()) {
+		VERBOSE("PairsMatcherSphericalTest FAILED: pair has no relative pose after MatchPair");
+		return false;
+	}
+
+	const Pose3D& poseRelRecovered = pair.relativePose.value();
+	const REAL angleErr = R2D(ACOS(ComputeAngle(poseRelRecovered.R, poseRelGT.R)));
+
+	// Translation is recovered up to scale; check direction similarity.
+	const Point3 tRecovered = poseRelRecovered.GetT();
+	const Point3 tGT = poseRelGT.GetT();
+	const Point3 tGTnorm = normalized(tGT);
+	const Point3 tRecNorm = normalized(tRecovered);
+	const REAL tSim = ABS(tGTnorm.dot(tRecNorm));
+
+	VERBOSE("PairsMatcherSphericalTest: matches=%u, inliers=%u, rotation err=%.4f deg, t similarity=%.4f",
+	        pair.GetNumMatches(), pair.GetNumInliers(), angleErr, tSim);
+
+	if (angleErr > REAL(0.5)) {
+		VERBOSE("PairsMatcherSphericalTest FAILED: rotation error %.4f deg > 0.5 deg", angleErr);
+		return false;
+	}
+	if (tSim < REAL(0.99)) {
+		VERBOSE("PairsMatcherSphericalTest FAILED: translation similarity %.4f < 0.99", tSim);
+		return false;
+	}
+
+	VERBOSE("PairsMatcherSphericalTest PASSED");
+	return true;
+}
+/*----------------------------------------------------------------*/
+
+
+// Note: the bearing-vector absolute pose (PnP) is tested directly in the
+// PoseLib test suite (ports/poselib/source/tests/optim_bearing_test.cc) —
+// specifically test_estimate_absolute_pose_bearings and
+// test_bearing_absolute_pose_jacobian. We keep PairsMatcherSphericalTest as
+// an OpenMVS integration test because it exercises PairsMatcher::MatchPair
+// (geometric verification orchestration), which is OpenMVS-specific.
+
+
+// ===============================================================================
+// MatchFeaturesGeometric spherical test: exercises the tracked-point guided
+// matching pipeline (used by KeyframeExtractor on 360° video). Tests the
+// post-RANSAC epipolar-constrained descriptor filtering step which cannot
+// use F-matrices for spherical pairs. Before Phase 4 this path would
+// throw bad_optional_access on pair.F.value() for any pair where at least
+// one camera is spherical.
+// ===============================================================================
+bool MatchGeometricSphericalTest()
+{
+	VERBOSE("\n=== MatchGeometricSphericalTest: tracked-guided matching on spherical pair ===");
+
+	Scene scene;
+	Pose3D poseRelGT;
+	BuildSphericalTwoViewScene(scene, poseRelGT);
+	Image& img0 = scene.images[0];
+	Image& img1 = scene.images[1];
+	VERBOSE("Built scene: %u images, %u tracks, img0.kpts=%u, img1.kpts=%u",
+	        (unsigned)scene.images.size(), (unsigned)scene.tracks.size(),
+	        (unsigned)img0.keypoints.size(), (unsigned)img1.keypoints.size());
+
+	// Build tracked-point arrays indexed by img0's keypoint index (MatchFeaturesGeometric's
+	// convention). For each img0 feature i, find the track that owns it and look up the
+	// corresponding img1 feature; set trackedPoints2[i] to that img1 keypoint position.
+	const size_t N0 = img0.keypoints.size();
+	std::vector<Point2f> trackedPoints1(N0);
+	std::vector<Point2f> trackedPoints2(N0, Point2f(0.f, 0.f));
+	std::vector<uchar> trackStatus(N0, 0);
+	for (size_t i = 0; i < N0; ++i)
+		trackedPoints1[i] = img0.keypoints[i].pt;
+
+	// Map img0.featID -> img1.featID via tracks. Since BuildSphericalTwoViewScene
+	// rejects tracks with < 2 observations, every surviving track for a 2-view
+	// scene has exactly one observation per image.
+	std::vector<uint32_t> feat0ToFeat1(N0, NO_ID);
+	for (const Track& t : scene.tracks) {
+		uint32_t feat0 = NO_ID, feat1 = NO_ID;
+		for (const auto& obs : t.observations) {
+			if (obs.imageID == 0) feat0 = obs.featureID;
+			else if (obs.imageID == 1) feat1 = obs.featureID;
+		}
+		if (feat0 != NO_ID && feat1 != NO_ID) {
+			ASSERT(feat0 < N0);
+			feat0ToFeat1[feat0] = feat1;
+			trackedPoints2[feat0] = img1.keypoints[feat1].pt;
+			trackStatus[feat0] = 1;
+		}
+	}
+	size_t numTracked = 0;
+	for (uchar s : trackStatus)
+		if (s) ++numTracked;
+	VERBOSE("MatchGeometricSphericalTest: %zu tracked correspondences", numTracked);
+	if (numTracked < 50) {
+		VERBOSE("MatchGeometricSphericalTest FAILED: only %zu tracked correspondences (need >= 50)", numTracked);
+		return false;
+	}
+
+	// Synthesize unique 256-bit binary descriptors per track. Paired img0/img1
+	// keypoints share the same descriptor (Hamming distance 0) so descriptor
+	// matching always prefers the ground-truth pair as the closest candidate.
+	// Different tracks get pseudo-random distinct patterns (high Hamming distance).
+	const int descBytes = 32;
+	img0.descriptors.create((int)N0, descBytes, CV_8U);
+	img1.descriptors.create((int)img1.keypoints.size(), descBytes, CV_8U);
+	img0.descriptors.setTo(cv::Scalar::all(0));
+	img1.descriptors.setTo(cv::Scalar::all(0));
+	for (uint32_t feat0 = 0; feat0 < N0; ++feat0) {
+		const uint32_t feat1 = feat0ToFeat1[feat0];
+		if (feat1 == NO_ID)
+			continue;
+		std::mt19937 descRng(0xDEADBEEFu ^ feat0);
+		for (int b = 0; b < descBytes; ++b) {
+			const uint8_t byte = (uint8_t)(descRng() & 0xFF);
+			img0.descriptors.at<uint8_t>((int)feat0, b) = byte;
+			img1.descriptors.at<uint8_t>((int)feat1, b) = byte;
+		}
+	}
+
+	// Record which matches span the back hemisphere — these are the features
+	// that the pre-Phase-4 (F-matrix) code would have lost, because the
+	// fundamental matrix is not geometrically meaningful for spherical pairs
+	// and pair.F is empty so the .value() call throws before reaching them.
+	size_t numBackHemisphereMatches = 0;
+	for (uint32_t feat0 = 0; feat0 < N0; ++feat0) {
+		const uint32_t feat1 = feat0ToFeat1[feat0];
+		if (feat1 == NO_ID)
+			continue;
+		const Point3 b0 = img0.pCamera->UnprojectNormalized(Cast<REAL>(img0.keypoints[feat0].pt));
+		const Point3 b1 = img1.pCamera->UnprojectNormalized(Cast<REAL>(img1.keypoints[feat1].pt));
+		if (b0.z < 0 || b1.z < 0)
+			++numBackHemisphereMatches;
+	}
+	VERBOSE("MatchGeometricSphericalTest: %zu back-hemisphere matches in scene", numBackHemisphereMatches);
+	if (numBackHemisphereMatches < 20) {
+		VERBOSE("MatchGeometricSphericalTest FAILED: scene has only %zu back-hemisphere matches (need >= 20 to be a meaningful test)", numBackHemisphereMatches);
+		return false;
+	}
+
+	// Run MatchFeaturesGeometric — the routine KeyframeExtractor calls for every
+	// consecutive video keyframe pair. Uses trackedPoints to bootstrap GeometricFilter,
+	// then filters descriptor candidates by epipolar distance.
+	MatchConfig matchCfg;
+	matchCfg.minMatches = 30;
+	matchCfg.maxEpipolarError = 5.f;
+	matchCfg.matchRatio = 0.9f;
+	matchCfg.descriptorsAreBinary = true;
+	matchCfg.minTriangulationAngle = 0.f;
+	matchCfg.reprojThreshold = 0.f;
+	matchCfg.epipoleFilterThreshold = 0.f;
+	PairsMatcher matcher(scene, matchCfg);
+
+	ImagePair pair(0, 1);
+	const bool geometryEstimated = MatchFeaturesGeometric(
+		matcher, img0, img1, trackedPoints1, trackedPoints2, trackStatus, pair, 2.f);
+
+	if (!geometryEstimated) {
+		VERBOSE("MatchGeometricSphericalTest FAILED: MatchFeaturesGeometric reported fallback (no geometry estimated)");
+		return false;
+	}
+	if (pair.F.has_value()) {
+		VERBOSE("MatchGeometricSphericalTest FAILED: pair.F should be absent for spherical pair, got a value");
+		return false;
+	}
+	if (!pair.E.has_value()) {
+		VERBOSE("MatchGeometricSphericalTest FAILED: pair.E missing");
+		return false;
+	}
+	if (!pair.relativePose.has_value()) {
+		VERBOSE("MatchGeometricSphericalTest FAILED: pair.relativePose missing");
+		return false;
+	}
+
+	const Pose3D& poseRec = pair.relativePose.value();
+	const REAL angleErr = R2D(ACOS(ComputeAngle(poseRec.R, poseRelGT.R)));
+	const Point3 tSimDir = normalized(poseRec.GetT()).dot(normalized(poseRelGT.GetT())) > 0 ? Point3(1,0,0) : Point3(-1,0,0);
+	const REAL tSim = ABS(normalized(poseRec.GetT()).dot(normalized(poseRelGT.GetT())));
+	(void)tSimDir;
+
+	const unsigned numMatches = pair.GetNumMatches();
+	const unsigned numInliers = pair.GetNumInliers();
+	VERBOSE("MatchGeometricSphericalTest: matches=%u, inliers=%u, rotation err=%.4f deg, t similarity=%.4f",
+	        numMatches, numInliers, angleErr, tSim);
+
+	if (angleErr > REAL(0.5)) {
+		VERBOSE("MatchGeometricSphericalTest FAILED: rotation error %.4f deg > 0.5 deg", angleErr);
+		return false;
+	}
+	if (tSim < REAL(0.99)) {
+		VERBOSE("MatchGeometricSphericalTest FAILED: translation similarity %.4f < 0.99", tSim);
+		return false;
+	}
+	// Expect at least 80% of tracked correspondences to survive the full pipeline
+	// (geometric filter + descriptor filter + epipolar filter).
+	const size_t minExpectedInliers = (numTracked * 8) / 10;
+	if (numInliers < minExpectedInliers) {
+		VERBOSE("MatchGeometricSphericalTest FAILED: only %u inliers < expected %zu (80%% of %zu tracked)",
+		        numInliers, minExpectedInliers, numTracked);
+		return false;
+	}
+
+	// Critical: at least some of the inliers must span the back hemisphere, to
+	// prove the angular epipolar filter actually admits z<0 bearings.
+	size_t inlierBackHemisphere = 0;
+	for (unsigned k = 0; k < numInliers; ++k) {
+		const DMatch& m = pair.matches[k];
+		const Point3 b0 = img0.pCamera->UnprojectNormalized(Cast<REAL>(img0.keypoints[m.queryIdx].pt));
+		const Point3 b1 = img1.pCamera->UnprojectNormalized(Cast<REAL>(img1.keypoints[m.trainIdx].pt));
+		if (b0.z < 0 || b1.z < 0)
+			++inlierBackHemisphere;
+	}
+	VERBOSE("MatchGeometricSphericalTest: %zu/%u back-hemisphere inliers", inlierBackHemisphere, numInliers);
+	if (inlierBackHemisphere < 10) {
+		VERBOSE("MatchGeometricSphericalTest FAILED: only %zu back-hemisphere inliers — epipolar filter is rejecting z<0 bearings",
+		        inlierBackHemisphere);
+		return false;
+	}
+
+	VERBOSE("MatchGeometricSphericalTest PASSED");
+	return true;
+}
+/*----------------------------------------------------------------*/
+
+
+// ===============================================================================
+// Phase 5: Cube-map bridge tests
+// ===============================================================================
+
+// Helper: synthesize a simple equirectangular test image with 6 distinct
+// color patches, one facing each cube face. Each patch is a small square
+// centered on the equirectangular pixel corresponding to the cube-face
+// look direction, so a correctly-rendered face has that color at its
+// center pixel.
+namespace {
+
+struct FaceColorSample {
+	Point3 bodyDir;   // unit direction in sphere body frame (Y-up)
+	Pixel8U color;    // BGR color assigned to this patch
+};
+
+// Pixel8U(r, g, b) — TPixel takes R first (named args by channel).
+static std::array<FaceColorSample, 6> kFacePatches = {{
+	{ Point3( 0,  0,  1), Pixel8U(  0,   0, 255) }, // +Z blue
+	{ Point3( 0,  0, -1), Pixel8U(255,   0,   0) }, // -Z red
+	{ Point3( 1,  0,  0), Pixel8U(  0, 255,   0) }, // +X green
+	{ Point3(-1,  0,  0), Pixel8U(255, 255,   0) }, // -X yellow
+	{ Point3( 0,  1,  0), Pixel8U(255, 255, 255) }, // +Y up white
+	{ Point3( 0, -1,  0), Pixel8U(128, 128, 128) }, // -Y down gray
+}};
+
+static void BuildCheckerboardEquirect(Image8U3& src, int width, int height)
+{
+	src.create(height, width);
+	// Paint a default dark gray background.
+	src.setTo(cv::Scalar(40, 40, 40));
+	// Stamp each face patch: a 5% x 5% rectangle centered on the
+	// equirectangular pixel at the body direction.
+	SphericalCamera sphCam(cv::Size(width, height));
+	const int patchHalfW = std::max(2, width / 20);
+	const int patchHalfH = std::max(2, height / 20);
+	for (const FaceColorSample& sample : kFacePatches) {
+		const auto [p, ok] = sphCam.Project(sample.bodyDir);
+		if (!ok)
+			continue;
+		const int cx = ROUND2INT(p.x);
+		const int cy = ROUND2INT(p.y);
+		for (int dy = -patchHalfH; dy <= patchHalfH; ++dy) {
+			const int y = cy + dy;
+			if (y < 0 || y >= height) continue;
+			for (int dx = -patchHalfW; dx <= patchHalfW; ++dx) {
+				const int x = ((cx + dx) % width + width) % width;
+				src(y, x) = sample.color;
+			}
+		}
+	}
+}
+
+} // namespace
+
+bool CubeMapFaceRenderTest()
+{
+	VERBOSE("\n=== CubeMapFaceRenderTest: equirectangular -> 6 pinhole faces ===");
+
+	// Synthesize a 512x256 equirectangular source with one colored patch per face.
+	Image8U3 src;
+	BuildCheckerboardEquirect(src, 512, 256);
+
+	const int faceSize = 128;
+	const auto geom = SphereCubeMap::MakeTangentFacesGeometry(6, faceSize);
+	const std::vector<Image8U3> facesVec =
+		SphereCubeMap::SphericalToTangentialFaces<Pixel8U>(src, geom);
+	for (unsigned k = 0; k < 6; ++k) {
+		const Image8U3& face = facesVec[k];
+		if (face.cols != faceSize || face.rows != faceSize) {
+			VERBOSE("CubeMapFaceRenderTest FAILED: face %u size mismatch (%dx%d expected %dx%d)",
+			        k, face.cols, face.rows, faceSize, faceSize);
+			return false;
+		}
+		// Read the central pixel of the face; it should be dominated by
+		// the color assigned to face k's body direction.
+		const Pixel8U& center = face(faceSize/2, faceSize/2);
+		const Pixel8U& expected = kFacePatches[k].color;
+		const int db = std::abs((int)center.b - (int)expected.b);
+		const int dg = std::abs((int)center.g - (int)expected.g);
+		const int dr = std::abs((int)center.r - (int)expected.r);
+		if (db > 16 || dg > 16 || dr > 16) {
+			VERBOSE("CubeMapFaceRenderTest FAILED: face %u center (%u,%u,%u) differs from expected (%u,%u,%u)",
+			        k, center.b, center.g, center.r, expected.b, expected.g, expected.r);
+			return false;
+		}
+	}
+
+	VERBOSE("CubeMapFaceRenderTest PASSED");
+	return true;
+}
+/*----------------------------------------------------------------*/
+
+bool CubeMapBridgeGeometryTest()
+{
+	VERBOSE("\n=== CubeMapBridgeGeometryTest: rig platform + face images + observations via ExportMVS ===");
+
+	Scene scene;
+	Pose3D poseRelGT;
+	BuildSphericalTwoViewScene(scene, poseRelGT);
+
+	// Export to a temp .mvs so we can inspect the serialised interface. The
+	// internal platform / image / vertex emission is exercised end-to-end
+	// (the 4 old bridge helpers are now file-local to InterfaceMVS.cpp).
+	namespace fs = std::filesystem;
+	namespace fs = std::filesystem;
+	struct CleanupGuard {
+		fs::path path;
+		CleanupGuard() {
+			path = fs::temp_directory_path() /
+				fs::path(String::FormatString("openmvs_geom_%u", (unsigned)std::time(nullptr)).c_str());
+			std::error_code ec;
+			fs::create_directories(path, ec);
+			if (ec) {
+				VERBOSE("CubeMapBridgeGeometryTest FAILED: cannot create temp dir: %s", ec.message().c_str());
+				path.clear();
+			}
+		}
+		~CleanupGuard() {
+			if (!path.empty())
+				fs::remove_all(path);
+		}
+		operator const String() const { return path.string(); }
+	} tmpDir;
+	if (tmpDir.path.empty())
+		return false;
+	const String mvsPath = (tmpDir.path / "scene.mvs").string().c_str();
+
+	ExportMVSConfig cfg;
+	cfg.undistortAlpha    = 0.f;
+	cfg.onlyInlierTracks  = true;
+	cfg.includeColors     = false;
+	if (!SFM::ExportMVS(mvsPath, scene, cfg)) {
+		VERBOSE("CubeMapBridgeGeometryTest FAILED: ExportMVS returned false");
+		return false;
+	}
+
+	// Read the serialised interface back for inspection.
+	MVS::Interface iface;
+	if (!MVS::ARCHIVE::SerializeLoad(iface, mvsPath.c_str())) {
+		VERBOSE("CubeMapBridgeGeometryTest FAILED: SerializeLoad returned false");
+		return false;
+	}
+
+	// Expect exactly one rig platform (one shared spherical camera).
+	if (iface.platforms.size() != 1) {
+		VERBOSE("CubeMapBridgeGeometryTest FAILED: expected 1 platform, got %zu", iface.platforms.size());
+		return false;
+	}
+	const auto& platform = iface.platforms[0];
+	if (platform.cameras.size() != 6) {
+		VERBOSE("CubeMapBridgeGeometryTest FAILED: expected 6 face cameras, got %zu", platform.cameras.size());
+		return false;
+	}
+
+	// Verify each face camera intrinsics and rotation.
+	const auto rotations = SphereCubeMap::FaceRotations(6);
+	for (unsigned k = 0; k < 6; ++k) {
+		const auto& cam = platform.cameras[k];
+		if (cam.width != 1024 || cam.height != 1024) {
+			VERBOSE("CubeMapBridgeGeometryTest FAILED: face %u size %ux%u != 1024x1024", k, cam.width, cam.height);
+			return false;
+		}
+		if (std::abs(cam.K(0,0) - 512.0) > 1e-9 || std::abs(cam.K(1,1) - 512.0) > 1e-9 ||
+		    std::abs(cam.K(0,2) - 512.0) > 1e-9 || std::abs(cam.K(1,2) - 512.0) > 1e-9) {
+			VERBOSE("CubeMapBridgeGeometryTest FAILED: face %u K mismatch", k);
+			return false;
+		}
+		const Matrix3x3& expectedR = rotations[k];
+		for (int i = 0; i < 3; ++i) {
+			for (int j = 0; j < 3; ++j) {
+				if (std::abs(cam.R(i,j) - expectedR(i,j)) > 1e-9) {
+					VERBOSE("CubeMapBridgeGeometryTest FAILED: face %u R(%d,%d) mismatch (%.4f vs %.4f)",
+					        k, i, j, cam.R(i,j), expectedR(i,j));
+					return false;
+				}
+			}
+		}
+		if (std::abs(cam.C.x) > 1e-9 || std::abs(cam.C.y) > 1e-9 || std::abs(cam.C.z) > 1e-9) {
+			VERBOSE("CubeMapBridgeGeometryTest FAILED: face %u C != 0", k);
+			return false;
+		}
+	}
+
+	// Two source images → two rig poses.
+	if (platform.poses.size() != 2) {
+		VERBOSE("CubeMapBridgeGeometryTest FAILED: expected 2 platform poses, got %zu", platform.poses.size());
+		return false;
+	}
+	// 2 source images × 6 faces = 12 MVS images.
+	if (iface.images.size() != 12) {
+		VERBOSE("CubeMapBridgeGeometryTest FAILED: expected 12 MVS images, got %zu", iface.images.size());
+		return false;
+	}
+
+	// Verify per-image platformID/cameraID/poseID wiring.
+	// Face images are emitted contiguously per source image in face order,
+	// so imgs[6*srcIdx + k] is the face k of source srcIdx.
+	for (unsigned srcIdx = 0; srcIdx < 2; ++srcIdx) {
+		for (unsigned k = 0; k < 6; ++k) {
+			const auto& img = iface.images[6 * srcIdx + k];
+			if (img.platformID != 0) {
+				VERBOSE("CubeMapBridgeGeometryTest FAILED: image (src=%u face=%u) platformID=%u", srcIdx, k, img.platformID);
+				return false;
+			}
+			if (img.cameraID != k) {
+				VERBOSE("CubeMapBridgeGeometryTest FAILED: image (src=%u face=%u) cameraID=%u", srcIdx, k, img.cameraID);
+				return false;
+			}
+			if (img.poseID != srcIdx) {
+				VERBOSE("CubeMapBridgeGeometryTest FAILED: image (src=%u face=%u) poseID=%u", srcIdx, k, img.poseID);
+				return false;
+			}
+		}
+	}
+
+	// Every vertex should have at least 2 face-view entries (one per source image
+	// that sees the track); tracks visible in both sources cover ≥ 2 faces total.
+	unsigned totalObservations = 0;
+	if (iface.vertices.empty()) {
+		VERBOSE("CubeMapBridgeGeometryTest FAILED: expected non-empty vertices");
+		return false;
+	}
+	for (const auto& v : iface.vertices) {
+		if (v.views.size() < 2) {
+			VERBOSE("CubeMapBridgeGeometryTest FAILED: vertex has only %zu views (expected >=2)", v.views.size());
+			return false;
+		}
+		totalObservations += (unsigned)v.views.size();
+	}
+	VERBOSE("CubeMapBridgeGeometryTest: %u vertices, %u total face observations",
+		(unsigned)iface.vertices.size(), totalObservations);
+	VERBOSE("CubeMapBridgeGeometryTest PASSED");
+	return true;
+}
+/*----------------------------------------------------------------*/
+
+bool CubeMapBridgeEndToEndTest()
+{
+	VERBOSE("\n=== CubeMapBridgeEndToEndTest: on-disk cube-map pixel roundtrip ===");
+
+	// Build a unique temp directory under the platform temp root (RAII managed).
+	namespace fs = std::filesystem;
+	struct CleanupGuard {
+		fs::path path;
+		CleanupGuard() {
+			path = fs::temp_directory_path() /
+				fs::path(String::FormatString("openmvs_cubemap_%u", (unsigned)std::time(nullptr)).c_str());
+			std::error_code ec;
+			fs::create_directories(path, ec);
+			if (ec) {
+				VERBOSE("CubeMapBridgeEndToEndTest FAILED: cannot create temp dir: %s", ec.message().c_str());
+				path.clear();
+			}
+		}
+		~CleanupGuard() {
+			if (!path.empty())
+				fs::remove_all(path);
+		}
+		operator const String() const { return path.string(); }
+	} tmpDir;
+	if (tmpDir.path.empty())
+		return false;
+
+	// Synthesize a 256x128 equirectangular source image with one colored
+	// patch per face (same helper the render test uses) and save it as .jxl.
+	Image8U3 src;
+	BuildCheckerboardEquirect(src, 256, 128);
+	const String srcFileName(String(tmpDir) + _T("/source.jxl"));
+	if (!src.Save(srcFileName)) {
+		VERBOSE("CubeMapBridgeEndToEndTest FAILED: cannot save source image '%s'", srcFileName.c_str());
+		return false;
+	}
+
+	// Minimal scene: one spherical camera, one image referencing the file.
+	Scene scene;
+	scene.cameras.emplace_back(new SphericalCamera(cv::Size(256, 128)));
+	Pose3D pose;
+	pose.C = Point3(0, 0, 0);
+	pose.R = Matrix3x3::IDENTITY;
+	scene.images.emplace_back(0, srcFileName, pose, 0, scene.cameras[0]);
+
+	// Export via the full ExportMVS pipeline: it renders + saves the N faces
+	// under `undistortImageDir`, writes the .mvs, and emits the rig platform,
+	// face images and track vertices the same way production MVS export does.
+	String outputDir = String(tmpDir) + _T("/faces/");
+	Util::ensureFolder(outputDir);
+	const String mvsPath = String(tmpDir) + _T("/scene.mvs");
+
+	ExportMVSConfig cfg;
+	cfg.undistortImageDir = outputDir;
+	cfg.undistortAlpha    = 0.f;
+	cfg.onlyInlierTracks  = true;
+	cfg.includeColors     = false;
+	cfg.sphericalFaceSize  = 128;
+	if (!SFM::ExportMVS(mvsPath, scene, cfg)) {
+		VERBOSE("CubeMapBridgeEndToEndTest FAILED: ExportMVS returned false");
+		return false;
+	}
+
+	// Verify each face file exists and its central pixel matches the patch color.
+	const String stem = Util::getFileName(srcFileName);
+	for (unsigned k = 0; k < 6; ++k) {
+		const String faceFileName = outputDir + stem + String::FormatString(_T("_face%u"), k) + _T(".jxl");
+		if (!fs::exists(fs::path(faceFileName.c_str()))) {
+			VERBOSE("CubeMapBridgeEndToEndTest FAILED: face file '%s' not written", faceFileName.c_str());
+			return false;
+		}
+		Image8U3 face;
+		if (!face.Load(faceFileName)) {
+			VERBOSE("CubeMapBridgeEndToEndTest FAILED: cannot load face file '%s'", faceFileName.c_str());
+			return false;
+		}
+		if (face.cols != cfg.sphericalFaceSize || face.rows != cfg.sphericalFaceSize) {
+			VERBOSE("CubeMapBridgeEndToEndTest FAILED: face %u size %dx%d != %dx%d",
+			        k, face.cols, face.rows, cfg.sphericalFaceSize, cfg.sphericalFaceSize);
+			return false;
+		}
+		const Pixel8U& center = face(cfg.sphericalFaceSize/2, cfg.sphericalFaceSize/2);
+		const Pixel8U& expected = kFacePatches[k].color;
+		// JXL is lossless for default settings but allow generous tolerance
+		// because the equirectangular source is only 256x128 so the 5% patch
+		// is only ~12 pixels wide — bilinear sampling at the face center may
+		// already smear slightly.
+		const int db = std::abs((int)center.b - (int)expected.b);
+		const int dg = std::abs((int)center.g - (int)expected.g);
+		const int dr = std::abs((int)center.r - (int)expected.r);
+		if (db > 32 || dg > 32 || dr > 32) {
+			VERBOSE("CubeMapBridgeEndToEndTest FAILED: face %u center (%u,%u,%u) differs from expected (%u,%u,%u)",
+			        k, center.b, center.g, center.r, expected.b, expected.g, expected.r);
+			return false;
+		}
+	}
+
+	VERBOSE("CubeMapBridgeEndToEndTest PASSED (6 faces written + verified under %s)", String(tmpDir).c_str());
+	return true;
+}
+/*----------------------------------------------------------------*/
+
+bool CubeMapBridgeMVSLoadTest()
+{
+	VERBOSE("\n=== CubeMapBridgeMVSLoadTest: ExportMVS -> MVS::Scene::Load roundtrip ===");
+
+	namespace fs = std::filesystem;
+	const fs::path tmpDir = fs::temp_directory_path() /
+		fs::path(String::FormatString("openmvs_cubemap_mvsload_%lld", (long long)std::time(nullptr)).c_str());
+	std::error_code ec;
+	fs::create_directories(tmpDir, ec);
+	if (ec) {
+		VERBOSE("CubeMapBridgeMVSLoadTest FAILED: cannot create temp dir: %s", ec.message().c_str());
+		return false;
+	}
+	struct CleanupGuard {
+		fs::path path;
+		~CleanupGuard() { std::error_code ec; fs::remove_all(path, ec); }
+	} cleanup{tmpDir};
+
+	// Build the same 2-view spherical scene but also materialize a source
+	// .jxl file on disk for each image so RenderAndWriteFaces has something
+	// to read. BuildSphericalTwoViewScene doesn't touch pixels, so we patch
+	// the fileName + write a synthetic equirectangular after-the-fact.
+	Scene scene;
+	Pose3D poseRelGT;
+	BuildSphericalTwoViewScene(scene, poseRelGT);
+
+	Image8U3 src;
+	BuildCheckerboardEquirect(src, 2048, 1024);
+	FOREACH(i, scene.images) {
+		Image& img = scene.images[i];
+		const String path = String(tmpDir.string()) +
+			String::FormatString(_T("/sphere_%u.jxl"), (unsigned)i);
+		if (!src.Save(path)) {
+			VERBOSE("CubeMapBridgeMVSLoadTest FAILED: cannot save source image '%s'", path.c_str());
+			return false;
+		}
+		img.fileName = path;
+	}
+
+	// Copy track observations into the track's inlier list so ExportMVS
+	// sees them (the helper leaves numInliers = observations.size() already).
+	for (Track& t : scene.tracks) {
+		ASSERT(t.numInliers == t.observations.size());
+	}
+
+	// Export the scene with the cube-map bridge. The face files land
+	// alongside the .mvs output (no undistort dir provided).
+	const String mvsPath = String(tmpDir.string()) + _T("/scene.mvs");
+	ExportMVSConfig cfg;
+	cfg.includeColors      = false;
+	cfg.sphericalFaceSize  = 256;  // small for speed
+	if (!ExportMVS(mvsPath, scene, cfg)) {
+		VERBOSE("CubeMapBridgeMVSLoadTest FAILED: ExportMVS returned false");
+		return false;
+	}
+
+	// Load the resulting .mvs via the MVS library and check structure.
+	MVS::Scene mvsScene(1);
+	const auto loaded = mvsScene.Load(mvsPath);
+	if (loaded == MVS::Scene::SCENE_NA) {
+		VERBOSE("CubeMapBridgeMVSLoadTest FAILED: MVS::Scene::Load returned SCENE_NA");
+		return false;
+	}
+	if (mvsScene.platforms.size() != 1) {
+		VERBOSE("CubeMapBridgeMVSLoadTest FAILED: expected 1 platform, got %u",
+		        (unsigned)mvsScene.platforms.size());
+		return false;
+	}
+	const auto& platform = mvsScene.platforms[0];
+	if (platform.cameras.size() != 6) {
+		VERBOSE("CubeMapBridgeMVSLoadTest FAILED: expected 6 mounted cameras, got %u",
+		        (unsigned)platform.cameras.size());
+		return false;
+	}
+	if (platform.poses.size() != 2) {
+		VERBOSE("CubeMapBridgeMVSLoadTest FAILED: expected 2 poses, got %u",
+		        (unsigned)platform.poses.size());
+		return false;
+	}
+	if (mvsScene.images.size() != 12) {
+		VERBOSE("CubeMapBridgeMVSLoadTest FAILED: expected 12 images, got %u",
+		        (unsigned)mvsScene.images.size());
+		return false;
+	}
+	if (mvsScene.pointcloud.points.empty()) {
+		VERBOSE("CubeMapBridgeMVSLoadTest FAILED: empty point cloud after load");
+		return false;
+	}
+	VERBOSE("CubeMapBridgeMVSLoadTest: loaded %u platforms, %u images, %u points",
+	        (unsigned)mvsScene.platforms.size(),
+	        (unsigned)mvsScene.images.size(),
+	        (unsigned)mvsScene.pointcloud.points.size());
+
+	VERBOSE("CubeMapBridgeMVSLoadTest PASSED");
+	return true;
+}
+/*----------------------------------------------------------------*/
+
+bool CubeMapBridgeMixedSceneTest()
+{
+	VERBOSE("\n=== CubeMapBridgeMixedSceneTest: pinhole + spherical pair in one export ===");
+
+	// Build a minimal scene with two cameras: one pinhole (640x480) and one
+	// spherical (2048x1024). Each camera contributes one image. We populate
+	// tracks by hand so each track has at least one observation from each
+	// image — that's enough to exercise both branches of ExportMVS's Phase 4
+	// track expansion.
+	Scene scene;
+	// Pinhole camera + image
+	scene.cameras.emplace_back(new PinholeCamera(cv::Size(640, 480), 500.0, 500.0, 320.0, 240.0));
+	Pose3D ppose;
+	ppose.C = Point3(0, 0, 0);
+	ppose.R = Matrix3x3::IDENTITY;
+	scene.images.emplace_back(0, String(_T("pinhole.jxl")), ppose, 0, scene.cameras[0]);
+	// Spherical camera + image
+	scene.cameras.emplace_back(new SphericalCamera(cv::Size(2048, 1024)));
+	Pose3D spose;
+	spose.C = Point3(0.5, 0, 0);
+	spose.R = Matrix3x3::IDENTITY;
+	scene.images.emplace_back(1, String(_T("sphere.jxl")), spose, 1, scene.cameras[1]);
+	scene.status.nCalibratedImages = 2;
+
+	// Generate a handful of 3D points in front of both cameras (+Z direction)
+	// so each point is visible from pinhole (z>0 in pinhole frame) AND from
+	// the spherical camera's forward (+Z) face.
+	for (int i = 0; i < 10; ++i) {
+		Point3 X(0.1 * (i - 5), 0.2 * (i % 3), 3.0 + 0.3 * i);
+		Track track(X);
+		// Each image gets one synthetic keypoint per track.
+		// For pinhole: project through the camera.
+		const auto [p0, ok0] = scene.images[0].ProjectPoint(X);
+		const auto [p1, ok1] = scene.images[1].ProjectPoint(X);
+		if (!ok0 || !ok1)
+			continue;
+		const uint32_t f0 = (uint32_t)scene.images[0].keypoints.size();
+		const uint32_t f1 = (uint32_t)scene.images[1].keypoints.size();
+		scene.images[0].keypoints.emplace_back(Cast<float>(p0), 0.f, 0.f, 10.f);
+		scene.images[1].keypoints.emplace_back(Cast<float>(p1), 0.f, 0.f, 10.f);
+		track.observations.emplace_back(0u, f0);
+		track.observations.emplace_back(1u, f1);
+		track.numInliers = (uint8_t)track.observations.size();
+		scene.tracks.emplace_back(std::move(track));
+	}
+	VERBOSE("MixedSceneTest: built %u tracks", (unsigned)scene.tracks.size());
+
+	// Materialize a fake pinhole jxl file so SavePixels / SceneLoad won't bark
+	// (we only care about the spherical image being readable by the bridge).
+	// The pinhole image is never read because its pixels aren't needed by
+	// ExportMVS itself — it only serializes the path. However the spherical
+	// side does need a readable file.
+	namespace fs = std::filesystem;
+	const fs::path tmpDir = fs::temp_directory_path() /
+		fs::path(String::FormatString("openmvs_cubemap_mixed_%lld", (long long)std::time(nullptr)).c_str());
+	std::error_code ec;
+	fs::create_directories(tmpDir, ec);
+	struct CleanupGuard {
+		fs::path path;
+		~CleanupGuard() { std::error_code ec; fs::remove_all(path, ec); }
+	} cleanup{tmpDir};
+
+	Image8U3 srcSphere;
+	BuildCheckerboardEquirect(srcSphere, 2048, 1024);
+	const String spherePath = String(tmpDir.string()) + _T("/sphere.jxl");
+	if (!srcSphere.Save(spherePath)) {
+		VERBOSE("CubeMapBridgeMixedSceneTest FAILED: cannot save sphere source");
+		return false;
+	}
+	scene.images[1].fileName = spherePath;
+	// Give the pinhole image a plausible path too (existence not required by ExportMVS).
+	scene.images[0].fileName = String(tmpDir.string()) + _T("/pinhole.jxl");
+
+	// Export
+	const String mvsPath = String(tmpDir.string()) + _T("/scene.mvs");
+	ExportMVSConfig cfg;
+	cfg.includeColors      = false;
+	cfg.sphericalFaceSize  = 256;
+	if (!ExportMVS(mvsPath, scene, cfg)) {
+		VERBOSE("CubeMapBridgeMixedSceneTest FAILED: ExportMVS returned false");
+		return false;
+	}
+
+	// Load and inspect
+	MVS::Scene mvsScene(1);
+	const auto loaded = mvsScene.Load(mvsPath);
+	if (loaded == MVS::Scene::SCENE_NA) {
+		VERBOSE("CubeMapBridgeMixedSceneTest FAILED: MVS::Scene::Load returned SCENE_NA");
+		return false;
+	}
+	if (mvsScene.platforms.size() != 2) {
+		VERBOSE("CubeMapBridgeMixedSceneTest FAILED: expected 2 platforms, got %u",
+		        (unsigned)mvsScene.platforms.size());
+		return false;
+	}
+	// Find the pinhole platform (1 camera) and the spherical rig platform (6 cameras).
+	int pinholeIdx = -1, rigIdx = -1;
+	for (unsigned p = 0; p < mvsScene.platforms.size(); ++p) {
+		if (mvsScene.platforms[p].cameras.size() == 1)
+			pinholeIdx = (int)p;
+		else if (mvsScene.platforms[p].cameras.size() == 6)
+			rigIdx = (int)p;
+	}
+	if (pinholeIdx < 0 || rigIdx < 0) {
+		VERBOSE("CubeMapBridgeMixedSceneTest FAILED: couldn't find pinhole(1-cam) and rig(6-cam) platforms");
+		return false;
+	}
+	if (mvsScene.platforms[pinholeIdx].poses.size() != 1) {
+		VERBOSE("CubeMapBridgeMixedSceneTest FAILED: pinhole platform should have 1 pose");
+		return false;
+	}
+	if (mvsScene.platforms[rigIdx].poses.size() != 1) {
+		VERBOSE("CubeMapBridgeMixedSceneTest FAILED: rig platform should have 1 pose");
+		return false;
+	}
+	// 1 pinhole + 6 face images = 7 MVS images.
+	if (mvsScene.images.size() != 7) {
+		VERBOSE("CubeMapBridgeMixedSceneTest FAILED: expected 7 images (1 pinhole + 6 faces), got %u",
+		        (unsigned)mvsScene.images.size());
+		return false;
+	}
+	if (mvsScene.pointcloud.points.empty()) {
+		VERBOSE("CubeMapBridgeMixedSceneTest FAILED: empty point cloud after load");
+		return false;
+	}
+	VERBOSE("CubeMapBridgeMixedSceneTest: %u platforms, %u images, %u points",
+	        (unsigned)mvsScene.platforms.size(),
+	        (unsigned)mvsScene.images.size(),
+	        (unsigned)mvsScene.pointcloud.points.size());
+
+	VERBOSE("CubeMapBridgeMixedSceneTest PASSED");
+	return true;
+}
+/*----------------------------------------------------------------*/
+
+bool CubeMapBridgeDropTopBottomTest()
+{
+	VERBOSE("\n=== CubeMapBridgeDropTopBottomTest: 4-face rig drops zenith/nadir ===");
+
+	// Place points at the 6 cardinal directions (radius 5). The 6-face
+	// version should see ALL points (each axis-aligned point maps to
+	// exactly one face); the 4-face version should drop the +Y and -Y
+	// points because those faces are removed.
+	struct AxisPoint { Point3 X; int expectedFace; };
+	const AxisPoint pts[6] = {
+		{ Point3(0, 0,  5), 0 }, // +Z
+		{ Point3(0, 0, -5), 1 }, // -Z
+		{ Point3(5, 0,  0), 2 }, // +X
+		{ Point3(-5, 0, 0), 3 }, // -X
+		{ Point3(0,  5, 0), 4 }, // +Y (zenith)
+		{ Point3(0, -5, 0), 5 }, // -Y (nadir)
+	};
+
+	// Pure-geometry projection (identical math to the MVS-export helper
+	// ProjectTrackOntoSphericalFaces in InterfaceMVS.cpp, minus the
+	// MVS::Interface plumbing). Returns the face indices (0..numFaces-1)
+	// into which X projects with positive depth.
+	auto ProjectFaces = [](const Point3& X,
+	                       const SphereCubeMap::TangentFacesGeometry& geom) {
+		std::vector<int> hit;
+		const REAL f  = geom.K(0,0);
+		const REAL cx = geom.K(0,2);
+		const REAL cy = geom.K(1,2);
+		const REAL zEps = REAL(1e-9);
+		for (int k = 0; k < geom.numFaces; ++k) {
+			const Point3 Xf = geom.rotations[k] * X; // pose is identity
+			if (Xf.z < zEps) continue;
+			const REAL u = f * Xf.x / Xf.z + cx;
+			const REAL v = f * Xf.y / Xf.z + cy;
+			if (u < REAL(0) || u >= REAL(geom.faceSize)) continue;
+			if (v < REAL(0) || v >= REAL(geom.faceSize)) continue;
+			hit.push_back(k);
+		}
+		return hit;
+	};
+
+	// 6-face case: every axis point should project into its assigned face.
+	{
+		const auto geom = SphereCubeMap::MakeTangentFacesGeometry(6, 512);
+		for (unsigned i = 0; i < 6; ++i) {
+			const auto hit = ProjectFaces(pts[i].X, geom);
+			if (hit.empty()) {
+				VERBOSE("CubeMapBridgeDropTopBottomTest FAILED: 6-face point %u has 0 views", i);
+				return false;
+			}
+			bool foundExpected = false;
+			for (int k : hit)
+				if (k == pts[i].expectedFace) { foundExpected = true; break; }
+			if (!foundExpected) {
+				VERBOSE("CubeMapBridgeDropTopBottomTest FAILED: 6-face point %u missing expected face %u",
+				        i, pts[i].expectedFace);
+				return false;
+			}
+		}
+	}
+
+	// 4-face case (numFaces = 4, equivalent to the legacy dropTopBottomFaces
+	// flag): axis points +Y and -Y now have no face that sees them.
+	{
+		const auto geom = SphereCubeMap::MakeTangentFacesGeometry(4, 512);
+		if (geom.numFaces != 4) {
+			VERBOSE("CubeMapBridgeDropTopBottomTest FAILED: MakeTangentFacesGeometry(4) returned numFaces=%d",
+			        geom.numFaces);
+			return false;
+		}
+		// +Z, -Z, +X, -X should all still land.
+		for (unsigned i = 0; i < 4; ++i) {
+			const auto hit = ProjectFaces(pts[i].X, geom);
+			if (hit.empty()) {
+				VERBOSE("CubeMapBridgeDropTopBottomTest FAILED: 4-face horizontal point %u has 0 views", i);
+				return false;
+			}
+		}
+		// +Y and -Y: zero hits (top/bottom faces are gone).
+		for (unsigned i = 4; i < 6; ++i) {
+			const auto hit = ProjectFaces(pts[i].X, geom);
+			if (!hit.empty()) {
+				VERBOSE("CubeMapBridgeDropTopBottomTest FAILED: 4-face zenith/nadir point %u has %u views (expected 0)",
+				        i, (unsigned)hit.size());
+				return false;
+			}
+		}
+	}
+
+	VERBOSE("CubeMapBridgeDropTopBottomTest PASSED");
+	return true;
 }
 /*----------------------------------------------------------------*/
 
@@ -3117,5 +4305,3 @@ bool HierarchicalSFMWithRandomTransformTest()
 /*----------------------------------------------------------------*/
 
 } // namespace SFM
-
-#pragma pop_macro("VERBOSE")

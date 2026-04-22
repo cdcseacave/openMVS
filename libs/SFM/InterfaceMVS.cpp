@@ -1,13 +1,14 @@
 ////////////////////////////////////////////////////////////////////
 // InterfaceMVS.cpp
 //
-// Copyright 2007 cDc@seacave
+// Copyright 2026 cDc@seacave
 // Distributed under the Boost Software License, Version 1.0
 // (See http://www.boost.org/LICENSE_1_0.txt)
 
 #include "Common.h"
 #include "InterfaceMVS.h"
 #include "Scene.h"
+#include "SphereCubeMap.h"
 
 // Import/Export scene and depth-maps to MVS and DMAP Interface format respectively
 #ifndef _USE_OPENCV
@@ -480,11 +481,176 @@ bool SFM::ImportMVS(const String& fileName, Scene& scene, bool loadColors)
 	return true;
 } // ImportMVS
 
-bool SFM::ExportMVS(const String& fileName, const Scene& scene,
-	String undistortImageDir,
-	float undistortAlpha,
-	bool onlyInlierTracks,
-	bool includeColors)
+
+// ------------------------------------------------------------------
+// SphereCubeMap MVS-export helpers convert a pre-built
+// TangentFacesGeometry into MVS::Interface records
+// ------------------------------------------------------------------
+namespace SFM::SphereCubeMap {
+
+// Phase 1: one rig Platform per spherical SFM camera, N face Cameras each.
+void EmitSphericalPlatforms(
+	const Scene& scene,
+	const TangentFacesGeometry& geometry,
+	MVS::Interface& iface,
+	std::unordered_map<const Camera*, uint32_t>& camToPlatform)
+{
+	ASSERT(geometry.numFaces > 0);
+	for (CameraPtr const cam : scene.cameras) {
+		if (cam == NULL || cam->GetType() != CameraType::SPHERICAL)
+			continue;
+		if (camToPlatform.count(cam))
+			continue;
+		const uint32_t platformID = (uint32_t)iface.platforms.size();
+		camToPlatform[cam] = platformID;
+
+		MVS::Interface::Platform& platform = iface.platforms.emplace_back();
+		platform.name = cam->metadata.name;
+		platform.cameras.reserve(geometry.numFaces);
+		for (int k = 0; k < geometry.numFaces; ++k) {
+			MVS::Interface::Platform::Camera& outCam = platform.cameras.emplace_back();
+			outCam.name   = String::FormatString("face%d", k);
+			outCam.width  = (uint32_t)geometry.faceSize;
+			outCam.height = (uint32_t)geometry.faceSize;
+			outCam.K = geometry.K;
+			outCam.R = geometry.rotations[k];
+			outCam.C = MVS::Interface::Pos3d(0, 0, 0);
+		}
+	}
+}
+
+// Phase 2: append pose + N face Image records for one spherical SFM image.
+void AppendSphericalFaceImages(
+	const Image& img,
+	const TangentFacesGeometry& geometry,
+	const String& basePath,
+	const String& extension,
+	uint32_t platformID,
+	MVS::Interface& iface,
+	std::vector<uint32_t>& mvsImageIDs)
+{
+	ASSERT(img.pCamera != NULL);
+	ASSERT(img.pCamera->GetType() == CameraType::SPHERICAL);
+	ASSERT(platformID < iface.platforms.size());
+	ASSERT(geometry.numFaces > 0);
+
+	MVS::Interface::Platform& platform = iface.platforms[platformID];
+	const uint32_t poseID = (uint32_t)platform.poses.size();
+	MVS::Interface::Platform::Pose& pose = platform.poses.emplace_back();
+	pose.R = img.R;
+	pose.C = img.C;
+
+	const String stem = Util::getFileName(img.fileName);
+	mvsImageIDs.clear();
+	mvsImageIDs.reserve(geometry.numFaces);
+	for (int k = 0; k < geometry.numFaces; ++k) {
+		MVS::Interface::Image& outImg = iface.images.emplace_back();
+		outImg.name = basePath + stem + String::FormatString(_T("_face%d"), k) + extension;
+		outImg.platformID = platformID;
+		outImg.cameraID   = (uint32_t)k;
+		outImg.poseID     = poseID;
+		outImg.ID         = (uint32_t)(iface.images.size() - 1);
+		mvsImageIDs.push_back(outImg.ID);
+	}
+}
+
+// Phase 3: render + save N face images for every spherical source image.
+// Geometry is shared across all calls; each image pays only the per-pixel
+// render cost (not the rotation-table build).
+unsigned RenderAndSaveSphericalFaces(
+	const Scene& scene,
+	const TangentFacesGeometry& geometry,
+	const String& extension,
+	const String& outputDir)
+{
+	if (outputDir.empty() || geometry.numFaces == 0)
+		return 0;
+	String outDir = outputDir;
+	Util::ensureValidFolderPath(outDir);
+	Util::ensureFolder(outDir);
+	unsigned written = 0;
+
+	for (const Image& img : scene.images) {
+		if (img.pCamera == NULL || img.pCamera->GetType() != CameraType::SPHERICAL)
+			continue;
+
+		bool loadedHere = false;
+		if (!img.HasPixels()) {
+			const_cast<Image&>(img).LoadPixels();
+			loadedHere = true;
+		}
+		if (!img.HasPixels()) {
+			DEBUG("SphereCubeMap: failed to load pixels for '%s'", img.fileName.c_str());
+			continue;
+		}
+
+		// Wrap pixels in an Image8U3 view, converting format if needed.
+		Image8U3 source;
+		if (img.pixels.channels() == 3 && img.pixels.depth() == CV_8U) {
+			source = Image8U3(img.pixels);
+		} else {
+			cv::Mat converted;
+			if (img.pixels.channels() == 1)      cv::cvtColor(img.pixels, converted, cv::COLOR_GRAY2BGR);
+			else if (img.pixels.channels() == 4) cv::cvtColor(img.pixels, converted, cv::COLOR_BGRA2BGR);
+			else                                 img.pixels.convertTo(converted, CV_8UC3);
+			source = Image8U3(converted);
+		}
+
+		// Render all N faces in one call, consuming the shared geometry.
+		const std::vector<Image8U3> faces =
+			SphericalToTangentialFaces<Pixel8U>(source, geometry);
+
+		const String stem = Util::getFileName(img.fileName);
+		for (int k = 0; k < (int)faces.size(); ++k) {
+			const String facePath = outDir + stem +
+				String::FormatString(_T("_face%d"), k) + extension;
+			if (!faces[k].Save(facePath)) {
+				DEBUG("SphereCubeMap: failed to save face '%s'", facePath.c_str());
+				continue;
+			}
+			++written;
+		}
+		if (loadedHere)
+			const_cast<Image&>(img).ReleasePixels();
+	}
+	return written;
+}
+
+// Phase 4: project 3D world point X through each face of one spherical
+// image's rig pose; push a Vertex::View entry for every face that sees it.
+void ProjectTrackOntoSphericalFaces(
+	const Point3& X,
+	const Pose3D& sphericalPose,
+	const TangentFacesGeometry& geometry,
+	const std::vector<uint32_t>& faceImageIDs,
+	MVS::Interface::Vertex& vertex)
+{
+	ASSERT((int)faceImageIDs.size() == geometry.numFaces);
+	const REAL f  = geometry.K(0,0);
+	const REAL cx = geometry.K(0,2);
+	const REAL cy = geometry.K(1,2);
+	const REAL zEps = REAL(1e-9);
+	const Point3 X_body = sphericalPose.R * (X - sphericalPose.C);
+
+	for (int k = 0; k < geometry.numFaces; ++k) {
+		const Point3 X_face = geometry.rotations[k] * X_body;
+		if (X_face.z < zEps)
+			continue;
+		const REAL u = f * X_face.x / X_face.z + cx;
+		const REAL v = f * X_face.y / X_face.z + cy;
+		if (u < REAL(0) || u >= REAL(geometry.faceSize)) continue;
+		if (v < REAL(0) || v >= REAL(geometry.faceSize)) continue;
+		MVS::Interface::Vertex::View view;
+		view.imageID    = faceImageIDs[k];
+		view.confidence = 0.f;
+		vertex.views.push_back(view);
+	}
+}
+
+} // namespace SFM::SphereCubeMap
+
+
+bool SFM::ExportMVS(const String& fileName, const Scene& scene, ExportMVSConfig config)
 {
 	using MVSInterface = MVS::Interface;
 	using MVSPlatform = MVS::Interface::Platform;
@@ -500,20 +666,57 @@ bool SFM::ExportMVS(const String& fileName, const Scene& scene,
 	TD_TIMER_STARTD();
 	MVSInterface iface;
 
-	// Map each SFM camera pointer to platform index
+	// Detect whether this scene contains any spherical cameras — if so,
+	// expand them into N-face rigs using the SphereCubeMap geometry.
+	bool hasSpherical = false;
+	for (CameraPtr const cam : scene.cameras) {
+		if (cam != NULL && cam->GetType() == CameraType::SPHERICAL) {
+			hasSpherical = true;
+			break;
+		}
+	}
+
+	// Build the sphere→tangent-faces geometry ONCE and reuse it across
+	// every spherical phase (platform emission, face-image emission,
+	// rendering, track projection). Empty geometry for pinhole-only scenes.
+	SphereCubeMap::TangentFacesGeometry sphericalGeom;
+	if (hasSpherical)
+		sphericalGeom = SphereCubeMap::MakeTangentFacesGeometry(
+			config.sphericalNumFaces, config.sphericalFaceSize);
+	if (hasSpherical && sphericalGeom.numFaces == 0) {
+		VERBOSE("error: unsupported sphericalNumFaces=%d (expected 4,6,8,12,20)",
+			config.sphericalNumFaces);
+		return false;
+	}
+
+	// Resolve the face output directory for cube-map images. Prefer the
+	// caller-provided undistort dir (mirrors the existing "outputs next to
+	// the .mvs file" contract); if empty default to the .mvs file's own
+	// directory so everything stays self-contained.
+	const String mvsFileDir = MAKE_PATH_FULL(WORKING_FOLDER_FULL, Util::getFilePath(fileName));
+	String cubeMapOutputDir;
+	if (hasSpherical)
+		cubeMapOutputDir = config.undistortImageDir.empty() ? mvsFileDir : config.undistortImageDir;
+
+	// Map each SFM camera pointer to its (possibly multi-camera) platform.
 	std::unordered_map<const Camera*, uint32_t> camToPlatform;
 	camToPlatform.reserve(scene.cameras.size());
 
-	const bool undistort = !undistortImageDir.empty();
+	const bool undistort = !config.undistortImageDir.empty();
 	std::unordered_map<const Camera*, KMatrix> undistortK;
 	CLISTDEF2(String) undistortedPaths;
 	if (undistort)
-		scene.UndistortImages(undistortImageDir, ".jpg", undistortAlpha, &undistortedPaths, &undistortK);
+		scene.UndistortImages(config.undistortImageDir, config.extension,
+		config.undistortAlpha, &undistortedPaths, &undistortK);
 
-	// Create platforms (one camera per platform)
+	// ----- Phase 1: platforms + cameras -----
+	// Pinhole: one platform with a single camera per SFM camera.
+	// Spherical: one platform with N face cameras via EmitSphericalPlatforms.
 	unsigned numDistortedCams = 0;
 	for (CameraPtr const cam : scene.cameras) {
 		ASSERT(camToPlatform.count(cam) == 0);
+		if (cam->GetType() == CameraType::SPHERICAL)
+			continue; // deferred to EmitSphericalPlatforms below
 		const uint32_t platformID = (uint32_t)iface.platforms.size();
 		camToPlatform[cam] = platformID;
 		MVSPlatform& platform = iface.platforms.emplace_back();
@@ -545,15 +748,33 @@ bool SFM::ExportMVS(const String& fileName, const Scene& scene,
 			break;
 		}
 	}
+	if (hasSpherical)
+		SphereCubeMap::EmitSphericalPlatforms(scene, sphericalGeom, iface, camToPlatform);
 
-	// Collect pose indices per image (stored in platform.poses vector);
-	// platform poses are filled as we iterate images.
-	const String basePath = MAKE_PATH_FULL(WORKING_FOLDER_FULL, Util::getFilePath(fileName));
+	// ----- Phase 2: images + poses -----
+	// sfmToMvsImage[i] holds the MVS imageIDs produced for SFM image i.
+	// Pinhole images get 1 entry; spherical images get N (== numFaces).
+	const String basePath = mvsFileDir;
+	String faceBaseSlash;
+	if (hasSpherical) {
+		faceBaseSlash = MAKE_PATH_REL(basePath, cubeMapOutputDir);
+		if (!faceBaseSlash.empty() && faceBaseSlash.back() != PATH_SEPARATOR)
+			faceBaseSlash += PATH_SEPARATOR;
+	}
+	std::vector<std::vector<uint32_t>> sfmToMvsImage(scene.images.size());
 	iface.images.reserve(scene.images.size());
 	FOREACH(i, scene.images) {
 		const Image& img = scene.images[i];
 		const Camera* cam = img.pCamera;
 		ASSERT(cam != NULL);
+
+		if (cam->GetType() == CameraType::SPHERICAL) {
+			SphereCubeMap::AppendSphericalFaceImages(
+				img, sphericalGeom, faceBaseSlash, config.extension,
+				camToPlatform[cam], iface, sfmToMvsImage[i]);
+			continue;
+		}
+
 		const uint32_t platformID = camToPlatform[cam];
 		MVSPlatform& platform = iface.platforms[platformID];
 		uint32_t poseID = MVS::NO_ID;
@@ -572,46 +793,76 @@ bool SFM::ExportMVS(const String& fileName, const Scene& scene,
 		outImg.cameraID = 0; // single camera per platform
 		outImg.poseID = poseID; // may be NO_ID
 		outImg.ID = img.ID; // preserve global ID
+		const uint32_t mvsID = (uint32_t)iface.images.size();
 		iface.images.emplace_back(std::move(outImg));
+		sfmToMvsImage[i].push_back(mvsID);
 	}
 
-	// Export points (tracks)
+	// ----- Phase 3: render + write cube-map face pixels -----
+	if (hasSpherical) {
+		const unsigned written = SphereCubeMap::RenderAndSaveSphericalFaces(
+			scene, sphericalGeom, config.extension, cubeMapOutputDir);
+		DEBUG("SphereCubeMap: wrote %u face images to '%s'",
+			written, cubeMapOutputDir.c_str());
+	}
+
+	// ----- Phase 4: vertices (tracks) -----
+	// For each inlier track, expand every observation through the
+	// sfmToMvsImage map: pinhole observations become a single view entry;
+	// spherical observations become one entry per face that sees the 3D
+	// point (0..6 per observation).
 	iface.vertices.reserve(scene.tracks.size());
-	if (includeColors)
-		includeColors = !scene.colors.empty(); // only if we have track colors
-	if (includeColors)
+	bool emitColors = config.includeColors;
+	if (emitColors)
+		emitColors = !scene.colors.empty();
+	if (emitColors)
 		iface.verticesColor.reserve(scene.tracks.size());
 	FOREACH(i, scene.tracks) {
 		const Track& track = scene.tracks[i];
 		if (!track.IsValid())
 			continue;
-		if (onlyInlierTracks && !track.IsInlier())
+		if (config.onlyInlierTracks && !track.IsInlier())
 			continue;
 		MVSVertex v;
 		v.X = Cast<float>(track.position);
 		v.views.reserve(track.GetNumInliers());
 		for (const Observation& obs : track) {
-			MVSVertex::View view;
-			view.imageID = obs.imageID;
-			view.confidence = 0.f;
-			v.views.push_back(view);
+			const uint32_t sfmImageID = obs.imageID;
+			if (sfmImageID >= sfmToMvsImage.size())
+				continue;
+			const std::vector<uint32_t>& mvsIDs = sfmToMvsImage[sfmImageID];
+			if (mvsIDs.empty())
+				continue;
+			const Image& srcImg = scene.images[sfmImageID];
+			if (srcImg.pCamera->GetType() == CameraType::SPHERICAL) {
+				SphereCubeMap::ProjectTrackOntoSphericalFaces(
+					track.position, srcImg, sphericalGeom, mvsIDs, v);
+			} else {
+				MVSVertex::View view;
+				view.imageID = mvsIDs.front();
+				view.confidence = 0.f;
+				v.views.push_back(view);
+			}
 		}
-		ASSERT(v.views.size() >= 2);
+		// A vertex with <2 views is unusable for dense reconstruction; skip it.
+		if (v.views.size() < 2)
+			continue;
 		iface.vertices.emplace_back(std::move(v));
-		if (includeColors) {
+		if (emitColors) {
 			MVS::Interface::Color col; // BGR order
 			col.c = scene.colors[i];
 			iface.verticesColor.push_back(col);
 		}
 	}
 
-	// Serialize
+	// ----- Phase 5: serialize -----
 	if (!MVS::ARCHIVE::SerializeSave(iface, fileName.c_str())) {
 		VERBOSE("error: failed serialization for '%s'", fileName.c_str());
 		return false;
 	}
-	DEBUG("Scene exported as MVS: %u platforms, %u images (%u valid), %u points%s to '%s' (%s)",
-		(unsigned)iface.platforms.size(), (unsigned)iface.images.size(), scene.status.nCalibratedImages, (unsigned)iface.vertices.size(), undistort ? " (undistorted)" : "",
+	DEBUG("Scene exported as MVS: %u platforms, %u images (%u valid), %u points%s%s to '%s' (%s)",
+		(unsigned)iface.platforms.size(), (unsigned)iface.images.size(), scene.status.nCalibratedImages, (unsigned)iface.vertices.size(),
+		undistort ? " (undistorted)" : "", hasSpherical ? " (spherical cube-map expanded)" : "",
 		fileName.c_str(), TD_TIMER_GET_FMT().c_str());
 	if (numDistortedCams > 0 && !undistort)
 		VERBOSE("warning: %u cameras had distortion; export ignores distortion (consider enabling undistort)", numDistortedCams);

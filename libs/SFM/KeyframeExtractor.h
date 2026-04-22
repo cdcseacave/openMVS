@@ -54,6 +54,10 @@ struct SFM_API KeyframeConfig
 	// Minimum features per cell (adjust sensitivity if below)
 	unsigned minFeaturesPerCell { 500 };
 
+	// Number of tangent-pinhole faces used when extracting features from
+	// spherical frames (ignored for pinhole). Valid values: 4, 6, 8, 12, 20.
+	unsigned cubemapFaces { 6 };
+
 	// Optional Gaussian blur kernel size applied to images passed to optical flow
 	// 0 = disabled (default). When >0, images used for calcOpticalFlowPyrLK
 	// will be blurred with this kernel size to improve tracking in noisy/video-compressed frames.
@@ -102,12 +106,13 @@ SFM_API float ComputeFeatureOverlap(
 	const std::vector<uchar>& status,
 	const cv::Size& imageSize);
 
-// Helper function: Compute overlap area using homography
+// Helper function: Compute overlap area using homography (pinhole) or angular displacement (spherical)
 SFM_API float ComputeHomographyOverlap(
 	const std::vector<Point2f>& prevPoints,
 	const std::vector<Point2f>& currPoints,
 	const std::vector<uchar>& status,
-	const cv::Size& imageSize);
+	const cv::Size& imageSize,
+	const Camera& camera);
 /*----------------------------------------------------------------*/
 
 } // namespace KeyframeExtractor
