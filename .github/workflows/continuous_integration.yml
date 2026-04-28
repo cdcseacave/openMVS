@@ -228,7 +228,34 @@ jobs:
           cmakeBuildDirectory: ${{ env.BUILD_DIR }}
           ruleset: NativeRecommendedRules.ruleset
 
+      # MSVC's /analyze emits one SARIF "run" per translation unit, all packed into a
+      # single results.sarif. As of the GitHub Code Scanning change effective 2025-07-21
+      # (https://github.blog/changelog/2025-07-21-...), upload-sarif rejects a SARIF file
+      # that contains multiple runs sharing the same category. Split each run into its
+      # own file and tag it with a unique automationDetails.id so CodeQL derives a
+      # distinct category per file.
+      - name: Split SARIF into one run per file
+        id: split-sarif
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os, pathlib
+          src = pathlib.Path(r"${{ steps.run-analysis.outputs.sarif }}")
+          data = json.loads(src.read_text(encoding="utf-8"))
+          out = src.parent / "sarif-split"
+          out.mkdir(exist_ok=True)
+          runs = data.get("runs", [])
+          for i, run in enumerate(runs):
+              run.setdefault("automationDetails", {})["id"] = f"msvc-analysis/{i:03d}/"
+              single = {k: v for k, v in data.items() if k != "runs"}
+              single["runs"] = [run]
+              (out / f"run-{i:03d}.sarif").write_text(json.dumps(single), encoding="utf-8")
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as f:
+              f.write(f"SARIF_DIR={out.as_posix()}\n")
+          print(f"Split {len(runs)} runs into {out}")
+          PY
+
       - name: Upload SARIF to GitHub
         uses: github/codeql-action/upload-sarif@v3
         with:
-          sarif_file: ${{ steps.run-analysis.outputs.sarif }}
+          sarif_file: ${{ env.SARIF_DIR }}
