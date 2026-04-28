@@ -124,6 +124,14 @@ ENDIF()
 SET(CMAKE_CXX_VISIBILITY_PRESET hidden)
 SET(CMAKE_VISIBILITY_INLINES_HIDDEN ON)
 
+# Define helper functions and macros.
+# Note: build/Utils.cmake declares `OPTION(BUILD_SHARED_LIBS ...)`, so the
+# OPENMVS_SHARED / IPO logic below MUST come AFTER this include — otherwise
+# BUILD_SHARED_LIBS is undefined at the IF() check and the block silently
+# no-ops, which on Windows surfaces as `boost::throw_exception` link failures
+# from SFM/MVS (Types.h still picks the BOOST_NO_EXCEPTIONS path).
+INCLUDE(build/Utils.cmake)
+
 # Tell C++ code we are building shared libraries, so headers (e.g. Types.h) can
 # pick the cross-DLL-friendly path for things like boost exception-unwinding.
 IF(BUILD_SHARED_LIBS)
@@ -137,9 +145,6 @@ IF(BUILD_SHARED_LIBS)
 	ENDIF()
 	SET(OpenMVS_ENABLE_IPO OFF CACHE BOOL "Whether to enable interprocedural optimization" FORCE)
 ENDIF()
-
-# Define helper functions and macros.
-INCLUDE(build/Utils.cmake)
 
 # Init session with macros defined in Utils.cmake
 GetOperatingSystemArchitectureBitness(SYSTEM)

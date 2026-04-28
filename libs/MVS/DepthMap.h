@@ -496,11 +496,12 @@ MVS_API unsigned EstimatePlane(const Point3Arr&, Plane&, double& maxThreshold, b
 MVS_API unsigned EstimatePlaneLockFirstPoint(const Point3Arr&, Plane&, double& maxThreshold, bool arrInliers[]=NULL, size_t maxIters=0);
 MVS_API unsigned EstimatePlaneTh(const Point3Arr&, Plane&, double maxThreshold, bool arrInliers[]=NULL, size_t maxIters=0);
 MVS_API unsigned EstimatePlaneThLockFirstPoint(const Point3Arr&, Plane&, double maxThreshold, bool arrInliers[]=NULL, size_t maxIters=0);
-// same for float points
-MATH_API unsigned EstimatePlane(const Point3fArr&, Planef&, double& maxThreshold, bool arrInliers[]=NULL, size_t maxIters=0);
-MATH_API unsigned EstimatePlaneLockFirstPoint(const Point3fArr&, Planef&, double& maxThreshold, bool arrInliers[]=NULL, size_t maxIters=0);
-MATH_API unsigned EstimatePlaneTh(const Point3fArr&, Planef&, double maxThreshold, bool arrInliers[]=NULL, size_t maxIters=0);
-MATH_API unsigned EstimatePlaneThLockFirstPoint(const Point3fArr&, Planef&, double maxThreshold, bool arrInliers[]=NULL, size_t maxIters=0);
+// same for float points; MVS_API (not MATH_API) because these are defined in
+// libs/MVS/DepthMap.cpp and shipped in MVS.dll, not Math.dll
+MVS_API unsigned EstimatePlane(const Point3fArr&, Planef&, double& maxThreshold, bool arrInliers[]=NULL, size_t maxIters=0);
+MVS_API unsigned EstimatePlaneLockFirstPoint(const Point3fArr&, Planef&, double& maxThreshold, bool arrInliers[]=NULL, size_t maxIters=0);
+MVS_API unsigned EstimatePlaneTh(const Point3fArr&, Planef&, double maxThreshold, bool arrInliers[]=NULL, size_t maxIters=0);
+MVS_API unsigned EstimatePlaneThLockFirstPoint(const Point3fArr&, Planef&, double maxThreshold, bool arrInliers[]=NULL, size_t maxIters=0);
 
 MVS_API void EstimatePointColors(const ImageArr& images, PointCloud& pointcloud);
 MVS_API void EstimatePointSegmentation(const ImageArr& images, PointCloud& pointcloud, unsigned minViews=2);
