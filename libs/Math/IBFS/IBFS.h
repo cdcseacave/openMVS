@@ -79,6 +79,30 @@ If you require another license, please contact the above.
 #include <string.h>
 #include <assert.h>
 
+// Provide MATH_API without pulling in Math/Common.h (avoids circular includes
+// for header-only files included from libs/Common via lmmin.h's path).
+#ifndef MATH_API
+  #ifdef _MSC_VER
+    #if defined(_USRDLL)
+      #ifdef Math_EXPORTS
+        #define MATH_API __declspec(dllexport)
+      #else
+        #define MATH_API __declspec(dllimport)
+      #endif
+    #elif defined(OPENMVS_SHARED)
+      #define MATH_API __declspec(dllimport)
+    #else
+      #define MATH_API
+    #endif
+  #else
+    #ifdef Math_EXPORTS
+      #define MATH_API __attribute__((visibility("default")))
+    #else
+      #define MATH_API
+    #endif
+  #endif
+#endif
+
 
 #ifndef IBIO
 #define IBIO 0
@@ -164,7 +188,7 @@ private:
 
 
 
-class IBFSGraph
+class MATH_API IBFSGraph
 {
 public:
 	IBFSGraph();

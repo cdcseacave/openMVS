@@ -35,19 +35,40 @@
 
 // I N C L U D E S /////////////////////////////////////////////////
 
-#if defined(MVS_EXPORTS) && !defined(Common_EXPORTS)
-#define Common_EXPORTS
-#endif
-
 #include "../Common/Common.h"
 #include "../IO/Common.h"
 #include "../Math/Common.h"
 
+// Per-library export macro: keyed only on MVS_EXPORTS so MVS symbols are
+// exported while building MVS.dll and imported elsewhere, without affecting
+// the export state of symbols owned by Common/Math/IO (which use their own macros).
 #ifndef MVS_API
-#define MVS_API GENERAL_API
+  #ifdef _MSC_VER
+    #if defined(_USRDLL)
+      #ifdef MVS_EXPORTS
+        #define MVS_API EXPORT_API
+      #else
+        #define MVS_API IMPORT_API
+      #endif
+    #elif defined(OPENMVS_SHARED)
+      #define MVS_API IMPORT_API
+    #else
+      #define MVS_API
+    #endif
+  #else
+    #ifdef MVS_EXPORTS
+      #define MVS_API EXPORT_API
+    #else
+      #define MVS_API
+    #endif
+  #endif
 #endif
 #ifndef MVS_TPL
-#define MVS_TPL GENERAL_TPL
+  #ifdef MVS_EXPORTS
+    #define MVS_TPL
+  #else
+    #define MVS_TPL extern
+  #endif
 #endif
 
 
@@ -65,8 +86,8 @@ using namespace SEACAVE;
 namespace MVS {
 
 // Initialize / close the library; should be called at the beginning and end of the program
-void Initialize(LPCTSTR appname, unsigned nMaxThreads=0, int nProcessPriority=0);
-void Finalize();
+MVS_API void Initialize(LPCTSTR appname, unsigned nMaxThreads=0, int nProcessPriority=0);
+MVS_API void Finalize();
 /*----------------------------------------------------------------*/
 
 } // namespace MVS

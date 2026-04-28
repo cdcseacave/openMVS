@@ -54,7 +54,7 @@ class SFM_API Scene;
 // The combination of these weights allows SfM algorithms to robustly select and prioritize image pairs
 // that provide the most reliable and informative geometric constraints.
 // The pairs are sorted by their composite weights in decreasing order.
-struct PairsWeightingConfig
+struct SFM_API PairsWeightingConfig
 {
     int gridSize = 10; // grid size for intrinsic weight computation
     unsigned minInliers = 15; // minimum inliers to consider pair for weighting

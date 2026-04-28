@@ -27,6 +27,12 @@ typedef struct SMLVALUE_TYPE {
 	SMLVALUE_TYPE() : data(NULL) {}
 	SMLVALUE_TYPE(const SMLVALUE_TYPE& r) : data(r.data) { ((SMLVALUE_TYPE&)r).data = NULL; }
 	~SMLVALUE_TYPE() { delete data; }
+	// Equality is provided so std::unordered_map<String,SMLVALUE>'s
+	// std::pair<const Key,Type>::operator== can be instantiated under MSVC's
+	// eager dllexport-class instantiation. Compares the value strings;
+	// `data` is opaque user data and ignored.
+	inline bool operator==(const SMLVALUE_TYPE& r) const { return val == r.val; }
+	inline bool operator!=(const SMLVALUE_TYPE& r) const { return !(*this == r); }
 } SMLVALUE;
 
 class SML;

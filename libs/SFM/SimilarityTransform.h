@@ -39,7 +39,7 @@ unsigned EstimateSimilarityTransform(
 
 
 // Similarity transform refinement unit test
-bool TestSimilarityTransform();
+SFM_API bool TestSimilarityTransform();
 /*----------------------------------------------------------------*/
 
 } // namespace SFM

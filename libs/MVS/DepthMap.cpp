@@ -30,6 +30,11 @@
 */
 
 #include "Common.h"
+// Tell DEFVAR_OPTION/DEFOPT_SPACE (defined in libs/Common/Common.h) to tag
+// the OPTDENSE namespace's data symbols and helpers with MVS_API so they
+// are exported from MVS.dll instead of the default Common-side tag.
+#undef OPTCONFIG_API
+#define OPTCONFIG_API MVS_API
 #include "DepthMap.h"
 #include "Mesh.h"
 #include "../Common/AutoEstimator.h"

@@ -127,13 +127,13 @@ public:
 
 // Convert OpenMVS pose to/from Ceres quaternion parameterization
 // params[7] = { qw, qx, qy, qz, Cx, Cy, Cz }
-void Pose3DToQuaternionAndCenter(const Pose3D& pose, double* params);
-void QuaternionAndCenterToPose3D(const double* params, Pose3D& pose);
+SFM_API void Pose3DToQuaternionAndCenter(const Pose3D& pose, double* params);
+SFM_API void QuaternionAndCenterToPose3D(const double* params, Pose3D& pose);
 
 // Convert OpenMVS pose to/from Ceres angle-axis parameterization
 // params[6] = { ax, ay, az, Cx, Cy, Cz }
-void Pose3DToAngleAxisAndCenter(const Pose3D& pose, double* params);
-void AngleAxisAndCenterToPose3D(const double* params, Pose3D& pose);
+SFM_API void Pose3DToAngleAxisAndCenter(const Pose3D& pose, double* params);
+SFM_API void AngleAxisAndCenterToPose3D(const double* params, Pose3D& pose);
 /*----------------------------------------------------------------*/
 
 

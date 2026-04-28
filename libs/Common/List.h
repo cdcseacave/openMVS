@@ -665,21 +665,26 @@ public:
 
 	inline IDX		InsertSortPtr(ARG_TYPE elem)
 	{
-		IDX l1(0), l2(_size);
-		while (l1 < l2) {
-			IDX i((l1 + l2) >> 1);
-			ARG_TYPE compElem(_vector[i]);
-			if (*elem < *compElem)
-				l2 = i;
-			else if (*compElem < *elem)
-				l1 = i+1;
-			else {
-				InsertAt(i, elem);
-				return i;
+		if constexpr (std::is_pointer<TYPE>::value) {
+			IDX l1(0), l2(_size);
+			while (l1 < l2) {
+				IDX i((l1 + l2) >> 1);
+				ARG_TYPE compElem(_vector[i]);
+				if (*elem < *compElem)
+					l2 = i;
+				else if (*compElem < *elem)
+					l1 = i+1;
+				else {
+					InsertAt(i, elem);
+					return i;
+				}
 			}
+			InsertAt(l1, elem);
+			return l1;
+		} else {
+			ASSERT(false && "InsertSortPtr requires pointer elements");
+			return NO_INDEX;
 		}
-		InsertAt(l1, elem);
-		return l1;
 	}
 
 	inline IDX		InsertSort(ARG_TYPE elem, TFncCompare xCompare)
@@ -833,19 +838,24 @@ public:
 
 	inline std::pair<IDX,bool>	InsertSortUniquePtr(ARG_TYPE elem)
 	{
-		IDX l1(0), l2(_size);
-		while (l1 < l2) {
-			IDX i((l1 + l2) >> 1);
-			ARG_TYPE compElem(_vector[i]);
-			if (*elem < *compElem)
-				l2 = i;
-			else if (*compElem < *elem)
-				l1 = i+1;
-			else
-				return std::make_pair(i, true);
+		if constexpr (std::is_pointer<TYPE>::value) {
+			IDX l1(0), l2(_size);
+			while (l1 < l2) {
+				IDX i((l1 + l2) >> 1);
+				ARG_TYPE compElem(_vector[i]);
+				if (*elem < *compElem)
+					l2 = i;
+				else if (*compElem < *elem)
+					l1 = i+1;
+				else
+					return std::make_pair(i, true);
+			}
+			InsertAt(l1, elem);
+			return std::make_pair(l1, false);
+		} else {
+			ASSERT(false && "InsertSortUniquePtr requires pointer elements");
+			return std::make_pair(NO_INDEX, false);
 		}
-		InsertAt(l1, elem);
-		return std::make_pair(l1, false);
 	}
 
 	inline std::pair<IDX,bool>	InsertSortUnique(ARG_TYPE elem, TFncCompare xCompare)
@@ -906,16 +916,20 @@ public:
 
 	inline IDX		FindFirstPtr(ARG_TYPE searchedKey) const
 	{
-		IDX l1(0), l2(_size);
-		while (l1 < l2) {
-			IDX i((l1 + l2) >> 1);
-			ARG_TYPE key(_vector[i]);
-			if (*searchedKey < *key)
-				l2 = i;
-			else if (*key < *searchedKey)
-				l1 = i + 1;
-			else
-				return i;
+		// `if constexpr` guard for the same eager-instantiation reason as
+		// EmptyDelete above: this method only compiles when TYPE is a pointer.
+		if constexpr (std::is_pointer<TYPE>::value) {
+			IDX l1(0), l2(_size);
+			while (l1 < l2) {
+				IDX i((l1 + l2) >> 1);
+				ARG_TYPE key(_vector[i]);
+				if (*searchedKey < *key)
+					l2 = i;
+				else if (*key < *searchedKey)
+					l1 = i + 1;
+				else
+					return i;
+			}
 		}
 		return NO_INDEX;
 	}
@@ -940,16 +954,18 @@ public:
 	template <typename SEARCH_TYPE>
 	inline IDX		FindFirstPtr(const SEARCH_TYPE& searchedKey) const
 	{
-		IDX l1(0), l2(_size);
-		while (l1 < l2) {
-			IDX i((l1 + l2) >> 1);
-			ARG_TYPE key(_vector[i]);
-			if (*key == searchedKey)
-				return i;
-			if (*key < searchedKey)
-				l1 = i + 1;
-			else
-				l2 = i;
+		if constexpr (std::is_pointer<TYPE>::value) {
+			IDX l1(0), l2(_size);
+			while (l1 < l2) {
+				IDX i((l1 + l2) >> 1);
+				ARG_TYPE key(_vector[i]);
+				if (*key == searchedKey)
+					return i;
+				if (*key < searchedKey)
+					l1 = i + 1;
+				else
+					l2 = i;
+			}
 		}
 		return NO_INDEX;
 	}
@@ -1255,8 +1271,16 @@ public:
 	// Delete also the pointers (take care to use this function only if the elements are pointers).
 	inline void		EmptyDelete()
 	{
-		while (_size)
-			delete _vector[--_size];
+		// `if constexpr` guard so DLL builds compile cleanly: Types.h declares
+		// `typedef class GENERAL_API cList<IDX,IDX,0> IDXArr;` which forces
+		// MSVC to instantiate every member of cList<IDX> including this one,
+		// even though `delete _vector[i]` is illegal when TYPE is not a pointer.
+		if constexpr (std::is_pointer<TYPE>::value) {
+			while (_size)
+				delete _vector[--_size];
+		} else {
+			ASSERT(false && "EmptyDelete() called on a list whose elements are not pointers");
+		}
 	}
 
 	// same as EmptyDelete(), plus free all allocated memory

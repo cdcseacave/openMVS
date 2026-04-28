@@ -31,7 +31,7 @@ namespace SEACAVE {
 
 // S T R U C T S ///////////////////////////////////////////////////
 
-class Semaphore  
+class GENERAL_API Semaphore
 {
 #ifdef _MSC_VER
 public:

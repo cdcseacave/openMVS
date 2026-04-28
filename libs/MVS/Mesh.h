@@ -373,7 +373,7 @@ struct TRasterMesh : TRasterMeshBase<DERIVED> {
 	}
 };
 
-bool TestMeshProjectionMT(const Mesh& mesh, const Image& image);
+MVS_API bool TestMeshProjectionMT(const Mesh& mesh, const Image& image);
 /*----------------------------------------------------------------*/
 
 

@@ -26,7 +26,7 @@ namespace SEACAVE {
  * compile-time string hash template
  **************************************************************************************/
 
-class StringHash
+class GENERAL_API StringHash
 {
 private:
 	uint32_t m_val;

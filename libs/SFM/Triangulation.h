@@ -42,7 +42,7 @@ class SFM_API Scene;
 	* @param minInliers Minimum number of inlier views
 	* @return number of inliers if triangulation successful
 	*/
-unsigned TriangulateDLT(
+SFM_API unsigned TriangulateDLT(
 	Track& track,
 	const ImageArr& images,
 	float reprojThreshold = 4.f,
@@ -60,7 +60,7 @@ unsigned TriangulateDLT(
 	* @param minInliers Minimum number of inlier observations.
 	* @return The number of inliers or 0 on failure.
 	*/
-unsigned TriangulateSkewLLS(
+SFM_API unsigned TriangulateSkewLLS(
 	Track& track,
 	const ImageArr& images,
 	float reprojThreshold = 4.f,
@@ -75,7 +75,7 @@ unsigned TriangulateSkewLLS(
 	* @param minAngleThreshold Minimum angle between rays (degrees)
 	* @return number of inlier tracks
 	*/
-unsigned TriangulateTracks(
+SFM_API unsigned TriangulateTracks(
 	Scene& scene,
 	bool outliersOnly = false,
 	float reprojThreshold = 4.f,

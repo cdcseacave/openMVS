@@ -76,8 +76,14 @@
 
 // include usual boost libraries
 #ifdef _USE_BOOST
-#if 1
-// disable exception support
+// In static builds we suppress boost's exception-unwinding machinery to keep
+// archive size down and provide a user-defined `boost::throw_exception` in
+// libs/Common/Common.cpp. In shared builds that approach is fragile across
+// DLL boundaries (forward decls in boost headers don't carry dllexport, so
+// SFM/MVS can't link the user-defined version), and there is no archive-size
+// concern, so let boost use its native exception path. The OPENMVS_SHARED
+// macro is defined globally via CMake when BUILD_SHARED_LIBS=ON.
+#ifndef OPENMVS_SHARED
 #define BOOST_NO_UNREACHABLE_RETURN_DETECTION
 #define BOOST_EXCEPTION_DISABLE
 #define BOOST_NO_EXCEPTIONS
@@ -303,30 +309,38 @@ std::string PrintMessageToString(Args&&... args) {
 
 namespace SEACAVE {
 
-typedef class GENERAL_API CSharedPtr<File>				FilePtr;
+// CSharedPtr is an inline-only template; each consumer TU instantiates locally
+// rather than importing a pre-instantiated copy from Common.dll. Tagging these
+// typedefs with GENERAL_API would mark the template as dllimport in consumers
+// without Common.dll actually exporting any out-of-line symbol for it.
+typedef CSharedPtr<File>								FilePtr;
 
-typedef class GENERAL_API CSharedPtr<ISTREAM>			ISTREAMPTR;
+typedef CSharedPtr<ISTREAM>								ISTREAMPTR;
 typedef ISTREAM*										LPISTREAM;
 
-typedef class GENERAL_API CSharedPtr<OSTREAM>			OSTREAMPTR;
+typedef CSharedPtr<OSTREAM>								OSTREAMPTR;
 typedef OSTREAM*										LPOSTREAM;
 
-typedef class GENERAL_API CSharedPtr<IOSTREAM>			IOSTREAMPTR;
+typedef CSharedPtr<IOSTREAM>							IOSTREAMPTR;
 typedef IOSTREAM*										LPIOSTREAM;
 
-typedef class GENERAL_API cList<void*, void*, 0>        VoidArr;
-typedef class GENERAL_API cList<LPCTSTR, LPCTSTR, 0>	LPCTSTRArr;
-typedef class GENERAL_API cList<String>                 StringArr;
-typedef class GENERAL_API cList<IDX, IDX, 0>			IDXArr;
-typedef class GENERAL_API cList<uint8_t, uint8_t, 0>    Unsigned8Arr;
-typedef class GENERAL_API cList<unsigned, unsigned, 0>  UnsignedArr;
-typedef class GENERAL_API cList<uint32_t, uint32_t, 0>  Unsigned32Arr;
-typedef class GENERAL_API cList<uint64_t, uint64_t, 0>  Unsigned64Arr;
-typedef class GENERAL_API cList<size_t, size_t, 0>      SizeArr;
-typedef class GENERAL_API cList<int, int, 0>            IntArr;
-typedef class GENERAL_API cList<bool, bool, 0>          BoolArr;
-typedef class GENERAL_API cList<float, float, 0>        FloatArr;
-typedef class GENERAL_API cList<double, double, 0>      DoubleArr;
+// cList<T> is a header-only template; each consumer TU instantiates locally.
+// Tagging these typedefs with GENERAL_API would mark them dllimport in
+// consumers without Common.dll providing matching exports for the inline-only
+// member functions, producing LNK2001s.
+typedef cList<void*, void*, 0>          VoidArr;
+typedef cList<LPCTSTR, LPCTSTR, 0>		LPCTSTRArr;
+typedef cList<String>                   StringArr;
+typedef cList<IDX, IDX, 0>				IDXArr;
+typedef cList<uint8_t, uint8_t, 0>      Unsigned8Arr;
+typedef cList<unsigned, unsigned, 0>    UnsignedArr;
+typedef cList<uint32_t, uint32_t, 0>    Unsigned32Arr;
+typedef cList<uint64_t, uint64_t, 0>    Unsigned64Arr;
+typedef cList<size_t, size_t, 0>        SizeArr;
+typedef cList<int, int, 0>              IntArr;
+typedef cList<bool, bool, 0>            BoolArr;
+typedef cList<float, float, 0>          FloatArr;
+typedef cList<double, double, 0>        DoubleArr;
 
 } // namespace SEACAVE
 
@@ -1000,33 +1014,37 @@ template<typename TYPE> struct ColorType {
 	static const value_type ONE;
 	static const alt_type ALTONE;
 };
+// Static-const members of explicit template specializations are awkward to
+// dllexport on MSVC; switching to `inline static constexpr` keeps the value
+// in the header (no DLL crossing) and works uniformly across static + shared
+// builds. Requires C++17 (already enabled project-wide).
 template<> struct ColorType<uint8_t> {
 	typedef uint8_t value_type;
 	typedef float alt_type;
 	typedef float work_type;
-	static const value_type ONE;
-	static const alt_type ALTONE;
+	inline static constexpr value_type ONE{255};
+	inline static constexpr alt_type ALTONE{1.f};
 };
 template<> struct ColorType<uint32_t> {
 	typedef uint32_t value_type;
 	typedef float alt_type;
 	typedef float work_type;
-	static const value_type ONE;
-	static const alt_type ALTONE;
+	inline static constexpr value_type ONE{255};
+	inline static constexpr alt_type ALTONE{1.f};
 };
 template<> struct ColorType<float> {
 	typedef float value_type;
 	typedef uint8_t alt_type;
 	typedef float work_type;
-	static const value_type ONE;
-	static const alt_type ALTONE;
+	inline static constexpr value_type ONE{1.f};
+	inline static constexpr alt_type ALTONE{255};
 };
 template<> struct ColorType<double> {
 	typedef double value_type;
 	typedef uint8_t alt_type;
 	typedef float work_type;
-	static const value_type ONE;
-	static const alt_type ALTONE;
+	inline static constexpr value_type ONE{1.0};
+	inline static constexpr alt_type ALTONE{255};
 };
 /*----------------------------------------------------------------*/
 
@@ -1763,7 +1781,7 @@ struct cuint32_t {
 
 
 // tools
-String cvMat2String(const cv::Mat&, LPCSTR format="% 10.4f ");
+GENERAL_API String cvMat2String(const cv::Mat&, LPCSTR format="% 10.4f ");
 template<typename TYPE, int m, int n> inline String cvMat2String(const TMatrix<TYPE,m,n>& mat, LPCSTR format="% 10.4f ") { return cvMat2String(cv::Mat(mat), format); }
 template<typename TYPE> inline String cvMat2String(const TPoint3<TYPE>& pt, LPCSTR format="% 10.4f ") { return cvMat2String(cv::Mat(pt), format); }
 /*----------------------------------------------------------------*/

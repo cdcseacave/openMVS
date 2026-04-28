@@ -42,10 +42,10 @@ public:
 
 			Material() : Kd(Color::WHITE) {}
 			Material(const String& _name) : name(_name), Kd(Color::WHITE) {}
-			Material(const Image8U3& _diffuse_map, const Color& _Kd=Color::WHITE);
+			IO_API Material(const Image8U3& _diffuse_map, const Color& _Kd=Color::WHITE);
 
 			// Makes sure the image is loaded for the diffuse map
-			bool LoadDiffuseMap();
+			IO_API bool LoadDiffuseMap();
 		};
 
 		typedef std::vector<Material> Materials;

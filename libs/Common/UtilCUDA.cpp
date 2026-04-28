@@ -20,8 +20,8 @@ namespace CUDA {
 
 // S T R U C T S ///////////////////////////////////////////////////
 
-String desiredDeviceIDs("-1");
-Devices devices;
+GENERAL_API String desiredDeviceIDs("-1");
+GENERAL_API Devices devices;
 
 // validate a CUDA device and fill the Device struct
 static CUresult _validateDevice(int devID, Device& device)

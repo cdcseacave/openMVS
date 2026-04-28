@@ -21,7 +21,7 @@ namespace SEACAVE {
 
 // S T R U C T S ///////////////////////////////////////////////////
 
-class CriticalSection  
+class GENERAL_API CriticalSection
 {
 #ifdef _MSC_VER
 
@@ -91,7 +91,7 @@ private:
 * is not fair, i e the first to try to enter a locked lock is not guaranteed to be the
 * first to get it when it's freed...
 */
-class FastCriticalSection {
+class GENERAL_API FastCriticalSection {
 public:
 	FastCriticalSection() : state(0) {}
 

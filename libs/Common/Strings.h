@@ -21,8 +21,14 @@ namespace SEACAVE {
 
 // S T R U C T S ///////////////////////////////////////////////////
 
-/// String class: enhanced std::string
-class GENERAL_API String : public std::string
+/// String class: enhanced std::string.
+/// NOTE: deliberately NOT tagged with `GENERAL_API` at class level — MSVC would
+/// otherwise re-export every inherited std::string member from Common.dll,
+/// colliding (LNK2005) with the same template instantiations baked into static
+/// archives like PoseLib. The String-specific methods are inline templates that
+/// instantiate per-TU; nothing here needs to cross the DLL boundary as a real
+/// out-of-line export.
+class String : public std::string
 {
 public:
 	typedef std::string Base;

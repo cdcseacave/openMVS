@@ -30,7 +30,7 @@
 #define DEBUG_LEVEL(n,...)
 #else
 #ifndef VERBOSITY_LEVEL
-namespace SEACAVE { extern int g_nVerbosityLevel; }
+namespace SEACAVE { extern GENERAL_API int g_nVerbosityLevel; }
 #define VERBOSITY_LEVEL g_nVerbosityLevel
 #endif
 #define VERBOSE LOG
@@ -90,8 +90,8 @@ namespace SEACAVE { extern int g_nVerbosityLevel; }
 #ifndef WORKING_FOLDER
 namespace SEACAVE {
 class String;
-extern String g_strWorkingFolder; // empty by default (current folder)
-extern String g_strWorkingFolderFull; // full path to current folder
+extern GENERAL_API String g_strWorkingFolder; // empty by default (current folder)
+extern GENERAL_API String g_strWorkingFolderFull; // full path to current folder
 } // namespace SEACAVE
 #define WORKING_FOLDER		g_strWorkingFolder // empty by default (current folder)
 #define WORKING_FOLDER_FULL	g_strWorkingFolderFull // full path to current folder
@@ -104,31 +104,42 @@ extern String g_strWorkingFolderFull; // full path to current folder
 #define GET_PATH_FULL(str)	(SEACAVE::Util::isFullPath((str).c_str()) ? SEACAVE::Util::getFilePath(str) : SEACAVE::Util::getSimplifiedPath(WORKING_FOLDER_FULL+SEACAVE::Util::getFilePath(str))) // retrieve the full path to the given file
 
 
-// macros simplifying the task of managing options
+// macros simplifying the task of managing options.
+//
+// OPTCONFIG_API is the per-library export tag applied to the option-namespace
+// data symbols + helper functions emitted by DEFOPT_SPACE / DEFVAR_OPTION.
+// Each consumer .cpp should `#define OPTCONFIG_API <LIB>_API` before invoking
+// these macros (e.g. MVS_API in libs/MVS/DepthMap.cpp). When the consumer
+// doesn't override it, GENERAL_API is the default (which keeps libs/Common
+// internal usage working unchanged).
+#ifndef OPTCONFIG_API
+#define OPTCONFIG_API GENERAL_API
+#endif
+
 #define DECOPT_SPACE(SPACE) namespace SPACE { \
-	void init(); \
-	void update(); \
-	extern SEACAVE::VoidArr arrFncOpt; \
-	extern SEACAVE::CConfigTable oConfig; \
+	OPTCONFIG_API void init(); \
+	OPTCONFIG_API void update(); \
+	extern OPTCONFIG_API SEACAVE::VoidArr arrFncOpt; \
+	extern OPTCONFIG_API SEACAVE::CConfigTable oConfig; \
 }
 #define DEFOPT_SPACE(SPACE, name) namespace SPACE { \
-	SEACAVE::CConfigTable oConfig(name); \
+	OPTCONFIG_API SEACAVE::CConfigTable oConfig(name); \
 	typedef LPCTSTR (*FNCINDEX)(); \
 	typedef void (*FNCINIT)(SEACAVE::IDX); \
 	typedef void (*FNCUPDATE)(); \
-	VoidArr arrFncOpt; \
-	void init() { \
+	OPTCONFIG_API VoidArr arrFncOpt; \
+	OPTCONFIG_API void init() { \
 		FOREACH(i, arrFncOpt) \
 			((FNCINIT)arrFncOpt[i])(i); \
 	} \
-	void update() { \
+	OPTCONFIG_API void update() { \
 		FOREACH(i, arrFncOpt) \
 			((FNCUPDATE)arrFncOpt[i])(); \
 	} \
 }
 
 #define DEFVAR_OPTION(SPACE, flags, type, name, title, desc, ...) namespace SPACE { \
-	type name; \
+	OPTCONFIG_API type name; \
 	LPCTSTR defval_##name(NULL); \
 	void update_##name() { \
 		SEACAVE::String::FromString(oConfig[title].val, name); \
@@ -314,8 +325,8 @@ DEFINE_CVDATATYPE(SEACAVE::Matrix4x4d)
 namespace SEACAVE {
 
 // Initialize / close the library; should be called at the beginning and end of the program
-void Initialize(LPCTSTR appname, unsigned nMaxThreads=0, int nProcessPriority=0);
-void Finalize();
+GENERAL_API void Initialize(LPCTSTR appname, unsigned nMaxThreads=0, int nProcessPriority=0);
+GENERAL_API void Finalize();
 /*----------------------------------------------------------------*/
 
 } // namespace SEACAVE

@@ -39,3 +39,4 @@ CMakeSettings.json
 out/
 bin*/
 make*/
+build-*/

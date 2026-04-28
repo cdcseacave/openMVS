@@ -125,7 +125,7 @@ protected:
 	}
 	#endif
 };
-typedef class GENERAL_API TFlags<uint32_t> Flags;
+typedef TFlags<uint32_t> Flags;
 /*----------------------------------------------------------------*/
 
 
@@ -234,12 +234,17 @@ protected:
 	std::vector<size_t> Freq; // histogram
 	size_t Overflow, Underflow; // count under/over flow
 };
-typedef class GENERAL_API THistogram<float> Histogram32F;
-typedef class GENERAL_API THistogram<double> Histogram64F;
+typedef THistogram<float> Histogram32F;
+typedef THistogram<double> Histogram64F;
 /*----------------------------------------------------------------*/
 
 
-class GENERAL_API Util
+// Note: this class deliberately does NOT carry `GENERAL_API` at class level —
+// MSVC would then eagerly instantiate every member of every template type
+// referenced by any method (e.g. cList<IDX>) and trigger SFINAE-less methods
+// like `cList<T>::EmptyDelete()`. Each non-inline static method below is
+// tagged individually so they still cross the DLL boundary.
+class Util
 {
 public:
 	static String getAppName() {
@@ -390,9 +395,9 @@ public:
 		return path[off+2] == _T('\0') || path[off+2] == PATH_SEPARATOR;
 	}
 
-	static String getHomeFolder();
-	static String getApplicationFolder();
-	static String getCurrentFolder();
+	static GENERAL_API String getHomeFolder();
+	static GENERAL_API String getApplicationFolder();
+	static GENERAL_API String getCurrentFolder();
 	static String getProcessFolder() {
 		return getFilePath(getAppName());
 	}
@@ -795,17 +800,17 @@ public:
 	}
 
 
-	static void		Init();
+	static GENERAL_API void		Init();
 
-	static String	GetCPUInfo();
-	static String	GetRAMInfo();
-	static String	GetOSInfo();
-	static String	GetDiskInfo(const String&);
+	static GENERAL_API String	GetCPUInfo();
+	static GENERAL_API String	GetRAMInfo();
+	static GENERAL_API String	GetOSInfo();
+	static GENERAL_API String	GetDiskInfo(const String&);
 	enum CPUFNC {NA=0, SSE, AVX};
-	static const Flags ms_CPUFNC;
+	static GENERAL_API const Flags ms_CPUFNC;
 
-	static void		LogBuild();
-	static void		LogMemoryInfo();
+	static GENERAL_API void		LogBuild();
+	static GENERAL_API void		LogMemoryInfo();
 
 	struct MemoryInfo {
 		size_t totalPhysical;
@@ -815,9 +820,9 @@ public:
 		MemoryInfo(size_t tP = 0, size_t fP = 0, size_t tV = 0, size_t fV = 0)
 			: totalPhysical(tP), freePhysical(fP), totalVirtual(tV), freeVirtual(fV) {}
 	};
-	static MemoryInfo GetMemoryInfo();
+	static GENERAL_API MemoryInfo GetMemoryInfo();
 
-	static LPSTR* CommandLineToArgvA(LPCSTR CmdLine, size_t& _argc);
+	static GENERAL_API LPSTR* CommandLineToArgvA(LPCSTR CmdLine, size_t& _argc);
 	static String CommandLineToString(size_t argc, LPCTSTR* argv) {
 		String strCmdLine;
 		for (size_t i=1; i<argc; ++i)

@@ -12,15 +12,17 @@
 #include "Common.h"
 
 namespace SEACAVE {
+// Tagged GENERAL_API to match the `extern GENERAL_API` declarations in
+// Common.h so MSVC actually emits these as exported entries in Common.dll.
 #if TD_VERBOSE == TD_VERBOSE_ON
-int g_nVerbosityLevel(2);
+GENERAL_API int g_nVerbosityLevel(2);
 #endif
 #if TD_VERBOSE == TD_VERBOSE_DEBUG
-int g_nVerbosityLevel(3);
+GENERAL_API int g_nVerbosityLevel(3);
 #endif
 
-String g_strWorkingFolder;
-String g_strWorkingFolderFull;
+GENERAL_API String g_strWorkingFolder;
+GENERAL_API String g_strWorkingFolderFull;
 } // namespace SEACAVE
 
 #ifdef _USE_BOOST

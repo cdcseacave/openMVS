@@ -7,6 +7,31 @@
 #ifndef LMMIN_H
 #define LMMIN_H
 
+// Provide MATH_API/MATH_TPL without including Math/Common.h (which would create
+// a circular include via Common/Plane.inl → lmmin.h → Math/Common.h →
+// SimilarityTransform.h while Common/Common.h is still being parsed).
+#ifndef MATH_API
+  #ifdef _MSC_VER
+    #if defined(_USRDLL)
+      #ifdef Math_EXPORTS
+        #define MATH_API __declspec(dllexport)
+      #else
+        #define MATH_API __declspec(dllimport)
+      #endif
+    #elif defined(OPENMVS_SHARED)
+      #define MATH_API __declspec(dllimport)
+    #else
+      #define MATH_API
+    #endif
+  #else
+    #ifdef Math_EXPORTS
+      #define MATH_API __attribute__((visibility("default")))
+    #else
+      #define MATH_API
+    #endif
+  #endif
+#endif
+
 
 /** Compact high-level interface. **/
 
@@ -32,8 +57,8 @@ typedef struct {
 } lm_status_struct;
 
 /* Recommended control parameter settings. */
-extern const lm_control_struct lm_control_double;
-extern const lm_control_struct lm_control_float;
+extern MATH_API const lm_control_struct lm_control_double;
+extern MATH_API const lm_control_struct lm_control_float;
 
 #ifdef LMFIT_PRINTOUT
 /* Standard monitoring routine. */
@@ -43,10 +68,10 @@ void lm_printout_std( int n_par, const double *par, int m_dat,
 #endif
 
 /* Refined calculation of Eucledian norm, typically used in printout routine. */
-double lm_enorm( int, const double * );
+MATH_API double lm_enorm( int, const double * );
 
 /* The actual minimization. */
-void lmmin( int n_par, double *par, int m_dat, const void *data, 
+MATH_API void lmmin( int n_par, double *par, int m_dat, const void *data,
             void (*evaluate) (const double *par, int m_dat, const void *data,
                               double *fvec, double *fjac, int *info),
             const lm_control_struct *control, lm_status_struct *status
@@ -62,7 +87,7 @@ void lmmin( int n_par, double *par, int m_dat, const void *data,
 
 /* Alternative to lm_minimize, allowing full control, and read-out
    of auxiliary arrays. For usage, see implementation of lmmin. */
-void lm_lmdif( int m, int n, double *x, double *fvec, double ftol,
+MATH_API void lm_lmdif( int m, int n, double *x, double *fvec, double ftol,
                double xtol, double gtol, int maxfev, double epsfcn,
                double *diag, int mode, double factor, int& info, int& nfev,
                double *fjac, int *ipvt, double *qtf, double *wa1,
@@ -78,8 +103,8 @@ void lm_lmdif( int m, int n, double *x, double *fvec, double ftol,
                #endif
              );
 
-extern const char *lm_infmsg[];
-extern const char *lm_shortmsg[];
+extern MATH_API const char *lm_infmsg[];
+extern MATH_API const char *lm_shortmsg[];
 
 
 #endif /* LMMIN_H */

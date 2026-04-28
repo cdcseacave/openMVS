@@ -50,19 +50,19 @@ namespace SphereCubeMap {
 // face count. Returned by value; internally cached per N, so repeated calls
 // reuse the same table. The 6-face table is bit-exact with prior cube-map
 // implementations to preserve MVS-export rig contract.
-std::vector<Matrix3x3> FaceRotations(int n);
+SFM_API std::vector<Matrix3x3> FaceRotations(int n);
 
 // FOV per face in degrees. Chosen so neighbouring faces overlap ~10–15%:
 //   4, 6   -> 91.0
 //   8      -> 80.0
 //   12     -> 72.0
 //   20     -> 50.0
-REAL FaceFOVDegrees(int n);
+SFM_API REAL FaceFOVDegrees(int n);
 
 // Pinhole intrinsic matrix for a square face:
 //   fx = fy = faceSize / (2 * tan(FaceFOVDegrees(n) / 2))
 //   cx = cy = faceSize / 2
-Matrix3x3 FaceIntrinsics(int faceSize, int n);
+SFM_API Matrix3x3 FaceIntrinsics(int faceSize, int n);
 /*----------------------------------------------------------------*/
 
 
@@ -81,7 +81,7 @@ struct SFM_API TangentFacesGeometry {
 
 // Construct a TangentFacesGeometry for the given (numFaces, faceSize).
 // Returns a geometry with numFaces==0 if numFaces is not one of {4,6,8,12,20}.
-TangentFacesGeometry MakeTangentFacesGeometry(int numFaces, int faceSize);
+SFM_API TangentFacesGeometry MakeTangentFacesGeometry(int numFaces, int faceSize);
 
 
 // Render ONE spherical image into N tangent-pinhole faces using a pre-built
@@ -91,7 +91,7 @@ TangentFacesGeometry MakeTangentFacesGeometry(int numFaces, int faceSize);
 // (Image8U3) and Pixel32F (Image32F3). Add new rows at the end of the .cpp
 // if a caller needs other TImage pixel types.
 template <typename TYPE>
-std::vector<TImage<TYPE>> SphericalToTangentialFaces(
+SFM_API std::vector<TImage<TYPE>> SphericalToTangentialFaces(
 	const TImage<TYPE>& sphericalImage,
 	const TangentFacesGeometry& geometry);
 /*----------------------------------------------------------------*/

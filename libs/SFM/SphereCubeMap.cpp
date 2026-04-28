@@ -333,11 +333,12 @@ std::vector<TImage<TYPE>> SFM::SphereCubeMap::SphericalToTangentialFaces(
 
 
 // Explicit instantiations — one line per supported pixel type. Add new
-// rows here if a caller needs Pixel16U, Pixel64F, etc.
-template std::vector<Image8U3>
+// rows here if a caller needs Pixel16U, Pixel64F, etc. Tagged SFM_API so the
+// instantiated symbols actually get exported from SFM.dll.
+template SFM_API std::vector<Image8U3>
 	SFM::SphereCubeMap::SphericalToTangentialFaces<Pixel8U>(
 	const Image8U3&, const TangentFacesGeometry&);
-template std::vector<Image32F3>
+template SFM_API std::vector<Image32F3>
 	SFM::SphereCubeMap::SphericalToTangentialFaces<Pixel32F>(
 	const Image32F3&, const TangentFacesGeometry&);
 /*----------------------------------------------------------------*/

@@ -54,6 +54,11 @@ endif()
 FILE(GLOB LIBRARY_FILES_C "*.cpp")
 FILE(GLOB LIBRARY_FILES_H "*.h" "*.inl")
 
+# PythonWrapper.cpp is compiled into the pyOpenMVS extension module by libs/MVS/CMakeLists.txt;
+# exclude it from the SFM library so it isn't built twice.
+GET_FILENAME_COMPONENT(PATH_SFMPythonWrapper_cpp ${CMAKE_CURRENT_SOURCE_DIR}/PythonWrapper.cpp ABSOLUTE)
+LIST(REMOVE_ITEM LIBRARY_FILES_C "${PATH_SFMPythonWrapper_cpp}")
+
 cxx_library_with_type(SFM "Libs" "" "${cxx_default}"
 	${LIBRARY_FILES_C} ${LIBRARY_FILES_H}
 )

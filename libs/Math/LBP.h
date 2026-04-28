@@ -29,7 +29,11 @@ namespace SEACAVE {
 // https://github.com/nmoehrle/mvs-texturing
 // Copyright(c) Michael Waechter
 // Licensed under the BSD 3-Clause license
-class MATH_API LBPInference
+// NOTE: deliberately NOT tagged with MATH_API at class level — every method
+// is defined inline in this header, so consumers can instantiate them locally.
+// Tagging would force MSVC to emit __declspec(dllimport) at call sites and
+// expect Math.dll to export them, but Math.dll has no out-of-line definitions.
+class LBPInference
 {
 public:
 	typedef unsigned NodeID;

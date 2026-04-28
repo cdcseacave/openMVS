@@ -11,20 +11,41 @@
 
 // I N C L U D E S /////////////////////////////////////////////////
 
-#if defined(SFM_EXPORTS) && !defined(Common_EXPORTS)
-#define Common_EXPORTS
-#endif
-
 #include "../Common/Common.h"
 #include "../Math/Common.h"
 #include "../IO/Common.h"
 #include "../Common/BS_thread_pool.hpp"
 
+// Per-library export macro: keyed only on SFM_EXPORTS so SFM symbols are
+// exported while building SFM.dll and imported elsewhere, without affecting
+// the export state of symbols owned by Common/Math/IO (which use their own macros).
 #ifndef SFM_API
-#define SFM_API GENERAL_API
+  #ifdef _MSC_VER
+    #if defined(_USRDLL)
+      #ifdef SFM_EXPORTS
+        #define SFM_API EXPORT_API
+      #else
+        #define SFM_API IMPORT_API
+      #endif
+    #elif defined(OPENMVS_SHARED)
+      #define SFM_API IMPORT_API
+    #else
+      #define SFM_API
+    #endif
+  #else
+    #ifdef SFM_EXPORTS
+      #define SFM_API EXPORT_API
+    #else
+      #define SFM_API
+    #endif
+  #endif
 #endif
 #ifndef SFM_TPL
-#define SFM_TPL GENERAL_TPL
+  #ifdef SFM_EXPORTS
+    #define SFM_TPL
+  #else
+    #define SFM_TPL extern
+  #endif
 #endif
 
 

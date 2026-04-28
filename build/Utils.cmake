@@ -10,7 +10,7 @@ INCLUDE(CheckIncludeFile)
 
 # BUILD_SHARED_LIBS is a standard CMake variable, but we declare it here to
 # make it prominent in the GUI.
-OPTION(BUILD_SHARED_LIBS "Build shared libraries (DLLs)" OFF)
+OPTION(BUILD_SHARED_LIBS "Build shared libraries (DLLs)" ON)
 OPTION(BUILD_SHARED_LIBS_FULL "Expose all functionality when built as shared libraries (DLLs)" OFF)
 OPTION(BUILD_EXCEPTIONS_ENABLED "Enable support for exceptions" ON)
 OPTION(BUILD_RTTI_ENABLED "Enable support run-time type information" ON)
@@ -919,11 +919,19 @@ endfunction()
 # Defines the main libraries.  User tests should link
 # with one of them.
 function(cxx_library_with_type name folder type cxx_flags)
-  # type can be either STATIC or SHARED to denote a static or shared library.
+  # type can be STATIC, SHARED, or empty. When empty, BUILD_SHARED_LIBS decides.
   # ARGN refers to additional arguments after 'cxx_flags'.
-  add_library("${name}" ${type} ${ARGN})
+  set(_lib_type "${type}")
+  if (NOT _lib_type)
+    if (BUILD_SHARED_LIBS)
+      set(_lib_type SHARED)
+    else()
+      set(_lib_type STATIC)
+    endif()
+  endif()
+  add_library("${name}" ${_lib_type} ${ARGN})
   #set_target_properties("${name}" PROPERTIES COMPILE_FLAGS "${cxx_flags}")
-  if ((BUILD_SHARED_LIBS AND NOT type STREQUAL "STATIC") OR type STREQUAL "SHARED")
+  if (_lib_type STREQUAL "SHARED")
     set_target_properties("${name}" PROPERTIES COMPILE_DEFINITIONS "_USRDLL")
   else()
     set_target_properties("${name}" PROPERTIES COMPILE_DEFINITIONS "_LIB")

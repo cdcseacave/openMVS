@@ -23,7 +23,7 @@ namespace SFM {
 class SFM_API PairsMatcher;
 
 // Configuration for ROMAv2 matches
-struct ROMA2Config {
+struct SFM_API ROMA2Config {
 	// Import matches settings
 	String importROMA2Path;	               // optional path to import ROMA2 .npz files
 	float minPairWeight = 3.f;             // minimum composite weight for image pairs to be included during matches import
@@ -55,13 +55,13 @@ unsigned ImportROMA2Matches(
 
 // Import ROMAv2 depths-maps from NPZ files listed in npzFiles (absolute or relative paths).
 // Returns the number of images updated with depth maps, and optionally the paths to the saved depth-map files.
-unsigned ImportROMA2DepthMaps(
+SFM_API unsigned ImportROMA2DepthMaps(
 	class Scene& scene,
 	const CLISTDEF2(String)& npzFiles,
 	const ROMA2Config& config = {},
     CLISTDEF2(String)* outDepthMapFiles = NULL);
 // Convenience overload: accept a directory (scans for .npz), a single file, or a semicolon-separated list.
-unsigned ImportROMA2DepthMaps(
+SFM_API unsigned ImportROMA2DepthMaps(
 	class Scene& scene,
     const ROMA2Config& config = {},
     CLISTDEF2(String)* outDepthMapFiles = NULL);

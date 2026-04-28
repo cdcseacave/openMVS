@@ -106,6 +106,38 @@ SET(CMAKE_POSITION_INDEPENDENT_CODE ON)
 # Set global property to avoid cyclic dependencies.
 SET_PROPERTY(GLOBAL PROPERTY GLOBAL_DEPENDS_NO_CYCLES ON)
 
+# Co-locate executables and DLLs so apps find dependent shared libraries at runtime
+# (Windows resolves DLLs via the executable's directory). Multi-config generators
+# automatically append per-config subfolders (e.g. bin/Release).
+IF(NOT CMAKE_RUNTIME_OUTPUT_DIRECTORY)
+	SET(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+ENDIF()
+IF(NOT CMAKE_LIBRARY_OUTPUT_DIRECTORY)
+	SET(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+ENDIF()
+IF(NOT CMAKE_ARCHIVE_OUTPUT_DIRECTORY)
+	SET(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib")
+ENDIF()
+
+# Hidden symbol visibility on non-Windows so explicit *_API macros control the export
+# surface uniformly across MSVC / GCC / Clang (matches the __declspec(dllexport) model).
+SET(CMAKE_CXX_VISIBILITY_PRESET hidden)
+SET(CMAKE_VISIBILITY_INLINES_HIDDEN ON)
+
+# Tell C++ code we are building shared libraries, so headers (e.g. Types.h) can
+# pick the cross-DLL-friendly path for things like boost exception-unwinding.
+IF(BUILD_SHARED_LIBS)
+	ADD_COMPILE_DEFINITIONS(OPENMVS_SHARED)
+	# MSVC's /GL+/LTCG is catastrophic on shared builds: the linker tries to
+	# re-do whole-program optimization across each DLL's .obj graph, peaking at
+	# 30-40 GB RAM and many minutes per DLL link. Per-DLL native code is fine
+	# without IPO; force-disable here so the user doesn't have to remember.
+	IF(OpenMVS_ENABLE_IPO)
+		MESSAGE(STATUS "Disabling OpenMVS_ENABLE_IPO under BUILD_SHARED_LIBS=ON (IPO under shared builds is memory-pathological).")
+	ENDIF()
+	SET(OpenMVS_ENABLE_IPO OFF CACHE BOOL "Whether to enable interprocedural optimization" FORCE)
+ENDIF()
+
 # Define helper functions and macros.
 INCLUDE(build/Utils.cmake)
 
@@ -252,7 +284,7 @@ if(OpenMVS_USE_PYTHON)
 	endif()
 endif()
 
-FIND_PACKAGE(Boost REQUIRED COMPONENTS iostreams program_options system serialization OPTIONAL_COMPONENTS ${Boost_EXTRA_COMPONENTS})
+FIND_PACKAGE(Boost REQUIRED COMPONENTS iostreams program_options system serialization exception OPTIONAL_COMPONENTS ${Boost_EXTRA_COMPONENTS})
 if(Boost_FOUND)
 	ADD_DEFINITIONS(${Boost_DEFINITIONS})
 	LIST(APPEND OpenMVS_EXTRA_LIBS ${Boost_LIBRARIES})

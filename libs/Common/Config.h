@@ -100,7 +100,11 @@
 #define EXPORT_API __declspec(dllexport)
 #define IMPORT_API __declspec(dllimport)
 /*----------------------------------------------------------------*/
-#ifdef _USRDLL
+// _USRDLL is set per-target by cxx_library_with_type when building any of our
+// DLLs. OPENMVS_SHARED is set globally by the top-level CMakeLists when
+// BUILD_SHARED_LIBS=ON; apps don't have _USRDLL but still need dllimport hints
+// for symbols that live inside Common.dll.
+#if defined(_USRDLL)
   #ifdef Common_EXPORTS
 	#define GENERAL_API EXPORT_API
 	#define GENERAL_TPL
@@ -108,6 +112,9 @@
 	#define GENERAL_API IMPORT_API
 	#define GENERAL_TPL extern
   #endif
+#elif defined(OPENMVS_SHARED)
+  #define GENERAL_API IMPORT_API
+  #define GENERAL_TPL extern
 #else
   #define GENERAL_API
   #define GENERAL_TPL
@@ -128,12 +135,21 @@
 #endif
 
 //----------------------------------------------------------------------
-// DLL_API is ignored for all other systems
+// DLL_API for GCC/Clang under -fvisibility=hidden
 //----------------------------------------------------------------------
+#if defined(__GNUC__) || defined(__clang__)
+#define EXPORT_API __attribute__((visibility("default")))
+#else
 #define EXPORT_API
+#endif
 #define IMPORT_API
-#define GENERAL_API
+#ifdef Common_EXPORTS
+#define GENERAL_API EXPORT_API
 #define GENERAL_TPL
+#else
+#define GENERAL_API
+#define GENERAL_TPL extern
+#endif
 
 // Define platform type
 #if defined(__x86_64__) || defined(__ppc64__) || defined(__aarch64__) || defined(__arm64__) || defined(__mips64)

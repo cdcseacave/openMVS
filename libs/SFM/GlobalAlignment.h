@@ -177,7 +177,7 @@ class SFM_API Scene;
  *     p_B = relativeTransform * p_A = scale * R * p_A + t
  * Its scale field is therefore s_A / s_B (source scale divided by destination scale).
  */
-struct ScenePair
+struct SFM_API ScenePair
 {
 	uint32_t sceneA;              // First sub-scene index
 	uint32_t sceneB;              // Second sub-scene index

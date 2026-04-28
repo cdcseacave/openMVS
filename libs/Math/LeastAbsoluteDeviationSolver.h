@@ -70,7 +70,7 @@ struct MATH_API LeastAbsoluteDeviationSolver
 /*----------------------------------------------------------------*/
 
 // Test the solver with a simple least absolute deviation problem
-bool TestLeastAbsoluteDeviationSolver();
+MATH_API bool TestLeastAbsoluteDeviationSolver();
 /*----------------------------------------------------------------*/
 
 } // namespace SEACAVE

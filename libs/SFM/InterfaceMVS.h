@@ -26,26 +26,26 @@ class SFM_API Scene;
 
 
 // Depth-map undistortion using depth-aware interpolation
-bool UndistortDMAP(const String& depthMapFile,
+SFM_API bool UndistortDMAP(const String& depthMapFile,
 	const cv::Mat& map1, const cv::Mat& map2, const KMatrix& imageUndistortedK);
 
 // Batch undistort depth-maps at their native resolution, matching image undistortion.
 // alpha should match the alpha used for image undistortion.
-bool UndistortDepthMaps(const Scene& scene,
+SFM_API bool UndistortDepthMaps(const Scene& scene,
 	const CLISTDEF2(String)& depthMapFiles,
 	float alpha=0.6f,
 	std::unordered_map<const Camera*, KMatrix>* undistortedIntrinsics=NULL);
 
 
 // Depth-map import from MVS format (similar to MVS::ImportDepthDataRaw)
-bool ImportDepthDataRaw(const String& fileName, String& imageFileName,
+SFM_API bool ImportDepthDataRaw(const String& fileName, String& imageFileName,
 	IIndexArr& IDs, cv::Size& imageSize, cv::Size& depthSize,
 	KMatrix& K, RMatrix& R, CMatrix& C,
 	float& dMin, float& dMax,
 	Image32F& depthMap, Image32F3& normalMap, Image32F& confMap, Image8U4& viewsMap, unsigned flags=15/*all*/);
 
 // Depth-map export to MVS format (similar to MVS::ExportDepthDataRaw)
-bool ExportDepthDataRaw(const String& fileName, const String& imageFileName,
+SFM_API bool ExportDepthDataRaw(const String& fileName, const String& imageFileName,
 	const IIndexArr& IDs, const cv::Size& imageSize,
 	const KMatrix& K, const RMatrix& R, const Point3& C,
 	float dMin, float dMax,
@@ -61,7 +61,7 @@ bool ExportDepthDataRaw(const String& fileName, const String& imageFileName,
  * @param loadColors whether to import per-point colors when present
  * @return true on success
  */
-bool ImportMVS(const String& fileName, Scene& scene, bool loadColors=true);
+SFM_API bool ImportMVS(const String& fileName, Scene& scene, bool loadColors=true);
 
 // Configuration bundle for ExportMVS. All fields have sane defaults so the
 // common case is just `SFM::ExportMVS(path, scene)`. Individual knobs can
@@ -115,7 +115,7 @@ struct SFM_API ExportMVSConfig {
  *                 color export, spherical cube-map options)
  * @return true on success
  */
-bool ExportMVS(const String& fileName, const Scene& scene,
+SFM_API bool ExportMVS(const String& fileName, const Scene& scene,
 	ExportMVSConfig config = {});
 /*----------------------------------------------------------------*/
 

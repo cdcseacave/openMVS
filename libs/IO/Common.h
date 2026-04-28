@@ -11,17 +11,38 @@
 
 // I N C L U D E S /////////////////////////////////////////////////
 
-#if defined(IO_EXPORTS) && !defined(Common_EXPORTS)
-#define Common_EXPORTS
-#endif
-
 #include "../Common/Common.h"
 
+// Per-library export macro: keyed only on IO_EXPORTS so IO symbols are
+// exported while building IO.dll and imported elsewhere, without affecting
+// the export state of symbols owned by Common.
 #ifndef IO_API
-#define IO_API GENERAL_API
+  #ifdef _MSC_VER
+    #if defined(_USRDLL)
+      #ifdef IO_EXPORTS
+        #define IO_API EXPORT_API
+      #else
+        #define IO_API IMPORT_API
+      #endif
+    #elif defined(OPENMVS_SHARED)
+      #define IO_API IMPORT_API
+    #else
+      #define IO_API
+    #endif
+  #else
+    #ifdef IO_EXPORTS
+      #define IO_API EXPORT_API
+    #else
+      #define IO_API
+    #endif
+  #endif
 #endif
 #ifndef IO_TPL
-#define IO_TPL GENERAL_TPL
+  #ifdef IO_EXPORTS
+    #define IO_TPL
+  #else
+    #define IO_TPL extern
+  #endif
 #endif
 
 #define _IMAGE_BMP		// add BMP support

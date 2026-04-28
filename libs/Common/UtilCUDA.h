@@ -34,7 +34,7 @@ namespace SEACAVE {
 
 namespace CUDA {
 
-extern String desiredDeviceIDs;
+extern GENERAL_API String desiredDeviceIDs;
 
 // global list of initialized devices
 struct Device {
@@ -45,7 +45,7 @@ struct Device {
 	inline Device() : ID(-1) {}
 };
 typedef CLISTDEF0(Device) Devices;
-extern Devices devices;
+extern GENERAL_API Devices devices;
 
 // outputs the proper CUDA error code in the event that a CUDA host call returns an error
 inline CUresult __reportCudaError(CUresult result, LPCSTR errorMessage) {
@@ -86,12 +86,12 @@ inline T align(T o, T a) {
 // initialize CUDA devices from a comma-separated list of device IDs;
 // if deviceIDs is "-1", the best available device is selected;
 // if deviceIDs is empty, CUDA is disabled (CPU only)
-CUresult initDevices(const String& deviceIDs = String());
+GENERAL_API CUresult initDevices(const String& deviceIDs = String());
 inline bool isEnabled() { return !devices.empty(); }
 /*----------------------------------------------------------------*/
 
 
-class MemDevice
+class GENERAL_API MemDevice
 {
 protected:
 	CUdeviceptr pData;

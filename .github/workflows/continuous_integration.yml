@@ -182,11 +182,11 @@ jobs:
         run: |
           rm -rf ../vcpkg/buildtrees
           rm -rf ../vcpkg/downloads
-          # Two-phase build to avoid linker memory exhaustion:
-          # Phase 1: libs at 4 threads (compile-bound, per-cl.exe RSS is modest).
-          # Phase 2: apps serially (link-bound, each link gets the full runner heap).
-          cmake --build . --config ${{ env.BUILD_CONFIG }} --parallel 4 --target MVS SFM
-          cmake --build . --config ${{ env.BUILD_CONFIG }} --parallel 1
+          # With BUILD_SHARED_LIBS=ON (default), CMakeLists.txt force-disables IPO and
+          # apps link only against import libs (.lib stubs) instead of pulling in the full
+          # transitive .obj graph — split into a libs-then-apps phase with --parallel 1
+          # on apps on static MSVC links + /GL+/LTCG as it peaks at ~40 GB per link
+          cmake --build . --config ${{ env.BUILD_CONFIG }} --parallel 4
 
       - name: Unit Tests
         working-directory: ./${{ env.BUILD_DIR }}
@@ -210,8 +210,8 @@ jobs:
       actions: read
       packages: write
     env:
-      VCPKG_DEFAULT_TRIPLET: x64-windows-release
-      BUILD_CONFIG: Release
+      VCPKG_DEFAULT_TRIPLET: x64-windows
+      BUILD_CONFIG: Debug
       CMAKE_EXTRA_ARGS: -A x64
 
     steps:

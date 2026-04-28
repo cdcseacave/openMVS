@@ -11,17 +11,38 @@
 
 // I N C L U D E S /////////////////////////////////////////////////
 
-#if defined(Math_EXPORTS) && !defined(Common_EXPORTS)
-#define Common_EXPORTS
-#endif
-
 #include "../Common/Common.h"
 
+// Per-library export macro: keyed only on Math_EXPORTS (auto-defined by CMake
+// for the Math target) so Math symbols are exported while building Math.dll
+// and imported elsewhere, without affecting the export state of Common symbols.
 #ifndef MATH_API
-#define MATH_API GENERAL_API
+  #ifdef _MSC_VER
+    #if defined(_USRDLL)
+      #ifdef Math_EXPORTS
+        #define MATH_API EXPORT_API
+      #else
+        #define MATH_API IMPORT_API
+      #endif
+    #elif defined(OPENMVS_SHARED)
+      #define MATH_API IMPORT_API
+    #else
+      #define MATH_API
+    #endif
+  #else
+    #ifdef Math_EXPORTS
+      #define MATH_API EXPORT_API
+    #else
+      #define MATH_API
+    #endif
+  #endif
 #endif
 #ifndef MATH_TPL
-#define MATH_TPL GENERAL_TPL
+  #ifdef Math_EXPORTS
+    #define MATH_TPL
+  #else
+    #define MATH_TPL extern
+  #endif
 #endif
 
 #include "LMFit/lmmin.h"

@@ -23,7 +23,7 @@ namespace SEACAVE {
 
 // S T R U C T S ///////////////////////////////////////////////////
 
-class Event
+class GENERAL_API Event
 {
 public:
 	Event(uint32_t _id) : id(_id) {}

@@ -31,17 +31,9 @@ int _vscprintf(LPCSTR format, va_list pargs) {
 
 namespace SEACAVE {
 
-const ColorType<uint8_t>::value_type ColorType<uint8_t>::ONE(255);
-const ColorType<uint8_t>::alt_type ColorType<uint8_t>::ALTONE(1.f);
-
-const ColorType<uint32_t>::value_type ColorType<uint32_t>::ONE(255);
-const ColorType<uint32_t>::alt_type ColorType<uint32_t>::ALTONE(1.f);
-
-const ColorType<float>::value_type ColorType<float>::ONE(1.f);
-const ColorType<float>::alt_type ColorType<float>::ALTONE(255);
-
-const ColorType<double>::value_type ColorType<double>::ONE(1.0);
-const ColorType<double>::alt_type ColorType<double>::ALTONE(255);
+// ColorType<>::ONE/ALTONE are now `inline static constexpr` in Types.h
+// (no DLL-crossing data symbol needed); definitions previously here are
+// removed.
 /*----------------------------------------------------------------*/
 
 

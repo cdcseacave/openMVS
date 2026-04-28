@@ -33,16 +33,21 @@
 
 #ifdef _USE_BOOST_PYTHON
 
-#undef _USRDLL
-#define _LIB
+// In static-only builds the previous code did `#undef _USRDLL`/`#define _LIB`
+// around these includes to neutralize *_API macros. With shared libs we keep
+// _USRDLL set so consumer TUs see __declspec(dllimport) and resolve symbols
+// against the import libs of Common.dll / MVS.dll / SFM.dll at link time.
 #include "Common.h"
 #include "Scene.h"
-#undef _LIB
-#define _USRDLL
 #ifndef BOOST_PYTHON_STATIC_LIB
 #define BOOST_PYTHON_STATIC_LIB
 #endif
 #include <boost/python.hpp>
+
+// Forward declaration — defined in libs/SFM/PythonWrapper.cpp; called from
+// inside our single BOOST_PYTHON_MODULE so SFM and MVS bindings end up in
+// the same `pyOpenMVS` extension module.
+namespace pySFM { void RegisterBindings(); }
 
 
 // D E F I N E S ///////////////////////////////////////////////////
@@ -102,6 +107,20 @@ public:
 		return TextureMesh(nResolutionLevel, 640/*nMinResolution*/, 0/*minCommonCameras*/, 0.f/*fOutlierThreshold*/, 0.3f/*fRatioDataSmoothness*/,
 			true/*bGlobalSeamLeveling*/, true/*bLocalSeamLeveling*/, 0/*nTextureSizeMultiple*/, Pixel8U(nColEmpty));
 	}
+
+	// SceneGeometry exposures (commit df48bf5): KD-tree-based normal estimation,
+	// sparse surface estimation, and ROI cropping operate on the in-memory
+	// pointcloud and don't need MVS_API tagging because Scene already has it.
+	bool pyEstimatePointCloudNormals(bool bRefine=true) {
+		return EstimatePointCloudNormals(bRefine);
+	}
+	bool pyEstimateSparseSurface(unsigned kNeighbors=16, float sizeScale=0.9f, float normalAngleMaxDeg=0.f) {
+		return EstimateSparseSurface(kNeighbors, sizeScale, FD2R(normalAngleMaxDeg));
+	}
+	void pyCropToROI(unsigned minNumPoints=3) {
+		if (IsBounded())
+			CropToROI(static_cast<const OBB3f&>(obb), minNumPoints);
+	}
 };
 
 void SetWorkingFolder(const std::string& folder) {
@@ -128,9 +147,16 @@ BOOST_PYTHON_MODULE(pyOpenMVS) {
 		.def("clean_mesh", &Scene::pyCleanMesh, (arg("decimate")=1.f, arg("remove_spurious")=20.f, arg("remove_spikes")=true, arg("close_holes")=30, arg("smooth_mesh")=2, arg("edge_length")=0.f, arg("crop_to_roi")=true))
 		.def("refine_mesh", &Scene::pyRefineMesh, (arg("resolution_level")=0, arg("ensure_edge_size")=1, arg("max_face_area")=32, arg("scales")=2, arg("scale_step")=0.5f, arg("regularity_weight")=0.2f))
 		.def("texture_mesh", &Scene::pyTextureMesh, (arg("resolution_level")=0, arg("empty_color")=0x00FF7F27))
-		.def("compute_leveled_volume", &Scene::ComputeLeveledVolume);
+		.def("compute_leveled_volume", &Scene::ComputeLeveledVolume)
+		.def("estimate_normals", &Scene::pyEstimatePointCloudNormals, (arg("refine")=true))
+		.def("estimate_sparse_surface", &Scene::pyEstimateSparseSurface,
+				(arg("k_neighbors")=16, arg("size_scale")=0.9f, arg("normal_angle_max_deg")=0.f))
+		.def("crop_to_roi", &Scene::pyCropToROI, (arg("min_num_points")=3));
 
 	def("set_working_folder", &SetWorkingFolder);
+
+	// Register SFM-side bindings (SfMScene + ImportConfig/ReconstructionConfig/...).
+	pySFM::RegisterBindings();
 } // BOOST_PYTHON_MODULE
 /*----------------------------------------------------------------*/
 

@@ -83,19 +83,33 @@ endif()
 TARGET_LINK_LIBRARIES(MVS PUBLIC Common Math IO CGAL::CGAL ${CERES_LIBRARIES})
 
 if(OpenMVS_USE_PYTHON)
+	# SFM-side wrapper lives in libs/SFM/PythonWrapper.cpp; compile it into the
+	# same pyOpenMVS module so a single .pyd exposes both Scene (MVS) and
+	# SfMScene (SFM) without juggling two extension modules.
+	GET_FILENAME_COMPONENT(PATH_SFMPythonWrapper_cpp
+		${CMAKE_CURRENT_SOURCE_DIR}/../SFM/PythonWrapper.cpp ABSOLUTE)
 	# Create the Python wrapper
 	cxx_library_with_type(pyOpenMVS "Libs" "SHARED" "${cxx_default}"
 		${PATH_PythonWrapper_cpp}
+		${PATH_SFMPythonWrapper_cpp}
 	)
 	# Link its dependencies
 	if(_USE_CUDA)
 		SET_TARGET_PROPERTIES(pyOpenMVS PROPERTIES CUDA_ARCHITECTURES "50;72;75")
 	endif()
-	TARGET_LINK_LIBRARIES(pyOpenMVS PRIVATE MVS)
-	# Suppress prefix "lib" because Python does not allow this prefix
+	TARGET_LINK_LIBRARIES(pyOpenMVS PRIVATE MVS SFM)
+	# Output as a Python extension module: no "lib" prefix, ".pyd" suffix on
+	# Windows so the standard `import pyOpenMVS` machinery loads it directly.
 	SET_TARGET_PROPERTIES(pyOpenMVS PROPERTIES PREFIX "")
-	# Install
-	INSTALL(TARGETS pyOpenMVS DESTINATION "${PYTHON_INSTALL_PATH}")
+	IF(WIN32)
+		SET_TARGET_PROPERTIES(pyOpenMVS PROPERTIES SUFFIX ".pyd")
+	ENDIF()
+	# Install pyOpenMVS.pyd alongside the openmvs/__init__.py loader so users
+	# get a self-contained package: import openmvs (which adds CUDA + co-located
+	# DLL search paths, then re-exports pyOpenMVS).
+	INSTALL(TARGETS pyOpenMVS DESTINATION "${PYTHON_INSTALL_PATH}/openmvs")
+	INSTALL(FILES ${CMAKE_SOURCE_DIR}/python/openmvs/__init__.py
+		DESTINATION "${PYTHON_INSTALL_PATH}/openmvs")
 endif()
 
 # Install
