@@ -164,7 +164,9 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: |
           sudo apt-get update -y
-          sudo apt-get install -y autoconf-archive libxmu-dev libdbus-1-dev libxtst-dev libxi-dev libxinerama-dev libxcursor-dev xorg-dev libgl-dev libglu1-mesa-dev autoconf automake bison libtool libltdl-dev pkg-config nasm ninja-build
+          # libav*-dev / libsw*-dev: consumed by the local ports/opencv4
+          # overlay so OpenCV's videoio links against apt-provided ffmpeg
+          sudo apt-get install -y autoconf-archive libxmu-dev libdbus-1-dev libxtst-dev libxi-dev libxinerama-dev libxcursor-dev xorg-dev libgl-dev libglu1-mesa-dev autoconf automake bison libtool libltdl-dev pkg-config nasm ninja-build libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev
 
       - name: Install macOS dependencies
         if: matrix.os == 'macos-latest'
@@ -184,9 +186,9 @@ jobs:
           rm -rf ../vcpkg/downloads
           # With BUILD_SHARED_LIBS=ON (default), CMakeLists.txt force-disables IPO and
           # apps link only against import libs (.lib stubs) instead of pulling in the full
-          # transitive .obj graph — split into a libs-then-apps phase with --parallel 1
-          # on apps on static MSVC links + /GL+/LTCG as it peaks at ~40 GB per link
-          cmake --build . --config ${{ env.BUILD_CONFIG }} --parallel 4
+          # transitive .obj graph. On static MSVC links + /GL+/LTCG build, split into a
+          # libs-then-apps phase with --parallel 1 for apps as it peaks at ~40 GB per link.
+          cmake --build . --parallel 4 --config ${{ env.BUILD_CONFIG }}
 
       - name: Unit Tests
         working-directory: ./${{ env.BUILD_DIR }}

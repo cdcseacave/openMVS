@@ -31,7 +31,6 @@
       "name": "opencv",
       "features": [
         "eigen",
-        "ffmpeg",
         "jpegxl",
         "openexr"
       ]

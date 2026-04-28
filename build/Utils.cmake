@@ -993,3 +993,120 @@ function(cxx_executable_with_flags name folder cxx_flags libs)
     endforeach()
   endif()
 endfunction()
+
+
+# OpenMVS_GenerateOpencv4Overlay(<overlay_ports_var>)
+#
+# On Linux only, generate a build-tree overlay for vcpkg's `opencv4` port that
+# mirrors the upstream port from the user's pinned VCPKG_ROOT and injects two
+# extra CMake flags so OpenCV's videoio links against the system FFmpeg
+# (apt's libav*-dev) via pkg-config instead of vcpkg compiling its hermetic
+# `ffmpeg` port (a 30+ minute build otherwise unavoidable just to support
+# cv::VideoCapture in KeyframeExtractor).
+#
+# Avoids carrying the full upstream opencv4 port (~22 files, 700+ lines,
+# version-tied patches) inside this repo: when the user bumps VCPKG_COMMIT
+# (i.e., points VCPKG_ROOT at a newer vcpkg), the overlay is regenerated
+# against the new upstream files automatically. Windows and macOS skip the
+# overlay entirely — videoio uses OS-native backends there (MSMF / DirectShow
+# on Windows, AVFoundation on macOS), so vcpkg can build the upstream
+# opencv4 port unmodified.
+#
+# Argument: name of a list variable (in the caller's scope) onto which the
+# generated overlay path will be appended. The variable is updated via
+# PARENT_SCOPE — the caller does not need to read a return value.
+FUNCTION(OpenMVS_GenerateOpencv4Overlay overlay_ports_var)
+	IF(NOT CMAKE_HOST_SYSTEM_NAME STREQUAL "Linux")
+		RETURN()
+	ENDIF()
+	SET(_vcpkg_root "")
+	IF(DEFINED ENV{VCPKG_ROOT})
+		SET(_vcpkg_root "$ENV{VCPKG_ROOT}")
+	ELSEIF(DEFINED CMAKE_TOOLCHAIN_FILE AND CMAKE_TOOLCHAIN_FILE MATCHES "(.*)/scripts/buildsystems/vcpkg.cmake$")
+		SET(_vcpkg_root "${CMAKE_MATCH_1}")
+	ENDIF()
+	IF(NOT _vcpkg_root OR NOT EXISTS "${_vcpkg_root}/ports/opencv4/portfile.cmake")
+		MESSAGE(WARNING "VCPKG_ROOT not set or upstream opencv4 port not found — vcpkg will compile its hermetic ffmpeg port (slow). Set VCPKG_ROOT to your vcpkg checkout to enable the system-FFmpeg overlay.")
+		RETURN()
+	ENDIF()
+	# Verify the system FFmpeg dev packages are present via pkg-config: the
+	# override we splice forces WITH_FFMPEG=ON, and the upstream opencv4
+	# portfile sets ENABLE_CONFIG_VERIFICATION=ON, so an absent libav* would
+	# hard-fail the opencv4 build ~10 minutes in with a cryptic OpenCV error.
+	# Detect now and fast-fail with the exact apt-get line instead.
+	FIND_PACKAGE(PkgConfig QUIET)
+	SET(_ffmpeg_found FALSE)
+	IF(PkgConfig_FOUND)
+		pkg_check_modules(_OPENMVS_SYS_FFMPEG QUIET libavcodec libavformat libavutil libswscale libswresample)
+		IF(_OPENMVS_SYS_FFMPEG_FOUND)
+			SET(_ffmpeg_found TRUE)
+		ENDIF()
+	ENDIF()
+	IF(NOT _ffmpeg_found)
+		MESSAGE(FATAL_ERROR "OpenMVS opencv4 overlay needs the system FFmpeg dev packages, which were not found via pkg-config. Install them with:\n"
+			"    sudo apt-get install -y libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev\n"
+			"Then re-run cmake. (Without the overlay, vcpkg would compile its hermetic ffmpeg port instead — a 30+ minute build.)")
+	ENDIF()
+	SET(_upstream "${_vcpkg_root}/ports/opencv4")
+	SET(_overlay "${CMAKE_BINARY_DIR}/_vcpkg_overlay/opencv4")
+	# Mirror every file from the upstream port (manifest, patches, usage.in)
+	# into the overlay; file(COPY) is timestamp-aware so this is a no-op on
+	# subsequent reconfigures unless upstream actually changed.
+	FILE(MAKE_DIRECTORY "${_overlay}")
+	FILE(GLOB _files "${_upstream}/*")
+	FOREACH(_f IN LISTS _files)
+		GET_FILENAME_COMPONENT(_name "${_f}" NAME)
+		IF(NOT _name STREQUAL "portfile.cmake")
+			FILE(COPY "${_f}" DESTINATION "${_overlay}")
+		ENDIF()
+	ENDFOREACH()
+	# Read upstream's portfile.cmake, splice our flag block in just before
+	# vcpkg_cmake_configure(, and write the patched copy. ADDITIONAL_BUILD_FLAGS
+	# is the same list the upstream portfile passes into the configure OPTIONS
+	# *after* ${FEATURE_OPTIONS} and after its own
+	# -DOPENCV_FFMPEG_USE_FIND_PACKAGE=FFMPEG line, so our override wins on
+	# conflict.
+	FILE(READ "${_upstream}/portfile.cmake" _portfile)
+	SET(_injection "
+# OpenMVS overlay (auto-generated): force-enable the FFMPEG videoio backend
+# and have OpenCV detect it via pkg-config (system apt libav*-dev) instead
+# of pulling vcpkg's hermetic ffmpeg port. See <openmvs>/build/Utils.cmake.
+#
+# PKG_CONFIG_PATH ordering matters here. We need pkg-config to find:
+#   - libav*.pc only on the system (vcpkg's ffmpeg port isn't installed)
+#   - gtk+-3.0.pc, fontconfig.pc, etc. from vcpkg (newer versions than
+#     Ubuntu 24.04 ships — e.g. fontconfig 2.17.1 vs system 2.15.0; pango
+#     refuses anything < 2.17.0)
+#   - x11.pc / xext.pc / xrender.pc only on the system (vcpkg's gtk3 chain
+#     hard-requires these and vcpkg never ships them)
+# pkg-config searches PKG_CONFIG_PATH left-to-right then PKG_CONFIG_LIBDIR.
+# Putting vcpkg's pkgconfig dirs FIRST in PATH prevents the system's older
+# fontconfig from shadowing vcpkg's newer one and breaking the gtk chain;
+# the system dirs follow so ffmpeg / x11 remain reachable.
+foreach(_p
+    \"\${CURRENT_INSTALLED_DIR}/lib/pkgconfig\"
+    \"\${CURRENT_INSTALLED_DIR}/share/pkgconfig\"
+    \"/usr/lib/x86_64-linux-gnu/pkgconfig\"
+    \"/usr/lib/pkgconfig\"
+    \"/usr/share/pkgconfig\"
+)
+  if(EXISTS \"\${_p}\")
+    if(DEFINED ENV{PKG_CONFIG_PATH} AND NOT \"\$ENV{PKG_CONFIG_PATH}\" STREQUAL \"\")
+      set(ENV{PKG_CONFIG_PATH} \"\$ENV{PKG_CONFIG_PATH}:\${_p}\")
+    else()
+      set(ENV{PKG_CONFIG_PATH} \"\${_p}\")
+    endif()
+  endif()
+endforeach()
+list(APPEND ADDITIONAL_BUILD_FLAGS
+  -DWITH_FFMPEG=ON
+  -DOPENCV_FFMPEG_USE_FIND_PACKAGE=OFF
+)
+
+vcpkg_cmake_configure(")
+	STRING(REPLACE "vcpkg_cmake_configure(" "${_injection}" _portfile "${_portfile}")
+	FILE(WRITE "${_overlay}/portfile.cmake" "${_portfile}")
+	LIST(APPEND ${overlay_ports_var} "${_overlay}")
+	SET(${overlay_ports_var} "${${overlay_ports_var}}" PARENT_SCOPE)
+	MESSAGE(STATUS "Generated opencv4 overlay port at ${_overlay} (sources system FFmpeg)")
+ENDFUNCTION()

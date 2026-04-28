@@ -16,17 +16,16 @@ re-exports the extension module's public API.
 Typical usage::
 
     import openmvs as ovs
-    sfm = ovs.SfMScene(num_threads=8)
+    sfm = ovs.SfMScene(max_threads=8)
     sfm.reconstruct("path/to/images", ovs.ReconstructionConfig())
     sfm.export_to_mvs("scene.mvs")
 
-    mvs = ovs.Scene(num_threads=8)
+    mvs = ovs.Scene(max_threads=8)
     mvs.load("scene.mvs")
     mvs.dense_reconstruction()
 """
 from __future__ import annotations
 
-import glob
 import os
 import sys
 from pathlib import Path
@@ -93,8 +92,8 @@ if sys.platform == "win32":
 
 # Re-export the extension module's symbols.  We do this with `from ... import *`
 # so consumers can write `import openmvs as ovs; ovs.SfMScene(...)`.
-from pyOpenMVS import *  # noqa: F401, F403, E402
-from pyOpenMVS import (  # noqa: E402
+from .pyOpenMVS import *  # noqa: F401, F403, E402
+from .pyOpenMVS import (  # noqa: E402
     ExportMVSConfig,
     FeatureExtractionConfig,
     ImportConfig,

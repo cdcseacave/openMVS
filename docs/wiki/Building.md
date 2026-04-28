@@ -26,7 +26,11 @@ Pre-built stable binaries for every supported platform (Windows x64, Windows x64
 
 ```
 #Install necesary system packages, for ex. on Debian OS:
-sudo apt install git cmake autoconf autoconf-archive automake libtool bison gfortran pkg-config libxi-dev libx11-dev libxft-dev libxtst-dev libxext-dev libxrandr-dev libxinerama-dev libxcursor-dev xorg-dev libgl-dev libglu1-mesa-dev nasm
+#  The libav*-dev / libsw*-dev packages provide system FFmpeg, which the bundled
+#  ports/opencv4 overlay links against (via pkg-config) so OpenCV's videoio can
+#  decode video files. Windows and macOS need no extra packages — OpenCV's
+#  videoio uses Media Foundation / DirectShow (Windows) or AVFoundation (macOS).
+sudo apt install git cmake autoconf autoconf-archive automake libtool bison gfortran pkg-config libxi-dev libx11-dev libxft-dev libxtst-dev libxext-dev libxrandr-dev libxinerama-dev libxcursor-dev xorg-dev libgl-dev libglu1-mesa-dev nasm libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev
 
 #Clone OpenMVS
 git clone --recurse-submodules https://github.com/cdcseacave/openMVS.git

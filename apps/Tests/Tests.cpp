@@ -96,9 +96,16 @@ bool UnitTests()
 // test OpenMVS functionality
 int main(int argc, LPCTSTR* argv)
 {
-	// Line-buffer stdout/stderr so CI logs are flushed per line and not lost on SIGKILL
+	// Flush stdout/stderr per write so CI logs aren't lost on SIGKILL.
+	// MSVC's ucrtbase rejects (buf=NULL, size=0) with mode!=_IONBF as an invalid
+	// parameter (fatal), and treats _IOLBF as _IOFBF anyway — so use _IONBF there.
+	#ifdef _MSC_VER
+	std::setvbuf(stdout, NULL, _IONBF, 0);
+	std::setvbuf(stderr, NULL, _IONBF, 0);
+	#else
 	std::setvbuf(stdout, NULL, _IOLBF, 0);
 	std::setvbuf(stderr, NULL, _IOLBF, 0);
+	#endif
 	OPEN_LOG();
 	OPEN_LOGCONSOLE();
 	Initialize(APPNAME);

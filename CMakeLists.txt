@@ -56,8 +56,20 @@ IF(NOT DEFINED CMAKE_TOOLCHAIN_FILE AND DEFINED ENV{VCPKG_ROOT})
 		SET(VCPKG_TARGET_TRIPLET "$ENV{VCPKG_DEFAULT_TRIPLET}" CACHE STRING "")
 	ENDIF()
 ENDIF()
+
 # Add local ports to overlay
 SET(VCPKG_OVERLAY_PORTS "${CMAKE_SOURCE_DIR}/ports")
+
+# Define helper functions and macros (must come before the project() call
+# below: the opencv4 overlay generator declared in Utils.cmake mutates
+# VCPKG_OVERLAY_PORTS, which the vcpkg toolchain consumes during project()).
+INCLUDE(build/Utils.cmake)
+
+# On Linux: regenerate a build-tree opencv4 overlay against the upstream port
+# at $VCPKG_ROOT and append it to VCPKG_OVERLAY_PORTS. Skipped on
+# Windows/macOS — see Utils.cmake for the full rationale.
+OpenMVS_GenerateOpencv4Overlay(VCPKG_OVERLAY_PORTS)
+
 IF(OpenMVS_BUILD_TOOLS AND OpenMVS_BUILD_VIEWER)
 	LIST(APPEND VCPKG_MANIFEST_FEATURES "viewer")
 ENDIF()
@@ -124,14 +136,11 @@ ENDIF()
 SET(CMAKE_CXX_VISIBILITY_PRESET hidden)
 SET(CMAKE_VISIBILITY_INLINES_HIDDEN ON)
 
-# Define helper functions and macros.
-# Note: build/Utils.cmake declares `OPTION(BUILD_SHARED_LIBS ...)`, so the
-# OPENMVS_SHARED / IPO logic below MUST come AFTER this include — otherwise
-# BUILD_SHARED_LIBS is undefined at the IF() check and the block silently
-# no-ops, which on Windows surfaces as `boost::throw_exception` link failures
-# from SFM/MVS (Types.h still picks the BOOST_NO_EXCEPTIONS path).
-INCLUDE(build/Utils.cmake)
-
+# build/Utils.cmake was already included above (it must run before project()
+# so the opencv4 overlay generator can append to VCPKG_OVERLAY_PORTS before
+# the vcpkg toolchain consumes it). Among other things, it declares
+# OPTION(BUILD_SHARED_LIBS ...), so the OPENMVS_SHARED / IPO logic that
+# follows can rely on BUILD_SHARED_LIBS being defined here.
 # Tell C++ code we are building shared libraries, so headers (e.g. Types.h) can
 # pick the cross-DLL-friendly path for things like boost exception-unwinding.
 IF(BUILD_SHARED_LIBS)
