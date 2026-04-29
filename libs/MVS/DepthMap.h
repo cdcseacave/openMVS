@@ -463,7 +463,7 @@ struct MVS_API DepthEstimator {
 		const float cosAngLen(normal.dot(viewDir));
 		if (cosAngLen >= 0)
 			normal = RMatrixBaseF(normal.cross(viewDir), MINF((ACOS(cosAngLen/norm(viewDir))-FD2R(90.f))*1.01f, -0.001f)) * normal;
-		ASSERT(ISEQUAL(norm(normal), 1.f, 1e-1f), "Norm = ", norm(normal));
+		ASSERT(ISEQUAL(norm(normal), 1.f), "Norm = ", norm(normal));
 	}
 
 	static bool ImportIgnoreMask(const Image&, const cv::Size&, uint8_t nIgnoreMaskLabel, BitMatrix&, Image8U* =NULL);

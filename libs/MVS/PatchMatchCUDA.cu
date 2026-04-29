@@ -104,7 +104,10 @@ __device__ inline void PDF2CDF(float* probs, const int numProbs) {
 /*----------------------------------------------------------------*/
 
 
-// generate a random normal
+// generate a random normal (Marsaglia's method on the unit sphere).
+// Algebraically unit-length: |n|^2 = 4q1^2(1-s) + 4q2^2(1-s) + (1-2s)^2 = 1.
+// Float-32 round-off contributes <=1 ULP from the single sqrtf(1-s); no
+// .normalized() defensive call is required.
 __device__ inline Point3 GenerateRandomNormal(const CUDA::Camera& camera, const Point2i& p, RandState* randState)
 {
 	float q1, q2, s;
@@ -113,16 +116,14 @@ __device__ inline Point3 GenerateRandomNormal(const CUDA::Camera& camera, const 
 		q2 = 2.f * curand_uniform(randState) - 1.f;
 		s = q1 * q1 + q2 * q2;
 	} while (s >= 1.f);
-	const float sq = sqrt(1.f - s);
-	Point3 normal(
+	const float sq = sqrtf(1.f - s);
+	const Point3 normal(
 		2.f * q1 * sq,
 		2.f * q2 * sq,
 		1.f - 2.f * s);
 
 	const Point3 viewDirection = camera.model.ViewDirection(p);
-	if (normal.dot(viewDirection) > 0.f)
-		normal = -normal;
-	return normal.normalized();
+	return normal.dot(viewDirection) > 0.f ? Point3(-normal) : normal;
 }
 
 // randomly perturb a normal

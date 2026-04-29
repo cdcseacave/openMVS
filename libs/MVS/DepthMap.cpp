@@ -684,7 +684,7 @@ void DepthEstimator::ProcessPixel(IDX idx)
 		const Depth ndepth(depthMap0(nx));
 		if (ndepth > 0) {
 			#if DENSE_SMOOTHNESS != DENSE_SMOOTHNESS_NA
-			ASSERT(ISEQUAL(norm(normalMap0(nx)), 1.f, 1e-1f), "Norm = ", norm(normalMap0(nx)));
+			ASSERT(ISEQUAL(norm(normalMap0(nx)), 1.f), "Norm = ", norm(normalMap0(nx)));
 			neighbors.emplace_back(nx);
 			neighborsClose.emplace_back(NeighborEstimate{ndepth, normalMap0(nx)
 				#if DENSE_SMOOTHNESS == DENSE_SMOOTHNESS_PLANE
@@ -699,7 +699,7 @@ void DepthEstimator::ProcessPixel(IDX idx)
 	const auto AddDirection = [this] (const ImageRef& nx) {
 		const Depth ndepth(depthMap0(nx));
 		if (ndepth > 0) {
-			ASSERT(ISEQUAL(norm(normalMap0(nx)), 1.f, 1e-1f), "Norm = ", norm(normalMap0(nx)));
+			ASSERT(ISEQUAL(norm(normalMap0(nx)), 1.f), "Norm = ", norm(normalMap0(nx)));
 			neighborsClose.emplace_back(NeighborEstimate{ndepth, normalMap0(nx)
 				#if DENSE_SMOOTHNESS == DENSE_SMOOTHNESS_PLANE
 				, Cast<float>(image0.camera.TransformPointI2C(Point3(nx, ndepth)))
@@ -950,17 +950,31 @@ DepthEstimator::PixelEstimate DepthEstimator::PerturbEstimate(const PixelEstimat
 	const float maxDepth = est.depth * (1.f+perturbation);
 	ptbEst.depth = CLAMP(rnd.randomUniform(minDepth, maxDepth), dMin, dMax);
 
-	// perturb normal
+	// perturb normal: Rodrigues rotation around a Marsaglia-unit axis. Old
+	// implementation composed three independently-rounded Euler-angle sin/cos
+	// values into a non-orthogonal float32 matrix, drifting up to ~1% and
+	// requiring the assertion tolerance to be 1e-2f. Using a unit axis +
+	// real Rodrigues keeps |perturbed| within float-32 noise floor.
 	const Normal viewDir(Cast<float>(X0));
 	std::uniform_real_distribution<float> urd(-1.f, 1.f);
 	const int numMaxTrials = 3;
 	int numTrials = 0;
 	perturbation *= FHALF_PI;
 	while(true) {
-		// generate random perturbation rotation
-		const RMatrixBaseF R(urd(rnd)*perturbation, urd(rnd)*perturbation, urd(rnd)*perturbation);
-		// perturb normal vector
-		ptbEst.normal = R * est.normal;
+		// random unit-length axis (Marsaglia's method, exact in math)
+		float q1, q2, ss;
+		do {
+			q1 = urd(rnd);
+			q2 = urd(rnd);
+			ss = q1*q1 + q2*q2;
+		} while (ss >= 1.f);
+		const float sq = SQRT(1.f - ss);
+		const Normal axis(2.f*q1*sq, 2.f*q2*sq, 1.f - 2.f*ss);
+		const float theta = urd(rnd) * perturbation;
+		// RMatrixBaseF(axis, theta) builds an orthogonal Rodrigues rotation
+		// (Set(wa,phi) at Rotation.inl normalises wa internally as well, so
+		// even residual axis drift would not affect orthogonality).
+		ptbEst.normal = RMatrixBaseF(axis, theta) * est.normal;
 		// make sure the perturbed normal is still looking towards the camera,
 		// otherwise try again with a smaller perturbation
 		if (ptbEst.normal.dot(viewDir) < 0.f)
@@ -971,7 +985,7 @@ DepthEstimator::PixelEstimate DepthEstimator::PerturbEstimate(const PixelEstimat
 		}
 		perturbation *= 0.5f;
 	}
-	ASSERT(ISEQUAL(norm(ptbEst.normal), 1.f, 1e-2f), "Norm = ", norm(ptbEst.normal));
+	ASSERT(ISEQUAL(norm(ptbEst.normal), 1.f), "Norm = ", norm(ptbEst.normal));
 
 	return ptbEst;
 }
