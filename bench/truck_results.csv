@@ -1,0 +1,9 @@
+build,R,V,precision,recall,fscore,tau,openmvs_total_s,wall_s,eval_wall_s,points,view_ms_mean,view_ms_max,n_views,log,eval_dir
+baseline,1,8,0.6828,0.7185,0.7002,0.005,104.379,106.75,84.82,5825537,0,,0,DensifyPointCloud-26042900164400624D.log,C:\Pro\TanksAndTemples\data\training\Truck\evaluation_R1_V8_baseline
+baseline,1,16,0.689,0.7101,0.6994,0.005,145.568,147.93,79.93,5746545,98.3,214,753,DensifyPointCloud-2604290020120022C5.log,C:\Pro\TanksAndTemples\data\training\Truck\evaluation_R1_V16_baseline
+baseline,0,8,0.6802,0.8272,0.7465,0.005,771.119,780.21,131.78,20801892,227.5,498,753,DensifyPointCloud-260429002417006A15.log,C:\Pro\TanksAndTemples\data\training\Truck\evaluation_R0_V8_baseline
+baseline,0,16,0.6863,0.8136,0.7446,0.005,716.582,726.74,135.37,21560978,361.1,686,753,DensifyPointCloud-2604290039410077B1.log,C:\Pro\TanksAndTemples\data\training\Truck\evaluation_R0_V16_baseline
+d4_fix,1,8,0.6825,0.7188,0.7002,0.005,101.528,104.07,83.2,5824225,55.9,131,753,DensifyPointCloud-260429012845004CE1.log,C:\Pro\TanksAndTemples\data\training\Truck\evaluation_R1_V8_d4_fix
+d4_fix,1,16,0.689,0.7102,0.6994,0.005,148.783,151.14,80.05,5744632,96.2,429,753,DensifyPointCloud-260429013203001CBD.log,C:\Pro\TanksAndTemples\data\training\Truck\evaluation_R1_V16_d4_fix
+d4_fix,0,8,0.6802,0.827,0.7465,0.005,1198.663,1207.65,127.24,20794264,249.7,558,753,DensifyPointCloud-260429013605004471.log,C:\Pro\TanksAndTemples\data\training\Truck\evaluation_R0_V8_d4_fix
+d4_fix,0,16,0.6858,0.8135,0.7442,0.005,618.438,628.25,125.51,21560949,354.6,713,753,DensifyPointCloud-260429015831003239.log,C:\Pro\TanksAndTemples\data\training\Truck\evaluation_R0_V16_d4_fix

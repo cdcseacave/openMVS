@@ -334,10 +334,13 @@ __device__ inline float MultiViewScoreNeighborPlane(const ImagePixels* images, c
 __device__ inline float AggregateMultiViewScores(const unsigned* viewWeights, const float* costVector, int numViews)
 {
 	float cost = 0;
+	unsigned wsum = 0;
 	for (int imgId = 0; imgId < numViews; ++imgId)
-		if (viewWeights[imgId])
+		if (viewWeights[imgId]) {
 			cost += viewWeights[imgId] * costVector[imgId];
-	return cost / NUM_SAMPLES;
+			wsum += viewWeights[imgId];
+		}
+	return wsum ? cost / float(wsum) : 1.2f;
 }
 
 // propagate and refine the plane estimate for the current pixel employing the asymmetric approach described in:
