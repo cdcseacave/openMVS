@@ -27,3 +27,14 @@ a1_refcache,1,8,0.6825,0.7188,0.7002,0.005,100.255,102.61,83.67,5825345,53.4,133
 a1_refcache,1,16,0.6891,0.7098,0.6993,0.005,139.463,141.85,81.56,5749778,90.8,195,753,DensifyPointCloud-260429102151004911.log,C:\Pro\TanksAndTemples\data\training\Truck\evaluation_R1_V16_a1_refcache
 a1_refcache,0,8,0.6802,0.8269,0.7464,0.005,427.1,435.88,126.29,20800651,198.1,460,753,DensifyPointCloud-260429102545002881.log,C:\Pro\TanksAndTemples\data\training\Truck\evaluation_R0_V8_a1_refcache
 a1_refcache,0,16,0.6844,0.8132,0.7433,0.005,630.192,640.24,131.39,21691529,328.3,633,753,DensifyPointCloud-2604291035180076A1.log,C:\Pro\TanksAndTemples\data\training\Truck\evaluation_R0_V16_a1_refcache
+c4_rodrigues,1,8,0.6826,0.7184,0.7,0.005,104.414,106.81,93.7,5822788,53.6,128,753,DensifyPointCloud-260429114450002635.log,C:\Pro\TanksAndTemples\data\training\Truck\evaluation_R1_V8_c4_rodrigues
+c4_rodrigues,1,16,0.6896,0.7097,0.6995,0.005,211.607,216.51,165.56,5742211,119.0,279,753,DensifyPointCloud-2604291148210078A5.log,C:\Pro\TanksAndTemples\data\training\Truck\evaluation_R1_V16_c4_rodrigues
+c4_rodrigues,0,8,0.681,0.8266,0.7468,0.005,789.424,810.0,261.69,20792234,270.2,547,753,DensifyPointCloud-260429115456007999.log,C:\Pro\TanksAndTemples\data\training\Truck\evaluation_R0_V8_c4_rodrigues
+a1_refcache_v2,1,8,0.6826,0.7185,0.7001,0.005,105.163,108.31,84.93,5824598,55.0,144,753,DensifyPointCloud-26042914411700462D.log,C:\Pro\TanksAndTemples\data\training\Truck\evaluation_R1_V8_a1_refcache_v2
+a1_refcache_v2,1,16,0.6886,0.7101,0.6992,0.005,140.643,143.78,80.41,5747973,91.7,211,753,DensifyPointCloud-2604291444440040BD.log,C:\Pro\TanksAndTemples\data\training\Truck\evaluation_R1_V16_a1_refcache_v2
+a1_refcache_v2,0,8,0.6801,0.827,0.7464,0.005,473.803,482.68,133.93,20803411,207.3,497,753,DensifyPointCloud-2604291448400079AD.log,C:\Pro\TanksAndTemples\data\training\Truck\evaluation_R0_V8_a1_refcache_v2
+a1_refcache_v2,0,16,0.6862,0.8135,0.7445,0.005,587.851,597.47,132.08,21567492,332.6,662,753,DensifyPointCloud-260429145912006CF5.log,C:\Pro\TanksAndTemples\data\training\Truck\evaluation_R0_V16_a1_refcache_v2
+c4_rodrigues_v2,1,8,0.6832,0.7184,0.7004,0.005,138.548,140.94,109.76,5822045,52.8,171,753,DensifyPointCloud-260429151216003D5D.log,C:\Pro\TanksAndTemples\data\training\Truck\evaluation_R1_V8_c4_rodrigues_v2
+c4_rodrigues_v2,1,16,0.6898,0.71,0.6997,0.005,145.655,148.61,84.45,5745309,91.6,196,753,DensifyPointCloud-2604291516410027B1.log,C:\Pro\TanksAndTemples\data\training\Truck\evaluation_R1_V16_c4_rodrigues_v2
+c4_rodrigues_v2,0,8,0.6802,0.8269,0.7464,0.005,462.037,471.13,136.93,20784803,208.8,498,753,DensifyPointCloud-26042915204700488D.log,C:\Pro\TanksAndTemples\data\training\Truck\evaluation_R0_V8_c4_rodrigues_v2
+c4_rodrigues_v2,0,16,0.6863,0.8134,0.7444,0.005,617.348,628.53,124.33,21556663,331.6,640,753,DensifyPointCloud-260429153109004145.log,C:\Pro\TanksAndTemples\data\training\Truck\evaluation_R0_V16_c4_rodrigues_v2
