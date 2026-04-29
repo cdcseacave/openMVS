@@ -83,6 +83,7 @@ private:
 	void AllocatePatchMatchCUDA(const cv::Mat1f& image);
 	void AllocateImageCUDA(size_t i, const cv::Mat1f& image, bool bInitImage, bool bInitDepthMap);
 	void RunCUDA(float* ptrCostMap=NULL, uint32_t* ptrViewsMap=NULL);
+	void UploadCameras(); // A2: upload host `cameras` into __constant__ g_cameras
 
 public:
 	Params params;
@@ -93,7 +94,6 @@ public:
 	std::vector<cudaTextureObject_t> textureDepths;
 	Point4* depthNormalEstimates;
 
-	Camera *cudaCameras;
 	std::vector<cudaArray_t> cudaImageArrays;
 	std::vector<cudaArray_t> cudaDepthArrays;
 	cudaTextureObject_t* cudaTextureImages;

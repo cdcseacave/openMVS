@@ -92,7 +92,6 @@ void PatchMatch::Release()
 void PatchMatch::ReleaseCUDA()
 {
 	cudaFree(cudaTextureImages);
-	cudaFree(cudaCameras);
 	cudaFree(cudaDepthNormalEstimates);
 	cudaFree(cudaDepthNormalCosts);
 	cudaFree(cudaRandStates);
@@ -118,7 +117,6 @@ void PatchMatch::AllocatePatchMatchCUDA(const cv::Mat1f& image)
 {
 	const size_t num_images = images.size();
 	CUDA_CHECK(cudaMalloc((void**)&cudaTextureImages, sizeof(cudaTextureObject_t) * num_images));
-	CUDA_CHECK(cudaMalloc((void**)&cudaCameras, sizeof(Camera) * num_images));
 	if (params.bGeomConsistency)
 		CUDA_CHECK(cudaMalloc((void**)&cudaTextureDepths, sizeof(cudaTextureObject_t) * (num_images-1)));
 
@@ -332,7 +330,7 @@ void PatchMatch::EstimateDepthMap(DepthData& depthData)
 
 		// setup CUDA memory
 		CUDA_CHECK(cudaMemcpy(cudaTextureImages, textureImages.data(), sizeof(cudaTextureObject_t) * numImages, cudaMemcpyHostToDevice));
-		CUDA_CHECK(cudaMemcpy(cudaCameras, cameras.data(), sizeof(Camera) * numImages, cudaMemcpyHostToDevice));
+		UploadCameras();
 		if (params.bGeomConsistency) {
 			// set previously computed depth-maps
 			ASSERT(depthData.depthMap.size() == depthData.GetView().image.size());
