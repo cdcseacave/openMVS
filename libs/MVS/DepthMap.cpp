@@ -1021,15 +1021,14 @@ std::pair<float,float> TriangulatePointsDelaunay(const Camera& camera, const cv:
 	projs.reserve(mesh.vertices.capacity());
 	Delaunay delaunay;
 	for (uint32_t idx: points) {
-		const Point3f pt(camera.ProjectPointP3(pointcloud.points[idx]));
-		const Point3f x(pt.x/pt.z, pt.y/pt.z, pt.z);
+		const auto [x, depth] = camera.ProjectPointP(pointcloud.points[idx]);
 		delaunay.insert(CPoint(x.x, x.y))->info() = mesh.vertices.size();
 		mesh.vertices.emplace_back(camera.TransformPointI2C(x));
 		projs.emplace_back(x.x, x.y);
-		if (depthBounds.first > pt.z)
-			depthBounds.first = pt.z;
-		if (depthBounds.second < pt.z)
-			depthBounds.second = pt.z;
+		if (depthBounds.first > depth)
+			depthBounds.first = depth;
+		if (depthBounds.second < depth)
+			depthBounds.second = depth;
 	}
 	// if full size depth-map requested
 	const size_t numPoints(3);
@@ -1440,8 +1439,8 @@ void MVS::EstimatePointColors(const ImageArr& images, PointCloud& pointcloud)
 			color = Pixel8U::WHITE;
 		} else {
 			// get image color
-			const Point2f proj(pImageData->camera.ProjectPointP(point));
-			color = (pImageData->image.isInsideWithBorder<float,1>(proj) ? pImageData->image.sample(proj) : Pixel8U::WHITE);
+			const auto [proj, depth] = pImageData->camera.ProjectPointP(point);
+			color = (depth > 0 && pImageData->image.isInsideWithBorder<float,1>(proj) ? pImageData->image.sample(proj) : Pixel8U::WHITE);
 		}
 	}
 
@@ -1478,7 +1477,7 @@ void MVS::EstimatePointSegmentation(const ImageArr& images, PointCloud& pointclo
 			if (imageData.mask.empty())
 				continue;
 			// get image mask label
-			const ImageRef proj(ROUND2INT(imageData.camera.ProjectPointP(point)));
+			const ImageRef proj(ROUND2INT(std::get<0>(imageData.camera.ProjectPointP(point))));
 			if (!imageData.mask.isInside(proj))
 				continue;
 			const PointCloud::Label& maskLabel = imageData.mask(proj);

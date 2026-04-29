@@ -461,8 +461,15 @@ struct MVS_API DepthEstimator {
 	inline void CorrectNormal(Normal& normal) const {
 		const Normal viewDir(Cast<float>(X0));
 		const float cosAngLen(normal.dot(viewDir));
-		if (cosAngLen >= 0)
-			normal = RMatrixBaseF(normal.cross(viewDir), MINF((ACOS(cosAngLen/norm(viewDir))-FD2R(90.f))*1.01f, -0.001f)) * normal;
+		if (cosAngLen >= 0) {
+			// rotation axis = unit(normal x viewDir); RMatrixBaseF::Set(w,phi)
+			// requires |w|=1 (see libs/Common/Rotation.inl). The cosAngLen>=0
+			// guard above already excludes the parallel case, so |normal x viewDir| > 0.
+			const Normal axisRaw(normal.cross(viewDir));
+			const float axisN(norm(axisRaw));
+			if (axisN > 0.f)
+				normal = RMatrixBaseF(axisRaw / axisN, MINF((ACOS(cosAngLen/norm(viewDir))-FD2R(90.f))*1.01f, -0.001f)) * normal;
+		}
 		ASSERT(ISEQUAL(norm(normal), 1.f), "Norm = ", norm(normal));
 	}
 

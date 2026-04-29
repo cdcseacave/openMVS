@@ -939,10 +939,10 @@ bool Scene::SelectNeighborViews(uint32_t ID, IndexArr& points, unsigned nMinView
 				if (views.FindFirst(IDB) == PointCloud::ViewArr::NO_INDEX)
 					continue;
 				const PointCloud::Point& point = pointcloud.points[idx];
-				Point2f ptB = imageDataB.camera.ProjectPointP(point);
+				Point2f ptB = std::get<0>(imageDataB.camera.ProjectPointP(point));
 				if (!imageDataB.camera.IsInside(ptB, boundsB))
 					continue;
-				Point2f& ptA = projs.emplace_back(imageData.camera.ProjectPointP(point));
+				Point2f& ptA = projs.emplace_back(std::get<0>(imageData.camera.ProjectPointP(point)));
 				if (!imageData.camera.IsInside(ptA, boundsA))
 					projs.RemoveLast();
 			}
@@ -1813,6 +1813,8 @@ float Scene::ComputeDistanceCameras2Scene(float depthPercentile, bool bForceReco
 	// for each image, compute the average distance between the camera and the scene points it sees;
 	// the average is computed on the Nth percentile of the closest points
 	const OBB3f* pObb = bUseROI && IsBounded() ? &obb : NULL;
+	// fall back to camera-frustum visibility when per-point views are missing
+	const bool bHasViews = !pointcloud.pointViews.empty();
 	REAL sumDepth = 0;
 	unsigned nImages = 0;
 	#ifdef SCENE_USE_OPENMP
@@ -1828,15 +1830,27 @@ float Scene::ComputeDistanceCameras2Scene(float depthPercentile, bool bForceReco
 		if (bForceRecompute || imageData.avgDepth <= 0) {
 			// recompute average depth
 			FloatArr depths;
-			FOREACH(idxPoint, pointcloud.points) {
-				const PointCloud::ViewArr& views = pointcloud.pointViews[idxPoint];
-				for (PointCloud::View idxView: views) {
-					if (idxView != idx)
-						continue;
+			if (bHasViews) {
+				FOREACH(idxPoint, pointcloud.points) {
+					const PointCloud::ViewArr& views = pointcloud.pointViews[idxPoint];
+					for (PointCloud::View idxView: views) {
+						if (idxView != idx)
+							continue;
+						const Point3f& point = pointcloud.points[idxPoint];
+						if (!pObb || pObb->Intersects(point))
+							depths.emplace_back(imageData.camera.PointDepth(point));
+						break;
+					}
+				}
+			} else {
+				const Point2f imageSize(imageData.GetSize());
+				FOREACH(idxPoint, pointcloud.points) {
 					const Point3f& point = pointcloud.points[idxPoint];
-					if (!pObb || pObb->Intersects(point))
-						depths.emplace_back(imageData.camera.PointDepth(point));
-					break;
+					if (pObb && !pObb->Intersects(point))
+						continue;
+					const auto [proj, depth] = imageData.camera.ProjectPointP(point);
+					if (depth > 0 && imageData.camera.IsInside(proj, imageSize))
+						depths.emplace_back(depth);
 				}
 			}
 			if (depths.empty()) {

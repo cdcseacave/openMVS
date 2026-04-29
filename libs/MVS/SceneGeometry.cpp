@@ -239,12 +239,9 @@ bool Scene::EstimatePointCloudNormals(bool bRefine)
 			ASSERT(imageData.IsValid() && !imageData.image.empty());
 			const Camera& camera = imageData.camera;
 			const Point3f viewDir = normalized(camera.C - Cast<REAL>(point));
-			const Depth depth = (Depth)camera.PointDepth(point);
-			if (depth <= 0)
-				continue;
 			// Project point to image
-			const Point2f projection = camera.ProjectPointP(point);
-			if (!imageData.image.isInsideWithBorder<float>(projection, patchRadius))
+			const auto [projection, depth] = camera.ProjectPointP(point);
+			if (depth <= 0 || !imageData.image.isInsideWithBorder<float>(projection, patchRadius))
 				continue;
 			// Compute view score: angle compatibility and footprint
 			const float angle = ACOS(ComputeAngleN(normal.ptr(), viewDir.ptr()));

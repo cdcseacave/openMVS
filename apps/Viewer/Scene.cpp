@@ -748,12 +748,11 @@ void Scene::PrecomputeTrackBasedNeighbors() {
 				projs.Empty();
 				for (const auto pointIdx : stat.sharedPoints) {
 					const MVS::PointCloud::Point& point = pointcloud.points[pointIdx];
-					Point2f ptB = otherImage.camera.ProjectPointP(point);
-					if (!otherImage.camera.IsInside(ptB, boundsB))
+					if (!otherImage.camera.IsInsideProjectionP(point, boundsB))
 						continue;
-					Point2f& ptA = projs.emplace_back(refImage.camera.ProjectPointP(point));
-					if (!refImage.camera.IsInside(ptA, boundsA))
-						projs.RemoveLast();
+					const auto [ptA, depth] = refImage.camera.ProjectPointP(point);
+					if (depth > 0 && refImage.camera.IsInside(ptA, boundsA))
+						projs.emplace_back(ptA);
 				}
 				if (!projs.empty())
 					area = ComputeCoveredArea<float,2,16,false>((const float*)projs.data(), projs.size(), boundsA.ptr());

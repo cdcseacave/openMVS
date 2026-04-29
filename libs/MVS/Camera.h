@@ -41,6 +41,7 @@
 
 // S T R U C T S ///////////////////////////////////////////////////
 
+#include <tuple>
 namespace MVS {
 
 // a camera is represented as:
@@ -285,10 +286,10 @@ public:
 		return TPoint2<TYPE>(q.x*invZ, q.y*invZ);
 	}
 	template <typename TYPE>
-	inline TPoint2<TYPE> ProjectPoint(const TPoint3<TYPE>& X) const {
+	inline std::tuple<TPoint2<TYPE>,TYPE> ProjectPoint(const TPoint3<TYPE>& X) const {
 		const TPoint3<TYPE> q(K * (R * (X - C)));
 		const TYPE invZ(INVERT(q.z));
-		return TPoint2<TYPE>(q.x*invZ, q.y*invZ);
+		return {TPoint2<TYPE>(q.x*invZ, q.y*invZ), q.z};
 	}
 	template <typename TYPE>
 	inline TPoint3<TYPE> ProjectPointP3(const TPoint3<TYPE>& X) const {
@@ -299,10 +300,10 @@ public:
 			(TYPE)(p[2*4+0]*X.x + p[2*4+1]*X.y + p[2*4+2]*X.z + p[2*4+3]));
 	}
 	template <typename TYPE>
-	inline TPoint2<TYPE> ProjectPointP(const TPoint3<TYPE>& X) const {
+	inline std::tuple<TPoint2<TYPE>,TYPE> ProjectPointP(const TPoint3<TYPE>& X) const {
 		const TPoint3<TYPE> q(ProjectPointP3(X));
 		const TYPE invZ(INVERT(q.z));
-		return TPoint2<TYPE>(q.x*invZ, q.y*invZ);
+		return {TPoint2<TYPE>(q.x*invZ, q.y*invZ), q.z};
 	}
 
 	// transform from image pixel coords to view plane coords
@@ -385,17 +386,23 @@ public:
 	}
 
 	// check if the given point (or its projection) is inside the camera view
-	template <typename TYPE>
-	inline bool IsInside(const TPoint2<TYPE>& pt, const TPoint2<TYPE>& size) const {
+	template <typename TYPE1, typename TYPE2>
+	inline bool IsInside(const TPoint2<TYPE1>& pt, const TPoint2<TYPE2>& size) const {
 		return pt.x>=0 && pt.y>=0 && pt.x<size.x && pt.y<size.y;
 	}
-	template <typename TYPE>
-	inline bool IsInsideProjection(const TPoint3<TYPE>& X, const TPoint2<TYPE>& size) const {
-		return IsInside(ProjectPoint(X), size);
+	template <typename TYPE1, typename TYPE2>
+	inline bool IsInsideProjection(const TPoint3<TYPE1>& X, const TPoint2<TYPE2>& size) const {
+		const auto [x, depth] = ProjectPoint(X);
+		if (depth <= 0)
+			return false;
+		return IsInside(x, size);
 	}
-	template <typename TYPE>
-	inline bool IsInsideProjectionP(const TPoint3<TYPE>& X, const TPoint2<TYPE>& size) const {
-		return IsInside(ProjectPointP(X), size);
+	template <typename TYPE1, typename TYPE2>
+	inline bool IsInsideProjectionP(const TPoint3<TYPE1>& X, const TPoint2<TYPE2>& size) const {
+		const auto [x, depth] = ProjectPointP(X);
+		if (depth <= 0)
+			return false;
+		return IsInside(x, size);
 	}
 
 	// same as above, but for ortho-projection

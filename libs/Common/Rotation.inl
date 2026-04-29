@@ -698,7 +698,7 @@ void TRMatrixBase<TYPE>::SetZXY(TYPE PhiX, TYPE PhiY, TYPE PhiZ)
 
 
 template <typename TYPE>
-void TRMatrixBase<TYPE>::Set(const Vec& wa, TYPE phi)
+void TRMatrixBase<TYPE>::Set(const Vec& w, TYPE phi)
 {
   // zero rotation  results in identity matrix
   if (ISZERO(phi)) {
@@ -706,11 +706,12 @@ void TRMatrixBase<TYPE>::Set(const Vec& wa, TYPE phi)
 	return;
   }
 
-  const TYPE wnorm(norm(wa));
-  if (wnorm < std::numeric_limits<TYPE>::epsilon()) {
-	CPC_ERROR("Vector "<<wa<<" is close to zero (norm = "<<wnorm<<"), solution is instable!");
-  }
-  const Vec w(wa*(TYPE(1)/wnorm));
+  // Contract: w must be a unit-length axis. Caller is responsible for
+  // normalisation -- the only non-unit caller in the tree (CorrectNormal,
+  // libs/MVS/DepthMap.h) was updated to pre-normalise its cross-product
+  // axis. Saves 1 sqrt + 1 div per call and makes Rodrigues output as
+  // orthogonal as float-32 arithmetic allows on the supplied inputs.
+  ASSERT(ISEQUAL(norm(w), TYPE(1)), "Set(w,phi) requires |w|=1; got |w| = ", norm(w));
 
   Mat Omega;
   Omega(0,0) = TYPE(0);

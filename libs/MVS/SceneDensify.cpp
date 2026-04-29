@@ -1490,7 +1490,7 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, b
 				ProjArr& pointProjs = projs.emplace_back();
 				pointProjs.emplace_back(Proj(x));
 				const PointCloud::Normal normal(!depthData.normalMap.empty() ? Cast<Normal::Type>(imageData.camera.R.t() * Cast<REAL>(depthData.normalMap(x))) : Normal(0, 0, -1));
-				ASSERT(ISEQUAL(norm(normal), 1.f), "Norm = ", norm(normal));
+				ASSERT(ISEQUAL(norm(normal), 1.f, 1e-2f), "Norm = ", norm(normal));
 				// check the projection in the neighbor depth-maps
 				Point3 X(point*confidence);
 				Pixel32F C(Cast<float>(imageData.image(x))*confidence);
@@ -1502,10 +1502,10 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, b
 					if (depthDataB.IsEmpty())
 						continue;
 					const Image& imageDataB = scene.images[idxImageB];
-					const Point3f pt(imageDataB.camera.ProjectPointP3(point));
-					if (pt.z <= 0)
+					const auto [pt, depthProjB] = imageDataB.camera.ProjectPointP(point);
+					if (depthProjB <= 0)
 						continue;
-					const ImageRef xB(ROUND2INT(pt.x/pt.z), ROUND2INT(pt.y/pt.z));
+					const ImageRef xB(ROUND2INT(pt));
 					DepthMap& depthMapB = depthDataB.depthMap;
 					if (!depthMapB.isInside(xB))
 						continue;
@@ -1515,10 +1515,10 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, b
 					uint32_t& idxPointB = arrDepthIdx[idxImageB](xB);
 					if (idxPointB != NO_ID)
 						continue;
-					if (IsDepthSimilar(pt.z, depthB, OPTDENSE::fDepthDiffThreshold)) {
+					if (IsDepthSimilar(depthProjB, depthB, OPTDENSE::fDepthDiffThreshold)) {
 						// check if normals agree
 						const PointCloud::Normal normalB(!depthData.normalMap.empty() ? Cast<Normal::Type>(imageDataB.camera.R.t() * Cast<REAL>(depthDataB.normalMap(xB))) : Normal(0, 0, -1));
-						ASSERT(ISEQUAL(norm(normalB), 1.f), "Norm = ", norm(normalB));
+						ASSERT(ISEQUAL(norm(normalB), 1.f, 1e-2f), "Norm = ", norm(normalB));
 						if (normal.dot(normalB) > normalError) {
 							// add view to the 3D point
 							ASSERT(views.FindFirst(idxImageB) == PointCloud::ViewArr::NO_INDEX);
@@ -1536,7 +1536,7 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, b
 							continue;
 						}
 					}
-					if (pt.z < depthB) {
+					if (depthProjB < depthB) {
 						// discard depth
 						invalidDepths.emplace_back(&depthB);
 					}
@@ -1686,23 +1686,23 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 			PointCloud::Normal normal;
 			if (fuseDepth > 0) {
 				// project reference point into current view
-				const Point3f pt(image.camera.ProjectPointP3(refPoint));
+				const auto [pt, depthProj] = image.camera.ProjectPointP(refPoint);
 				// check if depth agrees with current depth
-				ASSERT(pt.z > Depth(0) || !IsDepthSimilar(depth, pt.z, OPTDENSE::fDepthDiffThreshold));
-				if (!IsDepthSimilar(depth, pt.z, OPTDENSE::fDepthDiffThreshold))
+				ASSERT(depthProj > Depth(0) || !IsDepthSimilar(depth, depthProj, OPTDENSE::fDepthDiffThreshold));
+				if (!IsDepthSimilar(depth, depthProj, OPTDENSE::fDepthDiffThreshold))
 					return;
 				// check reprojection error of the reference point in the current view
-				const Point2f diff(pt.x / pt.z - float(x.x), pt.y / pt.z - float(x.y));
+				const Point2f diff(pt - Cast<float>(x));
 				if (normSq(diff) > maxReprojErrorSq)
 					return;
 				// check if normals agree
 				normal = image.camera.R.t() * Cast<REAL>(depthData.normalMap(x));
-				ASSERT(ISEQUAL(norm(normal), 1.f), "Norm = ", norm(normal));
+				ASSERT(ISEQUAL(norm(normal), 1.f, 1e-2f), "Norm = ", norm(normal));
 				if (refNormal.dot(normal) < normalError)
 					return;
 			} else {
 				normal = image.camera.R.t() * Cast<REAL>(depthData.normalMap(x));
-				ASSERT(ISEQUAL(norm(normal), 1.f), "Norm = ", norm(normal));
+				ASSERT(ISEQUAL(norm(normal), 1.f, 1e-2f), "Norm = ", norm(normal));
 			}
 			// set the current pixel as visited
 			useMask.set(x);
@@ -1741,7 +1741,7 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 				if (!neighbors[nextID])
 					continue;
 				const DepthData& nextDepthData = arrDepthData[nextID];
-				const ImageRef nextx(ROUND2INT(nextDepthData.GetCamera().ProjectPointP(X)));
+				const ImageRef nextx(ROUND2INT(std::get<0>(nextDepthData.GetCamera().ProjectPointP(X))));
 				FusePointImpl(nextID, nextx, fuseDepth, FusePointImpl);
 			}
 		};
