@@ -571,7 +571,7 @@ FloatArr ComputeMeanDistanceToClosestN(const PointCloud::PointArr &pts, int numb
 	FOREACH(i, cgalPoints) {
 		K_neighbor_search search(tree, cgalPoints[i], numberOfNeighbors + 1);
 		double sumDist = 0;
-		unsigned count = 0;
+		int count = 0;
 		for (const auto& result : search) {
 			const double distSq = result.second; // result is std::pair<Point_3, double>
 			if (distSq <= 0)
