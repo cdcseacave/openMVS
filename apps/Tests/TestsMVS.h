@@ -39,6 +39,15 @@ namespace MVS {
 
 // test MVS stages on a small sample dataset
 bool PipelineTest(bool verbose = false);
+
+// test OrthoMap Step 1: Grid Initialization & DEM Generation
+bool TestOrthoMapConfig(bool verbose = false);
+bool TestOrthoMapGSD(bool verbose = false);
+bool TestOrthoMapGrid(bool verbose = false);
+bool TestOrthoMapCamera(bool verbose = false);
+bool TestOrthoMapRasterize(bool verbose = false);
+bool TestOrthoMapOverlap(bool verbose = false);
+bool TestOrthoMapIntegration(bool verbose = false);
 /*----------------------------------------------------------------*/
 
 } // namespace MVS

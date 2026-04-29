@@ -332,28 +332,6 @@ public:
 	void LocalSeamLeveling();
 	void GenerateTexture(bool bGlobalSeamLeveling, bool bLocalSeamLeveling, unsigned nTextureSizeMultiple, Pixel8U colEmpty, float fSharpnessWeight, int maxTextureSize);
 
-	template <typename PIXEL>
-	static inline PIXEL RGB2YCBCR(const PIXEL& v) {
-		typedef typename PIXEL::Type T;
-		return PIXEL(
-			v[0] * T(0.299) + v[1] * T(0.587) + v[2] * T(0.114),
-			v[0] * T(-0.168736) + v[1] * T(-0.331264) + v[2] * T(0.5) + T(128),
-			v[0] * T(0.5) + v[1] * T(-0.418688) + v[2] * T(-0.081312) + T(128)
-		);
-	}
-	template <typename PIXEL>
-	static inline PIXEL YCBCR2RGB(const PIXEL& v) {
-		typedef typename PIXEL::Type T;
-		const T v1(v[1] - T(128));
-		const T v2(v[2] - T(128));
-		return PIXEL(
-			v[0]/* * T(1) + v1 * T(0)*/ + v2 * T(1.402),
-			v[0]/* * T(1)*/ + v1 * T(-0.34414) + v2 * T(-0.71414),
-			v[0]/* * T(1)*/ + v1 * T(1.772)/* + v2 * T(0)*/
-		);
-	}
-
-
 protected:
 	static void ProcessMask(Image8U& mask, int stripWidth);
 	static void PoissonBlending(const Image32F3& src, Image32F3& dst, const Image8U& mask, float bias=1.f);

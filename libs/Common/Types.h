@@ -485,6 +485,7 @@ template <typename TYPE> const TPoint2<TYPE> TPoint2<TYPE>::ZERO(0,0);
 template <typename TYPE> const TPoint2<TYPE> TPoint2<TYPE>::INF(std::numeric_limits<TYPE>::infinity(),std::numeric_limits<TYPE>::infinity());
 /*----------------------------------------------------------------*/
 typedef TPoint2<int> Point2i;
+typedef TPoint2<unsigned> Point2u;
 typedef TPoint2<hfloat> Point2hf;
 typedef TPoint2<float> Point2f;
 typedef TPoint2<double> Point2d;
@@ -994,6 +995,30 @@ typedef TDVector<uint32_t> DVector32U;
 typedef TDVector<float> DVector32F;
 typedef TDVector<double> DVector64F;
 typedef CLISTDEF2(DVector) DVectorArr;
+/*----------------------------------------------------------------*/
+
+
+// color space conversions
+template <typename PIXEL>
+inline PIXEL RGB2YCBCR(const PIXEL& v) {
+	typedef typename PIXEL::Type T;
+	return PIXEL(
+		v[0] * T(0.299) + v[1] * T(0.587) + v[2] * T(0.114),
+		v[0] * T(-0.168736) + v[1] * T(-0.331264) + v[2] * T(0.5) + T(128),
+		v[0] * T(0.5) + v[1] * T(-0.418688) + v[2] * T(-0.081312) + T(128)
+	);
+}
+template <typename PIXEL>
+inline PIXEL YCBCR2RGB(const PIXEL& v) {
+	typedef typename PIXEL::Type T;
+	const T v1(v[1] - T(128));
+	const T v2(v[2] - T(128));
+	return PIXEL(
+		v[0] + v2 * T(1.402),
+		v[0] + v1 * T(-0.34414) + v2 * T(-0.71414),
+		v[0] + v1 * T(1.772)
+	);
+}
 /*----------------------------------------------------------------*/
 
 

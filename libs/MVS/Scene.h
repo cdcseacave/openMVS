@@ -164,6 +164,9 @@ public:
 		bool bGlobalSeamLeveling=true, bool bLocalSeamLeveling=true, unsigned nTextureSizeMultiple=0, Pixel8U colEmpty=Pixel8U(255,127,39),
 		float fSharpnessWeight=0.5f, int ignoreMaskLabel=-1, int maxTextureSize=0, const IIndexArr& views=IIndexArr());
 
+	// Orthomap generation
+	bool ComputeOrthoMap(float orthoResolution=0, unsigned tileSize=4096, unsigned tileOverlap=16);
+
 	// Reconstruction quality assessment
 	struct Score {
 		float completeness{0}; // fraction of image covered by mesh [0,1]

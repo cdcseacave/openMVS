@@ -114,6 +114,23 @@ int main(int argc, LPCTSTR* argv)
 	if (argc < 2 || std::atoi(argv[1]) == 0) {
 		if (!UnitTests())
 			return EXIT_FAILURE;
+		// OrthoMap unit tests (synthetic data, no scene file needed)
+		// pass verbose=true when argv[2] is set (e.g., Tests 0 1)
+		const bool bVerbose = (argc > 2 && std::atoi(argv[2]) != 0);
+		if (!MVS::TestOrthoMapConfig(bVerbose))
+			return EXIT_FAILURE;
+		if (!MVS::TestOrthoMapGSD(bVerbose))
+			return EXIT_FAILURE;
+		if (!MVS::TestOrthoMapGrid(bVerbose))
+			return EXIT_FAILURE;
+		if (!MVS::TestOrthoMapCamera(bVerbose))
+			return EXIT_FAILURE;
+		if (!MVS::TestOrthoMapRasterize(bVerbose))
+			return EXIT_FAILURE;
+		if (!MVS::TestOrthoMapOverlap(bVerbose))
+			return EXIT_FAILURE;
+		if (!MVS::TestOrthoMapIntegration(bVerbose))
+			return EXIT_FAILURE;
 	} else if (std::atoi(argv[1]) == 1) {
 		// Run SFM smoke tests
 		if (!SFM::TestSimilarityTransform())
