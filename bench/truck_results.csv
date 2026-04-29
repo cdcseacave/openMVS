@@ -7,3 +7,11 @@ d4_fix,1,8,0.6825,0.7188,0.7002,0.005,101.528,104.07,83.2,5824225,55.9,131,753,D
 d4_fix,1,16,0.689,0.7102,0.6994,0.005,148.783,151.14,80.05,5744632,96.2,429,753,DensifyPointCloud-260429013203001CBD.log,C:\Pro\TanksAndTemples\data\training\Truck\evaluation_R1_V16_d4_fix
 d4_fix,0,8,0.6802,0.827,0.7465,0.005,1198.663,1207.65,127.24,20794264,249.7,558,753,DensifyPointCloud-260429013605004471.log,C:\Pro\TanksAndTemples\data\training\Truck\evaluation_R0_V8_d4_fix
 d4_fix,0,16,0.6858,0.8135,0.7442,0.005,618.438,628.25,125.51,21560949,354.6,713,753,DensifyPointCloud-260429015831003239.log,C:\Pro\TanksAndTemples\data\training\Truck\evaluation_R0_V16_d4_fix
+tier1_math,1,8,0.6825,0.7184,0.7,0.005,105.626,108.78,82.87,5825825,55.6,131,753,DensifyPointCloud-260429075105001865.log,C:\Pro\TanksAndTemples\data\training\Truck\evaluation_R1_V8_tier1_math
+tier1_math,1,16,0.6893,0.7101,0.6995,0.005,141.547,143.71,80.74,5745925,94.8,212,753,DensifyPointCloud-2604290754280071E9.log,C:\Pro\TanksAndTemples\data\training\Truck\evaluation_R1_V16_tier1_math
+tier1_math,0,8,0.6799,0.8271,0.7463,0.005,454.355,463.73,129.61,20801096,210.3,484,753,DensifyPointCloud-260429075825006E65.log,C:\Pro\TanksAndTemples\data\training\Truck\evaluation_R0_V8_tier1_math
+tier1_math,0,16,0.6863,0.8134,0.7445,0.005,564.049,574.31,130.41,21562575,352.9,690,753,DensifyPointCloud-260429080830000221.log,C:\Pro\TanksAndTemples\data\training\Truck\evaluation_R0_V16_tier1_math
+c3_lut,1,8,0.6827,0.7185,0.7001,0.005,104.549,106.87,79.69,5824189,57.3,147,753,DensifyPointCloud-2604290830100017E9.log,C:\Pro\TanksAndTemples\data\training\Truck\evaluation_R1_V8_c3_lut
+c3_lut,1,16,0.6891,0.7103,0.6995,0.005,144.582,146.87,81.19,5748715,97.3,205,753,DensifyPointCloud-260429083328006999.log,C:\Pro\TanksAndTemples\data\training\Truck\evaluation_R1_V16_c3_lut
+c3_lut,0,8,0.6803,0.8269,0.7465,0.005,524.195,532.94,133.05,20799730,214.6,490,753,DensifyPointCloud-260429083727005969.log,C:\Pro\TanksAndTemples\data\training\Truck\evaluation_R0_V8_c3_lut
+c3_lut,0,16,0.686,0.8131,0.7442,0.005,609.454,620.56,150.19,21565734,357.5,690,753,DensifyPointCloud-26042908484300605D.log,C:\Pro\TanksAndTemples\data\training\Truck\evaluation_R0_V16_c3_lut

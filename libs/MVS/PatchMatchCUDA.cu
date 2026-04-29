@@ -226,11 +226,19 @@ __device__ inline Matrix3 ComputeHomography(const CUDA::Camera& refCamera, const
 // weight a neighbor texel based on color similarity and distance to the center texel
 __device__ inline float ComputeBilateralWeight(int xDist, int yDist, float pix, float centerPix)
 {
-	constexpr float sigmaSpatial = -1.f / (2.f * (nSizeHalfWindow-1)*(nSizeHalfWindow-1));
+	// Spatial Gaussian for the 5x5 patch (xDist,yDist in {-4,-2,0,2,4}; sigmaSpatial = -1/18)
+	// precomputed: exp(-(dx*dx + dy*dy) / 18); indexed by (xDist+4)/2 and (yDist+4)/2.
+	static constexpr float spatialLUT[5][5] = {
+		{ 0.169013f, 0.329193f, 0.411112f, 0.329193f, 0.169013f },
+		{ 0.329193f, 0.641180f, 0.800737f, 0.641180f, 0.329193f },
+		{ 0.411112f, 0.800737f, 1.000000f, 0.800737f, 0.411112f },
+		{ 0.329193f, 0.641180f, 0.800737f, 0.641180f, 0.329193f },
+		{ 0.169013f, 0.329193f, 0.411112f, 0.329193f, 0.169013f },
+	};
 	constexpr float sigmaColor = -1.f / (2.f * 25.f/255.f*25.f/255.f);
-	const float spatialDistSq = float(xDist * xDist + yDist * yDist);
+	const float spatialW = spatialLUT[(yDist + nSizeHalfWindow) / nSizeStep][(xDist + nSizeHalfWindow) / nSizeStep];
 	const float colorDistSq = Square(pix - centerPix);
-	return __expf(spatialDistSq * sigmaSpatial + colorDistSq * sigmaColor);
+	return spatialW * __expf(colorDistSq * sigmaColor);
 }
 
 // compute the geometric consistency weight
