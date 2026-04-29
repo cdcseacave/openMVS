@@ -230,7 +230,7 @@ __device__ inline float ComputeBilateralWeight(int xDist, int yDist, float pix, 
 	constexpr float sigmaColor = -1.f / (2.f * 25.f/255.f*25.f/255.f);
 	const float spatialDistSq = float(xDist * xDist + yDist * yDist);
 	const float colorDistSq = Square(pix - centerPix);
-	return exp(spatialDistSq * sigmaSpatial + colorDistSq * sigmaColor);
+	return __expf(spatialDistSq * sigmaSpatial + colorDistSq * sigmaColor);
 }
 
 // compute the geometric consistency weight
@@ -300,14 +300,14 @@ __device__ float ScorePlane(const ImagePixels refImage, const CUDA::Camera& refC
 	if (varRefTrg < 1e-16f)
 		return maxCost;
 	const float covarTrgRef = sumRefTrg * bilateralWeightSum - sumRef * sumTrg;
-	float ncc = 1.f - covarTrgRef / sqrt(varRefTrg);
+	float ncc = 1.f - covarTrgRef * rsqrtf(varRefTrg);
 
 	// apply depth prior weight based on patch textureless
 	if (lowDepth > 0) {
 		const float depth(plane.w());
 		const float deltaDepth(min((abs(lowDepth-depth) / lowDepth), 0.5f));
 		constexpr float smoothSigmaDepth(-1.f / (1.f * 0.02f)); // 0.12: patch texture variance below 0.02 (0.12^2) is considered texture-less
-		const float factorDeltaDepth(exp(varRef * smoothSigmaDepth));
+		const float factorDeltaDepth(__expf(varRef * smoothSigmaDepth));
 		ncc = (1.f-factorDeltaDepth)*ncc + factorDeltaDepth*deltaDepth;
 	}
 	return max(0.f, min(2.f, ncc));
