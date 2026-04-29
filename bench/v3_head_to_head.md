@@ -40,4 +40,37 @@ Small Tests scene (`apps/Tests/data/scene.mvs`, 4 images, 0.29 MPx each):
 
 ## Open follow-up (deferred)
 
-- **CUDA-pipeline normal-norm investigation.** Source of > 1e-4 drift on `camera.R.t() × CUDA-stored normal`: instrument the host-side normalmap readback in `PatchMatchCUDA.cpp`, log distribution of `||camera.R.t() * n||` for one full depth-map. If centred at 1.0 ± 1e-3, the cause is `camera.R` orthogonality residual; if it grows with iteration count, plane-interp accumulation in the kernel. Either way, the fix is a renormalize-on-readback in the CUDA-to-host copy path, justified by reverting fusion tolerance to default afterwards.
+### Drift diagnostic results (2026-04-29 21:05)
+
+Instrumented `DenseFuseDepthMaps` to log per-image
+`||R*R.t() − I||_F` and the distribution of `||n||` and `||R.t()·n||`
+across all valid pixels. Ran two passes on Truck R=1 V=8: one CPU
+(`--cuda-device ""`, 24 min wall), one CUDA (`--cuda-device -1`, 1m46s).
+
+**Findings (251 images per pass, ~122M valid pixels each):**
+
+| Source | Camera R orthogonality | Raw ‖n‖ max-dev | Pixels > 1e-4 | Pixels > 1e-2 |
+|---|---|---|---|---|
+| CPU  | 1.5e-16 … 8.3e-16 | **0.1095** | 7 of 122M | 6 |
+| CUDA | 1.5e-16 … 8.3e-16 | 1.07e-6 | 0 of 125M | 0 |
+
+**Surprising inversion of the hypothesis:** CUDA-stored normals are
+clean (1e-6 noise floor, no outliers). The 1e-2 drift is **CPU-side**,
+concentrated in three images: img 34 (1 px @ 0.110), img 139 (5 px
+@ 0.013), img 242 (1 px @ 3.1e-4). All three images have perfectly
+orthogonal R (5e-16 residual) — so the disk-loaded poses are not the
+source either.
+
+**Root cause is unidentified but localized to CPU `EstimateDepthMap`
+random-init or perturbation path.** The 7 outlier pixels (5.7e-8 hit
+rate) suggest a numerically-unstable code path that fires on rare pixel
+patterns — possibly a denormal-triggered division, a NaN survivor, or
+an iteration that exits without re-normalising. The fusion-time `1e-2f`
+tolerance set by this commit absorbs all 7 outliers; tightening to
+default 1e-4 would intermittently fire on Truck-class scenes with > 1
+in 17M pixels exceeding the threshold.
+
+**Suggested next investigation step:** add a per-pixel log of
+`(idxImage, x, y, depth, ||n||)` for any pixel where `||n|| > 1e-3`
+deviation, capture the offending pixels' inputs, and trace back through
+`PerturbEstimate` / interpolation. Out of scope for this commit.
