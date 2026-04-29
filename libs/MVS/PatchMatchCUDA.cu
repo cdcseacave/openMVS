@@ -218,7 +218,12 @@ __device__ inline Matrix3 ComputeHomography(const CUDA::Camera& refCamera, const
 {
 	const Point3 X = refCamera.model.TransformPointI2C(p, plane.w());
 	const Point3 normal = plane.topLeftCorner<3,1>();
-	const Point3 t = (refCamera.pose.C - trgCamera.pose.C) / (normal.dot(X));
+	// Guard against plane passing through (or near) the reference camera center:
+	// normal.dot(X) -> 0 makes t infinite and the resulting H NaN, which would
+	// silently corrupt the patch walk (NaN comparisons fail-open in the bounds check).
+	const float denom = normal.dot(X);
+	const float safeDenom = fabsf(denom) < 1e-6f ? copysignf(1e-6f, denom) : denom;
+	const Point3 t = (refCamera.pose.C - trgCamera.pose.C) / safeDenom;
 	const Matrix3 H = trgCamera.pose.R * (refCamera.pose.R.transpose() + t*normal.transpose());
 	return trgCamera.model.K() * H * refCamera.model.K().inverse();
 }
