@@ -264,11 +264,50 @@ __device__ inline float GeometricConsistencyWeight(const ImagePixels depthImage,
 	return min(maxDist, sqrt(dist*(dist+2.f)));
 }
 
-// compute photometric score using weighted ZNCC
-__device__ float ScorePlane(const ImagePixels refImage, const CUDA::Camera& refCamera, const ImagePixels trgImage, const CUDA::Camera& trgCamera, const Point2i& p, const Point4& plane, const float lowDepth, const PatchMatch::Params& params)
+// number of samples in the (2*halfWin/step + 1)^2 reference patch
+#define N_PATCH_SAMPLES ((2 * nSizeHalfWindow / nSizeStep + 1) * (2 * nSizeHalfWindow / nSizeStep + 1))
+
+// Per-pixel reference-patch state. Depends only on the reference image at p,
+// so it is invariant across source views and plane hypotheses. Compute once
+// at the top of ProcessPixel / InitializePixelScore and reuse for every
+// ScorePlane call (eliminates ~13*nNumViews redundant ref tex2D fetches and
+// 25*13*nNumViews bilateral-weight evaluations per pixel).
+struct RefPatchCache {
+	float weight[N_PATCH_SAMPLES];        // bilateral weight per patch sample
+	float weightRefPix[N_PATCH_SAMPLES];  // weight * refPix per sample
+	float sumRef;                          // Σ weight * refPix
+	float bilateralWeightSum;              // Σ weight
+	float varRef;                          // sumRefRef*Σw - sumRef^2
+};
+
+__device__ inline void ComputeRefPatchCache(const ImagePixels refImage, const Point2i& p, RefPatchCache& cache)
+{
+	const float refCenterPix = tex2D<float>(refImage, p.x() + 0.5f, p.y() + 0.5f);
+	float sumRef = 0.f, sumRefRef = 0.f, bws = 0.f;
+	int idx = 0;
+	for (int i = -nSizeHalfWindow; i <= nSizeHalfWindow; i += nSizeStep) {
+		for (int j = -nSizeHalfWindow; j <= nSizeHalfWindow; j += nSizeStep) {
+			const float refPix = tex2D<float>(refImage, p.x() + j + 0.5f, p.y() + i + 0.5f);
+			const float w = ComputeBilateralWeight(j, i, refPix, refCenterPix);
+			const float wRef = w * refPix;
+			cache.weight[idx] = w;
+			cache.weightRefPix[idx] = wRef;
+			sumRef += wRef;
+			sumRefRef += wRef * refPix;
+			bws += w;
+			++idx;
+		}
+	}
+	cache.sumRef = sumRef;
+	cache.bilateralWeightSum = bws;
+	cache.varRef = sumRefRef * bws - sumRef * sumRef;
+}
+
+// compute photometric score using weighted ZNCC; uses precomputed reference cache
+__device__ float ScorePlane(const RefPatchCache& cache, const CUDA::Camera& refCamera, const ImagePixels trgImage, const CUDA::Camera& trgCamera, const Point2i& p, const Point4& plane, const float lowDepth, const PatchMatch::Params& params)
 {
 	constexpr float maxCost = 1.2f;
-	
+
 	Matrix3 H = ComputeHomography(refCamera, trgCamera, p.cast<float>(), plane);
 	const Point2 pt = (H * p.cast<float>().homogeneous()).hnormalized();
 	if (pt.x() >= trgCamera.size.x() || pt.x() < 0.f || pt.y() >= trgCamera.size.y() || pt.y() < 0.f)
@@ -277,42 +316,31 @@ __device__ float ScorePlane(const ImagePixels refImage, const CUDA::Camera& refC
 	Point3 baseX(X);
 	H *= float(nSizeStep);
 
-	float sumRef = 0.f;
-	float sumRefRef = 0.f;
-	float sumTrg = 0.f;
-	float sumTrgTrg = 0.f;
-	float sumRefTrg = 0.f;
-	float bilateralWeightSum = 0.f;
-	const float refCenterPix = tex2D<float>(refImage, p.x() + 0.5f, p.y() + 0.5f);
+	float sumTrg = 0.f, sumTrgTrg = 0.f, sumRefTrg = 0.f;
+	int idx = 0;
 	for (int i = -nSizeHalfWindow; i <= nSizeHalfWindow; i += nSizeStep) {
 		for (int j = -nSizeHalfWindow; j <= nSizeHalfWindow; j += nSizeStep) {
-			const Point2i refPt = Point2i(p.x() + j, p.y() + i);
 			const Point2 trgPt = X.hnormalized();
-			const float refPix = tex2D<float>(refImage, refPt.x() + 0.5f, refPt.y() + 0.5f);
 			const float trgPix = tex2D<float>(trgImage, trgPt.x() + 0.5f, trgPt.y() + 0.5f);
-			const float weight = ComputeBilateralWeight(j, i, refPix, refCenterPix);
-			const float weightRefPix = weight * refPix;
-			const float weightTrgPix = weight * trgPix;
-			sumRef += weightRefPix;
-			sumTrg += weightTrgPix;
-			sumRefRef += weightRefPix * refPix;
-			sumTrgTrg += weightTrgPix * trgPix;
-			sumRefTrg += weightRefPix * trgPix;
-			bilateralWeightSum += weight;
+			const float w = cache.weight[idx];
+			const float wTrg = w * trgPix;
+			sumTrg += wTrg;
+			sumTrgTrg += wTrg * trgPix;
+			sumRefTrg += cache.weightRefPix[idx] * trgPix;
+			++idx;
 			X += H.col(0);
 		}
 		baseX += H.col(1);
 		X = baseX;
 	}
 
-	const float varRef = sumRefRef * bilateralWeightSum - sumRef * sumRef;
-	if (lowDepth <= 0 && varRef < 1e-8f)
+	if (lowDepth <= 0 && cache.varRef < 1e-8f)
 		return maxCost;
-	const float varTrg = sumTrgTrg * bilateralWeightSum - sumTrg * sumTrg;
-	const float varRefTrg = varRef * varTrg;
+	const float varTrg = sumTrgTrg * cache.bilateralWeightSum - sumTrg * sumTrg;
+	const float varRefTrg = cache.varRef * varTrg;
 	if (varRefTrg < 1e-16f)
 		return maxCost;
-	const float covarTrgRef = sumRefTrg * bilateralWeightSum - sumRef * sumTrg;
+	const float covarTrgRef = sumRefTrg * cache.bilateralWeightSum - cache.sumRef * sumTrg;
 	float ncc = 1.f - covarTrgRef * rsqrtf(varRefTrg);
 
 	// apply depth prior weight based on patch textureless
@@ -320,26 +348,26 @@ __device__ float ScorePlane(const ImagePixels refImage, const CUDA::Camera& refC
 		const float depth(plane.w());
 		const float deltaDepth(min((abs(lowDepth-depth) / lowDepth), 0.5f));
 		constexpr float smoothSigmaDepth(-1.f / (1.f * 0.02f)); // 0.12: patch texture variance below 0.02 (0.12^2) is considered texture-less
-		const float factorDeltaDepth(__expf(varRef * smoothSigmaDepth));
+		const float factorDeltaDepth(__expf(cache.varRef * smoothSigmaDepth));
 		ncc = (1.f-factorDeltaDepth)*ncc + factorDeltaDepth*deltaDepth;
 	}
 	return max(0.f, min(2.f, ncc));
 }
 
 // compute photometric score for all neighbor images
-__device__ inline void MultiViewScorePlane(const ImagePixels *images, const ImagePixels* depthImages, const CUDA::Camera* cameras, const Point2i& p, const Point4& plane, const float lowDepth, float* costVector, const PatchMatch::Params& params)
+__device__ inline void MultiViewScorePlane(const RefPatchCache& cache, const ImagePixels* images, const ImagePixels* depthImages, const CUDA::Camera* cameras, const Point2i& p, const Point4& plane, const float lowDepth, float* costVector, const PatchMatch::Params& params)
 {
 	for (int imgId = 1; imgId <= params.nNumViews; ++imgId)
-		costVector[imgId-1] = ScorePlane(images[0], cameras[0], images[imgId], cameras[imgId], p, plane, lowDepth, params);
+		costVector[imgId-1] = ScorePlane(cache, cameras[0], images[imgId], cameras[imgId], p, plane, lowDepth, params);
 	if (params.bGeomConsistency)
 		for (int imgId = 0; imgId < params.nNumViews; ++imgId)
 			costVector[imgId] += 0.1f * GeometricConsistencyWeight(depthImages[imgId], cameras[0], cameras[imgId+1], plane, p);
 }
 // same as above, but interpolate the plane to current pixel position
-__device__ inline float MultiViewScoreNeighborPlane(const ImagePixels* images, const ImagePixels* depthImages, const CUDA::Camera* cameras, const Point2i& p, const Point2i& np, Point4 plane, const float lowDepth, float* costVector, const PatchMatch::Params& params)
+__device__ inline float MultiViewScoreNeighborPlane(const RefPatchCache& cache, const ImagePixels* images, const ImagePixels* depthImages, const CUDA::Camera* cameras, const Point2i& p, const Point2i& np, Point4 plane, const float lowDepth, float* costVector, const PatchMatch::Params& params)
 {
 	plane.w() = InterpolatePixel(cameras[0], p, np, plane.w(), plane.topLeftCorner<3,1>(), params);
-	MultiViewScorePlane(images, depthImages, cameras, p, plane, lowDepth, costVector, params);
+	MultiViewScorePlane(cache, images, depthImages, cameras, p, plane, lowDepth, costVector, params);
 	return plane.w();
 }
 
@@ -369,6 +397,9 @@ __device__ void ProcessPixel(const ImagePixels* images, const ImagePixels* depth
 	float lowDepth = 0;
 	if (params.bLowResProcessed)
 		lowDepth = lowDepths[idx];
+	// reference-patch state is invariant across views and hypotheses; cache once
+	RefPatchCache refCache;
+	ComputeRefPatchCache(images[0], p, refCache);
 
 	// adaptive sampling: 0 up-near, 1 down-near, 2 left-near, 3 right-near, 4 up-far, 5 down-far, 6 left-far, 7 right-far
 	static constexpr int2 dirs[8][11] = {
@@ -411,7 +442,7 @@ __device__ void ProcessPixel(const ImagePixels* images, const ImagePixels* depth
 		if (bestConf < FLT_MAX) {
 			valid[posId] = true;
 			positions[posId] = Point2Idx(bestNx, width);
-			neighborDepths[posId] = MultiViewScoreNeighborPlane(images, depthImages, cameras, p, bestNx, planes[positions[posId]], lowDepth, costArray[posId], params);
+			neighborDepths[posId] = MultiViewScoreNeighborPlane(refCache, images, depthImages, cameras, p, bestNx, planes[positions[posId]], lowDepth, costArray[posId], params);
 		}
 	}
 
@@ -473,7 +504,7 @@ __device__ void ProcessPixel(const ImagePixels* images, const ImagePixels* depth
 		finalCosts[posId] = AggregateMultiViewScores(viewWeights, costArray[posId], params.nNumViews);
 	const int minCostIdx = FindMinIndex(finalCosts, 8);
 	float costVector[MAX_VIEWS];
-	MultiViewScorePlane(images, depthImages, cameras, p, plane, lowDepth, costVector, params);
+	MultiViewScorePlane(refCache, images, depthImages, cameras, p, plane, lowDepth, costVector, params);
 	cost = AggregateMultiViewScores(viewWeights, costVector, params.nNumViews);
 	if (finalCosts[minCostIdx] < cost && valid[minCostIdx]) {
 		plane = planes[positions[minCostIdx]];
@@ -509,7 +540,7 @@ __device__ void ProcessPixel(const ImagePixels* images, const ImagePixels* depth
 		Point4 newPlane;
 		newPlane.topLeftCorner<3,1>() = normals[i];
 		newPlane.w() = depths[i];
-		MultiViewScorePlane(images, depthImages, cameras, p, newPlane, lowDepth, costVector, params);
+		MultiViewScorePlane(refCache, images, depthImages, cameras, p, newPlane, lowDepth, costVector, params);
 		const float costPlane = AggregateMultiViewScores(viewWeights, costVector, params.nNumViews);
 		if (cost > costPlane) {
 			cost = costPlane;
@@ -529,6 +560,9 @@ __device__ void InitializePixelScore(const ImagePixels *images, const ImagePixel
 	float lowDepth = 0;
 	if (params.bLowResProcessed)
 		lowDepth = lowDepths[idx];
+	// reference-patch state is invariant across views and hypotheses; cache once
+	RefPatchCache refCache;
+	ComputeRefPatchCache(images[0], p, refCache);
 	// initialize estimate randomly if not set
 	RandState* randState = &randStates[idx];
 	curand_init(1234/*threadIdx.x*/, p.y(), p.x(), randState);
@@ -544,7 +578,7 @@ __device__ void InitializePixelScore(const ImagePixels *images, const ImagePixel
 	}
 	// compute costs
 	float costVector[MAX_VIEWS];
-	MultiViewScorePlane(images, depthImages, cameras, p, plane, lowDepth, costVector, params);
+	MultiViewScorePlane(refCache, images, depthImages, cameras, p, plane, lowDepth, costVector, params);
 	// select best views
 	float costVectorSorted[MAX_VIEWS];
 	Sort(costVector, costVectorSorted, params.nNumViews);
@@ -559,20 +593,20 @@ __device__ void InitializePixelScore(const ImagePixels *images, const ImagePixel
 			SetBit(selectedView, imgId);
 	costs[idx] = cost / params.nInitTopK;
 }
-__global__ void InitializeScore(const cudaTextureObject_t* textureImages, const cudaTextureObject_t* textureDepths, const CUDA::Camera* cameras, Point4* planes, const float* lowDepths, float* costs, curandState* randStates, unsigned* selectedViews, const PatchMatch::Params params)
+__global__ __launch_bounds__(512, 1) void InitializeScore(const cudaTextureObject_t* textureImages, const cudaTextureObject_t* textureDepths, const CUDA::Camera* cameras, Point4* planes, const float* lowDepths, float* costs, curandState* randStates, unsigned* selectedViews, const PatchMatch::Params params)
 {
 	const Point2i p = GetThreadIndex2();
 	InitializePixelScore((const ImagePixels*)textureImages, (const ImagePixels*)textureDepths, cameras, planes, lowDepths, costs, (RandState*)randStates, selectedViews, p, params);
 }
 
 // traverse image in a back/red checkerboard pattern
-__global__ void BlackPixelProcess(const cudaTextureObject_t* textureImages, const cudaTextureObject_t* textureDepths, const CUDA::Camera* cameras, Point4* planes, const float* lowDepths, float* costs, curandState* randStates, unsigned* selectedViews, const PatchMatch::Params params, const int iter)
+__global__ __launch_bounds__(512, 1) void BlackPixelProcess(const cudaTextureObject_t* textureImages, const cudaTextureObject_t* textureDepths, const CUDA::Camera* cameras, Point4* planes, const float* lowDepths, float* costs, curandState* randStates, unsigned* selectedViews, const PatchMatch::Params params, const int iter)
 {
 	Point2i p = GetThreadIndex2();
 	p.y() = p.y() * 2 + (threadIdx.x % 2 == 0 ? 0 : 1);
 	ProcessPixel((const ImagePixels*)textureImages, (const ImagePixels*)textureDepths, cameras, planes, lowDepths, costs, (RandState*)randStates, selectedViews, p, params, iter);
 }
-__global__ void RedPixelProcess(const cudaTextureObject_t* textureImages, const cudaTextureObject_t* textureDepths, const CUDA::Camera* cameras, Point4* planes, const float* lowDepths, float* costs, curandState* randStates, unsigned* selectedViews, const PatchMatch::Params params, const int iter)
+__global__ __launch_bounds__(512, 1) void RedPixelProcess(const cudaTextureObject_t* textureImages, const cudaTextureObject_t* textureDepths, const CUDA::Camera* cameras, Point4* planes, const float* lowDepths, float* costs, curandState* randStates, unsigned* selectedViews, const PatchMatch::Params params, const int iter)
 {
 	Point2i p = GetThreadIndex2();
 	p.y() = p.y() * 2 + (threadIdx.x % 2 == 0 ? 1 : 0);
