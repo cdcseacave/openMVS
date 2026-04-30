@@ -43,6 +43,23 @@
 // patch stepping
 #define nSizeStep 2
 
+// F2: launch-bounds tuning. The default (PATCHMATCHCUDA_LB_256_2 = 1)
+// uses 256 threads/block with 2 resident blocks/SM, which on RTX-class
+// GPUs lets the warp scheduler interleave warps across blocks while
+// one is stalled on tex2D latency. Set to 0 to fall back to the
+// historical 512 threads/block, 1 block/SM configuration.
+#ifndef PATCHMATCHCUDA_LB_256_2
+#define PATCHMATCHCUDA_LB_256_2 1
+#endif
+
+#if PATCHMATCHCUDA_LB_256_2
+#define PATCHMATCHCUDA_BLOCK_H_DIV 4   // BLOCK_H = BLOCK_W / 4 = 8
+#define PATCHMATCHCUDA_LAUNCH_BOUNDS __launch_bounds__(256, 2)
+#else
+#define PATCHMATCHCUDA_BLOCK_H_DIV 2   // BLOCK_H = BLOCK_W / 2 = 16
+#define PATCHMATCHCUDA_LAUNCH_BOUNDS __launch_bounds__(512, 1)
+#endif
+
 
 namespace MVS {
 
@@ -625,20 +642,20 @@ __device__ void InitializePixelScore(const ImagePixels *images, const ImagePixel
 			SetBit(selectedView, imgId);
 	costs[idx] = cost / params.nInitTopK;
 }
-__global__ __launch_bounds__(512, 1) void InitializeScore(const cudaTextureObject_t* textureImages, const cudaTextureObject_t* textureDepths, Point4* planes, const float* lowDepths, float* costs, curandState* randStates, unsigned* selectedViews, const PatchMatch::Params params)
+__global__ PATCHMATCHCUDA_LAUNCH_BOUNDS void InitializeScore(const cudaTextureObject_t* textureImages, const cudaTextureObject_t* textureDepths, Point4* planes, const float* lowDepths, float* costs, curandState* randStates, unsigned* selectedViews, const PatchMatch::Params params)
 {
 	const Point2i p = GetThreadIndex2();
 	InitializePixelScore((const ImagePixels*)textureImages, (const ImagePixels*)textureDepths, planes, lowDepths, costs, (RandState*)randStates, selectedViews, p, params);
 }
 
 // traverse image in a back/red checkerboard pattern
-__global__ __launch_bounds__(512, 1) void BlackPixelProcess(const cudaTextureObject_t* textureImages, const cudaTextureObject_t* textureDepths, Point4* planes, const float* lowDepths, float* costs, curandState* randStates, unsigned* selectedViews, const PatchMatch::Params params, const int iter)
+__global__ PATCHMATCHCUDA_LAUNCH_BOUNDS void BlackPixelProcess(const cudaTextureObject_t* textureImages, const cudaTextureObject_t* textureDepths, Point4* planes, const float* lowDepths, float* costs, curandState* randStates, unsigned* selectedViews, const PatchMatch::Params params, const int iter)
 {
 	Point2i p = GetThreadIndex2();
 	p.y() = p.y() * 2 + (threadIdx.x % 2 == 0 ? 0 : 1);
 	ProcessPixel((const ImagePixels*)textureImages, (const ImagePixels*)textureDepths, planes, lowDepths, costs, (RandState*)randStates, selectedViews, p, params, iter);
 }
-__global__ __launch_bounds__(512, 1) void RedPixelProcess(const cudaTextureObject_t* textureImages, const cudaTextureObject_t* textureDepths, Point4* planes, const float* lowDepths, float* costs, curandState* randStates, unsigned* selectedViews, const PatchMatch::Params params, const int iter)
+__global__ PATCHMATCHCUDA_LAUNCH_BOUNDS void RedPixelProcess(const cudaTextureObject_t* textureImages, const cudaTextureObject_t* textureDepths, Point4* planes, const float* lowDepths, float* costs, curandState* randStates, unsigned* selectedViews, const PatchMatch::Params params, const int iter)
 {
 	Point2i p = GetThreadIndex2();
 	p.y() = p.y() * 2 + (threadIdx.x % 2 == 0 ? 1 : 0);
@@ -678,7 +695,11 @@ __host__ void PatchMatch::RunCUDA(float* ptrCostMap, uint32_t* ptrViewsMap)
 	const unsigned height = cameras[0].size.y();
 
 	constexpr unsigned BLOCK_W = 32;
-	constexpr unsigned BLOCK_H = (BLOCK_W / 2);
+	// BLOCK_H is selected by PATCHMATCHCUDA_LB_256_2 (build-time toggle): the
+	// default mode uses BLOCK_W/4 (=8) so threads/block matches the
+	// __launch_bounds__(256, 2) annotation; the legacy mode uses BLOCK_W/2
+	// (=16) for the historical 512 threads/block, 1 block/SM config.
+	constexpr unsigned BLOCK_H = (BLOCK_W / PATCHMATCHCUDA_BLOCK_H_DIV);
 
 	const dim3 blockSize(BLOCK_W, BLOCK_H, 1);
 	// gridSizeFull: block covers BLOCK_W in x. The previous formula divided
