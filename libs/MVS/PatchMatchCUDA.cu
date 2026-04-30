@@ -682,11 +682,13 @@ __global__ void FilterPlanes(Point4* planes, float* costs, unsigned* selectedVie
 
 
 // host helper: upload camera array into the device __constant__ symbol.
+// B3: queued on the per-instance stream so it serializes with the rest of
+// the H->D setup without fencing the device.
 __host__ void PatchMatch::UploadCameras()
 {
 	const size_t n = cameras.size();
 	ASSERT(n <= MAX_VIEWS + 1);
-	CUDA_CHECK(cudaMemcpyToSymbol(g_cameras, cameras.data(), sizeof(Camera) * n, 0, cudaMemcpyHostToDevice));
+	CUDA_CHECK(cudaMemcpyToSymbolAsync(g_cameras, cameras.data(), sizeof(Camera) * n, 0, cudaMemcpyHostToDevice, cudaStream));
 }
 
 __host__ void PatchMatch::RunCUDA(float* ptrCostMap, uint32_t* ptrViewsMap)

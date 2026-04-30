@@ -58,3 +58,4 @@ block_tune,0,16,0.6859,0.8129,0.744,0.005,794.658,816.42,294.51,21513516,359.5,6
 grid_fix2,0,8,0.6802,0.8267,0.7463,0.005,510.511,519.54,133.02,20767711,262.9,461,753,DensifyPointCloud-26043011120500782D.log,C:\Pro\TanksAndTemples\data\training\Truck\evaluation_R0_V8_grid_fix2
 f1_134,0,16,0.6862,0.8133,0.7444,0.005,570.561,581.11,136.22,21519846,326.7,621,753,DensifyPointCloud-260430113719004CF9.log,C:\Pro\TanksAndTemples\data\training\Truck\evaluation_R0_V16_f1_134
 f2_lb256_2,0,16,0.6862,0.8133,0.7444,0.005,595.735,609.88,141.63,21516160,321.0,678,753,DensifyPointCloud-260430115455007E65.log,C:\Pro\TanksAndTemples\data\training\Truck\evaluation_R0_V16_f2_lb256_2
+b3_async_pinned,0,16,0.6858,0.8134,0.7442,0.005,551.322,561.01,124.78,21508601,318.6,637,753,DensifyPointCloud-26043012213500407D.log,C:\Pro\TanksAndTemples\data\training\Truck\evaluation_R0_V16_b3_async_pinned

@@ -66,10 +66,8 @@ PatchMatch::PatchMatch()
 PatchMatch::~PatchMatch()
 {
 	Release();
-	if (cudaStream) {
+	if (cudaStream)
 		cudaStreamDestroy(cudaStream);
-		cudaStream = 0;
-	}
 }
 
 void PatchMatch::Release()
@@ -107,7 +105,13 @@ void PatchMatch::ReleaseCUDA()
 	if (params.bGeomConsistency)
 		cudaFree(cudaTextureDepths);
 
-	delete[] depthNormalEstimates;
+	// B3: depthNormalEstimates is pinned host memory (cudaHostAlloc) so the
+	// H<->D transfers in RunCUDA / EstimateDepthMap can run as true async DMA
+	// instead of staging through driver-allocated buffers.
+	if (depthNormalEstimates) {
+		cudaFreeHost(depthNormalEstimates);
+		depthNormalEstimates = NULL;
+	}
 }
 
 void PatchMatch::Init(bool bGeomConsistency)
@@ -129,7 +133,9 @@ void PatchMatch::AllocatePatchMatchCUDA(const cv::Mat1f& image)
 		CUDA_CHECK(cudaMalloc((void**)&cudaTextureDepths, sizeof(cudaTextureObject_t) * (num_images-1)));
 
 	const size_t size = image.size().area();
-	depthNormalEstimates = new Point4[size];
+	// B3: pin the host-side estimates buffer so cudaMemcpyAsync H<->D actually
+	// runs as DMA (no driver staging copy).
+	CUDA_CHECK(cudaHostAlloc((void**)&depthNormalEstimates, sizeof(Point4) * size, cudaHostAllocDefault));
 	CUDA_CHECK(cudaMalloc((void**)&cudaDepthNormalEstimates, sizeof(Point4) * size));
 
 	CUDA_CHECK(cudaMalloc((void**)&cudaDepthNormalCosts, sizeof(float) * size));
@@ -303,13 +309,17 @@ void PatchMatch::EstimateDepthMap(DepthData& depthData)
 				}
 				AllocateImageCUDA(i, image, false, !view.depthMap.empty());
 			}
-			CUDA_CHECK(cudaMemcpy2DToArray(cudaImageArrays[i], 0, 0, image.ptr<float>(), image.step[0], image.cols * sizeof(float), image.rows, cudaMemcpyHostToDevice));
+			// B3: H->D transfers go through the per-instance stream so the
+			// subsequent kernel does not need a separate fence. Pageable
+			// cv::Mat memory still stalls the host (that's a CUDA contract),
+			// but the device-side ordering is now stream-scoped.
+			CUDA_CHECK(cudaMemcpy2DToArrayAsync(cudaImageArrays[i], 0, 0, image.ptr<float>(), image.step[0], image.cols * sizeof(float), image.rows, cudaMemcpyHostToDevice, cudaStream));
 			if (params.bGeomConsistency && i > 0 && !view.depthMap.empty()) {
 				// set previously computed depth-map
 				DepthMap depthMap(view.depthMap);
 				if (depthMap.size() != image.size())
 					cv::resize(depthMap, depthMap, image.size(), 0, 0, cv::INTER_LINEAR);
-				CUDA_CHECK(cudaMemcpy2DToArray(cudaDepthArrays[i-1], 0, 0, depthMap.ptr<float>(), depthMap.step[0], sizeof(float) * depthMap.cols, depthMap.rows, cudaMemcpyHostToDevice));
+				CUDA_CHECK(cudaMemcpy2DToArrayAsync(cudaDepthArrays[i-1], 0, 0, depthMap.ptr<float>(), depthMap.step[0], sizeof(float) * depthMap.cols, depthMap.rows, cudaMemcpyHostToDevice, cudaStream));
 			}
 			images[i] = std::move(image);
 			cameras[i] = std::move(camera);
@@ -336,13 +346,14 @@ void PatchMatch::EstimateDepthMap(DepthData& depthData)
 		}
 		prevNumImages = numImages;
 
-		// setup CUDA memory
-		CUDA_CHECK(cudaMemcpy(cudaTextureImages, textureImages.data(), sizeof(cudaTextureObject_t) * numImages, cudaMemcpyHostToDevice));
+		// setup CUDA memory (B3: queued on cudaStream so kernel can launch
+		// without a global fence between setup and execution)
+		CUDA_CHECK(cudaMemcpyAsync(cudaTextureImages, textureImages.data(), sizeof(cudaTextureObject_t) * numImages, cudaMemcpyHostToDevice, cudaStream));
 		UploadCameras();
 		if (params.bGeomConsistency) {
 			// set previously computed depth-maps
 			ASSERT(depthData.depthMap.size() == depthData.GetView().image.size());
-			CUDA_CHECK(cudaMemcpy(cudaTextureDepths, textureDepths.data(), sizeof(cudaTextureObject_t) * params.nNumViews, cudaMemcpyHostToDevice));
+			CUDA_CHECK(cudaMemcpyAsync(cudaTextureDepths, textureDepths.data(), sizeof(cudaTextureObject_t) * params.nNumViews, cudaMemcpyHostToDevice, cudaStream));
 		}
 
 		// load depth-map and normal-map into CUDA memory
@@ -356,12 +367,15 @@ void PatchMatch::EstimateDepthMap(DepthData& depthData)
 				depthNormal.w() = depthData.depthMap(r, c);
 			}
 		}
-		CUDA_CHECK(cudaMemcpy(cudaDepthNormalEstimates, depthNormalEstimates, sizeof(Point4) * depthData.depthMap.size().area(), cudaMemcpyHostToDevice));
+		// B3: depthNormalEstimates is pinned (cudaHostAlloc) so this transfer
+		// runs as DMA-async on cudaStream rather than staging through a
+		// driver-allocated buffer.
+		CUDA_CHECK(cudaMemcpyAsync(cudaDepthNormalEstimates, depthNormalEstimates, sizeof(Point4) * depthData.depthMap.size().area(), cudaMemcpyHostToDevice, cudaStream));
 
 		// load low resolution depth-map into CUDA memory
 		if (params.bLowResProcessed) {
 			ASSERT(depthData.depthMap.isContinuous());
-			CUDA_CHECK(cudaMemcpy(cudaLowDepths, depthData.depthMap.ptr<float>(), sizeof(float) * depthData.depthMap.size().area(), cudaMemcpyHostToDevice));
+			CUDA_CHECK(cudaMemcpyAsync(cudaLowDepths, depthData.depthMap.ptr<float>(), sizeof(float) * depthData.depthMap.size().area(), cudaMemcpyHostToDevice, cudaStream));
 		}
 
 		// run CUDA patch-match
@@ -405,7 +419,7 @@ void PatchMatch::EstimateDepthMap(DepthData& depthData)
 				}
 			}
 		}
-		
+
 		// remember sub-resolution estimates for next iteration
 		if (scaleNumber > 0) {
 			lowResDepthMap = depthData.depthMap;
