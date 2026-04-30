@@ -76,6 +76,12 @@ namespace CUDA {
 // the previous `cameras` pointer parameter.
 __constant__ Camera g_cameras[MAX_VIEWS + 1];
 
+// F4 (#8): mirror PatchMatch::Params in __constant__ memory so kernels
+// no longer pay the per-thread parameter-stack broadcast (Params is 32 B
+// passed by value through registers in every thread). Updated once per
+// pyramid level via UploadParams() before kernel launch.
+__constant__ PatchMatch::Params g_params;
+
 // set/check a bit
 __device__ constexpr void SetBit(unsigned& input, unsigned i) {
 	input |= (1u << i);
@@ -208,19 +214,19 @@ __device__ inline Point3 GeneratePerturbedNormal(const CUDA::Camera& camera, con
 }
 
 // randomly perturb a normal
-__device__ inline float GeneratePerturbedDepth(float depth, RandState* randState, const float perturbation, const PatchMatch::Params& params)
+__device__ inline float GeneratePerturbedDepth(float depth, RandState* randState, const float perturbation)
 {
 	const float depthMinPerturbed = (1.f - perturbation) * depth;
 	const float depthMaxPerturbed = (1.f + perturbation) * depth;
 	float depthPerturbed;
 	do {
 		depthPerturbed = curand_uniform(randState) * (depthMaxPerturbed - depthMinPerturbed) + depthMinPerturbed;
-	} while (depthPerturbed < params.fDepthMin && depthPerturbed > params.fDepthMax);
+	} while (depthPerturbed < g_params.fDepthMin && depthPerturbed > g_params.fDepthMax);
 	return depthPerturbed;
 }
 
 // interpolate given pixel's estimate to the current position
-__device__ inline float InterpolatePixel(const CUDA::Camera& camera, const Point2i& p, const Point2i& np, float depth, const Point3& normal, const PatchMatch::Params& params)
+__device__ inline float InterpolatePixel(const CUDA::Camera& camera, const Point2i& p, const Point2i& np, float depth, const Point3& normal)
 {
 	float depthNew;
 	if (p.x() == np.x()) {
@@ -243,7 +249,7 @@ __device__ inline float InterpolatePixel(const CUDA::Camera& camera, const Point
 		const float planeD = normal.dot(camera.model.TransformPointI2C(np.cast<float>(), depth));
 		depthNew = planeD / normal.dot(camera.model.TransformPointI2C(p.cast<float>()));
 	}
-	return (depthNew >= params.fDepthMin && depthNew <= params.fDepthMax) ? depthNew : depth;
+	return (depthNew >= g_params.fDepthMin && depthNew <= g_params.fDepthMax) ? depthNew : depth;
 }
 
 // compute normal to the surface given the 4 neighbors
@@ -356,7 +362,7 @@ __device__ inline void ComputeRefPatchCache(const ImagePixels refImage, const Po
 }
 
 // compute photometric score using weighted ZNCC; uses precomputed reference cache
-__device__ float ScorePlane(const RefPatchCache& cache, const CUDA::Camera& refCamera, const ImagePixels trgImage, const CUDA::Camera& trgCamera, const Point2i& p, const Point4& plane, const float lowDepth, const PatchMatch::Params& params)
+__device__ float ScorePlane(const RefPatchCache& cache, const CUDA::Camera& refCamera, const ImagePixels trgImage, const CUDA::Camera& trgCamera, const Point2i& p, const Point4& plane, const float lowDepth)
 {
 	constexpr float maxCost = 1.2f;
 
@@ -418,19 +424,27 @@ __device__ float ScorePlane(const RefPatchCache& cache, const CUDA::Camera& refC
 }
 
 // compute photometric score for all neighbor images
-__device__ inline void MultiViewScorePlane(const RefPatchCache& cache, const ImagePixels* images, const ImagePixels* depthImages, const Point2i& p, const Point4& plane, const float lowDepth, float* costVector, const PatchMatch::Params& params)
+// F4 (#7): GEOM templated so the geom-consistency branch is dead-code
+// eliminated when off (the common case on all bench runs); when on, the
+// extra add per view becomes a straight-line code path with no per-pixel
+// branch on params.bGeomConsistency.
+template <bool GEOM>
+__device__ inline void MultiViewScorePlane(const RefPatchCache& cache, const ImagePixels* images, const ImagePixels* depthImages, const Point2i& p, const Point4& plane, const float lowDepth, float* costVector)
 {
-	for (int imgId = 1; imgId <= params.nNumViews; ++imgId)
-		costVector[imgId-1] = ScorePlane(cache, g_cameras[0], images[imgId], g_cameras[imgId], p, plane, lowDepth, params);
-	if (params.bGeomConsistency)
-		for (int imgId = 0; imgId < params.nNumViews; ++imgId)
+	const int nNumViews = g_params.nNumViews;
+	for (int imgId = 1; imgId <= nNumViews; ++imgId)
+		costVector[imgId-1] = ScorePlane(cache, g_cameras[0], images[imgId], g_cameras[imgId], p, plane, lowDepth);
+	if (GEOM) {
+		for (int imgId = 0; imgId < nNumViews; ++imgId)
 			costVector[imgId] += 0.1f * GeometricConsistencyWeight(depthImages[imgId], g_cameras[0], g_cameras[imgId+1], plane, p);
+	}
 }
 // same as above, but interpolate the plane to current pixel position
-__device__ inline float MultiViewScoreNeighborPlane(const RefPatchCache& cache, const ImagePixels* images, const ImagePixels* depthImages, const Point2i& p, const Point2i& np, Point4 plane, const float lowDepth, float* costVector, const PatchMatch::Params& params)
+template <bool GEOM>
+__device__ inline float MultiViewScoreNeighborPlane(const RefPatchCache& cache, const ImagePixels* images, const ImagePixels* depthImages, const Point2i& p, const Point2i& np, Point4 plane, const float lowDepth, float* costVector)
 {
-	plane.w() = InterpolatePixel(g_cameras[0], p, np, plane.w(), plane.topLeftCorner<3,1>(), params);
-	MultiViewScorePlane(cache, images, depthImages, p, plane, lowDepth, costVector, params);
+	plane.w() = InterpolatePixel(g_cameras[0], p, np, plane.w(), plane.topLeftCorner<3,1>());
+	MultiViewScorePlane<GEOM>(cache, images, depthImages, p, plane, lowDepth, costVector);
 	return plane.w();
 }
 
@@ -449,7 +463,8 @@ __device__ inline float AggregateMultiViewScores(const unsigned* viewWeights, co
 
 // propagate and refine the plane estimate for the current pixel employing the asymmetric approach described in:
 // "Multi-View Stereo with Asymmetric Checkerboard Propagation and Multi-Hypothesis Joint View Selection", 2018
-__device__ void ProcessPixel(const ImagePixels* images, const ImagePixels* depthImages, Point4* planes, const float* lowDepths, float* costs, RandState* randStates, unsigned* selectedViews, const Point2i& p, const PatchMatch::Params& params, const int iter)
+template <bool GEOM>
+__device__ void ProcessPixel(const ImagePixels* images, const ImagePixels* depthImages, Point4* planes, const float* lowDepths, float* costs, RandState* randStates, unsigned* selectedViews, const Point2i& p, const int iter)
 {
 	const int width = g_cameras[0].size.x();
 	const int height = g_cameras[0].size.y();
@@ -458,7 +473,7 @@ __device__ void ProcessPixel(const ImagePixels* images, const ImagePixels* depth
 	const int idx = Point2Idx(p, width);
 	RandState* randState = &randStates[idx];
 	float lowDepth = 0;
-	if (params.bLowResProcessed)
+	if (g_params.bLowResProcessed)
 		lowDepth = lowDepths[idx];
 	// reference-patch state is invariant across views and hypotheses; cache once
 	RefPatchCache refCache;
@@ -505,23 +520,24 @@ __device__ void ProcessPixel(const ImagePixels* images, const ImagePixels* depth
 		if (bestConf < FLT_MAX) {
 			valid[posId] = true;
 			positions[posId] = Point2Idx(bestNx, width);
-			neighborDepths[posId] = MultiViewScoreNeighborPlane(refCache, images, depthImages, p, bestNx, LoadPlaneLDG(&planes[positions[posId]]), lowDepth, costArray[posId], params);
+			neighborDepths[posId] = MultiViewScoreNeighborPlane<GEOM>(refCache, images, depthImages, p, bestNx, LoadPlaneLDG(&planes[positions[posId]]), lowDepth, costArray[posId]);
 		}
 	}
 
 	// multi-hypothesis view selection
 	float viewSelectionPriors[MAX_VIEWS] = {0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f};
+	const int nNumViews = g_params.nNumViews;
 	for (int posId = 0; posId < 4; ++posId) {
 		if (valid[posId]) {
 			const unsigned selectedView = selectedViews[neighborPositions[posId]];
-			for (int j = 0; j < params.nNumViews; ++j)
+			for (int j = 0; j < nNumViews; ++j)
 				viewSelectionPriors[j] += (IsBitSet(selectedView, j) ? 0.9f : 0.1f);
 		}
 	}
 	float samplingProbs[MAX_VIEWS];
 	constexpr float thCostBad = 1.2f;
 	const float thCost = 0.8f * exp(Square((float)iter) / (-2.f * 4.f*4.f));
-	for (int imgId = 0; imgId < params.nNumViews; ++imgId) {
+	for (int imgId = 0; imgId < nNumViews; ++imgId) {
 		float sumW = 0;
 		unsigned count = 0;
 		unsigned countBad = 0;
@@ -543,11 +559,11 @@ __device__ void ProcessPixel(const ImagePixels* images, const ImagePixels* depth
 			samplingProbs[imgId] = 0.f;
 		}
 	}
-	PDF2CDF(samplingProbs, params.nNumViews);
+	PDF2CDF(samplingProbs, nNumViews);
 	unsigned viewWeights[MAX_VIEWS] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
 	for (int sample = 0; sample < NUM_SAMPLES; ++sample) {
 		const float randProb = curand_uniform(randState);
-		for (int imgId = 0; imgId < params.nNumViews; ++imgId) {
+		for (int imgId = 0; imgId < nNumViews; ++imgId) {
 			if (samplingProbs[imgId] > randProb) {
 				++viewWeights[imgId];
 				break;
@@ -559,16 +575,16 @@ __device__ void ProcessPixel(const ImagePixels* images, const ImagePixels* depth
 	Point4& plane = planes[idx];
 	float& cost = costs[idx];
 	unsigned newSelectedViews = 0;
-	for (int imgId = 0; imgId < params.nNumViews; ++imgId)
+	for (int imgId = 0; imgId < nNumViews; ++imgId)
 		if (viewWeights[imgId])
 			SetBit(newSelectedViews, imgId);
 	float finalCosts[8];
 	for (int posId = 0; posId < 8; ++posId)
-		finalCosts[posId] = AggregateMultiViewScores(viewWeights, costArray[posId], params.nNumViews);
+		finalCosts[posId] = AggregateMultiViewScores(viewWeights, costArray[posId], nNumViews);
 	const int minCostIdx = FindMinIndex(finalCosts, 8);
 	float costVector[MAX_VIEWS];
-	MultiViewScorePlane(refCache, images, depthImages, p, plane, lowDepth, costVector, params);
-	cost = AggregateMultiViewScores(viewWeights, costVector, params.nNumViews);
+	MultiViewScorePlane<GEOM>(refCache, images, depthImages, p, plane, lowDepth, costVector);
+	cost = AggregateMultiViewScores(viewWeights, costVector, nNumViews);
 	if (finalCosts[minCostIdx] < cost && valid[minCostIdx]) {
 		plane = LoadPlaneLDG(&planes[positions[minCostIdx]]);
 		plane.w() = neighborDepths[minCostIdx];
@@ -580,7 +596,7 @@ __device__ void ProcessPixel(const ImagePixels* images, const ImagePixels* depth
 	// refine estimate
 	constexpr float perturbationDepth = 0.005f;
 	constexpr float perturbationNormal = 0.01f * (float)M_PI;
-	const float depthPerturbed = GeneratePerturbedDepth(depth, randState, perturbationDepth, params);
+	const float depthPerturbed = GeneratePerturbedDepth(depth, randState, perturbationDepth);
 	const Point3 perturbedNormal = GeneratePerturbedNormal(g_cameras[0], p, plane.topLeftCorner<3,1>(), randState, perturbationNormal);
 	const Point3 normalRand = GenerateRandomNormal(g_cameras[0], p, randState);
 	int numValidPlanes = 3;
@@ -603,8 +619,8 @@ __device__ void ProcessPixel(const ImagePixels* images, const ImagePixels* depth
 		Point4 newPlane;
 		newPlane.topLeftCorner<3,1>() = normals[i];
 		newPlane.w() = depths[i];
-		MultiViewScorePlane(refCache, images, depthImages, p, newPlane, lowDepth, costVector, params);
-		const float costPlane = AggregateMultiViewScores(viewWeights, costVector, params.nNumViews);
+		MultiViewScorePlane<GEOM>(refCache, images, depthImages, p, newPlane, lowDepth, costVector);
+		const float costPlane = AggregateMultiViewScores(viewWeights, costVector, nNumViews);
 		if (cost > costPlane) {
 			cost = costPlane;
 			plane = newPlane;
@@ -613,7 +629,8 @@ __device__ void ProcessPixel(const ImagePixels* images, const ImagePixels* depth
 }
 
 // compute the score of the current plane estimate
-__device__ void InitializePixelScore(const ImagePixels *images, const ImagePixels* depthImages, Point4* planes, const float* lowDepths, float* costs, RandState* randStates, unsigned* selectedViews, const Point2i& p, const PatchMatch::Params params)
+template <bool GEOM>
+__device__ void InitializePixelScore(const ImagePixels *images, const ImagePixels* depthImages, Point4* planes, const float* lowDepths, float* costs, RandState* randStates, unsigned* selectedViews, const Point2i& p)
 {
 	const int width = g_cameras[0].size.x();
 	const int height = g_cameras[0].size.y();
@@ -621,7 +638,7 @@ __device__ void InitializePixelScore(const ImagePixels *images, const ImagePixel
 		return;
 	const int idx = Point2Idx(p, width);
 	float lowDepth = 0;
-	if (params.bLowResProcessed)
+	if (g_params.bLowResProcessed)
 		lowDepth = lowDepths[idx];
 	// reference-patch state is invariant across views and hypotheses; cache once
 	RefPatchCache refCache;
@@ -634,50 +651,59 @@ __device__ void InitializePixelScore(const ImagePixels *images, const ImagePixel
 	if (depth <= 0.f) {
 		// generate random plane
 		plane.topLeftCorner<3,1>() = GenerateRandomNormal(g_cameras[0], p, randState);
-		plane.w() = curand_uniform(randState) * (params.fDepthMax - params.fDepthMin) + params.fDepthMin;
+		plane.w() = curand_uniform(randState) * (g_params.fDepthMax - g_params.fDepthMin) + g_params.fDepthMin;
 	} else if (plane.topLeftCorner<3,1>().dot(g_cameras[0].model.ViewDirection(p)) >= 0.f) {
 		// generate random normal
 		plane.topLeftCorner<3,1>() = GenerateRandomNormal(g_cameras[0], p, randState);
 	}
 	// compute costs
+	const int nNumViews = g_params.nNumViews;
+	const int nInitTopK = g_params.nInitTopK;
 	float costVector[MAX_VIEWS];
-	MultiViewScorePlane(refCache, images, depthImages, p, plane, lowDepth, costVector, params);
+	MultiViewScorePlane<GEOM>(refCache, images, depthImages, p, plane, lowDepth, costVector);
 	// select best views
 	float costVectorSorted[MAX_VIEWS];
-	Sort(costVector, costVectorSorted, params.nNumViews);
+	Sort(costVector, costVectorSorted, nNumViews);
 	float cost = 0.f;
-	for (int i = 0; i < params.nInitTopK; ++i)
+	for (int i = 0; i < nInitTopK; ++i)
 		cost += costVectorSorted[i];
-	const float costThreshold = costVectorSorted[params.nInitTopK - 1];
+	const float costThreshold = costVectorSorted[nInitTopK - 1];
 	unsigned& selectedView = selectedViews[idx];
 	selectedView = 0;
-	for (int imgId = 0; imgId < params.nNumViews; ++imgId)
+	for (int imgId = 0; imgId < nNumViews; ++imgId)
 		if (costVector[imgId] <= costThreshold)
 			SetBit(selectedView, imgId);
-	costs[idx] = cost / params.nInitTopK;
+	costs[idx] = cost / nInitTopK;
 }
-__global__ PATCHMATCHCUDA_LAUNCH_BOUNDS void InitializeScore(const cudaTextureObject_t* textureImages, const cudaTextureObject_t* textureDepths, Point4* planes, const float* lowDepths, float* costs, curandState* randStates, unsigned* selectedViews, const PatchMatch::Params params)
+// F4 (#7+#8): kernels are templated on GEOM so the compiler emits
+// distinct binaries with the geom-consistency branch dead-code-eliminated
+// when off. Params live in __constant__ g_params and are no longer
+// passed by value -- see UploadParams() in RunCUDA.
+template <bool GEOM>
+__global__ PATCHMATCHCUDA_LAUNCH_BOUNDS void InitializeScore(const cudaTextureObject_t* textureImages, const cudaTextureObject_t* textureDepths, Point4* planes, const float* lowDepths, float* costs, curandState* randStates, unsigned* selectedViews)
 {
 	const Point2i p = GetThreadIndex2();
-	InitializePixelScore((const ImagePixels*)textureImages, (const ImagePixels*)textureDepths, planes, lowDepths, costs, (RandState*)randStates, selectedViews, p, params);
+	InitializePixelScore<GEOM>((const ImagePixels*)textureImages, (const ImagePixels*)textureDepths, planes, lowDepths, costs, (RandState*)randStates, selectedViews, p);
 }
 
 // traverse image in a back/red checkerboard pattern
-__global__ PATCHMATCHCUDA_LAUNCH_BOUNDS void BlackPixelProcess(const cudaTextureObject_t* textureImages, const cudaTextureObject_t* textureDepths, Point4* planes, const float* lowDepths, float* costs, curandState* randStates, unsigned* selectedViews, const PatchMatch::Params params, const int iter)
+template <bool GEOM>
+__global__ PATCHMATCHCUDA_LAUNCH_BOUNDS void BlackPixelProcess(const cudaTextureObject_t* textureImages, const cudaTextureObject_t* textureDepths, Point4* planes, const float* lowDepths, float* costs, curandState* randStates, unsigned* selectedViews, const int iter)
 {
 	Point2i p = GetThreadIndex2();
 	p.y() = p.y() * 2 + (threadIdx.x % 2 == 0 ? 0 : 1);
-	ProcessPixel((const ImagePixels*)textureImages, (const ImagePixels*)textureDepths, planes, lowDepths, costs, (RandState*)randStates, selectedViews, p, params, iter);
+	ProcessPixel<GEOM>((const ImagePixels*)textureImages, (const ImagePixels*)textureDepths, planes, lowDepths, costs, (RandState*)randStates, selectedViews, p, iter);
 }
-__global__ PATCHMATCHCUDA_LAUNCH_BOUNDS void RedPixelProcess(const cudaTextureObject_t* textureImages, const cudaTextureObject_t* textureDepths, Point4* planes, const float* lowDepths, float* costs, curandState* randStates, unsigned* selectedViews, const PatchMatch::Params params, const int iter)
+template <bool GEOM>
+__global__ PATCHMATCHCUDA_LAUNCH_BOUNDS void RedPixelProcess(const cudaTextureObject_t* textureImages, const cudaTextureObject_t* textureDepths, Point4* planes, const float* lowDepths, float* costs, curandState* randStates, unsigned* selectedViews, const int iter)
 {
 	Point2i p = GetThreadIndex2();
 	p.y() = p.y() * 2 + (threadIdx.x % 2 == 0 ? 1 : 0);
-	ProcessPixel((const ImagePixels*)textureImages, (const ImagePixels*)textureDepths, planes, lowDepths, costs, (RandState*)randStates, selectedViews, p, params, iter);
+	ProcessPixel<GEOM>((const ImagePixels*)textureImages, (const ImagePixels*)textureDepths, planes, lowDepths, costs, (RandState*)randStates, selectedViews, p, iter);
 }
 
 // filter depth/normals
-__global__ void FilterPlanes(Point4* planes, float* costs, unsigned* selectedViews, int width, int height, const PatchMatch::Params params)
+__global__ void FilterPlanes(Point4* planes, float* costs, unsigned* selectedViews, int width, int height)
 {
 	const Point2i p = GetThreadIndex2();
 	if (p.x() >= width || p.y() >= height)
@@ -686,7 +712,7 @@ __global__ void FilterPlanes(Point4* planes, float* costs, unsigned* selectedVie
 	// filter estimates if the score is not good enough
 	Point4& plane = planes[idx];
 	float conf = costs[idx];
-	if (plane.w() <= 0 || conf >= params.fThresholdKeepCost) {
+	if (plane.w() <= 0 || conf >= g_params.fThresholdKeepCost) {
 		conf = 0;
 		plane = Point4::Zero();
 		selectedViews[idx] = 0;
@@ -703,6 +729,13 @@ __host__ void PatchMatch::UploadCameras()
 	const size_t n = cameras.size();
 	ASSERT(n <= MAX_VIEWS + 1);
 	CUDA_CHECK(cudaMemcpyToSymbolAsync(g_cameras, cameras.data(), sizeof(Camera) * n, 0, cudaMemcpyHostToDevice, cudaStream));
+}
+
+// F4 (#8): mirror the host params into __constant__ g_params before each
+// pyramid level's kernel launches.
+__host__ void PatchMatch::UploadParams()
+{
+	CUDA_CHECK(cudaMemcpyToSymbolAsync(g_params, &params, sizeof(Params), 0, cudaMemcpyHostToDevice, cudaStream));
 }
 
 __host__ void PatchMatch::RunCUDA(float* ptrCostMap, uint32_t* ptrViewsMap)
@@ -724,18 +757,33 @@ __host__ void PatchMatch::RunCUDA(float* ptrCostMap, uint32_t* ptrViewsMap)
 	const dim3 gridSizeFull((width + BLOCK_W - 1) / BLOCK_W, (height + BLOCK_H - 1) / BLOCK_H, 1);
 	const dim3 gridSizeCheckerboard((width + BLOCK_W - 1) / BLOCK_W, ((height / 2) + BLOCK_H - 1) / BLOCK_H, 1);
 
-	InitializeScore<<<gridSizeFull, blockSize, 0, cudaStream>>>(cudaTextureImages, cudaTextureDepths, cudaDepthNormalEstimates, cudaLowDepths, cudaDepthNormalCosts, cudaRandStates, cudaSelectedViews, params);
+	// F4 (#8): refresh constant-memory params for this pyramid level.
+	UploadParams();
+
+	// F4 (#7): dispatch templated kernels by bGeomConsistency. The macro
+	// keeps both code paths identical except for the GEOM template arg.
+#define LAUNCH_GEOM(KERNEL, GRID, ...) \
+	do { \
+		if (params.bGeomConsistency) \
+			KERNEL<true ><<<GRID, blockSize, 0, cudaStream>>>(__VA_ARGS__); \
+		else \
+			KERNEL<false><<<GRID, blockSize, 0, cudaStream>>>(__VA_ARGS__); \
+	} while (0)
+
+	LAUNCH_GEOM(InitializeScore, gridSizeFull, cudaTextureImages, cudaTextureDepths, cudaDepthNormalEstimates, cudaLowDepths, cudaDepthNormalCosts, cudaRandStates, cudaSelectedViews);
 	cudaStreamSynchronize(cudaStream);
 
 	for (int iter = 0; iter < params.nEstimationIters; ++iter) {
-		BlackPixelProcess<<<gridSizeCheckerboard, blockSize, 0, cudaStream>>>(cudaTextureImages, cudaTextureDepths, cudaDepthNormalEstimates, cudaLowDepths, cudaDepthNormalCosts, cudaRandStates, cudaSelectedViews, params, iter);
+		LAUNCH_GEOM(BlackPixelProcess, gridSizeCheckerboard, cudaTextureImages, cudaTextureDepths, cudaDepthNormalEstimates, cudaLowDepths, cudaDepthNormalCosts, cudaRandStates, cudaSelectedViews, iter);
 		cudaStreamSynchronize(cudaStream);
-		RedPixelProcess<<<gridSizeCheckerboard, blockSize, 0, cudaStream>>>(cudaTextureImages, cudaTextureDepths, cudaDepthNormalEstimates, cudaLowDepths, cudaDepthNormalCosts, cudaRandStates, cudaSelectedViews, params, iter);
+		LAUNCH_GEOM(RedPixelProcess, gridSizeCheckerboard, cudaTextureImages, cudaTextureDepths, cudaDepthNormalEstimates, cudaLowDepths, cudaDepthNormalCosts, cudaRandStates, cudaSelectedViews, iter);
 		cudaStreamSynchronize(cudaStream);
 	}
 
+#undef LAUNCH_GEOM
+
 	if (params.fThresholdKeepCost > 0)
-		FilterPlanes<<<gridSizeFull, blockSize, 0, cudaStream>>>(cudaDepthNormalEstimates, cudaDepthNormalCosts, cudaSelectedViews, width, height, params);
+		FilterPlanes<<<gridSizeFull, blockSize, 0, cudaStream>>>(cudaDepthNormalEstimates, cudaDepthNormalCosts, cudaSelectedViews, width, height);
 
 	cudaMemcpyAsync(depthNormalEstimates, cudaDepthNormalEstimates, sizeof(Point4) * width * height, cudaMemcpyDeviceToHost, cudaStream);
 	if (ptrCostMap)

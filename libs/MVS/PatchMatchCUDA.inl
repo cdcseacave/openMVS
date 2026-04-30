@@ -84,6 +84,7 @@ private:
 	void AllocateImageCUDA(size_t i, const cv::Mat1f& image, bool bInitImage, bool bInitDepthMap);
 	void RunCUDA(float* ptrCostMap=NULL, uint32_t* ptrViewsMap=NULL);
 	void UploadCameras(); // A2: upload host `cameras` into __constant__ g_cameras
+	void UploadParams();  // F4: upload host `params` into __constant__ g_params
 
 public:
 	Params params;
