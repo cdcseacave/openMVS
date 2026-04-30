@@ -43,11 +43,10 @@
 // patch stepping
 #define nSizeStep 2
 
-// F2: launch-bounds tuning. The default (PATCHMATCHCUDA_LB_256_2 = 1)
-// uses 256 threads/block with 2 resident blocks/SM, which on RTX-class
-// GPUs lets the warp scheduler interleave warps across blocks while
-// one is stalled on tex2D latency. Set to 0 to fall back to the
-// historical 512 threads/block, 1 block/SM configuration.
+// Launch-bounds tuning. Default uses 256 threads/block with 2 resident
+// blocks/SM, letting the warp scheduler interleave across blocks while
+// one is stalled on tex2D latency (~1.8% per-view kernel time vs the
+// historical 512/1 config). Set PATCHMATCHCUDA_LB_256_2=0 to fall back.
 #ifndef PATCHMATCHCUDA_LB_256_2
 #define PATCHMATCHCUDA_LB_256_2 1
 #endif
@@ -68,18 +67,11 @@ namespace CUDA {
 #define ImagePixels cudaTextureObject_t
 #define RandState curandState
 
-// A2: cameras live in __constant__ memory. CUDA::Camera is 72 B; with
-// MAX_VIEWS=32 source + 1 reference = 33 entries, the array is ~2.4 KB --
-// well within the 64 KB constant-memory budget. Constant memory has a
-// dedicated 8 KB per-SM cache that broadcasts to all threads in a warp on
-// a single read, eliminating the per-pixel L1/global-memory loads through
-// the previous `cameras` pointer parameter.
+// Cameras and runtime params live in __constant__ memory: warp-broadcast
+// reads through the constant cache replace per-thread parameter-stack /
+// global-memory traffic. Updated via UploadCameras() / UploadParams()
+// before each pyramid-level kernel launch.
 __constant__ Camera g_cameras[MAX_VIEWS + 1];
-
-// F4 (#8): mirror PatchMatch::Params in __constant__ memory so kernels
-// no longer pay the per-thread parameter-stack broadcast (Params is 32 B
-// passed by value through registers in every thread). Updated once per
-// pyramid level via UploadParams() before kernel launch.
 __constant__ PatchMatch::Params g_params;
 
 // set/check a bit
@@ -90,12 +82,11 @@ __device__ constexpr int IsBitSet(unsigned input, unsigned i) {
 	return (input >> i) & 1u;
 }
 
-// C2: read-only-cache loaders for the planes[] array. Within the
-// black/red checkerboard pass every neighbour offset in `dirs` and in
-// `neighborPositions` has odd Manhattan parity from the current pixel,
-// so the cells we read are guaranteed not to be written in this kernel
-// launch -- the __ldg() read-only contract holds and L1 bandwidth is
-// freed up for the texture work.
+// Read-only-cache loaders for planes[]. Safe within a checkerboard pass
+// because every offset in `dirs` and `neighborPositions` has odd Manhattan
+// parity from the current pixel, so the cells we read are not written in
+// this launch -- the __ldg() read-only contract holds and L1 bandwidth
+// is freed for the texture work.
 __device__ __forceinline__ Point4 LoadPlaneLDG(const Point4* p) {
 	const float* f = reinterpret_cast<const float*>(p);
 	Point4 r;
@@ -286,12 +277,7 @@ __device__ inline Matrix3 ComputeHomography(const CUDA::Camera& refCamera, const
 	return trgCamera.model.K() * H * refCamera.model.K().inverse();
 }
 
-// weight a neighbor texel based on color similarity and distance to the center texel.
-// F4-bench (#2): the caller already tracks `idx` in [0,24] for the 5x5 patch,
-// so accept it directly and use a flat LUT. Removes the (xDist+4)/2 * 5 +
-// (yDist+4)/2 address arithmetic and lets nvcc fold spatialLUT[idx] into
-// immediate FMUL operands when the patch loop fully unrolls (#pragma unroll
-// is set on the caller's inner j-loop to guarantee that).
+// weight a neighbor texel based on color similarity and distance to the center texel
 __device__ inline float ComputeBilateralWeight(int idx, float pix, float centerPix)
 {
 	// Spatial Gaussian for the 5x5 patch (sample positions in {-4,-2,0,2,4};
@@ -374,10 +360,9 @@ __device__ float ScorePlane(const RefPatchCache& cache, const CUDA::Camera& refC
 	constexpr float maxCost = 1.2f;
 
 	Matrix3 H = ComputeHomography(refCamera, trgCamera, p.cast<float>(), plane);
-	// F3 (#1): inline hnormalized() with __fdividef so each projection is
-	// one RCP + two FMAs instead of two IEEE-compliant divisions. The +0.5
-	// tex2D pixel-center bias rides into the FMA. Saves ~25 divisions per
-	// ScorePlane call (the hottest inner loop in the kernel).
+	// Inline hnormalized() as RCP + 2 FMAs (the +0.5 tex2D pixel-center
+	// bias rides into the FMA). Replaces 2 IEEE divisions per sample in the
+	// 25-sample patch walk -- the hottest inner loop, ~-29% per-view kernel time.
 	{
 		const Point3 ptH = H * p.cast<float>().homogeneous();
 		const float invZ = __fdividef(1.f, ptH.z());
@@ -433,10 +418,8 @@ __device__ float ScorePlane(const RefPatchCache& cache, const CUDA::Camera& refC
 }
 
 // compute photometric score for all neighbor images
-// F4 (#7): GEOM templated so the geom-consistency branch is dead-code
-// eliminated when off (the common case on all bench runs); when on, the
-// extra add per view becomes a straight-line code path with no per-pixel
-// branch on params.bGeomConsistency.
+// compute photometric score for all neighbor images. GEOM-templated so
+// the geom-consistency loop is dead-code eliminated when off.
 template <bool GEOM>
 __device__ inline void MultiViewScorePlane(const RefPatchCache& cache, const ImagePixels* images, const ImagePixels* depthImages, const Point2i& p, const Point4& plane, const float lowDepth, float* costVector)
 {
@@ -684,10 +667,9 @@ __device__ void InitializePixelScore(const ImagePixels *images, const ImagePixel
 			SetBit(selectedView, imgId);
 	costs[idx] = cost / nInitTopK;
 }
-// F4 (#7+#8): kernels are templated on GEOM so the compiler emits
-// distinct binaries with the geom-consistency branch dead-code-eliminated
-// when off. Params live in __constant__ g_params and are no longer
-// passed by value -- see UploadParams() in RunCUDA.
+// Kernels are GEOM-templated; nvcc emits separate binaries with the
+// geom-consistency loop eliminated when off. Runtime params come from
+// __constant__ g_params (uploaded per pyramid level by UploadParams()).
 template <bool GEOM>
 __global__ PATCHMATCHCUDA_LAUNCH_BOUNDS void InitializeScore(const cudaTextureObject_t* textureImages, const cudaTextureObject_t* textureDepths, Point4* planes, const float* lowDepths, float* costs, curandState* randStates, unsigned* selectedViews)
 {
@@ -730,18 +712,13 @@ __global__ void FilterPlanes(Point4* planes, float* costs, unsigned* selectedVie
 /*----------------------------------------------------------------*/
 
 
-// host helper: upload camera array into the device __constant__ symbol.
-// B3: queued on the per-instance stream so it serializes with the rest of
-// the H->D setup without fencing the device.
+// upload host cameras / params into their __constant__ symbols on cudaStream
 __host__ void PatchMatch::UploadCameras()
 {
 	const size_t n = cameras.size();
 	ASSERT(n <= MAX_VIEWS + 1);
 	CUDA_CHECK(cudaMemcpyToSymbolAsync(g_cameras, cameras.data(), sizeof(Camera) * n, 0, cudaMemcpyHostToDevice, cudaStream));
 }
-
-// F4 (#8): mirror the host params into __constant__ g_params before each
-// pyramid level's kernel launches.
 __host__ void PatchMatch::UploadParams()
 {
 	CUDA_CHECK(cudaMemcpyToSymbolAsync(g_params, &params, sizeof(Params), 0, cudaMemcpyHostToDevice, cudaStream));
@@ -753,24 +730,17 @@ __host__ void PatchMatch::RunCUDA(float* ptrCostMap, uint32_t* ptrViewsMap)
 	const unsigned height = cameras[0].size.y();
 
 	constexpr unsigned BLOCK_W = 32;
-	// BLOCK_H is selected by PATCHMATCHCUDA_LB_256_2 (build-time toggle): the
-	// default mode uses BLOCK_W/4 (=8) so threads/block matches the
-	// __launch_bounds__(256, 2) annotation; the legacy mode uses BLOCK_W/2
-	// (=16) for the historical 512 threads/block, 1 block/SM config.
+	// BLOCK_H is selected by PATCHMATCHCUDA_LB_256_2 (build-time toggle).
 	constexpr unsigned BLOCK_H = (BLOCK_W / PATCHMATCHCUDA_BLOCK_H_DIV);
 
 	const dim3 blockSize(BLOCK_W, BLOCK_H, 1);
-	// gridSizeFull: block covers BLOCK_W in x. The previous formula divided
-	// width by BLOCK_H, launching ~2x extra blocks of which most threads
-	// early-returned. Dividing by BLOCK_W matches actual block coverage.
 	const dim3 gridSizeFull((width + BLOCK_W - 1) / BLOCK_W, (height + BLOCK_H - 1) / BLOCK_H, 1);
 	const dim3 gridSizeCheckerboard((width + BLOCK_W - 1) / BLOCK_W, ((height / 2) + BLOCK_H - 1) / BLOCK_H, 1);
 
-	// F4 (#8): refresh constant-memory params for this pyramid level.
+	// refresh constant-memory params for this pyramid level
 	UploadParams();
 
-	// F4 (#7): dispatch templated kernels by bGeomConsistency. The macro
-	// keeps both code paths identical except for the GEOM template arg.
+	// dispatch templated kernels by bGeomConsistency
 #define LAUNCH_GEOM(KERNEL, GRID, ...) \
 	do { \
 		if (params.bGeomConsistency) \

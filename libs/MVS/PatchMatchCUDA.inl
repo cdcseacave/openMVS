@@ -83,8 +83,8 @@ private:
 	void AllocatePatchMatchCUDA(const cv::Mat1f& image);
 	void AllocateImageCUDA(size_t i, const cv::Mat1f& image, bool bInitImage, bool bInitDepthMap);
 	void RunCUDA(float* ptrCostMap=NULL, uint32_t* ptrViewsMap=NULL);
-	void UploadCameras(); // A2: upload host `cameras` into __constant__ g_cameras
-	void UploadParams();  // F4: upload host `params` into __constant__ g_params
+	void UploadCameras(); // upload host cameras into __constant__ g_cameras
+	void UploadParams();  // upload host params into __constant__ g_params
 
 public:
 	Params params;
@@ -104,11 +104,9 @@ public:
 	float* cudaDepthNormalCosts;
 	curandState* cudaRandStates;
 	uint32_t* cudaSelectedViews;
-	// C1: dedicated stream so all kernel launches and per-pass syncs are
-	// scoped to this PatchMatch instance instead of fencing the whole device.
-	// Behaviourally a no-op while everything still runs on one stream, but
-	// it is the prerequisite for overlapping H<->D transfers with kernel
-	// work on the next pyramid level (B3).
+	// per-instance stream: scopes kernel launches and syncs to this
+	// PatchMatch instead of fencing the whole device, and enables async
+	// H<->D transfers.
 	cudaStream_t cudaStream;
 };
 /*----------------------------------------------------------------*/
