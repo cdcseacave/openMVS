@@ -67,6 +67,25 @@ __device__ constexpr int IsBitSet(unsigned input, unsigned i) {
 	return (input >> i) & 1u;
 }
 
+// C2: read-only-cache loaders for the planes[] array. Within the
+// black/red checkerboard pass every neighbour offset in `dirs` and in
+// `neighborPositions` has odd Manhattan parity from the current pixel,
+// so the cells we read are guaranteed not to be written in this kernel
+// launch -- the __ldg() read-only contract holds and L1 bandwidth is
+// freed up for the texture work.
+__device__ __forceinline__ Point4 LoadPlaneLDG(const Point4* p) {
+	const float* f = reinterpret_cast<const float*>(p);
+	Point4 r;
+	r.x() = __ldg(f + 0);
+	r.y() = __ldg(f + 1);
+	r.z() = __ldg(f + 2);
+	r.w() = __ldg(f + 3);
+	return r;
+}
+__device__ __forceinline__ float LoadPlaneWLDG(const Point4* p) {
+	return __ldg(reinterpret_cast<const float*>(p) + 3);
+}
+
 // sort the given values array using bubble sort algorithm
 __device__ inline void Sort(const float* values, float* sortedValues, int n) {
 	for (int i = 0; i < n; ++i)
@@ -455,7 +474,7 @@ __device__ void ProcessPixel(const ImagePixels* images, const ImagePixels* depth
 		if (bestConf < FLT_MAX) {
 			valid[posId] = true;
 			positions[posId] = Point2Idx(bestNx, width);
-			neighborDepths[posId] = MultiViewScoreNeighborPlane(refCache, images, depthImages, p, bestNx, planes[positions[posId]], lowDepth, costArray[posId], params);
+			neighborDepths[posId] = MultiViewScoreNeighborPlane(refCache, images, depthImages, p, bestNx, LoadPlaneLDG(&planes[positions[posId]]), lowDepth, costArray[posId], params);
 		}
 	}
 
@@ -520,7 +539,7 @@ __device__ void ProcessPixel(const ImagePixels* images, const ImagePixels* depth
 	MultiViewScorePlane(refCache, images, depthImages, p, plane, lowDepth, costVector, params);
 	cost = AggregateMultiViewScores(viewWeights, costVector, params.nNumViews);
 	if (finalCosts[minCostIdx] < cost && valid[minCostIdx]) {
-		plane = planes[positions[minCostIdx]];
+		plane = LoadPlaneLDG(&planes[positions[minCostIdx]]);
 		plane.w() = neighborDepths[minCostIdx];
 		cost = finalCosts[minCostIdx];
 		selectedViews[idx] = newSelectedViews;
@@ -538,10 +557,10 @@ __device__ void ProcessPixel(const ImagePixels* images, const ImagePixels* depth
 	if (valid[0] && valid[1] && valid[2] && valid[3]) {
 		// estimate normal from surrounding surface
 		const Point4 ndepths(
-			planes[neighborPositions[0]].w(),
-			planes[neighborPositions[1]].w(),
-			planes[neighborPositions[2]].w(),
-			planes[neighborPositions[3]].w()
+			LoadPlaneWLDG(&planes[neighborPositions[0]]),
+			LoadPlaneWLDG(&planes[neighborPositions[1]]),
+			LoadPlaneWLDG(&planes[neighborPositions[2]]),
+			LoadPlaneWLDG(&planes[neighborPositions[3]])
 		);
 		surfaceNormal = ComputeDepthGradient(g_cameras[0].model, depth, p, ndepths);
 		numValidPlanes = 4;
@@ -668,26 +687,26 @@ __host__ void PatchMatch::RunCUDA(float* ptrCostMap, uint32_t* ptrViewsMap)
 	const dim3 gridSizeFull((width + BLOCK_W - 1) / BLOCK_W, (height + BLOCK_H - 1) / BLOCK_H, 1);
 	const dim3 gridSizeCheckerboard((width + BLOCK_W - 1) / BLOCK_W, ((height / 2) + BLOCK_H - 1) / BLOCK_H, 1);
 
-	InitializeScore<<<gridSizeFull, blockSize>>>(cudaTextureImages, cudaTextureDepths, cudaDepthNormalEstimates, cudaLowDepths, cudaDepthNormalCosts, cudaRandStates, cudaSelectedViews, params);
-	cudaDeviceSynchronize();
+	InitializeScore<<<gridSizeFull, blockSize, 0, cudaStream>>>(cudaTextureImages, cudaTextureDepths, cudaDepthNormalEstimates, cudaLowDepths, cudaDepthNormalCosts, cudaRandStates, cudaSelectedViews, params);
+	cudaStreamSynchronize(cudaStream);
 
 	for (int iter = 0; iter < params.nEstimationIters; ++iter) {
-		BlackPixelProcess<<<gridSizeCheckerboard, blockSize>>>(cudaTextureImages, cudaTextureDepths, cudaDepthNormalEstimates, cudaLowDepths, cudaDepthNormalCosts, cudaRandStates, cudaSelectedViews, params, iter);
-		cudaDeviceSynchronize();
-		RedPixelProcess<<<gridSizeCheckerboard, blockSize>>>(cudaTextureImages, cudaTextureDepths, cudaDepthNormalEstimates, cudaLowDepths, cudaDepthNormalCosts, cudaRandStates, cudaSelectedViews, params, iter);
-		cudaDeviceSynchronize();
+		BlackPixelProcess<<<gridSizeCheckerboard, blockSize, 0, cudaStream>>>(cudaTextureImages, cudaTextureDepths, cudaDepthNormalEstimates, cudaLowDepths, cudaDepthNormalCosts, cudaRandStates, cudaSelectedViews, params, iter);
+		cudaStreamSynchronize(cudaStream);
+		RedPixelProcess<<<gridSizeCheckerboard, blockSize, 0, cudaStream>>>(cudaTextureImages, cudaTextureDepths, cudaDepthNormalEstimates, cudaLowDepths, cudaDepthNormalCosts, cudaRandStates, cudaSelectedViews, params, iter);
+		cudaStreamSynchronize(cudaStream);
 	}
 
 	if (params.fThresholdKeepCost > 0)
-		FilterPlanes<<<gridSizeFull, blockSize>>>(cudaDepthNormalEstimates, cudaDepthNormalCosts, cudaSelectedViews, width, height, params);
+		FilterPlanes<<<gridSizeFull, blockSize, 0, cudaStream>>>(cudaDepthNormalEstimates, cudaDepthNormalCosts, cudaSelectedViews, width, height, params);
 
-	cudaMemcpy(depthNormalEstimates, cudaDepthNormalEstimates, sizeof(Point4) * width * height, cudaMemcpyDeviceToHost);
+	cudaMemcpyAsync(depthNormalEstimates, cudaDepthNormalEstimates, sizeof(Point4) * width * height, cudaMemcpyDeviceToHost, cudaStream);
 	if (ptrCostMap)
-		cudaMemcpy(ptrCostMap, cudaDepthNormalCosts, sizeof(float) * width * height, cudaMemcpyDeviceToHost);
+		cudaMemcpyAsync(ptrCostMap, cudaDepthNormalCosts, sizeof(float) * width * height, cudaMemcpyDeviceToHost, cudaStream);
 	if (ptrViewsMap)
-		cudaMemcpy(ptrViewsMap, cudaSelectedViews, sizeof(uint32_t) * width * height, cudaMemcpyDeviceToHost);
+		cudaMemcpyAsync(ptrViewsMap, cudaSelectedViews, sizeof(uint32_t) * width * height, cudaMemcpyDeviceToHost, cudaStream);
 
-	cudaDeviceSynchronize();
+	cudaStreamSynchronize(cudaStream);
 }
 /*----------------------------------------------------------------*/
 

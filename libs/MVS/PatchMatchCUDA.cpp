@@ -53,15 +53,23 @@ namespace MVS {
 namespace CUDA {
 
 PatchMatch::PatchMatch()
+	: cudaStream(0)
 {
 	// initialize CUDA device if needed
 	if (SEACAVE::CUDA::devices.IsEmpty())
 		SEACAVE::CUDA::initDevices(SEACAVE::CUDA::desiredDeviceIDs);
+	// C1: per-instance stream lets RunCUDA() use cudaStreamSynchronize()
+	// instead of fencing the whole device.
+	CUDA_CHECK(cudaStreamCreate(&cudaStream));
 }
 
 PatchMatch::~PatchMatch()
 {
 	Release();
+	if (cudaStream) {
+		cudaStreamDestroy(cudaStream);
+		cudaStream = 0;
+	}
 }
 
 void PatchMatch::Release()

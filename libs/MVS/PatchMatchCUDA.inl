@@ -103,6 +103,12 @@ public:
 	float* cudaDepthNormalCosts;
 	curandState* cudaRandStates;
 	uint32_t* cudaSelectedViews;
+	// C1: dedicated stream so all kernel launches and per-pass syncs are
+	// scoped to this PatchMatch instance instead of fencing the whole device.
+	// Behaviourally a no-op while everything still runs on one stream, but
+	// it is the prerequisite for overlapping H<->D transfers with kernel
+	// work on the next pyramid level (B3).
+	cudaStream_t cudaStream;
 };
 /*----------------------------------------------------------------*/
 
