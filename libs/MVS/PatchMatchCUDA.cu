@@ -662,7 +662,10 @@ __host__ void PatchMatch::RunCUDA(float* ptrCostMap, uint32_t* ptrViewsMap)
 	constexpr unsigned BLOCK_H = (BLOCK_W / 2);
 
 	const dim3 blockSize(BLOCK_W, BLOCK_H, 1);
-	const dim3 gridSizeFull((width + BLOCK_H - 1) / BLOCK_H, (height + BLOCK_H - 1) / BLOCK_H, 1);
+	// gridSizeFull: block covers BLOCK_W in x. The previous formula divided
+	// width by BLOCK_H, launching ~2x extra blocks of which most threads
+	// early-returned. Dividing by BLOCK_W matches actual block coverage.
+	const dim3 gridSizeFull((width + BLOCK_W - 1) / BLOCK_W, (height + BLOCK_H - 1) / BLOCK_H, 1);
 	const dim3 gridSizeCheckerboard((width + BLOCK_W - 1) / BLOCK_W, ((height / 2) + BLOCK_H - 1) / BLOCK_H, 1);
 
 	InitializeScore<<<gridSizeFull, blockSize>>>(cudaTextureImages, cudaTextureDepths, cudaDepthNormalEstimates, cudaLowDepths, cudaDepthNormalCosts, cudaRandStates, cudaSelectedViews, params);
