@@ -286,22 +286,27 @@ __device__ inline Matrix3 ComputeHomography(const CUDA::Camera& refCamera, const
 	return trgCamera.model.K() * H * refCamera.model.K().inverse();
 }
 
-// weight a neighbor texel based on color similarity and distance to the center texel
-__device__ inline float ComputeBilateralWeight(int xDist, int yDist, float pix, float centerPix)
+// weight a neighbor texel based on color similarity and distance to the center texel.
+// F4-bench (#2): the caller already tracks `idx` in [0,24] for the 5x5 patch,
+// so accept it directly and use a flat LUT. Removes the (xDist+4)/2 * 5 +
+// (yDist+4)/2 address arithmetic and lets nvcc fold spatialLUT[idx] into
+// immediate FMUL operands when the patch loop fully unrolls (#pragma unroll
+// is set on the caller's inner j-loop to guarantee that).
+__device__ inline float ComputeBilateralWeight(int idx, float pix, float centerPix)
 {
-	// Spatial Gaussian for the 5x5 patch (xDist,yDist in {-4,-2,0,2,4}; sigmaSpatial = -1/18)
-	// precomputed: exp(-(dx*dx + dy*dy) / 18); indexed by (xDist+4)/2 and (yDist+4)/2.
-	static constexpr float spatialLUT[5][5] = {
-		{ 0.169013f, 0.329193f, 0.411112f, 0.329193f, 0.169013f },
-		{ 0.329193f, 0.641180f, 0.800737f, 0.641180f, 0.329193f },
-		{ 0.411112f, 0.800737f, 1.000000f, 0.800737f, 0.411112f },
-		{ 0.329193f, 0.641180f, 0.800737f, 0.641180f, 0.329193f },
-		{ 0.169013f, 0.329193f, 0.411112f, 0.329193f, 0.169013f },
+	// Spatial Gaussian for the 5x5 patch (sample positions in {-4,-2,0,2,4};
+	// sigmaSpatial = -1/18) precomputed: exp(-(dx*dx + dy*dy) / 18). Row-major
+	// over (i, j) with i as the outer index.
+	static constexpr float spatialLUT[25] = {
+		0.169013f, 0.329193f, 0.411112f, 0.329193f, 0.169013f,
+		0.329193f, 0.641180f, 0.800737f, 0.641180f, 0.329193f,
+		0.411112f, 0.800737f, 1.000000f, 0.800737f, 0.411112f,
+		0.329193f, 0.641180f, 0.800737f, 0.641180f, 0.329193f,
+		0.169013f, 0.329193f, 0.411112f, 0.329193f, 0.169013f,
 	};
 	constexpr float sigmaColor = -1.f / (2.f * 25.f/255.f*25.f/255.f);
-	const float spatialW = spatialLUT[(yDist + nSizeHalfWindow) / nSizeStep][(xDist + nSizeHalfWindow) / nSizeStep];
 	const float colorDistSq = Square(pix - centerPix);
-	return spatialW * __expf(colorDistSq * sigmaColor);
+	return spatialLUT[idx] * __expf(colorDistSq * sigmaColor);
 }
 
 // compute the geometric consistency weight
@@ -343,10 +348,12 @@ __device__ inline void ComputeRefPatchCache(const ImagePixels refImage, const Po
 	const float refCenterPix = tex2D<float>(refImage, p.x() + 0.5f, p.y() + 0.5f);
 	float sumRef = 0.f, sumRefRef = 0.f, bws = 0.f;
 	int idx = 0;
+	#pragma unroll
 	for (int i = -nSizeHalfWindow; i <= nSizeHalfWindow; i += nSizeStep) {
+		#pragma unroll
 		for (int j = -nSizeHalfWindow; j <= nSizeHalfWindow; j += nSizeStep) {
 			const float refPix = tex2D<float>(refImage, p.x() + j + 0.5f, p.y() + i + 0.5f);
-			const float w = ComputeBilateralWeight(j, i, refPix, refCenterPix);
+			const float w = ComputeBilateralWeight(idx, refPix, refCenterPix);
 			const float wRef = w * refPix;
 			cache.weight[idx] = w;
 			cache.weightRefPix[idx] = wRef;
@@ -385,7 +392,9 @@ __device__ float ScorePlane(const RefPatchCache& cache, const CUDA::Camera& refC
 
 	float sumTrg = 0.f, sumTrgTrg = 0.f, sumRefTrg = 0.f;
 	int idx = 0;
+	#pragma unroll
 	for (int i = -nSizeHalfWindow; i <= nSizeHalfWindow; i += nSizeStep) {
+		#pragma unroll
 		for (int j = -nSizeHalfWindow; j <= nSizeHalfWindow; j += nSizeStep) {
 			const float invZ = __fdividef(1.f, X.z());
 			const float trgPx = X.x() * invZ + 0.5f;
