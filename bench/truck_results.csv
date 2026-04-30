@@ -60,3 +60,5 @@ f1_134,0,16,0.6862,0.8133,0.7444,0.005,570.561,581.11,136.22,21519846,326.7,621,
 f2_lb256_2,0,16,0.6862,0.8133,0.7444,0.005,595.735,609.88,141.63,21516160,321.0,678,753,DensifyPointCloud-260430115455007E65.log,C:\Pro\TanksAndTemples\data\training\Truck\evaluation_R0_V16_f2_lb256_2
 b3_async_pinned,0,16,0.6858,0.8134,0.7442,0.005,551.322,561.01,124.78,21508601,318.6,637,753,DensifyPointCloud-26043012213500407D.log,C:\Pro\TanksAndTemples\data\training\Truck\evaluation_R0_V16_b3_async_pinned
 b4_pin_images,0,16,0.686,0.8133,0.7442,0.005,587.295,600.15,125.52,21509121,320.4,620,753,DensifyPointCloud-26043012560100635D.log,C:\Pro\TanksAndTemples\data\training\Truck\evaluation_R0_V16_b4_pin_images
+f3_fdivf,0,16,0.6534,0.8251,0.7293,0.005,524.359,537.72,155.57,26198400,226.2,525,753,DensifyPointCloud-260430140516003E99.log,C:\Pro\TanksAndTemples\data\training\Truck\evaluation_R0_V16_f3_fdivf
+f3_fdivf_only,0,16,0.686,0.8131,0.7441,0.005,525.072,535.0,136.29,21507292,224.8,509,753,DensifyPointCloud-260430141825002815.log,C:\Pro\TanksAndTemples\data\training\Truck\evaluation_R0_V16_f3_fdivf_only

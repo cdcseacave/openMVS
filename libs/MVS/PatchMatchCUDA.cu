@@ -256,6 +256,9 @@ __device__ inline Point3 ComputeDepthGradient(const LinearCameraModel& model, fl
 	// compute depth gradient
 	const Point2 d = dg*0.5f;
 	// compute normal from depth gradient
+	// NOTE: must remain unit-length: InterpolatePixel and ComputeHomography
+	// have scale-dependent denom guards (FLT_EPSILON, 1e-6) that fire
+	// spuriously on unnormalized normals whose magnitude tracks |depth|.
 	return Point3(
 		model.f.x()*d.x(),
 		model.f.y()*d.y(),
@@ -358,9 +361,18 @@ __device__ float ScorePlane(const RefPatchCache& cache, const CUDA::Camera& refC
 	constexpr float maxCost = 1.2f;
 
 	Matrix3 H = ComputeHomography(refCamera, trgCamera, p.cast<float>(), plane);
-	const Point2 pt = (H * p.cast<float>().homogeneous()).hnormalized();
-	if (pt.x() >= trgCamera.size.x() || pt.x() < 0.f || pt.y() >= trgCamera.size.y() || pt.y() < 0.f)
-		return maxCost;
+	// F3 (#1): inline hnormalized() with __fdividef so each projection is
+	// one RCP + two FMAs instead of two IEEE-compliant divisions. The +0.5
+	// tex2D pixel-center bias rides into the FMA. Saves ~25 divisions per
+	// ScorePlane call (the hottest inner loop in the kernel).
+	{
+		const Point3 ptH = H * p.cast<float>().homogeneous();
+		const float invZ = __fdividef(1.f, ptH.z());
+		const float ptX = ptH.x() * invZ;
+		const float ptY = ptH.y() * invZ;
+		if (ptX >= trgCamera.size.x() || ptX < 0.f || ptY >= trgCamera.size.y() || ptY < 0.f)
+			return maxCost;
+	}
 	Point3 X = H * Point2(p.x()-nSizeHalfWindow, p.y()-nSizeHalfWindow).homogeneous();
 	Point3 baseX(X);
 	H *= float(nSizeStep);
@@ -369,8 +381,10 @@ __device__ float ScorePlane(const RefPatchCache& cache, const CUDA::Camera& refC
 	int idx = 0;
 	for (int i = -nSizeHalfWindow; i <= nSizeHalfWindow; i += nSizeStep) {
 		for (int j = -nSizeHalfWindow; j <= nSizeHalfWindow; j += nSizeStep) {
-			const Point2 trgPt = X.hnormalized();
-			const float trgPix = tex2D<float>(trgImage, trgPt.x() + 0.5f, trgPt.y() + 0.5f);
+			const float invZ = __fdividef(1.f, X.z());
+			const float trgPx = X.x() * invZ + 0.5f;
+			const float trgPy = X.y() * invZ + 0.5f;
+			const float trgPix = tex2D<float>(trgImage, trgPx, trgPy);
 			const float w = cache.weight[idx];
 			const float wTrg = w * trgPix;
 			sumTrg += wTrg;
