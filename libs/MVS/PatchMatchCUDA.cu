@@ -145,11 +145,9 @@ __device__ inline void PDF2CDF(float* probs, const int numProbs) {
 /*----------------------------------------------------------------*/
 
 
-// generate a random normal (Marsaglia's method on the unit sphere).
-// Algebraically unit-length: |n|^2 = 4q1^2(1-s) + 4q2^2(1-s) + (1-2s)^2 = 1.
-// Float-32 round-off contributes <=1 ULP from the single sqrtf(1-s); no
-// .normalized() defensive call is required.
-__device__ inline Point3 GenerateRandomNormal(const CUDA::Camera& camera, const Point2i& p, RandState* randState)
+// generate a random unit vector (Marsaglia's method on the unit sphere);
+// algebraically unit-length: |n|^2 = 4q1^2(1-s) + 4q2^2(1-s) + (1-2s)^2 = 1
+__device__ inline Point3 GenerateRandomUnitVector(RandState* randState)
 {
 	float q1, q2, s;
 	do {
@@ -158,50 +156,38 @@ __device__ inline Point3 GenerateRandomNormal(const CUDA::Camera& camera, const 
 		s = q1 * q1 + q2 * q2;
 	} while (s >= 1.f);
 	const float sq = sqrtf(1.f - s);
-	const Point3 normal(
+	return Point3(
 		2.f * q1 * sq,
 		2.f * q2 * sq,
 		1.f - 2.f * s);
+}
 
+// generate a random normal in the camera-facing half-space
+__device__ inline Point3 GenerateRandomNormal(const CUDA::Camera& camera, const Point2i& p, RandState* randState)
+{
+	const Point3 normal = GenerateRandomUnitVector(randState);
 	const Point3 viewDirection = camera.model.ViewDirection(p);
 	return normal.dot(viewDirection) > 0.f ? Point3(-normal) : normal;
 }
 
-// randomly perturb a normal
-// Algorithmically unit-preserving: Rodrigues rotation around a Marsaglia-unit
-// axis by a random small angle. For unit |axis|=1 and unit |normal|=1, the
-// rotation v' = v cosθ + (axis x v) sinθ + axis (axis . v)(1 - cosθ) preserves
-// |v'|=1 exactly in math; float32 round-off contributes ~2-3 ULP, the same
-// noise floor as the input -- so no .normalized() defensive call is required.
-// Also halves the trig cost (1 sincosf vs 3 sin + 3 cos) and replaces the
-// 9-element non-orthogonal matrix product with one cross + one dot.
+// randomly perturb a normal (algorithmically unit-preserving);
+// Rodrigues rotation around a Marsaglia-unit axis by a random small angle
 __device__ inline Point3 GeneratePerturbedNormal(const CUDA::Camera& camera, const Point2i& p, const Point3& normal, RandState* randState, const float perturbation)
 {
-	// Random unit-length axis on the sphere (Marsaglia's method, exact in math).
-	float q1, q2, s;
-	do {
-		q1 = 2.f * curand_uniform(randState) - 1.f;
-		q2 = 2.f * curand_uniform(randState) - 1.f;
-		s = q1 * q1 + q2 * q2;
-	} while (s >= 1.f);
-	const float sq = sqrtf(1.f - s);
-	const Point3 axis(2.f * q1 * sq, 2.f * q2 * sq, 1.f - 2.f * s);
-
-	// Random angle in [-perturbation/2, +perturbation/2].
+	// random angle in [-perturbation/2, +perturbation/2]
 	const float theta = (curand_uniform(randState) - 0.5f) * perturbation;
 	float sinT, cosT;
 	__sincosf(theta, &sinT, &cosT);
 
-	// Rodrigues' rotation formula.
+	// rodrigues' rotation formula
+	const Point3 axis = GenerateRandomUnitVector(randState);
 	const float aDotN = axis.dot(normal);
 	const Point3 axCrossN = axis.cross(normal);
 	const Point3 normalPerturbed = normal * cosT + axCrossN * sinT + axis * (aDotN * (1.f - cosT));
 
-	// Keep the perturbed normal in the camera-facing half-space.
+	// keep the perturbed normal in the camera-facing half-space
 	const Point3 viewDirection = camera.model.ViewDirection(p);
-	if (normalPerturbed.dot(viewDirection) >= 0.f)
-		return normal;
-	return normalPerturbed;
+	return normalPerturbed.dot(viewDirection) >= 0.f ? normal : normalPerturbed;
 }
 
 // randomly perturb a normal
@@ -212,7 +198,7 @@ __device__ inline float GeneratePerturbedDepth(float depth, RandState* randState
 	float depthPerturbed;
 	do {
 		depthPerturbed = curand_uniform(randState) * (depthMaxPerturbed - depthMinPerturbed) + depthMinPerturbed;
-	} while (depthPerturbed < g_params.fDepthMin && depthPerturbed > g_params.fDepthMax);
+	} while (depthPerturbed < g_params.fDepthMin || depthPerturbed > g_params.fDepthMax);
 	return depthPerturbed;
 }
 
@@ -223,7 +209,7 @@ __device__ inline float InterpolatePixel(const CUDA::Camera& camera, const Point
 	if (p.x() == np.x()) {
 		const float nx1 = (p.y() - camera.model.p.y()) / camera.model.f.y();
 		const float denom = normal.z() + nx1 * normal.y();
-		if (abs(denom) < FLT_EPSILON)
+		if (fabsf(denom) < FLT_EPSILON)
 			return depth;
 		const float x1 = (np.y() - camera.model.p.y()) / camera.model.f.y();
 		const float nom = depth * (normal.z() + x1 * normal.y());
@@ -231,7 +217,7 @@ __device__ inline float InterpolatePixel(const CUDA::Camera& camera, const Point
 	} else if (p.y() == np.y()) {
 		const float nx1 = (p.x() - camera.model.p.x()) / camera.model.f.x();
 		const float denom = normal.z() + nx1 * normal.x();
-		if (abs(denom) < FLT_EPSILON)
+		if (fabsf(denom) < FLT_EPSILON)
 			return depth;
 		const float x1 = (np.x() - camera.model.p.x()) / camera.model.f.x();
 		const float nom = depth * (normal.z() + x1 * normal.x());
@@ -253,9 +239,6 @@ __device__ inline Point3 ComputeDepthGradient(const LinearCameraModel& model, fl
 	// compute depth gradient
 	const Point2 d = dg*0.5f;
 	// compute normal from depth gradient
-	// NOTE: must remain unit-length: InterpolatePixel and ComputeHomography
-	// have scale-dependent denom guards (FLT_EPSILON, 1e-6) that fire
-	// spuriously on unnormalized normals whose magnitude tracks |depth|.
 	return Point3(
 		model.f.x()*d.x(),
 		model.f.y()*d.y(),
@@ -267,22 +250,21 @@ __device__ inline Matrix3 ComputeHomography(const CUDA::Camera& refCamera, const
 {
 	const Point3 X = refCamera.model.TransformPointI2C(p, plane.w());
 	const Point3 normal = plane.topLeftCorner<3,1>();
-	// Guard against plane passing through (or near) the reference camera center:
-	// normal.dot(X) -> 0 makes t infinite and the resulting H NaN, which would
-	// silently corrupt the patch walk (NaN comparisons fail-open in the bounds check).
+	// guard against plane passing through (or near) the reference camera center:
+	// normal.dot(X) -> 0 makes t infinite and the resulting H NaN
 	const float denom = normal.dot(X);
-	const float safeDenom = fabsf(denom) < 1e-6f ? copysignf(1e-6f, denom) : denom;
+	const float safeDenom = fabsf(denom) < FLT_EPSILON ? copysignf(FLT_EPSILON, denom) : denom;
 	const Point3 t = (refCamera.pose.C - trgCamera.pose.C) / safeDenom;
 	const Matrix3 H = trgCamera.pose.R * (refCamera.pose.R.transpose() + t*normal.transpose());
 	return trgCamera.model.K() * H * refCamera.model.K().inverse();
 }
 
 // weight a neighbor texel based on color similarity and distance to the center texel
-__device__ inline float ComputeBilateralWeight(int idx, float pix, float centerPix)
+__device__ inline float ComputeBilateralWeight4(int idx, float pix, float centerPix)
 {
-	// Spatial Gaussian for the 5x5 patch (sample positions in {-4,-2,0,2,4};
-	// sigmaSpatial = -1/18) precomputed: exp(-(dx*dx + dy*dy) / 18). Row-major
-	// over (i, j) with i as the outer index.
+	// spatial Gaussian for the 5x5 patch (sample positions in {-4,-2,0,2,4};
+	// sigmaSpatial = -1/18) precomputed: exp(-(dx*dx + dy*dy) / 18);
+	// row-major over (i, j) with i as the outer index
 	static constexpr float spatialLUT[25] = {
 		0.169013f, 0.329193f, 0.411112f, 0.329193f, 0.169013f,
 		0.329193f, 0.641180f, 0.800737f, 0.641180f, 0.329193f,
@@ -293,6 +275,14 @@ __device__ inline float ComputeBilateralWeight(int idx, float pix, float centerP
 	constexpr float sigmaColor = -1.f / (2.f * 25.f/255.f*25.f/255.f);
 	const float colorDistSq = Square(pix - centerPix);
 	return spatialLUT[idx] * __expf(colorDistSq * sigmaColor);
+}
+__device__ inline float ComputeBilateralWeight(int xDist, int yDist, float pix, float centerPix)
+{
+	constexpr float sigmaSpatial = -1.f / (2.f * (nSizeHalfWindow-1)*(nSizeHalfWindow-1));
+	constexpr float sigmaColor = -1.f / (2.f * 25.f/255.f*25.f/255.f);
+	const float spatialDistSq = float(xDist * xDist + yDist * yDist);
+	const float colorDistSq = Square(pix - centerPix);
+	return __expf(spatialDistSq * sigmaSpatial + colorDistSq * sigmaColor);
 }
 
 // compute the geometric consistency weight
@@ -309,8 +299,8 @@ __device__ inline float GeometricConsistencyWeight(const ImagePixels depthImage,
 	const Point3 trgX = trgCamera.TransformPointI2W(trgPt, trgDepth);
 	const Point2 backwardPoint = refCamera.TransformPointW2I(trgX);
 	const Point2 diff = p.cast<float>() - backwardPoint;
-	const float dist = diff.norm();
-	return min(maxDist, sqrt(dist*(dist+2.f)));
+	const float distSq = diff.squaredNorm();
+	return min(maxDist, sqrtf(distSq + sqrtf(distSq)*2.f));
 }
 
 // number of samples in the (2*halfWin/step + 1)^2 reference patch
@@ -324,9 +314,9 @@ __device__ inline float GeometricConsistencyWeight(const ImagePixels depthImage,
 struct RefPatchCache {
 	float weight[N_PATCH_SAMPLES];        // bilateral weight per patch sample
 	float weightRefPix[N_PATCH_SAMPLES];  // weight * refPix per sample
-	float sumRef;                          // Σ weight * refPix
-	float bilateralWeightSum;              // Σ weight
-	float varRef;                          // sumRefRef*Σw - sumRef^2
+	float sumRef;                         // Σ weight * refPix
+	float bilateralWeightSum;             // Σ weight
+	float varRef;                         // sumRefRef*Σw - sumRef^2
 };
 
 __device__ inline void ComputeRefPatchCache(const ImagePixels refImage, const Point2i& p, RefPatchCache& cache)
@@ -339,7 +329,11 @@ __device__ inline void ComputeRefPatchCache(const ImagePixels refImage, const Po
 		#pragma unroll
 		for (int j = -nSizeHalfWindow; j <= nSizeHalfWindow; j += nSizeStep) {
 			const float refPix = tex2D<float>(refImage, p.x() + j + 0.5f, p.y() + i + 0.5f);
-			const float w = ComputeBilateralWeight(idx, refPix, refCenterPix);
+			#if nSizeHalfWindow == 4
+			const float w = ComputeBilateralWeight4(idx, refPix, refCenterPix);
+			#else
+			const float w = ComputeBilateralWeight(j, i, refPix, refCenterPix);
+			#endif
 			const float wRef = w * refPix;
 			cache.weight[idx] = w;
 			cache.weightRefPix[idx] = wRef;
@@ -360,9 +354,8 @@ __device__ float ScorePlane(const RefPatchCache& cache, const CUDA::Camera& refC
 	constexpr float maxCost = 1.2f;
 
 	Matrix3 H = ComputeHomography(refCamera, trgCamera, p.cast<float>(), plane);
-	// Inline hnormalized() as RCP + 2 FMAs (the +0.5 tex2D pixel-center
-	// bias rides into the FMA). Replaces 2 IEEE divisions per sample in the
-	// 25-sample patch walk -- the hottest inner loop, ~-29% per-view kernel time.
+	// inline hnormalized() as RCP + 2 FMAs (the +0.5 tex2D pixel-center bias rides into the FMA)
+	// replaces 2 IEEE divisions per sample in the 25-sample patch walk; hottest inner loop, ~-29% per-view kernel time
 	{
 		const Point3 ptH = H * p.cast<float>().homogeneous();
 		const float invZ = __fdividef(1.f, ptH.z());
@@ -409,7 +402,7 @@ __device__ float ScorePlane(const RefPatchCache& cache, const CUDA::Camera& refC
 	// apply depth prior weight based on patch textureless
 	if (lowDepth > 0) {
 		const float depth(plane.w());
-		const float deltaDepth(min((abs(lowDepth-depth) / lowDepth), 0.5f));
+		const float deltaDepth(min((fabsf(lowDepth-depth) / lowDepth), 0.5f));
 		constexpr float smoothSigmaDepth(-1.f / (1.f * 0.02f)); // 0.12: patch texture variance below 0.02 (0.12^2) is considered texture-less
 		const float factorDeltaDepth(__expf(cache.varRef * smoothSigmaDepth));
 		ncc = (1.f-factorDeltaDepth)*ncc + factorDeltaDepth*deltaDepth;
@@ -417,9 +410,8 @@ __device__ float ScorePlane(const RefPatchCache& cache, const CUDA::Camera& refC
 	return max(0.f, min(2.f, ncc));
 }
 
-// compute photometric score for all neighbor images
-// compute photometric score for all neighbor images. GEOM-templated so
-// the geom-consistency loop is dead-code eliminated when off.
+// compute photometric score for all neighbor images;
+// GEOM-templated so geom-consistency loop is dead-code eliminated when off
 template <bool GEOM>
 __device__ inline void MultiViewScorePlane(const RefPatchCache& cache, const ImagePixels* images, const ImagePixels* depthImages, const Point2i& p, const Point4& plane, const float lowDepth, float* costVector)
 {
@@ -528,7 +520,7 @@ __device__ void ProcessPixel(const ImagePixels* images, const ImagePixels* depth
 	}
 	float samplingProbs[MAX_VIEWS];
 	constexpr float thCostBad = 1.2f;
-	const float thCost = 0.8f * exp(Square((float)iter) / (-2.f * 4.f*4.f));
+	const float thCost = 0.8f * __expf(Square((float)iter) / (-2.f * 4.f*4.f));
 	for (int imgId = 0; imgId < nNumViews; ++imgId) {
 		float sumW = 0;
 		unsigned count = 0;
@@ -536,7 +528,7 @@ __device__ void ProcessPixel(const ImagePixels* images, const ImagePixels* depth
 		for (int posId = 0; posId < 8; posId++) {
 			if (valid[posId]) {
 				if (costArray[posId][imgId] < thCost) {
-					sumW += exp(Square(costArray[posId][imgId]) / (-2.f * 0.3f*0.3f));
+					sumW += __expf(Square(costArray[posId][imgId]) / (-2.f * 0.3f*0.3f));
 					++count;
 				} else if (costArray[posId][imgId] > thCostBad) {
 					++countBad;
@@ -546,7 +538,7 @@ __device__ void ProcessPixel(const ImagePixels* images, const ImagePixels* depth
 		if (count > 2 && countBad < 3) {
 			samplingProbs[imgId] = viewSelectionPriors[imgId] * sumW / count;
 		} else if (countBad < 3) {
-			samplingProbs[imgId] = viewSelectionPriors[imgId] * exp(Square(thCost) / (-2.f * 0.4f*0.4f));
+			samplingProbs[imgId] = viewSelectionPriors[imgId] * __expf(Square(thCost) / (-2.f * 0.4f*0.4f));
 		} else {
 			samplingProbs[imgId] = 0.f;
 		}
@@ -667,9 +659,10 @@ __device__ void InitializePixelScore(const ImagePixels *images, const ImagePixel
 			SetBit(selectedView, imgId);
 	costs[idx] = cost / nInitTopK;
 }
-// Kernels are GEOM-templated; nvcc emits separate binaries with the
-// geom-consistency loop eliminated when off. Runtime params come from
-// __constant__ g_params (uploaded per pyramid level by UploadParams()).
+
+// kernels are GEOM-templated; nvcc emits separate binaries with the
+// geom-consistency loop eliminated when off; runtime params come from
+// __constant__ g_params (uploaded per pyramid level by UploadParams())
 template <bool GEOM>
 __global__ PATCHMATCHCUDA_LAUNCH_BOUNDS void InitializeScore(const cudaTextureObject_t* textureImages, const cudaTextureObject_t* textureDepths, Point4* planes, const float* lowDepths, float* costs, curandState* randStates, unsigned* selectedViews)
 {
@@ -730,7 +723,7 @@ __host__ void PatchMatch::RunCUDA(float* ptrCostMap, uint32_t* ptrViewsMap)
 	const unsigned height = cameras[0].size.y();
 
 	constexpr unsigned BLOCK_W = 32;
-	// BLOCK_H is selected by PATCHMATCHCUDA_LB_256_2 (build-time toggle).
+	// BLOCK_H is selected by PATCHMATCHCUDA_LB_256_2 (build-time toggle)
 	constexpr unsigned BLOCK_H = (BLOCK_W / PATCHMATCHCUDA_BLOCK_H_DIV);
 
 	const dim3 blockSize(BLOCK_W, BLOCK_H, 1);
@@ -741,13 +734,12 @@ __host__ void PatchMatch::RunCUDA(float* ptrCostMap, uint32_t* ptrViewsMap)
 	UploadParams();
 
 	// dispatch templated kernels by bGeomConsistency
-#define LAUNCH_GEOM(KERNEL, GRID, ...) \
-	do { \
-		if (params.bGeomConsistency) \
-			KERNEL<true ><<<GRID, blockSize, 0, cudaStream>>>(__VA_ARGS__); \
-		else \
-			KERNEL<false><<<GRID, blockSize, 0, cudaStream>>>(__VA_ARGS__); \
-	} while (0)
+	#define LAUNCH_GEOM(KERNEL, GRID, ...) { \
+			if (params.bGeomConsistency) \
+				KERNEL<true ><<<GRID, blockSize, 0, cudaStream>>>(__VA_ARGS__); \
+			else \
+				KERNEL<false><<<GRID, blockSize, 0, cudaStream>>>(__VA_ARGS__); \
+		}
 
 	LAUNCH_GEOM(InitializeScore, gridSizeFull, cudaTextureImages, cudaTextureDepths, cudaDepthNormalEstimates, cudaLowDepths, cudaDepthNormalCosts, cudaRandStates, cudaSelectedViews);
 	cudaStreamSynchronize(cudaStream);
@@ -759,7 +751,7 @@ __host__ void PatchMatch::RunCUDA(float* ptrCostMap, uint32_t* ptrViewsMap)
 		cudaStreamSynchronize(cudaStream);
 	}
 
-#undef LAUNCH_GEOM
+	#undef LAUNCH_GEOM
 
 	if (params.fThresholdKeepCost > 0)
 		FilterPlanes<<<gridSizeFull, blockSize, 0, cudaStream>>>(cudaDepthNormalEstimates, cudaDepthNormalCosts, cudaSelectedViews, width, height);

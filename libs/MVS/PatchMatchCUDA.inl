@@ -104,9 +104,8 @@ public:
 	float* cudaDepthNormalCosts;
 	curandState* cudaRandStates;
 	uint32_t* cudaSelectedViews;
-	// per-instance stream: scopes kernel launches and syncs to this
-	// PatchMatch instead of fencing the whole device, and enables async
-	// H<->D transfers.
+	// per-instance stream: scopes kernel launches and syncs to this PatchMatch
+	// instead of fencing the whole device, and enables async H<->D transfers
 	cudaStream_t cudaStream;
 };
 /*----------------------------------------------------------------*/

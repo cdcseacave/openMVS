@@ -950,11 +950,8 @@ DepthEstimator::PixelEstimate DepthEstimator::PerturbEstimate(const PixelEstimat
 	const float maxDepth = est.depth * (1.f+perturbation);
 	ptbEst.depth = CLAMP(rnd.randomUniform(minDepth, maxDepth), dMin, dMax);
 
-	// perturb normal: Rodrigues rotation around a Marsaglia-unit axis. Old
-	// implementation composed three independently-rounded Euler-angle sin/cos
-	// values into a non-orthogonal float32 matrix, drifting up to ~1% and
-	// requiring the assertion tolerance to be 1e-2f. Using a unit axis +
-	// real Rodrigues keeps |perturbed| within float-32 noise floor.
+	// perturb normal: Rodrigues rotation around a Marsaglia-unit axis;
+	// using a unit axis + real Rodrigues keeps |perturbed| within float-32 noise
 	const Normal viewDir(Cast<float>(X0));
 	std::uniform_real_distribution<float> urd(-1.f, 1.f);
 	const int numMaxTrials = 3;
@@ -972,8 +969,6 @@ DepthEstimator::PixelEstimate DepthEstimator::PerturbEstimate(const PixelEstimat
 		const Normal axis(2.f*q1*sq, 2.f*q2*sq, 1.f - 2.f*ss);
 		const float theta = urd(rnd) * perturbation;
 		// RMatrixBaseF(axis, theta) builds an orthogonal Rodrigues rotation
-		// (Set(wa,phi) at Rotation.inl normalises wa internally as well, so
-		// even residual axis drift would not affect orthogonality).
 		ptbEst.normal = RMatrixBaseF(axis, theta) * est.normal;
 		// make sure the perturbed normal is still looking towards the camera,
 		// otherwise try again with a smaller perturbation
@@ -1021,10 +1016,12 @@ std::pair<float,float> TriangulatePointsDelaunay(const Camera& camera, const cv:
 	projs.reserve(mesh.vertices.capacity());
 	Delaunay delaunay;
 	for (uint32_t idx: points) {
-		const auto [x, depth] = camera.ProjectPointP(pointcloud.points[idx]);
+		const Point3 Xcam = camera.TransformPointW2C(Cast<REAL>(pointcloud.points[idx]));
+		ASSERT(Xcam.z > 0);
+		const Point2f x = camera.TransformPointC2I(Xcam);
+		projs.emplace_back(x);
 		delaunay.insert(CPoint(x.x, x.y))->info() = mesh.vertices.size();
-		mesh.vertices.emplace_back(camera.TransformPointI2C(x));
-		projs.emplace_back(x.x, x.y);
+		const float depth = mesh.vertices.emplace_back(Xcam).z;
 		if (depthBounds.first > depth)
 			depthBounds.first = depth;
 		if (depthBounds.second < depth)

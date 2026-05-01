@@ -41,7 +41,6 @@
 
 // S T R U C T S ///////////////////////////////////////////////////
 
-#include <tuple>
 namespace MVS {
 
 // a camera is represented as:

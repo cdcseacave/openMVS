@@ -102,8 +102,6 @@ void PatchMatch::ReleaseCUDA()
 	cudaFree(cudaSelectedViews);
 	if (params.bGeomConsistency)
 		cudaFree(cudaTextureDepths);
-
-	// depthNormalEstimates is pinned (cudaHostAlloc); free with cudaFreeHost.
 	if (depthNormalEstimates) {
 		cudaFreeHost(depthNormalEstimates);
 		depthNormalEstimates = NULL;
@@ -129,8 +127,7 @@ void PatchMatch::AllocatePatchMatchCUDA(const cv::Mat1f& image)
 		CUDA_CHECK(cudaMalloc((void**)&cudaTextureDepths, sizeof(cudaTextureObject_t) * (num_images-1)));
 
 	const size_t size = image.size().area();
-	// pin the estimates buffer so the H<->D copies on cudaStream run as
-	// true DMA-async without driver staging.
+	// pin estimates buffer so the H<->D copies on cudaStream run as true DMA-async without driver staging
 	CUDA_CHECK(cudaHostAlloc((void**)&depthNormalEstimates, sizeof(Point4) * size, cudaHostAllocDefault));
 	CUDA_CHECK(cudaMalloc((void**)&cudaDepthNormalEstimates, sizeof(Point4) * size));
 
@@ -306,7 +303,7 @@ void PatchMatch::EstimateDepthMap(DepthData& depthData)
 				AllocateImageCUDA(i, image, false, !view.depthMap.empty());
 			}
 			// queued on cudaStream so the kernel does not need a device fence;
-			// pageable cv::Mat still stalls the host but ordering is stream-scoped.
+			// pageable cv::Mat still stalls the host but ordering is stream-scoped
 			CUDA_CHECK(cudaMemcpy2DToArrayAsync(cudaImageArrays[i], 0, 0, image.ptr<float>(), image.step[0], image.cols * sizeof(float), image.rows, cudaMemcpyHostToDevice, cudaStream));
 			if (params.bGeomConsistency && i > 0 && !view.depthMap.empty()) {
 				// set previously computed depth-map
