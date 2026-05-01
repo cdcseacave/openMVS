@@ -228,6 +228,7 @@ jobs:
         id: run-analysis
         with:
           cmakeBuildDirectory: ${{ env.BUILD_DIR }}
+          buildConfiguration: ${{ env.BUILD_CONFIG }}
           ruleset: NativeRecommendedRules.ruleset
 
       # MSVC's /analyze emits one SARIF "run" per translation unit, all packed into a
