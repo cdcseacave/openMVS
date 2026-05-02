@@ -71,6 +71,14 @@ namespace CUDA {
 // reads through the constant cache replace per-thread parameter-stack /
 // global-memory traffic. Updated via UploadCameras() / UploadParams()
 // before each pyramid-level kernel launch.
+//
+// IMPORTANT: these symbols are module-global per device, so PatchMatchCUDA
+// is single-instance / single-in-flight per device. The current densify
+// pipeline guarantees this (one image at a time per device) and the C++
+// side enforces it at runtime via an atomic in-flight counter (see
+// PatchMatchCUDA::EstimateDepthMap). If multi-stream / multi-instance
+// parallel use is ever added, switch to per-instance device buffers
+// passed explicitly to kernels.
 __constant__ Camera g_cameras[MAX_VIEWS + 1];
 __constant__ PatchMatch::Params g_params;
 
@@ -88,7 +96,7 @@ __device__ constexpr int IsBitSet(unsigned input, unsigned i) {
 // this launch -- the __ldg() read-only contract holds and L1 bandwidth
 // is freed for the texture work.
 __device__ __forceinline__ Point4 LoadPlaneLDG(const Point4* p) {
-	const float* f = reinterpret_cast<const float*>(p);
+	const float* f = p->data();
 	Point4 r;
 	r.x() = __ldg(f + 0);
 	r.y() = __ldg(f + 1);
@@ -97,7 +105,7 @@ __device__ __forceinline__ Point4 LoadPlaneLDG(const Point4* p) {
 	return r;
 }
 __device__ __forceinline__ float LoadPlaneWLDG(const Point4* p) {
-	return __ldg(reinterpret_cast<const float*>(p) + 3);
+	return __ldg(p->data() + 3);
 }
 
 // sort the given values array using bubble sort algorithm

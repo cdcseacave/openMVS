@@ -36,7 +36,6 @@
 #ifdef _USE_CUDA
 
 
-
 // D E F I N E S ///////////////////////////////////////////////////
 
 #pragma push_macro("VERBOSE")
@@ -51,6 +50,25 @@ DEFINE_LOG_NAME(lt, _T("PtchMtch"));
 namespace MVS {
 
 namespace CUDA {
+
+// In-flight counter for the CUDA backend. The kernels read cameras/params
+// from module-global __constant__ memory (g_cameras / g_params, see
+// PatchMatchCUDA.cu), which is shared by every PatchMatch instance on the
+// device. Concurrent overlap would race; this guards EstimateDepthMap
+// against accidentally being run from two threads at once.
+namespace {
+std::atomic<int> g_patchMatchCudaInFlight{0};
+struct PatchMatchCudaInFlightGuard {
+	PatchMatchCudaInFlightGuard() {
+		const int prev = g_patchMatchCudaInFlight.fetch_add(1, std::memory_order_acq_rel);
+		ASSERT(prev == 0, "PatchMatchCUDA must be single-in-flight per device "
+			"(g_cameras/g_params live in shared __constant__ memory).");
+	}
+	~PatchMatchCudaInFlightGuard() {
+		g_patchMatchCudaInFlight.fetch_sub(1, std::memory_order_acq_rel);
+	}
+};
+} // anonymous namespace
 
 PatchMatch::PatchMatch()
 	: cudaStream(0)
@@ -188,6 +206,7 @@ void PatchMatch::AllocateImageCUDA(size_t i, const cv::Mat1f& image, bool bInitI
 void PatchMatch::EstimateDepthMap(DepthData& depthData)
 {
 	TD_TIMER_STARTD();
+	const PatchMatchCudaInFlightGuard inFlightGuard;
 
 	ASSERT(depthData.images.size() > 1);
 

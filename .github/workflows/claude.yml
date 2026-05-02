@@ -14,9 +14,15 @@ permissions:
 
 jobs:
   claude:
+    # Only repository owners, members, and collaborators may trigger this
+    # workflow. The job has write permissions and uses a long-lived OAuth
+    # token, so anonymous PR commenters must NOT be able to invoke it.
     if: |
-      (github.event_name == 'issue_comment' && github.event.issue.pull_request && contains(github.event.comment.body, '@claude')) ||
-      (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude'))
+      contains(fromJson('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association) &&
+      (
+        (github.event_name == 'issue_comment' && github.event.issue.pull_request && contains(github.event.comment.body, '@claude')) ||
+        (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude'))
+      )
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
