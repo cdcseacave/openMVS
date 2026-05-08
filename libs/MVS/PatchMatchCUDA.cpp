@@ -243,7 +243,8 @@ void PatchMatch::EstimateDepthMap(DepthData& depthData)
 		if (scaleNumber != totalScaleNumber) {
 			// all resolutions, but the smallest one, if multi-resolution is enabled
 			params.bLowResProcessed = true;
-			cv::resize(lowResDepthMap, depthData.depthMap, size, 0, 0, cv::INTER_LINEAR);
+			// INTER_NEAREST preserves [dMin, dMax] / normalized-normals / correct-view-IDs
+			cv::resize(lowResDepthMap, depthData.depthMap, size, 0, 0, cv::INTER_NEAREST);
 			cv::resize(lowResNormalMap, depthData.normalMap, size, 0, 0, cv::INTER_NEAREST);
 			cv::resize(lowResViewsMap, depthData.viewsMap, size, 0, 0, cv::INTER_NEAREST);
 			CUDA_CHECK(cudaMalloc((void**)&cudaLowDepths, sizeof(float) * size.area()));

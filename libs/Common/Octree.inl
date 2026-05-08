@@ -762,8 +762,8 @@ void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE>::GetDebugInfo(DEBUGINFO* pInfo, b
 template <typename ITEMARR_TYPE, typename TYPE, int DIMS, typename DATA_TYPE>
 void TOctree<ITEMARR_TYPE,TYPE,DIMS,DATA_TYPE>::LogDebugInfo(const DEBUGINFO& info)
 {
-	//VERBOSE("NoItems: %d; Mem %s; MemItems %s; MemStruct %s; AvgMemStruct %.2f%%%%; NoNodes %d; NoLeaf %d; AvgLeaf %.2f%%%%; AvgDepth %.2f; MinDepth %d; MaxDepth %d",
-	VERBOSE("NumItems %d; Mem %s (%s items, %s struct - %.2f%%%%); NumNodes %d (leaves %d - %.2f%%%%); Depth %.2f (%d min, %d max)",
+	//VERBOSE("NoItems: %d; Mem %s; MemItems %s; MemStruct %s; AvgMemStruct %.2f%%; NoNodes %d; NoLeaf %d; AvgLeaf %.2f%%; AvgDepth %.2f; MinDepth %d; MaxDepth %d",
+	VERBOSE("NumItems %d; Mem %s (%s items, %s struct - %.2f%%); NumNodes %d (leaves %d - %.2f%%); Depth %.2f (%d min, %d max)",
 		info.numItems,
 		Util::formatBytes(info.memSize).c_str(), Util::formatBytes(info.memItems).c_str(), Util::formatBytes(info.memStruct).c_str(), double(info.memStruct)*100.0/info.memSize,
 		info.numNodes, info.numLeaves, float(info.numLeaves*100)/info.numNodes,

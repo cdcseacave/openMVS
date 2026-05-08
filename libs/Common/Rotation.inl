@@ -535,7 +535,9 @@ inline TRMatrixBase<TYPE>::TRMatrixBase(const Vec& rot)
 }
 
 template <typename TYPE>
-inline TRMatrixBase<TYPE>::TRMatrixBase(const Vec& w, TYPE phi)
+template <typename TYPEW,
+          std::enable_if_t<std::is_floating_point<TYPEW>::value, int>>
+inline TRMatrixBase<TYPE>::TRMatrixBase(const Vec& w, TYPEW phi)
 {
 	Set(w, phi);
 }
@@ -698,7 +700,9 @@ void TRMatrixBase<TYPE>::SetZXY(TYPE PhiX, TYPE PhiY, TYPE PhiZ)
 
 
 template <typename TYPE>
-void TRMatrixBase<TYPE>::Set(const Vec& w, TYPE phi)
+template <typename TYPEW,
+          std::enable_if_t<std::is_floating_point<TYPEW>::value, int>>
+void TRMatrixBase<TYPE>::Set(const Vec& w, TYPEW phi)
 {
   // zero rotation  results in identity matrix
   if (ISZERO(phi)) {
@@ -713,20 +717,24 @@ void TRMatrixBase<TYPE>::Set(const Vec& w, TYPE phi)
   // orthogonal as float-32 arithmetic allows on the supplied inputs.
   ASSERT(ISEQUAL(norm(w), TYPE(1)), "Set(w,phi) requires |w|=1; got |w| = ", norm(w));
 
-  Mat Omega;
-  Omega(0,0) = TYPE(0);
-  Omega(0,1) = -w[2];
-  Omega(0,2) = w[1];
-  Omega(1,0) = w[2];
-  Omega(1,1) = TYPE(0);
-  Omega(1,2) = -w[0];
-  Omega(2,0) = -w[1] ;
-  Omega(2,1) = w[0];
-  Omega(2,2) = TYPE(0);
+  // Build skew-symmetric Omega and run Rodrigues in working precision TYPEW.
+  // When TYPEW is wider than TYPE (e.g. double vs float) this keeps the
+  // resulting matrix close to orthogonal even when TYPE is float32.
+  typedef TMatrix<TYPEW,3,3> MatW;
+  MatW Omega;
+  Omega(0,0) = TYPEW(0);
+  Omega(0,1) = -TYPEW(w[2]);
+  Omega(0,2) =  TYPEW(w[1]);
+  Omega(1,0) =  TYPEW(w[2]);
+  Omega(1,1) = TYPEW(0);
+  Omega(1,2) = -TYPEW(w[0]);
+  Omega(2,0) = -TYPEW(w[1]);
+  Omega(2,1) =  TYPEW(w[0]);
+  Omega(2,2) = TYPEW(0);
 
-  const Mat Sin_O(Omega *  sin(phi));
-  const Mat Cos_O_O((Omega * Omega) * (TYPE(1)-cos(phi)));
-  *this = Base::IDENTITY + Sin_O + Cos_O_O;
+  const MatW Sin_O(Omega * sin(phi));
+  const MatW Cos_O_O((Omega * Omega) * (TYPEW(1) - cos(phi)));
+  *this = MatW::IDENTITY + Sin_O + Cos_O_O;
 }
 
 

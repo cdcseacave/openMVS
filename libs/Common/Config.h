@@ -268,7 +268,18 @@ __inline__ static void trap_instruction() { __asm__ volatile("brk #0"); }
 #endif
 #endif
 
+// _HEADLESS_DEBUG: ASSERT prints to stderr and continues -- no modal popups,
+// no debugger break. Lets test runners / CI capture every failed invariant
+// in one pass. Production builds leave _HEADLESS_DEBUG undefined and behave
+// exactly as before.
+#ifdef _HEADLESS_DEBUG
+#include <cstdio>
+#define PRINT_ASSERT_MSG(exp, ...) do { std::fprintf(stderr, "[ASSERT] %s:%d: %s\n", __FILE__, __LINE__, #exp); std::fflush(stderr); } while(0)
+#define _ASSERT_BREAK()
+#else
 #define PRINT_ASSERT_MSG(exp, ...)
+#define _ASSERT_BREAK() DEBUG_BREAK()
+#endif
 
 #ifdef _DEBUG
 
@@ -278,17 +289,22 @@ __inline__ static void trap_instruction() { __asm__ volatile("brk #0"); }
 #include <cstdlib>
 #include <crtdbg.h>
 #ifdef _INC_CRTDBG
+#ifdef _HEADLESS_DEBUG
+#define SIMPLE_ASSERT(exp) {if (!(exp)) PRINT_ASSERT_MSG(exp);}
+#define ASSERT(exp, ...) {if (!(exp)) PRINT_ASSERT_MSG(exp, ##__VA_ARGS__);}
+#else
 #define SIMPLE_ASSERT(exp) {if (!(exp) && 1 == _CrtDbgReport(_CRT_ASSERT, __FILE__, __LINE__, NULL, #exp)) _CrtDbgBreak();}
 #define ASSERT(exp, ...) {static bool bIgnore(false); if (!bIgnore && !(exp)) {PRINT_ASSERT_MSG(exp, ##__VA_ARGS__); if (!(bIgnore = !(1 == _CrtDbgReport(_CRT_ASSERT, __FILE__, __LINE__, NULL, #exp)))) _CrtDbgBreak();}}
+#endif
 #else
-#define SIMPLE_ASSERT(exp) {if (!(exp)) DEBUG_BREAK();}
-#define ASSERT(exp, ...) {if (!(exp)) {PRINT_ASSERT_MSG(exp, ##__VA_ARGS__); DEBUG_BREAK();}}
+#define SIMPLE_ASSERT(exp) {if (!(exp)) _ASSERT_BREAK();}
+#define ASSERT(exp, ...) {if (!(exp)) {PRINT_ASSERT_MSG(exp, ##__VA_ARGS__); _ASSERT_BREAK();}}
 #endif // _INC_CRTDBG
 #define TRACE(...) {TCHAR buffer[2048]; _sntprintf(buffer, 2048, __VA_ARGS__); OutputDebugString(buffer);}
 #else // _MSC_VER
 #include <assert.h>
-#define SIMPLE_ASSERT(exp) {if (!(exp)) DEBUG_BREAK();}
-#define ASSERT(exp, ...) {if (!(exp)) {PRINT_ASSERT_MSG(exp, ##__VA_ARGS__); DEBUG_BREAK();}}
+#define SIMPLE_ASSERT(exp) {if (!(exp)) _ASSERT_BREAK();}
+#define ASSERT(exp, ...) {if (!(exp)) {PRINT_ASSERT_MSG(exp, ##__VA_ARGS__); _ASSERT_BREAK();}}
 #define TRACE(...)
 #endif // _MSC_VER
 

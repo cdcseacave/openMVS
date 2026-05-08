@@ -141,10 +141,18 @@ image.Load(fileName);  // loads with correct channel/depth conversion
 image.Save(fileName);  // saves via OpenCV with correct format
 ```
 
+### Headless Debug Mode (`_HEADLESS_DEBUG`)
+- Build flag: `cmake -DOpenMVS_HEADLESS_DEBUG=ON` — controlled via CMake OPTION at CMakeLists.txt:45
+- Gating: `ConfigLocal.h.in` template line 71 expands `#cmakedefine _HEADLESS_DEBUG` when the CMake variable is ON
+- Effect: prints `[ASSERT]` to stderr and continues (no modal dialogs, no `_CrtDbgBreak()`); `LogConsole::Open()` short-circuits to leave stdout/stderr on inherited terminal
+- Implementation: `Config.h` lines 277–284 redefine `PRINT_ASSERT_MSG` macro and define `_ASSERT_BREAK()` empty; `Config.h` lines 294–300 skip `_CrtDbgReport()` modal when flag is set; `Log.cpp` line 272 short-circuits redirection
+- Use case: CI/test runners capture all invariant failures in one pass without blocking on popups
+- Production builds (flag OFF): zero code change — byte-identical to baseline
+
 ### Configuration
 - Build-time config in `ConfigLocal.h` (generated) included in every code file
 - Runtime options via boost::program_options pattern
-- Feature flags like `OpenMVS_USE_CUDA`, `OpenMVS_USE_CERES`
+- Feature flags like `OpenMVS_USE_CUDA`, `OpenMVS_USE_CERES`, `OpenMVS_HEADLESS_DEBUG`
 - Each library uses a precompiled header (`Common.h`) for common includes, like Eigen, OpenCV, etc.
 
 ## Viewer Application Specifics

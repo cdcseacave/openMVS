@@ -65,3 +65,7 @@
 
 // SSE support
 #cmakedefine _USE_SSE
+
+// Headless debug mode (no modal dialogs, ASSERT prints to stderr, no LogConsole redirection)
+#cmakedefine _HEADLESS_DEBUG
+

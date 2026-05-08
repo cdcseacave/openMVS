@@ -1296,7 +1296,7 @@ void DepthMapsData::MergeDepthMaps(PointCloud& pointcloud, bool bEstimateColor, 
 	GET_LOGCONSOLE().Play();
 	progress.close();
 
-	DEBUG_EXTRA("Depth-maps merged: %u depth-maps, %u depths, %u points (%d%%%%) (%s)",
+	DEBUG_EXTRA("Depth-maps merged: %u depth-maps, %u depths, %u points (%d%%) (%s)",
 		nDepthMaps, nDepths, pointcloud.points.size(), ROUND2INT(100.f*pointcloud.points.size()/nDepths), TD_TIMER_GET_FMT().c_str());
 } // MergeDepthMaps
 /*----------------------------------------------------------------*/
@@ -1583,7 +1583,7 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, b
 	arrDepthIdx.Release();
 	cacheDMaps.ClearCache();
 
-	DEBUG_EXTRA("Depth-maps fused and filtered: %u depth-maps, %u depths, %u points (%d%%%%), %.2f hits in %.2f cached (%s)",
+	DEBUG_EXTRA("Depth-maps fused and filtered: %u depth-maps, %u depths, %u points (%d%%), %.2f hits in %.2f cached (%s)",
 		numDMapsFused, nDepths, pointcloud.points.size(), ROUND2INT((100.f*pointcloud.points.size())/nDepths),
 		static_cast<double>(totalNumImageNeighborsInCache) / numDMapsFused,
 		static_cast<double>(totalNumImagesInCache) / numDMapsFused, TD_TIMER_GET_FMT().c_str());
@@ -1863,7 +1863,7 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 	if (!_bEstimateNormal)
 		pointcloud.normals.Release();
 
-	DEBUG_EXTRA("Depth-maps dense fused and filtered: %u depth-maps, %u depths, %u points (%d%%%%), %.2f hits in %.2f cached (%s)",
+	DEBUG_EXTRA("Depth-maps dense fused and filtered: %u depth-maps, %u depths, %u points (%d%%), %.2f hits in %.2f cached (%s)",
 		numDMapsFused, nDepths, pointcloud.points.size(), ROUND2INT((100.f*pointcloud.points.size())/nDepths),
 		static_cast<double>(totalNumImageNeighborsInCache) / numDMapsFused,
 		static_cast<double>(totalNumImagesInCache) / numDMapsFused, TD_TIMER_GET_FMT().c_str());
@@ -2609,7 +2609,7 @@ void Scene::PointCloudFilter(int thRemove)
 			pointcloud.RemovePoint(idxPoint);
 	}
 
-	DEBUG_EXTRA("Point-cloud filtered: %u/%u points (%d%%%%) (%s)", pointcloud.points.size(), numInitPoints, ROUND2INT((100.f*pointcloud.points.GetSize())/numInitPoints), TD_TIMER_GET_FMT().c_str());
+	DEBUG_EXTRA("Point-cloud filtered: %u/%u points (%d%%) (%s)", pointcloud.points.size(), numInitPoints, ROUND2INT((100.f*pointcloud.points.GetSize())/numInitPoints), TD_TIMER_GET_FMT().c_str());
 } // PointCloudFilter
 /*----------------------------------------------------------------*/
 

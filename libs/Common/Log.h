@@ -64,12 +64,7 @@ public:
 
 	#ifdef LOG_STREAM
 	template<class T> inline Log& operator<<(const T& val) {
-		#ifdef LOG_THREAD
-		Lock l(m_cs);
-		std::ostringstream& ostr = m_streams[__THREAD__];
-		#else
-		std::ostringstream& ostr = m_stream;
-		#endif
+		std::ostringstream& ostr = GetStream();
 		ostr << val;
 		const std::string& line = ostr.str();
 		if (!line.empty() && *(line.end()-1) == _T('\n')) {
@@ -84,12 +79,7 @@ public:
 	typedef CoutType& (*StandardEndLine)(CoutType&);
 	// define an operator<< to take in std::endl
 	inline Log& operator<<(StandardEndLine) {
-		#ifdef LOG_THREAD
-		Lock l(m_cs);
-		std::ostringstream& ostr = m_streams[__THREAD__];
-		#else
-		std::ostringstream& ostr = m_stream;
-		#endif
+		std::ostringstream& ostr = GetStream();
 		Write(ostr.str().c_str());
 		ostr.str(_T(""));
 		return *this;
@@ -98,7 +88,21 @@ public:
 
 protected:
 	// write a message of a certain type to the log
-	void		_Record(Idx, LPCTSTR, va_list); 
+	void		_Record(Idx, LPCTSTR, va_list);
+
+	#ifdef LOG_STREAM
+	// per-thread (or per-instance) scratch buffer used by operator<<;
+	// in LOG_THREAD mode this is a function-local thread_local, so it needs
+	// no map and no lock and is destroyed automatically at thread exit
+	inline std::ostringstream& GetStream() {
+		#ifdef LOG_THREAD
+		static thread_local std::ostringstream ostr;
+		return ostr;
+		#else
+		return m_stream;
+		#endif
+	}
+	#endif
 
 protected:
 	struct LogType {
@@ -109,24 +113,14 @@ protected:
 	typedef cList<LogType, const LogType&, 0, 8> LogTypeArr;
 
 	// log members
-	String					m_message;		// last recorded message
 	ClbkRecordMsgArrayPtr	m_arrRecordClbk;// the array with all registered listeners
 	LogTypeArr				m_arrLogTypes;	// the array with all the registered log types
 
 	#ifdef LOG_THREAD
 	// threading
-	RWLock					m_lock;			// mutex used to ensure multi-thread safety
-	#endif
-
-	#ifdef LOG_STREAM
-	// streaming
-	#ifdef LOG_THREAD
-	typedef std::unordered_map<unsigned,std::ostringstream> StreamMap;
-	StreamMap				m_streams;		// stream object used to handle one log with operator << (one for each thread)
-	CriticalSection			m_cs;			// mutex used to ensure multi-thread safety for accessing m_streams
-	#else
-	std::ostringstream		m_stream;		// stream object used to handle one log with operator <<
-	#endif
+	RWLock					m_lock;			// guards the listener array
+	#elifdef LOG_STREAM
+	std::ostringstream		m_stream;		// scratch buffer for operator<< (single-threaded)
 	#endif
 
 	// static
@@ -161,7 +155,7 @@ public:
 	void			Close();
 	void			Pause();
 	void			Play();
-	void			Record(const String&); 
+	void			Record(const String&);
 
 protected:
 	FilePtr			m_ptrFile;		// the log file

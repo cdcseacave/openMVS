@@ -47,6 +47,9 @@ void Log::RegisterListener(ClbkRecordMsg clbk)
 	ASSERT(m_arrRecordClbk != NULL);
 	if (m_arrRecordClbk == NULL)
 		return;
+	#ifdef LOG_THREAD
+	WLock l(m_lock);
+	#endif
 	m_arrRecordClbk->Insert(clbk);
 }
 void Log::UnregisterListener(ClbkRecordMsg clbk)
@@ -54,6 +57,9 @@ void Log::UnregisterListener(ClbkRecordMsg clbk)
 	ASSERT(m_arrRecordClbk != NULL);
 	if (m_arrRecordClbk == NULL)
 		return;
+	#ifdef LOG_THREAD
+	WLock l(m_lock);
+	#endif
 	m_arrRecordClbk->Remove(clbk);
 }
 
@@ -104,20 +110,16 @@ void Log::Write(Idx lt, LPCTSTR szFormat, ...)
 void Log::_Record(Idx lt, LPCTSTR szFormat, va_list args)
 {
 	ASSERT(m_arrRecordClbk != NULL);
-	if (m_arrRecordClbk->IsEmpty())
+	if (m_arrRecordClbk == NULL || m_arrRecordClbk->IsEmpty())
 		return;
 
 	// Format a message by adding the date (auto adds new line)
-	TCHAR szTime[256];
-	TCHAR szBuffer[2048];
+	TCHAR szTime[256] = {_T('\0')};
 	#if defined(LOG_DATE) || defined(LOG_TIME)
 	TCHAR* szPtrTime = szTime;
 	#ifdef _MSC_VER
 	SYSTEMTIME st;
 	GetLocalTime(&st);
-	#ifdef LOG_THREAD
-	WLock l(m_lock);
-	#endif
 	#ifdef LOG_DATE
 	szPtrTime += GetDateFormat(LOCALE_USER_DEFAULT,0,&st,_T("dd'.'MM'.'yy"),szPtrTime,80)-1;
 	#endif
@@ -141,23 +143,24 @@ void Log::_Record(Idx lt, LPCTSTR szFormat, va_list args)
 	#endif
 	#endif // _MSC_VER
 	#endif // LOG_DATE || LOG_TIME
-	#ifdef DEFAULT_LOGTYPE
-	LPCTSTR const logType(lt<m_arrLogTypes.size() ? m_arrLogTypes[lt] : (LPCSTR)DEFAULT_LOGTYPE);
-	#else
-	LPCTSTR const logType(lt<m_arrLogTypes.size() ? m_arrLogTypes[lt] : g_appType);
-	#endif
-	if ((size_t)_vsntprintf(szBuffer, 2048, szFormat, args) > 2048) {
-		// not enough space for the full string, reprint dynamically
-		m_message.FormatSafe("%s [%s] %s" LINE_SEPARATOR_STR, szTime, logType, String::FormatStringSafe(szFormat, args).c_str());
-	} else {
-		// enough space for all the string, print directly
-		m_message.Format("%s [%s] %s" LINE_SEPARATOR_STR, szTime, logType, szBuffer);
-	}
-	TRACE(m_message);
+	LPCTSTR const logType(lt<m_arrLogTypes.size() ?
+		m_arrLogTypes[lt] :
+		#ifdef DEFAULT_LOGTYPE
+		(LPCSTR)DEFAULT_LOGTYPE);
+		#else
+		g_appType);
+		#endif
+	const String formatted(String::FormatStringSafe(szFormat, args));
+	String message;
+	message.Format(_T("%s [%s] %s") LINE_SEPARATOR_STR, szTime, logType, formatted.c_str());
+	TRACE(_T("%s"), message.c_str());
 
-	// signal listeners
+	// signal listeners (lock only the dispatch — the formatting above touches no shared state)
+	#ifdef LOG_THREAD
+	WLock l(m_lock);
+	#endif
 	FOREACHPTR(pClbk, *m_arrRecordClbk)
-		(*pClbk)(m_message);
+		(*pClbk)(message);
 }
 /*----------------------------------------------------------------*/
 
@@ -274,6 +277,16 @@ void LogConsole::Open()
 	if (IsOpen())
 		return;
 
+	#ifdef _HEADLESS_DEBUG
+	// Headless: do not allocate a separate console window, do not redirect
+	// std::cout/std::cerr, do not freopen stdin/stdout/stderr. Just mark
+	// the console "open" (stdout sentinel) and register the listener so
+	// LOG/VERBOSE/DEBUG lines print straight to the inherited terminal.
+	m_fileOut = stdout;
+	GET_LOG().RegisterListener(DELEGATEBINDCLASS(Log::ClbkRecordMsg, &LogConsole::Record, this));
+	return;
+	#endif
+
 	// allocate a console for this app
 	bManageConsole = (AllocConsole()!=FALSE?true:false);
 
@@ -366,6 +379,12 @@ void LogConsole::Close()
 {
 	if (!IsOpen())
 		return;
+	#ifdef _HEADLESS_DEBUG
+	// Headless: only the listener was registered; do not fclose stdout etc.
+	GET_LOG().UnregisterListener(DELEGATEBINDCLASS(Log::ClbkRecordMsg, &LogConsole::Record, this));
+	m_fileOut = NULL;
+	return;
+	#endif
 	GET_LOG().UnregisterListener(DELEGATEBINDCLASS(Log::ClbkRecordMsg, &LogConsole::Record, this));
 	#ifdef _USE_COSOLEFILEHANDLES
 	// close console stream handles
@@ -404,7 +423,7 @@ void LogConsole::Close()
 void LogConsole::Record(const String& msg)
 {
 	ASSERT(IsOpen());
-	printf(msg);
+	printf(_T("%s"), msg.c_str());
 	fflush(stdout);
 }
 

@@ -111,6 +111,7 @@ int main(int argc, LPCTSTR* argv)
 	Initialize(APPNAME);
 	WORKING_FOLDER = _DATA_PATH;
 	INIT_WORKING_FOLDER;
+	const bool verbose = (argc > 2 && std::atoi(argv[2]) != 0);
 	if (argc < 2 || std::atoi(argv[1]) == 0) {
 		if (!UnitTests())
 			return EXIT_FAILURE;
@@ -199,7 +200,7 @@ int main(int argc, LPCTSTR* argv)
 			return EXIT_FAILURE;
 	} else {
 		// Run MVS pipeline test
-		if (!MVS::PipelineTest())
+		if (!MVS::PipelineTest(verbose))
 			return EXIT_FAILURE;
 	}
 	Finalize();

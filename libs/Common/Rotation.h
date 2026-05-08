@@ -290,7 +290,9 @@ public:
 	inline explicit TRMatrixBase(const cv::Point3_<TYPE>& rot) : TRMatrixBase(Vec(rot)) {}
 
 	/** @brief Initialization from rotation axis w and angle phi (in rad) using Rodrigues' formula */
-	inline TRMatrixBase(const Vec& w, const TYPE phi);
+	template <typename TYPEW = TYPE,
+	          std::enable_if_t<std::is_floating_point<TYPEW>::value, int> = 0>
+	inline TRMatrixBase(const Vec& w, const TYPEW phi);
 
 	/** @brief Initialization from quaternion */
 	inline explicit TRMatrixBase(const Quat& q);
@@ -413,11 +415,16 @@ public:
 	{ SetYXZ(r[0], r[1], r[2]); }
 
 	/** @brief Set from rotation axis w and angle phi (in rad)
-		@param w Axis vector w will be normalized to length 1, so we need
-				 |w|>1e-6 if phi != 0, otherwise an exception is thrown
-		@param phi Rotation angle is given in radians
+		@tparam TYPEW Working precision used for the internal Rodrigues
+				 algebra (skew-symmetric matrix, sin/cos, accumulation)
+				 to better preserve orthogonality of the resulting
+				 rotation matrix at the cost of 9 narrowing casts on store.
+		@param w Axis vector, must be unit-length (|w|=1).
+		@param phi Rotation angle is given in radians.
 		@author evers, woelk */
-	void Set(const Vec& w, TYPE phi);
+	template <typename TYPEW = TYPE,
+	          std::enable_if_t<std::is_floating_point<TYPEW>::value, int> = 0>
+	void Set(const Vec& w, TYPEW phi);
 
 	/** set this matrix from 3 vectors each representing a column*/
 	void SetFromColumnVectors(const Vec& v0,

@@ -2283,7 +2283,7 @@ void MVS::CompareDepthMaps(const DepthMap& depthMap, const DepthMap& depthMapGT,
 	}
 	errorsVisual.Save(ComposeDepthFilePath(idxImage, "errors.png"));
 	#endif
-	VERBOSE("Depth-maps compared for image % 3u: %.4f PSNR; %g median %g mean %g stddev error; %u (%.2f%%%%) error %u (%.2f%%%%) missing %u (%.2f%%%%) extra pixels (%s)",
+	VERBOSE("Depth-maps compared for image % 3u: %.4f PSNR; %g median %g mean %g stddev error; %u (%.2f%%) error %u (%.2f%%) missing %u (%.2f%%) extra pixels (%s)",
 		idxImage,
 		fPSNR,
 		th.first, mean, stddev,

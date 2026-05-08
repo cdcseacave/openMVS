@@ -67,6 +67,17 @@ namespace CUDA {
 #define ImagePixels cudaTextureObject_t
 #define RandState curandState
 
+// nvcc rejects `__constant__ Camera[...]` in Debug because the Eigen-backed
+// Camera type is treated as needing dynamic initialization. Keep Release on
+// the direct Camera array, and use aligned byte storage only for Debug.
+#if defined(_DEBUG)
+struct alignas(Camera) CameraConstStorage {
+	unsigned char bytes[sizeof(Camera)];
+};
+static_assert(sizeof(CameraConstStorage) == sizeof(Camera), "Camera constant storage must preserve Camera size");
+static_assert(alignof(CameraConstStorage) == alignof(Camera), "Camera constant storage must preserve Camera alignment");
+#endif
+
 // Cameras and runtime params live in __constant__ memory: warp-broadcast
 // reads through the constant cache replace per-thread parameter-stack /
 // global-memory traffic. Updated via UploadCameras() / UploadParams()
@@ -79,7 +90,12 @@ namespace CUDA {
 // PatchMatchCUDA::EstimateDepthMap). If multi-stream / multi-instance
 // parallel use is ever added, switch to per-instance device buffers
 // passed explicitly to kernels.
+#if defined(_DEBUG)
+__constant__ CameraConstStorage g_cameraStorage[MAX_VIEWS + 1];
+#define g_cameras reinterpret_cast<const Camera*>(g_cameraStorage)
+#else
 __constant__ Camera g_cameras[MAX_VIEWS + 1];
+#endif
 __constant__ PatchMatch::Params g_params;
 
 // set/check a bit
@@ -198,16 +214,13 @@ __device__ inline Point3 GeneratePerturbedNormal(const CUDA::Camera& camera, con
 	return normalPerturbed.dot(viewDirection) >= 0.f ? normal : normalPerturbed;
 }
 
-// randomly perturb a normal
+// randomly perturb a depth, sampling uniformly from the intersection of the
+// perturbation window [(1-p)d, (1+p)d] with the valid range [fDepthMin, fDepthMax]
 __device__ inline float GeneratePerturbedDepth(float depth, RandState* randState, const float perturbation)
 {
-	const float depthMinPerturbed = (1.f - perturbation) * depth;
-	const float depthMaxPerturbed = (1.f + perturbation) * depth;
-	float depthPerturbed;
-	do {
-		depthPerturbed = curand_uniform(randState) * (depthMaxPerturbed - depthMinPerturbed) + depthMinPerturbed;
-	} while (depthPerturbed < g_params.fDepthMin || depthPerturbed > g_params.fDepthMax);
-	return depthPerturbed;
+	const float lo = fmaxf((1.f - perturbation) * depth, g_params.fDepthMin);
+	const float hi = fminf((1.f + perturbation) * depth, g_params.fDepthMax);
+	return lo + curand_uniform(randState) * (hi - lo);
 }
 
 // interpolate given pixel's estimate to the current position
@@ -718,7 +731,11 @@ __host__ void PatchMatch::UploadCameras()
 {
 	const size_t n = cameras.size();
 	ASSERT(n <= MAX_VIEWS + 1);
+	#if defined(_DEBUG)
+	CUDA_CHECK(cudaMemcpyToSymbolAsync(g_cameraStorage, cameras.data(), sizeof(Camera) * n, 0, cudaMemcpyHostToDevice, cudaStream));
+	#else
 	CUDA_CHECK(cudaMemcpyToSymbolAsync(g_cameras, cameras.data(), sizeof(Camera) * n, 0, cudaMemcpyHostToDevice, cudaStream));
+	#endif
 }
 __host__ void PatchMatch::UploadParams()
 {

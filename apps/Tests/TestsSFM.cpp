@@ -2890,13 +2890,12 @@ bool ViewGraphCalibratorTest()
 	const PinholeCamera& gt_camera = *static_cast<PinholeCamera*>(sceneGT.cameras[0]);
 	PinholeCamera& cam = *static_cast<PinholeCamera*>(scene.cameras[0]);
 	const double gt_focal = gt_camera.fx;
-	const double initial_focal = cam.fy = cam.fx *= 1.3; // perturb initial focal length by +30%
-	DEBUG("ViewGraphCalibratorTest: GT focal=%.2f, Initial focal=%.2f, Perturbation=%.2f%%",
-	      gt_focal, initial_focal, ABS(initial_focal - gt_focal) / gt_focal * 100);
 
-	// Re-estimate F from noisy keypoints using RANSAC and validate them:
-	// test that F correctly explains matched keypoint observations;
-	// for each pair, verify that matched points satisfy the epipolar constraint: p2^T * F * p1 ≈ 0
+	// Re-estimate F from noisy keypoints using RANSAC and validate them first;
+	// with the GT focal length still in place. The calibrated branch of
+	// PairsMatcher::GeometricFilter composes F = K2^-T * E * K1^-1 using
+	// the camera's current K, so any perturbation applied to cam.fx before
+	// this loop would be baked into F itself
 	VERBOSE("ViewGraphCalibratorTest: Validating fundamental matrices...");
 	unsigned numFailedPairs = 0;
 	MatchConfig matchCfg;
@@ -2928,8 +2927,14 @@ bool ViewGraphCalibratorTest()
 		VERBOSE("ViewGraphCalibratorTest: All %u validated pairs satisfy epipolar constraints", scene.pairs.size());
 	}
 
+	// Now that F encodes the GT focal length, perturb the camera's stored
+	// focal so the calibrator has actual work to do.
+	const double initial_focal = cam.fy = cam.fx *= 1.3; // perturb initial focal length by +30%
+	DEBUG("ViewGraphCalibratorTest: GT focal=%.2f, Initial focal=%.2f, Perturbation=%.2f%%",
+	      gt_focal, initial_focal, ABS(initial_focal - gt_focal) / gt_focal * 100);
+
 	// Apply view graph calibrator
-	ASSERT(cam.trustIntrinsics == false); // allow focal length refinement
+	cam.trustIntrinsics = false; // synthetic scene generator may default to true; the test exercises focal refinement
 	ViewGraphCalibratorConfig vgConfig;
 	vgConfig.minPairWeight = 0.f; // use all pairs
 	ViewGraphCalibrator calibrator(vgConfig);
