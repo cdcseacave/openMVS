@@ -176,7 +176,7 @@ jobs:
       - &configure-step
         name: Configure CMake
         run: |
-          cmake -S . -B ${{ env.BUILD_DIR }} -DCMAKE_BUILD_TYPE=${{ env.BUILD_CONFIG }} -DVCPKG_ROOT=${{ env.VCPKG_ROOT }} -DVCPKG_TARGET_TRIPLET=${{ env.VCPKG_DEFAULT_TRIPLET }} -DOpenMVS_USE_CUDA=OFF ${{ env.CMAKE_EXTRA_ARGS }}
+          cmake -S . -B ${{ env.BUILD_DIR }} -DCMAKE_BUILD_TYPE=${{ env.BUILD_CONFIG }} -DVCPKG_ROOT=${{ env.VCPKG_ROOT }} -DVCPKG_TARGET_TRIPLET=${{ env.VCPKG_DEFAULT_TRIPLET }} -DOpenMVS_USE_CUDA=OFF -DOpenMVS_HEADLESS_DEBUG=ON ${{ env.CMAKE_EXTRA_ARGS }}
 
       - &build-step
         name: Build
