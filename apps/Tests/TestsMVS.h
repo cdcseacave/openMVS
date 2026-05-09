@@ -38,7 +38,7 @@
 namespace MVS {
 
 // test MVS stages on a small sample dataset
-bool PipelineTest(bool verbose = false);
+bool PipelineTest(bool forceCPU = false, bool verbose = false);
 /*----------------------------------------------------------------*/
 
 } // namespace MVS

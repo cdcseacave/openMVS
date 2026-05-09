@@ -2454,7 +2454,7 @@ bool TwoViewTest()
 }
 
 // Reconstruction test: Import images, extract features, match pairs, build tracks, and initialize
-bool ReconstructTest()
+bool ReconstructTest(bool verbose)
 {
 	TD_TIMER_START();
 
@@ -2578,6 +2578,20 @@ bool ReconstructTest()
 	}
 
 	VERBOSE("ReconstructTest: All tests passed (%s)", TD_TIMER_GET_FMT().c_str());
+
+	if (verbose) {
+		// Dump the reconstructed scene in both native SfM and MVS formats.
+		const String sfmPath(MAKE_PATH("reconstruct_test.sfm"));
+		if (!scene.Save(sfmPath)) {
+			VERBOSE("ReconstructTest: failed to save SfM scene '%s'", sfmPath.c_str());
+			return false;
+		}
+		const String mvsPath(MAKE_PATH("reconstruct_test.mvs"));
+		if (!SFM::ExportMVS(mvsPath, scene)) {
+			VERBOSE("ReconstructTest: failed to export MVS scene '%s'", mvsPath.c_str());
+			return false;
+		}
+	}
 	return true;
 }
 

@@ -42,12 +42,13 @@ DEFINE_LOG_NAME(lt, _T("TestMVS "));
 namespace MVS {
 
 // test MVS stages on a small sample dataset
-bool PipelineTest(bool verbose)
+bool PipelineTest(bool forceCPU, bool verbose)
 {
 	TD_TIMER_START();
-	#if 1 && defined(_USE_CUDA)
+	#ifdef _USE_CUDA
 	// force CPU for testing even if CUDA is available
-	SEACAVE::CUDA::desiredDeviceIDs.clear();
+	if (forceCPU)
+		SEACAVE::CUDA::desiredDeviceIDs.clear();
 	#endif
 	Scene scene;
 	if (!scene.Load(MAKE_PATH("scene.mvs"))) {

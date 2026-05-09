@@ -112,6 +112,7 @@ int main(int argc, LPCTSTR* argv)
 	WORKING_FOLDER = _DATA_PATH;
 	INIT_WORKING_FOLDER;
 	const bool verbose = (argc > 2 && std::atoi(argv[2]) != 0);
+	const bool forceCPU = (argc > 3 && std::atoi(argv[3]) != 0);
 	if (argc < 2 || std::atoi(argv[1]) == 0) {
 		if (!UnitTests())
 			return EXIT_FAILURE;
@@ -161,7 +162,7 @@ int main(int argc, LPCTSTR* argv)
 			return EXIT_FAILURE;
 		if (!SFM::CubeMapBridgeDropTopBottomTest())
 			return EXIT_FAILURE;
-		if (!SFM::ReconstructTest())
+		if (!SFM::ReconstructTest(verbose))
 			return EXIT_FAILURE;
 		// Hierarchical SFM tests - Phase 1: Scene Clustering
 		if (!SFM::SceneClusterSingleClusterTest())
@@ -200,7 +201,7 @@ int main(int argc, LPCTSTR* argv)
 			return EXIT_FAILURE;
 	} else {
 		// Run MVS pipeline test
-		if (!MVS::PipelineTest(verbose))
+		if (!MVS::PipelineTest(forceCPU, verbose))
 			return EXIT_FAILURE;
 	}
 	Finalize();

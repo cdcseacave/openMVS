@@ -83,7 +83,7 @@ bool TripletStarInitTest();
 bool TwoViewTest();
 
 // Reconstruction test: Import images, extract features, match pairs, build tracks, and initialize
-bool ReconstructTest();
+bool ReconstructTest(bool verbose = false);
 
 // Test function for rotation estimation
 bool RotationEstimatorTest();
