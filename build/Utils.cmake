@@ -172,12 +172,14 @@ macro(ComposePackageLibSuffix)
 	set(PACKAGE_LIB_SUFFIX_DBG "")
 	set(PACKAGE_LIB_SUFFIX_REL "")
 	if(MSVC)
-		if("${MSVC_VERSION}" STRGREATER "1929")
-			set(PACKAGE_LIB_SUFFIX "/vc17")
+		if("${MSVC_VERSION}" STRGREATER "1949")
+			set(PACKAGE_LIB_SUFFIX "/vc18") # 1950+ : VS 2026 (toolset v145) -> vc18
+		elseif("${MSVC_VERSION}" STRGREATER "1929")
+			set(PACKAGE_LIB_SUFFIX "/vc17") # 1930-1949 : VS 2022 (toolset v143/v144) -> vc17
 		elseif("${MSVC_VERSION}" STRGREATER "1916")
-			set(PACKAGE_LIB_SUFFIX "/vc16")
+			set(PACKAGE_LIB_SUFFIX "/vc16") # 1920-1929 : VS 2019 (toolset v142) -> vc16
 		elseif("${MSVC_VERSION}" STRGREATER "1900")
-			set(PACKAGE_LIB_SUFFIX "/vc15")
+			set(PACKAGE_LIB_SUFFIX "/vc15") # 1910-1916 : VS 2017 (toolset v141) -> vc15
 		elseif("${MSVC_VERSION}" STREQUAL "1900")
 			set(PACKAGE_LIB_SUFFIX "/vc14")
 		elseif("${MSVC_VERSION}" STREQUAL "1800")

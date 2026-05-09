@@ -247,7 +247,7 @@ void PatchMatch::EstimateDepthMap(DepthData& depthData)
 			cv::resize(lowResDepthMap, depthData.depthMap, size, 0, 0, cv::INTER_NEAREST);
 			cv::resize(lowResNormalMap, depthData.normalMap, size, 0, 0, cv::INTER_NEAREST);
 			cv::resize(lowResViewsMap, depthData.viewsMap, size, 0, 0, cv::INTER_NEAREST);
-			CUDA_CHECK(cudaMalloc((void**)&cudaLowDepths, sizeof(float) * size.area()));
+			CUDA_CHECK(cudaMallocAsync((void**)&cudaLowDepths, sizeof(float) * size.area(), cudaStream));
 		} else {
 			if (totalScaleNumber > 0) {
 				// smallest resolution, when multi-resolution is enabled
@@ -391,7 +391,7 @@ void PatchMatch::EstimateDepthMap(DepthData& depthData)
 		RunCUDA(depthData.confMap.getData(), (uint32_t*)depthData.viewsMap.getData());
 		CUDA_CHECK(cudaGetLastError());
 		if (params.bLowResProcessed)
-			CUDA_CHECK(cudaFree(cudaLowDepths));
+			CUDA_CHECK(cudaFreeAsync(cudaLowDepths, cudaStream));
 
 		// load depth-map, normal-map and confidence-map from CUDA memory
 		for (int r = 0; r < depthData.depthMap.rows; ++r) {

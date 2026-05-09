@@ -119,7 +119,7 @@ protected:
 	#ifdef LOG_THREAD
 	// threading
 	RWLock					m_lock;			// guards the listener array
-	#elifdef LOG_STREAM
+	#elif defined(LOG_STREAM)
 	std::ostringstream		m_stream;		// scratch buffer for operator<< (single-threaded)
 	#endif
 

@@ -530,7 +530,7 @@ __device__ void ProcessPixel(const ImagePixels* images, const ImagePixels* depth
 	}
 
 	// multi-hypothesis view selection
-	float viewSelectionPriors[MAX_VIEWS] = {0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f};
+	float viewSelectionPriors[MAX_VIEWS] = {};
 	const int nNumViews = g_params.nNumViews;
 	for (int posId = 0; posId < 4; ++posId) {
 		if (valid[posId]) {
@@ -605,7 +605,7 @@ __device__ void ProcessPixel(const ImagePixels* images, const ImagePixels* depth
 	const Point3 perturbedNormal = GeneratePerturbedNormal(g_cameras[0], p, plane.topLeftCorner<3,1>(), randState, perturbationNormal);
 	const Point3 normalRand = GenerateRandomNormal(g_cameras[0], p, randState);
 	int numValidPlanes = 3;
-	Point3 surfaceNormal;
+	Point3 surfaceNormal = Point3::Zero();
 	if (valid[0] && valid[1] && valid[2] && valid[3]) {
 		// estimate normal from surrounding surface
 		const Point4 ndepths(
