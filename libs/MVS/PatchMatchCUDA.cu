@@ -420,8 +420,10 @@ __device__ float ScorePlane(const RefPatchCache& cache, const CUDA::Camera& refC
 	const float covarTrgRef = sumRefTrg * cache.bilateralWeightSum - cache.sumRef * sumTrg;
 	float ncc = 1.f - covarTrgRef * rsqrtf(varRefTrg);
 
-	// apply depth prior weight based on patch textureless
-	if (lowDepth > 0) {
+	// apply depth prior weight based on patch textureless;
+	// hard-cap the prior on medium to well-textured patches:
+	// 0.0025 is the optimum tested on several GT datasets
+	if (lowDepth > 0 && cache.varRef < 0.0025f) {
 		const float depth(plane.w());
 		const float deltaDepth(min((fabsf(lowDepth-depth) / lowDepth), 0.5f));
 		constexpr float smoothSigmaDepth(-1.f / (1.f * 0.02f)); // 0.12: patch texture variance below 0.02 (0.12^2) is considered texture-less

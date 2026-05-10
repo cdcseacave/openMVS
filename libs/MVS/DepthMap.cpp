@@ -591,8 +591,10 @@ float DepthEstimator::ScorePixelImage(const DepthData::ViewData& image1, Depth d
 		}
 		score += OPTDENSE::fEstimationGeometricWeight * consistency;
 	}
-	// apply depth prior weight based on patch textureless
-	if (!lowResDepthMap.empty()) {
+	// apply depth prior weight based on patch textureless;
+	// hard-cap the prior on medium to well-textured patches:
+	// 0.0025 is the optimum tested on several GT datasets
+	if (!lowResDepthMap.empty() && normSq0 < 0.0025f) {
 		const Depth d0 = lowResDepthMap(x0);
 		if (d0 > 0) {
 			const float deltaDepth(MINF(DepthSimilarity(d0, depth), 0.5f));
