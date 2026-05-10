@@ -75,15 +75,19 @@ target_link_libraries(your_project PRIVATE OpenMVS::MVS)
 Python API
 -------------------
 
-The Python API can be enable by setting the `OpenMVS_USE_PYTHON` option to `ON` when running `cmake`. The Python API is built as a shared library and can be used in any Python project. Example:
+The Python API can be enable by setting the `OpenMVS_USE_PYTHON` option to `ON` when running `cmake`. The bindings are exposed by the `pyOpenMVS` extension module itself, and the install step also places an `openmvs` package wrapper next to it. Use `import openmvs as omvs` if you are importing the installed package wrapper; on Windows the wrapper adds the CUDA and co-located DLL search paths before re-exporting the same API.
+
+Use `import pyOpenMVS as omvs` if you are importing the extension module directly from the build or install location.
+
+Example:
 ```
-import pyOpenMVS
+import openmvs as omvs
 
 def run_mvs():
     # set the working folder; all files used next are relative to this folder (optional)
-    pyOpenMVS.set_working_folder("folder/containing/the/scene")
+    omvs.set_working_folder("folder/containing/the/scene")
     # create an empty scene
-    scene = pyOpenMVS.Scene()
+    scene = omvs.Scene()
     # load a MVS scene from a file
     if not scene.load("scene.mvs"):
         print("ERROR: scene could not be loaded")

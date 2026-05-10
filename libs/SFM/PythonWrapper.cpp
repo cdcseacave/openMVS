@@ -105,6 +105,70 @@ public:
 	unsigned pyNumTracks() const   { return static_cast<unsigned>(tracks.size()); }
 	unsigned pyNumCalibrated() const { return status.nCalibratedImages; }
 	bool pyIsEmpty() const { return IsEmpty(); }
+
+	// Per-image metadata - returns a Python list of dicts so callers can
+	// recover image and camera metadata without dragging the full C++ Image
+	// type into Python; can be used for ex to map video keyframes
+	// back to their source video frame index via timestamp*fps.
+	boost::python::list pyGetImageRecords() const {
+		boost::python::list out;
+		for (size_t i = 0; i < images.size(); ++i) {
+			const SFM::Image& img = images[i];
+			boost::python::dict r;
+			const SFM::Camera* pCamera = img.pCamera;
+			r["id"]        = static_cast<uint32_t>(img.ID);
+			r["camera_id"] = static_cast<uint32_t>(img.cameraID);
+			r["file_name"] = static_cast<std::string>(img.fileName);
+			r["timestamp"] = static_cast<double>(img.timestamp);
+			r["has_pose"]  = img.HasPose();
+			r["num_keypoints"] = static_cast<uint32_t>(img.keypoints.size());
+			r["width"] = pCamera ? pCamera->GetWidth() : 0;
+			r["height"] = pCamera ? pCamera->GetHeight() : 0;
+			r["camera_type"] = static_cast<std::string>(
+				pCamera ? SFM::CameraTypeToString(pCamera->GetType()) : SFM::CameraTypeToString(SFM::CameraType::UNDEFINED));
+			out.append(r);
+		}
+		return out;
+	}
+
+	// Per-pair metadata - returns a Python list of tuples to keep allocation
+	// overhead down when exporting large pair graphs. Tuple schema:
+	// (id1, id2, num_matches, num_inliers, num_filtered_inliers,
+	//  geometry_flags,
+	//  overlap_ratio, overlap_area, mean_ray_angle,
+	//  weight_spatial, weight_connectivity, weight_triplet, composite_weight)
+	boost::python::list pyGetPairRecords() const {
+		boost::python::list out;
+		for (size_t i = 0; i < pairs.size(); ++i) {
+			const SFM::ImagePair& pair = pairs[i];
+			// bitmask: 1=relative_pose, 2=fundamental, 4=essential, 8=homography
+			uint32_t geometryFlags = 0;
+			if (pair.relativePose.has_value())
+				geometryFlags |= 1u;
+			if (pair.F.has_value())
+				geometryFlags |= 2u;
+			if (pair.E.has_value())
+				geometryFlags |= 4u;
+			if (pair.H.has_value())
+				geometryFlags |= 8u;
+			out.append(boost::python::make_tuple(
+				static_cast<uint32_t>(pair.ID1),
+				static_cast<uint32_t>(pair.ID2),
+				pair.GetNumMatches(),
+				pair.GetNumInliers(),
+				pair.GetNumFilteredInliers(),
+				geometryFlags,
+				static_cast<double>(pair.overlapRatio),
+				static_cast<double>(pair.overlapArea),
+				static_cast<double>(pair.meanRayAngle),
+				static_cast<double>(pair.weightSpatial),
+				static_cast<double>(pair.weightConnectivity),
+				static_cast<double>(pair.weightTriplet),
+				static_cast<double>(pair.GetCompositeWeight())
+			));
+		}
+		return out;
+	}
 };
 
 // Bridge: feed an SFM result into an existing MVS::Scene via the canonical
@@ -204,7 +268,9 @@ void RegisterBindings()
 		.add_property("num_pairs",       &Scene::pyNumPairs)
 		.add_property("num_tracks",      &Scene::pyNumTracks)
 		.add_property("num_calibrated",  &Scene::pyNumCalibrated)
-		.add_property("is_empty",        &Scene::pyIsEmpty);
+		.add_property("is_empty",        &Scene::pyIsEmpty)
+		.def("get_image_records",        &Scene::pyGetImageRecords)
+		.def("get_pair_records",         &Scene::pyGetPairRecords);
 
 	// Free function: convenience SFM->MVS bridge via .mvs file.
 	def("export_sfm_to_mvs", &ExportToMVSFile,

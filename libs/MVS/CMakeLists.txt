@@ -108,7 +108,7 @@ if(OpenMVS_USE_PYTHON)
 	# get a self-contained package: import openmvs (which adds CUDA + co-located
 	# DLL search paths, then re-exports pyOpenMVS).
 	INSTALL(TARGETS pyOpenMVS DESTINATION "${PYTHON_INSTALL_PATH}/openmvs")
-	INSTALL(FILES ${CMAKE_SOURCE_DIR}/python/openmvs/__init__.py
+	INSTALL(FILES ${CMAKE_SOURCE_DIR}/build/python/__init__.py
 		DESTINATION "${PYTHON_INSTALL_PATH}/openmvs")
 endif()
 

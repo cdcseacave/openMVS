@@ -32,11 +32,11 @@ from pathlib import Path
 
 
 def _add_dll_dir(path: str) -> None:
-    """Best-effort `os.add_dll_directory(path)` (Windows only, Python ≥ 3.8)."""
+    """Best-effort `os.add_dll_directory(path)` (Windows only, Python >= 3.8)."""
     if not os.path.isdir(path):
         return
     add = getattr(os, "add_dll_directory", None)
-    if add is not None:  # Windows + Py38+
+    if add is not None:
         try:
             add(path)
         except (OSError, FileNotFoundError):
@@ -61,7 +61,6 @@ def _resolve_cuda_bin() -> str | None:
     if not os.path.isdir(root):
         return None
 
-    # Pick the highest-versioned vN.M subfolder.
     candidates = [
         d for d in os.listdir(root)
         if d.startswith("v") and os.path.isdir(os.path.join(root, d))
@@ -90,8 +89,6 @@ if sys.platform == "win32":
         _add_dll_dir(cuda_bin)
 
 
-# Re-export the extension module's symbols.  We do this with `from ... import *`
-# so consumers can write `import openmvs as ovs; ovs.SfMScene(...)`.
 from .pyOpenMVS import *  # noqa: F401, F403, E402
 from .pyOpenMVS import (  # noqa: E402
     ExportMVSConfig,
