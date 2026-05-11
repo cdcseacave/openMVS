@@ -46,6 +46,102 @@ uint64 Morton2D(uint32_t x, uint32_t y) {
 	return (ExpandBits2D(x) << 1) | ExpandBits2D(y);
 }	
 
+static void SetFallbackFaceTexcoords(const Mesh& mesh, Mesh::FIndex faceIdx, Mesh::TexCoordArr& faceTexcoords)
+{
+	const Mesh::Face& face = mesh.faces[faceIdx];
+	const Point3f& p0 = mesh.vertices[face[0]];
+	const Point3f& p1 = mesh.vertices[face[1]];
+	const Point3f& p2 = mesh.vertices[face[2]];
+	const float len01((float)norm(p1-p0));
+	const float len02((float)norm(p2-p0));
+	const float len12((float)norm(p2-p1));
+	const float x(len01 > 1e-6f ? (len02*len02 - len12*len12 + len01*len01) / (2.f * len01) : 0.f);
+	const float y(sqrtf(MAXF(len02*len02 - x*x, 0.f)));
+	Mesh::TexCoord* texCoords = &faceTexcoords[faceIdx*3];
+	texCoords[0] = Mesh::TexCoord(0.f, 0.f);
+	texCoords[1] = Mesh::TexCoord(len01, 0.f);
+	texCoords[2] = Mesh::TexCoord(x, y);
+}
+
+static void GenerateFastTexturePatches(Mesh& mesh, const ImageArr& images, const cv::Size& viewSize, const cv::Size& imageSize,
+	const std::vector<int>& faceViewsIdx, const std::vector<float>& faceViewsScore, uint nKeepViews, std::vector<std::vector<uint>>& patches)
+{
+	mesh.EmptyExtra();
+	mesh.ListIncidentFaces();
+	mesh.ListIncidentFaceFaces();
+	mesh.faceTexcoords.resize(mesh.faces.size() * 3);
+
+	std::vector<int> bestViews(mesh.faces.size(), -1);
+	for (Mesh::FIndex faceIdx = 0; faceIdx < mesh.faces.size(); ++faceIdx) {
+		const size_t offset((size_t)faceIdx * nKeepViews);
+		for (uint viewRank = 0; viewRank < nKeepViews; ++viewRank) {
+			const int viewIdx(faceViewsIdx[offset + viewRank]);
+			if (viewIdx >= 0 && viewIdx < (int)images.size() && faceViewsScore[offset + viewRank] > 0.f) {
+				bestViews[faceIdx] = viewIdx;
+				break;
+			}
+		}
+	}
+
+	std::vector<Camera> scaledCameras(images.size());
+	std::vector<uint8_t> cameraInit(images.size(), uint8_t(0));
+	std::vector<uint8_t> visited(mesh.faces.size(), uint8_t(0));
+	Mesh::FaceIdxArr stack;
+	patches.clear();
+	patches.reserve(mesh.faces.size());
+	for (Mesh::FIndex seedFaceIdx = 0; seedFaceIdx < mesh.faces.size(); ++seedFaceIdx) {
+		if (visited[seedFaceIdx])
+			continue;
+		visited[seedFaceIdx] = 1;
+		patches.emplace_back();
+		std::vector<uint>& patch = patches.back();
+		const int bestView(bestViews[seedFaceIdx]);
+		if (bestView < 0) {
+			patch.push_back(seedFaceIdx);
+			SetFallbackFaceTexcoords(mesh, seedFaceIdx, mesh.faceTexcoords);
+			continue;
+		}
+
+		if (!cameraInit[bestView]) {
+			scaledCameras[bestView] = images[bestView].camera.GetScaled(viewSize, imageSize);
+			cameraInit[bestView] = 1;
+		}
+		const Camera& camera = scaledCameras[bestView];
+		stack.Empty();
+		stack.Insert(seedFaceIdx);
+		while (!stack.empty()) {
+			const Mesh::FIndex faceIdx = stack.back();
+			stack.RemoveAtMove(stack.size()-1);
+			patch.push_back(faceIdx);
+
+			bool bProjected(true);
+			Mesh::TexCoord* texCoords = &mesh.faceTexcoords[faceIdx*3];
+			const Mesh::Face& face = mesh.faces[faceIdx];
+			for (int v = 0; v < 3; ++v) {
+				const auto ptC(camera.TransformPointW2C(Cast<REAL>(mesh.vertices[face[v]])));
+				if (ptC.z <= 0) {
+					bProjected = false;
+					break;
+				}
+				const Point2f pt(camera.TransformPointC2I(ptC));
+				texCoords[v] = Mesh::TexCoord(pt.x, pt.y);
+			}
+			if (!bProjected)
+				SetFallbackFaceTexcoords(mesh, faceIdx, mesh.faceTexcoords);
+
+			const Mesh::FaceFaces& adjFaces = mesh.faceFaces[faceIdx];
+			for (int e = 0; e < 3; ++e) {
+				const Mesh::FIndex adjFaceIdx = adjFaces[e];
+				if (adjFaceIdx == NO_ID || visited[adjFaceIdx] || bestViews[adjFaceIdx] != bestView)
+					continue;
+				visited[adjFaceIdx] = 1;
+				stack.Insert(adjFaceIdx);
+			}
+		}
+	}
+	mesh.ReleaseComputable();
+}
+
 bool Scene::TextureMeshCuda(unsigned _maxTexRes, unsigned _maxImgRes, bool rePack, bool reParametrize) {
 	// parameters
 	const uint maxTextRes = _maxTexRes;			// maximal textures aresolution
@@ -144,48 +240,12 @@ bool Scene::TextureMeshCuda(unsigned _maxTexRes, unsigned _maxImgRes, bool rePac
 	if (mesh.faceTexcoords.empty() || !std::filesystem::exists(pathPatches.c_str()) || reParametrize) {
 		// parametrization
 		{
-			VERBOSE("Mesh parametrization (xatlas) starting on %u verts, %u faces",
+			VERBOSE("Mesh parametrization starting on %u verts, %u faces",
 				mesh.vertices.size(), mesh.faces.size());
 			TD_TIMER_STARTD();
-			mesh.faceTexcoords.clear();
-			xatlas::Atlas* atlas = xatlas::Create();
-			xatlas::MeshDecl meshDecl;
-			meshDecl.vertexCount = mesh.vertices.size();
-			meshDecl.vertexPositionData = mesh.vertices.GetData();
-			meshDecl.vertexPositionStride = sizeof(SEACAVE::TPoint3<float>);
-			meshDecl.indexCount = mesh.faces.size() * 3;
-			meshDecl.indexData = mesh.faces.GetData();
-			meshDecl.indexFormat = xatlas::IndexFormat::UInt32;
-			if (xatlas::AddMesh(atlas, meshDecl) != xatlas::AddMeshError::Success) {
-				 ABORT("Error: xatlas::AddMesh failed");
-				return EXIT_FAILURE;
-			}
-			VERBOSE("xatlas: AddMesh done @%s; calling ComputeCharts...", TD_TIMER_GET_FMT().c_str());
-			xatlas::ChartOptions chartOptions = xatlas::ChartOptions();
-			xatlas::ComputeCharts(atlas, chartOptions);
-			VERBOSE("xatlas: ComputeCharts done @%s (%u charts); calling PackCharts...",
-				TD_TIMER_GET_FMT().c_str(), atlas->chartCount);
-			xatlas::PackOptions packOptions = xatlas::PackOptions();
-			xatlas::PackCharts(atlas, packOptions);
-			VERBOSE("xatlas: PackCharts done @%s (%u atlases, %ux%u resolution)",
-				TD_TIMER_GET_FMT().c_str(), atlas->atlasCount, atlas->width, atlas->height);
-			const xatlas::Mesh& atlasMesh = atlas->meshes[0];
-			mesh.faceTexcoords.resize(mesh.faces.size() * 3);
-			for (int i = 0; i < mesh.faces.size(); ++i) {
-				for (int j = 0; j < 3; ++j) {
-					const xatlas::Vertex& v = atlasMesh.vertexArray[atlasMesh.indexArray[i * 3 + j]];
-					mesh.faceTexcoords[i * 3 + j] = MVS::Mesh::TexCoord(v.uv[0], v.uv[1]);
-				}
-			}
-			// store charts as patches
-			patches.resize(atlas->chartCount);
-			for (int i = 0; i < atlas->chartCount; ++i) {
-				uint count = atlasMesh.chartArray[i].faceCount;
-				uint* faceArr = atlasMesh.chartArray[i].faceArray;
-				std::vector<uint> patch(faceArr, faceArr + count);
-				patches[i] = patch;
-			}
-			xatlas::Destroy(atlas);
+			GenerateFastTexturePatches(mesh, images, viewSize, imageSize, faceViewsIdx, faceViewsScore, nKeepViews, patches);
+			if (VERBOSITY_LEVEL > 1)
+				VERBOSE("Mesh parametrization completed: %u charts (%s)", (uint32_t)patches.size(), TD_TIMER_GET_FMT().c_str());
 			// save patches to patches.txt
 			std::ofstream ofs(pathPatches);
 			for (const auto& patch : patches) {

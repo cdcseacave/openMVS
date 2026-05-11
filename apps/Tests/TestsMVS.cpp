@@ -82,7 +82,7 @@ bool PipelineTest(bool forceCPU, bool verbose)
 	TestMeshProjectionMT(scene.mesh, scene.images[1]);
 	#endif
 	// snapshot the cleaned, untextured mesh so we can run both texturing backends
-	// (CPU mapmap+seam-leveling vs CUDA xatlas+sequential-blending) from the same baseline
+	// (CPU mapmap+seam-leveling vs CUDA texturing) from the same baseline
 	const Mesh meshUntextured = scene.mesh;
 	if (!scene.TextureMesh(0, 0) || !scene.mesh.HasTexture()) {
 		VERBOSE("ERROR: TestDataset failed texturing the mesh (CPU)!");

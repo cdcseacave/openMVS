@@ -34,7 +34,6 @@
 #include "AtlasPacker.h"
 #ifdef _USE_CUDA
 #include "CURAST/curast.h"
-#include "xatlas.h"
 #include <filesystem>
 #endif
 // connected components
