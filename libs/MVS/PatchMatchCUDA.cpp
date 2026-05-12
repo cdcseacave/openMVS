@@ -58,11 +58,9 @@ namespace CUDA {
 // single-in-flight per device.
 //
 // SceneDensify spawns two worker threads in its event loop (see
-// DenseReconstructionEstimateTmp) so concurrent calls into here do happen
-// in normal Release builds; an ASSERT-only check would silently corrupt the
-// constant-memory uploads. A std::mutex serializes the host-side critical
-// section while still letting the kernel itself enjoy the constant-memory
-// broadcast that the optimization commit added.
+// DenseReconstructionEstimateTmp) so concurrent calls into here do happen;
+// a std::mutex serializes the host-side critical section while still letting
+// the kernel enjoy the constant-memory broadcast that the optimization commit added.
 namespace {
 std::mutex g_patchMatchCudaMutex;
 struct PatchMatchCudaInFlightGuard {
