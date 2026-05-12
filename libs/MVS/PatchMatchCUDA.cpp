@@ -362,21 +362,8 @@ void PatchMatch::EstimateDepthMap(DepthData& depthData)
 		CUDA_CHECK(cudaMemcpyAsync(cudaTextureImages, textureImages.data(), sizeof(cudaTextureObject_t) * numImages, cudaMemcpyHostToDevice, cudaStream));
 		UploadCameras();
 		if (params.bGeomConsistency) {
-			// set previously computed depth-maps;
-			// the kernel and the host-side fill loop below index
-			// cudaDepthNormalEstimates with image-sized stride, so the
-			// reference depth/normal/views/conf maps must match the
-			// reference image size — when they don't (e.g. the previous
-			// pass left them at a sub-resolution), upsize them here.
-			const Image8U::Size refSize(depthData.GetView().image.size());
-			if (depthData.depthMap.size() != refSize)
-				cv::resize(depthData.depthMap, depthData.depthMap, refSize, 0, 0, cv::INTER_NEAREST);
-			if (depthData.normalMap.size() != refSize)
-				cv::resize(depthData.normalMap, depthData.normalMap, refSize, 0, 0, cv::INTER_NEAREST);
-			if (depthData.viewsMap.size() != refSize)
-				cv::resize(depthData.viewsMap, depthData.viewsMap, refSize, 0, 0, cv::INTER_NEAREST);
-			if (depthData.confMap.size() != refSize)
-				depthData.confMap.create(refSize);
+			// set previously computed depth-maps
+			ASSERT(depthData.depthMap.size() == depthData.GetView().image.size());
 			CUDA_CHECK(cudaMemcpyAsync(cudaTextureDepths, textureDepths.data(), sizeof(cudaTextureObject_t) * params.nNumViews, cudaMemcpyHostToDevice, cudaStream));
 		}
 
