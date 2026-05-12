@@ -106,10 +106,19 @@ static CUresult _selectBestDevice(Device& bestDevice)
 	return CUDA_SUCCESS;
 }
 
+// returns true for any of: empty, "-2", "cpu"/"CPU"/case-insensitive, "none"
+bool isCpuRequested(const String& deviceIDs)
+{
+	if (deviceIDs.empty() || deviceIDs == "-2")
+		return true;
+	const String lower(deviceIDs.ToLower());
+	return lower == "cpu" || lower == "none";
+}
+
 // initialize CUDA devices from a comma-separated list of device IDs
 CUresult initDevices(const String& deviceIDs)
 {
-	if (deviceIDs.empty())
+	if (isCpuRequested(deviceIDs))
 		return CUDA_ERROR_INVALID_DEVICE;
 
 	// cuInit needed because MemDevice uses Driver API (cuMemAlloc, etc.)

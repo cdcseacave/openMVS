@@ -114,7 +114,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 			), "verbosity level")
 		#endif
 		#ifdef _USE_CUDA
-		("cuda-device", boost::program_options::value<std::string>(&SEACAVE::CUDA::desiredDeviceIDs)->default_value("-1"), "CUDA device(s) for processing (-2 - CPU/GLSL processing, -1 - best GPU, >=0 - comma-separated IDs)")
+		("cuda-device", boost::program_options::value<std::string>(&SEACAVE::CUDA::desiredDeviceIDs)->default_value("-1"), "CUDA device(s) for processing (-1 best GPU, -2/cpu/empty CPU/GLSL, >=0 comma-separated IDs)")
 		#endif
 		;
 
@@ -252,7 +252,7 @@ int main(int argc, LPCTSTR* argv)
 	cfg.matchCfg.expandPairsTopK = OPT::expandPairsTopK;
 	cfg.matchCfg.releaseDescriptors = OPT::releaseDescriptors;
 	#ifdef _USE_CUDA
-	cfg.matchCfg.useCUDA = cfg.featuresCfg.useCUDA = !SEACAVE::CUDA::desiredDeviceIDs.empty();
+	cfg.matchCfg.useCUDA = cfg.featuresCfg.useCUDA = !SEACAVE::CUDA::isCpuRequested(SEACAVE::CUDA::desiredDeviceIDs);
 	#endif
 	cfg.matchImagesOnly = OPT::matchImagesOnly;
 	cfg.viewgraphCfg.maxTwoViewError = 0; // disable pair filtering after ViewGraph calibration

@@ -95,7 +95,7 @@ if(OpenMVS_USE_PYTHON)
 	)
 	# Link its dependencies
 	if(_USE_CUDA)
-		SET_TARGET_PROPERTIES(pyOpenMVS PROPERTIES CUDA_ARCHITECTURES "50;72;75")
+		SET_TARGET_PROPERTIES(pyOpenMVS PROPERTIES CUDA_ARCHITECTURES "native")
 	endif()
 	TARGET_LINK_LIBRARIES(pyOpenMVS PRIVATE MVS SFM)
 	# Output as a Python extension module: no "lib" prefix, ".pyd" suffix on

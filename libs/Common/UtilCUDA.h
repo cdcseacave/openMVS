@@ -85,9 +85,13 @@ inline T align(T o, T a) {
 
 // initialize CUDA devices from a comma-separated list of device IDs;
 // if deviceIDs is "-1", the best available device is selected;
-// if deviceIDs is empty, CUDA is disabled (CPU only)
+// if deviceIDs is empty, "-2", "cpu", or "none", CUDA is disabled (CPU only)
 GENERAL_API CUresult initDevices(const String& deviceIDs = String());
 inline bool isEnabled() { return !devices.empty(); }
+
+// returns true if deviceIDs is a sentinel that means "do not use CUDA";
+// recognized CPU sentinels: empty string, "-2", "cpu"/"CPU", "none"
+GENERAL_API bool isCpuRequested(const String& deviceIDs);
 /*----------------------------------------------------------------*/
 
 

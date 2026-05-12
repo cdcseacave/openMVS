@@ -3,7 +3,7 @@
 ########################################################################
 #
 # Project-wide settings
-CMAKE_MINIMUM_REQUIRED(VERSION 3.18)
+CMAKE_MINIMUM_REQUIRED(VERSION 3.24)
 IF(POLICY CMP0011)
 	# Included scripts do automatic cmake_policy() PUSH and POP.
 	CMAKE_POLICY(SET CMP0011 NEW)
@@ -220,6 +220,8 @@ if(OpenMVS_USE_CUDA)
 		# export PATH="/usr/local/cuda/bin:$PATH"
 		# export LD_LIBRARY_PATH="/usr/local/cuda/lib64:${LD_LIBRARY_PATH}"
 		if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
+			# `native` (CMake >= 3.24) tells nvcc to detect and target the build
+			# host's GPU; the project's CMAKE_MINIMUM_REQUIRED guarantees support.
 			SET(CMAKE_CUDA_ARCHITECTURES "native")
 		endif()
 		SET(CMAKE_CUDA_FLAGS_INIT "${CMAKE_CUDA_FLAGS_INIT} -allow-unsupported-compiler")

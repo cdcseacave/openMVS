@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.18)
+cmake_minimum_required(VERSION 3.24)
 if(POLICY CMP0072)
   cmake_policy(SET CMP0072 NEW)  # prefer GLVND
 endif()

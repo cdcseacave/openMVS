@@ -117,7 +117,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 			), "verbosity level")
 		#endif
 		#ifdef _USE_CUDA
-		("cuda-device", boost::program_options::value<std::string>(&SEACAVE::CUDA::desiredDeviceIDs)->default_value("-1"), "CUDA device(s) for depth-map estimation (comma-separated IDs, -1 for best GPU, empty for CPU)")
+		("cuda-device", boost::program_options::value<std::string>(&SEACAVE::CUDA::desiredDeviceIDs)->default_value("-1"), "CUDA device(s) for depth-map estimation (-1 best GPU, -2/cpu/empty CPU, >=0 comma-separated IDs)")
 		#endif
 		;
 

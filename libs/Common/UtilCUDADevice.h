@@ -48,10 +48,45 @@ namespace SEACAVE {
 
 namespace CUDA {
 
+// active device's compute capability, as returned by getActiveDeviceCC();
+// device == -1 means no active device or the query failed
+struct DeviceComputeCapability {
+	int device;
+	int major;
+	int minor;
+};
+
+// query the currently active CUDA device's compute capability
+FORCEINLINE DeviceComputeCapability getActiveDeviceCC() {
+	DeviceComputeCapability cc = { -1, 0, 0 };
+	if (cudaGetDevice(&cc.device) != cudaSuccess || cc.device < 0) {
+		cc.device = -1;
+		return cc;
+	}
+	cudaDeviceGetAttribute(&cc.major, cudaDevAttrComputeCapabilityMajor, cc.device);
+	cudaDeviceGetAttribute(&cc.minor, cudaDevAttrComputeCapabilityMinor, cc.device);
+	return cc;
+}
+
 FORCEINLINE void checkCudaCall(const cudaError_t error) {
 	if (error == cudaSuccess)
 		return;
 	VERBOSE("CUDA error at %s:%d: %s (code %d)", __FILE__, __LINE__, cudaGetErrorString(error), error);
+	// these three errors all map to "device cannot run this kernel/symbol":
+	//   500 cudaErrorNotFound             - named symbol not found on the active device
+	//   209 cudaErrorNoKernelImageForDevice - no SASS/PTX path for this device's compute capability
+	//    98 cudaErrorInvalidDeviceFunction - kernel was not registered for this device
+	// the typical cause is a CUDA_ARCHITECTURES list that omits the device's compute
+	// capability and ships no PTX-virtual fallback; point the user at the fix
+	if (error == cudaErrorNotFound || error == cudaErrorNoKernelImageForDevice || error == cudaErrorInvalidDeviceFunction) {
+		const DeviceComputeCapability cc = getActiveDeviceCC();
+		if (cc.device >= 0)
+			VERBOSE("CUDA hint: the active device is compute capability %d.%d (sm_%d%d); "
+				"rebuild OpenMVS with -DCMAKE_CUDA_ARCHITECTURES=%d%d "
+				"(or a list that includes this arch, optionally with PTX virtual fallback) "
+				"and ensure the CUDA Toolkit supports it.",
+				cc.major, cc.minor, cc.major, cc.minor, cc.major, cc.minor);
+	}
 	ASSERT("CudaError" == NULL);
 	exit(EXIT_FAILURE);
 }
