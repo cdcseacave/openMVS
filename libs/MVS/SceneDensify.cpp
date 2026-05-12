@@ -2238,7 +2238,29 @@ void Scene::DenseReconstructionEstimate(void* pData)
 			// select views to reconstruct the depth-map for this image
 			const IIndex idx = data.images[evtImage.idxImage];
 			DepthData& depthData(data.depthMaps.arrDepthData[idx]);
-			const bool depthmapComputed(data.nFusionMode < 0 || (data.nFusionMode >= 0 && data.nEstimationGeometricIter < 0 && File::access(ComposeDepthFilePath(data.scene.images[idx].ID, "dmap"))));
+			// cached .dmap is only reusable if it was written at the current
+			// image resolution; a .dmap from a previous run at a different
+			// resolution-level would propagate its (stale) size through
+			// InitViews and violate the image/depthMap size invariant that
+			// PatchMatch::EstimateDepthMap relies on. Peek the header (flags=0
+			// reads only the metadata) and treat a size mismatch as if the
+			// cache were missing so the image gets re-estimated cleanly.
+			const auto isCachedDmapUsable = [&](IIndex idxImg) {
+				const String path(ComposeDepthFilePath(data.scene.images[idxImg].ID, "dmap"));
+				if (!File::access(path))
+					return false;
+				String storedImageFileName;
+				IIndexArr storedIDs;
+				cv::Size storedImageSize;
+				KMatrix K; RMatrix R; CMatrix C;
+				Depth dMin, dMax;
+				DepthMap _d; NormalMap _n; ConfidenceMap _c; ViewsMap _v;
+				if (!ImportDepthDataRaw(path, storedImageFileName, storedIDs, storedImageSize,
+						K, R, C, dMin, dMax, _d, _n, _c, _v, 0))
+					return false;
+				return data.scene.images[idxImg].image.size() == storedImageSize;
+			};
+			const bool depthmapComputed(data.nFusionMode < 0 || (data.nFusionMode >= 0 && data.nEstimationGeometricIter < 0 && isCachedDmapUsable(idx)));
 			// initialize images pair: reference image and the best neighbor view
 			ASSERT(data.neighborsMap.IsEmpty() || data.neighborsMap[evtImage.idxImage] != NO_ID);
 			if (!data.depthMaps.InitViews(depthData, data.neighborsMap.IsEmpty()?NO_ID:data.neighborsMap[evtImage.idxImage], OPTDENSE::nNumViews, !depthmapComputed, depthmapComputed ? -1 : (data.nEstimationGeometricIter >= 0 ? 1 : 0))) {
