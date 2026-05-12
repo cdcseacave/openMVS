@@ -181,6 +181,47 @@ static bool ExportToMVSFile(const Scene& scene, const std::string& fileName,
 }
 
 
+// SEACAVE::String <-> Python str converters.
+// SEACAVE::String publicly derives from std::string, but Boost.Python keys
+// type converters by exact type_id and so the built-in std::string converter
+// does NOT cover String. Without these registrations, every `def_readwrite`
+// on a String field (e.g. ExportMVSConfig::undistortImageDir) returns an
+// opaque "SEACAVE::String" object on read and raises
+//   TypeError: No Python class registered for C++ class class SEACAVE::String
+// on write. Registering this once makes all current and future String fields
+// behave like ordinary Python strings.
+struct StringToPython {
+	static PyObject* convert(const SEACAVE::String& s) {
+		return PyUnicode_FromStringAndSize(s.data(), static_cast<Py_ssize_t>(s.size()));
+	}
+};
+struct StringFromPython {
+	StringFromPython() {
+		boost::python::converter::registry::push_back(
+			&convertible, &construct, boost::python::type_id<SEACAVE::String>());
+	}
+	static void* convertible(PyObject* obj) {
+		return (PyUnicode_Check(obj) || PyBytes_Check(obj)) ? obj : nullptr;
+	}
+	static void construct(PyObject* obj,
+			boost::python::converter::rvalue_from_python_stage1_data* data) {
+		const char* value;
+		Py_ssize_t length = 0;
+		if (PyUnicode_Check(obj)) {
+			value = PyUnicode_AsUTF8AndSize(obj, &length);
+			if (value == nullptr)
+				boost::python::throw_error_already_set();
+		} else {
+			value = PyBytes_AsString(obj);
+			length = PyBytes_GET_SIZE(obj);
+		}
+		void* storage = reinterpret_cast<
+			boost::python::converter::rvalue_from_python_storage<SEACAVE::String>*>(data)->storage.bytes;
+		new (storage) SEACAVE::String(value, static_cast<size_t>(length));
+		data->convertible = storage;
+	}
+};
+
 // Boost.Python registrar — called from inside the single
 // BOOST_PYTHON_MODULE(pyOpenMVS) block in libs/MVS/PythonWrapper.cpp so that
 // SFM and MVS bindings share one .pyd. Boost.Python only allows one module
@@ -190,6 +231,19 @@ void RegisterBindings()
 {
 	using namespace boost::python;
 
+	to_python_converter<SEACAVE::String, StringToPython>();
+	StringFromPython();
+
+	// For SEACAVE::String members, def_readwrite would pick
+	// return_internal_reference (the default for class-type members) and bypass
+	// the to_python_converter registered above — yielding the same opaque
+	// "SEACAVE::String" handle on reads. Routing through add_property with
+	// return_by_value forces a copy that engages the converter.
+	#define DEF_STR_RW(NAME, MEMBER_PTR) \
+		add_property(NAME, \
+			make_getter(MEMBER_PTR, return_value_policy<return_by_value>()), \
+			make_setter(MEMBER_PTR))
+
 	// SFM::ImportConfig — image import + camera priors
 	class_<SFM::ImportConfig>("ImportConfig")
 		.def_readwrite("use_exif", &SFM::ImportConfig::useExif)
@@ -197,12 +251,12 @@ void RegisterBindings()
 		.def_readwrite("focal_length", &SFM::ImportConfig::focalLength)
 		.def_readwrite("k1", &SFM::ImportConfig::k1)
 		.def_readwrite("k2", &SFM::ImportConfig::k2)
-		.def_readwrite("import_poses_csv", &SFM::ImportConfig::importPosesCSV)
+		.DEF_STR_RW("import_poses_csv", &SFM::ImportConfig::importPosesCSV)
 		.def_readwrite("import_poses_mode", &SFM::ImportConfig::importPosesMode);
 
 	// SFM::ROMA2Config — semi-dense matching
 	class_<SFM::ROMA2Config>("ROMA2Config")
-		.def_readwrite("import_path", &SFM::ROMA2Config::importROMA2Path)
+		.DEF_STR_RW("import_path", &SFM::ROMA2Config::importROMA2Path)
 		.def_readwrite("min_pair_weight", &SFM::ROMA2Config::minPairWeight)
 		.def_readwrite("epipolar_threshold", &SFM::ROMA2Config::epipolarThreshold)
 		.def_readwrite("erode_border", &SFM::ROMA2Config::erodeBorder);
@@ -235,13 +289,15 @@ void RegisterBindings()
 
 	// ExportMVSConfig — undistortion + spherical cube-map options for ExportMVS
 	class_<SFM::ExportMVSConfig>("ExportMVSConfig")
-		.def_readwrite("undistort_image_dir", &SFM::ExportMVSConfig::undistortImageDir)
-		.def_readwrite("extension", &SFM::ExportMVSConfig::extension)
+		.DEF_STR_RW("undistort_image_dir", &SFM::ExportMVSConfig::undistortImageDir)
+		.DEF_STR_RW("extension", &SFM::ExportMVSConfig::extension)
 		.def_readwrite("undistort_alpha", &SFM::ExportMVSConfig::undistortAlpha)
 		.def_readwrite("only_inlier_tracks", &SFM::ExportMVSConfig::onlyInlierTracks)
 		.def_readwrite("include_colors", &SFM::ExportMVSConfig::includeColors)
 		.def_readwrite("spherical_face_size", &SFM::ExportMVSConfig::sphericalFaceSize)
 		.def_readwrite("spherical_num_faces", &SFM::ExportMVSConfig::sphericalNumFaces);
+
+	#undef DEF_STR_RW
 
 	// pySFM::Scene — main entry point
 	class_<Scene, boost::noncopyable, boost::shared_ptr<Scene>>(
