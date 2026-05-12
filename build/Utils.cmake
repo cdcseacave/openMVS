@@ -682,6 +682,19 @@ macro(optimize_default_compiler_settings)
 	  # progress). No effect at /Od; kicks in only for optimized (Release/RelWithDebInfo)
 	  # builds where cl.exe's optimizer would otherwise spin on pathological inlining.
 	  set(BUILD_EXTRA_FLAGS "${BUILD_EXTRA_FLAGS} /d2ReducedOptimizeHugeFunctions")
+
+	  # Match the 8 MB main-thread stack that Linux and macOS provide by default.
+	  # The /O2-inlined Eigen + CGAL chain in Scene::EstimateROI (covariance PCA,
+	  # Eigen::SelfAdjointEigenSolver, AABB::Insert over thousands of rotated
+	  # points) needs ~1.3 MB of frame on its own; combined with the calling
+	  # frame and the OpenMP thread-pool warmup it overflows the 1 MB Windows
+	  # default and the app exits silently with STATUS_STACK_OVERFLOW
+	  # (0xC00000FD) right after "Scene loaded". Picking 8 MB instead of the
+	  # ~2 MB minimum aligns Windows with the implicit assumption the rest of
+	  # the codebase makes on POSIX, so behavior is platform-uniform; only the
+	  # main thread is affected (worker threads still default to 1 MB unless
+	  # opted in via CreateThread/_beginthreadex).
+	  set(BUILD_EXTRA_EXE_LINKER_FLAGS "${BUILD_EXTRA_EXE_LINKER_FLAGS} /STACK:8388608")
 	endif()
 
 	# Fix macOS linker warnings about reducing alignment from 0x8000 to 0x4000

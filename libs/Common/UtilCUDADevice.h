@@ -78,7 +78,8 @@ FORCEINLINE void checkCudaCall(const cudaError_t error) {
 	//    98 cudaErrorInvalidDeviceFunction - kernel was not registered for this device
 	// the typical cause is a CUDA_ARCHITECTURES list that omits the device's compute
 	// capability and ships no PTX-virtual fallback; point the user at the fix
-	if (error == cudaErrorNotFound || error == cudaErrorNoKernelImageForDevice || error == cudaErrorInvalidDeviceFunction) {
+	// cudaErrorNotFound (500) was removed in CUDA 12+; compare against the literal value
+	if (error == static_cast<cudaError_t>(500) || error == cudaErrorNoKernelImageForDevice || error == cudaErrorInvalidDeviceFunction) {
 		const DeviceComputeCapability cc = getActiveDeviceCC();
 		if (cc.device >= 0)
 			VERBOSE("CUDA hint: the active device is compute capability %d.%d (sm_%d%d); "
