@@ -51,22 +51,23 @@ namespace MVS {
 
 namespace CUDA {
 
-// In-flight counter for the CUDA backend. The kernels read cameras/params
+// In-flight serializer for the CUDA backend. The kernels read cameras/params
 // from module-global __constant__ memory (g_cameras / g_params, see
 // PatchMatchCUDA.cu), which is shared by every PatchMatch instance on the
-// device. Concurrent overlap would race; this guards EstimateDepthMap
-// against accidentally being run from two threads at once.
+// device. Concurrent overlap would race, so EstimateDepthMap must run
+// single-in-flight per device.
+//
+// SceneDensify spawns two worker threads in its event loop (see
+// DenseReconstructionEstimateTmp) so concurrent calls into here do happen
+// in normal Release builds; an ASSERT-only check would silently corrupt the
+// constant-memory uploads. A std::mutex serializes the host-side critical
+// section while still letting the kernel itself enjoy the constant-memory
+// broadcast that the optimization commit added.
 namespace {
-std::atomic<int> g_patchMatchCudaInFlight{0};
+std::mutex g_patchMatchCudaMutex;
 struct PatchMatchCudaInFlightGuard {
-	PatchMatchCudaInFlightGuard() {
-		const int prev = g_patchMatchCudaInFlight.fetch_add(1, std::memory_order_acq_rel);
-		ASSERT(prev == 0, "PatchMatchCUDA must be single-in-flight per device "
-			"(g_cameras/g_params live in shared __constant__ memory).");
-	}
-	~PatchMatchCudaInFlightGuard() {
-		g_patchMatchCudaInFlight.fetch_sub(1, std::memory_order_acq_rel);
-	}
+	std::lock_guard<std::mutex> _lock;
+	PatchMatchCudaInFlightGuard() : _lock(g_patchMatchCudaMutex) {}
 };
 } // anonymous namespace
 
