@@ -93,10 +93,10 @@ if(OpenMVS_USE_PYTHON)
 		${PATH_PythonWrapper_cpp}
 		${PATH_SFMPythonWrapper_cpp}
 	)
-	# Link its dependencies
-	if(_USE_CUDA)
-		SET_TARGET_PROPERTIES(pyOpenMVS PROPERTIES CUDA_ARCHITECTURES "native")
-	endif()
+	# Link its dependencies; CUDA_ARCHITECTURES intentionally not set here so
+	# pyOpenMVS inherits the global CMAKE_CUDA_ARCHITECTURES (defaulted to
+	# "native" by the root CMakeLists when undefined) and respects any
+	# -DCMAKE_CUDA_ARCHITECTURES=... the user or toolchain provides.
 	TARGET_LINK_LIBRARIES(pyOpenMVS PRIVATE MVS SFM)
 	# Output as a Python extension module: no "lib" prefix, ".pyd" suffix on
 	# Windows so the standard `import pyOpenMVS` machinery loads it directly.
