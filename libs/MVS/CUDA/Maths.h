@@ -274,6 +274,42 @@ inline __device__ Point3i GetThreadIndex3() {
 }
 #endif
 
+// ensure the total threads per block equal the given threadsPerBlock
+inline dim3& EnsureThreadsPerBlock(unsigned threadsPerBlock, dim3& blockSize) {
+	while (true) {
+		const unsigned productCheck = blockSize.x * blockSize.y * blockSize.z;
+		ASSERT(productCheck >= threadsPerBlock);
+		if (productCheck == threadsPerBlock)
+			break;
+		if (blockSize.z > 1)
+			--blockSize.z;
+		else if (blockSize.y > 1)
+			--blockSize.y;
+		else
+			--blockSize.x;
+	}
+	return blockSize;
+}
+// get the number of threads per block such that the threads are equal in each of the first two dimensions
+inline dim3 GetThreadsPerBlock2(unsigned threadsPerBlock) {
+	unsigned threadsPerBlockX = static_cast<unsigned>(ceil(sqrt(threadsPerBlock)));
+	dim3 blockSize(threadsPerBlockX, threadsPerBlockX, 1);
+	return EnsureThreadsPerBlock(threadsPerBlock, blockSize);
+}
+// get the number of blocks, each of blockSize, such that the blocks cover all elements
+inline unsigned GetBlockCount(unsigned blockSize, unsigned elements) {
+	return (elements + blockSize - 1) / blockSize;
+}
+// default threads per block
+inline unsigned DefaultThreadsPerBlock() {
+	return 512;
+}
+inline std::pair<unsigned,unsigned> DefaultBlockCount(unsigned elements) {
+	const unsigned threadsPerBlock = DefaultThreadsPerBlock();
+	const unsigned gridSize = GetBlockCount(threadsPerBlock, elements);
+	return {gridSize, threadsPerBlock};
+}
+
 // convert 2D to 1D coordinates and back
 __host__ __device__ inline int Point2Idx(const Point2i& p, int width) {
 	return p.y() * width + p.x();

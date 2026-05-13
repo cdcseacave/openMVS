@@ -32,6 +32,11 @@
 #include "Common.h"
 #include "Scene.h"
 #include "AtlasPacker.h"
+#ifdef _USE_CUDA
+#include "CURAST/curast.h"
+#include "xatlas.h"
+#include <filesystem>
+#endif
 // connected components
 #include <boost/graph/adjacency_list.hpp>
 #include <boost/graph/connected_components.hpp>
@@ -2426,5 +2431,9 @@ bool Scene::TextureMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsi
 	return true;
 } // TextureMesh
 /*----------------------------------------------------------------*/
+
+#ifdef _USE_CUDA
+#include "SceneTextureCUDA.inl"
+#endif
 
 #pragma pop_macro("VERBOSE")

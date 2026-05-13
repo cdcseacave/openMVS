@@ -68,6 +68,10 @@ unsigned nArchiveType;
 int nProcessPriority;
 unsigned nMaxThreads;
 int nMaxTextureSize;
+int nMaxImgSize;
+bool bUseCUDABlending;
+bool bForceParam;
+bool bForcePack;
 String strExportType;
 String strConfigFileName;
 boost::program_options::variables_map vm;
@@ -131,6 +135,12 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("orthographic-image-resolution", boost::program_options::value(&OPT::nOrthoMapResolution)->default_value(0), "orthographic image resolution to be generated from the textured mesh - the mesh is expected to be already geo-referenced or at least properly oriented (0 - disabled)")
 		("ignore-mask-label", boost::program_options::value(&OPT::nIgnoreMaskLabel)->default_value(-1), "label value to ignore in the image mask, stored in the MVS scene or next to each image with '.mask.png' extension (-1 - auto estimate mask for lens distortion, -2 - disabled)")
 		("max-texture-size", boost::program_options::value(&OPT::nMaxTextureSize)->default_value(8192), "maximum texture size, split it in multiple textures of this size if needed (0 - unbounded)")
+		#ifdef _USE_CUDA
+		("max-img-size", boost::program_options::value(&OPT::nMaxImgSize)->default_value(0), "maximum image size to be used for CUDA texturing (0 - disabled)")
+		("cuda-blending", boost::program_options::bool_switch(&OPT::bUseCUDABlending), "use CUDA for texture generation")
+		("force-param", boost::program_options::bool_switch(&OPT::bForceParam), "force reparametrization for CUDA texture generation")
+		("force-pack", boost::program_options::bool_switch(&OPT::bForcePack), "force repacking of CUDA texture atlases")
+		#endif
 		;
 
 	// hidden options, allowed both on command line and
@@ -300,6 +310,12 @@ int main(int argc, LPCTSTR* argv)
 
 	// compute mesh texture
 	TD_TIMER_START();
+	#ifdef _USE_CUDA
+	if (OPT::bUseCUDABlending) {
+		if (!scene.TextureMeshCuda(OPT::nMaxTextureSize, OPT::nMaxImgSize, OPT::bForcePack, OPT::bForceParam))
+			return EXIT_FAILURE;
+	} else
+	#endif
 	if (!scene.TextureMesh(OPT::nResolutionLevel, OPT::nMinResolution, OPT::minCommonCameras, OPT::fOutlierThreshold, OPT::fRatioDataSmoothness,
 						   OPT::bGlobalSeamLeveling, OPT::bLocalSeamLeveling, OPT::nTextureSizeMultiple, Pixel8U(OPT::nColEmpty),
 						   OPT::fSharpnessWeight, OPT::nIgnoreMaskLabel, OPT::nMaxTextureSize, views))

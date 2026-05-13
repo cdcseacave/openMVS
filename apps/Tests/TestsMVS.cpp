@@ -30,6 +30,7 @@
  */
 
 #include "../../libs/MVS.h"
+#include <fstream>
 
 
 // D E F I N E S ///////////////////////////////////////////////////
@@ -80,16 +81,45 @@ bool PipelineTest(bool forceCPU, bool verbose)
 	#ifdef _USE_OPENMP
 	TestMeshProjectionMT(scene.mesh, scene.images[1]);
 	#endif
+	// snapshot the cleaned, untextured mesh so we can run both texturing backends
+	// (CPU mapmap+seam-leveling vs CUDA xatlas+sequential-blending) from the same baseline
+	const Mesh meshUntextured = scene.mesh;
 	if (!scene.TextureMesh(0, 0) || !scene.mesh.HasTexture()) {
-		VERBOSE("ERROR: TestDataset failed texturing the mesh!");
+		VERBOSE("ERROR: TestDataset failed texturing the mesh (CPU)!");
 		return false;
 	}
 	if (verbose)
-		scene.mesh.Save(MAKE_PATH("scene_dense_mesh_texture.ply"));
-	const float qualityScore = scene.ComputeReconstructionQuality().score();
-	if (qualityScore < 45.f) {
-		VERBOSE("ERROR: TestDataset reconstruction quality too low (%.1f)!", qualityScore);
+		scene.mesh.Save(MAKE_PATH("scene_dense_mesh_texture_cpu.ply"));
+	const float qualityScoreCPU = scene.ComputeReconstructionQuality().score();
+	if (qualityScoreCPU < 45.f) {
+		VERBOSE("ERROR: TestDataset CPU texturing quality too low (%.1f)!", qualityScoreCPU);
 		return false;
+	}
+	#ifdef _USE_CUDA
+	if (!forceCPU) {
+		scene.mesh = meshUntextured;
+		if (!scene.TextureMeshCuda(/*maxTexRes*/8192, /*maxImgRes*/0, /*rePack*/false, /*reParametrize*/true) || !scene.mesh.HasTexture()) {
+			VERBOSE("ERROR: TestDataset failed texturing the mesh (CUDA)!");
+			return false;
+		}
+		if (verbose)
+			scene.mesh.Save(MAKE_PATH("scene_dense_mesh_texture_cuda.ply"));
+		const float qualityScoreCUDA = scene.ComputeReconstructionQuality().score();
+		if (qualityScoreCUDA < 45.f) {
+			VERBOSE("ERROR: TestDataset CUDA texturing quality too low (%.1f)!", qualityScoreCUDA);
+			return false;
+		}
+		VERBOSE("Texturing scores: CPU=%.1f CUDA=%.1f", qualityScoreCPU, qualityScoreCUDA);
+		// also persist scores to disk so callers can extract them without parsing console output
+		// (OpenMVS LogConsole redirects stdout to CONOUT$, defeating shell pipes)
+		std::ofstream(MAKE_PATH("scene_dense_mesh_texture_scores.txt"))
+			<< "CPU=" << qualityScoreCPU << " CUDA=" << qualityScoreCUDA << std::endl;
+	} else
+	#endif
+	{
+		VERBOSE("Texturing score: CPU=%.1f", qualityScoreCPU);
+		std::ofstream(MAKE_PATH("scene_dense_mesh_texture_scores.txt"))
+			<< "CPU=" << qualityScoreCPU << std::endl;
 	}
 	VERBOSE("All pipeline stages passed (%s)", TD_TIMER_GET_FMT().c_str());
 	return true;

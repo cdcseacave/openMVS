@@ -60,6 +60,7 @@ ENDIF()
 
 # Add local ports to overlay
 SET(VCPKG_OVERLAY_PORTS "${CMAKE_SOURCE_DIR}/ports")
+LIST(APPEND VCPKG_OVERLAY_PORTS "${CMAKE_SOURCE_DIR}/vcpkg-overlay-ports")
 
 # Define helper functions and macros (must come before the project() call
 # below: the opencv4 overlay generator declared in Utils.cmake mutates
