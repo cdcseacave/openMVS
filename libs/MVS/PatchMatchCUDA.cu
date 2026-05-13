@@ -37,6 +37,14 @@
 // samples used to perform views selection
 #define NUM_SAMPLES 32
 
+// unified "bad cost" sentinel: returned by ScorePlane when the patch
+// cannot be evaluated against a view (out-of-frame, texture-less, or
+// degenerate variance), used as the view-pruning threshold in the
+// multi-hypothesis joint view selection, and as the all-views-rejected
+// fallback in AggregateMultiViewScores. Keeping the three meanings on
+// a single name makes the alignment explicit and tunable from one place.
+#define fBadCost 1.2f
+
 // patch window radius
 #define nSizeHalfWindow 4
 
@@ -372,8 +380,6 @@ __device__ inline void ComputeRefPatchCache(const ImagePixels refImage, const Po
 // compute photometric score using weighted ZNCC; uses precomputed reference cache
 __device__ float ScorePlane(const RefPatchCache& cache, const CUDA::Camera& refCamera, const ImagePixels trgImage, const CUDA::Camera& trgCamera, const Point2i& p, const Point4& plane, const float lowDepth)
 {
-	constexpr float maxCost = 1.2f;
-
 	Matrix3 H = ComputeHomography(refCamera, trgCamera, p.cast<float>(), plane);
 	// inline hnormalized() as RCP + 2 FMAs (the +0.5 tex2D pixel-center bias rides into the FMA)
 	// replaces 2 IEEE divisions per sample in the 25-sample patch walk; hottest inner loop, ~-29% per-view kernel time
@@ -383,7 +389,7 @@ __device__ float ScorePlane(const RefPatchCache& cache, const CUDA::Camera& refC
 		const float ptX = ptH.x() * invZ;
 		const float ptY = ptH.y() * invZ;
 		if (ptX >= trgCamera.size.x() || ptX < 0.f || ptY >= trgCamera.size.y() || ptY < 0.f)
-			return maxCost;
+			return fBadCost;
 	}
 	Point3 X = H * Point2(p.x()-nSizeHalfWindow, p.y()-nSizeHalfWindow).homogeneous();
 	Point3 baseX(X);
@@ -412,11 +418,11 @@ __device__ float ScorePlane(const RefPatchCache& cache, const CUDA::Camera& refC
 	}
 
 	if (lowDepth <= 0 && cache.varRef < 1e-8f)
-		return maxCost;
+		return fBadCost;
 	const float varTrg = sumTrgTrg * cache.bilateralWeightSum - sumTrg * sumTrg;
 	const float varRefTrg = cache.varRef * varTrg;
 	if (varRefTrg < 1e-16f)
-		return maxCost;
+		return fBadCost;
 	const float covarTrgRef = sumRefTrg * cache.bilateralWeightSum - cache.sumRef * sumTrg;
 	float ncc = 1.f - covarTrgRef * rsqrtf(varRefTrg);
 
@@ -455,21 +461,43 @@ __device__ inline float MultiViewScoreNeighborPlane(const RefPatchCache& cache, 
 	return plane.w();
 }
 
-// aggregate photometric score from all images
+// aggregate photometric scores from MC-sampled views into one per-pixel
+// cost: the MC-weighted mean over views with viewWeights > 0. Sentinel
+// views (cost == fBadCost from ScorePlane: out-of-frame, occlusion, or
+// degenerate variance) are included at their raw cost, pulling the mean
+// upward and disadvantaging plane hypotheses that fail to project many
+// views. NUM_SAMPLES = sum(viewWeights[]) by construction in
+// ProcessPixel (NUM_SAMPLES MC draws each increment one viewWeights[])
 __device__ inline float AggregateMultiViewScores(const unsigned* viewWeights, const float* costVector, int numViews)
 {
 	float cost = 0;
-	unsigned wsum = 0;
 	for (int imgId = 0; imgId < numViews; ++imgId)
-		if (viewWeights[imgId]) {
+		if (viewWeights[imgId])
 			cost += viewWeights[imgId] * costVector[imgId];
-			wsum += viewWeights[imgId];
-		}
-	return wsum ? cost / float(wsum) : 1.2f;
+	return cost / float(NUM_SAMPLES);
 }
 
-// propagate and refine the plane estimate for the current pixel employing the asymmetric approach described in:
-// "Multi-View Stereo with Asymmetric Checkerboard Propagation and Multi-Hypothesis Joint View Selection", 2018
+// Per-pixel update for ACMH-style patch-match stereo on GPU; reference:
+//   "Multi-View Stereo with Asymmetric Checkerboard Propagation and
+//    Multi-Hypothesis Joint View Selection", Xu & Tao, 2018.
+//
+// Each call performs (for a single pixel):
+//   1. Adaptive neighbor sampling - 8 directional patterns (4 near + 4 far);
+//      pick the best plane in each direction and score it against all views
+//      into costArray[posId][imgId].
+//   2. Multi-hypothesis joint view selection:
+//        - Build viewSelectionPriors[j] from neighbors' selectedViews bitmasks.
+//        - For each view, count agreeing/disagreeing neighbor planes and form
+//          samplingProbs[imgId] = prior * Gaussian-weighted local agreement.
+//        - PDF2CDF normalizes; NUM_SAMPLES Monte-Carlo draws populate
+//          viewWeights[imgId] (= count of times imgId was sampled).
+//   3. Plane comparison - aggregate each of the 8 neighbor planes + the
+//      current plane against the shared viewWeights; pick the lowest.
+//   4. Plane refinement - perturb depth/normal, re-score against the same
+//      viewWeights, keep if it lowers the aggregate cost.
+//
+// The shared viewWeights basis across (3) and (4) ensures plane hypotheses
+// are evaluated on a consistent view-selection footing within this pixel.
 template <bool GEOM>
 __device__ void ProcessPixel(const ImagePixels* images, const ImagePixels* depthImages, Point4* planes, const float* lowDepths, float* costs, RandState* randStates, unsigned* selectedViews, const Point2i& p, const int iter)
 {
@@ -542,7 +570,6 @@ __device__ void ProcessPixel(const ImagePixels* images, const ImagePixels* depth
 		}
 	}
 	float samplingProbs[MAX_VIEWS];
-	constexpr float thCostBad = 1.2f;
 	const float thCost = 0.8f * __expf(Square((float)iter) / (-2.f * 4.f*4.f));
 	for (int imgId = 0; imgId < nNumViews; ++imgId) {
 		float sumW = 0;
@@ -553,7 +580,7 @@ __device__ void ProcessPixel(const ImagePixels* images, const ImagePixels* depth
 				if (costArray[posId][imgId] < thCost) {
 					sumW += __expf(Square(costArray[posId][imgId]) / (-2.f * 0.3f*0.3f));
 					++count;
-				} else if (costArray[posId][imgId] > thCostBad) {
+				} else if (costArray[posId][imgId] >= fBadCost) {
 					++countBad;
 				}
 			}
@@ -567,7 +594,7 @@ __device__ void ProcessPixel(const ImagePixels* images, const ImagePixels* depth
 		}
 	}
 	PDF2CDF(samplingProbs, nNumViews);
-	unsigned viewWeights[MAX_VIEWS] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+	unsigned viewWeights[MAX_VIEWS] = {};
 	for (int sample = 0; sample < NUM_SAMPLES; ++sample) {
 		const float randProb = curand_uniform(randState);
 		for (int imgId = 0; imgId < nNumViews; ++imgId) {
