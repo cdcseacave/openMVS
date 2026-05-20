@@ -98,6 +98,15 @@ if(OpenMVS_USE_PYTHON)
 	# "native" by the root CMakeLists when undefined) and respects any
 	# -DCMAKE_CUDA_ARCHITECTURES=... the user or toolchain provides.
 	TARGET_LINK_LIBRARIES(pyOpenMVS PRIVATE MVS SFM)
+	if(TARGET Python3::Python)
+		TARGET_LINK_LIBRARIES(pyOpenMVS PRIVATE Python3::Python)
+	else()
+		TARGET_INCLUDE_DIRECTORIES(pyOpenMVS PRIVATE ${Python3_INCLUDE_DIRS})
+		TARGET_LINK_LIBRARIES(pyOpenMVS PRIVATE ${Python3_LIBRARIES})
+	endif()
+	if(TARGET Boost::python)
+		TARGET_LINK_LIBRARIES(pyOpenMVS PRIVATE Boost::python)
+	endif()
 	# Output as a Python extension module: no "lib" prefix, ".pyd" suffix on
 	# Windows so the standard `import pyOpenMVS` machinery loads it directly.
 	SET_TARGET_PROPERTIES(pyOpenMVS PROPERTIES PREFIX "")
