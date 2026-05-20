@@ -9,6 +9,7 @@
 #include "Scene.h"
 #include "Track.h"
 #include "Triangulation.h"
+#include "PoseLibBearing.h"
 #include <PoseLib/poselib.h>
 
 using namespace SFM;
@@ -103,12 +104,12 @@ IIndexArr Resection::SelectNextImages(IIndexScores& unregistered) const
 	opt.ransac.max_iterations = config.ransac.max_iterations;
 	opt.ransac.min_iterations = config.ransac.min_iterations;
 	opt.ransac.success_prob = config.ransac.confidence;
-	opt.max_error = img.pCamera->PixelErrorToAngular(
-		config.ransac.threshold * img.pCamera->GetFeatureNoiseScale());
+	opt.max_error = PoseLibMaxErrorFromAngle(img.pCamera->PixelErrorToAngular(
+		config.ransac.threshold * img.pCamera->GetFeatureNoiseScale()));
 
 	std::vector<char> inliers;
 	poselib::CameraPose camPose;
-	poselib::RansacStats stats = poselib::estimate_absolute_pose_bearings(
+	poselib::RansacStats stats = EstimateAbsolutePoseBearings(
 		bearings, points3D, opt, &camPose, &inliers);
 
 	const unsigned numInliers = (unsigned)stats.num_inliers;

@@ -27,6 +27,7 @@
 #include "Scene.h"
 #include "FeaturesExtractor.h"
 #include "PairsWeighting.h"
+#include "PoseLibBearing.h"
 #include "VocabularyTree.h"
 #include <PoseLib/poselib.h>
 
@@ -445,13 +446,12 @@ bool PairsMatcher::GeometricFilter(
 		//   angle_k = cam_k.PixelErrorToAngular(pixel_threshold)
 		//   angle   = 0.5 * (angle_1 + angle_2)
 		// For pinhole this reduces to 0.5/focal_1 + 0.5/focal_2 in the small-angle
-		// limit (previous hand-rolled scaling). The bearing estimator interprets
-		// opt.max_error as an angle in radians (converted internally to sin(angle),
-		// the unit of its unit-norm symmetric Sampson residual).
+		// limit (previous hand-rolled scaling). The local PoseLib adapter scores
+		// chord distance on unit bearings, so convert the angular threshold first.
 		const REAL pxErr = opt.max_error;
 		const REAL angle1 = cam1.PixelErrorToAngular(pxErr);
 		const REAL angle2 = cam2.PixelErrorToAngular(pxErr);
-		opt.max_error = 0.5 * (angle1 + angle2);
+		opt.max_error = PoseLibMaxErrorFromAngle(0.5 * (angle1 + angle2));
 
 		// Extract matched keypoints and convert directly to 3D unit bearing vectors
 		const float minFeatureDistanceSq = SQUARE(config.minFeatureDistance);
@@ -478,7 +478,7 @@ bool PairsMatcher::GeometricFilter(
 		// the four (R, ±t), (R', ±t) decompositions of the essential matrix all have
 		// identical Sampson scores and RANSAC picks whichever one the 5-point solver
 		// returned first.
-		poselib::RansacStats stats = poselib::estimate_relative_pose_bearings(
+		poselib::RansacStats stats = EstimateRelativePoseBearings(
 			bearings1, bearings2,
 			opt,
 			&plPose,
