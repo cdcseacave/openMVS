@@ -404,7 +404,11 @@ def ensure_binaries(steps_to_run):
         COLMAP_BIN += ".bat"
 
 
-ensure_binaries(_peek_steps_list())
+# Skip binary prompting when the user just wants -h/--help; argparse will
+# still build STEPS below with whatever BIN globals are currently set (which
+# is fine for help text — only command execution needs real paths).
+if not ({'-h', '--help'} & set(sys.argv[1:])):
+    ensure_binaries(_peek_steps_list())
 
 
 CONF = ConfContainer()

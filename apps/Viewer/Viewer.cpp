@@ -219,8 +219,9 @@ int main(int argc, LPCTSTR* argv)
 			// select which render layers are visible in the screenshot
 			Window& w = viewer.GetWindow();
 			w.showPointCloud    = OPT::strShow.find('p') != std::string::npos;
-			w.showMesh          = OPT::strShow.find('m') != std::string::npos;
 			w.showMeshTextured  = OPT::strShow.find('t') != std::string::npos;
+			// 't' is a modifier of mesh rendering: requesting textured implies mesh
+			w.showMesh          = OPT::strShow.find('m') != std::string::npos || w.showMeshTextured;
 			w.showCameras       = OPT::strShow.find('c') != std::string::npos;
 			w.showMeshWireframe = OPT::strShow.find('w') != std::string::npos;
 			w.showBounds        = OPT::strShow.find('b') != std::string::npos;
