@@ -123,7 +123,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("source,s", boost::program_options::value<std::string>(&OPT::strSource), "source folder or semicolon-separated list of images")
 		("output-file,o", boost::program_options::value<std::string>(&OPT::strOutputFileName), "output scene file path")
 		("export-mvs", boost::program_options::value<std::string>(&OPT::strOutputFileNameMVS), "output MVS file path (optional)")
-		("detector-type,t", boost::program_options::value<std::string>(&OPT::strDetectorType)->default_value("SIFTGPU"), "feature detector type: AKAZE, ORB, SIFT or SIFTGPU")
+		("detector-type,t", boost::program_options::value<std::string>(&OPT::strDetectorType)->default_value(FeatureTypeToString(FeatureType::DEFAULT)), "feature detector type: AKAZE, ORB, SIFT or SIFTGPU")
 		("import-poses-csv", boost::program_options::value<std::string>(&OPT::strImportPosesCSV)->default_value("poses.csv"), "import camera poses from CSV file (optional)")
 		("export-poses-csv", boost::program_options::value<std::string>(&OPT::strExportPosesCSV), "export camera poses to CSV file (optional)")
 		("import-poses-mode", boost::program_options::value(&OPT::importPosesMode)->default_value(0), "mode for importing camera poses from CSV: 0=none, 1=all, 2=extrinsics only, 3=positions only")
@@ -268,6 +268,8 @@ int main(int argc, LPCTSTR* argv)
 			!(cfg.matchImagesOnly && scene.status.nState.isSet(Scene::Status::STATE::MATCHED))) {
 			VERBOSE("error: reconstruction failed");
 			return EXIT_FAILURE;
+		} else if (OPT::bExtractColors && scene.colors.empty() && !scene.SampleColors()) {
+			VERBOSE("warning: color extraction failed");
 		}
 	} else if (!scene.Save(MAKE_PATH_SAFE(OPT::strOutputFileName), (ARCHIVE_TYPE)OPT::nArchiveType)) {
 		VERBOSE("error: failed to save reconstructed scene to %s", OPT::strOutputFileName.c_str());

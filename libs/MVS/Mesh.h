@@ -245,7 +245,7 @@ public:
 
 	// file IO
 	bool Load(const String& fileName);
-	bool Save(const String& fileName, const cList<String>& comments=cList<String>(), bool bBinary=true) const;
+	bool Save(const String& fileName, const cList<String>& comments=cList<String>(), bool bBinary=true, bool bTexLossless=true) const;
 	bool Save(const FacesChunkArr&, const String& fileName, const cList<String>& comments=cList<String>(), bool bBinary=true) const;
 	static bool Save(const VertexArr& vertices, const String& fileName, bool bBinary=true);
 

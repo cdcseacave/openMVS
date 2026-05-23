@@ -1,0 +1,68 @@
+name: Sync GitHub Wiki
+
+# Mirrors docs/wiki/ in this repo to the project's GitHub wiki
+# (https://github.com/cdcseacave/openMVS.wiki.git) so wiki edits can be
+# reviewed via pull request alongside code changes.
+#
+# Setup (one-time, requires repo admin):
+#   1. Generate a dedicated SSH keypair: `ssh-keygen -t ed25519 -C wiki-sync -f wiki_deploy -N ""`
+#   2. Add wiki_deploy.pub as a Deploy Key on cdcseacave/openMVS with WRITE access
+#      (GitHub-wide deploy keys on the main repo also grant push access to the
+#      wiki repo, since they share the same auth backend).
+#   3. Add the private key (wiki_deploy) as the repo secret WIKI_DEPLOY_KEY.
+#
+# Files only on the wiki side (e.g. _Footer.md, _Sidebar.md, manually-added
+# pages) are preserved — this workflow copies in but does not delete.
+
+on:
+  push:
+    branches: [develop]
+    paths: ['docs/wiki/**']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sync-wiki
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure SSH for wiki push
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.WIKI_DEPLOY_KEY }}
+
+      - name: Mirror docs/wiki -> wiki repo
+        env:
+          SRC_REPO: ${{ github.repository }}
+          SRC_SHA:  ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          WIKI_DIR="$(mktemp -d)"
+          git clone --depth 1 "git@github.com:${SRC_REPO}.wiki.git" "$WIKI_DIR"
+
+          # Copy every file under docs/wiki/ into the wiki worktree, preserving
+          # pages that only exist on the wiki side (no --delete).
+          cp -a docs/wiki/. "$WIKI_DIR"/
+
+          cd "$WIKI_DIR"
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "Wiki already in sync with docs/wiki@${SRC_SHA}."
+            exit 0
+          fi
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit \
+            -m "Sync wiki from docs/wiki@${SRC_SHA:0:7}" \
+            -m "Mirrored from ${SRC_REPO}@${SRC_SHA}."
+          git push origin HEAD:master

@@ -309,6 +309,38 @@ void Scene::Run() {
 	window.Run();
 }
 
+// Set the view camera from a transform file (12 or 16 whitespace-separated
+// values, row-major; camera-to-world: columns are the camera X,Y,Z axes in
+// world space, last column is the camera center). Returns false if the file
+// is missing or malformed, leaving the current (auto-fit) view unchanged.
+bool Scene::SetViewFromFile(const String& viewFileName) {
+	Matrix3x4 m;
+	if (!Util::loadMatrix3x4(viewFileName, m)) {
+		DEBUG("error: cannot load view transform from '%s' (expected 12 or 16 values)", viewFileName.c_str());
+		return false;
+	}
+	window.GetCamera().SetCameraFromPose(m);
+	DEBUG("View set from '%s'", Util::getFileNameExt(viewFileName).c_str());
+	return true;
+}
+
+// Set the view camera to exactly match a scene camera's pose and FOV — what
+// the photo would have framed (camIndex is clamped to the available valid
+// cameras). Returns false if the scene has no cameras.
+bool Scene::SetViewFromCamera(unsigned camIndex) {
+	if (!IsOpen() || images.empty()) {
+		DEBUG("error: no scene cameras to set the view from");
+		return false;
+	}
+	if (camIndex >= images.size())
+		camIndex = images.size() / 2; // sensible default: a central view
+	const MVS::Image& imageData = scene.images[images[camIndex].idx];
+	// pose + FOV exactly as captured (no camera-view-mode, so no image overlay)
+	window.GetCamera().SetCameraFromSceneData(imageData);
+	DEBUG("View set from scene camera %u", camIndex);
+	return true;
+}
+
 double Scene::GetWorkflowElapsedTime() const {
 	if (workflowState.load() != WF_STATE_RUNNING || workflowStartTime == 0.0)
 		return 0.0;

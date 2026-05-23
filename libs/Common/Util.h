@@ -785,11 +785,11 @@ public:
 		return (float)atof(aString);
 	}
 
-	static time_t getTime() {
+	static GENERAL_API time_t getTime() {
 		return (time_t)time(NULL);
 	}
 
-	static uint32_t getTick() {
+	static GENERAL_API uint32_t getTick() {
 		#ifdef _MSC_VER
 		return GetTickCount();
 		#else
@@ -797,6 +797,32 @@ public:
 		gettimeofday(&tv, NULL);
 		return (uint32_t)(tv.tv_sec * 1000 ) + (tv.tv_usec / 1000);
 		#endif
+	}
+
+	// Lenient text reader for a 3x4 or 4x4 transform stored as
+	// whitespace-separated numbers. On a 4x4 file the bottom row must be
+	// 0 0 0 1; only the upper 3 rows are returned. Non-numeric tokens are
+	// skipped so simple labels/comments are tolerated. Returns false if the
+	// file cannot be opened or the value count / bottom row is invalid.
+	// Takes the cv::Matx base (Matrix3x4 == TMatrix<REAL,3,4> upcasts) because
+	// the SEACAVE Matrix3x4 typedef isn't yet defined at this point in the
+	// header chain (Types.h includes Util.h before declaring TMatrix).
+	static GENERAL_API bool loadMatrix3x4(const String& fileName, cv::Matx<double,3,4>& out) {
+		std::ifstream file(fileName);
+		if (!file)
+			return false;
+		std::vector<double> v;
+		std::string token;
+		while (file >> token) {
+			try { v.push_back(std::stod(token)); }
+			catch (...) { /* tolerate non-numeric tokens (labels/comments) */ }
+		}
+		// reject invalid formats or 4x4 inputs whose bottom row isn't the affine sentinel [0 0 0 1]
+		if (v.size() != 12 && (v.size() != 16 || v[12] != 0 || v[13] != 0 || v[14] != 0 || v[15] != 1))
+			return false;
+		for (unsigned i = 0; i < 12; ++i)
+			out.val[i] = v[i];
+		return true;
 	}
 
 

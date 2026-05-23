@@ -68,6 +68,7 @@ unsigned nArchiveType;
 int nProcessPriority;
 unsigned nMaxThreads;
 int nMaxTextureSize;
+bool bExportTextureLossless;
 String strExportType;
 String strConfigFileName;
 boost::program_options::variables_map vm;
@@ -131,6 +132,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("orthographic-image-resolution", boost::program_options::value(&OPT::nOrthoMapResolution)->default_value(0), "orthographic image resolution to be generated from the textured mesh - the mesh is expected to be already geo-referenced or at least properly oriented (0 - disabled)")
 		("ignore-mask-label", boost::program_options::value(&OPT::nIgnoreMaskLabel)->default_value(-1), "label value to ignore in the image mask, stored in the MVS scene or next to each image with '.mask.png' extension (-1 - auto estimate mask for lens distortion, -2 - disabled)")
 		("max-texture-size", boost::program_options::value(&OPT::nMaxTextureSize)->default_value(8192), "maximum texture size, split it in multiple textures of this size if needed (0 - unbounded)")
+		("export-texture-lossless", boost::program_options::value(&OPT::bExportTextureLossless)->default_value(true), "save the texture as PNG (lossless) or JPG (smaller, lossy) when exporting to PLY")
 		;
 
 	// hidden options, allowed both on command line and
@@ -307,7 +309,7 @@ int main(int argc, LPCTSTR* argv)
 	VERBOSE("Mesh texturing completed: %u vertices, %u faces (%s)", scene.mesh.vertices.GetSize(), scene.mesh.faces.GetSize(), TD_TIMER_GET_FMT().c_str());
 
 	// save the final mesh
-	scene.mesh.Save(baseFileName+OPT::strExportType);
+	scene.mesh.Save(baseFileName+OPT::strExportType, cList<String>(), true, OPT::bExportTextureLossless);
 	#if TD_VERBOSE != TD_VERBOSE_OFF
 	if (VERBOSITY_LEVEL > 2)
 		scene.ExportCamerasMLP(baseFileName+_T(".mlp"), baseFileName+OPT::strExportType);

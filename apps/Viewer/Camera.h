@@ -35,11 +35,11 @@ namespace VIEWER {
 
 /**
  * Simple camera class for 3D rendering.
- * 
+ *
  * This class provides basic camera functionality for view and projection matrices,
  * camera state management, and scene viewing. The camera supports both perspective
  * and orthographic projections.
- * 
+ *
  * Navigation is handled by external control classes (e.g., ArcballControls) that
  * manipulate the camera's position, target, and orientation.
  */
@@ -121,18 +121,20 @@ public:
 	bool IsCameraViewMode() const { return currentCamID != NO_ID; }
 	void SetCameraViewMode(MVS::IIndex camID);
 	void SetCameraFromSceneData(const MVS::Image& imageData);
+	void SetCameraFromPose(const Matrix3x4& pose);
+	void SetCameraFromPose(const MVS::Image& imageData);
 	void DisableCameraViewMode();
 	void SaveCurrentState();
 	bool RestoreSavedState();
 	bool HasSavedState() const { return savedState.has_value(); }
 	MVS::IIndex GetCurrentCamID() const { return currentCamID; }
-	void SetCurrentCamID(MVS::IIndex camID) { 
-		prevCamID = currentCamID; 
-		currentCamID = camID; 
+	void SetCurrentCamID(MVS::IIndex camID) {
+		prevCamID = currentCamID;
+		currentCamID = camID;
 	}
 	void SetMaxCamID(MVS::IIndex maxID) { maxCamID = maxID; }
-	void SetCameraViewModeCallback(std::function<void(MVS::IIndex)> callback) { 
-		cameraViewModeCallback = callback; 
+	void SetCameraViewModeCallback(std::function<void(MVS::IIndex)> callback) {
+		cameraViewModeCallback = callback;
 	}
 
 	// Camera navigation

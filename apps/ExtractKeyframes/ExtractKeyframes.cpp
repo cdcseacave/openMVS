@@ -112,7 +112,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("input-file,i", boost::program_options::value<std::string>(&OPT::strInputFileName), "input video file path")
 		("output-file,o", boost::program_options::value<std::string>(&OPT::strOutputFileName), "output scene file path")
 		("output-directory,d", boost::program_options::value<std::string>(&OPT::strOutputDirectory)->default_value("keyframes"), "output directory for keyframe images")
-		("detector-type,t", boost::program_options::value<std::string>(&OPT::strDetectorType)->default_value("SIFT"), "feature detector type: AKAZE, ORB, SIFT or SIFTGPU")
+		("detector-type,t", boost::program_options::value<std::string>(&OPT::strDetectorType)->default_value(FeatureTypeToString(FeatureType::DEFAULT)), "feature detector type: AKAZE, ORB, SIFT or SIFTGPU")
 		("overlap-threshold", boost::program_options::value(&OPT::fOverlapThreshold)->default_value(0.85f), "minimum overlap threshold between consecutive keyframes (0.0-1.0)")
 		("focal-length,f", boost::program_options::value(&OPT::fFocalLength)->default_value(0.f), "known focal length in pixels (<=0 for auto-calibration from fundamental matrices)")
 		("pp-offset-x", boost::program_options::value(&OPT::fPPOffsetX)->default_value(0.f), "principal point X offset from image center in pixels")
@@ -168,7 +168,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 	}
 
 	if (OPT::strOutputFileName.empty())
-		OPT::strOutputFileName = Util::getFilePath(OPT::strInputFileName) + _T("scene_tracked.sfm");
+		OPT::strOutputFileName = _T("scene_tracked.sfm");
 	else
 		Util::ensureValidPath(OPT::strOutputFileName);
 	Util::ensureValidFolderPath(OPT::strOutputDirectory);

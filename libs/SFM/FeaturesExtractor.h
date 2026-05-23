@@ -45,7 +45,8 @@ enum class FeatureType : uint8_t {
 	AKAZE = 1,
 	ORB = 2,
 	SIFT = 3,
-	SIFTGPU = 4
+	SIFTGPU = 4,
+	DEFAULT = SIFTGPU
 };
 
 

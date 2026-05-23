@@ -129,6 +129,7 @@ public:
 	std::vector<bool> meshSubMeshVisible; // control visibility of individual sub-meshes (using unsigned char instead of bool for ImGui compatibility)
 	String pendingScreenshotPath;
 	bool pendingScreenshotIncludeUI;
+	bool pendingScreenshotQuit; // close the window once the pending screenshot has been saved
 
 public:
 	Window();
@@ -190,7 +191,7 @@ public:
 	const Eigen::Vector2d& GetDevicePixelRatio() const { return devicePixelRatio; }
 	const cv::Size& GetSize() const { return camera.GetSize(); }
 	void SetSceneBounds(const Point3f& center, const Point3f& size);
-	void RequestScreenshot(const String& filename, bool includeUI = false);
+	void RequestScreenshot(const String& filename, bool includeUI = false, bool quitAfter = false);
 	GLFWwindow* GetGLFWWindow() const { return window; }
 	static GLFWwindow* GetCurrentGLFWWindow();
 	static Window& GetCurrentWindow();

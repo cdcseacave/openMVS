@@ -42,4 +42,12 @@ The sparse point-cloud is represented as an array of points, each one containing
 
 ## Output
 
-The output is a point-cloud and/or a triangle mesh, exported by default in the [PLY](https://en.wikipedia.org/wiki/PLY_%28file_format%29) file format, and a texture image, exported by default as PNG. [OBJ](https://en.wikipedia.org/wiki/Wavefront_.obj_file) is also supported for storing meshes.
+The output is a point-cloud and/or a triangle mesh, exported by default in the [PLY](https://en.wikipedia.org/wiki/PLY_%28file_format%29) file format, and a texture image, exported by default as PNG.
+
+Additional export formats:
+
+- **[OBJ](https://en.wikipedia.org/wiki/Wavefront_.obj_file)** — meshes (with `.mtl` material + texture sidecars when textured).
+- **[glTF 2.0](https://www.khronos.org/gltf/)** — both meshes and point-clouds, in either the ASCII `.gltf` form (with binary buffer sidecars) or the self-contained binary `.glb` form. Vertex colors / normals (point-cloud), faces and the diffuse texture map (textured mesh) round-trip. Implemented in `MVS::Mesh::SaveGLTF` / `MVS::PointCloud::SaveGLTF` on top of the header-only [`tiny_gltf`](https://github.com/syoyo/tinygltf) library; load/save format is auto-selected by file extension.
+- **[Potree 2.0](https://potree.org)** — point-cloud only. Saves an LOD octree (`metadata.json` + `hierarchy.bin` + `octree.bin`) into a directory, ready to be streamed by the Potree web viewer. Implemented in `MVS::PointCloud::SavePotree` ([`libs/MVS/PointCloud.cpp`](https://github.com/cdcseacave/openMVS/blob/master/libs/MVS/PointCloud.cpp)) using the LOD octree builder in [`libs/Common/OctreeLOD.h`](https://github.com/cdcseacave/openMVS/blob/master/libs/Common/OctreeLOD.h). A simple Python helper, [`scripts/python/potree_server.py`](https://github.com/cdcseacave/openMVS/blob/master/scripts/python/potree_server.py), serves the result through a self-contained Potree.js HTML page for local inspection.
+
+`TransformScene --convert 1 --export-type {ply|obj|glb|gltf|potree}` is the swiss-army CLI that drives any of the above formats from an existing `.mvs` project, and the `Viewer` accepts `.gltf` / `.glb` as drag-and-drop inputs and can re-export to `.ply` / `.obj` / `.glb`.

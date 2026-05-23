@@ -199,6 +199,9 @@ public:
 	inline bool IsValid() const { return window.IsValid(); }
 	inline bool IsOpen() const { return IsValid() && !scene.IsEmpty(); }
 
+	bool SetViewFromFile(const String& viewFileName);
+	bool SetViewFromCamera(unsigned camIndex);
+
 	// Scene management
 	bool Open(const String& fileName, String geometryFileName = {});
 	bool Save(const String& fileName = String(), bool bRescaleImages = false);

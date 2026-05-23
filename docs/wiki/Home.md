@@ -1,4 +1,4 @@
-![logo](http://cdcseacave.github.io/openMVS/images/logo.png)
+![logo](https://github.com/cdcseacave/openMVS/blob/master/docs/assets/logo.png)
 
 # OpenMVS
 **open Multi-View Stereo reconstruction library**

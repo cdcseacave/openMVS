@@ -211,29 +211,41 @@ void Camera::PreviousCamera() {
 		DisableCameraViewMode();
 }
 
-void Camera::SetCameraFromSceneData(const MVS::Image& imageData) {
+// Set the camera pose (position + orientation) from a 3x4 camera-to-world
+// matrix. Row-major; columns 0..2 are the camera X,Y,Z axes in world
+// space and column 3 is the camera center. MVS convention: +Z forward
+// and image +Y is down, so world up is -Y. FOV is left unchanged
+void Camera::SetCameraFromPose(const Matrix3x4& pose) {
+	// Row-major camera-to-world: columns 0..2 are the camera X,Y,Z axes in
+	// world space, column 3 is the camera center. MVS convention: camera
+	// looks along +Z, image +Y is down, so world up is -Y
+	const Eigen::Vector3d eye(pose[3], pose[7], pose[11]);
+	const Eigen::Vector3d forward(pose[2], pose[6], pose[10]);
+	const Eigen::Vector3d up(-pose[1], -pose[5], -pose[9]);
+	SetLookAt(eye, eye + forward.normalized(), up);
+}
+// Set the camera pose (position + orientation) from MVS image data. FOV
+// is left unchanged; use SetCameraFromSceneData for the pose+FOV match
+void Camera::SetCameraFromPose(const MVS::Image& imageData) {
 	ASSERT(imageData.IsValid());
+	// MVS camera frame: X=right, Y=down, Z=forward. R.row(2) is the world
+	// +Z axis (already unit), -R.row(1) is world up
+	const Eigen::Vector3d eye(imageData.camera.C);
+	const Eigen::Vector3d forward(imageData.camera.Direction());
+	const Eigen::Vector3d up(imageData.camera.UpDirection());
+	SetLookAt(eye, eye + forward, up);
+}
 
-	// Get camera position and orientation from MVS camera data
-	position = imageData.camera.C;
+void Camera::SetCameraFromSceneData(const MVS::Image& imageData) {
+	// Pose (position + orientation) from the image's extrinsic
+	SetCameraFromPose(imageData);
 
-	// Calculate target point by projecting forward from camera
-	// In MVS camera coordinates: X=right, Y=down, Z=forward
-	// We want to look in the +Z direction of the camera
-	Eigen::Vector3d forward(imageData.camera.Direction());
-	up = imageData.camera.UpDirection();
-	// Set target point a reasonable distance forward
-	double targetDistance = 1.0; // Can be adjusted based on scene scale
-	target = position + forward * targetDistance;
-
-	// Set FOV from camera intrinsics
+	// FOV from the image's intrinsics, adjusted to fit the viewport aspect
 	double fovY = R2D(imageData.ComputeFOV(1));
-
-	// Adjust FOV based on viewport size
-	double imageAspect = static_cast<double>(imageData.width) / imageData.height;
-	double viewportAspect = static_cast<double>(size.width) / size.height;
+	const double imageAspect = static_cast<double>(imageData.width) / imageData.height;
+	const double viewportAspect = static_cast<double>(size.width) / size.height;
 	if (imageAspect > viewportAspect) {
-		// Image is wider than viewport, adjust FOV to fit width
+		// Image is wider than the viewport — narrow FOV so the width fits
 		fovY /= (imageAspect / viewportAspect);
 	}
 	SetFOV(fovY);

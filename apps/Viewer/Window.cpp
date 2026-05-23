@@ -78,6 +78,7 @@ Window::Window()
 	, showMeshTextured(true)
 	, showBounds(true)
 	, pendingScreenshotIncludeUI(false)
+	, pendingScreenshotQuit(false)
 {
 }
 
@@ -398,6 +399,8 @@ void Window::Render() {
 		if (!pendingScreenshotPath.empty() && !pendingScreenshotIncludeUI) {
 			CaptureScreenshot(pendingScreenshotPath);
 			pendingScreenshotPath.clear();
+			if (pendingScreenshotQuit)
+				glfwSetWindowShouldClose(window, GLFW_TRUE);
 		}
 
 		// Render cameras and selection highlights
@@ -464,6 +467,8 @@ void Window::Render() {
 	if (!pendingScreenshotPath.empty()) {
 		CaptureScreenshot(pendingScreenshotPath);
 		pendingScreenshotPath.clear();
+		if (pendingScreenshotQuit)
+			glfwSetWindowShouldClose(window, GLFW_TRUE);
 	}
 
 	// End frame
@@ -508,11 +513,14 @@ void Window::SetSceneBounds(const Point3f& center, const Point3f& size) {
 	firstPersonControls->setMovementSpeed(norm(size) * 0.1);
 }
 
-void Window::RequestScreenshot(const String& filename, bool includeUI) {
+// Request an off-screen screenshot to be saved by the renderer on the next
+// frame; if quitAfter is set the window closes once the image is written
+void Window::RequestScreenshot(const String& filename, bool includeUI, bool quitAfter) {
 	if (filename.empty())
 		return;
 	pendingScreenshotPath = filename;
 	pendingScreenshotIncludeUI = includeUI;
+	pendingScreenshotQuit = quitAfter;
 	RequestRedraw();
 }
 

@@ -304,33 +304,16 @@ int main(int argc, LPCTSTR* argv)
 
 	if (!OPT::strTransformFileName.empty() && OPT::nNormalizeCoordinates == 0) {
 		// transform this scene by the given transform matrix
-		std::ifstream file(MAKE_PATH_SAFE(OPT::strTransformFileName));
-		std::string value;
-		std::vector<double> transformValues;
-		while (file >> value) {
-			double v;
-			try {
-				v = std::stod(value);
-			}
-			catch (...) {
-				continue;
-			}
-			transformValues.push_back(v);
-		}
-		if (transformValues.size() != 12 &&
-			(transformValues.size() != 16 || transformValues[12] != 0 || transformValues[13] != 0 || transformValues[14] != 0 || transformValues[15] != 1)) {
+		Matrix3x4 transform;
+		if (!Util::loadMatrix3x4(MAKE_PATH_SAFE(OPT::strTransformFileName), transform)) {
 			VERBOSE("error: invalid transform");
 			return EXIT_FAILURE;
 		}
 		VERBOSE("Transform matrix loaded from '%s'", Util::getFileNameExt(OPT::strTransformFileName).c_str());
-		Matrix3x4 transform;
-		if (!OPT::bInvertTransform) {
-			for (unsigned i=0; i<12; ++i)
-				transform[i] = transformValues[i];
-		} else {
+		if (OPT::bInvertTransform) {
 			Matrix4x4 mat4x4 = Matrix4x4::IDENTITY;
 			for (unsigned e=0; e<12; ++e)
-				mat4x4[e] = transformValues[e];
+				mat4x4[e] = transform[e];
 			mat4x4 = mat4x4.inv();
 			for (unsigned e=0; e<12; ++e)
 				transform[e] = mat4x4[e];

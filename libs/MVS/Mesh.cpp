@@ -1478,7 +1478,7 @@ bool Mesh::LoadGLTF(const String& fileName, bool bBinary)
 /*----------------------------------------------------------------*/
 
 // export the mesh to the given file
-bool Mesh::Save(const String& fileName, const cList<String>& comments, bool bBinary) const
+bool Mesh::Save(const String& fileName, const cList<String>& comments, bool bBinary, bool bTexLossless) const
 {
 	if (IsEmpty())
 		return false;
@@ -1491,7 +1491,7 @@ bool Mesh::Save(const String& fileName, const cList<String>& comments, bool bBin
 	if (ext == _T(".gltf") || ext == _T(".glb"))
 		ret = SaveGLTF(fileName, ext == _T(".glb"));
 	else
-		ret = SavePLY(ext != _T(".ply") ? String(fileName+_T(".ply")) : fileName, comments, bBinary);
+		ret = SavePLY(ext != _T(".ply") ? String(fileName+_T(".ply")) : fileName, comments, bBinary, bTexLossless);
 	if (!ret)
 		return false;
 	DEBUG_EXTRA("Mesh '%s' saved: %u vertices, %u faces (%s)",
