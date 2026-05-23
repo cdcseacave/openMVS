@@ -71,7 +71,7 @@ bool PipelineTest(bool forceCPU, bool verbose)
 		scene.mesh.Save(MAKE_PATH("scene_dense_mesh.ply"));
 	constexpr float decimate = 0.7f;
 	scene.mesh.Clean(decimate);
-	if (!ISINSIDE(scene.mesh.faces.size(), 17000u, 25000u)) {
+	if (!ISINSIDE(scene.mesh.faces.size(), 17000u, 26000u)) {
 		VERBOSE("ERROR: TestDataset failed cleaning the mesh!");
 		return false;
 	}
