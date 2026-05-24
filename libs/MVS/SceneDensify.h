@@ -36,7 +36,6 @@
 // I N C L U D E S /////////////////////////////////////////////////
 
 #include "SemiGlobalMatcher.h"
-#include "../Common/Thread.h"
 
 #include <memory>
 #include <vector>
@@ -70,6 +69,17 @@ public:
 	bool InitViews(DepthData& depthData, IIndex idxNeighbor, IIndex numNeighbors, bool loadImages, int loadDepthMaps);
 	bool InitDepthMap(DepthData& depthData);
 	bool EstimateDepthMap(IIndex idxImage, int nGeometricIter);
+
+	#ifdef _USE_CUDA
+	// Construct poolSize PatchMatch instances ready for the depth-map phase.
+	// First construction probes CUDA::initDevices(); returns false if the
+	// device set is still empty afterwards (caller falls back to CPU).
+	bool AllocateCudaPool(unsigned poolSize);
+	// Tear down per-instance state and re-init for the geometric-consistency
+	// phase, resetting the slot counter and bumping the epoch so worker threads
+	// re-claim slots cleanly even if the OS reuses them across the boundary.
+	void ReinitCudaPoolForGeom();
+	#endif // _USE_CUDA
 
 	bool RemoveSmallSegments(DepthData& depthData);
 	bool GapInterpolation(DepthData& depthData);

@@ -145,6 +145,40 @@ DepthMapsData::DepthMapsData(Scene& _scene)
 DepthMapsData::~DepthMapsData()
 {
 } // destructor
+
+#ifdef _USE_CUDA
+bool DepthMapsData::AllocateCudaPool(unsigned poolSize)
+{
+	ASSERT(pmCUDAPool.empty());
+	if (poolSize == 0)
+		poolSize = 1;
+	// PatchMatch's ctor triggers CUDA::initDevices() on first construction;
+	// build one to probe and check whether any device was actually picked up.
+	auto probe = std::make_unique<MVS::CUDA::PatchMatch>();
+	if (SEACAVE::CUDA::devices.IsEmpty())
+		return false;
+	probe->Init(false);
+	pmCUDAPool.reserve(poolSize);
+	pmCUDAPool.emplace_back(std::move(probe));
+	for (unsigned k = 1; k < poolSize; ++k) {
+		auto pm = std::make_unique<MVS::CUDA::PatchMatch>();
+		pm->Init(false);
+		pmCUDAPool.emplace_back(std::move(pm));
+	}
+	pmCUDANextIdx = (Thread::safe_t)-1;
+	return true;
+}
+
+void DepthMapsData::ReinitCudaPoolForGeom()
+{
+	for (auto& pm : pmCUDAPool) {
+		pm->Release();
+		pm->Init(true);
+	}
+	pmCUDANextIdx = (Thread::safe_t)-1;
+	Thread::safeInc(pmCUDAEpoch);
+}
+#endif // _USE_CUDA
 /*----------------------------------------------------------------*/
 
 // compute visibility for the reference image (the first image in "images")
@@ -2113,28 +2147,18 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 	}
 
 	#ifdef _USE_CUDA
-	// initialize CUDA: one PatchMatch instance per worker thread so the host-side
-	// prep (image upload, depth-prior packing, result unpack) actually parallelizes.
-	// Pool size is clamped to [1, nMaxThreads]; default 4 worker instances.
+	// One PatchMatch instance per worker thread; host-side prep (image upload,
+	// depth-prior packing, result unpack) then parallelizes while the kernel
+	// launches stay GPU-side-serialized via the cudaEvent_t chain.
 	if (!SEACAVE::CUDA::isCpuRequested(SEACAVE::CUDA::desiredDeviceIDs) && data.nFusionMode >= 0) {
-		// probe-allocate first instance so initDevices runs and we can see whether the device init succeeded
-		auto probe = std::unique_ptr<MVS::CUDA::PatchMatch>(new MVS::CUDA::PatchMatch());
-		if (!SEACAVE::CUDA::devices.IsEmpty()) {
-			const size_t pmCUDAPoolSize = (nMaxThreads > 1)
-				? std::max<size_t>(1u, std::min<size_t>((size_t)OPTDENSE::nPatchMatchCUDAInstances, (size_t)nMaxThreads))
-				: 1u;
-			probe->Init(false);
-			data.depthMaps.pmCUDAPool.emplace_back(std::move(probe));
-			for (size_t k = 1; k < pmCUDAPoolSize; ++k) {
-				auto pm = std::unique_ptr<MVS::CUDA::PatchMatch>(new MVS::CUDA::PatchMatch());
-				pm->Init(false);
-				data.depthMaps.pmCUDAPool.emplace_back(std::move(pm));
-			}
-			data.depthMaps.pmCUDANextIdx = (Thread::safe_t)-1;
-			// raise the in-flight semaphore from 1 to pmCUDAPoolSize so all
-			// pool workers can run EstimateDepthMap concurrently
-			data.sem.Clear((unsigned)pmCUDAPoolSize);
-			data.nDenseWorkers = (unsigned)pmCUDAPoolSize;
+		const unsigned poolSize = (nMaxThreads > 1)
+			? std::clamp<unsigned>(OPTDENSE::nPatchMatchCUDAInstances, 1u, nMaxThreads)
+			: 1u;
+		if (data.depthMaps.AllocateCudaPool(poolSize)) {
+			// raise the in-flight semaphore so all pool workers can run
+			// EstimateDepthMap concurrently
+			data.sem.Clear(poolSize);
+			data.nDenseWorkers = poolSize;
 		}
 	}
 	#endif // _USE_CUDA
@@ -2150,15 +2174,9 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 	data.progress = new Util::Progress("Estimated depth-maps", data.images.GetSize());
 	GET_LOGCONSOLE().Pause();
 	if (nMaxThreads > 1) {
-		// multi-thread execution: one thread per CUDA pool slot when CUDA is
-		// active, else preserve the historical 2-worker CPU configuration
-		#ifdef _USE_CUDA
-		const unsigned nDenseWorkers = data.depthMaps.pmCUDAPool.empty()
-			? 2u : (unsigned)data.depthMaps.pmCUDAPool.size();
-		#else
-		const unsigned nDenseWorkers = 2u;
-		#endif
-		cList<SEACAVE::Thread> threads(nDenseWorkers);
+		// data.nDenseWorkers is set to the CUDA pool size (or kept at the
+		// constructor default of 2 for the CPU path) before we get here.
+		cList<SEACAVE::Thread> threads(data.nDenseWorkers);
 		FOREACHPTR(pThread, threads)
 			pThread->start(DenseReconstructionEstimateTmp, (void*)&data);
 		FOREACHPTR(pThread, threads)
@@ -2174,16 +2192,8 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 
 	if (data.nFusionMode >= 0) {
 		#ifdef _USE_CUDA
-		// re-init each pool instance for the geom-consistency phase and bump
-		// the epoch so worker threads re-claim slots cleanly
-		if (!data.depthMaps.pmCUDAPool.empty() && OPTDENSE::nEstimationGeometricIters) {
-			for (auto& pm : data.depthMaps.pmCUDAPool) {
-				pm->Release();
-				pm->Init(true);
-			}
-			data.depthMaps.pmCUDANextIdx = (Thread::safe_t)-1;
-			Thread::safeInc(data.depthMaps.pmCUDAEpoch);
-		}
+		if (!data.depthMaps.pmCUDAPool.empty() && OPTDENSE::nEstimationGeometricIters)
+			data.depthMaps.ReinitCudaPoolForGeom();
 		#endif // _USE_CUDA
 		while (++data.nEstimationGeometricIter < (int)OPTDENSE::nEstimationGeometricIters) {
 			// initialize the queue of images to be geometric processed
@@ -2196,14 +2206,8 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 			data.progress = new Util::Progress("Geometric-consistent estimated depth-maps", data.images.GetSize());
 			GET_LOGCONSOLE().Pause();
 			if (nMaxThreads > 1) {
-				// multi-thread execution: same worker count as the depth-map phase
-				#ifdef _USE_CUDA
-				const unsigned nDenseWorkers = data.depthMaps.pmCUDAPool.empty()
-					? 2u : (unsigned)data.depthMaps.pmCUDAPool.size();
-				#else
-				const unsigned nDenseWorkers = 2u;
-				#endif
-				cList<SEACAVE::Thread> threads(nDenseWorkers);
+				// same worker count as the depth-map phase
+				cList<SEACAVE::Thread> threads(data.nDenseWorkers);
 				FOREACHPTR(pThread, threads)
 					pThread->start(DenseReconstructionEstimateTmp, (void*)&data);
 				FOREACHPTR(pThread, threads)
@@ -2395,6 +2399,7 @@ void Scene::DenseReconstructionEstimate(void* pData)
 			break; }
 
 		case EVT_SAVEDEPTHMAP: {
+			TD_TIMER_STARTD();
 			const EVTSaveDepthMap& evtImage = *((EVTSaveDepthMap*)(Event*)evt);
 			const IIndex idx = data.images[evtImage.idxImage];
 			DepthData& depthData(data.depthMaps.arrDepthData[idx]);
@@ -2410,13 +2415,21 @@ void Scene::DenseReconstructionEstimate(void* pData)
 				}
 			}
 			#endif
+			// capture identifiers before Release wipes depthData state
+			const IIndex viewID = depthData.GetView().GetID();
+			const int dmRows = depthData.depthMap.rows;
+			const int dmCols = depthData.depthMap.cols;
 			// save compute depth-map for this image
 			if (!depthData.depthMap.empty() &&
-				!depthData.Save(ComposeDepthFilePath(depthData.GetView().GetID(), data.nEstimationGeometricIter < 0 ? "dmap" : "geo.dmap")))
+				!depthData.Save(ComposeDepthFilePath(viewID, data.nEstimationGeometricIter < 0 ? "dmap" : "geo.dmap")))
 				exit(EXIT_FAILURE);
 			depthData.ReleaseImages();
 			depthData.Release();
 			data.progress->operator++();
+			// per-image save timing (gated at -v 2 so the default-verbose run
+			// is not dragged down by per-image logging when pool-size grows)
+			DEBUG_ULTIMATE("Depth-map %3u saved: %dx%d (%s)", viewID,
+				dmCols, dmRows, TD_TIMER_GET_FMT().c_str());
 			break; }
 
 		case EVT_CLOSE: {
