@@ -55,15 +55,18 @@ namespace CUDA {
 // from module-global __constant__ memory (g_cameras / g_params, see
 // PatchMatchCUDA.cu), which is shared by every PatchMatch instance on the
 // device. Concurrent overlap would race the __constant__ writes against an
-// in-flight kernel's reads, so the {UploadCameras + RunCUDA} block runs
-// single-in-flight per device. The cudaStreamSynchronize inside RunCUDA holds
-// the lock until the kernels have actually consumed the __constant__ values.
+// in-flight kernel's reads.
 //
-// The rest of EstimateDepthMap (per-instance image/depth uploads, host-side
-// packing of depthNormalEstimates, result unpack) is per-instance state and
-// runs lock-free, so the two SceneDensify workers parallelize that work.
+// Strategy: a global cudaEvent_t chains worker N+1's kernels behind worker N's
+// kernels on the GPU side. A tiny host mutex covers only the queueing sequence
+// {wait-event, upload-cameras, queue-kernels, record-event} so the host releases
+// after queueing (~1ms) rather than after kernel execution (~80-400ms). Each
+// worker then cudaStreamSynchronize's its own stream outside the mutex before
+// reading results into its per-instance pinned buffer.
 namespace {
 std::mutex g_patchMatchCudaMutex;
+cudaEvent_t g_constMemReady = nullptr;
+std::once_flag g_constMemEventInit;
 } // anonymous namespace
 
 PatchMatch::PatchMatch()
@@ -380,16 +383,24 @@ void PatchMatch::EstimateDepthMap(DepthData& depthData)
 			CUDA_CHECK(cudaMemcpyAsync(cudaLowDepths, depthData.depthMap.ptr<float>(), sizeof(float) * depthData.depthMap.size().area(), cudaMemcpyHostToDevice, cudaStream));
 		}
 
-		// run CUDA patch-match: serialize only the __constant__-mem writes
-		// (g_cameras via UploadCameras, g_params via UploadParams inside RunCUDA)
-		// and the kernel launches that read them. RunCUDA ends with
-		// cudaStreamSynchronize, so the lock holds until kernels actually finish.
+		// run CUDA patch-match: GPU-side event chains successive workers'
+		// kernel sequences so the next worker's __constant__ writes wait for
+		// the previous worker's kernels to finish reading them. Host mutex
+		// covers only the queueing window, not kernel execution.
 		ASSERT(!depthData.viewsMap.empty());
+		std::call_once(g_constMemEventInit, []() {
+			CUDA_CHECK(cudaEventCreateWithFlags(&g_constMemReady, cudaEventDisableTiming));
+		});
 		{
-			std::lock_guard<std::mutex> kernelLock(g_patchMatchCudaMutex);
+			std::lock_guard<std::mutex> queueLock(g_patchMatchCudaMutex);
+			CUDA_CHECK(cudaStreamWaitEvent(cudaStream, g_constMemReady, 0));
 			UploadCameras();
 			RunCUDA(depthData.confMap.getData(), (uint32_t*)depthData.viewsMap.getData());
+			CUDA_CHECK(cudaEventRecord(g_constMemReady, cudaStream));
 		}
+		// wait for our own kernels + D2H copies to finish before the unpack loop
+		// reads from the pinned host buffer
+		CUDA_CHECK(cudaStreamSynchronize(cudaStream));
 		CUDA_CHECK(cudaGetLastError());
 		if (params.bLowResProcessed)
 			CUDA_CHECK(cudaFreeAsync(cudaLowDepths, cudaStream));

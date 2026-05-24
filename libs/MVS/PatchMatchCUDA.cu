@@ -795,14 +795,13 @@ __host__ void PatchMatch::RunCUDA(float* ptrCostMap, uint32_t* ptrViewsMap)
 				KERNEL<false><<<GRID, blockSize, 0, cudaStream>>>(__VA_ARGS__); \
 		}
 
+	// Pure queueing path: stream ordering on cudaStream already chains kernels;
+	// caller (EstimateDepthMap) syncs the stream once before reading results.
 	LAUNCH_GEOM(InitializeScore, gridSizeFull, cudaTextureImages, cudaTextureDepths, cudaDepthNormalEstimates, cudaLowDepths, cudaDepthNormalCosts, cudaRandStates, cudaSelectedViews);
-	cudaStreamSynchronize(cudaStream);
 
 	for (int iter = 0; iter < params.nEstimationIters; ++iter) {
 		LAUNCH_GEOM(BlackPixelProcess, gridSizeCheckerboard, cudaTextureImages, cudaTextureDepths, cudaDepthNormalEstimates, cudaLowDepths, cudaDepthNormalCosts, cudaRandStates, cudaSelectedViews, iter);
-		cudaStreamSynchronize(cudaStream);
 		LAUNCH_GEOM(RedPixelProcess, gridSizeCheckerboard, cudaTextureImages, cudaTextureDepths, cudaDepthNormalEstimates, cudaLowDepths, cudaDepthNormalCosts, cudaRandStates, cudaSelectedViews, iter);
-		cudaStreamSynchronize(cudaStream);
 	}
 
 	#undef LAUNCH_GEOM
@@ -815,8 +814,6 @@ __host__ void PatchMatch::RunCUDA(float* ptrCostMap, uint32_t* ptrViewsMap)
 		cudaMemcpyAsync(ptrCostMap, cudaDepthNormalCosts, sizeof(float) * width * height, cudaMemcpyDeviceToHost, cudaStream);
 	if (ptrViewsMap)
 		cudaMemcpyAsync(ptrViewsMap, cudaSelectedViews, sizeof(uint32_t) * width * height, cudaMemcpyDeviceToHost, cudaStream);
-
-	cudaStreamSynchronize(cudaStream);
 }
 /*----------------------------------------------------------------*/
 
