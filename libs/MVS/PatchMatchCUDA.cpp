@@ -51,22 +51,19 @@ namespace MVS {
 
 namespace CUDA {
 
-// In-flight serializer for the CUDA backend. The kernels read cameras/params
+// Kernel-launch serializer for the CUDA backend. The kernels read cameras/params
 // from module-global __constant__ memory (g_cameras / g_params, see
 // PatchMatchCUDA.cu), which is shared by every PatchMatch instance on the
-// device. Concurrent overlap would race, so EstimateDepthMap must run
-// single-in-flight per device.
+// device. Concurrent overlap would race the __constant__ writes against an
+// in-flight kernel's reads, so the {UploadCameras + RunCUDA} block runs
+// single-in-flight per device. The cudaStreamSynchronize inside RunCUDA holds
+// the lock until the kernels have actually consumed the __constant__ values.
 //
-// SceneDensify spawns two worker threads in its event loop (see
-// DenseReconstructionEstimateTmp) so concurrent calls into here do happen;
-// a std::mutex serializes the host-side critical section while still letting
-// the kernel enjoy the constant-memory broadcast that the optimization commit added.
+// The rest of EstimateDepthMap (per-instance image/depth uploads, host-side
+// packing of depthNormalEstimates, result unpack) is per-instance state and
+// runs lock-free, so the two SceneDensify workers parallelize that work.
 namespace {
 std::mutex g_patchMatchCudaMutex;
-struct PatchMatchCudaInFlightGuard {
-	std::lock_guard<std::mutex> _lock;
-	PatchMatchCudaInFlightGuard() : _lock(g_patchMatchCudaMutex) {}
-};
 } // anonymous namespace
 
 PatchMatch::PatchMatch()
@@ -205,7 +202,6 @@ void PatchMatch::AllocateImageCUDA(size_t i, const cv::Mat1f& image, bool bInitI
 void PatchMatch::EstimateDepthMap(DepthData& depthData)
 {
 	TD_TIMER_STARTD();
-	const PatchMatchCudaInFlightGuard inFlightGuard;
 
 	ASSERT(depthData.images.size() > 1);
 
@@ -358,7 +354,6 @@ void PatchMatch::EstimateDepthMap(DepthData& depthData)
 
 		// setup CUDA memory (queued on cudaStream)
 		CUDA_CHECK(cudaMemcpyAsync(cudaTextureImages, textureImages.data(), sizeof(cudaTextureObject_t) * numImages, cudaMemcpyHostToDevice, cudaStream));
-		UploadCameras();
 		if (params.bGeomConsistency) {
 			// set previously computed depth-maps
 			ASSERT(depthData.depthMap.size() == depthData.GetView().image.size());
@@ -385,9 +380,16 @@ void PatchMatch::EstimateDepthMap(DepthData& depthData)
 			CUDA_CHECK(cudaMemcpyAsync(cudaLowDepths, depthData.depthMap.ptr<float>(), sizeof(float) * depthData.depthMap.size().area(), cudaMemcpyHostToDevice, cudaStream));
 		}
 
-		// run CUDA patch-match
+		// run CUDA patch-match: serialize only the __constant__-mem writes
+		// (g_cameras via UploadCameras, g_params via UploadParams inside RunCUDA)
+		// and the kernel launches that read them. RunCUDA ends with
+		// cudaStreamSynchronize, so the lock holds until kernels actually finish.
 		ASSERT(!depthData.viewsMap.empty());
-		RunCUDA(depthData.confMap.getData(), (uint32_t*)depthData.viewsMap.getData());
+		{
+			std::lock_guard<std::mutex> kernelLock(g_patchMatchCudaMutex);
+			UploadCameras();
+			RunCUDA(depthData.confMap.getData(), (uint32_t*)depthData.viewsMap.getData());
+		}
 		CUDA_CHECK(cudaGetLastError());
 		if (params.bLowResProcessed)
 			CUDA_CHECK(cudaFreeAsync(cudaLowDepths, cudaStream));
