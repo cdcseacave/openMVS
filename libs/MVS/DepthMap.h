@@ -138,6 +138,7 @@ extern MVS_API unsigned nEstimateNormals;
 extern MVS_API float fNCCThresholdKeep;
 extern MVS_API unsigned nEstimationIters;
 extern MVS_API unsigned nEstimationGeometricIters;
+extern MVS_API unsigned nPatchMatchCUDAInstances;
 extern MVS_API float fEstimationGeometricWeight;
 extern MVS_API unsigned nRandomIters;
 extern MVS_API unsigned nRandomMaxScale;

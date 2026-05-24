@@ -36,6 +36,10 @@
 // I N C L U D E S /////////////////////////////////////////////////
 
 #include "SemiGlobalMatcher.h"
+#include "../Common/Thread.h"
+
+#include <memory>
+#include <vector>
 
 
 // S T R U C T S ///////////////////////////////////////////////////
@@ -56,6 +60,11 @@ class MVS_API DepthMapsData
 public:
 	DepthMapsData(Scene& _scene);
 	~DepthMapsData();
+
+	// pmCUDAPool holds move-only std::unique_ptrs; explicitly forbid copy so the
+	// MSVC dllexport instantiator does not try to synthesize a copy constructor.
+	DepthMapsData(const DepthMapsData&) = delete;
+	DepthMapsData& operator=(const DepthMapsData&) = delete;
 
 	bool SelectViews(DepthData& depthData);
 	bool InitViews(DepthData& depthData, IIndex idxNeighbor, IIndex numNeighbors, bool loadImages, int loadDepthMaps);
@@ -92,8 +101,14 @@ public:
 	DepthEstimator::MapRefArr coordsTrg; // ... same for target image
 
 	#ifdef _USE_CUDA
-	// used internally to estimate the depth-maps using CUDA
-	CAutoPtr<MVS::CUDA::PatchMatch> pmCUDA;
+	// One PatchMatch instance per worker thread; each worker claims a slot via
+	// thread-local index gated by pmCUDAEpoch. Lets the {UploadCameras + kernel
+	// launch} window stay mutex-serialized via the global event chain while the
+	// per-instance host prep (image upload, depth-prior packing, result unpack)
+	// runs lock-free in parallel across the SceneDensify ThreadPool workers.
+	std::vector<std::unique_ptr<MVS::CUDA::PatchMatch>> pmCUDAPool;
+	mutable volatile Thread::safe_t pmCUDANextIdx;
+	mutable volatile Thread::safe_t pmCUDAEpoch;
 	#endif // _USE_CUDA
 };
 /*----------------------------------------------------------------*/
@@ -111,6 +126,11 @@ struct MVS_API DenseDepthMapData {
 	int nFusionMode;
 	float fSampleMeshNeighbors;
 	STEREO::SemiGlobalMatcher sgm;
+	// number of workers in the dense-reconstruction ThreadPool; set by
+	// DenseReconstruction once the CUDA pool size is known. Used by the worker
+	// EVT_PROCESSIMAGE handler to broadcast EVT_CLOSE to all sibling workers
+	// (the old single-EVT_CLOSE pattern hung when nWorkers > 2).
+	unsigned nDenseWorkers;
 
 	DenseDepthMapData(Scene& _scene, int _nFusionMode=0, float _fSampleMeshNeighbors=0);
 	~DenseDepthMapData();
