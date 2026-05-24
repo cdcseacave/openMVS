@@ -107,7 +107,48 @@ void PatchMatch::Release()
 	images.clear();
 	cameras.clear();
 
+	for (float*& p : hostImageStaging) if (p) cudaFreeHost(p);
+	hostImageStaging.clear();
+	hostImageStagingArea.clear();
+	for (float*& p : hostDepthPriorStaging) if (p) cudaFreeHost(p);
+	hostDepthPriorStaging.clear();
+	hostDepthPriorStagingArea.clear();
+
 	ReleaseCUDA();
+}
+
+void PatchMatch::StagedUploadCvMat(cudaArray_t dst, const cv::Mat1f& src,
+	std::vector<float*>& slots, std::vector<size_t>& areas, size_t slotIdx)
+{
+	ASSERT(src.type() == CV_32FC1);
+	const size_t area = (size_t)src.rows * (size_t)src.cols;
+	const size_t rowBytes = (size_t)src.cols * sizeof(float);
+	// Pinned staging wins on large images (driver-internal staging stall scales
+	// with area) but loses on small ones (cudaHostAlloc + explicit memcpy
+	// overhead is fixed). Threshold calibrated on Truck R=1 V=8 (~1 MP, regress)
+	// vs Truck R=0 V=8 (~3 MP, -15.7% wall).
+	constexpr size_t kPinnedStagingThresholdArea = 1500000;
+	if (area < kPinnedStagingThresholdArea) {
+		CUDA_CHECK(cudaMemcpy2DToArrayAsync(dst, 0, 0, src.ptr<float>(), src.step[0],
+			rowBytes, src.rows, cudaMemcpyHostToDevice, cudaStream));
+		return;
+	}
+	if (slots.size() <= slotIdx) slots.resize(slotIdx + 1, nullptr);
+	if (areas.size() <= slotIdx) areas.resize(slotIdx + 1, 0);
+	if (slots[slotIdx] == nullptr || areas[slotIdx] < area) {
+		if (slots[slotIdx]) CUDA_CHECK(cudaFreeHost(slots[slotIdx]));
+		CUDA_CHECK(cudaHostAlloc((void**)&slots[slotIdx], area * sizeof(float), cudaHostAllocDefault));
+		areas[slotIdx] = area;
+	}
+	float* dstPinned = slots[slotIdx];
+	if (src.isContinuous() && src.step[0] == rowBytes) {
+		memcpy(dstPinned, src.ptr<float>(), area * sizeof(float));
+	} else {
+		for (int r = 0; r < src.rows; ++r)
+			memcpy(dstPinned + (size_t)r * src.cols, src.ptr<float>(r), rowBytes);
+	}
+	CUDA_CHECK(cudaMemcpy2DToArrayAsync(dst, 0, 0, dstPinned, rowBytes,
+		rowBytes, src.rows, cudaMemcpyHostToDevice, cudaStream));
 }
 
 void PatchMatch::ReleaseCUDA()
@@ -320,15 +361,16 @@ void PatchMatch::EstimateDepthMap(DepthData& depthData)
 				}
 				AllocateImageCUDA(i, image, false, !view.depthMap.empty());
 			}
-			// queued on cudaStream so the kernel does not need a device fence;
-			// pageable cv::Mat still stalls the host but ordering is stream-scoped
-			CUDA_CHECK(cudaMemcpy2DToArrayAsync(cudaImageArrays[i], 0, 0, image.ptr<float>(), image.step[0], image.cols * sizeof(float), image.rows, cudaMemcpyHostToDevice, cudaStream));
+			// large images stage through per-instance pinned slot for a truly-async
+			// H->D DMA on cudaStream; small images fall through to direct pageable
+			// DMA inside StagedUploadCvMat (driver-internal staging is cheaper)
+			StagedUploadCvMat(cudaImageArrays[i], image, hostImageStaging, hostImageStagingArea, (size_t)i);
 			if (params.bGeomConsistency && i > 0 && !view.depthMap.empty()) {
 				// set previously computed depth-map
 				DepthMap depthMap(view.depthMap);
 				if (depthMap.size() != image.size())
 					cv::resize(depthMap, depthMap, image.size(), 0, 0, cv::INTER_LINEAR);
-				CUDA_CHECK(cudaMemcpy2DToArrayAsync(cudaDepthArrays[i-1], 0, 0, depthMap.ptr<float>(), depthMap.step[0], sizeof(float) * depthMap.cols, depthMap.rows, cudaMemcpyHostToDevice, cudaStream));
+				StagedUploadCvMat(cudaDepthArrays[i-1], depthMap, hostDepthPriorStaging, hostDepthPriorStagingArea, (size_t)(i-1));
 			}
 			images[i] = std::move(image);
 			cameras[i] = std::move(camera);
