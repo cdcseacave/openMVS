@@ -37,14 +37,11 @@
 
 #include "SemiGlobalMatcher.h"
 
-#include <memory>
-#include <vector>
-
 
 // S T R U C T S ///////////////////////////////////////////////////
 
 namespace MVS {
-	
+
 // Forward declarations
 class MVS_API Scene;
 #ifdef _USE_CUDA

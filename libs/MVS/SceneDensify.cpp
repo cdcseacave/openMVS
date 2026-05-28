@@ -2152,7 +2152,7 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 	// launches stay GPU-side-serialized via the cudaEvent_t chain.
 	if (!SEACAVE::CUDA::isCpuRequested(SEACAVE::CUDA::desiredDeviceIDs) && data.nFusionMode >= 0) {
 		const unsigned poolSize = (nMaxThreads > 1)
-			? std::clamp<unsigned>(OPTDENSE::nPatchMatchCUDAInstances, 1u, nMaxThreads)
+			? CLAMP(OPTDENSE::nPatchMatchCUDAInstances, 1u, nMaxThreads)
 			: 1u;
 		if (data.depthMaps.AllocateCudaPool(poolSize)) {
 			// raise the in-flight semaphore so all pool workers can run

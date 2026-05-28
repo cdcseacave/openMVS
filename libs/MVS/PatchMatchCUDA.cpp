@@ -117,16 +117,14 @@ void PatchMatch::Release()
 	ReleaseCUDA();
 }
 
+// pinned staging wins on large images (driver-internal staging stall scales with
+// area) but loses on small ones (cudaHostAlloc + explicit memcpy overhead is fixed)
 void PatchMatch::StagedUploadCvMat(cudaArray_t dst, const cv::Mat1f& src,
 	std::vector<float*>& slots, std::vector<size_t>& areas, size_t slotIdx)
 {
 	ASSERT(src.type() == CV_32FC1);
 	const size_t area = (size_t)src.rows * (size_t)src.cols;
 	const size_t rowBytes = (size_t)src.cols * sizeof(float);
-	// Pinned staging wins on large images (driver-internal staging stall scales
-	// with area) but loses on small ones (cudaHostAlloc + explicit memcpy
-	// overhead is fixed). Threshold calibrated on Truck R=1 V=8 (~1 MP, regress)
-	// vs Truck R=0 V=8 (~3 MP, -15.7% wall).
 	constexpr size_t kPinnedStagingThresholdArea = 1500000;
 	if (area < kPinnedStagingThresholdArea) {
 		CUDA_CHECK(cudaMemcpy2DToArrayAsync(dst, 0, 0, src.ptr<float>(), src.step[0],
