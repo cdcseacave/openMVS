@@ -93,17 +93,18 @@ IIndexArr Resection::SelectNextImages(IIndexScores& unregistered) const
 		return {0, n};
 
 	// Convert the pixel-space reprojection threshold to an angular threshold
-	// on the unit sphere via the camera's PixelErrorToAngular helper, then
-	// let AbsolutePoseOptions convert to the chord-distance metric its
-	// scoring function uses internally. The per-camera noise scale widens
-	// the pinhole-tuned threshold for models (e.g. spherical cube-face SIFT)
-	// whose feature positions have higher pixel-space uncertainty.
+	// on the unit sphere via the camera's PixelErrorToAngular helper and hand
+	// it to the bearing estimator as opt.max_error (radians); the estimator
+	// converts internally to the chord-distance metric its scoring function
+	// uses. The per-camera noise scale widens the pinhole-tuned threshold for
+	// models (e.g. spherical cube-face SIFT) whose feature positions have
+	// higher pixel-space uncertainty.
 	poselib::AbsolutePoseOptions opt;
 	opt.ransac.max_iterations = config.ransac.max_iterations;
 	opt.ransac.min_iterations = config.ransac.min_iterations;
 	opt.ransac.success_prob = config.ransac.confidence;
-	opt.SetMaxErrorFromAngle(img.pCamera->PixelErrorToAngular(
-		config.ransac.threshold * img.pCamera->GetFeatureNoiseScale()));
+	opt.max_error = img.pCamera->PixelErrorToAngular(
+		config.ransac.threshold * img.pCamera->GetFeatureNoiseScale());
 
 	std::vector<char> inliers;
 	poselib::CameraPose camPose;
