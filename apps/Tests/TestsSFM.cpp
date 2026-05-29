@@ -638,6 +638,11 @@ void SimulateSubSceneReconstruction(
 // that observations span the full equirectangular image including longitudes
 // |theta| > pi/2. This is the regression harness for the S^2 -> R^2 singularity
 // in SphericalCamera::Unproject and the pinhole DLT in TriangulateDLT.
+//
+// It also guards against the left-right (X) mirror reported on real 360 scenes:
+// the closing block pins the absolute equirectangular convention of
+// SphericalCamera::Project against hand-reasoned ground truth, and runs an O(3)
+// (reflection-allowed) Kabsch handedness check on the reconstructed rig+points.
 // ===============================================================================
 bool ReconstructSphericalSyntheticTest()
 {
@@ -814,6 +819,114 @@ bool ReconstructSphericalSyntheticTest()
 	if (baMeanAng > REAL(1.0)) {
 		VERBOSE("ReconstructSphericalSyntheticTest FAILED: post-BA mean angular error %.4f deg exceeds 1.0 deg threshold",
 		        baMeanAng);
+		return false;
+	}
+
+	// ---------------------------------------------------------------------------
+	// Left-right mirror / handedness regression checks.
+	//
+	// The reconstruction above creates its 2D observations with
+	// SphericalCamera::Project and then inverts the SAME Project during
+	// triangulation, so any globally-consistent sign flip in the azimuth
+	// convention (an X-mirror) cancels in the round trip and stays invisible to
+	// the recovery-error metrics. The two checks below expose such a flip
+	// WITHOUT round-tripping through Project.
+	//
+	// (A) Pin the absolute equirectangular convention: assert SphericalCamera::Project
+	//     maps canonical camera-space directions to the geometrically-correct side
+	//     of the image. The expected side is reasoned from first principles for the
+	//     standard equirect layout (forward +Z at the centre column, camera-right
+	//     +X on the right half, and the Y-DOWN convention shared with the pinhole
+	//     camera: camera +Y toward the bottom row) — NOT from Project.
+	const Camera& sphCam = *sceneGT.cameras[0];
+	const REAL uCenter = REAL(width) / 2;
+	const REAL vCenter = REAL(height) / 2;
+	struct ConventionCase { Point3 dirCam; const char* name; int expectU; int expectV; };
+	// expectU/expectV: -1 => strictly left/above centre, +1 => strictly right/below, 0 => ~centre
+	const ConventionCase cases[] = {
+		{ Point3( 0,  0, 1), "forward +Z",  0,  0 },  // centre column, equator
+		{ Point3( 1,  0, 1), "right   +X", +1,  0 },  // right of centre
+		{ Point3(-1,  0, 1), "left    -X", -1,  0 },  // left of centre
+		{ Point3( 0,  1, 1), "+Y (down)",   0, +1 },  // below centre (v large), Y-down
+		{ Point3( 0, -1, 1), "-Y (up)  ",   0, -1 },  // above centre (v small), Y-down
+	};
+	for (const ConventionCase& c : cases) {
+		const auto [px, valid] = sphCam.Project(c.dirCam);
+		if (!valid) {
+			VERBOSE("ReconstructSphericalSyntheticTest FAILED: Project(%s) returned invalid", c.name);
+			return false;
+		}
+		bool ok = true;
+		if (c.expectU < 0)      ok = ok && (px.x < uCenter - REAL(1));
+		else if (c.expectU > 0) ok = ok && (px.x > uCenter + REAL(1));
+		else                    ok = ok && (ABS(px.x - uCenter) < REAL(1));
+		if (c.expectV < 0)      ok = ok && (px.y < vCenter - REAL(1));
+		else if (c.expectV > 0) ok = ok && (px.y > vCenter + REAL(1));
+		else                    ok = ok && (ABS(px.y - vCenter) < REAL(1));
+		if (!ok) {
+			VERBOSE("ReconstructSphericalSyntheticTest FAILED: equirect convention mismatch for %s -> pixel (%.1f, %.1f); "
+			        "this is the left-right (X) mirror fingerprint", c.name, px.x, px.y);
+			return false;
+		}
+		DEBUG("Convention %s -> pixel (%.1f, %.1f) [centre (%.1f, %.1f)]", c.name, px.x, px.y, uCenter, vCenter);
+	}
+	// Exact numeric lock: pure camera-right (+X, z=0) must land at u = 3/4 width,
+	// pure camera-left (-X) at u = 1/4 width (standard equirect azimuth mapping).
+	{
+		const auto [pxR, vR] = sphCam.Project(Point3( 1, 0, 0));
+		const auto [pxL, vL] = sphCam.Project(Point3(-1, 0, 0));
+		if (!vR || !vL ||
+		    ABS(pxR.x - REAL(0.75) * width) > REAL(1) ||
+		    ABS(pxL.x - REAL(0.25) * width) > REAL(1)) {
+			VERBOSE("ReconstructSphericalSyntheticTest FAILED: azimuth mapping is mirrored "
+			        "(+X u=%.1f expected %.1f, -X u=%.1f expected %.1f)",
+			        pxR.x, REAL(0.75) * width, pxL.x, REAL(0.25) * width);
+			return false;
+		}
+	}
+
+	// (B) O(3) Kabsch reflection test on the reconstructed rig + points vs GT.
+	//     The optimal reflection-allowed alignment R = V*U^T from SVD(H) = U*S*V^T
+	//     satisfies sign(det R) == sign(det H) because the singular values are
+	//     non-negative; so det(H) > 0 proves the reconstruction matches GT under a
+	//     PROPER rotation (no reflection), i.e. it is not left-right mirrored.
+	//     (No SVD needed — only the sign of the 3x3 cross-covariance determinant.)
+	//     The rig (camera centres) and the points are stacked together so a
+	//     "rig + points mirror together" failure is caught as a single det flip.
+	Point3Arr src, dst;
+	for (IIndex t = 0; t < scene.tracks.size(); ++t) {
+		if (norm(scene.tracks[t].position - sceneGT.tracks[t].position) < REAL(0.5)) {
+			src.emplace_back(scene.tracks[t].position);
+			dst.emplace_back(sceneGT.tracks[t].position);
+		}
+	}
+	FOREACH(i, scene.images) {
+		src.emplace_back(scene.images[i].C);
+		dst.emplace_back(sceneGT.images[i].C);
+	}
+	if (src.size() < 4) {
+		VERBOSE("ReconstructSphericalSyntheticTest FAILED: too few rig+point correspondences (%u) for handedness check",
+		        (unsigned)src.size());
+		return false;
+	}
+	Point3 sMean(REAL(0), REAL(0), REAL(0)), dMean(REAL(0), REAL(0), REAL(0));
+	for (const Point3& p : src) sMean += p;
+	for (const Point3& p : dst) dMean += p;
+	sMean /= (REAL)src.size();
+	dMean /= (REAL)dst.size();
+	REAL Hxx = 0, Hxy = 0, Hxz = 0, Hyx = 0, Hyy = 0, Hyz = 0, Hzx = 0, Hzy = 0, Hzz = 0;
+	FOREACH(i, src) {
+		const Point3 s = src[i] - sMean, d = dst[i] - dMean;
+		Hxx += s.x*d.x; Hxy += s.x*d.y; Hxz += s.x*d.z;
+		Hyx += s.y*d.x; Hyy += s.y*d.y; Hyz += s.y*d.z;
+		Hzx += s.z*d.x; Hzy += s.z*d.y; Hzz += s.z*d.z;
+	}
+	const REAL detH = Hxx*(Hyy*Hzz - Hyz*Hzy) - Hxy*(Hyx*Hzz - Hyz*Hzx) + Hxz*(Hyx*Hzy - Hyy*Hzx);
+	VERBOSE("Handedness check: det(cross-covariance) = %.4g over %u rig+point correspondences",
+	        detH, (unsigned)src.size());
+	if (detH <= REAL(0)) {
+		VERBOSE("ReconstructSphericalSyntheticTest FAILED: reconstruction aligns to GT only under a reflection "
+		        "(det = %.4g <= 0) -> left-right mirror detected", detH);
 		return false;
 	}
 

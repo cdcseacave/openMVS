@@ -26,20 +26,16 @@ namespace {
 // 6-face cube rotation table — bit-exact with the pre-generalization
 // implementation so MVS-export outputs are unchanged.
 //
-// Face order: +Z forward, -Z back, +X right, -X left, +Y up (sky),
-// -Y down (ground). All rotations are pure SO(3) elements (det=+1)
-// that map the body Y-UP frame (SphericalCamera's convention — +Y is
-// physical "up") to a face "Y-UP" frame whose +Z points along the
-// named body axis.
+// Face order: +Z forward, -Z back, +X right, -X left, +Y, -Y.
+// All rotations are pure SO(3) elements (det=+1) that map the body
+// frame to a face frame whose +Z points along the named body axis.
 //
-// Because SphericalCamera uses Y-UP but MVS's pinhole formula assumes
-// Y-DOWN, the rendered face image looks vertically inverted to a
-// human viewer (sky at bottom, ground at top for face 0). This is
-// intentional and self-consistent: MVS's K*cam.R*(X-C) chain produces
-// pixel coordinates that exactly match where each sampled equirect
-// direction was written, so dense reconstruction, meshing and
-// texturing all behave correctly even though the raw face files
-// look flipped.
+// SphericalCamera now uses the Y-DOWN imaging convention (the same as
+// MVS's pinhole formula and the OpenCV image frame), so the rendered
+// face images are vertically upright (sky at top for face 0). MVS's
+// K*cam.R*(X-C) chain produces pixel coordinates that match where each
+// sampled equirect direction was written, so dense reconstruction,
+// meshing and texturing all behave correctly.
 // ------------------------------------------------------------------
 std::array<Matrix3x3, 6> BuildFaceRotations6()
 {
@@ -55,10 +51,10 @@ std::array<Matrix3x3, 6> BuildFaceRotations6()
 	// Face 3: -X left → body -X = face +Z. R = Ry(+90°).
 	R[3] = Matrix3x3::ZERO;
 	R[3](0,2) = 1; R[3](1,1) = 1; R[3](2,0) = -1;
-	// Face 4: +Y up (sky) → body +Y = face +Z. R = Rx(+90°).
+	// Face 4: +Y → body +Y = face +Z. R = Rx(+90°).
 	R[4] = Matrix3x3::ZERO;
 	R[4](0,0) = 1; R[4](1,2) = -1; R[4](2,1) = 1;
-	// Face 5: -Y down (ground) → body -Y = face +Z. R = Rx(-90°).
+	// Face 5: -Y → body -Y = face +Z. R = Rx(-90°).
 	R[5] = Matrix3x3::ZERO;
 	R[5](0,0) = 1; R[5](1,2) = 1; R[5](2,1) = -1;
 	return R;
@@ -317,10 +313,10 @@ std::vector<TImage<TYPE>> SFM::SphereCubeMap::SphericalToTangentialFaces(
 
 	#ifdef SFM_DEBUG_SPHERICAL_FACES
 	// Debug: save rendered faces to disk for visual inspection.
-	// The output images look flipped vertically (sky at bottom, ground at top for face 0)
-	// because SphericalCamera is Y-UP but MVS's pinhole formula assumes Y-DOWN;
-	// this is intentional and self-consistent so that the raw pixel coordinates
-	// match where each sampled equirect direction was written.
+	// The output images are vertically upright (sky at top, ground at bottom for face 0)
+	// because SphericalCamera uses the Y-DOWN convention, same as MVS's pinhole
+	// formula, so the raw pixel coordinates match where each sampled equirect
+	// direction was written.
 	for (int k = 0; k < geometry.numFaces; ++k) {
 		String fileName = MAKE_PATH(String::FormatString("spherical_face_%02d.png", k));
 		if (!images[k].Save(fileName))

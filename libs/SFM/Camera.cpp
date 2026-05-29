@@ -225,11 +225,15 @@ std::pair<Point2, bool> SphericalCamera::Project(const Point3& X) const
 
 	// Longitude (theta) and latitude (phi)
 	const REAL theta = ATAN2(X.x, X.z);  // azimuth angle [-pi, pi]
-	const REAL phi = ASIN(CLAMP(X.y / r, REAL(-1), REAL(1)));  // elevation angle [-pi/2, pi/2]
+	// Y-DOWN convention, matching PinholeCamera and the OpenCV image frame:
+	// camera +Y points toward the image bottom, so negate before the elevation
+	// asin. A direction that is "up" for an upright camera is -Y and lands on the
+	// top row, which is what makes a standard equirect (sky at top) read correctly.
+	const REAL phi = ASIN(CLAMP(-X.y / r, REAL(-1), REAL(1)));  // signed elevation [-pi/2, pi/2]
 
 	// Map to image coordinates
 	// theta: -pi to pi -> 0 to width
-	// phi: -pi/2 to pi/2 -> height to 0 (y-axis points down)
+	// phi: pi/2 to -pi/2 -> 0 to height
 	return std::make_pair(Point2(
 		(theta + REAL(M_PI)) / (REAL(2) * REAL(M_PI)) * size.width,
 		(REAL(M_PI_2) - phi) / REAL(M_PI) * size.height
@@ -241,7 +245,7 @@ Point2 SphericalCamera::MapImageToSpherical(const Point2& x) const
 	// Map image coordinates to spherical angles
 	ASSERT(IsValid());
 	const REAL theta = (x.x / size.width) * REAL(2) * REAL(M_PI) - REAL(M_PI);
-	const REAL phi = REAL(M_PI_2) - (x.y / size.height) * REAL(M_PI);
+	const REAL phi = (x.y / size.height) * REAL(M_PI) - REAL(M_PI_2);
 	return Point2(theta, phi);
 }
 

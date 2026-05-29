@@ -359,7 +359,7 @@ struct SphericalAngularReprojectionError {
 	                                  int width, int height)
 	{
 		const double longitude = (observed_x/width - 0.5) * 2.0 * M_PI;
-		const double latitude = (0.5 - observed_y/height) * M_PI;
+		const double latitude = (observed_y/height - 0.5) * M_PI;
 		const double cos_lat = COS(latitude);
 		const double sin_lat = SIN(latitude);
 		const double cos_lon = COS(longitude);
