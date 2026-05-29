@@ -886,8 +886,6 @@ bool Scene::UndistortImages(String outputDir, String extension, float alpha,
 {
 	if (outputDir.empty())
 		return true;
-	Util::ensureValidFolderPath(outputDir);
-	Util::ensureFolder(outputDir);
 	if (extension.empty())
 		extension = ".jxl";
 
@@ -920,7 +918,11 @@ bool Scene::UndistortImages(String outputDir, String extension, float alpha,
 		}
 	}
 	if (undistortMaps.empty())
-		return true;
+		return true; // no camera has distortion: skip undistortion and do not create the output folder
+
+	// There is at least one distorted camera to correct, so create the output folder
+	Util::ensureValidFolderPath(outputDir);
+	Util::ensureFolder(outputDir);
 
 	if (outImagePaths)
 		outImagePaths->assign(images.size(), String());
