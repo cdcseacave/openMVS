@@ -54,6 +54,9 @@
 // NVidia Cuda Runtime API
 #cmakedefine _USE_CUDA
 
+// Apple Metal compute backend
+#cmakedefine _USE_METAL
+
 // Fast float to int support
 #cmakedefine _USE_FAST_FLOAT2INT
 

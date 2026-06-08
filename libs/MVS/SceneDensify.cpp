@@ -33,6 +33,9 @@
 #include "Scene.h"
 #include "SceneDensify.h"
 #include "PatchMatchCUDA.h"
+#ifdef _USE_METAL
+#include "PatchMatchMetal.h"
+#endif // _USE_METAL
 #include "DMapCache.h"
 
 using namespace MVS;
@@ -139,6 +142,10 @@ DepthMapsData::DepthMapsData(Scene& _scene)
 	, pmCUDANextIdx((Thread::safe_t)-1)
 	, pmCUDAEpoch(0)
 	#endif // _USE_CUDA
+	#ifdef _USE_METAL
+	, pmMetalNextIdx((Thread::safe_t)-1)
+	, pmMetalEpoch(0)
+	#endif // _USE_METAL
 {
 } // constructor
 
@@ -179,6 +186,38 @@ void DepthMapsData::ReinitCudaPoolForGeom()
 	Thread::safeInc(pmCUDAEpoch);
 }
 #endif // _USE_CUDA
+
+#ifdef _USE_METAL
+bool DepthMapsData::AllocateMetalPool(unsigned poolSize)
+{
+	ASSERT(pmMetalPool.empty());
+	if (poolSize == 0)
+		poolSize = 1;
+	auto probe = std::make_unique<MVS::METAL::PatchMatch>();
+	if (!probe->IsValid())
+		return false;
+	probe->Init(false);
+	pmMetalPool.reserve(poolSize);
+	pmMetalPool.emplace_back(std::move(probe));
+	for (unsigned k = 1; k < poolSize; ++k) {
+		auto pm = std::make_unique<MVS::METAL::PatchMatch>();
+		pm->Init(false);
+		pmMetalPool.emplace_back(std::move(pm));
+	}
+	pmMetalNextIdx = (Thread::safe_t)-1;
+	return true;
+}
+
+void DepthMapsData::ReinitMetalPoolForGeom()
+{
+	for (auto& pm : pmMetalPool) {
+		pm->Release();
+		pm->Init(true);
+	}
+	pmMetalNextIdx = (Thread::safe_t)-1;
+	Thread::safeInc(pmMetalEpoch);
+}
+#endif // _USE_METAL
 /*----------------------------------------------------------------*/
 
 // compute visibility for the reference image (the first image in "images")
@@ -561,6 +600,21 @@ bool DepthMapsData::EstimateDepthMap(IIndex idxImage, int nGeometricIter)
 		return true;
 	}
 	#endif // _USE_CUDA
+
+	#ifdef _USE_METAL
+	if (!pmMetalPool.empty()) {
+		// runs both photometric (nGeometricIter < 0) and geometric-consistency passes;
+		// the pool's bGeomConsistency state (Init/ReinitMetalPoolForGeom) selects the mode
+		static thread_local int s_slotM = -1;
+		static thread_local Thread::safe_t s_epochM = (Thread::safe_t)-1;
+		if (s_slotM < 0 || s_epochM != pmMetalEpoch) {
+			s_slotM = (int)(Thread::safeInc(pmMetalNextIdx) % (Thread::safe_t)pmMetalPool.size());
+			s_epochM = pmMetalEpoch;
+		}
+		pmMetalPool[s_slotM]->EstimateDepthMap(arrDepthData[idxImage]);
+		return true;
+	}
+	#endif // _USE_METAL
 
 	TD_TIMER_STARTD();
 
@@ -2163,6 +2217,21 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 	}
 	#endif // _USE_CUDA
 
+	#ifdef _USE_METAL
+	// Metal compute backend (Apple Silicon): one PatchMatch instance per worker.
+	// Disable with OPENMVS_DISABLE_METAL=1 to force the CPU path.
+	if (!getenv("OPENMVS_DISABLE_METAL") && data.nFusionMode >= 0) {
+		const unsigned poolSize = (nMaxThreads > 1)
+			? CLAMP(OPTDENSE::nPatchMatchCUDAInstances, 1u, nMaxThreads)
+			: 1u;
+		if (data.depthMaps.AllocateMetalPool(poolSize)) {
+			data.sem.Clear(poolSize);
+			data.nDenseWorkers = poolSize;
+			VERBOSE("Using Metal compute backend for depth-map estimation (%u workers)", poolSize);
+		}
+	}
+	#endif // _USE_METAL
+
 	// initialize the queue of images to be processed
 	const int nOptimize(OPTDENSE::nOptimize);
 	if (OPTDENSE::nEstimationGeometricIters && data.nFusionMode >= 0)
@@ -2195,6 +2264,10 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 		if (!data.depthMaps.pmCUDAPool.empty() && OPTDENSE::nEstimationGeometricIters)
 			data.depthMaps.ReinitCudaPoolForGeom();
 		#endif // _USE_CUDA
+		#ifdef _USE_METAL
+		if (!data.depthMaps.pmMetalPool.empty() && OPTDENSE::nEstimationGeometricIters)
+			data.depthMaps.ReinitMetalPoolForGeom();
+		#endif // _USE_METAL
 		while (++data.nEstimationGeometricIter < (int)OPTDENSE::nEstimationGeometricIters) {
 			// initialize the queue of images to be geometric processed
 			if (data.nEstimationGeometricIter+1 == (int)OPTDENSE::nEstimationGeometricIters)

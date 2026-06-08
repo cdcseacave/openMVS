@@ -34,10 +34,35 @@ endif()
 GET_FILENAME_COMPONENT(PATH_PythonWrapper_cpp ${CMAKE_CURRENT_SOURCE_DIR}/PythonWrapper.cpp ABSOLUTE)
 LIST(REMOVE_ITEM LIBRARY_FILES_C "${PATH_PythonWrapper_cpp}")
 
+# Metal backend: the Objective-C++ source is not matched by the *.cpp glob.
+# The MSL kernels (PatchMatchMetal.metal) are the single source of truth; embed
+# them as a string (compiled at runtime via newLibraryWithSource) by generating
+# PatchMatchMetal_msl.h into the build dir at configure time.
+if(_USE_METAL)
+	file(READ "${CMAKE_CURRENT_SOURCE_DIR}/PatchMatchMetal.metal" _PATCHMATCH_MSL_SRC)
+	file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/PatchMatchMetal_msl.h"
+"// AUTO-GENERATED at configure time from PatchMatchMetal.metal -- do not edit.
+#pragma once
+static const char* kPatchMatchMSL = R\"METALSRC(
+${_PATCHMATCH_MSL_SRC})METALSRC\";
+")
+	LIST(APPEND LIBRARY_FILES_C "${CMAKE_CURRENT_SOURCE_DIR}/PatchMatchMetal.mm")
+endif()
+
 cxx_library_with_type(MVS "Libs" "" "${cxx_default}"
 	${LIBRARY_FILES_C} ${LIBRARY_FILES_H}
 	${CUDA_LIBRARY_FILES_C} ${CUDA_LIBRARY_FILES_H}
 )
+
+# Metal backend: compile the .mm as Objective-C++ with ARC, skip the C++ PCH,
+# and link the Apple frameworks.
+if(_USE_METAL)
+	set_source_files_properties("${CMAKE_CURRENT_SOURCE_DIR}/PatchMatchMetal.mm" PROPERTIES
+		SKIP_PRECOMPILE_HEADERS ON
+		COMPILE_OPTIONS "-fobjc-arc")
+	TARGET_INCLUDE_DIRECTORIES(MVS PRIVATE "${CMAKE_CURRENT_BINARY_DIR}") # generated PatchMatchMetal_msl.h
+	TARGET_LINK_LIBRARIES(MVS PUBLIC "-framework Metal" "-framework Foundation")
+endif()
 
 # MSVC scalpel: Camera.cpp and Scene.cpp drag in a template graph (CGAL/Eigen/OpenCV)
 # that lands MSVC's optimizer in a pathological codegen path. Camera.cpp takes ~3 min
