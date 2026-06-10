@@ -165,6 +165,7 @@ public:
 		float fSharpnessWeight=0.5f, int ignoreMaskLabel=-1, int maxTextureSize=0, const IIndexArr& views=IIndexArr());
 	#ifdef _USE_CUDA
 	bool TextureMeshCuda(unsigned maxTexRes, unsigned maxImgRes, bool rePack, bool reParametrize);
+	bool GenerateOrthoMap(float tileSize, int maxImgRes, int maxTileRes, const SEACAVE::String outputName, bool bResume=false);
 	#endif
 
 	// Reconstruction quality assessment

@@ -51,7 +51,7 @@ void CURAST::DownloadBestViewsScore() {
 		std::copy(scores.begin() + nViews * i, scores.begin() + nViews * (i + 1), hBestViewsScore.begin() + faceIdx * nViews);
 		std::copy(idxs.begin() + nViews * i, idxs.begin() + nViews * (i + 1), hBestViewsIdx.begin() + faceIdx * nViews);
 		std::copy(res.begin() + nViews * i, res.begin() + nViews * (i + 1), hResFace.begin() + faceIdx * nViews);
-}
+	}
 }
 void CURAST::InitializeTexturePyramidOnDevice(const cv::Size size,const int level) {
 	laplacePyramidTextures.resize(level + 1);
@@ -72,9 +72,9 @@ void CURAST::InitializeFaceMap(cv::Size imgSize, bool useVisibility) {
 	faceMap.Resize(imgSize, 1); 
 	depthMap.Resize(imgSize, 1);
 	if (useVisibility) {
-	visibilityMap.Resize(imgSize, 1);
-	cudaMemset(visibilityMap.GetDeviceData(), 0, visibilityMap.SizeInBytes());
-}
+		visibilityMap.Resize(imgSize, 1);
+		cudaMemset(visibilityMap.GetDeviceData(), 0, visibilityMap.SizeInBytes()); 
+	}
 }
 void CURAST::SetFacesForView(uint viewIdx, std::vector<uint>& faceList, uint nBest) {
 	std::vector<int> _isBestView(faceList.size());
@@ -93,7 +93,7 @@ void CURAST::SetFacesForView(uint viewIdx, std::vector<uint>& faceList, uint nBe
 				break;
 			}
 		}
-}
+	}
 	faceScores.ReallocateIfNotSize(_facesScore.size());
 	faceScores.UploadFromHost(_facesScore.data(), _facesScore.size(), Stream());
 	isBestView.ReallocateIfNotSize(_isBestView.size());
@@ -209,6 +209,78 @@ void TextureCURAST::CollapseTexturePyramid() {
 void TextureCURAST::ClearMeshBuffer() {
 	bufferPositions.ReallocateIfNotSize(0);
 	bufferUVs.ReallocateIfNotSize(0);
+	bestViewsIdx.ReallocateIfNotSize(0);
+	bestViewsScore.ReallocateIfNotSize(0);
+	resFace.ReallocateIfNotSize(0);
+}
+void OrthoCURAST::ProjectMeshForOrtho() {
+	CUDA::Camera camera;
+	camera.C = C;
+	camera.R = R;
+	camera.K = K;
+	Point2i imgSize = depthMap.CudaImageSize();
+	faceScores.ReallocateIfNotSize(meshChunk.size());
+	Point2i dims = visibilityMap.CudaImageSize();
+	CUDA::CURAST::ProjectMeshOrtho(depthMap.GetDeviceData(), faceMap.GetDeviceData(), visibilityMap.GetDeviceData(), 
+		bufferPositions.GetDeviceData(), meshChunk.size(), camera, depthMap.CudaImageSize(), Stream());
+	float fx = K(0,0);
+	float fy = K(1,1);
+	CUDA::CURAST::UpdateBestViewsOrtho(faceMap.GetDeviceData(), visibilityMap.GetDeviceData(), depthMap.GetDeviceData(), bestViewsScore.GetDeviceData(), resFace.GetDeviceData(), bestViewsIdx.GetDeviceData(),
+		meshChunk.size(), depthMap.CudaImageSize(), nViews, viewIdx, fx, fy, Stream());
+	DownloadBestViewsScore();
+}
+void OrthoCURAST::InitializeOrthoViewPyramidOnDevice(const cv::Size size,const int level, const int _stackSize) {
+	if (laplacePyramidTextures.size() != level + 1) {
+		laplacePyramidTextures.resize(level + 1);
+	}
+	// resize if needed
+	if (_stackSize > maxStackSize) {
+		stackSize = _stackSize;
+		maxStackSize = _stackSize;
+		for (int i = 0; i <= level; i++)
+			laplacePyramidTextures[i].Resize(size, 3*stackSize);
+		visibilityScores.Resize(size, stackSize);
+		idxStacks.Resize(size, stackSize);
+	}
+	// reset data
+	for (int i = 0; i <= level; i++)
+			cudaMemset(laplacePyramidTextures[i].GetDeviceData(), 0, laplacePyramidTextures[i].SizeInBytes());
+	cudaMemset(visibilityScores.GetDeviceData(), 0, visibilityScores.SizeInBytes());
+	CUDA::CURAST::Fill(idxStacks.GetDeviceData(), -1, size.area()*stackSize, Stream());
+}
+void OrthoCURAST::GenerateNormalOrthoMap(float2 tileOrigine, float2 tileSize, cv::Size tileRes) {
+	visibilityMap.Resize(tileRes,1);
+	CUDA::CURAST::GetNormalOrthoMap(visibilityMap.GetDeviceData(), bufferPositions.GetDeviceData(),meshChunk.size(),CUDA::Point2(tileSize.x,tileSize.y),CUDA::Point2i(tileRes.width,tileRes.height),Stream(),CUDA::Point2(tileOrigine.x,tileOrigine.y));
+}
+void OrthoCURAST::OrthoRasterize(uint viewIdx, float2 tileOrigin, float2 tileSize) {
+	CUDA::Camera camera;
+	camera.C = C;
+	camera.R = R;
+	camera.K = K;
+
+	CUDA::CURAST::OrthoRasterize(laplacePyramidTextures, stackSize, visibilityScores.GetDeviceData(), faceScores.GetDeviceData(), laplacePyramidImages, bufferPositions.GetDeviceData(), faceScores.NumElements(), 
+		meshChunk.size(), camera, viewIdx, MVS::CUDA::Point2(tileOrigin.x,tileOrigin.y), MVS::CUDA::Point2(tileSize.x,tileSize.y), Stream());
+}
+void OrthoCURAST::CollapseTexturePyramid(){
+	const auto& texMat = laplacePyramidTextures[0];
+	collapseWorkspace.Init((uint)(texMat.CudaImageSize()(0) * texMat.CudaImageSize()(1)), (uint)laplacePyramidTextures.size());
+	CUDA::CURAST::CollapseStacksOrtho(laplacePyramidTextures, visibilityScores.GetDeviceData(), visibilityMap.GetDeviceData(), texMat.CudaImageSize(), laplacePyramidTextures.size(), stackSize, collapseWorkspace, Stream());
+	CUDA::CURAST::CollapsePyramid(laplacePyramidTextures, laplacePyramidTextures[0].CudaImageSize(), laplacePyramidTextures.size(), stackSize, Stream(), -1,-1);
+}
+void OrthoCURAST::LoadMeshChunkOnDevice(CUDA::Point3* positions, CUDA::Point3i* faces, std::vector<uint>& chunk) {
+	std::vector<CUDA::Point3> pos;
+	meshChunk = chunk;
+	for (int i = 0; i < chunk.size(); i++) {
+		uint faceIdx = chunk[i];
+		CUDA::Point3i face = faces[faceIdx];
+		for (int v = 0; v < 3; v++) 
+			pos.push_back(positions[face(v)]);
+	}
+	bufferPositions.ReallocateToAtLeastSize(pos.size());
+	bufferPositions.UploadFromHost(pos.data(), pos.size(), Stream());
+}
+void OrthoCURAST::ClearMeshBuffer() {
+	bufferPositions.ReallocateIfNotSize(0);
 	bestViewsIdx.ReallocateIfNotSize(0);
 	bestViewsScore.ReallocateIfNotSize(0);
 	resFace.ReallocateIfNotSize(0);

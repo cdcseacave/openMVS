@@ -72,6 +72,10 @@ int nMaxImgSize;
 bool bUseCUDABlending;
 bool bForceParam;
 bool bForcePack;
+float fTileSize;
+int nMaxTileRes;
+bool bOrthoOnly;
+bool bResume;
 String strExportType;
 String strConfigFileName;
 boost::program_options::variables_map vm;
@@ -140,6 +144,10 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("cuda-blending", boost::program_options::bool_switch(&OPT::bUseCUDABlending), "use CUDA for texture generation")
 		("force-param", boost::program_options::bool_switch(&OPT::bForceParam), "force reparametrization for CUDA texture generation")
 		("force-pack", boost::program_options::bool_switch(&OPT::bForcePack), "force repacking of CUDA texture atlases")
+		("ortho-only", boost::program_options::bool_switch(&OPT::bOrthoOnly), "generate only the orthomap (no mesh texturing); when enabled --output-file specifies the orthomap image filename instead of the textured mesh")
+		("tile-size", boost::program_options::value(&OPT::fTileSize)->default_value(0.f), "generate orthomap tiles using this world-space size (0 - auto)")
+		("max-tile-res", boost::program_options::value(&OPT::nMaxTileRes)->default_value(8192), "maximum orthomap tile resolution")
+		("resume-orthomap", boost::program_options::bool_switch(&OPT::bResume), "resume orthomap generation from existing tile images")
 		#endif
 		;
 
@@ -311,6 +319,11 @@ int main(int argc, LPCTSTR* argv)
 	// compute mesh texture
 	TD_TIMER_START();
 	#ifdef _USE_CUDA
+	if (OPT::bOrthoOnly) {
+		if (!scene.GenerateOrthoMap(OPT::fTileSize, OPT::nMaxImgSize, OPT::nMaxTileRes, OPT::strOutputFileName, OPT::bResume))
+			return EXIT_FAILURE;
+		return EXIT_SUCCESS;
+	}
 	if (OPT::bUseCUDABlending) {
 		if (!scene.TextureMeshCuda(OPT::nMaxTextureSize, OPT::nMaxImgSize, OPT::bForcePack, OPT::bForceParam))
 			return EXIT_FAILURE;

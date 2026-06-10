@@ -630,3 +630,5 @@ bool Scene::TextureMeshCuda(unsigned _maxTexRes, unsigned _maxImgRes, bool rePac
 	}
 	return true;
 }
+
+#include "SceneOrthoCUDA.inl"
