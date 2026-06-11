@@ -32,6 +32,7 @@
 #include "Common.h"
 #include "Scene.h"
 #include "AtlasPacker.h"
+#include <fstream>
 // connected components
 #include <boost/graph/adjacency_list.hpp>
 #include <boost/graph/connected_components.hpp>
@@ -2425,6 +2426,112 @@ bool Scene::TextureMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsi
 
 	return true;
 } // TextureMesh
+
+static inline uint8_t ColorToU8(float value)
+{
+	return (uint8_t)CLAMP(ROUND2INT(value), 0, 255);
+}
+
+static bool SaveVertexColoredMeshPLY(const Mesh& mesh, const MeshTexture::Colors& colors, const String& fileName)
+{
+	ASSERT(!fileName.empty());
+	ASSERT(colors.size() == mesh.vertices.size());
+	Util::ensureFolder(fileName);
+
+	std::ofstream stream(fileName, std::ios::binary);
+	if (!stream)
+		return false;
+
+	stream << "ply\n";
+	stream << "format binary_little_endian 1.0\n";
+	stream << "element vertex " << mesh.vertices.size() << "\n";
+	stream << "property float x\n";
+	stream << "property float y\n";
+	stream << "property float z\n";
+	stream << "property uchar red\n";
+	stream << "property uchar green\n";
+	stream << "property uchar blue\n";
+	stream << "element face " << mesh.faces.size() << "\n";
+	stream << "property list uchar uint vertex_indices\n";
+	stream << "end_header\n";
+
+	FOREACH(i, mesh.vertices) {
+		const Mesh::Vertex& vertex = mesh.vertices[i];
+		const float coords[3] = { (float)vertex.x, (float)vertex.y, (float)vertex.z };
+		const MeshTexture::Color& color = colors[i];
+		const uint8_t rgb[3] = { ColorToU8(color.x), ColorToU8(color.y), ColorToU8(color.z) };
+		stream.write((const char*)coords, sizeof(coords));
+		stream.write((const char*)rgb, sizeof(rgb));
+	}
+	const uint8_t numVertices(3);
+	FOREACHPTR(pFace, mesh.faces) {
+		const uint32_t indices[3] = { (uint32_t)(*pFace)[0], (uint32_t)(*pFace)[1], (uint32_t)(*pFace)[2] };
+		stream.write((const char*)&numVertices, sizeof(numVertices));
+		stream.write((const char*)indices, sizeof(indices));
+	}
+	return stream.good();
+}
+
+bool Scene::ExportMeshVertexColors(const String& fileName, unsigned nResolutionLevel, unsigned nMinResolution, unsigned minCommonCameras,
+	float fOutlierThreshold, float fRatioDataSmoothness, Pixel8U colEmpty, int nIgnoreMaskLabel, const IIndexArr& views)
+{
+	if (mesh.IsEmpty())
+		return false;
+
+	MeshTexture texture(*this, nResolutionLevel, nMinResolution);
+	TD_TIMER_STARTD();
+	if (!texture.FaceViewSelection(minCommonCameras, fOutlierThreshold, fRatioDataSmoothness, nIgnoreMaskLabel, views))
+		return false;
+	DEBUG_EXTRA("Assigning the best view to each face completed: %u faces, %u patches (%s)", mesh.faces.size(), texture.texturePatches.size(), TD_TIMER_GET_FMT().c_str());
+
+	MeshTexture::Colors vertexColors(mesh.vertices.size());
+	vertexColors.Memset(0);
+	FloatArr vertexWeights(mesh.vertices.size());
+	vertexWeights.Memset(0);
+	const MeshTexture::Color emptyColor(colEmpty);
+	const unsigned numPatches(texture.texturePatches.size() > 0 ? texture.texturePatches.size()-1 : 0);
+	for (unsigned idxPatch=0; idxPatch<numPatches; ++idxPatch) {
+		const MeshTexture::TexturePatch& texturePatch = texture.texturePatches[idxPatch];
+		if (texturePatch.label == NO_ID)
+			continue;
+		Image& imageData = images[texturePatch.label];
+		if (imageData.image.empty()) {
+			unsigned level(nResolutionLevel);
+			const unsigned imageSize(imageData.RecomputeMaxResolution(level, nMinResolution));
+			if (!imageData.ReloadImage(imageSize))
+				continue;
+			imageData.UpdateCamera(platforms);
+		}
+		for (const FIndex idxFace: texturePatch.faces) {
+			const Face& face = mesh.faces[idxFace];
+			const float weight(MAXF((float)mesh.ComputeArea(idxFace), 1e-6f));
+			for (int v=0; v<3; ++v) {
+				const VIndex idxVertex(face[v]);
+				const auto [pt, depth] = imageData.camera.ProjectPointP(mesh.vertices[idxVertex]);
+				if (depth <= 0 || !imageData.image.isInside(pt))
+					continue;
+				vertexColors[idxVertex] += MeshTexture::Color(imageData.image.sampleSafe(pt)) * weight;
+				vertexWeights[idxVertex] += weight;
+			}
+		}
+	}
+
+	FOREACH(i, vertexColors) {
+		if (vertexWeights[i] > 0)
+			vertexColors[i] *= INVERT(vertexWeights[i]);
+		else
+			vertexColors[i] = emptyColor;
+	}
+
+	{
+	TD_TIMER_STARTD();
+	if (!SaveVertexColoredMeshPLY(mesh, vertexColors, fileName))
+		return false;
+	DEBUG_EXTRA("Vertex-colored mesh '%s' saved: %u vertices, %u faces (%s)",
+		Util::getFileNameExt(fileName).c_str(), mesh.vertices.size(), mesh.faces.size(), TD_TIMER_GET_FMT().c_str());
+	}
+	return true;
+} // ExportMeshVertexColors
 /*----------------------------------------------------------------*/
 
 #pragma pop_macro("VERBOSE")
