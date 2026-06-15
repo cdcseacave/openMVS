@@ -2458,8 +2458,12 @@ static bool SaveVertexColoredMeshPLY(const Mesh& mesh, const MeshTexture::Colors
 	FOREACH(i, mesh.vertices) {
 		const Mesh::Vertex& vertex = mesh.vertices[i];
 		const float coords[3] = { (float)vertex.x, (float)vertex.y, (float)vertex.z };
-		const MeshTexture::Color& color = colors[i];
-		const uint8_t rgb[3] = { ColorToU8(color.x), ColorToU8(color.y), ColorToU8(color.z) };
+		const Pixel8U color(Pixel8U::Pnt(
+			ColorToU8(colors[i].x),
+			ColorToU8(colors[i].y),
+			ColorToU8(colors[i].z)
+		));
+		const uint8_t rgb[3] = { color.r, color.g, color.b };
 		stream.write((const char*)coords, sizeof(coords));
 		stream.write((const char*)rgb, sizeof(rgb));
 	}
