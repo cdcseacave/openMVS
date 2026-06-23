@@ -71,4 +71,17 @@ python3 make_table.py $TNT_ROOT $SCENES   # CUDA column now populated
 | `evaluate_f1.sh` | TnT toolbox → precision/recall/F1 |
 | `run_local.sh` | orchestrate Metal+CPU, emit markdown table |
 | `contribute_cuda.sh` | **standalone** script for NVIDIA volunteers |
+| `pack_scene_mvs.sh` | bundle shared `scene.mvs` + images for volunteers |
 | `make_table.py` | collate JSON → markdown (grows as CUDA arrives) |
+
+## Attribution
+
+The datasets and ground truth are from the
+[Tanks and Temples](https://www.tanksandtemples.org/) benchmark (Knapitsch,
+Park, Zhou, Koltun, *"Tanks and Temples: Benchmarking Large-Scale Scene
+Reconstruction"*, ACM Transactions on Graphics, 2017). Any shared `scene.mvs`
+bundles undistorted frames **derived** from the TnT training set, redistributed
+for non-commercial research under
+[CC BY-NC-SA](https://creativecommons.org/licenses/by-nc-sa/3.0/). Evaluation
+uses the official [isl-org/TanksAndTemples](https://github.com/isl-org/TanksAndTemples)
+Python toolbox.

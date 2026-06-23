@@ -53,3 +53,8 @@ result drops straight into the table. If you or anyone with a CUDA box can run i
 on even one or two of these scenes, the comparison is complete.
 
 Shared inputs (scene.mvs + undistorted images): _<link>_.
+
+> The shared `scene.mvs` bundles undistorted frames derived from the
+> [Tanks and Temples](https://www.tanksandtemples.org/) training dataset
+> (Knapitsch et al., *ACM ToG* 2017), redistributed for non-commercial
+> research under [CC BY-NC-SA](https://creativecommons.org/licenses/by-nc-sa/3.0/).
