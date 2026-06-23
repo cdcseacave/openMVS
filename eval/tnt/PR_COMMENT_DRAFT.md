@@ -1,7 +1,7 @@
 <!-- Draft reply for cdcseacave/openMVS#1279 -->
 
 @cdcseacave thanks! I've added a fully reproducible benchmark harness under
-[`eval/tnt/`](eval/tnt/README.md) and ran the first comparison.
+[`eval/tnt/`](https://github.com/leNeo/openMVS-metal/blob/metal-patchmatch-backend/eval/tnt/README.md) and ran the first comparison.
 
 ### Methodology (one variable changed)
 
@@ -46,7 +46,7 @@ agreement ~0.1% where both are valid; Metal depth-maps actually *more* complete)
 I don't have an NVIDIA GPU, so I can't produce the CUDA PatchMatch numbers
 locally. To keep it perfectly controlled, the harness publishes the shared
 `scene.mvs` files and a one-shot
-[`contribute_cuda.sh`](eval/tnt/contribute_cuda.sh): a volunteer densifies the
+[`contribute_cuda.sh`](https://github.com/leNeo/openMVS-metal/blob/metal-patchmatch-backend/eval/tnt/contribute_cuda.sh): a volunteer densifies the
 *same* `scene.mvs` with a CUDA build and sends back the fused PLY + timing — no
 GT or toolbox needed on their side; I run the identical F1 evaluation here so the
 result drops straight into the table. If you or anyone with a CUDA box can run it
