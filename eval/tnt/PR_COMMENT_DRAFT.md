@@ -52,7 +52,12 @@ GT or toolbox needed on their side; I run the identical F1 evaluation here so th
 result drops straight into the table. If you or anyone with a CUDA box can run it
 on even one or two of these scenes, the comparison is complete.
 
-Shared inputs (scene.mvs + undistorted images): _<link>_.
+Shared inputs (scene.mvs + undistorted images), one self-contained tarball per
+scene — [**release: tnt-bench-inputs**](https://github.com/leNeo/openMVS-metal/releases/tag/tnt-bench-inputs):
+[Barn](https://github.com/leNeo/openMVS-metal/releases/download/tnt-bench-inputs/Barn_mvs.tar.gz) ·
+[Ignatius](https://github.com/leNeo/openMVS-metal/releases/download/tnt-bench-inputs/Ignatius_mvs.tar.gz) ·
+[Meetingroom](https://github.com/leNeo/openMVS-metal/releases/download/tnt-bench-inputs/Meetingroom_mvs.tar.gz) ·
+[Truck](https://github.com/leNeo/openMVS-metal/releases/download/tnt-bench-inputs/Truck_mvs.tar.gz)
 
 > The shared `scene.mvs` bundles undistorted frames derived from the
 > [Tanks and Temples](https://www.tanksandtemples.org/) training dataset
