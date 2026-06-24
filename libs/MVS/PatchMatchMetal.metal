@@ -236,6 +236,12 @@ static inline float ScorePlane(thread const RefCache& cache, constant Camera& re
 static inline float GeometricConsistencyWeight(texture2d<float> depthImg, constant Camera& ref,
                                                constant Camera& trg, float4 plane, int2 p) {
     const float maxDist = 4.0f;
+    // No depth-map for this neighbor: the driver binds the 1x1 dummy texture as a
+    // stand-in. Mirror CUDA's `if (depthImage == NULL) return 0.f;` and skip the
+    // geometric term, instead of charging the full maxDist penalty the zero-depth
+    // branch below would — otherwise missing neighbors make Metal far more
+    // conservative than CUDA (fewer fused points / lower recall).
+    if (depthImg.get_width() <= 1) return 0.0f;
     const float3 fwd = I2W(ref, float2(p), plane.w);
     const float2 trgPt = W2I(trg, fwd);
     const float trgDepth = depthImg.sample(texSampler, float2(trgPt.x+0.5f, trgPt.y+0.5f)).r;
