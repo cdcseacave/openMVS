@@ -59,6 +59,30 @@ tar -xzf Truck_cuda_result.tar.gz -C $TNT_ROOT/Truck/out_cuda/
 python3 make_table.py $TNT_ROOT $SCENES   # CUDA column now populated
 ```
 
+## Results — CUDA column filled
+
+The CUDA column was produced on an NVIDIA GPU (i7-13700KF host) by densifying the
+**exact published shared `scene.mvs`** with the **identical** `DENSIFY_PARAMS`,
+and scored by the same toolbox at the same per-scene τ. The CUDA trajectory was
+derived from the shared `scene.mvs` (`InterfaceCOLMAP --binary 0` export →
+`colmap_to_tnt_log.py`); entry counts match the official `_COLMAP_SfM.log`
+exactly for all four scenes.
+
+F-score @ official τ (only the PatchMatch backend differs):
+
+| Scene | metal | cpu | cuda |
+|---|---|---|---|
+| Barn | 0.409 | 0.371 | **0.424** |
+| Ignatius | 0.657 | 0.608 | **0.668** |
+| Meetingroom | 0.239 | 0.215 | **0.253** |
+| Truck | 0.647 | 0.593 | **0.649** |
+| **mean** | 0.488 | 0.447 | **0.499** |
+
+CUDA and Metal agree to within ~0.01–0.015 F1 on every scene (CUDA marginally
+ahead), with near-identical precision/recall — confirming the Metal port
+reproduces the CUDA reference, not merely the separate CPU `DepthEstimator`. Full
+P/R/points/wall and an independent-SfM cross-check are in the PR discussion.
+
 ## Files
 
 | Script | Role |
