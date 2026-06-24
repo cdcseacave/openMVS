@@ -188,15 +188,15 @@ struct IntersectRayPoints {
 /*----------------------------------------------------------------*/
 
 
-typedef MVS_API float Depth;
-typedef MVS_API Point3f Normal;
-typedef MVS_API TImage<Depth> DepthMap;
-typedef MVS_API TImage<Normal> NormalMap;
-typedef MVS_API TImage<float> ConfidenceMap;
-typedef MVS_API SEACAVE::cList<Depth,Depth,0> DepthArr;
-typedef MVS_API CLISTDEF2IDX(DepthMap,IIndex) DepthMapArr;
-typedef MVS_API CLISTDEF2IDX(NormalMap,IIndex) NormalMapArr;
-typedef MVS_API CLISTDEF2IDX(ConfidenceMap,IIndex) ConfidenceMapArr;
+typedef float Depth;
+typedef Point3f Normal;
+typedef TImage<Depth> DepthMap;
+typedef TImage<Normal> NormalMap;
+typedef TImage<float> ConfidenceMap;
+typedef SEACAVE::cList<Depth,Depth,0> DepthArr;
+typedef CLISTDEF2IDX(DepthMap,IIndex) DepthMapArr;
+typedef CLISTDEF2IDX(NormalMap,IIndex) NormalMapArr;
+typedef CLISTDEF2IDX(ConfidenceMap,IIndex) ConfidenceMapArr;
 /*----------------------------------------------------------------*/
 
 } // namespace MVS

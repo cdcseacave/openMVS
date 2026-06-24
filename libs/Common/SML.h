@@ -23,10 +23,12 @@ namespace SEACAVE {
 
 typedef struct SMLVALUE_TYPE {
 	String val; //item's value
-	void* data; //user data
+	void* data; //opaque user data; non-owning -- its lifecycle is managed by the
+	            //SML per-item release callback (see SML::SetFncItem, e.g.
+	            //CConfigTable::ItemReleaseData), never freed here: deleting a
+	            //void* is undefined behavior (the real destructor is never called)
 	SMLVALUE_TYPE() : data(NULL) {}
 	SMLVALUE_TYPE(const SMLVALUE_TYPE& r) : data(r.data) { ((SMLVALUE_TYPE&)r).data = NULL; }
-	~SMLVALUE_TYPE() { delete data; }
 	// Equality is provided so std::unordered_map<String,SMLVALUE>'s
 	// std::pair<const Key,Type>::operator== can be instantiated under MSVC's
 	// eager dllexport-class instantiation. Compares the value strings;

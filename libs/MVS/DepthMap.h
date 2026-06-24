@@ -284,7 +284,7 @@ struct MVS_API DepthData {
 	}
 	#endif
 };
-typedef MVS_API CLISTDEFIDX(DepthData,IIndex) DepthDataArr;
+typedef CLISTDEFIDX(DepthData,IIndex) DepthDataArr;
 /*----------------------------------------------------------------*/
 
 

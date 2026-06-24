@@ -87,7 +87,7 @@ public:
 	}
 	#endif
 };
-typedef MVS_API CLISTDEFIDX(Platform,uint32_t) PlatformArr;
+typedef CLISTDEFIDX(Platform,uint32_t) PlatformArr;
 /*----------------------------------------------------------------*/
 
 } // namespace MVS

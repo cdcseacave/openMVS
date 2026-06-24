@@ -48,7 +48,7 @@ namespace MVS {
 typedef uint32_t IIndex;
 typedef SEACAVE::cList<IIndex, IIndex, 0, 16, IIndex> IIndexArr;
 typedef _INTERFACE_NAMESPACE::Interface::Image::ViewScore ViewScore;
-typedef MVS_API CLISTDEF0IDX(ViewScore, IIndex) ViewScoreArr;
+typedef CLISTDEF0IDX(ViewScore, IIndex) ViewScoreArr;
 /*----------------------------------------------------------------*/
 
 // a view instance seeing the scene
@@ -142,7 +142,7 @@ public:
 	BOOST_SERIALIZATION_SPLIT_MEMBER()
 	#endif
 };
-typedef MVS_API CLISTDEF2IDX(Image,IIndex) ImageArr;
+typedef CLISTDEF2IDX(Image,IIndex) ImageArr;
 
 static inline IIndex ImageID2Index(const ImageArr& images, IIndex ID) {
 	return images.FindFunc([&ID](const Image& image) { return image.ID == ID; });

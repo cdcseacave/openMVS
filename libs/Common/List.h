@@ -62,7 +62,7 @@
 #endif
 // constructs a cList reference to a given std::_vector
 #ifndef CLISTREFVECTOR
-#define CLISTREFVECTOR(CLIST, var, vec) uint8_t _ArrData##var[sizeof(CLIST)]; new(_ArrData##var) CLIST(vec.size(), reinterpret_cast<CLIST::value_type*>(const_cast<ARR2VAL(vec)*>(&vec[0]))); const CLIST& var(*reinterpret_cast<const CLIST*>(_ArrData##var))
+#define CLISTREFVECTOR(CLIST, var, vec) uint8_t _ArrData##var[sizeof(CLIST)]; new(_ArrData##var) CLIST(vec.size(), reinterpret_cast<typename CLIST::value_type*>(const_cast<ARR2VAL(vec)*>(&vec[0]))); const CLIST& var(*reinterpret_cast<const CLIST*>(_ArrData##var))
 #endif
 
 #define CLISTDEFSCALAR(TYPE) SEACAVE::cList< TYPE, TYPE, 0 >
