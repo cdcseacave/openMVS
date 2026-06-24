@@ -201,6 +201,11 @@ bool DepthMapsData::AllocateMetalPool(unsigned poolSize)
 	pmMetalPool.emplace_back(std::move(probe));
 	for (unsigned k = 1; k < poolSize; ++k) {
 		auto pm = std::make_unique<MVS::METAL::PatchMatch>();
+		// the probe proved the device + pipelines build; an additional instance
+		// failing is unexpected (e.g. resource exhaustion), so stop growing rather
+		// than add an invalid worker that would silently produce empty depth-maps
+		if (!pm->IsValid())
+			break;
 		pm->Init(false);
 		pmMetalPool.emplace_back(std::move(pm));
 	}
@@ -589,10 +594,12 @@ bool DepthMapsData::EstimateDepthMap(IIndex idxImage, int nGeometricIter)
 	#ifdef _USE_CUDA
 	if (!pmCUDAPool.empty()) {
 		// claim a pool slot for this worker thread; epoch invalidates the claim
-		// across phase boundaries so re-used OS threads pick a fresh slot
+		// across phase boundaries so re-used OS threads pick a fresh slot. also
+		// re-claim when a thread reused across DepthMapsData instances holds a slot
+		// now out of range for a smaller pool (epochs can collide at the value 0)
 		static thread_local int s_slot = -1;
 		static thread_local Thread::safe_t s_epoch = (Thread::safe_t)-1;
-		if (s_slot < 0 || s_epoch != pmCUDAEpoch) {
+		if (!ISINSIDE(s_slot, 0, (int)pmCUDAPool.size()) || s_epoch != pmCUDAEpoch) {
 			s_slot = (int)(Thread::safeInc(pmCUDANextIdx) % (Thread::safe_t)pmCUDAPool.size());
 			s_epoch = pmCUDAEpoch;
 		}
@@ -607,7 +614,10 @@ bool DepthMapsData::EstimateDepthMap(IIndex idxImage, int nGeometricIter)
 		// the pool's bGeomConsistency state (Init/ReinitMetalPoolForGeom) selects the mode
 		static thread_local int s_slotM = -1;
 		static thread_local Thread::safe_t s_epochM = (Thread::safe_t)-1;
-		if (s_slotM < 0 || s_epochM != pmMetalEpoch) {
+		// re-claim a slot when uninitialized, after a phase boundary (epoch bump), or
+		// when a thread reused across DepthMapsData instances holds a slot that is now
+		// out of range for a smaller pool (epochs can collide at the initial value 0)
+		if (!ISINSIDE(s_slotM, 0, (int)pmMetalPool.size()) || s_epochM != pmMetalEpoch) {
 			s_slotM = (int)(Thread::safeInc(pmMetalNextIdx) % (Thread::safe_t)pmMetalPool.size());
 			s_epochM = pmMetalEpoch;
 		}

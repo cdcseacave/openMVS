@@ -3,9 +3,9 @@
 *
 * Metal compute backend for PatchMatch dense densification (Apple Silicon).
 * Objective-C++ implementation behind the pure-C++ PIMPL in PatchMatchMetal.h.
-* Mirrors MVS::CUDA::PatchMatch::EstimateDepthMap (multi-resolution photometric
-* PatchMatch); geometric-consistency is a follow-up (kernels already support it
-* via the GEOM function constant).
+* Mirrors MVS::CUDA::PatchMatch::EstimateDepthMap: multi-resolution PatchMatch
+* with both photometric and geometric-consistency passes (the latter selected
+* via the GEOM function constant and neighbor depth-map textures).
 */
 
 #include "Common.h"
@@ -126,14 +126,18 @@ void PatchMatch::EstimateDepthMap(DepthData& depthData)
 	TD_TIMER_STARTD();
 	ASSERT(depthData.images.size() > 1);
 
-	@autoreleasepool {
 	DepthData& fullResDepthData(depthData);
 	const bool geom = params.bGeomConsistency;
 	const unsigned totalScaleNumber(geom ? 0u : OPTDENSE::nSubResolutionLevels);
 	DepthMap lowResDepthMap;
 	NormalMap lowResNormalMap;
 	ViewsMap lowResViewsMap;
-	const IIndex numImages = depthData.images.size();
+	// the shader's texture arrays hold METAL_MAX_VIEWS entries (reference + neighbors);
+	// clamp so a user-configured OPTDENSE::nMaxViews beyond the cap cannot overflow the
+	// texture bindings or index past the shader arrays (CUDA guards the same cap with an
+	// ASSERT in UploadCameras). images are score-ordered, so we keep the best neighbors.
+	ASSERT(depthData.images.size() <= METAL_MAX_VIEWS);
+	const IIndex numImages = MINF((IIndex)depthData.images.size(), (IIndex)METAL_MAX_VIEWS);
 	params.nNumViews = (int)numImages - 1;
 	params.nInitTopK = MINF(params.nInitTopK, params.nNumViews);
 	params.fDepthMin = depthData.dMin;
@@ -141,6 +145,10 @@ void PatchMatch::EstimateDepthMap(DepthData& depthData)
 	const int maxPixelViews(MINF(params.nNumViews, 4));
 
 	for (unsigned scaleNumber = totalScaleNumber + 1; scaleNumber-- > 0; ) {
+		// per-scale pool: drains this scale's textures/buffers/command buffer before
+		// the next scale allocates, instead of holding every scale's Metal objects
+		// resident until the whole multi-resolution loop returns
+		@autoreleasepool {
 		const float scale = 1.f / POWI(2, scaleNumber);
 		DepthData currentDepthData(DepthMapsData::ScaleDepthData(fullResDepthData, scale));
 		DepthData& dd(scaleNumber == 0 ? fullResDepthData : currentDepthData);
@@ -178,16 +186,18 @@ void PatchMatch::EstimateDepthMap(DepthData& depthData)
 		const int area = W * Hh;
 		id<MTLDevice> dev = impl->device;
 
-		// upload cameras + image textures
+		// upload cameras + image textures; each view is sized to its own image
+		// (neighbor views can differ in resolution from the reference, so a shared
+		// reference-sized descriptor would overflow replaceRegion for larger neighbors)
 		std::vector<MtlCamera> cams(numImages);
 		NSMutableArray<id<MTLTexture>>* texs = [NSMutableArray arrayWithCapacity:numImages];
-		MTLTextureDescriptor* td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatR32Float
-			width:W height:Hh mipmapped:NO];
-		td.usage = MTLTextureUsageShaderRead;
 		for (IIndex i = 0; i < numImages; ++i) {
 			const DepthData::ViewData& view = dd.images[i];
 			const Image32F& image = view.image;
 			cams[i] = ConvertCamera(view.camera, image.cols, image.rows);
+			MTLTextureDescriptor* td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatR32Float
+				width:image.cols height:image.rows mipmapped:NO];
+			td.usage = MTLTextureUsageShaderRead;
 			id<MTLTexture> t = [dev newTextureWithDescriptor:td];
 			[t replaceRegion:MTLRegionMake2D(0, 0, image.cols, image.rows) mipmapLevel:0
 				withBytes:image.ptr<float>() bytesPerRow:image.step[0]];
@@ -268,33 +278,35 @@ void PatchMatch::EstimateDepthMap(DepthData& depthData)
 		id<MTLComputePipelineState> psB = geom ? impl->psBlackG : impl->psBlack;
 		id<MTLComputePipelineState> psR = geom ? impl->psRedG : impl->psRed;
 
+		// one command buffer per scale: each pass gets its own encoder so Metal's
+		// automatic hazard tracking serializes the read-after-write dependencies on
+		// the shared device buffers, while a single host sync at the end replaces the
+		// per-kernel waitUntilCompleted round-trips (the kernels were never able to
+		// overlap anyway, so results are identical — only the CPU stalls are removed).
+		id<MTLCommandBuffer> cb = [impl->queue commandBuffer];
 		// InitializeScore (full grid)
 		{
-			id<MTLCommandBuffer> cb = [impl->queue commandBuffer];
 			id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoder];
 			[enc setComputePipelineState:psI];
 			bindCommon(enc);
 			[enc dispatchThreads:MTLSizeMake(W, Hh, 1) threadsPerThreadgroup:tg];
 			[enc endEncoding];
-			[cb commit]; [cb waitUntilCompleted];
 		}
 		// checkerboard iterations
 		for (int iter = 0; iter < params.nEstimationIters; ++iter) {
-			id<MTLBuffer> bIter = [dev newBufferWithBytes:&iter length:sizeof(int) options:MTLResourceStorageModeShared];
 			for (int pass = 0; pass < 2; ++pass) {
-				id<MTLCommandBuffer> cb = [impl->queue commandBuffer];
 				id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoder];
 				[enc setComputePipelineState:(pass==0 ? psB : psR)];
 				bindCommon(enc);
-				[enc setBuffer:bIter offset:0 atIndex:7];
+				// setBytes copies the value into the command buffer at encode time,
+				// so each pass captures its own iter without a per-iter MTLBuffer
+				[enc setBytes:&iter length:sizeof(int) atIndex:7];
 				[enc dispatchThreads:MTLSizeMake(W, (Hh+1)/2, 1) threadsPerThreadgroup:tg];
 				[enc endEncoding];
-				[cb commit]; [cb waitUntilCompleted];
 			}
 		}
 		// FilterPlanes (full grid) if requested
 		if (params.fThresholdKeepCost > 0) {
-			id<MTLCommandBuffer> cb = [impl->queue commandBuffer];
 			id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoder];
 			[enc setComputePipelineState:impl->psFilter];
 			[enc setBuffer:bPlanes offset:0 atIndex:1];
@@ -303,8 +315,9 @@ void PatchMatch::EstimateDepthMap(DepthData& depthData)
 			[enc setBuffer:bPrm offset:0 atIndex:6];
 			[enc dispatchThreads:MTLSizeMake(W, Hh, 1) threadsPerThreadgroup:tg];
 			[enc endEncoding];
-			[cb commit]; [cb waitUntilCompleted];
 		}
+		[cb commit];
+		[cb waitUntilCompleted];
 
 		// readback: planes -> depth/normal, costs -> conf, sel -> views
 		const float* costs = (const float*)bCosts.contents;
@@ -341,8 +354,8 @@ void PatchMatch::EstimateDepthMap(DepthData& depthData)
 			lowResNormalMap = dd.normalMap;
 			lowResViewsMap = dd.viewsMap;
 		}
+		} // @autoreleasepool (per scale)
 	}
-	} // @autoreleasepool
 
 	DEBUG_EXTRA("Depth-map for image %3u estimated via Metal: %dx%d (%s)",
 		depthData.images.front().GetID(),

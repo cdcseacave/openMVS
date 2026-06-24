@@ -54,14 +54,14 @@ cxx_library_with_type(MVS "Libs" "" "${cxx_default}"
 	${CUDA_LIBRARY_FILES_C} ${CUDA_LIBRARY_FILES_H}
 )
 
-# Metal backend: compile the .mm as Objective-C++ with ARC, skip the C++ PCH,
-# and link the Apple frameworks.
+# Metal backend: compile the .mm as Objective-C++ with ARC and skip the C++ PCH.
+# The Metal/Foundation frameworks are linked centrally via OpenMVS_EXTRA_LIBS
+# (root CMakeLists) and propagate here transitively through Common.
 if(_USE_METAL)
 	set_source_files_properties("${CMAKE_CURRENT_SOURCE_DIR}/PatchMatchMetal.mm" PROPERTIES
 		SKIP_PRECOMPILE_HEADERS ON
 		COMPILE_OPTIONS "-fobjc-arc")
 	TARGET_INCLUDE_DIRECTORIES(MVS PRIVATE "${CMAKE_CURRENT_BINARY_DIR}") # generated PatchMatchMetal_msl.h
-	TARGET_LINK_LIBRARIES(MVS PUBLIC "-framework Metal" "-framework Foundation")
 endif()
 
 # MSVC scalpel: Camera.cpp and Scene.cpp drag in a template graph (CGAL/Eigen/OpenCV)
