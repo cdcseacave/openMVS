@@ -153,6 +153,12 @@ struct MVS_API DenseDepthMapData {
 	int nEstimationGeometricIter;
 	int nFusionMode;
 	float fSampleMeshNeighbors;
+	// atomic shutdown latch for an estimate phase, reset to 0 before each phase:
+	// the first worker to reach the end-of-work branch increments it from 0 to 1
+	// and enqueues exactly one EVT_CLOSE per worker. Keeps the EVT_CLOSE count
+	// balanced so the queue ends empty (see DenseReconstructionEstimate), which is
+	// what lets a non-empty queue stay a reliable failure signal.
+	volatile Thread::safe_t nClosing;
 	STEREO::SemiGlobalMatcher sgm;
 	// number of workers in the dense-reconstruction ThreadPool; set by
 	// DenseReconstruction once the CUDA pool size is known. Used by the worker

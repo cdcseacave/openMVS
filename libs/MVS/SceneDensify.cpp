@@ -1986,7 +1986,7 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 
 DenseDepthMapData::DenseDepthMapData(Scene& _scene, int _nFusionMode, float _fSampleMeshNeighbors) :
 	scene(_scene), depthMaps(_scene), idxImage(0), sem(1), nEstimationGeometricIter(-1),
-	nFusionMode(_nFusionMode), fSampleMeshNeighbors(_fSampleMeshNeighbors), nDenseWorkers(2u)
+	nFusionMode(_nFusionMode), fSampleMeshNeighbors(_fSampleMeshNeighbors), nClosing(0), nDenseWorkers(2u)
 {
 	if (nFusionMode < 0) {
 		STEREO::SemiGlobalMatcher::CreateThreads(scene.nMaxThreads);
@@ -2247,6 +2247,7 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 	if (OPTDENSE::nEstimationGeometricIters && data.nFusionMode >= 0)
 		OPTDENSE::nOptimize = 0;
 	data.idxImage = 0;
+	data.nClosing = 0;
 	ASSERT(data.events.IsEmpty());
 	data.events.AddEvent(new EVTProcessImage(0));
 	// start working threads
@@ -2265,13 +2266,10 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 		DenseReconstructionEstimate((void*)&data);
 	}
 	GET_LOGCONSOLE().Play();
-	// Workers have joined. A non-empty queue here is NOT a failure: the shutdown
-	// handshake broadcasts one EVT_CLOSE per sibling and more than one worker can
-	// reach the end-branch, so orphaned EVT_CLOSE sentinels may linger (genuine
-	// estimate errors abort the process directly, they never signal via the queue).
-	// Drain them so the next phase starts from the empty queue it asserts before
-	// re-seeding the work.
-	data.events.Clear();
+	// the balanced shutdown leaves the queue empty on success; anything left is a
+	// genuine worker failure (e.g. a propagated EVTFail)
+	if (!data.events.IsEmpty())
+		return false;
 	data.progress.Release();
 
 	if (data.nFusionMode >= 0) {
@@ -2288,6 +2286,7 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 			if (data.nEstimationGeometricIter+1 == (int)OPTDENSE::nEstimationGeometricIters)
 				OPTDENSE::nOptimize = nOptimize;
 			data.idxImage = 0;
+			data.nClosing = 0;
 			ASSERT(data.events.IsEmpty());
 			data.events.AddEvent(new EVTProcessImage(0));
 			// start working threads
@@ -2305,9 +2304,8 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 				DenseReconstructionEstimate((void*)&data);
 			}
 			GET_LOGCONSOLE().Play();
-			// drain orphaned EVT_CLOSE sentinels (see note in the photometric phase)
-			// before the next geometric iteration re-seeds the queue.
-			data.events.Clear();
+			if (!data.events.IsEmpty())
+				return false;
 			data.progress.Release();
 			// replace raw depth-maps with the geometric-consistent ones
 			for (IIndex idx: data.images) {
@@ -2369,11 +2367,18 @@ void Scene::DenseReconstructionEstimate(void* pData)
 			const EVTProcessImage& evtImage = *((EVTProcessImage*)(Event*)evt);
 			if (evtImage.idxImage >= data.images.size()) {
 				if (nMaxThreads > 1) {
-					// close working threads: broadcast one EVT_CLOSE per sibling.
-					// This worker exits below; each other worker consumes one event.
-					// (Old single-event pattern hung whenever nDenseWorkers > 2.)
-					for (unsigned k = 1; k < data.nDenseWorkers; ++k)
-						data.events.AddEvent(new EVTClose);
+					// Work is exhausted. More than one worker can reach this branch
+					// (each pulls a distinct safeInc'd index past the end), so don't
+					// let every one of them broadcast: the first worker here (latch
+					// 0->1) enqueues exactly one EVT_CLOSE per worker -- itself
+					// included -- and every worker, including the ones in this branch,
+					// then exits by consuming exactly one. The counts stay balanced,
+					// so no orphaned EVT_CLOSE is left behind and a non-empty queue
+					// after the join remains a reliable failure signal.
+					if (Thread::safeInc(data.nClosing) == 1)
+						for (unsigned k = 0; k < data.nDenseWorkers; ++k)
+							data.events.AddEvent(new EVTClose);
+					break; // loop back to consume our own EVT_CLOSE
 				}
 				return;
 			}
