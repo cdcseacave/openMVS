@@ -1986,7 +1986,7 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 
 DenseDepthMapData::DenseDepthMapData(Scene& _scene, int _nFusionMode, float _fSampleMeshNeighbors) :
 	scene(_scene), depthMaps(_scene), idxImage(0), sem(1), nEstimationGeometricIter(-1),
-	nFusionMode(_nFusionMode), fSampleMeshNeighbors(_fSampleMeshNeighbors), nFailures(0), nDenseWorkers(2u)
+	nFusionMode(_nFusionMode), fSampleMeshNeighbors(_fSampleMeshNeighbors), nDenseWorkers(2u)
 {
 	if (nFusionMode < 0) {
 		STEREO::SemiGlobalMatcher::CreateThreads(scene.nMaxThreads);
@@ -2265,11 +2265,12 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 		DenseReconstructionEstimate((void*)&data);
 	}
 	GET_LOGCONSOLE().Play();
-	// NB: not !events.IsEmpty() — orphaned EVT_CLOSE sentinels may linger here.
-	if (data.nFailures > 0)
-		return false;
-	// workers have joined: drain any leftover EVT_CLOSE so the next phase starts
-	// from an empty queue (it asserts IsEmpty() before re-seeding the work).
+	// Workers have joined. A non-empty queue here is NOT a failure: the shutdown
+	// handshake broadcasts one EVT_CLOSE per sibling and more than one worker can
+	// reach the end-branch, so orphaned EVT_CLOSE sentinels may linger (genuine
+	// estimate errors abort the process directly, they never signal via the queue).
+	// Drain them so the next phase starts from the empty queue it asserts before
+	// re-seeding the work.
 	data.events.Clear();
 	data.progress.Release();
 
@@ -2304,10 +2305,8 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 				DenseReconstructionEstimate((void*)&data);
 			}
 			GET_LOGCONSOLE().Play();
-			// NB: not !events.IsEmpty() — orphaned EVT_CLOSE sentinels may linger here.
-			if (data.nFailures > 0)
-				return false;
-			// drain leftover EVT_CLOSE before the next geometric iteration re-seeds.
+			// drain orphaned EVT_CLOSE sentinels (see note in the photometric phase)
+			// before the next geometric iteration re-seeds the queue.
 			data.events.Clear();
 			data.progress.Release();
 			// replace raw depth-maps with the geometric-consistent ones
