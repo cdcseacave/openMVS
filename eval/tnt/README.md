@@ -59,6 +59,13 @@ tar -xzf Truck_cuda_result.tar.gz -C $TNT_ROOT/Truck/out_cuda/
 python3 make_table.py $TNT_ROOT $SCENES   # CUDA column now populated
 ```
 
+`evaluate_f1.sh` derives the reconstruction's TnT trajectory from the shared
+`scene.mvs` itself (`InterfaceCOLMAP --binary 0` → `colmap_to_tnt_log.py`), so it
+works from just the published tarball + ground truth — no `colmap/sparse/0`
+needed. Note: the `scene.mvs` lives in its own COLMAP frame, so do **not** pass
+the GT's `<Scene>_COLMAP_SfM.log` as the trajectory — it has the same entry count
+but different poses, which silently breaks the alignment and collapses F1 (~0.01).
+
 ## Results — CUDA column filled
 
 The CUDA column was produced on an NVIDIA GPU (i7-13700KF host) by densifying the

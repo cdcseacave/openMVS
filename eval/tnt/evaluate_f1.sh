@@ -22,7 +22,6 @@ PLY="${2:?usage: evaluate_f1.sh <Scene> <fused.ply> <label>}"
 LABEL="${3:?usage: evaluate_f1.sh <Scene> <fused.ply> <label>}"
 GT="$TNT_ROOT/$SCENE/gt"
 EVAL="$TNT_ROOT/$SCENE/eval_$LABEL"
-SPARSE="$TNT_ROOT/$SCENE/colmap/sparse/0"
 IMG="$TNT_ROOT/$SCENE/images"
 TRAJ="$TNT_ROOT/$SCENE/traj_tnt.log"
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -40,17 +39,34 @@ fi
 
 # 1) Our reconstruction's trajectory in TnT .log format (one entry per input
 #    image, identity for unregistered) — required as --traj-path so the toolbox
-#    can align our cloud's frame to the GT. Built once per scene, shared by all
-#    backends (same SfM -> same scene.mvs -> same poses).
+#    can align our cloud's frame to the GT.
+#
+#    Derive it from the shared scene.mvs ITSELF (export to a COLMAP text model
+#    with InterfaceCOLMAP, then colmap_to_tnt_log.py). This keeps the eval
+#    self-contained from just the scene.mvs + its images — no separate
+#    colmap/sparse/0 needed — which is exactly what a CUDA volunteer or anyone
+#    reproducing from the published tarball has.
+#
+#    IMPORTANT: the scene.mvs lives in its OWN COLMAP frame. Do NOT substitute
+#    the GT's <Scene>_COLMAP_SfM.log as the trajectory — it has the same entry
+#    count but different poses, so the alignment silently breaks and F1 collapses
+#    (~0.01). The poses must come from our reconstruction, i.e. the scene.mvs.
 if [ ! -f "$TRAJ" ]; then
-  [ -d "$SPARSE" ] || die "missing COLMAP model $SPARSE (run prepare_scene.sh)"
-  log "[$SCENE] generating TnT trajectory log from COLMAP model"
-  mkdir -p "$SPARSE/../sparse_txt"
-  colmap model_converter --input_path "$SPARSE" \
-    --output_path "$SPARSE/../sparse_txt" --output_type TXT >/dev/null 2>&1 || \
-    die "colmap model_converter failed"
+  MVS="$TNT_ROOT/$SCENE/mvs/scene.mvs"
+  [ -f "$MVS" ] || die "missing $MVS"
+  [ -x "$INTERFACE_COLMAP" ] || die "InterfaceCOLMAP not built (see setup.sh)"
+  log "[$SCENE] deriving TnT trajectory from scene.mvs (InterfaceCOLMAP export)"
+  EXPORT="$TNT_ROOT/$SCENE/colmap_export"; rm -rf "$EXPORT"; mkdir -p "$EXPORT"
+  # scene.mvs references its images by relative path, so export from its folder.
+  ( cd "$(dirname "$MVS")" && "$INTERFACE_COLMAP" -i "$MVS" -o "$EXPORT" --binary 0 ) \
+    >/dev/null 2>&1 || die "InterfaceCOLMAP export failed"
+  IMAGES_TXT="$(find "$EXPORT" -name images.txt | head -1)"
+  [ -n "$IMAGES_TXT" ] || die "no images.txt from InterfaceCOLMAP export"
+  # filename list for the per-image entries: the (undistorted) images scene.mvs
+  # references, falling back to the raw image set if the dense dir is absent.
+  IMGDIR="$TNT_ROOT/$SCENE/colmap/dense/images"; [ -d "$IMGDIR" ] || IMGDIR="$IMG"
   "$TNT_PYTHON" "$HERE/colmap_to_tnt_log.py" \
-    "$SPARSE/../sparse_txt/images.txt" "$IMG" "$TRAJ" jpg || die "traj conversion failed"
+    "$IMAGES_TXT" "$IMGDIR" "$TRAJ" jpg || die "traj conversion failed"
 fi
 
 # 2) The toolbox derives the scene name from basename(--dataset-dir) and expects
