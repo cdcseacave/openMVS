@@ -253,7 +253,7 @@ inline T MAXF3(const T& x1, const T& x2, const T& x3) {
 }
 
 template<typename T>
-FORCEINLINE T RANDOM() { return T(RAND())/RAND_MAX; }
+FORCEINLINE T RANDOM() { return T(RAND())/T(RAND_MAX); }
 
 template<typename T1, typename T2>
 union TAliasCast {
