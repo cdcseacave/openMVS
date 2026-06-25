@@ -1986,7 +1986,7 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 
 DenseDepthMapData::DenseDepthMapData(Scene& _scene, int _nFusionMode, float _fSampleMeshNeighbors) :
 	scene(_scene), depthMaps(_scene), idxImage(0), sem(1), nEstimationGeometricIter(-1),
-	nFusionMode(_nFusionMode), fSampleMeshNeighbors(_fSampleMeshNeighbors), nDenseWorkers(2u)
+	nFusionMode(_nFusionMode), fSampleMeshNeighbors(_fSampleMeshNeighbors), nFailures(0), nDenseWorkers(2u)
 {
 	if (nFusionMode < 0) {
 		STEREO::SemiGlobalMatcher::CreateThreads(scene.nMaxThreads);
@@ -2265,8 +2265,12 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 		DenseReconstructionEstimate((void*)&data);
 	}
 	GET_LOGCONSOLE().Play();
-	if (!data.events.IsEmpty())
+	// NB: not !events.IsEmpty() — orphaned EVT_CLOSE sentinels may linger here.
+	if (data.nFailures > 0)
 		return false;
+	// workers have joined: drain any leftover EVT_CLOSE so the next phase starts
+	// from an empty queue (it asserts IsEmpty() before re-seeding the work).
+	data.events.Clear();
 	data.progress.Release();
 
 	if (data.nFusionMode >= 0) {
@@ -2300,8 +2304,11 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 				DenseReconstructionEstimate((void*)&data);
 			}
 			GET_LOGCONSOLE().Play();
-			if (!data.events.IsEmpty())
+			// NB: not !events.IsEmpty() — orphaned EVT_CLOSE sentinels may linger here.
+			if (data.nFailures > 0)
 				return false;
+			// drain leftover EVT_CLOSE before the next geometric iteration re-seeds.
+			data.events.Clear();
 			data.progress.Release();
 			// replace raw depth-maps with the geometric-consistent ones
 			for (IIndex idx: data.images) {

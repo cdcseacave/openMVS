@@ -153,6 +153,12 @@ struct MVS_API DenseDepthMapData {
 	int nEstimationGeometricIter;
 	int nFusionMode;
 	float fSampleMeshNeighbors;
+	// explicit failure flag for a worker phase. A non-empty event queue is NOT a
+	// reliable error signal: the EVT_CLOSE sentinels broadcast at shutdown may
+	// still be queued when the workers join (more likely with nDenseWorkers > 2,
+	// e.g. the Metal/CUDA pools, and multiplied by each geometric iteration), so
+	// DenseReconstruction checks this counter instead of events.IsEmpty().
+	volatile Thread::safe_t nFailures;
 	STEREO::SemiGlobalMatcher sgm;
 	// number of workers in the dense-reconstruction ThreadPool; set by
 	// DenseReconstruction once the CUDA pool size is known. Used by the worker
