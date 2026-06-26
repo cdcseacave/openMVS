@@ -42,7 +42,7 @@ die()  { printf '\033[1;31m[tnt][err]\033[0m %s\n' "$*" >&2; exit 1; }
 # Count vertices in a binary/ascii PLY without loading it fully.
 ply_vertex_count() {
   awk '
-    /^element vertex/ { print $3; found=1 }
-    /^end_header/     { if (found) exit; else exit }
+    /^element vertex/ { print $3; exit }
+    /^end_header/     { exit }
   ' "$1" 2>/dev/null || echo 0
 }

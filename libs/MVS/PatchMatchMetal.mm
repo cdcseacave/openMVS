@@ -134,6 +134,10 @@ void PatchMatch::Init(bool bGeomConsistency)
 	}
 }
 
+// No-op: mirrors the CUDA interface, but the Metal backend keeps no persistent
+// per-estimate GPU state to free between phases -- every buffer/texture is
+// allocated and freed inside EstimateDepthMap's per-scale @autoreleasepool (ARC),
+// while device/queue/pipelines live for the whole PatchMatch object lifetime.
 void PatchMatch::Release() {}
 
 static MtlCamera ConvertCamera(const Camera& cam, int cols, int rows)
