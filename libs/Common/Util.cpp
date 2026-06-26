@@ -646,17 +646,43 @@ bool OSSupportsAVX()
 
 #else // _MSC_VER
 
+#ifndef _ENVIRONMENT64
+// 32-bit x86 only: probe SSE OS-support via a SIGILL handler (see OSSupportsSSE).
+#include <csetjmp>
+#include <csignal>
+namespace {
+sigjmp_buf g_sigIllJmp;
+void OnSigIll(int) { siglongjmp(g_sigIllJmp, 1); }
+}
+#endif
+
 // Function to detect SSE availability in operating system.
 bool OSSupportsSSE()
 {
-	// try SSE instruction and look for crash
-	try {
-		asm("xorps %xmm0, %xmm0");
-	}
-	catch(int e) {
-		return false;     // unknown exception occurred
-	}
+	#ifdef _ENVIRONMENT64
+	// SSE/SSE2 are part of the mandatory x86-64 baseline and are always enabled
+	// by any 64-bit OS, so on x86-64 they are guaranteed available here.
 	return true;
+	#else
+	// 32-bit x86: SSE is optional and the OS must enable it (it has to preserve
+	// the XMM state across context switches). Probe by executing an SSE
+	// instruction under a temporary SIGILL handler: a disabled/unsupported
+	// instruction raises a signal — not a C++ exception, which is why the old
+	// try/catch could never catch it — recovered via sigsetjmp/siglongjmp.
+	struct sigaction sa, old;
+	memset(&sa, 0, sizeof(sa));
+	sa.sa_handler = &OnSigIll;
+	sigemptyset(&sa.sa_mask);
+	if (sigaction(SIGILL, &sa, &old) != 0)
+		return true; // cannot install handler; assume enabled on a modern OS
+	volatile bool supported = true;
+	if (sigsetjmp(g_sigIllJmp, 1) == 0)
+		asm volatile ("xorps %xmm0, %xmm0");
+	else
+		supported = false;
+	sigaction(SIGILL, &old, NULL);
+	return supported;
+	#endif
 }
 // Function to detect AVX availability in operating system.
 bool OSSupportsAVX()
@@ -723,7 +749,6 @@ void Util::LogBuild()
 }
 
 // print information about the memory usage
-#if _PLATFORM_X86
 #ifdef _MSC_VER
 #include <Psapi.h>
 #pragma comment(lib, "Psapi.lib")
@@ -744,6 +769,22 @@ void Util::LogMemoryInfo()
 	LOG(_T("\tPeakPagefileUsage %s"), SEACAVE::Util::formatBytes(pmc.PeakPagefileUsage).c_str());
 	LOG(_T("} ENDINFO"));
 }
+#elif defined(__APPLE__) // _MSC_VER
+#include <mach/mach.h>
+void Util::LogMemoryInfo()
+{
+	// macOS (Intel and Apple Silicon) has no procfs; ask the Mach kernel for
+	// the current task's resident/virtual footprint instead.
+	mach_task_basic_info_data_t info;
+	mach_msg_type_number_t count = MACH_TASK_BASIC_INFO_COUNT;
+	if (task_info(mach_task_self(), MACH_TASK_BASIC_INFO, (task_info_t)&info, &count) != KERN_SUCCESS)
+		return;
+	LOG(_T("MEMORYINFO: {"));
+	LOG(_T("\tPeakResidentSize %s"), SEACAVE::Util::formatBytes((int64_t)info.resident_size_max).c_str());
+	LOG(_T("\tResidentSize %s"), SEACAVE::Util::formatBytes((int64_t)info.resident_size).c_str());
+	LOG(_T("\tVirtualSize %s"), SEACAVE::Util::formatBytes((int64_t)info.virtual_size).c_str());
+	LOG(_T("} ENDINFO"));
+}
 #else // _MSC_VER
 void Util::LogMemoryInfo()
 {
@@ -759,11 +800,6 @@ void Util::LogMemoryInfo()
 	LOG(_T("} ENDINFO"));
 }
 #endif // _MSC_VER
-#else // _PLATFORM_X86
-void Util::LogMemoryInfo()
-{
-}
-#endif // _PLATFORM_X86
 
 
 

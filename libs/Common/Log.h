@@ -42,7 +42,12 @@ namespace SEACAVE {
 
 class GENERAL_API Log
 {
-	DECLARE_SINGLETON(Log);
+	// DEFINE_SINGLETON (not DECLARE_SINGLETON): the singleton must be unique
+	// across module boundaries. Under shared-library builds with hidden inline
+	// visibility, a header-inline Meyers singleton yields a separate instance
+	// per DLL/.dylib, so the app would register listeners on one Log while the
+	// libraries write to their own (listener-less) Log.
+	DEFINE_SINGLETON(Log);
 
 public:
 	typedef uint32_t Idx;
@@ -145,7 +150,7 @@ protected:
 
 class GENERAL_API LogFile
 {
-	DECLARE_SINGLETON(LogFile);
+	DEFINE_SINGLETON(LogFile); // unique across modules (see Log above)
 
 public:
 	~LogFile() { Close(); }
@@ -168,7 +173,7 @@ protected:
 
 class GENERAL_API LogConsole
 {
-	DECLARE_SINGLETON(LogConsole);
+	DEFINE_SINGLETON(LogConsole); // unique across modules (see Log above)
 
 public:
 	~LogConsole() { Close(); }

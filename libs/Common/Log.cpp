@@ -42,6 +42,14 @@ Log::Log()
 	ResetTypes();
 }
 
+// Out-of-line so the single instance lives in (and is exported from) libCommon,
+// shared across every module instead of one private copy per shared library.
+Log& Log::GetInstance()
+{
+	static Log instance;
+	return instance;
+}
+
 void Log::RegisterListener(ClbkRecordMsg clbk)
 {
 	ASSERT(m_arrRecordClbk != NULL);
@@ -176,6 +184,12 @@ LogFile::LogFile()
 {
 }
 
+LogFile& LogFile::GetInstance()
+{
+	static LogFile instance;
+	return instance;
+}
+
 bool LogFile::Open(LPCTSTR logName)
 {
 	Util::ensureFolder(logName);
@@ -259,6 +273,12 @@ LogConsole::LogConsole()
 	m_cerr(NULL), m_cerrOld(NULL),
 	bManageConsole(false)
 {
+}
+
+LogConsole& LogConsole::GetInstance()
+{
+	static LogConsole instance;
+	return instance;
 }
 
 bool LogConsole::IsOpen() const

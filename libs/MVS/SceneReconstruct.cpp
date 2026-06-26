@@ -339,12 +339,19 @@ inline Plane getFacetPlane(const facet_t& facet)
 
 // Check if a point (p) is coplanar with a triangle (a, b, c);
 // return orientation type
-#if _PLATFORM_X86 && defined(__GNUC__)
+// Disable FP contraction (FMA) for this geometric predicate so the sign of the
+// determinant is reproducible across architectures and compilers: a fused
+// multiply-add rounds once instead of twice and can flip the sign near the
+// epsilon threshold
+#if defined(__GNUC__) && !defined(__clang__)
 #pragma GCC push_options
-#pragma GCC target ("no-fma")
+#pragma GCC optimize("-ffp-contract=off")
 #endif
 static inline int orientation(const point_t& a, const point_t& b, const point_t& c, const point_t& p)
 {
+	#if defined(__clang__)
+	#pragma clang fp contract(off)
+	#endif
 	#if 0
 	return CGAL::orientation(a, b, c, p);
 	#else
@@ -370,7 +377,7 @@ static inline int orientation(const point_t& a, const point_t& b, const point_t&
 	return CGAL::COPLANAR;
 	#endif
 }
-#if _PLATFORM_X86 && defined(__GNUC__)
+#if defined(__GNUC__) && !defined(__clang__)
 #pragma GCC pop_options
 #endif
 
