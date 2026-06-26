@@ -1,0 +1,4 @@
+# runtime artifacts from local benchmark runs
+InterfaceCOLMAP-*.log
+DensifyPointCloud-*.log
+*.dmap
