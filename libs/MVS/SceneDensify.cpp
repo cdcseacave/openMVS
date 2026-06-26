@@ -33,9 +33,7 @@
 #include "Scene.h"
 #include "SceneDensify.h"
 #include "PatchMatchCUDA.h"
-#ifdef _USE_METAL
 #include "PatchMatchMetal.h"
-#endif // _USE_METAL
 #include "DMapCache.h"
 
 using namespace MVS;
@@ -2210,37 +2208,34 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 	}
 	}
 
-	#ifdef _USE_CUDA
+	#if defined(_USE_CUDA) || defined(_USE_METAL)
 	// One PatchMatch instance per worker thread; host-side prep (image upload,
-	// depth-prior packing, result unpack) then parallelizes while the kernel
-	// launches stay GPU-side-serialized via the cudaEvent_t chain.
+	// depth-prior packing, result unpack) parallelizes across the worker pool while
+	// the backend serializes the kernel launches as needed (CUDA via the cudaEvent_t
+	// chain). The GPU backend (CUDA on Windows/Linux, Metal on Apple) is selected by
+	// the shared --gpu-device param (-1 GPU, -2/cpu/empty CPU).
 	if (!SEACAVE::CUDA::isCpuRequested(SEACAVE::CUDA::desiredDeviceIDs) && data.nFusionMode >= 0) {
 		const unsigned poolSize = (nMaxThreads > 1)
 			? CLAMP(OPTDENSE::nPatchMatchCUDAInstances, 1u, nMaxThreads)
 			: 1u;
-		if (data.depthMaps.AllocateCudaPool(poolSize)) {
+		#ifdef _USE_CUDA
+		const bool bAllocatedPool = data.depthMaps.AllocateCudaPool(poolSize);
+		#else
+		const bool bAllocatedPool = data.depthMaps.AllocateMetalPool(poolSize);
+		#endif
+		if (bAllocatedPool) {
 			// raise the in-flight semaphore so all pool workers can run
 			// EstimateDepthMap concurrently
 			data.sem.Clear(poolSize);
 			data.nDenseWorkers = poolSize;
-		}
-	}
-	#endif // _USE_CUDA
-
-	#ifdef _USE_METAL
-	// Metal compute backend (Apple Silicon): one PatchMatch instance per worker.
-	// Disable with OPENMVS_DISABLE_METAL=1 to force the CPU path.
-	if (!getenv("OPENMVS_DISABLE_METAL") && data.nFusionMode >= 0) {
-		const unsigned poolSize = (nMaxThreads > 1)
-			? CLAMP(OPTDENSE::nPatchMatchCUDAInstances, 1u, nMaxThreads)
-			: 1u;
-		if (data.depthMaps.AllocateMetalPool(poolSize)) {
-			data.sem.Clear(poolSize);
-			data.nDenseWorkers = poolSize;
+			#ifdef _USE_CUDA
+			VERBOSE("Using CUDA compute backend for depth-map estimation (%u workers)", poolSize);
+			#else
 			VERBOSE("Using Metal compute backend for depth-map estimation (%u workers)", poolSize);
+			#endif
 		}
 	}
-	#endif // _USE_METAL
+	#endif // _USE_CUDA || _USE_METAL
 
 	// initialize the queue of images to be processed
 	const int nOptimize(OPTDENSE::nOptimize);

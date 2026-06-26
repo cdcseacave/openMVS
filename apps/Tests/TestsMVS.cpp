@@ -45,8 +45,8 @@ namespace MVS {
 bool PipelineTest(bool forceCPU, bool verbose)
 {
 	TD_TIMER_START();
-	#ifdef _USE_CUDA
-	// force CPU for testing even if CUDA is available
+	#if defined(_USE_CUDA) || defined(_USE_METAL)
+	// force CPU for testing even if a GPU backend is available
 	if (forceCPU)
 		SEACAVE::CUDA::desiredDeviceIDs.clear();
 	#endif

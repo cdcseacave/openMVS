@@ -39,7 +39,7 @@ DENSIFY_PARAMS=(
   --max-resolution 3200
   --number-views 5
   --fusion-mode 0
-  --cuda-device "$GPU"
+  --gpu-device "$GPU"
 )
 
 echo "[cuda] densifying $SCENE on GPU $GPU ..."

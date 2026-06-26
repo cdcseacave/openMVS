@@ -15,8 +15,9 @@ nothing else**:
 1. **SfM is run once per scene** (`prepare_scene.sh`) → a single shared
    `scene.mvs`.
 2. Every backend densifies **that identical `scene.mvs`** with the **identical
-   fixed parameters** in `lib.sh` (`DENSIFY_PARAMS`). Metal is the default on
-   Apple; `OPENMVS_DISABLE_METAL=1` forces the CPU path.
+   fixed parameters** in `lib.sh` (`DENSIFY_PARAMS`). The backend is chosen with
+   the shared `--gpu-device` flag: `-1` selects the GPU (Metal on Apple, CUDA
+   elsewhere), `--gpu-device cpu` forces the CPU path.
 3. **Evaluation is held constant**: the *same* ground truth, crop volume and
    *same* toolbox version (`isl-org/TanksAndTemples`) score every backend's
    fused cloud (`evaluate_f1.sh`).

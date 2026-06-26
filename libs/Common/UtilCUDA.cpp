@@ -8,6 +8,22 @@
 #include "Common.h"
 #include "UtilCUDA.h"
 
+// GPU device-selection string + CPU-sentinel check, shared by all backends and
+// available even when no GPU backend is compiled (UtilCUDA.cpp is always built).
+namespace SEACAVE {
+namespace CUDA {
+GENERAL_API String desiredDeviceIDs("-1");
+// returns true for any of: empty, "-2", "cpu"/case-insensitive, "none"
+bool isCpuRequested(const String& deviceIDs)
+{
+	if (deviceIDs.empty() || deviceIDs == "-2")
+		return true;
+	const String lower(deviceIDs.ToLower());
+	return lower == "cpu" || lower == "none";
+}
+} // namespace CUDA
+} // namespace SEACAVE
+
 #ifdef _USE_CUDA
 
 
@@ -20,7 +36,6 @@ namespace CUDA {
 
 // S T R U C T S ///////////////////////////////////////////////////
 
-GENERAL_API String desiredDeviceIDs("-1");
 GENERAL_API Devices devices;
 
 // validate a CUDA device and fill the Device struct
@@ -104,15 +119,6 @@ static CUresult _selectBestDevice(Device& bestDevice)
 		return CUDA_ERROR_NO_DEVICE;
 	}
 	return CUDA_SUCCESS;
-}
-
-// returns true for any of: empty, "-2", "cpu"/"CPU"/case-insensitive, "none"
-bool isCpuRequested(const String& deviceIDs)
-{
-	if (deviceIDs.empty() || deviceIDs == "-2")
-		return true;
-	const String lower(deviceIDs.ToLower());
-	return lower == "cpu" || lower == "none";
 }
 
 // initialize CUDA devices from a comma-separated list of device IDs

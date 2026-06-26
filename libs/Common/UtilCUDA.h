@@ -8,6 +8,19 @@
 #ifndef  __SEACAVE_CUDA_H__
 #define  __SEACAVE_CUDA_H__
 
+
+// GPU device-selection string shared by all backends (CUDA and Metal), available
+// even when no GPU backend is compiled. Set via --gpu-device:
+// "-1" best GPU, "-2"/"cpu"/"none"/empty CPU, >=0 comma-separated device IDs.
+namespace SEACAVE {
+namespace CUDA {
+extern GENERAL_API String desiredDeviceIDs;
+// returns true if deviceIDs is a CPU sentinel (empty / "-2" / "cpu" / "none")
+GENERAL_API bool isCpuRequested(const String& deviceIDs);
+} // namespace CUDA
+} // namespace SEACAVE
+
+
 #ifdef _USE_CUDA
 
 
@@ -33,8 +46,6 @@
 namespace SEACAVE {
 
 namespace CUDA {
-
-extern GENERAL_API String desiredDeviceIDs;
 
 // global list of initialized devices
 struct Device {
@@ -88,10 +99,6 @@ inline T align(T o, T a) {
 // if deviceIDs is empty, "-2", "cpu", or "none", CUDA is disabled (CPU only)
 GENERAL_API CUresult initDevices(const String& deviceIDs = String());
 inline bool isEnabled() { return !devices.empty(); }
-
-// returns true if deviceIDs is a sentinel that means "do not use CUDA";
-// recognized CPU sentinels: empty string, "-2", "cpu"/"CPU", "none"
-GENERAL_API bool isCpuRequested(const String& deviceIDs);
 /*----------------------------------------------------------------*/
 
 

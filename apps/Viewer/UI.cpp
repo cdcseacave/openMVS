@@ -2573,14 +2573,14 @@ void UI::ShowDensifyWorkflowWindow(Window& window) {
 	ImGui::DragFloat("ROI Border (%)", &opts.borderROI, 0.1f, -100.f, 100.f, "%.2f");
 	if (ImGui::IsItemHovered())
 		ImGui::SetTooltip("Percentage to expand (positive) or shrink (negative) the ROI border.\nUseful to include context or tighten the bounds.");
-	#ifdef _USE_CUDA
-	static char cudaDeviceBuf[64] = {};
-	if (cudaDeviceBuf[0] == '\0')
-		strncpy(cudaDeviceBuf, SEACAVE::CUDA::desiredDeviceIDs.c_str(), sizeof(cudaDeviceBuf)-1);
-	if (ImGui::InputText("CUDA Device(s)", cudaDeviceBuf, sizeof(cudaDeviceBuf)))
-		SEACAVE::CUDA::desiredDeviceIDs = cudaDeviceBuf;
+	#if defined(_USE_CUDA) || defined(_USE_METAL)
+	static char gpuDeviceBuf[64] = {};
+	if (gpuDeviceBuf[0] == '\0')
+		strncpy(gpuDeviceBuf, SEACAVE::CUDA::desiredDeviceIDs.c_str(), sizeof(gpuDeviceBuf)-1);
+	if (ImGui::InputText("GPU Device(s)", gpuDeviceBuf, sizeof(gpuDeviceBuf)))
+		SEACAVE::CUDA::desiredDeviceIDs = gpuDeviceBuf;
 	if (ImGui::IsItemHovered())
-		ImGui::SetTooltip("CUDA device(s) for depth-map estimation\n(comma-separated IDs, -1 for best GPU, empty for CPU)");
+		ImGui::SetTooltip("GPU device(s) for depth-map estimation\n(comma-separated IDs, -1 for best GPU, empty for CPU)");
 	#endif
 
 	ImGui::Separator();

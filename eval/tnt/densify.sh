@@ -7,8 +7,8 @@
 #   writes $TNT_ROOT/<Scene>/out_<backend>/scene_dense.ply
 #          $TNT_ROOT/<Scene>/out_<backend>/metrics.json
 #
-# Backend selection (this OpenMVS lineage): Metal is the default on Apple;
-# OPENMVS_DISABLE_METAL=1 forces the pure-CPU DepthEstimator path.
+# Backend selection: the shared --gpu-device flag picks the backend; -1 uses the
+# GPU (Metal on Apple, CUDA elsewhere), 'cpu' forces the pure-CPU DepthEstimator.
 source "$(cd "$(dirname "$0")" && pwd)/lib.sh"
 
 SCENE="${1:?usage: densify.sh <Scene> <metal|cpu>}"
@@ -28,8 +28,8 @@ if [ -z "${FORCE:-}" ] && [ -f "$OUT/metrics.json" ] && \
 fi
 
 case "$BACKEND" in
-  metal) unset OPENMVS_DISABLE_METAL ;;
-  cpu)   export OPENMVS_DISABLE_METAL=1 ;;
+  metal) BACKEND_ARGS=(--gpu-device -1) ;;
+  cpu)   BACKEND_ARGS=(--gpu-device cpu) ;;
   *)     die "backend must be 'metal' or 'cpu' (CUDA volunteers use contribute_cuda.sh)" ;;
 esac
 
@@ -38,6 +38,7 @@ log "[$SCENE/$BACKEND] densifying (params: ${DENSIFY_PARAMS[*]})"
 TIMELOG="$OUT/time.txt"
 /usr/bin/time -l "$DPC" "$MVS" \
     "${DENSIFY_PARAMS[@]}" \
+    "${BACKEND_ARGS[@]}" \
     -w "$OUT" -o "$OUT/scene_dense.mvs" \
     >"$OUT/densify.log" 2>"$TIMELOG" || die "densify failed, see $OUT/densify.log"
 
