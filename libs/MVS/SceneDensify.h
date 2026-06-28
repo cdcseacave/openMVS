@@ -96,11 +96,12 @@ public:
 
 	void EstimateNormalMaps();
 
-	bool AdjustConfidenceFast(DepthData& depthData, const IIndexArr& idxNeighbors);
+	void ComputeIntraMapPrior(const DepthData& depthData, ConfidenceMap& priorMap) const;
 	bool AdjustConfidence(DepthData& depthDataRef, const IIndexArr& idxNeighbors);
 	void MergeDepthMaps(PointCloud& pointcloud, bool bEstimateColor, bool bEstimateNormal);
 	void FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, bool bEstimateNormal);
 	void DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, bool bEstimateNormal);
+	void LabelFusionInliers();
 
 	static DepthData ScaleDepthData(const DepthData& inputDeptData, float scale);
 

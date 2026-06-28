@@ -85,11 +85,10 @@ DECOPT_SPACE(OPTDENSE)
 namespace OPTDENSE {
 // configuration variables
 enum DepthFlags {
-	REMOVE_SPECKLES        = (1 << 0),
-	FILL_GAPS              = (1 << 1),
-	ADJUST_CONFIDENCE_FAST = (1 << 2),
-	ADJUST_CONFIDENCE      = (1 << 3),
-	OPTIMIZE               = (REMOVE_SPECKLES|FILL_GAPS)
+	REMOVE_SPECKLES   = (1 << 0),
+	FILL_GAPS         = (1 << 1),
+	ADJUST_CONFIDENCE = (1 << 2), // recalibrate confidence to predict fusion survival (see DepthMapsData::AdjustConfidence)
+	OPTIMIZE          = (REMOVE_SPECKLES|FILL_GAPS)
 };
 enum FuseMode {
 	FUSE_NOFILTER = 0,
@@ -136,6 +135,14 @@ extern MVS_API unsigned nFuseFilter;
 extern MVS_API unsigned nEstimateColors;
 extern MVS_API unsigned nEstimateNormals;
 extern MVS_API float fNCCThresholdKeep;
+// confidence recalibration (DepthMapsData::AdjustConfidence) - see DepthFlags::ADJUST_CONFIDENCE
+extern MVS_API float fConfPriorStrength; // intra-map geometric prior strength as Beta pseudo-counts
+extern MVS_API float fConfConfirmTau; // softness of the multi-view confirmation gate around nMinViewsFuse
+extern MVS_API float fConfPriorGate; // how much the prior alone contributes to the gate when no neighbor confirms
+extern MVS_API float fConfPhotoFloor; // minimum multiplicative photometric weight
+extern MVS_API float fConfFloor; // floor (times photometric conf) for pixels confirmed by >=1 view (anti-erosion)
+extern MVS_API float fConfFSVWeight; // optional free-space-violation penalty weight (0 - disabled)
+extern MVS_API bool bExportFusionLabels; // export per-pixel fusion inlier/outlier labels for confidence evaluation
 extern MVS_API unsigned nEstimationIters;
 extern MVS_API unsigned nEstimationGeometricIters;
 extern MVS_API unsigned nPatchMatchCUDAInstances;

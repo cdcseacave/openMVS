@@ -1048,241 +1048,228 @@ bool DepthMapsData::GapInterpolation(DepthData& depthData)
 /*----------------------------------------------------------------*/
 
 
-// adjust confidence-map based on the depth-map and the confidence-maps of the neighbor depth-maps
-bool DepthMapsData::AdjustConfidenceFast(DepthData& depthDataRef, const IIndexArr& idxNeighbors)
+// compute a cheap intra-map geometric prior in [0,1] from local depth (and normal) coherence;
+// high where the local surface is smooth and the normals are consistent, computed once per map with no
+// neighbor views; used as a Bayesian prior during confidence adjustment to keep coherent but weakly-confirmed
+// estimates alive (recovering fusion's few-view false-negatives)
+void DepthMapsData::ComputeIntraMapPrior(const DepthData& depthData, ConfidenceMap& priorMap) const
 {
-	TD_TIMER_STARTD();
-
-	// set confidence as the similarity of the depth values in the neighbor depth-maps
-	// to the depth value from the reference depth-map
-	ASSERT(depthDataRef.IsValid() && !depthDataRef.IsEmpty() && !idxNeighbors.empty());
-	ASSERT(depthDataRef.confMap.size() == depthDataRef.depthMap.size());
-	constexpr Depth thDepthSimilarity(0.01f);
-	constexpr Depth sigmaDepthDiff(1.f / (-2.f * SQUARE(thDepthSimilarity)));
-	const DepthData::ViewData& imageRef = depthDataRef.GetView();
-	ConfidenceMap newConfMap(depthDataRef.depthMap.size());
-	#if TD_VERBOSE != TD_VERBOSE_OFF
-	unsigned nProcessed(0), nDiscarded(0);
+	const DepthMap& depthMap = depthData.depthMap;
+	const NormalMap& normalMap = depthData.normalMap;
+	const bool bHasNormal(!normalMap.empty());
+	const float thRel(OPTDENSE::fDepthDiffThreshold * 3.f); // relative depth-diff scale for the prior
+	const float sigmaNormalSq(SQUARE(FD2R(OPTDENSE::fNormalDiffThreshold))); // angular-variance scale
+	priorMap.create(depthMap.size());
+	priorMap.memset(0);
+	#ifdef DENSE_USE_OPENMP
+	#pragma omp parallel for
 	#endif
-	for (int r=0; r<depthDataRef.depthMap.rows; ++r) {
-		for (int c=0; c<depthDataRef.depthMap.cols; ++c) {
-			const Depth& depthRef = depthDataRef.depthMap(r,c);
-			if (depthRef <= 0) {
-				newConfMap(r,c) = 0;
+	for (int r=0; r<depthMap.rows; ++r) {
+		for (int c=0; c<depthMap.cols; ++c) {
+			const Depth depth(depthMap(r,c));
+			if (depth <= 0)
 				continue;
-			}
-			const Point3 X(imageRef.camera.TransformPointI2W(Point3(c,r,depthRef)));
-			const float confPhotoRef(depthDataRef.confMap(r,c));
-			// check if the point's depth is similar to the depth in the neighbor depth-maps
-			// and keep the smallest difference
-			Depth minDiff(1.f);
-			float bestConf(0), negBestConf1(0), negBestConf2(0);
-			for (IIndex idxN: idxNeighbors) {
-				const DepthData& depthData = arrDepthData[idxN];
-				const DepthData::ViewData& image = depthData.GetView();
-				const Point3 camX(image.camera.TransformPointW2C(X));
-				if (camX.z <= 0)
+			// mean of the (up to) 3 smallest relative depth-differences in the 3x3 window
+			float relDiff[8];
+			int n(0);
+			for (int k=-1; k<=1; ++k) {
+				const int rk(r+k);
+				if (rk < 0 || rk >= depthMap.rows)
 					continue;
-				const ImageRef x(ROUND2INT(image.camera.TransformPointC2I(camX)));
-				if (!depthData.depthMap.isInside(x))
-					continue;
-				const Depth depth(depthData.depthMap(x));
-				if (depth <= 0)
-					continue;
-				const Depth diff(DepthSimilarity((Depth)camX.z, depth));
-				const float conf(depthData.confMap(x));
-				if (diff > thDepthSimilarity) {
-					if (negBestConf1 < conf) {
-						negBestConf2 = negBestConf1;
-						negBestConf1 = conf;
-					} else if (negBestConf2 < conf)
-						negBestConf2 = conf;
-				}
-				if (minDiff > diff || (minDiff == diff && bestConf < conf)) {
-					minDiff = diff;
-					bestConf = conf;
+				for (int l=-1; l<=1; ++l) {
+					if (k==0 && l==0)
+						continue;
+					const int cl(c+l);
+					if (cl < 0 || cl >= depthMap.cols)
+						continue;
+					const Depth d(depthMap(rk,cl));
+					if (d <= 0)
+						continue;
+					relDiff[n++] = ABS(depth-d)/depth;
 				}
 			}
-			// set confidence based on the depth difference;
-			// if confidence-map is available, the final confidence is a combination of the photometric and similarity confidence
-			const float confPhoto = MINF(confPhotoRef, bestConf);
-			const float confSimilarity = EXP(SQUARE(minDiff) * sigmaDepthDiff);
-			const float negBestConfs(negBestConf1 + negBestConf2);
-			const bool bKeep(confPhoto > negBestConfs);
-			newConfMap(r,c) = bKeep ? 0.3f*confPhoto + 0.7f*confSimilarity : (negBestConfs > 0.f ? 0.1f*confPhoto/negBestConfs : 0.f);
-			#if TD_VERBOSE != TD_VERBOSE_OFF
-			if (confSimilarity <= 0.5f)
-				++nDiscarded;
-			++nProcessed;
-			#endif
+			if (n == 0)
+				continue; // isolated pixel: leave prior 0 (not locally coherent)
+			const int s(MINF(3,n));
+			float meanRel(0);
+			for (int i=0; i<s; ++i) {
+				int jmin(i);
+				for (int j=i+1; j<n; ++j)
+					if (relDiff[j] < relDiff[jmin])
+						jmin = j;
+				const float t(relDiff[i]); relDiff[i] = relDiff[jmin]; relDiff[jmin] = t;
+				meanRel += relDiff[i];
+			}
+			meanRel /= s;
+			const float pDepth(EXP(-SQUARE(meanRel/thRel)));
+			float prior(pDepth);
+			if (bHasNormal) {
+				// angular coherence of the normals in the window using a renormalized mean direction
+				Point3f mean(0,0,0);
+				int cnt(0);
+				for (int k=-1; k<=1; ++k) {
+					const int rk(r+k);
+					if (rk < 0 || rk >= depthMap.rows)
+						continue;
+					for (int l=-1; l<=1; ++l) {
+						const int cl(c+l);
+						if (cl < 0 || cl >= depthMap.cols)
+							continue;
+						if (depthMap(rk,cl) <= 0)
+							continue;
+						mean += normalMap(rk,cl);
+						++cnt;
+					}
+				}
+				const float nrm(norm(mean));
+				if (cnt > 0 && nrm > 1e-6f) {
+					mean /= nrm;
+					float varAng(0);
+					int cnt2(0);
+					for (int k=-1; k<=1; ++k) {
+						const int rk(r+k);
+						if (rk < 0 || rk >= depthMap.rows)
+							continue;
+						for (int l=-1; l<=1; ++l) {
+							const int cl(c+l);
+							if (cl < 0 || cl >= depthMap.cols)
+								continue;
+							if (depthMap(rk,cl) <= 0)
+								continue;
+							const float dotN(CLAMP(mean.dot(normalMap(rk,cl)), -1.f, 1.f));
+							varAng += SQUARE(ACOS(dotN));
+							++cnt2;
+						}
+					}
+					const float pNormal(EXP(-varAng/(cnt2*sigmaNormalSq)));
+					prior = SQRT(MAXF(pDepth,1e-3f)*MAXF(pNormal,1e-3f));
+				}
+			}
+			priorMap(r,c) = prior;
 		}
 	}
-	if (!SaveConfidenceMap(ComposeDepthFilePath(imageRef.GetID(), "adjusted.fast.cmap"), newConfMap))
-		return false;
-
-	DEBUG("Confidence-map %3u fast-adjusted using %u other images: %u/%u depths discarded (%s)",
-		imageRef.GetID(), idxNeighbors.size(), nDiscarded, nProcessed, TD_TIMER_GET_FMT().c_str());
-	return true;
-} // AdjustConfidenceFast
+} // ComputeIntraMapPrior
 /*----------------------------------------------------------------*/
 
-// filter confidence-map, one pixel at a time, using confidence based fusion of neighbor pixels
+// recalibrate the confidence-map so that depths likely to survive fusion get high confidence and outliers get low;
+// for each pixel an intra-map geometric prior (computed once) is combined with a one-hop multi-view confirmation count
+// scored with the exact DenseFuseDepthMaps gates (depth + forward-backward reprojection + normal + min-confidence),
+// merged via a Beta-style posterior with no hard cliff so a confirmed or locally-coherent pixel is never zeroed
 bool DepthMapsData::AdjustConfidence(DepthData& depthDataRef, const IIndexArr& idxNeighbors)
 {
 	TD_TIMER_STARTD();
 
-	// count valid neighbor depth-maps
-	ASSERT(depthDataRef.IsValid() && !depthDataRef.IsEmpty());
-	const IIndex N = idxNeighbors.size();
-	ASSERT(OPTDENSE::nMinViewsFilter > 0 && scene.nCalibratedImages > 1);
-	const IIndex nMinViews(MINF(OPTDENSE::nMinViewsFilter, N));
-	const IIndex nMinViewsAdjust(MINF(OPTDENSE::nMinViewsFilterAdjust, N));
-
-	// project all neighbor depth-maps to this image
+	ASSERT(depthDataRef.IsValid() && !depthDataRef.IsEmpty() && !idxNeighbors.empty());
+	ASSERT(depthDataRef.confMap.size() == depthDataRef.depthMap.size());
 	const DepthData::ViewData& imageRef = depthDataRef.GetView();
-	const Image8U::Size sizeRef(depthDataRef.depthMap.size());
 	const Camera& cameraRef = imageRef.camera;
-	DepthMapArr depthMaps(N);
-	ConfidenceMapArr confMaps(N);
-	FOREACH(n, depthMaps) {
-		DepthMap& depthMap = depthMaps[n];
-		depthMap.create(sizeRef);
-		depthMap.memset(0);
-		ConfidenceMap& confMap = confMaps[n];
-		confMap.create(sizeRef);
-		confMap.memset(0);
-		const IIndex idxView = idxNeighbors[n];
-		const DepthData& depthData = arrDepthData[idxView];
-		const Camera& camera = depthData.GetView().camera;
-		for (int i=0; i<depthData.depthMap.rows; ++i) {
-			for (int j=0; j<depthData.depthMap.cols; ++j) {
-				const ImageRef x(j,i);
-				const Depth depth(depthData.depthMap(x));
-				if (depth == 0)
-					continue;
-				ASSERT(depth > 0);
-				const Point3 X(camera.TransformPointI2W(Point3(x.x,x.y,depth)));
-				const Point3 camX(cameraRef.TransformPointW2C(X));
-				if (camX.z <= 0)
-					continue;
-				#if 0
-				// set depth on the rounded image projection only
-				const ImageRef xRef(ROUND2INT(cameraRef.TransformPointC2I(camX)));
-				if (!depthMap.isInside(xRef))
-					continue;
-				Depth& depthRef(depthMap(xRef));
-				if (depthRef != 0 && depthRef < camX.z)
-					continue;
-				depthRef = camX.z;
-				confMap(xRef) = depthData.confMap(x);
-				#else
-				// set depth on the 4 pixels around the image projection
-				const Point2 imgX(cameraRef.TransformPointC2I(camX));
-				const ImageRef xRefs[4] = {
-					ImageRef(FLOOR2INT(imgX.x), FLOOR2INT(imgX.y)),
-					ImageRef(FLOOR2INT(imgX.x), CEIL2INT(imgX.y)),
-					ImageRef(CEIL2INT(imgX.x), FLOOR2INT(imgX.y)),
-					ImageRef(CEIL2INT(imgX.x), CEIL2INT(imgX.y))
-				};
-				for (int p=0; p<4; ++p) {
-					const ImageRef& xRef = xRefs[p];
-					if (!depthMap.isInside(xRef))
-						continue;
-					Depth& depthRef(depthMap(xRef));
-					if (depthRef != 0 && depthRef < (Depth)camX.z)
-						continue;
-					depthRef = (Depth)camX.z;
-					confMap(xRef) = depthData.confMap(x);
-				}
-				#endif
-			}
-		}
-		#if TD_VERBOSE != TD_VERBOSE_OFF
-		if (VERBOSITY_LEVEL > 3)
-			ExportDepthMap(MAKE_PATH(String::FormatString("depthRender%04u.%04u.png", depthDataRef.GetView().GetID(), idxView)), depthMap);
-		#endif
-	}
+	const DepthMap& depthMapRef = depthDataRef.depthMap;
+	const NormalMap& normalMapRef = depthDataRef.normalMap;
+	const ConfidenceMap& confMapRef = depthDataRef.confMap;
+	const bool bHasRefNormal(!normalMapRef.empty());
 
-	const float thDepthDiff(OPTDENSE::fDepthDiffThreshold*1.2f);
-	DepthMap newDepthMap(sizeRef);
-	ConfidenceMap newConfMap(sizeRef);
+	// confirmation gates reused verbatim from DenseFuseDepthMaps
+	const float normalError(COS(FD2R(OPTDENSE::fNormalDiffThreshold)));
+	const float minConfidence(1.f - OPTDENSE::fNCCThresholdKeep);
+	const float maxReprojErrorSq(SQUARE(OPTDENSE::fDepthReprojectionErrorThreshold));
+	const Depth thDepth(OPTDENSE::fDepthDiffThreshold);
+	// posterior/gate shape parameters
+	const float s(OPTDENSE::fConfPriorStrength);
+	const float tau(MAXF(OPTDENSE::fConfConfirmTau, 0.01f));
+	const float kPrior(OPTDENSE::fConfPriorGate);
+	const float w0(OPTDENSE::fConfPhotoFloor);
+	const float confFloor(OPTDENSE::fConfFloor);
+	const float wFSV(OPTDENSE::fConfFSVWeight);
+
+	// intra-map geometric prior (once per map)
+	ConfidenceMap priorMap;
+	ComputeIntraMapPrior(depthDataRef, priorMap);
+
+	ConfidenceMap newConfMap(depthMapRef.size());
 	#if TD_VERBOSE != TD_VERBOSE_OFF
-	size_t nProcessed(0), nDiscarded(0);
+	unsigned nProcessed(0), nDiscarded(0);
 	#endif
-	// average similar depths, and decrease confidence if depths do not agree
-	// (inspired by: "Real-Time Visibility-Based Fusion of Depth Maps", Merrell, 2007)
-	for (int i=0; i<sizeRef.height; ++i) {
-		for (int j=0; j<sizeRef.width; ++j) {
-			const ImageRef xRef(j,i);
-			const Depth depth(depthDataRef.depthMap(xRef));
-			if (depth == 0) {
-				newDepthMap(xRef) = 0;
-				newConfMap(xRef) = 0;
+	for (int r=0; r<depthMapRef.rows; ++r) {
+		for (int c=0; c<depthMapRef.cols; ++c) {
+			const Depth depthRef(depthMapRef(r,c));
+			if (depthRef <= 0) {
+				newConfMap(r,c) = 0;
 				continue;
 			}
-			ASSERT(depth > 0);
 			#if TD_VERBOSE != TD_VERBOSE_OFF
 			++nProcessed;
 			#endif
-			// update best depth and confidence estimate with all estimates
-			float posConf(depthDataRef.confMap(xRef)), negConf(0);
-			Depth avgDepth(depth*posConf);
-			unsigned nPosViews(0), nNegViews(0);
-			unsigned n(N);
-			do {
-				const Depth d(depthMaps[--n](xRef));
-				if (d == 0) {
-					if (nPosViews + nNegViews + n < nMinViews)
-						goto DiscardDepth;
+			const float confPhoto(confMapRef(r,c));
+			const float pGeo(priorMap(r,c));
+			const Point3 X(cameraRef.TransformPointI2W(Point3((REAL)c,(REAL)r,(REAL)depthRef)));
+			Point3 nRefW;
+			if (bHasRefNormal)
+				nRefW = cameraRef.R.t() * Cast<REAL>(normalMapRef(r,c));
+			// one-hop multi-view confirmation
+			unsigned K(0);
+			float Pconf(0), Nfsv(0);
+			for (IIndex idxN: idxNeighbors) {
+				const DepthData& depthDataN = arrDepthData[idxN];
+				if (depthDataN.IsEmpty())
+					continue;
+				const Camera& cameraN = depthDataN.GetView().camera;
+				const Point3 camX(cameraN.TransformPointW2C(X));
+				if (camX.z <= 0)
+					continue; // guard before C2I to avoid projecting points behind the camera
+				const ImageRef x(ROUND2INT(cameraN.TransformPointC2I(camX)));
+				if (!depthDataN.depthMap.isInside(x))
+					continue;
+				const Depth dN(depthDataN.depthMap(x));
+				if (dN <= 0)
+					continue;
+				const float cN(depthDataN.confMap.empty() ? 1.f : depthDataN.confMap(x));
+				// GATE 1: depth similarity (neighbor measured depth as denominator, as in DenseFuse)
+				if (!IsDepthSimilar(dN, (Depth)camX.z, thDepth)) {
+					// optional free-space-violation accounting (off by default)
+					if (wFSV > 0 && cN >= minConfidence && (Depth)camX.z < dN)
+						Nfsv += cN;
 					continue;
 				}
-				ASSERT(d > 0);
-				if (IsDepthSimilar(depth, d, thDepthDiff)) {
-					// average similar depths
-					const float c(confMaps[n](xRef));
-					avgDepth += d*c;
-					posConf += c;
-					++nPosViews;
-				} else {
-					// penalize confidence
-					if (depth > d) {
-						// occlusion
-						negConf += confMaps[n](xRef);
-					} else {
-						// free-space violation
-						const DepthData& depthData = arrDepthData[idxNeighbors[n]];
-						const Camera& camera = depthData.GetView().camera;
-						const Point3 X(cameraRef.TransformPointI2W(Point3(xRef.x,xRef.y,depth)));
-						const ImageRef x(ROUND2INT(camera.TransformPointW2I(X)));
-						if (depthData.confMap.isInside(x)) {
-							const float c(depthData.confMap(x));
-							negConf += (c > 0 ? c : confMaps[n](xRef));
-						} else
-							negConf += confMaps[n](xRef);
-					}
-					++nNegViews;
+				// GATE 2: forward-backward reprojection (back-project the neighbor pixel, reproject into reference)
+				const Point3 Xn(cameraN.TransformPointI2W(Point3((REAL)x.x,(REAL)x.y,(REAL)dN)));
+				const auto [xref, zref] = cameraRef.ProjectPointP(Xn);
+				if (zref <= 0)
+					continue;
+				const Point2 diff(xref - Point2((REAL)c,(REAL)r));
+				if (normSq(diff) > maxReprojErrorSq)
+					continue;
+				// GATE 3: normal agreement (only if both normal-maps are available)
+				if (bHasRefNormal && !depthDataN.normalMap.empty()) {
+					const Point3 nNW(cameraN.R.t() * Cast<REAL>(depthDataN.normalMap(x)));
+					if (nRefW.dot(nNW) < normalError)
+						continue;
 				}
-			} while (n);
-			ASSERT(nPosViews+nNegViews >= nMinViews);
-			// if enough good views and positive confidence...
-			if (nPosViews >= nMinViewsAdjust && posConf > negConf && ISINSIDE(avgDepth/=posConf, depthDataRef.dMin, depthDataRef.dMax)) {
-				// consider this pixel an inlier
-				newConfMap(xRef) = 1.f - MINF(((negConf+0.2f) * nPosViews) / (posConf * MAXF(nNegViews,1u)), 1.f);
-			} else {
-				// consider this pixel an outlier
-				DiscardDepth:
-				newConfMap(xRef) = 0;
-				#if TD_VERBOSE != TD_VERBOSE_OFF
-				++nDiscarded;
-				#endif
+				// GATE 4: neighbor min-confidence
+				if (cN < minConfidence)
+					continue;
+				// all gates passed: this neighbor confirms the reference depth
+				++K;
+				Pconf += cN;
 			}
+			// map (prior, confirmation count, photometric conf) to a calibrated [0,1] confidence with no hard cliff
+			const float gate(1.f - EXP(-((float)K + kPrior*pGeo)/tau));
+			const float posterior((s*pGeo + Pconf)/(s + Pconf + wFSV*Nfsv));
+			const float photoFactor(w0 + (1.f-w0)*confPhoto);
+			float conf(CLAMP(posterior*gate*photoFactor, 0.f, 1.f));
+			if (K >= 1)
+				conf = MAXF(conf, confFloor*confPhoto); // never erode a genuinely confirmed pixel (anti-cascade)
+			newConfMap(r,c) = conf;
+			#if TD_VERBOSE != TD_VERBOSE_OFF
+			if (conf < minConfidence)
+				++nDiscarded;
+			#endif
 		}
 	}
 	if (!SaveConfidenceMap(ComposeDepthFilePath(imageRef.GetID(), "adjusted.cmap"), newConfMap))
 		return false;
 
-	DEBUG("Confidence-map %3u adjusted using %u other images: %u/%u depths discarded (%s)",
-		imageRef.GetID(), N, nDiscarded, nProcessed, TD_TIMER_GET_FMT().c_str());
+	DEBUG("Confidence-map %3u adjusted using %u other images: %u/%u depths below fusion confidence (%s)",
+		imageRef.GetID(), idxNeighbors.size(), nDiscarded, nProcessed, TD_TIMER_GET_FMT().c_str());
 	return true;
 } // AdjustConfidence
 /*----------------------------------------------------------------*/
@@ -1979,6 +1966,220 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 /*----------------------------------------------------------------*/
 
 
+// per-pixel fusion-label values written to the .flabel maps (kept in sync with scripts/python/EvalConfidence.py)
+namespace {
+enum FusionLabel : uint8_t {
+	LABEL_INVALID          = 0, // no depth estimate
+	LABEL_OUTLIER          = 1, // seen by a neighbor but geometrically not confirmed
+	LABEL_AMBIGUOUS        = 2, // not covered by any neighbor (cannot decide)
+	LABEL_WEAK_INLIER      = 3, // confirmed by >=2 views but too few views/pixels to pass strict fusion (fusion false-negative)
+	LABEL_CONFIDENT_INLIER = 4, // would survive strict DenseFuse (>=nMinViewsFuse views and >=nMinPixelsFuse pixels)
+};
+// minimal raw map writer for the evaluation harness;
+// header: int32 magic('LMAP'=0x50414D4C), int32 width, int32 height, int32 elemType (1=uint8, 2=uint16, 4=float32); then row-major data
+template <typename T>
+bool SaveRawMap(const String& fileName, const TImage<T>& map, int32_t elemType) {
+	FILE* f = fopen(fileName.c_str(), "wb");
+	if (f == NULL)
+		return false;
+	const int32_t hdr[4] = { 0x50414D4C, (int32_t)map.cols, (int32_t)map.rows, elemType };
+	bool ok = fwrite(hdr, sizeof(hdr), 1, f) == 1;
+	for (int r = 0; ok && r < map.rows; ++r)
+		ok = fwrite(map.template ptr<T>(r), sizeof(T), (size_t)map.cols, f) == (size_t)map.cols;
+	fclose(f);
+	return ok;
+}
+} // namespace
+
+// label every depth estimate as inlier/outlier by replaying the DenseFuseDepthMaps flood-fill with the
+// confidence gate DISABLED (so the labels are pure geometry, independent of the confidence-map being evaluated);
+// for each kept cluster all contributing pixels (across views) get the cluster label and its view-count support;
+// writes per-image .flabel (uint8 FusionLabel) and .fsupport (uint16 #views) beside the .dmap files
+void DepthMapsData::LabelFusionInliers()
+{
+	TD_TIMER_STARTD();
+
+	typedef SEACAVE::BitMatrix UseMask;
+	typedef CLISTDEFIDX(UseMask,IIndex) UseMaskArr;
+	typedef std::pair<IIndex,ImageRef> Member;
+
+	const unsigned nMinViewsFuse(MINF(OPTDENSE::nMinViewsFuse, arrDepthData.size()));
+	const float normalError(COS(FD2R(OPTDENSE::fNormalDiffThreshold)));
+	const float maxReprojErrorSq(SQUARE(OPTDENSE::fDepthReprojectionErrorThreshold));
+	const IIndex numDMapsReserveFusion(10);
+	UseMaskArr arrUseMask(arrDepthData.size());
+	// per-image label/support maps (std::vector so the cv::Mat elements are properly constructed/destructed)
+	std::vector<TImage<uint8_t>> arrLabelMap(arrDepthData.size());
+	std::vector<TImage<uint16_t>> arrSupportMap(arrDepthData.size());
+	const unsigned depthDataLoadFlags(HeaderDepthDataRaw::HAS_DEPTH | HeaderDepthDataRaw::HAS_NORMAL | HeaderDepthDataRaw::HAS_CONF);
+	Util::Progress progress(_T("Labeled depth-maps"), arrDepthData.size());
+	GET_LOGCONSOLE().Pause();
+	BoolArr fusedDMaps(arrDepthData.size());
+	fusedDMaps.Memset(0);
+	DMapCache cacheDMaps(arrDepthData, depthDataLoadFlags, GetAvailableMemory(arrDepthData, fusedDMaps, numDMapsReserveFusion));
+	BoolArr neighbors(arrDepthData.size());
+	PointCloud::Point refPoint;
+	PointCloud::Normal refNormal;
+	std::vector<Member> fusedMembers;
+	PointCloud::ViewArr fusedViews;
+	const auto EnsureMaps = [&](IIndex ID) -> void {
+		if (!arrUseMask[ID].empty())
+			return;
+		const cv::Size size(arrDepthData[ID].depthMap.size());
+		arrUseMask[ID].create(size);
+		arrUseMask[ID].memset(0);
+		arrLabelMap[ID].create(size); arrLabelMap[ID].memset(LABEL_INVALID);
+		arrSupportMap[ID].create(size); arrSupportMap[ID].memset(0);
+	};
+	const auto FusePoint = [&](IIndex ID, const ImageRef& x, unsigned fuseDepth) -> void {
+		const auto lambda = [&](IIndex ID, const ImageRef& x, unsigned fuseDepth, const auto& FusePointImpl) -> void {
+			const DepthData& depthData = arrDepthData[ID];
+			if (!Image8U::isInside(x, depthData.size))
+				return;
+			const Depth depth = depthData.depthMap(x);
+			if (depth <= Depth(0))
+				return;
+			UseMask& useMask = arrUseMask[ID];
+			if (useMask(x))
+				return;
+			// NOTE: the confidence gate of DenseFuseDepthMaps is intentionally DISABLED here so that the
+			// labels stay independent of the confidence-map we want to evaluate
+			const DepthData::ViewData& image = depthData.GetView();
+			PointCloud::Normal normal;
+			if (fuseDepth > 0) {
+				const auto [pt, depthProj] = image.camera.ProjectPointP(refPoint);
+				if (!IsDepthSimilar(depth, depthProj, OPTDENSE::fDepthDiffThreshold))
+					return;
+				const Point2f diff(pt - Cast<float>(x));
+				if (normSq(diff) > maxReprojErrorSq)
+					return;
+				normal = image.camera.R.t() * Cast<REAL>(depthData.normalMap(x));
+				if (refNormal.dot(normal) < normalError)
+					return;
+			} else {
+				normal = image.camera.R.t() * Cast<REAL>(depthData.normalMap(x));
+			}
+			useMask.set(x);
+			const PointCloud::Point X(image.camera.TransformPointI2W(Point3(REAL(x.x), REAL(x.y), REAL(depth))));
+			fusedMembers.emplace_back(ID, x);
+			fusedViews.InsertSortUnique(ID);
+			if (fuseDepth == 0) {
+				refPoint = X;
+				refNormal = normal;
+			}
+			if (++fuseDepth >= OPTDENSE::nMaxFuseDepth || fusedMembers.size() >= OPTDENSE::nMaxPointsFuse)
+				return;
+			for (const ViewScore& neighbor : image.pImageData->neighbors) {
+				const IIndex nextID(neighbor.ID);
+				if (!neighbors[nextID])
+					continue;
+				const DepthData& nextDepthData = arrDepthData[nextID];
+				const ImageRef nextx(ROUND2INT(std::get<0>(nextDepthData.GetCamera().ProjectPointP(X))));
+				FusePointImpl(nextID, nextx, fuseDepth, FusePointImpl);
+			}
+		};
+		lambda(ID, x, fuseDepth, lambda);
+	};
+	// loop over each depth-map (best connected first), exactly as DenseFuseDepthMaps
+	IIndex numDMapsFused = 0;
+	while (true) {
+		const auto [idxImage, numImageNeighborsInCache, numImagesInCache] = FetchBestNextDMapIndex(arrDepthData, cacheDMaps, fusedDMaps);
+		(void)numImageNeighborsInCache; (void)numImagesInCache;
+		if (idxImage == NO_ID)
+			break;
+		++numDMapsFused;
+		cacheDMaps.UseImage(idxImage);
+		cacheDMaps.SkipMemoryCheckIdxImage(idxImage);
+		const DepthData& depthData(arrDepthData[idxImage]);
+		ASSERT(!depthData.IsEmpty());
+		if (depthData.normalMap.empty())
+			EstimateNormalMaps();
+		// make sure all neighbors are cached and have label/use maps
+		neighbors.Memset(0);
+		neighbors[idxImage] = true;
+		IIndex numNeighbors(0);
+		for (const ViewScore& neighbor: depthData.neighbors) {
+			const DepthData& depthDataB(arrDepthData[neighbor.ID]);
+			if (!depthDataB.IsValid())
+				continue;
+			cacheDMaps.UseImage(neighbor.ID);
+			if (depthDataB.IsEmpty())
+				continue;
+			neighbors[neighbor.ID] = true;
+			EnsureMaps(neighbor.ID);
+			if (++numNeighbors >= OPTDENSE::nMaxViewsFuse)
+				break;
+		}
+		EnsureMaps(idxImage);
+		// try to label each depth estimate
+		for (int i=0; i<depthData.size.height; ++i) {
+			for (int j=0; j<depthData.size.width; ++j) {
+				FusePoint(idxImage, ImageRef(j,i), 0);
+				if (fusedMembers.empty())
+					continue;
+				const unsigned V(fusedViews.size());
+				const unsigned P((unsigned)fusedMembers.size());
+				uint8_t label;
+				if (V >= nMinViewsFuse && P >= OPTDENSE::nMinPixelsFuse) {
+					label = LABEL_CONFIDENT_INLIER;
+				} else if (V >= 2) {
+					label = LABEL_WEAK_INLIER;
+				} else {
+					// singleton cluster: outlier if a neighbor covers the seed (seen but not confirmed), else ambiguous
+					bool seen(false);
+					for (const ViewScore& neighbor: depthData.neighbors) {
+						if (!neighbors[neighbor.ID])
+							continue;
+						const DepthData& nd(arrDepthData[neighbor.ID]);
+						const auto [pt, dproj] = nd.GetCamera().ProjectPointP(refPoint);
+						if (dproj <= 0)
+							continue;
+						const ImageRef nx(ROUND2INT(pt));
+						if (nd.depthMap.isInside(nx) && nd.depthMap(nx) > 0) {
+							seen = true;
+							break;
+						}
+					}
+					label = seen ? LABEL_OUTLIER : LABEL_AMBIGUOUS;
+				}
+				const uint16_t support((uint16_t)MINF(V, 65535u));
+				for (const Member& m: fusedMembers) {
+					arrLabelMap[m.first](m.second) = label;
+					arrSupportMap[m.first](m.second) = support;
+				}
+				fusedMembers.clear();
+				fusedViews.clear();
+			}
+		}
+		fusedDMaps[idxImage] = true;
+		progress.display(numDMapsFused);
+		cacheDMaps.SkipMemoryCheckIdxImage();
+		if (numDMapsFused % numDMapsReserveFusion == 0)
+			cacheDMaps.SetMaxMemory(GetAvailableMemory(arrDepthData, fusedDMaps, numDMapsReserveFusion, cacheDMaps.GetUsedMemory()));
+	}
+	GET_LOGCONSOLE().Play();
+	progress.close();
+	cacheDMaps.ClearCache();
+
+	// write the per-image label/support maps beside the depth-maps
+	unsigned nWritten(0);
+	FOREACH(i, arrDepthData) {
+		if (arrLabelMap[i].empty())
+			continue;
+		const IIndex viewID(arrDepthData[i].GetView().GetID());
+		if (!SaveRawMap(ComposeDepthFilePath(viewID, "flabel"), arrLabelMap[i], 1) ||
+			!SaveRawMap(ComposeDepthFilePath(viewID, "fsupport"), arrSupportMap[i], 2)) {
+			DEBUG("error: failed to write fusion labels for image %u", viewID);
+		} else {
+			++nWritten;
+		}
+	}
+	arrUseMask.Release();
+	DEBUG_EXTRA("Fusion inlier/outlier labels exported for %u depth-maps (%s)", nWritten, TD_TIMER_GET_FMT().c_str());
+} // LabelFusionInliers
+/*----------------------------------------------------------------*/
+
+
 
 // S T R U C T S ///////////////////////////////////////////////////
 
@@ -2022,6 +2223,10 @@ bool Scene::DenseReconstruction(int nFusionMode, bool bCrop2ROI, float fBorderRO
 		return false;
 	if (ABS(nFusionMode) == 1)
 		return true;
+
+	// optionally export per-pixel fusion inlier/outlier labels for confidence evaluation
+	if (OPTDENSE::bExportFusionLabels)
+		data.depthMaps.LabelFusionInliers();
 
 	// fuse all depth-maps
 	pointcloud.Release();
@@ -2315,7 +2520,7 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 		data.nEstimationGeometricIter = -1;
 	}
 
-	if ((OPTDENSE::nOptimize & (OPTDENSE::ADJUST_CONFIDENCE | OPTDENSE::ADJUST_CONFIDENCE_FAST)) != 0) {
+	if ((OPTDENSE::nOptimize & OPTDENSE::ADJUST_CONFIDENCE) != 0) {
 		// initialize the queue of depth-maps to be filtered
 		data.sem.Clear();
 		data.idxImage = data.images.GetSize();
@@ -2570,9 +2775,8 @@ void Scene::DenseReconstructionFilter(void* pData)
 					break;
 			}
 			// filter the depth-map for this image
-			if (((OPTDENSE::nOptimize & OPTDENSE::ADJUST_CONFIDENCE_FAST) != 0 && data.depthMaps.AdjustConfidenceFast(depthData, idxNeighbors)) |
-				((OPTDENSE::nOptimize & OPTDENSE::ADJUST_CONFIDENCE) != 0 && data.depthMaps.AdjustConfidence(depthData, idxNeighbors))) {
-				// load the filtered maps after all depth-maps were filtered
+			if ((OPTDENSE::nOptimize & OPTDENSE::ADJUST_CONFIDENCE) != 0 && data.depthMaps.AdjustConfidence(depthData, idxNeighbors)) {
+				// load the filtered map after all depth-maps were filtered
 				data.events.AddEvent(new EVTAdjustDepthMap(evtImage.idxImage));
 			}
 			// unload referenced depth-maps
@@ -2590,37 +2794,18 @@ void Scene::DenseReconstructionFilter(void* pData)
 			DepthData& depthData(data.depthMaps.arrDepthData[idx]);
 			ASSERT(depthData.IsValid());
 			data.sem.Wait();
-			// load filtered maps
-			ConfidenceMap confMapFast, confMap;
+			// load the recalibrated confidence-map and replace the photometric one
+			ConfidenceMap confMap;
 			if (depthData.IncRef(ComposeDepthFilePath(depthData.GetView().GetID(), "dmap")) == 0 ||
-				!(LoadConfidenceMap(ComposeDepthFilePath(depthData.GetView().GetID(), "adjusted.fast.cmap"), confMapFast) |
-				  LoadConfidenceMap(ComposeDepthFilePath(depthData.GetView().GetID(), "adjusted.cmap"), confMap)))
+				!LoadConfidenceMap(ComposeDepthFilePath(depthData.GetView().GetID(), "adjusted.cmap"), confMap))
 			{
 				// signal error and terminate
 				data.events.AddEventFirst(new EVTFail);
 				return;
 			}
 			ASSERT(depthData.GetRef() == 1);
-			if (!confMapFast.empty())
-				File::deleteFile(ComposeDepthFilePath(depthData.GetView().GetID(), "adjusted.fast.cmap").c_str());
-			if (!confMap.empty())
-				File::deleteFile(ComposeDepthFilePath(depthData.GetView().GetID(), "adjusted.cmap").c_str());
-			if (confMapFast.empty()) {
-				depthData.confMap = std::move(confMap);
-			} else if (confMap.empty()) {
-				depthData.confMap = std::move(confMapFast);
-			} else {
-				// set confidence-map as the best confidence if both confMap and congMapFast are set
-				for (int r = 0; r<depthData.confMap.rows; ++r) {
-					for (int c = 0; c<depthData.confMap.cols; ++c) {
-						const float conf = confMap(r,c);
-						const float confFast = confMapFast(r,c);
-						depthData.confMap(r,c) = conf > 0 && confFast > 0 ? MAXF(conf, confFast) : 0.f;
-					}
-				}
-				confMapFast.release();
-				confMap.release();
-			}
+			File::deleteFile(ComposeDepthFilePath(depthData.GetView().GetID(), "adjusted.cmap").c_str());
+			depthData.confMap = std::move(confMap);
 			#if TD_VERBOSE != TD_VERBOSE_OFF
 			// save depth map as image
 			if (VERBOSITY_LEVEL > 2) {
