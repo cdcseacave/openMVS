@@ -1205,7 +1205,6 @@ bool DepthMapsData::AdjustConfidence(DepthData& depthDataRef, const IIndexArr& i
 	const float kPrior(OPTDENSE::fConfPriorGate);
 	const float w0(OPTDENSE::fConfPhotoFloor);
 	const float confFloor(OPTDENSE::fConfFloor);
-	const float wFSV(OPTDENSE::fConfFSVWeight);
 
 	// intra-map geometric prior (once per map)
 	ConfidenceMap priorMap;
@@ -1215,11 +1214,10 @@ bool DepthMapsData::AdjustConfidence(DepthData& depthDataRef, const IIndexArr& i
 	// optional per-pixel feature export for offline parameter tuning (recompute newConf from these in Python)
 	const bool bFeat(OPTDENSE::bExportConfFeatures);
 	TImage<uint16_t> featK;
-	TImage<float> featPconf, featNfsv, featPrior, featPhoto;
+	TImage<float> featPconf, featPrior, featPhoto;
 	if (bFeat) {
 		featK.create(depthMapRef.size()); featK.memset(0);
 		featPconf.create(depthMapRef.size()); featPconf.memset(0);
-		featNfsv.create(depthMapRef.size()); featNfsv.memset(0);
 		featPrior.create(depthMapRef.size()); featPrior.memset(0);
 		featPhoto.create(depthMapRef.size()); featPhoto.memset(0);
 	}
@@ -1244,7 +1242,7 @@ bool DepthMapsData::AdjustConfidence(DepthData& depthDataRef, const IIndexArr& i
 				nRefW = cameraRef.R.t() * Cast<REAL>(normalMapRef(r,c));
 			// one-hop multi-view confirmation
 			unsigned K(0);
-			float Pconf(0), Nfsv(0);
+			float Pconf(0);
 			for (IIndex idxN: idxNeighbors) {
 				const DepthData& depthDataN = arrDepthData[idxN];
 				if (depthDataN.IsEmpty())
@@ -1261,12 +1259,8 @@ bool DepthMapsData::AdjustConfidence(DepthData& depthDataRef, const IIndexArr& i
 					continue;
 				const float cN(depthDataN.confMap.empty() ? 1.f : depthDataN.confMap(x));
 				// GATE 1: depth similarity (neighbor measured depth as denominator, as in DenseFuse)
-				if (!IsDepthSimilar(dN, (Depth)camX.z, thDepth)) {
-					// optional free-space-violation accounting (off by default)
-					if (wFSV > 0 && cN >= minConfidence && (Depth)camX.z < dN)
-						Nfsv += cN;
+				if (!IsDepthSimilar(dN, (Depth)camX.z, thDepth))
 					continue;
-				}
 				// GATE 2: forward-backward reprojection (back-project the neighbor pixel, reproject into reference)
 				const Point3 Xn(cameraN.TransformPointI2W(Point3((REAL)x.x,(REAL)x.y,(REAL)dN)));
 				const auto [xref, zref] = cameraRef.ProjectPointP(Xn);
@@ -1290,7 +1284,7 @@ bool DepthMapsData::AdjustConfidence(DepthData& depthDataRef, const IIndexArr& i
 			}
 			// map (prior, confirmation count, photometric conf) to a calibrated [0,1] confidence with no hard cliff
 			const float gate(1.f - EXP(-((float)K + kPrior*pGeo)/tau));
-			const float posterior((s*pGeo + Pconf)/(s + Pconf + wFSV*Nfsv));
+			const float posterior((s*pGeo + Pconf)/(s + Pconf));
 			const float photoFactor(w0 + (1.f-w0)*confPhoto);
 			float conf(CLAMP(posterior*gate*photoFactor, 0.f, 1.f));
 			if (K >= 1)
@@ -1299,7 +1293,6 @@ bool DepthMapsData::AdjustConfidence(DepthData& depthDataRef, const IIndexArr& i
 			if (bFeat) {
 				featK(r,c) = (uint16_t)MINF(K, 65535u);
 				featPconf(r,c) = Pconf;
-				featNfsv(r,c) = Nfsv;
 				featPrior(r,c) = pGeo;
 				featPhoto(r,c) = confPhoto;
 			}
@@ -1313,7 +1306,6 @@ bool DepthMapsData::AdjustConfidence(DepthData& depthDataRef, const IIndexArr& i
 		const IIndex id(imageRef.GetID());
 		SaveRawMap(ComposeDepthFilePath(id, "cfeatK"), featK, 2);
 		SaveRawMap(ComposeDepthFilePath(id, "cfeatPconf"), featPconf, 4);
-		SaveRawMap(ComposeDepthFilePath(id, "cfeatNfsv"), featNfsv, 4);
 		SaveRawMap(ComposeDepthFilePath(id, "cfeatPrior"), featPrior, 4);
 		SaveRawMap(ComposeDepthFilePath(id, "cfeatPhoto"), featPhoto, 4);
 		// tuning/export mode: leave the source depth-map untouched (confidence is recomputed offline);

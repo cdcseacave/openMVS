@@ -121,7 +121,6 @@ MDEFVAR_OPTDENSE_float(fConfConfirmTau, "Conf Confirm Tau", "confidence-adjust: 
 MDEFVAR_OPTDENSE_float(fConfPriorGate, "Conf Prior Gate", "confidence-adjust: prior contribution to the gate when no neighbor confirms", "0.3")
 MDEFVAR_OPTDENSE_float(fConfPhotoFloor, "Conf Photo Floor", "confidence-adjust: minimum multiplicative photometric weight", "0.5")
 MDEFVAR_OPTDENSE_float(fConfFloor, "Conf Floor", "confidence-adjust: floor (times photometric conf) for pixels confirmed by >=1 view", "0.5")
-MDEFVAR_OPTDENSE_float(fConfFSVWeight, "Conf FSV Weight", "confidence-adjust: optional free-space-violation penalty weight (0 - disabled)", "0.0")
 MDEFVAR_OPTDENSE_bool(bExportFusionLabels, "Export Fusion Labels", "export per-pixel fusion inlier/outlier labels (.flabel/.fsupport) for confidence evaluation", "0")
 MDEFVAR_OPTDENSE_bool(bExportConfFeatures, "Export Conf Features", "export per-pixel confidence-adjust features (.cfeat*) for offline parameter tuning", "0")
 DEFVAR_OPTDENSE_uint32(nEstimationIters, "Estimation Iters", "Number of patch-match iterations", "3")

@@ -3,12 +3,12 @@
 Offline sweep of the AdjustConfidence parameters against fusion inlier/outlier labels.
 
 Reads the per-pixel method features exported by DensifyPointCloud --export-conf-features
-(.cfeatK/.cfeatPconf/.cfeatNfsv/.cfeatPrior/.cfeatPhoto) and the geometry-only labels
+(.cfeatK/.cfeatPconf/.cfeatPrior/.cfeatPhoto) and the geometry-only labels
 (.flabel/.fsupport, from --export-fusion-labels). Because the final confidence is a closed
 form of those features, any parameter set can be scored instantly without re-running C++:
 
   gate        = 1 - exp(-(K + kPrior*pGeo)/tau)
-  posterior   = (s*pGeo + Pconf)/(s + Pconf + wFSV*Nfsv)
+  posterior   = (s*pGeo + Pconf)/(s + Pconf)
   photoFactor = w0 + (1-w0)*photo
   conf        = clip(posterior*gate*photoFactor, 0, 1); if K>=1: conf = max(conf, floor*photo)
 
@@ -29,14 +29,14 @@ INVALID, OUTLIER, AMBIGUOUS, WEAK, CONF = 0, 1, 2, 3, 4
 
 def load_scene(d, cap, max_images=0):
     """Load+subsample labeled pixels from one feature dir. Returns dict of flat arrays."""
-    cols = {k: [] for k in ('K', 'Pconf', 'Nfsv', 'pGeo', 'photo', 'label', 'support')}
+    cols = {k: [] for k in ('K', 'Pconf', 'pGeo', 'photo', 'label', 'support')}
     fls = sorted(glob.glob(os.path.join(d, '*.flabel')))
     if max_images and len(fls) > max_images:  # evenly sample a subset of images
         fls = [fls[i] for i in np.linspace(0, len(fls) - 1, max_images).astype(np.int64)]
     for n, fl in enumerate(fls):
         stem = os.path.splitext(os.path.basename(fl))[0]
         p = lambda ext: os.path.join(d, stem + ext)
-        if not all(os.path.exists(p(e)) for e in ('.cfeatK', '.cfeatPconf', '.cfeatNfsv', '.cfeatPrior', '.cfeatPhoto', '.fsupport')):
+        if not all(os.path.exists(p(e)) for e in ('.cfeatK', '.cfeatPconf', '.cfeatPrior', '.cfeatPhoto', '.fsupport')):
             continue
         label = load_raw_map(fl).ravel()
         sel = (label == OUTLIER) | (label == WEAK) | (label == CONF)
@@ -47,7 +47,6 @@ def load_scene(d, cap, max_images=0):
             idx = idx[np.linspace(0, idx.size - 1, cap).astype(np.int64)]
         cols['K'].append(load_raw_map(p('.cfeatK')).ravel()[idx].astype(np.float64))
         cols['Pconf'].append(load_raw_map(p('.cfeatPconf')).ravel()[idx].astype(np.float64))
-        cols['Nfsv'].append(load_raw_map(p('.cfeatNfsv')).ravel()[idx].astype(np.float64))
         cols['pGeo'].append(load_raw_map(p('.cfeatPrior')).ravel()[idx].astype(np.float64))
         cols['photo'].append(load_raw_map(p('.cfeatPhoto')).ravel()[idx].astype(np.float64))
         cols['label'].append(label[idx].astype(np.int32))
@@ -60,9 +59,9 @@ def load_scene(d, cap, max_images=0):
 
 
 def conf_from(F, p):
-    s, tau, kPrior, w0, floor, wFSV = p
+    s, tau, kPrior, w0, floor = p
     gate = 1.0 - np.exp(-(F['K'] + kPrior * F['pGeo']) / tau)
-    posterior = (s * F['pGeo'] + F['Pconf']) / (s + F['Pconf'] + wFSV * F['Nfsv'])
+    posterior = (s * F['pGeo'] + F['Pconf']) / (s + F['Pconf'])
     conf = np.clip(posterior * gate * (w0 + (1.0 - w0) * F['photo']), 0.0, 1.0)
     return np.where(F['K'] >= 1, np.maximum(conf, floor * F['photo']), conf)
 
@@ -114,12 +113,12 @@ def main():
 
     # baseline: raw photometric confidence is the 'photo' feature itself
     base = metrics(pool['photo'], pool, args.gate)
-    DEFAULT = (2.0, 1.0, 0.3, 0.3, 0.5, 0.0)
+    DEFAULT = (1.0, 2.0, 0.3, 0.5, 0.5)  # shipped OPTDENSE defaults (fConfPriorStrength/ConfirmTau/PriorGate/PhotoFloor/Floor)
     dflt = metrics(conf_from(pool, DEFAULT), pool, args.gate)
 
     grid = dict(s=[1, 2, 4, 8], tau=[0.5, 1.0, 1.5, 2.0], kPrior=[0.0, 0.3, 0.6],
-                w0=[0.1, 0.3, 0.5], floor=[0.3, 0.5, 0.7], wFSV=[0.0, 0.5])
-    combos = list(itertools.product(*[grid[k] for k in ('s', 'tau', 'kPrior', 'w0', 'floor', 'wFSV')]))
+                w0=[0.1, 0.3, 0.5], floor=[0.3, 0.5, 0.7])
+    combos = list(itertools.product(*[grid[k] for k in ('s', 'tau', 'kPrior', 'w0', 'floor')]))
     print('sweeping %d combos on %d-pixel sample...' % (len(combos), sweep['label'].size))
     results = []
     for p in combos:
@@ -132,7 +131,7 @@ def main():
     results.sort(key=lambda r: -r[0])
 
     def row(tag, m, p=None):
-        ps = ('s=%g tau=%g kP=%g w0=%g fl=%g fsv=%g' % p) if p else ''
+        ps = ('s=%g tau=%g kP=%g w0=%g fl=%g' % p) if p else ''
         return ('%-10s Sroc=%.3f Spr=%.3f | Lroc=%.3f Lpr=%.3f | P@g=%.3f R@g=%.3f weakR=%.3f sp=%.3f  %s' % (
             tag, m['S']['roc'], m['S']['pr'], m['L']['roc'], m['L']['pr'],
             m['L']['prec'], m['L']['rec'], m['weakR'], m['sp'], ps))
@@ -145,7 +144,7 @@ def main():
 
     best = results[0]
     print('\n===== WINNER (re-scored on FULL pool) =====')
-    print('winner params: s=%g tau=%g kPrior=%g w0=%g floor=%g wFSV=%g' % best[1])
+    print('winner params: s=%g tau=%g kPrior=%g w0=%g floor=%g' % best[1])
     print(row('winner', metrics(conf_from(pool, best[1]), pool, args.gate), best[1]))
     print('\n===== WINNER per-scene breakdown =====')
     for name, F in scenes.items():
