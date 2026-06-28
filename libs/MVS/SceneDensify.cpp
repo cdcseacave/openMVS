@@ -128,6 +128,32 @@ inline float Conf2Weight(float conf, Depth depth) {
 }
 /*----------------------------------------------------------------*/
 
+// per-pixel fusion-label values written to the .flabel maps (kept in sync with scripts/python/EvalConfidence.py)
+namespace {
+enum FusionLabel : uint8_t {
+	LABEL_INVALID          = 0, // no depth estimate
+	LABEL_OUTLIER          = 1, // seen by a neighbor but geometrically not confirmed
+	LABEL_AMBIGUOUS        = 2, // not covered by any neighbor (cannot decide)
+	LABEL_WEAK_INLIER      = 3, // confirmed by >=2 views but too few views/pixels to pass strict fusion (fusion false-negative)
+	LABEL_CONFIDENT_INLIER = 4, // would survive strict DenseFuse (>=nMinViewsFuse views and >=nMinPixelsFuse pixels)
+};
+// minimal raw map writer for the evaluation harness;
+// header: int32 magic('LMAP'=0x50414D4C), int32 width, int32 height, int32 elemType (1=uint8, 2=uint16, 4=float32); then row-major data
+template <typename T>
+bool SaveRawMap(const String& fileName, const TImage<T>& map, int32_t elemType) {
+	FILE* f = fopen(fileName.c_str(), "wb");
+	if (f == NULL)
+		return false;
+	const int32_t hdr[4] = { 0x50414D4C, (int32_t)map.cols, (int32_t)map.rows, elemType };
+	bool ok = fwrite(hdr, sizeof(hdr), 1, f) == 1;
+	for (int r = 0; ok && r < map.rows; ++r)
+		ok = fwrite(map.template ptr<T>(r), sizeof(T), (size_t)map.cols, f) == (size_t)map.cols;
+	fclose(f);
+	return ok;
+}
+} // namespace
+
+
 
 // S T R U C T S ///////////////////////////////////////////////////
 
@@ -1186,6 +1212,17 @@ bool DepthMapsData::AdjustConfidence(DepthData& depthDataRef, const IIndexArr& i
 	ComputeIntraMapPrior(depthDataRef, priorMap);
 
 	ConfidenceMap newConfMap(depthMapRef.size());
+	// optional per-pixel feature export for offline parameter tuning (recompute newConf from these in Python)
+	const bool bFeat(OPTDENSE::bExportConfFeatures);
+	TImage<uint16_t> featK;
+	TImage<float> featPconf, featNfsv, featPrior, featPhoto;
+	if (bFeat) {
+		featK.create(depthMapRef.size()); featK.memset(0);
+		featPconf.create(depthMapRef.size()); featPconf.memset(0);
+		featNfsv.create(depthMapRef.size()); featNfsv.memset(0);
+		featPrior.create(depthMapRef.size()); featPrior.memset(0);
+		featPhoto.create(depthMapRef.size()); featPhoto.memset(0);
+	}
 	#if TD_VERBOSE != TD_VERBOSE_OFF
 	unsigned nProcessed(0), nDiscarded(0);
 	#endif
@@ -1259,11 +1296,30 @@ bool DepthMapsData::AdjustConfidence(DepthData& depthDataRef, const IIndexArr& i
 			if (K >= 1)
 				conf = MAXF(conf, confFloor*confPhoto); // never erode a genuinely confirmed pixel (anti-cascade)
 			newConfMap(r,c) = conf;
+			if (bFeat) {
+				featK(r,c) = (uint16_t)MINF(K, 65535u);
+				featPconf(r,c) = Pconf;
+				featNfsv(r,c) = Nfsv;
+				featPrior(r,c) = pGeo;
+				featPhoto(r,c) = confPhoto;
+			}
 			#if TD_VERBOSE != TD_VERBOSE_OFF
 			if (conf < minConfidence)
 				++nDiscarded;
 			#endif
 		}
+	}
+	if (bFeat) {
+		const IIndex id(imageRef.GetID());
+		SaveRawMap(ComposeDepthFilePath(id, "cfeatK"), featK, 2);
+		SaveRawMap(ComposeDepthFilePath(id, "cfeatPconf"), featPconf, 4);
+		SaveRawMap(ComposeDepthFilePath(id, "cfeatNfsv"), featNfsv, 4);
+		SaveRawMap(ComposeDepthFilePath(id, "cfeatPrior"), featPrior, 4);
+		SaveRawMap(ComposeDepthFilePath(id, "cfeatPhoto"), featPhoto, 4);
+		// tuning/export mode: leave the source depth-map untouched (confidence is recomputed offline);
+		// returning false skips the EVT_ADJUSTDEPTHMAP merge that would otherwise re-save the depth-map
+		DEBUG("Confidence-map %3u features exported (%s)", id, TD_TIMER_GET_FMT().c_str());
+		return false;
 	}
 	if (!SaveConfidenceMap(ComposeDepthFilePath(imageRef.GetID(), "adjusted.cmap"), newConfMap))
 		return false;
@@ -1966,30 +2022,6 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 /*----------------------------------------------------------------*/
 
 
-// per-pixel fusion-label values written to the .flabel maps (kept in sync with scripts/python/EvalConfidence.py)
-namespace {
-enum FusionLabel : uint8_t {
-	LABEL_INVALID          = 0, // no depth estimate
-	LABEL_OUTLIER          = 1, // seen by a neighbor but geometrically not confirmed
-	LABEL_AMBIGUOUS        = 2, // not covered by any neighbor (cannot decide)
-	LABEL_WEAK_INLIER      = 3, // confirmed by >=2 views but too few views/pixels to pass strict fusion (fusion false-negative)
-	LABEL_CONFIDENT_INLIER = 4, // would survive strict DenseFuse (>=nMinViewsFuse views and >=nMinPixelsFuse pixels)
-};
-// minimal raw map writer for the evaluation harness;
-// header: int32 magic('LMAP'=0x50414D4C), int32 width, int32 height, int32 elemType (1=uint8, 2=uint16, 4=float32); then row-major data
-template <typename T>
-bool SaveRawMap(const String& fileName, const TImage<T>& map, int32_t elemType) {
-	FILE* f = fopen(fileName.c_str(), "wb");
-	if (f == NULL)
-		return false;
-	const int32_t hdr[4] = { 0x50414D4C, (int32_t)map.cols, (int32_t)map.rows, elemType };
-	bool ok = fwrite(hdr, sizeof(hdr), 1, f) == 1;
-	for (int r = 0; ok && r < map.rows; ++r)
-		ok = fwrite(map.template ptr<T>(r), sizeof(T), (size_t)map.cols, f) == (size_t)map.cols;
-	fclose(f);
-	return ok;
-}
-} // namespace
 
 // label every depth estimate as inlier/outlier by replaying the DenseFuseDepthMaps flood-fill with the
 // confidence gate DISABLED (so the labels are pure geometry, independent of the confidence-map being evaluated);
@@ -2221,12 +2253,14 @@ bool Scene::DenseReconstruction(int nFusionMode, bool bCrop2ROI, float fBorderRO
 	// estimate depth-maps
 	if (!ComputeDepthMaps(data))
 		return false;
-	if (ABS(nFusionMode) == 1)
-		return true;
 
 	// optionally export per-pixel fusion inlier/outlier labels for confidence evaluation
+	// (independent of fusion, so it also runs in export-only mode |nFusionMode|==1)
 	if (OPTDENSE::bExportFusionLabels)
 		data.depthMaps.LabelFusionInliers();
+
+	if (ABS(nFusionMode) == 1)
+		return true;
 
 	// fuse all depth-maps
 	pointcloud.Release();

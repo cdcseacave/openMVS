@@ -143,6 +143,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 	unsigned nFuseFilter;
 	unsigned nOptimize;
 	bool bExportFusionLabels;
+	bool bExportConfFeatures;
 	int nIgnoreMaskLabel;
 	float fDepthDiffThreshold;
 	float fDepthReprojectionErrorThreshold;
@@ -177,6 +178,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("fusion-reprojection-threshold,d", boost::program_options::value(&fDepthReprojectionErrorThreshold)->default_value(1.2f), "dense-fuse maximum distance between measured and depth projected pixel")
 		("postprocess-dmaps", boost::program_options::value(&nOptimize)->default_value(0), "flags used to filter the depth-maps after estimation (0 - disabled, 1 - remove-speckles, 2 - fill-gaps, 4 - adjust-confidence)")
 		("export-fusion-labels", boost::program_options::value(&bExportFusionLabels)->default_value(false), "export per-pixel fusion inlier/outlier labels (.flabel/.fsupport) for confidence evaluation")
+		("export-conf-features", boost::program_options::value(&bExportConfFeatures)->default_value(false), "export per-pixel confidence-adjust features (.cfeat*) for offline parameter tuning")
 		("filter-point-cloud", boost::program_options::value(&OPT::thFilterPointCloud)->default_value(0), "filter dense point-cloud based on visibility (0 - disabled)")
 		("export-number-views", boost::program_options::value(&OPT::nExportNumViews)->default_value(0), "export points with >= number of views (0 - disabled, <0 - save MVS project too)")
 		("roi-border", boost::program_options::value(&OPT::fBorderROI)->default_value(0), "add a border to the region-of-interest when cropping the scene (0 - disabled, >0 - percentage, <0 - absolute)")
@@ -280,6 +282,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 	OPTDENSE::nFuseFilter = nFuseFilter;
 	OPTDENSE::nOptimize = nOptimize;
 	OPTDENSE::bExportFusionLabels = bExportFusionLabels;
+	OPTDENSE::bExportConfFeatures = bExportConfFeatures;
 	OPTDENSE::nIgnoreMaskLabel = nIgnoreMaskLabel;
 	OPTDENSE::fDepthDiffThreshold = fDepthDiffThreshold;
 	OPTDENSE::fDepthReprojectionErrorThreshold = fDepthReprojectionErrorThreshold;

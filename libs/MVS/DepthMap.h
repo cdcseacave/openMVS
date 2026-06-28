@@ -143,6 +143,7 @@ extern MVS_API float fConfPhotoFloor; // minimum multiplicative photometric weig
 extern MVS_API float fConfFloor; // floor (times photometric conf) for pixels confirmed by >=1 view (anti-erosion)
 extern MVS_API float fConfFSVWeight; // optional free-space-violation penalty weight (0 - disabled)
 extern MVS_API bool bExportFusionLabels; // export per-pixel fusion inlier/outlier labels for confidence evaluation
+extern MVS_API bool bExportConfFeatures; // export per-pixel confidence-adjust features (K/Pconf/Nfsv/prior/photo) for offline tuning
 extern MVS_API unsigned nEstimationIters;
 extern MVS_API unsigned nEstimationGeometricIters;
 extern MVS_API unsigned nPatchMatchCUDAInstances;
