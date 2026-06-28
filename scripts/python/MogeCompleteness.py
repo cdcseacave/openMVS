@@ -193,22 +193,25 @@ def main():
     ci = A['label'] == CONF
     half = (vid % 2 == 0)
     cal = ci & half
+    NORMCAP = 45.0  # hard cap so the normal leg actually bites (orientation, not just scale)
     def on_surface(tau_d, tau_n):
         depth_ok = A['r_depth'] <= tau_d
         norm_ok = (A['r_n'] <= tau_n) | ~A['normal_reliable']
         return depth_ok & norm_ok
-    # joint percentile q s.t. held-out CI ON = 0.90
-    best_q = 0.90
+    def tn_at(q):
+        m = cal & A['normal_reliable']
+        return min(np.percentile(A['r_n'][m], q * 100), NORMCAP) if m.any() else NORMCAP
+    # joint percentile q s.t. held-out CI ON = 0.90 (normal threshold capped at NORMCAP)
+    best_q = 0.95
     for q in np.linspace(0.80, 0.995, 40):
         td = np.percentile(A['r_depth'][cal], q * 100)
-        tn = np.percentile(A['r_n'][cal & A['normal_reliable']], q * 100) if (cal & A['normal_reliable']).any() else 180
-        rate = on_surface(td, tn)[ci & ~half].mean()
-        if rate >= 0.90:
+        if on_surface(td, tn_at(q))[ci & ~half].mean() >= 0.90:
             best_q = q; break
     tau_d = np.percentile(A['r_depth'][cal], best_q * 100)
-    tau_n = np.percentile(A['r_n'][cal & A['normal_reliable']], best_q * 100) if (cal & A['normal_reliable']).any() else 180
+    tau_n = tn_at(best_q)
     ON = on_surface(tau_d, tau_n)
-    OFF = (~ON) & (A['r_depth'] > tau_d * 1.5)  # clearly off
+    # OFF = disagree on depth OR (where the normal is reliable) on orientation -> catches smooth-but-wrong floaters
+    OFF = (A['r_depth'] > tau_d) | (A['normal_reliable'] & (A['r_n'] > tau_n))
     print('calibrated tau_depth=%.4f tau_normal=%.1fdeg (q=%.3f)' % (tau_d, tau_n, best_q))
 
     # ---- SANITY: CI ON-rate, OUTLIER OFF-rate, CI-vs-OUTLIER same-surface AUC ----
