@@ -29,6 +29,7 @@ from EvalConfidence import load_raw_map, roc_auc
 
 INVALID, OUTLIER, AMBIGUOUS, WEAK, CONF = 0, 1, 2, 3, 4
 EPS = 1e-9
+RELMAD = float(os.environ.get('WITNESS_RELMAD', '0.05'))  # per-view affine residual MAD guard (relax for metric depth)
 
 
 def new_conf(K, Pconf, pGeo, photo):  # shipped defaults s=1,tau=2,kPrior=0.3,w0=0.5,floor=0.5
@@ -119,13 +120,18 @@ def process_view(dmap, moge, fl, fs, fK, fPc, fPr, fPh, cap, vid):
     if ci.sum() < 200:
         return None
     gm, gv = 1.0 / dm, 1.0 / dv
-    fit = robust_affine(gm[ci].ravel(), gv[ci].ravel())
-    if fit is None:
-        return None
-    a, b, inl, relmad = fit
+    if os.environ.get('WITNESS_METRIC'):
+        # metric depth (e.g. sparse-guided MapAnything): scale-only correction, no affine/inlier guard
+        a = float(np.median(gv[ci] / np.maximum(gm[ci], EPS))); b = 0.0
+        inl, relmad = 1.0, 0.0
+    else:
+        fit = robust_affine(gm[ci].ravel(), gv[ci].ravel())
+        if fit is None:
+            return None
+        a, b, inl, relmad = fit
     sp_m = np.percentile(gm[ci], 95) - np.percentile(gm[ci], 5)
     sp_v = np.percentile(gv[ci], 95) - np.percentile(gv[ci], 5)
-    if inl < 0.5 or relmad > 0.05 or sp_m < 0.3 * sp_v:   # validity guards
+    if inl < 0.5 or relmad > RELMAD or sp_m < 0.3 * sp_v:   # validity guards
         return {'unreliable_view': True, 'vid': vid}
     dhat = 1.0 / np.maximum(a * gm + b, EPS)
     r_depth = np.abs(dv - dhat) / dv

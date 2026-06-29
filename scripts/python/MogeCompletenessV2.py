@@ -21,7 +21,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from MvsUtils import loadDMAP
 from EvalConfidence import load_raw_map, roc_auc
 from MogeCompleteness import robust_affine, orient_cam_facing, new_conf
-from MogeCompleteness import INVALID, OUTLIER, AMBIGUOUS, WEAK, CONF, EPS
+from MogeCompleteness import INVALID, OUTLIER, AMBIGUOUS, WEAK, CONF, EPS, RELMAD
 
 CACHE = {}; CACHE_ORDER = []; CACHE_MAX = 26
 
@@ -61,7 +61,7 @@ def prep_view(vid, paths):
                 a, b, inl, relmad = fit
                 spm = np.percentile((1.0/dm)[ci], 95) - np.percentile((1.0/dm)[ci], 5)
                 spv = np.percentile((1.0/dv)[ci], 95) - np.percentile((1.0/dv)[ci], 5)
-                if inl >= 0.5 and relmad <= 0.05 and spm >= 0.3 * spv:
+                if inl >= 0.5 and relmad <= RELMAD and spm >= 0.3 * spv:
                     res = (a, b, ci)
     if res is None:
         CACHE[vid] = None; return None
