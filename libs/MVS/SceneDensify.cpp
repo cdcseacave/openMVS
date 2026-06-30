@@ -1177,10 +1177,64 @@ void DepthMapsData::ComputeIntraMapPrior(const DepthData& depthData, ConfidenceM
 } // ComputeIntraMapPrior
 /*----------------------------------------------------------------*/
 
-// recalibrate the confidence-map so that depths likely to survive fusion get high confidence and outliers get low;
-// for each pixel an intra-map geometric prior (computed once) is combined with a one-hop multi-view confirmation count
-// scored with the exact DenseFuseDepthMaps gates (depth + forward-backward reprojection + normal + min-confidence),
-// merged via a Beta-style posterior with no hard cliff so a confirmed or locally-coherent pixel is never zeroed
+// ----------------------------------------------------------------------------
+// AdjustConfidence -- recalibrate the per-pixel confidence-map so that it predicts
+// "will this depth survive DenseFuseDepthMaps" instead of mere photometric NCC.
+//
+// WHY: the confMap produced by depth estimation is photometric only (conf = 1 - score,
+// score = 1 - NCC). NCC is high wherever a patch correlates -- including repetitive
+// texture, specular highlights and occlusion edges where a WRONG depth still matches well
+// -- and low on correct but textureless surfaces. So the raw confidence is a poor predictor
+// of what actually matters downstream: whether a depth is kept by fusion. DenseFuseDepthMaps
+// is the gold standard for that (a depth survives only if other views geometrically confirm
+// its 3D point), but its global flood-fill cannot be cheaply evaluated per pixel. This routine
+// reproduces fusion's keep/drop decision LOCALLY and cheaply, for every pixel.
+//
+// Two independent, complementary sources of evidence are combined per reference pixel:
+//
+//  (A) MULTI-VIEW confirmation count K  -- one-hop, O(neighbors), the inter-map evidence:
+//      back-project the pixel to its 3D point X, project X into each neighbor depth-map and
+//      test the neighbor's own estimate against the EXACT four DenseFuse gates --
+//        G1 depth-similarity, G2 forward-backward reprojection, G3 normal agreement,
+//        G4 neighbor min-confidence. Every neighbor passing all four is a genuine confirmation
+//      (++K) and contributes its confidence to Pconf. K is thus a faithful per-pixel proxy for
+//      "how many views would confirm this point during fusion".
+//
+//  (B) INTRA-MAP geometric prior pGeo (ComputeIntraMapPrior, once per map, O(pixels)):
+//      how well the pixel fits the local surface defined by its own 3x3 neighborhood (small
+//      relative depth differences + coherent normals). A pixel on a smooth, self-consistent
+//      surface scores high even with NO neighbor confirmation; an isolated depth spike (the
+//      typical outlier) breaks local depth/normal coherence and scores ~0.
+//
+// The two are merged into a calibrated confidence in [0,1] with NO hard cliff (a confirmed or
+// locally-coherent pixel is never zeroed):
+//      gate        = 1 - exp(-(K + kPrior*pGeo)/tau)   soft analogue of "nMinViewsFuse>=2";
+//                                                       pGeo acts as a fractional virtual view
+//      posterior   = (s*pGeo + Pconf)/(s + Pconf)      Beta posterior mean, prior = s pseudo-obs
+//      photoFactor = w0 + (1-w0)*confPhoto             retain a photometric floor
+//      conf        = clamp(posterior * gate * photoFactor, 0, 1)
+//      if K>=1:  conf = max(conf, fConfFloor*confPhoto) anti-cascade floor (see below)
+//
+// HOW THIS KEEPS INLIERS AND DROPS OUTLIERS:
+//  * Inlier seen by MANY views: K large -> gate->1 and posterior->~1 -> high confidence.
+//  * Inlier seen by FEW views (precisely fusion's false-negatives): even K=1 gives gate~=0.73,
+//    and the anti-cascade floor guarantees conf >= 0.5*confPhoto, so it is NOT thresholded away.
+//  * Inlier seen by NO view but lying on a coherent surface (K=0, pGeo high): gate~=0.24 keeps
+//    it ALIVE just around the fusion gate (judged in the LENIENT regime) rather than zeroing it.
+//    This is the "valid even without much neighbor evidence, because it continues the local
+//    surface" case -- especially valuable on thin / grazing / scene-boundary geometry, and on
+//    mono-like smooth surfaces that lack texture for strong NCC.
+//  * Photometric floater (high NCC, geometrically wrong): no view confirms it (K=0) AND it does
+//    not fit any local surface (pGeo~0), so BOTH gate and posterior collapse; the high NCC alone
+//    (photoFactor) cannot rescue it -> confidence -> ~0. Geometry, not photometry, decides.
+//
+// ANTI-CASCADE: the subsequent REAL fusion also gates neighbors on min-confidence (its G4), so
+// zeroing a confirmed pixel here would remove it as a confirming neighbor for other pixels and
+// erode the cloud. The K>=1 floor keeps any genuinely confirmed pixel above the fusion gate.
+//
+// COST: O(pixels x neighbors), a single lookup per neighbor -- no full neighbor-map reprojection
+// and no extra full-resolution maps in RAM (unlike the removed Merrell-style implementation).
+// ----------------------------------------------------------------------------
 bool DepthMapsData::AdjustConfidence(DepthData& depthDataRef, const IIndexArr& idxNeighbors)
 {
 	TD_TIMER_STARTD();
@@ -1890,6 +1944,11 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 		};
 		lambda(ID, x, fuseDepth, lambda);
 	};
+	// optional intra-map geometric prior of the reference depth-map (recomputed per image): it grants
+	// fractional "virtual" view/pixel support so that an inlier lying on a locally coherent surface but
+	// confirmed by too few views/pixels is still kept (same prior used by AdjustConfidence); empty when off
+	const bool bUsePrior(OPTDENSE::fFusePriorWeight > 0);
+	ConfidenceMap priorMap;
 	// loop over each depth-map
 	IIndex numDMapsFused = 0;
 	while (true) {
@@ -1909,6 +1968,8 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 		ASSERT(!depthData.IsEmpty());
 		if (bEstimateNormal && depthData.normalMap.empty())
 			EstimateNormalMaps();
+		if (bUsePrior)
+			ComputeIntraMapPrior(depthData, priorMap); // depth+normal coherence of every seed pixel, O(pixels)
 		// make sure all neighbors are cached
 		neighbors.Memset(0);
 		neighbors[idxImage] = true;
@@ -1960,7 +2021,16 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 		for (int i=0; i<depthData.size.height; ++i) {
 			for (int j=0; j<depthData.size.width; ++j) {
 				FusePoint(idxImage, ImageRef(j,i), 0);
-				if (fusedPoints[0].size() >= OPTDENSE::nMinPixelsFuse && fusedViews.size() >= nMinViewsFuse) {
+				// the intra-map prior of the seed pixel (j,i) contributes fractional virtual support: a seed
+				// lying on a locally coherent surface partially satisfies the view and pixel minimums, so an
+				// inlier that fusion would otherwise drop for want of cross-view confirmation is recovered.
+				// the prior measures agreement with same-depth-map neighbors, which nMinPixelsFuse explicitly
+				// counts; the !fusedViews.empty() guard ensures at least the real seed exists so the prior can
+				// never fabricate a point out of nothing (when disabled, virtualSupport==0 => identical output)
+				const float virtualSupport(bUsePrior ? OPTDENSE::fFusePriorWeight * priorMap(i,j) : 0.f);
+				if (!fusedViews.empty() &&
+					(float)fusedPoints[0].size() + virtualSupport >= (float)OPTDENSE::nMinPixelsFuse &&
+					(float)fusedViews.size() + virtualSupport >= (float)nMinViewsFuse) {
 					// create the corresponding 3D point
 					pointcloud.points.emplace_back(
 						fusedPoints[0].GetMedian(),

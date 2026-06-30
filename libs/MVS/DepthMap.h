@@ -141,6 +141,7 @@ extern MVS_API float fConfConfirmTau; // softness of the multi-view confirmation
 extern MVS_API float fConfPriorGate; // how much the prior alone contributes to the gate when no neighbor confirms
 extern MVS_API float fConfPhotoFloor; // minimum multiplicative photometric weight
 extern MVS_API float fConfFloor; // floor (times photometric conf) for pixels confirmed by >=1 view (anti-erosion)
+extern MVS_API float fFusePriorWeight; // DenseFuseDepthMaps: weight of the intra-map prior as virtual view/pixel support to keep few-view inliers (0 disables)
 extern MVS_API bool bExportFusionLabels; // export per-pixel fusion inlier/outlier labels for confidence evaluation
 extern MVS_API bool bExportConfFeatures; // export per-pixel confidence-adjust features (K/Pconf/prior/photo) for offline tuning
 extern MVS_API unsigned nEstimationIters;
