@@ -1083,8 +1083,12 @@ void DepthMapsData::ComputeIntraMapPrior(const DepthData& depthData, ConfidenceM
 	const DepthMap& depthMap = depthData.depthMap;
 	const NormalMap& normalMap = depthData.normalMap;
 	const bool bHasNormal(!normalMap.empty());
-	const float thRel(OPTDENSE::fDepthDiffThreshold * 3.f); // relative depth-diff scale for the prior
+	const Matrix3x3f K(depthData.GetView().camera.K);
+	const DepthGradientEstimator est(K, depthMap);
+	const float band(OPTDENSE::fDepthDiffThreshold * 3.f);          // relative planarity band
 	const float sigmaNormalSq(SQUARE(FD2R(OPTDENSE::fNormalDiffThreshold))); // angular-variance scale
+	const float invKmin(1.f / 4.f);                                // soft planar quorum (~4 inliers)
+	const bool bCoherence(OPTDENSE::bConfPriorNormalCoherence);
 	priorMap.create(depthMap.size());
 	priorMap.memset(0);
 	#ifdef DENSE_USE_OPENMP
@@ -1092,86 +1096,63 @@ void DepthMapsData::ComputeIntraMapPrior(const DepthData& depthData, ConfidenceM
 	#endif
 	for (int r=0; r<depthMap.rows; ++r) {
 		for (int c=0; c<depthMap.cols; ++c) {
-			const Depth depth(depthMap(r,c));
-			if (depth <= 0)
+			const Depth w(depthMap(r,c));
+			if (w <= 0)
 				continue;
-			// mean of the (up to) 3 smallest relative depth-differences in the 3x3 window
-			float relDiff[8];
-			int n(0);
-			for (int k=-1; k<=1; ++k) {
-				const int rk(r+k);
-				if (rk < 0 || rk >= depthMap.rows)
-					continue;
-				for (int l=-1; l<=1; ++l) {
-					if (k==0 && l==0)
-						continue;
-					const int cl(c+l);
-					if (cl < 0 || cl >= depthMap.cols)
-						continue;
-					const Depth d(depthMap(rk,cl));
-					if (d <= 0)
-						continue;
-					relDiff[n++] = ABS(depth-d)/depth;
+			// fit a slope-aware local depth plane using only depth-similar neighbors
+			Point3f ws;
+			if (!est.DepthGradient(ImageRef(c,r), ws))
+				continue;                                          // not on a locally coherent surface
+			const float wx(ws[1]), wy(ws[2]);
+			// slope-aware planarity + inlier quorum over the 3x3 window:
+			// count neighbors whose depth matches the fitted plane prediction (not just the center depth)
+			int nInl(0);
+			float sumE2(0);
+			for (int y=-1; y<=1; ++y) {
+				const int rr(r+y);
+				if (rr<0 || rr>=depthMap.rows) continue;
+				for (int x=-1; x<=1; ++x) {
+					if (x==0 && y==0) continue;
+					const int cc(c+x);
+					if (cc<0 || cc>=depthMap.cols) continue;
+					const Depth dN(depthMap(rr,cc));
+					if (dN <= 0) continue;
+					const float dpred(w + wx*x + wy*y);
+					const float e(ABS(dN-dpred)/w);
+					if (e < band) { ++nInl; sumE2 += SQUARE(e/band); }
 				}
 			}
-			if (n == 0)
-				continue; // isolated pixel: leave prior 0 (not locally coherent)
-			const int s(MINF(3,n));
-			float meanRel(0);
-			for (int i=0; i<s; ++i) {
-				int jmin(i);
-				for (int j=i+1; j<n; ++j)
-					if (relDiff[j] < relDiff[jmin])
-						jmin = j;
-				const float t(relDiff[i]); relDiff[i] = relDiff[jmin]; relDiff[jmin] = t;
-				meanRel += relDiff[i];
-			}
-			meanRel /= s;
-			const float pDepth(EXP(-SQUARE(meanRel/thRel)));
-			float prior(pDepth);
+			if (nInl < 3)
+				continue;
+			const float Pplane(EXP(-sumE2/nInl));
+			const float gate(1.f - EXP(-(float)nInl*invKmin));
+			// normal agreement: depth-gradient normal vs stored (photometric) normal = burst discriminator.
+			// On a real surface the two coincide; on a textureless/repetitive burst the photometric normal
+			// is unconstrained and disagrees with the geometry-implied gradient normal => Pnorm collapses.
+			float Pnorm(1.f);
 			if (bHasNormal) {
-				// angular coherence of the normals in the window using a renormalized mean direction
-				Point3f mean(0,0,0);
-				int cnt(0);
-				for (int k=-1; k<=1; ++k) {
-					const int rk(r+k);
-					if (rk < 0 || rk >= depthMap.rows)
-						continue;
-					for (int l=-1; l<=1; ++l) {
-						const int cl(c+l);
-						if (cl < 0 || cl >= depthMap.cols)
-							continue;
-						if (depthMap(rk,cl) <= 0)
-							continue;
-						mean += normalMap(rk,cl);
-						++cnt;
+				const Normal nGrad(est.NormalFromGradient(c, r, w, wx, wy));
+				Pnorm = MAXF(0.f, nGrad.dot(normalMap(r,c)));
+				if (bCoherence) {
+					// variant B: also require coherence of the stored normals across the window
+					Point3f mean(0,0,0); int cnt(0);
+					for (int y=-1; y<=1; ++y) { const int rr(r+y); if (rr<0||rr>=depthMap.rows) continue;
+						for (int x=-1; x<=1; ++x) { const int cc(c+x); if (cc<0||cc>=depthMap.cols) continue;
+							if (depthMap(rr,cc) <= 0) continue; mean += normalMap(rr,cc); ++cnt; } }
+					const float nrm(norm(mean));
+					if (cnt > 0 && nrm > 1e-6f) {
+						mean /= nrm;
+						float varAng(0); int cnt2(0);
+						for (int y=-1; y<=1; ++y) { const int rr(r+y); if (rr<0||rr>=depthMap.rows) continue;
+							for (int x=-1; x<=1; ++x) { const int cc(c+x); if (cc<0||cc>=depthMap.cols) continue;
+								if (depthMap(rr,cc) <= 0) continue;
+								const float dotN(CLAMP(mean.dot(normalMap(rr,cc)), -1.f, 1.f));
+								varAng += SQUARE(ACOS(dotN)); ++cnt2; } }
+						Pnorm *= EXP(-varAng/(cnt2*sigmaNormalSq));
 					}
-				}
-				const float nrm(norm(mean));
-				if (cnt > 0 && nrm > 1e-6f) {
-					mean /= nrm;
-					float varAng(0);
-					int cnt2(0);
-					for (int k=-1; k<=1; ++k) {
-						const int rk(r+k);
-						if (rk < 0 || rk >= depthMap.rows)
-							continue;
-						for (int l=-1; l<=1; ++l) {
-							const int cl(c+l);
-							if (cl < 0 || cl >= depthMap.cols)
-								continue;
-							if (depthMap(rk,cl) <= 0)
-								continue;
-							const float dotN(CLAMP(mean.dot(normalMap(rk,cl)), -1.f, 1.f));
-							varAng += SQUARE(ACOS(dotN));
-							++cnt2;
-						}
-					}
-					const float pNormal(EXP(-varAng/(cnt2*sigmaNormalSq)));
-					prior = SQRT(MAXF(pDepth,1e-3f)*MAXF(pNormal,1e-3f));
 				}
 			}
-			priorMap(r,c) = prior;
+			priorMap(r,c) = CLAMP(Pplane*Pnorm*gate, 0.f, 1.f);
 		}
 	}
 } // ComputeIntraMapPrior
