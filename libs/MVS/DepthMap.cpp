@@ -1597,93 +1597,70 @@ void MVS::EstimatePointNormals(const ImageArr& images, PointCloud& pointcloud, i
 } // EstimatePointNormals
 /*----------------------------------------------------------------*/
 
+bool DepthGradientEstimator::DepthGradient(const ImageRef& ir, Point3f& ws) const
+{
+	float& w  = ws[0];
+	float& wx = ws[1];
+	float& wy = ws[2];
+	w = depthMap(ir);
+	if (w <= 0)
+		return false;
+	// loop over neighborhood and finding least squares plane,
+	// the coefficients of which give gradient of depth
+	int whxx(0), whxy(0), whyy(0);
+	float wgx(0), wgy(0);
+	const int Radius(1);
+	int n(0);
+	for (int y = -Radius; y <= Radius; ++y) {
+		for (int x = -Radius; x <= Radius; ++x) {
+			if (x == 0 && y == 0)
+				continue;
+			const ImageRef pt(ir.x+x, ir.y+y);
+			if (!depthMap.isInside(pt))
+				continue;
+			const float wi(depthMap(pt));
+			if (!IsDepthValid(w, wi))
+				continue;
+			whxx += x*x; whxy += x*y; whyy += y*y;
+			wgx += (wi - w)*x; wgy += (wi - w)*y;
+			++n;
+		}
+	}
+	if (n < 3)
+		return false;
+	// solve 2x2 system, generated from depth gradient
+	const int det(whxx*whyy - whxy*whxy);
+	if (det == 0)
+		return false;
+	const float invDet(1.f/float(det));
+	wx = (float( whyy)*wgx - float(whxy)*wgy)*invDet;
+	wy = (float(-whxy)*wgx + float(whxx)*wgy)*invDet;
+	return true;
+}
+
+Normal DepthGradientEstimator::NormalFromGradient(int x, int y, Depth d, Depth dx, Depth dy) const
+{
+	ASSERT(ISZERO(K(0,1)));
+	return normalized(Normal(
+		K(0,0)*dx,
+		K(1,1)*dy,
+		(K(0,2)-float(x))*dx+(K(1,2)-float(y))*dy-d
+	));
+}
+
 bool MVS::EstimateNormalMap(const Matrix3x3f& K, const DepthMap& depthMap, NormalMap& normalMap)
 {
 	normalMap.create(depthMap.size());
-	struct Tool {
-		static bool IsDepthValid(Depth d, Depth nd) {
-			return nd > 0 && IsDepthSimilar(d, nd, Depth(0.03f));
-		}
-		// computes depth gradient (first derivative) at current pixel
-		static bool DepthGradient(const DepthMap& depthMap, const ImageRef& ir, Point3f& ws) {
-			float& w  = ws[0];
-			float& wx = ws[1];
-			float& wy = ws[2];
-			w = depthMap(ir);
-			if (w <= 0)
-				return false;
-			// loop over neighborhood and finding least squares plane,
-			// the coefficients of which give gradient of depth
-			int whxx(0), whxy(0), whyy(0);
-			float wgx(0), wgy(0);
-			const int Radius(1);
-			int n(0);
-			for (int y = -Radius; y <= Radius; ++y) {
-				for (int x = -Radius; x <= Radius; ++x) {
-					if (x == 0 && y == 0)
-						continue;
-					const ImageRef pt(ir.x+x, ir.y+y);
-					if (!depthMap.isInside(pt))
-						continue;
-					const float wi(depthMap(pt));
-					if (!IsDepthValid(w, wi))
-						continue;
-					whxx += x*x; whxy += x*y; whyy += y*y;
-					wgx += (wi - w)*x; wgy += (wi - w)*y;
-					++n;
-				}
-			}
-			if (n < 3)
-				return false;
-			// solve 2x2 system, generated from depth gradient
-			const int det(whxx*whyy - whxy*whxy);
-			if (det == 0)
-				return false;
-			const float invDet(1.f/float(det));
-			wx = (float( whyy)*wgx - float(whxy)*wgy)*invDet;
-			wy = (float(-whxy)*wgx + float(whxx)*wgy)*invDet;
-			return true;
-		}
-		// computes normal to the surface given the depth and its gradient
-		static Normal ComputeNormal(const Matrix3x3f& K, int x, int y, Depth d, Depth dx, Depth dy) {
-			ASSERT(ISZERO(K(0,1)));
-			return normalized(Normal(
-				K(0,0)*dx,
-				K(1,1)*dy,
-				(K(0,2)-float(x))*dx+(K(1,2)-float(y))*dy-d
-			));
-		}
-	};
+	const DepthGradientEstimator est(K, depthMap);
 	for (int r=0; r<normalMap.rows; ++r) {
 		for (int c=0; c<normalMap.cols; ++c) {
-			#if 0
-			const Depth d(depthMap(r,c));
-			if (d <= 0) {
-				normalMap(r,c) = Normal::ZERO;
-				continue;
-			}
-			Depth dl, du;
-			if (depthMap.isInside(ImageRef(c-1,r-1)) && Tool::IsDepthValid(d, dl=depthMap(r,c-1)) &&  Tool::IsDepthValid(d, du=depthMap(r-1,c)))
-				normalMap(r,c) = Tool::ComputeNormal(K, c, r, d, du-d, dl-d);
-			else
-			if (depthMap.isInside(ImageRef(c+1,r-1)) && Tool::IsDepthValid(d, dl=depthMap(r,c+1)) &&  Tool::IsDepthValid(d, du=depthMap(r-1,c)))
-				normalMap(r,c) = Tool::ComputeNormal(K, c, r, d, du-d, d-dl);
-			else
-			if (depthMap.isInside(ImageRef(c+1,r+1)) && Tool::IsDepthValid(d, dl=depthMap(r,c+1)) &&  Tool::IsDepthValid(d, du=depthMap(r+1,c)))
-				normalMap(r,c) = Tool::ComputeNormal(K, c, r, d, d-du, d-dl);
-			else
-			if (depthMap.isInside(ImageRef(c-1,r+1)) && Tool::IsDepthValid(d, dl=depthMap(r,c-1)) &&  Tool::IsDepthValid(d, du=depthMap(r+1,c)))
-				normalMap(r,c) = Tool::ComputeNormal(K, c, r, d, d-du, dl-d);
-			else
-				normalMap(r,c) = Normal(0,0,-1);
-			#else
 			// calculates depth gradient at x
 			Normal& n = normalMap(r,c);
-			if (Tool::DepthGradient(depthMap, ImageRef(c,r), n))
-				n = Tool::ComputeNormal(K, c, r, n.x, n.y, n.z);
+			Point3f ws;
+			if (est.DepthGradient(ImageRef(c,r), ws))
+				n = est.NormalFromGradient(c, r, ws[0], ws[1], ws[2]);
 			else
 				n = Normal::ZERO;
-			#endif
 			ASSERT(normalMap(r,c).dot(K.inv()*Point3f(float(c),float(r),1.f)) <= 0);
 		}
 	}

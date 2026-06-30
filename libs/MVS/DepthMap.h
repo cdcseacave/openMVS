@@ -526,6 +526,23 @@ MVS_API unsigned ColorPointSegmentation(PointCloud& pointcloud);
 MVS_API void EstimatePointNormals(const ImageArr& images, PointCloud& pointcloud, int numNeighbors=16/*K-nearest neighbors*/);
 
 MVS_API bool EstimateNormalMap(const Matrix3x3f& K, const DepthMap&, NormalMap&);
+
+// Local first-order depth-plane estimator: fits depth(x,y) ~ w + wx*x + wy*y over the 3x3
+// neighborhood using only depth-similar neighbors, and derives the implied surface normal.
+// Shared by EstimateNormalMap and DepthMapsData::ComputeIntraMapPrior.
+class MVS_API DepthGradientEstimator {
+public:
+	DepthGradientEstimator(const Matrix3x3f& K, const DepthMap& depthMap) : K(K), depthMap(depthMap) {}
+	static bool IsDepthValid(Depth d, Depth nd) { return nd > 0 && IsDepthSimilar(d, nd, Depth(0.03f)); }
+	// fit the local depth gradient at ir; fills ws=(w, dd/dx, dd/dy); false if <3 similar neighbors / singular
+	bool DepthGradient(const ImageRef& ir, Point3f& ws) const;
+	// surface normal implied by a depth gradient (camera-facing, normalized)
+	Normal NormalFromGradient(int x, int y, Depth d, Depth dx, Depth dy) const;
+private:
+	const Matrix3x3f& K;
+	const DepthMap& depthMap;
+};
+
 MVS_API void EstimateConfidenceFromDepth(const DepthData& depthData, ConfidenceMap& confMap, int winHalfSize=1, int n=3);
 MVS_API void EstimateConfidenceFromNormal(const DepthData& depthData, ConfidenceMap& confMap, int winHalfSize=1);
 
