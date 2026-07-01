@@ -35,6 +35,8 @@
 #include "PatchMatchCUDA.h"
 #include "PatchMatchMetal.h"
 #include "DMapCache.h"
+#include <atomic>
+#include <chrono>
 
 using namespace MVS;
 
@@ -1216,6 +1218,10 @@ void DepthMapsData::ComputeIntraMapPrior(const DepthData& depthData, ConfidenceM
 // COST: O(pixels x neighbors), a single lookup per neighbor -- no full neighbor-map reprojection
 // and no extra full-resolution maps in RAM (unlike the removed Merrell-style implementation).
 // ----------------------------------------------------------------------------
+// accumulates the pure AdjustConfidence compute time (intra-map prior + multi-view confirmation loop)
+// across the multithreaded adjust phase; reset and reported by the dispatch in ComputeDepthMaps
+static std::atomic<int64_t> g_confAdjustComputeNS(0);
+
 bool DepthMapsData::AdjustConfidence(DepthData& depthDataRef, const IIndexArr& idxNeighbors)
 {
 	TD_TIMER_STARTD();
@@ -1242,6 +1248,7 @@ bool DepthMapsData::AdjustConfidence(DepthData& depthDataRef, const IIndexArr& i
 	const float confFloor(OPTDENSE::fConfFloor);
 
 	// intra-map geometric prior (once per map)
+	const std::chrono::steady_clock::time_point timeAdjustStart(std::chrono::steady_clock::now());
 	ConfidenceMap priorMap;
 	ComputeIntraMapPrior(depthDataRef, priorMap);
 
@@ -1337,6 +1344,8 @@ bool DepthMapsData::AdjustConfidence(DepthData& depthDataRef, const IIndexArr& i
 			#endif
 		}
 	}
+	g_confAdjustComputeNS.fetch_add(std::chrono::duration_cast<std::chrono::nanoseconds>(
+		std::chrono::steady_clock::now() - timeAdjustStart).count(), std::memory_order_relaxed);
 	if (bFeat) {
 		const IIndex id(imageRef.GetID());
 		SaveRawMap(ComposeDepthFilePath(id, "cfeatK"), featK, 2);
@@ -2598,6 +2607,8 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 	}
 
 	if ((OPTDENSE::nOptimize & OPTDENSE::ADJUST_CONFIDENCE) != 0) {
+		TD_TIMER_STARTD();
+		g_confAdjustComputeNS.store(0);
 		// initialize the queue of depth-maps to be filtered
 		data.sem.Clear();
 		data.idxImage = data.images.GetSize();
@@ -2622,6 +2633,9 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 		if (!data.events.IsEmpty())
 			return false;
 		data.progress.Release();
+		VERBOSE("Confidence-maps adjusted: %u depth-maps (%s; %.3gs prior+confirmation compute, %.2fms/map avg)",
+			data.images.GetSize(), TD_TIMER_GET_FMT().c_str(),
+			g_confAdjustComputeNS.load()/1e9, g_confAdjustComputeNS.load()/1e6/(double)MAXF(data.images.GetSize(),1u));
 	}
 	return true;
 } // ComputeDepthMaps
