@@ -1,7 +1,20 @@
 #!/usr/bin/env python3
 # MULTI-VIEW MapAnything: feed posed neighbour groups (img+intrinsics+pose+sparse depth) jointly ->
-# sharper, view-consistent METRIC depth. Save per-view depth+normal+mask on the dmap grid (moge npz).
-# sam3 env. Usage: python mapany_infer_mv.py <scene.mvs> <dmap_dir> <scene_img_dir> <out_dir> [chunk] [overlap] [limit]
+# sharper, view-consistent METRIC depth. Save per-view depth+normal+mask (+conf+na_mask) on the dmap grid.
+# sam3 env. Usage: python MapAnyInferMV.py <scene.mvs> <dmap_dir> <scene_img_dir> <out_dir> [chunk] [overlap] [limit]
+#
+# Inference knobs (env vars). Defaults are tuned for the pseudo-GT witness (hole-free surface); the
+# edge mask is OFF by default because it (computed at 518px, upsampled ~5x) was the entire hole source
+# on the benchmark -- see mvs_bench/EDGEMASK_RESULTS.md. Set MA_MASK_EDGES=1 to reproduce the model's
+# out-of-the-box masked output.
+#   MA_APPLY_MASK=1   apply the non-ambiguous mask to the output depth (removes sky/ambiguity; 0 -> keep all)
+#   MA_MASK_EDGES=0   mask depth/normal-discontinuity edges (default 0 -> keep edge pixels; 1 -> ragged holes)
+#   MA_CONF_MASK=0    apply a confidence-percentile mask inside infer() (1 -> drop low-confidence pixels)
+#   MA_CONF_PCT=10    percentile threshold used when MA_CONF_MASK=1
+#   MA_MV_CONF=0      use multi-view depth-consistency confidence instead of the learned conf (geometric)
+#   MA_RES=0          0 -> fixed_mapping @ 518 (model-native); >0 -> longest_side=MA_RES (e.g. 910, hi-res)
+# The npz always carries per-pixel 'conf' and 'na_mask' (non-ambiguous mask) when the model returns them,
+# so downstream eval can weight/trim by confidence instead of the hard depth>0 mask.
 import sys, os, glob, time
 sys.path.insert(0, '/home/ubuntu/openMVS/scripts/python')
 import numpy as np, cv2, torch
@@ -15,6 +28,24 @@ CHUNK = int(sys.argv[5]) if len(sys.argv) > 5 else 16
 OV = int(sys.argv[6]) if len(sys.argv) > 6 else 6
 limit = int(sys.argv[7]) if len(sys.argv) > 7 else 0
 probe = os.environ.get('PROBE')
+
+
+def envflag(name, default):
+    return os.environ.get(name, default) not in ('0', '', 'false', 'False')
+
+
+APPLY_MASK = envflag('MA_APPLY_MASK', '1')
+MASK_EDGES = envflag('MA_MASK_EDGES', '0')
+CONF_MASK = envflag('MA_CONF_MASK', '0')
+CONF_PCT = float(os.environ.get('MA_CONF_PCT', '10'))
+MV_CONF = envflag('MA_MV_CONF', '0')
+MA_RES = int(os.environ.get('MA_RES', '0'))
+INFER_KW = dict(memory_efficient_inference=True, apply_mask=APPLY_MASK, mask_edges=MASK_EDGES,
+                apply_confidence_mask=CONF_MASK, confidence_percentile=CONF_PCT, use_multiview_confidence=MV_CONF)
+PRE_KW = {} if MA_RES <= 0 else dict(resize_mode='longest_side', size=MA_RES)
+print('CONFIG apply_mask=%d mask_edges=%d conf_mask=%d(pct=%g) mv_conf=%d res=%s'
+      % (APPLY_MASK, MASK_EDGES, CONF_MASK, CONF_PCT, MV_CONF, MA_RES or 'native518'), flush=True)
+
 os.makedirs(out_dir, exist_ok=True)
 model = MapAnything.from_pretrained(os.environ.get('MA_MODEL', 'facebook/map-anything')).to('cuda').eval()
 Xs, by_view = load_scene_points(scene_mvs)
@@ -29,6 +60,15 @@ def normals_from_depth(depth, K):
     n = np.cross(dx, dy); n /= np.maximum(np.linalg.norm(n, axis=2, keepdims=True), 1e-9)
     f = n[..., 2] > 0; n[f] = -n[f]
     return n.astype(np.float32)
+
+
+def rs(a, W, H, interp):
+    return cv2.resize(np.asarray(a, np.float32), (W, H), interpolation=interp)
+
+
+def getarr(p, key):
+    v = p.get(key, None)
+    return None if v is None else v.squeeze().detach().cpu().numpy()
 
 
 # build sorted view records (vid correlates with spatial order for sequential capture)
@@ -65,24 +105,35 @@ for wi, w in enumerate(windows):
                       'camera_poses': torch.from_numpy(c2w).float(), 'depth_z': torch.from_numpy(sd.astype(np.float32)),
                       'is_metric_scale': torch.tensor([True])})
         metas.append((vid, f, W, H, K, d))
-    pv = preprocess_inputs(views)
+    pv = preprocess_inputs(views, **PRE_KW)
     with torch.no_grad():
-        preds = model.infer(pv, memory_efficient_inference=True)
+        preds = model.infer(pv, **INFER_KW)
     center = (w[0] + w[-1]) / 2.0
     for k, (vid, f, W, H, K, d) in enumerate(metas):
         cen = -abs(w[k] - center)
         if vid in best_central and best_central[vid] >= cen:
             continue
         best_central[vid] = cen
-        dz = preds[k]['depth_z'].squeeze().detach().cpu().numpy().astype(np.float32)
-        depth = cv2.resize(dz, (W, H), interpolation=cv2.INTER_LINEAR)
-        mask = np.isfinite(depth) & (depth > 0); depth = np.where(mask, depth, 0.0)
+        p = preds[k]
+        dz = getarr(p, 'depth_z').astype(np.float32)
+        depth = rs(dz, W, H, cv2.INTER_LINEAR)
+        # 'valid' reflects the mask the model applied to depth_z (holes are non-finite / <=0 there)
+        mask = np.isfinite(depth) & (depth > 0)
+        depth = np.where(mask, depth, 0.0)
         normal = normals_from_depth(np.maximum(depth, 1e-6), K)
-        np.savez_compressed(os.path.join(out_dir, 'depth%04d.npz' % vid).replace('depth%04d' % vid, os.path.splitext(os.path.basename(f))[0]),
-                            depth=depth, normal=normal, mask=mask)
+        out = dict(depth=depth, normal=normal, mask=mask)
+        # keep the model's own signals so downstream can weight/trim by confidence instead of depth>0
+        conf = getarr(p, 'conf')
+        if conf is not None:
+            out['conf'] = rs(conf, W, H, cv2.INTER_LINEAR).astype(np.float32)
+        na_mask = getarr(p, 'non_ambiguous_mask')
+        if na_mask is not None:
+            out['na_mask'] = rs(na_mask.astype(np.float32), W, H, cv2.INTER_NEAREST) > 0.5
+        np.savez_compressed(os.path.join(out_dir, os.path.splitext(os.path.basename(f))[0] + '.npz'), **out)
         if probe and wi == 0 and k == 0:
             dv = np.asarray(d['depth_map'], np.float64); m = (dv > 0) & mask
-            print('PRED keys', list(preds[0].keys())[:6], '... SCALE med(MA/MVS)=%.4f' % float(np.median(depth[m] / dv[m])), flush=True)
+            print('PRED keys', list(p.keys()), 'valid=%.3f SCALE med(MA/MVS)=%.4f'
+                  % (mask.mean(), float(np.median(depth[m] / dv[m])) if m.any() else -1), flush=True)
     if (wi + 1) % 5 == 0:
         print('window %d/%d (%.0fs)' % (wi + 1, len(windows), time.time() - t0), flush=True)
 print('DONE %d views in %.1fs' % (N, time.time() - t0), flush=True)
