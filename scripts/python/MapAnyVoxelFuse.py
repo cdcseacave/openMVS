@@ -20,6 +20,12 @@ dmap_dir, mono_dir, img_dir, out_ply = sys.argv[1:5]
 voxel_arg = sys.argv[5] if len(sys.argv) > 5 else 'auto'
 STRIDE = int(sys.argv[6]) if len(sys.argv) > 6 else 1
 MINCONF = float(os.environ.get('MINCONF', '0.1'))
+# Keep only voxels corroborated by >= MINVIEWS distinct views. A mono-depth surface seen by one camera
+# only is unverifiable: edge-bleed at depth discontinuities and unconstrained mono regions back-project
+# into long single-view "rays" of floaters (~80% of raw voxels on wide-baseline scenes). Requiring
+# cross-view agreement (a real surface is hit in the SAME voxel by multiple views; a floater is not)
+# removes them without touching genuine multi-view surface. MINVIEWS=1 restores the old union behavior.
+MINVIEWS = int(os.environ.get('MINVIEWS', '2'))
 
 
 def reduce_by_voxel(vox, *arrays):
@@ -131,7 +137,9 @@ pairs = np.unique(np.stack([ginv, allV], 1), axis=0)
 vcount = np.bincount(pairs[:, 0], minlength=G).astype(np.int64)
 view_flat = pairs[:, 1].astype(np.uint32)               # already grouped by voxel, ascending view
 offs = np.zeros(G + 1, np.int64); offs[1:] = np.cumsum(vcount)
-print('GT cloud: %d voxels, views/point mean=%.2f max=%d' % (G, vcount.mean(), vcount.max()), flush=True)
+nkeep = int((vcount >= MINVIEWS).sum())
+print('GT cloud: %d voxels total -> %d kept (>=%d views), views/point mean=%.2f max=%d'
+      % (G, nkeep, MINVIEWS, vcount.mean(), vcount.max()), flush=True)
 
 # ---- write OpenMVS binary PLY (per-k vectorized: x,y,z f32 | rgb u8 | nx,ny,nz f32 | u8+k*u32 | u8+k*f32) ----
 xyz = xyz.astype('<f4'); rgb = np.clip(rgb, 0, 255).astype('u1'); nrm = nrm.astype('<f4')
@@ -140,12 +148,12 @@ hdr = ("ply\nformat binary_little_endian 1.0\ncomment voxel_size %.8g\nelement v
        "property uchar red\nproperty uchar green\nproperty uchar blue\n"
        "property float nx\nproperty float ny\nproperty float nz\n"
        "property list uchar uint view_indices\n"
-       "property list uchar float view_weights\nend_header\n") % (voxel, G)
+       "property list uchar float view_weights\nend_header\n") % (voxel, nkeep)
 with open(out_ply, 'wb') as f:
     f.write(hdr.encode())
     order = np.argsort(vcount, kind='stable')
     for k in np.unique(vcount):
-        if k == 0:
+        if k < max(1, MINVIEWS):
             continue
         idx = order[vcount[order] == k]
         dt = np.dtype([('xyz', '<f4', (3,)), ('rgb', 'u1', (3,)), ('n', '<f4', (3,)),
@@ -158,4 +166,4 @@ with open(out_ply, 'wb') as f:
         rec['vi'] = view_flat[gather]
         rec['vw'] = 1.0
         f.write(rec.tobytes())
-print('wrote %s (%d points)' % (out_ply, G), flush=True)
+print('wrote %s (%d points, >=%d views)' % (out_ply, nkeep, MINVIEWS), flush=True)
