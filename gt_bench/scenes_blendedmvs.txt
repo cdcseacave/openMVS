@@ -1,0 +1,7 @@
+# BlendedMVS validation-split scenes selected for the GT benchmark (5 of 7).
+# Format: <sceneID>  # <category>: <description>   (parsers: strip #-lines, take field 1)
+5b7a3890fc8fcf6781e2593a  # aerial/large: 375-view drone survey of a village (circular historic compound, houses, ponds)
+59817e4a1bd4b175e7038d19  # sculpture+facade: 91-view drone orbit of a bronze 3-figure monument on a plaza, office building facades behind
+5ba19a8a360c7c30c1c169df  # sculpture/close-range: 100-view ground-level weathered stone fountain statue against a brick wall facade
+59d2657f82ca7774b1ec081d  # indoor+small-object: 77-view indoor bedroom, patterned basketball on a bed, textureless walls
+5a6400933d809f1d8200af15  # small-object/outdoor: 110-view doll figurine on paved ground, shallow depth-of-field background
