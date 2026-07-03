@@ -37,6 +37,31 @@ def test_nn_dist_grid_matches_bruteforce():
         f'max abs err={np.max(np.abs(got - want))}'
 
 
+def test_nn_dist_grid_bimodal_density():
+    # Reviewer's adversarial case (Critical review finding): on a bimodal-density cloud the grid
+    # cell is sized for the AVERAGE density, so a query in the sparse region has its true NN
+    # several cells away. The pre-fix code accepted the best candidate of the first ring that
+    # contained ANY candidate -- returning e.g. the 3rd-nearest point (0.2764) instead of the
+    # true NN (0.2026) when a closer point sat just outside the searched block. The certified
+    # safe-radius termination rule (accept only once best <= ring*cell) must make ALL distances
+    # exact, verified here against brute force for every query, sparse- and dense-region alike.
+    rng = np.random.default_rng(42)
+    ref = np.vstack([
+        rng.random((50, 3)),                     # sparse cluster in [0,1]^3
+        rng.random((2000, 3)) * 0.05 + 2.0,      # dense cluster in [2,2.05]^3
+    ])
+    query = np.vstack([
+        rng.random((300, 3)) * 1.4 - 0.2,        # in/around the sparse cluster
+        rng.random((100, 3)) * 0.25 + 1.9,       # in/around the dense cluster
+        rng.random((100, 3)) * 3.0 - 0.5,        # spanning both + the empty gap between them
+    ])
+    got = E._nn_dist_grid(query, ref)
+    d2 = ((query[:, None, :] - ref[None, :, :]) ** 2).sum(-1)
+    want = np.sqrt(d2.min(axis=1))
+    assert np.allclose(got, want, atol=1e-9), \
+        f'max abs err={np.max(np.abs(got - want))} at q={np.argmax(np.abs(got - want))}'
+
+
 def test_nn_dist_grid_far_outliers():
     # Query points far outside the reference cloud's bounding box must still
     # resolve to their true (large) nearest-neighbor distance via the
@@ -203,6 +228,7 @@ def test_cli_end_to_end_json_shape():
 if __name__ == '__main__':
     test_cube()
     test_nn_dist_grid_matches_bruteforce()
+    test_nn_dist_grid_bimodal_density()
     test_nn_dist_grid_far_outliers()
     test_load_mesh_dir_concatenation_synthetic()
     test_load_obj_real_tile()

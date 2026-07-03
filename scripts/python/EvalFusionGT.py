@@ -23,8 +23,9 @@ Usage:
     and concatenated (vertex indices re-offset per tile) into one mesh.
 
 NN backend: scipy.spatial.cKDTree if available, else a dependency-free uniform-grid spatial hash
-(_nn_dist_grid) with a brute-force fallback for any point whose neighborhood search comes up empty
-(e.g. far outliers). NOTE: this box's /home/ubuntu/miniconda3 python has no scipy installed, so in
+(_nn_dist_grid) returning EXACT distances (expanding-ring search with a certified safe-radius
+termination rule, brute-force resolution for anything uncertified after ring_cap -- see its
+docstring). NOTE: this box's /home/ubuntu/miniconda3 python has no scipy installed, so in
 practice `_nn_dist_grid` is the path actually exercised end-to-end here, not just a rarely-used
 fallback -- see scripts/python/tests/test_evalfusion_gt.py for direct brute-force-comparison tests
 of it (not just the looser cube-test tolerance margins).
@@ -228,17 +229,36 @@ def _bruteforce_min_dist(query, ref, qchunk=200, rchunk=100000):
     return out
 
 
-def _nn_dist_grid(query, ref, ring_cap=2):
-    """Dependency-free approximate-but-verified nearest-neighbor distance from each `query` point
-    to `ref`, via a uniform spatial hash grid sized to ~1 ref point/cell. Searches an expanding
-    (2r+1)^3 block (r = 1..ring_cap) around each query's cell; any point still unresolved after
-    ring_cap (typically none, or genuine far outliers with no nearby ref points at all) is
-    resolved exactly via _bruteforce_min_dist. Encodes cell coordinates into a single int64 hash
-    key with a 21-bit-per-axis budget (~+-1,048,576 cells from the ref bbox origin) -- query cells
-    outside that budget cannot alias a real ref cell key (clipped to `pos=len-1` and rejected by
-    the exact-key equality check on `uniq_keys[pos_c] == keys_flat`, and separately guarded by
-    `inb`), so they safely fall through to the brute-force straggler path rather than risking a
-    hash collision."""
+def _nn_dist_grid(query, ref, ring_cap=4):
+    """Dependency-free EXACT nearest-neighbor distance from each `query` point to `ref`, via a
+    uniform spatial hash grid sized to ~1 ref point/cell.
+
+    Search: expanding Chebyshev rings around each query's cell (ring 1 = the full 3x3x3 block
+    including the query's own cell; ring r>1 = only the (2r+1)^3-(2r-1)^3 shell of new cells),
+    carrying the best distance found so far across rings.
+
+    Termination (REVIEW FIX -- the certified safe-radius rule): a query's best-so-far distance d
+    is only ACCEPTED once d <= ring*cell. Derivation: the query point q lies inside its cell c
+    (q_i in [c_i*cell, (c_i+1)*cell) per axis, from floor()); after searching all cells within
+    Chebyshev distance `ring` of c, the searched block spans [(c_i-ring)*cell, (c_i+ring+1)*cell)
+    per axis, so q is at least ring*cell from every face of the block, and any point OUTSIDE the
+    block is therefore at distance >= ring*cell from q. Hence d <= ring*cell proves no unsearched
+    point can beat d. Without this rule, the first candidate found in a ring could be accepted
+    even when a closer point sits just outside the searched block -- on non-uniform-density
+    clouds (cell sized for the average density, query in a sparse region whose true NN is several
+    cells away) that returned overestimated distances (reviewer repro: bimodal cloud, 3rd-nearest
+    at 0.2764 returned instead of the true NN at 0.2026; now covered by
+    test_nn_dist_grid_bimodal_density). Queries still uncertified after ring_cap (typically far
+    outliers or points in large coverage holes) are resolved exactly via _bruteforce_min_dist, so
+    every returned distance is exact either way -- completeness/accuracy thresholding depends on
+    that.
+
+    Encodes cell coordinates into a single int64 hash key with a 21-bit-per-axis budget
+    (~+-1,048,576 cells from the ref bbox origin) -- query cells outside that budget cannot alias
+    a real ref cell key (clipped to `pos=len-1` and rejected by the exact-key equality check on
+    `uniq_keys[pos_c] == keys_flat`, and separately guarded by `inb`); since every ref cell IS in
+    budget (asserted below), an out-of-budget neighbor cell is provably empty of ref points, so
+    skipping it does not break the safe-radius certification."""
     query = np.asarray(query, dtype=np.float64)
     ref = np.asarray(ref, dtype=np.float64)
     nq, nr = len(query), len(ref)
@@ -292,7 +312,6 @@ def _nn_dist_grid(query, ref, ring_cap=2):
 
     q_c = cellidx(query)
     best = np.full(nq, np.inf)
-    found = np.zeros(nq, dtype=bool)
     remaining = np.arange(nq)
 
     for ring in range(1, ring_cap + 1):
@@ -300,7 +319,11 @@ def _nn_dist_grid(query, ref, ring_cap=2):
             break
         rng = np.arange(-ring, ring + 1)
         gx, gy, gz = np.meshgrid(rng, rng, rng, indexing='ij')
-        offs = np.stack([gx.ravel(), gy.ravel(), gz.ravel()], axis=1)  # full (2r+1)^3 block
+        offs = np.stack([gx.ravel(), gy.ravel(), gz.ravel()], axis=1)
+        if ring > 1:
+            # only the new shell (Chebyshev distance == ring); inner cells were already searched
+            # in previous rings and their candidates are carried in `best`.
+            offs = offs[np.abs(offs).max(axis=1) == ring]
 
         qc = q_c[remaining]                                  # (M,3)
         neigh = (qc[:, None, :] + offs[None, :, :]).reshape(-1, 3)   # (M*K,3)
@@ -337,14 +360,16 @@ def _nn_dist_grid(query, ref, ring_cap=2):
 
                 local_best = np.full(M, np.inf)
                 np.minimum.at(local_best, q_idx_flat, d)
-                has = np.isfinite(local_best)
-                idxs = remaining[has]
-                best[idxs] = local_best[has]
-                found[idxs] = True
+                best[remaining] = np.minimum(best[remaining], local_best)
 
-        remaining = remaining[~found[remaining]]
+        # certified safe-radius acceptance (see docstring): a best-so-far distance d is provably
+        # the true NN distance only once d <= ring*cell -- anything outside the searched block is
+        # at distance >= ring*cell. Queries with a candidate but d > ring*cell MUST keep
+        # expanding (their true NN may sit just outside the searched block).
+        remaining = remaining[best[remaining] > ring * cell]
 
     if remaining.size:
+        # uncertified after ring_cap (far outliers / large coverage holes): resolve exactly.
         best[remaining] = _bruteforce_min_dist(query[remaining], ref)
 
     return best

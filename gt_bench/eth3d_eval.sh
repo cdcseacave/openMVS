@@ -21,7 +21,19 @@
 #
 # Tolerances are fixed absolute meters (ETH3D scenes are already metric), not derived from a bbox
 # diagonal like EvalFusionGT.py's BlendedMVS fractional tolerances -- override via env var.
+#
+# Gross outliers (REVIEW FIX): the tool has no native gross/floater concept, and 1-accuracy@0.1m
+# (the loosest NORMAL tier) is not a gross tier. A dedicated, much larger gross tolerance
+# (ETH3D_GROSS_TOL, default 0.5m -- 5x the loosest normal tier, same spirit as EvalFusionGT.py's
+# gross tol = 5x its loosest 1%-of-diag tier) is appended internally to the tool's --tolerances;
+# gross_outlier_frac = 1 - accuracy@ETH3D_GROSS_TOL. The reported completeness/accuracy/f1 tiers
+# stay the standard four (ETH3D_TOLERANCES); the gross tier appears only as gross_outlier_frac +
+# gross_tol_abs in the JSON.
 set -euo pipefail
+
+# Pin the C locale for the tool run AND the parsing below: a non-C locale could make the tool
+# print decimal commas (or the parser expect them), silently breaking the float parsing.
+export LC_ALL=C
 
 FUSED_PLY="${1:?usage: eth3d_eval.sh <fused.ply> <scene_dir> <out.json>}"
 SCENE_DIR="${2:?usage: eth3d_eval.sh <fused.ply> <scene_dir> <out.json>}"
@@ -29,6 +41,7 @@ OUT_JSON="${3:?usage: eth3d_eval.sh <fused.ply> <scene_dir> <out.json>}"
 
 TOOL="${ETH3D_TOOL:-/home/ubuntu/virginia/gt_bench/tools/multi-view-evaluation/build/ETH3DMultiViewEvaluation}"
 TOLERANCES="${ETH3D_TOLERANCES:-0.01,0.02,0.05,0.1}"
+GROSS_TOL="${ETH3D_GROSS_TOL:-0.5}"   # dedicated gross/floater tier (meters), must exceed all TOLERANCES
 PY=/home/ubuntu/miniconda3/bin/python
 REPO=/home/ubuntu/openMVS
 # Never write temp files into the repo or /tmp root -- see gt_bench/README.md data-root policy.
@@ -42,19 +55,29 @@ MLP="$SCENE_DIR/dslr_scan_eval/scan_alignment.mlp"
 
 mkdir -p "$TMPDIR_ETH3D"
 LOG=$(mktemp "$TMPDIR_ETH3D/eth3d_eval.XXXXXX.log")
-trap 'rm -f "$LOG"' EXIT
+# Keep the raw tool log on FAILURE for debugging (that's exactly when it's needed);
+# delete it only on success.
+cleanup() {
+    status=$?
+    if [ "$status" -eq 0 ]; then
+        rm -f "$LOG"
+    else
+        echo "eth3d_eval.sh failed (exit $status); raw tool log kept at: $LOG" >&2
+    fi
+}
+trap cleanup EXIT
 
-echo "Running ETH3DMultiViewEvaluation: reconstruction=$FUSED_PLY  gt_mlp=$MLP  tolerances=$TOLERANCES" >&2
-"$TOOL" --tolerances "$TOLERANCES" \
+echo "Running ETH3DMultiViewEvaluation: reconstruction=$FUSED_PLY  gt_mlp=$MLP  tolerances=$TOLERANCES gross=$GROSS_TOL" >&2
+"$TOOL" --tolerances "$TOLERANCES,$GROSS_TOL" \
     --reconstruction_ply_path "$FUSED_PLY" \
     --ground_truth_mlp_path "$MLP" 2>&1 | tee "$LOG" >&2
 
 mkdir -p "$(dirname "$OUT_JSON")"
 
-"$PY" - "$LOG" "$FUSED_PLY" "$MLP" "$OUT_JSON" "$TOLERANCES" <<'PYEOF'
+"$PY" - "$LOG" "$FUSED_PLY" "$MLP" "$OUT_JSON" "$TOLERANCES" "$GROSS_TOL" <<'PYEOF'
 import sys, os, re, json
 
-log_path, fused_ply, mlp_path, out_json, tol_csv = sys.argv[1:6]
+log_path, fused_ply, mlp_path, out_json, tol_csv, gross_tol_s = sys.argv[1:7]
 sys.path.insert(0, '/home/ubuntu/openMVS/scripts/python')
 import numpy as np
 import GtUtils
@@ -74,11 +97,20 @@ comp = parse_line('Completenesses')
 acc = parse_line('Accuracies')
 f1 = parse_line('F1-scores')
 
+# the tool was invoked with the standard tiers PLUS one trailing dedicated gross tier
+# (see script header); the gross tier is consumed only for gross_outlier_frac below and is
+# excluded from the reported completeness/accuracy/f1 dicts.
 keys = [k.strip() for k in tol_csv.split(',')]
-assert len(keys) == len(tol) == len(comp) == len(acc) == len(f1), (
-    'tolerance count mismatch: --tolerances=%r vs parsed %r/%r/%r/%r' % (keys, tol, comp, acc, f1))
+gross_tol = float(gross_tol_s)
+assert all(gross_tol > float(k) for k in keys), (
+    'ETH3D_GROSS_TOL=%r must exceed every normal tier in %r' % (gross_tol_s, keys))
+assert len(keys) + 1 == len(tol) == len(comp) == len(acc) == len(f1), (
+    'tolerance count mismatch: --tolerances=%r + gross=%r vs parsed %r/%r/%r/%r'
+    % (keys, gross_tol_s, tol, comp, acc, f1))
 for k, t in zip(keys, tol):
     assert abs(float(k) - t) < 1e-9, 'tolerance label %r does not match parsed value %r' % (k, t)
+assert abs(gross_tol - tol[-1]) < 1e-9, (
+    'gross tolerance label %r does not match parsed value %r' % (gross_tol_s, tol[-1]))
 
 
 def ply_vertex_count(path):
@@ -112,22 +144,25 @@ for mesh in tree.getroot().iter('MLMesh'):
         print('warning: GT scan referenced by %s not found, excluded from n_gt: %s' % (mlp_path, p), file=sys.stderr)
 
 out = {
-    'completeness': dict(zip(keys, comp)),
-    'accuracy': dict(zip(keys, acc)),
-    # ADAPTATION: ETH3DMultiViewEvaluation has no native "gross outlier" concept (unlike
-    # EvalFusionGT.py's separate 5%-of-diag gross_tol). Defined here as 1 - accuracy at the
-    # LARGEST requested tolerance (last entry of --tolerances, default 0.1m): the exact fraction
-    # of reconstruction points with NO ground-truth scan surface within that tolerance.
+    # standard tiers only -- the trailing gross tier is deliberately excluded here.
+    'completeness': dict(zip(keys, comp[:-1])),
+    'accuracy': dict(zip(keys, acc[:-1])),
+    # ADAPTATION (post-review): ETH3DMultiViewEvaluation has no native "gross outlier" concept
+    # (unlike EvalFusionGT.py's separate 5%-of-diag gross_tol), so a DEDICATED gross tier
+    # (default 0.5m, ETH3D_GROSS_TOL) is appended to the tool's --tolerances and
+    # gross_outlier_frac = 1 - accuracy at that gross tier: the exact fraction of reconstruction
+    # points with NO ground-truth scan surface within gross_tol_abs.
     'gross_outlier_frac': 1.0 - acc[-1],
+    'gross_tol_abs': gross_tol,
     # ETH3D tolerances are fixed absolute meters, not derived from a bbox diagonal (unlike
     # EvalFusionGT.py's BlendedMVS path) -- tol_abs duplicates the same values under the same
     # string keys for JSON-shape parity with EvalFusionGT.py.
-    'tol_abs': dict(zip(keys, tol)),
+    'tol_abs': dict(zip(keys, tol[:-1])),
     # informational only (reconstruction bbox diagonal); NOT used to derive tol_abs here.
     'diag': diag,
     'n_rec': n_rec,
     'n_gt': n_gt,
-    'f1': dict(zip(keys, f1)),
+    'f1': dict(zip(keys, f1[:-1])),
 }
 os.makedirs(os.path.dirname(os.path.abspath(out_json)) or '.', exist_ok=True)
 with open(out_json, 'w') as fh:
