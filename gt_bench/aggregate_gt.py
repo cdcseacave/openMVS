@@ -236,6 +236,13 @@ def main():
     parts.append(table2_fusion(results, keys) + '\n')
 
     parts.append('## [3] Gross-outlier fraction, w0 vs w3\n')
+    parts.append('Caveat (same spirit as table 2\'s note): gross-outlier values are NOT comparable '
+                  'across datasets -- the gross tolerance and the `diag` it is related to have different '
+                  'semantics per dataset (BlendedMVS: gross tol fixed at 5% of the GT sample cloud\'s '
+                  'bbox diagonal, no `gross_tol_abs` in its JSON so the ratio column shows `-`; ETH3D: '
+                  'gross tol is a fixed absolute 0.5 m while `diag` is merely the reconstruction\'s own '
+                  'bbox diagonal, so the ratio varies per scene and measures nothing dataset-comparable). '
+                  'Compare w0 vs w3 within a row, or across scenes of the SAME dataset only.\n')
     parts.append(table3_gross_outliers(results, keys) + '\n')
 
     parts.append('## [4] Timing\n')

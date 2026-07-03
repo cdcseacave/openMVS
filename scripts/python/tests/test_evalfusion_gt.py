@@ -182,6 +182,70 @@ def _write_ply_xyz(path, xyz):
         xyz.astype('<f4').tofile(f)
 
 
+def test_score_cloud_dedup_bias():
+    # REVIEW FIX (round 3): score_cloud voxel-dedups the REFERENCE cloud of each direction at
+    # finest_tol/4 before scoring (ref-side only: query-side dedup reweights the metric
+    # population on non-uniformly dense clouds -- measured up to 0.04 absolute bias on this very
+    # test before the fix -- see score_cloud's comment). This test bounds the metric bias dedup
+    # introduces, against the exact no-dedup path, on NON-UNIFORM clouds dense enough to trigger
+    # heavy dedup -- the committed assertion is the one score_cloud's comment promises:
+    # |metric(dedup) - metric(exact)| < 0.005 absolute for completeness and accuracy at the
+    # finest tolerance. The clouds are built so both metrics are genuinely threshold-sensitive
+    # (mid-range values with real probability mass near the tolerance boundary), not saturated
+    # at 0/1 where dedup bias would be invisible.
+    rng = np.random.default_rng(11)
+    tol = 0.05
+    v = tol / 4.0
+
+    # Geometry note: the GT is a gently CURVED surface (z = 0.2*sin(x)*sin(y)), not an exact
+    # z=0 plane -- an exactly-planar cloud has (near-)zero extent on one axis, which degenerates
+    # _nn_dist_grid's volume-based cell sizing (cell -> microscopic, certification radius
+    # ring_cap*cell -> ~0) and pushes EVERY query to the O(n*m) brute-force fallback: still
+    # exact, but hours-slow at these sizes. Real MVS scenes always have 3D extent; the curved
+    # surface keeps the test in the realistic regime.
+    def surf(x, y):
+        return 0.2 * np.sin(x) * np.sin(y)
+
+    # GT: dense half x<2.5 (lateral spacing ~0.0043 << v -> heavy dedup), sparse half x>2.5
+    # (spacing ~0.0125 ~= v -> mild dedup): strongly non-uniform, per the review requirement.
+    n_gd, n_gs = 280000, 80000
+    gx = np.concatenate([rng.random(n_gd) * 2.5, 2.5 + rng.random(n_gs) * 2.5])
+    gy = rng.random(n_gd + n_gs) * 5.0
+    gt = np.column_stack([gx, gy, surf(gx, gy)])
+
+    # rec: the same surface plus a one-sided height error |N(0, tol/2)| -- most points well
+    # inside tol, ~5% beyond it, i.e. real probability mass right at the tolerance boundary,
+    # where dedup bias would show in ACCURACY. Laterally non-uniform: dense x<2.5, THIN
+    # (spacing ~ tol) for 2.5<x<4.85 -- the thin band spreads gt->rec NN distances across the
+    # tolerance so COMPLETENESS is threshold-sensitive too -- and empty for x>4.85 (a narrow
+    # uncovered stripe; kept narrow so its far-field queries stay cheap for the exact path).
+    n_rd, n_rt = 200000, 3000
+    rx = np.concatenate([rng.random(n_rd) * 2.5, 2.5 + rng.random(n_rt) * 2.35])
+    ry = rng.random(n_rd + n_rt) * 5.0
+    rec = np.column_stack([rx, ry, surf(rx, ry) + np.abs(rng.normal(0.0, tol / 2, n_rd + n_rt))])
+    # dedup must actually trigger, on both clouds, or this test proves nothing
+    n_gt_d, n_rec_d = len(E._voxel_dedup(gt, v)), len(E._voxel_dedup(rec, v))
+    assert n_gt_d < 0.5 * len(gt), (n_gt_d, len(gt))
+    assert n_rec_d < 0.8 * len(rec), (n_rec_d, len(rec))
+    m = E.score_cloud(rec, gt, tols=[tol], gross_tol=10 * tol)
+    # exact reference: identical metrics with NO dedup (nn_dist itself is exact -- proven by the
+    # test_nn_dist_grid_* brute-force-match tests above)
+    comp_exact = float((E.nn_dist(gt, rec) <= tol).mean())
+    acc_exact = float((E.nn_dist(rec, gt) <= tol).mean())
+    d_comp = abs(m['completeness'][tol] - comp_exact)
+    d_acc = abs(m['accuracy'][tol] - acc_exact)
+    print('test_score_cloud_dedup_bias: gt %d->%d rec %d->%d | comp %.4f vs exact %.4f (|d|=%.5f)'
+          ' | acc %.4f vs exact %.4f (|d|=%.5f)'
+          % (len(gt), n_gt_d, len(rec), n_rec_d,
+             m['completeness'][tol], comp_exact, d_comp, m['accuracy'][tol], acc_exact, d_acc))
+    assert d_comp < 0.005, d_comp
+    assert d_acc < 0.005, d_acc
+    # sanity: both metrics are mid-range (threshold-sensitive), not saturated at 0/1 where
+    # dedup bias would be invisible
+    assert 0.80 < m['completeness'][tol] < 0.995, m['completeness'][tol]
+    assert 0.80 < m['accuracy'][tol] < 0.995, m['accuracy'][tol]
+
+
 def test_cli_end_to_end_json_shape():
     # Synthetic end-to-end smoke of the actual CLI: writes a fused.ply and a
     # single-file GT .obj (unit cube), runs EvalFusionGT.py as a subprocess,
@@ -233,5 +297,6 @@ if __name__ == '__main__':
     test_load_mesh_dir_concatenation_synthetic()
     test_load_obj_real_tile()
     test_load_mesh_dir_real_scene()
+    test_score_cloud_dedup_bias()
     test_cli_end_to_end_json_shape()
     print('OK')

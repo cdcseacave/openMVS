@@ -107,6 +107,17 @@ COMMON_OPTS=(--resolution-level "$L" --max-resolution "$MAXRES" -v 2)
 # substitution (that would silently swallow -- and mix stage timing/log-path
 # tracking with -- the binary's own console output, which is copious at -v 2).
 # Wall time is measured with plain date(1) calls in the current shell instead.
+#
+# CRITICAL (review fix): stages 2/3a/3b MUST pass --geometric-iters 0. With the default
+# (2), SceneDensify.cpp's geometric-consistency loop (:2570) unconditionally re-estimates
+# EVERY image regardless of the on-disk dmap cache (the cache-reuse check at :2701 requires
+# nEstimationGeometricIter < 0, which is false inside the loop) and then REPLACES each
+# cached dmap with the freshly re-estimated geo.dmap (:2601-2603). Without this flag,
+# stage 2 adjusted freshly RE-ESTIMATED dmaps (breaking the paired raw-vs-adjusted
+# comparison against stage 1's snapshot) and stages 3a/3b re-estimated yet again, so
+# fusion never saw the adjusted confidence at all. Stage 1 keeps the default so dmaps are
+# estimated WITH geometric consistency exactly once; every later stage reuses them from
+# cache untouched (verified via dmap checksums across stages -- see task-7-report.md).
 
 # ================= Stage 1: estimate raw depth-maps =================
 MARK_EST="$WD/.time_estimate"
@@ -117,9 +128,14 @@ if [ "$FORCE" = 1 ] || [ ! -f "$MARK_EST" ] || [ ! -d "$WD/raw_dmaps" ]; then
   "${BIN[@]}" "$SCENE_MVS" -w "$WD" "${COMMON_OPTS[@]}" --fusion-mode 1 --postprocess-dmaps 0 -o est.mvs
   t1=$(date +%s.%N)
   WALL=$(elapsed_s "$t0" "$t1")
+  # atomic snapshot (review fix): populate a .tmp dir first, then a single rename -- a crash
+  # mid-copy can never leave a half-populated raw_dmaps/ that the idempotency check (which
+  # keys on the FINAL name) would mistake for a complete snapshot.
+  rm -rf "$WD/raw_dmaps.tmp" "$WD/raw_dmaps"
+  mkdir -p "$WD/raw_dmaps.tmp"
+  cp "$WD"/depth*.dmap "$WD/raw_dmaps.tmp/"
+  mv "$WD/raw_dmaps.tmp" "$WD/raw_dmaps"
   echo "$WALL" > "$MARK_EST"
-  rm -rf "$WD/raw_dmaps"; mkdir -p "$WD/raw_dmaps"
-  cp "$WD"/depth*.dmap "$WD/raw_dmaps/"
   log "stage 1/4 done: ${WALL}s, snapshot -> raw_dmaps/"
 else
   log "stage 1/4: skip (already done, $(cat "$MARK_EST")s)"
@@ -131,7 +147,7 @@ if [ "$FORCE" = 1 ] || [ ! -f "$MARK_ADJ" ]; then
   log "stage 2/4: adjusting confidence in place"
   wait_for_gpu
   t0=$(date +%s.%N)
-  "${BIN[@]}" "$SCENE_MVS" -w "$WD" "${COMMON_OPTS[@]}" --fusion-mode 1 --postprocess-dmaps 4 -o adj.mvs
+  "${BIN[@]}" "$SCENE_MVS" -w "$WD" "${COMMON_OPTS[@]}" --geometric-iters 0 --fusion-mode 1 --postprocess-dmaps 4 -o adj.mvs
   t1=$(date +%s.%N)
   WALL=$(elapsed_s "$t0" "$t1")
   LAST_LOG=$(newest_log)
@@ -158,7 +174,7 @@ if [ "$FORCE" = 1 ] || [ ! -f "$MARK_W0" ] || [ ! -s "$WD/cloud_w0.ply" ]; then
   log "stage 3a/4: fusing (rescue OFF, Fuse Prior Weight = 0)"
   printf 'Fuse Prior Weight = 0\n' > "$WD/fuse_w0.cfg"
   t0=$(date +%s.%N)
-  "${BIN[@]}" "$SCENE_MVS" -w "$WD" "${COMMON_OPTS[@]}" --postprocess-dmaps 0 \
+  "${BIN[@]}" "$SCENE_MVS" -w "$WD" "${COMMON_OPTS[@]}" --geometric-iters 0 --postprocess-dmaps 0 \
       --dense-config-file fuse_w0.cfg -o cloud_w0.mvs
   t1=$(date +%s.%N)
   WALL=$(elapsed_s "$t0" "$t1")
@@ -173,7 +189,7 @@ MARK_W3="$WD/.time_fuse_w3"
 if [ "$FORCE" = 1 ] || [ ! -f "$MARK_W3" ] || [ ! -s "$WD/cloud_w3.ply" ]; then
   log "stage 3b/4: fusing (rescue ON, default Fuse Prior Weight = 3.0)"
   t0=$(date +%s.%N)
-  "${BIN[@]}" "$SCENE_MVS" -w "$WD" "${COMMON_OPTS[@]}" --postprocess-dmaps 0 -o cloud_w3.mvs
+  "${BIN[@]}" "$SCENE_MVS" -w "$WD" "${COMMON_OPTS[@]}" --geometric-iters 0 --postprocess-dmaps 0 -o cloud_w3.mvs
   t1=$(date +%s.%N)
   WALL=$(elapsed_s "$t0" "$t1")
   [ -s "$WD/cloud_w3.ply" ] || { echo "error: expected $WD/cloud_w3.ply not produced" >&2; exit 1; }

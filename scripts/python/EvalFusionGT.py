@@ -229,9 +229,24 @@ def _bruteforce_min_dist(query, ref, qchunk=200, rchunk=100000):
     return out
 
 
-def _nn_dist_grid(query, ref, ring_cap=4):
-    """Dependency-free EXACT nearest-neighbor distance from each `query` point to `ref`, via a
-    uniform spatial hash grid sized to ~1 ref point/cell.
+def _nn_dist_grid(query, ref, ring_cap=4, max_dist=None, _cell_override=None):
+    """Dependency-free nearest-neighbor distance from each `query` point to `ref`, via a
+    uniform spatial hash grid sized to ~1 ref point/cell. EXACT for every distance <= max_dist;
+    with max_dist=None (the default) exact everywhere.
+
+    max_dist (REVIEW round 3 follow-up, performance): threshold-based metrics only ever compare
+    distances against tolerances <= max_dist, so a query whose true NN distance provably exceeds
+    max_dist does not need an exact value -- any bucket-equivalent value > max_dist gives
+    identical metric results. Without this, every far query (gross outliers -- e.g. 38-50% of a
+    real fused cloud vs a GT mesh region) fell through ring_cap to _bruteforce_min_dist against
+    the FULL reference cloud: ~10^12 candidate pairs on real scenes, i.e. hours per evaluation.
+    With max_dist given, stragglers after the fine-grid rings are re-searched ONCE on a coarse
+    grid (cell = max_dist/ring_cap, via _cell_override) so the same certified safe-radius rule
+    either resolves them exactly (d <= ring*coarse_cell certifies, and ring_cap*coarse_cell =
+    max_dist covers everything that can matter) or PROVES d >= max_dist (best-so-far > searched
+    radius >= max_dist and everything unsearched is >= the searched radius), in which case a
+    sentinel just above max_dist is returned -- bucket-equivalent for every tolerance <=
+    max_dist. No brute-force pass is needed at all in this mode.
 
     Search: expanding Chebyshev rings around each query's cell (ring 1 = the full 3x3x3 block
     including the query's own cell; ring r>1 = only the (2r+1)^3-(2r-1)^3 shell of new cells),
@@ -268,19 +283,23 @@ def _nn_dist_grid(query, ref, ring_cap=4):
         return np.full(nq, np.inf)
 
     mn = ref.min(axis=0)
-    # Robust density estimate for cell sizing: use a percentile-trimmed extent so a small number
-    # of far outliers in `ref` (reconstructed clouds routinely contain floater points -- this is
-    # exactly what gross_outlier_frac measures) can't blow up the estimated cell size for the
-    # dense bulk of the cloud. Using the raw min/max here previously made cells ~15x too coarse on
-    # a unit-cube-plus-100-far-outliers input: ~3400 ref points per cell meant a single ring-1
-    # (3x3x3) block enumerated ~1.8e10 candidate (query, ref) pairs and exhausted host memory. The
-    # encoding grid origin (mn, below) still spans the TRUE min/max, so no point -- including the
-    # outliers -- is excluded from the grid; only the density/cell-size estimate is robust.
-    lo = np.percentile(ref, 1, axis=0)
-    hi = np.percentile(ref, 99, axis=0)
-    extent = np.maximum(hi - lo, 1e-9)
-    vol = float(extent[0] * extent[1] * extent[2])
-    cell = max((vol / max(nr, 1)) ** (1.0 / 3.0), 1e-9)
+    if _cell_override is not None:
+        cell = float(_cell_override)
+    else:
+        # Robust density estimate for cell sizing: use a percentile-trimmed extent so a small
+        # number of far outliers in `ref` (reconstructed clouds routinely contain floater points
+        # -- this is exactly what gross_outlier_frac measures) can't blow up the estimated cell
+        # size for the dense bulk of the cloud. Using the raw min/max here previously made cells
+        # ~15x too coarse on a unit-cube-plus-100-far-outliers input: ~3400 ref points per cell
+        # meant a single ring-1 (3x3x3) block enumerated ~1.8e10 candidate (query, ref) pairs and
+        # exhausted host memory. The encoding grid origin (mn, below) still spans the TRUE
+        # min/max, so no point -- including the outliers -- is excluded from the grid; only the
+        # density/cell-size estimate is robust.
+        lo = np.percentile(ref, 1, axis=0)
+        hi = np.percentile(ref, 99, axis=0)
+        extent = np.maximum(hi - lo, 1e-9)
+        vol = float(extent[0] * extent[1] * extent[2])
+        cell = max((vol / max(nr, 1)) ** (1.0 / 3.0), 1e-9)
 
     BITS = 21
     OFF = 1 << (BITS - 1)
@@ -340,26 +359,48 @@ def _nn_dist_grid(query, ref, ring_cap=4):
             e = ends[pos_c[valid]]
             counts = e - s
             total = int(counts.sum())
-            if total > 200_000_000:
-                # Defensive valve: even with the robust percentile-based cell sizing above, a
-                # pathologically skewed density (e.g. a huge duplicate-point cluster) could still
-                # blow up a single ring's candidate count. Fail loudly instead of risking host
-                # OOM (this box has no swap -- see openmvs-build-env memory notes).
-                raise MemoryError(
-                    f'_nn_dist_grid: ring {ring} search would materialize {total} candidate '
-                    f'(query,ref) pairs (>2e8); likely pathological density skew in the '
-                    f'reference cloud -- aborting rather than risking host OOM')
             if total > 0:
-                group_start = np.cumsum(counts) - counts
-                idx_in_group = np.arange(total) - np.repeat(group_start, counts)
-                ref_idx_flat = np.repeat(s, counts) + idx_in_group
-                q_idx_flat = np.repeat(hit_q, counts)
-
-                diffs = query[remaining][q_idx_flat] - ref_sorted[ref_idx_flat]
-                d = np.sqrt(np.einsum('ij,ij->i', diffs, diffs))
-
+                # REVIEW FIX (round 3): candidate (query,ref) pairs are materialized in CHUNKS of
+                # at most CHUNK_PAIRS instead of all at once. The previous code raised MemoryError
+                # above 2e8 pairs as a defensive valve -- but a real fused OpenMVS cloud (~10^6
+                # points; every scene in the GT baseline produces one) legitimately reaches ~10^9
+                # ring-1 pairs, because volume-based cell sizing over-packs cells for surface-like
+                # clouds (points concentrate on a 2D manifold inside the 3D grid). Chunking keeps
+                # peak memory bounded at ~CHUNK_PAIRS*(3 coords * 8 bytes * 2 arrays) ~= 2.4GB per
+                # chunk while producing EXACTLY the same distances (each chunk's per-query minima
+                # are folded into local_best; minima are associative). Exactness is still covered
+                # by test_nn_dist_grid_matches_bruteforce / _bimodal_density / _far_outliers.
+                CHUNK_PAIRS = 50_000_000
+                qrem = query[remaining]
                 local_best = np.full(M, np.inf)
-                np.minimum.at(local_best, q_idx_flat, d)
+                cum = np.cumsum(counts)
+                edges = [0]
+                while edges[-1] < len(counts):
+                    base = cum[edges[-1] - 1] if edges[-1] else 0
+                    nxt = int(np.searchsorted(cum, base + CHUNK_PAIRS, side='right'))
+                    nxt = max(nxt, edges[-1] + 1)  # always progress (a single cell can't exceed
+                    edges.append(min(nxt, len(counts)))  # the cap: n-samples <= 10M << CHUNK_PAIRS)
+                for a, b in zip(edges[:-1], edges[1:]):
+                    cnt = counts[a:b]
+                    tot = int(cnt.sum())
+                    if tot == 0:
+                        continue
+                    group_start = np.cumsum(cnt) - cnt
+                    idx_in_group = np.arange(tot) - np.repeat(group_start, cnt)
+                    ref_idx_flat = np.repeat(s[a:b], cnt) + idx_in_group
+                    q_idx_flat = np.repeat(hit_q[a:b], cnt)
+
+                    diffs = qrem[q_idx_flat] - ref_sorted[ref_idx_flat]
+                    d = np.sqrt(np.einsum('ij,ij->i', diffs, diffs))
+
+                    # q_idx_flat is non-decreasing by construction (hit_q = repeat(arange(M), K)
+                    # masked by `valid` preserves order; repeat by cnt preserves it too), so the
+                    # per-query minimum is a segmented reduction -- np.minimum.reduceat on the
+                    # segment starts, orders of magnitude faster than np.minimum.at at ~1e9 pairs.
+                    seg_starts = np.concatenate(([0], np.flatnonzero(np.diff(q_idx_flat)) + 1))
+                    seg_mins = np.minimum.reduceat(d, seg_starts)
+                    seg_q = q_idx_flat[seg_starts]
+                    local_best[seg_q] = np.minimum(local_best[seg_q], seg_mins)
                 best[remaining] = np.minimum(best[remaining], local_best)
 
         # certified safe-radius acceptance (see docstring): a best-so-far distance d is provably
@@ -369,18 +410,38 @@ def _nn_dist_grid(query, ref, ring_cap=4):
         remaining = remaining[best[remaining] > ring * cell]
 
     if remaining.size:
-        # uncertified after ring_cap (far outliers / large coverage holes): resolve exactly.
-        best[remaining] = _bruteforce_min_dist(query[remaining], ref)
+        if max_dist is None:
+            # uncertified after ring_cap (far outliers / large coverage holes): resolve exactly.
+            best[remaining] = _bruteforce_min_dist(query[remaining], ref)
+        elif ring_cap * cell >= max_dist:
+            # Certified-by-absence: every still-remaining query has best > ring_cap*cell >=
+            # max_dist AND everything unsearched is >= ring_cap*cell >= max_dist, so its true NN
+            # distance is provably >= max_dist. Report a bucket-equivalent sentinel just above
+            # max_dist (min with the carried best keeps a real value when one was found; both
+            # sides are > max_dist so thresholding at any tolerance <= max_dist is unaffected).
+            best[remaining] = np.minimum(best[remaining], np.nextafter(max_dist, np.inf))
+        else:
+            # One coarse-grid pass for the stragglers: cell = max_dist/ring_cap makes the
+            # ring_cap-th ring's certified radius exactly max_dist, so the recursion terminates
+            # in the branch above (never recurses twice). The grid search is exact for ANY cell
+            # size (certification rule), so this changes performance only, not results.
+            coarse = _nn_dist_grid(query[remaining], ref, ring_cap, max_dist,
+                                    _cell_override=max_dist / ring_cap)
+            best[remaining] = np.minimum(best[remaining], coarse)
 
     return best
 
 
-def nn_dist(query, ref):
+def nn_dist(query, ref, max_dist=None):
+    """NN distances from query to ref. With max_dist given, distances beyond max_dist may be
+    returned as a bucket-equivalent value > max_dist instead of the exact distance (see
+    _nn_dist_grid) -- only pass max_dist when every threshold the result will be compared
+    against is <= max_dist. The scipy path is exact regardless (ignores max_dist)."""
     try:
         from scipy.spatial import cKDTree
         return cKDTree(ref).query(query, workers=-1)[0]
     except ImportError:
-        return _nn_dist_grid(query, ref)
+        return _nn_dist_grid(query, ref, max_dist=max_dist)
 
 
 def _voxel_dedup(points, voxel_size):
@@ -403,28 +464,51 @@ def score_cloud(rec, gt, tols, gross_tol):
     Returns completeness/accuracy keyed by the exact tol values passed in (not fraction labels --
     the CLI layer below does that relabeling for JSON output)."""
     # ADAPTATION (Task 7 real-GT validation finding, 2026-07-03): a real OpenMVS fused cloud
-    # (10^5-10^6+ points) paired with a GT sample of comparable size makes _nn_dist_grid's ring-1
-    # candidate-pair estimate exceed its 2e8 memory-safety valve essentially unconditionally --
-    # not because of a data corruption/outlier pathology (checked directly: neither cloud's
-    # per-cell point density is wildly skewed in isolation on real data), but simply because
-    # O(n_query * 27 * local_ref_density) crosses the valve once n_query reaches ~10^6, which any
-    # real dense reconstruction does. Measured directly on a real 1.48M-point OpenMVS cloud: a
-    # voxel 1/10th of the finest tolerance only merged 6% of points (real inter-point spacing is
-    # centimeter-scale, not sub-mm) and still exceeded the valve; a voxel equal to the finest
-    # tolerance itself merged ~89% and comfortably cleared it. Fix: voxel-dedup BOTH clouds at the
-    # finest requested tolerance before scoring -- two points closer together than the finest
-    # tolerance already fall in the same completeness/accuracy bucket at every requested
-    # granularity in the overwhelming majority of cases (they can only disagree for a pair that
-    # straddles a tolerance boundary within one voxel diagonal, a second-order edge effect), so
-    # this does not materially change what the metric measures -- it mainly drops the redundant
-    # multi-view reobservations of the same physical surface point that dense MVS fusion produces
-    # well below its own reconstruction precision. Standard practice in MVS benchmarks (e.g.
-    # Tanks & Temples voxel-downsamples before evaluation). n_rec/n_gt below still report the
-    # ORIGINAL (pre-dedup) point counts.
-    voxel = min(tols) if tols else 0.0
+    # (10^5-10^6+ points) paired with a GT sample of comparable size produces ~10^9 ring-1
+    # candidate pairs in _nn_dist_grid -- not a data pathology, just O(n_query * 27 *
+    # local_ref_density) crossing any fixed single-shot memory budget once n_query reaches ~10^6,
+    # which every real dense reconstruction does. The fix has two parts:
+    # (1) _nn_dist_grid now materializes candidate pairs in bounded CHUNKS (see there), so the
+    #     dedup voxel below is chosen for metric ACCURACY, not for memory survival;
+    # (2) voxel-dedup BOTH clouds before scoring, mainly to drop the redundant multi-view
+    #     reobservations of the same physical surface point that dense MVS fusion produces well
+    #     below its own reconstruction precision -- standard MVS-benchmark practice (e.g.
+    #     Tanks & Temples voxel-downsamples before evaluation).
+    #
+    # Voxel size = finest_tol/4, REFERENCE-SIDE ONLY (REVIEW FIX round 3; was finest_tol applied
+    # to BOTH sides, which had two distinct bias mechanisms):
+    #   * voxel = finest_tol allowed per-distance dedup error comparable to the finest tolerance
+    #     itself, biasing exactly the finest-tier metrics;
+    #   * QUERY-side dedup silently REWEIGHTED the metric population: dedup merges more points
+    #     where the cloud is dense, so on a non-uniformly dense cloud the kept-query mix shifts
+    #     weight from dense regions toward sparse regions -- and coverage/accuracy failures
+    #     correlate with local density, so this is not noise but a systematic bias (measured
+    #     |bias| up to 0.04 on the committed test's 8x-density-contrast cloud). Ref-side-only
+    #     dedup keeps EVERY original query point, so the metric's weighting is exact.
+    # Derived per-distance error bound for ref-side dedup: it keeps one representative point per
+    # occupied axis-aligned voxel of side v, so a query q's true NN p and p's kept representative
+    # r share a voxel, |p - r| <= v*sqrt(3) (the voxel diagonal), and by the triangle inequality
+    #   d(q, REF) <= d(q, REF_dedup) <= d(q, REF) + v*sqrt(3)
+    # -- a one-sided error of at most (sqrt(3)/4)*finest_tol ~= 0.433*finest_tol at v =
+    # finest_tol/4 (typical error is far smaller, ~half the dedup'd ref spacing laterally, and
+    # only queries whose true distance falls within the perturbation of a tolerance boundary can
+    # change buckets). The resulting METRIC bias is bounded empirically by the committed
+    # test_score_cloud_dedup_bias (non-uniform, dedup-triggering clouds, threshold-sensitive
+    # metric mass): |metric(dedup) - metric(exact no-dedup)| < 0.005 absolute for completeness
+    # and accuracy at the finest tolerance.
+    # Memory: the ring-search candidate count scales with n_query * ref_points_per_cell; dedup
+    # caps the REF density (the blowup factor), and _nn_dist_grid's chunking (see there) bounds
+    # the remaining n_query-driven volume, so full-size query clouds are fine.
+    # n_rec/n_gt below still report the ORIGINAL (pre-dedup) point counts.
+    voxel = min(tols) / 4.0 if tols else 0.0
     rec_d, gt_d = _voxel_dedup(rec, voxel), _voxel_dedup(gt, voxel)
-    d_gt2rec = nn_dist(gt_d, rec_d)        # completeness
-    d_rec2gt = nn_dist(rec_d, gt_d)        # accuracy / outliers
+    # max_dist = the largest threshold each distance array is compared against (completeness is
+    # only thresholded at tols; accuracy additionally at gross_tol) -- distances beyond it are
+    # bucket-equivalent, letting nn_dist skip the exact resolution of far/gross-outlier queries
+    # (see _nn_dist_grid's max_dist doc; without this, real clouds' 38-50% gross-outlier queries
+    # brute-forced against the full ref cloud for hours per evaluation).
+    d_gt2rec = nn_dist(gt, rec_d, max_dist=max(tols) if tols else None)   # completeness: FULL gt queries vs dedup'd rec ref
+    d_rec2gt = nn_dist(rec, gt_d, max_dist=max([gross_tol] + list(tols)))  # accuracy/outliers: FULL rec queries vs dedup'd gt ref
     return {'completeness': {t: float((d_gt2rec <= t).mean()) for t in tols},
             'accuracy':     {t: float((d_rec2gt <= t).mean()) for t in tols},
             'gross_outlier_frac': float((d_rec2gt > gross_tol).mean()),
