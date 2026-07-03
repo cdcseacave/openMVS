@@ -233,6 +233,10 @@ struct MVS_API DepthData {
 	DepthMap depthMap; // depth-map
 	NormalMap normalMap; // normal-map in camera space
 	ConfidenceMap confMap; // confidence-map
+	ConfidenceMap confMapAdjusted; // recalibrated confidence-map computed by AdjustConfidence(), held
+		// in memory until the deferred EVT_ADJUSTDEPTHMAP swap (confMap = move(confMapAdjusted));
+		// intentionally NOT cleared by Release() so it survives a cache eviction/reload of this
+		// DepthData between the filter and adjust events
 	ViewsMap viewsMap; // view-IDs map (indexing images vector starting after first view)
 	float dMin, dMax; // global depth range for this image
 	cv::Size size; // image size used to estimate this depth-map

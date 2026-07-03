@@ -1229,6 +1229,23 @@ void DepthMapsData::ComputeIntraMapPrior(const DepthData& depthData, ConfidenceM
 static std::atomic<int64_t> g_confAdjustComputeNS(0);
 static std::atomic<int64_t> g_confPriorComputeNS(0);
 
+// phase-lifetime depth-map cache for the adjust-confidence phase (Task 10): the adjust phase runs
+// one worker per reference image, each pulling up to 8 neighbors, so a naive per-reference
+// IncRef/DecRef (the pre-Task-10 design) re-reads any shared neighbor from disk up to ~9x. A single
+// DMapCache instance (mirroring FuseDepthMaps' usage) shared across the whole phase lets a neighbor
+// loaded for one reference stay resident for the next. DMapCache::UseImage briefly releases its own
+// internal lock while performing the (potentially slow) disk Load(), so two worker threads racing to
+// cache the SAME not-yet-loaded image concurrently could both pass the "is it empty" check and both
+// call Load() on the same DepthData. Closing that race with ONE global mutex around every UseImage()
+// call was tried first and measured ~2x SLOWER on courtyard (30 threads for only 38 images means most
+// UseImage() calls are cheap cache-HITS that don't need any extra locking beyond DMapCache's own
+// internal mutex -- serializing those too just adds futex/scheduler overhead across many threads).
+// Reusing each DepthData's own (already thread-safe, already unused now that IncRef/DecRef is gone
+// from this phase) CriticalSection as a PER-IMAGE lock gives the same correctness -- only two threads
+// racing to load the SAME still-empty image ever contend -- with none of the false contention between
+// threads touching different images.
+static DMapCache* g_pAdjustDMapCache(NULL);
+
 // AdjustConfidence's multi-view confirmation loop projects every reference pixel into every selected
 // neighbor depth-map (and back) using a FIXED pair of cameras (ref, neighbor) -- only the per-pixel
 // depth changes. Precomputing the composed single-precision linear maps below ONCE PER NEIGHBOR (not
@@ -1532,8 +1549,10 @@ bool DepthMapsData::AdjustConfidence(DepthData& depthDataRef, const IIndexArr& i
 		DEBUG("Confidence-map %3u features exported (%s)", id, TD_TIMER_GET_FMT().c_str());
 		return false;
 	}
-	if (!SaveConfidenceMap(ComposeDepthFilePath(imageRef.GetID(), "adjusted.cmap"), newConfMap))
-		return false;
+	// store the recalibrated confidence-map in memory; the EVT_ADJUSTDEPTHMAP handler swaps it into
+	// confMap only after every reference using this image as a neighbor has finished reading the
+	// PRE-adjustment confMap (guaranteed by the data.sem barrier -- see DenseReconstructionFilter)
+	depthDataRef.confMapAdjusted = std::move(newConfMap);
 
 	DEBUG("Confidence-map %3u adjusted using %u other images: %u/%u depths below fusion confidence (%s)",
 		imageRef.GetID(), idxNeighbors.size(), nDiscarded, nProcessed, TD_TIMER_GET_FMT().c_str());
@@ -2791,6 +2810,21 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 		ASSERT(data.events.IsEmpty());
 		FOREACH(i, data.images)
 			data.events.AddEvent(new EVTFilterDepthMap(i));
+		// phase-lifetime depth-map cache (Task 10): sized the same way FuseDepthMaps sizes its own
+		// cache (GetAvailableMemory), so that -- for any scene whose depth/normal/confidence maps fit
+		// in available RAM, same assumption FuseDepthMaps already relies on -- every image is read
+		// from disk at most once for the whole phase instead of once per reference that uses it as a
+		// neighbor. Reuse fusion's exact fixed lookahead reserve (10): a reserve scaled by
+		// nMaxThreads was tried first but overshoots for small/mid scenes (nMaxThreads can exceed the
+		// image count, e.g. 30 threads x 9 > 38 images), making GetAvailableMemory sum EVERY image as
+		// "needed" instead of a bounded lookahead and needlessly shrinking the cache budget. Full load
+		// flags (15/all) are used so the EVT_ADJUSTDEPTHMAP re-save below round-trips
+		// depthMap/normalMap/confMap/viewsMap exactly like the old per-reference IncRef(fileName) did.
+		BoolArr noneFused(data.depthMaps.arrDepthData.size());
+		noneFused.Memset(0);
+		DMapCache cacheDMaps(data.depthMaps.arrDepthData, 15u/*all*/,
+			GetAvailableMemory(data.depthMaps.arrDepthData, noneFused, 10u/*same lookahead reserve as FuseDepthMaps*/));
+		g_pAdjustDMapCache = &cacheDMaps;
 		// start working threads
 		data.progress = new Util::Progress("Filtered depth-maps", data.images.GetSize());
 		GET_LOGCONSOLE().Pause();
@@ -2806,13 +2840,17 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 			DenseReconstructionFilter((void*)&data);
 		}
 		GET_LOGCONSOLE().Play();
+		const uint32_t numDMapReads(cacheDMaps.GetNumImageReads());
+		cacheDMaps.ClearCache();
+		g_pAdjustDMapCache = NULL;
 		if (!data.events.IsEmpty())
 			return false;
 		data.progress.Release();
-		VERBOSE("Confidence-maps adjusted: %u depth-maps (%s; %.3gs prior+confirmation compute, %.2fms/map avg; %.3gs prior / %.3gs confirmation)",
+		VERBOSE("Confidence-maps adjusted: %u depth-maps (%s; %.3gs prior+confirmation compute, %.2fms/map avg; %.3gs prior / %.3gs confirmation; %u dmap disk reads via cache)",
 			data.images.GetSize(), TD_TIMER_GET_FMT().c_str(),
 			g_confAdjustComputeNS.load()/1e9, g_confAdjustComputeNS.load()/1e6/(double)MAXF(data.images.GetSize(),1u),
-			g_confPriorComputeNS.load()/1e9, (g_confAdjustComputeNS.load()-g_confPriorComputeNS.load())/1e9);
+			g_confPriorComputeNS.load()/1e9, (g_confAdjustComputeNS.load()-g_confPriorComputeNS.load())/1e9,
+			numDMapReads);
 	}
 	return true;
 } // ComputeDepthMaps
@@ -3025,18 +3063,25 @@ void Scene::DenseReconstructionFilter(void* pData)
 				data.SignalCompleteDepthmapFilter();
 				break;
 			}
-			// make sure all depth-maps are loaded
-			depthData.IncRef(ComposeDepthFilePath(depthData.GetView().GetID(), "dmap"));
+			// make sure this image and its neighbors are loaded, via the phase-lifetime cache so a
+			// neighbor shared by several references is read from disk at most once for the phase
+			// (was up to ~9x via per-reference IncRef/DecRef); each DepthData's own CriticalSection
+			// (unused in this phase now that IncRef/DecRef is gone) serializes only same-image cache
+			// accesses, not unrelated ones -- see the g_pAdjustDMapCache comment above
+			ASSERT(g_pAdjustDMapCache != NULL);
+			{
+				Lock l(depthData.cs);
+				g_pAdjustDMapCache->UseImage(idx);
+			}
 			const unsigned numMaxNeighbors(8);
 			IIndexArr idxNeighbors(0, depthData.neighbors.GetSize());
 			for (const ViewScore& neighbor: depthData.neighbors) {
 				DepthData& depthDataPair = data.depthMaps.arrDepthData[neighbor.ID];
 				if (!depthDataPair.IsValid())
 					continue;
-				if (depthDataPair.IncRef(ComposeDepthFilePath(depthDataPair.GetView().GetID(), "dmap")) == 0) {
-					// signal error and terminate
-					data.events.AddEventFirst(new EVTFail);
-					return;
+				{
+					Lock l(depthDataPair.cs);
+					g_pAdjustDMapCache->UseImage(neighbor.ID);
 				}
 				idxNeighbors.push_back(neighbor.ID);
 				if (idxNeighbors.size() == numMaxNeighbors)
@@ -3047,12 +3092,6 @@ void Scene::DenseReconstructionFilter(void* pData)
 				// load the filtered map after all depth-maps were filtered
 				data.events.AddEvent(new EVTAdjustDepthMap(evtImage.idxImage));
 			}
-			// unload referenced depth-maps
-			for (IIndex idxNeighbor: idxNeighbors) {
-				DepthData& depthDataPair = data.depthMaps.arrDepthData[idxNeighbor];
-				depthDataPair.DecRef();
-			}
-			depthData.DecRef();
 			data.SignalCompleteDepthmapFilter();
 			break; }
 
@@ -3061,19 +3100,22 @@ void Scene::DenseReconstructionFilter(void* pData)
 			const IIndex idx = data.images[evtImage.idxImage];
 			DepthData& depthData(data.depthMaps.arrDepthData[idx]);
 			ASSERT(depthData.IsValid());
+			// blocks until every EVT_FILTERDEPTHMAP has finished (SignalCompleteDepthmapFilter only
+			// signals sem once idxImage reaches 0 -- see ComputeDepthMaps); this is what makes the
+			// deferred swap below safe: all neighbor reads of this image's PRE-adjustment confMap
+			// (from other references' AdjustConfidence calls) have completed by the time we get here
 			data.sem.Wait();
-			// load the recalibrated confidence-map and replace the photometric one
-			ConfidenceMap confMap;
-			if (depthData.IncRef(ComposeDepthFilePath(depthData.GetView().GetID(), "dmap")) == 0 ||
-				!LoadConfidenceMap(ComposeDepthFilePath(depthData.GetView().GetID(), "adjusted.cmap"), confMap))
+			// ensure the depth-map is still resident (the cache may have evicted it under memory
+			// pressure since its own filter event ran) before swapping in the recalibrated conf-map
+			// computed in memory by AdjustConfidence (no more adjusted.cmap disk round-trip)
+			ASSERT(g_pAdjustDMapCache != NULL);
 			{
-				// signal error and terminate
-				data.events.AddEventFirst(new EVTFail);
-				return;
+				Lock l(depthData.cs);
+				g_pAdjustDMapCache->UseImage(idx);
 			}
-			ASSERT(depthData.GetRef() == 1);
-			File::deleteFile(ComposeDepthFilePath(depthData.GetView().GetID(), "adjusted.cmap").c_str());
-			depthData.confMap = std::move(confMap);
+			ASSERT(!depthData.IsEmpty() && !depthData.confMapAdjusted.empty());
+			depthData.confMap = std::move(depthData.confMapAdjusted);
+			depthData.confMapAdjusted.release();
 			#if TD_VERBOSE != TD_VERBOSE_OFF
 			// save depth map as image
 			if (VERBOSITY_LEVEL > 2) {
@@ -3087,7 +3129,6 @@ void Scene::DenseReconstructionFilter(void* pData)
 			// save filtered depth-map for this image
 			if (!depthData.Save(ComposeDepthFilePath(depthData.GetView().GetID(), "dmap")))
 				exit(EXIT_FAILURE);
-			depthData.DecRef();
 			data.progress->operator++();
 			break; }
 
