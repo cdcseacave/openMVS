@@ -37,6 +37,10 @@
 #include "DMapCache.h"
 #include <atomic>
 #include <chrono>
+#include <vector>
+#ifdef _USE_SSE
+#include <smmintrin.h> // SSE4.1 (_mm_floor_ps) for the vectorized confirmation sweep
+#endif
 
 using namespace MVS;
 
@@ -1219,8 +1223,11 @@ void DepthMapsData::ComputeIntraMapPrior(const DepthData& depthData, ConfidenceM
 // and no extra full-resolution maps in RAM (unlike the removed Merrell-style implementation).
 // ----------------------------------------------------------------------------
 // accumulates the pure AdjustConfidence compute time (intra-map prior + multi-view confirmation loop)
-// across the multithreaded adjust phase; reset and reported by the dispatch in ComputeDepthMaps
+// across the multithreaded adjust phase; reset and reported by the dispatch in ComputeDepthMaps;
+// the second counter isolates the ComputeIntraMapPrior share so the prior and the confirmation
+// sweep can be tracked separately across the speed work (confirmation rewritten first, prior later)
 static std::atomic<int64_t> g_confAdjustComputeNS(0);
+static std::atomic<int64_t> g_confPriorComputeNS(0);
 
 // AdjustConfidence's multi-view confirmation loop projects every reference pixel into every selected
 // neighbor depth-map (and back) using a FIXED pair of cameras (ref, neighbor) -- only the per-pixel
@@ -1271,6 +1278,8 @@ bool DepthMapsData::AdjustConfidence(DepthData& depthDataRef, const IIndexArr& i
 	const std::chrono::steady_clock::time_point timeAdjustStart(std::chrono::steady_clock::now());
 	ConfidenceMap priorMap;
 	ComputeIntraMapPrior(depthDataRef, priorMap);
+	g_confPriorComputeNS.fetch_add(std::chrono::duration_cast<std::chrono::nanoseconds>(
+		std::chrono::steady_clock::now() - timeAdjustStart).count(), std::memory_order_relaxed);
 
 	ConfidenceMap newConfMap(depthMapRef.size());
 	// optional per-pixel feature export for offline parameter tuning (recompute newConf from these in Python)
@@ -1309,6 +1318,170 @@ bool DepthMapsData::AdjustConfidence(DepthData& depthDataRef, const IIndexArr& i
 		}
 	}
 
+	// one-hop multi-view confirmation, swept NEIGHBOR-OUTER / pixel-inner: the sweep is memory-
+	// latency-bound (per confirmation it randomly samples the neighbor's depth/conf/normal maps),
+	// so visiting one neighbor at a time keeps a single neighbor's maps hot in cache and lets the
+	// smooth ref->neighbor warp drive the hardware prefetcher, instead of interleaving up to 8
+	// neighbor working sets per pixel. Per pixel the neighbors are still accumulated in the exact
+	// neighborProjs order (pass k adds neighbor k for every pixel), so K and the float Pconf sum
+	// are BIT-IDENTICAL to the pixel-outer/neighbor-inner order.
+	TImage<uint16_t> countMap(depthMapRef.size());
+	countMap.memset(0);
+	ConfidenceMap pconfMap(depthMapRef.size());
+	pconfMap.memset(0);
+	// per-row projection buffers shared by every neighbor pass (see stage A below)
+	std::vector<int> xRow, yRow;
+	std::vector<float> zRow;
+	for (const NeighborProj& np: neighborProjs) {
+		const bool bNormalGate(bHasRefNormal && !np.normalMap->empty());
+		const bool bHasConf(!np.confMap->empty());
+		const DepthMap& depthMapN(*np.depthMap);
+		// unpack the fused transforms into scalar locals: the generic cv::Matx operator* spills
+		// temporaries to the stack in this hot loop, while plain float locals stay enregistered;
+		// the accumulation order below matches cv::Matx (left-to-right dot product) so the
+		// results are bit-identical
+		const float A00(np.A(0,0)), A01(np.A(0,1)), A02(np.A(0,2));
+		const float A10(np.A(1,0)), A11(np.A(1,1)), A12(np.A(1,2));
+		const float A20(np.A(2,0)), A21(np.A(2,1)), A22(np.A(2,2));
+		const float b0(np.b.x), b1(np.b.y), b2(np.b.z);
+		const float Ai00(np.Ai(0,0)), Ai01(np.Ai(0,1)), Ai02(np.Ai(0,2));
+		const float Ai10(np.Ai(1,0)), Ai11(np.Ai(1,1)), Ai12(np.Ai(1,2));
+		const float Ai20(np.Ai(2,0)), Ai21(np.Ai(2,1)), Ai22(np.Ai(2,2));
+		const float bi0(np.bi.x), bi1(np.bi.y), bi2(np.bi.z);
+		// the sweep is bound by the projection stage (transform+divide+round+bounds, executed for
+		// EVERY pixel x neighbor candidate, hits and misses alike -- measured at ~80% of the sweep):
+		// stage A projects a WHOLE ROW into flat buffers, 4 columns per iteration with SSE where
+		// available (the ops are IEEE-identical per lane and in the same order as the scalar code,
+		// and ROUND2INT(float) == (int)floor(x+.5f) is reproduced exactly by _mm_floor_ps, so the
+		// buffered results are bit-identical to the scalar path), prefetching the neighbor-depth
+		// (and normal) cache lines of surviving lanes; stage B then walks the row applying the
+		// gates. zRow[c] <= 0 marks "skip column c" (invalid depth / behind camera / outside map).
+		const int cols(depthMapRef.cols);
+		xRow.resize(cols); yRow.resize(cols); zRow.resize(cols);
+		for (int r=0; r<depthMapRef.rows; ++r) {
+			const float rd((float)r);
+			const Depth* const rowD(depthMapRef.ptr<const Depth>(r));
+			// ---- stage A: project the row ----
+			const auto Project = [&](int c) { // scalar fallback/tail
+				float& z(zRow[c]);
+				const Depth depthRef(rowD[c]);
+				if (depthRef <= 0) {
+					z = 0;
+					return;
+				}
+				// ref pixel in homogeneous (u*d,v*d,d) form
+				const float ud((float)c*depthRef), vd(rd*depthRef);
+				const float qz(A20*ud + A21*vd + A22*depthRef + b2);
+				if (qz <= 0) {
+					z = 0; // point behind the neighbor camera (guard before homogeneous divide)
+					return;
+				}
+				const float qx(A00*ud + A01*vd + A02*depthRef + b0);
+				const float qy(A10*ud + A11*vd + A12*depthRef + b1);
+				const ImageRef x(ROUND2INT(qx/qz), ROUND2INT(qy/qz));
+				if (!depthMapN.isInside(x)) {
+					z = 0;
+					return;
+				}
+				#ifdef _USE_SSE
+				_mm_prefetch((const char*)&depthMapN(x), _MM_HINT_T0);
+				if (bNormalGate)
+					_mm_prefetch((const char*)&(*np.normalMap)(x), _MM_HINT_T0);
+				#endif
+				xRow[c] = x.x; yRow[c] = x.y;
+				z = qz;
+			};
+			int c = 0;
+			#ifdef _USE_SSE
+			{
+			const __m128 vZero(_mm_setzero_ps()), vHalf(_mm_set1_ps(.5f)), vRd(_mm_set1_ps(rd));
+			const __m128 vA00(_mm_set1_ps(A00)), vA01(_mm_set1_ps(A01)), vA02(_mm_set1_ps(A02)), vB0(_mm_set1_ps(b0));
+			const __m128 vA10(_mm_set1_ps(A10)), vA11(_mm_set1_ps(A11)), vA12(_mm_set1_ps(A12)), vB1(_mm_set1_ps(b1));
+			const __m128 vA20(_mm_set1_ps(A20)), vA21(_mm_set1_ps(A21)), vA22(_mm_set1_ps(A22)), vB2(_mm_set1_ps(b2));
+			const __m128i vNegOne(_mm_set1_epi32(-1));
+			const __m128i vW(_mm_set1_epi32(depthMapN.cols)), vH(_mm_set1_epi32(depthMapN.rows));
+			const __m128 vRamp(_mm_setr_ps(0.f, 1.f, 2.f, 3.f));
+			for (; c+4<=cols; c+=4) {
+				const __m128 d4(_mm_loadu_ps(rowD+c));
+				// (float)(c+k) computed as (float)c + k: exact for any image-sized c
+				const __m128 c4(_mm_add_ps(_mm_set1_ps((float)c), vRamp));
+				const __m128 ud(_mm_mul_ps(c4, d4)), vd(_mm_mul_ps(vRd, d4));
+				// same evaluation tree as the scalar path: ((A*ud + A*vd) + A*d) + b
+				const __m128 qz4(_mm_add_ps(_mm_add_ps(_mm_add_ps(_mm_mul_ps(vA20, ud), _mm_mul_ps(vA21, vd)), _mm_mul_ps(vA22, d4)), vB2));
+				const __m128 qx4(_mm_add_ps(_mm_add_ps(_mm_add_ps(_mm_mul_ps(vA00, ud), _mm_mul_ps(vA01, vd)), _mm_mul_ps(vA02, d4)), vB0));
+				const __m128 qy4(_mm_add_ps(_mm_add_ps(_mm_add_ps(_mm_mul_ps(vA10, ud), _mm_mul_ps(vA11, vd)), _mm_mul_ps(vA12, d4)), vB1));
+				// ROUND2INT(float) == (int)floor(x+.5f); garbage lanes (d<=0/qz<=0) produce
+				// harmless garbage ints (cvtt of NaN/Inf -> INT_MIN) that the bounds test rejects
+				const __m128i xi(_mm_cvttps_epi32(_mm_floor_ps(_mm_add_ps(_mm_div_ps(qx4, qz4), vHalf))));
+				const __m128i yi(_mm_cvttps_epi32(_mm_floor_ps(_mm_add_ps(_mm_div_ps(qy4, qz4), vHalf))));
+				const __m128i inX(_mm_and_si128(_mm_cmpgt_epi32(xi, vNegOne), _mm_cmpgt_epi32(vW, xi)));
+				const __m128i inY(_mm_and_si128(_mm_cmpgt_epi32(yi, vNegOne), _mm_cmpgt_epi32(vH, yi)));
+				const __m128 okF(_mm_and_ps(_mm_cmpgt_ps(d4, vZero), _mm_cmpgt_ps(qz4, vZero)));
+				const __m128i ok(_mm_and_si128(_mm_castps_si128(okF), _mm_and_si128(inX, inY)));
+				_mm_storeu_si128((__m128i*)&xRow[c], xi);
+				_mm_storeu_si128((__m128i*)&yRow[c], yi);
+				// masked-out lanes store +0.0 == the "skip" sentinel
+				_mm_storeu_ps(&zRow[c], _mm_and_ps(qz4, _mm_castsi128_ps(ok)));
+				const int m(_mm_movemask_ps(_mm_castsi128_ps(ok)));
+				for (int k=0; k<4; ++k) { // prefetch the neighbor-map lines of surviving lanes
+					if ((m&(1<<k)) == 0)
+						continue;
+					const ImageRef x(xRow[c+k], yRow[c+k]);
+					_mm_prefetch((const char*)&depthMapN(x), _MM_HINT_T0);
+					if (bNormalGate)
+						_mm_prefetch((const char*)&(*np.normalMap)(x), _MM_HINT_T0);
+				}
+			}
+			}
+			#endif
+			for (; c<cols; ++c)
+				Project(c);
+			// ---- stage B: gates ----
+			for (int c=0; c<cols; ++c) {
+				const float qz(zRow[c]);
+				if (qz <= 0)
+					continue; // invalid ref depth / behind camera / outside neighbor map
+				const ImageRef x(xRow[c], yRow[c]);
+				const Depth dN(depthMapN(x));
+				if (dN <= 0)
+					continue;
+				// GATE 1: depth similarity (neighbor measured depth as denominator, as in DenseFuse)
+				// GATE 2: forward-backward reprojection (back-project the neighbor pixel, reproject into reference)
+				// both tests are evaluated before a SINGLE combined branch: their outcomes alternate
+				// spatially (half-agreeing surfaces) and cost a mispredict each when tested separately,
+				// while evaluating both back-to-back lets G2's matrix product overlap G1's divide; the
+				// tests themselves and their values are unchanged, and the positive <=/&-forms reject
+				// NaN/Inf exactly like the original early-out sequence did
+				const bool gDepth(IsDepthSimilar(dN, (Depth)qz, thDepth));
+				const float un((float)x.x*dN), vn((float)x.y*dN);
+				const float qrz(Ai20*un + Ai21*vn + Ai22*dN + bi2);
+				const float qrx(Ai00*un + Ai01*vn + Ai02*dN + bi0);
+				const float qry(Ai10*un + Ai11*vn + Ai12*dN + bi1);
+				const float du(qrx/qrz - (float)c), dv(qry/qrz - rd);
+				const bool gReproj(qrz > 0 && du*du+dv*dv <= maxReprojErrorSq);
+				if (!(gDepth & gReproj))
+					continue;
+				// GATE 3: normal agreement (only if both normal-maps are available); the ref normal is
+				// rotated lazily into THIS neighbor's camera frame (np.Rrel) only when reached here,
+				// the neighbor normal is used raw (already in its own camera space, no rotation needed)
+				if (bNormalGate) {
+					const Point3f nRefN(np.Rrel*normalMapRef(r,c));
+					if (nRefN.dot((*np.normalMap)(x)) < normalError)
+						continue;
+				}
+				// the neighbor's confidence, read only now that the geometric gates passed (the
+				// map is immutable during the sweep, so the deferred load returns the same value
+				// the original early load did -- but only gate-3 survivors pay for it)
+				const float cN(bHasConf ? (*np.confMap)(x) : 1.f);
+				// GATE 4: neighbor min-confidence
+				if (cN < minConfidence)
+					continue;
+				// all gates passed: this neighbor confirms the reference depth
+				++countMap(r,c);
+				pconfMap(r,c) += cN;
+			}
+		}
+	}
 	#if TD_VERBOSE != TD_VERBOSE_OFF
 	unsigned nProcessed(0), nDiscarded(0);
 	#endif
@@ -1324,47 +1497,8 @@ bool DepthMapsData::AdjustConfidence(DepthData& depthDataRef, const IIndexArr& i
 			#endif
 			const float confPhoto(confMapRef(r,c));
 			const float pGeo(priorMap(r,c));
-			// ref pixel in homogeneous (u*d,v*d,d) form, fed to every precomputed NeighborProj below
-			const Point3f xd((float)c*depthRef, (float)r*depthRef, depthRef);
-			// one-hop multi-view confirmation
-			unsigned K(0);
-			float Pconf(0);
-			for (const NeighborProj& np: neighborProjs) {
-				const Point3f q(np.A*xd + np.b);
-				if (q.z <= 0)
-					continue; // guard before homogeneous divide to avoid projecting points behind the camera
-				const ImageRef x(ROUND2INT(q.x/q.z), ROUND2INT(q.y/q.z));
-				if (!np.depthMap->isInside(x))
-					continue;
-				const Depth dN((*np.depthMap)(x));
-				if (dN <= 0)
-					continue;
-				const float cN(np.confMap->empty() ? 1.f : (*np.confMap)(x));
-				// GATE 1: depth similarity (neighbor measured depth as denominator, as in DenseFuse)
-				if (!IsDepthSimilar(dN, (Depth)q.z, thDepth))
-					continue;
-				// GATE 2: forward-backward reprojection (back-project the neighbor pixel, reproject into reference)
-				const Point3f qr(np.Ai*Point3f((float)x.x*dN, (float)x.y*dN, dN) + np.bi);
-				if (qr.z <= 0)
-					continue;
-				const float du(qr.x/qr.z - (float)c), dv(qr.y/qr.z - (float)r);
-				if (du*du+dv*dv > maxReprojErrorSq)
-					continue;
-				// GATE 3: normal agreement (only if both normal-maps are available); the ref normal is
-				// rotated lazily into THIS neighbor's camera frame (np.Rrel) only when reached here,
-				// the neighbor normal is used raw (already in its own camera space, no rotation needed)
-				if (bHasRefNormal && !np.normalMap->empty()) {
-					const Point3f nRefN(np.Rrel*normalMapRef(r,c));
-					if (nRefN.dot((*np.normalMap)(x)) < normalError)
-						continue;
-				}
-				// GATE 4: neighbor min-confidence
-				if (cN < minConfidence)
-					continue;
-				// all gates passed: this neighbor confirms the reference depth
-				++K;
-				Pconf += cN;
-			}
+			const unsigned K(countMap(r,c));
+			const float Pconf(pconfMap(r,c));
 			// map (prior, confirmation count, photometric conf) to a calibrated [0,1] confidence with no hard cliff
 			const float gate(1.f - EXP(-((float)K + kPrior*pGeo)/tau));
 			const float posterior((s*pGeo + Pconf)/(s + Pconf));
@@ -2650,6 +2784,7 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 	if ((OPTDENSE::nOptimize & OPTDENSE::ADJUST_CONFIDENCE) != 0) {
 		TD_TIMER_STARTD();
 		g_confAdjustComputeNS.store(0);
+		g_confPriorComputeNS.store(0);
 		// initialize the queue of depth-maps to be filtered
 		data.sem.Clear();
 		data.idxImage = data.images.GetSize();
@@ -2674,9 +2809,10 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 		if (!data.events.IsEmpty())
 			return false;
 		data.progress.Release();
-		VERBOSE("Confidence-maps adjusted: %u depth-maps (%s; %.3gs prior+confirmation compute, %.2fms/map avg)",
+		VERBOSE("Confidence-maps adjusted: %u depth-maps (%s; %.3gs prior+confirmation compute, %.2fms/map avg; %.3gs prior / %.3gs confirmation)",
 			data.images.GetSize(), TD_TIMER_GET_FMT().c_str(),
-			g_confAdjustComputeNS.load()/1e9, g_confAdjustComputeNS.load()/1e6/(double)MAXF(data.images.GetSize(),1u));
+			g_confAdjustComputeNS.load()/1e9, g_confAdjustComputeNS.load()/1e6/(double)MAXF(data.images.GetSize(),1u),
+			g_confPriorComputeNS.load()/1e9, (g_confAdjustComputeNS.load()-g_confPriorComputeNS.load())/1e9);
 	}
 	return true;
 } // ComputeDepthMaps

@@ -156,7 +156,10 @@ if [ "$FORCE" = 1 ] || [ ! -f "$MARK_ADJ" ]; then
   ADJVALS=$(python3 -c "
 import re, sys
 line = '''$ADJLINE'''
-m = re.search(r'Confidence-maps adjusted:\s*(\d+)\s*depth-maps\s*\(([^;]*);\s*([0-9.eE+-]+)s prior\+confirmation compute,\s*([0-9.eE+-]+)ms/map avg\)', line)
+# the optional trailing '; <X>s prior / <Y>s confirmation' split (added with the Task-9
+# confirmation-sweep rewrite) is tolerated but not required, so the parser works with both
+# pre- and post-split binaries
+m = re.search(r'Confidence-maps adjusted:\s*(\d+)\s*depth-maps\s*\(([^;]*);\s*([0-9.eE+-]+)s prior\+confirmation compute,\s*([0-9.eE+-]+)ms/map avg(?:;[^)]*)?\)', line)
 if not m:
     print('error: could not parse adjust line: %r' % line, file=sys.stderr); sys.exit(1)
 print(m.group(1), m.group(3), m.group(4))
