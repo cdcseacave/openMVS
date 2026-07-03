@@ -80,6 +80,16 @@ def load_ply_xyz(path):
                 xyz[:, i] = raw[:, o:o + SZ[t]].copy().view('<f4' if SZ[t] == 4 else '<f8')[:, 0]
             return xyz
         # slow path: sequential parse (lists have per-vertex length)
+        # The '<3f' unpack below is only correct when the first three fixed
+        # properties are exactly float32 x, y, z -- guard against any other
+        # layout (e.g. color-first or double-typed coords) instead of silently
+        # returning garbage coordinates.
+        head = [(p[1], p[2]) for p in fixed[:3]]
+        if [nm for _, nm in head] != ['x', 'y', 'z'] or \
+           any(ty not in ('float', 'float32') for ty, _ in head):
+            raise ValueError(
+                f'load_ply_xyz slow path requires float32 x,y,z as the first '
+                f'three fixed vertex properties, got {head}: {path}')
         pre = sum(SZ[p[1]] for p in fixed)
         xyz = np.empty((n, 3), np.float64)
         buf = f.read()
@@ -137,7 +147,9 @@ def _thin_prism_fisheye_distort(u, v, params):
     Confirmed empirically: reprojecting COLMAP's own SfM points (points3D.txt)
     through the naive (no fisheye step) formula gave a median 340px error
     against images.txt's observed 2D keypoints; adding the fisheye step
-    dropped that to sub-pixel (see task-4-report.md)."""
+    dropped that to sub-pixel (0.64px median). Automated as
+    test_thin_prism_fisheye_reprojection in tests/test_gtutils.py (real-data
+    guarded, asserts median < 2px)."""
     fx, fy, cx, cy, k1, k2, p1, p2, k3, k4, sx1, sy1 = params
     r = np.sqrt(u * u + v * v)
     theta = np.arctan(r)

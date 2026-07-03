@@ -64,6 +64,49 @@ def test_load_ply_xyz_with_list_property(tmp='/tmp/claude_test_list.ply'):
     assert r.shape == (n, 3)
     assert np.allclose(r, xyz, atol=1e-6)
 
+def test_load_ply_xyz_slow_path_guards_xyz_layout():
+    # The slow (list-property) path reads x,y,z with a hardcoded '<3f' unpack,
+    # which is only correct when the first three fixed properties are exactly
+    # float32 x, y, z. Any other layout must raise ValueError, not silently
+    # return garbage coordinates.
+    def write_ply(tmp, props, record_bytes):
+        with open(tmp, 'wb') as f:
+            _write_ply_header(f, 1, props)
+            f.write(record_bytes)
+            f.write(struct.pack('<B', 0))  # empty views list for the single vertex
+        return tmp
+
+    # color-first layout: x,y,z are not the first fixed properties
+    p = write_ply('/tmp/claude_test_colorfirst.ply',
+                  ['property uchar red', 'property uchar green', 'property uchar blue',
+                   'property float x', 'property float y', 'property float z',
+                   'property list uchar int views'],
+                  struct.pack('<BBBfff', 1, 2, 3, 1.0, 2.0, 3.0))
+    try:
+        GtUtils.load_ply_xyz(p)
+        raise SystemExit('FAIL: color-first slow-path PLY did not raise ValueError')
+    except ValueError:
+        pass
+
+    # double-typed coordinates: right names, wrong byte width for '<3f'
+    p = write_ply('/tmp/claude_test_doublexyz.ply',
+                  ['property double x', 'property double y', 'property double z',
+                   'property list uchar int views'],
+                  struct.pack('<ddd', 1.0, 2.0, 3.0))
+    try:
+        GtUtils.load_ply_xyz(p)
+        raise SystemExit('FAIL: double-xyz slow-path PLY did not raise ValueError')
+    except ValueError:
+        pass
+
+    # conforming layout still works
+    p = write_ply('/tmp/claude_test_conform.ply',
+                  ['property float x', 'property float y', 'property float z',
+                   'property list uchar int views'],
+                  struct.pack('<fff', 1.0, 2.0, 3.0))
+    r = GtUtils.load_ply_xyz(p)
+    assert r.shape == (1, 3) and np.allclose(r, [[1.0, 2.0, 3.0]])
+
 def test_load_ply_xyz_trailing_element(tmp='/tmp/claude_test_trailing.ply'):
     # Mimics ETH3D scan1.ply: `element vertex` (x,y,z only) followed by a
     # trailing `element camera` with many more properties. A parser that
@@ -193,6 +236,83 @@ def _eth3d_convention_median_errors(scene, image_name, n_subsample=1_000_000, se
     rel_err_r = np.abs(win_r - gt) / gt
     return float(np.median(rel_err_z)), float(np.median(rel_err_r)), int(gt.size)
 
+_RUNS_ROOT = '/home/ubuntu/virginia/gt_bench/runs'
+
+def test_view_image_names_real_data():
+    # Real-data-guarded: dmap index -> image basename mapping via MvsUtils.
+    scene_mvs = os.path.join(_RUNS_ROOT, 'eth3d_courtyard/scene.mvs')
+    if not os.path.isfile(scene_mvs):
+        print('SKIP test_view_image_names_real_data: scene.mvs not present')
+        return
+    names = GtUtils.view_image_names(scene_mvs)
+    assert len(names) == 38, f'expected 38 courtyard views, got {len(names)}'
+    assert 'DSC_0286.JPG' in names, 'known image basename missing'
+    assert all(('/' not in n and '\\' not in n) for n in names), 'expected basenames only'
+    print(f'view_image_names: {len(names)} names, first={names[0]}')
+
+def _load_colmap_observations(images_txt, image_name, max_n=2000):
+    # COLMAP images.txt: pose line, then a POINTS2D line of (x, y, point3d_id) triples.
+    with open(images_txt) as f:
+        lines = f.readlines()
+    for i, line in enumerate(lines):
+        if line.startswith('#'):
+            continue
+        parts = line.split()
+        if len(parts) >= 10 and parts[-1].endswith(image_name):
+            obs = []
+            pts = lines[i + 1].split()
+            for j in range(0, len(pts), 3):
+                pid = int(pts[j + 2])
+                if pid != -1:
+                    obs.append((float(pts[j]), float(pts[j + 1]), pid))
+            return obs[:max_n]
+    raise KeyError(image_name)
+
+def test_thin_prism_fisheye_reprojection():
+    # Automates the fisheye pre-step verification (previously only prose in the
+    # GtUtils docstring/report): reproject COLMAP's own SfM points
+    # (points3D.txt) into a distorted image via _thin_prism_fisheye_distort and
+    # compare against the observed 2D keypoints recorded in images.txt.
+    # Measured median error 0.64px with the equidistant-fisheye pre-step
+    # (vs. 340px median without it -- the naive Brown-Conrady-only formula).
+    scene_dir = os.path.join(_ETH3D_ROOT, 'courtyard')
+    jpg_dir = os.path.join(scene_dir, 'dslr_calibration_jpg')
+    if not os.path.isdir(jpg_dir):
+        print('SKIP test_thin_prism_fisheye_reprojection: dslr_calibration_jpg not present')
+        return
+    image_name = 'DSC_0286.JPG'
+    R, t, cam_id = _load_colmap_pose(os.path.join(jpg_dir, 'images.txt'), image_name)
+    model, w, h, params = GtUtils.load_colmap_camera_params(os.path.join(jpg_dir, 'cameras.txt'))[cam_id]
+    assert model == 'THIN_PRISM_FISHEYE', model
+
+    obs = _load_colmap_observations(os.path.join(jpg_dir, 'images.txt'), image_name, max_n=2000)
+    wanted = {pid for _, _, pid in obs}
+    pts3d = {}
+    with open(os.path.join(jpg_dir, 'points3D.txt')) as f:
+        for line in f:
+            if line.startswith('#'):
+                continue
+            parts = line.split()
+            pid = int(parts[0])
+            if pid in wanted:
+                pts3d[pid] = np.array([float(parts[1]), float(parts[2]), float(parts[3])])
+
+    errs = []
+    for x_obs, y_obs, pid in obs:
+        X = pts3d.get(pid)
+        if X is None:
+            continue
+        Xc = R @ X + t
+        if Xc[2] <= 0:
+            continue
+        px, py = GtUtils._thin_prism_fisheye_distort(Xc[0] / Xc[2], Xc[1] / Xc[2], params)
+        errs.append(np.hypot(px - x_obs, py - y_obs))
+    errs = np.asarray(errs)
+    assert errs.size >= 500, f'only {errs.size} observations matched (need >=500)'
+    med = float(np.median(errs))
+    assert med < 2.0, f'median reprojection error {med:.2f}px >= 2px'
+    print(f'fisheye reprojection: median err={med:.3f}px n={errs.size}')
+
 def test_eth3d_convention_regression():
     scenes = [('courtyard', 'DSC_0286.JPG'), ('office', 'DSC_0219.JPG')]
     for scene, _ in scenes:
@@ -272,6 +392,8 @@ def test_remap_eth3d_depth_to_undistorted_accuracy():
 
 if __name__ == '__main__':
     test_pfm_roundtrip(); test_gt_labels(); test_resize_nearest()
-    test_load_ply_xyz_fixed_props(); test_load_ply_xyz_with_list_property(); test_load_ply_xyz_trailing_element()
+    test_load_ply_xyz_fixed_props(); test_load_ply_xyz_with_list_property()
+    test_load_ply_xyz_slow_path_guards_xyz_layout(); test_load_ply_xyz_trailing_element()
+    test_view_image_names_real_data(); test_thin_prism_fisheye_reprojection()
     test_eth3d_convention_regression(); test_remap_eth3d_depth_to_undistorted_accuracy()
     print('OK')
