@@ -1,0 +1,8 @@
+# ETH3D high-res multi-view training scenes selected for the GT benchmark (6 of 13).
+# Format: <scene>  # <indoor|outdoor>: <description>   (parsers: strip #-lines, take field 1)
+courtyard      # outdoor: 38 images, building courtyard with facades, foliage, furniture
+facade         # outdoor: 76 images, building facade close-range (largest scene, most views)
+meadow         # outdoor: 15 images, open grass field, mostly planar/textured ground (few views, low structure)
+office         # indoor: 26 images, office room, desks/chairs/textureless walls
+delivery_area  # indoor: 44 images, loading dock/warehouse interior
+pipes          # indoor: 14 images, industrial pipes close-range (fewest views, thin-structure geometry)
