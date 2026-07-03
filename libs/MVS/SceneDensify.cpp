@@ -1222,6 +1222,26 @@ void DepthMapsData::ComputeIntraMapPrior(const DepthData& depthData, ConfidenceM
 // across the multithreaded adjust phase; reset and reported by the dispatch in ComputeDepthMaps
 static std::atomic<int64_t> g_confAdjustComputeNS(0);
 
+// AdjustConfidence's multi-view confirmation loop projects every reference pixel into every selected
+// neighbor depth-map (and back) using a FIXED pair of cameras (ref, neighbor) -- only the per-pixel
+// depth changes. Precomputing the composed single-precision linear maps below ONCE PER NEIGHBOR (not
+// per pixel) turns each gate into a single 3x3 float matrix-vector product, replacing the double-
+// precision TransformPointI2W/TransformPointW2C/ProjectPointP round trips previously repeated for
+// every (pixel, neighbor) pair. Derivation (K's third row is always (0,0,1), see Camera.h):
+//   camX = Rn*(Xworld-Cn), Xworld = Rr^T*Kr^-1*(u*d,v*d,d)+Cr  =>  Kn*camX = A*(u*d,v*d,d) + b
+//   (fwd-bwd) Xn = Rn^T*Kn^-1*(un*dn,vn*dn,dn)+Cn, ref-projected = Kr*Rr*(Xn-Cr) = Ai*(...) + bi
+// reused verbatim by later confirmation-loop rewrites (fusion, inlier labeling).
+struct NeighborProj {
+	Matrix3x3f A;    // Kn*Rn*Rr^T*Kr^-1 : ref (u*d,v*d,d) h-coords -> nbr h-coords (q.z = nbr cam depth)
+	Point3f    b;    // Kn*Rn*(Cr-Cn)
+	Matrix3x3f Ai;   // Kr*Rr*Rn^T*Kn^-1 : nbr (u*d,v*d,d) h-coords -> ref h-coords (qr.z = ref cam depth)
+	Point3f    bi;   // Kr*Rr*(Cn-Cr)
+	Matrix3x3f Rrel; // Rn*Rr^T : rotates a ref-camera-space normal directly into the nbr camera space
+	const DepthMap* depthMap;
+	const ConfidenceMap* confMap;
+	const NormalMap* normalMap;
+};
+
 bool DepthMapsData::AdjustConfidence(DepthData& depthDataRef, const IIndexArr& idxNeighbors)
 {
 	TD_TIMER_STARTD();
@@ -1263,6 +1283,32 @@ bool DepthMapsData::AdjustConfidence(DepthData& depthDataRef, const IIndexArr& i
 		featPrior.create(depthMapRef.size()); featPrior.memset(0);
 		featPhoto.create(depthMapRef.size()); featPhoto.memset(0);
 	}
+
+	// precompute the fused single-precision ref->neighbor (and back) projection for every valid
+	// neighbor once per reference map (see NeighborProj); the double-precision composition (K/R/C)
+	// happens here only, O(neighbors), not O(pixels x neighbors)
+	CLISTDEF0(NeighborProj) neighborProjs(0, idxNeighbors.size());
+	{
+		const Matrix3x3 invKr(cameraRef.GetInvK());
+		for (IIndex idxN: idxNeighbors) {
+			const DepthData& depthDataN = arrDepthData[idxN];
+			if (depthDataN.IsEmpty())
+				continue;
+			const Camera& cameraN = depthDataN.GetView().camera;
+			const Matrix3x3 invKn(cameraN.GetInvK());
+			const Matrix3x3 Rrel(cameraN.R*cameraRef.R.t()); // ref-cam -> nbr-cam rotation
+			NeighborProj& np = neighborProjs.AddEmpty();
+			np.A = Matrix3x3f(cameraN.K*Rrel*invKr);
+			np.b = Point3f(cameraN.K*cameraN.R*(cameraRef.C-cameraN.C));
+			np.Ai = Matrix3x3f(cameraRef.K*Rrel.t()*invKn);
+			np.bi = Point3f(cameraRef.K*cameraRef.R*(cameraN.C-cameraRef.C));
+			np.Rrel = Matrix3x3f(Rrel);
+			np.depthMap = &depthDataN.depthMap;
+			np.confMap = &depthDataN.confMap;
+			np.normalMap = &depthDataN.normalMap;
+		}
+	}
+
 	#if TD_VERBOSE != TD_VERBOSE_OFF
 	unsigned nProcessed(0), nDiscarded(0);
 	#endif
@@ -1278,43 +1324,38 @@ bool DepthMapsData::AdjustConfidence(DepthData& depthDataRef, const IIndexArr& i
 			#endif
 			const float confPhoto(confMapRef(r,c));
 			const float pGeo(priorMap(r,c));
-			const Point3 X(cameraRef.TransformPointI2W(Point3((REAL)c,(REAL)r,(REAL)depthRef)));
-			Point3 nRefW;
-			if (bHasRefNormal)
-				nRefW = cameraRef.R.t() * Cast<REAL>(normalMapRef(r,c));
+			// ref pixel in homogeneous (u*d,v*d,d) form, fed to every precomputed NeighborProj below
+			const Point3f xd((float)c*depthRef, (float)r*depthRef, depthRef);
 			// one-hop multi-view confirmation
 			unsigned K(0);
 			float Pconf(0);
-			for (IIndex idxN: idxNeighbors) {
-				const DepthData& depthDataN = arrDepthData[idxN];
-				if (depthDataN.IsEmpty())
+			for (const NeighborProj& np: neighborProjs) {
+				const Point3f q(np.A*xd + np.b);
+				if (q.z <= 0)
+					continue; // guard before homogeneous divide to avoid projecting points behind the camera
+				const ImageRef x(ROUND2INT(q.x/q.z), ROUND2INT(q.y/q.z));
+				if (!np.depthMap->isInside(x))
 					continue;
-				const Camera& cameraN = depthDataN.GetView().camera;
-				const Point3 camX(cameraN.TransformPointW2C(X));
-				if (camX.z <= 0)
-					continue; // guard before C2I to avoid projecting points behind the camera
-				const ImageRef x(ROUND2INT(cameraN.TransformPointC2I(camX)));
-				if (!depthDataN.depthMap.isInside(x))
-					continue;
-				const Depth dN(depthDataN.depthMap(x));
+				const Depth dN((*np.depthMap)(x));
 				if (dN <= 0)
 					continue;
-				const float cN(depthDataN.confMap.empty() ? 1.f : depthDataN.confMap(x));
+				const float cN(np.confMap->empty() ? 1.f : (*np.confMap)(x));
 				// GATE 1: depth similarity (neighbor measured depth as denominator, as in DenseFuse)
-				if (!IsDepthSimilar(dN, (Depth)camX.z, thDepth))
+				if (!IsDepthSimilar(dN, (Depth)q.z, thDepth))
 					continue;
 				// GATE 2: forward-backward reprojection (back-project the neighbor pixel, reproject into reference)
-				const Point3 Xn(cameraN.TransformPointI2W(Point3((REAL)x.x,(REAL)x.y,(REAL)dN)));
-				const auto [xref, zref] = cameraRef.ProjectPointP(Xn);
-				if (zref <= 0)
+				const Point3f qr(np.Ai*Point3f((float)x.x*dN, (float)x.y*dN, dN) + np.bi);
+				if (qr.z <= 0)
 					continue;
-				const Point2 diff(xref - Point2((REAL)c,(REAL)r));
-				if (normSq(diff) > maxReprojErrorSq)
+				const float du(qr.x/qr.z - (float)c), dv(qr.y/qr.z - (float)r);
+				if (du*du+dv*dv > maxReprojErrorSq)
 					continue;
-				// GATE 3: normal agreement (only if both normal-maps are available)
-				if (bHasRefNormal && !depthDataN.normalMap.empty()) {
-					const Point3 nNW(cameraN.R.t() * Cast<REAL>(depthDataN.normalMap(x)));
-					if (nRefW.dot(nNW) < normalError)
+				// GATE 3: normal agreement (only if both normal-maps are available); the ref normal is
+				// rotated lazily into THIS neighbor's camera frame (np.Rrel) only when reached here,
+				// the neighbor normal is used raw (already in its own camera space, no rotation needed)
+				if (bHasRefNormal && !np.normalMap->empty()) {
+					const Point3f nRefN(np.Rrel*normalMapRef(r,c));
+					if (nRefN.dot((*np.normalMap)(x)) < normalError)
 						continue;
 				}
 				// GATE 4: neighbor min-confidence
