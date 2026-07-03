@@ -74,7 +74,7 @@ comp = parse_line('Completenesses')
 acc = parse_line('Accuracies')
 f1 = parse_line('F1-scores')
 
-keys = tol_csv.split(',')
+keys = [k.strip() for k in tol_csv.split(',')]
 assert len(keys) == len(tol) == len(comp) == len(acc) == len(f1), (
     'tolerance count mismatch: --tolerances=%r vs parsed %r/%r/%r/%r' % (keys, tol, comp, acc, f1))
 for k, t in zip(keys, tol):
@@ -93,9 +93,9 @@ def ply_vertex_count(path):
     return n
 
 
-n_rec = ply_vertex_count(fused_ply)
 rec_xyz = GtUtils.load_ply_xyz(fused_ply)
-diag = float(np.linalg.norm(rec_xyz.max(0) - rec_xyz.min(0))) if len(rec_xyz) else 0.0
+n_rec = len(rec_xyz)
+diag = float(np.linalg.norm(rec_xyz.max(0) - rec_xyz.min(0))) if n_rec else 0.0
 
 # n_gt: sum vertex counts of every scan .ply referenced by the .mlp (some scenes, e.g. courtyard,
 # register more than one scan simultaneously).
@@ -108,6 +108,8 @@ for mesh in tree.getroot().iter('MLMesh'):
     p = fn if os.path.isabs(fn) else os.path.join(mlp_dir, fn)
     if os.path.isfile(p):
         n_gt += ply_vertex_count(p)
+    else:
+        print('warning: GT scan referenced by %s not found, excluded from n_gt: %s' % (mlp_path, p), file=sys.stderr)
 
 out = {
     'completeness': dict(zip(keys, comp)),

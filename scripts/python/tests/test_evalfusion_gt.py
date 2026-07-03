@@ -4,6 +4,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 import EvalFusionGT as E
 
 _BMVS_ROOT = '/home/ubuntu/virginia/gt_bench/blendedmvs'
+# Test scratch dir: never the repo or /tmp root -- see gt_bench/README.md data-root policy.
+_SCRATCH_ROOT = '/home/ubuntu/virginia/gt_bench/tmp'
+os.makedirs(_SCRATCH_ROOT, exist_ok=True)
 
 
 def test_cube():
@@ -61,7 +64,7 @@ def test_load_mesh_dir_concatenation_synthetic():
     # Two tiny synthetic tiles with disjoint vertex sets; verify load_mesh()
     # on the directory concatenates vertices/faces with correctly offset
     # face indices (not just summed counts -- actual geometry round-trips).
-    tmp = tempfile.mkdtemp(dir='/home/ubuntu/openMVS/scripts/python/tests' if False else None)
+    tmp = tempfile.mkdtemp(dir=_SCRATCH_ROOT)
     try:
         v0, f0 = E.make_cube_mesh()
         v1 = v0 + np.array([10.0, 0.0, 0.0])  # shifted copy -> distinguishable tile
@@ -158,7 +161,7 @@ def test_cli_end_to_end_json_shape():
     # Synthetic end-to-end smoke of the actual CLI: writes a fused.ply and a
     # single-file GT .obj (unit cube), runs EvalFusionGT.py as a subprocess,
     # and checks the JSON shape/keys Task 7's aggregator depends on.
-    tmp = tempfile.mkdtemp()
+    tmp = tempfile.mkdtemp(dir=_SCRATCH_ROOT)
     try:
         v, f = E.make_cube_mesh()
         obj_path = os.path.join(tmp, 'gt_cube.obj')
