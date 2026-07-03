@@ -7,23 +7,25 @@
 #
 # Naming convention (used by every later task): bmvs_<first8ofSceneID>, eth3d_<name>
 #
-# Path-resolution notes (verified by reading apps/InterfaceMVSNet/InterfaceCOLMAP source):
+# Path-resolution notes (verified by reading source + inspecting the produced scene.mvs):
 #  - InterfaceMVSNet has NO --image-folder flag; it hardcodes an "images/" subfolder
 #    name under -i. BlendedMVS ships that folder as "blended_images/", so we symlink
-#    <scene>/images -> blended_images before importing. The importer stores ABSOLUTE
-#    image paths in scene.mvs (built from the already-absolute -i path), so they
-#    resolve from any working directory, but they resolve THROUGH the "images" symlink
-#    literally (directory_iterator does not canonicalize it) -- that symlink must stay
-#    in place for the images to be reachable later.
+#    <scene>/images -> blended_images before importing.
 #  - InterfaceCOLMAP wants "<-i>/sparse/{cameras,images,points3D}.{txt,bin}". ETH3D's
 #    dslr_calibration_undistorted/ already has exactly cameras.txt/images.txt/points3D.txt,
 #    so a single directory symlink <scene>/colmap/sparse -> ../dslr_calibration_undistorted
 #    is enough (no per-file symlinks needed). --image-folder is pointed directly (absolute)
 #    at <scene>/images/, which already contains the dslr_images_undistorted/ subfolder that
-#    ETH3D's images.txt names are prefixed with -- no extra images symlink is required for
-#    import to work. InterfaceCOLMAP stores image paths RELATIVE TO THE OUTPUT FOLDER
-#    (the scene.mvs directory), so they only resolve when later tools are run with that
-#    directory as their working folder (matches the Task 7 runner's convention).
+#    ETH3D's images.txt names are prefixed with.
+#  - Regardless of importer, MVS::Scene::Save (libs/MVS/Scene.cpp) unconditionally
+#    rewrites every image path as MAKE_PATH_REL(WORKING_FOLDER_FULL, ...) before writing
+#    scene.mvs -- so BOTH importers end up storing image paths RELATIVE TO THE WORKING
+#    FOLDER (-w), which we always set equal to the output directory. Confirmed empirically:
+#    a BlendedMVS scene.mvs image name is "../../blendedmvs/<id>/images/00000000.jpg" (goes
+#    through the per-scene "images" symlink above, so that symlink must stay in place), an
+#    ETH3D one is "../../eth3d/<name>/images/dslr_images_undistorted/DSC_0323.JPG". Later
+#    tools (Task 7's DensifyPointCloud runner) MUST be run with -w <this workdir> (or cwd =
+#    this workdir) for these relative paths to resolve.
 #
 # In addition, a runs/<scene>/images symlink to the scene's source image folder is created
 # in every workdir for uniformity/convenience, even though scene.mvs itself does not depend
