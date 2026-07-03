@@ -25,15 +25,38 @@ Usage:
 Compare methods by pointing --dmap-dir at runs produced with different --postprocess-dmaps while
 keeping --labels-dir fixed (labels are geometry-only and identical across confidence variants).
 No dependency beyond numpy (and MvsUtils for .dmap parsing).
+
+GT-depth mode (additive; keeps the .flabel/.fsupport path above fully working):
+  python EvalConfidence.py <dmap_dir> --gt-depth-dir <dir> --gt-format {blendedmvs,eth3d}
+                           --scene-mvs <scene.mvs> [--rel-tol 0.01] [--abs-tol 0.0] [--json out.json]
+
+Instead of consuming the fusion-exported .flabel/.fsupport maps, this mode derives per-pixel
+inlier/outlier labels directly from ground-truth depth (GtUtils.gt_labels), matching each dmap
+(named depth<ID>.dmap by view ID) to its scene image via GtUtils.view_image_names(--scene-mvs).
+It reuses the SAME roc_auc/pr_auc/prec_recall_at/ece metric machinery as the STRICT flabel
+regime above (LENIENT has no GT counterpart: GT labels are binary, there is no WEAK_INLIER).
+  blendedmvs : GT file = <gt-depth-dir>/rendered_depth_maps/<image-stem>.pfm (GtUtils.read_pfm)
+  eth3d      : GT file = <gt-depth-dir>/ground_truth_depth/dslr_images/<image-name>, on the
+               DISTORTED grid as z-depth (GtUtils.read_eth3d_depth); remapped onto the undistorted
+               dmap grid with GtUtils.remap_eth3d_depth_to_undistorted (needs the COLMAP camera
+               models under <gt-depth-dir>/dslr_calibration_{jpg,undistorted}/). The remap is
+               moderately expensive, so results are cached per view as .npy under
+               <gt-depth-dir>/../gt_cache/ (override with --gt-cache-dir), keyed by image name +
+               dmap shape -- NOT written into the repo.
+--json writes {scene, mode, per_view: [...], pooled: {roc_auc, pr_auc, p_at_01, r_at_01,
+spearman, brier, ece, n_labeled}} for Task 7's aggregator.
 """
 import os
 import sys
+import re
 import glob
+import json
 import argparse
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from MvsUtils import loadDMAP
+import GtUtils
 
 INVALID, OUTLIER, AMBIGUOUS, WEAK_INLIER, CONFIDENT_INLIER = 0, 1, 2, 3, 4
 LMAP_MAGIC = 0x50414D4C  # 'LMAP'
@@ -158,6 +181,162 @@ def eval_image(conf, label, support, t, max_pixels):
     return out, dict(fnr=fnr, spearman=sp, n_weak=int(weak.sum()))
 
 
+def metrics_from_gt(d_est, conf, d_gt, rel_tol=0.01, abs_tol=0.0, t=0.1, max_pixels=0):
+    """GT-depth counterpart of eval_image's STRICT regime: labels come from GtUtils.gt_labels
+    (d_est vs. ground-truth depth) instead of the exported .flabel/.fsupport maps. d_gt is resized
+    (nearest) onto d_est's grid when shapes differ. Reuses the same roc_auc/pr_auc/prec_recall_at/
+    ece machinery as eval_image; returns a flat dict (not a (regimes, extra) pair) keyed with the
+    JSON-schema names (roc_auc, pr_auc, p_at_01, r_at_01, spearman, brier, ece, n_labeled) plus the
+    raw (scores, ys) arrays for pooling across views.
+
+    'spearman' has no direct GT-mode analogue of flabel's spearman(conf, view-support) -- there is
+    no separate support signal here -- so it is the rank correlation of confidence against the
+    binary GT inlier/outlier label itself (rank-biserial), over the same labeled-pixel selection
+    used for the other metrics."""
+    if d_gt.shape != d_est.shape:
+        d_gt = GtUtils.resize_depth_nearest(d_gt, d_est.shape)
+    inlier, outlier, _ = GtUtils.gt_labels(d_est, d_gt, rel_tol, abs_tol)
+    sel = inlier | outlier  # every GT-valid pixel is labeled inlier xor outlier (no AMBIGUOUS class)
+    c = np.asarray(conf)[sel].astype(np.float64)
+    y = inlier[sel].astype(np.int32)
+    if max_pixels and c.size > max_pixels:
+        idx = np.linspace(0, c.size - 1, max_pixels).astype(np.int64)
+        c, y = c[idx], y[idx]
+    if c.size == 0:
+        prec = rec = brier = ece_v = float('nan')
+    else:
+        prec, rec = prec_recall_at(c, y, t)
+        brier = float(np.mean((c - y) ** 2))
+        ece_v = ece(c, y)
+    return dict(roc_auc=roc_auc(c, y), pr_auc=pr_auc(c, y), p_at_01=prec, r_at_01=rec,
+                spearman=spearman(c, y.astype(np.float64)), brier=brier, ece=ece_v,
+                n_labeled=int(c.size), scores=c, ys=y)
+
+
+def _colmap_image_camera_id(images_txt, image_name):
+    """Look up the camera_id (COLMAP images.txt field 9) for `image_name` (matched as a path
+    suffix, since images.txt entries are relative paths like 'images/dslr_images/DSC_0286.JPG')."""
+    with open(images_txt) as f:
+        for line in f:
+            if line.startswith('#'):
+                continue
+            parts = line.split()
+            if len(parts) >= 10 and parts[-1].endswith(image_name):
+                return int(parts[8])
+    return None
+
+
+def _load_gt_depth_view(image_name, d_shape, args, eth3d_ctx):
+    """Load+grid-align the ground-truth depth for one view onto d_shape=(h,w). Returns None if no
+    GT is available for this image (skipped by the caller)."""
+    if args.gt_format == 'blendedmvs':
+        stem = os.path.splitext(image_name)[0]
+        pfm_path = os.path.join(args.gt_depth_dir, 'rendered_depth_maps', stem + '.pfm')
+        if not os.path.isfile(pfm_path):
+            return None
+        return GtUtils.resize_depth_nearest(GtUtils.read_pfm(pfm_path), d_shape)
+
+    # eth3d
+    cams_d, cams_u, images_txt_d, cache_dir = eth3d_ctx
+    h, w = d_shape
+    cache_path = os.path.join(cache_dir, '%s_%dx%d.npy' % (image_name.replace(os.sep, '_'), h, w)) if cache_dir else None
+    if cache_path and os.path.isfile(cache_path):
+        return np.load(cache_path)
+    cam_id = _colmap_image_camera_id(images_txt_d, image_name)
+    if cam_id is None or cam_id not in cams_d or cam_id not in cams_u:
+        return None
+    model_d, w_d, h_d, params_d = cams_d[cam_id]
+    model_u, w_u, h_u, params_u = cams_u[cam_id]
+    depth_path = os.path.join(args.gt_depth_dir, 'ground_truth_depth', 'dslr_images', image_name)
+    if not os.path.isfile(depth_path):
+        return None
+    depth_distorted = GtUtils.read_eth3d_depth(depth_path, w_d, h_d)
+    depth_undist = GtUtils.remap_eth3d_depth_to_undistorted(
+        depth_distorted, (w_d, h_d, params_d), (w_u, h_u, params_u))
+    d_gt = GtUtils.resize_depth_nearest(depth_undist, d_shape)
+    if cache_path:
+        os.makedirs(cache_dir, exist_ok=True)
+        np.save(cache_path, d_gt)
+    return d_gt
+
+
+def run_gt_mode(args):
+    """GT-depth label mode: same metric machinery as eval_image's STRICT regime (via
+    metrics_from_gt), labels sourced from ground-truth depth instead of fusion .flabel exports."""
+    names = GtUtils.view_image_names(args.scene_mvs)
+    dmaps = sorted(glob.glob(os.path.join(args.dmap_dir, 'depth*.dmap')))
+    if not dmaps:
+        print('error: no depth*.dmap files in %s' % args.dmap_dir); sys.exit(1)
+
+    eth3d_ctx = None
+    if args.gt_format == 'eth3d':
+        jpg_dir = os.path.join(args.gt_depth_dir, 'dslr_calibration_jpg')
+        cams_d = GtUtils.load_colmap_camera_params(os.path.join(jpg_dir, 'cameras.txt'))
+        cams_u = GtUtils.load_colmap_camera_params(
+            os.path.join(args.gt_depth_dir, 'dslr_calibration_undistorted', 'cameras.txt'))
+        cache_dir = args.gt_cache_dir or os.path.join(
+            os.path.dirname(os.path.abspath(args.gt_depth_dir.rstrip('/'))), 'gt_cache')
+        eth3d_ctx = (cams_d, cams_u, os.path.join(jpg_dir, 'images.txt'), cache_dir)
+
+    per_view, pool_c, pool_y = [], [], []
+    for dm in dmaps:
+        idx_m = re.match(r'depth(\d+)\.dmap$', os.path.basename(dm))
+        if not idx_m:
+            continue
+        idx = int(idx_m.group(1))
+        if idx >= len(names):
+            if not args.quiet:
+                print('skip %s (view index out of range for --scene-mvs)' % dm)
+            continue
+        image_name = names[idx]
+        data = loadDMAP(dm)
+        if data is None or not data.get('has_conf'):
+            if not args.quiet:
+                print('skip %s (no confidence in dmap)' % image_name)
+            continue
+        d_est = np.asarray(data['depth_map'], dtype=np.float64)
+        conf = np.asarray(data['confidence_map'], dtype=np.float32)
+        d_gt = _load_gt_depth_view(image_name, d_est.shape, args, eth3d_ctx)
+        if d_gt is None:
+            if not args.quiet:
+                print('skip %s (no GT depth found)' % image_name)
+            continue
+        r = metrics_from_gt(d_est, conf, d_gt, args.rel_tol, args.abs_tol, args.threshold, args.max_pixels_per_image)
+        per_view.append({k: r[k] for k in ('roc_auc', 'pr_auc', 'p_at_01', 'r_at_01', 'spearman',
+                                            'brier', 'ece', 'n_labeled')} | {'image': image_name})
+        if r['n_labeled']:
+            pool_c.append(r['scores']); pool_y.append(r['ys'])
+        if not args.quiet:
+            print('%-24s roc=%s pr=%s P@%.2f=%s R@%.2f=%s brier=%s ece=%s n=%d' % (
+                image_name, fmt(r['roc_auc']), fmt(r['pr_auc']), args.threshold, fmt(r['p_at_01']),
+                args.threshold, fmt(r['r_at_01']), fmt(r['brier']), fmt(r['ece']), r['n_labeled']))
+
+    if pool_c:
+        c, y = np.concatenate(pool_c), np.concatenate(pool_y)
+        prec, rec = prec_recall_at(c, y, args.threshold)
+        pooled = dict(roc_auc=roc_auc(c, y), pr_auc=pr_auc(c, y), p_at_01=prec, r_at_01=rec,
+                      spearman=spearman(c, y.astype(np.float64)),
+                      brier=float(np.mean((c - y) ** 2)), ece=ece(c, y), n_labeled=int(c.size))
+    else:
+        pooled = dict(roc_auc=float('nan'), pr_auc=float('nan'), p_at_01=float('nan'), r_at_01=float('nan'),
+                      spearman=float('nan'), brier=float('nan'), ece=float('nan'), n_labeled=0)
+
+    print('\n================ GT AGGREGATE (%d/%d views, format=%s, t=%.2f) ================' % (
+        len(per_view), len(dmaps), args.gt_format, args.threshold))
+    print('ROC-AUC=%s  PR-AUC=%s  P@%.2f=%s  R@%.2f=%s  Spearman=%s  Brier=%s  ECE=%s  n_labeled=%d' % (
+        fmt(pooled['roc_auc']), fmt(pooled['pr_auc']), args.threshold, fmt(pooled['p_at_01']),
+        args.threshold, fmt(pooled['r_at_01']), fmt(pooled['spearman']), fmt(pooled['brier']),
+        fmt(pooled['ece']), pooled['n_labeled']))
+
+    out = dict(scene=os.path.basename(os.path.realpath(args.gt_depth_dir)), mode=args.gt_format,
+               per_view=per_view, pooled=pooled)
+    if args.json:
+        with open(args.json, 'w') as f:
+            json.dump(out, f, indent=2)
+        print('JSON written to %s' % args.json)
+    return out
+
+
 def fmt(x):
     return 'n/a' if x != x else '%.4f' % x  # x!=x detects nan
 
@@ -170,7 +349,26 @@ def main():
     ap.add_argument('--max-pixels-per-image', type=int, default=400000, help='subsample cap per image per regime (0 = all)')
     ap.add_argument('--csv', default=None, help='optional per-image CSV output path')
     ap.add_argument('--quiet', action='store_true', help='suppress per-image lines')
+    ap.add_argument('--gt-depth-dir', default=None,
+                    help='GT mode: root dir with rendered_depth_maps/ (blendedmvs) or '
+                         'ground_truth_depth/+dslr_calibration_*/ (eth3d); switches to GT-depth label mode')
+    ap.add_argument('--gt-format', choices=('blendedmvs', 'eth3d'), default=None,
+                    help='GT mode: ground-truth depth convention (required with --gt-depth-dir)')
+    ap.add_argument('--scene-mvs', default=None,
+                    help='GT mode: scene.mvs used to map dmap view-index -> image name (required with --gt-depth-dir)')
+    ap.add_argument('--rel-tol', type=float, default=0.01, help='GT mode: relative depth tolerance for inlier/outlier labeling')
+    ap.add_argument('--abs-tol', type=float, default=0.0, help='GT mode: absolute depth tolerance floor')
+    ap.add_argument('--gt-cache-dir', default=None,
+                    help='GT mode (eth3d): override the remapped-GT .npy cache dir '
+                         '(default: a gt_cache/ dir alongside --gt-depth-dir)')
+    ap.add_argument('--json', default=None, help='GT mode: write {scene,mode,per_view,pooled} JSON here')
     args = ap.parse_args()
+
+    if args.gt_depth_dir:
+        if not args.gt_format or not args.scene_mvs:
+            print('error: --gt-depth-dir requires --gt-format and --scene-mvs'); sys.exit(1)
+        run_gt_mode(args)
+        return
 
     labels_dir = args.labels_dir or args.dmap_dir
     dmaps = sorted(glob.glob(os.path.join(args.dmap_dir, '*.dmap')))
