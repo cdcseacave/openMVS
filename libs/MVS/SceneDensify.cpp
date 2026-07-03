@@ -2810,21 +2810,37 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 		ASSERT(data.events.IsEmpty());
 		FOREACH(i, data.images)
 			data.events.AddEvent(new EVTFilterDepthMap(i));
-		// phase-lifetime depth-map cache (Task 10): sized the same way FuseDepthMaps sizes its own
-		// cache (GetAvailableMemory), so that -- for any scene whose depth/normal/confidence maps fit
-		// in available RAM, same assumption FuseDepthMaps already relies on -- every image is read
-		// from disk at most once for the whole phase instead of once per reference that uses it as a
-		// neighbor. Reuse fusion's exact fixed lookahead reserve (10): a reserve scaled by
-		// nMaxThreads was tried first but overshoots for small/mid scenes (nMaxThreads can exceed the
-		// image count, e.g. 30 threads x 9 > 38 images), making GetAvailableMemory sum EVERY image as
-		// "needed" instead of a bounded lookahead and needlessly shrinking the cache budget. Full load
-		// flags (15/all) are used so the EVT_ADJUSTDEPTHMAP re-save below round-trips
+		// phase-lifetime depth-map cache (Task 10): every image is read from disk at most once for
+		// the whole phase instead of once per reference that uses it as a neighbor. The budget is
+		// deliberately UNLIMITED (maxMemory=0, no eviction ever): full-scene residency is this
+		// phase's design premise, and -- crucially -- DMapCache::EjectOldest() Release()s the LRU
+		// image with no pin/in-use awareness, while a concurrent worker's confirmation sweep holds
+		// raw pointers into its neighbors' depth/normal/conf maps (NeighborProj in AdjustConfidence)
+		// for the whole sweep; a bounded budget under memory pressure would therefore be a
+		// use-after-free, not a graceful degradation. Unlimited turns memory exhaustion into an
+		// honest allocation failure instead of a silent UAF. The cost is made visible: estimated
+		// peak logged right below (incl. the per-image in-memory adjusted-confidence side buffers,
+		// which live outside the cache's accounting), actual disk reads + resident cache bytes
+		// logged at phase end. Measured worst-case (BlendedMVS 5b7a3890, 375 views @768x576):
+		// 3.7GB peak cache / 6.2GB peak process RSS -- comfortably bounded in practice.
+		// Full load flags (15/all) are used so the EVT_ADJUSTDEPTHMAP re-save below round-trips
 		// depthMap/normalMap/confMap/viewsMap exactly like the old per-reference IncRef(fileName) did.
-		BoolArr noneFused(data.depthMaps.arrDepthData.size());
-		noneFused.Memset(0);
-		DMapCache cacheDMaps(data.depthMaps.arrDepthData, 15u/*all*/,
-			GetAvailableMemory(data.depthMaps.arrDepthData, noneFused, 10u/*same lookahead reserve as FuseDepthMaps*/));
+		DMapCache cacheDMaps(data.depthMaps.arrDepthData, 15u/*all*/, 0/*unlimited -- see above*/);
 		g_pAdjustDMapCache = &cacheDMaps;
+		#if TD_VERBOSE != TD_VERBOSE_OFF
+		{
+			// estimated peak memory: per pixel 4B depth + 12B normal + 4B conf + 4B views (upper
+			// bound; normal/views may be absent) resident in the cache, plus 4B for the
+			// confMapAdjusted side buffer -- at the semaphore barrier every image's side buffer is
+			// live simultaneously, so it belongs in the estimate even though the cache can't see it
+			size_t estPeakMemory(0);
+			for (const DepthData& depthData: data.depthMaps.arrDepthData)
+				if (depthData.IsValid())
+					estPeakMemory += (size_t)depthData.size.area() * ((1/*depth*/+3/*normal*/+1/*conf*/+1/*confMapAdjusted*/)*4 + 4/*views*/);
+			VERBOSE("Adjust-confidence phase: caching all %u depth-maps in memory, estimated peak %lluMB (incl. in-memory adjusted confidence)",
+				data.images.size(), (unsigned long long)(estPeakMemory>>20));
+		}
+		#endif
 		// start working threads
 		data.progress = new Util::Progress("Filtered depth-maps", data.images.GetSize());
 		GET_LOGCONSOLE().Pause();
@@ -2841,16 +2857,18 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 		}
 		GET_LOGCONSOLE().Play();
 		const uint32_t numDMapReads(cacheDMaps.GetNumImageReads());
+		// with the unlimited budget nothing is ever ejected, so the final resident size IS the peak
+		const size_t peakCacheMemory(cacheDMaps.GetUsedMemory());
 		cacheDMaps.ClearCache();
 		g_pAdjustDMapCache = NULL;
 		if (!data.events.IsEmpty())
 			return false;
 		data.progress.Release();
-		VERBOSE("Confidence-maps adjusted: %u depth-maps (%s; %.3gs prior+confirmation compute, %.2fms/map avg; %.3gs prior / %.3gs confirmation; %u dmap disk reads via cache)",
+		VERBOSE("Confidence-maps adjusted: %u depth-maps (%s; %.3gs prior+confirmation compute, %.2fms/map avg; %.3gs prior / %.3gs confirmation; %u dmap disk reads via cache, %lluMB peak cache memory)",
 			data.images.GetSize(), TD_TIMER_GET_FMT().c_str(),
 			g_confAdjustComputeNS.load()/1e9, g_confAdjustComputeNS.load()/1e6/(double)MAXF(data.images.GetSize(),1u),
 			g_confPriorComputeNS.load()/1e9, (g_confAdjustComputeNS.load()-g_confPriorComputeNS.load())/1e9,
-			numDMapReads);
+			numDMapReads, (unsigned long long)(peakCacheMemory>>20));
 	}
 	return true;
 } // ComputeDepthMaps
@@ -3105,9 +3123,10 @@ void Scene::DenseReconstructionFilter(void* pData)
 			// deferred swap below safe: all neighbor reads of this image's PRE-adjustment confMap
 			// (from other references' AdjustConfidence calls) have completed by the time we get here
 			data.sem.Wait();
-			// ensure the depth-map is still resident (the cache may have evicted it under memory
-			// pressure since its own filter event ran) before swapping in the recalibrated conf-map
-			// computed in memory by AdjustConfidence (no more adjusted.cmap disk round-trip)
+			// ensure the depth-map is resident before swapping in the recalibrated conf-map computed
+			// in memory by AdjustConfidence (no more adjusted.cmap disk round-trip); with the
+			// phase's unlimited cache budget nothing is ever ejected, so this is a guaranteed cache
+			// hit -- kept for uniformity and as defense should the budget policy ever change
 			ASSERT(g_pAdjustDMapCache != NULL);
 			{
 				Lock l(depthData.cs);
