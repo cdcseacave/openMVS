@@ -4,8 +4,8 @@ Produced by scripts/python/MapAnyVsGT.py against the pseudo-GT pipeline unchange
 commit 7f8ca1c (MapAnyInferMV.py MA_MASK_EDGES=0/MA_RES=910, MapAnyVoxelFuse.py MINVIEWS=2).
 Scenes: eth3d_courtyard L2, eth3d_office L2 (real SfM sparse-depth conditioning), bmvs_5a640093 L1
 (scene.mvs has ZERO SfM sparse vertices -- InterfaceMVSNet import -- so its MapAnything witness was
-generated WITHOUT sparse-depth conditioning, images+intrinsics+poses only, via the standalone
-mapany/MapAnyInferMV_nosparse.py helper; labelled `nosparse_witness=true` in its JSON).
+generated WITHOUT sparse-depth conditioning, images+intrinsics+poses only, via
+scripts/python/MapAnyInferMV_nosparse.py; labelled `nosparse_witness=true` in its JSON).
 Full numbers: /home/ubuntu/virginia/gt_bench/mapany/<scene>/mapanyvsgt.json.
 Full task report: /home/ubuntu/openMVS/.superpowers/sdd/task-8-report.md.
 -->
@@ -17,7 +17,10 @@ several tens of percent of scene depth) comparable to or larger than the effect 
 percentage-point completeness/gross-outlier deltas) that tuning was trying to resolve. The clouds
 built from it (`magt.ply`) score 3-51% accuracy and 17-62% gross-outlier rate against REAL ground
 truth, on scenes where the actual OpenMVS reconstruction it was supposed to grade scores 87-99%
-accuracy and <1% gross-outlier rate on the SAME real GT.
+accuracy and <1% gross-outlier rate on the SAME real GT. (These headline ranges span tolerance tiers
+AND scenes -- e.g. "3-51%" runs from bmvs at a fine 0.25%-diag tier to office at the loosest 10cm
+tier; the per-tier, per-scene tables in sections (a)/(b) below are the precise like-for-like
+comparison.)
 
 ## (a) How noisy is MapAnything depth vs real GT?
 
@@ -112,6 +115,12 @@ than a bare "X% complete" or "Y% gross outliers" statement would be -- but they 
 correlation the witness's noise has with the rescue mechanism itself, which this study cannot rule out.
 
 ## (d) Decision
+
+**Sample-size limitation, stated up front**: this study measured 3 of the 11 benchmark scenes
+(2 ETH3D + 1 BlendedMVS -- outdoor wide-baseline, textureless indoor, and small-object/no-sparse
+respectively). The retire-for-tuning decision below therefore generalizes to the remaining 8 scenes
+by argument (the measured error floor is consistent across all 3 deliberately-diverse scene types,
+and nothing in the pseudo-GT pipeline is scene-specific), not by exhaustive measurement.
 
 **Retire MapAnything pseudo-GT for tuning.** Do not use `magt.ply` completeness/accuracy/gross-outlier
 numbers, or per-pixel MapAnything depth comparisons, to justify a knob change, a threshold pick, or a
