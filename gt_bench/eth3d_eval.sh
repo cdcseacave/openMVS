@@ -55,10 +55,12 @@ MLP="$SCENE_DIR/dslr_scan_eval/scan_alignment.mlp"
 
 mkdir -p "$TMPDIR_ETH3D"
 LOG=$(mktemp "$TMPDIR_ETH3D/eth3d_eval.XXXXXX.log")
+STRIPPED_PLY=$(mktemp "$TMPDIR_ETH3D/eth3d_eval_stripped.XXXXXX.ply")
 # Keep the raw tool log on FAILURE for debugging (that's exactly when it's needed);
-# delete it only on success.
+# delete it only on success. The stripped PLY (see below) is always scratch, never kept.
 cleanup() {
     status=$?
+    rm -f "$STRIPPED_PLY"
     if [ "$status" -eq 0 ]; then
         rm -f "$LOG"
     else
@@ -67,9 +69,31 @@ cleanup() {
 }
 trap cleanup EXIT
 
-echo "Running ETH3DMultiViewEvaluation: reconstruction=$FUSED_PLY  gt_mlp=$MLP  tolerances=$TOLERANCES gross=$GROSS_TOL" >&2
+# TASK-7 FINDING (real-GT validation, 2026-07-03): the bundled PCL PLY reader used by
+# ETH3DMultiViewEvaluation hits a hardcoded `assert(false)` in
+# PLYReader::vertexListPropertyContentCallback<int> when loading OpenMVS fused clouds that
+# carry the "list uint8 uint32 view_indices" / "list uint8 float32 view_weights" per-point
+# properties -- reproduced size-dependently (a 90k-point cloud loaded fine, a 213k-point
+# cloud from the SAME scene/writer crashed), consistent with a known PCL PLY-parser bug
+# where a variable-length list record straddles an internal read-buffer boundary. The tool
+# only needs point positions for completeness/accuracy, so we sidestep the bug entirely by
+# feeding it an XYZ-only PLY (no list properties) instead of the original.
+"$PY" - "$FUSED_PLY" "$STRIPPED_PLY" <<'PYEOF'
+import sys
+sys.path.insert(0, '/home/ubuntu/openMVS/scripts/python')
+import GtUtils
+fused_ply, stripped_ply = sys.argv[1:3]
+xyz = GtUtils.load_ply_xyz(fused_ply)
+with open(stripped_ply, 'wb') as f:
+    f.write(('ply\nformat binary_little_endian 1.0\nelement vertex %d\n'
+              'property float32 x\nproperty float32 y\nproperty float32 z\nend_header\n'
+              % len(xyz)).encode('ascii'))
+    f.write(xyz.astype('<f4').tobytes())
+PYEOF
+
+echo "Running ETH3DMultiViewEvaluation: reconstruction=$FUSED_PLY (stripped to XYZ-only, see comment above)  gt_mlp=$MLP  tolerances=$TOLERANCES gross=$GROSS_TOL" >&2
 "$TOOL" --tolerances "$TOLERANCES,$GROSS_TOL" \
-    --reconstruction_ply_path "$FUSED_PLY" \
+    --reconstruction_ply_path "$STRIPPED_PLY" \
     --ground_truth_mlp_path "$MLP" 2>&1 | tee "$LOG" >&2
 
 mkdir -p "$(dirname "$OUT_JSON")"

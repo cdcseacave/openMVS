@@ -32,7 +32,9 @@ GT-depth mode (additive; keeps the .flabel/.fsupport path above fully working):
 
 Instead of consuming the fusion-exported .flabel/.fsupport maps, this mode derives per-pixel
 inlier/outlier labels directly from ground-truth depth (GtUtils.gt_labels), matching each dmap
-(named depth<ID>.dmap by view ID) to its scene image via GtUtils.view_image_names(--scene-mvs).
+to its scene image via the dmap's own embedded 'file_name' field (NOT a positional lookup into
+--scene-mvs's images array -- view.GetID() (the dmap filename's numeric ID) is not guaranteed
+to equal that array position; confirmed reversed on a COLMAP-imported scene, see run_gt_mode).
 It reuses the SAME roc_auc/pr_auc/prec_recall_at/ece metric machinery as the STRICT flabel
 regime above (LENIENT has no GT counterpart: GT labels are binary, there is no WEAK_INLIER).
   blendedmvs : GT file = <gt-depth-dir>/rendered_depth_maps/<image-stem>.pfm (GtUtils.read_pfm)
@@ -263,7 +265,6 @@ def _load_gt_depth_view(image_name, d_shape, args, eth3d_ctx):
 def run_gt_mode(args):
     """GT-depth label mode: same metric machinery as eval_image's STRICT regime (via
     metrics_from_gt), labels sourced from ground-truth depth instead of fusion .flabel exports."""
-    names = GtUtils.view_image_names(args.scene_mvs)
     dmaps = sorted(glob.glob(os.path.join(args.dmap_dir, 'depth*.dmap')))
     if not dmaps:
         print('error: no depth*.dmap files in %s' % args.dmap_dir); sys.exit(1)
@@ -280,20 +281,23 @@ def run_gt_mode(args):
 
     per_view, pool_c, pool_y = [], [], []
     for dm in dmaps:
-        idx_m = re.match(r'depth(\d+)\.dmap$', os.path.basename(dm))
-        if not idx_m:
-            continue
-        idx = int(idx_m.group(1))
-        if idx >= len(names):
-            if not args.quiet:
-                print('skip %s (view index out of range for --scene-mvs)' % dm)
-            continue
-        image_name = names[idx]
+        # BUGFIX (found during Task 7 real-GT validation, 2026-07-03): the dmap filename's
+        # numeric index is view.GetID() (libs/MVS/DepthMap.h ComposeDepthFilePath), which is
+        # NOT guaranteed to equal the 0-based position of that image in --scene-mvs's images
+        # array -- confirmed on a COLMAP-imported (ETH3D) scene where the two orderings are
+        # fully reversed (dmap0001's embedded file_name was the LAST entry of
+        # GtUtils.view_image_names, not the first). Using positional lookup silently scored
+        # every view's confidence against a DIFFERENT image's ground-truth depth (ROC-AUC
+        # collapsed to ~0.45, i.e. worse than chance). Fixed by trusting the dmap's own
+        # embedded 'file_name' field instead of any external index/position mapping -- it is
+        # written by OpenMVS at estimation time and is unambiguously the image that produced
+        # this exact depth/confidence map.
         data = loadDMAP(dm)
         if data is None or not data.get('has_conf'):
             if not args.quiet:
-                print('skip %s (no confidence in dmap)' % image_name)
+                print('skip %s (no confidence in dmap)' % dm)
             continue
+        image_name = os.path.basename(data['file_name'])
         d_est = np.asarray(data['depth_map'], dtype=np.float64)
         conf = np.asarray(data['confidence_map'], dtype=np.float32)
         d_gt = _load_gt_depth_view(image_name, d_est.shape, args, eth3d_ctx)

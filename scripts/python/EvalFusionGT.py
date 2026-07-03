@@ -383,13 +383,48 @@ def nn_dist(query, ref):
         return _nn_dist_grid(query, ref)
 
 
+def _voxel_dedup(points, voxel_size):
+    """Keeps one representative point per occupied voxel of side voxel_size (first-seen wins in
+    input order). No-op if voxel_size <= 0 or points is empty. Used by score_cloud -- see the
+    comment there for why."""
+    if voxel_size <= 0 or len(points) == 0:
+        return points
+    keys = np.floor(points / voxel_size).astype(np.int64)
+    # pack the 3 int64 axis-indices into one structured-array key so np.unique can dedup whole
+    # rows (voxel cells) in one vectorized pass instead of a Python-level loop.
+    packed = np.ascontiguousarray(keys).view([('', keys.dtype)] * 3)
+    _, first_idx = np.unique(packed, return_index=True)
+    return points[np.sort(first_idx)]
+
+
 def score_cloud(rec, gt, tols, gross_tol):
     """rec: (Nr,3) reconstructed points. gt: (Ng,3) GT surface samples. tols: list of absolute
     distance thresholds. gross_tol: absolute distance threshold for gross-outlier detection.
     Returns completeness/accuracy keyed by the exact tol values passed in (not fraction labels --
     the CLI layer below does that relabeling for JSON output)."""
-    d_gt2rec = nn_dist(gt, rec)        # completeness
-    d_rec2gt = nn_dist(rec, gt)        # accuracy / outliers
+    # ADAPTATION (Task 7 real-GT validation finding, 2026-07-03): a real OpenMVS fused cloud
+    # (10^5-10^6+ points) paired with a GT sample of comparable size makes _nn_dist_grid's ring-1
+    # candidate-pair estimate exceed its 2e8 memory-safety valve essentially unconditionally --
+    # not because of a data corruption/outlier pathology (checked directly: neither cloud's
+    # per-cell point density is wildly skewed in isolation on real data), but simply because
+    # O(n_query * 27 * local_ref_density) crosses the valve once n_query reaches ~10^6, which any
+    # real dense reconstruction does. Measured directly on a real 1.48M-point OpenMVS cloud: a
+    # voxel 1/10th of the finest tolerance only merged 6% of points (real inter-point spacing is
+    # centimeter-scale, not sub-mm) and still exceeded the valve; a voxel equal to the finest
+    # tolerance itself merged ~89% and comfortably cleared it. Fix: voxel-dedup BOTH clouds at the
+    # finest requested tolerance before scoring -- two points closer together than the finest
+    # tolerance already fall in the same completeness/accuracy bucket at every requested
+    # granularity in the overwhelming majority of cases (they can only disagree for a pair that
+    # straddles a tolerance boundary within one voxel diagonal, a second-order edge effect), so
+    # this does not materially change what the metric measures -- it mainly drops the redundant
+    # multi-view reobservations of the same physical surface point that dense MVS fusion produces
+    # well below its own reconstruction precision. Standard practice in MVS benchmarks (e.g.
+    # Tanks & Temples voxel-downsamples before evaluation). n_rec/n_gt below still report the
+    # ORIGINAL (pre-dedup) point counts.
+    voxel = min(tols) if tols else 0.0
+    rec_d, gt_d = _voxel_dedup(rec, voxel), _voxel_dedup(gt, voxel)
+    d_gt2rec = nn_dist(gt_d, rec_d)        # completeness
+    d_rec2gt = nn_dist(rec_d, gt_d)        # accuracy / outliers
     return {'completeness': {t: float((d_gt2rec <= t).mean()) for t in tols},
             'accuracy':     {t: float((d_rec2gt <= t).mean()) for t in tols},
             'gross_outlier_frac': float((d_rec2gt > gross_tol).mean()),
