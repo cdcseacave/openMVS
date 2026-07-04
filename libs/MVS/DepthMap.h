@@ -141,6 +141,9 @@ extern MVS_API float fConfConfirmTau; // softness of the multi-view confirmation
 extern MVS_API float fConfPriorGate; // how much the prior alone contributes to the gate when no neighbor confirms
 extern MVS_API float fConfPhotoFloor; // minimum multiplicative photometric weight
 extern MVS_API float fConfFloor; // floor (times photometric conf) for pixels confirmed by >=1 view (anti-erosion)
+// Task 15: free-space-violation (FSV) negative evidence -- opt-in, default 0 = exact no-op (see AdjustConfidenceSweep)
+extern MVS_API float fConfViolationWeight; // lambda: posterior-denominator weight of the FSV count V (0 disables)
+extern MVS_API float fConfViolationMargin; // how far BEHIND our depth (in units of the G1 depth-diff threshold) a neighbor's own depth must be to count as a violation, vs. merely being occluded (neutral)
 extern MVS_API float fFusePriorWeight; // DenseFuseDepthMaps: weight of the intra-map prior as virtual view/pixel support to keep few-view inliers (0 disables)
 // Task 12: integrated (estimation-time) confidence recalibration -- runs AdjustConfidence(DepthData&)
 // as an epilogue of the LAST geometric-consistency iteration, from neighbor depth/normal/conf loaded

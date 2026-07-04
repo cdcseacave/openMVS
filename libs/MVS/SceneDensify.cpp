@@ -1239,7 +1239,13 @@ const ConfidenceMap& DepthMapsData::GetIntraMapPrior(DepthData& depthData, bool 
 // locally-coherent pixel is never zeroed):
 //      gate        = 1 - exp(-(K + kPrior*pGeo)/tau)   soft analogue of "nMinViewsFuse>=2";
 //                                                       pGeo acts as a fractional virtual view
-//      posterior   = (s*pGeo + Pconf)/(s + Pconf)      Beta posterior mean, prior = s pseudo-obs
+//      posterior   = (s*pGeo + Pconf)/(s + Pconf + lambda*V)  Beta posterior mean, prior = s
+//                                                       pseudo-obs; V (Task 15, opt-in, default
+//                                                       lambda=0 = exact no-op) is a count of
+//                                                       free-space-violation neighbors -- G1
+//                                                       failures where the neighbor's OWN depth is
+//                                                       well BEHIND ours, i.e. its ray passes
+//                                                       through our point -- diluting the posterior
 //      photoFactor = w0 + (1-w0)*confPhoto             retain a photometric floor
 //      conf        = clamp(posterior * gate * photoFactor, 0, 1)
 //      if K>=1:  conf = max(conf, fConfFloor*confPhoto) anti-cascade floor (see below)
@@ -1457,6 +1463,9 @@ static bool AdjustConfidenceSweep(DepthMapsData& depthMapsData, DepthData& depth
 	const float kPrior(OPTDENSE::fConfPriorGate);
 	const float w0(OPTDENSE::fConfPhotoFloor);
 	const float confFloor(OPTDENSE::fConfFloor);
+	// Task 15: free-space-violation (FSV) negative evidence (opt-in, lambda==0 is an exact no-op)
+	const float lambdaViol(OPTDENSE::fConfViolationWeight);
+	const float violMargin(OPTDENSE::fConfViolationMargin);
 
 	// intra-map geometric prior (once per map); bParallel=false -- this call runs inside one of
 	// nMaxThreads already-parallel pool-worker threads (see GetIntraMapPrior's declaration comment)
@@ -1468,10 +1477,11 @@ static bool AdjustConfidenceSweep(DepthMapsData& depthMapsData, DepthData& depth
 	ConfidenceMap newConfMap(depthMapRef.size());
 	// optional per-pixel feature export for offline parameter tuning (recompute newConf from these in Python)
 	const bool bFeat(OPTDENSE::bExportConfFeatures);
-	TImage<uint16_t> featK;
+	TImage<uint16_t> featK, featV;
 	TImage<float> featPconf, featPrior, featPhoto;
 	if (bFeat) {
 		featK.create(depthMapRef.size()); featK.memset(0);
+		featV.create(depthMapRef.size()); featV.memset(0);
 		featPconf.create(depthMapRef.size()); featPconf.memset(0);
 		featPrior.create(depthMapRef.size()); featPrior.memset(0);
 		featPhoto.create(depthMapRef.size()); featPhoto.memset(0);
@@ -1488,6 +1498,10 @@ static bool AdjustConfidenceSweep(DepthMapsData& depthMapsData, DepthData& depth
 	countMap.memset(0);
 	ConfidenceMap pconfMap(depthMapRef.size());
 	pconfMap.memset(0);
+	// Task 15: per-pixel free-space-violation count V, accumulated the same neighbor-outer/pixel-inner
+	// way as countMap/pconfMap above (so it stays bit-identical regardless of neighbor visiting order)
+	TImage<uint16_t> violMap(depthMapRef.size());
+	violMap.memset(0);
 	// per-row projection buffers shared by every neighbor pass (see stage A below)
 	std::vector<int> xRow, yRow;
 	std::vector<float> zRow;
@@ -1612,6 +1626,18 @@ static bool AdjustConfidenceSweep(DepthMapsData& depthMapsData, DepthData& depth
 				// tests themselves and their values are unchanged, and the positive <=/&-forms reject
 				// NaN/Inf exactly like the original early-out sequence did
 				const bool gDepth(IsDepthSimilar(dN, (Depth)qz, thDepth));
+				// Task 15: when GATE 1 fails, classify why -- the neighbor's own measured depth dN
+				// lies on the SAME ray as our point's depth qz (both expressed in the neighbor's
+				// camera frame), so the two cases are distinguishable:
+				//  * dN >> qz (well BEHIND, past the margin): if our point were real, the neighbor's
+				//    camera would have stopped its ray AT us, not at a surface further away -- so the
+				//    neighbor's ray passes THROUGH our point out to a real surface behind it. This is
+				//    negative evidence (a free-space violation) even though no positive gate fired.
+				//  * dN << qz: the neighbor sees something much CLOSER than our point instead -- we
+				//    are simply occluded in that view, which says nothing about our point: neutral.
+				// only a violation well past the G1 similarity boundary counts, not a borderline miss.
+				if (!gDepth && dN > qz*(1.f + violMargin*thDepth))
+					++violMap(r,c);
 				const float un((float)x.x*dN), vn((float)x.y*dN);
 				const float qrz(Ai20*un + Ai21*vn + Ai22*dN + bi2);
 				const float qrx(Ai00*un + Ai01*vn + Ai02*dN + bi0);
@@ -1658,9 +1684,12 @@ static bool AdjustConfidenceSweep(DepthMapsData& depthMapsData, DepthData& depth
 			const float pGeo(priorMap(r,c));
 			const unsigned K(countMap(r,c));
 			const float Pconf(pconfMap(r,c));
+			const unsigned V(violMap(r,c));
 			// map (prior, confirmation count, photometric conf) to a calibrated [0,1] confidence with no hard cliff
 			const float gate(1.f - EXP(-((float)K + kPrior*pGeo)/tau));
-			const float posterior((s*pGeo + Pconf)/(s + Pconf));
+			// Task 15: free-space-violation evidence dilutes the posterior by inflating its denominator;
+			// lambdaViol==0 makes this an EXACT no-op (0.f*(float)V == 0.f for any finite V)
+			const float posterior((s*pGeo + Pconf)/(s + Pconf + lambdaViol*(float)V));
 			const float photoFactor(w0 + (1.f-w0)*confPhoto);
 			float conf(CLAMP(posterior*gate*photoFactor, 0.f, 1.f));
 			if (K >= 1)
@@ -1668,6 +1697,7 @@ static bool AdjustConfidenceSweep(DepthMapsData& depthMapsData, DepthData& depth
 			newConfMap(r,c) = conf;
 			if (bFeat) {
 				featK(r,c) = (uint16_t)MINF(K, 65535u);
+				featV(r,c) = (uint16_t)MINF(V, 65535u);
 				featPconf(r,c) = Pconf;
 				featPrior(r,c) = pGeo;
 				featPhoto(r,c) = confPhoto;
@@ -1683,6 +1713,7 @@ static bool AdjustConfidenceSweep(DepthMapsData& depthMapsData, DepthData& depth
 	if (bFeat) {
 		const IIndex id(imageRef.GetID());
 		SaveRawMap(ComposeDepthFilePath(id, "cfeatK"), featK, 2);
+		SaveRawMap(ComposeDepthFilePath(id, "cfeatV"), featV, 2);
 		SaveRawMap(ComposeDepthFilePath(id, "cfeatPconf"), featPconf, 4);
 		SaveRawMap(ComposeDepthFilePath(id, "cfeatPrior"), featPrior, 4);
 		SaveRawMap(ComposeDepthFilePath(id, "cfeatPhoto"), featPhoto, 4);
