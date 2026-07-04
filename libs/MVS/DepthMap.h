@@ -151,6 +151,13 @@ extern MVS_API float fConfViolationMargin; // how far BEHIND our depth (in units
 // nearest-neighbor rounding, so K becomes a fractional Ksoft consumed everywhere K was used.
 extern MVS_API bool bConfSoftGates;
 extern MVS_API float fFusePriorWeight; // DenseFuseDepthMaps: weight of the intra-map prior as virtual view/pixel support to keep few-view inliers (0 disables)
+// Task 18: free-space-violation (FSV) guard on fusion-RESCUED points only (points kept solely
+// thanks to fFusePriorWeight's virtual support -- see DenseFuseDepthMaps). Reuses the exact Task-15
+// FSV classification (a neighbor view whose own depth lies well behind ours, per fConfViolationMargin)
+// counted during fusion's own join gate. -1 disables the guard: fully inert, byte-identical to
+// pre-Task-18 fusion output. Default 0 (strict) rejects any rescued point contradicted by >=1
+// free-space ray; N allows <=N such violations. Non-rescued points are never affected.
+extern MVS_API int nFuseViolationMax;
 // Task 12: integrated (estimation-time) confidence recalibration -- runs AdjustConfidence(DepthData&)
 // as an epilogue of the LAST geometric-consistency iteration, from neighbor depth/normal/conf loaded
 // for THIS reference's own geometric-consistency scoring (see InitViews' loadDepthMaps==2 path); no

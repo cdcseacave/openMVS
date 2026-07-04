@@ -2338,6 +2338,12 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 	FloatArr fusedWeights;
 	Point3d fusedNormal;
 	Pixel32F fusedColor;
+	// Task 18: free-space-violation (FSV) guard -- counts, for the point currently being
+	// accumulated, how many candidate views were rejected by the join gate below BECAUSE their
+	// own measured depth lies well behind the point (same classification as Task 15's
+	// AdjustConfidenceSweep violMap). Only consulted at the keep-rule for points RESCUED by
+	// virtualSupport (see OPTDENSE::nFuseViolationMax below); reset alongside fusedViews et al.
+	unsigned fusedViolations(0);
 	const auto FusePoint = [&](IIndex ID, const ImageRef& x, unsigned fuseDepth) -> void {
 		const auto lambda = [&](IIndex ID, const ImageRef& x, unsigned fuseDepth, const auto& FusePointImpl) -> void {
 			const DepthData& depthData = arrDepthData[ID];
@@ -2366,8 +2372,17 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 				const auto [pt, depthProj] = image.camera.ProjectPointP(refPoint);
 				// check if depth agrees with current depth
 				ASSERT(depthProj > Depth(0) || !IsDepthSimilar(depth, depthProj, OPTDENSE::fDepthDiffThreshold));
-				if (!IsDepthSimilar(depth, depthProj, OPTDENSE::fDepthDiffThreshold))
+				if (!IsDepthSimilar(depth, depthProj, OPTDENSE::fDepthDiffThreshold)) {
+					// Task 18: classify why the join gate failed, SAME free-space-violation (FSV)
+					// test as Task 15's AdjustConfidenceSweep (violMap): `depth` is this view's OWN
+					// measured depth at x, `depthProj` is our accumulating point reprojected into
+					// this view -- if this view's ray sees a surface well BEHIND our point instead
+					// of agreeing with it, that is negative evidence the point is real (only
+					// meaningful when depthProj>0, i.e. the point is actually in front of this view)
+					if (depthProj > Depth(0) && depth > depthProj * (1.f + OPTDENSE::fConfViolationMargin * OPTDENSE::fDepthDiffThreshold))
+						++fusedViolations;
 					return;
+				}
 				// check reprojection error of the reference point in the current view
 				const Point2f diff(pt - Cast<float>(x));
 				if (normSq(diff) > maxReprojErrorSq)
@@ -2510,21 +2525,32 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 				if (!fusedViews.empty() &&
 					(float)fusedPoints[0].size() + virtualSupport >= (float)OPTDENSE::nMinPixelsFuse &&
 					(float)fusedViews.size() + virtualSupport >= (float)nMinViewsFuse) {
-					// create the corresponding 3D point
-					pointcloud.points.emplace_back(
-						fusedPoints[0].GetMedian(),
-						fusedPoints[1].GetMedian(),
-						fusedPoints[2].GetMedian()
-					);
-					ASSERT(fusedViews.size() == fusedWeights.size());
-					PointCloud::WeightArr& weights = pointcloud.pointWeights.AddEmpty();
-					for (float weight: fusedWeights)
-						weights.push_back(weight);
-					pointcloud.pointViews.emplace_back(fusedViews);
-					if (bEstimateNormal)
-						pointcloud.normals.emplace_back(normalized(fusedNormal));
-					if (bEstimateColor)
-						pointcloud.colors.emplace_back((fusedColor/static_cast<float>(fusedPoints[0].size())).cast<uint8_t>());
+					// Task 18: a point that passes ONLY thanks to virtualSupport (i.e. would have
+					// FAILED the keep-rule at virtualSupport==0) is "rescued"; nFuseViolationMax
+					// additionally requires such a point to have at most that many free-space
+					// violations (fusedViolations, counted above by the join gate). A NON-rescued
+					// point (already meets both thresholds on real support alone) is NEVER subject
+					// to this guard. nFuseViolationMax<0 (default) disables the guard entirely, so
+					// this whole check is skipped/inert and the output is byte-identical.
+					const bool rescued = fusedPoints[0].size() < OPTDENSE::nMinPixelsFuse ||
+										  fusedViews.size() < nMinViewsFuse;
+					if (!rescued || OPTDENSE::nFuseViolationMax < 0 || fusedViolations <= (unsigned)OPTDENSE::nFuseViolationMax) {
+						// create the corresponding 3D point
+						pointcloud.points.emplace_back(
+							fusedPoints[0].GetMedian(),
+							fusedPoints[1].GetMedian(),
+							fusedPoints[2].GetMedian()
+						);
+						ASSERT(fusedViews.size() == fusedWeights.size());
+						PointCloud::WeightArr& weights = pointcloud.pointWeights.AddEmpty();
+						for (float weight: fusedWeights)
+							weights.push_back(weight);
+						pointcloud.pointViews.emplace_back(fusedViews);
+						if (bEstimateNormal)
+							pointcloud.normals.emplace_back(normalized(fusedNormal));
+						if (bEstimateColor)
+							pointcloud.colors.emplace_back((fusedColor/static_cast<float>(fusedPoints[0].size())).cast<uint8_t>());
+					}
 				}
 				if (!fusedViews.empty()) {
 					nDepths += fusedViews.size();
@@ -2535,6 +2561,7 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 					fusedWeights.clear();
 					fusedNormal = Point3d::ZERO;
 					fusedColor = Pixel32F::BLACK;
+					fusedViolations = 0;
 				}
 			}
 		}
