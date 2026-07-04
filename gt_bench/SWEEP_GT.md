@@ -107,6 +107,22 @@ Every scene-level improves (min +0.0046 ≫ the −0.005 guard); ETH3D gains are
 RNG-free. P@0.1 is flat-to-positive on all but the two textured outdoor scenes (courtyard −0.0011,
 facade −0.0016 ≈ noise), and the pooled P@0.1 rises, so guard (b) holds.
 
+> **⚠️ `fConfFloor` 0.5 → 0.03 — Tasks 18-20 must watch this.** The floor was cut **16×** purely on
+> **ROC-flatness** grounds: in the winning (soft-gate) region ROC-AUC is identical across
+> floor ∈ {0.03, 0.05, 0.1}, so the sweep's ROC objective does not constrain it and the tied winner
+> reported 0.03. **ROC over these scenes does NOT test the floor's actual job.** The anti-cascade
+> floor (`conf = max(conf, floor·photo)` for `Kf≥1` pixels) exists to keep genuinely-confirmed but
+> **few-view** inliers above the fusion confidence gate (0.1) — i.e. to preserve completeness and
+> protect confidence-**threshold** consumers (e.g. TSDF, `--postprocess-dmaps 4` used as a hard
+> filter) from eroding real surface. A GT inlier/outlier **ranking** metric (ROC) is blind to where
+> the absolute confidence lands relative to 0.1. Here pooled R@0.1 actually *rose* (0.9217 → 0.9607),
+> which is reassuring evidence the low floor is not eroding recall on these 10 scene-levels — but
+> that is not a completeness proof. **Action for Tasks 18-20:** the fusion-rescue guard (T18), the
+> second-chance pass (T19), and especially the **T20 full-benchmark completeness/gross-outlier
+> holdout** must explicitly check that the 0.03 floor does not erode few-view completeness/recall vs
+> the old 0.5. `floor ∈ {0.05, 0.1}` are ROC-identical fallbacks if a downstream completeness
+> regression appears — reverting the floor alone costs nothing in ROC.
+
 ## Per-resolution check
 
 The winner is applied to each resolution regime and compared to that regime's *own* best combo:

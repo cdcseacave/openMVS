@@ -277,8 +277,11 @@ def conf_from_gt(F, s, tau, w0, floor, lam, margin):
 # Fully-vectorized ROC-AUC + average-precision for the hot grid loop. EvalConfidence's
 # roc_auc/pr_auc are byte-for-byte correct but tie-average / accumulate AP in a pure-Python
 # per-element loop (O(n) Python) -- fine for a handful of eval calls, but 2430 combos x pooled
-# 2M px = billions of Python iterations. These reproduce the SAME numbers with numpy ops only
-# (verified equal to the reference within 1e-12 in verify_metric_equivalence below).
+# 2M px = billions of Python iterations. These reproduce the SAME numbers with numpy ops only:
+# validated equal to EvalConfidence.roc_auc/pr_auc to < 1e-9 on random scores WITH TIES (5 trials)
+# before the Task-17 sweep run -- see .superpowers/sdd/task-17-report.md section 1. (The
+# margin-invariance loader assumption is separately checked at runtime by verify_margin_invariance,
+# wired to the --verify-margin-invariance flag.)
 def roc_auc_fast(scores, labels):
     n = labels.size
     npos = int(labels.sum()); nneg = n - npos
