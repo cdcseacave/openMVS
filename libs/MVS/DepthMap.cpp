@@ -116,14 +116,24 @@ DEFVAR_OPTDENSE_uint32(nFuseFilter, "Fuse Filter", "how to fuse the depth-maps i
 MDEFVAR_OPTDENSE_uint32(nEstimateColors, "Estimate Colors", "should we estimate the colors for the dense point-cloud?", "2", "0", "1")
 MDEFVAR_OPTDENSE_uint32(nEstimateNormals, "Estimate Normals", "should we estimate the normals for the dense point-cloud?", "2", "0", "1")
 MDEFVAR_OPTDENSE_float(fNCCThresholdKeep, "NCC Threshold Keep", "Maximum 1-NCC score accepted for a match", "0.9", "0.5")
-MDEFVAR_OPTDENSE_float(fConfPriorStrength, "Conf Prior Strength", "confidence-adjust: intra-map geometric prior strength as Beta pseudo-counts", "1.0")
-MDEFVAR_OPTDENSE_float(fConfConfirmTau, "Conf Confirm Tau", "confidence-adjust: softness of the multi-view confirmation gate", "2.0")
+// Task 17: the seven confidence-adjust defaults below were recalibrated against REAL ground
+// truth (BlendedMVS rendered depth + ETH3D laser scans) by an offline sweep over 10 scene-levels
+// (6 ETH3D L2 + 2 BlendedMVS at L0/L1), maximizing pooled GT ROC-AUC subject to no scene-level
+// regressing >0.005 and pooled P@0.1 not worsening (gt_bench/SWEEP_GT.md). The prior TnT-pseudo-GT
+// defaults (s=1, tau=2, photoFloor=0.5, floor=0.5, lambda=0, margin=3, softGates=0; pooled real-GT
+// ROC 0.9463) were beaten by soft gates ON + FSV lambda=2 + a retuned posterior shape (pooled ROC
+// 0.9598, +0.0135; every scene-level improved, min +0.0046), end-to-end reproduced within 0.003 on
+// the deterministic ETH3D scenes. fConfPriorGate is NOT swept (held at 0.3). Flipping bConfSoftGates
+// default 0->1 is a real behavior change: the continuous-weight soft path (Task 16, soft-G4 fix
+// 426d1f7) is now the shipped default; set "Conf Soft Gates = 0" to recover the hard Task-15 path.
+MDEFVAR_OPTDENSE_float(fConfPriorStrength, "Conf Prior Strength", "confidence-adjust: intra-map geometric prior strength as Beta pseudo-counts", "2.0")
+MDEFVAR_OPTDENSE_float(fConfConfirmTau, "Conf Confirm Tau", "confidence-adjust: softness of the multi-view confirmation gate", "1.5")
 MDEFVAR_OPTDENSE_float(fConfPriorGate, "Conf Prior Gate", "confidence-adjust: prior contribution to the gate when no neighbor confirms", "0.3")
-MDEFVAR_OPTDENSE_float(fConfPhotoFloor, "Conf Photo Floor", "confidence-adjust: minimum multiplicative photometric weight", "0.5")
-MDEFVAR_OPTDENSE_float(fConfFloor, "Conf Floor", "confidence-adjust: floor (times photometric conf) for pixels confirmed by >=1 view", "0.5")
-MDEFVAR_OPTDENSE_float(fConfViolationWeight, "Conf Violation Weight", "confidence-adjust: posterior-denominator weight (lambda) of the free-space-violation count; a neighbor whose own depth is well behind our point implies its ray passes through us (0 disables, exact no-op)", "0")
-MDEFVAR_OPTDENSE_float(fConfViolationMargin, "Conf Violation Margin", "confidence-adjust: how far behind our depth (in units of the Depth Diff Threshold) a neighbor's own depth must be to count as a free-space violation, vs. merely being occluded (neutral)", "3")
-DEFVAR_OPTDENSE_bool(bConfSoftGates, "Conf Soft Gates", "confidence-adjust: replace the hard nearest-neighbor pass/fail confirmation gates with continuous weights and bilinear (edge-aware) neighbor-depth sampling (0 - hard path, bit-identical to Task 15)", "0")
+MDEFVAR_OPTDENSE_float(fConfPhotoFloor, "Conf Photo Floor", "confidence-adjust: minimum multiplicative photometric weight", "0.7")
+MDEFVAR_OPTDENSE_float(fConfFloor, "Conf Floor", "confidence-adjust: floor (times photometric conf) for pixels confirmed by >=1 view", "0.03")
+MDEFVAR_OPTDENSE_float(fConfViolationWeight, "Conf Violation Weight", "confidence-adjust: posterior-denominator weight (lambda) of the free-space-violation count; a neighbor whose own depth is well behind our point implies its ray passes through us (0 disables, exact no-op)", "2.0")
+MDEFVAR_OPTDENSE_float(fConfViolationMargin, "Conf Violation Margin", "confidence-adjust: how far behind our depth (in units of the Depth Diff Threshold) a neighbor's own depth must be to count as a free-space violation, vs. merely being occluded (neutral)", "2")
+DEFVAR_OPTDENSE_bool(bConfSoftGates, "Conf Soft Gates", "confidence-adjust: replace the hard nearest-neighbor pass/fail confirmation gates with continuous weights and bilinear (edge-aware) neighbor-depth sampling (0 - hard path, bit-identical to Task 15)", "1")
 MDEFVAR_OPTDENSE_float(fFusePriorWeight, "Fuse Prior Weight", "fusion: weight of the intra-map geometric prior as virtual view/pixel support, to keep inliers on a coherent surface seen by too few views/pixels (0 disables)", "3.0")
 MDEFVAR_OPTDENSE_bool(bConfPriorNormalCoherence, "Conf Prior Normal Coherence", "intra-map prior: multiply gradient-normal agreement by window normal coherence (A/B experiment)", "0")
 MDEFVAR_OPTDENSE_bool(bExportFusionLabels, "Export Fusion Labels", "export per-pixel fusion inlier/outlier labels (.flabel/.fsupport) for confidence evaluation", "0")
