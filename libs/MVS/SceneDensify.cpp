@@ -1263,6 +1263,29 @@ const ConfidenceMap& DepthMapsData::GetIntraMapPrior(DepthData& depthData, bool 
 //
 // COST: O(pixels x neighbors), a single lookup per neighbor -- no full neighbor-map reprojection
 // and no extra full-resolution maps in RAM (unlike the removed Merrell-style implementation).
+//
+// TWO MODES / WHICH TO USE (Task 13 A/B decision, gt_bench/AB_INTEGRATED.md):
+//  * STANDALONE (--postprocess-dmaps 4): this sweep runs as its own phase over MINF(nMaxThreads,
+//    nImages) CPU threads (up to 30 here). This is the DEFAULT / RECOMMENDED path for pipelines that
+//    consume the adjusted confidence.
+//  * INTEGRATED ("Estimate Confidence = 1", the AdjustConfidence(DepthData&) overload below): the
+//    SAME sweep runs inline as an epilogue of the last geometric-consistency iteration, so it reuses
+//    the neighbor depth/normal/conf already loaded for that iteration (no separate phase, no dmap
+//    reload). Confidence QUALITY is equivalent (|dROC| <= ~0.003 vs standalone on 4 of 5 bench
+//    scenes; up to -0.013 only on the hardest 15-view scene, where the estimation-time neighbor set
+//    diverges from the fusion-time set). BUT it is sized for GPU dispatch: only nDenseWorkers (==
+//    nPatchMatchCUDAInstances, default 4) CPU workers run the sweep, vs up to 30 standalone. Because
+//    the sweep is the same expensive O(pixels x neighbors) work, squeezing it through 4 workers makes
+//    integrated a TOTAL-time win only on small / few-image scenes (where folding it into estimation
+//    amortizes the standalone phase's fixed per-phase overhead) and a net LOSS on large-image scenes
+//    (courtyard/office/facade: +8..+64s). Raising nPatchMatchCUDAInstances does NOT fix this -- that
+//    same knob also raises GPU-dispatch concurrency for every geometric iteration, and oversubscribing
+//    the single GPU cancels the small sweep saving (measured). A safe fix (decouple the epilogue's CPU
+//    pool from the GPU pool -- MORE per-view workers only for the last iteration, still NO threads
+//    inside this sweep) is a dispatch restructuring, deferred to Task 14; even then its best case is a
+//    TIE with standalone (identical sweep work, identical dmap I/O). Use integrated for confidence-only
+//    consumers (e.g. TSDF) that want to skip a separate phase or avoid dmaps on disk, especially on
+//    small scenes; otherwise prefer standalone.
 // ----------------------------------------------------------------------------
 // accumulates the pure AdjustConfidence compute time (intra-map prior + multi-view confirmation loop)
 // across the multithreaded adjust phase; reset and reported by the dispatch in ComputeDepthMaps;
