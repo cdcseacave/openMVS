@@ -140,6 +140,9 @@ DEFVAR_OPTDENSE_bool(bFuseSecondChance, "Fuse Second Chance", "fusion: opt-in se
 MDEFVAR_OPTDENSE_bool(bConfPriorNormalCoherence, "Conf Prior Normal Coherence", "intra-map prior: multiply gradient-normal agreement by window normal coherence (A/B experiment)", "0")
 MDEFVAR_OPTDENSE_bool(bExportFusionLabels, "Export Fusion Labels", "export per-pixel fusion inlier/outlier labels (.flabel/.fsupport) for confidence evaluation", "0")
 MDEFVAR_OPTDENSE_bool(bExportConfFeatures, "Export Conf Features", "export per-pixel confidence-adjust features (.cfeat*) for offline parameter tuning", "0")
+// NOTE: the in-process double-adjust guard (integrated + --postprocess-dmaps 4 in the SAME run) only
+// protects a single process; do NOT enable this and then run a separate --postprocess-dmaps 4 pass on
+// the saved depth-maps -- that would adjust confidence twice with no warning across the two processes.
 DEFVAR_OPTDENSE_bool(bEstimateConfidence, "Estimate Confidence", "adjust per-pixel confidence during the last geometric-consistency iteration (fusion-faithful)", "0")
 DEFVAR_OPTDENSE_uint32(nEstimationIters, "Estimation Iters", "Number of patch-match iterations", "3")
 DEFVAR_OPTDENSE_uint32(nEstimationGeometricIters, "Estimation Geometric Iters", "Number of geometric consistent patch-match iterations (0 - disabled)", "2")
