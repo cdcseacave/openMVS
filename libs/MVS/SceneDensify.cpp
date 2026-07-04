@@ -1341,6 +1341,25 @@ struct NeighborProj {
 static bool AdjustConfidenceSweep(DepthMapsData& depthMapsData, DepthData& depthDataRef,
 	CLISTDEF0(NeighborProj)& neighborProjs, size_t nRequestedNeighbors, bool bDeferSwap);
 
+// Task 16 (opt-in, OPTDENSE::bConfSoftGates): validity-aware bilinear neighbor-depth sample used by
+// AdjustConfidenceSweep's soft-gate path in place of the hard path's nearest-neighbor ROUND2INT
+// lookup. Returns false (caller falls back to the nearest sample) when any of the 4 taps is
+// outside the map / invalid, OR when the 4 taps are not mutually depth-similar -- i.e. NEVER
+// interpolates across a depth discontinuity (a foreground/background edge), which would otherwise
+// synthesize a fictitious in-between depth at exactly the pixels where soft gating matters most.
+static inline bool SampleDepthBilinear(const DepthMap& dm, float px, float py,
+                                       float thDepthDiff, Depth& d) {
+	const int x0=FLOOR2INT(px), y0=FLOOR2INT(py);
+	if (x0 < 0 || y0 < 0 || x0+1 >= dm.width() || y0+1 >= dm.height()) return false;
+	const Depth d00=dm(y0,x0), d01=dm(y0,x0+1), d10=dm(y0+1,x0), d11=dm(y0+1,x0+1);
+	if (d00<=0 || d01<=0 || d10<=0 || d11<=0) return false;   // caller falls back to nearest
+	const Depth dmin(MINF(MINF(d00,d01),MINF(d10,d11))), dmax(MAXF(MAXF(d00,d01),MAXF(d10,d11)));
+	if (!IsDepthSimilar(dmin, dmax, thDepthDiff)) return false; // never interpolate across an edge
+	const float wx=px-(float)x0, wy=py-(float)y0;
+	d = (d00*(1.f-wx)+d01*wx)*(1.f-wy) + (d10*(1.f-wx)+d11*wx)*wy;
+	return true;
+}
+
 bool DepthMapsData::AdjustConfidence(DepthData& depthDataRef, const IIndexArr& idxNeighbors)
 {
 	ASSERT(depthDataRef.IsValid() && !depthDataRef.IsEmpty() && !idxNeighbors.empty());
@@ -1455,8 +1474,18 @@ static bool AdjustConfidenceSweep(DepthMapsData& depthMapsData, DepthData& depth
 	// confirmation gates reused verbatim from DenseFuseDepthMaps
 	const float normalError(COS(FD2R(OPTDENSE::fNormalDiffThreshold)));
 	const float minConfidence(1.f - OPTDENSE::fNCCThresholdKeep);
-	const float maxReprojErrorSq(SQUARE(OPTDENSE::fDepthReprojectionErrorThreshold));
+	const float thReproj(OPTDENSE::fDepthReprojectionErrorThreshold);
+	const float maxReprojErrorSq(SQUARE(thReproj));
 	const Depth thDepth(OPTDENSE::fDepthDiffThreshold);
+	// Task 16 (opt-in): soft continuous-weight gates + bilinear neighbor-depth sampling in place of
+	// the hard nearest-neighbor pass/fail path; default OFF keeps this function bit-identical to
+	// Task 15 (see the branch in the neighbor sweep below)
+	const bool bSoftGates(OPTDENSE::bConfSoftGates);
+	// soft GATE-4 transition half-width: the soft path replaces the hard cN<minConfidence rejection
+	// with a smoothstep centered on minConfidence, so a low-confidence neighbor down-weights BOTH
+	// Ksoft and Pconf (a modest fraction of minConfidence; MAXF guards fNCCThresholdKeep==1 =>
+	// minConfidence==0; Task 17 can sweep this)
+	const float epsConf(MAXF(0.5f*minConfidence, 1e-6f));
 	// posterior/gate shape parameters
 	const float s(OPTDENSE::fConfPriorStrength);
 	const float tau(MAXF(OPTDENSE::fConfConfirmTau, 0.01f));
@@ -1498,6 +1527,13 @@ static bool AdjustConfidenceSweep(DepthMapsData& depthMapsData, DepthData& depth
 	countMap.memset(0);
 	ConfidenceMap pconfMap(depthMapRef.size());
 	pconfMap.memset(0);
+	// Task 16 (opt-in): fractional confirmation-weight accumulator Ksoft, used INSTEAD OF countMap
+	// when bSoftGates is set (allocated only then, so the hard/default path pays nothing extra)
+	ConfidenceMap countMapSoft;
+	if (bSoftGates) {
+		countMapSoft.create(depthMapRef.size());
+		countMapSoft.memset(0);
+	}
 	// Task 15: per-pixel free-space-violation count V, accumulated the same neighbor-outer/pixel-inner
 	// way as countMap/pconfMap above (so it stays bit-identical regardless of neighbor visiting order)
 	TImage<uint16_t> violMap(depthMapRef.size());
@@ -1610,6 +1646,9 @@ static bool AdjustConfidenceSweep(DepthMapsData& depthMapsData, DepthData& depth
 			for (; c<cols; ++c)
 				Project(c);
 			// ---- stage B: gates ----
+			// Task 16: branch ONCE per row on the knob (not per pixel) so the default/hard path below
+			// is a byte-for-byte copy of Task 15's loop -- no float ever touches countMap/K on this path
+			if (!bSoftGates) {
 			for (int c=0; c<cols; ++c) {
 				const float qz(zRow[c]);
 				if (qz <= 0)
@@ -1665,6 +1704,74 @@ static bool AdjustConfidenceSweep(DepthMapsData& depthMapsData, DepthData& depth
 				++countMap(r,c);
 				pconfMap(r,c) += cN;
 			}
+			} else {
+			// ---- stage B (Task 16, opt-in): soft continuous-weight gates ----
+			// Free-space-violation bookkeeping (Task 15) stays HARD and is evaluated on the nearest
+			// sample exactly as the hard path above -- V is deliberately NOT softened. The confirmation
+			// gates G1/G2/G3 are replaced by continuous weights wD/wR/wN in [0,1]; their product w
+			// contributes a FRACTIONAL confirmation (Ksoft += w) and a w-weighted confidence
+			// (Pconf += w*cN) instead of the hard ++countMap/+=cN. GATE 4 (neighbor min-confidence) is
+			// intentionally not reapplied as a hard cutoff here (see task-16-report.md): Pconf is
+			// already cN-weighted, so a low-confidence neighbor is automatically down-weighted there,
+			// even though it can still add to Ksoft's purely-geometric confirmation count.
+			for (int c=0; c<cols; ++c) {
+				const float qz(zRow[c]);
+				if (qz <= 0)
+					continue; // invalid ref depth / behind camera / outside neighbor map
+				const ImageRef x(xRow[c], yRow[c]);
+				const Depth dNNearest(depthMapN(x));
+				if (dNNearest <= 0)
+					continue;
+				// Task 15 free-space-violation logic, HARD, on the nearest sample -- unchanged
+				const bool gDepthNearest(IsDepthSimilar(dNNearest, (Depth)qz, thDepth));
+				if (!gDepthNearest && dNNearest > qz*(1.f + violMargin*thDepth))
+					++violMap(r,c);
+				// bilinear (edge-aware) neighbor-depth sample at the continuous projected location;
+				// recompute the continuous (px,py) here -- stage A only kept the rounded xRow/yRow
+				// used by the hard path -- cheap, and only paid on this opt-in branch
+				const Depth depthRef(rowD[c]);
+				const float ud((float)c*depthRef), vd(rd*depthRef);
+				const float qx(A00*ud + A01*vd + A02*depthRef + b0);
+				const float qy(A10*ud + A11*vd + A12*depthRef + b1);
+				const float px(qx/qz), py(qy/qz);
+				Depth dN;
+				if (!SampleDepthBilinear(depthMapN, px, py, thDepth, dN))
+					dN = dNNearest; // straddles a depth edge, or out of bounds: fall back to nearest
+				// GATE 1 (soft): Gaussian depth agreement, same relative-depth convention as IsDepthSimilar
+				const float wD(expf(-SQUARE((qz-dN)/(0.5f*thDepth*qz))));
+				// GATE 2 (soft): forward-backward reprojection residual, reusing G2's exact formula
+				// (same neighbor pixel location x) with the (possibly bilinear) dN swapped in
+				const float un((float)x.x*dN), vn((float)x.y*dN);
+				const float qrz(Ai20*un + Ai21*vn + Ai22*dN + bi2);
+				float wR(0.f);
+				if (qrz > 0) {
+					const float qrx(Ai00*un + Ai01*vn + Ai02*dN + bi0);
+					const float qry(Ai10*un + Ai11*vn + Ai12*dN + bi1);
+					const float du(qrx/qrz - (float)c), dv(qry/qrz - rd);
+					wR = expf(-(du*du+dv*dv)/SQUARE(0.5f*thReproj));
+				}
+				// GATE 3 (soft): same cosine as the hard G3; neutral (1) when no normal maps available
+				float wN(1.f);
+				if (bNormalGate) {
+					const Point3f nRefN(np.Rrel*normalMapRef(r,c));
+					wN = MAXF(0.f, nRefN.dot((*np.normalMap)(x)));
+				}
+				// GATE 4 (soft): smoothstep(cN; minConfidence-epsConf, minConfidence+epsConf) mirrors
+				// the hard path's cN<minConfidence rejection. Folding wC into w makes a low-confidence
+				// neighbor down-weight BOTH Ksoft and Pconf, so a geometrically-strong but low-conf
+				// neighbor can no longer push Ksoft>=1 and trip the anti-cascade floor Task 15 reserves
+				// for genuinely min-conf-passing pixels. cN==1 when no conf map => wC==1 (matches the
+				// hard path treating a missing conf as passing G4).
+				const float cN(bHasConf ? (*np.confMap)(x) : 1.f);
+				const float tC(CLAMP((cN - (minConfidence - epsConf))*(0.5f/epsConf), 0.f, 1.f));
+				const float wC(tC*tC*(3.f - 2.f*tC));
+				const float w(wD*wR*wN*wC);
+				if (w <= 0.05f)
+					continue; // negligible joint agreement: does not contribute
+				countMapSoft(r,c) += w;
+				pconfMap(r,c) += w*cN;
+			}
+			}
 		}
 	}
 	#if TD_VERBOSE != TD_VERBOSE_OFF
@@ -1683,20 +1790,29 @@ static bool AdjustConfidenceSweep(DepthMapsData& depthMapsData, DepthData& depth
 			const float confPhoto(confMapRef(r,c));
 			const float pGeo(priorMap(r,c));
 			const unsigned K(countMap(r,c));
+			// Task 16 (opt-in): the fractional soft-gate confirmation weight Ksoft is consumed in place
+			// of the hard integer K everywhere below when bSoftGates is set; when off, Kf is bit-identical
+			// to the previous (float)K cast (ternary short-circuits, so countMapSoft -- unallocated when
+			// off -- is never touched), so the formulas and their outputs are unchanged (Task 15 parity)
+			const float Kf(bSoftGates ? countMapSoft(r,c) : (float)K);
 			const float Pconf(pconfMap(r,c));
 			const unsigned V(violMap(r,c));
 			// map (prior, confirmation count, photometric conf) to a calibrated [0,1] confidence with no hard cliff
-			const float gate(1.f - EXP(-((float)K + kPrior*pGeo)/tau));
+			const float gate(1.f - EXP(-(Kf + kPrior*pGeo)/tau));
 			// Task 15: free-space-violation evidence dilutes the posterior by inflating its denominator;
 			// lambdaViol==0 makes this an EXACT no-op (0.f*(float)V == 0.f for any finite V)
 			const float posterior((s*pGeo + Pconf)/(s + Pconf + lambdaViol*(float)V));
 			const float photoFactor(w0 + (1.f-w0)*confPhoto);
 			float conf(CLAMP(posterior*gate*photoFactor, 0.f, 1.f));
-			if (K >= 1)
+			if (Kf >= 1.f)
 				conf = MAXF(conf, confFloor*confPhoto); // never erode a genuinely confirmed pixel (anti-cascade)
 			newConfMap(r,c) = conf;
 			if (bFeat) {
-				featK(r,c) = (uint16_t)MINF(K, 65535u);
+				// Task 16: in soft mode cfeatK stores Ksoft SCALED by 1000 (fixed-point, ~3 decimal digits)
+				// instead of the raw integer count, so Task 17's offline tuning can recover the fractional
+				// value -- consumers must check bConfSoftGates and divide by 1000.f accordingly
+				featK(r,c) = bSoftGates ? (uint16_t)MINF((unsigned)ROUND2INT(Kf*1000.f), 65535u)
+				                        : (uint16_t)MINF(K, 65535u);
 				featV(r,c) = (uint16_t)MINF(V, 65535u);
 				featPconf(r,c) = Pconf;
 				featPrior(r,c) = pGeo;

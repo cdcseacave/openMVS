@@ -144,6 +144,12 @@ extern MVS_API float fConfFloor; // floor (times photometric conf) for pixels co
 // Task 15: free-space-violation (FSV) negative evidence -- opt-in, default 0 = exact no-op (see AdjustConfidenceSweep)
 extern MVS_API float fConfViolationWeight; // lambda: posterior-denominator weight of the FSV count V (0 disables)
 extern MVS_API float fConfViolationMargin; // how far BEHIND our depth (in units of the G1 depth-diff threshold) a neighbor's own depth must be to count as a violation, vs. merely being occluded (neutral)
+// Task 16: soft gates + bilinear neighbor sampling -- opt-in, default 0 = HARD nearest-lookup path
+// (bit-identical to Task 15). When on, the multi-view confirmation loop replaces the four hard
+// pass/fail gates (G1 depth/G2 reproj/G3 normal, G4 unchanged/dropped -- see AdjustConfidenceSweep)
+// with continuous weights, and samples the neighbor depth bilinearly (edge-aware) instead of via
+// nearest-neighbor rounding, so K becomes a fractional Ksoft consumed everywhere K was used.
+extern MVS_API bool bConfSoftGates;
 extern MVS_API float fFusePriorWeight; // DenseFuseDepthMaps: weight of the intra-map prior as virtual view/pixel support to keep few-view inliers (0 disables)
 // Task 12: integrated (estimation-time) confidence recalibration -- runs AdjustConfidence(DepthData&)
 // as an epilogue of the LAST geometric-consistency iteration, from neighbor depth/normal/conf loaded
