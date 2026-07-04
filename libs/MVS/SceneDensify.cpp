@@ -2338,12 +2338,16 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 	FloatArr fusedWeights;
 	Point3d fusedNormal;
 	Pixel32F fusedColor;
-	// Task 18: free-space-violation (FSV) guard -- counts, for the point currently being
-	// accumulated, how many candidate views were rejected by the join gate below BECAUSE their
-	// own measured depth lies well behind the point (same classification as Task 15's
-	// AdjustConfidenceSweep violMap). Only consulted at the keep-rule for points RESCUED by
-	// virtualSupport (see OPTDENSE::nFuseViolationMax below); reset alongside fusedViews et al.
-	unsigned fusedViolations(0);
+	// Task 18: free-space-violation (FSV) guard -- the set of DISTINCT view IDs that, for the point
+	// currently being accumulated, were rejected by the join gate below BECAUSE their own measured
+	// depth lies well behind the point (same classification as Task 15's AdjustConfidenceSweep
+	// violMap). Deduplicated the same way fusedViews dedups observing views (InsertSortUnique), so V
+	// counts "how many distinct views see behind this point" and is per-view-bounded like Task 15's
+	// V -- the flood-fill can reach one neighbor view via several parent paths before its useMask is
+	// set, so a plain per-probe counter would over-count a single view. Only consulted at the
+	// keep-rule for points RESCUED by virtualSupport (see OPTDENSE::nFuseViolationMax); reset
+	// alongside fusedViews et al.
+	PointCloud::ViewArr fusedViolViews;
 	const auto FusePoint = [&](IIndex ID, const ImageRef& x, unsigned fuseDepth) -> void {
 		const auto lambda = [&](IIndex ID, const ImageRef& x, unsigned fuseDepth, const auto& FusePointImpl) -> void {
 			const DepthData& depthData = arrDepthData[ID];
@@ -2378,9 +2382,11 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 					// measured depth at x, `depthProj` is our accumulating point reprojected into
 					// this view -- if this view's ray sees a surface well BEHIND our point instead
 					// of agreeing with it, that is negative evidence the point is real (only
-					// meaningful when depthProj>0, i.e. the point is actually in front of this view)
+					// meaningful when depthProj>0, i.e. the point is actually in front of this view).
+					// Record the DISTINCT view ID (InsertSortUnique) so V counts violating views, not
+					// probes -- one view can be re-reached before its useMask is set.
 					if (depthProj > Depth(0) && depth > depthProj * (1.f + OPTDENSE::fConfViolationMargin * OPTDENSE::fDepthDiffThreshold))
-						++fusedViolations;
+						fusedViolViews.InsertSortUnique(ID);
 					return;
 				}
 				// check reprojection error of the reference point in the current view
@@ -2527,14 +2533,14 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 					(float)fusedViews.size() + virtualSupport >= (float)nMinViewsFuse) {
 					// Task 18: a point that passes ONLY thanks to virtualSupport (i.e. would have
 					// FAILED the keep-rule at virtualSupport==0) is "rescued"; nFuseViolationMax
-					// additionally requires such a point to have at most that many free-space
-					// violations (fusedViolations, counted above by the join gate). A NON-rescued
+					// additionally requires such a point to be seen behind by at most that many
+					// DISTINCT views (fusedViolViews, populated above by the join gate). A NON-rescued
 					// point (already meets both thresholds on real support alone) is NEVER subject
 					// to this guard. nFuseViolationMax<0 (default) disables the guard entirely, so
 					// this whole check is skipped/inert and the output is byte-identical.
 					const bool rescued = fusedPoints[0].size() < OPTDENSE::nMinPixelsFuse ||
 										  fusedViews.size() < nMinViewsFuse;
-					if (!rescued || OPTDENSE::nFuseViolationMax < 0 || fusedViolations <= (unsigned)OPTDENSE::nFuseViolationMax) {
+					if (!rescued || OPTDENSE::nFuseViolationMax < 0 || fusedViolViews.size() <= (unsigned)OPTDENSE::nFuseViolationMax) {
 						// create the corresponding 3D point
 						pointcloud.points.emplace_back(
 							fusedPoints[0].GetMedian(),
@@ -2561,7 +2567,7 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 					fusedWeights.clear();
 					fusedNormal = Point3d::ZERO;
 					fusedColor = Pixel32F::BLACK;
-					fusedViolations = 0;
+					fusedViolViews.clear();
 				}
 			}
 		}
