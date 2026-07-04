@@ -1084,7 +1084,10 @@ bool DepthMapsData::GapInterpolation(DepthData& depthData)
 // high where the local surface is smooth and the normals are consistent, computed once per map with no
 // neighbor views; used as a Bayesian prior during confidence adjustment to keep coherent but weakly-confirmed
 // estimates alive (recovering fusion's few-view false-negatives)
-void DepthMapsData::ComputeIntraMapPrior(const DepthData& depthData, ConfidenceMap& priorMap) const
+// bParallel: enable the inner "#pragma omp parallel for" -- false when called from a context that is
+// already parallelized by some OTHER mechanism, per this codebase's no-per-view-threading policy (see
+// GetIntraMapPrior's declaration comment in SceneDensify.h -- and its honest measured-effect note)
+void DepthMapsData::ComputeIntraMapPrior(const DepthData& depthData, ConfidenceMap& priorMap, bool bParallel) const
 {
 	const DepthMap& depthMap = depthData.depthMap;
 	const NormalMap& normalMap = depthData.normalMap;
@@ -1098,7 +1101,7 @@ void DepthMapsData::ComputeIntraMapPrior(const DepthData& depthData, ConfidenceM
 	priorMap.create(depthMap.size());
 	priorMap.memset(0);
 	#ifdef DENSE_USE_OPENMP
-	#pragma omp parallel for
+	#pragma omp parallel for if(bParallel)
 	#endif
 	for (int r=0; r<depthMap.rows; ++r) {
 		for (int c=0; c<depthMap.cols; ++c) {
@@ -1162,6 +1165,27 @@ void DepthMapsData::ComputeIntraMapPrior(const DepthData& depthData, ConfidenceM
 		}
 	}
 } // ComputeIntraMapPrior
+/*----------------------------------------------------------------*/
+
+// compute-if-absent accessor for the intra-map prior: shared by AdjustConfidence and
+// DenseFuseDepthMaps so the O(pixels) prior computed for a given DepthData is not recomputed if it
+// is touched a second time before being released. Caveat honestly documented here (not just claimed):
+// this only helps within the lifetime of a single cached DepthData -- both the adjust phase's own
+// DMapCache (ComputeDepthMaps) and the fusion phase's DMapCache call ClearCache()/Release() on every
+// touched image at the END of their respective phase, which also clears priorMap (see the
+// DepthData::priorMap comment in DepthMap.h for why that's the right lifetime). So in EVERY currently
+// existing call pattern -- staged benchmark (separate processes) AND the default single-process
+// estimate->adjust->fuse pipeline alike -- AdjustConfidence's prior for an image is gone by the time
+// DenseFuseDepthMaps looks at that same image, and this accessor's cache is a guaranteed miss on
+// first touch, same as calling ComputeIntraMapPrior directly. It is still the right shape (a single
+// shared code path + a real cache slot) for any future pipeline restructuring that keeps DepthData
+// resident across phases; the measurable win of this change is entirely the bParallel argument below.
+const ConfidenceMap& DepthMapsData::GetIntraMapPrior(DepthData& depthData, bool bParallel) const
+{
+	if (depthData.priorMap.empty())
+		ComputeIntraMapPrior(depthData, depthData.priorMap, bParallel);
+	return depthData.priorMap;
+}
 /*----------------------------------------------------------------*/
 
 // ----------------------------------------------------------------------------
@@ -1291,10 +1315,10 @@ bool DepthMapsData::AdjustConfidence(DepthData& depthDataRef, const IIndexArr& i
 	const float w0(OPTDENSE::fConfPhotoFloor);
 	const float confFloor(OPTDENSE::fConfFloor);
 
-	// intra-map geometric prior (once per map)
+	// intra-map geometric prior (once per map); bParallel=false -- this call runs inside one of
+	// nMaxThreads already-parallel pool-worker threads (see GetIntraMapPrior's declaration comment)
 	const std::chrono::steady_clock::time_point timeAdjustStart(std::chrono::steady_clock::now());
-	ConfidenceMap priorMap;
-	ComputeIntraMapPrior(depthDataRef, priorMap);
+	const ConfidenceMap& priorMap = GetIntraMapPrior(depthDataRef, false);
 	g_confPriorComputeNS.fetch_add(std::chrono::duration_cast<std::chrono::nanoseconds>(
 		std::chrono::steady_clock::now() - timeAdjustStart).count(), std::memory_order_relaxed);
 
@@ -2132,7 +2156,6 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 	// fractional "virtual" view/pixel support so that an inlier lying on a locally coherent surface but
 	// confirmed by too few views/pixels is still kept (same prior used by AdjustConfidence); empty when off
 	const bool bUsePrior(OPTDENSE::fFusePriorWeight > 0);
-	ConfidenceMap priorMap;
 	// loop over each depth-map
 	IIndex numDMapsFused = 0;
 	while (true) {
@@ -2147,13 +2170,13 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 		// fuse depth-map
 		cacheDMaps.UseImage(idxImage);
 		cacheDMaps.SkipMemoryCheckIdxImage(idxImage);
-		const DepthData& depthData(arrDepthData[idxImage]);
+		DepthData& depthData(arrDepthData[idxImage]); // non-const: GetIntraMapPrior caches into depthData.priorMap
 		ASSERT(depthData.GetView().GetLocalID(scene.images) == idxImage);
 		ASSERT(!depthData.IsEmpty());
 		if (bEstimateNormal && depthData.normalMap.empty())
 			EstimateNormalMaps();
 		if (bUsePrior)
-			ComputeIntraMapPrior(depthData, priorMap); // depth+normal coherence of every seed pixel, O(pixels)
+			GetIntraMapPrior(depthData, true); // depth+normal coherence of every seed pixel, O(pixels); bParallel=true (serial caller, idle cores)
 		// make sure all neighbors are cached
 		neighbors.Memset(0);
 		neighbors[idxImage] = true;
@@ -2211,7 +2234,7 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 				// the prior measures agreement with same-depth-map neighbors, which nMinPixelsFuse explicitly
 				// counts; the !fusedViews.empty() guard ensures at least the real seed exists so the prior can
 				// never fabricate a point out of nothing (when disabled, virtualSupport==0 => identical output)
-				const float virtualSupport(bUsePrior ? OPTDENSE::fFusePriorWeight * priorMap(i,j) : 0.f);
+				const float virtualSupport(bUsePrior ? OPTDENSE::fFusePriorWeight * depthData.priorMap(i,j) : 0.f);
 				if (!fusedViews.empty() &&
 					(float)fusedPoints[0].size() + virtualSupport >= (float)OPTDENSE::nMinPixelsFuse &&
 					(float)fusedViews.size() + virtualSupport >= (float)nMinViewsFuse) {
@@ -2831,13 +2854,14 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 		{
 			// estimated peak memory: per pixel 4B depth + 12B normal + 4B conf + 4B views (upper
 			// bound; normal/views may be absent) resident in the cache, plus 4B for the
-			// confMapAdjusted side buffer -- at the semaphore barrier every image's side buffer is
-			// live simultaneously, so it belongs in the estimate even though the cache can't see it
+			// confMapAdjusted side buffer and 4B for the cached intra-map priorMap (Task 11,
+			// GetIntraMapPrior) -- at the semaphore barrier every image's side buffers are live
+			// simultaneously, so both belong in the estimate even though the cache can't see them
 			size_t estPeakMemory(0);
 			for (const DepthData& depthData: data.depthMaps.arrDepthData)
 				if (depthData.IsValid())
-					estPeakMemory += (size_t)depthData.size.area() * ((1/*depth*/+3/*normal*/+1/*conf*/+1/*confMapAdjusted*/)*4 + 4/*views*/);
-			VERBOSE("Adjust-confidence phase: caching all %u depth-maps in memory, estimated peak %lluMB (incl. in-memory adjusted confidence)",
+					estPeakMemory += (size_t)depthData.size.area() * ((1/*depth*/+3/*normal*/+1/*conf*/+1/*confMapAdjusted*/+1/*priorMap*/)*4 + 4/*views*/);
+			VERBOSE("Adjust-confidence phase: caching all %u depth-maps in memory, estimated peak %lluMB (incl. in-memory adjusted confidence + prior)",
 				data.images.size(), (unsigned long long)(estPeakMemory>>20));
 		}
 		#endif

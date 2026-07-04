@@ -37,14 +37,26 @@ SCENE="$1"; L="$2"
 
 ROOT=/home/ubuntu/virginia/gt_bench
 REPO=/home/ubuntu/openMVS
-WD="$ROOT/runs/$SCENE/L$L"
-RES="$ROOT/results"
+# WD/RES are overridable (Task 11 re-run: point WD at a fresh workdir seeded from the
+# original raw_dmaps/ snapshot -- kept as a SIBLING of runs/<scene>/L<r> under runs/<scene>/
+# so the existing runs/{blendedmvs,eth3d} path-resolution symlinks still apply unchanged --
+# and RES at a separate results dir so the committed baseline JSONs are never touched).
+# Both default to the original hardcoded locations, so every existing caller is unaffected.
+WD="${WD:-$ROOT/runs/$SCENE/L$L}"
+RES="${RES:-$ROOT/results}"
 SCENE_MVS="$ROOT/runs/$SCENE/scene.mvs"
 BINRAW="$REPO/make/bin/Release/DensifyPointCloud"
 BIN=(env LD_LIBRARY_PATH=/usr/local/cuda/lib64 "$BINRAW")
 PY=/home/ubuntu/miniconda3/bin/python
 MAXRES=3200
 FORCE="${FORCE:-0}"
+# Task 11 re-run knobs: the acceptance gates only need adjust/fuse WALL TIMES + conf_adj ROC,
+# not conf_raw (identical to baseline, code doesn't touch raw confidence) or fusion GT
+# completeness (fusion's own math is untouched by Task 11; only the prior's cache/threading
+# changed, and courtyard L2 byte-equivalence already proves adjusted dmaps are unchanged, so
+# fused clouds are provably unchanged too). Default 0 preserves the full original pipeline.
+SKIP_CONF_RAW="${SKIP_CONF_RAW:-0}"
+SKIP_FUSE_EVAL="${SKIP_FUSE_EVAL:-0}"
 
 [ -x "$BINRAW" ] || { echo "error: $BINRAW not found/executable (build it first)" >&2; exit 1; }
 [ -f "$SCENE_MVS" ] || { echo "error: $SCENE_MVS not found" >&2; exit 1; }
@@ -208,7 +220,9 @@ if [ "$GT_FORMAT" = eth3d ]; then
   GT_CACHE_ARGS=(--gt-cache-dir "$ROOT/runs/$SCENE/gt_cache")
 fi
 
-if [ "$FORCE" = 1 ] || ! json_exists conf_raw; then
+if [ "$SKIP_CONF_RAW" = 1 ]; then
+  log "stage 4/4: skip conf_raw (SKIP_CONF_RAW=1)"
+elif [ "$FORCE" = 1 ] || ! json_exists conf_raw; then
   log "stage 4/4: EvalConfidence (raw)"
   "$PY" "$REPO/scripts/python/EvalConfidence.py" "$WD/raw_dmaps" \
       --gt-depth-dir "$GT_DEPTH_DIR" --gt-format "$GT_FORMAT" --scene-mvs "$SCENE_MVS" \
@@ -228,7 +242,9 @@ fi
 
 eval_fusion() {
   local wtag="$1" ply="$2"
-  if [ "$FORCE" = 1 ] || ! json_exists "fuse_$wtag"; then
+  if [ "$SKIP_FUSE_EVAL" = 1 ]; then
+    log "stage 4/4: skip fuse_$wtag GT eval (SKIP_FUSE_EVAL=1)"
+  elif [ "$FORCE" = 1 ] || ! json_exists "fuse_$wtag"; then
     log "stage 4/4: fusion eval ($wtag)"
     if [ "$GT_FORMAT" = blendedmvs ]; then
       "$PY" "$REPO/scripts/python/EvalFusionGT.py" "$ply" --gt-mesh "$GT_MESH" \

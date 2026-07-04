@@ -237,6 +237,11 @@ struct MVS_API DepthData {
 		// in memory until the deferred EVT_ADJUSTDEPTHMAP swap (confMap = move(confMapAdjusted));
 		// intentionally NOT cleared by Release() so it survives a cache eviction/reload of this
 		// DepthData between the filter and adjust events
+	ConfidenceMap priorMap; // intra-map geometric prior (DepthMapsData::ComputeIntraMapPrior), lazily
+		// computed and cached by DepthMapsData::GetIntraMapPrior() so AdjustConfidence and
+		// DenseFuseDepthMaps can share one computation instead of each recomputing its own; unlike
+		// confMapAdjusted this IS cleared by Release() -- it is a cheap, recomputable derived cache
+		// with no cross-event delivery obligation, so it simply follows the DepthData's own lifetime
 	ViewsMap viewsMap; // view-IDs map (indexing images vector starting after first view)
 	float dMin, dMax; // global depth range for this image
 	cv::Size size; // image size used to estimate this depth-map
@@ -256,6 +261,7 @@ struct MVS_API DepthData {
 		depthMap.release();
 		normalMap.release();
 		confMap.release();
+		priorMap.release();
 		viewsMap.release();
 	}
 

@@ -96,7 +96,20 @@ public:
 
 	void EstimateNormalMaps();
 
-	void ComputeIntraMapPrior(const DepthData& depthData, ConfidenceMap& priorMap) const;
+	void ComputeIntraMapPrior(const DepthData& depthData, ConfidenceMap& priorMap, bool bParallel) const;
+	// compute-if-absent accessor: returns depthData.priorMap, computing (and caching) it only if not
+	// already present. bParallel selects ComputeIntraMapPrior's inner OpenMP loop: AdjustConfidence
+	// passes false -- it runs inside one of nMaxThreads already-parallel pthread pool workers, so the
+	// old unconditional inner "#pragma omp parallel for" would spawn a fresh OMP team PER worker (the
+	// pthread is not an OMP thread, so omp_get_nested does not gate it; up to nMaxThreads independent
+	// teams could coexist). Disabling it is a hard requirement of this codebase's no-per-view-
+	// threading rule, independent of perf. DenseFuseDepthMaps passes true -- single serial caller,
+	// idle cores. NOTE (measured, task-11-report.md): on this libgomp/30-core box the change had NO
+	// measurable effect on adjust wall/compute (flat within run-to-run noise, marginally slower on the
+	// largest eth3d L1 rows) -- the prior is only ~20-25% of adjust cost (the confirmation sweep
+	// dominates, Task 9) and the old region did not measurably thrash here. Kept for the requirement +
+	// for the single shared prior code path, NOT as a proven speedup -- reported honestly, not assumed.
+	const ConfidenceMap& GetIntraMapPrior(DepthData& depthData, bool bParallel) const;
 	bool AdjustConfidence(DepthData& depthDataRef, const IIndexArr& idxNeighbors);
 	void MergeDepthMaps(PointCloud& pointcloud, bool bEstimateColor, bool bEstimateNormal);
 	void FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, bool bEstimateNormal);
