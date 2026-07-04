@@ -5,6 +5,52 @@ depth-map fusion against real ground truth (BlendedMVS rendered depth maps + tex
 meshes, ETH3D laser scans). Only scripts/lists/docs live in the repo; **all data stays
 on the large mount** — never under the repository or the root filesystem.
 
+## Final shipped defaults (Tasks 15-20)
+
+All of the following are the **shipped `DEFVAR` defaults** in `libs/MVS/DepthMap.cpp` as of Task 20
+(no `--dense-config-file` override needed to get them) — GT-recalibrated against this benchmark,
+replacing the earlier TnT-pseudo-GT-tuned or MapAnything-pseudo-GT-tuned values used by Tasks 1-14 (see
+`gt_bench/VERDICT_MAPANYTHING.md`: that pseudo-GT is retired for tuning purposes).
+
+| knob | shipped default | task | GT evidence |
+|---|---|---|---|
+| `bConfSoftGates` | 1 (soft continuous-weight gates) | 16/17 | `SWEEP_GT.md` |
+| `fConfViolationWeight` (FSV lambda) | 2.0 | 15/17 | `SWEEP_GT.md` |
+| `fConfViolationMargin` | 2 | 15/17 | `SWEEP_GT.md` |
+| `fConfPriorStrength` | 2.0 | 17 | `SWEEP_GT.md` |
+| `fConfConfirmTau` | 1.5 | 17 | `SWEEP_GT.md` |
+| `fConfPhotoFloor` | 0.7 | 17 | `SWEEP_GT.md` |
+| `fConfFloor` | 0.03 | 17 | `SWEEP_GT.md` |
+| `fFusePriorWeight` (w-rescue) | **see `WEIGHT_SWEEP_GT.md`** | 20 | `WEIGHT_SWEEP_GT.md` |
+| `nFuseViolationMax` (fusion FSV guard) | 0 | 18 | task-18-report.md |
+| `bFuseSecondChance` | 0 (off; proven redundant given the w-rescue default) | 19 | task-19-report.md |
+
+Confidence-adjust pooled real-GT ROC-AUC: **0.9463 -> 0.9598** (Task 17, ff92771/426d1f7/f1b72c1;
+every one of 10 swept scene-levels improved). Fusion `fFusePriorWeight` completeness/gross-outlier
+sweep: `gt_bench/WEIGHT_SWEEP_GT.md` (Task 20).
+
+## How to re-run the full benchmark
+
+```bash
+# 1) full 28-scene-level pipeline (estimate -> adjust -> fuse w0+shipped-default -> eval)
+for s in $(awk '!/^#/{print "eth3d_" $1}' gt_bench/scenes_eth3d.txt) \
+         $(awk '!/^#/{print "bmvs_" substr($1,1,8)}' gt_bench/scenes_blendedmvs.txt); do
+  case "$s" in
+    eth3d_*) for L in 3 2 1; do bash gt_bench/run_scene.sh "$s" "$L"; done ;;
+    bmvs_*)  for L in 1 0;   do bash gt_bench/run_scene.sh "$s" "$L"; done ;;
+  esac
+done
+# 2) aggregate results/*.json -> AGGREGATE_GT.md
+/home/ubuntu/miniconda3/bin/python gt_bench/aggregate_gt.py
+```
+
+`run_scene.sh` is idempotent per stage (safe to re-run after an interruption); set `FORCE=1` to force
+every stage. Point `WD`/`RES` at scratch directories for one-off validation instead of the shared
+`runs/`/`results/` trees (never overwrite the canonical baseline dmaps with a non-final build). The
+committed `BASELINE_2026-07.md` is the pre-Task-9 (double-precision `AdjustConfidence`, old
+pseudo-GT-tuned defaults) reference snapshot; a from-scratch re-run with the current shipped defaults
+above will not match it number-for-number by design (that is the point of Tasks 15-20).
+
 ## Confidence estimation: standalone vs integrated (Task 13)
 
 The fusion-faithful confidence sweep can run two ways, producing equivalent-quality confidence:
