@@ -158,6 +158,16 @@ extern MVS_API float fFusePriorWeight; // DenseFuseDepthMaps: weight of the intr
 // pre-Task-18 fusion output. Default 0 (strict) rejects any rescued point contradicted by >=1
 // free-space ray; N allows <=N such violations. Non-rescued points are never affected.
 extern MVS_API int nFuseViolationMax;
+// Task 19: opt-in second-chance fusion pass. During the main fusion pass, every seed that FAILS the
+// keep-rule but already has >=2 real observing views AND a well-supported intra-map prior
+// (priorMap(i,j)>=0.5) is snapshotted (its already-assembled point/views/weights/normal/color -- see
+// the DenseFuseDepthMaps comment on why a snapshot, not a replay, is the only thing that CAN work: by
+// the time a seed's keep-rule is evaluated, every pixel it touched is already permanently marked used
+// in useMask, whether the group is kept or discarded, so there is no unconsumed pixel left to revisit).
+// After the main pass, if this is set, each snapshot is re-tested with a relaxed pixel-count minimum
+// and a strict zero-free-space-violation requirement, independent of nFuseViolationMax. Default 0 =
+// byte-identical to pre-Task-19 fusion (no snapshots even taken when off).
+extern MVS_API bool bFuseSecondChance;
 // Task 12: integrated (estimation-time) confidence recalibration -- runs AdjustConfidence(DepthData&)
 // as an epilogue of the LAST geometric-consistency iteration, from neighbor depth/normal/conf loaded
 // for THIS reference's own geometric-consistency scoring (see InitViews' loadDepthMaps==2 path); no

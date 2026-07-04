@@ -2348,6 +2348,40 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 	// keep-rule for points RESCUED by virtualSupport (see OPTDENSE::nFuseViolationMax); reset
 	// alongside fusedViews et al.
 	PointCloud::ViewArr fusedViolViews;
+	// Task 19: opt-in second-chance fusion pass -- STEP 1 finding (read the rejection path first):
+	// inside FusePointImpl, useMask.set(x) (see below) fires UNCONDITIONALLY for every pixel that
+	// locally passes the per-pixel gates (bounds/depth/confidence, and -- when fuseDepth>0 -- the
+	// depth/reprojection/normal join gate), BEFORE control ever returns to the keep-rule check at the
+	// bottom of this (i,j) loop. So a seed's contributing pixels are marked consumed the instant they
+	// join the flood-fill, regardless of whether the assembled group later passes or fails the
+	// keep-rule; a discarded group's pixels are just as permanently "used" as a kept group's. The only
+	// pixels that stay unmarked (useMask==0) are ones that were PROBED as a would-be join and FAILED
+	// the depth/reprojection/normal test (the `return` before useMask.set at the join-gate checks) --
+	// but by construction every valid (depth>0, confident) pixel is eventually visited either as a
+	// successful join (marked) or as its own seed at fuseDepth==0 (which has no join gate and always
+	// marks it), so by the end of the main fusion pass EVERY valid pixel belongs to exactly one
+	// already-attempted group. There is no leftover, never-tried pixel pool for a later pass to pick
+	// up. Consequently a second-chance pass CANNOT recover anything by re-running FusePoint on a
+	// recorded seed pixel -- that pixel (and everything it successfully joined) is already useMask==1
+	// from pass 1, so a literal replay is a guaranteed no-op. The only thing that can work -- and the
+	// only thing this implementation does -- is to snapshot the ALREADY-ASSEMBLED group's point/views/
+	// weights/normal/color at the moment pass 1 would have discarded it, then re-apply a relaxed
+	// keep-rule to that frozen snapshot after the main pass. This touches no pixel a second time (no
+	// double-fuse: the recorded group's pixels were never part of any kept point) and needs no further
+	// useMask interaction at all.
+	struct SecondChanceCandidate {
+		PointCloud::Point point;
+		PointCloud::ViewArr views;
+		PointCloud::WeightArr weights;
+		PointCloud::Normal normal;
+		PointCloud::Color color;
+		unsigned numPixels;
+	};
+	// CLISTDEF2IDX (useConstruct=2), NOT CLISTDEF0IDX: SecondChanceCandidate owns non-trivial members
+	// (ViewArr/WeightArr, themselves heap-owning cLists), which need their constructor/destructor
+	// actually invoked on every AddEmpty()/RemoveLast()/grow -- CLISTDEF0IDX skips construction
+	// entirely (meant for POD types) and corrupts the nested lists' _vector/_size/_vectorSize.
+	CLISTDEF2IDX(SecondChanceCandidate, IIndex) secondChanceCandidates;
 	const auto FusePoint = [&](IIndex ID, const ImageRef& x, unsigned fuseDepth) -> void {
 		const auto lambda = [&](IIndex ID, const ImageRef& x, unsigned fuseDepth, const auto& FusePointImpl) -> void {
 			const DepthData& depthData = arrDepthData[ID];
@@ -2449,6 +2483,9 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 	// fractional "virtual" view/pixel support so that an inlier lying on a locally coherent surface but
 	// confirmed by too few views/pixels is still kept (same prior used by AdjustConfidence); empty when off
 	const bool bUsePrior(OPTDENSE::fFusePriorWeight > 0);
+	// Task 19: the second-chance record gate also needs priorMap(i,j), independent of fFusePriorWeight
+	// (bUsePrior), since a user may want the recovery pass without the w3 rescue's virtual support
+	const bool bNeedPrior(bUsePrior || OPTDENSE::bFuseSecondChance);
 	// loop over each depth-map
 	IIndex numDMapsFused = 0;
 	while (true) {
@@ -2468,7 +2505,7 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 		ASSERT(!depthData.IsEmpty());
 		if (bEstimateNormal && depthData.normalMap.empty())
 			EstimateNormalMaps();
-		if (bUsePrior)
+		if (bNeedPrior)
 			GetIntraMapPrior(depthData, true); // depth+normal coherence of every seed pixel, O(pixels); bParallel=true (serial caller, idle cores)
 		// make sure all neighbors are cached
 		neighbors.Memset(0);
@@ -2528,6 +2565,7 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 				// counts; the !fusedViews.empty() guard ensures at least the real seed exists so the prior can
 				// never fabricate a point out of nothing (when disabled, virtualSupport==0 => identical output)
 				const float virtualSupport(bUsePrior ? OPTDENSE::fFusePriorWeight * depthData.priorMap(i,j) : 0.f);
+				bool bKept(false);
 				if (!fusedViews.empty() &&
 					(float)fusedPoints[0].size() + virtualSupport >= (float)OPTDENSE::nMinPixelsFuse &&
 					(float)fusedViews.size() + virtualSupport >= (float)nMinViewsFuse) {
@@ -2556,7 +2594,38 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 							pointcloud.normals.emplace_back(normalized(fusedNormal));
 						if (bEstimateColor)
 							pointcloud.colors.emplace_back((fusedColor/static_cast<float>(fusedPoints[0].size())).cast<uint8_t>());
+						bKept = true;
 					}
+				}
+				// Task 19: this seed failed the keep-rule above (bKept==false). Every pixel it touched
+				// (the seed itself, plus everything it successfully joined) is already permanently
+				// marked used in useMask -- see the rejection-path note above the FusePoint lambda --
+				// so nothing can be recovered by revisiting this pixel later. The only recoverable
+				// thing is the already-assembled group itself: if it already has >=2 real observing
+				// views and the seed sits on a well-supported intra-map prior surface, snapshot it now
+				// (point/views/weights/normal/color are about to be cleared below) for the opt-in
+				// second-chance pass after the main fusion loop. Gated on the knob first
+				// (short-circuit) so priorMap is never touched, and nothing is recorded, when
+				// bFuseSecondChance is off (default) -- keeps the no-op trivial.
+				if (OPTDENSE::bFuseSecondChance && !bKept && fusedViews.size() >= 2 && depthData.priorMap(i,j) >= 0.5f) {
+					SecondChanceCandidate& cand = secondChanceCandidates.AddEmpty();
+					cand.point = PointCloud::Point(
+						fusedPoints[0].GetMedian(),
+						fusedPoints[1].GetMedian(),
+						fusedPoints[2].GetMedian()
+					);
+					cand.views = fusedViews;
+					ASSERT(fusedViews.size() == fusedWeights.size());
+					for (float weight: fusedWeights)
+						cand.weights.push_back(weight);
+					cand.normal = bEstimateNormal ? Cast<float>(normalized(fusedNormal)) : PointCloud::Normal(0,0,0);
+					cand.color = bEstimateColor ? (fusedColor/static_cast<float>(fusedPoints[0].size())).cast<uint8_t>() : PointCloud::Color(0,0,0);
+					cand.numPixels = (unsigned)fusedPoints[0].size();
+					// strict V==0 requirement (Task-18 counting, independent of nFuseViolationMax): a
+					// candidate seen from behind by even one distinct view is never eligible, so drop
+					// it here rather than carrying dead weight into the second-chance pass below
+					if (!fusedViolViews.empty())
+						secondChanceCandidates.RemoveLast();
 				}
 				if (!fusedViews.empty()) {
 					nDepths += fusedViews.size();
@@ -2585,6 +2654,49 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 	progress.close();
 	arrUseMask.Release();
 	cacheDMaps.ClearCache();
+	// Task 19: opt-in second-chance pass. Re-test every snapshot recorded above (already-assembled,
+	// prior-supported, violation-free groups that failed the main keep-rule) with a relaxed pixel-count
+	// minimum. This does NOT revisit any pixel or touch useMask -- per the STEP-1 rejection-path note
+	// above the FusePoint lambda, by now every pixel is already permanently consumed one way or
+	// another, so there is nothing left to gate on; it only re-decides, on the frozen snapshot, whether
+	// the group deserves to become a point after all. secondChanceCandidates is always empty when
+	// bFuseSecondChance is off (default), so this is then a no-op and output stays byte-identical.
+	//
+	// MEASURED (Task 19, ETH3D courtyard/office/delivery_area, deterministic dmaps held fixed):
+	// with the CURRENT default fFusePriorWeight=3.0 (w3 rescue on), this recovers exactly ZERO points
+	// on every scene tested, and it PROVABLY always will: the record gate above requires priorMap>=0.5,
+	// so any surviving (V==0) recorded candidate had virtualSupport=fFusePriorWeight*priorMap>=1.5 at
+	// the moment pass 1 rejected it on pixel-count alone, i.e. its REAL pixel count was
+	// <nMinPixelsFuse-1.5=3.5 (<=3) -- strictly below the relaxed floor of nMinPixelsFuse-1=4 computed
+	// below. So under the shipped default, the w3 rescue's own virtual support already guarantees no
+	// clean discarded candidate can reach the relaxed floor: this pass is fully redundant with it.
+	// Confirmed the mechanism itself is NOT broken: with fFusePriorWeight=0 (w3 off), courtyard
+	// recovered 558299/4206407 candidates (+25.9% points), completeness rose at every ETH3D tolerance
+	// tier, gross_outlier_frac moved only 0.202%->0.207% (+0.005pp, well inside the +0.05pp gate) --
+	// i.e. it works exactly as designed, it is just currently redundant given fFusePriorWeight=3.0's
+	// default. Hence default stays OFF (see task-19-report.md for the full A/B).
+	if (OPTDENSE::bFuseSecondChance) {
+		const unsigned nMinPixelsFuseRelaxed(MAXF((int)OPTDENSE::nMinPixelsFuse - 1, 3));
+		unsigned numSecondChanceRecovered = 0;
+		for (const SecondChanceCandidate& cand: secondChanceCandidates) {
+			// V==0 was already enforced at record time (dead-on-arrival candidates were dropped
+			// immediately, since fusedViolViews cannot change after the seed's traversal completes);
+			// only the relaxed pixel/view minimums remain to be checked here
+			if (cand.numPixels < nMinPixelsFuseRelaxed || cand.views.size() < nMinViewsFuse)
+				continue;
+			pointcloud.points.emplace_back(cand.point);
+			PointCloud::WeightArr& weights = pointcloud.pointWeights.AddEmpty();
+			weights = cand.weights;
+			pointcloud.pointViews.emplace_back(cand.views);
+			if (bEstimateNormal)
+				pointcloud.normals.emplace_back(cand.normal);
+			if (bEstimateColor)
+				pointcloud.colors.emplace_back(cand.color);
+			++numSecondChanceRecovered;
+		}
+		DEBUG_EXTRA("Second-chance fusion: %u/%u recorded prior-supported seeds recovered",
+			numSecondChanceRecovered, secondChanceCandidates.size());
+	}
 	if (!_bEstimateNormal)
 		pointcloud.normals.Release();
 
