@@ -111,6 +111,15 @@ public:
 	// for the single shared prior code path, NOT as a proven speedup -- reported honestly, not assumed.
 	const ConfidenceMap& GetIntraMapPrior(DepthData& depthData, bool bParallel) const;
 	bool AdjustConfidence(DepthData& depthDataRef, const IIndexArr& idxNeighbors);
+	// Task 12: integrated fusion-faithful confidence -- epilogue of the LAST geometric-consistency
+	// iteration, run from the CALLER (DenseReconstructionEstimate's EVT_SAVEDEPTHMAP handler) while
+	// depthDataRef.images[] (this reference's own already-loaded neighbor depth/normal/conf, see
+	// InitViews' loadDepthMaps==2 path) is still resident, before ReleaseImages()/Release()/Save().
+	// No idxNeighbors argument -- the neighbor set and its data come entirely from depthDataRef.images
+	// (index 0 is the reference itself), not from the shared arrDepthData[] the standalone overload
+	// above indexes into. Writes depthDataRef.confMap directly (no confMapAdjusted deferred swap: see
+	// the .cpp comment for why the standalone phase's race does not apply here).
+	bool AdjustConfidence(DepthData& depthDataRef);
 	void MergeDepthMaps(PointCloud& pointcloud, bool bEstimateColor, bool bEstimateNormal);
 	void FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, bool bEstimateNormal);
 	void DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, bool bEstimateNormal);

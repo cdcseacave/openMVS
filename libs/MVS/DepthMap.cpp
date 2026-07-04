@@ -125,6 +125,7 @@ MDEFVAR_OPTDENSE_float(fFusePriorWeight, "Fuse Prior Weight", "fusion: weight of
 MDEFVAR_OPTDENSE_bool(bConfPriorNormalCoherence, "Conf Prior Normal Coherence", "intra-map prior: multiply gradient-normal agreement by window normal coherence (A/B experiment)", "0")
 MDEFVAR_OPTDENSE_bool(bExportFusionLabels, "Export Fusion Labels", "export per-pixel fusion inlier/outlier labels (.flabel/.fsupport) for confidence evaluation", "0")
 MDEFVAR_OPTDENSE_bool(bExportConfFeatures, "Export Conf Features", "export per-pixel confidence-adjust features (.cfeat*) for offline parameter tuning", "0")
+DEFVAR_OPTDENSE_bool(bEstimateConfidence, "Estimate Confidence", "adjust per-pixel confidence during the last geometric-consistency iteration (fusion-faithful)", "0")
 DEFVAR_OPTDENSE_uint32(nEstimationIters, "Estimation Iters", "Number of patch-match iterations", "3")
 DEFVAR_OPTDENSE_uint32(nEstimationGeometricIters, "Estimation Geometric Iters", "Number of geometric consistent patch-match iterations (0 - disabled)", "2")
 DEFVAR_OPTDENSE_uint32(nPatchMatchCUDAInstances, "PatchMatch CUDA Instances", "Number of parallel CUDA PatchMatch worker instances (clamped to nMaxThreads)", "4")

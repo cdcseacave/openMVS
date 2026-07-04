@@ -142,6 +142,12 @@ extern MVS_API float fConfPriorGate; // how much the prior alone contributes to 
 extern MVS_API float fConfPhotoFloor; // minimum multiplicative photometric weight
 extern MVS_API float fConfFloor; // floor (times photometric conf) for pixels confirmed by >=1 view (anti-erosion)
 extern MVS_API float fFusePriorWeight; // DenseFuseDepthMaps: weight of the intra-map prior as virtual view/pixel support to keep few-view inliers (0 disables)
+// Task 12: integrated (estimation-time) confidence recalibration -- runs AdjustConfidence(DepthData&)
+// as an epilogue of the LAST geometric-consistency iteration, from neighbor depth/normal/conf loaded
+// for THIS reference's own geometric-consistency scoring (see InitViews' loadDepthMaps==2 path); no
+// separate --postprocess-dmaps 4 phase, no disk round-trip. See the double-adjust guard in
+// Scene::ComputeDepthMaps if both this and ADJUST_CONFIDENCE (DepthFlags) are requested together.
+extern MVS_API bool bEstimateConfidence;
 extern MVS_API bool bConfPriorNormalCoherence; // intra-map prior: also require window normal coherence (variant B) vs gradient-normal agreement only (variant A)
 extern MVS_API bool bExportFusionLabels; // export per-pixel fusion inlier/outlier labels for confidence evaluation
 extern MVS_API bool bExportConfFeatures; // export per-pixel confidence-adjust features (K/Pconf/prior/photo) for offline tuning
@@ -192,6 +198,16 @@ struct MVS_API DepthData {
 		Point3f Tm;    // constants during per-pixel geometric-consistent loops
 		Matrix3x3f Tr; //
 		Point3f Tn;    //
+
+		// Task 12: this neighbor's own normal/confidence maps, loaded ALONGSIDE depthMap (same
+		// disk file, same InitViews() call -- no extra file open) ONLY during the LAST
+		// geometric-consistency iteration when OPTDENSE::bEstimateConfidence is set (see
+		// InitViews' loadDepthMaps==2 path); empty otherwise. Lets the integrated
+		// DepthMapsData::AdjustConfidence(DepthData&) overload reuse this reference's own
+		// already-loaded, disk-snapshotted neighbor copies instead of the standalone
+		// postprocess phase's shared arrDepthData[] lookup.
+		NormalMap normalMap;
+		ConfidenceMap confMap;
 
 		inline void Init(const Camera& cameraRef) {
 			Hl = camera.K * camera.R * cameraRef.R.t();
@@ -255,6 +271,8 @@ struct MVS_API DepthData {
 		for (ViewData& image: images) {
 			image.image.release();
 			image.depthMap.release();
+			image.normalMap.release(); // Task 12: neighbor normal/conf loaded only for the last
+			image.confMap.release();   // geometric-consistency iteration (see ViewData comment above)
 		}
 	}
 	inline void Release() {
