@@ -5,6 +5,28 @@ depth-map fusion against real ground truth (BlendedMVS rendered depth maps + tex
 meshes, ETH3D laser scans). Only scripts/lists/docs live in the repo; **all data stays
 on the large mount** — never under the repository or the root filesystem.
 
+## Confidence estimation: standalone vs integrated (Task 13)
+
+The fusion-faithful confidence sweep can run two ways, producing equivalent-quality confidence:
+
+- **Standalone (`--postprocess-dmaps 4`) — DEFAULT / recommended.** A separate phase after
+  estimation that parallelizes the sweep across all cores (`MINF(nMaxThreads, nImages)`, up to 30
+  here). Use this for any pipeline that consumes the adjusted confidence, and it is the only path for
+  reuse-existing-dmaps workflows (adjusting dmaps from a prior run).
+- **Integrated (`Estimate Confidence = 1`, via `--dense-config-file`) — opt-in.** The same sweep runs
+  inline as an epilogue of the last geometric-consistency iteration (no second phase, no dmap
+  reload). Confidence quality matches standalone within noise (|ΔROC| ≤ ~0.003 on 4 of 5 bench
+  scenes; up to −0.013 only on the hardest 15-view scene). But it runs on only `nDenseWorkers`
+  (= `nPatchMatchCUDAInstances`, default 4) CPU workers, so on **total pipeline wall time** it wins
+  only on small / few-image scenes (bmvs −2.9 s, meadow −9.4 s) and loses on large-image scenes
+  (office +8 s, courtyard +42 s, facade +64 s). Raising `nPatchMatchCUDAInstances` does **not** fix
+  this (it also oversubscribes the single GPU). Prefer integrated for confidence-only consumers (e.g.
+  TSDF) that want to skip a separate phase or avoid dmaps on disk, especially on small scenes.
+
+Full A/B numbers, worker-pool investigation, and the decision rationale: **`AB_INTEGRATED.md`**.
+The Task-14 follow-up (decoupling the epilogue CPU pool from the GPU pool) would bring large-scene
+integrated total time to parity with standalone — its best case is a tie, not a win.
+
 ## Data root
 
 ```
