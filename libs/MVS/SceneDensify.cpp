@@ -1240,15 +1240,22 @@ const ConfidenceMap& DepthMapsData::GetIntraMapPrior(DepthData& depthData, bool 
 //      gate        = 1 - exp(-(K + kPrior*pGeo)/tau)   soft analogue of "nMinViewsFuse>=2";
 //                                                       pGeo acts as a fractional virtual view
 //      posterior   = (s*pGeo + Pconf)/(s + Pconf + lambda*V)  Beta posterior mean, prior = s
-//                                                       pseudo-obs; V (Task 15, opt-in, default
-//                                                       lambda=0 = exact no-op) is a count of
+//                                                       pseudo-obs; V (Task 15, GT-recalibrated
+//                                                       default lambda=2, Task 17) is a count of
 //                                                       free-space-violation neighbors -- G1
 //                                                       failures where the neighbor's OWN depth is
 //                                                       well BEHIND ours, i.e. its ray passes
 //                                                       through our point -- diluting the posterior
+//                                                       (lambda=0 restores the pre-Task-15 exact no-op)
 //      photoFactor = w0 + (1-w0)*confPhoto             retain a photometric floor
 //      conf        = clamp(posterior * gate * photoFactor, 0, 1)
 //      if K>=1:  conf = max(conf, fConfFloor*confPhoto) anti-cascade floor (see below)
+//
+// GT-RECALIBRATED SHIPPED DEFAULTS (Task 17, gt_bench/SWEEP_GT.md): the confirmation count K is
+// the fractional Ksoft of the SOFT-gate path (bConfSoftGates default 1 -- continuous weights +
+// edge-aware bilinear neighbor sampling, see the TWO MODES note below), the FSV term is active
+// (lambda = fConfViolationWeight = 2, margin = fConfViolationMargin = 2), and the posterior shape is
+// s=2 / tau=1.5 / w0(photoFloor)=0.7 / floor=0.03. Pooled real-GT ROC-AUC 0.9463 -> 0.9598.
 //
 // HOW THIS KEEPS INLIERS AND DROPS OUTLIERS:
 //  * Inlier seen by MANY views: K large -> gate->1 and posterior->~1 -> high confidence.
