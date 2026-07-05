@@ -613,8 +613,9 @@ __device__ void ProcessPixel(const ImagePixels* images, const ImagePixels* depth
 		if (viewWeights[imgId])
 			SetBit(newSelectedViews, imgId);
 	float finalCosts[8];
-	for (int posId = 0; posId < 8; ++posId)
-		finalCosts[posId] = AggregateMultiViewScores(viewWeights, costArray[posId], nNumViews);
+	for (int posId = 0; posId < 8; ++posId) {
+		finalCosts[posId] = valid[posId] ? AggregateMultiViewScores(viewWeights, costArray[posId], params.nNumViews) : FLT_MAX;
+	}
 	const int minCostIdx = FindMinIndex(finalCosts, 8);
 	float costVector[MAX_VIEWS];
 	MultiViewScorePlane<GEOM>(refCache, images, depthImages, p, plane, lowDepth, costVector);
