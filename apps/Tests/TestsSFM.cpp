@@ -2073,7 +2073,8 @@ bool PipelineTest()
 
 		BAConfig cfg;
 		cfg.maxIterations = 20;
-		if (!BundleAdjustment::Adjust(scene, cfg)) {
+		BundleAdjustment ba(scene, cfg);
+		if (!ba.Adjust()) {
 			VERBOSE("Test 1 FAILED: BundleAdjustment returned false");
 			return false;
 		}
@@ -2082,6 +2083,35 @@ bool PipelineTest()
 		const auto [meanErr, meanAng] = ComputeTracksMeanReprojectionError(scene);
 		if (meanErr > 1.0) {
 			VERBOSE("Test 1 FAILED: reprojection error too large");
+			return false;
+		}
+
+		// Pose uncertainty from the BA covariance: one entry per image, the gauge reference
+		// exactly 0, every other registered image finite and strictly positive
+		const PoseUncertaintyArr uncertainty = ba.ComputePoseUncertainty();
+		if (uncertainty.size() != scene.images.size()) {
+			VERBOSE("Test 1 FAILED: pose uncertainty not computed (%u/%u images)",
+				(unsigned)uncertainty.size(), (unsigned)scene.images.size());
+			return false;
+		}
+		unsigned numDatum = 0;
+		FOREACH(i, uncertainty) {
+			const PoseUncertainty& u = uncertainty[i];
+			if (!u.IsValid()) {
+				VERBOSE("Test 1 FAILED: pose uncertainty missing for image %u", i);
+				return false;
+			}
+			const float rotVar = u.MaxRotationVariance();
+			const float posVar = u.MaxPositionVariance();
+			if (!ISFINITE(rotVar) || !ISFINITE(posVar) || rotVar < 0.f || posVar < 0.f) {
+				VERBOSE("Test 1 FAILED: invalid pose uncertainty for image %u (rotVar %g, posVar %g)", i, rotVar, posVar);
+				return false;
+			}
+			if (rotVar == 0.f && posVar == 0.f)
+				++numDatum; // gauge reference
+		}
+		if (numDatum != 1) {
+			VERBOSE("Test 1 FAILED: expected exactly 1 gauge-reference image, got %u", numDatum);
 			return false;
 		}
 		VERBOSE("Test 1 PASSED");

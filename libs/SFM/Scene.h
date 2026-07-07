@@ -210,6 +210,9 @@ public:
 
 	// Invalidate image pose and remove it from any tracks it is part of
 	bool InvalidateImage(IIndex imgID);
+	// Batch variant: invalidate several images with a single sweep over all tracks
+	// (O(tracks) total instead of O(tracks) per image). Returns the number invalidated.
+	unsigned InvalidateImages(const IIndexArr& imgIDs);
 
 	// Save/Load scene to file
 	bool Save(const String& fileName, ARCHIVE_TYPE nArchiveType = ARCHIVE_DEFAULT) const;

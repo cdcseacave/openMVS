@@ -148,6 +148,37 @@ bool Scene::InvalidateImage(IIndex imgID)
 	--status.nCalibratedImages;
 	return true;
 }
+unsigned Scene::InvalidateImages(const IIndexArr& imgIDs)
+{
+	// Mark every requested valid image as dropped, then demote all of them from the
+	// tracks in a single sweep (the per-image InvalidateImage would sweep all tracks once
+	// per image; here N drops cost one sweep). A track may lose several observations at
+	// once, so iterate its inlier prefix in reverse: each swap-with-last stays valid under
+	// the shrinking count, unlike the single-image version that can break after one hit.
+	std::vector<uint8_t> drop(images.size(), 0);
+	unsigned n = 0;
+	for (const IIndex id : imgIDs) {
+		ASSERT(id < images.size());
+		Image& image = images[id];
+		if (image.IsValid()) {
+			image.InvalidatePose();
+			drop[id] = 1;
+			++n;
+		}
+	}
+	if (n == 0)
+		return 0;
+	for (Track& track : tracks) {
+		if (!track.IsInlier())
+			continue;
+		RFOREACHRAW(i, track.numInliers)
+			if (drop[track.observations[i].imageID])
+				if (--track.numInliers != i)
+					std::swap(track.observations[track.numInliers], track.observations[i]);
+	}
+	status.nCalibratedImages -= n;
+	return n;
+}
 bool Scene::Save(const String& fileName, ARCHIVE_TYPE nArchiveType) const
 {
 	#ifdef _USE_BOOST
@@ -629,6 +660,7 @@ bool Scene::ReconstructHierarchical(const ReconstructionConfig& config)
 	if (subScenes.size() == 1) {
 		*this = std::move(subScenes[0]);
 	} else {
+		// merge sub-scenes, or, if not possible, keep only the largest sub-scene
 		GlobalAlignment globalAlign(*this, config.globalAlignmentCfg);
 		globalAlign.MergeScenes(subScenes, localToGlobals);
 	}

@@ -180,3 +180,24 @@ Joint refinement of focal length + distortion (k1, k2) with relative pose via Ce
 - **Optional**: SiftGPU (CUDA/OpenGL)
 - **Inherited**: Eigen3, OpenCV, Boost
 - **Precompiled header**: `Common.h`
+
+## Debugging / fast iteration
+When iterating on the reconstruction stages (clustering, sub-scene recon, global
+alignment/merge, BA, weak-image filtering), **skip feature extraction + matching** by
+resuming from the post-matching scene — **pass the matched `.sfm` as the input source
+instead of the images folder**. No code change needed:
+
+- A normal `-v 3` run writes `scene_pre_reconstruction.sfm` to the working folder (the
+  post-matching scene, carrying the `FEATURES_EXTRACTED` + `MATCHED` state flags).
+- **Rename it first** (e.g. to `matches.sfm`) so the new run cannot overwrite it.
+- Feed it as the source: `CreateStructure matches.sfm -o scene.sfm -v 3`. `Scene::Import`
+  detects the single `.sfm` and `Load`s it; `ExtractFeatures` and `MatchPairs` then
+  early-return on the `FEATURES_EXTRACTED` / `MATCHED` flags, so reconstruction starts
+  immediately.
+- For pure reconstruction debugging, omit `--export-mvs` and `--extract-colors` to skip
+  the slow undistortion / MVS export / color-sampling tail.
+- This turns a ~full pipeline run into just the reconstruction (e.g. on Tanks&Temples
+  Courthouse, 1106 imgs: skips ~33s features + several min matching).
+- To capture extra debug state mid-pipeline, temporarily add a `Save(MAKE_PATH("dbg.sfm"))`
+  and feed `dbg.sfm` back in the same way.
+

@@ -194,7 +194,11 @@ struct SFM_API GlobalAlignmentConfig
 {
 	float minPairWeight = 3.f;         // minimum composite weight for image pairs to be included during matches import
 	unsigned minCommonTracks{25};      // minimum tracks to connect sub-scenes
-	bool mergeTrackInliersOnly{true};  // Phase 1: seed union-find with only inlier observations (true) or all observations (false)
+	bool mergeTrackInliersOnly{true};  // seed union-find with only inlier observations (true) or all observations (false)
+	// Cross-sub-scene Sim(3) alignment robustness (see EstimateRelativePoses):
+	double simInlierThresholdFactor{0.01};  // RANSAC inlier distance as a fraction of the destination bbox diagonal
+	double minSimInlierRatio{0.3};          // minimum RANSAC inlier ratio required to accept a sub-scene pair
+	unsigned simRansacMaxIters{10000};      // RANSAC iteration budget; needed to find low-inlier-ratio models
 };
 
 /**
@@ -221,10 +225,12 @@ public:
 	GlobalAlignment(Scene& scene, const GlobalAlignmentConfig& config);
 
 	/**
-	 * @brief Merge aligned sub-scenes into single scene
-	 * @param subScenes Vector of sub-scenes to  aligned and merge (modified in-place)
+	 * @brief Align and merge sub-scenes into the global scene
+	 * @param subScenes Vector of sub-scenes to align and merge (modified in-place)
 	 * @param localToGlobals Vector of ID mappings from sub-scenes to global scene (parallel to subScenes)
-	 * @return true if merge successful
+	 * @return true if all sub-scenes were aligned and merged; false if alignment could not
+	 *         complete, in which case the global scene is populated with the largest intact
+	 *         sub-scene so a good partial reconstruction is never discarded (never left empty)
 	 *
 	 * Combines all sub-scenes, handling duplicate cameras/points.
 	 */
@@ -249,10 +255,14 @@ private:
 		std::vector<ScenePair>& scenePairs);
 
 	/**
-	 * @brief Stage 2: Estimate global rotations from pairwise rotations
+	 * @brief Stage 2: Estimate global rotations from pairwise rotations.
+	 * Robustly rejects rotation-inconsistent pairs and PRUNES them from scenePairs in place, so
+	 * the downstream scale/translation averaging only use rotation-consistent links. Sub-scenes
+	 * the estimator cannot place are left with an INF rotation (caller selects by finiteness).
+	 * @param scenePairs in/out: pruned to the rotation-consistent subset.
 	 */
 	bool EstimateGlobalRotations(
-		const std::vector<ScenePair>& scenePairs,
+		std::vector<ScenePair>& scenePairs,
 		const uint32_t numSubScenes,
 		std::vector<Point3d>& globalRotations);
 
@@ -283,7 +293,8 @@ private:
 		const std::vector<IIndexArr>& localToGlobals,
 		const std::vector<Point3d>& globalRotations,
 		const std::vector<REAL>& globalScales,
-		const std::vector<Point3>& globalTranslations);
+		const std::vector<Point3>& globalTranslations,
+		const std::vector<bool>& mergeMask);
 
 	/**
 	 * @brief Merge a single scene into the global scene

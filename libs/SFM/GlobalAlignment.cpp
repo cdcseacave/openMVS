@@ -79,58 +79,108 @@ bool GlobalAlignment::MergeScenes(std::vector<Scene>& subScenes, const std::vect
 
 	BuildGlobalToLocalMap(localToGlobals);
 
-	// Stage 1: Estimate relative poses between connected sub-scenes
-	std::vector<ScenePair> scenePairs;
-	if (!EstimateRelativePoses(subScenes, scenePairs)) {
-		VERBOSE("error: failed to estimate relative poses");
-		return false;
-	}
-
-	// If only one sub-scene or no connections, just copy directly
-	if (numSubScenes == 1 || scenePairs.empty()) {
-		VERBOSE("Single sub-scene or no connections, copying directly");
-		for (uint32_t sceneIdx = 0; sceneIdx < numSubScenes; ++sceneIdx) {
-			MergeSingleScene(subScenes[sceneIdx], localToGlobals[sceneIdx]);
+	// Run the staged alignment pipeline; any stage failing breaks out to the fallback below.
+	// Every failure occurs before the merge stage (Stage 5) consumes sub-scenes, so on failure
+	// all sub-scenes are still intact and the fallback can keep the largest one.
+	do {
+		// Stage 1: Estimate relative poses between connected sub-scenes
+		std::vector<ScenePair> scenePairs;
+		if (!EstimateRelativePoses(subScenes, scenePairs)) {
+			VERBOSE("error: failed to estimate relative poses");
+			break;
 		}
-		DEBUG("Single-scene merge completed (%s)", TD_TIMER_GET_FMT().c_str());
+
+		// If only one sub-scene or no connections, just copy directly
+		if (numSubScenes == 1 || scenePairs.empty()) {
+			VERBOSE("Single sub-scene or no connections, copying directly");
+			for (uint32_t sceneIdx = 0; sceneIdx < numSubScenes; ++sceneIdx)
+				MergeSingleScene(subScenes[sceneIdx], localToGlobals[sceneIdx]);
+			DEBUG("Single-scene merge completed (%s)", TD_TIMER_GET_FMT().c_str());
+			return true;
+		}
+
+		// Stage 2: Rotation averaging. Robustly rejects rotation-inconsistent sub-scene pairs and
+		// prunes them from scenePairs in place; solves only its largest connected component and
+		// leaves every sub-scene it could not place at Point3::INF.
+		std::vector<Point3d> globalRotations;
+		if (!EstimateGlobalRotations(scenePairs, numSubScenes, globalRotations)) {
+			VERBOSE("error: failed to estimate global rotations");
+			break;
+		}
+
+		// Merge only the sub-scenes the rotation estimator actually placed (finite rotation).
+		// Deriving the merge set directly from the estimator's output is authoritative: it cannot
+		// disagree with what rotation averaging solved (no separately-recomputed component, no
+		// tie-break or filtered-edge mismatch), so an unplaced (INF) rotation can never reach
+		// RMatrix() and inject NaN poses (the crash this guards against). Sub-scenes left at INF
+		// — those with no rotation-consistent link into the solved component — stay unregistered
+		// for the subsequent resection to recover individually.
+		std::vector<bool> mergeMask(numSubScenes, false);
+		unsigned numMergeScenes = 0;
+		for (uint32_t s = 0; s < numSubScenes; ++s)
+			if (globalRotations[s] != Point3::INF) { mergeMask[s] = true; ++numMergeScenes; }
+		if (numMergeScenes == 0) {
+			VERBOSE("error: rotation averaging placed no sub-scenes");
+			break;
+		}
+		if (numMergeScenes < numSubScenes)
+			VERBOSE("Merging the rotation-consistent component: %u/%u sub-scenes (%u unalignable, left for resection)",
+				numMergeScenes, numSubScenes, numSubScenes - numMergeScenes);
+
+		// Keep only pairs internal to the merged (finite-rotation) component, so scale and
+		// translation averaging — whose gauge is fixed to the strongest-weighted node — anchor
+		// inside the kept component rather than in a discarded one (which would leave the kept
+		// component's translation block unconstrained).
+		{
+			unsigned w = 0;
+			FOREACH(i, scenePairs)
+				if (mergeMask[scenePairs[i].sceneA] && mergeMask[scenePairs[i].sceneB])
+					scenePairs[w++] = scenePairs[i];
+			scenePairs.resize(w);
+		}
+
+		// Stage 3: Scale averaging (over the rotation-consistent pairs surviving in scenePairs)
+		std::vector<REAL> globalScales;
+		if (!EstimateGlobalScales(scenePairs, numSubScenes, globalScales)) {
+			VERBOSE("error: failed to estimate global scales");
+			break;
+		}
+
+		// Stage 4: Translation averaging (over the rotation-consistent pairs surviving in scenePairs)
+		std::vector<Point3> globalTranslations;
+		if (!EstimateGlobalTranslations(scenePairs, globalRotations, globalScales, numSubScenes, globalTranslations)) {
+			VERBOSE("error: failed to estimate global translations");
+			break;
+		}
+
+		// Stage 5: Merge sub-scenes with global transforms (largest connected component only)
+		if (!MergeTransformedScenes(subScenes, localToGlobals, globalRotations, globalScales, globalTranslations, mergeMask)) {
+			VERBOSE("error: failed to merge transformed scenes");
+			break;
+		}
+
+		#if GLOBALALIGNMENT_DEBUG
+		// Export merged scene for debugging
+		ExportMVS(MAKE_PATH("scene_merged_reconstruction.mvs"), scene);
+		#endif
+
+		DEBUG("Global alignment completed: merged %u/%u sub-scenes (%s)",
+			numMergeScenes, numSubScenes, TD_TIMER_GET_FMT().c_str());
 		return true;
-	}
+	} while (0);
 
-	// Stage 2: Rotation averaging
-	std::vector<Point3d> globalRotations;
-	if (!EstimateGlobalRotations(scenePairs, numSubScenes, globalRotations)) {
-		VERBOSE("error: failed to estimate global rotations");
-		return false;
-	}
-
-	// Stage 3: Scale averaging
-	std::vector<REAL> globalScales;
-	if (!EstimateGlobalScales(scenePairs, numSubScenes, globalScales)) {
-		VERBOSE("error: failed to estimate global scales");
-		return false;
-	}
-
-	// Stage 4: Translation averaging
-	std::vector<Point3> globalTranslations;
-	if (!EstimateGlobalTranslations(scenePairs, globalRotations, globalScales, numSubScenes, globalTranslations)) {
-		VERBOSE("error: failed to estimate global translations");
-		return false;
-	}
-
-	// Stage 5: Merge sub-scenes with global transforms
-	if (!MergeTransformedScenes(subScenes, localToGlobals, globalRotations, globalScales, globalTranslations)) {
-		VERBOSE("error: failed to merge transformed scenes");
-		return false;
-	}
-
-	#if GLOBALALIGNMENT_DEBUG
-	// Export merged scene for debugging
-	ExportMVS(MAKE_PATH("scene_merged_reconstruction.mvs"), scene);
-	#endif
-
-	DEBUG("Global alignment completed: merged %u sub-scenes (%s)",
-		numSubScenes, TD_TIMER_GET_FMT().c_str());
-	return true;
+	// Fallback: alignment could not complete. Keep the largest successfully-reconstructed
+	// sub-scene rather than discarding a good partial reconstruction (downstream BA/resection
+	// then refine it in place). Safe because every failure above precedes sub-scene consumption.
+	IIndex bestIdx = 0;
+	for (IIndex i = 1; i < (IIndex)subScenes.size(); ++i)
+		if (subScenes[i].status.nCalibratedImages > subScenes[bestIdx].status.nCalibratedImages)
+			bestIdx = i;
+	VERBOSE("warning: sub-scene merge failed; keeping largest sub-scene %u (%u/%u images)",
+		bestIdx, subScenes[bestIdx].status.nCalibratedImages, (unsigned)subScenes[bestIdx].images.size());
+	scene.Release();
+	scene = std::move(subScenes[bestIdx]);
+	return false;
 }
 /*----------------------------------------------------------------*/
 
@@ -240,20 +290,20 @@ bool GlobalAlignment::EstimateRelativePoses(
 			continue;
 		}
 
-		// Characteristic length scale for the RANSAC threshold: 0.1% of the source
-		// point cloud's bounding-box diagonal. Using a relative scale keeps the
+		// Characteristic length scale for the RANSAC threshold: a fraction (default 1%) of the
+		// destination point cloud's bounding-box diagonal. Using a relative scale keeps the
 		// criterion invariant to each sub-scene's arbitrary units.
-		AABB3 srcBbox(true);
-		for (const Point3& p : srcPoints)
-			srcBbox.InsertFull(p);
-		if (srcBbox.IsEmpty()) {
+		AABB3 dstBbox(true);
+		for (const Point3& p : dstPoints)
+			dstBbox.InsertFull(p);
+		if (dstBbox.IsEmpty()) {
 			++numSkippedPairs;
 			continue;
 		}
-		const double threshold = 0.001 * srcBbox.GetSize().norm();
+		const double threshold = config.simInlierThresholdFactor * dstBbox.GetSize().norm();
 
 		Transform T;
-		const unsigned numInliers = EstimateSimilarityTransform(srcPoints, dstPoints, T, threshold);
+		const unsigned numInliers = EstimateSimilarityTransform(srcPoints, dstPoints, T, threshold, true, config.simRansacMaxIters);
 		if (numInliers == 0) {
 			DEBUG_ULTIMATE("warning: sub-scene pair (%u, %u): Sim(3) RANSAC failed (%u correspondences)",
 				pairIdx.i, pairIdx.j, (unsigned)srcPoints.size());
@@ -267,7 +317,7 @@ bool GlobalAlignment::EstimateRelativePoses(
 			continue;
 		}
 		const double inlierRatio = (double)numInliers / (double)srcPoints.size();
-		if (inlierRatio < 0.3) {
+		if (inlierRatio < config.minSimInlierRatio) {
 			DEBUG_ULTIMATE("warning: sub-scene pair (%u, %u): skipped (low inlier ratio %.1f%% = %u/%u)",
 				pairIdx.i, pairIdx.j, inlierRatio * 100.0, numInliers, (unsigned)srcPoints.size());
 			++numSkippedPairs;
@@ -296,11 +346,11 @@ bool GlobalAlignment::EstimateRelativePoses(
 /*----------------------------------------------------------------*/
 
 bool GlobalAlignment::EstimateGlobalRotations(
-	const std::vector<ScenePair>& scenePairs,
+	std::vector<ScenePair>& scenePairs,
 	const uint32_t numSubScenes,
 	std::vector<Point3d>& globalRotations)
 {
-	// Convert scene pairs to rotation pairs
+	// Convert scene pairs to rotation pairs (kept 1:1 with scenePairs by index)
 	std::vector<RotationPair> rotationPairs;
 	rotationPairs.reserve(scenePairs.size());
 
@@ -335,7 +385,20 @@ bool GlobalAlignment::EstimateGlobalRotations(
 		}
 	}
 
-	DEBUG("Estimated %u global rotations", (unsigned)globalRotations.size());
+	// Prune rotation-inconsistent pairs from scenePairs in place. FilterRelativeRotations zeroes
+	// (does not remove) the weight of pairs whose relative rotation disagrees with the averaged
+	// global rotations, and rotationPairs stays 1:1 with scenePairs, so a single index compaction
+	// keeps only the survivors. Downstream scale/translation averaging then use only these.
+	ASSERT(rotationPairs.size() == scenePairs.size());
+	const unsigned numInputPairs = (unsigned)scenePairs.size();
+	unsigned numKept = 0;
+	FOREACH(i, scenePairs)
+		if (rotationPairs[i].weight > 0)
+			scenePairs[numKept++] = scenePairs[i];
+	scenePairs.resize(numKept);
+
+	DEBUG("Estimated %u global rotations (%u/%u rotation-consistent pairs)",
+		(unsigned)globalRotations.size(), numKept, numInputPairs);
 	return true;
 }
 /*----------------------------------------------------------------*/
@@ -431,14 +494,21 @@ bool GlobalAlignment::MergeTransformedScenes(
 	const std::vector<IIndexArr>& localToGlobals,
 	const std::vector<Point3d>& globalRotations,
 	const std::vector<REAL>& globalScales,
-	const std::vector<Point3>& globalTranslations)
+	const std::vector<Point3>& globalTranslations,
+	const std::vector<bool>& mergeMask)
 {
 	// Track per-camera accumulation counts; destination cameras accumulate directly
 	std::unordered_map<Camera*, unsigned> cameraAccumCount;
 
 	// Transform each sub-scene and merge into global scene
 	scene.status.nCalibratedImages = 0;
+	unsigned numMerged = 0;
 	FOREACH(sceneIdx, subScenes) {
+		// Skip sub-scenes outside the largest connected component: their averaged transforms
+		// are unconstrained and would inject NaN/garbage poses into the merged scene.
+		if (sceneIdx < mergeMask.size() && !mergeMask[sceneIdx])
+			continue;
+		++numMerged;
 		Scene& subScene = subScenes[sceneIdx];
 
 		// Build similarity transform for this sub-scene
@@ -490,8 +560,8 @@ bool GlobalAlignment::MergeTransformedScenes(
 	MergeTracksWithCrossSubScenePairs();
 	FilterTracks(scene, 16.f, 0.5f);
 
-	DEBUG("Merged %u transformed sub-scenes (%u tracks, %u calibrated images)",
-		(unsigned)subScenes.size(), (unsigned)scene.tracks.size(), scene.status.nCalibratedImages);
+	DEBUG("Merged %u/%u transformed sub-scenes (%u tracks, %u calibrated images)",
+		numMerged, (unsigned)subScenes.size(), (unsigned)scene.tracks.size(), scene.status.nCalibratedImages);
 	return true;
 }
 /*----------------------------------------------------------------*/

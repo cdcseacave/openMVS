@@ -266,7 +266,7 @@ unsigned SFM::TriangulateTracks(
 	}
 	scene.status.nTracks = numInliers + numInliersPrev;
 	DEBUG("Triangulated %u tracks successfully (%u failed, %u invalid), total inliers %u from %u tracks, %.2f views/track (%s)",
-		numInliers, scene.tracks.size()-numInliersPrev-numInliers-numInvalids, numInvalids, scene.status.nTracks, scene.tracks.size(), (float)numInliersObservations/numInliers, TD_TIMER_GET_FMT().c_str());
+		numInliers, scene.tracks.size()-numInliersPrev-numInliers-numInvalids, numInvalids, scene.status.nTracks, scene.tracks.size(), (float)numInliersObservations/MAXF(numInliers, 1u), TD_TIMER_GET_FMT().c_str());
 	return numInliers;
 }
 /*----------------------------------------------------------------*/
