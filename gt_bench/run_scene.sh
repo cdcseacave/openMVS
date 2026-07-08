@@ -259,6 +259,16 @@ eval_fusion() {
 eval_fusion w0 "$WD/cloud_w0.ply"
 eval_fusion w3 "$WD/cloud_w3.ply"
 
+# optional extra fusion weight for the w2-vs-w3 default re-check (DO_W2=1); default off = no change
+if [ "${DO_W2:-0}" = 1 ]; then
+  if [ "$FORCE" = 1 ] || [ ! -s "$WD/cloud_w2.ply" ]; then
+    printf 'Fuse Prior Weight = 2\n' > "$WD/fuse_w2.cfg"
+    "${BIN[@]}" "$SCENE_MVS" -w "$WD" "${COMMON_OPTS[@]}" --geometric-iters 0 --postprocess-dmaps 0 \
+        --dense-config-file fuse_w2.cfg -o cloud_w2.mvs
+  fi
+  eval_fusion w2 "$WD/cloud_w2.ply"
+fi
+
 # ================= timing.json =================
 if [ "$FORCE" = 1 ] || ! json_exists timing; then
   EST_WALL=$(cat "$MARK_EST")
