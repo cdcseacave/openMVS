@@ -795,7 +795,15 @@ bool Scene::EstimateNeighborViewsPointCloud(unsigned maxResolution)
 		for (unsigned r = 0; r < maxResolution; ++r) {
 			for (unsigned c = 0; c < maxResolution; ++c) {
 				const Point2f x(c*stepW + stepW/2, r*stepH + stepH/2);
-				const Depth depthPerturb(randomRange(minDepthPerturb, maxDepthPerturb));
+				// deterministic pseudo-random depth in [minDepthPerturb, maxDepthPerturb]: the global
+				// randomRange() draws from a time-seeded RNG (Util.cpp srand((unsigned)t)), which made
+				// this empty-point-cloud neighbor-covisibility estimate -- and therefore ALL downstream
+				// dense fusion -- vary run-to-run for scenes imported without a sparse point cloud (e.g.
+				// BlendedMVS via InterfaceMVSNet). A stateless hash of the (view-pair, grid-cell) keeps
+				// the same depth spread while making the whole reconstruction reproducible.
+				const uint32_t hashRnd(((idI*73856093u) ^ (idJ*19349663u) ^ ((r*maxResolution+c)*83492791u)) + 0x9E3779B9u);
+				const float unitRnd((float)((hashRnd>>8) & 0xFFFFFFu) * (1.f/16777216.f));
+				const Depth depthPerturb(minDepthPerturb + (maxDepthPerturb-minDepthPerturb)*unitRnd);
 				const Point3 X(imageData.camera.TransformPointI2W(Point3(x.x, x.y, depthPerturb)));
 				const Point3 X2(imageData2.camera.TransformPointW2C(X));
 				if (X2.z < 0)
