@@ -117,6 +117,54 @@ def pr_auc(scores, labels):
     return ap
 
 
+def operating_points(scores, ys,
+                     contam_budgets=(0.001, 0.005, 0.01, 0.02, 0.05),
+                     compl_targets=(0.80, 0.90, 0.95, 0.99)):
+    """Contamination-vs-completeness operating frontier of a confidence map -- the per-depth-map
+    analogue of fusion's completeness-at-a-gross-outlier-budget, so the adaptive confidence can be
+    graded on the SAME two GT metrics as fusion (outlier contamination + completeness), not only
+    ROC/PR-AUC.
+
+    A confidence map is used as a retention score: keep pixel iff conf >= t. Among the kept pixels,
+    outlier CONTAMINATION = kept_outliers / kept_total (= 1 - precision); COMPLETENESS retained =
+    kept_inliers / all_inliers (= recall). Sweeping t traces a frontier; we read off two dual
+    threshold-free summaries:
+      completeness_at_contam[b] = max completeness reachable while contamination <= b
+      contam_at_completeness[r] = min contamination reachable while completeness >= r
+    Both are invariant to any monotone rescaling of the confidence, so raw and adjusted confidence
+    (which live on different numeric scales) compare fairly WITHOUT picking a shared threshold --
+    the naive 'compare P@0.1 of raw vs adjusted' is unfair because recalibration shifts the scale.
+
+    ys: 1 = GT-inlier (retain-worthy positive), 0 = GT-outlier. Values are None when no operating
+    point satisfies the constraint (e.g. completeness target unreachable at any threshold)."""
+    scores = np.asarray(scores, dtype=np.float64)
+    ys = np.asarray(ys)
+    n = ys.size
+    npos = int(ys.sum()); nneg = n - npos
+    ca = {'%.3f' % b: None for b in contam_budgets}
+    cc = {'%.2f' % r: None for r in compl_targets}
+    if npos == 0 or nneg == 0:
+        return dict(completeness_at_contam=ca, contam_at_completeness=cc, n_pos=npos, n_neg=nneg)
+    order = np.argsort(-scores, kind='mergesort')  # highest confidence kept first
+    s = scores[order]; y = ys[order].astype(np.float64)
+    tp = np.cumsum(y); fp = np.cumsum(1.0 - y)
+    kept = np.arange(1, n + 1, dtype=np.float64)
+    # evaluate the frontier only at distinct-confidence group boundaries: thresholding BETWEEN two
+    # equal confidences is not a realizable operating point (ties must be kept or dropped together).
+    boundary = np.ones(n, dtype=bool)
+    boundary[:-1] = s[1:] != s[:-1]
+    idx = np.nonzero(boundary)[0]
+    compl = tp[idx] / npos
+    contam = fp[idx] / kept[idx]
+    for b in contam_budgets:
+        m = contam <= b
+        ca['%.3f' % b] = float(compl[m].max()) if np.any(m) else None
+    for r in compl_targets:
+        m = compl >= r
+        cc['%.2f' % r] = float(contam[m].min()) if np.any(m) else None
+    return dict(completeness_at_contam=ca, contam_at_completeness=cc, n_pos=npos, n_neg=nneg)
+
+
 def spearman(a, b):
     if a.size < 2:
         return float('nan')
@@ -320,10 +368,12 @@ def run_gt_mode(args):
         prec, rec = prec_recall_at(c, y, args.threshold)
         pooled = dict(roc_auc=roc_auc(c, y), pr_auc=pr_auc(c, y), p_at_01=prec, r_at_01=rec,
                       spearman=spearman(c, y.astype(np.float64)),
-                      brier=float(np.mean((c - y) ** 2)), ece=ece(c, y), n_labeled=int(c.size))
+                      brier=float(np.mean((c - y) ** 2)), ece=ece(c, y), n_labeled=int(c.size),
+                      operating=operating_points(c, y))
     else:
         pooled = dict(roc_auc=float('nan'), pr_auc=float('nan'), p_at_01=float('nan'), r_at_01=float('nan'),
-                      spearman=float('nan'), brier=float('nan'), ece=float('nan'), n_labeled=0)
+                      spearman=float('nan'), brier=float('nan'), ece=float('nan'), n_labeled=0,
+                      operating=operating_points(np.array([]), np.array([])))
 
     print('\n================ GT AGGREGATE (%d/%d views, format=%s, t=%.2f) ================' % (
         len(per_view), len(dmaps), args.gt_format, args.threshold))
@@ -331,6 +381,14 @@ def run_gt_mode(args):
         fmt(pooled['roc_auc']), fmt(pooled['pr_auc']), args.threshold, fmt(pooled['p_at_01']),
         args.threshold, fmt(pooled['r_at_01']), fmt(pooled['spearman']), fmt(pooled['brier']),
         fmt(pooled['ece']), pooled['n_labeled']))
+    op = pooled['operating']
+    def _f(x): return 'n/a' if x is None else '%.4f' % x
+    print('OPERATING  completeness @ contamination<= {0.5%%:%s 1%%:%s 2%%:%s 5%%:%s}   '
+          'contamination @ completeness>= {90%%:%s 95%%:%s 99%%:%s}' % (
+          _f(op['completeness_at_contam']['0.005']), _f(op['completeness_at_contam']['0.010']),
+          _f(op['completeness_at_contam']['0.020']), _f(op['completeness_at_contam']['0.050']),
+          _f(op['contam_at_completeness']['0.90']), _f(op['contam_at_completeness']['0.95']),
+          _f(op['contam_at_completeness']['0.99'])))
 
     out = dict(scene=os.path.basename(os.path.realpath(args.gt_depth_dir)), mode=args.gt_format,
                per_view=per_view, pooled=pooled)
