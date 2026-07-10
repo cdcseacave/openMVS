@@ -218,19 +218,41 @@ eth3d_pipes_L2          eth3d |  0.183  0.194  0.208 |  0.007  0.009  0.016 | +0
 eth3d_pipes_L3          eth3d |  0.161  0.169  0.184 |  0.050  0.063  0.089 | +0.01/+0.04pp  OK/OK
 ```
 
-### 3b. Fusion aggregates (28 scene-levels)
+### 3b. Fusion aggregates — mean / median / max across the 28 scene-levels
 
-| weight | mean completeness gain vs w0 (mid tier) | scene-levels over +0.05pp gross budget |
-|---|---|---|
-| **w2** | **+2.42pp** | **2 / 28** (only `bmvs_59d2657f` L0/L1, a near-textureless wall) |
-| **w3** | +5.79pp | **12 / 28** (bmvs 59d2657f/5a640093/5ba19a8a, eth3d delivery_area×3, office×3) |
+**Completeness GAIN over w0** (rescue off), at the mid tier, in percentage points:
 
-**Reading it:** every scene gains completeness from the rescue (both w2 and w3 beat w0 everywhere).
-The tradeoff is the outlier budget: **w3 roughly doubles w2's completeness gain but blows the +0.05pp
-per-scene gross budget on 12/28 scenes; w2 respects it on 26/28**. Recommendation: **default w2** (the
-"add completeness without adding outliers" goal makes outliers the binding constraint); w3 stays
-available for users wanting max completeness at a known outlier cost. Full narrative:
-`W2_W3_RECHECK.md`, `FINAL_2026-07.md` [2]. (Decision on the shipped default is yours — currently w3.)
+| weight | mean | median | max |
+|---|---|---|---|
+| w2 | +2.42pp | +1.93pp | +6.07pp |
+| w3 | +5.79pp | +5.68pp | +13.34pp |
+
+**Gross-outlier fraction — absolute** (%):
+
+| weight | mean | median | max |
+|---|---|---|---|
+| w0 (off) | 0.53% | 0.08% | 4.96% |
+| w2 | 0.60% | 0.09% | 5.77% |
+| w3 | 0.71% | 0.13% | 7.00% |
+
+**Gross outliers the rescue ADDS vs w0** (percentage points) — the actual cost of the rescue:
+
+| weight | mean | median | max (worst scene) |
+|---|---|---|---|
+| w2 | +0.07pp | +0.01pp | +0.81pp (`bmvs_59d2657f`) |
+| w3 | +0.18pp | +0.03pp | +2.04pp (`bmvs_59d2657f`) |
+
+Per dataset the added outliers split sharply: **ETH3D barely moves** (w2 max +0.05pp, w3 max +0.14pp),
+while **BlendedMVS carries the cost** (w2 max +0.81pp, w3 max +2.04pp) — almost entirely the one
+near-textureless wall (`bmvs_59d2657f`), where any rescue invents some geometry.
+
+**Reading it:** every scene gains completeness (w2 and w3 both beat w0 everywhere). w3 roughly doubles
+w2's completeness gain (+5.8 vs +2.4pp mean) but adds ~2.5× the outliers (+0.18 vs +0.07pp mean;
++2.04 vs +0.81pp worst-case). Since the goal is "completeness without new outliers," **w2 is the
+conservative default** — typically adding essentially nothing (median +0.01pp) — with w3 available for
+users wanting maximum completeness at a known outlier cost. (Shipped default is yours; currently w3.)
+Regenerate all of the above with `python gt_bench/aggregate_fuse.py`; deep-dive narrative in
+`W2_W3_RECHECK.md` and `FINAL_2026-07.md` [2].
 
 ---
 

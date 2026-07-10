@@ -10,7 +10,7 @@ Adopt rule (from the plan): largest w whose gross <= w0-gross + 0.05pp on EVERY 
 
 Usage: python aggregate_fuse.py [results_dir]   (default: /home/ubuntu/virginia/gt_bench/results_final)
 """
-import os, sys, json, glob
+import os, sys, json, glob, statistics as st
 
 RES = sys.argv[1] if len(sys.argv) > 1 else '/home/ubuntu/virginia/gt_bench/results_final'
 MID = {'bmvs': '0.005', 'eth3d': '0.02'}          # mid completeness tolerance key per dataset
@@ -48,22 +48,30 @@ def main():
             100 * gross['w0'], 100 * gross['w2'], 100 * gross['w3'],
             100 * dg2, 100 * dg3, b2, b3))
 
-    def agg(rs, name):
+    def ms(v):
+        return 'mean %5.2f  median %5.2f  max %5.2f' % (st.mean(v), st.median(v), max(v))
+
+    def block(rs, name):
         if not rs:
             return
-        n = len(rs)
-        dc2 = sum(r[2]['w2'] - r[2]['w0'] for r in rs) / n
-        dc3 = sum(r[2]['w3'] - r[2]['w0'] for r in rs) / n
-        print('  %-12s (%2d): mean Dcompleteness w2 %+.4f  w3 %+.4f  |  over-budget w2 %d  w3 %d'
-              % (name, n, dc2, dc3,
-                 sum(1 for r in rs if r[3]['w2'] - r[3]['w0'] > BUDGET),
-                 sum(1 for r in rs if r[3]['w3'] - r[3]['w0'] > BUDGET)))
-    print('\n=== aggregates (mean completeness gain vs w0; per-scene +0.05pp gross budget) ===')
-    agg([r for r in rows if r[1] == 'eth3d'], 'ETH3D')
-    agg([r for r in rows if r[1] == 'bmvs'], 'BlendedMVS')
-    agg(rows, 'ALL')
-    print('\nover-budget scene-levels:  w2 = %d/%d  %s\n                           w3 = %d/%d  %s'
-          % (len(over['w2']), len(rows), over['w2'], len(over['w3']), len(rows), over['w3']))
+        cg2 = [100 * (r[2]['w2'] - r[2]['w0']) for r in rs]   # completeness gain vs w0 (pp)
+        cg3 = [100 * (r[2]['w3'] - r[2]['w0']) for r in rs]
+        ga0 = [100 * r[3]['w0'] for r in rs]                  # absolute gross-outlier (%)
+        ga2 = [100 * r[3]['w2'] for r in rs]
+        ga3 = [100 * r[3]['w3'] for r in rs]
+        dg2 = [100 * (r[3]['w2'] - r[3]['w0']) for r in rs]   # gross ADDED vs w0 (pp)
+        dg3 = [100 * (r[3]['w3'] - r[3]['w0']) for r in rs]
+        print('\n%s (%d scene-levels)' % (name, len(rs)))
+        print('  completeness gain vs w0 (pp):  w2 [%s]   w3 [%s]' % (ms(cg2), ms(cg3)))
+        print('  absolute gross-outlier (%%):    w0 [%s]   w2 [%s]   w3 [%s]' % (ms(ga0), ms(ga2), ms(ga3)))
+        print('  gross ADDED vs w0 (pp):        w2 [%s]   w3 [%s]' % (ms(dg2), ms(dg3)))
+
+    print('\n=== aggregates: mean / median / max across scene-levels ===')
+    block(rows, 'ALL')
+    block([r for r in rows if r[1] == 'eth3d'], 'ETH3D')
+    block([r for r in rows if r[1] == 'bmvs'], 'BlendedMVS')
+    print('\n(for reference, per-scene +0.05pp gross budget: over on w2 = %d/%d, w3 = %d/%d)'
+          % (len(over['w2']), len(rows), len(over['w3']), len(rows)))
 
 
 if __name__ == '__main__':
