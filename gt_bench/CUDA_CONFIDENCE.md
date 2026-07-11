@@ -72,12 +72,12 @@ recalibration (GPU): … ms/map avg".)
 
 ## CUDA-OFF build
 
-A `-DOpenMVS_USE_CUDA=OFF` build is expected to compile: the kernel `.cu` is excluded by the CMake
-glob, `AdjustConfidenceCUDA` / `RunConfidenceCUDA` / `ConfNeighborHost` / `pmCUDAPool` /
-`bEstimateConfidenceCUDA` are all referenced only inside `#ifdef _USE_CUDA`, `ConfidenceCUDA.h`'s
-declaration is plain POD (no CUDA types), and `ConfidenceRefine.h`'s host path (`CR_HD`=`inline`,
-double `std::exp`) already compiles in the host passes. (A dedicated CUDA-off configure/build confirms
-this — see `/home/ubuntu/virginia/build_nocuda`.)
+A `-DOpenMVS_USE_CUDA=OFF` build compiles and links cleanly (**verified**: fresh CUDA-off configure +
+`DensifyPointCloud` target built 100%, no errors, `ConfidenceCUDA.cu.o` correctly excluded). The kernel
+`.cu` is dropped by the CMake glob, `AdjustConfidenceCUDA` / `RunConfidenceCUDA` / `ConfNeighborHost` /
+`pmCUDAPool` / `bEstimateConfidenceCUDA` are all referenced only inside `#ifdef _USE_CUDA`,
+`ConfidenceCUDA.h`'s declaration is plain POD (no CUDA types), and `ConfidenceRefine.h`'s host path
+(`CR_HD`=`inline`, double `std::exp`) compiles in the host passes.
 
 ## Reproduce
 
