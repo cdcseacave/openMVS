@@ -35,6 +35,7 @@
 #include "PatchMatchCUDA.h"
 #include "PatchMatchMetal.h"
 #include "DMapCache.h"
+#include "ConfidenceRefine.h"
 #include <atomic>
 #include <chrono>
 #include <vector>
@@ -1502,6 +1503,14 @@ static bool AdjustConfidenceSweep(DepthMapsData& depthMapsData, DepthData& depth
 	// Task 15: free-space-violation (FSV) negative evidence (opt-in, lambda==0 is an exact no-op)
 	const float lambdaViol(OPTDENSE::fConfViolationWeight);
 	const float violMargin(OPTDENSE::fConfViolationMargin);
+	// single-precision parameter snapshot shared with the CUDA confidence kernel; the final
+	// per-pixel posterior below is routed through ConfRefine::Posterior so CPU and GPU evaluate the
+	// identical closed form (the CPU path stays byte-identical -- ConfRefine::CRexp uses double std::exp)
+	ConfRefine::Params crp;
+	crp.s = s; crp.tau = tau; crp.kPrior = kPrior; crp.w0 = w0; crp.confFloor = confFloor;
+	crp.minConfidence = minConfidence; crp.thReproj = thReproj; crp.thDepth = (float)thDepth;
+	crp.normalError = normalError; crp.lambdaViol = lambdaViol; crp.violMargin = violMargin;
+	crp.epsConf = epsConf;
 
 	// intra-map geometric prior (once per map); bParallel=false -- this call runs inside one of
 	// nMaxThreads already-parallel pool-worker threads (see GetIntraMapPrior's declaration comment)
@@ -1804,15 +1813,10 @@ static bool AdjustConfidenceSweep(DepthMapsData& depthMapsData, DepthData& depth
 			const float Kf(bSoftGates ? countMapSoft(r,c) : (float)K);
 			const float Pconf(pconfMap(r,c));
 			const unsigned V(violMap(r,c));
-			// map (prior, confirmation count, photometric conf) to a calibrated [0,1] confidence with no hard cliff
-			const float gate(1.f - EXP(-(Kf + kPrior*pGeo)/tau));
-			// Task 15: free-space-violation evidence dilutes the posterior by inflating its denominator;
-			// lambdaViol==0 makes this an EXACT no-op (0.f*(float)V == 0.f for any finite V)
-			const float posterior((s*pGeo + Pconf)/(s + Pconf + lambdaViol*(float)V));
-			const float photoFactor(w0 + (1.f-w0)*confPhoto);
-			float conf(CLAMP(posterior*gate*photoFactor, 0.f, 1.f));
-			if (Kf >= 1.f)
-				conf = MAXF(conf, confFloor*confPhoto); // never erode a genuinely confirmed pixel (anti-cascade)
+			// map (prior, confirmation count, photometric conf) to a calibrated [0,1] confidence with no
+			// hard cliff -- the gate (soft nMinViews), Beta posterior mean with FSV dilution, photometric
+			// floor, and anti-cascade floor now live in ConfRefine::Posterior (shared with the GPU kernel)
+			const float conf(ConfRefine::Posterior(confPhoto, pGeo, Kf, Pconf, (float)V, crp));
 			newConfMap(r,c) = conf;
 			if (bFeat) {
 				// Task 16: in soft mode cfeatK stores Ksoft SCALED by 1000 (fixed-point, ~3 decimal digits)

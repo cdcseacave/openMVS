@@ -37,6 +37,7 @@
 #define OPTCONFIG_API MVS_API
 #include "DepthMap.h"
 #include "Mesh.h"
+#include "ConfidenceRefine.h"
 #include "../Common/AutoEstimator.h"
 // CGAL: depth-map initialization
 #include <CGAL/Simple_cartesian.h>
@@ -1619,42 +1620,18 @@ void MVS::EstimatePointNormals(const ImageArr& images, PointCloud& pointcloud, i
 
 bool DepthGradientEstimator::DepthGradient(const ImageRef& ir, Point3f& ws) const
 {
-	float& w  = ws[0];
-	float& wx = ws[1];
-	float& wy = ws[2];
-	w = depthMap(ir);
-	if (w <= 0)
+	// least-squares plane fit shared verbatim with the CUDA confidence prior kernel
+	// (ConfRefine::DepthPlaneFit); a tiny accessor adapts this TImage to the plain (x,y) interface
+	// the shared template expects. Byte-identical to the previous hand-written loop.
+	struct Acc {
+		const DepthMap& dm;
+		inline float operator()(int x, int y) const { return dm(ImageRef(x, y)); }
+		inline bool inside(int x, int y) const { return dm.isInside(ImageRef(x, y)); }
+	} acc{depthMap};
+	float w, wx, wy;
+	if (!ConfRefine::DepthPlaneFit(acc, ir.x, ir.y, w, wx, wy))
 		return false;
-	// loop over neighborhood and finding least squares plane,
-	// the coefficients of which give gradient of depth
-	int whxx(0), whxy(0), whyy(0);
-	float wgx(0), wgy(0);
-	const int Radius(1);
-	int n(0);
-	for (int y = -Radius; y <= Radius; ++y) {
-		for (int x = -Radius; x <= Radius; ++x) {
-			if (x == 0 && y == 0)
-				continue;
-			const ImageRef pt(ir.x+x, ir.y+y);
-			if (!depthMap.isInside(pt))
-				continue;
-			const float wi(depthMap(pt));
-			if (!IsDepthValid(w, wi))
-				continue;
-			whxx += x*x; whxy += x*y; whyy += y*y;
-			wgx += (wi - w)*x; wgy += (wi - w)*y;
-			++n;
-		}
-	}
-	if (n < 3)
-		return false;
-	// solve 2x2 system, generated from depth gradient
-	const int det(whxx*whyy - whxy*whxy);
-	if (det == 0)
-		return false;
-	const float invDet(1.f/float(det));
-	wx = (float( whyy)*wgx - float(whxy)*wgy)*invDet;
-	wy = (float(-whxy)*wgx + float(whxx)*wgy)*invDet;
+	ws[0] = w; ws[1] = wx; ws[2] = wy;
 	return true;
 }
 
