@@ -874,6 +874,13 @@ macro(ConfigLibrary)
 		set(DEF_INSTALL_CMAKE_DIR "lib/cmake")
 	endif()
 	set(INSTALL_CMAKE_DIR ${DEF_INSTALL_CMAKE_DIR} CACHE PATH "Installation directory for CMake files")
+	# Group the installed binaries, libraries and CMake files under a per-project
+	# subdirectory (<prefix>/bin/${PROJECT_NAME}, <prefix>/lib/${PROJECT_NAME}, ...).
+	# Disable to install them directly into <prefix>/bin, <prefix>/lib, ... so the
+	# executables sit next to their dependency DLLs (e.g. a shared vcpkg triplet).
+	# Headers are always namespaced under <prefix>/include/${PROJECT_NAME} to avoid
+	# collisions with other packages in a shared include prefix.
+	option(INSTALL_USE_SUBDIR "Group installed binaries/libraries/CMake files under a per-project (${PROJECT_NAME}) subdirectory" ON)
 	# Make relative paths absolute (needed later on)
 	foreach(p LIB BIN INCLUDE CMAKE)
 		set(var INSTALL_${p}_DIR)
@@ -883,7 +890,10 @@ macro(ConfigLibrary)
 		else()
 			set(${varp} "${CMAKE_INSTALL_PREFIX}/${${var}}")
 		endif()
-		set(${var} "${${varp}}/${PROJECT_NAME}")
+		set(${var} "${${varp}}")
+		if(INSTALL_USE_SUBDIR OR p STREQUAL "INCLUDE")
+			set(${var} "${${var}}/${PROJECT_NAME}")
+		endif()
 	endforeach()
 endmacro()
 

@@ -8,6 +8,8 @@ Equirectangular (360°) video is supported natively: setting `--camera-type 1` s
 
 The SfM module, implemented in [libs/SFM](https://github.com/cdcseacave/openMVS/blob/master/libs/SFM) and exposed as the `CreateStructure` app, performs a full incremental reconstruction from an unordered set of images. It includes feature detection (SIFT / AKAZE / ORB / SIFTGPU), pairwise matching (exhaustive, vocabulary-tree or sequential), geometric verification, incremental pose estimation and triangulation, followed by Ceres-based bundle adjustment. The reconstruction can be seeded from a CSV file of known camera poses (full poses, extrinsics only or positions only) and its result can be exported either as a native `.sfm` file or directly as a `.mvs` project for the downstream dense-reconstruction step.
 
+Scenes with GPS metadata can be rigidly aligned to a metric ENU (East/North/Up) frame and optionally refined with GPS position priors in a final bundle adjustment (`--gps-position-weight`). The pose covariance of the last bundle adjustment can be recorded per image and exported as a quality report (`--export-pose-quality`) — 1-sigma position and rotation accuracy per camera, absolute ENU meters when GPS priors are used — which the `Viewer` renders as per-camera error ellipsoids (see [design/PoseUncertainty.md](https://github.com/cdcseacave/openMVS/blob/master/docs/design/PoseUncertainty.md)).
+
 Both pinhole and spherical (equirectangular) cameras are first-class camera models. For spherical images, matching skips the fundamental-matrix epipolar check (the epipolar geometry degenerates for 360° rays) and bundle adjustment uses an angular reprojection cost scaled to pixel-equivalent residuals.
 
 ## Spherical Cameras

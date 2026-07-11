@@ -52,6 +52,9 @@ Notable options:
 - `--vocab-max-pairs` (default `50`) — maximum pairs per image for vocabulary-tree matching.
 - `--import-poses-csv` (default `poses.csv`) with `--import-poses-mode` (`0` none, `1` all, `2` extrinsics only, `3` positions only) — seed the reconstruction from a CSV of known poses.
 - `--export-poses-csv` — write the recovered poses alongside the scene.
+- `--export-pose-quality` — estimate the per-image pose covariance during the final bundle adjustment and write a per-image quality report to CSV: 1-sigma camera-position accuracy per axis (with the full 3x3 covariance), rotation accuracy per axis in degrees, observation counts and the a-priori GPS accuracy. On a GPS-aligned scene the position values are ENU meters (East/North/Up); with GPS priors enabled they are absolute accuracies, otherwise relative to a reference (datum) image. The report can be visualized as per-camera error ellipsoids by the `Viewer` (`--pose-quality-file`).
+- `--align-gps-threshold` (default `5` m, `0` disabled) — rigidly align the reconstruction to the image GPS metadata (metric ENU frame).
+- `--gps-position-weight` / `--gps-position-weight-z` (default `0`, disabled) — after GPS alignment, refine the reconstruction with a bundle adjustment that constrains each camera to its GPS position (weighted by the per-image accuracy metadata); this anchors the global position, orientation and scale to the GPS data.
 - `--import-openmvg-dir` / `--export-openmvg-dir` — interoperate with OpenMVG feature files.
 - `--focal-length` (default `0`, disabled) and `--default-focal-ratio` (default `1.2`, used as `ratio * max(width,height)` when the focal length is unknown) — intrinsic overrides.
 - `--extract-colors` (default `false`) — attach image colors to the reconstructed sparse points.
@@ -174,6 +177,8 @@ A typical sparse point-cloud and camera poses obtained by the previous steps wil
 ![sparse point-cloud](https://github.com/cdcseacave/openMVS_sample/blob/master/Sparse.jpg)
 
 `Viewer` module can be used to visualize any `OpenMVS` scene file (`MVS` project, `SFM` sparse reconstruction, or individual `DMAP` depth-map) or geometry file (`PLY`, `OBJ`, `OFF`, `GLTF`, `GLB`). The viewer expects the input file either on the command line or to drag & drop it inside the viewer window. `Viewer` is used to create all the screenshots below.
+
+A pose-quality report produced by `CreateStructure --export-pose-quality` can be loaded alongside the scene with `--pose-quality-file quality.csv`: each camera gets a wireframe error ellipsoid (shape and orientation from its 3x3 position covariance, colored blue = best localized to red = worst), a magnification slider in the render settings scales the 1-sigma radii, and selecting a camera shows its per-axis position and rotation accuracy. Report rows are matched to scene images by ID, which the `.mvs` export preserves from the SfM scene.
 
 The output of each `OpenMVS` module is displayed by default both on the console and stored in a `LOG` file. Example of the generated `LOG` files can also be found at [OpenMVS_sample](https://github.com/cdcseacave/openMVS_sample).
 

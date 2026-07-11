@@ -128,9 +128,11 @@ public:
 	void ShowCameraInfoDialog(Window& window);
 	void ShowSelectionDialog(Window& window);
 	void ShowSavePromptDialog(Window& window);
+	void PromptOpenPoseQualityReport(Window& window); // prompt for and load a pose-quality CSV onto the open scene
 	static bool ShowOpenFileDialog(String& filename, String& geometryFilename);
 	static bool ShowSaveFileDialog(String& filename);
 	static bool ShowSaveImageDialog(String& filename);
+	static bool ShowOpenPoseQualityDialog(String& filename);
 
 	// Input handling
 	void RecordLog(const String& msg);

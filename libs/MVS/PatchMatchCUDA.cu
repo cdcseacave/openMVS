@@ -614,12 +614,13 @@ __device__ void ProcessPixel(const ImagePixels* images, const ImagePixels* depth
 			SetBit(newSelectedViews, imgId);
 	float finalCosts[8];
 	for (int posId = 0; posId < 8; ++posId)
-		finalCosts[posId] = AggregateMultiViewScores(viewWeights, costArray[posId], nNumViews);
+		finalCosts[posId] = valid[posId] ? AggregateMultiViewScores(viewWeights, costArray[posId], nNumViews) : FLT_MAX;
 	const int minCostIdx = FindMinIndex(finalCosts, 8);
 	float costVector[MAX_VIEWS];
 	MultiViewScorePlane<GEOM>(refCache, images, depthImages, p, plane, lowDepth, costVector);
 	cost = AggregateMultiViewScores(viewWeights, costVector, nNumViews);
-	if (finalCosts[minCostIdx] < cost && valid[minCostIdx]) {
+	if (finalCosts[minCostIdx] < cost) {
+		ASSERT(valid[minCostIdx]);
 		plane = LoadPlaneLDG(&planes[positions[minCostIdx]]);
 		plane.w() = neighborDepths[minCostIdx];
 		cost = finalCosts[minCostIdx];

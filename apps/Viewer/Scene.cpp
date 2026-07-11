@@ -252,6 +252,8 @@ Scene::Scene(ARCHIVE_TYPE _nArchiveType)
 	, geometryMesh(false)
 	, estimateSfMNormals(false)
 	, estimateSfMPatches(false)
+	, cameraUncertaintyNorm(0.f)
+	, cameraUncertaintyAutoScale(1.f)
 	, workflowState(WF_STATE_IDLE)
 	, currentWorkflowType(WF_NONE)
 	, geometryModified(false)
@@ -267,6 +269,9 @@ void Scene::Reset()
 {
 	window.Reset();
 	trackBasedNeighbors.Release();
+	cameraUncertainty.Release();
+	cameraUncertaintyNorm = 0.f;
+	cameraUncertaintyAutoScale = 1.f;
 	images.Release();
 	scene.Release();
 	sceneName.clear();
@@ -583,6 +588,114 @@ bool Scene::Export(const String& _fileName, const String& exportType, bool bView
 			fs << aabb;
 	}
 	return bPoints || bMesh;
+}
+
+// Load the per-image pose uncertainty from a CreateStructure pose-quality CSV report
+// (--export-pose-quality) and enable the uncertainty-ellipsoids display.
+// Rows are matched to the scene images by ID (ExportMVS preserves the SFM image ID).
+bool Scene::LoadPoseUncertainty(const String& fileName) {
+	cameraUncertainty.Release();
+	cameraUncertaintyNorm = 0.f;
+	if (!IsOpen()) {
+		DEBUG("error: pose uncertainty requires an open scene");
+		return false;
+	}
+	std::ifstream is(fileName);
+	if (!is.is_open()) {
+		DEBUG("error: cannot open pose quality report '%s'", fileName.c_str());
+		return false;
+	}
+	// parse the CSV rows: ID,name,valid,datum,sigmaPosX,sigmaPosY,sigmaPosZ,
+	// covPosXY,covPosXZ,covPosYZ,sigmaRotX,sigmaRotY,sigmaRotZ[,...extra columns ignored]
+	std::unordered_map<uint32_t, CameraUncertainty> mapUncertainty;
+	std::string line;
+	while (std::getline(is, line)) {
+		if (line.empty() || line[0] == '#')
+			continue;
+		std::vector<std::string> fields;
+		size_t start = 0;
+		for (size_t pos; (pos = line.find(',', start)) != std::string::npos; start = pos + 1)
+			fields.push_back(line.substr(start, pos - start));
+		fields.push_back(line.substr(start));
+		if (fields.size() < 13)
+			continue;
+		char* end;
+		const unsigned long id = std::strtoul(fields[0].c_str(), &end, 10);
+		if (end == fields[0].c_str() || *end != '\0')
+			continue; // header or malformed line
+		if (fields[2] == "0")
+			continue; // image without computed uncertainty
+		const Point3f sigmaPos((float)std::atof(fields[4].c_str()), (float)std::atof(fields[5].c_str()), (float)std::atof(fields[6].c_str()));
+		if (sigmaPos.x < 0.f)
+			continue;
+		const Point3f covOff((float)std::atof(fields[7].c_str()), (float)std::atof(fields[8].c_str()), (float)std::atof(fields[9].c_str()));
+		CameraUncertainty& u = mapUncertainty[(uint32_t)id];
+		u.posCov = Matrix3x3f(
+			SQUARE(sigmaPos.x), covOff.x, covOff.y,
+			covOff.x, SQUARE(sigmaPos.y), covOff.z,
+			covOff.y, covOff.z, SQUARE(sigmaPos.z));
+		u.posSigma = sigmaPos;
+		u.rotSigma = Point3f((float)std::atof(fields[10].c_str()), (float)std::atof(fields[11].c_str()), (float)std::atof(fields[12].c_str()));
+		u.state = fields[3] != "0" ? CameraUncertainty::DATUM : CameraUncertainty::COMPUTED;
+	}
+	if (mapUncertainty.empty()) {
+		DEBUG("error: no valid pose uncertainty entries in '%s'", fileName.c_str());
+		return false;
+	}
+	// match the entries to the scene images by ID
+	cameraUncertainty.resize(images.size());
+	FOREACH(i, cameraUncertainty)
+		cameraUncertainty[i] = CameraUncertainty();
+	unsigned matched = 0;
+	FloatArr sigmas;
+	FOREACH(i, images) {
+		const MVS::Image& imageData = scene.images[images[i].idx];
+		const auto it = mapUncertainty.find(imageData.ID);
+		if (it == mapUncertainty.end())
+			continue;
+		cameraUncertainty[i] = it->second;
+		++matched;
+		if (it->second.state == CameraUncertainty::COMPUTED)
+			sigmas.push_back(it->second.MaxPosSigma());
+	}
+	if (matched == 0) {
+		DEBUG("error: no pose uncertainty entries in '%s' match the scene image IDs", fileName.c_str());
+		cameraUncertainty.Release();
+		return false;
+	}
+	// robust colormap normalization: 95th-percentile of the max-axis sigma
+	if (!sigmas.empty()) {
+		sigmas.Sort();
+		cameraUncertaintyNorm = sigmas[(sigmas.size() - 1) * 95 / 100];
+		if (cameraUncertaintyNorm <= 0.f)
+			cameraUncertaintyNorm = MAXF(sigmas.Last(), 1.f);
+	}
+	// Auto-size the ellipsoids to the scene: raw 1-sigma radii are in world units and can be far
+	// smaller (metric/GPS scenes) or far larger (datum-relative scenes, where the unanchored scale
+	// mode saturates) than the scene itself, so a fixed scale renders them sub-pixel or scene-
+	// spanning ("nothing visible"). Size against the MEDIAN sigma (not the 95th-pct color norm,
+	// which the few worst-localized cameras inflate — that would shrink every typical ellipsoid):
+	// scale so the median ellipsoid's largest axis is ~3% of the scene bounding-box diagonal
+	// (poorly-localized cameras then stand out proportionally larger, while typical ones stay
+	// small enough not to overlap their neighbours at the default x1 slider). This is kept SEPARATE
+	// from the user-facing `Window::uncertaintyEllipsoidScale` (which multiplies it, defaulting to 1)
+	// so the deferred ImGui-ini load of that persisted slider value cannot clobber the auto fit.
+	const float sceneExtent = window.GetCamera().GetSceneSize().norm();
+	const float medianSigma = sigmas.empty() ? 0.f : sigmas[sigmas.size() / 2]; // sigmas is sorted above
+	cameraUncertaintyAutoScale = (sceneExtent > 0.f && medianSigma > 0.f) ?
+		MINF(MAXF(0.03f * sceneExtent / medianSigma, 1e-6f), 1e6f) : 1.f;
+	window.showUncertaintyEllipsoids = true;
+	window.GetRenderer().UploadUncertaintyEllipsoids(window);
+	Window::RequestRedraw();
+	// drawable = COMPUTED entries (datum entries have zero covariance and draw nothing)
+	const unsigned drawable = sigmas.size();
+	DEBUG("Pose uncertainty loaded from '%s': %u/%u images matched (%u drawable ellipsoids, %u datum), "
+		"sigma norm %.3g, auto-fit ellipsoid scale %.3g (x%.3g slider)%s",
+		Util::getFileNameExt(fileName).c_str(), matched, images.size(),
+		drawable, matched - drawable, cameraUncertaintyNorm, cameraUncertaintyAutoScale,
+		window.uncertaintyEllipsoidScale,
+		drawable == 0 ? " -- WARNING: nothing to draw (all matched entries are gauge datum)" : "");
+	return true;
 }
 
 // Estimate ROI workflow wrapper (async execution)

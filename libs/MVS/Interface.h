@@ -234,7 +234,10 @@ bool SerializeSave(const _Tp& obj, const std::string& fileName, uint32_t version
 	// serialize out the current state
 	ARCHIVE::ArchiveSave serializer(stream, version);
 	serializer & obj;
-	return true;
+	// flush and verify the write actually reached disk: a failure here (e.g. the volume ran
+	// out of space) otherwise leaves a silently truncated file that still parses its element
+	// counts but is missing data, so report it as an error instead of a successful save
+	return stream.flush().good();
 }
 template<typename _Tp>
 bool SerializeLoad(_Tp& obj, const std::string& fileName, uint32_t* pVersion=NULL) {
@@ -542,7 +545,7 @@ struct Interface
 				ar & score;
 			}
 		};
-		
+
 		std::string name; // image file name
 		std::string maskName; // segmentation file name (optional)
 		uint32_t platformID; // ID of the associated platform

@@ -13,12 +13,17 @@ class Scene {
     ImagePairArr pairs;       // Pairwise matches and geometry
     TrackArr tracks;          // 3D points with multi-view observations
     ColorArr colors;          // Per-track RGB colors
+    PoseUncertaintyArr poseUncertainty; // Optional per-image pose covariance from the last global BA
     Transform transform;      // Similarity transform (GPS alignment)
     OBB3f obb;               // Scene bounding box
     Status status;            // Pipeline state tracking
     BS::light_thread_pool threadPool;
 };
 ```
+`poseUncertainty` is filled during `Scene::Reconstruct` when `ReconstructionConfig::estimatePoseUncertainty`
+is set, serialized with the scene, and kept consistent with the world frame by `Scene::Transform`
+(position covariance maps as `scale^2 * R * Cov * R^T`; rotation variance is about the camera axes,
+untouched). Exported as a per-image CSV quality report by `ExportPoseUncertaintyCSV`.
 
 ### Camera Hierarchy (`Camera.h`) - Polymorphic
 - **Camera** (abstract base): Virtual `Project()`, `Unproject()`, `GetK()`, `AccumulateIntrinsics()`, `ScaleIntrinsics()`
@@ -80,7 +85,12 @@ Extract features (AKAZE/ORB/SIFT/SIFTGPU) -> Match pairs (VOCABULARY/EXHAUSTIVE/
 -> Build tracks (union-find) -> Filter tracks + weak images
 -> Star initialization (reference view) -> Resect remaining images (incremental)
 -> Bundle adjustment (global + local)
--> Optional GPS alignment
+-> Optional GPS alignment (rigid Sim(3) to metric ENU)
+-> Optional GPS-prior BA (BAConfig::gpsPositionWeight/Z > 0; must run post-alignment:
+   the residuals are gated on GEO_ALIGN and their meters-vs-pixels weighting assumes ENU)
+-> Optional pose-uncertainty recording (estimatePoseUncertainty): covariance read off the
+   last global BA (final BA, superseded by the GPS-prior BA when it runs) BEFORE FilterTracks
+   invalidates the parameter blocks the solved ceres problem references
 ```
 
 ### Hierarchical Reconstruction (`Scene::ReconstructHierarchical`)
@@ -127,7 +137,16 @@ Ceres Solver-based non-linear optimization.
 - Parameterization: angle-axis or quaternion for rotation
 - Robust loss: Huber with configurable threshold
 - Variants: Global BA, Local BA (windowed)
-- Optional GPS position constraints
+- Optional GPS position constraints (`GPSPositionError`: camera center vs GPS in ENU, weighted by
+  per-image accuracy metadata with 10 m / 20 m fallbacks; gated on the GEO_ALIGN scene state; when
+  present the gauge is anchored, so no reference pose is held fixed)
+- **Pose covariance** (`ComputePoseUncertainty`, call on the instance after `Adjust`): Schur-eliminates
+  the 3D points, reads the per-pose 6x6 marginal blocks off a sparse selected inverse (Takahashi).
+  `PoseUncertainty` = rotation variance about the camera axes (rad^2) + full 3x3 world-frame
+  camera-center covariance (diag + off-diag; the position tangent is the plain world camera center).
+  Gauge semantics: with GPS priors the covariance is absolute (ENU); otherwise it is relative to a
+  datum image (reported as exactly 0) and the global SCALE gauge stays unanchored, so magnitudes
+  saturate at the damping ceiling along the scale mode — treat non-GPS values as relative trust only.
 
 ### Star Initializer (`StarInitializer.h`)
 Reference view selection (highest connectivity) + star configuration initialization.
@@ -166,7 +185,12 @@ Joint refinement of focal length + distortion (k1, k2) with relative pose via Ce
 ## External Format Support
 - **COLMAP import** (`ImportCOLMAP.h`): Binary reconstruction, selective import
 - **ROMA2 import** (`ImportROMA2.h`): Robust optical matching .npz files
-- **MVS export** (`InterfaceMVS.h`): Conversion to MVS binary format
+- **MVS export** (`InterfaceMVS.h`): Conversion to MVS binary format. The SFM image ID is written
+  into `Interface::Image::ID` (the external/global-ID field) so per-image data keyed by SFM ID —
+  e.g. the pose-quality CSV — correlates after import; `Vertex::View::imageID` stays the
+  images-ARRAY-POSITION (hard invariant), tracked separately from the IDs. Spherical cube-map faces
+  get fresh unique IDs past the largest SFM ID (depth-map file names are derived from the ID and
+  must not collide)
 - **PLY export**: Tracks as 3D points with optional colors
 
 ## Memory Management

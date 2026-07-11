@@ -48,6 +48,7 @@ namespace {
 namespace OPT {
 String strInputFileName;
 String strGeometryFileName;
+String strPoseQualityFileName;
 String strOutputFileName;
 String strScreenshotFileName;
 String strViewFileName;
@@ -111,6 +112,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 	config.add_options()
 		("input-file,i", boost::program_options::value<std::string>(&OPT::strInputFileName), "input project filename containing camera poses and scene (point-cloud/mesh)")
 		("geometry-file,g", boost::program_options::value<std::string>(&OPT::strGeometryFileName), "mesh or point-cloud with views file name (overwrite existing geometry)")
+		("pose-quality-file", boost::program_options::value<std::string>(&OPT::strPoseQualityFileName), "per-image pose quality CSV report (CreateStructure --export-pose-quality) to display as camera uncertainty ellipsoids")
 		("output-file,o", boost::program_options::value<std::string>(&OPT::strOutputFileName), "output filename for storing the mesh")
 		("screenshot-file,S", boost::program_options::value<std::string>(&OPT::strScreenshotFileName), "render the scene off-screen to this image file and exit (scriptable; extension selects the format, .png if omitted)")
 		("view-file", boost::program_options::value<std::string>(&OPT::strViewFileName), "transform file controlling the screenshot viewpoint (12 or 16 whitespace-separated values, row-major camera-to-world); if omitted the default fitted view is used")
@@ -168,6 +170,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 
 	// initialize optional options
 	Util::ensureValidPath(OPT::strGeometryFileName);
+	Util::ensureValidPath(OPT::strPoseQualityFileName);
 	Util::ensureValidPath(OPT::strOutputFileName);
 	Util::ensureValidPath(OPT::strScreenshotFileName);
 	Util::ensureValidPath(OPT::strViewFileName);
@@ -206,6 +209,10 @@ int main(int argc, LPCTSTR* argv)
 			OPT::strInputFileName.empty() ? OPT::strInputFileName : MAKE_PATH_SAFE(OPT::strInputFileName),
 			OPT::strGeometryFileName.empty() ? OPT::strGeometryFileName : MAKE_PATH_SAFE(OPT::strGeometryFileName)))
 		return EXIT_FAILURE;
+	if (viewer.IsOpen() && !OPT::strPoseQualityFileName.empty()) {
+		// load and display the per-image pose uncertainty
+		viewer.LoadPoseUncertainty(MAKE_PATH_SAFE(OPT::strPoseQualityFileName));
+	}
 	if (viewer.IsOpen() && !OPT::strOutputFileName.empty()) {
 		// export the scene
 		viewer.Export(MAKE_PATH_SAFE(OPT::strOutputFileName), OPT::strExportType.empty()?LPCTSTR(NULL):OPT::strExportType.c_str());

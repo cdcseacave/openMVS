@@ -301,7 +301,18 @@ __inline__ static void trap_instruction() { __asm__ volatile("brk #0"); }
 #define ASSERT(exp, ...) {if (!(exp)) {PRINT_ASSERT_MSG(exp, ##__VA_ARGS__); _ASSERT_BREAK();}}
 #endif // _INC_CRTDBG
 #define TRACE(...) {TCHAR buffer[2048]; _sntprintf(buffer, 2048, __VA_ARGS__); OutputDebugString(buffer);}
-#else // _MSC_VER
+#elif defined(__CUDA_ARCH__)
+// __CUDA_ARCH__ is defined only while nvcc compiles the device side of a
+// .cu file -- never for ordinary host translation units, and never for the
+// __host__ side of a .cu file. CUDA implements
+// it natively for device code (__assertfail() + trap; the failure message
+// surfaces at the next cudaStreamSynchronize()/error check) and it already
+// compiles to nothing under NDEBUG, so this costs nothing in Release builds.
+#include <cassert>
+#define SIMPLE_ASSERT(exp) assert(exp)
+#define ASSERT(exp, ...) assert(exp)
+#define TRACE(...)
+#else // !_MSC_VER & !__CUDA_ARCH__
 #include <assert.h>
 #define SIMPLE_ASSERT(exp) {if (!(exp)) _ASSERT_BREAK();}
 #define ASSERT(exp, ...) {if (!(exp)) {PRINT_ASSERT_MSG(exp, ##__VA_ARGS__); _ASSERT_BREAK();}}

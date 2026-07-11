@@ -46,6 +46,15 @@ bool BAPinholeReprojectionJacobianTest();
 // Small SFM smoke test: build tiny scene and run BundleAdjustment::Adjust
 bool PipelineTest();
 
+// GPS-prior BA on a geo-aligned scene: absolute (datum-free) pose covariance
+// and the missing-accuracy fallback
+bool GPSPriorPoseUncertaintyTest();
+
+// Pose-quality report roundtrip: pose uncertainty recorded on the scene from the last
+// BA, CSV export re-read, ExportMVS preserving the SFM image IDs the report is
+// correlated by, world-transform covariance mapping, and .sfm serialization
+bool PoseUncertaintyExportTest();
+
 // GPS alignment degeneracy test: coincident/collinear GPS positions must be
 // rejected without modifying the scene; well-spread GPS must still align
 bool AlignToGPSDegenerateTest();

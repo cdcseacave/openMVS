@@ -49,7 +49,9 @@ All in `namespace SFM`. Called sequentially when `argv[1] == 1`.
 |------|---------|---------------|
 | `VocabularyTreeTest()` | VocTree build/save/load/query roundtrip (RootSIFT-like + binary descriptors) | Top matches contain expected images |
 | `BAPinholeReprojectionJacobianTest()` | Analytical vs AutoDiff Jacobian validation for pinhole BA | Gradient agreement |
-| `PipelineTest()` | 5-subtest BA suite: quaternion poses, spherical camera, focal refinement, principal point, radial distortion | Reprojection < 1.0 px; focal < 5%; k1/k2 < 0.01 |
+| `PipelineTest()` | 6-subtest BA suite: quaternion poses + pose covariance, spherical camera, focal refinement, radial distortion, GPS constraints, scene transform | Reprojection < 1.0 px; focal < 5%; k1/k2 < 0.01; covariance finite/PSD, one datum |
+| `GPSPriorPoseUncertaintyTest()` | GPS-prior BA on a geo-aligned scene: absolute (datum-free) pose covariance + missing-accuracy fallback | No gauge datum; all finite; mean position error < 0.2 m |
+| `PoseUncertaintyExportTest()` | Pose-quality report roundtrip: covariance recorded on the scene, CSV export re-read, ExportMVS image-ID preservation, `Scene::Transform` covariance mapping, `.sfm` serialization | 1 datum row; IDs match; Cov' = s²RCovRᵀ; save/load identical |
 | `TripletStarInitTest()` | 3-view initialization via `StarInitializer` with track building and intrinsic refinement | >75% tracks recovered; focal < 5%; k1/k2 < 0.01 |
 | `TwoViewTest()` | Epipolar geometry: essential/fundamental matrix, pose recovery, distortion roundtrip | Rotation < 0.1 rad; translation dot > 0.95; distortion reproj < 1e-4 |
 | `ReconstructTest()` | Full SFM on real images: import → AKAZE features → exhaustive matching → geometric filter → tracks → BA | 4 images loaded; BA converges; tracks non-empty |

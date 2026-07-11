@@ -12,6 +12,7 @@
 #include "BundleAdjustmentCostFunctions.h"
 
 #include <ceres/crs_matrix.h>
+#include <ceres/covariance.h>
 #include <Eigen/Sparse>
 
 using namespace SFM;
@@ -67,30 +68,38 @@ inline int CeresTangentSize(const ceres::Problem& problem, const double* block) 
 // Takahashi recursion over the simplicial LDLT factor of a fill-reducing permutation of S.
 // Adds increasing diagonal damping to recover from rank deficiency (gauge). Returns false
 // if still rank-deficient after retries. On success S^-1(a,b) = Z(permInv(a), permInv(b)).
+// condFloorRel bounds the conditioning: every LDLT pivot is driven above condFloorRel*maxDiag,
+// so a residual gauge null space left in S (e.g. the 1-DOF global-scale mode of a GPS-free
+// network) gets a large-but-finite variance rather than overflowing the recursion to +inf.
+// Pass 0 for a full-rank system (GPS-anchored) to damp only up to positive-definiteness.
 bool ComputeSelectedInverse(Eigen::SparseMatrix<double>& S,
-	Eigen::SparseMatrix<double>& Zout, Eigen::PermutationMatrix<Eigen::Dynamic>& permOut)
+	Eigen::SparseMatrix<double>& Zout, Eigen::PermutationMatrix<Eigen::Dynamic>& permOut,
+	double condFloorRel)
 {
 	// Scale-aware damping so the (gauge) null space is regularized rather than rejected: add
-	// delta*I until the factor is positive-definite, then use the regularized inverse. A residual
-	// gauge null space (e.g. a GPS-constrained BA that fixed no pose) is handled by the datum
-	// removed in the caller plus this damping, instead of failing outright.
+	// delta*I until the factor is positive-definite, then use the regularized inverse. Any
+	// residual gauge null space left by the caller (datum removal or GPS-prior anchoring) is
+	// absorbed by this damping, instead of failing outright.
 	double maxDiag = 0.0;
 	for (int i = 0; i < S.rows(); ++i) maxDiag = std::max(maxDiag, std::abs(S.coeff(i, i)));
 	// Start near the numerical-zero scale and grow only until the factor is positive-definite, so
 	// the regularization touches just the gauge null space and does not cap (saturate) the
-	// covariance of genuinely weakly-constrained poses at 1/damping.
+	// covariance of genuinely weakly-constrained poses at 1/damping. When condFloorRel>0 the
+	// pivots are additionally driven above pivotFloor: this bounds the conditioning so a residual
+	// gauge null space (e.g. the global-scale mode) yields a finite variance instead of an inf.
+	const double pivotFloor = condFloorRel * maxDiag; // 0 when condFloorRel==0
 	double damping = std::max(1e-15 * maxDiag, 1e-300), applied = 0.0;
 	Eigen::SimplicialLDLT<Eigen::SparseMatrix<double>> ldlt;
 	Eigen::VectorXd D;
 	bool ok = false;
-	for (int attempt = 0; attempt < 14; ++attempt) {
+	for (int attempt = 0; attempt < 20; ++attempt) {
 		const double delta = damping - applied;
 		for (int i = 0; i < S.rows(); ++i) S.coeffRef(i, i) += delta;
 		applied = damping;
 		ldlt.compute(S);
 		if (ldlt.info() == Eigen::Success) {
 			D = ldlt.vectorD();
-			if ((D.array() > 0.0).all()) { ok = true; break; }
+			if ((D.array() > pivotFloor).all() && (D.array() > 0.0).all()) { ok = true; break; }
 		}
 		damping *= 10.0;
 	}
@@ -111,7 +120,7 @@ bool ComputeSelectedInverse(Eigen::SparseMatrix<double>& S,
 	Zout.makeCompressed();
 	Eigen::SparseMatrix<double>& Z = Zout;
 
-	const double dFloor = damping;
+	const double dFloor = std::max(damping, pivotFloor);
 	for (int j = n - 1; j >= 0; --j) {
 		std::vector<int> nz;
 		for (Eigen::SparseMatrix<double>::InnerIterator it(Lstrict, j); it; ++it)
@@ -158,10 +167,11 @@ PoseUncertaintyArr BundleAdjustment::ComputePoseUncertainty()
 	}
 	if (poses.size() < 2)
 		return PoseUncertaintyArr();
-	// If BA did not fix the gauge (e.g. a GPS-constrained run fixes no pose), choose the
-	// best-connected pose as the datum and exclude it from the covariance system, removing the
-	// 6-DOF rotation+translation gauge null space (residual scale DOF is absorbed by damping).
-	if (datumIDs.empty()) {
+	// If BA did not fix the gauge, choose the best-connected pose as the datum and exclude it
+	// from the covariance system, removing the 6-DOF rotation+translation gauge null space
+	// (residual scale DOF is absorbed by damping). GPS priors already anchor the gauge, so in
+	// that case every pose stays in the system and the covariances are absolute (ENU).
+	if (datumIDs.empty() && numGPSResiduals == 0) {
 		size_t best = 0;
 		for (size_t k = 1; k < poses.size(); ++k)
 			if (numReprojResidualsPerImage[poses[k].imageID] > numReprojResidualsPerImage[poses[best].imageID])
@@ -222,9 +232,14 @@ PoseUncertaintyArr BundleAdjustment::ComputePoseUncertainty()
 		S = Haa - reduced;
 	}
 
+	// With no GPS priors the reduced system still carries the 1-DOF global-scale gauge (the
+	// rotation+translation gauge was already removed by excluding the datum pose above), so
+	// bound the conditioning to give that scale mode a finite variance. GPS-anchored systems
+	// are full rank and use the exact (unbounded-precision) selected inverse.
+	const double condFloorRel = (numGPSResiduals == 0) ? 1e-9 : 0.0;
 	Eigen::SparseMatrix<double> Z;
 	Eigen::PermutationMatrix<Eigen::Dynamic> perm;
-	if (!ComputeSelectedInverse(S, Z, perm)) {
+	if (!ComputeSelectedInverse(S, Z, perm, condFloorRel)) {
 		VERBOSE("warning: pose-covariance selected-inverse failed (rank-deficient gauge)");
 		return PoseUncertaintyArr();
 	}
@@ -233,7 +248,7 @@ PoseUncertaintyArr BundleAdjustment::ComputePoseUncertainty()
 	const Eigen::PermutationMatrix<Eigen::Dynamic>::IndicesType& permIdx = perm.indices();
 
 	PoseUncertaintyArr uncertainty(scene.images.size());
-	const PoseUncertainty invalid{Point3f(-1.f, -1.f, -1.f), Point3f(-1.f, -1.f, -1.f)};
+	const PoseUncertainty invalid{Point3f(-1.f, -1.f, -1.f), Point3f(-1.f, -1.f, -1.f), Point3f(-1.f, -1.f, -1.f)};
 	FOREACH(i, uncertainty)
 		uncertainty[i] = invalid;
 	MeanStdMinMax<float> statR, statT;
@@ -246,14 +261,176 @@ PoseUncertaintyArr BundleAdjustment::ComputePoseUncertainty()
 		PoseUncertainty& u = uncertainty[p.imageID];
 		u.rotVar = Point3f((float)Zat(0, 0), (float)Zat(1, 1), (float)Zat(2, 2));
 		u.posVar = Point3f((float)Zat(3, 3), (float)Zat(4, 4), (float)Zat(5, 5));
+		u.posCov = Point3f((float)Zat(3, 4), (float)Zat(3, 5), (float)Zat(4, 5));
 		statR.Update(u.MaxRotationVariance()); statT.Update(u.MaxPositionVariance());
 	}
 	for (const IIndex id : datumIDs)
-		uncertainty[id].rotVar = uncertainty[id].posVar = Point3f(0.f, 0.f, 0.f); // reference datum
+		uncertainty[id].rotVar = uncertainty[id].posVar = uncertainty[id].posCov = Point3f(0.f, 0.f, 0.f); // reference datum
 	DEBUG("Pose uncertainty: %u/%u images (rotVar mean %.3g, posVar mean %.3g) in %s",
 		(unsigned)poses.size(), (unsigned)scene.images.size(),
 		statR.size ? statR.GetMean() : 0.f, statT.size ? statT.GetMean() : 0.f, TD_TIMER_GET_FMT().c_str());
 	return uncertainty;
+}
+/*----------------------------------------------------------------*/
+
+
+// Reference cross-check of ComputePoseUncertainty() using Ceres' own (slow, dense) covariance
+// estimator. Same pose set, same gauge/datum, same conditioning (intrinsics fixed as they are
+// held constant in the problem; points marginalized by Ceres) — so the two must agree.
+PoseUncertaintyArr BundleAdjustment::ComputePoseUncertaintyCeres()
+{
+	TD_TIMER_STARTD();
+	if (!problem)
+		return PoseUncertaintyArr();
+	struct PoseRef { IIndex imageID; double* block; int size; };
+	std::vector<PoseRef> poses;
+	IIndexArr datumIDs;
+	FOREACH(i, scene.images) {
+		if (!scene.images[i].IsValid())
+			continue;
+		double* block = poseParams.data() + i * 7;
+		if (!problem->HasParameterBlock(block))
+			continue;
+		if (problem->IsParameterBlockConstant(block)) { datumIDs.push_back(i); continue; }
+		poses.push_back({ (IIndex)i, block, CeresTangentSize(*problem, block) });
+	}
+	if (poses.size() < 2)
+		return PoseUncertaintyArr();
+	// Match ComputePoseUncertainty()'s gauge handling: with no GPS priors and no BA-fixed pose,
+	// hold the best-connected pose constant so the reduced system is (all but the scale mode)
+	// full rank; DENSE_SVD's null-space thresholding absorbs the residual gauge freedom.
+	std::vector<double*> tempFixed;
+	if (datumIDs.empty() && numGPSResiduals == 0) {
+		size_t best = 0;
+		for (size_t k = 1; k < poses.size(); ++k)
+			if (numReprojResidualsPerImage[poses[k].imageID] > numReprojResidualsPerImage[poses[best].imageID])
+				best = k;
+		datumIDs.push_back(poses[best].imageID);
+		problem->SetParameterBlockConstant(poses[best].block);
+		tempFixed.push_back(poses[best].block);
+		poses.erase(poses.begin() + best);
+	}
+
+	PoseUncertaintyArr uncertainty;
+	if (poses.size() >= 2) {
+		ceres::Covariance::Options options;
+		options.algorithm_type = ceres::DENSE_SVD; // slow reference; robust to rank deficiency (gauge)
+		options.null_space_rank = -1;              // drop only the numerically-zero (gauge) modes
+		options.apply_loss_function = true;        // robustified GN Hessian, as Problem::Evaluate() uses
+		options.num_threads = 1;
+		ceres::Covariance covariance(options);
+		std::vector<std::pair<const double*, const double*>> blocks;
+		blocks.reserve(poses.size());
+		for (const PoseRef& p : poses)
+			blocks.emplace_back(p.block, p.block);
+		if (covariance.Compute(blocks, problem.get())) {
+			uncertainty.resize(scene.images.size());
+			const PoseUncertainty invalid{Point3f(-1.f,-1.f,-1.f), Point3f(-1.f,-1.f,-1.f), Point3f(-1.f,-1.f,-1.f)};
+			FOREACH(i, uncertainty)
+				uncertainty[i] = invalid;
+			for (const PoseRef& p : poses) {
+				if (p.size < 6)
+					continue;
+				double cov[36];
+				if (!covariance.GetCovarianceBlockInTangentSpace(p.block, p.block, cov))
+					continue;
+				// tangent order [rotation(3), position(3)]; cov is row-major 6x6
+				PoseUncertainty& u = uncertainty[p.imageID];
+				u.rotVar = Point3f((float)cov[0*6+0], (float)cov[1*6+1], (float)cov[2*6+2]);
+				u.posVar = Point3f((float)cov[3*6+3], (float)cov[4*6+4], (float)cov[5*6+5]);
+				u.posCov = Point3f((float)cov[3*6+4], (float)cov[3*6+5], (float)cov[4*6+5]);
+			}
+			for (const IIndex id : datumIDs)
+				uncertainty[id].rotVar = uncertainty[id].posVar = uncertainty[id].posCov = Point3f(0.f,0.f,0.f);
+		} else {
+			VERBOSE("warning: reference (Ceres) pose-covariance computation failed");
+		}
+	}
+	// undo the temporary datum fix so the problem is left as it was
+	for (double* b : tempFixed)
+		problem->SetParameterBlockVariable(b);
+	DEBUG("Pose uncertainty (Ceres reference): %u/%u images in %s",
+		(unsigned)poses.size(), (unsigned)scene.images.size(), TD_TIMER_GET_FMT().c_str());
+	return uncertainty;
+}
+/*----------------------------------------------------------------*/
+
+
+unsigned SFM::ExportPoseUncertaintyCSV(const String& fileName, const Scene& scene)
+{
+	const PoseUncertaintyArr& uncertainty = scene.poseUncertainty;
+	if (uncertainty.size() != scene.images.size())
+		return 0;
+	std::ofstream os(fileName);
+	if (!os.is_open())
+		return 0;
+
+	// Per-image inlier observation counts
+	UnsignedArr numObsPerImage(scene.images.size());
+	numObsPerImage.Memset(0);
+	for (const Track& track : scene.tracks) {
+		if (!track.IsInlier())
+			continue;
+		for (const Observation& obs : track)
+			if (obs.imageID < numObsPerImage.size())
+				++numObsPerImage[obs.imageID];
+	}
+
+	const bool geoAligned = scene.status.nState.isSet(Scene::Status::STATE::GEO_ALIGN);
+	const auto isDatum = [](const PoseUncertainty& u) {
+		return u.IsValid() && u.MaxPositionVariance() == 0.f && u.MaxRotationVariance() == 0.f;
+	};
+	bool hasDatum = false;
+	FOREACH(i, uncertainty)
+		if (isDatum(uncertainty[i])) { hasDatum = true; break; }
+
+	os << "# pose uncertainty (1-sigma): position in "
+	   << (geoAligned ? "ENU meters (East/North/Up)" : "world units")
+	   << " (frame: " << (geoAligned ? "ENU" : "local")
+	   << ", gauge: " << (hasDatum ? "datum-relative" : "absolute")
+	   << "); rotation in degrees about the camera x/y/z axes; -1 = not computed; all-zero = gauge datum\n";
+	os << "ID,name,valid,datum,sigmaPosX,sigmaPosY,sigmaPosZ,covPosXY,covPosXZ,covPosYZ,"
+	      "sigmaRotX,sigmaRotY,sigmaRotZ,numObs,gpsAccuracyXY,gpsAccuracyZ\n";
+	os << std::setprecision(9);
+
+	unsigned numValid = 0;
+	FloatArr posSigmas;
+	MeanStdMinMax<float> statPos;
+	FOREACH(i, scene.images) {
+		const Image& image = scene.images[i];
+		const PoseUncertainty& u = uncertainty[i];
+		const bool valid = image.IsValid() && u.IsValid();
+		const bool datum = valid && isDatum(u);
+		Point3f sigmaPos(-1.f, -1.f, -1.f), covPos(-1.f, -1.f, -1.f), sigmaRot(-1.f, -1.f, -1.f);
+		if (valid) {
+			sigmaPos = Point3f(SQRT(u.posVar.x), SQRT(u.posVar.y), SQRT(u.posVar.z));
+			covPos = u.posCov;
+			sigmaRot = Point3f(R2D(SQRT(u.rotVar.x)), R2D(SQRT(u.rotVar.y)), R2D(SQRT(u.rotVar.z)));
+			++numValid;
+			if (!datum) {
+				const float maxSigma = SQRT(u.MaxPositionVariance());
+				posSigmas.push_back(maxSigma);
+				statPos.Update(maxSigma);
+			}
+		}
+		const View::Metadata& meta = image.View::metadata;
+		os << image.ID << ','
+		   << Util::getFileName(image.fileName) << ','
+		   << (valid ? 1 : 0) << ',' << (datum ? 1 : 0) << ','
+		   << sigmaPos.x << ',' << sigmaPos.y << ',' << sigmaPos.z << ','
+		   << covPos.x << ',' << covPos.y << ',' << covPos.z << ','
+		   << sigmaRot.x << ',' << sigmaRot.y << ',' << sigmaRot.z << ','
+		   << numObsPerImage[i] << ','
+		   << meta.positionAccuracy << ',' << meta.positionAccuracyZ << '\n';
+	}
+
+	VERBOSE("Pose quality report: %u/%u images (max position sigma mean %.3g, median %.3g, max %.3g %s) exported to '%s'",
+		numValid, scene.images.size(),
+		statPos.size ? statPos.GetMean() : 0.f,
+		posSigmas.empty() ? 0.f : posSigmas.GetMedian(),
+		statPos.size ? statPos.maxVal : 0.f,
+		geoAligned ? "m" : "units", fileName.c_str());
+	return numValid;
 }
 /*----------------------------------------------------------------*/
 
@@ -429,8 +606,9 @@ bool BundleAdjustment::Adjust()
 		if (scene.images[i].IsValid())
 			Pose3DToQuaternionAndCenter(scene.images[i], poseParams.data() + i * 7);
 
-	// Intrinsic parameters: map unique cameras to parameter blocks
-	std::unordered_map<const Camera*, DoubleArr> intrinsicParams;
+	// Intrinsic parameters: map unique cameras to parameter blocks (member: must outlive the
+	// solve so the intrinsic blocks remain valid for post-Adjust covariance evaluation).
+	intrinsicParams.clear();
 	for (const Image& img : scene.images)
 		if (img.IsValid())
 			AddPinholeIntrinsics(intrinsicParams, img);
@@ -580,7 +758,7 @@ bool BundleAdjustment::Adjust()
 	}
 
 	// Add GPS position constraints (if enabled)
-	uint32_t nGPSResiduals = 0;
+	numGPSResiduals = 0;
 	if ((config.gpsPositionWeight > 0.0 || config.gpsPositionWeightZ > 0.0) && scene.status.nState.isSet(Scene::Status::STATE::GEO_ALIGN)) {
 		// Estimate median distance from tracks
 		DoubleArr distances;
@@ -636,9 +814,13 @@ bool BundleAdjustment::Adjust()
 						enu_east, enu_north, enu_up);
 			// Create GPS residual
 			// Camera coordinate convention: X=East, Y=North, Z=Up (adjust if scene uses different convention)
+			// EXIF GPS frequently lacks accuracy tags; the residual divides by the accuracy,
+			// so substitute typical consumer-GPS accuracies when unknown
+			const double accuracyH = meta.positionAccuracy > 0.f ? meta.positionAccuracy : 10.0;
+			const double accuracyV = meta.positionAccuracyZ > 0.f ? meta.positionAccuracyZ : 20.0;
 			ceres::CostFunction* gps_cost = GPSPositionError::Create(
 				enu_east, enu_north, enu_up,
-				meta.positionAccuracy, meta.positionAccuracyZ,
+				accuracyH, accuracyV,
 				weight_h_scaled, weight_v_scaled
 			);
 			problem.AddResidualBlock(
@@ -646,14 +828,14 @@ bool BundleAdjustment::Adjust()
 				nullptr, // No robust loss for GPS (already weighted by accuracy)
 				poseParams.data() + i * 7
 			);
-			++nGPSResiduals;
+			++numGPSResiduals;
 		}
 		DEBUG("Added %u GPS position constraints (origin: lat=%.6f°, lon=%.6f°, alt=%.1fm)",
-			nGPSResiduals, lat0, lon0, alt0);
+			numGPSResiduals, lat0, lon0, alt0);
 	}
 
 	// Fix best connected camera (gauge freedom) - unless we have GPS constraints
-	if (nGPSResiduals == 0) {
+	if (numGPSResiduals == 0) {
 		IIndex bestImgID = NO_ID;
 		FOREACH(i, scene.images) {
 			if (!scene.images[i].IsValid())
@@ -743,7 +925,7 @@ bool BundleAdjustment::Adjust()
 	}
 
 	DEBUG("Bundle adjustment complete: %u reprojection residuals, %u GPS residuals, %.4g -> %.4g cost (%s)",
-	    numReprojResiduals, nGPSResiduals, summary.initial_cost, summary.final_cost, TD_TIMER_GET_FMT().c_str());
+	    numReprojResiduals, numGPSResiduals, summary.initial_cost, summary.final_cost, TD_TIMER_GET_FMT().c_str());
 
 	// Report average reprojection errors
 	ComputeTracksMeanReprojectionError(scene);
@@ -755,6 +937,7 @@ bool BundleAdjustment::AdjustLocal(
 	const IIndexArr& fixedViewIDs)
 {
 	TD_TIMER_STARTD();
+	numGPSResiduals = 0; // local BA adds no GPS priors
 
 	// 1. Set local window
 	ASSERT(!viewIDs.empty());
@@ -792,8 +975,9 @@ bool BundleAdjustment::AdjustLocal(
 		Pose3DToQuaternionAndCenter(scene.images[imgID], poseParams.data() + imgID * 7);
 	}
 
-	// Intrinsic parameters: always fixed in local BA (not refined)
-	std::unordered_map<const Camera*, DoubleArr> intrinsicParams;
+	// Intrinsic parameters: always fixed in local BA (not refined). Member storage so the
+	// intrinsic blocks outlive the solve for post-Adjust covariance evaluation.
+	intrinsicParams.clear();
 	for (IIndex imgID : allImages)
 		if (scene.images[imgID].IsValid())
 			AddPinholeIntrinsics(intrinsicParams, scene.images[imgID]);
