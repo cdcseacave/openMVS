@@ -3308,6 +3308,10 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 		if (!data.depthMaps.pmMetalPool.empty() && OPTDENSE::nEstimationGeometricIters)
 			data.depthMaps.ReinitMetalPoolForGeom();
 		#endif // _USE_METAL
+		// reset the shared confidence-compute accumulators so the post-loop timing line reports only
+		// the integrated last-iteration recalibration (the standalone phase resets them itself)
+		g_confAdjustComputeNS.store(0);
+		g_confPriorComputeNS.store(0);
 		while (++data.nEstimationGeometricIter < (int)OPTDENSE::nEstimationGeometricIters) {
 			// initialize the queue of images to be geometric processed
 			if (data.nEstimationGeometricIter+1 == (int)OPTDENSE::nEstimationGeometricIters)
@@ -3345,6 +3349,17 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 			}
 		}
 		data.nEstimationGeometricIter = -1;
+		// integrated confidence recalibration timing (GPU kernel+transfer, or the CPU sweep): the
+		// accumulator was zeroed before the geometric loop, so this is the last-iteration cost only
+		const auto confNS(g_confAdjustComputeNS.load());
+		if (confNS > 0 && data.images.GetSize() > 0) {
+			bool bGPU(false);
+			#ifdef _USE_CUDA
+			bGPU = !data.depthMaps.pmCUDAPool.empty() && OPTDENSE::bEstimateConfidenceCUDA;
+			#endif
+			VERBOSE("Integrated confidence recalibration (%s): %.0fms total, %.2fms/map avg over %u depth-maps",
+				bGPU ? "GPU" : "CPU", (double)confNS*1e-6, (double)confNS*1e-6/data.images.GetSize(), data.images.GetSize());
+		}
 	}
 
 	// Task 12 double-adjust guard: if the integrated per-view confidence estimation already ran
