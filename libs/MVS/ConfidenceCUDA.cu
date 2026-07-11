@@ -210,8 +210,10 @@ __global__ void SweepKernel(const float* refDepth, const float* refNormal, int h
 	confOut[idx] = ConfRefine::Posterior(refConf[idx], priorMap[idx], Kf, Pconf, (float)V, p);
 }
 
-// RAII: free every cudaMalloc'd pointer on scope exit (success or early return)
-namespace { struct DevBag { std::vector<void*> v; ~DevBag(){ for (void* p : v) cudaFree(p); } }; }
+// RAII: free every cudaMalloc'd pointer on scope exit (success or early return), then consume any
+// pending CUDA error so a non-fatal failure (e.g. OOM) does not leak this thread's last-error into a
+// later CUDA call on the same reused pool-worker thread (review finding, robustness).
+namespace { struct DevBag { std::vector<void*> v; ~DevBag(){ for (void* p : v) cudaFree(p); cudaGetLastError(); } }; }
 
 bool RunConfidenceCUDA(
 	int W, int H,
