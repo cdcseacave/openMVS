@@ -36,6 +36,8 @@
 #include "PatchMatchMetal.h"
 #include "DMapCache.h"
 #include "ConfidenceRefine.h"
+#include "ConfidenceCUDA.h"
+#include <cstdlib>
 #include <atomic>
 #include <chrono>
 #include <vector>
@@ -1837,6 +1839,49 @@ static bool AdjustConfidenceSweep(DepthMapsData& depthMapsData, DepthData& depth
 	}
 	g_confAdjustComputeNS.fetch_add(std::chrono::duration_cast<std::chrono::nanoseconds>(
 		std::chrono::steady_clock::now() - timeAdjustStart).count(), std::memory_order_relaxed);
+	#ifdef _USE_CUDA
+	// TEMPORARY parity harness (T14b; removed once T14c wires the real GPU dispatch): when
+	// MVS_CONF_CUDA_CHECK is set in the environment, run the GPU kernel on the SAME neighborProjs +
+	// maps the CPU sweep just used, and report max|Δconf| vs the CPU newConfMap. This validates the
+	// kernel against the CPU with byte-identical inputs (no Python re-derivation of NeighborProj).
+	if (std::getenv("MVS_CONF_CUDA_CHECK") != NULL) {
+		const int W(depthMapRef.cols), H(depthMapRef.rows);
+		ASSERT(depthMapRef.isContinuous() && confMapRef.isContinuous());
+		std::vector<MVS::CUDA::ConfNeighborHost> hn(neighborProjs.size());
+		for (size_t k=0; k<neighborProjs.size(); ++k) {
+			const NeighborProj& np(neighborProjs[k]);
+			MVS::CUDA::ConfNeighborHost& d(hn[k]);
+			for (int i=0;i<3;++i) for (int j=0;j<3;++j) { d.A[i*3+j]=np.A(i,j); d.Ai[i*3+j]=np.Ai(i,j); d.Rrel[i*3+j]=np.Rrel(i,j); }
+			d.b[0]=np.b.x; d.b[1]=np.b.y; d.b[2]=np.b.z;
+			d.bi[0]=np.bi.x; d.bi[1]=np.bi.y; d.bi[2]=np.bi.z;
+			ASSERT(np.depthMap->isContinuous());
+			d.depth = np.depthMap->ptr<float>();
+			d.conf = np.confMap->empty() ? NULL : np.confMap->ptr<float>();
+			d.normal = np.normalMap->empty() ? NULL : np.normalMap->ptr<float>();
+			d.width = np.depthMap->cols; d.height = np.depthMap->rows;
+		}
+		const Matrix3x3f Kf(imageRef.camera.K);
+		ConfidenceMap gpuConf(depthMapRef.size());
+		const bool ok = MVS::CUDA::RunConfidenceCUDA(W, H,
+			depthMapRef.ptr<float>(), bHasRefNormal ? normalMapRef.ptr<float>() : NULL, confMapRef.ptr<float>(),
+			Kf(0,0), Kf(1,1), Kf(0,2), Kf(1,2), OPTDENSE::fNormalDiffThreshold,
+			hn.data(), (int)hn.size(), crp, bSoftGates, OPTDENSE::bConfPriorNormalCoherence, gpuConf.ptr<float>());
+		if (ok) {
+			double maxd(0), sumd(0); size_t ne(0);
+			for (int r=0;r<H;++r) for (int c=0;c<W;++c) {
+				const double dd(ABS((double)gpuConf(r,c)-(double)newConfMap(r,c)));
+				if (dd>maxd) maxd=dd; sumd+=dd; if (gpuConf(r,c)!=newConfMap(r,c)) ++ne;
+			}
+			fprintf(stderr, "[CONF_CUDA_CHECK] img %u: max|dconf|=%.3e mean|dconf|=%.3e differing=%zu/%d (softGates=%d, %zu nbrs)\n",
+				imageRef.GetID(), maxd, sumd/(double)(W*H), ne, W*H, (int)bSoftGates, neighborProjs.size());
+			// optionally SAVE the GPU result instead of the CPU one, so an end-to-end ROC comparison
+			// (EvalConfidence on GPU-written vs CPU-written dmaps) can measure the real |dROC| gate
+			if (std::getenv("MVS_CONF_CUDA_WRITEBACK") != NULL)
+				gpuConf.copyTo(newConfMap);
+		} else
+			fprintf(stderr, "[CONF_CUDA_CHECK] img %u: RunConfidenceCUDA FAILED\n", imageRef.GetID());
+	}
+	#endif
 	if (bFeat) {
 		const IIndex id(imageRef.GetID());
 		SaveRawMap(ComposeDepthFilePath(id, "cfeatK"), featK, 2);
