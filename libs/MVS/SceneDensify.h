@@ -120,6 +120,11 @@ public:
 	// above indexes into. Writes depthDataRef.confMap directly (no confMapAdjusted deferred swap: see
 	// the .cpp comment for why the standalone phase's race does not apply here).
 	bool AdjustConfidence(DepthData& depthDataRef);
+	#ifdef _USE_CUDA
+	// Task 14: GPU counterpart of AdjustConfidence(DepthData&) -- same neighbor build, the prior +
+	// confirmation sweep run in ConfidenceCUDA.cu. Returns false on any CUDA error (CPU fallback).
+	bool AdjustConfidenceCUDA(DepthData& depthDataRef);
+	#endif
 	void MergeDepthMaps(PointCloud& pointcloud, bool bEstimateColor, bool bEstimateNormal);
 	void FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, bool bEstimateNormal);
 	void DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, bool bEstimateNormal);

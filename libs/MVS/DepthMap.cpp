@@ -112,7 +112,7 @@ MDEFVAR_OPTDENSE_int32(nOptimizerMaxIters, "Optimizer Max Iters", "MRF optimizer
 MDEFVAR_OPTDENSE_uint32(nSpeckleSize, "Speckle Size", "maximal size of a speckle (small speckles get removed)", "100")
 MDEFVAR_OPTDENSE_uint32(nIpolGapSize, "Interpolate Gap Size", "interpolate small gaps (left<->right, top<->bottom)", "7")
 MDEFVAR_OPTDENSE_int32(nIgnoreMaskLabel, "Ignore Mask Label", "label id used during ignore mask filter (<0 - disabled)", "-1")
-DEFVAR_OPTDENSE_uint32(nOptimize, "Optimize", "should we filter the extracted depth-maps?", "0") // see DepthFlags
+DEFVAR_OPTDENSE_uint32(nOptimize, "Optimize", "should we filter the extracted depth-maps?", "4") // see DepthFlags; default ADJUST_CONFIDENCE(4): recalibrate confidence on every densify (CPU standalone, or GPU integrated when CUDA estimation is used -- see bEstimateConfidenceCUDA)
 DEFVAR_OPTDENSE_uint32(nFuseFilter, "Fuse Filter", "how to fuse the depth-maps into one dense point-cloud?", "2", "0", "1") // see FuseMode
 MDEFVAR_OPTDENSE_uint32(nEstimateColors, "Estimate Colors", "should we estimate the colors for the dense point-cloud?", "2", "0", "1")
 MDEFVAR_OPTDENSE_uint32(nEstimateNormals, "Estimate Normals", "should we estimate the normals for the dense point-cloud?", "2", "0", "1")
@@ -144,7 +144,8 @@ MDEFVAR_OPTDENSE_bool(bExportConfFeatures, "Export Conf Features", "export per-p
 // NOTE: the in-process double-adjust guard (integrated + --postprocess-dmaps 4 in the SAME run) only
 // protects a single process; do NOT enable this and then run a separate --postprocess-dmaps 4 pass on
 // the saved depth-maps -- that would adjust confidence twice with no warning across the two processes.
-DEFVAR_OPTDENSE_bool(bEstimateConfidence, "Estimate Confidence", "adjust per-pixel confidence during the last geometric-consistency iteration (fusion-faithful)", "0")
+DEFVAR_OPTDENSE_bool(bEstimateConfidence, "Estimate Confidence", "adjust per-pixel confidence during the last geometric-consistency iteration on the CPU (fusion-faithful); legacy integrated-CPU opt-in -- the default confidence path is the ADJUST_CONFIDENCE postprocess flag (CPU standalone / GPU integrated)", "0")
+DEFVAR_OPTDENSE_bool(bEstimateConfidenceCUDA, "Estimate Confidence CUDA", "when CUDA is available and used for depth-map estimation, run the ADJUST_CONFIDENCE recalibration on the GPU integrated into the last geometric-consistency iteration (1), or force the CPU version anyway (0); no effect when estimation runs on the CPU", "1")
 DEFVAR_OPTDENSE_uint32(nEstimationIters, "Estimation Iters", "Number of patch-match iterations", "3")
 DEFVAR_OPTDENSE_uint32(nEstimationGeometricIters, "Estimation Geometric Iters", "Number of geometric consistent patch-match iterations (0 - disabled)", "2")
 DEFVAR_OPTDENSE_uint32(nPatchMatchCUDAInstances, "PatchMatch CUDA Instances", "Number of parallel CUDA PatchMatch worker instances (clamped to nMaxThreads)", "4")

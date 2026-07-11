@@ -176,6 +176,7 @@ extern MVS_API bool bFuseSecondChance;
 // separate --postprocess-dmaps 4 phase, no disk round-trip. See the double-adjust guard in
 // Scene::ComputeDepthMaps if both this and ADJUST_CONFIDENCE (DepthFlags) are requested together.
 extern MVS_API bool bEstimateConfidence;
+extern MVS_API bool bEstimateConfidenceCUDA; // when CUDA estimation is used, run ADJUST_CONFIDENCE on the GPU integrated into the last geometric-consistency iteration (default); 0 forces the CPU version
 extern MVS_API bool bConfPriorNormalCoherence; // intra-map prior: also require window normal coherence (variant B) vs gradient-normal agreement only (variant A)
 extern MVS_API bool bExportFusionLabels; // export per-pixel fusion inlier/outlier labels for confidence evaluation
 extern MVS_API bool bExportConfFeatures; // export per-pixel confidence-adjust features (K/Pconf/prior/photo) for offline tuning
