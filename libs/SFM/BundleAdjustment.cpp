@@ -393,7 +393,7 @@ unsigned SFM::ExportPoseUncertaintyCSV(const String& fileName, const Scene& scen
 	      "sigmaRotX,sigmaRotY,sigmaRotZ,numObs,gpsAccuracyXY,gpsAccuracyZ\n";
 	os << std::setprecision(9);
 
-	unsigned numValid = 0;
+	unsigned numValid = 0, numSpherical = 0;
 	FloatArr posSigmas;
 	MeanStdMinMax<float> statPos;
 	FOREACH(i, scene.images) {
@@ -407,15 +407,21 @@ unsigned SFM::ExportPoseUncertaintyCSV(const String& fileName, const Scene& scen
 			covPos = u.posCov;
 			sigmaRot = Point3f(R2D(SQRT(u.rotVar.x)), R2D(SQRT(u.rotVar.y)), R2D(SQRT(u.rotVar.z)));
 			++numValid;
+			if (image.GetCameraType() == CameraType::SPHERICAL)
+				++numSpherical;
 			if (!datum) {
 				const float maxSigma = SQRT(u.MaxPositionVariance());
 				posSigmas.push_back(maxSigma);
 				statPos.Update(maxSigma);
 			}
 		}
+		// the CSV is parsed positionally by comma, so keep the name a single column: a comma in
+		// the file name would shift every following field for a consumer (e.g. the Viewer loader)
+		String name = Util::getFileName(image.fileName);
+		std::replace(name.begin(), name.end(), ',', '_');
 		const View::Metadata& meta = image.View::metadata;
 		os << image.ID << ','
-		   << Util::getFileName(image.fileName) << ','
+		   << name << ','
 		   << (valid ? 1 : 0) << ',' << (datum ? 1 : 0) << ','
 		   << sigmaPos.x << ',' << sigmaPos.y << ',' << sigmaPos.z << ','
 		   << covPos.x << ',' << covPos.y << ',' << covPos.z << ','
@@ -430,6 +436,12 @@ unsigned SFM::ExportPoseUncertaintyCSV(const String& fileName, const Scene& scen
 		posSigmas.empty() ? 0.f : posSigmas.GetMedian(),
 		statPos.size ? statPos.maxVal : 0.f,
 		geoAligned ? "m" : "units", fileName.c_str());
+	// spherical images are split into fresh-ID cube-map faces by ExportMVS, so their rows here
+	// (keyed by the SFM image ID) will not correlate with the exported .mvs image IDs
+	if (numSpherical > 0)
+		VERBOSE("warning: %u spherical image(s) in the pose quality report will not correlate with the "
+			"cube-map faces produced by the MVS export (pose uncertainty is validated for pinhole cameras)",
+			numSpherical);
 	return numValid;
 }
 /*----------------------------------------------------------------*/

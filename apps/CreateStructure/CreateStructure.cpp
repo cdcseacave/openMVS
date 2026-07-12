@@ -297,11 +297,11 @@ int main(int argc, LPCTSTR* argv)
 		VERBOSE("error: failed to export camera poses to CSV file %s", OPT::strExportPosesCSV.c_str());
 		return EXIT_FAILURE;
 	}
-	// Export per-image pose quality report to CSV file
-	if (!OPT::strExportPoseQuality.empty() && !ExportPoseUncertaintyCSV(MAKE_PATH_SAFE(OPT::strExportPoseQuality), scene)) {
-		VERBOSE("error: failed to export pose quality report to CSV file %s", OPT::strExportPoseQuality.c_str());
-		return EXIT_FAILURE;
-	}
+	// Export per-image pose quality report to CSV file; this is an optional diagnostic, so a
+	// failure to produce it (e.g. a rank-deficient covariance yielding no rows) must not abort
+	// the run and lose the primary outputs (the scene and the MVS export below)
+	if (!OPT::strExportPoseQuality.empty() && !ExportPoseUncertaintyCSV(MAKE_PATH_SAFE(OPT::strExportPoseQuality), scene))
+		VERBOSE("warning: failed to export pose quality report to CSV file %s", OPT::strExportPoseQuality.c_str());
 	// Export image pairs to CSV file
 	if (!OPT::strExportPairsCSV.empty() && !PairsMatcher::ExportPairsCSV(scene, MAKE_PATH_SAFE(OPT::strExportPairsCSV), 3.f)) {
 		VERBOSE("error: failed to export image pairs to CSV file %s", OPT::strExportPairsCSV.c_str());

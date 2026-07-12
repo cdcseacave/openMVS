@@ -35,6 +35,7 @@ using namespace SFM;
 #endif
 
 #define SFM_PROJECT_ID "SFM\0" // identifies the SFM project stream
+#define SFM_PROJECT_VERSION 0  // SFM project stream layout version (bump on any breaking header/serialization change)
 
 
 // S T R U C T S ///////////////////////////////////////////////////
@@ -199,9 +200,12 @@ bool Scene::Save(const String& fileName, ARCHIVE_TYPE nArchiveType) const
 	// save stream type (compression layer used by boost serialization)
 	const uint32_t nType = nArchiveType;
 	fs.write((const char*)&nType, sizeof(uint32_t));
+	// save the stream layout version so future changes can be detected/rejected
+	const uint32_t nVersion = SFM_PROJECT_VERSION;
+	fs.write((const char*)&nVersion, sizeof(uint32_t));
 	// reserve some bytes
-	const uint64_t nReserved = 0;
-	fs.write((const char*)&nReserved, sizeof(uint64_t));
+	const uint32_t nReserved = 0;
+	fs.write((const char*)&nReserved, sizeof(uint32_t));
 	// serialize out the current state
 	if (!SerializeSave(*this, fs, nArchiveType)) {
 		VERBOSE("error: serialization failed for file '%s' (archive type %d)", fileName.c_str(), (int)nArchiveType);
@@ -237,11 +241,19 @@ bool Scene::Load(const String& fileName)
 	// load stream type (compression layer used by boost serialization)
 	uint32_t nType;
 	fs.read((char*)&nType, sizeof(uint32_t));
+	// load the stream layout version and reject files written by a newer, incompatible writer
+	uint32_t nVersion;
+	fs.read((char*)&nVersion, sizeof(uint32_t));
 	// skip reserved bytes
-	uint64_t nReserved;
-	fs.read((char*)&nReserved, sizeof(uint64_t));
+	uint32_t nReserved;
+	fs.read((char*)&nReserved, sizeof(uint32_t));
 	if (!fs) {
 		VERBOSE("error: invalid SFM project header '%s'", fileName.c_str());
+		return false;
+	}
+	if (nVersion > SFM_PROJECT_VERSION) {
+		VERBOSE("error: unsupported SFM project version %u (this build supports up to %u) in '%s'",
+			nVersion, (unsigned)SFM_PROJECT_VERSION, fileName.c_str());
 		return false;
 	}
 	// serialize in the current state
@@ -615,23 +627,7 @@ bool Scene::Reconstruct(const String& source, const ReconstructionConfig& config
 	finalBaCfg.refineTangentialDistortion = (config.baIntrinsicFlags & ReconstructionConfig::INTRINSIC_TANGENTIAL_DIST) != 0;
 	finalBaCfg.refineRadialDistortion456 = (config.baIntrinsicFlags & ReconstructionConfig::INTRINSIC_RADIAL_DIST_456) != 0;
 	finalBaCfg.refinePrincipalPoint = (config.baIntrinsicFlags & ReconstructionConfig::INTRINSIC_PRINCIPAL_POINT) != 0;
-	// A GPS-prior refinement below recomputes the pose uncertainty in the absolute ENU frame and
-	// supersedes whatever is recorded here, so skip the expensive covariance in that case rather
-	// than computing the selected inverse twice; the degenerate branch after the GPS alignment
-	// recovers it if the refinement ends up not running.
-	const bool willAlignWithGPS = config.thAlignGPS > 0 && HasImagesWithGPS();
-	const bool willRefineWithGPS = config.baConfig.IsRefiningGPS() && willAlignWithGPS;
-	{
-		BundleAdjustment ba(*this, finalBaCfg);
-		if (!ba.Adjust()) {
-			VERBOSE("warning: final bundle adjustment failed; skipping pose uncertainty estimation");
-		} else if (config.estimatePoseUncertainty && !willRefineWithGPS) {
-			// record the pose uncertainty off the solved problem before the track filtering below
-			// invalidates the parameter blocks it references (images resected later get not-computed
-			// entries, and Transform keeps the record in the current world frame)
-			poseUncertainty = ba.ComputePoseUncertainty();
-		}
-	}
+	BundleAdjustment::Adjust(*this, finalBaCfg);
 	FilterTracks(*this, config.maxFineReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar);
 
 	// Filter weakly connected images and resection remaining images into the reconstruction
@@ -643,7 +639,7 @@ bool Scene::Reconstruct(const String& source, const ReconstructionConfig& config
 	}
 
 	// Align scene to GPS if available
-	if (willAlignWithGPS)
+	if (config.thAlignGPS > 0 && HasImagesWithGPS())
 		AlignToGPS(config.thAlignGPS);
 
 	// Refine the geo-aligned reconstruction with GPS position priors (if enabled): the GPS
@@ -656,24 +652,21 @@ bool Scene::Reconstruct(const String& source, const ReconstructionConfig& config
 	uncBaCfg.refineFocalLength = uncBaCfg.refineFocalLengthAspectRatio = uncBaCfg.refinePrincipalPoint =
 	uncBaCfg.refineRadialDistortion123 = uncBaCfg.refineTangentialDistortion = uncBaCfg.refineRadialDistortion456 = false;
 	if (config.baConfig.IsRefiningGPS() && status.nState.isSet(Status::STATE::GEO_ALIGN)) {
-		{
-			BundleAdjustment ba(*this, uncBaCfg);
-			if (!ba.Adjust()) {
-				VERBOSE("warning: GPS-prior bundle adjustment failed; keeping the pre-alignment pose uncertainty");
-			} else if (config.estimatePoseUncertainty) {
-				// the GPS priors anchor the gauge, so this supersedes the earlier record
-				// with absolute ENU covariances (and covers the images resected since)
-				poseUncertainty = ba.ComputePoseUncertainty();
-			}
-		}
-		FilterTracks(*this, config.maxFineReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar);
-	} else if (config.estimatePoseUncertainty && willRefineWithGPS) {
-		// the final BA skipped the covariance expecting this GPS refinement to supply it, but the
-		// GPS alignment was degenerate and did not run; compute it now (intrinsics already
-		// converged -> held fixed) so the requested pose-quality report is still produced
 		BundleAdjustment ba(*this, uncBaCfg);
-		if (ba.Adjust())
+		if (!ba.Adjust()) {
+			VERBOSE("warning: GPS-prior bundle adjustment failed; keeping the pre-alignment pose uncertainty");
+		} else if (config.estimatePoseUncertainty) {
+			// the GPS priors anchor the gauge, so this supersedes the earlier record
+			// with absolute ENU covariances (and covers the images resected since)
 			poseUncertainty = ba.ComputePoseUncertainty();
+			FilterTracks(*this, config.maxFineReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar);
+		}
+	} else if (config.estimatePoseUncertainty) {
+		BundleAdjustment ba(*this, uncBaCfg);
+		if (ba.Adjust()) {
+			poseUncertainty = ba.ComputePoseUncertainty();
+			FilterTracks(*this, config.maxFineReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar);
+		}
 	}
 
 	// Estimate color for points
