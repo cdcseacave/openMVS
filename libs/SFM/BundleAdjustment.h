@@ -59,7 +59,7 @@ struct SFM_API BAConfig
 	unsigned numThreads = 0;         // Number of threads (0 = auto)
 	double functionTolerance = 1e-6; // Convergence tolerance
 
-	// Helper: Enable all intrinsic refinement flags
+	// enable all intrinsic refinement flags
 	void RefineMainIntrinsics() {
 		refineFocalLength = true;
 		refineRadialDistortion123 = true;
@@ -75,16 +75,19 @@ struct SFM_API BAConfig
 		refineRadialDistortion456 = true;
 	}
 
-	// Helper: Check if any intrinsic refinement is enabled
+	// check if any intrinsic refinement is enabled
 	bool IsRefiningIntrinsics() const {
 		return refineFocalLength || refinePrincipalPoint ||
 		       refineRadialDistortion123 || refineTangentialDistortion ||
 		       refineRadialDistortion456;
 	}
-
-	// Helper: Check if any pose component is being refined
+	// check if any pose component is being refined
 	bool IsRefiningPoses() const {
 		return refinePosesRotation || refinePosesPosition;
+	}
+	// check if any GPS-related refinement is enabled
+	bool IsRefiningGPS() const {
+		return gpsPositionWeight > 0 || gpsPositionWeightZ > 0;
 	}
 };
 /*----------------------------------------------------------------*/

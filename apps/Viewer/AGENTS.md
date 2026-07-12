@@ -87,13 +87,16 @@ pose-quality report, matches rows to scene images by ID (`scene.images[image.idx
 from the SFM scene by ExportMVS), and fills `Scene::cameraUncertainty` (per VIEWER-image index).
 `UploadUncertaintyEllipsoids` eigen-decomposes each 3x3 position covariance into an oriented
 solid (triangulated UV-sphere) ellipsoid at the camera center, scaled by
-`Window::uncertaintyEllipsoidScale` and colored via the jet colormap normalized to the
-95th-percentile sigma. It is drawn by `ellipsoidShader` (lit head-light shading + per-vertex color)
+`cameraUncertaintyAutoScale * Window::uncertaintyEllipsoidScale` (scene auto-fit base times the user
+slider) and colored via the jet colormap normalized to the 95th-percentile sigma
+(`cameraUncertaintyNorm`). It is drawn by `ellipsoidShader` (lit head-light shading + per-vertex color)
 as a translucent surface — blended, depth-tested but not depth-writing, so the camera frustum at the
-center stays visible. `LoadPoseUncertainty` AUTO-SETS `uncertaintyEllipsoidScale` so the 95th-pct
-ellipsoid is ~8% of the scene bbox diagonal (`Camera::GetSceneSize().norm()`) — raw sigmas are
-world-units and would otherwise render sub-pixel (tiny sigma) or scene-spanning (no-GPS needle
-covariances); it logs matched/drawable/datum counts + the chosen scale via VERBOSE. NOTE
+center stays visible. `LoadPoseUncertainty` AUTO-SETS `cameraUncertaintyAutoScale` — kept SEPARATE from
+the user-facing `Window::uncertaintyEllipsoidScale` (which multiplies it, defaulting to x1) so the
+deferred ImGui-ini load of that persisted slider cannot clobber the auto-fit — so the MEDIAN
+ellipsoid's largest axis is ~3% of the scene bbox diagonal (`Camera::GetSceneSize().norm()`) — raw
+sigmas are world-units and would otherwise render sub-pixel (tiny sigma) or scene-spanning (no-GPS
+needle covariances); it logs matched/drawable/datum counts + the chosen scale via DEBUG. NOTE
 `Pixel32F::gray2color(0)` is RED
 and `(1)` is BLUE — pass `1 - value` for blue = good / red = bad ramps. Gauge-datum entries have zero
 covariance (nothing drawn; the selection overlay labels them "reference"). UI: checkbox + log-scale

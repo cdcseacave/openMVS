@@ -759,7 +759,7 @@ bool BundleAdjustment::Adjust()
 
 	// Add GPS position constraints (if enabled)
 	numGPSResiduals = 0;
-	if ((config.gpsPositionWeight > 0.0 || config.gpsPositionWeightZ > 0.0) && scene.status.nState.isSet(Scene::Status::STATE::GEO_ALIGN)) {
+	if (config.IsRefiningGPS() && scene.status.nState.isSet(Scene::Status::STATE::GEO_ALIGN)) {
 		// Estimate median distance from tracks
 		DoubleArr distances;
 		distances.reserve(scene.tracks.size());
