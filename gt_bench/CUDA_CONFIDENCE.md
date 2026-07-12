@@ -28,6 +28,17 @@ evaluate the identical closed form.
   phase is skipped whenever the integrated path ran (extended double-adjust guard). With
   `--geometric-iters 0` there is no last iteration, so confidence falls back to the standalone CPU pass.
 
+## Release note — adaptive confidence is ON by default (cross-process double-adjust)
+
+`--postprocess-dmaps` now defaults to `4` (`ADJUST_CONFIDENCE`), so every densify recalibrates
+confidence. **Within a single process this is safe:** the in-process guard (`bIntegratedConfRan`) skips
+the standalone phase whenever the integrated last-iteration recalibration already ran, so confidence is
+adjusted exactly once. **The guard is per-process, though.** If you split the pipeline — estimate in
+one invocation, then run a *separate* `--postprocess-dmaps 4` pass over the same saved `.dmap`s — the
+confidence is recalibrated a second time (the posterior/gate/floor compounded on its own output). In a
+split estimate → adjust → fuse workflow, pass `--postprocess-dmaps 0` on the later invocation(s) to opt
+out. A single `DensifyPointCloud` call (estimate → adjust → fuse in one process) is unaffected.
+
 ## Parity (GPU vs CPU) — the recalibration is the same
 
 **CUDA depth estimation is nondeterministic** (PatchMatchCUDA's curand: two runs of the same scene
