@@ -117,11 +117,13 @@ ID,name,valid,datum,sigmaPosX,sigmaPosY,sigmaPosZ,covPosXY,covPosXZ,covPosYZ,sig
 ## Viewer Display
 
 `Viewer scene.mvs --pose-quality-file quality.csv` matches rows to images by ID and renders a
-wireframe **error ellipsoid** at each camera center: axes/orientation from the eigen-decomposition
-of the 3x3 position covariance, radii = 1-sigma times a log-scale magnification slider (Render
-Settings), color = jet from blue (best localized) to red (worst), normalized at the
-95th-percentile sigma. Selecting a camera shows its per-axis position and rotation sigmas; the
-gauge datum is labeled "reference".
+translucent shaded-solid **error ellipsoid** at each camera center: axes/orientation from the
+eigen-decomposition of the 3x3 position covariance, radii = 1-sigma times a log-scale magnification
+slider (Render Settings), per-vertex color = jet from blue (best localized) to red (worst),
+normalized at the 95th-percentile sigma. The surfaces are lit and drawn semi-transparent (alpha
+0.6, depth-write off, sorted back-to-front) so the camera frustum at each center and overlapping
+ellipsoids remain visible through the shell. Selecting a camera shows its per-axis position and
+rotation sigmas; the gauge datum is labeled "reference".
 
 ## Validation
 

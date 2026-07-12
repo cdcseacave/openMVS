@@ -259,8 +259,13 @@ PoseUncertaintyArr BundleAdjustment::ComputePoseUncertainty()
 			return Z.coeff(permIdx(p.start + r), permIdx(p.start + c));
 		};
 		PoseUncertainty& u = uncertainty[p.imageID];
-		u.rotVar = Point3f((float)Zat(0, 0), (float)Zat(1, 1), (float)Zat(2, 2));
-		u.posVar = Point3f((float)Zat(3, 3), (float)Zat(4, 4), (float)Zat(5, 5));
+		// The diagonal variances are non-negative for the SPD covariance, but the selected-inverse
+		// recursion can emit a tiny negative on an axis whose true variance sits at the roundoff
+		// floor; clamp so a stray negative does not become a NaN in the downstream sqrt (1-sigma
+		// CSV export / Viewer ellipsoid). Off-diagonals stay signed -- they carry real correlations.
+		const auto Zvar = [&Zat](int i) { return MAXF(0.f, (float)Zat(i, i)); };
+		u.rotVar = Point3f(Zvar(0), Zvar(1), Zvar(2));
+		u.posVar = Point3f(Zvar(3), Zvar(4), Zvar(5));
 		u.posCov = Point3f((float)Zat(3, 4), (float)Zat(3, 5), (float)Zat(4, 5));
 		statR.Update(u.MaxRotationVariance()); statT.Update(u.MaxPositionVariance());
 	}

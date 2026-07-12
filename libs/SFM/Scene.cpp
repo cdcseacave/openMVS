@@ -653,12 +653,12 @@ bool Scene::Reconstruct(const String& source, const ReconstructionConfig& config
 	uncBaCfg.refineRadialDistortion123 = uncBaCfg.refineTangentialDistortion = uncBaCfg.refineRadialDistortion456 = false;
 	if (config.baConfig.IsRefiningGPS() && status.nState.isSet(Status::STATE::GEO_ALIGN)) {
 		BundleAdjustment ba(*this, uncBaCfg);
-		if (!ba.Adjust()) {
-			VERBOSE("warning: GPS-prior bundle adjustment failed; keeping the pre-alignment pose uncertainty");
-		} else if (config.estimatePoseUncertainty) {
-			// the GPS priors anchor the gauge, so this supersedes the earlier record
-			// with absolute ENU covariances (and covers the images resected since)
-			poseUncertainty = ba.ComputePoseUncertainty();
+		if (ba.Adjust()) {
+			if (config.estimatePoseUncertainty) {
+				// the GPS priors anchor the gauge, so this supersedes the earlier record
+				// with absolute ENU covariances (and covers the images resected since)
+				poseUncertainty = ba.ComputePoseUncertainty();
+			}
 			FilterTracks(*this, config.maxFineReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar);
 		}
 	} else if (config.estimatePoseUncertainty) {

@@ -463,7 +463,7 @@ CUDA kernels run on the GPU while the CPU pipeline continues. GPU synchronizatio
 
 | Extension | Library | Description |
 |-----------|---------|-------------|
-| `.sfm` | Boost serialization | SFM scene (cameras, images, tracks); 16-byte header (`"SFM\0"` magic + `uint32` archive type + `uint64` reserved) precedes the compressed payload so the loader self-describes its compression layer |
+| `.sfm` | Boost serialization | SFM scene (cameras, images, tracks); 16-byte header (`"SFM\0"` magic + `uint32` archive type + `uint32` version + `uint32` reserved) precedes the boost payload (text or binary, optionally compressed per the archive type) so the loader self-describes its compression layer and rejects streams from a newer, incompatible writer (`version > SFM_PROJECT_VERSION`) |
 | `.mvs` | Boost serialization / custom binary | MVS scene (platforms, images, pointcloud, mesh); the loader selects one of two on-disk variants by the leading magic. Native project (`"MVS\0"`): 20-byte header (`"MVS\0"` magic + `uint32` version + `uint32` archive type + `uint64` reserved) followed by a boost payload (text or binary, optionally zlib/zstd-compressed per the archive type). Interface (`"MVSI"`, custom dependency-free serialization): 12-byte header (`"MVSI"` magic + `uint32` version + `uint32` reserved) followed by an uncompressed hand-rolled binary payload whose version is threaded through serialization |
 | `.dmap` | Custom binary | Per-image depth map, normal map, confidence map |
 

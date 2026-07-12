@@ -178,7 +178,7 @@ A typical sparse point-cloud and camera poses obtained by the previous steps wil
 
 `Viewer` module can be used to visualize any `OpenMVS` scene file (`MVS` project, `SFM` sparse reconstruction, or individual `DMAP` depth-map) or geometry file (`PLY`, `OBJ`, `OFF`, `GLTF`, `GLB`). The viewer expects the input file either on the command line or to drag & drop it inside the viewer window. `Viewer` is used to create all the screenshots below.
 
-A pose-quality report produced by `CreateStructure --export-pose-quality` can be loaded alongside the scene with `--pose-quality-file quality.csv`: each camera gets a wireframe error ellipsoid (shape and orientation from its 3x3 position covariance, colored blue = best localized to red = worst), a magnification slider in the render settings scales the 1-sigma radii, and selecting a camera shows its per-axis position and rotation accuracy. Report rows are matched to scene images by ID, which the `.mvs` export preserves from the SfM scene.
+A pose-quality report produced by `CreateStructure --export-pose-quality` can be loaded alongside the scene with `--pose-quality-file quality.csv`: each camera gets a translucent shaded error ellipsoid (shape and orientation from its 3x3 position covariance, colored blue = best localized to red = worst), a magnification slider in the render settings scales the 1-sigma radii, and selecting a camera shows its per-axis position and rotation accuracy. Report rows are matched to scene images by ID, which the `.mvs` export preserves from the SfM scene.
 
 The output of each `OpenMVS` module is displayed by default both on the console and stored in a `LOG` file. Example of the generated `LOG` files can also be found at [OpenMVS_sample](https://github.com/cdcseacave/openMVS_sample).
 
