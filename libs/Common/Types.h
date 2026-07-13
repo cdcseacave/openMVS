@@ -1801,5 +1801,6 @@ template<typename TYPE> inline String cvMat2String(const TPoint3<TYPE>& pt, LPCS
 #include "Octree.h"
 #include "OctreeLOD.h"
 #include "UtilCUDA.h"
+#include "UtilMetal.h"
 
 #endif // __SEACAVE_TYPES_H__

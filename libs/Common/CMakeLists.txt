@@ -10,6 +10,10 @@ endif()
 # List sources files
 FILE(GLOB LIBRARY_FILES_C "*.cpp")
 FILE(GLOB LIBRARY_FILES_H "*.h" "*.inl")
+if(_USE_METAL)
+	FILE(GLOB LIBRARY_FILES_METAL "*.mm")
+	LIST(APPEND LIBRARY_FILES_C ${LIBRARY_FILES_METAL})
+endif()
 
 cxx_library_with_type(Common "Libs" "" "${cxx_default}"
 	${LIBRARY_FILES_C} ${LIBRARY_FILES_H}
@@ -18,6 +22,12 @@ cxx_library_with_type(Common "Libs" "" "${cxx_default}"
 # Manually set Common.h as the precompiled header
 IF(CMAKE_VERSION VERSION_GREATER_EQUAL 3.16.0)
 	TARGET_PRECOMPILE_HEADERS(Common PRIVATE "Common.h")
+endif()
+
+if(_USE_METAL)
+	set_source_files_properties(${LIBRARY_FILES_METAL} PROPERTIES
+		SKIP_PRECOMPILE_HEADERS ON
+		COMPILE_OPTIONS "-fobjc-arc")
 endif()
 
 # Add public include directories that propagate to dependent targets
