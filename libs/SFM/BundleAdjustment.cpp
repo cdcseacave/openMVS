@@ -904,6 +904,22 @@ bool BundleAdjustment::Adjust()
 		options.linear_solver_type = ceres::ITERATIVE_SCHUR;
 		options.preconditioner_type = ceres::SCHUR_JACOBI; // Robust preconditioner
 		options.use_inner_iterations = true; // Improves convergence
+		#if 0 && (CERES_VERSION_MAJOR > 2 || (CERES_VERSION_MAJOR == 2 && CERES_VERSION_MINOR >= 2))
+		// DISABLED: Power Bundle Adjustment (Weber et al., CVPR 2022) via the
+		// SCHUR_POWER_SERIES_EXPANSION preconditioner, gated on a large camera count (the reduced
+		// camera system it is meant to accelerate). Benchmarked against the SCHUR_JACOBI default and
+		// it loses at every scale tested, so it is left off. On an i7-13700KF (16C/24T) / RTX 4070 /
+		// 32GB / Win11, Ceres 2.2.0 + CUDA 13.0: House (83 cameras) ran 1.2-3.9x slower; Tanks&Temples
+		// Courthouse (1106 cameras) ran 1.6-1.7x slower on the 4-5.6M-residual bundles and HUNG for
+		// >81 min on a 6.3M-residual bundle (never converged), while SCHUR_JACOBI completed the whole
+		// reconstruction in ~54 min. CG convergence was erratic (non-monotonic in problem size).
+		// Re-enable/re-tune (e.g. without use_spse_initialization) only with a fresh benchmark on a
+		// scene with far more cameras than we had available.
+		if (scene.status.nCalibratedImages > 1000) {
+			options.preconditioner_type = ceres::SCHUR_POWER_SERIES_EXPANSION;
+			options.use_spse_initialization = true;
+		}
+		#endif
 	}
 	#ifndef _RELEASE
 	options.minimizer_progress_to_stdout = true;
