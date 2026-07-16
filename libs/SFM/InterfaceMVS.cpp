@@ -520,6 +520,9 @@ void EmitSphericalPlatforms(
 }
 
 // Phase 2: append pose + N face Image records for one spherical SFM image.
+// mvsImagePositions receives the array positions of the created records (used as
+// Vertex::View::imageID); the global IDs are drawn from nextID (unique per image,
+// required by depth-map file naming).
 void AppendSphericalFaceImages(
 	const Image& img,
 	const TangentFacesGeometry& geometry,
@@ -527,7 +530,8 @@ void AppendSphericalFaceImages(
 	const String& extension,
 	uint32_t platformID,
 	MVS::Interface& iface,
-	std::vector<uint32_t>& mvsImageIDs)
+	std::vector<uint32_t>& mvsImagePositions,
+	uint32_t& nextID)
 {
 	ASSERT(img.pCamera != NULL);
 	ASSERT(img.pCamera->GetType() == CameraType::SPHERICAL);
@@ -541,16 +545,16 @@ void AppendSphericalFaceImages(
 	pose.C = img.C;
 
 	const String stem = Util::getFileName(img.fileName);
-	mvsImageIDs.clear();
-	mvsImageIDs.reserve(geometry.numFaces);
+	mvsImagePositions.clear();
+	mvsImagePositions.reserve(geometry.numFaces);
 	for (int k = 0; k < geometry.numFaces; ++k) {
 		MVS::Interface::Image& outImg = iface.images.emplace_back();
 		outImg.name = basePath + stem + String::FormatString(_T("_face%d"), k) + extension;
 		outImg.platformID = platformID;
 		outImg.cameraID   = (uint32_t)k;
 		outImg.poseID     = poseID;
-		outImg.ID         = (uint32_t)(iface.images.size() - 1);
-		mvsImageIDs.push_back(outImg.ID);
+		outImg.ID         = nextID++;
+		mvsImagePositions.push_back((uint32_t)(iface.images.size() - 1));
 	}
 }
 
@@ -741,7 +745,8 @@ bool SFM::ExportMVS(const String& fileName, const Scene& scene, ExportMVSConfig 
 		SphereCubeMap::EmitSphericalPlatforms(scene, sphericalGeom, iface, camToPlatform);
 
 	// ----- Phase 2: images + poses -----
-	// sfmToMvsImage[i] holds the MVS imageIDs produced for SFM image i.
+	// sfmToMvsImage[i] holds the images-array positions produced for SFM image i
+	// (the values Vertex::View::imageID references, distinct from the global Image::ID).
 	// Pinhole images get 1 entry; spherical images get N (== numFaces).
 	const String basePath = mvsFileDir;
 	String faceBaseSlash;
@@ -752,6 +757,14 @@ bool SFM::ExportMVS(const String& fileName, const Scene& scene, ExportMVSConfig 
 	}
 	std::vector<std::vector<uint32_t>> sfmToMvsImage(scene.images.size());
 	iface.images.reserve(scene.images.size());
+	// Global image IDs: pinhole images keep their SFM image ID so external per-image data
+	// (e.g. the pose-quality CSV) can be correlated after import; spherical cube-map faces
+	// draw fresh IDs past the largest SFM ID (depth-map file naming requires uniqueness).
+	// Vertex::View::imageID must stay the images-array position, tracked separately.
+	uint32_t nextSyntheticID = 0;
+	for (const Image& img : scene.images)
+		if (img.ID != NO_ID && img.ID >= nextSyntheticID)
+			nextSyntheticID = img.ID + 1;
 	FOREACH(i, scene.images) {
 		const Image& img = scene.images[i];
 		const Camera* cam = img.pCamera;
@@ -760,7 +773,7 @@ bool SFM::ExportMVS(const String& fileName, const Scene& scene, ExportMVSConfig 
 		if (cam->GetType() == CameraType::SPHERICAL) {
 			SphereCubeMap::AppendSphericalFaceImages(
 				img, sphericalGeom, faceBaseSlash, config.extension,
-				camToPlatform[cam], iface, sfmToMvsImage[i]);
+				camToPlatform[cam], iface, sfmToMvsImage[i], nextSyntheticID);
 			continue;
 		}
 
@@ -781,9 +794,8 @@ bool SFM::ExportMVS(const String& fileName, const Scene& scene, ExportMVSConfig 
 		outImg.platformID = platformID;
 		outImg.cameraID = 0; // single camera per platform
 		outImg.poseID = poseID; // may be NO_ID
-		// Assign export-order IDs to keep IDs unique and contiguous in mixed scenes.
-		outImg.ID = (uint32_t)iface.images.size();
-		sfmToMvsImage[i].push_back(outImg.ID);
+		outImg.ID = (img.ID != NO_ID ? img.ID : nextSyntheticID++);
+		sfmToMvsImage[i].push_back((uint32_t)iface.images.size()); // vertex views reference the array position
 		iface.images.emplace_back(std::move(outImg));
 	}
 

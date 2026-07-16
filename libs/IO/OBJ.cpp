@@ -66,7 +66,6 @@ bool ObjModel::MaterialLib::Save(const String& prefix, bool texLossless) const
 			<< "Ka 1.000000 1.000000 1.000000" << "\n"
 			<< "Kd " << mat.Kd.r << " " << mat.Kd.g << " " << mat.Kd.b << "\n"
 			<< "Ks 0.000000 0.000000 0.000000" << "\n"
-			<< "Tr 1.000000" << "\n"
 			<< "illum 1" << "\n"
 			<< "Ns 1.000000" << "\n";
 		// save material maps

@@ -2107,6 +2107,18 @@ bool PipelineTest()
 				VERBOSE("Test 1 FAILED: invalid pose uncertainty for image %u (rotVar %g, posVar %g)", i, rotVar, posVar);
 				return false;
 			}
+			// full 3x3 position covariance: off-diagonals finite and Cauchy-Schwarz-consistent
+			if (!ISFINITE(u.posCov.x) || !ISFINITE(u.posCov.y) || !ISFINITE(u.posCov.z)) {
+				VERBOSE("Test 1 FAILED: invalid position covariance for image %u", i);
+				return false;
+			}
+			constexpr float tol = 1.01f;
+			if (ABS(u.posCov.x) > SQRT(u.posVar.x * u.posVar.y) * tol + FLT_EPSILON ||
+			    ABS(u.posCov.y) > SQRT(u.posVar.x * u.posVar.z) * tol + FLT_EPSILON ||
+			    ABS(u.posCov.z) > SQRT(u.posVar.y * u.posVar.z) * tol + FLT_EPSILON) {
+				VERBOSE("Test 1 FAILED: position covariance not positive semi-definite for image %u", i);
+				return false;
+			}
 			if (rotVar == 0.f && posVar == 0.f)
 				++numDatum; // gauge reference
 		}
@@ -2359,6 +2371,313 @@ bool PipelineTest()
 		VERBOSE("Test 6 PASSED (max projection error = %.6f pixels, mean = %.6f pixels)",
 		        maxProjectionError, meanProjectionError);
 	}
+	return true;
+}
+
+
+// GPS-prior BA on a geo-aligned scene: the priors anchor the gauge, so BA fixes no
+// pose and ComputePoseUncertainty must return absolute (datum-free) covariances;
+// also exercises the missing-accuracy fallback (a view without EXIF accuracy tags
+// must not produce non-finite residuals).
+bool GPSPriorPoseUncertaintyTest()
+{
+	VERBOSE("\n=== GPSPriorPoseUncertaintyTest: absolute pose covariance under GPS priors ===");
+	Scene sceneGT, scene;
+	SceneConfig sceneCfg;
+	sceneCfg.numImages = 6;
+	sceneCfg.numPoints = 100;
+	sceneCfg.poseMode = SceneConfig::RANDOM_POSES;
+	sceneCfg.generateGPS = true; // synthesizes GPS metadata and aligns the scene to ENU
+	sceneCfg.perturbOptions = SceneConfig::PERTURB_POSES;
+	GenerateTestScene(sceneGT, sceneCfg, &scene);
+	if (!scene.status.nState.isSet(Scene::Status::STATE::GEO_ALIGN)) {
+		VERBOSE("GPSPriorPoseUncertaintyTest FAILED: generated scene not geo-aligned");
+		return false;
+	}
+	// one view without accuracy tags: BA must fall back to default accuracies
+	View::Metadata& meta = static_cast<View&>(scene.images[1]).metadata;
+	meta.positionAccuracy = 0.f;
+	meta.positionAccuracyZ = 0.f;
+
+	BAConfig cfg;
+	cfg.gpsPositionWeight = 1.0;
+	cfg.gpsPositionWeightZ = 1.0;
+	cfg.gpsWeightScaleFactor = 0.1;
+	BundleAdjustment ba(scene, cfg);
+	if (!ba.Adjust()) {
+		VERBOSE("GPSPriorPoseUncertaintyTest FAILED: GPS-prior BundleAdjustment returned false");
+		return false;
+	}
+	// poses must stay commensurate with the GPS accuracy
+	double meanPosError = 0;
+	FOREACH(i, scene.images)
+		meanPosError += norm(scene.images[i].C - sceneGT.images[i].C);
+	meanPosError /= scene.images.size();
+	if (meanPosError > 0.2) {
+		VERBOSE("GPSPriorPoseUncertaintyTest FAILED: mean position error = %.3f m > 0.2 m", meanPosError);
+		return false;
+	}
+
+	const PoseUncertaintyArr uncertainty = ba.ComputePoseUncertainty();
+	if (uncertainty.size() != scene.images.size()) {
+		VERBOSE("GPSPriorPoseUncertaintyTest FAILED: pose uncertainty not computed (%u/%u images)",
+			(unsigned)uncertainty.size(), (unsigned)scene.images.size());
+		return false;
+	}
+	FOREACH(i, uncertainty) {
+		const PoseUncertainty& u = uncertainty[i];
+		if (!u.IsValid() ||
+			!ISFINITE(u.MaxRotationVariance()) || !ISFINITE(u.MaxPositionVariance()) ||
+			!ISFINITE(u.posCov.x) || !ISFINITE(u.posCov.y) || !ISFINITE(u.posCov.z)) {
+			VERBOSE("GPSPriorPoseUncertaintyTest FAILED: invalid pose uncertainty for image %u", i);
+			return false;
+		}
+		// absolute gauge: GPS priors anchor every pose, no datum must be designated
+		if (u.MaxRotationVariance() == 0.f && u.MaxPositionVariance() == 0.f) {
+			VERBOSE("GPSPriorPoseUncertaintyTest FAILED: unexpected gauge datum at image %u", i);
+			return false;
+		}
+	}
+
+	// Cross-check the fast Schur + selected-inverse covariance against Ceres' own (slow, dense)
+	// covariance estimator on the same solved problem. GPS priors make the system full rank, so
+	// both compute the same marginal pose covariance and must agree up to numerical error.
+	const PoseUncertaintyArr reference = ba.ComputePoseUncertaintyCeres();
+	if (reference.size() != uncertainty.size()) {
+		VERBOSE("GPSPriorPoseUncertaintyTest FAILED: Ceres reference covariance not computed (%u/%u)",
+			(unsigned)reference.size(), (unsigned)uncertainty.size());
+		return false;
+	}
+	// Per-image relative error: position covariance via Frobenius norm, rotation variance per axis.
+	const auto frob = [](const Matrix3x3f& m) {
+		float s = 0.f; for (int k = 0; k < 9; ++k) s += m.val[k]*m.val[k]; return SQRT(s);
+	};
+	const auto frobDiff = [](const Matrix3x3f& A, const Matrix3x3f& B) {
+		float s = 0.f; for (int k = 0; k < 9; ++k) { const float d = A.val[k]-B.val[k]; s += d*d; } return SQRT(s);
+	};
+	const auto relErr = [](float a, float b) { return ABS(a - b) / MAXF(ABS(b), 1e-12f); };
+	float maxPosRelErr = 0.f, maxRotRelErr = 0.f;
+	unsigned numChecked = 0;
+	FOREACH(i, uncertainty) {
+		const PoseUncertainty& a = uncertainty[i];
+		const PoseUncertainty& b = reference[i];
+		if (!a.IsValid() || !b.IsValid())
+			continue;
+		const Matrix3x3f Ca = a.GetPositionCovariance(), Cb = b.GetPositionCovariance();
+		maxPosRelErr = MAXF(maxPosRelErr, frobDiff(Ca, Cb) / MAXF(frob(Cb), 1e-12f));
+		maxRotRelErr = MAXF(maxRotRelErr, relErr(a.rotVar.x, b.rotVar.x));
+		maxRotRelErr = MAXF(maxRotRelErr, relErr(a.rotVar.y, b.rotVar.y));
+		maxRotRelErr = MAXF(maxRotRelErr, relErr(a.rotVar.z, b.rotVar.z));
+		++numChecked;
+	}
+	if (numChecked == 0) {
+		VERBOSE("GPSPriorPoseUncertaintyTest FAILED: no images to cross-check against Ceres");
+		return false;
+	}
+	constexpr float crossCheckTol = 0.05f; // 5% — the two use different linear-algebra paths
+	if (maxPosRelErr > crossCheckTol || maxRotRelErr > crossCheckTol) {
+		VERBOSE("GPSPriorPoseUncertaintyTest FAILED: covariance disagrees with Ceres reference "
+			"(max rel err: position %.3g, rotation %.3g > %.2g over %u images)",
+			maxPosRelErr, maxRotRelErr, crossCheckTol, numChecked);
+		return false;
+	}
+	VERBOSE("GPSPriorPoseUncertaintyTest PASSED (mean position error = %.3f m; "
+		"Ceres cross-check max rel err: position %.3g, rotation %.3g over %u images)",
+		meanPosError, maxPosRelErr, maxRotRelErr, numChecked);
+	return true;
+}
+
+
+// Pose-quality report roundtrip: pose uncertainty recorded on the scene from the last
+// BA + ExportPoseUncertaintyCSV (one row per image keyed by SFM image ID, exactly one
+// all-zero gauge datum for a non-GPS BA), ExportMVS -> MVS::Scene::Load preserving the
+// (non-contiguous) SFM image IDs the report is correlated by, Scene::Transform mapping
+// the position covariance, and .sfm serialization preserving the record.
+bool PoseUncertaintyExportTest()
+{
+	VERBOSE("\n=== PoseUncertaintyExportTest: quality report CSV + image-ID roundtrip ===");
+	Scene sceneGT, scene;
+	SceneConfig sceneCfg;
+	sceneCfg.perturbOptions = SceneConfig::PERTURB_ALL;
+	GenerateTestScene(sceneGT, sceneCfg, &scene);
+	// non-contiguous IDs prove the CSV/interface correlation is ID-based, not index-based
+	FOREACH(i, scene.images)
+		scene.images[i].ID = 10 + i * 3;
+	scene.status.nState.set(Scene::Status::STATE::CALIBRATED);
+
+	namespace fs = std::filesystem;
+	const fs::path tmpDir = fs::temp_directory_path() /
+		fs::path(String::FormatString("openmvs_pose_quality_%lld", (long long)std::time(nullptr)).c_str());
+	std::error_code ec;
+	fs::create_directories(tmpDir, ec);
+	if (ec) {
+		VERBOSE("PoseUncertaintyExportTest FAILED: cannot create temp dir: %s", ec.message().c_str());
+		return false;
+	}
+	struct CleanupGuard {
+		fs::path path;
+		~CleanupGuard() { std::error_code ec; fs::remove_all(path, ec); }
+	} cleanup{tmpDir};
+
+	const String mvsPath = String(tmpDir.string()) + _T("/scene.mvs");
+	if (!ExportMVS(mvsPath, scene, {})) {
+		VERBOSE("PoseUncertaintyExportTest FAILED: ExportMVS returned false");
+		return false;
+	}
+
+	// record the pose uncertainty on the scene from the (last) bundle adjustment,
+	// as Scene::Reconstruct does when ReconstructionConfig::estimatePoseUncertainty is set
+	{
+		BAConfig cfg;
+		BundleAdjustment ba(scene, cfg);
+		if (!ba.Adjust()) {
+			VERBOSE("PoseUncertaintyExportTest FAILED: BundleAdjustment returned false");
+			return false;
+		}
+		scene.poseUncertainty = ba.ComputePoseUncertainty();
+	}
+	if (scene.poseUncertainty.size() != scene.images.size()) {
+		VERBOSE("PoseUncertaintyExportTest FAILED: pose uncertainty not computed (%u/%u images)",
+			(unsigned)scene.poseUncertainty.size(), (unsigned)scene.images.size());
+		return false;
+	}
+	const String csvPath = String(tmpDir.string()) + _T("/quality.csv");
+	const unsigned numValid = ExportPoseUncertaintyCSV(csvPath, scene);
+	if (numValid != scene.images.size()) {
+		VERBOSE("PoseUncertaintyExportTest FAILED: exported %u valid rows, expected %u",
+			numValid, scene.images.size());
+		return false;
+	}
+
+	// re-read the CSV: one data row per image, IDs matching the assigned ones,
+	// exactly one datum row with all-zero sigmas
+	std::ifstream is(csvPath);
+	if (!is.is_open()) {
+		VERBOSE("PoseUncertaintyExportTest FAILED: cannot re-open '%s'", csvPath.c_str());
+		return false;
+	}
+	unsigned numRows = 0, numDatum = 0;
+	std::unordered_set<unsigned long> csvIDs;
+	std::string line;
+	while (std::getline(is, line)) {
+		if (line.empty() || line[0] == '#')
+			continue;
+		std::vector<std::string> fields;
+		size_t start = 0;
+		for (size_t pos; (pos = line.find(',', start)) != std::string::npos; start = pos + 1)
+			fields.push_back(line.substr(start, pos - start));
+		fields.push_back(line.substr(start));
+		char* end;
+		const unsigned long id = std::strtoul(fields[0].c_str(), &end, 10);
+		if (end == fields[0].c_str() || *end != '\0')
+			continue; // header line
+		if (fields.size() < 16) {
+			VERBOSE("PoseUncertaintyExportTest FAILED: CSV row with %u fields, expected 16", (unsigned)fields.size());
+			return false;
+		}
+		++numRows;
+		csvIDs.insert(id);
+		if (fields[3] != "0") {
+			++numDatum;
+			for (int f = 4; f <= 12; ++f) {
+				if (std::atof(fields[f].c_str()) != 0.0) {
+					VERBOSE("PoseUncertaintyExportTest FAILED: non-zero sigma on the datum row (field %d)", f);
+					return false;
+				}
+			}
+		}
+	}
+	if (numRows != scene.images.size() || numDatum != 1) {
+		VERBOSE("PoseUncertaintyExportTest FAILED: %u rows (%u expected), %u datum rows (1 expected)",
+			numRows, scene.images.size(), numDatum);
+		return false;
+	}
+	FOREACH(i, scene.images) {
+		if (csvIDs.count(scene.images[i].ID) == 0) {
+			VERBOSE("PoseUncertaintyExportTest FAILED: image ID %u missing from the CSV", scene.images[i].ID);
+			return false;
+		}
+	}
+
+	// the exported .mvs must preserve the SFM image IDs (the report correlation key)
+	MVS::Scene mvsScene(1);
+	if (mvsScene.Load(mvsPath) == MVS::Scene::SCENE_NA) {
+		VERBOSE("PoseUncertaintyExportTest FAILED: MVS::Scene::Load returned SCENE_NA");
+		return false;
+	}
+	if (mvsScene.images.size() != scene.images.size()) {
+		VERBOSE("PoseUncertaintyExportTest FAILED: %u MVS images, expected %u",
+			(unsigned)mvsScene.images.size(), scene.images.size());
+		return false;
+	}
+	FOREACH(i, mvsScene.images) {
+		if (mvsScene.images[i].ID != scene.images[i].ID) {
+			VERBOSE("PoseUncertaintyExportTest FAILED: MVS image %u has ID %u, expected %u",
+				i, mvsScene.images[i].ID, scene.images[i].ID);
+			return false;
+		}
+	}
+	// vertex views must reference array positions, still in range
+	for (const MVS::PointCloud::ViewArr& views : mvsScene.pointcloud.pointViews)
+		for (const MVS::PointCloud::View view : views)
+			if (view >= mvsScene.images.size()) {
+				VERBOSE("PoseUncertaintyExportTest FAILED: vertex view %u out of range", view);
+				return false;
+			}
+
+	// world-transform consistency: Scene::Transform must map the recorded position
+	// covariance as scale^2 * R * Cov * R^T and leave the rotation variance untouched
+	IIndex idxCheck = NO_ID;
+	FOREACH(i, scene.poseUncertainty)
+		if (scene.poseUncertainty[i].IsValid() && scene.poseUncertainty[i].MaxPositionVariance() > 0.f) {
+			idxCheck = i;
+			break;
+		}
+	if (idxCheck == NO_ID) {
+		VERBOSE("PoseUncertaintyExportTest FAILED: no non-datum uncertainty entry to check");
+		return false;
+	}
+	const PoseUncertainty before = scene.poseUncertainty[idxCheck];
+	std::mt19937 rng(789);
+	const Transform T = Transform::Random(rng);
+	scene.Transform(T);
+	const PoseUncertainty& after = scene.poseUncertainty[idxCheck];
+	const Matrix3x3 cov(
+		before.posVar.x, before.posCov.x, before.posCov.y,
+		before.posCov.x, before.posVar.y, before.posCov.z,
+		before.posCov.y, before.posCov.z, before.posVar.z);
+	const Matrix3x3 covT(T.R * cov * T.R.t() * SQUARE(T.scale));
+	const auto isNear = [](float a, float b) {
+		return ABS(a - b) <= 1e-3f * MAXF(MAXF(ABS(a), ABS(b)), 1e-12f);
+	};
+	if (!isNear((float)covT(0,0), after.posVar.x) || !isNear((float)covT(1,1), after.posVar.y) || !isNear((float)covT(2,2), after.posVar.z) ||
+	    !isNear((float)covT(0,1), after.posCov.x) || !isNear((float)covT(0,2), after.posCov.y) || !isNear((float)covT(1,2), after.posCov.z) ||
+	    after.rotVar != before.rotVar) {
+		VERBOSE("PoseUncertaintyExportTest FAILED: transformed covariance mismatch");
+		return false;
+	}
+
+	// serialization roundtrip preserves the recorded uncertainty
+	const String sfmPath = String(tmpDir.string()) + _T("/scene.sfm");
+	if (!scene.Save(sfmPath, ARCHIVE_BINARY)) {
+		VERBOSE("PoseUncertaintyExportTest FAILED: scene save failed");
+		return false;
+	}
+	Scene scene2;
+	if (!scene2.Load(sfmPath) || scene2.poseUncertainty.size() != scene.poseUncertainty.size()) {
+		VERBOSE("PoseUncertaintyExportTest FAILED: scene load lost the pose uncertainty");
+		return false;
+	}
+	FOREACH(i, scene.poseUncertainty) {
+		const PoseUncertainty& a = scene.poseUncertainty[i];
+		const PoseUncertainty& b = scene2.poseUncertainty[i];
+		if (a.rotVar != b.rotVar || a.posVar != b.posVar || a.posCov != b.posCov) {
+			VERBOSE("PoseUncertaintyExportTest FAILED: serialized uncertainty mismatch at image %u", i);
+			return false;
+		}
+	}
+
+	VERBOSE("PoseUncertaintyExportTest PASSED (%u images, %u valid rows)", scene.images.size(), numValid);
 	return true;
 }
 

@@ -3655,7 +3655,9 @@ bool SerializeSave(const TYPE& obj, std::ofstream& fs, ARCHIVE_TYPE type, unsign
 		VERBOSE("error: Can not save the object, invalid archive type");
 		return false;
 	}
-	return true;
+	// flush the buffered archive bytes and verify the stream is still good, so a failed
+	// write (e.g. disk full) is reported instead of leaving a truncated but parseable file
+	return fs.flush().good();
 } // SerializeSave
 template <typename TYPE>
 bool SerializeSave(const TYPE& obj, const SEACAVE::String& fileName, ARCHIVE_TYPE type, unsigned flags=boost::archive::no_header)

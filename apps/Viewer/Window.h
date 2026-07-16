@@ -112,6 +112,7 @@ public:
 	MVS::IIndex minViews;
 	float userFontScale; // UI font scale
 	float cameraSize;
+	float uncertaintyEllipsoidScale; // multiplies the 1-sigma pose-uncertainty ellipsoid radii
 	CameraDisplayColor cameraDisplayColor;
 	CameraDisplayType cameraDisplayType;
 	bool showCameraLookAt;
@@ -126,6 +127,7 @@ public:
 	bool showMeshWireframe;
 	bool showMeshTextured;
 	bool showBounds; // draw the scene oriented bounding-box wireframe
+	bool showUncertaintyEllipsoids; // draw the per-camera pose-uncertainty ellipsoids (when loaded)
 	std::vector<bool> meshSubMeshVisible; // control visibility of individual sub-meshes (using unsigned char instead of bool for ImGui compatibility)
 	String pendingScreenshotPath;
 	bool pendingScreenshotIncludeUI;

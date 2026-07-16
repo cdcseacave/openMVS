@@ -73,6 +73,25 @@ jobs:
         with:
           vcpkgGitCommitId: ${{ env.VCPKG_COMMIT }}
 
+      # The windows runner's Visual Studio ships LLVM flang, which vcpkg's lapack-reference
+      # port auto-detects and uses to compile reference LAPACK. That flang (currently 22.1.x)
+      # fails on LAPACK 3.12.1's ?gedmd (DMD) routines ("'w' is not an object that can appear
+      # in an expression"), breaking the whole vcpkg install. On dev machines without flang,
+      # vcpkg_find_fortran instead falls back to its bundled MinGW gfortran (with GNUtoMS), which
+      # builds LAPACK cleanly — so reproduce that here by hiding flang so CMake finds no Fortran
+      # compiler and vcpkg uses gfortran. flang is only ever used for this Fortran detection;
+      # the C/C++ build uses cl.exe and is unaffected.
+      - &hide-vs-flang-step
+        name: Use vcpkg's bundled gfortran for LAPACK (disable VS LLVM flang)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Get-ChildItem "C:\Program Files\Microsoft Visual Studio" -Recurse -Filter "flang*.exe" -ErrorAction SilentlyContinue |
+            ForEach-Object {
+              Write-Host "Disabling $($_.FullName)"
+              Rename-Item -LiteralPath $_.FullName -NewName "$($_.Name).disabled" -Force
+            }
+
       - name: Install mono (required for nuget.exe on Linux)
         if: runner.os == 'Linux'
         run: |
@@ -219,6 +238,7 @@ jobs:
     steps:
       - *checkout-step
       - *setup-vcpkg-step
+      - *hide-vs-flang-step
       - *setup-nuget-cache-step
       - *configure-step
       - *build-step

@@ -34,6 +34,9 @@ using namespace SFM;
 #define SCENE_USE_OPENMP
 #endif
 
+#define SFM_PROJECT_ID "SFM\0" // identifies the SFM project stream
+#define SFM_PROJECT_VERSION 0  // SFM project stream layout version (bump on any breaking header/serialization change)
+
 
 // S T R U C T S ///////////////////////////////////////////////////
 
@@ -81,6 +84,7 @@ Scene& Scene::operator=(const Scene& scene) {
 	for (const Track& track : scene.tracks)
 		tracks.emplace_back(track);
 	// Copy status
+	poseUncertainty = scene.poseUncertainty;
 	transform = scene.transform;
 	obb = scene.obb;
 	status = scene.status;
@@ -96,6 +100,7 @@ Scene& Scene::operator=(Scene&& scene) noexcept {
 	pairs = std::move(scene.pairs);
 	tracks = std::move(scene.tracks);
 	colors = std::move(scene.colors);
+	poseUncertainty = std::move(scene.poseUncertainty);
 	transform = scene.transform;
 	obb = scene.obb;
 	status = scene.status;
@@ -109,6 +114,7 @@ void Scene::Release() {
 	pairs.Release();
 	tracks.Release();
 	colors.clear();
+	poseUncertainty.Release();
 	transform = Matrix4x4::IDENTITY;
 	obb = OBB3(true);
 	status = Status();
@@ -183,7 +189,25 @@ bool Scene::Save(const String& fileName, ARCHIVE_TYPE nArchiveType) const
 {
 	#ifdef _USE_BOOST
 	TD_TIMER_STARTD();
-	if (!SerializeSave(*this, fileName, nArchiveType)) {
+	// open the output stream
+	std::ofstream fs(fileName, std::ios::out | std::ios::binary);
+	if (!fs.is_open()) {
+		VERBOSE("error: unable to open file '%s'", fileName.c_str());
+		return false;
+	}
+	// save project ID
+	fs.write(SFM_PROJECT_ID, 4);
+	// save stream type (compression layer used by boost serialization)
+	const uint32_t nType = nArchiveType;
+	fs.write((const char*)&nType, sizeof(uint32_t));
+	// save the stream layout version so future changes can be detected/rejected
+	const uint32_t nVersion = SFM_PROJECT_VERSION;
+	fs.write((const char*)&nVersion, sizeof(uint32_t));
+	// reserve some bytes
+	const uint32_t nReserved = 0;
+	fs.write((const char*)&nReserved, sizeof(uint32_t));
+	// serialize out the current state
+	if (!SerializeSave(*this, fs, nArchiveType)) {
 		VERBOSE("error: serialization failed for file '%s' (archive type %d)", fileName.c_str(), (int)nArchiveType);
 		return false;
 	}
@@ -197,12 +221,44 @@ bool Scene::Save(const String& fileName, ARCHIVE_TYPE nArchiveType) const
 	#endif
 }
 
-bool Scene::Load(const String& fileName, ARCHIVE_TYPE nArchiveType)
+bool Scene::Load(const String& fileName)
 {
 	#ifdef _USE_BOOST
 	TD_TIMER_STARTD();
-	if (!SerializeLoad(*this, fileName, nArchiveType)) {
-		VERBOSE("error: deserialization failed for file '%s' (archive type %d)", fileName.c_str(), (int)nArchiveType);
+	// open the input stream
+	std::ifstream fs(fileName, std::ios::in | std::ios::binary);
+	if (!fs.is_open()) {
+		VERBOSE("error: unable to open file '%s'", fileName.c_str());
+		return false;
+	}
+	// load and validate project header ID
+	char szHeader[4];
+	fs.read(szHeader, 4);
+	if (!fs || strncmp(szHeader, SFM_PROJECT_ID, 4) != 0) {
+		VERBOSE("error: invalid SFM project '%s'", fileName.c_str());
+		return false;
+	}
+	// load stream type (compression layer used by boost serialization)
+	uint32_t nType;
+	fs.read((char*)&nType, sizeof(uint32_t));
+	// load the stream layout version and reject files written by a newer, incompatible writer
+	uint32_t nVersion;
+	fs.read((char*)&nVersion, sizeof(uint32_t));
+	// skip reserved bytes
+	uint32_t nReserved;
+	fs.read((char*)&nReserved, sizeof(uint32_t));
+	if (!fs) {
+		VERBOSE("error: invalid SFM project header '%s'", fileName.c_str());
+		return false;
+	}
+	if (nVersion > SFM_PROJECT_VERSION) {
+		VERBOSE("error: unsupported SFM project version %u (this build supports up to %u) in '%s'",
+			nVersion, (unsigned)SFM_PROJECT_VERSION, fileName.c_str());
+		return false;
+	}
+	// serialize in the current state
+	if (!SerializeLoad(*this, fs, (ARCHIVE_TYPE)nType)) {
+		VERBOSE("error: deserialization failed for file '%s' (archive type %d)", fileName.c_str(), (int)nType);
 		return false;
 	}
 	DEBUG_EXTRA("Scene loaded (%s): %u cameras, %u images (%u calibrated), %u pairs, %u tracks",
@@ -268,7 +324,7 @@ bool Scene::Import(const String& source, const ImportConfig& config)
 	if (imageFiles.size() == 1 && Util::getFileExt(imageFiles.front()) == ".sfm" &&
 		File::isFile(MAKE_PATH_SAFE(imageFiles.front())))
 	{
-		if (!Load(MAKE_PATH_SAFE(imageFiles.front()), config.archiveType))
+		if (!Load(MAKE_PATH_SAFE(imageFiles.front())))
 			return false;
 	} else if (imageFiles.size() < 2) {
 		VERBOSE("error: no input images found for '%s'", source.c_str());
@@ -547,7 +603,7 @@ bool Scene::Reconstruct(const String& source, const ReconstructionConfig& config
 	#endif
 	#else
 	// Shortcut features and matching by directly loading a pre-reconstruction scene (for debugging)
-	Load(MAKE_PATH("scene_pre_reconstruction.sfm"), config.importCfg.archiveType);
+	Load(MAKE_PATH("scene_pre_reconstruction.sfm"));
 	#endif
 
 	// Run reconstruction method
@@ -585,6 +641,33 @@ bool Scene::Reconstruct(const String& source, const ReconstructionConfig& config
 	// Align scene to GPS if available
 	if (config.thAlignGPS > 0 && HasImagesWithGPS())
 		AlignToGPS(config.thAlignGPS);
+
+	// Refine the geo-aligned reconstruction with GPS position priors (if enabled): the GPS
+	// residuals are gated on GEO_ALIGN and their meters-vs-pixels weighting assumes the metric
+	// ENU frame, so this is the earliest point in the pipeline where they can take effect
+	// (validated for pinhole cameras; spherical scenes use angular residuals the weighting
+	// does not account for).
+	// Disable intrinsics which already converged in the final bundle adjustment.
+	BAConfig uncBaCfg = finalBaCfg;
+	uncBaCfg.refineFocalLength = uncBaCfg.refineFocalLengthAspectRatio = uncBaCfg.refinePrincipalPoint =
+	uncBaCfg.refineRadialDistortion123 = uncBaCfg.refineTangentialDistortion = uncBaCfg.refineRadialDistortion456 = false;
+	if (config.baConfig.IsRefiningGPS() && status.nState.isSet(Status::STATE::GEO_ALIGN)) {
+		BundleAdjustment ba(*this, uncBaCfg);
+		if (ba.Adjust()) {
+			if (config.estimatePoseUncertainty) {
+				// the GPS priors anchor the gauge, so this supersedes the earlier record
+				// with absolute ENU covariances (and covers the images resected since)
+				poseUncertainty = ba.ComputePoseUncertainty();
+			}
+			FilterTracks(*this, config.maxFineReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar);
+		}
+	} else if (config.estimatePoseUncertainty) {
+		BundleAdjustment ba(*this, uncBaCfg);
+		if (ba.Adjust()) {
+			poseUncertainty = ba.ComputePoseUncertainty();
+			FilterTracks(*this, config.maxFineReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar);
+		}
+	}
 
 	// Estimate color for points
 	if (config.extractColors)
@@ -933,6 +1016,24 @@ void Scene::Transform(const struct Transform& T)
 	// Apply to all points
 	for (Track& track : tracks)
 		track.position = T * track.position;
+
+	// Keep the recorded pose uncertainty consistent with the new world frame: the position
+	// covariance maps as scale^2 * R * Cov * R^T (rotation uncertainty is about the camera
+	// axes and is unaffected by a world transform)
+	if (!poseUncertainty.empty()) {
+		const REAL s2(SQUARE(T.scale));
+		for (PoseUncertainty& u : poseUncertainty) {
+			if (!u.IsValid())
+				continue;
+			const Matrix3x3 cov(
+				u.posVar.x, u.posCov.x, u.posCov.y,
+				u.posCov.x, u.posVar.y, u.posCov.z,
+				u.posCov.y, u.posCov.z, u.posVar.z);
+			const Matrix3x3 covT(T.R * cov * T.R.t() * s2);
+			u.posVar = Point3f((float)covT(0,0), (float)covT(1,1), (float)covT(2,2));
+			u.posCov = Point3f((float)covT(0,1), (float)covT(0,2), (float)covT(1,2));
+		}
+	}
 }
 
 bool Scene::UndistortImages(String outputDir, String extension, float alpha,
@@ -1006,7 +1107,11 @@ bool Scene::UndistortImages(String outputDir, String extension, float alpha,
 		undistorted = img.ToOriginalOrientation(undistorted);
 		const String stem = Util::getFileName(img.fileName);
 		const String outPath = outputDir + stem + extension;
-		if (SaveImage(undistorted, outPath) && outImagePaths)
+		if (!SaveImage(undistorted, outPath)) {
+			VERBOSE("error: saving undistorted image '%s' to '%s' failed", img.fileName.c_str(), outPath.c_str());
+			continue;
+		}
+		if (outImagePaths)
 			(*outImagePaths)[i] = outPath;
 	}
 	return true;

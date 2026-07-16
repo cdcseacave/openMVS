@@ -60,16 +60,18 @@ bool PipelineTest(bool forceCPU, bool verbose)
 	// The point/face counts and quality vary run-to-run (multi-threaded
 	// densify/mesh) and differ between the CPU and GPU PatchMatch backends, so
 	// these are deliberately wide plausibility windows, not tight regression
-	// bounds: they bracket both backends' observed spread with margin. Measured
-	// ranges (CPU & GPU): points 58k-71k, recon faces 21k-37k, cleaned faces
-	// 15k-26k, quality 44-51.
+	// bounds: they bracket both backends' observed spread with margin. The CPU
+	// PatchMatch backend yields markedly denser meshes than the GPU one (up to
+	// ~2x the faces), and GPU-less CI hosts sit at the top of that range. Measured
+	// (GPU, local CPU, GPU-less CI): points 58k-71k, recon faces 23k-43k, cleaned
+	// faces 16k-30k, quality 44-51.
 	if (!scene.DenseReconstruction() || scene.pointcloud.GetSize() < 50000u) {
 		VERBOSE("ERROR: TestDataset failed estimating dense point-cloud!");
 		return false;
 	}
 	if (verbose)
 		scene.pointcloud.Save(MAKE_PATH("scene_dense.ply"));
-	if (!scene.ReconstructMesh() || !ISINSIDE(scene.mesh.faces.size(), 18000u, 42000u)) {
+	if (!scene.ReconstructMesh() || !ISINSIDE(scene.mesh.faces.size(), 16000u, 52000u)) {
 		VERBOSE("ERROR: TestDataset failed reconstructing the mesh!");
 		return false;
 	}
@@ -77,7 +79,7 @@ bool PipelineTest(bool forceCPU, bool verbose)
 		scene.mesh.Save(MAKE_PATH("scene_dense_mesh.ply"));
 	constexpr float decimate = 0.7f;
 	scene.mesh.Clean(decimate);
-	if (!ISINSIDE(scene.mesh.faces.size(), 12000u, 30000u)) {
+	if (!ISINSIDE(scene.mesh.faces.size(), 11000u, 38000u)) {
 		VERBOSE("ERROR: TestDataset failed cleaning the mesh!");
 		return false;
 	}

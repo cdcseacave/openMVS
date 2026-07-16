@@ -775,7 +775,7 @@ bool DepthMapsData::EstimateDepthMap(IIndex idxImage, int nGeometricIter)
 	{
 		const float fNCCThresholdKeep(OPTDENSE::fNCCThresholdKeep);
 		if (nGeometricIter < 0 && OPTDENSE::nEstimationGeometricIters)
-			OPTDENSE::fNCCThresholdKeep *= 1.333f;
+			OPTDENSE::fNCCThresholdKeep *= 1.2f;
 		// create working threads
 		idxPixel = -1;
 		ASSERT(estimators.empty());
@@ -2221,7 +2221,9 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 		#ifdef _USE_CUDA
 		const bool bAllocatedPool = data.depthMaps.AllocateCudaPool(poolSize);
 		#else
-		const bool bAllocatedPool = data.depthMaps.AllocateMetalPool(poolSize);
+		const bool bAllocatedPool = SEACAVE::METAL::isRuntimeAvailable() && data.depthMaps.AllocateMetalPool(poolSize);
+		if (!bAllocatedPool)
+			VERBOSE("WARNING: Metal runtime health check failed; using CPU depth-map estimation");
 		#endif
 		if (bAllocatedPool) {
 			// raise the in-flight semaphore so all pool workers can run

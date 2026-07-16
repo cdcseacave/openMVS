@@ -243,6 +243,9 @@ void UI::ShowMainMenuBar(Window& window) {
 					scene.Open(filename, geometryFilename);
 				window.SetVisible(true);
 			}
+			// Load a pose-quality CSV report onto the current scene (camera uncertainty ellipsoids)
+			if (ImGui::MenuItem("Load Pose Quality...", nullptr, false, scene.IsOpen()))
+				PromptOpenPoseQualityReport(window);
 			#ifdef __APPLE__
 			if (ImGui::MenuItem("Save Scene", "Cmd+S", false, scene.IsOpen())) {
 			#else
@@ -556,6 +559,29 @@ void UI::ShowCameraControls(Window& window) {
 			window.GetRenderer().UploadCameras(window);
 			window.GetRenderer().UploadSelection(window);
 			window.RequestRedraw();
+		}
+
+		// Pose-uncertainty ellipsoids (available once a pose quality report is loaded)
+		{
+			ImGui::BeginDisabled(!window.GetScene().IsOpen());
+			if (ImGui::Button("Load Pose Quality..."))
+				PromptOpenPoseQualityReport(window);
+			ImGui::EndDisabled();
+			if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+				ImGui::SetTooltip("Load a CreateStructure --export-pose-quality CSV to display camera uncertainty ellipsoids");
+			const bool hasUncertainty = window.GetScene().HasCameraUncertainty();
+			ImGui::BeginDisabled(!hasUncertainty);
+			if (ImGui::Checkbox("Show Uncertainty Ellipsoids", &window.showUncertaintyEllipsoids))
+				window.RequestRedraw();
+			if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+				ImGui::SetTooltip("Per-camera position-covariance ellipsoids (blue = best localized, red = worst);\nload a pose quality report (button above or --pose-quality-file) to enable");
+			if (ImGui::SliderFloat("Ellipsoid Scale", &window.uncertaintyEllipsoidScale, 0.001f, 100000.f, "%.3gx", ImGuiSliderFlags_Logarithmic)) {
+				window.GetRenderer().UploadUncertaintyEllipsoids(window);
+				window.RequestRedraw();
+			}
+			if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+				ImGui::SetTooltip("Magnification of the 1-sigma ellipsoid radii\n(x1 = auto-fit to the scene)");
+			ImGui::EndDisabled();
 		}
 
 		// Arcball sensitivity controls (only show when in arcball mode)
@@ -2221,6 +2247,18 @@ void UI::ShowSelectionOverlay(const Window& window) {
 						R2D(eulerAngles.x), R2D(eulerAngles.y), R2D(eulerAngles.z));
 					ImGui::Text("  avg depth: %.2g", imageData.avgDepth);
 					ImGui::Text("  neighbors: %u", (unsigned)imageData.neighbors.size());
+					if (selectionIdx < scene.cameraUncertainty.size()) {
+						const Scene::CameraUncertainty& u = scene.cameraUncertainty[selectionIdx];
+						if (u.state == Scene::CameraUncertainty::DATUM) {
+							ImGui::Text("  pose sigma: reference (datum)");
+						} else if (u.IsComputed()) {
+							ImGui::Text("  position sigma%s: %.3g, %.3g, %.3g",
+								mvs_scene.HasTransform() ? " (ENU m)" : "",
+								u.posSigma.x, u.posSigma.y, u.posSigma.z);
+							ImGui::Text("  rotation sigma: %.3g°, %.3g°, %.3g°",
+								u.rotSigma.x, u.rotSigma.y, u.rotSigma.z);
+						}
+					}
 				}
 			}
 			break; }
@@ -3021,6 +3059,9 @@ void SettingsReadLine(ImGuiContext*, ImGuiSettingsHandler* handler, void* entry,
 	else if (sscanf(line, "CameraSize=%f", &x) == 1) {
 		window.cameraSize = x;
 	}
+	else if (sscanf(line, "EllipsoidScale=%f", &x) == 1) {
+		window.uncertaintyEllipsoidScale = x;
+	}
 	else if (sscanf(line, "CameraDisplayColor=%d", &intVal) == 1) {
 		window.cameraDisplayColor =
 			intVal == (int)Window::CAMERA_COLOR_JET ? Window::CAMERA_COLOR_JET : Window::CAMERA_COLOR_SOLID;
@@ -3088,6 +3129,7 @@ void SettingsWriteAll(ImGuiContext*, ImGuiSettingsHandler* handler, ImGuiTextBuf
 		window.clearColor[0], window.clearColor[1],
 		window.clearColor[2], window.clearColor[3]);
 	buf->appendf("CameraSize=%f\n", window.cameraSize);
+	buf->appendf("EllipsoidScale=%f\n", window.uncertaintyEllipsoidScale);
 	buf->appendf("CameraDisplayColor=%d\n", (int)window.cameraDisplayColor);
 	buf->appendf("CameraDisplayType=%d\n", (int)window.cameraDisplayType);
 	buf->appendf("ShowCameraLookAt=%d\n", window.showCameraLookAt ? 1 : 0);
@@ -3136,9 +3178,9 @@ bool UI::ShowOpenFileDialog(String& filename, String& geometryFilename) {
 		// Get the result
 		auto result = dialog.result();
 		if (!result.empty()) {
-			filename = result[0];
+			Util::ensureValidPath(filename = result[0]);
 			if (result.size() > 1)
-				geometryFilename = result[1];
+				Util::ensureValidPath(geometryFilename = result[1]);
 			else
 				geometryFilename.clear();
 			return true;
@@ -3169,7 +3211,7 @@ bool UI::ShowSaveFileDialog(String& filename) {
 		// Get the result - save_file returns a string directly, not a vector
 		auto result = dialog.result();
 		if (!result.empty()) {
-			filename = result;
+			Util::ensureValidPath(filename = result);
 			return true;
 		}
 	} catch (const std::exception& e) {
@@ -3194,7 +3236,43 @@ bool UI::ShowSaveImageDialog(String& filename) {
 
 		auto result = dialog.result();
 		if (!result.empty()) {
-			filename = result;
+			Util::ensureValidPath(filename = result);
+			return true;
+		}
+	} catch (const std::exception& e) {
+		DEBUG("File dialog error: %s", e.what());
+	}
+	return false;
+}
+
+// Prompt for a CreateStructure pose-quality CSV report and load it onto the open scene,
+// displaying the per-camera uncertainty ellipsoids (modal error if it cannot be matched).
+void UI::PromptOpenPoseQualityReport(Window& window) {
+	window.SetVisible(false);
+	String filename;
+	if (ShowOpenPoseQualityDialog(filename)) {
+		if (!window.GetScene().LoadPoseUncertainty(filename))
+			pfd::message("Pose Quality Report",
+				String("Could not load or match any camera from the report:\n") + filename,
+				pfd::choice::ok, pfd::icon::error).result();
+	}
+	window.SetVisible(true);
+}
+
+bool UI::ShowOpenPoseQualityDialog(String& filename) {
+	try {
+		auto dialog = pfd::open_file(
+			"Open Pose Quality Report",       // title
+			WORKING_FOLDER_FULL,              // initial path (absolute)
+			{
+				"CSV Pose Quality Report", "*.csv",
+				"All Files", "*"
+			},                                // filters
+			pfd::opt::none                    // options
+		);
+		auto result = dialog.result();
+		if (!result.empty()) {
+			Util::ensureValidPath(filename = result[0]);
 			return true;
 		}
 	} catch (const std::exception& e) {
