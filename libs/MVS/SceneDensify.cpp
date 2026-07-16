@@ -775,7 +775,7 @@ bool DepthMapsData::EstimateDepthMap(IIndex idxImage, int nGeometricIter)
 	{
 		const float fNCCThresholdKeep(OPTDENSE::fNCCThresholdKeep);
 		if (nGeometricIter < 0 && OPTDENSE::nEstimationGeometricIters)
-			OPTDENSE::fNCCThresholdKeep *= 1.333f;
+			OPTDENSE::fNCCThresholdKeep *= 1.2f;
 		// create working threads
 		idxPixel = -1;
 		ASSERT(estimators.empty());
