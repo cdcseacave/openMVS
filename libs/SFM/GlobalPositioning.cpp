@@ -391,32 +391,6 @@ void GlobalPositioner::ConfigureProblem(Scene& scene)
 		}
 	}
 
-	// Configure GPU/CUDA support if available
-	#ifdef _USE_CUDA
-	if (options.useGpu && scene.images.size() >= options.minNumImagesGpuSolver) {
-		#if (CERES_VERSION_MAJOR >= 3 || (CERES_VERSION_MAJOR == 2 && CERES_VERSION_MINOR >= 2))
-		// Dense Solver Check (Standard CUDA)
-		if (ceres::IsDenseLinearAlgebraLibraryTypeAvailable(ceres::CUDA)) {
-			solverOptions.dense_linear_algebra_library_type = ceres::CUDA;
-		} else {
-			VERBOSE("warning: GPU direct solver requested but Ceres was built without CUDA; using CPU direct solvers instead.");
-		}
-		#if 0 // TODO: disabled for now as cuDSS is not yet available in latest vcpkg Ceres port
-		// Sparse Solver Check (cuDSS / CUDA_SPARSE)
-		if (ceres::IsSparseLinearAlgebraLibraryTypeAvailable(ceres::CUDA_SPARSE)) {
-			solverOptions.sparse_linear_algebra_library_type = ceres::CUDA_SPARSE;
-			// cuDSS is currently only supported with SPARSE_NORMAL_CHOLESKY
-			solverOptions.linear_solver_type = ceres::SPARSE_NORMAL_CHOLESKY;
-		} else {
-			VERBOSE("warning: GPU sparse solver requested but Ceres was built without cuDSS; using CPU sparse solvers instead.");
-		}
-		#endif
-		#else
-		VERBOSE("warning: GPU solver requested but Ceres (version < 2.2) was built without CUDA; using CPU solvers instead.");
-		#endif
-	}
-	#endif // _USE_CUDA
-
 	// Set up the options for the solver
 	if (!scene.tracks.empty()) {
 		solverOptions.linear_solver_type = ceres::SPARSE_SCHUR;
@@ -425,6 +399,30 @@ void GlobalPositioner::ConfigureProblem(Scene& scene)
 		solverOptions.linear_solver_type = ceres::SPARSE_NORMAL_CHOLESKY;
 		solverOptions.preconditioner_type = ceres::JACOBI;
 	}
+
+	// Configure GPU/CUDA acceleration if available and requested; applied after the solver
+	// type is chosen so the sparse backend is only switched on a path cuDSS can handle
+	#ifdef _USE_CUDA
+	if (options.useGpu && scene.images.size() >= options.minNumImagesGpuSolver) {
+		#if (CERES_VERSION_MAJOR >= 3 || (CERES_VERSION_MAJOR == 2 && CERES_VERSION_MINOR >= 2))
+		// Offload dense direct solves to the GPU via cuSOLVER when available.
+		if (ceres::IsDenseLinearAlgebraLibraryTypeAvailable(ceres::CUDA))
+			solverOptions.dense_linear_algebra_library_type = ceres::CUDA;
+		else
+			VERBOSE("warning: GPU dense solver requested but Ceres was built without CUDA; using CPU direct solvers instead.");
+		// cuDSS (CUDA_SPARSE) currently backs only SPARSE_NORMAL_CHOLESKY, so enable it only on
+		// that path; the runtime check auto-activates it once the linked Ceres provides cuDSS.
+		if (solverOptions.linear_solver_type == ceres::SPARSE_NORMAL_CHOLESKY) {
+			if (ceres::IsSparseLinearAlgebraLibraryTypeAvailable(ceres::CUDA_SPARSE))
+				solverOptions.sparse_linear_algebra_library_type = ceres::CUDA_SPARSE;
+			else
+				VERBOSE("warning: GPU sparse solver requested but Ceres was built without cuDSS; using CPU sparse solvers instead.");
+		}
+		#else
+		VERBOSE("warning: GPU solver requested but Ceres (version < 2.2) was built without CUDA; using CPU solvers instead.");
+		#endif
+	}
+	#endif // _USE_CUDA
 }
 /*----------------------------------------------------------------*/
 
