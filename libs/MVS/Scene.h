@@ -127,11 +127,12 @@ public:
 	Scene SubScene(const IIndexArr& idxImages) const;
 	Scene& CropToROI(const OBB3f&, unsigned minNumPoints=3);
 	bool EstimateROI(float scaleROI=1.1f, int upAxis=-1);
-	FloatArr ROIPointWeights() const;
+	bool EstimateGravityDirection(Point3f& up) const;
+	FloatArr ROIPointWeights(const UnsignedArr& indices, float& medianNeighborDistance) const;
 	float ComputeDistanceCameras2Scene(float depthPercentile=0.1f, bool bForceRecompute=false, bool bUseROI=true);
 
 	// Tower scene
-	bool ComputeCenterLine(Line3f &camCenterLine) const;
+	bool ComputeCenterLine(Line3f &camCenterLine, const Point3f* up=NULL) const;
 	bool ComputeTowerCylinder(Point2f& centerPoint, float& fRadius, float& fROIRadius, float& zMin, float& zMax, float& minCamZ, const int towerMode);
 	void InitTowerScene(const int towerMode);
 	size_t DrawCircle(PointCloud& pc,PointCloud::PointArr& outCircle, const Point3f& circleCenter, const float circleRadius, const unsigned nTargetPoints, const float fStartAngle, const float fAngleBetweenPoints);

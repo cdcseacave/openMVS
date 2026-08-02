@@ -178,9 +178,9 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("filter-point-cloud", boost::program_options::value(&OPT::thFilterPointCloud)->default_value(0), "filter dense point-cloud based on visibility (0 - disabled)")
 		("export-number-views", boost::program_options::value(&OPT::nExportNumViews)->default_value(0), "export points with >= number of views (0 - disabled, <0 - save MVS project too)")
 		("roi-border", boost::program_options::value(&OPT::fBorderROI)->default_value(0), "add a border to the region-of-interest when cropping the scene (0 - disabled, >0 - percentage, <0 - absolute)")
-		("estimate-roi", boost::program_options::value(&OPT::fScaleROI)->default_value(1.1f), "estimate and set region-of-interest (0 - disabled)")
+		("estimate-roi", boost::program_options::value(&OPT::fScaleROI)->default_value(1.1f), "estimate and set region-of-interest, scale factor applied to the estimated extents (0 - disabled, <1 - shrink, >1 - expand)")
 		("crop-to-roi", boost::program_options::value(&OPT::bCrop2ROI)->default_value(true), "crop scene using the region-of-interest")
-		("up-axis", boost::program_options::value(&OPT::upAxis)->default_value(-1), "set the up-axis for ROI estimation and tower-mode (0 - X, 1 - Y, 2 - Z, <0 - undefined)")
+		("up-axis", boost::program_options::value(&OPT::upAxis)->default_value(-1), "set the up-axis for ROI estimation and tower-mode (0 - X, 1 - Y, 2 - Z, <0 - auto-detect from cameras and ground plane)")
 		("remove-dmaps", boost::program_options::value(&bRemoveDmaps)->default_value(false), "remove depth-maps after fusion")
 		("tower-mode", boost::program_options::value(&OPT::nTowerMode)->default_value(4), "add a cylinder of points in the center of ROI; scene assume to be Z-up oriented (0 - disabled, 1 - replace, 2 - append, 3 - select neighbors, 4 - select neighbors & append, <0 - force tower mode)")
 		("normalize-coordinates", boost::program_options::value(&OPT::nNormalizeCoordinates)->default_value(0), "normalize scene coordinates and output the inverse transform to file (0 - disabled, 1 - center, 2 - center & scale)")
@@ -404,7 +404,11 @@ int main(int argc, LPCTSTR* argv)
 	}
 	if (!scene.IsBounded() && OPT::fScaleROI > 0)
 		scene.EstimateROI(OPT::fScaleROI, OPT::upAxis);
-	if (!OPT::strExportROIFileName.empty() && scene.IsBounded()) {
+	if (!OPT::strExportROIFileName.empty()) {
+		if (!scene.IsBounded()) {
+			VERBOSE("error: no valid ROI to export");
+			return EXIT_FAILURE;
+		}
 		DEBUG_EXTRA("ROI saved to %s ", MAKE_PATH_SAFE(OPT::strExportROIFileName).c_str());
 		std::ofstream fs(MAKE_PATH_SAFE(OPT::strExportROIFileName));
 		if (!fs)
