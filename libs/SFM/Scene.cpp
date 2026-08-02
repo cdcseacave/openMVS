@@ -712,7 +712,8 @@ bool Scene::ReconstructHierarchical(const ReconstructionConfig& config)
 			return; // skip this sub-scene
 		}
 
-		// Incrementally resect images into the reconstruction
+		// Incrementally resect images into the reconstruction; every Ceres solve
+		// clamps itself to the sub-scene's thread budget (see BundleAdjustment)
 		Resection resection(subScene, config.resectionCfg);
 		resection.RegisterImages();
 
@@ -836,20 +837,19 @@ bool Scene::ReconstructGlobal(const ReconstructionConfig& config)
 bool Scene::SampleColors()
 {
 	TD_TIMER_STARTD();
-	bool wereImagesLoaded = false;
 
-	// Resize colors array to match tracks
-	Sampler::Linear<float> sampler;
+	// Select for each track the observation with the smallest reprojection error and
+	// group the selection by image; this needs the geometry only, so that the pixels
+	// can be sampled below one image at a time
+	typedef std::pair<uint32_t,uint32_t> TrackFeature; // track and the feature seeing it
+	std::vector<std::vector<TrackFeature>> imageSamples(images.size());
 	colors.resize(tracks.size());
 	FOREACH(trackID, tracks) {
+		// outliers and tracks not projecting in any of their views remain black
+		colors[trackID] = Pixel8U::BLACK;
 		const Track& track = tracks[trackID];
-		if (!track.IsInlier()) {
-			// Outlier: set black color
-			colors[trackID] = Pixel8U::BLACK;
+		if (!track.IsInlier())
 			continue;
-		}
-
-		// Inlier: find observation with smallest reprojection error
 		float minError = FLT_MAX;
 		uint32_t bestObsIdx;
 		for (uint32_t obsIdx = 0; obsIdx < track.GetNumInliers(); ++obsIdx) {
@@ -868,46 +868,41 @@ bool Scene::SampleColors()
 				bestObsIdx = obsIdx;
 			}
 		}
-		if (minError >= FLT_MAX) {
-			colors[trackID] = Pixel8U::BLACK;
+		if (minError >= FLT_MAX)
 			continue;
-		}
-
-		// Sample color from the best observation
 		const Observation& bestObs = track.observations[bestObsIdx];
-		Image& img = images[bestObs.imageID];
-		const cv::KeyPoint& kp = img.keypoints[bestObs.featureID];
+		imageSamples[bestObs.imageID].emplace_back(trackID, bestObs.featureID);
+	}
 
-		// Load image pixels if not already loaded
+	// Sample the colors one image at a time, releasing right away the pixels loaded
+	// here: the images of a large scene do not fit together in memory
+	Sampler::Linear<float> sampler;
+	FOREACH(imageID, images) {
+		const std::vector<TrackFeature>& samples = imageSamples[imageID];
+		if (samples.empty())
+			continue;
+		Image& img = images[imageID];
 		const bool wasLoaded = img.HasPixels();
-		if (!wasLoaded) {
+		if (!wasLoaded)
 			img.LoadPixels();
-			wereImagesLoaded = true;
-		}
-		if (!img.HasPixels()) {
+		const int numChannels(img.HasPixels() ? img.pixels.channels() : 0);
+		if (numChannels != 1 && numChannels != 3) {
+			if (!wasLoaded)
+				img.ReleasePixels();
 			colors.Release();
 			return false;
 		}
 		// Sample color from image at keypoint location using bilinear interpolation
-		Pixel8U sampledColor;
-		switch (img.pixels.channels()) {
-		case 1:
-			sampledColor.set((uint8_t)CLAMP(ROUND2INT(Sampler::Sample<uint8_t,float>(img.pixels, sampler, kp.pt)), 0, 255));
-			break;
-		case 3:
-			sampledColor = Sampler::Sample<Pixel8U,Pixel32F>(img.pixels, sampler, kp.pt).cast<uint8_t>();
-			break;
-		default:
-			colors.Release();
-			return false;
+		for (const TrackFeature& sample: samples) {
+			const cv::KeyPoint& kp = img.keypoints[sample.second];
+			if (numChannels == 1)
+				colors[sample.first].set((uint8_t)CLAMP(ROUND2INT(Sampler::Sample<uint8_t,float>(img.pixels, sampler, kp.pt)), 0, 255));
+			else
+				colors[sample.first] = Sampler::Sample<Pixel8U,Pixel32F>(img.pixels, sampler, kp.pt).cast<uint8_t>();
 		}
-		colors[trackID] = sampledColor;
-	}
-
-	// Release image pixels if they were not loaded before
-	if (!wereImagesLoaded)
-		for (Image& img : images)
+		if (!wasLoaded)
 			img.ReleasePixels();
+	}
 	DEBUG_EXTRA("Colors sampled for %u tracks (%s)",
 		tracks.size(), TD_TIMER_GET_FMT().c_str());
 	return true;

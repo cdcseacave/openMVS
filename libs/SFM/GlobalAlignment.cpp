@@ -62,6 +62,18 @@ void GlobalAlignment::BuildGlobalToLocalMap(const std::vector<IIndexArr>& localT
 	}
 }
 
+// index of the sub-scene holding the most calibrated images, among those flagged eligible
+// (all of them when no mask is given); NO_ID if none is eligible
+static uint32_t FindLargestSubScene(const std::vector<Scene>& subScenes, const std::vector<bool>* eligible = NULL)
+{
+	uint32_t best = NO_ID;
+	FOREACH(sceneIdx, subScenes)
+		if ((eligible == NULL || (*eligible)[sceneIdx]) &&
+			(best == NO_ID || subScenes[sceneIdx].status.nCalibratedImages > subScenes[best].status.nCalibratedImages))
+			best = (uint32_t)sceneIdx;
+	return best;
+}
+
 bool GlobalAlignment::MergeScenes(std::vector<Scene>& subScenes, const std::vector<IIndexArr>& localToGlobals)
 {
 	TD_TIMER_STARTD();
@@ -94,7 +106,7 @@ bool GlobalAlignment::MergeScenes(std::vector<Scene>& subScenes, const std::vect
 		if (numSubScenes == 1 || scenePairs.empty()) {
 			VERBOSE("Single sub-scene or no connections, copying directly");
 			for (uint32_t sceneIdx = 0; sceneIdx < numSubScenes; ++sceneIdx)
-				MergeSingleScene(subScenes[sceneIdx], localToGlobals[sceneIdx]);
+				MergeSingleScene(subScenes[sceneIdx], localToGlobals[sceneIdx], true);
 			DEBUG("Single-scene merge completed (%s)", TD_TIMER_GET_FMT().c_str());
 			return true;
 		}
@@ -131,13 +143,9 @@ bool GlobalAlignment::MergeScenes(std::vector<Scene>& subScenes, const std::vect
 		// translation averaging — whose gauge is fixed to the strongest-weighted node — anchor
 		// inside the kept component rather than in a discarded one (which would leave the kept
 		// component's translation block unconstrained).
-		{
-			unsigned w = 0;
-			FOREACH(i, scenePairs)
-				if (mergeMask[scenePairs[i].sceneA] && mergeMask[scenePairs[i].sceneB])
-					scenePairs[w++] = scenePairs[i];
-			scenePairs.resize(w);
-		}
+		scenePairs.erase(std::remove_if(scenePairs.begin(), scenePairs.end(),
+			[&mergeMask](const ScenePair& sp) { return !mergeMask[sp.sceneA] || !mergeMask[sp.sceneB]; }),
+			scenePairs.end());
 
 		// Stage 3: Scale averaging (over the rotation-consistent pairs surviving in scenePairs)
 		std::vector<REAL> globalScales;
@@ -153,8 +161,17 @@ bool GlobalAlignment::MergeScenes(std::vector<Scene>& subScenes, const std::vect
 			break;
 		}
 
+		// Stage 4.5: validate the averaged alignment via Sim(3) cycle residuals, then re-average
+		// the survivors until the verdict is stable
+		std::vector<bool> demoted = ValidateAlignment(subScenes, mergeMask, scenePairs,
+			globalRotations, globalScales, globalTranslations);
+		const unsigned numUnplaced = numSubScenes - numMergeScenes;
+		if ((unsigned)std::count(demoted.begin(), demoted.end(), true) > numUnplaced &&
+			!RefineDemotedAlignment(subScenes, scenePairs, globalRotations, globalScales, globalTranslations, demoted))
+			break;
+
 		// Stage 5: Merge sub-scenes with global transforms (largest connected component only)
-		if (!MergeTransformedScenes(subScenes, localToGlobals, globalRotations, globalScales, globalTranslations, mergeMask)) {
+		if (!MergeTransformedScenes(subScenes, localToGlobals, globalRotations, globalScales, globalTranslations, demoted)) {
 			VERBOSE("error: failed to merge transformed scenes");
 			break;
 		}
@@ -165,17 +182,15 @@ bool GlobalAlignment::MergeScenes(std::vector<Scene>& subScenes, const std::vect
 		#endif
 
 		DEBUG("Global alignment completed: merged %u/%u sub-scenes (%s)",
-			numMergeScenes, numSubScenes, TD_TIMER_GET_FMT().c_str());
+			numSubScenes - (unsigned)std::count(demoted.begin(), demoted.end(), true),
+			numSubScenes, TD_TIMER_GET_FMT().c_str());
 		return true;
 	} while (0);
 
 	// Fallback: alignment could not complete. Keep the largest successfully-reconstructed
 	// sub-scene rather than discarding a good partial reconstruction (downstream BA/resection
 	// then refine it in place). Safe because every failure above precedes sub-scene consumption.
-	IIndex bestIdx = 0;
-	for (IIndex i = 1; i < (IIndex)subScenes.size(); ++i)
-		if (subScenes[i].status.nCalibratedImages > subScenes[bestIdx].status.nCalibratedImages)
-			bestIdx = i;
+	const uint32_t bestIdx = FindLargestSubScene(subScenes);
 	VERBOSE("warning: sub-scene merge failed; keeping largest sub-scene %u (%u/%u images)",
 		bestIdx, subScenes[bestIdx].status.nCalibratedImages, (unsigned)subScenes[bestIdx].images.size());
 	scene.Release();
@@ -489,63 +504,265 @@ bool GlobalAlignment::EstimateGlobalTranslations(
 }
 /*----------------------------------------------------------------*/
 
+// the per-sub-scene local→global Sim(3) the merge applies: rotation averaging
+// produces R_i mapping global→local (same convention as Image.R) while the
+// similarity transform applies local→global, hence the transpose; the validator
+// must construct exactly the transform the merge applies, so both build it here
+static SEACAVE::Transform BuildGlobalTransform(const Point3d& rotation, REAL scale, const Point3& translation)
+{
+	SEACAVE::Transform G;
+	G.R = RMatrix(rotation).t();
+	G.scale = scale;
+	G.t = translation;
+	return G;
+}
+
+std::vector<bool> GlobalAlignment::ValidateAlignment(
+	const std::vector<Scene>& subScenes,
+	const std::vector<bool>& mergeMask,
+	const std::vector<ScenePair>& scenePairs,
+	const std::vector<Point3d>& globalRotations,
+	const std::vector<REAL>& globalScales,
+	const std::vector<Point3>& globalTranslations) const
+{
+	ASSERT(mergeMask.size() == subScenes.size());
+	const uint32_t numSubScenes = (uint32_t)subScenes.size();
+	// sub-scenes rotation averaging could not place have no usable transform
+	std::vector<bool> demoted(numSubScenes);
+	for (uint32_t s = 0; s < numSubScenes; ++s)
+		demoted[s] = !mergeMask[s];
+
+	// Per-sub-scene transform Stage 5 will apply, plus the local camera-bbox diagonal
+	// used to normalize the translation residuals.
+	std::vector<Transform> globalTransforms(numSubScenes);
+	std::vector<REAL> camBoxDiags(numSubScenes, REAL(0));
+	FOREACH(sceneIdx, subScenes) {
+		if (demoted[sceneIdx])
+			continue;
+		globalTransforms[sceneIdx] = BuildGlobalTransform(
+			globalRotations[sceneIdx], globalScales[sceneIdx], globalTranslations[sceneIdx]);
+		AABB3 bbox(true);
+		for (const Image& img : subScenes[sceneIdx].images)
+			if (img.IsValid())
+				bbox.InsertFull(img.C);
+		if (!bbox.IsEmpty())
+			camBoxDiags[sceneIdx] = bbox.GetSize().norm();
+	}
+
+	// Sim(3) cycle residual per surviving edge: relativeTransform maps A-local to B-local and
+	// G_i maps each local frame to the global frame, so G_B*T_AB and G_A both map A-local to
+	// global and E = G_A^-1 * (G_B * T_AB) is the A-frame discrepancy between the measured
+	// edge and the averaged consensus (identity when perfectly consistent).
+	struct EdgeStat {
+		uint32_t sceneA, sceneB;
+		float weight;
+		bool conflicting;
+	};
+	std::vector<EdgeStat> edges;
+	edges.reserve(scenePairs.size());
+	for (const ScenePair& sp : scenePairs) {
+		ASSERT(!demoted[sp.sceneA] && !demoted[sp.sceneB]);
+		const Transform E = globalTransforms[sp.sceneA].Invert() * (globalTransforms[sp.sceneB] * sp.relativeTransform);
+		const REAL errScale = MAXF(E.scale, REAL(1) / E.scale);
+		const REAL errRot = R2D(ACOS(ComputeAngle(Matrix3x3(E.R))));
+		// E.t is in A's local frame: express the discrepancy in global units and compare
+		// it against the smaller of the two global camera footprints, so the verdict does
+		// not depend on which endpoint happens to have the lower sub-scene index
+		const REAL diagA = camBoxDiags[sp.sceneA] * globalTransforms[sp.sceneA].scale;
+		const REAL diagB = camBoxDiags[sp.sceneB] * globalTransforms[sp.sceneB].scale;
+		const REAL diag = diagA > 0 && diagB > 0 ? MINF(diagA, diagB) : MAXF(diagA, diagB);
+		const REAL errTrans = diag > 0 ? globalTransforms[sp.sceneA].scale * norm(E.t) / diag : REAL(0);
+		const unsigned weight = MINF(sp.numInliers, 1000u);
+		const bool conflicting =
+			errScale > config.maxSimScaleRatio ||
+			errRot > config.maxSimRotationError ||
+			errTrans > config.maxSimTranslationError;
+		VERBOSE("Sub-scene pair (%u, %u) similarity residuals: scale %.1f%%, rotation %.2f deg, translation %.2f%% (weight %u)",
+			sp.sceneA, sp.sceneB, (errScale - 1) * 100, errRot, errTrans * 100, weight);
+		edges.push_back({sp.sceneA, sp.sceneB, (float)weight, conflicting});
+	}
+
+	// Vote out the node most dominated by conflicting cycle evidence, one at a time; a node
+	// with a single incident edge is satisfied exactly by the averaging, so it carries no
+	// cycle evidence and can never be flagged.
+	for (;;) {
+		uint32_t worst = NO_ID;
+		float worstFrac = 0.5f;
+		for (uint32_t s = 0; s < numSubScenes; ++s) {
+			if (demoted[s])
+				continue;
+			float total = 0.f, conflict = 0.f;
+			unsigned numEdges = 0, numConflicting = 0;
+			for (const EdgeStat& e : edges) {
+				if (e.sceneA != s && e.sceneB != s)
+					continue;
+				if (demoted[e.sceneA] || demoted[e.sceneB])
+					continue;
+				++numEdges;
+				total += e.weight;
+				if (e.conflicting) {
+					++numConflicting;
+					conflict += e.weight;
+				}
+			}
+			if (numEdges < 2 || numConflicting < 2)
+				continue;
+			const float frac = conflict / total;
+			if (frac > worstFrac) {
+				worstFrac = frac;
+				worst = s;
+			}
+		}
+		if (worst == NO_ID)
+			break;
+		VERBOSE("Sub-scene %u misaligned by similarity cycle consistency (%.0f%% conflicting edge weight); demoting to be rebuilt by resection",
+			worst, worstFrac * 100.f);
+		demoted[worst] = true;
+	}
+
+	// Never demote everything: keep as anchor the largest sub-scene rotation averaging placed
+	// (an unplaced one has no transform to anchor with)
+	if (std::find(demoted.begin(), demoted.end(), false) == demoted.end()) {
+		const uint32_t best = FindLargestSubScene(subScenes, &mergeMask);
+		ASSERT(best != NO_ID); // the caller merges only when at least one sub-scene was placed
+		demoted[best] = false;
+		VERBOSE("warning: all sub-scenes failed validation; keeping sub-scene %u as anchor", best);
+	}
+	return demoted;
+}
+/*----------------------------------------------------------------*/
+
+bool GlobalAlignment::RefineDemotedAlignment(
+	const std::vector<Scene>& subScenes,
+	std::vector<ScenePair>& scenePairs,
+	const std::vector<Point3d>& globalRotations,
+	std::vector<REAL>& globalScales,
+	std::vector<Point3>& globalTranslations,
+	std::vector<bool>& demoted)
+{
+	const uint32_t numSubScenes = (uint32_t)subScenes.size();
+	for (;;) {
+		// Demoting can disconnect the pair graph, while scale and translation averaging pin a
+		// single gauge node, so keep only the component holding the most calibrated images.
+		DisjointSet<uint32_t> ds(numSubScenes);
+		for (const ScenePair& sp : scenePairs)
+			if (!demoted[sp.sceneA] && !demoted[sp.sceneB])
+				ds.Union(sp.sceneA, sp.sceneB);
+		std::vector<unsigned> componentImages(numSubScenes, 0);
+		for (uint32_t s = 0; s < numSubScenes; ++s)
+			if (!demoted[s])
+				componentImages[ds.Find(s)] += subScenes[s].status.nCalibratedImages;
+		uint32_t bestRoot = NO_ID;
+		for (uint32_t s = 0; s < numSubScenes; ++s) {
+			if (demoted[s])
+				continue;
+			const uint32_t root = ds.Find(s);
+			if (bestRoot == NO_ID || componentImages[root] > componentImages[bestRoot])
+				bestRoot = root;
+		}
+		for (uint32_t s = 0; s < numSubScenes; ++s)
+			if (!demoted[s] && ds.Find(s) != bestRoot) {
+				VERBOSE("Sub-scene %u disconnected from the merge component; demoting to be rebuilt by resection", s);
+				demoted[s] = true;
+			}
+		scenePairs.erase(std::remove_if(scenePairs.begin(), scenePairs.end(),
+			[&demoted](const ScenePair& sp) { return demoted[sp.sceneA] || demoted[sp.sceneB]; }),
+			scenePairs.end());
+
+		// A single survivor defines the gauge by itself; nothing left to average
+		const unsigned numActive = numSubScenes - (unsigned)std::count(demoted.begin(), demoted.end(), true);
+		if (numActive < 2 || scenePairs.empty())
+			return true;
+
+		globalScales.clear();
+		globalTranslations.clear();
+		if (!EstimateGlobalScales(scenePairs, numSubScenes, globalScales) ||
+			!EstimateGlobalTranslations(scenePairs, globalRotations, globalScales, numSubScenes, globalTranslations)) {
+			VERBOSE("error: failed to re-average scales/translations after demotions");
+			return false;
+		}
+
+		std::vector<bool> keepMask(numSubScenes);
+		for (uint32_t s = 0; s < numSubScenes; ++s)
+			keepMask[s] = !demoted[s];
+		std::vector<bool> revalidated = ValidateAlignment(subScenes, keepMask, scenePairs,
+			globalRotations, globalScales, globalTranslations);
+		if (revalidated == demoted)
+			return true;
+		demoted = std::move(revalidated);
+	}
+}
+/*----------------------------------------------------------------*/
+
+
 bool GlobalAlignment::MergeTransformedScenes(
 	std::vector<Scene>& subScenes,
 	const std::vector<IIndexArr>& localToGlobals,
 	const std::vector<Point3d>& globalRotations,
 	const std::vector<REAL>& globalScales,
 	const std::vector<Point3>& globalTranslations,
-	const std::vector<bool>& mergeMask)
+	const std::vector<bool>& demoted)
 {
-	// Track per-camera accumulation counts; destination cameras accumulate directly
-	std::unordered_map<Camera*, unsigned> cameraAccumCount;
-
-	// Transform each sub-scene and merge into global scene
-	scene.status.nCalibratedImages = 0;
-	unsigned numMerged = 0;
+	// Transform each trusted sub-scene into the global frame. Demoted sub-scenes are merged
+	// without poses below, so transforming them would be wasted work — and those rotation
+	// averaging left unplaced (always demoted) have unconstrained averaged transforms that
+	// would inject NaN/garbage poses.
 	FOREACH(sceneIdx, subScenes) {
-		// Skip sub-scenes outside the largest connected component: their averaged transforms
-		// are unconstrained and would inject NaN/garbage poses into the merged scene.
-		if (sceneIdx < mergeMask.size() && !mergeMask[sceneIdx])
+		if (demoted[sceneIdx])
 			continue;
-		++numMerged;
 		Scene& subScene = subScenes[sceneIdx];
 
-		// Build similarity transform for this sub-scene
-		// Rotation averaging produces R_i mapping global→local (same convention as Image.R),
-		// but the similarity transform needs local→global, so transpose
-		SEACAVE::Transform T;
-		T.R = RMatrix(globalRotations[sceneIdx]).t();
-		T.scale = globalScales[sceneIdx];
-		T.t = globalTranslations[sceneIdx];
-
-		// Apply transform to sub-scene
-		subScene.Transform(T);
+		// Apply the similarity transform to the sub-scene
+		subScene.Transform(BuildGlobalTransform(
+			globalRotations[sceneIdx], globalScales[sceneIdx], globalTranslations[sceneIdx]));
 
 		#if GLOBALALIGNMENT_DEBUG
 		// Export aligned sub-scene for debugging
 		subScene.ExportPLY(String::FormatString("subscene_%u_aligned.ply", sceneIdx));
 		#endif
+	}
 
-		// Accumulate intrinsics from sub-scene cameras into destination cameras
+	// Demoted sub-scenes (see ValidateAlignment) are merged without poses, to be rebuilt by
+	// the post-merge resection.
+	std::vector<bool> untrustedImages(scene.images.size(), false);
+	FOREACH(sceneIdx, subScenes)
+		if (demoted[sceneIdx])
+			for (const IIndex globalID : localToGlobals[sceneIdx])
+				if (globalID != NO_ID && globalID < scene.images.size())
+					untrustedImages[globalID] = true;
+
+	// Track per-camera accumulation counts; destination cameras accumulate directly
+	std::unordered_map<Camera*, unsigned> cameraAccumCount;
+
+	// Merge each sub-scene into the global scene
+	scene.status.nCalibratedImages = 0;
+	unsigned numMerged = 0;
+	FOREACH(sceneIdx, subScenes) {
+		Scene& subScene = subScenes[sceneIdx];
 		const IIndexArr& localToGlobal = localToGlobals[sceneIdx];
-		for (IIndex localID = 0; localID < subScene.images.size(); ++localID) {
-			const IIndex globalID = localToGlobal[localID];
-			if (globalID == NO_ID || globalID >= scene.images.size())
-				continue;
-			const Image& srcImg = subScene.images[localID];
-			Image& dstImg = scene.images[globalID];
-			if (!srcImg.IsValid() || !srcImg.HasCamera() || !dstImg.HasCamera())
-				continue;
-			auto [it, inserted] = cameraAccumCount.emplace(dstImg.pCamera, 0);
-			if (inserted)
-				dstImg.pCamera->ResetIntrinsics();
-			dstImg.pCamera->AccumulateIntrinsics(*srcImg.pCamera);
-			++it->second;
+		const bool trusted = !demoted[sceneIdx];
+		if (trusted) {
+			++numMerged;
+			// Accumulate intrinsics from sub-scene cameras into destination cameras
+			// (demoted sub-scenes are excluded: their drifted geometry taints intrinsics too)
+			for (IIndex localID = 0; localID < subScene.images.size(); ++localID) {
+				const IIndex globalID = localToGlobal[localID];
+				if (globalID == NO_ID || globalID >= scene.images.size())
+					continue;
+				const Image& srcImg = subScene.images[localID];
+				Image& dstImg = scene.images[globalID];
+				if (!srcImg.IsValid() || !srcImg.HasCamera() || !dstImg.HasCamera())
+					continue;
+				auto [it, inserted] = cameraAccumCount.emplace(dstImg.pCamera, 0);
+				if (inserted)
+					dstImg.pCamera->ResetIntrinsics();
+				dstImg.pCamera->AccumulateIntrinsics(*srcImg.pCamera);
+				++it->second;
+			}
 		}
 
 		// Merge into global scene
-		MergeSingleScene(subScene, localToGlobal);
+		MergeSingleScene(subScene, localToGlobal, trusted);
 	}
 
 	// Finalize intrinsics averaging
@@ -557,7 +774,7 @@ bool GlobalAlignment::MergeTransformedScenes(
 	}
 
 	// Merge sub-scene tracks and connect them via cross-sub-scene pairs
-	MergeTracksWithCrossSubScenePairs();
+	MergeTracksWithCrossSubScenePairs(untrustedImages);
 	FilterTracks(scene, 16.f, 0.5f);
 
 	DEBUG("Merged %u/%u transformed sub-scenes (%u tracks, %u calibrated images)",
@@ -566,7 +783,7 @@ bool GlobalAlignment::MergeTransformedScenes(
 }
 /*----------------------------------------------------------------*/
 
-void GlobalAlignment::MergeSingleScene(Scene& subScene, const IIndexArr& localToGlobal)
+void GlobalAlignment::MergeSingleScene(Scene& subScene, const IIndexArr& localToGlobal, bool trusted)
 {
 	// Copy image poses and move back keypoints/descriptors
 	// (keypoints/descriptors were moved to sub-scenes during ExtractSubScene to save memory)
@@ -578,7 +795,7 @@ void GlobalAlignment::MergeSingleScene(Scene& subScene, const IIndexArr& localTo
 		Image& srcImg = subScene.images[localID];
 		Image& dstImg = scene.images[globalID];
 
-		if (srcImg.IsValid()) {
+		if (srcImg.IsValid() && trusted) {
 			if (!dstImg.IsValid())
 				++scene.status.nCalibratedImages;
 			dstImg.R = srcImg.R;
@@ -621,15 +838,10 @@ void GlobalAlignment::MergeSingleScene(Scene& subScene, const IIndexArr& localTo
 
 		Track dstTrack = srcTrack;
 
-		// Remap observation image IDs from local to global
+		// Remap observation image IDs from local to global (NO_ID marks an unmapped image)
 		for (Observation& obs : dstTrack.observations) {
-			if (obs.imageID < localToGlobal.size()) {
-				const IIndex globalID = localToGlobal[obs.imageID];
-				if (globalID != NO_ID)
-					obs.imageID = globalID;
-				else
-					obs.imageID = NO_ID; // invalid observation
-			}
+			ASSERT(obs.imageID < localToGlobal.size());
+			obs.imageID = localToGlobal[obs.imageID];
 		}
 
 		// Remove invalid observations (decrement numInliers if an inlier was removed)
@@ -640,6 +852,10 @@ void GlobalAlignment::MergeSingleScene(Scene& subScene, const IIndexArr& localTo
 				dstTrack.observations.RemoveAtMove(i);
 			}
 		}
+
+		// Demoted sub-scene: keep the observations but none of the (drifted) 3D trust
+		if (!trusted)
+			dstTrack.numInliers = 0;
 
 		if (!dstTrack.IsValid())
 			continue;
@@ -654,18 +870,20 @@ void GlobalAlignment::MergeSingleScene(Scene& subScene, const IIndexArr& localTo
 /*----------------------------------------------------------------*/
 
 
-void GlobalAlignment::MergeTracksWithCrossSubScenePairs()
+void GlobalAlignment::MergeTracksWithCrossSubScenePairs(const std::vector<bool>& untrustedImages)
 {
-	// Per-root metadata for union-find: 3D position, inlier count, image set
+	// Per-root metadata for union-find: 3D position, inlier count, and the set of images the
+	// track already observes (allocated only for the roots that hold a track, which are a
+	// small fraction of the features; its presence is what marks a root as holding one)
 	struct RootMeta {
 		Point3 position{Point3::ZERO};
 		uint32_t numInliers{0};
-		std::unique_ptr<std::unordered_map<IIndex, uint16_t>> imageCount;
+		std::unique_ptr<std::unordered_set<IIndex>> images;
 		bool hasPosition{false};
 
-		void InitImageCount() {
-			if (!imageCount)
-				imageCount = std::make_unique<std::unordered_map<IIndex, uint16_t>>();
+		void InitImages() {
+			if (!images)
+				images = std::make_unique<std::unordered_set<IIndex>>();
 		}
 	};
 
@@ -703,9 +921,15 @@ void GlobalAlignment::MergeTracksWithCrossSubScenePairs()
 	for (const Track& track : scene.tracks) {
 		if (!track.IsValid())
 			continue;
-		const uint32_t numObs = useOnlyInliers
-			? (uint32_t)track.numInliers
-			: (uint32_t)track.observations.size();
+		// Tracks from demoted sub-scenes carry no inlier/3D trust (numInliers=0), but their
+		// observation structure must survive so the post-merge resection can re-triangulate
+		// them: seed them with all observations and no position.
+		const bool untrustedTrack = !track.IsInlier() &&
+			track.observations[0].imageID < untrustedImages.size() &&
+			untrustedImages[track.observations[0].imageID];
+		const uint32_t numObs = untrustedTrack
+			? (uint32_t)track.observations.size()
+			: (useOnlyInliers ? (uint32_t)track.numInliers : (uint32_t)track.observations.size());
 		if (numObs < 2)
 			continue;
 		// Union selected observations into one set
@@ -731,12 +955,12 @@ void GlobalAlignment::MergeTracksWithCrossSubScenePairs()
 		meta.position = track.position;
 		meta.numInliers = track.numInliers;
 		meta.hasPosition = track.IsInlier();
-		meta.InitImageCount();
+		meta.InitImages();
 		for (uint32_t i = 0; i < numObs; ++i) {
 			const Observation& obs = track.observations[i];
 			if (obs.imageID < scene.images.size() &&
 				obs.featureID < scene.images[obs.imageID].keypoints.size())
-				++((*meta.imageCount)[obs.imageID]);
+				meta.images->emplace(obs.imageID);
 		}
 		if (meta.hasPosition)
 			bbox.InsertFull(track.position);
@@ -765,10 +989,9 @@ void GlobalAlignment::MergeTracksWithCrossSubScenePairs()
 		if (featureCounted[gid])
 			return;
 		featureCounted[gid] = true;
-		const uint32_t root = ds.Find(gid);
-		RootMeta& meta = rootMeta[root];
-		meta.InitImageCount();
-		++((*meta.imageCount)[imgID]);
+		RootMeta& meta = rootMeta[ds.Find(gid)];
+		meta.InitImages();
+		meta.images->emplace(imgID);
 	};
 
 	for (const ImagePair& pair : scene.pairs) {
@@ -806,10 +1029,10 @@ void GlobalAlignment::MergeTracksWithCrossSubScenePairs()
 				[&](uint32_t rootDst, uint32_t rootSrc) -> bool {
 					RootMeta& metaDst = rootMeta[rootDst];
 					RootMeta& metaSrc = rootMeta[rootSrc];
-					ASSERT(metaDst.imageCount && metaSrc.imageCount);
+					ASSERT(metaDst.images && metaSrc.images);
 					// Guard 1: reject if merging would create duplicate image observations
-					for (const auto& [imgID, count] : *metaSrc.imageCount) {
-						if (metaDst.imageCount->count(imgID)) {
+					for (const IIndex imgID : *metaSrc.images) {
+						if (metaDst.images->count(imgID)) {
 							++numRejectedDupImage;
 							return false;
 						}
@@ -832,9 +1055,8 @@ void GlobalAlignment::MergeTracksWithCrossSubScenePairs()
 						metaDst.hasPosition = true;
 					}
 					metaDst.numInliers += metaSrc.numInliers;
-					for (const auto& [imgID, count] : *metaSrc.imageCount)
-						(*metaDst.imageCount)[imgID] += count;
-					metaSrc.imageCount.reset();
+					metaDst.images->insert(metaSrc.images->begin(), metaSrc.images->end());
+					metaSrc.images.reset();
 					++numMerged;
 					return true;
 				}
@@ -851,7 +1073,7 @@ void GlobalAlignment::MergeTracksWithCrossSubScenePairs()
 			const uint32_t gid = offset + fid;
 			const uint32_t root = ds.Find(gid);
 			// Only include features that belong to a set with metadata (i.e., part of a track)
-			if (!rootMeta[root].imageCount)
+			if (!rootMeta[root].images)
 				continue;
 			trackGroups[root].emplace_back(imgID, fid);
 		}

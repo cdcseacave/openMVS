@@ -927,7 +927,9 @@ bool BundleAdjustment::Adjust()
 	options.minimizer_progress_to_stdout = false;
 	#endif
 	options.max_num_iterations = config.maxIterations;
-	options.num_threads = config.numThreads > 0 ? config.numThreads : std::thread::hardware_concurrency();
+	// numThreads 0 = auto; either way stay within the scene's thread budget, as
+	// clustered sub-scenes solve concurrently
+	options.num_threads = (int)MINF(config.numThreads > 0 ? config.numThreads : std::thread::hardware_concurrency(), scene.nMaxThreads);
 	options.function_tolerance = config.functionTolerance;
 
 	// Solve
@@ -1135,7 +1137,9 @@ bool BundleAdjustment::AdjustLocal(
 	options.minimizer_progress_to_stdout = false;
 	#endif
 	options.max_num_iterations = config.maxIterations;
-	options.num_threads = config.numThreads > 0 ? config.numThreads : std::thread::hardware_concurrency();
+	// numThreads 0 = auto; either way stay within the scene's thread budget, as
+	// clustered sub-scenes solve concurrently
+	options.num_threads = (int)MINF(config.numThreads > 0 ? config.numThreads : std::thread::hardware_concurrency(), scene.nMaxThreads);
 	options.function_tolerance = config.functionTolerance;
 
 	ceres::Solver::Summary summary;

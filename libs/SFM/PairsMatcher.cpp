@@ -1267,13 +1267,17 @@ bool PairsMatcher::ExportPairsCSV(const Scene& scene, const String& fileName, fl
 		return false;
 	}
 	const String basePath = MAKE_PATH_FULL(WORKING_FOLDER_FULL, Util::getFilePath(fileName));
-	ofs << "ImageA,ImageB,NumMatches,Weight\n";
+	ofs << "ImageA,ImageB,NumMatches,Weight,WeightSpatial,WeightConnectivity,WeightTriplet,MeanRayAngle\n";
 	for (const ImagePair& pair : scene.pairs) {
 		const String relImageNameA = MAKE_PATH_REL(basePath, scene.images[pair.ID1].fileName);
 		const String relImageNameB = MAKE_PATH_REL(basePath, scene.images[pair.ID2].fileName);
 		ofs << relImageNameA << "," << relImageNameB << ","
 		    << pair.GetNumFilteredInliers() << ","
-			<< pair.GetCompositeWeight() << "\n";
+			<< pair.GetCompositeWeight() << ","
+			<< pair.weightSpatial << ","
+			<< pair.weightConnectivity << ","
+			<< pair.weightTriplet << ","
+			<< R2D(pair.meanRayAngle) << "\n";
 	}
 	ofs.close();
 	VERBOSE("Exported %u pairs to '%s'",

@@ -72,6 +72,7 @@ String strImageIndices;
 unsigned nMaxFeaturesPerCell;
 unsigned nMinFeaturesPerCell;
 unsigned maxViewsPerCluster;
+bool bClusterCommunities;
 bool bUseGlobalSolver;
 bool bExtractColors;
 float undistortAlpha;
@@ -151,6 +152,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("k2", boost::program_options::value(&OPT::k2)->default_value(0.f), "force k2 distortion coefficient for specified images (0 = not used)")
 		("image-indices", boost::program_options::value<std::string>(&OPT::strImageIndices), "image indices to apply forced parameters (e.g., '0 5-10 15', empty = all images)")
 		("max-views-per-cluster", boost::program_options::value(&OPT::maxViewsPerCluster)->default_value(200), "maximum images per cluster for hierarchical reconstruction (0 = disable clustering)")
+		("cluster-communities", boost::program_options::value<bool>(&OPT::bClusterCommunities)->default_value(false), "cluster by community detection + capacity packing instead of pure aggregative clustering")
 		("use-global-solver", boost::program_options::value<bool>(&OPT::bUseGlobalSolver)->default_value(false), "use global solver for calibration, istead of hierarhical solver")
 		("extract-colors", boost::program_options::value<bool>(&OPT::bExtractColors)->default_value(false), "extract colors for reconstructed points")
 		("undistort-alpha", boost::program_options::value<float>(&OPT::undistortAlpha)->default_value(0.6f), "alpha parameter for undistortion (0=zoomed in, 1=all pixels retained)")
@@ -272,6 +274,7 @@ int main(int argc, LPCTSTR* argv)
 	cfg.estimatePoseUncertainty = !OPT::strExportPoseQuality.empty();
 	cfg.extractColors = OPT::bExtractColors;
 	cfg.clusterCfg.maxViewsPerCluster = OPT::maxViewsPerCluster;
+	cfg.clusterCfg.useCommunityDetection = OPT::bClusterCommunities;
 
 	// Run SfM reconstruction
 	Scene scene(OPT::nMaxThreads);

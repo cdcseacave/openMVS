@@ -242,10 +242,10 @@ unsigned ImagePair::FilterMatches(const Image& img1, const Image& img2, float mi
 	}
 
 	// Filter matches
-	const REAL maxCosAngle = COS(D2R(minAngle));
+	const REAL maxCosAngle = COS(D2R(REAL(minAngle)));
 	const auto [pts1, pts2] = GetMatchedPoints(img1, img2);
 	std::vector<char> mask(matches.size(), 0);
-	TAccumulator<float> angleAccumulator; // cos-angle weighted average
+	FloatArr cosAngles(0, matches.size()); // per-inlier ray-angle cosines
 	unsigned numInliers = 0;
 	FOREACH(i, matches) {
 		// Observed unit bearings (works for both pinhole and spherical)
@@ -285,15 +285,16 @@ unsigned ImagePair::FilterMatches(const Image& img1, const Image& img2, float mi
 		const REAL cosAngle = ComputeAngle(V1.ptr(), V2.ptr());
 		if (minAngle > 0 && cosAngle > maxCosAngle)
 			continue;
-		// Accepted as inlier; weight mean by inverse angular residual (mirrors 1/pixelErr² semantics)
-		const float oneMinusCos = (float)(REAL(1) - MINF(cosErr1, cosErr2));
-		angleAccumulator.Add((float)cosAngle, 1.f / MAXF(oneMinusCos, 1e-10f));
+		// Accepted as inlier
+		cosAngles.push_back((float)cosAngle);
 		mask[i] = 1;
 		++numInliers;
 	}
 
-	// Update mean ray angle
-	meanRayAngle = numInliers > 0 ? ACOS(angleAccumulator.Normalized()) : 0.f;
+	// Update ray angle with the median of per-inlier angles: cosine is monotone in the angle,
+	// so the median cosine maps exactly to the median angle, and a robust order statistic keeps
+	// mismatch-contaminated or badly triangulated matches from skewing the pair statistic
+	meanRayAngle = cosAngles.empty() ? 0.f : ACOS(cosAngles.GetMedian());
 	// Partition matches by inlier mask
 	return numFilteredInliers = (int)PartitionMatchesByMask(mask, (int)numInliers, true);
 }

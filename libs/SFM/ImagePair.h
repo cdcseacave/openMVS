@@ -74,7 +74,7 @@ public:
 	// Overlap metrics
 	float overlapRatio;       // ratio of tracked/matched features
 	float overlapArea;        // overlap area computed from homography (0-1)
-	float meanRayAngle;       // mean angle between viewing rays of inlier matches in radians (pseudo-baseline)
+	float meanRayAngle;       // median angle between viewing rays of inlier matches in radians (pseudo-baseline)
 
 	// Composite weighting scores
 	float weightSpatial;      // Intrinsic: geometric spread/conditioning (0-1)
@@ -147,13 +147,17 @@ public:
 	unsigned GetNumInliers() const { return (unsigned)matches.size(); }
 	unsigned GetNumFilteredInliers() const { return numFilteredInliers >= 0 ? (unsigned)numFilteredInliers : GetNumInliers(); }
 
-	// Compute composite weight from components: wIntrinsic * wExtrinsic
-	// W = (weightSpatial^2 * numInliers) * (weightConnectivity * (0.5 + weightTriplet))
+	// Compute composite weight from components:
+	// W = numInliers * cbrt(weightSpatial * weightConnectivity * (0.5 + weightTriplet))
+	// The quality factors are combined by geometric mean instead of a raw product: each lives
+	// in [0,1] and a raw product spans many orders of magnitude, so one weak (or noisy) factor
+	// annihilates a pair with hundreds of verified inliers and disconnects valid sub-blocks
+	// from the track graph; the geometric mean preserves the ordering while keeping the weight
+	// commensurate with the inlier evidence.
 	inline float GetCompositeWeight() const {
 		const unsigned nCappedInliers = MINF(GetNumFilteredInliers(), 1000u); // cap inliers to avoid excessive weight
-		const float wIntrinsic = nCappedInliers * weightSpatial; // intrinsic quality
-		const float wExtrinsic = weightConnectivity * (0.5f + weightTriplet); // extrinsic support
-		return wIntrinsic * wExtrinsic;
+		const float wQuality = weightSpatial * weightConnectivity * (0.5f + weightTriplet);
+		return nCappedInliers * CBRT(wQuality);
 	}
 	inline bool HasValidWeight() const {
 		return GetCompositeWeight() > 0.f;
