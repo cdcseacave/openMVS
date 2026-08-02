@@ -100,7 +100,9 @@ Scene::DenseReconstruction(nFusionMode, ...)
 - **PatchMatch stereo**: Random init + iterative propagation + sub-pixel refinement
 - **Semi-Global Matching** (`SemiGlobalMatcher.h`): Optional SGM refinement pass
 - **Confidence filtering**: Multi-view consistency checks
-- **DMapCache** (`DMapCache.h`): LRU disk cache for large-scale processing
+- **DMapCache** (`DMapCache.h`): LRU disk cache for large-scale processing; also holds the color pixels of the cached depth-maps during fusion
+- **ImageCache** (`ImageCache.h`): LRU cache decoding images on demand during estimation, storing the gray intensities the estimator consumes
+- **View-locality order** (`SortImagesByViewLocality`): the depth-maps are estimated walking the view graph, so consecutive ones share views and the cache decodes each image once
 - **PatchMatchCUDA** (`PatchMatchCUDA.h`): GPU-accelerated depth estimation
 
 ### 3. Mesh Reconstruction (`SceneReconstruct.cpp`, 43KB)
@@ -138,6 +140,24 @@ Renders the textured mesh from each camera viewpoint and compares against the or
 - **Point clouds**: `.ply` (binary/ASCII), `.gltf`
 - **Meshes**: `.ply`, `.obj` (with MTL), `.gltf`
 - **Interface**: COLMAP, OpenMVG via `Interface.h`
+- **Depth-maps**: `.dmap`, read and written by `Interface.h` alone
+  (`Export/ImportDepthDataRaw`); `DepthMap.cpp` and `SFM/InterfaceMVS.cpp` only adapt
+  the scene types to it.
+
+`Interface.h` is a drop-in header: any project can read and write our scenes and
+depth-maps with it alone. Keep it that way — no `Common/` include, no OpenMVS type in it.
+It works two ways, and the rule for both is *use OpenCV whenever it is there*:
+- `_USE_OPENCV` (what we build with): includes `<opencv2/core.hpp>` and uses the real
+  `cv::Mat`/`Matx`/`Point3_`, `convertTo` for the float16/uint8 packing, `minMaxIdx` for
+  the scales. Maps are passed as `cv::Mat&` and created in place, so nothing is copied —
+  our `TImage`s *are* `cv::Mat_`s and bind straight through.
+- `_USE_CUSTOM_CV` (set automatically when the former is not): minimal in-header
+  `cv::Matx`/`Point3_`/`Mat` and plain-C IEEE-754 conversions in `namespace DEPTHDATA`.
+
+Both paths must write the same bytes. That is not assumed, it is tested: the scratchpad
+carries an exhaustive check of the conversions against F16C over all 2^32 float patterns,
+plus a round-trip that compiles the header both ways over real `.dmap` files and compares
+the output byte for byte. Re-run those after touching the codec.
 
 ## GPU/CUDA Components
 - `PatchMatchCUDA.h/cpp/inl` - GPU-parallel depth estimation

@@ -45,9 +45,17 @@
 namespace MVS {
 
 // Caches depth-maps to disk.
+//
+// Fusion samples the colors of a point from the images of the depth-maps it was
+// fused from, which are exactly the ones this cache holds, so it can manage the
+// pixels of those images as well: pass the scene images to decode them alongside
+// their depth-data and release them together with it, keeping both under the same
+// memory budget instead of requiring every image to stay resident.
 class DMapCache {
 public:
-	explicit DMapCache(DepthDataArr& arrDepthData, unsigned loadFlags, size_t max_memory_bytes);
+	explicit DMapCache(DepthDataArr& arrDepthData, unsigned loadFlags, size_t max_memory_bytes, ImageArr* pImages = NULL);
+	// reports how well the cache did
+	~DMapCache();
 
 	// check if the list is empty
 	bool IsEmpty() const { ASSERT((usedMemory == 0) == fifo.IsEmpty()); return fifo.IsEmpty(); }
@@ -72,25 +80,27 @@ public:
 	// return true if the key is in the cache
 	bool IsImageCached(IIndex idxImage) const;
 
-	// get the number of times images were read from disk
-	uint32_t GetNumImageReads() const { return numImageRead; }
-
 	// eject all images from the cache
 	void ClearCache();
 
 	// get the current memory usage (in bytes)
 	size_t GetUsedMemory() const { return usedMemory; }
-	size_t ComputeUsedMemory() const;
 
 private:
 	// eject the least recently used images if the cache size is above max-limit
 	bool Eject() const;
 	// eject the least recently used image
 	bool EjectOldest() const;
+	// bytes the depth-data of the given image occupies, plus its color pixels
+	// when this cache manages them too
+	size_t GetMemorySize(IIndex idxImage) const;
 
 private:
 	unsigned loadFlags;
 	DepthDataArr& arrDepthData;
+	// scene images whose pixels are cached along the depth-data, NULL if the
+	// caller keeps them resident itself
+	ImageArr* pImages;
 
 	// maximum and used memory (in bytes)
 	size_t maxMemory, disabledMaxMemory;
@@ -105,8 +115,8 @@ private:
 	// track which images are last accessed
 	mutable ListFIFO<IIndex> fifo;
 
-	// number of times images were read from disk (debug only)
-	mutable uint32_t numImageRead;
+	// depth-maps loaded from disk (misses) and served from the cache (hits)
+	mutable CacheHitStats hitStats;
 };
 /*----------------------------------------------------------------*/
 

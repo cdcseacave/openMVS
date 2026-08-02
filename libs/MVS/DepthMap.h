@@ -512,7 +512,15 @@ MVS_API unsigned EstimatePlaneLockFirstPoint(const Point3fArr&, Planef&, double&
 MVS_API unsigned EstimatePlaneTh(const Point3fArr&, Planef&, double maxThreshold, bool arrInliers[]=NULL, size_t maxIters=0);
 MVS_API unsigned EstimatePlaneThLockFirstPoint(const Point3fArr&, Planef&, double maxThreshold, bool arrInliers[]=NULL, size_t maxIters=0);
 
-MVS_API void EstimatePointColors(const ImageArr& images, PointCloud& pointcloud);
+// the physical memory every densify stage leaves untouched: room for the OS file
+// cache absorbing the depth-map traffic and for the steps that follow
+inline size_t ComputeSafetyMemory(const Util::MemoryInfo& memInfo) {
+	return MAXF(ROUND2INT<size_t>(memInfo.totalPhysical * 0.08), size_t(1*1024*1024*1024ull)/*1GB*/);
+}
+
+// the images are decoded as they are sampled and released right after, so they do
+// not have to be loaded by the caller
+MVS_API void EstimatePointColors(ImageArr& images, PointCloud& pointcloud);
 MVS_API void EstimatePointSegmentation(const ImageArr& images, PointCloud& pointcloud, unsigned minViews=2);
 MVS_API unsigned ColorPointSegmentation(PointCloud& pointcloud);
 MVS_API void EstimatePointNormals(const ImageArr& images, PointCloud& pointcloud, int numNeighbors=16/*K-nearest neighbors*/);

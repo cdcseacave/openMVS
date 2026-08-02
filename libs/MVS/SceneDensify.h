@@ -36,6 +36,7 @@
 // I N C L U D E S /////////////////////////////////////////////////
 
 #include "SemiGlobalMatcher.h"
+#include "ImageCache.h"
 
 
 // S T R U C T S ///////////////////////////////////////////////////
@@ -69,6 +70,7 @@ public:
 
 	bool SelectViews(DepthData& depthData);
 	bool InitViews(DepthData& depthData, IIndex idxNeighbor, IIndex numNeighbors, bool loadImages, int loadDepthMaps);
+	bool FetchViewImage(DepthData::ViewData& view);
 	bool InitDepthMap(DepthData& depthData);
 	bool EstimateDepthMap(IIndex idxImage, int nGeometricIter);
 
@@ -104,6 +106,9 @@ public:
 
 	static DepthData ScaleDepthData(const DepthData& inputDeptData, float scale);
 
+	// Bytes the image cache may hold for the whole depth-map estimation.
+	size_t ComputeImageCacheMemory(const IIndexArr& images) const;
+
 protected:
 	static void* STCALL ScoreDepthMapTmp(void*);
 	static void* STCALL EstimateDepthMapTmp(void*);
@@ -113,6 +118,12 @@ public:
 	Scene& scene;
 
 	DepthDataArr arrDepthData;
+
+	// Images decoded on demand by InitViews, so a large scene does not have to
+	// hold every one of them for the whole reconstruction. Sized once for the
+	// whole estimation, and left disabled for the SGM fusion modes, which work
+	// directly on the color images.
+	ImageCache imageCache;
 
 	// used internally to estimate the depth-maps
 	Image8U::Size prevDepthMapSize; // remember the size of the last estimated depth-map

@@ -1409,40 +1409,115 @@ unsigned MVS::EstimatePlaneThLockFirstPoint(const Point3fArr& points, Planef& pl
 
 
 // estimate the colors of the given dense point-cloud
-void MVS::EstimatePointColors(const ImageArr& images, PointCloud& pointcloud)
+//
+// A point takes the color of the image seeing it from the closest, so the choice is
+// made over all the views and only the cameras are needed to make it. The points are
+// therefore assigned to their image first and sampled after, grouped by that image,
+// which decodes each image exactly once and keeps only the ones being sampled
+// resident: a scene of ten thousand views does not fit its pixels in memory all at
+// once, and holding them was the only reason this step needed them all decoded.
+// Points seen by no image, projecting outside it, or whose image cannot be decoded,
+// are left white.
+void MVS::EstimatePointColors(ImageArr& images, PointCloud& pointcloud)
 {
 	TD_TIMER_START();
 
+	ASSERT(pointcloud.pointViews.size() == pointcloud.points.size());
 	pointcloud.colors.resize(pointcloud.points.size());
-	FOREACH(i, pointcloud.colors) {
-		PointCloud::Color& color = pointcloud.colors[i];
+	pointcloud.colors.MemsetValue(Pixel8U::WHITE);
+
+	// select for each point the image seeing it from the closest
+	IIndexArr pointImages(pointcloud.points.size());
+	#ifdef DEPTHMAP_USE_OPENMP
+	#pragma omp parallel for
+	for (int_t _i=0; _i<(int_t)pointcloud.points.size(); ++_i) {
+		const PointCloud::Index i((PointCloud::Index)_i);
+	#else
+	FOREACH(i, pointcloud.points) {
+	#endif
 		const PointCloud::Point& point = pointcloud.points[i];
-		const PointCloud::ViewArr& views= pointcloud.pointViews[i];
-		// compute vertex color
 		REAL bestDistance(FLT_MAX);
-		const Image* pImageData(NULL);
-		FOREACHPTR(pView, views) {
-			const Image& imageData = images[*pView];
+		IIndex idxBestImage(NO_ID);
+		for (PointCloud::View idxImage: pointcloud.pointViews[i]) {
+			const Image& imageData = images[idxImage];
 			ASSERT(imageData.IsValid());
-			if (imageData.image.empty())
-				continue;
 			// compute the distance from the 3D point to the image
 			const REAL distance(imageData.camera.PointDepth(point));
 			ASSERT(distance > 0);
 			if (bestDistance > distance) {
 				bestDistance = distance;
-				pImageData = &imageData;
+				idxBestImage = idxImage;
 			}
 		}
-		if (pImageData == NULL) {
-			// set a dummy color
-			color = Pixel8U::WHITE;
-		} else {
-			// get image color
-			const auto [proj, depth] = pImageData->camera.ProjectPointP(point);
-			color = (depth > 0 && pImageData->image.isInsideWithBorder<float,1>(proj) ? pImageData->image.sample(proj) : Pixel8U::WHITE);
+		pointImages[i] = idxBestImage;
+	}
+
+	// group the points by the image they are sampled from
+	IIndexArr imagePointsStart(images.size()+1);
+	imagePointsStart.Memset(0);
+	for (IIndex idxImage: pointImages)
+		if (idxImage != NO_ID)
+			++imagePointsStart[idxImage+1];
+	for (IIndex idxImage=1; idxImage<imagePointsStart.size(); ++idxImage)
+		imagePointsStart[idxImage] += imagePointsStart[idxImage-1];
+	IndexArr imagePoints(imagePointsStart.Last());
+	if (imagePoints.empty()) {
+		DEBUG_ULTIMATE("Estimate dense point-cloud colors: no point is seen by any image (%s)", TD_TIMER_GET_FMT().c_str());
+		return;
+	}
+	{
+		IIndexArr imagePointsFill(imagePointsStart);
+		FOREACH(i, pointImages) {
+			const IIndex idxImage(pointImages[i]);
+			if (idxImage != NO_ID)
+				imagePoints[imagePointsFill[idxImage]++] = i;
 		}
 	}
+	pointImages.Release();
+
+	#ifdef DEPTHMAP_USE_OPENMP
+	// sample as many images at a time as the memory left holds, so even a scene
+	// whose images are large relative to it colors, one image at a time
+	size_t maxImageMemory(0);
+	FOREACH(idxImage, images)
+		if (imagePointsStart[idxImage] < imagePointsStart[idxImage+1])
+			maxImageMemory = MAXF(maxImageMemory, (size_t)images[idxImage].GetSize().area()*sizeof(Pixel8U));
+	ASSERT(maxImageMemory > 0);
+	const Util::MemoryInfo memInfo(Util::GetMemoryInfo());
+	const size_t safetyMemory(ComputeSafetyMemory(memInfo));
+	const size_t freeMemory(memInfo.freePhysical > safetyMemory ? memInfo.freePhysical - safetyMemory : 0);
+	const unsigned numImagesAtOnce(MINF(MAXF((unsigned)(freeMemory / maxImageMemory), 1u), (unsigned)omp_get_max_threads()));
+	#endif
+
+	// sample the points of each image, decoding it only if it is not loaded already
+	unsigned numFailedImages(0);
+	#ifdef DEPTHMAP_USE_OPENMP
+	#pragma omp parallel for schedule(dynamic,1) num_threads(numImagesAtOnce) reduction(+:numFailedImages)
+	for (int_t _idxImage=0; _idxImage<(int_t)images.size(); ++_idxImage) {
+		const IIndex idxImage((IIndex)_idxImage);
+	#else
+	FOREACH(idxImage, images) {
+	#endif
+		const IIndex idxPointsStart(imagePointsStart[idxImage]), idxPointsEnd(imagePointsStart[idxImage+1]);
+		if (idxPointsStart == idxPointsEnd)
+			continue;
+		Image& imageData = images[idxImage];
+		const bool bReleaseImage(imageData.image.empty());
+		if (bReleaseImage && !imageData.ReloadImageAtPreparedResolution()) {
+			++numFailedImages;
+			continue;
+		}
+		for (IIndex i=idxPointsStart; i<idxPointsEnd; ++i) {
+			const PointCloud::Index idxPoint(imagePoints[i]);
+			const auto [proj, depth] = imageData.camera.ProjectPointP(pointcloud.points[idxPoint]);
+			if (depth > 0 && imageData.image.isInsideWithBorder<float,1>(proj))
+				pointcloud.colors[idxPoint] = imageData.image.sample(proj);
+		}
+		if (bReleaseImage)
+			imageData.ReleaseImage();
+	}
+	if (numFailedImages > 0)
+		VERBOSE("warning: %u images could not be decoded; the points they see stay white", numFailedImages);
 
 	DEBUG_ULTIMATE("Estimate dense point-cloud colors: %u colors (%s)", pointcloud.colors.size(), TD_TIMER_GET_FMT().c_str());
 } // EstimatePointColors
@@ -2043,6 +2118,12 @@ bool MVS::ExportPointCloud(const String& fileName, const Image& imageData, const
 } // ExportPointCloud
 /*----------------------------------------------------------------*/
 
+// The DMAP file format, and the only implementation of the packing it stores its maps
+// with, live in Interface.h: that header pulls in nothing but the standard library and
+// OpenCV, so every library reading or writing the depth-maps this one produces shares
+// the same codec instead of carrying its own copy of it -- which is how the two of them
+// silently drifted apart before. The functions below only adapt the scene types to it,
+// the maps being passed straight through as the cv::Mat they already are.
 //  - IDs are the reference view ID and neighbor view IDs used to estimate the depth-map (global ID)
 bool MVS::ExportDepthDataRaw(const String& fileName, const String& imageFileName,
 	const IIndexArr& IDs, const cv::Size& imageSize,
@@ -2055,69 +2136,27 @@ bool MVS::ExportDepthDataRaw(const String& fileName, const String& imageFileName
 	ASSERT(confMap.empty() || depthMap.size() == confMap.size());
 	ASSERT(viewsMap.empty() || depthMap.size() == viewsMap.size());
 	ASSERT(depthMap.width() <= imageSize.width && depthMap.height() <= imageSize.height);
-
-	std::unique_ptr<FILE, decltype(&fclose)> f(fopen(fileName, "wb"), &fclose);
-	if (!f) {
-		DEBUG("error: opening file '%s' for writing depth-data", fileName.c_str());
-		return false;
-	}
-
-	// write header
-	HeaderDepthDataRaw header;
-	header.name = HeaderDepthDataRaw::HeaderDepthDataRawName();
-	header.type = HeaderDepthDataRaw::HAS_DEPTH;
-	header.imageWidth = (uint32_t)imageSize.width;
-	header.imageHeight = (uint32_t)imageSize.height;
-	header.depthWidth = (uint32_t)depthMap.cols;
-	header.depthHeight = (uint32_t)depthMap.rows;
-	header.dMin = dMin;
-	header.dMax = dMax;
-	if (!normalMap.empty())
-		header.type |= HeaderDepthDataRaw::HAS_NORMAL;
-	if (!confMap.empty())
-		header.type |= HeaderDepthDataRaw::HAS_CONF;
-	if (!viewsMap.empty())
-		header.type |= HeaderDepthDataRaw::HAS_VIEWS;
-	fwrite(&header, sizeof(HeaderDepthDataRaw), 1, f.get());
-
-	// write image file name
-	STATIC_ASSERT(sizeof(String::value_type) == sizeof(char));
-	const String FileName(MAKE_PATH_REL(Util::getFullPath(Util::getFilePath(fileName)), Util::getFullPath(imageFileName)));
-	const uint16_t nFileNameSize((uint16_t)FileName.length());
-	fwrite(&nFileNameSize, sizeof(uint16_t), 1, f.get());
-	fwrite(FileName.c_str(), sizeof(char), nFileNameSize, f.get());
-
-	// write neighbor IDs
-	STATIC_ASSERT(sizeof(uint32_t) == sizeof(IIndex));
-	const uint32_t nIDs(IDs.size());
-	fwrite(&nIDs, sizeof(IIndex), 1, f.get());
-	fwrite(IDs.data(), sizeof(IIndex), nIDs, f.get());
-
-	// write pose
 	STATIC_ASSERT(sizeof(double) == sizeof(REAL));
-	fwrite(K.val, sizeof(REAL), 9, f.get());
-	fwrite(R.val, sizeof(REAL), 9, f.get());
-	fwrite(C.ptr(), sizeof(REAL), 3, f.get());
+	STATIC_ASSERT(sizeof(uint32_t) == sizeof(IIndex));
 
-	// write depth-map
-	if (fwrite(depthMap.getData(), sizeof(float), depthMap.area(), f.get()) != static_cast<size_t>(depthMap.area())) {
+	DepthDataRaw data;
+	data.header.imageWidth = (uint32_t)imageSize.width;
+	data.header.imageHeight = (uint32_t)imageSize.height;
+	data.header.dMin = dMin;
+	data.header.dMax = dMax;
+	// store the image path relative to the depth-map, so that the two travel together
+	data.imageFileName = MAKE_PATH_REL(Util::getFullPath(Util::getFilePath(fileName)), Util::getFullPath(imageFileName));
+	data.IDs.assign(IDs.begin(), IDs.end());
+	data.K = K;
+	data.R = R;
+	data.C = C;
+	if (!ExportDepthDataRaw(static_cast<const std::string&>(fileName), data,
+		depthMap, normalMap, confMap, viewsMap))
+	{
 		DEBUG("error: writing depth-data to file '%s'", fileName.c_str());
 		return false;
 	}
-
-	// write normal-map
-	if ((header.type & HeaderDepthDataRaw::HAS_NORMAL) != 0)
-		fwrite(normalMap.getData(), sizeof(float)*3, normalMap.area(), f.get());
-
-	// write confidence-map
-	if ((header.type & HeaderDepthDataRaw::HAS_CONF) != 0)
-		fwrite(confMap.getData(), sizeof(float), confMap.area(), f.get());
-
-	// write views-map
-	if ((header.type & HeaderDepthDataRaw::HAS_VIEWS) != 0)
-		fwrite(viewsMap.getData(), sizeof(uint8_t)*4, viewsMap.area(), f.get());
-
-	return ferror(f.get()) == 0;
+	return true;
 } // ExportDepthDataRaw
 
 bool MVS::ImportDepthDataRaw(const String& fileName, String& imageFileName,
@@ -2126,93 +2165,26 @@ bool MVS::ImportDepthDataRaw(const String& fileName, String& imageFileName,
 	Depth& dMin, Depth& dMax,
 	DepthMap& depthMap, NormalMap& normalMap, ConfidenceMap& confMap, ViewsMap& viewsMap, unsigned flags)
 {
-	std::unique_ptr<FILE, decltype(&fclose)> f(fopen(fileName, "rb"), &fclose);
-	if (!f) {
-		DEBUG("error: opening file '%s' for reading depth-data", fileName.c_str());
-		return false;
-	}
-
-	// read header
-	HeaderDepthDataRaw header;
-	if (fread(&header, sizeof(HeaderDepthDataRaw), 1, f.get()) != 1 ||
-		header.name != HeaderDepthDataRaw::HeaderDepthDataRawName() ||
-		(header.type & HeaderDepthDataRaw::HAS_DEPTH) == 0 ||
-		header.depthWidth <= 0 || header.depthHeight <= 0 ||
-		header.imageWidth < header.depthWidth || header.imageHeight < header.depthHeight)
-	{
-		DEBUG("error: invalid depth-data file '%s'", fileName.c_str());
-		return false;
-	}
-
-	// read image file name
-	STATIC_ASSERT(sizeof(String::value_type) == sizeof(char));
-	uint16_t nFileNameSize;
-	fread(&nFileNameSize, sizeof(uint16_t), 1, f.get());
-	imageFileName.resize(nFileNameSize);
-	fread(imageFileName.data(), sizeof(char), nFileNameSize, f.get());
-
-	// read neighbor IDs
-	STATIC_ASSERT(sizeof(uint32_t) == sizeof(IIndex));
-	uint32_t nIDs;
-	fread(&nIDs, sizeof(IIndex), 1, f.get());
-	ASSERT(nIDs > 0 && nIDs < 256);
-	IDs.resize(nIDs);
-	fread(IDs.data(), sizeof(IIndex), nIDs, f.get());
-
-	// read pose
 	STATIC_ASSERT(sizeof(double) == sizeof(REAL));
-	fread(K.val, sizeof(REAL), 9, f.get());
-	fread(R.val, sizeof(REAL), 9, f.get());
-	fread(C.ptr(), sizeof(REAL), 3, f.get());
+	STATIC_ASSERT(sizeof(uint32_t) == sizeof(IIndex));
 
-	// read depth-map meta-data
-	dMin = header.dMin;
-	dMax = header.dMax;
-	imageSize.width = header.imageWidth;
-	imageSize.height = header.imageHeight;
-	if (flags == 0)
-		return ferror(f.get()) == 0; // only header + meta requested
-
-	// read depth-map
-	if ((flags & HeaderDepthDataRaw::HAS_DEPTH) != 0) {
-		depthMap.create(header.depthHeight, header.depthWidth);
-		if (fread(depthMap.getData(), sizeof(float), depthMap.area(), f.get()) != static_cast<size_t>(depthMap.area())) {
-			DEBUG("error: reading depth-data from file '%s'", fileName.c_str());
-			return false;
-		}
-	} else {
-		fseek(f.get(), sizeof(float)*header.depthWidth*header.depthHeight, SEEK_CUR);
+	DepthDataRaw data;
+	if (!ImportDepthDataRaw(static_cast<const std::string&>(fileName), data,
+		depthMap, normalMap, confMap, viewsMap, flags))
+	{
+		DEBUG("error: reading depth-data from file '%s'", fileName.c_str());
+		return false;
 	}
-
-	// read normal-map
-	if ((header.type & HeaderDepthDataRaw::HAS_NORMAL) != 0) {
-		if ((flags & HeaderDepthDataRaw::HAS_NORMAL) != 0) {
-			normalMap.create(header.depthHeight, header.depthWidth);
-			fread(normalMap.getData(), sizeof(float)*3, normalMap.area(), f.get());
-		} else {
-			fseek(f.get(), sizeof(float)*3*header.depthWidth*header.depthHeight, SEEK_CUR);
-		}
-	}
-
-	// read confidence-map
-	if ((header.type & HeaderDepthDataRaw::HAS_CONF) != 0) {
-		if ((flags & HeaderDepthDataRaw::HAS_CONF) != 0) {
-			confMap.create(header.depthHeight, header.depthWidth);
-			fread(confMap.getData(), sizeof(float), confMap.area(), f.get());
-		} else {
-			fseek(f.get(), sizeof(float)*header.depthWidth*header.depthHeight, SEEK_CUR);
-		}
-	}
-
-	// read visibility-map
-	if ((header.type & HeaderDepthDataRaw::HAS_VIEWS) != 0) {
-		if ((flags & HeaderDepthDataRaw::HAS_VIEWS) != 0) {
-			viewsMap.create(header.depthHeight, header.depthWidth);
-			fread(viewsMap.getData(), sizeof(uint8_t)*4, viewsMap.area(), f.get());
-		}
-	}
-
-	return ferror(f.get()) == 0;
+	imageFileName = data.imageFileName;
+	IDs.CopyOf(data.IDs.data(), (IIndex)data.IDs.size());
+	K = data.K;
+	R = data.R;
+	C = data.C;
+	dMin = data.header.dMin;
+	dMax = data.header.dMax;
+	imageSize.width = (int)data.header.imageWidth;
+	imageSize.height = (int)data.header.imageHeight;
+	return true;
 } // ImportDepthDataRaw
 /*----------------------------------------------------------------*/
 

@@ -6,7 +6,11 @@
 
 #include <fstream>
 #include <string>
+#include <vector>
 #include <cctype>
+#include <cmath>
+#include <cstdint>
+#include <cstring>
 #include <limits>
 
 
@@ -25,6 +29,11 @@
 #if !defined(_USE_OPENCV) && !defined(_USE_CUSTOM_CV)
 #define _USE_CUSTOM_CV
 #endif
+#ifdef _USE_OPENCV
+// the matrix, point and image types below, and the conversions the depth-data codec
+// needs, are OpenCV's own; without it this header defines the little it uses of them
+#include <opencv2/core.hpp>
+#endif
 
 // set to disable custom NO_ID declaration
 #ifndef _DISABLE_NO_ID
@@ -35,6 +44,19 @@
 // S T R U C T S ///////////////////////////////////////////////////
 
 #ifdef _USE_CUSTOM_CV
+
+// element types, same values as OpenCV
+#define CV_8U   0
+#define CV_8S   1
+#define CV_16U  2
+#define CV_16S  3
+#define CV_32S  4
+#define CV_32F  5
+#define CV_64F  6
+#define CV_MAKETYPE(depth,cn) ((depth) + (((cn)-1) << 3))
+#define CV_8UC4  CV_MAKETYPE(CV_8U,4)
+#define CV_32FC1 CV_MAKETYPE(CV_32F,1)
+#define CV_32FC3 CV_MAKETYPE(CV_32F,3)
 
 namespace cv {
 
@@ -47,6 +69,8 @@ public:
 
 	inline Point3_() {}
 	inline Point3_(Type _x, Type _y, Type _z) : x(_x), y(_y), z(_z) {}
+	template<typename Type2>
+	inline Point3_(const Point3_<Type2>& pt) : x(Type(pt.x)), y(Type(pt.y)), z(Type(pt.z)) {}
 	#ifdef _USE_EIGEN
 	EIGEN_MAKE_ALIGNED_OPERATOR_NEW_IF_VECTORIZABLE_FIXED_SIZE(Type,3)
 	typedef Eigen::Matrix<Type,3,1> EVec;
@@ -82,6 +106,13 @@ public:
 			x-X.x,
 			y-X.y,
 			z-X.z
+		);
+	}
+	Point3_ operator * (Type s) const {
+		return Point3_(
+			x*s,
+			y*s,
+			z*s
 		);
 	}
 
@@ -157,6 +188,51 @@ public:
 
 public:
 	Type val[m*n];
+};
+
+// simple cv::Mat: the subset of the interface the depth-data codec below needs, so
+// that it is written once against the OpenCV types and works either way; the pixels
+// are owned here, where the real one shares them reference-counted
+class Mat
+{
+public:
+	inline Mat() : rows(0), cols(0), flags(0), step(0) {}
+	inline Mat(int _rows, int _cols, int _type) : rows(0), cols(0), flags(0), step(0) { create(_rows, _cols, _type); }
+
+	inline bool empty() const { return buffer.empty(); }
+	inline int type() const { return flags; }
+	inline int depth() const { return flags & 7; }
+	inline int channels() const { return (flags >> 3) + 1; }
+	inline size_t elemSize() const { return (size_t)channels()*DepthSize(depth()); }
+
+	inline void create(int _rows, int _cols, int _type) {
+		if (rows == _rows && cols == _cols && flags == _type)
+			return;
+		rows = _rows; cols = _cols; flags = _type;
+		step = (size_t)cols*elemSize();
+		buffer.resize(step*(size_t)rows);
+	}
+	inline void release() { rows = cols = 0; step = 0; buffer.clear(); }
+
+	inline uint8_t* ptr(int r=0) { return buffer.data()+(size_t)r*step; }
+	inline const uint8_t* ptr(int r=0) const { return buffer.data()+(size_t)r*step; }
+	template<typename Type> inline Type* ptr(int r=0) { return reinterpret_cast<Type*>(buffer.data()+(size_t)r*step); }
+	template<typename Type> inline const Type* ptr(int r=0) const { return reinterpret_cast<const Type*>(buffer.data()+(size_t)r*step); }
+
+	static inline size_t DepthSize(int d) {
+		switch (d) {
+		case CV_8U: case CV_8S: return 1;
+		case CV_16U: case CV_16S: return 2;
+		case CV_64F: return 8;
+		default: return 4;
+		}
+	}
+
+public:
+	int rows, cols; // pixel resolution
+	int flags; // element type
+	size_t step; // bytes between two consecutive rows
+	std::vector<uint8_t> buffer; // the pixels
 };
 
 } // namespace cv
@@ -773,6 +849,16 @@ struct Interface
 //  - normal-map (optional): the 3D point normal in camera space; same resolution as the depth-map
 //  - confidence-map (optional): the 3D point confidence (usually a value in [0,1]); same resolution as the depth-map
 //  - views-map (optional): the pixels' views, indexing image-IDs starting after first view (up to 4); same resolution as the depth-map
+// The maps are stored quantized, 11 bytes per pixel in total; every value is still
+// float in memory, the packing happens only in ExportDepthDataRaw/ImportDepthDataRaw:
+//  - depth: half, after scaling by 2^-depthExp so the values land in the well-conditioned
+//    part of the half range whatever the scene scale; the scaling is exact (it only
+//    shifts the exponent), so the sole error is the half rounding, 4.9e-4 relative
+//  - normal: two int16 holding the octahedral projection of the unit vector; the
+//    all-zero normal of an invalid pixel is kept exactly via a reserved sentinel
+//  - confidence: uint8 over [0,confScale]; the scale is per depth-map because the
+//    values are in [0,1] for the patch-match estimators but are raw matching costs
+//    on the semi-global-matching fusion path
 struct HeaderDepthDataRaw {
 	enum {
 		HAS_DEPTH = (1<<0),
@@ -782,17 +868,509 @@ struct HeaderDepthDataRaw {
 	};
 	uint16_t name; // file type
 	uint8_t type; // content type
-	uint8_t padding; // reserve
+	int8_t depthExp; // power-of-two exponent the stored depths were scaled down by
 	uint32_t imageWidth, imageHeight; // image resolution
 	uint32_t depthWidth, depthHeight; // depth-map resolution
 	float dMin, dMax; // depth range for this view
+	float confScale; // confidence value the stored uint8 range maps onto
 	// image file name length followed by the characters: uint16_t nFileNameSize; char* FileName
 	// number of view IDs followed by view ID and neighbor view IDs: uint32_t nIDs; uint32_t* IDs
 	// camera, rotation and position matrices (row-major) at image resolution: double K[3][3], R[3][3], C[3]
-	// depth, normal, confidence maps: float depthMap[height][width], normalMap[height][width][3], confMap[height][width]
-	inline HeaderDepthDataRaw() : name(0), type(0), padding(0) {}
-	static uint16_t HeaderDepthDataRawName() { return *reinterpret_cast<const uint16_t*>("DR"); }
+	// depth, normal, confidence maps: half depthMap[height][width], int16_t normalMap[height][width][2], uint8_t confMap[height][width]
+	inline HeaderDepthDataRaw() : name(0), type(0), depthExp(0), confScale(1.f) {}
+	static uint16_t HeaderDepthDataRawName() { return *reinterpret_cast<const uint16_t*>("D2"); }
 };
+/*----------------------------------------------------------------*/
+
+
+// the meta-data of one depth-map, everything a DMAP file stores besides the maps
+// themselves, which are passed separately as the caller's own matrices
+struct DepthDataRaw {
+	HeaderDepthDataRaw header; // resolutions, depth range and content type
+	std::string imageFileName; // path to the reference color image, by convention relative to the DMAP file
+	std::vector<uint32_t> IDs; // reference view ID followed by the neighbor view IDs
+	cv::Matx<double,3,3> K; // reference view intrinsics, at image resolution
+	cv::Matx<double,3,3> R; // reference view rotation, world to camera
+	cv::Point3_<double> C; // reference view position, in world coordinates
+};
+
+// The quantization the DMAP format stores its maps with. Where OpenCV has the
+// conversion it does it -- convertTo() reaches the F16C instructions for the halves and
+// the SIMD saturating cast for the confidence -- and the plain C fallbacks below only
+// stand in for a project that does not have OpenCV, or whose OpenCV predates CV_16F
+// (before 3.4.4/4.0): they implement the very same IEEE-754 round-to-nearest-even
+// rules, so both write the same bytes.
+namespace DEPTHDATA {
+
+#if defined(_USE_CUSTOM_CV) || !defined(CV_16F)
+
+// IEEE-754 binary32 to binary16, round-to-nearest-even
+inline uint16_t Float2Half(float value) {
+	uint32_t f;
+	memcpy(&f, &value, sizeof(uint32_t));
+	const uint32_t sign(f & 0x80000000u);
+	f ^= sign;
+	uint16_t h;
+	if (f >= 0x47800000u) {
+		// too large for half: infinity, or NaN made quiet
+		h = (uint16_t)(f > 0x7f800000u ? 0x7e00u : 0x7c00u);
+	} else if (f < 0x38800000u) {
+		// subnormal or zero: adding the magic value lines the mantissa up at the bottom
+		// of the float, and the round-to-nearest-even addition does the rounding
+		const uint32_t magicBits(((127-15)+(23-10)+1) << 23);
+		float magic, m;
+		memcpy(&magic, &magicBits, sizeof(uint32_t));
+		memcpy(&m, &f, sizeof(uint32_t));
+		m += magic;
+		memcpy(&f, &m, sizeof(uint32_t));
+		h = (uint16_t)(f - magicBits);
+	} else {
+		// normal: rebias the exponent and round the mantissa to nearest-even
+		const uint32_t mantOdd((f >> 13) & 1);
+		f += ((uint32_t)(15-127) << 23) + 0xfff + mantOdd;
+		h = (uint16_t)(f >> 13);
+	}
+	return (uint16_t)(h | (uint16_t)(sign >> 16));
+}
+// IEEE-754 binary16 to binary32, exact
+inline float Half2Float(uint16_t value) {
+	const uint32_t shiftedExp(0x7c00 << 13); // exponent mask, after the shift below
+	uint32_t o((uint32_t)(value & 0x7fff) << 13);
+	const uint32_t exp(shiftedExp & o);
+	o += (uint32_t)(127-15) << 23; // rebias the exponent
+	if (exp == shiftedExp) {
+		// infinity or NaN: rebias again, the half exponent being all ones
+		o += (uint32_t)(128-16) << 23;
+	} else if (exp == 0) {
+		// subnormal or zero: renormalize by subtracting the implicit leading one back out
+		const uint32_t magicBits(113 << 23);
+		float magic, m;
+		o += 1 << 23;
+		memcpy(&m, &o, sizeof(uint32_t));
+		memcpy(&magic, &magicBits, sizeof(uint32_t));
+		m -= magic;
+		memcpy(&o, &m, sizeof(uint32_t));
+	}
+	o |= (uint32_t)(value & 0x8000) << 16;
+	float f;
+	memcpy(&f, &o, sizeof(uint32_t));
+	return f;
+}
+
+// float already scaled to [0,255] to uint8, round-to-nearest-even and clamped
+inline uint8_t Float2Unorm8(float value) {
+	if (!(value > 0.f)) // also catches NaN
+		return 0;
+	if (value >= 255.f)
+		return 255;
+	// adding 1.5*2^23 pushes the fraction out of the mantissa, so the addition itself
+	// rounds to the nearest integer, ties to even, which then sits in the low bits
+	const float t(value + 12582912.f);
+	uint32_t bits;
+	memcpy(&bits, &t, sizeof(uint32_t));
+	return (uint8_t)(bits & 0xff);
+}
+#endif // _USE_CUSTOM_CV || !CV_16F
+
+// run the given per-row work over [0,rows), on OpenCV's thread pool where there is one
+// -- it is the one the rest of the process already uses, and it runs the body inline
+// when called from inside another parallel region -- and on OpenMP otherwise
+template <typename TROWS>
+inline void ParallelForRows(int rows, const TROWS& ForRows) {
+#ifdef _USE_CUSTOM_CV
+	#ifdef _OPENMP
+	#pragma omp parallel for
+	#endif
+	for (int r=0; r<rows; ++r)
+		ForRows(r, r+1);
+#else
+	cv::parallel_for_(cv::Range(0, rows), [&ForRows](const cv::Range& range) {
+		ForRows(range.start, range.end);
+	});
+#endif
+}
+
+// Octahedral direction quantized to two int16. Both directions are ~10 ALU operations
+// and the error stays near-uniform over the sphere, which is what makes the pair worth
+// storing at 16 bits. A pixel without an estimate carries an all-zero normal, which is
+// not a unit vector and so cannot go through the octahedral projection at all; it gets
+// the one code an encoded unit vector can never produce -- both components below the
+// -32767 the encoder clamps to -- so that invalid pixels round-trip exactly instead of
+// decoding to a NaN that would then propagate into fusion.
+enum : int16_t { NORMAL_SENTINEL = -32768 };
+inline void EncodeNormal(float x, float y, float z, int16_t& ox, int16_t& oy) {
+	if (x == 0 && y == 0 && z == 0) {
+		ox = oy = NORMAL_SENTINEL;
+		return;
+	}
+	const float invL1(1.f/(std::fabs(x)+std::fabs(y)+std::fabs(z)));
+	float px(x*invL1), py(y*invL1);
+	if (z < 0) {
+		const float nx((1.f-std::fabs(py)) * (px < 0 ? -1.f : 1.f));
+		const float ny((1.f-std::fabs(px)) * (py < 0 ? -1.f : 1.f));
+		px = nx; py = ny;
+	}
+	ox = (int16_t)(int)std::floor((px < -1.f ? -1.f : (px > 1.f ? 1.f : px))*32767.f + 0.5f);
+	oy = (int16_t)(int)std::floor((py < -1.f ? -1.f : (py > 1.f ? 1.f : py))*32767.f + 0.5f);
+}
+inline void DecodeNormal(int16_t ox, int16_t oy, float& x, float& y, float& z) {
+	if (ox == NORMAL_SENTINEL && oy == NORMAL_SENTINEL) {
+		x = y = z = 0.f;
+		return;
+	}
+	const float px(ox*(1.f/32767.f)), py(oy*(1.f/32767.f));
+	x = px;
+	y = py;
+	z = 1.f-std::fabs(px)-std::fabs(py);
+	if (z < 0) {
+		x = (1.f-std::fabs(py)) * (px < 0 ? -1.f : 1.f);
+		y = (1.f-std::fabs(px)) * (py < 0 ? -1.f : 1.f);
+	}
+	const float invNorm(1.f/std::sqrt(x*x + y*y + z*z));
+	x *= invNorm; y *= invNorm; z *= invNorm;
+}
+
+// largest value of a single channel float map, NaNs skipped
+inline float MaxValue(const cv::Mat& map) {
+#ifdef _USE_CUSTOM_CV
+	float maxValue(0);
+	for (int r=0; r<map.rows; ++r) {
+		const float* p = map.ptr<float>(r);
+		for (int c=0; c<map.cols; ++c)
+			if (maxValue < p[c])
+				maxValue = p[c];
+	}
+	return maxValue;
+#else
+	double maxValue(0);
+	cv::minMaxIdx(map, NULL, &maxValue);
+	return (float)maxValue;
+#endif
+}
+
+// depth-map to and from halves scaled by the given power of two
+inline void PackDepth(const cv::Mat& depthMap, double scale, uint16_t* packed) {
+#if defined(_USE_CUSTOM_CV) || !defined(CV_16F)
+	const int cols(depthMap.cols);
+	const float scaleF((float)scale);
+	ParallelForRows(depthMap.rows, [&](int rBegin, int rEnd) {
+		for (int r=rBegin; r<rEnd; ++r) {
+			const float* pD = depthMap.ptr<float>(r);
+			uint16_t* pH = packed + (size_t)r*cols;
+			for (int c=0; c<cols; ++c)
+				pH[c] = Float2Half(pD[c]*scaleF);
+		}
+	});
+#else
+	cv::Mat depthMapH(depthMap.rows, depthMap.cols, CV_16F, packed);
+	depthMap.convertTo(depthMapH, CV_16F, scale);
+#endif
+}
+inline void UnpackDepth(const uint16_t* packed, int rows, int cols, double scale, cv::Mat& depthMap) {
+#if defined(_USE_CUSTOM_CV) || !defined(CV_16F)
+	depthMap.create(rows, cols, CV_32FC1);
+	const float scaleF((float)scale);
+	ParallelForRows(rows, [&](int rBegin, int rEnd) {
+		for (int r=rBegin; r<rEnd; ++r) {
+			const uint16_t* pH = packed + (size_t)r*cols;
+			float* pD = depthMap.ptr<float>(r);
+			for (int c=0; c<cols; ++c)
+				pD[c] = Half2Float(pH[c])*scaleF;
+		}
+	});
+#else
+	const cv::Mat depthMapH(rows, cols, CV_16F, const_cast<uint16_t*>(packed));
+	depthMapH.convertTo(depthMap, CV_32F, scale);
+#endif
+}
+
+// confidence-map to and from unorm8 over the given scale
+inline void PackConf(const cv::Mat& confMap, double scale, uint8_t* packed) {
+#ifdef _USE_CUSTOM_CV
+	const int cols(confMap.cols);
+	const float scaleF((float)scale);
+	ParallelForRows(confMap.rows, [&](int rBegin, int rEnd) {
+		for (int r=rBegin; r<rEnd; ++r) {
+			const float* pC = confMap.ptr<float>(r);
+			uint8_t* pU = packed + (size_t)r*cols;
+			for (int c=0; c<cols; ++c)
+				pU[c] = Float2Unorm8(pC[c]*scaleF);
+		}
+	});
+#else
+	cv::Mat confMapU(confMap.rows, confMap.cols, CV_8U, packed);
+	confMap.convertTo(confMapU, CV_8U, scale);
+#endif
+}
+inline void UnpackConf(const uint8_t* packed, int rows, int cols, double scale, cv::Mat& confMap) {
+#ifdef _USE_CUSTOM_CV
+	confMap.create(rows, cols, CV_32FC1);
+	const float scaleF((float)scale);
+	ParallelForRows(rows, [&](int rBegin, int rEnd) {
+		for (int r=rBegin; r<rEnd; ++r) {
+			const uint8_t* pU = packed + (size_t)r*cols;
+			float* pC = confMap.ptr<float>(r);
+			for (int c=0; c<cols; ++c)
+				pC[c] = pU[c]*scaleF;
+		}
+	});
+#else
+	const cv::Mat confMapU(rows, cols, CV_8U, const_cast<uint8_t*>(packed));
+	confMapU.convertTo(confMap, CV_32F, scale);
+#endif
+}
+
+// normal-map to and from the octahedral pairs; OpenCV has no such projection, so this
+// one is ours either way
+inline void PackNormals(const cv::Mat& normalMap, int16_t* packed) {
+	const int cols(normalMap.cols);
+	ParallelForRows(normalMap.rows, [&](int rBegin, int rEnd) {
+		for (int r=rBegin; r<rEnd; ++r) {
+			const float* pN = normalMap.ptr<float>(r);
+			int16_t* pO = packed + (size_t)r*cols*2;
+			for (int c=0; c<cols; ++c)
+				EncodeNormal(pN[c*3], pN[c*3+1], pN[c*3+2], pO[c*2], pO[c*2+1]);
+		}
+	});
+}
+inline void UnpackNormals(const int16_t* packed, int rows, int cols, cv::Mat& normalMap) {
+	normalMap.create(rows, cols, CV_32FC3);
+	ParallelForRows(rows, [&](int rBegin, int rEnd) {
+		for (int r=rBegin; r<rEnd; ++r) {
+			const int16_t* pO = packed + (size_t)r*cols*2;
+			float* pN = normalMap.ptr<float>(r);
+			for (int c=0; c<cols; ++c)
+				DecodeNormal(pO[c*2], pO[c*2+1], pN[c*3], pN[c*3+1], pN[c*3+2]);
+		}
+	});
+}
+
+} // namespace DEPTHDATA
+/*----------------------------------------------------------------*/
+
+
+// Export the depth-data of one view to the given stream, opened in binary mode.
+// The caller fills in data the image resolution, the depth range, the image file name,
+// the view IDs and the pose, while the map resolution, the content type and the
+// quantization scales are derived from the maps themselves. Only the depth-map is
+// mandatory; an empty map is simply not written. The maps are read where they are, no
+// copy of them is made: depth and confidence are CV_32FC1, the normals CV_32FC3 in
+// camera space, and the views CV_8UC4.
+inline bool ExportDepthDataRaw(std::ostream& stream, const DepthDataRaw& data,
+	const cv::Mat& depthMap, const cv::Mat& normalMap, const cv::Mat& confMap, const cv::Mat& viewsMap)
+{
+	if (depthMap.empty() || depthMap.type() != CV_32FC1 || data.IDs.empty() || data.IDs.size() >= 256)
+		return false;
+	if ((!normalMap.empty() && (normalMap.type() != CV_32FC3 || normalMap.rows != depthMap.rows || normalMap.cols != depthMap.cols)) ||
+		(!confMap.empty() && (confMap.type() != CV_32FC1 || confMap.rows != depthMap.rows || confMap.cols != depthMap.cols)) ||
+		(!viewsMap.empty() && (viewsMap.type() != CV_8UC4 || viewsMap.rows != depthMap.rows || viewsMap.cols != depthMap.cols)))
+		return false;
+	const int height(depthMap.rows), width(depthMap.cols);
+	const size_t area((size_t)height*width);
+
+	// write header
+	HeaderDepthDataRaw header(data.header);
+	header.name = HeaderDepthDataRaw::HeaderDepthDataRawName();
+	header.type = HeaderDepthDataRaw::HAS_DEPTH;
+	header.depthWidth = (uint32_t)width;
+	header.depthHeight = (uint32_t)height;
+	if (header.imageWidth < header.depthWidth || header.imageHeight < header.depthHeight)
+		return false;
+	// bring the depths into the well-conditioned part of the half range whatever the
+	// scene scale: a power-of-two factor only shifts the exponent, so this is exact and
+	// the sole error left is the half rounding. Take the exponent from the data and not
+	// from dMax, which some callers set to FLT_MAX as an "unbounded" sentinel.
+	const float maxDepth(DEPTHDATA::MaxValue(depthMap));
+	if (maxDepth > 0 && std::isfinite(maxDepth)) {
+		const int e(std::ilogb(maxDepth));
+		header.depthExp = (int8_t)(e < -100 ? -100 : (e > 100 ? 100 : e));
+	} else {
+		header.depthExp = 0;
+	}
+	// a depth sitting on either end of the range can be rounded just past it by the
+	// half quantization, so widen the recorded range by that bound (half carries an
+	// 11-bit significand) and keep "every stored depth is inside [dMin,dMax]" true
+	const float depthQuantRelErr(1.f/1024.f);
+	if (std::isfinite(header.dMin))
+		header.dMin *= 1.f-depthQuantRelErr;
+	if (std::isfinite(header.dMax))
+		header.dMax *= 1.f+depthQuantRelErr;
+	if (!normalMap.empty())
+		header.type |= HeaderDepthDataRaw::HAS_NORMAL;
+	if (!confMap.empty()) {
+		header.type |= HeaderDepthDataRaw::HAS_CONF;
+		// the patch-match estimators normalize confidence to [0,1], but the
+		// semi-global-matching fusion stores raw matching costs, so take the range
+		// from the data rather than assuming it
+		const float maxConf(DEPTHDATA::MaxValue(confMap));
+		header.confScale = (maxConf > 0 && std::isfinite(maxConf)) ? maxConf : 1.f;
+	}
+	if (!viewsMap.empty())
+		header.type |= HeaderDepthDataRaw::HAS_VIEWS;
+	stream.write((const char*)&header, sizeof(HeaderDepthDataRaw));
+
+	// write image file name
+	const uint16_t nFileNameSize((uint16_t)data.imageFileName.length());
+	stream.write((const char*)&nFileNameSize, sizeof(uint16_t));
+	stream.write(data.imageFileName.c_str(), nFileNameSize);
+
+	// write neighbor IDs
+	const uint32_t nIDs((uint32_t)data.IDs.size());
+	stream.write((const char*)&nIDs, sizeof(uint32_t));
+	stream.write((const char*)data.IDs.data(), sizeof(uint32_t)*nIDs);
+
+	// write pose
+	stream.write((const char*)data.K.val, sizeof(double)*9);
+	stream.write((const char*)data.R.val, sizeof(double)*9);
+	stream.write((const char*)&data.C.x, sizeof(double)*3);
+
+	// write depth-map, as half scaled by 2^-depthExp (zero stays exactly zero)
+	{
+		std::vector<uint16_t> depthMapH(area);
+		DEPTHDATA::PackDepth(depthMap, std::ldexp(1.0, -header.depthExp), depthMapH.data());
+		stream.write((const char*)depthMapH.data(), sizeof(uint16_t)*area);
+	}
+
+	// write normal-map, as the octahedral direction quantized to two int16
+	if ((header.type & HeaderDepthDataRaw::HAS_NORMAL) != 0) {
+		std::vector<int16_t> normalMapOct(area*2);
+		DEPTHDATA::PackNormals(normalMap, normalMapOct.data());
+		stream.write((const char*)normalMapOct.data(), sizeof(int16_t)*area*2);
+	}
+
+	// write confidence-map, as unorm8 over [0,confScale]
+	if ((header.type & HeaderDepthDataRaw::HAS_CONF) != 0) {
+		std::vector<uint8_t> confMapU(area);
+		DEPTHDATA::PackConf(confMap, 255.0/header.confScale, confMapU.data());
+		stream.write((const char*)confMapU.data(), sizeof(uint8_t)*area);
+	}
+
+	// write views-map, stored as it is
+	if ((header.type & HeaderDepthDataRaw::HAS_VIEWS) != 0)
+		for (int r=0; r<height; ++r)
+			stream.write((const char*)viewsMap.ptr(r), (size_t)width*4);
+
+	return (bool)stream;
+}
+// same, writing to the given file
+inline bool ExportDepthDataRaw(const std::string& fileName, const DepthDataRaw& data,
+	const cv::Mat& depthMap, const cv::Mat& normalMap, const cv::Mat& confMap, const cv::Mat& viewsMap)
+{
+	std::ofstream stream(fileName, std::ofstream::binary);
+	if (!stream.is_open())
+		return false;
+	if (!ExportDepthDataRaw(stream, data, depthMap, normalMap, confMap, viewsMap))
+		return false;
+	// verify the write actually reached disk: a failure here (e.g. the volume ran out of
+	// space) otherwise leaves a silently truncated file that still parses its header
+	return stream.flush().good();
+}
+
+// Import the depth-data of one view from the given stream, opened in binary mode.
+// Every map requested through flags and present in the file is created at the stored
+// resolution and read into directly; the others are stepped over and left untouched.
+// Passing no flag at all reads the meta-data alone, the maps being the bulk of the file.
+inline bool ImportDepthDataRaw(std::istream& stream, DepthDataRaw& data,
+	cv::Mat& depthMap, cv::Mat& normalMap, cv::Mat& confMap, cv::Mat& viewsMap,
+	unsigned flags=HeaderDepthDataRaw::HAS_DEPTH|HeaderDepthDataRaw::HAS_NORMAL|HeaderDepthDataRaw::HAS_CONF|HeaderDepthDataRaw::HAS_VIEWS)
+{
+	// read header
+	HeaderDepthDataRaw& header = data.header;
+	stream.read((char*)&header, sizeof(HeaderDepthDataRaw));
+	if (!stream ||
+		header.name != HeaderDepthDataRaw::HeaderDepthDataRawName() ||
+		(header.type & HeaderDepthDataRaw::HAS_DEPTH) == 0 ||
+		header.depthWidth == 0 || header.depthHeight == 0 ||
+		header.imageWidth < header.depthWidth || header.imageHeight < header.depthHeight)
+		return false;
+
+	// read image file name
+	uint16_t nFileNameSize;
+	stream.read((char*)&nFileNameSize, sizeof(uint16_t));
+	data.imageFileName.resize(nFileNameSize);
+	if (nFileNameSize > 0)
+		stream.read(&data.imageFileName[0], nFileNameSize);
+
+	// read neighbor IDs
+	uint32_t nIDs;
+	stream.read((char*)&nIDs, sizeof(uint32_t));
+	if (!stream || nIDs == 0 || nIDs >= 256)
+		return false;
+	data.IDs.resize(nIDs);
+	stream.read((char*)data.IDs.data(), sizeof(uint32_t)*nIDs);
+
+	// read pose
+	stream.read((char*)data.K.val, sizeof(double)*9);
+	stream.read((char*)data.R.val, sizeof(double)*9);
+	stream.read((char*)&data.C.x, sizeof(double)*3);
+	if (!stream || flags == 0)
+		return (bool)stream; // only the meta-data was requested
+	// a map handed over already allocated has to be of the type it is stored as
+	if ((!depthMap.empty() && depthMap.type() != CV_32FC1) ||
+		(!normalMap.empty() && normalMap.type() != CV_32FC3) ||
+		(!confMap.empty() && confMap.type() != CV_32FC1) ||
+		(!viewsMap.empty() && viewsMap.type() != CV_8UC4))
+		return false;
+
+	const int height((int)header.depthHeight), width((int)header.depthWidth);
+	const size_t area((size_t)height*width);
+
+	// read depth-map, stored as half scaled by 2^-depthExp
+	if ((flags & HeaderDepthDataRaw::HAS_DEPTH) != 0) {
+		std::vector<uint16_t> depthMapH(area);
+		stream.read((char*)depthMapH.data(), sizeof(uint16_t)*area);
+		if (!stream)
+			return false;
+		DEPTHDATA::UnpackDepth(depthMapH.data(), height, width, std::ldexp(1.0, header.depthExp), depthMap);
+	} else {
+		stream.seekg(sizeof(uint16_t)*area, std::ios::cur);
+	}
+
+	// read normal-map, stored as the octahedral direction quantized to two int16
+	if ((header.type & HeaderDepthDataRaw::HAS_NORMAL) != 0) {
+		if ((flags & HeaderDepthDataRaw::HAS_NORMAL) != 0) {
+			std::vector<int16_t> normalMapOct(area*2);
+			stream.read((char*)normalMapOct.data(), sizeof(int16_t)*area*2);
+			if (!stream)
+				return false;
+			DEPTHDATA::UnpackNormals(normalMapOct.data(), height, width, normalMap);
+		} else {
+			stream.seekg(sizeof(int16_t)*area*2, std::ios::cur);
+		}
+	}
+
+	// read confidence-map, stored as unorm8 over [0,confScale]
+	if ((header.type & HeaderDepthDataRaw::HAS_CONF) != 0) {
+		if ((flags & HeaderDepthDataRaw::HAS_CONF) != 0) {
+			std::vector<uint8_t> confMapU(area);
+			stream.read((char*)confMapU.data(), sizeof(uint8_t)*area);
+			if (!stream)
+				return false;
+			DEPTHDATA::UnpackConf(confMapU.data(), height, width, header.confScale/255.0, confMap);
+		} else {
+			stream.seekg(sizeof(uint8_t)*area, std::ios::cur);
+		}
+	}
+
+	// read views-map, stored as it is
+	if ((header.type & flags & HeaderDepthDataRaw::HAS_VIEWS) != 0) {
+		viewsMap.create(height, width, CV_8UC4);
+		for (int r=0; r<height; ++r)
+			stream.read((char*)viewsMap.ptr(r), (size_t)width*4);
+	}
+
+	return (bool)stream;
+}
+// same, reading from the given file
+inline bool ImportDepthDataRaw(const std::string& fileName, DepthDataRaw& data,
+	cv::Mat& depthMap, cv::Mat& normalMap, cv::Mat& confMap, cv::Mat& viewsMap,
+	unsigned flags=HeaderDepthDataRaw::HAS_DEPTH|HeaderDepthDataRaw::HAS_NORMAL|HeaderDepthDataRaw::HAS_CONF|HeaderDepthDataRaw::HAS_VIEWS)
+{
+	std::ifstream stream(fileName, std::ifstream::binary);
+	if (!stream.is_open())
+		return false;
+	return ImportDepthDataRaw(stream, data, depthMap, normalMap, confMap, viewsMap, flags);
+}
 /*----------------------------------------------------------------*/
 
 } // namespace _INTERFACE_NAMESPACE

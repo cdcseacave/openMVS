@@ -16,15 +16,11 @@
 #endif
 #include "../MVS/Interface.h"
 
-using namespace SFM;
-
-
-// D E F I N E S ///////////////////////////////////////////////////
-
-// uncomment to enable multi-threading based on OpenMP
 #ifdef _USE_OPENMP
 #define INTERFACEMVS_USE_OPENMP
 #endif
+
+using namespace SFM;
 
 
 // S T R U C T S ///////////////////////////////////////////////////
@@ -146,19 +142,17 @@ bool SFM::UndistortDepthMaps(const Scene& scene,
 			{
 				pData = &undistortMaps[pc];
 				if (pData->map1.empty() || pData->map2.empty()) {
-					// Read only header to obtain image size and depth-map resolution
-					String imageFileName;
-					IIndexArr IDs;
-					cv::Size imageSize, depthSize;
-					KMatrix Ki; RMatrix R; CMatrix C;
-					float dMin=0, dMax=0; // unused here
-					Image32F depthMapStub, confStub; Image32F3 normalStub; Image8U4 viewsStub;
-					// flags=0 → header + meta only
-					if (!ImportDepthDataRaw(dfile, imageFileName, IDs, imageSize, depthSize, Ki, R, C, dMin, dMax,
-							depthMapStub, normalStub, confStub, viewsStub, 0)) {
+					// read only the header to obtain the image size and depth-map resolution;
+					// flags=0 requests the meta-data alone, leaving the map arguments untouched
+					MVS::DepthDataRaw meta;
+					cv::Mat unusedMap;
+					if (!MVS::ImportDepthDataRaw(static_cast<const std::string&>(dfile), meta,
+							unusedMap, unusedMap, unusedMap, unusedMap, 0)) {
 						DEBUG("warning: failed to read depth header '%s'", dfile.c_str());
 						exit(EXIT_FAILURE);
 					}
+					const cv::Size imageSize((int)meta.header.imageWidth, (int)meta.header.imageHeight);
+					const cv::Size depthSize((int)meta.header.depthWidth, (int)meta.header.depthHeight);
 					// Build K at depth resolution by scaling the image K
 					const KMatrix Kdepth = ScaleK(pc->GetK(), imageSize, depthSize);
 					const cv::Mat distCoeffs = pc->GetDistortionCoeffs();
@@ -183,101 +177,39 @@ bool SFM::UndistortDepthMaps(const Scene& scene,
 /*----------------------------------------------------------------*/
 
 
+// The DMAP file format and its codec live in MVS/Interface.h, which depends on nothing
+// but the standard library and OpenCV and so is shared by both libraries even though
+// they are siblings that do not link each other; the two functions below only adapt this
+// library's types to it. Do not reimplement the packing here: this file used to carry
+// its own copy of it, and the two drifted apart the first time the format changed.
 bool SFM::ImportDepthDataRaw(const String& fileName, String& imageFileName,
 	IIndexArr& IDs, cv::Size& imageSize, cv::Size& depthSize,
 	KMatrix& K, RMatrix& R, CMatrix& C,
 	float& dMin, float& dMax,
 	Image32F& depthMap, Image32F3& normalMap, Image32F& confMap, Image8U4& viewsMap, unsigned flags)
 {
-	std::unique_ptr<FILE, decltype(&fclose)> f(fopen(fileName, "rb"), &fclose);
-	if (!f) {
-		DEBUG("error: opening file '%s' for reading depth-data", fileName.c_str());
-		return false;
-	}
-
-	// read header
-	MVS::HeaderDepthDataRaw header;
-	if (fread(&header, sizeof(MVS::HeaderDepthDataRaw), 1, f.get()) != 1 ||
-		header.name != MVS::HeaderDepthDataRaw::HeaderDepthDataRawName() ||
-		(header.type & MVS::HeaderDepthDataRaw::HAS_DEPTH) == 0 ||
-		header.depthWidth <= 0 || header.depthHeight <= 0 ||
-		header.imageWidth < header.depthWidth || header.imageHeight < header.depthHeight)
-	{
-		DEBUG("error: invalid depth-data file '%s'", fileName.c_str());
-		return false;
-	}
-
-	// read image file name
-	STATIC_ASSERT(sizeof(String::value_type) == sizeof(char));
-	uint16_t nFileNameSize;
-	fread(&nFileNameSize, sizeof(uint16_t), 1, f.get());
-	imageFileName.resize(nFileNameSize);
-	fread(imageFileName.data(), sizeof(char), nFileNameSize, f.get());
-
-	// read neighbor IDs
-	STATIC_ASSERT(sizeof(uint32_t) == sizeof(IIndex));
-	uint32_t nIDs;
-	fread(&nIDs, sizeof(IIndex), 1, f.get());
-	ASSERT(nIDs > 0 && nIDs < 256);
-	IDs.resize(nIDs);
-	fread(IDs.data(), sizeof(IIndex), nIDs, f.get());
-
-	// read pose
 	STATIC_ASSERT(sizeof(double) == sizeof(REAL));
-	fread(K.val, sizeof(REAL), 9, f.get());
-	fread(R.val, sizeof(REAL), 9, f.get());
-	fread(C.ptr(), sizeof(REAL), 3, f.get());
+	STATIC_ASSERT(sizeof(uint32_t) == sizeof(IIndex));
 
-	// parse sizes
-	dMin = header.dMin;
-	dMax = header.dMax;
-	imageSize.width = header.imageWidth;
-	imageSize.height = header.imageHeight;
-	depthSize.width = header.depthWidth;
-	depthSize.height = header.depthHeight;
-	if (flags == 0)
-		return ferror(f.get()) == 0; // only header + meta requested
-
-	// read depth-map
-	if ((flags & MVS::HeaderDepthDataRaw::HAS_DEPTH) != 0) {
-		depthMap.create(header.depthHeight, header.depthWidth);
-		if (fread(depthMap.getData(), sizeof(float), depthMap.area(), f.get()) != static_cast<size_t>(depthMap.area())) {
-			DEBUG("error: reading depth-data from file '%s'", fileName.c_str());
-			return false;
-		}
-	} else {
-		fseek(f.get(), sizeof(float)*header.depthWidth*header.depthHeight, SEEK_CUR);
+	MVS::DepthDataRaw data;
+	if (!MVS::ImportDepthDataRaw(static_cast<const std::string&>(fileName), data,
+		depthMap, normalMap, confMap, viewsMap, flags))
+	{
+		DEBUG("error: reading depth-data from file '%s'", fileName.c_str());
+		return false;
 	}
-
-	// read normal-map
-	if ((header.type & MVS::HeaderDepthDataRaw::HAS_NORMAL) != 0) {
-		if ((flags & MVS::HeaderDepthDataRaw::HAS_NORMAL) != 0) {
-			normalMap.create(header.depthHeight, header.depthWidth);
-			fread(normalMap.getData(), sizeof(float)*3, normalMap.area(), f.get());
-		} else {
-			fseek(f.get(), sizeof(float)*3*header.depthWidth*header.depthHeight, SEEK_CUR);
-		}
-	}
-
-	// read confidence-map
-	if ((header.type & MVS::HeaderDepthDataRaw::HAS_CONF) != 0) {
-		if ((flags & MVS::HeaderDepthDataRaw::HAS_CONF) != 0) {
-			confMap.create(header.depthHeight, header.depthWidth);
-			fread(confMap.getData(), sizeof(float), confMap.area(), f.get());
-		} else {
-			fseek(f.get(), sizeof(float)*header.depthWidth*header.depthHeight, SEEK_CUR);
-		}
-	}
-
-	// read visibility-map
-	if ((header.type & MVS::HeaderDepthDataRaw::HAS_VIEWS) != 0) {
-		if ((flags & MVS::HeaderDepthDataRaw::HAS_VIEWS) != 0) {
-			viewsMap.create(header.depthHeight, header.depthWidth);
-			fread(viewsMap.getData(), sizeof(uint8_t)*4, viewsMap.area(), f.get());
-		}
-	}
-
-	return ferror(f.get()) == 0;
+	imageFileName = data.imageFileName;
+	IDs.CopyOf(data.IDs.data(), (IIndex)data.IDs.size());
+	K = data.K;
+	R = data.R;
+	C = data.C;
+	dMin = data.header.dMin;
+	dMax = data.header.dMax;
+	imageSize.width = (int)data.header.imageWidth;
+	imageSize.height = (int)data.header.imageHeight;
+	depthSize.width = (int)data.header.depthWidth;
+	depthSize.height = (int)data.header.depthHeight;
+	return true;
 } // ImportDepthDataRaw
 
 bool SFM::ExportDepthDataRaw(const String& fileName, const String& imageFileName,
@@ -291,64 +223,27 @@ bool SFM::ExportDepthDataRaw(const String& fileName, const String& imageFileName
 	ASSERT(confMap.empty() || depthMap.size() == confMap.size());
 	ASSERT(viewsMap.empty() || depthMap.size() == viewsMap.size());
 	ASSERT(depthMap.width() <= (int)imageSize.width && depthMap.height() <= (int)imageSize.height);
-
-	std::unique_ptr<FILE, decltype(&fclose)> f(fopen(fileName, "wb"), &fclose);
-	if (!f) {
-		DEBUG("error: opening file '%s' for writing depth-data", fileName.c_str());
-		return false;
-	}
-
-	// Write header
-	MVS::HeaderDepthDataRaw header;
-	header.name = MVS::HeaderDepthDataRaw::HeaderDepthDataRawName();
-	header.type = MVS::HeaderDepthDataRaw::HAS_DEPTH;
-	header.imageWidth = (uint32_t)imageSize.width;
-	header.imageHeight = (uint32_t)imageSize.height;
-	header.depthWidth = (uint32_t)depthMap.cols;
-	header.depthHeight = (uint32_t)depthMap.rows;
-	header.dMin = dMin;
-	header.dMax = dMax;
-	header.padding = 0;
-	if (!confMap.empty())
-		header.type |= MVS::HeaderDepthDataRaw::HAS_CONF;
-	if (!viewsMap.empty())
-		header.type |= MVS::HeaderDepthDataRaw::HAS_VIEWS;
-	fwrite(&header, sizeof(MVS::HeaderDepthDataRaw), 1, f.get());
-
-	// Write image file name
-	STATIC_ASSERT(sizeof(String::value_type) == sizeof(char));
-	const String FileName(MAKE_PATH_REL(Util::getFullPath(Util::getFilePath(fileName)), Util::getFullPath(imageFileName)));
-	const uint16_t nFileNameSize((uint16_t)FileName.length());
-	fwrite(&nFileNameSize, sizeof(uint16_t), 1, f.get());
-	fwrite(FileName.c_str(), sizeof(char), nFileNameSize, f.get());
-
-	// Write neighbor IDs
-	STATIC_ASSERT(sizeof(uint32_t) == sizeof(IIndex));
-	const uint32_t nIDs(IDs.size());
-	fwrite(&nIDs, sizeof(IIndex), 1, f.get());
-	fwrite(IDs.data(), sizeof(IIndex), nIDs, f.get());
-
-	// Write pose
 	STATIC_ASSERT(sizeof(double) == sizeof(REAL));
-	fwrite(K.val, sizeof(REAL), 9, f.get());
-	fwrite(R.val, sizeof(REAL), 9, f.get());
-	fwrite(C.ptr(), sizeof(REAL), 3, f.get());
+	STATIC_ASSERT(sizeof(uint32_t) == sizeof(IIndex));
 
-	// Write depth-map
-	if (fwrite(depthMap.getData(), sizeof(float), depthMap.area(), f.get()) != static_cast<size_t>(depthMap.area())) {
+	MVS::DepthDataRaw data;
+	data.header.imageWidth = (uint32_t)imageSize.width;
+	data.header.imageHeight = (uint32_t)imageSize.height;
+	data.header.dMin = dMin;
+	data.header.dMax = dMax;
+	// store the image path relative to the depth-map, so that the two travel together
+	data.imageFileName = MAKE_PATH_REL(Util::getFullPath(Util::getFilePath(fileName)), Util::getFullPath(imageFileName));
+	data.IDs.assign(IDs.begin(), IDs.end());
+	data.K = K;
+	data.R = R;
+	data.C = C;
+	if (!MVS::ExportDepthDataRaw(static_cast<const std::string&>(fileName), data,
+		depthMap, cv::Mat()/*this library does not estimate normals*/, confMap, viewsMap))
+	{
 		DEBUG("error: writing depth-data to file '%s'", fileName.c_str());
 		return false;
 	}
-
-	// Write confidence-map
-	if (!confMap.empty())
-		fwrite(confMap.getData(), sizeof(float), confMap.area(), f.get());
-
-	// Write views-map
-	if (!viewsMap.empty())
-		fwrite(viewsMap.getData(), sizeof(uint8_t)*4, viewsMap.area(), f.get());
-
-	return ferror(f.get()) == 0;
+	return true;
 } // ExportDepthDataRaw
 /*----------------------------------------------------------------*/
 

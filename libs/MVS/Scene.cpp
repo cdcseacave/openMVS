@@ -398,7 +398,7 @@ bool Scene::LoadDMAP(const String& fileName)
 	// load image pixels
 	const Image8U3 imageDepth(DepthMap2Image(depthMap));
 	Image8U3 imageColor;
-	if (image.ReloadImage(MAXF(image.width,image.height)))
+	if (image.ReloadImageAtPreparedResolution())
 		cv::resize(image.image, imageColor, depthMap.size());
 	else
 		imageColor = imageDepth;

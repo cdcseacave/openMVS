@@ -35,14 +35,36 @@
 using namespace MVS;
 
 
+// D E F I N E S ///////////////////////////////////////////////////
+
+#undef VERBOSE
+#define VERBOSE(...) LOG(lt, __VA_ARGS__)
+
+
 // S T R U C T S ///////////////////////////////////////////////////
 
-DMapCache::DMapCache(DepthDataArr& _arrDepthData, unsigned _loadFlags, size_t _max_memory_bytes)
+DEFINE_LOG_NAME(lt, _T("DMapCach"));
+
+DMapCache::DMapCache(DepthDataArr& _arrDepthData, unsigned _loadFlags, size_t _max_memory_bytes, ImageArr* _pImages)
 	:
-	loadFlags(_loadFlags), arrDepthData(_arrDepthData),
+	loadFlags(_loadFlags), arrDepthData(_arrDepthData), pImages(_pImages),
 	maxMemory(_max_memory_bytes), disabledMaxMemory(0), usedMemory(0),
-	skipMemoryCheckIdxImage(NO_ID), numImageRead(0)
+	skipMemoryCheckIdxImage(NO_ID)
 {
+}
+
+DMapCache::~DMapCache()
+{
+	REPORT_CACHE_HIT_STATS(hitStats, "Depth-map");
+}
+
+size_t DMapCache::GetMemorySize(IIndex idxImage) const {
+	size_t memory(arrDepthData[idxImage].GetMemorySize());
+	if (pImages) {
+		const Image8U3& image = (*pImages)[idxImage].image;
+		memory += image.total() * image.elemSize();
+	}
+	return memory;
 }
 
 void DMapCache::SetMaxMemory(size_t max_memory_bytes) {
@@ -56,6 +78,7 @@ bool DMapCache::UseImage(IIndex idxImage) const {
 	std::lock_guard<std::mutex> guard(mutex);
 	ASSERT(arrDepthData[idxImage].IsValid());
 	if (!arrDepthData[idxImage].IsEmpty()) {
+		hitStats.Hit();
 		fifo.Put(idxImage);
 		return false;
 	}
@@ -65,9 +88,17 @@ bool DMapCache::UseImage(IIndex idxImage) const {
 		std::this_thread::sleep_for(std::chrono::milliseconds(100));
 	arrDepthData[idxImage].Load(fileName, loadFlags);
 	ASSERT(!arrDepthData[idxImage].IsEmpty());
+	if (pImages) {
+		// decode the image at the resolution its depth-map was estimated at, which
+		// is the one Image::width/height were left at when the scene was prepared;
+		// on failure the image stays empty and the fusion skips its colors
+		Image& imageData = (*pImages)[idxImage];
+		if (imageData.image.empty() && !imageData.ReloadImageAtPreparedResolution())
+			VERBOSE("warning: image %u could not be decoded; the points it sees stay uncolored", imageData.ID);
+	}
 	mutex.lock();
-	++numImageRead;
-	usedMemory += arrDepthData[idxImage].GetMemorySize();
+	hitStats.Miss();
+	usedMemory += GetMemorySize(idxImage);
 	fifo.Put(idxImage);
 	Eject();
 	return true;
@@ -95,16 +126,6 @@ void DMapCache::ClearCache() {
 		EjectOldest();
 }
 
-size_t DMapCache::ComputeUsedMemory() const {
-	std::lock_guard<std::mutex> guard(mutex);
-	size_t computedUsedMemory = 0;
-	for (const auto& depthData : arrDepthData)
-		if (!depthData.IsEmpty())
-			computedUsedMemory += depthData.GetMemorySize();
-	ASSERT(computedUsedMemory == usedMemory);
-	return computedUsedMemory;
-}
-
 bool DMapCache::Eject() const {
 	if (maxMemory == 0)
 		return true;
@@ -120,9 +141,11 @@ bool DMapCache::EjectOldest() const {
 	if (fifo.Back() == skipMemoryCheckIdxImage)
 		return false;
 	const IIndex idxImage = fifo.Pop();
-	usedMemory -= arrDepthData[idxImage].GetMemorySize();
+	usedMemory -= GetMemorySize(idxImage);
 	// release the depth-data; no need to save the depth-data to disk as it is already saved
 	arrDepthData[idxImage].Release();
+	if (pImages)
+		(*pImages)[idxImage].ReleaseImage();
 	return true;
 }
 /*----------------------------------------------------------------*/
