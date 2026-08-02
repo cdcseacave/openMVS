@@ -666,7 +666,7 @@ IIndexArr SFM::FilterWeaklyConnectedImages(Scene& scene,
 	// cases. Same consistency criterion as GlobalRotationEstimator::FilterRelativeRotations.
 	if (maxPoseInconsistencyAngle > 0.f) {
 		constexpr unsigned minPairInliersForCheck = 30;
-		const REAL minCosAngle = COS(D2R(maxPoseInconsistencyAngle));
+		const REAL minCosAngle = COS(D2R(REAL(maxPoseInconsistencyAngle)));
 		unsigned numChecked = 0, numCut = 0;
 		RFOREACH(ei, edgeWeights) {
 			const PairIdx pidx = edgeWeights[ei].pairIdx;

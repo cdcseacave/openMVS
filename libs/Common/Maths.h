@@ -158,8 +158,6 @@ typedef uint64_t	        QWORD;
 #define INV_PI			0.31830988618379067153776752674503
 #define INV_HALF_PI		0.63661977236758134307553505349006
 #define INV_SQRT_2PI	0.39894228040143267793994605993439
-#define D2R(d)			((d)*(PI/180.0)) // degree to radian
-#define R2D(r)			((r)*(180.0/PI)) // radian to degree
 #define SQRT_2			1.4142135623730950488016887242097
 #define SQRT_3			1.7320508075688772935274463415059
 #define LOG_2			0.30102999566398119521373889472449
@@ -176,8 +174,6 @@ typedef uint64_t	        QWORD;
 #define FINV_PI			((float)INV_PI)
 #define FINV_HALF_PI	((float)INV_HALF_PI)
 #define FINV_SQRT_2PI	((float)INV_SQRT_2PI)
-#define FD2R(d)			((d)*(FPI/180.f)) // degree to radian
-#define FR2D(r)			((r)*(180.f/FPI)) // radian to degree
 #define FSQRT_2			((float)SQRT_2)
 #define FSQRT_3			((float)SQRT_3)
 #define FLOG_2			((float)LOG_2)
@@ -290,6 +286,16 @@ constexpr T SQUARE(const T& a) {
 template<typename T>
 constexpr T CUBE(const T& a) {
 	return a * a * a;
+}
+template<typename T>
+constexpr T D2R(const T& d) { // degree to radian
+	STATIC_ASSERT(std::is_floating_point<T>::value);
+	return d * T(PI/180.0);
+}
+template<typename T>
+constexpr T R2D(const T& r) { // radian to degree
+	STATIC_ASSERT(std::is_floating_point<T>::value);
+	return r * T(180.0/PI);
 }
 template<typename T>
 inline T SQRT(const T& a) {
@@ -469,14 +475,14 @@ FORCEINLINE float CBRT(float x) {
 	#ifdef _FAST_CBRT
 	return fast_cbrt<float,1>(x);
 	#else
-	return POW(x, 1.0f/3.0f);
+	return std::cbrt(x);
 	#endif
 }
 FORCEINLINE double CBRT(const double& x) {
 	#ifdef _FAST_CBRT
 	return fast_cbrt<double,2>(x);
 	#else
-	return POW(x, 1.0/3.0);
+	return std::cbrt(x);
 	#endif
 }
 /*----------------------------------------------------------------*/
@@ -1073,8 +1079,8 @@ public:
 	inline SO3(const Vec3& v) { exp(v); }
 
 	/// creates an SO3 as a rotation that takes Vector a into the direction of Vector b
-	/// with the rotation axis along a ^ b. If |a ^ b| == 0, it creates the identity rotation.
-	/// An assertion will fail if Vector a and Vector b are in exactly opposite directions. 
+	/// with the rotation axis along a ^ b. If |a ^ b| == 0, it creates the identity rotation;
+	/// an assertion will fail if Vector a and Vector b are in exactly opposite directions.
 	/// @param a source Vector
 	/// @param b target Vector
 	SO3(const Vec3& a, const Vec3& b) {
@@ -1120,7 +1126,7 @@ public:
 		mat.row(2) -= mat.row(1) * d12;
 		mat.row(2).normalize();
 		// check for positive determinant <=> right handed coordinate system of row vectors
-		ASSERT(mat.row(0).cross(mat.row(1)).dot(mat.row(2)) > 0); 
+		ASSERT(mat.row(0).cross(mat.row(1)).dot(mat.row(2)) > 0);
 	}
 
 	/// Exponentiate a vector in the Lie algebra to generate a new SO3.

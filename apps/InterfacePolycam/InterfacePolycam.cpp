@@ -234,7 +234,7 @@ bool ParseImage(Scene& scene, const String& imagePath, const String& cameraPath,
 			const String neighborName = std::to_string(timestamp);
 			const IIndex neighborID = mapImageName.at(neighborName);
 			if (neighborID != imageData.ID)
-				imageData.neighbors.emplace_back(ViewScore{neighborID, 0, 1.f, FD2R(15.f), 0.5f, 3.f});
+				imageData.neighbors.emplace_back(ViewScore{neighborID, 0, 1.f, D2R(15.f), 0.5f, 3.f});
 		}
 	}
 	// load and convert depth-map

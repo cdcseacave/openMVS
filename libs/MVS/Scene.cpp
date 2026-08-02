@@ -491,7 +491,7 @@ bool Scene::LoadViewNeighbors(const String& fileName)
 		FOREACH(i, imageData.neighbors) {
 			const IIndex nID(String::FromString<IIndex>(argv[i+1], NO_ID));
 			ASSERT(nID != NO_ID);
-			imageData.neighbors[i] = ViewScore{nID, 0, 1.f, FD2R(15.f), 0.5f, 2.f+(argc-i)*0.5f};
+			imageData.neighbors[i] = ViewScore{nID, 0, 1.f, D2R(15.f), 0.5f, 2.f+(argc-i)*0.5f};
 		}
 	}
 
@@ -2206,13 +2206,13 @@ void Scene::InitTowerScene(const int towerMode)
 		break;
 	case 3: // select neighbors
 		pointcloud.Swap(towerPC);
-		SelectNeighborViews(OPTDENSE::nMinViews, OPTDENSE::nMinViewsTrustPoint>1?OPTDENSE::nMinViewsTrustPoint:2, FD2R(OPTDENSE::fOptimAngle), OPTDENSE::fWeightPointInsideROI);
+		SelectNeighborViews(OPTDENSE::nMinViews, OPTDENSE::nMinViewsTrustPoint>1?OPTDENSE::nMinViewsTrustPoint:2, D2R(OPTDENSE::fOptimAngle), OPTDENSE::fWeightPointInsideROI);
 		pointcloud.Swap(towerPC);
 		VERBOSE("Scene identified as tower-like; only select view neighbors from detected tower point-cloud");
 		break;
 	case 4: // select neighbors and append tower points
 		pointcloud.Swap(towerPC);
-		SelectNeighborViews(OPTDENSE::nMinViews, OPTDENSE::nMinViewsTrustPoint>1?OPTDENSE::nMinViewsTrustPoint:2, FD2R(OPTDENSE::fOptimAngle), OPTDENSE::fWeightPointInsideROI);
+		SelectNeighborViews(OPTDENSE::nMinViews, OPTDENSE::nMinViewsTrustPoint>1?OPTDENSE::nMinViewsTrustPoint:2, D2R(OPTDENSE::fOptimAngle), OPTDENSE::fWeightPointInsideROI);
 		pointcloud.Swap(towerPC);
 		AppendPointCloud(towerPC);
 		VERBOSE("Scene identified as tower-like; select view neighbors from detected tower point-cloud and next append it to existing point-cloud");

@@ -93,14 +93,14 @@ public:
 	bool Save(const String& fileName, ARCHIVE_TYPE type=ARCHIVE_DEFAULT) const;
 
 	bool EstimatePointCloudNormals(bool bRefine=true);
-	bool EstimateSparseSurface(unsigned kNeighbors=16, float sizeScale=0.9f, float normalAngleMax=FD2R(0.f));
+	bool EstimateSparseSurface(unsigned kNeighbors=16, float sizeScale=0.9f, float normalAngleMax=D2R(0.f));
 	bool EstimateNeighborViewsPointCloud(unsigned maxResolution=16);
 	void SampleMeshWithVisibility(REAL sampling=0, unsigned maxResolution=320);
 	bool ExportMeshToDepthMaps(const String& baseName);
 
-	bool SelectNeighborViews(uint32_t ID, IndexArr& points, unsigned nMinViews=3, unsigned nMinPointViews=2, float fOptimAngle=FD2R(12), float fWeightPointInsideROI=0.7f);
-	void SelectNeighborViews(unsigned nMinViews=3, unsigned nMinPointViews=2, float fOptimAngle=FD2R(12), float fWeightPointInsideROI=0.7f);
-	static bool FilterNeighborViews(ViewScoreArr& neighbors, float fMinArea=0.1f, float fMinScale=0.2f, float fMaxScale=2.4f, float fMinAngle=FD2R(3), float fMaxAngle=FD2R(45), unsigned nMaxViews=12);
+	bool SelectNeighborViews(uint32_t ID, IndexArr& points, unsigned nMinViews=3, unsigned nMinPointViews=2, float fOptimAngle=D2R(12.f), float fWeightPointInsideROI=0.7f);
+	void SelectNeighborViews(unsigned nMinViews=3, unsigned nMinPointViews=2, float fOptimAngle=D2R(12.f), float fWeightPointInsideROI=0.7f);
+	static bool FilterNeighborViews(ViewScoreArr& neighbors, float fMinArea=0.1f, float fMinScale=0.2f, float fMaxScale=2.4f, float fMinAngle=D2R(3.f), float fMaxAngle=D2R(45.f), unsigned nMaxViews=12);
 
 	bool ExportCamerasMLP(const String& fileName, const String& fileNameScene) const;
 	static bool ExportLinesPLY(const String& fileName, const CLISTDEF0IDX(Line3f,uint32_t)& lines, const Pixel8U* colors=NULL, bool bBinary=true);

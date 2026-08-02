@@ -439,10 +439,10 @@ DepthEstimator::DepthEstimator(
 	#endif
 	smoothBonusDepth(1.f-OPTDENSE::fRandomSmoothBonus), smoothBonusNormal((1.f-OPTDENSE::fRandomSmoothBonus)*0.96f),
 	smoothSigmaDepth(-1.f/(2.f*SQUARE(OPTDENSE::fRandomSmoothDepth))), // used in exp(-x^2 / (2*(0.02^2)))
-	smoothSigmaNormal(-1.f/(2.f*SQUARE(FD2R(OPTDENSE::fRandomSmoothNormal)))), // used in exp(-x^2 / (2*(0.22^2)))
+	smoothSigmaNormal(-1.f/(2.f*SQUARE(D2R(OPTDENSE::fRandomSmoothNormal)))), // used in exp(-x^2 / (2*(0.22^2)))
 	thMagnitudeSq(OPTDENSE::fDescriptorMinMagnitudeThreshold>0?SQUARE(OPTDENSE::fDescriptorMinMagnitudeThreshold):-1.f),
-	angle1Range(FD2R(OPTDENSE::fRandomAngle1Range)), //default 0.279252678=FD2R(20)
-	angle2Range(FD2R(OPTDENSE::fRandomAngle2Range)), //default 0.174532920=FD2R(16)
+	angle1Range(D2R(OPTDENSE::fRandomAngle1Range)), //default 0.279252678=D2R(20.f)
+	angle2Range(D2R(OPTDENSE::fRandomAngle2Range)), //default 0.174532920=D2R(16.f)
 	thConfSmall(OPTDENSE::fNCCThresholdKeep * 0.66f), // default 0.6
 	thConfBig(OPTDENSE::fNCCThresholdKeep * 0.9f), // default 0.8
 	thConfRand(OPTDENSE::fNCCThresholdKeep * 1.1f), // default 0.99
@@ -2320,7 +2320,7 @@ void MVS::CompareNormalMaps(const NormalMap& normalMap, const NormalMap& normalM
 				continue;
 			}
 			ASSERT(ISEQUAL(norm(normal),1.f) && ISEQUAL(norm(normalGT),1.f));
-			const float error(FR2D(ACOS(CLAMP(normal.dot(normalGT), -1.f, 1.f))));
+			const float error(R2D(ACOS(CLAMP(normal.dot(normalGT), -1.f, 1.f))));
 			errors.Insert(error);
 		}
 	}

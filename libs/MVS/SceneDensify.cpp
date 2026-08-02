@@ -232,15 +232,15 @@ bool DepthMapsData::SelectViews(DepthData& depthData)
 	const IIndex idxImage((IIndex)(&depthData-arrDepthData.Begin()));
 	ASSERT(depthData.neighbors.IsEmpty());
 	if (scene.images[idxImage].neighbors.empty() &&
-		!scene.SelectNeighborViews(idxImage, depthData.points, OPTDENSE::nMinViews, OPTDENSE::nMinViewsTrustPoint>1?OPTDENSE::nMinViewsTrustPoint:2, FD2R(OPTDENSE::fOptimAngle), OPTDENSE::fWeightPointInsideROI))
+		!scene.SelectNeighborViews(idxImage, depthData.points, OPTDENSE::nMinViews, OPTDENSE::nMinViewsTrustPoint>1?OPTDENSE::nMinViewsTrustPoint:2, D2R(OPTDENSE::fOptimAngle), OPTDENSE::fWeightPointInsideROI))
 		return false;
 	depthData.neighbors.CopyOf(scene.images[idxImage].neighbors);
 
 	// remove invalid neighbor views
 	const float fMinArea(OPTDENSE::fMinArea);
 	const float fMinScale(0.2f), fMaxScale(3.2f);
-	const float fMinAngle(FD2R(OPTDENSE::fMinAngle));
-	const float fMaxAngle(FD2R(OPTDENSE::fMaxAngle));
+	const float fMinAngle(D2R(OPTDENSE::fMinAngle));
+	const float fMaxAngle(D2R(OPTDENSE::fMaxAngle));
 	const unsigned nMaxViews(MAXF(OPTDENSE::nMaxViews, OPTDENSE::nNumViews));
 	if (!Scene::FilterNeighborViews(depthData.neighbors, fMinArea, fMinScale, fMaxScale, fMinAngle, fMaxAngle, nMaxViews)) {
 		DEBUG_EXTRA("error: reference image %3u has no good images in view", idxImage);
@@ -503,7 +503,7 @@ void* STCALL DepthMapsData::EndDepthMapTmp(void* arg)
 {
 	DepthEstimator& estimator = *((DepthEstimator*)arg);
 	IDX idx;
-	MAYBEUNUSED const float fOptimAngle(FD2R(OPTDENSE::fOptimAngle));
+	MAYBEUNUSED const float fOptimAngle(D2R(OPTDENSE::fOptimAngle));
 	while ((idx=(IDX)Thread::safeInc(estimator.idxPixel)) < estimator.coords.GetSize()) {
 		const ImageRef& x = estimator.coords[idx];
 		ASSERT(estimator.depthMap0(x) >= 0);
@@ -1497,7 +1497,7 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, b
 
 	// fuse all depth-maps, processing the best connected images first
 	const unsigned nMinViewsFuse(MINF(OPTDENSE::nMinViewsFuse, arrDepthData.size()));
-	const float normalError(COS(FD2R(OPTDENSE::fNormalDiffThreshold)));
+	const float normalError(COS(D2R(OPTDENSE::fNormalDiffThreshold)));
 	const IIndex numDMapsReserveFusion(10);
 	CLISTDEF0(Depth*) invalidDepths(0, 32);
 	size_t nDepths(0);
@@ -1737,7 +1737,7 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 
 	// fuse all depth-maps, processing the best connected images first
 	const unsigned nMinViewsFuse(MINF(OPTDENSE::nMinViewsFuse, arrDepthData.size()));
-	const float normalError(COS(FD2R(OPTDENSE::fNormalDiffThreshold)));
+	const float normalError(COS(D2R(OPTDENSE::fNormalDiffThreshold)));
 	const float minConfidence(1.f - OPTDENSE::fNCCThresholdKeep);
 	const float maxReprojErrorSq(SQUARE(OPTDENSE::fDepthReprojectionErrorThreshold));
 	const IIndex numDMapsReserveFusion(10);

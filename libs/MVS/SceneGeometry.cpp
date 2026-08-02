@@ -127,7 +127,7 @@ bool Scene::EstimatePointCloudNormals(bool bRefine)
 	constexpr int patchRadius = 3; // Half-size of the patch window
 	constexpr int patchSize = patchRadius * 2 + 1;
 	constexpr int nTexels = patchSize * patchSize;
-	constexpr float sigmaAngle = FD2R(15.f); // 15 degrees sigma for angle weighting
+	constexpr float sigmaAngle = D2R(15.f); // 15 degrees sigma for angle weighting
 	constexpr float sigmaAngleInv = -1.f / (2.f * SQUARE(sigmaAngle));
 	typedef Sampler::Linear<float> Sampler;
 	const Sampler sampler;

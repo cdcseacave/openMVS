@@ -71,7 +71,7 @@ bool StarInitializer::EstimateGlobalScale(
 	bool hasValidPairs = false;
 
 	// 1. Iterate all pairs in the scene
-	const REAL maxCosAngle = COS(D2R(0.5f));
+	const REAL maxCosAngle = COS(D2R(0.5));
 	const REAL reprojPixelThreshold = 6;
 	FOREACH(pairIdx, scene.pairs) {
 		// Only consider pairs where both views are in our set

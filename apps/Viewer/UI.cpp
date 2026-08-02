@@ -1761,7 +1761,7 @@ void UI::ShowCameraInfoDialog(Window& window) {
 							ImGui::Text("%.2f", neighbor.score);
 							ImGui::TableSetColumnIndex(2);
 						}
-						ImGui::Text("%.2f", FR2D(neighbor.angle));
+						ImGui::Text("%.2f", R2D(neighbor.angle));
 						ImGui::TableSetColumnIndex(3);
 						ImGui::Text("%d", ROUND2INT(neighbor.area*100));
 						ImGui::TableSetColumnIndex(4);

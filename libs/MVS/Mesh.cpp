@@ -432,7 +432,7 @@ void Mesh::SmoothNormalFaces(float fMaxGradient, float fOriginalWeight, unsigned
 		ListIncidentFaces();
 	if (faceFaces.size() != faces.size())
 		ListIncidentFaceFaces();
-	const float cosMaxGradient = COS(FD2R(fMaxGradient));
+	const float cosMaxGradient = COS(D2R(fMaxGradient));
 	for (unsigned rep = 0; rep < nIterations; ++rep) {
 		NormalArr newFaceNormals(faceNormals.size());
 		FOREACH(idxFace, faces) {
@@ -2298,7 +2298,7 @@ void Mesh::CloseHoleQuality(VertexIdxArr& verts)
 				return;
 			}
 			if (indices.empty())
-				dihedral = FD2R(33.f);
+				dihedral = D2R(33.f);
 			else {
 				const Normal n0(mesh.FaceNormal(mesh.faces[indices[0]]));
 				if (indices.size() == 1)
