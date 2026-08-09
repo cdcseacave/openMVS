@@ -281,6 +281,15 @@ __inline__ static void trap_instruction() { __asm__ volatile("brk #0"); }
 #define _ASSERT_BREAK() DEBUG_BREAK()
 #endif
 
+// Make every assertion visible to MSVC Code Analysis. _Analysis_assume_ is a
+// no-op outside analysis and does not pass assumptions to the optimizer.
+#ifdef _MSC_VER
+#include <sal.h>
+#define ASSERT_ANALYSIS_ASSUME(exp) _Analysis_assume_(exp)
+#else
+#define ASSERT_ANALYSIS_ASSUME(exp)
+#endif
+
 #ifdef _DEBUG
 
 #ifdef _MSC_VER
@@ -290,15 +299,15 @@ __inline__ static void trap_instruction() { __asm__ volatile("brk #0"); }
 #include <crtdbg.h>
 #ifdef _INC_CRTDBG
 #ifdef _HEADLESS_DEBUG
-#define SIMPLE_ASSERT(exp) {if (!(exp)) PRINT_ASSERT_MSG(exp);}
-#define ASSERT(exp, ...) {if (!(exp)) PRINT_ASSERT_MSG(exp, ##__VA_ARGS__);}
+#define SIMPLE_ASSERT(exp) {if (!(exp)) PRINT_ASSERT_MSG(exp); ASSERT_ANALYSIS_ASSUME(exp);}
+#define ASSERT(exp, ...) {if (!(exp)) PRINT_ASSERT_MSG(exp, ##__VA_ARGS__); ASSERT_ANALYSIS_ASSUME(exp);}
 #else
-#define SIMPLE_ASSERT(exp) {if (!(exp) && 1 == _CrtDbgReport(_CRT_ASSERT, __FILE__, __LINE__, NULL, #exp)) _CrtDbgBreak();}
-#define ASSERT(exp, ...) {static bool bIgnore(false); if (!bIgnore && !(exp)) {PRINT_ASSERT_MSG(exp, ##__VA_ARGS__); if (!(bIgnore = !(1 == _CrtDbgReport(_CRT_ASSERT, __FILE__, __LINE__, NULL, #exp)))) _CrtDbgBreak();}}
+#define SIMPLE_ASSERT(exp) {if (!(exp) && 1 == _CrtDbgReport(_CRT_ASSERT, __FILE__, __LINE__, NULL, #exp)) _CrtDbgBreak(); ASSERT_ANALYSIS_ASSUME(exp);}
+#define ASSERT(exp, ...) {static bool bIgnore(false); if (!bIgnore && !(exp)) {PRINT_ASSERT_MSG(exp, ##__VA_ARGS__); if (!(bIgnore = !(1 == _CrtDbgReport(_CRT_ASSERT, __FILE__, __LINE__, NULL, #exp)))) _CrtDbgBreak();} ASSERT_ANALYSIS_ASSUME(exp);}
 #endif
 #else
-#define SIMPLE_ASSERT(exp) {if (!(exp)) _ASSERT_BREAK();}
-#define ASSERT(exp, ...) {if (!(exp)) {PRINT_ASSERT_MSG(exp, ##__VA_ARGS__); _ASSERT_BREAK();}}
+#define SIMPLE_ASSERT(exp) {if (!(exp)) _ASSERT_BREAK(); ASSERT_ANALYSIS_ASSUME(exp);}
+#define ASSERT(exp, ...) {if (!(exp)) {PRINT_ASSERT_MSG(exp, ##__VA_ARGS__); _ASSERT_BREAK();} ASSERT_ANALYSIS_ASSUME(exp);}
 #endif // _INC_CRTDBG
 #define TRACE(...) {TCHAR buffer[2048]; _sntprintf(buffer, 2048, __VA_ARGS__); OutputDebugString(buffer);}
 #elif defined(__CUDA_ARCH__)
@@ -322,12 +331,12 @@ __inline__ static void trap_instruction() { __asm__ volatile("brk #0"); }
 #else
 
 #ifdef _RELEASE
-#define SIMPLE_ASSERT(exp)
-#define ASSERT(exp, ...)
+#define SIMPLE_ASSERT(exp) ASSERT_ANALYSIS_ASSUME(exp)
+#define ASSERT(exp, ...) ASSERT_ANALYSIS_ASSUME(exp)
 #else
 #ifdef _MSC_VER
-#define SIMPLE_ASSERT(exp) {if (!(exp)) __debugbreak();}
-#define ASSERT(exp, ...) {if (!(exp)) {PRINT_ASSERT_MSG(exp, ##__VA_ARGS__); __debugbreak();}}
+#define SIMPLE_ASSERT(exp) {if (!(exp)) __debugbreak(); ASSERT_ANALYSIS_ASSUME(exp);}
+#define ASSERT(exp, ...) {if (!(exp)) {PRINT_ASSERT_MSG(exp, ##__VA_ARGS__); __debugbreak();} ASSERT_ANALYSIS_ASSUME(exp);}
 #else // _MSC_VER
 #define SIMPLE_ASSERT(exp) {if (!(exp)) __builtin_trap();}
 #define ASSERT(exp, ...) {if (!(exp)) {PRINT_ASSERT_MSG(exp, ##__VA_ARGS__); __builtin_trap();}}

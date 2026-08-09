@@ -1845,7 +1845,7 @@ void Scene::OnCastRay(const Point2f& screenPos, const Ray3d& ray, int button, in
 		const Layer* previousActiveLayer = GetActiveLayer();
 		const uint32_t previousActiveLayerID = previousActiveLayer != NULL ? previousActiveLayer->id : NO_ID;
 		uint32_t newSelectionLayerID = previousActiveLayerID;
-		Point3f newSelectionPoints[4];
+		Point3f newSelectionPoints[4]{};
 		const Renderer::PickResult pickResult = window.GetRenderer().PickPrimitiveAt(screenPos, pickRadius, window);
 		if (pickResult.IsValid()) {
 			newSelectionLayerID = pickResult.layerID;
@@ -1898,7 +1898,7 @@ void Scene::OnCastRay(const Point2f& screenPos, const Ray3d& ray, int button, in
 			const bool selectionLayerChanged = previousActiveLayerID != newSelectionLayerID;
 			SetActiveLayerByID(newSelectionLayerID, false);
 			Layer* activeLayer = GetActiveLayer();
-			ASSERT(activeLayer != NULL);
+			ASSERT(activeLayer != NULL && activeLayer->id == newSelectionLayerID);
 			const ImageArr& images(activeLayer->images);
 			MVS::Scene& scene(activeLayer->scene);
 			window.selectionType = newSelectionType;

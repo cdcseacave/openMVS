@@ -502,7 +502,7 @@ void Window::Render() {
 				}
 				GL_CHECK(glScissor(side == 0 ? 0 : splitX, 0, side == 0 ? splitX : windowSize.width - splitX, windowSize.height));
 				renderer->UpdateViewProjection(GetSideCamera(side));
-				renderer->SetLayerPassFilter(sideLayers[side]);
+				renderer->SetLayerPassFilter(std::move(sideLayers[side]));
 				renderScenePass(side == activeSide);
 			}
 			renderer->ClearLayerPassFilter();

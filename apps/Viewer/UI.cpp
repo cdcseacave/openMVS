@@ -1912,8 +1912,11 @@ void UI::ShowExportDialog(Scene& scene) {
 		ImGui::Separator();
 
 		const bool backgroundWork(scene.HasBackgroundWork());
-		bool canExport = !backgroundWork && (((exportFormat == 0 || exportFormat == 1) && hasPointCloud) || ((exportFormat == 2 || exportFormat == 3 || exportFormat == 4) && hasMesh));
-		if (ImGui::Button("Export...", ImVec2(120, 0)) && canExport) {
+		const bool canExport = !backgroundWork && (((exportFormat == 0 || exportFormat == 1) && hasPointCloud) || ((exportFormat == 2 || exportFormat == 3 || exportFormat == 4) && hasMesh));
+		ImGui::BeginDisabled(!canExport);
+		const bool exportRequested(ImGui::Button("Export...", ImVec2(120, 0)));
+		ImGui::EndDisabled();
+		if (exportRequested) {
 			String filename;
 			if (ShowSaveFileDialog(filename)) {
 				// Ensure the filename has the correct extension
@@ -1929,7 +1932,7 @@ void UI::ShowExportDialog(Scene& scene) {
 		}
 		if (!canExport) {
 			ImGui::SameLine();
-			ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.f), "(Export disabled - no compatible data)");
+			ImGui::TextDisabled(backgroundWork ? "(Export disabled while processing)" : "(No compatible data)");
 		}
 
 		ImGui::SameLine();
