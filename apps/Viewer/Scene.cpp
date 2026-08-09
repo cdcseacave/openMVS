@@ -314,6 +314,66 @@ void ActivateWorkingFolder(const Scene::Layer& layer)
 	ActivateWorkingFolder(layer.workingFolder);
 }
 
+String MakeUniqueLayerLabel(const Scene::LayerArr& layers, const String& requestedLabel, uint32_t ignoredLayerID = NO_ID)
+{
+	const String baseLabel(requestedLabel.empty() ? _T("Untitled") : requestedLabel);
+	String label(baseLabel);
+	for (unsigned suffix = 2;; ++suffix) {
+		bool duplicate = false;
+		for (const Scene::Layer& layer : layers) {
+			if (layer.id != ignoredLayerID && layer.label == label) {
+				duplicate = true;
+				break;
+			}
+		}
+		if (!duplicate)
+			return label;
+		label = String::FormatString(_T("%s (%u)"), baseLabel.c_str(), suffix);
+	}
+}
+
+unsigned UpdateCameraUncertaintyStatistics(Scene::Layer& layer)
+{
+	FloatArr sigmas;
+	for (const Scene::CameraUncertainty& uncertainty : layer.cameraUncertainty)
+		if (uncertainty.state == Scene::CameraUncertainty::COMPUTED)
+			sigmas.push_back(uncertainty.MaxPosSigma());
+	if (sigmas.empty()) {
+		layer.cameraUncertaintyNorm = 0.f;
+		layer.cameraUncertaintyAutoScale = 1.f;
+		return 0;
+	}
+	sigmas.Sort();
+	layer.cameraUncertaintyNorm = sigmas[(sigmas.size() - 1) * 95 / 100];
+	if (layer.cameraUncertaintyNorm <= 0.f)
+		layer.cameraUncertaintyNorm = MAXF(sigmas.Last(), 1.f);
+	const float sceneExtent = norm(layer.sceneSize);
+	const float medianSigma = sigmas[sigmas.size() / 2];
+	layer.cameraUncertaintyAutoScale = (sceneExtent > 0.f && medianSigma > 0.f) ?
+		MINF(MAXF(0.03f * sceneExtent / medianSigma, 1e-6f), 1e6f) : 1.f;
+	return (unsigned)sigmas.size();
+}
+
+bool HasNonCollinearPoints(const Point3Arr& points)
+{
+	if (points.size() < 3)
+		return false;
+	Eigen::Vector3d mean(Eigen::Vector3d::Zero());
+	for (const Point3& point : points)
+		mean += static_cast<const Point3::CEVecMap>(point);
+	mean /= (double)points.size();
+	Eigen::Matrix3d covariance(Eigen::Matrix3d::Zero());
+	for (const Point3& point : points) {
+		const Eigen::Vector3d centered(static_cast<const Point3::CEVecMap>(point) - mean);
+		covariance += centered * centered.transpose();
+	}
+	const Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> solver(covariance);
+	if (solver.info() != Eigen::Success || !solver.eigenvalues().allFinite())
+		return false;
+	const double largest = solver.eigenvalues()[2];
+	return largest > std::numeric_limits<double>::epsilon() && solver.eigenvalues()[1] > largest * 1e-10;
+}
+
 template <typename Geometry>
 AABB3f ComputeViewerBounds(const Geometry& geometry, size_t elementCount)
 {
@@ -552,7 +612,7 @@ void Scene::RefreshLayerState(Layer& layer, bool rebuildImages)
 		layer.sceneSize = Point3f(bounds.GetSize().cast<float>());
 	layer.sceneDistance = layer.images.empty() ? 1.f : scene.ComputeDistanceCameras2Scene(0.1f, true);
 	if (layer.label.empty()) {
-		layer.label = Util::getFileName(layer.sceneName);
+		layer.label = Util::getFileNameExt(layer.sceneName);
 	}
 }
 
@@ -769,61 +829,111 @@ bool Scene::AlignLayersToActive()
 	const Layer* refLayer = GetActiveLayer();
 	if (refLayer == NULL || layers.size() < 2)
 		return false;
-	// Reference camera centers keyed by image file name and by preserved SFM image ID:
-	// the same capture reconstructed twice keeps its photo names, and scenes exported
-	// from the same SFM keep their image IDs, so either key identifies shared cameras.
-	std::unordered_map<std::string, Point3> nameToCenter;
-	std::unordered_map<uint32_t, Point3> idToCenter;
+	// Reference camera centers keyed by image file name and by preserved SFM image ID.
+	// Duplicate basenames/IDs are marked ambiguous instead of silently overwriting a
+	// correspondence, which could otherwise produce a plausible but incorrect transform.
+	struct CameraMatch {
+		Point3 center;
+		MVS::IIndex imageIdx{NO_ID};
+	};
+	std::unordered_map<std::string, CameraMatch> nameToCamera;
+	std::unordered_map<uint32_t, CameraMatch> idToCamera;
 	for (const Image& image : refLayer->images) {
 		const MVS::Image& imageData = refLayer->scene.images[image.idx];
-		nameToCenter[Util::getFileNameExt(imageData.name).ToLower()] = Point3(imageData.camera.C);
-		if (imageData.ID != NO_ID)
-			idToCenter[imageData.ID] = Point3(imageData.camera.C);
+		const CameraMatch cameraMatch{Point3(imageData.camera.C), image.idx};
+		const std::string imageName(Util::getFileNameExt(imageData.name).ToLower());
+		const auto [nameIt, nameInserted] = nameToCamera.emplace(imageName, cameraMatch);
+		if (!nameInserted)
+			nameIt->second.imageIdx = NO_ID;
+		if (imageData.ID != NO_ID) {
+			const auto [idIt, idInserted] = idToCamera.emplace(imageData.ID, cameraMatch);
+			if (!idInserted)
+				idIt->second.imageIdx = NO_ID;
+		}
 	}
 	unsigned alignedLayers = 0;
 	for (Layer& layer : layers) {
 		if (layer.id == refLayer->id)
 			continue;
 		Point3Arr points, pointsRef;
+		std::unordered_set<MVS::IIndex> matchedRefImages;
+		unsigned nameMatches = 0, idMatches = 0;
 		for (const Image& image : layer.images) {
 			const MVS::Image& imageData = layer.scene.images[image.idx];
-			const auto it = nameToCenter.find(Util::getFileNameExt(imageData.name).ToLower());
-			if (it == nameToCenter.end())
+			const CameraMatch* match = NULL;
+			bool matchedByName = false;
+			const auto nameIt = nameToCamera.find(Util::getFileNameExt(imageData.name).ToLower());
+			if (nameIt != nameToCamera.end() && nameIt->second.imageIdx != NO_ID && !matchedRefImages.count(nameIt->second.imageIdx)) {
+				match = &nameIt->second;
+				matchedByName = true;
+			}
+			if (match == NULL && imageData.ID != NO_ID) {
+				const auto idIt = idToCamera.find(imageData.ID);
+				if (idIt != idToCamera.end() && idIt->second.imageIdx != NO_ID && !matchedRefImages.count(idIt->second.imageIdx))
+					match = &idIt->second;
+			}
+			if (match == NULL)
 				continue;
 			points.emplace_back(imageData.camera.C);
-			pointsRef.emplace_back(it->second);
-		}
-		if (points.size() < 3) {
-			points.Empty();
-			pointsRef.Empty();
-			for (const Image& image : layer.images) {
-				const MVS::Image& imageData = layer.scene.images[image.idx];
-				const auto it = imageData.ID != NO_ID ? idToCenter.find(imageData.ID) : idToCenter.end();
-				if (it == idToCenter.end())
-					continue;
-				points.emplace_back(imageData.camera.C);
-				pointsRef.emplace_back(it->second);
-			}
+			pointsRef.emplace_back(match->center);
+			matchedRefImages.emplace(match->imageIdx);
+			if (matchedByName)
+				++nameMatches;
+			else
+				++idMatches;
 		}
 		if (points.size() < 3) {
 			DEBUG("Layer '%s' not aligned: only %u camera(s) match the active layer", layer.label.c_str(), points.size());
 			continue;
 		}
+		if (!HasNonCollinearPoints(points) || !HasNonCollinearPoints(pointsRef)) {
+			DEBUG("Layer '%s' not aligned: the %u matched camera centers are coincident or collinear", layer.label.c_str(), points.size());
+			continue;
+		}
 		const Matrix4x4 transform = SimilarityTransform(points, pointsRef);
+		if (!static_cast<const Matrix4x4::CEMatMap>(transform).allFinite()) {
+			DEBUG("Layer '%s' not aligned: similarity estimation produced a non-finite transform", layer.label.c_str());
+			continue;
+		}
 		Matrix3x3 rotation; Point3 translation; REAL scale;
 		DecomposeSimilarityTransform(transform, rotation, translation, scale);
+		if (!std::isfinite(scale) || scale <= std::numeric_limits<REAL>::epsilon()) {
+			DEBUG("Layer '%s' not aligned: invalid estimated scale %g", layer.label.c_str(), scale);
+			continue;
+		}
 		layer.scene.Transform(rotation, translation, scale);
 		RefreshLayerState(layer, false);
+		if (!layer.cameraUncertainty.empty()) {
+			const Eigen::Matrix3f R = static_cast<const Matrix3x3::CEMatMap>(rotation).cast<float>();
+			for (CameraUncertainty& uncertainty : layer.cameraUncertainty) {
+				if (uncertainty.state != CameraUncertainty::COMPUTED)
+					continue;
+				Eigen::Matrix3f covariance = static_cast<const Matrix3x3f::CEMatMap>(uncertainty.posCov);
+				covariance = (float)SQUARE(scale) * R * covariance * R.transpose();
+				covariance = (covariance + covariance.transpose()) * 0.5f;
+				uncertainty.posCov = covariance;
+				uncertainty.posSigma = Point3f(
+					SQRT(MAXF(covariance(0, 0), 0.f)),
+					SQRT(MAXF(covariance(1, 1), 0.f)),
+					SQRT(MAXF(covariance(2, 2), 0.f)));
+			}
+			UpdateCameraUncertaintyStatistics(layer);
+		}
 		layer.dirty = true;
 		++alignedLayers;
-		DEBUG("Layer '%s' aligned to '%s' using %u matched cameras (scale %g)",
-			layer.label.c_str(), refLayer->label.c_str(), points.size(), scale);
+		DEBUG("Layer '%s' aligned to '%s' using %u matched cameras (%u by name, %u by ID; scale %g)",
+			layer.label.c_str(), refLayer->label.c_str(), points.size(), nameMatches, idMatches, scale);
 	}
 	if (alignedLayers == 0)
 		return false;
 	UpdateGeometryModifiedFlag();
-	// Keep the current viewpoint: the moved layers now coincide with the active layer,
-	// which the view is already framing.
+	// Refit to the unchanged reference layer. Loading an initially displaced layer
+	// may have framed very large combined bounds, leaving the aligned result tiny or
+	// off-center even though the transform itself succeeded.
+	if (!refLayer->bounds.IsEmpty())
+		window.SetSceneBounds(refLayer->bounds.GetCenter(), refLayer->bounds.GetSize().cast<float>());
+	else
+		UpdateWindowSceneBounds(true);
 	window.GetCamera().SetSceneDistance(ComputeVisibleSceneDistance());
 	window.UploadRenderData();
 	return true;
@@ -835,7 +945,7 @@ bool Scene::LoadLayer(Layer& layer, const String& fileName, String geometryFileN
 	const String sceneFileName(MAKE_PATH_FULL(WORKING_FOLDER_FULL, fileName));
 	layer.sceneName = sceneFileName;
 	layer.workingFolder = Util::getFilePath(sceneFileName);
-	layer.label = Util::getFileName(sceneFileName);
+	layer.label = Util::getFileNameExt(sceneFileName);
 	ActivateWorkingFolder(layer);
 
 	const MVS::Scene::SCENE_TYPE sceneType(layer.scene.Load(sceneFileName, true));
@@ -934,12 +1044,15 @@ bool Scene::AddLayer(const String& fileName, String geometryFileName, bool makeA
 		window.SetVisible(true);
 		return false;
 	}
+	layer.label = MakeUniqueLayerLabel(layers, layer.label);
 	layers.emplace_back(std::move(layer));
-	if (makeActive || activeLayerIndex < 0)
+	const bool activeLayerChanged(makeActive || activeLayerIndex < 0);
+	if (activeLayerChanged)
 		activeLayerIndex = (int)layers.size() - 1;
 	const Layer& activeLayer(*GetActiveLayer());
 	ActivateWorkingFolder(activeLayer);
-	PrecomputeTrackBasedNeighbors();
+	if (activeLayerChanged)
+		PrecomputeTrackBasedNeighbors();
 	window.GetCamera().SetMaxCamID(activeLayer.images.size());
 	window.GetCamera().SetSceneDistance(ComputeVisibleSceneDistance());
 	UpdateWindowSceneBounds(true);
@@ -1023,7 +1136,7 @@ bool Scene::Save(const String& _fileName, bool bRescaleImages) {
 	}
 	layer->sceneName = fileName;
 	layer->workingFolder = saveWorkingFolder;
-	layer->label = Util::getFileName(fileName);
+	layer->label = MakeUniqueLayerLabel(layers, Util::getFileNameExt(fileName), layer->id);
 	layer->dirty = false;
 	UpdateGeometryModifiedFlag();
 	UpdateWindowTitle();
@@ -1350,7 +1463,6 @@ bool Scene::LoadPoseUncertainty(const String& fileName) {
 	// match the entries to the scene images by ID
 	CameraUncertaintyArr loadedUncertainty(images.size());
 	unsigned matched = 0;
-	FloatArr sigmas;
 	FOREACH(i, images) {
 		const MVS::Image& imageData = scene.images[images[i].idx];
 		const auto it = mapUncertainty.find(imageData.ID);
@@ -1358,20 +1470,10 @@ bool Scene::LoadPoseUncertainty(const String& fileName) {
 			continue;
 		loadedUncertainty[i] = it->second;
 		++matched;
-		if (it->second.state == CameraUncertainty::COMPUTED)
-			sigmas.push_back(it->second.MaxPosSigma());
 	}
 	if (matched == 0) {
 		DEBUG("error: no pose uncertainty entries in '%s' match the scene image IDs", fileName.c_str());
 		return false;
-	}
-	// robust colormap normalization: 95th-percentile of the max-axis sigma
-	float uncertaintyNorm = 0.f;
-	if (!sigmas.empty()) {
-		sigmas.Sort();
-		uncertaintyNorm = sigmas[(sigmas.size() - 1) * 95 / 100];
-		if (uncertaintyNorm <= 0.f)
-			uncertaintyNorm = MAXF(sigmas.Last(), 1.f);
 	}
 	// Auto-size the ellipsoids to the scene: raw 1-sigma radii are in world units and can be far
 	// smaller (metric/GPS scenes) or far larger (datum-relative scenes, where the unanchored scale
@@ -1383,22 +1485,16 @@ bool Scene::LoadPoseUncertainty(const String& fileName) {
 	// small enough not to overlap their neighbours at the default x1 slider). This is kept SEPARATE
 	// from the user-facing `Window::uncertaintyEllipsoidScale` (which multiplies it, defaulting to 1)
 	// so the deferred ImGui-ini load of that persisted slider value cannot clobber the auto fit.
-	const float sceneExtent = norm(layer->sceneSize);
-	const float medianSigma = sigmas.empty() ? 0.f : sigmas[sigmas.size() / 2]; // sigmas is sorted above
-	const float uncertaintyAutoScale = (sceneExtent > 0.f && medianSigma > 0.f) ?
-		MINF(MAXF(0.03f * sceneExtent / medianSigma, 1e-6f), 1e6f) : 1.f;
 	layer->cameraUncertainty.Swap(loadedUncertainty);
-	layer->cameraUncertaintyNorm = uncertaintyNorm;
-	layer->cameraUncertaintyAutoScale = uncertaintyAutoScale;
+	const unsigned drawable = UpdateCameraUncertaintyStatistics(*layer);
 	window.showUncertaintyEllipsoids = true;
 	window.GetRenderer().UploadUncertaintyEllipsoids(window);
 	Window::RequestRedraw();
 	// drawable = COMPUTED entries (datum entries have zero covariance and draw nothing)
-	const unsigned drawable = sigmas.size();
 	DEBUG("Pose uncertainty loaded from '%s': %u/%u images matched (%u drawable ellipsoids, %u datum), "
 		"sigma norm %.3g, auto-fit ellipsoid scale %.3g (x%.3g slider)%s",
 		Util::getFileNameExt(fileName).c_str(), matched, images.size(),
-		drawable, matched - drawable, uncertaintyNorm, uncertaintyAutoScale,
+		drawable, matched - drawable, layer->cameraUncertaintyNorm, layer->cameraUncertaintyAutoScale,
 		window.uncertaintyEllipsoidScale,
 		drawable == 0 ? " -- WARNING: nothing to draw (all matched entries are gauge datum)" : "");
 	return true;
@@ -1778,8 +1874,9 @@ void Scene::OnCastRay(const Point2f& screenPos, const Ray3d& ray, int button, in
 		if (window.showCameras) {
 			const TCone<REAL, 3> cone(ray, D2R(REAL(0.5)));
 			const TConeIntersect<REAL, 3> coneIntersect(cone);
+			const bool pickCompareRight = screenPos.x >= (float)window.GetCompareSplitX();
 			for (const Layer& layer : layers) {
-				if (!layer.visible)
+				if (!layer.visible || (window.IsCompareEnabled() && layer.compareRight != pickCompareRight))
 					continue;
 				FOREACH(idx, layer.images) {
 					const Image& image = layer.images[idx];

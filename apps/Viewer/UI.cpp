@@ -1059,16 +1059,27 @@ void UI::ShowLayersPanel(Window& window)
 	ImGui::SameLine();
 	compareChanged |= ImGui::RadioButton("Off", &compareMode, Window::COMPARE_DISABLED);
 	ImGui::SameLine();
+	const bool canCompare(scene.GetLayerCount() > 1);
+	ImGui::BeginDisabled(!canCompare);
 	compareChanged |= ImGui::RadioButton("Swipe", &compareMode, Window::COMPARE_SWIPE);
-	if (ImGui::IsItemHovered())
-		ImGui::SetTooltip("Split the view at a draggable divider: side-A layers render left,\n"
-		                  "side-B layers right, both sharing the same full-window projection,\n"
-		                  "so aligned scenes match pixel-exact across the divider");
+	if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+		if (!canCompare)
+			ImGui::SetTooltip("Load at least two layers to enable comparison");
+		else
+			ImGui::SetTooltip("Split the view at a draggable divider: side-A layers render left,\n"
+			                  "side-B layers right, both sharing the same full-window projection,\n"
+			                  "so aligned scenes match pixel-exact across the divider");
+	}
 	ImGui::SameLine();
 	compareChanged |= ImGui::RadioButton("Split", &compareMode, Window::COMPARE_SPLIT);
-	if (ImGui::IsItemHovered())
-		ImGui::SetTooltip("Show two equal side-by-side viewports, each scene centered\n"
-		                  "in its own full frustum");
+	if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+		if (!canCompare)
+			ImGui::SetTooltip("Load at least two layers to enable comparison");
+		else
+			ImGui::SetTooltip("Show two equal side-by-side viewports, each scene centered\n"
+			                  "in its own full frustum");
+	}
+	ImGui::EndDisabled();
 	if (compareChanged)
 		scene.EnableCompareMode((Window::CompareMode)compareMode);
 	if (window.IsCompareEnabled()) {
@@ -1077,19 +1088,56 @@ void UI::ShowLayersPanel(Window& window)
 			window.SetCompareSyncCameras(syncCameras);
 		if (ImGui::IsItemHovered())
 			ImGui::SetTooltip("Move the cameras of both sides together; uncheck to adjust each\n"
-			                  "side's camera individually with the mouse over its viewport\n"
+			                  "side's camera individually in Arcball mode with the mouse over its viewport\n"
 			                  "(re-checking snaps the other side back onto the active view)");
+		unsigned visibleSides[2] = {0, 0};
+		for (const Scene::Layer& layer : scene.GetLayers())
+			if (layer.visible)
+				++visibleSides[layer.compareRight ? 1 : 0];
+		ImGui::SameLine();
+		ImGui::TextDisabled("A: %u  B: %u", visibleSides[0], visibleSides[1]);
+		if (visibleSides[0] == 0 || visibleSides[1] == 0)
+			ImGui::TextColored(ImVec4(1.f, 0.7f, 0.3f, 1.f), "Assign at least one visible layer to each side.");
 	}
 	if (scene.GetLayerCount() > 1) {
-		ImGui::SameLine();
-		if (ImGui::Button("Align to Active")) {
-			if (!scene.AlignLayersToActive())
-				DEBUG("No layer could be aligned to the active layer");
+		ImGui::Spacing();
+		const Scene::Layer* activeLayer(scene.GetActiveLayer());
+		bool canAttemptAlignment = activeLayer != NULL && activeLayer->images.size() >= 3;
+		if (canAttemptAlignment) {
+			canAttemptAlignment = false;
+			for (const Scene::Layer& layer : scene.GetLayers()) {
+				if (&layer != activeLayer && layer.images.size() >= 3) {
+					canAttemptAlignment = true;
+					break;
+				}
+			}
 		}
-		if (ImGui::IsItemHovered())
-			ImGui::SetTooltip("Move every other layer onto the active layer with a similarity transform\n"
-			                  "estimated from cameras shared between the scenes (matched by photo name,\n"
-			                  "then by preserved SFM image ID); requires at least 3 shared cameras");
+		ImGui::BeginDisabled(!canAttemptAlignment);
+		if (ImGui::Button("Align Layers to Active..."))
+			ImGui::OpenPopup("Confirm Layer Alignment");
+		ImGui::EndDisabled();
+		if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+			if (!canAttemptAlignment)
+				ImGui::SetTooltip("Alignment requires at least two scene layers with 3 or more cameras each");
+			else
+				ImGui::SetTooltip("Move every other layer onto the active layer with a similarity transform\n"
+				                  "estimated from cameras shared between the scenes (matched by photo name,\n"
+				                  "then by preserved SFM image ID); requires at least 3 shared cameras");
+		}
+		if (ImGui::BeginPopupModal("Confirm Layer Alignment", NULL, ImGuiWindowFlags_AlwaysAutoResize)) {
+			ImGui::TextWrapped("Align all other layers to '%s'?", activeLayer != NULL ? activeLayer->label.c_str() : "the active layer");
+			ImGui::TextWrapped("This changes their scene coordinates and cannot be undone in Viewer. Modified layers will be marked unsaved.");
+			ImGui::Separator();
+			if (ImGui::Button("Align", ImVec2(120, 0))) {
+				if (!scene.AlignLayersToActive())
+					DEBUG("No layer could be aligned to the active layer");
+				ImGui::CloseCurrentPopup();
+			}
+			ImGui::SameLine();
+			if (ImGui::Button("Cancel", ImVec2(120, 0)))
+				ImGui::CloseCurrentPopup();
+			ImGui::EndPopup();
+		}
 	}
 
 	ImGui::Separator();
@@ -1124,7 +1172,8 @@ void UI::ShowLayersPanel(Window& window)
 			if (ImGui::Selectable(displayLabel.c_str(), isActive))
 				scene.SetActiveLayer(i);
 			if (ImGui::IsItemHovered())
-					ImGui::SetTooltip("%u points\n%u mesh vertices, %u faces\n%u cameras",
+					ImGui::SetTooltip("%s\n%u points\n%u mesh vertices, %u faces\n%u cameras",
+					                  layer->sceneName.c_str(),
 					                  (unsigned)layer->scene.pointcloud.points.size(), (unsigned)layer->scene.mesh.vertices.size(),
 					                  (unsigned)layer->scene.mesh.faces.size(), (unsigned)layer->images.size());
 

@@ -186,7 +186,6 @@ bool Window::Initialize(const cv::Size& size, const String& windowTitle, Scene& 
 	// Initialize core systems
 	arcballControls = std::make_unique<ArcballControls>(camera);
 	arcballControlsB = std::make_unique<ArcballControls>(cameraB);
-	arcballControlsB->setEnableGizmos(false); // gizmos are rendered for the main camera only
 	firstPersonControls = std::make_unique<FirstPersonControls>(camera);
 	selectionController = std::make_unique<SelectionController>(camera);
 	bboxEditController = std::make_unique<BoundingBoxEditController>(camera);
@@ -409,6 +408,14 @@ void Window::UploadRenderData() {
 
 void Window::Render() {
 	GL_DEBUG_SCOPE("Window::Render");
+	// Both compare-side arcballs use the same user-facing navigation settings.
+	arcballControlsB->setRadiusFactor(arcballControls->getRadiusFactor());
+	arcballControlsB->setSensitivity(arcballControls->getSensitivity());
+	arcballControlsB->setRotationSensitivity(arcballControls->getRotationSensitivity());
+	arcballControlsB->setZoomSensitivity(arcballControls->getZoomSensitivity());
+	arcballControlsB->setPanSensitivity(arcballControls->getPanSensitivity());
+	arcballControlsB->setEnableGizmos(arcballControls->getEnableGizmos());
+	arcballControlsB->setEnableGizmosCenter(arcballControls->getEnableGizmosCenter());
 
 	// Keep the compare cameras consistent with the current mode and active layer
 	UpdateCompareState();
@@ -532,13 +539,37 @@ void Window::Render() {
 	// Show UI
 	ui->ShowMainMenuBar(*this);
 
-	// Render gizmos or coordinate axes
-	if (currentControlMode == CONTROL_ARCBALL && arcballControls && arcballControls->getEnableGizmos()) {
-		// Render arcball gizmos instead of coordinate axes
-		withMainCameraViewport([&] { renderer->RenderArcballGizmos(camera, *arcballControls); });
+	// Render a navigation indicator for each split viewport. Arcball gizmos are
+	// also clipped per side in swipe mode, making independently controlled camera
+	// orientations visible without duplicating the corner-based axes widget.
+	const auto renderNavigationIndicator = [this](int side) {
+		const Camera& sideCamera(GetSideCamera(side));
+		if (currentControlMode == CONTROL_ARCBALL && arcballControls->getEnableGizmos())
+			renderer->RenderArcballGizmos(sideCamera, GetSideArcballControls(side));
+		else
+			renderer->RenderCoordinateAxes(sideCamera);
+	};
+	const bool renderEachCompareSide =
+		IsCompareEnabled() && scene.IsOpen() &&
+		(compareMode == COMPARE_SPLIT ||
+		 (currentControlMode == CONTROL_ARCBALL && arcballControls->getEnableGizmos()));
+	if (renderEachCompareSide) {
+		const int splitX = GetCompareSplitX();
+		GL_CHECK(glEnable(GL_SCISSOR_TEST));
+		for (int side = 0; side < 2; ++side) {
+			if (compareMode == COMPARE_SPLIT) {
+				const cv::Rect viewport = GetCompareViewport(side);
+				GL_CHECK(glViewport(viewport.x, viewport.y, viewport.width, viewport.height));
+			}
+			GL_CHECK(glScissor(side == 0 ? 0 : splitX, 0, side == 0 ? splitX : windowSize.width - splitX, windowSize.height));
+			renderer->UpdateViewProjection(GetSideCamera(side));
+			renderNavigationIndicator(side);
+		}
+		GL_CHECK(glDisable(GL_SCISSOR_TEST));
+		GL_CHECK(glViewport(0, 0, windowSize.width, windowSize.height));
+		renderer->UpdateViewProjection(camera);
 	} else {
-		// Even when no scene is loaded, render coordinate axes as a visual indicator
-		withMainCameraViewport([&] { renderer->RenderCoordinateAxes(camera); });
+		renderNavigationIndicator(GetCompareActiveSide());
 	}
 
 	// Render UI

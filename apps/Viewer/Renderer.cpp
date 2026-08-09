@@ -1909,8 +1909,8 @@ void Renderer::RenderCoordinateAxes(const Camera& camera) {
 	const int margin = 10;	// Margin from screen edges
 
 	GL_CHECK(glViewport(
-		oldViewport[2] - axesSize - margin,  // x: right side minus size and margin
-		margin,							     // y: bottom with margin
+		oldViewport[0] + oldViewport[2] - axesSize - margin, // x: viewport right minus size and margin
+		oldViewport[1] + margin,							  // y: viewport bottom with margin
 		axesSize,							 // width
 		axesSize							 // height
 	));

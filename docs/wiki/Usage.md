@@ -31,6 +31,7 @@ CreateStructure -s scene_keyframes.sfm -o scene.sfm --export-mvs scene.mvs --ext
 
 </details>
 
+
 <details>
 <summary><strong>Sparse Reconstruction with Native SfM</strong></summary>
 
@@ -347,6 +348,8 @@ The input file (or any of the supported formats listed below) can be passed on t
 - `--export-type` — export format override (`ply` or `obj`).
 - `--max-memory` — hard memory cap in MB (`0` = unlimited).
 - `--screenshot-file, -S` — render the scene off-screen to this image file and exit, without opening the interactive window.
+- `--compare-mode` — enable `swipe` or `split` comparison for interactive use or scripted screenshots (requires at least two loaded layers).
+- `--align-layers` — align additional layers to the active layer from shared cameras before entering interactive or screenshot mode.
 - `--view-file` — optional viewpoint for the screenshot: a transform file of 12 or 16 whitespace-separated values, row-major, interpreted as a camera-to-world pose (columns are the camera X, Y, Z axes in world space, the last column is the camera center).
 - `--view-camera` — alternative viewpoint for the screenshot: index of a scene camera view point to use (`-1` disables it). Ignored when `--view-file` is given.
 - `--screenshot-show` — which layers to render in the screenshot, as a string of flags: `p` point-cloud, `m` mesh, `t` textured, `c` cameras, `w` wireframe, `b` bounding-box, `u` UI (e.g. `p`, `m`, `mt`). When omitted the interactive defaults are kept.
@@ -401,4 +404,3 @@ Tools
 </details>
 
 </details>
-

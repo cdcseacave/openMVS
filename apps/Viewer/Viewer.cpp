@@ -53,6 +53,8 @@ String strPoseQualityFileName;
 String strOutputFileName;
 String strScreenshotFileName;
 String strViewFileName;
+String strCompareMode;
+bool bAlignLayers;
 int nViewCamera;
 String strShow;
 unsigned nArchiveType;
@@ -117,6 +119,8 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("pose-quality-file", boost::program_options::value<std::string>(&OPT::strPoseQualityFileName), "per-image pose quality CSV report (CreateStructure --export-pose-quality) to display as camera uncertainty ellipsoids")
 		("output-file,o", boost::program_options::value<std::string>(&OPT::strOutputFileName), "output filename for storing the mesh")
 		("screenshot-file,S", boost::program_options::value<std::string>(&OPT::strScreenshotFileName), "render the scene off-screen to this image file and exit (scriptable; extension selects the format, .png if omitted)")
+		("compare-mode", boost::program_options::value<std::string>(&OPT::strCompareMode), "enable multi-layer comparison in swipe or split mode (requires at least two layers)")
+		("align-layers", boost::program_options::bool_switch(&OPT::bAlignLayers)->default_value(false), "align additional layers to the active layer using shared cameras")
 		("view-file", boost::program_options::value<std::string>(&OPT::strViewFileName), "transform file controlling the screenshot viewpoint (12 or 16 whitespace-separated values, row-major camera-to-world); if omitted the default fitted view is used")
 		("view-camera", boost::program_options::value(&OPT::nViewCamera)->default_value(-1), "set the screenshot viewpoint to this scene camera's pose for a natural upright framing (-1 disabled; out-of-range selects a central camera); overridden by --view-file")
 		("screenshot-show", boost::program_options::value<std::string>(&OPT::strShow), "which scene components to render in the screenshot, as a string of flags: p=point-cloud, m=mesh, t=textured, c=cameras, w=wireframe, b=bounding-box, u=UI overlay (e.g. 'p', 'm', 'mt', 'mu'); if omitted the interactive defaults are kept and the UI overlay is disabled")
@@ -188,6 +192,11 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 	resolveOptionPath(OPT::strOutputFileName);
 	resolveOptionPath(OPT::strScreenshotFileName);
 	resolveOptionPath(OPT::strViewFileName);
+	OPT::strCompareMode = OPT::strCompareMode.ToLower();
+	if (!OPT::strCompareMode.empty() && OPT::strCompareMode != _T("swipe") && OPT::strCompareMode != _T("split")) {
+		LOG("invalid compare mode '%s' (expected 'swipe' or 'split')", OPT::strCompareMode.c_str());
+		return false;
+	}
 
 	MVS::Initialize(APPNAME, OPT::nMaxThreads, OPT::nProcessPriority);
 	return true;
@@ -231,6 +240,19 @@ int main(int argc, LPCTSTR* argv)
 			if (!viewer.AddLayer(MAKE_PATH_SAFE(fileName), String(), !viewer.IsOpen()))
 				return EXIT_FAILURE;
 		}
+	}
+	if (OPT::bAlignLayers) {
+		if (viewer.GetLayerCount() < 2 || !viewer.AlignLayersToActive()) {
+			DEBUG("error: --align-layers requires at least two layers with three or more shared non-collinear cameras");
+			return EXIT_FAILURE;
+		}
+	}
+	if (!OPT::strCompareMode.empty()) {
+		if (viewer.GetLayerCount() < 2) {
+			DEBUG("error: --compare-mode requires at least two loaded layers");
+			return EXIT_FAILURE;
+		}
+		viewer.EnableCompareMode(OPT::strCompareMode == _T("swipe") ? Window::COMPARE_SWIPE : Window::COMPARE_SPLIT);
 	}
 	if (viewer.IsOpen() && !OPT::strPoseQualityFileName.empty()) {
 		// load and display the per-image pose uncertainty

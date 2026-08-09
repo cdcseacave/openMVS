@@ -19,6 +19,7 @@
 #else
 #include <sys/utsname.h>
 #ifdef __APPLE__
+#include <mach/mach.h>
 #include <sys/sysctl.h>
 #else
 #include <sys/sysinfo.h>
@@ -770,7 +771,6 @@ void Util::LogMemoryInfo()
 	LOG(_T("} ENDINFO"));
 }
 #elif defined(__APPLE__) // _MSC_VER
-#include <mach/mach.h>
 void Util::LogMemoryInfo()
 {
 	// macOS (Intel and Apple Silicon) has no procfs; ask the Mach kernel for
@@ -829,19 +829,31 @@ Util::MemoryInfo Util::GetMemoryInfo()
 
 	#elif defined(__APPLE__)                // mac
 
-	int mib[2] ={CTL_HW, HW_MEMSIZE};
-	size_t len = sizeof(size_t);
-	size_t totalMemory;
-	if (sysctl(mib, 2, &totalMemory, &len, NULL, 0) < 0) {
-		ASSERT(false);
-		return MemoryInfo();
+	size_t totalMemory = 0;
+	size_t len = sizeof(totalMemory);
+	int mib[2] = {CTL_HW, HW_MEMSIZE};
+	if (sysctl(mib, 2, &totalMemory, &len, NULL, 0) < 0)
+		totalMemory = 0;
+	const mach_port_t host(mach_host_self());
+	if (totalMemory == 0) {
+		host_basic_info_data_t hostInfo;
+		mach_msg_type_number_t hostInfoCount(HOST_BASIC_INFO_COUNT);
+		if (host_info(host, HOST_BASIC_INFO, reinterpret_cast<host_info_t>(&hostInfo), &hostInfoCount) == KERN_SUCCESS)
+			totalMemory = (size_t)hostInfo.max_mem;
 	}
-	mib[1] = HW_USERMEM;
-    size_t freeMemory;
-    if (sysctl(mib, 2, &freeMemory, &len, NULL, 0) == -1) {
-		ASSERT(false);
-        return MemoryInfo();
-    }
+
+	size_t freeMemory = 0;
+	vm_size_t pageSize = 0;
+	vm_statistics64_data_t vmStats;
+	mach_msg_type_number_t vmStatsCount(HOST_VM_INFO64_COUNT);
+	if (host_page_size(host, &pageSize) == KERN_SUCCESS &&
+		host_statistics64(host, HOST_VM_INFO64, reinterpret_cast<host_info64_t>(&vmStats), &vmStatsCount) == KERN_SUCCESS) {
+		const uint64_t availablePages =
+			(uint64_t)vmStats.free_count + vmStats.inactive_count + vmStats.speculative_count;
+		const uint64_t availableMemory = availablePages * (uint64_t)pageSize;
+		freeMemory = (size_t)(totalMemory > 0 ? MINF(availableMemory, (uint64_t)totalMemory) : availableMemory);
+	}
+	mach_port_deallocate(mach_task_self(), host);
 	return MemoryInfo(totalMemory, freeMemory);
 
 	#else // __GNUC__                       // linux
