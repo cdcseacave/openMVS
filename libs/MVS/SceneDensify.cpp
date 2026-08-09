@@ -697,6 +697,15 @@ DepthData DepthMapsData::ScaleDepthData(const DepthData& inputDeptData, float sc
 // In order to ensure some smoothness while locally estimating each pixel, a bonus is added to the NCC score if the estimate for this pixel is close to the estimates for the neighbor pixels.
 // Optionally, the occluded pixels can be detected by extending the described iterations to the target image and removing the estimates that do not have similar values in both views.
 //  - nGeometricIter: current geometric-consistent estimation iteration (-1 - normal patch-match)
+// (definitions moved up from the adjust-confidence section so the fused in-estimation
+// recalibration below can account its compute time into the same integrated-timing report)
+static std::atomic<int64_t> g_confAdjustComputeNS(0);
+static std::atomic<int64_t> g_confPriorComputeNS(0);
+#ifdef _USE_CUDA
+// defined alongside AdjustConfidenceCUDA below
+static bool BuildConfNeighborHosts(const DepthData& depthDataRef, std::vector<MVS::CUDA::ConfNeighborHost>& hn);
+static ConfRefine::Params MakeConfRefineParams();
+#endif // _USE_CUDA
 bool DepthMapsData::EstimateDepthMap(IIndex idxImage, int nGeometricIter)
 {
 	#ifdef _USE_CUDA
@@ -711,7 +720,37 @@ bool DepthMapsData::EstimateDepthMap(IIndex idxImage, int nGeometricIter)
 			s_slot = (int)(Thread::safeInc(pmCUDANextIdx) % (Thread::safe_t)pmCUDAPool.size());
 			s_epoch = pmCUDAEpoch;
 		}
-		pmCUDAPool[s_slot]->EstimateDepthMap(arrDepthData[idxImage]);
+		DepthData& depthData(arrDepthData[idxImage]);
+		// T14 resident-buffer reuse: on the last geometric-consistency iteration run the
+		// confidence recalibration fused into the estimation itself, reusing the device-resident
+		// reference buffers; the request carries the neighbor raw previous-iteration snapshots
+		// (loaded by InitViews, loadDepthMaps==2) and the parameter set. When the postprocess
+		// speckle/gap filters are enabled the adjust must keep running AFTER them, so the fused
+		// path is skipped and the EVT_SAVEDEPTHMAP epilogue takes over unchanged; same when the
+		// neighbor maps are unusable. A failed fused launch (done=false) also falls back to the
+		// epilogue GPU (re-upload) path and its CPU fallback.
+		MVS::CUDA::ConfAdjustRequest confRequest;
+		MVS::CUDA::ConfAdjustRequest* pConfRequest(NULL);
+		if (nGeometricIter >= 0 && nGeometricIter+1 == (int)OPTDENSE::nEstimationGeometricIters &&
+			(OPTDENSE::nOptimize & OPTDENSE::ADJUST_CONFIDENCE) != 0 &&
+			(OPTDENSE::nOptimize & OPTDENSE::OPTIMIZE) == 0 &&
+			OPTDENSE::bEstimateConfidenceCUDA &&
+			BuildConfNeighborHosts(depthData, confRequest.neighbors)) {
+			const Camera& cameraRef = depthData.GetView().camera;
+			const Matrix3x3f Kf(cameraRef.K);
+			confRequest.k00 = Kf(0,0); confRequest.k11 = Kf(1,1);
+			confRequest.k02 = Kf(0,2); confRequest.k12 = Kf(1,2);
+			confRequest.normalDiffThresholdDeg = OPTDENSE::fNormalDiffThreshold;
+			confRequest.params = MakeConfRefineParams();
+			confRequest.softGates = OPTDENSE::bConfSoftGates;
+			confRequest.priorNormalCoherence = OPTDENSE::bConfPriorNormalCoherence;
+			pConfRequest = &confRequest;
+		}
+		pmCUDAPool[s_slot]->EstimateDepthMap(depthData, pConfRequest);
+		if (pConfRequest) {
+			g_confAdjustComputeNS.fetch_add(confRequest.computeNS, std::memory_order_relaxed);
+			depthData.bConfAdjusted = confRequest.done;
+		}
 		return true;
 	}
 	#endif // _USE_CUDA
@@ -1360,12 +1399,8 @@ const ConfidenceMap& DepthMapsData::GetIntraMapPrior(DepthData& depthData, bool 
 //    consumers (e.g. TSDF) that want to skip a separate phase or avoid dmaps on disk, especially on
 //    small scenes; otherwise prefer standalone.
 // ----------------------------------------------------------------------------
-// accumulates the pure AdjustConfidence compute time (intra-map prior + multi-view confirmation loop)
-// across the multithreaded adjust phase; reset and reported by the dispatch in ComputeDepthMaps;
-// the second counter isolates the ComputeIntraMapPrior share so the prior and the confirmation
-// sweep can be tracked separately across the speed work (confirmation rewritten first, prior later)
-static std::atomic<int64_t> g_confAdjustComputeNS(0);
-static std::atomic<int64_t> g_confPriorComputeNS(0);
+// (the g_confAdjustComputeNS / g_confPriorComputeNS accumulators are defined above
+// DepthMapsData::EstimateDepthMap so the fused in-estimation recalibration reports into them too)
 
 // phase-lifetime depth-map cache for the adjust-confidence phase (Task 10): the adjust phase runs
 // one worker per reference image, each pulling up to 8 neighbors, so a naive per-reference
@@ -1430,6 +1465,14 @@ static inline bool SampleDepthBilinear(const DepthMap& dm, float px, float py,
 bool DepthMapsData::AdjustConfidence(DepthData& depthDataRef, const IIndexArr& idxNeighbors)
 {
 	ASSERT(depthDataRef.IsValid() && !depthDataRef.IsEmpty() && !idxNeighbors.empty());
+	// cross-process double-adjust guard: the dmap this confidence was loaded from already carries
+	// the CONF_ADJUSTED flag (e.g. a previous DensifyPointCloud run recalibrated it during its
+	// last geometric-consistency iteration) -- recalibrating again would compound the
+	// posterior/gate/floor formula on its own output, so warn and leave the file untouched
+	if (depthDataRef.bConfAdjusted) {
+		VERBOSE("warning: view %u confidence is already recalibrated (dmap CONF_ADJUSTED flag), skipping the standalone adjust", depthDataRef.GetView().GetID());
+		return false;
+	}
 	const Camera& cameraRef = depthDataRef.GetView().camera;
 
 	// precompute the fused single-precision ref->neighbor (and back) projection for every valid
@@ -1512,32 +1555,17 @@ bool DepthMapsData::AdjustConfidence(DepthData& depthDataRef)
 /*----------------------------------------------------------------*/
 
 #ifdef _USE_CUDA
-// Task 14: GPU counterpart of the integrated AdjustConfidence(DepthData&) above -- the SAME neighbor
-// build (this reference's private depthDataRef.images[] loaded by InitViews' loadDepthMaps==2), but
-// the per-pixel intra-map prior + one-hop confirmation sweep run on the GPU (ConfidenceCUDA.cu's
-// RunConfidenceCUDA) instead of the CPU AdjustConfidenceSweep. The neighbor depth/normal/conf are
-// already resident in host memory from this iteration's geometric-consistency scoring, so this costs
-// no extra disk read; the launcher uploads them, runs the two kernels, and downloads the recalibrated
-// confidence, written to depthDataRef.confMap in place (private copies -> no deferred swap). Returns
-// false on any CUDA error (contiguity/allocation/launch) so the caller falls back to the CPU sweep.
-bool DepthMapsData::AdjustConfidenceCUDA(DepthData& depthDataRef)
+// Build the per-neighbor fused projection transforms + host map pointers consumed by the GPU
+// confidence launchers, from this reference's private depthDataRef.images[] (the raw
+// previous-iteration snapshots loaded by InitViews' loadDepthMaps==2 -- the raw-neighbor-conf
+// invariant). Returns false when any neighbor map is non-contiguous (the launchers index them as
+// flat row-major buffers); neighbors whose depth failed to load are skipped, matching the CPU.
+static bool BuildConfNeighborHosts(const DepthData& depthDataRef, std::vector<MVS::CUDA::ConfNeighborHost>& hn)
 {
-	ASSERT(depthDataRef.IsValid() && !depthDataRef.IsEmpty());
-	const DepthMap& depthMapRef = depthDataRef.depthMap;
-	const NormalMap& normalMapRef = depthDataRef.normalMap;
-	const ConfidenceMap& confMapRef = depthDataRef.confMap;
-	const int W(depthMapRef.cols), H(depthMapRef.rows);
-	if (W <= 0 || H <= 0 || confMapRef.size() != depthMapRef.size())
-		return false;
-	// the launcher indexes maps as contiguous row-major float buffers; bail to the CPU sweep otherwise
-	if (!depthMapRef.isContinuous() || !confMapRef.isContinuous() ||
-		(!normalMapRef.empty() && !normalMapRef.isContinuous()))
-		return false;
 	const Camera& cameraRef = depthDataRef.GetView().camera;
-
-	std::vector<MVS::CUDA::ConfNeighborHost> hn;
-	hn.reserve(depthDataRef.images.empty() ? 0 : depthDataRef.images.size()-1);
 	const Matrix3x3 invKr(cameraRef.GetInvK());
+	hn.clear();
+	hn.reserve(depthDataRef.images.empty() ? 0 : depthDataRef.images.size()-1);
 	for (IIndex i=1; i<depthDataRef.images.size(); ++i) {
 		const DepthData::ViewData& viewN = depthDataRef.images[i];
 		if (viewN.depthMap.empty())
@@ -1564,8 +1592,12 @@ bool DepthMapsData::AdjustConfidenceCUDA(DepthData& depthDataRef)
 		d.width = viewN.depthMap.cols; d.height = viewN.depthMap.rows;
 		hn.push_back(d);
 	}
+	return true;
+}
 
-	// single-precision parameter snapshot, identical to AdjustConfidenceSweep's setup
+// single-precision parameter snapshot, identical to AdjustConfidenceSweep's setup
+static ConfRefine::Params MakeConfRefineParams()
+{
 	ConfRefine::Params p;
 	p.minConfidence = 1.f - OPTDENSE::fNCCThresholdKeep;
 	p.thReproj = OPTDENSE::fDepthReprojectionErrorThreshold;
@@ -1579,6 +1611,40 @@ bool DepthMapsData::AdjustConfidenceCUDA(DepthData& depthDataRef)
 	p.lambdaViol = OPTDENSE::fConfViolationWeight;
 	p.violMargin = OPTDENSE::fConfViolationMargin;
 	p.epsConf = MAXF(0.5f*p.minConfidence, 1e-6f);
+	return p;
+}
+
+// Task 14: GPU counterpart of the integrated AdjustConfidence(DepthData&) above -- the SAME neighbor
+// build (this reference's private depthDataRef.images[] loaded by InitViews' loadDepthMaps==2), but
+// the per-pixel intra-map prior + one-hop confirmation sweep run on the GPU (ConfidenceCUDA.cu's
+// RunConfidenceCUDA) instead of the CPU AdjustConfidenceSweep. The neighbor depth/normal/conf are
+// already resident in host memory from this iteration's geometric-consistency scoring, so this costs
+// no extra disk read; the launcher uploads them, runs the two kernels, and downloads the recalibrated
+// confidence, written to depthDataRef.confMap in place (private copies -> no deferred swap). Returns
+// false on any CUDA error (contiguity/allocation/launch) so the caller falls back to the CPU sweep.
+// NOTE: this is the standalone/epilogue variant that re-uploads the reference maps; the fused
+// in-estimation variant (resident-buffer reuse) lives in PatchMatch::EstimateDepthMap.
+bool DepthMapsData::AdjustConfidenceCUDA(DepthData& depthDataRef)
+{
+	ASSERT(depthDataRef.IsValid() && !depthDataRef.IsEmpty());
+	const DepthMap& depthMapRef = depthDataRef.depthMap;
+	const NormalMap& normalMapRef = depthDataRef.normalMap;
+	const ConfidenceMap& confMapRef = depthDataRef.confMap;
+	const int W(depthMapRef.cols), H(depthMapRef.rows);
+	if (W <= 0 || H <= 0 || confMapRef.size() != depthMapRef.size())
+		return false;
+	// the launcher indexes maps as contiguous row-major float buffers; bail to the CPU sweep otherwise
+	if (!depthMapRef.isContinuous() || !confMapRef.isContinuous() ||
+		(!normalMapRef.empty() && !normalMapRef.isContinuous()))
+		return false;
+	const Camera& cameraRef = depthDataRef.GetView().camera;
+
+	std::vector<MVS::CUDA::ConfNeighborHost> hn;
+	if (!BuildConfNeighborHosts(depthDataRef, hn))
+		return false;
+
+	// single-precision parameter snapshot, identical to AdjustConfidenceSweep's setup
+	const ConfRefine::Params p(MakeConfRefineParams());
 
 	const Matrix3x3f Kf(cameraRef.K);
 	ConfidenceMap newConfMap(depthMapRef.size());
@@ -3975,9 +4041,12 @@ void Scene::DenseReconstructionEstimate(void* pData)
 			// writes depthData.confMap in place before it is serialized to disk a few lines down.
 			// See the DepthMapsData::AdjustConfidence(DepthData&) overload above for the full
 			// rationale and why no deferred confMapAdjusted swap is needed here.
+			// skipped when the fused in-estimation recalibration (T14 resident-buffer reuse, see
+			// DepthMapsData::EstimateDepthMap) already adjusted this view's confMap -- running this
+			// epilogue too would recalibrate an already-recalibrated confidence a second time
 			if ((OPTDENSE::nOptimize & OPTDENSE::ADJUST_CONFIDENCE) && data.nEstimationGeometricIter >= 0 &&
 				data.nEstimationGeometricIter+1 == (int)OPTDENSE::nEstimationGeometricIters &&
-				!depthData.depthMap.empty()) {
+				!depthData.depthMap.empty() && !depthData.bConfAdjusted) {
 				bool bDone(false);
 				#ifdef _USE_CUDA
 				// GPU is the default when CUDA did the estimation (bEstimateConfidenceCUDA); on any CUDA
@@ -3990,7 +4059,10 @@ void Scene::DenseReconstructionEstimate(void* pData)
 				#endif
 				// CPU integrated: as the GPU-error fallback, or the legacy 'Estimate Confidence' opt-in
 				if (!bDone && (bTryGPU || OPTDENSE::bEstimateConfidence))
-					data.depthMaps.AdjustConfidence(depthData);
+					bDone = data.depthMaps.AdjustConfidence(depthData);
+				// the saved dmap then carries the CONF_ADJUSTED flag (cross-process double-adjust guard)
+				if (bDone)
+					depthData.bConfAdjusted = true;
 			}
 			#if TD_VERBOSE != TD_VERBOSE_OFF
 			// save depth map as image
@@ -4123,7 +4195,9 @@ void Scene::DenseReconstructionFilter(void* pData)
 				ExportPointCloud(ComposeDepthFilePath(depthData.GetView().GetID(), "filtered.ply"), *depthData.images.First().pImageData, depthMap, normalMap);
 			}
 			#endif
-			// save filtered depth-map for this image
+			// save filtered depth-map for this image; it now holds the recalibrated confidence, so
+			// the re-saved dmap carries the CONF_ADJUSTED flag (cross-process double-adjust guard)
+			depthData.bConfAdjusted = true;
 			if (!depthData.Save(ComposeDepthFilePath(depthData.GetView().GetID(), "dmap")))
 				exit(EXIT_FAILURE);
 			data.progress->operator++();

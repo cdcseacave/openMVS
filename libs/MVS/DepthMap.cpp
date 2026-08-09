@@ -182,6 +182,7 @@ DepthData::DepthData(const DepthData& srcDepthData) :
 	dMin(srcDepthData.dMin),
 	dMax(srcDepthData.dMax),
 	size(srcDepthData.size),
+	bConfAdjusted(srcDepthData.bConfAdjusted),
 	references(srcDepthData.references)
 {}
 
@@ -293,7 +294,7 @@ bool DepthData::Save(const String& fileName) const
 		for (const ViewData& image: images)
 			IDs.push_back(image.GetID());
 		const ViewData& image0 = GetView();
-		if (!ExportDepthDataRaw(fileNameTmp, image0.pImageData->name, IDs, depthMap.size(), image0.camera.K, image0.camera.R, image0.camera.C, dMin, dMax, depthMap, normalMap, confMap, viewsMap))
+		if (!ExportDepthDataRaw(fileNameTmp, image0.pImageData->name, IDs, depthMap.size(), image0.camera.K, image0.camera.R, image0.camera.C, dMin, dMax, depthMap, normalMap, confMap, viewsMap, bConfAdjusted))
 			return false;
 	}
 	if (!File::renameFile(fileNameTmp, fileName)) {
@@ -310,7 +311,7 @@ bool DepthData::Load(const String& fileName, unsigned flags)
 	IIndexArr IDs;
 	cv::Size imageSize;
 	Camera camera;
-	if (!ImportDepthDataRaw(fileName, imageFileName, IDs, imageSize, camera.K, camera.R, camera.C, dMin, dMax, depthMap, normalMap, confMap, viewsMap, flags))
+	if (!ImportDepthDataRaw(fileName, imageFileName, IDs, imageSize, camera.K, camera.R, camera.C, dMin, dMax, depthMap, normalMap, confMap, viewsMap, flags, &bConfAdjusted))
 		return false;
 	ASSERT(!IDs.empty() && (!IsValid() || IDs.front() == GetView().GetID()));
 	ASSERT(depthMap.size() == imageSize);
@@ -2112,7 +2113,8 @@ bool MVS::ExportDepthDataRaw(const String& fileName, const String& imageFileName
 	const IIndexArr& IDs, const cv::Size& imageSize,
 	const KMatrix& K, const RMatrix& R, const CMatrix& C,
 	Depth dMin, Depth dMax,
-	const DepthMap& depthMap, const NormalMap& normalMap, const ConfidenceMap& confMap, const ViewsMap& viewsMap)
+	const DepthMap& depthMap, const NormalMap& normalMap, const ConfidenceMap& confMap, const ViewsMap& viewsMap,
+	bool bConfAdjusted)
 {
 	ASSERT(!IDs.empty() && IDs.size() < 256);
 	ASSERT(!depthMap.empty());
@@ -2127,6 +2129,8 @@ bool MVS::ExportDepthDataRaw(const String& fileName, const String& imageFileName
 	data.header.imageHeight = (uint32_t)imageSize.height;
 	data.header.dMin = dMin;
 	data.header.dMax = dMax;
+	if (bConfAdjusted)
+		data.header.type |= HeaderDepthDataRaw::CONF_ADJUSTED; // carried through by the codec (cross-process double-adjust guard)
 	// store the image path relative to the depth-map, so that the two travel together
 	data.imageFileName = MAKE_PATH_REL(Util::getFullPath(Util::getFilePath(fileName)), Util::getFullPath(imageFileName));
 	data.IDs.assign(IDs.begin(), IDs.end());
@@ -2146,7 +2150,8 @@ bool MVS::ImportDepthDataRaw(const String& fileName, String& imageFileName,
 	IIndexArr& IDs, cv::Size& imageSize,
 	KMatrix& K, RMatrix& R, CMatrix& C,
 	Depth& dMin, Depth& dMax,
-	DepthMap& depthMap, NormalMap& normalMap, ConfidenceMap& confMap, ViewsMap& viewsMap, unsigned flags)
+	DepthMap& depthMap, NormalMap& normalMap, ConfidenceMap& confMap, ViewsMap& viewsMap, unsigned flags,
+	bool* pbConfAdjusted)
 {
 	STATIC_ASSERT(sizeof(double) == sizeof(REAL));
 	STATIC_ASSERT(sizeof(uint32_t) == sizeof(IIndex));
@@ -2167,6 +2172,8 @@ bool MVS::ImportDepthDataRaw(const String& fileName, String& imageFileName,
 	dMax = data.header.dMax;
 	imageSize.width = (int)data.header.imageWidth;
 	imageSize.height = (int)data.header.imageHeight;
+	if (pbConfAdjusted)
+		*pbConfAdjusted = (data.header.type & HeaderDepthDataRaw::CONF_ADJUSTED) != 0;
 	return true;
 } // ImportDepthDataRaw
 /*----------------------------------------------------------------*/

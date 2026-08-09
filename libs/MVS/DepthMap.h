@@ -290,10 +290,14 @@ struct MVS_API DepthData {
 	ViewsMap viewsMap; // view-IDs map (indexing images vector starting after first view)
 	float dMin, dMax; // global depth range for this image
 	cv::Size size; // image size used to estimate this depth-map
+	bool bConfAdjusted; // transient, never serialized: the fused GPU confidence recalibration
+		// already ran for this view inside the last geometric-consistency estimation itself
+		// (T14 resident-buffer reuse, see DepthMapsData::EstimateDepthMap), so the
+		// EVT_SAVEDEPTHMAP epilogue must not adjust the confidence a second time
 	unsigned references; // how many times this depth-map is referenced (on 0 can be safely unloaded)
 	CriticalSection cs; // used to count references
 
-	inline DepthData() : references(0) {}
+	inline DepthData() : bConfAdjusted(false), references(0) {}
 	DepthData(const DepthData&);
 
 	inline void ReleaseImages() {
@@ -630,12 +634,14 @@ MVS_API bool ExportDepthDataRaw(const String&, const String& imageFileName,
 	const IIndexArr&, const cv::Size& imageSize,
 	const KMatrix&, const RMatrix&, const CMatrix&,
 	Depth dMin, Depth dMax,
-	const DepthMap&, const NormalMap&, const ConfidenceMap&, const ViewsMap&);
+	const DepthMap&, const NormalMap&, const ConfidenceMap&, const ViewsMap&,
+	bool bConfAdjusted=false/*mark the stored confMap as already recalibrated (CONF_ADJUSTED)*/);
 MVS_API bool ImportDepthDataRaw(const String&, String& imageFileName,
 	IIndexArr&, cv::Size& imageSize,
 	KMatrix&, RMatrix&, CMatrix&,
 	Depth& dMin, Depth& dMax,
-	DepthMap&, NormalMap&, ConfidenceMap&, ViewsMap&, unsigned flags=15/*all*/);
+	DepthMap&, NormalMap&, ConfidenceMap&, ViewsMap&, unsigned flags=15/*all*/,
+	bool* pbConfAdjusted=NULL/*receives the stored CONF_ADJUSTED flag*/);
 
 MVS_API void CompareDepthMaps(const DepthMap& depthMap, const DepthMap& depthMapGT, uint32_t idxImage, float threshold=0.01f);
 MVS_API void CompareNormalMaps(const NormalMap& normalMap, const NormalMap& normalMapGT, uint32_t idxImage);

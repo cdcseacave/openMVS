@@ -32,6 +32,9 @@
 #include "Common.h"
 #include "PatchMatchCUDA.h"
 #include "DepthMap.h"
+#include "ConfidenceCUDA.h"
+
+#include <chrono>
 
 #ifdef _USE_CUDA
 
@@ -241,7 +244,7 @@ void PatchMatch::AllocateImageCUDA(size_t i, const cv::Mat1f& image, bool bInitI
 	}
 }
 
-void PatchMatch::EstimateDepthMap(DepthData& depthData)
+void PatchMatch::EstimateDepthMap(DepthData& depthData, ConfAdjustRequest* pConfRequest)
 {
 	TD_TIMER_STARTD();
 
@@ -445,6 +448,34 @@ void PatchMatch::EstimateDepthMap(DepthData& depthData)
 		if (params.bLowResProcessed)
 			CUDA_CHECK(cudaFreeAsync(cudaLowDepths, cudaStream));
 
+		// T14 resident-buffer reuse: recalibrate the confidence as a true extension of the last
+		// geometric-consistency iteration, reading the final reference depth+normal
+		// (cudaDepthNormalEstimates) and raw NCC cost (cudaDepthNormalCosts) still resident on the
+		// device from the kernels above; only the neighbors' raw previous-iteration
+		// depth/conf/normal snapshots (host, loaded by InitViews -- the raw-neighbor-conf
+		// invariant) are uploaded. The adjusted confidence is downloaded straight into
+		// depthData.confMap, replacing both the cost D2H above and the cost->conf conversion in
+		// the unpack loop below. The kernels use no __constant__ state, so no serialization with
+		// other workers' PatchMatch kernels is needed beyond this instance's own stream order.
+		// On any CUDA error done stays false, the conversion below runs as usual and the caller
+		// falls back to the epilogue (re-upload) path.
+		bool bFusedConfDone(false);
+		if (pConfRequest && scaleNumber == 0 && params.bGeomConsistency &&
+			!depthData.confMap.empty() && depthData.confMap.isContinuous() &&
+			depthData.confMap.size() == depthData.depthMap.size()) {
+			const std::chrono::steady_clock::time_point t0(std::chrono::steady_clock::now());
+			bFusedConfDone = RunConfidenceFusedCUDA(size.width, size.height,
+				cudaDepthNormalEstimates, cudaDepthNormalCosts,
+				pConfRequest->k00, pConfRequest->k11, pConfRequest->k02, pConfRequest->k12,
+				pConfRequest->normalDiffThresholdDeg,
+				pConfRequest->neighbors.data(), (int)pConfRequest->neighbors.size(),
+				pConfRequest->params, pConfRequest->softGates, pConfRequest->priorNormalCoherence,
+				(void*)cudaStream, depthData.confMap.ptr<float>());
+			pConfRequest->computeNS += std::chrono::duration_cast<std::chrono::nanoseconds>(
+				std::chrono::steady_clock::now() - t0).count();
+			pConfRequest->done = bFusedConfDone;
+		}
+
 		// load depth-map, normal-map and confidence-map from CUDA memory
 		for (int r = 0; r < depthData.depthMap.rows; ++r) {
 			for (int c = 0; c < depthData.depthMap.cols; ++c) {
@@ -455,10 +486,14 @@ void PatchMatch::EstimateDepthMap(DepthData& depthData)
 				depthData.depthMap(r, c) = depth;
 				depthData.normalMap(r, c) = depthNormal.topLeftCorner<3, 1>();
 				if (scaleNumber == 0) {
-					// converted ZNCC [0-2] score, where 0 is best, to [0-1] confidence, where 1 is best
-					ASSERT(!depthData.confMap.empty());
-					float& conf = depthData.confMap(r, c);
-					conf = conf >= 1.f ? 0.f : 1.f - conf;
+					if (!bFusedConfDone) {
+						// converted ZNCC [0-2] score, where 0 is best, to [0-1] confidence, where 1 is
+						// best (skipped when the fused recalibration above already replaced confMap
+						// with the adjusted confidence, which is no longer a cost)
+						ASSERT(!depthData.confMap.empty());
+						float& conf = depthData.confMap(r, c);
+						conf = conf >= 1.f ? 0.f : 1.f - conf;
+					}
 					// map pixel views from bit-mask to index
 					ASSERT(!depthData.viewsMap.empty());
 					ViewsID& views = depthData.viewsMap(r, c);

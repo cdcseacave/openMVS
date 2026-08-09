@@ -53,6 +53,8 @@ struct DepthData;
 
 namespace CUDA {
 
+struct ConfAdjustRequest; // ConfidenceCUDA.h (fused confidence recalibration, T14)
+
 class PatchMatch {
 public:
 	struct Params {
@@ -73,7 +75,10 @@ public:
 	void Init(bool bGeomConsistency);
 	void Release();
 
-	void EstimateDepthMap(DepthData&);
+	// pConfRequest (optional): on the last geometric-consistency iteration, run the fused GPU
+	// confidence recalibration right after the estimation kernels, reusing the device-resident
+	// reference buffers (see ConfidenceCUDA.h ConfAdjustRequest); its done/computeNS report back
+	void EstimateDepthMap(DepthData&, ConfAdjustRequest* pConfRequest = NULL);
 
 	float4 GetPlaneHypothesis(const int index);
 	float GetCost(const int index);

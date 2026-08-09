@@ -108,7 +108,11 @@ def loadDMAP(dmap_path: str):
     content_type = np.frombuffer(dmap.read(1), dtype=np.uint8)
     # power-of-two exponent the stored depths were scaled down by
     depth_exp = np.frombuffer(dmap.read(1), dtype=np.int8)[0]
-    
+
+    # upper bits of content_type are flags, not content: mask them off before
+    # deciding which maps the file stores
+    conf_adjusted = bool(content_type & 16) # stored confidence is already recalibrated (CONF_ADJUSTED)
+    content_type = content_type & 15
     has_depth = content_type > 0
     has_normal = content_type in [3, 7, 11, 15]
     has_conf = content_type in [5, 7, 13, 15]
@@ -141,6 +145,7 @@ def loadDMAP(dmap_path: str):
       'has_normal': has_normal,
       'has_conf': has_conf,
       'has_views': has_views,
+      'conf_adjusted': conf_adjusted,
       'image_width': image_width,
       'image_height': image_height,
       'depth_width': depth_width,

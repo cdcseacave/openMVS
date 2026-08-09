@@ -865,6 +865,11 @@ struct HeaderDepthDataRaw {
 		HAS_NORMAL = (1<<1),
 		HAS_CONF = (1<<2),
 		HAS_VIEWS = (1<<3),
+		CONTENT_MASK = HAS_DEPTH|HAS_NORMAL|HAS_CONF|HAS_VIEWS,
+		// flag bits (not content): the writer carries them through from the caller's header.type;
+		// readers that do not know them ignore them
+		CONF_ADJUSTED = (1<<4), // the stored confMap is the recalibrated (fusion-survival)
+			// confidence, already adjusted once -- a second adjust pass must not re-run on it
 	};
 	uint16_t name; // file type
 	uint8_t type; // content type
@@ -1171,7 +1176,9 @@ inline bool ExportDepthDataRaw(std::ostream& stream, const DepthDataRaw& data,
 	// write header
 	HeaderDepthDataRaw header(data.header);
 	header.name = HeaderDepthDataRaw::HeaderDepthDataRawName();
-	header.type = HeaderDepthDataRaw::HAS_DEPTH;
+	// content bits are derived from the maps actually written below; non-content flag bits
+	// (e.g. CONF_ADJUSTED) are carried through from the caller's header
+	header.type = (uint8_t)((data.header.type & ~(unsigned)HeaderDepthDataRaw::CONTENT_MASK) | HeaderDepthDataRaw::HAS_DEPTH);
 	header.depthWidth = (uint32_t)width;
 	header.depthHeight = (uint32_t)height;
 	if (header.imageWidth < header.depthWidth || header.imageHeight < header.depthHeight)

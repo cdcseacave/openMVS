@@ -12,9 +12,13 @@
  * The per-pixel arithmetic is the SAME ConfidenceRefine.h used by the CPU (single-precision here);
  * GPU-vs-CPU differences are ULP-level (float vs double exp, FMA), well inside |dROC| <= 0.005.
  *
- * The host launcher uploads the reference + neighbor maps, runs both kernels on one stream, and
- * downloads the adjusted confidence. On any CUDA error it frees everything and returns false so the
- * caller falls back to the CPU sweep.
+ * Both kernels are templated on a reference-map accessor so the same code serves two layouts:
+ *   RefLinearAcc -- the standalone/fallback path: reference depth/normal/conf uploaded from host
+ *                   as linear buffers (RunConfidenceCUDA, unchanged semantics).
+ *   RefPackedAcc -- the fused path (T14 resident-buffer reuse): reference depth+normal read from
+ *                   PatchMatch's resident Point4 estimates and raw conf derived from its resident
+ *                   ZNCC cost buffer (RunConfidenceFusedCUDA); nothing reference-sized is uploaded.
+ * On any CUDA error the launchers free everything and return false so the caller falls back.
  */
 #include <cuda_runtime.h>
 #include <cstdio>
@@ -42,12 +46,37 @@ struct DevNeighbor {
 // nearest-pixel round matching SEACAVE::Round2Int(float) = floor(x + 0.5f)
 __device__ __forceinline__ int Round2IntDev(float x) { return (int)floorf(x + 0.5f); }
 
-// linear depth accessor for ConfRefine::DepthPlaneFit (device); file-scope so nvcc treats it as a
-// normal template argument (local structs with __device__ methods are fragile as template args)
-struct DevDepthAcc {
-	const float* d; int w, h;
-	__device__ float operator()(int x, int y) const { return d[y*w + x]; }
-	__device__ bool inside(int x, int y) const { return x >= 0 && x < w && y >= 0 && y < h; }
+// ---- reference-map accessors (kernel template parameter) ----
+// Both expose: Depth(idx), HasNormal(), Normal(idx), Conf(idx) plus the operator()(x,y)/inside(x,y)
+// depth interface ConfRefine::DepthPlaneFit expects from its accessor argument.
+
+// standalone path: reference maps uploaded from host as linear buffers
+struct RefLinearAcc {
+	const float* depth;
+	const float* normal;   // interleaved x,y,z, or null
+	const float* conf;
+	int W, H;
+	__device__ __forceinline__ float Depth(int idx) const { return depth[idx]; }
+	__device__ __forceinline__ int HasNormal() const { return normal != nullptr; }
+	__device__ __forceinline__ F3 Normal(int idx) const { return F3{normal[idx*3+0], normal[idx*3+1], normal[idx*3+2]}; }
+	__device__ __forceinline__ float Conf(int idx) const { return conf[idx]; }
+	__device__ __forceinline__ float operator()(int x, int y) const { return depth[y*W + x]; }
+	__device__ __forceinline__ bool inside(int x, int y) const { return x >= 0 && x < W && y >= 0 && y < H; }
+};
+
+// fused path: reference read straight from PatchMatch's resident buffers -- Point4 per pixel
+// (xyz = normal, w = depth) and the raw ZNCC cost (conf = cost>=1 ? 0 : 1-cost, the exact
+// conversion the host unpack loop applies, so CPU/GPU parity is preserved bit-for-bit)
+struct RefPackedAcc {
+	const float4* dn;
+	const float* cost;
+	int W, H;
+	__device__ __forceinline__ float Depth(int idx) const { return dn[idx].w; }
+	__device__ __forceinline__ int HasNormal() const { return 1; }
+	__device__ __forceinline__ F3 Normal(int idx) const { const float4 v = dn[idx]; return F3{v.x, v.y, v.z}; }
+	__device__ __forceinline__ float Conf(int idx) const { const float c = cost[idx]; return c >= 1.f ? 0.f : 1.f - c; }
+	__device__ __forceinline__ float operator()(int x, int y) const { return dn[y*W + x].w; }
+	__device__ __forceinline__ bool inside(int x, int y) const { return x >= 0 && x < W && y >= 0 && y < H; }
 };
 
 // device port of SceneDensify.cpp SampleDepthBilinear (edge-aware; false -> caller uses nearest)
@@ -67,8 +96,8 @@ __device__ __forceinline__ bool SampleDepthBilinearDev(const float* dm, int w, i
 }
 
 // ---- intra-map geometric prior (mirrors DepthMapsData::ComputeIntraMapPrior) ----
-__global__ void PriorKernel(const float* refDepth, const float* refNormal, int hasRefNormal,
-                            int W, int H, float k00, float k11, float k02, float k12,
+template <typename RefAcc>
+__global__ void PriorKernel(RefAcc ref, int W, int H, float k00, float k11, float k02, float k12,
                             float band, float invKmin, float sigmaNormalSq, int bCoherence,
                             float* priorOut) {
 	const int c = blockIdx.x*blockDim.x + threadIdx.x;
@@ -76,9 +105,8 @@ __global__ void PriorKernel(const float* refDepth, const float* refNormal, int h
 	if (c >= W || r >= H) return;
 	const int idx = r*W + c;
 	priorOut[idx] = 0.f;
-	DevDepthAcc acc{refDepth, W, H};
 	float w, wx, wy;
-	if (!ConfRefine::DepthPlaneFit(acc, c, r, w, wx, wy))
+	if (!ConfRefine::DepthPlaneFit(ref, c, r, w, wx, wy))
 		return;
 	int nInl = 0; float sumE2 = 0.f;
 	for (int y = -1; y <= 1; ++y) {
@@ -86,7 +114,7 @@ __global__ void PriorKernel(const float* refDepth, const float* refNormal, int h
 		for (int x = -1; x <= 1; ++x) {
 			if (x == 0 && y == 0) continue;
 			const int cc = c + x; if (cc < 0 || cc >= W) continue;
-			const float dN = refDepth[rr*W + cc];
+			const float dN = ref(cc, rr);
 			if (dN <= 0.f) continue;
 			const float dpred = w + wx*(float)x + wy*(float)y;
 			const float e = fabsf(dN - dpred) / w;
@@ -97,24 +125,26 @@ __global__ void PriorKernel(const float* refDepth, const float* refNormal, int h
 	const float Pplane = ConfRefine::CRexp(-sumE2 / (float)nInl);
 	const float gate = 1.f - ConfRefine::CRexp(-(float)nInl * invKmin);
 	float Pnorm = 1.f;
-	if (hasRefNormal) {
+	if (ref.HasNormal()) {
 		const F3 nGrad = ConfRefine::NormalFromGrad(k00, k11, k02, k12, c, r, w, wx, wy);
-		const float snx = refNormal[idx*3+0], sny = refNormal[idx*3+1], snz = refNormal[idx*3+2];
-		Pnorm = fmaxf(0.f, nGrad.x*snx + nGrad.y*sny + nGrad.z*snz);
+		const F3 sn = ref.Normal(idx);
+		Pnorm = fmaxf(0.f, nGrad.x*sn.x + nGrad.y*sn.y + nGrad.z*sn.z);
 		if (bCoherence) {
 			float mx = 0.f, my = 0.f, mz = 0.f; int cnt = 0;
 			for (int y = -1; y <= 1; ++y) { const int rr = r+y; if (rr<0||rr>=H) continue;
 				for (int x = -1; x <= 1; ++x) { const int cc = c+x; if (cc<0||cc>=W) continue;
-					if (refDepth[rr*W+cc] <= 0.f) continue;
-					mx += refNormal[(rr*W+cc)*3+0]; my += refNormal[(rr*W+cc)*3+1]; mz += refNormal[(rr*W+cc)*3+2]; ++cnt; } }
+					if (ref(cc, rr) <= 0.f) continue;
+					const F3 nn = ref.Normal(rr*W+cc);
+					mx += nn.x; my += nn.y; mz += nn.z; ++cnt; } }
 			const float nrm = sqrtf(mx*mx + my*my + mz*mz);
 			if (cnt > 0 && nrm > 1e-6f) {
 				mx /= nrm; my /= nrm; mz /= nrm;
 				float varAng = 0.f; int cnt2 = 0;
 				for (int y = -1; y <= 1; ++y) { const int rr = r+y; if (rr<0||rr>=H) continue;
 					for (int x = -1; x <= 1; ++x) { const int cc = c+x; if (cc<0||cc>=W) continue;
-						if (refDepth[rr*W+cc] <= 0.f) continue;
-						float dn = mx*refNormal[(rr*W+cc)*3+0] + my*refNormal[(rr*W+cc)*3+1] + mz*refNormal[(rr*W+cc)*3+2];
+						if (ref(cc, rr) <= 0.f) continue;
+						const F3 nn = ref.Normal(rr*W+cc);
+						float dn = mx*nn.x + my*nn.y + mz*nn.z;
 						dn = dn < -1.f ? -1.f : (dn > 1.f ? 1.f : dn);
 						const float a = acosf(dn); varAng += a*a; ++cnt2; } }
 				Pnorm *= ConfRefine::CRexp(-varAng / ((float)cnt2 * sigmaNormalSq));
@@ -126,18 +156,19 @@ __global__ void PriorKernel(const float* refDepth, const float* refNormal, int h
 }
 
 // ---- one-hop multi-view confirmation (mirrors AdjustConfidenceSweep) ----
-__global__ void SweepKernel(const float* refDepth, const float* refNormal, int hasRefNormal,
-                            const float* refConf, const float* priorMap, int W, int H,
+template <typename RefAcc>
+__global__ void SweepKernel(RefAcc ref, const float* priorMap, int W, int H,
                             const DevNeighbor* neigh, int nNeigh, Params p, int softGates,
                             float maxReprojErrorSq, float* confOut) {
 	const int c = blockIdx.x*blockDim.x + threadIdx.x;
 	const int r = blockIdx.y*blockDim.y + threadIdx.y;
 	if (c >= W || r >= H) return;
 	const int idx = r*W + c;
-	const float depthRef = refDepth[idx];
+	const float depthRef = ref.Depth(idx);
 	if (depthRef <= 0.f) { confOut[idx] = 0.f; return; }
 	float rnx = 0.f, rny = 0.f, rnz = 0.f;
-	if (hasRefNormal) { rnx = refNormal[idx*3+0]; rny = refNormal[idx*3+1]; rnz = refNormal[idx*3+2]; }
+	const int hasRefNormal = ref.HasNormal();
+	if (hasRefNormal) { const F3 rn = ref.Normal(idx); rnx = rn.x; rny = rn.y; rnz = rn.z; }
 
 	float Khard = 0.f, Ksoft = 0.f, Pconf = 0.f;
 	int V = 0;
@@ -207,7 +238,7 @@ __global__ void SweepKernel(const float* refDepth, const float* refNormal, int h
 		}
 	}
 	const float Kf = softGates ? Ksoft : Khard;
-	confOut[idx] = ConfRefine::Posterior(refConf[idx], priorMap[idx], Kf, Pconf, (float)V, p);
+	confOut[idx] = ConfRefine::Posterior(ref.Conf(idx), priorMap[idx], Kf, Pconf, (float)V, p);
 }
 
 // RAII: free every cudaMalloc'd pointer on scope exit (success or early return), then consume any
@@ -215,21 +246,18 @@ __global__ void SweepKernel(const float* refDepth, const float* refNormal, int h
 // later CUDA call on the same reused pool-worker thread (review finding, robustness).
 namespace { struct DevBag { std::vector<void*> v; ~DevBag(){ for (void* p : v) cudaFree(p); cudaGetLastError(); } }; }
 
-bool RunConfidenceCUDA(
-	int W, int H,
-	const float* refDepth, const float* refNormal, const float* refConf,
+// shared tail of both launchers: allocate the prior/output buffers, upload the neighbor maps +
+// descriptors, launch both kernels on `stream`, download the adjusted confidence and synchronize.
+// Every device allocation is tracked in `bag`, freed by the caller's scope exit.
+template <typename RefAcc>
+static bool LaunchConfidenceKernels(
+	int W, int H, const RefAcc& ref,
 	float k00, float k11, float k02, float k12, float normalDiffThresholdDeg,
 	const ConfNeighborHost* neighbors, int nNeighbors,
 	const Params& params, bool softGates, bool priorNormalCoherence,
-	float* confOut)
+	cudaStream_t stream, DevBag& bag, float* confOut)
 {
-	if (W <= 0 || H <= 0 || nNeighbors < 0) return false;
 	const size_t nPix = (size_t)W * (size_t)H;
-	DevBag bag;
-	cudaStream_t stream = 0;
-	if (cudaStreamCreate(&stream) != cudaSuccess) return false;
-	struct StreamGuard { cudaStream_t s; ~StreamGuard(){ cudaStreamDestroy(s); } } sg{stream};
-
 	auto dmalloc = [&](size_t bytes) -> void* {
 		void* p = nullptr;
 		if (bytes == 0) return nullptr;
@@ -241,17 +269,9 @@ bool RunConfidenceCUDA(
 		return dst && cudaMemcpyAsync(dst, src, bytes, cudaMemcpyHostToDevice, stream) == cudaSuccess;
 	};
 
-	// reference maps
-	float* dRefDepth = (float*)dmalloc(nPix*sizeof(float));
-	float* dRefConf  = (float*)dmalloc(nPix*sizeof(float));
-	float* dPrior    = (float*)dmalloc(nPix*sizeof(float));
-	float* dConf     = (float*)dmalloc(nPix*sizeof(float));
-	if (dRefDepth==(void*)-1 || dRefConf==(void*)-1 || dPrior==(void*)-1 || dConf==(void*)-1) return false;
-	float* dRefNormal = nullptr;
-	if (refNormal) { dRefNormal = (float*)dmalloc(nPix*3*sizeof(float)); if (dRefNormal==(void*)-1) return false; }
-	if (!up(dRefDepth, refDepth, nPix*sizeof(float))) return false;
-	if (!up(dRefConf, refConf, nPix*sizeof(float))) return false;
-	if (refNormal && !up(dRefNormal, refNormal, nPix*3*sizeof(float))) return false;
+	float* dPrior = (float*)dmalloc(nPix*sizeof(float));
+	float* dConf  = (float*)dmalloc(nPix*sizeof(float));
+	if (dPrior==(void*)-1 || dConf==(void*)-1) return false;
 
 	// neighbor maps + descriptors
 	std::vector<DevNeighbor> hNeigh(nNeighbors);
@@ -285,15 +305,73 @@ bool RunConfidenceCUDA(
 	const float sigmaNormalSq = rad*rad;
 	const float maxReprojErrorSq = params.thReproj * params.thReproj;
 
-	PriorKernel<<<grid, block, 0, stream>>>(dRefDepth, dRefNormal, refNormal?1:0, W, H,
+	PriorKernel<RefAcc><<<grid, block, 0, stream>>>(ref, W, H,
 		k00, k11, k02, k12, band, invKmin, sigmaNormalSq, priorNormalCoherence?1:0, dPrior);
-	SweepKernel<<<grid, block, 0, stream>>>(dRefDepth, dRefNormal, refNormal?1:0, dRefConf, dPrior,
+	SweepKernel<RefAcc><<<grid, block, 0, stream>>>(ref, dPrior,
 		W, H, dNeigh, nNeighbors, params, softGates?1:0, maxReprojErrorSq, dConf);
 
 	if (cudaMemcpyAsync(confOut, dConf, nPix*sizeof(float), cudaMemcpyDeviceToHost, stream) != cudaSuccess) return false;
 	if (cudaStreamSynchronize(stream) != cudaSuccess) return false;
 	if (cudaGetLastError() != cudaSuccess) return false;
 	return true;
+}
+
+bool RunConfidenceCUDA(
+	int W, int H,
+	const float* refDepth, const float* refNormal, const float* refConf,
+	float k00, float k11, float k02, float k12, float normalDiffThresholdDeg,
+	const ConfNeighborHost* neighbors, int nNeighbors,
+	const Params& params, bool softGates, bool priorNormalCoherence,
+	float* confOut)
+{
+	if (W <= 0 || H <= 0 || nNeighbors < 0) return false;
+	const size_t nPix = (size_t)W * (size_t)H;
+	DevBag bag;
+	cudaStream_t stream = 0;
+	if (cudaStreamCreate(&stream) != cudaSuccess) return false;
+	struct StreamGuard { cudaStream_t s; ~StreamGuard(){ cudaStreamDestroy(s); } } sg{stream};
+
+	auto dmalloc = [&](size_t bytes) -> void* {
+		void* p = nullptr;
+		if (bytes == 0) return nullptr;
+		if (cudaMalloc(&p, bytes) != cudaSuccess) return (void*)-1;
+		bag.v.push_back(p);
+		return p;
+	};
+	auto up = [&](void* dst, const void* src, size_t bytes) -> bool {
+		return dst && cudaMemcpyAsync(dst, src, bytes, cudaMemcpyHostToDevice, stream) == cudaSuccess;
+	};
+
+	// reference maps
+	float* dRefDepth = (float*)dmalloc(nPix*sizeof(float));
+	float* dRefConf  = (float*)dmalloc(nPix*sizeof(float));
+	if (dRefDepth==(void*)-1 || dRefConf==(void*)-1) return false;
+	float* dRefNormal = nullptr;
+	if (refNormal) { dRefNormal = (float*)dmalloc(nPix*3*sizeof(float)); if (dRefNormal==(void*)-1) return false; }
+	if (!up(dRefDepth, refDepth, nPix*sizeof(float))) return false;
+	if (!up(dRefConf, refConf, nPix*sizeof(float))) return false;
+	if (refNormal && !up(dRefNormal, refNormal, nPix*3*sizeof(float))) return false;
+
+	const RefLinearAcc ref{dRefDepth, dRefNormal, dRefConf, W, H};
+	return LaunchConfidenceKernels(W, H, ref, k00, k11, k02, k12, normalDiffThresholdDeg,
+		neighbors, nNeighbors, params, softGates, priorNormalCoherence, stream, bag, confOut);
+}
+
+bool RunConfidenceFusedCUDA(
+	int W, int H,
+	const void* devDepthNormals, const float* devCosts,
+	float k00, float k11, float k02, float k12, float normalDiffThresholdDeg,
+	const ConfNeighborHost* neighbors, int nNeighbors,
+	const Params& params, bool softGates, bool priorNormalCoherence,
+	void* stream, float* confOut)
+{
+	if (W <= 0 || H <= 0 || nNeighbors < 0 || !devDepthNormals || !devCosts || !confOut) return false;
+	DevBag bag;
+	// Point4 is 4 contiguous floats (x,y,z = normal, w = depth), 16-byte aligned by cudaMalloc
+	const RefPackedAcc ref{reinterpret_cast<const float4*>(devDepthNormals), devCosts, W, H};
+	return LaunchConfidenceKernels(W, H, ref, k00, k11, k02, k12, normalDiffThresholdDeg,
+		neighbors, nNeighbors, params, softGates, priorNormalCoherence,
+		(cudaStream_t)stream, bag, confOut);
 }
 
 } // namespace CUDA
