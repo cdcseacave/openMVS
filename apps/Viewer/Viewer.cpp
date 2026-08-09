@@ -47,6 +47,7 @@ namespace {
 
 namespace OPT {
 String strInputFileName;
+std::vector<std::string> strLayerFileNames;
 String strGeometryFileName;
 String strPoseQualityFileName;
 String strOutputFileName;
@@ -111,13 +112,14 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 	boost::program_options::options_description config("Viewer options");
 	config.add_options()
 		("input-file,i", boost::program_options::value<std::string>(&OPT::strInputFileName), "input project filename containing camera poses and scene (point-cloud/mesh)")
+		("layer-file,l", boost::program_options::value<std::vector<std::string>>(&OPT::strLayerFileNames)->composing(), "additional scene or geometry file to load as a layer (repeat for multiple layers)")
 		("geometry-file,g", boost::program_options::value<std::string>(&OPT::strGeometryFileName), "mesh or point-cloud with views file name (overwrite existing geometry)")
 		("pose-quality-file", boost::program_options::value<std::string>(&OPT::strPoseQualityFileName), "per-image pose quality CSV report (CreateStructure --export-pose-quality) to display as camera uncertainty ellipsoids")
 		("output-file,o", boost::program_options::value<std::string>(&OPT::strOutputFileName), "output filename for storing the mesh")
 		("screenshot-file,S", boost::program_options::value<std::string>(&OPT::strScreenshotFileName), "render the scene off-screen to this image file and exit (scriptable; extension selects the format, .png if omitted)")
 		("view-file", boost::program_options::value<std::string>(&OPT::strViewFileName), "transform file controlling the screenshot viewpoint (12 or 16 whitespace-separated values, row-major camera-to-world); if omitted the default fitted view is used")
 		("view-camera", boost::program_options::value(&OPT::nViewCamera)->default_value(-1), "set the screenshot viewpoint to this scene camera's pose for a natural upright framing (-1 disabled; out-of-range selects a central camera); overridden by --view-file")
-		("screenshot-show", boost::program_options::value<std::string>(&OPT::strShow), "which layers to render in the screenshot, as a string of flags: p=point-cloud, m=mesh, t=textured, c=cameras, w=wireframe, b=bounding-box, u=UI overlay (e.g. 'p', 'm', 'mt', 'mu'); if omitted the interactive defaults are kept for the layers and the UI overlay is disabled")
+		("screenshot-show", boost::program_options::value<std::string>(&OPT::strShow), "which scene components to render in the screenshot, as a string of flags: p=point-cloud, m=mesh, t=textured, c=cameras, w=wireframe, b=bounding-box, u=UI overlay (e.g. 'p', 'm', 'mt', 'mu'); if omitted the interactive defaults are kept and the UI overlay is disabled")
 		;
 
 	boost::program_options::options_description cmdline_options;
@@ -156,24 +158,36 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 	Util::LogBuild();
 	LOG(_T("Command line: ") APPNAME _T("%s"), Util::CommandLineToString(argc, argv).c_str());
 
-	// validate input
-	Util::ensureValidPath(OPT::strInputFileName);
+	// Resolve every command-line/config path once, before opening a layer can
+	// switch WORKING_FOLDER to that scene's directory.
+	const auto resolveOptionPath = [](String& path) {
+		Util::ensureValidPath(path);
+		if (!path.empty())
+			path = Util::getFullPath(MAKE_PATH_SAFE(path));
+	};
+	resolveOptionPath(OPT::strInputFileName);
+	for (std::string& layerFileName : OPT::strLayerFileNames) {
+		String path(layerFileName.c_str());
+		resolveOptionPath(path);
+		layerFileName.assign(path.c_str());
+	}
 	if (OPT::vm.count("help")) {
 		boost::program_options::options_description visible("Available options");
 		visible.add(generic).add(config);
 		GET_LOG() << _T("\n"
-			"Visualize any know point-cloud/mesh formats or MVS projects. Supply files through command line or Drag&Drop.\n")
+			"Visualize any known point-cloud/mesh formats or MVS projects. Supply files through command line or Drag&Drop.\n"
+			"Multiple scenes can be loaded as layers (-l), aligned, and compared side by side with synchronized cameras.\n")
 			<< visible;
 	}
 	if (!OPT::strExportType.empty())
 		OPT::strExportType = OPT::strExportType.ToLower() == _T("obj") ? _T(".obj") : _T(".ply");
 
 	// initialize optional options
-	Util::ensureValidPath(OPT::strGeometryFileName);
-	Util::ensureValidPath(OPT::strPoseQualityFileName);
-	Util::ensureValidPath(OPT::strOutputFileName);
-	Util::ensureValidPath(OPT::strScreenshotFileName);
-	Util::ensureValidPath(OPT::strViewFileName);
+	resolveOptionPath(OPT::strGeometryFileName);
+	resolveOptionPath(OPT::strPoseQualityFileName);
+	resolveOptionPath(OPT::strOutputFileName);
+	resolveOptionPath(OPT::strScreenshotFileName);
+	resolveOptionPath(OPT::strViewFileName);
 
 	MVS::Initialize(APPNAME, OPT::nMaxThreads, OPT::nProcessPriority);
 	return true;
@@ -209,13 +223,24 @@ int main(int argc, LPCTSTR* argv)
 			OPT::strInputFileName.empty() ? OPT::strInputFileName : MAKE_PATH_SAFE(OPT::strInputFileName),
 			OPT::strGeometryFileName.empty() ? OPT::strGeometryFileName : MAKE_PATH_SAFE(OPT::strGeometryFileName)))
 		return EXIT_FAILURE;
+	if (!OPT::strLayerFileNames.empty()) {
+		// Each repeated option is an independent layer. OpenFiles() deliberately
+		// pairs a scene+geometry selection from the GUI, which is not the CLI
+		// contract advertised by --layer-file.
+		for (const std::string& fileName : OPT::strLayerFileNames) {
+			if (!viewer.AddLayer(MAKE_PATH_SAFE(fileName), String(), !viewer.IsOpen()))
+				return EXIT_FAILURE;
+		}
+	}
 	if (viewer.IsOpen() && !OPT::strPoseQualityFileName.empty()) {
 		// load and display the per-image pose uncertainty
-		viewer.LoadPoseUncertainty(MAKE_PATH_SAFE(OPT::strPoseQualityFileName));
+		if (!viewer.LoadPoseUncertainty(MAKE_PATH_SAFE(OPT::strPoseQualityFileName)))
+			return EXIT_FAILURE;
 	}
 	if (viewer.IsOpen() && !OPT::strOutputFileName.empty()) {
 		// export the scene
-		viewer.Export(MAKE_PATH_SAFE(OPT::strOutputFileName), OPT::strExportType.empty()?LPCTSTR(NULL):OPT::strExportType.c_str());
+		if (!viewer.Export(MAKE_PATH_SAFE(OPT::strOutputFileName), OPT::strExportType))
+			return EXIT_FAILURE;
 	}
 	if (!OPT::strScreenshotFileName.empty()) {
 		// scriptable mode: optionally set the viewpoint, capture one frame off-screen, then exit
@@ -234,10 +259,12 @@ int main(int argc, LPCTSTR* argv)
 			w.showBounds        = OPT::strShow.find('b') != std::string::npos;
 			includeUI           = OPT::strShow.find('u') != std::string::npos;
 		}
-		if (!OPT::strViewFileName.empty())
-			viewer.SetViewFromFile(MAKE_PATH_SAFE(OPT::strViewFileName));
-		else if (OPT::nViewCamera >= 0)
-			viewer.SetViewFromCamera((unsigned)OPT::nViewCamera);
+		if (!OPT::strViewFileName.empty()) {
+			if (!viewer.SetViewFromFile(MAKE_PATH_SAFE(OPT::strViewFileName)))
+				return EXIT_FAILURE;
+		} else if (OPT::nViewCamera >= 0 && !viewer.SetViewFromCamera((unsigned)OPT::nViewCamera)) {
+			return EXIT_FAILURE;
+		}
 		viewer.GetWindow().RequestScreenshot(MAKE_PATH_SAFE(OPT::strScreenshotFileName), includeUI, true);
 	}
 	// enter viewer loop (returns immediately after the screenshot in scriptable mode)

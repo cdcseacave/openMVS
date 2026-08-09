@@ -78,6 +78,7 @@ public:
 
 	void Release();
 	void ReleaseImage();
+	void CancelImageLoading();
 	inline bool IsImageEmpty() const { return pImage.ptr == IMG_NULL; }
 	inline bool IsImageLoading() const { return pImage.ptr == IMG_LOADING; }
 	inline bool IsImageValid() const { return pImage.ptr >= IMG_VALID; }

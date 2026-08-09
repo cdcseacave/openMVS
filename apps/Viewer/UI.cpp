@@ -52,7 +52,8 @@ constexpr size_t MAX_UI_LOG_LINES = 9000;
 // S T R U C T S ///////////////////////////////////////////////////
 
 UI::UI()
-	: showSceneInfo(false)
+	: initialized(false)
+	, showSceneInfo(false)
 	, showCameraControls(false)
 	, showSelectionControls(false)
 	, showRenderSettings(false)
@@ -62,6 +63,7 @@ UI::UI()
 	, showWorkflowOverlay(true)
 	, showViewportOverlay(true)
 	, showSelectionOverlay(true)
+	, showLayersPanel(true)
 	, showAboutDialog(false)
 	, showHelpDialog(false)
 	, showExportDialog(false)
@@ -152,11 +154,15 @@ bool UI::Initialize(Window& window, const String& glslVersion) {
 
 	// Register log listener to capture log messages for the in-app console
 	GET_LOG().RegisterListener(DELEGATEBINDCLASS(Log::ClbkRecordMsg, &UI::RecordLog, this));
+	initialized = true;
 
 	return true;
 }
 
 void UI::Release() {
+	if (!initialized)
+		return;
+	initialized = false;
 	// Unregister log listener
 	GET_LOG().UnregisterListener(DELEGATEBINDCLASS(Log::ClbkRecordMsg, &UI::RecordLog, this));
 
@@ -187,6 +193,10 @@ void UI::Render(Window& window) {
 	ShowViewportOverlay(window);
 	ShowEmptySceneOverlay(window);
 	ShowSelectionOverlay(window);
+	if (showLayersPanel)
+		ShowLayersPanel(window);
+	if (window.compareMode && window.GetScene().IsOpen())
+		ShowCompareDivider(window);
 
 	ImGui::Render();
 	ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
@@ -231,33 +241,41 @@ void UI::ShowMainMenuBar(Window& window) {
 
 		if (ImGui::BeginMenu("File")) {
 			lastMenuInteraction = glfwGetTime(); // Update interaction time when menu is open
+			const bool backgroundWork(scene.HasBackgroundWork());
 			#ifdef __APPLE__
-			if (ImGui::MenuItem("Open Scene...", "Cmd+O")) {
+			if (ImGui::MenuItem("Open Scene...", "Cmd+O", false, !backgroundWork)) {
 			#else
-			if (ImGui::MenuItem("Open Scene...", "Ctrl+O")) {
+			if (ImGui::MenuItem("Open Scene...", "Ctrl+O", false, !backgroundWork)) {
 			#endif
 				// Open file dialog and load scene if file selected
 				window.SetVisible(false);
-				String filename, geometryFilename;
-				if (ShowOpenFileDialog(filename, geometryFilename))
-					scene.Open(filename, geometryFilename);
+				std::vector<String> filenames;
+				if (ShowOpenFileDialog(filenames) && ConfirmDiscardChanges(scene, "open another scene"))
+					scene.OpenFiles(filenames, true);
+				window.SetVisible(true);
+			}
+			if (ImGui::MenuItem("Add Layer...", nullptr, false, !backgroundWork)) {
+				window.SetVisible(false);
+				std::vector<String> filenames;
+				if (ShowOpenFileDialog(filenames))
+					scene.OpenFiles(filenames, false);
 				window.SetVisible(true);
 			}
 			// Load a pose-quality CSV report onto the current scene (camera uncertainty ellipsoids)
-			if (ImGui::MenuItem("Load Pose Quality...", nullptr, false, scene.IsOpen()))
+			if (ImGui::MenuItem("Load Pose Quality...", nullptr, false, scene.IsOpen() && !backgroundWork))
 				PromptOpenPoseQualityReport(window);
 			#ifdef __APPLE__
-			if (ImGui::MenuItem("Save Scene", "Cmd+S", false, scene.IsOpen())) {
+			if (ImGui::MenuItem("Save Scene", "Cmd+S", false, scene.IsOpen() && !backgroundWork)) {
 			#else
-			if (ImGui::MenuItem("Save Scene", "Ctrl+S", false, scene.IsOpen())) {
+			if (ImGui::MenuItem("Save Scene", "Ctrl+S", false, scene.IsOpen() && !backgroundWork)) {
 			#endif
 				// Save scene to current file
 				scene.Save();
 			}
 			#ifdef __APPLE__
-			if (ImGui::MenuItem("Save Scene As...", "Cmd+Shift+S", false, scene.IsOpen())) {
+			if (ImGui::MenuItem("Save Scene As...", "Cmd+Shift+S", false, scene.IsOpen() && !backgroundWork)) {
 			#else
-			if (ImGui::MenuItem("Save Scene As...", "Ctrl+Shift+S", false, scene.IsOpen())) {
+			if (ImGui::MenuItem("Save Scene As...", "Ctrl+Shift+S", false, scene.IsOpen() && !backgroundWork)) {
 			#endif
 				// Always prompt for save location
 				window.SetVisible(false);
@@ -295,25 +313,24 @@ void UI::ShowMainMenuBar(Window& window) {
 				window.SetVisible(true);
 			}
 			#ifdef __APPLE__
-			if (ImGui::MenuItem("Close", "Cmd+W", false, scene.IsOpen())) {
+			if (ImGui::MenuItem("Close", "Cmd+W", false, scene.IsOpen() && !backgroundWork)) {
 			#else
-			if (ImGui::MenuItem("Close", "Ctrl+W", false, scene.IsOpen())) {
+			if (ImGui::MenuItem("Close", "Ctrl+W", false, scene.IsOpen() && !backgroundWork)) {
 			#endif
-				// Release/reset the currently open scene (keeps the application/window running)
-				scene.Reset();
-				// Make sure renderer/UI reflect the cleared scene
-				window.UploadRenderData();
+				const int activeLayerIndex = scene.GetActiveLayerIndex();
+				if (activeLayerIndex >= 0 && ConfirmDiscardLayer(scene, (size_t)activeLayerIndex))
+					scene.RemoveLayer((size_t)activeLayerIndex);
 			}
 			ImGui::Separator();
-			if (ImGui::MenuItem("Export...", nullptr, false, scene.IsOpen())) {
+			if (ImGui::MenuItem("Export...", nullptr, false, scene.IsOpen() && !backgroundWork)) {
 				// Show export dialog with export format options
 				showExportDialog = true;
 			}
 			ImGui::Separator();
 			#ifdef __APPLE__
-			if (ImGui::MenuItem("Exit", "Cmd+Q")) {
+			if (ImGui::MenuItem("Exit", "Cmd+Q", false, !backgroundWork)) {
 			#else
-			if (ImGui::MenuItem("Exit", "Alt+F4")) {
+			if (ImGui::MenuItem("Exit", "Alt+F4", false, !backgroundWork)) {
 			#endif
 				// Check if geometry was modified and show save prompt
 				if (scene.IsGeometryModified()) {
@@ -333,6 +350,7 @@ void UI::ShowMainMenuBar(Window& window) {
 			ImGui::MenuItem("Selection Dialog", "Shift+S", &showSelectionDialog);
 			ImGui::MenuItem("Render Settings", "Shift+R", &showRenderSettings);
 			ImGui::MenuItem("Bounding Box", "Shift+B", &showBoundingBoxControls);
+			ImGui::MenuItem("Layers", nullptr, &showLayersPanel);
 			ImGui::Separator();
 			ImGui::MenuItem("Console", nullptr, &showConsoleOverlay);
 			ImGui::MenuItem("Performance Overlay", nullptr, &showPerformanceOverlay);
@@ -359,33 +377,33 @@ void UI::ShowMainMenuBar(Window& window) {
 			lastMenuInteraction = glfwGetTime();
 			const Scene& scene = window.GetScene();
 			const bool hasScene = scene.IsOpen();
-			const MVS::Scene& mvsScene = scene.GetScene();
-			const bool hasImages = hasScene && mvsScene.IsValid();
-			const bool hasPoints = hasImages && mvsScene.pointcloud.IsValid();
-			const bool hasMesh = hasImages && !mvsScene.mesh.IsEmpty();
-			const bool workflowRunning = scene.IsWorkflowRunning();
+			const bool backgroundWork = scene.HasBackgroundWork();
+			const MVS::Scene* mvsScene = hasScene && !backgroundWork ? &scene.GetScene() : nullptr;
+			const bool hasImages = mvsScene != nullptr && mvsScene->IsValid();
+			const bool hasPoints = hasImages && mvsScene->pointcloud.IsValid();
+			const bool hasMesh = hasImages && !mvsScene->mesh.IsEmpty();
 			const auto addWorkflowEntry = [&](const char* label, bool enabled, bool& toggleFlag, const char* tooltip) {
 				// Disable if workflow is running or prerequisites not met
-				const bool canRun = enabled && !workflowRunning;
+				const bool canRun = enabled && !backgroundWork;
 				if (ImGui::MenuItem(label, nullptr, false, canRun))
 					toggleFlag = true;
 				else if (!canRun && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
-					if (workflowRunning)
-						ImGui::SetTooltip("A workflow is currently running");
+					if (backgroundWork)
+						ImGui::SetTooltip("Background work is currently running");
 					else
 						ImGui::SetTooltip("%s", tooltip);
 				}
 			};
 			addWorkflowEntry("Estimate ROI", hasPoints, showEstimateROIWorkflow, "Requires calibrated images and point-cloud.");
-			if (ImGui::MenuItem("Recompute Bounding Box", "Ctrl+B", false, hasPoints && !workflowRunning))
+			if (ImGui::MenuItem("Recompute Bounding Box", "Ctrl+B", false, hasPoints && !backgroundWork))
 				window.GetScene().RunEstimateROIWorkflow(window.GetScene().GetEstimateROIWorkflowOptions());
 			else if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
 				ImGui::SetTooltip("Run the ROI estimation workflow with the current options (same as Ctrl+B)");
-			if (ImGui::MenuItem("Set Bounding Box from Selection", nullptr, false, hasScene))
+			if (ImGui::MenuItem("Set Bounding Box from Selection", nullptr, false, hasScene && !backgroundWork))
 				window.GetScene().SetROIFromSelection(false);
 			else if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
 				ImGui::SetTooltip("Fit an oriented bounding box to the currently selected points/faces");
-			if (ImGui::MenuItem("Clear Bounding Box", nullptr, false, hasScene && mvsScene.IsBounded()))
+			if (ImGui::MenuItem("Clear Bounding Box", nullptr, false, mvsScene != nullptr && mvsScene->IsBounded() && !backgroundWork))
 				window.GetScene().ClearBoundingBox();
 			else if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
 				ImGui::SetTooltip("Remove the scene's bounding box");
@@ -415,6 +433,7 @@ void UI::ShowMainMenuBar(Window& window) {
 
 void UI::ShowSceneInfo(const Window& window) {
 	if (!showSceneInfo) return;
+	if (!window.GetScene().IsOpen()) return; // GetScene() requires an active layer
 	const MVS::Scene& scene = window.GetScene().GetScene();
 
 	ImGui::SetNextWindowPos(ImVec2(10, 110), ImGuiCond_FirstUseEver);
@@ -525,23 +544,15 @@ void UI::ShowCameraControls(Window& window) {
 		if (ImGui::SliderFloat("Camera Size", &window.cameraSize, 0.005f, 0.5f, "%.4f")) {
 			window.GetRenderer().UploadCameras(window);
 			window.GetRenderer().UploadSelection(window);
+			window.RequestRedraw();
 		}
 		if (ImGui::IsItemHovered())
 			ImGui::SetTooltip("Adjust camera size");
 
-		// Camera display color mode
-		ImGui::TextUnformatted("Camera Display Color");
-		int displayColor = (int)window.cameraDisplayColor;
-		bool cameraDisplayChanged = false;
-		if (ImGui::RadioButton("Solid##CameraDisplayColor", &displayColor, (int)Window::CAMERA_COLOR_SOLID))
-			cameraDisplayChanged = true;
-		ImGui::SameLine();
-		if (ImGui::RadioButton("Jet##CameraDisplayColor", &displayColor, (int)Window::CAMERA_COLOR_JET))
-			cameraDisplayChanged = true;
-
 		// Camera display type
 		ImGui::TextUnformatted("Camera Display Type");
 		int displayType = (int)window.cameraDisplayType;
+		bool cameraDisplayChanged = false;
 		if (ImGui::RadioButton("Frustum##CameraDisplayType", &displayType, (int)Window::CAMERA_DISPLAY_FRUSTUM))
 			cameraDisplayChanged = true;
 		ImGui::SameLine();
@@ -554,7 +565,6 @@ void UI::ShowCameraControls(Window& window) {
 			ImGui::SetTooltip("Show look-at direction indicator for each camera");
 
 		if (cameraDisplayChanged) {
-			window.cameraDisplayColor = (Window::CameraDisplayColor)displayColor;
 			window.cameraDisplayType = (Window::CameraDisplayType)displayType;
 			window.GetRenderer().UploadCameras(window);
 			window.GetRenderer().UploadSelection(window);
@@ -563,7 +573,7 @@ void UI::ShowCameraControls(Window& window) {
 
 		// Pose-uncertainty ellipsoids (available once a pose quality report is loaded)
 		{
-			ImGui::BeginDisabled(!window.GetScene().IsOpen());
+			ImGui::BeginDisabled(!window.GetScene().IsOpen() || window.GetScene().HasBackgroundWork());
 			if (ImGui::Button("Load Pose Quality..."))
 				PromptOpenPoseQualityReport(window);
 			ImGui::EndDisabled();
@@ -860,14 +870,14 @@ void UI::ShowBoundingBoxControls(Window& window) {
 	if (!showBoundingBoxControls) return;
 
 	Scene& scene = window.GetScene();
-	MVS::Scene& mvsScene = scene.GetScene();
 
 	ImGui::SetNextWindowPos(ImVec2(20, 130), ImGuiCond_FirstUseEver);
 	ImGui::SetNextWindowSize(ImVec2(340, 420), ImGuiCond_FirstUseEver);
 	if (ImGui::Begin("Bounding Box", &showBoundingBoxControls)) {
 		const bool hasScene = scene.IsOpen();
-		const bool hasPoints = mvsScene.pointcloud.IsValid();
-		const bool isBounded = mvsScene.IsBounded();
+		MVS::Scene* mvsScene = hasScene ? &scene.GetScene() : nullptr;
+		const bool hasPoints = mvsScene != nullptr && mvsScene->pointcloud.IsValid();
+		const bool isBounded = mvsScene != nullptr && mvsScene->IsBounded();
 		const bool workflowRunning = scene.IsWorkflowRunning();
 
 		// --- Visibility ---
@@ -906,6 +916,7 @@ void UI::ShowBoundingBoxControls(Window& window) {
 		}
 		ImGui::Spacing();
 		{
+			ImGui::BeginDisabled(workflowRunning);
 			if (ImGui::Button("Select ROI with mouse...")) {
 				// Switch to selection control so the user can draw a region.
 				window.SetControlMode(Window::CONTROL_SELECTION);
@@ -920,10 +931,11 @@ void UI::ShowBoundingBoxControls(Window& window) {
 			if (ImGui::Button("Set from Selection (AABB)"))
 				scene.SetROIFromSelection(true);
 			ImGui::EndDisabled();
+			ImGui::EndDisabled();
 		}
 		ImGui::Spacing();
 		{
-			ImGui::BeginDisabled(!isBounded);
+			ImGui::BeginDisabled(!isBounded || workflowRunning);
 			if (ImGui::Button("Clear Bounding Box"))
 				scene.ClearBoundingBox();
 			ImGui::EndDisabled();
@@ -938,6 +950,7 @@ void UI::ShowBoundingBoxControls(Window& window) {
 		if (!isBounded) {
 			ImGui::TextDisabled("(no bounding box - compute or set one first)");
 		} else {
+			ImGui::BeginDisabled(workflowRunning);
 			// 3D gizmo edit mode toggle
 			const bool inEditMode = window.GetControlMode() == Window::CONTROL_BBOX_EDIT;
 			if (inEditMode) {
@@ -956,7 +969,7 @@ void UI::ShowBoundingBoxControls(Window& window) {
 
 			// Numeric edit - always available. Edit a local copy, then commit
 			// through Scene::SetBoundingBox so invariants stay centralized.
-			OBB3f edited = mvsScene.obb;
+			OBB3f edited = mvsScene->obb;
 			if (BoxRotationWidget::EditOBB("##OBBEdit", edited)) {
 				scene.SetBoundingBox(edited);
 				// If the controller is active, refresh its working copy too.
@@ -972,9 +985,295 @@ void UI::ShowBoundingBoxControls(Window& window) {
 			}
 			if (ImGui::IsItemHovered())
 				ImGui::SetTooltip("Clear the current OBB and re-run Estimate ROI");
+			ImGui::EndDisabled();
 		}
 	}
 	ImGui::End();
+}
+
+void UI::ShowLayersPanel(Window& window)
+{
+	Scene& scene = window.GetScene();
+	ImGui::SetNextWindowPos(ImVec2(10, 470), ImGuiCond_FirstUseEver);
+	ImGui::SetNextWindowSize(ImVec2(320, 320), ImGuiCond_FirstUseEver);
+	if (!ImGui::Begin("Layers", &showLayersPanel)) {
+		ImGui::End();
+		return;
+	}
+	const bool backgroundWork(scene.HasBackgroundWork());
+	ImGui::BeginDisabled(backgroundWork);
+	if (backgroundWork) {
+		ImGui::TextDisabled("Layer controls are locked while background work is running");
+		ImGui::EndDisabled();
+		ImGui::End();
+		return;
+	}
+
+	if (ImGui::Button("Open...", ImVec2(90, 0))) {
+		window.SetVisible(false);
+		std::vector<String> filenames;
+		if (ShowOpenFileDialog(filenames) && ConfirmDiscardChanges(scene, "open another scene"))
+			scene.OpenFiles(filenames, true);
+		window.SetVisible(true);
+	}
+	ImGui::SameLine();
+	if (ImGui::Button("Add...", ImVec2(90, 0))) {
+		window.SetVisible(false);
+		std::vector<String> filenames;
+		if (ShowOpenFileDialog(filenames))
+			scene.OpenFiles(filenames, false);
+		window.SetVisible(true);
+	}
+	ImGui::SameLine();
+	if (ImGui::Button("Show All", ImVec2(90, 0)))
+		scene.SetAllLayersVisible();
+
+	if (!scene.IsOpen()) {
+		ImGui::EndDisabled();
+		ImGui::Separator();
+		ImGui::TextDisabled("No layers loaded");
+		ImGui::End();
+		return;
+	}
+
+	ImGui::Separator();
+	if (ImGui::Button("Prev")) {
+		scene.ActivateNextLayer(-1);
+	}
+	ImGui::SameLine();
+	if (ImGui::Button("Next")) {
+		scene.ActivateNextLayer(1);
+	}
+	ImGui::SameLine();
+	if (ImGui::Button("Solo Active")) {
+		const int activeLayerIndex = scene.GetActiveLayerIndex();
+		if (activeLayerIndex >= 0)
+			scene.SoloLayer((size_t)activeLayerIndex);
+	}
+
+	ImGui::Separator();
+	int compareMode = (int)window.compareMode;
+	bool compareChanged = false;
+	ImGui::AlignTextToFramePadding();
+	ImGui::TextUnformatted("Compare:");
+	ImGui::SameLine();
+	compareChanged |= ImGui::RadioButton("Off", &compareMode, Window::COMPARE_DISABLED);
+	ImGui::SameLine();
+	compareChanged |= ImGui::RadioButton("Swipe", &compareMode, Window::COMPARE_SWIPE);
+	if (ImGui::IsItemHovered())
+		ImGui::SetTooltip("Split the view at a draggable divider: side-A layers render left,\n"
+		                  "side-B layers right, both sharing the same full-window projection,\n"
+		                  "so aligned scenes match pixel-exact across the divider");
+	ImGui::SameLine();
+	compareChanged |= ImGui::RadioButton("Split", &compareMode, Window::COMPARE_SPLIT);
+	if (ImGui::IsItemHovered())
+		ImGui::SetTooltip("Show two equal side-by-side viewports, each scene centered\n"
+		                  "in its own full frustum");
+	if (compareChanged)
+		scene.EnableCompareMode((Window::CompareMode)compareMode);
+	if (window.IsCompareEnabled()) {
+		bool syncCameras = window.compareSyncCameras;
+		if (ImGui::Checkbox("Sync Cameras", &syncCameras))
+			window.SetCompareSyncCameras(syncCameras);
+		if (ImGui::IsItemHovered())
+			ImGui::SetTooltip("Move the cameras of both sides together; uncheck to adjust each\n"
+			                  "side's camera individually with the mouse over its viewport\n"
+			                  "(re-checking snaps the other side back onto the active view)");
+	}
+	if (scene.GetLayerCount() > 1) {
+		ImGui::SameLine();
+		if (ImGui::Button("Align to Active")) {
+			if (!scene.AlignLayersToActive())
+				DEBUG("No layer could be aligned to the active layer");
+		}
+		if (ImGui::IsItemHovered())
+			ImGui::SetTooltip("Move every other layer onto the active layer with a similarity transform\n"
+			                  "estimated from cameras shared between the scenes (matched by photo name,\n"
+			                  "then by preserved SFM image ID); requires at least 3 shared cameras");
+	}
+
+	ImGui::Separator();
+	bool removedLayer = false;
+	const int layerColumns = window.compareMode ? 5 : 4;
+	if (ImGui::BeginTable("##layer-list", layerColumns, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH)) {
+		ImGui::TableSetupColumn("Visible", ImGuiTableColumnFlags_WidthFixed, 24.f);
+		ImGui::TableSetupColumn("Layer", ImGuiTableColumnFlags_WidthStretch);
+		if (window.compareMode)
+			ImGui::TableSetupColumn("Side", ImGuiTableColumnFlags_WidthFixed, 24.f);
+		ImGui::TableSetupColumn("Solo", ImGuiTableColumnFlags_WidthFixed, 24.f);
+		ImGui::TableSetupColumn("Remove", ImGuiTableColumnFlags_WidthFixed, 24.f);
+		for (size_t i = 0; i < scene.GetLayerCount(); ++i) {
+			Scene::Layer* layer = scene.GetLayer(i);
+			if (layer == nullptr)
+				continue;
+			ImGui::PushID((int)layer->id);
+			ImGui::TableNextRow();
+
+			ImGui::TableSetColumnIndex(0);
+			bool isVisible = layer->visible;
+			if (ImGui::Checkbox("##visible", &isVisible))
+				scene.SetLayerVisible(i, isVisible);
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip("Show or hide this layer");
+
+			ImGui::TableSetColumnIndex(1);
+			String displayLabel(layer->label);
+			if (layer->dirty)
+				displayLabel += _T(" *");
+			const bool isActive(scene.GetActiveLayerIndex() == (int)i);
+			if (ImGui::Selectable(displayLabel.c_str(), isActive))
+				scene.SetActiveLayer(i);
+			if (ImGui::IsItemHovered())
+					ImGui::SetTooltip("%u points\n%u mesh vertices, %u faces\n%u cameras",
+					                  (unsigned)layer->scene.pointcloud.points.size(), (unsigned)layer->scene.mesh.vertices.size(),
+					                  (unsigned)layer->scene.mesh.faces.size(), (unsigned)layer->images.size());
+
+			int column = 2;
+			if (window.compareMode) {
+				ImGui::TableSetColumnIndex(column++);
+				if (ImGui::SmallButton(layer->compareRight ? "B" : "A")) {
+					layer->compareRight = !layer->compareRight;
+					window.RequestRedraw();
+				}
+				if (ImGui::IsItemHovered())
+					ImGui::SetTooltip("Compare side: A renders left of the divider, B right (click to swap)");
+			}
+
+			ImGui::TableSetColumnIndex(column++);
+			if (ImGui::SmallButton("S"))
+				scene.SoloLayer(i);
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip("Solo this layer");
+
+			ImGui::TableSetColumnIndex(column);
+			if (ImGui::SmallButton("X") && ConfirmDiscardLayer(scene, i)) {
+				scene.RemoveLayer(i);
+				removedLayer = true;
+				ImGui::PopID();
+				break;
+			}
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip("Remove this layer");
+			ImGui::PopID();
+		}
+		ImGui::EndTable();
+	}
+	if (removedLayer) {
+		ImGui::EndDisabled();
+		ImGui::End();
+		return;
+	}
+
+	Scene::Layer* activeLayer = scene.GetActiveLayer();
+	if (activeLayer != nullptr) {
+		ImGui::Separator();
+		ImGui::Text("Active Layer Appearance");
+
+		bool pointAppearanceChanged = false;
+		bool cameraAppearanceChanged = false;
+
+		const bool hasPoints = !activeLayer->scene.pointcloud.IsEmpty();
+		const bool hasCameras = !activeLayer->images.empty();
+
+		if (hasPoints) {
+			bool usePointSolidColor = activeLayer->usePointSolidColor;
+			if (ImGui::Checkbox("Solid Point Color", &usePointSolidColor)) {
+				activeLayer->usePointSolidColor = usePointSolidColor;
+				pointAppearanceChanged = true;
+			}
+
+			float pointColor[3] = {
+			    activeLayer->pointColor.x,
+			    activeLayer->pointColor.y,
+			    activeLayer->pointColor.z};
+			ImGui::BeginDisabled(!activeLayer->usePointSolidColor);
+			if (ImGui::ColorEdit3("Point Color", pointColor)) {
+				activeLayer->pointColor = Point3f(pointColor[0], pointColor[1], pointColor[2]);
+				pointAppearanceChanged = true;
+			}
+			ImGui::EndDisabled();
+		} else {
+			ImGui::TextDisabled("No point cloud in active layer");
+		}
+
+		if (hasCameras) {
+			bool useCameraJetColor = activeLayer->useCameraJetColor;
+			if (ImGui::Checkbox("Jet Camera Colors", &useCameraJetColor)) {
+				activeLayer->useCameraJetColor = useCameraJetColor;
+				cameraAppearanceChanged = true;
+			}
+
+			float cameraColor[3] = {
+			    activeLayer->cameraColor.x,
+			    activeLayer->cameraColor.y,
+			    activeLayer->cameraColor.z};
+			ImGui::BeginDisabled(activeLayer->useCameraJetColor);
+			if (ImGui::ColorEdit3("Camera Color", cameraColor)) {
+				activeLayer->cameraColor = Point3f(cameraColor[0], cameraColor[1], cameraColor[2]);
+				cameraAppearanceChanged = true;
+			}
+			ImGui::EndDisabled();
+			ImGui::TextDisabled("Jet gradient is computed within this layer.");
+		} else {
+			ImGui::TextDisabled("No cameras in active layer");
+		}
+
+		if (pointAppearanceChanged || cameraAppearanceChanged) {
+			if (pointAppearanceChanged)
+				window.GetRenderer().UploadPointClouds(scene, window.pointNormalLength);
+			if (cameraAppearanceChanged)
+				window.GetRenderer().UploadCameras(window);
+			window.RequestRedraw();
+		}
+	}
+	ImGui::EndDisabled();
+
+	ImGui::End();
+}
+
+// A|B compare divider: the split line and side labels drawn on the foreground draw
+// list. In swipe mode a full-height drag handle moves the divider; the position is
+// stored as a window fraction, so the UI-space overlay and the framebuffer-space
+// scissor rects always agree. In split mode the divider is a fixed separator
+// between the two equal viewports.
+void UI::ShowCompareDivider(Window& window)
+{
+	const ImGuiIO& io = ImGui::GetIO();
+	const float displayWidth = io.DisplaySize.x;
+	const float displayHeight = io.DisplaySize.y;
+	if (displayWidth <= 0.f || displayHeight <= 0.f)
+		return;
+
+	float splitX = window.compareSplitPos * displayWidth;
+	bool hovered = false, held = false;
+	if (window.compareMode == Window::COMPARE_SWIPE) {
+		ImGui::SetNextWindowPos(ImVec2(splitX - 6.f, 0.f));
+		ImGui::SetNextWindowSize(ImVec2(12.f, displayHeight));
+		ImGui::SetNextWindowBgAlpha(0.f);
+		const ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings |
+		                               ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav |
+		                               ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBackground;
+		if (ImGui::Begin("##compare-divider", nullptr, flags)) {
+			ImGui::InvisibleButton("##compare-divider-drag", ImVec2(12.f, displayHeight));
+			hovered = ImGui::IsItemHovered();
+			held = ImGui::IsItemActive();
+			if (hovered || held)
+				ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+			if (held) {
+				window.compareSplitPos = CLAMP(io.MousePos.x / displayWidth, 0.05f, 0.95f);
+				Window::RequestRedraw();
+			}
+		}
+		ImGui::End();
+	}
+
+	splitX = window.compareSplitPos * displayWidth;
+	ImDrawList* drawList = ImGui::GetForegroundDrawList();
+	const ImU32 lineColor = (hovered || held) ? IM_COL32(255, 210, 80, 255) : IM_COL32(230, 230, 230, 180);
+	drawList->AddLine(ImVec2(splitX, 0.f), ImVec2(splitX, displayHeight), lineColor, (hovered || held) ? 3.f : 2.f);
+	const ImU32 labelColor = IM_COL32(255, 255, 255, 220);
+	drawList->AddText(ImVec2(splitX - 20.f, 40.f), labelColor, "A");
+	drawList->AddText(ImVec2(splitX + 10.f, 40.f), labelColor, "B");
 }
 
 void UI::ShowConsoleOverlay(Window& window)
@@ -1000,8 +1299,8 @@ void UI::ShowConsoleOverlay(Window& window)
 	ImGui::SetNextWindowPos(window_pos, ImGuiCond_Always, window_pos_pivot);
 	ImGui::SetNextWindowBgAlpha(0.35f);
 	ImGui::SetNextWindowSizeConstraints(ImVec2(400, 100), ImVec2(
-		MINF(window.GetCamera().GetSize().width*0.8f, 800*window.userFontScale),
-		MINF(window.GetCamera().GetSize().height*0.4f, 200*window.userFontScale)));
+		MINF(window.GetSize().width*0.8f, 800*window.userFontScale),
+		MINF(window.GetSize().height*0.4f, 200*window.userFontScale)));
 
 	if (ImGui::Begin("Console", &showConsoleOverlay, window_flags)) {
 		// use the last item's rect (the child) in screen coordinates — this anchors the buttons
@@ -1135,12 +1434,7 @@ void UI::ShowWorkflowOverlay(Window& window) {
 		if (workflowRunning) {
 			const Scene::WorkflowType type = scene.GetCurrentWorkflowType();
 			const double elapsed = scene.GetWorkflowElapsedTime();
-			const char* workflowName =
-				type == Scene::WF_ESTIMATE_ROI ? "Estimate ROI" :
-				type == Scene::WF_DENSIFY ? "Densify" :
-				type == Scene::WF_RECONSTRUCT ? "Reconstruct Mesh" :
-				type == Scene::WF_REFINE ? "Refine Mesh" :
-				type == Scene::WF_TEXTURE ? "Texture Mesh" : "Unknown";
+			const char* workflowName = Scene::GetWorkflowName(type);
 
 			ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.2f, 1.0f), "Running: %s", workflowName);
 			ImGui::ProgressBar(-1.0f * static_cast<float>(ImGui::GetTime()), ImVec2(-1, 0));
@@ -1157,12 +1451,7 @@ void UI::ShowWorkflowOverlay(Window& window) {
 			const size_t start = history.size() > maxShow ? history.size() - maxShow : 0;
 			for (size_t i = start; i < history.size(); ++i) {
 				const auto& entry = history[i];
-				const char* name =
-					entry.type == Scene::WF_ESTIMATE_ROI ? "ROI" :
-					entry.type == Scene::WF_DENSIFY ? "Densify" :
-					entry.type == Scene::WF_RECONSTRUCT ? "Reconstruct" :
-					entry.type == Scene::WF_REFINE ? "Refine" :
-					entry.type == Scene::WF_TEXTURE ? "Texture" : "?";
+				const char* name = Scene::GetWorkflowName(entry.type, true);
 
 				if (entry.success) {
 					ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "%s: %.1f s", name, entry.duration);
@@ -1277,9 +1566,9 @@ void UI::ShowEmptySceneOverlay(const Window& window) {
 		ImGui::Dummy(ImVec2(0,8));
 		ImGui::SetCursorPosX((win_size.x - btn_w) * 0.5f);
 		if (ImGui::Button("Open", ImVec2(btn_w, btn_h))) {
-			String filename, geometryFilename;
-			if (ShowOpenFileDialog(filename, geometryFilename))
-				scene.Open(filename, geometryFilename);
+			std::vector<String> filenames;
+			if (ShowOpenFileDialog(filenames))
+				scene.OpenFiles(filenames, true);
 		}
 	}
 	ImGui::End();
@@ -1337,6 +1626,7 @@ void UI::ShowHelpDialog() {
 			ImGui::Text("  Ctrl+X        Save Screenshot");
 			ImGui::Text("  Alt+F4        Exit");
 		}
+		ImGui::Text("  [ / ]         Previous/next active layer");
 		ImGui::Separator();
 
 		// Camera Navigation
@@ -1442,6 +1732,9 @@ void UI::ShowHelpDialog() {
 		ImGui::Text("  Mouse at top        Show/hide menu bar");
 		ImGui::Text("  Escape              Close dialogs/windows");
 		ImGui::Text("                      Clear focus/hide menu");
+		ImGui::Text("  Layers panel        Toggle visibility, solo, active layer");
+		ImGui::Text("                      Compare A|B (swipe or split view), align layers");
+		ImGui::Text("                      Sync or per-viewport camera adjustment");
 		ImGui::Separator();
 
 		// File Formats
@@ -1476,6 +1769,10 @@ void UI::ShowHelpDialog() {
 
 void UI::ShowExportDialog(Scene& scene) {
 	if (!showExportDialog) return;
+	if (!scene.IsOpen() || scene.HasBackgroundWork()) {
+		showExportDialog = false;
+		return;
+	}
 
 	// Show as a regular window instead of modal popup
 	ImGui::SetNextWindowSize(ImVec2(400, 300), ImGuiCond_FirstUseEver);
@@ -1484,33 +1781,59 @@ void UI::ShowExportDialog(Scene& scene) {
 		ImGui::Separator();
 
 		static int exportFormat = 0;
+		static int exportScope = 0;
 		static bool bExportViews = true;
 		const char* formatOptions[] = { "PLY Point Cloud", "GLTF Point Cloud", "PLY Mesh", "OBJ Mesh", "GLTF Mesh" };
 		const char* formatExt[] = { ".ply", ".glb", ".ply", ".obj", ".glb" };
 		ImGui::Combo("Export Format", &exportFormat, formatOptions, IM_ARRAYSIZE(formatOptions));
+		if (scene.GetLayerCount() > 1) {
+			const char* scopeOptions[] = {"Active Layer", "Visible Layers (Merged)"};
+			ImGui::Combo("Export Scope", &exportScope, scopeOptions, IM_ARRAYSIZE(scopeOptions));
+		} else {
+			exportScope = 0;
+		}
 
 		ImGui::Separator();
 
 		// Show what will be exported based on format and scene content
-		const MVS::Scene& mvs_scene = scene.GetScene();
-		bool hasPointCloud = !mvs_scene.pointcloud.IsEmpty();
-		bool hasMesh = !mvs_scene.mesh.IsEmpty();
+		bool hasPointCloud = false;
+		bool hasMesh = false;
+		if (exportScope == 0) {
+			const MVS::Scene& mvs_scene = scene.GetScene();
+			hasPointCloud = !mvs_scene.pointcloud.IsEmpty();
+			hasMesh = !mvs_scene.mesh.IsEmpty();
+		} else {
+			for (const Scene::Layer& layer : scene.GetLayers()) {
+				if (!layer.visible)
+					continue;
+				hasPointCloud = hasPointCloud || !layer.scene.pointcloud.IsEmpty();
+				hasMesh = hasMesh || !layer.scene.mesh.IsEmpty();
+			}
+		}
 
 		switch (exportFormat) {
 		case 0: // PLY Point Cloud
 		case 1: // GLTF Point Cloud
 			if (hasPointCloud) {
-				ImGui::Text("✓ Point cloud: %zu points", mvs_scene.pointcloud.points.size());
-				if (!mvs_scene.pointcloud.pointViews.empty()) {
+				if (exportScope == 0) {
+					const MVS::Scene& mvs_scene = scene.GetScene();
+					ImGui::Text("✓ Point cloud: %zu points", mvs_scene.pointcloud.points.size());
+				} else {
+					ImGui::Text("✓ Merged visible point clouds");
+				}
+				if (exportScope == 0 && !scene.GetScene().pointcloud.pointViews.empty()) {
 					ImGui::Text("✓ Point views available");
 					ImGui::SameLine();
 					ImGui::Checkbox("Export", &bExportViews);
+				} else if (exportScope != 0) {
+					bExportViews = false;
+					ImGui::TextDisabled("Point-view export is disabled for merged layers");
 				}
-				if (!mvs_scene.pointcloud.pointWeights.empty())
+				if (exportScope == 0 && !scene.GetScene().pointcloud.pointWeights.empty())
 					ImGui::Text("✓ Point weights available");
-				if (!mvs_scene.pointcloud.colors.empty())
+				if (exportScope == 0 && !scene.GetScene().pointcloud.colors.empty())
 					ImGui::Text("✓ Point colors available");
-				if (!mvs_scene.pointcloud.normals.empty())
+				if (exportScope == 0 && !scene.GetScene().pointcloud.normals.empty())
 					ImGui::Text("✓ Point normals available");
 			} else {
 				ImGui::TextColored(ImVec4(1.f, 0.6f, 0.6f, 1.f), "⚠ No point cloud data to export");
@@ -1520,10 +1843,16 @@ void UI::ShowExportDialog(Scene& scene) {
 		case 3: // OBJ Mesh
 		case 4: // GLTF Mesh
 			if (hasMesh) {
-				ImGui::Text("✓ Mesh: %u vertices, %u faces", mvs_scene.mesh.vertices.size(), mvs_scene.mesh.faces.size());
-				if (!mvs_scene.mesh.faceTexcoords.empty() && !mvs_scene.mesh.texturesDiffuse.empty())
+				if (exportScope == 0) {
+					const MVS::Scene& mvs_scene = scene.GetScene();
+					ImGui::Text("✓ Mesh: %u vertices, %u faces", mvs_scene.mesh.vertices.size(), mvs_scene.mesh.faces.size());
+				} else {
+					ImGui::Text("✓ Merged visible meshes");
+					ImGui::TextDisabled("Textures are omitted from merged export");
+				}
+				if (exportScope == 0 && !scene.GetScene().mesh.faceTexcoords.empty() && !scene.GetScene().mesh.texturesDiffuse.empty())
 					ImGui::Text("✓ Texture coordinates and textures available");
-				if (!mvs_scene.mesh.vertexNormals.empty())
+				if (exportScope == 0 && !scene.GetScene().mesh.vertexNormals.empty())
 					ImGui::Text("✓ Vertex normals available");
 			} else {
 				ImGui::TextColored(ImVec4(1.f, 0.6f, 0.6f, 1.f), "⚠ No mesh data to export");
@@ -1533,15 +1862,19 @@ void UI::ShowExportDialog(Scene& scene) {
 
 		ImGui::Separator();
 
-		bool canExport = ((exportFormat == 0 || exportFormat == 1) && hasPointCloud) ||
-			((exportFormat == 2 || exportFormat == 3 || exportFormat == 4) && hasMesh);
+		const bool backgroundWork(scene.HasBackgroundWork());
+		bool canExport = !backgroundWork && (((exportFormat == 0 || exportFormat == 1) && hasPointCloud) || ((exportFormat == 2 || exportFormat == 3 || exportFormat == 4) && hasMesh));
 		if (ImGui::Button("Export...", ImVec2(120, 0)) && canExport) {
 			String filename;
 			if (ShowSaveFileDialog(filename)) {
 				// Ensure the filename has the correct extension
 				String baseFileName = Util::getFileFullName(filename);
 				String finalFileName = baseFileName + formatExt[exportFormat];
-				scene.Export(finalFileName, formatExt[exportFormat], bExportViews);
+				const Scene::ExportGeometry geometry = exportFormat < 2 ? Scene::EXPORT_POINT_CLOUD : Scene::EXPORT_MESH;
+				if (exportScope == 0)
+					scene.Export(finalFileName, formatExt[exportFormat], bExportViews, geometry);
+				else
+					scene.ExportVisibleLayers(finalFileName, formatExt[exportFormat], geometry);
 			}
 			showExportDialog = false;
 		}
@@ -1565,6 +1898,16 @@ void UI::ShowCameraInfoDialog(Window& window) {
 	ImGui::SetNextWindowSize(ImVec2(390, 612), ImGuiCond_FirstUseEver);
 	if (ImGui::Begin("Camera Information", &showCameraInfoDialog)) {
 		const Scene& scene = window.GetScene();
+		if (scene.HasBackgroundWork()) {
+			ImGui::TextDisabled("Camera information is unavailable while background work is running");
+			ImGui::End();
+			return;
+		}
+		if (!scene.IsOpen()) {
+			ImGui::TextDisabled("No active layer");
+			ImGui::End();
+			return;
+		}
 		const ImageArr& images = scene.GetImages();
 		const MVS::Scene& mvs_scene = scene.GetScene();
 
@@ -1805,6 +2148,24 @@ void UI::ShowSelectionDialog(Window& window) {
 	// Set dialog properties
 	ImGui::OpenPopup("Selection Dialog");
 	if (ImGui::BeginPopupModal("Selection Dialog", &showSelectionDialog, ImGuiWindowFlags_AlwaysAutoResize)) {
+		if (window.GetScene().HasBackgroundWork()) {
+			ImGui::TextDisabled("Selection is unavailable while background work is running");
+			if (ImGui::Button("Close", ImVec2(120, 0))) {
+				showSelectionDialog = false;
+				ImGui::CloseCurrentPopup();
+			}
+			ImGui::EndPopup();
+			return;
+		}
+		if (!window.GetScene().IsOpen()) {
+			ImGui::TextDisabled("No active layer");
+			if (ImGui::Button("Close", ImVec2(120, 0))) {
+				showSelectionDialog = false;
+				ImGui::CloseCurrentPopup();
+			}
+			ImGui::EndPopup();
+			return;
+		}
 		ImGui::Text("Select an element by index or name:");
 		ImGui::Separator();
 
@@ -1821,6 +2182,7 @@ void UI::ShowSelectionDialog(Window& window) {
 		// Input fields based on selection type
 		const Scene& scene = window.GetScene();
 		const MVS::Scene& mvs_scene = scene.GetScene();
+		const ImageArr& viewerImages = scene.GetImages();
 		IDXArr selectionIndices;
 		String selectionError;
 
@@ -1848,14 +2210,13 @@ void UI::ShowSelectionDialog(Window& window) {
 				selectionError = Util::parseIndexRanges(selectionInputBuffer, mvs_scene.mesh.faces.size(), selectionIndices, "face");
 				} break;
 			case 2: { // Camera by Index
-				selectionError = Util::parseIndexRanges(selectionInputBuffer, mvs_scene.images.size(), selectionIndices, "camera");
+				selectionError = Util::parseIndexRanges(selectionInputBuffer, viewerImages.size(), selectionIndices, "camera");
 				} break;
 			case 3: { // Camera by Name
 				int cameraIndex = -1;
-				const ImageArr& images = scene.GetImages();
-				FOREACH(i, images) {
-					if (images[i].idx < mvs_scene.images.size()) {
-						const MVS::Image& imageData = mvs_scene.images[images[i].idx];
+				FOREACH(i, viewerImages) {
+					if (viewerImages[i].idx < mvs_scene.images.size()) {
+						const MVS::Image& imageData = mvs_scene.images[viewerImages[i].idx];
 						String fileName = Util::getFileNameExt(imageData.name);
 						if (fileName.find(selectionInputBuffer) != String::npos) {
 							cameraIndex = i;
@@ -1877,7 +2238,9 @@ void UI::ShowSelectionDialog(Window& window) {
 		ImGui::Separator();
 
 		// Buttons
-		if (ImGui::Button("Select", ImVec2(120, 0)) && selectionError.empty()) {
+		const bool canSelect = selectionError.empty() && !selectionIndices.empty();
+		ImGui::BeginDisabled(!canSelect);
+		if (ImGui::Button("Select", ImVec2(120, 0))) {
 			// Perform the selection based on the type
 			const IDX primarySelectionIdx = selectionIndices.front();
 			switch (selectionType) {
@@ -1900,7 +2263,7 @@ void UI::ShowSelectionDialog(Window& window) {
 			case 3: { // Camera by Name
 				window.selectionType = Window::SEL_CAMERA;
 				window.SetSelectionIds(selectionIndices);
-				const MVS::Image& imageData = mvs_scene.images[scene.GetImages()[primarySelectionIdx].idx];
+				const MVS::Image& imageData = mvs_scene.images[viewerImages[primarySelectionIdx].idx];
 				window.selectionPoints[0] = imageData.camera.C;
 			} break;
 			}
@@ -1914,6 +2277,7 @@ void UI::ShowSelectionDialog(Window& window) {
 			showSelectionDialog = false;
 			ImGui::CloseCurrentPopup();
 		}
+		ImGui::EndDisabled();
 
 		ImGui::SameLine();
 		if (ImGui::Button("Cancel", ImVec2(120, 0))) {
@@ -1935,20 +2299,21 @@ void UI::ShowSavePromptDialog(Window& window) {
 	ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
 
 	if (ImGui::BeginPopupModal("Save Changes?", &showSavePromptDialog, ImGuiWindowFlags_AlwaysAutoResize)) {
-		ImGui::Text("The geometry has been modified.");
+		ImGui::Text("One or more layers have been modified.");
 		ImGui::Text("Do you want to save the changes before exiting?");
 		ImGui::Separator();
 
 		if (ImGui::Button("Save", ImVec2(120, 0))) {
-			// Save the scene
-			if (scene.Save()) {
-				DEBUG("Scene saved successfully");
-				scene.SetGeometryModified(false);
+			if (scene.SaveModifiedLayers()) {
+				DEBUG("Modified layers saved successfully");
+				showSavePromptDialog = false;
+				ImGui::CloseCurrentPopup();
+				window.ConfirmClose();
+			} else if (!scene.IsGeometryModified()) {
+				showSavePromptDialog = false;
+				ImGui::CloseCurrentPopup();
+				window.ConfirmClose();
 			}
-			// Close the dialog and exit
-			showSavePromptDialog = false;
-			ImGui::CloseCurrentPopup();
-			glfwSetWindowShouldClose(window.GetGLFWWindow(), GLFW_TRUE);
 		}
 
 		ImGui::SameLine();
@@ -1956,7 +2321,7 @@ void UI::ShowSavePromptDialog(Window& window) {
 			// Exit without saving
 			showSavePromptDialog = false;
 			ImGui::CloseCurrentPopup();
-			glfwSetWindowShouldClose(window.GetGLFWWindow(), GLFW_TRUE);
+			window.ConfirmClose();
 		}
 
 		ImGui::SameLine();
@@ -2073,16 +2438,21 @@ void UI::ShowPointCloudControls(Window& window) {
 		ImGui::Indent();
 		if (ImGui::SliderFloat("Point Size", &window.pointSize, 1.f, 10.f))
 			window.RequestRedraw();
-		// Check if normals are available
-		const MVS::Scene& scene = window.GetScene().GetScene();
-		if (!scene.pointcloud.normals.empty()) {
+		// Check if normals are available in any visible layer
+		bool hasNormals = false;
+		for (const Scene::Layer& layer : window.GetScene().GetLayers()) {
+			if (layer.visible && !layer.scene.pointcloud.normals.empty() && layer.scene.pointcloud.normals.size() == layer.scene.pointcloud.points.size()) {
+				hasNormals = true;
+				break;
+			}
+		}
+		if (hasNormals) {
 			if (ImGui::Checkbox("Show Normals", &window.showPointCloudNormals))
 				window.RequestRedraw();
 			if (window.showPointCloudNormals) {
 				ImGui::Indent();
 				if (ImGui::SliderFloat("Normal Length", &window.pointNormalLength, 0.001f, 0.1f, "%.3f")) {
-					// Re-upload point cloud with new normal length
-					window.GetRenderer().UploadPointCloud(scene.pointcloud, window.pointNormalLength);
+					window.GetRenderer().UploadPointClouds(window.GetScene(), window.pointNormalLength);
 					window.RequestRedraw();
 				}
 				ImGui::Unindent();
@@ -2129,10 +2499,12 @@ void UI::ShowMeshControls(Window& window) {
 			}
 
 			// Individual sub-mesh checkboxes
+			std::unordered_map<uint32_t, unsigned> layerSubmeshCounts;
 			FOREACH(i, window.meshSubMeshVisible) {
-				// Create a meaningful label for each sub-mesh
-				String label = String::FormatString("Sub-mesh %zu", i);
-				// Add texture info if available
+				const uint32_t layerID(window.GetRenderer().GetMeshSubMeshLayerID(i));
+				const Scene::Layer* layer(window.GetScene().GetLayerByID(layerID));
+				const unsigned layerSubmeshIdx(layerSubmeshCounts[layerID]++);
+				const String label(layer == NULL ? String::FormatString("Sub-mesh %u", layerSubmeshIdx + 1) : String::FormatString("%s / mesh %u", layer->label.c_str(), layerSubmeshIdx + 1));
 				bool isVisible = window.meshSubMeshVisible[i];
 				if (ImGui::Checkbox(label, &isVisible)) {
 					window.meshSubMeshVisible[i] = isVisible;
@@ -2146,6 +2518,7 @@ void UI::ShowMeshControls(Window& window) {
 
 void UI::ShowSelectionOverlay(const Window& window) {
 	if (!showSelectionOverlay) return;
+	if (window.GetScene().HasBackgroundWork()) return;
 
 	// Only show if there's a valid selection
 	if (window.selectionType == Window::SEL_NA) return;
@@ -2247,8 +2620,9 @@ void UI::ShowSelectionOverlay(const Window& window) {
 						R2D(eulerAngles.x), R2D(eulerAngles.y), R2D(eulerAngles.z));
 					ImGui::Text("  avg depth: %.2g", imageData.avgDepth);
 					ImGui::Text("  neighbors: %u", (unsigned)imageData.neighbors.size());
-					if (selectionIdx < scene.cameraUncertainty.size()) {
-						const Scene::CameraUncertainty& u = scene.cameraUncertainty[selectionIdx];
+					const Scene::Layer* activeLayer = scene.GetActiveLayer();
+					if (activeLayer != NULL && selectionIdx < activeLayer->cameraUncertainty.size()) {
+						const Scene::CameraUncertainty& u = activeLayer->cameraUncertainty[selectionIdx];
 						if (u.state == Scene::CameraUncertainty::DATUM) {
 							ImGui::Text("  pose sigma: reference (datum)");
 						} else if (u.IsComputed()) {
@@ -2447,8 +2821,9 @@ void UI::ShowEstimateROIWorkflowWindow(Window& window) {
 		return;
 
 	Scene& scene = window.GetScene();
-	const MVS::Scene& mvsScene = scene.GetScene();
-	const bool hasPoints = mvsScene.IsValid() && mvsScene.pointcloud.IsValid();
+	const bool workflowRunning = scene.IsWorkflowRunning();
+	const MVS::Scene* mvsScene = workflowRunning ? nullptr : &scene.GetScene();
+	const bool hasPoints = mvsScene != nullptr && mvsScene->IsValid() && mvsScene->pointcloud.IsValid();
 
 	ImGui::SetNextWindowSize(ImVec2(360.f, 140.f), ImGuiCond_FirstUseEver);
 	if (!ImGui::Begin("Estimate ROI##workflow", &showEstimateROIWorkflow)) {
@@ -2472,7 +2847,7 @@ void UI::ShowEstimateROIWorkflowWindow(Window& window) {
 
 	ImGui::Separator();
 	const bool canRun = scene.IsOpen() && hasPoints;
-	ImGui::BeginDisabled(!canRun || scene.IsWorkflowRunning());
+	ImGui::BeginDisabled(!canRun || workflowRunning);
 	if (ImGui::Button("Run")) {
 		showEstimateROIWorkflow = false;
 		scene.RunEstimateROIWorkflow(opts);
@@ -2493,8 +2868,9 @@ void UI::ShowDensifyWorkflowWindow(Window& window) {
 
 	Scene& scene = window.GetScene();
 	Scene::DensifyWorkflowOptions& opts = scene.GetDensifyWorkflowOptions();
-	const MVS::Scene& mvsScene = scene.GetScene();
-	const bool hasImages = mvsScene.IsValid();
+	const bool workflowRunning = scene.IsWorkflowRunning();
+	const MVS::Scene* mvsScene = workflowRunning ? nullptr : &scene.GetScene();
+	const bool hasImages = mvsScene != nullptr && mvsScene->IsValid();
 	ImGui::SetNextWindowSize(ImVec2(420.f, 0.f), ImGuiCond_FirstUseEver);
 	if (!ImGui::Begin("Densify Point Cloud##workflow", &showDensifyWorkflow)) {
 		ImGui::End();
@@ -2644,8 +3020,9 @@ void UI::ShowReconstructWorkflowWindow(Window& window) {
 
 	Scene& scene = window.GetScene();
 	Scene::ReconstructMeshWorkflowOptions& opts = scene.GetReconstructMeshWorkflowOptions();
-	const MVS::Scene& mvsScene = scene.GetScene();
-	const bool hasPoints = mvsScene.IsValid() && mvsScene.pointcloud.IsValid();
+	const bool workflowRunning = scene.IsWorkflowRunning();
+	const MVS::Scene* mvsScene = workflowRunning ? nullptr : &scene.GetScene();
+	const bool hasPoints = mvsScene != nullptr && mvsScene->IsValid() && mvsScene->pointcloud.IsValid();
 	ImGui::SetNextWindowSize(ImVec2(420.f, 0.f), ImGuiCond_FirstUseEver);
 	if (!ImGui::Begin("Reconstruct Mesh##workflow", &showReconstructWorkflow)) {
 		ImGui::End();
@@ -2808,9 +3185,10 @@ void UI::ShowRefineWorkflowWindow(Window& window) {
 		ImGui::SetTooltip("Memory reduction strategy:\n- 0 = no reduction (fastest, most memory)\n- 3 = maximum reduction (slowest, least memory)\nUse higher values for large scenes or limited RAM.");
 
 	ImGui::Separator();
-	const MVS::Scene& mvsScene = scene.GetScene();
-	const bool canRun = scene.IsOpen() && mvsScene.IsValid() && !mvsScene.mesh.IsEmpty();
-	ImGui::BeginDisabled(!canRun || scene.IsWorkflowRunning());
+	const bool workflowRunning = scene.IsWorkflowRunning();
+	const MVS::Scene* mvsScene = workflowRunning ? nullptr : &scene.GetScene();
+	const bool canRun = mvsScene != nullptr && mvsScene->IsValid() && !mvsScene->mesh.IsEmpty();
+	ImGui::BeginDisabled(!canRun || workflowRunning);
 	if (ImGui::Button("Run")) {
 		showRefineWorkflow = false;
 		scene.RunRefineMeshWorkflow(opts);
@@ -2831,8 +3209,9 @@ void UI::ShowTextureWorkflowWindow(Window& window) {
 
 	Scene& scene = window.GetScene();
 	Scene::TextureMeshWorkflowOptions& opts = scene.GetTextureMeshWorkflowOptions();
-	const MVS::Scene& mvsScene = scene.GetScene();
-	const bool hasMesh = mvsScene.IsValid() && !mvsScene.mesh.IsEmpty();
+	const bool workflowRunning = scene.IsWorkflowRunning();
+	const MVS::Scene* mvsScene = workflowRunning ? nullptr : &scene.GetScene();
+	const bool hasMesh = mvsScene != nullptr && mvsScene->IsValid() && !mvsScene->mesh.IsEmpty();
 	ImGui::SetNextWindowSize(ImVec2(420.f, 0.f), ImGuiCond_FirstUseEver);
 	if (!ImGui::Begin("Texture Mesh##workflow", &showTextureWorkflow)) {
 		ImGui::End();
@@ -2933,15 +3312,11 @@ void UI::ShowBatchWorkflowWindow(Window& window) {
 		return;
 
 	Scene& scene = window.GetScene();
-	Scene::EstimateROIWorkflowOptions& estimateOpts = scene.GetEstimateROIWorkflowOptions();
-	Scene::DensifyWorkflowOptions& densifyOpts = scene.GetDensifyWorkflowOptions();
-	Scene::ReconstructMeshWorkflowOptions& reconstructOpts = scene.GetReconstructMeshWorkflowOptions();
-	Scene::RefineMeshWorkflowOptions& refineOpts = scene.GetRefineMeshWorkflowOptions();
-	Scene::TextureMeshWorkflowOptions& textureOpts = scene.GetTextureMeshWorkflowOptions();
-	const MVS::Scene& mvsScene = scene.GetScene();
-	const bool hasImages = mvsScene.IsValid();
-	const bool hasPoints = hasImages && mvsScene.pointcloud.IsValid();
-	const bool hasMesh = hasImages && !mvsScene.mesh.IsEmpty();
+	const bool workflowRunning = scene.IsWorkflowRunning();
+	const MVS::Scene* mvsScene = workflowRunning ? nullptr : &scene.GetScene();
+	const bool hasImages = mvsScene != nullptr && mvsScene->IsValid();
+	const bool hasPoints = hasImages && mvsScene->pointcloud.IsValid();
+	const bool hasMesh = hasImages && !mvsScene->mesh.IsEmpty();
 	ImGui::SetNextWindowSize(ImVec2(400.f, 184.f), ImGuiCond_FirstUseEver);
 	if (!ImGui::Begin("Batch Process##workflow", &showBatchWorkflow)) {
 		ImGui::End();
@@ -2990,46 +3365,17 @@ void UI::ShowBatchWorkflowWindow(Window& window) {
 
 	ImGui::Separator();
 	// Build runnable list
-	std::vector<int> runnable;
+	std::vector<Scene::WorkflowType> runnable;
 	for (int idx = 0; idx < 5; ++idx)
 		if (selectedModules[idx])
-			runnable.push_back(idx);
+			runnable.push_back(static_cast<Scene::WorkflowType>(idx + 1));
 	const bool canRun = !runnable.empty();
 	if (!canRun)
 		ImGui::TextDisabled("No runnable modules selected or prerequisites missing.");
 
 	if (ImGui::Button("Run") && canRun) {
-		// Close window before running long tasks
-		showBatchWorkflow = false;
-		ImGui::End();
-		// Execute selected modules in order
-		FOREACH(i, runnable) {
-			const int mod = runnable[i];
-			switch (mod) {
-			case 0:
-				DEBUG("Batch: Running Estimate ROI...");
-				scene.RunEstimateROIWorkflow(estimateOpts);
-				break;
-			case 1:
-				DEBUG("Batch: Running Densify Point Cloud...");
-				scene.RunDensifyWorkflow(densifyOpts);
-				break;
-			case 2:
-				DEBUG("Batch: Running Reconstruct Mesh...");
-				scene.RunReconstructMeshWorkflow(reconstructOpts);
-				break;
-			case 3:
-				DEBUG("Batch: Running Refine Mesh...");
-				scene.RunRefineMeshWorkflow(refineOpts);
-				break;
-			case 4:
-				DEBUG("Batch: Running Texture Mesh...");
-				scene.RunTextureMeshWorkflow(textureOpts);
-				break;
-			}
-		}
-		window.RequestRedraw();
-		return; // already ended ImGui for this invocation
+		if (scene.RunBatchWorkflow(runnable))
+			showBatchWorkflow = false;
 	}
 	ImGui::SameLine();
 	if (ImGui::Button("Close"))
@@ -3063,8 +3409,7 @@ void SettingsReadLine(ImGuiContext*, ImGuiSettingsHandler* handler, void* entry,
 		window.uncertaintyEllipsoidScale = x;
 	}
 	else if (sscanf(line, "CameraDisplayColor=%d", &intVal) == 1) {
-		window.cameraDisplayColor =
-			intVal == (int)Window::CAMERA_COLOR_JET ? Window::CAMERA_COLOR_JET : Window::CAMERA_COLOR_SOLID;
+		(void)intVal; // deprecated: camera jet/solid mode is stored per layer
 	}
 	else if (sscanf(line, "CameraDisplayType=%d", &intVal) == 1) {
 		window.cameraDisplayType =
@@ -3130,7 +3475,6 @@ void SettingsWriteAll(ImGuiContext*, ImGuiSettingsHandler* handler, ImGuiTextBuf
 		window.clearColor[2], window.clearColor[3]);
 	buf->appendf("CameraSize=%f\n", window.cameraSize);
 	buf->appendf("EllipsoidScale=%f\n", window.uncertaintyEllipsoidScale);
-	buf->appendf("CameraDisplayColor=%d\n", (int)window.cameraDisplayColor);
 	buf->appendf("CameraDisplayType=%d\n", (int)window.cameraDisplayType);
 	buf->appendf("ShowCameraLookAt=%d\n", window.showCameraLookAt ? 1 : 0);
 	buf->appendf("PointSize=%f\n", window.pointSize);
@@ -3157,38 +3501,62 @@ void SettingsWriteAll(ImGuiContext*, ImGuiSettingsHandler* handler, ImGuiTextBuf
 }
 
 // Custom settings implementation
-bool UI::ShowOpenFileDialog(String& filename, String& geometryFilename) {
+bool UI::ShowOpenFileDialog(std::vector<String>& filenames)
+{
 	// Use portable-file-dialogs for cross-platform file dialog
 	try {
 		auto dialog = pfd::open_file(
-			"Open Scene File",                   // title
-			WORKING_FOLDER_FULL,          // initial path (absolute)
-			{
-				"OpenMVS Scene Files", "*.mvs",
-				"OpenMVS Depth Map Files", "*.dmap",
-				"PLY Mesh / Point Cloud Files", "*.ply",
-				"GLTF Mesh / Point Cloud Files", "*.gltf",
-				"GLB Mesh / Point Cloud Files", "*.glb",
-				"OBJ Mesh Files", "*.obj",
-				"All Files", "*"
-			},                                         // filters
-			pfd::opt::multiselect             // options
+		    "Open Scene File", // title
+		    WORKING_FOLDER_FULL, // initial path (absolute)
+		    {
+		        "OpenMVS Scene Files", "*.mvs",
+		        "OpenMVS Interface Files", "*.sfm",
+		        "OpenMVS Depth Map Files", "*.dmap",
+		        "PLY Mesh / Point Cloud Files", "*.ply",
+		        "GLTF Mesh / Point Cloud Files", "*.gltf",
+		        "GLB Mesh / Point Cloud Files", "*.glb",
+		        "OBJ Mesh Files", "*.obj",
+		        "All Files", "*"}, // filters
+		    pfd::opt::multiselect // options
 		);
 
 		// Get the result
 		auto result = dialog.result();
 		if (!result.empty()) {
-			Util::ensureValidPath(filename = result[0]);
-			if (result.size() > 1)
-				Util::ensureValidPath(geometryFilename = result[1]);
-			else
-				geometryFilename.clear();
+			filenames.clear();
+			filenames.reserve(result.size());
+			for (const std::string& path : result) {
+				String filename(path.c_str());
+				Util::ensureValidPath(filename);
+				filenames.emplace_back(std::move(filename));
+			}
 			return true;
 		}
 	} catch (const std::exception& e) {
 		DEBUG("File dialog error: %s", e.what());
 	}
 	return false;
+}
+
+bool UI::ConfirmDiscardChanges(const Scene& scene, const char* action)
+{
+	if (!scene.IsGeometryModified())
+		return true;
+	const String message(String::FormatString(
+		"One or more layers have unsaved changes.\n\nDiscard them and %s?",
+		action));
+	return pfd::message("Unsaved Changes", message.c_str(), pfd::choice::yes_no, pfd::icon::warning).result() == pfd::button::yes;
+}
+
+bool UI::ConfirmDiscardLayer(const Scene& scene, size_t layerIndex)
+{
+	const Scene::Layer* layer(scene.GetLayer(layerIndex));
+	if (layer == nullptr || !layer->dirty)
+		return true;
+	const String message(String::FormatString(
+		"Layer '%s' has unsaved changes.\n\nDiscard them and remove the layer?",
+		layer->label.c_str()));
+	return pfd::message("Unsaved Layer", message.c_str(), pfd::choice::yes_no, pfd::icon::warning).result() == pfd::button::yes;
 }
 
 bool UI::ShowSaveFileDialog(String& filename) {

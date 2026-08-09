@@ -36,6 +36,18 @@
 
 using namespace VIEWER;
 
+static std::array<Point3f, 4> ComputeCameraFrustumCorners(const MVS::Image& imageData, float depth);
+static uint32_t CreateCameraFrustumGeometry(
+	const MVS::Image& imageData,
+	float depth,
+	bool showLookAt,
+	const Pixel32F& centerColor,
+	const Pixel32F& frustumColor,
+	std::vector<float>& vertices,
+	std::vector<float>& colors,
+	std::vector<uint32_t>& indices,
+	size_t baseIndex);
+
 Renderer::Renderer()
 	: pointCount(0)
 	, pointNormalCount(0)
@@ -44,6 +56,7 @@ Renderer::Renderer()
 	, ellipsoidIndexCount(0)
 	, imageOverlayIndexCount(0)
 	, selectionPrimitiveCount(0)
+	, neighborSelectionPrimitiveCount(0)
 	, selectionOverlayVertexCount(0)
 	, boundsPrimitiveCount(0)
 	, pickFBO(0)
@@ -109,13 +122,23 @@ void Renderer::Reset() {
 	ellipsoidIndexCount = 0;
 	imageOverlayIndexCount = 0;
 	selectionPrimitiveCount = 0;
+	neighborSelectionPrimitiveCount = 0;
 	boundsPrimitiveCount = 0;
 
 	// Clear mesh-related data
-	mapFaceSubsetIndices.clear();
-	mapSubsetFaceIndices.clear();
+	pointLayerRanges.clear();
 	meshFaceCounts.clear();
 	meshTextures.clear();
+	meshTextureIndices.clear();
+	meshSubMeshLayerIDs.clear();
+	meshLayerFaceMaps.clear();
+	faceRefs.clear();
+	globalFaceSubMeshIndices.clear();
+	cameraLayerRanges.clear();
+	ellipsoidCenters.clear();
+	ellipsoidLayerIDs.clear();
+	ellipsoidDrawOrder.clear();
+	layerPassFilter.clear();
 
 	// Clear scene-dependent geometry buffers by allocating empty data
 	ReleasePickerBuffers();
@@ -153,6 +176,312 @@ void Renderer::Reset() {
 
 	if (boundsVBO)
 		boundsVBO->AllocateBuffer(0);
+}
+
+const Renderer::LayerIndexRange* Renderer::FindPointLayerRange(uint32_t layerID) const
+{
+	for (const LayerIndexRange& range : pointLayerRanges)
+		if (range.layerID == layerID)
+			return &range;
+	return nullptr;
+}
+
+const Renderer::CameraLayerRange* Renderer::FindCameraLayerRange(uint32_t layerID) const
+{
+	for (const CameraLayerRange& range : cameraLayerRanges)
+		if (range.layerID == layerID)
+			return &range;
+	return nullptr;
+}
+
+const Renderer::LayerFaceMap* Renderer::FindMeshLayerMap(uint32_t layerID) const
+{
+	for (const LayerFaceMap& map : meshLayerFaceMaps)
+		if (map.layerID == layerID)
+			return &map;
+	return nullptr;
+}
+
+bool Renderer::MapGlobalPoint(size_t globalIndex, uint32_t& layerID, uint32_t& localIndex) const
+{
+	for (const LayerIndexRange& range : pointLayerRanges) {
+		if (globalIndex < range.offset || globalIndex >= range.offset + range.count)
+			continue;
+		layerID = range.layerID;
+		localIndex = static_cast<uint32_t>(globalIndex - range.offset);
+		return true;
+	}
+	return false;
+}
+
+bool Renderer::MapGlobalFace(size_t globalIndex, uint32_t& layerID, uint32_t& localIndex) const
+{
+	if (globalIndex >= faceRefs.size())
+		return false;
+	layerID = faceRefs[globalIndex].layerID;
+	localIndex = faceRefs[globalIndex].localIndex;
+	return layerID != NO_ID && localIndex != NO_ID;
+}
+
+bool Renderer::MapLocalFace(uint32_t layerID, uint32_t localIndex, uint32_t& globalIndex) const
+{
+	const LayerFaceMap* faceMap = FindMeshLayerMap(layerID);
+	if (faceMap == nullptr || localIndex >= faceMap->localToGlobalFace.size())
+		return false;
+	globalIndex = faceMap->localToGlobalFace[localIndex];
+	return globalIndex != NO_ID;
+}
+
+void Renderer::UploadLayers(const Scene& sceneController, const Window& window)
+{
+	UploadPointClouds(sceneController, window.pointNormalLength);
+	UploadMeshes(sceneController);
+	UploadCameras(window);
+}
+
+void Renderer::UploadPointClouds(const Scene& sceneController, float normalLength)
+{
+	pointCount = 0;
+	pointNormalCount = 0;
+	pointLayerRanges.clear();
+
+	// Aggregate visible point clouds.
+	for (const Scene::Layer& layer : sceneController.GetLayers()) {
+		if (!layer.visible || layer.scene.pointcloud.IsEmpty())
+			continue;
+		const MVS::PointCloud& pointcloud = layer.scene.pointcloud;
+		LayerIndexRange range;
+		range.layerID = layer.id;
+		range.offset = pointCount;
+		range.count = pointcloud.points.size();
+		if (pointcloud.normals.size() == pointcloud.points.size()) {
+			range.normalOffset = pointNormalCount;
+			range.normalCount = pointcloud.normals.size() * 2;
+		}
+		pointLayerRanges.push_back(range);
+		pointCount += range.count;
+		pointNormalCount += range.normalCount;
+	}
+	if (pointCount) {
+		pointCloudVBO->AllocateBuffer(pointCount * 3 * sizeof(float));
+		pointCloudColorVBO->AllocateBuffer(pointCount * 3 * sizeof(float));
+		if (pointNormalCount)
+			pointCloudNormalsVBO->AllocateBuffer(pointNormalCount * 3 * sizeof(float));
+		size_t pointOffset = 0;
+		size_t normalOffset = 0;
+		for (const Scene::Layer& layer : sceneController.GetLayers()) {
+			if (!layer.visible || layer.scene.pointcloud.IsEmpty())
+				continue;
+			const MVS::PointCloud& pointcloud = layer.scene.pointcloud;
+			pointCloudVBO->SetSubData(pointcloud.points[0].ptr(), pointcloud.points.size() * 3, pointOffset * 3);
+
+			std::vector<float> colors;
+			colors.reserve(pointcloud.points.size() * 3);
+			if (layer.usePointSolidColor) {
+				for (size_t i = 0; i < pointcloud.points.size(); ++i) {
+					colors.push_back(layer.pointColor.x);
+					colors.push_back(layer.pointColor.y);
+					colors.push_back(layer.pointColor.z);
+				}
+			} else if (pointcloud.colors.size() == pointcloud.points.size()) {
+				for (const Pixel8U& color : pointcloud.colors) {
+					colors.push_back(color.r / 255.f);
+					colors.push_back(color.g / 255.f);
+					colors.push_back(color.b / 255.f);
+				}
+			} else {
+				colors.resize(pointcloud.points.size() * 3, 1.f);
+			}
+			pointCloudColorVBO->SetSubData(colors, pointOffset * 3);
+
+			if (pointcloud.normals.size() == pointcloud.points.size()) {
+				std::vector<float> normalLines;
+				normalLines.reserve(pointcloud.normals.size() * 6);
+				for (size_t i = 0; i < pointcloud.points.size(); ++i) {
+					const MVS::PointCloud::Point& point = pointcloud.points[i];
+					const MVS::PointCloud::Normal& normal = pointcloud.normals[i];
+					normalLines.push_back(point.x);
+					normalLines.push_back(point.y);
+					normalLines.push_back(point.z);
+					normalLines.push_back(point.x + normal.x * normalLength);
+					normalLines.push_back(point.y + normal.y * normalLength);
+					normalLines.push_back(point.z + normal.z * normalLength);
+				}
+				pointCloudNormalsVBO->SetSubData(normalLines, normalOffset * 3);
+				normalOffset += pointcloud.normals.size() * 2;
+			}
+			pointOffset += pointcloud.points.size();
+		}
+		ASSERT(pointOffset == pointCount && normalOffset == pointNormalCount);
+	}
+}
+
+void Renderer::UploadMeshes(const Scene& sceneController)
+{
+	meshFaceCounts.clear();
+	meshTextures.clear();
+	meshTextureIndices.clear();
+	meshSubMeshLayerIDs.clear();
+	meshLayerFaceMaps.clear();
+	faceRefs.clear();
+	globalFaceSubMeshIndices.clear();
+
+	// Aggregate visible meshes into a combined GPU upload.
+	struct PreparedLayerMesh
+	{
+		uint32_t layerID{NO_ID};
+		size_t originalFaceCount{0};
+		const MVS::Mesh* directMesh{nullptr};
+		std::vector<MVS::Mesh> submeshes;
+		MVS::Mesh::FaceIdxArr faceSubsetIndices;
+		std::vector<uint32_t> faceSubmeshIndices;
+
+		size_t GetSubmeshCount() const { return directMesh == nullptr ? submeshes.size() : 1; }
+		const MVS::Mesh& GetSubmesh(size_t idx) const
+		{
+			ASSERT(idx < GetSubmeshCount());
+			return directMesh == nullptr ? submeshes[idx] : *directMesh;
+		}
+	};
+	std::vector<PreparedLayerMesh> preparedMeshes;
+	size_t totalVertices = 0;
+	size_t totalIndices = 0;
+	size_t totalTexCoords = 0;
+	size_t totalFaces = 0;
+	for (const Scene::Layer& layer : sceneController.GetLayers()) {
+		if (!layer.visible || layer.scene.mesh.IsEmpty() || layer.scene.mesh.faces.empty())
+			continue;
+		PreparedLayerMesh prepared;
+		prepared.layerID = layer.id;
+		prepared.originalFaceCount = layer.scene.mesh.faces.size();
+		if (layer.scene.mesh.HasTexture()) {
+			if (layer.scene.mesh.texturesDiffuse.size() > 1) {
+				std::vector<MVS::Mesh> textureSubmeshes(layer.scene.mesh.SplitMeshPerTextureBlob(&prepared.faceSubsetIndices));
+				std::vector<uint32_t> textureToSubmesh(textureSubmeshes.size(), NO_ID);
+				for (size_t textureIdx = 0; textureIdx < textureSubmeshes.size(); ++textureIdx) {
+					MVS::Mesh& submesh(textureSubmeshes[textureIdx]);
+					if (submesh.IsEmpty())
+						continue;
+					MVS::Mesh convertedMesh;
+					submesh.ConvertTexturePerVertex(convertedMesh);
+					if (convertedMesh.vertexNormals.size() != convertedMesh.vertices.size())
+						convertedMesh.ComputeNormalVertices();
+					textureToSubmesh[textureIdx] = (uint32_t)prepared.submeshes.size();
+					prepared.submeshes.emplace_back(std::move(convertedMesh));
+				}
+				prepared.faceSubmeshIndices.resize(layer.scene.mesh.faces.size());
+				FOREACH(faceIdx, layer.scene.mesh.faces) {
+					const uint32_t textureIdx(layer.scene.mesh.GetFaceTextureIndex(faceIdx));
+					ASSERT(textureIdx < textureToSubmesh.size() && textureToSubmesh[textureIdx] != NO_ID);
+					prepared.faceSubmeshIndices[faceIdx] = textureToSubmesh[textureIdx];
+				}
+			} else {
+				MVS::Mesh convertedMesh;
+				layer.scene.mesh.ConvertTexturePerVertex(convertedMesh);
+				if (convertedMesh.vertexNormals.size() != convertedMesh.vertices.size())
+					convertedMesh.ComputeNormalVertices();
+				prepared.submeshes.emplace_back(std::move(convertedMesh));
+			}
+		} else {
+			if (layer.scene.mesh.vertexNormals.size() != layer.scene.mesh.vertices.size()) {
+				prepared.submeshes.emplace_back(layer.scene.mesh);
+				prepared.submeshes.back().ComputeNormalVertices();
+			} else {
+				prepared.directMesh = &layer.scene.mesh;
+			}
+		}
+		for (size_t submeshIdx = 0; submeshIdx < prepared.GetSubmeshCount(); ++submeshIdx) {
+			const MVS::Mesh& submesh(prepared.GetSubmesh(submeshIdx));
+			totalVertices += submesh.vertices.size();
+			totalIndices += submesh.faces.size() * 3;
+			totalTexCoords += submesh.vertices.size();
+			totalFaces += submesh.faces.size();
+		}
+		preparedMeshes.emplace_back(std::move(prepared));
+	}
+	if (!preparedMeshes.empty()) {
+		meshVBO->AllocateBuffer(totalVertices * 3 * sizeof(float));
+		meshNormalVBO->AllocateBuffer(totalVertices * 3 * sizeof(float));
+		meshTexCoordVBO->AllocateBuffer(totalTexCoords * 2 * sizeof(float));
+		meshEBO->AllocateBuffer(totalIndices * sizeof(uint32_t));
+		faceRefs.assign(totalFaces, {});
+		globalFaceSubMeshIndices.assign(totalFaces, NO_ID);
+
+		uint32_t vertexOffset = 0;
+		uint32_t globalFaceOffset = 0;
+		for (const PreparedLayerMesh& prepared : preparedMeshes) {
+			LayerFaceMap layerFaceMap;
+			layerFaceMap.layerID = prepared.layerID;
+			layerFaceMap.localToGlobalFace.assign(prepared.originalFaceCount, NO_ID);
+			const uint32_t layerFaceBase = globalFaceOffset;
+			std::vector<uint32_t> layerSubmeshFaceOffsets(prepared.GetSubmeshCount(), 0);
+			for (size_t submeshIdx = 1; submeshIdx < prepared.GetSubmeshCount(); ++submeshIdx)
+				layerSubmeshFaceOffsets[submeshIdx] = layerSubmeshFaceOffsets[submeshIdx - 1] + prepared.GetSubmesh(submeshIdx - 1).faces.size();
+			const uint32_t globalSubmeshBase = meshFaceCounts.size();
+
+			for (size_t submeshIdx = 0; submeshIdx < prepared.GetSubmeshCount(); ++submeshIdx) {
+				const MVS::Mesh& submesh(prepared.GetSubmesh(submeshIdx));
+				MVS::Mesh::TexCoordArr normFaceTexcoords;
+				if (!submesh.faceTexcoords.empty())
+					submesh.FaceTexcoordsNormalize(normFaceTexcoords, false);
+				else
+					normFaceTexcoords.resize(submesh.vertices.size());
+				ASSERT(submesh.vertexNormals.size() == submesh.vertices.size());
+
+				std::vector<uint32_t> adjustedIndices;
+				adjustedIndices.reserve(submesh.faces.size() * 3);
+				for (const MVS::Mesh::Face& face : submesh.faces) {
+					adjustedIndices.push_back(vertexOffset + face.x);
+					adjustedIndices.push_back(vertexOffset + face.y);
+					adjustedIndices.push_back(vertexOffset + face.z);
+				}
+
+				meshVBO->SetSubData(&submesh.vertices[0].x, submesh.vertices.size() * 3, vertexOffset * 3);
+				meshNormalVBO->SetSubData(&submesh.vertexNormals[0].x, submesh.vertexNormals.size() * 3, vertexOffset * 3);
+				meshTexCoordVBO->SetSubData(&normFaceTexcoords[0].x, normFaceTexcoords.size() * 2, vertexOffset * 2);
+
+				const MVS::Mesh::FIndex faceCountPrev = meshFaceCounts.empty() ? 0 : meshFaceCounts.back();
+				meshEBO->SetSubData(adjustedIndices, faceCountPrev * 3);
+				uint32_t textureIndex = NO_ID;
+				if (submesh.HasTexture()) {
+					ASSERT(submesh.texturesDiffuse.size() == 1);
+					textureIndex = (uint32_t)meshTextures.size();
+					Image& image = meshTextures.emplace_back((MVS::IIndex)textureIndex);
+					image.SetImageLoading();
+					image.AssignImage(submesh.texturesDiffuse.front());
+					image.TransferImage();
+				}
+				meshTextureIndices.emplace_back(textureIndex);
+				meshSubMeshLayerIDs.emplace_back(prepared.layerID);
+				meshFaceCounts.emplace_back(faceCountPrev + submesh.faces.size());
+
+				for (size_t localFace = 0; localFace < submesh.faces.size(); ++localFace)
+					globalFaceSubMeshIndices[globalFaceOffset + localFace] = globalSubmeshBase + submeshIdx;
+
+				globalFaceOffset += submesh.faces.size();
+				vertexOffset += submesh.vertices.size();
+			}
+
+			if (!prepared.faceSubsetIndices.empty()) {
+				FOREACH(faceIdx, prepared.faceSubsetIndices) {
+					const uint32_t submeshIdx = prepared.faceSubmeshIndices[faceIdx];
+					const uint32_t globalFaceIndex = layerFaceBase + layerSubmeshFaceOffsets[submeshIdx] + prepared.faceSubsetIndices[faceIdx];
+					layerFaceMap.localToGlobalFace[faceIdx] = globalFaceIndex;
+					faceRefs[globalFaceIndex] = {prepared.layerID, (uint32_t)faceIdx};
+				}
+			} else {
+				for (uint32_t faceIdx = 0; faceIdx < prepared.originalFaceCount; ++faceIdx) {
+					const uint32_t globalFaceIndex = layerFaceBase + faceIdx;
+					layerFaceMap.localToGlobalFace[faceIdx] = globalFaceIndex;
+					faceRefs[globalFaceIndex] = {prepared.layerID, faceIdx};
+				}
+			}
+			meshLayerFaceMaps.emplace_back(std::move(layerFaceMap));
+		}
+		ASSERT(vertexOffset == totalVertices && globalFaceOffset == totalFaces);
+		ASSERT(meshFaceCounts.size() == meshTextureIndices.size());
+		ASSERT(meshFaceCounts.size() == meshSubMeshLayerIDs.size());
+	}
 }
 
 void Renderer::CreateShaders() {
@@ -578,169 +907,6 @@ void Renderer::SetupGizmoBuffers() {
 	gizmoVAO->Unbind();
 }
 
-void Renderer::UploadPointCloud(const MVS::PointCloud& pointcloud, float normalLength) {
-	pointCount = pointcloud.GetSize();
-	pointNormalCount = 0;
-	if (pointCount == 0)
-		return;
-	// Convert colors to float array
-	std::vector<float> colors;
-	colors.reserve(pointcloud.colors.size() * 3);
-	if (!pointcloud.colors.empty()) {
-		for (const auto& color : pointcloud.colors) {
-			colors.push_back(color.r / 255.f);
-			colors.push_back(color.g / 255.f);
-			colors.push_back(color.b / 255.f);
-		}
-	} else {
-		// Default white color for all points
-		colors.resize(pointcloud.points.size() * 3, 1.f);
-	}
-	// Upload to GPU
-	pointCloudVBO->SetData(pointcloud.points[0].ptr(), pointcloud.points.size() * 3);
-	pointCloudColorVBO->SetData(colors);
-
-	// Upload normals if available
-	if (!pointcloud.normals.empty()) {
-		ASSERT(pointcloud.normals.size() == pointcloud.points.size());
-		// Create line segments for normals: each normal gets 2 vertices (start and end)
-		std::vector<float> normalLines;
-		normalLines.reserve(pointcloud.normals.size() * 6); // 2 points * 3 components each
-		for (size_t i = 0; i < pointcloud.points.size(); ++i) {
-			const MVS::PointCloud::Point& point = pointcloud.points[i];
-			const MVS::PointCloud::Normal& normal = pointcloud.normals[i];
-			// Start point (the actual point)
-			normalLines.push_back(point.x);
-			normalLines.push_back(point.y);
-			normalLines.push_back(point.z);
-			// End point (point + normal * length)
-			normalLines.push_back(point.x + normal.x * normalLength);
-			normalLines.push_back(point.y + normal.y * normalLength);
-			normalLines.push_back(point.z + normal.z * normalLength);
-		}
-		pointCloudNormalsVBO->SetData(normalLines);
-		pointNormalCount = normalLines.size() / 3; // Total vertices for normal lines
-	}
-}
-
-void Renderer::UploadMesh(MVS::Mesh& mesh) {
-	mapFaceSubsetIndices.clear();
-	mapSubsetFaceIndices.clear();
-	meshFaceCounts.clear();
-	meshTextures.clear();
-	if (mesh.IsEmpty())
-		return;
-
-	if (mesh.HasTexture()) {
-		// Convert mesh to use texture per vertex and
-		// split it in sub-meshes if multiple textures are present
-		std::vector<MVS::Mesh> meshes;
-		if (mesh.texturesDiffuse.size() > 1) {
-			meshes = mesh.SplitMeshPerTextureBlob(&mapFaceSubsetIndices);
-			for (MVS::Mesh& submesh: meshes) {
-				MVS::Mesh convertedMesh;
-				submesh.ConvertTexturePerVertex(convertedMesh);
-				submesh.Swap(convertedMesh);
-			}
-		} else {
-			MVS::Mesh convertedMesh;
-			mesh.ConvertTexturePerVertex(convertedMesh);
-			meshes.emplace_back(std::move(convertedMesh));
-		}
-
-		// Calculate total buffer sizes for all sub-meshes
-		size_t totalVertices = 0;
-		size_t totalIndices = 0;
-		size_t totalTexCoords = 0;
-		for (const MVS::Mesh& submesh : meshes) {
-			totalVertices += submesh.vertices.size();
-			totalIndices += submesh.faces.size() * 3;
-			totalTexCoords += submesh.vertices.size(); // One tex coord per vertex after conversion
-		}
-
-		// Allocate total buffer sizes using VBO wrapper functions
-		meshVBO->AllocateBuffer(totalVertices * 3 * sizeof(float));
-		meshNormalVBO->AllocateBuffer(totalVertices * 3 * sizeof(float));
-		meshTexCoordVBO->AllocateBuffer(totalTexCoords * 2 * sizeof(float));
-		meshEBO->AllocateBuffer(totalIndices * sizeof(uint32_t));
-
-		// Upload each sub-mesh using glBufferSubData
-		uint32_t vertexOffset = 0;
-		meshTextures.reserve(meshes.size());
-		meshFaceCounts.reserve(meshes.size());
-		for (MVS::Mesh& submesh : meshes) {
-			// convert texture coordinates
-			MVS::Mesh::TexCoordArr normFaceTexcoords;
-			if (!submesh.faceTexcoords.empty()) {
-				// normalize texture coordinates
-				submesh.FaceTexcoordsNormalize(normFaceTexcoords, false);
-			} else {
-				// default texture coordinates
-				normFaceTexcoords.resize(submesh.vertices.size());
-			}
-			// convert normals to float array
-			if (submesh.vertexNormals.empty())
-				submesh.ComputeNormalVertices();
-			// adjust face indices to account for previous sub-meshes
-			std::vector<uint32_t> adjustedIndices;
-			adjustedIndices.reserve(submesh.faces.size() * 3);
-			for (const MVS::Mesh::Face& face : submesh.faces) {
-				adjustedIndices.push_back(vertexOffset + face.x);
-				adjustedIndices.push_back(vertexOffset + face.y);
-				adjustedIndices.push_back(vertexOffset + face.z);
-			}
-			// upload vertices using VBO wrapper functions
-			meshVBO->SetSubData(&submesh.vertices[0].x, submesh.vertices.size() * 3, vertexOffset * 3);
-			// upload normals using VBO wrapper functions
-			meshNormalVBO->SetSubData(&submesh.vertexNormals[0].x, submesh.vertexNormals.size() * 3, vertexOffset * 3);
-			// upload texture coordinates using VBO wrapper functions
-			meshTexCoordVBO->SetSubData(&normFaceTexcoords[0].x, normFaceTexcoords.size() * 2, vertexOffset * 2);
-			// upload indices using VBO wrapper functions
-			const MVS::Mesh::FIndex faceCountPrev = meshFaceCounts.empty() ? 0 : meshFaceCounts.back();
-			const size_t indexOffset = faceCountPrev * 3;
-			meshEBO->SetSubData(adjustedIndices, indexOffset);
-			// load texture for this sub-mesh
-			if (submesh.HasTexture()) {
-				ASSERT(submesh.texturesDiffuse.size() == 1, "Sub-mesh should have exactly one texture");
-				const MVS::IIndex i = (MVS::IIndex)meshTextures.size();
-				Image& image = meshTextures.emplace_back(i);
-				image.SetImageLoading();
-				image.AssignImage(submesh.texturesDiffuse.front());
-				image.TransferImage();
-			}
-			// track this sub-mesh
-			meshFaceCounts.emplace_back(faceCountPrev + submesh.faces.size());
-			// update offsets for next sub-mesh
-			vertexOffset += submesh.vertices.size();
-		}
-		// map subset face indices for selection highlighting
-		if (!mapFaceSubsetIndices.empty()) {
-			mapSubsetFaceIndices.resize(mapFaceSubsetIndices.size());
-			FOREACH(faceIdx, mapFaceSubsetIndices) {
-				const MVS::Mesh::TexIndex submeshIdx = mesh.GetFaceTextureIndex(faceIdx);
-				ASSERT(submeshIdx < meshFaceCounts.size());
-				const MVS::Mesh::FIndex faceCountOffset = submeshIdx ? meshFaceCounts[submeshIdx - 1] : 0u;
-				mapSubsetFaceIndices[faceCountOffset + mapFaceSubsetIndices[faceIdx]] = faceIdx;
-			}
-		}
-	} else {
-		// single mesh without texture - simpler case
-		// convert normals to float array
-		bool hasNormals = true;
-		if (mesh.vertexNormals.empty()) {
-			mesh.ComputeNormalVertices();
-			hasNormals = false;
-		}
-		// upload to GPU using traditional method
-		meshVBO->SetData(mesh.vertices[0].ptr(), mesh.vertices.size() * 3);
-		meshEBO->SetData(mesh.faces[0].ptr(), mesh.faces.size() * 3);
-		meshNormalVBO->SetData(mesh.vertexNormals[0].ptr(), mesh.vertexNormals.size() * 3);
-		if (!hasNormals)
-			mesh.vertexNormals.Release();
-		meshFaceCounts.emplace_back(mesh.faces.size());
-	}
-}
-
 // Helper function to compute camera frustum corners in world space
 // This function correctly accounts for the principal point by using image coordinates
 // and TransformPointI2W instead of assuming the principal point is at the image center
@@ -774,8 +940,7 @@ static uint32_t CreateCameraFrustumGeometry(
 	std::vector<float>& vertices,
 	std::vector<float>& colors,
 	std::vector<uint32_t>& indices,
-	size_t baseIndex
-) {
+	size_t baseIndex) {
 	// Camera center (apex of the pyramid)
 	const Point3f center = imageData.camera.C;
 	vertices.insert(vertices.end(), {center.x, center.y, center.z});
@@ -827,60 +992,116 @@ static uint32_t CreateCameraFrustumGeometry(
 
 void Renderer::UploadCameras(const Window& window) {
 	cameraPointIndexCount = cameraLineIndexCount = imageOverlayIndexCount = 0;
-	if (window.GetScene().GetImages().empty())
+	cameraLayerRanges.clear();
+
+	const Scene& sceneController = window.GetScene();
+	size_t imageCount = 0;
+	for (const Scene::Layer& layer : sceneController.GetLayers()) {
+		if (!layer.visible)
+			continue;
+		imageCount += layer.images.size();
+	}
+	if (imageCount == 0)
 		return;
+
 	const float depth = window.GetCamera().GetSceneDistance() * window.cameraSize;
-	const bool useJetColors = window.cameraDisplayColor == Window::CAMERA_COLOR_JET;
 	const bool displayDots = window.cameraDisplayType == Window::CAMERA_DISPLAY_DOT;
 	const bool showLookAt = window.showCameraLookAt;
-	const MVS::ImageArr& images = window.GetScene().GetScene().images;
-	const ImageArr& viewerImages = window.GetScene().GetImages();
-	const size_t imageCount = viewerImages.size();
 
-	// Generate camera frustum geometry
 	std::vector<float> cameraVertices;
 	std::vector<float> cameraColors;
 	std::vector<uint32_t> cameraPointIndices;
 	std::vector<uint32_t> cameraLineIndices;
-	for (size_t cameraIdx = 0; cameraIdx < imageCount; ++cameraIdx) {
-		const MVS::Image& imageData = images[viewerImages[cameraIdx].idx];
-		ASSERT(imageData.IsValid());
-		const float colorValue = imageCount > 1 ? ((float)cameraIdx / (float)(imageCount - 1)) : 0.5f;
-		const Pixel32F cameraColor = useJetColors ? Pixel32F::gray2color(colorValue) : Pixel32F::YELLOW;
+	std::vector<float> allVertices;
+	std::vector<uint32_t> allIndices;
 
-		// Dot mode: draw only camera centers.
-		if (displayDots) {
-			const uint32_t baseIndex = (uint32_t)(cameraVertices.size() / 3);
-			const Point3f center = imageData.camera.C;
-			cameraVertices.insert(cameraVertices.end(), {center.x, center.y, center.z});
-			cameraColors.insert(cameraColors.end(), {cameraColor.c2, cameraColor.c1, cameraColor.c0});
-			cameraPointIndices.push_back((uint32_t)baseIndex);
-			++cameraPointIndexCount;
-			if (showLookAt) {
-				const Point2 pp = imageData.camera.GetPrincipalPoint();
-				const Point3f worldPrincipalPoint = imageData.camera.TransformPointI2W(Point3(pp.x, pp.y, depth));
-				cameraVertices.insert(cameraVertices.end(), {worldPrincipalPoint.x, worldPrincipalPoint.y, worldPrincipalPoint.z});
-				cameraColors.insert(cameraColors.end(), {0.f, 1.f, 0.f}); // Green look-at target
-				cameraLineIndices.push_back(baseIndex);
-				cameraLineIndices.push_back(baseIndex + 1);
-				cameraLineIndexCount += 2;
-			}
+	size_t globalCameraOffset = 0;
+	for (const Scene::Layer& layer : sceneController.GetLayers()) {
+		if (!layer.visible || layer.images.empty())
 			continue;
-		}
+		CameraLayerRange range;
+		range.layerID = layer.id;
+		range.offset = globalCameraOffset;
+		range.count = layer.images.size();
+		range.pointIndexOffset = cameraPointIndices.size();
+		range.lineIndexOffset = cameraLineIndices.size();
+		size_t layerCameraIdx = 0;
+		for (const Image& image : layer.images) {
+			const MVS::Image& imageData = layer.scene.images[image.idx];
+			ASSERT(imageData.IsValid());
+			const float colorValue = layer.useCameraJetColor
+			                             ? (layer.images.size() > 1 ? ((float)layerCameraIdx / (float)(layer.images.size() - 1)) : 0.5f)
+			                             : 0.5f;
+			const Pixel32F cameraColor = layer.useCameraJetColor ? Pixel32F::gray2color(colorValue) : Pixel32F(layer.cameraColor.x, layer.cameraColor.y, layer.cameraColor.z);
 
-		// Frustum mode: draw full camera wireframe.
-		const size_t baseIndex = cameraVertices.size() / 3;
-		cameraLineIndexCount += CreateCameraFrustumGeometry(
-			imageData,
-			depth,
-			showLookAt,
-			cameraColor,
-			cameraColor,
-			cameraVertices,
-			cameraColors,
-			cameraLineIndices,
-			baseIndex
-		);
+			if (displayDots) {
+				const uint32_t baseIndex = (uint32_t)(cameraVertices.size() / 3);
+				const Point3f center = imageData.camera.C;
+				cameraVertices.insert(cameraVertices.end(), {center.x, center.y, center.z});
+				cameraColors.insert(cameraColors.end(), {cameraColor.c2, cameraColor.c1, cameraColor.c0});
+				cameraPointIndices.push_back(baseIndex);
+				++cameraPointIndexCount;
+				if (showLookAt) {
+					const Point2 pp = imageData.camera.GetPrincipalPoint();
+					const Point3f worldPrincipalPoint = imageData.camera.TransformPointI2W(Point3(pp.x, pp.y, depth));
+					cameraVertices.insert(cameraVertices.end(), {worldPrincipalPoint.x, worldPrincipalPoint.y, worldPrincipalPoint.z});
+					cameraColors.insert(cameraColors.end(), {0.f, 1.f, 0.f});
+					cameraLineIndices.push_back(baseIndex);
+					cameraLineIndices.push_back(baseIndex + 1);
+					cameraLineIndexCount += 2;
+				}
+			} else {
+				const size_t baseIndex = cameraVertices.size() / 3;
+				cameraLineIndexCount += CreateCameraFrustumGeometry(
+				    imageData,
+				    depth,
+				    showLookAt,
+				    cameraColor,
+				    cameraColor,
+				    cameraVertices,
+				    cameraColors,
+				    cameraLineIndices,
+				    baseIndex);
+			}
+
+			std::array<Point3f, 4> worldCorners = ComputeCameraFrustumCorners(imageData, depth);
+			const uint32_t baseVertex = (uint32_t)(allVertices.size() / 5);
+			for (int i = 0; i < 4; ++i) {
+				const Point3f& worldCorner = worldCorners[i];
+				allVertices.push_back(worldCorner.x);
+				allVertices.push_back(worldCorner.y);
+				allVertices.push_back(worldCorner.z);
+				switch (i) {
+				case 0:
+					allVertices.push_back(0.f);
+					allVertices.push_back(0.f);
+					break;
+				case 1:
+					allVertices.push_back(1.f);
+					allVertices.push_back(0.f);
+					break;
+				case 2:
+					allVertices.push_back(1.f);
+					allVertices.push_back(1.f);
+					break;
+				default:
+					allVertices.push_back(0.f);
+					allVertices.push_back(1.f);
+					break;
+				}
+			}
+			allIndices.push_back(baseVertex + 0);
+			allIndices.push_back(baseVertex + 1);
+			allIndices.push_back(baseVertex + 2);
+			allIndices.push_back(baseVertex + 0);
+			allIndices.push_back(baseVertex + 2);
+			allIndices.push_back(baseVertex + 3);
+			++layerCameraIdx;
+		}
+		range.pointIndexCount = cameraPointIndices.size() - range.pointIndexOffset;
+		range.lineIndexCount = cameraLineIndices.size() - range.lineIndexOffset;
+		cameraLayerRanges.push_back(range);
+		globalCameraOffset += layer.images.size();
 	}
 
 	std::vector<uint32_t> cameraIndices;
@@ -888,62 +1109,14 @@ void Renderer::UploadCameras(const Window& window) {
 	cameraIndices.insert(cameraIndices.end(), cameraPointIndices.begin(), cameraPointIndices.end());
 	cameraIndices.insert(cameraIndices.end(), cameraLineIndices.begin(), cameraLineIndices.end());
 
-	// Upload camera geometry to GPU buffers
 	if (!cameraIndices.empty()) {
 		cameraVBO->SetData(cameraVertices);
 		cameraColorVBO->SetData(cameraColors);
 		cameraEBO->SetData(cameraIndices);
 	}
 
-	// Collect all overlay geometry for images with valid textures
-	std::vector<float> allVertices;
-	std::vector<uint32_t> allIndices;
-	for (const auto& image : window.GetScene().GetImages()) {
-		const MVS::Image& imageData = window.GetScene().GetScene().images[image.idx];
-		ASSERT(imageData.IsValid());
-		// Get frustum corners using the same helper function as CreateCameraFrustumGeometry
-		std::array<Point3f, 4> worldCorners = ComputeCameraFrustumCorners(imageData, depth);
-		// Create quad vertices for this overlay
-		const uint32_t baseVertex = allVertices.size() / 5;
-		for (int i = 0; i < 4; ++i) {
-			const Point3f& worldCorner = worldCorners[i];
-			// Add 3D world position
-			allVertices.push_back(worldCorner.x);
-			allVertices.push_back(worldCorner.y);
-			allVertices.push_back(worldCorner.z);
-			// Add texture coordinates
-			// Map image corners to texture coordinates:
-			// top-left -> (0,0), top-right -> (1,0), bottom-right -> (1,1), bottom-left -> (0,1)
-			switch(i) {
-			case 0: // top-left corner
-				allVertices.push_back(0.f); // U
-				allVertices.push_back(0.f); // V (top of image)
-				break;
-			case 1: // top-right corner
-				allVertices.push_back(1.f); // U
-				allVertices.push_back(0.f); // V (top of image)
-				break;
-			case 2: // bottom-right corner
-				allVertices.push_back(1.f); // U
-				allVertices.push_back(1.f); // V (bottom of image)
-				break;
-			case 3: // bottom-left corner
-				allVertices.push_back(0.f); // U
-				allVertices.push_back(1.f); // V (bottom of image)
-				break;
-			}
-		}
-		// Add indices for this quad (2 triangles)
-		allIndices.push_back(baseVertex + 0); // top-left
-		allIndices.push_back(baseVertex + 1); // top-right
-		allIndices.push_back(baseVertex + 2); // bottom-right
-		allIndices.push_back(baseVertex + 0); // top-left
-		allIndices.push_back(baseVertex + 2); // bottom-right
-		allIndices.push_back(baseVertex + 3); // bottom-left
-		imageOverlayIndexCount += 6; // 2 triangles * 3 indices each
-	}
-	// Upload all overlay geometry to GPU buffers
-	if (imageOverlayIndexCount) {
+	if (!allIndices.empty()) {
+		imageOverlayIndexCount = allIndices.size();
 		imageOverlayVBO->SetData(allVertices);
 		imageOverlayEBO->SetData(allIndices);
 	}
@@ -952,15 +1125,10 @@ void Renderer::UploadCameras(const Window& window) {
 void Renderer::UploadUncertaintyEllipsoids(const Window& window) {
 	ellipsoidIndexCount = 0;
 	ellipsoidCenters.clear();
-	const Scene& scene = window.GetScene();
-	if (!scene.HasCameraUncertainty())
+	ellipsoidLayerIDs.clear();
+	const Scene& sceneController = window.GetScene();
+	if (!sceneController.HasCameraUncertainty())
 		return;
-	const MVS::ImageArr& images = scene.GetScene().images;
-	const ImageArr& viewerImages = scene.GetImages();
-	ASSERT(scene.cameraUncertainty.size() == viewerImages.size());
-	const float norm = scene.cameraUncertaintyNorm > 0.f ? scene.cameraUncertaintyNorm : 1.f;
-	// effective radius scale = scene auto-fit (sizes the median ellipsoid to the scene) x user slider
-	const float scale = window.uncertaintyEllipsoidScale * scene.cameraUncertaintyAutoScale;
 
 	// Solid unit-sphere template (UV sphere): a shared vertex grid + triangle list that is
 	// transformed per camera into an oriented, shaded error ellipsoid. Per-vertex unit-sphere
@@ -988,44 +1156,55 @@ void Renderer::UploadUncertaintyEllipsoids(const Window& window) {
 
 	std::vector<float> vertices, normals, colors;
 	std::vector<uint32_t> indices;
-	FOREACH(cameraIdx, viewerImages) {
-		const Scene::CameraUncertainty& u = scene.cameraUncertainty[cameraIdx];
-		if (!u.IsComputed())
+	for (const Scene::Layer& layer : sceneController.GetLayers()) {
+		if (!layer.visible || layer.cameraUncertainty.empty())
 			continue;
-		// Oriented world-frame error ellipsoid: eigen-decompose the position covariance
-		const Matrix3x3f& cov = u.posCov;
-		Eigen::Matrix3f ecov;
-		ecov << cov(0,0), cov(0,1), cov(0,2),
-		        cov(1,0), cov(1,1), cov(1,2),
-		        cov(2,0), cov(2,1), cov(2,2);
-		const Eigen::SelfAdjointEigenSolver<Eigen::Matrix3f> es(ecov);
-		if (es.info() != Eigen::Success)
-			continue;
-		const Eigen::Vector3f radii = es.eigenvalues().cwiseMax(0.f).cwiseSqrt() * scale;
-		if (radii.maxCoeff() <= 0.f)
-			continue; // gauge datum (or degenerate): nothing to draw
-		const Eigen::Matrix3f R = es.eigenvectors();
-		// Ellipsoid surface normal is R * diag(1/radii) * u (gradient of the implicit form);
-		// clamp the reciprocal so a near-degenerate (thin) axis does not blow up the normal.
-		const Eigen::Vector3f invRadii = radii.cwiseMax(1e-9f).cwiseInverse();
-		const MVS::Image& imageData = images[viewerImages[cameraIdx].idx];
-		const Point3f center = imageData.camera.C;
-		const Eigen::Vector3f C(center.x, center.y, center.z);
-		ellipsoidCenters.push_back(C); // one per accepted ellipsoid, aligned with the EBO slot order
-		// gray2color maps 0 = red, 1 = blue: invert so blue = best localized, red = worst
-		const float colorValue = MINF(u.MaxPosSigma() / norm, 1.f);
-		const Pixel32F color = Pixel32F::gray2color(1.f - colorValue);
-		const uint32_t baseIndex = (uint32_t)(vertices.size() / 3);
-		for (const Point3f& v : unitVertices) {
-			const Eigen::Vector3f dir(v.x, v.y, v.z);
-			const Eigen::Vector3f p = C + R * radii.cwiseProduct(dir);
-			const Eigen::Vector3f n = (R * invRadii.cwiseProduct(dir)).normalized();
-			vertices.insert(vertices.end(), {p.x(), p.y(), p.z()});
-			normals.insert(normals.end(), {n.x(), n.y(), n.z()});
-			colors.insert(colors.end(), {color.c2, color.c1, color.c0});
+		const MVS::ImageArr& images(layer.scene.images);
+		const ImageArr& viewerImages(layer.images);
+		ASSERT(layer.cameraUncertainty.size() == viewerImages.size());
+		const float norm = layer.cameraUncertaintyNorm > 0.f ? layer.cameraUncertaintyNorm : 1.f;
+		// Effective radius scale = per-layer auto-fit x the global user magnification slider.
+		const float scale = window.uncertaintyEllipsoidScale * layer.cameraUncertaintyAutoScale;
+		FOREACH(cameraIdx, viewerImages) {
+			const Scene::CameraUncertainty& u = layer.cameraUncertainty[cameraIdx];
+			if (!u.IsComputed())
+				continue;
+			// Oriented world-frame error ellipsoid: eigen-decompose the position covariance
+			const Matrix3x3f& cov = u.posCov;
+			Eigen::Matrix3f ecov;
+			ecov << cov(0, 0), cov(0, 1), cov(0, 2),
+			    cov(1, 0), cov(1, 1), cov(1, 2),
+			    cov(2, 0), cov(2, 1), cov(2, 2);
+			const Eigen::SelfAdjointEigenSolver<Eigen::Matrix3f> es(ecov);
+			if (es.info() != Eigen::Success)
+				continue;
+			const Eigen::Vector3f radii = es.eigenvalues().cwiseMax(0.f).cwiseSqrt() * scale;
+			if (radii.maxCoeff() <= 0.f)
+				continue; // gauge datum (or degenerate): nothing to draw
+			const Eigen::Matrix3f R = es.eigenvectors();
+			// Ellipsoid surface normal is R * diag(1/radii) * u (gradient of the implicit form);
+			// clamp the reciprocal so a near-degenerate (thin) axis does not blow up the normal.
+			const Eigen::Vector3f invRadii = radii.cwiseMax(1e-9f).cwiseInverse();
+			const MVS::Image& imageData = images[viewerImages[cameraIdx].idx];
+			const Point3f center = imageData.camera.C;
+			const Eigen::Vector3f C(center.x, center.y, center.z);
+			ellipsoidCenters.push_back(C); // one per accepted ellipsoid, aligned with the EBO slot order
+			ellipsoidLayerIDs.push_back(layer.id);
+			// gray2color maps 0 = red, 1 = blue: invert so blue = best localized, red = worst
+			const float colorValue = MINF(u.MaxPosSigma() / norm, 1.f);
+			const Pixel32F color = Pixel32F::gray2color(1.f - colorValue);
+			const uint32_t baseIndex = (uint32_t)(vertices.size() / 3);
+			for (const Point3f& v : unitVertices) {
+				const Eigen::Vector3f dir(v.x, v.y, v.z);
+				const Eigen::Vector3f p = C + R * radii.cwiseProduct(dir);
+				const Eigen::Vector3f n = (R * invRadii.cwiseProduct(dir)).normalized();
+				vertices.insert(vertices.end(), {p.x(), p.y(), p.z()});
+				normals.insert(normals.end(), {n.x(), n.y(), n.z()});
+				colors.insert(colors.end(), {color.c2, color.c1, color.c0});
+			}
+			for (const uint32_t idx : unitIndices)
+				indices.push_back(baseIndex + idx);
 		}
-		for (const uint32_t idx : unitIndices)
-			indices.push_back(baseIndex + idx);
 	}
 	if (indices.empty())
 		return;
@@ -1071,6 +1250,8 @@ void Renderer::RenderUncertaintyEllipsoids(const Window& window) {
 			return (ellipsoidCenters[a] - eye).squaredNorm() > (ellipsoidCenters[b] - eye).squaredNorm();
 		});
 	for (const uint32_t k : ellipsoidDrawOrder) {
+		if (!IsLayerInPass(ellipsoidLayerIDs[k]))
+			continue;
 		const void* off = reinterpret_cast<const void*>((size_t)k * per * sizeof(uint32_t));
 		GL_CHECK(glCullFace(GL_FRONT));
 		GL_CHECK(glDrawElements(GL_TRIANGLES, per, GL_UNSIGNED_INT, off)); // far (back) faces
@@ -1086,6 +1267,7 @@ void Renderer::RenderUncertaintyEllipsoids(const Window& window) {
 
 void Renderer::UploadSelection(const Window& window) {
 	selectionPrimitiveCount = 0;
+	neighborSelectionPrimitiveCount = 0;
 	if (window.selectionType == Window::SEL_NA)
 		return;
 	const bool requiresSelectionIndex = window.selectionType == Window::SEL_POINT || window.selectionType == Window::SEL_CAMERA;
@@ -1184,6 +1366,7 @@ void Renderer::UploadSelection(const Window& window) {
 
 	// Add neighbor camera geometry if selected
 	if (window.selectedNeighborCamera != NO_ID) {
+		const size_t neighborVertexOffset = selectionVertices.size() / 3;
 		const Image& image = window.GetScene().GetImages()[window.selectedNeighborCamera];
 		const MVS::Image& neighborImage = scene.images[image.idx];
 		ASSERT(neighborImage.IsValid());
@@ -1205,6 +1388,7 @@ void Renderer::UploadSelection(const Window& window) {
 			selectionVertices.insert(selectionVertices.end(), {corner1.x, corner1.y, corner1.z});
 			selectionVertices.insert(selectionVertices.end(), {corner2.x, corner2.y, corner2.z});
 		}
+		neighborSelectionPrimitiveCount = selectionVertices.size() / 3 - neighborVertexOffset;
 	}
 
 	// Upload all selection geometry to GPU if we have any
@@ -1299,7 +1483,13 @@ void Renderer::RenderPointCloud(const Window& window) {
 
 	pointCloudVAO->Bind();
 
-	GL_CHECK(glDrawArrays(GL_POINTS, 0, pointCount));
+	if (layerPassFilter.empty()) {
+		GL_CHECK(glDrawArrays(GL_POINTS, 0, pointCount));
+	} else {
+		for (const LayerIndexRange& range : pointLayerRanges)
+			if (IsLayerInPass(range.layerID))
+				GL_CHECK(glDrawArrays(GL_POINTS, (GLint)range.offset, (GLsizei)range.count));
+	}
 
 	pointCloudVAO->Unbind();
 }
@@ -1315,7 +1505,13 @@ void Renderer::RenderPointCloudNormals(const Window& window) {
 
 	pointCloudNormalsVAO->Bind();
 
-	GL_CHECK(glDrawArrays(GL_LINES, 0, pointNormalCount));
+	if (layerPassFilter.empty()) {
+		GL_CHECK(glDrawArrays(GL_LINES, 0, pointNormalCount));
+	} else {
+		for (const LayerIndexRange& range : pointLayerRanges)
+			if (range.normalCount > 0 && IsLayerInPass(range.layerID))
+				GL_CHECK(glDrawArrays(GL_LINES, (GLint)range.normalOffset, (GLsizei)range.normalCount));
+	}
 
 	pointCloudNormalsVAO->Unbind();
 }
@@ -1343,7 +1539,10 @@ void Renderer::RenderMesh(const Window& window) {
 		// check if this sub-mesh should be rendered
 		if (!window.meshSubMeshVisible.empty() && !window.meshSubMeshVisible[i])
 			continue;
-		const bool textureValid = (i < meshTextures.size()) && meshTextures[i].IsValid();
+		if (!IsLayerInPass(GetMeshSubMeshLayerID(i)))
+			continue;
+		const uint32_t textureIndex = i < meshTextureIndices.size() ? meshTextureIndices[i] : NO_ID;
+		const bool textureValid = textureIndex < meshTextures.size() && meshTextures[textureIndex].IsValid();
 		// check if this sub-mesh has a valid texture
 		const bool hasTexture = texturesEnabled && textureValid;
 		// select the appropriate shader based on texture availability for this sub-mesh
@@ -1353,7 +1552,7 @@ void Renderer::RenderMesh(const Window& window) {
 		currentMeshShader->SetBool("wireframe", isWireframe);
 		if (hasTexture) {
 			GL_CHECK(glActiveTexture(GL_TEXTURE0));
-			GL_CHECK(glBindTexture(GL_TEXTURE_2D, meshTextures[i].GetID()));
+			GL_CHECK(glBindTexture(GL_TEXTURE_2D, meshTextures[textureIndex].GetID()));
 			currentMeshShader->SetInt("diffuseTexture", 0);
 		} else {
 			currentMeshShader->SetVector3("meshColor", Eigen::Vector3f(0.8f, 0.8f, 0.8f));
@@ -1381,24 +1580,57 @@ void Renderer::RenderCameras(const Window& window) {
 	cameraVAO->Bind();
 	cameraEBO->Bind();
 
-	if (window.cameraDisplayType == Window::CAMERA_DISPLAY_DOT) {
-		if (cameraPointIndexCount > 0)
-			GL_CHECK(glDrawElements(GL_POINTS, static_cast<GLsizei>(cameraPointIndexCount), GL_UNSIGNED_INT, 0));
-		if (window.showCameraLookAt && cameraLineIndexCount > 0) {
-			const void* lineOffset = reinterpret_cast<const void*>(cameraPointIndexCount * sizeof(uint32_t));
-			GL_CHECK(glDrawElements(GL_LINES, static_cast<GLsizei>(cameraLineIndexCount), GL_UNSIGNED_INT, lineOffset));
+	// The camera EBO stores all point indices first, then all line indices; each layer owns a
+	// contiguous sub-range in both blocks, so a pass filter reduces to per-layer draw calls.
+	const bool displayDots = window.cameraDisplayType == Window::CAMERA_DISPLAY_DOT;
+	if (layerPassFilter.empty()) {
+		if (displayDots) {
+			if (cameraPointIndexCount > 0)
+				GL_CHECK(glDrawElements(GL_POINTS, static_cast<GLsizei>(cameraPointIndexCount), GL_UNSIGNED_INT, 0));
+			if (window.showCameraLookAt && cameraLineIndexCount > 0) {
+				const void* lineOffset = reinterpret_cast<const void*>(cameraPointIndexCount * sizeof(uint32_t));
+				GL_CHECK(glDrawElements(GL_LINES, static_cast<GLsizei>(cameraLineIndexCount), GL_UNSIGNED_INT, lineOffset));
+			}
+		} else {
+			if (cameraLineIndexCount > 0)
+				GL_CHECK(glDrawElements(GL_LINES, static_cast<GLsizei>(cameraLineIndexCount), GL_UNSIGNED_INT, 0));
 		}
 	} else {
-		if (cameraLineIndexCount > 0)
-			GL_CHECK(glDrawElements(GL_LINES, static_cast<GLsizei>(cameraLineIndexCount), GL_UNSIGNED_INT, 0));
+		for (const CameraLayerRange& range : cameraLayerRanges) {
+			if (!IsLayerInPass(range.layerID))
+				continue;
+			if (displayDots && range.pointIndexCount > 0) {
+				const void* pointOffset = reinterpret_cast<const void*>(range.pointIndexOffset * sizeof(uint32_t));
+				GL_CHECK(glDrawElements(GL_POINTS, static_cast<GLsizei>(range.pointIndexCount), GL_UNSIGNED_INT, pointOffset));
+			}
+			if ((!displayDots || window.showCameraLookAt) && range.lineIndexCount > 0) {
+				const void* lineOffset = reinterpret_cast<const void*>((cameraPointIndexCount + range.lineIndexOffset) * sizeof(uint32_t));
+				GL_CHECK(glDrawElements(GL_LINES, static_cast<GLsizei>(range.lineIndexCount), GL_UNSIGNED_INT, lineOffset));
+			}
+		}
 	}
 
 	cameraVAO->Unbind();
 }
 
 void Renderer::RenderImageOverlays(const Window& window) {
-	if (imageOverlayIndexCount == 0)
+	const Camera& camera(window.GetCamera());
+	if (imageOverlayIndexCount == 0 || !camera.IsCameraViewMode())
 		return;
+	const Scene& sceneController(window.GetScene());
+	const Scene::Layer* layer(sceneController.GetActiveLayer());
+	if (layer == nullptr || !layer->visible)
+		return;
+	const CameraLayerRange* range(FindCameraLayerRange(layer->id));
+	const MVS::IIndex cameraID(camera.GetCurrentCamID());
+	if (range == nullptr || cameraID >= layer->images.size())
+		return;
+	Image& image(const_cast<Image&>(layer->images[cameraID]));
+	if (!image.IsValid()) {
+		if (!image.IsImageValid())
+			return;
+		image.TransferImage();
+	}
 
 	// Set up for 3D rendering with special handling for transparency
 	GL_CHECK(glDisable(GL_DEPTH_TEST)); // Temporarily disable depth testing to ensure visibility
@@ -1416,22 +1648,10 @@ void Renderer::RenderImageOverlays(const Window& window) {
 	imageOverlayVAO->Bind();
 	imageOverlayEBO->Bind();
 
-	FOREACH(imgIdx, window.GetScene().GetImages()) {
-		// Load the image if not already loaded
-		Image& image = window.GetScene().GetImages()[imgIdx];
-		if (!image.IsValid()) {
-			if (!image.IsImageValid())
-				continue; // Image asynchronously loading
-			// Image loaded, create the texture
-			image.TransferImage();
-		}
-		// Bind the camera image texture
-		GL_CHECK(glActiveTexture(GL_TEXTURE0));
-		image.Bind();
-		// Calculate the actual byte offset for glDrawElements
-		const void* indexOffset = reinterpret_cast<const void*>(imgIdx * 6 * sizeof(uint32_t));
-		GL_CHECK(glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, indexOffset));
-	}
+	GL_CHECK(glActiveTexture(GL_TEXTURE0));
+	image.Bind();
+	const void* indexOffset = reinterpret_cast<const void*>((range->offset + cameraID) * 6 * sizeof(uint32_t));
+	GL_CHECK(glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, indexOffset));
 
 	imageOverlayVAO->Unbind();
 
@@ -1443,6 +1663,8 @@ void Renderer::RenderImageOverlays(const Window& window) {
 void Renderer::RenderSelection(const Window& window) {
 	// Highlight selected point in point cloud if applicable
 	if (window.showPointCloud && window.selectionType == Window::SEL_POINT && pointCount > 0 && window.HasSelectionIds()) {
+		const Scene::Layer* activeLayer = window.GetScene().GetActiveLayer();
+		const LayerIndexRange* pointRange = activeLayer != nullptr ? FindPointLayerRange(activeLayer->id) : nullptr;
 		// Use the geometry selection shader for highlighting
 		geometrySelectionShader->Use();
 		geometrySelectionShader->SetBool("useHighlight", true);
@@ -1457,9 +1679,9 @@ void Renderer::RenderSelection(const Window& window) {
 
 		// Render each selected point individually using glDrawArrays with offset
 		for (IDX selectedIdx : window.GetSelectionIds()) {
-			if (selectedIdx >= pointCount)
+			if (pointRange == nullptr || selectedIdx >= pointRange->count)
 				continue;
-			GL_CHECK(glDrawArrays(GL_POINTS, static_cast<GLint>(selectedIdx), 1));
+			GL_CHECK(glDrawArrays(GL_POINTS, static_cast<GLint>(pointRange->offset + selectedIdx), 1));
 		}
 
 		pointCloudVAO->Unbind();
@@ -1497,11 +1719,11 @@ void Renderer::RenderSelection(const Window& window) {
 	GL_CHECK(glDrawArrays(GL_LINES, 0, selectionPrimitiveCount));
 
 	// Render neighbor camera with different color
-	if (window.selectedNeighborCamera != NO_ID) {
+	if (window.selectedNeighborCamera != NO_ID && neighborSelectionPrimitiveCount > 0) {
 		selectionShader->SetFloat("lineWidth", 1.f);
 		selectionShader->SetVector3("selectionColor", Eigen::Vector3f(1.f, 0.f, 1.f)); // Magenta for neighbor camera
 		// Render neighbor camera geometry as lines (starting after primary selection vertices)
-		GL_CHECK(glDrawArrays(GL_LINES, selectionPrimitiveCount, selectionPrimitiveCount));
+		GL_CHECK(glDrawArrays(GL_LINES, selectionPrimitiveCount, neighborSelectionPrimitiveCount));
 	}
 
 	selectionVAO->Unbind();
@@ -1896,6 +2118,9 @@ void Renderer::RenderSelectedGeometry(const Window& window) {
 	const SelectionController& selectionController = window.GetSelectionController();
 	if (!selectionController.hasSelection())
 		return;
+	const Scene::Layer* activeLayer = window.GetScene().GetActiveLayer();
+	if (activeLayer == nullptr)
+		return;
 
 	// Enable blending for highlighting effect
 	GL_CHECK(glEnable(GL_BLEND));
@@ -1909,13 +2134,17 @@ void Renderer::RenderSelectedGeometry(const Window& window) {
 	// Render selected points with highlighting
 	const auto& selectedPointIndices = selectionController.getSelectedPointIndices();
 	if (window.showPointCloud && !selectedPointIndices.empty() && pointCount > 0) {
+		const LayerIndexRange* pointRange = FindPointLayerRange(activeLayer->id);
 		// set highlight size and color for points (red)
 		geometrySelectionShader->SetVector3("highlightColor", Eigen::Vector3f(1.f, 0.f, 0.f));
 		geometrySelectionShader->SetFloat("pointSize", window.pointSize * 2.5f);
 		// render each selected point individually using glDrawArrays with offset
 		pointCloudVAO->Bind();
-		for (const auto& pointIdx : selectedPointIndices)
-			GL_CHECK(glDrawArrays(GL_POINTS, pointIdx, 1));
+		for (const auto& pointIdx : selectedPointIndices) {
+			if (pointRange == nullptr || pointIdx >= pointRange->count)
+				continue;
+			GL_CHECK(glDrawArrays(GL_POINTS, pointRange->offset + pointIdx, 1));
+		}
 		pointCloudVAO->Unbind();
 	}
 
@@ -1931,19 +2160,21 @@ void Renderer::RenderSelectedGeometry(const Window& window) {
 		GL_CHECK(glPolygonOffset(-1.f, -1.f)); // more aggressive offset
 		meshVAO->Bind();
 		meshEBO->Bind();
-		// render only selected faces individually, each face consists of 3 vertices (triangle)
-		const MVS::Scene& scene = window.GetScene().GetScene();
 		for (const auto& faceIdx : selectedFaceIndices) {
-			// get which submesh this face belongs to and its index within that submesh
-			const MVS::Mesh::TexIndex submeshIdx = scene.mesh.GetFaceTextureIndex(faceIdx);
-			ASSERT(submeshIdx < meshFaceCounts.size());
+			uint32_t globalFaceIdx;
+			if (!MapLocalFace(activeLayer->id, faceIdx, globalFaceIdx))
+				continue;
+			if (globalFaceIdx >= globalFaceSubMeshIndices.size())
+				continue;
+			const uint32_t submeshIdx = globalFaceSubMeshIndices[globalFaceIdx];
+			if (submeshIdx >= meshFaceCounts.size())
+				continue;
 			// check if this submesh is visible
 			if (!window.meshSubMeshVisible.empty() && !window.meshSubMeshVisible[submeshIdx])
 				continue;
-			// calculate the actual byte offset for this face in the EBO
-			MVS::Mesh::FIndex submeshOffset = meshFaceCounts[submeshIdx];
-			MVS::Mesh::FIndex faceIdxInSubmesh(mapFaceSubsetIndices.empty() ? faceIdx :  mapFaceSubsetIndices[faceIdx]);
-			const void* indexPtr = reinterpret_cast<const void*>((submeshOffset + faceIdxInSubmesh) * 3 * sizeof(uint32_t));
+			const MVS::Mesh::FIndex faceCountOffset = submeshIdx > 0 ? meshFaceCounts[submeshIdx - 1] : 0u;
+			const MVS::Mesh::FIndex faceIdxInSubmesh = globalFaceIdx - faceCountOffset;
+			const void* indexPtr = reinterpret_cast<const void*>((faceCountOffset + faceIdxInSubmesh) * 3 * sizeof(uint32_t));
 			// render this single face (3 indices)
 			GL_CHECK(glDrawElements(GL_TRIANGLES, 3, GL_UNSIGNED_INT, indexPtr));
 		}
@@ -2006,8 +2237,8 @@ void Renderer::EnsurePickFBOSize(int width, int height) {
 // if a primitive is found returns valid PickResult, where
 // pick.idx is the primitive index (point index or face index) depending on isPoint
 Renderer::PickResult Renderer::PickPrimitiveAt(const Point2f& screenPos, int radius, const Window& window) {
-	// Ensure FBO matches viewport size
-	const cv::Size& vpSize = window.GetCamera().GetSize();
+	// Ensure FBO matches the window framebuffer size
+	const cv::Size& vpSize = window.GetSize();
 	EnsurePickFBOSize(vpSize.width, vpSize.height);
 
 	// Bind pick FBO
@@ -2032,6 +2263,24 @@ Renderer::PickResult Renderer::PickPrimitiveAt(const Point2f& screenPos, int rad
 	GL_CHECK(glEnable(GL_SCISSOR_TEST));
 	GL_CHECK(glScissor(minX, minY, w, h));
 
+	// In compare view each layer is displayed only on its assigned side, so restrict
+	// the pick pass to the layers actually shown under the cursor and rasterize it
+	// with that side's camera and viewport, matching the on-screen rendering.
+	std::vector<uint32_t> cursorSideLayers;
+	if (window.compareMode) {
+		const int cursorSide = screenPos.x >= (float)window.GetCompareSplitX() ? 1 : 0;
+		for (const Scene::Layer& layer : window.GetScene().GetLayers())
+			if (layer.visible && layer.compareRight == (cursorSide == 1))
+				cursorSideLayers.push_back(layer.id);
+		const cv::Rect viewport = window.GetCompareViewport(cursorSide);
+		GL_CHECK(glViewport(viewport.x, viewport.y, viewport.width, viewport.height));
+		UpdateViewProjection(window.GetSideCamera(cursorSide));
+	}
+	const auto layerAtCursor = [&](uint32_t layerID) {
+		return !window.compareMode ||
+			std::find(cursorSideLayers.begin(), cursorSideLayers.end(), layerID) != cursorSideLayers.end();
+	};
+
 	// Render mesh (triangles) into pick FBO only if mesh rendering is enabled and we have mesh data
 	unsigned baseFace = 0;
 	if (window.showMesh && !meshFaceCounts.empty()) {
@@ -2041,6 +2290,8 @@ Renderer::PickResult Renderer::PickPrimitiveAt(const Point2f& screenPos, int rad
 		FOREACH(i, meshFaceCounts) {
 			// skip invisible submeshes if window indicates it
 			if (!window.meshSubMeshVisible.empty() && !window.meshSubMeshVisible[i])
+				continue;
+			if (!layerAtCursor(GetMeshSubMeshLayerID(i)))
 				continue;
 			const MVS::Mesh::FIndex faceCountOffset = i > 0 ? meshFaceCounts[i - 1] : 0u;
 			const MVS::Mesh::FIndex faceCountTotal = meshFaceCounts[i];
@@ -2058,7 +2309,13 @@ Renderer::PickResult Renderer::PickPrimitiveAt(const Point2f& screenPos, int rad
 		pickerPointsShader->Use();
 		pickerPointsShader->SetUInt("uBaseID", baseFace);
 		pointCloudVAO->Bind();
-		GL_CHECK(glDrawArrays(GL_POINTS, 0, pointCount));
+		if (window.compareMode) {
+			for (const LayerIndexRange& range : pointLayerRanges)
+				if (layerAtCursor(range.layerID))
+					GL_CHECK(glDrawArrays(GL_POINTS, (GLint)range.offset, (GLsizei)range.count));
+		} else {
+			GL_CHECK(glDrawArrays(GL_POINTS, 0, pointCount));
+		}
 		pointCloudVAO->Unbind();
 	}
 
@@ -2076,6 +2333,10 @@ Renderer::PickResult Renderer::PickPrimitiveAt(const Point2f& screenPos, int rad
 	// Unbind and restore state
 	GL_CHECK(glDisable(GL_SCISSOR_TEST));
 	GL_CHECK(glBindFramebuffer(GL_FRAMEBUFFER, 0));
+	if (window.compareMode) {
+		GL_CHECK(glViewport(0, 0, vpSize.width, vpSize.height));
+		UpdateViewProjection(window.GetCamera());
+	}
 
 	// Find nearest non-zero id (smallest depth)
 	float bestDepth = FLT_MAX;
@@ -2099,22 +2360,21 @@ Renderer::PickResult Renderer::PickPrimitiveAt(const Point2f& screenPos, int rad
 	if (bestID < baseFace) {
 		// hit a mesh face
 		result.isPoint = false;
-		result.index = bestID;
+		if (!MapGlobalFace(bestID, result.layerID, result.index))
+			return {};
 		ASSERT(meshEBO && meshVBO);
 		MVS::Mesh::Face face;
-		meshEBO->GetSubData<uint32_t>(face.ptr(), 3, static_cast<size_t>(result.index) * 3);
+		meshEBO->GetSubData<uint32_t>(face.ptr(), 3, static_cast<size_t>(bestID) * 3);
 		meshVBO->GetSubData<float>(result.points[0].ptr(), 3, static_cast<size_t>(face[0]) * 3);
 		meshVBO->GetSubData<float>(result.points[1].ptr(), 3, static_cast<size_t>(face[1]) * 3);
 		meshVBO->GetSubData<float>(result.points[2].ptr(), 3, static_cast<size_t>(face[2]) * 3);
-		// convert face index from subset to original if necessary
-		if (!mapSubsetFaceIndices.empty())
-			result.index = mapSubsetFaceIndices[result.index];
 	} else {
 		// hit a point
 		result.isPoint = true;
-		result.index = bestID - baseFace;
+		if (!MapGlobalPoint(bestID - baseFace, result.layerID, result.index))
+			return {};
 		ASSERT(pointCloudVBO);
-		pointCloudVBO->GetSubData<float>(result.points[0].ptr(), 3, static_cast<size_t>(result.index) * 3);
+		pointCloudVBO->GetSubData<float>(result.points[0].ptr(), 3, static_cast<size_t>(bestID - baseFace) * 3);
 	}
 	return result;
 }
