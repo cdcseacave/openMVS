@@ -86,6 +86,27 @@ class SFM_API Scene;
  *   using GlobalTranslationEstimator. The gauge freedom is fixed by pinning
  *   the best-connected sub-scene at the origin.
  *
+ * VALIDATION (between stages 4 and 5)
+ *   Each sub-scene pair's measured Sim(3) is composed with the averaged global transforms
+ *   of its two end-points; the residual is identity when the edge agrees with the
+ *   consensus. A sub-scene dominated by conflicting incident edge weight is demoted: it is
+ *   merged without its poses so the post-merge resection re-registers its images against
+ *   the trusted consensus. The remaining sub-scenes are then re-averaged and re-validated
+ *   until the verdict is stable.
+ *
+ *   This validates the sub-scenes against EACH OTHER; whether a single sub-scene is itself
+ *   internally sound is not re-litigated here. A cluster holding two blocks joined by a
+ *   seam too sparse to observe their relative scale reconstructs at two scales, and that is
+ *   a clustering fault: SceneCluster refuses such an interface when merging clusters
+ *   (ClusterConfig::minClusterCoupling), splits any cluster that ends up with one anyway
+ *   (RefineClustersSplitThinWaist), and reports the spectral-cut coupling of every finished
+ *   cluster. If the defect ever reappears, that is where it is detected and fixed — the
+ *   merge stage must not compensate for it. Comparing each sub-scene's own two-view
+ *   geometry against its own poses was tried here and abandoned: on a 7-scene benchmark it
+ *   flagged every scene (11-72% violated pair weight), including ones that registered every
+ *   image, because two-view relative poses are unreliable on the low-parallax and
+ *   homography-degenerate pairs such captures are full of.
+ *
  * STAGE 5: MERGE TRANSFORMED SUB-SCENES
  *   Apply the estimated similarity transforms (s_i * R_i, t_i) to each
  *   sub-scene's cameras and 3D points, then merge into the global scene:
@@ -192,22 +213,20 @@ struct SFM_API ScenePair
  */
 struct SFM_API GlobalAlignmentConfig
 {
-	float minPairWeight = 3.f;         // minimum composite weight for image pairs to be included during matches import
 	unsigned minCommonTracks{25};      // minimum tracks to connect sub-scenes
-	bool mergeTrackInliersOnly{true};  // Phase 1: seed union-find with only inlier observations (true) or all observations (false)
-};
-
-/**
- * @brief Pairwise similarity transform between two sub-scenes
- */
-struct SFM_API PairwiseSimilarity
-{
-	uint32_t sceneA;      // First sub-scene index
-	uint32_t sceneB;      // Second sub-scene index
-	Transform transform;  // Transform from A to B
-	float weight;         // Confidence weight (# correspondences)
-
-	PairwiseSimilarity() : sceneA(NO_ID), sceneB(NO_ID), weight(0.f) {}
+	bool mergeTrackInliersOnly{true};  // seed union-find with only inlier observations (true) or all observations (false)
+	// Cross-sub-scene Sim(3) alignment robustness (see EstimateRelativePoses):
+	double simInlierThresholdFactor{0.01};  // RANSAC inlier distance as a fraction of the destination bbox diagonal
+	double minSimInlierRatio{0.3};          // minimum RANSAC inlier ratio required to accept a sub-scene pair
+	unsigned simRansacMaxIters{10000};      // RANSAC iteration budget; needed to find low-inlier-ratio models
+	// Merge validation (see ValidateAlignment): each surviving sub-scene pair's measured Sim(3)
+	// is composed with the averaged global transforms of its two end-points; edges whose residual
+	// is too large in scale, rotation or translation are conflicting, and a sub-scene dominated
+	// by conflicting incident edge weight is demoted and rebuilt by the post-merge resection
+	// instead of being merged with its (misaligned) poses.
+	float maxSimScaleRatio{1.1f};           // max per-edge scale-residual ratio vs the averaged global transforms
+	float maxSimRotationError{3.f};         // degrees; max per-edge rotation residual vs the averaged global transforms
+	float maxSimTranslationError{0.05f};    // max per-edge translation residual as a fraction of the sub-scene's local camera-bbox diagonal
 };
 
 class SFM_API GlobalAlignment
@@ -221,10 +240,12 @@ public:
 	GlobalAlignment(Scene& scene, const GlobalAlignmentConfig& config);
 
 	/**
-	 * @brief Merge aligned sub-scenes into single scene
-	 * @param subScenes Vector of sub-scenes to  aligned and merge (modified in-place)
+	 * @brief Align and merge sub-scenes into the global scene
+	 * @param subScenes Vector of sub-scenes to align and merge (modified in-place)
 	 * @param localToGlobals Vector of ID mappings from sub-scenes to global scene (parallel to subScenes)
-	 * @return true if merge successful
+	 * @return true if all sub-scenes were aligned and merged; false if alignment could not
+	 *         complete, in which case the global scene is populated with the largest intact
+	 *         sub-scene so a good partial reconstruction is never discarded (never left empty)
 	 *
 	 * Combines all sub-scenes, handling duplicate cameras/points.
 	 */
@@ -249,10 +270,14 @@ private:
 		std::vector<ScenePair>& scenePairs);
 
 	/**
-	 * @brief Stage 2: Estimate global rotations from pairwise rotations
+	 * @brief Stage 2: Estimate global rotations from pairwise rotations.
+	 * Robustly rejects rotation-inconsistent pairs and PRUNES them from scenePairs in place, so
+	 * the downstream scale/translation averaging only use rotation-consistent links. Sub-scenes
+	 * the estimator cannot place are left with an INF rotation (caller selects by finiteness).
+	 * @param scenePairs in/out: pruned to the rotation-consistent subset.
 	 */
 	bool EstimateGlobalRotations(
-		const std::vector<ScenePair>& scenePairs,
+		std::vector<ScenePair>& scenePairs,
 		const uint32_t numSubScenes,
 		std::vector<Point3d>& globalRotations);
 
@@ -277,13 +302,64 @@ private:
 
 	/**
 	 * @brief Stage 5: Merge transformed sub-scenes into global scene
+	 * @param demoted per-sub-scene flags (from ValidateAlignment): merge without poses when true
 	 */
 	bool MergeTransformedScenes(
 		std::vector<Scene>& subScenes,
 		const std::vector<IIndexArr>& localToGlobals,
 		const std::vector<Point3d>& globalRotations,
 		const std::vector<REAL>& globalScales,
-		const std::vector<Point3>& globalTranslations);
+		const std::vector<Point3>& globalTranslations,
+		const std::vector<bool>& demoted);
+
+	/**
+	 * @brief Validate the averaged alignment via Sim(3) cycle consistency and decide which
+	 * sub-scenes cannot be trusted with their poses.
+	 *
+	 * Every surviving ScenePair carries a relative Sim(3) measured from 3D-3D correspondences
+	 * between two reconstructions; composing it with the averaged global transforms of its two
+	 * end-points yields a residual that is identity when the edge agrees with the consensus.
+	 * Edges whose residual is too large in scale, rotation or translation are conflicting, and
+	 * the sub-scene most dominated by conflicting incident edge weight is demoted, iteratively
+	 * (a node with a single incident edge is satisfied exactly by the averaging, so it carries
+	 * no cycle evidence and can never be flagged). Sub-scenes left unplaced by rotation
+	 * averaging (mergeMask false) are demoted as well.
+	 *
+	 * Demoted sub-scenes are merged WITHOUT their poses and 3D positions (features, image
+	 * pairs and track observations only), leaving their images unregistered so the post-merge
+	 * resection re-registers them incrementally against the trusted consensus — the same
+	 * process that would have placed them correctly had the cluster boundary not severed
+	 * their strongest pairs.
+	 *
+	 * @return per-sub-scene demotion flags (true = merge without poses)
+	 */
+	std::vector<bool> ValidateAlignment(
+		const std::vector<Scene>& subScenes,
+		const std::vector<bool>& mergeMask,
+		const std::vector<ScenePair>& scenePairs,
+		const std::vector<Point3d>& globalRotations,
+		const std::vector<REAL>& globalScales,
+		const std::vector<Point3>& globalTranslations) const;
+
+	/**
+	 * @brief Re-average the demoted-free sub-set until the validation verdict is stable
+	 *
+	 * Demoting a sub-scene removes its edges, so the scale and translation consensus must be
+	 * recomputed over the survivors and re-validated; rotation averaging is already robust, so
+	 * its result is kept. Demoting can also disconnect the pair graph, while scale/translation
+	 * averaging pin a single gauge node, so every sub-scene outside the largest surviving
+	 * component is demoted too. Each iteration demotes at least one more sub-scene, bounding
+	 * the loop by their number.
+	 *
+	 * @return false if re-averaging failed, in which case the alignment cannot complete
+	 */
+	bool RefineDemotedAlignment(
+		const std::vector<Scene>& subScenes,
+		std::vector<ScenePair>& scenePairs,
+		const std::vector<Point3d>& globalRotations,
+		std::vector<REAL>& globalScales,
+		std::vector<Point3>& globalTranslations,
+		std::vector<bool>& demoted);
 
 	/**
 	 * @brief Merge a single scene into the global scene
@@ -291,8 +367,11 @@ private:
 	 * Moves keypoints/descriptors back from sub-scene images to the global scene
 	 * (they were moved to sub-scenes during SceneCluster::ExtractSubScene to save memory).
 	 * Also moves image pairs back and remaps track observation IDs.
+	 * When not trusted, camera poses are not copied and all merged tracks are marked
+	 * non-inlier (numInliers=0): the observations survive for later triangulation, but no
+	 * pose or 3D position from the demoted sub-scene can influence the reconstruction.
 	 */
-	void MergeSingleScene(Scene& subScene, const IIndexArr& localToGlobal);
+	void MergeSingleScene(Scene& subScene, const IIndexArr& localToGlobal, bool trusted);
 
 	/**
 	 * @brief Merge tracks from sub-scenes and connect them via cross-sub-scene pairs
@@ -302,8 +381,13 @@ private:
 	 * 2. Process cross-sub-scene pairs to connect tracks across boundaries,
 	 *    using 3D proximity as validation when both sides have triangulated positions
 	 * 3. Assemble final tracks, triangulating any new tracks without 3D positions
+	 *
+	 * Tracks of demoted sub-scenes (all observations in untrusted images) are seeded with
+	 * all their observations but no 3D position, so their structure survives for the
+	 * post-merge resection to re-triangulate.
+	 * @param untrustedImages per-global-image flags marking images of demoted sub-scenes
 	 */
-	void MergeTracksWithCrossSubScenePairs();
+	void MergeTracksWithCrossSubScenePairs(const std::vector<bool>& untrustedImages);
 
 	// Global image ID -> (sub-scene index, local image index)
 	std::unordered_map<IIndex, std::pair<uint32_t, IIndex>> globalToLocal;

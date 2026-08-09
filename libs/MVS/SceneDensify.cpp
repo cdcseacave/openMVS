@@ -170,7 +170,8 @@ bool SaveRawMap(const String& fileName, const TImage<T>& map, int32_t elemType) 
 DepthMapsData::DepthMapsData(Scene& _scene)
 	:
 	scene(_scene),
-	arrDepthData(_scene.images.GetSize())
+	arrDepthData(_scene.images.GetSize()),
+	imageCache(_scene.images)
 	#ifdef _USE_CUDA
 	, pmCUDANextIdx((Thread::safe_t)-1)
 	, pmCUDAEpoch(0)
@@ -185,6 +186,33 @@ DepthMapsData::DepthMapsData(Scene& _scene)
 DepthMapsData::~DepthMapsData()
 {
 } // destructor
+
+// bytes the image cache may keep for the whole depth-map estimation: the whole
+// set of images when it fits in three quarters of what is free above the same
+// safety margin the depth-map cache keeps, and that three quarters otherwise.
+//
+// Holding all of them is worth reaching for, because landing just short is the
+// worst place to be: the references sweep the scene in order, so a capacity a
+// few images below the set makes LRU evict exactly what the next reference is
+// about to ask for. Measured on a 683-image scene, a budget 2% short of the set
+// turned the per-view fetch from 0.4ms into 18ms and cost 150 decodes a pass.
+//
+// Below a handful of images a cache would only thrash, so disable it there and
+// let the images be decoded for each use.
+size_t DepthMapsData::ComputeImageCacheMemory(const IIndexArr& images) const
+{
+	if (images.empty())
+		return 0;
+	const size_t allImages(ImageCache::ComputeMemorySize(scene.images, images));
+	const Util::MemoryInfo memInfo(Util::GetMemoryInfo());
+	const size_t safetyMemory(ComputeSafetyMemory(memInfo));
+	if (memInfo.freePhysical <= safetyMemory)
+		return 0;
+	const size_t maxMemory(MINF((memInfo.freePhysical - safetyMemory) / 4 * 3, allImages));
+	// require room for at least 8 average images, or the whole (small) set:
+	// nothing can thrash when every image fits
+	return maxMemory >= MINF(allImages, allImages / images.size() * 8) ? maxMemory : 0;
+} // ComputeImageCacheMemory
 
 #ifdef _USE_CUDA
 bool DepthMapsData::AllocateCudaPool(unsigned poolSize)
@@ -267,15 +295,15 @@ bool DepthMapsData::SelectViews(DepthData& depthData)
 	const IIndex idxImage((IIndex)(&depthData-arrDepthData.Begin()));
 	ASSERT(depthData.neighbors.IsEmpty());
 	if (scene.images[idxImage].neighbors.empty() &&
-		!scene.SelectNeighborViews(idxImage, depthData.points, OPTDENSE::nMinViews, OPTDENSE::nMinViewsTrustPoint>1?OPTDENSE::nMinViewsTrustPoint:2, FD2R(OPTDENSE::fOptimAngle), OPTDENSE::fWeightPointInsideROI))
+		!scene.SelectNeighborViews(idxImage, depthData.points, OPTDENSE::nMinViews, OPTDENSE::nMinViewsTrustPoint>1?OPTDENSE::nMinViewsTrustPoint:2, D2R(OPTDENSE::fOptimAngle), OPTDENSE::fWeightPointInsideROI))
 		return false;
 	depthData.neighbors.CopyOf(scene.images[idxImage].neighbors);
 
 	// remove invalid neighbor views
 	const float fMinArea(OPTDENSE::fMinArea);
 	const float fMinScale(0.2f), fMaxScale(3.2f);
-	const float fMinAngle(FD2R(OPTDENSE::fMinAngle));
-	const float fMaxAngle(FD2R(OPTDENSE::fMaxAngle));
+	const float fMinAngle(D2R(OPTDENSE::fMinAngle));
+	const float fMaxAngle(D2R(OPTDENSE::fMaxAngle));
 	const unsigned nMaxViews(MAXF(OPTDENSE::nMaxViews, OPTDENSE::nNumViews));
 	if (!Scene::FilterNeighborViews(depthData.neighbors, fMinArea, fMinScale, fMaxScale, fMinAngle, fMaxAngle, nMaxViews)) {
 		DEBUG_EXTRA("error: reference image %3u has no good images in view", idxImage);
@@ -283,6 +311,20 @@ bool DepthMapsData::SelectViews(DepthData& depthData)
 	}
 	return true;
 } // SelectViews
+/*----------------------------------------------------------------*/
+
+// fetch the intensities of the given view, from the image cache when possible;
+// the cached image is shared with every other view using it, so scaling it for
+// this view has to write to a buffer of its own
+bool DepthMapsData::FetchViewImage(DepthData::ViewData& view)
+{
+	Image32F imageGray;
+	if (!imageCache.UseImage(view.GetLocalID(scene.images), imageGray))
+		return false;
+	if (!DepthData::ViewData::ScaleImage(imageGray, view.image, view.scale))
+		view.image = imageGray;
+	return true;
+} // FetchViewImage
 /*----------------------------------------------------------------*/
 
 // select target image for the reference image (the first image in "images"),
@@ -317,12 +359,15 @@ bool DepthMapsData::InitViews(DepthData& depthData, IIndex idxNeighbor, IIndex n
 		viewTrg.scale = neighbor.scale;
 		viewTrg.camera = viewTrg.pImageData->camera;
 		if (loadImages) {
-			viewTrg.pImageData->image.toGray(viewTrg.image, cv::COLOR_BGR2GRAY, true);
-			if (DepthData::ViewData::ScaleImage(viewTrg.image, viewTrg.image, viewTrg.scale))
+			if (!FetchViewImage(viewTrg)) {
+				depthData.images.Release();
+				return false;
+			}
+			if (DepthData::ViewData::NeedScaleImage(viewTrg.scale))
 				viewTrg.camera = viewTrg.pImageData->GetCamera(scene.platforms, viewTrg.image.size());
 		} else {
 			if (DepthData::ViewData::NeedScaleImage(viewTrg.scale))
-				viewTrg.camera = viewTrg.pImageData->GetCamera(scene.platforms, Image8U::computeResize(viewTrg.pImageData->image.size(), viewTrg.scale));
+				viewTrg.camera = viewTrg.pImageData->GetCamera(scene.platforms, Image8U::computeResize(viewTrg.pImageData->GetSize(), viewTrg.scale));
 		}
 		DEBUG_EXTRA("Reference image %3u paired with image %3u", idxImage, neighbor.ID);
 	} else {
@@ -337,12 +382,19 @@ bool DepthMapsData::InitViews(DepthData& depthData, IIndex idxNeighbor, IIndex n
 			viewTrg.scale = neighbor.scale;
 			viewTrg.camera = viewTrg.pImageData->camera;
 			if (loadImages) {
-				viewTrg.pImageData->image.toGray(viewTrg.image, cv::COLOR_BGR2GRAY, true);
-				if (DepthData::ViewData::ScaleImage(viewTrg.image, viewTrg.image, viewTrg.scale))
+				if (!FetchViewImage(viewTrg)) {
+					// the image cannot be decoded any more; drop this neighbor, the
+					// same way a neighbor with no depth-map is dropped below
+					VERBOSE("warning: skipping neighbor view %u (%s): cannot load image",
+						neighbor.ID, Util::getFileNameExt(viewTrg.pImageData->name).c_str());
+					depthData.images.RemoveLast();
+					continue;
+				}
+				if (DepthData::ViewData::NeedScaleImage(viewTrg.scale))
 					viewTrg.camera = viewTrg.pImageData->GetCamera(scene.platforms, viewTrg.image.size());
 			} else {
 				if (DepthData::ViewData::NeedScaleImage(viewTrg.scale))
-					viewTrg.camera = viewTrg.pImageData->GetCamera(scene.platforms, Image8U::computeResize(viewTrg.pImageData->image.size(), viewTrg.scale));
+					viewTrg.camera = viewTrg.pImageData->GetCamera(scene.platforms, Image8U::computeResize(viewTrg.pImageData->GetSize(), viewTrg.scale));
 			}
 		}
 		#if TD_VERBOSE != TD_VERBOSE_OFF
@@ -366,9 +418,14 @@ bool DepthMapsData::InitViews(DepthData& depthData, IIndex idxNeighbor, IIndex n
 	viewRef.scale = 1;
 	viewRef.pImageData = &scene.images[idxImage];
 	viewRef.camera = viewRef.pImageData->camera;
-	if (loadImages)
-		viewRef.pImageData->image.toGray(viewRef.image, cv::COLOR_BGR2GRAY, true);
-	depthData.size = viewRef.pImageData->image.size();
+	if (loadImages) {
+		if (!FetchViewImage(viewRef)) {
+			VERBOSE("error: cannot load image '%s'", viewRef.pImageData->name.c_str());
+			depthData.images.Release();
+			return false;
+		}
+	}
+	depthData.size = viewRef.pImageData->GetSize();
 
 	// initialize views
 	for (IIndex i=1; i<depthData.images.size(); ) {
@@ -556,7 +613,7 @@ void* STCALL DepthMapsData::EndDepthMapTmp(void* arg)
 {
 	DepthEstimator& estimator = *((DepthEstimator*)arg);
 	IDX idx;
-	MAYBEUNUSED const float fOptimAngle(FD2R(OPTDENSE::fOptimAngle));
+	MAYBEUNUSED const float fOptimAngle(D2R(OPTDENSE::fOptimAngle));
 	while ((idx=(IDX)Thread::safeInc(estimator.idxPixel)) < estimator.coords.GetSize()) {
 		const ImageRef& x = estimator.coords[idx];
 		ASSERT(estimator.depthMap0(x) >= 0);
@@ -828,7 +885,7 @@ bool DepthMapsData::EstimateDepthMap(IIndex idxImage, int nGeometricIter)
 	{
 		const float fNCCThresholdKeep(OPTDENSE::fNCCThresholdKeep);
 		if (nGeometricIter < 0 && OPTDENSE::nEstimationGeometricIters)
-			OPTDENSE::fNCCThresholdKeep *= 1.333f;
+			OPTDENSE::fNCCThresholdKeep *= 1.2f;
 		// create working threads
 		idxPixel = -1;
 		ASSERT(estimators.empty());
@@ -1116,7 +1173,7 @@ void DepthMapsData::ComputeIntraMapPrior(const DepthData& depthData, ConfidenceM
 	const Matrix3x3f K(depthData.GetView().camera.K);
 	const DepthGradientEstimator est(K, depthMap);
 	const float band(OPTDENSE::fDepthDiffThreshold * 3.f);          // relative planarity band
-	const float sigmaNormalSq(SQUARE(FD2R(OPTDENSE::fNormalDiffThreshold))); // angular-variance scale
+	const float sigmaNormalSq(SQUARE(D2R(OPTDENSE::fNormalDiffThreshold))); // angular-variance scale
 	const float invKmin(1.f / 4.f);                                // soft planar quorum (~4 inliers)
 	const bool bCoherence(OPTDENSE::bConfPriorNormalCoherence);
 	priorMap.create(depthMap.size());
@@ -1513,7 +1570,7 @@ bool DepthMapsData::AdjustConfidenceCUDA(DepthData& depthDataRef)
 	p.minConfidence = 1.f - OPTDENSE::fNCCThresholdKeep;
 	p.thReproj = OPTDENSE::fDepthReprojectionErrorThreshold;
 	p.thDepth = OPTDENSE::fDepthDiffThreshold;
-	p.normalError = COS(FD2R(OPTDENSE::fNormalDiffThreshold));
+	p.normalError = COS(D2R(OPTDENSE::fNormalDiffThreshold));
 	p.s = OPTDENSE::fConfPriorStrength;
 	p.tau = MAXF(OPTDENSE::fConfConfirmTau, 0.01f);
 	p.kPrior = OPTDENSE::fConfPriorGate;
@@ -1569,7 +1626,7 @@ static bool AdjustConfidenceSweep(DepthMapsData& depthMapsData, DepthData& depth
 	const bool bHasRefNormal(!normalMapRef.empty());
 
 	// confirmation gates reused verbatim from DenseFuseDepthMaps
-	const float normalError(COS(FD2R(OPTDENSE::fNormalDiffThreshold)));
+	const float normalError(COS(D2R(OPTDENSE::fNormalDiffThreshold)));
 	const float minConfidence(1.f - OPTDENSE::fNCCThresholdKeep);
 	const float thReproj(OPTDENSE::fDepthReprojectionErrorThreshold);
 	const float maxReprojErrorSq(SQUARE(thReproj));
@@ -2044,6 +2101,12 @@ void DepthMapsData::MergeDepthMaps(PointCloud& pointcloud, bool bEstimateColor, 
 		if (bEstimateNormal && depthData.normalMap.empty())
 			EstimateNormalMaps();
 		const DepthData::ViewData& image = depthData.GetView();
+		// the colors come from the image of this depth-map only, so decode it here
+		// and release it below instead of keeping every image of the scene resident
+		Image& imageData = *image.pImageData;
+		if (bEstimateColor && imageData.image.empty() &&
+			!imageData.ReloadImageAtPreparedResolution())
+			DEBUG("warning: image %u could not be decoded; its points stay uncolored", imageData.ID);
 		const size_t nNumPointsPrev(pointcloud.points.size());
 		for (int i=0; i<depthData.depthMap.rows; ++i) {
 			for (int j=0; j<depthData.depthMap.cols; ++j) {
@@ -2057,13 +2120,16 @@ void DepthMapsData::MergeDepthMaps(PointCloud& pointcloud, bool bEstimateColor, 
 				pointcloud.points.emplace_back(image.camera.TransformPointI2W(Point3(Cast<float>(x),depth)));
 				pointcloud.pointViews.emplace_back().push_back(idxImage);
 				if (bEstimateColor)
-					pointcloud.colors.emplace_back(image.pImageData->image(x));
+					pointcloud.colors.emplace_back(imageData.image.empty() ?
+						PointCloud::Color(Pixel8U::BLACK) : PointCloud::Color(imageData.image(x)));
 				if (bEstimateNormal)
 					depthData.GetNormal(x, pointcloud.normals.emplace_back());
 				++nDepths;
 			}
 		}
 		depthData.DecRef();
+		if (bEstimateColor)
+			imageData.ReleaseImage();
 		++nDepthMaps;
 		ASSERT(pointcloud.points.size() == pointcloud.pointViews.size());
 		DEBUG_ULTIMATE("Depth-map for reference image %3u merged using %u depth-maps: %u new points (%s)",
@@ -2100,15 +2166,95 @@ size_t GetAvailableMemory(const DepthDataArr& arrDepthData, const BoolArr& fused
 	const Util::MemoryInfo memInfo(Util::GetMemoryInfo());
 	const size_t neededPointCloudMemory(ROUND2INT<size_t>(resolution * (1/*depth*/+1/*color*/+3/*normal*/+1/*confidence*/) * 4/*bytes*/ * 0.35/*unique pixels per depth-map*/));
 	const size_t freeMemory(currentCacheMemory + memInfo.freePhysical);
-	const size_t safetyMemory(MAXF(ROUND2INT<size_t>(memInfo.totalPhysical * 0.08), size_t(1*1024*1024*1024ull)/*1GB*/));
+	const size_t safetyMemory(ComputeSafetyMemory(memInfo));
 	const size_t neededMemory(neededPointCloudMemory + safetyMemory);
-	const size_t minDMapsMemory(resolution / numDMaps * 8/*min dmaps in memory*/ * (1/*depth*/ + 3/*normal*/ + 1/*confidence*/) * 4/*bytes*/);
+	const size_t minDMapsMemory(resolution / numDMaps * 8/*min dmaps in memory*/ * ((1/*depth*/ + 3/*normal*/ + 1/*confidence*/) * 4/*bytes*/ + 3/*color bytes*/));
 	if (freeMemory < neededMemory) {
 		DEBUG("warning: not enough memory to cache depth-maps (%luMB needed, %luMB available)", neededMemory/1024/1024, freeMemory/1024/1024);
 		return MINF(currentCacheMemory, minDMapsMemory);
 	}
 	return freeMemory - neededMemory;
 } // GetAvailableMemory
+
+// decode the pixels of every image with a depth-map to fuse, for the steps that
+// need all of them at once instead of the few a cache can hold; the images without
+// one are never sampled, so decoding them would only exceed the budget the caller
+// validated over exactly this set
+bool LoadAllImages(ImageArr& images, const DepthDataArr& arrDepthData)
+{
+	ASSERT(images.size() == arrDepthData.size());
+	bool bSuccess(true);
+	#ifdef DENSE_USE_OPENMP
+	#pragma omp parallel for shared(bSuccess)
+	for (int_t ID=0; ID<(int_t)images.GetSize(); ++ID) {
+		Image& imageData = images[(IIndex)ID];
+		if (!arrDepthData[(IIndex)ID].IsValid())
+			continue;
+	#else
+	FOREACH(idxImage, images) {
+		Image& imageData = images[idxImage];
+		if (!arrDepthData[idxImage].IsValid())
+			continue;
+	#endif
+		if (imageData.IsValid() && imageData.image.empty() &&
+			!imageData.ReloadImageAtPreparedResolution())
+			bSuccess = false;
+	}
+	return bSuccess;
+} // LoadAllImages
+
+// decide how the fused colors reach the image pixels, which the depth-map
+// estimation no longer leaves resident:
+//  - when the pixels of every image fit next to the depth-maps the cache has to
+//    hold anyway, decode them all once here and leave them resident, so a scene
+//    that was never memory bound does not pay a decode every time a depth-map
+//    re-enters the cache (whole images are re-read, and they are the largest
+//    files in play);
+//  - otherwise hand the images to the cache, which loads and releases them
+//    together with the depth-data, bounding what a scene with far more images
+//    than fit can use.
+// Returns the images for the cache to manage, or NULL once they are resident,
+// taking what they occupy out of the cache budget.
+ImageArr* PrepareFusionImages(const DepthDataArr& arrDepthData, ImageArr& images, size_t& cacheMemory)
+{
+	size_t allColors(0), resolution(0);
+	IIndex numDMaps(0);
+	FOREACH(idxImage, arrDepthData) {
+		if (!arrDepthData[idxImage].IsValid())
+			continue;
+		const Image& imageData = images[idxImage];
+		allColors += (size_t)imageData.GetSize().area() * sizeof(Pixel8U);
+		resolution += (size_t)arrDepthData[idxImage].size.area();
+		++numDMaps;
+	}
+	if (numDMaps == 0)
+		return NULL;
+	// the cache still has to hold the depth-map being fused and its neighbors
+	const size_t workingSet(resolution / numDMaps *
+		(MINF(OPTDENSE::nMaxViewsFuse, numDMaps) + 1) * (1/*depth*/ + 3/*normal*/ + 1/*confidence*/) * 4/*bytes*/);
+	if (allColors + workingSet > cacheMemory) {
+		VERBOSE("Fused colors sampled through the depth-map cache: %luMB of images do not fit in %luMB",
+			allColors/1024/1024, cacheMemory/1024/1024);
+		return &images;
+	}
+	if (!LoadAllImages(images, arrDepthData))
+		VERBOSE("warning: some images could not be decoded; the points they see stay uncolored");
+	cacheMemory -= allColors;
+	return NULL;
+} // PrepareFusionImages
+
+// budget the memory a fusion pass may use and decide where the fused colors come
+// from: images left resident (pCachedImages NULL) or managed by the depth-map cache
+struct FusionCacheSetup {
+	size_t cacheMemory;
+	ImageArr* pCachedImages;
+	FusionCacheSetup(const DepthDataArr& arrDepthData, const BoolArr& fusedDMaps, IIndex numDMapsReserveFusion, ImageArr& images, bool bEstimateColor)
+		:
+		cacheMemory(GetAvailableMemory(arrDepthData, fusedDMaps, numDMapsReserveFusion)),
+		pCachedImages(bEstimateColor ? PrepareFusionImages(arrDepthData, images, cacheMemory) : NULL)
+	{
+	}
+};
 
 // finds the best depth-map to fuse next that maximizes the number of neighbors already in cache
 std::tuple<unsigned, unsigned, unsigned> FetchBestNextDMapIndex(const DepthDataArr& arrDepthData, const DMapCache& cacheDMaps, const BoolArr& fusedDMaps) {
@@ -2166,7 +2312,7 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, b
 
 	// fuse all depth-maps, processing the best connected images first
 	const unsigned nMinViewsFuse(MINF(OPTDENSE::nMinViewsFuse, arrDepthData.size()));
-	const float normalError(COS(FD2R(OPTDENSE::fNormalDiffThreshold)));
+	const float normalError(COS(D2R(OPTDENSE::fNormalDiffThreshold)));
 	const IIndex numDMapsReserveFusion(10);
 	CLISTDEF0(Depth*) invalidDepths(0, 32);
 	size_t nDepths(0);
@@ -2189,7 +2335,8 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, b
 	GET_LOGCONSOLE().Pause();
 	BoolArr fusedDMaps(arrDepthData.size());
 	fusedDMaps.Memset(0);
-	DMapCache cacheDMaps(arrDepthData, depthDataLoadFlags, GetAvailableMemory(arrDepthData, fusedDMaps, numDMapsReserveFusion));
+	const FusionCacheSetup cacheSetup(arrDepthData, fusedDMaps, numDMapsReserveFusion, scene.images, bEstimateColor);
+	DMapCache cacheDMaps(arrDepthData, depthDataLoadFlags, cacheSetup.cacheMemory, cacheSetup.pCachedImages);
 	unsigned totalNumImageNeighborsInCache = 0, totalNumImagesInCache = 0;
 	IIndex numDMapsFused = 0;
 	for (; numDMapsFused < arrDepthData.size(); ++numDMapsFused) {
@@ -2270,7 +2417,10 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, b
 				ASSERT(ISEQUAL(norm(normal), 1.f, 1e-2f), "Norm = ", norm(normal));
 				// check the projection in the neighbor depth-maps
 				Point3 X(point*confidence);
-				Pixel32F C(Cast<float>(imageData.image(x))*confidence);
+				// the pixels are resident only when colors are fused, and an image whose
+				// decode failed stays empty: its points stay uncolored
+				Pixel32F C(bEstimateColor && !imageData.image.empty() ?
+					Pixel32F(Cast<float>(imageData.image(x))*confidence) : Pixel32F::BLACK);
 				PointCloud::Normal N(normal*confidence);
 				invalidDepths.clear();
 				for (const ViewScore& neighbor: depthData.neighbors) {
@@ -2305,7 +2455,7 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, b
 							pointProjs.InsertAt(idx, Proj(xB));
 							idxPointB = idxPoint;
 							X += imageDataB.camera.TransformPointI2W(Point3(Point2f(xB),depthB))*REAL(confidenceB);
-							if (bEstimateColor)
+							if (bEstimateColor && !imageDataB.image.empty())
 								C += Cast<float>(imageDataB.image(xB))*confidenceB;
 							if (bEstimateNormal)
 								N += normalB*confidenceB;
@@ -2406,7 +2556,7 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 
 	// fuse all depth-maps, processing the best connected images first
 	const unsigned nMinViewsFuse(MINF(OPTDENSE::nMinViewsFuse, arrDepthData.size()));
-	const float normalError(COS(FD2R(OPTDENSE::fNormalDiffThreshold)));
+	const float normalError(COS(D2R(OPTDENSE::fNormalDiffThreshold)));
 	const float minConfidence(1.f - OPTDENSE::fNCCThresholdKeep);
 	const float maxReprojErrorSq(SQUARE(OPTDENSE::fDepthReprojectionErrorThreshold));
 	const IIndex numDMapsReserveFusion(10);
@@ -2428,7 +2578,8 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 	GET_LOGCONSOLE().Pause();
 	BoolArr fusedDMaps(arrDepthData.size());
 	fusedDMaps.Memset(0);
-	DMapCache cacheDMaps(arrDepthData, depthDataLoadFlags, GetAvailableMemory(arrDepthData, fusedDMaps, numDMapsReserveFusion));
+	const FusionCacheSetup cacheSetup(arrDepthData, fusedDMaps, numDMapsReserveFusion, scene.images, bEstimateColor);
+	DMapCache cacheDMaps(arrDepthData, depthDataLoadFlags, cacheSetup.cacheMemory, cacheSetup.pCachedImages);
 	unsigned totalNumImageNeighborsInCache = 0, totalNumImagesInCache = 0;
 	BoolArr neighbors(arrDepthData.size());
 	PointCloud::Point refPoint;
@@ -2553,7 +2704,7 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 					fusedWeights.InsertAt(it.first, weight);
 				if (bEstimateNormal)
 					fusedNormal += Cast<double>(normal);
-				if (bEstimateColor)
+				if (bEstimateColor && !image.pImageData->image.empty())
 					fusedColor += Cast<float>(image.pImageData->image(x));
 			}
 			// remember the first pixel as the reference.
@@ -2822,7 +2973,7 @@ void DepthMapsData::LabelFusionInliers()
 	typedef std::pair<IIndex,ImageRef> Member;
 
 	const unsigned nMinViewsFuse(MINF(OPTDENSE::nMinViewsFuse, arrDepthData.size()));
-	const float normalError(COS(FD2R(OPTDENSE::fNormalDiffThreshold)));
+	const float normalError(COS(D2R(OPTDENSE::fNormalDiffThreshold)));
 	const float maxReprojErrorSq(SQUARE(OPTDENSE::fDepthReprojectionErrorThreshold));
 	const IIndex numDMapsReserveFusion(10);
 	UseMaskArr arrUseMask(arrDepthData.size());
@@ -3048,6 +3199,7 @@ bool Scene::DenseReconstruction(int nFusionMode, bool bCrop2ROI, float fBorderRO
 	if (ABS(nFusionMode) == 1)
 		return true;
 
+
 	// fuse all depth-maps
 	pointcloud.Release();
 	switch (OPTDENSE::nFuseFilter) {
@@ -3113,6 +3265,167 @@ bool Scene::DenseReconstruction(int nFusionMode, bool bCrop2ROI, float fBorderRO
 } // DenseReconstruction
 /*----------------------------------------------------------------*/
 
+// number of depth-map estimation workers that fit in the memory left after the
+// images were loaded; every worker keeps a whole DepthData alive while its
+// depth-map is estimated, so the requested pool size is only an upper bound
+//
+// a worker accounts for two initialized DepthData, not one: each of them queues
+// the next image before estimating its own, so the depth-data being prepared and
+// the one being estimated are alive at the same time. Per DepthData:
+//  - the gray image of the reference and of each of its neighbors
+//  - the neighbor depth-maps, loaded during the geometric-consistency passes
+//  - the reference depth, normal, confidence and views maps
+// and, once per worker, the backend staging buffers mirroring the images, the
+// neighbor depth-maps and the packed depth+normal estimates
+unsigned DenseWorkerPoolSize(unsigned requested, unsigned maxWorkers,
+	const ImageArr& sceneImages, const IIndexArr& images, const DepthDataArr& arrDepthData,
+	size_t reservedMemory)
+{
+	ASSERT(requested > 0 && maxWorkers > 0);
+	size_t area(0);
+	IIndex numViews(0);
+	for (IIndex idxImage: images) {
+		const DepthData& depthData = arrDepthData[idxImage];
+		if (depthData.neighbors.IsEmpty())
+			continue;
+		area = MAXF(area, (size_t)sceneImages[idxImage].GetSize().area());
+		// nNumViews is 0 when all the neighbor views are to be used
+		numViews = MAXF(numViews, (OPTDENSE::nNumViews ?
+			MINF(depthData.neighbors.GetSize(), OPTDENSE::nNumViews) :
+			depthData.neighbors.GetSize()) + 1);
+	}
+	if (area == 0 || numViews < 2)
+		return MINF(requested, maxWorkers);
+	const size_t sizeEstimate(4*sizeof(float)); // packed depth+normal, as the backends stage it
+	const size_t hostImages(numViews * area * sizeof(float));
+	const size_t hostDepthMaps((numViews - 1) * area * sizeof(float));
+	const size_t hostRefMaps(area * (sizeof(Depth) + sizeof(Normal) + sizeof(float) + sizeof(ViewsID)));
+	const size_t hostStaging(area * sizeEstimate + hostImages + hostDepthMaps);
+	const size_t hostWorker(2 * (hostImages + hostDepthMaps + hostRefMaps) + hostStaging);
+	// what is free now, minus what the image cache may still fill with the images
+	// it has not decoded yet, is what the workers may share; leave the same
+	// safety margin the depth-map cache uses, both for the fusion that follows
+	// and for the file cache absorbing the depth-map traffic the estimation generates
+	const Util::MemoryInfo memInfo(Util::GetMemoryInfo());
+	const size_t safetyMemory(ComputeSafetyMemory(memInfo) + reservedMemory);
+	const size_t freeMemory(memInfo.freePhysical > safetyMemory ? memInfo.freePhysical - safetyMemory : 0);
+	unsigned poolSize(MINF(requested, maxWorkers));
+	const unsigned hostWorkers(MAXF((unsigned)(freeMemory / hostWorker), 1u));
+	if (hostWorkers < poolSize) {
+		VERBOSE("Depth-map estimation limited to %u workers (%u requested): %.1fGB free, %.1fGB needed per worker",
+			hostWorkers, poolSize, (double)freeMemory/(1024*1024*1024), (double)hostWorker/(1024*1024*1024));
+		poolSize = hostWorkers;
+	}
+	#ifdef _USE_CUDA
+	// same for the device: each worker owns the image and depth textures, the
+	// depth+normal estimates, their costs, the selected views and the RNG states
+	size_t freeDevice(0), totalDevice(0);
+	if (cudaMemGetInfo(&freeDevice, &totalDevice) == cudaSuccess) {
+		const size_t deviceWorker(area * (
+			numViews * sizeof(float)/*image arrays*/ +
+			(numViews - 1) * sizeof(float)/*depth arrays*/ +
+			sizeEstimate/*estimates*/ + sizeof(float)/*costs*/ +
+			sizeof(unsigned)/*selected views*/ + sizeof(curandState)));
+		const unsigned deviceWorkers(MAXF((unsigned)(freeDevice * 4 / 5 / deviceWorker), 1u));
+		if (deviceWorkers < poolSize) {
+			VERBOSE("Depth-map estimation limited to %u workers (%u requested): %.1fGB free on device, %.1fGB needed per worker",
+				deviceWorkers, poolSize, (double)freeDevice/(1024*1024*1024), (double)deviceWorker/(1024*1024*1024));
+			poolSize = deviceWorkers;
+		}
+	}
+	#endif // _USE_CUDA
+	return poolSize;
+} // DenseWorkerPoolSize
+/*----------------------------------------------------------------*/
+
+// order the images so that the depth-maps estimated one after the other are
+// computed from as many common views as possible
+//
+// Estimating a depth-map reads the intensities of its reference image and of each of
+// its neighbor views, which the image cache keeps for as long as its budget allows,
+// so how many images have to be decoded again is decided entirely by the order the
+// references come in. The order they are stored in carries no such property: even a
+// sequential capture pairs an image with views far from it in the file order (an
+// orbit closing on itself, a flight passing over the same ground again), and an
+// unordered collection has no meaningful order at all. Walk the view graph greedily
+// instead, always taking next the image sharing the most views with the one just
+// taken, so an image decoded once serves as many consecutive depth-maps as it can
+// before it ages out of the cache.
+//
+// Scenes whose images all fit in the cache are unaffected, nothing being ever
+// ejected, and the estimation result does not depend on the order: a depth-map is
+// computed from the images and, in the geometric passes, from the depth-maps the
+// previous pass wrote, never from a depth-map of the pass it belongs to.
+void SortImagesByViewLocality(const DepthDataArr& arrDepthData, IIndexArr& images)
+{
+	const IIndex numImages(images.size());
+	if (numImages < 3)
+		return;
+	// the views each depth-map is estimated from: the image itself and the neighbors
+	// InitViews keeps of it
+	CLISTDEF2IDX(IIndexArr,IIndex) views(numImages);
+	CLISTDEF2IDX(IIndexArr,IIndex) usedBy(arrDepthData.size());
+	FOREACH(i, images) {
+		const IIndex idxImage(images[i]);
+		const ViewScoreArr& neighbors = arrDepthData[idxImage].neighbors;
+		ASSERT(!neighbors.empty());
+		IIndexArr& viewsImage = views[i];
+		viewsImage.push_back(idxImage);
+		usedBy[idxImage].push_back(i);
+		const float fMinScore(MAXF(neighbors.First().score*OPTDENSE::fViewMinScoreRatio, OPTDENSE::fViewMinScore));
+		for (const ViewScore& neighbor: neighbors) {
+			if ((OPTDENSE::nNumViews && viewsImage.size() > OPTDENSE::nNumViews) ||
+				neighbor.score < fMinScore)
+				break;
+			viewsImage.push_back(neighbor.ID);
+			usedBy[neighbor.ID].push_back(i);
+		}
+	}
+	// walk the graph, scoring the images left by the number of views they share with
+	// the one just taken
+	BoolArr scheduled(numImages);
+	scheduled.Memset(0);
+	IIndexArr scores(numImages);
+	scores.Memset(0);
+	IIndexArr order(0, numImages), touched;
+	IIndex idxNext(0), idxFirstLeft(0);
+	for (IIndex n=0; n<numImages; ++n) {
+		scheduled[idxNext] = true;
+		order.push_back(images[idxNext]);
+		if (n+1 == numImages)
+			break;
+		touched.Empty();
+		for (IIndex idxView: views[idxNext]) {
+			for (IIndex i: usedBy[idxView]) {
+				if (scheduled[i])
+					continue;
+				if (scores[i]++ == 0)
+					touched.push_back(i);
+			}
+		}
+		IIndex idxBest(NO_ID), bestScore(0);
+		for (IIndex i: touched) {
+			if (bestScore < scores[i] || (bestScore == scores[i] && idxBest > i)) {
+				bestScore = scores[i];
+				idxBest = i;
+			}
+			scores[i] = 0;
+		}
+		if (idxBest == NO_ID) {
+			// every image sharing a view with this one is estimated already;
+			// continue with the first image left, starting the walk over in whatever
+			// part of the scene it belongs to
+			while (scheduled[idxFirstLeft])
+				++idxFirstLeft;
+			idxBest = idxFirstLeft;
+		}
+		idxNext = idxBest;
+	}
+	ASSERT(order.size() == numImages);
+	images = std::move(order);
+} // SortImagesByViewLocality
+/*----------------------------------------------------------------*/
+
 // do first half of dense reconstruction: depth map computation
 // results are saved to "data"
 bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
@@ -3138,6 +3451,7 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 		TD_TIMER_START();
 		data.images.Reserve(images.GetSize());
 		imagesMap.Resize(images.GetSize());
+		imagesMap.MemsetValue(NO_ID);
 		#ifdef DENSE_USE_OPENMP
 		bool bAbort(false);
 		#pragma omp parallel for shared(data, bAbort)
@@ -3151,25 +3465,15 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 		#endif
 			// skip invalid, uncalibrated or discarded images
 			Image& imageData = images[idxImage];
-			if (!imageData.IsValid()) {
-				#ifdef DENSE_USE_OPENMP
-				#pragma omp critical
-				#endif
-				imagesMap[idxImage] = NO_ID;
+			if (!imageData.IsValid())
 				continue;
-			}
-			// map image index
-			#ifdef DENSE_USE_OPENMP
-			#pragma omp critical
-			#endif
-			{
-				imagesMap[idxImage] = data.images.GetSize();
-				data.images.Insert(idxImage);
-			}
-			// reload image at the appropriate resolution
+			// reload image at the appropriate resolution; the depth-map estimation
+			// reads the images through the image cache, which decodes them on demand,
+			// so only their resolution is resolved here and the pixels are left for
+			// later -- the SGM fusion modes instead work directly on the color images
 			unsigned nResolutionLevel(OPTDENSE::nResolutionLevel);
 			const unsigned nMaxResolution(imageData.RecomputeMaxResolution(nResolutionLevel, OPTDENSE::nMinResolution, OPTDENSE::nMaxResolution));
-			if (!imageData.ReloadImage(nMaxResolution)) {
+			if (!imageData.ReloadImage(nMaxResolution, data.nFusionMode < 0)) {
 				#ifdef DENSE_USE_OPENMP
 				bAbort = true;
 				#pragma omp flush (bAbort)
@@ -3185,11 +3489,22 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 			DEBUG_LEVEL(3, "C%d = \n%s", idxImage, cvMat2String(imageData.camera.C).c_str());
 		}
 		#ifdef DENSE_USE_OPENMP
-		if (bAbort || data.images.IsEmpty()) {
-		#else
-		if (data.images.IsEmpty()) {
-		#endif
+		if (bAbort) {
 			VERBOSE("error: preparing images for dense reconstruction failed (errors loading images)");
+			return false;
+		}
+		#endif
+		// collect the images to be processed; the loop above cannot do it as the
+		// order it completes its iterations in is arbitrary, while the estimation
+		// walks this list in order
+		FOREACH(idxImage, images) {
+			if (!images[idxImage].IsValid())
+				continue;
+			imagesMap[idxImage] = data.images.GetSize();
+			data.images.Insert(idxImage);
+		}
+		if (data.images.IsEmpty()) {
+			VERBOSE("error: preparing images for dense reconstruction failed (no valid image)");
 			return false;
 		}
 		VERBOSE("Preparing images for dense reconstruction completed: %d images (%s)", images.GetSize(), TD_TIMER_GET_FMT().c_str());
@@ -3233,6 +3548,30 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 	}
 	}
 
+	// estimate the depth-maps in the order reusing the decoded images best
+	SortImagesByViewLocality(data.depthMaps.arrDepthData, data.images);
+
+	// size the cache decoding the images on demand and fill it with the images the
+	// estimation starts on; the SGM fusion modes keep working on the color images
+	// loaded above and never ask it for anything
+	if (data.nFusionMode >= 0) {
+		TD_TIMER_START();
+		ImageCache& imageCache = data.depthMaps.imageCache;
+		imageCache.Reset(data.depthMaps.ComputeImageCacheMemory(data.images));
+		if (!imageCache.Prefetch(data.images)) {
+			VERBOSE("error: preparing images for dense reconstruction failed (errors decoding images)");
+			return false;
+		}
+		const size_t allImagesMemory(ImageCache::ComputeMemorySize(images, data.images));
+		if (imageCache.GetMaxMemory() == 0)
+			VERBOSE("warning: not enough memory to cache the images (%luMB needed); each use decodes them again",
+				allImagesMemory/1024/1024);
+		else
+			VERBOSE("Image cache filled with %u of %u images: %luMB budget, %luMB to hold them all (%s)",
+				imageCache.GetNumImageReads(), data.images.GetSize(),
+				imageCache.GetMaxMemory()/1024/1024, allImagesMemory/1024/1024, TD_TIMER_GET_FMT().c_str());
+	}
+
 	#if defined(_USE_CUDA) || defined(_USE_METAL)
 	// One PatchMatch instance per worker thread; host-side prep (image upload,
 	// depth-prior packing, result unpack) parallelizes across the worker pool while
@@ -3241,12 +3580,14 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 	// the shared --gpu-device param (-1 GPU, -2/cpu/empty CPU).
 	if (!SEACAVE::CUDA::isCpuRequested(SEACAVE::CUDA::desiredDeviceIDs) && data.nFusionMode >= 0) {
 		const unsigned poolSize = (nMaxThreads > 1)
-			? CLAMP(OPTDENSE::nPatchMatchCUDAInstances, 1u, nMaxThreads)
+			? DenseWorkerPoolSize(MAXF(OPTDENSE::nPatchMatchCUDAInstances, 1u), nMaxThreads, images, data.images, data.depthMaps.arrDepthData, data.depthMaps.imageCache.GetFreeMemory())
 			: 1u;
 		#ifdef _USE_CUDA
 		const bool bAllocatedPool = data.depthMaps.AllocateCudaPool(poolSize);
 		#else
-		const bool bAllocatedPool = data.depthMaps.AllocateMetalPool(poolSize);
+		const bool bAllocatedPool = SEACAVE::METAL::isRuntimeAvailable() && data.depthMaps.AllocateMetalPool(poolSize);
+		if (!bAllocatedPool)
+			VERBOSE("WARNING: Metal runtime health check failed; using CPU depth-map estimation");
 		#endif
 		if (bAllocatedPool) {
 			// raise the in-flight semaphore so all pool workers can run
@@ -3361,6 +3702,9 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 				bGPU ? "GPU" : "CPU", (double)confNS*1e-6, (double)confNS*1e-6/data.images.GetSize(), data.images.GetSize());
 		}
 	}
+	// nothing reads the images any more, so give the memory they occupy back to
+	// the depth-map caches of the filtering and the fusion that follow
+	data.depthMaps.imageCache.Reset(0);
 
 	// Task 12 double-adjust guard: if the integrated per-view confidence estimation already ran
 	// (as an epilogue of the last geometric-consistency iteration, see EVT_SAVEDEPTHMAP above),
@@ -3440,7 +3784,7 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 			DenseReconstructionFilter((void*)&data);
 		}
 		GET_LOGCONSOLE().Play();
-		const uint32_t numDMapReads(cacheDMaps.GetNumImageReads());
+		const uint32_t numDMapReads(cacheDMaps.GetHitStats().numMisses);
 		// with the unlimited budget nothing is ever ejected, so the final resident size IS the peak
 		const size_t peakCacheMemory(cacheDMaps.GetUsedMemory());
 		cacheDMaps.ClearCache();
@@ -3513,7 +3857,7 @@ void Scene::DenseReconstructionEstimate(void* pData)
 				if (!ImportDepthDataRaw(path, storedImageFileName, storedIDs, storedImageSize,
 						K, R, C, dMin, dMax, _d, _n, _c, _v, 0))
 					return false;
-				return data.scene.images[idxImg].image.size() == storedImageSize;
+				return data.scene.images[idxImg].GetSize() == storedImageSize;
 			};
 			const bool depthmapComputed(data.nFusionMode < 0 || (data.nFusionMode >= 0 && data.nEstimationGeometricIter < 0 && isCachedDmapUsable(idx)));
 			// Task 12: on the LAST geometric-consistency iteration, ask InitViews to also load
@@ -3653,7 +3997,13 @@ void Scene::DenseReconstructionEstimate(void* pData)
 			if (VERBOSITY_LEVEL > 2) {
 				ExportDepthMap(ComposeDepthFilePath(depthData.GetView().GetID(), "png"), depthData.depthMap);
 				ExportConfidenceMap(ComposeDepthFilePath(depthData.GetView().GetID(), "conf.png"), depthData.confMap);
-				ExportPointCloud(ComposeDepthFilePath(depthData.GetView().GetID(), "ply"), *depthData.images.First().pImageData, depthData.depthMap, depthData.normalMap);
+				// the exported cloud is colored from the pixels, which the estimation
+				// itself does not keep resident any more; decode them into a copy, as
+				// other estimation workers read the shared image concurrently
+				Image imageData(*depthData.images.First().pImageData);
+				if (imageData.image.empty())
+					imageData.ReloadImageAtPreparedResolution();
+				ExportPointCloud(ComposeDepthFilePath(depthData.GetView().GetID(), "ply"), imageData, depthData.depthMap, depthData.normalMap);
 				if (VERBOSITY_LEVEL > 4) {
 					ExportNormalMap(ComposeDepthFilePath(depthData.GetView().GetID(), "normal.png"), depthData.normalMap);
 					depthData.confMap.Save(ComposeDepthFilePath(depthData.GetView().GetID(), "conf.pfm"));
@@ -3665,9 +4015,10 @@ void Scene::DenseReconstructionEstimate(void* pData)
 			const int dmRows = depthData.depthMap.rows;
 			const int dmCols = depthData.depthMap.cols;
 			// save compute depth-map for this image
-			if (!depthData.depthMap.empty() &&
-				!depthData.Save(ComposeDepthFilePath(viewID, data.nEstimationGeometricIter < 0 ? "dmap" : "geo.dmap")))
-				exit(EXIT_FAILURE);
+			if (!depthData.depthMap.empty()) {
+				if (!depthData.Save(ComposeDepthFilePath(viewID, data.nEstimationGeometricIter < 0 ? "dmap" : "geo.dmap")))
+					exit(EXIT_FAILURE);
+			}
 			depthData.ReleaseImages();
 			depthData.Release();
 			data.progress->operator++();

@@ -905,7 +905,7 @@ inline bool IsDepthSimilar(T d0, T d1, T threshold=T(0.01)) {
 	return DepthSimilarity(d0, d1) < threshold;
 }
 template<typename T>
-inline bool IsNormalSimilar(const TPoint3<T>& n0, const TPoint3<T>& n1, T threshold=T(0.996194698)/*COS(FD2R(5.f))*/) {
+inline bool IsNormalSimilar(const TPoint3<T>& n0, const TPoint3<T>& n1, T threshold=T(0.996194698)/*COS(D2R(5.f))*/) {
 	return ComputeAngle<T,T>(n0.ptr(), n1.ptr()) > threshold;
 }
 /*----------------------------------------------------------------*/

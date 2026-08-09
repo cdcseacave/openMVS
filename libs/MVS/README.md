@@ -159,7 +159,7 @@ This is where the heavy computation happens. For each reference image:
 
 All depth maps are then **fused** into a single dense point cloud by projecting each confident pixel into 3D and merging nearby points.
 
-**Memory management**: Large datasets can produce hundreds of depth maps. The `DMapCache` (LRU disk cache) automatically writes depth maps to disk and reloads them when needed, keeping memory usage bounded.
+**Memory management**: Large datasets can produce hundreds of depth maps. The `DMapCache` (LRU disk cache) automatically writes depth maps to disk and reloads them when needed, keeping memory usage bounded. The images are bounded the same way: `ImageCache` decodes them on demand during depth estimation and `DMapCache` holds the color pixels of the depth-maps it caches during fusion, so neither stage needs every image resident. The depth-maps are estimated in view-graph order (`SortImagesByViewLocality`) so that consecutive ones are computed from mostly the same views, which is what keeps that cache from having to decode an image more than once.
 
 **GPU acceleration**: `PatchMatchCUDA` provides a CUDA implementation for the depth estimation step, running per-pixel matching in parallel on the GPU.
 
@@ -216,6 +216,7 @@ GPU code targets compute capabilities 5.0, 7.2, and 7.5+. When CUDA is not avail
 | OBJ | `.obj` | Textured mesh export (with .mtl and texture images) |
 | glTF | `.gltf`/`.glb` | Modern 3D format for interchange |
 | Interface | various | COLMAP, OpenMVG import/export via `Interface.h` |
+| Depth-map | `.dmap` | quantized depth/normal/confidence/views, 11 bytes per pixel; the codec lives in `Interface.h`, which is self-contained and can be dropped into any project |
 
 ## Performance and Threading
 
@@ -223,7 +224,7 @@ GPU code targets compute capabilities 5.0, 7.2, and 7.5+. When CUDA is not avail
 - **`BS::light_thread_pool`**: Task-based parallelism for more complex scheduling
 - **`nMaxThreads`**: Scene-level thread limit that algorithms respect
 - **Octree**: Spatial acceleration for point/mesh queries
-- **DMapCache**: LRU disk cache prevents out-of-memory on large datasets
+- **DMapCache** / **ImageCache**: LRU caches prevent out-of-memory on large datasets
 - **Multi-resolution**: Coarse-to-fine processing reduces computation at each level
 
 ## File Organization
@@ -241,7 +242,7 @@ libs/MVS/
 ├── PointCloud.h/cpp          # Point cloud with attributes
 ├── Mesh.h/cpp                # Triangle mesh with topology
 ├── DepthMap.h/cpp            # Depth/normal/confidence maps
-├── Interface.h               # External format definitions
+├── Interface.h               # External format definitions + the .dmap codec
 │
 │ # Pipeline stages (one file per stage)
 ├── SceneDensify.cpp          # Dense depth estimation (98 KB)
@@ -254,6 +255,7 @@ libs/MVS/
 │ # Supporting algorithms
 ├── SemiGlobalMatcher.h/cpp   # SGM stereo algorithm
 ├── DMapCache.h/cpp           # LRU depth map disk cache
+├── ImageCache.h/cpp          # LRU on-demand image decoding cache
 ├── RectsBinPack.h/cpp        # Texture atlas packing
 │
 │ # CUDA components

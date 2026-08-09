@@ -114,6 +114,7 @@ struct SFM_API ReconstructionConfig {
 
 	float thAlignGPS{5.f}; // threshold for aligning to GPS (meters)
 	bool extractColors{false}; // extract colors for reconstructed points
+	bool estimatePoseUncertainty{false}; // record per-image pose uncertainty from the last global bundle adjustment
 };
 
 
@@ -136,6 +137,11 @@ public:
 
 	// Optional per-track colors (aligned with tracks array)
 	Pixel8UArr colors;
+
+	// Optional per-image pose uncertainty estimated from the last global bundle adjustment
+	// run during reconstruction (empty unless ReconstructionConfig::estimatePoseUncertainty);
+	// kept consistent with the current world frame by Scene::Transform
+	PoseUncertaintyArr poseUncertainty;
 
 	// Optional transformation used to convert from absolute to relative coordinate system
 	Matrix4x4 transform;
@@ -210,10 +216,15 @@ public:
 
 	// Invalidate image pose and remove it from any tracks it is part of
 	bool InvalidateImage(IIndex imgID);
+	// Batch variant: invalidate several images with a single sweep over all tracks
+	// (O(tracks) total instead of O(tracks) per image). Returns the number invalidated.
+	unsigned InvalidateImages(const IIndexArr& imgIDs);
 
 	// Save/Load scene to file
+	// (the save file embeds a small header recording the archive/compression type,
+	//  so Load is self-describing and does not need to be told the archive type)
 	bool Save(const String& fileName, ARCHIVE_TYPE nArchiveType = ARCHIVE_DEFAULT) const;
-	bool Load(const String& fileName, ARCHIVE_TYPE nArchiveType = ARCHIVE_DEFAULT);
+	bool Load(const String& fileName);
 
 	/**
 	 * @brief Import images and initialize cameras from source
@@ -365,6 +376,7 @@ public:
 		ar & pairs;
 		ar & tracks;
 		ar & colors;
+		ar & poseUncertainty;
 		ar & transform;
 		ar & obb;
 		ar & status;

@@ -110,6 +110,10 @@ class NPZPairCache {
 public:
 	NPZPairCache(Scene& scene_, const ROMA2Config& config_)
 		: scene(scene_), config(config_) {}
+	// reports how well the cache did
+	~NPZPairCache() {
+		REPORT_CACHE_HIT_STATS(hitStats, "Warp");
+	}
 	static constexpr size_t MAX_CACHED_PAIRS = 10;  // Keep at least 5-10 warp matrices in memory
 
 	// Get pair data from cache (might contain only the header if not yet loaded)
@@ -126,8 +130,10 @@ public:
 		if (contains) {
 			// Warp data is already loaded
 			ASSERT(pairData.HasData());
+			hitStats.Hit();
 			return pairData;
 		}
+		hitStats.Miss();
 
 		// Evict oldest entries if cache is full
 		while (fifo.Size() >= MAX_CACHED_PAIRS) {
@@ -188,6 +194,7 @@ private:
 	ListFIFO<uint64_t> fifo;                          // Track LRU order
 	Scene& scene;
 	const ROMA2Config& config;
+	CacheHitStats hitStats;                           // Loaded from disk (misses), served from the cache (hits)
 };
 
 } // namespace

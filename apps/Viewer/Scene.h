@@ -146,6 +146,21 @@ public:
 	typedef CLISTDEFIDX(ViewScoreWithPoints,uint32_t) ViewScoreWithPointsArr;
 	CLISTDEFIDX(ViewScoreWithPointsArr,uint32_t) trackBasedNeighbors; // per-viewer image neighbors from shared tracks
 
+	// Per-image pose uncertainty loaded from a CreateStructure pose-quality CSV report
+	struct CameraUncertainty {
+		enum State : uint8_t { NOT_COMPUTED = 0, COMPUTED, DATUM };
+		Matrix3x3f posCov; // world-frame camera-center covariance (m^2 when geo-referenced)
+		Point3f posSigma;  // camera-center 1-sigma along the world axes (sqrt of posCov diagonal)
+		Point3f rotSigma;  // rotation 1-sigma about the camera x/y/z axes (deg)
+		State state{NOT_COMPUTED};
+		bool IsComputed() const { return state != NOT_COMPUTED; }
+		float MaxPosSigma() const { return MAXF(MAXF(posSigma.x, posSigma.y), posSigma.z); }
+	};
+	typedef CLISTDEF0IDX(CameraUncertainty,uint32_t) CameraUncertaintyArr;
+	CameraUncertaintyArr cameraUncertainty; // per viewer-image (indexed like images), empty when not loaded
+	float cameraUncertaintyNorm; // ellipsoid colormap normalization (robust max of MaxPosSigma)
+	float cameraUncertaintyAutoScale; // scene-fit ellipsoid radius scale (Window::uncertaintyEllipsoidScale multiplies it)
+
 	EstimateROIWorkflowOptions estimateROIOptions;
 	DensifyWorkflowOptions densifyOptions;
 	ReconstructMeshWorkflowOptions reconstructOptions;
@@ -206,6 +221,10 @@ public:
 	bool Open(const String& fileName, String geometryFileName = {});
 	bool Save(const String& fileName = String(), bool bRescaleImages = false);
 	bool Export(const String& fileName, const String& exportType = String(), bool bViews = true) const;
+
+	// Pose uncertainty display (per-image quality report produced by CreateStructure)
+	bool LoadPoseUncertainty(const String& fileName);
+	bool HasCameraUncertainty() const { return !cameraUncertainty.empty(); }
 
 	// Workflows (async execution)
 	bool RunEstimateROIWorkflow(const EstimateROIWorkflowOptions& options);

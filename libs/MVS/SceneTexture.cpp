@@ -763,7 +763,7 @@ static bool IsFaceVisible(const MeshTexture::FaceDataArr& faceDatas, const IInde
 void MeshTexture::CreateVirtualFaces(const FaceDataViewArr& facesDatas, FaceDataViewArr& virtualFacesDatas, VirtualFaceIdxsArr& virtualFaces, unsigned minCommonCameras, float thMaxNormalDeviation) const
 {
 	const float ratioAngleToQuality(0.67f);
-	const float cosMaxNormalDeviation(COS(FD2R(thMaxNormalDeviation)));
+	const float cosMaxNormalDeviation(COS(D2R(thMaxNormalDeviation)));
 	Mesh::FaceIdxArr remainingFaces(faces.size());
 	std::iota(remainingFaces.begin(), remainingFaces.end(), 0);
 	std::vector<bool> selectedFaces(faces.size(), false);

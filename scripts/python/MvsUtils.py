@@ -55,6 +55,46 @@ def sample_depth_map(depth_map, x):
   return depth
 
 
+def decodeNormalMap(normal_oct: np.ndarray):
+  """
+  Decode an octahedral normal-map stored as two int16 per pixel back to unit vectors.
+  The code reserved for a pixel without an estimate decodes to the zero normal.
+  """
+  invalid = np.logical_and(normal_oct[..., 0] == -32768, normal_oct[..., 1] == -32768)
+  p = np.clip(normal_oct.astype(np.float32) / 32767.0, -1.0, 1.0)
+  x, y = p[..., 0], p[..., 1]
+  z = 1.0 - np.abs(x) - np.abs(y)
+  folded = z < 0.0
+  xf = np.where(folded, np.copysign(1.0 - np.abs(y), x), x)
+  yf = np.where(folded, np.copysign(1.0 - np.abs(x), y), y)
+  normal_map = np.stack([xf, yf, z], axis=-1)
+  norm = np.linalg.norm(normal_map, axis=-1, keepdims=True)
+  normal_map = np.divide(normal_map, norm, out=np.zeros_like(normal_map), where=norm > 0)
+  normal_map[invalid] = 0.0
+  return normal_map
+
+
+def encodeNormalMap(normal_map: np.ndarray):
+  """
+  Encode a normal-map to the octahedral int16 pair stored in the file. The zero normal
+  of a pixel without an estimate is not a unit vector and cannot be projected, so it
+  gets the reserved code instead.
+  """
+  n = normal_map.astype(np.float32)
+  l1 = np.abs(n).sum(axis=-1, keepdims=True)
+  invalid = l1[..., 0] <= 0.0
+  p = np.divide(n, l1, out=np.zeros_like(n), where=l1 > 0)
+  x, y, z = p[..., 0], p[..., 1], p[..., 2]
+  folded = z < 0.0
+  xf = np.where(folded, np.copysign(1.0 - np.abs(y), x), x)
+  yf = np.where(folded, np.copysign(1.0 - np.abs(x), y), y)
+  # floor(x+0.5), the rounding the C++ encoder in MVS/Interface.h applies, so that both
+  # produce the same code for a value landing exactly on a tie
+  normal_oct = np.floor(np.clip(np.stack([xf, yf], axis=-1), -1.0, 1.0) * 32767.0 + 0.5).astype(np.int16)
+  normal_oct[invalid] = -32768
+  return normal_oct
+
+
 def loadDMAP(dmap_path: str):
   """
   Load and parse a DMAP (Depth Map) file.
@@ -66,7 +106,8 @@ def loadDMAP(dmap_path: str):
   with open(dmap_path, 'rb') as dmap:
     file_type = dmap.read(2).decode()
     content_type = np.frombuffer(dmap.read(1), dtype=np.uint8)
-    reserve = np.frombuffer(dmap.read(1), dtype=np.uint8)
+    # power-of-two exponent the stored depths were scaled down by
+    depth_exp = np.frombuffer(dmap.read(1), dtype=np.int8)[0]
     
     has_depth = content_type > 0
     has_normal = content_type in [3, 7, 11, 15]
@@ -76,11 +117,13 @@ def loadDMAP(dmap_path: str):
     image_width, image_height = np.frombuffer(dmap.read(8), dtype=np.uint32)
     depth_width, depth_height = np.frombuffer(dmap.read(8), dtype=np.uint32)
     
-    if (file_type != 'DR' or has_depth == False or depth_width <= 0 or depth_height <= 0 or image_width < depth_width or image_height < depth_height):
+    if (file_type != 'D2' or has_depth == False or depth_width <= 0 or depth_height <= 0 or image_width < depth_width or image_height < depth_height):
       print('error: opening file \'{}\' for reading depth-data'.format(dmap_path))
       return
     
     depth_min, depth_max = np.frombuffer(dmap.read(8), dtype=np.float32)
+    # confidence value the stored uint8 range maps onto
+    conf_scale = np.frombuffer(dmap.read(4), dtype=np.float32)[0]
     
     file_name_size = np.frombuffer(dmap.read(2), dtype=np.uint16)[0]
     file_name = dmap.read(file_name_size).decode()
@@ -114,14 +157,17 @@ def loadDMAP(dmap_path: str):
     }
     
     map_size = depth_width * depth_height
-    depth_map = np.frombuffer(dmap.read(4 * map_size), dtype=np.float32).reshape(depth_height, depth_width)
+    # the maps are stored quantized; scaling by a power of two is exact, so the only
+    # error is the half rounding, and a zero depth stays exactly zero
+    depth_map = np.frombuffer(dmap.read(2 * map_size), dtype=np.float16).reshape(depth_height, depth_width)
+    depth_map = np.ldexp(depth_map.astype(np.float32), depth_exp)
     data.update({'depth_map': depth_map})
     if has_normal:
-      normal_map = np.frombuffer(dmap.read(4 * map_size * 3), dtype=np.float32).reshape(depth_height, depth_width, 3)
-      data.update({'normal_map': normal_map})
+      normal_oct = np.frombuffer(dmap.read(2 * map_size * 2), dtype=np.int16).reshape(depth_height, depth_width, 2)
+      data.update({'normal_map': decodeNormalMap(normal_oct)})
     if has_conf:
-      confidence_map = np.frombuffer(dmap.read(4 * map_size), dtype=np.float32).reshape(depth_height, depth_width)
-      data.update({'confidence_map': confidence_map})
+      confidence_map = np.frombuffer(dmap.read(map_size), dtype=np.uint8).reshape(depth_height, depth_width)
+      data.update({'confidence_map': confidence_map.astype(np.float32) * (conf_scale / 255.0)})
     if has_views:
       views_map = np.frombuffer(dmap.read(map_size * 4), dtype=np.uint8).reshape(depth_height, depth_width, 4)
       data.update({'views_map': views_map})
@@ -161,16 +207,37 @@ def saveDMAP(data: dict, dmap_path: str):
   if 'views_map' in data:
     content_type += 8
 
+  depth_map = np.asarray(data['depth_map'], dtype=np.float32)
+  # take the exponent from the data rather than from depth_max, which callers may set
+  # to a large "unbounded" sentinel; it puts the values in the well-conditioned part of
+  # the half range whatever the scene scale, and being a power of two it is exact
+  max_depth = depth_map.max(initial=0.0)
+  depth_exp = int(np.clip(np.floor(np.log2(max_depth)), -100, 100)) if np.isfinite(max_depth) and max_depth > 0 else 0
+  # a depth on either end of the range can be rounded just past it by the half
+  # quantization, so widen the recorded range by that bound (half has an 11-bit
+  # significand) and keep "every stored depth is inside [depth_min,depth_max]" true
+  depth_quant_rel_err = 1.0 / 1024.0
+  depth_min = data['depth_min'] * (1.0 - depth_quant_rel_err) if np.isfinite(data['depth_min']) else data['depth_min']
+  depth_max = data['depth_max'] * (1.0 + depth_quant_rel_err) if np.isfinite(data['depth_max']) else data['depth_max']
+  # the patch-match estimators normalize confidence to [0,1], but the semi-global
+  # matching fusion stores raw matching costs, so take the range from the data
+  conf_scale = 1.0
+  if 'confidence_map' in data:
+    max_conf = np.asarray(data['confidence_map'], dtype=np.float32).max(initial=0.0)
+    if np.isfinite(max_conf) and max_conf > 0:
+      conf_scale = float(max_conf)
+
   with open(dmap_path, 'wb') as dmap:
-    dmap.write('DR'.encode())
+    dmap.write('D2'.encode())
 
     dmap.write(np.array([content_type], dtype=np.uint8))
-    dmap.write(np.array([0], dtype=np.uint8))
+    dmap.write(np.array([depth_exp], dtype=np.int8))
 
     dmap.write(np.array([data['image_width'], data['image_height']], dtype=np.uint32))
     dmap.write(np.array([data['depth_width'], data['depth_height']], dtype=np.uint32))
 
-    dmap.write(np.array([data['depth_min'], data['depth_max']], dtype=np.float32))
+    dmap.write(np.array([depth_min, depth_max], dtype=np.float32))
+    dmap.write(np.array([conf_scale], dtype=np.float32))
 
     file_name = data['file_name']
     dmap.write(np.array([len(file_name)], dtype=np.uint16))
@@ -184,11 +251,12 @@ def saveDMAP(data: dict, dmap_path: str):
     np.array(data['R'], dtype=np.float64).tofile(dmap)
     np.array(data['C'], dtype=np.float64).tofile(dmap)
 
-    data['depth_map'].astype(np.float32).tofile(dmap)
+    np.ldexp(depth_map, -depth_exp).astype(np.float16).tofile(dmap)
     if 'normal_map' in data:
-      data['normal_map'].astype(np.float32).tofile(dmap)
+      encodeNormalMap(np.asarray(data['normal_map'])).tofile(dmap)
     if 'confidence_map' in data:
-      data['confidence_map'].astype(np.float32).tofile(dmap)
+      confidence_map = np.asarray(data['confidence_map'], dtype=np.float32)
+      np.rint(np.clip(confidence_map * (255.0 / conf_scale), 0.0, 255.0)).astype(np.uint8).tofile(dmap)
     if 'views_map' in data:
       data['views_map'].astype(np.uint8).tofile(dmap)
 

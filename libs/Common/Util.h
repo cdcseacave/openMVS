@@ -919,6 +919,26 @@ public:
 };
 /*----------------------------------------------------------------*/
 
+
+// counters tracking how well a cache serves its uses; synchronization stays with
+// the owning cache
+struct CacheHitStats {
+	uint32_t numMisses; // fetched from the backing store
+	uint32_t numHits; // served from the cache
+
+	inline CacheHitStats() : numMisses(0), numHits(0) {}
+	inline void Hit() { ++numHits; }
+	inline void Miss() { ++numMisses; }
+	inline void Reset() { numMisses = numHits = 0; }
+	inline uint32_t NumUses() const { return numMisses + numHits; }
+	inline unsigned HitRatePercent() const { const uint32_t numUses(NumUses()); return numUses ? (unsigned)((100.f*numHits)/numUses + 0.5f) : 0u; }
+};
+// report as "<name> cache: X% hit rate (uses, misses)"; a macro so the log line is
+// attributed to the calling module's log channel
+#define REPORT_CACHE_HIT_STATS(stats, name) \
+	do { if ((stats).NumUses()) DEBUG_EXTRA(name " cache: %u%% hit rate (%u uses, %u misses)", (stats).HitRatePercent(), (stats).NumUses(), (stats).numMisses); } while(false)
+/*----------------------------------------------------------------*/
+
 } // namespace SEACAVE
 
 #endif // __SEACAVE_UTIL_H__

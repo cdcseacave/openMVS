@@ -37,7 +37,7 @@ struct Params {
 	float minConfidence;   // 1 - fNCCThresholdKeep  (G4)
 	float thReproj;        // fDepthReprojectionErrorThreshold (G2)
 	float thDepth;         // fDepthDiffThreshold (G1)
-	float normalError;     // COS(FD2R(fNormalDiffThreshold)) (hard G3)
+	float normalError;     // COS(D2R(fNormalDiffThreshold)) (hard G3)
 	// free-space violation (Task 15): fConfViolationWeight (lambda), fConfViolationMargin
 	float lambdaViol, violMargin;
 	// soft-gate G4 transition half-width: MAXF(0.5f*minConfidence, 1e-6f)

@@ -39,8 +39,8 @@ public:
 	typedef SEACAVE::TRay<TYPE,DIMS> RAY;
 	typedef unsigned ITYPE;
 	typedef Eigen::Matrix<ITYPE,DIMS,1> TRIANGLE;
-	enum { numCorners = (DIMS==1 ? 2 : (DIMS==2 ? 4 : 8)) }; // 2^DIMS
-	enum { numScalar = (5*DIMS) };
+	enum { numCorners = (1<<DIMS) }; // 2^DIMS
+	enum { numScalar = (DIMS*(DIMS+2)) }; // the rotation matrix plus the two points
 
 	MATRIX m_rot;	// rotation matrix from world to local (orthonormal axes)
 	POINT m_pos;	// translation from local to world (center-point)
@@ -61,10 +61,12 @@ public:
 	inline void Set(const AABB&); // build from AABB
 	inline void Set(const MATRIX& rot, const POINT& ptMin, const POINT& ptMax); // build from rotation matrix from world to local, and local min/max corners
 	inline void Set(const POINT* pts, size_t n, int k = 0, int fixedAxis=-1); // build from points; if k (number of nearest neighbors) set, filter and use only surface points
+	inline void Set(const POINT* pts, size_t n, const POINT& up); // build from points with the last local axis aligned to the given up direction and the remaining ones minimizing the footprint
 	inline void Set(const POINT* pts, size_t n, const TRIANGLE* tris, size_t s); // build from triangles
 	inline void Set(const MATRIX& C, const POINT* pts, size_t n, int fixedAxis=-1); // build from covariance matrix
 	inline void SetRotation(const MATRIX& C); // build rotation only from covariance matrix
-	inline void SetRotation(const MATRIX& C, int fixedAxis); // same as above, but one axis is fixed
+	inline void SetRotation(const MATRIX& C, int fixedAxis); // same as above, but one axis is kept on the world basis
+	inline void SetRotation(const POINT& up, const POINT* pts, size_t n); // build rotation only: last local axis aligned to up, the remaining ones from the minimum-area rectangle of the projected points
 	inline void SetBounds(const POINT* pts, size_t n); // build size and center only from given points
 
 	inline void BuildBegin(); // start online build for computing the rotation

@@ -86,6 +86,10 @@ public:
 	static bool ReadImage(IMAGEPTR pImage, Image8U3& image);
 	bool LoadImage(const String& fileName, unsigned nMaxResolution=0);
 	bool ReloadImage(unsigned nMaxResolution=0, bool bLoadPixels=true);
+	// reload the pixels at the resolution the scene was prepared at: width/height
+	// are left at that resolution when the pixels are released, so the scale
+	// recomputation reproduces them exactly
+	bool ReloadImageAtPreparedResolution(bool bLoadPixels=true) { return ReloadImage(MAXF(width, height), bLoadPixels); }
 	void ReleaseImage();
 	float ResizeImage(unsigned nMaxResolution=0);
 	unsigned RecomputeMaxResolution(unsigned& level, unsigned minImageSize, unsigned maxImageSize=INT_MAX) const;

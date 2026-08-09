@@ -103,7 +103,9 @@ unsigned SFM::EstimateSimilarityTransform(
 	const Point3Arr& dstPoints,
 	Transform& transform,
 	double threshold,
-	bool refine)
+	bool refine,
+	size_t maxIters,
+	double confidence)
 {
 	const size_t n = srcPoints.size();
 	if (n != dstPoints.size() || n < 3) {
@@ -117,7 +119,11 @@ unsigned SFM::EstimateSimilarityTransform(
 		SimilarityTransformKernel kernel(srcPoints, dstPoints);
 		UniformSampler sampler;
 		std::vector<size_t> inliers;
-		RANSAC(kernel, sampler, inliers, transform, threshold);
+		#ifdef ACRANSAC_SAMPLE_INLIERS
+		RANSAC(kernel, sampler, inliers, transform, threshold, maxIters);
+		#else
+		RANSAC(kernel, sampler, inliers, transform, threshold, confidence, maxIters);
+		#endif
 		if (inliers.size() < SimilarityTransformKernel::MINIMUM_SAMPLES) {
 			VERBOSE("error: Similarity-transform RANSAC failed to find enough inliers");
 			return 0;

@@ -519,7 +519,7 @@ struct MVS_API DepthEstimator {
 	}
 	inline Normal RandomNormal(const Point3f& viewRay) {
 		Normal normal;
-		Dir2Normal(Point2f(rnd.randomRange(FD2R(0.f),FD2R(180.f)), rnd.randomRange(FD2R(90.f),FD2R(180.f))), normal);
+		Dir2Normal(Point2f(rnd.randomRange(D2R(0.f),D2R(180.f)), rnd.randomRange(D2R(90.f),D2R(180.f))), normal);
 		ASSERT(ISEQUAL(norm(normal), 1.f), "Norm = ", norm(normal));
 		return normal.dot(viewRay) > 0 ? -normal : normal;
 	}
@@ -535,7 +535,7 @@ struct MVS_API DepthEstimator {
 			const Normal axisRaw(normal.cross(viewDir));
 			const float axisN(norm(axisRaw));
 			if (!ISZERO(axisN))
-				normal = RMatrixBaseF(axisRaw / axisN, MINF((ACOS(cosAngLen/norm(viewDir))-FD2R(90.f))*1.01f, -0.001f)) * normal;
+				normal = RMatrixBaseF(axisRaw / axisN, MINF((ACOS(cosAngLen/norm(viewDir))-D2R(90.f))*1.01f, -0.001f)) * normal;
 			else
 				normal = -normal;
 		}
@@ -578,7 +578,15 @@ MVS_API unsigned EstimatePlaneLockFirstPoint(const Point3fArr&, Planef&, double&
 MVS_API unsigned EstimatePlaneTh(const Point3fArr&, Planef&, double maxThreshold, bool arrInliers[]=NULL, size_t maxIters=0);
 MVS_API unsigned EstimatePlaneThLockFirstPoint(const Point3fArr&, Planef&, double maxThreshold, bool arrInliers[]=NULL, size_t maxIters=0);
 
-MVS_API void EstimatePointColors(const ImageArr& images, PointCloud& pointcloud);
+// the physical memory every densify stage leaves untouched: room for the OS file
+// cache absorbing the depth-map traffic and for the steps that follow
+inline size_t ComputeSafetyMemory(const Util::MemoryInfo& memInfo) {
+	return MAXF(ROUND2INT<size_t>(memInfo.totalPhysical * 0.08), size_t(1*1024*1024*1024ull)/*1GB*/);
+}
+
+// the images are decoded as they are sampled and released right after, so they do
+// not have to be loaded by the caller
+MVS_API void EstimatePointColors(ImageArr& images, PointCloud& pointcloud);
 MVS_API void EstimatePointSegmentation(const ImageArr& images, PointCloud& pointcloud, unsigned minViews=2);
 MVS_API unsigned ColorPointSegmentation(PointCloud& pointcloud);
 MVS_API void EstimatePointNormals(const ImageArr& images, PointCloud& pointcloud, int numNeighbors=16/*K-nearest neighbors*/);

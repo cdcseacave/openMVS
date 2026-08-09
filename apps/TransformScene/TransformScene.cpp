@@ -242,7 +242,7 @@ int main(int argc, LPCTSTR* argv)
 		return EXIT_FAILURE;
 	if (OPT::fEpsNoisePosition > 0 || OPT::fEpsNoiseRotation > 0) {
 		scene.pointcloud.Release();
-		scene.AddNoiseCameraPoses(OPT::fEpsNoisePosition, FD2R(OPT::fEpsNoiseRotation));
+		scene.AddNoiseCameraPoses(OPT::fEpsNoisePosition, D2R(OPT::fEpsNoiseRotation));
 		scene.Save(MAKE_PATH_SAFE(Util::getFileFullName(OPT::strOutputFileName)) + _T(".mvs"), (ARCHIVE_TYPE)OPT::nArchiveType);
 		return EXIT_SUCCESS;
 	}

@@ -1050,7 +1050,7 @@ void MeshRefine::ThSelectNeighbors(uint32_t idxImage, std::unordered_set<uint64_
 	// keep only best neighbor views
 	const float fMinArea(0.1f);
 	const float fMinScale(0.2f), fMaxScale(3.2f);
-	const float fMinAngle(FD2R(2.5f)), fMaxAngle(FD2R(45.f));
+	const float fMinAngle(D2R(2.5f)), fMaxAngle(D2R(45.f));
 	Image& imageData = images[idxImage];
 	if (!imageData.IsValid())
 		return;
@@ -1328,7 +1328,11 @@ bool Scene::RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsig
 			// DefineProblem
 			refine.ratioRigidityElasticity = 1.f;
 			ceres::MeshProblem* problemData(new ceres::MeshProblem(refine));
+			#if CERES_VERSION_MAJOR > 2 || (CERES_VERSION_MAJOR == 2 && CERES_VERSION_MINOR >= 3)
+			ceres::GradientProblem problem{std::unique_ptr<ceres::FirstOrderFunction>(problemData)};
+			#else
 			ceres::GradientProblem problem(problemData);
+			#endif
 			// SetMinimizerOptions
 			ceres::GradientProblemSolver::Options options;
 			if (VERBOSITY_LEVEL > 1) {

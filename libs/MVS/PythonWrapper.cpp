@@ -115,7 +115,7 @@ public:
 		return EstimatePointCloudNormals(bRefine);
 	}
 	bool pyEstimateSparseSurface(unsigned kNeighbors=16, float sizeScale=0.9f, float normalAngleMaxDeg=0.f) {
-		return EstimateSparseSurface(kNeighbors, sizeScale, FD2R(normalAngleMaxDeg));
+		return EstimateSparseSurface(kNeighbors, sizeScale, D2R(normalAngleMaxDeg));
 	}
 	void pyCropToROI(unsigned minNumPoints=3) {
 		if (IsBounded())

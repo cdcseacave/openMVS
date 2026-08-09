@@ -36,8 +36,13 @@ using namespace SFM;
 #define VOCABTREE_USE_OPENMP
 #endif
 
+#undef VERBOSE
+#define VERBOSE(...) LOG(lt, __VA_ARGS__)
+
 
 // S T R U C T S ///////////////////////////////////////////////////
+
+DEFINE_LOG_NAME(lt, _T("VocabTre"));
 
 using EigenVectoru = Eigen::Matrix<uint8_t, Eigen::Dynamic, 1>;
 using EigenVectorf = Eigen::VectorXf;
@@ -88,13 +93,18 @@ struct VocabularyTree::Impl
 	// Cache for top-N descriptors per image
 	mutable std::mutex cacheMutex;
 	mutable std::unordered_map<IIndex, cv::Mat> descriptorsCache;
+	// Images whose descriptors were selected (misses) and served from the cache (hits)
+	mutable CacheHitStats hitStats;
 
 	const cv::Mat& getDescriptors(const Image& img) const {
 		ASSERT(!img.descriptors.empty());
 		std::lock_guard<std::mutex> lock(cacheMutex);
 		auto it = descriptorsCache.find(img.ID);
-		if (it != descriptorsCache.end())
+		if (it != descriptorsCache.end()) {
+			hitStats.Hit();
 			return it->second;
+		}
+		hitStats.Miss();
 		// Cache descriptors with sampling if needed
 		cv::Mat& cached = descriptorsCache[img.ID];
 		const int rows = img.descriptors.rows;
@@ -623,6 +633,7 @@ VocabularyTree::~VocabularyTree() { Release(); }
 void VocabularyTree::Release()
 {
 	if (pImpl) {
+		ClearDescriptorsCache();
 		delete pImpl;
 		pImpl = nullptr;
 	}
@@ -1017,6 +1028,9 @@ void VocabularyTree::ClearDescriptorsCache()
 {
 	if (pImpl) {
 		std::lock_guard<std::mutex> lock(pImpl->cacheMutex);
+		// Report how well the cache did before forgetting it
+		REPORT_CACHE_HIT_STATS(pImpl->hitStats, "Descriptors");
+		pImpl->hitStats.Reset();
 		pImpl->descriptorsCache.clear();
 	}
 }

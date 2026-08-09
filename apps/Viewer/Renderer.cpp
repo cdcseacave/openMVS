@@ -41,6 +41,7 @@ Renderer::Renderer()
 	, pointNormalCount(0)
 	, cameraPointIndexCount(0)
 	, cameraLineIndexCount(0)
+	, ellipsoidIndexCount(0)
 	, imageOverlayIndexCount(0)
 	, selectionPrimitiveCount(0)
 	, selectionOverlayVertexCount(0)
@@ -105,6 +106,7 @@ void Renderer::Reset() {
 	pointNormalCount = 0;
 	cameraPointIndexCount = 0;
 	cameraLineIndexCount = 0;
+	ellipsoidIndexCount = 0;
 	imageOverlayIndexCount = 0;
 	selectionPrimitiveCount = 0;
 	boundsPrimitiveCount = 0;
@@ -196,6 +198,13 @@ void Renderer::CreateShaders() {
 		#include "shaders/camera.frag"
 	);
 
+	// Pose-uncertainty ellipsoid shader (lit, per-vertex color, translucent solid surface)
+	ellipsoidShader = std::make_unique<Shader>(
+		#include "shaders/ellipsoid.vert"
+		,
+		#include "shaders/ellipsoid.frag"
+	);
+
 	// 3D Image overlay shader (renders textured quad in 3D world space)
 	imageOverlayShader = std::make_unique<Shader>(
 		#include "shaders/imageoverlay.vert"
@@ -259,6 +268,7 @@ void Renderer::CreateShaders() {
 	viewProjectionUBO->BindToShader(*meshTexturedShader, "ViewProjection");
 	viewProjectionUBO->BindToShader(*geometrySelectionShader, "ViewProjection");
 	viewProjectionUBO->BindToShader(*cameraShader, "ViewProjection");
+	viewProjectionUBO->BindToShader(*ellipsoidShader, "ViewProjection");
 	viewProjectionUBO->BindToShader(*imageOverlayShader, "ViewProjection");
 	viewProjectionUBO->BindToShader(*selectionShader, "ViewProjection");
 	viewProjectionUBO->BindToShader(*boundsShader, "ViewProjection");
@@ -274,6 +284,7 @@ void Renderer::CreateBuffers() {
 	SetupPointCloudNormalsBuffers();
 	SetupMeshBuffers();
 	SetupCameraBuffers();
+	SetupEllipsoidBuffers();
 	SetupImageOverlayBuffers();
 	SetupSelectionBuffers();
 	SetupSelectionOverlayBuffers();
@@ -355,6 +366,30 @@ void Renderer::SetupCameraBuffers() {
 	cameraVAO->EnableAttribute(1, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
 
 	cameraVAO->Unbind();
+}
+
+void Renderer::SetupEllipsoidBuffers() {
+	ellipsoidVAO = std::make_unique<VAO>();
+	ellipsoidVBO = std::make_unique<VBO>(GL_ARRAY_BUFFER);
+	ellipsoidNormalVBO = std::make_unique<VBO>(GL_ARRAY_BUFFER);
+	ellipsoidEBO = std::make_unique<VBO>(GL_ELEMENT_ARRAY_BUFFER);
+	ellipsoidColorVBO = std::make_unique<VBO>(GL_ARRAY_BUFFER);
+
+	ellipsoidVAO->Bind();
+
+	// Position attribute (location 0)
+	ellipsoidVBO->Bind();
+	ellipsoidVAO->EnableAttribute(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
+
+	// Normal attribute (location 1)
+	ellipsoidNormalVBO->Bind();
+	ellipsoidVAO->EnableAttribute(1, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
+
+	// Color attribute (location 2)
+	ellipsoidColorVBO->Bind();
+	ellipsoidVAO->EnableAttribute(2, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
+
+	ellipsoidVAO->Unbind();
 }
 
 void Renderer::SetupSelectionBuffers() {
@@ -786,7 +821,7 @@ static uint32_t CreateCameraFrustumGeometry(
 	// Line from principal point to upwards direction indicator.
 	indices.push_back(baseIndex + 5); // principal point (index 5)
 	indices.push_back(baseIndex + 6); // upwards direction indicator (index 6)
-	
+
 	return 20; // 4 lines from center + 4 lines for rectangle + 2 lines for look-at = 10 lines = 20 indices
 }
 
@@ -912,6 +947,141 @@ void Renderer::UploadCameras(const Window& window) {
 		imageOverlayVBO->SetData(allVertices);
 		imageOverlayEBO->SetData(allIndices);
 	}
+}
+
+void Renderer::UploadUncertaintyEllipsoids(const Window& window) {
+	ellipsoidIndexCount = 0;
+	ellipsoidCenters.clear();
+	const Scene& scene = window.GetScene();
+	if (!scene.HasCameraUncertainty())
+		return;
+	const MVS::ImageArr& images = scene.GetScene().images;
+	const ImageArr& viewerImages = scene.GetImages();
+	ASSERT(scene.cameraUncertainty.size() == viewerImages.size());
+	const float norm = scene.cameraUncertaintyNorm > 0.f ? scene.cameraUncertaintyNorm : 1.f;
+	// effective radius scale = scene auto-fit (sizes the median ellipsoid to the scene) x user slider
+	const float scale = window.uncertaintyEllipsoidScale * scene.cameraUncertaintyAutoScale;
+
+	// Solid unit-sphere template (UV sphere): a shared vertex grid + triangle list that is
+	// transformed per camera into an oriented, shaded error ellipsoid. Per-vertex unit-sphere
+	// positions double as the object-space directions used to derive the surface normals.
+	constexpr int STACKS = 10, SLICES = 16;
+	std::vector<Point3f> unitVertices;
+	std::vector<uint32_t> unitIndices;
+	unitVertices.reserve((STACKS + 1) * (SLICES + 1));
+	for (int s = 0; s <= STACKS; ++s) {
+		const float phi = FPI * s / STACKS; // 0 = north pole .. PI = south pole
+		const float sinPhi = SIN(phi), cosPhi = COS(phi);
+		for (int l = 0; l <= SLICES; ++l) {
+			const float theta = 2.f * FPI * l / SLICES;
+			unitVertices.emplace_back(sinPhi * COS(theta), sinPhi * SIN(theta), cosPhi);
+		}
+	}
+	const int stride = SLICES + 1;
+	for (int s = 0; s < STACKS; ++s) {
+		for (int l = 0; l < SLICES; ++l) {
+			const uint32_t i0 = (uint32_t)(s * stride + l), i1 = i0 + 1;
+			const uint32_t i2 = i0 + stride, i3 = i2 + 1;
+			unitIndices.insert(unitIndices.end(), { i0, i2, i1, i1, i2, i3 }); // outward winding
+		}
+	}
+
+	std::vector<float> vertices, normals, colors;
+	std::vector<uint32_t> indices;
+	FOREACH(cameraIdx, viewerImages) {
+		const Scene::CameraUncertainty& u = scene.cameraUncertainty[cameraIdx];
+		if (!u.IsComputed())
+			continue;
+		// Oriented world-frame error ellipsoid: eigen-decompose the position covariance
+		const Matrix3x3f& cov = u.posCov;
+		Eigen::Matrix3f ecov;
+		ecov << cov(0,0), cov(0,1), cov(0,2),
+		        cov(1,0), cov(1,1), cov(1,2),
+		        cov(2,0), cov(2,1), cov(2,2);
+		const Eigen::SelfAdjointEigenSolver<Eigen::Matrix3f> es(ecov);
+		if (es.info() != Eigen::Success)
+			continue;
+		const Eigen::Vector3f radii = es.eigenvalues().cwiseMax(0.f).cwiseSqrt() * scale;
+		if (radii.maxCoeff() <= 0.f)
+			continue; // gauge datum (or degenerate): nothing to draw
+		const Eigen::Matrix3f R = es.eigenvectors();
+		// Ellipsoid surface normal is R * diag(1/radii) * u (gradient of the implicit form);
+		// clamp the reciprocal so a near-degenerate (thin) axis does not blow up the normal.
+		const Eigen::Vector3f invRadii = radii.cwiseMax(1e-9f).cwiseInverse();
+		const MVS::Image& imageData = images[viewerImages[cameraIdx].idx];
+		const Point3f center = imageData.camera.C;
+		const Eigen::Vector3f C(center.x, center.y, center.z);
+		ellipsoidCenters.push_back(C); // one per accepted ellipsoid, aligned with the EBO slot order
+		// gray2color maps 0 = red, 1 = blue: invert so blue = best localized, red = worst
+		const float colorValue = MINF(u.MaxPosSigma() / norm, 1.f);
+		const Pixel32F color = Pixel32F::gray2color(1.f - colorValue);
+		const uint32_t baseIndex = (uint32_t)(vertices.size() / 3);
+		for (const Point3f& v : unitVertices) {
+			const Eigen::Vector3f dir(v.x, v.y, v.z);
+			const Eigen::Vector3f p = C + R * radii.cwiseProduct(dir);
+			const Eigen::Vector3f n = (R * invRadii.cwiseProduct(dir)).normalized();
+			vertices.insert(vertices.end(), {p.x(), p.y(), p.z()});
+			normals.insert(normals.end(), {n.x(), n.y(), n.z()});
+			colors.insert(colors.end(), {color.c2, color.c1, color.c0});
+		}
+		for (const uint32_t idx : unitIndices)
+			indices.push_back(baseIndex + idx);
+	}
+	if (indices.empty())
+		return;
+	ellipsoidVBO->SetData(vertices);
+	ellipsoidNormalVBO->SetData(normals);
+	ellipsoidColorVBO->SetData(colors);
+	ellipsoidEBO->SetData(indices);
+	ellipsoidIndexCount = indices.size();
+}
+
+void Renderer::RenderUncertaintyEllipsoids(const Window& window) {
+	if (ellipsoidIndexCount == 0)
+		return;
+
+	// Translucent shaded solids: depth-tested against the opaque scene but not writing depth,
+	// so the camera frustum sitting at each ellipsoid center and any overlapping ellipsoids
+	// remain visible through the surface.
+	GL_CHECK(glEnable(GL_BLEND));
+	GL_CHECK(glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA));
+	GL_CHECK(glDepthMask(GL_FALSE));
+
+	ellipsoidShader->Use();
+	// Fairly opaque so thin/needle-shaped covariances stay clearly visible (a translucent
+	// needle seen edge-on nearly disappears); depth-write is off so the camera at the center
+	// and neighbouring ellipsoids show through.
+	ellipsoidShader->SetFloat("alpha", 0.6f);
+
+	ellipsoidVAO->Bind();
+	ellipsoidEBO->Bind();
+	GL_CHECK(glEnable(GL_CULL_FACE));
+	// Every ellipsoid shares the same fixed sphere topology, so slot k owns the constant-size
+	// EBO block [k*per, (k+1)*per). For correct translucency, sort the slots farthest-first from
+	// the eye and draw them back-to-front; within each convex ellipsoid draw the far (back) faces
+	// then the near (front) faces so its own shell is not inside-out. Without the inter-ellipsoid
+	// ordering, overlapping ellipsoids blend in buffer order rather than by depth.
+	const Eigen::Vector3f eye = window.GetCamera().GetPosition().cast<float>();
+	const size_t n = ellipsoidCenters.size();
+	const GLsizei per = (GLsizei)(ellipsoidIndexCount / n); // constant per-ellipsoid stride, exact
+	ellipsoidDrawOrder.resize(n);
+	std::iota(ellipsoidDrawOrder.begin(), ellipsoidDrawOrder.end(), 0u);
+	std::sort(ellipsoidDrawOrder.begin(), ellipsoidDrawOrder.end(),
+		[&](uint32_t a, uint32_t b) {
+			return (ellipsoidCenters[a] - eye).squaredNorm() > (ellipsoidCenters[b] - eye).squaredNorm();
+		});
+	for (const uint32_t k : ellipsoidDrawOrder) {
+		const void* off = reinterpret_cast<const void*>((size_t)k * per * sizeof(uint32_t));
+		GL_CHECK(glCullFace(GL_FRONT));
+		GL_CHECK(glDrawElements(GL_TRIANGLES, per, GL_UNSIGNED_INT, off)); // far (back) faces
+		GL_CHECK(glCullFace(GL_BACK));
+		GL_CHECK(glDrawElements(GL_TRIANGLES, per, GL_UNSIGNED_INT, off)); // near (front) faces
+	}
+	GL_CHECK(glDisable(GL_CULL_FACE));
+	ellipsoidVAO->Unbind();
+
+	GL_CHECK(glDepthMask(GL_TRUE));
+	GL_CHECK(glDisable(GL_BLEND));
 }
 
 void Renderer::UploadSelection(const Window& window) {

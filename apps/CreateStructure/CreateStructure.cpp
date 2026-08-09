@@ -51,6 +51,7 @@ String strOutputFileNameMVS;
 String strDetectorType;
 String strImportPosesCSV;
 String strExportPosesCSV;
+String strExportPoseQuality;
 String strImportOpenMVGDir;
 String strExportOpenMVGDir;
 String strExportPairsCSV;
@@ -71,11 +72,14 @@ String strImageIndices;
 unsigned nMaxFeaturesPerCell;
 unsigned nMinFeaturesPerCell;
 unsigned maxViewsPerCluster;
+bool bClusterCommunities;
 bool bUseGlobalSolver;
 bool bExtractColors;
 float undistortAlpha;
 String strUndistortExt;
 float thAlignGPS;
+double gpsPositionWeight;
+double gpsPositionWeightZ;
 unsigned nMaxThreads;
 int nArchiveType;
 int nProcessPriority;
@@ -127,6 +131,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("detector-type,t", boost::program_options::value<std::string>(&OPT::strDetectorType)->default_value(FeatureTypeToString(FeatureType::DEFAULT)), "feature detector type: AKAZE, ORB, SIFT or SIFTGPU")
 		("import-poses-csv", boost::program_options::value<std::string>(&OPT::strImportPosesCSV)->default_value("poses.csv"), "import camera poses from CSV file (optional)")
 		("export-poses-csv", boost::program_options::value<std::string>(&OPT::strExportPosesCSV), "export camera poses to CSV file (optional)")
+		("export-pose-quality", boost::program_options::value<std::string>(&OPT::strExportPoseQuality), "estimate the pose covariance during the final bundle adjustment and export the per-image quality report to CSV file (optional)")
 		("import-poses-mode", boost::program_options::value(&OPT::importPosesMode)->default_value(0), "mode for importing camera poses from CSV: 0=none, 1=all, 2=extrinsics only, 3=positions only")
 		("import-openmvg-dir", boost::program_options::value<std::string>(&OPT::strImportOpenMVGDir), "import OpenMVG features from directory (optional)")
 		("export-openmvg-dir", boost::program_options::value<std::string>(&OPT::strExportOpenMVGDir), "export OpenMVG features to directory (optional)")
@@ -147,11 +152,14 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("k2", boost::program_options::value(&OPT::k2)->default_value(0.f), "force k2 distortion coefficient for specified images (0 = not used)")
 		("image-indices", boost::program_options::value<std::string>(&OPT::strImageIndices), "image indices to apply forced parameters (e.g., '0 5-10 15', empty = all images)")
 		("max-views-per-cluster", boost::program_options::value(&OPT::maxViewsPerCluster)->default_value(200), "maximum images per cluster for hierarchical reconstruction (0 = disable clustering)")
+		("cluster-communities", boost::program_options::value<bool>(&OPT::bClusterCommunities)->default_value(false), "cluster by community detection + capacity packing instead of pure aggregative clustering")
 		("use-global-solver", boost::program_options::value<bool>(&OPT::bUseGlobalSolver)->default_value(false), "use global solver for calibration, istead of hierarhical solver")
 		("extract-colors", boost::program_options::value<bool>(&OPT::bExtractColors)->default_value(false), "extract colors for reconstructed points")
 		("undistort-alpha", boost::program_options::value<float>(&OPT::undistortAlpha)->default_value(0.6f), "alpha parameter for undistortion (0=zoomed in, 1=all pixels retained)")
 		("undistort-extension", boost::program_options::value<std::string>(&OPT::strUndistortExt)->default_value(".jxl"), "file extension/format for the exported undistorted images (e.g. .jpg, .png, .jxl)")
 		("align-gps-threshold", boost::program_options::value<float>(&OPT::thAlignGPS)->default_value(5.f), "maximum distance in meters for aligning GPS positions to reconstruction poses (0 = disabled)")
+		("gps-position-weight", boost::program_options::value(&OPT::gpsPositionWeight)->default_value(0.0), "horizontal weight of the GPS position priors used to refine the geo-aligned reconstruction (0 = disabled)")
+		("gps-position-weight-z", boost::program_options::value(&OPT::gpsPositionWeightZ)->default_value(0.0), "vertical weight of the GPS position priors used to refine the geo-aligned reconstruction (0 = disabled)")
 		;
 
 	boost::program_options::options_description cmdline_options;
@@ -199,6 +207,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 	Util::ensureValidPath(OPT::strOutputFileNameMVS);
 	Util::ensureValidPath(OPT::strImportPosesCSV);
 	Util::ensureValidPath(OPT::strExportPosesCSV);
+	Util::ensureValidPath(OPT::strExportPoseQuality);
 	Util::ensureValidFolderPath(OPT::strImportOpenMVGDir);
 	Util::ensureValidFolderPath(OPT::strExportOpenMVGDir);
 	Util::ensureValidPath(OPT::strExportPairsCSV);
@@ -260,8 +269,12 @@ int main(int argc, LPCTSTR* argv)
 	cfg.viewgraphCfg.maxTwoViewError = 0; // disable pair filtering after ViewGraph calibration
 	cfg.useGlobalSolver = OPT::bUseGlobalSolver;
 	cfg.thAlignGPS = OPT::thAlignGPS;
+	cfg.baConfig.gpsPositionWeight = OPT::gpsPositionWeight;
+	cfg.baConfig.gpsPositionWeightZ = OPT::gpsPositionWeightZ;
+	cfg.estimatePoseUncertainty = !OPT::strExportPoseQuality.empty();
 	cfg.extractColors = OPT::bExtractColors;
 	cfg.clusterCfg.maxViewsPerCluster = OPT::maxViewsPerCluster;
+	cfg.clusterCfg.useCommunityDetection = OPT::bClusterCommunities;
 
 	// Run SfM reconstruction
 	Scene scene(OPT::nMaxThreads);
@@ -287,6 +300,11 @@ int main(int argc, LPCTSTR* argv)
 		VERBOSE("error: failed to export camera poses to CSV file %s", OPT::strExportPosesCSV.c_str());
 		return EXIT_FAILURE;
 	}
+	// Export per-image pose quality report to CSV file; this is an optional diagnostic, so a
+	// failure to produce it (e.g. a rank-deficient covariance yielding no rows) must not abort
+	// the run and lose the primary outputs (the scene and the MVS export below)
+	if (!OPT::strExportPoseQuality.empty() && !ExportPoseUncertaintyCSV(MAKE_PATH_SAFE(OPT::strExportPoseQuality), scene))
+		VERBOSE("warning: failed to export pose quality report to CSV file %s", OPT::strExportPoseQuality.c_str());
 	// Export image pairs to CSV file
 	if (!OPT::strExportPairsCSV.empty() && !PairsMatcher::ExportPairsCSV(scene, MAKE_PATH_SAFE(OPT::strExportPairsCSV), 3.f)) {
 		VERBOSE("error: failed to export image pairs to CSV file %s", OPT::strExportPairsCSV.c_str());

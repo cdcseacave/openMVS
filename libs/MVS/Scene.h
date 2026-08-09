@@ -93,14 +93,14 @@ public:
 	bool Save(const String& fileName, ARCHIVE_TYPE type=ARCHIVE_DEFAULT) const;
 
 	bool EstimatePointCloudNormals(bool bRefine=true);
-	bool EstimateSparseSurface(unsigned kNeighbors=16, float sizeScale=0.9f, float normalAngleMax=FD2R(0.f));
+	bool EstimateSparseSurface(unsigned kNeighbors=16, float sizeScale=0.9f, float normalAngleMax=D2R(0.f));
 	bool EstimateNeighborViewsPointCloud(unsigned maxResolution=16);
 	void SampleMeshWithVisibility(REAL sampling=0, unsigned maxResolution=320);
 	bool ExportMeshToDepthMaps(const String& baseName);
 
-	bool SelectNeighborViews(uint32_t ID, IndexArr& points, unsigned nMinViews=3, unsigned nMinPointViews=2, float fOptimAngle=FD2R(12), float fWeightPointInsideROI=0.7f);
-	void SelectNeighborViews(unsigned nMinViews=3, unsigned nMinPointViews=2, float fOptimAngle=FD2R(12), float fWeightPointInsideROI=0.7f);
-	static bool FilterNeighborViews(ViewScoreArr& neighbors, float fMinArea=0.1f, float fMinScale=0.2f, float fMaxScale=2.4f, float fMinAngle=FD2R(3), float fMaxAngle=FD2R(45), unsigned nMaxViews=12);
+	bool SelectNeighborViews(uint32_t ID, IndexArr& points, unsigned nMinViews=3, unsigned nMinPointViews=2, float fOptimAngle=D2R(12.f), float fWeightPointInsideROI=0.7f);
+	void SelectNeighborViews(unsigned nMinViews=3, unsigned nMinPointViews=2, float fOptimAngle=D2R(12.f), float fWeightPointInsideROI=0.7f);
+	static bool FilterNeighborViews(ViewScoreArr& neighbors, float fMinArea=0.1f, float fMinScale=0.2f, float fMaxScale=2.4f, float fMinAngle=D2R(3.f), float fMaxAngle=D2R(45.f), unsigned nMaxViews=12);
 
 	bool ExportCamerasMLP(const String& fileName, const String& fileNameScene) const;
 	static bool ExportLinesPLY(const String& fileName, const CLISTDEF0IDX(Line3f,uint32_t)& lines, const Pixel8U* colors=NULL, bool bBinary=true);
@@ -127,11 +127,12 @@ public:
 	Scene SubScene(const IIndexArr& idxImages) const;
 	Scene& CropToROI(const OBB3f&, unsigned minNumPoints=3);
 	bool EstimateROI(float scaleROI=1.1f, int upAxis=-1);
-	FloatArr ROIPointWeights() const;
+	bool EstimateGravityDirection(Point3f& up) const;
+	FloatArr ROIPointWeights(const UnsignedArr& indices, float& medianNeighborDistance) const;
 	float ComputeDistanceCameras2Scene(float depthPercentile=0.1f, bool bForceRecompute=false, bool bUseROI=true);
 
 	// Tower scene
-	bool ComputeCenterLine(Line3f &camCenterLine) const;
+	bool ComputeCenterLine(Line3f &camCenterLine, const Point3f* up=NULL) const;
 	bool ComputeTowerCylinder(Point2f& centerPoint, float& fRadius, float& fROIRadius, float& zMin, float& zMax, float& minCamZ, const int towerMode);
 	void InitTowerScene(const int towerMode);
 	size_t DrawCircle(PointCloud& pc,PointCloud::PointArr& outCircle, const Point3f& circleCenter, const float circleRadius, const unsigned nTargetPoints, const float fStartAngle, const float fAngleBetweenPoints);

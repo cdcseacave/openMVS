@@ -95,6 +95,14 @@ private:
 	size_t cameraPointIndexCount;
 	size_t cameraLineIndexCount;
 
+	// Pose-uncertainty ellipsoid rendering (translucent shaded solids, lit + per-vertex color)
+	std::unique_ptr<Shader> ellipsoidShader;
+	std::unique_ptr<VAO> ellipsoidVAO;
+	std::unique_ptr<VBO> ellipsoidVBO, ellipsoidNormalVBO, ellipsoidEBO, ellipsoidColorVBO;
+	size_t ellipsoidIndexCount;
+	std::vector<Eigen::Vector3f> ellipsoidCenters; // world-space center per accepted ellipsoid, aligned with the EBO slots
+	std::vector<uint32_t> ellipsoidDrawOrder; // reused scratch for the per-frame back-to-front sort
+
 	// 3D image overlay rendering (pre-computed for all images with valid textures)
 	std::unique_ptr<Shader> imageOverlayShader;
 	std::unique_ptr<VAO> imageOverlayVAO;
@@ -157,6 +165,7 @@ public:
 	void UploadPointCloud(const MVS::PointCloud& pointcloud, float normalLength);
 	void UploadMesh(MVS::Mesh& mesh);
 	void UploadCameras(const Window& window);
+	void UploadUncertaintyEllipsoids(const Window& window);
 	void UploadSelection(const Window& window);
 	void UploadBounds(const MVS::Scene& scene);
 
@@ -168,6 +177,7 @@ public:
 	void RenderPointCloudNormals(const Window& window);
 	void RenderMesh(const Window& window);
 	void RenderCameras(const Window& window);
+	void RenderUncertaintyEllipsoids(const Window& window);
 	void RenderImageOverlays(const Window& window);
 	void RenderSelection(const Window& window);
 	void RenderSelectionOverlay(const Window& window);
@@ -207,6 +217,7 @@ private:
 	void SetupPointCloudNormalsBuffers();
 	void SetupMeshBuffers();
 	void SetupCameraBuffers();
+	void SetupEllipsoidBuffers();
 	void SetupImageOverlayBuffers();
 	void SetupSelectionBuffers();
 	void SetupSelectionOverlayBuffers();

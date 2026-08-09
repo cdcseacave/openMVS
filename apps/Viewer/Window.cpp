@@ -63,6 +63,7 @@ Window::Window()
 	, minViews(2)
 	, userFontScale(1.f)
 	, cameraSize(0.1f)
+	, uncertaintyEllipsoidScale(1.f)
 	, cameraDisplayColor(CAMERA_COLOR_SOLID)
 	, cameraDisplayType(CAMERA_DISPLAY_FRUSTUM)
 	, showCameraLookAt(true)
@@ -77,6 +78,7 @@ Window::Window()
 	, showMeshWireframe(false)
 	, showMeshTextured(true)
 	, showBounds(true)
+	, showUncertaintyEllipsoids(false)
 	, pendingScreenshotIncludeUI(false)
 	, pendingScreenshotQuit(false)
 {
@@ -306,8 +308,11 @@ void Window::Run() {
 		{
 			std::vector<std::string> pending;
 			OpenMVS_ConsumePendingOpenFiles(pending);
-			if (!pending.empty())
-				GetScene().Open(pending.front());
+			if (!pending.empty()) {
+				String filename(pending.front());
+				Util::ensureValidPath(filename);
+				GetScene().Open(filename);
+			}
 		}
 		#endif
 
@@ -364,6 +369,9 @@ void Window::UploadRenderData() {
 	if (!scene.GetScene().images.empty())
 		renderer->UploadCameras(*this);
 
+	// Upload pose-uncertainty ellipsoids if loaded
+	renderer->UploadUncertaintyEllipsoids(*this);
+
 	// Upload bounds if available
 	renderer->UploadBounds(scene.GetScene());
 
@@ -395,17 +403,11 @@ void Window::Render() {
 		if (showMesh)
 			renderer->RenderMesh(*this);
 
-		// Flush pending screenshot if requested (without UI)
-		if (!pendingScreenshotPath.empty() && !pendingScreenshotIncludeUI) {
-			CaptureScreenshot(pendingScreenshotPath);
-			pendingScreenshotPath.clear();
-			if (pendingScreenshotQuit)
-				glfwSetWindowShouldClose(window, GLFW_TRUE);
-		}
-
 		// Render cameras and selection highlights
 		if (showCameras)
 			renderer->RenderCameras(*this);
+		if (showUncertaintyEllipsoids)
+			renderer->RenderUncertaintyEllipsoids(*this);
 		renderer->RenderSelection(*this);
 		renderer->RenderSelectedGeometry(*this);
 
@@ -430,6 +432,15 @@ void Window::Render() {
 
 		// Render 2D selection overlay (after all 3D rendering, before UI)
 		renderer->RenderSelectionOverlay(*this);
+
+		// Flush pending screenshot if requested (without UI): capture after every
+		// 3D layer so the screenshot-show flags (cameras, bounds, ...) take effect
+		if (!pendingScreenshotPath.empty() && !pendingScreenshotIncludeUI) {
+			CaptureScreenshot(pendingScreenshotPath);
+			pendingScreenshotPath.clear();
+			if (pendingScreenshotQuit)
+				glfwSetWindowShouldClose(window, GLFW_TRUE);
+		}
 
 		// Show scene information
 		ui->ShowSceneInfo(*this);
@@ -901,6 +912,7 @@ void Window::HandleFileDrop(int count, const char** paths) {
 	if (count > 0) {
 		// Handle first dropped file
 		String filename(paths[0]);
+		Util::ensureValidPath(filename);
 		// Check file extension to determine if it's a scene or geometry file
 		String ext = Util::getFileExt(filename).ToLower();
 		if (ext == ".mvs" || ext == ".sfm" || ext == ".dmap") {
@@ -909,6 +921,7 @@ void Window::HandleFileDrop(int count, const char** paths) {
 			if (count > 1) {
 				// Use second dropped file as geometry file if available
 				geometryFilename = String(paths[1]);
+				Util::ensureValidPath(geometryFilename);
 			}
 			GetScene().Open(filename, geometryFilename);
 		} else if (ext == ".ply" || ext == ".obj" || ext == ".off" || ext == ".gltf" || ext == ".glb") {

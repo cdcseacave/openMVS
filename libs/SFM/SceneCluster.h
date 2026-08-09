@@ -114,10 +114,9 @@ struct SFM_API ClusterConfig
 	unsigned maxViewsPerCluster{200};  // maximum images per cluster (0 = disable clustering)
 	unsigned minViewsPerCluster{10};   // minimum images per cluster to keep (smaller clusters merged/reassigned)
 	unsigned maxOverCapacity{20};      // maximum extra images a cluster can take over maxViewsPerCluster when absorbing orphans
-	unsigned minCommonTracks{25};      // minimum tracks to connect views
 	float minPairWeight{3.f};          // minimum composite weight for pair edge
-	bool refineWeakEdges{true};        // post-process to reassign views with weak connectivity
-	float edgeWeightPercentile{0.9f};  // percentile threshold for high-weight edges in connected components (0-1)
+	float minClusterCoupling{0.05f};   // refuse a merge whose interface weight falls below this fraction of the weaker side's internal weight, and split any final cluster with such an internal seam (0 = disabled)
+	bool useCommunityDetection{false}; // partition by community detection + capacity packing instead of pure aggregative clustering
 };
 
 /**
@@ -166,14 +165,43 @@ private:
 	// Aggregative clustering (greedy max-weight)
 	std::vector<Scene> SplitSceneAggregativeClustering(std::vector<IIndexArr>* outLocalToGlobal);
 
+	// Community detection (Louvain) followed by capacity packing; same interface
+	// and refinement passes as the aggregative method, but clusters are built from
+	// detected communities instead of individual images
+	std::vector<Scene> SplitSceneCommunityDetection(std::vector<IIndexArr>* outLocalToGlobal);
+
+	// Greedy max-weight merging of the given initial clusters under the capacity
+	// limit and the minimum-coupling acceptance test (shared by both methods)
+	void GreedyMergeClusters(std::vector<IIndexArr>& clusters, bool periodicRefine);
+
+	// Deterministic Louvain community detection on a subset of the covisibility
+	// graph (standard modularity with resolution gamma)
+	std::vector<IIndexArr> DetectCommunities(const IIndexArr& nodes, float gamma) const;
+
+	// Recursively split a community larger than maxViewsPerCluster by escalating
+	// the detection resolution; falls back to halving for fully dense communities
+	void SplitOversizedCommunity(const IIndexArr& community, float gamma, std::vector<IIndexArr>& out) const;
+
 	// Helper: Merge small clusters with neighbors
 	void MergeSmallClusters(std::vector<IIndexArr>& clusters);
 
 	// Helper: Refine clusters using local search (move/swap nodes for modularity + balance)
 	void RefineClustersLocalSearch(std::vector<IIndexArr>& clusters);
 
+	// Helper: conservatively move well-connected boundary images out of the
+	// largest cluster into smaller neighbors, to shorten the critical path of
+	// concurrent sub-scene reconstruction (moves are gated by a minimum
+	// affinity ratio to the target cluster, so weakly-coupled images never move)
+	void RefineClustersBalance(std::vector<IIndexArr>& clusters);
+
 	// Helper: Split disconnected components within clusters
 	void RefineClustersSplitDisconnected(std::vector<IIndexArr>& clusters);
+
+	// Helper: split any cluster whose best balanced bipartition (spectral cut of its
+	// internal covisibility graph) is joined below the minClusterCoupling seam — the
+	// thin-waist clusters that would otherwise reconstruct as two independently scaled
+	// blocks; each half becomes its own sub-scene, realigned by the global Sim(3) merge
+	void RefineClustersSplitThinWaist(std::vector<IIndexArr>& clusters);
 
 	// Helper: Rescue small orphaned clusters
 	void RefineClustersRescueOrphans(std::vector<IIndexArr>& clusters);

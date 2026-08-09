@@ -235,7 +235,7 @@ std::pair<float, float> SFM::ComputeTracksMeanReprojectionError(Scene& scene)
 		avgPixel = sumPixelError / numErrors;
 	}
 	DEBUG_EXTRA("Mean reprojection error: %.2f pixels (%.2f deg) from %u tracks (%.2f views/track)",
-		avgPixel, avgAngular, numTracks, numErrors / (double)numTracks);
+		avgPixel, avgAngular, numTracks, numErrors / (double)MAXF(numTracks, 1u));
 	return std::make_pair(avgPixel, avgAngular);
 }
 
@@ -345,34 +345,100 @@ std::pair<float, float> SFM::FilterTracks(Scene& scene,
 		avgPixel = sumPixelError / numInlierErrors;
 	}
 	DEBUG_EXTRA("Tracks filtered: %u/%u inliers, mean reprojection error %.2f pixels (%.2f th), angular %.2g deg, %.2f views/track (completeness: %.2f mean, %.2f stddev)",
-		numInlierTracks, scene.tracks.size(), avgPixel, maxReprojErrorPixels, avgAngular, numInlierErrors / (double)numInlierTracks, trackCompletenessStats.GetMean()*100, trackCompletenessStats.GetStdDev()*100);
+		numInlierTracks, scene.tracks.size(), avgPixel, maxReprojErrorPixels, avgAngular, numInlierErrors / (double)MAXF(numInlierTracks, 1u), trackCompletenessStats.GetMean()*100, trackCompletenessStats.GetStdDev()*100);
 	return std::make_pair(avgPixel, avgAngular);
 }
 
 
-// Prunes weakly connected images and clusters the remainder based on 3D point
-// covisibility.
-//
-// Covisibility is the number of 3D points visible in both images. Images with
-// high covisibility likely have reliable relative pose estimates, while weakly
-// connected images may have less reliable geometry.
-//
-// Additionally, applies two pre-filters:
-// Tier 1: Spatial Distribution Filter - invalidates images with clustered tracks
-//         (Effective Inlier Count < threshold)
-// Tier 2: Geometric Degeneracy Filter - invalidates images with small triangulation
-//         angles (median angle < threshold), indicating insufficient baseline
-//
-// Algorithm:
-//   1. Pre-filter 1: Check spatial distribution of inlier tracks in each image
-//   2. Pre-filter 2: Check triangulation angles for geometric constraints
-//   3. Build a covisibility graph where edges connect images sharing >= min points
-//   4. Find the largest connected component and mark isolated images for removal
-//   5. Compute an adaptive edge weight threshold using median minus maximum
-//      absolute deviation (MAD)
-//   6. Cluster images using union-find: first merge strongly connected images,
-//      then iteratively merge clusters connected by weaker edges
-// Prunes weakly connected images and clusters the remainder based on 3D point covisibility.
+namespace {
+
+// Per-image inlier-observation index in CSR layout (avoids the O(images x tracks) membership
+// scan the filter used to run per image). Built once over the inlier prefix of
+// every track with >= 2 inliers: for image i, its observations live in
+// [offset[i], offset[i+1]) as parallel (track index, featureID) pairs.
+struct ImageObsCSR {
+	std::vector<uint32_t> offset; // size numImages+1
+	std::vector<uint32_t> track;  // size totObs (track index into scene.tracks)
+	std::vector<uint32_t> feat;   // size totObs (featureID within the image)
+};
+
+// Build the CSR from the current scene state (counting pass -> prefix sum -> fill pass).
+static void BuildImageObsCSR(const Scene& scene, ImageObsCSR& csr)
+{
+	const IIndex n = scene.images.size();
+	csr.offset.assign(n + 1, 0);
+	for (const Track& t : scene.tracks) {
+		if (!t.IsInlier())
+			continue;
+		for (uint8_t k = 0; k < t.numInliers; ++k)
+			++csr.offset[t.observations[k].imageID + 1];
+	}
+	for (IIndex i = 0; i < n; ++i)
+		csr.offset[i + 1] += csr.offset[i];
+	const uint32_t totObs = csr.offset[n];
+	csr.track.resize(totObs);
+	csr.feat.resize(totObs);
+	std::vector<uint32_t> cursor(csr.offset.begin(), csr.offset.end() - 1);
+	FOREACH(ti, scene.tracks) {
+		const Track& t = scene.tracks[ti];
+		if (!t.IsInlier())
+			continue;
+		for (uint8_t k = 0; k < t.numInliers; ++k) {
+			const Observation& obs = t.observations[k];
+			const uint32_t pos = cursor[obs.imageID]++;
+			csr.track[pos] = ti;
+			csr.feat[pos] = obs.featureID;
+		}
+	}
+}
+
+// Deterministic sort-based covisibility: every track with >= minInliersPerTrack inliers
+// contributes one shared point to each unordered pair of its inlier images. Emits the pairs
+// as packed (lo<<32|hi) keys, sorts, run-length-encodes, and keeps edges whose total count is
+// >= minCovisibilityCount. Output is sorted by (i,j) ascending, so every downstream consumer
+// (union-find, k-core) sees a fixed order (replaces the former unordered_map iteration order).
+static void BuildCovisEdges(const Scene& scene, unsigned minCovisibilityCount,
+	uint8_t minInliersPerTrack, std::vector<std::array<unsigned, 3>>& edges)
+{
+	std::vector<uint64_t> keys;
+	size_t est = 0;
+	for (const Track& t : scene.tracks)
+		if (t.IsInlier(minInliersPerTrack))
+			est += (size_t)t.numInliers * (t.numInliers - 1) / 2;
+	keys.reserve(MINF(est, (size_t)64 * 1024 * 1024)); // cap the reservation; grow geometrically past it
+	for (const Track& t : scene.tracks) {
+		if (!t.IsInlier(minInliersPerTrack))
+			continue;
+		for (uint8_t a = 0; a < t.numInliers; ++a) {
+			const uint32_t ia = t.observations[a].imageID;
+			for (uint8_t b = a + 1; b < t.numInliers; ++b) {
+				const uint32_t ib = t.observations[b].imageID;
+				const uint32_t lo = MINF(ia, ib), hi = MAXF(ia, ib);
+				keys.push_back(((uint64_t)lo << 32) | hi);
+			}
+		}
+	}
+	std::sort(keys.begin(), keys.end());
+	edges.clear();
+	for (size_t s = 0; s < keys.size(); ) {
+		size_t e = s + 1;
+		while (e < keys.size() && keys[e] == keys[s])
+			++e;
+		const unsigned count = (unsigned)(e - s);
+		if (count >= minCovisibilityCount) {
+			const uint64_t key = keys[s];
+			edges.push_back({ (unsigned)(key >> 32), (unsigned)(key & 0xffffffffu), count });
+		}
+		s = e;
+	}
+}
+
+} // namespace
+
+
+// Prunes weakly connected and wrongly positioned images, clustering the remainder by 3D
+// point covisibility. Covisibility is the number of 3D points visible in both images; high
+// covisibility implies a reliable relative pose, low covisibility a weak link.
 //
 // ALGORITHM STAGES:
 // =================
@@ -395,37 +461,47 @@ std::pair<float, float> SFM::FilterTracks(Scene& scene,
 //    - Result: Undirected graph where weights = shared 3D points
 //    - High covisibility → reliable relative pose; Low covisibility → weak geometry
 //
-// 4. LARGEST CONNECTED COMPONENT FILTERING (Boost Graph)
-//    - Computes connected components of covisibility graph
+// 4. LARGEST CONNECTED COMPONENT FILTERING
+//    - Computes connected components of the covisibility graph (edges >= minCovisibilityCount)
 //    - Keeps largest component (by image count)
-//    - Removes isolated image groups not well-connected to main reconstruction
-//    - Graceful fallback: skips this stage if Boost unavailable
+//    - Removes isolated image groups not connected to the main reconstruction
 //
-// 5. ADAPTIVE THRESHOLDING (Median-MAD)
-//    - Collect all edge weights in largest component
-//    - Compute: median = median(weights)
-//    - Compute: MAD = median(|weight - median|)
-//    - Threshold: T = max(median - MAD, 5)
-//    - Rationale: Robust to non-Gaussian weight distributions; prevents over-segmentation
+// 5. WEAK-ATTACHMENT REMOVAL (absolute k-core)
+//    - Peel images whose covisibility degree (number of neighbors sharing >= minCovisibilityCount
+//      inlier tracks) is < minCovisDegree (default 2), iterating until stable, then keep the
+//      largest connected component of what remains
+//    - Absolute, not scene-relative: densely-connected images always survive; only thinly-attached
+//      images and the tails/segments left behind when they are peeled are removed
+//    - Replaces a former median-MAD clustering that used a scene-relative threshold as a trust
+//      criterion and was unstable (nondeterministically over-cut densely-connected scenes)
 //
-// 6. HIERARCHICAL CLUSTERING (Union-Find)
-//    - Phase 1: Merge image pairs with weight > threshold (strong clustering)
-//    - Phase 2: Iteratively merge clusters with >= 2 weak edges (weight >= 0.75*T)
-//    - Result: Final cluster assignments for each image
-//    - Benefit: Avoids over-segmentation when weak connections are distributed
+// POSE-CONSISTENCY (optional, off by default; maxPoseInconsistencyAngle > 0):
+//    - The connectivity stages measure conditioning, not pose correctness: a wrongly positioned
+//      view (bad resection on repetitive texture, mis-merged segment) can be well spread, well
+//      triangulated, and share >= minCovisibilityCount tracks with its (co-wrong) neighbors.
+//    - What betrays a wrong pose is disagreement with independent evidence. Between edge
+//      construction and the largest-CC pass, each covisibility edge whose global relative
+//      rotation (R2 * R1^T) disagrees with the stored two-view relativePose by more than
+//      maxPoseInconsistencyAngle is cut. A lone wrong view loses its edges to the correct core
+//      and is peeled by the k-core; a co-wrong clique keeps its internal edges but splits off
+//      and is removed by the largest-CC. One mechanism, both cases, no new drop stage.
+//    - Optional per-image backstops (maxReprojErrorPixels > 0) drop an image only when BOTH
+//      absolute signals agree (low match-survival AND high robust reprojection error).
+//      Never a single-signal or scene-relative drop.
+//    - Blind spot: a wrong placement that is fully self-consistent (two-view poses, tracks, and
+//      BA all agreeing because the same repetitive structure fooled all of them) is undetectable
+//      from internal geometry; it needs external evidence (GPS, loop closure, semantics).
 //
 // RETURN VALUE:
 // =============
-// Array of cluster IDs (one per image):
-//   - NO_ID: Image invalidated by pre-filters or not in largest component
-//   - 0, 1, 2, ...: Cluster assignment for valid, well-connected images
+// Array of invalidated image IDs (removed by the pre-filters or the connectivity stages).
 //
 // USAGE:
 // ======
 //   // After building and filtering tracks
 //   BuildTracks(scene);
 //   FilterTracks(scene);
-//   IIndexArr clusterIds = FilterWeaklyConnectedImages(scene);
+//   IIndexArr removedIDs = FilterWeaklyConnectedImages(scene);
 //
 // PARAMETER GUIDANCE:
 // ===================
@@ -446,10 +522,27 @@ std::pair<float, float> SFM::FilterTracks(Scene& scene,
 //   - Lower (1.0): More lenient, accepts distant images
 //   - Higher (2.5): Stricter, requires better baselines and parallax
 //   - Detects geometric degeneracy: insufficient depth resolution or translation uncertainty
+//
+// minCovisDegree (default 2):
+//   - Minimum number of independent covisibility neighbors an image must keep to survive the
+//     k-core peel; sibling absolute threshold to minCovisibilityCount
+//
+// maxPoseInconsistencyAngle (default 0 = disabled):
+//   - Cut covisibility edges whose global relative rotation disagrees with the stored two-view
+//     relativePose by more than this angle (detects wrongly positioned views). 0 disables.
+//   - Clean, well-converged scenes carry up to ~5 deg two-view-vs-BA rotation noise on correct
+//     edges, so prefer 8-10 deg when enabling; at or below 5 deg correct edges start being cut.
+//
+// maxReprojErrorPixels (default 0 = disabled; pass config.maxFineReprojError to enable):
+//   - Enables the agreement-gated per-image backstops (match-survival + robust reprojection).
+//     0 leaves the backstops off. Both signals are absolute (never scene-relative).
 IIndexArr SFM::FilterWeaklyConnectedImages(Scene& scene,
 	unsigned minCovisibilityCount,
 	float minObservationArea,
-	float minTriangulationAngle)
+	float minTriangulationAngle,
+	unsigned minCovisDegree,
+	float maxPoseInconsistencyAngle,
+	float maxReprojErrorPixels)
 {
 	TD_TIMER_STARTD();
 	struct PairIdxCount {
@@ -458,81 +551,75 @@ IIndexArr SFM::FilterWeaklyConnectedImages(Scene& scene,
 	};
 	IIndexArr filteredIDs;
 
-	// Tier 1: Spatial Distribution Filter (Effective Inlier Count)
-	// Check if inlier tracks are spread across the image or clustered in one area
+	// One shared, entry-state CSR of per-image inlier observations: kills the former
+	// O(images x tracks) membership scan that the tier pre-filters ran per image.
 	constexpr int gridSize = 10; // 10x10 grid
+	constexpr uint8_t minInliersPerTrack = 3; // covisibility only counts tracks with >= 3 inliers
+	ImageObsCSR csr;
+	BuildImageObsCSR(scene, csr);
+
+	// Tier 1: Spatial Distribution Filter (Effective Inlier Count) — clustered features give a
+	//         weak pose constraint.
+	// Tier 2: Geometric Degeneracy Filter (Triangulation Angle) — a small median angle means a
+	//         degenerate baseline.
+	// Both verdicts are computed on the entry state (below) and applied together afterwards, so
+	// they are order-independent: invalidating one image never shifts another's angle medians or
+	// covisibility mid-loop (the old inline InvalidateImage made verdicts index-order dependent).
 	const unsigned minNumObservationsForGrid = ROUND2INT<unsigned>(SQUARE(gridSize) * minObservationArea);
 	MeanStdMinMax<REAL> coverageStats;
 	TMatrix<uint8_t, gridSize, gridSize> occupiedCells;
-	// Tier 2: Geometric Degeneracy Filter (Triangulation Angle)
-	// Check if the image has sufficient triangulation angles for reliable pose
 	const float minAngleRadians = D2R(minTriangulationAngle);
 	MeanStdMinMax<REAL> angleStats;
-	FloatArr angles(0, MAXF(scene.tracks.size(), 100u));
+	std::vector<uint8_t> tierDrop(scene.images.size(), 0); // 0=keep, 1=tier1, 2=tier2
+	FloatArr obsAngles, medAngles; // hoisted out of the per-image loop (avoid per-track churn)
 	FOREACH(imgIdx, scene.images) {
 		const Image& image = scene.images[imgIdx];
 		if (!image.IsValid())
 			continue;
-		// Count occupied grid cells and
-		// compute median triangulation angle for tracks visible in this image
+		// Count occupied grid cells and the median triangulation angle over this image's own
+		// inlier observations (CSR slice), then record a tier verdict without mutating the scene.
 		const float cellWidth = (float)image.pCamera->GetWidth() / gridSize;
 		const float cellHeight = (float)image.pCamera->GetHeight() / gridSize;
 		unsigned numOccupiedCells = 0;
 		occupiedCells.memset(0);
-		angles.clear();
-		for (const Track& track : scene.tracks) {
-			if (!track.IsInlier())
-				continue;
-			// Find observation in this image
-			bool seesTrack = false;
-			for (const Observation& obs : track) {
-				if (obs.imageID == imgIdx) {
-					// Project observation location to grid
-					const cv::KeyPoint& kp = image.keypoints[obs.featureID];
-					int cellX = static_cast<int>(kp.pt.x / cellWidth);
-					int cellY = static_cast<int>(kp.pt.y / cellHeight);
-					uint8_t& cell = occupiedCells(cellX, cellY);
-					if (cell == 0) {
-						cell = 1; // mark cell as occupied
-						++numOccupiedCells;
-					}
-					seesTrack = true;
-					break;
-				}
-			}
-			if (!seesTrack)
-				continue;
-			// Compute triangulation angle for this track
+		medAngles.clear();
+		for (uint32_t p = csr.offset[imgIdx]; p < csr.offset[imgIdx + 1]; ++p) {
+			const Track& track = scene.tracks[csr.track[p]];
+			const cv::KeyPoint& kp = image.keypoints[csr.feat[p]];
+			// Clamp cell indices: undistorted keypoints can land at/past the border, which would
+			// otherwise write outside the fixed 10x10 grid (mirrors the diagnostics twin).
+			const int cellX = MINF(MAXF((int)(kp.pt.x / cellWidth), 0), gridSize - 1);
+			const int cellY = MINF(MAXF((int)(kp.pt.y / cellHeight), 0), gridSize - 1);
+			uint8_t& cell = occupiedCells(cellX, cellY);
+			if (cell == 0) { cell = 1; ++numOccupiedCells; }
+			// Median triangulation angle: this image's ray vs every other inlier observation's ray
 			const Point3 ray = image.C - track.position;
-			FloatArr obsAngles(0, track.numInliers-1);
-			for (const Observation& obs : track) {
-				if (obs.imageID == imgIdx)
+			obsAngles.clear();
+			for (uint8_t k = 0; k < track.numInliers; ++k) {
+				const IIndex other = track.observations[k].imageID;
+				if (other == imgIdx)
 					continue;
-				const Image& otherImage = scene.images[obs.imageID];
-				Point3 otherRay = otherImage.C - track.position;
-				float cosAngle = ComputeAngle(ray.ptr(), otherRay.ptr());
-				obsAngles.push_back(cosAngle);
+				const Point3 otherRay = scene.images[other].C - track.position;
+				obsAngles.push_back(ComputeAngle(ray.ptr(), otherRay.ptr()));
 			}
-			ASSERT(!obsAngles.empty())
-			angles.push_back(obsAngles.GetNth((obsAngles.size()-1) / 2)); // median angle
+			if (!obsAngles.empty())
+				medAngles.push_back(obsAngles.GetNth((obsAngles.size() - 1) / 2)); // per-track median angle
 		}
-		// Effective inlier count as fraction of occupied cells
+		// Tier-1 verdict: effective inlier count as fraction of occupied cells
 		if (numOccupiedCells < minNumObservationsForGrid) {
 			DEBUG_EXTRA("warning: image %u (`%s`) invalidated for low spatial distribution (%.2f%% < %.2f%% cells occupied), %u visible tracks",
-				imgIdx, Util::getFileName(image.fileName).c_str(), (float)numOccupiedCells / SQUARE(gridSize) * 100.f, (float)minObservationArea * 100.f, (unsigned)angles.size());
-			if (scene.InvalidateImage(imgIdx))
-				filteredIDs.push_back(imgIdx);
+				imgIdx, Util::getFileName(image.fileName).c_str(), (float)numOccupiedCells / SQUARE(gridSize) * 100.f, (float)minObservationArea * 100.f, (unsigned)medAngles.size());
+			tierDrop[imgIdx] = 1;
 			continue;
 		}
-		// Check median triangulation angle
-		if (angles.empty())
+		// Tier-2 verdict: median triangulation angle
+		if (medAngles.empty())
 			continue;
-		const float medianAngle = ACOS(angles.GetMedian());
+		const float medianAngle = ACOS(medAngles.GetMedian());
 		if (medianAngle < minAngleRadians) {
 			DEBUG_EXTRA("warning: image %u (`%s`) invalidated for low median triangulation angle (%.2f° < %.2f°), %.2f%% cells occupied, %u visible tracks",
-				imgIdx, Util::getFileName(image.fileName).c_str(), R2D(medianAngle), minTriangulationAngle, (float)numOccupiedCells / SQUARE(gridSize) * 100.f, (unsigned)angles.size());
-			if (scene.InvalidateImage(imgIdx))
-				filteredIDs.push_back(imgIdx);
+				imgIdx, Util::getFileName(image.fileName).c_str(), R2D(medianAngle), minTriangulationAngle, (float)numOccupiedCells / SQUARE(gridSize) * 100.f, (unsigned)medAngles.size());
+			tierDrop[imgIdx] = 2;
 			continue;
 		}
 		coverageStats.Update((REAL)numOccupiedCells / SQUARE(gridSize));
@@ -543,35 +630,60 @@ IIndexArr SFM::FilterWeaklyConnectedImages(Scene& scene,
 	DEBUG_EXTRA("Triangulation angle: mean %.2f° stddev %.2f° range [%.2f°,%.2f°] n %u",
 		R2D(angleStats.GetMean()), R2D(angleStats.GetStdDev()), R2D(angleStats.GetMin()), R2D(angleStats.GetMax()), angleStats.size);
 
-	// Step 1: Compute covisibility counts between all image pairs
-	// based on shared inlier tracks
-	constexpr uint8_t minInliersPerTrack = 3; // only consider tracks with >= 3 inliers
-	std::unordered_map<PairIdx, unsigned> imageCovisibilityCount;
-	for (const Track& track : scene.tracks) {
-		if (!track.IsInlier(minInliersPerTrack))
-			continue;
-		// Increment covisibility count for all image pairs
-		for (uint8_t i = 0; i < track.numInliers; ++i) {
-			for (uint8_t j = i + 1; j < track.numInliers; ++j) {
-				IIndex img1 = track.observations[i].imageID;
-				IIndex img2 = track.observations[j].imageID;
-				PairIdx pairIdx = MakePairIdx(img1, img2);
-				imageCovisibilityCount[pairIdx]++;
-			}
-		}
+	// Apply the tier verdicts in a single batch sweep over the tracks (order-independent).
+	{
+		IIndexArr tierDropIDs;
+		FOREACH(imgIdx, scene.images)
+			if (tierDrop[imgIdx])
+				tierDropIDs.push_back(imgIdx);
+		scene.InvalidateImages(tierDropIDs);
+		for (const IIndex id : tierDropIDs)
+			filteredIDs.push_back(id);
 	}
 
-	// Step 2: Filter edges to keep only reliable connections
+	// Step 1+2: covisibility graph over the surviving inlier tracks (sort-based, deterministic,
+	// recomputed on the post-tier state so counts match the current scene). Output is sorted by
+	// (i,j), so union-find and the k-core peel below see a fixed edge order.
+	std::vector<std::array<unsigned, 3>> covisEdges;
+	BuildCovisEdges(scene, minCovisibilityCount, minInliersPerTrack, covisEdges);
 	CLISTDEF0(PairIdxCount) edgeWeights;
-	edgeWeights.reserve(imageCovisibilityCount.size());
-	for (const auto& [pairIdx, count] : imageCovisibilityCount)
-		if (count >= minCovisibilityCount)
-			edgeWeights.push_back({ pairIdx, count });
-	DEBUG_EXTRA("Established visibility graph with %u/%u images and %u/%u image pairs",
-		scene.status.nCalibratedImages, scene.images.size(), (unsigned)edgeWeights.size(), (unsigned)imageCovisibilityCount.size());
+	edgeWeights.reserve(covisEdges.size());
+	for (const auto& e : covisEdges)
+		edgeWeights.push_back({ PairIdx(e[0], e[1]), e[2] });
+	DEBUG_EXTRA("Established visibility graph with %u/%u images and %u image pairs",
+		scene.status.nCalibratedImages, scene.images.size(), (unsigned)edgeWeights.size());
 	if (edgeWeights.empty()) {
 		DEBUG("error: no valid image pairs found for clustering");
 		return filteredIDs;
+	}
+
+	// Pose-consistency edge filter (optional; off unless maxPoseInconsistencyAngle > 0).
+	// Cut covisibility edges whose global relative rotation (R2 * R1^T; Pose3D::R is world->camera)
+	// disagrees with the stored two-view relativePose (image1->image2, ID1 < ID2 == pidx.i < pidx.j,
+	// so orientation always matches). An unknown or thin pair keeps its edge — absence of evidence
+	// is not evidence of inconsistency. Cutting a wrong view's edges starves its degree so the
+	// k-core peels it (lone view) or the largest-CC drops it (co-wrong clique). One mechanism, both
+	// cases. Same consistency criterion as GlobalRotationEstimator::FilterRelativeRotations.
+	if (maxPoseInconsistencyAngle > 0.f) {
+		constexpr unsigned minPairInliersForCheck = 30;
+		const REAL minCosAngle = COS(D2R(REAL(maxPoseInconsistencyAngle)));
+		unsigned numChecked = 0, numCut = 0;
+		RFOREACH(ei, edgeWeights) {
+			const PairIdx pidx = edgeWeights[ei].pairIdx;
+			const ImagePair* p = scene.FindPair(pidx.i, pidx.j);
+			if (!p || !p->relativePose || p->GetNumFilteredInliers() < minPairInliersForCheck)
+				continue; // unknown != inconsistent: keep the edge
+			const Matrix3x3 relCalcR = scene.images[pidx.j].R * scene.images[pidx.i].R.t();
+			const REAL cosAngle = ComputeAngle(p->relativePose->R, relCalcR);
+			++numChecked;
+			if (cosAngle < minCosAngle) {
+				DEBUG_EXTRA("warning: covisibility edge (%u,%u) cut for pose inconsistency (%.2f° > %.2f°, %u inliers)",
+					pidx.i, pidx.j, R2D(ACOS(cosAngle)), maxPoseInconsistencyAngle, p->GetNumFilteredInliers());
+				edgeWeights.RemoveAt(ei);
+				++numCut;
+			}
+		}
+		DEBUG("Pose-consistency: cut %u/%u checked covisibility edges (> %.2f°)", numCut, numChecked, maxPoseInconsistencyAngle);
 	}
 
 	// Step 3: Keep only the largest connected component and invalidate the rest
@@ -580,30 +692,33 @@ IIndexArr SFM::FilterWeaklyConnectedImages(Scene& scene,
 	// Union all image pairs connected by edges
 	for (const PairIdxCount& edge : edgeWeights)
 		ds.Union(edge.pairIdx.i, edge.pairIdx.j);
-	const auto InvaidateImagesIfNotInLargestComponent = [&scene,&filteredIDs,&ds]() {
-		std::unordered_map<IIndex, unsigned> componentSizes = ds.CompressAllPaths().GetComponentSizes();
-		// Find the largest component root
+	const auto InvalidateImagesIfNotInLargestComponent = [&scene, &filteredIDs, &ds]() {
+		const std::unordered_map<IIndex, unsigned> componentSizes = ds.CompressAllPaths().GetComponentSizes();
+		// Largest component root; tie-break to the smaller root ID so the choice is deterministic
+		// regardless of the (unordered) map iteration order.
 		IIndex largestComponentRoot = NO_ID;
 		unsigned maxSize = 0;
-		for (const auto& [root, size] : componentSizes) {
-			if (size > maxSize) {
+		for (const auto& [root, size] : componentSizes)
+			if (size > maxSize || (size == maxSize && root < largestComponentRoot)) {
 				maxSize = size;
 				largestComponentRoot = root;
 			}
-		}
-		// Invalidate images not in largest component
+		// Invalidate images not in the largest component, in one batch sweep
+		IIndexArr dropIDs;
 		FOREACH(imgIdx, scene.images) {
 			if (scene.images[imgIdx].IsValid() && largestComponentRoot != ds.Find(imgIdx)) {
 				DEBUG_EXTRA("warning: image %u (`%s`) invalidated for not in largest connected component",
 					imgIdx, Util::getFileName(scene.images[imgIdx].fileName).c_str());
-				if (scene.InvalidateImage(imgIdx))
-					filteredIDs.push_back(imgIdx);
+				dropIDs.push_back(imgIdx);
 			}
 		}
+		scene.InvalidateImages(dropIDs);
+		for (const IIndex id : dropIDs)
+			filteredIDs.push_back(id);
 		DEBUG_EXTRA("Kept %u images in largest connected component (from %u components)",
 			scene.status.nCalibratedImages, (unsigned)componentSizes.size());
 	};
-	InvaidateImagesIfNotInLargestComponent();
+	InvalidateImagesIfNotInLargestComponent();
 
 	// Filter edge weights to keep only edges within largest component
 	RFOREACH(i, edgeWeights) {
@@ -617,64 +732,142 @@ IIndexArr SFM::FilterWeaklyConnectedImages(Scene& scene,
 		return filteredIDs;
 	}
 
-	// Step 4: Compute adaptive threshold using median minus median absolute deviation (MAD)
-	constexpr unsigned minEdgeWeightThreshold = 5; // minimum threshold for acceptable covisibility
-	const auto [median, mad] = ComputeX84Threshold<unsigned,float>(edgeWeights.size(),
-	[&edgeWeights](size_t i) { return edgeWeights[i].count; }, 1.f);
-	const unsigned edgeWeightThreshold = MAXF((unsigned)(median - mad), minEdgeWeightThreshold);
-	DEBUG_EXTRA("Image covisibility clustering: median=%u, MAD=%u, threshold=%u",
-		(unsigned)median, (unsigned)mad, edgeWeightThreshold);
+	// Step 4: Stable absolute weak-attachment removal (k-core), replacing a former median-MAD
+	// clustering. That clustering used a scene-relative threshold (median minus MAD of the edge
+	// weights) as a trust criterion, which is unstable: on densely-connected scenes it
+	// nondeterministically split off and discarded well-connected, trustworthy images (e.g. ~200
+	// on Tanks&Temples Courthouse, all immediately re-registered by the following resection).
+	// Trust is absolute, not relative to how dense the rest of the scene is: an image is weakly
+	// attached only when it shares enough covisibility with too few independent neighbors. So peel
+	// images whose covisibility degree (number of neighbors sharing >= minCovisibilityCount inlier
+	// tracks) is below minCovisDegree, iterating until stable, then keep the largest connected
+	// component. The peel runs purely on the edge graph via a local alive[]/degree[] pair, so its
+	// correctness never depends on when the scene is mutated; the peeled images are invalidated in
+	// one batch at the end. (Whole sub-scenes that cannot be placed in a common frame are already
+	// handled earlier, at merge time in GlobalAlignment, by keeping only the largest sub-scene.)
+	std::vector<std::vector<IIndex>> adj(scene.images.size());
+	for (const PairIdxCount& edge : edgeWeights) {
+		adj[edge.pairIdx.i].push_back(edge.pairIdx.j);
+		adj[edge.pairIdx.j].push_back(edge.pairIdx.i);
+	}
+	std::vector<uint8_t> alive(scene.images.size(), 0);
+	FOREACH(imgIdx, scene.images)
+		alive[imgIdx] = scene.images[imgIdx].IsValid() ? 1 : 0;
+	std::vector<unsigned> degree(scene.images.size(), 0);
+	FOREACH(imgIdx, scene.images)
+		if (alive[imgIdx])
+			for (const IIndex nb : adj[imgIdx])
+				if (alive[nb])
+					++degree[imgIdx];
+	std::vector<IIndex> peelQueue;
+	FOREACH(imgIdx, scene.images)
+		if (alive[imgIdx] && degree[imgIdx] < minCovisDegree)
+			peelQueue.push_back(imgIdx);
+	IIndexArr peeledIDs;
+	while (!peelQueue.empty()) {
+		const IIndex imgIdx = peelQueue.back();
+		peelQueue.pop_back();
+		if (!alive[imgIdx] || degree[imgIdx] >= minCovisDegree)
+			continue;
+		DEBUG_EXTRA("warning: image %u (`%s`) invalidated for weak covisibility degree (%u < %u)",
+			imgIdx, Util::getFileName(scene.images[imgIdx].fileName).c_str(), degree[imgIdx], minCovisDegree);
+		alive[imgIdx] = 0;
+		peeledIDs.push_back(imgIdx);
+		for (const IIndex nb : adj[imgIdx])
+			if (alive[nb] && degree[nb] > 0) {
+				--degree[nb];
+				if (degree[nb] < minCovisDegree)
+					peelQueue.push_back(nb);
+			}
+	}
+	scene.InvalidateImages(peeledIDs);
+	for (const IIndex id : peeledIDs)
+		filteredIDs.push_back(id);
 
-	// Step 5: Clusters images using union-find based on pair covisibility weights.
-	// The iterative refinement helps avoid over-segmentation when the connection
-	// between two groups of images is distributed across multiple weaker edges.
-	constexpr float weakEdgeMultiplier = 0.75f; // weaker edges must have weight >= 75% of threshold to be considered for merging
-	constexpr unsigned minWeakEdgesToMerge = 2; // clusters must share >= 2 weak edges to be merged
-	constexpr unsigned maxClusteringIterations = 10; // limit iterations to prevent infinite loops
-
-	// 5.1. Create initial clusters from strong edges (weight > threshold)
+	// Keep the largest connected component of the peeled graph (drops any segment that the
+	// peeling severed from the main reconstruction).
 	ds.Reset(scene.images.size());
 	for (const PairIdxCount& edge : edgeWeights)
-		if (edge.count > edgeWeightThreshold)
+		if (scene.images[edge.pairIdx.i].IsValid() && scene.images[edge.pairIdx.j].IsValid())
 			ds.Union(edge.pairIdx.i, edge.pairIdx.j);
+	InvalidateImagesIfNotInLargestComponent();
 
-	// 5.2. Iteratively merge clusters connected by multiple weaker edges
-	// Two clusters are merged if they share >= minWeakEdgesToMerge edges with
-	// weight >= weakEdgeMultiplier * threshold. This continues until no more
-	// merges occur (or maxClusteringIterations iterations)
-	bool changed = true;
-	unsigned iteration = 0;
-	while (changed && iteration++ < maxClusteringIterations) {
-		changed = false;
+	// Agreement-gated per-image backstops (optional; off unless maxReprojErrorPixels > 0).
+	// Drop an image only when BOTH absolute signals agree — low match-survival AND high robust
+	// reprojection error — then run one more largest-CC pass so a backstop drop cannot strand a
+	// segment. Both signals are absolute; a single marginal signal never fires.
+	if (maxReprojErrorPixels > 0.f) {
+		constexpr float survivalFloor = 0.2f;
+		constexpr unsigned survivalMinMatches = 100;
 
-		// Count edges between each pair of cluster roots
-		std::unordered_map<IIndex, std::unordered_map<IIndex, unsigned>> numPairs;
-		for (const PairIdxCount& edge : edgeWeights) {
-			if (edge.count < weakEdgeMultiplier * edgeWeightThreshold)
+		// Signal A source: match-survival. Verified inlier matches whose two endpoints do not land
+		// on one shared inlier track are "lost" (FilterTracks stripped a misregistered view's obs).
+		std::unordered_map<uint64_t, uint32_t> featToTrack;
+		FOREACH(t, scene.tracks) {
+			const Track& track = scene.tracks[t];
+			if (!track.IsInlier(minInliersPerTrack))
 				continue;
-			const IIndex root1 = ds.Find(edge.pairIdx.i);
-			const IIndex root2 = ds.Find(edge.pairIdx.j);
-			if (root1 == root2)
-				continue; // already in same cluster
-			numPairs[root1][root2]++;
-			numPairs[root2][root1]++;
+			for (uint8_t k = 0; k < track.numInliers; ++k)
+				featToTrack[((uint64_t)track.observations[k].imageID << 32) | track.observations[k].featureID] = (uint32_t)t;
 		}
-
-		// Merge clusters that share >= minWeakEdgesToMerge connecting edges
-		for (const auto& [root1, counter] : numPairs) {
-			for (const auto& [root2, count] : counter) {
-				if (root1 <= root2)
-					continue; // process each pair once
-				if (count >= minWeakEdgesToMerge) {
-					changed = true;
-					ds.Union(root1, root2);
+		std::vector<unsigned> lostCross(scene.images.size(), 0), totalVerified(scene.images.size(), 0);
+		for (const ImagePair& pair : scene.pairs) {
+			if (!scene.images[pair.ID1].IsValid() || !scene.images[pair.ID2].IsValid())
+				continue;
+			const unsigned nInl = MINF(pair.GetNumFilteredInliers(), (unsigned)pair.matches.size());
+			for (unsigned m = 0; m < nInl; ++m) {
+				const DMatch& dm = pair.matches[m];
+				const auto a = featToTrack.find(((uint64_t)pair.ID1 << 32) | dm.queryIdx);
+				const auto b = featToTrack.find(((uint64_t)pair.ID2 << 32) | dm.trainIdx);
+				++totalVerified[pair.ID1]; ++totalVerified[pair.ID2];
+				if (a == featToTrack.end() || b == featToTrack.end() || a->second != b->second) {
+					++lostCross[pair.ID1]; ++lostCross[pair.ID2];
 				}
 			}
 		}
-	}
 
-	// 5.3. Invalidate images not in largest component after clustering
-	InvaidateImagesIfNotInLargestComponent();
+		IIndexArr backstopIDs;
+		FloatArr resid;
+		FOREACH(imgIdx, scene.images) {
+			const Image& image = scene.images[imgIdx];
+			if (!image.IsValid())
+				continue;
+			// Signal A: match-survival ratio
+			if (totalVerified[imgIdx] < survivalMinMatches)
+				continue;
+			const float survival = 1.f - (float)lostCross[imgIdx] / (float)totalVerified[imgIdx];
+			if (survival >= survivalFloor)
+				continue; // first signal did not fire -> cannot reach 2 signals
+			// Signal B: robust (median) per-image reprojection error against current track positions
+			resid.clear();
+			for (uint32_t p = csr.offset[imgIdx]; p < csr.offset[imgIdx + 1]; ++p) {
+				const Track& track = scene.tracks[csr.track[p]];
+				if (!track.IsInlier())
+					continue;
+				const Point3 Xcam = image.TransformPointW2C(track.position);
+				const auto [projected, valid] = image.pCamera->Project(Xcam);
+				if (!valid)
+					continue;
+				const Point2 kppt = Cast<REAL>(image.keypoints[csr.feat[p]].pt);
+				resid.push_back((float)norm(projected - kppt));
+			}
+			if (resid.empty() || resid.GetMedian() <= maxReprojErrorPixels)
+				continue; // second signal did not fire
+			DEBUG_EXTRA("warning: image %u (`%s`) invalidated by backstops (survival %.2f < %.2f, reproj median %.2fpx > %.2fpx)",
+				imgIdx, Util::getFileName(image.fileName).c_str(), survival, survivalFloor, resid.GetMedian(), maxReprojErrorPixels);
+			backstopIDs.push_back(imgIdx);
+		}
+		if (!backstopIDs.empty()) {
+			scene.InvalidateImages(backstopIDs);
+			for (const IIndex id : backstopIDs)
+				filteredIDs.push_back(id);
+			ds.Reset(scene.images.size());
+			for (const PairIdxCount& edge : edgeWeights)
+				if (scene.images[edge.pairIdx.i].IsValid() && scene.images[edge.pairIdx.j].IsValid())
+					ds.Union(edge.pairIdx.i, edge.pairIdx.j);
+			InvalidateImagesIfNotInLargestComponent();
+		}
+	}
 
 	DEBUG("Filtered %u/%u weakly connected images in %s",
 		filteredIDs.size(), scene.status.nCalibratedImages+filteredIDs.size(), TD_TIMER_GET_FMT().c_str());

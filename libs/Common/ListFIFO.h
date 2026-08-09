@@ -80,6 +80,12 @@ public:
 		return order.empty();
 	}
 
+	// forget all keys
+	void Clear() {
+		order.clear();
+		map.clear();
+	}
+
 	// get the size of the list
 	size_t Size() const {
 		return order.size();
@@ -93,15 +99,6 @@ public:
 	// return the keys currently in cache
 	const std::list<T>& GetCachedValues() const {
 		return order;
-	}
-
-	// print the current order of elements
-	void PrintOrder() const {
-		std::cout << "Current order: ";
-		for (const auto& element : order) {
-			std::cout << element << " ";
-		}
-		std::cout << std::endl;
 	}
 
 private:

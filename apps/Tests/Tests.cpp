@@ -146,6 +146,10 @@ int main(int argc, LPCTSTR* argv)
 			return EXIT_FAILURE;
 		if (!SFM::PipelineTest())
 			return EXIT_FAILURE;
+		if (!SFM::GPSPriorPoseUncertaintyTest())
+			return EXIT_FAILURE;
+		if (!SFM::PoseUncertaintyExportTest())
+			return EXIT_FAILURE;
 		if (!SFM::ReconstructSphericalSyntheticTest())
 			return EXIT_FAILURE;
 		if (!SFM::PairsMatcherSphericalTest())

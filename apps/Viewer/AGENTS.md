@@ -56,6 +56,7 @@ Use `Window::RequestRedraw()` to post a GLFW event that wakes the wait-for-event
 - `UploadPointCloud(MVS::PointCloud, normalLength)` — points + optional normals
 - `UploadMesh(MVS::Mesh)` — vertices, faces, normals, texcoords, sub-mesh partitioning
 - `UploadCameras(Window)` — camera frustum line geometry
+- `UploadUncertaintyEllipsoids(Window)` — per-camera pose-uncertainty solid shaded ellipsoids
 - `UploadSelection(Window)` — highlighted primitive geometry
 - `UploadBounds(MVS::Scene)` — AABB wireframe
 
@@ -66,6 +67,7 @@ SetLighting(dir, intensity, color) — upload Lighting UBO
 RenderPointCloud()                 — GL_POINTS with dynamic point size
 RenderMesh()                       — solid + wireframe + textured variants
 RenderCameras()                    — frustum line rendering
+RenderUncertaintyEllipsoids()      — pose-uncertainty translucent shaded solids (ellipsoidShader)
 RenderImageOverlays()              — 3D photo planes with per-image opacity
 RenderSelection()                  — highlighted primitives
 RenderSelectionOverlay()           — 2D screen-space selection UI
@@ -74,6 +76,31 @@ RenderCoordinateAxes()
 RenderArcballGizmos()              — virtual trackball visualization
 EndFrame()
 ```
+
+Non-UI screenshots (`--screenshot-file` without the `u` flag) are captured after ALL 3D layers
+(cameras, ellipsoids, bounds, overlays) but before any ImGui window — the `--screenshot-show`
+layer flags (`c`, `b`, ...) therefore apply to the capture.
+
+### Pose-Uncertainty Ellipsoids
+`Scene::LoadPoseUncertainty(csv)` (triggered by `--pose-quality-file`) parses a CreateStructure
+pose-quality report, matches rows to scene images by ID (`scene.images[image.idx].ID` — preserved
+from the SFM scene by ExportMVS), and fills `Scene::cameraUncertainty` (per VIEWER-image index).
+`UploadUncertaintyEllipsoids` eigen-decomposes each 3x3 position covariance into an oriented
+solid (triangulated UV-sphere) ellipsoid at the camera center, scaled by
+`cameraUncertaintyAutoScale * Window::uncertaintyEllipsoidScale` (scene auto-fit base times the user
+slider) and colored via the jet colormap normalized to the 95th-percentile sigma
+(`cameraUncertaintyNorm`). It is drawn by `ellipsoidShader` (lit head-light shading + per-vertex color)
+as a translucent surface — blended, depth-tested but not depth-writing, so the camera frustum at the
+center stays visible. `LoadPoseUncertainty` AUTO-SETS `cameraUncertaintyAutoScale` — kept SEPARATE from
+the user-facing `Window::uncertaintyEllipsoidScale` (which multiplies it, defaulting to x1) so the
+deferred ImGui-ini load of that persisted slider cannot clobber the auto-fit — so the MEDIAN
+ellipsoid's largest axis is ~3% of the scene bbox diagonal (`Camera::GetSceneSize().norm()`) — raw
+sigmas are world-units and would otherwise render sub-pixel (tiny sigma) or scene-spanning (no-GPS
+needle covariances); it logs matched/drawable/datum counts + the chosen scale via DEBUG. NOTE
+`Pixel32F::gray2color(0)` is RED
+and `(1)` is BLUE — pass `1 - value` for blue = good / red = bad ramps. Gauge-datum entries have zero
+covariance (nothing drawn; the selection overlay labels them "reference"). UI: checkbox + log-scale
+magnification slider in Render Settings; per-axis sigmas shown for the selected camera.
 
 ### UBO Layout (std140)
 - **ViewProjection**: `view`, `projection`, `viewProjection` (mat4) + `cameraPos` (vec3)
@@ -170,8 +197,10 @@ Async MVS pipeline stages executable from the Viewer UI:
 
 ### Command-Line Options
 ```
--i, --input-file     MVS project file (positional)
+-i, --input-file      MVS project file (positional)
 -g, --geometry-file   Mesh/point-cloud to override existing geometry
+    --pose-quality-file  Pose-quality CSV (CreateStructure --export-pose-quality) shown as
+                         per-camera uncertainty ellipsoids
 -o, --output-file     Output filename for saving
     --export-type     Export format: ply or obj
     --archive-type    Project format: -1=interface, 0=text, 1=binary, 2=compressed

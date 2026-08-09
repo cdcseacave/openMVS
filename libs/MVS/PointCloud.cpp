@@ -1216,12 +1216,12 @@ void PointCloud::PrintStatistics(const Image* pImages, const OBB3f* pObb) const
 			// print normal/views angle distribution
 			size_t nViews(0);
 			size_t nPointsm(0), nPoints3(0), nPoints10(0), nPoints25(0), nPoints40(0), nPoints60(0), nPoints90p(0);
-			const REAL thCosAngle3(COS(D2R(3.f)));
-			const REAL thCosAngle10(COS(D2R(10.f)));
-			const REAL thCosAngle25(COS(D2R(25.f)));
-			const REAL thCosAngle40(COS(D2R(40.f)));
-			const REAL thCosAngle60(COS(D2R(60.f)));
-			const REAL thCosAngle90(COS(D2R(90.f)));
+			const REAL thCosAngle3(COS(D2R(3.0)));
+			const REAL thCosAngle10(COS(D2R(10.0)));
+			const REAL thCosAngle25(COS(D2R(25.0)));
+			const REAL thCosAngle40(COS(D2R(40.0)));
+			const REAL thCosAngle60(COS(D2R(60.0)));
+			const REAL thCosAngle90(COS(D2R(90.0)));
 			FOREACH(idx, points) {
 				const PointCloud::Point& X = points[idx];
 				const PointCloud::Normal& N = normals[idx];

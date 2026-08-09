@@ -58,8 +58,8 @@ public:
 		INIT_WORKING_FOLDER;
 	}
 
-	bool pyLoad(const std::string& fileName, int archiveType=ARCHIVE_DEFAULT) {
-		return Load(MAKE_PATH_SAFE(fileName), static_cast<ARCHIVE_TYPE>(archiveType));
+	bool pyLoad(const std::string& fileName) {
+		return Load(MAKE_PATH_SAFE(fileName));
 	}
 	bool pySave(const std::string& fileName, int archiveType=ARCHIVE_DEFAULT) const {
 		return Save(MAKE_PATH_SAFE(fileName), static_cast<ARCHIVE_TYPE>(archiveType));
@@ -303,7 +303,7 @@ void RegisterBindings()
 	class_<Scene, boost::noncopyable, boost::shared_ptr<Scene>>(
 			"SfMScene", init<unsigned>((arg("max_threads")=0)))
 		.def("load", &Scene::pyLoad,
-				(arg("file_path"), arg("archive_type")=static_cast<int>(ARCHIVE_DEFAULT)))
+				(arg("file_path")))
 		.def("save", &Scene::pySave,
 				(arg("file_path"), arg("archive_type")=static_cast<int>(ARCHIVE_DEFAULT)))
 		.def("import_images", &Scene::pyImport,
