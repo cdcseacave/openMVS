@@ -17,6 +17,17 @@ resolution) in PCIe transfer time.
 **The user paused here specifically to lock the correctness invariant first (see §4). Do NOT start the
 refactor until you have internalized §4 — it is the whole point of the pause.**
 
+> **UPDATE 2026-08-09: the §3 refactor is DONE** (commit `a7c2a04`, after the develop merge
+> `1ccc1fa`): fused in-estimation launch reusing `cudaDepthNormalEstimates`/`cudaDepthNormalCosts`,
+> accessor-templated kernels, epilogue skip via transient `DepthData::bConfAdjusted`, §4 invariant
+> preserved (neighbors still uploaded from the raw host snapshots). Verified per §5: parity
+> |ΔROC| = 0.000026 (method 2, meadow L3), timing meadow L3 3.59 ms/map / courtyard L1 (6.1 MP)
+> 65.6 ms/map (re-upload epilogue: 75.0), CUDA-OFF build clean, ctest unchanged. The same commit
+> adds the **cross-process double-adjust guard** (§8 item): dmaps persist a `CONF_ADJUSTED` D2
+> header flag; the standalone phase warns + skips flagged views (live-tested 38/38).
+> `Mesh::Clean` spike-removal infinite loop (§9) fixed in `147f450`. Full writeup:
+> `CUDA_CONFIDENCE.md` ("Fused kernel" section).
+
 ---
 
 ## 2. What is DONE (committed on this branch, `8b6c922..HEAD`)

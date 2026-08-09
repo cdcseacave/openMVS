@@ -39,6 +39,13 @@ confidence is recalibrated a second time (the posterior/gate/floor compounded on
 split estimate → adjust → fuse workflow, pass `--postprocess-dmaps 0` on the later invocation(s) to opt
 out. A single `DensifyPointCloud` call (estimate → adjust → fuse in one process) is unaffected.
 
+**RESOLVED (2026-08-09):** the split-workflow hazard above is now guarded on disk. Every dmap whose
+confidence was recalibrated carries a `CONF_ADJUSTED` flag bit in the D2 header `type` field (a
+non-content bit the codec carries through and old readers ignore; `MvsUtils.py` masks it and exposes
+`conf_adjusted`). The standalone postprocess phase checks the flag per view and **warns + skips**
+instead of compounding (verified live: 38/38 already-adjusted views skipped, 0.00 ms/map compute,
+files untouched). `--postprocess-dmaps 0` opt-out remains available but is no longer required.
+
 ## Parity (GPU vs CPU) — the recalibration is the same
 
 **CUDA depth estimation is nondeterministic** (PatchMatchCUDA's curand: two runs of the same scene
@@ -80,6 +87,42 @@ eth3d_meadow L3, 15 depth-maps, integrated recalibration (kernel + host↔device
 GPU is **~18× faster** per map and **10× under the ≤50 ms/view** acceptance target; the ~75 ms it adds
 across the whole run is a negligible fraction of estimation wall. (`VERBOSE`: "Integrated confidence
 recalibration (GPU): … ms/map avg".)
+
+## Fused kernel — resident-buffer reuse (T14e, 2026-08-09)
+
+The confidence launch now runs **inside `PatchMatch::EstimateDepthMap`**, right after the last
+geometric-consistency kernels on the same instance stream, reading the reference depth+normal from
+the resident `cudaDepthNormalEstimates` (`Point4`: xyz=normal, w=depth) and the raw NCC confidence
+from the resident `cudaDepthNormalCosts` (`1-cost`, the same conversion the host unpack applies).
+Only the neighbors' **raw previous-iteration** depth/conf/normal snapshots are uploaded (the §4
+raw-neighbor-conf invariant: the host `depthDataRef.images[]` copies loaded by `InitViews` are the
+only copy that exists, and it is raw). The adjusted confidence is downloaded into a separate output
+buffer straight into `confMap`; the unpack skips the cost→conf conversion; the `EVT_SAVEDEPTHMAP`
+epilogue is skipped via the transient `DepthData::bConfAdjusted`. A failed launch falls back to the
+epilogue re-upload GPU path, then the CPU sweep (chain intact). With the speckle/gap filters on
+(`OPTIMIZE` bits), the fused path is skipped so the adjust keeps running after filtering.
+
+The kernels are templated on a reference accessor (`RefLinearAcc` host-upload layout vs
+`RefPackedAcc` resident layout), so the standalone/fallback launcher and the parity harness are
+unchanged. Per-worker device footprint drops ~27% (no reference re-upload: 28 B/px + 20n B/px →
+8 + 16n B/px, n = neighbors).
+
+**Parity (§5 method 2, real pipeline, D2 codec):** eth3d_meadow L3, GPU-fused vs CPU-integrated,
+GT ROC-AUC **0.824253 vs 0.824279 → |ΔROC| = 0.000026** (includes estimation noise; gate ≤0.005;
+pre-refactor recorded ≈0.001). Full metric row (PR-AUC, Spearman, Brier, ECE) matches to ≤1e-3.
+
+**Timing (fused vs epilogue re-upload, same binary):**
+
+| scene / res | px/map | fused | epilogue re-upload | CPU integrated |
+|---|---|---|---|---|
+| eth3d_meadow L3 | ~0.29 MP | **3.59 ms/map** | ~5.0 ms/map (T14 recorded) | 93.3 ms/map |
+| eth3d_courtyard L1 | ~6.1 MP | **65.6 ms/map** | 75.0 ms/map | ~2364 ms/map (recorded) |
+
+At full resolution the reuse saves **12.5%** — matching the design math (the reference maps were
+~13% of the transfer volume; the neighbor conf/normal upload is the irreducible remainder). The
+original ≤50 ms/view target is met at L3/L2 scales but **narrowly missed at 6 MP (65.6 ms)**; the
+remaining lever is the optional neighbor-depth `tex2D` reuse (§3 of the handoff: fiddly, explicitly
+deferred). Against the CPU integrated path the fused GPU is **~36× faster** at 6 MP.
 
 ## CUDA-OFF build
 
