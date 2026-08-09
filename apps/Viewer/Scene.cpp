@@ -316,7 +316,7 @@ void ActivateWorkingFolder(const Scene::Layer& layer)
 
 String MakeUniqueLayerLabel(const Scene::LayerArr& layers, const String& requestedLabel, uint32_t ignoredLayerID = NO_ID)
 {
-	const String baseLabel(requestedLabel.empty() ? _T("Untitled") : requestedLabel);
+	const String baseLabel(requestedLabel.empty() ? String(_T("Untitled")) : requestedLabel);
 	String label(baseLabel);
 	for (unsigned suffix = 2;; ++suffix) {
 		bool duplicate = false;
