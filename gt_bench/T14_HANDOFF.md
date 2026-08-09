@@ -158,8 +158,12 @@ with the CPU (within the established GPU float ULP band).
 
 ## 6. Build & run (this machine)
 
-- GPU: A100-40GB, CUDA 12.6 (`/usr/local/cuda`). Canonical build dir is **`make/`** (already configured,
-  CUDA ON). Build: `VCPKG_ROOT=/home/ubuntu/vcpkg cmake --build make --config Release --target DensifyPointCloud -j30`.
+- GPU: A100-40GB, CUDA 12.9 (`/usr/local/cuda` → `cuda-12.9`; the box was upgraded from 12.6 on
+  2026-08-08 — the vcpkg-installed ceres now hard-requires CUDAToolkit ≥ 12.9.86, so a configure
+  against 12.6 FAILS). Canonical build dir is **`make/`** (Ninja Multi-Config, vcpkg toolchain,
+  CUDA ON). If a reconfigure is ever needed from scratch:
+  `VCPKG_ROOT=/home/ubuntu/vcpkg cmake -S . -B make -G "Ninja Multi-Config" -DCMAKE_TOOLCHAIN_FILE=/home/ubuntu/vcpkg/scripts/buildsystems/vcpkg.cmake -DOpenMVS_USE_CUDA=ON -DCMAKE_CUDA_COMPILER=/usr/local/cuda-12.9/bin/nvcc`.
+  Build: `VCPKG_ROOT=/home/ubuntu/vcpkg cmake --build make --config Release --target DensifyPointCloud -j30`.
   Binary `make/bin/Release/DensifyPointCloud`; run with `LD_LIBRARY_PATH=/usr/local/cuda/lib64`.
 - **A new `.cu` file needs a cmake RECONFIGURE first** (`cmake make`) — `FILE(GLOB *.cu)` runs at
   configure time. (Editing an existing `.cu` does not.)
@@ -193,7 +197,38 @@ with the CPU (within the established GPU float ULP band).
   fusion default** decision (recommendation: w2). See the `gt-benchmark` / `confidence-recalibration-feature`
   memories.
 
-## 9. Process notes
+## 9. Develop merge (2026-08-09, commit `1ccc1fa`) — findings
+
+Merged `develop` (`e884035`, pose covariance + D2 dmap codec + densify image cache). One textual
+conflict (SceneDensify.cpp depth-map load flags — kept feature's `nLoadFlags`), two API-drift fixes
+(FD2R→`D2R`, `GetNumImageReads()`→`GetHitStats().numMisses`). All targets build; the D2 codec
+preserves the partial-load `flags` semantics that the raw-neighbor-conf invariant (§4) depends on.
+
+**Caveat — D2 quantization:** dmaps now store conf as unorm8 over `[0, confScale]` and depth as
+float16. CPU↔GPU parity holds by mechanism (both read the same host maps), but all recorded gt_bench
+absolute numbers (ROC, parity deltas) predate quantization; regenerate old dmap artifacts before
+comparing.
+
+**MVSPipelineTest (ctest test 3) fails — PRE-EXISTING, not merge-caused.** With the branch default
+(adjust-confidence ON) fusion yields ~108k points (develop's calibrated spread: 58–71k) and the
+graph-cut mesh lands far below the 16k-face window: pre-merge 15133 faces, post-merge 8337. A/B with
+`OPTDENSE::nOptimize=0` confirms adjust-ON is the discriminating variable (pre-merge+OFF passes all
+stages, quality 52.1). Disposition = user decision: recalibrate the test windows for the new
+default, run the test with the adjust disabled, or revisit the default/weighting (interacts with the
+w2-vs-w3 item above).
+
+**Latent upstream `Mesh::Clean` infinite loop (shared code, byte-identical on develop).** The
+spike-removal stage (Mesh.cpp `halfedges_around_target` circulator, ~line 898) never terminates on
+the mesh this branch's fusion produces when `fSpurious=10` (the `Clean()` default the test uses);
+`fSpurious=20` (the ReconstructMesh app default) or `--remove-spikes 0` completes in <300ms. gdb
+shows a tight 3-instruction pointer-chase loop pinned at one PC; the input geometry itself is clean
+(no NaN/Inf, no degenerate/duplicate faces). Repro:
+`Tests 2 1` (saves `scene_dense_mesh.ply`), then
+`ReconstructMesh -w apps/Tests/data scene.mvs --mesh-file scene_dense_mesh.ply --decimate 0.7 --remove-spurious 10`.
+Fix belongs upstream: bound the circulator walk / validate the halfedge structure after the
+spurious stage's bulk `Euler::remove_face` removals.
+
+## 10. Process notes
 
 - Progress ledger: `.superpowers/sdd/progress.md` (this branch's task history).
 - Memories (outside repo, `/home/ubuntu/.claude/projects/-home-ubuntu-openMVS/memory/`):
