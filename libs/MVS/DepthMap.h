@@ -88,6 +88,13 @@ enum DepthFlags {
 	REMOVE_SPECKLES   = (1 << 0),
 	FILL_GAPS         = (1 << 1),
 	ADJUST_CONFIDENCE = (1 << 2), // recalibrate confidence to predict fusion survival (see DepthMapsData::AdjustConfidence)
+	// default: enable ADJUST_CONFIDENCE only when the recalibration is nearly free, i.e. when CUDA
+	// estimates the depth-maps and the confidence runs fused into the last geometric-consistency
+	// iteration off the already-resident buffers. On the CPU the recalibration is a separate
+	// full-resolution sweep costing roughly as much as a fusion pass, so it stays off unless the
+	// user asks for it explicitly (--postprocess-dmaps 4). Scene::ComputeDepthMaps resolves this to
+	// either ADJUST_CONFIDENCE or 0 once the estimation backend is known; it never survives past that.
+	ADJUST_CONFIDENCE_AUTO = (1 << 3),
 	OPTIMIZE          = (REMOVE_SPECKLES|FILL_GAPS)
 };
 enum FuseMode {
@@ -135,56 +142,22 @@ extern MVS_API unsigned nFuseFilter;
 extern MVS_API unsigned nEstimateColors;
 extern MVS_API unsigned nEstimateNormals;
 extern MVS_API float fNCCThresholdKeep;
-// confidence recalibration (DepthMapsData::AdjustConfidence) - see DepthFlags::ADJUST_CONFIDENCE
-extern MVS_API float fConfPriorStrength; // intra-map geometric prior strength as Beta pseudo-counts
-extern MVS_API float fConfConfirmTau; // softness of the multi-view confirmation gate around nMinViewsFuse
-extern MVS_API float fConfPriorGate; // how much the prior alone contributes to the gate when no neighbor confirms
-extern MVS_API float fConfPhotoFloor; // minimum multiplicative photometric weight
-extern MVS_API float fConfFloor; // floor (times photometric conf) for pixels confirmed by >=1 view (anti-erosion)
-// Task 15: free-space-violation (FSV) negative evidence (see AdjustConfidenceSweep). Task 17
-// GT-recalibrated this to default lambda=2 (shipped); 0 restores the pre-Task-15 exact no-op.
-extern MVS_API float fConfViolationWeight; // lambda: posterior-denominator weight of the FSV count V (0 disables)
-extern MVS_API float fConfViolationMargin; // how far BEHIND our depth (in units of the G1 depth-diff threshold) a neighbor's own depth must be to count as a violation, vs. merely being occluded (neutral)
-// Task 16: soft gates + bilinear neighbor sampling. When on (Task 17 GT-recalibrated this to the
-// shipped DEFAULT), the multi-view confirmation loop replaces the four hard pass/fail gates
-// (G1 depth/G2 reproj/G3 normal, G4 unchanged/dropped -- see AdjustConfidenceSweep) with
-// continuous weights, and samples the neighbor depth bilinearly (edge-aware) instead of via
-// nearest-neighbor rounding, so K becomes a fractional Ksoft consumed everywhere K was used.
-// Set false to recover the HARD nearest-lookup path (bit-identical to pre-Task-16).
-extern MVS_API bool bConfSoftGates;
+// confidence recalibration (DepthMapsData::AdjustConfidence) - see DepthFlags::ADJUST_CONFIDENCE.
+// The posterior's shape constants are NOT exposed: they are a single jointly ground-truth-calibrated
+// operating point living in ConfidenceRefine.h (see the note there).
 // DenseFuseDepthMaps: weight of the intra-map prior as virtual view/pixel support to keep few-view
 // inliers (0 disables). Default 3 favors completeness (GT bench: +6.5pp mean completeness for
 // +0.17pp gross outliers vs 0) -- right for the usual pipeline where mesh reconstruction follows and
 // cleans the extra outliers; prefer 2 when the dense point-cloud IS the final output (+2.6pp for
 // +0.07pp, within the per-scene outlier budget on 26/28 GT scene-levels vs 17/28 at 3).
 extern MVS_API float fFusePriorWeight;
-// Task 18: free-space-violation (FSV) guard on fusion-RESCUED points only (points kept solely
-// thanks to fFusePriorWeight's virtual support -- see DenseFuseDepthMaps). Reuses the exact Task-15
-// FSV classification (a neighbor view whose own depth lies well behind ours, per fConfViolationMargin)
-// counted during fusion's own join gate. -1 disables the guard: fully inert, byte-identical to
-// pre-Task-18 fusion output. Default 0 (strict) rejects any rescued point contradicted by >=1
-// free-space ray; N allows <=N such violations. Non-rescued points are never affected.
+// free-space-violation (FSV) guard on fusion-RESCUED points only (points kept solely thanks to
+// fFusePriorWeight's virtual support -- see DenseFuseDepthMaps), counted during fusion's own join
+// gate. -1 disables the guard: fully inert, byte-identical to fusion without it. Default 0 (strict)
+// rejects any rescued point contradicted by >=1 free-space ray; N allows <=N such violations.
+// Non-rescued points are never affected.
 extern MVS_API int nFuseViolationMax;
-// Task 19: opt-in second-chance fusion pass. During the main fusion pass, every seed that FAILS the
-// keep-rule but already has >=2 real observing views AND a well-supported intra-map prior
-// (priorMap(i,j)>=0.5) is snapshotted (its already-assembled point/views/weights/normal/color -- see
-// the DenseFuseDepthMaps comment on why a snapshot, not a replay, is the only thing that CAN work: by
-// the time a seed's keep-rule is evaluated, every pixel it touched is already permanently marked used
-// in useMask, whether the group is kept or discarded, so there is no unconsumed pixel left to revisit).
-// After the main pass, if this is set, each snapshot is re-tested with a relaxed pixel-count minimum
-// and a strict zero-free-space-violation requirement, independent of nFuseViolationMax. Default 0 =
-// byte-identical to pre-Task-19 fusion (no snapshots even taken when off).
-extern MVS_API bool bFuseSecondChance;
-// Task 12: integrated (estimation-time) confidence recalibration -- runs AdjustConfidence(DepthData&)
-// as an epilogue of the LAST geometric-consistency iteration, from neighbor depth/normal/conf loaded
-// for THIS reference's own geometric-consistency scoring (see InitViews' loadDepthMaps==2 path); no
-// separate --postprocess-dmaps 4 phase, no disk round-trip. See the double-adjust guard in
-// Scene::ComputeDepthMaps if both this and ADJUST_CONFIDENCE (DepthFlags) are requested together.
-extern MVS_API bool bEstimateConfidence;
 extern MVS_API bool bEstimateConfidenceCUDA; // when CUDA estimation is used, run ADJUST_CONFIDENCE on the GPU integrated into the last geometric-consistency iteration (default); 0 forces the CPU version
-extern MVS_API bool bConfPriorNormalCoherence; // intra-map prior: also require window normal coherence (variant B) vs gradient-normal agreement only (variant A)
-extern MVS_API bool bExportFusionLabels; // export per-pixel fusion inlier/outlier labels for confidence evaluation
-extern MVS_API bool bExportConfFeatures; // export per-pixel confidence-adjust features (K/Pconf/prior/photo) for offline tuning
 extern MVS_API unsigned nEstimationIters;
 extern MVS_API unsigned nEstimationGeometricIters;
 extern MVS_API unsigned nPatchMatchCUDAInstances;
@@ -233,9 +206,9 @@ struct MVS_API DepthData {
 		Matrix3x3f Tr; //
 		Point3f Tn;    //
 
-		// Task 12: this neighbor's own normal/confidence maps, loaded ALONGSIDE depthMap (same
+		// this neighbor's own normal/confidence maps, loaded ALONGSIDE depthMap (same
 		// disk file, same InitViews() call -- no extra file open) ONLY during the LAST
-		// geometric-consistency iteration when OPTDENSE::bEstimateConfidence is set (see
+		// geometric-consistency iteration when the integrated confidence runs (see
 		// InitViews' loadDepthMaps==2 path); empty otherwise. Lets the integrated
 		// DepthMapsData::AdjustConfidence(DepthData&) overload reuse this reference's own
 		// already-loaded, disk-snapshotted neighbor copies instead of the standalone
@@ -309,7 +282,7 @@ struct MVS_API DepthData {
 		for (ViewData& image: images) {
 			image.image.release();
 			image.depthMap.release();
-			image.normalMap.release(); // Task 12: neighbor normal/conf loaded only for the last
+			image.normalMap.release(); // neighbor normal/conf loaded only for the last
 			image.confMap.release();   // geometric-consistency iteration (see ViewData comment above)
 		}
 	}

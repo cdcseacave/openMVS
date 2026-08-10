@@ -61,13 +61,17 @@ bool PipelineTest(bool forceCPU, bool verbose)
 	// densify/mesh) and differ between the CPU and GPU PatchMatch backends, so
 	// these are deliberately wide plausibility windows, not tight regression
 	// bounds: they bracket both backends' observed spread with margin.
-	// Re-baselined 2026-08-10 for the current defaults -- adjust-confidence ON
-	// (nOptimize=4), fusion rescue on (fFusePriorWeight=3, ~+90% dense points on
-	// this scene), and pointWeights holding the plain [0,1] per-view confidence
-	// consumed directly by the weighted mesh visibility (this test keeps
-	// pointWeights, unlike the ReconstructMesh app whose constant-weight
-	// default discards them). Measured (GPU / local CPU): points ~108k, recon
-	// faces 52.9k / 69.7k, cleaned faces 37.0k / 48.7k, quality ~50.
+	// Re-baselined 2026-08-10 for the current defaults. Note the backends now
+	// differ by design, not just by numerical spread: nOptimize defaults to
+	// ADJUST_CONFIDENCE_AUTO, so the confidence recalibration runs on the GPU
+	// backend (fused into the last geometric-consistency iteration, nearly free)
+	// and is skipped on the CPU backend (where it would cost a separate pass).
+	// Also on: fusion rescue (fFusePriorWeight=3, ~+90% dense points on this
+	// scene); pointWeights hold the plain [0,1] per-view confidence consumed by
+	// the weighted mesh visibility (this test keeps pointWeights, unlike the
+	// ReconstructMesh app whose constant-weight default discards them).
+	// Measured (GPU adjust-ON / CPU adjust-OFF): recon faces 52.9k / 71.4k,
+	// cleaned faces 37.0k / 49.8k, quality 50.4 / 52.2.
 	if (!scene.DenseReconstruction() || scene.pointcloud.GetSize() < 50000u) {
 		VERBOSE("ERROR: TestDataset failed estimating dense point-cloud (%u points)!", scene.pointcloud.GetSize());
 		return false;

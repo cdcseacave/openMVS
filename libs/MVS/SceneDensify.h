@@ -106,14 +106,14 @@ public:
 	// pthread is not an OMP thread, so omp_get_nested does not gate it; up to nMaxThreads independent
 	// teams could coexist). Disabling it is a hard requirement of this codebase's no-per-view-
 	// threading rule, independent of perf. DenseFuseDepthMaps passes true -- single serial caller,
-	// idle cores. NOTE (measured, task-11-report.md): on this libgomp/30-core box the change had NO
+	// idle cores. NOTE (measured): on this libgomp/30-core box the change had NO
 	// measurable effect on adjust wall/compute (flat within run-to-run noise, marginally slower on the
 	// largest eth3d L1 rows) -- the prior is only ~20-25% of adjust cost (the confirmation sweep
-	// dominates, Task 9) and the old region did not measurably thrash here. Kept for the requirement +
+	// dominates) and the old region did not measurably thrash here. Kept for the requirement +
 	// for the single shared prior code path, NOT as a proven speedup -- reported honestly, not assumed.
 	const ConfidenceMap& GetIntraMapPrior(DepthData& depthData, bool bParallel) const;
 	bool AdjustConfidence(DepthData& depthDataRef, const IIndexArr& idxNeighbors);
-	// Task 12: integrated fusion-faithful confidence -- epilogue of the LAST geometric-consistency
+	// integrated fusion-faithful confidence -- epilogue of the LAST geometric-consistency
 	// iteration, run from the CALLER (DenseReconstructionEstimate's EVT_SAVEDEPTHMAP handler) while
 	// depthDataRef.images[] (this reference's own already-loaded neighbor depth/normal/conf, see
 	// InitViews' loadDepthMaps==2 path) is still resident, before ReleaseImages()/Release()/Save().
@@ -123,14 +123,13 @@ public:
 	// the .cpp comment for why the standalone phase's race does not apply here).
 	bool AdjustConfidence(DepthData& depthDataRef);
 	#ifdef _USE_CUDA
-	// Task 14: GPU counterpart of AdjustConfidence(DepthData&) -- same neighbor build, the prior +
+	// GPU counterpart of AdjustConfidence(DepthData&) -- same neighbor build, the prior +
 	// confirmation sweep run in ConfidenceCUDA.cu. Returns false on any CUDA error (CPU fallback).
 	bool AdjustConfidenceCUDA(DepthData& depthDataRef);
 	#endif
 	void MergeDepthMaps(PointCloud& pointcloud, bool bEstimateColor, bool bEstimateNormal);
 	void FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, bool bEstimateNormal);
 	void DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, bool bEstimateNormal);
-	void LabelFusionInliers();
 
 	static DepthData ScaleDepthData(const DepthData& inputDeptData, float scale);
 

@@ -28,21 +28,47 @@ namespace ConfRefine {
 // plain float triple (a device-safe stand-in for Normal/Point3f)
 struct F3 { float x, y, z; };
 
-// single-precision snapshot of the OPTDENSE::fConf* knobs + shared gate thresholds, uploaded to the
-// kernel and passed to Posterior/soft-weight helpers on both paths.
+// ---- posterior shape constants ----
+// Calibrated jointly against ground-truth depth (BlendedMVS + ETH3D, 28 scene-levels) by sweeping the
+// whole grid and scoring the inlier/outlier ROC of the resulting confidence. One global setting won on
+// every scene-level, with no meaningful per-resolution split, so these are deliberately compile-time
+// constants and not user knobs: they are a single jointly-tuned operating point, and moving one without
+// re-sweeping the others degrades the calibration. Retuning means re-running that sweep.
+constexpr float PRIOR_STRENGTH  = 2.0f;  // intra-map geometric prior weight, as Beta pseudo-counts
+constexpr float CONFIRM_TAU     = 1.5f;  // softness of the multi-view confirmation gate
+constexpr float PRIOR_GATE      = 0.3f;  // prior's contribution to the gate when no neighbor confirms
+constexpr float PHOTO_FLOOR     = 0.7f;  // minimum multiplicative photometric weight
+constexpr float CONF_FLOOR      = 0.03f; // anti-cascade floor (times photometric conf) once K >= 1
+constexpr float VIOLATION_W     = 2.0f;  // posterior-denominator weight of the free-space-violation count
+constexpr float VIOLATION_MARGIN= 2.0f;  // how far behind our depth (in units of thDepth) a neighbor's
+                                         // own depth must lie to count as a violation vs. mere occlusion
+
+// single-precision snapshot of the shape constants above + the gate thresholds that DO remain runtime
+// (they are shared with fusion), uploaded to the kernel and passed to Posterior/soft-weight helpers.
 struct Params {
-	// posterior / gate shape (fConfPriorStrength, fConfConfirmTau, fConfPriorGate, fConfPhotoFloor, fConfFloor)
+	// posterior / gate shape (the constants above)
 	float s, tau, kPrior, w0, confFloor;
 	// gate thresholds shared with fusion
 	float minConfidence;   // 1 - fNCCThresholdKeep  (G4)
 	float thReproj;        // fDepthReprojectionErrorThreshold (G2)
 	float thDepth;         // fDepthDiffThreshold (G1)
-	float normalError;     // COS(D2R(fNormalDiffThreshold)) (hard G3)
-	// free-space violation (Task 15): fConfViolationWeight (lambda), fConfViolationMargin
+	float normalError;     // COS(D2R(fNormalDiffThreshold)) (G3)
+	// free-space violation
 	float lambdaViol, violMargin;
 	// soft-gate G4 transition half-width: MAXF(0.5f*minConfidence, 1e-6f)
 	float epsConf;
 };
+
+// fill the shape constants; the caller sets the runtime gate thresholds
+CR_HD void InitParamsShape(Params& p) {
+	p.s = PRIOR_STRENGTH;
+	p.tau = CONFIRM_TAU;
+	p.kPrior = PRIOR_GATE;
+	p.w0 = PHOTO_FLOOR;
+	p.confFloor = CONF_FLOOR;
+	p.lambdaViol = VIOLATION_W;
+	p.violMargin = VIOLATION_MARGIN;
+}
 
 // mirror of SEACAVE::DepthSimilarity/IsDepthSimilar: ABS(d0-d1)/d0 < thr (d0 > 0 assumed). The
 // division (not thr*d0) is deliberate -- it reproduces DepthSimilarity byte-for-byte on the host.
@@ -63,8 +89,8 @@ CR_HD float CRexp(float a) {
 CR_HD float CRclamp01(float v) { return v < 0.f ? 0.f : (v > 1.f ? 1.f : v); }
 
 // ---- final per-pixel posterior -> confidence (mirrors SceneDensify.cpp AdjustConfidenceSweep) ----
-// Kf: hard integer K cast to float, or the soft confirmation weight Ksoft. Pconf: sum of confirming
-// neighbor confidences. V: free-space-violation count. pGeo: intra-map prior. confPhoto: own NCC conf.
+// Kf: the accumulated soft confirmation weight. Pconf: weighted sum of confirming neighbor confidences.
+// V: free-space-violation count. pGeo: intra-map prior. confPhoto: own NCC conf.
 CR_HD float Posterior(float confPhoto, float pGeo, float Kf, float Pconf, float V, const Params& p) {
 	const float gate = 1.f - CRexp(-(Kf + p.kPrior * pGeo) / p.tau);
 	const float posterior = (p.s * pGeo + Pconf) / (p.s + Pconf + p.lambdaViol * V);
@@ -77,18 +103,18 @@ CR_HD float Posterior(float confPhoto, float pGeo, float Kf, float Pconf, float 
 	return conf;
 }
 
-// ---- soft-gate continuous weights (Task 16), all in [0,1] ----
-// GATE 1 (soft): Gaussian relative-depth agreement (SceneDensify.cpp:1748)
+// ---- soft-gate continuous weights, all in [0,1] ----
+// GATE 1: Gaussian relative-depth agreement
 CR_HD float SoftDepthW(float qz, float dN, float thDepth) {
 	const float t = (qz - dN) / (0.5f * thDepth * qz);
 	return CRexp(-t * t);
 }
-// GATE 2 (soft): forward-backward reprojection residual (SceneDensify.cpp:1758)
+// GATE 2: forward-backward reprojection residual
 CR_HD float SoftReprojW(float du, float dv, float thReproj) {
 	const float d = 0.5f * thReproj;
 	return CRexp(-(du * du + dv * dv) / (d * d));
 }
-// GATE 4 (soft): smoothstep on the neighbor confidence around minConfidence (SceneDensify.cpp:1773-1774)
+// GATE 4: smoothstep on the neighbor confidence around minConfidence
 CR_HD float SoftConfW(float cN, float minConfidence, float epsConf) {
 	float t = (cN - (minConfidence - epsConf)) * (0.5f / epsConf);
 	t = CRclamp01(t);

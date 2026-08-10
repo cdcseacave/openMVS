@@ -34,7 +34,6 @@
 #include "DepthMap.h"
 #include "ConfidenceCUDA.h"
 
-#include <chrono>
 
 #ifdef _USE_CUDA
 
@@ -481,9 +480,8 @@ void PatchMatch::EstimateDepthMap(DepthData& depthData, ConfAdjustRequest* pConf
 			bFusedConfDone = RunConfidenceFusedCUDA(size.width, size.height,
 				cudaDepthNormalEstimates, cudaDepthNormalCosts,
 				pConfRequest->k00, pConfRequest->k11, pConfRequest->k02, pConfRequest->k12,
-				pConfRequest->normalDiffThresholdDeg,
 				pConfRequest->neighbors.data(), (int)pConfRequest->neighbors.size(),
-				pConfRequest->params, pConfRequest->softGates, pConfRequest->priorNormalCoherence,
+				pConfRequest->params,
 				(void*)cudaStream, depthData.confMap.ptr<float>());
 			pConfRequest->computeNS += std::chrono::duration_cast<std::chrono::nanoseconds>(
 				std::chrono::steady_clock::now() - t0).count();

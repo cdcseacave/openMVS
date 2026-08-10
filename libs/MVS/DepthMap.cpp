@@ -112,39 +112,13 @@ MDEFVAR_OPTDENSE_int32(nOptimizerMaxIters, "Optimizer Max Iters", "MRF optimizer
 MDEFVAR_OPTDENSE_uint32(nSpeckleSize, "Speckle Size", "maximal size of a speckle (small speckles get removed)", "100")
 MDEFVAR_OPTDENSE_uint32(nIpolGapSize, "Interpolate Gap Size", "interpolate small gaps (left<->right, top<->bottom)", "7")
 MDEFVAR_OPTDENSE_int32(nIgnoreMaskLabel, "Ignore Mask Label", "label id used during ignore mask filter (<0 - disabled)", "-1")
-DEFVAR_OPTDENSE_uint32(nOptimize, "Optimize", "should we filter the extracted depth-maps?", "4") // see DepthFlags; default ADJUST_CONFIDENCE(4): recalibrate confidence on every densify (CPU standalone, or GPU integrated when CUDA estimation is used -- see bEstimateConfidenceCUDA)
+DEFVAR_OPTDENSE_uint32(nOptimize, "Optimize", "should we filter the extracted depth-maps? (1 - remove-speckles, 2 - fill-gaps, 4 - adjust-confidence, 8 - adjust-confidence only if the depth-maps are estimated on the GPU, where it is nearly free)", "8") // see DepthFlags
 DEFVAR_OPTDENSE_uint32(nFuseFilter, "Fuse Filter", "how to fuse the depth-maps into one dense point-cloud?", "2", "0", "1") // see FuseMode
 MDEFVAR_OPTDENSE_uint32(nEstimateColors, "Estimate Colors", "should we estimate the colors for the dense point-cloud?", "2", "0", "1")
 MDEFVAR_OPTDENSE_uint32(nEstimateNormals, "Estimate Normals", "should we estimate the normals for the dense point-cloud?", "2", "0", "1")
 MDEFVAR_OPTDENSE_float(fNCCThresholdKeep, "NCC Threshold Keep", "Maximum 1-NCC score accepted for a match", "0.9", "0.5")
-// Task 17: the seven confidence-adjust defaults below were recalibrated against REAL ground
-// truth (BlendedMVS rendered depth + ETH3D laser scans) by an offline sweep over 10 scene-levels
-// (6 ETH3D L2 + 2 BlendedMVS at L0/L1), maximizing pooled GT ROC-AUC subject to no scene-level
-// regressing >0.005 and pooled P@0.1 not worsening (gt_bench/SWEEP_GT.md). The prior TnT-pseudo-GT
-// defaults (s=1, tau=2, photoFloor=0.5, floor=0.5, lambda=0, margin=3, softGates=0; pooled real-GT
-// ROC 0.9463) were beaten by soft gates ON + FSV lambda=2 + a retuned posterior shape (pooled ROC
-// 0.9598, +0.0135; every scene-level improved, min +0.0046), end-to-end reproduced within 0.003 on
-// the deterministic ETH3D scenes. fConfPriorGate is NOT swept (held at 0.3). Flipping bConfSoftGates
-// default 0->1 is a real behavior change: the continuous-weight soft path (Task 16, soft-G4 fix
-// 426d1f7) is now the shipped default; set "Conf Soft Gates = 0" to recover the hard Task-15 path.
-MDEFVAR_OPTDENSE_float(fConfPriorStrength, "Conf Prior Strength", "confidence-adjust: intra-map geometric prior strength as Beta pseudo-counts", "2.0")
-MDEFVAR_OPTDENSE_float(fConfConfirmTau, "Conf Confirm Tau", "confidence-adjust: softness of the multi-view confirmation gate", "1.5")
-MDEFVAR_OPTDENSE_float(fConfPriorGate, "Conf Prior Gate", "confidence-adjust: prior contribution to the gate when no neighbor confirms", "0.3")
-MDEFVAR_OPTDENSE_float(fConfPhotoFloor, "Conf Photo Floor", "confidence-adjust: minimum multiplicative photometric weight", "0.7")
-MDEFVAR_OPTDENSE_float(fConfFloor, "Conf Floor", "confidence-adjust: floor (times photometric conf) for pixels confirmed by >=1 view", "0.03")
-MDEFVAR_OPTDENSE_float(fConfViolationWeight, "Conf Violation Weight", "confidence-adjust: posterior-denominator weight (lambda) of the free-space-violation count; a neighbor whose own depth is well behind our point implies its ray passes through us (0 disables, exact no-op)", "2.0")
-MDEFVAR_OPTDENSE_float(fConfViolationMargin, "Conf Violation Margin", "confidence-adjust: how far behind our depth (in units of the Depth Diff Threshold) a neighbor's own depth must be to count as a free-space violation, vs. merely being occluded (neutral)", "2")
-DEFVAR_OPTDENSE_bool(bConfSoftGates, "Conf Soft Gates", "confidence-adjust: replace the hard nearest-neighbor pass/fail confirmation gates with continuous weights and bilinear (edge-aware) neighbor-depth sampling (0 - hard path, bit-identical to Task 15)", "1")
 MDEFVAR_OPTDENSE_float(fFusePriorWeight, "Fuse Prior Weight", "fusion: weight of the intra-map geometric prior as virtual view/pixel support, to keep inliers on a coherent surface seen by too few views/pixels (0 disables); default 3 favors completeness and suits the usual pipeline where mesh reconstruction follows and cleans the few extra outliers, use 2 when the dense point-cloud is the final output (fewer outliers, slightly lower completeness)", "3.0")
 MDEFVAR_OPTDENSE_int32(nFuseViolationMax, "Fuse Violation Max", "fusion: max free-space-violating neighbor views allowed on a point rescued only by Fuse Prior Weight's virtual support (same FSV test as Conf Violation Margin); non-rescued points are never affected (-1 disables the guard, byte-identical to pre-guard fusion; 0 - strict/default, drop rescued points contradicted by any free-space ray)", "0")
-DEFVAR_OPTDENSE_bool(bFuseSecondChance, "Fuse Second Chance", "fusion: opt-in second-chance pass that re-tests prior-supported seeds discarded by the main keep-rule (>=2 real views, intra-map prior>=0.5) with a relaxed pixel-count minimum and a strict zero-free-space-violation requirement; recovers a few clean discarded seeds without adding outliers (0 disables, byte-identical to pre-Task-19 fusion)", "0")
-MDEFVAR_OPTDENSE_bool(bConfPriorNormalCoherence, "Conf Prior Normal Coherence", "intra-map prior: multiply gradient-normal agreement by window normal coherence (A/B experiment)", "0")
-MDEFVAR_OPTDENSE_bool(bExportFusionLabels, "Export Fusion Labels", "export per-pixel fusion inlier/outlier labels (.flabel/.fsupport) for confidence evaluation", "0")
-MDEFVAR_OPTDENSE_bool(bExportConfFeatures, "Export Conf Features", "export per-pixel confidence-adjust features (.cfeat*) for offline parameter tuning", "0")
-// NOTE: the in-process double-adjust guard (integrated + --postprocess-dmaps 4 in the SAME run) only
-// protects a single process; do NOT enable this and then run a separate --postprocess-dmaps 4 pass on
-// the saved depth-maps -- that would adjust confidence twice with no warning across the two processes.
-DEFVAR_OPTDENSE_bool(bEstimateConfidence, "Estimate Confidence", "adjust per-pixel confidence during the last geometric-consistency iteration on the CPU (fusion-faithful); legacy integrated-CPU opt-in -- the default confidence path is the ADJUST_CONFIDENCE postprocess flag (CPU standalone / GPU integrated)", "0")
 DEFVAR_OPTDENSE_bool(bEstimateConfidenceCUDA, "Estimate Confidence CUDA", "when CUDA is available and used for depth-map estimation, run the ADJUST_CONFIDENCE recalibration on the GPU integrated into the last geometric-consistency iteration (1), or force the CPU version anyway (0); no effect when estimation runs on the CPU", "1")
 DEFVAR_OPTDENSE_uint32(nEstimationIters, "Estimation Iters", "Number of patch-match iterations", "3")
 DEFVAR_OPTDENSE_uint32(nEstimationGeometricIters, "Estimation Geometric Iters", "Number of geometric consistent patch-match iterations (0 - disabled)", "2")
@@ -368,7 +342,7 @@ size_t MVS::DepthData::GetMemorySize() const
 // try to load and apply mask to the depth map;
 // the mask for each image is stored in the MVS scene or next to each image with '.mask.png' extension;
 // the mask marks as false (or 0) pixels that should be ignored
-//  - pMask: optional output mask; if defined, the mask is returned in this image instead of the BitMatrix
+// - pMask: optional output mask; if defined, the mask is returned in this image instead of the BitMatrix
 bool DepthEstimator::ImportIgnoreMask(const Image& image0, const cv::Size& size, uint8_t nIgnoreMaskLabel, BitMatrix& bmask, Image8U* pMask)
 {
 	ASSERT(image0.IsValid());
@@ -397,9 +371,9 @@ bool DepthEstimator::ImportIgnoreMask(const Image& image0, const cv::Size& size,
 } // ImportIgnoreMask
 
 // create the map for converting index to matrix position
-//                         1 2 3
-//  1 2 4 7 5 3 6 8 9 -->  4 5 6
-//                         7 8 9
+//                        1 2 3
+// 1 2 4 7 5 3 6 8 9 -->  4 5 6
+//                        7 8 9
 void DepthEstimator::MapMatrix2ZigzagIdx(const cv::Size& size, DepthEstimator::MapRefArr& coords, const BitMatrix& mask, int rawStride)
 {
 	typedef DepthEstimator::MapRef MapRef;
@@ -1029,7 +1003,7 @@ namespace CGAL {
 }
 
 // triangulate in-view points, generating a 2D mesh;
-//  - avgDepth (optional): average depth of the image, used to estimate the depth of the image corners
+// - avgDepth (optional): average depth of the image, used to estimate the depth of the image corners
 // return also the estimated depth boundaries (min and max depth)
 std::pair<float,float> TriangulatePointsDelaunay(const Camera& camera, const cv::Size& size, const PointCloud& pointcloud, const IndexArr& points,
 	Mesh& mesh, Point2fArr& projs, float avgDepth=0.f)
@@ -2108,7 +2082,7 @@ bool MVS::ExportPointCloud(const String& fileName, const Image& imageData, const
 // the same codec instead of carrying its own copy of it -- which is how the two of them
 // silently drifted apart before. The functions below only adapt the scene types to it,
 // the maps being passed straight through as the cv::Mat they already are.
-//  - IDs are the reference view ID and neighbor view IDs used to estimate the depth-map (global ID)
+// - IDs are the reference view ID and neighbor view IDs used to estimate the depth-map (global ID)
 bool MVS::ExportDepthDataRaw(const String& fileName, const String& imageFileName,
 	const IIndexArr& IDs, const cv::Size& imageSize,
 	const KMatrix& K, const RMatrix& R, const CMatrix& C,

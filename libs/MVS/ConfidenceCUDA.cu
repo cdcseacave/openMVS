@@ -7,7 +7,7 @@
  *                   (shared ConfRefine::DepthPlaneFit) + slope-aware planarity/quorum + gradient-vs-
  *                   stored-normal agreement.
  *   SweepKernel  -- one-hop multi-view confirmation (AdjustConfidenceSweep): project the pixel into
- *                   each neighbor, apply the 4 gates (+ FSV) hard or soft, accumulate K/Ksoft/Pconf/V,
+ *                   each neighbor, apply the 4 soft gates (+ FSV), accumulate K/Pconf/V,
  *                   then the shared ConfRefine::Posterior.
  * The per-pixel arithmetic is the SAME ConfidenceRefine.h used by the CPU (single-precision here);
  * GPU-vs-CPU differences are ULP-level (float vs double exp, FMA), well inside |dROC| <= 0.005.
@@ -110,7 +110,7 @@ __device__ __forceinline__ bool SampleDepthBilinearDev(const DevNeighbor& np,
 // ---- intra-map geometric prior (mirrors DepthMapsData::ComputeIntraMapPrior) ----
 template <typename RefAcc>
 __global__ void PriorKernel(RefAcc ref, int W, int H, float k00, float k11, float k02, float k12,
-                            float band, float invKmin, float sigmaNormalSq, int bCoherence,
+                            float band, float invKmin,
                             float* priorOut) {
 	const int c = blockIdx.x*blockDim.x + threadIdx.x;
 	const int r = blockIdx.y*blockDim.y + threadIdx.y;
@@ -141,27 +141,6 @@ __global__ void PriorKernel(RefAcc ref, int W, int H, float k00, float k11, floa
 		const F3 nGrad = ConfRefine::NormalFromGrad(k00, k11, k02, k12, c, r, w, wx, wy);
 		const F3 sn = ref.Normal(idx);
 		Pnorm = fmaxf(0.f, nGrad.x*sn.x + nGrad.y*sn.y + nGrad.z*sn.z);
-		if (bCoherence) {
-			float mx = 0.f, my = 0.f, mz = 0.f; int cnt = 0;
-			for (int y = -1; y <= 1; ++y) { const int rr = r+y; if (rr<0||rr>=H) continue;
-				for (int x = -1; x <= 1; ++x) { const int cc = c+x; if (cc<0||cc>=W) continue;
-					if (ref(cc, rr) <= 0.f) continue;
-					const F3 nn = ref.Normal(rr*W+cc);
-					mx += nn.x; my += nn.y; mz += nn.z; ++cnt; } }
-			const float nrm = sqrtf(mx*mx + my*my + mz*mz);
-			if (cnt > 0 && nrm > 1e-6f) {
-				mx /= nrm; my /= nrm; mz /= nrm;
-				float varAng = 0.f; int cnt2 = 0;
-				for (int y = -1; y <= 1; ++y) { const int rr = r+y; if (rr<0||rr>=H) continue;
-					for (int x = -1; x <= 1; ++x) { const int cc = c+x; if (cc<0||cc>=W) continue;
-						if (ref(cc, rr) <= 0.f) continue;
-						const F3 nn = ref.Normal(rr*W+cc);
-						float dn = mx*nn.x + my*nn.y + mz*nn.z;
-						dn = dn < -1.f ? -1.f : (dn > 1.f ? 1.f : dn);
-						const float a = acosf(dn); varAng += a*a; ++cnt2; } }
-				Pnorm *= ConfRefine::CRexp(-varAng / ((float)cnt2 * sigmaNormalSq));
-			}
-		}
 	}
 	float pr = Pplane * Pnorm * gate;
 	priorOut[idx] = pr < 0.f ? 0.f : (pr > 1.f ? 1.f : pr);
@@ -170,7 +149,7 @@ __global__ void PriorKernel(RefAcc ref, int W, int H, float k00, float k11, floa
 // ---- one-hop multi-view confirmation (mirrors AdjustConfidenceSweep) ----
 template <typename RefAcc>
 __global__ void SweepKernel(RefAcc ref, const float* priorMap, int W, int H,
-                            const DevNeighbor* neigh, int nNeigh, Params p, int softGates,
+                            const DevNeighbor* neigh, int nNeigh, Params p,
                             float maxReprojErrorSq, float* confOut) {
 	const int c = blockIdx.x*blockDim.x + threadIdx.x;
 	const int r = blockIdx.y*blockDim.y + threadIdx.y;
@@ -182,7 +161,7 @@ __global__ void SweepKernel(RefAcc ref, const float* priorMap, int W, int H,
 	const int hasRefNormal = ref.HasNormal();
 	if (hasRefNormal) { const F3 rn = ref.Normal(idx); rnx = rn.x; rny = rn.y; rnz = rn.z; }
 
-	float Khard = 0.f, Ksoft = 0.f, Pconf = 0.f;
+	float K = 0.f, Pconf = 0.f;
 	int V = 0;
 	const float ud = (float)c * depthRef, vd = (float)r * depthRef;
 	for (int k = 0; k < nNeigh; ++k) {
@@ -198,27 +177,6 @@ __global__ void SweepKernel(RefAcc ref, const float* priorMap, int W, int H,
 		if (dNn <= 0.f) continue;
 		const bool hasNormalGate = (hasRefNormal && np.normal != nullptr);
 
-		if (!softGates) {
-			const bool gDepth = ConfRefine::IsDepthSimilarF(dNn, qz, p.thDepth);
-			if (!gDepth && dNn > qz*(1.f + p.violMargin*p.thDepth)) ++V;
-			const float un = (float)xN*dNn, vn = (float)yN*dNn;
-			const float qrz = np.Ai[6]*un + np.Ai[7]*vn + np.Ai[8]*dNn + np.bi[2];
-			const float qrx = np.Ai[0]*un + np.Ai[1]*vn + np.Ai[2]*dNn + np.bi[0];
-			const float qry = np.Ai[3]*un + np.Ai[4]*vn + np.Ai[5]*dNn + np.bi[1];
-			const float du = qrx/qrz - (float)c, dv = qry/qrz - (float)r;
-			const bool gReproj = (qrz > 0.f) && (du*du + dv*dv <= maxReprojErrorSq);
-			if (!(gDepth && gReproj)) continue;
-			if (hasNormalGate) {
-				const float nx = np.Rrel[0]*rnx + np.Rrel[1]*rny + np.Rrel[2]*rnz;
-				const float ny = np.Rrel[3]*rnx + np.Rrel[4]*rny + np.Rrel[5]*rnz;
-				const float nz = np.Rrel[6]*rnx + np.Rrel[7]*rny + np.Rrel[8]*rnz;
-				const float mnx = np.normal[(yN*np.width+xN)*3+0], mny = np.normal[(yN*np.width+xN)*3+1], mnz = np.normal[(yN*np.width+xN)*3+2];
-				if (nx*mnx + ny*mny + nz*mnz < p.normalError) continue;
-			}
-			const float cN = np.conf ? np.conf[yN*np.width + xN] : 1.f;
-			if (cN < p.minConfidence) continue;
-			Khard += 1.f; Pconf += cN;
-		} else {
 			const bool gDepthNearest = ConfRefine::IsDepthSimilarF(dNn, qz, p.thDepth);
 			if (!gDepthNearest && dNn > qz*(1.f + p.violMargin*p.thDepth)) ++V;
 			float dN;
@@ -246,10 +204,9 @@ __global__ void SweepKernel(RefAcc ref, const float* priorMap, int W, int H,
 			const float wC = ConfRefine::SoftConfW(cN, p.minConfidence, p.epsConf);
 			const float w = wD*wR*wN*wC;
 			if (w <= 0.05f) continue;
-			Ksoft += w; Pconf += w*cN;
-		}
+			K += w; Pconf += w*cN;
 	}
-	const float Kf = softGates ? Ksoft : Khard;
+	const float Kf = K;
 	confOut[idx] = ConfRefine::Posterior(ref.Conf(idx), priorMap[idx], Kf, Pconf, (float)V, p);
 }
 
@@ -264,9 +221,9 @@ namespace { struct DevBag { std::vector<void*> v; ~DevBag(){ for (void* p : v) c
 template <typename RefAcc>
 static bool LaunchConfidenceKernels(
 	int W, int H, const RefAcc& ref,
-	float k00, float k11, float k02, float k12, float normalDiffThresholdDeg,
+	float k00, float k11, float k02, float k12,
 	const ConfNeighborHost* neighbors, int nNeighbors,
-	const Params& params, bool softGates, bool priorNormalCoherence,
+	const Params& params,
 	cudaStream_t stream, DevBag& bag, float* confOut)
 {
 	const size_t nPix = (size_t)W * (size_t)H;
@@ -318,14 +275,12 @@ static bool LaunchConfidenceKernels(
 	const dim3 grid((W + block.x - 1)/block.x, (H + block.y - 1)/block.y, 1);
 	const float band = params.thDepth * 3.f;
 	const float invKmin = 1.f/4.f;
-	const float rad = normalDiffThresholdDeg * (3.14159265358979323846f/180.f);
-	const float sigmaNormalSq = rad*rad;
 	const float maxReprojErrorSq = params.thReproj * params.thReproj;
 
 	PriorKernel<RefAcc><<<grid, block, 0, stream>>>(ref, W, H,
-		k00, k11, k02, k12, band, invKmin, sigmaNormalSq, priorNormalCoherence?1:0, dPrior);
+		k00, k11, k02, k12, band, invKmin, dPrior);
 	SweepKernel<RefAcc><<<grid, block, 0, stream>>>(ref, dPrior,
-		W, H, dNeigh, nNeighbors, params, softGates?1:0, maxReprojErrorSq, dConf);
+		W, H, dNeigh, nNeighbors, params, maxReprojErrorSq, dConf);
 
 	if (cudaMemcpyAsync(confOut, dConf, nPix*sizeof(float), cudaMemcpyDeviceToHost, stream) != cudaSuccess) return false;
 	if (cudaStreamSynchronize(stream) != cudaSuccess) return false;
@@ -336,9 +291,9 @@ static bool LaunchConfidenceKernels(
 bool RunConfidenceCUDA(
 	int W, int H,
 	const float* refDepth, const float* refNormal, const float* refConf,
-	float k00, float k11, float k02, float k12, float normalDiffThresholdDeg,
+	float k00, float k11, float k02, float k12,
 	const ConfNeighborHost* neighbors, int nNeighbors,
-	const Params& params, bool softGates, bool priorNormalCoherence,
+	const Params& params,
 	float* confOut)
 {
 	if (W <= 0 || H <= 0 || nNeighbors < 0) return false;
@@ -370,24 +325,24 @@ bool RunConfidenceCUDA(
 	if (refNormal && !up(dRefNormal, refNormal, nPix*3*sizeof(float))) return false;
 
 	const RefLinearAcc ref{dRefDepth, dRefNormal, dRefConf, W, H};
-	return LaunchConfidenceKernels(W, H, ref, k00, k11, k02, k12, normalDiffThresholdDeg,
-		neighbors, nNeighbors, params, softGates, priorNormalCoherence, stream, bag, confOut);
+	return LaunchConfidenceKernels(W, H, ref, k00, k11, k02, k12,
+		neighbors, nNeighbors, params, stream, bag, confOut);
 }
 
 bool RunConfidenceFusedCUDA(
 	int W, int H,
 	const void* devDepthNormals, const float* devCosts,
-	float k00, float k11, float k02, float k12, float normalDiffThresholdDeg,
+	float k00, float k11, float k02, float k12,
 	const ConfNeighborHost* neighbors, int nNeighbors,
-	const Params& params, bool softGates, bool priorNormalCoherence,
+	const Params& params,
 	void* stream, float* confOut)
 {
 	if (W <= 0 || H <= 0 || nNeighbors < 0 || !devDepthNormals || !devCosts || !confOut) return false;
 	DevBag bag;
 	// Point4 is 4 contiguous floats (x,y,z = normal, w = depth), 16-byte aligned by cudaMalloc
 	const RefPackedAcc ref{reinterpret_cast<const float4*>(devDepthNormals), devCosts, W, H};
-	return LaunchConfidenceKernels(W, H, ref, k00, k11, k02, k12, normalDiffThresholdDeg,
-		neighbors, nNeighbors, params, softGates, priorNormalCoherence,
+	return LaunchConfidenceKernels(W, H, ref, k00, k11, k02, k12,
+		neighbors, nNeighbors, params,
 		(cudaStream_t)stream, bag, confOut);
 }
 

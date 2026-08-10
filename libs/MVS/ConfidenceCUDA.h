@@ -54,13 +54,11 @@ struct ConfNeighborHost {
 // last geometric-consistency kernels. The neighbor host pointers reference this reference's own
 // depthDataRef.images[] maps -- the raw PREVIOUS-iteration snapshots loaded by InitViews
 // (loadDepthMaps==2), preserving the raw-neighbor-confidence invariant (single Jacobi pass,
-// order-independent; see gt_bench/T14_HANDOFF.md par.4).
+// order-independent).
 struct ConfAdjustRequest {
 	std::vector<ConfNeighborHost> neighbors;
 	ConfRefine::Params params;             // single-precision OPTDENSE snapshot
 	float k00, k11, k02, k12;              // reference camera intrinsics (skew-free)
-	float normalDiffThresholdDeg;          // OPTDENSE::fNormalDiffThreshold (prior coherence)
-	bool softGates, priorNormalCoherence;
 	// outputs
 	bool done = false;                     // fused kernels ran and confMap holds the adjusted conf
 	long long computeNS = 0;               // wall time of the fused launch (kernels + transfers)
@@ -74,9 +72,8 @@ bool RunConfidenceCUDA(
 	int W, int H,
 	const float* refDepth, const float* refNormal /*3*W*H or null*/, const float* refConf,
 	float k00, float k11, float k02, float k12,           // reference camera intrinsics (skew-free)
-	float normalDiffThresholdDeg,                         // OPTDENSE::fNormalDiffThreshold (prior coherence)
 	const ConfNeighborHost* neighbors, int nNeighbors,
-	const ConfRefine::Params& params, bool softGates, bool priorNormalCoherence,
+	const ConfRefine::Params& params,
 	float* confOut);
 
 // Fused variant (T14 resident-buffer reuse): the reference maps are NOT uploaded -- devDepthNormals
@@ -91,9 +88,8 @@ bool RunConfidenceFusedCUDA(
 	int W, int H,
 	const void* devDepthNormals, const float* devCosts,
 	float k00, float k11, float k02, float k12,
-	float normalDiffThresholdDeg,
 	const ConfNeighborHost* neighbors, int nNeighbors,
-	const ConfRefine::Params& params, bool softGates, bool priorNormalCoherence,
+	const ConfRefine::Params& params,
 	void* stream,
 	float* confOut);
 
