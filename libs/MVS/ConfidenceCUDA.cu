@@ -37,14 +37,24 @@ using ConfRefine::F3;
 // device-resident neighbor descriptor (fused transforms + device map pointers)
 struct DevNeighbor {
 	float A[9], b[3], Ai[9], bi[3], Rrel[9];
-	const float* depth;
-	const float* conf;     // null -> no confidence (cN = 1)
-	const float* normal;   // null -> no normal gate
+	const float* depth;              // null when texDepth is used instead
+	const float* conf;               // null -> no confidence (cN = 1)
+	const float* normal;             // null -> no normal gate
+	cudaTextureObject_t texDepth;    // nonzero -> read depth from PatchMatch's resident texture
 	int width, height;
 };
 
 // nearest-pixel round matching SEACAVE::Round2Int(float) = floor(x + 0.5f)
 __device__ __forceinline__ int Round2IntDev(float x) { return (int)floorf(x + 0.5f); }
+
+// neighbor depth at integer pixel (x,y), from the linear upload or the resident texture. The
+// texture is cudaFilterModeLinear, but a fetch at the exact texel center (x+0.5, y+0.5) has
+// interpolation weight exactly 0, so it returns the texel bit-exactly -- identical to the linear
+// read, keeping CPU/GPU parity. Callers guarantee (x,y) is inside [0,width)x[0,height).
+__device__ __forceinline__ float NbDepthAt(const DevNeighbor& np, int x, int y) {
+	return np.depth ? np.depth[y*np.width + x] :
+		tex2D<float>(np.texDepth, (float)x + 0.5f, (float)y + 0.5f);
+}
 
 // ---- reference-map accessors (kernel template parameter) ----
 // Both expose: Depth(idx), HasNormal(), Normal(idx), Conf(idx) plus the operator()(x,y)/inside(x,y)
@@ -79,13 +89,15 @@ struct RefPackedAcc {
 	__device__ __forceinline__ bool inside(int x, int y) const { return x >= 0 && x < W && y >= 0 && y < H; }
 };
 
-// device port of SceneDensify.cpp SampleDepthBilinear (edge-aware; false -> caller uses nearest)
-__device__ __forceinline__ bool SampleDepthBilinearDev(const float* dm, int w, int h,
+// device port of SceneDensify.cpp SampleDepthBilinear (edge-aware; false -> caller uses nearest).
+// The 4 taps go through NbDepthAt (exact texel fetches) -- hardware bilinear CANNOT be used here
+// because each tap must pass the validity (>0) and min/max depth-similarity gates individually.
+__device__ __forceinline__ bool SampleDepthBilinearDev(const DevNeighbor& np,
                                                         float px, float py, float thDepth, float& d) {
 	const int x0 = (int)floorf(px), y0 = (int)floorf(py);
-	if (x0 < 0 || y0 < 0 || x0 + 1 >= w || y0 + 1 >= h) return false;
-	const float d00 = dm[y0*w + x0], d01 = dm[y0*w + x0+1];
-	const float d10 = dm[(y0+1)*w + x0], d11 = dm[(y0+1)*w + x0+1];
+	if (x0 < 0 || y0 < 0 || x0 + 1 >= np.width || y0 + 1 >= np.height) return false;
+	const float d00 = NbDepthAt(np, x0, y0), d01 = NbDepthAt(np, x0+1, y0);
+	const float d10 = NbDepthAt(np, x0, y0+1), d11 = NbDepthAt(np, x0+1, y0+1);
 	if (d00 <= 0.f || d01 <= 0.f || d10 <= 0.f || d11 <= 0.f) return false;
 	const float dmin = fminf(fminf(d00, d01), fminf(d10, d11));
 	const float dmax = fmaxf(fmaxf(d00, d01), fmaxf(d10, d11));
@@ -182,7 +194,7 @@ __global__ void SweepKernel(RefAcc ref, const float* priorMap, int W, int H,
 		const float px = qx/qz, py = qy/qz;
 		const int xN = Round2IntDev(px), yN = Round2IntDev(py);
 		if (xN < 0 || xN >= np.width || yN < 0 || yN >= np.height) continue;
-		const float dNn = np.depth[yN*np.width + xN];
+		const float dNn = NbDepthAt(np, xN, yN);
 		if (dNn <= 0.f) continue;
 		const bool hasNormalGate = (hasRefNormal && np.normal != nullptr);
 
@@ -210,7 +222,7 @@ __global__ void SweepKernel(RefAcc ref, const float* priorMap, int W, int H,
 			const bool gDepthNearest = ConfRefine::IsDepthSimilarF(dNn, qz, p.thDepth);
 			if (!gDepthNearest && dNn > qz*(1.f + p.violMargin*p.thDepth)) ++V;
 			float dN;
-			if (!SampleDepthBilinearDev(np.depth, np.width, np.height, px, py, p.thDepth, dN))
+			if (!SampleDepthBilinearDev(np, px, py, p.thDepth, dN))
 				dN = dNn;
 			const float wD = ConfRefine::SoftDepthW(qz, dN, p.thDepth);
 			const float un = (float)xN*dN, vn = (float)yN*dN;
@@ -282,8 +294,13 @@ static bool LaunchConfidenceKernels(
 		for (int i = 0; i < 9; ++i) { d.A[i]=s.A[i]; d.Ai[i]=s.Ai[i]; d.Rrel[i]=s.Rrel[i]; }
 		for (int i = 0; i < 3; ++i) { d.b[i]=s.b[i]; d.bi[i]=s.bi[i]; }
 		d.width = s.width; d.height = s.height;
-		float* dd = (float*)dmalloc(np*sizeof(float)); if (dd==(void*)-1) return false;
-		if (!up(dd, s.depth, np*sizeof(float))) return false; d.depth = dd;
+		// fused path with a valid resident texture: read depth via tex2D, skip the largest upload
+		d.texDepth = (cudaTextureObject_t)s.texDepth;
+		d.depth = nullptr;
+		if (s.texDepth == 0) {
+			float* dd = (float*)dmalloc(np*sizeof(float)); if (dd==(void*)-1) return false;
+			if (!up(dd, s.depth, np*sizeof(float))) return false; d.depth = dd;
+		}
 		d.conf = nullptr;
 		if (s.conf) { float* dc=(float*)dmalloc(np*sizeof(float)); if (dc==(void*)-1) return false; if (!up(dc,s.conf,np*sizeof(float))) return false; d.conf = dc; }
 		d.normal = nullptr;

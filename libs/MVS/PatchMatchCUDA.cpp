@@ -463,6 +463,20 @@ void PatchMatch::EstimateDepthMap(DepthData& depthData, ConfAdjustRequest* pConf
 		if (pConfRequest && scaleNumber == 0 && params.bGeomConsistency &&
 			!depthData.confMap.empty() && depthData.confMap.isContinuous() &&
 			depthData.confMap.size() == depthData.depthMap.size()) {
+			// neighbor-depth texture reuse: the geometric-consistency pass already holds every
+			// neighbor's raw previous-iteration depth in cudaDepthArrays/textureDepths, so point
+			// the launcher at the resident texture instead of re-uploading the same map -- but only
+			// when the upload above did NOT resize it (view.depthMap.size() == image.size()),
+			// otherwise the texture holds an INTER_LINEAR-resized copy while the host pointer (and
+			// the CPU path) sample the native map; mismatched neighbors keep the linear upload.
+			for (ConfNeighborHost& n : pConfRequest->neighbors) {
+				n.texDepth = 0;
+				if (n.srcImage >= 1 && (size_t)n.srcImage < depthData.images.size() &&
+					(size_t)(n.srcImage-1) < textureDepths.size() && textureDepths[n.srcImage-1] != 0 &&
+					depthData.images[n.srcImage].depthMap.size() == images[n.srcImage].size() &&
+					n.width == images[n.srcImage].cols && n.height == images[n.srcImage].rows)
+					n.texDepth = (unsigned long long)textureDepths[n.srcImage-1];
+			}
 			const std::chrono::steady_clock::time_point t0(std::chrono::steady_clock::now());
 			bFusedConfDone = RunConfidenceFusedCUDA(size.width, size.height,
 				cudaDepthNormalEstimates, cudaDepthNormalCosts,

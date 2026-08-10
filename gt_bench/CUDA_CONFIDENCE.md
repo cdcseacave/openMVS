@@ -113,16 +113,24 @@ pre-refactor recorded ≈0.001). Full metric row (PR-AUC, Spearman, Brier, ECE) 
 
 **Timing (fused vs epilogue re-upload, same binary):**
 
-| scene / res | px/map | fused | epilogue re-upload | CPU integrated |
-|---|---|---|---|---|
-| eth3d_meadow L3 | ~0.29 MP | **3.59 ms/map** | ~5.0 ms/map (T14 recorded) | 93.3 ms/map |
-| eth3d_courtyard L1 | ~6.1 MP | **65.6 ms/map** | 75.0 ms/map | ~2364 ms/map (recorded) |
+| scene / res | px/map | fused +tex2D | fused (upload nbr depth) | epilogue re-upload | CPU integrated |
+|---|---|---|---|---|---|
+| eth3d_meadow L3 | ~0.29 MP | **3.28 ms/map** | 3.59 ms/map | ~5.0 ms/map (T14 recorded) | 93.3 ms/map |
+| eth3d_courtyard L1 | ~6.1 MP | **60.0 ms/map** | 65.6 ms/map | 75.0 ms/map | ~2364 ms/map (recorded) |
 
-At full resolution the reuse saves **12.5%** — matching the design math (the reference maps were
-~13% of the transfer volume; the neighbor conf/normal upload is the irreducible remainder). The
-original ≤50 ms/view target is met at L3/L2 scales but **narrowly missed at 6 MP (65.6 ms)**; the
-remaining lever is the optional neighbor-depth `tex2D` reuse (§3 of the handoff: fiddly, explicitly
-deferred). Against the CPU integrated path the fused GPU is **~36× faster** at 6 MP.
+At full resolution the reference-buffer reuse saved **12.5%** — matching the design math (the
+reference maps were ~13% of the transfer volume) — and the follow-up **neighbor-depth `tex2D`
+reuse** (2026-08-10) another **8.6%**: each neighbor descriptor can carry the PatchMatch instance's
+resident depth texture (`textureDepths[i-1]`, the same raw previous-iteration map geometric
+consistency just used), skipping that upload + its `cudaMalloc`. The texture is linear-filtered, but
+all confidence reads are exact texel-center fetches (`x+0.5`) whose interpolation weight is exactly
+0 → bit-identical to the linear-buffer read (parity re-verified: meadow L3 GT ROC 0.8243 vs
+0.824253 recorded). Guard: the texture is used per-neighbor only when it holds the UNRESIZED map
+(`view.depthMap.size() == image.size()`); a mismatched neighbor falls back to the linear upload
+(the fused upload path resizes with INTER_LINEAR in that case, which would diverge from the CPU
+path's native-resolution sampling). The remaining upload (neighbor conf+normal, ~16n B/px) is
+inherent. The original ≤50 ms/view target is met at L3/L2 scales and now missed by only 20% at
+6 MP (60.0 ms); against the CPU integrated path the fused GPU is **~39× faster** at 6 MP.
 
 ## CUDA-OFF build
 

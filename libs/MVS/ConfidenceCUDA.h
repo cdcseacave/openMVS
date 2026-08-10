@@ -39,6 +39,14 @@ struct ConfNeighborHost {
 	const float* conf;     // width*height, or null
 	const float* normal;   // 3*width*height (interleaved x,y,z), or null
 	int width, height;
+	int srcImage;          // index of this neighbor in depthDataRef.images[] (>=1)
+	// optional resident depth texture (a cudaTextureObject_t handle, kept as an integer so this
+	// header stays CUDA-free): when nonzero the FUSED launcher reads the neighbor depth from it via
+	// exact texel-center tex2D fetches instead of uploading `depth`. Set only by the fused call site
+	// (PatchMatch::EstimateDepthMap) and only when the resident texture holds the UNRESIZED map
+	// (view.depthMap.size() == image.size()), so texture and host buffer are byte-identical; the
+	// standalone/epilogue path (RunConfidenceCUDA) always leaves it 0 and uploads.
+	unsigned long long texDepth;
 };
 
 // Everything the fused in-estimation confidence launch needs, prepared by the dispatch layer

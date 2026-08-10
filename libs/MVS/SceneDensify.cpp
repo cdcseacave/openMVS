@@ -1590,6 +1590,8 @@ static bool BuildConfNeighborHosts(const DepthData& depthDataRef, std::vector<MV
 		d.conf = viewN.confMap.empty() ? NULL : viewN.confMap.ptr<float>();
 		d.normal = viewN.normalMap.empty() ? NULL : viewN.normalMap.ptr<float>();
 		d.width = viewN.depthMap.cols; d.height = viewN.depthMap.rows;
+		d.srcImage = (int)i;
+		d.texDepth = 0;
 		hn.push_back(d);
 	}
 	return true;
