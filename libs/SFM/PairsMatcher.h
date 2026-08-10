@@ -55,12 +55,13 @@ struct SFM_API MatchConfig
 		SKIP = -1,
 		EXHAUSTIVE = 0,  // Match all O(N²) pairs (small scenes only)
 		VOCABULARY = 1,  // Use vocabulary tree retrieval (recommended)
-		SEQUENTIAL = 2   // Match consecutive images only (ordered sequences)
+		SEQUENTIAL = 2,  // Match consecutive images only (ordered sequences)
+		KNOWN_POSES = 3  // Select pairs from already-known camera poses
 	};
 
 	MatchMode mode = VOCABULARY;
 	unsigned maxDescriptorsPerImage = 2000; // Max descriptors per image for vocabulary tree
-	unsigned maxPairsPerImage = 50;     // Max pairs per image (VOCABULARY mode)
+	unsigned maxPairsPerImage = 50;     // Max pairs per image (VOCABULARY/KNOWN_POSES mode)
 	unsigned expandPairsTopK = 5;       // Top-K neighbors per endpoint to expand base vocab pairs (0 = no expansion)
 	unsigned matchSequenceOverlap = 3;  // Number of subsequent images to match in SEQUENTIAL mode
 	unsigned preMatchThreshold = 0;     // Minimum number of matches in pre-matching step to keep the pair (0 = disabled)
@@ -175,6 +176,12 @@ public:
 	// the base vocabulary pairs and the rest are expanded pairs. Existing pairs
 	// (as per PairExists) are excluded. If topK == 0, no expanded pairs are added.
 	PairIdxArr CollectVocabularyPairs(unsigned* ptrNumBasePairs = NULL);
+
+	// Build candidate pairs from the known camera poses: reject the pairs whose optical axes
+	// diverge too much, score the remaining ones by baseline and viewing-direction agreement,
+	// and keep the top-K per image (symmetric union, deduplicated).
+	// Returns an empty array if less than two images are posed or the poses are degenerate.
+	PairIdxArr CollectKnownPosePairs();
 
 	// Reorder pairs to minimize GPU descriptor transfers by grouping pairs sharing the same first image,
 	// with secondary ordering by descriptor cost (descending) for better thread pool load balancing

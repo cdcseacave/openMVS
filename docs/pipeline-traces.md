@@ -34,7 +34,7 @@ graph TD
     A[Scene::Reconstruct<br/>Scene.cpp:610] --> B[Scene::Import<br/>Scene.cpp:191]
     B --> B1[Scan directory or split semicolon list]
     B1 --> B2[Load EXIF/metadata per image<br/>Image::LoadMetadata]
-    B2 --> B3[Optional: ImportPosesCSV]
+    B2 --> B3[Optional: import poses<br/>ImportPosesCSV .csv / ImportFramesJSON .json]
     B3 --> B4[Cluster identical cameras<br/>shared camera pointers]
     B4 --> C[Scene::ExtractFeatures<br/>Scene.cpp:420]
     C --> C1[FeaturesExtractor::Extract<br/>FeaturesExtractor.cpp]
@@ -52,9 +52,11 @@ graph TD
     D2 -->|VOCABULARY| D3[VocabularyTree query<br/>top-K pairs]
     D2 -->|EXHAUSTIVE| D4[All N^2 pairs]
     D2 -->|SEQUENTIAL| D5[Consecutive overlap window]
+    D2 -->|KNOWN_POSES| D5b[CollectKnownPosePairs<br/>baseline x view-agreement, top-K]
     D3 --> D6[PairsMatcher::MatchPair]
     D4 --> D6
     D5 --> D6
+    D5b --> D6
     D6 --> D7[MatchFeatures: FLANN/BFMatcher<br/>Lowe ratio test]
     D7 --> D8[GeometricFilter: RANSAC<br/>Essential or Fundamental matrix]
     D8 --> D9[Optional: PairsWeighting<br/>spatial * connectivity * triplet]
@@ -65,8 +67,10 @@ graph TD
     F --> G{Solver Mode}
     G -->|default| H[Scene::ReconstructHierarchical]
     G -->|useGlobalSolver| I[Scene::ReconstructGlobal]
+    G -->|HasKnownPoses| I2[Scene::ReconstructKnownPoses]
     H --> J
     I --> J
+    I2 --> J
     J[Pre-final BA: BundleAdjustment::Adjust<br/>+ FilterTracks + TriangulateTracks] --> K[Final BA: BundleAdjustment::Adjust]
     K --> L[FilterWeaklyConnectedImages]
     L --> M{Uncalibrated images?}
@@ -74,8 +78,10 @@ graph TD
     M -->|no| O
     N --> O
     O{GPS available?} -->|yes| P[Scene::AlignToGPS]
+    O -->|no, known poses| P2[Scene::AlignToPriorPoses]
     O -->|no| Q
     P --> Q{extractColors?}
+    P2 --> Q
     Q -->|yes| R[Scene::SampleColors]
     Q -->|no| S[Save .sfm output]
     R --> S
@@ -88,7 +94,7 @@ graph TD
 - Input: folder path or semicolon-separated image list
 - Processing: scans directory for jpg/png/tif/jxl/exr/webp; sorts numerically; loads each image metadata (EXIF, GPS, focal length estimate via `Image::LoadMetadata`); clusters images sharing identical camera parameters into shared `Camera` pointers
 - Output: `scene.images[]` populated with file paths, metadata, and `pCamera` pointers; `scene.cameras[]` unique camera list
-- Config: `ImportConfig::defaultFocalRatio` (1.2), `ImportConfig::useExif`, `ImportConfig::importPosesCSV`, `ImportConfig::focalLength`/`k1`/`k2` overrides
+- Config: `ImportConfig::defaultFocalRatio` (1.2), `ImportConfig::useExif`, `ImportConfig::importPosesFile`/`importPosesMode` (`PoseImportMode`), `ImportConfig::focalLength`/`k1`/`k2` overrides
 
 **Step 2: Feature Extraction**
 - Function: `Scene::ExtractFeatures()` → `FeaturesExtractor::Extract()` — `libs/SFM/Scene.cpp:420`, `libs/SFM/FeaturesExtractor.cpp`
@@ -105,7 +111,8 @@ graph TD
   - VOCABULARY mode: builds VocabularyTree on descriptors, queries top `maxPairsPerImage` (50) candidates per image, optionally expands via `expandPairsTopK` co-neighbor images
   - EXHAUSTIVE mode: all O(N²) pairs
   - SEQUENTIAL mode: matches each image to `matchSequenceOverlap` subsequent images
-  - Optional pre-match threshold filter
+  - KNOWN_POSES mode: `CollectKnownPosePairs()` derives the candidates from the imported poses — median nearest-neighbor camera distance as the scene scale, optical-axis angle > 75° rejected, remaining pairs scored by normalized baseline × viewing-direction agreement, top `maxPairsPerImage` per image kept as a symmetric deduplicated union; falls back to EXHAUSTIVE if it yields nothing. Auto-selected by `CreateStructure` when poses were imported and `--match-mode` was not passed explicitly
+  - Optional pre-match threshold filter (skipped in EXHAUSTIVE/SEQUENTIAL/KNOWN_POSES, which build no vocabulary tree)
   - Per pair: `MatchFeatures()` uses FLANN (LSH for binary, KDTree for float) with Lowe ratio test (0.9 AKAZE/ORB, 0.8 SIFT) and optional cross-check
   - `GeometricFilter()`: RANSAC for E-matrix (calibrated pairs) or F-matrix (uncalibrated); min 50 inlier matches; optional H estimation
   - `PairsWeighting`: computes composite weight = spatial * connectivity * triplet for each pair
@@ -120,14 +127,14 @@ graph TD
 - Output: refined `camera.fx/fy` for non-trusted cameras; `ComputeRelativePoses()` rerun for updated cameras
 - Config: `ViewGraphCalibratorConfig::minFocalRatio`, `maxFocalRatio`, `trustIntrinsics`, `maxTwoViewError`, `minPairWeight`, `lossThreshold`, `maxIterations`
 
-**Step 5: Dispatch to Hierarchical or Global**
+**Step 5: Dispatch to Known-Poses, Hierarchical or Global**
 - Function: `Scene::Reconstruct()` — `libs/SFM/Scene.cpp:656`
-- Input: matched scene with relative poses; `ReconstructionConfig::useGlobalSolver`
-- Processing: saves intermediate `scene_pre_reconstruction.sfm`; branches to `ReconstructHierarchical()` (default) or `ReconstructGlobal()`
+- Input: matched scene with relative poses; `ReconstructionConfig::HasKnownPoses()`, `ReconstructionConfig::useGlobalSolver`
+- Processing: saves intermediate `scene_pre_reconstruction.sfm`; branches to `ReconstructKnownPoses()` (when poses were imported with a mode that brings in extrinsics), else `ReconstructHierarchical()` (default) or `ReconstructGlobal()`
 
 **Step 6: Post-reconstruction refinement (shared)**
 - Function: `Scene::Reconstruct()` — `libs/SFM/Scene.cpp:659–697`
-- Processing: two-phase global BA (pre-final at 25 iters, final at config iters); `FilterTracks()`; `TriangulateTracks()`; `FilterWeaklyConnectedImages()`; optional final `Resection::RegisterImages()` for remaining unregistered images; optional `AlignToGPS()`; optional `SampleColors()`
+- Processing: two-phase global BA (pre-final at 25 iters, final at config iters); `FilterTracks()`; `TriangulateTracks()`; `FilterWeaklyConnectedImages()`; optional final `Resection::RegisterImages()` for remaining unregistered images; optional `AlignToGPS()`, or `AlignToPriorPoses()` in known-poses mode; optional `SampleColors()`
 
 ### C. Data Flow Summary
 
@@ -142,6 +149,38 @@ graph TD
 | Resection | 2D-3D correspondences | Registered camera poses | `minCorrespondences`, `ransac.threshold` |
 | Bundle Adjustment | Poses + tracks | Refined poses + 3D points | `maxIterations`, `baIntrinsicFlags` |
 | GPS Alignment | Camera centers + GPS | Similarity transform | `thAlignGPS` |
+| Prior-Pose Alignment | Camera centers + `Scene::priorPoses` | Similarity transform back to the input frame | `importPosesFile`, `importPosesMode` |
+
+### D. Known-Poses (Finetune) Variant
+
+When `ReconstructionConfig::HasKnownPoses()` is true — `ImportConfig::importPosesFile` set with `PoseImportMode::POSES_INTRINSICS` or `POSES` — Step 5 dispatches to `Scene::ReconstructKnownPoses()` (`libs/SFM/Scene.cpp:858`) instead of the hierarchical/global solvers. Steps 1–4 and 6 are unchanged; only the pose-estimation core is replaced.
+
+```mermaid
+graph TD
+    A[Scene::ReconstructKnownPoses<br/>Scene.cpp:858] --> B{At least 50% of images posed?}
+    B -->|no| B1[Fail loudly<br/>list the unmatched file names]
+    B -->|yes| C[Snapshot poses into Scene::priorPoses]
+    C --> D{frames.json imported as AUTO?}
+    D -->|yes| E[DetectFramesConvention<br/>ImportFramesJSON.cpp]
+    E --> E1{Conclusive?}
+    E1 -->|no| E2[Fail: ask for an explicit convention]
+    E1 -->|flip needed| E3[FlipFramesConvention<br/>+ re-snapshot priorPoses]
+    E1 -->|already correct| F
+    E3 --> F
+    D -->|no| F
+    F[BuildTracks] --> G[TriangulateTracks<br/>4x maxReprojError]
+    G --> H[FilterTracks]
+    H --> I[RecomputeCalibratedImages<br/>set CALIBRATED]
+    I --> J[Finetune BA<br/>forces RefineMainIntrinsics if !TrustIntrinsics]
+    J --> K[TriangulateTracks outliers + FilterTracks]
+    K --> L[Second BA + FilterTracks]
+    L --> M[Shared tail of Scene::Reconstruct]
+```
+
+- **Pose import** happens back in Step 1: `ImportConfig::importPosesFile` is dispatched on extension, `.csv` to `ImportPosesCSV()` and `.json` to `ImportFramesJSON()` (`libs/SFM/ImportFramesJSON.h`), before the camera de-duplication so identical per-frame intrinsics collapse into one shared `Camera`.
+- **Permissive first triangulation** (4× `maxReprojError`): the imported poses are approximate and the intrinsics may still be EXIF-derived, so the strict threshold would reject correct tracks before BA can fix the geometry.
+- **Clustering never runs** on this path, which is what keeps the transient `Scene::priorPoses` alive (the hierarchical path's `*this` move would drop it).
+- **The shared tail is untouched**, including the final `Resection::RegisterImages()` — that is what registers images absent from the poses file — and closing with `AlignToPriorPoses()` in place of `AlignToGPS()`.
 
 ---
 
@@ -738,7 +777,7 @@ graph TD
 
 This is the primary SFM pipeline entry point:
 1. Configures `ReconstructionConfig` from CLI options
-2. Calls `SFM::Scene::Reconstruct(source, cfg)` — runs the full incremental/hierarchical/global SFM pipeline
+2. Calls `SFM::Scene::Reconstruct(source, cfg)` — runs the full incremental/hierarchical/global SFM pipeline, or the known-poses finetune path when `--import-poses-file` is used with `--import-poses-mode 1|2` (which also auto-selects `--match-mode 3` and disables the GPS alignment unless those were passed explicitly)
 3. Saves `.sfm` native format via `scene.Save()`
 4. Optional: exports camera poses CSV, image pairs CSV
 5. Optional: exports MVS format via `ExportMVS()` for downstream MVS processing (undistorts images, converts to `MVS::Interface` binary format)
@@ -755,6 +794,7 @@ images: ImageArr            — per-image: keypoints, descriptors, pose (R, C), 
 pairs: ImagePairArr         — per-pair: matches, E/F/H matrices, relative pose, weights
 tracks: TrackArr            — 3D points with Observation[] (imageID, featureID)
 colors: Pixel8UArr          — per-track RGB (optional, from SampleColors())
+priorPoses: map<IIndex,Pose3D> — imported poses before refinement (transient, not serialized)
 transform: Matrix4x4        — GPS alignment transform (identity if not aligned)
 status: Status              — state flags (FEATURES_EXTRACTED, MATCHED, CALIBRATED, GEO_ALIGN)
 ```

@@ -408,9 +408,11 @@ unsigned SFM::ExportPosesCSV(const String& fileName, const ImageArr& images)
 	return numValid;
 }
 
-unsigned SFM::ImportPosesCSV(const String& fileName, ImageArr& images, unsigned mode)
+unsigned SFM::ImportPosesCSV(const String& fileName, ImageArr& images, PoseImportMode mode)
 {
 	unsigned numUpdated = 0;
+	if (mode == PoseImportMode::NONE)
+		return numUpdated;
 	std::ifstream is(fileName);
 	if (!is.is_open())
 		return numUpdated;
@@ -464,12 +466,19 @@ unsigned SFM::ImportPosesCSV(const String& fileName, ImageArr& images, unsigned 
 				continue;
 			}
 
-			if (image.HasCamera() && mode == 0 /*all*/) {
-				// Set intrinsics
-				if (PinholeCamera* cam = dynamic_cast<PinholeCamera*>(image.pCamera))
-					cam->SetIntrinsics((REAL)fx, (REAL)fy, (REAL)cx, (REAL)cy);
+			if (mode == PoseImportMode::POSES_INTRINSICS && image.HasCamera()) {
+				// Set intrinsics, but only for camera models that expose them
+				if (PinholeCamera* cam = dynamic_cast<PinholeCamera*>(image.pCamera)) {
+					if (fx > 0.0 && fy > 0.0) {
+						cam->SetIntrinsics((REAL)fx, (REAL)fy, (REAL)cx, (REAL)cy);
+						cam->trustIntrinsics = true;
+					} else {
+						DEBUG("warning: image '%s' has invalid intrinsics in the poses file (fx %g, fy %g); importing the pose only",
+							fields[0].c_str(), fx, fy);
+					}
+				}
 			}
-			if (mode == 1 /*extrinsics only*/) {
+			if (mode != PoseImportMode::POSITIONS) {
 				// Set rotation from quaternion
 				Eigen::Quaterniond q(qw, qx, qy, qz);
 				if (q.norm() == 0.0)
@@ -477,10 +486,8 @@ unsigned SFM::ImportPosesCSV(const String& fileName, ImageArr& images, unsigned 
 				q.normalize();
 				image.R = q.toRotationMatrix();
 			}
-			if (mode == 1 /*extrinsics only*/ || mode == 2 /*positions only*/) {
-				// Set camera position
-				image.C = CMatrix((REAL)Cx, (REAL)Cy, (REAL)Cz);
-			}
+			// Set camera position
+			image.C = CMatrix((REAL)Cx, (REAL)Cy, (REAL)Cz);
 			++numUpdated;
 		} catch (const std::exception&) {
 			continue;

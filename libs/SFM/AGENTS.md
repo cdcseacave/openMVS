@@ -25,6 +25,11 @@ is set, serialized with the scene, and kept consistent with the world frame by `
 (position covariance maps as `scale^2 * R * Cov * R^T`; rotation variance is about the camera axes,
 untouched). Exported as a per-image CSV quality report by `ExportPoseUncertaintyCSV`.
 
+`priorPoses` (`std::unordered_map<IIndex, Pose3D>`, keyed by image ID) snapshots the poses as imported,
+before any refinement, and is consumed by `Scene::AlignToPriorPoses`. It is **transient**: deliberately
+not serialized and not carried across the `*this` move in `ReconstructHierarchical` — the known-poses
+path never clusters, so it always survives.
+
 ### Camera Hierarchy (`Camera.h`) - Polymorphic
 - **Camera** (abstract base): Virtual `Project()`, `Unproject()`, `GetK()`, `AccumulateIntrinsics()`, `ScaleIntrinsics()`
 - **PinholeCamera**: `fx, fy, cx, cy` + Brown-Conrady distortion `k1-k6, p1, p2`. Flag `useAdditionalDistortion` for k4-k6
@@ -80,12 +85,13 @@ class ImagePair {
 
 ### Incremental Reconstruction (`Scene::Reconstruct`)
 ```
-Extract features (AKAZE/ORB/SIFT/SIFTGPU) -> Match pairs (VOCABULARY/EXHAUSTIVE/SEQUENTIAL)
+Extract features (AKAZE/ORB/SIFT/SIFTGPU) -> Match pairs (VOCABULARY/EXHAUSTIVE/SEQUENTIAL/KNOWN_POSES)
 -> Geometric verification (E/F/H + RANSAC) -> View graph calibration (focal estimation)
 -> Build tracks (union-find) -> Filter tracks + weak images
 -> Star initialization (reference view) -> Resect remaining images (incremental)
 -> Bundle adjustment (global + local)
--> Optional GPS alignment (rigid Sim(3) to metric ENU)
+-> Optional GPS alignment (rigid Sim(3) to metric ENU), or, in known-poses mode, Sim(3)
+   re-alignment back to the imported pose frame (AlignToPriorPoses; no GEO_ALIGN)
 -> Optional GPS-prior BA (BAConfig::gpsPositionWeight/Z > 0; must run post-alignment:
    the residuals are gated on GEO_ALIGN and their meters-vs-pixels weighting assumes ENU)
 -> Optional pose-uncertainty recording (estimatePoseUncertainty): covariance read off the
@@ -107,6 +113,23 @@ Extract features (AKAZE/ORB/SIFT/SIFTGPU) -> Match pairs (VOCABULARY/EXHAUSTIVE/
 -> Global rotation averaging -> Global positioning (translations + points)
 ```
 
+### Known-Poses / Finetune Reconstruction (`Scene::ReconstructKnownPoses`)
+Selected by `ReconstructionConfig::HasKnownPoses()` (a poses file is configured with
+`PoseImportMode::POSES_INTRINSICS` or `POSES`); the imported poses are initialization only.
+```
+[Match + build tracks] -> Validate >=50% of the images got a pose (fail loudly, listing the
+   unmatched names - never silently fall back to standard SfM)
+-> Snapshot the imported poses into Scene::priorPoses
+-> Resolve the frames.json camera-axes convention (DetectFramesConvention, only when AUTO)
+-> BuildTracks -> TriangulateTracks with 4x maxReprojError -> FilterTracks
+-> RecomputeCalibratedImages + set CALIBRATED
+-> Finetune BA (forces RefineMainIntrinsics when any camera has !TrustIntrinsics)
+-> Re-triangulate outliers + FilterTracks -> second BA
+```
+Then falls through to the **unchanged** shared tail of `Scene::Reconstruct` (pre-final BA,
+filtering, final BA, `FilterWeaklyConnectedImages`, resection of the images missing from the
+poses file, alignment, colors). Clustering is never involved.
+
 ## Key Algorithms
 
 ### Feature Extraction (`FeaturesExtractor.h`)
@@ -115,7 +138,12 @@ Extract features (AKAZE/ORB/SIFT/SIFTGPU) -> Match pairs (VOCABULARY/EXHAUSTIVE/
 - Keypoint weighting: `ComputeKeypointWeight()`, `ComputeKeypointPrecision()`
 
 ### Feature Matching (`PairsMatcher.h`, `MatchGeometric.h`)
-- **Matching modes**: `EXHAUSTIVE` (all pairs), `VOCABULARY` (top-K retrieval), `SEQUENTIAL` (video)
+- **Matching modes**: `EXHAUSTIVE` (all pairs), `VOCABULARY` (top-K retrieval), `SEQUENTIAL` (video),
+  `KNOWN_POSES` (pose-guided: `CollectKnownPosePairs` scores baseline - normalized by the median
+  nearest-neighbor camera distance - times viewing-direction agreement, rejects optical-axis angles
+  > 75 deg, keeps top-`maxPairsPerImage` per image; falls back to exhaustive if it yields no pair.
+  No camera-center cheirality test: orbit and nadir captures put the neighbor centers tangential /
+  perpendicular to the view direction, so the strongest pairs would fail it)
 - Lowe's ratio test, cross-check, FLANN (LSH/KDTree)
 - **Geometric verification**: RANSAC for E (calibrated) or F (uncalibrated), optional H
 - Threshold: `maxEpipolarError` (pixels), min inliers (default 50)
@@ -185,6 +213,21 @@ Joint refinement of focal length + distortion (k1, k2) with relative pose via Ce
 ## External Format Support
 - **COLMAP import** (`ImportCOLMAP.h`): Binary reconstruction, selective import
 - **ROMA2 import** (`ImportROMA2.h`): Robust optical matching .npz files
+- **frames.json import** (`ImportFramesJSON.h`): Polycam-style array of `{name, transform[16], params?}`;
+  `transform` is a column-major 4x4 camera-to-world matrix, `params` an optional OPENCV intrinsics block
+  (`w,h,fx,fy,cx,cy,k1,k2,p1,p2`) declared for its own resolution and rescaled to the image.
+  Entries are matched to images by file name (full name, then stem, both case-insensitive).
+  Runs before the camera de-duplication in `Scene::Import`, so identical per-frame intrinsics collapse
+  into one shared `Camera`. Two gotchas it handles: the file does not declare its camera-axes
+  convention (`FramesConvention::ARKIT|OPENCV`, differing by a pi rotation about X - see
+  `DetectFramesConvention` / `FlipFramesConvention`), and EXIF-portrait images are rotated 90 deg
+  clockwise on load, so both `R` (composed with `Rz(+90 deg)`, the inverse of `View::RevertRotation`)
+  and the imported intrinsics are rotated to match, while the camera center is unchanged
+- **Pose CSV import/export** (`Image.h`: `ImportPosesCSV` / `ExportPosesCSV`): `PoseImportMode`
+  = `NONE` / `POSES_INTRINSICS` (intrinsics when the row has them, plus R + C, marks
+  `trustIntrinsics`) / `POSES` (R + C) / `POSITIONS` (C only). Rows match by file-name stem
+  (case-sensitive, unlike the frames.json matcher) and `score <= 0` invalidates the pose.
+  `ImportConfig::importPosesFile` dispatches on extension: `.csv` here, `.json` to `ImportFramesJSON`
 - **MVS export** (`InterfaceMVS.h`): Conversion to MVS binary format. The SFM image ID is written
   into `Interface::Image::ID` (the external/global-ID field) so per-image data keyed by SFM ID —
   e.g. the pose-quality CSV — correlates after import; `Vertex::View::imageID` stays the

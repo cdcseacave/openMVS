@@ -24,6 +24,7 @@
 #include "BundleAdjustment.h"
 #include "GlobalAlignment.h"
 #include "ImportROMA2.h"
+#include "ImportFramesJSON.h"
 
 
 // D E F I N E S ///////////////////////////////////////////////////
@@ -43,8 +44,12 @@ struct SFM_API ImportConfig {
 	float k1 = 0.f;                  // force k1 distortion coefficient (0 = not used)
 	float k2 = 0.f;                  // force k2 distortion coefficient (0 = not used)
 	String imageIndicesStr;          // image indices to apply forced parameters (empty = all images)
-	String importPosesCSV;           // import camera poses from CSV file (optional)
-	unsigned importPosesMode = 0;    // flags for importing camera poses from CSV: 0=all, 1=extrinsics only, 2=positions only
+	String importPosesFile;          // import camera poses from file (.csv or .json); empty = disabled
+	PoseImportMode importPosesMode = PoseImportMode::NONE; // what to import from the poses file (see PoseImportMode)
+	// camera-axes convention of a frames.json poses file (ignored for .csv);
+	// AUTO imports the poses with the ARKit convention and defers the decision to
+	// DetectFramesConvention(), which can only resolve it once the pairs are matched
+	FramesConvention framesConvention = FramesConvention::AUTO;
 	ARCHIVE_TYPE archiveType = ARCHIVE_DEFAULT; // archive type for loading/saving scenes
 };
 
@@ -115,6 +120,14 @@ struct SFM_API ReconstructionConfig {
 	float thAlignGPS{5.f}; // threshold for aligning to GPS (meters)
 	bool extractColors{false}; // extract colors for reconstructed points
 	bool estimatePoseUncertainty{false}; // record per-image pose uncertainty from the last global bundle adjustment
+
+	// true when the pose import was configured with a mode that brings in extrinsics,
+	// which selects the known-poses ("finetune") reconstruction path
+	bool HasKnownPoses() const {
+		return !importCfg.importPosesFile.empty() &&
+			(importCfg.importPosesMode == PoseImportMode::POSES_INTRINSICS ||
+			 importCfg.importPosesMode == PoseImportMode::POSES);
+	}
 };
 
 
@@ -142,6 +155,12 @@ public:
 	// run during reconstruction (empty unless ReconstructionConfig::estimatePoseUncertainty);
 	// kept consistent with the current world frame by Scene::Transform
 	PoseUncertaintyArr poseUncertainty;
+
+	// Camera poses as imported before refinement, keyed by image ID; used to re-align the
+	// refined reconstruction back to the input frame (Scene::AlignToPriorPoses).
+	// Transient: deliberately NOT serialized and NOT carried across the Scene move in
+	// ReconstructHierarchical - the known-poses path never clusters, so it always survives.
+	std::unordered_map<IIndex, Pose3D> priorPoses;
 
 	// Optional transformation used to convert from absolute to relative coordinate system
 	Matrix4x4 transform;
@@ -220,6 +239,10 @@ public:
 	// (O(tracks) total instead of O(tracks) per image). Returns the number invalidated.
 	unsigned InvalidateImages(const IIndexArr& imgIDs);
 
+	// Rescan all images and refresh status.nCalibratedImages (which is otherwise delta-maintained);
+	// returns the recomputed count
+	uint32_t RecomputeCalibratedImages();
+
 	// Save/Load scene to file
 	// (the save file embeds a small header recording the archive/compression type,
 	//  so Load is self-describing and does not need to be told the archive type)
@@ -280,6 +303,22 @@ public:
 	bool ReconstructGlobal(const ReconstructionConfig& config);
 
 	/**
+	 * @brief Run a finetune reconstruction starting from the imported camera poses
+	 * @param config Reconstruction configuration (must satisfy config.HasKnownPoses())
+	 * @return true if reconstruction completed
+	 *
+	 * Pipeline:
+	 * 1. Validate the pose import covered the dataset and remember the imported poses
+	 * 2. Resolve the camera-axes convention of a frames.json import (see DetectFramesConvention)
+	 * 3. Build tracks and triangulate them with the imported poses
+	 * 4. Bundle-adjust, re-triangulate the outliers, bundle-adjust again
+	 *
+	 * The imported poses are used as initialization only; the result is brought back to the
+	 * input coordinate frame at the end of Reconstruct() by AlignToPriorPoses().
+	 */
+	bool ReconstructKnownPoses(const ReconstructionConfig& config);
+
+	/**
 	 * @brief Sample colors for each track from observations
 	 *
 	 * For inlier tracks, selects the observation with the smallest reprojection error
@@ -300,6 +339,22 @@ public:
 	 * @return true if alignment was successful (requires at least 3 GPS positions)
 	 */
 	bool AlignToGPS(double threshold = 0.0);
+
+	/**
+	 * @brief Align the refined reconstruction back to the coordinate frame of the imported
+	 *        prior poses (also anchors the otherwise-free scale)
+	 *
+	 * Estimates a similarity transform between the centers of the images still valid after
+	 * filtering and their Scene::priorPoses counterparts, and applies it to the whole scene
+	 * (including the images resected along the way, which have no prior). Unlike AlignToGPS
+	 * this does not touch Scene::transform nor set GEO_ALIGN: the prior frame is not a
+	 * geo-referenced one, it is simply the frame the poses were imported in.
+	 * @param thresholdRatio RANSAC inlier threshold, expressed as a fraction of the median
+	 *        distance between neighboring prior camera centers; the prior frame may be in
+	 *        arbitrary units, so no absolute threshold can be chosen here (0 disables RANSAC)
+	 * @return false if the priors are too few or too degenerate to estimate a similarity transform
+	 */
+	bool AlignToPriorPoses(float thresholdRatio = 0.5f);
 
 	/**
 	 * @brief Get ECEF centroid stored in trasform if the scene is aligned to GPS

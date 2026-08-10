@@ -732,6 +732,113 @@ PairIdxArr PairsMatcher::CollectVocabularyPairs(unsigned* ptrNumBasePairs)
 	return result;
 }
 
+PairIdxArr PairsMatcher::CollectKnownPosePairs()
+{
+	PairIdxArr result;
+	// Collect the images having a known pose (as indices in the scene image array)
+	const IIndex nImages = scene.images.size();
+	IIndexArr posedImages(0, nImages);
+	for (IIndex i = 0; i < nImages; ++i)
+		if (scene.images[i].HasPose())
+			posedImages.push_back(i);
+	const IIndex nPosed = (IIndex)posedImages.size();
+	if (nPosed < 2) {
+		DEBUG("Pose-guided matching: only %u images have a known pose", nPosed);
+		return result;
+	}
+
+	TD_TIMER_STARTD();
+
+	// 1) Estimate the scene scale as the median nearest-neighbor camera-center distance
+	REALArr nearestDistances(nPosed);
+	scene.threadPool.detach_loop(0u, nPosed, [&](IIndex a) {
+		const CMatrix& C = scene.images[posedImages[a]].C;
+		REAL nearestDistance = std::numeric_limits<REAL>::max();
+		for (IIndex b = 0; b < nPosed; ++b) {
+			if (b == a)
+				continue;
+			const REAL distance = norm(C - scene.images[posedImages[b]].C);
+			if (nearestDistance > distance)
+				nearestDistance = distance;
+		}
+		nearestDistances[a] = nearestDistance;
+	});
+	scene.threadPool.wait();
+	const REAL sceneScale = nearestDistances.GetMedian();
+	if (sceneScale <= 0) {
+		DEBUG("Pose-guided matching: degenerate camera configuration, all %u camera centers coincide", nPosed);
+		return result;
+	}
+
+	// 2) Score every posed pair and keep the best candidates for each image
+	const unsigned topK = config.maxPairsPerImage;
+	const REAL maxViewAngle(D2R(REAL(75))); // maximum angle between the two optical axes (cameras facing away)
+	const REAL optBaseline(2); // best scoring baseline, in scene-scale units
+	struct ScoredImage {
+		IIndex idx;  // index in the posed images array
+		REAL score;  // pair score, the higher the better
+	};
+	std::vector<CLISTDEF0(ScoredImage)> topPerImage(nPosed);
+	std::atomic<unsigned> numRejectedByViewAngle{0};
+	scene.threadPool.detach_loop(0u, nPosed, [&](IIndex a) {
+		const Image& imgA = scene.images[posedImages[a]];
+		const Point3 directionA(imgA.Direction());
+		CLISTDEF0(ScoredImage)& scoredImages = topPerImage[a];
+		scoredImages.reserve(nPosed - 1);
+		for (IIndex b = 0; b < nPosed; ++b) {
+			if (b == a)
+				continue;
+			const Image& imgB = scene.images[posedImages[b]];
+			// discard the pairs whose optical axes diverge too much, as they can not observe the same surface;
+			// note: the two cameras observe the scene, not each other, so no camera-center cheirality test is done:
+			//  in an orbit capture the neighboring camera centers lie tangentially to the view direction and in a
+			//  nadir aerial capture perpendicularly to it, so the strongest overlapping pairs fail such a test
+			const REAL viewAngle(ACOS(CLAMP(directionA.dot(imgB.Direction()), REAL(-1), REAL(1))));
+			if (viewAngle > maxViewAngle) {
+				++numRejectedByViewAngle;
+				continue;
+			}
+			// the baseline term peaks at optBaseline and decays symmetrically in log-scale towards
+			// no-parallax (baseline -> 0, no triangulation) and no-overlap (baseline -> infinity),
+			// while the view term linearly penalizes the diverging optical axes;
+			// note: the baseline is only a ranking preference and not a rejection criterion, as the
+			//  scene depth is unknown and the distance at which two views still overlap varies by
+			//  orders of magnitude in scene-scale units between close-range and aerial captures
+			const REAL baseline(norm(imgA.C - imgB.C) / sceneScale);
+			const REAL scoreBaseline(REAL(2)*baseline*optBaseline / (SQUARE(baseline) + SQUARE(optBaseline)));
+			const REAL scoreView(REAL(1) - viewAngle/maxViewAngle);
+			scoredImages.emplace_back(ScoredImage{b, scoreBaseline*scoreView});
+		}
+		if (scoredImages.size() > topK) {
+			scoredImages.Sort([](const ScoredImage& i, const ScoredImage& j) {
+				return i.score > j.score;
+			});
+			scoredImages.Resize(topK);
+		}
+	});
+	scene.threadPool.wait();
+
+	// 3) Build the symmetric union of the per-image candidates, deduplicated
+	std::unordered_set<PairIdx::PairIndex> setPairs;
+	setPairs.reserve((size_t)nPosed * MINF(topK, 8u));
+	for (IIndex a = 0; a < nPosed; ++a) {
+		const IIndex idA = scene.images[posedImages[a]].ID;
+		for (const ScoredImage& scoredImage : topPerImage[a]) {
+			const IIndex idB = scene.images[posedImages[scoredImage.idx]].ID;
+			ASSERT(idB != idA);
+			const PairIdx p = MakePairIdx(idA, idB);
+			if (setPairs.emplace(p.idx).second)
+				result.emplace_back(p);
+		}
+	}
+	const unsigned numExhaustivePairs((nImages - 1) * nImages / 2);
+	DEBUG("Pose-guided matching: %u candidate pairs from %u posed images (%.2f/%u pairs/image, %.1f%% of the %u exhaustive pairs, %u rejected by the %.0fdeg view-angle test) in %s",
+		(unsigned)result.size(), nPosed, (float)result.size() / nPosed, topK,
+		100.f * result.size() / numExhaustivePairs, numExhaustivePairs,
+		numRejectedByViewAngle.load() / 2, R2D(maxViewAngle), TD_TIMER_GET_FMT().c_str());
+	return result;
+}
+
 void PairsMatcher::OptimizePairsOrder(PairIdxArr& pairsToMatch)
 {
 	if (pairsToMatch.empty())
@@ -1055,13 +1162,16 @@ unsigned PairsMatcher::Match()
 	// Collect pairs to match based on selected mode
 	PairIdxArr pairsToMatch;
 	const unsigned numExhaustivePairs((nImages - 1) * nImages / 2);
-	switch (matchMode) {
-	case MatchConfig::EXHAUSTIVE: {
+	const auto CollectExhaustivePairs = [&]() {
 		VERBOSE("Exhaustive matching %u images...", nImages);
 		pairsToMatch.reserve(numExhaustivePairs);
 		for (IIndex i = 0; i < nImages; ++i)
 			for (IIndex j = i + 1; j < nImages; ++j)
 				pairsToMatch.emplace_back(MakePairIdx(scene.images[i].ID, scene.images[j].ID));
+	};
+	switch (matchMode) {
+	case MatchConfig::EXHAUSTIVE: {
+		CollectExhaustivePairs();
 		break;
 	}
 	case MatchConfig::VOCABULARY: {
@@ -1070,6 +1180,15 @@ unsigned PairsMatcher::Match()
 		if (pairsToMatch.empty()) {
 			VERBOSE("error: vocabulary produced no new candidate pairs");
 			return 0;
+		}
+		break;
+	}
+	case MatchConfig::KNOWN_POSES: {
+		// Select the candidate pairs using the already-known camera poses
+		pairsToMatch = CollectKnownPosePairs();
+		if (pairsToMatch.empty()) {
+			VERBOSE("warning: known poses produced no candidate pairs (less than two posed images or degenerate poses); falling back to exhaustive matching");
+			CollectExhaustivePairs();
 		}
 		break;
 	}
@@ -1098,6 +1217,8 @@ unsigned PairsMatcher::Match()
 	ASSERT(!pairsToMatch.empty());
 
 	// Make pre-matching if requested
+	// note: pre-matching needs the vocabulary tree top descriptors, so it is skipped
+	//  in the modes not building it (EXHAUSTIVE/SEQUENTIAL/KNOWN_POSES)
 	if (vocabularyTree) {
 		if (config.preMatchThreshold > 0)
 			PreMatch(pairsToMatch);

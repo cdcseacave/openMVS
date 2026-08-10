@@ -179,14 +179,23 @@ inline std::vector<cv::KeyPoint> ConvertToKeypoints(const std::vector<Point2f>& 
 	return keypoints;
 }
 
+// Mode for importing camera poses from an external file
+enum class PoseImportMode {
+	NONE = 0,              // no import
+	POSES_INTRINSICS = 1,  // import intrinsics (when available) and rotation + camera center
+	POSES = 2,             // import rotation + camera center only
+	POSITIONS = 3          // import camera center only
+};
+
 // Export/Import all image poses to/from a human-readable CSV.
 // Schema per row: filename,fx,fy,cx,cy,qx,qy,qz,qw,Cx,Cy,Cz,score
 //  - fileName: poses CSV file name for export/import
 //  - images: array of images to export/import poses
-//  - mode: flags for importing camera poses from CSV: 0=all, 1=extrinsics only, 2=positions only
+//  - mode: what to import from each CSV row (see PoseImportMode);
+//    POSES_INTRINSICS also marks the applied intrinsics as trusted
 // returns number of valid image poses exported/imported
 SFM_API unsigned ExportPosesCSV(const String& fileName, const ImageArr& images);
-SFM_API unsigned ImportPosesCSV(const String& fileName, ImageArr& images, unsigned mode = 0);
+SFM_API unsigned ImportPosesCSV(const String& fileName, ImageArr& images, PoseImportMode mode = PoseImportMode::POSES_INTRINSICS);
 
 // Estimates image blur using a robust multi-scale variance-of-Laplacian focus measure.
 // The function internally converts to grayscale, normalizes intensity to [0,1],

@@ -77,6 +77,9 @@ public:
 	bool pyReconstructGlobal(const SFM::ReconstructionConfig& config) {
 		return ReconstructGlobal(config);
 	}
+	bool pyReconstructKnownPoses(const SFM::ReconstructionConfig& config) {
+		return ReconstructKnownPoses(config);
+	}
 
 	// Per-stage entry points (for fine-grained pipeline control).
 	bool pyImport(const std::string& source, const SFM::ImportConfig& config) {
@@ -93,6 +96,9 @@ public:
 
 	bool pyAlignToGPS(double threshold=0.0) {
 		return AlignToGPS(threshold);
+	}
+	bool pyAlignToPriorPoses(float thresholdRatio=0.5f) {
+		return AlignToPriorPoses(thresholdRatio);
 	}
 	bool pySampleColors() {
 		return SampleColors();
@@ -244,6 +250,13 @@ void RegisterBindings()
 			make_getter(MEMBER_PTR, return_value_policy<return_by_value>()), \
 			make_setter(MEMBER_PTR))
 
+	// SFM::PoseImportMode — what to import from an external poses file
+	enum_<SFM::PoseImportMode>("PoseImportMode")
+		.value("NONE", SFM::PoseImportMode::NONE)
+		.value("POSES_INTRINSICS", SFM::PoseImportMode::POSES_INTRINSICS)
+		.value("POSES", SFM::PoseImportMode::POSES)
+		.value("POSITIONS", SFM::PoseImportMode::POSITIONS);
+
 	// SFM::ImportConfig — image import + camera priors
 	class_<SFM::ImportConfig>("ImportConfig")
 		.def_readwrite("use_exif", &SFM::ImportConfig::useExif)
@@ -251,7 +264,7 @@ void RegisterBindings()
 		.def_readwrite("focal_length", &SFM::ImportConfig::focalLength)
 		.def_readwrite("k1", &SFM::ImportConfig::k1)
 		.def_readwrite("k2", &SFM::ImportConfig::k2)
-		.DEF_STR_RW("import_poses_csv", &SFM::ImportConfig::importPosesCSV)
+		.DEF_STR_RW("import_poses_file", &SFM::ImportConfig::importPosesFile)
 		.def_readwrite("import_poses_mode", &SFM::ImportConfig::importPosesMode);
 
 	// SFM::ROMA2Config — semi-dense matching
@@ -315,8 +328,10 @@ void RegisterBindings()
 				(arg("source"), arg("config")))
 		.def("reconstruct_hierarchical", &Scene::pyReconstructHierarchical, (arg("config")))
 		.def("reconstruct_global", &Scene::pyReconstructGlobal, (arg("config")))
+		.def("reconstruct_known_poses", &Scene::pyReconstructKnownPoses, (arg("config")))
 		.def("sample_colors", &Scene::pySampleColors)
 		.def("align_to_gps", &Scene::pyAlignToGPS, (arg("threshold")=0.0))
+		.def("align_to_prior_poses", &Scene::pyAlignToPriorPoses, (arg("threshold_ratio")=0.5f))
 		.def("export_to_mvs", &ExportToMVSFile,
 				(arg("file_path"), arg("config")=SFM::ExportMVSConfig()))
 		.add_property("num_images",      &Scene::pyNumImages)

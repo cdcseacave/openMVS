@@ -49,7 +49,10 @@ String strSource;
 String strOutputFileName;
 String strOutputFileNameMVS;
 String strDetectorType;
-String strImportPosesCSV;
+String strImportPosesFile;
+String strImportPosesCSV; // deprecated alias of strImportPosesFile
+String strKnownPosesConvention;
+FramesConvention framesConvention = FramesConvention::AUTO;
 String strExportPosesCSV;
 String strExportPoseQuality;
 String strImportOpenMVGDir;
@@ -129,10 +132,11 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("output-file,o", boost::program_options::value<std::string>(&OPT::strOutputFileName), "output scene file path")
 		("export-mvs", boost::program_options::value<std::string>(&OPT::strOutputFileNameMVS), "output MVS file path (optional)")
 		("detector-type,t", boost::program_options::value<std::string>(&OPT::strDetectorType)->default_value(FeatureTypeToString(FeatureType::DEFAULT)), "feature detector type: AKAZE, ORB, SIFT or SIFTGPU")
-		("import-poses-csv", boost::program_options::value<std::string>(&OPT::strImportPosesCSV)->default_value("poses.csv"), "import camera poses from CSV file (optional)")
+		("import-poses-file", boost::program_options::value<std::string>(&OPT::strImportPosesFile)->default_value("poses.csv"), "import camera poses from file: .csv (OpenMVS pose CSV) or .json (frames.json)")
 		("export-poses-csv", boost::program_options::value<std::string>(&OPT::strExportPosesCSV), "export camera poses to CSV file (optional)")
 		("export-pose-quality", boost::program_options::value<std::string>(&OPT::strExportPoseQuality), "estimate the pose covariance during the final bundle adjustment and export the per-image quality report to CSV file (optional)")
-		("import-poses-mode", boost::program_options::value(&OPT::importPosesMode)->default_value(0), "mode for importing camera poses from CSV: 0=none, 1=all, 2=extrinsics only, 3=positions only")
+		("import-poses-mode", boost::program_options::value(&OPT::importPosesMode)->default_value(0), "mode for importing camera poses: 0=none, 1=poses+intrinsics, 2=poses only, 3=positions only")
+		("known-poses-convention", boost::program_options::value<std::string>(&OPT::strKnownPosesConvention)->default_value("auto"), "camera-axes convention of the poses in a frames.json: auto|arkit|opencv")
 		("import-openmvg-dir", boost::program_options::value<std::string>(&OPT::strImportOpenMVGDir), "import OpenMVG features from directory (optional)")
 		("export-openmvg-dir", boost::program_options::value<std::string>(&OPT::strExportOpenMVGDir), "export OpenMVG features to directory (optional)")
 		("export-pairs-csv", boost::program_options::value<std::string>(&OPT::strExportPairsCSV), "export image pairs to CSV file (optional)")
@@ -140,7 +144,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("compare-mvs", boost::program_options::value<std::string>(&OPT::strCompareMVS), "compare reconstruction against ground-truth MVS file (optional)")
 		("max-features-per-cell", boost::program_options::value(&OPT::nMaxFeaturesPerCell)->default_value(3000), "maximum features per grid cell (3x3 grid)")
 		("min-features-per-cell", boost::program_options::value(&OPT::nMinFeaturesPerCell)->default_value(500), "minimum features per cell before adjusting sensitivity")
-		("match-mode", boost::program_options::value(&OPT::matchMode)->default_value(1), "match mode: -1=SKIP,0=EXHAUSTIVE,1=VOCABULARY,2=SEQUENTIAL")
+		("match-mode", boost::program_options::value(&OPT::matchMode)->default_value(1), "match mode: -1=SKIP,0=EXHAUSTIVE,1=VOCABULARY,2=SEQUENTIAL,3=KNOWN_POSES")
 		("match-sequence-overlap", boost::program_options::value(&OPT::matchSequenceOverlap)->default_value(3), "sequence overlap for sequential matching")
 		("vocab-max-pairs", boost::program_options::value(&OPT::maxPairsPerImage)->default_value(50), "maximum pairs per image for vocabulary matching")
 		("expand-pairs-topk", boost::program_options::value(&OPT::expandPairsTopK)->default_value(5), "top-K per endpoint to expand vocabulary pairs (0 = disable)")
@@ -162,11 +166,20 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("gps-position-weight-z", boost::program_options::value(&OPT::gpsPositionWeightZ)->default_value(0.0), "vertical weight of the GPS position priors used to refine the geo-aligned reconstruction (0 = disabled)")
 		;
 
+	// deprecated options: still accepted, but not advertised in the help message
+	boost::program_options::options_description deprecated_options("Deprecated options");
+	deprecated_options.add_options()
+		("import-poses-csv", boost::program_options::value<std::string>(&OPT::strImportPosesCSV)->default_value("poses.csv"), "deprecated alias of --import-poses-file")
+		;
+
 	boost::program_options::options_description cmdline_options;
-	cmdline_options.add(generic).add(config);
+	cmdline_options.add(generic).add(config).add(deprecated_options);
+
+	boost::program_options::options_description visible_options;
+	visible_options.add(generic).add(config);
 
 	boost::program_options::options_description config_file_options;
-	config_file_options.add(config);
+	config_file_options.add(config).add(deprecated_options);
 
 	boost::program_options::positional_options_description p;
 	p.add("source", -1);
@@ -196,7 +209,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 	// validate input
 	Util::ensureValidPath(OPT::strSource);
 	if (OPT::vm.count("help") || OPT::strSource.empty()) {
-		GET_LOG() << cmdline_options;
+		GET_LOG() << visible_options;
 		if (OPT::strSource.empty())
 			LOG("error: source (folder or list) is required");
 		return false;
@@ -205,7 +218,27 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 	if (OPT::strOutputFileName.empty())
 		OPT::strOutputFileName = _T("scene.sfm");
 	Util::ensureValidPath(OPT::strOutputFileNameMVS);
-	Util::ensureValidPath(OPT::strImportPosesCSV);
+	// resolve the deprecated poses file option: the new option wins if both are given explicitly
+	if (!OPT::vm["import-poses-csv"].defaulted()) {
+		VERBOSE("warning: --import-poses-csv is deprecated, use --import-poses-file");
+		if (!OPT::vm["import-poses-file"].defaulted())
+			VERBOSE("warning: both --import-poses-file and --import-poses-csv given, using --import-poses-file");
+		else
+			OPT::strImportPosesFile = OPT::strImportPosesCSV;
+	}
+	Util::ensureValidPath(OPT::strImportPosesFile);
+	// parse the camera-axes convention of the imported poses
+	const String strConvention(OPT::strKnownPosesConvention.ToLower());
+	if (strConvention == "auto")
+		OPT::framesConvention = FramesConvention::AUTO;
+	else if (strConvention == "arkit")
+		OPT::framesConvention = FramesConvention::ARKIT;
+	else if (strConvention == "opencv")
+		OPT::framesConvention = FramesConvention::OPENCV;
+	else {
+		LOG("error: unknown known-poses convention '%s' (accepted: auto, arkit, opencv)", OPT::strKnownPosesConvention.c_str());
+		return false;
+	}
 	Util::ensureValidPath(OPT::strExportPosesCSV);
 	Util::ensureValidPath(OPT::strExportPoseQuality);
 	Util::ensureValidFolderPath(OPT::strImportOpenMVGDir);
@@ -247,8 +280,9 @@ int main(int argc, LPCTSTR* argv)
 	cfg.importCfg.k1 = OPT::k1;
 	cfg.importCfg.k2 = OPT::k2;
 	cfg.importCfg.imageIndicesStr = OPT::strImageIndices;
-	cfg.importCfg.importPosesCSV = OPT::importPosesMode ? OPT::strImportPosesCSV : String();
-	cfg.importCfg.importPosesMode = OPT::importPosesMode ? OPT::importPosesMode - 1 : 0;
+	cfg.importCfg.importPosesFile = OPT::importPosesMode ? OPT::strImportPosesFile : String();
+	cfg.importCfg.importPosesMode = static_cast<SFM::PoseImportMode>(OPT::importPosesMode);
+	cfg.importCfg.framesConvention = OPT::framesConvention;
 	cfg.importCfg.archiveType = (ARCHIVE_TYPE)OPT::nArchiveType;
 	cfg.featuresCfg.detectorType = FeatureTypeFromString(OPT::strDetectorType);
 	cfg.featuresCfg.maxFeaturesPerCell = OPT::nMaxFeaturesPerCell;
@@ -275,6 +309,18 @@ int main(int argc, LPCTSTR* argv)
 	cfg.extractColors = OPT::bExtractColors;
 	cfg.clusterCfg.maxViewsPerCluster = OPT::maxViewsPerCluster;
 	cfg.clusterCfg.useCommunityDetection = OPT::bClusterCommunities;
+
+	// known-poses mode: adapt the defaults the user did not set explicitly
+	if (cfg.HasKnownPoses()) {
+		if (OPT::vm["match-mode"].defaulted()) {
+			cfg.matchCfg.mode = MatchConfig::KNOWN_POSES;
+			VERBOSE("Known camera poses imported: pose-guided pair selection auto-selected (use --match-mode to override)");
+		}
+		if (OPT::vm["align-gps-threshold"].defaulted()) {
+			cfg.thAlignGPS = 0.f;
+			VERBOSE("Known camera poses imported: GPS alignment disabled, the reconstruction is re-aligned to the imported pose frame instead (use --align-gps-threshold to override)");
+		}
+	}
 
 	// Run SfM reconstruction
 	Scene scene(OPT::nMaxThreads);

@@ -324,6 +324,10 @@ void GenerateTestScene(Scene& scene, const SceneConfig& cfg, Scene* scenePerturb
 			                        camSpec.cx, camSpec.cy);
 			pinhole->k1 = camSpec.k1;
 			pinhole->k2 = camSpec.k2;
+			// intrinsics come straight from the ground-truth spec, so they are trusted:
+			// tests exercising the calibrated (essential-matrix) matching branch rely on it;
+			// tests exercising focal refinement clear the flag explicitly
+			pinhole->trustIntrinsics = true;
 			cam = pinhole;
 		} else {
 			cam = new SphericalCamera(cv::Size(camSpec.width, camSpec.height));
@@ -3505,7 +3509,7 @@ bool ViewGraphCalibratorTest()
 	      gt_focal, initial_focal, ABS(initial_focal - gt_focal) / gt_focal * 100);
 
 	// Apply view graph calibrator
-	cam.trustIntrinsics = false; // synthetic scene generator may default to true; the test exercises focal refinement
+	cam.trustIntrinsics = false; // the synthetic scene generator marks intrinsics trusted; the test exercises focal refinement
 	ViewGraphCalibratorConfig vgConfig;
 	vgConfig.minPairWeight = 0.f; // use all pairs
 	ViewGraphCalibrator calibrator(vgConfig);
