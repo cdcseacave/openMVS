@@ -152,7 +152,12 @@ extern MVS_API float fConfViolationMargin; // how far BEHIND our depth (in units
 // nearest-neighbor rounding, so K becomes a fractional Ksoft consumed everywhere K was used.
 // Set false to recover the HARD nearest-lookup path (bit-identical to pre-Task-16).
 extern MVS_API bool bConfSoftGates;
-extern MVS_API float fFusePriorWeight; // DenseFuseDepthMaps: weight of the intra-map prior as virtual view/pixel support to keep few-view inliers (0 disables)
+// DenseFuseDepthMaps: weight of the intra-map prior as virtual view/pixel support to keep few-view
+// inliers (0 disables). Default 3 favors completeness (GT bench: +6.5pp mean completeness for
+// +0.17pp gross outliers vs 0) -- right for the usual pipeline where mesh reconstruction follows and
+// cleans the extra outliers; prefer 2 when the dense point-cloud IS the final output (+2.6pp for
+// +0.07pp, within the per-scene outlier budget on 26/28 GT scene-levels vs 17/28 at 3).
+extern MVS_API float fFusePriorWeight;
 // Task 18: free-space-violation (FSV) guard on fusion-RESCUED points only (points kept solely
 // thanks to fFusePriorWeight's virtual support -- see DenseFuseDepthMaps). Reuses the exact Task-15
 // FSV classification (a neighbor view whose own depth lies well behind ours, per fConfViolationMargin)

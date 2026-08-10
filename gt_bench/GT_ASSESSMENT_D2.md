@@ -61,9 +61,13 @@ spread is larger than every Δ above).
 
 The confidence-guided rescue buys real completeness on every pool; w3 buys ~2.5× more than w2 but
 pushes 11/28 scene-levels past the +0.05pp gross-outlier budget (worst +1.8pp, BlendedMVS 5ba19a8a).
-w2 stays within budget on 26/28 with the two exceptions marginal. **Recommendation unchanged: w2 as
-the shipping default** (best completeness-per-added-outlier), w3 as an opt-in for
-completeness-critical use.
+w2 stays within budget on 26/28 with the two exceptions marginal.
+
+**Decision (2026-08-10): the default stays w3** — the pipeline is normally followed by mesh
+reconstruction, which cleans the few extra gross outliers and benefits from the extra true points.
+**Use w2 (`--fusion-prior-weight 2`) when the dense point cloud itself is the final output** (fewer
+outliers at slightly lower completeness); documented in the `DensifyPointCloud` CLI help and the
+`fFusePriorWeight` option description.
 
 ## 4. Operational notes
 

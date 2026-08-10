@@ -147,6 +147,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 	int nIgnoreMaskLabel;
 	float fDepthDiffThreshold;
 	float fDepthReprojectionErrorThreshold;
+	float fFusePriorWeight;
 	bool bRemoveDmaps;
 	boost::program_options::options_description config("Densify options");
 	config.add_options()
@@ -176,6 +177,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("fusion-filter", boost::program_options::value(&nFuseFilter)->default_value(2), "filter used to fuse the depth-maps (0 - merge, 1 - fuse, 2 - dense-fuse)")
 		("fusion-depth-diff-threshold,t", boost::program_options::value(&fDepthDiffThreshold)->default_value(0.01f), "maximum variance allowed for the depths during fusion")
 		("fusion-reprojection-threshold,d", boost::program_options::value(&fDepthReprojectionErrorThreshold)->default_value(1.2f), "dense-fuse maximum distance between measured and depth projected pixel")
+		("fusion-prior-weight", boost::program_options::value(&fFusePriorWeight)->default_value(3.f), "dense-fuse weight of the intra-map geometric prior used as virtual support to keep few-view inliers (0 - disabled); the default 3 favors completeness, best when a mesh reconstruction step follows and cleans the few extra outliers; set 2 when the dense point-cloud itself is the final output (fewer outliers at slightly lower completeness)")
 		("postprocess-dmaps", boost::program_options::value(&nOptimize)->default_value(4), "flags used to filter the depth-maps after estimation (0 - disabled, 1 - remove-speckles, 2 - fill-gaps, 4 - adjust-confidence; default 4 = adjust-confidence on)")
 		("export-fusion-labels", boost::program_options::value(&bExportFusionLabels)->default_value(false), "export per-pixel fusion inlier/outlier labels (.flabel/.fsupport) for confidence evaluation")
 		("export-conf-features", boost::program_options::value(&bExportConfFeatures)->default_value(false), "export per-pixel confidence-adjust features (.cfeat*) for offline parameter tuning")
@@ -286,6 +288,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 	OPTDENSE::nIgnoreMaskLabel = nIgnoreMaskLabel;
 	OPTDENSE::fDepthDiffThreshold = fDepthDiffThreshold;
 	OPTDENSE::fDepthReprojectionErrorThreshold = fDepthReprojectionErrorThreshold;
+	OPTDENSE::fFusePriorWeight = fFusePriorWeight;
 	OPTDENSE::bRemoveDmaps = bRemoveDmaps;
 	if (!bValidConfig && !OPT::strDenseConfigFileName.empty())
 		OPTDENSE::oConfig.Save(OPT::strDenseConfigFileName);
