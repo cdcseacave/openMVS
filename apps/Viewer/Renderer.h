@@ -40,6 +40,7 @@ namespace VIEWER {
 
 // Forward declarations
 class Window;
+class Scene;
 
 struct ViewProjectionData {
 	EIGEN_MAKE_ALIGNED_OPERATOR_NEW
@@ -74,16 +75,40 @@ private:
 	std::unique_ptr<VBO> pointCloudNormalsVBO;
 	size_t pointCount;
 	size_t pointNormalCount;
+	struct LayerPrimitiveRef
+	{
+		uint32_t layerID{NO_ID};
+		uint32_t localIndex{NO_ID};
+	};
+	struct LayerIndexRange
+	{
+		uint32_t layerID{NO_ID};
+		size_t offset{0};
+		size_t count{0};
+		size_t normalOffset{0}; // normal-line vertex sub-range (points only)
+		size_t normalCount{0};
+	};
+	std::vector<LayerIndexRange> pointLayerRanges;
+	// Compare split view: scene passes draw only these layers (empty = draw all)
+	std::vector<uint32_t> layerPassFilter;
 
 	// Mesh rendering
 	std::unique_ptr<Shader> meshShader;
 	std::unique_ptr<Shader> meshTexturedShader;
 	std::unique_ptr<VAO> meshVAO;
 	std::unique_ptr<VBO> meshVBO, meshEBO, meshNormalVBO, meshTexCoordVBO;
-	MVS::Mesh::FaceIdxArr mapFaceSubsetIndices; // maps face indices from original mesh to sub-mesh when rendering subsets
-	MVS::Mesh::FaceIdxArr mapSubsetFaceIndices; // maps face indices from sub-mesh to original mesh when rendering subsets
 	std::vector<unsigned> meshFaceCounts; // number of faces till each sub-mesh (subtract the previous to get count per sub-mesh)
 	ImageArr meshTextures;
+	std::vector<uint32_t> meshTextureIndices; // texture index per sub-mesh (NO_ID for untextured sub-meshes)
+	std::vector<uint32_t> meshSubMeshLayerIDs; // owning layer ID per sub-mesh
+	struct LayerFaceMap
+	{
+		uint32_t layerID{NO_ID};
+		std::vector<uint32_t> localToGlobalFace;
+	};
+	std::vector<LayerFaceMap> meshLayerFaceMaps;
+	std::vector<LayerPrimitiveRef> faceRefs;
+	std::vector<uint32_t> globalFaceSubMeshIndices;
 
 	// Geometry selection highlighting (for SelectionController)
 	std::unique_ptr<Shader> geometrySelectionShader;
@@ -94,6 +119,17 @@ private:
 	std::unique_ptr<VBO> cameraVBO, cameraEBO, cameraColorVBO;
 	size_t cameraPointIndexCount;
 	size_t cameraLineIndexCount;
+	struct CameraLayerRange
+	{
+		uint32_t layerID{NO_ID};
+		size_t offset{0}; // first camera slot (indexes the image-overlay quads)
+		size_t count{0};
+		size_t pointIndexOffset{0}; // sub-range in the point block of the camera EBO
+		size_t pointIndexCount{0};
+		size_t lineIndexOffset{0}; // sub-range in the line block of the camera EBO
+		size_t lineIndexCount{0};
+	};
+	std::vector<CameraLayerRange> cameraLayerRanges;
 
 	// Pose-uncertainty ellipsoid rendering (translucent shaded solids, lit + per-vertex color)
 	std::unique_ptr<Shader> ellipsoidShader;
@@ -101,6 +137,7 @@ private:
 	std::unique_ptr<VBO> ellipsoidVBO, ellipsoidNormalVBO, ellipsoidEBO, ellipsoidColorVBO;
 	size_t ellipsoidIndexCount;
 	std::vector<Eigen::Vector3f> ellipsoidCenters; // world-space center per accepted ellipsoid, aligned with the EBO slots
+	std::vector<uint32_t> ellipsoidLayerIDs; // owning layer per accepted ellipsoid, aligned with ellipsoidCenters
 	std::vector<uint32_t> ellipsoidDrawOrder; // reused scratch for the per-frame back-to-front sort
 
 	// 3D image overlay rendering (pre-computed for all images with valid textures)
@@ -115,6 +152,7 @@ private:
 	std::unique_ptr<VAO> selectionVAO;
 	std::unique_ptr<VBO> selectionVBO;
 	size_t selectionPrimitiveCount;
+	size_t neighborSelectionPrimitiveCount;
 
 	// Selection overlay rendering (2D screen space)
 	std::unique_ptr<Shader> selectionOverlayShader;
@@ -162,8 +200,8 @@ public:
 	void Reset();
 
 	// Data upload
-	void UploadPointCloud(const MVS::PointCloud& pointcloud, float normalLength);
-	void UploadMesh(MVS::Mesh& mesh);
+	void UploadLayers(const Scene& sceneController, const Window& window);
+	void UploadPointClouds(const Scene& sceneController, float normalLength);
 	void UploadCameras(const Window& window);
 	void UploadUncertaintyEllipsoids(const Window& window);
 	void UploadSelection(const Window& window);
@@ -171,6 +209,9 @@ public:
 
 	// Rendering
 	void BeginFrame(const Camera& camera, const Eigen::Vector4f& clearColor);
+	// Re-prime the cached view-projection matrices; called by the compare view to
+	// render each side with its own camera (BeginFrame primes the main camera)
+	void UpdateViewProjection(const Camera& camera);
 	void SetLighting(const Eigen::Vector3f& direction, float intensity, const Eigen::Vector3f& color);
 
 	void RenderPointCloud(const Window& window);
@@ -195,9 +236,10 @@ public:
 
 	struct PickResult {
 		uint32_t index{NO_ID};
+		uint32_t layerID{NO_ID};
 		Point3f points[3];
 		bool isPoint;
-		bool IsValid() const { return index != NO_ID; }
+		bool IsValid() const { return index != NO_ID && layerID != NO_ID; }
 	};
 	PickResult PickPrimitiveAt(const Point2f& screenPos, int radius, const Window& window);
 
@@ -205,12 +247,25 @@ public:
 
 	// Getters
 	size_t GetMeshSubMeshCount() const { return meshFaceCounts.size(); }
+	uint32_t GetMeshSubMeshLayerID(size_t submeshIdx) const
+	{
+		return submeshIdx < meshSubMeshLayerIDs.size() ? meshSubMeshLayerIDs[submeshIdx] : NO_ID;
+	}
+
+	// Compare split view: restrict the scene render passes to a subset of layers (empty = all)
+	void SetLayerPassFilter(std::vector<uint32_t> layerIDs) { layerPassFilter = std::move(layerIDs); }
+	void ClearLayerPassFilter() { layerPassFilter.clear(); }
+	bool IsLayerInPass(uint32_t layerID) const
+	{
+		return layerPassFilter.empty() ||
+			std::find(layerPassFilter.begin(), layerPassFilter.end(), layerID) != layerPassFilter.end();
+	}
 
 private:
 	void CreateShaders();
 	void CreateBuffers();
-	void UpdateViewProjection(const Camera& camera);
 	void UpdateLighting();
+	void UploadMeshes(const Scene& sceneController);
 
 	// Utility methods
 	void SetupPointCloudBuffers();
@@ -236,10 +291,17 @@ private:
 	                                    std::vector<uint32_t>& indices,
 	                                    uint32_t baseIndex = 0);
 
-    // Ensure pick FBO matches requested size (creates or recreates textures/renderbuffers)
-    void EnsurePickFBOSize(int width, int height);
-    // Release picker buffers (textures, renderbuffers, FBO)
-    void ReleasePickerBuffers();
+	// Ensure pick FBO matches requested size (creates or recreates textures/renderbuffers)
+	void EnsurePickFBOSize(int width, int height);
+	// Release picker buffers (textures, renderbuffers, FBO)
+	void ReleasePickerBuffers();
+
+	const LayerIndexRange* FindPointLayerRange(uint32_t layerID) const;
+	const CameraLayerRange* FindCameraLayerRange(uint32_t layerID) const;
+	const LayerFaceMap* FindMeshLayerMap(uint32_t layerID) const;
+	bool MapGlobalPoint(size_t globalIndex, uint32_t& layerID, uint32_t& localIndex) const;
+	bool MapGlobalFace(size_t globalIndex, uint32_t& layerID, uint32_t& localIndex) const;
+	bool MapLocalFace(uint32_t layerID, uint32_t localIndex, uint32_t& globalIndex) const;
 };
 /*----------------------------------------------------------------*/
 

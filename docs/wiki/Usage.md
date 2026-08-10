@@ -31,6 +31,7 @@ CreateStructure -s scene_keyframes.sfm -o scene.sfm --export-mvs scene.mvs --ext
 
 </details>
 
+
 <details>
 <summary><strong>Sparse Reconstruction with Native SfM</strong></summary>
 
@@ -342,10 +343,13 @@ The input file (or any of the supported formats listed below) can be passed on t
 
 - `--input-file, -i` — project file containing cameras and geometry.
 - `--geometry-file, -g` — external mesh or point-cloud that overlays / replaces the scene geometry.
+- `--layer-file, -l` — additional scene or geometry file loaded as a separate layer, for inspecting or comparing multiple reconstructions side by side (repeat for multiple layers).
 - `--output-file, -o` — output filename for programmatic mesh export.
 - `--export-type` — export format override (`ply` or `obj`).
 - `--max-memory` — hard memory cap in MB (`0` = unlimited).
 - `--screenshot-file, -S` — render the scene off-screen to this image file and exit, without opening the interactive window.
+- `--compare-mode` — enable `swipe` or `split` comparison for interactive use or scripted screenshots (requires at least two loaded layers).
+- `--align-layers` — align additional layers to the active layer from shared cameras before entering interactive or screenshot mode.
 - `--view-file` — optional viewpoint for the screenshot: a transform file of 12 or 16 whitespace-separated values, row-major, interpreted as a camera-to-world pose (columns are the camera X, Y, Z axes in world space, the last column is the camera center).
 - `--view-camera` — alternative viewpoint for the screenshot: index of a scene camera view point to use (`-1` disables it). Ignored when `--view-file` is given.
 - `--screenshot-show` — which layers to render in the screenshot, as a string of flags: `p` point-cloud, `m` mesh, `t` textured, `c` cameras, `w` wireframe, `b` bounding-box, `u` UI (e.g. `p`, `m`, `mt`). When omitted the interactive defaults are kept.
@@ -355,7 +359,7 @@ The input file (or any of the supported formats listed below) can be passed on t
 The user interface is built on Dear ImGui and organized into menus, dockable panels and overlays:
 
 - **File menu** — Open / Save / Save As / Close / Export, plus screenshot capture (with or without UI visible).
-- **View menu** — toggles Scene Info, Camera Info, Camera Controls, Selection, Render Settings, Bounding Box, Console and the Performance / Workflow / Viewport / Selection overlays.
+- **View menu** — toggles the Layers panel, Scene Info, Camera Info, Camera Controls, Selection, Render Settings, Bounding Box, Console and the Performance / Workflow / Viewport / Selection overlays.
 - **Render toggles** — one-key switches for Point-cloud, Mesh, Cameras, Wireframe, Textured, and Bounding-box visibility.
 - **Workflow menu** — launches the OpenMVS pipeline steps on the loaded scene: *Estimate ROI*, *Densify*, *Reconstruct Mesh*, *Refine*, *Texture*. Each opens a parameter panel with the corresponding module's options.
 - **Help / About dialogs** — `F1` shows the complete in-app keybinding reference.
@@ -375,7 +379,7 @@ File & app
 - `Ctrl+O` open · `Ctrl+S` save · `Ctrl+Shift+S` save as · `Ctrl+X` screenshot · `F11` fullscreen · `ESC` close window · `F1` help
 
 Navigation
-- `Tab` switch arcball ↔ first-person · `R` reset view · `←` / `→` step to previous / next camera pose
+- `Tab` switch arcball ↔ first-person · `R` reset view · `←` / `→` step to previous / next camera pose · `[` / `]` previous / next active layer
 
 Display toggles
 - `P` point cloud · `M` mesh · `C` cameras · `W` wireframe · `T` textured · `B` bounding box
@@ -388,6 +392,8 @@ Tools
 
 #### Headline features
 
+- **Multi-scene layers.** Several scenes or geometry files can be loaded at the same time as independent layers (`-l` on the command line, `Ctrl+O` or drag-and-drop) with per-layer visibility, solo, active selection and appearance controls in the *View ▸ Layers* panel; `[` / `]` cycle the active layer, on which the in-GUI pipeline and all editing tools operate.
+- **Side-by-side compare.** The Layers panel places each layer on side A or B of a vertical divider, in one of two modes: *Swipe* renders both sides with the same full-window camera separated by a draggable divider, so aligned scenes match pixel-exact across it, while *Split* shows two equal viewports with each scene centered in its own frustum. Camera movement is synchronized between the two sides by default; uncheck *Sync Cameras* to adjust each viewport's camera individually with the mouse over it. *Align to Active* moves every other layer onto the active one with a similarity transform estimated from cameras shared between the scenes (matched by photo file name, then by preserved SfM image ID; at least 3 shared cameras are required).
 - **ROI editing.** Press `Shift+B` to overlay an interactive oriented bounding box on the scene; drag the corner, face or rotation handles to define the region that subsequent pipeline stages will focus on. ROI can also be auto-estimated from the scene (`Ctrl+B`) or loaded from a file.
 - **Camera trajectory colouring.** Camera frustums are coloured along a Jet colormap according to their index in the capture sequence — blue at the start, red at the end — making it easy to spot loop closures, gaps or ordering issues. Cameras can be rendered as full frustums or as simple dots; the currently selected camera and its neighbours are highlighted distinctly.
 - **Camera-pose navigation.** The left / right arrow keys step through the scene's registered views; `Shift+Q` pins a panel showing the selected camera's intrinsics and extrinsics.
@@ -398,4 +404,3 @@ Tools
 </details>
 
 </details>
-
