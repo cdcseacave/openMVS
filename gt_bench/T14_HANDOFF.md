@@ -197,16 +197,36 @@ with the CPU (within the established GPU float ULP band).
 - `libs/MVS/DepthMap.{cpp,h}`, `apps/DensifyPointCloud/DensifyPointCloud.cpp` — flags/defaults.
 - `gt_bench/CUDA_CONFIDENCE.md` — the feature writeup (update it when the refactor lands).
 
-## 8. Open items (NOT blocking the refactor — user decisions)
+## 8. Open items — ALL RESOLVED as of 2026-08-10
 
-- Minor review finding: **cross-process double-adjust** now reachable by default (release note added to
-  `CUDA_CONFIDENCE.md`; a real guard = marking dmaps "already adjusted", deferred).
-- Minor review finding: per-worker GPU alloc × workers can OOM on huge images → CPU fallback (safe). The
-  reuse refactor reduces this by ~27%.
-- Inherited from the parent branch (independent of T14): **revert the test-only determinism hash**
-  (commit `763be0d` in `Scene::EstimateNeighborViewsPointCloud`) before release; and the **w2-vs-w3
-  fusion default** decision (recommendation: w2). See the `gt-benchmark` / `confidence-recalibration-feature`
-  memories.
+- ~~**cross-process double-adjust**~~ — RESOLVED in `a7c2a04`: dmaps persist a `CONF_ADJUSTED` flag bit
+  in the D2 header `type` (additive, old readers ignore it); the standalone phase warns and skips
+  already-adjusted views (live-tested 38/38).
+- **per-worker GPU alloc × workers can OOM on huge images** — mitigated, not eliminated: the fused
+  reuse (`a7c2a04`) plus the neighbor-depth texture reuse (`d3ce222`) removed the reference-buffer and
+  neighbor-depth uploads; the CPU fallback remains the safety net. Accepted as-is.
+- ~~**revert the test-only determinism hash**~~ — DONE in `98066e2` (reverts `763be0d`).
+  `Scene::EstimateNeighborViewsPointCloud` is back to upstream's time-seeded `randomRange()`.
+  This is the intended shipping state: the randomness is statistically fine, and no ctest exercises
+  that function (it only runs for scenes with NO sparse cloud AND no precomputed neighbors, whereas
+  the test scene has a sparse cloud). Determinism is a *bench* concern only — when re-running the GT
+  sweep on BlendedMVS-style scenes, seed locally in a throwaway patch rather than in shipped code.
+  Consequence to remember: gt_bench BlendedMVS numbers were recorded while the hash was in place, so
+  re-runs now carry ~5% run-to-run spread in point counts.
+- ~~**w2-vs-w3 fusion default**~~ — DECIDED in `05bacc4`: default stays **w3** (`fFusePriorWeight=3`)
+  because the standard pipeline meshes after densifying, and the mesh step cleans the few extra
+  outliers while benefiting from the extra true points. `--fusion-prior-weight 2` is documented (CLI
+  help + `DepthMap.h`/`GT_ASSESSMENT_D2.md`) for when the dense point cloud is the final output.
+- ~~**MVSPipelineTest mesh-face window with adjust-ON** (§9)~~ — RESOLVED in `bb2bf4c` + `d6e7d56`.
+  Root cause was NOT the test: `pointWeights` persisted `Conf2Weight = 1/(max(1-conf,.03)*depth^2)`,
+  an internal fusion-averaging kernel whose magnitude depends on the scene's length unit and on the
+  confidence calibration. The recalibrated (honest, ~2x lower) confidences pushed the weighted
+  graph-cut past its absolute free-space constants (kAbs/kOutl, tuned for weight~1), collapsing
+  coverage (108k points -> 8,337 faces). Final fix (`d6e7d56`): persist the plain calibrated [0,1]
+  confidence — dimensionless, matching the Interface `Vertex::View::confidence` semantics — so the
+  cut runs at its design scale with no normalization step. Windows re-baselined; ctest 3/3.
+  The shipped `ReconstructMesh` app was never affected (`--constant-weight` defaults to true, which
+  releases `pointWeights` entirely).
 
 ## 9. Develop merge (2026-08-09, commit `1ccc1fa`) — findings
 
@@ -220,7 +240,9 @@ float16. CPU↔GPU parity holds by mechanism (both read the same host maps), but
 absolute numbers (ROC, parity deltas) predate quantization; regenerate old dmap artifacts before
 comparing.
 
-**MVSPipelineTest (ctest test 3) fails — PRE-EXISTING, not merge-caused.** With the branch default
+**MVSPipelineTest (ctest test 3) fails — PRE-EXISTING, not merge-caused. [RESOLVED 2026-08-10 in
+`bb2bf4c`+`d6e7d56` — see §8; root cause was the persisted weight's unit/calibration dependence,
+not the test windows. Kept below for the diagnosis trail.]** With the branch default
 (adjust-confidence ON) fusion yields ~108k points (develop's calibrated spread: 58–71k) and the
 graph-cut mesh lands far below the 16k-face window: pre-merge 15133 faces, post-merge 8337. A/B with
 `OPTDENSE::nOptimize=0` confirms adjust-ON is the discriminating variable (pre-merge+OFF passes all
