@@ -238,14 +238,14 @@ struct vert_info_t {
 	#else
 	inline vert_info_t() {}
 	#endif
-	void InsertViews(const PointCloud& pc, PointCloud::Index idxPoint) {
+	void InsertViews(const PointCloud& pc, PointCloud::Index idxPoint, float weightScale) {
 		const PointCloud::ViewArr& _views = pc.pointViews[idxPoint];
 		ASSERT(!_views.IsEmpty());
 		const PointCloud::WeightArr* pweights(pc.pointWeights.IsEmpty() ? NULL : pc.pointWeights.Begin()+idxPoint);
 		ASSERT(pweights == NULL || _views.GetSize() == pweights->GetSize());
 		FOREACH(i, _views) {
 			const PointCloud::View viewID(_views[i]);
-			const PointCloud::Weight weight(pweights ? (*pweights)[i] : PointCloud::Weight(1));
+			const PointCloud::Weight weight(pweights ? (*pweights)[i]*weightScale : PointCloud::Weight(1));
 			// insert viewID in increasing order
 			const uint32_t idx(views.FindFirstEqlGreater(viewID));
 			if (idx < views.GetSize() && views[idx] == viewID) {
@@ -795,6 +795,25 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 	{
 		TD_TIMER_STARTD();
 
+		// normalize the point-view weights to mean 1: Conf2Weight scales as 1/depth^2, so the raw
+		// magnitudes depend on the scene's length unit (and on the confidence calibration -- the
+		// recalibrated confidences sit systematically lower than the raw NCC scores), while the
+		// graph-cut constants (kb, kf, kRel, kAbs, kOutl) assume the uniform-weight regime
+		// (weight ~ 1); feed the cut the RELATIVE weight variation at that scale instead of the
+		// arbitrary absolute one, making the weighted path invariant to units and calibration
+		float weightScale(1.f);
+		if (!pointcloud.pointWeights.IsEmpty()) {
+			double sumWeights(0);
+			size_t numWeights(0);
+			FOREACH(i, pointcloud.pointWeights) {
+				const PointCloud::WeightArr& ws = pointcloud.pointWeights[i];
+				FOREACHPTR(pw, ws)
+					sumWeights += *pw;
+				numWeights += ws.size();
+			}
+			if (sumWeights > 0)
+				weightScale = (float)((double)numWeights / sumWeights);
+		}
 		std::vector<point_t> vertices(pointcloud.points.GetSize());
 		std::vector<std::ptrdiff_t> indices(pointcloud.points.GetSize());
 		// fetch points
@@ -881,7 +900,7 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 				}
 			}
 			// update point visibility info
-			hint->info().InsertViews(pointcloud, idx);
+			hint->info().InsertViews(pointcloud, idx, weightScale);
 			++progress;
 		});
 		progress.close();

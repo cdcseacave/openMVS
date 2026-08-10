@@ -60,27 +60,29 @@ bool PipelineTest(bool forceCPU, bool verbose)
 	// The point/face counts and quality vary run-to-run (multi-threaded
 	// densify/mesh) and differ between the CPU and GPU PatchMatch backends, so
 	// these are deliberately wide plausibility windows, not tight regression
-	// bounds: they bracket both backends' observed spread with margin. The CPU
-	// PatchMatch backend yields markedly denser meshes than the GPU one (up to
-	// ~2x the faces), and GPU-less CI hosts sit at the top of that range. Measured
-	// (GPU, local CPU, GPU-less CI): points 58k-71k, recon faces 23k-43k, cleaned
-	// faces 16k-30k, quality 44-51.
+	// bounds: they bracket both backends' observed spread with margin.
+	// Re-baselined 2026-08-10 for the current defaults -- adjust-confidence ON
+	// (nOptimize=4), fusion rescue on (fFusePriorWeight=3, ~+90% dense points on
+	// this scene), and the mean-normalized mesh visibility weights (this test
+	// keeps pointWeights, unlike the ReconstructMesh app whose constant-weight
+	// default discards them). Measured (GPU / local CPU): points ~108k, recon
+	// faces 65.2k / 71.1k, cleaned faces 45.5k / 49.7k, quality 50-54.
 	if (!scene.DenseReconstruction() || scene.pointcloud.GetSize() < 50000u) {
-		VERBOSE("ERROR: TestDataset failed estimating dense point-cloud!");
+		VERBOSE("ERROR: TestDataset failed estimating dense point-cloud (%u points)!", scene.pointcloud.GetSize());
 		return false;
 	}
 	if (verbose)
 		scene.pointcloud.Save(MAKE_PATH("scene_dense.ply"));
-	if (!scene.ReconstructMesh() || !ISINSIDE(scene.mesh.faces.size(), 16000u, 52000u)) {
-		VERBOSE("ERROR: TestDataset failed reconstructing the mesh!");
+	if (!scene.ReconstructMesh() || !ISINSIDE(scene.mesh.faces.size(), 45000u, 100000u)) {
+		VERBOSE("ERROR: TestDataset failed reconstructing the mesh (%u faces)!", scene.mesh.faces.size());
 		return false;
 	}
 	if (verbose)
 		scene.mesh.Save(MAKE_PATH("scene_dense_mesh.ply"));
 	constexpr float decimate = 0.7f;
 	scene.mesh.Clean(decimate);
-	if (!ISINSIDE(scene.mesh.faces.size(), 11000u, 38000u)) {
-		VERBOSE("ERROR: TestDataset failed cleaning the mesh!");
+	if (!ISINSIDE(scene.mesh.faces.size(), 32000u, 70000u)) {
+		VERBOSE("ERROR: TestDataset failed cleaning the mesh (%u faces)!", scene.mesh.faces.size());
 		return false;
 	}
 	if (verbose)
