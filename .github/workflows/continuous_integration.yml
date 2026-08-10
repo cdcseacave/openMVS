@@ -33,6 +33,7 @@ jobs:
     name: Build on ${{ matrix.os }}
     if: github.event_name != 'schedule'
     runs-on: ${{ matrix.os }}
+    timeout-minutes: ${{ matrix.timeout-minutes }}
     # packages:write is needed to push vcpkg binary cache to GitHub Packages NuGet
     # feed (see VCPKG_BINARY_SOURCES configuration). contents:read is the default.
     permissions:
@@ -47,16 +48,19 @@ jobs:
             build-type: Release
             cmake-extra-args: -A x64
             artifact-name: OpenMVS_Windows_Release_x64
+            timeout-minutes: 480
           - os: ubuntu-latest
             triplet: x64-linux-release
             build-type: Release
             cmake-extra-args: -G Ninja
             artifact-name: OpenMVS_Ubuntu_Release_x64
+            timeout-minutes: 360
           - os: macos-latest
             triplet: arm64-osx
             build-type: Release
             cmake-extra-args: -G Ninja
             artifact-name: OpenMVS_macOS_Release_arm64
+            timeout-minutes: 360
     env:
       VCPKG_DEFAULT_TRIPLET: ${{ matrix.triplet }}
       BUILD_CONFIG: ${{ matrix.build-type }}
