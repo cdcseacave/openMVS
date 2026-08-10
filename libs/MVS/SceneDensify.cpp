@@ -131,7 +131,10 @@ public:
 /*----------------------------------------------------------------*/
 
 
-// convert the ZNCC score to a weight used to average the fused points
+// convert the confidence score to a weight used to average the fused points: the 1/depth^2 factor
+// is a triangulation-precision proxy (nearer observations localize better) and is safe here only
+// because averaging is invariant to the weights' absolute scale; do NOT persist these values --
+// pointWeights stores the plain [0,1] per-view confidence, which is dimensionless and calibrated
 inline float Conf2Weight(float conf, Depth depth) {
 	return 1.f/(MAXF(1.f-conf,0.03f)*depth*depth);
 }
@@ -2478,7 +2481,9 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, b
 				PointCloud::ViewArr& views = pointcloud.pointViews.emplace_back();
 				views.emplace_back(idxImage);
 				PointCloud::WeightArr& weights = pointcloud.pointWeights.emplace_back();
-				REAL confidence(weights.emplace_back(Conf2Weight(depthData.confMap.empty() ? 1.f : depthData.confMap(x),depth)));
+				const float conf(depthData.confMap.empty() ? 1.f : depthData.confMap(x));
+				weights.emplace_back(conf);
+				REAL confidence(Conf2Weight(conf,depth));
 				ProjArr& pointProjs = projs.emplace_back();
 				pointProjs.emplace_back(Proj(x));
 				const PointCloud::Normal normal(!depthData.normalMap.empty() ? Cast<Normal::Type>(imageData.camera.R.t() * Cast<REAL>(depthData.normalMap(x))) : Normal(0, 0, -1));
@@ -2517,9 +2522,10 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, b
 						if (normal.dot(normalB) > normalError) {
 							// add view to the 3D point
 							ASSERT(views.FindFirst(idxImageB) == PointCloud::ViewArr::NO_INDEX);
-							const float confidenceB(Conf2Weight(depthDataB.confMap.empty() ? 1.f : depthDataB.confMap(xB),depthB));
+							const float confB(depthDataB.confMap.empty() ? 1.f : depthDataB.confMap(xB));
+							const float confidenceB(Conf2Weight(confB,depthB));
 							const IIndex idx(views.InsertSort(idxImageB));
-							weights.InsertAt(idx, confidenceB);
+							weights.InsertAt(idx, confB);
 							pointProjs.InsertAt(idx, Proj(xB));
 							idxPointB = idxPoint;
 							X += imageDataB.camera.TransformPointI2W(Point3(Point2f(xB),depthB))*REAL(confidenceB);
@@ -2764,12 +2770,17 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 				fusedPoints[0].push_back(X(0));
 				fusedPoints[1].push_back(X(1));
 				fusedPoints[2].push_back(X(2));
-				const float weight(Conf2Weight(conf, depth));
+				// persist the plain [0,1] confidence as this view's weight: point positions are medians
+				// (weights are never used to average here), so the stored weight only serves downstream
+				// consumers (Interface Vertex::View::confidence, ReconstructMesh weighted visibility)
+				// which expect a dimensionless, calibrated value at the constant-weight scale (<=1);
+				// pixels merged from the same view are correlated observations of the same surface,
+				// so combine them with max, not a sum (a sum is unbounded and unit-dependent)
 				const auto it(fusedViews.InsertSortUnique(ID));
 				if (it.second)
-					fusedWeights[it.first] += weight;
+					fusedWeights[it.first] = MAXF(fusedWeights[it.first], conf);
 				else
-					fusedWeights.InsertAt(it.first, weight);
+					fusedWeights.InsertAt(it.first, conf);
 				if (bEstimateNormal)
 					fusedNormal += Cast<double>(normal);
 				if (bEstimateColor && !image.pImageData->image.empty())

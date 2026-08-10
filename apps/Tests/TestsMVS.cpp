@@ -63,17 +63,18 @@ bool PipelineTest(bool forceCPU, bool verbose)
 	// bounds: they bracket both backends' observed spread with margin.
 	// Re-baselined 2026-08-10 for the current defaults -- adjust-confidence ON
 	// (nOptimize=4), fusion rescue on (fFusePriorWeight=3, ~+90% dense points on
-	// this scene), and the mean-normalized mesh visibility weights (this test
-	// keeps pointWeights, unlike the ReconstructMesh app whose constant-weight
+	// this scene), and pointWeights holding the plain [0,1] per-view confidence
+	// consumed directly by the weighted mesh visibility (this test keeps
+	// pointWeights, unlike the ReconstructMesh app whose constant-weight
 	// default discards them). Measured (GPU / local CPU): points ~108k, recon
-	// faces 65.2k / 71.1k, cleaned faces 45.5k / 49.7k, quality 50-54.
+	// faces 52.9k / 69.7k, cleaned faces 37.0k / 48.7k, quality ~50.
 	if (!scene.DenseReconstruction() || scene.pointcloud.GetSize() < 50000u) {
 		VERBOSE("ERROR: TestDataset failed estimating dense point-cloud (%u points)!", scene.pointcloud.GetSize());
 		return false;
 	}
 	if (verbose)
 		scene.pointcloud.Save(MAKE_PATH("scene_dense.ply"));
-	if (!scene.ReconstructMesh() || !ISINSIDE(scene.mesh.faces.size(), 45000u, 100000u)) {
+	if (!scene.ReconstructMesh() || !ISINSIDE(scene.mesh.faces.size(), 40000u, 100000u)) {
 		VERBOSE("ERROR: TestDataset failed reconstructing the mesh (%u faces)!", scene.mesh.faces.size());
 		return false;
 	}
@@ -81,7 +82,7 @@ bool PipelineTest(bool forceCPU, bool verbose)
 		scene.mesh.Save(MAKE_PATH("scene_dense_mesh.ply"));
 	constexpr float decimate = 0.7f;
 	scene.mesh.Clean(decimate);
-	if (!ISINSIDE(scene.mesh.faces.size(), 32000u, 70000u)) {
+	if (!ISINSIDE(scene.mesh.faces.size(), 28000u, 70000u)) {
 		VERBOSE("ERROR: TestDataset failed cleaning the mesh (%u faces)!", scene.mesh.faces.size());
 		return false;
 	}
