@@ -1720,8 +1720,10 @@ bool MVS::EstimateNormalMap(const Matrix3x3f& K, const DepthMap& depthMap, Norma
 } // EstimateNormalMap
 /*----------------------------------------------------------------*/
 
-// estimate confidence map from depth-map variation in a window;
-// the estimated confidence is the mean of the depth differences to the 3 closer pixel to the central pixel
+// estimate confidence map from depth-map variation in a window: the n smallest absolute
+// depth differences to the neighbors, spread over the whole neighborhood and mapped
+// through a Gaussian of the depth range, mixed with the fraction of neighbors sitting at
+// a similar depth (see the header for what this is for and what it is not)
 void MVS::EstimateConfidenceFromDepth(const DepthData& depthData, ConfidenceMap& confMap, int winHalfSize, int n) {
 	ASSERT(depthData.dMax > depthData.dMin);
 	const float dDepth = depthData.dMax - depthData.dMin;
@@ -1737,7 +1739,7 @@ void MVS::EstimateConfidenceFromDepth(const DepthData& depthData, ConfidenceMap&
 			if (depth <= 0)
 				continue;
 			float& confidence = confMap(r, c);
-			FloatArr depthDiffValues;
+			FloatArr depthDiffValues(0, (IDX)(SQUARE(2*winHalfSize+1)-1)); // reserve the whole window, one allocation
 			unsigned numDiffDepths(0), numSimilarDepths(0);
 			for (int k = -winHalfSize; k<=winHalfSize; k++)
 				for (int l = -winHalfSize; l<=winHalfSize; l++)
@@ -1755,7 +1757,9 @@ void MVS::EstimateConfidenceFromDepth(const DepthData& depthData, ConfidenceMap&
 			for (int k = 0; k < s; k++)
 				confidenceDiff += depthDiffValues[k]/depthDiffValues.size();
 			confidenceDiff = EXP(-SQUARE(confidenceDiff/(0.002f*dDepth)));
-			const float confidenceSim =
+			// a pixel no neighbor agrees with gets no similarity credit at all (and the
+			// ratio below is left undefined, hence the guard)
+			const float confidenceSim = numSimilarDepths == 0 ? 0.f :
 				MINF(float(numSimilarDepths)/n, 1.f)*0.7f +
 				MAXF(1.f-float(numDiffDepths)/numSimilarDepths, 0.f)*0.3f;
 			confidence = confidenceDiff*0.9f + confidenceSim*0.1f;
@@ -1791,7 +1795,9 @@ void MVS::EstimateConfidenceFromNormal(const DepthData& depthData, ConfidenceMap
 				for (int l = -winHalfSize; l<=winHalfSize; l++)
 					if (r+k >= 0 && r+k < normalMap.rows && c+l >= 0 && c+l < normalMap.cols && depthData.depthMap(r+k, c+l) > 0)
 						theta += SQUARE(ACOS(mean.dot(normalMap(r+k, c+l))));
-			confMap(r, c) = SQUARE(1 - theta/(count*ACOS(-1)));
+			// the squared angles can sum past the normalizer where the normals disagree
+			// wildly, so floor the score before squaring it and keep the result in [0,1]
+			confMap(r, c) = SQUARE(MAXF(1.f-theta/(count*float(M_PI)), 0.f));
 		}
 	}
 } // EstimateConfidenceFromNormal

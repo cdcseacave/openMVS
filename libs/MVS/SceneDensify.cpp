@@ -462,7 +462,8 @@ bool DepthMapsData::InitViews(DepthData& depthData, IIndex idxNeighbor, IIndex n
 		ViewsMap viewsMap;
 		if (!ImportDepthDataRaw(ComposeDepthFilePath(viewRef.GetID(), "dmap"),
 				imageFileName, IDs, imageSize, camera.K, camera.R, camera.C, depthData.dMin, depthData.dMax,
-				depthData.depthMap, depthData.normalMap, confMap, viewsMap, 3))
+				depthData.depthMap, depthData.normalMap, confMap, viewsMap,
+				HeaderDepthDataRaw::HAS_DEPTH|HeaderDepthDataRaw::HAS_NORMAL))
 			return false;
 		ASSERT(viewRef.image.size() == depthData.depthMap.size());
 		ASSERT(depthData.normalMap.empty() || viewRef.image.size() == depthData.normalMap.size());

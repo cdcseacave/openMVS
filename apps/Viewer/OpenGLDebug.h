@@ -34,9 +34,6 @@
 
 // I N C L U D E S /////////////////////////////////////////////////
 
-#include <iostream>
-#include <string>
-#include <sstream>
 #include <glad/glad.h>
 
 
@@ -61,12 +58,15 @@
 
 #define GL_CLEAR_ERRORS() OPENGL_DEBUG::ClearOpenGLErrors()
 
-#define GL_ENABLE_DEBUG_OUTPUT() OPENGL_DEBUG::EnableOpenGLDebugOutput()
+// statement macro in both configurations: the value is discarded here so that the
+// disabled form is a no-op statement and not a value-less expression (-Wunused-value);
+// call OPENGL_DEBUG::EnableOpenGLDebugOutput() directly to test whether it succeeded
+#define GL_ENABLE_DEBUG_OUTPUT() (void)OPENGL_DEBUG::EnableOpenGLDebugOutput()
 #else
 #define GL_CHECK(call) call
 #define GL_DEBUG_SCOPE(name)
 #define GL_CLEAR_ERRORS()
-#define GL_ENABLE_DEBUG_OUTPUT() false
+#define GL_ENABLE_DEBUG_OUTPUT() ((void)0)
 #endif
 
 

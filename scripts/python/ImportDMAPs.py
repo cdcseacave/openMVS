@@ -227,11 +227,9 @@ def import_dmaps(scene_file, input_dir, ext, output_file, rescale=True, verbose=
       scale, shift = scale_depth_map(scene, idx, depth_map, verbose)
       depth_map[depth_map != 0] = scale * depth_map[depth_map != 0] + shift
 
-    # Create DMAP data
+    # Create DMAP data; saveDMAP derives the stored content from the maps present here,
+    # so an imported depth-map carries no normals, confidence or views
     dmap_data = {
-      "has_normal": False,
-      "has_conf": False,
-      "has_views": False,
       "image_width": scene["platforms"][image["platform_id"]]["cameras"][image["camera_id"]]["width"],
       "image_height": scene["platforms"][image["platform_id"]]["cameras"][image["camera_id"]]["height"],
       "depth_width": depth_map.shape[1],

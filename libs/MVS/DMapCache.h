@@ -39,8 +39,6 @@
 #include "DepthMap.h"
 #include "../Common/ListFIFO.h"
 
-#include <unordered_map>
-
 
 // S T R U C T S ///////////////////////////////////////////////////
 

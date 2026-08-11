@@ -312,7 +312,7 @@ struct MVS_API DepthData {
 	void ApplyIgnoreMask(const BitMatrix&);
 
 	bool Save(const String& fileName) const;
-	bool Load(const String& fileName, unsigned flags=15);
+	bool Load(const String& fileName, unsigned flags=HeaderDepthDataRaw::CONTENT_MASK);
 
 	unsigned GetRef();
 	unsigned IncRef(const String& fileName);
@@ -593,7 +593,23 @@ private:
 	const DepthMap& depthMap;
 };
 
+// Standalone confidence estimators, deriving a confidence-map from the geometry of one
+// depth-map alone -- no images, no neighboring views, no matching cost. The dense
+// pipeline does not use them: its own estimates come with a photometric score, which
+// DensifyPointCloud can recalibrate against the neighboring views (see
+// OPTDENSE::ADJUST_CONFIDENCE). They are meant for the depth-maps that reach the library
+// with no confidence at all -- imported from an external estimator (the Interface* apps,
+// scripts/python/ImportDMAPs.py) or produced by a method that does not score its
+// estimates -- so that fusion, point ordering and the mesh visibility weights have
+// something better than a constant to work with. Both fill confMap with values in [0,1]
+// at the depth-map resolution, and both are heuristics with no calibrated meaning: they
+// rank the pixels of a map against each other, they do not predict an error.
+// Confidence from the local depth coherence: a piecewise-smooth surface scores high,
+// the isolated depths a mismatch leaves behind score low. n is how many of the nearest
+// neighbor depth differences enter the score.
 MVS_API void EstimateConfidenceFromDepth(const DepthData& depthData, ConfidenceMap& confMap, int winHalfSize=1, int n=3);
+// Confidence from the local normal coherence; needs depthData.normalMap, which
+// EstimateNormalMap() can supply from the depth-map itself.
 MVS_API void EstimateConfidenceFromNormal(const DepthData& depthData, ConfidenceMap& confMap, int winHalfSize=1);
 
 MVS_API bool SaveDepthMap(const String& fileName, const DepthMap& depthMap);
@@ -620,7 +636,8 @@ MVS_API bool ImportDepthDataRaw(const String&, String& imageFileName,
 	IIndexArr&, cv::Size& imageSize,
 	KMatrix&, RMatrix&, CMatrix&,
 	Depth& dMin, Depth& dMax,
-	DepthMap&, NormalMap&, ConfidenceMap&, ViewsMap&, unsigned flags=15/*all*/,
+	DepthMap&, NormalMap&, ConfidenceMap&, ViewsMap&,
+	unsigned flags=HeaderDepthDataRaw::CONTENT_MASK/*maps to read, all of them by default*/,
 	bool* pbConfAdjusted=NULL/*receives the stored CONF_ADJUSTED flag*/);
 
 MVS_API void CompareDepthMaps(const DepthMap& depthMap, const DepthMap& depthMapGT, uint32_t idxImage, float threshold=0.01f);

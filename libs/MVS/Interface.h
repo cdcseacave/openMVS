@@ -849,6 +849,10 @@ struct Interface
 //  - normal-map (optional): the 3D point normal in camera space; same resolution as the depth-map
 //  - confidence-map (optional): the 3D point confidence (usually a value in [0,1]); same resolution as the depth-map
 //  - views-map (optional): the pixels' views, indexing image-IDs starting after first view (up to 4); same resolution as the depth-map
+// The content type is a bit-field: its low bits (CONTENT_MASK) say which of the maps
+// above the file stores and the bits above it are flags qualifying them, so every reader
+// has to test the bits it cares about and mask the rest -- comparing the whole byte
+// against a content combination reads a flagged file as a corrupt one.
 // The maps are stored quantized, 11 bytes per pixel in total; every value is still
 // float in memory, the packing happens only in ExportDepthDataRaw/ImportDepthDataRaw:
 //  - depth: half, after scaling by 2^-depthExp so the values land in the well-conditioned
@@ -866,8 +870,8 @@ struct HeaderDepthDataRaw {
 		HAS_CONF = (1<<2),
 		HAS_VIEWS = (1<<3),
 		CONTENT_MASK = HAS_DEPTH|HAS_NORMAL|HAS_CONF|HAS_VIEWS,
-		// flag bits (not content): the writer carries them through from the caller's header.type;
-		// readers that do not know them ignore them
+		// flag bits, qualifying the content rather than listing it; the writer derives the
+		// content bits from the maps it is handed and carries these through from the caller's header
 		CONF_ADJUSTED = (1<<4), // the stored confMap is the recalibrated (fusion-survival)
 			// confidence, already adjusted once -- a second adjust pass must not re-run on it
 	};

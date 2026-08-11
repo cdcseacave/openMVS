@@ -350,7 +350,8 @@ int main(int argc, LPCTSTR* argv)
 			ViewsMap viewsMap;
 			if (!ImportDepthDataRaw(ComposeDepthFilePath(image.ID, "dmap"),
 				imageFileName, IDs, imageSize, camera.K, camera.R, camera.C,
-				dMin, dMax, depthMap, normalMap, confMap, viewsMap, 1))
+				dMin, dMax, depthMap, normalMap, confMap, viewsMap,
+				HeaderDepthDataRaw::HAS_DEPTH))
 				return EXIT_FAILURE;
 			// save depth-map as PNG
 			Image16U depthMap16U;

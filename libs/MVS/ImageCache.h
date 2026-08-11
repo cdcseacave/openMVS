@@ -39,9 +39,10 @@
 #include "Image.h"
 #include "../Common/ListFIFO.h"
 
+// the STL containers and the rest of the standard library this header uses come with
+// the Common.h precompiled header; only what the PCH does not provide is included here
 #include <condition_variable>
 #include <mutex>
-#include <unordered_map>
 
 
 // S T R U C T S ///////////////////////////////////////////////////
