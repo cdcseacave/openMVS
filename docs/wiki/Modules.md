@@ -40,6 +40,8 @@ These are combined in a closed form (see [libs/MVS/ConfidenceRefine.h](https://g
 
 **Cost and defaults.** When CUDA estimates the depth-maps, the recalibration runs fused into the last geometric-consistency iteration, reading the depth, normal and cost buffers already resident on the device — about 3 ms per depth-map, which is why it is **enabled by default on GPU**. On the CPU there is no such free ride: it costs a separate full-resolution sweep comparable to a fusion pass, so it is **off by default** and enabled explicitly with `--postprocess-dmaps 8`. Recalibrated depth-maps are flagged in the `.dmap` header so a second pass never adjusts an already-adjusted map.
 
+The full design, the ground-truth evaluation behind these numbers, the alternatives that were measured and rejected, and how to continue the work are recorded in [design/DepthMapConfidence.md](https://github.com/cdcseacave/openMVS/blob/master/docs/design/DepthMapConfidence.md).
+
 ## Mesh Reconstruction
 
 This module aims at estimating a mesh surface that explains the best the input point-cloud, and to be robust to outliers. The input point-cloud could be dense or sparse, and hence the algorithm used should be able to perform well in both cases. For these reasons, the algorithm currently implemented is based on the paper: *Exploiting Visibility Information in Surface Reconstruction to Preserve Weakly Supported Surfaces* M. Jancosek et al. 2014.
