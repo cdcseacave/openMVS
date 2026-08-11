@@ -158,8 +158,7 @@ public:
 
 	// Camera poses as imported before refinement, keyed by image ID; used to re-align the
 	// refined reconstruction back to the input frame (Scene::AlignToPriorPoses).
-	// Transient: deliberately NOT serialized and NOT carried across the Scene move in
-	// ReconstructHierarchical - the known-poses path never clusters, so it always survives.
+	// Transient: deliberately not serialized, but preserved by regular Scene copies and moves.
 	std::unordered_map<IIndex, Pose3D> priorPoses;
 
 	// Optional transformation used to convert from absolute to relative coordinate system

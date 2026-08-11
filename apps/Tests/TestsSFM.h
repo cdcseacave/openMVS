@@ -92,6 +92,11 @@ bool CubeMapBridgeDropTopBottomTest();
 // Triplet star-initialization test: 3-view scene with tracks + StarInitializer + BA
 bool TripletStarInitTest();
 
+// Known-pose import, pair selection, and prior-frame alignment tests
+bool KnownPosesImportTest();
+bool KnownPosePairSelectionTest();
+bool AlignToPriorPosesTest();
+
 // Two-view geometry test: PairsMatcher and ImagePair matrix operations
 bool TwoViewTest();
 

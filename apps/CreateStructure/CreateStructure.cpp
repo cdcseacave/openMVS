@@ -50,9 +50,7 @@ String strOutputFileName;
 String strOutputFileNameMVS;
 String strDetectorType;
 String strImportPosesFile;
-String strImportPosesCSV; // deprecated alias of strImportPosesFile
 String strKnownPosesConvention;
-FramesConvention framesConvention = FramesConvention::AUTO;
 String strExportPosesCSV;
 String strExportPoseQuality;
 String strImportOpenMVGDir;
@@ -136,7 +134,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("export-poses-csv", boost::program_options::value<std::string>(&OPT::strExportPosesCSV), "export camera poses to CSV file (optional)")
 		("export-pose-quality", boost::program_options::value<std::string>(&OPT::strExportPoseQuality), "estimate the pose covariance during the final bundle adjustment and export the per-image quality report to CSV file (optional)")
 		("import-poses-mode", boost::program_options::value(&OPT::importPosesMode)->default_value(0), "mode for importing camera poses: 0=none, 1=poses+intrinsics, 2=poses only, 3=positions only")
-		("known-poses-convention", boost::program_options::value<std::string>(&OPT::strKnownPosesConvention)->default_value("auto"), "camera-axes convention of the poses in a frames.json: auto|arkit|opencv")
+		("known-poses-convention", boost::program_options::value<std::string>(&OPT::strKnownPosesConvention), "camera-axes convention of the poses in a frames.json: arkit|opencv (default: auto-detect)")
 		("import-openmvg-dir", boost::program_options::value<std::string>(&OPT::strImportOpenMVGDir), "import OpenMVG features from directory (optional)")
 		("export-openmvg-dir", boost::program_options::value<std::string>(&OPT::strExportOpenMVGDir), "export OpenMVG features to directory (optional)")
 		("export-pairs-csv", boost::program_options::value<std::string>(&OPT::strExportPairsCSV), "export image pairs to CSV file (optional)")
@@ -157,7 +155,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("image-indices", boost::program_options::value<std::string>(&OPT::strImageIndices), "image indices to apply forced parameters (e.g., '0 5-10 15', empty = all images)")
 		("max-views-per-cluster", boost::program_options::value(&OPT::maxViewsPerCluster)->default_value(200), "maximum images per cluster for hierarchical reconstruction (0 = disable clustering)")
 		("cluster-communities", boost::program_options::value<bool>(&OPT::bClusterCommunities)->default_value(false), "cluster by community detection + capacity packing instead of pure aggregative clustering")
-		("use-global-solver", boost::program_options::value<bool>(&OPT::bUseGlobalSolver)->default_value(false), "use global solver for calibration, istead of hierarhical solver")
+		("use-global-solver", boost::program_options::value<bool>(&OPT::bUseGlobalSolver)->default_value(false), "use global solver for calibration instead of the hierarchical solver")
 		("extract-colors", boost::program_options::value<bool>(&OPT::bExtractColors)->default_value(false), "extract colors for reconstructed points")
 		("undistort-alpha", boost::program_options::value<float>(&OPT::undistortAlpha)->default_value(0.6f), "alpha parameter for undistortion (0=zoomed in, 1=all pixels retained)")
 		("undistort-extension", boost::program_options::value<std::string>(&OPT::strUndistortExt)->default_value(".jxl"), "file extension/format for the exported undistorted images (e.g. .jpg, .png, .jxl)")
@@ -166,20 +164,11 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("gps-position-weight-z", boost::program_options::value(&OPT::gpsPositionWeightZ)->default_value(0.0), "vertical weight of the GPS position priors used to refine the geo-aligned reconstruction (0 = disabled)")
 		;
 
-	// deprecated options: still accepted, but not advertised in the help message
-	boost::program_options::options_description deprecated_options("Deprecated options");
-	deprecated_options.add_options()
-		("import-poses-csv", boost::program_options::value<std::string>(&OPT::strImportPosesCSV)->default_value("poses.csv"), "deprecated alias of --import-poses-file")
-		;
-
 	boost::program_options::options_description cmdline_options;
-	cmdline_options.add(generic).add(config).add(deprecated_options);
-
-	boost::program_options::options_description visible_options;
-	visible_options.add(generic).add(config);
+	cmdline_options.add(generic).add(config);
 
 	boost::program_options::options_description config_file_options;
-	config_file_options.add(config).add(deprecated_options);
+	config_file_options.add(config);
 
 	boost::program_options::positional_options_description p;
 	p.add("source", -1);
@@ -209,7 +198,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 	// validate input
 	Util::ensureValidPath(OPT::strSource);
 	if (OPT::vm.count("help") || OPT::strSource.empty()) {
-		GET_LOG() << visible_options;
+		GET_LOG() << cmdline_options;
 		if (OPT::strSource.empty())
 			LOG("error: source (folder or list) is required");
 		return false;
@@ -218,24 +207,23 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 	if (OPT::strOutputFileName.empty())
 		OPT::strOutputFileName = _T("scene.sfm");
 	Util::ensureValidPath(OPT::strOutputFileNameMVS);
-	// resolve the deprecated poses file option: the new option wins if both are given explicitly
-	if (!OPT::vm["import-poses-csv"].defaulted()) {
-		VERBOSE("warning: --import-poses-csv is deprecated, use --import-poses-file");
-		if (!OPT::vm["import-poses-file"].defaulted())
-			VERBOSE("warning: both --import-poses-file and --import-poses-csv given, using --import-poses-file");
-		else
-			OPT::strImportPosesFile = OPT::strImportPosesCSV;
+	if (OPT::importPosesMode > static_cast<unsigned>(PoseImportMode::POSITIONS)) {
+		LOG("error: unknown import poses mode %u (accepted: 0, 1, 2, 3)", OPT::importPosesMode);
+		return false;
+	}
+	if (OPT::matchMode < static_cast<int>(MatchConfig::SKIP) ||
+		OPT::matchMode > static_cast<int>(MatchConfig::KNOWN_POSES)) {
+		LOG("error: unknown match mode %d (accepted: -1, 0, 1, 2, 3)", OPT::matchMode);
+		return false;
 	}
 	Util::ensureValidPath(OPT::strImportPosesFile);
-	// parse the camera-axes convention of the imported poses
+	// Validate and canonicalize the camera-axes convention; empty means auto-detect.
 	const String strConvention(OPT::strKnownPosesConvention.ToLower());
-	if (strConvention == "auto")
-		OPT::framesConvention = FramesConvention::AUTO;
-	else if (strConvention == "arkit")
-		OPT::framesConvention = FramesConvention::ARKIT;
-	else if (strConvention == "opencv")
-		OPT::framesConvention = FramesConvention::OPENCV;
-	else {
+	if (strConvention.empty() || strConvention == "auto") {
+		OPT::strKnownPosesConvention.clear();
+	} else if (strConvention == "arkit" || strConvention == "opencv") {
+		OPT::strKnownPosesConvention = strConvention;
+	} else {
 		LOG("error: unknown known-poses convention '%s' (accepted: auto, arkit, opencv)", OPT::strKnownPosesConvention.c_str());
 		return false;
 	}
@@ -282,7 +270,8 @@ int main(int argc, LPCTSTR* argv)
 	cfg.importCfg.imageIndicesStr = OPT::strImageIndices;
 	cfg.importCfg.importPosesFile = OPT::importPosesMode ? OPT::strImportPosesFile : String();
 	cfg.importCfg.importPosesMode = static_cast<SFM::PoseImportMode>(OPT::importPosesMode);
-	cfg.importCfg.framesConvention = OPT::framesConvention;
+	cfg.importCfg.framesConvention = OPT::strKnownPosesConvention.empty() ? FramesConvention::AUTO :
+		OPT::strKnownPosesConvention == "arkit" ? FramesConvention::ARKIT : FramesConvention::OPENCV;
 	cfg.importCfg.archiveType = (ARCHIVE_TYPE)OPT::nArchiveType;
 	cfg.featuresCfg.detectorType = FeatureTypeFromString(OPT::strDetectorType);
 	cfg.featuresCfg.maxFeaturesPerCell = OPT::nMaxFeaturesPerCell;
@@ -325,8 +314,11 @@ int main(int argc, LPCTSTR* argv)
 	// Run SfM reconstruction
 	Scene scene(OPT::nMaxThreads);
 	if (!scene.Reconstruct(OPT::strSource, cfg)) {
-		if (!scene.status.nState.isSet(Scene::Status::STATE::CALIBRATED) &&
-			!(cfg.matchImagesOnly && scene.status.nState.isSet(Scene::Status::STATE::MATCHED))) {
+		// A known-poses failure is never a usable partial result: in particular, failed
+		// alignment to the imported frame must propagate to the process exit status.
+		if (cfg.HasKnownPoses() ||
+			(!scene.status.nState.isSet(Scene::Status::STATE::CALIBRATED) &&
+			 !(cfg.matchImagesOnly && scene.status.nState.isSet(Scene::Status::STATE::MATCHED)))) {
 			VERBOSE("error: reconstruction failed");
 			return EXIT_FAILURE;
 		} else if (OPT::bExtractColors && scene.colors.empty() && !scene.SampleColors()) {

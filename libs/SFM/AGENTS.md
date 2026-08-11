@@ -27,8 +27,7 @@ untouched). Exported as a per-image CSV quality report by `ExportPoseUncertainty
 
 `priorPoses` (`std::unordered_map<IIndex, Pose3D>`, keyed by image ID) snapshots the poses as imported,
 before any refinement, and is consumed by `Scene::AlignToPriorPoses`. It is **transient**: deliberately
-not serialized and not carried across the `*this` move in `ReconstructHierarchical` — the known-poses
-path never clusters, so it always survives.
+not serialized, but preserved by regular `Scene` copies and moves.
 
 ### Camera Hierarchy (`Camera.h`) - Polymorphic
 - **Camera** (abstract base): Virtual `Project()`, `Unproject()`, `GetK()`, `AccumulateIntrinsics()`, `ScaleIntrinsics()`
@@ -126,9 +125,10 @@ Selected by `ReconstructionConfig::HasKnownPoses()` (a poses file is configured 
 -> Finetune BA (forces RefineMainIntrinsics when any camera has !TrustIntrinsics)
 -> Re-triangulate outliers + FilterTracks -> second BA
 ```
-Then falls through to the **unchanged** shared tail of `Scene::Reconstruct` (pre-final BA,
+Then falls through to the shared tail of `Scene::Reconstruct` (pre-final BA,
 filtering, final BA, `FilterWeaklyConnectedImages`, resection of the images missing from the
-poses file, alignment, colors). Clustering is never involved.
+poses file, alignment, colors). The run fails if the final similarity alignment back to the
+imported frame cannot be estimated. Clustering is never involved.
 
 ## Key Algorithms
 
@@ -143,8 +143,9 @@ poses file, alignment, colors). Clustering is never involved.
   `KNOWN_POSES` (pose-guided: `CollectKnownPosePairs` scores baseline - normalized by the median
   nearest-neighbor camera distance - times viewing-direction agreement, rejects optical-axis angles
   > 75 deg, keeps the pairs present in the candidate lists of BOTH endpoints, plus each image's
-  2 nearest cameras ungated (occlusion safeguard) and max-score component bridges; falls back to
-  exhaustive if it yields no pair.
+  2 nearest cameras ungated (occlusion safeguard) and max-score component bridges; incomplete
+  pose sets use vocabulary retrieval for pairs touching unposed images; falls back to exhaustive
+  if fewer than two poses are usable or their camera centers are degenerate.
   No camera-center cheirality test: orbit and nadir captures put the neighbor centers tangential /
   perpendicular to the view direction, so the strongest pairs would fail it)
 - **Verification feedback** (`CollectVerificationFeedbackPairs`, on by default for

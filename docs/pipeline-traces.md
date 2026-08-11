@@ -23,20 +23,20 @@ All function references are to real code read from the source.
 ## 1. SFM Incremental Pipeline
 
 ### Entry Point
-`SFM::Scene::Reconstruct()` — `libs/SFM/Scene.cpp:610`
+`SFM::Scene::Reconstruct()` — `libs/SFM/Scene.cpp:600`
 
-Called from: `CreateStructure` app (`apps/CreateStructure/CreateStructure.cpp:263`)
+Called from: `CreateStructure` app (`apps/CreateStructure/CreateStructure.cpp:251`)
 
 ### A. Mermaid Flow Diagram
 
 ```mermaid
 graph TD
-    A[Scene::Reconstruct<br/>Scene.cpp:610] --> B[Scene::Import<br/>Scene.cpp:191]
+    A[Scene::Reconstruct<br/>Scene.cpp:600] --> B[Scene::Import<br/>Scene.cpp:300]
     B --> B1[Scan directory or split semicolon list]
     B1 --> B2[Load EXIF/metadata per image<br/>Image::LoadMetadata]
     B2 --> B3[Optional: import poses<br/>ImportPosesCSV .csv / ImportFramesJSON .json]
     B3 --> B4[Cluster identical cameras<br/>shared camera pointers]
-    B4 --> C[Scene::ExtractFeatures<br/>Scene.cpp:420]
+    B4 --> C[Scene::ExtractFeatures<br/>Scene.cpp:545]
     C --> C1[FeaturesExtractor::Extract<br/>FeaturesExtractor.cpp]
     C1 --> C2{Detector Type}
     C2 -->|AKAZE| C3[cv::AKAZE 3x3 grid]
@@ -47,7 +47,7 @@ graph TD
     C4 --> D
     C5 --> D
     C6 --> D
-    D[Scene::MatchPairs<br/>Scene.cpp:442] --> D1[PairsMatcher::Match<br/>PairsMatcher.cpp]
+    D[Scene::MatchPairs<br/>Scene.cpp:567] --> D1[PairsMatcher::Match<br/>PairsMatcher.cpp]
     D1 --> D2{Match Mode}
     D2 -->|VOCABULARY| D3[VocabularyTree query<br/>top-K pairs]
     D2 -->|EXHAUSTIVE| D4[All N^2 pairs]
@@ -90,14 +90,14 @@ graph TD
 ### B. Step-by-Step Narrative
 
 **Step 1: Image Import**
-- Function: `Scene::Import()` — `libs/SFM/Scene.cpp:191`
+- Function: `Scene::Import()` — `libs/SFM/Scene.cpp:300`
 - Input: folder path or semicolon-separated image list
 - Processing: scans directory for jpg/png/tif/jxl/exr/webp; sorts numerically; loads each image metadata (EXIF, GPS, focal length estimate via `Image::LoadMetadata`); clusters images sharing identical camera parameters into shared `Camera` pointers
 - Output: `scene.images[]` populated with file paths, metadata, and `pCamera` pointers; `scene.cameras[]` unique camera list
 - Config: `ImportConfig::defaultFocalRatio` (1.2), `ImportConfig::useExif`, `ImportConfig::importPosesFile`/`importPosesMode` (`PoseImportMode`), `ImportConfig::focalLength`/`k1`/`k2` overrides
 
 **Step 2: Feature Extraction**
-- Function: `Scene::ExtractFeatures()` → `FeaturesExtractor::Extract()` — `libs/SFM/Scene.cpp:420`, `libs/SFM/FeaturesExtractor.cpp`
+- Function: `Scene::ExtractFeatures()` → `FeaturesExtractor::Extract()` — `libs/SFM/Scene.cpp:545`, `libs/SFM/FeaturesExtractor.cpp`
 - Input: `scene.images[]` with file paths; `FeatureExtractionConfig`
 - Processing: for each image, creates a 3x3 spatial grid; runs detector on each cell up to `maxFeaturesPerCell` (default 3000, giving max 27000 features/image); binary descriptors (AKAZE/ORB) stored as CV_8U; SIFT converted to RootSIFT (L1-normalize then sqrt, quantized to uint8); optional OpenMVG import/export
 - Output: `image.keypoints` (cv::KeyPoint), `image.descriptors` (CV_8U)
@@ -105,14 +105,14 @@ graph TD
 - Parallelism: OpenMP parallel for over images when `SCENE_USE_OPENMP` enabled
 
 **Step 3: Pair Matching**
-- Function: `Scene::MatchPairs()` → `PairsMatcher::Match()` — `libs/SFM/Scene.cpp:442`, `libs/SFM/PairsMatcher.cpp`
+- Function: `Scene::MatchPairs()` → `PairsMatcher::Match()` — `libs/SFM/Scene.cpp:567`, `libs/SFM/PairsMatcher.cpp`
 - Input: extracted features per image; `MatchConfig`
 - Processing:
   - VOCABULARY mode: builds VocabularyTree on descriptors, fuses the per-image retrieval rankings (reciprocal-rank fusion) and keeps the mutual top-K pairs plus connectivity bridges; a second verification-feedback round re-invests the remaining pair budget
   - EXHAUSTIVE mode: all O(N²) pairs
   - SEQUENTIAL mode: matches each image to `matchSequenceOverlap` subsequent images
-  - KNOWN_POSES mode: `CollectKnownPosePairs()` derives the candidates from the imported poses — median nearest-neighbor camera distance as the scene scale, optical-axis angle > 75° rejected, remaining pairs scored by normalized baseline × viewing-direction agreement, mutual top-K agreement plus each image's 2 nearest cameras ungated (occlusion floor) and connectivity bridges; the verification-feedback round applies here too; falls back to EXHAUSTIVE if it yields nothing. Auto-selected by `CreateStructure` when poses were imported and `--match-mode` was not passed explicitly
-  - Optional pre-match threshold filter (skipped in EXHAUSTIVE/SEQUENTIAL/KNOWN_POSES, which build no vocabulary tree)
+  - KNOWN_POSES mode: `CollectKnownPosePairs()` derives the candidates from the imported poses — median nearest-neighbor camera distance as the scene scale, optical-axis angle > 75° rejected, remaining pairs scored by normalized baseline × viewing-direction agreement, mutual top-K agreement plus each posed image's 2 nearest posed cameras ungated (occlusion floor) and connectivity bridges; incomplete pose sets additionally use vocabulary retrieval for pairs touching unposed images; the verification-feedback round applies here too; falls back to EXHAUSTIVE if it yields nothing. Auto-selected by `CreateStructure` when poses were imported and `--match-mode` was not passed explicitly
+  - Optional pre-match threshold filter (requires a vocabulary tree, so it is skipped in EXHAUSTIVE/SEQUENTIAL and in KNOWN_POSES when every image is posed)
   - Per pair: `MatchFeatures()` uses FLANN (LSH for binary, KDTree for float) with Lowe ratio test (0.9 AKAZE/ORB, 0.8 SIFT) and optional cross-check
   - `GeometricFilter()`: RANSAC for E-matrix (calibrated pairs) or F-matrix (uncalibrated); min 50 inlier matches; optional H estimation
   - `PairsWeighting`: computes composite weight = spatial * connectivity * triplet for each pair
@@ -128,12 +128,12 @@ graph TD
 - Config: `ViewGraphCalibratorConfig::minFocalRatio`, `maxFocalRatio`, `trustIntrinsics`, `maxTwoViewError`, `minPairWeight`, `lossThreshold`, `maxIterations`
 
 **Step 5: Dispatch to Known-Poses, Hierarchical or Global**
-- Function: `Scene::Reconstruct()` — `libs/SFM/Scene.cpp:656`
+- Function: `Scene::Reconstruct()` — `libs/SFM/Scene.cpp:652`
 - Input: matched scene with relative poses; `ReconstructionConfig::HasKnownPoses()`, `ReconstructionConfig::useGlobalSolver`
 - Processing: saves intermediate `scene_pre_reconstruction.sfm`; branches to `ReconstructKnownPoses()` (when poses were imported with a mode that brings in extrinsics), else `ReconstructHierarchical()` (default) or `ReconstructGlobal()`
 
 **Step 6: Post-reconstruction refinement (shared)**
-- Function: `Scene::Reconstruct()` — `libs/SFM/Scene.cpp:659–697`
+- Function: `Scene::Reconstruct()` — `libs/SFM/Scene.cpp:657–719`
 - Processing: two-phase global BA (pre-final at 25 iters, final at config iters); `FilterTracks()`; `TriangulateTracks()`; `FilterWeaklyConnectedImages()`; optional final `Resection::RegisterImages()` for remaining unregistered images; optional `AlignToGPS()`, or `AlignToPriorPoses()` in known-poses mode; optional `SampleColors()`
 
 ### C. Data Flow Summary
@@ -153,11 +153,11 @@ graph TD
 
 ### D. Known-Poses (Finetune) Variant
 
-When `ReconstructionConfig::HasKnownPoses()` is true — `ImportConfig::importPosesFile` set with `PoseImportMode::POSES_INTRINSICS` or `POSES` — Step 5 dispatches to `Scene::ReconstructKnownPoses()` (`libs/SFM/Scene.cpp:858`) instead of the hierarchical/global solvers. Steps 1–4 and 6 are unchanged; only the pose-estimation core is replaced.
+When `ReconstructionConfig::HasKnownPoses()` is true — `ImportConfig::importPosesFile` set with `PoseImportMode::POSES_INTRINSICS` or `POSES` — Step 5 dispatches to `Scene::ReconstructKnownPoses()` (`libs/SFM/Scene.cpp:859`) instead of the hierarchical/global solvers. Import, feature extraction, and the shared refinement tail remain the same; pair selection can use the known poses and adds visual-retrieval candidates for images without a prior.
 
 ```mermaid
 graph TD
-    A[Scene::ReconstructKnownPoses<br/>Scene.cpp:858] --> B{At least 50% of images posed?}
+    A[Scene::ReconstructKnownPoses<br/>Scene.cpp:859] --> B{At least 50% of images posed?}
     B -->|no| B1[Fail loudly<br/>list the unmatched file names]
     B -->|yes| C[Snapshot poses into Scene::priorPoses]
     C --> D{frames.json imported as AUTO?}
@@ -179,15 +179,15 @@ graph TD
 
 - **Pose import** happens back in Step 1: `ImportConfig::importPosesFile` is dispatched on extension, `.csv` to `ImportPosesCSV()` and `.json` to `ImportFramesJSON()` (`libs/SFM/ImportFramesJSON.h`), before the camera de-duplication so identical per-frame intrinsics collapse into one shared `Camera`.
 - **Permissive first triangulation** (4× `maxReprojError`): the imported poses are approximate and the intrinsics may still be EXIF-derived, so the strict threshold would reject correct tracks before BA can fix the geometry.
-- **Clustering never runs** on this path, which is what keeps the transient `Scene::priorPoses` alive (the hierarchical path's `*this` move would drop it).
-- **The shared tail is untouched**, including the final `Resection::RegisterImages()` — that is what registers images absent from the poses file — and closing with `AlignToPriorPoses()` in place of `AlignToGPS()`.
+- **Clustering never runs** on this path; `Scene::priorPoses` is transient (not serialized) but is preserved by regular scene copies and moves.
+- **The shared tail still runs**, including the final `Resection::RegisterImages()` for images absent from the poses file, and closes with `AlignToPriorPoses()` in place of `AlignToGPS()`. Failure to estimate that final similarity fails the reconstruction rather than leaving successful output in an arbitrary bundle-adjustment gauge.
 
 ---
 
 ## 2. SFM Hierarchical Pipeline
 
 ### Entry Point
-`SFM::Scene::ReconstructHierarchical()` — `libs/SFM/Scene.cpp:700`
+`SFM::Scene::ReconstructHierarchical()` — `libs/SFM/Scene.cpp:726`
 
 Called from `Scene::Reconstruct()` when `useGlobalSolver=false` (default).
 
@@ -195,7 +195,7 @@ Called from `Scene::Reconstruct()` when `useGlobalSolver=false` (default).
 
 ```mermaid
 graph TD
-    A[ReconstructHierarchical<br/>Scene.cpp:700] --> B{images > maxViewsPerCluster?}
+    A[ReconstructHierarchical<br/>Scene.cpp:726] --> B{images > maxViewsPerCluster?}
     B -->|yes| C[SceneCluster::SplitScene<br/>SceneCluster.cpp]
     B -->|no| D[Single sub-scene = this scene]
     C --> E[Per-cluster: BuildTracks<br/>Track.cpp union-find]
@@ -269,13 +269,13 @@ graph TD
 ## 3. SFM Global Pipeline
 
 ### Entry Point
-`SFM::Scene::ReconstructGlobal()` — `libs/SFM/Scene.cpp:772`
+`SFM::Scene::ReconstructGlobal()` — `libs/SFM/Scene.cpp:796`
 
 ### A. Mermaid Flow Diagram
 
 ```mermaid
 graph TD
-    A[ReconstructGlobal<br/>Scene.cpp:772] --> B[GlobalRotationEstimator::EstimateRotations<br/>GlobalRotationAveraging.cpp]
+    A[ReconstructGlobal<br/>Scene.cpp:796] --> B[GlobalRotationEstimator::EstimateRotations<br/>GlobalRotationAveraging.cpp]
     B --> B1[InitializeFromMaximumSpanningTree<br/>weighted by inlier counts]
     B1 --> B2[SetupLinearSystem: sparse Ax=b<br/>dR_ij = dR_j - dR_i in tangent space]
     B2 --> B3[SolveL1Regression: up to 5 iterations]

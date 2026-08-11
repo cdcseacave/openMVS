@@ -416,6 +416,7 @@ bool Scene::Import(const String& source, const ImportConfig& config)
 				key += String::FormatString("|%.9f|%.9f|%.9f|%.9f", pc->fx, pc->fy, pc->cx, pc->cy);
 				key += String::FormatString("|%.9f|%.9f|%.9f|%.9f|%.9f|%.9f", pc->k1, pc->k2, pc->k3, pc->p1, pc->p2, pc->k4);
 				key += String::FormatString("|%.9f|%.9f", pc->k5, pc->k6);
+				key += pc->trustIntrinsics ? "|trusted" : "|untrusted";
 			}
 			// include metadata for strict grouping
 			key += "|" + cam->metadata.name + "|" + cam->metadata.model;
@@ -683,8 +684,8 @@ bool Scene::Reconstruct(const String& source, const ReconstructionConfig& config
 	// path works to preserve, so the CLI zeroes thAlignGPS there unless it was passed explicitly)
 	if (config.thAlignGPS > 0 && HasImagesWithGPS())
 		AlignToGPS(config.thAlignGPS);
-	else if (config.HasKnownPoses() && !priorPoses.empty())
-		AlignToPriorPoses();
+	else if (config.HasKnownPoses() && !priorPoses.empty() && !AlignToPriorPoses())
+		return false;
 
 	// Refine the geo-aligned reconstruction with GPS position priors (if enabled): the GPS
 	// residuals are gated on GEO_ALIGN and their meters-vs-pixels weighting assumes the metric
@@ -908,7 +909,7 @@ bool Scene::ReconstructKnownPoses(const ReconstructionConfig& config)
 
 	// 3. Resolve the camera-axes convention of the imported transforms: a frames.json does not
 	// declare it and Scene::Import optimistically applied the ARKit one; the two hypotheses
-	// differ by a pi rotation about the camera X axis, so the wrong choice mirrors every
+	// differ by a pi rotation about the camera X axis, so the wrong choice reverses every
 	// viewing direction and triangulation collapses
 	if (config.importCfg.framesConvention == FramesConvention::AUTO &&
 		Util::getFileExt(config.importCfg.importPosesFile).ToLower() == ".json")
@@ -1192,15 +1193,15 @@ bool Scene::AlignToPriorPoses(float thresholdRatio)
 	// the spacing of the prior cameras; half of it keeps a slowly drifting trajectory (exactly
 	// what the finetune corrects) fully inlier while rejecting a camera that ended up a whole
 	// frame-spacing away from its prior
-	DoubleArr nearestDists;
-	nearestDists.reserve(priorCenters.size());
-	FOREACH(i, priorCenters) {
+	DoubleArr nearestDists(priorCenters.size());
+	threadPool.detach_loop(IIndex(0), (IIndex)priorCenters.size(), [&](IIndex i) {
 		REAL minDistSq = std::numeric_limits<REAL>::max();
 		FOREACH(j, priorCenters)
 			if (i != j)
 				minDistSq = MINF(minDistSq, normSq(priorCenters[i]-priorCenters[j]));
-		nearestDists.push_back((double)SQRT(minDistSq));
-	}
+		nearestDists[i] = (double)SQRT(minDistSq);
+	});
+	threadPool.wait();
 	const double medianDist = nearestDists.GetMedian();
 	if (medianDist <= 0) {
 		VERBOSE("error: prior camera centers are coincident, skipping prior-pose alignment");

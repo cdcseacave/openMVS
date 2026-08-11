@@ -18,8 +18,7 @@ IF(POLICY CMP0104)
 ENDIF()
 IF(POLICY CMP0146)
 	# Use CMake's first-class CUDA language support instead of FindCUDA().
-	# note: not required, but forced by OpenCV old support for CUDA
-	CMAKE_POLICY(SET CMP0146 OLD)
+	CMAKE_POLICY(SET CMP0146 NEW)
 ENDIF()
 IF(POLICY CMP0167)
 	# The FindBoost module is removed.

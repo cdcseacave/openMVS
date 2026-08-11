@@ -184,6 +184,7 @@ public:
 	// and keep the pairs present in the candidate lists of both endpoints; every image also
 	// keeps its nearest cameras regardless of the view-angle gate (occlusion safeguard), and
 	// any remaining connected components are bridged with the best-scoring cross pairs;
+	// images without a pose receive vocabulary-retrieved pairs so they can be resected later;
 	// topK is the per-image candidate-list length (see Match for how it maps to the
 	// configured pairs-per-image target).
 	// Returns an empty array if less than two images are posed or the poses are degenerate.

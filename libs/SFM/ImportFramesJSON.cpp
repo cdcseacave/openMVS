@@ -70,6 +70,19 @@ inline String StemKey(const String& path) {
 	return Util::getFileName(path).ToLower();
 }
 
+// Read a finite floating-point value from external JSON.
+bool ReadFiniteNumber(const nlohmann::json& value, REAL& number)
+{
+	if (!value.is_number())
+		return false;
+	try {
+		number = value.get<REAL>();
+	} catch (const std::exception&) {
+		return false;
+	}
+	return ISFINITE(number);
+}
+
 // Check that the given matrix is a rotation, up to the given tolerance
 bool IsRotationMatrix(const Matrix3x3& R, REAL tolerance)
 {
@@ -119,11 +132,10 @@ bool ApplyImportedIntrinsics(const nlohmann::json& params, Image& img, String& e
 	};
 	for (const auto& field : fields) {
 		const auto it = params.find(field.name);
-		if (it == params.end() || !it->is_number()) {
+		if (it == params.end() || !ReadFiniteNumber(*it, *field.value)) {
 			error = String::FormatString("missing or invalid '%s'", field.name);
 			return false;
 		}
-		*field.value = it->get<REAL>();
 	}
 	if (declaredWidth <= 0 || declaredHeight <= 0 || fx <= 0 || fy <= 0) {
 		error = String::FormatString("invalid resolution %gx%g or focal (%g, %g)",
@@ -226,9 +238,19 @@ unsigned SFM::ImportFramesJSON(const String& fileName, Scene& scene, PoseImportM
 {
 	if (mode == PoseImportMode::NONE)
 		return 0;
+	if (mode != PoseImportMode::POSES_INTRINSICS && mode != PoseImportMode::POSES &&
+		mode != PoseImportMode::POSITIONS)
+	{
+		VERBOSE("error: invalid pose import mode for frames file '%s'", fileName.c_str());
+		return 0;
+	}
 	if (convention == FramesConvention::AUTO) {
 		VERBOSE("error: the camera-axes convention of '%s' can only be resolved after matching; "
 			"import it as arkit or opencv", fileName.c_str());
+		return 0;
+	}
+	if (convention != FramesConvention::ARKIT && convention != FramesConvention::OPENCV) {
+		VERBOSE("error: invalid camera-axes convention for frames file '%s'", fileName.c_str());
 		return 0;
 	}
 	std::ifstream stream(fileName.c_str());
@@ -250,15 +272,23 @@ unsigned SFM::ImportFramesJSON(const String& fileName, Scene& scene, PoseImportM
 	std::unordered_map<String, IIndex> imageByName, imageByStem;
 	imageByName.reserve(scene.images.size());
 	imageByStem.reserve(scene.images.size());
+	const auto AddUniqueImageKey = [](std::unordered_map<String, IIndex>& imageMap,
+		const String& key, IIndex imageID)
+	{
+		const auto [it, inserted] = imageMap.emplace(key, imageID);
+		if (!inserted)
+			it->second = NO_ID; // ambiguous keys must not silently select one image
+	};
 	FOREACH(i, scene.images) {
 		const String& imgFileName = scene.images[i].fileName;
-		imageByName.emplace(NameKey(imgFileName), i);
-		imageByStem.emplace(StemKey(imgFileName), i);
+		AddUniqueImageKey(imageByName, NameKey(imgFileName), i);
+		AddUniqueImageKey(imageByStem, StemKey(imgFileName), i);
 	}
 
 	const Matrix3x3 flip = CameraAxesFlip();
 	unsigned numPosed = 0, numUnmatched = 0, numRejected = 0, numIntrinsics = 0, numWarnings = 0;
 	bool intrinsicsRequestedButMissing = false;
+	std::vector<uint8_t> importedImages(scene.images.size(), 0);
 	for (size_t e = 0; e < data.size(); ++e) {
 		const nlohmann::json& entry = data[e];
 		const auto itName = entry.find("name"); // returns end() for any non-object entry
@@ -272,19 +302,38 @@ unsigned SFM::ImportFramesJSON(const String& fileName, Scene& scene, PoseImportM
 		const String name(itName->get<std::string>());
 		// find the matching image: full name first, then stem
 		IIndex imageID = NO_ID;
+		bool ambiguousName = false;
 		const auto itByName = imageByName.find(NameKey(name));
 		if (itByName != imageByName.end()) {
 			imageID = itByName->second;
+			ambiguousName = imageID == NO_ID;
 		} else {
 			const auto itByStem = imageByStem.find(StemKey(name));
-			if (itByStem != imageByStem.end())
+			if (itByStem != imageByStem.end()) {
 				imageID = itByStem->second;
+				ambiguousName = imageID == NO_ID;
+			}
 		}
 		if (imageID == NO_ID) {
+			if (++numWarnings <= maxLoggedWarnings) {
+				if (ambiguousName)
+					VERBOSE("error: frame '%s' of '%s' ambiguously matches multiple input images; skipped",
+						name.c_str(), fileName.c_str());
+				else
+					VERBOSE("warning: frame '%s' of '%s' matches no input image; skipped",
+						name.c_str(), fileName.c_str());
+			}
+			if (ambiguousName)
+				++numRejected;
+			else
+				++numUnmatched;
+			continue;
+		}
+		if (importedImages[imageID]) {
 			if (++numWarnings <= maxLoggedWarnings)
-				VERBOSE("warning: frame '%s' of '%s' matches no input image; skipped",
-					name.c_str(), fileName.c_str());
-			++numUnmatched;
+				VERBOSE("error: more than one frame in '%s' matches image '%s'; duplicate skipped",
+					fileName.c_str(), Util::getFileNameExt(scene.images[imageID].fileName).c_str());
+			++numRejected;
 			continue;
 		}
 		Image& img = scene.images[imageID];
@@ -301,15 +350,14 @@ unsigned SFM::ImportFramesJSON(const String& fileName, Scene& scene, PoseImportM
 		bool validNumbers = true;
 		for (unsigned k = 0; k < 16; ++k) {
 			const nlohmann::json& value = (*itTransform)[k];
-			if (!value.is_number()) {
+			if (!ReadFiniteNumber(value, transform[k])) {
 				validNumbers = false;
 				break;
 			}
-			transform[k] = value.get<REAL>();
 		}
 		if (!validNumbers) {
 			if (++numWarnings <= maxLoggedWarnings)
-				VERBOSE("error: frame '%s' of '%s' has a non-numeric 'transform'; skipped",
+				VERBOSE("error: frame '%s' of '%s' has a non-finite or non-numeric 'transform'; skipped",
 					name.c_str(), fileName.c_str());
 			++numRejected;
 			continue;
@@ -355,6 +403,7 @@ unsigned SFM::ImportFramesJSON(const String& fileName, Scene& scene, PoseImportM
 			img.R = rotation;
 		}
 		img.C = center;
+		importedImages[imageID] = 1;
 		++numPosed;
 		// import the intrinsics only when asked for and available
 		if (mode == PoseImportMode::POSES_INTRINSICS) {

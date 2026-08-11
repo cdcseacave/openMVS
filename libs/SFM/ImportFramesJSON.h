@@ -27,7 +27,7 @@ class SFM_API Scene;
 // Camera-axes convention of a frames.json `transform` matrix.
 // The file stores a camera-to-world transform, but does not declare the camera axes
 // it is expressed in; the two options differ by a pi rotation about the camera X axis,
-// so picking the wrong one mirrors every viewing direction and triangulation collapses.
+// so picking the wrong one reverses every optical axis and triangulation collapses.
 enum class FramesConvention {
 	AUTO = 0,   // unknown: decide after matching, from the verified relative poses
 	ARKIT = 1,  // ARKit/OpenGL camera axes (X right, Y up, Z backward)
@@ -44,7 +44,8 @@ SFM_API String FramesConventionToString(FramesConvention convention);
  * is a column-major 4x4 camera-to-world matrix and the optional `params` holds an OPENCV
  * camera model declared for a possibly different image resolution.
  * Entries are matched to the already imported scene images by file name (full name first,
- * then stem, both case-insensitive); images without a matching entry are left unposed.
+ * then stem, both case-insensitive); ambiguous names and duplicate entries are rejected,
+ * while images without a matching entry are left unposed.
  * The intrinsics are only imported when the mode asks for them and `params` is present,
  * otherwise the EXIF-derived intrinsics computed by Image::LoadMetadata are kept.
  * Must be called before the images are assigned shared cameras, so that identical

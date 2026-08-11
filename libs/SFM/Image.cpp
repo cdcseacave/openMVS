@@ -413,14 +413,20 @@ unsigned SFM::ImportPosesCSV(const String& fileName, ImageArr& images, PoseImpor
 	unsigned numUpdated = 0;
 	if (mode == PoseImportMode::NONE)
 		return numUpdated;
+	if (mode != PoseImportMode::POSES_INTRINSICS && mode != PoseImportMode::POSES &&
+		mode != PoseImportMode::POSITIONS)
+		return numUpdated;
 	std::ifstream is(fileName);
 	if (!is.is_open())
 		return numUpdated;
 
 	std::unordered_map<String, IIndex> stemToIndex;
 	stemToIndex.reserve(images.size());
-	FOREACH(i, images)
-		stemToIndex.emplace(Util::getFileName(images[i].fileName), i);
+	FOREACH(i, images) {
+		const auto [it, inserted] = stemToIndex.emplace(Util::getFileName(images[i].fileName), i);
+		if (!inserted)
+			it->second = NO_ID; // reject ambiguous stems instead of selecting an arbitrary image
+	}
 
 	String line;
 	if (!std::getline(is, line))
@@ -443,27 +449,39 @@ unsigned SFM::ImportPosesCSV(const String& fileName, ImageArr& images, PoseImpor
 			continue;
 		// Find image by stem
 		const auto it = stemToIndex.find(fields[0]);
-		if (it == stemToIndex.end())
+		if (it == stemToIndex.end() || it->second == NO_ID)
 			continue;
 		Image& image = images[it->second];
 		// Parse values
 		try {
-			double fx = std::stod(fields[1]);
-			double fy = std::stod(fields[2]);
-			double cx = std::stod(fields[3]);
-			double cy = std::stod(fields[4]);
-			double qx = std::stod(fields[5]);
-			double qy = std::stod(fields[6]);
-			double qz = std::stod(fields[7]);
-			double qw = std::stod(fields[8]);
-			double Cx = std::stod(fields[9]);
-			double Cy = std::stod(fields[10]);
-			double Cz = std::stod(fields[11]);
-			float score = std::stof(fields[12]);
+			const double fx = std::stod(fields[1]);
+			const double fy = std::stod(fields[2]);
+			const double cx = std::stod(fields[3]);
+			const double cy = std::stod(fields[4]);
+			const double qx = std::stod(fields[5]);
+			const double qy = std::stod(fields[6]);
+			const double qz = std::stod(fields[7]);
+			const double qw = std::stod(fields[8]);
+			const double Cx = std::stod(fields[9]);
+			const double Cy = std::stod(fields[10]);
+			const double Cz = std::stod(fields[11]);
+			const float score = std::stof(fields[12]);
+			if (!std::isfinite(fx) || !std::isfinite(fy) || !std::isfinite(cx) || !std::isfinite(cy) ||
+				!std::isfinite(qx) || !std::isfinite(qy) || !std::isfinite(qz) || !std::isfinite(qw) ||
+				!std::isfinite(Cx) || !std::isfinite(Cy) || !std::isfinite(Cz) || !std::isfinite(score))
+				continue;
 
 			if (score <= 0.f) {
 				image.InvalidatePose();
 				continue;
+			}
+
+			Eigen::Quaterniond q;
+			if (mode != PoseImportMode::POSITIONS) {
+				q = Eigen::Quaterniond(qw, qx, qy, qz);
+				if (q.norm() <= std::numeric_limits<double>::epsilon())
+					continue;
+				q.normalize();
 			}
 
 			if (mode == PoseImportMode::POSES_INTRINSICS && image.HasCamera()) {
@@ -480,10 +498,6 @@ unsigned SFM::ImportPosesCSV(const String& fileName, ImageArr& images, PoseImpor
 			}
 			if (mode != PoseImportMode::POSITIONS) {
 				// Set rotation from quaternion
-				Eigen::Quaterniond q(qw, qx, qy, qz);
-				if (q.norm() == 0.0)
-					continue;
-				q.normalize();
 				image.R = q.toRotationMatrix();
 			}
 			// Set camera position

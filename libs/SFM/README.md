@@ -120,7 +120,7 @@ Input: Images (or video keyframes)          [+ optional poses file]
       ▼                ▼                    ▼
 ┌───────────────┐ ┌──────────────┐ ┌──────────────────────┐
 │ HIERARCHICAL  │ │   GLOBAL     │ │     KNOWN POSES      │
-│(robust,slower)│ │(fast,simpler)│ │  (finetune, fastest) │
+│(robust,slower)│ │(fast,simpler)│ │      (finetune)      │
 │               │ │              │ │                      │
 │Scene          │ │Rotation      │ │Validate pose         │
 │  Clustering   │ │  Averaging   │ │  coverage (>=50%)    │
@@ -154,7 +154,7 @@ Input: Images (or video keyframes)          [+ optional poses file]
 
 ### Common Front-End
 
-These steps are shared by both workflows.
+These steps are shared by all reconstruction workflows.
 
 #### 1. Feature Extraction (`FeaturesExtractor.h`)
 
@@ -172,11 +172,11 @@ Four matching strategies:
 - **VOCABULARY** (recommended): Build a visual vocabulary tree and query each image's ranked similar-image list. The two directed rankings are fused with symmetric reciprocal-rank fusion (each direction contributes `1/(k0+rank)`, so a pair both images retrieve early outranks a pair only one image scores high, and the rank-based fusion is immune to per-query score-scale drift), then only the pairs present in the fused top-K lists of *both* endpoints are kept — mutual agreement suppresses the one-sided, mostly false tail of each retrieval list that wastes matching budget at small `maxPairsPerImage`. Finally the connected components of the selected pair graph are bridged with the best-scoring cross-component pairs, so a sparse selection cannot silently split the view graph. O(N log N) instead of O(N²).
 - **EXHAUSTIVE**: Match all pairs. Only practical for small datasets (<100 images).
 - **SEQUENTIAL**: Match consecutive frames only. For ordered video sequences.
-- **KNOWN_POSES**: Pick the pairs geometrically, from poses that were imported rather than estimated. Each pair is scored by baseline (normalized by the median nearest-neighbor camera distance, so the score is independent of the units the poses came in) times viewing-direction agreement; pairs whose optical axes diverge by more than 75° are rejected outright. Selection mirrors VOCABULARY: a pair is kept only if each image ranks the other within its own top candidates (mutual agreement), every image additionally keeps its 2 nearest cameras with *no* angle gating (under occlusion — e.g. an indoor camera turning back at the end of a corridor — all top covisible partners can exceed the gate, and dropping them was measured to split the view graph), and remaining components are bridged by the best-scoring cross pairs. It needs no descriptors, so no vocabulary tree is built. Auto-selected when poses were imported and `--match-mode` was not passed explicitly; falls back to exhaustive if fewer than two images are posed.
+- **KNOWN_POSES**: Pick the pairs geometrically, from poses that were imported rather than estimated. Each pair is scored by baseline (normalized by the median nearest-neighbor camera distance, so the score is independent of the units the poses came in) times viewing-direction agreement; pairs whose optical axes diverge by more than 75° are rejected outright. Selection mirrors VOCABULARY: a pair is kept only if each image ranks the other within its own top candidates (mutual agreement), every posed image additionally keeps its 2 nearest posed cameras with *no* angle gating (under occlusion — e.g. an indoor camera turning back at the end of a corridor — all top covisible partners can exceed the gate), and remaining components are bridged by the best-scoring cross pairs. Pair selection itself needs no descriptors and therefore builds no vocabulary tree when every image is posed. If the poses file is incomplete, vocabulary retrieval adds pairs touching the unposed images so the reconstruction tail can resect them. Auto-selected when poses were imported and `--match-mode` was not passed explicitly; falls back to exhaustive if fewer than two images are posed.
 
   Note that the score deliberately has **no** camera-center cheirality (mutual-frustum) test: in an orbit capture the neighboring camera centers lie tangentially to the view direction, and in a nadir aerial capture perpendicularly to it, so the strongest overlapping pairs are exactly the ones such a test would discard. Baseline is a ranking preference, not a rejection criterion -- the distance at which two views still overlap varies by orders of magnitude between close-range and aerial captures.
 
-**Verification feedback** (VOCABULARY and KNOWN_POSES, on by default when `maxPairsPerImage >= 10`, disable with `--match-verification-feedback 0`): matching runs in two rounds. The first round collects and matches candidates from *uninflated* per-image lists at 80% of the target (single-round matching inflates the lists to compensate the strictness of mutual agreement; here the second round does that job instead); the remaining budget — everything up to `maxPairsPerImage*N/2` total attempted pairs, including the part the strict mutual-agreement rule leaves unspent — is then re-invested in pairs suggested by the geometrically *verified* matches of the first round: KNOWN_POSES closes the triangles of the verified pair graph (two images sharing verified neighbors most likely overlap too, ranked by the number of common neighbors — this recovers true pairs the view-angle gate or the baseline preference mis-ranked), while VOCABULARY propagates each verified pair to the top-5 retrieval candidates of its endpoints (the retrieval analogue of triangle closing, GraphMatch/COLMAP-transitive style). Images left with the weakest verified connectivity refill any leftover budget from their next best-ranked first-round candidates (2 pairs per image). On the 7-dataset pseudo-GT benchmark this raises mean weighted pair recall at an equal attempted-pair budget by +0.9/+1.9/+3.3 (VOCABULARY, never worse on any dataset at budgets ≥10) and +0.5/+0.7/+0.8 (KNOWN_POSES) at 10/20/30 pairs/image.
+**Verification feedback** (VOCABULARY and KNOWN_POSES, on by default when `maxPairsPerImage >= 10`, disable with `--match-verification-feedback 0`): matching runs in two rounds. The first round collects and matches candidates from *uninflated* per-image lists at 80% of the target (single-round matching inflates the lists to compensate the strictness of mutual agreement; here the second round does that job instead); the remaining budget — everything up to `maxPairsPerImage*N/2` total attempted pairs, including the part the strict mutual-agreement rule leaves unspent — is then re-invested in pairs suggested by the geometrically *verified* matches of the first round: KNOWN_POSES closes the triangles of the verified pair graph (two images sharing verified neighbors most likely overlap too, ranked by the number of common neighbors — this recovers true pairs the view-angle gate or the baseline preference mis-ranked), while VOCABULARY propagates each verified pair to the top-5 retrieval candidates of its endpoints (the retrieval analogue of triangle closing). Images left with the weakest verified connectivity refill any leftover budget from their next best-ranked first-round candidates (2 pairs per image).
 
 The matching pipeline:
 1. **Descriptor matching**: FLANN (LSH for binary, KDTree for float) or brute-force
@@ -203,7 +203,7 @@ Union-find merges matched features across all image pairs into tracks. Filtering
 The hierarchical workflow is the **recommended default**. It splits the scene into manageable clusters, reconstructs each independently using incremental SFM, and then stitches them together with global alignment. When the dataset is small enough to fit in a single cluster, it degrades gracefully to a pure incremental reconstruction -- so it works well for any scene size.
 
 ```
-Input: Tracks + Image Pairs (from common front-end)
+Input: Images + matched pairs (from common front-end)
   │
   ▼
 ┌─────────────────────────────────────────────────────────┐
@@ -301,7 +301,7 @@ Output: Calibrated poses + sparse point cloud
 The global workflow bypasses incremental reconstruction entirely. Instead of registering images one by one, it solves for all camera rotations and translations simultaneously using averaging algorithms. This is fundamentally different from the incremental approach.
 
 ```
-Input: Tracks + Image Pairs (from common front-end)
+Input: Images + matched pairs (from common front-end)
   │
   ▼
 ┌─────────────────────────────────────────────────────────┐
@@ -367,7 +367,7 @@ Sometimes the poses are not the unknown. An AR capture (ARKit/ARCore, Polycam), 
 It is selected by `ReconstructionConfig::HasKnownPoses()`, which is true when a poses file is configured with a mode that brings in extrinsics (`PoseImportMode::POSES_INTRINSICS` or `POSES`).
 
 ```
-Input: Tracks + Image Pairs (from common front-end)
+Input: Images + matched pairs (from common front-end)
        + poses imported during Scene::Import
   │
   ▼
@@ -423,11 +423,11 @@ Output: Refined poses + sparse point cloud, handed to the
 
 - **Intrinsics are refined even when you asked for no refinement**, but only if some camera reports `!TrustIntrinsics()`. A poses-only import leaves the focal length coming from EXIF, which is by far the weakest prior in play; known poses make the bundle adjustment over focal length well conditioned, so it is worth solving for.
 
-- **Nothing is skipped in the front-end.** Features are still extracted and pairs are still matched and geometrically verified in the usual way. This is deliberate: the E-decomposed relative poses are what the convention auto-detection compares the imported poses against, so they must stay independent of them.
+- **The front-end still verifies image evidence.** Features are extracted and every selected pair is descriptor-matched and geometrically verified; only candidate selection changes to use the imported poses (plus visual retrieval for unposed images). This is deliberate: the E-decomposed relative poses are what convention auto-detection compares the imported poses against, so they must stay independent of them.
 
-- **Clustering never runs.** This path does not go through `ReconstructHierarchical`, which is what makes the transient `Scene::priorPoses` safe -- the `*this` move that hierarchical reconstruction performs would otherwise drop it.
+- **Clustering never runs.** This path does not go through `ReconstructHierarchical`; `Scene::priorPoses` is transient (not serialized) but is preserved by regular scene copies and moves.
 
-- **The shared tail is untouched.** After this method returns, `Scene::Reconstruct` continues exactly as it does for the other workflows, including the final `Resection::RegisterImages()` -- which is what registers any image that had no entry in the poses file at all.
+- **The shared tail still runs.** After this method returns, `Scene::Reconstruct` continues through final bundle adjustment, filtering, and `Resection::RegisterImages()`, which registers images that had no entry in the poses file.
 
 #### The frames.json format (`ImportFramesJSON.h`)
 
@@ -453,7 +453,7 @@ A JSON array of frames, the format Polycam-style AR captures export:
 
 **Two things the format does not tell you**, both handled by the importer:
 
-1. **Camera-axes convention.** The `transform` is camera-to-world, but whether its camera axes are ARKit/OpenGL (X right, Y up, Z backward) or OpenCV (X right, Y down, Z forward) is not declared, and the two differ by a π rotation about the camera X axis. Choosing wrong mirrors every viewing direction and triangulation collapses. `DetectFramesConvention` decides after matching: it compares the imported relative rotations `R_j · R_iᵀ` against the match-verified ones under both hypotheses and takes the lower median angular error, requiring the winner to be 3× better. If no pair carries a verified relative pose (an F-only, uncalibrated scene), it falls back to two-view triangulating the highest-weighted pairs under both hypotheses and counting cheirality-positive, low-reprojection inliers. A genuinely ambiguous scene returns `AUTO`, and the caller fails asking for an explicit convention rather than guessing. `FlipFramesConvention` applies the flip as `img.R ← diag(1,-1,-1) · img.R`, leaving the camera centers alone.
+1. **Camera-axes convention.** The `transform` is camera-to-world, but whether its camera axes are ARKit/OpenGL (X right, Y up, Z backward) or OpenCV (X right, Y down, Z forward) is not declared, and the two differ by a π rotation about the camera X axis. Choosing wrong reverses every optical axis and triangulation collapses. `DetectFramesConvention` decides after matching: it compares the imported relative rotations `R_j · R_iᵀ` against the match-verified ones under both hypotheses and takes the lower median angular error, requiring the winner to be 3× better. If no pair carries a verified relative pose (an F-only, uncalibrated scene), it falls back to two-view triangulating the highest-weighted pairs under both hypotheses and counting cheirality-positive, low-reprojection inliers. A genuinely ambiguous scene returns `AUTO`, and the caller fails asking for an explicit convention rather than guessing. `FlipFramesConvention` applies the flip as `img.R ← diag(1,-1,-1) · img.R`, leaving the camera centers alone.
 
 2. **EXIF portrait rotation.** OpenMVS rotates EXIF-portrait images 90° clockwise on load (`View::ToWorkingOrientation`), but the imported pose describes the camera of the image *as stored on disk*. The importer composes the same in-plane rotation into the pose (`R ← Rz(+90°) · R`, the inverse of what `View::RevertRotation` undoes on export) and rotates the imported intrinsics to match (`fx ↔ fy`, `cx, cy` remapped, `p1, p2` rotated; the radial coefficients are invariant). The camera center is unchanged.
 
@@ -461,7 +461,7 @@ A JSON array of frames, the format Polycam-style AR captures export:
 
 Bundle adjustment leaves the gauge free, so the refined reconstruction drifts off the input frame -- and, without GPS priors, its scale is unanchored entirely. `AlignToPriorPoses` estimates a similarity transform from the refined camera centers to their `priorPoses` counterparts (`EstimateSimilarityTransform`, the same primitive `AlignToGPS` uses) and applies it with `Scene::Transform`, which also re-maps the track positions and the pose covariances. Images resected along the way have no prior and simply ride along with the transform.
 
-The RANSAC threshold is expressed as a *fraction* of the median distance between neighboring prior camera centers (default 0.5) rather than in absolute units, because the prior frame may be in any units at all.
+The RANSAC threshold is expressed as a *fraction* of the median distance between neighboring prior camera centers (default 0.5) rather than in absolute units, because the prior frame may be in any units at all. The reconstruction fails if this final similarity cannot be estimated; it never reports success with output left in an arbitrary bundle-adjustment gauge.
 
 Unlike `AlignToGPS`, this does not touch `Scene::transform` and does not set the `GEO_ALIGN` state: the prior frame is the dataset's own frame, not a geo-referenced one. It runs as the `else` branch of the GPS-alignment block, so a scene with both GPS metadata and known poses still prefers GPS when the user asks for it.
 
@@ -486,7 +486,7 @@ The log line it emits -- median and maximum camera-center delta, median and maxi
 - **Start with hierarchical** (`Scene::ReconstructHierarchical`). It's the safer default. For small scenes (< 200 images) it automatically runs as a single incremental reconstruction with no clustering overhead.
 - **Try global** (`Scene::ReconstructGlobal`) when you need speed and your dataset is well-connected with reliable matches (e.g., drone surveys with good overlap, indoor scans with distinctive features). If the global result has missing or misaligned cameras, fall back to hierarchical.
 - **Global is not "better hierarchical"**. The two approaches have fundamentally different failure modes. Hierarchical fails gracefully (some images may not register, but the rest are correct). Global can fail catastrophically (a few bad rotations corrupt the entire solution).
-- **Known-poses is not a competitor to either** -- it is the answer to a different question. Use it only when you already have the poses and want them refined in their own frame; it cannot reconstruct a scene whose poses are unknown. Because it never has to search for a pose, it is the fastest of the three and its failure mode is a loud one (bad or badly-named poses stop the run instead of producing a plausible-looking wrong scene).
+- **Known-poses is not a competitor to either** -- it is the answer to a different question. Use it only when you already have the poses and want them refined in their own frame; it cannot reconstruct a scene whose poses are unknown. It avoids the incremental/global pose solver, and bad or badly named poses stop the run instead of silently selecting a different reconstruction strategy.
 
 ## External Format Integration
 

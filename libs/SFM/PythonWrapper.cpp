@@ -256,6 +256,10 @@ void RegisterBindings()
 		.value("POSES_INTRINSICS", SFM::PoseImportMode::POSES_INTRINSICS)
 		.value("POSES", SFM::PoseImportMode::POSES)
 		.value("POSITIONS", SFM::PoseImportMode::POSITIONS);
+	enum_<SFM::FramesConvention>("FramesConvention")
+		.value("AUTO", SFM::FramesConvention::AUTO)
+		.value("ARKIT", SFM::FramesConvention::ARKIT)
+		.value("OPENCV", SFM::FramesConvention::OPENCV);
 
 	// SFM::ImportConfig — image import + camera priors
 	class_<SFM::ImportConfig>("ImportConfig")
@@ -265,7 +269,8 @@ void RegisterBindings()
 		.def_readwrite("k1", &SFM::ImportConfig::k1)
 		.def_readwrite("k2", &SFM::ImportConfig::k2)
 		.DEF_STR_RW("import_poses_file", &SFM::ImportConfig::importPosesFile)
-		.def_readwrite("import_poses_mode", &SFM::ImportConfig::importPosesMode);
+		.def_readwrite("import_poses_mode", &SFM::ImportConfig::importPosesMode)
+		.def_readwrite("frames_convention", &SFM::ImportConfig::framesConvention);
 
 	// SFM::ROMA2Config — semi-dense matching
 	class_<SFM::ROMA2Config>("ROMA2Config")

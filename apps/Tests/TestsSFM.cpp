@@ -54,6 +54,98 @@ DEFINE_LOG_NAME(lt, _T("TestSFM "));
 
 namespace SFM {
 
+// External pose import test: frames.json name matching, intrinsics, duplicate rejection,
+// and CSV validation without partial updates from an invalid pose row.
+bool KnownPosesImportTest()
+{
+	namespace fs = std::filesystem;
+	const fs::path tmpDir = fs::temp_directory_path() /
+		fs::path(String::FormatString("openmvs_known_poses_%lld", (long long)std::time(nullptr)).c_str());
+	std::error_code ec;
+	fs::create_directories(tmpDir, ec);
+	if (ec) {
+		VERBOSE("KnownPosesImportTest FAILED: cannot create temp dir: %s", ec.message().c_str());
+		return false;
+	}
+	struct CleanupGuard {
+		fs::path path;
+		~CleanupGuard() { std::error_code ec; fs::remove_all(path, ec); }
+	} cleanup{tmpDir};
+
+	const auto AddImage = [](ImageArr& images, IIndex id, const String& fileName, REAL focal) {
+		Image& image = images.emplace_back(id, fileName);
+		image.pCamera = new PinholeCamera(cv::Size(640, 480), focal, focal, 319.5, 239.5);
+		image.cameraID = NO_ID; // the image owns its pre-deduplication camera
+	};
+
+	Scene scene;
+	AddImage(scene.images, 0, "/input/FrameA.jpg", 700);
+	AddImage(scene.images, 1, "/input/frameB.png", 700);
+	const String jsonPath = String(tmpDir.string()) + _T("/frames.json");
+	{
+		std::ofstream os(jsonPath);
+		os << R"json([
+  {"name":"framea.jpg","transform":[1,0,0,0,0,1,0,0,0,0,1,0,1,2,3,1],
+   "params":{"camera_model":"OPENCV","w":640,"h":480,"fx":800,"fy":810,"cx":320,"cy":240,"k1":0.01,"k2":-0.02,"p1":0.001,"p2":-0.002}},
+  {"name":"FRAMEB","transform":[1,0,0,0,0,1,0,0,0,0,1,0,4,5,6,1]},
+  {"name":"framea.jpg","transform":[1,0,0,0,0,1,0,0,0,0,1,0,9,9,9,1]}
+])json";
+		if (!os) {
+			VERBOSE("KnownPosesImportTest FAILED: cannot write frames.json");
+			return false;
+		}
+	}
+	if (ImportFramesJSON(jsonPath, scene, PoseImportMode::POSES_INTRINSICS, FramesConvention::OPENCV) != 2) {
+		VERBOSE("KnownPosesImportTest FAILED: frames.json did not import exactly two unique images");
+		return false;
+	}
+	const PinholeCamera* const cameraA = static_cast<const PinholeCamera*>(scene.images[0].pCamera);
+	const PinholeCamera* const cameraB = static_cast<const PinholeCamera*>(scene.images[1].pCamera);
+	if (norm(scene.images[0].C - Point3(1, 2, 3)) > REAL(1e-6) ||
+		norm(scene.images[1].C - Point3(4, 5, 6)) > REAL(1e-6) ||
+		ABS(cameraA->fx - REAL(800)) > REAL(1e-6) || !cameraA->trustIntrinsics ||
+		cameraB->trustIntrinsics)
+	{
+		VERBOSE("KnownPosesImportTest FAILED: imported pose/intrinsics mismatch");
+		return false;
+	}
+
+	ImageArr csvImages;
+	AddImage(csvImages, 0, "/input/framea.jpg", 700);
+	AddImage(csvImages, 1, "/input/frameb.jpg", 700);
+	AddImage(csvImages, 2, "/input/one/ambiguous.jpg", 700);
+	AddImage(csvImages, 3, "/input/two/ambiguous.png", 700);
+	const String csvPath = String(tmpDir.string()) + _T("/poses.csv");
+	{
+		std::ofstream os(csvPath);
+		os << "filename,fx,fy,cx,cy,qx,qy,qz,qw,Cx,Cy,Cz,score\n";
+		os << "framea,800,810,320,240,0,0,0,1,1,2,3,1\n";
+		os << "frameb,900,900,320,240,0,0,0,0,4,5,6,1\n"; // invalid zero quaternion
+		os << "ambiguous,900,900,320,240,0,0,0,1,7,8,9,1\n";
+		if (!os) {
+			VERBOSE("KnownPosesImportTest FAILED: cannot write pose CSV");
+			return false;
+		}
+	}
+	if (ImportPosesCSV(csvPath, csvImages, PoseImportMode::POSES_INTRINSICS) != 1) {
+		VERBOSE("KnownPosesImportTest FAILED: pose CSV did not reject the invalid quaternion row");
+		return false;
+	}
+	const PinholeCamera* const csvCameraA = static_cast<const PinholeCamera*>(csvImages[0].pCamera);
+	const PinholeCamera* const csvCameraB = static_cast<const PinholeCamera*>(csvImages[1].pCamera);
+	if (!csvImages[0].HasPose() || csvImages[1].HasPose() ||
+		csvImages[2].HasPose() || csvImages[3].HasPose() ||
+		!csvCameraA->trustIntrinsics || csvCameraB->trustIntrinsics ||
+		ABS(csvCameraB->fx - REAL(700)) > REAL(1e-6))
+	{
+		VERBOSE("KnownPosesImportTest FAILED: invalid CSV row partially modified its image");
+		return false;
+	}
+
+	VERBOSE("KnownPosesImportTest PASSED");
+	return true;
+}
+
 // VocabularyTree save/load roundtrip test
 bool VocabularyTreeTest()
 {
@@ -555,6 +647,81 @@ void GenerateTestScene(Scene& scene, const SceneConfig& cfg, Scene* scenePerturb
 			}
 		}
 	}
+}
+/*----------------------------------------------------------------*/
+
+
+// Pose-guided selection must still produce candidate pairs for images absent from the pose file.
+bool KnownPosePairSelectionTest()
+{
+	Scene scene;
+	SceneConfig sceneCfg;
+	sceneCfg.numImages = 6;
+	sceneCfg.numPoints = 120;
+	sceneCfg.poseMode = SceneConfig::CIRCULAR_ARRANGEMENT;
+	sceneCfg.rotationAngleStep = 60;
+	sceneCfg.generateDescriptors = true;
+	GenerateTestScene(scene, sceneCfg);
+	const IIndex unposedImage = scene.images.size() - 1;
+	const IIndex unposedImageID = scene.images[unposedImage].ID;
+	scene.images[unposedImage].InvalidatePose();
+
+	MatchConfig matchCfg;
+	matchCfg.descriptorsAreBinary = sceneCfg.binaryDescriptors;
+	matchCfg.maxPairsPerImage = 4;
+	PairsMatcher matcher(scene, matchCfg);
+	const PairIdxArr pairs = matcher.CollectKnownPosePairs(3);
+	bool coversUnposedImage = false;
+	std::unordered_set<PairIdx::PairIndex> uniquePairs;
+	for (const PairIdx& pair : pairs) {
+		if (!uniquePairs.emplace(pair.idx).second) {
+			VERBOSE("KnownPosePairSelectionTest FAILED: duplicate pair (%u, %u)", pair.i, pair.j);
+			return false;
+		}
+		coversUnposedImage = coversUnposedImage || pair.i == unposedImageID || pair.j == unposedImageID;
+	}
+	if (!coversUnposedImage) {
+		VERBOSE("KnownPosePairSelectionTest FAILED: no candidate covers the unposed image");
+		return false;
+	}
+
+	VERBOSE("KnownPosePairSelectionTest PASSED (%u candidates)", (unsigned)pairs.size());
+	return true;
+}
+
+
+// Re-align a scene transformed away from its imported camera frame.
+bool AlignToPriorPosesTest()
+{
+	Scene scene;
+	SceneConfig sceneCfg;
+	sceneCfg.numImages = 8;
+	sceneCfg.numPoints = 80;
+	sceneCfg.poseMode = SceneConfig::CIRCULAR_ARRANGEMENT;
+	sceneCfg.rotationAngleStep = 45;
+	GenerateTestScene(scene, sceneCfg);
+	for (const Image& image : scene.images)
+		scene.priorPoses.emplace(image.ID, Pose3D(image.R, image.C));
+
+	std::mt19937 rng(321);
+	scene.Transform(Transform::Random(rng));
+	if (!scene.AlignToPriorPoses(0.f)) {
+		VERBOSE("AlignToPriorPosesTest FAILED: alignment returned false");
+		return false;
+	}
+	for (const Image& image : scene.images) {
+		const Pose3D& prior = scene.priorPoses.at(image.ID);
+		const REAL centerError = norm(image.C - prior.C);
+		const REAL rotationError = ACOS(ComputeAngle(image.R, prior.R));
+		if (centerError > REAL(1e-4) || rotationError > REAL(1e-4)) {
+			VERBOSE("AlignToPriorPosesTest FAILED: image %u error is %g position, %g degrees rotation",
+				image.ID, centerError, R2D(rotationError));
+			return false;
+		}
+	}
+
+	VERBOSE("AlignToPriorPosesTest PASSED");
+	return true;
 }
 /*----------------------------------------------------------------*/
 

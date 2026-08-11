@@ -132,7 +132,8 @@ public:
 					std::lock_guard<std::mutex> lock(sceneMutex);
 					ImagePair& p = scene.pairs[it->second];
 					if (!p.HasMatches() || (pairsMatcher.GetConfig().maxEpipolarError > 0 && !p.HasGeometricVerification())) {
-						existingPair = std::move(p);
+						// Keep the stored pair intact until the asynchronous rematch succeeds.
+						existingPair = p;
 						existingIdx = it->second;
 						existingFound = true;
 					} else {
@@ -872,6 +873,7 @@ PairIdxArr PairsMatcher::CollectKnownPosePairs(unsigned topK)
 {
 	PairIdxArr result;
 	const IIndex nImages = scene.images.size();
+	const unsigned requestedTopK = topK;
 	const IIndexArr posedImages = CollectPosedImages(scene);
 	const IIndex nPosed = posedImages.size();
 	if (nPosed < 2) {
@@ -912,7 +914,7 @@ PairIdxArr PairsMatcher::CollectKnownPosePairs(unsigned topK)
 			const PosePairScorer::Score s = scorer(imgA, directionA, imgB);
 			// track the nearest cameras with no gating: under occlusion (e.g. an indoor camera
 			// turning back at the end of a corridor) ALL top covisible partners can exceed the
-			// view-angle gate, and dropping them was measured to split the view graph in two
+			// view-angle gate, and dropping them can split the view graph
 			if (nearestImages.size() < floorNN) {
 				nearestImages.emplace_back(ScoredImage{b, -s.distance});
 				if (nearestImages.size() == floorNN)
@@ -964,8 +966,8 @@ PairIdxArr PairsMatcher::CollectKnownPosePairs(unsigned topK)
 	const unsigned numFloorPairs = (unsigned)setPairs.size() - numMutualPairs;
 
 	// 5) Connectivity backbone: join the connected components of the selected pair graph
-	//    (Boruvka rounds over the two-tier bridge score: any gated score outranks every
-	//    ungated one, and ungated bridges prefer the nearest cameras), so a sparse or
+	//    (Boruvka rounds over the two-tier bridge score: any admissible score outranks every
+	//    rejected one, and rejected bridges prefer the nearest cameras), so a sparse or
 	//    gate-fragmented selection cannot silently split the view graph
 	IIndexArr ufParent(nPosed);
 	std::iota(ufParent.begin(), ufParent.end(), 0u);
@@ -1017,16 +1019,48 @@ PairIdxArr PairsMatcher::CollectKnownPosePairs(unsigned topK)
 		}
 	}
 
-	// 6) Convert the selected posed-index pairs to image-ID pairs
+	// 6) Convert the selected posed-index pairs to image-ID pairs.
+	// If the pose file covers only part of the image set, add vocabulary candidates touching
+	// unposed images; otherwise those images would have no matches and the reconstruction
+	// tail could never resect them. Fall back to those images' exhaustive pairs only if visual
+	// retrieval is unavailable.
 	result.reserve((IIndex)setPairs.size());
+	std::unordered_set<PairIdx::PairIndex> selectedPairIDs;
+	selectedPairIDs.reserve(setPairs.size());
 	for (const PairIdx::PairIndex pairIndex : setPairs) {
 		const PairIdx pair(pairIndex);
-		result.emplace_back(MakePairIdx(scene.images[posedImages[pair.i]].ID, scene.images[posedImages[pair.j]].ID));
+		const PairIdx imagePair(MakePairIdx(scene.images[posedImages[pair.i]].ID, scene.images[posedImages[pair.j]].ID));
+		selectedPairIDs.emplace(imagePair.idx);
+		result.emplace_back(imagePair);
+	}
+	unsigned numUnposedPairs = 0;
+	if (nPosed < nImages) {
+		std::unordered_set<IIndex> posedImageIDs;
+		posedImageIDs.reserve(nPosed);
+		for (const IIndex imageIdx : posedImages)
+			posedImageIDs.emplace(scene.images[imageIdx].ID);
+		PairIdxArr unposedCandidates = CollectVocabularyPairs(requestedTopK);
+		if (unposedCandidates.empty()) {
+			VERBOSE("warning: visual retrieval for the %u images without poses failed; matching every pair touching them",
+				nImages - nPosed);
+			for (IIndex i = 0; i < nImages; ++i)
+				for (IIndex j = i + 1; j < nImages; ++j)
+					if (!scene.images[i].HasPose() || !scene.images[j].HasPose())
+						unposedCandidates.emplace_back(MakePairIdx(scene.images[i].ID, scene.images[j].ID));
+		}
+		for (const PairIdx& pair : unposedCandidates) {
+			if (posedImageIDs.count(pair.i) && posedImageIDs.count(pair.j))
+				continue;
+			if (selectedPairIDs.emplace(pair.idx).second) {
+				result.emplace_back(pair);
+				++numUnposedPairs;
+			}
+		}
 	}
 	const unsigned numExhaustivePairs((nImages - 1) * nImages / 2);
-	DEBUG("Pose-guided matching: %u candidate pairs from %u posed images (%u mutual top-%u, %u nearest-camera floor, %u connectivity bridges; %.2f/%u pairs/image, %.1f%% of the %u exhaustive pairs, %u rejected by the %.0fdeg view-angle test) in %s",
+	DEBUG("Pose-guided matching: %u candidate pairs from %u posed images (%u mutual top-%u, %u nearest-camera floor, %u connectivity bridges, %u visual pairs covering %u unposed images; %.2f/%u pairs/image, %.1f%% of the %u exhaustive pairs, %u rejected by the %.0fdeg view-angle test) in %s",
 		(unsigned)result.size(), nPosed, numMutualPairs, topK, numFloorPairs, (unsigned)setPairs.size() - numMutualPairs - numFloorPairs,
-		(float)result.size() / nPosed, config.maxPairsPerImage,
+		numUnposedPairs, nImages - nPosed, (float)result.size() / nImages, config.maxPairsPerImage,
 		100.f * result.size() / numExhaustivePairs, numExhaustivePairs,
 		numRejectedByViewAngle.load() / 2, R2D(scorer.maxViewAngle), TD_TIMER_GET_FMT().c_str());
 	return result;
@@ -1042,13 +1076,16 @@ PairIdxArr PairsMatcher::CollectVerificationFeedbackPairs(const PairIdxArr& atte
 	TD_TIMER_STARTD();
 
 	// 1) Compute the pair budget left to invest: the total budget targets
-	//    maxPairsPerImage*N/2 pairs and the first round spent one attempt per candidate
+	//    maxPairsPerImage*N/2 pairs over the full image set and the first round spent one
+	//    attempt per candidate. In pose-guided mode, nEligible below still limits feedback
+	//    proposals to posed images, but visual candidates for unposed images consume the same
+	//    scene-wide budget.
 	const IIndexArr posedImages = poseGuided ? CollectPosedImages(scene) : IIndexArr();
 	const IIndex nEligible = poseGuided ? posedImages.size() : nImages;
 	if (nEligible < 3)
 		return result; // no pair outside the exhaustive set of a 2-image scene
 	const size_t numTotalPairsBudget = MINF(
-		(size_t)config.maxPairsPerImage*nEligible/2, (size_t)nEligible*(nEligible - 1)/2);
+		(size_t)config.maxPairsPerImage*nImages/2, (size_t)nImages*(nImages - 1)/2);
 	std::unordered_set<PairIdx::PairIndex> attempted;
 	attempted.reserve(attemptedPairs.size() + scene.pairs.size());
 	for (const PairIdx& pair : attemptedPairs)
@@ -1601,8 +1638,9 @@ bool PairsMatcher::MatchPairsBatch(const PairIdxArr& pairsToMatch, LPCTSTR progr
 					// Check if geometric verification was done
 					ImagePair& existingPair = scene.pairs[it->second];
 					if (!existingPair.HasMatches() || (config.maxEpipolarError > 0 && !existingPair.HasGeometricVerification())) {
-						// Move existing pair data (Pose/F) but keep matches clean/empty if they were cleared
-						pair = std::move(existingPair);
+						// Preserve the stored pair until rematching succeeds; a failed rematch must not
+						// leave the scene entry moved-from.
+						pair = existingPair;
 						existingIdx = it->second;
 					}
 					if (existingIdx == NO_ID) {
@@ -1745,8 +1783,8 @@ unsigned PairsMatcher::Match()
 	MatchStats stats;
 	const auto MatchRound = [&](PairIdxArr& pairs, LPCTSTR progressCaption) {
 		// Pre-match the pairs if requested
-		// note: pre-matching needs the vocabulary tree top descriptors, so it is skipped
-		//  in the modes not building it (EXHAUSTIVE/SEQUENTIAL/KNOWN_POSES)
+		// Pre-matching needs the vocabulary-tree descriptors, so it runs only when candidate
+		// collection built the tree (VOCABULARY, or KNOWN_POSES with unposed images).
 		if (vocabularyTree) {
 			if (config.preMatchThreshold > 0)
 				PreMatch(pairs);
@@ -1769,9 +1807,12 @@ unsigned PairsMatcher::Match()
 	}
 	fusedRetrievalScores.clear(); // only kept for the verification-feedback round
 
+	const unsigned numProcessedPairs = stats.newPairs + stats.updatedPairs;
 	DEBUG("Images matched: created %u/%u new/updated pairs (%u total from %u exhaustive),\n%u/%u/%u matches (%.2f/%.2f/%.2f per pair) in %s",
 		stats.newPairs, stats.updatedPairs, scene.pairs.size(), numExhaustivePairs, stats.numFilteredInliers, stats.numInliers, stats.numMatches,
-		static_cast<double>(stats.numFilteredInliers) / (stats.newPairs + stats.updatedPairs), static_cast<double>(stats.numInliers) / (stats.newPairs + stats.updatedPairs), static_cast<double>(stats.numMatches) / (stats.newPairs + stats.updatedPairs),
+		numProcessedPairs ? static_cast<double>(stats.numFilteredInliers) / numProcessedPairs : 0.0,
+		numProcessedPairs ? static_cast<double>(stats.numInliers) / numProcessedPairs : 0.0,
+		numProcessedPairs ? static_cast<double>(stats.numMatches) / numProcessedPairs : 0.0,
 		TD_TIMER_GET_FMT().c_str());
 
 	#if TD_VERBOSE != TD_VERBOSE_OFF
