@@ -76,8 +76,10 @@ VERBOSE("Info: %s", str);   // General logging
 ```
 
 ### Error Handling
-- `ASSERT(condition)` for debug checks
-- Return false/NULL for failures
+- Use `ASSERT(condition)` for impossible or disallowed internal states. Do not add a runtime guard that lets execution continue with an invalid state.
+- If an assertion can be reached, fix the caller or state transition that violated the invariant; do not hide the defect with a fallback.
+- Use runtime validation and return false/NULL only for expected, recoverable failures such as invalid external input or unavailable resources.
+- `ASSERT` also communicates its invariant to MSVC Code Analysis; do not add separate analyzer assumptions at call sites.
 
 ### Common Typedefs
 ```cpp
