@@ -127,6 +127,9 @@ public:
 
 				auto it = existingPairMap.find(pairIDs.idx);
 				if (it != existingPairMap.end()) {
+					// Lock: the worker tasks below append new pairs concurrently, which can
+					// reallocate the pairs array from under this indexed access
+					std::lock_guard<std::mutex> lock(sceneMutex);
 					ImagePair& p = scene.pairs[it->second];
 					if (!p.HasMatches() || (pairsMatcher.GetConfig().maxEpipolarError > 0 && !p.HasGeometricVerification())) {
 						existingPair = std::move(p);
@@ -192,12 +195,13 @@ public:
 					}
 					atomicNumInliers.fetch_add(pair.GetNumInliers(), std::memory_order_relaxed);
 					atomicNumFilteredInliers.fetch_add(pair.GetNumFilteredInliers(), std::memory_order_relaxed);
-					// Store pair into scene
+					// Store pair into scene; the lock also covers the indexed write-back,
+					// as appending a new pair can reallocate the pairs array
+					std::lock_guard<std::mutex> lock(sceneMutex);
 					if (existingIdx != NO_ID) {
 						pairsMatcher.GetScene().pairs[existingIdx] = std::move(pair);
 						atomicUpdatedPairs.fetch_add(1, std::memory_order_relaxed);
 					} else {
-						std::lock_guard<std::mutex> lock(sceneMutex);
 						pairsMatcher.GetScene().pairs.emplace_back(std::move(pair));
 						atomicNewPairs.fetch_add(1, std::memory_order_relaxed);
 					}
@@ -853,12 +857,12 @@ struct PosePairScorer {
 		return REAL(2)*baseline*optBaseline / (SQUARE(baseline) + SQUARE(optBaseline));
 	}
 
-	// two-tier score for connectivity bridging: any gated pair outranks every ungated one,
-	// and the ungated pairs prefer the nearest cameras
+	// two-tier score for connectivity bridging: any pair passing the view-angle gate outranks
+	// every rejected one, and the rejected (fallback) tier prefers the nearest cameras
 	REAL BridgeScore(const Score& s) const {
 		return s.IsGated() ?
 			REAL(1) / (REAL(1) + s.distance/sceneScale) : // fallback tier, ordered by distance
-			REAL(1) + s.score;                            // gated tier, ordered by the pair score
+			REAL(1) + s.score;                            // admissible tier, ordered by the pair score
 	}
 };
 
@@ -1717,8 +1721,11 @@ unsigned PairsMatcher::Match()
 		pairsToMatch.reserve(nImages * config.matchSequenceOverlap);
 		if (nImages >= 2 * config.matchSequenceOverlap) {
 			for (IIndex i = 0; i < nImages; ++i)
-				for (unsigned k = 1; k <= config.matchSequenceOverlap; ++k)
+				for (unsigned k = 1; k <= config.matchSequenceOverlap; ++k) {
+					if (2*k == nImages && i >= nImages/2)
+						continue; // diametrically-opposite pair, already emitted from the other endpoint
 					pairsToMatch.emplace_back(MakePairIdx(scene.images[i].ID, scene.images[(i + k) % nImages].ID));
+				}
 		} else {
 			for (IIndex i = 0; i < nImages; ++i)
 				for (unsigned k = 1; k <= config.matchSequenceOverlap; ++k)

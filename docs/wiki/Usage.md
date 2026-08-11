@@ -50,7 +50,7 @@ Notable options:
 - `--detector-type` (default `SIFTGPU`) — feature detector; same choices as above.
 - `--match-mode` (`-1` skip, `0` exhaustive, `1` vocabulary, `2` sequential, `3` known-poses; default `1`) — pairwise-matching strategy.
 - `--match-sequence-overlap` (default `3`) — sequence overlap when using sequential matching.
-- `--vocab-max-pairs` (default `50`) — maximum pairs per image for vocabulary-tree and known-poses matching.
+- `--vocab-max-pairs` (default `50`) — target pairs per image for vocabulary-tree and known-poses matching (with `--match-verification-feedback`, the default, part of this budget is re-invested in pairs suggested by the verified matches).
 - `--import-poses-file` (default `poses.csv`) with `--import-poses-mode` (`0` none, `1` poses+intrinsics, `2` poses only, `3` positions only) — start the reconstruction from known camera poses, read from an OpenMVS pose `.csv` or a Polycam-style `frames.json`; see *Finetune from Known Poses* below. (`--import-poses-csv` is still accepted as a deprecated alias and warns.)
 - `--known-poses-convention` (`auto` | `arkit` | `opencv`, default `auto`) — camera-axes convention of the poses in a `frames.json`.
 - `--export-poses-csv` — write the recovered poses alongside the scene.

@@ -520,10 +520,8 @@ KeyframeExtractor::ExtractFromVideo("video.mp4", config, scene);
 Scene scene;
 // ... load images, extract features ...
 
-// Match using vocabulary tree
-VocabularyTree vocab;
-vocab.Build(scene);
-PairsMatcher::MatchScene(scene, matchConfig);
+// Match image pairs (builds the vocabulary tree on demand in VOCABULARY mode)
+scene.MatchPairs(matchConfig);
 
 // Build tracks and reconstruct
 BuildTracks(scene);
@@ -531,7 +529,7 @@ StarInitializer().Initialize(scene);
 // ... incremental resection + BA ...
 
 // Export to MVS format
-ExportToMVS(scene, mvsScene);
+SFM::ExportMVS("scene.mvs", scene);
 ```
 
 ### Finetune from Known Poses
