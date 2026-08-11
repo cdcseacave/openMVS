@@ -108,7 +108,7 @@ graph TD
 - Function: `Scene::MatchPairs()` → `PairsMatcher::Match()` — `libs/SFM/Scene.cpp:442`, `libs/SFM/PairsMatcher.cpp`
 - Input: extracted features per image; `MatchConfig`
 - Processing:
-  - VOCABULARY mode: builds VocabularyTree on descriptors, queries top `maxPairsPerImage` (50) candidates per image, optionally expands via `expandPairsTopK` co-neighbor images
+  - VOCABULARY mode: builds VocabularyTree on descriptors, fuses the per-image retrieval rankings (reciprocal-rank fusion) and keeps the mutual top-K pairs plus connectivity bridges; a second verification-feedback round re-invests the remaining pair budget
   - EXHAUSTIVE mode: all O(N²) pairs
   - SEQUENTIAL mode: matches each image to `matchSequenceOverlap` subsequent images
   - KNOWN_POSES mode: `CollectKnownPosePairs()` derives the candidates from the imported poses — median nearest-neighbor camera distance as the scene scale, optical-axis angle > 75° rejected, remaining pairs scored by normalized baseline × viewing-direction agreement, top `maxPairsPerImage` per image kept as a symmetric deduplicated union; falls back to EXHAUSTIVE if it yields nothing. Auto-selected by `CreateStructure` when poses were imported and `--match-mode` was not passed explicitly

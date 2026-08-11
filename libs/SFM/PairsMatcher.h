@@ -61,8 +61,8 @@ struct SFM_API MatchConfig
 
 	MatchMode mode = VOCABULARY;
 	unsigned maxDescriptorsPerImage = 2000; // Max descriptors per image for vocabulary tree
-	unsigned maxPairsPerImage = 50;     // Max pairs per image (VOCABULARY/KNOWN_POSES mode)
-	unsigned expandPairsTopK = 5;       // Top-K neighbors per endpoint to expand base vocab pairs (0 = no expansion)
+	unsigned maxPairsPerImage = 50;     // Target pairs per image (VOCABULARY/KNOWN_POSES mode)
+	bool verificationFeedback = true;   // Two-round matching: hold back part of the pair budget and re-invest it in pairs suggested by the geometrically verified matches (VOCABULARY/KNOWN_POSES mode)
 	unsigned matchSequenceOverlap = 3;  // Number of subsequent images to match in SEQUENTIAL mode
 	unsigned preMatchThreshold = 0;     // Minimum number of matches in pre-matching step to keep the pair (0 = disabled)
 	float minFeatureDistance = 0.f;     // Minimum distance between matched features in pixels (0 = disabled)
@@ -171,17 +171,33 @@ public:
 	// Build vocabulary tree on demand (lazy initialization)
 	void EnsureVocabularyTree();
 
-	// Build top-N vocab pairs for all images and expand them via top-K co-neighbors.
-	// Returns a single vector of candidate pairs where the first numBasePairs are
-	// the base vocabulary pairs and the rest are expanded pairs. Existing pairs
-	// (as per PairExists) are excluded. If topK == 0, no expanded pairs are added.
-	PairIdxArr CollectVocabularyPairs(unsigned* ptrNumBasePairs = NULL);
+	// Build candidate pairs from the vocabulary-tree retrieval: re-rank the per-image ranked
+	// lists with symmetric reciprocal-rank fusion, keep the pairs present in the fused top-K
+	// lists of both endpoints, and bridge any remaining connected components with the
+	// best-scoring cross-component pairs; topK is the per-image candidate-list length
+	// (see Match for how it maps to the configured pairs-per-image target).
+	// Returns an empty array if the vocabulary tree cannot be built.
+	PairIdxArr CollectVocabularyPairs(unsigned topK);
 
 	// Build candidate pairs from the known camera poses: reject the pairs whose optical axes
 	// diverge too much, score the remaining ones by baseline and viewing-direction agreement,
-	// and keep the top-K per image (symmetric union, deduplicated).
+	// and keep the pairs present in the candidate lists of both endpoints; every image also
+	// keeps its nearest cameras regardless of the view-angle gate (occlusion safeguard), and
+	// any remaining connected components are bridged with the best-scoring cross pairs;
+	// topK is the per-image candidate-list length (see Match for how it maps to the
+	// configured pairs-per-image target).
 	// Returns an empty array if less than two images are posed or the poses are degenerate.
-	PairIdxArr CollectKnownPosePairs();
+	PairIdxArr CollectKnownPosePairs(unsigned topK);
+
+	// Build additional candidate pairs from the geometrically verified pairs of the previous
+	// matching round (verification feedback), investing the part of the pair budget the first
+	// round did not spend: KNOWN_POSES closes the triangles of the verified pair graph
+	// (two images sharing verified neighbors likely overlap too), while VOCABULARY propagates
+	// each verified pair to the top retrieval candidates of its endpoints; the images with the
+	// weakest verified connectivity then refill the remaining budget from their next
+	// best-ranked candidates. attemptedPairs lists the already-matched candidates; only new
+	// pairs are returned, at most as many as left in the total budget maxPairsPerImage*N/2.
+	PairIdxArr CollectVerificationFeedbackPairs(const PairIdxArr& attemptedPairs);
 
 	// Reorder pairs to minimize GPU descriptor transfers by grouping pairs sharing the same first image,
 	// with secondary ordering by descriptor cost (descending) for better thread pool load balancing
@@ -194,6 +210,20 @@ public:
 	static bool ExportPairsCSV(const Scene& scene, const String& fileName, float minWeight = 0.f);
 
 private:
+	// Counters accumulated by MatchPairsBatch across matching rounds
+	struct MatchStats {
+		unsigned newPairs = 0;
+		unsigned updatedPairs = 0;
+		size_t numMatches = 0;
+		size_t numInliers = 0;
+		size_t numFilteredInliers = 0;
+	};
+
+	// Match and geometrically verify the given candidate pairs in parallel, storing the
+	// valid ones in the scene and accumulating the counters into stats.
+	// Returns false only on fatal initialization errors (e.g. GPU matcher setup).
+	bool MatchPairsBatch(const PairIdxArr& pairsToMatch, LPCTSTR progressCaption, MatchStats& stats);
+
 	Scene& scene;
 	const MatchConfig config;
 
@@ -202,6 +232,11 @@ private:
 
 	// Vocabulary tree for image retrieval (lazy initialization)
 	std::unique_ptr<VocabularyTree> vocabularyTree;
+
+	// Symmetric fused retrieval score of every pair retrieved by the last
+	// CollectVocabularyPairs call, kept for CollectVerificationFeedbackPairs
+	// (released by Match once the matching rounds complete)
+	std::unordered_map<PairIdx::PairIndex, float> fusedRetrievalScores;
 };
 
 /*----------------------------------------------------------------*/

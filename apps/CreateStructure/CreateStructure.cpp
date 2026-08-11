@@ -64,7 +64,7 @@ int matchMode;
 unsigned importPosesMode;
 unsigned matchSequenceOverlap;
 unsigned maxPairsPerImage;
-unsigned expandPairsTopK;
+bool matchVerificationFeedback;
 bool releaseDescriptors;
 bool matchImagesOnly;
 float defaultFocalRatio;
@@ -146,8 +146,8 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("min-features-per-cell", boost::program_options::value(&OPT::nMinFeaturesPerCell)->default_value(500), "minimum features per cell before adjusting sensitivity")
 		("match-mode", boost::program_options::value(&OPT::matchMode)->default_value(1), "match mode: -1=SKIP,0=EXHAUSTIVE,1=VOCABULARY,2=SEQUENTIAL,3=KNOWN_POSES")
 		("match-sequence-overlap", boost::program_options::value(&OPT::matchSequenceOverlap)->default_value(3), "sequence overlap for sequential matching")
-		("vocab-max-pairs", boost::program_options::value(&OPT::maxPairsPerImage)->default_value(50), "maximum pairs per image for vocabulary matching")
-		("expand-pairs-topk", boost::program_options::value(&OPT::expandPairsTopK)->default_value(5), "top-K per endpoint to expand vocabulary pairs (0 = disable)")
+		("vocab-max-pairs", boost::program_options::value(&OPT::maxPairsPerImage)->default_value(50), "target pairs per image for vocabulary and pose-guided matching")
+		("match-verification-feedback", boost::program_options::value(&OPT::matchVerificationFeedback)->default_value(true), "hold back part of the matching budget and re-invest it in pairs suggested by the geometrically verified matches (vocabulary and pose-guided matching)")
 		("release-descriptors", boost::program_options::value(&OPT::releaseDescriptors)->default_value(true), "release descriptors after matching to save memory")
 		("match-images-only", boost::program_options::value(&OPT::matchImagesOnly)->default_value(false), "match only the image pairs and save the scene without reconstruction (release descriptors)")
 		("default-focal-ratio", boost::program_options::value(&OPT::defaultFocalRatio)->default_value(1.2f), "focal-length is set to ratio * max(width,height) for images with unknown focal-length")
@@ -294,7 +294,7 @@ int main(int argc, LPCTSTR* argv)
 	cfg.matchCfg.mode = static_cast<MatchConfig::MatchMode>(OPT::matchMode);
 	cfg.matchCfg.matchSequenceOverlap = OPT::matchSequenceOverlap;
 	cfg.matchCfg.maxPairsPerImage = OPT::maxPairsPerImage;
-	cfg.matchCfg.expandPairsTopK = OPT::expandPairsTopK;
+	cfg.matchCfg.verificationFeedback = OPT::matchVerificationFeedback;
 	cfg.matchCfg.releaseDescriptors = OPT::releaseDescriptors;
 	#ifdef _USE_CUDA
 	cfg.matchCfg.useCUDA = cfg.featuresCfg.useCUDA = !SEACAVE::CUDA::isCpuRequested(SEACAVE::CUDA::desiredDeviceIDs);

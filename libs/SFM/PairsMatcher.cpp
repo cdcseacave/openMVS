@@ -657,11 +657,8 @@ void PairsMatcher::EnsureVocabularyTree()
 	      scene.images.size(), TD_TIMER_GET_FMT().c_str());
 }
 
-PairIdxArr PairsMatcher::CollectVocabularyPairs(unsigned* ptrNumBasePairs)
+PairIdxArr PairsMatcher::CollectVocabularyPairs(unsigned topK)
 {
-	const unsigned topN = config.maxPairsPerImage;
-	const unsigned topK = config.expandPairsTopK;
-	unsigned numBasePairs = 0;
 	PairIdxArr result;
 	// Ensure vocabulary tree is ready
 	EnsureVocabularyTree();
@@ -670,86 +667,135 @@ PairIdxArr PairsMatcher::CollectVocabularyPairs(unsigned* ptrNumBasePairs)
 
 	TD_TIMER_STARTD();
 
-	// 1) Query top-N similar images for each image (without matching)
 	const IIndex nImages = scene.images.size();
-	std::vector<IIndexArr> topPerImage(nImages);
+	topK = (unsigned)MINF(topK, nImages - 1);
+	const unsigned queryDepth = (unsigned)MINF(MAXF(topK*4u, 100u), nImages - 1);
+	const float rrfK0 = 10.f; // reciprocal-rank-fusion damping constant
+
+	// 1) Query the ranked similar-image list for each image (without matching);
+	//    the list is queried deeper than top-K so the fused rank of a pair can be
+	//    recovered even when only one endpoint retrieves the other early
+	std::unordered_map<IIndex, IIndex> idxFromID;
+	idxFromID.reserve(nImages);
+	FOREACH(idx, scene.images)
+		idxFromID.emplace(scene.images[idx].ID, idx);
+	std::vector<IIndexArr> rankedPerImage(nImages); // candidate image indices, best first
 	scene.threadPool.detach_loop(0u, nImages, [&](IIndex i) {
 		const Image& img = scene.images[i];
-		const auto candidates = vocabularyTree->Query(img, topN);
-		topPerImage[i].reserve(candidates.size());
-		for (const auto& kv : candidates)
-			if (kv.first != img.ID) // skip self-match
-				topPerImage[i].push_back(kv.first);
+		const auto candidates = vocabularyTree->Query(img, queryDepth + 1);
+		IIndexArr& ranked = rankedPerImage[i];
+		ranked.reserve((IIndex)candidates.size());
+		for (const auto& kv : candidates) {
+			if (kv.first == img.ID)
+				continue; // skip self-match
+			const auto it = idxFromID.find(kv.first);
+			if (it != idxFromID.end())
+				ranked.push_back(it->second);
+		}
 	});
 	scene.threadPool.wait();
 
-	// 2) Build base set from union of all top-N lists (for exclusion),
-	//    and base vector of pairs to actually match (skip existing pairs).
-	std::unordered_set<PairIdx::PairIndex> setPairs; // union of all retrieved pairs
-	setPairs.reserve((size_t)nImages * MINF(topN, 8u));
+	// 2) Score every retrieved pair by symmetric reciprocal-rank fusion: each direction
+	//    contributes 1/(k0+rank), so a pair both images retrieve early outranks a pair
+	//    only one image scores high; being rank-based, the fusion is immune to the
+	//    per-query score-scale drift of raw TF-IDF similarities
+	std::unordered_map<PairIdx::PairIndex, float> pairScores;
+	pairScores.reserve((size_t)nImages * MINF(queryDepth, 16u));
 	for (IIndex i = 0; i < nImages; ++i) {
-		const IIndex idA = scene.images[i].ID;
-		for (const IIndex idB : topPerImage[i]) {
-			ASSERT(idB != idA);
-			const PairIdx p = MakePairIdx(idA, idB);
-			// For base result vector, add on first encounter
-			if (setPairs.emplace(p.idx).second)
-				result.emplace_back(p);
-		}
-	}
-	numBasePairs = (unsigned)result.size();
-	if (ptrNumBasePairs)
-		*ptrNumBasePairs = numBasePairs;
-	if (topK == 0 || numBasePairs == 0) {
-		DEBUG("Vocabulary-based matching: %u base candidate pairs (%.2f/%u pairs/image) in %s",
-			numBasePairs, (float)numBasePairs / nImages, config.maxPairsPerImage, TD_TIMER_GET_FMT().c_str());
-		return result;
+		const IIndexArr& ranked = rankedPerImage[i];
+		FOREACH(r, ranked)
+			pairScores[MakePairIdx(scene.images[i].ID, scene.images[ranked[r]].ID).idx] += 1.f / (rrfK0 + (float)r);
 	}
 
-	// 3) Expand using top-K neighbors per endpoint for each base pair, if requested
+	// 3) Keep the pairs ranked in the fused top-K lists of BOTH endpoints: requiring
+	//    mutual agreement suppresses the one-sided (mostly false) tail of each list,
+	//    which is what wastes most of the matching budget at small top-K settings
+	struct ScoredPair {
+		PairIdx::PairIndex idx;
+		float score;
+	};
+	std::vector<CLISTDEF0(ScoredPair)> topPerImage(nImages);
+	for (const auto& [pairIndex, score] : pairScores) {
+		const PairIdx pair(pairIndex);
+		topPerImage[idxFromID[pair.i]].push_back({pairIndex, score});
+		topPerImage[idxFromID[pair.j]].push_back({pairIndex, score});
+	}
+	std::unordered_map<PairIdx::PairIndex, uint8_t> numEndpointVotes;
+	numEndpointVotes.reserve((size_t)nImages * MINF(topK, 16u));
 	for (IIndex i = 0; i < nImages; ++i) {
-		const IIndex idA = scene.images[i].ID;
-		const auto& listA = topPerImage[idA];
-		const unsigned kA = MINF(topK, (unsigned)listA.size());
-		for (unsigned a = 0; a < kA; ++a) {
-			const IIndex idB = listA[a];
-			const auto& listB = topPerImage[idB];
-			const unsigned kB = MINF(topK, (unsigned)listB.size());
-			// Combine endpoints with each other's top-K
-			for (unsigned b = 0; b < kB; ++b) {
-				const IIndex idN = listB[b];
-				if (idA == idN)
-					continue; // skip self-match;
-				const PairIdx q = MakePairIdx(idA, idN);
-				// Skip if pair already exists
-				if (setPairs.emplace(q.idx).second)
-					result.emplace_back(q);
-			}
+		CLISTDEF0(ScoredPair)& scoredPairs = topPerImage[i];
+		if (scoredPairs.size() > topK) {
+			scoredPairs.Sort([](const ScoredPair& a, const ScoredPair& b) {
+				return a.score > b.score;
+			});
+			scoredPairs.Resize(topK);
+		}
+		for (const ScoredPair& sp : scoredPairs)
+			++numEndpointVotes[sp.idx];
+	}
+	std::unordered_set<PairIdx::PairIndex> setPairs;
+	setPairs.reserve(numEndpointVotes.size() / 2);
+	for (const auto& [pairIndex, votes] : numEndpointVotes) {
+		ASSERT(votes <= 2);
+		if (votes == 2 && setPairs.emplace(pairIndex).second)
+			result.emplace_back(PairIdx(pairIndex));
+	}
+	const unsigned numMutualPairs = (unsigned)result.size();
+
+	// 4) Connectivity backbone: add the maximum-similarity edges bridging the connected
+	//    components of the selected pair graph (Kruskal over all retrieved pairs, with
+	//    the union-find seeded by the mutual pairs), so a sparse selection cannot
+	//    silently split the view graph
+	IIndexArr ufParent(nImages);
+	std::iota(ufParent.begin(), ufParent.end(), 0u);
+	const auto Find = [&ufParent](IIndex x) {
+		while (ufParent[x] != x)
+			x = ufParent[x] = ufParent[ufParent[x]];
+		return x;
+	};
+	for (const PairIdx& p : result)
+		ufParent[Find(idxFromID[p.i])] = Find(idxFromID[p.j]);
+	CLISTDEF0(ScoredPair) allPairs(0, (IIndex)pairScores.size());
+	for (const auto& [pairIndex, score] : pairScores)
+		allPairs.push_back({pairIndex, score});
+	allPairs.Sort([](const ScoredPair& a, const ScoredPair& b) {
+		return a.score > b.score;
+	});
+	for (const ScoredPair& sp : allPairs) {
+		const PairIdx pair(sp.idx);
+		const IIndex rootA = Find(idxFromID[pair.i]);
+		const IIndex rootB = Find(idxFromID[pair.j]);
+		if (rootA != rootB) {
+			ufParent[rootA] = rootB;
+			if (setPairs.emplace(sp.idx).second)
+				result.emplace_back(pair);
 		}
 	}
-	DEBUG("Vocabulary-based matching: %u base candidate pairs, with %u expanded candidates (%.2f/%u pairs/image) in %s",
-		numBasePairs, result.size() - numBasePairs, (float)result.size() / nImages, config.maxPairsPerImage, TD_TIMER_GET_FMT().c_str());
+	DEBUG("Vocabulary-based matching: %u candidate pairs, %u mutual top-%u and %u connectivity bridges (%.2f/%u pairs/image) in %s",
+		result.size(), numMutualPairs, topK, result.size() - numMutualPairs,
+		(float)result.size() / nImages, config.maxPairsPerImage, TD_TIMER_GET_FMT().c_str());
+	// keep the fused retrieval scores for the verification-feedback round
+	fusedRetrievalScores = std::move(pairScores);
 	return result;
 }
 
-PairIdxArr PairsMatcher::CollectKnownPosePairs()
+namespace {
+
+// Collect the images having a known pose (as indices in the scene image array)
+IIndexArr CollectPosedImages(const Scene& scene)
 {
-	PairIdxArr result;
-	// Collect the images having a known pose (as indices in the scene image array)
-	const IIndex nImages = scene.images.size();
-	IIndexArr posedImages(0, nImages);
-	for (IIndex i = 0; i < nImages; ++i)
+	IIndexArr posedImages(0, scene.images.size());
+	FOREACH(i, scene.images)
 		if (scene.images[i].HasPose())
 			posedImages.push_back(i);
-	const IIndex nPosed = (IIndex)posedImages.size();
-	if (nPosed < 2) {
-		DEBUG("Pose-guided matching: only %u images have a known pose", nPosed);
-		return result;
-	}
+	return posedImages;
+}
 
-	TD_TIMER_STARTD();
-
-	// 1) Estimate the scene scale as the median nearest-neighbor camera-center distance
+// Estimate the scene scale as the median nearest-neighbor camera-center distance
+// (0 if all camera centers coincide)
+REAL EstimateSceneScale(Scene& scene, const IIndexArr& posedImages)
+{
+	const IIndex nPosed = posedImages.size();
 	REALArr nearestDistances(nPosed);
 	scene.threadPool.detach_loop(0u, nPosed, [&](IIndex a) {
 		const CMatrix& C = scene.images[posedImages[a]].C;
@@ -764,50 +810,121 @@ PairIdxArr PairsMatcher::CollectKnownPosePairs()
 		nearestDistances[a] = nearestDistance;
 	});
 	scene.threadPool.wait();
-	const REAL sceneScale = nearestDistances.GetMedian();
+	return nearestDistances.GetMedian();
+}
+
+// Pose-guided pair scoring, shared by the candidate selection, the connectivity bridging
+// and the verification-feedback round.
+// The pairs whose optical axes diverge too much are rejected, as they can not observe the
+// same surface; note: the two cameras observe the scene, not each other, so no camera-center
+// cheirality test is done: in an orbit capture the neighboring camera centers lie tangentially
+// to the view direction and in a nadir aerial capture perpendicularly to it, so the strongest
+// overlapping pairs fail such a test.
+// The baseline term peaks at optBaseline and decays symmetrically in log-scale towards
+// no-parallax (baseline -> 0, no triangulation) and no-overlap (baseline -> infinity),
+// while the view term linearly penalizes the diverging optical axes;
+// note: the baseline is only a ranking preference and not a rejection criterion, as the
+//  scene depth is unknown and the distance at which two views still overlap varies by
+//  orders of magnitude in scene-scale units between close-range and aerial captures
+struct PosePairScorer {
+	const REAL sceneScale;                   // median nearest-neighbor camera-center distance
+	const REAL maxViewAngle = D2R(REAL(75)); // maximum angle between the two optical axes (cameras facing away)
+	const REAL optBaseline = 2;              // best scoring baseline, in scene-scale units
+
+	struct Score {
+		REAL distance;  // camera-center distance
+		REAL viewAngle; // angle between the two optical axes
+		REAL score;     // pair score, the higher the better; negative if the view-angle gate rejects the pair
+		bool IsGated() const { return score < 0; }
+	};
+
+	// directionA must be imgA.Direction(), passed in so the caller can hoist it out of its loop
+	Score operator()(const Image& imgA, const Point3& directionA, const Image& imgB) const {
+		Score s;
+		s.distance = norm(imgA.C - imgB.C);
+		s.viewAngle = ACOS(CLAMP(directionA.dot(imgB.Direction()), REAL(-1), REAL(1)));
+		s.score = s.viewAngle > maxViewAngle ?
+			REAL(-1) : ScoreBaseline(s.distance) * (REAL(1) - s.viewAngle/maxViewAngle);
+		return s;
+	}
+
+	REAL ScoreBaseline(REAL distance) const {
+		const REAL baseline(distance / sceneScale);
+		return REAL(2)*baseline*optBaseline / (SQUARE(baseline) + SQUARE(optBaseline));
+	}
+
+	// two-tier score for connectivity bridging: any gated pair outranks every ungated one,
+	// and the ungated pairs prefer the nearest cameras
+	REAL BridgeScore(const Score& s) const {
+		return s.IsGated() ?
+			REAL(1) / (REAL(1) + s.distance/sceneScale) : // fallback tier, ordered by distance
+			REAL(1) + s.score;                            // gated tier, ordered by the pair score
+	}
+};
+
+} // namespace
+
+PairIdxArr PairsMatcher::CollectKnownPosePairs(unsigned topK)
+{
+	PairIdxArr result;
+	const IIndex nImages = scene.images.size();
+	const IIndexArr posedImages = CollectPosedImages(scene);
+	const IIndex nPosed = posedImages.size();
+	if (nPosed < 2) {
+		DEBUG("Pose-guided matching: only %u images have a known pose", nPosed);
+		return result;
+	}
+
+	TD_TIMER_STARTD();
+
+	// 1) Estimate the scene scale and initialize the shared pose-pair scoring
+	const REAL sceneScale = EstimateSceneScale(scene, posedImages);
 	if (sceneScale <= 0) {
 		DEBUG("Pose-guided matching: degenerate camera configuration, all %u camera centers coincide", nPosed);
 		return result;
 	}
+	const PosePairScorer scorer{sceneScale};
 
 	// 2) Score every posed pair and keep the best candidates for each image
-	const unsigned topK = config.maxPairsPerImage;
-	const REAL maxViewAngle(D2R(REAL(75))); // maximum angle between the two optical axes (cameras facing away)
-	const REAL optBaseline(2); // best scoring baseline, in scene-scale units
+	topK = (unsigned)MINF(topK, nPosed - 1);
+	const unsigned floorNN = MINF(2u, nPosed - 1); // per-image nearest cameras kept regardless of the view-angle gate
 	struct ScoredImage {
 		IIndex idx;  // index in the posed images array
 		REAL score;  // pair score, the higher the better
 	};
 	std::vector<CLISTDEF0(ScoredImage)> topPerImage(nPosed);
+	std::vector<CLISTDEF0(ScoredImage)> nearestPerImage(nPosed); // per-image nearest cameras by center distance, ungated
 	std::atomic<unsigned> numRejectedByViewAngle{0};
 	scene.threadPool.detach_loop(0u, nPosed, [&](IIndex a) {
 		const Image& imgA = scene.images[posedImages[a]];
 		const Point3 directionA(imgA.Direction());
 		CLISTDEF0(ScoredImage)& scoredImages = topPerImage[a];
 		scoredImages.reserve(nPosed - 1);
+		CLISTDEF0(ScoredImage)& nearestImages = nearestPerImage[a];
 		for (IIndex b = 0; b < nPosed; ++b) {
 			if (b == a)
 				continue;
 			const Image& imgB = scene.images[posedImages[b]];
-			// discard the pairs whose optical axes diverge too much, as they can not observe the same surface;
-			// note: the two cameras observe the scene, not each other, so no camera-center cheirality test is done:
-			//  in an orbit capture the neighboring camera centers lie tangentially to the view direction and in a
-			//  nadir aerial capture perpendicularly to it, so the strongest overlapping pairs fail such a test
-			const REAL viewAngle(ACOS(CLAMP(directionA.dot(imgB.Direction()), REAL(-1), REAL(1))));
-			if (viewAngle > maxViewAngle) {
+			const PosePairScorer::Score s = scorer(imgA, directionA, imgB);
+			// track the nearest cameras with no gating: under occlusion (e.g. an indoor camera
+			// turning back at the end of a corridor) ALL top covisible partners can exceed the
+			// view-angle gate, and dropping them was measured to split the view graph in two
+			if (nearestImages.size() < floorNN) {
+				nearestImages.emplace_back(ScoredImage{b, -s.distance});
+				if (nearestImages.size() == floorNN)
+					nearestImages.Sort([](const ScoredImage& i, const ScoredImage& j) {
+						return i.score > j.score;
+					});
+			} else if (-s.distance > nearestImages.Last().score) {
+				nearestImages.Last() = ScoredImage{b, -s.distance};
+				for (IIndex n = nearestImages.size() - 1; n > 0 && nearestImages[n].score > nearestImages[n-1].score; --n)
+					std::swap(nearestImages[n], nearestImages[n-1]);
+			}
+			if (s.IsGated()) {
 				++numRejectedByViewAngle;
 				continue;
 			}
-			// the baseline term peaks at optBaseline and decays symmetrically in log-scale towards
-			// no-parallax (baseline -> 0, no triangulation) and no-overlap (baseline -> infinity),
-			// while the view term linearly penalizes the diverging optical axes;
-			// note: the baseline is only a ranking preference and not a rejection criterion, as the
-			//  scene depth is unknown and the distance at which two views still overlap varies by
-			//  orders of magnitude in scene-scale units between close-range and aerial captures
-			const REAL baseline(norm(imgA.C - imgB.C) / sceneScale);
-			const REAL scoreBaseline(REAL(2)*baseline*optBaseline / (SQUARE(baseline) + SQUARE(optBaseline)));
-			const REAL scoreView(REAL(1) - viewAngle/maxViewAngle);
-			scoredImages.emplace_back(ScoredImage{b, scoreBaseline*scoreView});
+			scoredImages.emplace_back(ScoredImage{b, s.score});
 		}
 		if (scoredImages.size() > topK) {
 			scoredImages.Sort([](const ScoredImage& i, const ScoredImage& j) {
@@ -818,24 +935,306 @@ PairIdxArr PairsMatcher::CollectKnownPosePairs()
 	});
 	scene.threadPool.wait();
 
-	// 3) Build the symmetric union of the per-image candidates, deduplicated
-	std::unordered_set<PairIdx::PairIndex> setPairs;
-	setPairs.reserve((size_t)nPosed * MINF(topK, 8u));
-	for (IIndex a = 0; a < nPosed; ++a) {
-		const IIndex idA = scene.images[posedImages[a]].ID;
-		for (const ScoredImage& scoredImage : topPerImage[a]) {
-			const IIndex idB = scene.images[posedImages[scoredImage.idx]].ID;
-			ASSERT(idB != idA);
-			const PairIdx p = MakePairIdx(idA, idB);
-			if (setPairs.emplace(p.idx).second)
-				result.emplace_back(p);
+	// 3) Keep the pairs present in the candidate lists of BOTH endpoints: requiring mutual
+	//    agreement suppresses the one-sided tail of each list (candidates kept only because
+	//    the other image sits in a denser part of the trajectory), which is what wastes most
+	//    of the matching budget at small top-K settings
+	std::unordered_map<PairIdx::PairIndex, uint8_t> numEndpointVotes;
+	numEndpointVotes.reserve((size_t)nPosed * MINF(topK, 16u));
+	for (IIndex a = 0; a < nPosed; ++a)
+		for (const ScoredImage& scoredImage : topPerImage[a])
+			++numEndpointVotes[MakePairIdx(a, scoredImage.idx).idx];
+	std::unordered_set<PairIdx::PairIndex> setPairs; // pairs of indices in the posed images array
+	setPairs.reserve(numEndpointVotes.size() / 2);
+	for (const auto& [pairIndex, votes] : numEndpointVotes) {
+		ASSERT(votes <= 2);
+		if (votes == 2)
+			setPairs.emplace(pairIndex);
+	}
+	const unsigned numMutualPairs = (unsigned)setPairs.size();
+
+	// 4) Ungated nearest-camera floor: every image keeps its nearest cameras
+	for (IIndex a = 0; a < nPosed; ++a)
+		for (const ScoredImage& nearestImage : nearestPerImage[a])
+			setPairs.emplace(MakePairIdx(a, nearestImage.idx).idx);
+	const unsigned numFloorPairs = (unsigned)setPairs.size() - numMutualPairs;
+
+	// 5) Connectivity backbone: join the connected components of the selected pair graph
+	//    (Boruvka rounds over the two-tier bridge score: any gated score outranks every
+	//    ungated one, and ungated bridges prefer the nearest cameras), so a sparse or
+	//    gate-fragmented selection cannot silently split the view graph
+	IIndexArr ufParent(nPosed);
+	std::iota(ufParent.begin(), ufParent.end(), 0u);
+	const auto Find = [&ufParent](IIndex x) {
+		while (ufParent[x] != x)
+			x = ufParent[x] = ufParent[ufParent[x]];
+		return x;
+	};
+	unsigned numComponents = nPosed;
+	for (const PairIdx::PairIndex pairIndex : setPairs) {
+		const PairIdx pair(pairIndex);
+		const IIndex rootA = Find(pair.i), rootB = Find(pair.j);
+		if (rootA != rootB) {
+			ufParent[rootA] = rootB;
+			--numComponents;
 		}
 	}
+	struct Bridge {
+		PairIdx::PairIndex pairIndex;
+		REAL score;
+	};
+	while (numComponents > 1) {
+		// one Boruvka round: find the best outgoing edge of each component and merge
+		std::unordered_map<IIndex, Bridge> bestBridge; // component root -> best cross edge
+		for (IIndex a = 0; a < nPosed; ++a) {
+			const Image& imgA = scene.images[posedImages[a]];
+			const Point3 directionA(imgA.Direction());
+			const IIndex rootA = Find(a);
+			for (IIndex b = a + 1; b < nPosed; ++b) {
+				if (rootA == Find(b))
+					continue;
+				const Image& imgB = scene.images[posedImages[b]];
+				const REAL bridgeScore = scorer.BridgeScore(scorer(imgA, directionA, imgB));
+				const auto [it, inserted] = bestBridge.try_emplace(rootA, Bridge{MakePairIdx(a, b).idx, bridgeScore});
+				if (!inserted && it->second.score < bridgeScore)
+					it->second = Bridge{MakePairIdx(a, b).idx, bridgeScore};
+			}
+		}
+		if (bestBridge.empty())
+			break;
+		for (const auto& [root, bridge] : bestBridge) {
+			const PairIdx pair(bridge.pairIndex);
+			const IIndex rootA = Find(pair.i), rootB = Find(pair.j);
+			if (rootA != rootB) {
+				ufParent[rootA] = rootB;
+				--numComponents;
+				setPairs.emplace(pair.idx);
+			}
+		}
+	}
+
+	// 6) Convert the selected posed-index pairs to image-ID pairs
+	result.reserve((IIndex)setPairs.size());
+	for (const PairIdx::PairIndex pairIndex : setPairs) {
+		const PairIdx pair(pairIndex);
+		result.emplace_back(MakePairIdx(scene.images[posedImages[pair.i]].ID, scene.images[posedImages[pair.j]].ID));
+	}
 	const unsigned numExhaustivePairs((nImages - 1) * nImages / 2);
-	DEBUG("Pose-guided matching: %u candidate pairs from %u posed images (%.2f/%u pairs/image, %.1f%% of the %u exhaustive pairs, %u rejected by the %.0fdeg view-angle test) in %s",
-		(unsigned)result.size(), nPosed, (float)result.size() / nPosed, topK,
+	DEBUG("Pose-guided matching: %u candidate pairs from %u posed images (%u mutual top-%u, %u nearest-camera floor, %u connectivity bridges; %.2f/%u pairs/image, %.1f%% of the %u exhaustive pairs, %u rejected by the %.0fdeg view-angle test) in %s",
+		(unsigned)result.size(), nPosed, numMutualPairs, topK, numFloorPairs, (unsigned)setPairs.size() - numMutualPairs - numFloorPairs,
+		(float)result.size() / nPosed, config.maxPairsPerImage,
 		100.f * result.size() / numExhaustivePairs, numExhaustivePairs,
-		numRejectedByViewAngle.load() / 2, R2D(maxViewAngle), TD_TIMER_GET_FMT().c_str());
+		numRejectedByViewAngle.load() / 2, R2D(scorer.maxViewAngle), TD_TIMER_GET_FMT().c_str());
+	return result;
+}
+
+PairIdxArr PairsMatcher::CollectVerificationFeedbackPairs(const PairIdxArr& attemptedPairs)
+{
+	PairIdxArr result;
+	ASSERT(config.mode == MatchConfig::VOCABULARY || config.mode == MatchConfig::KNOWN_POSES);
+	const bool poseGuided(config.mode == MatchConfig::KNOWN_POSES);
+	const IIndex nImages = scene.images.size();
+
+	TD_TIMER_STARTD();
+
+	// 1) Compute the pair budget left to invest: the total budget targets
+	//    maxPairsPerImage*N/2 pairs and the first round spent one attempt per candidate
+	const IIndexArr posedImages = poseGuided ? CollectPosedImages(scene) : IIndexArr();
+	const IIndex nEligible = poseGuided ? posedImages.size() : nImages;
+	if (nEligible < 3)
+		return result; // no pair outside the exhaustive set of a 2-image scene
+	const size_t numTotalPairsBudget = MINF(
+		(size_t)config.maxPairsPerImage*nEligible/2, (size_t)nEligible*(nEligible - 1)/2);
+	std::unordered_set<PairIdx::PairIndex> attempted;
+	attempted.reserve(attemptedPairs.size() + scene.pairs.size());
+	for (const PairIdx& pair : attemptedPairs)
+		attempted.emplace(pair.idx);
+	for (const ImagePair& pair : scene.pairs)
+		attempted.emplace(MakePairIdx(pair.ID1, pair.ID2).idx);
+	if (attempted.size() >= numTotalPairsBudget) {
+		DEBUG("Verification-feedback matching: no pair budget left (%u pairs attempted of %u budgeted)",
+			(unsigned)attempted.size(), (unsigned)numTotalPairsBudget);
+		return result;
+	}
+	const size_t budget = numTotalPairsBudget - attempted.size();
+
+	// 2) Build the geometrically verified pair graph of the previous matching round
+	PairIdxArr verifiedPairs(0, scene.pairs.size());
+	std::vector<IIndexArr> verifiedNeighbors(nImages);
+	for (const ImagePair& pair : scene.pairs) {
+		if (!pair.HasMatches() || (config.maxEpipolarError > 0 && !pair.HasGeometricVerification()))
+			continue;
+		ASSERT(pair.ID1 < nImages && pair.ID2 < nImages);
+		verifiedPairs.emplace_back(MakePairIdx(pair.ID1, pair.ID2));
+		verifiedNeighbors[pair.ID1].push_back(pair.ID2);
+		verifiedNeighbors[pair.ID2].push_back(pair.ID1);
+	}
+	if (verifiedPairs.empty()) {
+		DEBUG("Verification-feedback matching: no verified pairs to build on");
+		return result;
+	}
+
+	// 3) Propose and score new pairs from the verified graph
+	struct Proposal {
+		PairIdx::PairIndex pairIndex;
+		uint32_t votes;  // verification-feedback strength (e.g. common verified neighbors)
+		float score;     // first-round candidate score, breaking the vote ties
+	};
+	CLISTDEF0(Proposal) proposals;
+	struct ScoredCandidate {
+		IIndex idx;   // candidate image index
+		float score;  // first-round candidate score, the higher the better
+	};
+	std::vector<CLISTDEF0(ScoredCandidate)> rankedPerImage(nImages); // refill candidates, best first
+	const auto SortCandidates = [](CLISTDEF0(ScoredCandidate)& candidates) {
+		candidates.Sort([](const ScoredCandidate& a, const ScoredCandidate& b) {
+			return a.score > b.score || (a.score == b.score && a.idx < b.idx);
+		});
+	};
+	if (poseGuided) {
+		// close the triangles of the verified graph: two images sharing verified neighbors
+		// most likely overlap too, no matter how the pose-based score ranks them (the strongest
+		// signal available: it recovers the true pairs the view-angle gate or the baseline
+		// preference mis-ranked in the first round)
+		const REAL sceneScale = EstimateSceneScale(scene, posedImages);
+		if (sceneScale <= 0)
+			return result;
+		const PosePairScorer scorer{sceneScale};
+		std::unordered_map<PairIdx::PairIndex, uint32_t> numCommonNeighbors;
+		for (IIndex i = 0; i < nImages; ++i) {
+			const IIndexArr& neighbors = verifiedNeighbors[i];
+			FOREACH(x, neighbors)
+				for (IIndex y = x + 1; y < neighbors.size(); ++y) {
+					const PairIdx::PairIndex pairIndex = MakePairIdx(neighbors[x], neighbors[y]).idx;
+					if (attempted.find(pairIndex) == attempted.end())
+						++numCommonNeighbors[pairIndex];
+				}
+		}
+		proposals.reserve((IIndex)numCommonNeighbors.size());
+		for (const auto& [pairIndex, votes] : numCommonNeighbors) {
+			const PairIdx pair(pairIndex);
+			const Image& imgA = scene.images[pair.i];
+			const Image& imgB = scene.images[pair.j];
+			if (!imgA.HasPose() || !imgB.HasPose())
+				continue; // verified pairs may predate this matching round and involve unposed images
+			const float score((float)scorer(imgA, imgA.Direction(), imgB).score);
+			proposals.push_back({pairIndex, votes, MAXF(score, 0.f)});
+		}
+		// rank the refill candidates by the pose-based score (gated pairs excluded), deep
+		// enough past the first-round candidate lists to always offer unattempted pairs
+		if (proposals.size() < budget) {
+			const IIndex refillDepth = MINF(config.maxPairsPerImage*4/3 + 8, nEligible - 1);
+			scene.threadPool.detach_loop(0u, nEligible, [&](IIndex a) {
+				const Image& imgA = scene.images[posedImages[a]];
+				const Point3 directionA(imgA.Direction());
+				CLISTDEF0(ScoredCandidate)& candidates = rankedPerImage[posedImages[a]];
+				candidates.reserve(nEligible - 1);
+				for (IIndex b = 0; b < nEligible; ++b) {
+					if (b == a)
+						continue;
+					const PosePairScorer::Score s = scorer(imgA, directionA, scene.images[posedImages[b]]);
+					if (!s.IsGated())
+						candidates.push_back({posedImages[b], (float)s.score});
+				}
+				SortCandidates(candidates);
+				if (candidates.size() > refillDepth)
+					candidates.Resize(refillDepth);
+			});
+			scene.threadPool.wait();
+		}
+	} else {
+		// propagate each verified pair to the top retrieval candidates of its endpoints:
+		// a candidate retrieved high by one endpoint of a verified pair most likely overlaps
+		// the other endpoint too (the retrieval analogue of closing verified triangles)
+		if (fusedRetrievalScores.empty()) {
+			DEBUG("Verification-feedback matching: no retrieval scores kept from the vocabulary round");
+			return result;
+		}
+		for (const auto& [pairIndex, score] : fusedRetrievalScores) {
+			const PairIdx pair(pairIndex);
+			ASSERT(pair.i < nImages && pair.j < nImages);
+			rankedPerImage[pair.i].push_back({pair.j, score});
+			rankedPerImage[pair.j].push_back({pair.i, score});
+		}
+		for (CLISTDEF0(ScoredCandidate)& candidates : rankedPerImage)
+			SortCandidates(candidates);
+		const auto FusedScore = [this](IIndex a, IIndex b) {
+			const auto it = fusedRetrievalScores.find(MakePairIdx(a, b).idx);
+			return it != fusedRetrievalScores.end() ? it->second : 0.f;
+		};
+		const unsigned propagateK = 5; // retrieval candidates each verified endpoint propagates to
+		std::unordered_map<PairIdx::PairIndex, float> propagatedScores;
+		const auto Propagate = [&](IIndex a, IIndex b) {
+			// propose the pairs (a, c) for the top retrieval candidates c of its verified partner b
+			const CLISTDEF0(ScoredCandidate)& ranked = rankedPerImage[b];
+			const IIndex topK = MINF((IIndex)propagateK, (IIndex)ranked.size());
+			for (IIndex r = 0; r < topK; ++r) {
+				const IIndex c = ranked[r].idx;
+				if (c == a)
+					continue;
+				const PairIdx::PairIndex pairIndex = MakePairIdx(a, c).idx;
+				if (attempted.find(pairIndex) != attempted.end())
+					continue;
+				const float score = FusedScore(a, c) + FusedScore(b, c);
+				const auto [it, inserted] = propagatedScores.try_emplace(pairIndex, score);
+				if (!inserted && it->second < score)
+					it->second = score;
+			}
+		};
+		for (const PairIdx& pair : verifiedPairs) {
+			Propagate(pair.i, pair.j);
+			Propagate(pair.j, pair.i);
+		}
+		proposals.reserve((IIndex)propagatedScores.size());
+		for (const auto& [pairIndex, score] : propagatedScores)
+			proposals.push_back({pairIndex, 1u, score});
+	}
+
+	// 4) Take the best proposals until the budget is spent
+	proposals.Sort([](const Proposal& a, const Proposal& b) {
+		if (a.votes != b.votes)
+			return a.votes > b.votes;
+		if (a.score != b.score)
+			return a.score > b.score;
+		return a.pairIndex < b.pairIndex;
+	});
+	for (const Proposal& proposal : proposals) {
+		if (result.size() >= budget)
+			break;
+		attempted.emplace(proposal.pairIndex);
+		result.emplace_back(PairIdx(proposal.pairIndex));
+	}
+	const unsigned numProposedPairs = (unsigned)result.size();
+
+	// 5) Refill: the images with the weakest verified connectivity spend the remaining
+	//    budget on their next best-ranked candidates from the first-round scoring
+	if (result.size() < budget) {
+		const unsigned maxRefillsPerImage = 2;
+		IIndexArr weakestFirst(nEligible);
+		FOREACH(i, weakestFirst)
+			weakestFirst[i] = poseGuided ? posedImages[i] : i;
+		weakestFirst.Sort([&verifiedNeighbors](IIndex a, IIndex b) {
+			const IIndex degA = verifiedNeighbors[a].size(), degB = verifiedNeighbors[b].size();
+			return degA < degB || (degA == degB && a < b);
+		});
+		for (const IIndex a : weakestFirst) {
+			if (result.size() >= budget)
+				break;
+			unsigned numAdded = 0;
+			for (const ScoredCandidate& candidate : rankedPerImage[a]) {
+				const PairIdx::PairIndex pairIndex = MakePairIdx(a, candidate.idx).idx;
+				if (!attempted.emplace(pairIndex).second)
+					continue;
+				result.emplace_back(PairIdx(pairIndex));
+				if (++numAdded >= maxRefillsPerImage || result.size() >= budget)
+					break;
+			}
+		}
+	}
+
+	DEBUG("Verification-feedback matching: %u candidate pairs (%u proposed by the %u verified pairs, %u refilled by the weakest-connected images; %u attempted of the %u pair budget) in %s",
+		(unsigned)result.size(), numProposedPairs, verifiedPairs.size(), (unsigned)result.size() - numProposedPairs,
+		(unsigned)(attempted.size() - result.size()), (unsigned)numTotalPairsBudget, TD_TIMER_GET_FMT().c_str());
 	return result;
 }
 
@@ -1146,89 +1545,10 @@ void PairsMatcher::PreMatch(PairIdxArr& pairsToMatch)
 		pairsToMatch.size(), numVerifiedStored, numRemoved, TD_TIMER_GET_FMT().c_str());
 }
 
-unsigned PairsMatcher::Match()
+bool PairsMatcher::MatchPairsBatch(const PairIdxArr& pairsToMatch, LPCTSTR progressCaption, MatchStats& stats)
 {
-	const IIndex nImages = scene.images.size();
-	if (nImages < 2) {
-		VERBOSE("error: need at least 2 images for matching");
-		return 0;
-	}
-
-	TD_TIMER_STARTD();
-	const MatchConfig::MatchMode matchMode(
-		config.mode == MatchConfig::VOCABULARY && nImages < config.maxPairsPerImage*6/5 ?
-		MatchConfig::EXHAUSTIVE : config.mode);
-
-	// Collect pairs to match based on selected mode
-	PairIdxArr pairsToMatch;
-	const unsigned numExhaustivePairs((nImages - 1) * nImages / 2);
-	const auto CollectExhaustivePairs = [&]() {
-		VERBOSE("Exhaustive matching %u images...", nImages);
-		pairsToMatch.reserve(numExhaustivePairs);
-		for (IIndex i = 0; i < nImages; ++i)
-			for (IIndex j = i + 1; j < nImages; ++j)
-				pairsToMatch.emplace_back(MakePairIdx(scene.images[i].ID, scene.images[j].ID));
-	};
-	switch (matchMode) {
-	case MatchConfig::EXHAUSTIVE: {
-		CollectExhaustivePairs();
-		break;
-	}
-	case MatchConfig::VOCABULARY: {
-		// Build vocabulary candidates (base + optional expanded pairs)
-		pairsToMatch = CollectVocabularyPairs();
-		if (pairsToMatch.empty()) {
-			VERBOSE("error: vocabulary produced no new candidate pairs");
-			return 0;
-		}
-		break;
-	}
-	case MatchConfig::KNOWN_POSES: {
-		// Select the candidate pairs using the already-known camera poses
-		pairsToMatch = CollectKnownPosePairs();
-		if (pairsToMatch.empty()) {
-			VERBOSE("warning: known poses produced no candidate pairs (less than two posed images or degenerate poses); falling back to exhaustive matching");
-			CollectExhaustivePairs();
-		}
-		break;
-	}
-	case MatchConfig::SEQUENTIAL: {
-		// Sequential matching: consecutive images only
-		// Close the loop: include pairs that wrap from the end to the front;
-		// makes sense only when nImages >= 2*overlap, and to avoid duplicates
-		VERBOSE("Sequential matching %u images (overlap: %u)...", nImages, config.matchSequenceOverlap);
-		pairsToMatch.reserve(nImages * config.matchSequenceOverlap);
-		if (nImages >= 2 * config.matchSequenceOverlap) {
-			for (IIndex i = 0; i < nImages; ++i)
-				for (unsigned k = 1; k <= config.matchSequenceOverlap; ++k)
-					pairsToMatch.emplace_back(MakePairIdx(scene.images[i].ID, scene.images[(i + k) % nImages].ID));
-		} else {
-			for (IIndex i = 0; i < nImages; ++i)
-				for (unsigned k = 1; k <= config.matchSequenceOverlap; ++k)
-					if (i + k < nImages)
-						pairsToMatch.emplace_back(MakePairIdx(scene.images[i].ID, scene.images[i + k].ID));
-		}
-		break;
-	}
-	default:
-		ASSERT("Invalid match mode" == NULL);
-		return 0;
-	}
-	ASSERT(!pairsToMatch.empty());
-
-	// Make pre-matching if requested
-	// note: pre-matching needs the vocabulary tree top descriptors, so it is skipped
-	//  in the modes not building it (EXHAUSTIVE/SEQUENTIAL/KNOWN_POSES)
-	if (vocabularyTree) {
-		if (config.preMatchThreshold > 0)
-			PreMatch(pairsToMatch);
-		// Clear descriptors cache
-		vocabularyTree->ClearDescriptorsCache();
-	}
-
-	// Reorder pairs to minimize GPU transfers and improve load balancing
-	OptimizePairsOrder(pairsToMatch);
-
+	if (pairsToMatch.empty())
+		return true;
 	// Hash map to quickly find existing pairs (or created by PreMatch)
 	std::unordered_map<uint64_t, IIndex> existingPairMap;
 	existingPairMap.reserve(scene.pairs.size());
@@ -1238,7 +1558,7 @@ unsigned PairsMatcher::Match()
 	}
 	// Match all collected pairs in parallel
 	cv::setNumThreads(1); // temporary turn off multi-threading for OpenCV functions
-	Util::Progress progress(_T("Match image pairs"), pairsToMatch.size());
+	Util::Progress progress(progressCaption, pairsToMatch.size());
 	GET_LOGCONSOLE().Pause();
 	unsigned newPairs = 0, updatedPairs = 0;
 	size_t numMatches = 0,  numInliers = 0, numFilteredInliers = 0;
@@ -1249,7 +1569,10 @@ unsigned PairsMatcher::Match()
 		SiftGPUMatchCoordinator coordinator(*this);
 		if (!coordinator.Initialize()) {
 			VERBOSE("error: SiftMatchGPU coordinator initialization failed");
-			return 0;
+			GET_LOGCONSOLE().Play();
+			progress.close();
+			cv::setNumThreads(scene.nMaxThreads);
+			return false;
 		}
 		coordinator.ProcessPairs(pairsToMatch, existingPairMap, progress, newPairs, updatedPairs, numMatches, numInliers, numFilteredInliers);
 	} else
@@ -1314,9 +1637,134 @@ unsigned PairsMatcher::Match()
 	progress.close();
 	cv::setNumThreads(scene.nMaxThreads); // restore OpenCV threading
 
+	stats.newPairs += newPairs;
+	stats.updatedPairs += updatedPairs;
+	stats.numMatches += numMatches;
+	stats.numInliers += numInliers;
+	stats.numFilteredInliers += numFilteredInliers;
+	return true;
+}
+
+unsigned PairsMatcher::Match()
+{
+	const IIndex nImages = scene.images.size();
+	if (nImages < 2) {
+		VERBOSE("error: need at least 2 images for matching");
+		return 0;
+	}
+
+	TD_TIMER_STARTD();
+	const MatchConfig::MatchMode matchMode(
+		config.mode == MatchConfig::VOCABULARY && nImages < config.maxPairsPerImage*6/5 ?
+		MatchConfig::EXHAUSTIVE : config.mode);
+
+	// Two-round verification feedback: hold back part of the pair budget in the first round
+	// and re-invest it in the pairs suggested by the geometrically verified matches; engaged
+	// only for the selective modes, and only when the budget is large enough for the
+	// first-round verified graph to carry a useful signal
+	bool verificationFeedback = config.verificationFeedback && config.maxPairsPerImage >= 10 &&
+		(matchMode == MatchConfig::VOCABULARY || matchMode == MatchConfig::KNOWN_POSES);
+	// Per-image candidate-list length for the selective modes: in single-round matching the
+	// list is inflated because the mutual-agreement rule is stricter than a one-sided top-K
+	// union (at the configured setting it then selects about the configured volume of pairs,
+	// just distributed by two-sided preference); with verification feedback the first round
+	// instead uses a deflated list (80% of the target, uninflated) and the second round
+	// fills the rest of the maxPairsPerImage*N/2 pair budget guided by the verified matches
+	const unsigned vocabularyTopK = verificationFeedback ?
+		config.maxPairsPerImage*4/5 : config.maxPairsPerImage*8/5;
+	const unsigned knownPosesTopK = verificationFeedback ?
+		config.maxPairsPerImage*4/5 : config.maxPairsPerImage*4/3;
+
+	// Collect pairs to match based on selected mode
+	PairIdxArr pairsToMatch;
+	const unsigned numExhaustivePairs((nImages - 1) * nImages / 2);
+	const auto CollectExhaustivePairs = [&]() {
+		VERBOSE("Exhaustive matching %u images...", nImages);
+		pairsToMatch.reserve(numExhaustivePairs);
+		for (IIndex i = 0; i < nImages; ++i)
+			for (IIndex j = i + 1; j < nImages; ++j)
+				pairsToMatch.emplace_back(MakePairIdx(scene.images[i].ID, scene.images[j].ID));
+	};
+	switch (matchMode) {
+	case MatchConfig::EXHAUSTIVE: {
+		CollectExhaustivePairs();
+		break;
+	}
+	case MatchConfig::VOCABULARY: {
+		// Build vocabulary candidates from the tree retrieval ranking
+		pairsToMatch = CollectVocabularyPairs(vocabularyTopK);
+		if (pairsToMatch.empty()) {
+			VERBOSE("error: vocabulary produced no new candidate pairs");
+			return 0;
+		}
+		break;
+	}
+	case MatchConfig::KNOWN_POSES: {
+		// Select the candidate pairs using the already-known camera poses
+		pairsToMatch = CollectKnownPosePairs(knownPosesTopK);
+		if (pairsToMatch.empty()) {
+			VERBOSE("warning: known poses produced no candidate pairs (less than two posed images or degenerate poses); falling back to exhaustive matching");
+			CollectExhaustivePairs();
+			verificationFeedback = false;
+		}
+		break;
+	}
+	case MatchConfig::SEQUENTIAL: {
+		// Sequential matching: consecutive images only
+		// Close the loop: include pairs that wrap from the end to the front;
+		// makes sense only when nImages >= 2*overlap, and to avoid duplicates
+		VERBOSE("Sequential matching %u images (overlap: %u)...", nImages, config.matchSequenceOverlap);
+		pairsToMatch.reserve(nImages * config.matchSequenceOverlap);
+		if (nImages >= 2 * config.matchSequenceOverlap) {
+			for (IIndex i = 0; i < nImages; ++i)
+				for (unsigned k = 1; k <= config.matchSequenceOverlap; ++k)
+					pairsToMatch.emplace_back(MakePairIdx(scene.images[i].ID, scene.images[(i + k) % nImages].ID));
+		} else {
+			for (IIndex i = 0; i < nImages; ++i)
+				for (unsigned k = 1; k <= config.matchSequenceOverlap; ++k)
+					if (i + k < nImages)
+						pairsToMatch.emplace_back(MakePairIdx(scene.images[i].ID, scene.images[i + k].ID));
+		}
+		break;
+	}
+	default:
+		ASSERT("Invalid match mode" == NULL);
+		return 0;
+	}
+	ASSERT(!pairsToMatch.empty());
+
+	// Run a matching round: pre-match filter if requested, GPU-friendly ordering, then
+	// parallel feature matching and geometric verification of all the candidate pairs
+	MatchStats stats;
+	const auto MatchRound = [&](PairIdxArr& pairs, LPCTSTR progressCaption) {
+		// Pre-match the pairs if requested
+		// note: pre-matching needs the vocabulary tree top descriptors, so it is skipped
+		//  in the modes not building it (EXHAUSTIVE/SEQUENTIAL/KNOWN_POSES)
+		if (vocabularyTree) {
+			if (config.preMatchThreshold > 0)
+				PreMatch(pairs);
+			// Clear descriptors cache
+			vocabularyTree->ClearDescriptorsCache();
+		}
+		// Reorder pairs to minimize GPU transfers and improve load balancing
+		OptimizePairsOrder(pairs);
+		return MatchPairsBatch(pairs, progressCaption, stats);
+	};
+	if (!MatchRound(pairsToMatch, _T("Match image pairs")))
+		return 0;
+
+	// Second round: spend the held-back pair budget on the pairs suggested by the
+	// geometrically verified matches of the first round
+	if (verificationFeedback) {
+		PairIdxArr feedbackPairs = CollectVerificationFeedbackPairs(pairsToMatch);
+		if (!feedbackPairs.empty() && !MatchRound(feedbackPairs, _T("Match feedback pairs")))
+			return 0;
+	}
+	fusedRetrievalScores.clear(); // only kept for the verification-feedback round
+
 	DEBUG("Images matched: created %u/%u new/updated pairs (%u total from %u exhaustive),\n%u/%u/%u matches (%.2f/%.2f/%.2f per pair) in %s",
-		newPairs, updatedPairs, scene.pairs.size(), numExhaustivePairs, numFilteredInliers, numInliers, numMatches,
-		static_cast<double>(numFilteredInliers) / (newPairs + updatedPairs), static_cast<double>(numInliers) / (newPairs + updatedPairs), static_cast<double>(numMatches) / (newPairs + updatedPairs),
+		stats.newPairs, stats.updatedPairs, scene.pairs.size(), numExhaustivePairs, stats.numFilteredInliers, stats.numInliers, stats.numMatches,
+		static_cast<double>(stats.numFilteredInliers) / (stats.newPairs + stats.updatedPairs), static_cast<double>(stats.numInliers) / (stats.newPairs + stats.updatedPairs), static_cast<double>(stats.numMatches) / (stats.newPairs + stats.updatedPairs),
 		TD_TIMER_GET_FMT().c_str());
 
 	#if TD_VERBOSE != TD_VERBOSE_OFF

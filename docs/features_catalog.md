@@ -118,7 +118,7 @@ OpenMVS is a comprehensive photogrammetry library implementing a complete pipeli
   - **Descriptor matching:** FLANN LSH (binary descriptors) or KDTree (float descriptors); Lowe ratio test (0.9 for AKAZE/ORB, 0.8 for SIFT); optional cross-check
   - **Pre-match threshold:** optional filter before full matching
   - **SiftMatchGPU:** GPU-accelerated matching path (optional)
-- **Configuration:** `MatchConfig` — `mode`, `maxPairsPerImage` (50, used by `VOCABULARY` and `KNOWN_POSES`), `matchDistance`, `matchRatio`, `maxEpipolarError`, `minMatches` (50), `expandPairsTopK`, `matchSequenceOverlap`
+- **Configuration:** `MatchConfig` — `mode`, `maxPairsPerImage` (50, used by `VOCABULARY` and `KNOWN_POSES`), `verificationFeedback` (two-round matching), `matchDistance`, `matchRatio`, `maxEpipolarError`, `minMatches` (50), `matchSequenceOverlap`
 - **GPU Support:** Yes (SiftMatchGPU)
 - **Threading:** `BS::light_thread_pool` for parallel pair matching; per-thread matcher instances
 - **Dependencies:** FLANN, OpenCV, SiftMatchGPU (optional)

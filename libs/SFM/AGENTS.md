@@ -138,12 +138,23 @@ poses file, alignment, colors). Clustering is never involved.
 - Keypoint weighting: `ComputeKeypointWeight()`, `ComputeKeypointPrecision()`
 
 ### Feature Matching (`PairsMatcher.h`, `MatchGeometric.h`)
-- **Matching modes**: `EXHAUSTIVE` (all pairs), `VOCABULARY` (top-K retrieval), `SEQUENTIAL` (video),
+- **Matching modes**: `EXHAUSTIVE` (all pairs), `VOCABULARY` (reciprocal-rank-fused retrieval,
+  mutual top-K + connectivity bridges), `SEQUENTIAL` (video),
   `KNOWN_POSES` (pose-guided: `CollectKnownPosePairs` scores baseline - normalized by the median
   nearest-neighbor camera distance - times viewing-direction agreement, rejects optical-axis angles
-  > 75 deg, keeps top-`maxPairsPerImage` per image; falls back to exhaustive if it yields no pair.
+  > 75 deg, keeps the pairs present in the candidate lists of BOTH endpoints, plus each image's
+  2 nearest cameras ungated (occlusion safeguard) and max-score component bridges; falls back to
+  exhaustive if it yields no pair.
   No camera-center cheirality test: orbit and nadir captures put the neighbor centers tangential /
   perpendicular to the view direction, so the strongest pairs would fail it)
+- **Verification feedback** (`CollectVerificationFeedbackPairs`, on by default for
+  VOCABULARY/KNOWN_POSES with `maxPairsPerImage >= 10`): matching runs in two rounds - the first
+  collects from uninflated per-image lists at 80% of the target, then the remaining budget (up to
+  `maxPairsPerImage*N/2` total pairs) goes to pairs suggested by the geometrically verified matches: KNOWN_POSES closes
+  the triangles of the verified pair graph (ranked by common verified neighbors), VOCABULARY
+  propagates each verified pair to its endpoints' top-5 retrieval candidates; the images with the
+  weakest verified connectivity refill any leftover budget (2 pairs/image) from their next
+  best-ranked first-round candidates
 - Lowe's ratio test, cross-check, FLANN (LSH/KDTree)
 - **Geometric verification**: RANSAC for E (calibrated) or F (uncalibrated), optional H
 - Threshold: `maxEpipolarError` (pixels), min inliers (default 50)
