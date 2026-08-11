@@ -390,7 +390,7 @@ Input: Images + matched pairs (from common front-end)
   ▼
 ┌─────────────────────────────────────────────────────────┐
 │ 3. Resolve the Camera-Axes Convention (frames.json only) │
-│    ImportFramesJSON.h::DetectFramesConvention            │
+│    PoseIO.h::DetectFramesConvention                      │
 │    Compare imported vs match-verified relative rotations │
 │    Inconclusive -> fail, ask for an explicit convention  │
 └─────────────────────────────────────────────────────────┘
@@ -429,7 +429,7 @@ Output: Refined poses + sparse point cloud, handed to the
 
 - **The shared tail still runs.** After this method returns, `Scene::Reconstruct` continues through final bundle adjustment, filtering, and `Resection::RegisterImages()`, which registers images that had no entry in the poses file.
 
-#### The frames.json format (`ImportFramesJSON.h`)
+#### The frames.json format (`PoseIO.h`)
 
 A JSON array of frames, the format Polycam-style AR captures export:
 
@@ -494,8 +494,7 @@ The log line it emits -- median and maximum camera-center delta, median and maxi
 |--------|--------|-----------|
 | `ImportCOLMAP.h` | COLMAP binary | Import cameras, poses, tracks |
 | `ImportROMA2.h` | ROMA2 .npz | Import robust matches + depth |
-| `ImportFramesJSON.h` | Polycam-style frames.json | Import camera poses + optional OPENCV intrinsics |
-| `Image.h` (`ImportPosesCSV` / `ExportPosesCSV`) | OpenMVS pose CSV | Import/export per-image intrinsics + pose |
+| `PoseIO.h` | OpenMVS pose CSV and Polycam-style frames.json | Import/export per-image intrinsics and poses |
 | `InterfaceMVS.h` | OpenMVS .mvs | Export to MVS pipeline |
 | Scene::ExportPLY | PLY | Export sparse point cloud |
 
@@ -608,7 +607,7 @@ libs/SFM/
 │ # External format support
 ├── ImportCOLMAP.h/cpp                  # COLMAP import
 ├── ImportROMA2.h/cpp                   # ROMA2 match import
-├── ImportFramesJSON.h/cpp              # frames.json pose import + convention detection
+├── PoseIO.h/cpp                        # CSV/frames.json pose I/O + convention detection
 └── InterfaceMVS.h/cpp                  # MVS format export
 ```
 

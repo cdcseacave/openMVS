@@ -225,7 +225,7 @@ Joint refinement of focal length + distortion (k1, k2) with relative pose via Ce
 ## External Format Support
 - **COLMAP import** (`ImportCOLMAP.h`): Binary reconstruction, selective import
 - **ROMA2 import** (`ImportROMA2.h`): Robust optical matching .npz files
-- **frames.json import** (`ImportFramesJSON.h`): Polycam-style array of `{name, transform[16], params?}`;
+- **frames.json import** (`PoseIO.h`): Polycam-style array of `{name, transform[16], params?}`;
   `transform` is a column-major 4x4 camera-to-world matrix, `params` an optional OPENCV intrinsics block
   (`w,h,fx,fy,cx,cy,k1,k2,p1,p2`) declared for its own resolution and rescaled to the image.
   Entries are matched to images by file name (full name, then stem, both case-insensitive).
@@ -235,7 +235,7 @@ Joint refinement of focal length + distortion (k1, k2) with relative pose via Ce
   `DetectFramesConvention` / `FlipFramesConvention`), and EXIF-portrait images are rotated 90 deg
   clockwise on load, so both `R` (composed with `Rz(+90 deg)`, the inverse of `View::RevertRotation`)
   and the imported intrinsics are rotated to match, while the camera center is unchanged
-- **Pose CSV import/export** (`Image.h`: `ImportPosesCSV` / `ExportPosesCSV`): `PoseImportMode`
+- **Pose CSV import/export** (`PoseIO.h`: `ImportPosesCSV` / `ExportPosesCSV`): `PoseImportMode`
   = `NONE` / `POSES_INTRINSICS` (intrinsics when the row has them, plus R + C, marks
   `trustIntrinsics`) / `POSES` (R + C) / `POSITIONS` (C only). Rows match by file-name stem
   (case-sensitive, unlike the frames.json matcher) and `score <= 0` invalidates the pose.
@@ -279,4 +279,3 @@ instead of the images folder**. No code change needed:
   Courthouse, 1106 imgs: skips ~33s features + several min matching).
 - To capture extra debug state mid-pipeline, temporarily add a `Save(MAKE_PATH("dbg.sfm"))`
   and feed `dbg.sfm` back in the same way.
-

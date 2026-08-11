@@ -24,7 +24,7 @@
 #include "BundleAdjustment.h"
 #include "GlobalAlignment.h"
 #include "ImportROMA2.h"
-#include "ImportFramesJSON.h"
+#include "PoseIO.h"
 
 
 // D E F I N E S ///////////////////////////////////////////////////
@@ -453,4 +453,3 @@ SFM_API bool CompareScenes(const Scene& scene, const String& gtFile, bool matchB
 } // namespace SFM
 
 #endif // _SFM_SCENE_H_
-

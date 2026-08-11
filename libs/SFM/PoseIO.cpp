@@ -1,12 +1,12 @@
 ////////////////////////////////////////////////////////////////////
-// ImportFramesJSON.cpp
+// PoseIO.cpp
 //
 // Copyright 2007 cDc@seacave
 // Distributed under the Boost Software License, Version 1.0
 // (See http://www.boost.org/LICENSE_1_0.txt)
 
 #include "Common.h"
-#include "ImportFramesJSON.h"
+#include "PoseIO.h"
 #include "Scene.h"
 #include "Triangulation.h"
 #include "../IO/json.hpp"
@@ -220,6 +220,157 @@ struct PairScore {
 };
 
 } // unnamed namespace
+
+
+unsigned SFM::ExportPosesCSV(const String& fileName, const ImageArr& images)
+{
+	unsigned numValid = 0;
+	std::ofstream os(fileName);
+	if (!os.is_open())
+		return numValid;
+
+	os << "# columns: filename(stem, no ext), fx, fy, cx, cy, qx, qy, qz, qw (world->camera quaternion), Cx, Cy, Cz (camera center in world coords), score (0 invalid/unknown - 1 accurate)\n";
+	os << "filename,fx,fy,cx,cy,qx,qy,qz,qw,Cx,Cy,Cz,score\n";
+	os << std::setprecision(17);
+
+	for (const Image& image : images) {
+		const bool valid = image.IsValid();
+		const float score = valid ? 1.f : 0.f;
+		const std::string stem = Util::getFileName(image.fileName);
+
+		double fx = 0.0, fy = 0.0, cx = 0.0, cy = 0.0;
+		Eigen::Quaterniond q = Eigen::Quaterniond::Identity();
+		double Cx = 0.0, Cy = 0.0, Cz = 0.0;
+		if (valid) {
+			// Intrinsics
+			const KMatrix K = image.GetK();
+			fx = K(0, 0);
+			fy = K(1, 1);
+			cx = K(0, 2);
+			cy = K(1, 2);
+			// Extrinsics
+			const Eigen::Matrix3d R = image.R;
+			q = Eigen::Quaterniond(R);
+			q.normalize();
+			Cx = image.C.x;
+			Cy = image.C.y;
+			Cz = image.C.z;
+			++numValid;
+		}
+
+		os << stem << ','
+		   << fx << ',' << fy << ',' << cx << ',' << cy << ','
+		   << q.x() << ',' << q.y() << ',' << q.z() << ',' << q.w() << ','
+		   << Cx << ',' << Cy << ',' << Cz << ','
+		   << score << '\n';
+	}
+
+	return numValid;
+}
+
+unsigned SFM::ImportPosesCSV(const String& fileName, ImageArr& images, PoseImportMode mode)
+{
+	unsigned numUpdated = 0;
+	if (mode == PoseImportMode::NONE)
+		return numUpdated;
+	if (mode != PoseImportMode::POSES_INTRINSICS && mode != PoseImportMode::POSES &&
+		mode != PoseImportMode::POSITIONS)
+		return numUpdated;
+	std::ifstream is(fileName);
+	if (!is.is_open())
+		return numUpdated;
+
+	std::unordered_map<String, IIndex> stemToIndex;
+	stemToIndex.reserve(images.size());
+	FOREACH(i, images) {
+		const auto [it, inserted] = stemToIndex.emplace(Util::getFileName(images[i].fileName), i);
+		if (!inserted)
+			it->second = NO_ID; // reject ambiguous stems instead of selecting an arbitrary image
+	}
+
+	String line;
+	if (!std::getline(is, line))
+		return numUpdated; // missing comment/header
+	// Consume header line after comment if present
+	if (!line.empty() && line[0] == '#' && !std::getline(is, line))
+		return numUpdated; // missing header
+
+	while (std::getline(is, line)) {
+		if (line.empty())
+			continue;
+		// Parse CSV line
+		std::vector<String> fields;
+		fields.reserve(13);
+		std::stringstream ss(line);
+		String token;
+		while (std::getline(ss, token, ','))
+			fields.push_back(token);
+		if (fields.size() < 13)
+			continue;
+		// Find image by stem
+		const auto it = stemToIndex.find(fields[0]);
+		if (it == stemToIndex.end() || it->second == NO_ID)
+			continue;
+		Image& image = images[it->second];
+		// Parse values
+		try {
+			const double fx = std::stod(fields[1]);
+			const double fy = std::stod(fields[2]);
+			const double cx = std::stod(fields[3]);
+			const double cy = std::stod(fields[4]);
+			const double qx = std::stod(fields[5]);
+			const double qy = std::stod(fields[6]);
+			const double qz = std::stod(fields[7]);
+			const double qw = std::stod(fields[8]);
+			const double Cx = std::stod(fields[9]);
+			const double Cy = std::stod(fields[10]);
+			const double Cz = std::stod(fields[11]);
+			const float score = std::stof(fields[12]);
+			if (!std::isfinite(fx) || !std::isfinite(fy) || !std::isfinite(cx) || !std::isfinite(cy) ||
+				!std::isfinite(qx) || !std::isfinite(qy) || !std::isfinite(qz) || !std::isfinite(qw) ||
+				!std::isfinite(Cx) || !std::isfinite(Cy) || !std::isfinite(Cz) || !std::isfinite(score))
+				continue;
+
+			if (score <= 0.f) {
+				image.InvalidatePose();
+				continue;
+			}
+
+			Eigen::Quaterniond q;
+			if (mode != PoseImportMode::POSITIONS) {
+				q = Eigen::Quaterniond(qw, qx, qy, qz);
+				if (q.norm() <= std::numeric_limits<double>::epsilon())
+					continue;
+				q.normalize();
+			}
+
+			if (mode == PoseImportMode::POSES_INTRINSICS && image.HasCamera()) {
+				// Set intrinsics, but only for camera models that expose them
+				if (PinholeCamera* cam = dynamic_cast<PinholeCamera*>(image.pCamera)) {
+					if (fx > 0.0 && fy > 0.0) {
+						cam->SetIntrinsics((REAL)fx, (REAL)fy, (REAL)cx, (REAL)cy);
+						cam->trustIntrinsics = true;
+					} else {
+						DEBUG("warning: image '%s' has invalid intrinsics in the poses file (fx %g, fy %g); importing the pose only",
+							fields[0].c_str(), fx, fy);
+					}
+				}
+			}
+			if (mode != PoseImportMode::POSITIONS) {
+				// Set rotation from quaternion
+				image.R = q.toRotationMatrix();
+			}
+			// Set camera position
+			image.C = CMatrix((REAL)Cx, (REAL)Cy, (REAL)Cz);
+			++numUpdated;
+		} catch (const std::exception&) {
+			continue;
+		}
+	}
+
+	return numUpdated;
+}
+/*----------------------------------------------------------------*/
 
 
 String SFM::FramesConventionToString(FramesConvention convention)

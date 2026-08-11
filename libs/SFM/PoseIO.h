@@ -1,12 +1,12 @@
 ////////////////////////////////////////////////////////////////////
-// ImportFramesJSON.h
+// PoseIO.h
 //
 // Copyright 2007 cDc@seacave
 // Distributed under the Boost Software License, Version 1.0
 // (See http://www.boost.org/LICENSE_1_0.txt)
 
-#ifndef _SFM_IMPORTFRAMESJSON_H_
-#define _SFM_IMPORTFRAMESJSON_H_
+#ifndef _SFM_POSEIO_H_
+#define _SFM_POSEIO_H_
 
 
 // I N C L U D E S /////////////////////////////////////////////////
@@ -23,6 +23,25 @@ namespace SFM {
 
 // forward declarations to avoid circular includes
 class SFM_API Scene;
+
+// Mode for importing camera poses from an external file
+enum class PoseImportMode {
+	NONE = 0,              // no import
+	POSES_INTRINSICS = 1,  // import intrinsics (when available) and rotation + camera center
+	POSES = 2,             // import rotation + camera center only
+	POSITIONS = 3          // import camera center only
+};
+
+/**
+ * @brief Export/import image poses in the OpenMVS human-readable CSV format
+ *
+ * Schema per row: filename,fx,fy,cx,cy,qx,qy,qz,qw,Cx,Cy,Cz,score.
+ * POSES_INTRINSICS also marks applied intrinsics as trusted.
+ * @return number of valid image poses exported/imported
+ */
+SFM_API unsigned ExportPosesCSV(const String& fileName, const ImageArr& images);
+SFM_API unsigned ImportPosesCSV(const String& fileName, ImageArr& images,
+	PoseImportMode mode = PoseImportMode::POSES_INTRINSICS);
 
 // Camera-axes convention of a frames.json `transform` matrix.
 // The file stores a camera-to-world transform, but does not declare the camera axes
@@ -92,4 +111,4 @@ SFM_API FramesConvention DetectFramesConvention(const Scene& scene,
 
 } // namespace SFM
 
-#endif // _SFM_IMPORTFRAMESJSON_H_
+#endif // _SFM_POSEIO_H_

@@ -182,7 +182,7 @@ graph TD
     I --> J[ExportMVS: undistort images<br/>write MVS::Interface binary]
 ```
 
-`HasKnownPoses()` is true when `ImportConfig::importPosesFile` is set with `PoseImportMode::POSES_INTRINSICS` or `POSES`; the poses come from an OpenMVS pose `.csv` or a Polycam-style `frames.json` (`libs/SFM/ImportFramesJSON.h`) and serve as initialization only, with `Scene::AlignToPriorPoses` returning the refined result to the input frame (and anchoring its scale) instead of the GPS alignment.
+`HasKnownPoses()` is true when `ImportConfig::importPosesFile` is set with `PoseImportMode::POSES_INTRINSICS` or `POSES`; the poses come from an OpenMVS pose `.csv` or a Polycam-style `frames.json` (`libs/SFM/PoseIO.h`) and serve as initialization only, with `Scene::AlignToPriorPoses` returning the refined result to the input frame (and anchoring its scale) instead of the GPS alignment.
 
 ### MVS Stage Detail
 
@@ -489,8 +489,8 @@ CUDA kernels run on the GPU while the CPU pipeline continues. GPU synchronizatio
 | Metashape XML | `InterfaceMetashape` | Import | Chunk XML with cameras, sensors, markers |
 | MVSNet cameras.txt | `InterfaceMVSNet` | Import | Per-image camera parameter files + optional .pfm depth |
 | Polycam JSON | `InterfacePolycam` | Import | Per-frame JSON + ARKit poses |
-| frames.json | `ImportFramesJSON.h` | Import | Array of `{name, transform[16], params?}`: column-major camera-to-world poses + optional OPENCV intrinsics, seeding the known-poses SFM path |
-| Pose CSV | `Image.h` | Import/Export | `filename,fx,fy,cx,cy,qx,qy,qz,qw,Cx,Cy,Cz,score` per image |
+| frames.json | `PoseIO.h` | Import | Array of `{name, transform[16], params?}`: column-major camera-to-world poses + optional OPENCV intrinsics, seeding the known-poses SFM path |
+| Pose CSV | `PoseIO.h` | Import/Export | `filename,fx,fy,cx,cy,qx,qy,qz,qw,Cx,Cy,Cz,score` per image |
 | SFM to MVS | `InterfaceMVS.h` | Internal | Undistorts images, writes MVS::Interface binary |
 
 ### Image Formats

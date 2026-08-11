@@ -406,10 +406,10 @@ OpenMVS is a comprehensive photogrammetry library implementing a complete pipeli
 - **Threading:** Single
 - **Dependencies:** Common, TinyNPY
 
-### Import Frames JSON (Known Poses)
+### Pose I/O (Known Poses)
 
-- **Files:** `libs/SFM/ImportFramesJSON.h`, `libs/SFM/ImportFramesJSON.cpp`
-- **Algorithms:** Reads a Polycam-style `frames.json` — a JSON array of `{name, transform[16], params?}` entries where `transform` is a column-major 4×4 camera-to-world matrix:
+- **Files:** `libs/SFM/PoseIO.h`, `libs/SFM/PoseIO.cpp`
+- **Algorithms:** Imports/exports the OpenMVS pose CSV format and reads a Polycam-style `frames.json` — a JSON array of `{name, transform[16], params?}` entries where `transform` is a column-major 4×4 camera-to-world matrix:
   - **Entry-to-image matching:** by file name, full name first then stem, both case-insensitive; unmatched entries are reported, unmatched images stay unposed (recovered later by the pipeline tail's resection)
   - **Pose sanitation:** the last row must be `(0,0,0,1)` within 1e-6; a rotation block within 1e-3 of orthonormal is re-orthonormalized, outside that the entry is rejected
   - **Camera-axes convention:** `FramesConvention::ARKIT` (X right, Y up, Z backward) vs `OPENCV` (X right, Y down, Z forward), differing by a π rotation about the camera X axis; the file does not declare it, so `DetectFramesConvention()` resolves it after matching — median angular error of the imported vs match-verified relative rotations under both hypotheses (needs ≥3 verified pairs and a 3× margin), falling back to two-view triangulating up to 10 top-weighted pairs (≤200 matches each, ≥20 inliers required) and comparing cheirality-positive low-reprojection inlier counts; returns `AUTO` when inconclusive so the caller can fail loudly. `FlipFramesConvention()` applies the flip as `R ← diag(1,-1,-1)·R` with the camera centers unchanged
