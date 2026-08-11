@@ -39,6 +39,8 @@
 #include "DepthMap.h"
 #include "../Common/ListFIFO.h"
 
+#include <unordered_map>
+
 
 // S T R U C T S ///////////////////////////////////////////////////
 
@@ -109,6 +111,11 @@ private:
 	// maximum and used memory (in bytes)
 	size_t maxMemory, disabledMaxMemory;
 	mutable size_t usedMemory;
+
+	// bytes accounted into usedMemory when each image was cached; ejection subtracts exactly
+	// this snapshot, so maps grown AFTER caching (a normal-map estimated in place, the fusion
+	// phase's priorMap, an adjusted confidence side buffer) can never underflow the counter
+	mutable std::unordered_map<IIndex,size_t> accountedMemory;
 
 	// index of the image to skip memory check
 	IIndex skipMemoryCheckIdxImage;

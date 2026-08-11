@@ -900,7 +900,9 @@ void Mesh::Clean(float fDecimate, float fSpurious, bool bRemoveSpikes, unsigned 
 		// collect_garbage() has restored the invariants)
 		const auto collectVertexFans = [&sm](CLEAN::vertex_descriptor vd, std::vector<CLEAN::halfedge_descriptor>* pFaceFans) -> int {
 			const CLEAN::halfedge_descriptor h0 = sm.halfedge(vd);
-			if (h0 == CLEAN::SurfaceMesh::null_halfedge() || sm.is_removed(sm.edge(h0)))
+			if (h0 == CLEAN::SurfaceMesh::null_halfedge())
+				return 0; // isolated vertex: zero faces, a spike candidate the removal loop deletes
+			if (sm.is_removed(sm.edge(h0)))
 				return -1;
 			int faceCount(0);
 			size_t walk(0);

@@ -53,7 +53,7 @@ struct DepthData;
 
 namespace CUDA {
 
-struct ConfAdjustRequest; // ConfidenceCUDA.h (fused confidence recalibration, T14)
+struct ConfAdjustRequest; // ConfidenceCUDA.h (fused confidence recalibration)
 
 class PatchMatch {
 public:

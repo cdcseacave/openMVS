@@ -48,11 +48,12 @@ constexpr float VIOLATION_MARGIN= 2.0f;  // how far behind our depth (in units o
 struct Params {
 	// posterior / gate shape (the constants above)
 	float s, tau, kPrior, w0, confFloor;
-	// gate thresholds shared with fusion
+	// gate thresholds shared with fusion (G3, the normal gate, needs none here: it is a continuous
+	// dot-product weight); thReproj/thDepth are divisors of the soft gates, clamped away from 0 by
+	// the callers so the gates stay finite
 	float minConfidence;   // 1 - fNCCThresholdKeep  (G4)
 	float thReproj;        // fDepthReprojectionErrorThreshold (G2)
 	float thDepth;         // fDepthDiffThreshold (G1)
-	float normalError;     // COS(D2R(fNormalDiffThreshold)) (G3)
 	// free-space violation
 	float lambdaViol, violMargin;
 	// soft-gate G4 transition half-width: MAXF(0.5f*minConfidence, 1e-6f)

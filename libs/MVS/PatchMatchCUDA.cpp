@@ -34,7 +34,6 @@
 #include "DepthMap.h"
 #include "ConfidenceCUDA.h"
 
-
 #ifdef _USE_CUDA
 
 
@@ -447,7 +446,7 @@ void PatchMatch::EstimateDepthMap(DepthData& depthData, ConfAdjustRequest* pConf
 		if (params.bLowResProcessed)
 			CUDA_CHECK(cudaFreeAsync(cudaLowDepths, cudaStream));
 
-		// T14 resident-buffer reuse: recalibrate the confidence as a true extension of the last
+		// resident-buffer reuse: recalibrate the confidence as a true extension of the last
 		// geometric-consistency iteration, reading the final reference depth+normal
 		// (cudaDepthNormalEstimates) and raw NCC cost (cudaDepthNormalCosts) still resident on the
 		// device from the kernels above; only the neighbors' raw previous-iteration

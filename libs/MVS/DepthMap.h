@@ -85,17 +85,20 @@ DECOPT_SPACE(OPTDENSE)
 namespace OPTDENSE {
 // configuration variables
 enum DepthFlags {
-	REMOVE_SPECKLES   = (1 << 0),
-	FILL_GAPS         = (1 << 1),
-	ADJUST_CONFIDENCE = (1 << 2), // recalibrate confidence to predict fusion survival (see DepthMapsData::AdjustConfidence)
+	REMOVE_SPECKLES        = (1 << 0),
+	FILL_GAPS              = (1 << 1),
 	// default: enable ADJUST_CONFIDENCE only when the recalibration is nearly free, i.e. when CUDA
 	// estimates the depth-maps and the confidence runs fused into the last geometric-consistency
 	// iteration off the already-resident buffers. On the CPU the recalibration is a separate
 	// full-resolution sweep costing roughly as much as a fusion pass, so it stays off unless the
-	// user asks for it explicitly (--postprocess-dmaps 4). Scene::ComputeDepthMaps resolves this to
+	// user asks for it explicitly (--postprocess-dmaps 8). Scene::ComputeDepthMaps resolves this to
 	// either ADJUST_CONFIDENCE or 0 once the estimation backend is known; it never survives past that.
-	ADJUST_CONFIDENCE_AUTO = (1 << 3),
-	OPTIMIZE          = (REMOVE_SPECKLES|FILL_GAPS)
+	// Bit values are chosen for config back-compat: AUTO recycles the retired ADJUST_CONFIDENCE_FAST
+	// bit (whose "cheap adjust" meaning it inherits), and ADJUST_CONFIDENCE keeps its historical
+	// value, so existing configs and scripts keep their behavior.
+	ADJUST_CONFIDENCE_AUTO = (1 << 2),
+	ADJUST_CONFIDENCE      = (1 << 3), // recalibrate confidence to predict fusion survival (see DepthMapsData::AdjustConfidence)
+	OPTIMIZE               = (REMOVE_SPECKLES|FILL_GAPS)
 };
 enum FuseMode {
 	FUSE_NOFILTER = 0,
@@ -110,8 +113,6 @@ extern MVS_API unsigned nMinViews;
 extern MVS_API unsigned nMaxViews;
 extern MVS_API unsigned nMinViewsFuse;
 extern MVS_API unsigned nMaxViewsFuse;
-extern MVS_API unsigned nMinViewsFilter;
-extern MVS_API unsigned nMinViewsFilterAdjust;
 extern MVS_API unsigned nMinViewsTrustPoint;
 extern MVS_API unsigned nNumViews;
 extern MVS_API unsigned nMinPixelsFuse;
@@ -268,10 +269,11 @@ struct MVS_API DepthData {
 	ViewsMap viewsMap; // view-IDs map (indexing images vector starting after first view)
 	float dMin, dMax; // global depth range for this image
 	cv::Size size; // image size used to estimate this depth-map
-	bool bConfAdjusted; // transient, never serialized: the fused GPU confidence recalibration
-		// already ran for this view inside the last geometric-consistency estimation itself
-		// (T14 resident-buffer reuse, see DepthMapsData::EstimateDepthMap), so the
-		// EVT_SAVEDEPTHMAP epilogue must not adjust the confidence a second time
+	bool bConfAdjusted; // the confidence recalibration already ran for this view -- either fused
+		// into the last geometric-consistency estimation itself (resident-buffer reuse, see
+		// DepthMapsData::EstimateDepthMap) or restored by Load() from the dmap header's
+		// CONF_ADJUSTED flag (Save() persists it there; it is NOT part of the MVS scene
+		// serialization) -- so no adjust pass (epilogue or standalone) may recalibrate it again
 	unsigned references; // how many times this depth-map is referenced (on 0 can be safely unloaded)
 	CriticalSection cs; // used to count references
 

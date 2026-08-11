@@ -15,13 +15,14 @@
  * Both kernels are templated on a reference-map accessor so the same code serves two layouts:
  *   RefLinearAcc -- the standalone/fallback path: reference depth/normal/conf uploaded from host
  *                   as linear buffers (RunConfidenceCUDA, unchanged semantics).
- *   RefPackedAcc -- the fused path (T14 resident-buffer reuse): reference depth+normal read from
+ *   RefPackedAcc -- the fused path (resident-buffer reuse): reference depth+normal read from
  *                   PatchMatch's resident Point4 estimates and raw conf derived from its resident
  *                   ZNCC cost buffer (RunConfidenceFusedCUDA); nothing reference-sized is uploaded.
  * On any CUDA error the launchers free everything and return false so the caller falls back.
  */
 #include <cuda_runtime.h>
 #include <cstdio>
+#include <cstring>
 #include <cmath>
 #include <vector>
 
@@ -150,7 +151,7 @@ __global__ void PriorKernel(RefAcc ref, int W, int H, float k00, float k11, floa
 template <typename RefAcc>
 __global__ void SweepKernel(RefAcc ref, const float* priorMap, int W, int H,
                             const DevNeighbor* neigh, int nNeigh, Params p,
-                            float maxReprojErrorSq, float* confOut) {
+                            float* confOut) {
 	const int c = blockIdx.x*blockDim.x + threadIdx.x;
 	const int r = blockIdx.y*blockDim.y + threadIdx.y;
 	if (c >= W || r >= H) return;
@@ -176,43 +177,41 @@ __global__ void SweepKernel(RefAcc ref, const float* priorMap, int W, int H,
 		const float dNn = NbDepthAt(np, xN, yN);
 		if (dNn <= 0.f) continue;
 		const bool hasNormalGate = (hasRefNormal && np.normal != nullptr);
-
-			const bool gDepthNearest = ConfRefine::IsDepthSimilarF(dNn, qz, p.thDepth);
-			if (!gDepthNearest && dNn > qz*(1.f + p.violMargin*p.thDepth)) ++V;
-			float dN;
-			if (!SampleDepthBilinearDev(np, px, py, p.thDepth, dN))
-				dN = dNn;
-			const float wD = ConfRefine::SoftDepthW(qz, dN, p.thDepth);
-			const float un = (float)xN*dN, vn = (float)yN*dN;
-			const float qrz = np.Ai[6]*un + np.Ai[7]*vn + np.Ai[8]*dN + np.bi[2];
-			float wR = 0.f;
-			if (qrz > 0.f) {
-				const float qrx = np.Ai[0]*un + np.Ai[1]*vn + np.Ai[2]*dN + np.bi[0];
-				const float qry = np.Ai[3]*un + np.Ai[4]*vn + np.Ai[5]*dN + np.bi[1];
-				const float du = qrx/qrz - (float)c, dv = qry/qrz - (float)r;
-				wR = ConfRefine::SoftReprojW(du, dv, p.thReproj);
-			}
-			float wN = 1.f;
-			if (hasNormalGate) {
-				const float nx = np.Rrel[0]*rnx + np.Rrel[1]*rny + np.Rrel[2]*rnz;
-				const float ny = np.Rrel[3]*rnx + np.Rrel[4]*rny + np.Rrel[5]*rnz;
-				const float nz = np.Rrel[6]*rnx + np.Rrel[7]*rny + np.Rrel[8]*rnz;
-				const float mnx = np.normal[(yN*np.width+xN)*3+0], mny = np.normal[(yN*np.width+xN)*3+1], mnz = np.normal[(yN*np.width+xN)*3+2];
-				wN = fmaxf(0.f, nx*mnx + ny*mny + nz*mnz);
-			}
-			const float cN = np.conf ? np.conf[yN*np.width + xN] : 1.f;
-			const float wC = ConfRefine::SoftConfW(cN, p.minConfidence, p.epsConf);
-			const float w = wD*wR*wN*wC;
-			if (w <= 0.05f) continue;
-			K += w; Pconf += w*cN;
+		const bool gDepthNearest = ConfRefine::IsDepthSimilarF(dNn, qz, p.thDepth);
+		if (!gDepthNearest && dNn > qz*(1.f + p.violMargin*p.thDepth)) ++V;
+		float dN;
+		if (!SampleDepthBilinearDev(np, px, py, p.thDepth, dN))
+			dN = dNn;
+		const float wD = ConfRefine::SoftDepthW(qz, dN, p.thDepth);
+		const float un = (float)xN*dN, vn = (float)yN*dN;
+		const float qrz = np.Ai[6]*un + np.Ai[7]*vn + np.Ai[8]*dN + np.bi[2];
+		float wR = 0.f;
+		if (qrz > 0.f) {
+			const float qrx = np.Ai[0]*un + np.Ai[1]*vn + np.Ai[2]*dN + np.bi[0];
+			const float qry = np.Ai[3]*un + np.Ai[4]*vn + np.Ai[5]*dN + np.bi[1];
+			const float du = qrx/qrz - (float)c, dv = qry/qrz - (float)r;
+			wR = ConfRefine::SoftReprojW(du, dv, p.thReproj);
+		}
+		float wN = 1.f;
+		if (hasNormalGate) {
+			const float nx = np.Rrel[0]*rnx + np.Rrel[1]*rny + np.Rrel[2]*rnz;
+			const float ny = np.Rrel[3]*rnx + np.Rrel[4]*rny + np.Rrel[5]*rnz;
+			const float nz = np.Rrel[6]*rnx + np.Rrel[7]*rny + np.Rrel[8]*rnz;
+			const float mnx = np.normal[(yN*np.width+xN)*3+0], mny = np.normal[(yN*np.width+xN)*3+1], mnz = np.normal[(yN*np.width+xN)*3+2];
+			wN = fmaxf(0.f, nx*mnx + ny*mny + nz*mnz);
+		}
+		const float cN = np.conf ? np.conf[yN*np.width + xN] : 1.f;
+		const float wC = ConfRefine::SoftConfW(cN, p.minConfidence, p.epsConf);
+		const float w = wD*wR*wN*wC;
+		if (w <= 0.05f) continue;
+		K += w; Pconf += w*cN;
 	}
-	const float Kf = K;
-	confOut[idx] = ConfRefine::Posterior(ref.Conf(idx), priorMap[idx], Kf, Pconf, (float)V, p);
+	confOut[idx] = ConfRefine::Posterior(ref.Conf(idx), priorMap[idx], K, Pconf, (float)V, p);
 }
 
 // RAII: free every cudaMalloc'd pointer on scope exit (success or early return), then consume any
 // pending CUDA error so a non-fatal failure (e.g. OOM) does not leak this thread's last-error into a
-// later CUDA call on the same reused pool-worker thread (review finding, robustness).
+// later CUDA call on the same reused pool-worker thread.
 namespace { struct DevBag { std::vector<void*> v; ~DevBag(){ for (void* p : v) cudaFree(p); cudaGetLastError(); } }; }
 
 // shared tail of both launchers: allocate the prior/output buffers, upload the neighbor maps +
@@ -275,16 +274,22 @@ static bool LaunchConfidenceKernels(
 	const dim3 grid((W + block.x - 1)/block.x, (H + block.y - 1)/block.y, 1);
 	const float band = params.thDepth * 3.f;
 	const float invKmin = 1.f/4.f;
-	const float maxReprojErrorSq = params.thReproj * params.thReproj;
 
 	PriorKernel<RefAcc><<<grid, block, 0, stream>>>(ref, W, H,
 		k00, k11, k02, k12, band, invKmin, dPrior);
 	SweepKernel<RefAcc><<<grid, block, 0, stream>>>(ref, dPrior,
-		W, H, dNeigh, nNeighbors, params, maxReprojErrorSq, dConf);
+		W, H, dNeigh, nNeighbors, params, dConf);
+	// reject a failed kernel launch BEFORE queueing the download
+	if (cudaGetLastError() != cudaSuccess) return false;
 
-	if (cudaMemcpyAsync(confOut, dConf, nPix*sizeof(float), cudaMemcpyDeviceToHost, stream) != cudaSuccess) return false;
+	// download into a scratch buffer and commit to confOut only once everything succeeded:
+	// confOut may be the caller's LIVE confidence map (the fused path passes depthData.confMap
+	// directly), which must stay intact on any failure so the fallback paths start from valid data
+	std::vector<float> hConf(nPix);
+	if (cudaMemcpyAsync(hConf.data(), dConf, nPix*sizeof(float), cudaMemcpyDeviceToHost, stream) != cudaSuccess) return false;
 	if (cudaStreamSynchronize(stream) != cudaSuccess) return false;
 	if (cudaGetLastError() != cudaSuccess) return false;
+	memcpy(confOut, hConf.data(), nPix*sizeof(float));
 	return true;
 }
 

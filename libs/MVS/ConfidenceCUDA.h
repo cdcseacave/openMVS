@@ -9,7 +9,7 @@
  * declares the launchers:
  *  - RunConfidenceCUDA: standalone/fallback variant -- uploads the reference + neighbor maps from
  *    host memory, runs the prior and confidence-sweep kernels, downloads the adjusted confidence.
- *  - RunConfidenceFusedCUDA: fused variant (T14 resident-buffer reuse) -- the reference depth,
+ *  - RunConfidenceFusedCUDA: fused variant (resident-buffer reuse) -- the reference depth,
  *    normal and raw NCC cost are read straight from the PatchMatch instance's device-resident
  *    buffers (cudaDepthNormalEstimates / cudaDepthNormalCosts); only the neighbors' raw
  *    previous-iteration conf/normal/depth snapshots are uploaded.
@@ -76,7 +76,7 @@ bool RunConfidenceCUDA(
 	const ConfRefine::Params& params,
 	float* confOut);
 
-// Fused variant (T14 resident-buffer reuse): the reference maps are NOT uploaded -- devDepthNormals
+// Fused variant (resident-buffer reuse): the reference maps are NOT uploaded -- devDepthNormals
 // is the PatchMatch instance's resident Point4-per-pixel buffer (xyz = normal, w = depth) and
 // devCosts its resident ZNCC cost buffer (raw conf = cost>=1 ? 0 : 1-cost, the same conversion the
 // host unpack loop applies). Launches on the caller's stream (pass the instance's cudaStream_t as

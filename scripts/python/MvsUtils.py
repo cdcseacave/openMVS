@@ -211,6 +211,11 @@ def saveDMAP(data: dict, dmap_path: str):
     content_type += 4
   if 'views_map' in data:
     content_type += 8
+  # carry the CONF_ADJUSTED flag through (loadDMAP surfaces it as 'conf_adjusted'): a stored
+  # confidence that was already recalibrated must stay marked, or a later DensifyPointCloud
+  # run would recalibrate it a second time (see the cross-process double-adjust guard)
+  if data.get('conf_adjusted'):
+    content_type += 16
 
   depth_map = np.asarray(data['depth_map'], dtype=np.float32)
   # take the exponent from the data rather than from depth_max, which callers may set

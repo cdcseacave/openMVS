@@ -85,8 +85,6 @@ DEFVAR_OPTDENSE_uint32(nMinViews, "Min Views", "minimum number of agreeing views
 MDEFVAR_OPTDENSE_uint32(nMaxViews, "Max Views", "maximum number of neighbor images used to compute the depth-map for the reference image", "12")
 DEFVAR_OPTDENSE_uint32(nMinViewsFuse, "Min Views Fuse", "minimum number of images that agrees with an estimate during fusion in order to consider it inlier", "2")
 MDEFVAR_OPTDENSE_uint32(nMaxViewsFuse, "Max Views Fuse", "maximum number of neighbor depth-maps used during fusion", "32")
-DEFVAR_OPTDENSE_uint32(nMinViewsFilter, "Min Views Filter", "minimum number of images that agrees with an estimate in order to consider it inlier", "1")
-MDEFVAR_OPTDENSE_uint32(nMinViewsFilterAdjust, "Min Views Filter Adjust", "minimum number of images that agrees with an estimate in order to consider it inlier (0 - disabled)", "1")
 MDEFVAR_OPTDENSE_uint32(nMinViewsTrustPoint, "Min Views Trust Point", "min-number of views so that the point is considered for approximating the depth-maps (<2 - random initialization)", "2")
 MDEFVAR_OPTDENSE_uint32(nNumViews, "Num Views", "Number of views used for depth-map estimation (0 - all views available)", "0", "4", "8")
 MDEFVAR_OPTDENSE_uint32(nMinPixelsFuse, "Min Pixels Fuse", "minimum number of depth-estimates that agree during fusion in order to consider it (multiple pixels can be from the same depth-map)", "5")
@@ -112,13 +110,13 @@ MDEFVAR_OPTDENSE_int32(nOptimizerMaxIters, "Optimizer Max Iters", "MRF optimizer
 MDEFVAR_OPTDENSE_uint32(nSpeckleSize, "Speckle Size", "maximal size of a speckle (small speckles get removed)", "100")
 MDEFVAR_OPTDENSE_uint32(nIpolGapSize, "Interpolate Gap Size", "interpolate small gaps (left<->right, top<->bottom)", "7")
 MDEFVAR_OPTDENSE_int32(nIgnoreMaskLabel, "Ignore Mask Label", "label id used during ignore mask filter (<0 - disabled)", "-1")
-DEFVAR_OPTDENSE_uint32(nOptimize, "Optimize", "should we filter the extracted depth-maps? (1 - remove-speckles, 2 - fill-gaps, 4 - adjust-confidence, 8 - adjust-confidence only if the depth-maps are estimated on the GPU, where it is nearly free)", "8") // see DepthFlags
+DEFVAR_OPTDENSE_uint32(nOptimize, "Optimize", "should we filter the extracted depth-maps? (1 - remove-speckles, 2 - fill-gaps, 4 - adjust-confidence only if the depth-maps are estimated on the GPU, where it is nearly free, 8 - adjust-confidence)", "4") // see DepthFlags
 DEFVAR_OPTDENSE_uint32(nFuseFilter, "Fuse Filter", "how to fuse the depth-maps into one dense point-cloud?", "2", "0", "1") // see FuseMode
 MDEFVAR_OPTDENSE_uint32(nEstimateColors, "Estimate Colors", "should we estimate the colors for the dense point-cloud?", "2", "0", "1")
 MDEFVAR_OPTDENSE_uint32(nEstimateNormals, "Estimate Normals", "should we estimate the normals for the dense point-cloud?", "2", "0", "1")
 MDEFVAR_OPTDENSE_float(fNCCThresholdKeep, "NCC Threshold Keep", "Maximum 1-NCC score accepted for a match", "0.9", "0.5")
 MDEFVAR_OPTDENSE_float(fFusePriorWeight, "Fuse Prior Weight", "fusion: weight of the intra-map geometric prior as virtual view/pixel support, to keep inliers on a coherent surface seen by too few views/pixels (0 disables); default 3 favors completeness and suits the usual pipeline where mesh reconstruction follows and cleans the few extra outliers, use 2 when the dense point-cloud is the final output (fewer outliers, slightly lower completeness)", "3.0")
-MDEFVAR_OPTDENSE_int32(nFuseViolationMax, "Fuse Violation Max", "fusion: max free-space-violating neighbor views allowed on a point rescued only by Fuse Prior Weight's virtual support (same FSV test as Conf Violation Margin); non-rescued points are never affected (-1 disables the guard, byte-identical to pre-guard fusion; 0 - strict/default, drop rescued points contradicted by any free-space ray)", "0")
+MDEFVAR_OPTDENSE_int32(nFuseViolationMax, "Fuse Violation Max", "fusion: max free-space-violating neighbor views allowed on a point rescued only by Fuse Prior Weight's virtual support (same free-space-violation test as the confidence recalibration); non-rescued points are never affected (-1 disables the guard, byte-identical to pre-guard fusion; 0 - strict/default, drop rescued points contradicted by any free-space ray)", "0")
 DEFVAR_OPTDENSE_bool(bEstimateConfidenceCUDA, "Estimate Confidence CUDA", "when CUDA is available and used for depth-map estimation, run the ADJUST_CONFIDENCE recalibration on the GPU integrated into the last geometric-consistency iteration (1), or force the CPU version anyway (0); no effect when estimation runs on the CPU", "1")
 DEFVAR_OPTDENSE_uint32(nEstimationIters, "Estimation Iters", "Number of patch-match iterations", "3")
 DEFVAR_OPTDENSE_uint32(nEstimationGeometricIters, "Estimation Geometric Iters", "Number of geometric consistent patch-match iterations (0 - disabled)", "2")
@@ -329,6 +327,12 @@ size_t MVS::DepthData::GetMemorySize() const
 		nBytes += normalMap.memory_size();
 	if (!confMap.empty())
 		nBytes += confMap.memory_size();
+	// the derived side buffers count too: DMapCache budgets evictions on this total, and
+	// DenseFuseDepthMaps caches a full-resolution priorMap on every fused reference
+	if (!confMapAdjusted.empty())
+		nBytes += confMapAdjusted.memory_size();
+	if (!priorMap.empty())
+		nBytes += priorMap.memory_size();
 	if (!viewsMap.empty())
 		nBytes += viewsMap.memory_size();
 	return nBytes;

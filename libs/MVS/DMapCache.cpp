@@ -98,7 +98,7 @@ bool DMapCache::UseImage(IIndex idxImage) const {
 	}
 	mutex.lock();
 	hitStats.Miss();
-	usedMemory += GetMemorySize(idxImage);
+	usedMemory += (accountedMemory[idxImage] = GetMemorySize(idxImage));
 	fifo.Put(idxImage);
 	Eject();
 	return true;
@@ -141,7 +141,12 @@ bool DMapCache::EjectOldest() const {
 	if (fifo.Back() == skipMemoryCheckIdxImage)
 		return false;
 	const IIndex idxImage = fifo.Pop();
-	usedMemory -= GetMemorySize(idxImage);
+	// subtract the bytes accounted at load time, NOT the current size: maps grown since
+	// (see accountedMemory) would otherwise underflow the counter
+	const auto itAccounted(accountedMemory.find(idxImage));
+	ASSERT(itAccounted != accountedMemory.end());
+	usedMemory -= itAccounted->second;
+	accountedMemory.erase(itAccounted);
 	// release the depth-data; no need to save the depth-data to disk as it is already saved
 	arrDepthData[idxImage].Release();
 	if (pImages)

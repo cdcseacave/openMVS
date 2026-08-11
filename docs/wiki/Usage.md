@@ -202,7 +202,7 @@ The densification module stores, along the dense scene in `MVS` format, also the
 
 Two options are worth knowing about:
 
-- `--postprocess-dmaps` controls the depth-map confidence recalibration (see [Modules](Modules.md#depth-map-confidence)), which replaces the raw photometric score with one that predicts whether a depth will survive fusion. The default (`8`) enables it only when the depth-maps are estimated on CUDA, where it runs fused into the last estimation iteration for about 3 ms per map; on the CPU it would cost a separate full-resolution pass, so pass `4` to force it on there.
+- `--postprocess-dmaps` controls the depth-map confidence recalibration (see [Modules](Modules.md#depth-map-confidence)), which replaces the raw photometric score with one that predicts whether a depth will survive fusion. The default (`4`) enables it only when the depth-maps are estimated on CUDA, where it runs fused into the last estimation iteration for about 3 ms per map; on the CPU it would cost a separate full-resolution pass, so pass `8` to force it on there.
 - `--fusion-prior-weight` keeps depths that lie on a locally coherent surface but are seen by too few views. The default (`3`) favours completeness and suits the usual pipeline where mesh reconstruction follows and removes the few extra outliers; use `2` when the dense point-cloud itself is the final deliverable.
 
 ![dense point-cloud](https://github.com/cdcseacave/openMVS_sample/blob/master/depth0001.dmap.jpg)
