@@ -45,7 +45,7 @@ jobs:
           - os: windows-latest
             triplet: x64-windows-release
             build-type: Release
-            cmake-extra-args: -A x64
+            cmake-extra-args: -A x64 -DOpenMVS_MSVC_FAST_RELEASE=ON
             artifact-name: OpenMVS_Windows_Release_x64
           - os: ubuntu-latest
             triplet: x64-linux-release

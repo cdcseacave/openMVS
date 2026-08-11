@@ -100,6 +100,15 @@ public:
 	void SetSceneDistance(float distance) { sceneDistance = distance; }
 	void SetTarget(const Point3f& newTarget);
 	void SetLookAt(const Eigen::Vector3d& eye, const Eigen::Vector3d& target, const Eigen::Vector3d& up);
+	// Copy the view pose (not the viewport size) from another camera; used by the
+	// compare view to hand the current view over between the side cameras
+	void CopyViewFrom(const Camera& other) {
+		position = other.position;
+		target = other.target;
+		up = other.up;
+		fov = other.fov;
+		orthographic = other.orthographic;
+	}
 
 	// Ray casting
 	Ray3d GetPickingRay(const Eigen::Vector2d& screenPos) const;

@@ -43,6 +43,7 @@ OPTION(OpenMVS_MAX_CUDA_COMPATIBILITY "Build for maximum CUDA device compatibili
 OPTION(OpenMVS_ENABLE_IPO "Whether to enable interprocedural optimization" ON)
 OPTION(OpenMVS_ENABLE_TESTS "Enable test code" ON)
 OPTION(OpenMVS_HEADLESS_DEBUG "Print asserts to stderr and continue; do not redirect cout/cerr or pop modal dialogs (for CI / non-interactive debug runs)" OFF)
+OPTION(OpenMVS_MSVC_FAST_RELEASE "Compile MVS Camera.cpp and Scene.cpp without optimization in MSVC Release builds" OFF)
 
 # Disable CUDA on MacOS
 IF(APPLE)

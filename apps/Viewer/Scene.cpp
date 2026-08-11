@@ -62,23 +62,32 @@ class EVTLoadImage : public Event
 {
 public:
 	Scene* pScene;
+	uint32_t layerID;
 	MVS::IIndex idx;
 	unsigned nMaxResolution;
 	bool Run(void*) {
-		Image& image = pScene->images[idx];
+		const auto finish = [&](bool success) {
+			pScene->pendingImageLoads.fetch_sub(1);
+			return success;
+		};
+		Scene::Layer* layer = pScene->GetLayerByID(layerID);
+		if (layer == NULL || idx >= layer->images.size())
+			return finish(false);
+		Image& image = layer->images[idx];
 		ASSERT(image.idx != NO_ID);
-		MVS::Image& imageData = pScene->scene.images[image.idx];
+		MVS::Image& imageData = layer->scene.images[image.idx];
 		ASSERT(imageData.IsValid());
-		if (imageData.image.empty() && !imageData.ReloadImage(nMaxResolution))
-			return false;
-		imageData.UpdateCamera(pScene->scene.platforms);
+		if (imageData.image.empty() && !imageData.ReloadImage(nMaxResolution)) {
+			image.CancelImageLoading();
+			return finish(false);
+		}
+		imageData.UpdateCamera(layer->scene.platforms);
 		image.AssignImage(imageData.image);
 		imageData.ReleaseImage();
 		glfwPostEmptyEvent();
-		return true;
+		return finish(true);
 	}
-	EVTLoadImage(Scene* _pScene, MVS::IIndex _idx, unsigned _nMaxResolution=0)
-		: Event(EVT_JOB), pScene(_pScene), idx(_idx), nMaxResolution(_nMaxResolution) {}
+	EVTLoadImage(Scene* _pScene, uint32_t _layerID, MVS::IIndex _idx, unsigned _nMaxResolution = 0) : Event(EVT_JOB), pScene(_pScene), layerID(_layerID), idx(_idx), nMaxResolution(_nMaxResolution) {}
 };
 
 // Base class for workflow events
@@ -86,9 +95,9 @@ class EventWorkflow : public Event
 {
 public:
 	Scene* pScene;
+	uint32_t layerID;
 
-	EventWorkflow(Scene* _pScene)
-		: Event(EVT_JOB), pScene(_pScene) {}
+	EventWorkflow(Scene* _pScene, uint32_t _layerID) : Event(EVT_JOB), pScene(_pScene), layerID(_layerID) {}
 
 	virtual ~EventWorkflow() {}
 
@@ -110,18 +119,27 @@ public:
 class EVTWorkflowEstimateROI : public EventWorkflow
 {
 public:
+	const Scene::EstimateROIWorkflowOptions options;
+
 	bool Execute() override {
-		const auto& options = pScene->estimateROIOptions;
-		return pScene->scene.EstimateROI(options.scaleROI, options.upAxis);
+		Scene::Layer* layer = pScene->GetLayerByID(layerID);
+		if (layer == NULL)
+			return false;
+		return layer->scene.EstimateROI(options.scaleROI, options.upAxis);
 	}
-	EVTWorkflowEstimateROI(Scene* _pScene) : EventWorkflow(_pScene) {}
+	EVTWorkflowEstimateROI(Scene* _pScene, uint32_t _layerID, const Scene::EstimateROIWorkflowOptions& _options)
+		: EventWorkflow(_pScene, _layerID), options(_options) {}
 };
 
 class EVTWorkflowDensify : public EventWorkflow
 {
 public:
+	const Scene::DensifyWorkflowOptions options;
+
 	bool Execute() override {
-		const auto& options = pScene->densifyOptions;
+		Scene::Layer* layer = pScene->GetLayerByID(layerID);
+		if (layer == NULL)
+			return false;
 		// Set MVS options
 		MVS::OPTDENSE::init();
 		MVS::OPTDENSE::update();
@@ -142,17 +160,22 @@ public:
 		MVS::OPTDENSE::bRemoveDmaps = options.removeDepthMaps;
 		MVS::OPTDENSE::nOptimize = options.postprocess ? (unsigned)MVS::OPTDENSE::OPTIMIZE : 0u;
 
-		return pScene->scene.DenseReconstruction(options.fusionMode, options.cropToROI, options.borderROI, options.sampleMeshNeighbors);
+		return layer->scene.DenseReconstruction(options.fusionMode, options.cropToROI, options.borderROI, options.sampleMeshNeighbors);
 	}
-	EVTWorkflowDensify(Scene* _pScene) : EventWorkflow(_pScene) {}
+	EVTWorkflowDensify(Scene* _pScene, uint32_t _layerID, const Scene::DensifyWorkflowOptions& _options)
+		: EventWorkflow(_pScene, _layerID), options(_options) {}
 };
 
 class EVTWorkflowReconstructMesh : public EventWorkflow
 {
 public:
+	const Scene::ReconstructMeshWorkflowOptions options;
+
 	bool Execute() override {
-		const auto& options = pScene->reconstructOptions;
-		MVS::Scene& mvsScene = pScene->scene;
+		Scene::Layer* layer = pScene->GetLayerByID(layerID);
+		if (layer == NULL)
+			return false;
+		MVS::Scene& mvsScene = layer->scene;
 
 		// Remove point weights if constant weight requested
 		if (options.constantWeight)
@@ -185,29 +208,39 @@ public:
 		mvsScene.mesh.Clean(decimate, options.removeSpurious, options.removeSpikes, options.closeHoles, options.smoothSteps, options.edgeLength);
 		return true;
 	}
-	EVTWorkflowReconstructMesh(Scene* _pScene) : EventWorkflow(_pScene) {}
+	EVTWorkflowReconstructMesh(Scene* _pScene, uint32_t _layerID, const Scene::ReconstructMeshWorkflowOptions& _options)
+		: EventWorkflow(_pScene, _layerID), options(_options) {}
 };
 
 class EVTWorkflowRefineMesh : public EventWorkflow
 {
 public:
+	const Scene::RefineMeshWorkflowOptions options;
+
 	bool Execute() override {
-		const auto& options = pScene->refineOptions;
-		return pScene->scene.RefineMesh(options.resolutionLevel, options.minResolution, options.maxViews,
-			options.decimateMesh, options.closeHoles, options.ensureEdgeSize, options.maxFaceArea,
-			options.scales, options.scaleStep, options.alternatePair, options.regularityWeight,
-			options.rigidityElasticityRatio, options.gradientStep, options.planarVertexRatio,
-			options.reduceMemory);
+		Scene::Layer* layer = pScene->GetLayerByID(layerID);
+		if (layer == NULL)
+			return false;
+		return layer->scene.RefineMesh(options.resolutionLevel, options.minResolution, options.maxViews,
+		                               options.decimateMesh, options.closeHoles, options.ensureEdgeSize, options.maxFaceArea,
+		                               options.scales, options.scaleStep, options.alternatePair, options.regularityWeight,
+		                               options.rigidityElasticityRatio, options.gradientStep, options.planarVertexRatio,
+		                               options.reduceMemory);
 	}
-	EVTWorkflowRefineMesh(Scene* _pScene) : EventWorkflow(_pScene) {}
+	EVTWorkflowRefineMesh(Scene* _pScene, uint32_t _layerID, const Scene::RefineMeshWorkflowOptions& _options)
+		: EventWorkflow(_pScene, _layerID), options(_options) {}
 };
 
 class EVTWorkflowTextureMesh : public EventWorkflow
 {
 public:
+	const Scene::TextureMeshWorkflowOptions options;
+
 	bool Execute() override {
-		const auto& options = pScene->textureOptions;
-		MVS::Scene& mvsScene = pScene->scene;
+		Scene::Layer* layer = pScene->GetLayerByID(layerID);
+		if (layer == NULL)
+			return false;
+		MVS::Scene& mvsScene = layer->scene;
 
 		// Clean and decimate mesh
 		float decimate = CLAMP(options.decimateMesh, 0.f, 1.f);
@@ -221,7 +254,8 @@ public:
 			options.localSeamLeveling, options.textureSizeMultiple,
 			Pixel8U(options.emptyColor), options.sharpnessWeight, options.ignoreMaskLabel, options.maxTextureSize);
 	}
-	EVTWorkflowTextureMesh(Scene* _pScene) : EventWorkflow(_pScene) {}
+	EVTWorkflowTextureMesh(Scene* _pScene, uint32_t _layerID, const Scene::TextureMeshWorkflowOptions& _options)
+		: EventWorkflow(_pScene, _layerID), options(_options) {}
 };
 
 void* Scene::ThreadWorker(void*) {
@@ -247,16 +281,141 @@ void* Scene::ThreadWorker(void*) {
 SEACAVE::EventQueue Scene::events;
 SEACAVE::Thread Scene::thread;
 
+namespace {
+bool IsSceneProjectFile(const String& fileName)
+{
+	const String ext(Util::getFileExt(fileName).ToLower());
+	return ext == _T(".mvs") || ext == _T(".sfm") || ext == _T(".dmap");
+}
+
+bool IsGeometryFile(const String& fileName)
+{
+	const String ext(Util::getFileExt(fileName).ToLower());
+	return ext == _T(".ply") || ext == _T(".obj") || ext == _T(".gltf") || ext == _T(".glb");
+}
+
+String GetDefaultSaveFileName(const Scene::Layer& layer)
+{
+	if (IsSceneProjectFile(layer.sceneName))
+		return Util::insertBeforeFileExt(layer.sceneName, _T("_new"));
+	return Util::getFileFullName(layer.sceneName) + _T("_new.mvs");
+}
+
+void ActivateWorkingFolder(const String& folder)
+{
+	if (folder.empty())
+		return;
+	WORKING_FOLDER = folder;
+	INIT_WORKING_FOLDER;
+}
+
+void ActivateWorkingFolder(const Scene::Layer& layer)
+{
+	ActivateWorkingFolder(layer.workingFolder);
+}
+
+String MakeUniqueLayerLabel(const Scene::LayerArr& layers, const String& requestedLabel, uint32_t ignoredLayerID = NO_ID)
+{
+	const String baseLabel(requestedLabel.empty() ? String(_T("Untitled")) : requestedLabel);
+	String label(baseLabel);
+	for (unsigned suffix = 2;; ++suffix) {
+		bool duplicate = false;
+		for (const Scene::Layer& layer : layers) {
+			if (layer.id != ignoredLayerID && layer.label == label) {
+				duplicate = true;
+				break;
+			}
+		}
+		if (!duplicate)
+			return label;
+		label = String::FormatString(_T("%s (%u)"), baseLabel.c_str(), suffix);
+	}
+}
+
+unsigned UpdateCameraUncertaintyStatistics(Scene::Layer& layer)
+{
+	FloatArr sigmas;
+	for (const Scene::CameraUncertainty& uncertainty : layer.cameraUncertainty)
+		if (uncertainty.state == Scene::CameraUncertainty::COMPUTED)
+			sigmas.push_back(uncertainty.MaxPosSigma());
+	if (sigmas.empty()) {
+		layer.cameraUncertaintyNorm = 0.f;
+		layer.cameraUncertaintyAutoScale = 1.f;
+		return 0;
+	}
+	sigmas.Sort();
+	layer.cameraUncertaintyNorm = sigmas[(sigmas.size() - 1) * 95 / 100];
+	if (layer.cameraUncertaintyNorm <= 0.f)
+		layer.cameraUncertaintyNorm = MAXF(sigmas.Last(), 1.f);
+	const float sceneExtent = norm(layer.sceneSize);
+	const float medianSigma = sigmas[sigmas.size() / 2];
+	layer.cameraUncertaintyAutoScale = (sceneExtent > 0.f && medianSigma > 0.f) ?
+		MINF(MAXF(0.03f * sceneExtent / medianSigma, 1e-6f), 1e6f) : 1.f;
+	return (unsigned)sigmas.size();
+}
+
+bool HasNonCollinearPoints(const Point3Arr& points)
+{
+	if (points.size() < 3)
+		return false;
+	Eigen::Vector3d mean(Eigen::Vector3d::Zero());
+	for (const Point3& point : points)
+		mean += static_cast<const Point3::CEVecMap>(point);
+	mean /= (double)points.size();
+	Eigen::Matrix3d covariance(Eigen::Matrix3d::Zero());
+	for (const Point3& point : points) {
+		const Eigen::Vector3d centered(static_cast<const Point3::CEVecMap>(point) - mean);
+		covariance += centered * centered.transpose();
+	}
+	const Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> solver(covariance);
+	if (solver.info() != Eigen::Success || !solver.eigenvalues().allFinite())
+		return false;
+	const double largest = solver.eigenvalues()[2];
+	return largest > std::numeric_limits<double>::epsilon() && solver.eigenvalues()[1] > largest * 1e-10;
+}
+
+template <typename Geometry>
+AABB3f ComputeViewerBounds(const Geometry& geometry, size_t elementCount)
+{
+	// Percentile bounds keep reconstruction outliers from making the useful
+	// geometry tiny. Small inputs need their full extent, because trimming only
+	// a handful of samples can collapse an axis or discard most of the model.
+	constexpr size_t MIN_ROBUST_BOUNDS_ELEMENTS = 100;
+	AABB3f bounds(elementCount < MIN_ROBUST_BOUNDS_ELEMENTS
+	                  ? geometry.GetAABB()
+	                  : geometry.GetAABB(0.1f, 0.9f));
+	if (bounds.IsEmpty())
+		bounds = geometry.GetAABB();
+
+	float maxExtent = 0.f;
+	for (int axis = 0; axis < 3; ++axis) {
+		if (!std::isfinite(bounds.ptMin[axis]) || !std::isfinite(bounds.ptMax[axis]))
+			return AABB3f(true);
+		maxExtent = MAXF(maxExtent, bounds.ptMax[axis] - bounds.ptMin[axis]);
+	}
+	const float padding = MAXF(maxExtent * 0.005f, 0.001f);
+	for (int axis = 0; axis < 3; ++axis) {
+		if (bounds.ptMin[axis] < bounds.ptMax[axis])
+			continue;
+		const float center = (bounds.ptMin[axis] + bounds.ptMax[axis]) * 0.5f;
+		bounds.ptMin[axis] = center - padding;
+		bounds.ptMax[axis] = center + padding;
+	}
+	return bounds;
+}
+} // unnamed namespace
+
 Scene::Scene(ARCHIVE_TYPE _nArchiveType)
 	: nArchiveType(_nArchiveType)
-	, geometryMesh(false)
 	, estimateSfMNormals(false)
 	, estimateSfMPatches(false)
-	, cameraUncertaintyNorm(0.f)
-	, cameraUncertaintyAutoScale(1.f)
+	, activeLayerIndex(-1)
+	, nextLayerID(1)
+	, workflowLayerID(NO_ID)
 	, workflowState(WF_STATE_IDLE)
 	, currentWorkflowType(WF_NONE)
 	, geometryModified(false)
+	, pendingImageLoads(0)
 	, workflowStartTime(0.0)
 {
 }
@@ -269,19 +428,18 @@ void Scene::Reset()
 {
 	window.Reset();
 	trackBasedNeighbors.Release();
-	cameraUncertainty.Release();
-	cameraUncertaintyNorm = 0.f;
-	cameraUncertaintyAutoScale = 1.f;
-	images.Release();
-	scene.Release();
-	sceneName.clear();
-	geometryName.clear();
+	batchWorkflowActive = false;
+	batchWorkflowQueue.clear();
+	ClearLayers();
+	geometryModified.store(false);
+	UpdateWindowTitle();
 }
+
 void Scene::Release()
 {
 	if (window.IsValid())
 		window.SetVisible(false);
-	if (!thread.isRunning()) {
+	if (thread.isRunning()) {
 		events.AddEvent(new EVTClose());
 		thread.join();
 	}
@@ -298,15 +456,20 @@ bool Scene::Initialize(const cv::Size& size, const String& windowName, const Str
 	}
 	VERBOSE("OpenGL: %s %s", glGetString(GL_RENDERER), glGetString(GL_VERSION));
 	name = windowName;
+	window.GetCamera().SetCameraViewModeCallback([this](MVS::IIndex camID) {
+		OnSetCameraViewMode(camID);
+	});
 
 	// init working thread
 	thread.start(ThreadWorker);
 
 	// open scene or init empty scene
-	if (!fileName.empty())
-		Open(fileName, geometryFileName);
-	else
+	if (!fileName.empty()) {
+		if (!Open(fileName, geometryFileName))
+			return false;
+	} else {
 		window.SetVisible(true);
+	}
 	return true;
 }
 
@@ -317,7 +480,7 @@ void Scene::Run() {
 // Set the view camera from a transform file (12 or 16 whitespace-separated
 // values, row-major; camera-to-world: columns are the camera X,Y,Z axes in
 // world space, last column is the camera center). Returns false if the file
-// is missing or malformed, leaving the current (auto-fit) view unchanged.
+// is missing or malformed, leaving the current view unchanged.
 bool Scene::SetViewFromFile(const String& viewFileName) {
 	Matrix3x4 m;
 	if (!Util::loadMatrix3x4(viewFileName, m)) {
@@ -329,196 +492,620 @@ bool Scene::SetViewFromFile(const String& viewFileName) {
 	return true;
 }
 
-// Set the view camera to exactly match a scene camera's pose and FOV — what
-// the photo would have framed (camIndex is clamped to the available valid
-// cameras). Returns false if the scene has no cameras.
+// Set the view camera to exactly match an active-layer scene camera's pose and FOV.
 bool Scene::SetViewFromCamera(unsigned camIndex) {
-	if (!IsOpen() || images.empty()) {
+	Layer* layer = GetActiveLayer();
+	if (layer == NULL || layer->images.empty()) {
 		DEBUG("error: no scene cameras to set the view from");
 		return false;
 	}
-	if (camIndex >= images.size())
-		camIndex = images.size() / 2; // sensible default: a central view
-	const MVS::Image& imageData = scene.images[images[camIndex].idx];
-	// pose + FOV exactly as captured (no camera-view-mode, so no image overlay)
+	if (camIndex >= layer->images.size())
+		camIndex = layer->images.size() / 2;
+	const MVS::Image& imageData = layer->scene.images[layer->images[camIndex].idx];
 	window.GetCamera().SetCameraFromSceneData(imageData);
 	DEBUG("View set from scene camera %u", camIndex);
 	return true;
 }
 
-double Scene::GetWorkflowElapsedTime() const {
-	if (workflowState.load() != WF_STATE_RUNNING || workflowStartTime == 0.0)
-		return 0.0;
-	return glfwGetTime() - workflowStartTime;
+void Scene::ClearLayers()
+{
+	ASSERT(!HasPendingImageLoads());
+	layers.clear();
+	activeLayerIndex = -1;
+	nextLayerID = 1;
+	workflowLayerID = NO_ID;
 }
 
-void Scene::CheckWorkflowCompletion() {
-	const WorkflowState state = workflowState.load();
-	if (state == WF_STATE_COMPLETED || state == WF_STATE_FAILED) {
-		// Workflow completed, finalize it on the main thread
-		const bool success = (state == WF_STATE_COMPLETED);
-		FinalizeWorkflow(success);
-	}
+Scene::Layer* Scene::GetLayer(size_t idx)
+{
+	return idx < layers.size() ? &layers[idx] : NULL;
 }
 
-void Scene::FinalizeWorkflow(bool success) {
-	SEACAVE::Lock lock(workflowMutex);
+const Scene::Layer* Scene::GetLayer(size_t idx) const
+{
+	return idx < layers.size() ? &layers[idx] : NULL;
+}
 
-	// Check if we need to finalize (already done or not running)
-	const WorkflowState state = workflowState.load();
-	if (state != WF_STATE_COMPLETED && state != WF_STATE_FAILED)
-		return;
+Scene::Layer* Scene::GetActiveLayer()
+{
+	return activeLayerIndex >= 0 && (size_t)activeLayerIndex < layers.size() ? &layers[activeLayerIndex] : NULL;
+}
 
-	// Calculate duration directly (can't use GetWorkflowElapsedTime since state is no longer RUNNING)
-	const double currentTime = glfwGetTime();
-	const double duration = (workflowStartTime > 0.0) ? (currentTime - workflowStartTime) : 0.0;
-	const WorkflowType type = currentWorkflowType.load();
+const Scene::Layer* Scene::GetActiveLayer() const
+{
+	return activeLayerIndex >= 0 && (size_t)activeLayerIndex < layers.size() ? &layers[activeLayerIndex] : NULL;
+}
 
-	// Add to workflow history
-	workflowHistory.push_back({type, duration, success});
+Scene::Layer* Scene::GetLayerByID(uint32_t layerID)
+{
+	for (Layer& layer : layers)
+		if (layer.id == layerID)
+			return &layer;
+	return NULL;
+}
 
-	if (success) {
-		DEBUG("Workflow completed successfully: %s (%.2f seconds)",
-			type == WF_ESTIMATE_ROI ? "Estimate ROI" :
-			type == WF_DENSIFY ? "Densify" :
-			type == WF_RECONSTRUCT ? "Reconstruct Mesh" :
-			type == WF_REFINE ? "Refine Mesh" :
-			type == WF_TEXTURE ? "Texture Mesh" : "Unknown",
-			duration);
+const Scene::Layer* Scene::GetLayerByID(uint32_t layerID) const
+{
+	for (const Layer& layer : layers)
+		if (layer.id == layerID)
+			return &layer;
+	return NULL;
+}
 
-		// Re-upload geometry to GPU buffers
-		window.UploadRenderData();
+bool Scene::HasVisibleLayers() const
+{
+	for (const Layer& layer : layers)
+		if (layer.visible)
+			return true;
+	return false;
+}
 
-		// Mark geometry as modified
-		geometryModified.store(true);
+bool Scene::HasCameraUncertainty() const
+{
+	for (const Layer& layer : layers)
+		if (!layer.cameraUncertainty.empty())
+			return true;
+	return false;
+}
 
-		// Request window redraw
-		window.RequestRedraw();
+void Scene::RefreshLayerState(Layer& layer, bool rebuildImages)
+{
+	MVS::Scene& scene(layer.scene);
+	AABB3f bounds(true);
+	AABB3f imageBounds(true);
+
+	if (scene.IsBounded()) {
+		bounds = scene.obb.GetAABB();
 	} else {
-		DEBUG("Workflow failed: %s",
-			type == WF_ESTIMATE_ROI ? "Estimate ROI" :
-			type == WF_DENSIFY ? "Densify" :
-			type == WF_RECONSTRUCT ? "Reconstruct Mesh" :
-			type == WF_REFINE ? "Refine Mesh" :
-			type == WF_TEXTURE ? "Texture Mesh" : "Unknown");
+		if (!scene.pointcloud.IsEmpty())
+			bounds = ComputeViewerBounds(scene.pointcloud, scene.pointcloud.points.size());
+		if (!scene.mesh.IsEmpty()) {
+			scene.mesh.ComputeNormalFaces();
+			bounds.Insert(ComputeViewerBounds(scene.mesh, scene.mesh.vertices.size()));
+		}
 	}
 
-	// Reset workflow state
-	workflowState.store(WF_STATE_IDLE);
-	currentWorkflowType.store(WF_NONE);
-	workflowStartTime = 0.0;
+	if (rebuildImages)
+		layer.images.Release();
+	if (rebuildImages || layer.images.empty()) {
+		layer.images.Reserve(scene.images.size());
+		FOREACH(idxImage, scene.images) {
+			const MVS::Image& imageData = scene.images[idxImage];
+			if (!imageData.IsValid())
+				continue;
+			layer.images.emplace_back(idxImage);
+			imageBounds.InsertFull(Cast<float>(imageData.camera.C));
+		}
+	} else {
+		for (const Image& image : layer.images)
+			imageBounds.InsertFull(Cast<float>(scene.images[image.idx].camera.C));
+	}
+	if (bounds.IsEmpty() && !imageBounds.IsEmpty()) {
+		imageBounds.Enlarge(0.5);
+		bounds = imageBounds;
+	}
+
+	layer.bounds = bounds;
+	if (bounds.IsEmpty())
+		layer.sceneSize = Point3f(1, 1, 1);
+	else
+		layer.sceneSize = Point3f(bounds.GetSize().cast<float>());
+	layer.sceneDistance = layer.images.empty() ? 1.f : scene.ComputeDistanceCameras2Scene(0.1f, true);
+	if (layer.label.empty()) {
+		layer.label = Util::getFileNameExt(layer.sceneName);
+	}
 }
 
-bool Scene::Open(const String& fileName, String geometryFileName) {
+float Scene::ComputeVisibleSceneDistance() const
+{
+	float sceneDistance = 1.f;
+	bool foundVisibleLayer = false;
+	for (const Layer& layer : layers) {
+		if (!layer.visible)
+			continue;
+		sceneDistance = MAXF(sceneDistance, layer.sceneDistance);
+		foundVisibleLayer = true;
+	}
+	if (!foundVisibleLayer) {
+		const Layer* layer = GetActiveLayer();
+		if (layer != NULL)
+			sceneDistance = MAXF(sceneDistance, layer->sceneDistance);
+	}
+	return sceneDistance;
+}
+
+void Scene::UpdateWindowSceneBounds(bool resetView)
+{
+	if (!window.IsValid())
+		return;
+	AABB3f bounds(true);
+	for (const Layer& layer : layers) {
+		if (!layer.visible || layer.bounds.IsEmpty())
+			continue;
+		bounds.Insert(layer.bounds);
+	}
+	if (bounds.IsEmpty()) {
+		const Layer* layer = GetActiveLayer();
+		if (layer != NULL && !layer->bounds.IsEmpty())
+			bounds = layer->bounds;
+	}
+	if (bounds.IsEmpty())
+		return;
+	if (resetView)
+		window.SetSceneBounds(bounds.GetCenter(), bounds.GetSize().cast<float>());
+}
+
+void Scene::RefreshVisibleLayers()
+{
+	window.GetCamera().SetSceneDistance(ComputeVisibleSceneDistance());
+	window.UploadRenderData();
+}
+
+void Scene::UpdateWindowTitle()
+{
+	if (!window.IsValid())
+		return;
+	if (!IsOpen()) {
+		window.SetTitle(name);
+		return;
+	}
+	const Layer* activeLayer(GetActiveLayer());
+	ASSERT(activeLayer != NULL);
+	window.SetTitle(String::FormatString((name + _T(": %s [%u layers]")).c_str(), activeLayer->label.c_str(), (unsigned)layers.size()));
+}
+
+void Scene::UpdateGeometryModifiedFlag()
+{
+	bool modified = false;
+	for (const Layer& layer : layers) {
+		if (layer.dirty) {
+			modified = true;
+			break;
+		}
+	}
+	geometryModified.store(modified);
+}
+
+void Scene::SetGeometryModified(bool modified)
+{
+	Layer* layer = GetActiveLayer();
+	if (layer != NULL)
+		layer->dirty = modified;
+	if (modified)
+		geometryModified.store(true);
+	else
+		UpdateGeometryModifiedFlag();
+}
+
+bool Scene::SetActiveLayer(size_t layerIndex, bool requestRedraw)
+{
+	if (HasBackgroundWork()) {
+		DEBUG("Cannot change the active layer while background work is running");
+		return false;
+	}
+	if (layerIndex >= layers.size())
+		return false;
+	if ((int)layerIndex == activeLayerIndex) {
+		ActivateWorkingFolder(layers[layerIndex]);
+		return true;
+	}
+	activeLayerIndex = (int)layerIndex;
+	const Layer& layer(layers[layerIndex]);
+	ActivateWorkingFolder(layer);
+	PrecomputeTrackBasedNeighbors();
+	window.GetCamera().SetMaxCamID(layer.images.size());
+	window.GetCamera().SetSceneDistance(ComputeVisibleSceneDistance());
+	window.GetCamera().DisableCameraViewMode();
+	window.GetSelectionController().clearSelection();
+	window.selectionType = Window::SEL_NA;
+	window.ClearSelectionIds();
+	window.selectedNeighborCamera = NO_ID;
+	window.GetRenderer().UploadSelection(window);
+	window.GetRenderer().UploadBounds(layer.scene);
+	UpdateWindowTitle();
+	if (requestRedraw)
+		window.RequestRedraw();
+	return true;
+}
+
+bool Scene::SetActiveLayerByID(uint32_t layerID, bool requestRedraw)
+{
+	for (size_t i = 0; i < layers.size(); ++i) {
+		if (layers[i].id == layerID)
+			return SetActiveLayer(i, requestRedraw);
+	}
+	return false;
+}
+
+void Scene::SetLayerVisible(size_t layerIndex, bool visible)
+{
+	if (HasBackgroundWork()) {
+		DEBUG("Cannot change layer visibility while background work is running");
+		return;
+	}
+	Layer* layer = GetLayer(layerIndex);
+	if (layer == NULL || layer->visible == visible)
+		return;
+	layer->visible = visible;
+	RefreshVisibleLayers();
+}
+
+void Scene::SetAllLayersVisible(bool visible)
+{
+	if (HasBackgroundWork()) {
+		DEBUG("Cannot change layer visibility while background work is running");
+		return;
+	}
+	bool visibilityChanged = false;
+	for (Layer& layer : layers) {
+		if (layer.visible != visible) {
+			layer.visible = visible;
+			visibilityChanged = true;
+		}
+	}
+	if (!visibilityChanged)
+		return;
+	RefreshVisibleLayers();
+}
+
+void Scene::SoloLayer(size_t layerIndex)
+{
+	if (HasBackgroundWork()) {
+		DEBUG("Cannot solo a layer while background work is running");
+		return;
+	}
+	if (layerIndex >= layers.size())
+		return;
+	bool alreadySolo = layers[layerIndex].visible;
+	for (size_t i = 0; i < layers.size(); ++i) {
+		if (i == layerIndex)
+			continue;
+		if (layers[i].visible) {
+			alreadySolo = false;
+			break;
+		}
+	}
+	if (alreadySolo) {
+		for (Layer& layer : layers)
+			layer.visible = true;
+	} else {
+		for (size_t i = 0; i < layers.size(); ++i)
+			layers[i].visible = (i == layerIndex);
+	}
+	if (layers.size() == 1 && alreadySolo)
+		return;
+	RefreshVisibleLayers();
+}
+
+void Scene::ActivateNextLayer(int direction)
+{
+	if (layers.empty())
+		return;
+	const int layerCount((int)layers.size());
+	const int nextIndex((activeLayerIndex + direction + layerCount) % layerCount);
+	SetActiveLayer((size_t)nextIndex);
+}
+
+void Scene::EnableCompareMode(Window::CompareMode mode)
+{
+	const bool wasEnabled = window.IsCompareEnabled();
+	window.compareMode = layers.empty() ? Window::COMPARE_DISABLED : mode;
+	if (window.IsCompareEnabled() && !wasEnabled) {
+		// Default side assignment: active layer on the left (A), everything else on
+		// the right (B); switching between swipe and split keeps the assignment.
+		const Layer* activeLayer = GetActiveLayer();
+		for (Layer& layer : layers)
+			layer.compareRight = (&layer != activeLayer);
+	}
+	window.RequestRedraw();
+}
+
+bool Scene::AlignLayersToActive()
+{
+	if (HasBackgroundWork()) {
+		DEBUG("Cannot align layers while background work is running");
+		return false;
+	}
+	const Layer* refLayer = GetActiveLayer();
+	if (refLayer == NULL || layers.size() < 2)
+		return false;
+	// Reference camera centers keyed by image file name and by preserved SFM image ID.
+	// Duplicate basenames/IDs are marked ambiguous instead of silently overwriting a
+	// correspondence, which could otherwise produce a plausible but incorrect transform.
+	struct CameraMatch {
+		Point3 center;
+		MVS::IIndex imageIdx{NO_ID};
+	};
+	std::unordered_map<std::string, CameraMatch> nameToCamera;
+	std::unordered_map<uint32_t, CameraMatch> idToCamera;
+	for (const Image& image : refLayer->images) {
+		const MVS::Image& imageData = refLayer->scene.images[image.idx];
+		const CameraMatch cameraMatch{Point3(imageData.camera.C), image.idx};
+		const std::string imageName(Util::getFileNameExt(imageData.name).ToLower());
+		const auto [nameIt, nameInserted] = nameToCamera.emplace(imageName, cameraMatch);
+		if (!nameInserted)
+			nameIt->second.imageIdx = NO_ID;
+		if (imageData.ID != NO_ID) {
+			const auto [idIt, idInserted] = idToCamera.emplace(imageData.ID, cameraMatch);
+			if (!idInserted)
+				idIt->second.imageIdx = NO_ID;
+		}
+	}
+	unsigned alignedLayers = 0;
+	for (Layer& layer : layers) {
+		if (layer.id == refLayer->id)
+			continue;
+		Point3Arr points, pointsRef;
+		std::unordered_set<MVS::IIndex> matchedRefImages;
+		unsigned nameMatches = 0, idMatches = 0;
+		for (const Image& image : layer.images) {
+			const MVS::Image& imageData = layer.scene.images[image.idx];
+			const CameraMatch* match = NULL;
+			bool matchedByName = false;
+			const auto nameIt = nameToCamera.find(Util::getFileNameExt(imageData.name).ToLower());
+			if (nameIt != nameToCamera.end() && nameIt->second.imageIdx != NO_ID && !matchedRefImages.count(nameIt->second.imageIdx)) {
+				match = &nameIt->second;
+				matchedByName = true;
+			}
+			if (match == NULL && imageData.ID != NO_ID) {
+				const auto idIt = idToCamera.find(imageData.ID);
+				if (idIt != idToCamera.end() && idIt->second.imageIdx != NO_ID && !matchedRefImages.count(idIt->second.imageIdx))
+					match = &idIt->second;
+			}
+			if (match == NULL)
+				continue;
+			points.emplace_back(imageData.camera.C);
+			pointsRef.emplace_back(match->center);
+			matchedRefImages.emplace(match->imageIdx);
+			if (matchedByName)
+				++nameMatches;
+			else
+				++idMatches;
+		}
+		if (points.size() < 3) {
+			DEBUG("Layer '%s' not aligned: only %u camera(s) match the active layer", layer.label.c_str(), points.size());
+			continue;
+		}
+		if (!HasNonCollinearPoints(points) || !HasNonCollinearPoints(pointsRef)) {
+			DEBUG("Layer '%s' not aligned: the %u matched camera centers are coincident or collinear", layer.label.c_str(), points.size());
+			continue;
+		}
+		const Matrix4x4 transform = SimilarityTransform(points, pointsRef);
+		if (!static_cast<const Matrix4x4::CEMatMap>(transform).allFinite()) {
+			DEBUG("Layer '%s' not aligned: similarity estimation produced a non-finite transform", layer.label.c_str());
+			continue;
+		}
+		Matrix3x3 rotation; Point3 translation; REAL scale;
+		DecomposeSimilarityTransform(transform, rotation, translation, scale);
+		if (!std::isfinite(scale) || scale <= std::numeric_limits<REAL>::epsilon()) {
+			DEBUG("Layer '%s' not aligned: invalid estimated scale %g", layer.label.c_str(), scale);
+			continue;
+		}
+		layer.scene.Transform(rotation, translation, scale);
+		RefreshLayerState(layer, false);
+		if (!layer.cameraUncertainty.empty()) {
+			const Eigen::Matrix3f R = static_cast<const Matrix3x3::CEMatMap>(rotation).cast<float>();
+			for (CameraUncertainty& uncertainty : layer.cameraUncertainty) {
+				if (uncertainty.state != CameraUncertainty::COMPUTED)
+					continue;
+				Eigen::Matrix3f covariance = static_cast<const Matrix3x3f::CEMatMap>(uncertainty.posCov);
+				covariance = (float)SQUARE(scale) * R * covariance * R.transpose();
+				covariance = (covariance + covariance.transpose()) * 0.5f;
+				uncertainty.posCov = covariance;
+				uncertainty.posSigma = Point3f(
+					SQRT(MAXF(covariance(0, 0), 0.f)),
+					SQRT(MAXF(covariance(1, 1), 0.f)),
+					SQRT(MAXF(covariance(2, 2), 0.f)));
+			}
+			UpdateCameraUncertaintyStatistics(layer);
+		}
+		layer.dirty = true;
+		++alignedLayers;
+		DEBUG("Layer '%s' aligned to '%s' using %u matched cameras (%u by name, %u by ID; scale %g)",
+			layer.label.c_str(), refLayer->label.c_str(), points.size(), nameMatches, idMatches, scale);
+	}
+	if (alignedLayers == 0)
+		return false;
+	UpdateGeometryModifiedFlag();
+	// Refit to the unchanged reference layer. Loading an initially displaced layer
+	// may have framed very large combined bounds, leaving the aligned result tiny or
+	// off-center even though the transform itself succeeded.
+	if (!refLayer->bounds.IsEmpty())
+		window.SetSceneBounds(refLayer->bounds.GetCenter(), refLayer->bounds.GetSize().cast<float>());
+	else
+		UpdateWindowSceneBounds(true);
+	window.GetCamera().SetSceneDistance(ComputeVisibleSceneDistance());
+	window.UploadRenderData();
+	return true;
+}
+
+bool Scene::LoadLayer(Layer& layer, const String& fileName, String geometryFileName)
+{
+	ASSERT(!fileName.empty());
+	const String sceneFileName(MAKE_PATH_FULL(WORKING_FOLDER_FULL, fileName));
+	layer.sceneName = sceneFileName;
+	layer.workingFolder = Util::getFilePath(sceneFileName);
+	layer.label = Util::getFileNameExt(sceneFileName);
+	ActivateWorkingFolder(layer);
+
+	const MVS::Scene::SCENE_TYPE sceneType(layer.scene.Load(sceneFileName, true));
+	if (sceneType == MVS::Scene::SCENE_NA) {
+		DEBUG("error: can not open scene '%s'", sceneFileName.c_str());
+		return false;
+	}
+	if (geometryFileName.empty() && sceneType == MVS::Scene::SCENE_INTERFACE) {
+		const String defaultGeometryFileName(Util::getFileFullName(sceneFileName) + _T(".ply"));
+		if (File::isFile(defaultGeometryFileName))
+			geometryFileName = defaultGeometryFileName;
+	}
+	if (!geometryFileName.empty()) {
+		const String geometryPath(MAKE_PATH_FULL(layer.workingFolder, geometryFileName));
+		MVS::Mesh mesh;
+		MVS::PointCloud pointcloud;
+		if (mesh.Load(geometryPath)) {
+			layer.scene.mesh.Swap(mesh);
+		} else if (pointcloud.Load(geometryPath)) {
+			layer.scene.pointcloud.Swap(pointcloud);
+		}
+	}
+	if (!layer.scene.pointcloud.IsEmpty()) {
+		layer.scene.pointcloud.PrintStatistics(layer.scene.images.data(), &layer.scene.obb);
+		layer.usePointSolidColor = layer.scene.pointcloud.colors.empty();
+		if (estimateSfMNormals && layer.scene.EstimatePointCloudNormals())
+			if (estimateSfMPatches && layer.scene.mesh.IsEmpty())
+				layer.scene.EstimateSparseSurface();
+	}
+	RefreshLayerState(layer, true);
+	return true;
+}
+
+bool Scene::Open(const String& fileName, String geometryFileName)
+{
+	if (HasBackgroundWork()) {
+		DEBUG("Cannot open a scene while background work is running");
+		return false;
+	}
+	Reset();
+	return AddLayer(fileName, geometryFileName, true);
+}
+
+bool Scene::OpenFiles(const std::vector<String>& fileNames, bool replaceExisting)
+{
+	if (HasBackgroundWork()) {
+		DEBUG("Cannot open layers while background work is running");
+		return false;
+	}
+	if (fileNames.empty())
+		return false;
+	if (replaceExisting)
+		Reset();
+
+	bool loadedAny = false;
+	if (fileNames.size() == 2) {
+		const String& firstFile(fileNames.front());
+		const String& secondFile(fileNames.back());
+		const bool firstIsScene(IsSceneProjectFile(firstFile));
+		const bool secondIsScene(IsSceneProjectFile(secondFile));
+		const bool firstIsGeometry(IsGeometryFile(firstFile));
+		const bool secondIsGeometry(IsGeometryFile(secondFile));
+		if (firstIsScene && secondIsGeometry && !secondIsScene) {
+			loadedAny = AddLayer(firstFile, secondFile, true);
+		} else if (secondIsScene && firstIsGeometry && !firstIsScene) {
+			loadedAny = AddLayer(secondFile, firstFile, true);
+		}
+	}
+	if (!loadedAny) {
+		for (const String& fileName : fileNames) {
+			if (!IsSceneProjectFile(fileName) && !IsGeometryFile(fileName))
+				continue;
+			loadedAny = AddLayer(fileName, String(), !loadedAny) || loadedAny;
+		}
+	}
+	if (!loadedAny && replaceExisting)
+		window.SetVisible(true);
+	return loadedAny;
+}
+
+bool Scene::AddLayer(const String& fileName, String geometryFileName, bool makeActive)
+{
+	if (HasBackgroundWork()) {
+		DEBUG("Cannot add a layer while background work is running");
+		return false;
+	}
 	ASSERT(!fileName.empty());
 	window.SetVisible(false);
-	DEBUG_EXTRA("Loading: '%s'", Util::getFileNameExt(fileName).c_str());
-	Reset();
-	sceneName = fileName;
+	DEBUG_EXTRA("Loading layer: '%s'", Util::getFileNameExt(fileName).c_str());
 
-	// load the scene
-	if (Util::isFullPath(fileName)) {
-		WORKING_FOLDER = Util::getFilePath(fileName);
-		INIT_WORKING_FOLDER;
-	}
-	const MVS::Scene::SCENE_TYPE sceneType(scene.Load(MAKE_PATH_FULL(WORKING_FOLDER_FULL, fileName), true));
-	if (sceneType == MVS::Scene::SCENE_NA) {
-		DEBUG("error: can not open scene '%s'", fileName.c_str());
+	Layer layer;
+	layer.id = nextLayerID++;
+	if (!LoadLayer(layer, fileName, geometryFileName)) {
+		if (const Layer* activeLayer = GetActiveLayer())
+			ActivateWorkingFolder(*activeLayer);
 		window.SetVisible(true);
 		return false;
 	}
-	if (geometryFileName.empty() && sceneType == MVS::Scene::SCENE_INTERFACE)
-		geometryFileName = Util::getFileFullName(fileName) + _T(".ply");
-	if (!geometryFileName.empty()) {
-		// try to load given mesh
-		MVS::Mesh mesh;
-		MVS::PointCloud pointcloud;
-		if (mesh.Load(MAKE_PATH_FULL(WORKING_FOLDER_FULL, geometryFileName))) {
-			scene.mesh.Swap(mesh);
-			geometryName = geometryFileName;
-			geometryMesh = true;
-		} else
-		// try to load as a point-cloud
-		if (pointcloud.Load(MAKE_PATH_FULL(WORKING_FOLDER_FULL, geometryFileName))) {
-			scene.pointcloud.Swap(pointcloud);
-			geometryName = geometryFileName;
-			geometryMesh = false;
-		}
-	}
-	if (!scene.pointcloud.IsEmpty()) {
-		scene.pointcloud.PrintStatistics(scene.images.data(), &scene.obb);
-		if (estimateSfMNormals && scene.EstimatePointCloudNormals())
-			if (estimateSfMPatches && scene.mesh.IsEmpty())
-				scene.EstimateSparseSurface();
-	}
-
-	// init scene
-	AABB3f bounds(true);
-	Point3f sceneCenter(0, 0, 0);
-	if (scene.IsBounded()) {
-		bounds = scene.obb.GetAABB();
-		sceneCenter = bounds.GetCenter();
-	} else {
-		if (!scene.pointcloud.IsEmpty()) {
-			bounds = scene.pointcloud.GetAABB(0.1f, 0.9f);
-			sceneCenter = scene.pointcloud.GetCenter();
-		}
-		if (!scene.mesh.IsEmpty()) {
-			scene.mesh.ComputeNormalFaces();
-			bounds.Insert(scene.mesh.GetAABB(0.1f, 0.9f));
-			sceneCenter = scene.mesh.GetCenter();
-		}
-	}
-
-	// init images
-	AABB3f imageBounds(true);
-	images.Reserve(scene.images.size());
-	FOREACH(idxImage, scene.images) {
-		const MVS::Image& imageData = scene.images[idxImage];
-		if (!imageData.IsValid())
-			continue;
-		images.emplace_back(idxImage);
-		imageBounds.InsertFull(Cast<float>(imageData.camera.C));
-	}
-	if (bounds.IsEmpty() && !imageBounds.IsEmpty()) {
-		// if no geometry is present, use image bounds
-		imageBounds.Enlarge(0.5);
-		bounds = imageBounds;
-		sceneCenter = imageBounds.GetCenter();
-	}
-
-	// Precompute neighbors based on shared tracks
-	PrecomputeTrackBasedNeighbors();
-
-	// fit camera to scene
-	if (!bounds.IsEmpty()) {
-		const Point3f sceneSize = bounds.GetSize().cast<float>();
-		window.SetSceneBounds(sceneCenter, sceneSize);
-	}
-
-	// Set images size for camera view mode
-	if (!images.empty()) {
-		window.GetCamera().SetMaxCamID(images.size());
-		window.GetCamera().SetSceneDistance(scene.ComputeDistanceCameras2Scene(0.1f, true));
-	}
-
-	// Set up camera view mode callback
-	window.GetCamera().SetCameraViewModeCallback([this](MVS::IIndex camID) {
-		OnSetCameraViewMode(camID);
-	});
-
-	// set window title
-	window.SetTitle(String::FormatString((name + _T(": %s")).c_str(), Util::getFileName(fileName).c_str()));
-
-	// upload render data
+	layer.label = MakeUniqueLayerLabel(layers, layer.label);
+	layers.emplace_back(std::move(layer));
+	const bool activeLayerChanged(makeActive || activeLayerIndex < 0);
+	if (activeLayerChanged)
+		activeLayerIndex = (int)layers.size() - 1;
+	const Layer& activeLayer(*GetActiveLayer());
+	ActivateWorkingFolder(activeLayer);
+	if (activeLayerChanged)
+		PrecomputeTrackBasedNeighbors();
+	window.GetCamera().SetMaxCamID(activeLayer.images.size());
+	window.GetCamera().SetSceneDistance(ComputeVisibleSceneDistance());
+	UpdateWindowSceneBounds(true);
+	UpdateWindowTitle();
 	window.UploadRenderData();
-
 	window.SetVisible(true);
 	return true;
 }
 
+bool Scene::RemoveLayer(size_t layerIndex)
+{
+	if (layerIndex >= layers.size())
+		return false;
+	if (HasBackgroundWork()) {
+		DEBUG("Cannot remove a layer while background work is running");
+		return false;
+	}
+	const Layer* previousActiveLayer = GetActiveLayer();
+	const uint32_t previousActiveLayerID = previousActiveLayer != NULL ? previousActiveLayer->id : NO_ID;
+	const uint32_t removedLayerID = layers[layerIndex].id;
+	layers.erase(layers.begin() + layerIndex);
+	if (layers.empty()) {
+		Reset();
+		window.SetVisible(true);
+		return true;
+	}
+	size_t newActiveLayerIndex = MINF(layerIndex, layers.size() - 1);
+	if (previousActiveLayerID != NO_ID && previousActiveLayerID != removedLayerID) {
+		for (size_t i = 0; i < layers.size(); ++i) {
+			if (layers[i].id == previousActiveLayerID) {
+				newActiveLayerIndex = i;
+				break;
+			}
+		}
+	}
+	activeLayerIndex = -1; // force SetActiveLayer() to rebuild dependent state
+	SetActiveLayer(newActiveLayerIndex, false);
+	UpdateGeometryModifiedFlag();
+	UpdateWindowSceneBounds(true);
+	window.UploadRenderData();
+	return true;
+}
+
 bool Scene::Save(const String& _fileName, bool bRescaleImages) {
-	if (!IsOpen())
+	if (HasBackgroundWork()) {
+		DEBUG("Cannot save a scene while background work is running");
+		return false;
+	}
+	Layer* layer = GetActiveLayer();
+	if (layer == NULL)
+		return false;
+	MVS::Scene& scene(layer->scene);
+	if (!layer->IsOpen())
 		return false;
 	REAL imageScale = 0;
 	if (bRescaleImages) {
@@ -529,42 +1116,69 @@ bool Scene::Save(const String& _fileName, bool bRescaleImages) {
 		window.SetVisible(true);
 		imageScale = strScale.From<REAL>(0);
 	}
-	const String fileName(!_fileName.empty() ? _fileName : Util::insertBeforeFileExt(sceneName, _T("_new")));
-	MVS::Mesh mesh;
-	if (!scene.mesh.IsEmpty() && !geometryName.empty() && geometryMesh)
-		mesh.Swap(scene.mesh);
-	MVS::PointCloud pointcloud;
-	if (!scene.pointcloud.IsEmpty() && !geometryName.empty() && !geometryMesh)
-		pointcloud.Swap(scene.pointcloud);
+	const String requestedFileName(!_fileName.empty() ? _fileName : GetDefaultSaveFileName(*layer));
+	const String fileName(MAKE_PATH_FULL(layer->workingFolder, requestedFileName));
+	const String previousWorkingFolder(layer->workingFolder);
+	const String saveWorkingFolder(Util::getFilePath(fileName));
+	ActivateWorkingFolder(saveWorkingFolder);
 	if (imageScale > 0 && imageScale < 1) {
-		// scale and save images
 		const String folderName(Util::getFilePath(MAKE_PATH_FULL(WORKING_FOLDER_FULL, fileName)) + String::FormatString("images%d" PATH_SEPARATOR_STR, ROUND2INT(imageScale*100)));
 		if (!scene.ScaleImages(0, imageScale, folderName)) {
 			DEBUG("error: can not scale scene images to '%s'", folderName.c_str());
+			ActivateWorkingFolder(previousWorkingFolder);
 			return false;
 		}
 	}
 	if (!scene.Save(fileName, nArchiveType)) {
 		DEBUG("error: can not save scene to '%s'", fileName.c_str());
+		ActivateWorkingFolder(previousWorkingFolder);
 		return false;
 	}
-	if (!mesh.IsEmpty())
-		scene.mesh.Swap(mesh);
-	if (!pointcloud.IsEmpty())
-		scene.pointcloud.Swap(pointcloud);
-	sceneName = fileName;
+	layer->sceneName = fileName;
+	layer->workingFolder = saveWorkingFolder;
+	layer->label = MakeUniqueLayerLabel(layers, Util::getFileNameExt(fileName), layer->id);
+	layer->dirty = false;
+	UpdateGeometryModifiedFlag();
+	UpdateWindowTitle();
 	return true;
 }
 
-bool Scene::Export(const String& _fileName, const String& exportType, bool bViews) const {
-	if (!IsOpen())
+bool Scene::SaveModifiedLayers()
+{
+	if (!IsOpen() || HasBackgroundWork())
 		return false;
-	ASSERT(!sceneName.IsEmpty());
+	const int previousActiveLayer = activeLayerIndex;
+	bool savedAny = false;
+	bool success = true;
+	for (size_t i = 0; i < layers.size(); ++i) {
+		if (!layers[i].dirty)
+			continue;
+		SetActiveLayer(i, false);
+		success = Save(String(), false) && success;
+		savedAny = true;
+	}
+	if (previousActiveLayer >= 0 && previousActiveLayer < (int)layers.size())
+		SetActiveLayer((size_t)previousActiveLayer, false);
+	return success && savedAny;
+}
+
+bool Scene::Export(const String& _fileName, const String& exportType, bool bViews, ExportGeometry geometry) const {
+	if (HasBackgroundWork()) {
+		DEBUG("Cannot export a scene while background work is running");
+		return false;
+	}
+	const Layer* layer = GetActiveLayer();
+	if (layer == NULL || !layer->IsOpen())
+		return false;
+	const MVS::Scene& scene(layer->scene);
+	ASSERT(!layer->sceneName.IsEmpty());
 	String lastFileName;
-	const String fileName(!_fileName.empty() ? _fileName : sceneName);
+	const String fileName(!_fileName.empty() ? _fileName : layer->sceneName);
 	const String baseFileName(Util::getFileFullName(fileName));
-	const bool bPoints(scene.pointcloud.Save(lastFileName=(baseFileName+_T("_pointcloud")+(!exportType.empty()?exportType.c_str():(Util::getFileExt(fileName)==_T(".glb")?_T(".glb"):_T(".ply")))), nArchiveType==ARCHIVE_MVS && bViews));
-	const bool bMesh(scene.mesh.Save(lastFileName=(baseFileName+_T("_mesh")+(!exportType.empty()?exportType.c_str():(Util::getFileExt(fileName)==_T(".obj")?_T(".obj"):_T(".ply")))), {}, true));
+	const bool exportPoints = geometry != EXPORT_MESH && !scene.pointcloud.IsEmpty();
+	const bool exportMesh = geometry != EXPORT_POINT_CLOUD && !scene.mesh.IsEmpty() && !scene.mesh.faces.empty();
+	const bool bPoints(exportPoints && scene.pointcloud.Save(lastFileName=(baseFileName+_T("_pointcloud")+(!exportType.empty()?exportType.c_str():(Util::getFileExt(fileName)==_T(".glb")?_T(".glb"):_T(".ply")))), nArchiveType==ARCHIVE_MVS && bViews));
+	const bool bMesh(exportMesh && scene.mesh.Save(lastFileName=(baseFileName+_T("_mesh")+(!exportType.empty()?exportType.c_str():(Util::getFileExt(fileName)==_T(".obj")?_T(".obj"):_T(".ply")))), {}, true));
 	#if TD_VERBOSE != TD_VERBOSE_OFF
 	if (VERBOSITY_LEVEL > 2 && (bPoints || bMesh))
 		scene.ExportCamerasMLP(Util::getFileFullName(lastFileName)+_T(".mlp"), lastFileName);
@@ -590,14 +1204,215 @@ bool Scene::Export(const String& _fileName, const String& exportType, bool bView
 	return bPoints || bMesh;
 }
 
+bool Scene::BuildMergedVisiblePointCloud(MVS::PointCloud& pointcloud) const
+{
+	pointcloud.Release();
+	size_t totalPoints = 0;
+	bool exportColors = false;
+	bool exportNormals = false;
+	for (const Layer& layer : layers) {
+		if (!layer.visible || layer.scene.pointcloud.IsEmpty())
+			continue;
+		totalPoints += layer.scene.pointcloud.points.size();
+		exportColors = exportColors || layer.scene.pointcloud.colors.size() == layer.scene.pointcloud.points.size();
+		exportNormals = exportNormals || layer.scene.pointcloud.normals.size() == layer.scene.pointcloud.points.size();
+	}
+	if (totalPoints == 0)
+		return false;
+
+	pointcloud.points.Reserve(totalPoints);
+	if (exportColors)
+		pointcloud.colors.Reserve(totalPoints);
+	if (exportNormals)
+		pointcloud.normals.Reserve(totalPoints);
+
+	for (const Layer& layer : layers) {
+		if (!layer.visible || layer.scene.pointcloud.IsEmpty())
+			continue;
+		const MVS::PointCloud& layerPointCloud(layer.scene.pointcloud);
+		pointcloud.points.Join(layerPointCloud.points);
+		if (exportColors) {
+			if (layerPointCloud.colors.size() == layerPointCloud.points.size())
+				pointcloud.colors.Join(layerPointCloud.colors);
+			else {
+				FOREACH(i, layerPointCloud.points)
+					pointcloud.colors.emplace_back(255, 255, 255);
+			}
+		}
+		if (exportNormals) {
+			if (layerPointCloud.normals.size() == layerPointCloud.points.size())
+				pointcloud.normals.Join(layerPointCloud.normals);
+			else {
+				FOREACH(i, layerPointCloud.points)
+					pointcloud.normals.emplace_back(0.f, 0.f, 0.f);
+			}
+		}
+	}
+	return !pointcloud.IsEmpty();
+}
+
+bool Scene::BuildMergedVisibleMesh(MVS::Mesh& mesh) const
+{
+	mesh.Release();
+	bool hasMesh = false;
+	for (const Layer& layer : layers) {
+		if (!layer.visible || layer.scene.mesh.IsEmpty() || layer.scene.mesh.faces.empty())
+			continue;
+		MVS::Mesh layerMesh(layer.scene.mesh);
+		if (layerMesh.HasTexture()) {
+			layerMesh.faceTexcoords.Release();
+			layerMesh.faceTexindices.Release();
+			layerMesh.texturesDiffuse.Release();
+		}
+		layerMesh.vertexNormals.Release();
+		layerMesh.faceNormals.Release();
+		mesh.Join(layerMesh);
+		hasMesh = true;
+	}
+	if (hasMesh)
+		mesh.ComputeNormalVertices();
+	return hasMesh && !mesh.IsEmpty();
+}
+
+bool Scene::ExportVisibleLayers(const String& _fileName, const String& exportType, ExportGeometry geometry) const
+{
+	if (HasBackgroundWork()) {
+		DEBUG("Cannot export layers while background work is running");
+		return false;
+	}
+	if (!HasVisibleLayers())
+		return false;
+	String lastFileName;
+	const Layer* activeLayer(GetActiveLayer());
+	const String fileName(!_fileName.empty() ? _fileName : (activeLayer != NULL ? activeLayer->sceneName : String()));
+	const String baseFileName(Util::getFileFullName(fileName));
+
+	MVS::PointCloud mergedPointCloud;
+	MVS::Mesh mergedMesh;
+	const bool hasPoints(geometry != EXPORT_MESH && BuildMergedVisiblePointCloud(mergedPointCloud));
+	const bool hasMesh(geometry != EXPORT_POINT_CLOUD && BuildMergedVisibleMesh(mergedMesh));
+	if (!hasPoints && !hasMesh)
+		return false;
+
+	const bool bPoints = hasPoints && mergedPointCloud.Save(lastFileName = (baseFileName + _T("_pointcloud") + (!exportType.empty() ? exportType.c_str() : (Util::getFileExt(fileName) == _T(".glb") ? _T(".glb") : _T(".ply")))), false);
+	const bool bMesh = hasMesh && mergedMesh.Save(lastFileName = (baseFileName + _T("_mesh") + (!exportType.empty() ? exportType.c_str() : (Util::getFileExt(fileName) == _T(".obj") ? _T(".obj") : _T(".ply")))), {}, true);
+
+	AABB3f aabb(true);
+	if (bPoints)
+		aabb = mergedPointCloud.GetAABB();
+	if (bMesh)
+		aabb.Insert(mergedMesh.GetAABB());
+	if (!aabb.IsEmpty()) {
+		std::ofstream fs(baseFileName + _T("_roi_box.txt"));
+		if (fs)
+			fs << aabb;
+	}
+	return bPoints || bMesh;
+}
+
+double Scene::GetWorkflowElapsedTime() const
+{
+	if (workflowState.load() != WF_STATE_RUNNING || workflowStartTime == 0.0)
+		return 0.0;
+	return glfwGetTime() - workflowStartTime;
+}
+
+const char* Scene::GetWorkflowName(WorkflowType type, bool shortName)
+{
+	switch (type) {
+	case WF_ESTIMATE_ROI: return shortName ? "ROI" : "Estimate ROI";
+	case WF_DENSIFY: return "Densify";
+	case WF_RECONSTRUCT: return shortName ? "Reconstruct" : "Reconstruct Mesh";
+	case WF_REFINE: return shortName ? "Refine" : "Refine Mesh";
+	case WF_TEXTURE: return shortName ? "Texture" : "Texture Mesh";
+	default: return shortName ? "?" : "Unknown";
+	}
+}
+
+void Scene::CheckWorkflowCompletion()
+{
+	const WorkflowState state = workflowState.load();
+	if (state == WF_STATE_COMPLETED || state == WF_STATE_FAILED) {
+		// Workflow completed, finalize it on the main thread
+		const bool success = (state == WF_STATE_COMPLETED);
+		FinalizeWorkflow(success);
+	}
+}
+
+void Scene::FinalizeWorkflow(bool success)
+{
+	SEACAVE::Lock lock(workflowMutex);
+
+	// Check if we need to finalize (already done or not running)
+	const WorkflowState state = workflowState.load();
+	if (state != WF_STATE_COMPLETED && state != WF_STATE_FAILED)
+		return;
+
+	// Calculate duration directly (can't use GetWorkflowElapsedTime since state is no longer RUNNING)
+	const double currentTime = glfwGetTime();
+	const double duration = (workflowStartTime > 0.0) ? (currentTime - workflowStartTime) : 0.0;
+	const WorkflowType type = currentWorkflowType.load();
+	const char* workflowName(Scene::GetWorkflowName(type));
+
+	// Add to workflow history
+	workflowHistory.push_back({type, duration, success});
+
+	if (success) {
+		DEBUG("Workflow completed successfully: %s (%.2f seconds)", workflowName, duration);
+	} else {
+		DEBUG("Workflow failed: %s", workflowName);
+	}
+
+	// A failed workflow can still modify its input before reporting failure (for example,
+	// mesh cleaning or point-weight removal), so always refresh and mark its layer dirty.
+	Layer* layer = GetLayerByID(workflowLayerID);
+	if (layer != NULL) {
+		RefreshLayerState(*layer, false);
+		if (layer == GetActiveLayer())
+			PrecomputeTrackBasedNeighbors();
+		layer->dirty = true;
+		UpdateGeometryModifiedFlag();
+		window.GetCamera().SetSceneDistance(ComputeVisibleSceneDistance());
+		window.UploadRenderData();
+		window.RequestRedraw();
+	}
+
+	// Reset workflow state
+	workflowState.store(WF_STATE_IDLE);
+	currentWorkflowType.store(WF_NONE);
+	workflowStartTime = 0.0;
+	workflowLayerID = NO_ID;
+	if (!success) {
+		batchWorkflowActive = false;
+		batchWorkflowQueue.clear();
+	} else if (!batchWorkflowQueue.empty()) {
+		if (!StartNextBatchWorkflow()) {
+			batchWorkflowActive = false;
+			DEBUG("Batch workflow stopped because the next stage could not start");
+		}
+	} else if (batchWorkflowActive) {
+		batchWorkflowActive = false;
+		DEBUG_EXTRA("Workflow queue completed");
+	}
+}
+
 // Load the per-image pose uncertainty from a CreateStructure pose-quality CSV report
 // (--export-pose-quality) and enable the uncertainty-ellipsoids display.
 // Rows are matched to the scene images by ID (ExportMVS preserves the SFM image ID).
 bool Scene::LoadPoseUncertainty(const String& fileName) {
-	cameraUncertainty.Release();
-	cameraUncertaintyNorm = 0.f;
-	if (!IsOpen()) {
+	Layer* layer = GetActiveLayer();
+	if (layer == NULL) {
 		DEBUG("error: pose uncertainty requires an open scene");
+		return false;
+	}
+	if (HasBackgroundWork()) {
+		DEBUG("Cannot load pose uncertainty while background work is running");
+		return false;
+	}
+	const ImageArr& images(layer->images);
+	const MVS::Scene& scene(layer->scene);
+	if (images.empty()) {
+		DEBUG("error: pose uncertainty requires calibrated images in the active layer");
 		return false;
 	}
 	std::ifstream is(fileName);
@@ -626,9 +1441,12 @@ bool Scene::LoadPoseUncertainty(const String& fileName) {
 		if (fields[2] == "0")
 			continue; // image without computed uncertainty
 		const Point3f sigmaPos((float)std::atof(fields[4].c_str()), (float)std::atof(fields[5].c_str()), (float)std::atof(fields[6].c_str()));
-		if (sigmaPos.x < 0.f)
+		if (sigmaPos.x < 0.f || sigmaPos.y < 0.f || sigmaPos.z < 0.f ||
+			!std::isfinite(sigmaPos.x) || !std::isfinite(sigmaPos.y) || !std::isfinite(sigmaPos.z))
 			continue;
 		const Point3f covOff((float)std::atof(fields[7].c_str()), (float)std::atof(fields[8].c_str()), (float)std::atof(fields[9].c_str()));
+		if (!std::isfinite(covOff.x) || !std::isfinite(covOff.y) || !std::isfinite(covOff.z))
+			continue;
 		CameraUncertainty& u = mapUncertainty[(uint32_t)id];
 		u.posCov = Matrix3x3f(
 			SQUARE(sigmaPos.x), covOff.x, covOff.y,
@@ -643,32 +1461,19 @@ bool Scene::LoadPoseUncertainty(const String& fileName) {
 		return false;
 	}
 	// match the entries to the scene images by ID
-	cameraUncertainty.resize(images.size());
-	FOREACH(i, cameraUncertainty)
-		cameraUncertainty[i] = CameraUncertainty();
+	CameraUncertaintyArr loadedUncertainty(images.size());
 	unsigned matched = 0;
-	FloatArr sigmas;
 	FOREACH(i, images) {
 		const MVS::Image& imageData = scene.images[images[i].idx];
 		const auto it = mapUncertainty.find(imageData.ID);
 		if (it == mapUncertainty.end())
 			continue;
-		cameraUncertainty[i] = it->second;
+		loadedUncertainty[i] = it->second;
 		++matched;
-		if (it->second.state == CameraUncertainty::COMPUTED)
-			sigmas.push_back(it->second.MaxPosSigma());
 	}
 	if (matched == 0) {
 		DEBUG("error: no pose uncertainty entries in '%s' match the scene image IDs", fileName.c_str());
-		cameraUncertainty.Release();
 		return false;
-	}
-	// robust colormap normalization: 95th-percentile of the max-axis sigma
-	if (!sigmas.empty()) {
-		sigmas.Sort();
-		cameraUncertaintyNorm = sigmas[(sigmas.size() - 1) * 95 / 100];
-		if (cameraUncertaintyNorm <= 0.f)
-			cameraUncertaintyNorm = MAXF(sigmas.Last(), 1.f);
 	}
 	// Auto-size the ellipsoids to the scene: raw 1-sigma radii are in world units and can be far
 	// smaller (metric/GPS scenes) or far larger (datum-relative scenes, where the unanchored scale
@@ -680,131 +1485,137 @@ bool Scene::LoadPoseUncertainty(const String& fileName) {
 	// small enough not to overlap their neighbours at the default x1 slider). This is kept SEPARATE
 	// from the user-facing `Window::uncertaintyEllipsoidScale` (which multiplies it, defaulting to 1)
 	// so the deferred ImGui-ini load of that persisted slider value cannot clobber the auto fit.
-	const float sceneExtent = window.GetCamera().GetSceneSize().norm();
-	const float medianSigma = sigmas.empty() ? 0.f : sigmas[sigmas.size() / 2]; // sigmas is sorted above
-	cameraUncertaintyAutoScale = (sceneExtent > 0.f && medianSigma > 0.f) ?
-		MINF(MAXF(0.03f * sceneExtent / medianSigma, 1e-6f), 1e6f) : 1.f;
+	layer->cameraUncertainty.Swap(loadedUncertainty);
+	const unsigned drawable = UpdateCameraUncertaintyStatistics(*layer);
 	window.showUncertaintyEllipsoids = true;
 	window.GetRenderer().UploadUncertaintyEllipsoids(window);
 	Window::RequestRedraw();
 	// drawable = COMPUTED entries (datum entries have zero covariance and draw nothing)
-	const unsigned drawable = sigmas.size();
 	DEBUG("Pose uncertainty loaded from '%s': %u/%u images matched (%u drawable ellipsoids, %u datum), "
 		"sigma norm %.3g, auto-fit ellipsoid scale %.3g (x%.3g slider)%s",
 		Util::getFileNameExt(fileName).c_str(), matched, images.size(),
-		drawable, matched - drawable, cameraUncertaintyNorm, cameraUncertaintyAutoScale,
+		drawable, matched - drawable, layer->cameraUncertaintyNorm, layer->cameraUncertaintyAutoScale,
 		window.uncertaintyEllipsoidScale,
 		drawable == 0 ? " -- WARNING: nothing to draw (all matched entries are gauge datum)" : "");
 	return true;
 }
 
 // Estimate ROI workflow wrapper (async execution)
-bool Scene::RunEstimateROIWorkflow(const EstimateROIWorkflowOptions& options) {
-	ASSERT(IsOpen() && "No scene loaded");
-	ASSERT(scene.pointcloud.IsValid() && "Point-cloud is empty");
-	ASSERT(!IsWorkflowRunning() && "A workflow is already running");
-
-	// Update options in scene
-	estimateROIOptions = options;
-
-	// Set workflow state
+bool Scene::StartWorkflow(WorkflowType type, Layer& layer, SEACAVE::Event* event)
+{
+	ASSERT(event != NULL && workflowState.load() == WF_STATE_IDLE);
+	ActivateWorkingFolder(layer);
 	workflowState.store(WF_STATE_RUNNING);
-	currentWorkflowType.store(WF_ESTIMATE_ROI);
+	currentWorkflowType.store(type);
 	workflowStartTime = glfwGetTime();
-
-	// Submit workflow event to queue for async execution
-	events.AddEvent(new EVTWorkflowEstimateROI(this));
-
-	DEBUG("Estimate ROI workflow started (async)");
+	workflowLayerID = layer.id;
+	events.AddEvent(event);
+	DEBUG("%s workflow started (async)", GetWorkflowName(type));
 	return true;
+}
+
+bool Scene::RunEstimateROIWorkflow(const EstimateROIWorkflowOptions& options)
+{
+	Layer* layer = GetActiveLayer();
+	if (layer == NULL || !layer->scene.pointcloud.IsValid() || HasBackgroundWork()) {
+		DEBUG("Cannot start Estimate ROI: an active point-cloud layer is required and no background work can be running");
+		return false;
+	}
+	estimateROIOptions = options;
+	return StartWorkflow(WF_ESTIMATE_ROI, *layer, new EVTWorkflowEstimateROI(this, layer->id, options));
 }
 
 // Densify point-cloud workflow wrapper (async execution)
 bool Scene::RunDensifyWorkflow(const DensifyWorkflowOptions& options) {
-	ASSERT(IsOpen() && "No scene loaded");
-	ASSERT(!scene.images.empty() && "Scene has no images");
-	ASSERT(!IsWorkflowRunning() && "A workflow is already running");
-
-	// Update options in scene
+	Layer* layer = GetActiveLayer();
+	if (layer == NULL || !layer->scene.IsValid() || HasBackgroundWork()) {
+		DEBUG("Cannot start Densify: an active calibrated-image layer is required and no background work can be running");
+		return false;
+	}
 	densifyOptions = options;
-
-	// Set workflow state
-	workflowState.store(WF_STATE_RUNNING);
-	currentWorkflowType.store(WF_DENSIFY);
-	workflowStartTime = glfwGetTime();
-
-	DEBUG("Densify workflow started (async) at time %.3f", workflowStartTime);
-
-	// Submit workflow event to queue for async execution
-	events.AddEvent(new EVTWorkflowDensify(this));
-
-	return true;
+	return StartWorkflow(WF_DENSIFY, *layer, new EVTWorkflowDensify(this, layer->id, options));
 }
 
 // Reconstruct mesh workflow wrapper (async execution)
 bool Scene::RunReconstructMeshWorkflow(const ReconstructMeshWorkflowOptions& options) {
-	ASSERT(IsOpen() && "No scene loaded");
-	ASSERT(scene.pointcloud.IsValid() && "Point-cloud is empty");
-	ASSERT(!IsWorkflowRunning() && "A workflow is already running");
-
-	// Update options in scene
+	Layer* layer = GetActiveLayer();
+	if (layer == NULL || !layer->scene.pointcloud.IsValid() || HasBackgroundWork()) {
+		DEBUG("Cannot start Reconstruct Mesh: an active point-cloud layer is required and no background work can be running");
+		return false;
+	}
 	reconstructOptions = options;
-
-	// Set workflow state
-	workflowState.store(WF_STATE_RUNNING);
-	currentWorkflowType.store(WF_RECONSTRUCT);
-	workflowStartTime = glfwGetTime();
-
-	// Submit workflow event to queue for async execution
-	events.AddEvent(new EVTWorkflowReconstructMesh(this));
-
-	DEBUG("Reconstruct Mesh workflow started (async)");
-	return true;
+	return StartWorkflow(WF_RECONSTRUCT, *layer, new EVTWorkflowReconstructMesh(this, layer->id, options));
 }
 
 // Refine mesh workflow wrapper (async execution)
 bool Scene::RunRefineMeshWorkflow(const RefineMeshWorkflowOptions& options) {
-	ASSERT(IsOpen() && "No scene loaded");
-	ASSERT(!scene.mesh.IsEmpty() && "Mesh is empty");
-	ASSERT(!IsWorkflowRunning() && "A workflow is already running");
-
-	// Update options in scene
+	Layer* layer = GetActiveLayer();
+	if (layer == NULL || !layer->scene.IsValid() || layer->scene.mesh.IsEmpty() || HasBackgroundWork()) {
+		DEBUG("Cannot start Refine Mesh: an active mesh-and-image layer is required and no background work can be running");
+		return false;
+	}
 	refineOptions = options;
-
-	// Set workflow state
-	workflowState.store(WF_STATE_RUNNING);
-	currentWorkflowType.store(WF_REFINE);
-	workflowStartTime = glfwGetTime();
-
-	// Submit workflow event to queue for async execution
-	events.AddEvent(new EVTWorkflowRefineMesh(this));
-
-	DEBUG("Refine Mesh workflow started (async)");
-	return true;
+	return StartWorkflow(WF_REFINE, *layer, new EVTWorkflowRefineMesh(this, layer->id, options));
 }
 
 // Texture mesh workflow wrapper (async execution)
 bool Scene::RunTextureMeshWorkflow(const TextureMeshWorkflowOptions& options) {
-	ASSERT(IsOpen() && "No scene loaded");
-	ASSERT(!scene.mesh.IsEmpty() && "Mesh is empty");
-	ASSERT(!IsWorkflowRunning() && "A workflow is already running");
-
-	// Update options in scene
+	Layer* layer = GetActiveLayer();
+	if (layer == NULL || !layer->scene.IsValid() || layer->scene.mesh.IsEmpty() || HasBackgroundWork()) {
+		DEBUG("Cannot start Texture Mesh: an active mesh-and-image layer is required and no background work can be running");
+		return false;
+	}
 	textureOptions = options;
+	return StartWorkflow(WF_TEXTURE, *layer, new EVTWorkflowTextureMesh(this, layer->id, options));
+}
 
-	// Set workflow state
-	workflowState.store(WF_STATE_RUNNING);
-	currentWorkflowType.store(WF_TEXTURE);
-	workflowStartTime = glfwGetTime();
+bool Scene::RunBatchWorkflow(const std::vector<WorkflowType>& workflowTypes)
+{
+	if (workflowTypes.empty() || HasBackgroundWork() || GetActiveLayer() == NULL)
+		return false;
+	for (WorkflowType type : workflowTypes) {
+		if (type <= WF_NONE || type > WF_TEXTURE)
+			return false;
+	}
+	batchWorkflowQueue.assign(workflowTypes.begin(), workflowTypes.end());
+	batchWorkflowActive = true;
+	batchEstimateROIOptions = estimateROIOptions;
+	batchDensifyOptions = densifyOptions;
+	batchReconstructOptions = reconstructOptions;
+	batchRefineOptions = refineOptions;
+	batchTextureOptions = textureOptions;
+	if (StartNextBatchWorkflow())
+		return true;
+	batchWorkflowActive = false;
+	batchWorkflowQueue.clear();
+	return false;
+}
 
-	// Submit workflow event to queue for async execution
-	events.AddEvent(new EVTWorkflowTextureMesh(this));
-
-	DEBUG("Texture Mesh workflow started (async)");
-	return true;
+bool Scene::StartNextBatchWorkflow()
+{
+	if (batchWorkflowQueue.empty())
+		return false;
+	const WorkflowType type(batchWorkflowQueue.front());
+	batchWorkflowQueue.pop_front();
+	bool started = false;
+	switch (type) {
+	case WF_ESTIMATE_ROI: started = RunEstimateROIWorkflow(batchEstimateROIOptions); break;
+	case WF_DENSIFY: started = RunDensifyWorkflow(batchDensifyOptions); break;
+	case WF_RECONSTRUCT: started = RunReconstructMeshWorkflow(batchReconstructOptions); break;
+	case WF_REFINE: started = RunRefineMeshWorkflow(batchRefineOptions); break;
+	case WF_TEXTURE: started = RunTextureMeshWorkflow(batchTextureOptions); break;
+	default: break;
+	}
+	if (!started)
+		batchWorkflowQueue.clear();
+	return started;
 }
 
 MVS::IIndex Scene::ImageIdxMVS2Viewer(MVS::IIndex idx) const {
+	const Layer* layer = GetActiveLayer();
+	if (layer == NULL)
+		return NO_ID;
+	const ImageArr& images(layer->images);
 	// Convert MVS image index to viewer index
 	// The list of images in the viewer is a subset of the MVS images,
 	// more exactly only the valid images are stored in the viewer.
@@ -819,6 +1630,11 @@ MVS::IIndex Scene::ImageIdxMVS2Viewer(MVS::IIndex idx) const {
 
 void Scene::PrecomputeTrackBasedNeighbors() {
 	trackBasedNeighbors.clear();
+	Layer* layer = GetActiveLayer();
+	if (layer == NULL)
+		return;
+	const ImageArr& images(layer->images);
+	const MVS::Scene& scene(layer->scene);
 	trackBasedNeighbors.resize(images.size());
 	if (!scene.IsValid() || !scene.pointcloud.IsValid() || images.empty())
 		return;
@@ -870,7 +1686,6 @@ void Scene::PrecomputeTrackBasedNeighbors() {
 				const Point3f V2(otherImage.camera.C - Cast<REAL>(point));
 				stat.angleSum += ACOS(ComputeAngle(V1.ptr(), V2.ptr()));
 				++stat.sumCount;
-				// Compute scale ratio (footprint1 / footprint2)
 				const float footprint2 = otherImage.camera.GetFootprintImage(otherDepth);
 				stat.scaleSum += footprint1 / footprint2;
 			}
@@ -910,7 +1725,7 @@ void Scene::PrecomputeTrackBasedNeighbors() {
 			neighbor.score.angle = stat.sumCount > 0 ? stat.angleSum / stat.sumCount : 0.f;
 			neighbor.score.area = area;
 			neighbor.score.score = (float)stat.points*MAXF(area,0.01f);
-			neighbor.sharedPoints = stat.sharedPoints; // Store shared point indices
+			neighbor.sharedPoints = stat.sharedPoints;
 		}
 
 		neighbors.Sort([](const ViewScoreWithPoints& a, const ViewScoreWithPoints& b) {
@@ -921,8 +1736,10 @@ void Scene::PrecomputeTrackBasedNeighbors() {
 
 void Scene::CropToBounds()
 {
-	if (!IsOpen())
+	Layer* layer = GetActiveLayer();
+	if (layer == NULL)
 		return;
+	MVS::Scene& scene(layer->scene);
 	if (!scene.IsBounded())
 		return;
 	const size_t numPoints = scene.pointcloud.points.size();
@@ -931,14 +1748,17 @@ void Scene::CropToBounds()
 	scene.mesh.RemoveFacesOutside(scene.obb);
 	// Mark as modified if anything was removed
 	if (numPoints != scene.pointcloud.points.size() || numFaces != scene.mesh.faces.size())
-		geometryModified.store(true);
+		SetGeometryModified(true);
+	RefreshLayerState(*layer, false);
 	window.SetSceneBounds(scene.obb.GetCenter(), scene.obb.GetSize());
 }
 
 void Scene::TogleSceneBox()
 {
-	if (!IsOpen())
+	Layer* layer = GetActiveLayer();
+	if (layer == NULL)
 		return;
+	MVS::Scene& scene(layer->scene);
 	if (scene.IsBounded()) {
 		ClearBoundingBox();
 		return;
@@ -989,7 +1809,7 @@ void Scene::OnCenterScene(const Point3f& center) {
 }
 
 void Scene::OnCastRay(const Point2f& screenPos, const Ray3d& ray, int button, int action, int mods) {
-	if (!IsOpen())
+	if (!IsOpen() || HasBackgroundWork())
 		return;
 	const double timeClick(0.2);
 	const double timeDblClick(0.4);
@@ -1019,18 +1839,23 @@ void Scene::OnCastRay(const Point2f& screenPos, const Ray3d& ray, int button, in
 		}
 		const Window::SELECTION prevSelectionType = window.selectionType;
 		window.selectionType = Window::SEL_NA;
+		Window::SELECTION newSelectionType = Window::SEL_NA;
 		REAL minDist = REAL(FLT_MAX);
 		IDX newSelectionIdx = NO_IDX;
-		Point3f newSelectionPoints[4];
+		const Layer* previousActiveLayer = GetActiveLayer();
+		const uint32_t previousActiveLayerID = previousActiveLayer != NULL ? previousActiveLayer->id : NO_ID;
+		uint32_t newSelectionLayerID = previousActiveLayerID;
+		Point3f newSelectionPoints[4]{};
 		const Renderer::PickResult pickResult = window.GetRenderer().PickPrimitiveAt(screenPos, pickRadius, window);
 		if (pickResult.IsValid()) {
+			newSelectionLayerID = pickResult.layerID;
 			if (pickResult.isPoint) {
-				window.selectionType = Window::SEL_POINT;
+				newSelectionType = Window::SEL_POINT;
 				newSelectionIdx = pickResult.index;
 				newSelectionPoints[0] = pickResult.points[0];
 				minDist = norm(Point3f(ray.m_pOrig.cast<float>()) - pickResult.points[0]);
 			} else {
-				window.selectionType = Window::SEL_TRIANGLE;
+				newSelectionType = Window::SEL_TRIANGLE;
 				newSelectionIdx = pickResult.index;
 				newSelectionPoints[0] = pickResult.points[0];
 				newSelectionPoints[1] = pickResult.points[1];
@@ -1045,30 +1870,56 @@ void Scene::OnCastRay(const Point2f& screenPos, const Ray3d& ray, int button, in
 			}
 			newSelectionPoints[3] = ray.GetPoint(minDist).cast<float>();
 		}
-		// check for camera intersection
-		const TCone<REAL, 3> cone(ray, D2R(REAL(0.5)));
-		const TConeIntersect<REAL, 3> coneIntersect(cone);
-		FOREACH(idx, images) {
-			const Image& image = images[idx];
-			const MVS::Image& imageData = scene.images[image.idx];
-			ASSERT(imageData.IsValid());
-			REAL dist;
-			if (coneIntersect.Classify(imageData.camera.C, dist) == VISIBLE && dist < minDist) {
-				window.selectionType = Window::SEL_CAMERA;
-				minDist = dist;
-				newSelectionIdx = idx;
-				newSelectionPoints[0] = newSelectionPoints[3] = imageData.camera.C;
+		// Check for camera intersection only when camera geometry is visible.
+		if (window.showCameras) {
+			const TCone<REAL, 3> cone(ray, D2R(REAL(0.5)));
+			const TConeIntersect<REAL, 3> coneIntersect(cone);
+			const bool pickCompareRight = screenPos.x >= (float)window.GetCompareSplitX();
+			for (const Layer& layer : layers) {
+				if (!layer.visible || (window.IsCompareEnabled() && layer.compareRight != pickCompareRight))
+					continue;
+				FOREACH(idx, layer.images) {
+					const Image& image = layer.images[idx];
+					const MVS::Image& imageData = layer.scene.images[image.idx];
+					ASSERT(imageData.IsValid());
+					REAL dist;
+					if (coneIntersect.Classify(imageData.camera.C, dist) == VISIBLE && dist < minDist) {
+						newSelectionType = Window::SEL_CAMERA;
+						minDist = dist;
+						newSelectionIdx = idx;
+						newSelectionLayerID = layer.id;
+						newSelectionPoints[0] = newSelectionPoints[3] = imageData.camera.C;
+					}
+				}
 			}
 		}
 		// check if we have a new selection
-		if (window.selectionType != Window::SEL_NA) {
-			if (window.selectionType == Window::SEL_CAMERA && (mods & GLFW_MOD_ALT)) {
-				// If alt is pressed, set view camera mode
-				window.selectionType = prevSelectionType; // Restore previous selection type
+		if (newSelectionType != Window::SEL_NA) {
+			const bool selectionLayerChanged = previousActiveLayerID != newSelectionLayerID;
+			SetActiveLayerByID(newSelectionLayerID, false);
+			Layer* activeLayer = GetActiveLayer();
+			ASSERT(activeLayer != NULL && activeLayer->id == newSelectionLayerID);
+			const ImageArr& images(activeLayer->images);
+			MVS::Scene& scene(activeLayer->scene);
+			window.selectionType = newSelectionType;
+			if (newSelectionType == Window::SEL_CAMERA && (mods & GLFW_MOD_ALT)) {
+				// If alt is pressed, set view camera mode. Keep the previous selection only if it belongs to this layer.
+				window.selectionType = selectionLayerChanged ? Window::SEL_NA : prevSelectionType;
 				window.GetCamera().SetCameraViewMode(newSelectionIdx);
-			} else if (window.selectionType == Window::SEL_CAMERA && (mods & GLFW_MOD_CONTROL)) {
-				// If control is pressed, select neighbor camera
-				window.selectedNeighborCamera = newSelectionIdx;
+			} else if (newSelectionType == Window::SEL_CAMERA && (mods & GLFW_MOD_CONTROL)) {
+				// If control is pressed, select a neighbor camera when a primary camera is already selected in this layer.
+				const bool hasPrimaryCameraSelection = !selectionLayerChanged && prevSelectionType == Window::SEL_CAMERA && window.HasSelectionIds();
+				if (!hasPrimaryCameraSelection) {
+					window.SetSelectionId(newSelectionIdx);
+					window.selectedNeighborCamera = NO_ID;
+					window.selectionPoints[0] = newSelectionPoints[0];
+					window.selectionPoints[1] = newSelectionPoints[1];
+					window.selectionPoints[2] = newSelectionPoints[2];
+					window.selectionPoints[3] = newSelectionPoints[3];
+					window.selectionTime = now;
+				} else {
+					window.selectedNeighborCamera = newSelectionIdx;
+				}
 			} else {
 				// Normal selection
 				window.SetSelectionId(newSelectionIdx);
@@ -1081,7 +1932,7 @@ void Scene::OnCastRay(const Point2f& screenPos, const Ray3d& ray, int button, in
 			}
 			switch (window.selectionType) {
 			case Window::SEL_TRIANGLE: {
-				MVS::Mesh::Face face(IsWorkflowRunning() ? MVS::Mesh::Face() :  scene.mesh.faces[newSelectionIdx]);
+				const MVS::Mesh::Face& face(scene.mesh.faces[newSelectionIdx]);
 				DEBUG("Face selected:\n\tindex: %u\n\tvertex 1: %u (%g, %g, %g)\n\tvertex 2: %u (%g, %g, %g)\n\tvertex 3: %u (%g, %g, %g)",
 					newSelectionIdx,
 					face[0], newSelectionPoints[0].x, newSelectionPoints[0].y, newSelectionPoints[0].z,
@@ -1146,7 +1997,8 @@ void Scene::OnCastRay(const Point2f& screenPos, const Ray3d& ray, int button, in
 }
 
 void Scene::OnSetCameraViewMode(MVS::IIndex camID) {
-	if (!IsOpen() || camID >= images.size())
+	Layer* layer = GetActiveLayer();
+	if (layer == NULL || camID >= layer->images.size())
 		return;
 
 	// Save current camera state if entering camera view mode for the first time
@@ -1155,14 +2007,15 @@ void Scene::OnSetCameraViewMode(MVS::IIndex camID) {
 	window.GetCamera().SetCurrentCamID(camID);
 
 	// Get the Image from images and then access the MVS::Image via its index
-	Image& image = images[camID];
-	const MVS::Image& imageData = scene.images[image.idx];
+	Image& image = layer->images[camID];
+	const MVS::Image& imageData = layer->scene.images[image.idx];
 
 	// Load the image if not already loaded
 	if (!image.IsValid() && !image.IsImageLoading()) {
 		// Load image asynchronously
 		image.SetImageLoading();
-		events.AddEvent(new EVTLoadImage(this, camID, IMAGE_MAX_RESOLUTION));
+		pendingImageLoads.fetch_add(1);
+		events.AddEvent(new EVTLoadImage(this, layer->id, camID, IMAGE_MAX_RESOLUTION));
 	}
 
 	// Update camera with the scene data and viewport
@@ -1170,6 +2023,11 @@ void Scene::OnSetCameraViewMode(MVS::IIndex camID) {
 }
 
 void Scene::OnSelectPointsByCamera(bool highlightCameraVisiblePoints) {
+	Layer* layer = GetActiveLayer();
+	if (layer == NULL)
+		return;
+	MVS::Scene& scene(layer->scene);
+	ImageArr& images(layer->images);
 	if (!scene.pointcloud.IsValid() || scene.images.empty())
 		return;
 	SelectionController& selectionController = window.GetSelectionController();
@@ -1213,8 +2071,16 @@ void Scene::OnSelectPointsByCamera(bool highlightCameraVisiblePoints) {
 
 // Remove selected geometry (points and faces)
 void Scene::RemoveSelectedGeometry() {
+	if (HasBackgroundWork()) {
+		DEBUG("Cannot remove geometry while background work is running");
+		return;
+	}
 	if (!window.GetSelectionController().hasSelection())
 		return;
+	Layer* layer = GetActiveLayer();
+	if (layer == NULL)
+		return;
+	MVS::Scene& scene(layer->scene);
 
 	bool bDirtyScene = false;
 	SelectionController& selectionController = window.GetSelectionController();
@@ -1244,7 +2110,8 @@ void Scene::RemoveSelectedGeometry() {
 
 	// If any geometry was modified, update the scene
 	if (bDirtyScene) {
-		geometryModified.store(true);
+		SetGeometryModified(true);
+		RefreshLayerState(*layer, false);
 		window.UploadRenderData();
 	}
 }
@@ -1252,8 +2119,14 @@ void Scene::RemoveSelectedGeometry() {
 // Set the ROI (region of interest) based on the current selection
 //  - aabb: if true, use axis-aligned bounding box; if false, use oriented bounding box
 void Scene::SetROIFromSelection(bool aabb) {
-	if (!IsOpen())
+	if (HasBackgroundWork()) {
+		DEBUG("Cannot set ROI while background work is running");
 		return;
+	}
+	Layer* layer = GetActiveLayer();
+	if (layer == NULL)
+		return;
+	MVS::Scene& scene(layer->scene);
 
 	SelectionController& selectionController = window.GetSelectionController();
 	if (!selectionController.hasSelection())
@@ -1318,25 +2191,45 @@ void Scene::SetROIFromSelection(bool aabb) {
 // Centralizes the invariant: any code path that mutates scene.obb must refresh GPU
 // buffers and request a redraw. Call this from menu actions, workflows, and controllers.
 void Scene::ClearBoundingBox() {
-	if (!IsOpen())
+	if (HasBackgroundWork()) {
+		DEBUG("Cannot clear the bounding box while background work is running");
 		return;
+	}
+	Layer* layer = GetActiveLayer();
+	if (layer == NULL)
+		return;
+	MVS::Scene& scene(layer->scene);
 	scene.obb = OBB3f(true); // zero-extent => IsValid() == false
+	SetGeometryModified(true);
 	window.GetRenderer().UploadBounds(scene);
+	RefreshLayerState(*layer, false);
 	window.RequestRedraw();
 }
 
 // Replace the scene bounding box and refresh GPU buffers.
 // See ClearBoundingBox() for the rationale.
 void Scene::SetBoundingBox(const OBB3f& obb) {
-	if (!IsOpen())
+	if (HasBackgroundWork()) {
+		DEBUG("Cannot change the bounding box while background work is running");
 		return;
+	}
+	Layer* layer = GetActiveLayer();
+	if (layer == NULL)
+		return;
+	MVS::Scene& scene(layer->scene);
 	scene.obb = obb;
+	SetGeometryModified(true);
 	window.GetRenderer().UploadBounds(scene);
+	RefreshLayerState(*layer, false);
 	window.RequestRedraw();
 }
 
 // Crop scene to only images that see at least minPoints of the selected points
 MVS::Scene Scene::CropToPoints(const MVS::PointCloud::IndexArr& selectedPointIndices, unsigned minPoints) const {
+	const Layer* layer = GetActiveLayer();
+	if (layer == NULL)
+		return MVS::Scene();
+	const MVS::Scene& scene(layer->scene);
 	if (!scene.IsValid() || !scene.pointcloud.IsValid())
 		return MVS::Scene(); // Return empty scene
 

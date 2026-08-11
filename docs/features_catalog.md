@@ -787,18 +787,18 @@ OpenMVS is a comprehensive photogrammetry library implementing a complete pipeli
 ### Viewer Scene
 
 - **Files:** `apps/Viewer/Scene.h`, `apps/Viewer/Scene.cpp` (VIEWER namespace)
-- **Algorithms:** Top-level container wrapping `MVS::Scene`; `Open()`/`Save()`/`Export()`; async workflow state machine (IDLE→RUNNING→COMPLETED/FAILED); `CheckWorkflowCompletion()` / `FinalizeWorkflow()`; track-based neighbor precomputation; drag-and-drop handling
+- **Algorithms:** Top-level container wrapping `MVS::Scene`; multi-scene layer management (each layer owns its scene, images and appearance, addressed by stable layer IDs; per-layer visibility/solo/active); `AlignLayersToActive()` similarity alignment from camera centers matched by photo name then preserved SfM image ID; `Open()`/`Save()`/`Export()`; async workflow state machine (IDLE→RUNNING→COMPLETED/FAILED) operating on the active layer; `CheckWorkflowCompletion()` / `FinalizeWorkflow()`; track-based neighbor precomputation; drag-and-drop handling
 - **Dependencies:** MVS library
 
 ### Window and Event Loop
 
 - **Files:** `apps/Viewer/Window.h`, `apps/Viewer/Window.cpp`
-- **Algorithms:** GLFW window management; render-on-change via `glfwWaitEventsTimeout()`; `RequestRedraw()` event posting; delta time calculation; control mode switching (arcball/first-person/selection)
+- **Algorithms:** GLFW window management; render-on-change via `glfwWaitEventsTimeout()`; `RequestRedraw()` event posting; delta time calculation; control mode switching (arcball/first-person/selection); A|B compare view in swipe (shared full-window projection, scissor split) and split (two equal viewports, per-side projection) modes with synchronized or per-viewport cameras (input routed to the viewport under the cursor, side latched per drag)
 
 ### Renderer
 
 - **Files:** `apps/Viewer/Renderer.h`, `apps/Viewer/Renderer.cpp`
-- **Algorithms:** OpenGL 4.x rendering; point cloud, mesh (solid/wireframe/textured), camera frustums, image overlays, selection highlight; picker FBO with `R32UI` texture for primitive ID readback; sub-mesh partitioning by texture; 29 GLSL shaders
+- **Algorithms:** OpenGL 4.x rendering; point cloud, mesh (solid/wireframe/textured), camera frustums, image overlays, selection highlight; per-layer GPU buffer sub-ranges with a layer pass filter for compare-view draw subsets (no re-upload on side changes); picker FBO with `R32UI` texture for primitive ID readback, rasterized with the cursor side's camera in compare view; sub-mesh partitioning by texture; 29 GLSL shaders
 - **GPU Support:** Yes (OpenGL)
 
 ### Control Systems
@@ -809,7 +809,7 @@ OpenMVS is a comprehensive photogrammetry library implementing a complete pipeli
 ### UI
 
 - **Files:** `apps/Viewer/UI.h`, `apps/Viewer/UI.cpp`
-- **Algorithms:** ImGui with docking; workflow windows (Densify, ReconstructMesh, RefineMesh, TextureMesh, Batch); scene info, render settings, console overlay, performance overlay; auto-hiding menu bar
+- **Algorithms:** ImGui with docking; Layers panel (visibility/solo/active, compare off/swipe/split with A|B side assignment and camera sync, align-to-active); compare divider overlay (draggable in swipe mode); workflow windows (Densify, ReconstructMesh, RefineMesh, TextureMesh, Batch); scene info, render settings, console overlay, performance overlay; auto-hiding menu bar
 
 ---
 

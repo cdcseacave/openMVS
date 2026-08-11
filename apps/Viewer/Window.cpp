@@ -56,7 +56,10 @@ Window::Window()
 	, devicePixelRatio(1.0, 1.0)
 	, currentControlMode(CONTROL_ARCBALL)
 	, lastMousePos(0, 0)
+	, compareDragSide(-1)
+	, compareActiveSide(-1)
 	, lastFrame(0.0)
+	, closeConfirmed(false)
 	, selectionType(SEL_NA)
 	, selectedNeighborCamera(NO_ID)
 	, clearColor(0.3f, 0.4f, 0.5f, 1.f)
@@ -64,7 +67,6 @@ Window::Window()
 	, userFontScale(1.f)
 	, cameraSize(0.1f)
 	, uncertaintyEllipsoidScale(1.f)
-	, cameraDisplayColor(CAMERA_COLOR_SOLID)
 	, cameraDisplayType(CAMERA_DISPLAY_FRUSTUM)
 	, showCameraLookAt(true)
 	, pointSize(3.f)
@@ -79,8 +81,12 @@ Window::Window()
 	, showMeshTextured(true)
 	, showBounds(true)
 	, showUncertaintyEllipsoids(false)
+	, compareMode(COMPARE_DISABLED)
+	, compareSplitPos(0.5f)
+	, compareSyncCameras(true)
 	, pendingScreenshotIncludeUI(false)
 	, pendingScreenshotQuit(false)
+	, pendingScreenshotWarmupFrames(0)
 {
 }
 
@@ -179,13 +185,14 @@ bool Window::Initialize(const cv::Size& size, const String& windowTitle, Scene& 
 
 	// Initialize core systems
 	arcballControls = std::make_unique<ArcballControls>(camera);
+	arcballControlsB = std::make_unique<ArcballControls>(cameraB);
 	firstPersonControls = std::make_unique<FirstPersonControls>(camera);
 	selectionController = std::make_unique<SelectionController>(camera);
 	bboxEditController = std::make_unique<BoundingBoxEditController>(camera);
 	// Route every controller-driven OBB change through Scene::SetBoundingBox
 	// so GPU buffer refresh and redraw stay centralized in one place.
 	bboxEditController->setChangeCallback([this](const OBB3f& obb) {
-		if (GetScene().IsOpen())
+		if (GetScene().IsOpen() && !GetScene().HasBackgroundWork())
 			GetScene().SetBoundingBox(obb);
 	});
 	renderer = std::make_unique<Renderer>();
@@ -208,7 +215,8 @@ bool Window::Initialize(const cv::Size& size, const String& windowTitle, Scene& 
 
 	// Set up selection callback to automatically classify geometry when selection is completed
 	selectionController->setChangeCallback([&scene, this]() {
-		if (selectionController->hasSelectionPath()) {
+		const Scene::Layer* activeLayer(scene.GetActiveLayer());
+		if (!scene.HasBackgroundWork() && activeLayer != NULL && activeLayer->visible && selectionController->hasSelectionPath()) {
 			// Automatically classify geometry when selection is finished
 			if (!scene.GetScene().pointcloud.IsEmpty() && showPointCloud)
 				selectionController->classifyPointCloud(scene.GetScene().pointcloud, camera);
@@ -220,7 +228,7 @@ bool Window::Initialize(const cv::Size& size, const String& windowTitle, Scene& 
 
 	// Set up delete callback to remove selected geometry
 	selectionController->setDeleteCallback([&scene, this]() {
-		if (scene.IsWorkflowRunning()) {
+		if (scene.HasBackgroundWork()) {
 			DEBUG("Cannot remove geometry while workflow is running");
 			return;
 		}
@@ -229,7 +237,7 @@ bool Window::Initialize(const cv::Size& size, const String& windowTitle, Scene& 
 
 	// Set up ROI callback to set region of interest from selection
 	selectionController->setROICallback([&scene, this](bool aabb) {
-		if (scene.IsWorkflowRunning()) {
+		if (scene.HasBackgroundWork()) {
 			DEBUG("Cannot set ROI while workflow is running");
 			return;
 		}
@@ -248,8 +256,10 @@ void Window::Release() {
 		ui.reset();
 		renderer.reset();
 		arcballControls.reset();
+		arcballControlsB.reset();
 		firstPersonControls.reset();
 		selectionController.reset();
+		bboxEditController.reset();
 
 		// Destroy window and terminate GLFW
 		glfwDestroyWindow(window);
@@ -265,8 +275,13 @@ void Window::Release() {
 
 void Window::ResetView() {
 	camera.Reset();
-	currentControlMode = CONTROL_NONE;
-	SetControlMode(CONTROL_ARCBALL);
+	cameraB.Reset();
+	if (arcballControls) {
+		currentControlMode = CONTROL_NONE;
+		SetControlMode(CONTROL_ARCBALL);
+	} else {
+		currentControlMode = CONTROL_ARCBALL;
+	}
 	selectedNeighborCamera = NO_ID;
 	selectionType = SEL_NA;
 	selectionIdx.Release();
@@ -274,13 +289,34 @@ void Window::ResetView() {
 
 void Window::Reset() {
 	ResetView();
-	renderer->Reset();
+	if (selectionController)
+		selectionController->clearSelection();
+	meshSubMeshVisible.clear();
+	compareMode = COMPARE_DISABLED;
+	compareSyncCameras = true;
+	compareDragSide = -1;
+	compareActiveSide = -1;
+	if (renderer)
+		renderer->Reset();
 	SetTitle(_T("(empty)"));
 }
 
 void Window::Run() {
 	// Main loop
-	while (!ShouldClose()) {
+	while (true) {
+		if (ShouldClose()) {
+			if (GetScene().HasBackgroundWork()) {
+				glfwSetWindowShouldClose(window, GLFW_FALSE);
+				DEBUG("Cannot close Viewer while background work is running");
+				RequestAttention();
+			} else if (!closeConfirmed && GetScene().IsGeometryModified()) {
+				glfwSetWindowShouldClose(window, GLFW_FALSE);
+				ui->RequestSavePrompt();
+				RequestRedraw();
+			} else {
+				break;
+			}
+		}
 		// Update timing
 		const double deltaTime = UpdateTiming();
 
@@ -291,6 +327,8 @@ void Window::Run() {
 		switch (currentControlMode) {
 		case CONTROL_ARCBALL:
 			arcballControls->update(deltaTime);
+			if (IsCompareEnabled() && !compareSyncCameras)
+				arcballControlsB->update(deltaTime);
 			break;
 		case CONTROL_FIRST_PERSON:
 			firstPersonControls->update(deltaTime);
@@ -304,14 +342,19 @@ void Window::Run() {
 		}
 
 		#ifdef __APPLE__
-		// Check for files requested to open by Finder and open first
+		// Check for files requested to open by Finder
 		{
 			std::vector<std::string> pending;
 			OpenMVS_ConsumePendingOpenFiles(pending);
 			if (!pending.empty()) {
-				String filename(pending.front());
-				Util::ensureValidPath(filename);
-				GetScene().Open(filename);
+				std::vector<String> filenames;
+				filenames.reserve(pending.size());
+				for (const std::string& path : pending) {
+					String filename(path.c_str());
+					Util::ensureValidPath(filename);
+					filenames.emplace_back(std::move(filename));
+				}
+				GetScene().OpenFiles(filenames, false);
 			}
 		}
 		#endif
@@ -348,32 +391,16 @@ void Window::UploadRenderData() {
 	selectionType = SEL_NA;
 	selectionIdx.Release();
 
-	// Upload point cloud data if needed
-	if (!scene.GetScene().pointcloud.IsEmpty()) {
-		renderer->UploadPointCloud(scene.GetScene().pointcloud, pointNormalLength);
-		showPointCloud = true;
-	}
-
-	// Upload mesh data if needed
 	meshSubMeshVisible.clear();
-	if (!scene.GetScene().mesh.IsEmpty()) {
-		showMesh = true;
-		if (scene.GetScene().mesh.HasTexture())
-			showMeshTextured = true;
-		renderer->UploadMesh(scene.GetScene().mesh);
-		meshSubMeshVisible.assign(renderer->GetMeshSubMeshCount(), true);
-	}
-
-	// Upload cameras if visible, and
-	// upload image overlays for cameras with valid textures
-	if (!scene.GetScene().images.empty())
-		renderer->UploadCameras(*this);
+	renderer->UploadLayers(scene, *this);
+	meshSubMeshVisible.assign(renderer->GetMeshSubMeshCount(), true);
 
 	// Upload pose-uncertainty ellipsoids if loaded
 	renderer->UploadUncertaintyEllipsoids(*this);
 
 	// Upload bounds if available
-	renderer->UploadBounds(scene.GetScene());
+	if (scene.GetActiveLayer() != NULL)
+		renderer->UploadBounds(scene.GetActiveLayer()->scene);
 
 	// Request a redraw
 	RequestRedraw();
@@ -381,6 +408,17 @@ void Window::UploadRenderData() {
 
 void Window::Render() {
 	GL_DEBUG_SCOPE("Window::Render");
+	// Both compare-side arcballs use the same user-facing navigation settings.
+	arcballControlsB->setRadiusFactor(arcballControls->getRadiusFactor());
+	arcballControlsB->setSensitivity(arcballControls->getSensitivity());
+	arcballControlsB->setRotationSensitivity(arcballControls->getRotationSensitivity());
+	arcballControlsB->setZoomSensitivity(arcballControls->getZoomSensitivity());
+	arcballControlsB->setPanSensitivity(arcballControls->getPanSensitivity());
+	arcballControlsB->setEnableGizmos(arcballControls->getEnableGizmos());
+	arcballControlsB->setEnableGizmosCenter(arcballControls->getEnableGizmosCenter());
+
+	// Keep the compare cameras consistent with the current mode and active layer
+	UpdateCompareState();
 
 	// Enable depth testing
 	GL_CHECK(glEnable(GL_DEPTH_TEST));
@@ -392,46 +430,91 @@ void Window::Render() {
 	// Start UI frame
 	ui->NewFrame(*this);
 
+	// In split mode the main camera projects into the active-side viewport; scope
+	// main-camera overlays (selection rectangle, arcball gizmos) to it
+	const auto withMainCameraViewport = [this](auto&& draw) {
+		if (compareMode == COMPARE_SPLIT && GetScene().IsOpen() && GetScene().GetActiveLayer() != NULL) {
+			const cv::Rect viewport = GetCompareViewport(GetCompareActiveSide());
+			GL_CHECK(glViewport(viewport.x, viewport.y, viewport.width, viewport.height));
+			draw();
+			GL_CHECK(glViewport(0, 0, windowSize.width, windowSize.height));
+		} else
+			draw();
+	};
+
 	Scene& scene = GetScene();
 	if (scene.IsOpen()) {
-		// Render the scene contents
-		if (showPointCloud) {
-			renderer->RenderPointCloud(*this);
-			if (showPointCloudNormals)
-				renderer->RenderPointCloudNormals(*this);
-		}
-		if (showMesh)
-			renderer->RenderMesh(*this);
-
-		// Render cameras and selection highlights
-		if (showCameras)
-			renderer->RenderCameras(*this);
-		if (showUncertaintyEllipsoids)
-			renderer->RenderUncertaintyEllipsoids(*this);
-		renderer->RenderSelection(*this);
-		renderer->RenderSelectedGeometry(*this);
-
-		// Render bounds if visible and available
-		if (showBounds)
-			renderer->RenderBounds();
-
-		// Render the interactive bounding-box edit gizmos while edit mode is active
-		if (currentControlMode == CONTROL_BBOX_EDIT && GetScene().IsOpen()) {
-			const OBB3f& editOBB = bboxEditController->getOBB();
-			if (editOBB.IsValid()) {
-				renderer->RenderBoundingBoxGizmos(
-					editOBB,
-					bboxEditController->getHoverCornerIdx(),
-					bboxEditController->getHoverFaceIdx(),
-					bboxEditController->getHoverAxisIdx());
+		// One 3D scene pass; active-layer extras (selection, bounds, gizmos, image overlay)
+		// are drawn only in the pass that shows the active layer.
+		const auto renderScenePass = [this](bool renderActiveLayerExtras) {
+			if (showPointCloud) {
+				renderer->RenderPointCloud(*this);
+				if (showPointCloudNormals)
+					renderer->RenderPointCloudNormals(*this);
 			}
+			if (showMesh)
+				renderer->RenderMesh(*this);
+			if (showCameras)
+				renderer->RenderCameras(*this);
+			if (showUncertaintyEllipsoids)
+				renderer->RenderUncertaintyEllipsoids(*this);
+			if (!renderActiveLayerExtras)
+				return;
+			renderer->RenderSelection(*this);
+			renderer->RenderSelectedGeometry(*this);
+			if (showBounds)
+				renderer->RenderBounds();
+			// Render the interactive bounding-box edit gizmos while edit mode is active
+			if (currentControlMode == CONTROL_BBOX_EDIT) {
+				const OBB3f& editOBB = bboxEditController->getOBB();
+				if (editOBB.IsValid()) {
+					renderer->RenderBoundingBoxGizmos(
+						editOBB,
+						bboxEditController->getHoverCornerIdx(),
+						bboxEditController->getHoverFaceIdx(),
+						bboxEditController->getHoverAxisIdx());
+				}
+			}
+			// Render image overlay when in camera view mode
+			renderer->RenderImageOverlays(*this);
+		};
+		const Scene::Layer* activeLayer = scene.GetActiveLayer();
+		if (IsCompareEnabled() && activeLayer != NULL) {
+			// A|B compare: each pass draws only one side's layers. In swipe mode both
+			// passes share the full-window projection and differ only by the scissor
+			// rectangle, so aligned scenes match pixel-exact across the divider; in
+			// split mode each side renders into its own half-window viewport with its
+			// own projection. The side cameras are the same object while camera
+			// synchronization is on, so the views cannot drift apart.
+			const int splitX = GetCompareSplitX();
+			const int activeSide = GetCompareActiveSide();
+			std::vector<uint32_t> sideLayers[2];
+			for (const Scene::Layer& layer : scene.GetLayers())
+				if (layer.visible)
+					sideLayers[layer.compareRight ? 1 : 0].push_back(layer.id);
+			GL_CHECK(glEnable(GL_SCISSOR_TEST));
+			for (int side = 0; side < 2; ++side) {
+				if (sideLayers[side].empty())
+					continue; // an empty filter would mean "draw all layers"
+				if (compareMode == COMPARE_SPLIT) {
+					const cv::Rect viewport = GetCompareViewport(side);
+					GL_CHECK(glViewport(viewport.x, viewport.y, viewport.width, viewport.height));
+				}
+				GL_CHECK(glScissor(side == 0 ? 0 : splitX, 0, side == 0 ? splitX : windowSize.width - splitX, windowSize.height));
+				renderer->UpdateViewProjection(GetSideCamera(side));
+				renderer->SetLayerPassFilter(std::move(sideLayers[side]));
+				renderScenePass(side == activeSide);
+			}
+			renderer->ClearLayerPassFilter();
+			GL_CHECK(glDisable(GL_SCISSOR_TEST));
+			GL_CHECK(glViewport(0, 0, windowSize.width, windowSize.height));
+			renderer->UpdateViewProjection(camera); // restore the main camera for the overlays
+		} else {
+			renderScenePass(true);
 		}
-
-		// Render image overlay when in camera view mode
-		renderer->RenderImageOverlays(*this);
 
 		// Render 2D selection overlay (after all 3D rendering, before UI)
-		renderer->RenderSelectionOverlay(*this);
+		withMainCameraViewport([&] { renderer->RenderSelectionOverlay(*this); });
 
 		// Flush pending screenshot if requested (without UI): capture after every
 		// 3D layer so the screenshot-show flags (cameras, bounds, ...) take effect
@@ -439,36 +522,54 @@ void Window::Render() {
 			CaptureScreenshot(pendingScreenshotPath);
 			pendingScreenshotPath.clear();
 			if (pendingScreenshotQuit)
-				glfwSetWindowShouldClose(window, GLFW_TRUE);
+				ConfirmClose();
 		}
 
-		// Show scene information
-		ui->ShowSceneInfo(*this);
-
-		// Show camera controls
-		ui->ShowCameraControls(*this);
-
-		// Show selection controls
-		ui->ShowSelectionControls(*this);
-
-		// Show render settings
-		ui->ShowRenderSettings(*this);
-
-		// Show bounding-box editor
-		ui->ShowBoundingBoxControls(*this);
-		ui->ShowWorkflowWindows(*this);
+		if (!scene.HasBackgroundWork()) {
+			// Scene-dependent panels must not inspect or re-upload geometry while a worker mutates it.
+			ui->ShowSceneInfo(*this);
+			ui->ShowCameraControls(*this);
+			ui->ShowSelectionControls(*this);
+			ui->ShowRenderSettings(*this);
+			ui->ShowBoundingBoxControls(*this);
+			ui->ShowWorkflowWindows(*this);
+		}
 	}
 
 	// Show UI
 	ui->ShowMainMenuBar(*this);
 
-	// Render gizmos or coordinate axes
-	if (currentControlMode == CONTROL_ARCBALL && arcballControls && arcballControls->getEnableGizmos()) {
-		// Render arcball gizmos instead of coordinate axes
-		renderer->RenderArcballGizmos(camera, *arcballControls);
+	// Render a navigation indicator for each split viewport. Arcball gizmos are
+	// also clipped per side in swipe mode, making independently controlled camera
+	// orientations visible without duplicating the corner-based axes widget.
+	const auto renderNavigationIndicator = [this](int side) {
+		const Camera& sideCamera(GetSideCamera(side));
+		if (currentControlMode == CONTROL_ARCBALL && arcballControls->getEnableGizmos())
+			renderer->RenderArcballGizmos(sideCamera, GetSideArcballControls(side));
+		else
+			renderer->RenderCoordinateAxes(sideCamera);
+	};
+	const bool renderEachCompareSide =
+		IsCompareEnabled() && scene.IsOpen() &&
+		(compareMode == COMPARE_SPLIT ||
+		 (currentControlMode == CONTROL_ARCBALL && arcballControls->getEnableGizmos()));
+	if (renderEachCompareSide) {
+		const int splitX = GetCompareSplitX();
+		GL_CHECK(glEnable(GL_SCISSOR_TEST));
+		for (int side = 0; side < 2; ++side) {
+			if (compareMode == COMPARE_SPLIT) {
+				const cv::Rect viewport = GetCompareViewport(side);
+				GL_CHECK(glViewport(viewport.x, viewport.y, viewport.width, viewport.height));
+			}
+			GL_CHECK(glScissor(side == 0 ? 0 : splitX, 0, side == 0 ? splitX : windowSize.width - splitX, windowSize.height));
+			renderer->UpdateViewProjection(GetSideCamera(side));
+			renderNavigationIndicator(side);
+		}
+		GL_CHECK(glDisable(GL_SCISSOR_TEST));
+		GL_CHECK(glViewport(0, 0, windowSize.width, windowSize.height));
+		renderer->UpdateViewProjection(camera);
 	} else {
-		// Even when no scene is loaded, render coordinate axes as a visual indicator
-		renderer->RenderCoordinateAxes(camera);
+		renderNavigationIndicator(GetCompareActiveSide());
 	}
 
 	// Render UI
@@ -476,10 +577,15 @@ void Window::Render() {
 
 	// Flush pending screenshot if requested (with UI)
 	if (!pendingScreenshotPath.empty()) {
-		CaptureScreenshot(pendingScreenshotPath);
-		pendingScreenshotPath.clear();
-		if (pendingScreenshotQuit)
-			glfwSetWindowShouldClose(window, GLFW_TRUE);
+		if (pendingScreenshotWarmupFrames > 0) {
+			--pendingScreenshotWarmupFrames;
+			RequestRedraw();
+		} else {
+			CaptureScreenshot(pendingScreenshotPath);
+			pendingScreenshotPath.clear();
+			if (pendingScreenshotQuit)
+				ConfirmClose();
+		}
 	}
 
 	// End frame
@@ -508,6 +614,13 @@ void Window::SetVisible(bool visible) {
 	}
 }
 
+void Window::ConfirmClose()
+{
+	closeConfirmed = true;
+	if (window)
+		glfwSetWindowShouldClose(window, GLFW_TRUE);
+}
+
 void Window::RequestAttention() {
 	if (window)
 		glfwRequestWindowAttention(window);
@@ -520,8 +633,93 @@ void Window::Focus() {
 
 void Window::SetSceneBounds(const Point3f& center, const Point3f& size) {
 	camera.SetSceneBounds(center, size);
+	cameraB.SetSceneBounds(center, size);
 	arcballControls->setSensitivity(norm(size) * 0.1);
+	arcballControlsB->setSensitivity(norm(size) * 0.1);
 	firstPersonControls->setMovementSpeed(norm(size) * 0.1);
+}
+
+// Divider position in framebuffer pixels (fixed at the middle in split mode,
+// draggable in swipe mode)
+int Window::GetCompareSplitX() const {
+	return CLAMP(ROUND2INT(compareSplitPos * (float)windowSize.width), 1, windowSize.width - 1);
+}
+
+// Viewport rectangle of a compare side in framebuffer pixels; outside split mode
+// both sides cover the full window (the swipe divider only scissors the draw)
+cv::Rect Window::GetCompareViewport(int side) const {
+	if (compareMode != COMPARE_SPLIT)
+		return cv::Rect(0, 0, windowSize.width, windowSize.height);
+	const int splitX = GetCompareSplitX();
+	return side == 0 ?
+		cv::Rect(0, 0, splitX, windowSize.height) :
+		cv::Rect(splitX, 0, windowSize.width - splitX, windowSize.height);
+}
+
+int Window::GetCompareActiveSide() const {
+	const Scene::Layer* activeLayer = GetScene().GetActiveLayer();
+	return activeLayer != NULL && activeLayer->compareRight ? 1 : 0;
+}
+
+int Window::GetCompareSideAt(double xpos) const {
+	if (!IsCompareEnabled())
+		return 0;
+	return xpos * devicePixelRatio.x() >= (double)GetCompareSplitX() ? 1 : 0;
+}
+
+Camera& Window::GetSideCamera(int side) {
+	if (!IsCompareEnabled() || compareSyncCameras || side == GetCompareActiveSide())
+		return camera;
+	return cameraB;
+}
+
+const Camera& Window::GetSideCamera(int side) const {
+	return const_cast<Window*>(this)->GetSideCamera(side);
+}
+
+ArcballControls& Window::GetSideArcballControls(int side) {
+	return &GetSideCamera(side) == &cameraB ? *arcballControlsB : *arcballControls;
+}
+
+// Toggle synchronized camera movement; unsynchronizing hands the current view to
+// the other side's camera so both sides start from the same view
+void Window::SetCompareSyncCameras(bool sync) {
+	if (compareSyncCameras == sync)
+		return;
+	compareSyncCameras = sync;
+	if (!sync) {
+		cameraB.CopyViewFrom(camera);
+		arcballControlsB->reset();
+	}
+	compareDragSide = -1;
+	RequestRedraw();
+}
+
+void Window::UpdateCompareState() {
+	if (!IsCompareEnabled() || !GetScene().IsOpen() || GetScene().GetActiveLayer() == NULL) {
+		if (camera.GetSize() != windowSize)
+			camera.SetSize(windowSize);
+		compareActiveSide = -1;
+		return;
+	}
+	const int activeSide = GetCompareActiveSide();
+	if (!compareSyncCameras && compareActiveSide != -1 && compareActiveSide != activeSide) {
+		// The main camera always renders the active side; when the active layer
+		// switches sides, swap the poses so both views stay visually in place.
+		Camera prevCamera;
+		prevCamera.CopyViewFrom(camera);
+		camera.CopyViewFrom(cameraB);
+		cameraB.CopyViewFrom(prevCamera);
+	}
+	compareActiveSide = activeSide;
+	if (compareMode == COMPARE_SPLIT) {
+		compareSplitPos = 0.5f; // equal-size viewports
+		camera.SetSize(GetCompareViewport(activeSide).size());
+		cameraB.SetSize(GetCompareViewport(1 - activeSide).size());
+	} else {
+		camera.SetSize(windowSize);
+		cameraB.SetSize(windowSize);
+	}
 }
 
 // Request an off-screen screenshot to be saved by the renderer on the next
@@ -532,6 +730,7 @@ void Window::RequestScreenshot(const String& filename, bool includeUI, bool quit
 	pendingScreenshotPath = filename;
 	pendingScreenshotIncludeUI = includeUI;
 	pendingScreenshotQuit = quitAfter;
+	pendingScreenshotWarmupFrames = includeUI ? 1u : 0u;
 	RequestRedraw();
 }
 
@@ -612,13 +811,20 @@ void Window::HandleMouseMove(double xpos, double ypos) {
 	if (ui->WantCaptureMouse())
 		return;
 
-	// Normalize mouse position to [-1, 1] range
-	Eigen::Vector2d normalizedPos = NormalizeMousePos(xpos, ypos);
+	// While a drag is in progress the side latched at button-press keeps receiving
+	// the input, so crossing the divider does not switch cameras mid-drag; only
+	// arcball navigation is routed per side, the other modes always operate on the
+	// active layer through the main camera
+	const int side = compareDragSide != -1 ? compareDragSide : GetCompareSideAt(xpos);
+	const int controlSide = currentControlMode == CONTROL_ARCBALL ? side : GetCompareActiveSide();
+
+	// Normalize mouse position to [-1, 1] range inside the side's viewport
+	Eigen::Vector2d normalizedPos = NormalizeMousePos(xpos, ypos, controlSide);
 
 	// Pass to active control system
 	switch (currentControlMode) {
 	case CONTROL_ARCBALL:
-		arcballControls->handleMouseMove(normalizedPos);
+		GetSideArcballControls(side).handleMouseMove(normalizedPos);
 		break;
 	case CONTROL_FIRST_PERSON:
 		firstPersonControls->handleMouseMove(normalizedPos);
@@ -643,12 +849,28 @@ void Window::HandleMouseButton(int button, int action, int mods) {
 	// Normalize current mouse position
 	double xpos, ypos;
 	glfwGetCursorPos(window, &xpos, &ypos);
-	Eigen::Vector2d normalizedPos = NormalizeMousePos(xpos, ypos);
+
+	// Latch the compare side receiving this drag at button-press and release the
+	// latch once no mouse button remains held
+	const int cursorSide = GetCompareSideAt(xpos);
+	if (action == GLFW_PRESS && compareDragSide == -1)
+		compareDragSide = cursorSide;
+	const int side = compareDragSide != -1 ? compareDragSide : cursorSide;
+	if (action == GLFW_RELEASE &&
+		glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_RELEASE &&
+		glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_RELEASE &&
+		glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_MIDDLE) == GLFW_RELEASE)
+		compareDragSide = -1;
+
+	// Only arcball navigation is routed per side, the other modes always operate
+	// on the active layer through the main camera
+	const int controlSide = currentControlMode == CONTROL_ARCBALL ? side : GetCompareActiveSide();
+	Eigen::Vector2d normalizedPos = NormalizeMousePos(xpos, ypos, controlSide);
 
 	// Pass to active control system
 	switch (currentControlMode) {
 	case CONTROL_ARCBALL:
-		arcballControls->handleMouseButton(button, action, normalizedPos);
+		GetSideArcballControls(side).handleMouseButton(button, action, normalizedPos);
 		break;
 	case CONTROL_FIRST_PERSON:
 		firstPersonControls->handleMouseButton(button, action, normalizedPos);
@@ -662,8 +884,8 @@ void Window::HandleMouseButton(int button, int action, int mods) {
 		break;
 	}
 
-	// Handle raycast on click
-	Ray3d ray = camera.GetPickingRay(normalizedPos);
+	// Handle raycast on click: cast through the camera of the viewport under the cursor
+	Ray3d ray = GetSideCamera(cursorSide).GetPickingRay(NormalizeMousePos(xpos, ypos, cursorSide));
 	// Convert logical window cursor coords to framebuffer pixel coords using devicePixelRatio
 	Point2f screenPos(
 		static_cast<float>(xpos * devicePixelRatio.x()),
@@ -676,10 +898,15 @@ void Window::HandleScroll(double yoffset) {
 	if (ui->WantCaptureMouse())
 		return;
 
+	// Zoom the camera of the viewport under the cursor
+	double xpos, ypos;
+	glfwGetCursorPos(window, &xpos, &ypos);
+	const int side = compareDragSide != -1 ? compareDragSide : GetCompareSideAt(xpos);
+
 	// Pass to active control system
 	switch (currentControlMode) {
 	case CONTROL_ARCBALL:
-		arcballControls->handleScroll(yoffset);
+		GetSideArcballControls(side).handleScroll(yoffset);
 		break;
 	case CONTROL_FIRST_PERSON:
 		firstPersonControls->handleScroll(yoffset);
@@ -777,12 +1004,14 @@ void Window::HandleKeyboard(int key, int action, int mods) {
 				if (mods & GLFW_MOD_SUPER) {
 				#else
 				if (mods & GLFW_MOD_CONTROL) {
-				#endif
+					#endif
+					if (GetScene().HasBackgroundWork())
+						break;
 					// Ctrl+O - Open file
 					SetVisible(false);
-					String filename, geometryFilename;
-					if (ui->ShowOpenFileDialog(filename, geometryFilename))
-						GetScene().Open(filename, geometryFilename);
+					std::vector<String> filenames;
+					if (ui->ShowOpenFileDialog(filenames) && ui->ConfirmDiscardChanges(GetScene(), "open another scene"))
+						GetScene().OpenFiles(filenames, true);
 					SetVisible(true);
 				}
 				break;
@@ -792,7 +1021,9 @@ void Window::HandleKeyboard(int key, int action, int mods) {
 				if (mods & GLFW_MOD_SUPER) {
 				#else
 				if (mods & GLFW_MOD_CONTROL) {
-				#endif
+					#endif
+					if (GetScene().HasBackgroundWork())
+						break;
 					if (mods & GLFW_MOD_SHIFT) {
 						// Ctrl+Shift+S - Save As
 						SetVisible(false);
@@ -829,6 +1060,12 @@ void Window::HandleKeyboard(int key, int action, int mods) {
 			case GLFW_KEY_RIGHT:
 				camera.NextCamera();
 				break;
+			case GLFW_KEY_LEFT_BRACKET:
+				GetScene().ActivateNextLayer(-1);
+				return;
+			case GLFW_KEY_RIGHT_BRACKET:
+				GetScene().ActivateNextLayer(1);
+				return;
 
 			// Help dialog
 			case GLFW_KEY_F1:
@@ -910,31 +1147,19 @@ void Window::HandleKeyboard(int key, int action, int mods) {
 
 void Window::HandleFileDrop(int count, const char** paths) {
 	if (count > 0) {
-		// Handle first dropped file
-		String filename(paths[0]);
-		Util::ensureValidPath(filename);
-		// Check file extension to determine if it's a scene or geometry file
-		String ext = Util::getFileExt(filename).ToLower();
-		if (ext == ".mvs" || ext == ".sfm" || ext == ".dmap") {
-			// Scene file
-			String geometryFilename;
-			if (count > 1) {
-				// Use second dropped file as geometry file if available
-				geometryFilename = String(paths[1]);
-				Util::ensureValidPath(geometryFilename);
-			}
-			GetScene().Open(filename, geometryFilename);
-		} else if (ext == ".ply" || ext == ".obj" || ext == ".off" || ext == ".gltf" || ext == ".glb") {
-			// Geometry file
-			GetScene().Open(filename, "");
-		} else {
-			DEBUG("Unsupported file format: %s", ext.c_str());
+		std::vector<String> filenames;
+		filenames.reserve(count);
+		for (int i = 0; i < count; ++i) {
+			String filename(paths[i]);
+			Util::ensureValidPath(filename);
+			filenames.emplace_back(std::move(filename));
 		}
+		GetScene().OpenFiles(filenames, false);
 	}
 }
 
 bool Window::CaptureScreenshot(const String& filename) {
-	const cv::Size& size = camera.GetSize();
+	const cv::Size& size = windowSize;
 	if (size.empty()) {
 		DEBUG("error: invalid framebuffer size for screenshot");
 		return false;
@@ -970,32 +1195,34 @@ void Window::UpdateDevicePixelRatio() {
 	}
 
 	// Get logical window size and framebuffer size
-	cv::Size windowSize, size;
-	glfwGetWindowSize(window, &windowSize.width, &windowSize.height);
-	glfwGetFramebufferSize(window, &size.width, &size.height);
+	cv::Size logicalSize;
+	glfwGetWindowSize(window, &logicalSize.width, &logicalSize.height);
+	glfwGetFramebufferSize(window, &windowSize.width, &windowSize.height);
 
 	// Calculate device pixel ratio (scale factor)
-	devicePixelRatio.x() = (windowSize.width > 0 ? static_cast<double>(size.width) / static_cast<double>(windowSize.width) : 1.0);
-	devicePixelRatio.y() = (windowSize.height > 0 ? static_cast<double>(size.height) / static_cast<double>(windowSize.height) : 1.0);
+	devicePixelRatio.x() = (logicalSize.width > 0 ? static_cast<double>(windowSize.width) / static_cast<double>(logicalSize.width) : 1.0);
+	devicePixelRatio.y() = (logicalSize.height > 0 ? static_cast<double>(windowSize.height) / static_cast<double>(logicalSize.height) : 1.0);
 
 	// Set initial viewport to match framebuffer size
-	GL_CHECK(glViewport(0, 0, size.width, size.height));
+	GL_CHECK(glViewport(0, 0, windowSize.width, windowSize.height));
 
-	// Set initial camera size
-	camera.SetSize(size);
+	// Set initial camera sizes (UpdateCompareState re-applies the per-mode
+	// viewport sizes before the next frame is rendered)
+	camera.SetSize(windowSize);
+	cameraB.SetSize(windowSize);
 
 	DEBUG("Framebuffer size changed: %dx%d (window size: %dx%d)",
-		size.width, size.height, windowSize.width, windowSize.height);
+		windowSize.width, windowSize.height, logicalSize.width, logicalSize.height);
 }
 
-Eigen::Vector2d Window::NormalizeMousePos(double x, double y) const {
-	// Convert mouse coordinates from logical window coordinates to framebuffer coordinates
-	double framebufferX = x * devicePixelRatio.x();
-	double framebufferY = y * devicePixelRatio.y();
-
-	// Convert from framebuffer coordinates to normalized coordinates [-1, 1]
-	double normalizedX = (2.0 * framebufferX) / GetSize().width - 1.0;
-	double normalizedY = 1.0 - (2.0 * framebufferY) / GetSize().height;
+// Normalize a mouse position to [-1, 1] inside the given compare side's viewport
+// (the full window unless the split view is active)
+Eigen::Vector2d Window::NormalizeMousePos(double x, double y, int side) const {
+	const cv::Rect viewport = GetCompareViewport(side);
+	const double framebufferX = x * devicePixelRatio.x();
+	const double framebufferY = y * devicePixelRatio.y();
+	const double normalizedX = (2.0 * (framebufferX - viewport.x)) / viewport.width - 1.0;
+	const double normalizedY = 1.0 - (2.0 * framebufferY) / viewport.height;
 	return Eigen::Vector2d(normalizedX, normalizedY);
 }
 

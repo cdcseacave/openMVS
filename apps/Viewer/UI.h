@@ -42,6 +42,7 @@ class Window;
 
 class UI {
 private:
+	bool initialized;
 	String iniPath;
 
 	bool showSceneInfo;
@@ -54,6 +55,7 @@ private:
 	bool showWorkflowOverlay;
 	bool showViewportOverlay;
 	bool showSelectionOverlay;
+	bool showLayersPanel;
 	bool showAboutDialog;
 	bool showHelpDialog;
 	bool showExportDialog;
@@ -104,6 +106,8 @@ public:
 	void ShowSelectionControls(Window& window);
 	void ShowRenderSettings(Window& window);
 	void ShowBoundingBoxControls(Window& window);
+	void ShowLayersPanel(Window& window);
+	void ShowCompareDivider(Window& window); // A|B split view divider (draggable) + side labels
 	void ShowConsoleOverlay(Window& window);
 	void ShowPerformanceOverlay(Window& window);
 	void ShowWorkflowOverlay(Window& window);
@@ -118,6 +122,8 @@ public:
 	void ToggleSelectionDialog() { showSelectionDialog = !showSelectionDialog; }
 	void ToggleRenderSettings() { showRenderSettings = !showRenderSettings; }
 	void ToggleBoundingBoxControls() { showBoundingBoxControls = !showBoundingBoxControls; }
+	void ToggleLayersPanel() { showLayersPanel = !showLayersPanel; }
+	void RequestSavePrompt() { showSavePromptDialog = true; }
 	void SetSelectionControls(bool v) { showSelectionControls = v; }
 	void SetUserFontScale(float scale);
 
@@ -128,11 +134,13 @@ public:
 	void ShowCameraInfoDialog(Window& window);
 	void ShowSelectionDialog(Window& window);
 	void ShowSavePromptDialog(Window& window);
-	void PromptOpenPoseQualityReport(Window& window); // prompt for and load a pose-quality CSV onto the open scene
-	static bool ShowOpenFileDialog(String& filename, String& geometryFilename);
+	void PromptOpenPoseQualityReport(Window& window); // prompt for and load a pose-quality CSV onto the active layer
+	static bool ShowOpenFileDialog(std::vector<String>& filenames);
 	static bool ShowSaveFileDialog(String& filename);
 	static bool ShowSaveImageDialog(String& filename);
 	static bool ShowOpenPoseQualityDialog(String& filename);
+	static bool ConfirmDiscardChanges(const Scene& scene, const char* action);
+	static bool ConfirmDiscardLayer(const Scene& scene, size_t layerIndex);
 
 	// Input handling
 	void RecordLog(const String& msg);
