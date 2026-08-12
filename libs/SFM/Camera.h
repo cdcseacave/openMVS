@@ -180,8 +180,8 @@ public:
 	// Control flag for additional distortion
 	bool useAdditionalDistortion;  // enable k4, k5, k6 (default: false)
 
-	// Trust intrinsics validity
-	bool trustIntrinsics;
+	// Trust intrinsics validity (default: not trusted, creators must opt in)
+	bool trustIntrinsics = false;
 
 public:
 	PinholeCamera()

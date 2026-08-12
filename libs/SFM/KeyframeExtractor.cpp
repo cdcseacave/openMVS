@@ -547,6 +547,8 @@ bool ExtractFromVideo(const String& videoPath, const KeyframeConfig& config, Sce
 		PinholeCamera* pPinholeCamera = new PinholeCamera(cv::Size(frameWidth, frameHeight),
 		                                                  focalLength, focalLength,
 		                                                  ppX, ppY);
+		// only a user-provided focal is trusted; the guessed one stays untrusted (default)
+		// so that the two-view/triplet auto-calibration below is allowed to refine it
 		if (config.focalLength > 0)
 			pPinholeCamera->trustIntrinsics = true;
 		DEBUG("Camera intrinsics: f %.2f, pp (%.2f, %.2f) %s",

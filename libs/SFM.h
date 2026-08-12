@@ -49,6 +49,7 @@
 
 // Interface to external formats/tools
 #include "SFM/InterfaceMVS.h"
+#include "SFM/PoseIO.h"
 #include "SFM/ImportCOLMAP.h"
 #include "SFM/ImportROMA2.h"
 
@@ -58,4 +59,3 @@
 // S T R U C T S ///////////////////////////////////////////////////
 
 #endif // _SFM_H_
-

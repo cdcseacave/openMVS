@@ -22,7 +22,7 @@ env:
   BUILD_DIR: make
   CTEST_OUTPUT_ON_FAILURE: 1
   VCPKG_FEATURE_FLAGS: manifests,binarycaching,registries
-  VCPKG_COMMIT: '56bb2411609227288b70117ead2c47585ba07713'
+  VCPKG_COMMIT: '9e593bb18ea69cc5095e012465dcd675a822ed0d'
 
 defaults:
   run:

@@ -120,6 +120,14 @@ int main(int argc, LPCTSTR* argv)
 		// Run SFM smoke tests
 		if (!SFM::TestSimilarityTransform())
 			return EXIT_FAILURE;
+		if (!SFM::KnownPosesImportTest())
+			return EXIT_FAILURE;
+		if (!SFM::KnownPosePairSelectionTest())
+			return EXIT_FAILURE;
+		if (!SFM::AlignToPriorPosesTest())
+			return EXIT_FAILURE;
+		if (!SFM::AlignToPriorPosesCollinearTest())
+			return EXIT_FAILURE;
 		if (!SFM::AlignToGPSDegenerateTest())
 			return EXIT_FAILURE;
 		if (!SFM::PairsWeightingTest())

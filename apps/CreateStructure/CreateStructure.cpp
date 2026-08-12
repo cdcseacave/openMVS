@@ -49,7 +49,9 @@ String strSource;
 String strOutputFileName;
 String strOutputFileNameMVS;
 String strDetectorType;
-String strImportPosesCSV;
+String strImportPosesFile;
+String strKnownPosesConvention;
+FramesConvention knownPosesConvention;
 String strExportPosesCSV;
 String strExportPoseQuality;
 String strImportOpenMVGDir;
@@ -61,7 +63,7 @@ int matchMode;
 unsigned importPosesMode;
 unsigned matchSequenceOverlap;
 unsigned maxPairsPerImage;
-unsigned expandPairsTopK;
+bool matchVerificationFeedback;
 bool releaseDescriptors;
 bool matchImagesOnly;
 float defaultFocalRatio;
@@ -129,10 +131,11 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("output-file,o", boost::program_options::value<std::string>(&OPT::strOutputFileName), "output scene file path")
 		("export-mvs", boost::program_options::value<std::string>(&OPT::strOutputFileNameMVS), "output MVS file path (optional)")
 		("detector-type,t", boost::program_options::value<std::string>(&OPT::strDetectorType)->default_value(FeatureTypeToString(FeatureType::DEFAULT)), "feature detector type: AKAZE, ORB, SIFT or SIFTGPU")
-		("import-poses-csv", boost::program_options::value<std::string>(&OPT::strImportPosesCSV)->default_value("poses.csv"), "import camera poses from CSV file (optional)")
+		("import-poses-file", boost::program_options::value<std::string>(&OPT::strImportPosesFile)->default_value("poses.csv"), "import camera poses from file: .csv (OpenMVS pose CSV) or .json (frames.json)")
 		("export-poses-csv", boost::program_options::value<std::string>(&OPT::strExportPosesCSV), "export camera poses to CSV file (optional)")
 		("export-pose-quality", boost::program_options::value<std::string>(&OPT::strExportPoseQuality), "estimate the pose covariance during the final bundle adjustment and export the per-image quality report to CSV file (optional)")
-		("import-poses-mode", boost::program_options::value(&OPT::importPosesMode)->default_value(0), "mode for importing camera poses from CSV: 0=none, 1=all, 2=extrinsics only, 3=positions only")
+		("import-poses-mode", boost::program_options::value(&OPT::importPosesMode)->default_value(0), "mode for importing camera poses: 0=none, 1=poses+intrinsics, 2=poses only, 3=positions only")
+		("known-poses-convention", boost::program_options::value<std::string>(&OPT::strKnownPosesConvention), "camera-axes convention of the poses in a frames.json: arkit|opencv (default: auto-detect)")
 		("import-openmvg-dir", boost::program_options::value<std::string>(&OPT::strImportOpenMVGDir), "import OpenMVG features from directory (optional)")
 		("export-openmvg-dir", boost::program_options::value<std::string>(&OPT::strExportOpenMVGDir), "export OpenMVG features to directory (optional)")
 		("export-pairs-csv", boost::program_options::value<std::string>(&OPT::strExportPairsCSV), "export image pairs to CSV file (optional)")
@@ -140,10 +143,10 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("compare-mvs", boost::program_options::value<std::string>(&OPT::strCompareMVS), "compare reconstruction against ground-truth MVS file (optional)")
 		("max-features-per-cell", boost::program_options::value(&OPT::nMaxFeaturesPerCell)->default_value(3000), "maximum features per grid cell (3x3 grid)")
 		("min-features-per-cell", boost::program_options::value(&OPT::nMinFeaturesPerCell)->default_value(500), "minimum features per cell before adjusting sensitivity")
-		("match-mode", boost::program_options::value(&OPT::matchMode)->default_value(1), "match mode: -1=SKIP,0=EXHAUSTIVE,1=VOCABULARY,2=SEQUENTIAL")
+		("match-mode", boost::program_options::value(&OPT::matchMode)->default_value(1), "match mode: -1=SKIP,0=EXHAUSTIVE,1=VOCABULARY,2=SEQUENTIAL,3=KNOWN_POSES")
 		("match-sequence-overlap", boost::program_options::value(&OPT::matchSequenceOverlap)->default_value(3), "sequence overlap for sequential matching")
-		("vocab-max-pairs", boost::program_options::value(&OPT::maxPairsPerImage)->default_value(50), "maximum pairs per image for vocabulary matching")
-		("expand-pairs-topk", boost::program_options::value(&OPT::expandPairsTopK)->default_value(5), "top-K per endpoint to expand vocabulary pairs (0 = disable)")
+		("vocab-max-pairs", boost::program_options::value(&OPT::maxPairsPerImage)->default_value(50), "target pairs per image for vocabulary and pose-guided matching")
+		("match-verification-feedback", boost::program_options::value(&OPT::matchVerificationFeedback)->default_value(true), "hold back part of the matching budget and re-invest it in pairs suggested by the geometrically verified matches (vocabulary and pose-guided matching)")
 		("release-descriptors", boost::program_options::value(&OPT::releaseDescriptors)->default_value(true), "release descriptors after matching to save memory")
 		("match-images-only", boost::program_options::value(&OPT::matchImagesOnly)->default_value(false), "match only the image pairs and save the scene without reconstruction (release descriptors)")
 		("default-focal-ratio", boost::program_options::value(&OPT::defaultFocalRatio)->default_value(1.2f), "focal-length is set to ratio * max(width,height) for images with unknown focal-length")
@@ -153,7 +156,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("image-indices", boost::program_options::value<std::string>(&OPT::strImageIndices), "image indices to apply forced parameters (e.g., '0 5-10 15', empty = all images)")
 		("max-views-per-cluster", boost::program_options::value(&OPT::maxViewsPerCluster)->default_value(200), "maximum images per cluster for hierarchical reconstruction (0 = disable clustering)")
 		("cluster-communities", boost::program_options::value<bool>(&OPT::bClusterCommunities)->default_value(false), "cluster by community detection + capacity packing instead of pure aggregative clustering")
-		("use-global-solver", boost::program_options::value<bool>(&OPT::bUseGlobalSolver)->default_value(false), "use global solver for calibration, istead of hierarhical solver")
+		("use-global-solver", boost::program_options::value<bool>(&OPT::bUseGlobalSolver)->default_value(false), "use global solver for calibration instead of the hierarchical solver")
 		("extract-colors", boost::program_options::value<bool>(&OPT::bExtractColors)->default_value(false), "extract colors for reconstructed points")
 		("undistort-alpha", boost::program_options::value<float>(&OPT::undistortAlpha)->default_value(0.6f), "alpha parameter for undistortion (0=zoomed in, 1=all pixels retained)")
 		("undistort-extension", boost::program_options::value<std::string>(&OPT::strUndistortExt)->default_value(".jxl"), "file extension/format for the exported undistorted images (e.g. .jpg, .png, .jxl)")
@@ -205,7 +208,21 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 	if (OPT::strOutputFileName.empty())
 		OPT::strOutputFileName = _T("scene.sfm");
 	Util::ensureValidPath(OPT::strOutputFileNameMVS);
-	Util::ensureValidPath(OPT::strImportPosesCSV);
+	if (OPT::importPosesMode > static_cast<unsigned>(PoseImportMode::POSITIONS)) {
+		LOG("error: unknown import poses mode %u (accepted: 0, 1, 2, 3)", OPT::importPosesMode);
+		return false;
+	}
+	if (OPT::matchMode < static_cast<int>(MatchConfig::SKIP) ||
+		OPT::matchMode > static_cast<int>(MatchConfig::KNOWN_POSES)) {
+		LOG("error: unknown match mode %d (accepted: -1, 0, 1, 2, 3)", OPT::matchMode);
+		return false;
+	}
+	Util::ensureValidPath(OPT::strImportPosesFile);
+	// Parse the camera-axes convention; empty means auto-detect.
+	if (!FramesConventionFromString(OPT::strKnownPosesConvention, OPT::knownPosesConvention)) {
+		LOG("error: unknown known-poses convention '%s' (accepted: auto, arkit, opencv)", OPT::strKnownPosesConvention.c_str());
+		return false;
+	}
 	Util::ensureValidPath(OPT::strExportPosesCSV);
 	Util::ensureValidPath(OPT::strExportPoseQuality);
 	Util::ensureValidFolderPath(OPT::strImportOpenMVGDir);
@@ -247,8 +264,9 @@ int main(int argc, LPCTSTR* argv)
 	cfg.importCfg.k1 = OPT::k1;
 	cfg.importCfg.k2 = OPT::k2;
 	cfg.importCfg.imageIndicesStr = OPT::strImageIndices;
-	cfg.importCfg.importPosesCSV = OPT::importPosesMode ? OPT::strImportPosesCSV : String();
-	cfg.importCfg.importPosesMode = OPT::importPosesMode ? OPT::importPosesMode - 1 : 0;
+	cfg.importCfg.importPosesFile = OPT::importPosesMode ? OPT::strImportPosesFile : String();
+	cfg.importCfg.importPosesMode = static_cast<SFM::PoseImportMode>(OPT::importPosesMode);
+	cfg.importCfg.framesConvention = OPT::knownPosesConvention;
 	cfg.importCfg.archiveType = (ARCHIVE_TYPE)OPT::nArchiveType;
 	cfg.featuresCfg.detectorType = FeatureTypeFromString(OPT::strDetectorType);
 	cfg.featuresCfg.maxFeaturesPerCell = OPT::nMaxFeaturesPerCell;
@@ -260,7 +278,7 @@ int main(int argc, LPCTSTR* argv)
 	cfg.matchCfg.mode = static_cast<MatchConfig::MatchMode>(OPT::matchMode);
 	cfg.matchCfg.matchSequenceOverlap = OPT::matchSequenceOverlap;
 	cfg.matchCfg.maxPairsPerImage = OPT::maxPairsPerImage;
-	cfg.matchCfg.expandPairsTopK = OPT::expandPairsTopK;
+	cfg.matchCfg.verificationFeedback = OPT::matchVerificationFeedback;
 	cfg.matchCfg.releaseDescriptors = OPT::releaseDescriptors;
 	#ifdef _USE_CUDA
 	cfg.matchCfg.useCUDA = cfg.featuresCfg.useCUDA = !SEACAVE::CUDA::isCpuRequested(SEACAVE::CUDA::desiredDeviceIDs);
@@ -276,11 +294,21 @@ int main(int argc, LPCTSTR* argv)
 	cfg.clusterCfg.maxViewsPerCluster = OPT::maxViewsPerCluster;
 	cfg.clusterCfg.useCommunityDetection = OPT::bClusterCommunities;
 
+	// known-poses mode: pose-guided pair selection unless the user chose a mode explicitly
+	// (bringing the result back to the imported pose frame, which takes precedence over the
+	// GPS alignment, is handled inside Scene::Reconstruct so every caller gets it)
+	if (cfg.HasKnownPoses() && OPT::vm["match-mode"].defaulted()) {
+		cfg.matchCfg.mode = MatchConfig::KNOWN_POSES;
+		VERBOSE("Known camera poses imported: pose-guided pair selection auto-selected (use --match-mode to override)");
+	}
+
 	// Run SfM reconstruction
 	Scene scene(OPT::nMaxThreads);
 	if (!scene.Reconstruct(OPT::strSource, cfg)) {
-		if (!scene.status.nState.isSet(Scene::Status::STATE::CALIBRATED) &&
-			!(cfg.matchImagesOnly && scene.status.nState.isSet(Scene::Status::STATE::MATCHED))) {
+		// a scene calibrated before the failure is a usable partial result and is still
+		// exported below; anything less (including a match-images-only run that failed to
+		// resolve the pose convention) must propagate to the process exit status
+		if (!scene.status.nState.isSet(Scene::Status::STATE::CALIBRATED)) {
 			VERBOSE("error: reconstruction failed");
 			return EXIT_FAILURE;
 		} else if (OPT::bExtractColors && scene.colors.empty() && !scene.SampleColors()) {

@@ -39,6 +39,32 @@ SFM_API unsigned EstimateSimilarityTransform(
 	bool refine = true,
 	size_t maxIters = 0,
 	double confidence = 0.9999);
+
+/**
+ * @brief Estimate a similarity transform from paired centers, using the paired rotations
+ *        to disambiguate a (nearly) collinear center set
+ *
+ * Well-spread centers are handled by EstimateSimilarityTransform. When the second principal
+ * spread of the destination centers falls below the threshold (a straight-line capture such
+ * as a corridor walk), the center-only fit leaves the roll about the common axis
+ * unconstrained; the rotation is then estimated by robust rotation averaging over the
+ * rotation pairs (dstR ~= srcR * alignR, and poses transform as R_new = R * T.R^t, so
+ * T.R = alignR^t), scale and translation follow by least squares with the rotation fixed,
+ * and the result must place the median transformed center within the threshold.
+ * @param srcCenters,dstCenters corresponding positions (e.g. camera centers) in each frame
+ * @param srcRots,dstRots corresponding world-to-camera rotations, parallel to the centers
+ * @param transform Output similarity transform (dst = transform * src)
+ * @param threshold RANSAC inlier threshold in destination units; also gates the collinearity
+ *        test (0 disables both, reducing to the plain center-only estimation)
+ * @return number of inliers used for the final estimate, or 0 on failure
+ */
+SFM_API unsigned EstimateSimilarityTransformWithRotations(
+	const Point3Arr& srcCenters,
+	const Point3Arr& dstCenters,
+	const Matrix3x3Arr& srcRots,
+	const Matrix3x3Arr& dstRots,
+	Transform& transform,
+	double threshold = 0.0);
 /*----------------------------------------------------------------*/
 
 

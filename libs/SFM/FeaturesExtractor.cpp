@@ -352,8 +352,10 @@ size_t FeaturesExtractor::Extract()
 	{
 		// CPU multi-threaded feature extraction with per-thread detectors
 
-		// Create per-thread detectors using thread-local storage
-		std::unordered_map<std::thread::id, cv::Ptr<cv::Feature2D>> detectors;
+		// Give each pool worker its own detector. The vector is fixed before any task
+		// starts, so workers only mutate distinct elements (unlike inserting into a
+		// shared map from multiple threads).
+		std::vector<cv::Ptr<cv::Feature2D>> detectors(scene.threadPool.get_thread_count());
 		std::atomic<size_t> atomicNumFeatures{0};
 
 		scene.threadPool.detach_loop(IIndex(0), scene.images.size(), [&](IIndex i) {
@@ -362,7 +364,9 @@ size_t FeaturesExtractor::Extract()
 				++progress;
 				return;
 			}
-			if (ExtractImage(img, detectors[std::this_thread::get_id()]))
+			const std::optional<size_t> threadIdx = BS::this_thread::get_index();
+			ASSERT(threadIdx && *threadIdx < detectors.size());
+			if (ExtractImage(img, detectors[*threadIdx]))
 				atomicNumFeatures.fetch_add(img.keypoints.size(), std::memory_order_relaxed);
 			++progress;
 		});

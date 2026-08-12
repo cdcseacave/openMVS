@@ -42,6 +42,17 @@ using namespace SFM;
 
 DEFINE_LOG_NAME(lt, _T("Scene   "));
 
+// Translate the reconstruction intrinsic flags into the matching bundle-adjustment switches
+static void SetBAIntrinsicFlags(BAConfig& baCfg, unsigned baIntrinsicFlags)
+{
+	baCfg.refineFocalLength = (baIntrinsicFlags & ReconstructionConfig::INTRINSIC_FOCAL_LENGTH) != 0;
+	baCfg.refineFocalLengthAspectRatio = (baIntrinsicFlags & ReconstructionConfig::INTRINSIC_FOCAL_LENGTH_ASPECT_RATIO) != 0;
+	baCfg.refinePrincipalPoint = (baIntrinsicFlags & ReconstructionConfig::INTRINSIC_PRINCIPAL_POINT) != 0;
+	baCfg.refineRadialDistortion123 = (baIntrinsicFlags & ReconstructionConfig::INTRINSIC_RADIAL_DIST_123) != 0;
+	baCfg.refineTangentialDistortion = (baIntrinsicFlags & ReconstructionConfig::INTRINSIC_TANGENTIAL_DIST) != 0;
+	baCfg.refineRadialDistortion456 = (baIntrinsicFlags & ReconstructionConfig::INTRINSIC_RADIAL_DIST_456) != 0;
+}
+
 
 Scene::Scene(unsigned _nMaxThreads)
 	: transform(Matrix4x4::IDENTITY), obb(true), nMaxThreads(Thread::getMaxThreads(_nMaxThreads)),
@@ -84,7 +95,9 @@ Scene& Scene::operator=(const Scene& scene) {
 	for (const Track& track : scene.tracks)
 		tracks.emplace_back(track);
 	// Copy status
+	colors = scene.colors;
 	poseUncertainty = scene.poseUncertainty;
+	priorPoses = scene.priorPoses;
 	transform = scene.transform;
 	obb = scene.obb;
 	status = scene.status;
@@ -101,6 +114,7 @@ Scene& Scene::operator=(Scene&& scene) noexcept {
 	tracks = std::move(scene.tracks);
 	colors = std::move(scene.colors);
 	poseUncertainty = std::move(scene.poseUncertainty);
+	priorPoses = std::move(scene.priorPoses);
 	transform = scene.transform;
 	obb = scene.obb;
 	status = scene.status;
@@ -115,6 +129,7 @@ void Scene::Release() {
 	tracks.Release();
 	colors.clear();
 	poseUncertainty.Release();
+	priorPoses.clear();
 	transform = Matrix4x4::IDENTITY;
 	obb = OBB3(true);
 	status = Status();
@@ -184,6 +199,17 @@ unsigned Scene::InvalidateImages(const IIndexArr& imgIDs)
 	}
 	status.nCalibratedImages -= n;
 	return n;
+}
+// Rescan all images and refresh status.nCalibratedImages; the counter is normally
+// delta-maintained by the incremental solvers (StarInitializer/Resection/InvalidateImage),
+// so this is only needed by paths that set poses in bulk
+uint32_t Scene::RecomputeCalibratedImages()
+{
+	status.nCalibratedImages = 0;
+	for (const Image& image : images)
+		if (image.IsValid())
+			++status.nCalibratedImages;
+	return status.nCalibratedImages;
 }
 bool Scene::Save(const String& fileName, ARCHIVE_TYPE nArchiveType) const
 {
@@ -355,15 +381,12 @@ bool Scene::Import(const String& source, const ImportConfig& config)
 		cv::setNumThreads(nMaxThreads); // restore OpenCV threading
 		#endif
 
-		// 2b) Import camera poses from CSV file (if configured)
-		if (!config.importPosesCSV.empty()) {
-			unsigned numPosesImported = ImportPosesCSV(config.importPosesCSV, images, config.importPosesMode);
-			if (numPosesImported == 0) {
-				VERBOSE("error: failed to import poses from CSV file '%s'", config.importPosesCSV.c_str());
-				return false;
-			}
-			DEBUG("Imported poses for %u images from CSV file '%s'", numPosesImported, config.importPosesCSV.c_str());
-		}
+		// 2b) Import camera poses from file (if configured); this runs before the camera
+		// de-duplication below, so that identical per-frame imported intrinsics collapse
+		// into a single shared camera
+		if (!config.importPosesFile.empty() && config.importPosesMode != PoseImportMode::NONE &&
+			!ImportPoses(*this, config.importPosesFile, config.importPosesMode, config.framesConvention))
+			return false;
 
 		// 2c) Cluster identical cameras (exact match) and assign shared cameras
 		std::unordered_map<String, IIndex> camKeyToID;
@@ -375,6 +398,7 @@ bool Scene::Import(const String& source, const ImportConfig& config)
 				key += String::FormatString("|%.9f|%.9f|%.9f|%.9f", pc->fx, pc->fy, pc->cx, pc->cy);
 				key += String::FormatString("|%.9f|%.9f|%.9f|%.9f|%.9f|%.9f", pc->k1, pc->k2, pc->k3, pc->p1, pc->p2, pc->k4);
 				key += String::FormatString("|%.9f|%.9f", pc->k5, pc->k6);
+				key += pc->trustIntrinsics ? "|trusted" : "|untrusted";
 			}
 			// include metadata for strict grouping
 			key += "|" + cam->metadata.name + "|" + cam->metadata.model;
@@ -402,6 +426,18 @@ bool Scene::Import(const String& source, const ImportConfig& config)
 		}
 		VERBOSE("Imported %u images, %u unique cameras (%u trusted intrinsics)",
 		        images.size(), cameras.size(), numTrustedCameras);
+	} else if (!config.importPosesFile.empty() && config.importPosesMode != PoseImportMode::NONE) {
+		// The scene was resumed from a saved .sfm: the images already share de-duplicated
+		// cameras, so per-frame intrinsics cannot be applied (they would overwrite a camera
+		// shared by other images); import the poses only
+		PoseImportMode mode = config.importPosesMode;
+		if (mode == PoseImportMode::POSES_INTRINSICS) {
+			VERBOSE("warning: intrinsics from '%s' are ignored when resuming from a saved scene; importing the poses only",
+				config.importPosesFile.c_str());
+			mode = PoseImportMode::POSES;
+		}
+		if (!ImportPoses(*this, config.importPosesFile, mode, config.framesConvention))
+			return false;
 	}
 
 	// 2d) Apply forced focal length and distortion parameters to specified images (if configured)
@@ -572,8 +608,14 @@ bool Scene::Reconstruct(const String& source, const ReconstructionConfig& config
 			return false;
 		}
 		if (config.matchImagesOnly && status.nState.isSet(Status::STATE::MATCHED)) {
+			// the requested work is already done; still resolve an AUTO frames.json
+			// convention before the caller re-persists the scene (the loaded pairs are
+			// already matched, so the detection can run)
 			VERBOSE("warning: scene already matched after import");
-			return false;
+			if (config.HasKnownPoses() && !ResolveFramesConvention(*this,
+					config.importCfg.framesConvention, config.importCfg.importPosesFile))
+				return false;
+			return true;
 		}
 	}
 
@@ -591,6 +633,12 @@ bool Scene::Reconstruct(const String& source, const ReconstructionConfig& config
 		return false;
 
 	if (config.matchImagesOnly) {
+		// a frames.json imported with an AUTO convention must be resolved before the scene
+		// is persisted, otherwise possibly-flipped poses are saved with no record of the
+		// ambiguity and every later consumer inherits reversed optical axes
+		if (config.HasKnownPoses() && !ResolveFramesConvention(*this,
+				config.importCfg.framesConvention, config.importCfg.importPosesFile))
+			return false;
 		VERBOSE("Image pairs matched only as per configuration, reconstruction skipped");
 		return true;
 	}
@@ -607,7 +655,9 @@ bool Scene::Reconstruct(const String& source, const ReconstructionConfig& config
 	#endif
 
 	// Run reconstruction method
-	if (config.useGlobalSolver ? !ReconstructGlobal(config) : !ReconstructHierarchical(config))
+	if (config.HasKnownPoses() ? !ReconstructKnownPoses(config)
+	    : config.useGlobalSolver ? !ReconstructGlobal(config)
+	                             : !ReconstructHierarchical(config))
 		return false;
 
 	// Pre-final global bundle adjustment
@@ -623,10 +673,7 @@ bool Scene::Reconstruct(const String& source, const ReconstructionConfig& config
 
 	// Final global bundle adjustment
 	finalBaCfg.maxIterations = config.baConfig.maxIterations;
-	finalBaCfg.refineFocalLengthAspectRatio = (config.baIntrinsicFlags & ReconstructionConfig::INTRINSIC_FOCAL_LENGTH_ASPECT_RATIO) != 0;
-	finalBaCfg.refineTangentialDistortion = (config.baIntrinsicFlags & ReconstructionConfig::INTRINSIC_TANGENTIAL_DIST) != 0;
-	finalBaCfg.refineRadialDistortion456 = (config.baIntrinsicFlags & ReconstructionConfig::INTRINSIC_RADIAL_DIST_456) != 0;
-	finalBaCfg.refinePrincipalPoint = (config.baIntrinsicFlags & ReconstructionConfig::INTRINSIC_PRINCIPAL_POINT) != 0;
+	SetBAIntrinsicFlags(finalBaCfg, config.baIntrinsicFlags);
 	BundleAdjustment::Adjust(*this, finalBaCfg);
 	FilterTracks(*this, config.maxFineReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar);
 
@@ -638,8 +685,16 @@ bool Scene::Reconstruct(const String& source, const ReconstructionConfig& config
 		FilterWeaklyConnectedImages(*this);
 	}
 
-	// Align scene to GPS if available
-	if (config.thAlignGPS > 0 && HasImagesWithGPS())
+	// Align the scene back to the imported prior poses in known-poses mode (preserving the
+	// input frame is the point of that path, so it takes precedence over GPS, which would
+	// yank the scene out of that very frame), else to GPS if available. A failed prior-pose
+	// alignment leaves the scene in the refined (arbitrary-gauge) frame: it is reported, but
+	// must not discard the finished reconstruction
+	if (config.HasKnownPoses() && !priorPoses.empty()) {
+		if (!AlignToPriorPoses())
+			VERBOSE("warning: could not align the reconstruction back to the imported pose frame; "
+				"the result is left in the refined (arbitrary) frame");
+	} else if (config.thAlignGPS > 0 && HasImagesWithGPS())
 		AlignToGPS(config.thAlignGPS);
 
 	// Refine the geo-aligned reconstruction with GPS position priors (if enabled): the GPS
@@ -719,12 +774,7 @@ bool Scene::ReconstructHierarchical(const ReconstructionConfig& config)
 
 		// Local / global bundle adjustment for this sub-scene
 		BAConfig baCfg = config.baConfig;
-		baCfg.refineFocalLength = (config.baIntrinsicFlags & ReconstructionConfig::INTRINSIC_FOCAL_LENGTH) != 0;
-		baCfg.refineFocalLengthAspectRatio = (config.baIntrinsicFlags & ReconstructionConfig::INTRINSIC_FOCAL_LENGTH_ASPECT_RATIO) != 0;
-		baCfg.refinePrincipalPoint = (config.baIntrinsicFlags & ReconstructionConfig::INTRINSIC_PRINCIPAL_POINT) != 0;
-		baCfg.refineRadialDistortion123 = (config.baIntrinsicFlags & ReconstructionConfig::INTRINSIC_RADIAL_DIST_123) != 0;
-		baCfg.refineTangentialDistortion = (config.baIntrinsicFlags & ReconstructionConfig::INTRINSIC_TANGENTIAL_DIST) != 0;
-		baCfg.refineRadialDistortion456 = (config.baIntrinsicFlags & ReconstructionConfig::INTRINSIC_RADIAL_DIST_456) != 0;
+		SetBAIntrinsicFlags(baCfg, config.baIntrinsicFlags);
 		BundleAdjustment::Adjust(subScene, baCfg);
 		FilterTracks(subScene, config.maxReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar);
 	});
@@ -762,19 +812,6 @@ bool Scene::ReconstructGlobal(const ReconstructionConfig& config)
 
 	TD_TIMER_STARTD();
 
-	#if 0
-	// Import initial poses from CSV file (if configured)
-	unsigned numPosesImported = ImportPosesCSV(config.importCfg.importPosesCSV, images, 1);
-	BuildTracks(*this, config.minPairWeight);
-	TriangulateTracks(*this, false, 16.f);
-	FOREACH(i, images) {
-		Image& img = images[i];
-		img.LoadPixels(true);
-		float a = EstimateImageSharpness(img.pixels); // ensure sharpness is estimated
-		VERBOSE("Image %u blur estimate: %.4f, '%s'", img.ID, a, img.fileName.c_str());
-	}
-	#endif
-
 	// 1. Global Rotation Averaging
 	GlobalRotationEstimatorOptions rotOptions;
 	GlobalRotationEstimator rotEstimator(rotOptions);
@@ -807,10 +844,7 @@ bool Scene::ReconstructGlobal(const ReconstructionConfig& config)
 
 	// 3. Update Status
 	FilterTracks(*this, 6.f, 1.f);
-	status.nCalibratedImages = 0;
-	for (const Image& img : images)
-		if (img.IsValid())
-			status.nCalibratedImages++;
+	RecomputeCalibratedImages();
 	status.nState.set(Status::STATE::CALIBRATED);
 
 	// 4. Bundle Adjustment for position and structure refinement only
@@ -831,8 +865,135 @@ bool Scene::ReconstructGlobal(const ReconstructionConfig& config)
 		status.nCalibratedImages, images.size(), status.nTracks, tracks.size(), TD_TIMER_GET_FMT().c_str());
 	return true;
 }
-/*----------------------------------------------------------------*/
 
+bool Scene::ReconstructKnownPoses(const ReconstructionConfig& config)
+{
+	if (status.nState.isSet(Status::STATE::CALIBRATED)) {
+		VERBOSE("warning: scene already calibrated");
+		return true;
+	}
+
+	TD_TIMER_STARTD();
+
+	// 1. Validate the pose import actually covered the dataset: a file-name mismatch in the
+	// user's poses file would otherwise silently degrade into a from-scratch reconstruction
+	// of the few matched images, so fail loudly instead of falling back to standard SfM.
+	// This is a sanity gate against such a mismatch (which poses ~0 images), not a coverage
+	// requirement: partially covered captures are legitimate (the pose-guided pair selection
+	// adds visual pairs for the unposed images and the reconstruction tail resects them)
+	constexpr float minPosedImagesRatio = 0.2f; // sanity fraction of images that must be posed
+	constexpr IIndex maxUnposedNamesLogged = 10; // cap the unmatched list, then summarize
+	IIndexArr unposedImages;
+	unsigned numPosedImages = 0;
+	FOREACH(i, images) {
+		if (images[i].HasPose())
+			++numPosedImages;
+		else
+			unposedImages.push_back(i);
+	}
+	const unsigned minPosedImages = MAXF(2u, (unsigned)CEIL2INT(minPosedImagesRatio*images.size()));
+	if (numPosedImages < minPosedImages) {
+		String unmatched;
+		FOREACH(k, unposedImages) {
+			if (k >= maxUnposedNamesLogged) {
+				unmatched += String::FormatString(", ... (%u more)", unposedImages.size()-k);
+				break;
+			}
+			unmatched += String::FormatString("%s%s", k == 0 ? " " : ", ",
+				Util::getFileNameExt(images[unposedImages[k]].fileName).c_str());
+		}
+		VERBOSE("error: known-poses reconstruction needs a pose for at least %u of the %u images, "
+			"but only %u were matched by name in '%s'; unmatched:%s",
+			minPosedImages, images.size(), numPosedImages,
+			config.importCfg.importPosesFile.c_str(), unmatched.c_str());
+		return false;
+	}
+
+	// 2. Resolve the camera-axes convention of the imported transforms: a frames.json does not
+	// declare it and the import optimistically applied the ARKit one; the two hypotheses
+	// differ by a pi rotation about the camera X axis, so the wrong choice reverses every
+	// viewing direction and triangulation collapses
+	if (!ResolveFramesConvention(*this, config.importCfg.framesConvention, config.importCfg.importPosesFile))
+		return false;
+
+	// 3. Remember the imported poses: the bundle adjustment below refines them freely, and
+	// AlignToPriorPoses() uses this snapshot to bring the result back to the input frame
+	priorPoses.clear();
+	priorPoses.reserve(images.size());
+	for (const Image& img: images)
+		if (img.HasPose())
+			priorPoses.emplace(img.ID, Pose3D(img.R, img.C));
+
+	// 4. Build tracks and triangulate them with the imported poses; the poses are only
+	// approximate (and the intrinsics may still come from EXIF), so triangulate with a
+	// permissive reprojection threshold - the accurate-pose threshold would reject most of
+	// the correct tracks before the bundle adjustment ever gets a chance to fix the geometry
+	BuildTracks(*this, config.minPairWeight);
+	if (tracks.empty()) {
+		VERBOSE("error: no tracks could be built from the matched pairs");
+		return false;
+	}
+	const float initReprojError = config.maxReprojError*4.f;
+	TriangulateTracks(*this, false, initReprojError, config.minAngleThreshold);
+	const std::pair<float, float> initError = FilterTracks(*this, initReprojError,
+		config.minAngleThreshold, config.multDepthNear, config.multDepthFar);
+	if (status.nTracks == 0) {
+		VERBOSE("error: no track survived triangulation with the imported poses "
+			"(wrong camera-axes convention or wrong image-to-pose association?)");
+		return false;
+	}
+	DEBUG("Triangulated %u/%u tracks with the imported poses (%.2f pixels, %.3f degrees)",
+		status.nTracks, tracks.size(), initError.first, initError.second);
+
+	// 5. The imported poses are the reconstruction: mark the images calibrated so that the
+	// bundle adjustment and the tail's resection treat them as posed (the counter is otherwise
+	// delta-maintained by the incremental solvers, which never ran here)
+	RecomputeCalibratedImages();
+	status.nState.set(Status::STATE::CALIBRATED);
+
+	// 6. Finetune bundle adjustment: the poses are already close, so this mostly absorbs the
+	// intrinsics error; re-triangulate the outlier tracks with the tightened geometry and run a
+	// second pass - the same mini-BA -> re-triangulate -> BA convergence pattern the star
+	// initializer uses
+	BAConfig baCfg = config.baConfig;
+	SetBAIntrinsicFlags(baCfg, config.baIntrinsicFlags);
+	bool trustedIntrinsics = true;
+	for (const Camera* cam: cameras) {
+		if (!cam->TrustIntrinsics()) {
+			trustedIntrinsics = false;
+			break;
+		}
+	}
+	if (!trustedIntrinsics) {
+		// a focal length guessed from the default focal ratio (no usable metadata) is by far
+		// the weakest prior of a poses-only import, and the known poses make the bundle
+		// adjustment over it well conditioned, so refine it even when the caller asked for
+		// no intrinsic refinement
+		DEBUG("Cameras with untrusted intrinsics present: enabling main-intrinsics refinement");
+		baCfg.RefineMainIntrinsics();
+	}
+	baCfg.maxIterations = 25;
+	if (!BundleAdjustment::Adjust(*this, baCfg)) {
+		VERBOSE("error: known-poses bundle adjustment failed");
+		return false;
+	}
+	TriangulateTracks(*this, true, config.maxReprojError, config.minAngleThreshold);
+	FilterTracks(*this, config.maxReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar);
+	baCfg.maxIterations = config.baConfig.maxIterations;
+	if (!BundleAdjustment::Adjust(*this, baCfg)) {
+		VERBOSE("error: known-poses bundle adjustment failed");
+		return false;
+	}
+	const std::pair<float, float> finalError = FilterTracks(*this, config.maxReprojError,
+		config.minAngleThreshold, config.multDepthNear, config.multDepthFar);
+
+	RecomputeCalibratedImages();
+	DEBUG("Known-poses reconstruction complete: %u/%u images (%u posed by import), %u/%u points, "
+		"%.2f pixels (%s)",
+		status.nCalibratedImages, images.size(), numPosedImages,
+		status.nTracks, tracks.size(), finalError.first, TD_TIMER_GET_FMT().c_str());
+	return true;
+}
 
 bool Scene::SampleColors()
 {
@@ -990,6 +1151,102 @@ bool Scene::AlignToGPS(double threshold)
 	status.nState.set(Status::STATE::GEO_ALIGN);
 	VERBOSE("Scene aligned to GPS: aligned %u images (scale=%.4f)",
 		(unsigned)camCenters.size(), T_cam_to_enu.scale);
+	return true;
+}
+
+REAL SFM::MedianNearestCameraDistance(BS::light_thread_pool& threadPool, const Point3Arr& centers)
+{
+	if (centers.size() < 2)
+		return REAL(0);
+	REALArr nearestDistances(centers.size());
+	threadPool.detach_loop(IIndex(0), (IIndex)centers.size(), [&](IIndex i) {
+		REAL minDistSq = std::numeric_limits<REAL>::max();
+		FOREACH(j, centers)
+			if (i != j)
+				minDistSq = MINF(minDistSq, normSq(centers[i]-centers[j]));
+		nearestDistances[i] = SQRT(minDistSq);
+	});
+	threadPool.wait();
+	return nearestDistances.GetMedian();
+}
+
+bool Scene::AlignToPriorPoses(float thresholdRatio)
+{
+	// 1. Collect the refined/prior camera-center correspondences; images resected along the
+	// way have no prior and simply ride along with the transform applied below
+	Point3Arr refinedCenters, priorCenters;
+	IIndexArr alignedImages;
+	refinedCenters.reserve((IIndex)priorPoses.size());
+	priorCenters.reserve((IIndex)priorPoses.size());
+	alignedImages.reserve((IIndex)priorPoses.size());
+	FOREACH(i, images) {
+		const Image& img = images[i];
+		if (!img.IsValid())
+			continue;
+		const auto it = priorPoses.find(img.ID);
+		if (it == priorPoses.end())
+			continue;
+		alignedImages.push_back(i);
+		refinedCenters.push_back(img.C);
+		priorCenters.push_back(it->second.C);
+	}
+	if (refinedCenters.size() < 3) {
+		VERBOSE("error: insufficient prior poses left after filtering (found %u, need 3+), skipping prior-pose alignment",
+			(unsigned)refinedCenters.size());
+		return false;
+	}
+
+	// 2. Derive the RANSAC threshold from the capture itself: the prior frame is metric for an
+	// AR capture but arbitrary for a normalized one, so the only meaningful scale reference is
+	// the spacing of the prior cameras; half of it keeps a slowly drifting trajectory (exactly
+	// what the finetune corrects) fully inlier while rejecting a camera that ended up a whole
+	// frame-spacing away from its prior
+	const double medianDist = (double)MedianNearestCameraDistance(threadPool, priorCenters);
+	if (medianDist <= 0) {
+		VERBOSE("error: prior camera centers are coincident, skipping prior-pose alignment");
+		return false;
+	}
+	const double threshold = (double)thresholdRatio*medianDist;
+
+	// 3. Estimate the transform bringing the refined scene back to the prior frame; a
+	// (nearly) collinear capture (corridor walk, straight flight line) leaves the roll about
+	// the trajectory unconstrained by the centers alone, so the estimation falls back to the
+	// camera rotations there (see EstimateSimilarityTransformWithRotations)
+	Matrix3x3Arr refinedRots(alignedImages.size()), priorRots(alignedImages.size());
+	FOREACH(k, alignedImages) {
+		const Image& img = images[alignedImages[k]];
+		refinedRots[k] = img.R;
+		priorRots[k] = priorPoses.at(img.ID).R;
+	}
+	SEACAVE::Transform T_refined_to_prior;
+	if (EstimateSimilarityTransformWithRotations(refinedCenters, priorCenters,
+			refinedRots, priorRots, T_refined_to_prior, threshold) == 0) {
+		VERBOSE("error: failed to estimate the transform to the prior pose frame");
+		return false;
+	}
+	// apply; unlike AlignToGPS this leaves Scene::transform and GEO_ALIGN alone, as the prior
+	// frame is the dataset's own frame, not a geo-referenced one
+	Transform(T_refined_to_prior);
+
+	// 5. Report how far the finetune moved the poses, now that both are in the same frame
+	DoubleArr posErr, rotErrDeg;
+	posErr.reserve(alignedImages.size());
+	rotErrDeg.reserve(alignedImages.size());
+	double maxPosErr = 0, maxRotErrDeg = 0;
+	for (const IIndex i: alignedImages) {
+		const Image& img = images[i];
+		const Pose3D& prior = priorPoses.at(img.ID);
+		const double posDelta = norm(img.C-prior.C);
+		const double rotDelta = R2D(ACOS(ComputeAngle(img.R, prior.R)));
+		maxPosErr = MAXF(maxPosErr, posDelta);
+		maxRotErrDeg = MAXF(maxRotErrDeg, rotDelta);
+		posErr.push_back(posDelta);
+		rotErrDeg.push_back(rotDelta);
+	}
+	VERBOSE("Scene aligned to the imported prior poses: %u images (scale=%.4f) | "
+		"center delta median %g max %g (prior units) | rotation delta median %.3f max %.3f degrees",
+		alignedImages.size(), T_refined_to_prior.scale,
+		posErr.GetMedian(), maxPosErr, rotErrDeg.GetMedian(), maxRotErrDeg);
 	return true;
 }
 
@@ -1412,9 +1669,13 @@ bool SFM::CompareScenes(const Scene& scene, const String& gtFile, bool matchByNa
 	if (isCalibrated)
 		posErr.reserve(sceneIdx.size());
 	if (isCalibrated) {
-		// Full calibrated scene: estimate similarity transform and compare both rotation and position
+		// Full calibrated scene: estimate similarity transform and compare both rotation and
+		// position; the rotation-aware estimation keeps a (nearly) collinear capture (corridor
+		// walk) comparable, where a center-only fit would report an arbitrary roll about the
+		// trajectory as rotation error
+		const double threshold = 0.5 * (double)MedianNearestCameraDistance(gtScene.threadPool, dstCenters);
 		Transform align;
-		if (EstimateSimilarityTransform(srcCenters, dstCenters, align) == 0) {
+		if (EstimateSimilarityTransformWithRotations(srcCenters, dstCenters, srcRots, dstRots, align, threshold) == 0) {
 			VERBOSE("error: compare scenes similarity estimation failed (%zu matches)", srcCenters.size());
 			return false;
 		}

@@ -225,7 +225,7 @@ The following five suggestions offer the highest impact relative to implementati
 
 ### B2. Pair Matching (`libs/SFM/PairsMatcher.cpp`)
 
-**Current Implementation:** Vocabulary tree for pair selection (top-K + co-neighbor expansion). FLANN LSH/KDTree. Lowe ratio test. Optional cross-check. PoseLib RANSAC for E/F/H. SiftMatchGPU GPU path.
+**Current Implementation:** Vocabulary tree for pair selection (reciprocal-rank fusion, mutual top-K + connectivity bridges, two-round verification feedback). FLANN LSH/KDTree. Lowe ratio test. Optional cross-check. PoseLib RANSAC for E/F/H. SiftMatchGPU GPU path.
 
 1. **DEGENSAC / MAGSAC++ for Geometric Verification** (Priority: High | Complexity: Medium)
    - **What:** Add DEGENSAC or MAGSAC++ as alternative geometric verification methods.
