@@ -723,6 +723,45 @@ bool AlignToPriorPosesTest()
 	VERBOSE("AlignToPriorPosesTest PASSED");
 	return true;
 }
+
+
+// Re-align a straight-line (collinear) capture: the camera centers alone leave the roll
+// about the trajectory unconstrained, so the alignment must recover the rotation from the
+// camera rotations (the collinear fallback of EstimateSimilarityTransformWithRotations).
+bool AlignToPriorPosesCollinearTest()
+{
+	Scene scene;
+	SceneConfig sceneCfg;
+	sceneCfg.numImages = 8;
+	sceneCfg.numPoints = 80;
+	sceneCfg.poseMode = SceneConfig::SIMPLE_TRANSLATION;
+	sceneCfg.addPoseRotations = true;
+	sceneCfg.rotationAngleStep = 5;
+	GenerateTestScene(scene, sceneCfg);
+	for (const Image& image : scene.images)
+		scene.priorPoses.emplace(image.ID, Pose3D(image.R, image.C));
+
+	std::mt19937 rng(654);
+	scene.Transform(Transform::Random(rng));
+	// the default threshold ratio engages the collinearity detection on this trajectory
+	if (!scene.AlignToPriorPoses()) {
+		VERBOSE("AlignToPriorPosesCollinearTest FAILED: alignment returned false");
+		return false;
+	}
+	for (const Image& image : scene.images) {
+		const Pose3D& prior = scene.priorPoses.at(image.ID);
+		const REAL centerError = norm(image.C - prior.C);
+		const REAL rotationError = ACOS(ComputeAngle(image.R, prior.R));
+		if (centerError > REAL(1e-4) || rotationError > REAL(1e-4)) {
+			VERBOSE("AlignToPriorPosesCollinearTest FAILED: image %u error is %g position, %g degrees rotation",
+				image.ID, centerError, R2D(rotationError));
+			return false;
+		}
+	}
+
+	VERBOSE("AlignToPriorPosesCollinearTest PASSED");
+	return true;
+}
 /*----------------------------------------------------------------*/
 
 

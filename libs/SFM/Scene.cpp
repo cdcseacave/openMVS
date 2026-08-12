@@ -1252,88 +1252,21 @@ bool Scene::AlignToPriorPoses(float thresholdRatio)
 	}
 	const double threshold = (double)thresholdRatio*medianDist;
 
-	// 3. Check the prior positions are well spread: when they are, the similarity transform
-	// comes robustly from the center correspondences alone; a (nearly) collinear capture
-	// (corridor walk, straight flight line) instead leaves the roll about the trajectory
-	// unconstrained by the centers, so it is handled below with the rotation estimated from
-	// the camera rotations
-	bool wellSpread = true;
-	if (threshold > 0) {
-		Point3 mean(Point3::ZERO);
-		for (const Point3& C: priorCenters)
-			mean += C;
-		mean /= (REAL)priorCenters.size();
-		Eigen::Matrix3d cov(Eigen::Matrix3d::Zero());
-		for (const Point3& C: priorCenters) {
-			const Eigen::Vector3d d(Point3d(C-mean));
-			cov += d * d.transpose();
-		}
-		cov /= (double)priorCenters.size();
-		// standard deviation along each principal axis, in increasing order
-		const Eigen::Vector3d spread(Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d>(cov, Eigen::EigenvaluesOnly).eigenvalues().cwiseMax(0.).cwiseSqrt());
-		wellSpread = spread(1) >= threshold;
-		if (!wellSpread)
-			DEBUG("Prior camera positions are nearly collinear (spread %gx%gx%g, threshold %g): "
-				"estimating the alignment rotation from the camera rotations",
-				spread(2), spread(1), spread(0), threshold);
+	// 3. Estimate the transform bringing the refined scene back to the prior frame; a
+	// (nearly) collinear capture (corridor walk, straight flight line) leaves the roll about
+	// the trajectory unconstrained by the centers alone, so the estimation falls back to the
+	// camera rotations there (see EstimateSimilarityTransformWithRotations)
+	Matrix3x3Arr refinedRots(alignedImages.size()), priorRots(alignedImages.size());
+	FOREACH(k, alignedImages) {
+		const Image& img = images[alignedImages[k]];
+		refinedRots[k] = img.R;
+		priorRots[k] = priorPoses.at(img.ID).R;
 	}
-
-	// 4. Estimate the transform bringing the refined scene back to the prior frame
 	SEACAVE::Transform T_refined_to_prior;
-	if (wellSpread) {
-		if (EstimateSimilarityTransform(refinedCenters, priorCenters, T_refined_to_prior, threshold) == 0) {
-			VERBOSE("error: failed to estimate the transform to the prior pose frame");
-			return false;
-		}
-	} else {
-		// rotation from robust rotation averaging (R_prior ~= R_refined * alignR, and
-		// Scene::Transform applies rotations as R_new = R * T.R^t, so T.R = alignR^t)
-		Matrix3x3Arr refinedRots(alignedImages.size()), priorRots(alignedImages.size());
-		FOREACH(k, alignedImages) {
-			const Image& img = images[alignedImages[k]];
-			refinedRots[k] = img.R;
-			priorRots[k] = priorPoses.at(img.ID).R;
-		}
-		Matrix3x3 alignR;
-		if (!EstimateRotationAlignment(refinedRots, priorRots, alignR)) {
-			VERBOSE("error: rotation alignment to the collinear prior poses failed, skipping prior-pose alignment");
-			return false;
-		}
-		T_refined_to_prior.R = RMatrix(Matrix3x3(alignR.t()));
-		// scale and translation by least squares with the rotation fixed
-		const Eigen::Matrix3d R = T_refined_to_prior.R;
-		Eigen::Vector3d meanRefined(Eigen::Vector3d::Zero()), meanPrior(Eigen::Vector3d::Zero());
-		FOREACH(k, refinedCenters) {
-			meanRefined += Eigen::Vector3d(Point3d(refinedCenters[k]));
-			meanPrior += Eigen::Vector3d(Point3d(priorCenters[k]));
-		}
-		meanRefined /= (double)refinedCenters.size();
-		meanPrior /= (double)priorCenters.size();
-		double num = 0, den = 0;
-		FOREACH(k, refinedCenters) {
-			const Eigen::Vector3d dr(R * (Eigen::Vector3d(Point3d(refinedCenters[k])) - meanRefined));
-			const Eigen::Vector3d dp(Eigen::Vector3d(Point3d(priorCenters[k])) - meanPrior);
-			num += dp.dot(dr);
-			den += dr.squaredNorm();
-		}
-		if (den <= 0 || num <= 0) {
-			VERBOSE("error: refined camera centers are degenerate, skipping prior-pose alignment");
-			return false;
-		}
-		T_refined_to_prior.scale = num / den;
-		const Eigen::Vector3d t(meanPrior - T_refined_to_prior.scale * (R * meanRefined));
-		T_refined_to_prior.t = Point3(t.x(), t.y(), t.z());
-		// the rotation came from the camera rotations alone, so validate it against the
-		// centers: the aligned centers must land within the RANSAC threshold of their priors
-		DoubleArr residuals(refinedCenters.size());
-		FOREACH(k, refinedCenters)
-			residuals[k] = (double)norm(Point3(T_refined_to_prior * refinedCenters[k] - priorCenters[k]));
-		const double medianResidual = residuals.GetMedian();
-		if (medianResidual > threshold) {
-			VERBOSE("error: aligning the collinear capture is too inaccurate (median center residual %g, threshold %g), skipping prior-pose alignment",
-				medianResidual, threshold);
-			return false;
-		}
+	if (EstimateSimilarityTransformWithRotations(refinedCenters, priorCenters,
+			refinedRots, priorRots, T_refined_to_prior, threshold) == 0) {
+		VERBOSE("error: failed to estimate the transform to the prior pose frame");
+		return false;
 	}
 	// apply; unlike AlignToGPS this leaves Scene::transform and GEO_ALIGN alone, as the prior
 	// frame is the dataset's own frame, not a geo-referenced one
@@ -1780,9 +1713,13 @@ bool SFM::CompareScenes(const Scene& scene, const String& gtFile, bool matchByNa
 	if (isCalibrated)
 		posErr.reserve(sceneIdx.size());
 	if (isCalibrated) {
-		// Full calibrated scene: estimate similarity transform and compare both rotation and position
+		// Full calibrated scene: estimate similarity transform and compare both rotation and
+		// position; the rotation-aware estimation keeps a (nearly) collinear capture (corridor
+		// walk) comparable, where a center-only fit would report an arbitrary roll about the
+		// trajectory as rotation error
+		const double threshold = 0.5 * (double)MedianNearestCameraDistance(gtScene.threadPool, dstCenters);
 		Transform align;
-		if (EstimateSimilarityTransform(srcCenters, dstCenters, align) == 0) {
+		if (EstimateSimilarityTransformWithRotations(srcCenters, dstCenters, srcRots, dstRots, align, threshold) == 0) {
 			VERBOSE("error: compare scenes similarity estimation failed (%zu matches)", srcCenters.size());
 			return false;
 		}

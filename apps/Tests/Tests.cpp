@@ -126,6 +126,8 @@ int main(int argc, LPCTSTR* argv)
 			return EXIT_FAILURE;
 		if (!SFM::AlignToPriorPosesTest())
 			return EXIT_FAILURE;
+		if (!SFM::AlignToPriorPosesCollinearTest())
+			return EXIT_FAILURE;
 		if (!SFM::AlignToGPSDegenerateTest())
 			return EXIT_FAILURE;
 		if (!SFM::PairsWeightingTest())

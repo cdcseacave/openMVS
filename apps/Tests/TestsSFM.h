@@ -96,6 +96,7 @@ bool TripletStarInitTest();
 bool KnownPosesImportTest();
 bool KnownPosePairSelectionTest();
 bool AlignToPriorPosesTest();
+bool AlignToPriorPosesCollinearTest();
 
 // Two-view geometry test: PairsMatcher and ImagePair matrix operations
 bool TwoViewTest();
