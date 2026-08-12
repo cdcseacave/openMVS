@@ -48,6 +48,10 @@ All in `namespace SFM`. Called sequentially when `argv[1] == 1`.
 | Test | Purpose | Key Tolerance |
 |------|---------|---------------|
 | `VocabularyTreeTest()` | VocTree build/save/load/query roundtrip (RootSIFT-like + binary descriptors) | Top matches contain expected images |
+| `KnownPosesImportTest()` | frames.json/CSV pose import, intrinsics trust, duplicate and malformed-row handling | Unique images imported; invalid rows make no partial updates |
+| `KnownPosePairSelectionTest()` | Pose-guided selection with partial pose coverage | Unique candidate set includes the unposed image |
+| `AlignToPriorPosesTest()` | Sim(3) restoration of a transformed known-pose scene | Camera centers and rotations return to their prior frame |
+| `AlignToPriorPosesCollinearTest()` | Restoration of a straight-line capture (collinear centers) | Rotation-averaging fallback recovers the roll the centers cannot |
 | `BAPinholeReprojectionJacobianTest()` | Analytical vs AutoDiff Jacobian validation for pinhole BA | Gradient agreement |
 | `PipelineTest()` | 6-subtest BA suite: quaternion poses + pose covariance, spherical camera, focal refinement, radial distortion, GPS constraints, scene transform | Reprojection < 1.0 px; focal < 5%; k1/k2 < 0.01; covariance finite/PSD, one datum |
 | `GPSPriorPoseUncertaintyTest()` | GPS-prior BA on a geo-aligned scene: absolute (datum-free) pose covariance + missing-accuracy fallback | No gauge datum; all finite; mean position error < 0.2 m |

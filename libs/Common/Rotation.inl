@@ -1538,6 +1538,17 @@ inline bool IsRotationMatrix(const Eigen::Matrix<TYPE,3,3,O>& R) {
 	// the trace should be three and the determinant should be one
 	return (ISEQUAL(R.determinant(), TYPE(1)) && ISEQUAL((R*R.transpose()).trace(), TYPE(3)));
 } // IsRotationMatrix
+// same check with an explicit tolerance: R^T*R must be the identity and the determinant +1
+// (a mirroring matrix is not a rotation); meant for validating externally supplied data,
+// where the strict machine-epsilon overloads above would reject any serialized rotation
+template<typename TYPE>
+inline bool IsRotationMatrix(const TMatrix<TYPE,3,3>& R, TYPE tolerance) {
+	const TMatrix<TYPE,3,3> E(R.t()*R - TMatrix<TYPE,3,3>::eye());
+	for (int i = 0; i < 9; ++i)
+		if (ABS(E.val[i]) > tolerance)
+			return false;
+	return ABS(cv::determinant(R) - TYPE(1)) <= tolerance;
+} // IsRotationMatrix
 /*----------------------------------------------------------------*/
 
 // enforce matrix orthogonality

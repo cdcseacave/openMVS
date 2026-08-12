@@ -209,6 +209,92 @@ unsigned SFM::EstimateSimilarityTransform(
 /*----------------------------------------------------------------*/
 
 
+unsigned SFM::EstimateSimilarityTransformWithRotations(
+	const Point3Arr& srcCenters,
+	const Point3Arr& dstCenters,
+	const Matrix3x3Arr& srcRots,
+	const Matrix3x3Arr& dstRots,
+	Transform& transform,
+	double threshold)
+{
+	ASSERT(srcCenters.size() == dstCenters.size() &&
+		srcCenters.size() == srcRots.size() && srcRots.size() == dstRots.size());
+	// detect a (nearly) collinear destination-center set: with the second principal spread
+	// below the threshold, the roll about the common axis is unconstrained by the centers
+	bool wellSpread = true;
+	if (threshold > 0 && dstCenters.size() >= 3) {
+		Point3 mean(Point3::ZERO);
+		for (const Point3& C: dstCenters)
+			mean += C;
+		mean /= (REAL)dstCenters.size();
+		Eigen::Matrix3d cov(Eigen::Matrix3d::Zero());
+		for (const Point3& C: dstCenters) {
+			const Eigen::Vector3d d(Point3d(C-mean));
+			cov += d * d.transpose();
+		}
+		cov /= (double)dstCenters.size();
+		// standard deviation along each principal axis, in increasing order
+		const Eigen::Vector3d spread(Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d>(cov, Eigen::EigenvaluesOnly).eigenvalues().cwiseMax(0.).cwiseSqrt());
+		wellSpread = spread(1) >= threshold;
+		if (!wellSpread)
+			DEBUG("Centers are nearly collinear (spread %gx%gx%g, threshold %g): "
+				"estimating the alignment rotation from the paired rotations",
+				spread(2), spread(1), spread(0), threshold);
+	}
+	if (wellSpread)
+		return EstimateSimilarityTransform(srcCenters, dstCenters, transform, threshold);
+
+	// rotation from robust rotation averaging (dstR ~= srcR * alignR, and poses transform
+	// as R_new = R * T.R^t, so T.R = alignR^t)
+	Matrix3x3 alignR;
+	if (!EstimateRotationAlignment(srcRots, dstRots, alignR)) {
+		DEBUG("Rotation alignment of the collinear center set failed");
+		return 0;
+	}
+	transform.R = RMatrix(Matrix3x3(alignR.t()));
+	// scale and translation by least squares with the rotation fixed
+	const Eigen::Matrix3d R = transform.R;
+	Eigen::Vector3d meanSrc(Eigen::Vector3d::Zero()), meanDst(Eigen::Vector3d::Zero());
+	FOREACH(k, srcCenters) {
+		meanSrc += Eigen::Vector3d(Point3d(srcCenters[k]));
+		meanDst += Eigen::Vector3d(Point3d(dstCenters[k]));
+	}
+	meanSrc /= (double)srcCenters.size();
+	meanDst /= (double)dstCenters.size();
+	double num = 0, den = 0;
+	FOREACH(k, srcCenters) {
+		const Eigen::Vector3d dr(R * (Eigen::Vector3d(Point3d(srcCenters[k])) - meanSrc));
+		const Eigen::Vector3d dp(Eigen::Vector3d(Point3d(dstCenters[k])) - meanDst);
+		num += dp.dot(dr);
+		den += dr.squaredNorm();
+	}
+	if (den <= 0 || num <= 0) {
+		DEBUG("Source centers are degenerate, cannot recover the scale of the collinear alignment");
+		return 0;
+	}
+	transform.scale = num / den;
+	const Eigen::Vector3d t(meanDst - transform.scale * (R * meanSrc));
+	transform.t = Point3(t.x(), t.y(), t.z());
+	// the rotation came from the rotations alone, so validate it against the centers:
+	// the aligned centers must land within the threshold of their counterparts
+	DoubleArr residuals(srcCenters.size());
+	unsigned numInliers = 0;
+	FOREACH(k, srcCenters) {
+		residuals[k] = (double)norm(Point3(transform * srcCenters[k] - dstCenters[k]));
+		if (residuals[k] <= threshold)
+			++numInliers;
+	}
+	const double medianResidual = residuals.GetMedian();
+	if (medianResidual > threshold) {
+		DEBUG("Aligning the collinear center set is too inaccurate (median residual %g, threshold %g)",
+			medianResidual, threshold);
+		return 0;
+	}
+	return numInliers;
+}
+/*----------------------------------------------------------------*/
+
+
 // Similarity transform unit test
 bool SFM::TestSimilarityTransform()
 {

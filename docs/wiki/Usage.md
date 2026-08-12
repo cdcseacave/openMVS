@@ -48,10 +48,11 @@ When the input is a `.sfm` produced by `ExtractKeyframes` or `CreateStructure` w
 Notable options:
 
 - `--detector-type` (default `SIFTGPU`) — feature detector; same choices as above.
-- `--match-mode` (`-1` skip, `0` exhaustive, `1` vocabulary, `2` sequential; default `1`) — pairwise-matching strategy.
+- `--match-mode` (`-1` skip, `0` exhaustive, `1` vocabulary, `2` sequential, `3` known-poses; default `1`) — pairwise-matching strategy.
 - `--match-sequence-overlap` (default `3`) — sequence overlap when using sequential matching.
-- `--vocab-max-pairs` (default `50`) — maximum pairs per image for vocabulary-tree matching.
-- `--import-poses-csv` (default `poses.csv`) with `--import-poses-mode` (`0` none, `1` all, `2` extrinsics only, `3` positions only) — seed the reconstruction from a CSV of known poses.
+- `--vocab-max-pairs` (default `50`) — target pairs per image for vocabulary-tree and known-poses matching (with `--match-verification-feedback`, the default, part of this budget is re-invested in pairs suggested by the verified matches).
+- `--import-poses-file` (default `poses.csv`) with `--import-poses-mode` (`0` none, `1` poses+intrinsics, `2` poses only, `3` positions only) — import camera data from an OpenMVS pose `.csv` or a Polycam-style `frames.json`; modes `1` and `2` select the known-poses workflow described below.
+- `--known-poses-convention` (`auto` | `arkit` | `opencv`, default `auto`) — camera-axes convention of the poses in a `frames.json`.
 - `--export-poses-csv` — write the recovered poses alongside the scene.
 - `--export-pose-quality` — estimate the per-image pose covariance during the final bundle adjustment and write a per-image quality report to CSV: 1-sigma camera-position accuracy per axis (with the full 3x3 covariance), rotation accuracy per axis in degrees, observation counts and the a-priori GPS accuracy. On a GPS-aligned scene the position values are ENU meters (East/North/Up); with GPS priors enabled they are absolute accuracies, otherwise relative to a reference (datum) image. The report can be visualized as per-camera error ellipsoids by the `Viewer` (`--pose-quality-file`).
 - `--align-gps-threshold` (default `5` m, `0` disabled) — rigidly align the reconstruction to the image GPS metadata (metric ENU frame).
@@ -59,6 +60,41 @@ Notable options:
 - `--import-openmvg-dir` / `--export-openmvg-dir` — interoperate with OpenMVG feature files.
 - `--focal-length` (default `0`, disabled) and `--default-focal-ratio` (default `1.2`, used as `ratio * max(width,height)` when the focal length is unknown) — intrinsic overrides.
 - `--extract-colors` (default `false`) — attach image colors to the reconstructed sparse points.
+
+</details>
+
+<details>
+<summary><strong>Finetune from Known Poses</strong></summary>
+
+When the camera poses are already known — an AR capture (ARKit/ARCore, Polycam), a drone flight log, or a previous reconstruction — `CreateStructure` can skip pose estimation and instead *refine* the poses it was given, producing a densification-ready sparse reconstruction **in the input coordinate frame**. Point `--import-poses-file` at the poses and pick a mode that brings in the extrinsics (`1` or `2`):
+
+```
+# poses only (ARKit phone capture, intrinsics taken from EXIF)
+CreateStructure -w . -s ../keyframes/images --import-poses-file ../frames.json --import-poses-mode 2 --export-mvs scene.mvs --extract-colors 1 -v 3
+
+# poses + intrinsics (DJI drone survey, intrinsics taken from the file)
+CreateStructure -w . -s ../images --import-poses-file ../frames.json --import-poses-mode 1 --export-mvs scene.mvs --extract-colors 1 -v 3
+```
+
+Run these from a working subfolder of the dataset (`-w`); the other paths are relative to it.
+
+**Pose file formats.** The extension selects the parser:
+
+- `.csv` — the OpenMVS pose CSV, the same schema `--export-poses-csv` writes: `filename,fx,fy,cx,cy,qx,qy,qz,qw,Cx,Cy,Cz,score` per row. Rows are matched to the images by file-name stem (case-insensitive); ambiguous stems are rejected, and a row whose `score` is `0` or negative explicitly marks that image as unposed.
+- `.json` — a Polycam-style `frames.json`: an array of `{name, transform[16], params?}` entries, where `transform` is a **column-major 4x4 camera-to-world** matrix and the optional `params` block holds an `OPENCV` camera model (`w, h, fx, fy, cx, cy, k1, k2, p1, p2`). The intrinsics may be declared for a different resolution than the images on disk and are rescaled automatically. Entries are matched to the images by file name — the full name first, then the stem, both case-insensitive. Ambiguous image names and duplicate entries for one image are rejected.
+
+Images with no entry are simply left unposed and are registered by the usual resection at the end of the pipeline; if fewer than 20% of the images end up posed, the run stops and lists the unmatched names rather than quietly degrading into a from-scratch reconstruction — the gate catches a file-name mismatch between the poses file and the images, while partially covered captures are legitimate.
+
+**Modes.** `--import-poses-mode 1` imports the intrinsics (when the file carries them) *and* the poses, `2` imports the poses only and leaves the intrinsics to EXIF, `3` imports only the camera positions and does *not* select this workflow. Note that mode `1` previously imported the intrinsics *without* the poses, and mode `2` the poses without the intrinsics — no mode imported both. They now do what their names say, which is a behavior change if you were relying on the old, undocumented meaning.
+
+**Camera-axes convention.** A `frames.json` does not record whether its `transform` uses the ARKit/OpenGL camera axes (X right, Y up, Z backward) or the OpenCV ones (X right, Y down, Z forward), and the two differ by a 180&deg; rotation about the camera X axis — pick wrong and every optical axis is reversed. The default `--known-poses-convention auto` decides after matching, by checking the imported relative rotations against the ones recovered from the images themselves; when the evidence is inconclusive the run stops and asks you to pass `arkit` or `opencv` explicitly. EXIF-rotated portrait images are handled automatically.
+
+**What changes compared to a normal run:**
+
+- The match mode switches to `3` (known-poses) unless you passed `--match-mode` yourself: pairs between posed images are chosen geometrically. If the pose file is incomplete, vocabulary retrieval also supplies pairs touching the unposed images so the final resection can register them. The substitution is logged at startup.
+- The reconstruction is similarity-aligned back to the imported pose frame instead of to GPS — preserving the input frame is the point of this mode, so the prior-pose alignment takes precedence over `--align-gps-threshold`. This also anchors the scale that a non-GPS bundle adjustment leaves free. Straight-line captures (a corridor walk, a single flight line), whose camera centers cannot constrain the roll about the trajectory, are aligned using the imported camera rotations for the rotation part.
+
+At `-v 3` the final alignment reports how far the finetune actually moved the cameras — median and maximum position delta (in the units of the input poses) and median and maximum rotation delta in degrees — which is the quickest sanity check that the import was interpreted correctly. If that final similarity cannot be estimated, the run warns and the output stays in the refined (arbitrary-gauge) frame instead of being discarded.
 
 </details>
 

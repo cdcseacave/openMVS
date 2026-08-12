@@ -111,9 +111,9 @@ File count: ~10 `.h`/`.cpp` files (plus `IBFS/` and `LMFit/` subdirectories)
 
 ### `libs/SFM/` — Structure-from-Motion
 
-Full SFM pipeline implementation supporting three reconstruction strategies.
+Full SFM pipeline implementation supporting four reconstruction strategies (incremental, hierarchical, global, known-poses finetune).
 
-Key components: Feature extraction, pair matching, VocabularyTree image retrieval, geometric verification, track building, star initialization, incremental resection, bundle adjustment, global rotation/scale/translation averaging, scene clustering, global alignment, keyframe extraction, COLMAP/ROMA2 import, MVS export.
+Key components: Feature extraction, pair matching, VocabularyTree image retrieval, pose-guided pair selection, geometric verification, track building, star initialization, incremental resection, bundle adjustment, global rotation/scale/translation averaging, scene clustering, global alignment, keyframe extraction, COLMAP/ROMA2/frames.json import, MVS export.
 
 File count: ~30 `.h`/`.cpp` files
 
@@ -155,7 +155,7 @@ File count: ~20 `.h`/`.cpp`/`.cu` files (plus `CUDA/` subdirectory)
 ```mermaid
 graph LR
     A[Images] --> B[Feature Extraction<br/>AKAZE/ORB/SIFT/SiftGPU]
-    B --> C[Pair Matching<br/>VOCABULARY/EXHAUSTIVE/SEQUENTIAL]
+    B --> C[Pair Matching<br/>VOCABULARY/EXHAUSTIVE/SEQUENTIAL/KNOWN_POSES]
     C --> D[SFM Reconstruction]
     D --> E[Dense Point Cloud<br/>PatchMatch/CUDA/SGM]
     E --> F[Mesh Reconstruction<br/>CGAL Delaunay + graph-cut]
@@ -168,17 +168,21 @@ graph LR
 
 ```mermaid
 graph TD
-    A[Images + Metadata] --> B[Feature Extraction]
+    A[Images + Metadata<br/>+ optional poses file] --> B[Feature Extraction]
     B --> C[Pair Matching + Geometric Verification]
     C --> D[View Graph Calibration]
     D --> E{Strategy}
     E -->|default| F[Hierarchical SFM<br/>SceneCluster + per-cluster resection<br/>+ GlobalAlignment merge]
     E -->|useGlobalSolver=true| G[Global SFM<br/>GlobalRotationAveraging<br/>+ GlobalPositioning]
-    F --> H[Post-BA + GPS Alignment]
+    E -->|HasKnownPoses| K[Known-Poses SFM<br/>triangulate with the imported poses<br/>+ finetune BA]
+    F --> H[Post-BA + GPS Alignment<br/>or AlignToPriorPoses]
     G --> H
+    K --> H
     H --> I[Sparse Point Cloud + Camera Poses]
     I --> J[ExportMVS: undistort images<br/>write MVS::Interface binary]
 ```
+
+`HasKnownPoses()` is true when `ImportConfig::importPosesFile` is set with `PoseImportMode::POSES_INTRINSICS` or `POSES`; the poses come from an OpenMVS pose `.csv` or a Polycam-style `frames.json` (`libs/SFM/PoseIO.h`) and serve as initialization only, with `Scene::AlignToPriorPoses` returning the refined result to the input frame (and anchoring its scale) instead of the GPS alignment.
 
 ### MVS Stage Detail
 
@@ -211,6 +215,7 @@ Central container for the SFM stage. Defined in `libs/SFM/Scene.h`.
 | `pairs` | `ImagePairArr` | Pairwise matches, E/F/H matrices, relative pose, composite weights |
 | `tracks` | `TrackArr` | 3D points with `Observation[]` arrays (imageID, featureID) |
 | `colors` | `Pixel8UArr` | Per-track RGB colors (optional) |
+| `priorPoses` | `unordered_map<IIndex, Pose3D>` | Imported poses before refinement, keyed by image ID; transient (not serialized), consumed by `AlignToPriorPoses` |
 | `transform` | `Matrix4x4` | GPS similarity transform (identity if no GPS) |
 | `status` | `Status` | Pipeline state flags |
 | `threadPool` | `BS::light_thread_pool` | Worker thread pool |
@@ -484,6 +489,8 @@ CUDA kernels run on the GPU while the CPU pipeline continues. GPU synchronizatio
 | Metashape XML | `InterfaceMetashape` | Import | Chunk XML with cameras, sensors, markers |
 | MVSNet cameras.txt | `InterfaceMVSNet` | Import | Per-image camera parameter files + optional .pfm depth |
 | Polycam JSON | `InterfacePolycam` | Import | Per-frame JSON + ARKit poses |
+| frames.json | `PoseIO.h` | Import | Array of `{name, transform[16], params?}`: column-major camera-to-world poses + optional OPENCV intrinsics, seeding the known-poses SFM path |
+| Pose CSV | `PoseIO.h` | Import/Export | `filename,fx,fy,cx,cy,qx,qy,qz,qw,Cx,Cy,Cz,score` per image |
 | SFM to MVS | `InterfaceMVS.h` | Internal | Undistorts images, writes MVS::Interface binary |
 
 ### Image Formats

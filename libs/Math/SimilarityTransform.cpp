@@ -155,11 +155,16 @@ bool SEACAVE::EstimateRotationAlignment(
 	const REAL inlierThresholdRad = D2R(inlierThresholdDeg);
 	const REAL cosInlierThreshold = COS(inlierThresholdRad);
 
-	// 1) Build per-image relative rotation candidates (dst * src^T)
+	// 1) Build per-image alignment candidates for the documented model dstR = srcR * alignR,
+	// i.e. alignR_i = srcR_i^T * dstR_i; a right-side rotation difference (a world-gauge
+	// change acts on world-to-camera rotations as R -> R * W) makes these constant across
+	// the set, which is what the consensus seed and the IRLS below assume
+	// (the previous dst * src^T candidates fit the left-side model instead, which no caller
+	// uses: for gauge-differing sets they are conjugates that disagree with each other)
 	Matrix3x3Arr relRots;
 	relRots.reserve(srcRots.size());
 	FOREACH(i, srcRots)
-		relRots.emplace_back(dstRots[i] * srcRots[i].t());
+		relRots.emplace_back(srcRots[i].t() * dstRots[i]);
 
 	// 2) Consensus seed: pick the candidate with the largest inlier support
 	unsigned bestInliers = 0;

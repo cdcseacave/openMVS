@@ -12,7 +12,7 @@ OpenMVS is a comprehensive photogrammetry library implementing a complete pipeli
 - **MVS modules:** ~20 headers in `libs/MVS/`
 - **Common framework files:** ~40 headers in `libs/Common/`
 - **CUDA-enabled modules:** 4 (PatchMatchCUDA, SceneRefineCUDA, GlobalPositioning GPU, SiftGPU)
-- **Interface formats:** COLMAP, OpenMVG, Metashape, MVSNet, Polycam
+- **Interface formats:** COLMAP, OpenMVG, Metashape, MVSNet, Polycam, frames.json / pose CSV (known-pose import)
 
 ---
 
@@ -45,8 +45,8 @@ OpenMVS is a comprehensive photogrammetry library implementing a complete pipeli
 ### SFM Scene
 
 - **Files:** `libs/SFM/Scene.h`, `libs/SFM/Scene.cpp`
-- **Algorithms:** Full SFM pipeline orchestration — import, feature extraction, pair matching, track building, initialization, incremental resection, bundle adjustment, GPS alignment, color sampling
-- **Key Data:** `CameraArr cameras`, `ImageArr images`, `ImagePairArr pairs`, `TrackArr tracks`, `ColorArr colors`, `Transform transform`, `Status status`
+- **Algorithms:** Full SFM pipeline orchestration — import, feature extraction, pair matching, track building, initialization, incremental resection, bundle adjustment, GPS or prior-pose alignment, color sampling
+- **Key Data:** `CameraArr cameras`, `ImageArr images`, `ImagePairArr pairs`, `TrackArr tracks`, `ColorArr colors`, `Transform transform`, `Status status`, `priorPoses` (transient imported-pose snapshot)
 - **Configuration:** `ReconstructionConfig` (aggregates ImportConfig, FeatureExtractionConfig, MatchConfig, ViewGraphCalibratorConfig, and all reconstruction parameters)
 - **GPU Support:** Indirect — delegates to SiftGPU and CUDA modules
 - **Threading:** `BS::light_thread_pool` for parallel pair matching; OpenMP for image loops
@@ -113,11 +113,13 @@ OpenMVS is a comprehensive photogrammetry library implementing a complete pipeli
 
 - **Files:** `libs/SFM/PairsMatcher.h`, `libs/SFM/PairsMatcher.cpp`
 - **Algorithms:**
-  - **Matching modes:** `EXHAUSTIVE` (all N² pairs), `VOCABULARY` (VocabularyTree top-K retrieval + co-neighbor expansion), `SEQUENTIAL` (video overlap window)
+  - **Matching modes:** `EXHAUSTIVE` (all N² pairs), `VOCABULARY` (VocabularyTree retrieval re-ranked with reciprocal-rank fusion, mutual top-K + connectivity bridges), `SEQUENTIAL` (video overlap window), `KNOWN_POSES` (pose-guided selection)
+  - **Pose-guided selection (`CollectKnownPosePairs`):** scene scale estimated as the median nearest-neighbor camera-center distance; pairs rejected when the optical axes diverge by more than 75°; remaining pairs scored as normalized-baseline term (peaking at 2× scene scale, decaying symmetrically in log-scale) × viewing-direction agreement; a pair is kept only when each image ranks the other in its own top candidates (mutual agreement), every posed image additionally keeps its 2 nearest posed cameras ungated (occlusion floor), and the connected components are bridged by the best cross pairs; incomplete pose sets additionally use vocabulary retrieval for pairs touching unposed images so they can be resected later; falls back to `EXHAUSTIVE` when fewer than two images are posed or all centers coincide
+  - **Verification feedback (both selective modes):** matching runs in two rounds — the first uses uninflated candidate lists at 80% of the target, then `CollectVerificationFeedbackPairs` re-invests the rest of the `maxPairsPerImage*N/2` budget in pairs suggested by the geometrically verified matches (KNOWN_POSES closes verified triangles, VOCABULARY propagates verified pairs to their endpoints' top retrieval candidates), plus a weakest-image refill
   - **Descriptor matching:** FLANN LSH (binary descriptors) or KDTree (float descriptors); Lowe ratio test (0.9 for AKAZE/ORB, 0.8 for SIFT); optional cross-check
   - **Pre-match threshold:** optional filter before full matching
   - **SiftMatchGPU:** GPU-accelerated matching path (optional)
-- **Configuration:** `MatchConfig` — `mode`, `maxPairsPerImage` (50), `matchDistance`, `matchRatio`, `maxEpipolarError`, `minMatches` (50), `expandPairsTopK`, `matchSequenceOverlap`
+- **Configuration:** `MatchConfig` — `mode`, `maxPairsPerImage` (50, used by `VOCABULARY` and `KNOWN_POSES`), `verificationFeedback` (two-round matching), `matchDistance`, `matchRatio`, `maxEpipolarError`, `minMatches` (50), `matchSequenceOverlap`
 - **GPU Support:** Yes (SiftMatchGPU)
 - **Threading:** `BS::light_thread_pool` for parallel pair matching; per-thread matcher instances
 - **Dependencies:** FLANN, OpenCV, SiftMatchGPU (optional)
@@ -256,6 +258,21 @@ OpenMVS is a comprehensive photogrammetry library implementing a complete pipeli
 - **Threading:** Single (sequential stages)
 - **Dependencies:** PoseLib, Ceres Solver, Common
 
+### Known-Poses Reconstruction (Finetune)
+
+- **Files:** `libs/SFM/Scene.h`, `libs/SFM/Scene.cpp` (`Scene::ReconstructKnownPoses`)
+- **Algorithms:** Refinement path selected by `ReconstructionConfig::HasKnownPoses()` when a poses file was imported with `PoseImportMode::POSES_INTRINSICS` or `POSES`:
+  1. **Coverage validation:** at least 20% of the images (and at least 2) must carry an imported pose, otherwise the run fails listing the unmatched file names — a sanity gate against a file-name mismatch, never a silent fall-back to standard SfM
+  2. **Convention resolution:** for a `frames.json` imported as `AUTO`, `ResolveFramesConvention()` (`PoseIO.h`) runs `DetectFramesConvention()` to decide between the ARKit and OpenCV camera axes and `FlipFramesConvention()` applies the flip when needed
+  3. **Prior snapshot:** the imported poses are copied into `Scene::priorPoses` (transient, keyed by image ID) before any refinement
+  4. **Triangulation with the imported poses:** `BuildTracks` → `TriangulateTracks` at 4× `maxReprojError` (permissive, since the poses are approximate and the intrinsics may be EXIF-derived) → `FilterTracks`
+  5. **Calibrated marking:** `RecomputeCalibratedImages()` + `Status::STATE::CALIBRATED`
+  6. **Finetune BA:** bundle adjustment (forcing `RefineMainIntrinsics()` when any camera reports `!TrustIntrinsics()`) → re-triangulate outliers → filter → second bundle adjustment
+- **Configuration:** `ReconstructionConfig::importCfg` (`importPosesFile`, `importPosesMode`, `framesConvention`), `baIntrinsicFlags`, `maxReprojError`, `minAngleThreshold`, `minPairWeight`
+- **GPU Support:** No
+- **Threading:** Inherits the bundle adjustment and track threading
+- **Dependencies:** `ImportFramesJSON`, `Track`, `Triangulation`, `BundleAdjustment`
+
 ### View Graph Calibrator
 
 - **Files:** `libs/SFM/ViewGraphCalibrator.h`, `libs/SFM/ViewGraphCalibrator.cpp`
@@ -272,7 +289,7 @@ OpenMVS is a comprehensive photogrammetry library implementing a complete pipeli
 ### Similarity Transform (SFM)
 
 - **Files:** `libs/SFM/SimilarityTransform.h`, `libs/SFM/SimilarityTransform.cpp`
-- **Algorithms:** 7-DOF Sim(3) transform computation and application; GPS alignment via `AlignToGPS()` using WGS84→ENU geodetic conversion
+- **Algorithms:** 7-DOF Sim(3) transform computation and application; GPS alignment via `AlignToGPS()` using WGS84→ENU geodetic conversion; prior-pose alignment via `AlignToPriorPoses()`, which fits the same Sim(3) between the refined camera centers and the `Scene::priorPoses` snapshot (RANSAC threshold given as a fraction of the median neighboring prior-center distance, since the prior frame's units are unknown), leaving `Scene::transform` and `GEO_ALIGN` untouched and logging the median/max center and rotation delta against the priors; a known-poses reconstruction fails if this final alignment cannot be estimated
 - **GPU Support:** No
 - **Threading:** Single
 - **Dependencies:** Common, Math (GeodeticTransforms)
@@ -388,6 +405,21 @@ OpenMVS is a comprehensive photogrammetry library implementing a complete pipeli
 - **GPU Support:** No
 - **Threading:** Single
 - **Dependencies:** Common, TinyNPY
+
+### Pose I/O (Known Poses)
+
+- **Files:** `libs/SFM/PoseIO.h`, `libs/SFM/PoseIO.cpp`
+- **Algorithms:** Imports/exports the OpenMVS pose CSV format and reads a Polycam-style `frames.json` — a JSON array of `{name, transform[16], params?}` entries where `transform` is a column-major 4×4 camera-to-world matrix:
+  - **Entry-to-image matching:** by file name, full name first then stem, both case-insensitive; unmatched entries are reported, unmatched images stay unposed (recovered later by the pipeline tail's resection)
+  - **Pose sanitation:** the last row must be `(0,0,0,1)` within 1e-6; a rotation block within 1e-3 of orthonormal is re-orthonormalized, outside that the entry is rejected
+  - **Camera-axes convention:** `FramesConvention::ARKIT` (X right, Y up, Z backward) vs `OPENCV` (X right, Y down, Z forward), differing by a π rotation about the camera X axis; the file does not declare it, so `DetectFramesConvention()` resolves it after matching — median angular error of the imported vs match-verified relative rotations under both hypotheses (needs ≥3 verified pairs and a 3× margin), falling back to two-view triangulating up to 10 top-weighted pairs (≤200 matches each, ≥20 inliers required) and comparing cheirality-positive low-reprojection inlier counts; returns `AUTO` when inconclusive so the caller can fail loudly. `FlipFramesConvention()` applies the flip as `R ← diag(1,-1,-1)·R` with the camera centers unchanged
+  - **Intrinsics (`params`, only in `POSES_INTRINSICS` mode):** `camera_model` must be `OPENCV`; `fx, fy, cx, cy` rescaled from the declared `w,h` to the on-disk resolution, with the height ratio required to agree within 0.1%; `k1, k2, p1, p2` map onto `PinholeCamera`'s Brown-Conrady subset; `trustIntrinsics` set. Missing `params` leaves the EXIF-derived intrinsics in place
+  - **EXIF portrait handling:** images rotated 90° clockwise on load get the same in-plane rotation composed into the imported pose (`R ← Rz(+90°)·R`, the inverse of `View::RevertRotation`) and their imported intrinsics rotated to match (`fx↔fy`, `cx,cy` remapped, `p1,p2` rotated, radial terms invariant); the camera center is unchanged
+  - Runs before camera de-duplication in `Scene::Import`, so identical per-frame intrinsics collapse into a single shared `Camera`
+- **Configuration:** `ImportConfig::importPosesFile` (dispatched on extension: `.csv` → `ImportPosesCSV`, `.json` → here), `importPosesMode` (`PoseImportMode`), `framesConvention` (`auto|arkit|opencv`)
+- **GPU Support:** No
+- **Threading:** Single
+- **Dependencies:** Common, IO (`json.hpp`), `Triangulation`
 
 ### Interface MVS (SFM-to-MVS Bridge)
 
@@ -790,11 +822,11 @@ OpenMVS is a comprehensive photogrammetry library implementing a complete pipeli
 | SFM Feature Extraction | 1 | Yes (SiftGPU) |
 | SFM Matching | 4 | Yes (SiftMatchGPU) |
 | SFM Track Building | 2 | No |
-| SFM Reconstruction | 6 | Yes (GlobalPositioning) |
+| SFM Reconstruction | 7 | Yes (GlobalPositioning) |
 | SFM Bundle Adjustment | 1 | No |
 | SFM Global Methods | 4 | Yes (GlobalPositioning) |
 | SFM Keyframe | 1 | No |
-| SFM Import/Export | 3 | No |
+| SFM Import/Export | 4 | No |
 | MVS Core | 6 | Yes (Camera CUDA) |
 | MVS Dense Depth | 4 | Yes (PatchMatchCUDA) |
 | MVS Mesh Reconstruction | 1 | No |
