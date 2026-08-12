@@ -116,10 +116,11 @@ Extract features (AKAZE/ORB/SIFT/SIFTGPU) -> Match pairs (VOCABULARY/EXHAUSTIVE/
 Selected by `ReconstructionConfig::HasKnownPoses()` (a poses file is configured with
 `PoseImportMode::POSES_INTRINSICS` or `POSES`); the imported poses are initialization only.
 ```
-[Match + build tracks] -> Validate >=50% of the images got a pose (fail loudly, listing the
-   unmatched names - never silently fall back to standard SfM)
+[Match + build tracks] -> Validate >=20% of the images got a pose (fail loudly, listing the
+   unmatched names - never silently fall back to standard SfM; the gate catches a file-name
+   mismatch, partially covered captures are legitimate)
+-> Resolve the frames.json camera-axes convention (ResolveFramesConvention, only when AUTO)
 -> Snapshot the imported poses into Scene::priorPoses
--> Resolve the frames.json camera-axes convention (DetectFramesConvention, only when AUTO)
 -> BuildTracks -> TriangulateTracks with 4x maxReprojError -> FilterTracks
 -> RecomputeCalibratedImages + set CALIBRATED
 -> Finetune BA (forces RefineMainIntrinsics when any camera has !TrustIntrinsics)

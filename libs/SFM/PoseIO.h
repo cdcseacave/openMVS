@@ -36,7 +36,8 @@ enum class PoseImportMode {
  * @brief Export/import image poses in the OpenMVS human-readable CSV format
  *
  * Schema per row: filename,fx,fy,cx,cy,qx,qy,qz,qw,Cx,Cy,Cz,score.
- * POSES_INTRINSICS also marks applied intrinsics as trusted.
+ * Rows are matched to images by file-name stem, case-insensitive; ambiguous stems are
+ * rejected. POSES_INTRINSICS also marks applied intrinsics as trusted.
  * @return number of valid image poses exported/imported
  */
 SFM_API unsigned ExportPosesCSV(const String& fileName, const ImageArr& images);
@@ -55,6 +56,10 @@ enum class FramesConvention {
 
 // Human readable name of the given convention (for logging)
 SFM_API String FramesConventionToString(FramesConvention convention);
+
+// Parse a convention name (the inverse of FramesConventionToString, case-insensitive);
+// empty and "auto" map to AUTO; returns false for any other name
+SFM_API bool FramesConventionFromString(const String& str, FramesConvention& convention);
 
 /**
  * @brief Import camera poses (and optionally intrinsics) from a Polycam-style frames.json
@@ -85,6 +90,8 @@ SFM_API unsigned ImportFramesJSON(const String& fileName, Scene& scene, PoseImpo
  * `img.R <- diag(1,-1,-1) * img.R`, camera centers unchanged
  * (derivation: the camera-to-world rotation changes as `R_c2w * D`, so its
  * transpose, which is what Pose3D stores, changes as `D * R_c2w^T`).
+ * EXIF-rotated images store `Rz(90) * D * R_c2w^T` (see ImportFramesJSON), so their
+ * flip conjugates to `Rz(90) * D * Rz(-90) = diag(-1,1,-1)` instead.
  */
 SFM_API void FlipFramesConvention(Scene& scene);
 
@@ -94,9 +101,10 @@ SFM_API void FlipFramesConvention(Scene& scene);
  * Primary signal: over the pairs carrying a match-verified relative pose, the imported
  * relative rotation is compared against the verified one under both hypotheses and the
  * lower median angular error wins.
- * Fallback (no pair was verified, e.g. all pairs are F-only): the matches of the
- * highest-weighted pairs are two-view triangulated with the imported poses under both
- * hypotheses and the one producing more cheirality-positive, low-reprojection inliers wins.
+ * Fallback (no pair was verified, e.g. all pairs are F-only, or the rotation signal is
+ * ambiguous, e.g. a low-rotation forward walk): the matches of the highest-weighted pairs
+ * are two-view triangulated with the imported poses under both hypotheses and the one
+ * producing more cheirality-positive, low-reprojection inliers wins.
  * Both tests require a clear margin, so that a genuinely ambiguous scene reports AUTO
  * instead of guessing.
  * @param scene scene with imported poses and geometrically verified pairs (not modified)

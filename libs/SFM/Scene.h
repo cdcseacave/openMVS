@@ -307,8 +307,9 @@ public:
 	 * @return true if reconstruction completed
 	 *
 	 * Pipeline:
-	 * 1. Validate the pose import covered the dataset and remember the imported poses
+	 * 1. Validate the pose import covered the dataset
 	 * 2. Resolve the camera-axes convention of a frames.json import (see DetectFramesConvention)
+	 *    and remember the imported poses
 	 * 3. Build tracks and triangulate them with the imported poses
 	 * 4. Bundle-adjust, re-triangulate the outliers, bundle-adjust again
 	 *
@@ -316,6 +317,17 @@ public:
 	 * input coordinate frame at the end of Reconstruct() by AlignToPriorPoses().
 	 */
 	bool ReconstructKnownPoses(const ReconstructionConfig& config);
+
+	/**
+	 * @brief Resolve the camera-axes convention of an AUTO frames.json pose import
+	 *
+	 * No-op unless the import was a frames.json with FramesConvention::AUTO. Runs
+	 * DetectFramesConvention() on the matched pairs and flips the imported poses when the
+	 * detected convention differs from the optimistically applied ARKit one; must therefore
+	 * run after matching and before the poses are used or persisted.
+	 * @return false when the evidence is inconclusive (the caller must fail loudly)
+	 */
+	bool ResolveFramesConvention(const ImportConfig& importCfg);
 
 	/**
 	 * @brief Sample colors for each track from observations
@@ -345,9 +357,13 @@ public:
 	 *
 	 * Estimates a similarity transform between the centers of the images still valid after
 	 * filtering and their Scene::priorPoses counterparts, and applies it to the whole scene
-	 * (including the images resected along the way, which have no prior). Unlike AlignToGPS
-	 * this does not touch Scene::transform nor set GEO_ALIGN: the prior frame is not a
-	 * geo-referenced one, it is simply the frame the poses were imported in.
+	 * (including the images resected along the way, which have no prior). A (nearly)
+	 * collinear capture (corridor walk, straight flight line) leaves the roll about the
+	 * trajectory unconstrained by the centers, so there the rotation is estimated from the
+	 * prior/refined camera rotations instead and only scale and translation come from the
+	 * centers. Unlike AlignToGPS this does not touch Scene::transform nor set GEO_ALIGN:
+	 * the prior frame is not a geo-referenced one, it is simply the frame the poses were
+	 * imported in.
 	 * @param thresholdRatio RANSAC inlier threshold, expressed as a fraction of the median
 	 *        distance between neighboring prior camera centers; the prior frame may be in
 	 *        arbitrary units, so no absolute threshold can be chosen here (0 disables RANSAC)
@@ -448,6 +464,17 @@ public:
  * @return true if comparison succeeded (does not indicate quality)
  */
 SFM_API bool CompareScenes(const Scene& scene, const String& gtFile, bool matchByName = true);
+/*----------------------------------------------------------------*/
+
+
+/**
+ * @brief Median nearest-neighbor distance of the given camera centers
+ *
+ * The only scale reference a capture itself provides; used to derive relative thresholds
+ * (pair-selection baselines, alignment RANSAC thresholds).
+ * @return 0 when fewer than two centers are given or they all coincide
+ */
+SFM_API REAL MedianNearestCameraDistance(BS::light_thread_pool& threadPool, const Point3Arr& centers);
 /*----------------------------------------------------------------*/
 
 } // namespace SFM

@@ -742,38 +742,42 @@ PairIdxArr PairsMatcher::CollectVocabularyPairs(unsigned topK)
 	setPairs.reserve(numEndpointVotes.size() / 2);
 	for (const auto& [pairIndex, votes] : numEndpointVotes) {
 		ASSERT(votes <= 2);
-		if (votes == 2 && setPairs.emplace(pairIndex).second)
+		if (votes == 2) {
+			setPairs.emplace(pairIndex);
 			result.emplace_back(PairIdx(pairIndex));
+		}
 	}
 	const unsigned numMutualPairs = (unsigned)result.size();
 
 	// 4) Connectivity backbone: add the maximum-similarity edges bridging the connected
 	//    components of the selected pair graph (Kruskal over all retrieved pairs, with
 	//    the union-find seeded by the mutual pairs), so a sparse selection cannot
-	//    silently split the view graph
-	IIndexArr ufParent(nImages);
-	std::iota(ufParent.begin(), ufParent.end(), 0u);
-	const auto Find = [&ufParent](IIndex x) {
-		while (ufParent[x] != x)
-			x = ufParent[x] = ufParent[ufParent[x]];
-		return x;
-	};
-	for (const PairIdx& p : result)
-		ufParent[Find(idxFromID[p.i])] = Find(idxFromID[p.j]);
-	CLISTDEF0(ScoredPair) allPairs(0, (IIndex)pairScores.size());
-	for (const auto& [pairIndex, score] : pairScores)
-		allPairs.push_back({pairIndex, score});
-	allPairs.Sort([](const ScoredPair& a, const ScoredPair& b) {
-		return a.score > b.score;
-	});
-	for (const ScoredPair& sp : allPairs) {
-		const PairIdx pair(sp.idx);
-		const IIndex rootA = Find(idxFromID[pair.i]);
-		const IIndex rootB = Find(idxFromID[pair.j]);
-		if (rootA != rootB) {
-			ufParent[rootA] = rootB;
-			if (setPairs.emplace(sp.idx).second)
-				result.emplace_back(pair);
+	//    silently split the view graph; in the common case the mutual graph is already
+	//    one component and the whole candidate sort is skipped
+	DisjointSet<IIndex> components(nImages);
+	IIndex numComponents = nImages;
+	for (const PairIdx& p : result) {
+		const IIndex a = idxFromID[p.i], b = idxFromID[p.j];
+		if (components.Find(a) != components.Find(b)) {
+			components.Union(a, b);
+			--numComponents;
+		}
+	}
+	if (numComponents > 1) {
+		CLISTDEF0(ScoredPair) allPairs(0, (IIndex)pairScores.size());
+		for (const auto& [pairIndex, score] : pairScores)
+			allPairs.push_back({pairIndex, score});
+		allPairs.Sort([](const ScoredPair& a, const ScoredPair& b) {
+			return a.score > b.score;
+		});
+		for (const ScoredPair& sp : allPairs) {
+			const PairIdx pair(sp.idx);
+			const IIndex a = idxFromID[pair.i], b = idxFromID[pair.j];
+			if (components.Find(a) != components.Find(b)) {
+				components.Union(a, b);
+				if (setPairs.emplace(sp.idx).second)
+					result.emplace_back(pair);
+			}
 		}
 	}
 	DEBUG("Vocabulary-based matching: %u candidate pairs, %u mutual top-%u and %u connectivity bridges (%.2f/%u pairs/image) in %s",
@@ -800,22 +804,10 @@ IIndexArr CollectPosedImages(const Scene& scene)
 // (0 if all camera centers coincide)
 REAL EstimateSceneScale(Scene& scene, const IIndexArr& posedImages)
 {
-	const IIndex nPosed = posedImages.size();
-	REALArr nearestDistances(nPosed);
-	scene.threadPool.detach_loop(0u, nPosed, [&](IIndex a) {
-		const CMatrix& C = scene.images[posedImages[a]].C;
-		REAL nearestDistance = std::numeric_limits<REAL>::max();
-		for (IIndex b = 0; b < nPosed; ++b) {
-			if (b == a)
-				continue;
-			const REAL distance = norm(C - scene.images[posedImages[b]].C);
-			if (nearestDistance > distance)
-				nearestDistance = distance;
-		}
-		nearestDistances[a] = nearestDistance;
-	});
-	scene.threadPool.wait();
-	return nearestDistances.GetMedian();
+	Point3Arr centers(posedImages.size());
+	FOREACH(a, posedImages)
+		centers[a] = scene.images[posedImages[a]].C;
+	return MedianNearestCameraDistance(scene.threadPool, centers);
 }
 
 // Pose-guided pair scoring, shared by the candidate selection, the connectivity bridging
@@ -901,11 +893,18 @@ PairIdxArr PairsMatcher::CollectKnownPosePairs(unsigned topK)
 	std::vector<CLISTDEF0(ScoredImage)> topPerImage(nPosed);
 	std::vector<CLISTDEF0(ScoredImage)> nearestPerImage(nPosed); // per-image nearest cameras by center distance, ungated
 	std::atomic<unsigned> numRejectedByViewAngle{0};
+	const auto CmpScore = [](const ScoredImage& i, const ScoredImage& j) {
+		return i.score > j.score || (i.score == j.score && i.idx < j.idx);
+	};
+	// bound the per-image candidate list: all nPosed lists are alive at once, so letting each
+	// grow to nPosed-1 entries costs O(nPosed^2) memory (gigabytes on a >10k-image capture);
+	// compacting to the current top-K on overflow is exact, the dropped tail can never re-enter
+	const IIndex maxScoredImages = MAXF(16u, topK*4u);
 	scene.threadPool.detach_loop(0u, nPosed, [&](IIndex a) {
 		const Image& imgA = scene.images[posedImages[a]];
 		const Point3 directionA(imgA.Direction());
 		CLISTDEF0(ScoredImage)& scoredImages = topPerImage[a];
-		scoredImages.reserve(nPosed - 1);
+		scoredImages.reserve(MINF(nPosed - 1, maxScoredImages));
 		CLISTDEF0(ScoredImage)& nearestImages = nearestPerImage[a];
 		for (IIndex b = 0; b < nPosed; ++b) {
 			if (b == a)
@@ -931,11 +930,13 @@ PairIdxArr PairsMatcher::CollectKnownPosePairs(unsigned topK)
 				continue;
 			}
 			scoredImages.emplace_back(ScoredImage{b, s.score});
+			if (scoredImages.size() >= maxScoredImages) {
+				std::nth_element(scoredImages.begin(), scoredImages.begin() + topK, scoredImages.end(), CmpScore);
+				scoredImages.Resize(topK);
+			}
 		}
 		if (scoredImages.size() > topK) {
-			scoredImages.Sort([](const ScoredImage& i, const ScoredImage& j) {
-				return i.score > j.score;
-			});
+			scoredImages.Sort(CmpScore);
 			scoredImages.Resize(topK);
 		}
 	});
@@ -969,19 +970,12 @@ PairIdxArr PairsMatcher::CollectKnownPosePairs(unsigned topK)
 	//    (Boruvka rounds over the two-tier bridge score: any admissible score outranks every
 	//    rejected one, and rejected bridges prefer the nearest cameras), so a sparse or
 	//    gate-fragmented selection cannot silently split the view graph
-	IIndexArr ufParent(nPosed);
-	std::iota(ufParent.begin(), ufParent.end(), 0u);
-	const auto Find = [&ufParent](IIndex x) {
-		while (ufParent[x] != x)
-			x = ufParent[x] = ufParent[ufParent[x]];
-		return x;
-	};
+	DisjointSet<IIndex> components(nPosed);
 	unsigned numComponents = nPosed;
 	for (const PairIdx::PairIndex pairIndex : setPairs) {
 		const PairIdx pair(pairIndex);
-		const IIndex rootA = Find(pair.i), rootB = Find(pair.j);
-		if (rootA != rootB) {
-			ufParent[rootA] = rootB;
+		if (components.Find(pair.i) != components.Find(pair.j)) {
+			components.Union(pair.i, pair.j);
 			--numComponents;
 		}
 	}
@@ -995,9 +989,9 @@ PairIdxArr PairsMatcher::CollectKnownPosePairs(unsigned topK)
 		for (IIndex a = 0; a < nPosed; ++a) {
 			const Image& imgA = scene.images[posedImages[a]];
 			const Point3 directionA(imgA.Direction());
-			const IIndex rootA = Find(a);
+			const IIndex rootA = components.Find(a);
 			for (IIndex b = a + 1; b < nPosed; ++b) {
-				if (rootA == Find(b))
+				if (rootA == components.Find(b))
 					continue;
 				const Image& imgB = scene.images[posedImages[b]];
 				const REAL bridgeScore = scorer.BridgeScore(scorer(imgA, directionA, imgB));
@@ -1010,9 +1004,8 @@ PairIdxArr PairsMatcher::CollectKnownPosePairs(unsigned topK)
 			break;
 		for (const auto& [root, bridge] : bestBridge) {
 			const PairIdx pair(bridge.pairIndex);
-			const IIndex rootA = Find(pair.i), rootB = Find(pair.j);
-			if (rootA != rootB) {
-				ufParent[rootA] = rootB;
+			if (components.Find(pair.i) != components.Find(pair.j)) {
+				components.Union(pair.i, pair.j);
 				--numComponents;
 				setPairs.emplace(pair.idx);
 			}
@@ -1039,7 +1032,32 @@ PairIdxArr PairsMatcher::CollectKnownPosePairs(unsigned topK)
 		posedImageIDs.reserve(nPosed);
 		for (const IIndex imageIdx : posedImages)
 			posedImageIDs.emplace(scene.images[imageIdx].ID);
-		PairIdxArr unposedCandidates = CollectVocabularyPairs(requestedTopK);
+		// query the vocabulary tree only for the unposed images: the posed ones are already
+		// covered by the pose-guided selection above, so the full fused retrieval over all
+		// images would be built just to be thrown away
+		IIndexArr unposedImages;
+		unposedImages.reserve(nImages - nPosed);
+		FOREACH(i, scene.images)
+			if (!scene.images[i].HasPose())
+				unposedImages.push_back(i);
+		PairIdxArr unposedCandidates;
+		EnsureVocabularyTree();
+		if (vocabularyTree && vocabularyTree->IsValid()) {
+			const unsigned queryDepth = (unsigned)MINF(requestedTopK, nImages - 1);
+			std::vector<PairIdxArr> pairsPerImage(unposedImages.size());
+			scene.threadPool.detach_loop(0u, unposedImages.size(), [&](IIndex u) {
+				const Image& img = scene.images[unposedImages[u]];
+				const auto candidates = vocabularyTree->Query(img, queryDepth + 1);
+				PairIdxArr& pairs = pairsPerImage[u];
+				pairs.reserve((IIndex)candidates.size());
+				for (const auto& kv : candidates)
+					if (kv.first != img.ID)
+						pairs.emplace_back(MakePairIdx(img.ID, kv.first));
+			});
+			scene.threadPool.wait();
+			for (const PairIdxArr& pairs : pairsPerImage)
+				unposedCandidates.Join(pairs);
+		}
 		if (unposedCandidates.empty()) {
 			VERBOSE("warning: visual retrieval for the %u images without poses failed; matching every pair touching them",
 				nImages - nPosed);
@@ -1165,17 +1183,25 @@ PairIdxArr PairsMatcher::CollectVerificationFeedbackPairs(const PairIdxArr& atte
 		// enough past the first-round candidate lists to always offer unattempted pairs
 		if (proposals.size() < budget) {
 			const IIndex refillDepth = MINF(config.maxPairsPerImage*4/3 + 8, nEligible - 1);
+			// bound the per-image candidate list (see CollectKnownPosePairs): compacting to
+			// the current top ranking on overflow is exact and keeps the memory O(N*depth)
+			const IIndex maxCandidates = MAXF(IIndex(16), refillDepth*4);
 			scene.threadPool.detach_loop(0u, nEligible, [&](IIndex a) {
 				const Image& imgA = scene.images[posedImages[a]];
 				const Point3 directionA(imgA.Direction());
 				CLISTDEF0(ScoredCandidate)& candidates = rankedPerImage[posedImages[a]];
-				candidates.reserve(nEligible - 1);
+				candidates.reserve(MINF(nEligible - 1, maxCandidates));
 				for (IIndex b = 0; b < nEligible; ++b) {
 					if (b == a)
 						continue;
 					const PosePairScorer::Score s = scorer(imgA, directionA, scene.images[posedImages[b]]);
-					if (!s.IsGated())
-						candidates.push_back({posedImages[b], (float)s.score});
+					if (s.IsGated())
+						continue;
+					candidates.push_back({posedImages[b], (float)s.score});
+					if (candidates.size() >= maxCandidates) {
+						SortCandidates(candidates);
+						candidates.Resize(refillDepth);
+					}
 				}
 				SortCandidates(candidates);
 				if (candidates.size() > refillDepth)
@@ -1795,13 +1821,19 @@ unsigned PairsMatcher::Match()
 		OptimizePairsOrder(pairs);
 		return MatchPairsBatch(pairs, progressCaption, stats);
 	};
+	// Snapshot the candidate list before the round runs: PreMatch prunes rejected pairs from
+	// it in place (and they are not stored in scene.pairs either), so the feedback round must
+	// see the original list or it re-proposes exactly the pairs pre-matching already rejected
+	PairIdxArr attemptedPairs;
+	if (verificationFeedback)
+		attemptedPairs = pairsToMatch;
 	if (!MatchRound(pairsToMatch, _T("Match image pairs")))
 		return 0;
 
 	// Second round: spend the held-back pair budget on the pairs suggested by the
 	// geometrically verified matches of the first round
 	if (verificationFeedback) {
-		PairIdxArr feedbackPairs = CollectVerificationFeedbackPairs(pairsToMatch);
+		PairIdxArr feedbackPairs = CollectVerificationFeedbackPairs(attemptedPairs);
 		if (!feedbackPairs.empty() && !MatchRound(feedbackPairs, _T("Match feedback pairs")))
 			return 0;
 	}

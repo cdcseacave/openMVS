@@ -168,7 +168,7 @@ When `ReconstructionConfig::HasKnownPoses()` is true — `ImportConfig::importPo
 
 ```mermaid
 graph TD
-    A[Scene::ReconstructKnownPoses<br/>Scene.cpp:859] --> B{At least 50% of images posed?}
+    A[Scene::ReconstructKnownPoses<br/>Scene.cpp:859] --> B{At least 20% of images posed?}
     B -->|no| B1[Fail loudly<br/>list the unmatched file names]
     B -->|yes| C[Snapshot poses into Scene::priorPoses]
     C --> D{frames.json imported as AUTO?}

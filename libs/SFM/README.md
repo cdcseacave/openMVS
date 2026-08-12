@@ -123,7 +123,7 @@ Input: Images (or video keyframes)          [+ optional poses file]
 │(robust,slower)│ │(fast,simpler)│ │      (finetune)      │
 │               │ │              │ │                      │
 │Scene          │ │Rotation      │ │Validate pose         │
-│  Clustering   │ │  Averaging   │ │  coverage (>=50%)    │
+│  Clustering   │ │  Averaging   │ │  coverage (>=20%)    │
 │      │        │ │      │       │ │      │               │
 │      ▼        │ │      ▼       │ │      ▼               │
 │Per-cluster:   │ │Global        │ │Resolve camera-axes   │
@@ -373,7 +373,7 @@ Input: Images + matched pairs (from common front-end)
   ▼
 ┌─────────────────────────────────────────────────────────┐
 │ 1. Validate Pose Coverage                                │
-│    At least 50% of the images must have received a pose  │
+│    At least 20% of the images must have received a pose  │
 │    Otherwise: fail loudly, listing the unmatched names   │
 │    (never silently fall back to standard SfM -- that     │
 │     would mask a file-name mismatch in the poses file)   │

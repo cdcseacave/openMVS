@@ -24,29 +24,29 @@ namespace {
 // Largest deviation from orthonormality (max |R^T*R - I| element and |det(R)-1|) tolerated
 // in an imported camera-to-world rotation: within it the matrix is re-orthonormalized,
 // outside it the entry is rejected (sanitation of an external file)
-constexpr REAL orthonormalityTolerance = REAL(1e-3);
+constexpr REAL ORTHONORMALITY_TOLERANCE = REAL(1e-3);
 // Largest deviation tolerated in the last row of the 4x4 transform, which must be (0,0,0,1);
 // a transform failing this is either not affine or not stored column-major
-constexpr REAL affineRowTolerance = REAL(1e-6);
+constexpr REAL AFFINE_ROW_TOLERANCE = REAL(1e-6);
 // Largest relative disagreement tolerated between the horizontal and vertical rescale
 // factors implied by `params.w/h` versus the actual image resolution
-constexpr REAL intrinsicsScaleTolerance = REAL(1e-3);
+constexpr REAL INTRINSICS_SCALE_TOLERANCE = REAL(1e-3);
 // Number of per-entry problems reported individually before only the totals are logged
-constexpr unsigned maxLoggedWarnings = 10;
+constexpr unsigned MAX_LOGGED_WARNINGS = 10;
 
 // Convention detection: the winning hypothesis must be this many times better than the other
-constexpr REAL conventionMarginRatio = REAL(3);
+constexpr REAL CONVENTION_MARGIN_RATIO = REAL(3);
 // Convention detection: minimum number of match-verified pairs for the primary signal
-constexpr unsigned conventionMinVerifiedPairs = 3;
+constexpr unsigned CONVENTION_MIN_VERIFIED_PAIRS = 3;
 // Convention detection fallback: number of highest-weighted pairs triangulated
-constexpr unsigned conventionMaxTriangulatedPairs = 10;
+constexpr unsigned CONVENTION_MAX_TRIANGULATED_PAIRS = 10;
 // Convention detection fallback: matches sampled per pair
-constexpr unsigned conventionMaxMatchesPerPair = 200;
+constexpr unsigned CONVENTION_MAX_MATCHES_PER_PAIR = 200;
 // Convention detection fallback: minimum inliers the winning hypothesis must reach
-constexpr unsigned conventionMinTriangulatedInliers = 20;
+constexpr unsigned CONVENTION_MIN_TRIANGULATED_INLIERS = 20;
 // Convention detection fallback: triangulation thresholds
-constexpr float conventionReprojThreshold = 4.f;
-constexpr float conventionMinAngle = 0.5f;
+constexpr float CONVENTION_REPROJ_THRESHOLD = 4.f;
+constexpr float CONVENTION_MIN_ANGLE = 0.5f;
 
 // Pi rotation about the camera X axis, converting between the ARKit/OpenGL and the OpenCV
 // camera axes; it is symmetric and its own inverse, so the same matrix applies both ways
@@ -57,17 +57,38 @@ inline Matrix3x3 CameraAxesFlip() {
 		0, 0, -1);
 }
 
+// The axes flip expressed in the working raster orientation of the given image: an
+// EXIF-rotated image stores Rz(90)*R_file (see ImportFramesJSON), so undoing the file-side
+// flip conjugates it by that in-plane rotation, Rz(90)*D*Rz(-90) = diag(-1,1,-1);
+// both matrices are symmetric and involutive, so the same flip applies both ways
+inline Matrix3x3 CameraAxesFlipFor(const Image& img) {
+	return img.IsRotated() ?
+		Matrix3x3(
+			-1, 0, 0,
+			 0, 1, 0,
+			 0, 0, -1) :
+		CameraAxesFlip();
+}
+
 // The convention on the other side of the axes flip
 inline FramesConvention OppositeConvention(FramesConvention convention) {
 	return convention == FramesConvention::ARKIT ? FramesConvention::OPENCV : FramesConvention::ARKIT;
 }
 
-// Case-insensitive file name key used to match a frames.json entry to a scene image
+// Case-insensitive file name key used to match a poses-file entry to a scene image
 inline String NameKey(const String& path) {
 	return Util::getFileNameExt(path).ToLower();
 }
 inline String StemKey(const String& path) {
 	return Util::getFileName(path).ToLower();
+}
+
+// Insert an image key, rejecting ambiguous keys so they never silently select one image
+void AddUniqueImageKey(std::unordered_map<String, IIndex>& imageMap, const String& key, IIndex imageID)
+{
+	const auto [it, inserted] = imageMap.emplace(key, imageID);
+	if (!inserted)
+		it->second = NO_ID;
 }
 
 // Read a finite floating-point value from external JSON.
@@ -81,25 +102,6 @@ bool ReadFiniteNumber(const nlohmann::json& value, REAL& number)
 		return false;
 	}
 	return ISFINITE(number);
-}
-
-// Check that the given matrix is a rotation, up to the given tolerance
-bool IsRotationMatrix(const Matrix3x3& R, REAL tolerance)
-{
-	// R^T*R must be the identity
-	for (int i = 0; i < 3; ++i) {
-		for (int j = 0; j < 3; ++j) {
-			const REAL dot = R(0,i)*R(0,j) + R(1,i)*R(1,j) + R(2,i)*R(2,j);
-			if (ABS(dot - (i == j ? REAL(1) : REAL(0))) > tolerance)
-				return false;
-		}
-	}
-	// and the determinant must be +1 (a mirroring matrix is not a valid pose)
-	const REAL det =
-		R(0,0) * (R(1,1)*R(2,2) - R(1,2)*R(2,1)) -
-		R(0,1) * (R(1,0)*R(2,2) - R(1,2)*R(2,0)) +
-		R(0,2) * (R(1,0)*R(2,1) - R(1,1)*R(2,0));
-	return ABS(det - REAL(1)) <= tolerance;
 }
 
 // Apply the imported OPENCV intrinsics, declared for the original (on-disk) image
@@ -147,7 +149,7 @@ bool ApplyImportedIntrinsics(const nlohmann::json& params, Image& img, String& e
 	const cv::Size originalSize = img.GetOriginalSize();
 	const REAL scale = (REAL)originalSize.width / declaredWidth;
 	const REAL scaleHeight = (REAL)originalSize.height / declaredHeight;
-	if (ABS(scaleHeight - scale) > intrinsicsScaleTolerance * scale) {
+	if (ABS(scaleHeight - scale) > INTRINSICS_SCALE_TOLERANCE * scale) {
 		error = String::FormatString("declared resolution %gx%g does not match image %dx%d (scale %g vs %g)",
 			declaredWidth, declaredHeight, originalSize.width, originalSize.height, scale, scaleHeight);
 		return false;
@@ -169,15 +171,15 @@ bool ApplyImportedIntrinsics(const nlohmann::json& params, Image& img, String& e
 	return true;
 }
 
-// Count the two-view triangulation inliers of the given matches under one axes hypothesis:
-// an inlier is a match triangulating in front of both cameras with a small reprojection error
-unsigned CountTriangulationInliers(const Image& img1, const Image& img2,
-	const std::vector<DMatch>& matches, bool flipAxes)
+// Count the two-view triangulation inliers of the given matches under both axes hypotheses
+// (first as imported, then flipped to the opposite convention): an inlier is a match
+// triangulating in front of both cameras with a small reprojection error
+std::pair<unsigned, unsigned> CountTriangulationInliers(const Image& img1, const Image& img2,
+	const std::vector<DMatch>& matches)
 {
 	// build a two-image scene holding the hypothesis poses; the shared cameras are borrowed,
 	// so the camera IDs are kept valid to stop the view destructor from deleting them
 	ImageArr images(2);
-	const Matrix3x3 flip = CameraAxesFlip();
 	for (IIndex k = 0; k < 2; ++k) {
 		const Image& src = k == 0 ? img1 : img2;
 		Image& dst = images[k];
@@ -185,26 +187,34 @@ unsigned CountTriangulationInliers(const Image& img1, const Image& img2,
 		dst.cameraID = k;
 		dst.pCamera = src.pCamera;
 		dst.keypoints = src.keypoints;
-		dst.R = flipAxes ? RMatrix(flip * src.R) : src.R;
+		dst.R = src.R;
 		dst.C = src.C;
 	}
-	const unsigned numMatches = (unsigned)matches.size();
-	const unsigned step = MAXF(1u, numMatches / conventionMaxMatchesPerPair);
-	unsigned numInliers = 0;
-	for (unsigned i = 0; i < numMatches; i += step) {
-		const DMatch& match = matches[i];
-		if (match.queryIdx >= images[0].keypoints.size() ||
-			match.trainIdx >= images[1].keypoints.size())
-			continue;
-		Track track;
-		track.observations.emplace_back(0u, match.queryIdx);
-		track.observations.emplace_back(1u, match.trainIdx);
-		if (TriangulateSkewLLS(track, images, conventionReprojThreshold, conventionMinAngle, 2) < 2)
-			continue;
-		if (images[0].Depth(track.position) <= 0 || images[1].Depth(track.position) <= 0)
-			continue;
-		++numInliers;
-	}
+	const auto Count = [&images, &matches]() {
+		const unsigned numMatches = (unsigned)matches.size();
+		const unsigned step = MAXF(1u, numMatches / CONVENTION_MAX_MATCHES_PER_PAIR);
+		unsigned numInliers = 0;
+		for (unsigned i = 0; i < numMatches; i += step) {
+			const DMatch& match = matches[i];
+			if (match.queryIdx >= images[0].keypoints.size() ||
+				match.trainIdx >= images[1].keypoints.size())
+				continue;
+			Track track;
+			track.observations.emplace_back(0u, match.queryIdx);
+			track.observations.emplace_back(1u, match.trainIdx);
+			if (TriangulateSkewLLS(track, images, CONVENTION_REPROJ_THRESHOLD, CONVENTION_MIN_ANGLE, 2) < 2)
+				continue;
+			if (images[0].Depth(track.position) <= 0 || images[1].Depth(track.position) <= 0)
+				continue;
+			++numInliers;
+		}
+		return numInliers;
+	};
+	std::pair<unsigned, unsigned> numInliers;
+	numInliers.first = Count();
+	images[0].R = RMatrix(CameraAxesFlipFor(img1) * img1.R);
+	images[1].R = RMatrix(CameraAxesFlipFor(img2) * img2.R);
+	numInliers.second = Count();
 	// release the borrowed cameras before the array is destroyed
 	for (Image& img : images) {
 		img.cameraID = NO_ID;
@@ -273,20 +283,17 @@ unsigned SFM::ImportPosesCSV(const String& fileName, ImageArr& images, PoseImpor
 	unsigned numUpdated = 0;
 	if (mode == PoseImportMode::NONE)
 		return numUpdated;
-	if (mode != PoseImportMode::POSES_INTRINSICS && mode != PoseImportMode::POSES &&
-		mode != PoseImportMode::POSITIONS)
-		return numUpdated;
+	ASSERT(mode == PoseImportMode::POSES_INTRINSICS || mode == PoseImportMode::POSES ||
+		mode == PoseImportMode::POSITIONS);
 	std::ifstream is(fileName);
 	if (!is.is_open())
 		return numUpdated;
 
+	// index the images by stem, case-insensitive, with ambiguous stems rejected
 	std::unordered_map<String, IIndex> stemToIndex;
 	stemToIndex.reserve(images.size());
-	FOREACH(i, images) {
-		const auto [it, inserted] = stemToIndex.emplace(Util::getFileName(images[i].fileName), i);
-		if (!inserted)
-			it->second = NO_ID; // reject ambiguous stems instead of selecting an arbitrary image
-	}
+	FOREACH(i, images)
+		AddUniqueImageKey(stemToIndex, StemKey(images[i].fileName), i);
 
 	String line;
 	if (!std::getline(is, line))
@@ -295,20 +302,16 @@ unsigned SFM::ImportPosesCSV(const String& fileName, ImageArr& images, PoseImpor
 	if (!line.empty() && line[0] == '#' && !std::getline(is, line))
 		return numUpdated; // missing header
 
+	CLISTDEF2(String) fields;
 	while (std::getline(is, line)) {
 		if (line.empty())
 			continue;
 		// Parse CSV line
-		std::vector<String> fields;
-		fields.reserve(13);
-		std::stringstream ss(line);
-		String token;
-		while (std::getline(ss, token, ','))
-			fields.push_back(token);
+		Util::strSplit(line, ',', fields);
 		if (fields.size() < 13)
 			continue;
 		// Find image by stem
-		const auto it = stemToIndex.find(fields[0]);
+		const auto it = stemToIndex.find(fields[0].ToLower());
 		if (it == stemToIndex.end() || it->second == NO_ID)
 			continue;
 		Image& image = images[it->second];
@@ -381,6 +384,20 @@ String SFM::FramesConventionToString(FramesConvention convention)
 	default: return "auto";
 	}
 } // FramesConventionToString
+
+bool SFM::FramesConventionFromString(const String& str, FramesConvention& convention)
+{
+	const String name(str.ToLower());
+	if (name.empty() || name == "auto")
+		convention = FramesConvention::AUTO;
+	else if (name == "arkit")
+		convention = FramesConvention::ARKIT;
+	else if (name == "opencv")
+		convention = FramesConvention::OPENCV;
+	else
+		return false;
+	return true;
+} // FramesConventionFromString
 /*----------------------------------------------------------------*/
 
 
@@ -389,21 +406,14 @@ unsigned SFM::ImportFramesJSON(const String& fileName, Scene& scene, PoseImportM
 {
 	if (mode == PoseImportMode::NONE)
 		return 0;
-	if (mode != PoseImportMode::POSES_INTRINSICS && mode != PoseImportMode::POSES &&
-		mode != PoseImportMode::POSITIONS)
-	{
-		VERBOSE("error: invalid pose import mode for frames file '%s'", fileName.c_str());
-		return 0;
-	}
+	ASSERT(mode == PoseImportMode::POSES_INTRINSICS || mode == PoseImportMode::POSES ||
+		mode == PoseImportMode::POSITIONS);
 	if (convention == FramesConvention::AUTO) {
 		VERBOSE("error: the camera-axes convention of '%s' can only be resolved after matching; "
 			"import it as arkit or opencv", fileName.c_str());
 		return 0;
 	}
-	if (convention != FramesConvention::ARKIT && convention != FramesConvention::OPENCV) {
-		VERBOSE("error: invalid camera-axes convention for frames file '%s'", fileName.c_str());
-		return 0;
-	}
+	ASSERT(convention == FramesConvention::ARKIT || convention == FramesConvention::OPENCV);
 	std::ifstream stream(fileName.c_str());
 	if (!stream.is_open()) {
 		VERBOSE("error: failed to open frames file '%s'", fileName.c_str());
@@ -423,13 +433,6 @@ unsigned SFM::ImportFramesJSON(const String& fileName, Scene& scene, PoseImportM
 	std::unordered_map<String, IIndex> imageByName, imageByStem;
 	imageByName.reserve(scene.images.size());
 	imageByStem.reserve(scene.images.size());
-	const auto AddUniqueImageKey = [](std::unordered_map<String, IIndex>& imageMap,
-		const String& key, IIndex imageID)
-	{
-		const auto [it, inserted] = imageMap.emplace(key, imageID);
-		if (!inserted)
-			it->second = NO_ID; // ambiguous keys must not silently select one image
-	};
 	FOREACH(i, scene.images) {
 		const String& imgFileName = scene.images[i].fileName;
 		AddUniqueImageKey(imageByName, NameKey(imgFileName), i);
@@ -444,7 +447,7 @@ unsigned SFM::ImportFramesJSON(const String& fileName, Scene& scene, PoseImportM
 		const nlohmann::json& entry = data[e];
 		const auto itName = entry.find("name"); // returns end() for any non-object entry
 		if (itName == entry.end() || !itName->is_string()) {
-			if (++numWarnings <= maxLoggedWarnings)
+			if (++numWarnings <= MAX_LOGGED_WARNINGS)
 				VERBOSE("error: frame %u of '%s' has no 'name' string; skipped",
 					(unsigned)e, fileName.c_str());
 			++numRejected;
@@ -466,7 +469,7 @@ unsigned SFM::ImportFramesJSON(const String& fileName, Scene& scene, PoseImportM
 			}
 		}
 		if (imageID == NO_ID) {
-			if (++numWarnings <= maxLoggedWarnings) {
+			if (++numWarnings <= MAX_LOGGED_WARNINGS) {
 				if (ambiguousName)
 					VERBOSE("error: frame '%s' of '%s' ambiguously matches multiple input images; skipped",
 						name.c_str(), fileName.c_str());
@@ -481,7 +484,7 @@ unsigned SFM::ImportFramesJSON(const String& fileName, Scene& scene, PoseImportM
 			continue;
 		}
 		if (importedImages[imageID]) {
-			if (++numWarnings <= maxLoggedWarnings)
+			if (++numWarnings <= MAX_LOGGED_WARNINGS)
 				VERBOSE("error: more than one frame in '%s' matches image '%s'; duplicate skipped",
 					fileName.c_str(), Util::getFileNameExt(scene.images[imageID].fileName).c_str());
 			++numRejected;
@@ -491,7 +494,7 @@ unsigned SFM::ImportFramesJSON(const String& fileName, Scene& scene, PoseImportM
 		// read the 4x4 column-major camera-to-world transform
 		const auto itTransform = entry.find("transform");
 		if (itTransform == entry.end() || !itTransform->is_array() || itTransform->size() != 16) {
-			if (++numWarnings <= maxLoggedWarnings)
+			if (++numWarnings <= MAX_LOGGED_WARNINGS)
 				VERBOSE("error: frame '%s' of '%s' has no 'transform' array of 16 numbers; skipped",
 					name.c_str(), fileName.c_str());
 			++numRejected;
@@ -507,7 +510,7 @@ unsigned SFM::ImportFramesJSON(const String& fileName, Scene& scene, PoseImportM
 			}
 		}
 		if (!validNumbers) {
-			if (++numWarnings <= maxLoggedWarnings)
+			if (++numWarnings <= MAX_LOGGED_WARNINGS)
 				VERBOSE("error: frame '%s' of '%s' has a non-finite or non-numeric 'transform'; skipped",
 					name.c_str(), fileName.c_str());
 			++numRejected;
@@ -515,10 +518,10 @@ unsigned SFM::ImportFramesJSON(const String& fileName, Scene& scene, PoseImportM
 		}
 		// the last row of a column-major affine transform must be (0,0,0,1);
 		// a row-major file would carry its translation here instead
-		if (ABS(transform[3]) > affineRowTolerance || ABS(transform[7]) > affineRowTolerance ||
-			ABS(transform[11]) > affineRowTolerance || ABS(transform[15] - REAL(1)) > affineRowTolerance)
+		if (ABS(transform[3]) > AFFINE_ROW_TOLERANCE || ABS(transform[7]) > AFFINE_ROW_TOLERANCE ||
+			ABS(transform[11]) > AFFINE_ROW_TOLERANCE || ABS(transform[15] - REAL(1)) > AFFINE_ROW_TOLERANCE)
 		{
-			if (++numWarnings <= maxLoggedWarnings)
+			if (++numWarnings <= MAX_LOGGED_WARNINGS)
 				VERBOSE("error: frame '%s' of '%s' has last row (%g, %g, %g, %g) instead of (0, 0, 0, 1); "
 					"expected a column-major camera-to-world matrix; skipped", name.c_str(), fileName.c_str(),
 					transform[3], transform[7], transform[11], transform[15]);
@@ -532,8 +535,8 @@ unsigned SFM::ImportFramesJSON(const String& fileName, Scene& scene, PoseImportM
 			for (int c = 0; c < 3; ++c)
 				for (int r = 0; r < 3; ++r)
 					rotationC2W(r, c) = transform[c*4 + r];
-			if (!IsRotationMatrix(rotationC2W, orthonormalityTolerance)) {
-				if (++numWarnings <= maxLoggedWarnings)
+			if (!IsRotationMatrix(rotationC2W, ORTHONORMALITY_TOLERANCE)) {
+				if (++numWarnings <= MAX_LOGGED_WARNINGS)
 					VERBOSE("error: frame '%s' of '%s' has a non-orthonormal rotation; skipped",
 						name.c_str(), fileName.c_str());
 				++numRejected;
@@ -562,22 +565,22 @@ unsigned SFM::ImportFramesJSON(const String& fileName, Scene& scene, PoseImportM
 			if (itParams == entry.end() || !itParams->is_object()) {
 				intrinsicsRequestedButMissing = true;
 			} else if (!img.HasCamera()) {
-				if (++numWarnings <= maxLoggedWarnings)
+				if (++numWarnings <= MAX_LOGGED_WARNINGS)
 					VERBOSE("warning: frame '%s' of '%s' has intrinsics, but the image has no camera; ignored",
 						name.c_str(), fileName.c_str());
 			} else {
 				String error;
 				if (ApplyImportedIntrinsics(*itParams, img, error)) {
 					++numIntrinsics;
-				} else if (++numWarnings <= maxLoggedWarnings) {
+				} else if (++numWarnings <= MAX_LOGGED_WARNINGS) {
 					VERBOSE("warning: frame '%s' of '%s' has unusable intrinsics (%s); using the EXIF ones",
 						name.c_str(), fileName.c_str(), error.c_str());
 				}
 			}
 		}
 	}
-	if (numWarnings > maxLoggedWarnings)
-		VERBOSE("warning: %u more problems in '%s' not listed", numWarnings - maxLoggedWarnings, fileName.c_str());
+	if (numWarnings > MAX_LOGGED_WARNINGS)
+		VERBOSE("warning: %u more problems in '%s' not listed", numWarnings - MAX_LOGGED_WARNINGS, fileName.c_str());
 	if (intrinsicsRequestedButMissing)
 		DEBUG("Frames file '%s' has no 'params' for some frames; their intrinsics stay as estimated from EXIF",
 			Util::getFileNameExt(fileName).c_str());
@@ -598,12 +601,13 @@ unsigned SFM::ImportFramesJSON(const String& fileName, Scene& scene, PoseImportM
 
 void SFM::FlipFramesConvention(Scene& scene)
 {
-	const Matrix3x3 flip = CameraAxesFlip();
 	unsigned numFlipped = 0;
 	for (Image& img : scene.images) {
 		if (!img.HasPose())
 			continue;
-		img.R = RMatrix(flip * img.R);
+		// the flip differs for EXIF-rotated images, whose stored pose composes an in-plane
+		// rotation with the file pose (see CameraAxesFlipFor)
+		img.R = RMatrix(CameraAxesFlipFor(img) * img.R);
 		++numFlipped;
 	}
 	DEBUG("Flipped the camera-axes convention of %u poses", numFlipped);
@@ -616,7 +620,6 @@ FramesConvention SFM::DetectFramesConvention(const Scene& scene, FramesConventio
 	if (appliedConvention == FramesConvention::AUTO)
 		appliedConvention = FramesConvention::ARKIT;
 	const FramesConvention flippedConvention = OppositeConvention(appliedConvention);
-	const Matrix3x3 flip = CameraAxesFlip();
 
 	// primary signal: compare the imported relative rotations against the verified ones
 	REALArr errorsApplied(0, scene.pairs.size()), errorsFlipped(0, scene.pairs.size());
@@ -630,33 +633,36 @@ FramesConvention SFM::DetectFramesConvention(const Scene& scene, FramesConventio
 		// relativePose maps the first image to the second one, same as R2 * R1^T
 		const Matrix3x3& verified = pair.relativePose->R;
 		const Matrix3x3 relative(img2.R * img1.R.t());
-		// flipping both images conjugates their relative rotation by the axes flip
-		const Matrix3x3 relativeFlipped(Matrix3x3(flip * relative) * flip);
+		// flipping both images conjugates their relative rotation by the per-image axes
+		// flips (both symmetric): R2f * R1f^T = F2 * R2 * R1^T * F1
+		const Matrix3x3 relativeFlipped(Matrix3x3(CameraAxesFlipFor(img2) * relative) * CameraAxesFlipFor(img1));
 		errorsApplied.emplace_back(ComputeAngleSO3<REAL>(relative, verified));
 		errorsFlipped.emplace_back(ComputeAngleSO3<REAL>(relativeFlipped, verified));
 	}
 	const unsigned numVerifiedPairs = (unsigned)errorsApplied.size();
-	if (numVerifiedPairs >= conventionMinVerifiedPairs) {
+	if (numVerifiedPairs >= CONVENTION_MIN_VERIFIED_PAIRS) {
 		const REAL medianApplied = errorsApplied.GetMedian();
 		const REAL medianFlipped = errorsFlipped.GetMedian();
 		DEBUG_EXTRA("Frames convention: %u verified pairs, median relative rotation error %.2f deg as %s, %.2f deg as %s",
 			numVerifiedPairs, R2D(medianApplied), FramesConventionToString(appliedConvention).c_str(),
 			R2D(medianFlipped), FramesConventionToString(flippedConvention).c_str());
-		if (medianApplied * conventionMarginRatio < medianFlipped) {
+		if (medianApplied * CONVENTION_MARGIN_RATIO < medianFlipped) {
 			VERBOSE("Detected %s camera-axes convention (median relative rotation error %.2f deg vs %.2f deg)",
 				FramesConventionToString(appliedConvention).c_str(), R2D(medianApplied), R2D(medianFlipped));
 			return appliedConvention;
 		}
-		if (medianFlipped * conventionMarginRatio < medianApplied) {
+		if (medianFlipped * CONVENTION_MARGIN_RATIO < medianApplied) {
 			VERBOSE("Detected %s camera-axes convention (median relative rotation error %.2f deg vs %.2f deg)",
 				FramesConventionToString(flippedConvention).c_str(), R2D(medianFlipped), R2D(medianApplied));
 			return flippedConvention;
 		}
-		VERBOSE("error: the camera-axes convention is ambiguous: median relative rotation error "
-			"%.2f deg as %s vs %.2f deg as %s over %u verified pairs",
+		// the rotation signal loses its discriminative power on low-rotation captures
+		// (conjugating a small rotation barely changes it), so an ambiguous margin falls
+		// through to the cheirality-based triangulation test instead of giving up
+		DEBUG("Frames convention: ambiguous rotation signal (median relative rotation error "
+			"%.2f deg as %s vs %.2f deg as %s over %u verified pairs); falling back to two-view triangulation",
 			R2D(medianApplied), FramesConventionToString(appliedConvention).c_str(),
 			R2D(medianFlipped), FramesConventionToString(flippedConvention).c_str(), numVerifiedPairs);
-		return FramesConvention::AUTO;
 	}
 
 	// fallback: triangulate the strongest pairs under both hypotheses and compare the inliers
@@ -677,29 +683,29 @@ FramesConvention SFM::DetectFramesConvention(const Scene& scene, FramesConventio
 		VERBOSE("error: cannot detect the camera-axes convention: no matched pair between posed images");
 		return FramesConvention::AUTO;
 	}
-	std::sort(candidates.begin(), candidates.end(),
+	const unsigned numPairs = MINF((unsigned)candidates.size(), CONVENTION_MAX_TRIANGULATED_PAIRS);
+	std::partial_sort(candidates.begin(), candidates.begin() + numPairs, candidates.end(),
 		[](const PairScore& a, const PairScore& b) { return a.score > b.score; });
-	const unsigned numPairs = MINF((unsigned)candidates.size(), conventionMaxTriangulatedPairs);
 	unsigned inliersApplied = 0, inliersFlipped = 0;
 	for (unsigned i = 0; i < numPairs; ++i) {
 		const ImagePair& pair = scene.pairs[candidates[i].idx];
-		const Image& img1 = scene.images[pair.ID1];
-		const Image& img2 = scene.images[pair.ID2];
-		inliersApplied += CountTriangulationInliers(img1, img2, pair.matches, false);
-		inliersFlipped += CountTriangulationInliers(img1, img2, pair.matches, true);
+		const auto [applied, flipped] = CountTriangulationInliers(
+			scene.images[pair.ID1], scene.images[pair.ID2], pair.matches);
+		inliersApplied += applied;
+		inliersFlipped += flipped;
 	}
 	DEBUG_EXTRA("Frames convention: %u triangulated pairs, %u inliers as %s, %u inliers as %s",
 		numPairs, inliersApplied, FramesConventionToString(appliedConvention).c_str(),
 		inliersFlipped, FramesConventionToString(flippedConvention).c_str());
-	if (inliersApplied >= conventionMinTriangulatedInliers &&
-		(REAL)inliersApplied > conventionMarginRatio * inliersFlipped)
+	if (inliersApplied >= CONVENTION_MIN_TRIANGULATED_INLIERS &&
+		(REAL)inliersApplied > CONVENTION_MARGIN_RATIO * inliersFlipped)
 	{
 		VERBOSE("Detected %s camera-axes convention (%u vs %u two-view triangulation inliers)",
 			FramesConventionToString(appliedConvention).c_str(), inliersApplied, inliersFlipped);
 		return appliedConvention;
 	}
-	if (inliersFlipped >= conventionMinTriangulatedInliers &&
-		(REAL)inliersFlipped > conventionMarginRatio * inliersApplied)
+	if (inliersFlipped >= CONVENTION_MIN_TRIANGULATED_INLIERS &&
+		(REAL)inliersFlipped > CONVENTION_MARGIN_RATIO * inliersApplied)
 	{
 		VERBOSE("Detected %s camera-axes convention (%u vs %u two-view triangulation inliers)",
 			FramesConventionToString(flippedConvention).c_str(), inliersFlipped, inliersApplied);

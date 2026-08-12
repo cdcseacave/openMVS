@@ -357,6 +357,30 @@ bool Scene::Import(const String& source, const ImportConfig& config)
 		return false;
 	}
 
+	// Import camera poses from file (if configured), dispatched by extension
+	const auto ImportPoses = [this, &config](PoseImportMode mode) {
+		const String ext = Util::getFileExt(config.importPosesFile).ToLower();
+		unsigned numPosesImported;
+		if (ext == ".csv") {
+			numPosesImported = ImportPosesCSV(config.importPosesFile, images, mode);
+		} else if (ext == ".json") {
+			// the convention can only be resolved after matching, so AUTO imports the poses
+			// with the ARKit convention and DetectFramesConvention() flips them if needed
+			numPosesImported = ImportFramesJSON(config.importPosesFile, *this, mode,
+				config.framesConvention == FramesConvention::AUTO ? FramesConvention::ARKIT : config.framesConvention);
+		} else {
+			VERBOSE("error: unsupported poses file '%s' (supported extensions: .csv, .json)",
+				config.importPosesFile.c_str());
+			return false;
+		}
+		if (numPosesImported == 0) {
+			VERBOSE("error: failed to import poses from file '%s'", config.importPosesFile.c_str());
+			return false;
+		}
+		DEBUG("Imported poses for %u images from file '%s'", numPosesImported, config.importPosesFile.c_str());
+		return true;
+	};
+
 	if (IsEmpty()) {
 		// 2a) Load images and EXIF metadata; create per-image cameras
 		images.resize(imageFiles.size());
@@ -381,30 +405,12 @@ bool Scene::Import(const String& source, const ImportConfig& config)
 		cv::setNumThreads(nMaxThreads); // restore OpenCV threading
 		#endif
 
-		// 2b) Import camera poses from file (if configured), dispatched by extension;
-		// this runs before the camera de-duplication below, so that identical per-frame
-		// imported intrinsics collapse into a single shared camera
-		if (!config.importPosesFile.empty() && config.importPosesMode != PoseImportMode::NONE) {
-			const String ext = Util::getFileExt(config.importPosesFile).ToLower();
-			unsigned numPosesImported;
-			if (ext == ".csv") {
-				numPosesImported = ImportPosesCSV(config.importPosesFile, images, config.importPosesMode);
-			} else if (ext == ".json") {
-				// the convention can only be resolved after matching, so AUTO imports the poses
-				// with the ARKit convention and DetectFramesConvention() flips them if needed
-				numPosesImported = ImportFramesJSON(config.importPosesFile, *this, config.importPosesMode,
-					config.framesConvention == FramesConvention::AUTO ? FramesConvention::ARKIT : config.framesConvention);
-			} else {
-				VERBOSE("error: unsupported poses file '%s' (supported extensions: .csv, .json)",
-					config.importPosesFile.c_str());
-				return false;
-			}
-			if (numPosesImported == 0) {
-				VERBOSE("error: failed to import poses from file '%s'", config.importPosesFile.c_str());
-				return false;
-			}
-			DEBUG("Imported poses for %u images from file '%s'", numPosesImported, config.importPosesFile.c_str());
-		}
+		// 2b) Import camera poses from file (if configured); this runs before the camera
+		// de-duplication below, so that identical per-frame imported intrinsics collapse
+		// into a single shared camera
+		if (!config.importPosesFile.empty() && config.importPosesMode != PoseImportMode::NONE &&
+			!ImportPoses(config.importPosesMode))
+			return false;
 
 		// 2c) Cluster identical cameras (exact match) and assign shared cameras
 		std::unordered_map<String, IIndex> camKeyToID;
@@ -444,6 +450,18 @@ bool Scene::Import(const String& source, const ImportConfig& config)
 		}
 		VERBOSE("Imported %u images, %u unique cameras (%u trusted intrinsics)",
 		        images.size(), cameras.size(), numTrustedCameras);
+	} else if (!config.importPosesFile.empty() && config.importPosesMode != PoseImportMode::NONE) {
+		// The scene was resumed from a saved .sfm: the images already share de-duplicated
+		// cameras, so per-frame intrinsics cannot be applied (they would overwrite a camera
+		// shared by other images); import the poses only
+		PoseImportMode mode = config.importPosesMode;
+		if (mode == PoseImportMode::POSES_INTRINSICS) {
+			VERBOSE("warning: intrinsics from '%s' are ignored when resuming from a saved scene; importing the poses only",
+				config.importPosesFile.c_str());
+			mode = PoseImportMode::POSES;
+		}
+		if (!ImportPoses(mode))
+			return false;
 	}
 
 	// 2d) Apply forced focal length and distortion parameters to specified images (if configured)
@@ -614,8 +632,13 @@ bool Scene::Reconstruct(const String& source, const ReconstructionConfig& config
 			return false;
 		}
 		if (config.matchImagesOnly && status.nState.isSet(Status::STATE::MATCHED)) {
+			// the requested work is already done; still resolve an AUTO frames.json
+			// convention before the caller re-persists the scene (the loaded pairs are
+			// already matched, so the detection can run)
 			VERBOSE("warning: scene already matched after import");
-			return false;
+			if (config.HasKnownPoses() && !ResolveFramesConvention(config.importCfg))
+				return false;
+			return true;
 		}
 	}
 
@@ -633,6 +656,11 @@ bool Scene::Reconstruct(const String& source, const ReconstructionConfig& config
 		return false;
 
 	if (config.matchImagesOnly) {
+		// a frames.json imported with an AUTO convention must be resolved before the scene
+		// is persisted, otherwise possibly-flipped poses are saved with no record of the
+		// ambiguity and every later consumer inherits reversed optical axes
+		if (config.HasKnownPoses() && !ResolveFramesConvention(config.importCfg))
+			return false;
 		VERBOSE("Image pairs matched only as per configuration, reconstruction skipped");
 		return true;
 	}
@@ -679,13 +707,17 @@ bool Scene::Reconstruct(const String& source, const ReconstructionConfig& config
 		FilterWeaklyConnectedImages(*this);
 	}
 
-	// Align scene to GPS if available, or back to the imported prior poses
-	// (in known-poses mode the GPS alignment would yank the scene out of the very frame this
-	// path works to preserve, so the CLI zeroes thAlignGPS there unless it was passed explicitly)
-	if (config.thAlignGPS > 0 && HasImagesWithGPS())
+	// Align the scene back to the imported prior poses in known-poses mode (preserving the
+	// input frame is the point of that path, so it takes precedence over GPS, which would
+	// yank the scene out of that very frame), else to GPS if available. A failed prior-pose
+	// alignment leaves the scene in the refined (arbitrary-gauge) frame: it is reported, but
+	// must not discard the finished reconstruction
+	if (config.HasKnownPoses() && !priorPoses.empty()) {
+		if (!AlignToPriorPoses())
+			VERBOSE("warning: could not align the reconstruction back to the imported pose frame; "
+				"the result is left in the refined (arbitrary) frame");
+	} else if (config.thAlignGPS > 0 && HasImagesWithGPS())
 		AlignToGPS(config.thAlignGPS);
-	else if (config.HasKnownPoses() && !priorPoses.empty() && !AlignToPriorPoses())
-		return false;
 
 	// Refine the geo-aligned reconstruction with GPS position priors (if enabled): the GPS
 	// residuals are gated on GEO_ALIGN and their meters-vs-pixels weighting assumes the metric
@@ -867,8 +899,11 @@ bool Scene::ReconstructKnownPoses(const ReconstructionConfig& config)
 
 	// 1. Validate the pose import actually covered the dataset: a file-name mismatch in the
 	// user's poses file would otherwise silently degrade into a from-scratch reconstruction
-	// of the few matched images, so fail loudly instead of falling back to standard SfM
-	constexpr float minPosedImagesRatio = 0.5f; // sanity fraction of images that must be posed
+	// of the few matched images, so fail loudly instead of falling back to standard SfM.
+	// This is a sanity gate against such a mismatch (which poses ~0 images), not a coverage
+	// requirement: partially covered captures are legitimate (the pose-guided pair selection
+	// adds visual pairs for the unposed images and the reconstruction tail resects them)
+	constexpr float minPosedImagesRatio = 0.2f; // sanity fraction of images that must be posed
 	constexpr IIndex maxUnposedNamesLogged = 10; // cap the unmatched list, then summarize
 	IIndexArr unposedImages;
 	unsigned numPosedImages = 0;
@@ -896,41 +931,20 @@ bool Scene::ReconstructKnownPoses(const ReconstructionConfig& config)
 		return false;
 	}
 
-	// 2. Remember the imported poses: the bundle adjustment below refines them freely, and
-	// AlignToPriorPoses() uses this snapshot to bring the result back to the input frame
-	const auto CapturePriorPoses = [this]() {
-		priorPoses.clear();
-		priorPoses.reserve(images.size());
-		for (const Image& img: images)
-			if (img.HasPose())
-				priorPoses.emplace(img.ID, Pose3D(img.R, img.C));
-	};
-	CapturePriorPoses();
-
-	// 3. Resolve the camera-axes convention of the imported transforms: a frames.json does not
+	// 2. Resolve the camera-axes convention of the imported transforms: a frames.json does not
 	// declare it and Scene::Import optimistically applied the ARKit one; the two hypotheses
 	// differ by a pi rotation about the camera X axis, so the wrong choice reverses every
 	// viewing direction and triangulation collapses
-	if (config.importCfg.framesConvention == FramesConvention::AUTO &&
-		Util::getFileExt(config.importCfg.importPosesFile).ToLower() == ".json")
-	{
-		constexpr FramesConvention appliedConvention = FramesConvention::ARKIT;
-		const FramesConvention detectedConvention = DetectFramesConvention(*this, appliedConvention);
-		if (detectedConvention == FramesConvention::AUTO) {
-			VERBOSE("error: could not decide the camera-axes convention of '%s' from the matched pairs; "
-				"re-run passing the convention explicitly",
-				config.importCfg.importPosesFile.c_str());
-			return false;
-		}
-		VERBOSE("Known poses use the %s camera-axes convention%s",
-			FramesConventionToString(detectedConvention).c_str(),
-			detectedConvention == appliedConvention ? "" : " (flipping the imported poses)");
-		if (detectedConvention != appliedConvention) {
-			FlipFramesConvention(*this);
-			// the priors must describe the same poses the bundle adjustment starts from
-			CapturePriorPoses();
-		}
-	}
+	if (!ResolveFramesConvention(config.importCfg))
+		return false;
+
+	// 3. Remember the imported poses: the bundle adjustment below refines them freely, and
+	// AlignToPriorPoses() uses this snapshot to bring the result back to the input frame
+	priorPoses.clear();
+	priorPoses.reserve(images.size());
+	for (const Image& img: images)
+		if (img.HasPose())
+			priorPoses.emplace(img.ID, Pose3D(img.R, img.C));
 
 	// 4. Build tracks and triangulate them with the imported poses; the poses are only
 	// approximate (and the intrinsics may still come from EXIF), so triangulate with a
@@ -973,9 +987,11 @@ bool Scene::ReconstructKnownPoses(const ReconstructionConfig& config)
 		}
 	}
 	if (!trustedIntrinsics) {
-		// the EXIF-derived focal length is by far the weakest prior of a poses-only import,
-		// and the known poses make the bundle adjustment over it well conditioned, so refine
-		// it here even when the caller asked for no intrinsic refinement
+		// a focal length guessed from the default focal ratio (no usable metadata) is by far
+		// the weakest prior of a poses-only import, and the known poses make the bundle
+		// adjustment over it well conditioned, so refine it even when the caller asked for
+		// no intrinsic refinement
+		DEBUG("Cameras with untrusted intrinsics present: enabling main-intrinsics refinement");
 		baCfg.RefineMainIntrinsics();
 	}
 	baCfg.maxIterations = 25;
@@ -998,6 +1014,26 @@ bool Scene::ReconstructKnownPoses(const ReconstructionConfig& config)
 		"%.2f pixels (%s)",
 		status.nCalibratedImages, images.size(), numPosedImages,
 		status.nTracks, tracks.size(), finalError.first, TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
+bool Scene::ResolveFramesConvention(const ImportConfig& importCfg)
+{
+	if (importCfg.framesConvention != FramesConvention::AUTO ||
+		Util::getFileExt(importCfg.importPosesFile).ToLower() != ".json")
+		return true; // convention explicit, or not a frames.json import
+	constexpr FramesConvention appliedConvention = FramesConvention::ARKIT; // what Scene::Import applied
+	const FramesConvention detectedConvention = DetectFramesConvention(*this, appliedConvention);
+	if (detectedConvention == FramesConvention::AUTO) {
+		VERBOSE("error: could not decide the camera-axes convention of '%s' from the matched pairs; "
+			"re-run passing the convention explicitly", importCfg.importPosesFile.c_str());
+		return false;
+	}
+	VERBOSE("Known poses use the %s camera-axes convention%s",
+		FramesConventionToString(detectedConvention).c_str(),
+		detectedConvention == appliedConvention ? "" : " (flipping the imported poses)");
+	if (detectedConvention != appliedConvention)
+		FlipFramesConvention(*this);
 	return true;
 }
 /*----------------------------------------------------------------*/
@@ -1162,6 +1198,22 @@ bool Scene::AlignToGPS(double threshold)
 	return true;
 }
 
+REAL SFM::MedianNearestCameraDistance(BS::light_thread_pool& threadPool, const Point3Arr& centers)
+{
+	if (centers.size() < 2)
+		return REAL(0);
+	REALArr nearestDistances(centers.size());
+	threadPool.detach_loop(IIndex(0), (IIndex)centers.size(), [&](IIndex i) {
+		REAL minDistSq = std::numeric_limits<REAL>::max();
+		FOREACH(j, centers)
+			if (i != j)
+				minDistSq = MINF(minDistSq, normSq(centers[i]-centers[j]));
+		nearestDistances[i] = SQRT(minDistSq);
+	});
+	threadPool.wait();
+	return nearestDistances.GetMedian();
+}
+
 bool Scene::AlignToPriorPoses(float thresholdRatio)
 {
 	// 1. Collect the refined/prior camera-center correspondences; images resected along the
@@ -1193,25 +1245,19 @@ bool Scene::AlignToPriorPoses(float thresholdRatio)
 	// the spacing of the prior cameras; half of it keeps a slowly drifting trajectory (exactly
 	// what the finetune corrects) fully inlier while rejecting a camera that ended up a whole
 	// frame-spacing away from its prior
-	DoubleArr nearestDists(priorCenters.size());
-	threadPool.detach_loop(IIndex(0), (IIndex)priorCenters.size(), [&](IIndex i) {
-		REAL minDistSq = std::numeric_limits<REAL>::max();
-		FOREACH(j, priorCenters)
-			if (i != j)
-				minDistSq = MINF(minDistSq, normSq(priorCenters[i]-priorCenters[j]));
-		nearestDists[i] = (double)SQRT(minDistSq);
-	});
-	threadPool.wait();
-	const double medianDist = nearestDists.GetMedian();
+	const double medianDist = (double)MedianNearestCameraDistance(threadPool, priorCenters);
 	if (medianDist <= 0) {
 		VERBOSE("error: prior camera centers are coincident, skipping prior-pose alignment");
 		return false;
 	}
 	const double threshold = (double)thresholdRatio*medianDist;
 
-	// 3. Verify the prior positions are well spread: the similarity transform needs at least
-	// 3 distinct, non-collinear positions spread wider than the threshold (a pure rotate-in-place
-	// capture leaves the rotation about the camera track unconstrained)
+	// 3. Check the prior positions are well spread: when they are, the similarity transform
+	// comes robustly from the center correspondences alone; a (nearly) collinear capture
+	// (corridor walk, straight flight line) instead leaves the roll about the trajectory
+	// unconstrained by the centers, so it is handled below with the rotation estimated from
+	// the camera rotations
+	bool wellSpread = true;
 	if (threshold > 0) {
 		Point3 mean(Point3::ZERO);
 		for (const Point3& C: priorCenters)
@@ -1225,21 +1271,72 @@ bool Scene::AlignToPriorPoses(float thresholdRatio)
 		cov /= (double)priorCenters.size();
 		// standard deviation along each principal axis, in increasing order
 		const Eigen::Vector3d spread(Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d>(cov, Eigen::EigenvaluesOnly).eigenvalues().cwiseMax(0.).cwiseSqrt());
-		if (spread(1) < threshold) {
-			VERBOSE("error: prior camera positions nearly coincident or collinear (spread %gx%gx%g, need %g+), skipping prior-pose alignment",
+		wellSpread = spread(1) >= threshold;
+		if (!wellSpread)
+			DEBUG("Prior camera positions are nearly collinear (spread %gx%gx%g, threshold %g): "
+				"estimating the alignment rotation from the camera rotations",
 				spread(2), spread(1), spread(0), threshold);
+	}
+
+	// 4. Estimate the transform bringing the refined scene back to the prior frame
+	SEACAVE::Transform T_refined_to_prior;
+	if (wellSpread) {
+		if (EstimateSimilarityTransform(refinedCenters, priorCenters, T_refined_to_prior, threshold) == 0) {
+			VERBOSE("error: failed to estimate the transform to the prior pose frame");
+			return false;
+		}
+	} else {
+		// rotation from robust rotation averaging (R_prior ~= R_refined * alignR, and
+		// Scene::Transform applies rotations as R_new = R * T.R^t, so T.R = alignR^t)
+		Matrix3x3Arr refinedRots(alignedImages.size()), priorRots(alignedImages.size());
+		FOREACH(k, alignedImages) {
+			const Image& img = images[alignedImages[k]];
+			refinedRots[k] = img.R;
+			priorRots[k] = priorPoses.at(img.ID).R;
+		}
+		Matrix3x3 alignR;
+		if (!EstimateRotationAlignment(refinedRots, priorRots, alignR)) {
+			VERBOSE("error: rotation alignment to the collinear prior poses failed, skipping prior-pose alignment");
+			return false;
+		}
+		T_refined_to_prior.R = RMatrix(Matrix3x3(alignR.t()));
+		// scale and translation by least squares with the rotation fixed
+		const Eigen::Matrix3d R = T_refined_to_prior.R;
+		Eigen::Vector3d meanRefined(Eigen::Vector3d::Zero()), meanPrior(Eigen::Vector3d::Zero());
+		FOREACH(k, refinedCenters) {
+			meanRefined += Eigen::Vector3d(Point3d(refinedCenters[k]));
+			meanPrior += Eigen::Vector3d(Point3d(priorCenters[k]));
+		}
+		meanRefined /= (double)refinedCenters.size();
+		meanPrior /= (double)priorCenters.size();
+		double num = 0, den = 0;
+		FOREACH(k, refinedCenters) {
+			const Eigen::Vector3d dr(R * (Eigen::Vector3d(Point3d(refinedCenters[k])) - meanRefined));
+			const Eigen::Vector3d dp(Eigen::Vector3d(Point3d(priorCenters[k])) - meanPrior);
+			num += dp.dot(dr);
+			den += dr.squaredNorm();
+		}
+		if (den <= 0 || num <= 0) {
+			VERBOSE("error: refined camera centers are degenerate, skipping prior-pose alignment");
+			return false;
+		}
+		T_refined_to_prior.scale = num / den;
+		const Eigen::Vector3d t(meanPrior - T_refined_to_prior.scale * (R * meanRefined));
+		T_refined_to_prior.t = Point3(t.x(), t.y(), t.z());
+		// the rotation came from the camera rotations alone, so validate it against the
+		// centers: the aligned centers must land within the RANSAC threshold of their priors
+		DoubleArr residuals(refinedCenters.size());
+		FOREACH(k, refinedCenters)
+			residuals[k] = (double)norm(Point3(T_refined_to_prior * refinedCenters[k] - priorCenters[k]));
+		const double medianResidual = residuals.GetMedian();
+		if (medianResidual > threshold) {
+			VERBOSE("error: aligning the collinear capture is too inaccurate (median center residual %g, threshold %g), skipping prior-pose alignment",
+				medianResidual, threshold);
 			return false;
 		}
 	}
-
-	// 4. Estimate and apply the transform bringing the refined scene back to the prior frame;
-	// unlike AlignToGPS this leaves Scene::transform and GEO_ALIGN alone, as the prior frame
-	// is the dataset's own frame, not a geo-referenced one
-	SEACAVE::Transform T_refined_to_prior;
-	if (EstimateSimilarityTransform(refinedCenters, priorCenters, T_refined_to_prior, threshold) == 0) {
-		VERBOSE("error: failed to estimate the transform to the prior pose frame");
-		return false;
-	}
+	// apply; unlike AlignToGPS this leaves Scene::transform and GEO_ALIGN alone, as the prior
+	// frame is the dataset's own frame, not a geo-referenced one
 	Transform(T_refined_to_prior);
 
 	// 5. Report how far the finetune moved the poses, now that both are in the same frame

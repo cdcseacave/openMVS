@@ -51,6 +51,7 @@ String strOutputFileNameMVS;
 String strDetectorType;
 String strImportPosesFile;
 String strKnownPosesConvention;
+FramesConvention knownPosesConvention;
 String strExportPosesCSV;
 String strExportPoseQuality;
 String strImportOpenMVGDir;
@@ -217,13 +218,8 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		return false;
 	}
 	Util::ensureValidPath(OPT::strImportPosesFile);
-	// Validate and canonicalize the camera-axes convention; empty means auto-detect.
-	const String strConvention(OPT::strKnownPosesConvention.ToLower());
-	if (strConvention.empty() || strConvention == "auto") {
-		OPT::strKnownPosesConvention.clear();
-	} else if (strConvention == "arkit" || strConvention == "opencv") {
-		OPT::strKnownPosesConvention = strConvention;
-	} else {
+	// Parse the camera-axes convention; empty means auto-detect.
+	if (!FramesConventionFromString(OPT::strKnownPosesConvention, OPT::knownPosesConvention)) {
 		LOG("error: unknown known-poses convention '%s' (accepted: auto, arkit, opencv)", OPT::strKnownPosesConvention.c_str());
 		return false;
 	}
@@ -270,8 +266,7 @@ int main(int argc, LPCTSTR* argv)
 	cfg.importCfg.imageIndicesStr = OPT::strImageIndices;
 	cfg.importCfg.importPosesFile = OPT::importPosesMode ? OPT::strImportPosesFile : String();
 	cfg.importCfg.importPosesMode = static_cast<SFM::PoseImportMode>(OPT::importPosesMode);
-	cfg.importCfg.framesConvention = OPT::strKnownPosesConvention.empty() ? FramesConvention::AUTO :
-		OPT::strKnownPosesConvention == "arkit" ? FramesConvention::ARKIT : FramesConvention::OPENCV;
+	cfg.importCfg.framesConvention = OPT::knownPosesConvention;
 	cfg.importCfg.archiveType = (ARCHIVE_TYPE)OPT::nArchiveType;
 	cfg.featuresCfg.detectorType = FeatureTypeFromString(OPT::strDetectorType);
 	cfg.featuresCfg.maxFeaturesPerCell = OPT::nMaxFeaturesPerCell;
@@ -299,26 +294,21 @@ int main(int argc, LPCTSTR* argv)
 	cfg.clusterCfg.maxViewsPerCluster = OPT::maxViewsPerCluster;
 	cfg.clusterCfg.useCommunityDetection = OPT::bClusterCommunities;
 
-	// known-poses mode: adapt the defaults the user did not set explicitly
-	if (cfg.HasKnownPoses()) {
-		if (OPT::vm["match-mode"].defaulted()) {
-			cfg.matchCfg.mode = MatchConfig::KNOWN_POSES;
-			VERBOSE("Known camera poses imported: pose-guided pair selection auto-selected (use --match-mode to override)");
-		}
-		if (OPT::vm["align-gps-threshold"].defaulted()) {
-			cfg.thAlignGPS = 0.f;
-			VERBOSE("Known camera poses imported: GPS alignment disabled, the reconstruction is re-aligned to the imported pose frame instead (use --align-gps-threshold to override)");
-		}
+	// known-poses mode: pose-guided pair selection unless the user chose a mode explicitly
+	// (bringing the result back to the imported pose frame, which takes precedence over the
+	// GPS alignment, is handled inside Scene::Reconstruct so every caller gets it)
+	if (cfg.HasKnownPoses() && OPT::vm["match-mode"].defaulted()) {
+		cfg.matchCfg.mode = MatchConfig::KNOWN_POSES;
+		VERBOSE("Known camera poses imported: pose-guided pair selection auto-selected (use --match-mode to override)");
 	}
 
 	// Run SfM reconstruction
 	Scene scene(OPT::nMaxThreads);
 	if (!scene.Reconstruct(OPT::strSource, cfg)) {
-		// A known-poses failure is never a usable partial result: in particular, failed
-		// alignment to the imported frame must propagate to the process exit status.
-		if (cfg.HasKnownPoses() ||
-			(!scene.status.nState.isSet(Scene::Status::STATE::CALIBRATED) &&
-			 !(cfg.matchImagesOnly && scene.status.nState.isSet(Scene::Status::STATE::MATCHED)))) {
+		// a scene calibrated before the failure is a usable partial result and is still
+		// exported below; anything less (including a match-images-only run that failed to
+		// resolve the pose convention) must propagate to the process exit status
+		if (!scene.status.nState.isSet(Scene::Status::STATE::CALIBRATED)) {
 			VERBOSE("error: reconstruction failed");
 			return EXIT_FAILURE;
 		} else if (OPT::bExtractColors && scene.colors.empty() && !scene.SampleColors()) {

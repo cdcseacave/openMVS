@@ -91,12 +91,10 @@ Images with no entry are simply left unposed and are registered by the usual res
 
 **What changes compared to a normal run:**
 
-- The match mode switches to `3` (known-poses) unless you passed `--match-mode` yourself: pairs between posed images are chosen geometrically. If the pose file is incomplete, vocabulary retrieval also supplies pairs touching the unposed images so the final resection can register them.
-- The GPS alignment is switched off unless you passed `--align-gps-threshold` yourself: the reconstruction is instead similarity-aligned back to the imported pose frame, which also anchors the scale that a non-GPS bundle adjustment leaves free. Pass `--align-gps-threshold` explicitly if you would rather have the metric ENU frame.
+- The match mode switches to `3` (known-poses) unless you passed `--match-mode` yourself: pairs between posed images are chosen geometrically. If the pose file is incomplete, vocabulary retrieval also supplies pairs touching the unposed images so the final resection can register them. The substitution is logged at startup.
+- The reconstruction is similarity-aligned back to the imported pose frame instead of to GPS — preserving the input frame is the point of this mode, so the prior-pose alignment takes precedence over `--align-gps-threshold`. This also anchors the scale that a non-GPS bundle adjustment leaves free. Straight-line captures (a corridor walk, a single flight line), whose camera centers cannot constrain the roll about the trajectory, are aligned using the imported camera rotations for the rotation part.
 
-Both substitutions are logged at startup.
-
-At `-v 3` the final alignment reports how far the finetune actually moved the cameras — median and maximum position delta (in the units of the input poses) and median and maximum rotation delta in degrees — which is the quickest sanity check that the import was interpreted correctly. If that final similarity cannot be estimated, the reconstruction fails rather than returning output in an arbitrary bundle-adjustment gauge.
+At `-v 3` the final alignment reports how far the finetune actually moved the cameras — median and maximum position delta (in the units of the input poses) and median and maximum rotation delta in degrees — which is the quickest sanity check that the import was interpreted correctly. If that final similarity cannot be estimated, the run warns and the output stays in the refined (arbitrary-gauge) frame instead of being discarded.
 
 </details>
 
