@@ -48,7 +48,7 @@ struct SFM_API ImportConfig {
 	PoseImportMode importPosesMode = PoseImportMode::NONE; // what to import from the poses file (see PoseImportMode)
 	// camera-axes convention of a frames.json poses file (ignored for .csv);
 	// AUTO imports the poses with the ARKit convention and defers the decision to
-	// DetectFramesConvention(), which can only resolve it once the pairs are matched
+	// ResolveFramesConvention(), which can only resolve it once the pairs are matched
 	FramesConvention framesConvention = FramesConvention::AUTO;
 	ARCHIVE_TYPE archiveType = ARCHIVE_DEFAULT; // archive type for loading/saving scenes
 };
@@ -317,17 +317,6 @@ public:
 	 * input coordinate frame at the end of Reconstruct() by AlignToPriorPoses().
 	 */
 	bool ReconstructKnownPoses(const ReconstructionConfig& config);
-
-	/**
-	 * @brief Resolve the camera-axes convention of an AUTO frames.json pose import
-	 *
-	 * No-op unless the import was a frames.json with FramesConvention::AUTO. Runs
-	 * DetectFramesConvention() on the matched pairs and flips the imported poses when the
-	 * detected convention differs from the optimistically applied ARKit one; must therefore
-	 * run after matching and before the poses are used or persisted.
-	 * @return false when the evidence is inconclusive (the caller must fail loudly)
-	 */
-	bool ResolveFramesConvention(const ImportConfig& importCfg);
 
 	/**
 	 * @brief Sample colors for each track from observations

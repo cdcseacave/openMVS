@@ -381,18 +381,18 @@ Input: Images + matched pairs (from common front-end)
   │
   ▼
 ┌─────────────────────────────────────────────────────────┐
-│ 2. Snapshot the Imported Poses                           │
-│    Scene::priorPoses (transient, keyed by image ID)      │
-│    The BA below refines freely; this is what the final   │
-│    re-alignment brings the result back to                │
+│ 2. Resolve the Camera-Axes Convention (frames.json only) │
+│    PoseIO.h::ResolveFramesConvention                     │
+│    Compare imported vs match-verified relative rotations │
+│    Inconclusive -> fail, ask for an explicit convention  │
 └─────────────────────────────────────────────────────────┘
   │
   ▼
 ┌─────────────────────────────────────────────────────────┐
-│ 3. Resolve the Camera-Axes Convention (frames.json only) │
-│    PoseIO.h::DetectFramesConvention                      │
-│    Compare imported vs match-verified relative rotations │
-│    Inconclusive -> fail, ask for an explicit convention  │
+│ 3. Snapshot the Imported Poses                           │
+│    Scene::priorPoses (transient, keyed by image ID)      │
+│    The BA below refines freely; this is what the final   │
+│    re-alignment brings the result back to                │
 └─────────────────────────────────────────────────────────┘
   │
   ▼
@@ -453,15 +453,15 @@ A JSON array of frames, the format Polycam-style AR captures export:
 
 **Two things the format does not tell you**, both handled by the importer:
 
-1. **Camera-axes convention.** The `transform` is camera-to-world, but whether its camera axes are ARKit/OpenGL (X right, Y up, Z backward) or OpenCV (X right, Y down, Z forward) is not declared, and the two differ by a π rotation about the camera X axis. Choosing wrong reverses every optical axis and triangulation collapses. `DetectFramesConvention` decides after matching: it compares the imported relative rotations `R_j · R_iᵀ` against the match-verified ones under both hypotheses and takes the lower median angular error, requiring the winner to be 3× better. If no pair carries a verified relative pose (an F-only, uncalibrated scene), it falls back to two-view triangulating the highest-weighted pairs under both hypotheses and counting cheirality-positive, low-reprojection inliers. A genuinely ambiguous scene returns `AUTO`, and the caller fails asking for an explicit convention rather than guessing. `FlipFramesConvention` applies the flip as `img.R ← diag(1,-1,-1) · img.R`, leaving the camera centers alone.
+1. **Camera-axes convention.** The `transform` is camera-to-world, but whether its camera axes are ARKit/OpenGL (X right, Y up, Z backward) or OpenCV (X right, Y down, Z forward) is not declared, and the two differ by a π rotation about the camera X axis. Choosing wrong reverses every optical axis and triangulation collapses. `DetectFramesConvention` decides after matching: it compares the imported relative rotations `R_j · R_iᵀ` against the match-verified ones under both hypotheses and takes the lower median angular error, requiring the winner to be 3× better. If no pair carries a verified relative pose (an F-only, uncalibrated scene) or the rotation margin is ambiguous (a low-rotation forward walk barely changes under conjugation), it falls back to two-view triangulating the highest-weighted pairs under both hypotheses and counting cheirality-positive, low-reprojection inliers. A genuinely ambiguous scene returns `AUTO`, and the caller fails asking for an explicit convention rather than guessing. `FlipFramesConvention` applies the flip as `img.R ← diag(1,-1,-1) · img.R` — or `diag(-1,1,-1)` for EXIF-rotated images, whose stored pose composes the in-plane rotation — leaving the camera centers alone.
 
 2. **EXIF portrait rotation.** OpenMVS rotates EXIF-portrait images 90° clockwise on load (`View::ToWorkingOrientation`), but the imported pose describes the camera of the image *as stored on disk*. The importer composes the same in-plane rotation into the pose (`R ← Rz(+90°) · R`, the inverse of what `View::RevertRotation` undoes on export) and rotates the imported intrinsics to match (`fx ↔ fy`, `cx, cy` remapped, `p1, p2` rotated; the radial coefficients are invariant). The camera center is unchanged.
 
 #### Re-aligning to the input frame (`Scene::AlignToPriorPoses`)
 
-Bundle adjustment leaves the gauge free, so the refined reconstruction drifts off the input frame -- and, without GPS priors, its scale is unanchored entirely. `AlignToPriorPoses` estimates a similarity transform from the refined camera centers to their `priorPoses` counterparts (`EstimateSimilarityTransform`, the same primitive `AlignToGPS` uses) and applies it with `Scene::Transform`, which also re-maps the track positions and the pose covariances. Images resected along the way have no prior and simply ride along with the transform.
+Bundle adjustment leaves the gauge free, so the refined reconstruction drifts off the input frame -- and, without GPS priors, its scale is unanchored entirely. `AlignToPriorPoses` estimates a similarity transform from the refined camera centers to their `priorPoses` counterparts (`EstimateSimilarityTransformWithRotations`, which falls back to rotation averaging plus a least-squares scale/translation when the centers are near-collinear -- a straight-line capture leaves the roll unconstrained by centers alone) and applies it with `Scene::Transform`, which also re-maps the track positions and the pose covariances. Images resected along the way have no prior and simply ride along with the transform. Prior-pose alignment takes precedence over GPS: preserving the input frame is the point of this workflow.
 
-The RANSAC threshold is expressed as a *fraction* of the median distance between neighboring prior camera centers (default 0.5) rather than in absolute units, because the prior frame may be in any units at all. The reconstruction fails if this final similarity cannot be estimated; it never reports success with output left in an arbitrary bundle-adjustment gauge.
+The RANSAC threshold is expressed as a *fraction* of the median distance between neighboring prior camera centers (default 0.5) rather than in absolute units, because the prior frame may be in any units at all. If this final similarity cannot be estimated, the failure is reported as a warning and the finished reconstruction is kept in the refined (arbitrary-gauge) frame rather than discarded.
 
 Unlike `AlignToGPS`, this does not touch `Scene::transform` and does not set the `GEO_ALIGN` state: the prior frame is the dataset's own frame, not a geo-referenced one. It runs as the `else` branch of the GPS-alignment block, so a scene with both GPS metadata and known poses still prefers GPS when the user asks for it.
 

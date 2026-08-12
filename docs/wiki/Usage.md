@@ -80,10 +80,10 @@ Run these from a working subfolder of the dataset (`-w`); the other paths are re
 
 **Pose file formats.** The extension selects the parser:
 
-- `.csv` — the OpenMVS pose CSV, the same schema `--export-poses-csv` writes: `filename,fx,fy,cx,cy,qx,qy,qz,qw,Cx,Cy,Cz,score` per row. Rows are matched to the images by file-name stem (case-sensitive); ambiguous stems are skipped, and a row whose `score` is `0` or negative explicitly marks that image as unposed.
+- `.csv` — the OpenMVS pose CSV, the same schema `--export-poses-csv` writes: `filename,fx,fy,cx,cy,qx,qy,qz,qw,Cx,Cy,Cz,score` per row. Rows are matched to the images by file-name stem (case-insensitive); ambiguous stems are rejected, and a row whose `score` is `0` or negative explicitly marks that image as unposed.
 - `.json` — a Polycam-style `frames.json`: an array of `{name, transform[16], params?}` entries, where `transform` is a **column-major 4x4 camera-to-world** matrix and the optional `params` block holds an `OPENCV` camera model (`w, h, fx, fy, cx, cy, k1, k2, p1, p2`). The intrinsics may be declared for a different resolution than the images on disk and are rescaled automatically. Entries are matched to the images by file name — the full name first, then the stem, both case-insensitive. Ambiguous image names and duplicate entries for one image are rejected.
 
-Images with no entry are simply left unposed and are registered by the usual resection at the end of the pipeline; if fewer than half the images end up posed, the run stops and lists the unmatched names rather than quietly degrading into a from-scratch reconstruction.
+Images with no entry are simply left unposed and are registered by the usual resection at the end of the pipeline; if fewer than 20% of the images end up posed, the run stops and lists the unmatched names rather than quietly degrading into a from-scratch reconstruction — the gate catches a file-name mismatch between the poses file and the images, while partially covered captures are legitimate.
 
 **Modes.** `--import-poses-mode 1` imports the intrinsics (when the file carries them) *and* the poses, `2` imports the poses only and leaves the intrinsics to EXIF, `3` imports only the camera positions and does *not* select this workflow. Note that mode `1` previously imported the intrinsics *without* the poses, and mode `2` the poses without the intrinsics — no mode imported both. They now do what their names say, which is a behavior change if you were relying on the old, undocumented meaning.
 

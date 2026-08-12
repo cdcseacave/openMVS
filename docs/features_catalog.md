@@ -262,9 +262,9 @@ OpenMVS is a comprehensive photogrammetry library implementing a complete pipeli
 
 - **Files:** `libs/SFM/Scene.h`, `libs/SFM/Scene.cpp` (`Scene::ReconstructKnownPoses`)
 - **Algorithms:** Refinement path selected by `ReconstructionConfig::HasKnownPoses()` when a poses file was imported with `PoseImportMode::POSES_INTRINSICS` or `POSES`:
-  1. **Coverage validation:** at least 50% of the images (and at least 2) must carry an imported pose, otherwise the run fails listing the unmatched file names — never a silent fall-back to standard SfM
-  2. **Prior snapshot:** the imported poses are copied into `Scene::priorPoses` (transient, keyed by image ID) before any refinement
-  3. **Convention resolution:** for a `frames.json` imported as `AUTO`, `DetectFramesConvention()` decides between the ARKit and OpenCV camera axes and `FlipFramesConvention()` applies the flip when needed
+  1. **Coverage validation:** at least 20% of the images (and at least 2) must carry an imported pose, otherwise the run fails listing the unmatched file names — a sanity gate against a file-name mismatch, never a silent fall-back to standard SfM
+  2. **Convention resolution:** for a `frames.json` imported as `AUTO`, `ResolveFramesConvention()` (`PoseIO.h`) runs `DetectFramesConvention()` to decide between the ARKit and OpenCV camera axes and `FlipFramesConvention()` applies the flip when needed
+  3. **Prior snapshot:** the imported poses are copied into `Scene::priorPoses` (transient, keyed by image ID) before any refinement
   4. **Triangulation with the imported poses:** `BuildTracks` → `TriangulateTracks` at 4× `maxReprojError` (permissive, since the poses are approximate and the intrinsics may be EXIF-derived) → `FilterTracks`
   5. **Calibrated marking:** `RecomputeCalibratedImages()` + `Status::STATE::CALIBRATED`
   6. **Finetune BA:** bundle adjustment (forcing `RefineMainIntrinsics()` when any camera reports `!TrustIntrinsics()`) → re-triangulate outliers → filter → second bundle adjustment

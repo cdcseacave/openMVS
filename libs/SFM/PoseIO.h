@@ -85,6 +85,17 @@ SFM_API unsigned ImportFramesJSON(const String& fileName, Scene& scene, PoseImpo
 	FramesConvention convention = FramesConvention::ARKIT);
 
 /**
+ * @brief Import camera poses (and optionally intrinsics) from a file, dispatched by extension
+ *
+ * Supported formats: the OpenMVS CSV (.csv, see ImportPosesCSV) and the Polycam frames.json
+ * (.json, see ImportFramesJSON). The convention only applies to a frames.json import; AUTO
+ * optimistically imports as ARKit, to be fixed after matching by ResolveFramesConvention().
+ * @return true when at least one image received a pose
+ */
+SFM_API bool ImportPoses(Scene& scene, const String& fileName, PoseImportMode mode,
+	FramesConvention convention = FramesConvention::AUTO);
+
+/**
  * @brief Flip every posed image between the two camera-axes conventions
  *
  * `img.R <- diag(1,-1,-1) * img.R`, camera centers unchanged
@@ -115,6 +126,21 @@ SFM_API void FlipFramesConvention(Scene& scene);
  */
 SFM_API FramesConvention DetectFramesConvention(const Scene& scene,
 	FramesConvention appliedConvention = FramesConvention::ARKIT);
+
+/**
+ * @brief Resolve the camera-axes convention of an AUTO frames.json pose import
+ *
+ * No-op unless the import was a frames.json with FramesConvention::AUTO. Runs
+ * DetectFramesConvention() on the matched pairs and flips the imported poses when the
+ * detected convention differs from the optimistically applied ARKit one (see ImportPoses);
+ * must therefore run after matching and before the poses are used or persisted.
+ * @param scene scene with imported poses and matched pairs
+ * @param configuredConvention convention the import was configured with
+ * @param importPosesFile the imported poses file (identifies a frames.json import)
+ * @return false when the evidence is inconclusive (the caller must fail loudly)
+ */
+SFM_API bool ResolveFramesConvention(Scene& scene, FramesConvention configuredConvention,
+	const String& importPosesFile);
 /*----------------------------------------------------------------*/
 
 } // namespace SFM

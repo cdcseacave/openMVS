@@ -128,8 +128,9 @@ Selected by `ReconstructionConfig::HasKnownPoses()` (a poses file is configured 
 ```
 Then falls through to the shared tail of `Scene::Reconstruct` (pre-final BA,
 filtering, final BA, `FilterWeaklyConnectedImages`, resection of the images missing from the
-poses file, alignment, colors). The run fails if the final similarity alignment back to the
-imported frame cannot be estimated. Clustering is never involved.
+poses file, alignment, colors). A failed final similarity alignment back to the imported frame
+is reported as a warning and leaves the scene in the refined (arbitrary-gauge) frame; when prior
+poses exist the alignment takes precedence over GPS. Clustering is never involved.
 
 ## Key Algorithms
 
@@ -239,8 +240,8 @@ Joint refinement of focal length + distortion (k1, k2) with relative pose via Ce
 - **Pose CSV import/export** (`PoseIO.h`: `ImportPosesCSV` / `ExportPosesCSV`): `PoseImportMode`
   = `NONE` / `POSES_INTRINSICS` (intrinsics when the row has them, plus R + C, marks
   `trustIntrinsics`) / `POSES` (R + C) / `POSITIONS` (C only). Rows match by file-name stem
-  (case-sensitive, unlike the frames.json matcher) and `score <= 0` invalidates the pose.
-  `ImportConfig::importPosesFile` dispatches on extension: `.csv` here, `.json` to `ImportFramesJSON`
+  (case-insensitive, ambiguous stems rejected) and `score <= 0` invalidates the pose.
+  `ImportPoses` (`PoseIO.h`) dispatches on extension: `.csv` here, `.json` to `ImportFramesJSON`
 - **MVS export** (`InterfaceMVS.h`): Conversion to MVS binary format. The SFM image ID is written
   into `Interface::Image::ID` (the external/global-ID field) so per-image data keyed by SFM ID —
   e.g. the pose-quality CSV — correlates after import; `Vertex::View::imageID` stays the

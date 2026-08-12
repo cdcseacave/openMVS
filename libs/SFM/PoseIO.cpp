@@ -599,6 +599,31 @@ unsigned SFM::ImportFramesJSON(const String& fileName, Scene& scene, PoseImportM
 /*----------------------------------------------------------------*/
 
 
+bool SFM::ImportPoses(Scene& scene, const String& fileName, PoseImportMode mode, FramesConvention convention)
+{
+	const String ext = Util::getFileExt(fileName).ToLower();
+	unsigned numPosesImported;
+	if (ext == ".csv") {
+		numPosesImported = ImportPosesCSV(fileName, scene.images, mode);
+	} else if (ext == ".json") {
+		// the convention can only be resolved after matching, so AUTO imports the poses
+		// with the ARKit convention and ResolveFramesConvention() flips them if needed
+		numPosesImported = ImportFramesJSON(fileName, scene, mode,
+			convention == FramesConvention::AUTO ? FramesConvention::ARKIT : convention);
+	} else {
+		VERBOSE("error: unsupported poses file '%s' (supported extensions: .csv, .json)", fileName.c_str());
+		return false;
+	}
+	if (numPosesImported == 0) {
+		VERBOSE("error: failed to import poses from file '%s'", fileName.c_str());
+		return false;
+	}
+	DEBUG("Imported poses for %u images from file '%s'", numPosesImported, fileName.c_str());
+	return true;
+} // ImportPoses
+/*----------------------------------------------------------------*/
+
+
 void SFM::FlipFramesConvention(Scene& scene)
 {
 	unsigned numFlipped = 0;
@@ -717,4 +742,26 @@ FramesConvention SFM::DetectFramesConvention(const Scene& scene, FramesConventio
 		inliersFlipped, FramesConventionToString(flippedConvention).c_str(), numPairs);
 	return FramesConvention::AUTO;
 } // DetectFramesConvention
+/*----------------------------------------------------------------*/
+
+
+bool SFM::ResolveFramesConvention(Scene& scene, FramesConvention configuredConvention, const String& importPosesFile)
+{
+	if (configuredConvention != FramesConvention::AUTO ||
+		Util::getFileExt(importPosesFile).ToLower() != ".json")
+		return true; // convention explicit, or not a frames.json import
+	constexpr FramesConvention appliedConvention = FramesConvention::ARKIT; // what ImportPoses applied
+	const FramesConvention detectedConvention = DetectFramesConvention(scene, appliedConvention);
+	if (detectedConvention == FramesConvention::AUTO) {
+		VERBOSE("error: could not decide the camera-axes convention of '%s' from the matched pairs; "
+			"re-run passing the convention explicitly", importPosesFile.c_str());
+		return false;
+	}
+	VERBOSE("Known poses use the %s camera-axes convention%s",
+		FramesConventionToString(detectedConvention).c_str(),
+		detectedConvention == appliedConvention ? "" : " (flipping the imported poses)");
+	if (detectedConvention != appliedConvention)
+		FlipFramesConvention(scene);
+	return true;
+} // ResolveFramesConvention
 /*----------------------------------------------------------------*/

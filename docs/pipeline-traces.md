@@ -180,7 +180,7 @@ graph TD
 - **Pose import** happens back in Step 1: `ImportConfig::importPosesFile` is dispatched on extension, `.csv` to `ImportPosesCSV()` and `.json` to `ImportFramesJSON()` (`libs/SFM/PoseIO.h`), before the camera de-duplication so identical per-frame intrinsics collapse into one shared `Camera`.
 - **Permissive first triangulation** (4× `maxReprojError`): the imported poses are approximate and the intrinsics may still be EXIF-derived, so the strict threshold would reject correct tracks before BA can fix the geometry.
 - **Clustering never runs** on this path; `Scene::priorPoses` is transient (not serialized) but is preserved by regular scene copies and moves.
-- **The shared tail still runs**, including the final `Resection::RegisterImages()` for images absent from the poses file, and closes with `AlignToPriorPoses()` in place of `AlignToGPS()`. Failure to estimate that final similarity fails the reconstruction rather than leaving successful output in an arbitrary bundle-adjustment gauge.
+- **The shared tail still runs**, including the final `Resection::RegisterImages()` for images absent from the poses file, and closes with `AlignToPriorPoses()` in place of `AlignToGPS()` (prior-pose alignment takes precedence over GPS). Failure to estimate that final similarity is reported as a warning and leaves the finished reconstruction in the refined (arbitrary-gauge) frame rather than discarding it.
 
 ---
 

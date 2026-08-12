@@ -357,30 +357,6 @@ bool Scene::Import(const String& source, const ImportConfig& config)
 		return false;
 	}
 
-	// Import camera poses from file (if configured), dispatched by extension
-	const auto ImportPoses = [this, &config](PoseImportMode mode) {
-		const String ext = Util::getFileExt(config.importPosesFile).ToLower();
-		unsigned numPosesImported;
-		if (ext == ".csv") {
-			numPosesImported = ImportPosesCSV(config.importPosesFile, images, mode);
-		} else if (ext == ".json") {
-			// the convention can only be resolved after matching, so AUTO imports the poses
-			// with the ARKit convention and DetectFramesConvention() flips them if needed
-			numPosesImported = ImportFramesJSON(config.importPosesFile, *this, mode,
-				config.framesConvention == FramesConvention::AUTO ? FramesConvention::ARKIT : config.framesConvention);
-		} else {
-			VERBOSE("error: unsupported poses file '%s' (supported extensions: .csv, .json)",
-				config.importPosesFile.c_str());
-			return false;
-		}
-		if (numPosesImported == 0) {
-			VERBOSE("error: failed to import poses from file '%s'", config.importPosesFile.c_str());
-			return false;
-		}
-		DEBUG("Imported poses for %u images from file '%s'", numPosesImported, config.importPosesFile.c_str());
-		return true;
-	};
-
 	if (IsEmpty()) {
 		// 2a) Load images and EXIF metadata; create per-image cameras
 		images.resize(imageFiles.size());
@@ -409,7 +385,7 @@ bool Scene::Import(const String& source, const ImportConfig& config)
 		// de-duplication below, so that identical per-frame imported intrinsics collapse
 		// into a single shared camera
 		if (!config.importPosesFile.empty() && config.importPosesMode != PoseImportMode::NONE &&
-			!ImportPoses(config.importPosesMode))
+			!ImportPoses(*this, config.importPosesFile, config.importPosesMode, config.framesConvention))
 			return false;
 
 		// 2c) Cluster identical cameras (exact match) and assign shared cameras
@@ -460,7 +436,7 @@ bool Scene::Import(const String& source, const ImportConfig& config)
 				config.importPosesFile.c_str());
 			mode = PoseImportMode::POSES;
 		}
-		if (!ImportPoses(mode))
+		if (!ImportPoses(*this, config.importPosesFile, mode, config.framesConvention))
 			return false;
 	}
 
@@ -636,7 +612,8 @@ bool Scene::Reconstruct(const String& source, const ReconstructionConfig& config
 			// convention before the caller re-persists the scene (the loaded pairs are
 			// already matched, so the detection can run)
 			VERBOSE("warning: scene already matched after import");
-			if (config.HasKnownPoses() && !ResolveFramesConvention(config.importCfg))
+			if (config.HasKnownPoses() && !ResolveFramesConvention(*this,
+					config.importCfg.framesConvention, config.importCfg.importPosesFile))
 				return false;
 			return true;
 		}
@@ -659,7 +636,8 @@ bool Scene::Reconstruct(const String& source, const ReconstructionConfig& config
 		// a frames.json imported with an AUTO convention must be resolved before the scene
 		// is persisted, otherwise possibly-flipped poses are saved with no record of the
 		// ambiguity and every later consumer inherits reversed optical axes
-		if (config.HasKnownPoses() && !ResolveFramesConvention(config.importCfg))
+		if (config.HasKnownPoses() && !ResolveFramesConvention(*this,
+				config.importCfg.framesConvention, config.importCfg.importPosesFile))
 			return false;
 		VERBOSE("Image pairs matched only as per configuration, reconstruction skipped");
 		return true;
@@ -932,10 +910,10 @@ bool Scene::ReconstructKnownPoses(const ReconstructionConfig& config)
 	}
 
 	// 2. Resolve the camera-axes convention of the imported transforms: a frames.json does not
-	// declare it and Scene::Import optimistically applied the ARKit one; the two hypotheses
+	// declare it and the import optimistically applied the ARKit one; the two hypotheses
 	// differ by a pi rotation about the camera X axis, so the wrong choice reverses every
 	// viewing direction and triangulation collapses
-	if (!ResolveFramesConvention(config.importCfg))
+	if (!ResolveFramesConvention(*this, config.importCfg.framesConvention, config.importCfg.importPosesFile))
 		return false;
 
 	// 3. Remember the imported poses: the bundle adjustment below refines them freely, and
@@ -1016,28 +994,6 @@ bool Scene::ReconstructKnownPoses(const ReconstructionConfig& config)
 		status.nTracks, tracks.size(), finalError.first, TD_TIMER_GET_FMT().c_str());
 	return true;
 }
-
-bool Scene::ResolveFramesConvention(const ImportConfig& importCfg)
-{
-	if (importCfg.framesConvention != FramesConvention::AUTO ||
-		Util::getFileExt(importCfg.importPosesFile).ToLower() != ".json")
-		return true; // convention explicit, or not a frames.json import
-	constexpr FramesConvention appliedConvention = FramesConvention::ARKIT; // what Scene::Import applied
-	const FramesConvention detectedConvention = DetectFramesConvention(*this, appliedConvention);
-	if (detectedConvention == FramesConvention::AUTO) {
-		VERBOSE("error: could not decide the camera-axes convention of '%s' from the matched pairs; "
-			"re-run passing the convention explicitly", importCfg.importPosesFile.c_str());
-		return false;
-	}
-	VERBOSE("Known poses use the %s camera-axes convention%s",
-		FramesConventionToString(detectedConvention).c_str(),
-		detectedConvention == appliedConvention ? "" : " (flipping the imported poses)");
-	if (detectedConvention != appliedConvention)
-		FlipFramesConvention(*this);
-	return true;
-}
-/*----------------------------------------------------------------*/
-
 
 bool Scene::SampleColors()
 {
