@@ -452,9 +452,11 @@ void PatchMatch::EstimateDepthMap(DepthData& depthData, ConfAdjustRequest* pConf
 		// device from the kernels above; only the neighbors' raw previous-iteration
 		// depth/conf/normal snapshots (host, loaded by InitViews -- the raw-neighbor-conf
 		// invariant) are uploaded. The adjusted confidence is downloaded straight into
-		// depthData.confMap, replacing both the cost D2H above and the cost->conf conversion in
-		// the unpack loop below. The kernels use no __constant__ state, so no serialization with
-		// other workers' PatchMatch kernels is needed beyond this instance's own stream order.
+		// depthData.confMap, overwriting the raw cost RunCUDA already downloaded there (that D2H
+		// is kept: it is the conversion input the unpack loop below needs if this launch fails);
+		// only the cost->conf conversion is skipped. The kernels use no __constant__ state, so no
+		// serialization with other workers' PatchMatch kernels is needed beyond this instance's
+		// own stream order.
 		// On any CUDA error done stays false, the conversion below runs as usual and the caller
 		// falls back to the epilogue (re-upload) path.
 		bool bFusedConfDone(false);

@@ -212,6 +212,10 @@ __global__ void SweepKernel(RefAcc ref, const float* priorMap, int W, int H,
 // RAII: free every cudaMalloc'd pointer on scope exit (success or early return), then consume any
 // pending CUDA error so a non-fatal failure (e.g. OOM) does not leak this thread's last-error into a
 // later CUDA call on the same reused pool-worker thread.
+// On an early failure the kernels may still be queued on the stream when this runs: that is safe
+// only because cudaFree implicitly synchronizes with the device work referencing the allocation
+// before releasing it -- if these frees are ever switched to cudaFreeAsync (or another non-
+// synchronizing release), the failure paths must first cudaStreamSynchronize the launch stream.
 namespace { struct DevBag { std::vector<void*> v; ~DevBag(){ for (void* p : v) cudaFree(p); cudaGetLastError(); } }; }
 
 // shared tail of both launchers: allocate the prior/output buffers, upload the neighbor maps +

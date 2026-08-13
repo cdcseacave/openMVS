@@ -1185,7 +1185,10 @@ void DepthMapsData::ComputeIntraMapPrior(const DepthData& depthData, ConfidenceM
 	const bool bHasNormal(!normalMap.empty());
 	const Matrix3x3f K(depthData.GetView().camera.K);
 	const DepthGradientEstimator est(K, depthMap);
-	const float band(OPTDENSE::fDepthDiffThreshold * 3.f);          // relative planarity band
+	// relative planarity band; the threshold is clamped away from 0 exactly like the GPU prior's
+	// (MakeConfRefineParams' thDepth, from which PriorKernel derives its band) so the two paths
+	// stay in parity even at the degenerate fDepthDiffThreshold==0 setting
+	const float band(MAXF(OPTDENSE::fDepthDiffThreshold, 1e-6f) * 3.f);
 	const float invKmin(1.f / 4.f);                                // soft planar quorum (~4 inliers)
 	priorMap.create(depthMap.size());
 	priorMap.memset(0);
