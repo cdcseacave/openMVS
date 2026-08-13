@@ -893,15 +893,38 @@ void Mesh::Clean(float fDecimate, float fSpurious, bool bRemoveSpikes, unsigned 
 	// remove spikes
 	if (bRemoveSpikes) {
 		int nTotalSpikes(0);
+		// removed-but-not-yet-collected halfedges keep their connectivity links, so a
+		// circulator that reaches one orbits the graveyard forever and never returns to
+		// its start; every around-target walk here is thus bounded and aborts on removed
+		// elements (the vertex is simply re-visited in the next round, after
+		// collect_garbage() has restored the invariants)
+		const auto collectVertexFans = [&sm](CLEAN::vertex_descriptor vd, std::vector<CLEAN::halfedge_descriptor>* pFaceFans) -> int {
+			const CLEAN::halfedge_descriptor h0 = sm.halfedge(vd);
+			if (h0 == CLEAN::SurfaceMesh::null_halfedge())
+				return 0; // isolated vertex: zero faces, a spike candidate the removal loop deletes
+			if (sm.is_removed(sm.edge(h0)))
+				return -1;
+			int faceCount(0);
+			size_t walk(0);
+			const size_t maxWalk((size_t)sm.number_of_halfedges()+2);
+			CLEAN::halfedge_descriptor h = h0;
+			do {
+				if (sm.is_removed(sm.edge(h)) || ++walk > maxWalk)
+					return -1;
+				if (!sm.is_border(h)) {
+					++faceCount;
+					if (pFaceFans)
+						pFaceFans->push_back(h);
+				}
+				h = sm.opposite(sm.next(h));
+			} while (h != h0);
+			return faceCount;
+		};
 		for (int spikeIter = 0; spikeIter < 100; ++spikeIter) {
 			std::vector<CLEAN::vertex_descriptor> spikeVerts;
 			for (CLEAN::vertex_descriptor vd : sm.vertices()) {
-				int faceCount(0);
-				for (CLEAN::halfedge_descriptor hd : CGAL::halfedges_around_target(vd, sm)) {
-					if (!sm.is_border(hd))
-						++faceCount;
-				}
-				if (faceCount <= 1)
+				const int faceCount(collectVertexFans(vd, NULL));
+				if (faceCount >= 0 && faceCount <= 1)
 					spikeVerts.push_back(vd);
 			}
 			if (spikeVerts.empty())
@@ -911,13 +934,13 @@ void Mesh::Clean(float fDecimate, float fSpurious, bool bRemoveSpikes, unsigned 
 					sm.remove_vertex(vd);
 					continue;
 				}
+				// removals for an earlier spike vertex in this round can have deleted
+				// the edges around this one; postpone it to the next round then
 				std::vector<CLEAN::halfedge_descriptor> toRemove;
-				for (CLEAN::halfedge_descriptor hd : CGAL::halfedges_around_target(vd, sm)) {
-					if (!sm.is_border(hd))
-						toRemove.push_back(hd);
-				}
+				if (collectVertexFans(vd, &toRemove) < 0)
+					continue;
 				for (CLEAN::halfedge_descriptor hd : toRemove) {
-					if (!sm.is_removed(sm.face(hd)))
+					if (!sm.is_removed(sm.edge(hd)) && !sm.is_border(hd) && !sm.is_removed(sm.face(hd)))
 						CGAL::Euler::remove_face(hd, sm);
 				}
 			}

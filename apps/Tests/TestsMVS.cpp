@@ -60,27 +60,34 @@ bool PipelineTest(bool forceCPU, bool verbose)
 	// The point/face counts and quality vary run-to-run (multi-threaded
 	// densify/mesh) and differ between the CPU and GPU PatchMatch backends, so
 	// these are deliberately wide plausibility windows, not tight regression
-	// bounds: they bracket both backends' observed spread with margin. The CPU
-	// PatchMatch backend yields markedly denser meshes than the GPU one (up to
-	// ~2x the faces), and GPU-less CI hosts sit at the top of that range. Measured
-	// (GPU, local CPU, GPU-less CI): points 58k-71k, recon faces 23k-43k, cleaned
-	// faces 16k-30k, quality 44-51.
+	// bounds: they bracket both backends' observed spread with margin.
+	// Re-baselined 2026-08-10 for the current defaults. Note the backends now
+	// differ by design, not just by numerical spread: nOptimize defaults to
+	// ADJUST_CONFIDENCE_AUTO, so the confidence recalibration runs on the GPU
+	// backend (fused into the last geometric-consistency iteration, nearly free)
+	// and is skipped on the CPU backend (where it would cost a separate pass).
+	// Also on: fusion rescue (fFusePriorWeight=3, ~+90% dense points on this
+	// scene); pointWeights hold the plain [0,1] per-view confidence consumed by
+	// the weighted mesh visibility (this test keeps pointWeights, unlike the
+	// ReconstructMesh app whose constant-weight default discards them).
+	// Measured (GPU adjust-ON / CPU adjust-OFF): recon faces 52.9k / 71.4k,
+	// cleaned faces 37.0k / 49.8k, quality 50.4 / 52.2.
 	if (!scene.DenseReconstruction() || scene.pointcloud.GetSize() < 50000u) {
-		VERBOSE("ERROR: TestDataset failed estimating dense point-cloud!");
+		VERBOSE("ERROR: TestDataset failed estimating dense point-cloud (%u points)!", scene.pointcloud.GetSize());
 		return false;
 	}
 	if (verbose)
 		scene.pointcloud.Save(MAKE_PATH("scene_dense.ply"));
-	if (!scene.ReconstructMesh() || !ISINSIDE(scene.mesh.faces.size(), 16000u, 52000u)) {
-		VERBOSE("ERROR: TestDataset failed reconstructing the mesh!");
+	if (!scene.ReconstructMesh() || !ISINSIDE(scene.mesh.faces.size(), 40000u, 100000u)) {
+		VERBOSE("ERROR: TestDataset failed reconstructing the mesh (%u faces)!", scene.mesh.faces.size());
 		return false;
 	}
 	if (verbose)
 		scene.mesh.Save(MAKE_PATH("scene_dense_mesh.ply"));
 	constexpr float decimate = 0.7f;
 	scene.mesh.Clean(decimate);
-	if (!ISINSIDE(scene.mesh.faces.size(), 11000u, 38000u)) {
-		VERBOSE("ERROR: TestDataset failed cleaning the mesh!");
+	if (!ISINSIDE(scene.mesh.faces.size(), 28000u, 70000u)) {
+		VERBOSE("ERROR: TestDataset failed cleaning the mesh (%u faces)!", scene.mesh.faces.size());
 		return false;
 	}
 	if (verbose)

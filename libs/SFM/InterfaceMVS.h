@@ -37,19 +37,25 @@ SFM_API bool UndistortDepthMaps(const Scene& scene,
 	std::unordered_map<const Camera*, KMatrix>* undistortedIntrinsics=NULL);
 
 
-// Depth-map import from MVS format (similar to MVS::ImportDepthDataRaw)
+// Depth-map import from MVS format (similar to MVS::ImportDepthDataRaw).
+// The DMAP header carries the recalibrated-confidence flag (CONF_ADJUSTED in
+// MVS/Interface.h): anything that rewrites a depth-map has to carry it over, or the
+// stored confidence would be recalibrated a second time by a later dense run.
 SFM_API bool ImportDepthDataRaw(const String& fileName, String& imageFileName,
 	IIndexArr& IDs, cv::Size& imageSize, cv::Size& depthSize,
 	KMatrix& K, RMatrix& R, CMatrix& C,
 	float& dMin, float& dMax,
-	Image32F& depthMap, Image32F3& normalMap, Image32F& confMap, Image8U4& viewsMap, unsigned flags=15/*all*/);
+	Image32F& depthMap, Image32F3& normalMap, Image32F& confMap, Image8U4& viewsMap,
+	unsigned flags=15/*maps to read: HAS_DEPTH|HAS_NORMAL|HAS_CONF|HAS_VIEWS, all of them*/,
+	bool* pbConfAdjusted=NULL/*receives the stored CONF_ADJUSTED flag*/);
 
 // Depth-map export to MVS format (similar to MVS::ExportDepthDataRaw)
 SFM_API bool ExportDepthDataRaw(const String& fileName, const String& imageFileName,
 	const IIndexArr& IDs, const cv::Size& imageSize,
 	const KMatrix& K, const RMatrix& R, const Point3& C,
 	float dMin, float dMax,
-	const Image32F& depthMap, const Image32F& confMap, const Image8U4& viewsMap);
+	const Image32F& depthMap, const Image32F& confMap, const Image8U4& viewsMap,
+	bool bConfAdjusted=false/*mark the stored confMap as already recalibrated (CONF_ADJUSTED)*/);
 
 
 /**

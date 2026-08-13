@@ -13,6 +13,19 @@ Example usage:
 import numpy as np
 
 
+# DMAP header content type, mirroring MVS::HeaderDepthDataRaw (libs/MVS/Interface.h):
+# the low bits list the maps the file stores, the bits above them are flags qualifying
+# them, so each bit has to be tested on its own and the rest masked off
+DMAP_HAS_DEPTH = 1 << 0
+DMAP_HAS_NORMAL = 1 << 1
+DMAP_HAS_CONF = 1 << 2
+DMAP_HAS_VIEWS = 1 << 3
+DMAP_CONTENT_MASK = DMAP_HAS_DEPTH | DMAP_HAS_NORMAL | DMAP_HAS_CONF | DMAP_HAS_VIEWS
+# the stored confidence-map is the recalibrated (fusion-survival) confidence, already
+# adjusted once: a second adjust pass must not re-run on it
+DMAP_CONF_ADJUSTED = 1 << 4
+
+
 def scale_K(K, sx, sy):
   '''
   Scale the intrinsic camera matrix K.
@@ -105,19 +118,20 @@ def loadDMAP(dmap_path: str):
   """
   with open(dmap_path, 'rb') as dmap:
     file_type = dmap.read(2).decode()
-    content_type = np.frombuffer(dmap.read(1), dtype=np.uint8)
+    content_type = int(np.frombuffer(dmap.read(1), dtype=np.uint8)[0])
     # power-of-two exponent the stored depths were scaled down by
     depth_exp = np.frombuffer(dmap.read(1), dtype=np.int8)[0]
-    
-    has_depth = content_type > 0
-    has_normal = content_type in [3, 7, 11, 15]
-    has_conf = content_type in [5, 7, 13, 15]
-    has_views = content_type in [9, 11, 13, 15]
-    
+
+    has_depth = bool(content_type & DMAP_HAS_DEPTH)
+    has_normal = bool(content_type & DMAP_HAS_NORMAL)
+    has_conf = bool(content_type & DMAP_HAS_CONF)
+    has_views = bool(content_type & DMAP_HAS_VIEWS)
+    conf_adjusted = bool(content_type & DMAP_CONF_ADJUSTED)
+
     image_width, image_height = np.frombuffer(dmap.read(8), dtype=np.uint32)
     depth_width, depth_height = np.frombuffer(dmap.read(8), dtype=np.uint32)
     
-    if (file_type != 'D2' or has_depth == False or depth_width <= 0 or depth_height <= 0 or image_width < depth_width or image_height < depth_height):
+    if (file_type != 'D2' or not has_depth or depth_width <= 0 or depth_height <= 0 or image_width < depth_width or image_height < depth_height):
       print('error: opening file \'{}\' for reading depth-data'.format(dmap_path))
       return
     
@@ -141,6 +155,7 @@ def loadDMAP(dmap_path: str):
       'has_normal': has_normal,
       'has_conf': has_conf,
       'has_views': has_views,
+      'conf_adjusted': conf_adjusted,
       'image_width': image_width,
       'image_height': image_height,
       'depth_width': depth_width,
@@ -199,13 +214,19 @@ def saveDMAP(data: dict, dmap_path: str):
   assert 'R' in data, 'R is required'
   assert 'C' in data, 'C is required'
 
-  content_type = 1
+  content_type = DMAP_HAS_DEPTH
   if 'normal_map' in data:
-    content_type += 2
+    content_type |= DMAP_HAS_NORMAL
   if 'confidence_map' in data:
-    content_type += 4
+    content_type |= DMAP_HAS_CONF
   if 'views_map' in data:
-    content_type += 8
+    content_type |= DMAP_HAS_VIEWS
+  # carry the recalibrated-confidence flag through (loadDMAP surfaces it as 'conf_adjusted',
+  # and a map built here from scratch carries the raw confidence, hence the False default):
+  # a confidence that was already recalibrated must stay marked, or a later DensifyPointCloud
+  # run would recalibrate it a second time (see the cross-process double-adjust guard)
+  if data.get('conf_adjusted', False):
+    content_type |= DMAP_CONF_ADJUSTED
 
   depth_map = np.asarray(data['depth_map'], dtype=np.float32)
   # take the exponent from the data rather than from depth_max, which callers may set

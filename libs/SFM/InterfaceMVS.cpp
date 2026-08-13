@@ -39,8 +39,9 @@ bool SFM::UndistortDMAP(const String& depthMapFile,
 	Image32F depthMap, confMap;
 	Image32F3 normalMap;
 	Image8U4 viewsMap;
+	bool bConfAdjusted(false);
 	if (!ImportDepthDataRaw(depthMapFile, imageFileName, IDs, imageSize, depthSize, K, R, C, dMin, dMax,
-			depthMap, normalMap, confMap, viewsMap)) {
+			depthMap, normalMap, confMap, viewsMap, 15/*all maps*/, &bConfAdjusted)) {
 		DEBUG("warning: failed to import depth-map from '%s'", depthMapFile.c_str());
 		return false;
 	}
@@ -81,11 +82,13 @@ bool SFM::UndistortDMAP(const String& depthMapFile,
 	Image8U4 undistortedViewsMap;
 	if (!viewsMap.empty())
 		cv::remap(viewsMap, undistortedViewsMap, map1, map2, cv::INTER_NEAREST, cv::BORDER_CONSTANT, cv::Scalar::all(0));
-	// Export undistorted depth-map to a temporary file first
+	// Export undistorted depth-map to a temporary file first; undistortion resamples the
+	// confidence but does not change what it measures, so a recalibrated map stays
+	// recalibrated and keeps its CONF_ADJUSTED flag
 	const String tempDepthMapFile = depthMapFile + ".tmp";
 	if (!ExportDepthDataRaw(tempDepthMapFile, imageFileName, IDs, imageSize,
 			imageUndistortedK, R, C, dMin, dMax,
-			undistortedDepthMap, undistortedConfMap, undistortedViewsMap)) {
+			undistortedDepthMap, undistortedConfMap, undistortedViewsMap, bConfAdjusted)) {
 		DEBUG("warning: failed to export undistorted depth-map to '%s'", tempDepthMapFile.c_str());
 		return false;
 	}
@@ -186,7 +189,8 @@ bool SFM::ImportDepthDataRaw(const String& fileName, String& imageFileName,
 	IIndexArr& IDs, cv::Size& imageSize, cv::Size& depthSize,
 	KMatrix& K, RMatrix& R, CMatrix& C,
 	float& dMin, float& dMax,
-	Image32F& depthMap, Image32F3& normalMap, Image32F& confMap, Image8U4& viewsMap, unsigned flags)
+	Image32F& depthMap, Image32F3& normalMap, Image32F& confMap, Image8U4& viewsMap, unsigned flags,
+	bool* pbConfAdjusted)
 {
 	STATIC_ASSERT(sizeof(double) == sizeof(REAL));
 	STATIC_ASSERT(sizeof(uint32_t) == sizeof(IIndex));
@@ -198,6 +202,8 @@ bool SFM::ImportDepthDataRaw(const String& fileName, String& imageFileName,
 		DEBUG("error: reading depth-data from file '%s'", fileName.c_str());
 		return false;
 	}
+	if (pbConfAdjusted)
+		*pbConfAdjusted = (data.header.type & MVS::HeaderDepthDataRaw::CONF_ADJUSTED) != 0;
 	imageFileName = data.imageFileName;
 	IDs.CopyOf(data.IDs.data(), (IIndex)data.IDs.size());
 	K = data.K;
@@ -216,7 +222,8 @@ bool SFM::ExportDepthDataRaw(const String& fileName, const String& imageFileName
 	const IIndexArr& IDs, const cv::Size& imageSize,
 	const KMatrix& K, const RMatrix& R, const Point3& C,
 	float dMin, float dMax,
-	const Image32F& depthMap, const Image32F& confMap, const Image8U4& viewsMap)
+	const Image32F& depthMap, const Image32F& confMap, const Image8U4& viewsMap,
+	bool bConfAdjusted)
 {
 	ASSERT(!IDs.empty() && IDs.size() < 256);
 	ASSERT(!depthMap.empty());
@@ -231,6 +238,8 @@ bool SFM::ExportDepthDataRaw(const String& fileName, const String& imageFileName
 	data.header.imageHeight = (uint32_t)imageSize.height;
 	data.header.dMin = dMin;
 	data.header.dMax = dMax;
+	if (bConfAdjusted)
+		data.header.type |= MVS::HeaderDepthDataRaw::CONF_ADJUSTED; // carried through by the codec
 	// store the image path relative to the depth-map, so that the two travel together
 	data.imageFileName = MAKE_PATH_REL(Util::getFullPath(Util::getFilePath(fileName)), Util::getFullPath(imageFileName));
 	data.IDs.assign(IDs.begin(), IDs.end());

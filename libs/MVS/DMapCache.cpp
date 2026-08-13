@@ -75,14 +75,24 @@ void DMapCache::SetMaxMemory(size_t max_memory_bytes) {
 
 bool DMapCache::UseImage(IIndex idxImage) const {
 	ASSERT(idxImage < arrDepthData.size());
-	std::lock_guard<std::mutex> guard(mutex);
+	// unique_lock, NOT lock_guard: the miss path below releases the lock around the slow disk
+	// Load(); if that throws while unlocked, only a lock that tracks ownership skips the
+	// destructor unlock (unlocking a mutex the thread does not own is undefined behavior)
+	std::unique_lock<std::mutex> lock(mutex);
 	ASSERT(arrDepthData[idxImage].IsValid());
 	if (!arrDepthData[idxImage].IsEmpty()) {
 		hitStats.Hit();
 		fifo.Put(idxImage);
+		// account depth-data loaded outside the cache the first time it is seen: every fifo
+		// entry must have an accountedMemory snapshot (EjectOldest relies on it) and usedMemory
+		// must be non-zero whenever fifo is non-empty (see IsEmpty)
+		if (accountedMemory.find(idxImage) == accountedMemory.end()) {
+			usedMemory += (accountedMemory[idxImage] = GetMemorySize(idxImage));
+			Eject();
+		}
 		return false;
 	}
-	mutex.unlock();
+	lock.unlock();
 	const String fileName(ComposeDepthFilePath(arrDepthData[idxImage].GetView().GetID(), "dmap"));
 	while (!std::filesystem::is_regular_file(static_cast<const std::string&>(fileName)))
 		std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -96,9 +106,9 @@ bool DMapCache::UseImage(IIndex idxImage) const {
 		if (imageData.image.empty() && !imageData.ReloadImageAtPreparedResolution())
 			VERBOSE("warning: image %u could not be decoded; the points it sees stay uncolored", imageData.ID);
 	}
-	mutex.lock();
+	lock.lock();
 	hitStats.Miss();
-	usedMemory += GetMemorySize(idxImage);
+	usedMemory += (accountedMemory[idxImage] = GetMemorySize(idxImage));
 	fifo.Put(idxImage);
 	Eject();
 	return true;
@@ -141,7 +151,12 @@ bool DMapCache::EjectOldest() const {
 	if (fifo.Back() == skipMemoryCheckIdxImage)
 		return false;
 	const IIndex idxImage = fifo.Pop();
-	usedMemory -= GetMemorySize(idxImage);
+	// subtract the bytes accounted at load time, NOT the current size: maps grown since
+	// (see accountedMemory) would otherwise underflow the counter
+	const auto itAccounted(accountedMemory.find(idxImage));
+	ASSERT(itAccounted != accountedMemory.end());
+	usedMemory -= itAccounted->second;
+	accountedMemory.erase(itAccounted);
 	// release the depth-data; no need to save the depth-data to disk as it is already saved
 	arrDepthData[idxImage].Release();
 	if (pImages)

@@ -145,6 +145,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 	int nIgnoreMaskLabel;
 	float fDepthDiffThreshold;
 	float fDepthReprojectionErrorThreshold;
+	float fFusePriorWeight;
 	bool bRemoveDmaps;
 	boost::program_options::options_description config("Densify options");
 	config.add_options()
@@ -174,7 +175,8 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("fusion-filter", boost::program_options::value(&nFuseFilter)->default_value(2), "filter used to fuse the depth-maps (0 - merge, 1 - fuse, 2 - dense-fuse)")
 		("fusion-depth-diff-threshold,t", boost::program_options::value(&fDepthDiffThreshold)->default_value(0.01f), "maximum variance allowed for the depths during fusion")
 		("fusion-reprojection-threshold,d", boost::program_options::value(&fDepthReprojectionErrorThreshold)->default_value(1.2f), "dense-fuse maximum distance between measured and depth projected pixel")
-		("postprocess-dmaps", boost::program_options::value(&nOptimize)->default_value(0), "flags used to filter the depth-maps after estimation (0 - disabled, 1 - remove-speckles, 2 - fill-gaps, 4 - adjust-confidence)")
+		("fusion-prior-weight", boost::program_options::value(&fFusePriorWeight)->default_value(3.f), "dense-fuse weight of the intra-map geometric prior used as virtual support to keep few-view inliers (0 - disabled); the default 3 favors completeness, best when a mesh reconstruction step follows and cleans the few extra outliers; set 2 when the dense point-cloud itself is the final output (fewer outliers at slightly lower completeness)")
+		("postprocess-dmaps", boost::program_options::value(&nOptimize)->default_value(4), "flags used to filter the depth-maps after estimation (0 - disabled, 1 - remove-speckles, 2 - fill-gaps, 4 - adjust-confidence only when the depth-maps are estimated on CUDA, where it runs fused into the last estimation iteration and costs almost nothing, 8 - adjust-confidence; the default 4 therefore enables it on GPU and skips it on CPU, where it would cost a separate full-resolution pass -- pass 8 to force it on regardless)")
 		("filter-point-cloud", boost::program_options::value(&OPT::thFilterPointCloud)->default_value(0), "filter dense point-cloud based on visibility (0 - disabled)")
 		("export-number-views", boost::program_options::value(&OPT::nExportNumViews)->default_value(0), "export points with >= number of views (0 - disabled, <0 - save MVS project too)")
 		("roi-border", boost::program_options::value(&OPT::fBorderROI)->default_value(0), "add a border to the region-of-interest when cropping the scene (0 - disabled, >0 - percentage, <0 - absolute)")
@@ -280,6 +282,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 	OPTDENSE::nIgnoreMaskLabel = nIgnoreMaskLabel;
 	OPTDENSE::fDepthDiffThreshold = fDepthDiffThreshold;
 	OPTDENSE::fDepthReprojectionErrorThreshold = fDepthReprojectionErrorThreshold;
+	OPTDENSE::fFusePriorWeight = fFusePriorWeight;
 	OPTDENSE::bRemoveDmaps = bRemoveDmaps;
 	if (!bValidConfig && !OPT::strDenseConfigFileName.empty())
 		OPTDENSE::oConfig.Save(OPT::strDenseConfigFileName);
@@ -347,7 +350,8 @@ int main(int argc, LPCTSTR* argv)
 			ViewsMap viewsMap;
 			if (!ImportDepthDataRaw(ComposeDepthFilePath(image.ID, "dmap"),
 				imageFileName, IDs, imageSize, camera.K, camera.R, camera.C,
-				dMin, dMax, depthMap, normalMap, confMap, viewsMap, 1))
+				dMin, dMax, depthMap, normalMap, confMap, viewsMap,
+				HeaderDepthDataRaw::HAS_DEPTH))
 				return EXIT_FAILURE;
 			// save depth-map as PNG
 			Image16U depthMap16U;

@@ -24,6 +24,24 @@ The goal of this module is to provide the functionality of obtaining a complete 
 
 A second option for estimating the dense point-cloud is using Semi-Global Matching algorithm, implemented as described in: *Memory Efficient Semi-Global Matching* H. Hirschmüller et al. 2012. This method is still experimental, thus sometimes the speed and completeness might not be as good as the Path-Match approach, though the accuracy could be better.
 
+### Depth-Map Confidence
+
+Every depth estimate carries a confidence in `[0,1]`, stored in the `.dmap` files next to the depth and used to weight fusion, to order points, and to drive the visibility weights of the mesh step. By default this starts as a photometric score (`1 - NCC`), which answers *"how well does this patch match?"* — a question that is only loosely related to the one that actually matters downstream, *"is this depth correct?"*. A patch on a repetitive facade or in a textureless region can match beautifully and still be wrong.
+
+The optional recalibration replaces that photometric score with a posterior that predicts **whether a depth will survive fusion as an inlier**, combining three sources of evidence per pixel:
+
+- **an intra-map geometric prior** — a local plane is fitted to the depth-map around the pixel, and the pixel is scored by how well its neighbourhood agrees with that plane and by whether the plane's implied normal agrees with the estimated normal. A correct surface is locally coherent in both; a photometric mismatch usually is not;
+- **multi-view confirmation** — the pixel is projected into each neighbouring view and compared against that view's own depth estimate, through continuous (rather than pass/fail) agreement weights on depth, forward-backward reprojection, surface normal and the neighbour's own confidence. Every neighbour contributes a fractional vote, so agreement degrades smoothly instead of falling off a threshold;
+- **free-space violations** — when a neighbour's own measured depth lies well *behind* our point along the same ray, that neighbour's line of sight passes *through* where we claim a surface is. This is direct negative evidence, and is counted separately from mere occlusion (a neighbour seeing something closer says nothing about our point).
+
+These are combined in a closed form (see [libs/MVS/ConfidenceRefine.h](https://github.com/cdcseacave/openMVS/blob/master/libs/MVS/ConfidenceRefine.h)): a Beta-style posterior mean whose evidence is diluted by the violation count, gated by the total confirmation weight and scaled by the photometric term. Its shape constants are not exposed as options — they are a single operating point calibrated jointly against ground truth, and moving one without re-deriving the others degrades the result.
+
+**Expected accuracy.** Measured against ground-truth depth on 28 scene-levels of BlendedMVS and ETH3D, the recalibration raises the pooled inlier/outlier ROC-AUC from **0.844 to 0.926**, improving every scene-level tested. The practical consequence is on the completeness/contamination trade-off: thresholding confidence to admit at most 1% contaminated points retains **57.9%** of the depths versus **31.5%** with the raw photometric score — close to twice the usable surface at the same error budget.
+
+**Cost and defaults.** When CUDA estimates the depth-maps, the recalibration runs fused into the last geometric-consistency iteration, reading the depth, normal and cost buffers already resident on the device — about 3 ms per depth-map, which is why it is **enabled by default on GPU**. On the CPU there is no such free ride: it costs a separate full-resolution sweep comparable to a fusion pass, so it is **off by default** and enabled explicitly with `--postprocess-dmaps 8`. Recalibrated depth-maps are flagged in the `.dmap` header so a second pass never adjusts an already-adjusted map.
+
+The full design, the ground-truth evaluation behind these numbers, the alternatives that were measured and rejected, and how to continue the work are recorded in [design/DepthMapConfidence.md](https://github.com/cdcseacave/openMVS/blob/master/docs/design/DepthMapConfidence.md).
+
 ## Mesh Reconstruction
 
 This module aims at estimating a mesh surface that explains the best the input point-cloud, and to be robust to outliers. The input point-cloud could be dense or sparse, and hence the algorithm used should be able to perform well in both cases. For these reasons, the algorithm currently implemented is based on the paper: *Exploiting Visibility Information in Surface Reconstruction to Preserve Weakly Supported Surfaces* M. Jancosek et al. 2014.

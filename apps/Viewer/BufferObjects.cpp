@@ -32,7 +32,6 @@
 #include "BufferObjects.h"
 #include "Shader.h"
 #include "Renderer.h"
-#include <iostream>
 
 using namespace VIEWER;
 

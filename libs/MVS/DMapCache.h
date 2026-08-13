@@ -86,6 +86,10 @@ public:
 	// get the current memory usage (in bytes)
 	size_t GetUsedMemory() const { return usedMemory; }
 
+	// counters tracking how well the cache served its uses so far
+	// (numMisses = depth-maps fetched from disk)
+	const CacheHitStats& GetHitStats() const { return hitStats; }
+
 private:
 	// eject the least recently used images if the cache size is above max-limit
 	bool Eject() const;
@@ -105,6 +109,11 @@ private:
 	// maximum and used memory (in bytes)
 	size_t maxMemory, disabledMaxMemory;
 	mutable size_t usedMemory;
+
+	// bytes accounted into usedMemory when each image was cached; ejection subtracts exactly
+	// this snapshot, so maps grown AFTER caching (a normal-map estimated in place, the fusion
+	// phase's priorMap, an adjusted confidence side buffer) can never underflow the counter
+	mutable std::unordered_map<IIndex,size_t> accountedMemory;
 
 	// index of the image to skip memory check
 	IIndex skipMemoryCheckIdxImage;

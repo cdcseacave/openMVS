@@ -245,6 +245,10 @@ struct vert_info_t {
 		ASSERT(pweights == NULL || _views.GetSize() == pweights->GetSize());
 		FOREACH(i, _views) {
 			const PointCloud::View viewID(_views[i]);
+			// pointWeights holds the plain [0,1] per-view confidence (see SceneDensify fusion), i.e.
+			// the expected value of the constant-weight vote of 1: dimensionless and independent of
+			// the scene's length unit, so it can feed the graph-cut constants (kb, kf, kRel, kAbs,
+			// kOutl, tuned for the uniform-weight regime) directly, with no normalization step
 			const PointCloud::Weight weight(pweights ? (*pweights)[i] : PointCloud::Weight(1));
 			// insert viewID in increasing order
 			const uint32_t idx(views.FindFirstEqlGreater(viewID));

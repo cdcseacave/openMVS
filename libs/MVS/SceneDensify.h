@@ -98,8 +98,29 @@ public:
 
 	void EstimateNormalMaps();
 
-	bool AdjustConfidenceFast(DepthData& depthData, const IIndexArr& idxNeighbors);
+	void ComputeIntraMapPrior(const DepthData& depthData, ConfidenceMap& priorMap, bool bParallel) const;
+	// compute-if-absent accessor: returns depthData.priorMap, computing (and caching) it only if not
+	// already present. bParallel selects ComputeIntraMapPrior's inner OpenMP loop: AdjustConfidence
+	// passes false -- it runs inside one of nMaxThreads already-parallel pool-worker threads, where
+	// an inner "#pragma omp parallel for" would spawn a fresh OMP team PER worker (the pthread is
+	// not an OMP thread, so nesting rules do not gate it), violating this codebase's
+	// no-per-view-threading rule. DenseFuseDepthMaps passes true -- single serial caller, idle cores.
+	const ConfidenceMap& GetIntraMapPrior(DepthData& depthData, bool bParallel) const;
 	bool AdjustConfidence(DepthData& depthDataRef, const IIndexArr& idxNeighbors);
+	// integrated fusion-faithful confidence -- epilogue of the LAST geometric-consistency
+	// iteration, run from the CALLER (DenseReconstructionEstimate's EVT_SAVEDEPTHMAP handler) while
+	// depthDataRef.images[] (this reference's own already-loaded neighbor depth/normal/conf, see
+	// InitViews' loadDepthMaps==2 path) is still resident, before ReleaseImages()/Release()/Save().
+	// No idxNeighbors argument -- the neighbor set and its data come entirely from depthDataRef.images
+	// (index 0 is the reference itself), not from the shared arrDepthData[] the standalone overload
+	// above indexes into. Writes depthDataRef.confMap directly (no confMapAdjusted deferred swap: see
+	// the .cpp comment for why the standalone phase's race does not apply here).
+	bool AdjustConfidence(DepthData& depthDataRef);
+	#ifdef _USE_CUDA
+	// GPU counterpart of AdjustConfidence(DepthData&) -- same neighbor build, the prior +
+	// confirmation sweep run in ConfidenceCUDA.cu. Returns false on any CUDA error (CPU fallback).
+	bool AdjustConfidenceCUDA(DepthData& depthDataRef);
+	#endif
 	void MergeDepthMaps(PointCloud& pointcloud, bool bEstimateColor, bool bEstimateNormal);
 	void FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, bool bEstimateNormal);
 	void DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, bool bEstimateNormal);
