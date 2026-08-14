@@ -40,6 +40,9 @@
 // JPEG-XL codec
 #cmakedefine _USE_JXL
 
+// HEIF codec
+#cmakedefine _USE_HEIF
+
 // PNG codec
 #cmakedefine _USE_PNG
 
@@ -71,4 +74,7 @@
 
 // Headless debug mode (no modal dialogs, ASSERT prints to stderr, no LogConsole redirection)
 #cmakedefine _HEADLESS_DEBUG
+
+// In-source library test entry points, called by the Tests application
+#cmakedefine _USE_TESTS
 

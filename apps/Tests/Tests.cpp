@@ -87,6 +87,17 @@ bool UnitTests()
 		VERBOSE("ERROR: TestConfidenceInterval failed!");
 		return false;
 	}
+	#ifdef _IMAGE_HEIF
+	// the reader's own semantics are tested next to the reader, in libs/IO/ImageHEIF.cpp
+	if (!CImageHEIF::Test(MAKE_PATH("images/heif"))) {
+		VERBOSE("ERROR: CImageHEIF::Test failed!");
+		return false;
+	}
+	if (!SFM::HEIFMetadataTest()) {
+		VERBOSE("ERROR: HEIFMetadataTest failed!");
+		return false;
+	}
+	#endif
 	VERBOSE("All unit tests passed (%s)", TD_TIMER_GET_FMT().c_str());
 	return true;
 }

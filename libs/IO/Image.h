@@ -76,6 +76,8 @@ public:
 	virtual bool		WriteHeader(PIXELFORMAT, Size width, Size height, BYTE numLevels);
 	virtual bool		WriteData(void*, PIXELFORMAT, Size nStride, Size lineWidth);
 
+	virtual bool		GetMetadataEXIF(std::vector<uint8_t>&) const { return false; }
+
 	const IOSTREAMPTR&	GetStream() const		{ return m_pStream; }
 	IOSTREAMPTR&		GetStream()				{ return m_pStream; }
 	BYTE*				GetData() const			{ return m_data; }

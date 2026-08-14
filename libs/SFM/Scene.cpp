@@ -308,7 +308,7 @@ bool Scene::Import(const String& source, const ImportConfig& config)
 			if (!entry.is_regular_file())
 				continue;
 			const String ext = String(entry.path().extension().string()).ToLower();
-			if (ext == ".jpg" || ext == ".jpeg" || ext == ".png" || ext == ".tif" || ext == ".tiff" || ext == ".jxl" || ext == ".exr" || ext == ".webp")
+			if (ext == ".jpg" || ext == ".jpeg" || ext == ".png" || ext == ".tif" || ext == ".tiff" || ext == ".jxl" || ext == ".exr" || ext == ".webp" || ext == ".heic" || ext == ".heif")
 				imageFiles.emplace_back(entry.path().string());
 		}
 		if (!imageFiles.empty()) {

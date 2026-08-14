@@ -266,6 +266,22 @@ bool CImage::FilterFormat(void* pDst, PIXELFORMAT formatDst, Size strideDst, con
 		case PF_A8R8G8B8:
 		case PF_B8G8R8A8:
 		case PF_A8B8G8R8:
+			if (formatDst == PF_GRAY8) {
+				// from a 32bit color format to PF_GRAY8 (luminance of R,G,B, alpha dropped);
+				// a gray destination must never fall through to the alpha copy below: alpha is
+				// constant on photographs, so it yields a blank image with the right dimensions
+				// and no error reported anywhere
+				Size offR, offG, offB;
+				switch (formatSrc) {
+				case PF_R8G8B8A8: offR = 2; offG = 1; offB = 0; break;
+				case PF_B8G8R8A8: offR = 0; offG = 1; offB = 2; break;
+				case PF_A8R8G8B8: offR = 1; offG = 2; offB = 3; break;
+				default:          offR = 3; offG = 2; offB = 1; break; // PF_A8B8G8R8
+				}
+				for (Size i=0; i<nSzize; ++i,(uint8_t*&)pDst+=strideDst,(uint8_t*&)pSrc+=strideSrc)
+					((uint8_t*)pDst)[0] = RGB24TO8(((uint8_t*)pSrc)[offR], ((uint8_t*)pSrc)[offG], ((uint8_t*)pSrc)[offB]);
+				return true;
+			}
 			// from PF_R8G8B8A8 to PF_A8 (just copy the alpha channel)
 			(uint8_t*&)pSrc += 3; //skip the first RGB values
 		case PF_A8:
@@ -284,11 +300,19 @@ bool CImage::FilterFormat(void* pDst, PIXELFORMAT formatDst, Size strideDst, con
 			}
 			return true;
 
-		case PF_B8G8R8:
 		case PF_R8G8B8:
-			// from PF_R8G8B8 to PF_A8 (24bits to gray)
+			// from PF_R8G8B8 to PF_A8 (24bits to gray); the format names list channels from the
+			// most- to the least-significant bit, so the bytes in memory are B,G,R here
 			for (Size i=0; i<nSzize; ++i,(uint8_t*&)pDst+=strideDst,(uint8_t*&)pSrc+=strideSrc)
 				((uint8_t*)pDst)[0] = RGB24TO8(((uint8_t*)pSrc)[2], ((uint8_t*)pSrc)[1], ((uint8_t*)pSrc)[0]);
+			return true;
+
+		case PF_B8G8R8:
+			// from PF_B8G8R8 to PF_A8 (24bits to gray); the bytes in memory are R,G,B -- the
+			// order every codec reader in this library declares as its native format, so this
+			// is the common case and it must not reuse the reversed weights above
+			for (Size i=0; i<nSzize; ++i,(uint8_t*&)pDst+=strideDst,(uint8_t*&)pSrc+=strideSrc)
+				((uint8_t*)pDst)[0] = RGB24TO8(((uint8_t*)pSrc)[0], ((uint8_t*)pSrc)[1], ((uint8_t*)pSrc)[2]);
 			return true;
 		}
 		break;
@@ -899,6 +923,10 @@ CImage* CImage::Create(LPCTSTR szName, IMCREATE mode)
 	#ifdef _IMAGE_JXL
 	else if (_tcsncicmp(fext, _T(".jxl"), 4) == 0)
 		pImage = new CImageJXL();
+	#endif
+	#ifdef _IMAGE_HEIF
+	else if (_tcsncicmp(fext, _T(".heic"), 5) == 0 || _tcsncicmp(fext, _T(".heif"), 5) == 0)
+		pImage = new CImageHEIF();
 	#endif
 	#ifdef _IMAGE_TIFF
 	else if (_tcsncicmp(fext, _T(".tif"), 4) == 0 || _tcsncicmp(fext, _T(".tiff"), 5) == 0)

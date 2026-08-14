@@ -112,6 +112,7 @@ delete img;
 | JPEG | `CImageJPG` | Optional (`_USE_JPG`) | Lossy, requires libjpeg |
 | TIFF | `CImageTIFF` | Optional (`_USE_TIFF`) | Multi-page support, requires libtiff |
 | JpegXL | `CImageJXL` | Optional (`_USE_JXL`) | Modern codec, requires libjxl |
+| HEIF | `CImageHEIF` | Optional (`_USE_HEIF`) | Read-only high-efficiency image format, requires libheif |
 | SCI | `CImageSCI` | Yes | Custom OpenMVS binary format |
 
 The optional formats are enabled at build time based on available system libraries. The CMake build auto-detects them and sets `_USE_PNG`, `_USE_JPG`, etc.
@@ -121,11 +122,24 @@ The optional formats are enabled at build time based on available system librari
 The library defines a rich set of pixel formats for conversion between different representations:
 
 - **Grayscale**: `PF_GRAY8` (8-bit), `PF_GRAY32F` (32-bit float, used for depth maps)
-- **RGB**: `PF_R8G8B8` (24-bit), `PF_R8G8B8A8` (32-bit with alpha)
-- **BGR**: `PF_B8G8R8`, `PF_B8G8R8A8` (OpenCV's native order)
+- **Colour**: `PF_R8G8B8` / `PF_B8G8R8` (24-bit) and `PF_R8G8B8A8` / `PF_B8G8R8A8` (32-bit with alpha)
 - **Compressed**: `PF_DXT1` through `PF_DXT5` (S3TC block compression)
 
 `CImage::FilterFormat()` handles conversion between formats.
+
+**Channel order is the reverse of the name.** The names list channels from the most- to the
+least-significant bit (see the comment above `PIXELFORMAT` in `Image.h`), so on a little-endian
+machine the bytes in memory come out reversed:
+
+| Constant | Bytes in memory | Who uses it |
+| --- | --- | --- |
+| `PF_B8G8R8` | R, G, B | declared by every codec reader (JPG/PNG/JXL/HEIF) as its native format |
+| `PF_R8G8B8` | B, G, R | OpenCV's order — what `MVS::Image::ReadImage` and the rest of OpenMVS request |
+
+The unambiguous anchor is `CImagePNG::ReadData()`, which calls libpng's `png_set_bgr()` *precisely
+when* a `PF_B8G8R8` file is read into a `PF_R8G8B8` request: libpng natively emits R,G,B, so the
+request that needs the swap is `PF_R8G8B8`. `CImageJPG` agrees, declaring `PF_B8G8R8` for
+libjpeg's `JCS_RGB`. Requesting `PF_R8G8B8` is therefore what gives you an OpenCV-ready buffer.
 
 ## How Other Libraries Use IO
 
@@ -165,6 +179,7 @@ libs/IO/
 ├── ImageJPG.h/cpp      # JPEG format (optional)
 ├── ImageTIFF.h/cpp     # TIFF format (optional)
 ├── ImageJXL.h/cpp      # JPEG XL format (optional)
+├── ImageHEIF.h/cpp     # HEIF/HEIC format, read-only (optional)
 ├── ImageSCI.h/cpp      # Custom OpenMVS format
 ├── tiny_gltf.h         # glTF loader (third-party, header-only)
 ├── json.hpp            # JSON library (third-party, header-only)

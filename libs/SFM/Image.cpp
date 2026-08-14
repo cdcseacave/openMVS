@@ -55,6 +55,30 @@ private:
 	std::vector<uint8_t> buffer;
 	size_f_t pos;
 };
+
+// Fallback pixel loader for formats OpenCV's imread cannot decode (e.g. HEIC): routes
+// the file through the CImage reader chain instead (mirrors MVS::Image::ReadImage).
+// Destination format is chosen to match what cv::imread would have produced (BGR/8U),
+// since every downstream consumer of Image::pixels assumes imread's channel order.
+// PF_* names list channels most- to least-significant bit (see PIXELFORMAT in IO/Image.h),
+// so on little-endian PF_R8G8B8 is B,G,R in memory, i.e. imread's order; same request as
+// MVS::Image::ReadImage. The readers themselves declare PF_B8G8R8, which is R,G,B in memory.
+bool LoadPixelsViaCImage(const String& fileName, cv::Mat& pixels, bool gray)
+{
+	IMAGEPTR pImage(CImage::Create(fileName, CImage::READ));
+	if (!pImage || !pImage->ReadHeader())
+		return false;
+	// Decode into a local buffer and publish it into 'pixels' only once fully populated:
+	// callers treat a non-empty 'pixels' as "fully loaded" (Image::HasPixels()), and pixel
+	// loading also runs as a detached prefetch task concurrently with the consumer, so
+	// filling 'pixels' in place would expose a partially-decoded image. This mirrors the
+	// cv::imread path, which likewise assigns the destination only after decoding.
+	cv::Mat decoded((int)pImage->GetHeight(), (int)pImage->GetWidth(), gray ? CV_8UC1 : CV_8UC3);
+	if (!pImage->ReadData(decoded.data, gray ? PF_GRAY8 : PF_R8G8B8, gray ? 1 : 3, (CImage::Size)decoded.step))
+		return false;
+	pixels = decoded;
+	return true;
+}
 } // namespace
 /*----------------------------------------------------------------*/
 
@@ -66,8 +90,11 @@ bool Image::LoadPixels(bool gray)
 		return false;
 	}
 	if (!LoadImage(fileName, pixels, gray ? 1 : -1)) {
-		VERBOSE("Image::LoadPixels: failed to load image '%s'", fileName.c_str());
-		return false;
+		// fallback: route formats OpenCV cannot decode (e.g. HEIC) through the CImage readers
+		if (!LoadPixelsViaCImage(fileName, pixels, gray)) {
+			VERBOSE("Image::LoadPixels: failed to load image '%s'", fileName.c_str());
+			return false;
+		}
 	}
 	ASSERT(!pixels.empty());
 	// Rotate 90 degrees clockwise if needed, so width > height
@@ -147,10 +174,37 @@ bool Image::LoadMetadata(float defaultFocalRatio)
 	bool isSpherical = false;
 	bool trustIntrinsics = false;
 
-	// Parse EXIF from same buffer
+	// Parse EXIF metadata: prefer the container-native metadata blob (e.g. HEIF's "Exif"
+	// item, exposed by GetMetadataEXIF()) and fall back to the classic stream-based scan
+	// (JPEG/TIFF-style APP1 segment) used by every other format
 	TinyEXIF::EXIFInfo exif;
-	IOStreamEXIFWrapper exifStream(pImage->GetStream());
-	if (exif.parseFrom(exifStream) == TinyEXIF::PARSE_SUCCESS) {
+	bool parsed = false, containerOriented = false;
+	std::vector<uint8_t> blob;
+	if (pImage->GetMetadataEXIF(blob)) {
+		// blob is guaranteed by the GetMetadataEXIF contract to start with "Exif\0\0"
+		if (exif.parseFromEXIFSegment(blob.data(), (unsigned)blob.size()) == TinyEXIF::PARSE_SUCCESS) {
+			parsed = true;
+			containerOriented = true; // decoder already applied the container irot/imir transforms
+		}
+	}
+	if (!parsed) {
+		// blob missing, or present but failed to parse: fall back to the raw stream scan;
+		// clear() first so a failed blob-parse attempt cannot leave stale fields behind
+		exif.clear();
+		IOStreamEXIFWrapper exifStream(pImage->GetStream());
+		parsed = exif.parseFrom(exifStream) == TinyEXIF::PARSE_SUCCESS;
+	}
+	if (parsed) {
+		if (containerOriented) {
+			// HEIF stores rotation in container-level irot/imir boxes, which libheif applies
+			// during decode and reflects in the header/pixel dimensions already used above.
+			// Many writers ALSO stamp the EXIF Orientation tag for the same rotation:
+			// honoring it here would rotate a second time and desync View::metadata.rotated
+			// from the actual pixel layout -- which feeds the known-poses rotated-image flip
+			// (diag(-1,1,-1)), i.e. a silent pose-import breaker, not a cosmetic bug -- so
+			// normalize it away whenever the blob parse (not just the stream fallback) succeeded.
+			exif.Orientation = 1;
+		}
 		// Basic camera/lens metadata
 		metadata.dateTimeOriginal = exif.DateTimeOriginal;
 		metadata.exposureTime = exif.ExposureTime;
