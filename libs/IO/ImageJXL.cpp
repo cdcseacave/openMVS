@@ -36,7 +36,13 @@ struct JxlState {
 		ASSERT(stream);
 		auto* in = stream->getInputStream();
 		compressed.resize(compressed.size() + chunk_size);
-		size_t read = in->read(compressed.data() + compressed.size() - chunk_size, chunk_size);
+		const size_t read = in->read(compressed.data() + compressed.size() - chunk_size, chunk_size);
+		if (read == STREAM_ERROR) {
+			// do not fold STREAM_ERROR ((size_t)-1) into the size arithmetic below: it would
+			// wrap around and request an absurd allocation instead of reporting the read error
+			compressed.resize(compressed.size() - chunk_size);
+			return false;
+		}
 		compressed.resize(compressed.size() + read - chunk_size);
 		if (read == 0)
 			return false; // no more data to read
@@ -61,8 +67,12 @@ CImageJXL::~CImageJXL() { Close(); }
 
 void CImageJXL::Close() {
 	if (m_state) {
-		reinterpret_cast<JxlState*>(m_state)->Close();
-		delete m_state;
+		JxlState* const state = reinterpret_cast<JxlState*>(m_state);
+		state->Close();
+		// delete through the typed pointer: deleting a void* would skip ~JxlState() and leak
+		// compressed's buffer (Close() only clear()s it, which does not release capacity), once
+		// per decoded image
+		delete state;
 		m_state = NULL;
 	}
 	m_width = m_height = 0;
