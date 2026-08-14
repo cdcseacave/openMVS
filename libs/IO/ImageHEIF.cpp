@@ -216,7 +216,7 @@ bool CImageHEIF::GetMetadataEXIF(std::vector<uint8_t>& blob) const {
 		return false; // too short to be a valid TIFF header
 	static const uint8_t exifMarker[6] = {'E', 'x', 'i', 'f', 0, 0};
 	blob.clear();
-	if (payloadSize >= 6 && memcmp(payload, exifMarker, 6) == 0) {
+	if (memcmp(payload, exifMarker, 6) == 0) {
 		// already starts with "Exif\0\0"
 		blob.assign(payload, payload + payloadSize);
 	} else {
@@ -264,13 +264,24 @@ bool CImageHEIF::Test(const String& folder)
 {
 	String dir(folder);
 	Util::ensureValidFolderPath(dir);
-	const String pathNormal(dir + "sample.heic");
-	const String pathRot6(dir + "sample_rot6.heic");
-	const String pathAlpha(dir + "sample_alpha.heic");
-	// the picture every fixture is re-encoded from is brightest in its top-right corner, whose
-	// red and blue differ by ~106 -- far more than the lossy-HEVC tolerance, so comparing that
-	// one pixel catches a channel swap decisively
-	constexpr unsigned expectedR = 123, expectedG = 169, expectedB = 229;
+	// There are no HEIF-only fixtures: two of the four pipeline images are HEIC, so the SFM and
+	// MVS tests decode them for real on every run, which is what covers pixel content as a whole.
+	//  - 00001.heic: decodes 640x479, no container rotation, carries a genuine fully-opaque alpha
+	//                channel like a real iPhone photo; feature extraction gray-loads it every run
+	//  - 00002.heic: stored landscape but carrying a container 'irot' for 90deg CCW, so it DECODES
+	//                portrait 479x640, AND a stored EXIF Orientation=8 naming the same rotation.
+	//                Honoring the tag on top of the irot libheif already applied would rotate a
+	//                second time. SFM turns it back into the landscape working raster
+	//                (View::ToWorkingOrientation rotates 90deg CW); MVS, which has no
+	//                EXIF-rotation concept, is given a matching portrait camera by scene.mvs.
+	const String pathAlpha(dir + "00001.heic");
+	const String pathRotated(dir + "00002.heic");
+	// 00001.heic is brightest in its top-right corner, where red and blue differ by ~105 -- far
+	// more than the lossy-HEVC tolerance, so comparing that one pixel catches a channel swap
+	// decisively (the tolerance also absorbs decoder drift across libheif versions). The channel
+	// order is a property of the reader, not of the file, so pinning it on one image is enough --
+	// and it has to be this one: 00002.heic's corner is dark, with red and blue only ~14 apart.
+	constexpr unsigned alphaR = 127, alphaG = 171, alphaB = 232;
 	constexpr unsigned cornerTol = 12;
 	// a real picture spreads far wider than this; a constant one does not spread at all
 	constexpr unsigned minSpread = 10;
@@ -300,9 +311,8 @@ bool CImageHEIF::Test(const String& folder)
 		}
 		return true;
 	};
-	if (!CheckHeader(pathNormal, 256, 192, false) ||
-		!CheckHeader(pathRot6, 192, 256, false) ||   // genuine irot: 90deg CW of a 256x192 picture
-		!CheckHeader(pathAlpha, 256, 192, true))
+	if (!CheckHeader(pathRotated, 479, 640, false) || // genuine irot: 90deg CCW of a 640x479 picture
+		!CheckHeader(pathAlpha, 640, 479, true))
 		return false;
 
 	// 2) Absolute channel order. PF_* names list channels most- to least-significant bit, so on
@@ -311,10 +321,10 @@ bool CImageHEIF::Test(const String& folder)
 	// both directions locks the absolute order down, not merely the parity between the two.
 	CImage::Size width = 0, height = 0;
 	std::vector<uint8_t> bgr, rgb;
-	if (!ReadFixture(pathNormal, PF_R8G8B8, 3, bgr, width, height) ||
-		!ReadFixture(pathNormal, PF_B8G8R8, 3, rgb, width, height))
+	if (!ReadFixture(pathAlpha, PF_R8G8B8, 3, bgr, width, height) ||
+		!ReadFixture(pathAlpha, PF_B8G8R8, 3, rgb, width, height))
 	{
-		VERBOSE("error: CImageHEIF::Test: cannot decode '%s'", pathNormal.c_str());
+		VERBOSE("error: CImageHEIF::Test: cannot decode '%s'", pathAlpha.c_str());
 		return false;
 	}
 	const auto CheckCorner = [&](const char* what, const std::vector<uint8_t>& data,
@@ -331,8 +341,8 @@ bool CImageHEIF::Test(const String& folder)
 		}
 		return true;
 	};
-	if (!CheckCorner("PF_R8G8B8", bgr, 3, expectedB, expectedG, expectedR) ||
-		!CheckCorner("PF_B8G8R8", rgb, 3, expectedR, expectedG, expectedB))
+	if (!CheckCorner("PF_R8G8B8", bgr, 3, alphaB, alphaG, alphaR) ||
+		!CheckCorner("PF_B8G8R8", rgb, 3, alphaR, alphaG, alphaB))
 		return false;
 
 	// 3) Alpha is decoded only when the requested format can hold it. Real iPhone HEIFs carry an
@@ -347,8 +357,8 @@ bool CImageHEIF::Test(const String& folder)
 		VERBOSE("error: CImageHEIF::Test: cannot decode '%s'", pathAlpha.c_str());
 		return false;
 	}
-	// the 3-channel read of the alpha fixture must be the same picture as the opaque one
-	if (!CheckCorner("alpha PF_R8G8B8", alphaAsBGR, 3, expectedB, expectedG, expectedR))
+	// dropping the alpha must leave the picture itself untouched
+	if (!CheckCorner("alpha PF_R8G8B8", alphaAsBGR, 3, alphaB, alphaG, alphaR))
 		return false;
 	const unsigned graySpread = ChannelSpread(alphaAsGray, 1, 0);
 	if (graySpread < minSpread) {
@@ -363,22 +373,22 @@ bool CImageHEIF::Test(const String& folder)
 			"(first %u, spread %u)", pathAlpha.c_str(), (unsigned)alphaAsBGRA[3], alphaSpread);
 		return false;
 	}
-	if (!CheckCorner("alpha PF_R8G8B8A8", alphaAsBGRA, 4, expectedB, expectedG, expectedR))
+	if (!CheckCorner("alpha PF_R8G8B8A8", alphaAsBGRA, 4, alphaB, alphaG, alphaR))
 		return false;
 
 	// 4) The EXIF bridge must hand back a blob TinyEXIF can parse, i.e. one starting with the
 	// 6-byte "Exif\0\0" marker (libheif stores a 4-byte offset prefix, and sometimes no marker).
 	{
-		CAutoPtr<CImage> pImage(CImage::Create(pathNormal, CImage::READ));
+		CAutoPtr<CImage> pImage(CImage::Create(pathRotated, CImage::READ));
 		std::vector<uint8_t> exif;
 		if (pImage == NULL || !pImage->ReadHeader() || !pImage->GetMetadataEXIF(exif)) {
-			VERBOSE("error: CImageHEIF::Test: no EXIF blob in '%s'", pathNormal.c_str());
+			VERBOSE("error: CImageHEIF::Test: no EXIF blob in '%s'", pathRotated.c_str());
 			return false;
 		}
 		static const uint8_t marker[6] = {'E', 'x', 'i', 'f', 0, 0};
 		if (exif.size() <= sizeof(marker) || memcmp(exif.data(), marker, sizeof(marker)) != 0) {
 			VERBOSE("error: CImageHEIF::Test: EXIF blob of '%s' (%u bytes) is not prefixed with "
-				"the \"Exif\\0\\0\" marker TinyEXIF requires", pathNormal.c_str(), (unsigned)exif.size());
+				"the \"Exif\\0\\0\" marker TinyEXIF requires", pathRotated.c_str(), (unsigned)exif.size());
 			return false;
 		}
 	}

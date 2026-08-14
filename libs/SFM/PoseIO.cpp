@@ -84,6 +84,16 @@ Matrix3x3 PoseCorrection(const Image& img, bool flipAxes, unsigned inPlaneTurns)
 	return Matrix3x3(correction * InPlaneRotation(-applied));
 }
 
+// Whether the in-plane rotation is in question at all: only an EXIF-rotated image has a working
+// raster differing from the one its pose file describes, so with nothing rotated every in-plane
+// hypothesis collapses to the same correction
+bool HasRotatedPosedImage(const Scene& scene) {
+	for (const Image& img : scene.images)
+		if (img.HasPose() && img.IsRotated())
+			return true;
+	return false;
+}
+
 // The convention on the other side of the axes flip
 inline FramesConvention OppositeConvention(FramesConvention convention) {
 	return convention == FramesConvention::ARKIT ? FramesConvention::OPENCV : FramesConvention::ARKIT;
@@ -707,15 +717,7 @@ FramesPoseFrame SFM::DetectFramesConvention(const Scene& scene, FramesConvention
 		knownConvention = false;
 	}
 
-	// the in-plane rotation is only in question when some posed image is actually EXIF-rotated,
-	// since all the hypotheses are identical for an unrotated one
-	bool anyRotated = false;
-	for (const Image& img : scene.images) {
-		if (img.HasPose() && img.IsRotated()) {
-			anyRotated = true;
-			break;
-		}
-	}
+	const bool anyRotated = HasRotatedPosedImage(scene);
 	CLISTDEF0(Hypothesis) hypotheses;
 	for (const bool flipAxes : {false, true}) {
 		if (flipAxes && knownConvention)
@@ -856,14 +858,7 @@ bool SFM::ResolveFramesConvention(Scene& scene, FramesConvention configuredConve
 	const bool knownConvention = (configuredConvention != FramesConvention::AUTO);
 	// an explicit convention still leaves the in-plane rotation of any EXIF-rotated image
 	// undecided, since a frames.json never declares which raster its poses describe
-	bool anyRotated = false;
-	for (const Image& img : scene.images) {
-		if (img.HasPose() && img.IsRotated()) {
-			anyRotated = true;
-			break;
-		}
-	}
-	if (knownConvention && !anyRotated)
+	if (knownConvention && !HasRotatedPosedImage(scene))
 		return true; // nothing left to resolve
 	const FramesPoseFrame detected = DetectFramesConvention(scene, appliedConvention, knownConvention);
 	if (!detected.IsValid()) {

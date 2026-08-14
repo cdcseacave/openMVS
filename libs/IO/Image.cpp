@@ -271,12 +271,16 @@ bool CImage::FilterFormat(void* pDst, PIXELFORMAT formatDst, Size strideDst, con
 				// a gray destination must never fall through to the alpha copy below: alpha is
 				// constant on photographs, so it yields a blank image with the right dimensions
 				// and no error reported anywhere
+				// the RGB triplet sits reversed with respect to the name (as for the 24bit
+				// formats below) while the alpha byte stays where the name puts it, first or
+				// last; the same offsets the PF_R5G6B5 destination below uses for each format
 				Size offR, offG, offB;
 				switch (formatSrc) {
-				case PF_R8G8B8A8: offR = 2; offG = 1; offB = 0; break;
-				case PF_B8G8R8A8: offR = 0; offG = 1; offB = 2; break;
-				case PF_A8R8G8B8: offR = 1; offG = 2; offB = 3; break;
-				default:          offR = 3; offG = 2; offB = 1; break; // PF_A8B8G8R8
+				case PF_R8G8B8A8: offR = 2; offG = 1; offB = 0; break; // B,G,R,A
+				case PF_B8G8R8A8: offR = 0; offG = 1; offB = 2; break; // R,G,B,A
+				case PF_A8R8G8B8: offR = 3; offG = 2; offB = 1; break; // A,B,G,R
+				case PF_A8B8G8R8: offR = 1; offG = 2; offB = 3; break; // A,R,G,B
+				default: ASSERT("Unknown format" == NULL); return false;
 				}
 				for (Size i=0; i<nSzize; ++i,(uint8_t*&)pDst+=strideDst,(uint8_t*&)pSrc+=strideSrc)
 					((uint8_t*)pDst)[0] = RGB24TO8(((uint8_t*)pSrc)[offR], ((uint8_t*)pSrc)[offG], ((uint8_t*)pSrc)[offB]);

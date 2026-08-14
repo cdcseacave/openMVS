@@ -94,10 +94,12 @@ bool TripletStarInitTest();
 
 #ifdef _IMAGE_HEIF
 // HEIF/HEIC integration at the SFM layer (the reader itself is covered by CImageHEIF::Test):
-// decode parity against the source JPG through an independent codec, the EXIF metadata bridge
-// (focal length, GPS), the "don't rotate twice" orientation guard for a container 'irot' that
-// duplicates an EXIF Orientation, and the LoadPixels fallback for a format cv::imread cannot
-// decode -- in both color and gray, the latter being what feature extraction uses.
+// the decoded resolution the MVS camera is paired against, the EXIF metadata bridge (focal
+// length agreeing with the classic stream scan, GPS), the "don't rotate twice" orientation
+// guard for a container 'irot' that duplicates an EXIF Orientation, and the LoadPixels
+// fallback for a format cv::imread cannot decode -- in both color and gray, the latter being
+// what feature extraction uses. Pixel content as a whole is covered by ReconstructTest and the
+// MVS PipelineTest, two of whose four images are HEIC.
 bool HEIFMetadataTest();
 #endif
 

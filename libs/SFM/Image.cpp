@@ -79,6 +79,19 @@ bool LoadPixelsViaCImage(const String& fileName, cv::Mat& pixels, bool gray)
 	pixels = decoded;
 	return true;
 }
+// Whether cv::imread has any chance of decoding the given file. It has no HEIF codec at all, so
+// trying it first would log a misleading "error: loading image" for every HEIC on every run before
+// the CImage fallback quietly succeeds. Without _IMAGE_HEIF there is no fallback either, so the
+// attempt (and its error) is then the honest outcome.
+bool CanOpenCVDecode(const String& fileName)
+{
+	#ifdef _IMAGE_HEIF
+	const String ext(Util::getFileExt(fileName).ToLower());
+	return ext != ".heic" && ext != ".heif";
+	#else
+	return true;
+	#endif
+}
 } // namespace
 /*----------------------------------------------------------------*/
 
@@ -89,7 +102,7 @@ bool Image::LoadPixels(bool gray)
 		VERBOSE("Image::LoadPixels: empty file name");
 		return false;
 	}
-	if (!LoadImage(fileName, pixels, gray ? 1 : -1)) {
+	if (!CanOpenCVDecode(fileName) || !LoadImage(fileName, pixels, gray ? 1 : -1)) {
 		// fallback: route formats OpenCV cannot decode (e.g. HEIC) through the CImage readers
 		if (!LoadPixelsViaCImage(fileName, pixels, gray)) {
 			VERBOSE("Image::LoadPixels: failed to load image '%s'", fileName.c_str());

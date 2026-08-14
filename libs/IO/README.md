@@ -113,6 +113,13 @@ delete img;
 | TIFF | `CImageTIFF` | Optional (`_USE_TIFF`) | Multi-page support, requires libtiff |
 | JpegXL | `CImageJXL` | Optional (`_USE_JXL`) | Modern codec, requires libjxl |
 | HEIF | `CImageHEIF` | Optional (`_USE_HEIF`) | Read-only high-efficiency image format, requires libheif |
+
+libheif is pinned with `"default-features": false` in `vcpkg.json` on purpose: that keeps the
+GPL-2.0 x265 **encoder** out of the shipped binary, leaving the LGPL libde265 decoder, which is
+all OpenMVS needs since HEIF support is read-only. Do not enable the default features to "fix" a
+missing encoder — there is no HEIF write path to feed it. Note that two of the bundled test
+images (`apps/Tests/data/images/00001.heic`, `00002.heic`) are HEIC, so the SFM and MVS pipeline
+tests require libheif; OpenCV has no HEIF codec to fall back on.
 | SCI | `CImageSCI` | Yes | Custom OpenMVS binary format |
 
 The optional formats are enabled at build time based on available system libraries. The CMake build auto-detects them and sets `_USE_PNG`, `_USE_JPG`, etc.

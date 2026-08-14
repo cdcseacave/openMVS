@@ -89,7 +89,7 @@ bool UnitTests()
 	}
 	#ifdef _IMAGE_HEIF
 	// the reader's own semantics are tested next to the reader, in libs/IO/ImageHEIF.cpp
-	if (!CImageHEIF::Test(MAKE_PATH("images/heif"))) {
+	if (!CImageHEIF::Test(MAKE_PATH("images"))) {
 		VERBOSE("ERROR: CImageHEIF::Test failed!");
 		return false;
 	}

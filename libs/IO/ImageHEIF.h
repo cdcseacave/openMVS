@@ -40,12 +40,13 @@ public:
 	// Self-test of the reader, living next to the code it covers: decoded dimensions
 	// (container irot applied), absolute channel order, alpha decoded only on demand,
 	// the EXIF blob bridge and the write refusal.
-	// `folder` holds the fixtures (apps/Tests/data/images/heif).
+	// `folder` holds the test images (apps/Tests/data/images).
 	static bool	Test(const String& folder);
 	#endif
 
 protected:
-	void*		m_state; // placeholder for libheif context/handle state
+	void*		m_state; // opaque HeifState (file buffer + libheif context/handle), so that
+						 // no libheif header is needed to include this one
 }; // class CImageHEIF
 /*----------------------------------------------------------------*/
 
