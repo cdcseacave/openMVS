@@ -54,6 +54,107 @@ DEFINE_LOG_NAME(lt, _T("TestSFM "));
 
 namespace SFM {
 
+// Pose-frame detection: a frames.json declares neither the camera axes it uses nor, for an
+// EXIF-rotated image, how much in-plane rotation separates its camera frame from the working
+// raster (1 quarter turn for the on-disk portrait raster, 2 for the sensor-native landscape one
+// ARKit reports). Both must be recovered from the matched pairs, and since the two choices do not
+// commute, every combination has to round-trip. A wrong turn count conjugates every rotation by a
+// multiple of Rz(90), which preserves its angle but tilts its axis, so no axes flip can repair it
+// -- before this was searched, such a capture showed a large error under *both* axes hypotheses
+// and detection gave up.
+bool FramesPoseFrameDetectionTest()
+{
+	// the two building blocks ImportFramesJSON composes: the in-plane rotation it applies to a
+	// rotated image, and the ARKit<->OpenCV camera-axes flip
+	const auto InPlane = [](int turns) { return Matrix3x3(RMatrix(0, 0, REAL(M_PI_2) * turns)); };
+	const Matrix3x3 axesFlip(1, 0, 0, 0, -1, 0, 0, 0, -1);
+	constexpr unsigned numImages = 5;
+
+	// Forward-simulate an import instead of reusing the library's correction, so the test derives
+	// the expected poses independently: for a rotated image the import always produces
+	// `Rz(90) * D * c2w^T`, while the pose that is actually correct in the working frame carries
+	// `turns` quarter turns and the flip only for ARKit axes.
+	const auto RunCase = [&](FramesConvention axes, unsigned turns, bool rotated) -> bool {
+		Scene scene;
+		CLISTDEF0(Matrix3x3) imported(numImages);
+		for (unsigned i = 0; i < numImages; ++i) {
+			Image& img = scene.images.emplace_back(i, String::FormatString("/in/%u.heic", i));
+			img.pCamera = new PinholeCamera(cv::Size(640, 480), 700, 700, 319.5, 239.5);
+			img.cameraID = NO_ID; // the image owns its camera
+			img.View::metadata.rotated = rotated;
+			// the file's own world-to-camera rotation; the tilt keeps the rotation axes well away
+			// from the optical axis, without which conjugating by Rz(90) would be a no-op and
+			// there would be nothing to detect
+			const REAL angle = REAL(0.4) * i;
+			const Matrix3x3 fileR(RMatrix(REAL(0.25), angle, REAL(0.1) * i));
+			// what is actually correct in the working frame, and what the import produces
+			Matrix3x3 truth(fileR);
+			if (axes == FramesConvention::ARKIT)
+				truth = Matrix3x3(axesFlip * truth);
+			if (rotated)
+				truth = Matrix3x3(InPlane((int)turns) * truth);
+			imported[i] = Matrix3x3(axesFlip * fileR);
+			if (rotated)
+				imported[i] = Matrix3x3(InPlane(1) * imported[i]);
+			// hold the truth while the verified relative poses are built from it
+			img.R = RMatrix(truth);
+			img.C = CMatrix(3 * std::cos(angle), 3 * std::sin(angle), REAL(0.5) * i);
+		}
+		// the verified relative poses are what geometric matching recovers: ground truth
+		for (unsigned i = 0; i + 1 < numImages; ++i) {
+			for (unsigned j = i + 1; j < numImages; ++j) {
+				ImagePair& pair = scene.pairs.emplace_back(i, j);
+				pair.relativePose = scene.images[j] / scene.images[i];
+				pair.matches.emplace_back(0, 0); // the detector only checks that matches exist
+			}
+		}
+		// only now hand the scene the poses the import would have left behind
+		FOREACH(i, scene.images)
+			scene.images[i].R = RMatrix(imported[i]);
+
+		const FramesPoseFrame detected = DetectFramesConvention(scene, FramesConvention::ARKIT);
+		const FramesPoseFrame expected{axes, rotated ? turns : 0u};
+		if (detected.convention != expected.convention || detected.inPlaneTurns != expected.inPlaneTurns) {
+			VERBOSE("ERROR: FramesPoseFrameDetectionTest: rotated=%d, expected %s, detected %s",
+				(int)rotated, FramesPoseFrameToString(expected).c_str(),
+				FramesPoseFrameToString(detected).c_str());
+			return false;
+		}
+		// the correction must actually restore the poses, not merely be named correctly
+		ApplyFramesPoseFrame(scene, FramesConvention::ARKIT, detected);
+		REAL maxError = 0;
+		for (const ImagePair& pair : scene.pairs) {
+			const Matrix3x3 relative(scene.images[pair.ID2].R * scene.images[pair.ID1].R.t());
+			maxError = MAXF(maxError, ComputeAngleSO3<REAL>(relative, pair.relativePose->R));
+		}
+		if (R2D(maxError) > 1e-6) {
+			VERBOSE("ERROR: FramesPoseFrameDetectionTest: %s corrected poses still differ from the "
+				"verified relative rotations by %g deg", FramesPoseFrameToString(expected).c_str(),
+				R2D(maxError));
+			return false;
+		}
+		return true;
+	};
+
+	// every frame a rotated capture can be in: both axes conventions x all four quarter turns.
+	// Turn 1 is what the import assumes and turn 2 is what a real ARKit capture needs, but 0 and 3
+	// are searched too, so this pins the whole space rather than the two cases seen so far.
+	for (const FramesConvention axes : {FramesConvention::ARKIT, FramesConvention::OPENCV})
+		for (unsigned turns = 0; turns < FRAMES_IN_PLANE_TURNS; ++turns)
+			if (!RunCase(axes, turns, true))
+				return false;
+	// and an unrotated capture, where every turn count collapses to the same correction and must
+	// report 0 rather than split the evidence across four identical hypotheses
+	for (const FramesConvention axes : {FramesConvention::ARKIT, FramesConvention::OPENCV})
+		if (!RunCase(axes, 0, false))
+			return false;
+
+	VERBOSE("FramesPoseFrameDetectionTest: All tests passed");
+	return true;
+} // FramesPoseFrameDetectionTest
+/*----------------------------------------------------------------*/
+
+
 // External pose import test: frames.json name matching, intrinsics, duplicate rejection,
 // and CSV validation without partial updates from an invalid pose row.
 bool KnownPosesImportTest()
@@ -81,13 +182,20 @@ bool KnownPosesImportTest()
 	Scene scene;
 	AddImage(scene.images, 0, "/input/FrameA.jpg", 700);
 	AddImage(scene.images, 1, "/input/frameB.png", 700);
+	AddImage(scene.images, 2, "/input/framec.jpg", 700);
 	const String jsonPath = String(tmpDir.string()) + _T("/frames.json");
 	{
 		std::ofstream os(jsonPath);
+		// framea declares its intrinsics in the working (landscape) orientation, framec in the
+		// transposed (portrait) one at half resolution: both describe the same 640x480 camera and
+		// must land on the same intrinsics, since the orientation is a property of the
+		// declaration rather than of the image (all three images here are unrotated)
 		os << R"json([
   {"name":"framea.jpg","transform":[1,0,0,0,0,1,0,0,0,0,1,0,1,2,3,1],
    "params":{"camera_model":"OPENCV","w":640,"h":480,"fx":800,"fy":810,"cx":320,"cy":240,"k1":0.01,"k2":-0.02,"p1":0.001,"p2":-0.002}},
   {"name":"FRAMEB","transform":[1,0,0,0,0,1,0,0,0,0,1,0,4,5,6,1]},
+  {"name":"framec.jpg","transform":[1,0,0,0,0,1,0,0,0,0,1,0,7,8,9,1],
+   "params":{"camera_model":"OPENCV","w":240,"h":320,"fx":405,"fy":400,"cx":120,"cy":159.5,"k1":0.01,"k2":-0.02,"p1":0.001,"p2":-0.002}},
   {"name":"framea.jpg","transform":[1,0,0,0,0,1,0,0,0,0,1,0,9,9,9,1]}
 ])json";
 		if (!os) {
@@ -95,18 +203,42 @@ bool KnownPosesImportTest()
 			return false;
 		}
 	}
-	if (ImportFramesJSON(jsonPath, scene, PoseImportMode::POSES_INTRINSICS, FramesConvention::OPENCV) != 2) {
-		VERBOSE("KnownPosesImportTest FAILED: frames.json did not import exactly two unique images");
+	if (ImportFramesJSON(jsonPath, scene, PoseImportMode::POSES_INTRINSICS, FramesConvention::OPENCV) != 3) {
+		VERBOSE("KnownPosesImportTest FAILED: frames.json did not import exactly three unique images");
 		return false;
 	}
 	const PinholeCamera* const cameraA = static_cast<const PinholeCamera*>(scene.images[0].pCamera);
 	const PinholeCamera* const cameraB = static_cast<const PinholeCamera*>(scene.images[1].pCamera);
+	const PinholeCamera* const cameraC = static_cast<const PinholeCamera*>(scene.images[2].pCamera);
 	if (norm(scene.images[0].C - Point3(1, 2, 3)) > REAL(1e-6) ||
 		norm(scene.images[1].C - Point3(4, 5, 6)) > REAL(1e-6) ||
+		norm(scene.images[2].C - Point3(7, 8, 9)) > REAL(1e-6) ||
 		ABS(cameraA->fx - REAL(800)) > REAL(1e-6) || !cameraA->trustIntrinsics ||
 		cameraB->trustIntrinsics)
 	{
 		VERBOSE("KnownPosesImportTest FAILED: imported pose/intrinsics mismatch");
+		return false;
+	}
+	// framec declares the same physical camera transposed (portrait) and at half resolution, so
+	// after rescaling and the 90-degree rotation it must land on exactly framea's intrinsics.
+	// This is what keying the rotation off the *declared* aspect buys: framec's image carries no
+	// EXIF rotation at all, so a check on img.IsRotated() would leave it unrotated (and its
+	// portrait resolution would simply be rejected as not matching the image).
+	if (ABS(cameraC->fx - cameraA->fx) > REAL(1e-6) || ABS(cameraC->fy - cameraA->fy) > REAL(1e-6) ||
+		ABS(cameraC->cx - cameraA->cx) > REAL(1e-6) || ABS(cameraC->cy - cameraA->cy) > REAL(1e-6) ||
+		!cameraC->trustIntrinsics)
+	{
+		VERBOSE("KnownPosesImportTest FAILED: portrait-declared intrinsics did not rotate onto the "
+			"landscape ones: (%g,%g,%g,%g) vs (%g,%g,%g,%g)", cameraC->fx, cameraC->fy, cameraC->cx,
+			cameraC->cy, cameraA->fx, cameraA->fy, cameraA->cx, cameraA->cy);
+		return false;
+	}
+	// the tangential coefficients do rotate with the raster (the radial ones do not)
+	if (ABS(cameraC->p1 - REAL(-0.002)) > REAL(1e-9) || ABS(cameraC->p2 - REAL(-0.001)) > REAL(1e-9) ||
+		ABS(cameraC->k1 - cameraA->k1) > REAL(1e-9) || ABS(cameraC->k2 - cameraA->k2) > REAL(1e-9))
+	{
+		VERBOSE("KnownPosesImportTest FAILED: distortion not rotated as expected: p1=%g p2=%g k1=%g k2=%g",
+			cameraC->p1, cameraC->p2, cameraC->k1, cameraC->k2);
 		return false;
 	}
 

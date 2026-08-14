@@ -92,6 +92,10 @@ bool CubeMapBridgeDropTopBottomTest();
 // Triplet star-initialization test: 3-view scene with tracks + StarInitializer + BA
 bool TripletStarInitTest();
 
+// Pose-frame detection: recover both the camera-axes convention and, for EXIF-rotated images,
+// the in-plane rotation of an imported frames.json from the matched pairs
+bool FramesPoseFrameDetectionTest();
+
 // Known-pose import, pair selection, and prior-frame alignment tests
 bool KnownPosesImportTest();
 bool KnownPosePairSelectionTest();
