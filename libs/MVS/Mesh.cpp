@@ -32,6 +32,7 @@
 #include "Common.h"
 #include "Mesh.h"
 // CGAL: mesh cleaning, simplification, and repair
+#include <CGAL/version.h>
 #include <CGAL/Exact_predicates_inexact_constructions_kernel.h>
 #include <CGAL/Surface_mesh.h>
 #include <CGAL/boost/graph/Euler_operations.h>
@@ -44,7 +45,11 @@
 #include <CGAL/Polygon_mesh_processing/tangential_relaxation.h>
 #include <CGAL/Polygon_mesh_processing/angle_and_area_smoothing.h>
 #include <CGAL/Polygon_mesh_processing/remesh.h>
+#if CGAL_VERSION_MAJOR > 6 || (CGAL_VERSION_MAJOR == 6 && CGAL_VERSION_MINOR >= 2)
 #include <CGAL/boost/graph/border.h>
+#else
+#include <CGAL/Polygon_mesh_processing/border.h>
+#endif
 #include <CGAL/Surface_mesh_simplification/edge_collapse.h>
 #include <CGAL/Surface_mesh_simplification/Policies/Edge_collapse/GarlandHeckbert_triangle_policies.h>
 #include <CGAL/Surface_mesh_simplification/Policies/Edge_collapse/Face_count_stop_predicate.h>
@@ -970,7 +975,11 @@ void Mesh::Clean(float fDecimate, float fSpurious, bool bRemoveSpikes, unsigned 
 	// close holes
 	if (nCloseHoles > 0) {
 		std::vector<CLEAN::halfedge_descriptor> borderCycles;
+		#if CGAL_VERSION_MAJOR > 6 || (CGAL_VERSION_MAJOR == 6 && CGAL_VERSION_MINOR >= 2)
 		CGAL::extract_boundary_cycles(sm, std::back_inserter(borderCycles));
+		#else
+		CLEAN::PMP::extract_boundary_cycles(sm, std::back_inserter(borderCycles));
+		#endif
 		const int OriginalSize((int)sm.number_of_faces());
 		int holeCnt(0);
 		for (CLEAN::halfedge_descriptor hd : borderCycles) {
@@ -1141,7 +1150,7 @@ namespace BasicPLY {
 			Mesh::VertexArr& vertices, Mesh::NormalArr& vertexNormals)
 		{
 			PLY::PlyElement* elm = ply.find_element(elem_names[0]);
-			const size_t nMaxProps(SizeOfArray(props));
+			const size_t nMaxProps(6); // vertex colors are export-only
 			for (size_t p=0; p<nMaxProps; ++p) {
 				if (ply.find_property(elm, props[p].name.c_str()) < 0)
 					continue;
@@ -1166,9 +1175,9 @@ namespace BasicPLY {
 			if (elem_count)
 				ply.element_count(elem_names[0], elem_count);
 		}
-		static const PLY::PlyProperty props[12];
+		static const PLY::PlyProperty props[9];
 	};
-	const PLY::PlyProperty Vertex::props[12] = {
+	const PLY::PlyProperty Vertex::props[9] = {
 		{"x",             PLY::Float32, PLY::Float32, offsetof(Vertex,v.x), 0, 0, 0, 0},
 		{"y",             PLY::Float32, PLY::Float32, offsetof(Vertex,v.y), 0, 0, 0, 0},
 		{"z",             PLY::Float32, PLY::Float32, offsetof(Vertex,v.z), 0, 0, 0, 0},
@@ -1536,7 +1545,7 @@ bool Mesh::SaveVertexColors(const String& fileName, const ColorArr& vertexColors
 	TD_TIMER_STARTD();
 	const String ext(Util::getFileExt(fileName).ToLower());
 	const String fileNamePLY(ext != _T(".ply") ? String(fileName+_T(".ply")) : fileName);
-	if (!SavePLY(fileNamePLY, comments, bBinary, true, &vertexColors, false))
+	if (!SavePLY(fileNamePLY, comments, bBinary, true, &vertexColors))
 		return false;
 	DEBUG_EXTRA("Mesh with vertex colors '%s' saved: %u vertices, %u faces (%s)",
 		Util::getFileNameExt(fileNamePLY).c_str(), vertices.size(), faces.size(), TD_TIMER_GET_FMT().c_str());
@@ -1544,10 +1553,11 @@ bool Mesh::SaveVertexColors(const String& fileName, const ColorArr& vertexColors
 }
 // export the mesh as a PLY file
 bool Mesh::SavePLY(const String& fileName, const cList<String>& comments, bool bBinary, bool bTexLossless,
-	const ColorArr* pVertexColors, bool bExportTexture) const
+	const ColorArr* pVertexColors) const
 {
 	ASSERT(!fileName.empty());
 	ASSERT(pVertexColors == NULL || pVertexColors->size() == vertices.size());
+	const bool bExportTexture(pVertexColors == NULL);
 	Util::ensureFolder(fileName);
 
 	// create PLY object

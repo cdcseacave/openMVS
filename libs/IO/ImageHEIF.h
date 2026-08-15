@@ -25,14 +25,14 @@ class IO_API CImageHEIF : public CImage
 {
 public:
 	CImageHEIF();
-	virtual ~CImageHEIF();
+	~CImageHEIF() override;
 
-	void		Close();
+	void		Close() override;
 
-	bool		ReadHeader();
-	bool		ReadData(void*, PIXELFORMAT, Size nStride, Size lineWidth);
-	bool		WriteHeader(PIXELFORMAT, Size width, Size height, BYTE numLevels);
-	bool		WriteData(void*, PIXELFORMAT, Size nStride, Size lineWidth);
+	bool		ReadHeader() override;
+	bool		ReadData(void*, PIXELFORMAT, Size nStride, Size lineWidth) override;
+	bool		WriteHeader(PIXELFORMAT, Size width, Size height, BYTE numLevels) override;
+	bool		WriteData(void*, PIXELFORMAT, Size nStride, Size lineWidth) override;
 
 	virtual bool	GetMetadataEXIF(std::vector<uint8_t>& blob) const override;
 

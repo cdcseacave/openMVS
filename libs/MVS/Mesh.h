@@ -262,7 +262,7 @@ protected:
 	bool LoadGLTF(const String& fileName, bool bBinary=true);
 
 	bool SavePLY(const String& fileName, const cList<String>& comments=cList<String>(), bool bBinary=true, bool bTexLossless=true,
-		const ColorArr* pVertexColors=NULL, bool bExportTexture=true) const;
+		const ColorArr* pVertexColors=NULL) const;
 	bool SaveOBJ(const String& fileName) const;
 	bool SaveGLTF(const String& fileName, bool bBinary=true) const;
 

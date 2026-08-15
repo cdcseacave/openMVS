@@ -199,6 +199,10 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		OPT::strExportType =  _T(".ply");
 	if (OPT::bVertexColors)
 		OPT::strExportType = _T(".ply");
+	if (OPT::bVertexColors && OPT::nOrthoMapResolution > 0) {
+		VERBOSE("error: vertex-color and orthographic-image exports cannot be generated in the same run");
+		return false;
+	}
 
 	// initialize optional options
 	Util::ensureValidPath(OPT::strMeshFileName);

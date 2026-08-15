@@ -2433,14 +2433,29 @@ bool Scene::ExportMeshVertexColors(const String& fileName, unsigned nResolutionL
 	if (mesh.IsEmpty())
 		return false;
 
+	BoolArr imageWasLoaded(images.size());
+	FOREACH(idxImage, images)
+		imageWasLoaded[idxImage] = !images[idxImage].image.empty();
+	struct ImageReleaseGuard {
+		ImageArr& images;
+		const BoolArr& imageWasLoaded;
+		~ImageReleaseGuard() {
+			FOREACH(idxImage, images)
+				if (!imageWasLoaded[idxImage])
+					images[idxImage].ReleaseImage();
+		}
+	} imageReleaseGuard{images, imageWasLoaded};
+
 	MeshTexture texture(*this, nResolutionLevel, nMinResolution);
 	if (!texture.FaceViewSelection(minCommonCameras, fOutlierThreshold, fRatioDataSmoothness, nIgnoreMaskLabel, views))
 		return false;
 
-	MeshTexture::Colors colors(mesh.vertices.size());
+	Pixel32FArr colors(mesh.vertices.size());
 	colors.Memset(0);
 	FloatArr weights(mesh.vertices.size());
 	weights.Memset(0);
+	std::unordered_map<IIndex, Image8U> validityMasks;
+	const MeshTexture::Sampler sampler;
 	for (const MeshTexture::TexturePatch& texturePatch: texture.texturePatches) {
 		if (texturePatch.label == NO_ID)
 			continue;
@@ -2452,15 +2467,40 @@ bool Scene::ExportMeshVertexColors(const String& fileName, unsigned nResolutionL
 				return false;
 			imageData.UpdateCamera(platforms);
 		}
+		const Image8U* pValidityMask(NULL);
+		if (nIgnoreMaskLabel >= -1) {
+			auto [itMask, inserted] = validityMasks.try_emplace(texturePatch.label);
+			Image8U& validityMask(itMask->second);
+			if (inserted) {
+				if (nIgnoreMaskLabel >= 0) {
+					BitMatrix bmask;
+					DepthEstimator::ImportIgnoreMask(imageData, imageData.image.size(), (uint8_t)nIgnoreMaskLabel, bmask, &validityMask);
+				} else {
+					validityMask = DetectInvalidImageRegions(imageData.image);
+				}
+			}
+			if (!validityMask.empty())
+				pValidityMask = &validityMask;
+		}
 		for (const FIndex idxFace: texturePatch.faces) {
 			const Face& face = mesh.faces[idxFace];
 			const float weight(MAXF((float)mesh.ComputeArea(idxFace), 1e-6f));
-			for (int idx=0; idx<3; ++idx) {
-				const VIndex idxVertex(face[idx]);
+			for (int idxFaceVertex=0; idxFaceVertex<3; ++idxFaceVertex) {
+				const VIndex idxVertex(face[idxFaceVertex]);
 				const auto [pt, depth] = imageData.camera.ProjectPointP(mesh.vertices[idxVertex]);
-				if (depth <= 0 || !imageData.image.isInside(pt))
+				if (depth <= 0 || !imageData.image.isInsideWithBorder<float,1>(pt))
 					continue;
-				colors[idxVertex] += MeshTexture::Color(imageData.image.sampleSafe(pt)) * weight;
+				if (pValidityMask != NULL) {
+					const int x(FLOOR2INT(pt.x));
+					const int y(FLOOR2INT(pt.y));
+					if ((*pValidityMask)(y,x) == 0 || (*pValidityMask)(y,x+1) == 0 ||
+						(*pValidityMask)(y+1,x) == 0 || (*pValidityMask)(y+1,x+1) == 0)
+						continue;
+				}
+				const Pixel32F sample(imageData.image.sample<MeshTexture::Sampler,Pixel32F>(sampler, pt));
+				colors[idxVertex].r += sample.r * weight;
+				colors[idxVertex].g += sample.g * weight;
+				colors[idxVertex].b += sample.b * weight;
 				weights[idxVertex] += weight;
 			}
 		}
@@ -2470,10 +2510,7 @@ bool Scene::ExportMeshVertexColors(const String& fileName, unsigned nResolutionL
 	FOREACH(i, vertexColors) {
 		Mesh::Color& color = vertexColors[i];
 		if (weights[i] > 0) {
-			const MeshTexture::Color value(colors[i] * INVERT(weights[i]));
-			color.b = (uint8_t)CLAMP(ROUND2INT(value.x), 0, 255);
-			color.g = (uint8_t)CLAMP(ROUND2INT(value.y), 0, 255);
-			color.r = (uint8_t)CLAMP(ROUND2INT(value.z), 0, 255);
+			color = (colors[i] * INVERT(weights[i])).cast<uint8_t>();
 		} else {
 			color = colEmpty;
 		}

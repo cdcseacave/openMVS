@@ -734,30 +734,41 @@ public:
 	static String toString(const wchar_t* wsz) {
 		if (wsz == NULL)
 			return String();
-		#if 1
-		return std::wstring_convert<std::codecvt_utf8<wchar_t>, wchar_t>().to_bytes(wsz);
-		#elif 1
-		std::mbstate_t state = std::mbstate_t();
-		const size_t len(std::wcsrtombs(NULL, &wsz, 0, &state));
-		if (len == static_cast<std::size_t>(-1))
-			return String();
-		std::vector<char> mbstr(len+1);
-		if (std::wcsrtombs(&mbstr[0], &wsz, mbstr.size(), &state) == static_cast<std::size_t>(-1))
-			return String();
-		return String(&mbstr[0]);
-		#else
-		const std::wstring ws(wsz);
-		const std::locale locale("");
-		typedef std::codecvt<wchar_t, char, std::mbstate_t> converter_type;
-		const converter_type& converter = std::use_facet<converter_type>(locale);
-		std::vector<char> to(ws.length() * converter.max_length());
-		std::mbstate_t state;
-		const wchar_t* from_next;
-		char* to_next;
-		if (converter.out(state, ws.data(), ws.data() + ws.length(), from_next, &to[0], &to[0] + to.size(), to_next) != converter_type::ok)
-			return String();
-		return std::string(&to[0], to_next);
-		#endif
+		String str;
+		while (*wsz != 0) {
+			uint32_t codePoint(static_cast<uint32_t>(*wsz++));
+			if constexpr (sizeof(wchar_t) == 2) {
+				if (codePoint >= 0xD800 && codePoint <= 0xDBFF) {
+					const uint32_t low(static_cast<uint32_t>(*wsz));
+					if (low >= 0xDC00 && low <= 0xDFFF) {
+						++wsz;
+						codePoint = 0x10000 + ((codePoint-0xD800)<<10) + (low-0xDC00);
+					} else {
+						codePoint = 0xFFFD;
+					}
+				} else if (codePoint >= 0xDC00 && codePoint <= 0xDFFF) {
+					codePoint = 0xFFFD;
+				}
+			} else if (codePoint > 0x10FFFF || (codePoint >= 0xD800 && codePoint <= 0xDFFF)) {
+				codePoint = 0xFFFD;
+			}
+			if (codePoint <= 0x7F) {
+				str.push_back(static_cast<char>(codePoint));
+			} else if (codePoint <= 0x7FF) {
+				str.push_back(static_cast<char>(0xC0 | (codePoint>>6)));
+				str.push_back(static_cast<char>(0x80 | (codePoint&0x3F)));
+			} else if (codePoint <= 0xFFFF) {
+				str.push_back(static_cast<char>(0xE0 | (codePoint>>12)));
+				str.push_back(static_cast<char>(0x80 | ((codePoint>>6)&0x3F)));
+				str.push_back(static_cast<char>(0x80 | (codePoint&0x3F)));
+			} else {
+				str.push_back(static_cast<char>(0xF0 | (codePoint>>18)));
+				str.push_back(static_cast<char>(0x80 | ((codePoint>>12)&0x3F)));
+				str.push_back(static_cast<char>(0x80 | ((codePoint>>6)&0x3F)));
+				str.push_back(static_cast<char>(0x80 | (codePoint&0x3F)));
+			}
+		}
+		return str;
 	}
 
 	static int64_t toInt64(LPCTSTR aString) {

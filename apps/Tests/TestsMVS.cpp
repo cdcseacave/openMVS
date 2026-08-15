@@ -41,6 +41,40 @@ DEFINE_LOG_NAME(lt, _T("TestMVS "));
 
 namespace MVS {
 
+bool MeshVertexColorsPLYTest()
+{
+	namespace fs = std::filesystem;
+	const fs::path tmpDir(fs::temp_directory_path() / ("openmvs-colored-ply-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count())));
+	std::error_code ec;
+	fs::create_directories(tmpDir, ec);
+	if (ec)
+		return false;
+	struct CleanupGuard {
+		fs::path path;
+		~CleanupGuard() { std::error_code ec; fs::remove_all(path, ec); }
+	} cleanup{tmpDir};
+
+	Mesh mesh;
+	mesh.vertices = {{0.f, 0.f, 0.f}, {1.f, 0.f, 0.f}, {0.f, 1.f, 0.f}};
+	mesh.faces = {{0, 1, 2}};
+	const Mesh::ColorArr colors({Pixel8U::RED, Pixel8U::GREEN, Pixel8U::BLUE});
+	for (const bool bBinary: {false, true}) {
+		const String fileName((tmpDir / (bBinary ? "mesh-binary.ply" : "mesh-ascii.ply")).string());
+		if (!mesh.SaveVertexColors(fileName, colors, cList<String>(), bBinary))
+			return false;
+		Mesh loaded;
+		if (!loaded.Load(fileName) || loaded.vertices != mesh.vertices || loaded.faces != mesh.faces)
+			return false;
+		PointCloud pointCloud;
+		if (!pointCloud.Load(fileName) || pointCloud.points.size() != mesh.vertices.size() || pointCloud.colors.size() != colors.size())
+			return false;
+		FOREACH(idxVertex, mesh.vertices)
+			if (pointCloud.points[idxVertex] != mesh.vertices[idxVertex] || pointCloud.colors[idxVertex] != colors[idxVertex])
+				return false;
+	}
+	return true;
+}
+
 // test MVS stages on a small sample dataset
 bool PipelineTest(bool forceCPU, bool verbose)
 {

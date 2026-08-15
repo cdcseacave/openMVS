@@ -1966,6 +1966,16 @@ bool MVS::ExportConfidenceMap(const String& fileName, const ConfidenceMap& confM
 /*----------------------------------------------------------------*/
 
 // export point-cloud
+namespace {
+constexpr size_t MAX_PLY_MEMORY_BUFFER_SIZE(64u*1024u*1024u);
+
+size_t ComputePLYMemoryBufferSize(size_t nPoints, size_t pointSize)
+{
+	// A zero-sized buffer selects PLY's streaming path for large debug exports.
+	return nPoints <= MAX_PLY_MEMORY_BUFFER_SIZE / pointSize ? nPoints * pointSize : 0;
+}
+} // namespace
+
 bool MVS::ExportPointCloud(const String& fileName, const Image& imageData, const DepthMap& depthMap, const NormalMap& normalMap)
 {
 	ASSERT(!depthMap.empty());
@@ -1998,7 +2008,7 @@ bool MVS::ExportPointCloud(const String& fileName, const Image& imageData, const
 		// create PLY object
 		ASSERT(!fileName.IsEmpty());
 		Util::ensureFolder(fileName);
-		const size_t bufferSize = nPoints*sizeof(Vertex) + 2048/*extra size*/;
+		const size_t bufferSize(ComputePLYMemoryBufferSize(nPoints, sizeof(float)*3 + sizeof(uint8_t)*3));
 		PLY ply;
 		if (!ply.write(fileName, 1, elem_names, PLY::BINARY_LE, bufferSize))
 			return false;
@@ -2055,7 +2065,7 @@ bool MVS::ExportPointCloud(const String& fileName, const Image& imageData, const
 		// create PLY object
 		ASSERT(!fileName.IsEmpty());
 		Util::ensureFolder(fileName);
-		const size_t bufferSize = nPoints*sizeof(Vertex) + 2048/*extra size*/;
+		const size_t bufferSize(ComputePLYMemoryBufferSize(nPoints, sizeof(float)*6 + sizeof(uint8_t)*3));
 		PLY ply;
 		if (!ply.write(fileName, 1, elem_names, PLY::BINARY_LE, bufferSize))
 			return false;
