@@ -110,7 +110,7 @@ endif()
 # Link its dependencies
 TARGET_LINK_LIBRARIES(MVS PUBLIC Common Math IO CGAL::CGAL ${CERES_LIBRARIES})
 
-if(OpenMVS_USE_PYTHON)
+if(_USE_BOOST_PYTHON)
 	# SFM-side wrapper lives in libs/SFM/PythonWrapper.cpp; compile it into the
 	# same pyOpenMVS module so a single .pyd exposes both Scene (MVS) and
 	# SfMScene (SFM) without juggling two extension modules.
@@ -125,7 +125,10 @@ if(OpenMVS_USE_PYTHON)
 	# pyOpenMVS inherits the global CMAKE_CUDA_ARCHITECTURES (defaulted to
 	# "native" by the root CMakeLists when undefined) and respects any
 	# -DCMAKE_CUDA_ARCHITECTURES=... the user or toolchain provides.
-	TARGET_LINK_LIBRARIES(pyOpenMVS PRIVATE MVS SFM)
+	TARGET_LINK_LIBRARIES(pyOpenMVS PRIVATE MVS SFM ${OpenMVS_PYTHON_LIBS} ${Boost_PYTHON_LIBS})
+	if(NOT TARGET Python3::Python)
+		TARGET_INCLUDE_DIRECTORIES(pyOpenMVS PRIVATE ${Python3_INCLUDE_DIRS})
+	endif()
 	# Output as a Python extension module: no "lib" prefix, ".pyd" suffix on
 	# Windows so the standard `import pyOpenMVS` machinery loads it directly.
 	SET_TARGET_PROPERTIES(pyOpenMVS PROPERTIES PREFIX "")
