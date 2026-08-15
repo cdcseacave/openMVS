@@ -126,6 +126,13 @@ protected:
 typedef CSharedPtr<CImage> IMAGEPTR;
 /*----------------------------------------------------------------*/
 
+// Load the pixels of the given image file into an OpenCV matrix, in the requested format:
+// PF_GRAY8 for one channel or PF_R8G8B8 for three channels in OpenCV's memory order.
+// Overload of the LoadImage() declared by Common, which decodes everything OpenCV has a
+// codec for, this one taking over with the CImage readers for the formats it does not (HEIF).
+IO_API bool LoadImage(const String& fileName, cv::Mat& img, PIXELFORMAT format);
+/*----------------------------------------------------------------*/
+
 } // namespace SEACAVE
 
 #endif // __SEACAVE_IMAGE_H__

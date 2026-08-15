@@ -954,6 +954,44 @@ UNKNOWN_FORMAT:
 /*----------------------------------------------------------------*/
 
 
+// Load the image pixels in the requested format, decoding with OpenCV when it supports the
+// file format and with the CImage readers when it does not.
+// PF_* names list the channels most- to least-significant bit (see PIXELFORMAT above), so on a
+// little-endian machine PF_R8G8B8 is B,G,R in memory, i.e. exactly what cv::imread returns;
+// same request MVS::Image::ReadImage makes for its Image8U3.
+bool SEACAVE::LoadImage(const String& fileName, cv::Mat& img, PIXELFORMAT format)
+{
+	ASSERT(format == PF_GRAY8 || format == PF_R8G8B8);
+	const CImage::Size stride(CImage::GetStride(format)); // bytes per pixel, i.e. number of channels
+	// cv::imread has no HEIF codec at all, so trying it first would log a misleading
+	// "error: loading image" for every HEIC on every run before the reader below quietly
+	// succeeds; without _IMAGE_HEIF there is no HEIF reader either, so the attempt (and its
+	// error) is then the honest outcome
+	#ifdef _IMAGE_HEIF
+	const String ext(Util::getFileExt(fileName).ToLower());
+	const bool bDecodableByOpenCV(ext != _T(".heic") && ext != _T(".heif"));
+	#else
+	constexpr bool bDecodableByOpenCV(true);
+	#endif
+	if (bDecodableByOpenCV && LoadImage(fileName, img, (int)stride, CV_8U))
+		return true;
+	IMAGEPTR pImage(CImage::Create(fileName, CImage::READ));
+	if (pImage == NULL || !pImage->ReadHeader())
+		return false;
+	// decode into a local buffer and publish it into 'img' only once fully populated: callers
+	// can treat a non-empty matrix as "fully loaded" (ex. SFM::Image::HasPixels()) while the
+	// decoding runs as a detached prefetch task concurrently with the consumer, so filling
+	// 'img' in place would expose a partially decoded image; the OpenCV path above likewise
+	// assigns the destination only after decoding
+	cv::Mat decoded((int)pImage->GetHeight(), (int)pImage->GetWidth(), CV_8UC((int)stride));
+	if (!pImage->ReadData(decoded.data, format, stride, (CImage::Size)decoded.step))
+		return false;
+	img = decoded;
+	return true;
+} // LoadImage
+/*----------------------------------------------------------------*/
+
+
 #ifndef _RELEASE
 
 // Save image as raw data.

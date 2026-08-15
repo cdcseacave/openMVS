@@ -55,43 +55,6 @@ private:
 	std::vector<uint8_t> buffer;
 	size_f_t pos;
 };
-
-// Fallback pixel loader for formats OpenCV's imread cannot decode (e.g. HEIC): routes
-// the file through the CImage reader chain instead (mirrors MVS::Image::ReadImage).
-// Destination format is chosen to match what cv::imread would have produced (BGR/8U),
-// since every downstream consumer of Image::pixels assumes imread's channel order.
-// PF_* names list channels most- to least-significant bit (see PIXELFORMAT in IO/Image.h),
-// so on little-endian PF_R8G8B8 is B,G,R in memory, i.e. imread's order; same request as
-// MVS::Image::ReadImage. The readers themselves declare PF_B8G8R8, which is R,G,B in memory.
-bool LoadPixelsViaCImage(const String& fileName, cv::Mat& pixels, bool gray)
-{
-	IMAGEPTR pImage(CImage::Create(fileName, CImage::READ));
-	if (!pImage || !pImage->ReadHeader())
-		return false;
-	// Decode into a local buffer and publish it into 'pixels' only once fully populated:
-	// callers treat a non-empty 'pixels' as "fully loaded" (Image::HasPixels()), and pixel
-	// loading also runs as a detached prefetch task concurrently with the consumer, so
-	// filling 'pixels' in place would expose a partially-decoded image. This mirrors the
-	// cv::imread path, which likewise assigns the destination only after decoding.
-	cv::Mat decoded((int)pImage->GetHeight(), (int)pImage->GetWidth(), gray ? CV_8UC1 : CV_8UC3);
-	if (!pImage->ReadData(decoded.data, gray ? PF_GRAY8 : PF_R8G8B8, gray ? 1 : 3, (CImage::Size)decoded.step))
-		return false;
-	pixels = decoded;
-	return true;
-}
-// Whether cv::imread has any chance of decoding the given file. It has no HEIF codec at all, so
-// trying it first would log a misleading "error: loading image" for every HEIC on every run before
-// the CImage fallback quietly succeeds. Without _IMAGE_HEIF there is no fallback either, so the
-// attempt (and its error) is then the honest outcome.
-bool CanOpenCVDecode(const String& fileName)
-{
-	#ifdef _IMAGE_HEIF
-	const String ext(Util::getFileExt(fileName).ToLower());
-	return ext != ".heic" && ext != ".heif";
-	#else
-	return true;
-	#endif
-}
 } // namespace
 /*----------------------------------------------------------------*/
 
@@ -102,12 +65,12 @@ bool Image::LoadPixels(bool gray)
 		VERBOSE("Image::LoadPixels: empty file name");
 		return false;
 	}
-	if (!CanOpenCVDecode(fileName) || !LoadImage(fileName, pixels, gray ? 1 : -1)) {
-		// fallback: route formats OpenCV cannot decode (e.g. HEIC) through the CImage readers
-		if (!LoadPixelsViaCImage(fileName, pixels, gray)) {
-			VERBOSE("Image::LoadPixels: failed to load image '%s'", fileName.c_str());
-			return false;
-		}
+	// the IO overload of LoadImage() also decodes the formats OpenCV can not (ex. HEIC);
+	// every downstream consumer of 'pixels' assumes imread's channel order, which is what
+	// PF_R8G8B8 asks for (see the PIXELFORMAT comment in IO/Image.h)
+	if (!LoadImage(fileName, pixels, gray ? PF_GRAY8 : PF_R8G8B8)) {
+		VERBOSE("Image::LoadPixels: failed to load image '%s'", fileName.c_str());
+		return false;
 	}
 	ASSERT(!pixels.empty());
 	// Rotate 90 degrees clockwise if needed, so width > height

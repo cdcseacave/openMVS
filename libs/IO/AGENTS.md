@@ -45,6 +45,8 @@ Factory pattern with format auto-detection by file extension.
 - `ReadData()` / `WriteData()` - Pixel data I/O
 - `FilterFormat()` - Pixel format conversion
 
+**Free function:** `LoadImage(fileName, cv::Mat&, PIXELFORMAT)` - overload of Common's `LoadImage()` that decodes with OpenCV when it supports the format and with the `CImage` readers when it does not (HEIF); `PF_GRAY8` or `PF_R8G8B8` (OpenCV's BGR memory order).
+
 ### Pixel Formats
 `PF_GRAY8`, `PF_GRAY32F` (depth maps), `PF_R8G8B8`, `PF_R8G8B8A8`, `PF_B8G8R8`, `PF_B8G8R8A8`, `PF_DXT1`-`PF_DXT5` (S3TC compressed).
 
@@ -59,6 +61,7 @@ Factory pattern with format auto-detection by file extension.
 | JPEG | `CImageJPG` | `ImageJPG.h` | Optional (`_USE_JPG`) | Lossy, libjpeg |
 | TIFF | `CImageTIFF` | `ImageTIFF.h` | Optional (`_USE_TIFF`) | Multi-page, libtiff |
 | JpegXL | `CImageJXL` | `ImageJXL.h` | Optional (`_USE_JXL`) | Modern codec |
+| HEIF | `CImageHEIF` | `ImageHEIF.h` | Optional (`_USE_HEIF`) | Read-only, libheif; OpenCV has no codec for it |
 | SCI | `CImageSCI` | `ImageSCI.h` | Always | Custom OpenMVS format |
 
 ## Integration with MVS Library

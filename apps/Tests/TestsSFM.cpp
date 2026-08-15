@@ -156,8 +156,8 @@ bool HEIFMetadataTest()
 		}
 	}
 
-	// 3) The LoadPixels fallback: cv::imread has no HEIF codec, so this exercises
-	// LoadPixelsViaCImage, in color and then in the gray mode feature extraction uses.
+	// 3) The LoadPixels fallback: cv::imread has no HEIF codec, so this exercises the CImage
+	// branch of the IO LoadImage(), in color and then in the gray mode feature extraction uses.
 	// Done on the rotated image, so the rotate-back is covered too: the file decodes portrait
 	// 479x640 and LoadPixels must hand back the landscape 640x479 working raster.
 	{
