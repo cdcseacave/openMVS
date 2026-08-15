@@ -44,7 +44,7 @@
 #include <CGAL/Polygon_mesh_processing/tangential_relaxation.h>
 #include <CGAL/Polygon_mesh_processing/angle_and_area_smoothing.h>
 #include <CGAL/Polygon_mesh_processing/remesh.h>
-#include <CGAL/Polygon_mesh_processing/border.h>
+#include <CGAL/boost/graph/border.h>
 #include <CGAL/Surface_mesh_simplification/edge_collapse.h>
 #include <CGAL/Surface_mesh_simplification/Policies/Edge_collapse/GarlandHeckbert_triangle_policies.h>
 #include <CGAL/Surface_mesh_simplification/Policies/Edge_collapse/Face_count_stop_predicate.h>
@@ -970,7 +970,7 @@ void Mesh::Clean(float fDecimate, float fSpurious, bool bRemoveSpikes, unsigned 
 	// close holes
 	if (nCloseHoles > 0) {
 		std::vector<CLEAN::halfedge_descriptor> borderCycles;
-		CLEAN::PMP::extract_boundary_cycles(sm, std::back_inserter(borderCycles));
+		CGAL::extract_boundary_cycles(sm, std::back_inserter(borderCycles));
 		const int OriginalSize((int)sm.number_of_faces());
 		int holeCnt(0);
 		for (CLEAN::halfedge_descriptor hd : borderCycles) {
