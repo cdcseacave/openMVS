@@ -67,6 +67,8 @@ public:
 
 	typedef TPoint3<Type> Normal;
 	typedef SEACAVE::cList<Normal,const Normal&,0,8192,FIndex> NormalArr;
+	typedef Pixel8U Color;
+	typedef SEACAVE::cList<Color,const Color&,0,8192,VIndex> ColorArr;
 
 	typedef TPoint2<Type> TexCoord;
 	typedef SEACAVE::cList<TexCoord,const TexCoord&,0,8192,FIndex> TexCoordArr;
@@ -246,6 +248,7 @@ public:
 	// file IO
 	bool Load(const String& fileName);
 	bool Save(const String& fileName, const cList<String>& comments=cList<String>(), bool bBinary=true, bool bTexLossless=true) const;
+	bool SaveVertexColors(const String& fileName, const ColorArr& vertexColors, const cList<String>& comments=cList<String>(), bool bBinary=true) const;
 	bool Save(const FacesChunkArr&, const String& fileName, const cList<String>& comments=cList<String>(), bool bBinary=true) const;
 	static bool Save(const VertexArr& vertices, const String& fileName, bool bBinary=true);
 
@@ -258,7 +261,8 @@ protected:
 	bool LoadOBJ(const String& fileName);
 	bool LoadGLTF(const String& fileName, bool bBinary=true);
 
-	bool SavePLY(const String& fileName, const cList<String>& comments=cList<String>(), bool bBinary=true, bool bTexLossless=true) const;
+	bool SavePLY(const String& fileName, const cList<String>& comments=cList<String>(), bool bBinary=true, bool bTexLossless=true,
+		const ColorArr* pVertexColors=NULL, bool bExportTexture=true) const;
 	bool SaveOBJ(const String& fileName) const;
 	bool SaveGLTF(const String& fileName, bool bBinary=true) const;
 

@@ -2427,4 +2427,59 @@ bool Scene::TextureMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsi
 } // TextureMesh
 /*----------------------------------------------------------------*/
 
+bool Scene::ExportMeshVertexColors(const String& fileName, unsigned nResolutionLevel, unsigned nMinResolution, unsigned minCommonCameras,
+	float fOutlierThreshold, float fRatioDataSmoothness, Pixel8U colEmpty, int nIgnoreMaskLabel, const IIndexArr& views)
+{
+	if (mesh.IsEmpty())
+		return false;
+
+	MeshTexture texture(*this, nResolutionLevel, nMinResolution);
+	if (!texture.FaceViewSelection(minCommonCameras, fOutlierThreshold, fRatioDataSmoothness, nIgnoreMaskLabel, views))
+		return false;
+
+	MeshTexture::Colors colors(mesh.vertices.size());
+	colors.Memset(0);
+	FloatArr weights(mesh.vertices.size());
+	weights.Memset(0);
+	for (const MeshTexture::TexturePatch& texturePatch: texture.texturePatches) {
+		if (texturePatch.label == NO_ID)
+			continue;
+		Image& imageData = images[texturePatch.label];
+		if (imageData.image.empty()) {
+			unsigned level(nResolutionLevel);
+			const unsigned imageSize(imageData.RecomputeMaxResolution(level, nMinResolution));
+			if (!imageData.ReloadImage(imageSize))
+				return false;
+			imageData.UpdateCamera(platforms);
+		}
+		for (const FIndex idxFace: texturePatch.faces) {
+			const Face& face = mesh.faces[idxFace];
+			const float weight(MAXF((float)mesh.ComputeArea(idxFace), 1e-6f));
+			for (int idx=0; idx<3; ++idx) {
+				const VIndex idxVertex(face[idx]);
+				const auto [pt, depth] = imageData.camera.ProjectPointP(mesh.vertices[idxVertex]);
+				if (depth <= 0 || !imageData.image.isInside(pt))
+					continue;
+				colors[idxVertex] += MeshTexture::Color(imageData.image.sampleSafe(pt)) * weight;
+				weights[idxVertex] += weight;
+			}
+		}
+	}
+
+	Mesh::ColorArr vertexColors(mesh.vertices.size());
+	FOREACH(i, vertexColors) {
+		Mesh::Color& color = vertexColors[i];
+		if (weights[i] > 0) {
+			const MeshTexture::Color value(colors[i] * INVERT(weights[i]));
+			color.b = (uint8_t)CLAMP(ROUND2INT(value.x), 0, 255);
+			color.g = (uint8_t)CLAMP(ROUND2INT(value.y), 0, 255);
+			color.r = (uint8_t)CLAMP(ROUND2INT(value.z), 0, 255);
+		} else {
+			color = colEmpty;
+		}
+	}
+	return mesh.SaveVertexColors(fileName, vertexColors);
+} // ExportMeshVertexColors
+/*----------------------------------------------------------------*/
+
 #pragma pop_macro("VERBOSE")

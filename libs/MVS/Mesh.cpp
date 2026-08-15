@@ -1136,6 +1136,7 @@ namespace BasicPLY {
 	struct Vertex {
 		Mesh::Vertex v;
 		Mesh::Normal n;
+		Mesh::Color c;
 		static void InitLoadProps(PLY& ply, int elem_count,
 			Mesh::VertexArr& vertices, Mesh::NormalArr& vertexNormals)
 		{
@@ -1155,23 +1156,28 @@ namespace BasicPLY {
 			ply.put_element_setup(elem_names[0]);
 		}
 		static void InitSaveProps(PLY& ply, int elem_count,
-			bool bNormals)
+			bool bNormals, bool bColors)
 		{
 			ply.describe_property(elem_names[0], 3, props+0);
 			if (bNormals)
 				ply.describe_property(elem_names[0], 3, props+3);
+			if (bColors)
+				ply.describe_property(elem_names[0], 3, props+6);
 			if (elem_count)
 				ply.element_count(elem_names[0], elem_count);
 		}
-		static const PLY::PlyProperty props[9];
+		static const PLY::PlyProperty props[12];
 	};
-	const PLY::PlyProperty Vertex::props[] = {
+	const PLY::PlyProperty Vertex::props[12] = {
 		{"x",             PLY::Float32, PLY::Float32, offsetof(Vertex,v.x), 0, 0, 0, 0},
 		{"y",             PLY::Float32, PLY::Float32, offsetof(Vertex,v.y), 0, 0, 0, 0},
 		{"z",             PLY::Float32, PLY::Float32, offsetof(Vertex,v.z), 0, 0, 0, 0},
 		{"nx",            PLY::Float32, PLY::Float32, offsetof(Vertex,n.x), 0, 0, 0, 0},
 		{"ny",            PLY::Float32, PLY::Float32, offsetof(Vertex,n.y), 0, 0, 0, 0},
-		{"nz",            PLY::Float32, PLY::Float32, offsetof(Vertex,n.z), 0, 0, 0, 0}
+		{"nz",            PLY::Float32, PLY::Float32, offsetof(Vertex,n.z), 0, 0, 0, 0},
+		{"red",           PLY::Uint8,   PLY::Uint8,   offsetof(Vertex,c.r), 0, 0, 0, 0},
+		{"green",         PLY::Uint8,   PLY::Uint8,   offsetof(Vertex,c.g), 0, 0, 0, 0},
+		{"blue",          PLY::Uint8,   PLY::Uint8,   offsetof(Vertex,c.b), 0, 0, 0, 0}
 	};
 	// list of property information for a face
 	struct Face {
@@ -1521,10 +1527,27 @@ bool Mesh::Save(const String& fileName, const cList<String>& comments, bool bBin
 		Util::getFileNameExt(fileName).c_str(), vertices.size(), faces.size(), TD_TIMER_GET_FMT().c_str());
 	return true;
 }
+
+bool Mesh::SaveVertexColors(const String& fileName, const ColorArr& vertexColors, const cList<String>& comments, bool bBinary) const
+{
+	if (IsEmpty())
+		return false;
+	ASSERT(vertexColors.size() == vertices.size());
+	TD_TIMER_STARTD();
+	const String ext(Util::getFileExt(fileName).ToLower());
+	const String fileNamePLY(ext != _T(".ply") ? String(fileName+_T(".ply")) : fileName);
+	if (!SavePLY(fileNamePLY, comments, bBinary, true, &vertexColors, false))
+		return false;
+	DEBUG_EXTRA("Mesh with vertex colors '%s' saved: %u vertices, %u faces (%s)",
+		Util::getFileNameExt(fileNamePLY).c_str(), vertices.size(), faces.size(), TD_TIMER_GET_FMT().c_str());
+	return true;
+}
 // export the mesh as a PLY file
-bool Mesh::SavePLY(const String& fileName, const cList<String>& comments, bool bBinary, bool bTexLossless) const
+bool Mesh::SavePLY(const String& fileName, const cList<String>& comments, bool bBinary, bool bTexLossless,
+	const ColorArr* pVertexColors, bool bExportTexture) const
 {
 	ASSERT(!fileName.empty());
+	ASSERT(pVertexColors == NULL || pVertexColors->size() == vertices.size());
 	Util::ensureFolder(fileName);
 
 	// create PLY object
@@ -1540,7 +1563,7 @@ bool Mesh::SavePLY(const String& fileName, const cList<String>& comments, bool b
 		ply.append_comment(comment);
 
 	// export texture file name as comment if needed
-	if (HasTexture()) {
+	if (bExportTexture && HasTexture()) {
 		FOREACH(texId, texturesDiffuse) {
 		    const String textureFileName(Util::getFileFullName(fileName) + std::to_string((unsigned)texId).c_str() + (bTexLossless?_T(".png"):_T(".jpg")));
 		    ply.append_comment((_T("TextureFile ")+Util::getFileNameExt(textureFileName)).c_str());
@@ -1550,21 +1573,26 @@ bool Mesh::SavePLY(const String& fileName, const cList<String>& comments, bool b
 
 	// describe what properties go into vertex and face elements
 	ASSERT(vertexNormals.empty() || vertexNormals.size() == vertices.size());
-	BasicPLY::Vertex::InitSaveProps(ply, (int)vertices.size(), !vertexNormals.empty());
-	BasicPLY::Face::InitSaveProps(ply, (int)faces.size(), !faces.empty(), !faceTexcoords.empty(), !faceTexindices.empty());
+	const bool bTexcoords(bExportTexture && !faceTexcoords.empty());
+	const bool bTexindices(bTexcoords && !faceTexindices.empty());
+	BasicPLY::Vertex::InitSaveProps(ply, (int)vertices.size(), !vertexNormals.empty(), pVertexColors != NULL);
+	BasicPLY::Face::InitSaveProps(ply, (int)faces.size(), !faces.empty(), bTexcoords, bTexindices);
 	if (!ply.header_complete())
 		return false;
 
 	// export the array of vertices
 	BasicPLY::Vertex::Select(ply);
-	if (vertexNormals.empty()) {
+	if (vertexNormals.empty() && pVertexColors == NULL) {
 		FOREACHPTR(pVert, vertices)
 			ply.put_element(pVert);
 	} else {
 		BasicPLY::Vertex v;
 		FOREACH(i, vertices) {
 			v.v = vertices[i];
-			v.n = vertexNormals[i];
+			if (!vertexNormals.empty())
+				v.n = vertexNormals[i];
+			if (pVertexColors != NULL)
+				v.c = (*pVertexColors)[i];
 			ply.put_element(&v);
 		}
 	}
@@ -1573,7 +1601,7 @@ bool Mesh::SavePLY(const String& fileName, const cList<String>& comments, bool b
 	// export the array of faces
 	BasicPLY::Face::Select(ply);
 	BasicPLY::Face face = {{3},{6}};
-	if (faceTexcoords.empty()) {
+	if (!bTexcoords) {
 		FOREACHPTR(pFace, faces) {
 			face.face.pFace = const_cast<Face*>(pFace);
 			ply.put_element(&face);
@@ -1587,7 +1615,7 @@ bool Mesh::SavePLY(const String& fileName, const cList<String>& comments, bool b
 		FOREACH(f, faces) {
 			face.face.pFace = faces.data()+f;
 			face.tex.pTex = normFaceTexcoords.data()+f*3;
-			if (!faceTexindices.empty())
+			if (bTexindices)
 				face.texId = faceTexindices[f];
 			ply.put_element(&face);
 		}
@@ -1868,7 +1896,7 @@ bool Mesh::Save(const VertexArr& vertices, const String& fileName, bool bBinary)
 	}
 
 	// describe what properties go into vertex and face elements
-	BasicPLY::Vertex::InitSaveProps(ply, (int)vertices.size(), false);
+	BasicPLY::Vertex::InitSaveProps(ply, (int)vertices.size(), false, false);
 	if (!ply.header_complete())
 		return false;
 

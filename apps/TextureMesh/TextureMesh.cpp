@@ -69,6 +69,7 @@ int nProcessPriority;
 unsigned nMaxThreads;
 int nMaxTextureSize;
 bool bExportTextureLossless;
+bool bVertexColors;
 String strExportType;
 String strConfigFileName;
 boost::program_options::variables_map vm;
@@ -133,6 +134,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("ignore-mask-label", boost::program_options::value(&OPT::nIgnoreMaskLabel)->default_value(-1), "label value to ignore in the image mask, stored in the MVS scene or next to each image with '.mask.png' extension (-1 - auto estimate mask for lens distortion, -2 - disabled)")
 		("max-texture-size", boost::program_options::value(&OPT::nMaxTextureSize)->default_value(8192), "maximum texture size, split it in multiple textures of this size if needed (0 - unbounded)")
 		("export-texture-lossless", boost::program_options::value(&OPT::bExportTextureLossless)->default_value(true), "save the texture as PNG (lossless) or JPG (smaller, lossy) when exporting to PLY")
+		("vertex-colors", boost::program_options::value(&OPT::bVertexColors)->default_value(false), "export a PLY mesh with per-vertex colors instead of generating texture atlases")
 		;
 
 	// hidden options, allowed both on command line and
@@ -195,6 +197,8 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		OPT::strExportType =  _T(".gltf");
 	else
 		OPT::strExportType =  _T(".ply");
+	if (OPT::bVertexColors)
+		OPT::strExportType = _T(".ply");
 
 	// initialize optional options
 	Util::ensureValidPath(OPT::strMeshFileName);
@@ -299,6 +303,14 @@ int main(int argc, LPCTSTR* argv)
 	IIndexArr views;
 	if (!OPT::strViewsFileName.empty())
 		views = ParseViewsFile(MAKE_PATH_SAFE(OPT::strViewsFileName), scene);
+	if (OPT::bVertexColors) {
+		TD_TIMER_START();
+		if (!scene.ExportMeshVertexColors(baseFileName+OPT::strExportType, OPT::nResolutionLevel, OPT::nMinResolution, OPT::minCommonCameras,
+			OPT::fOutlierThreshold, OPT::fRatioDataSmoothness, Pixel8U(OPT::nColEmpty), OPT::nIgnoreMaskLabel, views))
+			return EXIT_FAILURE;
+		VERBOSE("Mesh vertex coloring completed: %u vertices, %u faces (%s)", scene.mesh.vertices.GetSize(), scene.mesh.faces.GetSize(), TD_TIMER_GET_FMT().c_str());
+		return EXIT_SUCCESS;
+	}
 
 	// compute mesh texture
 	TD_TIMER_START();
