@@ -87,6 +87,17 @@ bool UnitTests()
 		VERBOSE("ERROR: TestConfidenceInterval failed!");
 		return false;
 	}
+	#ifdef _IMAGE_HEIF
+	// the reader's own semantics are tested next to the reader, in libs/IO/ImageHEIF.cpp
+	if (!CImageHEIF::Test(MAKE_PATH("images"))) {
+		VERBOSE("ERROR: CImageHEIF::Test failed!");
+		return false;
+	}
+	if (!SFM::HEIFMetadataTest()) {
+		VERBOSE("ERROR: HEIFMetadataTest failed!");
+		return false;
+	}
+	#endif
 	VERBOSE("All unit tests passed (%s)", TD_TIMER_GET_FMT().c_str());
 	return true;
 }
@@ -111,116 +122,134 @@ int main(int argc, LPCTSTR* argv)
 	Initialize(APPNAME);
 	WORKING_FOLDER = _DATA_PATH;
 	INIT_WORKING_FOLDER;
-	const bool verbose = (argc > 2 && std::atoi(argv[2]) != 0);
-	const bool forceCPU = (argc > 3 && std::atoi(argv[3]) != 0);
-	if (argc < 2 || std::atoi(argv[1]) == 0) {
-		if (!UnitTests())
-			return EXIT_FAILURE;
-	} else if (std::atoi(argv[1]) == 1) {
-		// Run SFM smoke tests
-		if (!SFM::TestSimilarityTransform())
-			return EXIT_FAILURE;
-		if (!SFM::KnownPosesImportTest())
-			return EXIT_FAILURE;
-		if (!SFM::KnownPosePairSelectionTest())
-			return EXIT_FAILURE;
-		if (!SFM::AlignToPriorPosesTest())
-			return EXIT_FAILURE;
-		if (!SFM::AlignToPriorPosesCollinearTest())
-			return EXIT_FAILURE;
-		if (!SFM::AlignToGPSDegenerateTest())
-			return EXIT_FAILURE;
-		if (!SFM::PairsWeightingTest())
-			return EXIT_FAILURE;
-		if (!SFM::ViewGraphCalibratorTest())
-			return EXIT_FAILURE;
-		if (!SFM::BAPinholeReprojectionJacobianTest())
-			return EXIT_FAILURE;
-		if (!SFM::RotationEstimatorTest())
-			return EXIT_FAILURE;
-		if (!SFM::ScaleEstimatorTest())
-			return EXIT_FAILURE;
-		if (!SFM::TranslationEstimatorTest())
-			return EXIT_FAILURE;
-		if (!SFM::TripletStarInitTest())
-			return EXIT_FAILURE;
-		if (!SFM::PreMatchTest())
-			return EXIT_FAILURE;
-		if (!SFM::PairMatcherTest())
-			return EXIT_FAILURE;
-		if (!SFM::TwoViewTest())
-			return EXIT_FAILURE;
-		if (!SFM::VocabularyTreeTest())
-			return EXIT_FAILURE;
-		if (!SFM::PipelineTest())
-			return EXIT_FAILURE;
-		if (!SFM::GPSPriorPoseUncertaintyTest())
-			return EXIT_FAILURE;
-		if (!SFM::PoseUncertaintyExportTest())
-			return EXIT_FAILURE;
-		if (!SFM::ReconstructSphericalSyntheticTest())
-			return EXIT_FAILURE;
-		if (!SFM::PairsMatcherSphericalTest())
-			return EXIT_FAILURE;
-		if (!SFM::MatchGeometricSphericalTest())
-			return EXIT_FAILURE;
-		if (!SFM::CubeMapFaceRenderTest())
-			return EXIT_FAILURE;
-		if (!SFM::CubeMapBridgeGeometryTest())
-			return EXIT_FAILURE;
-		if (!SFM::CubeMapBridgeEndToEndTest())
-			return EXIT_FAILURE;
-		if (!SFM::CubeMapBridgeMVSLoadTest())
-			return EXIT_FAILURE;
-		if (!SFM::CubeMapBridgeMixedSceneTest())
-			return EXIT_FAILURE;
-		if (!SFM::CubeMapBridgeDropTopBottomTest())
-			return EXIT_FAILURE;
-		if (!SFM::ReconstructTest(verbose))
-			return EXIT_FAILURE;
-		// Hierarchical SFM tests - Phase 1: Scene Clustering
-		if (!SFM::SceneClusterSingleClusterTest())
-			return EXIT_FAILURE;
-		if (!SFM::SceneClusterSizeConstraintsTest())
-			return EXIT_FAILURE;
-		if (!SFM::SceneClusterDisconnectedComponentsTest())
-			return EXIT_FAILURE;
-		if (!SFM::SceneClusterMemoryProtocolTest())
-			return EXIT_FAILURE;
-		if (!SFM::SceneClusterIDRemappingTest())
-			return EXIT_FAILURE;
-		if (!SFM::SceneClusterSmallClusterRescueTest())
-			return EXIT_FAILURE;
-		// Hierarchical SFM tests - Phase 3: Global Alignment
-		if (!SFM::GlobalAlignmentBuildGlobalToLocalMapTest())
-			return EXIT_FAILURE;
-		if (!SFM::GlobalAlignmentRotationAveragingExtendedTest())
-			return EXIT_FAILURE;
-		if (!SFM::GlobalAlignmentScaleAveragingExtendedTest())
-			return EXIT_FAILURE;
-		if (!SFM::GlobalAlignmentScaleAveragingFallbackTest())
-			return EXIT_FAILURE;
-		if (!SFM::GlobalAlignmentTranslationAveragingExtendedTest())
-			return EXIT_FAILURE;
-		if (!SFM::GlobalAlignmentMergeSingleSceneTest())
-			return EXIT_FAILURE;
-		if (!SFM::GlobalAlignmentTrackMergeDuplicateImageGuardTest())
-			return EXIT_FAILURE;
-		if (!SFM::GlobalAlignmentTrackMerge3DProximityGuardTest())
-			return EXIT_FAILURE;
-		// Hierarchical SFM tests - End-to-End
-		if (!SFM::HierarchicalSFMSplitMergeRoundtripTest())
-			return EXIT_FAILURE;
-		if (!SFM::HierarchicalSFMWithRandomTransformTest())
-			return EXIT_FAILURE;
-	} else {
-		// Run MVS pipeline test
-		if (!MVS::PipelineTest(forceCPU, verbose))
-			return EXIT_FAILURE;
+	// Second argument is the verbosity level: non-zero also opens a log file, without which
+	// every VERBOSE()/LOG() line the tests emit is discarded (the console sink does not reach
+	// stdout, so failures would otherwise report nothing but an exit code). The log is written
+	// to the current directory, not WORKING_FOLDER, to keep the source data folder clean.
+	const int nVerbosity = (argc > 2 ? std::atoi(argv[2]) : 0);
+	const bool verbose = (nVerbosity != 0);
+	if (verbose) {
+		g_nVerbosityLevel = nVerbosity;
+		OPEN_LOGFILE((APPNAME _T("-")+Util::getUniqueName(0)+_T(".log")).c_str());
 	}
+	const bool forceCPU = (argc > 3 && std::atoi(argv[3]) != 0);
+	// run the selected suite inside a lambda so the teardown below is reached on failure
+	// too: the log file in particular must be closed, or a failing run truncates its own log
+	const bool succeeded = [&]() {
+		if (argc < 2 || std::atoi(argv[1]) == 0) {
+			if (!UnitTests())
+				return false;
+		} else if (std::atoi(argv[1]) == 1) {
+			// Run SFM smoke tests
+			if (!SFM::TestSimilarityTransform())
+				return false;
+			if (!SFM::KnownPosesImportTest())
+				return false;
+			if (!SFM::FramesPoseFrameDetectionTest())
+				return false;
+			if (!SFM::KnownPosePairSelectionTest())
+				return false;
+			if (!SFM::AlignToPriorPosesTest())
+				return false;
+			if (!SFM::AlignToPriorPosesCollinearTest())
+				return false;
+			if (!SFM::AlignToGPSDegenerateTest())
+				return false;
+			if (!SFM::PairsWeightingTest())
+				return false;
+			if (!SFM::ViewGraphCalibratorTest())
+				return false;
+			if (!SFM::BAPinholeReprojectionJacobianTest())
+				return false;
+			if (!SFM::RotationEstimatorTest())
+				return false;
+			if (!SFM::ScaleEstimatorTest())
+				return false;
+			if (!SFM::TranslationEstimatorTest())
+				return false;
+			if (!SFM::TripletStarInitTest())
+				return false;
+			if (!SFM::PreMatchTest())
+				return false;
+			if (!SFM::PairMatcherTest())
+				return false;
+			if (!SFM::TwoViewTest())
+				return false;
+			if (!SFM::VocabularyTreeTest())
+				return false;
+			if (!SFM::PipelineTest())
+				return false;
+			if (!SFM::GPSPriorPoseUncertaintyTest())
+				return false;
+			if (!SFM::PoseUncertaintyExportTest())
+				return false;
+			if (!SFM::ReconstructSphericalSyntheticTest())
+				return false;
+			if (!SFM::PairsMatcherSphericalTest())
+				return false;
+			if (!SFM::MatchGeometricSphericalTest())
+				return false;
+			if (!SFM::CubeMapFaceRenderTest())
+				return false;
+			if (!SFM::CubeMapBridgeGeometryTest())
+				return false;
+			if (!SFM::CubeMapBridgeEndToEndTest())
+				return false;
+			if (!SFM::CubeMapBridgeMVSLoadTest())
+				return false;
+			if (!SFM::CubeMapBridgeMixedSceneTest())
+				return false;
+			if (!SFM::CubeMapBridgeDropTopBottomTest())
+				return false;
+			if (!SFM::ReconstructTest(verbose))
+				return false;
+			// Hierarchical SFM tests - Phase 1: Scene Clustering
+			if (!SFM::SceneClusterSingleClusterTest())
+				return false;
+			if (!SFM::SceneClusterSizeConstraintsTest())
+				return false;
+			if (!SFM::SceneClusterDisconnectedComponentsTest())
+				return false;
+			if (!SFM::SceneClusterMemoryProtocolTest())
+				return false;
+			if (!SFM::SceneClusterIDRemappingTest())
+				return false;
+			if (!SFM::SceneClusterSmallClusterRescueTest())
+				return false;
+			// Hierarchical SFM tests - Phase 3: Global Alignment
+			if (!SFM::GlobalAlignmentBuildGlobalToLocalMapTest())
+				return false;
+			if (!SFM::GlobalAlignmentRotationAveragingExtendedTest())
+				return false;
+			if (!SFM::GlobalAlignmentScaleAveragingExtendedTest())
+				return false;
+			if (!SFM::GlobalAlignmentScaleAveragingFallbackTest())
+				return false;
+			if (!SFM::GlobalAlignmentTranslationAveragingExtendedTest())
+				return false;
+			if (!SFM::GlobalAlignmentMergeSingleSceneTest())
+				return false;
+			if (!SFM::GlobalAlignmentTrackMergeDuplicateImageGuardTest())
+				return false;
+			if (!SFM::GlobalAlignmentTrackMerge3DProximityGuardTest())
+				return false;
+			// Hierarchical SFM tests - End-to-End
+			if (!SFM::HierarchicalSFMSplitMergeRoundtripTest())
+				return false;
+			if (!SFM::HierarchicalSFMWithRandomTransformTest())
+				return false;
+		} else {
+			// Run MVS pipeline test
+			if (!MVS::PipelineTest(forceCPU, verbose))
+				return false;
+		}
+		return true;
+	}();
 	Finalize();
+	if (verbose)
+		CLOSE_LOGFILE();
 	CLOSE_LOGCONSOLE();
 	CLOSE_LOG();
-	return EXIT_SUCCESS;
+	return succeeded ? EXIT_SUCCESS : EXIT_FAILURE;
 }
 /*----------------------------------------------------------------*/

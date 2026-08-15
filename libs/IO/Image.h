@@ -76,6 +76,8 @@ public:
 	virtual bool		WriteHeader(PIXELFORMAT, Size width, Size height, BYTE numLevels);
 	virtual bool		WriteData(void*, PIXELFORMAT, Size nStride, Size lineWidth);
 
+	virtual bool		GetMetadataEXIF(std::vector<uint8_t>&) const { return false; }
+
 	const IOSTREAMPTR&	GetStream() const		{ return m_pStream; }
 	IOSTREAMPTR&		GetStream()				{ return m_pStream; }
 	BYTE*				GetData() const			{ return m_data; }
@@ -122,6 +124,13 @@ protected:
 	String				m_fileName;		// image's file name
 }; // class CImage
 typedef CSharedPtr<CImage> IMAGEPTR;
+/*----------------------------------------------------------------*/
+
+// Load the pixels of the given image file into an OpenCV matrix, in the requested format:
+// PF_GRAY8 for one channel or PF_R8G8B8 for three channels in OpenCV's memory order.
+// Overload of the LoadImage() declared by Common, which decodes everything OpenCV has a
+// codec for, this one taking over with the CImage readers for the formats it does not (HEIF).
+IO_API bool LoadImage(const String& fileName, cv::Mat& img, PIXELFORMAT format);
 /*----------------------------------------------------------------*/
 
 } // namespace SEACAVE

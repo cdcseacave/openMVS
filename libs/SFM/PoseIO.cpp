@@ -57,23 +57,60 @@ inline Matrix3x3 CameraAxesFlip() {
 		0, 0, -1);
 }
 
-// The axes flip expressed in the working raster orientation of the given image: an
-// EXIF-rotated image stores Rz(90)*R_file (see ImportFramesJSON), so undoing the file-side
-// flip conjugates it by that in-plane rotation, Rz(90)*D*Rz(-90) = diag(-1,1,-1);
-// both matrices are symmetric and involutive, so the same flip applies both ways
-inline Matrix3x3 CameraAxesFlipFor(const Image& img) {
-	return img.IsRotated() ?
-		Matrix3x3(
-			-1, 0, 0,
-			 0, 1, 0,
-			 0, 0, -1) :
-		CameraAxesFlip();
+// Rotation by the given number of quarter turns about the camera Z (optical) axis
+inline Matrix3x3 InPlaneRotation(int quarterTurns) {
+	return RMatrix(0, 0, REAL(M_PI_2) * quarterTurns);
+}
+
+// The rotation taking an imported pose to the one the given hypothesis implies, so that detection
+// and application can never drift apart: `R_hypothesis = PoseCorrection(...) * R_imported`.
+//
+// Writing Z for Rz(90) and D for the axes flip, ImportFramesJSON leaves
+//     R_imported = Z^a * D * R_file      (a = 1 for a rotated image, else 0)
+// while the hypothesis says the correct working-frame pose is
+//     R_hypothesis = Z^t * D_h * R_file  (t = inPlaneTurns, D_h = D unless the axes are flipped)
+// Eliminating R_file gives `Z^t * (flip ? D : I) * Z^-a`, i.e. the flip is taken *between* the two
+// in-plane rotations -- which is why the two choices do not commute, and why a flipped rotated
+// image at t = 1 needs Z*D*Z^-1 = diag(-1,1,-1) rather than D itself.
+Matrix3x3 PoseCorrection(const Image& img, bool flipAxes, unsigned inPlaneTurns)
+{
+	// the in-plane hypotheses all coincide unless the image is actually rotated, since only then
+	// does the working raster differ from the one the pose file describes
+	const int applied = img.IsRotated() ? 1 : 0;
+	const int total = img.IsRotated() ? (int)inPlaneTurns : 0;
+	Matrix3x3 correction(InPlaneRotation(total));
+	if (flipAxes)
+		correction = Matrix3x3(correction * CameraAxesFlip());
+	return Matrix3x3(correction * InPlaneRotation(-applied));
+}
+
+// Whether the in-plane rotation is in question at all: only an EXIF-rotated image has a working
+// raster differing from the one its pose file describes, so with nothing rotated every in-plane
+// hypothesis collapses to the same correction
+bool HasRotatedPosedImage(const Scene& scene) {
+	for (const Image& img : scene.images)
+		if (img.HasPose() && img.IsRotated())
+			return true;
+	return false;
 }
 
 // The convention on the other side of the axes flip
 inline FramesConvention OppositeConvention(FramesConvention convention) {
 	return convention == FramesConvention::ARKIT ? FramesConvention::OPENCV : FramesConvention::ARKIT;
 }
+
+// A candidate pose frame, scored by DetectFramesConvention
+struct Hypothesis {
+	bool flipAxes;           // whether the camera axes differ from the applied convention
+	unsigned inPlaneTurns;   // quarter turns from the pose file's frame to the working raster
+	REAL medianError;        // median relative-rotation error [rad], primary signal
+	unsigned numInliers;     // two-view triangulation inliers, fallback signal
+
+	FramesPoseFrame Frame(FramesConvention appliedConvention) const {
+		return FramesPoseFrame{
+			flipAxes ? OppositeConvention(appliedConvention) : appliedConvention, inPlaneTurns};
+	}
+};
 
 // Case-insensitive file name key used to match a poses-file entry to a scene image
 inline String NameKey(const String& path) {
@@ -104,8 +141,8 @@ bool ReadFiniteNumber(const nlohmann::json& value, REAL& number)
 	return ISFINITE(number);
 }
 
-// Apply the imported OPENCV intrinsics, declared for the original (on-disk) image
-// orientation and resolution, to the camera built at the working resolution.
+// Apply the imported OPENCV intrinsics to the camera built at the working resolution, rescaling
+// and rotating them from whichever resolution and orientation they were declared in.
 // Returns false and fills `error` when the parameters cannot be used.
 bool ApplyImportedIntrinsics(const nlohmann::json& params, Image& img, String& error)
 {
@@ -144,24 +181,41 @@ bool ApplyImportedIntrinsics(const nlohmann::json& params, Image& img, String& e
 			declaredWidth, declaredHeight, fx, fy);
 		return false;
 	}
-	// the parameters describe the image as stored on disk, so they must be rescaled to the
-	// original resolution (the camera is built at the working resolution, landscape)
-	const cv::Size originalSize = img.GetOriginalSize();
-	const REAL scale = (REAL)originalSize.width / declaredWidth;
-	const REAL scaleHeight = (REAL)originalSize.height / declaredHeight;
+	// Every image is preprocessed to the working raster (see View::ToWorkingOrientation), so the
+	// intrinsics have to end up there too. Which orientation they arrive in is a property of the
+	// *declaration*, not of the image: a COLMAP-style export describes the file as stored, while
+	// ARKit reports intrinsics for the sensor-native landscape buffer, and either provider may
+	// feed an EXIF-rotated file. The declared resolution says which, so key the rotation off that
+	// -- keying it off img.IsRotated() conflates the two and rejects (or, for a square raster,
+	// silently mis-rotates) a perfectly good landscape declaration.
+	const cv::Size workingSize = img.GetSize();
+	const bool rotateIntrinsics =
+		((declaredWidth < declaredHeight) != (workingSize.width < workingSize.height));
+	// compare the two resolutions in a common orientation
+	const cv::Size declaredInWorkingOrientation = rotateIntrinsics ?
+		cv::Size((int)declaredHeight, (int)declaredWidth) : cv::Size((int)declaredWidth, (int)declaredHeight);
+	const REAL scale = (REAL)workingSize.width / declaredInWorkingOrientation.width;
+	const REAL scaleHeight = (REAL)workingSize.height / declaredInWorkingOrientation.height;
 	if (ABS(scaleHeight - scale) > INTRINSICS_SCALE_TOLERANCE * scale) {
-		error = String::FormatString("declared resolution %gx%g does not match image %dx%d (scale %g vs %g)",
-			declaredWidth, declaredHeight, originalSize.width, originalSize.height, scale, scaleHeight);
+		error = String::FormatString("declared resolution %gx%g does not match image %dx%d in either "
+			"orientation (scale %g vs %g)", declaredWidth, declaredHeight,
+			workingSize.width, workingSize.height, scale, scaleHeight);
 		return false;
 	}
 	fx *= scale; fy *= scale;
 	cx *= scale; cy *= scale;
-	if (img.IsRotated()) {
-		// the raster is rotated 90 degrees clockwise on load (View::ToWorkingOrientation),
-		// so the intrinsics must follow: this is the inverse of the K branch of
-		// View::RevertRotation, with the tangential coefficients rotated accordingly
-		// (the radial ones are invariant to an in-plane rotation)
-		camera->SetIntrinsics(fy, fx, (REAL)(originalSize.height - 1) - cy, cx);
+	if (rotateIntrinsics) {
+		// rotate 90 degrees clockwise, the same transform ToWorkingOrientation applies to the
+		// pixels (and the inverse of the K branch of View::RevertRotation), with the tangential
+		// coefficients rotated to match; the radial ones are invariant to an in-plane rotation.
+		// The declared raster is the working one transposed, so its height is workingSize.width.
+		// Note the clockwise choice cannot be verified from the resolution alone: turning the
+		// other way also lands on the working orientation, 180 degrees off. That residual leaves
+		// fx/fy/k1/k2 exact and only mirrors the principal point about the image centre (an error
+		// of twice its offset, a few pixels for a real camera, which the bundle adjustment
+		// absorbs), unlike the same ambiguity on a pose -- see FRAMES_IN_PLANE_TURNS, which is
+		// resolved from the data precisely because there it is catastrophic.
+		camera->SetIntrinsics(fy, fx, (REAL)(workingSize.width - 1) - cy, cx);
 		camera->SetDistortion(k1, k2, p2, -p1);
 	} else {
 		camera->SetIntrinsics(fx, fy, cx, cy);
@@ -171,11 +225,11 @@ bool ApplyImportedIntrinsics(const nlohmann::json& params, Image& img, String& e
 	return true;
 }
 
-// Count the two-view triangulation inliers of the given matches under both axes hypotheses
-// (first as imported, then flipped to the opposite convention): an inlier is a match
-// triangulating in front of both cameras with a small reprojection error
-std::pair<unsigned, unsigned> CountTriangulationInliers(const Image& img1, const Image& img2,
-	const std::vector<DMatch>& matches)
+// Accumulate into every hypothesis the two-view triangulation inliers of the given matches
+// under that hypothesis: an inlier is a match triangulating in front of both cameras with a
+// small reprojection error
+void CountTriangulationInliers(const Image& img1, const Image& img2,
+	const std::vector<DMatch>& matches, CLISTDEF0(Hypothesis)& hypotheses)
 {
 	// build a two-image scene holding the hypothesis poses; the shared cameras are borrowed,
 	// so the camera IDs are kept valid to stop the view destructor from deleting them
@@ -187,7 +241,6 @@ std::pair<unsigned, unsigned> CountTriangulationInliers(const Image& img1, const
 		dst.cameraID = k;
 		dst.pCamera = src.pCamera;
 		dst.keypoints = src.keypoints;
-		dst.R = src.R;
 		dst.C = src.C;
 	}
 	const auto Count = [&images, &matches]() {
@@ -210,17 +263,16 @@ std::pair<unsigned, unsigned> CountTriangulationInliers(const Image& img1, const
 		}
 		return numInliers;
 	};
-	std::pair<unsigned, unsigned> numInliers;
-	numInliers.first = Count();
-	images[0].R = RMatrix(CameraAxesFlipFor(img1) * img1.R);
-	images[1].R = RMatrix(CameraAxesFlipFor(img2) * img2.R);
-	numInliers.second = Count();
+	for (Hypothesis& hypothesis : hypotheses) {
+		images[0].R = RMatrix(PoseCorrection(img1, hypothesis.flipAxes, hypothesis.inPlaneTurns) * img1.R);
+		images[1].R = RMatrix(PoseCorrection(img2, hypothesis.flipAxes, hypothesis.inPlaneTurns) * img2.R);
+		hypothesis.numInliers += Count();
+	}
 	// release the borrowed cameras before the array is destroyed
 	for (Image& img : images) {
 		img.cameraID = NO_ID;
 		img.pCamera = NULL;
 	}
-	return numInliers;
 }
 
 // Pair candidate used to select the strongest pairs for the detection fallback
@@ -384,6 +436,12 @@ String SFM::FramesConventionToString(FramesConvention convention)
 	default: return "auto";
 	}
 } // FramesConventionToString
+
+String SFM::FramesPoseFrameToString(FramesPoseFrame poseFrame)
+{
+	return FramesConventionToString(poseFrame.convention) +
+		String::FormatString("/%uq", poseFrame.inPlaneTurns);
+} // FramesPoseFrameToString
 
 bool SFM::FramesConventionFromString(const String& str, FramesConvention& convention)
 {
@@ -624,30 +682,70 @@ bool SFM::ImportPoses(Scene& scene, const String& fileName, PoseImportMode mode,
 /*----------------------------------------------------------------*/
 
 
-void SFM::FlipFramesConvention(Scene& scene)
-{
-	unsigned numFlipped = 0;
-	for (Image& img : scene.images) {
-		if (!img.HasPose())
-			continue;
-		// the flip differs for EXIF-rotated images, whose stored pose composes an in-plane
-		// rotation with the file pose (see CameraAxesFlipFor)
-		img.R = RMatrix(CameraAxesFlipFor(img) * img.R);
-		++numFlipped;
-	}
-	DEBUG("Flipped the camera-axes convention of %u poses", numFlipped);
-} // FlipFramesConvention
-/*----------------------------------------------------------------*/
-
-
-FramesConvention SFM::DetectFramesConvention(const Scene& scene, FramesConvention appliedConvention)
+void SFM::ApplyFramesPoseFrame(Scene& scene, FramesConvention appliedConvention, FramesPoseFrame poseFrame)
 {
 	if (appliedConvention == FramesConvention::AUTO)
 		appliedConvention = FramesConvention::ARKIT;
-	const FramesConvention flippedConvention = OppositeConvention(appliedConvention);
+	ASSERT(poseFrame.IsValid());
+	const bool flipAxes = (poseFrame.convention != appliedConvention);
+	// the import composed exactly one quarter turn, so that turn count with the same axes is the
+	// one frame needing no work at all; every other value corrects at least the rotated images
+	// (a scene may mix rotated and unrotated ones, so this cannot be decided per turn count alone)
+	if (!flipAxes && poseFrame.inPlaneTurns == 1)
+		return;
+	unsigned numCorrected = 0;
+	for (Image& img : scene.images) {
+		if (!img.HasPose())
+			continue;
+		// an unrotated image has no in-plane rotation either way, so a pure in-plane correction
+		// leaves it alone; skip it rather than multiply by a rounded identity
+		if (!flipAxes && !img.IsRotated())
+			continue;
+		img.R = RMatrix(PoseCorrection(img, flipAxes, poseFrame.inPlaneTurns) * img.R);
+		++numCorrected;
+	}
+	DEBUG("Re-expressed %u poses as %s", numCorrected, FramesPoseFrameToString(poseFrame).c_str());
+} // ApplyFramesPoseFrame
+/*----------------------------------------------------------------*/
+
+
+FramesPoseFrame SFM::DetectFramesConvention(const Scene& scene, FramesConvention appliedConvention,
+	bool knownConvention)
+{
+	if (appliedConvention == FramesConvention::AUTO) {
+		appliedConvention = FramesConvention::ARKIT;
+		knownConvention = false;
+	}
+
+	const bool anyRotated = HasRotatedPosedImage(scene);
+	CLISTDEF0(Hypothesis) hypotheses;
+	for (const bool flipAxes : {false, true}) {
+		if (flipAxes && knownConvention)
+			continue;
+		for (unsigned turns = 0; turns < FRAMES_IN_PLANE_TURNS; ++turns) {
+			// with nothing rotated every turn count collapses to the same correction, so only
+			// the one that means "no in-plane rotation at all" is worth scoring
+			if (!anyRotated && turns > 0)
+				continue;
+			hypotheses.emplace_back(Hypothesis{flipAxes, turns, REAL(0), 0u});
+		}
+	}
+	ASSERT(!hypotheses.empty());
+	const auto Describe = [appliedConvention](const Hypothesis& hypothesis) {
+		return FramesPoseFrameToString(hypothesis.Frame(appliedConvention));
+	};
+	// a lone hypothesis has nothing to be compared against, so there is nothing to detect
+	if (hypotheses.size() == 1) {
+		DEBUG("Frames pose frame: %s given and no rotated posed image, nothing to detect",
+			Describe(hypotheses[0]).c_str());
+		return hypotheses[0].Frame(appliedConvention);
+	}
 
 	// primary signal: compare the imported relative rotations against the verified ones
-	REALArr errorsApplied(0, scene.pairs.size()), errorsFlipped(0, scene.pairs.size());
+	// (a list of lists, so it needs the constructing cList variant, not the memcpy one)
+	CLISTDEF2(REALArr) errors(hypotheses.size());
+	for (REALArr& hypothesisErrors : errors)
+		hypothesisErrors.reserve(scene.pairs.size());
 	for (const ImagePair& pair : scene.pairs) {
 		if (!pair.relativePose.has_value() || !pair.HasMatches())
 			continue;
@@ -657,40 +755,48 @@ FramesConvention SFM::DetectFramesConvention(const Scene& scene, FramesConventio
 			continue;
 		// relativePose maps the first image to the second one, same as R2 * R1^T
 		const Matrix3x3& verified = pair.relativePose->R;
-		const Matrix3x3 relative(img2.R * img1.R.t());
-		// flipping both images conjugates their relative rotation by the per-image axes
-		// flips (both symmetric): R2f * R1f^T = F2 * R2 * R1^T * F1
-		const Matrix3x3 relativeFlipped(Matrix3x3(CameraAxesFlipFor(img2) * relative) * CameraAxesFlipFor(img1));
-		errorsApplied.emplace_back(ComputeAngleSO3<REAL>(relative, verified));
-		errorsFlipped.emplace_back(ComputeAngleSO3<REAL>(relativeFlipped, verified));
-	}
-	const unsigned numVerifiedPairs = (unsigned)errorsApplied.size();
-	if (numVerifiedPairs >= CONVENTION_MIN_VERIFIED_PAIRS) {
-		const REAL medianApplied = errorsApplied.GetMedian();
-		const REAL medianFlipped = errorsFlipped.GetMedian();
-		DEBUG_EXTRA("Frames convention: %u verified pairs, median relative rotation error %.2f deg as %s, %.2f deg as %s",
-			numVerifiedPairs, R2D(medianApplied), FramesConventionToString(appliedConvention).c_str(),
-			R2D(medianFlipped), FramesConventionToString(flippedConvention).c_str());
-		if (medianApplied * CONVENTION_MARGIN_RATIO < medianFlipped) {
-			VERBOSE("Detected %s camera-axes convention (median relative rotation error %.2f deg vs %.2f deg)",
-				FramesConventionToString(appliedConvention).c_str(), R2D(medianApplied), R2D(medianFlipped));
-			return appliedConvention;
+		FOREACH(h, hypotheses) {
+			const Hypothesis& hypothesis = hypotheses[h];
+			// correcting both images conjugates their relative rotation by the per-image
+			// corrections: R2c * R1c^T = M2 * R2 * R1^T * M1^T
+			const Matrix3x3 M1(PoseCorrection(img1, hypothesis.flipAxes, hypothesis.inPlaneTurns));
+			const Matrix3x3 M2(PoseCorrection(img2, hypothesis.flipAxes, hypothesis.inPlaneTurns));
+			const Matrix3x3 relative(Matrix3x3(M2 * Matrix3x3(img2.R * img1.R.t())) * M1.t());
+			errors[h].emplace_back(ComputeAngleSO3<REAL>(relative, verified));
 		}
-		if (medianFlipped * CONVENTION_MARGIN_RATIO < medianApplied) {
-			VERBOSE("Detected %s camera-axes convention (median relative rotation error %.2f deg vs %.2f deg)",
-				FramesConventionToString(flippedConvention).c_str(), R2D(medianFlipped), R2D(medianApplied));
-			return flippedConvention;
+	}
+	const unsigned numVerifiedPairs = (unsigned)errors[0].size();
+	if (numVerifiedPairs >= CONVENTION_MIN_VERIFIED_PAIRS) {
+		IDX best = 0;
+		FOREACH(h, hypotheses) {
+			hypotheses[h].medianError = errors[h].GetMedian();
+			if (hypotheses[h].medianError < hypotheses[best].medianError)
+				best = h;
+		}
+		String report;
+		FOREACH(h, hypotheses)
+			report += String::FormatString("%s%s %.2f deg", h == 0 ? "" : ", ",
+				Describe(hypotheses[h]).c_str(), R2D(hypotheses[h].medianError));
+		DEBUG_EXTRA("Frames convention: %u verified pairs, median relative rotation error: %s",
+			numVerifiedPairs, report.c_str());
+		// the winner must be clear of every rival, not just of the runner-up by luck
+		REAL runnerUp = std::numeric_limits<REAL>::max();
+		FOREACH(h, hypotheses)
+			if (h != best)
+				runnerUp = MINF(runnerUp, hypotheses[h].medianError);
+		if (hypotheses[best].medianError * CONVENTION_MARGIN_RATIO < runnerUp) {
+			VERBOSE("Detected %s pose frame (median relative rotation error %.2f deg vs %.2f deg)",
+				Describe(hypotheses[best]).c_str(), R2D(hypotheses[best].medianError), R2D(runnerUp));
+			return hypotheses[best].Frame(appliedConvention);
 		}
 		// the rotation signal loses its discriminative power on low-rotation captures
 		// (conjugating a small rotation barely changes it), so an ambiguous margin falls
 		// through to the cheirality-based triangulation test instead of giving up
-		DEBUG("Frames convention: ambiguous rotation signal (median relative rotation error "
-			"%.2f deg as %s vs %.2f deg as %s over %u verified pairs); falling back to two-view triangulation",
-			R2D(medianApplied), FramesConventionToString(appliedConvention).c_str(),
-			R2D(medianFlipped), FramesConventionToString(flippedConvention).c_str(), numVerifiedPairs);
+		DEBUG("Frames convention: ambiguous rotation signal (%s over %u verified pairs); "
+			"falling back to two-view triangulation", report.c_str(), numVerifiedPairs);
 	}
 
-	// fallback: triangulate the strongest pairs under both hypotheses and compare the inliers
+	// fallback: triangulate the strongest pairs under every hypothesis and compare the inliers
 	CLISTDEF0(PairScore) candidates;
 	candidates.reserve(scene.pairs.size());
 	FOREACH(p, scene.pairs) {
@@ -705,63 +811,66 @@ FramesConvention SFM::DetectFramesConvention(const Scene& scene, FramesConventio
 		candidates.emplace_back(PairScore{weight > 0.f ? weight : (float)pair.GetNumInliers(), p});
 	}
 	if (candidates.empty()) {
-		VERBOSE("error: cannot detect the camera-axes convention: no matched pair between posed images");
-		return FramesConvention::AUTO;
+		VERBOSE("error: cannot detect the pose frame: no matched pair between posed images");
+		return FramesPoseFrame{};
 	}
 	const unsigned numPairs = MINF((unsigned)candidates.size(), CONVENTION_MAX_TRIANGULATED_PAIRS);
 	std::partial_sort(candidates.begin(), candidates.begin() + numPairs, candidates.end(),
 		[](const PairScore& a, const PairScore& b) { return a.score > b.score; });
-	unsigned inliersApplied = 0, inliersFlipped = 0;
 	for (unsigned i = 0; i < numPairs; ++i) {
 		const ImagePair& pair = scene.pairs[candidates[i].idx];
-		const auto [applied, flipped] = CountTriangulationInliers(
-			scene.images[pair.ID1], scene.images[pair.ID2], pair.matches);
-		inliersApplied += applied;
-		inliersFlipped += flipped;
+		CountTriangulationInliers(scene.images[pair.ID1], scene.images[pair.ID2], pair.matches, hypotheses);
 	}
-	DEBUG_EXTRA("Frames convention: %u triangulated pairs, %u inliers as %s, %u inliers as %s",
-		numPairs, inliersApplied, FramesConventionToString(appliedConvention).c_str(),
-		inliersFlipped, FramesConventionToString(flippedConvention).c_str());
-	if (inliersApplied >= CONVENTION_MIN_TRIANGULATED_INLIERS &&
-		(REAL)inliersApplied > CONVENTION_MARGIN_RATIO * inliersFlipped)
+	IDX best = 0;
+	FOREACH(h, hypotheses)
+		if (hypotheses[h].numInliers > hypotheses[best].numInliers)
+			best = h;
+	String report;
+	FOREACH(h, hypotheses)
+		report += String::FormatString("%s%s %u", h == 0 ? "" : ", ",
+			Describe(hypotheses[h]).c_str(), hypotheses[h].numInliers);
+	DEBUG_EXTRA("Frames convention: %u triangulated pairs, inliers: %s", numPairs, report.c_str());
+	unsigned runnerUp = 0;
+	FOREACH(h, hypotheses)
+		if (h != best)
+			runnerUp = MAXF(runnerUp, hypotheses[h].numInliers);
+	if (hypotheses[best].numInliers >= CONVENTION_MIN_TRIANGULATED_INLIERS &&
+		(REAL)hypotheses[best].numInliers > CONVENTION_MARGIN_RATIO * runnerUp)
 	{
-		VERBOSE("Detected %s camera-axes convention (%u vs %u two-view triangulation inliers)",
-			FramesConventionToString(appliedConvention).c_str(), inliersApplied, inliersFlipped);
-		return appliedConvention;
+		VERBOSE("Detected %s pose frame (%u vs %u two-view triangulation inliers)",
+			Describe(hypotheses[best]).c_str(), hypotheses[best].numInliers, runnerUp);
+		return hypotheses[best].Frame(appliedConvention);
 	}
-	if (inliersFlipped >= CONVENTION_MIN_TRIANGULATED_INLIERS &&
-		(REAL)inliersFlipped > CONVENTION_MARGIN_RATIO * inliersApplied)
-	{
-		VERBOSE("Detected %s camera-axes convention (%u vs %u two-view triangulation inliers)",
-			FramesConventionToString(flippedConvention).c_str(), inliersFlipped, inliersApplied);
-		return flippedConvention;
-	}
-	VERBOSE("error: the camera-axes convention is ambiguous: %u two-view triangulation inliers as %s "
-		"vs %u as %s over %u pairs",
-		inliersApplied, FramesConventionToString(appliedConvention).c_str(),
-		inliersFlipped, FramesConventionToString(flippedConvention).c_str(), numPairs);
-	return FramesConvention::AUTO;
+	VERBOSE("error: the pose frame is ambiguous: two-view triangulation inliers over %u pairs: %s",
+		numPairs, report.c_str());
+	return FramesPoseFrame{};
 } // DetectFramesConvention
 /*----------------------------------------------------------------*/
 
 
 bool SFM::ResolveFramesConvention(Scene& scene, FramesConvention configuredConvention, const String& importPosesFile)
 {
-	if (configuredConvention != FramesConvention::AUTO ||
-		Util::getFileExt(importPosesFile).ToLower() != ".json")
-		return true; // convention explicit, or not a frames.json import
-	constexpr FramesConvention appliedConvention = FramesConvention::ARKIT; // what ImportPoses applied
-	const FramesConvention detectedConvention = DetectFramesConvention(scene, appliedConvention);
-	if (detectedConvention == FramesConvention::AUTO) {
-		VERBOSE("error: could not decide the camera-axes convention of '%s' from the matched pairs; "
+	if (Util::getFileExt(importPosesFile).ToLower() != ".json")
+		return true; // not a frames.json import
+	// what ImportPoses applied: the configured convention, or ARKit when it was left AUTO
+	const FramesConvention appliedConvention = configuredConvention == FramesConvention::AUTO ?
+		FramesConvention::ARKIT : configuredConvention;
+	const bool knownConvention = (configuredConvention != FramesConvention::AUTO);
+	// an explicit convention still leaves the in-plane rotation of any EXIF-rotated image
+	// undecided, since a frames.json never declares which raster its poses describe
+	if (knownConvention && !HasRotatedPosedImage(scene))
+		return true; // nothing left to resolve
+	const FramesPoseFrame detected = DetectFramesConvention(scene, appliedConvention, knownConvention);
+	if (!detected.IsValid()) {
+		VERBOSE("error: could not decide the pose frame of '%s' from the matched pairs; "
 			"re-run passing the convention explicitly", importPosesFile.c_str());
 		return false;
 	}
-	VERBOSE("Known poses use the %s camera-axes convention%s",
-		FramesConventionToString(detectedConvention).c_str(),
-		detectedConvention == appliedConvention ? "" : " (flipping the imported poses)");
-	if (detectedConvention != appliedConvention)
-		FlipFramesConvention(scene);
+	// how many poses are actually rewritten is reported by ApplyFramesPoseFrame itself, which is
+	// the only place that can tell (a scene may mix rotated and unrotated images)
+	VERBOSE("Known poses use the %s camera-axes convention, %u in-plane quarter turn(s) from the "
+		"working raster", FramesConventionToString(detected.convention).c_str(), detected.inPlaneTurns);
+	ApplyFramesPoseFrame(scene, appliedConvention, detected);
 	return true;
 } // ResolveFramesConvention
 /*----------------------------------------------------------------*/

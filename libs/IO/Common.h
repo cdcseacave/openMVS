@@ -57,6 +57,9 @@
 #ifdef _USE_JXL
 #define _IMAGE_JXL		// add JpegXL support
 #endif
+#ifdef _USE_HEIF
+#define _IMAGE_HEIF		// add HEIF support
+#endif
 #ifdef _USE_TIFF
 #define _IMAGE_TIFF		// add TIFF support
 #endif
@@ -82,6 +85,9 @@
 #endif
 #ifdef _IMAGE_JXL
 #include "ImageJXL.h"
+#endif
+#ifdef _IMAGE_HEIF
+#include "ImageHEIF.h"
 #endif
 #include "PLY.h"
 #include "OBJ.h"

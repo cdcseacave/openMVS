@@ -383,6 +383,8 @@ endif()
 ADD_SUBDIRECTORY(docs)
 
 if (OpenMVS_ENABLE_TESTS)
+	# compile the in-source library test entry points (see for instance CImageHEIF::Test)
+	SET(_USE_TESTS TRUE)
 	# enable testing functionality
 	ENABLE_TESTING()
 	# define tests

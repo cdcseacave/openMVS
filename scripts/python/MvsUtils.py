@@ -381,11 +381,14 @@ def loadMVSInterface(archive_path):
         R = np.asarray(np.frombuffer(mvs.read(72), dtype=np.float64)).reshape(3, 3).tolist()
         C = np.asarray(np.frombuffer(mvs.read(24), dtype=np.float64)).tolist()
         data['platforms'][platform_index]['cameras'][camera_index].update({'K': K, 'R': R, 'C': C})
-        poses_size = np.frombuffer(mvs.read(8), dtype=np.uint64)[0]
-        for _ in range(poses_size):
-          R = np.asarray(np.frombuffer(mvs.read(72), dtype=np.float64)).reshape(3, 3).tolist()
-          C = np.asarray(np.frombuffer(mvs.read(24), dtype=np.float64)).tolist()
-          data['platforms'][platform_index]['poses'].append({'R': R, 'C': C})
+      # the poses follow the whole camera array, not each camera (Platform::serialize does
+      # `ar & cameras; ar & poses;`), so reading them per camera desynced the stream and
+      # consumed the next camera's bytes on any multi-camera (rig) platform
+      poses_size = np.frombuffer(mvs.read(8), dtype=np.uint64)[0]
+      for _ in range(poses_size):
+        R = np.asarray(np.frombuffer(mvs.read(72), dtype=np.float64)).reshape(3, 3).tolist()
+        C = np.asarray(np.frombuffer(mvs.read(24), dtype=np.float64)).tolist()
+        data['platforms'][platform_index]['poses'].append({'R': R, 'C': C})
     
     images_size = np.frombuffer(mvs.read(8), dtype=np.uint64)[0]
     for image_index in range(images_size):

@@ -92,6 +92,21 @@ bool CubeMapBridgeDropTopBottomTest();
 // Triplet star-initialization test: 3-view scene with tracks + StarInitializer + BA
 bool TripletStarInitTest();
 
+#ifdef _IMAGE_HEIF
+// HEIF/HEIC integration at the SFM layer (the reader itself is covered by CImageHEIF::Test):
+// the decoded resolution the MVS camera is paired against, the EXIF metadata bridge (focal
+// length agreeing with the classic stream scan, GPS), the "don't rotate twice" orientation
+// guard for a container 'irot' that duplicates an EXIF Orientation, and the LoadPixels
+// fallback for a format cv::imread cannot decode -- in both color and gray, the latter being
+// what feature extraction uses. Pixel content as a whole is covered by ReconstructTest and the
+// MVS PipelineTest, two of whose four images are HEIC.
+bool HEIFMetadataTest();
+#endif
+
+// Pose-frame detection: recover both the camera-axes convention and, for EXIF-rotated images,
+// the in-plane rotation of an imported frames.json from the matched pairs
+bool FramesPoseFrameDetectionTest();
+
 // Known-pose import, pair selection, and prior-frame alignment tests
 bool KnownPosesImportTest();
 bool KnownPosePairSelectionTest();

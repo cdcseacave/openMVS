@@ -65,7 +65,10 @@ bool Image::LoadPixels(bool gray)
 		VERBOSE("Image::LoadPixels: empty file name");
 		return false;
 	}
-	if (!LoadImage(fileName, pixels, gray ? 1 : -1)) {
+	// the IO overload of LoadImage() also decodes the formats OpenCV can not (ex. HEIC);
+	// every downstream consumer of 'pixels' assumes imread's channel order, which is what
+	// PF_R8G8B8 asks for (see the PIXELFORMAT comment in IO/Image.h)
+	if (!LoadImage(fileName, pixels, gray ? PF_GRAY8 : PF_R8G8B8)) {
 		VERBOSE("Image::LoadPixels: failed to load image '%s'", fileName.c_str());
 		return false;
 	}
@@ -147,10 +150,37 @@ bool Image::LoadMetadata(float defaultFocalRatio)
 	bool isSpherical = false;
 	bool trustIntrinsics = false;
 
-	// Parse EXIF from same buffer
+	// Parse EXIF metadata: prefer the container-native metadata blob (e.g. HEIF's "Exif"
+	// item, exposed by GetMetadataEXIF()) and fall back to the classic stream-based scan
+	// (JPEG/TIFF-style APP1 segment) used by every other format
 	TinyEXIF::EXIFInfo exif;
-	IOStreamEXIFWrapper exifStream(pImage->GetStream());
-	if (exif.parseFrom(exifStream) == TinyEXIF::PARSE_SUCCESS) {
+	bool parsed = false, containerOriented = false;
+	std::vector<uint8_t> blob;
+	if (pImage->GetMetadataEXIF(blob)) {
+		// blob is guaranteed by the GetMetadataEXIF contract to start with "Exif\0\0"
+		if (exif.parseFromEXIFSegment(blob.data(), (unsigned)blob.size()) == TinyEXIF::PARSE_SUCCESS) {
+			parsed = true;
+			containerOriented = true; // decoder already applied the container irot/imir transforms
+		}
+	}
+	if (!parsed) {
+		// blob missing, or present but failed to parse: fall back to the raw stream scan;
+		// clear() first so a failed blob-parse attempt cannot leave stale fields behind
+		exif.clear();
+		IOStreamEXIFWrapper exifStream(pImage->GetStream());
+		parsed = exif.parseFrom(exifStream) == TinyEXIF::PARSE_SUCCESS;
+	}
+	if (parsed) {
+		if (containerOriented) {
+			// HEIF stores rotation in container-level irot/imir boxes, which libheif applies
+			// during decode and reflects in the header/pixel dimensions already used above.
+			// Many writers ALSO stamp the EXIF Orientation tag for the same rotation:
+			// honoring it here would rotate a second time and desync View::metadata.rotated
+			// from the actual pixel layout -- which feeds the known-poses rotated-image flip
+			// (diag(-1,1,-1)), i.e. a silent pose-import breaker, not a cosmetic bug -- so
+			// normalize it away whenever the blob parse (not just the stream fallback) succeeded.
+			exif.Orientation = 1;
+		}
 		// Basic camera/lens metadata
 		metadata.dateTimeOriginal = exif.DateTimeOriginal;
 		metadata.exposureTime = exif.ExposureTime;

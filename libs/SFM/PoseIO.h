@@ -54,8 +54,36 @@ enum class FramesConvention {
 	OPENCV = 2  // OpenCV camera axes (X right, Y down, Z forward)
 };
 
+// In-plane rotation, in quarter turns about the optical axis, taking the camera frame a
+// frames.json pose is expressed in to the working raster OpenMVS reconstructs in.
+// Only meaningful for an EXIF-rotated image, which OpenMVS rotates 90 degrees clockwise on load
+// so that every working raster is landscape (see View::ToWorkingOrientation); it is always 0 for
+// an unrotated image, where the two frames coincide. A pose file never declares this, and no
+// single value is right for all producers:
+//   1  the raster as stored on disk, i.e. what ImportFramesJSON composes
+//   2  the sensor-native landscape orientation, which is what ARKit reports poses in -- it sits
+//      180 degrees from the landscape reached by rotating a display-oriented portrait raster
+//      90 degrees clockwise, so an ARKit capture needs one more quarter turn than the import
+//      applies (measured on a real iPhone capture: 0.55 deg of residual vs 68 deg at 1 turn)
+// Getting it wrong conjugates every rotation by a multiple of Rz(90), which leaves its angle
+// intact but tilts its axis, so the poses stay plausible while relative rotations disagree by up
+// to twice the baseline rotation -- and no camera-axes flip can repair it.
+constexpr unsigned FRAMES_IN_PLANE_TURNS = 4;
+
+// The frame an imported pose set turned out to be expressed in: the camera axes and, for
+// EXIF-rotated images, the in-plane rotation. The two choices are independent.
+struct FramesPoseFrame {
+	FramesConvention convention = FramesConvention::AUTO;
+	unsigned inPlaneTurns = 0;
+
+	// AUTO marks an inconclusive detection
+	bool IsValid() const { return convention != FramesConvention::AUTO; }
+};
+
 // Human readable name of the given convention (for logging)
 SFM_API String FramesConventionToString(FramesConvention convention);
+// Human readable name of a detected pose frame, "<convention>/<turns>q" (for logging)
+SFM_API String FramesPoseFrameToString(FramesPoseFrame poseFrame);
 
 // Parse a convention name (the inverse of FramesConventionToString, case-insensitive);
 // empty and "auto" map to AUTO; returns false for any other name
@@ -96,44 +124,57 @@ SFM_API bool ImportPoses(Scene& scene, const String& fileName, PoseImportMode mo
 	FramesConvention convention = FramesConvention::AUTO);
 
 /**
- * @brief Flip every posed image between the two camera-axes conventions
+ * @brief Re-express every posed image in the detected pose frame
  *
- * `img.R <- diag(1,-1,-1) * img.R`, camera centers unchanged
- * (derivation: the camera-to-world rotation changes as `R_c2w * D`, so its
- * transpose, which is what Pose3D stores, changes as `D * R_c2w^T`).
- * EXIF-rotated images store `Rz(90) * D * R_c2w^T` (see ImportFramesJSON), so their
- * flip conjugates to `Rz(90) * D * Rz(-90) = diag(-1,1,-1)` instead.
+ * Rewrites `img.R` from the frame the import applied to the detected one, leaving the camera
+ * centers untouched (neither an axes flip nor an in-plane rotation moves the camera):
+ *  - a camera-axes flip is `img.R <- diag(1,-1,-1) * img.R` (derivation: the camera-to-world
+ *    rotation changes as `R_c2w * D`, so its transpose, which is what Pose3D stores, changes
+ *    as `D * R_c2w^T`);
+ *  - the in-plane rotation replaces the single `Rz(90)` ImportFramesJSON composes for an
+ *    EXIF-rotated image with `inPlaneTurns` quarter turns (see FRAMES_IN_PLANE_TURNS);
+ *  - when both apply the flip is taken between the two in-plane rotations, so order matters.
+ * Idempotent only in the sense that applying the frame the import already used is a no-op.
  */
-SFM_API void FlipFramesConvention(Scene& scene);
+SFM_API void ApplyFramesPoseFrame(Scene& scene, FramesConvention appliedConvention,
+	FramesPoseFrame poseFrame);
 
 /**
- * @brief Decide which camera-axes convention the imported poses use
+ * @brief Decide which frame the imported poses are expressed in
  *
+ * Searches the camera-axes convention and, when the scene holds EXIF-rotated posed images, the
+ * in-plane rotation as well -- up to eight hypotheses, since the two are independent and only
+ * their combination can be scored (a wrong in-plane rotation cannot be repaired by an axes flip).
  * Primary signal: over the pairs carrying a match-verified relative pose, the imported
- * relative rotation is compared against the verified one under both hypotheses and the
- * lower median angular error wins.
+ * relative rotation is compared against the verified one under every hypothesis and the
+ * lowest median angular error wins.
  * Fallback (no pair was verified, e.g. all pairs are F-only, or the rotation signal is
  * ambiguous, e.g. a low-rotation forward walk): the matches of the highest-weighted pairs
- * are two-view triangulated with the imported poses under both hypotheses and the one
- * producing more cheirality-positive, low-reprojection inliers wins.
- * Both tests require a clear margin, so that a genuinely ambiguous scene reports AUTO
- * instead of guessing.
+ * are two-view triangulated with the imported poses under every hypothesis and the one
+ * producing the most cheirality-positive, low-reprojection inliers wins.
+ * Both tests require a clear margin over the runner-up, so that a genuinely ambiguous scene
+ * reports AUTO instead of guessing.
  * @param scene scene with imported poses and geometrically verified pairs (not modified)
  * @param appliedConvention convention the scene poses were imported with; AUTO is treated
  *        as ARKIT, matching what Scene::Import applies when the configured convention is AUTO
- * @return the detected convention, or AUTO when the evidence is inconclusive
+ * @param knownConvention when set, only the in-plane rotation is searched (the caller was
+ *        given an explicit convention, so the axes are not in question)
+ * @return the detected pose frame, invalid (AUTO) when the evidence is inconclusive
  *         (the caller must fail loudly and ask for an explicit convention)
  */
-SFM_API FramesConvention DetectFramesConvention(const Scene& scene,
-	FramesConvention appliedConvention = FramesConvention::ARKIT);
+SFM_API FramesPoseFrame DetectFramesConvention(const Scene& scene,
+	FramesConvention appliedConvention = FramesConvention::ARKIT,
+	bool knownConvention = false);
 
 /**
- * @brief Resolve the camera-axes convention of an AUTO frames.json pose import
+ * @brief Resolve the frame of a frames.json pose import
  *
- * No-op unless the import was a frames.json with FramesConvention::AUTO. Runs
- * DetectFramesConvention() on the matched pairs and flips the imported poses when the
- * detected convention differs from the optimistically applied ARKit one (see ImportPoses);
- * must therefore run after matching and before the poses are used or persisted.
+ * No-op unless the import was a frames.json needing a search: an AUTO camera-axes convention,
+ * or any EXIF-rotated posed image (whose in-plane rotation is never declared by the file, so
+ * it is resolved from the data even when the convention was given explicitly). Runs
+ * DetectFramesConvention() on the matched pairs and re-expresses the imported poses when the
+ * result differs from what the import applied (see ImportPoses); must therefore run after
+ * matching and before the poses are used or persisted.
  * @param scene scene with imported poses and matched pairs
  * @param configuredConvention convention the import was configured with
  * @param importPosesFile the imported poses file (identifies a frames.json import)

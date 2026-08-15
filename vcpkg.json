@@ -25,6 +25,10 @@
       "default-features": false
     },
     "eigen3",
+    {
+      "name": "libheif",
+      "default-features": false
+    },
     "libjxl",
     "libpng",
     {
