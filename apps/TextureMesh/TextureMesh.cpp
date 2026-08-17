@@ -197,11 +197,15 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		OPT::strExportType =  _T(".gltf");
 	else
 		OPT::strExportType =  _T(".ply");
-	if (OPT::bVertexColors)
-		OPT::strExportType = _T(".ply");
-	if (OPT::bVertexColors && OPT::nOrthoMapResolution > 0) {
-		VERBOSE("error: vertex-color and orthographic-image exports cannot be generated in the same run");
-		return false;
+	if (OPT::bVertexColors) {
+		if (OPT::nOrthoMapResolution > 0) {
+			VERBOSE("error: the orthographic-image export needs a textured mesh, which vertex coloring does not generate");
+			return false;
+		}
+		if (OPT::strExportType != _T(".ply")) {
+			VERBOSE("warning: only the PLY format stores vertex colors, exporting as PLY instead of '%s'", OPT::strExportType.c_str());
+			OPT::strExportType = _T(".ply");
+		}
 	}
 
 	// initialize optional options
@@ -307,22 +311,20 @@ int main(int argc, LPCTSTR* argv)
 	IIndexArr views;
 	if (!OPT::strViewsFileName.empty())
 		views = ParseViewsFile(MAKE_PATH_SAFE(OPT::strViewsFileName), scene);
+	// color the mesh, either per vertex or with a texture
+	TD_TIMER_START();
 	if (OPT::bVertexColors) {
-		TD_TIMER_START();
-		if (!scene.ExportMeshVertexColors(baseFileName+OPT::strExportType, OPT::nResolutionLevel, OPT::nMinResolution, OPT::minCommonCameras,
+		if (!scene.ComputeVertexColors(OPT::nResolutionLevel, OPT::nMinResolution, OPT::minCommonCameras,
 			OPT::fOutlierThreshold, OPT::fRatioDataSmoothness, Pixel8U(OPT::nColEmpty), OPT::nIgnoreMaskLabel, views))
 			return EXIT_FAILURE;
 		VERBOSE("Mesh vertex coloring completed: %u vertices, %u faces (%s)", scene.mesh.vertices.GetSize(), scene.mesh.faces.GetSize(), TD_TIMER_GET_FMT().c_str());
-		return EXIT_SUCCESS;
+	} else {
+		if (!scene.TextureMesh(OPT::nResolutionLevel, OPT::nMinResolution, OPT::minCommonCameras, OPT::fOutlierThreshold, OPT::fRatioDataSmoothness,
+							   OPT::bGlobalSeamLeveling, OPT::bLocalSeamLeveling, OPT::nTextureSizeMultiple, Pixel8U(OPT::nColEmpty),
+							   OPT::fSharpnessWeight, OPT::nIgnoreMaskLabel, OPT::nMaxTextureSize, views))
+			return EXIT_FAILURE;
+		VERBOSE("Mesh texturing completed: %u vertices, %u faces (%s)", scene.mesh.vertices.GetSize(), scene.mesh.faces.GetSize(), TD_TIMER_GET_FMT().c_str());
 	}
-
-	// compute mesh texture
-	TD_TIMER_START();
-	if (!scene.TextureMesh(OPT::nResolutionLevel, OPT::nMinResolution, OPT::minCommonCameras, OPT::fOutlierThreshold, OPT::fRatioDataSmoothness,
-						   OPT::bGlobalSeamLeveling, OPT::bLocalSeamLeveling, OPT::nTextureSizeMultiple, Pixel8U(OPT::nColEmpty),
-						   OPT::fSharpnessWeight, OPT::nIgnoreMaskLabel, OPT::nMaxTextureSize, views))
-		return EXIT_FAILURE;
-	VERBOSE("Mesh texturing completed: %u vertices, %u faces (%s)", scene.mesh.vertices.GetSize(), scene.mesh.faces.GetSize(), TD_TIMER_GET_FMT().c_str());
 
 	// save the final mesh
 	scene.mesh.Save(baseFileName+OPT::strExportType, cList<String>(), true, OPT::bExportTextureLossless);

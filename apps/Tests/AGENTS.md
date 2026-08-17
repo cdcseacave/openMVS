@@ -30,6 +30,17 @@ Located in `data/` (path compiled as `_DATA_PATH`):
 | `TestRayTriangleIntersection<double>(1000)` | Ray-triangle intersection (double) |
 | `TestLeastAbsoluteDeviationSolver()` | Robust L1 solver |
 | `TestConfidenceInterval()` | Statistical confidence interval |
+| `MVS::MeshVertexColorsPLYTest()` | Vertex-colored PLY round-trip, ASCII and binary |
+
+Tests needing scratch files use `ScopedTempDir` (`Tests.h`), which creates a uniquely
+named temporary directory, reports the failure itself, and removes the tree on scope exit:
+
+```cpp
+const ScopedTempDir tmpDir(_T("MyTest"));
+if (!tmpDir.IsValid())
+    return false;
+const String path = tmpDir(_T("scene.mvs"));
+```
 
 ## SFM Tests (`TestsSFM.h` / `TestsSFM.cpp`)
 
@@ -82,12 +93,16 @@ Single integration test: `MVS::PipelineTest()`.
 ```
 Load scene.mvs
   → DenseReconstruction()        — point cloud >= 50,000 points
-  → ReconstructMesh()            — faces >= 25,000
-  → Mesh::Clean(decimate=0.7)    — faces in [18,000 – 30,000]
+  → ReconstructMesh()            — faces in [40,000 – 100,000]
+  → Mesh::Clean(decimate=0.7)    — faces in [28,000 – 70,000]
   → TestMeshProjectionMT()       — (if OpenMP enabled)
+  → ComputeVertexColors()        — every vertex colored, most of them sampled
   → TextureMesh()                — texturing succeeds
-  → ComputeReconstructionQuality() — score >= 45.0
+  → ComputeReconstructionQuality() — score >= 43.0
 ```
+
+The face/quality bounds are deliberately wide plausibility windows: they bracket the
+spread of both the CPU and GPU PatchMatch backends, which differ by design.
 
 Sets `OPTDENSE::bRemoveDmaps = true` to clean intermediate depth maps. Optionally saves `.ply` outputs when verbose.
 

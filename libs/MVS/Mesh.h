@@ -135,6 +135,7 @@ public:
 	FaceArr faces;
 
 	NormalArr vertexNormals; // for each vertex, the normal to the surface in that point (optional)
+	ColorArr vertexColors; // for each vertex, its color (optional; stored only by the PLY format, not by the project archive)
 	VertexVerticesArr vertexVertices; // for each vertex, the list of adjacent vertices (optional)
 	VertexFacesArr vertexFaces; // for each vertex, the ordered list of faces containing it (optional)
 	BoolArr vertexBoundary; // for each vertex, stores if it is at the boundary or not (optional)
@@ -198,6 +199,13 @@ public:
 	void RemoveFacesOutside(const OBB3f&);
 	void RemoveFaces(FaceIdxArr& facesRemove, bool bUpdateLists=false);
 	void RemoveVertices(VertexIdxArr& vertexRemove, bool bUpdateLists=false);
+	// discard the optional attributes of the given vertex, mirroring vertices.RemoveAt()
+	void RemoveVertexAttributes(VIndex idxV) {
+		if (!vertexNormals.empty())
+			vertexNormals.RemoveAt(idxV);
+		if (!vertexColors.empty())
+			vertexColors.RemoveAt(idxV);
+	}
 	VIndex RemoveDuplicatedVertices(VertexIdxArr* duplicatedVertices=NULL);
 	VIndex RemoveUnreferencedVertices(bool bUpdateLists=false);
 	std::vector<Mesh> SplitMeshPerTextureBlob(FaceIdxArr* mapFaceSubsetIndices = NULL) const;
@@ -248,7 +256,6 @@ public:
 	// file IO
 	bool Load(const String& fileName);
 	bool Save(const String& fileName, const cList<String>& comments=cList<String>(), bool bBinary=true, bool bTexLossless=true) const;
-	bool SaveVertexColors(const String& fileName, const ColorArr& vertexColors, const cList<String>& comments=cList<String>(), bool bBinary=true) const;
 	bool Save(const FacesChunkArr&, const String& fileName, const cList<String>& comments=cList<String>(), bool bBinary=true) const;
 	static bool Save(const VertexArr& vertices, const String& fileName, bool bBinary=true);
 
@@ -261,8 +268,7 @@ protected:
 	bool LoadOBJ(const String& fileName);
 	bool LoadGLTF(const String& fileName, bool bBinary=true);
 
-	bool SavePLY(const String& fileName, const cList<String>& comments=cList<String>(), bool bBinary=true, bool bTexLossless=true,
-		const ColorArr* pVertexColors=NULL) const;
+	bool SavePLY(const String& fileName, const cList<String>& comments=cList<String>(), bool bBinary=true, bool bTexLossless=true) const;
 	bool SaveOBJ(const String& fileName) const;
 	bool SaveGLTF(const String& fileName, bool bBinary=true) const;
 
