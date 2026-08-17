@@ -125,7 +125,7 @@ if(_USE_BOOST_PYTHON)
 	# pyOpenMVS inherits the global CMAKE_CUDA_ARCHITECTURES (defaulted to
 	# "native" by the root CMakeLists when undefined) and respects any
 	# -DCMAKE_CUDA_ARCHITECTURES=... the user or toolchain provides.
-	TARGET_LINK_LIBRARIES(pyOpenMVS PRIVATE MVS SFM ${OpenMVS_PYTHON_LIBS} ${Boost_PYTHON_LIBS})
+	TARGET_LINK_LIBRARIES(pyOpenMVS PRIVATE MVS SFM ${OpenMVS_PYTHON_LIBS})
 	# Output as a Python extension module: no "lib" prefix, ".pyd" suffix on
 	# Windows so the standard `import pyOpenMVS` machinery loads it directly.
 	SET_TARGET_PROPERTIES(pyOpenMVS PROPERTIES PREFIX "")

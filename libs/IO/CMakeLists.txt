@@ -4,9 +4,20 @@ macro(pkg_check_modules_fullpath_libs PREFIX MODULE_NAME)
 	pkg_check_modules(${PREFIX} IMPORTED_TARGET ${MODULE_NAME})
 	if(${PREFIX}_FOUND)
 		# FindPkgConfig resolves -l entries against the module's -L paths and keeps
-		# unresolved system libraries as linker names.
-		set(${PREFIX}_FULLPATH_LIBRARIES "${${PREFIX}_LINK_LIBRARIES}")
-		set(${PREFIX}_FULLPATH_LIBRARIES "${${PREFIX}_FULLPATH_LIBRARIES}" PARENT_SCOPE)
+		# unresolved system libraries as linker names; keep linking statically
+		# whenever the resolved library also ships an archive next to it
+		set(fullpath_libs "")
+		foreach(lib ${${PREFIX}_LINK_LIBRARIES})
+			get_filename_component(lib_dir "${lib}" DIRECTORY)
+			get_filename_component(lib_name "${lib}" NAME_WE)
+			if(lib_dir AND EXISTS "${lib_dir}/${lib_name}${CMAKE_STATIC_LIBRARY_SUFFIX}")
+				list(APPEND fullpath_libs "${lib_dir}/${lib_name}${CMAKE_STATIC_LIBRARY_SUFFIX}")
+			else()
+				list(APPEND fullpath_libs "${lib}")
+			endif()
+		endforeach()
+		set(${PREFIX}_FULLPATH_LIBRARIES "${fullpath_libs}")
+		set(${PREFIX}_FULLPATH_LIBRARIES "${fullpath_libs}" PARENT_SCOPE)
 		message(STATUS "Found ${MODULE_NAME}: ${${PREFIX}_VERSION} libs: ${${PREFIX}_FULLPATH_LIBRARIES}")
 	else()
 		set(${PREFIX}_FULLPATH_LIBRARIES "" PARENT_SCOPE)
