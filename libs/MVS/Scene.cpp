@@ -1115,7 +1115,8 @@ bool Scene::ExportLinesPLY(const String& fileName, const CLISTDEF0IDX(Line3f,uin
 	// create PLY object
 	ASSERT(!fileName.empty());
 	Util::ensureFolder(fileName);
-	const size_t memBufferSize(2 * (8 * 3/*pos*/ + 3 * 3/*color*/ + 6/*space*/ + 2/*eol*/) + 2048/*extra size*/);
+	// each line stores two vertices and one edge
+	const size_t memBufferSize(PLY::ComputeMemBufferSize(lines.size(), 2*sizeof(PLYVertex) + sizeof(PLYEdge)));
 	PLY ply;
 	if (!ply.write(fileName, 2, elem_names, bBinary?PLY::BINARY_LE:PLY::ASCII, memBufferSize))
 		return false;

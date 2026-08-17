@@ -164,6 +164,15 @@ public:
 	bool write(SEACAVE::OSTREAM*, int, LPCSTR*, int, size_t memBufferSize=0);
 	void release();
 
+	// largest memory buffer write() is allowed to allocate before streaming to disk instead
+	static constexpr size_t MAX_MEM_BUFFER_SIZE = 64u*1024u*1024u;
+	// size of the memory buffer holding the given elements, or 0 to stream them directly to disk;
+	// the returned size is only a hint, as the buffer grows on demand
+	static size_t ComputeMemBufferSize(size_t numElems, size_t elemSize) {
+		ASSERT(elemSize > 0);
+		return numElems <= MAX_MEM_BUFFER_SIZE/elemSize ? numElems*elemSize : 0;
+	}
+
 	void set_legacy_type_names();
 
 	void get_info(float*, int*);

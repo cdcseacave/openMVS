@@ -2262,10 +2262,18 @@ bool SemiGlobalMatcher::ExportPointCloud(const String& fileName, const Image& im
 		"vertex"
 	};
 
+	// count the valid disparities, both to size the write buffer and to avoid
+	// creating an empty file for a disparity-map without any valid disparity
+	const Disparity* const disparities = disparityMap.ptr<const Disparity>();
+	const size_t nPoints((size_t)std::count_if(disparities, disparities+disparityMap.area(),
+		[](Disparity disparity) { return disparity != NO_DISP; }));
+	if (nPoints == 0)
+		return false;
+
 	// create PLY object
 	ASSERT(!fileName.empty());
 	Util::ensureFolder(fileName);
-	const size_t memBufferSize(disparityMap.area()*(8*3/*pos*/+3*3/*color*/+7/*space*/+2/*eol*/) + 2048/*extra size*/);
+	const size_t memBufferSize(PLY::ComputeMemBufferSize(nPoints, sizeof(float)*3 + sizeof(uint8_t)*3));
 	PLY ply;
 	if (!ply.write(fileName, 1, elem_names, PLY::BINARY_LE, memBufferSize))
 		return false;

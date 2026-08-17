@@ -1966,25 +1966,15 @@ bool MVS::ExportConfidenceMap(const String& fileName, const ConfidenceMap& confM
 /*----------------------------------------------------------------*/
 
 // export point-cloud
-namespace {
-constexpr size_t MAX_PLY_MEMORY_BUFFER_SIZE(64u*1024u*1024u);
-
-size_t ComputePLYMemoryBufferSize(size_t nPoints, size_t pointSize)
-{
-	// A zero-sized buffer selects PLY's streaming path for large debug exports.
-	return nPoints <= MAX_PLY_MEMORY_BUFFER_SIZE / pointSize ? nPoints * pointSize : 0;
-}
-} // namespace
-
 bool MVS::ExportPointCloud(const String& fileName, const Image& imageData, const DepthMap& depthMap, const NormalMap& normalMap)
 {
 	ASSERT(!depthMap.empty());
 	const Camera& P0 = imageData.camera;
-	size_t nPoints(0);
-	for (int i=0; i<depthMap.area(); ++i) {
-		if (depthMap[i] > 0)
-			++nPoints;
-	}
+	// count the valid depths, both to size the write buffer and to avoid
+	// creating an empty file for a depth-map without any valid depth
+	const size_t nPoints((size_t)cv::countNonZero(depthMap));
+	if (nPoints == 0)
+		return false;
 	if (normalMap.empty()) {
 		// vertex definition
 		struct Vertex {
@@ -2008,7 +1998,7 @@ bool MVS::ExportPointCloud(const String& fileName, const Image& imageData, const
 		// create PLY object
 		ASSERT(!fileName.IsEmpty());
 		Util::ensureFolder(fileName);
-		const size_t bufferSize(ComputePLYMemoryBufferSize(nPoints, sizeof(float)*3 + sizeof(uint8_t)*3));
+		const size_t bufferSize(PLY::ComputeMemBufferSize(nPoints, sizeof(float)*3 + sizeof(uint8_t)*3));
 		PLY ply;
 		if (!ply.write(fileName, 1, elem_names, PLY::BINARY_LE, bufferSize))
 			return false;
@@ -2065,7 +2055,7 @@ bool MVS::ExportPointCloud(const String& fileName, const Image& imageData, const
 		// create PLY object
 		ASSERT(!fileName.IsEmpty());
 		Util::ensureFolder(fileName);
-		const size_t bufferSize(ComputePLYMemoryBufferSize(nPoints, sizeof(float)*6 + sizeof(uint8_t)*3));
+		const size_t bufferSize(PLY::ComputeMemBufferSize(nPoints, sizeof(float)*6 + sizeof(uint8_t)*3));
 		PLY ply;
 		if (!ply.write(fileName, 1, elem_names, PLY::BINARY_LE, bufferSize))
 			return false;
