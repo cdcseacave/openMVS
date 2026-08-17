@@ -353,6 +353,9 @@ public:
 				return false;
 		return true;
 	}
+	inline bool		operator!=(const cList& rList) const {
+		return !operator==(rList);
+	}
 
 	// Set the allocated memory (normally used for types without constructor).
 	inline void		Memset(uint8_t val)

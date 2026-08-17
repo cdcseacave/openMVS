@@ -735,6 +735,7 @@ public:
 		if (wsz == NULL)
 			return String();
 		String str;
+		str.reserve(wcslen(wsz)); // exact for the common ASCII case
 		while (*wsz != 0) {
 			uint32_t codePoint(static_cast<uint32_t>(*wsz++));
 			if constexpr (sizeof(wchar_t) == 2) {
