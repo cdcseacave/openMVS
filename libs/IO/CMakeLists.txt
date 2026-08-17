@@ -4,14 +4,17 @@ macro(pkg_check_modules_fullpath_libs PREFIX MODULE_NAME)
 	pkg_check_modules(${PREFIX} IMPORTED_TARGET ${MODULE_NAME})
 	if(${PREFIX}_FOUND)
 		# FindPkgConfig resolves -l entries against the module's -L paths and keeps
-		# unresolved system libraries as linker names; keep linking statically
-		# whenever the resolved library also ships an archive next to it
+		# unresolved system libraries as linker names; keep linking the module's own
+		# libraries statically whenever an archive ships next to the resolved one.
+		# Only those: the archives the toolchain ships for the system libraries are
+		# not built PIC, so pulling them in breaks linking our shared libraries.
 		set(fullpath_libs "")
 		foreach(lib ${${PREFIX}_LINK_LIBRARIES})
 			get_filename_component(lib_dir "${lib}" DIRECTORY)
 			get_filename_component(lib_name "${lib}" NAME_WE)
-			if(lib_dir AND EXISTS "${lib_dir}/${lib_name}${CMAKE_STATIC_LIBRARY_SUFFIX}")
-				list(APPEND fullpath_libs "${lib_dir}/${lib_name}${CMAKE_STATIC_LIBRARY_SUFFIX}")
+			set(static_lib "${lib_dir}/${lib_name}${CMAKE_STATIC_LIBRARY_SUFFIX}")
+			if(lib_dir IN_LIST ${PREFIX}_LIBRARY_DIRS AND EXISTS "${static_lib}")
+				list(APPEND fullpath_libs "${static_lib}")
 			else()
 				list(APPEND fullpath_libs "${lib}")
 			endif()
