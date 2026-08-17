@@ -54,7 +54,7 @@ public:
 		if (std::filesystem::create_directories(dir, ec))
 			path = dir;
 		else
-			VERBOSE("%s FAILED: cannot create temp dir '%s': %s", testName.c_str(), dir.string().c_str(), ec.message().c_str());
+			VERBOSE("%s FAILED: cannot create temp dir '%s': %s", testName.c_str(), dir.generic_string().c_str(), ec.message().c_str());
 	}
 	~ScopedTempDir() {
 		if (IsValid()) {
@@ -64,12 +64,13 @@ public:
 	}
 
 	bool IsValid() const { return !path.empty(); }
-	// path of this directory
-	SEACAVE::String Path() const { ASSERT(IsValid()); return SEACAVE::String(path.string()); }
+	// path of this directory; always slash-separated, as PATH_SEPARATOR is what
+	// the Util path helpers split on, on every platform
+	SEACAVE::String Path() const { ASSERT(IsValid()); return SEACAVE::String(path.generic_string()); }
 	// path of the given file inside this directory
 	SEACAVE::String operator()(const SEACAVE::String& fileName) const {
 		ASSERT(IsValid());
-		return SEACAVE::String((path / fileName.c_str()).string());
+		return SEACAVE::String((path / fileName.c_str()).generic_string());
 	}
 
 private:
