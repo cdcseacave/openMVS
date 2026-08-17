@@ -142,6 +142,18 @@ bool PipelineTest(bool forceCPU, bool verbose)
 		VERBOSE("ERROR: TestDataset colored only %u of %u mesh vertices!", numColored, scene.mesh.vertexColors.size());
 		return false;
 	}
+	// the colors must survive the project archive round-trip
+	{
+		const ScopedTempDir tmpDir(_T("PipelineTest"));
+		if (!tmpDir.IsValid())
+			return false;
+		const String mvsPath(tmpDir(_T("colored.mvs")));
+		Scene reloaded;
+		if (!scene.Save(mvsPath) || !reloaded.Load(mvsPath) || reloaded.mesh.vertexColors != scene.mesh.vertexColors) {
+			VERBOSE("ERROR: TestDataset failed reloading the mesh vertex colors!");
+			return false;
+		}
+	}
 	scene.mesh.vertexColors.Release();
 	if (!scene.TextureMesh(0, 0) || !scene.mesh.HasTexture()) {
 		VERBOSE("ERROR: TestDataset failed texturing the mesh!");

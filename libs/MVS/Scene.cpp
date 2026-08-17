@@ -40,7 +40,7 @@ using namespace MVS;
 // D E F I N E S ///////////////////////////////////////////////////
 
 #define PROJECT_ID "MVS\0" // identifies the project stream
-#define PROJECT_VER ((uint32_t)1) // identifies the version of a project stream
+#define PROJECT_VER ((uint32_t)2) // identifies the version of a project stream
 
 // uncomment to enable multi-threading based on OpenMP
 #ifdef _USE_OPENMP

@@ -135,7 +135,7 @@ public:
 	FaceArr faces;
 
 	NormalArr vertexNormals; // for each vertex, the normal to the surface in that point (optional)
-	ColorArr vertexColors; // for each vertex, its color (optional; stored only by the PLY format, not by the project archive)
+	ColorArr vertexColors; // for each vertex, its color (optional)
 	VertexVerticesArr vertexVertices; // for each vertex, the list of adjacent vertices (optional)
 	VertexFacesArr vertexFaces; // for each vertex, the ordered list of faces containing it (optional)
 	BoolArr vertexBoundary; // for each vertex, stores if it is at the boundary or not (optional)
@@ -280,6 +280,7 @@ protected:
 		ar & vertices;
 		ar & faces;
 		ar & vertexNormals;
+		ar & vertexColors;
 		ar & vertexVertices;
 		ar & vertexFaces;
 		ar & vertexBoundary;

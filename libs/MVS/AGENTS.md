@@ -61,7 +61,7 @@ class Mesh {
     VertexArr vertices;              // 3D positions
     FaceArr faces;                   // Triangle indices
     NormalArr vertexNormals, faceNormals;
-    ColorArr vertexColors;           // Per-vertex color (PLY only, not in the .mvs archive)
+    ColorArr vertexColors;           // Per-vertex color
     VertexVerticesArr vertexVertices; // Adjacency
     VertexFacesArr vertexFaces;      // Incident faces
     FaceFacesArr faceFaces;          // Face adjacency
