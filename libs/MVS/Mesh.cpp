@@ -2898,7 +2898,7 @@ REAL Mesh::ComputeVolume() const
 
 
 // project mesh to the given camera plane
-void Mesh::SamplePoints(unsigned numberOfPoints, PointCloud& pointcloud) const
+void Mesh::SamplePoints(unsigned numberOfPoints, PointCloud& pointcloud, uint32_t seed) const
 {
 	// total mesh surface
 	const REAL area(ComputeArea());
@@ -2907,16 +2907,16 @@ void Mesh::SamplePoints(unsigned numberOfPoints, PointCloud& pointcloud) const
 		return;
 	}
 	const REAL samplingDensity(numberOfPoints / area);
-	return SamplePoints(samplingDensity, numberOfPoints, pointcloud);
+	return SamplePoints(samplingDensity, numberOfPoints, pointcloud, seed);
 }
-void Mesh::SamplePoints(REAL samplingDensity, PointCloud& pointcloud) const
+void Mesh::SamplePoints(REAL samplingDensity, PointCloud& pointcloud, uint32_t seed) const
 {
 	// compute the total area to deduce the number of points
 	const REAL area(ComputeArea());
 	const unsigned theoreticNumberOfPoints(CEIL2INT<unsigned>(area * samplingDensity));
-	return SamplePoints(samplingDensity, theoreticNumberOfPoints, pointcloud);
+	return SamplePoints(samplingDensity, theoreticNumberOfPoints, pointcloud, seed);
 }
-void Mesh::SamplePoints(REAL samplingDensity, unsigned mumPointsTheoretic, PointCloud& pointcloud) const
+void Mesh::SamplePoints(REAL samplingDensity, unsigned mumPointsTheoretic, PointCloud& pointcloud, uint32_t seed) const
 {
 	ASSERT(!IsEmpty());
 	pointcloud.Release();
@@ -2927,7 +2927,7 @@ void Mesh::SamplePoints(REAL samplingDensity, unsigned mumPointsTheoretic, Point
 	}
 
 	// for each triangle
-	std::mt19937 rnd((std::random_device())());
+	std::mt19937 rnd(seed == NO_ID ? (std::random_device())() : seed);
 	std::uniform_real_distribution<REAL> dist(0,1);
 	FOREACH(idxFace, faces) {
 		const Face& face = faces[idxFace];

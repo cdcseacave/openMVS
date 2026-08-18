@@ -718,7 +718,25 @@ preflight instead of an A/B.
 
 ## Phase 0.B — runtime soundness
 
-(pending)
+**Instrumentation landed (2026-08-19, slice 2):** aggregate ray-walk accounting (18 counters,
+per-thread slots, zero-behavior-change — WSS-on and WSS-off outputs verified md5-identical to
+the slice-1 binaries) reported at `DEBUG_ULTIMATE`, with a `DEBUG_EXTRA` warning when bad-ends
+occur; `M` (scene coordinate magnitude) and `L` (median edge length) printed on the same line
+for the item-8 magnitude-correlation analysis. Also landed: optional deterministic seed for
+`Mesh::SamplePoints` (`--sample-mesh-seed`, sentinel `NO_ID` = legacy random_device), verified
+reproducible (same seed ⇒ identical PLY, different seed ⇒ different) — removes sampler noise
+from every Phase 1+ mesh-F1 measurement.
+
+First readout (SceauxCastle sample, WSS on, single-threaded, `M=115.9`, `L=0.119`):
+72 542 camera walks (41 dropped, 0 aborted), 2 812 618 steps, **0 bad-ends** — the walk is
+healthy in this comfortable-magnitude regime. WSS: 5128 fired, of which **922 (18 %) were
+`t==0` no-ops and 1648 (32 %) saturated to non-finite** — half of all reinforcements are
+degenerate, empirically confirming the item-7 verdict (structural no-op + per-view product
+divergence) on the first scene measured.
+
+Still pending: solver cross-check (IBFS vs alternate backend), single-thread vs OpenMP
+reference comparison, WSS micro-trace fixture, unit tests (empty-weights fallback, weight
+serialization/aggregation, fixture-based capacity checks).
 
 ## Phase 1 — benchmark noise floor
 

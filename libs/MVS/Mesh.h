@@ -235,9 +235,9 @@ public:
 	REAL ComputeArea() const;
 	REAL ComputeVolume() const;
 
-	void SamplePoints(unsigned numberOfPoints, PointCloud&) const;
-	void SamplePoints(REAL samplingDensity, PointCloud&) const;
-	void SamplePoints(REAL samplingDensity, unsigned mumPointsTheoretic, PointCloud&) const;
+	void SamplePoints(unsigned numberOfPoints, PointCloud&, uint32_t seed=NO_ID) const;
+	void SamplePoints(REAL samplingDensity, PointCloud&, uint32_t seed=NO_ID) const;
+	void SamplePoints(REAL samplingDensity, unsigned mumPointsTheoretic, PointCloud&, uint32_t seed=NO_ID) const; // seed==NO_ID: seed the RNG from std::random_device (non-deterministic)
 
 	void Project(const Camera& camera, DepthMap& depthMap) const;
 	void Project(const Camera& camera, DepthMap& depthMap, Image8U3& image) const;
