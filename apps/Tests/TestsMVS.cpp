@@ -30,6 +30,8 @@
  */
 
 #include "../../libs/MVS.h"
+#include "Tests.h"
+#include "TestsMVS.h"
 
 
 // D E F I N E S ///////////////////////////////////////////////////
@@ -40,6 +42,36 @@
 DEFINE_LOG_NAME(lt, _T("TestMVS "));
 
 namespace MVS {
+
+bool MeshVertexColorsPLYTest()
+{
+	const ScopedTempDir tmpDir(_T("MeshVertexColorsPLYTest"));
+	if (!tmpDir.IsValid())
+		return false;
+
+	Mesh mesh;
+	mesh.vertices = {{0.f, 0.f, 0.f}, {1.f, 0.f, 0.f}, {0.f, 1.f, 0.f}};
+	mesh.faces = {{0, 1, 2}};
+	mesh.vertexColors = {Pixel8U::RED, Pixel8U::GREEN, Pixel8U::BLUE};
+	for (const bool bBinary: {false, true}) {
+		const String fileName(tmpDir(bBinary ? _T("mesh-binary.ply") : _T("mesh-ascii.ply")));
+		if (!mesh.Save(fileName, cList<String>(), bBinary))
+			return false;
+		// the mesh must reload with its colors
+		Mesh loaded;
+		if (!loaded.Load(fileName) || loaded.vertices != mesh.vertices || loaded.faces != mesh.faces ||
+			loaded.vertexColors != mesh.vertexColors)
+			return false;
+		// the same file must read as a colored point-cloud
+		PointCloud pointCloud;
+		if (!pointCloud.Load(fileName) || pointCloud.points.size() != mesh.vertices.size() || pointCloud.colors.size() != mesh.vertexColors.size())
+			return false;
+		FOREACH(idxVertex, mesh.vertices)
+			if (pointCloud.points[idxVertex] != mesh.vertices[idxVertex] || pointCloud.colors[idxVertex] != mesh.vertexColors[idxVertex])
+				return false;
+	}
+	return true;
+}
 
 // test MVS stages on a small sample dataset
 bool PipelineTest(bool forceCPU, bool verbose)
@@ -95,6 +127,34 @@ bool PipelineTest(bool forceCPU, bool verbose)
 	#ifdef _USE_OPENMP
 	TestMeshProjectionMT(scene.mesh, scene.images[1]);
 	#endif
+	// color the mesh per vertex; this releases the images, which texturing below reloads
+	const Mesh::Color colEmpty(255, 127, 39);
+	if (!scene.ComputeVertexColors(0, 0, 0, 0.f, 0.3f, colEmpty) || scene.mesh.vertexColors.size() != scene.mesh.vertices.size()) {
+		VERBOSE("ERROR: TestDataset failed computing the mesh vertex colors!");
+		return false;
+	}
+	// most vertices are seen by at least one view, so they must be sampled and not left empty
+	Mesh::VIndex numColored(0);
+	for (const Mesh::Color& color: scene.mesh.vertexColors)
+		if (color != colEmpty)
+			++numColored;
+	if (numColored*2 < scene.mesh.vertexColors.size()) {
+		VERBOSE("ERROR: TestDataset colored only %u of %u mesh vertices!", numColored, scene.mesh.vertexColors.size());
+		return false;
+	}
+	// the colors must survive the project archive round-trip
+	{
+		const ScopedTempDir tmpDir(_T("PipelineTest"));
+		if (!tmpDir.IsValid())
+			return false;
+		const String mvsPath(tmpDir(_T("colored.mvs")));
+		Scene reloaded;
+		if (!scene.Save(mvsPath) || !reloaded.Load(mvsPath) || reloaded.mesh.vertexColors != scene.mesh.vertexColors) {
+			VERBOSE("ERROR: TestDataset failed reloading the mesh vertex colors!");
+			return false;
+		}
+	}
+	scene.mesh.vertexColors.Release();
 	if (!scene.TextureMesh(0, 0) || !scene.mesh.HasTexture()) {
 		VERBOSE("ERROR: TestDataset failed texturing the mesh!");
 		return false;

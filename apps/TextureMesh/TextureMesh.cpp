@@ -69,6 +69,7 @@ int nProcessPriority;
 unsigned nMaxThreads;
 int nMaxTextureSize;
 bool bExportTextureLossless;
+bool bVertexColors;
 String strExportType;
 String strConfigFileName;
 boost::program_options::variables_map vm;
@@ -133,6 +134,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("ignore-mask-label", boost::program_options::value(&OPT::nIgnoreMaskLabel)->default_value(-1), "label value to ignore in the image mask, stored in the MVS scene or next to each image with '.mask.png' extension (-1 - auto estimate mask for lens distortion, -2 - disabled)")
 		("max-texture-size", boost::program_options::value(&OPT::nMaxTextureSize)->default_value(8192), "maximum texture size, split it in multiple textures of this size if needed (0 - unbounded)")
 		("export-texture-lossless", boost::program_options::value(&OPT::bExportTextureLossless)->default_value(true), "save the texture as PNG (lossless) or JPG (smaller, lossy) when exporting to PLY")
+		("vertex-colors", boost::program_options::value(&OPT::bVertexColors)->default_value(false), "export a PLY mesh with per-vertex colors instead of generating texture atlases")
 		;
 
 	// hidden options, allowed both on command line and
@@ -195,6 +197,16 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		OPT::strExportType =  _T(".gltf");
 	else
 		OPT::strExportType =  _T(".ply");
+	if (OPT::bVertexColors) {
+		if (OPT::nOrthoMapResolution > 0) {
+			VERBOSE("error: the orthographic-image export needs a textured mesh, which vertex coloring does not generate");
+			return false;
+		}
+		if (OPT::strExportType != _T(".ply")) {
+			VERBOSE("warning: only the PLY format stores vertex colors, exporting as PLY instead of '%s'", OPT::strExportType.c_str());
+			OPT::strExportType = _T(".ply");
+		}
+	}
 
 	// initialize optional options
 	Util::ensureValidPath(OPT::strMeshFileName);
@@ -299,14 +311,20 @@ int main(int argc, LPCTSTR* argv)
 	IIndexArr views;
 	if (!OPT::strViewsFileName.empty())
 		views = ParseViewsFile(MAKE_PATH_SAFE(OPT::strViewsFileName), scene);
-
-	// compute mesh texture
+	// color the mesh, either per vertex or with a texture
 	TD_TIMER_START();
-	if (!scene.TextureMesh(OPT::nResolutionLevel, OPT::nMinResolution, OPT::minCommonCameras, OPT::fOutlierThreshold, OPT::fRatioDataSmoothness,
-						   OPT::bGlobalSeamLeveling, OPT::bLocalSeamLeveling, OPT::nTextureSizeMultiple, Pixel8U(OPT::nColEmpty),
-						   OPT::fSharpnessWeight, OPT::nIgnoreMaskLabel, OPT::nMaxTextureSize, views))
-		return EXIT_FAILURE;
-	VERBOSE("Mesh texturing completed: %u vertices, %u faces (%s)", scene.mesh.vertices.GetSize(), scene.mesh.faces.GetSize(), TD_TIMER_GET_FMT().c_str());
+	if (OPT::bVertexColors) {
+		if (!scene.ComputeVertexColors(OPT::nResolutionLevel, OPT::nMinResolution, OPT::minCommonCameras,
+			OPT::fOutlierThreshold, OPT::fRatioDataSmoothness, Pixel8U(OPT::nColEmpty), OPT::nIgnoreMaskLabel, views))
+			return EXIT_FAILURE;
+		VERBOSE("Mesh vertex coloring completed: %u vertices, %u faces (%s)", scene.mesh.vertices.GetSize(), scene.mesh.faces.GetSize(), TD_TIMER_GET_FMT().c_str());
+	} else {
+		if (!scene.TextureMesh(OPT::nResolutionLevel, OPT::nMinResolution, OPT::minCommonCameras, OPT::fOutlierThreshold, OPT::fRatioDataSmoothness,
+							   OPT::bGlobalSeamLeveling, OPT::bLocalSeamLeveling, OPT::nTextureSizeMultiple, Pixel8U(OPT::nColEmpty),
+							   OPT::fSharpnessWeight, OPT::nIgnoreMaskLabel, OPT::nMaxTextureSize, views))
+			return EXIT_FAILURE;
+		VERBOSE("Mesh texturing completed: %u vertices, %u faces (%s)", scene.mesh.vertices.GetSize(), scene.mesh.faces.GetSize(), TD_TIMER_GET_FMT().c_str());
+	}
 
 	// save the final mesh
 	scene.mesh.Save(baseFileName+OPT::strExportType, cList<String>(), true, OPT::bExportTextureLossless);

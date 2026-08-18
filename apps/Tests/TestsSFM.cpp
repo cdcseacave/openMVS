@@ -42,6 +42,7 @@
 #include "../../libs/SFM/SphereCubeMap.h"
 #include "../../libs/SFM/InterfaceMVS.h"
 #include "../../libs/MVS.h"
+#include "Tests.h"
 #include <filesystem>
 
 
@@ -324,19 +325,9 @@ bool FramesPoseFrameDetectionTest()
 // and CSV validation without partial updates from an invalid pose row.
 bool KnownPosesImportTest()
 {
-	namespace fs = std::filesystem;
-	const fs::path tmpDir = fs::temp_directory_path() /
-		fs::path(String::FormatString("openmvs_known_poses_%lld", (long long)std::time(nullptr)).c_str());
-	std::error_code ec;
-	fs::create_directories(tmpDir, ec);
-	if (ec) {
-		VERBOSE("KnownPosesImportTest FAILED: cannot create temp dir: %s", ec.message().c_str());
+	const ScopedTempDir tmpDir(_T("KnownPosesImportTest"));
+	if (!tmpDir.IsValid())
 		return false;
-	}
-	struct CleanupGuard {
-		fs::path path;
-		~CleanupGuard() { std::error_code ec; fs::remove_all(path, ec); }
-	} cleanup{tmpDir};
 
 	const auto AddImage = [](ImageArr& images, IIndex id, const String& fileName, REAL focal) {
 		Image& image = images.emplace_back(id, fileName);
@@ -348,7 +339,7 @@ bool KnownPosesImportTest()
 	AddImage(scene.images, 0, "/input/FrameA.jpg", 700);
 	AddImage(scene.images, 1, "/input/frameB.png", 700);
 	AddImage(scene.images, 2, "/input/framec.jpg", 700);
-	const String jsonPath = String(tmpDir.string()) + _T("/frames.json");
+	const String jsonPath = tmpDir(_T("frames.json"));
 	{
 		std::ofstream os(jsonPath);
 		// framea declares its intrinsics in the working (landscape) orientation, framec in the
@@ -412,7 +403,7 @@ bool KnownPosesImportTest()
 	AddImage(csvImages, 1, "/input/frameb.jpg", 700);
 	AddImage(csvImages, 2, "/input/one/ambiguous.jpg", 700);
 	AddImage(csvImages, 3, "/input/two/ambiguous.png", 700);
-	const String csvPath = String(tmpDir.string()) + _T("/poses.csv");
+	const String csvPath = tmpDir(_T("poses.csv"));
 	{
 		std::ofstream os(csvPath);
 		os << "filename,fx,fy,cx,cy,qx,qy,qz,qw,Cx,Cy,Cz,score\n";
@@ -1910,29 +1901,10 @@ bool CubeMapBridgeGeometryTest()
 	// Export to a temp .mvs so we can inspect the serialised interface. The
 	// internal platform / image / vertex emission is exercised end-to-end
 	// (the 4 old bridge helpers are now file-local to InterfaceMVS.cpp).
-	namespace fs = std::filesystem;
-	namespace fs = std::filesystem;
-	struct CleanupGuard {
-		fs::path path;
-		CleanupGuard() {
-			path = fs::temp_directory_path() /
-				fs::path(String::FormatString("openmvs_geom_%u", (unsigned)std::time(nullptr)).c_str());
-			std::error_code ec;
-			fs::create_directories(path, ec);
-			if (ec) {
-				VERBOSE("CubeMapBridgeGeometryTest FAILED: cannot create temp dir: %s", ec.message().c_str());
-				path.clear();
-			}
-		}
-		~CleanupGuard() {
-			if (!path.empty())
-				fs::remove_all(path);
-		}
-		operator const String() const { return path.string(); }
-	} tmpDir;
-	if (tmpDir.path.empty())
+	const ScopedTempDir tmpDir(_T("CubeMapBridgeGeometryTest"));
+	if (!tmpDir.IsValid())
 		return false;
-	const String mvsPath = (tmpDir.path / "scene.mvs").string().c_str();
+	const String mvsPath = tmpDir(_T("scene.mvs"));
 
 	ExportMVSConfig cfg;
 	cfg.undistortAlpha    = 0.f;
@@ -2048,27 +2020,8 @@ bool CubeMapBridgeEndToEndTest()
 {
 	VERBOSE("\n=== CubeMapBridgeEndToEndTest: on-disk cube-map pixel roundtrip ===");
 
-	// Build a unique temp directory under the platform temp root (RAII managed).
-	namespace fs = std::filesystem;
-	struct CleanupGuard {
-		fs::path path;
-		CleanupGuard() {
-			path = fs::temp_directory_path() /
-				fs::path(String::FormatString("openmvs_cubemap_%u", (unsigned)std::time(nullptr)).c_str());
-			std::error_code ec;
-			fs::create_directories(path, ec);
-			if (ec) {
-				VERBOSE("CubeMapBridgeEndToEndTest FAILED: cannot create temp dir: %s", ec.message().c_str());
-				path.clear();
-			}
-		}
-		~CleanupGuard() {
-			if (!path.empty())
-				fs::remove_all(path);
-		}
-		operator const String() const { return path.string(); }
-	} tmpDir;
-	if (tmpDir.path.empty())
+	const ScopedTempDir tmpDir(_T("CubeMapBridgeEndToEndTest"));
+	if (!tmpDir.IsValid())
 		return false;
 
 	// Synthesize a 256x128 equirectangular source image with one colored
@@ -2077,7 +2030,7 @@ bool CubeMapBridgeEndToEndTest()
 	const auto samples = BuildFaceCenterSamples(geom);
 	Image8U3 src;
 	BuildCheckerboardEquirect(src, 256, 128, samples);
-	const String srcFileName(String(tmpDir) + _T("/source.jxl"));
+	const String srcFileName(tmpDir(_T("source.jxl")));
 	if (!src.Save(srcFileName)) {
 		VERBOSE("CubeMapBridgeEndToEndTest FAILED: cannot save source image '%s'", srcFileName.c_str());
 		return false;
@@ -2094,9 +2047,9 @@ bool CubeMapBridgeEndToEndTest()
 	// Export via the full ExportMVS pipeline: it renders + saves the N faces
 	// under `undistortImageDir`, writes the .mvs, and emits the rig platform,
 	// face images and track vertices the same way production MVS export does.
-	String outputDir = String(tmpDir) + _T("/faces/");
+	String outputDir = tmpDir.Path() + _T("/faces/");
 	Util::ensureFolder(outputDir);
-	const String mvsPath = String(tmpDir) + _T("/scene.mvs");
+	const String mvsPath = tmpDir(_T("scene.mvs"));
 
 	ExportMVSConfig cfg;
 	cfg.undistortImageDir = outputDir;
@@ -2113,7 +2066,7 @@ bool CubeMapBridgeEndToEndTest()
 	const String stem = Util::getFileName(srcFileName);
 	for (unsigned k = 0; k < 6; ++k) {
 		const String faceFileName = outputDir + stem + String::FormatString(_T("_face%u"), k) + _T(".jxl");
-		if (!fs::exists(fs::path(faceFileName.c_str()))) {
+		if (!std::filesystem::exists(faceFileName.c_str())) {
 			VERBOSE("CubeMapBridgeEndToEndTest FAILED: face file '%s' not written", faceFileName.c_str());
 			return false;
 		}
@@ -2143,7 +2096,7 @@ bool CubeMapBridgeEndToEndTest()
 		}
 	}
 
-	VERBOSE("CubeMapBridgeEndToEndTest PASSED (6 faces written + verified under %s)", String(tmpDir).c_str());
+	VERBOSE("CubeMapBridgeEndToEndTest PASSED (6 faces written + verified under %s)", tmpDir.Path().c_str());
 	return true;
 }
 /*----------------------------------------------------------------*/
@@ -2152,19 +2105,9 @@ bool CubeMapBridgeMVSLoadTest()
 {
 	VERBOSE("\n=== CubeMapBridgeMVSLoadTest: ExportMVS -> MVS::Scene::Load roundtrip ===");
 
-	namespace fs = std::filesystem;
-	const fs::path tmpDir = fs::temp_directory_path() /
-		fs::path(String::FormatString("openmvs_cubemap_mvsload_%lld", (long long)std::time(nullptr)).c_str());
-	std::error_code ec;
-	fs::create_directories(tmpDir, ec);
-	if (ec) {
-		VERBOSE("CubeMapBridgeMVSLoadTest FAILED: cannot create temp dir: %s", ec.message().c_str());
+	const ScopedTempDir tmpDir(_T("CubeMapBridgeMVSLoadTest"));
+	if (!tmpDir.IsValid())
 		return false;
-	}
-	struct CleanupGuard {
-		fs::path path;
-		~CleanupGuard() { std::error_code ec; fs::remove_all(path, ec); }
-	} cleanup{tmpDir};
 
 	// Build the same 2-view spherical scene but also materialize a source
 	// .jxl file on disk for each image so RenderAndWriteFaces has something
@@ -2178,8 +2121,7 @@ bool CubeMapBridgeMVSLoadTest()
 	BuildCheckerboardEquirect(src, 2048, 1024);
 	FOREACH(i, scene.images) {
 		Image& img = scene.images[i];
-		const String path = String(tmpDir.string()) +
-			String::FormatString(_T("/sphere_%u.jxl"), (unsigned)i);
+		const String path = tmpDir(String::FormatString(_T("sphere_%u.jxl"), (unsigned)i));
 		if (!src.Save(path)) {
 			VERBOSE("CubeMapBridgeMVSLoadTest FAILED: cannot save source image '%s'", path.c_str());
 			return false;
@@ -2189,7 +2131,7 @@ bool CubeMapBridgeMVSLoadTest()
 
 	// Export the scene with the cube-map bridge. The face files land
 	// alongside the .mvs output (no undistort dir provided).
-	const String mvsPath = String(tmpDir.string()) + _T("/scene.mvs");
+	const String mvsPath = tmpDir(_T("scene.mvs"));
 	ExportMVSConfig cfg;
 	cfg.includeColors      = false;
 	cfg.sphericalFaceSize  = 256;  // small for speed
@@ -2292,29 +2234,23 @@ bool CubeMapBridgeMixedSceneTest()
 	// The pinhole image is never read because its pixels aren't needed by
 	// ExportMVS itself — it only serializes the path. However the spherical
 	// side does need a readable file.
-	namespace fs = std::filesystem;
-	const fs::path tmpDir = fs::temp_directory_path() /
-		fs::path(String::FormatString("openmvs_cubemap_mixed_%lld", (long long)std::time(nullptr)).c_str());
-	std::error_code ec;
-	fs::create_directories(tmpDir, ec);
-	struct CleanupGuard {
-		fs::path path;
-		~CleanupGuard() { std::error_code ec; fs::remove_all(path, ec); }
-	} cleanup{tmpDir};
+	const ScopedTempDir tmpDir(_T("CubeMapBridgeMixedSceneTest"));
+	if (!tmpDir.IsValid())
+		return false;
 
 	Image8U3 srcSphere;
 	BuildCheckerboardEquirect(srcSphere, 2048, 1024);
-	const String spherePath = String(tmpDir.string()) + _T("/sphere.jxl");
+	const String spherePath = tmpDir(_T("sphere.jxl"));
 	if (!srcSphere.Save(spherePath)) {
 		VERBOSE("CubeMapBridgeMixedSceneTest FAILED: cannot save sphere source");
 		return false;
 	}
 	scene.images[1].fileName = spherePath;
 	// Give the pinhole image a plausible path too (existence not required by ExportMVS).
-	scene.images[0].fileName = String(tmpDir.string()) + _T("/pinhole.jxl");
+	scene.images[0].fileName = tmpDir(_T("pinhole.jxl"));
 
 	// Export
-	const String mvsPath = String(tmpDir.string()) + _T("/scene.mvs");
+	const String mvsPath = tmpDir(_T("scene.mvs"));
 	ExportMVSConfig cfg;
 	cfg.includeColors      = false;
 	cfg.sphericalFaceSize  = 256;
@@ -3012,21 +2948,11 @@ bool PoseUncertaintyExportTest()
 		scene.images[i].ID = 10 + i * 3;
 	scene.status.nState.set(Scene::Status::STATE::CALIBRATED);
 
-	namespace fs = std::filesystem;
-	const fs::path tmpDir = fs::temp_directory_path() /
-		fs::path(String::FormatString("openmvs_pose_quality_%lld", (long long)std::time(nullptr)).c_str());
-	std::error_code ec;
-	fs::create_directories(tmpDir, ec);
-	if (ec) {
-		VERBOSE("PoseUncertaintyExportTest FAILED: cannot create temp dir: %s", ec.message().c_str());
+	const ScopedTempDir tmpDir(_T("PoseUncertaintyExportTest"));
+	if (!tmpDir.IsValid())
 		return false;
-	}
-	struct CleanupGuard {
-		fs::path path;
-		~CleanupGuard() { std::error_code ec; fs::remove_all(path, ec); }
-	} cleanup{tmpDir};
 
-	const String mvsPath = String(tmpDir.string()) + _T("/scene.mvs");
+	const String mvsPath = tmpDir(_T("scene.mvs"));
 	if (!ExportMVS(mvsPath, scene, {})) {
 		VERBOSE("PoseUncertaintyExportTest FAILED: ExportMVS returned false");
 		return false;
@@ -3048,7 +2974,7 @@ bool PoseUncertaintyExportTest()
 			(unsigned)scene.poseUncertainty.size(), (unsigned)scene.images.size());
 		return false;
 	}
-	const String csvPath = String(tmpDir.string()) + _T("/quality.csv");
+	const String csvPath = tmpDir(_T("quality.csv"));
 	const unsigned numValid = ExportPoseUncertaintyCSV(csvPath, scene);
 	if (numValid != scene.images.size()) {
 		VERBOSE("PoseUncertaintyExportTest FAILED: exported %u valid rows, expected %u",
@@ -3165,7 +3091,7 @@ bool PoseUncertaintyExportTest()
 	}
 
 	// serialization roundtrip preserves the recorded uncertainty
-	const String sfmPath = String(tmpDir.string()) + _T("/scene.sfm");
+	const String sfmPath = tmpDir(_T("scene.sfm"));
 	if (!scene.Save(sfmPath, ARCHIVE_BINARY)) {
 		VERBOSE("PoseUncertaintyExportTest FAILED: scene save failed");
 		return false;

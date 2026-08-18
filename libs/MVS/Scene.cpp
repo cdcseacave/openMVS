@@ -40,7 +40,7 @@ using namespace MVS;
 // D E F I N E S ///////////////////////////////////////////////////
 
 #define PROJECT_ID "MVS\0" // identifies the project stream
-#define PROJECT_VER ((uint32_t)1) // identifies the version of a project stream
+#define PROJECT_VER ((uint32_t)2) // identifies the version of a project stream
 
 // uncomment to enable multi-threading based on OpenMP
 #ifdef _USE_OPENMP
@@ -1115,7 +1115,8 @@ bool Scene::ExportLinesPLY(const String& fileName, const CLISTDEF0IDX(Line3f,uin
 	// create PLY object
 	ASSERT(!fileName.empty());
 	Util::ensureFolder(fileName);
-	const size_t memBufferSize(2 * (8 * 3/*pos*/ + 3 * 3/*color*/ + 6/*space*/ + 2/*eol*/) + 2048/*extra size*/);
+	// each line stores two vertices and one edge
+	const size_t memBufferSize(PLY::ComputeMemBufferSize(lines.size(), 2*sizeof(PLYVertex) + sizeof(PLYEdge)));
 	PLY ply;
 	if (!ply.write(fileName, 2, elem_names, bBinary?PLY::BINARY_LE:PLY::ASCII, memBufferSize))
 		return false;

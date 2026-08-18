@@ -1970,6 +1970,11 @@ bool MVS::ExportPointCloud(const String& fileName, const Image& imageData, const
 {
 	ASSERT(!depthMap.empty());
 	const Camera& P0 = imageData.camera;
+	// count the valid depths, both to size the write buffer and to avoid
+	// creating an empty file for a depth-map without any valid depth
+	const size_t nPoints((size_t)cv::countNonZero(depthMap));
+	if (nPoints == 0)
+		return false;
 	if (normalMap.empty()) {
 		// vertex definition
 		struct Vertex {
@@ -1993,7 +1998,7 @@ bool MVS::ExportPointCloud(const String& fileName, const Image& imageData, const
 		// create PLY object
 		ASSERT(!fileName.IsEmpty());
 		Util::ensureFolder(fileName);
-		const size_t bufferSize = depthMap.area()*(8*3/*pos*/+3*3/*color*/+7/*space*/+2/*eol*/) + 2048/*extra size*/;
+		const size_t bufferSize(PLY::ComputeMemBufferSize(nPoints, sizeof(float)*3 + sizeof(uint8_t)*3));
 		PLY ply;
 		if (!ply.write(fileName, 1, elem_names, PLY::BINARY_LE, bufferSize))
 			return false;
@@ -2050,7 +2055,7 @@ bool MVS::ExportPointCloud(const String& fileName, const Image& imageData, const
 		// create PLY object
 		ASSERT(!fileName.IsEmpty());
 		Util::ensureFolder(fileName);
-		const size_t bufferSize = depthMap.area()*(8*3/*pos*/+8*3/*normal*/+3*3/*color*/+8/*space*/+2/*eol*/) + 2048/*extra size*/;
+		const size_t bufferSize(PLY::ComputeMemBufferSize(nPoints, sizeof(float)*6 + sizeof(uint8_t)*3));
 		PLY ply;
 		if (!ply.write(fileName, 1, elem_names, PLY::BINARY_LE, bufferSize))
 			return false;

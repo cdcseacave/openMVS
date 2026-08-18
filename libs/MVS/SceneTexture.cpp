@@ -419,6 +419,22 @@ static Image8U DetectInvalidImageRegions(const Image8U3& image)
 	return mask;
 }
 
+// compute the mask of the valid pixels of the given image, at the given resolution;
+// nIgnoreMaskLabel selects the source of the mask: the label to ignore in the mask stored
+// with the image (>= 0), the regions invalidated by the lens undistortion (-1), or none (-2);
+// the returned mask is set to zero for invalid pixels, and is empty if masking is disabled
+static Image8U ComputeValidityMask(const Image& imageData, const cv::Size& size, int nIgnoreMaskLabel)
+{
+	Image8U mask;
+	if (nIgnoreMaskLabel >= 0) {
+		BitMatrix bmask;
+		DepthEstimator::ImportIgnoreMask(imageData, size, (uint8_t)nIgnoreMaskLabel, bmask, &mask);
+	} else if (nIgnoreMaskLabel == -1) {
+		mask = DetectInvalidImageRegions(imageData.image);
+	}
+	return mask;
+}
+
 MeshTexture::MeshTexture(Scene& _scene, unsigned _nResolutionLevel, unsigned _nMinResolution)
 	:
 	nResolutionLevel(_nResolutionLevel),
@@ -549,18 +565,11 @@ bool MeshTexture::ListCameraFaces(FaceDataViewArr& facesDatas, float fOutlierThr
 		RasterMesh rasterer(vertices, cameraHighRes, depthMap, faceMap, fullSize);
 		RasterMesh::Triangle triangle;
 		RasterMesh::TriangleRasterizer triangleRasterizer(triangle, rasterer);
-		if (nIgnoreMaskLabel >= 0) {
-			// import mask
-			BitMatrix bmask;
-			DepthEstimator::ImportIgnoreMask(imageData, fullSize, (uint8_t)OPTDENSE::nIgnoreMaskLabel, bmask, &rasterer.mask);
-		} else if (nIgnoreMaskLabel == -1) {
-			// creating mask to discard invalid regions created during image radial undistortion
-			rasterer.mask = DetectInvalidImageRegions(imageData.image);
-			#if TD_VERBOSE != TD_VERBOSE_OFF
-			if (VERBOSITY_LEVEL > 3)
-				SaveImage(rasterer.mask, String::FormatString("umask%04d.png", idxView));
-			#endif
-		}
+		rasterer.mask = ComputeValidityMask(imageData, fullSize, nIgnoreMaskLabel);
+		#if TD_VERBOSE != TD_VERBOSE_OFF
+		if (nIgnoreMaskLabel == -1 && VERBOSITY_LEVEL > 3)
+			SaveImage(rasterer.mask, String::FormatString("umask%04d.png", idxView));
+		#endif
 		rasterer.Clear();
 		for (FIndex idxFace : cameraFaces) {
 			rasterer.validFace = true;
@@ -2425,6 +2434,66 @@ bool Scene::TextureMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsi
 
 	return true;
 } // TextureMesh
+/*----------------------------------------------------------------*/
+
+// compute the color of each mesh vertex by sampling the views selected to texture the faces around it,
+// storing the result in mesh.vertexColors; the sampled images are released as soon as they are consumed
+//  - colEmpty: color assigned to the vertices not seen by any view
+bool Scene::ComputeVertexColors(unsigned nResolutionLevel, unsigned nMinResolution, unsigned minCommonCameras,
+	float fOutlierThreshold, float fRatioDataSmoothness, Pixel8U colEmpty, int nIgnoreMaskLabel, const IIndexArr& views)
+{
+	if (mesh.IsEmpty())
+		return false;
+
+	// assign the best view to each face
+	MeshTexture texture(*this, nResolutionLevel, nMinResolution);
+	if (!texture.FaceViewSelection(minCommonCameras, fOutlierThreshold, fRatioDataSmoothness, nIgnoreMaskLabel, views))
+		return false;
+
+	// group the faces by the view texturing them, so that each view is masked and sampled only once
+	std::unordered_map<IIndex, Mesh::FaceIdxArr> viewFaces;
+	for (const MeshTexture::TexturePatch& texturePatch: texture.texturePatches) {
+		if (texturePatch.label != NO_ID)
+			viewFaces[texturePatch.label].Join(texturePatch.faces);
+	}
+
+	// accumulate the vertex samples, weighted by the area of the face they are sampled for
+	Pixel32FArr colors(mesh.vertices.size());
+	colors.Memset(0);
+	FloatArr weights(mesh.vertices.size());
+	weights.Memset(0);
+	const MeshTexture::Sampler sampler;
+	for (const auto& [idxView, faces]: viewFaces) {
+		Image& imageData = images[idxView];
+		ASSERT(!imageData.image.empty()); // loaded by FaceViewSelection
+		const Image8U mask(ComputeValidityMask(imageData, imageData.image.size(), nIgnoreMaskLabel));
+		for (const FIndex idxFace: faces) {
+			const Face& face = mesh.faces[idxFace];
+			const float weight(MAXF((float)mesh.ComputeArea(idxFace), 1e-6f));
+			for (int v=0; v<3; ++v) {
+				const VIndex idxVertex(face[v]);
+				const auto [pt, depth] = imageData.camera.ProjectPointP(mesh.vertices[idxVertex]);
+				if (depth <= 0 || !imageData.image.isInsideWithBorder<float,1>(pt))
+					continue;
+				if (!mask.empty()) {
+					// discard the samples touching an invalid pixel
+					const int x(FLOOR2INT(pt.x)), y(FLOOR2INT(pt.y));
+					if (mask(y,x) == 0 || mask(y,x+1) == 0 || mask(y+1,x) == 0 || mask(y+1,x+1) == 0)
+						continue;
+				}
+				colors[idxVertex] += imageData.image.sample<MeshTexture::Sampler,Pixel32F>(sampler, pt) * weight;
+				weights[idxVertex] += weight;
+			}
+		}
+		imageData.ReleaseImage();
+	}
+
+	// set each vertex to the average of its samples
+	mesh.vertexColors.resize(mesh.vertices.size());
+	FOREACH(i, mesh.vertexColors)
+		mesh.vertexColors[i] = weights[i] > 0 ? (colors[i] * INVERT(weights[i])).cast<uint8_t>() : colEmpty;
+	return true;
+} // ComputeVertexColors
 /*----------------------------------------------------------------*/
 
 #pragma pop_macro("VERBOSE")

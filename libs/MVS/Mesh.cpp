@@ -32,6 +32,7 @@
 #include "Common.h"
 #include "Mesh.h"
 // CGAL: mesh cleaning, simplification, and repair
+#include <CGAL/version.h>
 #include <CGAL/Exact_predicates_inexact_constructions_kernel.h>
 #include <CGAL/Surface_mesh.h>
 #include <CGAL/boost/graph/Euler_operations.h>
@@ -44,7 +45,14 @@
 #include <CGAL/Polygon_mesh_processing/tangential_relaxation.h>
 #include <CGAL/Polygon_mesh_processing/angle_and_area_smoothing.h>
 #include <CGAL/Polygon_mesh_processing/remesh.h>
+// CGAL 6.2 moved the border API out of the Polygon_mesh_processing namespace
+#if CGAL_VERSION_MAJOR > 6 || (CGAL_VERSION_MAJOR == 6 && CGAL_VERSION_MINOR >= 2)
+#include <CGAL/boost/graph/border.h>
+namespace CGALBorder = CGAL;
+#else
 #include <CGAL/Polygon_mesh_processing/border.h>
+namespace CGALBorder = CGAL::Polygon_mesh_processing;
+#endif
 #include <CGAL/Surface_mesh_simplification/edge_collapse.h>
 #include <CGAL/Surface_mesh_simplification/Policies/Edge_collapse/GarlandHeckbert_triangle_policies.h>
 #include <CGAL/Surface_mesh_simplification/Policies/Edge_collapse/Face_count_stop_predicate.h>
@@ -100,6 +108,7 @@ void Mesh::ReleaseExtra()
 {
 	ReleaseComputable();
 	vertexNormals.Release();
+	vertexColors.Release();
 	faceNormals.Release();
 	faceTexcoords.Release();
 	texturesDiffuse.Release();
@@ -114,6 +123,7 @@ void Mesh::ReleaseComputable()
 void Mesh::EmptyExtra()
 {
 	vertexNormals.Empty();
+	vertexColors.Empty();
 	vertexVertices.Empty();
 	vertexFaces.Empty();
 	vertexBoundary.Empty();
@@ -127,6 +137,7 @@ Mesh& Mesh::Swap(Mesh& rhs)
 	vertices.Swap(rhs.vertices);
 	faces.Swap(rhs.faces);
 	vertexNormals.Swap(rhs.vertexNormals);
+	vertexColors.Swap(rhs.vertexColors);
 	vertexVertices.Swap(rhs.vertexVertices);
 	vertexFaces.Swap(rhs.vertexFaces);
 	vertexBoundary.Swap(rhs.vertexBoundary);
@@ -154,6 +165,7 @@ Mesh& Mesh::Join(const Mesh& mesh)
 	const VIndex offsetV(vertices.size());
 	vertices.Join(mesh.vertices);
 	vertexNormals.Join(mesh.vertexNormals);
+	vertexColors.Join(mesh.vertexColors);
 	faces.ReserveExtra(mesh.faces.size());
 	for (const Face& face: mesh.faces)
 		faces.emplace_back(face.x+offsetV, face.y+offsetV, face.z+offsetV);
@@ -758,6 +770,10 @@ static void ImportMesh(SurfaceMesh& sm, Mesh& mesh) {
 }
 static void ExportMesh(SurfaceMesh& sm, Mesh& mesh) {
 	sm.collect_garbage();
+	// this round-trip replaces the vertex set, so the per-vertex attributes it does
+	// not carry no longer correspond to it and have to be discarded
+	mesh.vertexNormals.Release();
+	mesh.vertexColors.Release();
 	// build vertex index map (vertex descriptors are contiguous after collect_garbage)
 	auto vIdxMap = sm.add_property_map<vertex_descriptor, Mesh::VIndex>("v:export_idx", 0).first;
 	mesh.vertices.Resize((Mesh::VIndex)sm.number_of_vertices());
@@ -970,7 +986,7 @@ void Mesh::Clean(float fDecimate, float fSpurious, bool bRemoveSpikes, unsigned 
 	// close holes
 	if (nCloseHoles > 0) {
 		std::vector<CLEAN::halfedge_descriptor> borderCycles;
-		CLEAN::PMP::extract_boundary_cycles(sm, std::back_inserter(borderCycles));
+		CGALBorder::extract_boundary_cycles(sm, std::back_inserter(borderCycles));
 		const int OriginalSize((int)sm.number_of_faces());
 		int holeCnt(0);
 		for (CLEAN::halfedge_descriptor hd : borderCycles) {
@@ -1136,18 +1152,19 @@ namespace BasicPLY {
 	struct Vertex {
 		Mesh::Vertex v;
 		Mesh::Normal n;
+		Mesh::Color c;
 		static void InitLoadProps(PLY& ply, int elem_count,
-			Mesh::VertexArr& vertices, Mesh::NormalArr& vertexNormals)
+			Mesh::VertexArr& vertices, Mesh::NormalArr& vertexNormals, Mesh::ColorArr& vertexColors)
 		{
 			PLY::PlyElement* elm = ply.find_element(elem_names[0]);
-			const size_t nMaxProps(SizeOfArray(props));
-			for (size_t p=0; p<nMaxProps; ++p) {
+			for (size_t p=0; p<SizeOfArray(props); ++p) {
 				if (ply.find_property(elm, props[p].name.c_str()) < 0)
 					continue;
 				ply.setup_property(props[p]);
 				switch (p) {
 				case 0: vertices.resize((IDX)elem_count); break;
 				case 3: vertexNormals.resize((IDX)elem_count); break;
+				case 6: vertexColors.resize((IDX)elem_count); break;
 				}
 			}
 		}
@@ -1155,23 +1172,28 @@ namespace BasicPLY {
 			ply.put_element_setup(elem_names[0]);
 		}
 		static void InitSaveProps(PLY& ply, int elem_count,
-			bool bNormals)
+			bool bNormals, bool bColors)
 		{
 			ply.describe_property(elem_names[0], 3, props+0);
 			if (bNormals)
 				ply.describe_property(elem_names[0], 3, props+3);
+			if (bColors)
+				ply.describe_property(elem_names[0], 3, props+6);
 			if (elem_count)
 				ply.element_count(elem_names[0], elem_count);
 		}
 		static const PLY::PlyProperty props[9];
 	};
-	const PLY::PlyProperty Vertex::props[] = {
+	const PLY::PlyProperty Vertex::props[9] = {
 		{"x",             PLY::Float32, PLY::Float32, offsetof(Vertex,v.x), 0, 0, 0, 0},
 		{"y",             PLY::Float32, PLY::Float32, offsetof(Vertex,v.y), 0, 0, 0, 0},
 		{"z",             PLY::Float32, PLY::Float32, offsetof(Vertex,v.z), 0, 0, 0, 0},
 		{"nx",            PLY::Float32, PLY::Float32, offsetof(Vertex,n.x), 0, 0, 0, 0},
 		{"ny",            PLY::Float32, PLY::Float32, offsetof(Vertex,n.y), 0, 0, 0, 0},
-		{"nz",            PLY::Float32, PLY::Float32, offsetof(Vertex,n.z), 0, 0, 0, 0}
+		{"nz",            PLY::Float32, PLY::Float32, offsetof(Vertex,n.z), 0, 0, 0, 0},
+		{"red",           PLY::Uint8,   PLY::Uint8,   offsetof(Vertex,c.r), 0, 0, 0, 0},
+		{"green",         PLY::Uint8,   PLY::Uint8,   offsetof(Vertex,c.g), 0, 0, 0, 0},
+		{"blue",          PLY::Uint8,   PLY::Uint8,   offsetof(Vertex,c.b), 0, 0, 0, 0}
 	};
 	// list of property information for a face
 	struct Face {
@@ -1285,8 +1307,8 @@ bool Mesh::LoadPLY(const String& fileName)
 		LPCSTR elem_name = ply.setup_element_read(i, &elem_count);
 		if (PLY::equal_strings(BasicPLY::elem_names[0], elem_name)) {
 			ASSERT(vertices.size() == (VIndex)elem_count);
-			BasicPLY::Vertex::InitLoadProps(ply, elem_count, vertices, vertexNormals);
-			if (vertexNormals.empty()) {
+			BasicPLY::Vertex::InitLoadProps(ply, elem_count, vertices, vertexNormals, vertexColors);
+			if (vertexNormals.empty() && vertexColors.empty()) {
 				for (Vertex& vert: vertices)
 					ply.get_element(&vert);
 			} else {
@@ -1294,7 +1316,10 @@ bool Mesh::LoadPLY(const String& fileName)
 				for (int v=0; v<elem_count; ++v) {
 					ply.get_element(&vertex);
 					vertices[v] = vertex.v;
-					vertexNormals[v] = vertex.n;
+					if (!vertexNormals.empty())
+						vertexNormals[v] = vertex.n;
+					if (!vertexColors.empty())
+						vertexColors[v] = vertex.c;
 				}
 			}
 		} else
@@ -1521,10 +1546,13 @@ bool Mesh::Save(const String& fileName, const cList<String>& comments, bool bBin
 		Util::getFileNameExt(fileName).c_str(), vertices.size(), faces.size(), TD_TIMER_GET_FMT().c_str());
 	return true;
 }
+
 // export the mesh as a PLY file
 bool Mesh::SavePLY(const String& fileName, const cList<String>& comments, bool bBinary, bool bTexLossless) const
 {
 	ASSERT(!fileName.empty());
+	ASSERT(vertexNormals.empty() || vertexNormals.size() == vertices.size());
+	ASSERT(vertexColors.empty() || vertexColors.size() == vertices.size());
 	Util::ensureFolder(fileName);
 
 	// create PLY object
@@ -1549,22 +1577,26 @@ bool Mesh::SavePLY(const String& fileName, const cList<String>& comments, bool b
 	}
 
 	// describe what properties go into vertex and face elements
-	ASSERT(vertexNormals.empty() || vertexNormals.size() == vertices.size());
-	BasicPLY::Vertex::InitSaveProps(ply, (int)vertices.size(), !vertexNormals.empty());
-	BasicPLY::Face::InitSaveProps(ply, (int)faces.size(), !faces.empty(), !faceTexcoords.empty(), !faceTexindices.empty());
+	const bool bTexcoords(!faceTexcoords.empty());
+	const bool bTexindices(bTexcoords && !faceTexindices.empty());
+	BasicPLY::Vertex::InitSaveProps(ply, (int)vertices.size(), !vertexNormals.empty(), !vertexColors.empty());
+	BasicPLY::Face::InitSaveProps(ply, (int)faces.size(), !faces.empty(), bTexcoords, bTexindices);
 	if (!ply.header_complete())
 		return false;
 
 	// export the array of vertices
 	BasicPLY::Vertex::Select(ply);
-	if (vertexNormals.empty()) {
+	if (vertexNormals.empty() && vertexColors.empty()) {
 		FOREACHPTR(pVert, vertices)
 			ply.put_element(pVert);
 	} else {
 		BasicPLY::Vertex v;
 		FOREACH(i, vertices) {
 			v.v = vertices[i];
-			v.n = vertexNormals[i];
+			if (!vertexNormals.empty())
+				v.n = vertexNormals[i];
+			if (!vertexColors.empty())
+				v.c = vertexColors[i];
 			ply.put_element(&v);
 		}
 	}
@@ -1573,7 +1605,7 @@ bool Mesh::SavePLY(const String& fileName, const cList<String>& comments, bool b
 	// export the array of faces
 	BasicPLY::Face::Select(ply);
 	BasicPLY::Face face = {{3},{6}};
-	if (faceTexcoords.empty()) {
+	if (!bTexcoords) {
 		FOREACHPTR(pFace, faces) {
 			face.face.pFace = const_cast<Face*>(pFace);
 			ply.put_element(&face);
@@ -1587,7 +1619,7 @@ bool Mesh::SavePLY(const String& fileName, const cList<String>& comments, bool b
 		FOREACH(f, faces) {
 			face.face.pFace = faces.data()+f;
 			face.tex.pTex = normFaceTexcoords.data()+f*3;
-			if (!faceTexindices.empty())
+			if (bTexindices)
 				face.texId = faceTexindices[f];
 			ply.put_element(&face);
 		}
@@ -1868,7 +1900,7 @@ bool Mesh::Save(const VertexArr& vertices, const String& fileName, bool bBinary)
 	}
 
 	// describe what properties go into vertex and face elements
-	BasicPLY::Vertex::InitSaveProps(ply, (int)vertices.size(), false);
+	BasicPLY::Vertex::InitSaveProps(ply, (int)vertices.size(), false, false);
 	if (!ply.header_complete())
 		return false;
 
@@ -2640,6 +2672,7 @@ void Mesh::RemoveVertices(VertexIdxArr& vertexRemove, bool bUpdateLists)
 					GetVertex(faces[idxF], idxVM) = idxV;
 			}
 			vertexFaces.RemoveAt(idxV);
+			RemoveVertexAttributes(idxV);
 			vertices.RemoveAt(idxV);
 			idxLast = idxV;
 		}
@@ -2663,6 +2696,7 @@ void Mesh::RemoveVertices(VertexIdxArr& vertexRemove, bool bUpdateLists)
 		}
 		if (!vertexVertices.empty())
 			vertexVertices.RemoveAt(idxV);
+		RemoveVertexAttributes(idxV);
 		vertices.RemoveAt(idxV);
 		idxLast = idxV;
 	}
@@ -2695,11 +2729,14 @@ Mesh::VIndex Mesh::RemoveDuplicatedVertices(VertexIdxArr* duplicatedVertices) {
 			return 0;
 		ReleaseComputable();
 	}
-    // update the vertices and vertexNormals arrays
+    // update the per-vertex arrays
     VertexArr newVertices(0, numUniqueVertices);
     VertexArr newVertexNormals;
 	if (!vertexNormals.empty())
 		newVertexNormals.reserve(numUniqueVertices);
+	ColorArr newVertexColors;
+	if (!vertexColors.empty())
+		newVertexColors.reserve(numUniqueVertices);
 	FOREACH(i, vertices) {
 		VIndex& uniqueIndex = mapVertices[i];
 		if (uniqueIndex != i)
@@ -2708,10 +2745,14 @@ Mesh::VIndex Mesh::RemoveDuplicatedVertices(VertexIdxArr* duplicatedVertices) {
         newVertices.emplace_back(vertices[i]);
 		if (!vertexNormals.empty())
 			newVertexNormals.emplace_back(vertexNormals[i]);
+		if (!vertexColors.empty())
+			newVertexColors.emplace_back(vertexColors[i]);
     }
     vertices = std::move(newVertices);
 	if (!vertexNormals.empty())
 		vertexNormals = std::move(newVertexNormals);
+	if (!vertexColors.empty())
+		vertexColors = std::move(newVertexColors);
     // update the vertex indices in the faces
     for (Face& face: faces) {
         for (int i = 0; i < 3; ++i) {
@@ -3499,6 +3540,7 @@ size_t MVS::Mesh::GetMemorySize() const {
 	size_t nBytes = vertices.GetMemorySize();
 	nBytes += faces.GetMemorySize();
 	nBytes += vertexNormals.GetMemorySize();
+	nBytes += vertexColors.GetMemorySize();
 	nBytes += vertexVertices.GetMemorySize();
 	nBytes += vertexFaces.GetMemorySize();
 	nBytes += vertexBoundary.GetMemorySize();

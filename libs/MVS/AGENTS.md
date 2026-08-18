@@ -61,6 +61,7 @@ class Mesh {
     VertexArr vertices;              // 3D positions
     FaceArr faces;                   // Triangle indices
     NormalArr vertexNormals, faceNormals;
+    ColorArr vertexColors;           // Per-vertex color
     VertexVerticesArr vertexVertices; // Adjacency
     VertexFacesArr vertexFaces;      // Incident faces
     FaceFacesArr faceFaces;          // Face adjacency
@@ -126,6 +127,8 @@ Key params: `nResolutionLevel`, `fDecimateMesh`, `nCloseHoles`, `fRegularityWeig
 Scene::TextureMesh(nResolutionLevel, ...)
 ```
 Project faces to images -> compute blending weights -> spatial patch grouping -> atlas packing (`AtlasPacker`, skyline-based bin packing with rotation) -> global seam leveling -> local seam blending.
+
+`Scene::ComputeVertexColors(...)` shares the same view selection, but instead of building an atlas it samples each vertex in the views texturing the faces around it and stores the weighted average in `mesh.vertexColors`; it releases each image as soon as its faces are consumed.
 
 ### 6. Reconstruction Quality Assessment (`SceneQuality.cpp`)
 ```cpp

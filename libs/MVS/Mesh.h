@@ -67,6 +67,8 @@ public:
 
 	typedef TPoint3<Type> Normal;
 	typedef SEACAVE::cList<Normal,const Normal&,0,8192,FIndex> NormalArr;
+	typedef Pixel8U Color;
+	typedef SEACAVE::cList<Color,const Color&,0,8192,VIndex> ColorArr;
 
 	typedef TPoint2<Type> TexCoord;
 	typedef SEACAVE::cList<TexCoord,const TexCoord&,0,8192,FIndex> TexCoordArr;
@@ -133,6 +135,7 @@ public:
 	FaceArr faces;
 
 	NormalArr vertexNormals; // for each vertex, the normal to the surface in that point (optional)
+	ColorArr vertexColors; // for each vertex, its color (optional)
 	VertexVerticesArr vertexVertices; // for each vertex, the list of adjacent vertices (optional)
 	VertexFacesArr vertexFaces; // for each vertex, the ordered list of faces containing it (optional)
 	BoolArr vertexBoundary; // for each vertex, stores if it is at the boundary or not (optional)
@@ -196,6 +199,13 @@ public:
 	void RemoveFacesOutside(const OBB3f&);
 	void RemoveFaces(FaceIdxArr& facesRemove, bool bUpdateLists=false);
 	void RemoveVertices(VertexIdxArr& vertexRemove, bool bUpdateLists=false);
+	// discard the optional attributes of the given vertex, mirroring vertices.RemoveAt()
+	void RemoveVertexAttributes(VIndex idxV) {
+		if (!vertexNormals.empty())
+			vertexNormals.RemoveAt(idxV);
+		if (!vertexColors.empty())
+			vertexColors.RemoveAt(idxV);
+	}
 	VIndex RemoveDuplicatedVertices(VertexIdxArr* duplicatedVertices=NULL);
 	VIndex RemoveUnreferencedVertices(bool bUpdateLists=false);
 	std::vector<Mesh> SplitMeshPerTextureBlob(FaceIdxArr* mapFaceSubsetIndices = NULL) const;
@@ -270,6 +280,7 @@ protected:
 		ar & vertices;
 		ar & faces;
 		ar & vertexNormals;
+		ar & vertexColors;
 		ar & vertexVertices;
 		ar & vertexFaces;
 		ar & vertexBoundary;
