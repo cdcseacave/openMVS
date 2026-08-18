@@ -800,7 +800,8 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 		TD_TIMER_STARTD();
 
 		std::vector<point_t> vertices(pointcloud.points.GetSize());
-		std::vector<std::ptrdiff_t> indices(pointcloud.points.GetSize());
+		std::vector<std::ptrdiff_t> indices;
+		indices.reserve(pointcloud.points.GetSize());
 		// fetch points
 		if (bUseOnlyROI && !IsBounded())
 			bUseOnlyROI = false;
@@ -809,11 +810,15 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 			if (bUseOnlyROI && !obb.Intersects(X))
 				continue;
 			vertices[i] = point_t(X.x, X.y, X.z);
-			indices[i] = i;
+			indices.emplace_back(i);
+		}
+		if (indices.empty()) {
+			VERBOSE("error: no points available for Delaunay reconstruction");
+			return false;
 		}
 		// sort vertices
 		typedef CGAL::Spatial_sort_traits_adapter_3<delaunay_t::Geom_traits, point_t*> Search_traits;
-		CGAL::spatial_sort(indices.begin(), indices.end(), Search_traits(&vertices[0], delaunay.geom_traits()));
+		CGAL::spatial_sort(indices.begin(), indices.end(), Search_traits(vertices.data(), delaunay.geom_traits()));
 		// insert vertices
 		Util::Progress progress(_T("Points inserted"), indices.size());
 		const float distInsertSq(SQUARE(distInsert));
@@ -966,7 +971,8 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 			if (vert.views.IsEmpty())
 				continue;
 			#ifdef DELAUNAY_WEAKSURF
-			vert.AllocateInfo();
+			if (bUseFreeSpaceSupport)
+				vert.AllocateInfo();
 			#endif
 			const point_t& p(vi->point());
 			const Point3 pt(CGAL2MVS<REAL>(p));
@@ -997,8 +1003,10 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 				} while (intersect(delaunay, segCamPoint, facets, facets, inter));
 				ASSERT(facets.empty() && inter.type == intersection_t::VERTEX && inter.v1 == vi);
 				#ifdef DELAUNAY_WEAKSURF
-				ASSERT(vert.viewsInfo[v].cell2Cam == NULL);
-				vert.viewsInfo[v].cell2Cam = inter.facet.first;
+				if (bUseFreeSpaceSupport) {
+					ASSERT(vert.viewsInfo[v].cell2Cam == NULL);
+					vert.viewsInfo[v].cell2Cam = inter.facet.first;
+				}
 				#endif
 				// find faces intersected by the endpoint-point segment
 				inter.dist = FLT_MAX; inter.bigger = false;
@@ -1024,8 +1032,10 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 				}
 				ASSERT(facets.empty() && inter.type == intersection_t::VERTEX && inter.v1 == vi);
 				#ifdef DELAUNAY_WEAKSURF
-				ASSERT(vert.viewsInfo[v].cell2End == NULL);
-				vert.viewsInfo[v].cell2End = inter.facet.first;
+				if (bUseFreeSpaceSupport) {
+					ASSERT(vert.viewsInfo[v].cell2End == NULL);
+					vert.viewsInfo[v].cell2End = inter.facet.first;
+				}
 				#endif
 			}
 			++progress;

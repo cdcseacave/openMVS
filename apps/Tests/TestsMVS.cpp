@@ -110,6 +110,43 @@ bool PipelineTest(bool forceCPU, bool verbose)
 	}
 	if (verbose)
 		scene.pointcloud.Save(MAKE_PATH("scene_dense.ply"));
+	// Exercise ROI integration with the first point outside the ROI; this used to leave
+	// default entries in the spatial-sort index and could reconstruct the wrong points.
+	{
+		PointCloud pointcloud(scene.pointcloud);
+		const OBB3f initialOBB(scene.obb);
+		const OBB3f roi(scene.pointcloud.GetAABB(0.1f, 0.9f));
+		PointCloud::Index idxOutside(NO_ID);
+		FOREACH(idxPoint, scene.pointcloud.points) {
+			if (!roi.Intersects(scene.pointcloud.points[idxPoint])) {
+				idxOutside = idxPoint;
+				break;
+			}
+		}
+		if (idxOutside == NO_ID) {
+			VERBOSE("ERROR: TestDataset failed finding a point outside the test ROI!");
+			return false;
+		}
+		if (idxOutside != 0) {
+			std::swap(scene.pointcloud.points[0], scene.pointcloud.points[idxOutside]);
+			std::swap(scene.pointcloud.pointViews[0], scene.pointcloud.pointViews[idxOutside]);
+			if (!scene.pointcloud.pointWeights.IsEmpty())
+				std::swap(scene.pointcloud.pointWeights[0], scene.pointcloud.pointWeights[idxOutside]);
+			if (!scene.pointcloud.normals.IsEmpty())
+				std::swap(scene.pointcloud.normals[0], scene.pointcloud.normals[idxOutside]);
+			if (!scene.pointcloud.colors.IsEmpty())
+				std::swap(scene.pointcloud.colors[0], scene.pointcloud.colors[idxOutside]);
+			if (!scene.pointcloud.labels.IsEmpty())
+				std::swap(scene.pointcloud.labels[0], scene.pointcloud.labels[idxOutside]);
+		}
+		scene.obb = roi;
+		if (!scene.ReconstructMesh(2.f, false, true) || scene.mesh.IsEmpty()) {
+			VERBOSE("ERROR: TestDataset failed reconstructing the ROI mesh (%u faces)!", scene.mesh.faces.size());
+			return false;
+		}
+		scene.pointcloud.Swap(pointcloud);
+		scene.obb = initialOBB;
+	}
 	if (!scene.ReconstructMesh() || !ISINSIDE(scene.mesh.faces.size(), 40000u, 100000u)) {
 		VERBOSE("ERROR: TestDataset failed reconstructing the mesh (%u faces)!", scene.mesh.faces.size());
 		return false;

@@ -1,0 +1,725 @@
+# Delaunay Mesh Reconstruction — Results Record
+
+Permanent record of per-slice experimental results and audit verdicts for `Scene::ReconstructMesh`
+(`libs/MVS/SceneReconstruct.cpp`). Complements `docs/design/DelaunayMeshImprovementPlan.md`, which
+owns the phased task list, acceptance gates, and execution order — this document owns the evidence:
+what was checked, what was found, and the numbers later unit tests must reproduce. Every experimental
+slice adds its own before/after table and accepted/rejected verdict here, appended in execution order.
+
+Date started: 2026-08-19.
+
+---
+
+## Phase 0.C — math & formula audit (2026-08-19)
+
+Ten energy-term / numerical-robustness items from plan §0.C, each re-derived from its source paper
+(Labatut/Pons/Keriven CGF-2009, via Labatut's thesis tel-00844020 §2.3.3/§3.1.3, cross-checked against
+Vu et al. PAMI-2012, and Jancosek & Pajdla ISRN-2014 art. 798595) and checked against the code. Full
+derivations, verified-by-execution numeric checks, and complete line-by-line reasoning live in the three
+source audit reports (`audit_terms_1to4.md`, `audit_terms_5to7.md`, `audit_terms_8to10.md`); this section
+distills each to its paper prescription, what the code does, the verdict, and the consequence for later
+phases.
+
+**Line-number caveat.** All `:NNN` references below are the audits' *snapshot* line numbers
+(`SceneReconstruct_snapshot.cpp`, stated by the auditors to be identical to
+`libs/MVS/SceneReconstruct.cpp` at audit time). The working tree carries an uncommitted partial patch
+(plan §0.A) at the time of writing, so live line numbers may already have drifted — treat these as
+pointers into the audited snapshot, not a live-file guarantee. All refs are to
+`libs/MVS/SceneReconstruct.cpp` unless stated otherwise.
+
+### Summary
+
+| # | Item | Verdict | Severity | Consequence |
+|---|---|---|---|---|
+| 1 | Soft-visibility weight `w=α(1−e^{−d²/2σ²})`, `d` from **P** in both walks | CONFIRMED-CORRECT | none (2 wrong comments) | locks Fixture A/B; comment fix only |
+| 2 | Directed facet capacities + `mirror_facet` vs `AddEdge` arc convention | CONFIRMED-CORRECT | none | locks Fixture A/B regression tests |
+| 3 | `D_in` on cell at `P+σ·dir` | CONFIRMED-CORRECT core | cosmetic-to-behavioral | 2 low-severity deviations feed Phase 0.B accounting; 3.3 interaction charged to item 4 |
+| 4 | Camera `D_out` as `kInf` hard s-links on a **set** of cells | DISCREPANCY (intentional) | behavioral | 360°/inward captures annihilate hull-exiting `D_in` votes; documented, no fix mandated |
+| 5 | Quality term `computePlaneSphereAngle` (β-skeleton) | CONFIRMED-CORRECT | cosmetic | signed-cosine range must not change without a benchmark |
+| 6 | `freeSpaceSupport` β/γ/triple-test | DISCREPANCY (support measure); triple test CONFIRMED-CORRECT | behavioral, moderate | rewrites Phase 4.1's "anchor" premise; CLI halves the jump window |
+| 7 | WSS enforcement `t *= epsAbs` | DISCREPANCY | behavioral, severe | rewrites Phase 4.1 semantics arms (now 4, not 3) |
+| 8 | `orientation()` absolute epsilon + ray-walk failure paths | DISCREPANCY | MEDIUM (HIGH sub-case) | redirects Phase 3.4's fix target from M to L / float-precision; feeds Phase 0.B counters |
+| 9 | σ estimation (median edge length) | CONFIRMED-CORRECT | none | enables Phase 3.3 subsampling without a fidelity caveat |
+| 10 | Capacity hygiene (non-negativity, `maxCap`, submodularity, container sizing) | mixed: submodularity/non-negativity CONFIRMED-CORRECT; overflow/NaN + container DISCREPANCY | MEDIUM-HIGH (WSS-on) | corrects plan's overflow framing; NaN, not overflow, is the corrupting path |
+
+### Item 1 — Soft-visibility weight `w = α·(1−e^{−d²/2σ²})`
+
+**Paper** (thesis §3.1.3, verbatim quote audited): the final tetrahedron on a line of sight is shifted
+σ past the sample point P; every oriented facet crossed by the extended chain `Q→P→P+σ·dir` gets weight
+`α_vis(1−e^{−d²/2σ²})` where **d is measured from P**, symmetric in front of and behind P. `D_in` itself
+is undecayed.
+
+**Code:** the ray in `intersection_t` (`:988-990`) originates at **P**, direction `(P−C)/|P−C|`; `dist`
+is filled via `TRay::IntersectsDist` (`:549, :555-560`), which returns the signed Euclidean distance
+from the ray's own origin — i.e. from P, not the camera. Both weight sites (`:997` camera→point walk,
+`:1026` behind-point walk) use `SQUARE(inter.dist)`, discarding sign; the behind-point walk reuses the
+same `Ray3` (cannot be re-seeded), only flipping the traversal predicate, so its distances also run from
+P (≈σ down to 0). `alpha_vis = view.weight` (`:982`), the per-view accumulated confidence.
+
+**Verdict — CONFIRMED-CORRECT.** The tube behaves exactly as prescribed: crossings near P are free,
+crossings far from P in either direction cost full α, σ=0 degenerates to hard visibility. Two cosmetic
+nits: the comment at `:444` ("distance from starting point (camera)") is wrong — origin is P, not the
+camera — and is almost certainly the origin of the suspicion that prompted this audit; the parenthetical
+at `:446` is backwards.
+
+**Consequence:** no code change. Fixture A/B (appendix) pin `w` to 7 decimals for known `d,σ`; a future
+"fix" of the wrong comments should not touch the arithmetic.
+
+### Item 2 — Directed facet capacities and `mirror_facet`
+
+**Paper:** `V_align(l_Ci,l_Cj)=α_vis·1[l_Ci=0∧l_Cj=1]`; since a cut pays `u→v` iff `u∈𝕊(free),v∈𝕋(full)`,
+the capacity must sit on the arc pointing along the ray, away from the camera, for every facet of the
+extended chain.
+
+**Code:** camera→point walk (`:992-1003`) always has `inter.facet.first` = the cell being exited (nearer
+the camera); `w` is added to `f[inter.facet.second]` of that cell (`:998-1002`), directly on the correct
+arc. The behind-point walk (`:1023-1032`) runs backwards, so `inter.facet.first` is the farther cell —
+the code first takes `delaunay.mirror_facet(inter.facet)` (`:1025`) to get the nearer cell/index pair,
+then deposits there, restoring the correct along-the-ray orientation. Assembly (`:1132-1141`)
+`AddEdge(ciID,cjID,ciInfo.f[i]+q,cjInfo.f[j]+q)` confirms `cell_info_t.f[i]` is the capacity of the
+directed arc `ci→neighbor(i)` in both the IBFS and Boost backends (`:87-95`, `:140-166`).
+
+**Verdict — CONFIRMED-CORRECT.** Both walk directions place capacity on the correct arc; `mirror_facet`
+is the necessary and correctly-applied correction for the reverse walk.
+
+**Consequence:** no code change. Fixture A pins the forward arc, Fixture B the `mirror_facet` reverse
+arc — if `mirror_facet` were ever dropped by a refactor, Fixture B's expected `0.18668163487015432`
+moves to the wrong cell and the test fails immediately.
+
+### Item 3 — `D_in` placement (`t += α` on the cell at `P + σ·dir`)
+
+**Paper:** the σ-shifted final tetrahedron gets an undecayed `α_vis` t-link; everything between P and
+that cell is an ordinary `V_align` member with decayed facet weights.
+
+**Code** (`:1012-1022`): `endPoint = P + σ·(P−C)/|P−C|` — exactly "σ along the line of sight"; the t-weight
+goes to `locate(endPoint)`, whatever cell that is, undecayed (`t += alpha_vis`); intermediate cells
+(when σ spans several) get decayed facet weights via the same backward walk and `mirror_facet`, i.e.
+ordinary `V_align` links.
+
+**Verdict — CONFIRMED-CORRECT core**, with two low-severity behavioral deviations: **(3.1)** the whole
+`(P,view)` contribution — including `D_in` — is silently dropped when the very first forward
+`intersect()` fails (`:993-994`), which happens when P is a vertex of the camera's own cell (essentially
+impossible, since OpenMVS never inserts camera centres as triangulation vertices) or on the rare "Bad
+end" fallback; **(3.2)** if the forward walk instead ends badly mid-chain, the debug `ASSERT` at `:1004`
+would fail but in release the code proceeds to plant the full `D_in` anyway — conservative (favours
+closed surfaces) but not paper-faithful. **(3.3, the important interaction):** when `P+σ·dir` falls
+outside the convex hull (common — any back/outward surface point), `endCell` is infinite, and item 4's
+`s=kInf` stamping also targets infinite cells; a node carrying both is unconditionally source-side, so
+the `D_in` vote is annihilated. Charged to item 4.
+
+**Consequence:** feeds Phase 0.B's failed-ray accounting (3.1/3.2 are countable exits) and Phase 4.1's
+synthetic-fixture design (3.3 is the mechanism behind open meshes at the hull boundary).
+
+### Item 4 — Camera `D_out` realised as hard `kInf` s-links on a *set* of cells
+
+**Paper:** `D_out(l(C₁))=α_vis·1[l(C₁)=1]`, accumulated per line of sight, on the **single** cell
+containing the sensor — large in practice but finite, so a cut may still label the camera cell inside if
+surrounding evidence outweighs it.
+
+**Code** (`:920-933`): locates the camera cell; `fetchCellFacets` has two branches — a finite camera cell
+stamps `s=kInf` on exactly that one cell (all 4 facets share `.first==cell`); an infinite camera cell (the
+**normal** path — OpenMVS tetrahedralises only the point cloud, so any object-centric or fly-around camera
+sits outside the hull) stamps `s=kInf` on **every infinite cell** whose hull facet is front-facing to that
+camera and inside its frustum — `hullFacets` entries store `.first` = the infinite cell, verified, so this
+is a real band of typically hundreds-to-thousands of cells, not one. The loop also stamps for any
+`IsValid()` image regardless of whether it contributed a single surviving ray.
+
+**Verdict — DISCREPANCY, behavioral, intentional design deviation** (verified, not merely suspected: the
+comment "link all cells contained by the camera to the source" plus the dedicated `kInf` parameter confirm
+intent). Three packed deviations: hard `kInf` instead of finite `Σα_vis`; a frustum×hull *band* of infinite
+cells instead of the one sensor cell; stamping by images with zero contributing rays.
+
+**Consequence:** on 360°/inward captures, every hull-adjacent infinite cell any camera front-faces is
+hard-free, so every `D_in` whose end cell exits the hull (item 3.3) contributes nothing — this is exactly
+why OpenMVS meshes stay open at the boundary, but it means those inside-votes are silently discarded
+rather than merely outweighed, and the hull can never be capped inside any camera's FOV regardless of
+evidence. Documented as intentional; no fix mandated. Phase 4.1's kAbs/kOutl retune should note that
+`kInf=2.684e8` is finite while the WSS-enforced `t` clamps at `maxCap=3.4e34` (item 10) — a saturated WSS
+cell *can* in principle outrank a camera hard constraint on the same node.
+
+### Item 5 — Quality term `computePlaneSphereAngle`
+
+**Paper** (Labatut 2009 §2.3, verbatim): "soft" 3D β-skeleton — for a facet's two adjacent tetrahedra,
+their circumscribing spheres intersect the facet's plane at angles φ, ψ; weight
+`1 − min{cos φ, cos ψ}` is added to **both** oriented weights of the facet. Derivable closed form for a
+facet circumcircle of radius `r` with apex height `h`: `cos φ = (h²−r²)/(h²+r²)`.
+
+**Code** (`:738-775`): computes `u/R` where `u = fn·(cc−v0)` (signed distance from facet plane to
+circumcentre along the inward facet normal `fn`) and `R = |cc−v0|` (exact, since `v0` is on the
+circumsphere); `:1140-1141` takes `MINF` of both cells' values, adds `q=(1−min)·kQual` symmetrically to
+both `AddEdge` directions, exactly once per facet.
+
+**Verdict — CONFIRMED-CORRECT** (verified by hand for a canonical tetrahedron `A=(0,0,0),B=(1,0,0),
+C=(0,1,0),D=(0,0,1)`: `fn` is inward, sign is right). Two cosmetic deviations: **(5a)** the code keeps the
+sign of `cosφ` (range `[-1,1]`, `q∈[0,2]·kQual`) rather than Labatut's literal unsigned reading
+(`q∈[0,1]`) — arguably the more faithful generalisation of the 2D β-skeleton's "circumcircles on opposite
+sides" criterion; **do not change without a benchmark**, it roughly halves the penalty for
+far-side-circumcentre facets. **(5b)** the two degenerate-facet guards (`fnLenSq==0`, `ctLenSq==0`) use
+exact float equality and essentially never fire on real slivers (a tiny-but-nonzero cross product still
+falls through to a `CLAMP`-bounded but numerically meaningless cosine).
+
+**Consequence:** no code change. F5.1–F5.4 (appendix) pin exact values for a canonical tetrahedron, a
+symmetric bipyramid (including the sign-discriminating "wrong side" row), and a regular tetrahedron —
+regression-lock candidates for Phase 4.1's fixture work.
+
+### Item 6 — `freeSpaceSupport()`, β/γ walks, and the triple test
+
+**Paper** (ISRN-2014 Eq. 1, 2, 6): `f(T)=Σ_{(c,p)∈S_T} α(p)` — a bare vote count, **no distance
+weighting**; `β=max` over the front window `⟨−k_f,0⟩`, `γ=(max+min)/2` over the back window `⟨0,k_b⟩`;
+classifier `K = K_rel ∧ K_abs ∧ K_outl` (Eq. 6), all three **un-negated**. §4.1: window is `⟨−3σ,4σ⟩`.
+Table 1 "Used": `k_rel=0.1, k_abs=1000, k_outl=400, k_f=3, k_b=4`; §3.1: `σ = 2×median edge length`.
+
+**Code:** `freeSpaceSupport` (`:697-707`) sums the 4 incoming mirror-facet `f[]` capacities — which
+inherit the same soft-visibility attenuation `1−e^{−d²/2σ²}` and `[0,1]`-confidence-weighted `α_vis` used
+for the visibility energy, not the paper's bare count. β/γ walks (`:1077-1101`) sample the exited cell per
+step (the window-endpoint's own cell is never sampled — minor, opposite-signed bias vs the attenuation
+bias). Triple test (`:1106`) `epsRel<kRel && epsAbs>kAbs && gamma<kOutl` is a literal, exact transcription
+of Eq. 6; defaults (`Scene.h:150-152`) match Table 1 exactly. CLI ships `--thickness-factor` default
+`1.0` (`ReconstructMesh.cpp:132`) as `kSigma`, vs the library default `kSigma=2.0` and the paper's
+`σ=2×median`.
+
+**Verdict — DISCREPANCY (behavioral, moderate) on the support measure; CONFIRMED-CORRECT on the triple
+test.** The plan brief's stated "`¬K_outl`" is the **error**, not the code — Eq. 5 defines
+`K_outl(c,p)=INT for (γ<k_outl)`, already un-negated; code and paper agree. Three stacked deviations in
+the support measure: distance attenuation biases γ systematically downward (inflating `ε_abs`, deflating
+`ε_rel` ⇒ classifier fires **more** than the paper's calibration assumes); `α_vis` is a `[0,1]` confidence
+sum, not the paper's integer count `α(p)≥1`, rescaling `k_abs`/`k_outl` by `1/E[weight]`; the shipped CLI
+measures the jump over `⟨−3L,+4L⟩` instead of the paper's `⟨−6L,+8L⟩` — half the intended window,
+simultaneously halving σ in the attenuation exponent — because `--thickness-factor` defaults to `1.0`
+against a library default of `2.0`.
+
+**Consequence:** rewrites the premise of Phase 4.1's "current thresholds (anchor)" arm — the anchor is
+not directly comparable to the paper's own calibration (three independent scale shifts already stack
+before any retune); directly motivates arm 2 (thresholds recalibrated on the bench) and confirms the
+CLI/library `kSigma` mismatch flagged in Phase 4.3 needs a deliberate resolution, not just a note.
+
+### Item 7 — WSS enforcement `t *= epsAbs`
+
+**Paper** (ISRN-2014 §7/§8, Eq. 8 verbatim): **multiplicative** enforcement — the paper explicitly states
+it does *not* set t-edges to infinity, it *enlarges* them: `w(e) = w(e)·Σ_{(c,p)∈S_K(v)} ε_abs(k_f,k_b)`,
+a **single multiply by the sum** of every qualifying segment's `ε_abs`, target cell
+`L_c^p(k_bσ)` (the cell 4σ behind the point).
+
+**Code** (`:1104-1111`): inside the per-view loop, `t *= epsAbs` fires once per qualifying (vertex, view)
+pair — a **per-firing-view product**, not the paper's single sum-then-multiply. Target cell
+`inter.ncell == L_c^p(k_bσ)` matches Eq. 8 exactly (verified); the factor `ε_abs` and the gate (item 6's
+triple test) both match.
+
+**Verdict — DISCREPANCY, behavioral, severe.** The plan's own premise is corrected here: it is **not**
+true that "ISRN-2014 sets a t-edge" — the paper prescribes multiplication, and the code also multiplies.
+The real deviations are: **(a)** the code multiplies **per firing view** instead of once by the **sum** —
+geometric divergence (`t·Πε` vs `t·Σε`) that overflows `float` after as few as ~13 same-cell
+reinforcements at the default `k_abs=1000`, saturating at `maxCap` into an effectively infinite t-link —
+precisely the hard constraint the paper explicitly rejected in favour of enforcement. **(b)** the resulting
+`α²` unit mismatch (`t` and `ε_abs` both carry units of α, so `t·ε_abs` is quadratic in the confidence
+scale while every other graph capacity is linear) is **inherited from the paper's own Eq. 8**, not
+introduced by OpenMVS — any candidate fix that removes this defect (`+=`, `max(t,·)`) is a deliberate
+departure from the paper, not a restoration of fidelity, and should be labelled as such. **(c)** the
+`t==0` no-op is **structural**, not incidental: the base `t` is deposited at **1σ** behind the point
+(`:1013-1022`, the ~1σ back-walk-start cell) while enforcement targets the walk's end cell at **4σ**
+(`:1107`) — usually a different cell, since a typical tetrahedron spans roughly one median edge; the
+target's `t` stays 0 unless some *other* point's 1σ endpoint happens to land in it. The failure is
+anti-correlated with the mechanism's design purpose: occluder interiors with no input points never
+receive a nonzero base `t`, so the classifier's flagship use case is exactly where it is silently inert.
+
+**Consequence:** rewrites Phase 4.1's enforcement-semantics arms from three to **four**: (1) current
+per-firing-view product (anchor); (2) paper-faithful Σ-then-multiply-once; (3) additive
+`t += kw·epsAbs`; (4) `t = max(t, kw·epsAbs)`. Arms 3/4 are honest departures from the paper (they fix a
+defect the paper itself carries), not restorations of fidelity, and the writeup should say so explicitly.
+
+### Item 8 — `orientation()` absolute epsilon and the ray-walk failure paths
+
+**Analysis basis:** no paper prescribes this constant; it is a numerical-robustness question answered by
+Shewchuk's `orient3d` static-filter theory — a determinant that scales as `L³` needs an epsilon that scales
+as `L³`, not a fixed constant.
+
+**Code** (`:354-386`): `orientation()` computes a 3×3 determinant in **double** precision (not float —
+verified; every intermediate is `double`) with fixed `eps=1e-12` (`:368`); the disabled `#else` branch
+(`:369-377`) is a hand-rolled relative-epsilon attempt, currently unreachable (`#if 1` at `:366`).
+
+**Verdict — DISCREPANCY, MEDIUM overall, HIGH if triggered.** The fixed `1e-12` is correctly calibrated
+only near tetrahedron edge length `L≈6` scene units (the break-even point where `1e-12` equals the true
+Shewchuk noise floor `≈4.7e-15·L³`). **Below `L≈1.12e-4` units, total silent collapse**: `0.707·L³ <
+1e-12` for a regular tetrahedron, so `orientation()` returns `COPLANAR` from every call; the walker's
+`switch` has no `case 3` (nb_coplanar==3 falls through to `break`, snapshot `:646`), so **every ray in the
+scene Bad-ends at its first step**, producing an empty/garbage mesh with no diagnostic. Above `L≈6` the
+epsilon is inert, but low-severity, because the two degeneracies that actually matter — segment-endpoint-
+hits-a-vertex, and an edge-coplanar shared facet pair — are handled by **exact** float cancellation and
+**exact** antisymmetry (`det(p,q,x,y) == -det(p,q,y,x)` bitwise, verified over 20,000 random inputs),
+independent of epsilon.
+
+**The plan's causal hypothesis is OVERTURNED, verified by direct execution.** `orientation()` subtracts
+coordinates before forming the determinant — every matrix entry is a first-order difference of doubles —
+so the predicate is provably translation/magnitude-independent (bit-exact identical behaviour verified at
+`M=1e6`; Sterbenz's lemma makes the subtractions exact for `M≫L`). **Georeferenced scenes do not fail
+through this epsilon.** They fail upstream: `PointCloud::Point` (`libs/MVS/PointCloud.h:57`) is `float`,
+giving ~6 cm quantization at UTM-easting magnitude (`M≈1e6`) — the geometry is destroyed by storage
+*before* triangulation ever runs (coincident/near-coincident vertices, zero-area facets → NaN plane
+normals, item 10). Mesh-time normalization cannot recover data already lost to float storage; the fix
+needs centering/rescaling **at load time**. Separately, the disabled relative-epsilon variant (`8b`) is
+**confirmed incorrect as written** and must not be enabled: it is dimensionally wrong (`eps~L¹` vs
+`det~L³`, so the error itself grows as `L²` and is wrong in both directions around `L=1`), uses per-row
+maxima instead of CGAL's per-**column** maxima, drops the third row entirely (the vector that actually
+varies along a ray walk), and has no magnitude-window check or exact fallback.
+
+**Consequence:** redirects Phase 3.4's "canonical-box coordinate normalization" fix — a naive unit-box
+**extent** target actually *creates* the `L≲1.1e-4` collapse regime at ≥8.3e7 points (extent shrinks as
+`N^(−1/2)` for a surface cloud); the correct rescale target is **median-edge-length≈1**
+(`s=1/L̄`, a two-pass triangulate→measure→rescale→retriangulate, or an a-priori L̄ estimate), plus a
+**separate** fix for float-quantized large-coordinate point clouds applied at load time, not mesh time.
+Also feeds Phase 0.B directly: item 8(c)'s inventory of 13 distinct silent ray-walk exits (none counted
+today; 2 — the `:1004`/`:1033` ASSERTs — silently corrupt the cached WSS walk-start cell in release
+builds; no step cap anywhere; 4 unguarded NaN/non-finite entry points, the dominant one being degenerate
+facets) is an implementation-ready counter-insertion plan for the failed-ray accounting task already
+scoped in plan §0.B.
+
+### Item 9 — σ estimation
+
+**Paper:** `σ = 2×median Delaunay edge length` (ISRN-2014 §3.1).
+
+**Code** (`:943-951`): true median (`cList::GetMedian`, `std::nth_element`, not binned) of **squared**
+finite Delaunay edge lengths, square-rooted; `SQRT(median(d²)) ≡ median(d)` exactly, since median
+commutes with any monotone transform — the correct construction (the obvious alternative
+`SQRT(mean(d²))` would be dominated by exactly the long-edge tail this guards against).
+
+**Verdict — CONFIRMED-CORRECT.** Hull/sliver contamination of the finite-edge population is bounded by
+`≈2·N^(−1/2)` (0.2% at N=1e6, 0.03% at N=5e7) — two orders of magnitude below the median's 50% breakdown
+point, so it neither saturates nor shifts, even under a generous worst-case bound. Subsampling to
+`k≈1e5` edges changes σ by `<0.3%` (asymptotic median SE, verified across CV=0.4–0.8 lognormal edge-length
+models), far below `kSigma`'s own tuning granularity (a 2× library-vs-CLI disagreement already exists,
+item 6) — **safe**, provided the sample is strided/reservoir rather than a prefix: insertion uses
+`CGAL::spatial_sort`, so `finite_edges_begin()` is spatially coherent and a prefix would sample a single
+biased Hilbert-curve segment.
+
+**Consequence:** enables Phase 3.3's "sampled edge-length σ estimation" profiling item without a fidelity
+caveat. Also documents σ as a **"typical local cell size"** (~1.5–3× point spacing, not point spacing
+itself, since each vertex has ≈15.5 Delaunay neighbours spanning 2nd/3rd rings) — a non-defect any future
+`kSigma`/`k_f`/`k_b` retune must be aware of. The transient `FloatArr` allocation (1.45 GiB at N=5e7) is
+the practical argument for subsampling, ahead of CPU time.
+
+### Item 10 — Capacity hygiene
+
+**Theory:** two-terminal graph-cut representability requires `θ(0,0)+θ(1,1) ≤ θ(0,1)+θ(1,0)`, i.e.
+`cap(i→j)+cap(j→i) ≥ 0`; non-negative capacities in both directions is sufficient. `maxCap` should bound
+any WSS-enforced `t` before it reaches the solver.
+
+**Code:** every accumulation site (`:902` zero-init, `:932` `s=kInf`, `:998-1002`/`:1026-1031` `f+=w`,
+`:1018-1022` `t+=alpha_vis`, `:1104-1111` `t*=epsAbs`, `:1140-1141` `q` and `AddEdge`) is non-negative
+under the documented `[0,1]`-confidence contract, but **unvalidated** at the API boundary (no runtime
+check on deserialised `pointWeights` sign, nor on caller-supplied `kInf`/`kQual`/`kAbs`/`kSigma`).
+`MINF(ciInfo.t, maxCap)` at `:1133` (graph-build scope) is **strictly downstream** of the `:1111` multiply
+(weighting scope) — it cannot prevent overflow, only remap it afterward.
+
+**Verdict — mixed.** **CONFIRMED-CORRECT:** submodularity (every pairwise capacity non-negative in both
+directions is sufficient and holds on every path; the symmetric `q` term cannot break it regardless of
+`kQual`'s magnitude; the WSS term is unary, so submodularity is vacuous for it) and non-negativity under
+the documented contract. **DISCREPANCY, MEDIUM-HIGH on WSS-on paths — but the plan's framing needs
+correcting:** `t *= epsAbs` does overflow to `+inf` after as few as **13** same-cell reinforcements at
+default `k_abs=1000` — **but `MINF`/`std::min` correctly clamps `+inf→maxCap` (3.4e34)**, so overflow is a
+**semantics distortion, not corruption**: a soft reinforcement silently becomes a hard constraint 26
+orders of magnitude above the camera's own `kInf` hard constraint (item 4), and 13–130 reinforcements
+produce byte-identical (fully saturated) graphs — lossy and unobservable, but not unsafe. **The actual
+corrupting path is NaN:** `std::min` returns its **first** argument when the comparison is false, so
+`MINF(NaN, maxCap) = NaN` — NaN is **not** clamped and reaches `graph.AddNode` intact in release builds
+(the `ASSERT(ISFINITE(sink)&&sink>=0)` at `:88` is compiled out). The traced NaN entry point is
+`normalized()` on a zero-area facet (`libs/Common/Plane.inl:66`, `0/0`), reachable via degenerate facets
+from item 8's float-quantized/large-coordinate clouds. **DISCREPANCY, MEDIUM on container hygiene**
+(separate from the above): the IBFS arc buffer is sized with **zero slack** (`2·numCells` edges, exact
+fit) behind a release-stripped `assert` (`IBFS.h:431`); there is no `dimension()==3` guard before the
+graph build unconditionally dereferences 4 neighbours per cell (a degenerate/coplanar input reaches
+`initSize(0,0)` then `addEdge` calls — silent heap overflow); and `int` arithmetic in the arc-count
+computation (`libs/MVS/Scene.h` graph ctor, `IBFS.cpp:129-131`) overflows at ≈79M points.
+
+**Consequence:** corrects the plan's item-10 framing from "confirm `t*=epsAbs` cannot overflow before the
+clamp" (it **does** overflow, but the overflow **is** caught) to "confirm no NaN reaches the solver" — the
+NaN path is the one to instrument. Feeds Phase 0.B's failed-ray accounting (add an `ISFINITE` counter at
+graph build, not only an overflow counter) and ties directly to item 8's degenerate-facet root cause. The
+container-sizing issues are independent hardening candidates (a `dimension()==3` guard) ahead of any
+large-aerial-job push, not gated on the energy-term work.
+
+---
+
+## Appendix — Fixture specifications
+
+Every numbered hand-solvable fixture from the three source audits, preserved verbatim (geometry and
+expected values unchanged) for consumption by later unit-test work under plan Phase 0.C / 4.1. Full
+derivation and cross-checks are in the source audit reports; only the fixture specifications themselves
+are reproduced here.
+
+### Common harness notes (fixtures for items 1–4)
+
+Apply to all four fixtures (A, B, C, D) below:
+
+* Build the `Scene` in memory: `scene.pointcloud.points/pointViews/pointWeights` +
+  `scene.images` with valid `Camera` (`camera.C`, `camera.P`, `imageData.width/height`,
+  `imageData.ID`), then call
+  `scene.ReconstructMesh(distInsert=0.f, bUseFreeSpaceSupport=false, bUseOnlyROI=false,
+   nItersFixNonManifold=0, kSigma=<below>, kQual=0.f, ...)`.
+  * `distInsert = 0` ⇒ the "insert all points" branch (**839–842**), no vertex merging.
+  * `bUseFreeSpaceSupport = false` ⇒ the WSS block (**1048–1117**) is skipped, so `t` is not
+    multiplied.
+  * `kQual = 0` ⇒ `q ≡ 0` at **1140**, so arc capacity == `f` exactly.
+* `pointWeights` left empty ⇒ every `α_vis = 1` (**252**).
+* The energy state (`infoCells`) is local to `ReconstructMesh` and cleared at **1144**, so a
+  unit test must either (i) expose a test hook that snapshots `infoCells` + the cell↔index map
+  before **1144**, or (ii) assert on the resulting `mesh` only. **Recommendation: add a
+  `#ifdef _USE_TEST_HOOKS` callback taking `(const delaunay_t&, const std::vector<cell_info_t>&)`
+  right before `infoCells.clear();` (snapshot 1144).** Everything below is written against that
+  hook.
+* **Do not assume CGAL cell indices.** Identify cells by `delaunay.locate(<interior probe
+  point>)` and facets by `cell->index(vertexHandleOf(X))`; identify vertices by
+  `delaunay.nearest_vertex(point_t(...))`. All the fixtures below are Delaunay-**unique**
+  (verified in §5.1/§5.2), so the combinatorics are stable, but the *numbering* is not.
+* Cameras must look at the scene with a wide FOV: `width = height = 640`,
+  `K = [200 0 320; 0 200 240; 0 0 1]`, `R` as stated, `C` as stated. Any FOV that contains the
+  whole point set works — the frustum only gates `fetchCellFacets` on **infinite** cells.
+* Tolerance: `1e-6` absolute on `edge_cap_t` (float) comparisons.
+
+### Fixture A — "bipyramid": 2 finite tetrahedra, 1 camera, 1 contributing point
+*(the requested hand-solvable item-2 fixture; also pins item 1 and the item-4 finite branch)*
+
+**Points** (all 5 inserted; each has `pointViews = {0}`):
+
+| name | coordinates |
+|---|---|
+| A | `( 1.0,  0.0,               0.0)` |
+| B | `(-0.5,  0.8660254037844386, 0.0)` |
+| C | `(-0.5, -0.8660254037844386, 0.0)` |
+| D | `( 0.0,  0.0,               3.0)` |
+| E | `( 0.0,  0.0,              -3.0)` |
+
+`A,B,C` = equilateral triangle, circumradius 1, in the plane `z = 0`, centred on the z-axis.
+
+**Camera 0**: `C = (0, 0, 1.5)`, `R = diag(1,1,-1)`-style pose looking along **−z**
+(any pose whose frustum contains the whole bipyramid).
+
+**Delaunay uniqueness (verified numerically):**
+circumsphere(A,B,C,D) = centre `(0,0,4/3)`, r = `5/3 = 1.6666667`; `|E − centre| = 4.3333333 > r` ✔
+circumsphere(A,B,C,E) = centre `(0,0,−4/3)`, r = `5/3`; `|D − centre| = 4.3333333 > r` ✔
+⇒ the triangulation is exactly `T_up = {A,B,C,D}`, `T_dn = {A,B,C,E}` sharing facet `ABC`,
+plus 6 infinite cells (one per hull facet `ABD, BCD, CAD, ABE, BCE, CAE`).
+`(0,0,1.5)` is strictly inside `T_up` ✔ (verified).
+
+**σ:** finite edges are `AB,BC,CA` (`len² = 3`, ×3) and `AD,BD,CD,AE,BE,CE` (`len² = 10`, ×6);
+9 values ⇒ odd ⇒ `GetMedian` = `GetNth(4)` = **10**. Pass
+`kSigma = 0.31622776601683794` (= 1/√10) ⇒ **σ = 1.0 exactly**, `inv2SigmaSq = 0.5`.
+
+**Ray inventory (derived, not assumed):**
+* rays to `A, B, C, D` — each is a vertex of the camera's own cell `T_up`, so the very first
+  `intersect` (snapshot **993**) hits that vertex and returns `false` ⇒ `continue`
+  ⇒ **zero contribution, no `t`** (this is sub-finding 3.1 in action).
+* ray to `E` — the segment `(0,0,1.5) → (0,0,−3)` crosses facet `ABC` at its centroid
+  `(0,0,0)` (strictly interior to the triangle), enters `T_dn`, then terminates at vertex `E`.
+
+**Expected state at the hook (α = 1, kQual = 0, kInf as passed):**
+
+| quantity | expected |
+|---|---|
+| `infoCells[T_up].f[T_up->index(D)]` | `0.9888910034617577`  (= `1 − e^{−4.5}`, `d = 3`) |
+| every other `f[·]` in the whole triangulation | `0.0` |
+| `infoCells[T_up].s` | `kInf` |
+| `s` of **every** other cell (incl. all 6 infinite) | `0.0` |
+| `Σ_cells t` | `1.0` |
+| the single cell with `t != 0` | is **infinite** and is incident to vertex `E` |
+| arc `T_up → T_dn` capacity | `0.9888910034617577` |
+| arc `T_dn → T_up` capacity | `0.0` |
+
+Locators: `T_up = delaunay.locate(point_t(0,0,1.0))`, `T_dn = delaunay.locate(point_t(0,0,-1.0))`;
+`vD = delaunay.nearest_vertex(point_t(0,0,3))`, `vE = delaunay.nearest_vertex(point_t(0,0,-3))`;
+facet `ABC` from `T_up` is `facet_t(T_up, T_up->index(vD))`, from `T_dn` it is
+`facet_t(T_dn, T_dn->index(vE))`.
+
+**What this fixture proves:** (item 2) the free→full capacity for a camera-side crossing sits on
+the arc `T_up → T_dn`, i.e. *along the ray*, and the reverse arc is exactly zero; (item 1) the
+weight is `α(1 − e^{−d²/2σ²})` with `d` = 3 = distance from **P = E**, *not* 1.5 = distance from
+the camera (which would give `1 − e^{−1.125} = 0.6753475`, an unmistakably different number —
+this single assertion is the whole point of item 1); (item 4) the finite-camera-cell branch
+stamps exactly one cell.
+
+### Fixture B — "tetra + interior point": `mirror_facet` and the σ-shifted `D_in`
+*(item 2 reverse arc, item 3 core, item 4 infinite branch)*
+
+**Points** (all 5 inserted). Let `s3 = 1.7320508075688772`.
+
+| name | coordinates | `pointViews` |
+|---|---|---|
+| P  | `( 0.0, 0.0, 0.0)` | `{0}` |
+| V0 | `( 1.5, 0.5, 6.0)` | `{1}` |
+| V1 | `( 4.0, 0.0, -2.0)` | `{0}` |
+| V2 | `(-2.0,  2*s3, -2.0)` = `(-2.0,  3.4641016151377544, -2.0)` | `{0}` |
+| V3 | `(-2.0, -2*s3, -2.0)` = `(-2.0, -3.4641016151377544, -2.0)` | `{0}` |
+
+**Camera 0**: `C = (0, 0, -10)`, looking along **+z**, wide FOV.
+**Camera 1**: `C = (1.5, 0.5, 26)`, looking along **−z**, wide FOV.
+(Camera 1 exists only so `V0` has a view whose ray provably contributes nothing — see below. If
+the harness can run with `NDEBUG` and an empty `pointViews[V0]`, camera 1 can be dropped; the
+`continue` at snapshot **971** handles empty view lists, only the `ASSERT`s at **243/832**
+object.)
+
+**Triangulation:** `P` is strictly inside tetra `V0V1V2V3` (verified) ⇒ the point set has a
+**unique** triangulation, the star of `P`:
+`Ca = {P,V1,V2,V3}`, `Cb = {P,V0,V2,V3}`, `Cc = {P,V0,V1,V3}`, `Cd = {P,V0,V1,V2}`, plus 4
+infinite cells over the hull facets `V1V2V3, V0V1V2, V0V2V3, V0V1V3`.
+
+**σ:** the 10 finite edge lengths² sorted are
+`[20, 20, 20, 38.5, 48, 48, 48, 70.5, 85.0359, 91.9641]`; `n = 10` (even) ⇒
+`GetMedian = (sq[4]+sq[5])/2 = (48+48)/2 = 48`. Pass
+`kSigma = 0.5773502691896258` (= 1/√3) ⇒ **σ = 4.0 exactly**, `inv2SigmaSq = 0.03125`.
+
+**Ray inventory (derived):**
+* `V1, V2, V3` from camera 0: the segments `(0,0,-10) → Vi` lie entirely in `z ≤ −2`, i.e.
+  entirely outside the hull except at the endpoint ⇒ first `intersect` hits the vertex ⇒
+  `continue` ⇒ **no contribution, no `t`**.
+* `V0` from camera 1: the segment `(1.5,0.5,26) → (1.5,0.5,6)` lies entirely in `z ≥ 6`, outside
+  the hull except at `V0` ⇒ same ⇒ **no contribution, no `t`**.
+* `P` from camera 0 — the only contributing ray:
+  * walk 1: crosses hull facet `V1V2V3` at `(0,0,-2)` (the base triangle's centroid, strictly
+    interior), enters `Ca`, terminates at vertex `P`. `d₁ = 2.0` exactly.
+  * walk 2: `endPoint = P + 4·(0,0,1) = (0,0,4)`, outside the hull. The +z ray from `P` enters
+    cell **`Cb = {P,V0,V2,V3}`** (verified by point-in-tetra on `P + εẑ`) and exits through
+    facet `V0V2V3` at `(0, 0, 18/7)` — barycentric `(0.5714286, 0.1730464, 0.2555250)` w.r.t.
+    `(V0,V2,V3)`, i.e. **strictly interior** to the triangle. `d₂ = 18/7 = 2.5714285714285716`.
+
+**Expected state at the hook (α = 1, kQual = 0):**
+
+| quantity | expected |
+|---|---|
+| `infoCells[infCell(V1V2V3)].f[·]` for facet `V1V2V3` | `0.11750309741540454`  (= `1 − e^{−0.125}`, `d = 2`) |
+| `infoCells[Cb].f[Cb->index(vP)]` (facet `V0V2V3`) | `0.18668163487015432`  (= `1 − e^{−(18/7)²/32}`, `d = 18/7`) |
+| `infoCells[Ca].f[Ca->index(vP)]` (mirror of `V1V2V3`) | `0.0` |
+| `infoCells[infCell(V0V2V3)].f[·]` for facet `V0V2V3` (mirror) | `0.0` |
+| every other `f[·]` | `0.0` |
+| `s` of `Ca, Cb, Cc, Cd` (all finite cells) | `0.0` |
+| `s` of **all 4** infinite cells | `kInf` (camera 0 front-faces `V1V2V3`; camera 1 front-faces the other three — verified by outward-normal sign tests) |
+| `Σ_cells t` | `1.0` |
+| the single cell with `t != 0` | is **infinite** and is the one containing `(0,0,4)` |
+
+Locators: `Ca = delaunay.locate(point_t(0, 0, -1.5))`, `Cb = delaunay.locate(point_t(-0.6, 0, 1.0))`
+(or simply `delaunay.locate(point_t(0,0,1.0))` — the +z probe from `P`),
+`vP = delaunay.nearest_vertex(point_t(0,0,0))`.
+
+**What this fixture proves:** (item 2) the behind-the-point crossing is deposited through
+`mirror_facet` on the arc `Cb → infCell(V0V2V3)`, i.e. **away from the camera**, and the reverse
+arc is exactly zero — if `mirror_facet` were dropped, `0.18668163` would appear on
+`infoCells[infCell(V0V2V3)].f[·]` instead and the test flips; (item 1) both `d`'s are distances
+from `P` (2 and 18/7) — a camera-origin `d` would give 8 and 12.571, i.e. `w₁ = 0.8646647`,
+`w₂ = 0.9926966`; (item 3) `t` lands on the cell at `P + σ·dir` and nowhere else, undecayed;
+(item 4) all infinite cells are hard-stamped while the 4 finite cells are untouched.
+
+### Fixture C — negative test for sub-finding 3.1 (whole ray dropped)
+
+Take **Fixture A** unchanged and assert what the ray to `D` produces:
+
+* `D = (0,0,3)` is a vertex of the camera cell `T_up`, so the ray from `(0,0,1.5)` crosses no
+  facet.
+* Expected under the current code: **`Σ_cells t == 1.0`** (only `E`'s ray), i.e. `D`'s `D_in`
+  is *missing*.
+* Expected under the paper: `Σ_cells t == 5.0` (one per point/view pair), with `D`'s `α_vis`
+  landing on the cell containing `D + 1·(0,0,1) = (0,0,4)`.
+
+Write the assertion against the **current** value (`1.0`) with a comment naming this file, so a
+future change of the `continue` at snapshot **993–994** trips the test deliberately rather than
+silently.
+
+### Fixture D — `D_in` annihilation probe (item 4, consequence 2)
+
+Take **Fixture B** and add **camera 2** at `C = (0, 0, 30)` looking along **−z** with a wide FOV
+(a second "top" camera; it needs no points of its own — an image with no rays still stamps, which
+is deviation D3, and that is precisely what this fixture documents).
+
+* Camera 2 front-faces the same three upper hull facets as camera 1, so
+  `infCell(V0V2V3).s == kInf` (unchanged from Fixture B).
+* `P`'s `D_in` still lands on `infCell(V0V2V3)`'s neighbourhood with `t == 1.0`.
+* **Assertion:** there exists a cell with `s == kInf` **and** `t > 0` simultaneously, and after
+  `ComputeMaxFlow` that cell satisfies `IsNodeOnSrcSide(cell) == true` — i.e. the inside-vote is
+  provably discarded. Assert this explicitly, again with a pointer to this document, so the
+  behaviour is locked and visible rather than emergent.
+
+### Item 5 fixtures — `computePlaneSphereAngle`
+
+All values below are exact or exact-to-7-digits and require no reference implementation.
+
+**F5.1 — orientation/sign probe, "corner tetrahedron" (single cell + infinite neighbours).**
+Insert exactly `A=(0,0,0), B=(1,0,0), C=(0,1,0), D=(0,0,1)`. One finite cell; circumcentre `(0.5,0.5,0.5)`,
+`R = √3/2 = 0.8660254`.
+
+| facet (opposite vertex) | plane | circumcentre side | expected `computePlaneSphereAngle` |
+|---|---|---|---|
+| opp. `A` | `x+y+z=1` | far side | `−1/3 = −0.3333333` |
+| opp. `B` | `x=0` | apex side | `+1/√3 = +0.5773503` |
+| opp. `C` | `y=0` | apex side | `+1/√3` |
+| opp. `D` | `z=0` | apex side | `+1/√3` |
+
+(Match by geometry, not by CGAL facet index — the index depends on insertion order.) A sign flip in the facet
+normal convention shows up immediately as all four values negated. Every facet here is a hull facet, so the
+`min` at `:1140` pairs each with the infinite cell's `1.f`, giving `q = (1 − value)·kQual`:
+`q_opp.A = 4/3·kQual`, `q_others = (1 − 1/√3)·kQual = 0.4226497·kQual`.
+
+**F5.2 — symmetric bipyramid, exercises the two-sided `min` and the symmetric `AddEdge`.**
+Insert `P0=(0,0,0)`, `P1=(1,0,0)`, `P2=(0.5, √3/2, 0)` (equilateral, side 1, circumradius `r = 1/√3`,
+circumcircle centre `(0.5, √3/6, 0)`), plus `Q⁺=(0.5, √3/6, +h)` and `Q⁻=(0.5, √3/6, −h)`.
+Both tetrahedra have their apex on the facet's circumcircle axis, so `cos φ = (h² − r²)/(h² + r²)` with
+`r² = 1/3`, and by mirror symmetry `cos ψ = cos φ`, hence `q = (1 − cos φ)·kQual` on the shared facet `z = 0`:
+
+| `h` | `u = (h²−r²)/(2h)` | `R = (h²+r²)/(2h)` | `cos φ = cos ψ` | expected `q/kQual` | note |
+|---|---|---|---|---|---|
+| `3` | `1.4444444` | `1.5555556` | `13/14 = 0.9285714` | `1/14 = 0.0714286` | large empty spheres → tiny penalty ✔ Labatut |
+| `1` | `1/3` | `2/3` | `0.5` | `0.5` | |
+| `1/√3 = 0.5773503` | `0` | `0.5773503` | `0` | `1.0` | facet circle is a great circle |
+| `1/3` | `−0.3333333` | `0.6666667` | `−0.5` | `1.5` | circumcentre on the **wrong** side → `q > 1`; this row is the one that discriminates the signed vs. unsigned reading (unsigned would give `q = 0.5`) |
+
+Delaunay validity check for `h=1`: sphere centre `(0.5,√3/6,1/3)`, `R=2/3`; distance to `Q⁻` is `4/3 > 2/3`, so
+the sphere is empty. ✔ (`h=3` and `h=1/√3` likewise; for `h=1/3` verify emptiness before use.)
+
+**F5.3 — regular tetrahedron reference value.** Vertices `(1,1,1), (1,−1,−1), (−1,1,−1), (−1,−1,1)`.
+Circumcentre = origin, `R = √3`, inradius = `R/3`. Expected `computePlaneSphereAngle = +1/3` on all four
+facets; with an identical mirrored neighbour, `q = 2/3·kQual`.
+
+**F5.4 — assembly assertion.** For any facet shared by cells `ci`/`cj`, assert
+`capacity(ci→cj) − f_ci[i] == capacity(cj→ci) − f_cj[j] == q` (same `q` both directions), and assert `q` is
+applied exactly once (no double-add) by counting `AddEdge` calls == number of distinct facets.
+
+### Item 6 fixtures — `freeSpaceSupport()` / β,γ walks / triple test
+
+**F6.1 — nominal fire.** `front = [10, 900, 1200]`, `back = [5, 3, 0, 2]`.
+`β = 1200`; `γ = (0+5)/2 = 2.5`; `ε^abs = 1197.5 > 1000` ✔; `ε^rel = 0.00208333 < 0.1` ✔; `γ = 2.5 < 400` ✔
+⇒ **INT**.
+
+**F6.2 — all three reject.** `front = [10, 900, 1200]`, `back = [5, 3, 0, 2000]`.
+`γ = (0+2000)/2 = 1000`; `ε^abs = 200` (fails `>1000`); `ε^rel = 0.8333` (fails `<0.1`); `γ = 1000` (fails
+`<400`) ⇒ **NOI**.
+
+**F6.3 — `K_outl` is the only rejecter, and the inequality is strict.**
+`front = [5000]`, `back = [390, 410]` → `γ = 400.0` exactly, `ε^abs = 4600 > 1000` ✔,
+`ε^rel = 0.08 < 0.1` ✔, `γ < 400` is **false** ⇒ **NOI**.
+Perturb to `back = [389.8, 410]` → `γ = 399.9` ⇒ **INT**. This pair pins the strictness of `<` at `k_outl`
+and proves `¬K_outl` (the brief's reading) is *not* what is implemented — under `¬K_outl` the two rows would
+swap.
+
+**F6.4 — degenerate `β`.** `front = [0, 0]`, `back = [0, 0]` → `ε^rel = NaN`, `ε^abs = 0` ⇒ **NOI**, and assert
+no NaN is written to any `t`.
+
+**F6.5 — `freeSpaceSupport` == sum of incoming, on a 5-point triangulation.** Reuse F5.2's bipyramid
+(`P0,P1,P2,Q⁺,Q⁻` → 2 finite cells + 6 infinite cells). Bypass the ray walk: write known values directly into
+`infoCells[*].f[*]`, then assert `freeSpaceSupport(T⁺)` equals the sum of the four `f` entries of the four
+*neighbours* indexed **toward** `T⁺`, and that permuting which side of each facet holds the weight changes the
+result (i.e. the test fails if `mirror_facet` is dropped). This is the only cheap way to lock the
+incoming-vs-outgoing convention, which is the one thing in item 6 that no comment proves.
+
+**F6.6 — σ.** Point set with hand-known Delaunay edge lengths (e.g. F5.2's bipyramid at `h=1`: edges
+`1,1,1` for the triangle and `|P_i − Q^±|` all equal by symmetry). Assert
+`sigma == median(edge lengths) * kSigma` and, separately, assert the value actually reached from
+`apps/ReconstructMesh` with default flags is `1×` not `2×` the median — that is the deviation to record.
+
+### Item 7 fixtures — WSS enforcement `t *= epsAbs`
+
+**F7.1 — sum-vs-product discriminator (pure arithmetic, no triangulation needed).**
+Given one target cell with `t_0 = 2.5` and two INT segments with `ε_1 = 1200`, `ε_2 = 1500`:
+
+| formulation | expected `t_final` |
+|---|---|
+| code `t *= ε` per segment | `2.5 · 1200 · 1500 = 4 500 000` |
+| paper Eq. (8) `t · Σ ε` | `2.5 · (1200 + 1500) = 6 750` |
+| candidate `t = max(t, kw·ε)` with `kw=1` | `1500` |
+| candidate `t += kw·ε` with `kw=1` | `2.5 + 2700 = 2702.5` |
+
+Pin the current behaviour at `4 500 000` so any later change is a deliberate, visible test edit.
+
+**F7.2 — the `t == 0` no-op.** Same as F7.1 but `t_0 = 0` ⇒ **all four** of `t*=ε` and `t·Σε` give `0`, while
+`max(t, kw·ε)` gives `1500` and `t += kw·ε` gives `2700`. This single row is the whole Phase-4 experimental
+question; it belongs in the test suite as a *characterisation* test now and becomes the assertion later.
+
+**F7.3 — target-cell identity.** On a synthetic scene with one camera at `C`, one point `p`, and enough filler
+points that the ray `C→p` crosses ≥ 6 cells within `4σ` behind `p`, assert:
+`infoCells[inter.ncell].` is the cell containing `p + k_b·σ·û` (compare against
+`delaunay.locate(p + kb*sigma*û)`), and assert it is **not** the cell containing `p + 1·σ·û` (the cell that
+received the base `t`). That single inequality is the mechanical proof of D-3 and is worth having as a red test.
+
+**F7.4 — saturation.** Feed 15 INT segments with `ε = 1200` at one cell with `t_0 = 1`. Assert
+`infoCells[cell].t` is `+inf` (or ≥ `maxCap`) and that `MINF(t, maxCap)` at `:1133` clamps it to
+`3.402823466e+34f`, i.e. an effectively infinite t-link — documenting that the "enforce, don't set to infinity"
+design intent is violated in practice.
+
+**F7.5 — overflow/NaN guard.** Assert no `NaN` ever reaches `graph.AddNode` (combination of F6.4's `β=0` path
+and F7.4's overflow path).
+
+*(Items 8, 9, and 10 are numerical-robustness/hygiene audits, not hand-solvable graph-cut fixtures — the
+counter-insertion plan in item 8's writeup above is a diagnostics harness, not a fixture spec, and is not
+reproduced here. See the "left out / contradictory" note in the closing summary.)*
+
+---
+
+## Consequences fed into the plan
+
+* **Item 4** (verified `kInf` band-stamping on frustum-visible hull-adjacent infinite cells, not just
+  the camera cell) confirms plan §0.C item 4's premise exactly; no plan phase requires a code change, but
+  Phase 4.1's `kAbs`/`kOutl` retune should account for the fact that a saturated WSS `t` (item 10) can in
+  principle outrank the camera's own `kInf` hard constraint on a shared node.
+* **Item 6** (`freeSpaceSupport` is distance-attenuated and `[0,1]`-confidence-weighted, not the paper's
+  bare integer vote count; CLI `--thickness-factor=1.0` halves the intended `⟨−3σ,+4σ⟩` window to
+  `⟨−3L,+4L⟩` against the library's own `kSigma=2.0` default) directly rewrites the premise of Phase
+  4.1's "current thresholds (anchor)" arm — the anchor is not comparable to the paper's calibration before
+  any retune — and motivates arm 2 (recalibrate on the bench). It also confirms the CLI/library `kSigma`
+  mismatch flagged in Phase 4.3 needs a deliberate, tracked resolution rather than a passing note. Triple
+  test itself needed no plan change (confirmed correct; the plan brief's `¬K_outl` reading was the error).
+* **Item 7** (enforcement is a per-firing-view product, not the paper's sum-then-multiply-once; the
+  `t==0` no-op is structural — base `t` at 1σ, enforcement target at 4σ, usually different cells) rewrites
+  Phase 4.1's semantics arms from three to four: current per-view product (anchor), paper-faithful
+  Σ-then-multiply-once, additive `t += kw·epsAbs`, and `t = max(t, kw·epsAbs)`. The α² unit defect is
+  inherited from the paper's own Eq. 8 — arms that remove it are deliberate departures, not fidelity
+  restorations, and Phase 4.1's writeup should label them as such.
+* **Item 8** (the predicate is provably translation-independent; the plan's georeferenced-scene
+  hypothesis is overturned; the real failure modes are miniature-scene epsilon collapse below `L≈1.1e-4`
+  and upstream `float`-precision loss in `PointCloud::Point` at UTM magnitude) redirects Phase 3.4's
+  "canonical-box coordinate normalization" fix: the rescale target must be median-edge-length≈1, not
+  raw extent — a naive unit-box extent target creates the same collapse regime at ≥8.3e7 points — and a
+  **separate** load-time fix is needed for float-quantized large-coordinate clouds; mesh-time
+  normalization cannot recover data already lost to `float` storage. The disabled relative-epsilon
+  variant referenced in plan §0.C item 8 ("the slower fallback") is confirmed incorrect as written and
+  must not be enabled without a full rewrite to CGAL's column-max, sorted, windowed form.
+* **Item 8(c)**'s ray-walk failure-path inventory (13 silent exits, 2 that corrupt the cached WSS
+  walk-start cell in release, no step cap, 4 unguarded NaN entry points) is an implementation-ready
+  counter-insertion plan that directly fulfils Phase 0.B's "failed-ray accounting" bullet.
+* **Item 10(b)** (overflow of `t*=epsAbs` to `+inf` IS clamped by `MINF`/`std::min` at `AddNode`; NaN is
+  the unclamped, corrupting path, traced to `normalized()` on zero-area facets) corrects plan §0.C item
+  10's framing from "confirm the multiply cannot overflow before the clamp" (it can, and does, but the
+  overflow is caught) to "confirm no NaN reaches the solver" — Phase 0.B's instrumentation should add an
+  `ISFINITE` counter at graph build, which also closes the loop with item 8's degenerate-facet root cause.
+* **Item 9** (median-based σ estimation confirmed correct; subsampling to `k≈1e5` edges changes σ by
+  `<0.3%`, far below the parameter's own tuning granularity, provided the sample is strided/reservoir)
+  clears Phase 3.3's "sampled edge-length σ estimation" profiling item for use without a fidelity caveat.
+* **Items 1, 2, 3 (core), 5, 10(a), 10(c)** are CONFIRMED-CORRECT and require no plan changes; their
+  fixtures (appendix above) are candidates for the regression-lock unit tests referenced throughout Phase
+  4.1's "synthetic fixture" work, so that a future refactor cannot silently flip a sign, drop a
+  `mirror_facet`, or change an arc direction without a failing test.
+
+---
+
+## Phase 0.A — partial-patch validation (2026-08-19) — ACCEPTED, landed as slice 1
+
+Patch under test: ROI spatial-sort index compaction (points outside the ROI no longer alias
+index 0), empty-ROI hard error, `viewsInfo`/`cell2Cam`/`cell2End` allocation gated on
+`bUseFreeSpaceSupport`, plus a `PipelineTest` ROI preflight (first point deliberately outside
+the ROI — the exact case the old code got wrong).
+
+| Check | Result | Evidence |
+|---|---|---|
+| viewsInfo read-gating | PASS | both unguarded reads (`:1080`, `:1091`) sit inside the single `if (bUseFreeSpaceSupport)` block (`:1050`–`:1116`); sole allocation site (`:975`) gated by the same flag |
+| WSS-off exact-result | PASS | SceauxCastle `scene_dense.mvs`, `--max-threads 1`: baseline vs patched raw+cleaned PLY md5-identical (11948/23877 raw → 11975/23946 cleaned) |
+| WSS-on exact-result | PASS | md5-identical (11922/23819 → 11946/23888) |
+| Peak RSS, WSS off | PASS | −2.58 % (56.72→55.26 MB); replicated 4-vs-6 runs, inter-cluster gap 1.27 MB vs ≤0.26 MB noise |
+| MVSPipelineTest | PASS | exit 0 (~3–4 s: 4-image synthetic scene, RTX 4070); independently re-run by the reviewer; ROI preflight is unconditional in `PipelineTest`, so exit 0 proves it passed |
+| CommonUnitTests | PASS | exit 0 |
+
+Notes: the mesh-stage equivalence was also predicted statically — with ROI off the compacted
+index list is `[0..N-1]`, identical to the old pre-sized vector, and the gated writes are
+consumed only by WSS code. ROI-on results intentionally differ (bug fix), covered by the new
+preflight instead of an A/B.
+
+## Phase 0.B — runtime soundness
+
+(pending)
+
+## Phase 1 — benchmark noise floor
+
+(pending)
