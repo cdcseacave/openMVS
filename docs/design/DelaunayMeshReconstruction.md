@@ -1042,9 +1042,25 @@ floor 0.0006 from the frozen pipeline):
 
 Reading: consistent small positive on the two scenes where fusion drops the most, tiny
 negative on Ignatius; only Truck touches the §8 ≥+0.003 gate, no scene violates the −0.003
-clause. Not defaultable on this evidence. Arms in flight: a conf ≥ 0.7 sidecar (offline
-filter of the same records — the 0.5–0.7 band is the prime suspect for Ignatius' regression)
-and, pending that readout, repeat runs for significance.
+clause.
+
+The conf ≥ 0.7 arm (offline filter of the same records to 2.96 M / 3.52 M / 4.99 M rays)
+tested whether the 0.5–0.7 band drives Ignatius' regression: Ignatius −0.0007, Meetingroom
++0.0011, Truck +0.0025 vs baseline. Both the gains and the regression shrink roughly
+proportionally with ray mass — the band is not selectively harmful, the whole effect just
+scales. The full-gate (0.5) variant dominates.
+
+**Verdict: carve-only rays stay OPT-IN (`--carve-rays-file`), not default.** The dropped
+evidence matters — the sign pattern is consistent across both gate settings and strongest
+exactly where fusion drops the most — but at +0.0033 best-scene it does not clear the §8
+default gate under the *current* energy. The same table shows why: `fss` loses 0.03–0.07 F1
+on these clouds, i.e. the energy's absolute-scale constants are miscalibrated for dense
+inputs, and a sub-0.003 evidence-injection effect cannot be judged defaultable inside a
+miscalibrated energy. Re-test the carve arm as a Phase 4.1 companion after recalibration (the
+plan itself pairs 5.1 with 4.1); Phase 5.2 (bypass fusion entirely) stays parked on this
+evidence — the marginal value of dropped pixels does not justify a full input-model change
+today. Repeat-run significance tightening was considered and skipped: no plausible repeat
+outcome changes the opt-in call.
 
 Side findings from the same table: (a) **`fss` collapses on these denser clouds** — −0.06 to
 −0.07 F1 on Ignatius/Truck vs the frozen-cloud "mildly negative" — consistent with the audit's
