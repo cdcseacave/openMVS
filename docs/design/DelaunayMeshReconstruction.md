@@ -756,8 +756,25 @@ reproducible (seed 42 twice identical, seed 7 diverges). Amusing regression duri
 development: the empty-ROI test OBB was first placed at 1e6 with a 0.01 extent — which
 collapses to zero in float (ulp 0.0625 at 1e6), the exact item-8 quantization mode.
 
-Still pending: solver cross-check (IBFS vs alternate backend), single-thread vs OpenMP
-reference comparison, WSS micro-trace fixture, fixture-based capacity checks (appendix specs).
+**Solver cross-check (2026-08-19) — PASS, solver-agnostic confirmed.** With
+`DELAUNAY_MAXFLOW_IBFS` commented out (Boost `boykov_kolmogorov_max_flow` fallback,
+compiled clean — not bit-rotted), SceauxCastle single-thread WSS-on and WSS-off meshes are
+**byte-identical** to the IBFS references (all 4 PLYs, raw + cleaned). Flow values: WSS-off
+18878.6 vs 18878.4 (1e-5 relative, float summation order), WSS-on exact at printed precision;
+vertex/face counts exact. The graph construction is therefore solver-independent — any future
+solver swap (Phase 3.3) is validated by this same harness. Directional timing context: the BK
+fallback's solve took 142–149 ms vs IBFS 59 ms on this scene (~2.4× slower), consistent with
+the TPAMI-2022 tier ranking. IBFS define restored and verified (rebuilt binary reproduces the
+reference md5).
+
+**Single-thread vs OpenMP mesh comparison (2026-08-19) — PASS on SceauxCastle.** Default
+multithreaded runs (WSS on and off) produced meshes **byte-identical** to the single-thread
+references, all 4 PLYs. Caveat kept honest: atomic float capacity accumulation is
+order-dependent in principle, so this shows no divergence on this scene/run rather than
+proving determinism in general; the Phase 1 noise floor (0.0006 F1) already bounds any
+practical effect on large scenes.
+
+Still pending: WSS micro-trace fixture, fixture-based capacity checks (appendix specs).
 
 ## Phase 1 — two-stage benchmark + noise floor (2026-08-19)
 
@@ -851,6 +868,38 @@ extraction (6.5 %) are not worth touching.
 Bad-end telemetry from the same run: 7 walks aborted / 5 rays dropped out of 4.07 G steps
 (0.0000 %) with `M=172` — the slice-2 warning path works and confirms ray-walk failures are
 negligible on a healthy scene (SceauxCastle had exactly 0).
+
+### Solver-candidate license check (2026-08-19) — no license-clean fast solver exists
+
+Per §0.D, licenses verified by fetching the actual license files/headers (not repo README
+claims), against the TPAMI-2022 review (arXiv:2202.00418) and its code repo
+(`github.com/patmjen/maxflow_algorithms`):
+
+* **EIBFS-I / EIBFS-I-NR** — the strongest one-shot serial performers on the instance families
+  closest to our Delaunay-tetrahedra graph (wins "Mesh segmentation" RP 0.95, "3D separated
+  surfaces" 0.92, stereo ~1.0; the "-I" means *index-based*, not incremental — the speed win
+  does not depend on warm-start reuse we don't have). BUT: despite sitting in the repo's
+  MIT-labeled `reimpls/` folder, their source headers carry the **unmodified TAU
+  "research purposes only"** license (Kaplan/Hed) — the same license as the IBFS already in
+  `libs/Math/IBFS/`. The folder-level MIT labeling is that repo's error, not a relicense.
+* **HPF** (highest mean RP overall, wins the "Multi-view" family — which is voxel
+  photo-consistency, a weaker analog than mesh segmentation): UC Regents non-commercial,
+  "not an open source license". No freed successor found.
+* **MBK (`reimpls/mbk.h`)** — verified genuinely clean-room MIT, and Boost's
+  `boykov_kolmogorov_max_flow` is BSL-1.0 — but the BK family is the paper's bottom serial
+  tier (mean RP ≈ 0.27, worst cases 1000×+ slower); both would likely be a speed *regression*
+  vs IBFS.
+* No permissively-licensed EIBFS implementation exists anywhere findable; the BK-family
+  GitHub forks are all Kolmogorov-lineage.
+
+Consequences for Phase 3.3: (a) an EIBFS-I A/B is **license-neutral** relative to the status
+quo (same research-only class as the in-tree IBFS) and remains justified by the 75 %-of-stage
+solve share — but it cannot *improve* the licensing story; (b) the only path to speed *plus* a
+real license fix is asking the TAU authors (or the DTU review authors, who already negotiated
+derivative rights once) for explicit permission, or a clean-room EIBFS reimplementation from
+the ESA papers (the algorithm is not copyrightable; nobody has done this yet); (c) vendoring
+`eibfs_i.h` into the tree is a maintainer decision — the A/B result should be produced first
+without committing the vendored solver.
 
 ## Phase 5.0 — fusion drop accounting (2026-08-19) — instrumentation landed as slice 7; first readout
 
