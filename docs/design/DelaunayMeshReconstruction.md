@@ -649,6 +649,19 @@ reproduced here. See the "left out / contradictory" note in the closing summary.
 
 ---
 
+## Phase 3.1 — weighting-loop deserialization (2026-08-19) — ACCEPTED
+
+Replaced the `#pragma omp critical` iterator handoff in both weighting loops with a
+pre-collected, view-filtered vertex-handle vector (built once, reused by both loops),
+`schedule(dynamic)` indexed parallel-for, and per-thread reserved facet buffers; all capacity
+atomics unchanged. Gates: single-thread outputs md5-identical (4/4 PLYs, WSS on+off); every
+order-independent walk counter identical multithreaded on SceauxCastle and Truck (31.7 M
+walks, 4.07 G steps); Truck median weighting −7.0 % (α_vis) and −9.5 % (t-edge loop),
+non-overlapping run distributions with untouched-stage controls flat; peak RSS +0.0 %; both
+test suites green. Timing includes the new pre-collection pass (net figures). Note: the
+`saturated` WSS counter is order-dependent across runs by design (documented in code) —
+observed drifting ±2 in baseline as well; not a regression.
+
 ## Consequences fed into the plan
 
 * **Item 4** (verified `kInf` band-stamping on frustum-visible hull-adjacent infinite cells, not just

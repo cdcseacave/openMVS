@@ -1058,26 +1058,40 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 		const float inv2SigmaSq(0.5f/(sigma*sigma));
 		distsSq.Release();
 
-		std::vector<facet_t> facets;
+		// capacity reserved once per thread for the ray-walk facet front, which stays
+		// small: at most the four facets of a cell, or the facets incident to a vertex
+		constexpr size_t kFacetsReserve(64);
+
+		// vertices weighted by the two loops below, collected once and reused by both.
+		// The vertex range spans the infinite vertex as well, but neither it nor any
+		// view-less vertex contributes weight, so both are filtered out here rather
+		// than tested inside the loops; this also gives the loops a random-access
+		// index, replacing the locked iterator handoff that used to serialize them.
+		std::vector<vertex_handle_t> vertexHandles;
 
 		// compute the weights for each edge
 		{
 		TD_TIMER_STARTD();
+		vertexHandles.reserve(delaunay.number_of_vertices());
+		for (delaunay_t::Vertex_iterator vi=delaunay.vertices_begin(), vie=delaunay.vertices_end(); vi!=vie; ++vi)
+			if (!vi->info().views.IsEmpty())
+				vertexHandles.push_back(vi);
 		Util::Progress progress(_T("Points weighted"), delaunay.number_of_vertices());
 		#ifdef DELAUNAY_USE_OPENMP
-		delaunay_t::Vertex_iterator vertexIter(delaunay.vertices_begin());
-		const int64_t nVerts(delaunay.number_of_vertices()+1);
-		#pragma omp parallel for private(facets)
+		const int64_t nVerts((int64_t)vertexHandles.size());
+		#pragma omp parallel
+		{
+		std::vector<facet_t> facets;
+		facets.reserve(kFacetsReserve);
+		#pragma omp for schedule(dynamic)
 		for (int64_t i=0; i<nVerts; ++i) {
-			delaunay_t::Vertex_iterator vi;
-			#pragma omp critical
-			vi = vertexIter++;
+			const vertex_handle_t vi(vertexHandles[(size_t)i]);
 		#else
-		for (delaunay_t::Vertex_iterator vi=delaunay.vertices_begin(), vie=delaunay.vertices_end(); vi!=vie; ++vi) {
+		std::vector<facet_t> facets;
+		facets.reserve(kFacetsReserve);
+		for (const vertex_handle_t& vi: vertexHandles) {
 		#endif
 			vert_info_t& vert(vi->info());
-			if (vert.views.IsEmpty())
-				continue;
 			#ifdef DELAUNAY_WEAKSURF
 			if (bUseFreeSpaceSupport)
 				vert.AllocateInfo();
@@ -1165,6 +1179,9 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 			}
 			++progress;
 		}
+		#ifdef DELAUNAY_USE_OPENMP
+		} // omp parallel
+		#endif
 		progress.close();
 		DEBUG_ULTIMATE("\tweighting completed in %s", TD_TIMER_GET_FMT().c_str());
 		}
@@ -1175,19 +1192,20 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 		if (bUseFreeSpaceSupport) {
 		TD_TIMER_STARTD();
 		#ifdef DELAUNAY_USE_OPENMP
-		delaunay_t::Vertex_iterator vertexIter(delaunay.vertices_begin());
-		const int64_t nVerts(delaunay.number_of_vertices()+1);
-		#pragma omp parallel for private(facets)
+		const int64_t nVerts((int64_t)vertexHandles.size());
+		#pragma omp parallel
+		{
+		std::vector<facet_t> facets;
+		facets.reserve(kFacetsReserve);
+		#pragma omp for schedule(dynamic)
 		for (int64_t i=0; i<nVerts; ++i) {
-			delaunay_t::Vertex_iterator vi;
-			#pragma omp critical
-			vi = vertexIter++;
+			const vertex_handle_t vi(vertexHandles[(size_t)i]);
 		#else
-		for (delaunay_t::Vertex_iterator vi=delaunay.vertices_begin(), vie=delaunay.vertices_end(); vi!=vie; ++vi) {
+		std::vector<facet_t> facets;
+		facets.reserve(kFacetsReserve);
+		for (const vertex_handle_t& vi: vertexHandles) {
 		#endif
 			const vert_info_t& vert(vi->info());
-			if (vert.views.IsEmpty())
-				continue;
 			const point_t& p(vi->point());
 			const Point3f pt(CGAL2MVS<float>(p));
 			walk_stats_t& stats(GetWalkStats());
@@ -1256,6 +1274,9 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 				}
 			}
 		}
+		#ifdef DELAUNAY_USE_OPENMP
+		} // omp parallel
+		#endif
 		DEBUG_ULTIMATE("\tt-edge reinforcement completed in %s", TD_TIMER_GET_FMT().c_str());
 		}
 		#endif
