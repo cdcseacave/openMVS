@@ -867,7 +867,44 @@ First readout (pipeline-test fixture, 4 depth maps): residuals 0 on both invaria
 min-pixels; the dropped-pixel confidence histogram is dominated by the `[0,0.1)` bin (312 k of
 545 k), i.e. most of the dropped mass is *low*-confidence, but the `[0.1,0.7)` bins still hold
 ~228 k pixels the mesh stage never sees. The go/no-go measurement for Phase 5.1 (carve-only
-rays from unfused high-confidence pixels) is the same accounting on real T&T scenes
-(Ignatius + Meetingroom, frozen-cloud settings `--resolution-level 1 --number-views 12`);
-cached dmaps for the frozen clouds no longer exist, so this requires a full re-densification
-per scene.
+rays from unfused high-confidence pixels) is the same accounting on real T&T scenes.
+
+### T&T readout (2026-08-19) — **GO for Phase 5.1**
+
+Full re-densification per scene (frozen-cloud settings `--resolution-level 1
+--number-views 12 --estimate-roi 0 --crop-to-roi 0 --tower-mode 0`; the frozen clouds' cached
+dmaps no longer existed), run in fresh `<scene>/runFusionStats/` folders whose dmaps are
+**kept** for fast fusion-only 5.1 iteration (~40 s vs a full densify). All runs: both
+accounting residuals 0, min-views 0.
+
+| scene (imgs) | valid depths | admitted | dropped | low-conf | min-pixels | violation | dropped @ conf ≥ 0.1 | dropped @ conf ≥ 0.7 (vs admitted) |
+|---|---|---|---|---|---|---|---|---|
+| Ignatius (263) | 132.2 M | 48.0 % | 52.0 % | 26.4 % | 25.4 % | 0.20 % | 33.9 M | 10.0 M (15.8 %) |
+| Meetingroom (371) | 175.1 M | 30.1 % | **69.9 %** | 34.6 % | 35.0 % | 0.25 % | **61.7 M** | 8.9 M (17.0 %) |
+| Truck (251) | 126.5 M | 56.0 % | 44.0 % | 23.6 % | 20.3 % | 0.15 % | 25.8 M | 8.7 M (12.3 %) |
+
+Findings:
+1. **The low-confidence channel is exactly the `[0,0.1)` histogram bin in every scene** — the
+   threshold separates cleanly; everything dropped above 0.1 confidence is min-pixels or
+   violation mass, i.e. *geometrically consistent depth that simply failed to cluster*.
+2. **min-pixels (cluster < 5 px) is the dominant recoverable channel**: 20–35 % of all valid
+   depths, 20–50 M dropped clusters per scene. Every scene throws away ~9–10 M pixels at
+   confidence ≥ 0.7 — 12–17 % of the admitted mass.
+3. Meetingroom — the recall-starved indoor scene — discards more than twice what it keeps;
+   its dropped ≥ 0.1-confidence mass (61.7 M) exceeds the admitted mass (52.8 M). The
+   correlation with the mesh-vs-cloud fidelity gap is suggestive, not yet causal evidence.
+4. Probe-level (context): already-fused dominates rejections (~60 %), outside 15–22 %;
+   free-space violations are rare (~0.1 % of probes) but nonzero everywhere.
+
+Verdict: the preconditions for Phase 5.1 hold — a large, high-confidence, geometrically
+consistent pixel population never reaches the mesh stage. Next: feed these unfused pixels as
+carve-only rays (free-space evidence without surface points) and A/B mesh F1 on the two-stage
+bench. Caveat: the re-densified clouds differ *substantially* from the frozen bench inputs —
+9.4 M vs 5.2 M points (Ignatius), 8.8 M vs 3.1 M (Meetingroom), 9.4 M vs 6.0 M (Truck). The
+frozen clouds were produced in June by older code with a `Densify.ini` in the working folder
+overriding defaults (reprojection threshold 1.2 vs today's 1.0, geometric weight 0.1 vs 0.3,
+pre-recalibration confidence lineage); the readout above uses current defaults, which is the
+correct basis for 5.1 (that is the pipeline 5.1 modifies) but means: (a) 5.1 A/Bs starting
+from these dmaps need their own freshly-measured baseline row, never the frozen-cloud rows;
+(b) the per-channel percentages would shift some under the June settings (looser reprojection
+grows clusters and shrinks the min-pixels channel), though not enough to flip the verdict.
