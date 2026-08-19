@@ -1009,3 +1009,46 @@ correct basis for 5.1 (that is the pipeline 5.1 modifies) but means: (a) 5.1 A/B
 from these dmaps need their own freshly-measured baseline row, never the frozen-cloud rows;
 (b) the per-channel percentages would shift some under the June settings (looser reprojection
 grows clusters and shrinks the min-pixels channel), though not enough to flip the verdict.
+
+## Phase 5.1 — carve-only rays (2026-08-19) — implemented (slice 9); A/B borderline, gate arms running
+
+Implementation (`39859e76`): `DensifyPointCloud --export-unfused-file` writes a 20-byte-record
+sidecar of the pixels that joined a cluster fusion then dropped (min-pixels / min-views /
+violation fates; the low-confidence fate never reaches a cluster), gated at confidence ≥ 0.5
+and capped at 8 M records by a deterministic power-of-two stride (`{i : i mod stride == 0}`).
+`ReconstructMesh --carve-rays-file` replays each record as a pure free-space ray: the
+camera→point segment is walked with the t-edge loop's facet stepper (`intersectFace` — a ray
+with no target vertex needs no bad-end path) and adds the standard distance-weighted α_vis
+scaled by the pixel's confidence to the crossed directed facets; no vertex, no unary term.
+The pass runs after both weighting loops, so **the WSS classifier still reads the fused points
+alone** — β/γ are computed before carve capacity lands; feeding it is a deliberate one-line
+later arm. (Also learned: `viewsInfo` is a walk-restart memo, not evidence — what WSS reads is
+`freeSpaceSupport()` = incoming `f` sums, which carve rays do feed, just after the fact.)
+Off-state proven exact (4/4 reference md5s, byte-identical fusion from identical dmaps, OMP
+and serial carve passes md5-identical). Known asymmetry: at default `--constant-weight 1`
+fused votes carry weight 1 while carve rays keep their ≤1 confidence.
+
+Sidecars (fusion rerun on the kept dmaps): Ignatius 4.75 M records of 19.0 M candidates
+(stride 4), Meetingroom 7.31 M of 29.3 M (stride 4), Truck 7.43 M of 14.9 M (stride 2).
+
+First A/B (fresh `@runFusionStats` baselines, single runs, python sampler, seed 42, noise
+floor 0.0006 from the frozen pipeline):
+
+| scene | baseline | carve | Δ | fss | carve-fss | Δ vs fss |
+|---|---|---|---|---|---|---|
+| Ignatius | 0.3348 | 0.3334 | −0.0014 | 0.2723 | 0.2726 | +0.0003 |
+| Meetingroom | 0.3566 | 0.3588 | +0.0022 | 0.3289 | 0.3312 | +0.0023 |
+| Truck | 0.3511 | **0.3544** | **+0.0033** | 0.2778 | 0.2808 | +0.0030 |
+
+Reading: consistent small positive on the two scenes where fusion drops the most, tiny
+negative on Ignatius; only Truck touches the §8 ≥+0.003 gate, no scene violates the −0.003
+clause. Not defaultable on this evidence. Arms in flight: a conf ≥ 0.7 sidecar (offline
+filter of the same records — the 0.5–0.7 band is the prime suspect for Ignatius' regression)
+and, pending that readout, repeat runs for significance.
+
+Side findings from the same table: (a) **`fss` collapses on these denser clouds** — −0.06 to
+−0.07 F1 on Ignatius/Truck vs the frozen-cloud "mildly negative" — consistent with the audit's
+unit-dependence verdict on kAbs/kOutl (absolute-scale constants meeting 1.6–2.8× more α
+mass); Phase 4.1's recalibration case just got stronger. (b) The mesh-vs-cloud fidelity gap
+persists on dense clouds (Ignatius cloud 0.773 → mesh 0.335; Truck 0.716 → 0.351;
+Meetingroom 0.437 → 0.357) — still an open investigation.
