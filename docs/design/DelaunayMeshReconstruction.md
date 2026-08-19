@@ -1202,3 +1202,58 @@ Verdict: the collapse is not a units-calibration artifact; the unbounded product
 is the prime suspect. That is exactly what arm B isolates — paper/add/max at default
 constants, where the paper arm already eliminated saturation on the F7 fixture (1648 → 0)
 and cut flow 80× on SceauxCastle.
+
+### Arm B — enforcement semantics at default constants (dense clouds, tag `phase41-sem`) — NEGATIVE; the t==0 no-op is protective
+
+Same three clouds, single runs; classifier unchanged, so all arms fire on the identical
+(vertex,view) pair set (e.g. Ignatius 20 163 406 in all four semantics).
+
+| scene | baseline | product | paper | add | max |
+|---|---|---|---|---|---|
+| Ignatius | 0.3348 | 0.2723 | 0.2722 | 0.0453 | 0.0437 |
+| Meetingroom | 0.3566 | 0.3289 | 0.3286 | 0.3001 | 0.3017 |
+| Truck | 0.3511 | 0.2778 | 0.2782 | 0.2220 | **0.3054** |
+
+Three clean findings:
+
+1. **paper ≡ product on dense clouds.** Ignatius and Meetingroom produce *identical cuts*
+   (Ignatius: same 3 053 611 vertices / 6 126 586 faces, flow 1.59654e7 vs 1.59649e7 —
+   δ 0.003 % in t-edge magnitudes below capacity, same argmin); Truck is near-identical
+   (6 254 463 vs 6 253 471 clean faces, F1 δ +0.0004). With epsAbs at absolute α scale
+   (arm A: the firing population sits at epsAbs ≫ 4000), a *single* multiplicative
+   enforcement is already effectively infinite — ISRN-2014's per-cell-sum vs the shipped
+   per-pair-product only matters at fixture scale, where it did change the mesh md5. Paper's
+   saturation count is 0 everywhere, yet the cut doesn't move: saturation was a symptom, not
+   the mechanism.
+2. **add − paper isolates the structural t==0 population, and it is the whole catastrophe.**
+   For t0 > 0, t0 + Σ epsAbs and t0 × Σ epsAbs are both effectively uncuttable — the only
+   functional difference is that add enforces on t0 == 0 cells (counters: t==0 no-op drops
+   to 0 in add/max). Result: Ignatius 0.2722 → 0.0453 (in-crop faces 736 K → 350 K), Truck
+   0.278 → 0.222, Meetingroom 0.329 → 0.300. Planting surface priors in deep free space
+   (the ~4σ walk-end cells that never received base t) destroys the outdoor object scenes.
+   The structural no-op — base t at ~1σ behind the point, enforcement targeting the ~4σ
+   cell — is *protective*, not a defect; do not "fix" it.
+3. **max bounds the magnitude and it shows.** max(t0, epsAbs) caps a cell at a single
+   epsAbs instead of a Σ/Π over hundreds of firings: it recovers most of add's Truck damage
+   (0.222 → 0.3054 — the best fss variant on Truck, above product) but shares the t==0
+   catastrophe on Ignatius (0.0437). Magnitude bounding helps; free-space enforcement kills.
+
+### Phase 4.1 close-out — all arms measured, defaults unchanged
+
+Combined verdict (arms A, B, C): no constant rescale, no enforcement semantics, and no
+global quality co-scale rescues free-space-support on dense clouds or makes point-weighting
+defaultable. Every shipped default stays: `--free-space-support 0`, `--constant-weight 1`,
+product semantics, kRel/kAbs/kOutl as-is, co-scale off. The switches remain as cheap,
+tested diagnostics.
+
+The Phase 5.1 carve companion re-test is **moot as specified**: it was conditioned on a
+recalibrated energy, and no recalibration was adopted — the opt-in verdict stands on its
+original evidence. The WSS-feeding carve variant is closed on the same grounds: feeding
+carve mass to β/γ can only raise γ and shrink the firing set, and arm A showed pure
+dilution converges to fss-off without ever recovering baseline — its value is bounded by
+"fss off", not worth a bench.
+
+Recorded for a possible later phase, not scheduled: bounded/relative enforcement (cap the
+enforcement at s-side scale — every tested arm is effectively binary per cell; max's Truck
+win is the one hint bounding has value), arm C's co-scale exponent / per-region co-scale.
+Next slice: Phase 4.2.
