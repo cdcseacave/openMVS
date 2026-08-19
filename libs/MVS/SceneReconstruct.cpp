@@ -1307,6 +1307,8 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 
 		// create graph
 		MaxFlow<cell_size_t,edge_cap_t> graph(delaunay.number_of_cells());
+		{
+		TD_TIMER_STARTD();
 		// set weights
 		constexpr edge_cap_t maxCap(3.402823466e+34f/*FLT_MAX*0.0001f*/);
 		for (delaunay_t::All_cells_iterator ci=delaunay.all_cells_begin(), ce=delaunay.all_cells_end(); ci!=ce; ++ci) {
@@ -1324,8 +1326,17 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 			}
 		}
 		infoCells.clear();
+		DEBUG_ULTIMATE("\tgraph construction completed in %s", TD_TIMER_GET_FMT().c_str());
+		}
 		// find graph-cut solution
-		const float maxflow(graph.ComputeMaxFlow());
+		float maxflow;
+		{
+		TD_TIMER_STARTD();
+		maxflow = graph.ComputeMaxFlow();
+		DEBUG_ULTIMATE("\tgraph-cut completed in %s", TD_TIMER_GET_FMT().c_str());
+		}
+		{
+		TD_TIMER_STARTD();
 		// extract surface formed by the facets between inside/outside cells
 		const size_t nEstimatedNumVerts(delaunay.number_of_vertices());
 		std::unordered_map<void*,Mesh::VIndex> mapVertices;
@@ -1360,6 +1371,8 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 			}
 		}
 		delaunay.clear();
+		DEBUG_ULTIMATE("\tsurface extraction completed in %s", TD_TIMER_GET_FMT().c_str());
+		}
 
 		DEBUG_EXTRA("Delaunay tetrahedras graph-cut completed (%g flow): %u vertices, %u faces (%s)", maxflow, mesh.vertices.GetSize(), mesh.faces.GetSize(), TD_TIMER_GET_FMT().c_str());
 	}
