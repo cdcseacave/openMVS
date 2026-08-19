@@ -774,7 +774,24 @@ order-dependent in principle, so this shows no divergence on this scene/run rath
 proving determinism in general; the Phase 1 noise floor (0.0006 F1) already bounds any
 practical effect on large scenes.
 
-Still pending: WSS micro-trace fixture, fixture-based capacity checks (appendix specs).
+**Fixture tests landed (2026-08-19, slice 8).** Appendix Fixtures A and B now run inside
+`MVSPipelineTest` as cut-topology locks: Fixture A (bipyramid) deterministically extracts
+exactly the one face behind the observed point that carries the orphaned `D_in` vote — a
+regression dropping or relocating that vote (item 3.1) changes the result; Fixture B (star of
+4 tetrahedra) locks its analytically expected empty mesh and full-pipeline determinism, with
+in-code comments documenting that it cannot discriminate a `mirror_facet` flip (both arc
+placements yield the same observable result). Two findings from building them: CGAL's
+`is_infinite(cell,i)` only excludes wing-facets of the infinite cell itself (hull-boundary
+facets are mesh-eligible), and the in-tree IBFS resolves disconnected zero-capacity cells to
+the free side but an unreachable cell with nonzero local `t` to the full side — the same
+free-node convention subtlety the EIBFS wrapper had to pin explicitly.
+
+Closed without a test: the WSS micro-trace. The `t *= epsAbs` enforcement runs on internal
+`infoCells` state with no public observation point, and a test that re-derives the formula in
+its own arithmetic pins nothing about the library (one such tautological test was written and
+rejected in review). The empirical walk counters (18 %/32 % no-op/saturation readout above)
+are the actual regression signal until Phase 4.1's semantics arms add a real hook as part of
+their instrumentation. Phase 0.B is otherwise complete.
 
 ## Phase 1 — two-stage benchmark + noise floor (2026-08-19)
 
