@@ -814,3 +814,60 @@ tilts toward the smoothness/quality term and the cut collapses inward (raw faces
 should restore much of the weighted arm's parity; that is a cheap early Phase 4.1 arm. Truck
 (+0.053 with weights) shows the signal itself carries real information once the balance is
 right — the consumer, not the signal, is miscalibrated (consistent with § 2 note 1).
+
+## Phase 3.2 — inert `nItersFixNonManifold` removal (2026-08-19) — ACCEPTED, landed as slice 6
+
+`Scene::ReconstructMesh` accepted `nItersFixNonManifold` but called `Mesh::FixNonManifold`
+exactly once regardless; a single pass is provably exhaustive (each vertex splits into one
+duplicate per incident manifold component; splitting never alters another vertex's
+incident-face set). Removed from declaration, definition, and both call sites passing the
+hardcoded `4` (ReconstructMesh app, Viewer — the latter a call site the initial audit missed).
+Gates: SceauxCastle WSS-on/off meshes md5-identical to the slice-2 references (raw and
+cleaned, 4/4), both test suites green. API hazard recorded in the commit message: an external
+caller passing a 4th positional argument intended as the iteration count now silently binds it
+to `kSigma` (in-tree `PythonWrapper` passes 3 args, unaffected).
+
+## Phase 3.3 — graph-cut sub-stage split (2026-08-19) — instrumentation landed as slice 7; solve dominates
+
+The `graphcut_s` stage (largest mesh stage on Truck) is now split by three `TD_TIMER` scopes
+reporting at `DEBUG_ULTIMATE` as `graph construction` / `graph-cut` / `surface extraction`
+(names matched by `bench/run_mesh.py`'s substage columns). Exact-result verified: meshes
+md5-identical, sub-times sum to the stage total.
+
+First readout, default CLI settings, multithreaded (the three phases are all serial, so the
+split is thread-independent):
+
+| scene | graph build | max-flow solve | surface extraction | stage total |
+|---|---|---|---|---|
+| SceauxCastle (11 img) | 22 ms | 63 ms (68 %) | 7 ms | 100 ms |
+| Truck (251 img, 22.7 M cells) | 5.83 s | 28.45 s (**75 %**) | 2.47 s | 38.0 s |
+
+**Verdict: the IBFS solve is the Phase 3.3 lever** — 75 % of the stage, ~26 % of the whole
+1m49s Truck mesh reconstruction. A 2× solver speedup would clear the ≥5 % exact-result gate
+with wide margin; next step is the EIBFS candidate (TPAMI-2022 review) license check per §0.D,
+then an A/B behind the existing `DELAUNAY_MAXFLOW_IBFS` switch pattern. Graph build (15 %) and
+extraction (6.5 %) are not worth touching.
+
+Bad-end telemetry from the same run: 7 walks aborted / 5 rays dropped out of 4.07 G steps
+(0.0000 %) with `M=172` — the slice-2 warning path works and confirms ray-walk failures are
+negligible on a healthy scene (SceauxCastle had exactly 0).
+
+## Phase 5.0 — fusion drop accounting (2026-08-19) — instrumentation landed as slice 7; first readout
+
+`DepthMapsData::DenseFuseDepthMaps` (the `--fusion-filter 2` default path) now prints at
+verbosity 3: per-probe rejection reasons (outside, no-depth, already-fused, low-confidence,
+depth-diff with free-space-violation subcount, reprojection-error, normal-diff), per-pixel
+lifetime fates (admitted, low-confidence, min-pixels, min-views, violation), and 10-bin
+confidence histograms of admitted vs dropped pixels — all in added `else` branches with
+self-checking residuals; fusion logic untouched (verified line-by-line, plus md5-equal outputs
+in the pipeline test).
+
+First readout (pipeline-test fixture, 4 depth maps): residuals 0 on both invariants;
+**47.95 % of valid depths never fuse** — 27.5 % dropped for low confidence, 20.4 % for
+min-pixels; the dropped-pixel confidence histogram is dominated by the `[0,0.1)` bin (312 k of
+545 k), i.e. most of the dropped mass is *low*-confidence, but the `[0.1,0.7)` bins still hold
+~228 k pixels the mesh stage never sees. The go/no-go measurement for Phase 5.1 (carve-only
+rays from unfused high-confidence pixels) is the same accounting on real T&T scenes
+(Ignatius + Meetingroom, frozen-cloud settings `--resolution-level 1 --number-views 12`);
+cached dmaps for the frozen clouds no longer exist, so this requires a full re-densification
+per scene.
