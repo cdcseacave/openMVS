@@ -1164,3 +1164,41 @@ first-order correction (the camera kInf links and the WSS absolute constants als
 scale, and a global mean cannot fix a spatially varying confidence deficit). Follow-ups
 recorded, not run: co-scale exponent sweep, per-region co-scale — deferred until after arms
 A/B.
+
+### Arm A — kAbs/kOutl proportional rescale at fss=1 (dense clouds, tag `phase41-kabs`) — REFUTED
+
+Hypothesis under test: the fss collapse on the dense `@runFusionStats` clouds (−0.03..−0.07
+vs no-fss baseline, Phase 5.1) is a units artifact — kAbs=1000/kOutl=400 are absolute-scale
+constants meeting 1.6–2.8× more α mass — fixable by scaling both proportionally. Sweep:
+x05 = 500/200, x1 = 1000/400 (Phase 5.1 rows), x2 = 2000/800, x4 = 4000/1600; single runs,
+same seed/sampler; WSS firing counters from the kept run logs (`fired` = enforcement
+(vertex,view) pairs, `sat%` = fraction that saturated the t edge).
+
+| scene | baseline | x05 | x1 | x2 | x4 | best vs baseline |
+|---|---|---|---|---|---|---|
+| Ignatius | 0.3348 | **0.3011** | 0.2723 | 0.2514 | 0.2303 | −0.034 (x05) |
+| Meetingroom | 0.3566 | 0.3288 | 0.3289 | 0.3315 | **0.3401** | −0.017 (x4) |
+| Truck | 0.3511 | **0.3020** | 0.2778 | 0.2767 | 0.2738 | −0.049 (x05) |
+
+| scene | fired x05/x1/x2/x4 (M) | sat% x05/x1/x2/x4 |
+|---|---|---|
+| Ignatius | 18.6 / 20.2 / 19.7 / 17.0 | 82 / 86 / 87 / 88 |
+| Meetingroom | 13.8 / 10.1 / 7.0 / 4.5 | 43 / 44 / 44 / 44 |
+| Truck | 21.7 / 20.7 / 18.4 / 15.5 | 63 / 65 / 66 / 67 |
+
+**Refuted.** All 9 rows stay below the no-fss baseline, and the preferred direction is
+scene-inconsistent (outdoor Ignatius/Truck best at x05, indoor Meetingroom monotone toward
+x4) — no global rescale exists. The counters say why the sweep is impotent: on
+Ignatius/Truck an 8× sweep of both thresholds moves the firing volume by <25 % (17–22 M),
+i.e. the firing population sits at extreme epsAbs (≫4000) and near-zero γ (≪200) — deep
+free space far from the classifier's decision boundary at *any* of these settings. And with
+product semantics each firing multiplies t by epsAbs itself (thousands), so 43–88 % of
+firings saturate the edge at every setting: enforcement is effectively a binary cell-nuke,
+and the constants only choose *which* cells get nuked, never *how hard*. Meetingroom's
+apparent improvement toward x4 is pure dilution (firings 13.8 M → 4.5 M, saturation ratio
+frozen at 43–44 %), converging toward the fss-off no-op, not a recalibration win.
+
+Verdict: the collapse is not a units-calibration artifact; the unbounded product semantics
+is the prime suspect. That is exactly what arm B isolates — paper/add/max at default
+constants, where the paper arm already eliminated saturation on the F7 fixture (1648 → 0)
+and cut flow 80× on SceauxCastle.
