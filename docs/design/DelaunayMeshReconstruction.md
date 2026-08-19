@@ -746,6 +746,58 @@ collapses to zero in float (ulp 0.0625 at 1e6), the exact item-8 quantization mo
 Still pending: solver cross-check (IBFS vs alternate backend), single-thread vs OpenMP
 reference comparison, WSS micro-trace fixture, fixture-based capacity checks (appendix specs).
 
-## Phase 1 — benchmark noise floor
+## Phase 1 — two-stage benchmark + noise floor (2026-08-19)
 
-(pending)
+Harness: `bench/run_mesh.py` (gitignored bench/) — frozen `runMetashape/scene_dense.mvs` per
+scene, per-variant ReconstructMesh args, two-stage scoring (cloud F1 cached once per frozen
+cloud; mesh F1 from seeded area-uniform sampling → the official T&T evaluator at scene τ),
+per-stage times, peak RSS, and the slice-2 ray-walk counters parsed per run.
+
+**Methodology defect found and fixed before any comparison ran**: the frozen scenes are
+unbounded, so the full-scene mesh spans hundreds of units while the T&T evaluation crop is a
+few units — a fixed 10 M area-uniform budget starves the crop (mesh recall 0.3–9 % on
+Ignatius/Truck/Barn, pure dilution). Fix (bench-side only): per-scene refined scene→GT
+alignment captured once from the evaluator's own output during the cached cloud eval; in-crop
+face mask replicating Open3D `SelectionPolygonVolume::CropInPolygon` exactly (cross-validated
+against open3d 0.19); seeded numpy sampling spends the whole budget on the in-crop submesh.
+Coordinates stay in the scene frame end-to-end (no double alignment).
+
+**Noise floor (paired identical baseline runs, 4 scenes): max |ΔF1| = 0.0006** (Meetingroom;
+Truck 0.0000, Barn 0.0002, Ignatius 0.0001). Raw face counts and max-flow are bit-identical
+across paired runs — reconstruction is deterministic at fixed thread count; the residual F1
+jitter is evaluator-side. Every future energy/filter delta is judged against 0.0006 + the
+§8 gate (+0.003).
+
+**Two-stage finding**: the mesh stage *loses* large fidelity vs its input cloud on
+Truck (mesh 0.357 vs cloud 0.706) and Ignatius (0.329 vs 0.738), is near-parity on Barn
+(0.558 vs 0.599), and *beats* the cloud on Meetingroom (0.338 vs 0.323). The mesh−cloud gap
+on Truck/Ignatius is now a first-class open question (candidate causes: default clean/smooth
+steps, crop-boundary faces, per-scene τ interaction) — queue a raw-vs-cleaned scoring arm
+with the Phase 3 work.
+
+## Phase 2 — confidence ablation (2026-08-19) — REJECTED, default unchanged
+
+2×2 matrix on the frozen clouds (adjusted #1292 confidence provenance), 4 scenes, mesh-F1
+deltas vs baseline mean (noise floor 0.0006, gate ±0.003):
+
+| Scene | weighted | fss | weighted-fss |
+|---|---|---|---|
+| Truck | **+0.053** | −0.060 | +0.018 |
+| Barn | **−0.293** | −0.021 | −0.295 |
+| Ignatius | −0.010 | −0.039 | −0.076 |
+| Meetingroom | **−0.177** | −0.025 | −0.232 |
+
+**Decision (per the Phase 2 rule): the app default stays `--constant-weight=true`.**
+Adjusted-provenance weighting fails the no-regression gate by two orders of magnitude on
+Barn/Meetingroom; `fss` alone is consistently mildly negative; the combination inherits the
+worst of both. The raw-NCC pairing arm is moot for the default question (adjusted already
+fails) but stays available for Phase 4.1 diagnosis.
+
+**Mechanism (hypothesis, to be tested in Phase 4.1, not asserted)**: enabling weights shrinks
+every data-term capacity by the mean confidence (~0.3–0.7) while the quality term `q` and the
+camera `kInf` constraints keep their unit-vote-calibrated scale — the relative energy balance
+tilts toward the smoothness/quality term and the cut collapses inward (raw faces −90 % Barn,
+−80 % Meetingroom). Testable prediction: co-scaling `--quality-factor` by the mean confidence
+should restore much of the weighted arm's parity; that is a cheap early Phase 4.1 arm. Truck
+(+0.053 with weights) shows the signal itself carries real information once the balance is
+right — the consumer, not the signal, is miscalibrated (consistent with § 2 note 1).
