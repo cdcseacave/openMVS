@@ -734,9 +734,17 @@ healthy in this comfortable-magnitude regime. WSS: 5128 fired, of which **922 (1
 degenerate, empirically confirming the item-7 verdict (structural no-op + per-view product
 divergence) on the first scene measured.
 
+**Unit tests landed (slice 3):** empty-ROI and 3-point degenerate inputs fail cleanly (new
+`dimension() < 3` guard after insertion — previously undefined behavior downstream), empty
+`pointWeights` reconstructs equivalently to explicit unit weights (1 % face-count tolerance;
+exact equality is not assertable under process-wide OpenMP float ordering), `pointWeights`
+round-trip bit-exactly through the interface archive, and seeded `SamplePoints` is
+reproducible (seed 42 twice identical, seed 7 diverges). Amusing regression during
+development: the empty-ROI test OBB was first placed at 1e6 with a 0.01 extent — which
+collapses to zero in float (ulp 0.0625 at 1e6), the exact item-8 quantization mode.
+
 Still pending: solver cross-check (IBFS vs alternate backend), single-thread vs OpenMP
-reference comparison, WSS micro-trace fixture, unit tests (empty-weights fallback, weight
-serialization/aggregation, fixture-based capacity checks).
+reference comparison, WSS micro-trace fixture, fixture-based capacity checks (appendix specs).
 
 ## Phase 1 — benchmark noise floor
 

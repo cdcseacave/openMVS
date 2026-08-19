@@ -991,6 +991,10 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 		});
 		progress.close();
 		pointcloud.Release();
+		if (delaunay.dimension() < 3) {
+			VERBOSE("error: too few or degenerate points for Delaunay reconstruction (dimension %d)", delaunay.dimension());
+			return false;
+		}
 		// init cells weights and
 		// loop over all cells and store the finite facet of the infinite cells
 		const size_t numNodes(delaunay.number_of_cells());
