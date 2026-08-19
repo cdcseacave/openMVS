@@ -1068,3 +1068,69 @@ unit-dependence verdict on kAbs/kOutl (absolute-scale constants meeting 1.6–2.
 mass); Phase 4.1's recalibration case just got stronger. (b) The mesh-vs-cloud fidelity gap
 persists on dense clouds (Ignatius cloud 0.773 → mesh 0.335; Truck 0.716 → 0.351;
 Meetingroom 0.437 → 0.357) — still an open investigation.
+
+## Phase 4.1 — WSS calibration & enforcement switches (2026-08-19) — implemented (slice 10); benches pending
+
+Implementation (`12811a32`): the five graph-cut free-space-support constants are on the
+ReconstructMesh CLI (`--support-factor` kb=4, `--front-factor` kf=3, `--relative-factor`
+kRel=0.1, `--absolute-factor` kAbs=1000, `--outlier-factor` kOutl=400 — defaults equal to the
+Scene.h declarations), and the previous two-call ternary (default path vs carve path
+respelling the constants) collapsed to a single call site; the camera-cell capacity is now
+`Scene::kInfCapacity`, spelled once. Two genuinely new switches live in a trailing defaulted
+`ReconstructMeshParams` (so PythonWrapper/Viewer/Tests call sites compile unchanged —
+`cl /Zs`-verified): `--wss-semantics product|paper|add|max` and `--quality-co-scale`.
+
+Enforcement arms, at the classifier's firing branch (`epsRel<kRel && epsAbs>kAbs &&
+gamma<kOutl`, target = the ~4σ walk-end cell, classifier untouched in every arm):
+
+| arm | update | nature |
+|---|---|---|
+| `product` | `t *= εabs` per firing (vertex,view) pair | shipped behavior, byte-exact default |
+| `paper` | `E(c) += εabs` per pair, then one `t *= E(c)` per cell (serial pass, only where `E>0`) | ISRN-2014 Eq. 8 fidelity restoration |
+| `add` | `t += kw·εabs` per pair (kw=1) | departure: drops the multiply's α² unit defect |
+| `max` | `t = max(t, kw·εabs)` per pair (named critical — no atomic max) | departure, order-independent |
+
+The item-7 fixture rows (F7.1/F7.2, appendix) are reproduced exactly by all four arms
+(product 4 500 000 / paper 6 750 / add 2 702.5 / max 1 500; t₀=0 row: 0/0/2700/1500).
+The `paper` accumulator is one float per cell, allocated only in that arm (~90 MB at Truck's
+22.7 M cells). Counter semantics per arm are documented at `walk_stats_t`: product/add/max
+count no-op/saturated per firing pair, paper per target cell; add/max cannot leave `t==0`
+by construction.
+
+Validation (frozen SceauxCastle, WSS on, single thread; **independently re-run by the
+reviewer from a fresh build**): default byte-exact — all 4 reference mesh md5s reproduced
+(`ec75a12e…`/`e14c9f89…`/`376635fb…`/`a473f42a…`); all-options-at-defaults run identical;
+both ctest suites green; unknown semantics rejected at Initialize.
+
+| arm | raw V/F | max-flow | fired | t==0 no-op | saturated |
+|---|---|---|---|---|---|
+| `product` | 11920/23819 | 5.37e+08 | 5128 | 922 (pairs) | **1648** (pairs) |
+| `paper` | 11920/23821 | 6.68e+06 | 5128 | 226 (cells) | **0** |
+| `add` | 11436/22865 | 4.73e+05 | 5128 | 0 | 0 |
+| `max` | 11436/22865 | 8.53e+04 | 5128 | 0 | 0 |
+
+Readings: `paper` eliminates the saturation channel entirely (1648 → 0) and drops the flow by
+two orders of magnitude — the geometric per-view divergence is confirmed to be the whole
+saturation story. The structural `t==0` no-op survives in `paper` (226 cells) as predicted —
+base t at ~1σ, enforcement at ~4σ, different cells. `add` and `max` produce different graphs
+(different flows) but the same cut on this scene: every fired cell lands ≥ kAbs=1000, far
+above neighbouring facet capacities. Cut-equality says nothing about scenes with real weak
+surfaces — that is what the bench arms are for.
+
+Quality co-scaling (Phase 2 mechanism arm): scales kQual by the mean of exactly the per-view
+confidences InsertViews consumed (over the inserted points), logged at DEBUG_EXTRA; strict
+no-op + VERBOSE warning when the cloud carries no weights (md5-proven on two inputs). On the
+re-fused SceauxCastle (mean conf 0.627): weighted 50 956 raw vertices → co-scaled 51 476 vs
+constant-weight 51 558 — co-scaling moves the weighted result back toward the constant-weight
+one, the direction the Phase 2 mechanism hypothesis predicts (one small scene, no F1 claim).
+
+Known cosmetic pre-existing issue recorded: the insertion block's local `lt` shadows
+`DEFINE_LOG_NAME(lt, …)`, mis-tagging log lines emitted from that scope (e.g. "Delaunay
+tetrahedralization completed" prints as `[ImgCache]`); the co-scale DEBUG_EXTRA inherits it.
+Fixing the shadowing would change existing log output — deferred.
+
+Bench sequence (read each before launching the next; no builds while benches run):
+(C) quality co-scaling on the frozen clouds where Phase 2 weighted rows exist — tests the
+Barn −0.293 mechanism hypothesis; (A) kAbs/kOutl recalibration sweep at fss=1 on the
+`@runFusionStats` clouds — the fss collapse is the sharpest signal; (B) semantics arms at
+default constants; then the carve companion re-test (Phase 5.1 verdict).
