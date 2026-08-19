@@ -146,12 +146,36 @@ public:
 	void PointCloudFilter(int thRemove=-1);
 
 	// Mesh reconstruction
+	// hard-constraint capacity of the cells containing a camera; not exposed by the apps
+	static constexpr float kInfCapacity = (float)(INT_MAX/8);
+	// experiment switches; every member defaults to the shipped behavior, so an omitted
+	// struct leaves the reconstruction bit-identical
+	struct ReconstructMeshParams {
+		// t-edge enforcement of the weakly supported surfaces classifier (ISRN-2014 Eq. 8):
+		// PRODUCT multiplies the target cell's t-edge by epsAbs once per firing (vertex, view)
+		// pair - the shipped behavior, a per-view product that diverges geometrically;
+		// PAPER sums epsAbs over the firing pairs of a cell and multiplies once - the fidelity
+		// restoration; ADD and MAX replace the multiply and so drop the alpha^2 unit defect
+		// Eq. 8 itself carries - deliberate departures from the paper, not restorations
+		enum WeakSurfEnforcement {
+			WSE_PRODUCT = 0,
+			WSE_PAPER,
+			WSE_ADD,
+			WSE_MAX
+		};
+		WeakSurfEnforcement weakSurfEnforcement = WSE_PRODUCT;
+		// scale kQual by the mean confidence of the consumed point weights: weighting shrinks
+		// every data-term capacity by that mean while the quality term keeps its unit-vote
+		// calibration; no-op if the point-cloud carries no weights
+		bool bQualityCoScale = false;
+	};
 	// carveRaysFile: optional sidecar of confident depth pixels fusion dropped (see UnfusedPixel),
 	// replayed as free-space rays that carve without inserting vertices (empty - disabled)
 	bool ReconstructMesh(float distInsert=2, bool bUseFreeSpaceSupport=true, bool bUseOnlyROI=false,
 						 float kSigma=2.f, float kQual=1.f, float kb=4.f,
 						 float kf=3.f, float kRel=0.1f/*max 0.3*/, float kAbs=1000.f/*min 500*/, float kOutl=400.f/*max 700.f*/,
-						 float kInf=(float)(INT_MAX/8), const String& carveRaysFile=String());
+						 float kInf=kInfCapacity, const String& carveRaysFile=String(),
+						 const ReconstructMeshParams& params=ReconstructMeshParams());
 
 	// Mesh refinement
 	bool RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsigned nMaxViews, float fDecimateMesh, unsigned nCloseHoles, unsigned nEnsureEdgeSize,

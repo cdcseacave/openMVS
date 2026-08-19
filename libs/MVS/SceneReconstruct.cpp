@@ -451,8 +451,13 @@ struct walk_stats_t {
 	uint64_t nWssHullExit; // intersectFace() stepped outside the convex hull
 	uint64_t nWssSkipped; // (vertex, view) pair dropped from the weakly supported surfaces classifier
 	uint64_t nWssFired; // classifier accepted the pair and reinforced the cell's t-edge
-	uint64_t nWssNoopZeroT; // ... on a cell with a zero t-edge, so the reinforcement is a no-op
-	uint64_t nWssSaturated; // ... on a cell whose t-edge is non-finite afterwards
+	// the two verdicts below read the target cell's t-edge after the enforcement, so the
+	// enforcement semantics decides what they count: PRODUCT/ADD/MAX update the cell in place and
+	// count per firing pair, PAPER defers its single multiply to a pass over the target cells and
+	// counts per cell there. The zero t-edge is unreachable by construction in ADD/MAX (both raise
+	// it above kAbs), which is the point of those arms, so a zero count is the expected reading
+	uint64_t nWssNoopZeroT; // ... left the t-edge zero, so the reinforcement is a no-op
+	uint64_t nWssSaturated; // ... left the t-edge non-finite
 	uint64_t nWalksCarve; // carve-only ray walks started (no vertex, no unary term)
 	uint64_t nCarveRayDropped; // carve walk found no facet to cross, the whole ray is discarded
 	uint64_t nCarveWalkAborted; // carve walk stopped before the cell containing its point
@@ -933,12 +938,17 @@ float computePlaneSphereAngle(const delaunay_t& Tr, const facet_t& facet)
 bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bUseOnlyROI,
 							float kSigma, float kQual, float kb,
 							float kf, float kRel, float kAbs, float kOutl,
-							float kInf, const String& carveRaysFile
+							float kInf, const String& carveRaysFile,
+							const ReconstructMeshParams& params
 )
 {
 	using namespace DELAUNAY;
 	ASSERT(!pointcloud.IsEmpty());
 	mesh.Release();
+
+	// the quality co-scaling reads the per-view confidences, which a constant-weight run drops
+	if (params.bQualityCoScale && pointcloud.pointWeights.IsEmpty())
+		VERBOSE("warning: quality co-scaling ignored, the point-cloud carries no point weights");
 
 	// load the carve-only rays before anything is built, so a corrupt file costs nothing
 	CarveRayArr carveRays;
@@ -1048,6 +1058,24 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 			++progress;
 		});
 		progress.close();
+		// co-scale the quality term by the mean confidence of the weights consumed above (one
+		// per used point and view, the same values InsertViews accumulated into alpha_vis):
+		// weighting scales every data-term capacity by that mean while the quality term keeps
+		// its unit-vote calibration, tilting the energy balance towards the quality term
+		if (params.bQualityCoScale && !pointcloud.pointWeights.IsEmpty()) {
+			double sumWeights(0);
+			size_t numWeights(0);
+			for (std::ptrdiff_t idx: indices) {
+				const PointCloud::WeightArr& weights = pointcloud.pointWeights[(PointCloud::Index)idx];
+				FOREACHPTR(pWeight, weights)
+					sumWeights += *pWeight;
+				numWeights += weights.size();
+			}
+			ASSERT(numWeights > 0);
+			const float meanWeight((float)(sumWeights/(double)numWeights));
+			kQual *= meanWeight;
+			DEBUG_EXTRA("Quality factor co-scaled by the mean point confidence %g: %g", meanWeight, kQual);
+		}
 		pointcloud.Release();
 		if (delaunay.dimension() < 3) {
 			VERBOSE("error: too few or degenerate points for Delaunay reconstruction (dimension %d)", delaunay.dimension());
@@ -1251,6 +1279,12 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 		// enforce t-edges for each point-camera pair with free-space support weights
 		if (bUseFreeSpaceSupport) {
 		TD_TIMER_STARTD();
+		// Eq. 8 scales the t-edge once by the sum of the jump evidence of every firing pair, so
+		// that arm accumulates the sum per target cell here and multiplies in the pass below;
+		// one float per cell, allocated only by this arm
+		std::vector<edge_cap_t> wssEvidence;
+		if (params.weakSurfEnforcement == ReconstructMeshParams::WSE_PAPER)
+			wssEvidence.assign(infoCells.size(), edge_cap_t(0));
 		#ifdef DELAUNAY_USE_OPENMP
 		const int64_t nVerts((int64_t)vertexHandles.size());
 		#pragma omp parallel
@@ -1318,13 +1352,48 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 				const edge_cap_t epsAbs(beta-gamma);
 				const edge_cap_t epsRel(gamma/beta);
 				if (epsRel < kRel && epsAbs > kAbs && gamma < kOutl) {
-					edge_cap_t& t(infoCells[inter.ncell->info()].t);
+					const cell_size_t ncellID(inter.ncell->info());
 					++stats.nWssFired;
-					#ifdef DELAUNAY_USE_OPENMP
-					#pragma omp atomic
-					#endif
-					t *= epsAbs;
-					// t is only ever scaled while this loop runs, so neither verdict below depends
+					if (params.weakSurfEnforcement == ReconstructMeshParams::WSE_PAPER) {
+						// only the sum is built here; the single multiply and both verdicts
+						// follow in the deferred pass, once every pair of this cell fired
+						edge_cap_t& evidence(wssEvidence[ncellID]);
+						#ifdef DELAUNAY_USE_OPENMP
+						#pragma omp atomic
+						#endif
+						evidence += epsAbs;
+						continue;
+					}
+					// the departure arms carry the gain kw of the enforced jump; the shipped
+					// product has no such factor (it scales by the bare epsAbs), so kw stays 1
+					constexpr edge_cap_t kwJump(1);
+					edge_cap_t& t(infoCells[ncellID].t);
+					switch (params.weakSurfEnforcement) {
+					case ReconstructMeshParams::WSE_ADD: {
+						#ifdef DELAUNAY_USE_OPENMP
+						#pragma omp atomic
+						#endif
+						t += kwJump*epsAbs;
+						break; }
+					case ReconstructMeshParams::WSE_MAX: {
+						// max has no atomic form, and only the accepted pairs reach it
+						const edge_cap_t jump(kwJump*epsAbs);
+						#ifdef DELAUNAY_USE_OPENMP
+						#pragma omp critical (WssEnforce)
+						#endif
+						{
+							if (t < jump)
+								t = jump;
+						}
+						break; }
+					default: {
+						#ifdef DELAUNAY_USE_OPENMP
+						#pragma omp atomic
+						#endif
+						t *= epsAbs;
+						break; }
+					}
+					// t only ever grows while this loop runs, so neither verdict below depends
 					// on which of the concurrent updates of the same cell this read observes
 					const edge_cap_t tCur(t);
 					if (tCur == 0)
@@ -1337,6 +1406,22 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 		#ifdef DELAUNAY_USE_OPENMP
 		} // omp parallel
 		#endif
+		// Eq. 8: one multiply per target cell by the summed jump evidence; a cell no pair fired
+		// at keeps its t-edge, so the sum is applied only where it is positive
+		if (params.weakSurfEnforcement == ReconstructMeshParams::WSE_PAPER) {
+			walk_stats_t& stats(GetWalkStats());
+			for (size_t ci=0; ci<infoCells.size(); ++ci) {
+				const edge_cap_t evidence(wssEvidence[ci]);
+				if (evidence == 0)
+					continue;
+				edge_cap_t& t(infoCells[ci].t);
+				t *= evidence;
+				if (t == 0)
+					++stats.nWssNoopZeroT;
+				else if (!ISFINITE(t))
+					++stats.nWssSaturated;
+			}
+		}
 		DEBUG_ULTIMATE("\tt-edge reinforcement completed in %s", TD_TIMER_GET_FMT().c_str());
 		}
 		#endif

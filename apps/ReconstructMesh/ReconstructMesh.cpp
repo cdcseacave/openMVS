@@ -65,6 +65,13 @@ bool bUseConstantWeight;
 bool bUseFreeSpaceSupport;
 float fThicknessFactor;
 float fQualityFactor;
+float fSupportFactor;
+float fFrontFactor;
+float fRelativeFactor;
+float fAbsoluteFactor;
+float fOutlierFactor;
+String strWssSemantics;
+Scene::ReconstructMeshParams reconstructParams;
 float fDecimateMesh;
 unsigned nTargetFaceNum;
 float fRemoveSpurious;
@@ -82,6 +89,23 @@ String strExportType;
 String strConfigFileName;
 boost::program_options::variables_map vm;
 } // namespace OPT
+
+// map the weakly-supported-surfaces enforcement name to its semantics
+bool ParseWeakSurfEnforcement(const String& name, Scene::ReconstructMeshParams::WeakSurfEnforcement& enforcement)
+{
+	const String lowerName(name.ToLower());
+	if (lowerName == _T("product"))
+		enforcement = Scene::ReconstructMeshParams::WSE_PRODUCT;
+	else if (lowerName == _T("paper"))
+		enforcement = Scene::ReconstructMeshParams::WSE_PAPER;
+	else if (lowerName == _T("add"))
+		enforcement = Scene::ReconstructMeshParams::WSE_ADD;
+	else if (lowerName == _T("max"))
+		enforcement = Scene::ReconstructMeshParams::WSE_MAX;
+	else
+		return false;
+	return true;
+}
 
 class Application {
 public:
@@ -132,6 +156,16 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("free-space-support,f", boost::program_options::value(&OPT::bUseFreeSpaceSupport)->default_value(false), "exploits the free-space support in order to reconstruct weakly-represented surfaces")
 		("thickness-factor", boost::program_options::value(&OPT::fThicknessFactor)->default_value(1.f), "multiplier adjusting the minimum thickness considered during visibility weighting")
 		("quality-factor", boost::program_options::value(&OPT::fQualityFactor)->default_value(1.f), "multiplier adjusting the quality weight considered during graph-cut")
+		// every default below is the same value Scene.h declares for the matching parameter of
+		// Scene::ReconstructMesh (kb, kf, kRel, kAbs, kOutl) or member of ReconstructMeshParams,
+		// so the single call site can pass them all and still leave the default path unchanged
+		("support-factor", boost::program_options::value(&OPT::fSupportFactor)->default_value(4.f), "multiplier adjusting the free-space support window behind the point (kb)")
+		("front-factor", boost::program_options::value(&OPT::fFrontFactor)->default_value(3.f), "multiplier adjusting the free-space support window in front of the point (kf)")
+		("relative-factor", boost::program_options::value(&OPT::fRelativeFactor)->default_value(0.1f), "maximum relative free-space support accepted by the weakly-supported-surfaces classifier (kRel)")
+		("absolute-factor", boost::program_options::value(&OPT::fAbsoluteFactor)->default_value(1000.f), "minimum free-space support jump accepted by the weakly-supported-surfaces classifier (kAbs)")
+		("outlier-factor", boost::program_options::value(&OPT::fOutlierFactor)->default_value(400.f), "maximum free-space support behind the point accepted by the weakly-supported-surfaces classifier (kOutl)")
+		("wss-semantics", boost::program_options::value<std::string>(&OPT::strWssSemantics)->default_value(_T("product")), "t-edge enforcement of the weakly-supported-surfaces classifier: product (per firing view), paper (sum, then one multiply), add or max")
+		("quality-co-scale", boost::program_options::value(&OPT::reconstructParams.bQualityCoScale)->default_value(false), "scale the quality factor by the mean point confidence (no-op if the point-cloud carries no weights)")
 		;
 	boost::program_options::options_description config_clean("Clean options");
 	config_clean.add_options()
@@ -201,6 +235,10 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 	if (OPT::strInputFileName.empty())
 		return false;
 	OPT::strExportType = OPT::strExportType.ToLower() == _T("obj") ? _T(".obj") : _T(".ply");
+	if (!ParseWeakSurfEnforcement(OPT::strWssSemantics, OPT::reconstructParams.weakSurfEnforcement)) {
+		VERBOSE("error: unknown weakly-supported-surfaces semantics '%s' (product, paper, add or max)", OPT::strWssSemantics.c_str());
+		return false;
+	}
 
 	// initialize optional options
 	Util::ensureValidPath(OPT::strPointCloudFileName);
@@ -450,13 +488,12 @@ int main(int argc, LPCTSTR* argv)
 			TD_TIMER_START();
 			if (OPT::bUseConstantWeight)
 				scene.pointcloud.pointWeights.Release();
-			// the carve-rays file is the last parameter of ReconstructMesh, so the graph-cut constants
-			// in between are spelled out only on the carving path, leaving the default path on the
-			// values declared in Scene.h
-			if (!(OPT::strCarveRaysFileName.empty() ?
-					scene.ReconstructMesh(OPT::fDistInsert, OPT::bUseFreeSpaceSupport, OPT::bUseOnlyROI, OPT::fThicknessFactor, OPT::fQualityFactor) :
-					scene.ReconstructMesh(OPT::fDistInsert, OPT::bUseFreeSpaceSupport, OPT::bUseOnlyROI, OPT::fThicknessFactor, OPT::fQualityFactor,
-						4.f, 3.f, 0.1f, 1000.f, 400.f, (float)(INT_MAX/8), MAKE_PATH_SAFE(OPT::strCarveRaysFileName))))
+			// MAKE_PATH_SAFE prepends the working folder, so an unset carve-rays file has to stay
+			// an empty string to keep meaning disabled
+			const String carveRaysFile(OPT::strCarveRaysFileName.empty() ? String() : MAKE_PATH_SAFE(OPT::strCarveRaysFileName));
+			if (!scene.ReconstructMesh(OPT::fDistInsert, OPT::bUseFreeSpaceSupport, OPT::bUseOnlyROI, OPT::fThicknessFactor, OPT::fQualityFactor,
+					OPT::fSupportFactor, OPT::fFrontFactor, OPT::fRelativeFactor, OPT::fAbsoluteFactor, OPT::fOutlierFactor,
+					Scene::kInfCapacity, carveRaysFile, OPT::reconstructParams))
 				return EXIT_FAILURE;
 			VERBOSE("Mesh reconstruction completed: %u vertices, %u faces (%s)", scene.mesh.vertices.size(), scene.mesh.faces.size(), TD_TIMER_GET_FMT().c_str());
 			#if TD_VERBOSE != TD_VERBOSE_OFF
