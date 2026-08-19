@@ -183,7 +183,7 @@ public:
 
 		// Reconstruct mesh
 		if (!mvsScene.ReconstructMesh(options.minPointDistance, options.useFreeSpaceSupport, options.useOnlyROI,
-			4, options.thicknessFactor, options.qualityFactor))
+			options.thicknessFactor, options.qualityFactor))
 			return false;
 
 		// Crop to ROI if requested
