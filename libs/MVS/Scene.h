@@ -146,10 +146,12 @@ public:
 	void PointCloudFilter(int thRemove=-1);
 
 	// Mesh reconstruction
+	// carveRaysFile: optional sidecar of confident depth pixels fusion dropped (see UnfusedPixel),
+	// replayed as free-space rays that carve without inserting vertices (empty - disabled)
 	bool ReconstructMesh(float distInsert=2, bool bUseFreeSpaceSupport=true, bool bUseOnlyROI=false,
 						 float kSigma=2.f, float kQual=1.f, float kb=4.f,
 						 float kf=3.f, float kRel=0.1f/*max 0.3*/, float kAbs=1000.f/*min 500*/, float kOutl=400.f/*max 700.f*/,
-						 float kInf=(float)(INT_MAX/8));
+						 float kInf=(float)(INT_MAX/8), const String& carveRaysFile=String());
 
 	// Mesh refinement
 	bool RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsigned nMaxViews, float fDecimateMesh, unsigned nCloseHoles, unsigned nEnsureEdgeSize,

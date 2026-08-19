@@ -171,7 +171,33 @@ extern MVS_API float fRandomAngle2Range;
 extern MVS_API float fRandomSmoothDepth;
 extern MVS_API float fRandomSmoothNormal;
 extern MVS_API float fRandomSmoothBonus;
+// path of the unfused-pixels sidecar written by DepthMapsData::DenseFuseDepthMaps (empty - disabled);
+// a working variable set by the caller before the fusion call, deliberately not a configuration
+// option, so an experiment can never leak into a saved densifier configuration file
+extern MVS_API String strExportUnfusedFileName;
 } // namespace OPTDENSE
+/*----------------------------------------------------------------*/
+
+
+// Depth pixels fusion dropped although they are confident: they carry no reliable surface position,
+// but their camera rays are still free-space evidence, so Scene::ReconstructMesh replays them as
+// carve-only rays that never become mesh vertices (see OPTDENSE::strExportUnfusedFileName).
+// The file is little-endian: a header followed by numRecords packed records.
+struct UnfusedPixel {
+	float X[3]; // world position, the same 3D point the fusion probe used
+	uint32_t idxView; // view the pixel belongs to
+	float conf; // recalibrated confidence in [0,1]
+};
+struct UnfusedPixelHeader {
+	static const uint32_t VERSION = 1;
+	char magic[4]; // "MVSU"
+	uint32_t version;
+	uint64_t numRecords;
+	inline bool IsValid() const {
+		return magic[0] == 'M' && magic[1] == 'V' && magic[2] == 'S' && magic[3] == 'U' && version == VERSION;
+	}
+};
+STATIC_ASSERT(sizeof(UnfusedPixel) == 20 && sizeof(UnfusedPixelHeader) == 16); // packed, no padding
 /*----------------------------------------------------------------*/
 
 

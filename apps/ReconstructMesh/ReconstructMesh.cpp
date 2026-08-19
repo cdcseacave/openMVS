@@ -57,6 +57,7 @@ String strOutputFileName;
 String strMeshFileName;
 String strImportROIFileName;
 String strImagePointsFileName;
+String strCarveRaysFileName;
 bool bMeshExport;
 float fDistInsert;
 bool bUseOnlyROI;
@@ -154,6 +155,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("split-max-area", boost::program_options::value(&OPT::fSplitMaxArea)->default_value(0.f), "maximum surface area that a sub-mesh can contain (0 - disabled)")
 		("import-roi-file", boost::program_options::value<std::string>(&OPT::strImportROIFileName), "ROI file name to be imported into the scene")
 		("image-points-file", boost::program_options::value<std::string>(&OPT::strImagePointsFileName), "input filename containing the list of points from an image to project on the mesh (optional)")
+		("carve-rays-file", boost::program_options::value<std::string>(&OPT::strCarveRaysFileName), "input filename containing the confident depth pixels fusion dropped (DensifyPointCloud --export-unfused-file), replayed as free-space rays that carve without inserting vertices (empty - disabled)")
 		;
 
 	boost::program_options::options_description cmdline_options;
@@ -205,6 +207,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 	Util::ensureValidPath(OPT::strOutputFileName);
 	Util::ensureValidPath(OPT::strImportROIFileName);
 	Util::ensureValidPath(OPT::strImagePointsFileName);
+	Util::ensureValidPath(OPT::strCarveRaysFileName);
 	Util::ensureValidPath(OPT::strMeshFileName);
 	if (OPT::strPointCloudFileName.empty() && (ARCHIVE_TYPE)OPT::nArchiveType == ARCHIVE_MVS)
 		OPT::strPointCloudFileName = Util::getFileFullName(OPT::strInputFileName) + _T(".ply");
@@ -447,7 +450,13 @@ int main(int argc, LPCTSTR* argv)
 			TD_TIMER_START();
 			if (OPT::bUseConstantWeight)
 				scene.pointcloud.pointWeights.Release();
-			if (!scene.ReconstructMesh(OPT::fDistInsert, OPT::bUseFreeSpaceSupport, OPT::bUseOnlyROI, OPT::fThicknessFactor, OPT::fQualityFactor))
+			// the carve-rays file is the last parameter of ReconstructMesh, so the graph-cut constants
+			// in between are spelled out only on the carving path, leaving the default path on the
+			// values declared in Scene.h
+			if (!(OPT::strCarveRaysFileName.empty() ?
+					scene.ReconstructMesh(OPT::fDistInsert, OPT::bUseFreeSpaceSupport, OPT::bUseOnlyROI, OPT::fThicknessFactor, OPT::fQualityFactor) :
+					scene.ReconstructMesh(OPT::fDistInsert, OPT::bUseFreeSpaceSupport, OPT::bUseOnlyROI, OPT::fThicknessFactor, OPT::fQualityFactor,
+						4.f, 3.f, 0.1f, 1000.f, 400.f, (float)(INT_MAX/8), MAKE_PATH_SAFE(OPT::strCarveRaysFileName))))
 				return EXIT_FAILURE;
 			VERBOSE("Mesh reconstruction completed: %u vertices, %u faces (%s)", scene.mesh.vertices.size(), scene.mesh.faces.size(), TD_TIMER_GET_FMT().c_str());
 			#if TD_VERBOSE != TD_VERBOSE_OFF
