@@ -901,6 +901,41 @@ the ESA papers (the algorithm is not copyrightable; nobody has done this yet); (
 `eibfs_i.h` into the tree is a maintainer decision — the A/B result should be produced first
 without committing the vendored solver.
 
+### EIBFS A/B (2026-08-19) — NEGATIVE, solver swap closed; no code committed
+
+Measured via an uncommitted third `MaxFlow` wrapper branch plus a standalone dump-replay
+harness (the production Truck graph — 22 722 599 nodes, 45 445 198 edges with capacities —
+dumped from the wrapper and replayed against each solver in isolation; harness + experiment
+diff + graph dump preserved in the session scratchpad under `eibfs/`).
+
+* **Correctness first**: on SceauxCastle the EIBFS-I wrapper (with `freeNodeValue=1` to match
+  the in-tree convention that unreached nodes land on the source side — the two
+  implementations *differ* in this default) reproduced all 4 reference meshes byte-identically.
+* **`reimpls/eibfs_i.h` (EIBFS-I) crashes on the Truck graph**: access violation in
+  `augmentExcesses<false>` (excess-bucket pop, `eibfs_i.h:1186`) after a clean `initGraph`;
+  independent of ArcIdx width (uint32 and uint64 both crash) and not caused by bad capacities
+  (0 non-finite/negative capacities counted at AddNode/AddEdge — incidentally a clean item-10
+  ISFINITE readout for Truck). A separate latent defect was found reading the code: bucket
+  `allocate()` doubles capacity once per call instead of until sufficient. Upstream repo issue
+  not filed (maintainer's call).
+* **`reimpls/eibfs_i_nr.h` (EIBFS-I-NR) works but is not faster**, interleaved ×2 on the
+  identical graph: IBFS init 1.23–1.29 s / solve 26.2–27.0 s; EIBFS-I-NR init 0.07–0.08 s /
+  solve 27.1–27.7 s. Total solver time is a wash. The TPAMI-2022 "Mesh segmentation" advantage
+  does **not** transfer to Delaunay-visibility graphs.
+* Side observation: the in-tree IBFS accumulates its reported `flow` in `float`, which at
+  Truck's ~8.1 M flow magnitude rounds away sub-unit increments — EIBFS-I-NR (double
+  accumulation) reports 8 312 066 vs IBFS 8 121 759 on the identical graph (+2.3 %). The flow
+  value is log-only (the cut itself is what the mesh consumes), so this is cosmetic; worth
+  knowing when comparing flow values across solvers or scenes.
+
+**Phase 3.3 verdict: keep IBFS.** No faster licensable solver exists (license check above),
+and the best available EIBFS implementation is speed-neutral here while its stronger sibling
+crashes. The remaining 3.x speed levers are the graph-build (15 %) and extraction (6.5 %)
+stages — both previously judged not worth touching — so Phase 3 closes with 3.1 (weighting
+deserialization) as its only landed speed win, and Phase 3.4 (coordinate normalization)
+remains a *robustness* item, not a speed item. The experiment edits were fully reverted; the
+restored binary reproduces the SceauxCastle reference md5.
+
 ## Phase 5.0 — fusion drop accounting (2026-08-19) — instrumentation landed as slice 7; first readout
 
 `DepthMapsData::DenseFuseDepthMaps` (the `--fusion-filter 2` default path) now prints at
