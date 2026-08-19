@@ -1134,3 +1134,33 @@ Bench sequence (read each before launching the next; no builds while benches run
 Barn −0.293 mechanism hypothesis; (A) kAbs/kOutl recalibration sweep at fss=1 on the
 `@runFusionStats` clouds — the fss collapse is the sharpest signal; (B) semantics arms at
 default constants; then the carve companion re-test (Phase 5.1 verdict).
+
+### Arm C — quality co-scaling (frozen clouds, tag `phase41-qscale`) — MECHANISM CONFIRMED
+
+Paired single runs, same seed/sampler as Phase 2; the re-run `weighted` rows reproduce the
+Phase 2 rows to ≤0.0002 (noise floor 0.0006) — no binary drift on the weighted path across
+slices 5–10.
+
+| scene | baseline mean | weighted | weighted-qscale | qscale vs weighted | qscale vs baseline |
+|---|---|---|---|---|---|
+| Barn | 0.5576 | 0.2648 | 0.5107 | **+0.246** | −0.047 |
+| Meetingroom | 0.3379 | 0.1606 | 0.3305 | **+0.170** | −0.007 |
+| Ignatius | 0.3295 | 0.3190 | 0.3425 | +0.024 | **+0.013** |
+| Truck | 0.3569 | 0.4094 | 0.4274 | +0.018 | **+0.071** |
+
+**The Phase 2 mechanism hypothesis is confirmed.** One global scalar — kQual × mean point
+confidence — recovers 84 % of Barn's collapse (−0.293 → −0.047) and 96 % of Meetingroom's
+(−0.177 → −0.007), and where weighting already helped it helps more (Truck +0.053 → +0.071,
+now with Ignatius positive too). The collapse signature reverses accordingly: Barn raw faces
+grow 0.75 M → 6.6 M (the inward cut un-collapses), Meetingroom's mesh F1 lands *above* its
+cloud F1 (+0.008 d), and recon time drops (Meetingroom 135 s → 68 s) — the solver stops
+fighting a mis-balanced energy.
+
+**Not defaultable as-is**: Barn −0.047 and Meetingroom −0.007 still violate the §8
+no-regression clause vs the constant-weight baseline, so `--constant-weight 1` stays the
+default. But the diagnosis is now precise: the confidence *signal* was never the problem —
+the quality term's unit-vote calibration was, and the mean-confidence co-scale is only a
+first-order correction (the camera kInf links and the WSS absolute constants also keep unit
+scale, and a global mean cannot fix a spatially varying confidence deficit). Follow-ups
+recorded, not run: co-scale exponent sweep, per-region co-scale — deferred until after arms
+A/B.
