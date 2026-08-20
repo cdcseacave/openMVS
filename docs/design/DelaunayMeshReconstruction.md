@@ -1460,3 +1460,59 @@ scale-sensitive — all scaled arms, including huge+off where the rescale code n
 show ≈0.15-edge median deviation in the cleaned (non-raw) mesh vs native, while the raw
 meshes sit at the float floor. Worth a look if extreme-scale scenes become a supported
 workflow.
+
+## Phase 5.3 — footprint-based σ_v (2026-08-20) — implemented (slice 15); gate NOT met vs adaptive, opt-in retained; footprint ≡ confidence in effect
+
+Implementation (`c34d2623`): `--footprint-sigma` derives σ_v from the mean pixel footprint
+(range/focal over the vertex's (point,view) pairs), read at mesh time from the views alone —
+no .mvs format change, no densification change, works on weightless clouds. Consumed
+relatively (calibrated by σ/median(footprint), so the absolute scale stays the established
+global σ and the canonical-rescale factor is carried exactly — proven identical across
+twelve orders of magnitude of input scale), same [0.25,4]×σ clamp, conf-shrink composes on
+top, competing base with `--adaptive-sigma` (app rejects the combination). The slice-13
+accumulator was widened to carry both per-vertex sums in one table; the shrink arm's
+outputs are byte-identical (HEAD cross-check). Off state byte-exact (5/5 anchors, agent +
+independent reviewer); ctest green. The field is structurally unlike the adaptive one:
+median pinned at exactly 1.0 by the calibration (no global bias, vs adaptive's 0.881),
+0.02 % clamped vs 2.6 %, ~50× cheaper to fill (no edge traversal).
+
+Bench (frozen clouds, tag `phase53-footprint`, n=3):
+
+| scene | baseline | adaptive-σ | footprint | Δ vs base | Δ vs adaptive | foot+conf05 | conf05-only (stage 2) |
+|---|---|---|---|---|---|---|---|
+| Barn | 0.5576 | 0.5647 | 0.5574 | −0.0002 | −0.0073 | 0.5570 | 0.5569 |
+| Ignatius | 0.3295 | 0.3321–25 | 0.3382 | **+0.0087** | +0.0057 | 0.3364 | 0.3380 |
+| Meetingroom | 0.3379 | 0.3383–96 | 0.3384 | +0.0005 | ~0 | 0.3392 | 0.3385 |
+| Truck | 0.3569 | 0.3601–02 | 0.3599 | +0.0030 | ~0 | 0.3579 | 0.3605 |
+
+**§8 gate: NOT met.** Mean vs baseline +0.0030 — at the gate, not beyond it — and vs the
+recommended adaptive default it is mean-neutral with a redistribution (Ignatius +0.0057,
+Barn −0.0073). Opt-in retained.
+
+**The decisive finding: footprint ≡ confidence-shrink in effect.** The footprint arm
+reproduces the stage-2 shrink-only row on every scene to within noise (0.5574/0.5569,
+0.3382/0.3380, 0.3384/0.3385, 0.3599/0.3605) — two independent implementations of the same
+physical signal (range-driven observation quality: near/well-observed → tighter σ), one
+from geometry, one from the recalibrated confidence. And stacking the shrink on the
+footprint base double-counts that signal (foot+conf05 ≤ footprint on 3/4 scenes),
+mirroring stage 2's no-stacking result on the adaptive base. The σ_v picture is now
+complete: there are exactly TWO independent signals — the *physical* one (footprint ≡
+confidence), which owns the object-scene gains (Ignatius +0.0085, Truck +0.003), and the
+*sampling-density* one (median incident edge), which owns Barn (+0.0071) — and they do not
+combine additively in this formulation. Adaptive σ remains the best single default; the
+physical field is the better choice on object-centric captures, available equally via
+`--footprint-sigma` (weightless clouds) or `--sigma-conf-shrink` (weighted clouds).
+
+Speed note on record: the footprint arms run the walks noticeably slower on some scenes
+(Ignatius 229 s vs ~98 s for the conf arms, Meetingroom 139 s vs ~64 s, and Barn
+foot+conf05 332 s) — same σ-field-dependent walk-cost phenomenon as the stage-1
+thickness-088 Barn oddity, still uninvestigated; the adaptive field is the fast one.
+
+### Phase 5.3 / §9 close-out
+This was the last §9 slice. Standing open items across the effort: (1) maintainer
+sign-offs — flip `--adaptive-sigma` default on, flip `--canonical-rescale` default on,
+align library kSigma 2.f→1.f; (2) load-time centering for float-quantized
+large-coordinate clouds (import-side half of Phase 3.4); (3) the mesh-vs-cloud fidelity
+gap (Ignatius cloud 0.77 → mesh 0.34; raw-vs-cleaned scoring arm unrun); (4) P5.2 direct
+dmap meshing parked, P6 deferred; (5) optional: upstream EIBFS-I excess-bucket crash
+report; the scale-sensitive mesh-cleaning stage observed in Phase 3.4.
