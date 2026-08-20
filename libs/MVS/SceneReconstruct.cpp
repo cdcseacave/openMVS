@@ -1039,12 +1039,21 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 	// downstream on the same footing
 	float medianEdge(0);
 	coord_rescale_t rescale;
-	// per-vertex confidence accumulator of the sigma-shrink arm: (sum, count) of the per-view
-	// confidences consumed at insertion, keyed on the vertex the point landed on (several
-	// points merge into one vertex, and the point indices are gone once the cloud is released);
-	// allocated only by that arm and freed as soon as it is folded into confVert below
-	typedef std::unordered_map<const delaunay_t::Vertex*, std::pair<float,uint32_t>> conf_accum_t;
-	conf_accum_t confAccum;
+	// per-vertex accumulator of the two arms that need insertion-time per-point data: (sum, count)
+	// of the per-view confidences for the sigma shrink and of the per-view pixel footprints for
+	// the footprint sigma, keyed on the vertex the point landed on (several points merge into one
+	// vertex, and the point indices are gone once the cloud is released). One table serves both,
+	// so enabling both costs one hash lookup and one node per vertex; allocated only when at
+	// least one arm is on and freed as soon as it is folded into the per-vertex vectors below
+	struct vert_accum_t {
+		float confSum = 0.f;
+		uint32_t confCount = 0;
+		float footSum = 0.f;
+		uint32_t footCount = 0;
+	};
+	typedef std::unordered_map<const delaunay_t::Vertex*, vert_accum_t> vert_accum_map_t;
+	vert_accum_map_t vertAccum;
+	const bool bVertAccum(bConfShrink || params.bFootprintSigma);
 	{
 		TD_TIMER_STARTD();
 
@@ -1070,8 +1079,8 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 		CGAL::spatial_sort(indices.begin(), indices.end(), Search_traits(vertices.data(), delaunay.geom_traits()));
 		// insert vertices
 		Util::Progress progress(_T("Points inserted"), indices.size());
-		if (bConfShrink)
-			confAccum.reserve(indices.size());
+		if (bVertAccum)
+			vertAccum.reserve(indices.size());
 		const float distInsertSq(SQUARE(distInsert));
 		vertex_handle_t hint;
 		delaunay_t::Locate_type lt;
@@ -1142,13 +1151,33 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 			}
 			// update point visibility info
 			hint->info().InsertViews(pointcloud, (PointCloud::Index)idx, params.bConstantVotes);
-			// keep the confidences the votes above just discarded, for the sigma shrink
-			if (bConfShrink) {
-				const PointCloud::WeightArr& weights = pointcloud.pointWeights[(PointCloud::Index)idx];
-				std::pair<float,uint32_t>& acc = confAccum[&*hint];
-				FOREACHPTR(pWeight, weights)
-					acc.first += *pWeight;
-				acc.second += (uint32_t)weights.size();
+			// keep the per-point data the insertion above consumes and then drops, for the sigma arms
+			if (bVertAccum) {
+				vert_accum_t& acc = vertAccum[&*hint];
+				// the confidences the votes just discarded, for the sigma shrink
+				if (bConfShrink) {
+					const PointCloud::WeightArr& weights = pointcloud.pointWeights[(PointCloud::Index)idx];
+					FOREACHPTR(pWeight, weights)
+						acc.confSum += *pWeight;
+					acc.confCount += (uint32_t)weights.size();
+				}
+				// the pixel footprint of the point in each of its views: the range to the camera
+				// over the focal length in pixels, i.e. the scene-unit size one pixel covers at
+				// that range - the localization scale densification worked at. Measured here, in
+				// the scene's own space; the median calibration below carries it into the working
+				// space of the canonical rescale
+				if (params.bFootprintSigma) {
+					FOREACHPTR(pViewID, views) {
+						const Camera& camera = images[*pViewID].camera;
+						const Point3 vecCamPoint(Cast<REAL>(point)-camera.C);
+						const REAL footprint(norm(vecCamPoint)/camera.GetFocalLength());
+						// a broken calibration must not poison the median calibration below
+						if (ISFINITE(footprint) && footprint > 0) {
+							acc.footSum += (float)footprint;
+							++acc.footCount;
+						}
+					}
+				}
 			}
 			++progress;
 		});
@@ -1285,34 +1314,67 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 		// per-vertex uncertainty: the global sigma is kSigma times the median length over all
 		// finite edges, so its local counterpart is the same statistic restricted to the edges
 		// incident to the vertex, clamped to [0.25,4] x global to keep the walks bounded;
-		// indexed like vertexHandles, and allocated only by this arm. The confidence shrink
-		// is the second arm writing this vector: it scales whichever base the first one left
-		// (local median edge, or the global sigma when it is off) by 1 - shrink * conf_v,
-		// the single clamp below closing both
+		// indexed like vertexHandles, and allocated only by this arm. The footprint arm is the
+		// competing base (per-point pixel footprint instead of local edge length), and the
+		// confidence shrink is the third arm writing this vector: it scales whichever base the
+		// others left (local median edge, footprint, or the global sigma when both are off) by
+		// 1 - shrink * conf_v, the single clamp below closing all of them
 		const bool bAdaptiveSigma(params.bAdaptiveSigma);
-		// either arm makes sigma a per-vertex quantity; neither leaves it global everywhere
-		const bool bSigmaVert(bAdaptiveSigma || bConfShrink);
+		// competing bases, so the local median edge wins if a caller sets both (the app rejects
+		// the combination); cleared below if the footprint field turns out to be degenerate
+		bool bFootprintSigma(params.bFootprintSigma && !bAdaptiveSigma);
+		// any of the arms makes sigma a per-vertex quantity; none leaves it global everywhere
+		const bool bSigmaVert(bAdaptiveSigma || bFootprintSigma || bConfShrink);
 		std::vector<float> sigmaVert;
 		if (bSigmaVert) {
 			TD_TIMER_STARTD();
 			const float sigmaVertMin(sigma*0.25f), sigmaVertMax(sigma*4.f);
 			sigmaVert.resize((size_t)nVerts);
-			// fold the per-vertex confidence accumulator into a mean per vertex, indexed like
-			// vertexHandles, and release the accumulator right away
-			std::vector<float> confVert;
+			// fold the per-vertex accumulator into a mean per vertex, indexed like vertexHandles,
+			// and release the accumulator right away
+			std::vector<float> confVert, footVert;
 			double sumConf(0);
+			float footMedian(0.f), footScale(0.f);
 			if (bConfShrink) {
 				confVert.resize((size_t)nVerts);
 				for (int64_t i=0; i<nVerts; ++i) {
 					// every vertex carrying views went through the insertion loop above
-					const conf_accum_t::const_iterator it(confAccum.find(&*vertexHandles[(size_t)i]));
-					ASSERT(it != confAccum.end() && it->second.second > 0);
-					const float conf(it->second.first/(float)it->second.second);
+					const vert_accum_map_t::const_iterator it(vertAccum.find(&*vertexHandles[(size_t)i]));
+					ASSERT(it != vertAccum.end() && it->second.confCount > 0);
+					const float conf(it->second.confSum/(float)it->second.confCount);
 					confVert[(size_t)i] = conf;
 					sumConf += conf;
 				}
-				conf_accum_t().swap(confAccum);
 			}
+			if (bFootprintSigma) {
+				footVert.resize((size_t)nVerts);
+				// the calibration median is taken over the measurable vertices only, so a broken
+				// camera cannot shift it; the copy is what GetMedian reorders
+				FloatArr footprints(0, (FloatArr::IDX)nVerts);
+				for (int64_t i=0; i<nVerts; ++i) {
+					// every vertex carrying views went through the insertion loop above, but all
+					// of its views may have been rejected as non-finite footprints
+					const vert_accum_map_t::const_iterator it(vertAccum.find(&*vertexHandles[(size_t)i]));
+					ASSERT(it != vertAccum.end());
+					const float foot(it->second.footCount ? it->second.footSum/(float)it->second.footCount : 0.f);
+					footVert[(size_t)i] = foot;
+					if (foot > 0)
+						footprints.Insert(foot);
+				}
+				// self-calibration: only the relative shape of the footprint field is consumed,
+				// its absolute scale is replaced by the established global sigma. This is also
+				// what makes the arm correct under the canonical rescale: the footprints are
+				// scene-space lengths while sigma is a working-space length, so the ratio
+				// sigma/median(footprint) carries exactly the scene-to-working factor
+				footMedian = (footprints.IsEmpty() ? 0.f : footprints.GetMedian());
+				if (!ISFINITE(footMedian) || footMedian <= 0) {
+					VERBOSE("warning: footprint sigma ignored, no valid per-vertex pixel footprint could be measured");
+					bFootprintSigma = false;
+					std::vector<float>().swap(footVert);
+				} else
+					footScale = sigma/footMedian;
+			}
+			vert_accum_map_t().swap(vertAccum);
 			#ifdef DELAUNAY_USE_OPENMP
 			#pragma omp parallel
 			{
@@ -1327,8 +1389,8 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 			FloatArr edgeDistsSq;
 			for (int64_t i=0; i<nVerts; ++i) {
 			#endif
-				// base scale: the local median-edge sigma, or the global one when only the
-				// confidence shrink is on
+				// base scale: the local median-edge sigma, the calibrated pixel footprint, or
+				// the global one when only the confidence shrink is on
 				float sigmaV(sigma);
 				if (bAdaptiveSigma) {
 					const vertex_handle_t vi(vertexHandles[(size_t)i]);
@@ -1343,6 +1405,13 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 					ASSERT(!edgeDistsSq.IsEmpty());
 					if (!edgeDistsSq.IsEmpty())
 						sigmaV = SQRT(edgeDistsSq.GetMedian())*kSigma;
+				} else
+				if (bFootprintSigma) {
+					// the vertex footprint relative to the field median, on the global sigma scale;
+					// a vertex whose views all failed the finiteness guard keeps the global sigma
+					const float foot(footVert[(size_t)i]);
+					if (foot > 0)
+						sigmaV = foot*footScale;
 				}
 				// a confident vertex is a better localized one, so it earns a tighter sigma
 				if (bConfShrink)
@@ -1372,9 +1441,12 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 				sigmaRatios.Insert(ratio);
 			}
 			DEBUG_EXTRA("%s sigma: %lld vertices, sigma_v/sigma min %.3f, median %.3f, max %.3f, clamped low %.2f%%, high %.2f%% (%s)",
-				bAdaptiveSigma ? "Adaptive" : "Confidence-shrunk",
+				bAdaptiveSigma ? "Adaptive" : (bFootprintSigma ? "Footprint" : "Confidence-shrunk"),
 				(long long)nVerts, ratioMin, sigmaRatios.GetMedian(), ratioMax,
 				100.f*(float)nClampedLow/(float)nVerts, 100.f*(float)nClampedHigh/(float)nVerts, TD_TIMER_GET_FMT().c_str());
+			if (bFootprintSigma)
+				DEBUG_EXTRA("Footprint sigma calibrated on the field median: median footprint %g scene units/pixel, sigma scale %g",
+					footMedian, footScale);
 			if (bConfShrink)
 				DEBUG_EXTRA("Confidence sigma shrink %g applied over conf_v mean %.3f: sigma_v/sigma median %.3f, votes %s",
 					params.sigmaConfShrink, (float)(sumConf/(double)nVerts), sigmaRatios.GetMedian(),

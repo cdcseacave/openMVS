@@ -169,6 +169,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("grazing-floor", boost::program_options::value(&OPT::reconstructParams.grazingCosFloor)->default_value(1.f), "min factor for grazing-incidence down-weighting of visibility votes on crossed facets; 1 = off")
 		("grazing-exponent", boost::program_options::value(&OPT::reconstructParams.grazingCosExp)->default_value(1.f), "exponent shaping the incidence cosine before the grazing floor is applied")
 		("adaptive-sigma", boost::program_options::value(&OPT::reconstructParams.bAdaptiveSigma)->default_value(false), "derive the point uncertainty sigma per-vertex from its median incident Delaunay edge length, clamped to [0.25,4] x the global sigma")
+		("footprint-sigma", boost::program_options::value(&OPT::reconstructParams.bFootprintSigma)->default_value(false), "derive the point uncertainty sigma per-vertex from its mean pixel footprint (range/focal over its views), calibrated to the global sigma by the median footprint and clamped to [0.25,4] x it; competes with --adaptive-sigma")
 		("sigma-conf-shrink", boost::program_options::value(&OPT::reconstructParams.sigmaConfShrink)->default_value(0.f), "shrink the per-vertex sigma by this fraction of the vertex mean point confidence, keeping the votes at unit scale; 0 = off (no-op if the point-cloud carries no weights)")
 		("canonical-rescale", boost::program_options::value(&OPT::reconstructParams.bCanonicalRescale)->default_value(false), "rescale the triangulation by a power of two so the median Delaunay edge lands near 1, where the ray-walk orientation predicate is calibrated; no-op unless the median edge falls outside [2^-10,2^10]")
 		;
@@ -254,6 +255,10 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 	}
 	if (OPT::reconstructParams.sigmaConfShrink < 0.f || OPT::reconstructParams.sigmaConfShrink >= 1.f) {
 		VERBOSE("error: invalid sigma confidence shrink %g (expected in [0,1), 0 disables the shrink)", OPT::reconstructParams.sigmaConfShrink);
+		return false;
+	}
+	if (OPT::reconstructParams.bAdaptiveSigma && OPT::reconstructParams.bFootprintSigma) {
+		VERBOSE("error: --adaptive-sigma and --footprint-sigma are competing per-vertex sigma bases (local edge length vs pixel footprint), enable only one");
 		return false;
 	}
 

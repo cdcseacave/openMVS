@@ -181,6 +181,16 @@ public:
 		// to [0.25, 4] x the global sigma, so a locally denser sample gets a tighter uncertainty;
 		// false = the single global sigma everywhere, the exact legacy behavior
 		bool bAdaptiveSigma = false;
+		// per-vertex sigma derived from the pixel footprint instead of the local edge length:
+		// footprint_v = mean over the (point, view) pairs merged into the vertex of
+		// ||X - C_view|| / f_view, the scene-unit size of one pixel of that view at that range -
+		// the physical scale densification localized the point at. The field is consumed
+		// relatively: it is calibrated by sigma / median(footprint_v) so the established global
+		// sigma scale (and the working space of the canonical rescale) is preserved, then clamped
+		// to the same [0.25, 4] x global sigma band. Competing base with bAdaptiveSigma - the app
+		// rejects the combination and the library lets bAdaptiveSigma win; needs only the point
+		// views, so it works on a cloud carrying no confidences
+		bool bFootprintSigma = false;
 		// shrink the per-vertex sigma towards the confident end of its range:
 		// sigma_v *= 1 - sigmaConfShrink * conf_v, where conf_v in [0,1] is the mean of the
 		// per-view confidences consumed for that vertex, the result clamped to the same
