@@ -1358,3 +1358,50 @@ Stage 2 (shrink σ_v for high-confidence vertices) is a separate A/B per the pla
 default path carries no confidence at mesh time (`--constant-weight 1` releases the weights
 before insertion), so stage 2 needs plumbing that keeps per-vertex confidence for the σ
 consumer without touching vote scale — next slice.
+
+## Phase 4.3 stage 2 — confidence-shrunk σ_v (2026-08-20) — implemented (slice 13); gate NOT met, opt-in retained
+
+Implementation (`1be150d0`): `--sigma-conf-shrink s` scales σ_v by `1 − s·conf_v`, where
+conf_v is the mean of the per-view confidences consumed at insertion for the points merged
+into the vertex, sharing the single [0.25, 4] × global-σ clamp with the adaptive arm; s
+validated in [0,1), logged no-op when the cloud carries no weights. The Phase 2 trap
+(weighted votes collapse the cut) is closed by construction: `bConstantVotes` keeps the
+votes at unit scale while the weights stay loaded, so confidence reaches σ *only*. Proven
+by the epsilon probe — `s = 1e-9` retains the weights, allocates and consumes the
+confidence channel (logged conf_v mean 0.611), yet is byte-identical to the plain run with
+bit-identical max-flow; and directionally — shrink moves the flow up (+0.5 %) and densifies
+the mesh, the opposite of the weighted-vote regime (−5.1 %, sparser). Off-state and
+`--adaptive-sigma` outputs byte-identical to `25f989df` (6/6 anchors, agent + independent
+reviewer); channel cost +3 MB transient, net wall neutral; ctest green.
+
+Bench (frozen clouds, tag `phase43-sigma2`, n=3 runs/scene; references = stage-1 rows and
+Phase 1/2 baselines above):
+
+| scene | adaptive-σ (stage 1) | +conf03 | Δ | +conf05 | Δ | conf05-only | Δ vs baseline |
+|---|---|---|---|---|---|---|---|
+| Barn | 0.5647 | 0.5649 | +0.0002 | 0.5642 | −0.0005 | 0.5569 | −0.0007 |
+| Ignatius | 0.3321–0.3325 | 0.3316 | −0.0009 | 0.3328 | +0.0003 | **0.3380** | **+0.0085** |
+| Meetingroom | 0.3383–0.3396 | 0.3386 | ~0 | 0.3385 | ~0 | 0.3385 | +0.0006 |
+| Truck | 0.3601–0.3602 | 0.3624 | +0.0022 | 0.3631 | +0.0029 | 0.3605 | +0.0036 |
+
+**§8 gate: NOT met on top of adaptive σ.** Stacked on the recommended default, the shrink
+is noise on three scenes and +0.0022..29 on Truck only (mean +0.0007..14, below +0.003);
+no scene regresses beyond noise, so the switch is safe but stays opt-in at 0.
+
+**The confidence signal itself is real — and largely redundant with adaptivity.** The
+shrink-only arm (global σ base) posts the best Ignatius of the whole phase: 0.3380
+(+0.0085 over baseline, +0.0055 over adaptive σ), with better precision *and* recall on an
+18 % smaller in-crop mesh, plus Truck +0.0036 — but Barn −0.0007 and a +0.0030 mean that
+sits exactly at, not beyond, the gate. Crucially the two mechanisms do not stack: adaptive
++ conf05 on Ignatius (0.3328) recovers almost none of the conf-only gain (0.3380) — where
+confident points cluster, the local-median σ is already tight and the shared 0.25 σ floor
+saturates. Verdict: confidence carries geometry information orthogonal to local density on
+object scenes, but under the adaptive default there is no headroom left at this
+formulation. This is direct motivation for Phase 5.3 (per-point *scale* export from
+densification): a principled per-point σ source could replace the heuristic
+`1 − s·conf` shrink rather than multiply into it.
+
+Interaction on record (from review): with `--constant-weight 1 --sigma-conf-shrink >0` the
+weights now survive into reconstruction, so adding `--quality-co-scale 1` to such a run
+activates the co-scale where it used to no-op silently. Both flags are opt-in and
+default-off; no default run is affected.
