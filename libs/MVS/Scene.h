@@ -175,6 +175,12 @@ public:
 		float grazingCosFloor = 1.f;
 		// exponent shaping the incidence cosine before the floor is applied (>0)
 		float grazingCosExp = 1.f;
+		// per-vertex sigma in the three roles where sigma stands for the point's own positional
+		// uncertainty (soft-visibility exponent, end-cell offset, free-space-support windows):
+		// sigma_v = kSigma * median incident finite-Delaunay-edge length of the vertex, clamped
+		// to [0.25, 4] x the global sigma, so a locally denser sample gets a tighter uncertainty;
+		// false = the single global sigma everywhere, the exact legacy behavior
+		bool bAdaptiveSigma = false;
 	};
 	// carveRaysFile: optional sidecar of confident depth pixels fusion dropped (see UnfusedPixel),
 	// replayed as free-space rays that carve without inserting vertices (empty - disabled)

@@ -1179,17 +1179,80 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 		// than tested inside the loops; this also gives the loops a random-access
 		// index, replacing the locked iterator handoff that used to serialize them.
 		std::vector<vertex_handle_t> vertexHandles;
-
-		// compute the weights for each edge
-		{
-		TD_TIMER_STARTD();
 		vertexHandles.reserve(delaunay.number_of_vertices());
 		for (delaunay_t::Vertex_iterator vi=delaunay.vertices_begin(), vie=delaunay.vertices_end(); vi!=vie; ++vi)
 			if (!vi->info().views.IsEmpty())
 				vertexHandles.push_back(vi);
+		const int64_t nVerts((int64_t)vertexHandles.size());
+
+		// per-vertex uncertainty: the global sigma is kSigma times the median length over all
+		// finite edges, so its local counterpart is the same statistic restricted to the edges
+		// incident to the vertex, clamped to [0.25,4] x global to keep the walks bounded;
+		// indexed like vertexHandles, and allocated only by this arm
+		const bool bAdaptiveSigma(params.bAdaptiveSigma);
+		std::vector<float> sigmaVert;
+		if (bAdaptiveSigma) {
+			TD_TIMER_STARTD();
+			const float sigmaVertMin(sigma*0.25f), sigmaVertMax(sigma*4.f);
+			sigmaVert.resize((size_t)nVerts);
+			#ifdef DELAUNAY_USE_OPENMP
+			#pragma omp parallel
+			{
+			// the threadsafe traversal keeps its visited set thread-local, while the plain
+			// finite_incident_edges() marks the shared cell state the ray-walks also read
+			std::vector<edge_t> edges;
+			FloatArr edgeDistsSq;
+			#pragma omp for schedule(dynamic)
+			for (int64_t i=0; i<nVerts; ++i) {
+			#else
+			std::vector<edge_t> edges;
+			FloatArr edgeDistsSq;
+			for (int64_t i=0; i<nVerts; ++i) {
+			#endif
+				const vertex_handle_t vi(vertexHandles[(size_t)i]);
+				edges.clear();
+				delaunay.finite_incident_edges_threadsafe(vi, std::back_inserter(edges));
+				edgeDistsSq.Empty();
+				for (const edge_t& e: edges) {
+					const cell_handle_t& c(e.first);
+					edgeDistsSq.Insert(normSq(CGAL2MVS<float>(c->vertex(e.second)->point()) - CGAL2MVS<float>(c->vertex(e.third)->point())));
+				}
+				// every finite vertex of a 3D triangulation has at least one finite incident edge
+				ASSERT(!edgeDistsSq.IsEmpty());
+				sigmaVert[(size_t)i] = edgeDistsSq.IsEmpty() ? sigma :
+					CLAMP(SQRT(edgeDistsSq.GetMedian())*kSigma, sigmaVertMin, sigmaVertMax);
+			}
+			#ifdef DELAUNAY_USE_OPENMP
+			} // omp parallel
+			#endif
+			// spread reported in units of the global sigma, so a uniform-scale scene reads ~1
+			FloatArr sigmaRatios(0, (FloatArr::IDX)nVerts);
+			const float invSigma(1.f/sigma);
+			float ratioMin(FLT_MAX), ratioMax(0.f);
+			size_t nClampedLow(0), nClampedHigh(0);
+			for (int64_t i=0; i<nVerts; ++i) {
+				const float sigmaV(sigmaVert[(size_t)i]);
+				if (sigmaV <= sigmaVertMin)
+					++nClampedLow;
+				else if (sigmaV >= sigmaVertMax)
+					++nClampedHigh;
+				const float ratio(sigmaV*invSigma);
+				if (ratioMin > ratio)
+					ratioMin = ratio;
+				if (ratioMax < ratio)
+					ratioMax = ratio;
+				sigmaRatios.Insert(ratio);
+			}
+			DEBUG_EXTRA("Adaptive sigma: %lld vertices, sigma_v/sigma min %.3f, median %.3f, max %.3f, clamped low %.2f%%, high %.2f%% (%s)",
+				(long long)nVerts, ratioMin, sigmaRatios.GetMedian(), ratioMax,
+				100.f*(float)nClampedLow/(float)nVerts, 100.f*(float)nClampedHigh/(float)nVerts, TD_TIMER_GET_FMT().c_str());
+		}
+
+		// compute the weights for each edge
+		{
+		TD_TIMER_STARTD();
 		Util::Progress progress(_T("Points weighted"), delaunay.number_of_vertices());
 		#ifdef DELAUNAY_USE_OPENMP
-		const int64_t nVerts((int64_t)vertexHandles.size());
 		#pragma omp parallel
 		{
 		std::vector<facet_t> facets;
@@ -1200,7 +1263,8 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 		#else
 		std::vector<facet_t> facets;
 		facets.reserve(kFacetsReserve);
-		for (const vertex_handle_t& vi: vertexHandles) {
+		for (int64_t i=0; i<nVerts; ++i) {
+			const vertex_handle_t vi(vertexHandles[(size_t)i]);
 		#endif
 			vert_info_t& vert(vi->info());
 			#ifdef DELAUNAY_WEAKSURF
@@ -1209,6 +1273,10 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 			#endif
 			const point_t& p(vi->point());
 			const Point3 pt(CGAL2MVS<REAL>(p));
+			// the point's own uncertainty, scaling the soft-visibility fall-off and the
+			// end-cell offset below; both reduce to the global sigma when the arm is off
+			const float sigmaV(bAdaptiveSigma ? sigmaVert[(size_t)i] : sigma);
+			const float inv2SigmaSqV(bAdaptiveSigma ? 0.5f/(sigmaV*sigmaV) : inv2SigmaSq);
 			walk_stats_t& stats(GetWalkStats());
 			FOREACH(v, vert.views) {
 				const typename vert_info_t::view_t view(vert.views[v]);
@@ -1234,7 +1302,7 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 					if (++nWalkSteps == kMaxWalkSteps)
 						++stats.nStepCapHit;
 					// assign score, weighted by the distance from the point to the intersection
-					const edge_cap_t wSoft(alpha_vis*(1.f-EXP(-SQUARE((float)inter.dist)*inv2SigmaSq)));
+					const edge_cap_t wSoft(alpha_vis*(1.f-EXP(-SQUARE((float)inter.dist)*inv2SigmaSqV)));
 					const edge_cap_t w(grazing.bEnabled ? wSoft*grazing(inter.facet, inter.ray) : wSoft);
 					edge_cap_t& f(infoCells[inter.facet.first->info()].f[inter.facet.second]);
 					#ifdef DELAUNAY_USE_OPENMP
@@ -1254,7 +1322,7 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 				#endif
 				// find faces intersected by the endpoint-point segment
 				inter.dist = FLT_MAX; inter.bigger = false;
-				const Point3 endPoint(pt+vecCamPoint*(invLenCamPoint*sigma));
+				const Point3 endPoint(pt+vecCamPoint*(invLenCamPoint*sigmaV));
 				const segment_t segEndPoint(MVS2CGAL(endPoint), p);
 				const cell_handle_t endCell(delaunay.locate(segEndPoint.source(), vi->cell()));
 				ASSERT(endCell != cell_handle_t());
@@ -1271,7 +1339,7 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 						++stats.nStepCapHit;
 					// assign score, weighted by the distance from the point to the intersection
 					const facet_t& mf(delaunay.mirror_facet(inter.facet));
-					const edge_cap_t wSoft(alpha_vis*(1.f-EXP(-SQUARE((float)inter.dist)*inv2SigmaSq)));
+					const edge_cap_t wSoft(alpha_vis*(1.f-EXP(-SQUARE((float)inter.dist)*inv2SigmaSqV)));
 					const edge_cap_t w(grazing.bEnabled ? wSoft*grazing(inter.facet, inter.ray) : wSoft);
 					edge_cap_t& f(infoCells[mf.first->info()].f[mf.second]);
 					#ifdef DELAUNAY_USE_OPENMP
@@ -1313,7 +1381,6 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 		if (params.weakSurfEnforcement == ReconstructMeshParams::WSE_PAPER)
 			wssEvidence.assign(infoCells.size(), edge_cap_t(0));
 		#ifdef DELAUNAY_USE_OPENMP
-		const int64_t nVerts((int64_t)vertexHandles.size());
 		#pragma omp parallel
 		{
 		std::vector<facet_t> facets;
@@ -1324,11 +1391,14 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 		#else
 		std::vector<facet_t> facets;
 		facets.reserve(kFacetsReserve);
-		for (const vertex_handle_t& vi: vertexHandles) {
+		for (int64_t i=0; i<nVerts; ++i) {
+			const vertex_handle_t vi(vertexHandles[(size_t)i]);
 		#endif
 			const vert_info_t& vert(vi->info());
 			const point_t& p(vi->point());
 			const Point3f pt(CGAL2MVS<float>(p));
+			// same per-point uncertainty as the weighting loop, here sizing both search windows
+			const float sigmaV(bAdaptiveSigma ? sigmaVert[(size_t)i] : sigma);
 			walk_stats_t& stats(GetWalkStats());
 			FOREACH(v, vert.views) {
 				const uint32_t imageID(vert.views[(vert_info_t::view_vec_t::IDX)v]);
@@ -1339,7 +1409,7 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 				const Point3f vecCamPoint(pt-Cast<float>(camera.C));
 				const float invLenCamPoint(1.f/norm(vecCamPoint));
 				// find faces intersected by the point-camera segment and keep the max free-space support score
-				const Point3f bgnPoint(pt-vecCamPoint*(invLenCamPoint*sigma*kf));
+				const Point3f bgnPoint(pt-vecCamPoint*(invLenCamPoint*sigmaV*kf));
 				const segment_t segPointBgn(p, MVS2CGAL(bgnPoint));
 				intersection_t inter;
 				if (!intersectFace(delaunay, segPointBgn, vi, vert.viewsInfo[v].cell2Cam, facets, inter)) {
@@ -1356,7 +1426,7 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 						beta = fs;
 				} while (intersectFace(delaunay, segPointBgn, facets, facets, inter));
 				// find faces intersected by the point-endpoint segment
-				const Point3f endPoint(pt+vecCamPoint*(invLenCamPoint*sigma*kb));
+				const Point3f endPoint(pt+vecCamPoint*(invLenCamPoint*sigmaV*kb));
 				const segment_t segPointEnd(p, MVS2CGAL(endPoint));
 				if (!intersectFace(delaunay, segPointEnd, vi, vert.viewsInfo[v].cell2End, facets, inter)) {
 					++stats.nWssSkipped;
