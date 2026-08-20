@@ -340,6 +340,26 @@ inline Plane getFacetPlane(const facet_t& facet)
 	return Plane(CGAL2MVS<REAL>(v0), CGAL2MVS<REAL>(v1), CGAL2MVS<REAL>(v2));
 }
 
+// Grazing-incidence down-weighting of the free-space vote deposited on a crossed facet:
+// a ray skimming the facet plane is weaker evidence that the facet separates free space
+// than a ray crossing it frontally, so the vote is scaled by the incidence cosine, shaped
+// by an exponent and floored. Both the facet plane normal (TPlane normalizes the normal of
+// its three-point form) and the walk ray direction are unit vectors, so their dot product
+// is the cosine itself; a floor of 1 makes the factor identically 1 and is the off state.
+struct grazing_t {
+	const float minFactor; // lower bound of the factor; 1 disables the term
+	const float exponent;  // shapes the cosine before the floor is applied
+	const bool bEnabled;
+	const bool bShaped;    // the exponent is worth a pow() call
+	inline grazing_t(float _minFactor, float _exponent)
+		: minFactor(_minFactor), exponent(_exponent), bEnabled(_minFactor < 1.f), bShaped(_exponent != 1.f) {}
+	inline float operator()(const facet_t& facet, const Ray3& ray) const {
+		ASSERT(bEnabled);
+		const float c((float)ABS(getFacetPlane(facet).m_vN.dot(ray.m_vDir)));
+		return MAXF(minFactor, bShaped ? POW(c, exponent) : c);
+	}
+};
+
 
 // Check if a point (p) is coplanar with a triangle (a, b, c);
 // return orientation type
@@ -1144,6 +1164,11 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 		const float inv2SigmaSq(0.5f/(sigma*sigma));
 		distsSq.Release();
 
+		// incidence weighting of the votes deposited by all three walks below
+		const grazing_t grazing(params.grazingCosFloor, params.grazingCosExp);
+		if (grazing.bEnabled)
+			DEBUG_EXTRA("Grazing-incidence down-weighting enabled: floor %g, exponent %g", grazing.minFactor, grazing.exponent);
+
 		// capacity reserved once per thread for the ray-walk facet front, which stays
 		// small: at most the four facets of a cell, or the facets incident to a vertex
 		constexpr size_t kFacetsReserve(64);
@@ -1209,7 +1234,8 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 					if (++nWalkSteps == kMaxWalkSteps)
 						++stats.nStepCapHit;
 					// assign score, weighted by the distance from the point to the intersection
-					const edge_cap_t w(alpha_vis*(1.f-EXP(-SQUARE((float)inter.dist)*inv2SigmaSq)));
+					const edge_cap_t wSoft(alpha_vis*(1.f-EXP(-SQUARE((float)inter.dist)*inv2SigmaSq)));
+					const edge_cap_t w(grazing.bEnabled ? wSoft*grazing(inter.facet, inter.ray) : wSoft);
 					edge_cap_t& f(infoCells[inter.facet.first->info()].f[inter.facet.second]);
 					#ifdef DELAUNAY_USE_OPENMP
 					#pragma omp atomic
@@ -1245,7 +1271,8 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 						++stats.nStepCapHit;
 					// assign score, weighted by the distance from the point to the intersection
 					const facet_t& mf(delaunay.mirror_facet(inter.facet));
-					const edge_cap_t w(alpha_vis*(1.f-EXP(-SQUARE((float)inter.dist)*inv2SigmaSq)));
+					const edge_cap_t wSoft(alpha_vis*(1.f-EXP(-SQUARE((float)inter.dist)*inv2SigmaSq)));
+					const edge_cap_t w(grazing.bEnabled ? wSoft*grazing(inter.facet, inter.ray) : wSoft);
 					edge_cap_t& f(infoCells[mf.first->info()].f[mf.second]);
 					#ifdef DELAUNAY_USE_OPENMP
 					#pragma omp atomic
@@ -1485,7 +1512,8 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 						++stats.nStepCapHit;
 					// assign score, weighted by the distance from the point to the intersection
 					const REAL dist(inter.ray.IntersectsDist(getFacetPlane(inter.facet)));
-					const edge_cap_t w(ray.conf*(1.f-EXP(-SQUARE((float)dist)*inv2SigmaSq)));
+					const edge_cap_t wSoft(ray.conf*(1.f-EXP(-SQUARE((float)dist)*inv2SigmaSq)));
+					const edge_cap_t w(grazing.bEnabled ? wSoft*grazing(inter.facet, inter.ray) : wSoft);
 					edge_cap_t& f(infoCells[inter.facet.first->info()].f[inter.facet.second]);
 					#ifdef DELAUNAY_USE_OPENMP
 					#pragma omp atomic

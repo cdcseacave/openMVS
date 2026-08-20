@@ -166,6 +166,8 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("outlier-factor", boost::program_options::value(&OPT::fOutlierFactor)->default_value(400.f), "maximum free-space support behind the point accepted by the weakly-supported-surfaces classifier (kOutl)")
 		("wss-semantics", boost::program_options::value<std::string>(&OPT::strWssSemantics)->default_value(_T("product")), "t-edge enforcement of the weakly-supported-surfaces classifier: product (per firing view), paper (sum, then one multiply), add or max")
 		("quality-co-scale", boost::program_options::value(&OPT::reconstructParams.bQualityCoScale)->default_value(false), "scale the quality factor by the mean point confidence (no-op if the point-cloud carries no weights)")
+		("grazing-floor", boost::program_options::value(&OPT::reconstructParams.grazingCosFloor)->default_value(1.f), "min factor for grazing-incidence down-weighting of visibility votes on crossed facets; 1 = off")
+		("grazing-exponent", boost::program_options::value(&OPT::reconstructParams.grazingCosExp)->default_value(1.f), "exponent shaping the incidence cosine before the grazing floor is applied")
 		;
 	boost::program_options::options_description config_clean("Clean options");
 	config_clean.add_options()
@@ -237,6 +239,14 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 	OPT::strExportType = OPT::strExportType.ToLower() == _T("obj") ? _T(".obj") : _T(".ply");
 	if (!ParseWeakSurfEnforcement(OPT::strWssSemantics, OPT::reconstructParams.weakSurfEnforcement)) {
 		VERBOSE("error: unknown weakly-supported-surfaces semantics '%s' (product, paper, add or max)", OPT::strWssSemantics.c_str());
+		return false;
+	}
+	if (OPT::reconstructParams.grazingCosFloor < 0.f || OPT::reconstructParams.grazingCosFloor > 1.f) {
+		VERBOSE("error: invalid grazing floor %g (expected in [0,1], 1 disables the down-weighting)", OPT::reconstructParams.grazingCosFloor);
+		return false;
+	}
+	if (OPT::reconstructParams.grazingCosExp <= 0.f) {
+		VERBOSE("error: invalid grazing exponent %g (expected strictly positive)", OPT::reconstructParams.grazingCosExp);
 		return false;
 	}
 

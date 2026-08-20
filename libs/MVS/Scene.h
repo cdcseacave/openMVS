@@ -168,6 +168,13 @@ public:
 		// every data-term capacity by that mean while the quality term keeps its unit-vote
 		// calibration; no-op if the point-cloud carries no weights
 		bool bQualityCoScale = false;
+		// grazing-incidence down-weighting of the visibility votes deposited on the crossed
+		// facets: the vote is scaled by max(grazingCosFloor, |cos(ray, facet normal)|^grazingCosExp),
+		// so a ray skimming a facet is weaker free-space evidence than one crossing it frontally;
+		// a floor of 1 makes the factor identically 1 and so disables the whole term
+		float grazingCosFloor = 1.f;
+		// exponent shaping the incidence cosine before the floor is applied (>0)
+		float grazingCosExp = 1.f;
 	};
 	// carveRaysFile: optional sidecar of confident depth pixels fusion dropped (see UnfusedPixel),
 	// replayed as free-space rays that carve without inserting vertices (empty - disabled)
