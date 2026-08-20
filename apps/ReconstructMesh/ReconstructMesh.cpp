@@ -170,6 +170,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("grazing-exponent", boost::program_options::value(&OPT::reconstructParams.grazingCosExp)->default_value(1.f), "exponent shaping the incidence cosine before the grazing floor is applied")
 		("adaptive-sigma", boost::program_options::value(&OPT::reconstructParams.bAdaptiveSigma)->default_value(false), "derive the point uncertainty sigma per-vertex from its median incident Delaunay edge length, clamped to [0.25,4] x the global sigma")
 		("sigma-conf-shrink", boost::program_options::value(&OPT::reconstructParams.sigmaConfShrink)->default_value(0.f), "shrink the per-vertex sigma by this fraction of the vertex mean point confidence, keeping the votes at unit scale; 0 = off (no-op if the point-cloud carries no weights)")
+		("canonical-rescale", boost::program_options::value(&OPT::reconstructParams.bCanonicalRescale)->default_value(false), "rescale the triangulation by a power of two so the median Delaunay edge lands near 1, where the ray-walk orientation predicate is calibrated; no-op unless the median edge falls outside [2^-10,2^10]")
 		;
 	boost::program_options::options_description config_clean("Clean options");
 	config_clean.add_options()

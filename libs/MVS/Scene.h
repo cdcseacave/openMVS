@@ -191,6 +191,16 @@ public:
 		// per-view confidences, so a run can feed those confidences to sigma while the
 		// energy stays in the uniform-weight regime its constants are tuned for
 		bool bConstantVotes = false;
+		// rescale the triangulation by a power of two so the median Delaunay edge lands near 1,
+		// where the ray-walk orientation predicate is calibrated: that predicate tests an
+		// unnormalized determinant growing as the cube of the edge length against a fixed
+		// absolute epsilon, so a scene whose median edge sits far below one unit collapses to
+		// COPLANAR at every walk step. The factor multiplies exactly in IEEE arithmetic and the
+		// kernel's exact predicates are scale-invariant, so the triangulation is scaled in place
+		// and the inverse applied at extraction; scenes whose median edge already falls inside
+		// [2^-10, 2^10] are left untouched. This repairs the predicate only - geometry already
+		// quantized away by the float storage of PointCloud::Point needs a load-time fix instead
+		bool bCanonicalRescale = false;
 	};
 	// carveRaysFile: optional sidecar of confident depth pixels fusion dropped (see UnfusedPixel),
 	// replayed as free-space rays that carve without inserting vertices (empty - disabled)
