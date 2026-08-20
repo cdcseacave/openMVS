@@ -1405,3 +1405,58 @@ Interaction on record (from review): with `--constant-weight 1 --sigma-conf-shri
 weights now survive into reconstruction, so adding `--quality-co-scale 1` to such a run
 activates the co-scale where it used to no-op silently. Both flags are opt-in and
 default-off; no default run is affected.
+
+## Phase 3.4 — canonical power-of-two rescale (2026-08-20) — implemented (slice 14); robustness fix, default flip recommended
+
+Implementation (`3c51e995`): `--canonical-rescale` multiplies the finished triangulation in
+place by `s = 2^(−round(log2 medianEdge))`, engaged only when |log2(median edge)| > 10. No
+retriangulation: the kernel's exact predicates are scale-invariant and a power-of-two
+factor is exact in IEEE arithmetic, so every cell/vertex handle survives and the inverse at
+extraction round-trips bit-for-bit. The median edge is now measured once at triangulation
+time (hoist proven bit-exact by the off anchors) and reused for σ; camera centers, carve
+rays, the end-cell locate and the hull-facet culling all run in the working space, with the
+frustum test mapped back to the camera's own space through the exact round-trip. Off state
+and flag-on-inside-the-band are byte-identical to `cc3e4080` (5/5 anchors, agent +
+independent reviewer); ctest green, no new warnings.
+
+Validation on ×1e−6 / ×1e+6 copies of the SceauxCastle anchor (via TransformScene,
+`diag(s,s,s)` 3×4 matrix; float-storage quantization is relative, so both magnitudes carry
+the same ≈6e-5-of-an-edge noise as the native cloud — verified):
+- **tiny + off: total collapse**, exactly as the item-8 audit predicted (L=1.19e-7 ≪ the
+  1.1e-4 threshold): 72542/72542 camera rays dropped with empty facet lists (the root site
+  is `fetchCellFacets`, whose hull-facet `orientation()` answers COPLANAR for everything —
+  this is why the rescale must precede camera-cell location, a mid-slice design correction),
+  zero flow, empty mesh.
+- **tiny + on: full rescue** — engages at 2^23, every counter matches native (walk steps
+  within 5, from the scaled cloud's float round-trip costing 2 Delaunay cells), flow
+  18878.3 vs 18878.4, vertex/face counts identical; raw-mesh vertices agree with native to
+  3e-6 scene units (float-storage floor; the zero-deviation off-vs-on-native control
+  validates the metric).
+- **huge + off does NOT collapse but is not clean either** (new finding beyond the audit):
+  at L=1.2e5 the epsilon is ~1e-27 relative and never fires, and near-degenerate
+  configurations resolved by float noise cost 7 vertices/14 faces and 0.13 % of the flow;
+  **huge + on restores the native flow and counts exactly**. The "inert above L≈6" verdict
+  was right about severity, wrong about the epsilon being behaviourally free.
+- Cross-scale consistency: the tiny-on and huge-on meshes, 1e12 apart in input scale, agree
+  to 4e-6 of a median edge.
+- WSS arms (fss 1): tiny/huge + on reproduce every WSS counter, the flow and the counts of
+  the native fss anchor; tiny + off collapses identically (WSS skipped 72542).
+
+**Default-flip recommendation, reserved to the maintainer**: flip `bCanonicalRescale` to
+true. The case is stronger than the adaptive-σ one: inside the band the flag provably does
+nothing (branch, no work, byte-identical output — anchors), and every standard scene is
+deep inside it (T&T frozen scenes L=0.021–0.047, SceauxCastle 0.119, vs band edge 9.8e-4),
+so the flip cannot change any normal run; outside the band the current behavior is an empty
+or silently degraded mesh.
+
+On record, out of this slice's scope (the audit's other half of item 8): geometry already
+quantized by the float `PointCloud::Point` storage at large coordinates (~6 cm at UTM
+magnitude) cannot be repaired at mesh time — that needs centering at load/import time,
+where doubles still exist (Interface importers / CreateStructure). Separate slice, touches
+all pipelines, needs its own validation.
+
+Post-`ReconstructMesh` observation (not this slice): the app's mesh *cleaning* stage is
+scale-sensitive — all scaled arms, including huge+off where the rescale code never runs,
+show ≈0.15-edge median deviation in the cleaned (non-raw) mesh vs native, while the raw
+meshes sit at the float floor. Worth a look if extreme-scale scenes become a supported
+workflow.
