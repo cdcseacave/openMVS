@@ -1257,3 +1257,44 @@ Recorded for a possible later phase, not scheduled: bounded/relative enforcement
 enforcement at s-side scale — every tested arm is effectively binary per cell; max's Truck
 win is the one hint bounding has value), arm C's co-scale exponent / per-region co-scale.
 Next slice: Phase 4.2.
+
+## Phase 4.2 — grazing-incidence down-weighting (2026-08-20) — implemented (slice 11); NEGATIVE for default, stays opt-in
+
+Implementation (`51de49dd`): each crossed-facet vote is scaled by
+`max(floor, |cos(ray, facet_normal)|^exp)` at all three walk sites (camera→point,
+behind-point σ-extension, carve replay); the end-cell unary and the WSS pass are untouched.
+Parameters ride `ReconstructMeshParams` (`--grazing-floor`, default 1 = off;
+`--grazing-exponent`, default 1), validated at CLI parse. A hoisted `grazing_t` functor
+branches around the factor entirely when off — off-state proven byte-identical (4/4
+SceauxCastle reference md5s, agent + independent reviewer runs), all 3 ctest suites green.
+Geometry facts verified in source: the facet-plane normal is unit by construction
+(`Plane.inl:66` normalizes) and every walk seeds a unit ray direction (the carve walk with
+an explicit zero-length guard), so the dot product is the incidence cosine. Degenerate
+(zero-area) facets produce a NaN normal, but those already produce a NaN crossing distance
+in the existing soft weight — same pre-existing hazard class (0.C item 10), no new entry.
+
+Bench (frozen clouds, tag `phase42-grazing`, single runs; baselines = Phase 2 means):
+
+| scene | baseline | floor 0.5 | floor 0.2 | floor 0.2 exp 2 |
+|---|---|---|---|---|
+| Barn | 0.5576 | 0.5376 (−0.020) | 0.5032 (−0.054) | 0.4572 (−0.100) |
+| Ignatius | 0.3295 | 0.3308 (+0.001) | 0.3341 (+0.005) | 0.3341 (+0.005) |
+| Meetingroom | 0.3379 | 0.3184 (−0.020) | 0.2702 (−0.068) | 0.2183 (−0.120) |
+| Truck | 0.3569 | 0.3638 (+0.007) | 0.3667 (+0.010) | 0.3554 (−0.001) |
+
+**Verdict: opt-in only; no default at any setting.** The sign splits by scene type and the
+dose-response is clean and monotone: the object-centric captures (Ignatius, Truck) gain a
+little (+0.001..+0.010), the planar/facade scenes (Barn, Meetingroom) lose 3–10× more, and
+losses scale with strength (mesh mass erodes with it — Meetingroom clean faces 2.89 M →
+1.54 M from floor 0.5 to the exp-2 arm). This *inverts* the plan's Vis2Mesh expectation
+(wins on facades): down-weighting oblique free-space votes while the unary keeps full
+strength starves exactly the surfaces that are only ever crossed obliquely — walls and
+floors swept by cameras moving parallel to them. No setting can clear §8: at the mildest
+arm the Truck gain (+0.0069) is already 3× smaller than the Barn/Meetingroom regressions,
+and both scale together toward zero as floor → 1. Interpolating a floor ≈ 0.75 lands Truck
+at ≈ +0.003 with Barn still ≈ −0.01 — the gate is unreachable on T&T. A per-scene or
+per-region gate (apply only away from planar structures) would be a new mechanism, not a
+tuning of this one; not scheduled.
+
+Next slice: Phase 4.3 (per-point adaptive σ; resolve the CLI `--thickness-factor` 1.0 vs
+library kSigma 2.0 mismatch deliberately while there).
