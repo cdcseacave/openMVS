@@ -238,7 +238,9 @@ struct vert_info_t {
 	#else
 	inline vert_info_t() {}
 	#endif
-	void InsertViews(const PointCloud& pc, PointCloud::Index idxPoint) {
+	// bUnitVotes: deposit a vote of 1 per view even when the point carries confidences,
+	// leaving the energy in the uniform-weight regime while another consumer reads them
+	void InsertViews(const PointCloud& pc, PointCloud::Index idxPoint, bool bUnitVotes) {
 		const PointCloud::ViewArr& _views = pc.pointViews[idxPoint];
 		ASSERT(!_views.IsEmpty());
 		const PointCloud::WeightArr* pweights(pc.pointWeights.IsEmpty() ? NULL : pc.pointWeights.Begin()+idxPoint);
@@ -249,7 +251,7 @@ struct vert_info_t {
 			// the expected value of the constant-weight vote of 1: dimensionless and independent of
 			// the scene's length unit, so it can feed the graph-cut constants (kb, kf, kRel, kAbs,
 			// kOutl, tuned for the uniform-weight regime) directly, with no normalization step
-			const PointCloud::Weight weight(pweights ? (*pweights)[i] : PointCloud::Weight(1));
+			const PointCloud::Weight weight(pweights && !bUnitVotes ? (*pweights)[i] : PointCloud::Weight(1));
 			// insert viewID in increasing order
 			const uint32_t idx(views.FindFirstEqlGreater(viewID));
 			if (idx < views.GetSize() && views[idx] == viewID) {
@@ -969,6 +971,10 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 	// the quality co-scaling reads the per-view confidences, which a constant-weight run drops
 	if (params.bQualityCoScale && pointcloud.pointWeights.IsEmpty())
 		VERBOSE("warning: quality co-scaling ignored, the point-cloud carries no point weights");
+	// same for the confidence-driven sigma shrink: no confidences, nothing to shrink by
+	if (params.sigmaConfShrink > 0 && pointcloud.pointWeights.IsEmpty())
+		VERBOSE("warning: confidence sigma shrink ignored, the point-cloud carries no point weights");
+	const bool bConfShrink(params.sigmaConfShrink > 0 && !pointcloud.pointWeights.IsEmpty());
 
 	// load the carve-only rays before anything is built, so a corrupt file costs nothing
 	CarveRayArr carveRays;
@@ -980,6 +986,12 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 	std::vector<cell_info_t> infoCells;
 	std::vector<camera_cell_t> camCells;
 	std::vector<facet_t> hullFacets;
+	// per-vertex confidence accumulator of the sigma-shrink arm: (sum, count) of the per-view
+	// confidences consumed at insertion, keyed on the vertex the point landed on (several
+	// points merge into one vertex, and the point indices are gone once the cloud is released);
+	// allocated only by that arm and freed as soon as it is folded into confVert below
+	typedef std::unordered_map<const delaunay_t::Vertex*, std::pair<float,uint32_t>> conf_accum_t;
+	conf_accum_t confAccum;
 	{
 		TD_TIMER_STARTD();
 
@@ -1005,6 +1017,8 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 		CGAL::spatial_sort(indices.begin(), indices.end(), Search_traits(vertices.data(), delaunay.geom_traits()));
 		// insert vertices
 		Util::Progress progress(_T("Points inserted"), indices.size());
+		if (bConfShrink)
+			confAccum.reserve(indices.size());
 		const float distInsertSq(SQUARE(distInsert));
 		vertex_handle_t hint;
 		delaunay_t::Locate_type lt;
@@ -1074,7 +1088,15 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 				}
 			}
 			// update point visibility info
-			hint->info().InsertViews(pointcloud, idx);
+			hint->info().InsertViews(pointcloud, (PointCloud::Index)idx, params.bConstantVotes);
+			// keep the confidences the votes above just discarded, for the sigma shrink
+			if (bConfShrink) {
+				const PointCloud::WeightArr& weights = pointcloud.pointWeights[(PointCloud::Index)idx];
+				std::pair<float,uint32_t>& acc = confAccum[&*hint];
+				FOREACHPTR(pWeight, weights)
+					acc.first += *pWeight;
+				acc.second += (uint32_t)weights.size();
+			}
 			++progress;
 		});
 		progress.close();
@@ -1188,13 +1210,34 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 		// per-vertex uncertainty: the global sigma is kSigma times the median length over all
 		// finite edges, so its local counterpart is the same statistic restricted to the edges
 		// incident to the vertex, clamped to [0.25,4] x global to keep the walks bounded;
-		// indexed like vertexHandles, and allocated only by this arm
+		// indexed like vertexHandles, and allocated only by this arm. The confidence shrink
+		// is the second arm writing this vector: it scales whichever base the first one left
+		// (local median edge, or the global sigma when it is off) by 1 - shrink * conf_v,
+		// the single clamp below closing both
 		const bool bAdaptiveSigma(params.bAdaptiveSigma);
+		// either arm makes sigma a per-vertex quantity; neither leaves it global everywhere
+		const bool bSigmaVert(bAdaptiveSigma || bConfShrink);
 		std::vector<float> sigmaVert;
-		if (bAdaptiveSigma) {
+		if (bSigmaVert) {
 			TD_TIMER_STARTD();
 			const float sigmaVertMin(sigma*0.25f), sigmaVertMax(sigma*4.f);
 			sigmaVert.resize((size_t)nVerts);
+			// fold the per-vertex confidence accumulator into a mean per vertex, indexed like
+			// vertexHandles, and release the accumulator right away
+			std::vector<float> confVert;
+			double sumConf(0);
+			if (bConfShrink) {
+				confVert.resize((size_t)nVerts);
+				for (int64_t i=0; i<nVerts; ++i) {
+					// every vertex carrying views went through the insertion loop above
+					const conf_accum_t::const_iterator it(confAccum.find(&*vertexHandles[(size_t)i]));
+					ASSERT(it != confAccum.end() && it->second.second > 0);
+					const float conf(it->second.first/(float)it->second.second);
+					confVert[(size_t)i] = conf;
+					sumConf += conf;
+				}
+				conf_accum_t().swap(confAccum);
+			}
 			#ifdef DELAUNAY_USE_OPENMP
 			#pragma omp parallel
 			{
@@ -1209,18 +1252,28 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 			FloatArr edgeDistsSq;
 			for (int64_t i=0; i<nVerts; ++i) {
 			#endif
-				const vertex_handle_t vi(vertexHandles[(size_t)i]);
-				edges.clear();
-				delaunay.finite_incident_edges_threadsafe(vi, std::back_inserter(edges));
-				edgeDistsSq.Empty();
-				for (const edge_t& e: edges) {
-					const cell_handle_t& c(e.first);
-					edgeDistsSq.Insert(normSq(CGAL2MVS<float>(c->vertex(e.second)->point()) - CGAL2MVS<float>(c->vertex(e.third)->point())));
+				// base scale: the local median-edge sigma, or the global one when only the
+				// confidence shrink is on
+				float sigmaV(sigma);
+				if (bAdaptiveSigma) {
+					const vertex_handle_t vi(vertexHandles[(size_t)i]);
+					edges.clear();
+					delaunay.finite_incident_edges_threadsafe(vi, std::back_inserter(edges));
+					edgeDistsSq.Empty();
+					for (const edge_t& e: edges) {
+						const cell_handle_t& c(e.first);
+						edgeDistsSq.Insert(normSq(CGAL2MVS<float>(c->vertex(e.second)->point()) - CGAL2MVS<float>(c->vertex(e.third)->point())));
+					}
+					// every finite vertex of a 3D triangulation has at least one finite incident edge
+					ASSERT(!edgeDistsSq.IsEmpty());
+					if (!edgeDistsSq.IsEmpty())
+						sigmaV = SQRT(edgeDistsSq.GetMedian())*kSigma;
 				}
-				// every finite vertex of a 3D triangulation has at least one finite incident edge
-				ASSERT(!edgeDistsSq.IsEmpty());
-				sigmaVert[(size_t)i] = edgeDistsSq.IsEmpty() ? sigma :
-					CLAMP(SQRT(edgeDistsSq.GetMedian())*kSigma, sigmaVertMin, sigmaVertMax);
+				// a confident vertex is a better localized one, so it earns a tighter sigma
+				if (bConfShrink)
+					sigmaV *= 1.f - params.sigmaConfShrink*confVert[(size_t)i];
+				// one clamp for both arms, so the shrink cannot push sigma out of the band
+				sigmaVert[(size_t)i] = CLAMP(sigmaV, sigmaVertMin, sigmaVertMax);
 			}
 			#ifdef DELAUNAY_USE_OPENMP
 			} // omp parallel
@@ -1243,9 +1296,14 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 					ratioMax = ratio;
 				sigmaRatios.Insert(ratio);
 			}
-			DEBUG_EXTRA("Adaptive sigma: %lld vertices, sigma_v/sigma min %.3f, median %.3f, max %.3f, clamped low %.2f%%, high %.2f%% (%s)",
+			DEBUG_EXTRA("%s sigma: %lld vertices, sigma_v/sigma min %.3f, median %.3f, max %.3f, clamped low %.2f%%, high %.2f%% (%s)",
+				bAdaptiveSigma ? "Adaptive" : "Confidence-shrunk",
 				(long long)nVerts, ratioMin, sigmaRatios.GetMedian(), ratioMax,
 				100.f*(float)nClampedLow/(float)nVerts, 100.f*(float)nClampedHigh/(float)nVerts, TD_TIMER_GET_FMT().c_str());
+			if (bConfShrink)
+				DEBUG_EXTRA("Confidence sigma shrink %g applied over conf_v mean %.3f: sigma_v/sigma median %.3f, votes %s",
+					params.sigmaConfShrink, (float)(sumConf/(double)nVerts), sigmaRatios.GetMedian(),
+					params.bConstantVotes ? "unit" : "weighted");
 		}
 
 		// compute the weights for each edge
@@ -1275,8 +1333,8 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 			const Point3 pt(CGAL2MVS<REAL>(p));
 			// the point's own uncertainty, scaling the soft-visibility fall-off and the
 			// end-cell offset below; both reduce to the global sigma when the arm is off
-			const float sigmaV(bAdaptiveSigma ? sigmaVert[(size_t)i] : sigma);
-			const float inv2SigmaSqV(bAdaptiveSigma ? 0.5f/(sigmaV*sigmaV) : inv2SigmaSq);
+			const float sigmaV(bSigmaVert ? sigmaVert[(size_t)i] : sigma);
+			const float inv2SigmaSqV(bSigmaVert ? 0.5f/(sigmaV*sigmaV) : inv2SigmaSq);
 			walk_stats_t& stats(GetWalkStats());
 			FOREACH(v, vert.views) {
 				const typename vert_info_t::view_t view(vert.views[v]);
@@ -1398,7 +1456,7 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 			const point_t& p(vi->point());
 			const Point3f pt(CGAL2MVS<float>(p));
 			// same per-point uncertainty as the weighting loop, here sizing both search windows
-			const float sigmaV(bAdaptiveSigma ? sigmaVert[(size_t)i] : sigma);
+			const float sigmaV(bSigmaVert ? sigmaVert[(size_t)i] : sigma);
 			walk_stats_t& stats(GetWalkStats());
 			FOREACH(v, vert.views) {
 				const uint32_t imageID(vert.views[(vert_info_t::view_vec_t::IDX)v]);

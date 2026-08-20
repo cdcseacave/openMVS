@@ -169,6 +169,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("grazing-floor", boost::program_options::value(&OPT::reconstructParams.grazingCosFloor)->default_value(1.f), "min factor for grazing-incidence down-weighting of visibility votes on crossed facets; 1 = off")
 		("grazing-exponent", boost::program_options::value(&OPT::reconstructParams.grazingCosExp)->default_value(1.f), "exponent shaping the incidence cosine before the grazing floor is applied")
 		("adaptive-sigma", boost::program_options::value(&OPT::reconstructParams.bAdaptiveSigma)->default_value(false), "derive the point uncertainty sigma per-vertex from its median incident Delaunay edge length, clamped to [0.25,4] x the global sigma")
+		("sigma-conf-shrink", boost::program_options::value(&OPT::reconstructParams.sigmaConfShrink)->default_value(0.f), "shrink the per-vertex sigma by this fraction of the vertex mean point confidence, keeping the votes at unit scale; 0 = off (no-op if the point-cloud carries no weights)")
 		;
 	boost::program_options::options_description config_clean("Clean options");
 	config_clean.add_options()
@@ -248,6 +249,10 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 	}
 	if (OPT::reconstructParams.grazingCosExp <= 0.f) {
 		VERBOSE("error: invalid grazing exponent %g (expected strictly positive)", OPT::reconstructParams.grazingCosExp);
+		return false;
+	}
+	if (OPT::reconstructParams.sigmaConfShrink < 0.f || OPT::reconstructParams.sigmaConfShrink >= 1.f) {
+		VERBOSE("error: invalid sigma confidence shrink %g (expected in [0,1), 0 disables the shrink)", OPT::reconstructParams.sigmaConfShrink);
 		return false;
 	}
 
@@ -497,8 +502,14 @@ int main(int argc, LPCTSTR* argv)
 			#endif
 			// reconstruct a coarse mesh from the given point-cloud
 			TD_TIMER_START();
-			if (OPT::bUseConstantWeight)
-				scene.pointcloud.pointWeights.Release();
+			if (OPT::bUseConstantWeight) {
+				// the sigma shrink needs the confidences the constant-weight run would drop, so
+				// keep them and neutralize the votes inside the reconstruction instead
+				if (OPT::reconstructParams.sigmaConfShrink > 0)
+					OPT::reconstructParams.bConstantVotes = true;
+				else
+					scene.pointcloud.pointWeights.Release();
+			}
 			// MAKE_PATH_SAFE prepends the working folder, so an unset carve-rays file has to stay
 			// an empty string to keep meaning disabled
 			const String carveRaysFile(OPT::strCarveRaysFileName.empty() ? String() : MAKE_PATH_SAFE(OPT::strCarveRaysFileName));
