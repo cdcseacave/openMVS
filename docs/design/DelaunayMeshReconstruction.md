@@ -1298,3 +1298,63 @@ tuning of this one; not scheduled.
 
 Next slice: Phase 4.3 (per-point adaptive σ; resolve the CLI `--thickness-factor` 1.0 vs
 library kSigma 2.0 mismatch deliberately while there).
+
+## Phase 4.3 stage 1 — per-vertex adaptive σ (2026-08-20) — implemented (slice 12); GATE MET, default flip recommended
+
+Implementation (`25f989df`): `--adaptive-sigma` derives σ per vertex as kSigma × median
+incident finite-Delaunay-edge length, clamped to [0.25, 4] × the global σ (the global σ is
+the same statistic over *all* finite edges, so the local form is its restriction), consumed
+in the three roles where σ is the point's own uncertainty — soft-visibility exponent,
+end-cell offset, WSS window lengths — and nowhere else (carve replay keeps the global).
+The parallel fill uses CGAL's `finite_incident_edges_threadsafe` (the plain traversal
+writes shared per-cell/per-vertex marker state — a data race under OMP against the cells
+the ray-walks read; caught in review, confirmed race-free by 3 multi-threaded repeats with
+byte-identical statistics). Fill cost 3 ms parallel on SceauxCastle, one float per vertex,
+allocated only when enabled. Off-state proven byte-identical (4/4 anchors, agent +
+independent reviewer); all ctest suites green. σ_v health on SceauxCastle: median
+σ_v/σ = 0.881 (expected median-of-medians bias — the per-vertex median de-weights the
+long-edge tail owned by sparse/hull vertices), 0.09 % clamped low, 2.51 % high.
+
+Bench (frozen clouds, tags `phase43-sigma` + `phase43-sigma-b`; adaptive n=3 runs/scene,
+thickness-088 n=2, thickness-2 n=1; baselines = Phase 1/2 means, per-scene repeat spread
+≤ 0.0013):
+
+| scene | baseline | adaptive-σ | Δ | thickness-088 | Δ | thickness-2 | Δ |
+|---|---|---|---|---|---|---|---|
+| Barn | 0.5576 | 0.5647 | **+0.0071** | 0.5564 | −0.0012 | 0.5552 | −0.0024 |
+| Ignatius | 0.3295 | 0.3321–0.3325 | **+0.0027..30** | 0.3286 | −0.0009 | 0.3246 | −0.0049 |
+| Meetingroom | 0.3379 | 0.3383–0.3396 | +0.0004..17 | 0.3388 | +0.0009 | 0.3309 | −0.0070 |
+| Truck | 0.3569 | 0.3601–0.3602 | **+0.0032..33** | 0.3607 | +0.0038 | 0.3376 | −0.0193 |
+
+**§8 gate: MET.** Barn clears ≥+0.003 with 10× margin, Truck and Ignatius sit at the gate,
+Meetingroom is neutral-positive; no scene regresses in any run. Bonus: recon is *faster*
+than baseline on all four scenes (−2..−6 %) with 4–10 % denser meshes. The attribution
+control (`thickness-088`, a global σ matched to the adaptive median) splits the mechanism:
+on Truck/Meetingroom the scalar replicates the win, but on Barn/Ignatius it does not
+(−0.001 both) — there the per-vertex adaptation itself carries +0.004..+0.008. So the win
+is not reducible to "shrink σ globally by 12 %"; mixed local density inside these scenes
+(Barn's structure vs vegetation, Ignatius' statue vs ground) is exactly where local σ
+helps, as the plan predicted for mixed-scale content.
+
+**Default-flip recommendation, reserved to the maintainer** (same convention as the
+Phase 2 rollout decision): flip `bAdaptiveSigma` to true / `--adaptive-sigma` default 1.
+The gate is met with repeats and the change is one line, but it alters every default run's
+output, so it ships only with maintainer sign-off.
+
+Side results:
+- `adaptive-sigma-fss` vs the fss rows is mixed (Ignatius +0.023, Barn −0.006,
+  Meetingroom −0.011, Truck −0.022) — fss stays off-default regardless (Phase 4.1), not
+  actionable.
+- **kSigma default mismatch resolved on data**: `thickness-2` (the *library* default
+  kSigma=2 under the CLI) is strictly worse on all four scenes (−0.002..−0.019). The CLI
+  default 1.0 is the right side. Recommendation: align the library default 2.f → 1.f
+  (affects PythonWrapper/Viewer/API callers — maintainer sign-off; a follow-up slice
+  should validate those callers when flipped).
+- Oddity on record: `thickness-088` Barn recon is ~1.5× slower than baseline (229 s vs
+  152 s, both repeats) while `adaptive-sigma` Barn is the *fastest* (147 s) — walk cost is
+  sensitive to the σ field in a non-obvious way; not investigated.
+
+Stage 2 (shrink σ_v for high-confidence vertices) is a separate A/B per the plan: note the
+default path carries no confidence at mesh time (`--constant-weight 1` releases the weights
+before insertion), so stage 2 needs plumbing that keeps per-vertex confidence for the σ
+consumer without touching vote scale — next slice.
