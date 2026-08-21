@@ -1017,10 +1017,37 @@ void Mesh::Clean(float fDecimate, float fSpurious, bool bRemoveSpikes, unsigned 
 	// smooth mesh
 	if (nSmooth > 0) {
 		#if 1
-		// implicit mean curvature flow: smooths surface along normals (equivalent to VCG VertexCoordLaplacian)
-		// time parameter controls intensity: 1e-4 mild, 1e-3 moderate, 1e-2 strong
-		CLEAN::PMP::smooth_shape(sm.faces(), sm, 1e-3,
-			CGAL::parameters::number_of_iterations(nSmooth));
+		// classic uniform-Laplacian smoothing: each vertex relaxes toward its one-ring
+		// centroid, so the step size follows the local edge scale and the result is
+		// independent of the units or resolution of the scene; a global-time flow
+		// (PMP::smooth_shape) over-smooths the fine regions of mixed-resolution meshes
+		// because its time constant has units of squared scene length
+		{
+		const double lambda(0.5);
+		auto newPts(sm.add_property_map<CLEAN::vertex_descriptor, CLEAN::Point_3>("v:smoothpt").first);
+		for (unsigned iter = 0; iter < nSmooth; ++iter) {
+			for (CLEAN::vertex_descriptor vd : sm.vertices()) {
+				const CLEAN::Point_3& p = sm.point(vd);
+				if (sm.is_isolated(vd) || sm.is_border(vd)) {
+					newPts[vd] = p;
+					continue;
+				}
+				double x(0), y(0), z(0);
+				unsigned n(0);
+				for (CLEAN::vertex_descriptor avd : sm.vertices_around_target(sm.halfedge(vd))) {
+					const CLEAN::Point_3& a = sm.point(avd);
+					x += a.x(); y += a.y(); z += a.z(); ++n;
+				}
+				newPts[vd] = (n == 0) ? p : CLEAN::Point_3(
+					p.x() + lambda*(x/n - p.x()),
+					p.y() + lambda*(y/n - p.y()),
+					p.z() + lambda*(z/n - p.z()));
+			}
+			for (CLEAN::vertex_descriptor vd : sm.vertices())
+				sm.point(vd) = newPts[vd];
+		}
+		sm.remove_property_map(newPts);
+		}
 		#elif 0
 		// tangential relaxation: moves vertices along tangent plane (improves triangle quality, no shape change)
 		CLEAN::PMP::tangential_relaxation(sm,
