@@ -172,6 +172,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("footprint-sigma", boost::program_options::value(&OPT::reconstructParams.bFootprintSigma)->default_value(false), "derive the point uncertainty sigma per-vertex from its mean pixel footprint (range/focal over its views), calibrated to the global sigma by the median footprint and clamped to [0.25,4] x it; competes with --adaptive-sigma")
 		("sigma-conf-shrink", boost::program_options::value(&OPT::reconstructParams.sigmaConfShrink)->default_value(0.f), "shrink the per-vertex sigma by this fraction of the vertex mean point confidence, keeping the votes at unit scale; 0 = off (no-op if the point-cloud carries no weights)")
 		("canonical-rescale", boost::program_options::value(&OPT::reconstructParams.bCanonicalRescale)->default_value(false), "rescale the triangulation by a power of two so the median Delaunay edge lands near 1, where the ray-walk orientation predicate is calibrated; no-op unless the median edge falls outside [2^-10,2^10]")
+		("max-edge-scale", boost::program_options::value(&OPT::reconstructParams.maxEdgeScale)->default_value(0.f), "drop extracted surface facets whose longest edge exceeds this multiple of the median cut-facet longest edge - the gap-spanning webbing grown across occluded space no observation supports (relative units, scale-independent; 0 = off)")
 		;
 	boost::program_options::options_description config_clean("Clean options");
 	config_clean.add_options()
@@ -255,6 +256,10 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 	}
 	if (OPT::reconstructParams.sigmaConfShrink < 0.f || OPT::reconstructParams.sigmaConfShrink >= 1.f) {
 		VERBOSE("error: invalid sigma confidence shrink %g (expected in [0,1), 0 disables the shrink)", OPT::reconstructParams.sigmaConfShrink);
+		return false;
+	}
+	if (OPT::reconstructParams.maxEdgeScale < 0.f) {
+		VERBOSE("error: invalid max edge scale %g (expected >= 0, 0 disables the gate)", OPT::reconstructParams.maxEdgeScale);
 		return false;
 	}
 	if (OPT::reconstructParams.bAdaptiveSigma && OPT::reconstructParams.bFootprintSigma) {

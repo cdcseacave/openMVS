@@ -1876,6 +1876,36 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 		#endif
 		mesh.vertices.Reserve((Mesh::VIndex)nEstimatedNumVerts);
 		mesh.faces.Reserve((Mesh::FIndex)nEstimatedNumVerts*2);
+		// scale-aware webbing gate: every Delaunay vertex IS an input point, so a facet can
+		// stray far from the observed cloud only by spanning it with long edges - the surface
+		// a visibility mesh grows across occluded space (under vehicles, behind walls) that no
+		// observation supports; measure each cut facet by its longest squared edge and drop
+		// the ones beyond maxEdgeScale x the median cut-facet longest edge (both live in the
+		// working space so canonical rescale cancels, and the ratio is scene-independent)
+		const auto maxFacetEdgeSq([&delaunay](const cell_handle_t& ci, int i) {
+			const auto tri(delaunay.triangle(ci, i));
+			return (float)MAXF3(CGAL::squared_distance(tri[0], tri[1]),
+			                    CGAL::squared_distance(tri[1], tri[2]),
+			                    CGAL::squared_distance(tri[2], tri[0]));
+		});
+		float gateEdgeSq(FLT_MAX);
+		if (params.maxEdgeScale > 0) {
+			FloatArr edgesSq(0, nEstimatedNumVerts*2);
+			for (delaunay_t::All_cells_iterator ci=delaunay.all_cells_begin(), ce=delaunay.all_cells_end(); ci!=ce; ++ci) {
+				const cell_size_t ciID(ci->info());
+				for (int i=0; i<4; ++i) {
+					if (delaunay.is_infinite(ci, i)) continue;
+					const cell_handle_t cj(ci->neighbor(i));
+					const cell_size_t cjID(cj->info());
+					if (ciID < cjID) continue;
+					if (graph.IsNodeOnSrcSide(ciID) == graph.IsNodeOnSrcSide(cjID)) continue;
+					edgesSq.Insert(maxFacetEdgeSq(ci, i));
+				}
+			}
+			if (!edgesSq.IsEmpty())
+				gateEdgeSq = edgesSq.GetMedian()*SQUARE(params.maxEdgeScale);
+		}
+		size_t numUnsupportedFaces(0);
 		for (delaunay_t::All_cells_iterator ci=delaunay.all_cells_begin(), ce=delaunay.all_cells_end(); ci!=ce; ++ci) {
 			const cell_size_t ciID(ci->info());
 			for (int i=0; i<4; ++i) {
@@ -1885,6 +1915,10 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 				if (ciID < cjID) continue;
 				const bool ciType(graph.IsNodeOnSrcSide(ciID));
 				if (ciType == graph.IsNodeOnSrcSide(cjID)) continue;
+				if (params.maxEdgeScale > 0 && maxFacetEdgeSq(ci, i) > gateEdgeSq) {
+					++numUnsupportedFaces;
+					continue;
+				}
 				Mesh::Face& face = mesh.faces.AddEmpty();
 				const triangle_vhandles_t tri(getTriangle(ci, i));
 				for (int v=0; v<3; ++v) {
@@ -1902,6 +1936,8 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 			}
 		}
 		delaunay.clear();
+		if (params.maxEdgeScale > 0)
+			DEBUG_EXTRA("Unsupported surface facets removed: %u (longest edge > %g x median)", (unsigned)numUnsupportedFaces, params.maxEdgeScale);
 		DEBUG_ULTIMATE("\tsurface extraction completed in %s", TD_TIMER_GET_FMT().c_str());
 		}
 
