@@ -1650,3 +1650,87 @@ the maintainer's call, alongside the other pending default flips.
   paradoxes (vertex-set vs sampled-surface recall); within-protocol comparisons are unaffected.
 - The Phase 5.3 close-out's "mesh-vs-cloud fidelity gap" open item and its "raw-vs-cleaned
   scoring arm unrun" note are both closed by this section.
+
+## Re-evaluation of every estimation idea on the raw+gated surface (2026-08-21)
+
+Every A/B verdict of the §9 effort was scored on the *cleaned* mesh — through the fixed-time
+MCF smoother now known to have been crushing the small-tau scenes to the ~0.33 regime. This
+campaign re-scores the ideas on the honest metric: the raw graph-cut surface with the k=6
+`--max-edge-scale` gate applied (offline face filter, validated to reproduce the in-recon gate
+to 68 faces in 4.5M), official T&T eval, frozen family-A clouds. Baselines (gated raw):
+Ignatius 0.7036, Truck 0.6298, Barn 0.6069, Meetingroom 0.3959.
+
+### The gate itself is a universal win, and k=4 dominates k=6
+
+| scene | raw (ungated) | k=8 | k=6 | k=4 | input cloud |
+|---|---|---|---|---|---|
+| Ignatius | 0.6986 | 0.7021 | 0.7036 | **0.7048** | 0.7381 |
+| Truck | 0.4835 | 0.6202 | 0.6298 | **0.6441** | 0.7060 |
+| Barn | 0.5704 | — | 0.6069 | **0.6144** | 0.5988 |
+| Meetingroom | 0.2185 | — | 0.3959 | **0.3961** | 0.3225 |
+
+k=4 is better-or-equal on all four scenes (recall never moves by more than 0.008). Gated raw
+already beats the input cloud on Barn and Meetingroom. Recommended default: ON at k=4
+(k=6 as the conservative choice).
+
+### Single-idea re-verdicts (gated k=6 raw F1; Δ vs the scene's gated baseline)
+
+| arm | Ignatius | Truck | Barn | Meetingroom | old (blurred) verdict → new verdict |
+|---|---|---|---|---|---|
+| adaptive-σ | 0.7427 (+.039) | 0.6451 (+.015) | 0.6191 (+.012) | 0.4036 (+.008) | "+0.003..0.007, gate met" → **universal win, 5-12x larger than reported; default-flip case now overwhelming** |
+| conf-shrink 0.5 (global base) | 0.7215 (+.018) | 0.6392 (+.009) | — | — | "+0.0085 best-Ignatius" → real but dominated by adaptive; still does not stack with it (a+c05: Ign +0.0008, Truck +0.0024) |
+| weighted (`--constant-weight 0`) alone | 0.4898 (−.214) | 0.6191 (−.011) | — | — | REJECTED → still rejected alone (Ignatius cut collapses to 241k faces) |
+| weighted + quality co-scale | 0.7380 (+.034) | 0.6455 (+.016) | — | — | "recovers the collapse, not defaultable" → **major win on objects** |
+| free-space-support | 0.6554 (−.048) | 0.5783 (−.052) | — | — | off → confirmed off |
+| grazing floor 0.2 | 0.6552 (−.048) | 0.6024 (−.027) | — | — | "+0.005..+0.010 on objects" → **FLIPPED: harmful everywhere; the apparent object-scene gain was an artifact of the broken smoother** |
+| thickness-factor 2 (library kSigma) | 0.5574 (−.146) | 0.5869 (−.043) | — | — | "strictly worse" → confirmed, much larger; kSigma 2.f→1.f alignment now urgent |
+
+### Stacking (the old "doesn't stack" answers were also blur-scored)
+
+| config | Ignatius | Truck | Barn | Meetingroom |
+|---|---|---|---|---|
+| gated baseline | 0.7036 | 0.6298 | 0.6069 | 0.3959 |
+| adaptive-σ | 0.7427 | 0.6451 | 0.6191 | 0.4036 |
+| adaptive + weighted + co-scale | **0.7497** | **0.6558** | 0.5989 | 0.3848 |
+| + conf-shrink 0.5 (triple) | 0.7492 | 0.6579 | — | — |
+
+adaptive + weighted+co-scale STACKS on the object scenes (+0.007/+0.011 over adaptive alone) —
+a genuinely new result the blur had hidden — but it regresses both planar scenes (Barn −0.020,
+Meetingroom −0.019, recall-paid), the historical Barn objection surviving in attenuated form.
+So the stack is a documented OBJECT-SCENE OPTION, not a default. conf-shrink remains redundant
+in the stack (±0.002, scene-inconsistent). The stack's cut is nearly webbing-free even before
+gating (45-67k faces gated vs ~380-720k for unit votes). Ignatius' raw surface exceeds its
+input cloud by 0.012.
+
+### Speed (graph-cut stage, from the same runs)
+
+adaptive-σ is the fastest arm as well as the most accurate: Ignatius 32.4s (vs 35-50s all
+other single arms), Truck 65.5s ≈ conf05. The weighted arms pay ~1.5-3x in the solve
+(Ignatius wcoscale 108s, a_wcos 53.6s; Truck a_wcos comparable to baseline). fss carves the
+most and solves fastest on Truck (42.5s) but loses 0.05 F1.
+
+### Recommended default: adaptive-σ + gate (all four scenes, raw surface)
+
+| scene | originally shipped | adaptive + gate k6 | adaptive + gate k4 | input cloud |
+|---|---|---|---|---|
+| Ignatius | 0.3295 | 0.7427 | 0.7427* | 0.7381 |
+| Truck | 0.3569 | 0.6451 | **0.6611** | 0.7060 |
+| Barn | 0.5576 | 0.6191 | **0.6257** | 0.5988 |
+| Meetingroom | 0.3379 | 0.4036 | 0.4036* | 0.3225 |
+
+(*k4≈k6 on these scenes per the baseline sweep; not re-run.) Three of four scenes now score
+ABOVE their input cloud (Truck at 94% of its), and adaptive-σ is simultaneously the fastest
+arm. Versus the originally shipped defaults the raw surface gains +0.07..+0.41 F1 per scene.
+
+### Consequences
+
+- The three pending maintainer flips (adaptive-sigma on, canonical-rescale on, kSigma 2→1)
+  are all re-confirmed with 5-12x larger margins; `--max-edge-scale` ON (k≈4) joins them as
+  a recommended default.
+- Grazing down-weighting (P4.2) should be considered for removal or at least documented as
+  harmful: its only support was a scoring artifact of the broken smoother.
+- The weighted+co-scale path (P2/P4.1 arm C) is rehabilitated as an object-scene opt-in
+  (+0.007..+0.011 over adaptive) with a documented planar-scene cost (−0.02).
+- Not re-run: carve-only rays (its rays cannot reach occluded webbing by construction, and
+  the gate now removes that surface geometrically; its prior A/B baseline also used different
+  clouds) and footprint-σ (shown ≡ conf-shrink, which re-confirmed as redundant here).
