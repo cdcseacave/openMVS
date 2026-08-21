@@ -1513,6 +1513,140 @@ This was the last §9 slice. Standing open items across the effort: (1) maintain
 sign-offs — flip `--adaptive-sigma` default on, flip `--canonical-rescale` default on,
 align library kSigma 2.f→1.f; (2) load-time centering for float-quantized
 large-coordinate clouds (import-side half of Phase 3.4); (3) the mesh-vs-cloud fidelity
-gap (Ignatius cloud 0.77 → mesh 0.34; raw-vs-cleaned scoring arm unrun); (4) P5.2 direct
-dmap meshing parked, P6 deferred; (5) optional: upstream EIBFS-I excess-bucket crash
-report; the scale-sensitive mesh-cleaning stage observed in Phase 3.4.
+gap — RESOLVED, root cause was the cleaning smoother, see the 2026-08-21 section below;
+(4) P5.2 direct dmap meshing parked (implementation plan now written:
+`DepthmapMeshingPlan.md`), P6 deferred; (5) optional: upstream EIBFS-I excess-bucket
+crash report; the scale-sensitive mesh-cleaning stage observed in Phase 3.4 — RESOLVED,
+same 2026-08-21 section (it was the fixed-time MCF).
+
+## Mesh-vs-cloud fidelity gap — ROOT CAUSE FOUND & FIXED (2026-08-21)
+
+The standing open item ("Ignatius cloud 0.77 -> mesh 0.34") is resolved. The gap was never in
+the mesh estimation: **the graph-cut surface scores within a few points of the input cloud; the
+`Mesh::Clean` smoothing stage was destroying it.** A second, smaller mechanism (Truck-class
+scenes) is unsupported "webbing" surface, now removable by an opt-in evidence gate.
+
+### The investigation (Ignatius first, per instruction; frozen family-A clouds, official T&T eval)
+
+Instrumented scoring of every pipeline stage (same in-crop 10M-sample protocol as the bench;
+`d_f1` rows in `bench/out_mesh/results.csv` cross-checked to +-0.0006):
+
+| stage scored | P | R | F1 |
+|---|---|---|---|
+| input cloud | 0.7271 | 0.7494 | 0.7381 |
+| Delaunay vertices kept by the cut (points only) | 0.762 | 0.425 | 0.545 |
+| **raw graph-cut mesh (pre-clean)** | **0.6992** | **0.6980** | **0.6986** |
+| after full Clean minus smooth (`--smooth 0`) | 0.6994 | 0.6979 | 0.6986 |
+| after 1 smooth iteration (old MCF) | 0.4989 | 0.4346 | 0.4645 |
+| after 2 smooth iterations = shipped default | 0.3630 | 0.3016 | 0.3295 |
+
+Attribution is airtight: every non-smooth clean step combined (long-edge removal, component
+removal, spikes, hole-closing) costs exactly nothing (0.6986 -> 0.6986), and the two MCF
+iterations produce the entire collapse with clean dose-response. The cleaned mesh also loses
+21% of its in-crop surface area to MCF shrinkage. Error structure before/after: the raw mesh
+has median surface error 1.77mm (fixed frame), no gross junk (P reaches 0.91 at 15mm); the
+cleaned mesh has median error ~4.6mm — a uniform blur, which is why only the small-tau scenes
+(Ignatius tau=3mm, Truck 5mm) collapsed while Barn/Meetingroom (tau=10mm) looked acceptable.
+
+**Root cause** (`libs/MVS/Mesh.cpp`, commit `c99883fc` "mesh: remove VCG and use CGAL for
+cleaning"): the VCG scale-free Laplacian smoothing was replaced by CGAL
+`PMP::smooth_shape` — implicit mean-curvature flow with a **fixed absolute time step 1e-3**.
+That time constant has units of squared scene length: it was evidently calibrated on ~3cm-edge
+meshes (0.03^2 ~= 1e-3) and over-smooths ~20x on Ignatius' ~7mm-edge statue mesh, on any
+metric-scale fine-resolution scene, while a single global time cannot fit a mixed-resolution
+mesh (fine statue + coarse background) at all. This is also the mechanism behind the
+"scale-sensitive mesh cleaning" observation recorded in Phase 3.4.
+
+**Fix**: `Mesh::Clean` now smooths with a classic per-vertex uniform-Laplacian relaxation
+(lambda=0.5, `nSmooth` iterations, borders fixed, deterministic double-buffered update) — each
+vertex moves relative to its own one-ring scale, so the result is unit- and
+resolution-independent, restoring the pre-CGAL behavior class.
+
+### Validation (shipped defaults = smooth 2, official T&T eval)
+
+| scene | cloud F1 | shipped before | raw (no clean) | **shipped after fix** |
+|---|---|---|---|---|
+| Ignatius (tau 3mm) | 0.7381 | 0.3295 | 0.6986 | **0.6960** |
+| Truck (tau 5mm) | 0.7060 | 0.3569 | 0.4835 | **0.5015** |
+| Barn (tau 10mm) | 0.5988 | 0.5576 | 0.5704 | **0.5926** |
+| Meetingroom (tau 10mm) | 0.3225 | 0.3379 | 0.2185 | **0.3650** |
+
+The fixed clean now denoises instead of destroying: on both object scenes it lands at or above
+the raw mesh (Ignatius -0.0026 vs raw with precision up 0.699->0.718; Truck +0.018 vs raw), and
+the two tau=10mm scenes — the ones the old MCF appeared to serve acceptably — also improve over
+the previously shipped result (Barn +0.035, Meetingroom +0.027, the latter now above its input
+cloud). Meetingroom's low raw score is not a counter-signal: its raw indoor mesh carries ~5x the
+cleaned surface area in gross junk faces (16k vs 3.1k area units in-crop) that the non-smooth
+clean steps (long-edge/spurious/component removal) legitimately strip; smoothing choice is
+orthogonal to that.
+
+### Second mechanism — unsupported webbing (Truck-class scenes)
+
+Truck's raw mesh still trails its cloud (0.4835 vs 0.7060) for a different reason: healthy
+recall (0.686 ~= cloud) but precision 0.373. The one-sided ground-level camera ring leaves
+occluded regions (under the chassis, behind walls) where the visibility mesh grows facets no
+ray supports; 10% of faces sit >30mm from ANY input point (p99: 305mm) and carry 41% of the
+in-crop sampled area. The default `--remove-spurious 20` cannot touch them (its threshold
+resolves to ~10 meters on these meshes). Offline face-filter prototypes on the raw mesh:
+
+| filter | faces dropped | P | R | F1 |
+|---|---|---|---|---|
+| none (raw) | — | 0.3733 | 0.6860 | 0.4835 |
+| max edge > 100mm | 9.7% | 0.5871 | 0.6856 | 0.6326 |
+| centroid > 4x median NN spacing from cloud | 11.7% | 0.6082 | 0.6865 | **0.6450** |
+
+Recall is untouched in both — the dropped surface supports nothing real.
+
+**First attempt, REFUTED — visibility-mass gate.** The obvious estimation-side signal is the
+alpha_vis crossing mass the votes accumulate on each facet (webbing should be mass zero: no ray
+enters occluded space). Implemented and validated as `--min-surface-evidence`; it does not work:
+
+| arm | facets removed | P | R | F1 |
+|---|---|---|---|---|
+| Truck raw (no gate) | — | 0.3733 | 0.6860 | 0.4835 |
+| Truck mass < 1e-6 | 2.99M / 4.97M | 0.3850 | 0.5701 | 0.4596 |
+| Truck mass < 0.05 | 3.01M / 4.97M | 0.3836 | 0.5669 | 0.4576 |
+| Ignatius raw (no gate) | — | 0.6992 | 0.6980 | 0.6986 |
+| Ignatius mass < 1e-6 | 2.54M / 4.11M | 0.6876 | 0.6175 | 0.6507 |
+| Ignatius mass < 0.05 | 2.57M / 4.11M | 0.6849 | 0.6078 | 0.6440 |
+
+~60% of cut facets carry mass EXACTLY ZERO on both scenes — including most of the true statue
+surface of Ignatius, which has essentially no webbing. The mechanism: each ray is a 1D needle
+through the tetrahedralization; it crosses only 1-2 facets of a vertex's ~20-facet umbrella, so
+the vote mass lives on a sparse subset of the real surface and no threshold separates webbing
+(zero) from surface (mostly also zero). Recall collapses, precision barely moves. The parameter
+was removed again.
+
+**Shipped gate — `--max-edge-scale <k>`.** The signals that do work offline are geometric, and
+they are nearly the same signal: every Delaunay vertex IS an input point, so a facet can only
+stray far from the observed cloud by spanning it with long edges. The gate drops extracted cut
+facets whose longest edge exceeds k x the median cut-facet longest edge (two passes over the cut
+facets, medians in working space so canonical rescale cancels; ratio units, scene-independent;
+0 = off, byte-identical). Calibration on the raw meshes: Truck median max-edge 17.9mm, so k=6
+(107mm) drops 9.2% of faces — matching the 100mm prototype (9.7%); Ignatius' global median is
+42mm (background-dominated), so k=6 = 254mm sits far above the ~7mm statue facets and only
+removes gap-spanners. Validation (official eval, `--max-edge-scale 6`):
+
+| arm | facets removed | P | R | F1 |
+|---|---|---|---|---|
+| Truck raw, no gate | — | 0.3733 | 0.6860 | 0.4835 |
+| Truck raw, k=6 | 457,918 (9.2%) | 0.5814 | 0.6869 | **0.6298** |
+| Truck k=6 + fixed clean | | 0.5988 | 0.6725 | **0.6335** |
+| Ignatius raw, no gate | — | 0.6992 | 0.6980 | 0.6986 |
+| Ignatius raw, k=6 | 608,815 (14.8%) | 0.7094 | 0.6978 | **0.7036** |
+
+Recall is untouched on both scenes and precision jumps only where webbing existed — the gate
+reproduces its offline prototype in-pipeline (0.6298 vs 0.6326) and is a small pure win even on
+the webbing-free Ignatius (+0.005). Truck end-to-end: 0.3569 shipped before this work, 0.5015
+with the smoothing fix, 0.6335 with fix + gate — 90% of its input cloud's 0.7060. The gate
+ships opt-in (default 0); flipping a default (k~=6) awaits a Barn/Meetingroom no-harm arm and
+the maintainer's call, alongside the other pending default flips.
+
+### Scope notes
+
+- `--min-point-distance` decimation exonerated: inserting all 5.2M points (no decimation)
+  scores 0.6764 raw — slightly WORSE than the decimated 0.6986, at 4.4x graph-cut cost.
+- The per-eval ICP realignment of the T&T toolbox explains small cross-eval comparison
+  paradoxes (vertex-set vs sampled-surface recall); within-protocol comparisons are unaffected.
+- The Phase 5.3 close-out's "mesh-vs-cloud fidelity gap" open item and its "raw-vs-cleaned
+  scoring arm unrun" note are both closed by this section.
