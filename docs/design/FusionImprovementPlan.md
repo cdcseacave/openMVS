@@ -10,8 +10,10 @@ to capture the better family. This plan first establishes **why** the two famili
 then ranks what is actually left to win (§ 4), with protocol (§ 5), slices (§ 6) and reserved
 decisions (§ 7).
 
-Conventions follow `docs/design/DelaunayMeshImprovementPlan.md`: § 4 candidates carry
-mechanism / expected effect / risk / cost; § 5 reuses the § 8 acceptance gates of that plan; § 6 is
+Conventions follow the executed mesh improvement plan (consolidated into
+`docs/design/DelaunayMeshReconstruction.md`): § 4 candidates carry
+mechanism / expected effect / risk / cost; § 5 reuses the acceptance gates recorded in that
+document's § 8; § 6 is
 one reversible commit per slice, each with its own validation; results land in
 `docs/design/DelaunayMeshReconstruction.md` alongside the mesh-side record.
 
@@ -90,10 +92,10 @@ baseline to re-freeze (slice S0) and a set of *further* fusion levers to test (�
 
 ### 1.1 Hypotheses checked and refuted
 
-`docs/design/DelaunayMeshReconstruction.md` (Phase 5.0 T&T readout, ~line 1000) attributes the
-A/B gap to *"a `Densify.ini` in the working folder overriding defaults (reprojection threshold 1.2
-vs today's 1.0, geometric weight 0.1 vs 0.3, pre-recalibration confidence lineage)"*. Two of those
-three claims are wrong and must be corrected (slice S1):
+The Phase 5.0 T&T readout (in the pre-consolidation `DelaunayMeshReconstruction.md`, now git
+history) attributed the A/B gap to *"a `Densify.ini` in the working folder overriding defaults
+(reprojection threshold 1.2 vs today's 1.0, geometric weight 0.1 vs 0.3, pre-recalibration
+confidence lineage)"*. Two of those three claims are wrong (slice S1 records the correction):
 
 - **`Densify.ini` was never read.** `DensifyPointCloud` calls `OPTDENSE::oConfig.Load(OPT::strDenseConfigFileName)`
   (`DensifyPointCloud.cpp:272`) with a name that stays **empty** unless `--dense-config-file` is
@@ -171,7 +173,7 @@ That is the recall mechanism, and it is exactly the observed signature: many mor
 (family A `nDepths/point` ≈ 18.7, family B ≈ 8.0 — `nDepths` sums `fusedViews.size()` over all
 clusters, `:2947`), higher recall, slightly lower precision.
 
-**Post-#1292 residual head-room** (Phase 5.0 T&T accounting, `docs/design/DelaunayMeshReconstruction.md`):
+**Post-#1292 residual head-room** (Phase 5.0 T&T accounting, preserved in git history):
 even *with* the rescue, Ignatius still drops 52.0 % of valid depths (26.4 % low-conf, 25.4 %
 min-pixels), Meetingroom 69.9 % (34.6 / 35.0), Truck 44.0 % (23.6 / 20.3); each scene throws away
 8.7–10.0 M pixels at confidence ≥ 0.7. The channel is not exhausted.
@@ -347,7 +349,7 @@ self-checking partitions, `SceneDensify.cpp:2441-2540`).
 
 ### 4.4 Acceptance gate
 
-Adopted from `DelaunayMeshImprovementPlan.md` § 8 (energy/filtering changes), extended for the
+Adopted from the mesh effort's acceptance gates (`DelaunayMeshReconstruction.md` § 8), extended for the
 downstream cost this plan can move:
 
 - **Quality**: mean paired **cloud**-F1 ≥ **+0.003** beyond noise, **and no scene regressing >
@@ -386,8 +388,9 @@ row and promote `runFusionStats` (4 scenes) to the canonical fusion baseline, `-
 `bench/out_mesh/results.csv`; `--noise-floor` re-run reproduces ≤ 0.0013.
 
 **S1 — Record the provenance finding (doc-only).**
-Correct the Phase-5.0 caveat paragraph in `docs/design/DelaunayMeshReconstruction.md` (the
-`Densify.ini` / "1.0" / "0.3" claims are wrong — § 1.1), insert the § 1 provenance table, and record
+The wrong Phase-5.0 caveat claims (`Densify.ini` / "1.0" / "0.3" — § 1.1) no longer appear in the
+consolidated `DelaunayMeshReconstruction.md`, so the correction half is done; what remains is to
+insert the § 1 provenance table there and record
 that `dc32ab8` and `833e93c` are stranded on `dense-cell-neighbors` and absent from develop.
 *Validation*: none needed; but flag both stranded commits to the maintainer in the same breath.
 
@@ -457,7 +460,7 @@ corresponding slice produces.
 4. **`nFuseViolationMax`** away from `0`, and whether the FSV guard should apply to non-rescued
    points (S5).
 5. **`ReconstructMesh --min-point-distance` 1.5 → 2.0** (S7) — mesh-side; also resolves the
-   CLI-vs-library (1.5 vs 2) mismatch already recorded in `DelaunayMeshImprovementPlan.md` § 0.
+   CLI-vs-library (1.5 vs 2) mismatch recorded during the mesh effort's audit (git history).
 6. **Re-freezing the canonical bench clouds** (S0b) — this rewrites the meaning of every historical
    `bench/out_mesh/results.csv` row and every `docs/design/DelaunayMeshReconstruction.md` table
    measured against them.

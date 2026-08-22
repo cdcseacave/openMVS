@@ -4,15 +4,15 @@ Target: a new, opt-in input mode for `Scene::ReconstructMesh` (`libs/MVS/SceneRe
 that consumes the per-view `.dmap` files directly instead of the fused point-cloud, skipping
 `DepthMapsData::DenseFuseDepthMaps` (`libs/MVS/SceneDensify.cpp:2634`) entirely.
 
-This is the full version of the idea Phase 5 of `docs/design/DelaunayMeshImprovementPlan.md` staged
-as **5.2 — direct dmap-sourced meshing**, parked after 5.1 by
-`docs/design/DelaunayMeshReconstruction.md` (Phase 5.1 close-out). It is written against the
+This is the full version of the idea the executed mesh improvement plan (since consolidated into
+`docs/design/DelaunayMeshReconstruction.md`; the plan file itself lives in git history) staged
+as **5.2 — direct dmap-sourced meshing**, parked after the carve-rays slice. It is written against the
 measurements that phase produced, so most of the "is the dropped evidence real?" question is
 already answered and does not need re-measuring — see § 1.
 
-Conventions follow `DelaunayMeshImprovementPlan.md`: numbered slices, one reversible commit each,
-acceptance gates from its § 8, per-slice verdicts appended to
-`docs/design/DelaunayMeshReconstruction.md`.
+Conventions: numbered slices, one reversible commit each, the acceptance gates recorded in
+`docs/design/DelaunayMeshReconstruction.md` § 8, per-slice verdicts appended to that same
+record.
 
 ---
 
@@ -119,7 +119,9 @@ visibility ray today (§ 0.3).
 3. **Not a volumetric method.** TSDF-style depth fusion (Curless & Levoy VRIP 1996 and its
    learned successors, e.g. RoutedFusion) integrates depth into a regular grid and has no
    visibility-ray energy at all — a different family, out of scope, named here only to delimit it.
-4. **Not a new energy.** σ arms, WSS semantics, grazing, quality co-scale stay exactly as shipped;
+4. **Not a new energy.** The visibility/WSS/quality energy stays exactly as shipped (WSS
+   enforcement-semantics switches and grazing-incidence down-weighting no longer exist in the
+   code at all — both were removed as universally harmful, see `DelaunayMeshReconstruction.md`);
    this plan changes *where the vertices and rays come from*, nothing about what they cost.
 5. **Not a re-litigation of Phase 5.0.** Its drop accounting is the input, not a slice.
 
@@ -445,9 +447,12 @@ win. Must also beat the `carve` variant (alternative E) on the same clouds — t
 ### Slice 3 — per-pixel σ sources *(1 day)*
 
 Plumb the per-pixel footprint (`depth/focal`, exact here) and the per-pixel confidence into the
-existing σ_v accumulator (`SceneReconstruct.cpp:1042-1056`), so `--footprint-sigma` and
-`--sigma-conf-shrink` work on the direct path with a *better* input than the vertex-mean
-reconstruction they use today. No new switches.
+existing σ_v accumulator (`vert_accum_t` in `SceneReconstruct.cpp`), so `--sigma-conf-shrink` works on
+the direct path with a *better* input than the vertex-mean reconstruction it uses today.
+`--footprint-sigma` itself was removed from the code (proven equivalent in effect to the
+confidence signal on every scene tested — see `DelaunayMeshReconstruction.md`); this arm would
+need to reintroduce it from git history (commit `c34d2623`) before it can be plumbed here. No
+new switches otherwise.
 
 **Gate**: the § 8 exact-result discipline — the arms must be no-ops when their flags are off — plus
 a bench arm showing the direct+footprint combination against direct alone.
@@ -505,13 +510,17 @@ the honest reading and keeps the existing column semantics.
 "dmap-s4-r0":   ["--use-depth-maps", "1", "--depth-maps-ray-stride", "0"],
 "dmap-s4-r2":   ["--use-depth-maps", "1", "--depth-maps-ray-stride", "2"],
 "dmap-s4-r1":   ["--use-depth-maps", "1", "--depth-maps-ray-stride", "1"],
-"dmap-s2-r1":   ["--use-depth-maps", "1", "--depth-maps-vertex-stride", "2", "--depth-maps-ray-stride", "1"],
-"dmap-s4-r1-foot": ["--use-depth-maps", "1", "--depth-maps-ray-stride", "1", "--footprint-sigma", "1"]
+"dmap-s2-r1":   ["--use-depth-maps", "1", "--depth-maps-vertex-stride", "2", "--depth-maps-ray-stride", "1"]
 ```
+
+(The `--footprint-sigma` variant this slice originally planned is not currently runnable:
+footprint sigma was removed from the code as proven equivalent in effect to the confidence
+signal — see `DelaunayMeshReconstruction.md`. Reintroduce it from git history, commit
+`c34d2623`, before adding a `-foot` variant back here.)
 
 with `baseline` and `carve` (alternative E) as the two controls.
 
-**Quality gate** (§ 8 of `DelaunayMeshImprovementPlan.md`, unchanged): mean paired mesh-F1
+**Quality gate** (`DelaunayMeshReconstruction.md` § 8, unchanged): mean paired mesh-F1
 ≥ **+0.003** beyond the measured **0.0006** noise floor; **no scene regressing > 0.003**; P/R each
 within 1 pp unless the complementary gain nets a clear F win; no topology regression; runtime and
 memory documented.
@@ -612,14 +621,16 @@ is high. This plan touches `SceneDensify.cpp` **not at all**.
    have none (no reliable surface position). With the raster, the position *is* the measurement —
    giving them a `t`-edge would make them full votes without a vertex. That is alternative C by
    another route; measure before assuming.
-5. **Interaction with the two pending default flips** (`--adaptive-sigma`, `--canonical-rescale`,
-   plus the library `kSigma 2.f→1.f` alignment) still awaiting maintainer sign-off. Benches must
-   state which side of those flips they ran on.
+5. **Interaction with the 2026-08-22 default flips** (`--adaptive-sigma` on, `--canonical-rescale`
+   on, `--max-edge-scale` 4, library `kSigma` 1.f) — all landed as defaults. Benches must state
+   which side of those flips they ran on; anything predating them ran on the old side.
 6. **Barn has no kept-dmap folder yet** — one re-densification is a prerequisite for a 4-scene gate.
-7. **The mesh-vs-cloud fidelity gap** (Ignatius cloud 0.77 → mesh 0.34) is still unexplained and
-   still the largest number in this whole effort. If it is a mesh-*cleaning* artefact rather than a
-   reconstruction one, none of the input-side work in this plan can move it, and the raw-vs-cleaned
-   scoring arm should be run first.
+7. **The mesh-vs-cloud fidelity gap** (Ignatius cloud 0.77 → mesh 0.34) is RESOLVED: it was a
+   mesh-*cleaning* artefact (fixed-time MCF smoothing, fixed by the scale-free Laplacian) plus
+   webbing on Truck-class scenes (fixed by the edge gate) — see `DelaunayMeshReconstruction.md`
+   §3-§4. Consequence for this plan: score every arm on the raw+gated surface, and the headroom
+   this plan chases is the remaining cloud-vs-mesh delta (e.g. Truck 0.7060 vs 0.6611), not the
+   old 0.4-point chasm.
 
 ---
 
@@ -642,6 +653,6 @@ Not a literature survey; only what bounds this plan's design space.
   such as RoutedFusion) — a different family: regular grid, no visibility rays, no graph cut.
   Named to delimit scope; explicitly not proposed.
 - **GPU visibility-based reconstruction (CAGD 2021)** — a full-GPU port of this exact pipeline
-  (three-level Delaunay index, GPU ray traversal, GPU graph cut), already recorded as the Phase 6
-  reference in `DelaunayMeshImprovementPlan.md` § 0.D. Relevant here only because the direct mode
+  (three-level Delaunay index, GPU ray traversal, GPU graph cut), recorded during the executed
+  mesh plan's literature scan (git history). Relevant here only because the direct mode
   makes ray count the dominant cost, which is precisely what that work parallelizes.
