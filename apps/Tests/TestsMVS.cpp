@@ -304,8 +304,15 @@ bool PipelineTest(bool forceCPU, bool verbose)
 		cam0.poseID = 0; cam0.ID = 0; cam0.width = cam0.height = 640;
 		cam0.camera = Camera(Matrix3x3(200,0,320, 0,200,240, 0,0,1), Matrix3x3(1,0,0, 0,1,0, 0,0,-1), Point3(0,0,1.5), true);
 		// kSigma = 1/sqrt(10): the median squared finite edge length is 10 (6 edges at length^2=10
-		// vs 3 at length^2=3), so this makes sigma exactly 1.0, matching the appendix's derivation
-		if (!sceneA.ReconstructMesh(0.f, false, false, 0.31622776601683794f, 0.f)) {
+		// vs 3 at length^2=3), so this makes sigma exactly 1.0, matching the appendix's derivation;
+		// the appendix hand-solves the fixture under the single global sigma and the ungated
+		// extraction, so the default per-vertex sigma, canonical rescale (a no-op at this
+		// scale, pinned for determinism) and webbing gate are all pinned off here
+		Scene::ReconstructMeshParams fixtureParams;
+		fixtureParams.bAdaptiveSigma = false;
+		fixtureParams.bCanonicalRescale = false;
+		fixtureParams.maxEdgeScale = 0.f;
+		if (!sceneA.ReconstructMesh(0.f, false, false, 0.31622776601683794f, 0.f, 4.f, 3.f, 0.1f, 1000.f, 400.f, Scene::kInfCapacity, String(), fixtureParams)) {
 			VERBOSE("ERROR: TestDataset Fixture-A (bipyramid) reconstruction failed!");
 			return false;
 		}
@@ -372,8 +379,13 @@ bool PipelineTest(bool forceCPU, bool verbose)
 		Image& cam1 = sceneB.images[1];
 		cam1.poseID = 1; cam1.ID = 1; cam1.width = cam1.height = 640;
 		cam1.camera = Camera(Matrix3x3(200,0,320, 0,200,240, 0,0,1), Matrix3x3(1,0,0, 0,-1,0, 0,0,-1), Point3(1.5,0.5,26), true);
-		// kSigma = 1/sqrt(3): the median squared finite edge length is 48, making sigma exactly 4.0
-		if (!sceneB.ReconstructMesh(0.f, false, false, 0.5773502691896258f, 0.f)) {
+		// kSigma = 1/sqrt(3): the median squared finite edge length is 48, making sigma exactly 4.0;
+		// pinned to the same hand-solved global-sigma, ungated configuration as Fixture A
+		Scene::ReconstructMeshParams fixtureParams;
+		fixtureParams.bAdaptiveSigma = false;
+		fixtureParams.bCanonicalRescale = false;
+		fixtureParams.maxEdgeScale = 0.f;
+		if (!sceneB.ReconstructMesh(0.f, false, false, 0.5773502691896258f, 0.f, 4.f, 3.f, 0.1f, 1000.f, 400.f, Scene::kInfCapacity, String(), fixtureParams)) {
 			VERBOSE("ERROR: TestDataset Fixture-B (tetra + interior point) reconstruction failed!");
 			return false;
 		}

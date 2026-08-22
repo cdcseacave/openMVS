@@ -148,49 +148,19 @@ public:
 	// Mesh reconstruction
 	// hard-constraint capacity of the cells containing a camera; not exposed by the apps
 	static constexpr float kInfCapacity = (float)(INT_MAX/8);
-	// experiment switches; every member defaults to the shipped behavior, so an omitted
-	// struct leaves the reconstruction bit-identical
+	// reconstruction options beyond the numeric factors of ReconstructMesh; the defaults are
+	// the recommended configuration, each opt-out restoring the corresponding legacy behavior
 	struct ReconstructMeshParams {
-		// t-edge enforcement of the weakly supported surfaces classifier (ISRN-2014 Eq. 8):
-		// PRODUCT multiplies the target cell's t-edge by epsAbs once per firing (vertex, view)
-		// pair - the shipped behavior, a per-view product that diverges geometrically;
-		// PAPER sums epsAbs over the firing pairs of a cell and multiplies once - the fidelity
-		// restoration; ADD and MAX replace the multiply and so drop the alpha^2 unit defect
-		// Eq. 8 itself carries - deliberate departures from the paper, not restorations
-		enum WeakSurfEnforcement {
-			WSE_PRODUCT = 0,
-			WSE_PAPER,
-			WSE_ADD,
-			WSE_MAX
-		};
-		WeakSurfEnforcement weakSurfEnforcement = WSE_PRODUCT;
 		// scale kQual by the mean confidence of the consumed point weights: weighting shrinks
 		// every data-term capacity by that mean while the quality term keeps its unit-vote
 		// calibration; no-op if the point-cloud carries no weights
 		bool bQualityCoScale = false;
-		// grazing-incidence down-weighting of the visibility votes deposited on the crossed
-		// facets: the vote is scaled by max(grazingCosFloor, |cos(ray, facet normal)|^grazingCosExp),
-		// so a ray skimming a facet is weaker free-space evidence than one crossing it frontally;
-		// a floor of 1 makes the factor identically 1 and so disables the whole term
-		float grazingCosFloor = 1.f;
-		// exponent shaping the incidence cosine before the floor is applied (>0)
-		float grazingCosExp = 1.f;
 		// per-vertex sigma in the three roles where sigma stands for the point's own positional
 		// uncertainty (soft-visibility exponent, end-cell offset, free-space-support windows):
 		// sigma_v = kSigma * median incident finite-Delaunay-edge length of the vertex, clamped
 		// to [0.25, 4] x the global sigma, so a locally denser sample gets a tighter uncertainty;
-		// false = the single global sigma everywhere, the exact legacy behavior
-		bool bAdaptiveSigma = false;
-		// per-vertex sigma derived from the pixel footprint instead of the local edge length:
-		// footprint_v = mean over the (point, view) pairs merged into the vertex of
-		// ||X - C_view|| / f_view, the scene-unit size of one pixel of that view at that range -
-		// the physical scale densification localized the point at. The field is consumed
-		// relatively: it is calibrated by sigma / median(footprint_v) so the established global
-		// sigma scale (and the working space of the canonical rescale) is preserved, then clamped
-		// to the same [0.25, 4] x global sigma band. Competing base with bAdaptiveSigma - the app
-		// rejects the combination and the library lets bAdaptiveSigma win; needs only the point
-		// views, so it works on a cloud carrying no confidences
-		bool bFootprintSigma = false;
+		// false = the single global sigma everywhere, the legacy behavior
+		bool bAdaptiveSigma = true;
 		// shrink the per-vertex sigma towards the confident end of its range:
 		// sigma_v *= 1 - sigmaConfShrink * conf_v, where conf_v in [0,1] is the mean of the
 		// per-view confidences consumed for that vertex, the result clamped to the same
@@ -210,22 +180,22 @@ public:
 		// and the inverse applied at extraction; scenes whose median edge already falls inside
 		// [2^-10, 2^10] are left untouched. This repairs the predicate only - geometry already
 		// quantized away by the float storage of PointCloud::Point needs a load-time fix instead
-		bool bCanonicalRescale = false;
+		bool bCanonicalRescale = true;
 		// drop extracted surface facets whose longest edge exceeds this multiple of the median
 		// cut-facet longest edge: every Delaunay vertex is an input point, so a facet can only
 		// stray far from the observed cloud by spanning it with long edges - the "webbing" a
 		// visibility mesh grows across occluded space (under vehicles, behind walls), surface
 		// no observation supports. A ratio of medians, so scene- and scale-independent;
-		// 0 disables (byte-identical). Gating on the facet visibility vote mass instead does
+		// 0 disables the gate. Gating on the facet visibility vote mass instead does
 		// NOT work: most true surface facets are never crossed by any ray either (each ray
 		// needles through 1-2 facets of a vertex umbrella), so no mass threshold separates
 		// webbing from surface
-		float maxEdgeScale = 0.f;
+		float maxEdgeScale = 4.f;
 	};
 	// carveRaysFile: optional sidecar of confident depth pixels fusion dropped (see UnfusedPixel),
 	// replayed as free-space rays that carve without inserting vertices (empty - disabled)
 	bool ReconstructMesh(float distInsert=2, bool bUseFreeSpaceSupport=true, bool bUseOnlyROI=false,
-						 float kSigma=2.f, float kQual=1.f, float kb=4.f,
+						 float kSigma=1.f, float kQual=1.f, float kb=4.f,
 						 float kf=3.f, float kRel=0.1f/*max 0.3*/, float kAbs=1000.f/*min 500*/, float kOutl=400.f/*max 700.f*/,
 						 float kInf=kInfCapacity, const String& carveRaysFile=String(),
 						 const ReconstructMeshParams& params=ReconstructMeshParams());

@@ -386,27 +386,6 @@ inline Plane getFacetPlane(const facet_t& facet)
 	return Plane(CGAL2MVS<REAL>(v0), CGAL2MVS<REAL>(v1), CGAL2MVS<REAL>(v2));
 }
 
-// Grazing-incidence down-weighting of the free-space vote deposited on a crossed facet:
-// a ray skimming the facet plane is weaker evidence that the facet separates free space
-// than a ray crossing it frontally, so the vote is scaled by the incidence cosine, shaped
-// by an exponent and floored. Both the facet plane normal (TPlane normalizes the normal of
-// its three-point form) and the walk ray direction are unit vectors, so their dot product
-// is the cosine itself; a floor of 1 makes the factor identically 1 and is the off state.
-struct grazing_t {
-	const float minFactor; // lower bound of the factor; 1 disables the term
-	const float exponent;  // shapes the cosine before the floor is applied
-	const bool bEnabled;
-	const bool bShaped;    // the exponent is worth a pow() call
-	inline grazing_t(float _minFactor, float _exponent)
-		: minFactor(_minFactor), exponent(_exponent), bEnabled(_minFactor < 1.f), bShaped(_exponent != 1.f) {}
-	inline float operator()(const facet_t& facet, const Ray3& ray) const {
-		ASSERT(bEnabled);
-		const float c((float)ABS(getFacetPlane(facet).m_vN.dot(ray.m_vDir)));
-		return MAXF(minFactor, bShaped ? POW(c, exponent) : c);
-	}
-};
-
-
 // Check if a point (p) is coplanar with a triangle (a, b, c);
 // return orientation type
 // Disable FP contraction (FMA) for this geometric predicate so the sign of the
@@ -1039,21 +1018,16 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 	// downstream on the same footing
 	float medianEdge(0);
 	coord_rescale_t rescale;
-	// per-vertex accumulator of the two arms that need insertion-time per-point data: (sum, count)
-	// of the per-view confidences for the sigma shrink and of the per-view pixel footprints for
-	// the footprint sigma, keyed on the vertex the point landed on (several points merge into one
-	// vertex, and the point indices are gone once the cloud is released). One table serves both,
-	// so enabling both costs one hash lookup and one node per vertex; allocated only when at
-	// least one arm is on and freed as soon as it is folded into the per-vertex vectors below
+	// per-vertex (sum, count) accumulator of the per-view confidences the sigma shrink needs at
+	// insertion time, keyed on the vertex the point landed on (several points merge into one
+	// vertex, and the point indices are gone once the cloud is released); allocated only when
+	// the shrink is on and freed as soon as it is folded into the per-vertex vector below
 	struct vert_accum_t {
 		float confSum = 0.f;
 		uint32_t confCount = 0;
-		float footSum = 0.f;
-		uint32_t footCount = 0;
 	};
 	typedef std::unordered_map<const delaunay_t::Vertex*, vert_accum_t> vert_accum_map_t;
 	vert_accum_map_t vertAccum;
-	const bool bVertAccum(bConfShrink || params.bFootprintSigma);
 	{
 		TD_TIMER_STARTD();
 
@@ -1079,7 +1053,7 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 		CGAL::spatial_sort(indices.begin(), indices.end(), Search_traits(vertices.data(), delaunay.geom_traits()));
 		// insert vertices
 		Util::Progress progress(_T("Points inserted"), indices.size());
-		if (bVertAccum)
+		if (bConfShrink)
 			vertAccum.reserve(indices.size());
 		const float distInsertSq(SQUARE(distInsert));
 		vertex_handle_t hint;
@@ -1151,33 +1125,13 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 			}
 			// update point visibility info
 			hint->info().InsertViews(pointcloud, (PointCloud::Index)idx, params.bConstantVotes);
-			// keep the per-point data the insertion above consumes and then drops, for the sigma arms
-			if (bVertAccum) {
+			// keep the confidences the votes just discarded, for the sigma shrink
+			if (bConfShrink) {
 				vert_accum_t& acc = vertAccum[&*hint];
-				// the confidences the votes just discarded, for the sigma shrink
-				if (bConfShrink) {
-					const PointCloud::WeightArr& weights = pointcloud.pointWeights[(PointCloud::Index)idx];
-					FOREACHPTR(pWeight, weights)
-						acc.confSum += *pWeight;
-					acc.confCount += (uint32_t)weights.size();
-				}
-				// the pixel footprint of the point in each of its views: the range to the camera
-				// over the focal length in pixels, i.e. the scene-unit size one pixel covers at
-				// that range - the localization scale densification worked at. Measured here, in
-				// the scene's own space; the median calibration below carries it into the working
-				// space of the canonical rescale
-				if (params.bFootprintSigma) {
-					FOREACHPTR(pViewID, views) {
-						const Camera& camera = images[*pViewID].camera;
-						const Point3 vecCamPoint(Cast<REAL>(point)-camera.C);
-						const REAL footprint(norm(vecCamPoint)/camera.GetFocalLength());
-						// a broken calibration must not poison the median calibration below
-						if (ISFINITE(footprint) && footprint > 0) {
-							acc.footSum += (float)footprint;
-							++acc.footCount;
-						}
-					}
-				}
+				const PointCloud::WeightArr& weights = pointcloud.pointWeights[(PointCloud::Index)idx];
+				FOREACHPTR(pWeight, weights)
+					acc.confSum += *pWeight;
+				acc.confCount += (uint32_t)weights.size();
 			}
 			++progress;
 		});
@@ -1290,11 +1244,6 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 		const float sigma(medianEdge*kSigma);
 		const float inv2SigmaSq(0.5f/(sigma*sigma));
 
-		// incidence weighting of the votes deposited by all three walks below
-		const grazing_t grazing(params.grazingCosFloor, params.grazingCosExp);
-		if (grazing.bEnabled)
-			DEBUG_EXTRA("Grazing-incidence down-weighting enabled: floor %g, exponent %g", grazing.minFactor, grazing.exponent);
-
 		// capacity reserved once per thread for the ray-walk facet front, which stays
 		// small: at most the four facets of a cell, or the facets incident to a vertex
 		constexpr size_t kFacetsReserve(64);
@@ -1314,17 +1263,12 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 		// per-vertex uncertainty: the global sigma is kSigma times the median length over all
 		// finite edges, so its local counterpart is the same statistic restricted to the edges
 		// incident to the vertex, clamped to [0.25,4] x global to keep the walks bounded;
-		// indexed like vertexHandles, and allocated only by this arm. The footprint arm is the
-		// competing base (per-point pixel footprint instead of local edge length), and the
-		// confidence shrink is the third arm writing this vector: it scales whichever base the
-		// others left (local median edge, footprint, or the global sigma when both are off) by
-		// 1 - shrink * conf_v, the single clamp below closing all of them
+		// indexed like vertexHandles, and allocated only when a per-vertex arm is on. The
+		// confidence shrink scales whichever base the adaptive arm left (local median edge,
+		// or the global sigma when it is off) by 1 - shrink * conf_v, the single clamp below
+		// closing both
 		const bool bAdaptiveSigma(params.bAdaptiveSigma);
-		// competing bases, so the local median edge wins if a caller sets both (the app rejects
-		// the combination); cleared below if the footprint field turns out to be degenerate
-		bool bFootprintSigma(params.bFootprintSigma && !bAdaptiveSigma);
-		// any of the arms makes sigma a per-vertex quantity; none leaves it global everywhere
-		const bool bSigmaVert(bAdaptiveSigma || bFootprintSigma || bConfShrink);
+		const bool bSigmaVert(bAdaptiveSigma || bConfShrink);
 		std::vector<float> sigmaVert;
 		if (bSigmaVert) {
 			TD_TIMER_STARTD();
@@ -1332,9 +1276,8 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 			sigmaVert.resize((size_t)nVerts);
 			// fold the per-vertex accumulator into a mean per vertex, indexed like vertexHandles,
 			// and release the accumulator right away
-			std::vector<float> confVert, footVert;
+			std::vector<float> confVert;
 			double sumConf(0);
-			float footMedian(0.f), footScale(0.f);
 			if (bConfShrink) {
 				confVert.resize((size_t)nVerts);
 				for (int64_t i=0; i<nVerts; ++i) {
@@ -1345,34 +1288,6 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 					confVert[(size_t)i] = conf;
 					sumConf += conf;
 				}
-			}
-			if (bFootprintSigma) {
-				footVert.resize((size_t)nVerts);
-				// the calibration median is taken over the measurable vertices only, so a broken
-				// camera cannot shift it; the copy is what GetMedian reorders
-				FloatArr footprints(0, (FloatArr::IDX)nVerts);
-				for (int64_t i=0; i<nVerts; ++i) {
-					// every vertex carrying views went through the insertion loop above, but all
-					// of its views may have been rejected as non-finite footprints
-					const vert_accum_map_t::const_iterator it(vertAccum.find(&*vertexHandles[(size_t)i]));
-					ASSERT(it != vertAccum.end());
-					const float foot(it->second.footCount ? it->second.footSum/(float)it->second.footCount : 0.f);
-					footVert[(size_t)i] = foot;
-					if (foot > 0)
-						footprints.Insert(foot);
-				}
-				// self-calibration: only the relative shape of the footprint field is consumed,
-				// its absolute scale is replaced by the established global sigma. This is also
-				// what makes the arm correct under the canonical rescale: the footprints are
-				// scene-space lengths while sigma is a working-space length, so the ratio
-				// sigma/median(footprint) carries exactly the scene-to-working factor
-				footMedian = (footprints.IsEmpty() ? 0.f : footprints.GetMedian());
-				if (!ISFINITE(footMedian) || footMedian <= 0) {
-					VERBOSE("warning: footprint sigma ignored, no valid per-vertex pixel footprint could be measured");
-					bFootprintSigma = false;
-					std::vector<float>().swap(footVert);
-				} else
-					footScale = sigma/footMedian;
 			}
 			vert_accum_map_t().swap(vertAccum);
 			#ifdef DELAUNAY_USE_OPENMP
@@ -1389,8 +1304,8 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 			FloatArr edgeDistsSq;
 			for (int64_t i=0; i<nVerts; ++i) {
 			#endif
-				// base scale: the local median-edge sigma, the calibrated pixel footprint, or
-				// the global one when only the confidence shrink is on
+				// base scale: the local median-edge sigma, or the global one when only the
+				// confidence shrink is on
 				float sigmaV(sigma);
 				if (bAdaptiveSigma) {
 					const vertex_handle_t vi(vertexHandles[(size_t)i]);
@@ -1405,13 +1320,6 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 					ASSERT(!edgeDistsSq.IsEmpty());
 					if (!edgeDistsSq.IsEmpty())
 						sigmaV = SQRT(edgeDistsSq.GetMedian())*kSigma;
-				} else
-				if (bFootprintSigma) {
-					// the vertex footprint relative to the field median, on the global sigma scale;
-					// a vertex whose views all failed the finiteness guard keeps the global sigma
-					const float foot(footVert[(size_t)i]);
-					if (foot > 0)
-						sigmaV = foot*footScale;
 				}
 				// a confident vertex is a better localized one, so it earns a tighter sigma
 				if (bConfShrink)
@@ -1441,12 +1349,9 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 				sigmaRatios.Insert(ratio);
 			}
 			DEBUG_EXTRA("%s sigma: %lld vertices, sigma_v/sigma min %.3f, median %.3f, max %.3f, clamped low %.2f%%, high %.2f%% (%s)",
-				bAdaptiveSigma ? "Adaptive" : (bFootprintSigma ? "Footprint" : "Confidence-shrunk"),
+				bAdaptiveSigma ? "Adaptive" : "Confidence-shrunk",
 				(long long)nVerts, ratioMin, sigmaRatios.GetMedian(), ratioMax,
 				100.f*(float)nClampedLow/(float)nVerts, 100.f*(float)nClampedHigh/(float)nVerts, TD_TIMER_GET_FMT().c_str());
-			if (bFootprintSigma)
-				DEBUG_EXTRA("Footprint sigma calibrated on the field median: median footprint %g scene units/pixel, sigma scale %g",
-					footMedian, footScale);
 			if (bConfShrink)
 				DEBUG_EXTRA("Confidence sigma shrink %g applied over conf_v mean %.3f: sigma_v/sigma median %.3f, votes %s",
 					params.sigmaConfShrink, (float)(sumConf/(double)nVerts), sigmaRatios.GetMedian(),
@@ -1508,8 +1413,7 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 					if (++nWalkSteps == kMaxWalkSteps)
 						++stats.nStepCapHit;
 					// assign score, weighted by the distance from the point to the intersection
-					const edge_cap_t wSoft(alpha_vis*(1.f-EXP(-SQUARE((float)inter.dist)*inv2SigmaSqV)));
-					const edge_cap_t w(grazing.bEnabled ? wSoft*grazing(inter.facet, inter.ray) : wSoft);
+					const edge_cap_t w(alpha_vis*(1.f-EXP(-SQUARE((float)inter.dist)*inv2SigmaSqV)));
 					edge_cap_t& f(infoCells[inter.facet.first->info()].f[inter.facet.second]);
 					#ifdef DELAUNAY_USE_OPENMP
 					#pragma omp atomic
@@ -1545,8 +1449,7 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 						++stats.nStepCapHit;
 					// assign score, weighted by the distance from the point to the intersection
 					const facet_t& mf(delaunay.mirror_facet(inter.facet));
-					const edge_cap_t wSoft(alpha_vis*(1.f-EXP(-SQUARE((float)inter.dist)*inv2SigmaSqV)));
-					const edge_cap_t w(grazing.bEnabled ? wSoft*grazing(inter.facet, inter.ray) : wSoft);
+					const edge_cap_t w(alpha_vis*(1.f-EXP(-SQUARE((float)inter.dist)*inv2SigmaSqV)));
 					edge_cap_t& f(infoCells[mf.first->info()].f[mf.second]);
 					#ifdef DELAUNAY_USE_OPENMP
 					#pragma omp atomic
@@ -1580,12 +1483,6 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 		// enforce t-edges for each point-camera pair with free-space support weights
 		if (bUseFreeSpaceSupport) {
 		TD_TIMER_STARTD();
-		// Eq. 8 scales the t-edge once by the sum of the jump evidence of every firing pair, so
-		// that arm accumulates the sum per target cell here and multiplies in the pass below;
-		// one float per cell, allocated only by this arm
-		std::vector<edge_cap_t> wssEvidence;
-		if (params.weakSurfEnforcement == ReconstructMeshParams::WSE_PAPER)
-			wssEvidence.assign(infoCells.size(), edge_cap_t(0));
 		#ifdef DELAUNAY_USE_OPENMP
 		#pragma omp parallel
 		{
@@ -1655,49 +1552,18 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 				const edge_cap_t epsAbs(beta-gamma);
 				const edge_cap_t epsRel(gamma/beta);
 				if (epsRel < kRel && epsAbs > kAbs && gamma < kOutl) {
-					const cell_size_t ncellID(inter.ncell->info());
 					++stats.nWssFired;
-					if (params.weakSurfEnforcement == ReconstructMeshParams::WSE_PAPER) {
-						// only the sum is built here; the single multiply and both verdicts
-						// follow in the deferred pass, once every pair of this cell fired
-						edge_cap_t& evidence(wssEvidence[ncellID]);
-						#ifdef DELAUNAY_USE_OPENMP
-						#pragma omp atomic
-						#endif
-						evidence += epsAbs;
-						continue;
-					}
-					// the departure arms carry the gain kw of the enforced jump; the shipped
-					// product has no such factor (it scales by the bare epsAbs), so kw stays 1
-					constexpr edge_cap_t kwJump(1);
-					edge_cap_t& t(infoCells[ncellID].t);
-					switch (params.weakSurfEnforcement) {
-					case ReconstructMeshParams::WSE_ADD: {
-						#ifdef DELAUNAY_USE_OPENMP
-						#pragma omp atomic
-						#endif
-						t += kwJump*epsAbs;
-						break; }
-					case ReconstructMeshParams::WSE_MAX: {
-						// max has no atomic form, and only the accepted pairs reach it
-						const edge_cap_t jump(kwJump*epsAbs);
-						#ifdef DELAUNAY_USE_OPENMP
-						#pragma omp critical (WssEnforce)
-						#endif
-						{
-							if (t < jump)
-								t = jump;
-						}
-						break; }
-					default: {
-						#ifdef DELAUNAY_USE_OPENMP
-						#pragma omp atomic
-						#endif
-						t *= epsAbs;
-						break; }
-					}
-					// t only ever grows while this loop runs, so neither verdict below depends
-					// on which of the concurrent updates of the same cell this read observes
+					// multiplied once per firing (vertex, view) pair; a zero t stays zero by
+					// design - enforcing on cells no visibility vote ever reached collapses
+					// thin structures, so the no-op is protective, not a defect
+					edge_cap_t& t(infoCells[inter.ncell->info()].t);
+					#ifdef DELAUNAY_USE_OPENMP
+					#pragma omp atomic
+					#endif
+					t *= epsAbs;
+					// t is only ever scaled while this loop runs, so neither verdict below
+					// depends on which of the concurrent updates of the same cell this read
+					// observes
 					const edge_cap_t tCur(t);
 					if (tCur == 0)
 						++stats.nWssNoopZeroT;
@@ -1709,22 +1575,6 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 		#ifdef DELAUNAY_USE_OPENMP
 		} // omp parallel
 		#endif
-		// Eq. 8: one multiply per target cell by the summed jump evidence; a cell no pair fired
-		// at keeps its t-edge, so the sum is applied only where it is positive
-		if (params.weakSurfEnforcement == ReconstructMeshParams::WSE_PAPER) {
-			walk_stats_t& stats(GetWalkStats());
-			for (size_t ci=0; ci<infoCells.size(); ++ci) {
-				const edge_cap_t evidence(wssEvidence[ci]);
-				if (evidence == 0)
-					continue;
-				edge_cap_t& t(infoCells[ci].t);
-				t *= evidence;
-				if (t == 0)
-					++stats.nWssNoopZeroT;
-				else if (!ISFINITE(t))
-					++stats.nWssSaturated;
-			}
-		}
 		DEBUG_ULTIMATE("\tt-edge reinforcement completed in %s", TD_TIMER_GET_FMT().c_str());
 		}
 		#endif
@@ -1789,8 +1639,7 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 						++stats.nStepCapHit;
 					// assign score, weighted by the distance from the point to the intersection
 					const REAL dist(inter.ray.IntersectsDist(getFacetPlane(inter.facet)));
-					const edge_cap_t wSoft(ray.conf*(1.f-EXP(-SQUARE((float)dist)*inv2SigmaSq)));
-					const edge_cap_t w(grazing.bEnabled ? wSoft*grazing(inter.facet, inter.ray) : wSoft);
+					const edge_cap_t w(ray.conf*(1.f-EXP(-SQUARE((float)dist)*inv2SigmaSq)));
 					edge_cap_t& f(infoCells[inter.facet.first->info()].f[inter.facet.second]);
 					#ifdef DELAUNAY_USE_OPENMP
 					#pragma omp atomic

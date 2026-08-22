@@ -70,7 +70,6 @@ float fFrontFactor;
 float fRelativeFactor;
 float fAbsoluteFactor;
 float fOutlierFactor;
-String strWssSemantics;
 Scene::ReconstructMeshParams reconstructParams;
 float fDecimateMesh;
 unsigned nTargetFaceNum;
@@ -89,23 +88,6 @@ String strExportType;
 String strConfigFileName;
 boost::program_options::variables_map vm;
 } // namespace OPT
-
-// map the weakly-supported-surfaces enforcement name to its semantics
-bool ParseWeakSurfEnforcement(const String& name, Scene::ReconstructMeshParams::WeakSurfEnforcement& enforcement)
-{
-	const String lowerName(name.ToLower());
-	if (lowerName == _T("product"))
-		enforcement = Scene::ReconstructMeshParams::WSE_PRODUCT;
-	else if (lowerName == _T("paper"))
-		enforcement = Scene::ReconstructMeshParams::WSE_PAPER;
-	else if (lowerName == _T("add"))
-		enforcement = Scene::ReconstructMeshParams::WSE_ADD;
-	else if (lowerName == _T("max"))
-		enforcement = Scene::ReconstructMeshParams::WSE_MAX;
-	else
-		return false;
-	return true;
-}
 
 class Application {
 public:
@@ -164,15 +146,11 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("relative-factor", boost::program_options::value(&OPT::fRelativeFactor)->default_value(0.1f), "maximum relative free-space support accepted by the weakly-supported-surfaces classifier (kRel)")
 		("absolute-factor", boost::program_options::value(&OPT::fAbsoluteFactor)->default_value(1000.f), "minimum free-space support jump accepted by the weakly-supported-surfaces classifier (kAbs)")
 		("outlier-factor", boost::program_options::value(&OPT::fOutlierFactor)->default_value(400.f), "maximum free-space support behind the point accepted by the weakly-supported-surfaces classifier (kOutl)")
-		("wss-semantics", boost::program_options::value<std::string>(&OPT::strWssSemantics)->default_value(_T("product")), "t-edge enforcement of the weakly-supported-surfaces classifier: product (per firing view), paper (sum, then one multiply), add or max")
-		("quality-co-scale", boost::program_options::value(&OPT::reconstructParams.bQualityCoScale)->default_value(false), "scale the quality factor by the mean point confidence (no-op if the point-cloud carries no weights)")
-		("grazing-floor", boost::program_options::value(&OPT::reconstructParams.grazingCosFloor)->default_value(1.f), "min factor for grazing-incidence down-weighting of visibility votes on crossed facets; 1 = off")
-		("grazing-exponent", boost::program_options::value(&OPT::reconstructParams.grazingCosExp)->default_value(1.f), "exponent shaping the incidence cosine before the grazing floor is applied")
-		("adaptive-sigma", boost::program_options::value(&OPT::reconstructParams.bAdaptiveSigma)->default_value(false), "derive the point uncertainty sigma per-vertex from its median incident Delaunay edge length, clamped to [0.25,4] x the global sigma")
-		("footprint-sigma", boost::program_options::value(&OPT::reconstructParams.bFootprintSigma)->default_value(false), "derive the point uncertainty sigma per-vertex from its mean pixel footprint (range/focal over its views), calibrated to the global sigma by the median footprint and clamped to [0.25,4] x it; competes with --adaptive-sigma")
-		("sigma-conf-shrink", boost::program_options::value(&OPT::reconstructParams.sigmaConfShrink)->default_value(0.f), "shrink the per-vertex sigma by this fraction of the vertex mean point confidence, keeping the votes at unit scale; 0 = off (no-op if the point-cloud carries no weights)")
-		("canonical-rescale", boost::program_options::value(&OPT::reconstructParams.bCanonicalRescale)->default_value(false), "rescale the triangulation by a power of two so the median Delaunay edge lands near 1, where the ray-walk orientation predicate is calibrated; no-op unless the median edge falls outside [2^-10,2^10]")
-		("max-edge-scale", boost::program_options::value(&OPT::reconstructParams.maxEdgeScale)->default_value(0.f), "drop extracted surface facets whose longest edge exceeds this multiple of the median cut-facet longest edge - the gap-spanning webbing grown across occluded space no observation supports (relative units, scale-independent; 0 = off)")
+		("quality-co-scale", boost::program_options::value(&OPT::reconstructParams.bQualityCoScale)->default_value(false), "scale the quality factor by the mean point confidence; paired with --constant-weight 0 it improves object-centric captures at some cost on planar scenes (no-op if the point-cloud carries no weights)")
+		("adaptive-sigma", boost::program_options::value(&OPT::reconstructParams.bAdaptiveSigma)->default_value(true), "derive the point uncertainty sigma per-vertex from its median incident Delaunay edge length, clamped to [0.25,4] x the global sigma (0 - the single global sigma everywhere)")
+		("sigma-conf-shrink", boost::program_options::value(&OPT::reconstructParams.sigmaConfShrink)->default_value(0.f), "shrink the per-vertex sigma by this fraction of the vertex mean point confidence, keeping the votes at unit scale (0 - disabled; no-op if the point-cloud carries no weights)")
+		("canonical-rescale", boost::program_options::value(&OPT::reconstructParams.bCanonicalRescale)->default_value(true), "rescale the triangulation by a power of two so the median Delaunay edge lands near 1, where the ray-walk orientation predicate is calibrated; no-op unless the median edge falls outside [2^-10,2^10]")
+		("max-edge-scale", boost::program_options::value(&OPT::reconstructParams.maxEdgeScale)->default_value(4.f), "drop extracted surface facets whose longest edge exceeds this multiple of the median cut-facet longest edge - the gap-spanning webbing grown across occluded space no observation supports (relative units, scale-independent; 0 - disabled)")
 		;
 	boost::program_options::options_description config_clean("Clean options");
 	config_clean.add_options()
@@ -242,28 +220,12 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 	if (OPT::strInputFileName.empty())
 		return false;
 	OPT::strExportType = OPT::strExportType.ToLower() == _T("obj") ? _T(".obj") : _T(".ply");
-	if (!ParseWeakSurfEnforcement(OPT::strWssSemantics, OPT::reconstructParams.weakSurfEnforcement)) {
-		VERBOSE("error: unknown weakly-supported-surfaces semantics '%s' (product, paper, add or max)", OPT::strWssSemantics.c_str());
-		return false;
-	}
-	if (OPT::reconstructParams.grazingCosFloor < 0.f || OPT::reconstructParams.grazingCosFloor > 1.f) {
-		VERBOSE("error: invalid grazing floor %g (expected in [0,1], 1 disables the down-weighting)", OPT::reconstructParams.grazingCosFloor);
-		return false;
-	}
-	if (OPT::reconstructParams.grazingCosExp <= 0.f) {
-		VERBOSE("error: invalid grazing exponent %g (expected strictly positive)", OPT::reconstructParams.grazingCosExp);
-		return false;
-	}
 	if (OPT::reconstructParams.sigmaConfShrink < 0.f || OPT::reconstructParams.sigmaConfShrink >= 1.f) {
 		VERBOSE("error: invalid sigma confidence shrink %g (expected in [0,1), 0 disables the shrink)", OPT::reconstructParams.sigmaConfShrink);
 		return false;
 	}
 	if (OPT::reconstructParams.maxEdgeScale < 0.f) {
 		VERBOSE("error: invalid max edge scale %g (expected >= 0, 0 disables the gate)", OPT::reconstructParams.maxEdgeScale);
-		return false;
-	}
-	if (OPT::reconstructParams.bAdaptiveSigma && OPT::reconstructParams.bFootprintSigma) {
-		VERBOSE("error: --adaptive-sigma and --footprint-sigma are competing per-vertex sigma bases (local edge length vs pixel footprint), enable only one");
 		return false;
 	}
 
