@@ -72,4 +72,5 @@ IncludeBlocks: Preserve
 SortUsingDeclarations: false
 
 # Macros
-ForEachMacros: ['FOREACH']
+# All iterator helpers in libs/Common/List.h expand to for loops.
+ForEachMacros: ['FOREACH', 'RFOREACH', 'FOREACHPTR', 'RFOREACHPTR', 'FOREACHRAW', 'RFOREACHRAW', 'FOREACHRAWPTR', 'RFOREACHRAWPTR']
