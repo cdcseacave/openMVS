@@ -575,14 +575,23 @@ OpenMVS is a comprehensive photogrammetry library implementing a complete pipeli
 - **Files:** `libs/MVS/SceneReconstruct.cpp` (no separate .h — integrated into Scene)
 - **Algorithms:**
   - CGAL `Delaunay_triangulation_3` with spatial sort for cache-friendly insertion
-  - `distInsert` (default 2 pixels): skip point if too close to an existing vertex in any view
-  - Per-vertex view information via `InsertViews()`
-  - Free-space graph scoring: marches rays through tetrahedra, adds `alpha_vis` weights
+  - `distInsert` (default 2 pixels, CLI 1.5): skip point if too close to an existing vertex in any view
+  - Per-vertex view information via `InsertViews()`; a vote carries that view's point confidence
+    when the cloud has one and 1 when it does not, and the app releases the confidence by default
+    (`--constant-weight 1`) so the votes are unit unless the operator opts in with 0
+  - Optional power-of-two canonical rescale of the triangulation (default on), so the ray-walk
+    `orientation()` predicate stays inside the band its fixed epsilon is calibrated for
+  - Free-space graph scoring: marches rays through tetrahedra, adds `alpha_vis` weights, attenuated
+    by the point's own uncertainty sigma — per-vertex from the median incident edge by default
   - Camera cells linked to source with weight `kInf`; edge weights: `kf`, `kRel`, `kAbs`, `kQual`
-  - CGAL min-cut (Alpha-shape) separating free-space from matter
-  - `nItersFixNonManifold` (4): iterative non-manifold repair
-  - Post-processing: `Mesh::Clean()` pipeline
-- **Configuration:** `distInsert`, `bUseFreeSpaceSupport`, `kSigma` (2), `nItersFixNonManifold`
+  - IBFS min-cut (`libs/Math/IBFS`) separating free-space from matter
+  - Surface extraction drops cut facets whose longest edge exceeds `maxEdgeScale` x the median cut
+    facet (the webbing gate, default 4)
+  - Single-pass non-manifold repair, then the `Mesh::Clean()` pipeline
+- **Configuration:** `distInsert`, `bUseFreeSpaceSupport`, `kSigma` (1), `ReconstructMeshParams`
+  (`bAdaptiveSigma`, `bCanonicalRescale`, `maxEdgeScale`), optional carve-only ray sidecar
+- **Design record:** `docs/design/DelaunayMeshReconstruction.md` (shipped defaults, validated
+  numbers, and the registry of ideas that were tried and rejected)
 - **GPU Support:** No
 - **Threading:** OpenMP for ray traversal
 - **Dependencies:** CGAL, Common

@@ -134,7 +134,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("output-file,o", boost::program_options::value<std::string>(&OPT::strOutputFileName), "output filename for storing the mesh")
 		("min-point-distance,d", boost::program_options::value(&OPT::fDistInsert)->default_value(1.5f), "minimum distance in pixels between the projection of two 3D points to consider them different while triangulating (0 - disabled)")
 		("integrate-only-roi", boost::program_options::value(&OPT::bUseOnlyROI)->default_value(false), "use only the points inside the ROI")
-		("constant-weight", boost::program_options::value(&OPT::bUseConstantWeight)->default_value(true), "considers all view weights 1 instead of the available weight")
+		("constant-weight", boost::program_options::value(&OPT::bUseConstantWeight)->default_value(true), "consider all view weights 1 instead of the per-view point confidence the point-cloud carries; disable it only for a point-cloud whose confidence was recalibrated by the densifier (--postprocess-dmaps), since an un-recalibrated confidence sits well below 1 and shrinks the visibility votes against the calibration of the graph-cut constants")
 		("free-space-support,f", boost::program_options::value(&OPT::bUseFreeSpaceSupport)->default_value(false), "exploits the free-space support in order to reconstruct weakly-represented surfaces")
 		("thickness-factor", boost::program_options::value(&OPT::fThicknessFactor)->default_value(1.f), "multiplier adjusting the minimum thickness considered during visibility weighting")
 		("quality-factor", boost::program_options::value(&OPT::fQualityFactor)->default_value(1.f), "multiplier adjusting the quality weight considered during graph-cut")
@@ -146,9 +146,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("relative-factor", boost::program_options::value(&OPT::fRelativeFactor)->default_value(0.1f), "maximum relative free-space support accepted by the weakly-supported-surfaces classifier (kRel)")
 		("absolute-factor", boost::program_options::value(&OPT::fAbsoluteFactor)->default_value(1000.f), "minimum free-space support jump accepted by the weakly-supported-surfaces classifier (kAbs)")
 		("outlier-factor", boost::program_options::value(&OPT::fOutlierFactor)->default_value(400.f), "maximum free-space support behind the point accepted by the weakly-supported-surfaces classifier (kOutl)")
-		("quality-co-scale", boost::program_options::value(&OPT::reconstructParams.bQualityCoScale)->default_value(false), "scale the quality factor by the mean point confidence; paired with --constant-weight 0 it improves object-centric captures at some cost on planar scenes (no-op if the point-cloud carries no weights)")
 		("adaptive-sigma", boost::program_options::value(&OPT::reconstructParams.bAdaptiveSigma)->default_value(true), "derive the point uncertainty sigma per-vertex from its median incident Delaunay edge length, clamped to [0.25,4] x the global sigma (0 - the single global sigma everywhere)")
-		("sigma-conf-shrink", boost::program_options::value(&OPT::reconstructParams.sigmaConfShrink)->default_value(0.f), "shrink the per-vertex sigma by this fraction of the vertex mean point confidence, keeping the votes at unit scale (0 - disabled; no-op if the point-cloud carries no weights)")
 		("canonical-rescale", boost::program_options::value(&OPT::reconstructParams.bCanonicalRescale)->default_value(true), "rescale the triangulation by a power of two so the median Delaunay edge lands near 1, where the ray-walk orientation predicate is calibrated; no-op unless the median edge falls outside [2^-10,2^10]")
 		("max-edge-scale", boost::program_options::value(&OPT::reconstructParams.maxEdgeScale)->default_value(4.f), "drop extracted surface facets whose longest edge exceeds this multiple of the median cut-facet longest edge - the gap-spanning webbing grown across occluded space no observation supports (relative units, scale-independent; 0 - disabled)")
 		;
@@ -220,10 +218,6 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 	if (OPT::strInputFileName.empty())
 		return false;
 	OPT::strExportType = OPT::strExportType.ToLower() == _T("obj") ? _T(".obj") : _T(".ply");
-	if (OPT::reconstructParams.sigmaConfShrink < 0.f || OPT::reconstructParams.sigmaConfShrink >= 1.f) {
-		VERBOSE("error: invalid sigma confidence shrink %g (expected in [0,1), 0 disables the shrink)", OPT::reconstructParams.sigmaConfShrink);
-		return false;
-	}
 	if (OPT::reconstructParams.maxEdgeScale < 0.f) {
 		VERBOSE("error: invalid max edge scale %g (expected >= 0, 0 disables the gate)", OPT::reconstructParams.maxEdgeScale);
 		return false;
@@ -475,14 +469,8 @@ int main(int argc, LPCTSTR* argv)
 			#endif
 			// reconstruct a coarse mesh from the given point-cloud
 			TD_TIMER_START();
-			if (OPT::bUseConstantWeight) {
-				// the sigma shrink needs the confidences the constant-weight run would drop, so
-				// keep them and neutralize the votes inside the reconstruction instead
-				if (OPT::reconstructParams.sigmaConfShrink > 0)
-					OPT::reconstructParams.bConstantVotes = true;
-				else
-					scene.pointcloud.pointWeights.Release();
-			}
+			if (OPT::bUseConstantWeight)
+				scene.pointcloud.pointWeights.Release();
 			// MAKE_PATH_SAFE prepends the working folder, so an unset carve-rays file has to stay
 			// an empty string to keep meaning disabled
 			const String carveRaysFile(OPT::strCarveRaysFileName.empty() ? String() : MAKE_PATH_SAFE(OPT::strCarveRaysFileName));

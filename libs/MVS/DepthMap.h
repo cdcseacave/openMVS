@@ -189,7 +189,8 @@ struct UnfusedPixel {
 	float conf; // recalibrated confidence in [0,1]
 };
 struct UnfusedPixelHeader {
-	static const uint32_t VERSION = 1;
+	// constexpr, so passing it to the varargs of the version-mismatch log needs no out-of-line definition
+	static constexpr uint32_t VERSION = 1;
 	char magic[4]; // "MVSU"
 	uint32_t version;
 	uint64_t numRecords;
