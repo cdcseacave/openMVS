@@ -146,7 +146,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("relative-factor", boost::program_options::value(&OPT::fRelativeFactor)->default_value(0.1f), "maximum relative free-space support accepted by the weakly-supported-surfaces classifier (kRel)")
 		("absolute-factor", boost::program_options::value(&OPT::fAbsoluteFactor)->default_value(1000.f), "minimum free-space support jump accepted by the weakly-supported-surfaces classifier (kAbs)")
 		("outlier-factor", boost::program_options::value(&OPT::fOutlierFactor)->default_value(400.f), "maximum free-space support behind the point accepted by the weakly-supported-surfaces classifier (kOutl)")
-		("quality-co-scale", boost::program_options::value(&OPT::reconstructParams.bQualityCoScale)->default_value(false), "scale the quality factor by the mean point confidence; paired with --constant-weight 0 it improves object-centric captures at some cost on planar scenes (no-op if the point-cloud carries no weights)")
+		("quality-co-scale", boost::program_options::value(&OPT::reconstructParams.bQualityCoScale)->default_value(true), "scale the quality factor by the mean point confidence consumed by the votes, keeping the data-vs-quality balance of the unit-vote calibration (inert unless --constant-weight 0 runs on a point-cloud carrying weights)")
 		("adaptive-sigma", boost::program_options::value(&OPT::reconstructParams.bAdaptiveSigma)->default_value(true), "derive the point uncertainty sigma per-vertex from its median incident Delaunay edge length, clamped to [0.25,4] x the global sigma (0 - the single global sigma everywhere)")
 		("sigma-conf-shrink", boost::program_options::value(&OPT::reconstructParams.sigmaConfShrink)->default_value(0.f), "shrink the per-vertex sigma by this fraction of the vertex mean point confidence, keeping the votes at unit scale (0 - disabled; no-op if the point-cloud carries no weights)")
 		("canonical-rescale", boost::program_options::value(&OPT::reconstructParams.bCanonicalRescale)->default_value(true), "rescale the triangulation by a power of two so the median Delaunay edge lands near 1, where the ray-walk orientation predicate is calibrated; no-op unless the median edge falls outside [2^-10,2^10]")
@@ -482,7 +482,8 @@ int main(int argc, LPCTSTR* argv)
 					OPT::reconstructParams.bConstantVotes = true;
 				else
 					scene.pointcloud.pointWeights.Release();
-			}
+			} else if (scene.pointcloud.pointWeights.IsEmpty())
+				VERBOSE("warning: weighted reconstruction requested, but the point-cloud carries no point weights");
 			// MAKE_PATH_SAFE prepends the working folder, so an unset carve-rays file has to stay
 			// an empty string to keep meaning disabled
 			const String carveRaysFile(OPT::strCarveRaysFileName.empty() ? String() : MAKE_PATH_SAFE(OPT::strCarveRaysFileName));

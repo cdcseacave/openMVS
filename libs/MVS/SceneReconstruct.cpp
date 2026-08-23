@@ -991,10 +991,7 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 	ASSERT(!pointcloud.IsEmpty());
 	mesh.Release();
 
-	// the quality co-scaling reads the per-view confidences, which a constant-weight run drops
-	if (params.bQualityCoScale && pointcloud.pointWeights.IsEmpty())
-		VERBOSE("warning: quality co-scaling ignored, the point-cloud carries no point weights");
-	// same for the confidence-driven sigma shrink: no confidences, nothing to shrink by
+	// the confidence-driven sigma shrink reads the per-view confidences: no confidences, nothing to shrink by
 	if (params.sigmaConfShrink > 0 && pointcloud.pointWeights.IsEmpty())
 		VERBOSE("warning: confidence sigma shrink ignored, the point-cloud carries no point weights");
 	const bool bConfShrink(params.sigmaConfShrink > 0 && !pointcloud.pointWeights.IsEmpty());
@@ -1137,7 +1134,7 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 		// per used point and view, the same values InsertViews accumulated into alpha_vis):
 		// weighting scales every data-term capacity by that mean while the quality term keeps
 		// its unit-vote calibration, tilting the energy balance towards the quality term
-		if (params.bQualityCoScale && !pointcloud.pointWeights.IsEmpty()) {
+		if (params.bQualityCoScale && !params.bConstantVotes && !pointcloud.pointWeights.IsEmpty()) {
 			double sumWeights(0);
 			size_t numWeights(0);
 			for (std::ptrdiff_t idx: indices) {

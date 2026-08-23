@@ -39,14 +39,16 @@ holes, and smooths.
 | `--canonical-rescale` | on | rescales the triangulation by a power of two so the median edge lands near 1, where the ray-walk `orientation()` predicate's fixed 1e-12 epsilon is calibrated; provably a no-op inside the band every normal scene lives in, and a correctness fix (not just a speed one) outside it (§6) |
 | `--max-edge-scale` | 4 | drops cut facets whose longest edge exceeds 4× the median cut-facet longest edge — the webbing gate (§4); a universal win, better-or-equal to k=6 on all four scenes, recall untouched |
 | library `kSigma` | 1.f | matches the CLI's long-standing `--thickness-factor` default of 1; the old library default of 2 loses 0.043-0.146 F1 to this value on every scene (§5) |
+| `--quality-co-scale` | on | calibration companion of weighted votes: scales kQual by the mean confidence the votes consumed, keeping the data-vs-quality balance of the unit-vote tuning; inert on the default constant-weight path and on weightless clouds, and ≥ weighted-votes-alone on all four scenes when votes are weighted (§2) |
 | `Mesh::Clean` smoothing | scale-free Laplacian | replaces `CGAL::PMP::smooth_shape`, whose fixed absolute time step over-smoothed fine meshes by ~20x (§3); the new smoother moves each vertex relative to its own one-ring scale, so it is unit- and resolution-independent |
 
 ### Opt-ins, and when to reach for them
 
-- **Object-scene stack** (`--constant-weight 0 --quality-co-scale 1`, on top of adaptive σ): the
-  single best result on object-centric captures (Ignatius 0.7497, Truck 0.6558) but costs Barn
-  −0.020 and Meetingroom −0.019 — use it only when the capture is object-centric and there is no
-  planar/facade content in frame (§5).
+- **Weighted votes** (`--constant-weight 0`): consume the per-view confidences as vote weights,
+  automatically calibrated by the default quality co-scale (§1). On recalibrated-confidence
+  clouds it is parity-or-slightly-better (+0.0006/+0.0030/+0.0038 Ignatius/Truck/Barn, −0.0021
+  Meetingroom, §2); on old plain-NCC clouds, whose confidence mass sits at 0.3-0.7, it remains an
+  object-scene-only tool (Ignatius/Truck up, Barn/Meetingroom −0.02, §5).
 - **`--sigma-conf-shrink`**: real signal, but redundant once adaptive σ is on (they draw on the
   same information and do not stack, §5) — use it only with `--adaptive-sigma 0`, i.e. as an
   alternative per-vertex σ source, not an addition to the default.
@@ -123,6 +125,42 @@ Adaptive σ is not just the most accurate arm, it is also the fastest: Ignatius 
 32.4s vs 35-50s for every other single arm tested; Truck 65.5s, on par with the conf-shrink arm.
 The weighted-vote arms pay 1.5-3x more solve time (Ignatius weighted+co-scale 108s). Free-space
 support carves fastest on Truck (42.5s) but loses 0.05 F1, so the speed is not worth taking.
+
+### Recalibrated-confidence clouds (2026-08-23)
+
+The CUDA densifier's integrated confidence recalibration (default `--postprocess-dmaps 4`)
+right-shifts the admitted-pixel confidence histogram (most mass ≥ 0.7) and roughly doubles the
+fusion yield; the four scenes were re-densified with it and the full arm matrix re-run on the new
+clouds (raw gated surface, same protocol as above):
+
+| scene | cloud | defaults (weight-1) | W | Wq | Sh | ShOnly | WqSh |
+|---|---|---|---|---|---|---|---|
+| Ignatius | 0.7715 | 0.7608 | 0.7597 | 0.7614 | 0.7615 | 0.7557 | 0.7607 |
+| Truck | 0.7175 | 0.6578 | 0.6593 | **0.6608** | 0.6566 | 0.6501 | 0.6598 |
+| Barn | 0.6416 | 0.6226 | 0.6260 | **0.6264** | 0.6185 | 0.6134 | 0.6219 |
+| Meetingroom | 0.4368 | 0.4380 | 0.4315 | 0.4359 | 0.4350 | 0.4327 | **0.4381** |
+
+W = `--constant-weight 0`; Wq = W + quality co-scale; Sh = `--sigma-conf-shrink 0.5`;
+ShOnly = Sh + `--adaptive-sigma 0`; WqSh = Wq + Sh. (The arms ran while the co-scale was still an
+opt-in flag; after the default flip it records, `--constant-weight 0` alone reproduces Wq.)
+
+The decomposition drove the default decision:
+
+- **Co-scale given weighted votes** (Wq − W): +0.0017/+0.0015/+0.0004/+0.0044 — positive on all
+  four scenes, because it is a calibration identity (min-cut scale invariance), not a scene
+  prior. **Default on**, gated inside the library to fire only when the votes actually consumed
+  the weights.
+- **The weights themselves** (W − weight-1): −0.0011/+0.0015/+0.0034/−0.0065 — scene-dependent.
+  The old collapse is gone (recalibrated weights sit near 1, §5), but the signal is not a
+  universal win, so **`--constant-weight` stays default-on** and the weight-1 regime remains the
+  shipped behavior, bit-identical by construction (the default path releases the weights before
+  the library ever sees them).
+- **Sigma shrink**: at or below baseline on 3/4 scenes stacked, below on 4/4 alone — the line
+  stays closed on recalibrated clouds too.
+
+Meetingroom is the first scene whose mesh beats its own input cloud on the new clouds (0.4380 vs
+0.4368); the other three meshes sit below their much-improved clouds, which absorbed most of the
+recalibration's value directly (cloud F1 +0.033/+0.012/+0.043/+0.114 vs the frozen references).
 
 ---
 
@@ -251,15 +289,20 @@ and in the `1 − s·conf` shrink formulation they do not stack (see next entry)
 `--adaptive-sigma`). ±0.002, scene-inconsistent — noise. **Kept opt-in** because alone (adaptive
 off) it is real: +0.018 on Ignatius (conf-shrink-only vs gated baseline).
 
-**Weighted votes alone** (`--constant-weight 0`, no co-scale). Ignatius cut collapses to 241k
-faces (F1 0.4898, −0.214 vs baseline); Truck −0.011. Mechanism: every data-term capacity shrinks
-by the mean point confidence (~0.3-0.7) while the quality term `q` and the camera `kInf`
-constraints keep their unit-vote calibration, so the cut collapses inward toward the smoothness
-term. **Rejected alone**; see the co-scale stack below for the fix.
+**Weighted votes alone** (`--constant-weight 0`, no co-scale). On old plain-NCC clouds the
+Ignatius cut collapses to 241k faces (F1 0.4898, −0.214 vs baseline); Truck −0.011. Mechanism:
+every data-term capacity shrinks by the mean point confidence (~0.3-0.7) while the quality term
+`q` and the camera `kInf` constraints keep their unit-vote calibration, so the cut collapses
+inward toward the smoothness term. On recalibrated clouds (weights near 1) the collapse is gone
+but the uncalibrated form still trails the co-scaled form on all four scenes (§2). **Rejected
+alone**; the co-scale is therefore the weighted path's default calibration, gated to fire only
+when the votes consumed the weights.
 
 **Object-scene stack** (`--constant-weight 0 --quality-co-scale 1`, on adaptive σ). Rehabilitates
-the collapse above by scaling `kQual` by the same mean confidence: Ignatius 0.7497 (cloud+0.012),
-Truck 0.6558 — but Barn −0.020, Meetingroom −0.019. **Opt-in, not default** (§1).
+the collapse above by scaling `kQual` by the same mean confidence: on old plain-NCC clouds
+Ignatius 0.7497 (cloud+0.012), Truck 0.6558 — but Barn −0.020, Meetingroom −0.019, so the
+*weighted votes* stay opt-in (§1). On recalibrated clouds the same stack is
+parity-or-slightly-better on 3/4 scenes (§2).
 
 **kAbs/kOutl proportional rescale** (WSS absolute-scale constants swept 0.5x-4x together, under
 `--free-space-support 1`). All 9 rows land below the no-fss baseline; the preferred direction is

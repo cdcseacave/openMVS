@@ -153,8 +153,8 @@ public:
 	struct ReconstructMeshParams {
 		// scale kQual by the mean confidence of the consumed point weights: weighting shrinks
 		// every data-term capacity by that mean while the quality term keeps its unit-vote
-		// calibration; no-op if the point-cloud carries no weights
-		bool bQualityCoScale = false;
+		// calibration; inert when the votes are unit (constant votes or a weightless cloud)
+		bool bQualityCoScale = true;
 		// per-vertex sigma in the three roles where sigma stands for the point's own positional
 		// uncertainty (soft-visibility exponent, end-cell offset, free-space-support windows):
 		// sigma_v = kSigma * median incident finite-Delaunay-edge length of the vertex, clamped
