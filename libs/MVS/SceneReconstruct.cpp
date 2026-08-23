@@ -353,12 +353,10 @@ struct coord_rescale_t {
 	int exponent;    // log2(scale), reported when the rescale engages
 	bool bEnabled;   // false keeps every consumer below on its untouched, unscaled path
 	inline coord_rescale_t() : scale(1), invScale(1), exponent(0), bEnabled(false) {}
-	// decide the factor from the measured median edge length; a degenerate measurement carries
-	// no scale information, so it leaves the scene alone
+	// decide the factor from the measured median edge length
 	inline void Setup(float medianEdge) {
 		ASSERT(!bEnabled);
-		if (!ISFINITE(medianEdge) || medianEdge <= 0)
-			return;
+		ASSERT(ISFINITE(medianEdge) && medianEdge > 0); // validated where measured
 		const double log2Edge(std::log2((double)medianEdge));
 		if (ABS(log2Edge) <= kLog2CanonicalBand)
 			return;
@@ -489,7 +487,6 @@ struct walk_stats_t {
 	uint64_t nBadEnd; // intersect() gave up with the segment not consumed
 	uint64_t nBadEndCoplanar3; // ... on a facet coplanar with all three of its edges
 	uint64_t nBadEndDirFilter; // ... with at least one candidate rejected by the direction filter
-	uint64_t nBadEndNonFinite; // ... with at least one candidate at a non-finite distance
 	uint64_t nCamRayDropped; // camera-side walk failed on its first step, the whole ray is discarded
 	uint64_t nCamWalkAborted; // camera-side walk did not end on its own vertex, so cell2Cam is wrong
 	uint64_t nEndWalkAborted; // end-point-side walk did not end on its own vertex, so cell2End is wrong
@@ -518,7 +515,6 @@ struct walk_stats_t {
 		nBadEnd += r.nBadEnd;
 		nBadEndCoplanar3 += r.nBadEndCoplanar3;
 		nBadEndDirFilter += r.nBadEndDirFilter;
-		nBadEndNonFinite += r.nBadEndNonFinite;
 		nCamRayDropped += r.nCamRayDropped;
 		nCamWalkAborted += r.nCamWalkAborted;
 		nEndWalkAborted += r.nEndWalkAborted;
@@ -681,17 +677,20 @@ bool intersect(const delaunay_t& Tr, const segment_t& seg, const std::vector<fac
 	int coplanar[3];
 	const REAL prevDist(inter.dist);
 	walk_stats_t& stats(GetWalkStats());
-	bool bDirFiltered(false), bNonFinite(false), bCoplanar3(false);
+	bool bDirFiltered(false), bCoplanar3(false);
 	for (const facet_t& in_facet: in_facets) {
 		ASSERT(!Tr.is_infinite(in_facet));
 		const int nb_coplanar(intersect(Tr.triangle(in_facet), seg, coplanar));
 		if (nb_coplanar >= 0) {
+			if (nb_coplanar == 3) {
+				// coplanar with 3 edges = tangent: the segment travels in the facet's
+				// supporting plane, so no crossing distance exists; give up
+				bCoplanar3 = true;
+				break;
+			}
 			// skip this cell if the intersection is not in the desired direction
 			const REAL interDist(inter.ray.IntersectsDist(getFacetPlane(in_facet)));
-			if (!ISFINITE(interDist)) {
-				bNonFinite = true;
-				continue;
-			}
+			ASSERT(ISFINITE(interDist)); // the exact test above says the segment straddles this plane
 			if ((interDist > prevDist) != inter.bigger) {
 				bDirFiltered = true;
 				continue;
@@ -699,9 +698,7 @@ bool intersect(const delaunay_t& Tr, const segment_t& seg, const std::vector<fac
 			// vertices of facet i: j = 4 * i, vertices = facet_vertex_order[j,j+1,j+2] negative orientation
 			inter.facet = in_facet;
 			inter.dist = interDist;
-			// nb_coplanar == 3 has no case below, it falls through to the bad end instead of stepping
-			if (nb_coplanar < 3)
-				++stats.nSteps;
+			++stats.nSteps;
 			switch (nb_coplanar) {
 			case 0: {
 				// face intersection
@@ -786,9 +783,7 @@ bool intersect(const delaunay_t& Tr, const segment_t& seg, const std::vector<fac
 				Tr.finite_incident_cells(inter.v1, cell_back_inserter_t(Tr, inter, out_facets));
 				return true; }
 			}
-			// coplanar with 3 edges = tangent = impossible?
-			bCoplanar3 = true;
-			break;
+			ASSERT("should not happen" == NULL);
 		}
 	}
 	// Bad end: no intersection found and we are not at the end of the segment (very rarely, but it happens)!
@@ -797,8 +792,6 @@ bool intersect(const delaunay_t& Tr, const segment_t& seg, const std::vector<fac
 		++stats.nBadEndCoplanar3;
 	if (bDirFiltered)
 		++stats.nBadEndDirFilter;
-	if (bNonFinite)
-		++stats.nBadEndNonFinite;
 	out_facets.clear();
 	return false;
 }
@@ -1194,6 +1187,13 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 				distsSq.Insert(normSq(CGAL2MVS<float>(c->vertex(ei->second)->point()) - CGAL2MVS<float>(c->vertex(ei->third)->point())));
 			}
 			medianEdge = SQRT(distsSq.GetMedian());
+		}
+		// the boundary where the measurement of the input data becomes an internal invariant:
+		// everything downstream (canonical rescale, sigma) relies on a usable scale, so a cloud
+		// whose median edge cannot be represented in float is rejected here, once
+		if (!ISFINITE(medianEdge) || medianEdge <= 0) {
+			VERBOSE("error: degenerate point-cloud scale (median Delaunay edge %g)", medianEdge);
+			return false;
 		}
 		// canonical rescale: everything from here on - the camera cells located below, both
 		// weighting loops, the carve replay and sigma itself - lives in the working space, and
@@ -1664,12 +1664,12 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 		carveRays.Release();
 
 		const walk_stats_t walkStats(GetTotalWalkStats());
-		DEBUG_ULTIMATE("\tray-walk accounting: M=%g L=%g | cam %llu (dropped %llu, aborted %llu), end %llu (aborted %llu), steps %llu, bad-ends %llu [coplanar3 %llu, dir-filter %llu, non-finite %llu], step-caps %llu | WSS: skipped %llu, null-cell %llu, infinite-cell %llu, hull-exit %llu, fired %llu (t==0 no-op %llu, saturated %llu) | carve %llu (dropped %llu, aborted %llu)",
+		DEBUG_ULTIMATE("\tray-walk accounting: M=%g L=%g | cam %llu (dropped %llu, aborted %llu), end %llu (aborted %llu), steps %llu, bad-ends %llu [coplanar3 %llu, dir-filter %llu], step-caps %llu | WSS: skipped %llu, null-cell %llu, infinite-cell %llu, hull-exit %llu, fired %llu (t==0 no-op %llu, saturated %llu) | carve %llu (dropped %llu, aborted %llu)",
 			sceneMagnitude, sigma/kSigma,
 			(unsigned long long)walkStats.nWalksCam, (unsigned long long)walkStats.nCamRayDropped, (unsigned long long)walkStats.nCamWalkAborted,
 			(unsigned long long)walkStats.nWalksEnd, (unsigned long long)walkStats.nEndWalkAborted,
 			(unsigned long long)walkStats.nSteps, (unsigned long long)walkStats.nBadEnd,
-			(unsigned long long)walkStats.nBadEndCoplanar3, (unsigned long long)walkStats.nBadEndDirFilter, (unsigned long long)walkStats.nBadEndNonFinite,
+			(unsigned long long)walkStats.nBadEndCoplanar3, (unsigned long long)walkStats.nBadEndDirFilter,
 			(unsigned long long)walkStats.nStepCapHit,
 			(unsigned long long)walkStats.nWssSkipped, (unsigned long long)walkStats.nWssNullCell, (unsigned long long)walkStats.nWssInfiniteCell,
 			(unsigned long long)walkStats.nWssHullExit, (unsigned long long)walkStats.nWssFired,
