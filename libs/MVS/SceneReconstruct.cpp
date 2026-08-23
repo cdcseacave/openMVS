@@ -531,7 +531,10 @@ struct walk_stats_t {
 // a legitimate walk crosses O(N^(1/3)) cells, so only walks far past this are worth flagging
 constexpr unsigned kMaxWalkSteps = 4096u;
 // one slot per worker thread, so the increments need no synchronization;
-// the slots are summed only after both weighting loops have completed
+// the slots are summed only after both weighting loops have completed.
+// The pool is process-wide and reset at the start of every reconstruction, so consecutive
+// reconstructions each report their own counts but two running at the same time would share
+// the slots: ReconstructMesh is reentrant across calls, not across concurrent callers
 static std::vector<walk_stats_t> g_walkStatsPool;
 static inline walk_stats_t& GetWalkStats() {
 	#ifdef DELAUNAY_USE_OPENMP
@@ -665,14 +668,15 @@ int intersect(const triangle_t& t, const segment_t& s, int coplanar[3])
 //  in_facets [in] : vector of facets to check
 //  out_facets [out] : vector of facets to check at next step (can be in_facets)
 //  out_inter [out] : kind of intersection
+//  stats [in,out] : the calling thread's accounting slot, passed in because this runs once per
+//    walk step and looking the slot up here would cost an omp_get_thread_num() call each time
 // return false if no intersection found and the end of the segment was not reached
-bool intersect(const delaunay_t& Tr, const segment_t& seg, const std::vector<facet_t>& in_facets, std::vector<facet_t>& out_facets, intersection_t& inter)
+bool intersect(const delaunay_t& Tr, const segment_t& seg, const std::vector<facet_t>& in_facets, std::vector<facet_t>& out_facets, intersection_t& inter, walk_stats_t& stats)
 {
 	ASSERT(!in_facets.empty());
 	static const int facet_vertex_order[] = {2,1,3,2,2,3,0,2,0,3,1,0,0,1,2,0};
 	int coplanar[3];
 	const REAL prevDist(inter.dist);
-	walk_stats_t& stats(GetWalkStats());
 	bool bDirFiltered(false), bCoplanar3(false);
 	for (const facet_t& in_facet: in_facets) {
 		ASSERT(!Tr.is_infinite(in_facet));
@@ -1322,7 +1326,7 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 				// find faces intersected by the camera-point segment
 				const segment_t segCamPoint(MVS2CGAL(camC), p);
 				++stats.nWalksCam;
-				if (!intersect(delaunay, segCamPoint, camCell.facets, facets, inter)) {
+				if (!intersect(delaunay, segCamPoint, camCell.facets, facets, inter, stats)) {
 					++stats.nCamRayDropped;
 					continue;
 				}
@@ -1337,7 +1341,7 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 					#pragma omp atomic
 					#endif
 					f += w;
-				} while (intersect(delaunay, segCamPoint, facets, facets, inter));
+				} while (intersect(delaunay, segCamPoint, facets, facets, inter, stats));
 				const bool bCamWalkOK(facets.empty() && inter.type == intersection_t::VERTEX && inter.v1 == vi);
 				ASSERT(bCamWalkOK);
 				if (!bCamWalkOK)
@@ -1362,7 +1366,7 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 				t += alpha_vis;
 				++stats.nWalksEnd;
 				nWalkSteps = 0;
-				while (intersect(delaunay, segEndPoint, facets, facets, inter)) {
+				while (intersect(delaunay, segEndPoint, facets, facets, inter, stats)) {
 					if (++nWalkSteps == kMaxWalkSteps)
 						++stats.nStepCapHit;
 					// assign score, weighted by the distance from the point to the intersection
@@ -1557,6 +1561,7 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 						++stats.nStepCapHit;
 					// assign score, weighted by the distance from the point to the intersection
 					const REAL dist(inter.ray.IntersectsDist(getFacetPlane(inter.facet)));
+					ASSERT(ISFINITE(dist)); // the exact test inside intersectFace() says the segment straddles this plane
 					const edge_cap_t w(ray.conf*(1.f-EXP(-SQUARE((float)dist)*inv2SigmaSq)));
 					edge_cap_t& f(infoCells[inter.facet.first->info()].f[inter.facet.second]);
 					#ifdef DELAUNAY_USE_OPENMP

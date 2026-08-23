@@ -147,7 +147,7 @@ bool PipelineTest(bool forceCPU, bool verbose)
 		scene.pointcloud.Swap(pointcloud);
 		scene.obb = initialOBB;
 	}
-	// Phase-0.B test D.1: a region-of-interest that intersects none of the dense points must
+	// A region-of-interest that intersects none of the dense points must
 	// fail cleanly through the "no points available" guard, not silently fall back to using
 	// every point
 	{
@@ -166,7 +166,7 @@ bool PipelineTest(bool forceCPU, bool verbose)
 		}
 		scene.obb = initialOBB;
 	}
-	// Phase-0.B test A: reconstructing with pointWeights released (each view's vote falls back
+	// Reconstructing with pointWeights released (each view's vote falls back
 	// to the implicit constant 1, see vert_info_t::InsertViews in SceneReconstruct.cpp) must
 	// behave the same as reconstructing with pointWeights present and every entry explicitly 1
 	{
@@ -209,7 +209,7 @@ bool PipelineTest(bool forceCPU, bool verbose)
 		}
 		scene.pointcloud = pointcloudBackup;
 	}
-	// Phase-0.B test B: pointWeights must round-trip through the interface archive bit-for-bit
+	// pointWeights must round-trip through the interface archive bit-for-bit
 	{
 		const ScopedTempDir tmpDir(_T("WeightsRoundTripTest"));
 		if (!tmpDir.IsValid())
@@ -247,7 +247,7 @@ bool PipelineTest(bool forceCPU, bool verbose)
 		}
 		scene.pointcloud = pointcloudBackup;
 	}
-	// Phase-0.B test D.2: too few points for the Delaunay triangulation to ever reach
+	// Too few points for the Delaunay triangulation to ever reach
 	// dimension 3 must fail cleanly via the dimension guard in SceneReconstruct.cpp, not
 	// crash or produce garbage; 3 points can reach at most dimension 2, so this is
 	// deterministic regardless of their actual layout
@@ -267,7 +267,7 @@ bool PipelineTest(bool forceCPU, bool verbose)
 		}
 		scene.pointcloud = pointcloudBackup;
 	}
-	// Phase-0.B test E: appendix Fixture A ("bipyramid", docs/design/DelaunayMeshReconstruction.md,
+	// Fixture A ("bipyramid", docs/design/DelaunayMeshReconstruction.md,
 	// Appendix), a synthetic 2-tetrahedra / 1-camera / 1-contributing-point scene hand-solved down
 	// to exact facet capacities and s/t values. Those internal values are not observable through the
 	// public API without adding test-only instrumentation to libs/MVS (explicitly out of scope), so
@@ -277,15 +277,14 @@ bool PipelineTest(bool forceCPU, bool verbose)
 	// implementation behaviour, not something the appendix's per-cell s/t/f table determines on its
 	// own: a cell with no path to either terminal (s=t=0) resolves to the source/free side, while a
 	// cell with no path in but a nonzero t (like the D_in vote this fixture places on an infinite cell
-	// beyond E, which never connects back to the finite triangulation -- items 3.1/3.3's "vote never
-	// reaches the surface" mechanism, reproduced here in miniature) resolves to the sink/full side from
+	// beyond E, which never connects back to the finite triangulation, the "vote never reaches the
+	// surface" mechanism reproduced here in miniature) resolves to the sink/full side from
 	// its own local bias alone. That interaction, not visible from the appendix table, is what this
 	// test locks: it deterministically extracts exactly one face -- the wing of the tetrahedron behind
 	// E that carries the orphaned D_in vote -- while the opposite apex D never appears (every facet
 	// touching D stays on the free side with its camera-linked neighbour, matching-side pairs never
-	// produce a face). A regression that drops the D_in vote (item 3.1) or relocates it onto a
-	// different cell changes this result; see the task report for which of items 1/2/4 this specific
-	// topology can and cannot discriminate on its own.
+	// produce a face). A regression that drops the behind-the-point D_in vote or relocates it onto a
+	// different cell changes this result.
 	{
 		Scene sceneA;
 		sceneA.pointcloud.points = {
@@ -333,7 +332,7 @@ bool PipelineTest(bool forceCPU, bool verbose)
 			return false;
 		}
 	}
-	// Phase-0.B test F: appendix Fixture B ("tetra + interior point", same Appendix), a synthetic
+	// Fixture B ("tetra + interior point", same appendix), a synthetic
 	// star-of-4-tetrahedra scene around a single interior contributing point P. As with Fixture A, the
 	// appendix's own predictions are on internal graph-cut state unreachable from the public API, so
 	// this locks the resulting cut topology instead -- confirmed empirically (stable across repeated
@@ -342,8 +341,8 @@ bool PipelineTest(bool forceCPU, bool verbose)
 	// tie-break, not by the appendix's per-cell table. Concretely: P's forward-walk vote reaches
 	// Ca={P,V1,V2,V3} with real positive capacity from its camera-linked infinite neighbour, so Ca
 	// joins the free side; but P's behind-the-point vote -- deposited via mirror_facet on the arc OUT
-	// of Cb={P,V0,V2,V3} towards its own camera-linked infinite neighbour, i.e. away from the camera,
-	// exactly as item 2 prescribes -- capacity flows the wrong direction to ever pull Cb along with it
+	// of Cb={P,V0,V2,V3} towards its own camera-linked infinite neighbour, i.e. away from the camera --
+	// capacity flows the wrong direction to ever pull Cb along with it
 	// (the arc runs Cb-to-neighbour, not neighbour-to-Cb), so Cb, Cc and Cd are all free-side "free"
 	// nodes with no s/t bias of their own and default to the same free side as Ca. Every facet in the
 	// fixture -- the six internal ones and the four hull ones -- therefore ends up with both sides
@@ -351,10 +350,10 @@ bool PipelineTest(bool forceCPU, bool verbose)
 	// facet differ) produces nothing: an EMPTY mesh. This is a solver-behaviour finding, not a
 	// mirror_facet correctness proof -- flipping mirror_facet's arc would put the same capacity on the
 	// opposite (Cb-reaching) arc, and Cb would then join the free side by real reachability instead of
-	// by default, reaching an *observably identical* empty result; see the task report. What this
-	// fixture does reliably lock: the pipeline runs this exact 4-tetrahedra / 2-camera fixture to
-	// completion, deterministically, with all four hull cells hard-stamped (item 4) and P's two votes
-	// landing where item 1/2/3 place them.
+	// by default, reaching an *observably identical* empty result. What this fixture does reliably
+	// lock: the pipeline runs this exact 4-tetrahedra / 2-camera fixture to completion,
+	// deterministically, with all four hull cells hard-stamped and both of P's votes landing on the
+	// cells the appendix derives.
 	{
 		Scene sceneB;
 		const float s3(1.7320508075688772f);
@@ -400,7 +399,7 @@ bool PipelineTest(bool forceCPU, bool verbose)
 	}
 	if (verbose)
 		scene.mesh.Save(MAKE_PATH("scene_dense_mesh.ply"));
-	// Phase-0.B test C: SamplePoints with an explicit seed must be reproducible, and a
+	// SamplePoints with an explicit seed must be reproducible, and a
 	// different seed must draw a different sample; per-face point counts are themselves
 	// seed-dependent (see the fractional-area coin-flip draw in Mesh::SamplePoints), so the
 	// cross-seed check compares the sampled points directly rather than assuming counts differ
