@@ -688,8 +688,10 @@ bool intersect(const delaunay_t& Tr, const segment_t& seg, const std::vector<fac
 		if (nb_coplanar >= 0) {
 			// skip this cell if the intersection is not in the desired direction
 			const REAL interDist(inter.ray.IntersectsDist(getFacetPlane(in_facet)));
-			if (!ISFINITE(interDist))
+			if (!ISFINITE(interDist)) {
 				bNonFinite = true;
+				continue;
+			}
 			if ((interDist > prevDist) != inter.bigger) {
 				bDirFiltered = true;
 				continue;
@@ -882,8 +884,10 @@ bool loadCarveRays(const String& fileName, IIndex numImages, CarveRayArr& rays)
 		VERBOSE("error: '%s' is not a carve-rays file (version %u expected)", fileName.c_str(), UnfusedPixelHeader::VERSION);
 		return false;
 	}
-	const uint64_t sizeRecords(header.numRecords*sizeof(UnfusedPixel));
-	if (file.getSize() != sizeof(header)+sizeRecords) {
+	// derive the record count bound from the file size by division, so a corrupt numRecords
+	// can not overflow the multiplication it would otherwise take to compute sizeRecords
+	const uint64_t sizeRecords((uint64_t)file.getSize()-sizeof(header));
+	if (sizeRecords%sizeof(UnfusedPixel) != 0 || header.numRecords != sizeRecords/sizeof(UnfusedPixel)) {
 		VERBOSE("error: carve-rays file '%s' is truncated (%llu records announced)", fileName.c_str(), (unsigned long long)header.numRecords);
 		return false;
 	}

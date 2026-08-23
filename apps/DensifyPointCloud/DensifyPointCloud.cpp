@@ -291,9 +291,9 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 	OPTDENSE::bRemoveDmaps = bRemoveDmaps;
 	if (!bValidConfig && !OPT::strDenseConfigFileName.empty())
 		OPTDENSE::oConfig.Save(OPT::strDenseConfigFileName);
-	// working variable, outside the configuration space saved above (see DepthMap.h)
-	if (!OPT::strExportUnfusedFileName.empty())
-		OPTDENSE::strExportUnfusedFileName = MAKE_PATH_SAFE(OPT::strExportUnfusedFileName);
+	// working variable, outside the configuration space saved above (see DepthMap.h);
+	// reset unconditionally so a stale value can not survive a repeated Initialize()
+	OPTDENSE::strExportUnfusedFileName = OPT::strExportUnfusedFileName.empty() ? String() : MAKE_PATH_SAFE(OPT::strExportUnfusedFileName);
 
 	MVS::Initialize(APPNAME, OPT::nMaxThreads, OPT::nProcessPriority);
 	return true;
