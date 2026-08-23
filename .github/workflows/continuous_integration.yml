@@ -22,7 +22,12 @@ env:
   BUILD_DIR: make
   CTEST_OUTPUT_ON_FAILURE: 1
   VCPKG_FEATURE_FLAGS: manifests,binarycaching,registries
-  VCPKG_COMMIT: '9e593bb18ea69cc5095e012465dcd675a822ed0d'
+  # ports pin msys2 packages by exact URL, and msys2 deletes a package as soon as it publishes
+  # the next build of it, so a pin only stays installable while its ports still name packages
+  # msys2 currently serves: the previous pin asked for autoconf2.71-2.71-3, which msys2 replaced
+  # with -4, and every gmp build (hence every configure) died on a 404 from all mirrors.
+  # This is microsoft/vcpkg#53437, the first commit whose gmp port names the package that exists
+  VCPKG_COMMIT: '37bb045f3c7a747d3e5d1c13b6fe6a0aec4b5d00'
 
 defaults:
   run:
