@@ -9,10 +9,12 @@ there. The phase-by-phase task list and per-slice experimental log that produced
 have been superseded and removed; `git log` / prior commits carry the full history if a
 derivation needs to be re-checked.
 
-Effort dates: 2026-08-18 to 2026-08-23. Two adjacent tracks are out of scope here and have their
-own plans: depth-maps as direct mesh input (bypassing the fused cloud) is
-`docs/design/DepthmapMeshingPlan.md`; dense-fusion re-baselining and the family-B benefit
-analysis is `docs/design/FusionImprovementPlan.md`.
+Effort dates: 2026-08-18 to 2026-08-23. Two adjacent tracks were scoped during this effort and
+are not implemented: depth-maps as direct mesh input (bypassing the fused cloud), and
+dense-fusion re-baselining. Their staged implementation plans have been removed along with the
+rest of this effort's intermediate planning; the measurements and refuted attributions that
+motivated them survive in §5, §6 and §8, which is everything a future attempt needs to restart
+without re-deriving anything.
 
 **Adjudication note.** Every mesh-F1 number recorded before 2026-08-21 was scored through a
 mesh-cleaning smoother bug that crushed scores by 20-50 points of F1 on fine-resolution scenes
@@ -39,15 +41,18 @@ holes, and smooths.
 | `--canonical-rescale` | on | rescales the triangulation by a power of two so the median edge lands near 1, where the ray-walk `orientation()` predicate's fixed 1e-12 epsilon is calibrated; provably a no-op inside the band every normal scene lives in, and a correctness fix (not just a speed one) outside it (§6) |
 | `--max-edge-scale` | 4 | drops cut facets whose longest edge exceeds 4× the median cut-facet longest edge — the webbing gate (§4); a universal win, better-or-equal to k=6 on all four scenes, recall untouched |
 | library `kSigma` | 1.f | matches the CLI's long-standing `--thickness-factor` default of 1; the old library default of 2 loses 0.043-0.146 F1 to this value on every scene (§5) |
-| `--constant-weight` | off | the visibility votes carry the per-view point confidence when the point-cloud has one (the densifier's recalibrated [0,1] confidence), and 1 otherwise: on recalibrated clouds the weighted votes are within noise of unit votes on every scene, and every calibration or shaping layer tried on top of them is within noise of the bare weights, so the bare weights are the default and the single code path (§2, §5); a point-cloud without confidence is bit-identical to the old weight-1 default; `--constant-weight 1` forces weight 1 on a cloud that carries confidence |
+| `--constant-weight` | on | every view votes 1, as it always has. The mesh stage **cannot tell a recalibrated confidence from a plain-NCC one** — `CONF_ADJUSTED` lives in the `.dmap` header and is deliberately not part of the MVS scene, and a point's per-view confidence arrives as a bare float — so consuming whatever the cloud carries would silently collapse the cut on any pre-recalibration cloud (Ignatius −0.214 F1, §5). Only the operator knows the provenance, so consuming the confidence is theirs to ask for: `--constant-weight 0`, and on recalibrated clouds it is worth at most a few thousandths either way (§2) |
 | `Mesh::Clean` smoothing | scale-free Laplacian | replaces `CGAL::PMP::smooth_shape`, whose fixed absolute time step over-smoothed fine meshes by ~20x (§3); the new smoother moves each vertex relative to its own one-ring scale, so it is unit- and resolution-independent |
 
 ### Opt-ins, and when to reach for them
 
-- **`--constant-weight 1`**: vote 1 per view even when the point-cloud carries confidence — the
-  pre-2026-08-23 default, and the control arm of every weighted-vote comparison in §2. Worth
-  reaching for on old plain-NCC clouds, whose confidence mass sits at 0.3-0.7 and whose weighted
-  cut collapses on object scenes (§5); on recalibrated clouds the two are within noise.
+- **`--constant-weight 0`** (weighted votes): consume the per-view confidence as the vote weight.
+  Reach for it **only when you know the cloud's confidence was recalibrated** by the densifier
+  (`--postprocess-dmaps`, default on): on such clouds it is parity-or-slightly-better on three of
+  four scenes and −0.0065 on the fourth (§2), while on an un-recalibrated cloud, whose confidence
+  mass sits at 0.3-0.7, it shrinks every data-term capacity against the unit-vote calibration of
+  the graph-cut constants and collapses the cut (§5). The library needs no switch for the
+  weightless case — a point-cloud carrying no confidence votes 1 per view by construction.
 - **`--carve-rays-file`**: unfused high-confidence depth pixels replayed as free-space-only rays,
   no vertex inserted (introduced by this effort) — feed it via
   `DensifyPointCloud --export-unfused-file`; below the default-flip gate but never harmful, keep
@@ -83,12 +88,14 @@ configuration gains +0.07 to +0.41 F1 per scene — all of that gain is the comp
 fixing the smoother (§4) plus adopting adaptive σ and the webbing gate, not any single change in
 isolation.
 
-**End-to-end validation of the flipped binary** (2026-08-23, defaults only, no flags): the raw
-surface reproduces the table above — Ignatius 0.7441, Truck 0.6614, Barn 0.6258, Meetingroom
-0.3974 (the small Meetingroom delta is the in-recon k=4 gate vs the offline k=6 scoring of the
-campaign arm) — and the full default pipeline including `Mesh::Clean` delivers Ignatius 0.7358,
-Truck 0.6604, Barn **0.6360**, Meetingroom **0.4037**: the clean now trades a little recall for
-precision on the object scenes and outright improves both τ=10mm scenes.
+**End-to-end validation of the flipped binary** (2026-08-23, on these same frozen
+pre-recalibration clouds): the raw surface reproduces the table above — Ignatius 0.7441, Truck
+0.6614, Barn 0.6258, Meetingroom 0.3974 (the small Meetingroom delta is the in-recon k=4 gate vs
+the offline k=6 scoring of the campaign arm) — and the full pipeline including `Mesh::Clean`
+delivers Ignatius 0.7358, Truck 0.6604, Barn **0.6360**, Meetingroom **0.4037**: the clean now
+trades a little recall for precision on the object scenes and outright improves both τ=10mm
+scenes. These runs used unit votes on pre-recalibration clouds, which is exactly the shipped
+default configuration.
 
 ### Webbing-gate k-sweep (raw graph-cut surface, no other change)
 
@@ -138,7 +145,7 @@ clouds (raw gated surface, same protocol as above):
 | Barn | 0.6416 | 0.6226 | 0.6260 | **0.6264** | 0.6185 | 0.6134 | 0.6219 |
 | Meetingroom | 0.4368 | 0.4380 | 0.4315 | 0.4359 | 0.4350 | 0.4327 | **0.4381** |
 
-W = the per-view confidence as vote weight (`--constant-weight 0`, now the default); Wq = W +
+W = the per-view confidence as vote weight (`--constant-weight 0`); Wq = W +
 quality co-scale (kQual scaled by the mean consumed confidence); Sh = confidence sigma shrink 0.5
 (σ_v *= 1 − 0.5·conf_v, votes kept at 1); ShOnly = Sh + `--adaptive-sigma 0`; WqSh = Wq + Sh.
 The Wq, Sh, ShOnly and WqSh arms no longer exist in the code — see the decision below.
@@ -155,13 +162,17 @@ What the grid says, arm by arm:
 **Decision (2026-08-23):** every layer tried on top of the bare confidence weights — the quality
 co-scale, the confidence sigma shrink, the unit-votes-with-retained-weights switch the shrink
 needed, and the combinations — lands within noise of simply using the confidence as the vote
-weight, and the bare weights are themselves within noise of weight 1 on these clouds. So the code
-keeps one path: the votes carry the per-view confidence when the point-cloud has one and 1
-otherwise (`--constant-weight` default off; `1` forces unit votes on a confidence-carrying cloud).
-`--quality-co-scale`, `--sigma-conf-shrink`, `ReconstructMeshParams::bQualityCoScale`,
-`sigmaConfShrink` and `bConstantVotes` were **removed**; the library's `Scene::ReconstructMesh` is
-back to the form it had before the confidence campaign, and a point-cloud without weights — the
-weight-1 path the defaults were validated on — is bit-identical to before.
+weight, and the bare weights are themselves within noise of weight 1 on these clouds. Nothing here
+earns a second code path, so `--quality-co-scale`, `--sigma-conf-shrink`,
+`ReconstructMeshParams::bQualityCoScale`, `sigmaConfShrink` and `bConstantVotes` were **removed**
+and the library's `Scene::ReconstructMesh` is back to the form it had before the confidence
+campaign: one path, in which a vote carries the point's per-view confidence if the cloud has one
+and 1 if it does not.
+
+The **app default stays `--constant-weight 1`** — the votes are unit and the weight-1 result is
+bit-identical to before — because nothing in the scene records whether a confidence has been
+recalibrated (§1), and these deltas are only within noise on clouds where it has been. Consuming
+the confidence is an informed opt-in, not a default the pipeline can pick on its own.
 
 Meetingroom is the first scene whose mesh beats its own input cloud on the new clouds (0.4380 vs
 0.4368); the other three meshes sit below their much-improved clouds, which absorbed most of the
@@ -305,8 +316,8 @@ baseline); Truck −0.011. Mechanism: every data-term capacity shrinks by the me
 confidence (~0.3-0.7) while the quality term `q` and the camera `kInf` constraints keep their
 unit-vote calibration, so the cut collapses inward toward the smoothness term. On recalibrated
 clouds (weights near 1) the collapse is gone and the weighted votes sit within a few thousandths
-of weight 1 on every scene (§2), which is why the confidence is now consumed by default when
-present; the old clouds are the reason `--constant-weight 1` stays available.
+of weight 1 on every scene (§2). Since nothing in the scene distinguishes the two kinds of cloud,
+this entry is the reason consuming the confidence stays an opt-in the operator asks for (§1).
 
 **Quality co-scale** (`--quality-co-scale`: `kQual *= mean consumed confidence`, the calibration
 identity that rehabilitates the collapse above — scale-invariant min-cut, so shrinking every data
@@ -360,8 +371,20 @@ table. **Removed from code.**
 decimated set). Scores *worse*: 0.6764 raw vs the decimated 0.6986, at 4.4x the graph-cut cost.
 `--min-point-distance` decimation is exonerated — it was never the source of any fidelity loss.
 
+**"The old and new input clouds differ by configuration."** The gap between the pre- and
+post-recalibration clouds (cloud F1 +0.010 to +0.114, points x1.6-3.2) was first attributed to a
+`Densify.ini` in the working folder overriding the defaults, to the fusion reprojection threshold
+and to the PatchMatch geometric weight. All three are wrong, and the corrections are worth keeping
+because each is a trap on its own: **a `Densify.ini` sitting in the working folder is never read**
+— the densifier loads a config only when `--dense-config-file` names one, and the scene with the
+most extreme old-cloud profile has no `Densify.ini` at all; and the reprojection-threshold and
+geometric-weight changes are **not on develop**, they live only on an unmerged branch, so both
+families ran the same values. Nor was it the neighbor selector, the resolution, the view count,
+the ROI or the tower mode — all identical. The families differ by **the binary**: the confidence
+recalibration and the fusion prior rescue, both defaults since #1292.
+
 **The WSS admission ladder.** Never implemented — it was gated on the weighted votes proving a
-*win* as a default, which Phase 2's ablation rejected on old clouds and the recalibrated-cloud
+*win* as a default, which the old-cloud ablation rejected outright and the recalibrated-cloud
 campaign did not revive (the weights are consumed by default now only because they are within
 noise of unit votes, §2). Void.
 
@@ -402,6 +425,19 @@ noise of unit votes, §2). Void.
   just the final F1.
 - `Mesh::SamplePoints` must use the **fixed-seed overload** in any benchmark; the legacy
   `random_device`-seeded default is noise-only and not reproducible.
+- **Mesh-stage cost scales with the vertex count, and memory is the binding limit**: measured
+  consistently across three T&T scenes, peak RSS is ~1.95 kB per Delaunay vertex (~313 B per cell
+  at 6.3-6.4 cells/vertex) and insertion costs 3.5-7.6 us per input point, of which
+  `--min-point-distance 1.5` keeps 48-65 % as vertices; a carve-only ray costs 1.6-3.3 us. A 10 M
+  point cloud therefore lands at 10-13 GB peak. Wall time is **superlinear** in points on the
+  scenes with the most redundancy: Meetingroom at 3.2x the points cost 6.1x the reconstruction
+  wall (triangulation 14.0->76.1 s, weighting 25.7->210.4 s, graph-cut 24.2->143.3 s). Any change
+  that pushes completeness has to be paired with a cost argument.
+- **Point count is noisy at the several-percent level between runs of the same build and flags**
+  (identical June runs: Barn 7.75/7.48/7.70 M, Meetingroom 3.53/3.56/3.11 M - 14 % spread), because
+  PatchMatch is unseeded. Any fusion A/B must therefore run on **frozen `.dmap` files**, never on
+  two separate densifications, or it measures the RNG. Mesh A/Bs have the matching rule: one frozen
+  `scene_dense.mvs`, and the seeded sampler above.
 
 ---
 
@@ -542,10 +578,21 @@ and nowhere else; all infinite cells are hard-stamped while the 4 finite cells a
 - **Load-time centering** for float-quantized large-coordinate point clouds (~6cm quantization at
   UTM magnitude, §6) — an import-side fix touching all pipelines (Interface importers /
   CreateStructure), not a mesh-stage change. Not started.
-- **Depth-maps as direct mesh input**, bypassing or supplementing the fused cloud — tracked in
-  `docs/design/DepthmapMeshingPlan.md`.
-- **Fusion re-baseline and family-B benefits** — tracked in
-  `docs/design/FusionImprovementPlan.md`.
+- **Depth-maps as direct mesh input**, bypassing or supplementing the fused cloud. Not started;
+  what motivates it is that fusion discards most of the evidence it is given — of the valid depths
+  in the reference maps it admits 48 % (Ignatius), 56 % (Truck) and 30 % (Meetingroom), i.e. it
+  drops 44-70 %, and every scene throws away 9-10 M pixels at confidence ≥ 0.7. The dropped mass
+  splits in two: everything below confidence 0.1 (the `1 - fNCCThresholdKeep` cut, 24-35 % of
+  pixels) and, almost all of the remainder, geometrically consistent depth that simply failed to
+  cluster into `nMinPixelsFuse` ≥ 5 pixels. Insertion and ray-walking are already decoupled in the
+  code — the carve replay walks rays for points that are not vertices at all — so the shape of such
+  a change is decimated vertices plus dense rays, and the costs in §6 bound what it may insert.
+- **Fusion re-baselining.** Not started. The bench's pre-#1292 reference clouds are stale
+  artifacts, not a configuration: the confidence recalibration (`--postprocess-dmaps 4`) and the
+  fusion prior rescue that separate them are today's defaults, so there is no setting to adopt,
+  only a baseline to re-freeze and further fusion levers to test. The one validated, still
+  unshipped lever found while scoping it: the fusion reprojection-error threshold at 1.2 versus the
+  1.0 measured better on an unmerged branch.
 - **Acceptance gates for future work on this energy**: mean paired mesh-F1 ≥ +0.003 beyond the
   0.0006 noise floor; no scene regressing more than 0.003 F1; ≥5% median improvement for
   exact-result speed changes. Judge every change on the **raw+gated surface** (§2's protocol),
