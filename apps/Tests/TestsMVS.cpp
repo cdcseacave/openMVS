@@ -100,8 +100,9 @@ bool PipelineTest(bool forceCPU, bool verbose)
 	// and is skipped on the CPU backend (where it would cost a separate pass).
 	// Also on: fusion rescue (fFusePriorWeight=3, ~+90% dense points on this
 	// scene); pointWeights hold the plain [0,1] per-view confidence consumed by
-	// the weighted mesh visibility (the same default path as the ReconstructMesh
-	// app, which keeps pointWeights unless --constant-weight is requested).
+	// the weighted mesh visibility, which this test exercises by calling the
+	// library directly -- the ReconstructMesh app releases them first, unless
+	// asked for the weighted path with --constant-weight 0.
 	// Measured (GPU adjust-ON / CPU adjust-OFF): recon faces 52.9k / 71.4k,
 	// cleaned faces 37.0k / 49.8k, quality 50.4 / 52.2.
 	if (!scene.DenseReconstruction() || scene.pointcloud.GetSize() < 50000u) {
