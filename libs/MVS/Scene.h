@@ -151,26 +151,12 @@ public:
 	// reconstruction options beyond the numeric factors of ReconstructMesh; the defaults are
 	// the recommended configuration, each opt-out restoring the corresponding legacy behavior
 	struct ReconstructMeshParams {
-		// scale kQual by the mean confidence of the consumed point weights: weighting shrinks
-		// every data-term capacity by that mean while the quality term keeps its unit-vote
-		// calibration; inert when the votes are unit (constant votes or a weightless cloud)
-		bool bQualityCoScale = true;
 		// per-vertex sigma in the three roles where sigma stands for the point's own positional
 		// uncertainty (soft-visibility exponent, end-cell offset, free-space-support windows):
 		// sigma_v = kSigma * median incident finite-Delaunay-edge length of the vertex, clamped
 		// to [0.25, 4] x the global sigma, so a locally denser sample gets a tighter uncertainty;
 		// false = the single global sigma everywhere, the legacy behavior
 		bool bAdaptiveSigma = true;
-		// shrink the per-vertex sigma towards the confident end of its range:
-		// sigma_v *= 1 - sigmaConfShrink * conf_v, where conf_v in [0,1] is the mean of the
-		// per-view confidences consumed for that vertex, the result clamped to the same
-		// [0.25, 4] x global sigma band; the confidence reaches sigma only, the votes keep
-		// their unit scale (see bConstantVotes); 0 disables, no-op without point weights
-		float sigmaConfShrink = 0.f;
-		// deposit a vote of 1 per (vertex, view) pair even when the point-cloud carries
-		// per-view confidences, so a run can feed those confidences to sigma while the
-		// energy stays in the uniform-weight regime its constants are tuned for
-		bool bConstantVotes = false;
 		// rescale the triangulation by a power of two so the median Delaunay edge lands near 1,
 		// where the ray-walk orientation predicate is calibrated: that predicate tests an
 		// unnormalized determinant growing as the cube of the edge length against a fixed

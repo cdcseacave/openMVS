@@ -26,7 +26,7 @@ Facts read out of the code and out of the existing benchmark record. Do not re-d
 |---|---|
 | Input is `scene.pointcloud`: `points`, `pointViews` (per-point view list), optional `pointWeights` (per-view [0,1] confidence) | `SceneReconstruct.cpp:1060-1091` |
 | Points are spatial-sorted (`CGAL::spatial_sort`) then inserted **serially** into `delaunay_t` with a hint; the `distInsert` (`--min-point-distance`, CLI default 1.5 px) test locates the nearest existing vertex and inserts only if the new point projects further than `distInsert` **or** at a dissimilar depth **in at least one of its views** | `:1078-1151` |
-| Per-vertex visibility is accumulated by `vert_info_t::InsertViews`, which **sums** the weight of repeated views: a vertex merged from N points sharing a view carries weight N from that view (weight 1 each under `bConstantVotes`) | `:243-270` |
+| Per-vertex visibility is accumulated by `vert_info_t::InsertViews`, which **sums** the weight of repeated views: a vertex merged from N points sharing a view carries weight N from that view (the per-view confidence each when the cloud carries `pointWeights`, 1 each otherwise) | `:243-270` |
 | `pointcloud.Release()` right after insertion — nothing downstream can look at the cloud again | `:1203` |
 | The global σ base is the **median finite Delaunay edge**, measured once the triangulation is complete | `:1232-1239` |
 | Camera cells + their `kInf` s-links are located after the optional canonical rescale | `:1243-1268` |
@@ -35,7 +35,7 @@ Facts read out of the code and out of the existing benchmark record. Do not re-d
 | **Insertion and ray-walking are already decoupled** — the carve replay (`:1739-1809`) walks rays for points that are not vertices at all, using `intersectFace()` (`:827`, `:854`) | `:1739-1809` |
 | Carve rays arrive as an `UnfusedPixel` sidecar (20-byte records, `"MVSU"` header) loaded by `loadCarveRays()` before anything is built | `:894-929`, `DepthMap.h:186-200` |
 | Parameters live in the trailing `ReconstructMeshParams` struct; `carveRaysFile` is the one positional string added on top | `Scene.h:153-221` |
-| App call site passes every knob from one place; `--constant-weight 1` (default) releases `pointWeights` before the call | `apps/ReconstructMesh/ReconstructMesh.cpp:509-525` |
+| App call site passes every knob from one place; `--constant-weight 1` (off by default) releases `pointWeights` before the call | `apps/ReconstructMesh/ReconstructMesh.cpp:509-525` |
 
 ### 0.2 The `.dmap` side
 
@@ -285,7 +285,8 @@ Three consequences worth stating:
 1. **The footprint σ of Phase 5.3 becomes exact and free here.** `footprint = range/focal` is a
    per-pixel quantity in the direct mode, not a per-vertex average reconstructed at mesh time —
    and Phase 5.3 found the physical field owns the object-scene gains (Ignatius +0.0087). Same for
-   `--sigma-conf-shrink`: the dmap confidence is right there, `CONF_ADJUSTED`-flagged.
+   the confidence sigma shrink (removed from the mesh stage, see `DelaunayMeshReconstruction.md`
+   §5): the dmap confidence is right there, `CONF_ADJUSTED`-flagged.
 2. **Positions get *better*, not worse.** The dmap carries `K`/`R`/`C` in double
    (`Interface.h:901-903`); back-projection can be done in `REAL` and only the final vertex is
    float. Today's path round-trips through `PointCloud::Point` float storage, which the Phase 3.4
@@ -446,12 +447,13 @@ win. Must also beat the `carve` variant (alternative E) on the same clouds — t
 
 ### Slice 3 — per-pixel σ sources *(1 day)*
 
-Plumb the per-pixel footprint (`depth/focal`, exact here) and the per-pixel confidence into the
-existing σ_v accumulator (`vert_accum_t` in `SceneReconstruct.cpp`), so `--sigma-conf-shrink` works on
-the direct path with a *better* input than the vertex-mean reconstruction it uses today.
-`--footprint-sigma` itself was removed from the code (proven equivalent in effect to the
-confidence signal on every scene tested — see `DelaunayMeshReconstruction.md`); this arm would
-need to reintroduce it from git history (commit `c34d2623`) before it can be plumbed here. No
+Plumb the per-pixel footprint (`depth/focal`, exact here) and the per-pixel confidence into a
+per-vertex σ_v source on the direct path, with a *better* input than the vertex-mean
+reconstruction the mesh-stage confidence shrink used. Both `--footprint-sigma` and
+`--sigma-conf-shrink` (with its insertion-time `vert_accum_t` accumulator) were removed from the
+code (proven equivalent in effect to each other on every scene tested, and neither beat adaptive
+σ — see `DelaunayMeshReconstruction.md` §5); this arm would need to reintroduce them from git
+history (commits `c34d2623` and `1be150d0`) before it can be plumbed here. No
 new switches otherwise.
 
 **Gate**: the § 8 exact-result discipline — the arms must be no-ops when their flags are off — plus

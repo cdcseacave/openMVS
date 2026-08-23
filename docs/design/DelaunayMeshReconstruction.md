@@ -9,7 +9,7 @@ there. The phase-by-phase task list and per-slice experimental log that produced
 have been superseded and removed; `git log` / prior commits carry the full history if a
 derivation needs to be re-checked.
 
-Effort dates: 2026-08-18 to 2026-08-22. Two adjacent tracks are out of scope here and have their
+Effort dates: 2026-08-18 to 2026-08-23. Two adjacent tracks are out of scope here and have their
 own plans: depth-maps as direct mesh input (bypassing the fused cloud) is
 `docs/design/DepthmapMeshingPlan.md`; dense-fusion re-baselining and the family-B benefit
 analysis is `docs/design/FusionImprovementPlan.md`.
@@ -39,19 +39,15 @@ holes, and smooths.
 | `--canonical-rescale` | on | rescales the triangulation by a power of two so the median edge lands near 1, where the ray-walk `orientation()` predicate's fixed 1e-12 epsilon is calibrated; provably a no-op inside the band every normal scene lives in, and a correctness fix (not just a speed one) outside it (§6) |
 | `--max-edge-scale` | 4 | drops cut facets whose longest edge exceeds 4× the median cut-facet longest edge — the webbing gate (§4); a universal win, better-or-equal to k=6 on all four scenes, recall untouched |
 | library `kSigma` | 1.f | matches the CLI's long-standing `--thickness-factor` default of 1; the old library default of 2 loses 0.043-0.146 F1 to this value on every scene (§5) |
-| `--quality-co-scale` | on | calibration companion of weighted votes: scales kQual by the mean confidence the votes consumed, keeping the data-vs-quality balance of the unit-vote tuning; inert on the default constant-weight path and on weightless clouds, and ≥ weighted-votes-alone on all four scenes when votes are weighted (§2) |
+| `--constant-weight` | off | the visibility votes carry the per-view point confidence when the point-cloud has one (the densifier's recalibrated [0,1] confidence), and 1 otherwise: on recalibrated clouds the weighted votes are within noise of unit votes on every scene, and every calibration or shaping layer tried on top of them is within noise of the bare weights, so the bare weights are the default and the single code path (§2, §5); a point-cloud without confidence is bit-identical to the old weight-1 default; `--constant-weight 1` forces weight 1 on a cloud that carries confidence |
 | `Mesh::Clean` smoothing | scale-free Laplacian | replaces `CGAL::PMP::smooth_shape`, whose fixed absolute time step over-smoothed fine meshes by ~20x (§3); the new smoother moves each vertex relative to its own one-ring scale, so it is unit- and resolution-independent |
 
 ### Opt-ins, and when to reach for them
 
-- **Weighted votes** (`--constant-weight 0`): consume the per-view confidences as vote weights,
-  automatically calibrated by the default quality co-scale (§1). On recalibrated-confidence
-  clouds it is parity-or-slightly-better (+0.0006/+0.0030/+0.0038 Ignatius/Truck/Barn, −0.0021
-  Meetingroom, §2); on old plain-NCC clouds, whose confidence mass sits at 0.3-0.7, it remains an
-  object-scene-only tool (Ignatius/Truck up, Barn/Meetingroom −0.02, §5).
-- **`--sigma-conf-shrink`**: real signal, but redundant once adaptive σ is on (they draw on the
-  same information and do not stack, §5) — use it only with `--adaptive-sigma 0`, i.e. as an
-  alternative per-vertex σ source, not an addition to the default.
+- **`--constant-weight 1`**: vote 1 per view even when the point-cloud carries confidence — the
+  pre-2026-08-23 default, and the control arm of every weighted-vote comparison in §2. Worth
+  reaching for on old plain-NCC clouds, whose confidence mass sits at 0.3-0.7 and whose weighted
+  cut collapses on object scenes (§5); on recalibrated clouds the two are within noise.
 - **`--carve-rays-file`**: unfused high-confidence depth pixels replayed as free-space-only rays,
   no vertex inserted (introduced by this effort) — feed it via
   `DensifyPointCloud --export-unfused-file`; below the default-flip gate but never harmful, keep
@@ -116,8 +112,10 @@ Gated raw already beats the input cloud on Barn and Meetingroom before adaptive 
 | + conf-shrink 0.5 (triple stack) | 0.7492 | 0.6579 | — | — |
 
 The weighted+co-scale stack adds a further +0.007/+0.011 over adaptive alone on the two object
-scenes, but regresses both planar scenes (Barn −0.020, Meetingroom −0.019) — an opt-in, not a
-default (§1, §5).
+scenes, but regresses both planar scenes (Barn −0.020, Meetingroom −0.019) — on these old
+plain-NCC clouds the weighted votes are an object-scene tool, not a default (§5). The co-scale
+and conf-shrink flags used by these rows were removed after the recalibrated-cloud campaign
+below; the rows stay as the record of what the stack bought on old clouds.
 
 ### Speed
 
@@ -140,23 +138,30 @@ clouds (raw gated surface, same protocol as above):
 | Barn | 0.6416 | 0.6226 | 0.6260 | **0.6264** | 0.6185 | 0.6134 | 0.6219 |
 | Meetingroom | 0.4368 | 0.4380 | 0.4315 | 0.4359 | 0.4350 | 0.4327 | **0.4381** |
 
-W = `--constant-weight 0`; Wq = W + quality co-scale; Sh = `--sigma-conf-shrink 0.5`;
-ShOnly = Sh + `--adaptive-sigma 0`; WqSh = Wq + Sh. (The arms ran while the co-scale was still an
-opt-in flag; after the default flip it records, `--constant-weight 0` alone reproduces Wq.)
+W = the per-view confidence as vote weight (`--constant-weight 0`, now the default); Wq = W +
+quality co-scale (kQual scaled by the mean consumed confidence); Sh = confidence sigma shrink 0.5
+(σ_v *= 1 − 0.5·conf_v, votes kept at 1); ShOnly = Sh + `--adaptive-sigma 0`; WqSh = Wq + Sh.
+The Wq, Sh, ShOnly and WqSh arms no longer exist in the code — see the decision below.
 
-The decomposition drove the default decision:
+What the grid says, arm by arm:
 
-- **Co-scale given weighted votes** (Wq − W): +0.0017/+0.0015/+0.0004/+0.0044 — positive on all
-  four scenes, because it is a calibration identity (min-cut scale invariance), not a scene
-  prior. **Default on**, gated inside the library to fire only when the votes actually consumed
-  the weights.
-- **The weights themselves** (W − weight-1): −0.0011/+0.0015/+0.0034/−0.0065 — scene-dependent.
-  The old collapse is gone (recalibrated weights sit near 1, §5), but the signal is not a
-  universal win, so **`--constant-weight` stays default-on** and the weight-1 regime remains the
-  shipped behavior, bit-identical by construction (the default path releases the weights before
-  the library ever sees them).
-- **Sigma shrink**: at or below baseline on 3/4 scenes stacked, below on 4/4 alone — the line
-  stays closed on recalibrated clouds too.
+- **The weights themselves** (W − weight-1): −0.0011/+0.0015/+0.0034/−0.0065 — within a few
+  thousandths either way, scene-dependent in sign. The old collapse is gone: recalibrated
+  weights sit near 1, so the energy stays in the regime its constants are tuned for (§5).
+- **Co-scale on top of the weights** (Wq − W): +0.0017/+0.0015/+0.0004/+0.0044 — consistent in
+  sign but mean +0.0020, below the +0.003 acceptance gate of §8.
+- **Sigma shrink**: at or below the weight-1 baseline on 3/4 scenes stacked, below on 4/4 alone.
+
+**Decision (2026-08-23):** every layer tried on top of the bare confidence weights — the quality
+co-scale, the confidence sigma shrink, the unit-votes-with-retained-weights switch the shrink
+needed, and the combinations — lands within noise of simply using the confidence as the vote
+weight, and the bare weights are themselves within noise of weight 1 on these clouds. So the code
+keeps one path: the votes carry the per-view confidence when the point-cloud has one and 1
+otherwise (`--constant-weight` default off; `1` forces unit votes on a confidence-carrying cloud).
+`--quality-co-scale`, `--sigma-conf-shrink`, `ReconstructMeshParams::bQualityCoScale`,
+`sigmaConfShrink` and `bConstantVotes` were **removed**; the library's `Scene::ReconstructMesh` is
+back to the form it had before the confidence campaign, and a point-cloud without weights — the
+weight-1 path the defaults were validated on — is bit-identical to before.
 
 Meetingroom is the first scene whose mesh beats its own input cloud on the new clouds (0.4380 vs
 0.4368); the other three meshes sit below their much-improved clouds, which absorbed most of the
@@ -277,32 +282,44 @@ surface priors in deep free space. **Never "fix" the t==0 no-op.** `max` still c
 per-firing `product` is the only enforcement behavior again.
 
 **Footprint-based σ** (`--footprint-sigma`, per-pixel range/focal as an alternative σ_v source
-to adaptive). Proven ≡ `--sigma-conf-shrink` in effect on every scene tested (within noise on
-all four: 0.5574/0.5569, 0.3382/0.3380, 0.3384/0.3385, 0.3599/0.3605) — two independent
-implementations of the same physical signal (near/well-observed → tighter σ). Loses to adaptive
-σ as a base (Barn −0.0073) and runs up to 2.3x slower on some scenes (Ignatius 229s vs ~98s for
-the confidence arms). **REMOVED from code.** The σ_v design space has exactly two independent
+to adaptive). Proven ≡ the confidence sigma shrink (since removed too, see below) in effect on
+every scene tested (within noise on all four: 0.5574/0.5569, 0.3382/0.3380, 0.3384/0.3385,
+0.3599/0.3605) — two independent implementations of the same physical signal (near/well-observed
+→ tighter σ). Loses to adaptive σ as a base (Barn −0.0073) and runs up to 2.3x slower on some
+scenes (Ignatius 229s vs ~98s for the confidence arms). **REMOVED from code.** The σ_v design space has exactly two independent
 signals — *physical* (confidence ≡ footprint) and *sampling-density* (median incident edge) —
 and in the `1 − s·conf` shrink formulation they do not stack (see next entry).
 
-**Confidence-shrink stacking on adaptive σ** (`--sigma-conf-shrink` on top of
-`--adaptive-sigma`). ±0.002, scene-inconsistent — noise. **Kept opt-in** because alone (adaptive
-off) it is real: +0.018 on Ignatius (conf-shrink-only vs gated baseline).
+**Confidence sigma shrink** (`--sigma-conf-shrink s`: σ_v *= 1 − s·conf_v with conf_v the mean
+per-view confidence merged into the vertex, votes kept at 1 through a `bConstantVotes` switch
+that retained the weights for σ only). Alone (adaptive σ off) it was real on old clouds: +0.018
+on Ignatius vs the gated baseline. Stacked on adaptive σ: ±0.002, scene-inconsistent — the two
+draw on the same information and do not stack. On recalibrated clouds it is at or below the
+weight-1 baseline on 3/4 scenes stacked (Ign 0.7615, Truck 0.6566, Barn 0.6185, MR 0.4350 vs
+0.7608/0.6578/0.6226/0.4380) and below on 4/4 alone (0.7557/0.6501/0.6134/0.4327). **REMOVED
+from code** together with `bConstantVotes`, which existed only to serve it.
 
-**Weighted votes alone** (`--constant-weight 0`, no co-scale). On old plain-NCC clouds the
-Ignatius cut collapses to 241k faces (F1 0.4898, −0.214 vs baseline); Truck −0.011. Mechanism:
-every data-term capacity shrinks by the mean point confidence (~0.3-0.7) while the quality term
-`q` and the camera `kInf` constraints keep their unit-vote calibration, so the cut collapses
-inward toward the smoothness term. On recalibrated clouds (weights near 1) the collapse is gone
-but the uncalibrated form still trails the co-scaled form on all four scenes (§2). **Rejected
-alone**; the co-scale is therefore the weighted path's default calibration, gated to fire only
-when the votes consumed the weights.
+**Weighted votes on old plain-NCC clouds** (`--constant-weight 0` before the densifier's
+confidence recalibration). The Ignatius cut collapses to 241k faces (F1 0.4898, −0.214 vs
+baseline); Truck −0.011. Mechanism: every data-term capacity shrinks by the mean point
+confidence (~0.3-0.7) while the quality term `q` and the camera `kInf` constraints keep their
+unit-vote calibration, so the cut collapses inward toward the smoothness term. On recalibrated
+clouds (weights near 1) the collapse is gone and the weighted votes sit within a few thousandths
+of weight 1 on every scene (§2), which is why the confidence is now consumed by default when
+present; the old clouds are the reason `--constant-weight 1` stays available.
 
-**Object-scene stack** (`--constant-weight 0 --quality-co-scale 1`, on adaptive σ). Rehabilitates
-the collapse above by scaling `kQual` by the same mean confidence: on old plain-NCC clouds
-Ignatius 0.7497 (cloud+0.012), Truck 0.6558 — but Barn −0.020, Meetingroom −0.019, so the
-*weighted votes* stay opt-in (§1). On recalibrated clouds the same stack is
-parity-or-slightly-better on 3/4 scenes (§2).
+**Quality co-scale** (`--quality-co-scale`: `kQual *= mean consumed confidence`, the calibration
+identity that rehabilitates the collapse above — scale-invariant min-cut, so shrinking every data
+capacity by the mean weight and the quality term by the same factor leaves the cut where unit
+votes would put it). On old plain-NCC clouds, weighted + co-scale on adaptive σ gives Ignatius
+0.7497 (cloud +0.012), Truck 0.6558 — but Barn −0.020, Meetingroom −0.019. On recalibrated
+clouds it is +0.0017/+0.0015/+0.0004/+0.0044 over the bare weights — consistent in sign, mean
++0.0020, below the §8 gate, and the bare weights are themselves within noise of weight 1. It was
+briefly default-on, gated to fire only when the votes consumed the weights (the first version
+keyed on weights *present*, which combined with the shrink's retained-but-unused weights would
+have shrunk `kQual` against unit votes — the collapse inverted). **REMOVED from code**: a second
+path that buys two thousandths is not worth carrying; if weights ever sit far from 1 again, the
+fix belongs in the densifier's calibration, not in a mesh-side rescale.
 
 **kAbs/kOutl proportional rescale** (WSS absolute-scale constants swept 0.5x-4x together, under
 `--free-space-support 1`). All 9 rows land below the no-fss baseline; the preferred direction is
@@ -343,8 +360,10 @@ table. **Removed from code.**
 decimated set). Scores *worse*: 0.6764 raw vs the decimated 0.6986, at 4.4x the graph-cut cost.
 `--min-point-distance` decimation is exonerated — it was never the source of any fidelity loss.
 
-**The WSS admission ladder.** Never implemented — it was gated on a weighting rollout
-(`--constant-weight 0` as a viable default) that Phase 2's ablation rejected outright. Void.
+**The WSS admission ladder.** Never implemented — it was gated on the weighted votes proving a
+*win* as a default, which Phase 2's ablation rejected on old clouds and the recalibrated-cloud
+campaign did not revive (the weights are consumed by default now only because they are within
+noise of unit votes, §2). Void.
 
 ---
 

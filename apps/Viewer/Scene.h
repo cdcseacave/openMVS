@@ -124,7 +124,7 @@ public:
 		float minPointDistance{1.5f};
 		bool useFreeSpaceSupport{false};
 		bool useOnlyROI{false};
-		bool constantWeight{true};
+		bool constantWeight{false};
 		float thicknessFactor{1.f};
 		float qualityFactor{1.f};
 		float decimateMesh{1.f};
