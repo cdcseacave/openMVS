@@ -33,16 +33,8 @@
 #include "PointCloud.h"
 #include "DepthMap.h"
 // GLTF: mesh import/export
-#define JSON_NOEXCEPTION
-#define TINYGLTF_NOEXCEPTION
-#define TINYGLTF_NO_STB_IMAGE
-#define TINYGLTF_NO_STB_IMAGE_WRITE
-#define TINYGLTF_NO_INCLUDE_JSON
-#define TINYGLTF_NO_INCLUDE_STB_IMAGE
-#define TINYGLTF_NO_INCLUDE_STB_IMAGE_WRITE
-// #define TINYGLTF_IMPLEMENTATION
+#include <tiny_gltf.h>
 #include "../IO/json.hpp"
-#include "../IO/tiny_gltf.h"
 
 using namespace MVS;
 

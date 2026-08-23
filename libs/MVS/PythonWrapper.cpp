@@ -97,7 +97,14 @@ public:
 	void pyCleanMesh(float fDecimate=1.f, float fRemoveSpurious=20.f, bool bRemoveSpikes=true, unsigned nCloseHoles=30, unsigned nSmoothMesh=2, float fEdgeLength=0.f, bool bCrop2ROI=false) {
 		if (bCrop2ROI && IsBounded())
 			mesh.RemoveFacesOutside(obb);
-		mesh.Clean(fDecimate, fRemoveSpurious, bRemoveSpikes, nCloseHoles, nSmoothMesh, fEdgeLength);
+		Mesh::CleanParams params;
+		params.simplifyTarget = fDecimate;
+		params.spuriousFactor = fRemoveSpurious;
+		params.removeSpikes = bRemoveSpikes;
+		params.maxHoles = nCloseHoles;
+		params.smoothIterations = (int)nSmoothMesh;
+		params.edgeLength = fEdgeLength;
+		mesh.Clean(params);
 	}
 	bool pyRefineMesh(unsigned nResolutionLevel=0, unsigned nEnsureEdgeSize=1, unsigned nMaxFaceArea=32, unsigned nScales=2, float fScaleStep=0.5f, float fRegularityWeight=0.2f) {
 		return RefineMesh(nResolutionLevel, 640/*nMinResolution*/, 8/*nMaxViews*/, 0.f/*fDecimateMesh*/, 30/*nCloseHoles*/, nEnsureEdgeSize,

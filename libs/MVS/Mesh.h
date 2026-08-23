@@ -185,15 +185,29 @@ public:
 	void GetAdjVertexFaces(VIndex, VIndex, FaceIdxArr&) const;
 
 	unsigned FixNonManifold(float magDisplacementDuplicateVertices=0.01f, VertexIdxArr* duplicatedVertices=NULL);
-	void Clean(float fDecimate=0.7f, float fSpurious=10.f, bool bRemoveSpikes=true, unsigned nCloseHoles=30, unsigned nSmoothMesh=2, float fEdgeLength=0, bool bLastClean=true);
+	FIndex RemoveSpuriousComponents(float factor);
+	VIndex RemoveSpikes(unsigned maxIterations=100);
+	void Simplify(float target, float minEdgeLength=0.f, float aggressiveness=0.f);
+	unsigned CloseHoles(unsigned maxHoles=200);
+	void SmoothHCLaplacian(int iterations=1);
+	struct CleanParams {
+		float simplifyTarget{1.f};
+		float spuriousFactor{0.f};
+		bool removeSpikes{false};
+		unsigned maxSpikeIterations{100};
+		unsigned maxHoles{0};
+		int smoothIterations{0};
+		float edgeLength{0.f};
+		int remeshIterations{3};
+		bool finalize{true};
+	};
+	void Clean(const CleanParams& params);
 
-	void EnsureEdgeSize(float minEdge=-0.5f, float maxEdge=-4.f, float collapseRatio=0.2, float degenerate_angle_deg=150, int mode=1, int max_iters=50);
+	void EnsureEdgeSize(float edgeLength=0.f, int iterations=3);
 
 	typedef cList<uint16_t,uint16_t,0,16,FIndex> AreaArr;
 	void Subdivide(const AreaArr& maxAreas, uint32_t maxArea);
-	void Decimate(VertexIdxArr& verticesRemove);
-	void CloseHole(VertexIdxArr& vertsLoop);
-	void CloseHoleQuality(VertexIdxArr& vertsLoop);
+	unsigned RemoveVerticesAndFill(VertexIdxArr& verticesRemove);
 	FIndex RemoveDegenerateFaces(Type thArea=1e-10f);
 	FIndex RemoveDegenerateFaces(unsigned maxIterations, Type thArea=1e-10f);
 	void RemoveFacesOutside(const OBB3f&);
@@ -206,8 +220,8 @@ public:
 		if (!vertexColors.empty())
 			vertexColors.RemoveAt(idxV);
 	}
-	VIndex RemoveDuplicatedVertices(VertexIdxArr* duplicatedVertices=NULL);
-	VIndex RemoveUnreferencedVertices(bool bUpdateLists=false);
+	VIndex RemoveDuplicatedVertices();
+	VIndex RemoveUnreferencedVertices();
 	std::vector<Mesh> SplitMeshPerTextureBlob(FaceIdxArr* mapFaceSubsetIndices = NULL) const;
 	void ConvertTexturePerVertex(Mesh&) const;
 
@@ -249,7 +263,7 @@ public:
 	bool Split(FacesChunkArr&, float maxArea);
 	Mesh SubMesh(const FaceIdxArr& faces) const;
 
-	bool TransferTexture(Mesh& mesh, const FaceIdxArr& faceSubsetIndices={}, unsigned borderSize=3, unsigned textureSize=4096);
+	bool TransferTexture(Mesh& mesh, unsigned borderSize=3, unsigned textureSize=4096);
 
 	size_t GetMemorySize() const;
 

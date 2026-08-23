@@ -70,7 +70,7 @@ class Mesh {
 };
 ```
 Key method:
-- `Clean(fDecimate, fSpurious, bRemoveSpikes, nCloseHoles, nSmoothMesh, fEdgeLength, bLastClean)`: CGAL-based mesh cleaning — decimation, spurious component removal, spike removal, hole closing, smoothing, and edge-length enforcement.
+- `Clean(fDecimate, fSpurious, bRemoveSpikes, nCloseHoles, nSmoothMesh, fEdgeLength, bLastClean)`: delegates generic mesh processing to HalfMesh — QEM decimation, spurious-component and spike removal, hole closing, HC smoothing, and isotropic remeshing. OpenMVS adjacency/normal caches are rebuilt only when they existed before the operation.
 
 ### DepthData (`DepthMap.h`)
 Per-image depth estimation data:
@@ -126,7 +126,7 @@ Key params: `nResolutionLevel`, `fDecimateMesh`, `nCloseHoles`, `fRegularityWeig
 ```cpp
 Scene::TextureMesh(nResolutionLevel, ...)
 ```
-Project faces to images -> compute blending weights -> spatial patch grouping -> atlas packing (`AtlasPacker`, skyline-based bin packing with rotation) -> global seam leveling -> local seam blending.
+Project faces to images -> compute blending weights -> spatial patch grouping -> atlas packing (`halfmesh::PackRectangles`, bounded multi-page skyline packing over `cv::Rect` with rotation) -> global seam leveling -> local seam blending.
 
 `Scene::ComputeVertexColors(...)` shares the same view selection, but instead of building an atlas it samples each vertex in the views texturing the faces around it and stores the weighted average in `mesh.vertexColors`; it releases each image as soon as its faces are consumed.
 

@@ -54,7 +54,6 @@ String strOutputFileName;
 String strAlignFileName;
 String strTransformFileName;
 String strTransferTextureFileName;
-String strIndicesFileName;
 bool bComputeVolume;
 bool bConvert;
 bool bInvertTransform;
@@ -120,8 +119,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("align-file,a", boost::program_options::value<std::string>(&OPT::strAlignFileName), "input scene filename to which the scene will be cameras aligned")
 		("transform-file,t", boost::program_options::value<std::string>(&OPT::strTransformFileName), "input transform filename by which the scene will transformed")
 		("invert-transform", boost::program_options::value(&OPT::bInvertTransform)->default_value(0), "Invert the scene transform read from file")
-		("transfer-texture-file", boost::program_options::value<std::string>(&OPT::strTransferTextureFileName), "input mesh filename to which the texture of the scene's mesh will be transfered to (the two meshes should be aligned and the new mesh to have UV-map)")
-		("indices-file", boost::program_options::value<std::string>(&OPT::strIndicesFileName), "input indices filename to be used with ex. texture transfer to select a subset of the scene's mesh")
+		("transfer-texture-file", boost::program_options::value<std::string>(&OPT::strTransferTextureFileName), "input mesh filename to which the texture of the scene's mesh will be transferred (the two meshes should be aligned)")
 		("convert", boost::program_options::value(&OPT::bConvert)->default_value(false), "just convert the input to the output format without any transformation")
 		("compute-volume", boost::program_options::value(&OPT::bComputeVolume)->default_value(false), "compute the volume of the given watertight mesh, or else try to estimate the ground plane and assume the mesh is bounded by it")
 		("eps-noise-position", boost::program_options::value(&OPT::fEpsNoisePosition)->default_value(0.f), "add noise to camera positions (0 - disabled)")
@@ -171,7 +169,6 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 	Util::ensureValidPath(OPT::strAlignFileName);
 	Util::ensureValidPath(OPT::strTransformFileName);
 	Util::ensureValidPath(OPT::strTransferTextureFileName);
-	Util::ensureValidPath(OPT::strIndicesFileName);
 	const String strInputFileNameExt(Util::getFileExt(OPT::strInputFileName).ToLower());
 	const bool bInvalidCommand(OPT::strInputFileName.empty() ||
 		(OPT::strAlignFileName.empty() && OPT::strTransformFileName.empty() && OPT::strTransferTextureFileName.empty() && !OPT::bComputeVolume && OPT::nNormalizeCoordinates == 0 && !OPT::bConvert));
@@ -325,22 +322,11 @@ int main(int argc, LPCTSTR* argv)
 
 	if (!OPT::strTransferTextureFileName.empty()) {
 		// transfer the texture of the scene's mesh to the new mesh;
-		// the two meshes should be aligned and the new mesh to have UV-coordinates
+		// the two meshes should be aligned
 		Mesh newMesh;
 		if (!newMesh.Load(MAKE_PATH_SAFE(OPT::strTransferTextureFileName)))
 			return EXIT_FAILURE;
-		Mesh::FaceIdxArr faceSubsetIndices;
-		if (!OPT::strIndicesFileName.empty()) {
-			std::ifstream in(OPT::strIndicesFileName.c_str());
-			while (true) {
-				String index;
-				in >> index;
-				if (!in.good())
-					break;
-				faceSubsetIndices.emplace_back(index.From<Mesh::FIndex>());
-			}
-		}
-		if (!scene.mesh.TransferTexture(newMesh, faceSubsetIndices))
+		if (!scene.mesh.TransferTexture(newMesh))
 			return EXIT_FAILURE;
 		newMesh.Save(baseFileName + OPT::strExportType);
 		VERBOSE("Texture transfered (%s)", TD_TIMER_GET_FMT().c_str());

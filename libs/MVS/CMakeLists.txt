@@ -5,6 +5,7 @@ if(CGAL_FOUND)
 	add_definitions(${CGAL_DEFINITIONS})
 	link_directories(${CGAL_LIBRARY_DIRS})
 endif()
+FIND_PACKAGE(halfmesh CONFIG REQUIRED)
 
 set(CERES_LIBS "")
 if(OpenMVS_USE_CERES)
@@ -53,6 +54,7 @@ cxx_library_with_type(MVS "Libs" "" "${cxx_default}"
 	${LIBRARY_FILES_C} ${LIBRARY_FILES_H}
 	${CUDA_LIBRARY_FILES_C} ${CUDA_LIBRARY_FILES_H}
 )
+TARGET_INCLUDE_DIRECTORIES(MVS PRIVATE "${CMAKE_SOURCE_DIR}/libs")
 
 # Metal backend: compile the .mm as Objective-C++ with ARC and skip the C++ PCH.
 # The Metal/Foundation frameworks are linked centrally via OpenMVS_EXTRA_LIBS
@@ -108,7 +110,7 @@ IF(CMAKE_VERSION VERSION_GREATER_EQUAL 3.16.0)
 endif()
 
 # Link its dependencies
-TARGET_LINK_LIBRARIES(MVS PUBLIC Common Math IO CGAL::CGAL ${CERES_LIBRARIES})
+TARGET_LINK_LIBRARIES(MVS PUBLIC Common Math IO CGAL::CGAL halfmesh::halfmesh ${CERES_LIBRARIES})
 
 if(_USE_BOOST_PYTHON)
 	# SFM-side wrapper lives in libs/SFM/PythonWrapper.cpp; compile it into the

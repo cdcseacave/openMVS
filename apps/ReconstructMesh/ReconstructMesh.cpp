@@ -158,7 +158,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("target-face-num", boost::program_options::value(&OPT::nTargetFaceNum)->default_value(0), "target number of faces to be applied to the reconstructed surface. (0 - disabled)")
 		("remove-spurious", boost::program_options::value(&OPT::fRemoveSpurious)->default_value(20.f), "spurious factor for removing faces with too long edges or isolated components (0 - disabled)")
 		("remove-spikes", boost::program_options::value(&OPT::bRemoveSpikes)->default_value(true), "flag controlling the removal of spike faces")
-		("close-holes", boost::program_options::value(&OPT::nCloseHoles)->default_value(30), "try to close small holes in the reconstructed surface (0 - disabled)")
+		("close-holes", boost::program_options::value(&OPT::nCloseHoles)->default_value(30), "maximum number of holes to close in the reconstructed surface (0 - disabled)")
 		("smooth", boost::program_options::value(&OPT::nSmoothMesh)->default_value(2), "number of iterations to smooth the reconstructed surface (0 - disabled)")
 		("edge-length", boost::program_options::value(&OPT::fEdgeLength)->default_value(0.f), "remesh such that the average edge length is this size (0 - disabled)")
 		("roi-border", boost::program_options::value(&OPT::fBorderROI)->default_value(0), "add a border to the region-of-interest when cropping the scene (0 - disabled, >0 - percentage, <0 - absolute)")
@@ -509,7 +509,14 @@ int main(int argc, LPCTSTR* argv)
 				numVertices-scene.mesh.vertices.size(), numFaces-scene.mesh.faces.size(), TD_TIMER_GET_FMT().c_str());
 		}
 		const float fDecimate(OPT::nTargetFaceNum ? static_cast<float>(OPT::nTargetFaceNum) / scene.mesh.faces.size() : OPT::fDecimateMesh);
-		scene.mesh.Clean(fDecimate, OPT::fRemoveSpurious, OPT::bRemoveSpikes, OPT::nCloseHoles, OPT::nSmoothMesh, OPT::fEdgeLength);
+		Mesh::CleanParams cleanParams;
+		cleanParams.simplifyTarget = fDecimate;
+		cleanParams.spuriousFactor = OPT::fRemoveSpurious;
+		cleanParams.removeSpikes = OPT::bRemoveSpikes;
+		cleanParams.maxHoles = OPT::nCloseHoles;
+		cleanParams.smoothIterations = (int)OPT::nSmoothMesh;
+		cleanParams.edgeLength = OPT::fEdgeLength;
+		scene.mesh.Clean(cleanParams);
 		scene.obb = initialOBB;
 
 		// save the final mesh
