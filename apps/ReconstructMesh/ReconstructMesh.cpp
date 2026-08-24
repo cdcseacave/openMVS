@@ -58,12 +58,7 @@ String strMeshFileName;
 String strImportROIFileName;
 String strImagePointsFileName;
 bool bMeshExport;
-float fDistInsert;
-bool bUseOnlyROI;
 bool bUseConstantWeight;
-bool bUseFreeSpaceSupport;
-float fThicknessFactor;
-float fQualityFactor;
 Scene::ReconstructMeshParams reconstructParams;
 float fDecimateMesh;
 unsigned nTargetFaceNum;
@@ -126,12 +121,12 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("input-file,i", boost::program_options::value<std::string>(&OPT::strInputFileName), "input filename containing camera poses and image list")
 		("pointcloud-file,p", boost::program_options::value<std::string>(&OPT::strPointCloudFileName), "dense point-cloud with views file name to reconstruct (overwrite existing point-cloud)")
 		("output-file,o", boost::program_options::value<std::string>(&OPT::strOutputFileName), "output filename for storing the mesh")
-		("min-point-distance,d", boost::program_options::value(&OPT::fDistInsert)->default_value(1.5f), "minimum distance in pixels between the projection of two 3D points to consider them different while triangulating (0 - disabled)")
-		("integrate-only-roi", boost::program_options::value(&OPT::bUseOnlyROI)->default_value(false), "use only the points inside the ROI")
+		("min-point-distance,d", boost::program_options::value(&OPT::reconstructParams.distInsert)->default_value(1.5f), "minimum distance in pixels between the projection of two 3D points to consider them different while triangulating (0 - disabled)")
+		("integrate-only-roi", boost::program_options::value(&OPT::reconstructParams.bUseOnlyROI)->default_value(false), "use only the points inside the ROI")
 		("constant-weight", boost::program_options::value(&OPT::bUseConstantWeight)->default_value(true), "consider all view weights 1 instead of the per-view point confidence the point-cloud carries; disable it only for a point-cloud whose confidence was recalibrated by the densifier (--postprocess-dmaps), since an un-recalibrated confidence sits well below 1 and shrinks the visibility votes against the calibration of the graph-cut constants")
-		("free-space-support,f", boost::program_options::value(&OPT::bUseFreeSpaceSupport)->default_value(false), "exploits the free-space support in order to reconstruct weakly-represented surfaces")
-		("thickness-factor", boost::program_options::value(&OPT::fThicknessFactor)->default_value(1.f), "multiplier adjusting the minimum thickness considered during visibility weighting")
-		("quality-factor", boost::program_options::value(&OPT::fQualityFactor)->default_value(1.f), "multiplier adjusting the quality weight considered during graph-cut")
+		("free-space-support,f", boost::program_options::value(&OPT::reconstructParams.bUseFreeSpaceSupport)->default_value(false), "exploits the free-space support in order to reconstruct weakly-represented surfaces")
+		("thickness-factor", boost::program_options::value(&OPT::reconstructParams.kSigma)->default_value(1.f), "multiplier adjusting the minimum thickness considered during visibility weighting")
+		("quality-factor", boost::program_options::value(&OPT::reconstructParams.kQual)->default_value(1.f), "multiplier adjusting the quality weight considered during graph-cut")
 		// every default below is the value the ReconstructMeshParams constructor declares, so the
 		// single call site can pass the struct and still leave the default path unchanged
 		("adaptive-sigma", boost::program_options::value(&OPT::reconstructParams.bAdaptiveSigma)->default_value(true), "derive the point uncertainty sigma per-vertex from its median incident Delaunay edge length, clamped to [0.25,4] x the global sigma (0 - the single global sigma everywhere)")
@@ -457,8 +452,7 @@ int main(int argc, LPCTSTR* argv)
 			TD_TIMER_START();
 			if (OPT::bUseConstantWeight)
 				scene.pointcloud.pointWeights.Release();
-			if (!scene.ReconstructMesh(OPT::fDistInsert, OPT::bUseFreeSpaceSupport, OPT::bUseOnlyROI, OPT::fThicknessFactor, OPT::fQualityFactor,
-					OPT::reconstructParams))
+			if (!scene.ReconstructMesh(OPT::reconstructParams))
 				return EXIT_FAILURE;
 			VERBOSE("Mesh reconstruction completed: %u vertices, %u faces (%s)", scene.mesh.vertices.size(), scene.mesh.faces.size(), TD_TIMER_GET_FMT().c_str());
 			#if TD_VERBOSE != TD_VERBOSE_OFF

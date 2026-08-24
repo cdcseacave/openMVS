@@ -885,14 +885,22 @@ float computePlaneSphereAngle(const delaunay_t& Tr, const facet_t& facet)
 // Next, the score is computed for all the edges of the directed graph composed of points as vertices.
 // Finally, graph-cut algorithm is used to split the tetrahedrons in inside and outside,
 // and the surface is such extracted.
-bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bUseOnlyROI,
-							float kSigma, float kQual, const ReconstructMeshParams& params,
-							float kb, float kf, float kRel, float kAbs, float kOutl,
-							float kInf)
+bool Scene::ReconstructMesh(const ReconstructMeshParams& params)
 {
 	using namespace DELAUNAY;
 	ASSERT(!pointcloud.IsEmpty());
 	mesh.Release();
+	const float distInsert(params.distInsert);
+	const bool bUseFreeSpaceSupport(params.bUseFreeSpaceSupport);
+	bool bUseOnlyROI(params.bUseOnlyROI);
+	const float kSigma(params.kSigma);
+	const float kQual(params.kQual);
+	const float kb(params.kb);
+	const float kf(params.kf);
+	const float kRel(params.kRel);
+	const float kAbs(params.kAbs);
+	const float kOutl(params.kOutl);
+	const float kInf(params.kInf);
 
 	// create the Delaunay triangulation
 	delaunay_t delaunay;

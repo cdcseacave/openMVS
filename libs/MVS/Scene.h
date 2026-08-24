@@ -148,12 +148,23 @@ public:
 	// Mesh reconstruction
 	// hard-constraint capacity of the cells containing a camera; not exposed by the apps
 	static constexpr float kInfCapacity = (float)(INT_MAX/8);
-	// reconstruction options beyond the numeric factors of ReconstructMesh; the defaults are
-	// the recommended configuration, each opt-out restoring the corresponding legacy behavior.
+	// reconstruction options; the defaults are the recommended configuration, each opt-out
+	// restoring the corresponding legacy behavior.
 	// The defaults are set by the constructor instead of member initializers, so that the
 	// defaulted parameter of ReconstructMesh below can default-construct this type while the
 	// enclosing class is still incomplete (GCC and Clang reject the member-initializer form)
 	struct ReconstructMeshParams {
+		float distInsert;
+		bool bUseFreeSpaceSupport;
+		bool bUseOnlyROI;
+		float kSigma;
+		float kQual;
+		float kb;
+		float kf;
+		float kRel;
+		float kAbs;
+		float kOutl;
+		float kInf;
 		// per-vertex sigma in the three roles where sigma stands for the point's own positional
 		// uncertainty (soft-visibility exponent, end-cell offset, free-space-support windows):
 		// sigma_v = kSigma * median incident finite-Delaunay-edge length of the vertex, clamped
@@ -181,12 +192,11 @@ public:
 		// webbing from surface
 		float maxEdgeScale;
 		inline ReconstructMeshParams()
-			: bAdaptiveSigma(true), bCanonicalRescale(true), maxEdgeScale(4.f) {}
+			: distInsert(2.f), bUseFreeSpaceSupport(true), bUseOnlyROI(false),
+			  kSigma(1.f), kQual(1.f), kb(4.f), kf(3.f), kRel(0.1f), kAbs(1000.f), kOutl(400.f), kInf(kInfCapacity),
+			  bAdaptiveSigma(true), bCanonicalRescale(true), maxEdgeScale(4.f) {}
 	};
-	bool ReconstructMesh(float distInsert=2, bool bUseFreeSpaceSupport=true, bool bUseOnlyROI=false,
-						 float kSigma=1.f, float kQual=1.f, const ReconstructMeshParams& params=ReconstructMeshParams(),
-						 float kb=4.f, float kf=3.f, float kRel=0.1f/*max 0.3*/, float kAbs=1000.f/*min 500*/, float kOutl=400.f/*max 700.f*/,
-						 float kInf=kInfCapacity);
+	bool ReconstructMesh(const ReconstructMeshParams& params=ReconstructMeshParams());
 
 	// Mesh refinement
 	bool RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsigned nMaxViews, float fDecimateMesh, unsigned nCloseHoles, unsigned nEnsureEdgeSize,

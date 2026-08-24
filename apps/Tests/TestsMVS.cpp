@@ -116,10 +116,14 @@ bool MeshBipyramidFixtureTest()
 	// extraction, so the default per-vertex sigma, canonical rescale (a no-op at this
 	// scale, pinned for determinism) and webbing gate are all pinned off here
 	Scene::ReconstructMeshParams fixtureParams;
+	fixtureParams.distInsert = 0.f;
+	fixtureParams.bUseFreeSpaceSupport = false;
+	fixtureParams.kSigma = 0.31622776601683794f;
+	fixtureParams.kQual = 0.f;
 	fixtureParams.bAdaptiveSigma = false;
 	fixtureParams.bCanonicalRescale = false;
 	fixtureParams.maxEdgeScale = 0.f;
-	if (!sceneA.ReconstructMesh(0.f, false, false, 0.31622776601683794f, 0.f, fixtureParams)) {
+	if (!sceneA.ReconstructMesh(fixtureParams)) {
 		VERBOSE("ERROR: Fixture-A (bipyramid) reconstruction failed!");
 		return false;
 	}
@@ -193,10 +197,14 @@ bool MeshTetraInteriorPointFixtureTest()
 	// kSigma = 1/sqrt(3): the median squared finite edge length is 48, making sigma exactly 4.0;
 	// pinned to the same hand-solved global-sigma, ungated configuration as Fixture A
 	Scene::ReconstructMeshParams fixtureParams;
+	fixtureParams.distInsert = 0.f;
+	fixtureParams.bUseFreeSpaceSupport = false;
+	fixtureParams.kSigma = 0.5773502691896258f;
+	fixtureParams.kQual = 0.f;
 	fixtureParams.bAdaptiveSigma = false;
 	fixtureParams.bCanonicalRescale = false;
 	fixtureParams.maxEdgeScale = 0.f;
-	if (!sceneB.ReconstructMesh(0.f, false, false, 0.5773502691896258f, 0.f, fixtureParams)) {
+	if (!sceneB.ReconstructMesh(fixtureParams)) {
 		VERBOSE("ERROR: Fixture-B (tetra + interior point) reconstruction failed!");
 		return false;
 	}
@@ -239,7 +247,10 @@ static bool ROIMeshReconstructionTest(Scene& scene)
 			std::swap(scene.pointcloud.labels[0], scene.pointcloud.labels[idxOutside]);
 	}
 	scene.obb = roi;
-	if (!scene.ReconstructMesh(2.f, false, true) || scene.mesh.IsEmpty()) {
+	Scene::ReconstructMeshParams params;
+	params.bUseFreeSpaceSupport = false;
+	params.bUseOnlyROI = true;
+	if (!scene.ReconstructMesh(params) || scene.mesh.IsEmpty()) {
 		VERBOSE("ERROR: TestDataset failed reconstructing the ROI mesh (%u faces)!", scene.mesh.faces.size());
 		return false;
 	}
@@ -263,7 +274,10 @@ static bool EmptyROIMeshGuardTest(Scene& scene)
 		VERBOSE("ERROR: TestDataset built an invalid empty-ROI OBB for the degenerate-input test!");
 		return false;
 	}
-	if (scene.ReconstructMesh(2.f, false, true)) {
+	Scene::ReconstructMeshParams params;
+	params.bUseFreeSpaceSupport = false;
+	params.bUseOnlyROI = true;
+	if (scene.ReconstructMesh(params)) {
 		VERBOSE("ERROR: TestDataset should have failed reconstructing an empty ROI!");
 		return false;
 	}
@@ -281,7 +295,9 @@ static bool UnitWeightsFallbackTest(Scene& scene)
 	// run 1: no pointWeights at all
 	scene.pointcloud = pointcloudBackup;
 	scene.pointcloud.pointWeights.Release();
-	if (!scene.ReconstructMesh(2.f, false, false) || scene.mesh.IsEmpty()) {
+	Scene::ReconstructMeshParams params;
+	params.bUseFreeSpaceSupport = false;
+	if (!scene.ReconstructMesh(params) || scene.mesh.IsEmpty()) {
 		VERBOSE("ERROR: TestDataset failed reconstructing with empty pointWeights!");
 		return false;
 	}
@@ -296,7 +312,7 @@ static bool UnitWeightsFallbackTest(Scene& scene)
 		FOREACH(idxView, weights)
 			weights[idxView] = PointCloud::Weight(1);
 	}
-	if (!scene.ReconstructMesh(2.f, false, false) || scene.mesh.IsEmpty()) {
+	if (!scene.ReconstructMesh(params) || scene.mesh.IsEmpty()) {
 		VERBOSE("ERROR: TestDataset failed reconstructing with explicit unit pointWeights!");
 		return false;
 	}
@@ -376,7 +392,9 @@ static bool TooFewPointsMeshGuardTest(Scene& scene)
 		pointcloudTiny.pointViews[i] = pointcloudBackup.pointViews[i];
 	}
 	scene.pointcloud = pointcloudTiny;
-	if (scene.ReconstructMesh(2.f, false, false)) {
+	Scene::ReconstructMeshParams params;
+	params.bUseFreeSpaceSupport = false;
+	if (scene.ReconstructMesh(params)) {
 		VERBOSE("ERROR: TestDataset should have failed reconstructing from only 3 points!");
 		return false;
 	}
