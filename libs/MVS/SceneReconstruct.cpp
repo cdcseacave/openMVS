@@ -478,53 +478,40 @@ void fetchCellFacets(const delaunay_t& Tr, const std::vector<facet_t>& hullFacet
 }
 
 
-// aggregate ray-walk accounting; observed only, never fed back into the reconstruction
+// aggregate ray-walk accounting; observed only, never fed back into the reconstruction.
+// Every worker walks with its own instance, so the increments need no synchronization and no
+// two threads can share a cache line; the instances are folded into the caller's total once,
+// after the weighting loop has finished
 struct walk_stats_t {
 	uint64_t nSteps; // facet/edge/vertex steps accepted by intersect()
 	uint64_t nBadEnd; // intersect() gave up with the segment not consumed
 	uint64_t nCamRayDropped; // camera-side walk failed on its first step, the whole ray is discarded
 	uint64_t nCamWalkAborted; // camera-side walk did not end on its own vertex, so cell2Cam is wrong
 	uint64_t nEndWalkAborted; // end-point-side walk did not end on its own vertex, so cell2End is wrong
-	uint64_t padCacheLine[3]; // keeps two neighbor slots of the pool below on separate cache lines
 
-	inline walk_stats_t& operator += (const walk_stats_t& r) {
-		nSteps += r.nSteps;
-		nBadEnd += r.nBadEnd;
-		nCamRayDropped += r.nCamRayDropped;
-		nCamWalkAborted += r.nCamWalkAborted;
-		nEndWalkAborted += r.nEndWalkAborted;
-		return *this;
+	// fold this worker's counts into the shared total, one atomic per field: the accounting must
+	// not serialize the walks, and an unnamed critical section is program-wide, not local to it
+	inline void AccumulateInto(walk_stats_t& total) const {
+		#ifdef DELAUNAY_USE_OPENMP
+		#pragma omp atomic
+		total.nSteps += nSteps;
+		#pragma omp atomic
+		total.nBadEnd += nBadEnd;
+		#pragma omp atomic
+		total.nCamRayDropped += nCamRayDropped;
+		#pragma omp atomic
+		total.nCamWalkAborted += nCamWalkAborted;
+		#pragma omp atomic
+		total.nEndWalkAborted += nEndWalkAborted;
+		#else
+		total.nSteps += nSteps;
+		total.nBadEnd += nBadEnd;
+		total.nCamRayDropped += nCamRayDropped;
+		total.nCamWalkAborted += nCamWalkAborted;
+		total.nEndWalkAborted += nEndWalkAborted;
+		#endif
 	}
 };
-// one slot per worker thread, so the increments need no synchronization;
-// the slots are summed only after both weighting loops have completed.
-// The pool is process-wide and reset at the start of every reconstruction, so consecutive
-// reconstructions each report their own counts but two running at the same time would share
-// the slots: ReconstructMesh is reentrant across calls, not across concurrent callers
-static std::vector<walk_stats_t> g_walkStatsPool;
-static inline walk_stats_t& GetWalkStats() {
-	#ifdef DELAUNAY_USE_OPENMP
-	const size_t idx((size_t)omp_get_thread_num());
-	ASSERT(idx < g_walkStatsPool.size());
-	return g_walkStatsPool[idx];
-	#else
-	ASSERT(!g_walkStatsPool.empty());
-	return g_walkStatsPool.front();
-	#endif
-}
-static inline void ResetWalkStats() {
-	#ifdef DELAUNAY_USE_OPENMP
-	g_walkStatsPool.assign((size_t)omp_get_max_threads(), walk_stats_t());
-	#else
-	g_walkStatsPool.assign(1, walk_stats_t());
-	#endif
-}
-static inline walk_stats_t GetTotalWalkStats() {
-	walk_stats_t total{};
-	for (const walk_stats_t& stats: g_walkStatsPool)
-		total += stats;
-	return total;
-}
 
 
 // information about an intersection between a segment and a facet
@@ -634,8 +621,7 @@ int intersect(const triangle_t& t, const segment_t& s, int coplanar[3])
 //  in_facets [in] : vector of facets to check
 //  out_facets [out] : vector of facets to check at next step (can be in_facets)
 //  out_inter [out] : kind of intersection
-//  stats [in,out] : the calling thread's accounting slot, passed in because this runs once per
-//    walk step and looking the slot up here would cost an omp_get_thread_num() call each time
+//  stats [in,out] : the calling thread's own accounting, updated in place
 // return false if no intersection found and the end of the segment was not reached
 bool intersect(const delaunay_t& Tr, const segment_t& seg, const std::vector<facet_t>& in_facets, std::vector<facet_t>& out_facets, intersection_t& inter, walk_stats_t& stats)
 {
@@ -1093,8 +1079,9 @@ bool Scene::ReconstructMesh(const ReconstructMeshParams& params)
 	{
 		TD_TIMER_STARTD();
 
-		// ReconstructMesh can run more than once per process, so the accounting starts clean here
-		ResetWalkStats();
+		// accounting for the ray walks below, owned by this block: nothing outlives the call,
+		// so concurrent reconstructions each report their own counts
+		walk_stats_t walkStats{};
 		// scene coordinate magnitude, reported next to the ray-walk accounting below; measured in
 		// the working space, so both it and the L it is printed with describe the space the walks
 		// actually run in rather than the scene's own units
@@ -1195,12 +1182,14 @@ bool Scene::ReconstructMesh(const ReconstructMeshParams& params)
 		{
 		std::vector<facet_t> facets;
 		facets.reserve(kFacetsReserve);
+		walk_stats_t stats{};
 		#pragma omp for schedule(dynamic)
 		for (int64_t i=0; i<nVerts; ++i) {
 			const vertex_handle_t vi(vertexHandles[(size_t)i]);
 		#else
 		std::vector<facet_t> facets;
 		facets.reserve(kFacetsReserve);
+		walk_stats_t stats{};
 		for (int64_t i=0; i<nVerts; ++i) {
 			const vertex_handle_t vi(vertexHandles[(size_t)i]);
 		#endif
@@ -1215,7 +1204,6 @@ bool Scene::ReconstructMesh(const ReconstructMeshParams& params)
 			// end-cell offset below; both reduce to the global sigma when the arm is off
 			const float sigmaV(bAdaptiveSigma ? sigmaVert[(size_t)i] : sigma);
 			const float inv2SigmaSqV(bAdaptiveSigma ? 0.5f/(sigmaV*sigmaV) : inv2SigmaSq);
-			walk_stats_t& stats(GetWalkStats());
 			FOREACH(v, vert.views) {
 				const typename vert_info_t::view_t view(vert.views[v]);
 				const uint32_t imageID(view.idxView);
@@ -1289,6 +1277,7 @@ bool Scene::ReconstructMesh(const ReconstructMeshParams& params)
 			}
 			++progress;
 		}
+		stats.AccumulateInto(walkStats);
 		#ifdef DELAUNAY_USE_OPENMP
 		} // omp parallel
 		#endif
@@ -1377,7 +1366,6 @@ bool Scene::ReconstructMesh(const ReconstructMeshParams& params)
 		}
 		#endif
 
-		const walk_stats_t walkStats(GetTotalWalkStats());
 		if (walkStats.nBadEnd)
 			DEBUG_EXTRA("warning: %llu ray-walks ended badly (%.4f%% of %llu steps), %llu rays dropped, %llu walks aborted (M=%g L=%g)",
 				(unsigned long long)walkStats.nBadEnd, 100.0*(double)walkStats.nBadEnd/(double)MAXF(walkStats.nSteps, uint64_t(1)),
