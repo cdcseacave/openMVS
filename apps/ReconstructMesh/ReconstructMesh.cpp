@@ -57,7 +57,6 @@ String strOutputFileName;
 String strMeshFileName;
 String strImportROIFileName;
 String strImagePointsFileName;
-String strCarveRaysFileName;
 bool bMeshExport;
 float fDistInsert;
 bool bUseOnlyROI;
@@ -172,7 +171,6 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("split-max-area", boost::program_options::value(&OPT::fSplitMaxArea)->default_value(0.f), "maximum surface area that a sub-mesh can contain (0 - disabled)")
 		("import-roi-file", boost::program_options::value<std::string>(&OPT::strImportROIFileName), "ROI file name to be imported into the scene")
 		("image-points-file", boost::program_options::value<std::string>(&OPT::strImagePointsFileName), "input filename containing the list of points from an image to project on the mesh (optional)")
-		("carve-rays-file", boost::program_options::value<std::string>(&OPT::strCarveRaysFileName), "input filename containing the confident depth pixels fusion dropped (DensifyPointCloud --export-unfused-file), replayed as free-space rays that carve without inserting vertices (empty - disabled)")
 		;
 
 	boost::program_options::options_description cmdline_options;
@@ -228,7 +226,6 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 	Util::ensureValidPath(OPT::strOutputFileName);
 	Util::ensureValidPath(OPT::strImportROIFileName);
 	Util::ensureValidPath(OPT::strImagePointsFileName);
-	Util::ensureValidPath(OPT::strCarveRaysFileName);
 	Util::ensureValidPath(OPT::strMeshFileName);
 	if (OPT::strPointCloudFileName.empty() && (ARCHIVE_TYPE)OPT::nArchiveType == ARCHIVE_MVS)
 		OPT::strPointCloudFileName = Util::getFileFullName(OPT::strInputFileName) + _T(".ply");
@@ -471,12 +468,9 @@ int main(int argc, LPCTSTR* argv)
 			TD_TIMER_START();
 			if (OPT::bUseConstantWeight)
 				scene.pointcloud.pointWeights.Release();
-			// MAKE_PATH_SAFE prepends the working folder, so an unset carve-rays file has to stay
-			// an empty string to keep meaning disabled
-			const String carveRaysFile(OPT::strCarveRaysFileName.empty() ? String() : MAKE_PATH_SAFE(OPT::strCarveRaysFileName));
 			if (!scene.ReconstructMesh(OPT::fDistInsert, OPT::bUseFreeSpaceSupport, OPT::bUseOnlyROI, OPT::fThicknessFactor, OPT::fQualityFactor,
 					OPT::fSupportFactor, OPT::fFrontFactor, OPT::fRelativeFactor, OPT::fAbsoluteFactor, OPT::fOutlierFactor,
-					Scene::kInfCapacity, carveRaysFile, OPT::reconstructParams))
+					Scene::kInfCapacity, OPT::reconstructParams))
 				return EXIT_FAILURE;
 			VERBOSE("Mesh reconstruction completed: %u vertices, %u faces (%s)", scene.mesh.vertices.size(), scene.mesh.faces.size(), TD_TIMER_GET_FMT().c_str());
 			#if TD_VERBOSE != TD_VERBOSE_OFF

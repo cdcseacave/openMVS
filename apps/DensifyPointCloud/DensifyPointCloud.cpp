@@ -57,7 +57,6 @@ String strExportSceneWithROIFileName;
 String strImportROIFileName;
 String strCropROIFileName;
 String strExportDMAPSPathName;
-String strExportUnfusedFileName;
 String strDenseConfigFileName;
 String strExportDepthMapsName;
 String strMaskPath;
@@ -203,7 +202,6 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("import-roi-file", boost::program_options::value<std::string>(&OPT::strImportROIFileName), "ROI file name to be imported into the scene")
 		("crop-roi-file", boost::program_options::value<std::string>(&OPT::strCropROIFileName), "ROI file name to crop the scene keeping only the points inside ROI and the cameras seeing them")
 		("export-dmaps", boost::program_options::value<std::string>(&OPT::strExportDMAPSPathName), "path name where DMAPs depth-maps will be exported as PNG depth-maps (empty - disabled)")
-		("export-unfused-file", boost::program_options::value<std::string>(&OPT::strExportUnfusedFileName), "output filename for storing the confident depth pixels fusion dropped, to be replayed by ReconstructMesh as carve-only rays (empty - disabled)")
 		("dense-config-file", boost::program_options::value<std::string>(&OPT::strDenseConfigFileName), "optional configuration file for the densifier (overwritten by the command line options)")
 		("export-depth-maps-name", boost::program_options::value<std::string>(&OPT::strExportDepthMapsName), "render given mesh and save the depth-map for every image to this file name base (empty - disabled)")
 		;
@@ -261,7 +259,6 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 	Util::ensureValidPath(OPT::strExportROIFileName);
 	Util::ensureValidPath(OPT::strImportROIFileName);
 	Util::ensureValidPath(OPT::strCropROIFileName);
-	Util::ensureValidPath(OPT::strExportUnfusedFileName);
 	if (OPT::strOutputFileName.empty())
 		OPT::strOutputFileName = Util::getFileFullName(OPT::strInputFileName) + _T("_dense.mvs");
 
@@ -291,9 +288,6 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 	OPTDENSE::bRemoveDmaps = bRemoveDmaps;
 	if (!bValidConfig && !OPT::strDenseConfigFileName.empty())
 		OPTDENSE::oConfig.Save(OPT::strDenseConfigFileName);
-	// working variable, outside the configuration space saved above (see DepthMap.h);
-	// reset unconditionally so a stale value can not survive a repeated Initialize()
-	OPTDENSE::strExportUnfusedFileName = OPT::strExportUnfusedFileName.empty() ? String() : MAKE_PATH_SAFE(OPT::strExportUnfusedFileName);
 
 	MVS::Initialize(APPNAME, OPT::nMaxThreads, OPT::nProcessPriority);
 	return true;

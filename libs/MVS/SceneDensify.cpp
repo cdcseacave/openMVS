@@ -2544,90 +2544,6 @@ struct FusionStats {
 	}
 };
 
-// optional sidecar of the confident depth pixels no fused point keeps, replayed by the mesh stage as
-// carve-only rays (see UnfusedPixel and OPTDENSE::strExportUnfusedFileName). Every pixel joining a
-// cluster is buffered; the cluster's fate then discards the buffer (the pixels became a fused point)
-// or commits the confident ones. Candidates arrive in fusion order and are decimated on the fly by a
-// power-of-two stride: when the buffer fills, every second record is dropped and the stride doubles,
-// so the retained set stays exactly {candidate i : i mod stride == 0} -- the same uniform subsample a
-// two-pass count-then-stride scheme would produce, in one pass, bounded memory and without an RNG.
-// The pixels fusion drops for low confidence never reach a cluster, so they cannot be exported here.
-struct UnfusedExport {
-	// only pixels this confident are worth a ray; the mesh stage weights each ray by its confidence
-	static constexpr float kMinConfidence = 0.5f;
-	// 8M records = 160 MB, the memory the export is allowed to hold
-	static constexpr uint64_t kMaxRecords = 8000000;
-
-	CLISTDEF0IDX(UnfusedPixel,uint64_t) cluster; // confident pixels of the cluster being accumulated
-	CLISTDEF0IDX(UnfusedPixel,uint64_t) records; // subsampled candidates, written out at the end
-	uint64_t numCandidates; // confident dropped pixels seen, before subsampling
-	uint64_t stride; // one candidate in stride is kept
-	const bool enabled;
-
-	inline UnfusedExport() : numCandidates(0), stride(1), enabled(!OPTDENSE::strExportUnfusedFileName.empty()) {}
-
-	// a pixel joining the cluster currently accumulated
-	inline void AccountJoin(const PointCloud::Point& X, IIndex idxView, float conf) {
-		if (!enabled || conf < kMinConfidence)
-			return;
-		UnfusedPixel& rec = cluster.AddEmpty();
-		rec.X[0] = X.x; rec.X[1] = X.y; rec.X[2] = X.z;
-		rec.idxView = idxView;
-		rec.conf = conf;
-	}
-	// the cluster reached its verdict: only the pixels of a dropped cluster are candidates
-	inline void AccountCluster(FusionStats::ClusterFate fate) {
-		if (!enabled)
-			return;
-		if (fate != FusionStats::CLUSTER_KEPT)
-			for (const UnfusedPixel& rec: cluster)
-				Push(rec);
-		cluster.clear();
-	}
-	inline void Push(const UnfusedPixel& rec) {
-		if (numCandidates++ % stride)
-			return;
-		records.push_back(rec);
-		if (records.size() < kMaxRecords)
-			return;
-		// buffer full: halve it in place and keep one candidate in 2*stride from here on
-		uint64_t numKept(0);
-		for (uint64_t i=0; i<records.size(); i+=2)
-			records[numKept++] = records[i];
-		records.resize(numKept);
-		stride *= 2;
-	}
-	// return false if the sidecar could not be written whole
-	bool Save() const {
-		ASSERT(enabled);
-		const String& fileName(OPTDENSE::strExportUnfusedFileName);
-		Util::ensureFolder(fileName);
-		File file(fileName, File::WRITE, File::CREATE | File::TRUNCATE);
-		if (!file.isOpen()) {
-			VERBOSE("error: cannot create unfused-pixels file '%s'", fileName.c_str());
-			return false;
-		}
-		// the count is patched at close, so the layout does not depend on the records being buffered
-		UnfusedPixelHeader header = {{'M','V','S','U'}, UnfusedPixelHeader::VERSION, 0};
-		const size_t sizeRecords(records.size()*sizeof(UnfusedPixel));
-		if (file.write(&header, sizeof(header)) != sizeof(header) ||
-			(sizeRecords > 0 && file.write(records.data(), sizeRecords) != sizeRecords))
-		{
-			VERBOSE("error: cannot write unfused-pixels file '%s'", fileName.c_str());
-			return false;
-		}
-		header.numRecords = records.size();
-		if (!file.setPos(0) || file.write(&header, sizeof(header)) != sizeof(header) || file.flush() != 0) {
-			VERBOSE("error: cannot finalize unfused-pixels file '%s'", fileName.c_str());
-			return false;
-		}
-		DEBUG_EXTRA("Unfused confident pixels exported: %llu of %llu candidates (confidence >= %g, stride %llu) -> '%s'",
-			(unsigned long long)records.size(), (unsigned long long)numCandidates,
-			kMinConfidence, (unsigned long long)stride, Util::getFileNameExt(fileName).c_str());
-		return true;
-	}
-};
-
 // fuse all valid depth-maps in the same 3D point-cloud;
 // join points very likely to represent the same 3D point and
 // filter out points blocking the view
@@ -2647,7 +2563,6 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 	const bool bEstimateNormal(true); // always estimate normals as they are needed for the fusion
 	size_t nDepths(0);
 	FusionStats fuseStats;
-	UnfusedExport fuseUnfused;
 	UseMaskArr arrUseMask(arrDepthData.size());
 	const size_t nPointsEstimate(arrDepthData.size() * 9000); //TODO: better estimate number of points
 	pointcloud.points.reserve(nPointsEstimate);
@@ -2772,7 +2687,6 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 			fuseStats.AccountJoin(conf);
 			// compute 3D location of the current depth
 			const PointCloud::Point X(image.camera.TransformPointI2W(Point3(REAL(x.x), REAL(x.y), REAL(depth))));
-			fuseUnfused.AccountJoin(X, ID, conf);
 			// accumulate statistics for fused point
 			{
 				fusedPoints[0].push_back(X(0));
@@ -2930,10 +2844,8 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 						if (bEstimateColor)
 							pointcloud.colors.emplace_back((fusedColor/static_cast<float>(fusedPoints[0].size())).cast<uint8_t>());
 						fuseStats.AccountCluster(FusionStats::CLUSTER_KEPT, fusedPoints[0].size());
-						fuseUnfused.AccountCluster(FusionStats::CLUSTER_KEPT);
 					} else {
 						fuseStats.AccountCluster(FusionStats::CLUSTER_DROP_VIOLATION, fusedPoints[0].size());
-						fuseUnfused.AccountCluster(FusionStats::CLUSTER_DROP_VIOLATION);
 					}
 				} else if (!fusedViews.empty()) {
 					// the two minimums are conjunctive, so a cluster short on both is attributed
@@ -2941,7 +2853,6 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 					const FusionStats::ClusterFate fate((float)fusedPoints[0].size() + virtualSupport < (float)OPTDENSE::nMinPixelsFuse ?
 						FusionStats::CLUSTER_DROP_MIN_PIXELS : FusionStats::CLUSTER_DROP_MIN_VIEWS);
 					fuseStats.AccountCluster(fate, fusedPoints[0].size());
-					fuseUnfused.AccountCluster(fate);
 				}
 				if (!fusedViews.empty()) {
 					nDepths += fusedViews.size();
@@ -2975,8 +2886,6 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 
 	ASSERT(fuseStats.nClustersKept == pointcloud.points.size());
 	fuseStats.Log();
-	if (fuseUnfused.enabled)
-		fuseUnfused.Save();
 	DEBUG_EXTRA("Depth-maps dense fused and filtered: %u depth-maps, %u depths, %u points (%d%%), %.2f hits in %.2f cached (%s)",
 		numDMapsFused, nDepths, pointcloud.points.size(), ROUND2INT((100.f*pointcloud.points.size())/nDepths),
 		static_cast<double>(totalNumImageNeighborsInCache) / numDMapsFused,

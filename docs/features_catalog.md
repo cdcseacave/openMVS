@@ -589,7 +589,7 @@ OpenMVS is a comprehensive photogrammetry library implementing a complete pipeli
     facet (the webbing gate, default 4)
   - Single-pass non-manifold repair, then the `Mesh::Clean()` pipeline
 - **Configuration:** `distInsert`, `bUseFreeSpaceSupport`, `kSigma` (1), `ReconstructMeshParams`
-  (`bAdaptiveSigma`, `bCanonicalRescale`, `maxEdgeScale`), optional carve-only ray sidecar
+  (`bAdaptiveSigma`, `bCanonicalRescale`, `maxEdgeScale`)
 - **Design record:** `docs/design/DelaunayMeshReconstruction.md` (shipped defaults, validated
   numbers, and the registry of ideas that were tried and rejected)
 - **GPU Support:** No
