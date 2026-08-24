@@ -95,6 +95,14 @@ bool UnitTests()
 		VERBOSE("ERROR: MeshVertexColorsPLYTest failed!");
 		return false;
 	}
+	if (!MVS::MeshBipyramidFixtureTest()) {
+		VERBOSE("ERROR: MeshBipyramidFixtureTest failed!");
+		return false;
+	}
+	if (!MVS::MeshTetraInteriorPointFixtureTest()) {
+		VERBOSE("ERROR: MeshTetraInteriorPointFixtureTest failed!");
+		return false;
+	}
 	#ifdef _IMAGE_HEIF
 	// the reader's own semantics are tested next to the reader, in libs/IO/ImageHEIF.cpp
 	if (!CImageHEIF::Test(MAKE_PATH("images"))) {

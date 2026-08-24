@@ -455,8 +455,9 @@ noise of unit votes, §2). Void.
 
 ## 7. Fixture appendix
 
-Fixtures A and B below back live regression tests in `apps/Tests/TestsMVS.cpp` (search
-`Fixture-A`/`Fixture-B`) and lock the cut topology of two hand-derived synthetic scenes — a
+Fixtures A and B below back live regression tests in `apps/Tests/TestsMVS.cpp`
+(`MeshBipyramidFixtureTest`/`MeshTetraInteriorPointFixtureTest`, run by `Tests.exe 0` since they
+need no dataset) and lock the cut topology of two hand-derived synthetic scenes — a
 regression that drops or relocates the orphaned `D_in` vote, or flips a `mirror_facet` arc, will
 fail these tests. Further hand-solvable fixture ideas (for the quality term, the free-space-support
 triple test, and the WSS enforcement arithmetic) were designed during this effort but never wired
