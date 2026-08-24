@@ -184,9 +184,9 @@ public:
 			: bAdaptiveSigma(true), bCanonicalRescale(true), maxEdgeScale(4.f) {}
 	};
 	bool ReconstructMesh(float distInsert=2, bool bUseFreeSpaceSupport=true, bool bUseOnlyROI=false,
-						 float kSigma=1.f, float kQual=1.f, float kb=4.f,
-						 float kf=3.f, float kRel=0.1f/*max 0.3*/, float kAbs=1000.f/*min 500*/, float kOutl=400.f/*max 700.f*/,
-						 float kInf=kInfCapacity, const ReconstructMeshParams& params=ReconstructMeshParams());
+						 float kSigma=1.f, float kQual=1.f, const ReconstructMeshParams& params=ReconstructMeshParams(),
+						 float kb=4.f, float kf=3.f, float kRel=0.1f/*max 0.3*/, float kAbs=1000.f/*min 500*/, float kOutl=400.f/*max 700.f*/,
+						 float kInf=kInfCapacity);
 
 	// Mesh refinement
 	bool RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsigned nMaxViews, float fDecimateMesh, unsigned nCloseHoles, unsigned nEnsureEdgeSize,

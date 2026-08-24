@@ -429,9 +429,11 @@ noise of unit votes, §2). Void.
 - `PointCloud::Point` storage is `float`, which quantizes UTM-magnitude scenes to ~6cm — mesh-time
   rescale cannot repair geometry already destroyed by storage before triangulation runs. The open
   fix is **load-time centering** (§8), not a mesh-stage change.
-- The ray-walk accounting counters (bad-ends, WSS `t==0`/saturation rates) are the **regression
-  signal** for any future change to this energy — instrument first, judge by the counters, not
-  just the final F1.
+- The bad-end walk counter (surfaced as a `DEBUG_EXTRA` warning whenever non-zero) is the
+  **regression alarm** for the walk invariants the canonical rescale protects. The fuller
+  per-stage accounting (WSS `t==0`/saturation rates, step caps, walk tallies) served the closed
+  WSS investigation and was removed with it (git history) — re-instrument first, judge by
+  counters, when revisiting this energy.
 - `Mesh::SamplePoints` must use the **fixed-seed overload** in any benchmark; the legacy
   `random_device`-seeded default is noise-only and not reproducible.
 - **Mesh-stage cost scales with the vertex count, and memory is the binding limit**: measured

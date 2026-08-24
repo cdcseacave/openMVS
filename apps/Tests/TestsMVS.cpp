@@ -312,7 +312,7 @@ bool PipelineTest(bool forceCPU, bool verbose)
 		fixtureParams.bAdaptiveSigma = false;
 		fixtureParams.bCanonicalRescale = false;
 		fixtureParams.maxEdgeScale = 0.f;
-		if (!sceneA.ReconstructMesh(0.f, false, false, 0.31622776601683794f, 0.f, 4.f, 3.f, 0.1f, 1000.f, 400.f, Scene::kInfCapacity, fixtureParams)) {
+		if (!sceneA.ReconstructMesh(0.f, false, false, 0.31622776601683794f, 0.f, fixtureParams)) {
 			VERBOSE("ERROR: TestDataset Fixture-A (bipyramid) reconstruction failed!");
 			return false;
 		}
@@ -385,7 +385,7 @@ bool PipelineTest(bool forceCPU, bool verbose)
 		fixtureParams.bAdaptiveSigma = false;
 		fixtureParams.bCanonicalRescale = false;
 		fixtureParams.maxEdgeScale = 0.f;
-		if (!sceneB.ReconstructMesh(0.f, false, false, 0.5773502691896258f, 0.f, 4.f, 3.f, 0.1f, 1000.f, 400.f, Scene::kInfCapacity, fixtureParams)) {
+		if (!sceneB.ReconstructMesh(0.f, false, false, 0.5773502691896258f, 0.f, fixtureParams)) {
 			VERBOSE("ERROR: TestDataset Fixture-B (tetra + interior point) reconstruction failed!");
 			return false;
 		}

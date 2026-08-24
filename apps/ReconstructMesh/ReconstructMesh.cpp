@@ -64,11 +64,6 @@ bool bUseConstantWeight;
 bool bUseFreeSpaceSupport;
 float fThicknessFactor;
 float fQualityFactor;
-float fSupportFactor;
-float fFrontFactor;
-float fRelativeFactor;
-float fAbsoluteFactor;
-float fOutlierFactor;
 Scene::ReconstructMeshParams reconstructParams;
 float fDecimateMesh;
 unsigned nTargetFaceNum;
@@ -137,14 +132,8 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("free-space-support,f", boost::program_options::value(&OPT::bUseFreeSpaceSupport)->default_value(false), "exploits the free-space support in order to reconstruct weakly-represented surfaces")
 		("thickness-factor", boost::program_options::value(&OPT::fThicknessFactor)->default_value(1.f), "multiplier adjusting the minimum thickness considered during visibility weighting")
 		("quality-factor", boost::program_options::value(&OPT::fQualityFactor)->default_value(1.f), "multiplier adjusting the quality weight considered during graph-cut")
-		// every default below is the same value Scene.h declares for the matching parameter of
-		// Scene::ReconstructMesh (kb, kf, kRel, kAbs, kOutl) or member of ReconstructMeshParams,
-		// so the single call site can pass them all and still leave the default path unchanged
-		("support-factor", boost::program_options::value(&OPT::fSupportFactor)->default_value(4.f), "multiplier adjusting the free-space support window behind the point (kb)")
-		("front-factor", boost::program_options::value(&OPT::fFrontFactor)->default_value(3.f), "multiplier adjusting the free-space support window in front of the point (kf)")
-		("relative-factor", boost::program_options::value(&OPT::fRelativeFactor)->default_value(0.1f), "maximum relative free-space support accepted by the weakly-supported-surfaces classifier (kRel)")
-		("absolute-factor", boost::program_options::value(&OPT::fAbsoluteFactor)->default_value(1000.f), "minimum free-space support jump accepted by the weakly-supported-surfaces classifier (kAbs)")
-		("outlier-factor", boost::program_options::value(&OPT::fOutlierFactor)->default_value(400.f), "maximum free-space support behind the point accepted by the weakly-supported-surfaces classifier (kOutl)")
+		// every default below is the value the ReconstructMeshParams constructor declares, so the
+		// single call site can pass the struct and still leave the default path unchanged
 		("adaptive-sigma", boost::program_options::value(&OPT::reconstructParams.bAdaptiveSigma)->default_value(true), "derive the point uncertainty sigma per-vertex from its median incident Delaunay edge length, clamped to [0.25,4] x the global sigma (0 - the single global sigma everywhere)")
 		("canonical-rescale", boost::program_options::value(&OPT::reconstructParams.bCanonicalRescale)->default_value(true), "rescale the triangulation by a power of two so the median Delaunay edge lands near 1, where the ray-walk orientation predicate is calibrated; no-op unless the median edge falls outside [2^-10,2^10]")
 		("max-edge-scale", boost::program_options::value(&OPT::reconstructParams.maxEdgeScale)->default_value(4.f), "drop extracted surface facets whose longest edge exceeds this multiple of the median cut-facet longest edge - the gap-spanning webbing grown across occluded space no observation supports (relative units, scale-independent; 0 - disabled)")
@@ -469,8 +458,7 @@ int main(int argc, LPCTSTR* argv)
 			if (OPT::bUseConstantWeight)
 				scene.pointcloud.pointWeights.Release();
 			if (!scene.ReconstructMesh(OPT::fDistInsert, OPT::bUseFreeSpaceSupport, OPT::bUseOnlyROI, OPT::fThicknessFactor, OPT::fQualityFactor,
-					OPT::fSupportFactor, OPT::fFrontFactor, OPT::fRelativeFactor, OPT::fAbsoluteFactor, OPT::fOutlierFactor,
-					Scene::kInfCapacity, OPT::reconstructParams))
+					OPT::reconstructParams))
 				return EXIT_FAILURE;
 			VERBOSE("Mesh reconstruction completed: %u vertices, %u faces (%s)", scene.mesh.vertices.size(), scene.mesh.faces.size(), TD_TIMER_GET_FMT().c_str());
 			#if TD_VERBOSE != TD_VERBOSE_OFF
