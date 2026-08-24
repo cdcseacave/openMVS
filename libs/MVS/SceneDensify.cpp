@@ -2485,9 +2485,15 @@ struct FusionStats {
 	uint64_t confDropped[NUM_CONF_BINS] = {0};
 	uint64_t confCluster[NUM_CONF_BINS] = {0}; // current cluster, flushed by AccountCluster()
 
-	// confidences are expected in [0,1], but the index must stay valid whatever the map holds
+	// confidences are expected in [0,1], but the index must stay valid whatever the map holds:
+	// clamp in float and reject non-finite values before the cast, since converting a NaN or an
+	// out-of-range float to int is undefined behavior. A corrupted confidence lands in the lowest
+	// bin, which keeps the histograms summing to the pixel counts they annotate
 	static inline unsigned ConfBin(float conf) {
-		return (unsigned)MINF(MAXF((int)(conf*(float)NUM_CONF_BINS), 0), (int)NUM_CONF_BINS-1);
+		if (!ISFINITE(conf))
+			return 0;
+		const float bin(MINF(MAXF(conf, 0.f), 1.f)*(float)NUM_CONF_BINS);
+		return MINF((unsigned)bin, (unsigned)NUM_CONF_BINS-1);
 	}
 	inline void AccountJoin(float conf) {
 		++nProbesJoined;
@@ -2516,10 +2522,12 @@ struct FusionStats {
 			str += String::FormatString(i == 0 ? "%llu" : ",%llu", (unsigned long long)conf[i]);
 		return str;
 	}
+	// reported one level below the fusion's own summary line: this is the evidence a fusion
+	// investigation reads, four dense lines of it, not something a normal run needs to see
 	void Log() const {
 		MAYBEUNUSED const uint64_t nPixelsDropped(nPixelsDropLowConf + nPixelsDropMinPixels + nPixelsDropMinViews + nPixelsDropViolation);
 		MAYBEUNUSED const double normPixels(100.0/(double)MAXF(nPixelsValid, uint64_t(1)));
-		DEBUG_EXTRA("Fusion pixel accounting: %llu valid depths (%llu without depth) -> %llu admitted (%.2f%%) in %llu points, %llu dropped (%.2f%%) [low-confidence %llu (%.2f%%), min-pixels %llu (%.2f%%), min-views %llu (%.2f%%), violation %llu (%.2f%%)], %llu seeds already fused, %llu clusters dropped, %llu traversals truncated, residual %lld",
+		DEBUG_ULTIMATE("Fusion pixel accounting: %llu valid depths (%llu without depth) -> %llu admitted (%.2f%%) in %llu points, %llu dropped (%.2f%%) [low-confidence %llu (%.2f%%), min-pixels %llu (%.2f%%), min-views %llu (%.2f%%), violation %llu (%.2f%%)], %llu seeds already fused, %llu clusters dropped, %llu traversals truncated, residual %lld",
 			(unsigned long long)nPixelsValid, (unsigned long long)nPixelsNoDepth,
 			(unsigned long long)nPixelsAdmitted, (double)nPixelsAdmitted*normPixels, (unsigned long long)nClustersKept,
 			(unsigned long long)nPixelsDropped, (double)nPixelsDropped*normPixels,
@@ -2530,16 +2538,16 @@ struct FusionStats {
 			(unsigned long long)nSeedsAlreadyFused, (unsigned long long)nClustersDropped, (unsigned long long)nProbesTruncated,
 			(long long)((int64_t)nPixelsValid - (int64_t)(nPixelsAdmitted + nPixelsDropped)));
 		MAYBEUNUSED const uint64_t nProbesRejected(nProbesOutside + nProbesNoDepth + nProbesAlreadyFused + nProbesLowConf + nProbesDepthDiff + nProbesReprojError + nProbesNormalDiff);
-		DEBUG_EXTRA("Fusion probe accounting: %llu probes -> %llu joined, rejected: outside %llu, no-depth %llu, already-fused %llu, low-confidence %llu, depth-diff %llu (free-space violations %llu), reprojection-error %llu, normal-diff %llu, residual %lld",
+		DEBUG_ULTIMATE("Fusion probe accounting: %llu probes -> %llu joined, rejected: outside %llu, no-depth %llu, already-fused %llu, low-confidence %llu, depth-diff %llu (free-space violations %llu), reprojection-error %llu, normal-diff %llu, residual %lld",
 			(unsigned long long)nProbes, (unsigned long long)nProbesJoined,
 			(unsigned long long)nProbesOutside, (unsigned long long)nProbesNoDepth,
 			(unsigned long long)nProbesAlreadyFused, (unsigned long long)nProbesLowConf,
 			(unsigned long long)nProbesDepthDiff, (unsigned long long)nProbesDepthDiffFSV,
 			(unsigned long long)nProbesReprojError, (unsigned long long)nProbesNormalDiff,
 			(long long)((int64_t)nProbes - (int64_t)(nProbesJoined + nProbesRejected)));
-		DEBUG_EXTRA("Fusion confidence histogram of the admitted pixels (%u bins over [0,1]): %s",
+		DEBUG_ULTIMATE("Fusion confidence histogram of the admitted pixels (%u bins over [0,1]): %s",
 			(unsigned)NUM_CONF_BINS, FormatConfHist(confAdmitted).c_str());
-		DEBUG_EXTRA("Fusion confidence histogram of the dropped pixels (%u bins over [0,1]): %s",
+		DEBUG_ULTIMATE("Fusion confidence histogram of the dropped pixels (%u bins over [0,1]): %s",
 			(unsigned)NUM_CONF_BINS, FormatConfHist(confDropped).c_str());
 	}
 };
