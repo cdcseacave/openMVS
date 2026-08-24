@@ -74,6 +74,17 @@ bool MeshVertexColorsPLYTest()
 }
 /*----------------------------------------------------------------*/
 
+// Both fixtures below lock a cut topology that is partly decided by how the min-cut solver
+// assigns the cells carrying no terminal capacity (s == t == 0) -- each fixture's comment says
+// which part. Every solver this project has run agrees there (IBFS and Boost BK reconstruct
+// byte-identical meshes), so the lock is stable; but a solver change that alters that convention
+// would fail these tests with no mesh regression behind it, so the failure says so rather than
+// leaving the next reader to rediscover it from the appendix
+static void ReportFixtureSolverTieBreak()
+{
+	VERBOSE("NOTE: this fixture's topology depends on how the min-cut solver assigns cells with no terminal capacity; if the solver changed, compare the cut labels before calling this a regression");
+}
+
 // Fixture A ("bipyramid", docs/design/DelaunayMeshReconstruction.md,
 // Appendix), a synthetic 2-tetrahedra / 1-camera / 1-contributing-point scene hand-solved down
 // to exact facet capacities and s/t values. Those internal values are not observable through the
@@ -129,6 +140,7 @@ bool MeshBipyramidFixtureTest()
 	}
 	if (sceneA.mesh.vertices.size() != 3 || sceneA.mesh.faces.size() != 1) {
 		VERBOSE("ERROR: Fixture-A (bipyramid) expected exactly 1 face (3 vertices), got %u vertices, %u faces!", sceneA.mesh.vertices.size(), sceneA.mesh.faces.size());
+		ReportFixtureSolverTieBreak();
 		return false;
 	}
 	// the single face must be one of E's two triangles with A/B/C -- D must never appear
@@ -141,6 +153,7 @@ bool MeshBipyramidFixtureTest()
 	}
 	if (nE != 1 || nD != 0 || nABC != 2) {
 		VERBOSE("ERROR: Fixture-A (bipyramid) produced an unexpected face -- expected E plus two of A/B/C, got %u E, %u D, %u of A/B/C!", nE, nD, nABC);
+		ReportFixtureSolverTieBreak();
 		return false;
 	}
 	return true;
@@ -210,6 +223,7 @@ bool MeshTetraInteriorPointFixtureTest()
 	}
 	if (!sceneB.mesh.vertices.IsEmpty() || !sceneB.mesh.faces.IsEmpty()) {
 		VERBOSE("ERROR: Fixture-B (tetra + interior point) expected an empty mesh, got %u vertices, %u faces!", sceneB.mesh.vertices.size(), sceneB.mesh.faces.size());
+		ReportFixtureSolverTieBreak();
 		return false;
 	}
 	return true;
