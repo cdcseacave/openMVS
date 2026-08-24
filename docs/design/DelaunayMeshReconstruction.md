@@ -469,15 +469,17 @@ Apply to both fixtures below:
 
 * Build the `Scene` in memory: `scene.pointcloud.points/pointViews/pointWeights` +
   `scene.images` with valid `Camera` (`camera.C`, `camera.P`, `imageData.width/height`,
-  `imageData.ID`), then call
-  `scene.ReconstructMesh(distInsert=0.f, bUseFreeSpaceSupport=false, bUseOnlyROI=false,
-   kSigma=<below>, kQual=0.f, ...)`.
+  `imageData.ID`), then call `scene.ReconstructMesh(params)` with a `ReconstructMeshParams`
+  carrying `distInsert=0.f`, `bUseFreeSpaceSupport=false`, `bUseOnlyROI=false`,
+  `kSigma=<below>`, `kQual=0.f`, `bAdaptiveSigma=false`, `bCanonicalRescale=false` and
+  `maxEdgeScale=0.f`; every reconstruction knob lives in that struct, there are no positional
+  arguments left.
   * `distInsert = 0` ⇒ the "insert all points" branch, no vertex merging.
   * `bUseFreeSpaceSupport = false` ⇒ the WSS block is skipped, so `t` is not multiplied.
   * `kQual = 0` ⇒ `q ≡ 0`, so arc capacity == `f` exactly.
-  * Pass an explicit `ReconstructMeshParams` with `bAdaptiveSigma=false`,
-    `bCanonicalRescale=false`, `maxEdgeScale=0` — both fixtures are hand-solved under the
-    single global sigma and the ungated extraction, and the shipped defaults differ.
+  * `bAdaptiveSigma=false`, `bCanonicalRescale=false`, `maxEdgeScale=0` — both fixtures are
+    hand-solved under the single global sigma and the ungated extraction, and the shipped
+    defaults differ.
 * `pointWeights` left empty ⇒ every `α_vis = 1`.
 * **Do not assume CGAL cell indices.** Identify cells by `delaunay.locate(<interior probe
   point>)` and facets by `cell->index(vertexHandleOf(X))`; identify vertices by
