@@ -91,8 +91,8 @@ public:
 		MVS::OPTDENSE::nResolutionLevel = nResolutionLevel;
 		return DenseReconstruction(nFusionMode, bCrop2ROI, fBorderROI);
 	}
-	bool pyReconstructMesh(float distInsert=2, bool bUseFreeSpaceSupport=false, bool bUseOnlyROI=false) {
-		return ReconstructMesh(distInsert, bUseFreeSpaceSupport, bUseOnlyROI);
+	bool pyReconstructMesh(const ReconstructMeshParams& params) {
+		return ReconstructMesh(params);
 	}
 	void pyCleanMesh(float fDecimate=1.f, float fRemoveSpurious=20.f, bool bRemoveSpikes=true, unsigned nCloseHoles=30, unsigned nSmoothMesh=2, float fEdgeLength=0.f, bool bCrop2ROI=false) {
 		if (bCrop2ROI && IsBounded())
@@ -132,6 +132,23 @@ void SetWorkingFolder(const std::string& folder) {
 BOOST_PYTHON_MODULE(pyOpenMVS) {
 	using namespace boost::python;
 
+	class_<MVS::Scene::ReconstructMeshParams>("ReconstructMeshParams")
+		.def_readwrite("dist_insert", &MVS::Scene::ReconstructMeshParams::distInsert)
+		.def_readwrite("use_free_space_support", &MVS::Scene::ReconstructMeshParams::bUseFreeSpaceSupport)
+		.def_readwrite("use_only_roi", &MVS::Scene::ReconstructMeshParams::bUseOnlyROI)
+		.def_readwrite("sigma", &MVS::Scene::ReconstructMeshParams::kSigma)
+		.def_readwrite("quality", &MVS::Scene::ReconstructMeshParams::kQual)
+		.def_readwrite("back_factor", &MVS::Scene::ReconstructMeshParams::kb)
+		.def_readwrite("front_factor", &MVS::Scene::ReconstructMeshParams::kf)
+		.def_readwrite("relative_factor", &MVS::Scene::ReconstructMeshParams::kRel)
+		.def_readwrite("absolute_factor", &MVS::Scene::ReconstructMeshParams::kAbs)
+		.def_readwrite("outlier_factor", &MVS::Scene::ReconstructMeshParams::kOutl)
+		.def_readwrite("infinite_capacity", &MVS::Scene::ReconstructMeshParams::kInf)
+		.def_readwrite("adaptive_sigma", &MVS::Scene::ReconstructMeshParams::bAdaptiveSigma)
+		.def_readwrite("canonical_rescale", &MVS::Scene::ReconstructMeshParams::bCanonicalRescale)
+		.def_readwrite("max_edge_scale", &MVS::Scene::ReconstructMeshParams::maxEdgeScale)
+		;
+
 	class_<Scene, boost::noncopyable, boost::shared_ptr<Scene>>("Scene", init<unsigned>(arg("max_threads")=0))
 		.def("load", &Scene::pyLoad, (arg("file_path"), arg("import")=true))
 		.def("save", &Scene::pySave, (arg("file_path"), arg("type")=static_cast<int>(ARCHIVE_DEFAULT)))
@@ -143,7 +160,7 @@ BOOST_PYTHON_MODULE(pyOpenMVS) {
 		.def("transform34", static_cast<void (Scene:: *)(const Matrix3x4&)>(&Scene::Transform))
 		.def("align_to", &Scene::AlignTo)
 		.def("dense_reconstruction", &Scene::pyDenseReconstruction, (arg("resolution_level")=0, arg("fusion_mode")=0, arg("crop_to_roi")=true, arg("roi_border")=0.f))
-		.def("reconstruct_mesh", &Scene::pyReconstructMesh, (arg("dist_insert")=2, arg("use_free_space_support")=false, arg("use_only_roi")=false))
+		.def("reconstruct_mesh", &Scene::pyReconstructMesh, (arg("params")=MVS::Scene::ReconstructMeshParams()))
 		.def("clean_mesh", &Scene::pyCleanMesh, (arg("decimate")=1.f, arg("remove_spurious")=20.f, arg("remove_spikes")=true, arg("close_holes")=30, arg("smooth_mesh")=2, arg("edge_length")=0.f, arg("crop_to_roi")=true))
 		.def("refine_mesh", &Scene::pyRefineMesh, (arg("resolution_level")=0, arg("ensure_edge_size")=1, arg("max_face_area")=32, arg("scales")=2, arg("scale_step")=0.5f, arg("regularity_weight")=0.2f))
 		.def("texture_mesh", &Scene::pyTextureMesh, (arg("resolution_level")=0, arg("empty_color")=0x00FF7F27))

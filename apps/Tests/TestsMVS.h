@@ -40,6 +40,11 @@ namespace MVS {
 // test vertex-colored PLY export and geometry reload
 bool MeshVertexColorsPLYTest();
 
+// test the Delaunay mesh cut on the two hand-solved synthetic fixtures
+// (docs/design/DelaunayMeshReconstruction.md, Appendix)
+bool MeshBipyramidFixtureTest();
+bool MeshTetraInteriorPointFixtureTest();
+
 // test MVS stages on a small sample dataset
 bool PipelineTest(bool forceCPU = false, bool verbose = false);
 /*----------------------------------------------------------------*/

@@ -58,12 +58,8 @@ String strMeshFileName;
 String strImportROIFileName;
 String strImagePointsFileName;
 bool bMeshExport;
-float fDistInsert;
-bool bUseOnlyROI;
 bool bUseConstantWeight;
-bool bUseFreeSpaceSupport;
-float fThicknessFactor;
-float fQualityFactor;
+Scene::ReconstructMeshParams reconstructParams;
 float fDecimateMesh;
 unsigned nTargetFaceNum;
 float fRemoveSpurious;
@@ -125,12 +121,17 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("input-file,i", boost::program_options::value<std::string>(&OPT::strInputFileName), "input filename containing camera poses and image list")
 		("pointcloud-file,p", boost::program_options::value<std::string>(&OPT::strPointCloudFileName), "dense point-cloud with views file name to reconstruct (overwrite existing point-cloud)")
 		("output-file,o", boost::program_options::value<std::string>(&OPT::strOutputFileName), "output filename for storing the mesh")
-		("min-point-distance,d", boost::program_options::value(&OPT::fDistInsert)->default_value(1.5f), "minimum distance in pixels between the projection of two 3D points to consider them different while triangulating (0 - disabled)")
-		("integrate-only-roi", boost::program_options::value(&OPT::bUseOnlyROI)->default_value(false), "use only the points inside the ROI")
-		("constant-weight", boost::program_options::value(&OPT::bUseConstantWeight)->default_value(true), "considers all view weights 1 instead of the available weight")
-		("free-space-support,f", boost::program_options::value(&OPT::bUseFreeSpaceSupport)->default_value(false), "exploits the free-space support in order to reconstruct weakly-represented surfaces")
-		("thickness-factor", boost::program_options::value(&OPT::fThicknessFactor)->default_value(1.f), "multiplier adjusting the minimum thickness considered during visibility weighting")
-		("quality-factor", boost::program_options::value(&OPT::fQualityFactor)->default_value(1.f), "multiplier adjusting the quality weight considered during graph-cut")
+		("min-point-distance,d", boost::program_options::value(&OPT::reconstructParams.distInsert)->default_value(1.5f), "minimum distance in pixels between the projection of two 3D points to consider them different while triangulating (0 - disabled)")
+		("integrate-only-roi", boost::program_options::value(&OPT::reconstructParams.bUseOnlyROI)->default_value(false), "use only the points inside the ROI")
+		("constant-weight", boost::program_options::value(&OPT::bUseConstantWeight)->default_value(true), "consider all view weights 1 instead of the per-view point confidence the point-cloud carries; disable it only for a point-cloud whose confidence was recalibrated by the densifier (--postprocess-dmaps), since an un-recalibrated confidence sits well below 1 and shrinks the visibility votes against the calibration of the graph-cut constants")
+		("free-space-support,f", boost::program_options::value(&OPT::reconstructParams.bUseFreeSpaceSupport)->default_value(false), "exploits the free-space support in order to reconstruct weakly-represented surfaces")
+		("thickness-factor", boost::program_options::value(&OPT::reconstructParams.kSigma)->default_value(1.f), "multiplier adjusting the minimum thickness considered during visibility weighting")
+		("quality-factor", boost::program_options::value(&OPT::reconstructParams.kQual)->default_value(1.f), "multiplier adjusting the quality weight considered during graph-cut")
+		// every default below is the value the ReconstructMeshParams constructor declares, so the
+		// single call site can pass the struct and still leave the default path unchanged
+		("adaptive-sigma", boost::program_options::value(&OPT::reconstructParams.bAdaptiveSigma)->default_value(true), "derive the point uncertainty sigma per-vertex from its median incident Delaunay edge length, clamped to [0.25,4] x the global sigma (0 - the single global sigma everywhere)")
+		("canonical-rescale", boost::program_options::value(&OPT::reconstructParams.bCanonicalRescale)->default_value(true), "rescale the triangulation by a power of two so the median Delaunay edge lands near 1, where the ray-walk orientation predicate is calibrated; no-op unless the median edge falls outside [2^-10,2^10]")
+		("max-edge-scale", boost::program_options::value(&OPT::reconstructParams.maxEdgeScale)->default_value(4.f), "drop extracted surface facets whose longest edge exceeds this multiple of the median cut-facet longest edge - the gap-spanning webbing grown across occluded space no observation supports (relative units, scale-independent; 0 - disabled)")
 		;
 	boost::program_options::options_description config_clean("Clean options");
 	config_clean.add_options()
@@ -199,6 +200,10 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 	if (OPT::strInputFileName.empty())
 		return false;
 	OPT::strExportType = OPT::strExportType.ToLower() == _T("obj") ? _T(".obj") : _T(".ply");
+	if (OPT::reconstructParams.maxEdgeScale < 0.f) {
+		VERBOSE("error: invalid max edge scale %g (expected >= 0, 0 disables the gate)", OPT::reconstructParams.maxEdgeScale);
+		return false;
+	}
 
 	// initialize optional options
 	Util::ensureValidPath(OPT::strPointCloudFileName);
@@ -447,7 +452,7 @@ int main(int argc, LPCTSTR* argv)
 			TD_TIMER_START();
 			if (OPT::bUseConstantWeight)
 				scene.pointcloud.pointWeights.Release();
-			if (!scene.ReconstructMesh(OPT::fDistInsert, OPT::bUseFreeSpaceSupport, OPT::bUseOnlyROI, 4, OPT::fThicknessFactor, OPT::fQualityFactor))
+			if (!scene.ReconstructMesh(OPT::reconstructParams))
 				return EXIT_FAILURE;
 			VERBOSE("Mesh reconstruction completed: %u vertices, %u faces (%s)", scene.mesh.vertices.size(), scene.mesh.faces.size(), TD_TIMER_GET_FMT().c_str());
 			#if TD_VERBOSE != TD_VERBOSE_OFF

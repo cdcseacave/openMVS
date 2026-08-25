@@ -3094,7 +3094,7 @@ void UI::ShowReconstructWorkflowWindow(Window& window) {
 		ImGui::SetTooltip("Process only points inside the Region of Interest.\nUseful to focus reconstruction on a specific area and reduce computation.");
 	ImGui::Checkbox("Constant Weight", &opts.constantWeight);
 	if (ImGui::IsItemHovered())
-		ImGui::SetTooltip("Use uniform weighting for all points instead of confidence-based weighting.\nMay help with uniformly sampled point clouds, but can reduce quality.");
+		ImGui::SetTooltip("Vote 1 for every view instead of the per-view point confidence the point-cloud carries.\nDisable it only for a point-cloud whose confidence was recalibrated by the densifier:\nan un-recalibrated confidence sits well below 1 and shrinks the visibility votes.");
 
 	ImGui::Separator();
 	ImGui::DragFloat("Thickness Factor", &opts.thicknessFactor, 0.05f, 0.f, 10.f, "%.2f");

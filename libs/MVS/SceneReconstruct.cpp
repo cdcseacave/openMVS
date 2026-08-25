@@ -248,7 +248,8 @@ struct vert_info_t {
 			// pointWeights holds the plain [0,1] per-view confidence (see SceneDensify fusion), i.e.
 			// the expected value of the constant-weight vote of 1: dimensionless and independent of
 			// the scene's length unit, so it can feed the graph-cut constants (kb, kf, kRel, kAbs,
-			// kOutl, tuned for the uniform-weight regime) directly, with no normalization step
+			// kOutl, tuned for the uniform-weight regime) directly, with no normalization step;
+			// a point-cloud without weights votes 1 per view
 			const PointCloud::Weight weight(pweights ? (*pweights)[i] : PointCloud::Weight(1));
 			// insert viewID in increasing order
 			const uint32_t idx(views.FindFirstEqlGreater(viewID));
@@ -331,6 +332,48 @@ inline point_t MVS2CGAL(const TPoint3<TYPE>& p) {
 	return point_t((kernel_t::RT)p.x, (kernel_t::RT)p.y, (kernel_t::RT)p.z);
 }
 
+// |log2(median Delaunay edge)| past which the canonical rescale engages; inside the band the
+// orientation predicate below has orders of magnitude of headroom either way
+constexpr double kLog2CanonicalBand = 10;
+// Canonical coordinate rescale of the triangulation (ReconstructMeshParams::bCanonicalRescale).
+// orientation() tests an unnormalized determinant, which grows as the cube of the local edge
+// length, against a fixed absolute epsilon, so the predicate is calibrated only while the scene's
+// median Delaunay edge stays near one unit: far below it every call answers COPLANAR and the ray
+// walks collapse, far above it the epsilon is inert. A uniform power-of-two factor moves the median
+// edge back into that band. Power of two matters twice: multiplying by it is exact in IEEE
+// arithmetic (it shifts the exponent, the mantissa is untouched), so the working coordinates and
+// the inverse applied at extraction round-trip bit-for-bit; and the kernel's exact predicates
+// answer identically at any scale, so every cell and vertex handle survives and nothing is
+// retriangulated. This repairs the predicate only: a scene whose geometry the float storage of
+// PointCloud::Point already quantized away needs centering at load time, before this code runs.
+struct coord_rescale_t {
+	double scale;    // scene space -> working space
+	double invScale; // working space -> scene space
+	int exponent;    // log2(scale), reported when the rescale engages
+	bool bEnabled;   // false keeps every consumer below on its untouched, unscaled path
+	inline coord_rescale_t() : scale(1), invScale(1), exponent(0), bEnabled(false) {}
+	// decide the factor from the measured median edge length
+	inline void Setup(float medianEdge) {
+		ASSERT(!bEnabled);
+		ASSERT(ISFINITE(medianEdge) && medianEdge > 0); // validated where measured
+		const double log2Edge(std::log2((double)medianEdge));
+		if (ABS(log2Edge) <= kLog2CanonicalBand)
+			return;
+		exponent = -(int)std::lround(log2Edge);
+		scale = std::ldexp(1.0, exponent);
+		invScale = std::ldexp(1.0, -exponent);
+		bEnabled = true;
+	}
+	// unconditional, for the single loop that scales the triangulation in place
+	inline point_t Scaled(const point_t& p) const {
+		ASSERT(bEnabled);
+		return point_t(p.x()*scale, p.y()*scale, p.z()*scale);
+	}
+	// every other conversion branches, so the disabled path executes the original code exactly
+	inline Point3 ToWorking(const Point3& p) const { return bEnabled ? Point3(p*scale) : p; }
+	inline point_t ToWorld(const point_t& p) const { return bEnabled ? point_t(p.x()*invScale, p.y()*invScale, p.z()*invScale) : p; }
+};
+
 // Given a facet, compute the plane containing it
 inline Plane getFacetPlane(const facet_t& facet)
 {
@@ -339,7 +382,6 @@ inline Plane getFacetPlane(const facet_t& facet)
 	const point_t& v2(facet.first->vertex((facet.second+3)%4)->point());
 	return Plane(CGAL2MVS<REAL>(v0), CGAL2MVS<REAL>(v1), CGAL2MVS<REAL>(v2));
 }
-
 
 // Check if a point (p) is coplanar with a triangle (a, b, c);
 // return orientation type
@@ -401,7 +443,7 @@ inline bool checkPointInside(const point_t& a, const point_t& b, const point_t& 
 // find all facets on the convex-hull and inside the camera frustum,
 // else return all four cell's facets
 template <int FacetOrientation>
-void fetchCellFacets(const delaunay_t& Tr, const std::vector<facet_t>& hullFacets, const cell_handle_t& cell, const Image& imageData, std::vector<facet_t>& facets)
+void fetchCellFacets(const delaunay_t& Tr, const std::vector<facet_t>& hullFacets, const cell_handle_t& cell, const Image& imageData, const coord_rescale_t& rescale, std::vector<facet_t>& facets)
 {
 	if (!Tr.is_infinite(cell)) {
 		// store all 4 facets of the cell
@@ -417,20 +459,59 @@ void fetchCellFacets(const delaunay_t& Tr, const std::vector<facet_t>& hullFacet
 	ASSERT(facets.empty());
 	const TFrustum<REAL,4> frustum(imageData.camera.P, imageData.width, imageData.height, 0, 1);
 	// loop over all cells
-	const point_t ptOrigin(MVS2CGAL(imageData.camera.C));
+	// the orientation test runs in the working space, which is the whole point of the rescale,
+	// while the frustum keeps the camera's own space and the facet bounds are mapped back into
+	// it: the round-trip is exact, so the culling verdict is the same at any scale
+	const point_t ptOrigin(MVS2CGAL(rescale.ToWorking(imageData.camera.C)));
 	for (const facet_t& face: hullFacets) {
 		// add face if visible
 		const triangle_t verts(Tr.triangle(face));
 		if (orientation(verts[0], verts[1], verts[2], ptOrigin) != FacetOrientation)
 			continue;
-		AABB3 ab(CGAL2MVS<REAL>(verts[0]));
+		AABB3 ab(CGAL2MVS<REAL>(rescale.ToWorld(verts[0])));
 		for (int i=1; i<3; ++i)
-			ab.Insert(CGAL2MVS<REAL>(verts[i]));
+			ab.Insert(CGAL2MVS<REAL>(rescale.ToWorld(verts[i])));
 		if (frustum.Classify(ab) == CULLED)
 			continue;
 		facets.push_back(face);
 	}
 }
+
+
+// aggregate ray-walk accounting; observed only, never fed back into the reconstruction.
+// Every worker walks with its own instance, so the increments need no synchronization and no
+// two threads can share a cache line; the instances are folded into the caller's total once,
+// after the weighting loop has finished
+struct walk_stats_t {
+	uint64_t nSteps; // facet/edge/vertex steps accepted by intersect()
+	uint64_t nBadEnd; // intersect() gave up with the segment not consumed
+	uint64_t nCamRayDropped; // camera-side walk failed on its first step, the whole ray is discarded
+	uint64_t nCamWalkAborted; // camera-side walk did not end on its own vertex, so cell2Cam is wrong
+	uint64_t nEndWalkAborted; // end-point-side walk did not end on its own vertex, so cell2End is wrong
+
+	// fold this worker's counts into the shared total, one atomic per field: the accounting must
+	// not serialize the walks, and an unnamed critical section is program-wide, not local to it
+	inline void AccumulateInto(walk_stats_t& total) const {
+		#ifdef DELAUNAY_USE_OPENMP
+		#pragma omp atomic
+		total.nSteps += nSteps;
+		#pragma omp atomic
+		total.nBadEnd += nBadEnd;
+		#pragma omp atomic
+		total.nCamRayDropped += nCamRayDropped;
+		#pragma omp atomic
+		total.nCamWalkAborted += nCamWalkAborted;
+		#pragma omp atomic
+		total.nEndWalkAborted += nEndWalkAborted;
+		#else
+		total.nSteps += nSteps;
+		total.nBadEnd += nBadEnd;
+		total.nCamRayDropped += nCamRayDropped;
+		total.nCamWalkAborted += nCamWalkAborted;
+		total.nEndWalkAborted += nEndWalkAborted;
+		#endif
+	}
+};
 
 
 // information about an intersection between a segment and a facet
@@ -540,8 +621,9 @@ int intersect(const triangle_t& t, const segment_t& s, int coplanar[3])
 //  in_facets [in] : vector of facets to check
 //  out_facets [out] : vector of facets to check at next step (can be in_facets)
 //  out_inter [out] : kind of intersection
+//  stats [in,out] : the calling thread's own accounting, updated in place
 // return false if no intersection found and the end of the segment was not reached
-bool intersect(const delaunay_t& Tr, const segment_t& seg, const std::vector<facet_t>& in_facets, std::vector<facet_t>& out_facets, intersection_t& inter)
+bool intersect(const delaunay_t& Tr, const segment_t& seg, const std::vector<facet_t>& in_facets, std::vector<facet_t>& out_facets, intersection_t& inter, walk_stats_t& stats)
 {
 	ASSERT(!in_facets.empty());
 	static const int facet_vertex_order[] = {2,1,3,2,2,3,0,2,0,3,1,0,0,1,2,0};
@@ -551,13 +633,21 @@ bool intersect(const delaunay_t& Tr, const segment_t& seg, const std::vector<fac
 		ASSERT(!Tr.is_infinite(in_facet));
 		const int nb_coplanar(intersect(Tr.triangle(in_facet), seg, coplanar));
 		if (nb_coplanar >= 0) {
+			if (nb_coplanar == 3) {
+				// coplanar with 3 edges = tangent: the segment travels in the facet's
+				// supporting plane, so no crossing distance exists; give up
+				break;
+			}
 			// skip this cell if the intersection is not in the desired direction
 			const REAL interDist(inter.ray.IntersectsDist(getFacetPlane(in_facet)));
-			if ((interDist > prevDist) != inter.bigger)
+			ASSERT(ISFINITE(interDist)); // the exact test above says the segment straddles this plane
+			if ((interDist > prevDist) != inter.bigger) {
 				continue;
+			}
 			// vertices of facet i: j = 4 * i, vertices = facet_vertex_order[j,j+1,j+2] negative orientation
 			inter.facet = in_facet;
 			inter.dist = interDist;
+			++stats.nSteps;
 			switch (nb_coplanar) {
 			case 0: {
 				// face intersection
@@ -642,11 +732,11 @@ bool intersect(const delaunay_t& Tr, const segment_t& seg, const std::vector<fac
 				Tr.finite_incident_cells(inter.v1, cell_back_inserter_t(Tr, inter, out_facets));
 				return true; }
 			}
-			// coplanar with 3 edges = tangent = impossible?
-			break;
+			ASSERT("should not happen" == NULL);
 		}
 	}
 	// Bad end: no intersection found and we are not at the end of the segment (very rarely, but it happens)!
+	++stats.nBadEnd;
 	out_facets.clear();
 	return false;
 }
@@ -781,26 +871,40 @@ float computePlaneSphereAngle(const delaunay_t& Tr, const facet_t& facet)
 // Next, the score is computed for all the edges of the directed graph composed of points as vertices.
 // Finally, graph-cut algorithm is used to split the tetrahedrons in inside and outside,
 // and the surface is such extracted.
-bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bUseOnlyROI, unsigned nItersFixNonManifold,
-							float kSigma, float kQual, float kb,
-							float kf, float kRel, float kAbs, float kOutl,
-							float kInf
-)
+bool Scene::ReconstructMesh(const ReconstructMeshParams& params)
 {
 	using namespace DELAUNAY;
 	ASSERT(!pointcloud.IsEmpty());
 	mesh.Release();
+	const float distInsert(params.distInsert);
+	const bool bUseFreeSpaceSupport(params.bUseFreeSpaceSupport);
+	bool bUseOnlyROI(params.bUseOnlyROI);
+	const float kSigma(params.kSigma);
+	const float kQual(params.kQual);
+	const float kb(params.kb);
+	const float kf(params.kf);
+	const float kRel(params.kRel);
+	const float kAbs(params.kAbs);
+	const float kOutl(params.kOutl);
+	const float kInf(params.kInf);
 
 	// create the Delaunay triangulation
 	delaunay_t delaunay;
 	std::vector<cell_info_t> infoCells;
 	std::vector<camera_cell_t> camCells;
 	std::vector<facet_t> hullFacets;
+	// median length over all finite Delaunay edges, measured once the triangulation is complete:
+	// the reference the canonical rescale is decided from and the base of sigma further down.
+	// Both live in the working space, so a rescaled scene keeps every distance comparison
+	// downstream on the same footing
+	float medianEdge(0);
+	coord_rescale_t rescale;
 	{
 		TD_TIMER_STARTD();
 
 		std::vector<point_t> vertices(pointcloud.points.GetSize());
-		std::vector<std::ptrdiff_t> indices(pointcloud.points.GetSize());
+		std::vector<std::ptrdiff_t> indices;
+		indices.reserve(pointcloud.points.GetSize());
 		// fetch points
 		if (bUseOnlyROI && !IsBounded())
 			bUseOnlyROI = false;
@@ -809,11 +913,15 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 			if (bUseOnlyROI && !obb.Intersects(X))
 				continue;
 			vertices[i] = point_t(X.x, X.y, X.z);
-			indices[i] = i;
+			indices.emplace_back(i);
+		}
+		if (indices.empty()) {
+			VERBOSE("error: no points available for Delaunay reconstruction");
+			return false;
 		}
 		// sort vertices
 		typedef CGAL::Spatial_sort_traits_adapter_3<delaunay_t::Geom_traits, point_t*> Search_traits;
-		CGAL::spatial_sort(indices.begin(), indices.end(), Search_traits(&vertices[0], delaunay.geom_traits()));
+		CGAL::spatial_sort(indices.begin(), indices.end(), Search_traits(vertices.data(), delaunay.geom_traits()));
 		// insert vertices
 		Util::Progress progress(_T("Points inserted"), indices.size());
 		const float distInsertSq(SQUARE(distInsert));
@@ -885,11 +993,15 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 				}
 			}
 			// update point visibility info
-			hint->info().InsertViews(pointcloud, idx);
+			hint->info().InsertViews(pointcloud, (PointCloud::Index)idx);
 			++progress;
 		});
 		progress.close();
 		pointcloud.Release();
+		if (delaunay.dimension() < 3) {
+			VERBOSE("error: too few or degenerate points for Delaunay reconstruction (dimension %d)", delaunay.dimension());
+			return false;
+		}
 		// init cells weights and
 		// loop over all cells and store the finite facet of the infinite cells
 		const size_t numNodes(delaunay.number_of_cells());
@@ -911,6 +1023,38 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 				}
 			}
 		}
+		// estimate the size of the smallest reconstructible object: the median of the squared
+		// finite edge lengths, square-rooted (median commutes with the square root, so this is
+		// the median length itself and the long-edge tail cannot pull it)
+		{
+			FloatArr distsSq(0, delaunay.number_of_edges());
+			for (delaunay_t::Finite_edges_iterator ei=delaunay.finite_edges_begin(), eei=delaunay.finite_edges_end(); ei!=eei; ++ei) {
+				const cell_handle_t& c(ei->first);
+				distsSq.Insert(normSq(CGAL2MVS<float>(c->vertex(ei->second)->point()) - CGAL2MVS<float>(c->vertex(ei->third)->point())));
+			}
+			medianEdge = SQRT(distsSq.GetMedian());
+		}
+		// the boundary where the measurement of the input data becomes an internal invariant:
+		// everything downstream (canonical rescale, sigma) relies on a usable scale, so a cloud
+		// whose median edge cannot be represented in float is rejected here, once
+		if (!ISFINITE(medianEdge) || medianEdge <= 0) {
+			VERBOSE("error: degenerate point-cloud scale (median Delaunay edge %g)", medianEdge);
+			return false;
+		}
+		// canonical rescale: everything from here on - the camera cells located below, both
+		// weighting loops and sigma itself - lives in the working space, and
+		// only the extracted mesh vertices are mapped back
+		if (params.bCanonicalRescale) {
+			rescale.Setup(medianEdge);
+			if (rescale.bEnabled) {
+				for (delaunay_t::Finite_vertices_iterator vit=delaunay.finite_vertices_begin(), vite=delaunay.finite_vertices_end(); vit!=vite; ++vit)
+					vit->set_point(rescale.Scaled(vit->point()));
+				const float medianEdgeScene(medianEdge);
+				medianEdge = (float)(medianEdge*rescale.scale);
+				DEBUG_EXTRA("Canonical rescale engaged: median Delaunay edge %g -> %g (scale 2^%d)", medianEdgeScene, medianEdge, rescale.exponent);
+			} else
+				DEBUG_ULTIMATE("\tcanonical rescale not needed: median Delaunay edge %g inside [2^-%g, 2^%g]", medianEdge, kLog2CanonicalBand, kLog2CanonicalBand);
+		}
 		// find all cells containing a camera
 		camCells.resize(images.GetSize());
 		FOREACH(i, images) {
@@ -919,9 +1063,9 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 				continue;
 			const Camera& camera = imageData.camera;
 			camera_cell_t& camCell = camCells[i];
-			camCell.cell = delaunay.locate(MVS2CGAL(camera.C));
+			camCell.cell = delaunay.locate(MVS2CGAL(rescale.ToWorking(camera.C)));
 			ASSERT(camCell.cell != cell_handle_t());
-			fetchCellFacets<CGAL::POSITIVE>(delaunay, hullFacets, camCell.cell, imageData, camCell.facets);
+			fetchCellFacets<CGAL::POSITIVE>(delaunay, hullFacets, camCell.cell, imageData, rescale, camCell.facets);
 			// link all cells contained by the camera to the source
 			for (const facet_t& f: camCell.facets)
 				infoCells[f.first->info()].s = kInf;
@@ -935,41 +1079,131 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 	{
 		TD_TIMER_STARTD();
 
-		// estimate the size of the smallest reconstructible object
-		FloatArr distsSq(0, delaunay.number_of_edges());
-		for (delaunay_t::Finite_edges_iterator ei=delaunay.finite_edges_begin(), eei=delaunay.finite_edges_end(); ei!=eei; ++ei) {
-			const cell_handle_t& c(ei->first);
-			distsSq.Insert(normSq(CGAL2MVS<float>(c->vertex(ei->second)->point()) - CGAL2MVS<float>(c->vertex(ei->third)->point())));
-		}
-		const float sigma(SQRT(distsSq.GetMedian())*kSigma);
-		const float inv2SigmaSq(0.5f/(sigma*sigma));
-		distsSq.Release();
+		// accounting for the ray walks below, owned by this block: nothing outlives the call,
+		// so concurrent reconstructions each report their own counts
+		walk_stats_t walkStats{};
+		// scene coordinate magnitude, reported next to the ray-walk accounting below; measured in
+		// the working space, so both it and the L it is printed with describe the space the walks
+		// actually run in rather than the scene's own units
+		AABB3 bbVerts(true);
+		for (delaunay_t::Finite_vertices_iterator vit=delaunay.finite_vertices_begin(), vite=delaunay.finite_vertices_end(); vit!=vite; ++vit)
+			bbVerts.InsertFull(CGAL2MVS<REAL>(vit->point()));
+		const REAL sceneMagnitude(bbVerts.GetCenter().norm());
 
-		std::vector<facet_t> facets;
+		// the size of the smallest reconstructible object, from the median edge measured with
+		// the triangulation above and already expressed in the working space
+		const float sigma(medianEdge*kSigma);
+		const float inv2SigmaSq(0.5f/(sigma*sigma));
+
+		// capacity reserved once per thread for the ray-walk facet front, which stays
+		// small: at most the four facets of a cell, or the facets incident to a vertex
+		constexpr size_t kFacetsReserve(64);
+
+		// vertices weighted by the two loops below, collected once and reused by both.
+		// The vertex range spans the infinite vertex as well, but neither it nor any
+		// view-less vertex contributes weight, so both are filtered out here rather
+		// than tested inside the loops; this also gives the loops a random-access
+		// index, replacing the locked iterator handoff that used to serialize them.
+		std::vector<vertex_handle_t> vertexHandles;
+		vertexHandles.reserve(delaunay.number_of_vertices());
+		for (delaunay_t::Vertex_iterator vi=delaunay.vertices_begin(), vie=delaunay.vertices_end(); vi!=vie; ++vi)
+			if (!vi->info().views.IsEmpty())
+				vertexHandles.push_back(vi);
+		const int64_t nVerts((int64_t)vertexHandles.size());
+
+		// per-vertex uncertainty: the global sigma is kSigma times the median length over all
+		// finite edges, so its local counterpart is the same statistic restricted to the edges
+		// incident to the vertex, clamped to [0.25,4] x global to keep the walks bounded;
+		// indexed like vertexHandles, and allocated only by this arm
+		const bool bAdaptiveSigma(params.bAdaptiveSigma);
+		std::vector<float> sigmaVert;
+		if (bAdaptiveSigma) {
+			TD_TIMER_STARTD();
+			const float sigmaVertMin(sigma*0.25f), sigmaVertMax(sigma*4.f);
+			sigmaVert.resize((size_t)nVerts);
+			#ifdef DELAUNAY_USE_OPENMP
+			#pragma omp parallel
+			{
+			// the threadsafe traversal keeps its visited set thread-local, while the plain
+			// finite_incident_edges() marks the shared cell state the ray-walks also read
+			std::vector<edge_t> edges;
+			FloatArr edgeDistsSq;
+			#pragma omp for schedule(dynamic)
+			for (int64_t i=0; i<nVerts; ++i) {
+			#else
+			std::vector<edge_t> edges;
+			FloatArr edgeDistsSq;
+			for (int64_t i=0; i<nVerts; ++i) {
+			#endif
+				const vertex_handle_t vi(vertexHandles[(size_t)i]);
+				edges.clear();
+				delaunay.finite_incident_edges_threadsafe(vi, std::back_inserter(edges));
+				edgeDistsSq.Empty();
+				for (const edge_t& e: edges) {
+					const cell_handle_t& c(e.first);
+					edgeDistsSq.Insert(normSq(CGAL2MVS<float>(c->vertex(e.second)->point()) - CGAL2MVS<float>(c->vertex(e.third)->point())));
+				}
+				// every finite vertex of a 3D triangulation has at least one finite incident edge
+				ASSERT(!edgeDistsSq.IsEmpty());
+				sigmaVert[(size_t)i] = CLAMP(SQRT(edgeDistsSq.GetMedian())*kSigma, sigmaVertMin, sigmaVertMax);
+			}
+			#ifdef DELAUNAY_USE_OPENMP
+			} // omp parallel
+			#endif
+			// spread reported in units of the global sigma, so a uniform-scale scene reads ~1
+			FloatArr sigmaRatios(0, (FloatArr::IDX)nVerts);
+			const float invSigma(1.f/sigma);
+			float ratioMin(FLT_MAX), ratioMax(0.f);
+			size_t nClampedLow(0), nClampedHigh(0);
+			for (int64_t i=0; i<nVerts; ++i) {
+				const float sigmaV(sigmaVert[(size_t)i]);
+				if (sigmaV <= sigmaVertMin)
+					++nClampedLow;
+				else if (sigmaV >= sigmaVertMax)
+					++nClampedHigh;
+				const float ratio(sigmaV*invSigma);
+				if (ratioMin > ratio)
+					ratioMin = ratio;
+				if (ratioMax < ratio)
+					ratioMax = ratio;
+				sigmaRatios.Insert(ratio);
+			}
+			DEBUG_EXTRA("Adaptive sigma: %lld vertices, sigma_v/sigma min %.3f, median %.3f, max %.3f, clamped low %.2f%%, high %.2f%% (%s)",
+				(long long)nVerts, ratioMin, sigmaRatios.GetMedian(), ratioMax,
+				100.f*(float)nClampedLow/(float)nVerts, 100.f*(float)nClampedHigh/(float)nVerts, TD_TIMER_GET_FMT().c_str());
+		}
 
 		// compute the weights for each edge
 		{
 		TD_TIMER_STARTD();
 		Util::Progress progress(_T("Points weighted"), delaunay.number_of_vertices());
 		#ifdef DELAUNAY_USE_OPENMP
-		delaunay_t::Vertex_iterator vertexIter(delaunay.vertices_begin());
-		const int64_t nVerts(delaunay.number_of_vertices()+1);
-		#pragma omp parallel for private(facets)
+		#pragma omp parallel
+		{
+		std::vector<facet_t> facets;
+		facets.reserve(kFacetsReserve);
+		walk_stats_t stats{};
+		#pragma omp for schedule(dynamic)
 		for (int64_t i=0; i<nVerts; ++i) {
-			delaunay_t::Vertex_iterator vi;
-			#pragma omp critical
-			vi = vertexIter++;
+			const vertex_handle_t vi(vertexHandles[(size_t)i]);
 		#else
-		for (delaunay_t::Vertex_iterator vi=delaunay.vertices_begin(), vie=delaunay.vertices_end(); vi!=vie; ++vi) {
+		std::vector<facet_t> facets;
+		facets.reserve(kFacetsReserve);
+		walk_stats_t stats{};
+		for (int64_t i=0; i<nVerts; ++i) {
+			const vertex_handle_t vi(vertexHandles[(size_t)i]);
 		#endif
 			vert_info_t& vert(vi->info());
-			if (vert.views.IsEmpty())
-				continue;
 			#ifdef DELAUNAY_WEAKSURF
-			vert.AllocateInfo();
+			if (bUseFreeSpaceSupport)
+				vert.AllocateInfo();
 			#endif
 			const point_t& p(vi->point());
 			const Point3 pt(CGAL2MVS<REAL>(p));
+			// the point's own uncertainty, scaling the soft-visibility fall-off and the
+			// end-cell offset below; both reduce to the global sigma when the arm is off
+			const float sigmaV(bAdaptiveSigma ? sigmaVert[(size_t)i] : sigma);
+			const float inv2SigmaSqV(bAdaptiveSigma ? 0.5f/(sigmaV*sigmaV) : inv2SigmaSq);
 			FOREACH(v, vert.views) {
 				const typename vert_info_t::view_t view(vert.views[v]);
 				const uint32_t imageID(view.idxView);
@@ -979,57 +1213,74 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 				const Camera& camera = imageData.camera;
 				const camera_cell_t& camCell = camCells[imageID];
 				// compute the ray used to find point intersection
-				const Point3 vecCamPoint(pt-camera.C);
+				const Point3 camC(rescale.ToWorking(camera.C));
+				const Point3 vecCamPoint(pt-camC);
 				const REAL invLenCamPoint(REAL(1)/norm(vecCamPoint));
 				intersection_t inter(pt, Point3(vecCamPoint*invLenCamPoint));
 				// find faces intersected by the camera-point segment
-				const segment_t segCamPoint(MVS2CGAL(camera.C), p);
-				if (!intersect(delaunay, segCamPoint, camCell.facets, facets, inter))
+				const segment_t segCamPoint(MVS2CGAL(camC), p);
+				if (!intersect(delaunay, segCamPoint, camCell.facets, facets, inter, stats)) {
+					++stats.nCamRayDropped;
 					continue;
+				}
 				do {
 					// assign score, weighted by the distance from the point to the intersection
-					const edge_cap_t w(alpha_vis*(1.f-EXP(-SQUARE((float)inter.dist)*inv2SigmaSq)));
+					const edge_cap_t w(alpha_vis*(1.f-EXP(-SQUARE((float)inter.dist)*inv2SigmaSqV)));
 					edge_cap_t& f(infoCells[inter.facet.first->info()].f[inter.facet.second]);
 					#ifdef DELAUNAY_USE_OPENMP
 					#pragma omp atomic
 					#endif
 					f += w;
-				} while (intersect(delaunay, segCamPoint, facets, facets, inter));
-				ASSERT(facets.empty() && inter.type == intersection_t::VERTEX && inter.v1 == vi);
+				} while (intersect(delaunay, segCamPoint, facets, facets, inter, stats));
+				const bool bCamWalkOK(facets.empty() && inter.type == intersection_t::VERTEX && inter.v1 == vi);
+				ASSERT(bCamWalkOK);
+				if (!bCamWalkOK)
+					++stats.nCamWalkAborted;
 				#ifdef DELAUNAY_WEAKSURF
-				ASSERT(vert.viewsInfo[v].cell2Cam == NULL);
-				vert.viewsInfo[v].cell2Cam = inter.facet.first;
+				if (bUseFreeSpaceSupport) {
+					ASSERT(vert.viewsInfo[v].cell2Cam == NULL);
+					vert.viewsInfo[v].cell2Cam = inter.facet.first;
+				}
 				#endif
 				// find faces intersected by the endpoint-point segment
 				inter.dist = FLT_MAX; inter.bigger = false;
-				const Point3 endPoint(pt+vecCamPoint*(invLenCamPoint*sigma));
+				const Point3 endPoint(pt+vecCamPoint*(invLenCamPoint*sigmaV));
 				const segment_t segEndPoint(MVS2CGAL(endPoint), p);
 				const cell_handle_t endCell(delaunay.locate(segEndPoint.source(), vi->cell()));
 				ASSERT(endCell != cell_handle_t());
-				fetchCellFacets<CGAL::NEGATIVE>(delaunay, hullFacets, endCell, imageData, facets);
+				fetchCellFacets<CGAL::NEGATIVE>(delaunay, hullFacets, endCell, imageData, rescale, facets);
 				edge_cap_t& t(infoCells[endCell->info()].t);
 				#ifdef DELAUNAY_USE_OPENMP
 				#pragma omp atomic
 				#endif
 				t += alpha_vis;
-				while (intersect(delaunay, segEndPoint, facets, facets, inter)) {
+				while (intersect(delaunay, segEndPoint, facets, facets, inter, stats)) {
 					// assign score, weighted by the distance from the point to the intersection
 					const facet_t& mf(delaunay.mirror_facet(inter.facet));
-					const edge_cap_t w(alpha_vis*(1.f-EXP(-SQUARE((float)inter.dist)*inv2SigmaSq)));
+					const edge_cap_t w(alpha_vis*(1.f-EXP(-SQUARE((float)inter.dist)*inv2SigmaSqV)));
 					edge_cap_t& f(infoCells[mf.first->info()].f[mf.second]);
 					#ifdef DELAUNAY_USE_OPENMP
 					#pragma omp atomic
 					#endif
 					f += w;
 				}
-				ASSERT(facets.empty() && inter.type == intersection_t::VERTEX && inter.v1 == vi);
+				const bool bEndWalkOK(facets.empty() && inter.type == intersection_t::VERTEX && inter.v1 == vi);
+				ASSERT(bEndWalkOK);
+				if (!bEndWalkOK)
+					++stats.nEndWalkAborted;
 				#ifdef DELAUNAY_WEAKSURF
-				ASSERT(vert.viewsInfo[v].cell2End == NULL);
-				vert.viewsInfo[v].cell2End = inter.facet.first;
+				if (bUseFreeSpaceSupport) {
+					ASSERT(vert.viewsInfo[v].cell2End == NULL);
+					vert.viewsInfo[v].cell2End = inter.facet.first;
+				}
 				#endif
 			}
 			++progress;
 		}
+		stats.AccumulateInto(walkStats);
+		#ifdef DELAUNAY_USE_OPENMP
+		} // omp parallel
+		#endif
 		progress.close();
 		DEBUG_ULTIMATE("\tweighting completed in %s", TD_TIMER_GET_FMT().c_str());
 		}
@@ -1040,31 +1291,34 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 		if (bUseFreeSpaceSupport) {
 		TD_TIMER_STARTD();
 		#ifdef DELAUNAY_USE_OPENMP
-		delaunay_t::Vertex_iterator vertexIter(delaunay.vertices_begin());
-		const int64_t nVerts(delaunay.number_of_vertices()+1);
-		#pragma omp parallel for private(facets)
+		#pragma omp parallel
+		{
+		std::vector<facet_t> facets;
+		facets.reserve(kFacetsReserve);
+		#pragma omp for schedule(dynamic)
 		for (int64_t i=0; i<nVerts; ++i) {
-			delaunay_t::Vertex_iterator vi;
-			#pragma omp critical
-			vi = vertexIter++;
+			const vertex_handle_t vi(vertexHandles[(size_t)i]);
 		#else
-		for (delaunay_t::Vertex_iterator vi=delaunay.vertices_begin(), vie=delaunay.vertices_end(); vi!=vie; ++vi) {
+		std::vector<facet_t> facets;
+		facets.reserve(kFacetsReserve);
+		for (int64_t i=0; i<nVerts; ++i) {
+			const vertex_handle_t vi(vertexHandles[(size_t)i]);
 		#endif
 			const vert_info_t& vert(vi->info());
-			if (vert.views.IsEmpty())
-				continue;
 			const point_t& p(vi->point());
 			const Point3f pt(CGAL2MVS<float>(p));
+			// same per-point uncertainty as the weighting loop, here sizing both search windows
+			const float sigmaV(bAdaptiveSigma ? sigmaVert[(size_t)i] : sigma);
 			FOREACH(v, vert.views) {
 				const uint32_t imageID(vert.views[(vert_info_t::view_vec_t::IDX)v]);
 				const Image& imageData = images[imageID];
 				ASSERT(imageData.IsValid());
 				const Camera& camera = imageData.camera;
 				// compute the ray used to find point intersection
-				const Point3f vecCamPoint(pt-Cast<float>(camera.C));
+				const Point3f vecCamPoint(pt-Cast<float>(rescale.ToWorking(camera.C)));
 				const float invLenCamPoint(1.f/norm(vecCamPoint));
 				// find faces intersected by the point-camera segment and keep the max free-space support score
-				const Point3f bgnPoint(pt-vecCamPoint*(invLenCamPoint*sigma*kf));
+				const Point3f bgnPoint(pt-vecCamPoint*(invLenCamPoint*sigmaV*kf));
 				const segment_t segPointBgn(p, MVS2CGAL(bgnPoint));
 				intersection_t inter;
 				if (!intersectFace(delaunay, segPointBgn, vi, vert.viewsInfo[v].cell2Cam, facets, inter))
@@ -1076,7 +1330,7 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 						beta = fs;
 				} while (intersectFace(delaunay, segPointBgn, facets, facets, inter));
 				// find faces intersected by the point-endpoint segment
-				const Point3f endPoint(pt+vecCamPoint*(invLenCamPoint*sigma*kb));
+				const Point3f endPoint(pt+vecCamPoint*(invLenCamPoint*sigmaV*kb));
 				const segment_t segPointEnd(p, MVS2CGAL(endPoint));
 				if (!intersectFace(delaunay, segPointEnd, vi, vert.viewsInfo[v].cell2End, facets, inter))
 					continue;
@@ -1094,6 +1348,9 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 				const edge_cap_t epsAbs(beta-gamma);
 				const edge_cap_t epsRel(gamma/beta);
 				if (epsRel < kRel && epsAbs > kAbs && gamma < kOutl) {
+					// multiplied once per firing (vertex, view) pair; a zero t stays zero by
+					// design - enforcing on cells no visibility vote ever reached collapses
+					// thin structures, so the no-op is protective, not a defect
 					edge_cap_t& t(infoCells[inter.ncell->info()].t);
 					#ifdef DELAUNAY_USE_OPENMP
 					#pragma omp atomic
@@ -1102,10 +1359,19 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 				}
 			}
 		}
+		#ifdef DELAUNAY_USE_OPENMP
+		} // omp parallel
+		#endif
 		DEBUG_ULTIMATE("\tt-edge reinforcement completed in %s", TD_TIMER_GET_FMT().c_str());
 		}
 		#endif
 
+		if (walkStats.nBadEnd)
+			DEBUG_EXTRA("warning: %llu ray-walks ended badly (%.4f%% of %llu steps), %llu rays dropped, %llu walks aborted (M=%g L=%g)",
+				(unsigned long long)walkStats.nBadEnd, 100.0*(double)walkStats.nBadEnd/(double)MAXF(walkStats.nSteps, uint64_t(1)),
+				(unsigned long long)walkStats.nSteps, (unsigned long long)walkStats.nCamRayDropped,
+				(unsigned long long)(walkStats.nCamWalkAborted+walkStats.nEndWalkAborted),
+				sceneMagnitude, sigma/kSigma);
 		DEBUG_EXTRA("Delaunay tetrahedras weighting completed: %u cells, %u faces (%s)", delaunay.number_of_cells(), delaunay.number_of_facets(), TD_TIMER_GET_FMT().c_str());
 	}
 
@@ -1142,6 +1408,36 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 		#endif
 		mesh.vertices.Reserve((Mesh::VIndex)nEstimatedNumVerts);
 		mesh.faces.Reserve((Mesh::FIndex)nEstimatedNumVerts*2);
+		// scale-aware webbing gate: every Delaunay vertex IS an input point, so a facet can
+		// stray far from the observed cloud only by spanning it with long edges - the surface
+		// a visibility mesh grows across occluded space (under vehicles, behind walls) that no
+		// observation supports; measure each cut facet by its longest squared edge and drop
+		// the ones beyond maxEdgeScale x the median cut-facet longest edge (both live in the
+		// working space so canonical rescale cancels, and the ratio is scene-independent)
+		const auto maxFacetEdgeSq([&delaunay](const cell_handle_t& ci, int i) {
+			const auto tri(delaunay.triangle(ci, i));
+			return (float)MAXF3(CGAL::squared_distance(tri[0], tri[1]),
+			                    CGAL::squared_distance(tri[1], tri[2]),
+			                    CGAL::squared_distance(tri[2], tri[0]));
+		});
+		float gateEdgeSq(FLT_MAX);
+		if (params.maxEdgeScale > 0) {
+			FloatArr edgesSq(0, nEstimatedNumVerts*2);
+			for (delaunay_t::All_cells_iterator ci=delaunay.all_cells_begin(), ce=delaunay.all_cells_end(); ci!=ce; ++ci) {
+				const cell_size_t ciID(ci->info());
+				for (int i=0; i<4; ++i) {
+					if (delaunay.is_infinite(ci, i)) continue;
+					const cell_handle_t cj(ci->neighbor(i));
+					const cell_size_t cjID(cj->info());
+					if (ciID < cjID) continue;
+					if (graph.IsNodeOnSrcSide(ciID) == graph.IsNodeOnSrcSide(cjID)) continue;
+					edgesSq.Insert(maxFacetEdgeSq(ci, i));
+				}
+			}
+			if (!edgesSq.IsEmpty())
+				gateEdgeSq = edgesSq.GetMedian()*SQUARE(params.maxEdgeScale);
+		}
+		size_t numUnsupportedFaces(0);
 		for (delaunay_t::All_cells_iterator ci=delaunay.all_cells_begin(), ce=delaunay.all_cells_end(); ci!=ce; ++ci) {
 			const cell_size_t ciID(ci->info());
 			for (int i=0; i<4; ++i) {
@@ -1151,6 +1447,10 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 				if (ciID < cjID) continue;
 				const bool ciType(graph.IsNodeOnSrcSide(ciID));
 				if (ciType == graph.IsNodeOnSrcSide(cjID)) continue;
+				if (params.maxEdgeScale > 0 && maxFacetEdgeSq(ci, i) > gateEdgeSq) {
+					++numUnsupportedFaces;
+					continue;
+				}
 				Mesh::Face& face = mesh.faces.AddEmpty();
 				const triangle_vhandles_t tri(getTriangle(ci, i));
 				for (int v=0; v<3; ++v) {
@@ -1158,7 +1458,7 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 					ASSERT(vh->point() == delaunay.triangle(ci,i)[v]);
 					const auto pairItID(mapVertices.insert(std::make_pair(vh.for_compact_container(), (Mesh::VIndex)mesh.vertices.GetSize())));
 					if (pairItID.second)
-						mesh.vertices.Insert(CGAL2MVS<Mesh::Vertex::Type>(vh->point()));
+						mesh.vertices.Insert(CGAL2MVS<Mesh::Vertex::Type>(rescale.ToWorld(vh->point())));
 					ASSERT(pairItID.first->second < mesh.vertices.GetSize());
 					face[v] = pairItID.first->second;
 				}
@@ -1168,12 +1468,20 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 			}
 		}
 		delaunay.clear();
+		if (params.maxEdgeScale > 0)
+			DEBUG_EXTRA("Unsupported surface facets removed: %u (longest edge > %g x median)", (unsigned)numUnsupportedFaces, params.maxEdgeScale);
 
 		DEBUG_EXTRA("Delaunay tetrahedras graph-cut completed (%g flow): %u vertices, %u faces (%s)", maxflow, mesh.vertices.GetSize(), mesh.faces.GetSize(), TD_TIMER_GET_FMT().c_str());
 	}
 
-	// fix non-manifold vertices and edges
-	mesh.FixNonManifold();
+	// fix non-manifold vertices and edges;
+	// a single pass is exhaustive: each vertex is split into one duplicate per incident
+	// connected component of faces (itself manifold by construction), and splitting never
+	// alters the incident-face set of any other vertex, so no vertex needs to be revisited.
+	// The cut can legitimately extract nothing, when no facet has its two cells on opposite
+	// sides, and FixNonManifold requires a mesh to work on, so skip it when there is none
+	if (!mesh.vertices.empty() && !mesh.faces.empty())
+		mesh.FixNonManifold();
 	return true;
 }
 /*----------------------------------------------------------------*/
