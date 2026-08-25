@@ -307,7 +307,24 @@ rows of the later slices replace them.
 
 ### S2 — Channel ablation on frozen dmaps
 
-*Not yet run.*
+**(ii) prior rescue off on the recalibrated dmaps** (`--fusion-prior-weight 0`)
+
+*Measured 2026-08-25* on the frozen `runConfAdj` dmaps, everything else at today's defaults:
+
+| scene | base P / R / F1 | 0 P / R / F1 | ΔF1 | ΔP | ΔR | points |
+|---|---|---|---|---|---|---|
+| Barn | 0.5746 / 0.7263 / 0.6416 | 0.5934 / 0.6353 / **0.6136** | **−0.0280** | +0.0188 | −0.0910 | −39.4 % |
+| Ignatius | 0.7081 / 0.8472 / 0.7714 | 0.7198 / 0.7640 / **0.7412** | **−0.0302** | +0.0117 | −0.0832 | −43.9 % |
+| Meetingroom | 0.5072 / 0.3838 / 0.4370 | 0.5488 / 0.2944 / **0.3832** | **−0.0538** | +0.0416 | −0.0894 | −48.3 % |
+| Truck | 0.6761 / 0.7644 / 0.7176 | 0.7003 / 0.7174 / **0.7087** | **−0.0089** | +0.0242 | −0.0470 | −37.6 % |
+
+Mean **−0.0302**. The prior-rescue term is worth **+0.0302** mean cloud F1 on the recalibrated
+dmaps (Truck +0.0089 … Meetingroom +0.0538); removing it trades P +1.2…+4.2 pp for R
+−4.7…−9.1 pp and −38…−48 % points — the rescue is the recall engine of family B, and the second
+half of the S2 split is answered: #1292's gain is not the confidence recalibration alone.
+
+Arms (i)/(iii)/(iv) (raw-confidence dmaps, with and without rescue) and S6 run in the raw chain
+(`bench/campaign_raw.sh`, tag `fusion-s10`) — *pending*.
 
 ### S3 — C1: restore `fDepthReprojectionErrorThreshold` 1.2 → 1.0
 
@@ -344,18 +361,133 @@ This is § 6 question 1 answered for this lever: a +0.005 cloud-F1 lever is invi
 Delaunay + graph-cut at this point density, so the case for the flip rests on the cloud — where
 the point cloud *is* the product — plus the fact that it costs nothing downstream.
 
-**Recommendation** (decision reserved, § 5 item 1): adopt 1.0 as the default — validated twice,
-on two confidence lineages, Pareto on every scene, neutral for the mesh. Implementation is the
-two literals of `dc32ab8` (`libs/MVS/DepthMap.cpp`, `DensifyPointCloud.cpp`) plus its
+**Recommendation** (decision reserved, § 5 item 1): adopt **at least** 1.0 as the default (the
+dose curve below says lower may be better; that part waits on S7) — validated twice, on two
+confidence lineages, Pareto on every scene, neutral for the mesh. Implementation is the two
+literals of `dc32ab8` (`libs/MVS/DepthMap.cpp`, `DensifyPointCloud.cpp`) plus its
 `docs/fusion_reprojection_threshold.md`.
+
+**Dose curve** (same frozen dmaps)
+
+| threshold | Barn ΔF1 | Ignatius ΔF1 | Meetingroom ΔF1 | Truck ΔF1 | mean ΔF1 | points range |
+|---|---|---|---|---|---|---|
+| 1.1 | +0.0027 | −0.0088 | +0.0027 | +0.0019 | **−0.0004** | −4.7…+4.4 % |
+| 1.0 | +0.0066 | +0.0043 | +0.0067 | +0.0046 | **+0.0055** | +5.9…+10.9 % |
+| 0.9 | +0.0128 | +0.0103 | +0.0141 | +0.0103 | **+0.0119** | +11.7…+27.7 % |
+
+Full P/R/F1 for 0.9 (`--fusion-reprojection-threshold 0.9`):
+
+| scene | base P / R / F1 | 0.9 P / R / F1 | ΔF1 | ΔP | ΔR | points |
+|---|---|---|---|---|---|---|
+| Barn | 0.5746 / 0.7263 / 0.6416 | 0.5817 / 0.7478 / **0.6544** | **+0.0128** | +0.0071 | +0.0215 | +18.8 % |
+| Ignatius | 0.7081 / 0.8472 / 0.7714 | 0.7128 / 0.8654 / **0.7817** | **+0.0103** | +0.0047 | +0.0182 | +21.4 % |
+| Meetingroom | 0.5072 / 0.3838 / 0.4370 | 0.5250 / 0.3955 / **0.4511** | **+0.0141** | +0.0178 | +0.0117 | +11.7 % |
+| Truck | 0.6761 / 0.7644 / 0.7176 | 0.6840 / 0.7777 / **0.7279** | **+0.0103** | +0.0079 | +0.0133 | +27.7 % |
+
+The curve is monotone through 0.9 — 0.9 beats 1.0 on every scene with P *and* R up on every scene
+(P +0.5…+1.8 pp, R +1.2…+2.2 pp) at +12…28 % points; 1.1 is a wash on the mean and loses on
+Ignatius (−0.0088, both P and R down). The reprojection-rejection counts grow with the tightening
+while low-conf drop is untouched, i.e. the whole effect is cluster splitting: probes rejected by
+the reprojection test go base → 0.9 Barn 61.2 M → 90.4 M, Ignatius 32.5 M → 46.5 M, Meetingroom
+29.0 M → 43.6 M, Truck 41.7 M → 58.5 M.
+
+Consequence: **the 1.0 recommendation is a floor, not the optimum**; arms 0.8 and 0.7 are running
+on the same binary, and because 0.9 already crosses the +20 % points line on Ignatius and Truck,
+the best dose gets the mandatory mesh cost pairing (S7) before anything is proposed — *pending*.
 
 ### S4 — C3 + C4: rescue-strength sweep
 
-*Not yet run.*
+**Prior-weight dose** (`fFusePriorWeight`, same frozen `runConfAdj` dmaps)
+
+| fFusePriorWeight | Barn ΔF1 | Ignatius ΔF1 | Meetingroom ΔF1 | Truck ΔF1 | mean ΔF1 | ΔP range | points range |
+|---|---|---|---|---|---|---|---|
+| 0 | −0.0280 | −0.0302 | −0.0538 | −0.0089 | **−0.0302** | +1.2…+4.2 pp | −38…−48 % |
+| 2 | −0.0121 | −0.0147 | −0.0271 | −0.0036 | **−0.0144** | +0.6…+2.2 pp | −23…−30 % |
+| 3 (default) | 0 | 0 | 0 | 0 | 0 (base) | — | — |
+| 4 | +0.0086 | +0.0082 | +0.0272 | −0.0012 | **+0.0107** | −1.3…−2.7 pp | +37…60 % |
+| 6 | −0.0130 | −0.0223 | +0.0399 | −0.0268 | **−0.0055** | −7.7…−10.5 pp | +144…342 % |
+
+Full P/R/F1 for weight 4:
+
+| scene | base P / R / F1 | 4 P / R / F1 | ΔF1 | ΔP | ΔR | points |
+|---|---|---|---|---|---|---|
+| Barn | 0.5746 / 0.7263 / 0.6416 | 0.5592 / 0.7765 / **0.6502** | **+0.0086** | −0.0154 | +0.0502 | +41.5 % |
+| Ignatius | 0.7081 / 0.8472 / 0.7714 | 0.6955 / 0.8870 / **0.7796** | **+0.0082** | −0.0126 | +0.0398 | +50.7 % |
+| Meetingroom | 0.5072 / 0.3838 / 0.4370 | 0.4800 / 0.4494 / **0.4642** | **+0.0272** | −0.0272 | +0.0656 | +60.1 % |
+| Truck | 0.6761 / 0.7644 / 0.7176 | 0.6554 / 0.7898 / **0.7164** | **−0.0012** | −0.0207 | +0.0254 | +36.9 % |
+
+**`nMinPixelsFuse` dose** (same dmaps)
+
+| nMinPixelsFuse | Barn ΔF1 | Ignatius ΔF1 | Meetingroom ΔF1 | Truck ΔF1 | mean ΔF1 |
+|---|---|---|---|---|---|
+| 5 (default) | 0 | 0 | 0 | 0 | 0 (base) |
+| 4 | +0.0050 | +0.0057 | +0.0271 | −0.0076 | **+0.0076** |
+| 3 | −0.0155 | −0.0298 | +0.0380 | −0.0294 | **−0.0092** |
+
+**C3 vs C4 dominance.** Prior4 beats minpix4 on every scene in F1 *and* P while adding fewer
+points (+37…60 % vs +40…79 %), and prior6 beats minpix3 the same way at ×2.4…4.4 vs ×2.5…4.6
+points — a lower `nMinPixelsFuse` is a strictly worse way to buy the same recall, so **C4 is
+closed**.
+
+**Meetingroom** is the only scene that keeps gaining at every dose (+0.027 at prior 4, +0.040 at
+prior 6, +0.038 at minpix 3) because it is recall-starved (R 0.38 at base); every other scene turns
+negative past weight 4.
+
+**Gate reading (`fFusePriorWeight` 4).** Mean passes (+0.0107), no-regression passes (Truck
+−0.0012 is inside the 0.003 clause), the 1 pp precision clause fails on every scene (P
+−1.3…−2.7 pp) and is only excused by the net F win, and points +37…60 % make the
+`--min-point-distance 2.0` mesh pairing mandatory — **conditional pass, decided in S7**.
+
+**C6 — `minConfidence`** (`fNCCThresholdKeep`, same dmaps)
+
+`fNCCThresholdKeep 0.95` (minConfidence 0.05):
+
+| scene | base P / R / F1 | 0.05 P / R / F1 | ΔF1 | ΔP | ΔR | points |
+|---|---|---|---|---|---|---|
+| Barn | 0.5746 / 0.7263 / 0.6416 | 0.5718 / 0.7278 / **0.6404** | **−0.0012** | −0.0028 | +0.0015 | +1.1 % |
+| Ignatius | 0.7081 / 0.8472 / 0.7714 | 0.6933 / 0.8338 / **0.7571** | **−0.0143** | −0.0148 | −0.0134 | −6.7 % |
+| Meetingroom | 0.5072 / 0.3838 / 0.4370 | 0.4966 / 0.3909 / **0.4374** | **+0.0004** | −0.0106 | +0.0071 | +2.4 % |
+| Truck | 0.6761 / 0.7644 / 0.7176 | 0.6736 / 0.7653 / **0.7166** | **−0.0010** | −0.0025 | +0.0009 | +0.9 % |
+
+Mean **−0.0040**.
+
+`fNCCThresholdKeep 0.85` (minConfidence 0.15):
+
+| scene | base P / R / F1 | 0.15 P / R / F1 | ΔF1 | ΔP | ΔR | points |
+|---|---|---|---|---|---|---|
+| Barn | 0.5746 / 0.7263 / 0.6416 | 0.5772 / 0.7241 / **0.6423** | **+0.0007** | +0.0026 | −0.0022 | −1.5 % |
+| Ignatius | 0.7081 / 0.8472 / 0.7714 | 0.7061 / 0.8350 / **0.7651** | **−0.0063** | −0.0020 | −0.0122 | −7.5 % |
+| Meetingroom | 0.5072 / 0.3838 / 0.4370 | 0.5131 / 0.3787 / **0.4358** | **−0.0012** | +0.0059 | −0.0051 | −3.9 % |
+| Truck | 0.6761 / 0.7644 / 0.7176 | 0.6788 / 0.7633 / **0.7186** | **+0.0010** | +0.0027 | −0.0011 | −1.2 % |
+
+Mean **−0.0014**.
+
+Both fail. Channel explanation: at 0.05 Ignatius admits more low-confidence seeds (low-conf drop
+26.42 → 21.77 %) yet yields −6.7 % points, with seeds-already-fused up 61.6 M → 65.6 M — the extra
+seeds do not become points, they are absorbed into, and mis-place, clusters that already existed
+(P −1.5 pp, R −1.3 pp); at 0.15 the seed pool shrinks (−7.5 % points on Ignatius, R −1.2 pp). The
+default 0.1 sits at the optimum of this range on three scenes and is inert on the fourth;
+**C6 is closed**.
 
 ### S5 — C5: free-space-violation arms
 
-*Not yet run.*
+**(i) `nFuseViolationMax` dose**
+
+| nFuseViolationMax | Barn ΔF1 | Ignatius ΔF1 | Meetingroom ΔF1 | Truck ΔF1 | mean ΔF1 |
+|---|---|---|---|---|---|
+| −1 | −0.0002 | −0.0011 | +0.0003 | −0.0035 | **−0.0011** |
+| 0 (default) | 0 | 0 | 0 | 0 | 0 (base) |
+| 1 | −0.0001 | −0.0002 | +0.0003 | +0.0004 | **+0.0001** |
+| 2 | −0.0005 | −0.0003 | +0.0003 | −0.0009 | **−0.0003** |
+
+(Truck points −3.3 % at −1, the only scene whose points move enough to matter.)
+
+The guard matters — switching it off costs Truck −0.0035 (mean −0.0011) — but its threshold is
+inert (1: +0.0001, 2: −0.0003, all within the 0.0006 floor except Truck) and it only ever touches
+0.12–0.25 % of valid depths, so **keep 0**.
+
+**(ii)** applying the guard to all clusters (`Fuse Violation Max All`, S10 binary) runs in
+`bench/campaign_s10.sh` — *pending*.
 
 ### S6 — C2: CPU parity measurement
 
@@ -419,13 +551,16 @@ corresponding slice produces.
 1. **`fDepthReprojectionErrorThreshold` 1.2 → 1.0** (S3) — a validated win that was written,
    documented and then never merged. Also: decide whether `dc32ab8` and `833e93c` were
    deliberately dropped or lost, and whether `dense-cell-neighbors` holds anything else in the
-   same state — *pending*.
+   same state — *pending*. S3 dose curve says 1.0 is a floor; 0.9 gains +0.0119 mean at
+   +12…28 % points, 0.8/0.7 and the mesh pairing pending.
 2. **`nOptimize` 4 → 8** (S6) — buys CPU users the whole #1292 quality jump at a CPU-pass cost —
    *pending*.
 3. **`fFusePriorWeight`** away from `3.0`, and/or **`nMinPixelsFuse`** away from `5` (S4) —
-   *pending*.
+   S4: `fFusePriorWeight` 4 is a conditional cloud pass (+0.0107 mean, P −1.3…−2.7 pp, +37…60 %
+   points) awaiting the S7 mesh pairing; `nMinPixelsFuse` is dominated by the prior weight at
+   every dose and is closed — *pending the S7 pairing*.
 4. **`nFuseViolationMax`** away from `0`, and whether the FSV guard should apply to non-rescued
-   points (S5) — *pending*.
+   points (S5) — S5 (i): guard worth keeping, threshold inert, keep 0; (ii) *pending*.
 5. **`ReconstructMesh --min-point-distance` 1.5 → 2.0** (S7) — mesh-side; also resolves the
    CLI-vs-library (1.5 vs 2) mismatch recorded during the mesh effort's audit (git history) —
    *pending*.
