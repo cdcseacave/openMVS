@@ -603,7 +603,7 @@ and nowhere else; all infinite cells are hard-stamped while the 4 finite cells a
   insertion and ray-walking decouple cleanly — it walked rays for points that were not vertices at
   all, at 1.6-3.3 us per ray — so the shape of such a change is decimated vertices plus dense
   rays, and the costs in §6 bound what it may insert.
-- **Fusion re-baselining.** Not started. The bench's pre-#1292 reference clouds are stale
+- **Fusion re-baselining.** In progress; recorded in `docs/design/DepthMapFusion.md`. The bench's pre-#1292 reference clouds are stale
   artifacts, not a configuration: the confidence recalibration (`--postprocess-dmaps 4`) and the
   fusion prior rescue that separate them are today's defaults, so there is no setting to adopt,
   only a baseline to re-freeze and further fusion levers to test. The one validated, still
