@@ -2654,6 +2654,11 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 	const bool bReleaseDropped(OPTDENSE::bFuseReleaseDropped);
 	const bool bTrackDropped(bRecoverableStats || bReleaseDropped);
 	const bool bSeedByConfidence(OPTDENSE::bFuseSeedByConfidence);
+	// read once: what a corroborating probe buys in the keep-rule. When it is positive, the agreement
+	// test in the already-fused early-out stops being an observation and becomes real support; at 0 the
+	// early-out is the blind return it always was and nothing below it changes
+	const float corroborationWeight(OPTDENSE::fFuseCorroborationWeight);
+	const bool bCorroboration(corroborationWeight > 0.f);
 	size_t nDepths(0);
 	FusionStats fuseStats;
 	fuseStats.bRecoverable = bRecoverableStats;
@@ -2705,11 +2710,11 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 	// dropped cluster walks to hand them back to the pool (bFuseReleaseDropped) and to mark them as
 	// that pool (the recoverable-support measurement). Reset alongside fusedViews et al.
 	MapPixelArr clusterMembers;
-	// observation-only state of the same cluster; no gate reads any of it and it is reset alongside
-	// fusedViews et al. It measures how much of the fusion loss a structural change could recover:
-	// corroboration by pixels an earlier cluster already consumed, the value of handing back the
-	// pixels a dropped cluster keeps locked, and a 4-neighbor re-probe of the joins the rounded
-	// projection misses
+	// what a structural change could recover on the cluster currently being accumulated, reset
+	// alongside fusedViews et al.: corroboration by pixels an earlier cluster already consumed, the
+	// value of handing back the pixels a dropped cluster keeps locked, and a 4-neighbor re-probe of the
+	// joins the rounded projection misses. All of it is observation-only EXCEPT the corroboration pair,
+	// which the keep-rule spends as support under OPTDENSE::fFuseCorroborationWeight
 	unsigned clusterCorroboration(0); // already-fused probes that agreed with this cluster
 	PointCloud::ViewArr clusterCorroborationViews; // ... the distinct views they came from
 	unsigned clusterReprobe(0); // failed joins that had an agreeing 4-neighbor
@@ -2798,26 +2803,38 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 				++fuseStats.nProbesAlreadyFused;
 				if (fuseDepth == 0)
 					++fuseStats.nSeedsAlreadyFused;
-				// observe (never act on) the support this blind early-out throws away: a pixel an
-				// earlier cluster consumed can still be an independently verified surface sitting
-				// exactly where this cluster claims one, and it is worth the most when that earlier
-				// cluster was itself dropped and its pixel is therefore free evidence
-				if (bRecoverableStats && fuseDepth > 0 && ClusterBelowMinimums()) {
-					++fuseStats.nProbesAlreadyFusedTested;
-					const bool bDropped(arrDroppedMask[ID](x));
-					if (bDropped)
-						++fuseStats.nProbesHitDropped;
+				// the support this blind early-out throws away: a pixel an earlier cluster consumed can
+				// still be an independently verified surface sitting exactly where this cluster claims
+				// one, and it is worth the most when that earlier cluster was itself dropped and its
+				// pixel is therefore free evidence. The agreement test is shared -- the measurement
+				// counts it, and under fFuseCorroborationWeight the keep-rule spends it as support --
+				// while everything it says about DROPPED pixels stays measurement-only, because
+				// arrDroppedMask is allocated only when bTrackDropped asked for it. Tested only while
+				// the cluster is below the keep-rule minimums, which is exactly where corroboration can
+				// still change the decision (above them the cluster already passes on real support), so
+				// the count is complete for every cluster it can rescue and the hot early-out of an
+				// already-keepable cluster stays free of any extra work
+				if ((bRecoverableStats || bCorroboration) && fuseDepth > 0 && ClusterBelowMinimums()) {
 					const auto [pt, depthProj] = depthData.GetView().camera.ProjectPointP(refPoint);
-					if (JoinAgrees(depthData, x, pt, depthProj)) {
-						++fuseStats.nProbesAlreadyFusedAgree;
+					const bool bAgrees(JoinAgrees(depthData, x, pt, depthProj));
+					if (bAgrees) {
 						++clusterCorroboration;
 						clusterCorroborationViews.InsertSortUnique(ID);
-						if (bDropped) {
-							++fuseStats.nProbesHitDroppedAgree;
-							++clusterReclaim;
-							clusterReclaimViews.InsertSortUnique(ID);
-							if (clusterReclaimHits.size() < OPTDENSE::nMaxPointsFuse)
-								clusterReclaimHits.push_back(MapPixel{ID, x});
+					}
+					if (bRecoverableStats) {
+						++fuseStats.nProbesAlreadyFusedTested;
+						const bool bDropped(arrDroppedMask[ID](x));
+						if (bDropped)
+							++fuseStats.nProbesHitDropped;
+						if (bAgrees) {
+							++fuseStats.nProbesAlreadyFusedAgree;
+							if (bDropped) {
+								++fuseStats.nProbesHitDroppedAgree;
+								++clusterReclaim;
+								clusterReclaimViews.InsertSortUnique(ID);
+								if (clusterReclaimHits.size() < OPTDENSE::nMaxPointsFuse)
+									clusterReclaimHits.push_back(MapPixel{ID, x});
+							}
 						}
 					}
 				}
@@ -3007,7 +3024,11 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 	};
 	// ask what the SAME rule shape the keep-rule just applied would have decided on a DROPPED cluster
 	// given each hypothetical extra support -- these are the numbers that say whether the structural
-	// candidates are worth building
+	// candidates are worth building. They answer "what if this channel were added on top of the rule as
+	// applied", which is the intended question only while fFuseCorroborationWeight is 0: with the weight
+	// on, the rule as applied already spent the corroboration, so the corroboration hypotheticals here
+	// would ask for it a second time and none of the channels is meaningful. Measure with one or the
+	// other, not both
 	const auto AccountClusterDropped = [&](float virtualSupport) {
 		// the hypothetical has to state the WHOLE keep-rule, minimums AND free-space guard: a cluster
 		// dropped as CLUSTER_DROP_VIOLATION already cleared both minimums through virtualSupport (that
@@ -3174,16 +3195,32 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 			// counts; the !fusedViews.empty() guard ensures at least the real seed exists so the prior can
 			// never fabricate a point out of nothing (when disabled, virtualSupport==0 => identical output)
 			const float virtualSupport(bUsePrior ? OPTDENSE::fFusePriorWeight * depthData.priorMap(i,j) : 0.f);
+			// corroboration support: the probes that landed on pixels earlier clusters had consumed and
+			// still agreed with this cluster's reference point. It is spent HERE only -- the fused point
+			// below is built from the real members alone -- and its views enter the view minimum as a
+			// set union with the observing views, never as a sum, so one corroborating view cannot pay
+			// twice (when disabled, corroborationSupport==0 and distinctViews==fusedViews.size(),
+			// i.e. the two conditions are the previous ones)
+			const float corroborationSupport(bCorroboration ? corroborationWeight * (float)clusterCorroboration : 0.f);
+			// the union degenerates to fusedViews whenever nothing corroborated -- which is the case at
+			// every pixel where no cluster formed at all, so the seed loop's hot path stays a size()
+			const unsigned distinctViews(bCorroboration && !clusterCorroborationViews.empty() ?
+				CountDistinctViews(fusedViews, clusterCorroborationViews, noViews) : fusedViews.size());
+			ASSERT(distinctViews >= fusedViews.size()); // a union with the corroborating views can only grow it
 			if (!fusedViews.empty() &&
-				(float)fusedPoints[0].size() + virtualSupport >= (float)OPTDENSE::nMinPixelsFuse &&
-				(float)fusedViews.size() + virtualSupport >= (float)nMinViewsFuse) {
-				// a point that passes ONLY thanks to virtualSupport (i.e. would have FAILED the
-				// keep-rule at virtualSupport==0) is "rescued"; nFuseViolationMax additionally
-				// requires such a point to be seen from behind by at most that many DISTINCT views
-				// (fusedViolViews, populated above by the join gate). A NON-rescued point (already
-				// meeting both thresholds on real support alone) answers to the separate limit
-				// nFuseViolationMaxAll instead -- which is -1 by default, so it stays unguarded
-				// exactly as before. A negative limit disables the guard it belongs to.
+				(float)fusedPoints[0].size() + corroborationSupport + virtualSupport >= (float)OPTDENSE::nMinPixelsFuse &&
+				(float)distinctViews + virtualSupport >= (float)nMinViewsFuse) {
+				// a point that passes ONLY thanks to support it did not observe itself -- virtualSupport
+				// or corroborationSupport, i.e. it would have FAILED the keep-rule on its real pixels
+				// and views alone -- is "rescued"; nFuseViolationMax additionally requires such a point
+				// to be seen from behind by at most that many DISTINCT views (fusedViolViews, populated
+				// above by the join gate). Deciding it on real support alone is what subjects a
+				// corroboration-only rescue to the strict guard, which is the precision protection that
+				// support deserves: it may well be a near-duplicate of the neighbor cluster whose pixels
+				// corroborated it. A NON-rescued point (already meeting both thresholds on real support
+				// alone) answers to the separate limit nFuseViolationMaxAll instead -- which is -1 by
+				// default, so it stays unguarded exactly as before. A negative limit disables the guard
+				// it belongs to.
 				const bool rescued = fusedPoints[0].size() < OPTDENSE::nMinPixelsFuse ||
 									  fusedViews.size() < nMinViewsFuse;
 				const int nViolationMax(rescued ? OPTDENSE::nFuseViolationMax : OPTDENSE::nFuseViolationMaxAll);
@@ -3214,8 +3251,9 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 				}
 			} else if (!fusedViews.empty()) {
 				// the two minimums are conjunctive, so a cluster short on both is attributed
-				// to the pixel minimum, matching the order the keep-rule states them
-				const FusionStats::ClusterFate fate((float)fusedPoints[0].size() + virtualSupport < (float)OPTDENSE::nMinPixelsFuse ?
+				// to the pixel minimum, matching the order the keep-rule states them -- over the same
+				// augmented quantities it just used, so the fate labels stay a partition of the drops
+				const FusionStats::ClusterFate fate((float)fusedPoints[0].size() + corroborationSupport + virtualSupport < (float)OPTDENSE::nMinPixelsFuse ?
 					FusionStats::CLUSTER_DROP_MIN_PIXELS : FusionStats::CLUSTER_DROP_MIN_VIEWS);
 				fuseStats.AccountCluster(fate, fusedPoints[0].size());
 				DropClusterMembers();

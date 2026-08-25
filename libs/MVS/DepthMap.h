@@ -181,6 +181,16 @@ extern MVS_API bool bFuseReleaseDropped;
 // and the seed-to-cluster assignment stops being an accident of scanline layout. Every pixel is still
 // visited exactly once; only the order changes, hence the fused cloud changes -- off by default.
 extern MVS_API bool bFuseSeedByConfidence;
+// DenseFuseDepthMaps: what a corroborating probe is worth in the keep-rule -- a probe landing on a
+// pixel an earlier cluster already consumed, whose depth, reprojection and normal agree with the
+// cluster's reference point, is an independently verified surface exactly where this cluster claims
+// one, evidence today's blind early-out discards. It buys this many pixels of support, and its view
+// counts as one more distinct view (a set union, never a sum); it never contributes its position,
+// view or weight to the fused point, which is still built from the real members alone. 0 (default)
+// discards it exactly as before, 1 counts it as a real pixel, 0.5 is the safer arm because such a
+// probe is often a near-duplicate of the neighbor cluster that consumed it. A cluster kept only
+// thanks to it counts as rescued, hence answers to nFuseViolationMax like a prior-rescued point.
+extern MVS_API float fFuseCorroborationWeight;
 extern MVS_API bool bEstimateConfidenceCUDA; // when CUDA estimation is used, run ADJUST_CONFIDENCE on the GPU integrated into the last geometric-consistency iteration (default); 0 forces the CPU version
 extern MVS_API unsigned nEstimationIters;
 extern MVS_API unsigned nEstimationGeometricIters;
