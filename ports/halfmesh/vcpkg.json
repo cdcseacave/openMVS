@@ -1,7 +1,6 @@
 {
   "name": "halfmesh",
-  "version": "0.2.0",
-  "port-version": 2,
+  "version": "0.3.0",
   "description": "Fast, compact half-edge triangle mesh processing library",
   "homepage": "https://github.com/cdcseacave/halfmesh",
   "license": "MIT",

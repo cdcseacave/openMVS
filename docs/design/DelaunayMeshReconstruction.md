@@ -209,11 +209,13 @@ hole-closing — costs exactly nothing (0.6986 → 0.6986). The two MCF smoothin
 the entire collapse, with a clean monotone dose-response, and the cleaned mesh loses 21% of its
 in-crop surface area to MCF shrinkage.
 
-**Fix**: `Mesh::Clean` now smooths with a classic per-vertex uniform-Laplacian relaxation
-(λ=0.5, `nSmooth` iterations, borders fixed, deterministic double-buffered update) — each vertex
-moves relative to its own one-ring scale, so the result is unit- and resolution-independent.
-Landed as commit `c6446c3c`; the webbing gate (§4) followed separately as `67c94292`. Post-fix,
-the shipped default
+**Fix**: `Mesh::Clean` smooths with a scale-free one-ring filter — each vertex moves relative to
+its own one-ring, so the result is unit- and resolution-independent. Landed as commit `c6446c3c`
+(uniform Laplacian, λ=0.5, borders fixed); the webbing gate (§4) followed separately as
+`67c94292`. The halfmesh migration later replaced that step with Taubin λ|μ band-pass smoothing
+(`SmoothTaubin`, λ=0.65 / μ=−0.69), which is scale-free in the same way but is a band-pass rather
+than a low-pass, so it removes high-frequency noise at ≈zero volume loss instead of shrinking the
+surface toward its one-ring centroids. Post-fix, the shipped default
 (smooth=2) lands at or above the raw mesh on both object scenes (Ignatius −0.0026 vs raw with
 precision up 0.699→0.718; Truck +0.018 vs raw) and clearly above the previously shipped result on
 all four scenes (Barn +0.035, Meetingroom +0.027, the latter now above its own input cloud).

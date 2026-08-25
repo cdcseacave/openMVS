@@ -209,7 +209,7 @@ public:
 		cleanParams.simplifyTarget = decimate;
 		cleanParams.spuriousFactor = options.removeSpurious;
 		cleanParams.removeSpikes = options.removeSpikes;
-		cleanParams.maxHoles = options.closeHoles;
+		cleanParams.maxHoleEdges = options.closeHoles;
 		cleanParams.smoothIterations = (int)options.smoothSteps;
 		cleanParams.edgeLength = options.edgeLength;
 		mvsScene.mesh.Clean(cleanParams);
@@ -255,7 +255,7 @@ public:
 			decimate = 1.f;
 		MVS::Mesh::CleanParams cleanParams;
 		cleanParams.simplifyTarget = decimate;
-		cleanParams.maxHoles = options.closeHoles;
+		cleanParams.maxHoleEdges = options.closeHoles;
 		mvsScene.mesh.Clean(cleanParams);
 
 		// Texture mesh

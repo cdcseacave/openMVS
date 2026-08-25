@@ -231,7 +231,7 @@ bool MeshHalfMeshProcessingTest()
 	openOctahedron.faceTexcoords.resize(openOctahedron.faces.size()*3);
 	openOctahedron.faceTexindices.resize(openOctahedron.faces.size());
 	openOctahedron.texturesDiffuse.emplace_back(1, 1);
-	if (openOctahedron.CloseHoles(1) != 1 || !openOctahedron.IsWatertight() ||
+	if (openOctahedron.CloseHoles(3) != 1 || !openOctahedron.IsWatertight() ||
 		!openOctahedron.faceTexcoords.empty() || !openOctahedron.faceTexindices.empty() ||
 		!openOctahedron.texturesDiffuse.empty()) {
 		VERBOSE("ERROR: HalfMesh bridge did not close a generic hole and invalidate texture data!");
@@ -248,7 +248,7 @@ bool MeshHalfMeshProcessingTest()
 		{0, 4, 1}, {0, 3, 4}, {1, 5, 2}, {1, 4, 5},
 		{3, 7, 4}, {3, 6, 7}, {4, 8, 5}, {4, 7, 8}
 	};
-	smoothGrid.SmoothHCLaplacian(1);
+	smoothGrid.Smooth(1);
 	if (smoothGrid.vertices[4].z == 1.f) {
 		VERBOSE("ERROR: HalfMesh bridge smoothing did not update vertex positions!");
 		return false;
@@ -257,9 +257,25 @@ bool MeshHalfMeshProcessingTest()
 	Mesh remeshed;
 	remeshed.vertices = {{0.f, 0.f, 0.f}, {1.f, 0.f, 0.f}, {1.f, 1.f, 0.f}, {0.f, 1.f, 0.f}};
 	remeshed.faces = {{0, 1, 2}, {0, 2, 3}};
-	remeshed.EnsureEdgeSize(0.3f, 2);
+	Mesh::CleanParams remeshParams;
+	remeshParams.edgeLength = 0.3f;
+	remeshParams.remeshIterations = 2;
+	remeshed.Clean(remeshParams);
 	if (remeshed.faces.size() <= 2 || remeshed.vertices.size() <= 4) {
 		VERBOSE("ERROR: HalfMesh bridge remeshing did not adapt mesh density!");
+		return false;
+	}
+
+	// a relative target edge length resolves against the mesh's own mean edge
+	Mesh relRemeshed;
+	relRemeshed.vertices = {{0.f, 0.f, 0.f}, {1.f, 0.f, 0.f}, {1.f, 1.f, 0.f}, {0.f, 1.f, 0.f}};
+	relRemeshed.faces = {{0, 1, 2}, {0, 2, 3}};
+	Mesh::CleanParams relRemeshParams;
+	relRemeshParams.edgeLength = -0.25f;
+	relRemeshParams.remeshIterations = 2;
+	relRemeshed.Clean(relRemeshParams);
+	if (relRemeshed.faces.size() <= 2 || relRemeshed.vertices.size() <= 4) {
+		VERBOSE("ERROR: HalfMesh bridge relative remeshing did not adapt mesh density!");
 		return false;
 	}
 
@@ -707,7 +723,7 @@ bool PipelineTest(bool forceCPU, bool verbose)
 	cleanParams.simplifyTarget = decimate;
 	cleanParams.spuriousFactor = 10.f;
 	cleanParams.removeSpikes = true;
-	cleanParams.maxHoles = 30;
+	cleanParams.maxHoleEdges = 30;
 	cleanParams.smoothIterations = 2;
 	scene.mesh.Clean(cleanParams);
 	if (!ISINSIDE(scene.mesh.faces.size(), 28000u, 70000u)) {

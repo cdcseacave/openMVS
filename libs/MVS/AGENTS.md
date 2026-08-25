@@ -69,8 +69,8 @@ class Mesh {
     Image8U3Arr texturesDiffuse;     // Texture atlases
 };
 ```
-Key method:
-- `Clean(fDecimate, fSpurious, bRemoveSpikes, nCloseHoles, nSmoothMesh, fEdgeLength, bLastClean)`: delegates generic mesh processing to HalfMesh — QEM decimation, spurious-component and spike removal, hole closing, HC smoothing, and isotropic remeshing. OpenMVS adjacency/normal caches are rebuilt only when they existed before the operation.
+Key method (`MeshHalfMesh.cpp`, the bridge to the halfmesh library):
+- `Clean(CleanParams)`: spurious-component removal, spike removal, QEM decimation, hole closing, Taubin smoothing, isotropic remeshing, then a finalize pass (degenerate faces, unreferenced vertices, non-manifold repair) — every enabled stage running on ONE halfmesh instance, so the mesh is converted in and out exactly once per call. The same stages are also exposed individually (`RemoveSpuriousComponents`, `RemoveSpikes`, `Simplify`, `CloseHoles`, `Smooth`), each paying its own conversion, so prefer `Clean` when running more than one. OpenMVS adjacency/normal caches are rebuilt only when they existed before the operation.
 
 ### DepthData (`DepthMap.h`)
 Per-image depth estimation data:

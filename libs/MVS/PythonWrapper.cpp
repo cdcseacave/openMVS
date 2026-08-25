@@ -94,14 +94,14 @@ public:
 	bool pyReconstructMesh(float distInsert=2, bool bUseFreeSpaceSupport=false, bool bUseOnlyROI=false) {
 		return ReconstructMesh(distInsert, bUseFreeSpaceSupport, bUseOnlyROI);
 	}
-	void pyCleanMesh(float fDecimate=1.f, float fRemoveSpurious=20.f, bool bRemoveSpikes=true, unsigned nCloseHoles=30, unsigned nSmoothMesh=2, float fEdgeLength=0.f, bool bCrop2ROI=false) {
+	void pyCleanMesh(float fDecimate=1.f, float fRemoveSpurious=20.f, bool bRemoveSpikes=true, unsigned nCloseHoles=30, unsigned nSmoothMesh=10, float fEdgeLength=0.f, bool bCrop2ROI=false) {
 		if (bCrop2ROI && IsBounded())
 			mesh.RemoveFacesOutside(obb);
-		Mesh::CleanParams params;
+		MVS::Mesh::CleanParams params;
 		params.simplifyTarget = fDecimate;
 		params.spuriousFactor = fRemoveSpurious;
 		params.removeSpikes = bRemoveSpikes;
-		params.maxHoles = nCloseHoles;
+		params.maxHoleEdges = nCloseHoles;
 		params.smoothIterations = (int)nSmoothMesh;
 		params.edgeLength = fEdgeLength;
 		mesh.Clean(params);

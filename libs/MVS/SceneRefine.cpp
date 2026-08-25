@@ -486,10 +486,16 @@ void MeshRefine::ListFaceAreas(Mesh::AreaArr& maxAreas)
 void MeshRefine::SubdivideMesh(uint32_t maxArea, float fDecimate, unsigned nCloseHoles, unsigned nEnsureEdgeSize)
 {
 	Mesh::AreaArr maxAreas;
-	const auto cleanMesh = [&](float simplifyTarget) {
+	// remeshing to the midpoint of the [0.5x, 4x] mean-edge band the refinement
+	// wants is expressed as a negative (relative) target edge length, so it runs
+	// as the remesh stage of the same Clean pass instead of a second round trip
+	constexpr float fEnsureEdgeLength(-2.25f);
+	const auto cleanMesh = [&](float simplifyTarget, float edgeLength=0.f) {
 		Mesh::CleanParams params;
 		params.simplifyTarget = simplifyTarget;
-		params.maxHoles = nCloseHoles;
+		params.maxHoleEdges = nCloseHoles;
+		params.edgeLength = edgeLength;
+		params.remeshIterations = 10;
 		scene.mesh.Clean(params);
 	};
 
@@ -503,10 +509,8 @@ void MeshRefine::SubdivideMesh(uint32_t maxArea, float fDecimate, unsigned nClos
 
 			#ifdef MESHOPT_ENSUREEDGESIZE
 			// make sure there are no edges too small or too long
-			if (nEnsureEdgeSize > 0 && bNoSimplification) {
-				scene.mesh.EnsureEdgeSize();
-				cleanMesh(1.f);
-			}
+			if (nEnsureEdgeSize > 0 && bNoSimplification)
+				cleanMesh(1.f, fEnsureEdgeLength);
 			#endif
 
 			// re-map vertex and camera faces
@@ -529,10 +533,8 @@ void MeshRefine::SubdivideMesh(uint32_t maxArea, float fDecimate, unsigned nClos
 
 				#ifdef MESHOPT_ENSUREEDGESIZE
 				// make sure there are no edges too small or too long
-				if (nEnsureEdgeSize > 0 && bNoSimplification) {
-					scene.mesh.EnsureEdgeSize();
-					cleanMesh(1.f);
-				}
+				if (nEnsureEdgeSize > 0 && bNoSimplification)
+					cleanMesh(1.f, fEnsureEdgeLength);
 				#endif
 
 				// re-map vertex and camera faces
@@ -561,10 +563,7 @@ void MeshRefine::SubdivideMesh(uint32_t maxArea, float fDecimate, unsigned nClos
 	#if MESHOPT_ENSUREEDGESIZE==1
 	if ((nEnsureEdgeSize == 1 && !bNoDecimation) || nEnsureEdgeSize > 1)
 	#endif
-	{
-		scene.mesh.EnsureEdgeSize();
-		cleanMesh(1.f);
-	}
+		cleanMesh(1.f, fEnsureEdgeLength);
 	#endif
 
 	// re-map vertex and camera faces

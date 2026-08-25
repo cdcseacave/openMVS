@@ -119,7 +119,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("mesh-file,m", boost::program_options::value<std::string>(&OPT::strMeshFileName), "mesh file name to texture (overwrite existing mesh)")
 		("output-file,o", boost::program_options::value<std::string>(&OPT::strOutputFileName), "output filename for storing the mesh")
 		("decimate", boost::program_options::value(&OPT::fDecimateMesh)->default_value(1.f), "decimation factor in range [0..1] to be applied to the input surface before refinement (0 - auto, 1 - disabled)")
-		("close-holes", boost::program_options::value(&OPT::nCloseHoles)->default_value(30), "maximum number of holes to close in the input surface (0 - disabled)")
+		("close-holes", boost::program_options::value(&OPT::nCloseHoles)->default_value(30), "close every hole in the input surface spanned by at most this many boundary edges (0 - disabled)")
 		("resolution-level", boost::program_options::value(&OPT::nResolutionLevel)->default_value(0), "how many times to scale down the images before mesh refinement")
 		("min-resolution", boost::program_options::value(&OPT::nMinResolution)->default_value(640), "do not scale images lower than this resolution")
 		("outlier-threshold", boost::program_options::value(&OPT::fOutlierThreshold)->default_value(6e-2f), "threshold used to find and remove outlier face textures (0 - disabled)")
@@ -303,7 +303,7 @@ int main(int argc, LPCTSTR* argv)
 		ASSERT(OPT::fDecimateMesh > 0.f);
 		Mesh::CleanParams cleanParams;
 		cleanParams.simplifyTarget = OPT::fDecimateMesh;
-		cleanParams.maxHoles = OPT::nCloseHoles;
+		cleanParams.maxHoleEdges = OPT::nCloseHoles;
 		scene.mesh.Clean(cleanParams);
 		#if TD_VERBOSE != TD_VERBOSE_OFF
 		if (VERBOSITY_LEVEL > 3)

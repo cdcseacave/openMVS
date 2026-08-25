@@ -184,30 +184,34 @@ public:
 	void GetAdjVertices(VIndex, VertexIdxArr&) const;
 	void GetAdjVertexFaces(VIndex, VIndex, FaceIdxArr&) const;
 
+	// generic mesh processing, all delegated to the halfmesh library
 	unsigned FixNonManifold(float magDisplacementDuplicateVertices=0.01f, VertexIdxArr* duplicatedVertices=NULL);
-	FIndex RemoveSpuriousComponents(float factor);
-	VIndex RemoveSpikes(unsigned maxIterations=100);
-	void Simplify(float target, float minEdgeLength=0.f, float aggressiveness=0.f);
-	unsigned CloseHoles(unsigned maxHoles=200);
-	void SmoothHCLaplacian(int iterations=1);
+	FIndex RemoveSpuriousComponents(float factor); // remove long-edged faces and tiny components, relative to the mesh edge-length distribution
+	VIndex RemoveSpikes(unsigned maxIterations=100); // remove vertices incident to at most one face
+	void Simplify(float target, float minEdgeLength=0.f, float aggressiveness=0.f); // QEM decimation; target in (0,1) is a keep-fraction, >1 an absolute face count
+	unsigned CloseHoles(unsigned maxHoleEdges=30); // fill every hole spanned by at most this many boundary edges
+	// Taubin lambda|mu band-pass smoothing: volume preserving, but deliberately gentle
+	// per pass, so a useful dose is tens of iterations rather than the two or three a
+	// plain Laplacian needs (which shrinks the surface for the same noise removal)
+	void Smooth(int iterations=10);
+	// the whole pipeline above in one pass over a single halfmesh instance,
+	// applied in this declaration order
 	struct CleanParams {
-		float simplifyTarget{1.f};
-		float spuriousFactor{0.f};
+		float spuriousFactor{0.f}; // RemoveSpuriousComponents factor (0 - disabled)
 		bool removeSpikes{false};
 		unsigned maxSpikeIterations{100};
-		unsigned maxHoles{0};
-		int smoothIterations{0};
-		float edgeLength{0.f};
+		float simplifyTarget{1.f}; // Simplify target (1 - disabled)
+		unsigned maxHoleEdges{0}; // CloseHoles limit (0 - disabled)
+		int smoothIterations{0}; // Smooth iterations (0 - disabled)
+		float edgeLength{0.f}; // isotropic remeshing target edge length: >0 absolute, <0 that multiple of the current mean edge length (0 - disabled)
 		int remeshIterations{3};
-		bool finalize{true};
+		bool finalize{true}; // end with degenerate-face/unreferenced-vertex removal and non-manifold repair
 	};
 	void Clean(const CleanParams& params);
 
-	void EnsureEdgeSize(float edgeLength=0.f, int iterations=3);
-
 	typedef cList<uint16_t,uint16_t,0,16,FIndex> AreaArr;
 	void Subdivide(const AreaArr& maxAreas, uint32_t maxArea);
-	unsigned RemoveVerticesAndFill(VertexIdxArr& verticesRemove);
+	unsigned RemoveVerticesAndFill(VertexIdxArr& verticesRemove); // remove the given vertices and span the holes their removal opens (no vertex is added)
 	FIndex RemoveDegenerateFaces(Type thArea=1e-10f);
 	FIndex RemoveDegenerateFaces(unsigned maxIterations, Type thArea=1e-10f);
 	void RemoveFacesOutside(const OBB3f&);
@@ -263,6 +267,8 @@ public:
 	bool Split(FacesChunkArr&, float maxArea);
 	Mesh SubMesh(const FaceIdxArr& faces) const;
 
+	// bake this mesh's texture onto the given aligned mesh, which gets a freshly
+	// generated UV atlas (any UV-map it carries is replaced)
 	bool TransferTexture(Mesh& mesh, unsigned borderSize=3, unsigned textureSize=4096);
 
 	size_t GetMemorySize() const;
