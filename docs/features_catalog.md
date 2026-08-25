@@ -588,8 +588,9 @@ OpenMVS is a comprehensive photogrammetry library implementing a complete pipeli
   - Surface extraction drops cut facets whose longest edge exceeds `maxEdgeScale` x the median cut
     facet (the webbing gate, default 4)
   - Single-pass non-manifold repair, then the `Mesh::Clean()` pipeline
-- **Configuration:** `distInsert`, `bUseFreeSpaceSupport`, `kSigma` (1), `ReconstructMeshParams`
-  (`bAdaptiveSigma`, `bCanonicalRescale`, `maxEdgeScale`), optional carve-only ray sidecar
+- **Configuration:** a single `ReconstructMeshParams` (`distInsert`, `bUseFreeSpaceSupport`,
+  `bUseOnlyROI`, `kSigma`, `kQual`, `kb`, `kf`, `kRel`, `kAbs`, `kOutl`, `kInf`,
+  `bAdaptiveSigma`, `bCanonicalRescale`, `maxEdgeScale`)
 - **Design record:** `docs/design/DelaunayMeshReconstruction.md` (shipped defaults, validated
   numbers, and the registry of ideas that were tried and rejected)
 - **GPU Support:** No

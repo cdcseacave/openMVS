@@ -182,8 +182,13 @@ public:
 			mvsScene.pointcloud.pointWeights.Release();
 
 		// Reconstruct mesh
-		if (!mvsScene.ReconstructMesh(options.minPointDistance, options.useFreeSpaceSupport, options.useOnlyROI,
-			options.thicknessFactor, options.qualityFactor))
+		MVS::Scene::ReconstructMeshParams params;
+		params.distInsert = options.minPointDistance;
+		params.bUseFreeSpaceSupport = options.useFreeSpaceSupport;
+		params.bUseOnlyROI = options.useOnlyROI;
+		params.kSigma = options.thicknessFactor;
+		params.kQual = options.qualityFactor;
+		if (!mvsScene.ReconstructMesh(params))
 			return false;
 
 		// Crop to ROI if requested

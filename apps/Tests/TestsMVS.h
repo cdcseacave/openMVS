@@ -41,6 +41,11 @@ namespace MVS {
 bool MeshVertexColorsPLYTest();
 bool MeshHalfMeshProcessingTest();
 
+// test the Delaunay mesh cut on the two hand-solved synthetic fixtures
+// (docs/design/DelaunayMeshReconstruction.md, Appendix)
+bool MeshBipyramidFixtureTest();
+bool MeshTetraInteriorPointFixtureTest();
+
 // test MVS stages on a small sample dataset
 bool PipelineTest(bool forceCPU = false, bool verbose = false);
 /*----------------------------------------------------------------*/

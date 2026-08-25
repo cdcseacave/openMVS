@@ -2434,200 +2434,6 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, b
 } // FuseDepthMaps
 
 
-// aggregate accounting of what dense fusion admits and drops; observed only, never fed back
-// into the fusion. Two independent tallies, each with its own exhaustiveness invariant, so a gap
-// in the taxonomy surfaces at runtime as a non-zero residual instead of silently biasing a share:
-//  - pixels: the seed loop walks every pixel of every fused reference depth-map exactly once, and
-//    every valid depth that the confidence gate does not reject there is consumed by exactly one
-//    cluster (the seed itself is consumed when no earlier cluster took it), hence
-//    nPixelsValid == nPixelsAdmitted + nPixelsDropLowConf + the three cluster keep-rule drops
-//  - probes: one FusePoint() call each, so the same pixel can be probed from many parents;
-//    every probe ends in one of the early-return branches or joins the current cluster, hence
-//    nProbes == nProbesJoined + the seven rejection branches (nProbesDepthDiffFSV subdivides
-//    nProbesDepthDiff and nProbesTruncated overlays nProbesJoined, so neither is a member)
-// plain counters need no synchronization: the depth-map loop and its per-pixel seed loop are
-// serial -- the only parallel region of DenseFuseDepthMaps caches the neighbor depth-maps and
-// never calls FusePoint
-struct FusionStats {
-	enum {NUM_CONF_BINS = 10}; // fixed-width bins spanning the [0,1] confidence range
-	enum ClusterFate {
-		CLUSTER_KEPT = 0, // passed the keep-rule and became a fused point
-		CLUSTER_DROP_MIN_PIXELS, // too few fused pixels (OPTDENSE::nMinPixelsFuse)
-		CLUSTER_DROP_MIN_VIEWS, // enough pixels, but too few distinct views (nMinViewsFuse)
-		CLUSTER_DROP_VIOLATION // rescued by the intra-map prior, but seen from behind by too many views
-	};
-	// per-pixel tally: a partition of the valid depths of every fused reference depth-map
-	uint64_t nPixelsValid = 0; // depth > 0, counted once per pixel when the seed loop reaches it
-	uint64_t nPixelsAdmitted = 0; // consumed by a cluster that became a fused point
-	uint64_t nPixelsDropLowConf = 0; // rejected by the confidence gate as a seed, so never consumed
-	uint64_t nPixelsDropMinPixels = 0; // consumed by a CLUSTER_DROP_MIN_PIXELS cluster
-	uint64_t nPixelsDropMinViews = 0; // consumed by a CLUSTER_DROP_MIN_VIEWS cluster
-	uint64_t nPixelsDropViolation = 0; // consumed by a CLUSTER_DROP_VIOLATION cluster
-	// per-pixel context, outside the partition above
-	uint64_t nPixelsNoDepth = 0; // seed-visited pixel without a depth estimate
-	uint64_t nSeedsAlreadyFused = 0; // seed-visited pixel an earlier cluster had already consumed
-	uint64_t nClustersKept = 0; // clusters that became a fused point
-	uint64_t nClustersDropped = 0; // clusters the keep-rule discarded
-	uint64_t nProbesTruncated = 0; // probes that stopped the traversal on nMaxFuseDepth/nMaxPointsFuse
-	// per-probe tally: a partition of the FusePoint() calls
-	uint64_t nProbes = 0;
-	uint64_t nProbesOutside = 0; // projected outside the probed depth-map
-	uint64_t nProbesNoDepth = 0; // no depth estimate at the probed pixel
-	uint64_t nProbesAlreadyFused = 0; // the probed pixel was already consumed
-	uint64_t nProbesLowConf = 0; // confidence below 1-fNCCThresholdKeep
-	uint64_t nProbesDepthDiff = 0; // depth disagrees with the reprojected point (fDepthDiffThreshold)
-	uint64_t nProbesDepthDiffFSV = 0; // ... of which see a surface behind it (free-space violation)
-	uint64_t nProbesReprojError = 0; // reprojection error above fDepthReprojectionErrorThreshold
-	uint64_t nProbesNormalDiff = 0; // normal disagrees with the reference (fNormalDiffThreshold)
-	uint64_t nProbesJoined = 0; // consumed by the current cluster
-	// confidence distribution of the admitted and of the dropped pixels
-	uint64_t confAdmitted[NUM_CONF_BINS] = {0};
-	uint64_t confDropped[NUM_CONF_BINS] = {0};
-	uint64_t confCluster[NUM_CONF_BINS] = {0}; // current cluster, flushed by AccountCluster()
-
-	// confidences are expected in [0,1], but the index must stay valid whatever the map holds
-	static inline unsigned ConfBin(float conf) {
-		return (unsigned)MINF(MAXF((int)(conf*(float)NUM_CONF_BINS), 0), (int)NUM_CONF_BINS-1);
-	}
-	inline void AccountJoin(float conf) {
-		++nProbesJoined;
-		++confCluster[ConfBin(conf)];
-	}
-	inline void AccountDropLowConf(float conf) {
-		++nPixelsDropLowConf;
-		++confDropped[ConfBin(conf)];
-	}
-	inline void AccountCluster(ClusterFate fate, size_t nPixels) {
-		uint64_t* const conf(fate == CLUSTER_KEPT ? confAdmitted : confDropped);
-		for (unsigned i=0; i<NUM_CONF_BINS; ++i) {
-			conf[i] += confCluster[i];
-			confCluster[i] = 0;
-		}
-		switch (fate) {
-		case CLUSTER_KEPT: nPixelsAdmitted += nPixels; ++nClustersKept; break;
-		case CLUSTER_DROP_MIN_PIXELS: nPixelsDropMinPixels += nPixels; ++nClustersDropped; break;
-		case CLUSTER_DROP_MIN_VIEWS: nPixelsDropMinViews += nPixels; ++nClustersDropped; break;
-		case CLUSTER_DROP_VIOLATION: nPixelsDropViolation += nPixels; ++nClustersDropped; break;
-		}
-	}
-	static inline String FormatConfHist(const uint64_t* conf) {
-		String str;
-		for (unsigned i=0; i<NUM_CONF_BINS; ++i)
-			str += String::FormatString(i == 0 ? "%llu" : ",%llu", (unsigned long long)conf[i]);
-		return str;
-	}
-	void Log() const {
-		MAYBEUNUSED const uint64_t nPixelsDropped(nPixelsDropLowConf + nPixelsDropMinPixels + nPixelsDropMinViews + nPixelsDropViolation);
-		MAYBEUNUSED const double normPixels(100.0/(double)MAXF(nPixelsValid, uint64_t(1)));
-		DEBUG_EXTRA("Fusion pixel accounting: %llu valid depths (%llu without depth) -> %llu admitted (%.2f%%) in %llu points, %llu dropped (%.2f%%) [low-confidence %llu (%.2f%%), min-pixels %llu (%.2f%%), min-views %llu (%.2f%%), violation %llu (%.2f%%)], %llu seeds already fused, %llu clusters dropped, %llu traversals truncated, residual %lld",
-			(unsigned long long)nPixelsValid, (unsigned long long)nPixelsNoDepth,
-			(unsigned long long)nPixelsAdmitted, (double)nPixelsAdmitted*normPixels, (unsigned long long)nClustersKept,
-			(unsigned long long)nPixelsDropped, (double)nPixelsDropped*normPixels,
-			(unsigned long long)nPixelsDropLowConf, (double)nPixelsDropLowConf*normPixels,
-			(unsigned long long)nPixelsDropMinPixels, (double)nPixelsDropMinPixels*normPixels,
-			(unsigned long long)nPixelsDropMinViews, (double)nPixelsDropMinViews*normPixels,
-			(unsigned long long)nPixelsDropViolation, (double)nPixelsDropViolation*normPixels,
-			(unsigned long long)nSeedsAlreadyFused, (unsigned long long)nClustersDropped, (unsigned long long)nProbesTruncated,
-			(long long)((int64_t)nPixelsValid - (int64_t)(nPixelsAdmitted + nPixelsDropped)));
-		MAYBEUNUSED const uint64_t nProbesRejected(nProbesOutside + nProbesNoDepth + nProbesAlreadyFused + nProbesLowConf + nProbesDepthDiff + nProbesReprojError + nProbesNormalDiff);
-		DEBUG_EXTRA("Fusion probe accounting: %llu probes -> %llu joined, rejected: outside %llu, no-depth %llu, already-fused %llu, low-confidence %llu, depth-diff %llu (free-space violations %llu), reprojection-error %llu, normal-diff %llu, residual %lld",
-			(unsigned long long)nProbes, (unsigned long long)nProbesJoined,
-			(unsigned long long)nProbesOutside, (unsigned long long)nProbesNoDepth,
-			(unsigned long long)nProbesAlreadyFused, (unsigned long long)nProbesLowConf,
-			(unsigned long long)nProbesDepthDiff, (unsigned long long)nProbesDepthDiffFSV,
-			(unsigned long long)nProbesReprojError, (unsigned long long)nProbesNormalDiff,
-			(long long)((int64_t)nProbes - (int64_t)(nProbesJoined + nProbesRejected)));
-		DEBUG_EXTRA("Fusion confidence histogram of the admitted pixels (%u bins over [0,1]): %s",
-			(unsigned)NUM_CONF_BINS, FormatConfHist(confAdmitted).c_str());
-		DEBUG_EXTRA("Fusion confidence histogram of the dropped pixels (%u bins over [0,1]): %s",
-			(unsigned)NUM_CONF_BINS, FormatConfHist(confDropped).c_str());
-	}
-};
-
-// optional sidecar of the confident depth pixels no fused point keeps, replayed by the mesh stage as
-// carve-only rays (see UnfusedPixel and OPTDENSE::strExportUnfusedFileName). Every pixel joining a
-// cluster is buffered; the cluster's fate then discards the buffer (the pixels became a fused point)
-// or commits the confident ones. Candidates arrive in fusion order and are decimated on the fly by a
-// power-of-two stride: when the buffer fills, every second record is dropped and the stride doubles,
-// so the retained set stays exactly {candidate i : i mod stride == 0} -- the same uniform subsample a
-// two-pass count-then-stride scheme would produce, in one pass, bounded memory and without an RNG.
-// The pixels fusion drops for low confidence never reach a cluster, so they cannot be exported here.
-struct UnfusedExport {
-	// only pixels this confident are worth a ray; the mesh stage weights each ray by its confidence
-	static constexpr float kMinConfidence = 0.5f;
-	// 8M records = 160 MB, the memory the export is allowed to hold
-	static constexpr uint64_t kMaxRecords = 8000000;
-
-	CLISTDEF0IDX(UnfusedPixel,uint64_t) cluster; // confident pixels of the cluster being accumulated
-	CLISTDEF0IDX(UnfusedPixel,uint64_t) records; // subsampled candidates, written out at the end
-	uint64_t numCandidates; // confident dropped pixels seen, before subsampling
-	uint64_t stride; // one candidate in stride is kept
-	const bool enabled;
-
-	inline UnfusedExport() : numCandidates(0), stride(1), enabled(!OPTDENSE::strExportUnfusedFileName.empty()) {}
-
-	// a pixel joining the cluster currently accumulated
-	inline void AccountJoin(const PointCloud::Point& X, IIndex idxView, float conf) {
-		if (!enabled || conf < kMinConfidence)
-			return;
-		UnfusedPixel& rec = cluster.AddEmpty();
-		rec.X[0] = X.x; rec.X[1] = X.y; rec.X[2] = X.z;
-		rec.idxView = idxView;
-		rec.conf = conf;
-	}
-	// the cluster reached its verdict: only the pixels of a dropped cluster are candidates
-	inline void AccountCluster(FusionStats::ClusterFate fate) {
-		if (!enabled)
-			return;
-		if (fate != FusionStats::CLUSTER_KEPT)
-			for (const UnfusedPixel& rec: cluster)
-				Push(rec);
-		cluster.clear();
-	}
-	inline void Push(const UnfusedPixel& rec) {
-		if (numCandidates++ % stride)
-			return;
-		records.push_back(rec);
-		if (records.size() < kMaxRecords)
-			return;
-		// buffer full: halve it in place and keep one candidate in 2*stride from here on
-		uint64_t numKept(0);
-		for (uint64_t i=0; i<records.size(); i+=2)
-			records[numKept++] = records[i];
-		records.resize(numKept);
-		stride *= 2;
-	}
-	// return false if the sidecar could not be written whole
-	bool Save() const {
-		ASSERT(enabled);
-		const String& fileName(OPTDENSE::strExportUnfusedFileName);
-		Util::ensureFolder(fileName);
-		File file(fileName, File::WRITE, File::CREATE | File::TRUNCATE);
-		if (!file.isOpen()) {
-			VERBOSE("error: cannot create unfused-pixels file '%s'", fileName.c_str());
-			return false;
-		}
-		// the count is patched at close, so the layout does not depend on the records being buffered
-		UnfusedPixelHeader header = {{'M','V','S','U'}, UnfusedPixelHeader::VERSION, 0};
-		const size_t sizeRecords(records.size()*sizeof(UnfusedPixel));
-		if (file.write(&header, sizeof(header)) != sizeof(header) ||
-			(sizeRecords > 0 && file.write(records.data(), sizeRecords) != sizeRecords))
-		{
-			VERBOSE("error: cannot write unfused-pixels file '%s'", fileName.c_str());
-			return false;
-		}
-		header.numRecords = records.size();
-		if (!file.setPos(0) || file.write(&header, sizeof(header)) != sizeof(header) || file.flush() != 0) {
-			VERBOSE("error: cannot finalize unfused-pixels file '%s'", fileName.c_str());
-			return false;
-		}
-		DEBUG_EXTRA("Unfused confident pixels exported: %llu of %llu candidates (confidence >= %g, stride %llu) -> '%s'",
-			(unsigned long long)records.size(), (unsigned long long)numCandidates,
-			kMinConfidence, (unsigned long long)stride, Util::getFileNameExt(fileName).c_str());
-		return true;
-	}
-};
-
 // fuse all valid depth-maps in the same 3D point-cloud;
 // join points very likely to represent the same 3D point and
 // filter out points blocking the view
@@ -2646,8 +2452,6 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 	const IIndex numDMapsReserveFusion(10);
 	const bool bEstimateNormal(true); // always estimate normals as they are needed for the fusion
 	size_t nDepths(0);
-	FusionStats fuseStats;
-	UnfusedExport fuseUnfused;
 	UseMaskArr arrUseMask(arrDepthData.size());
 	const size_t nPointsEstimate(arrDepthData.size() * 9000); //TODO: better estimate number of points
 	pointcloud.points.reserve(nPointsEstimate);
@@ -2688,43 +2492,22 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 	const auto FusePoint = [&](IIndex ID, const ImageRef& x, unsigned fuseDepth) -> void {
 		const auto lambda = [&](IIndex ID, const ImageRef& x, unsigned fuseDepth, const auto& FusePointImpl) -> void {
 			const DepthData& depthData = arrDepthData[ID];
-			++fuseStats.nProbes;
-			if (!Image8U::isInside(x, depthData.size)) {
-				++fuseStats.nProbesOutside;
+			if (!Image8U::isInside(x, depthData.size))
 				return;
-			}
 			// ignore pixel if not estimated
 			ASSERT(depthData.depthMap.size() == depthData.size);
 			const Depth depth = depthData.depthMap(x);
-			if (depth <= Depth(0)) {
-				++fuseStats.nProbesNoDepth;
-				if (fuseDepth == 0)
-					++fuseStats.nPixelsNoDepth;
+			if (depth <= Depth(0))
 				return;
-			}
 			ASSERT(ISINSIDE(depth, depthData.dMin * 0.95f, depthData.dMax * 1.05f));
-			// a seed visit (fuseDepth == 0) is the pixel's single appearance in the per-pixel
-			// tally: the seed loop below walks every pixel of every fused depth-map exactly once
-			if (fuseDepth == 0)
-				++fuseStats.nPixelsValid;
 			// ignore pixel if already fused
 			UseMask& useMask = arrUseMask[ID];
-			if (useMask(x)) {
-				++fuseStats.nProbesAlreadyFused;
-				if (fuseDepth == 0)
-					++fuseStats.nSeedsAlreadyFused;
+			if (useMask(x))
 				return;
-			}
 			// ignore pixel if not confident
 			const float conf(depthData.confMap.empty() ? 1.f : depthData.confMap(x));
-			if (conf < minConfidence) {
-				++fuseStats.nProbesLowConf;
-				// this gate reads nothing but the pixel itself, so a seed rejected here is
-				// rejected by every later probe as well and can never join a cluster
-				if (fuseDepth == 0)
-					fuseStats.AccountDropLowConf(conf);
+			if (conf < minConfidence)
 				return;
-			}
 			const DepthData::ViewData& image = depthData.GetView();
 			// if the fusion depth is greater than zero, the initial reference pixel
 			// has already been added and we need to check for consistency
@@ -2735,7 +2518,6 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 				// check if depth agrees with current depth
 				ASSERT(depthProj > Depth(0) || !IsDepthSimilar(depth, depthProj, OPTDENSE::fDepthDiffThreshold));
 				if (!IsDepthSimilar(depth, depthProj, OPTDENSE::fDepthDiffThreshold)) {
-					++fuseStats.nProbesDepthDiff;
 					// classify why the join gate failed, SAME free-space-violation (FSV)
 					// test as the AdjustConfidenceSweep (violMap): `depth` is this view's OWN
 					// measured depth at x, `depthProj` is our accumulating point reprojected into
@@ -2744,35 +2526,27 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 					// meaningful when depthProj>0, i.e. the point is actually in front of this view).
 					// Record the DISTINCT view ID (InsertSortUnique) so V counts violating views, not
 					// probes -- one view can be re-reached before its useMask is set.
-					if (depthProj > Depth(0) && depth > depthProj * (1.f + ConfRefine::VIOLATION_MARGIN * OPTDENSE::fDepthDiffThreshold)) {
-						++fuseStats.nProbesDepthDiffFSV;
+					if (depthProj > Depth(0) && depth > depthProj * (1.f + ConfRefine::VIOLATION_MARGIN * OPTDENSE::fDepthDiffThreshold))
 						fusedViolViews.InsertSortUnique(ID);
-					}
 					return;
 				}
 				// check reprojection error of the reference point in the current view
 				const Point2f diff(pt - Cast<float>(x));
-				if (normSq(diff) > maxReprojErrorSq) {
-					++fuseStats.nProbesReprojError;
+				if (normSq(diff) > maxReprojErrorSq)
 					return;
-				}
 				// check if normals agree
 				normal = image.camera.R.t() * Cast<REAL>(depthData.normalMap(x));
 				ASSERT(ISEQUAL(norm(normal), 1.f, 1e-2f), "Norm = ", norm(normal));
-				if (refNormal.dot(normal) < normalError) {
-					++fuseStats.nProbesNormalDiff;
+				if (refNormal.dot(normal) < normalError)
 					return;
-				}
 			} else {
 				normal = image.camera.R.t() * Cast<REAL>(depthData.normalMap(x));
 				ASSERT(ISEQUAL(norm(normal), 1.f, 1e-2f), "Norm = ", norm(normal));
 			}
 			// set the current pixel as visited
 			useMask.set(x);
-			fuseStats.AccountJoin(conf);
 			// compute 3D location of the current depth
 			const PointCloud::Point X(image.camera.TransformPointI2W(Point3(REAL(x.x), REAL(x.y), REAL(depth))));
-			fuseUnfused.AccountJoin(X, ID, conf);
 			// accumulate statistics for fused point
 			{
 				fusedPoints[0].push_back(X(0));
@@ -2802,10 +2576,8 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 			// do not traverse the graph infinitely in one branch and
 			// limit the maximum number of pixels fused in one point
 			// to avoid stack overflow
-			if (++fuseDepth >= OPTDENSE::nMaxFuseDepth || fusedPoints[0].size() >= OPTDENSE::nMaxPointsFuse) {
-				++fuseStats.nProbesTruncated;
+			if (++fuseDepth >= OPTDENSE::nMaxFuseDepth || fusedPoints[0].size() >= OPTDENSE::nMaxPointsFuse)
 				return;
-			}
 			// traverse the neighbors graph by projecting the point into other views
 			for (const ViewScore& neighbor : image.pImageData->neighbors) {
 				const IIndex nextID(neighbor.ID);
@@ -2929,19 +2701,7 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 							pointcloud.normals.emplace_back(normalized(fusedNormal));
 						if (bEstimateColor)
 							pointcloud.colors.emplace_back((fusedColor/static_cast<float>(fusedPoints[0].size())).cast<uint8_t>());
-						fuseStats.AccountCluster(FusionStats::CLUSTER_KEPT, fusedPoints[0].size());
-						fuseUnfused.AccountCluster(FusionStats::CLUSTER_KEPT);
-					} else {
-						fuseStats.AccountCluster(FusionStats::CLUSTER_DROP_VIOLATION, fusedPoints[0].size());
-						fuseUnfused.AccountCluster(FusionStats::CLUSTER_DROP_VIOLATION);
 					}
-				} else if (!fusedViews.empty()) {
-					// the two minimums are conjunctive, so a cluster short on both is attributed
-					// to the pixel minimum, matching the order the keep-rule states them
-					const FusionStats::ClusterFate fate((float)fusedPoints[0].size() + virtualSupport < (float)OPTDENSE::nMinPixelsFuse ?
-						FusionStats::CLUSTER_DROP_MIN_PIXELS : FusionStats::CLUSTER_DROP_MIN_VIEWS);
-					fuseStats.AccountCluster(fate, fusedPoints[0].size());
-					fuseUnfused.AccountCluster(fate);
 				}
 				if (!fusedViews.empty()) {
 					nDepths += fusedViews.size();
@@ -2973,10 +2733,6 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 	if (!_bEstimateNormal)
 		pointcloud.normals.Release();
 
-	ASSERT(fuseStats.nClustersKept == pointcloud.points.size());
-	fuseStats.Log();
-	if (fuseUnfused.enabled)
-		fuseUnfused.Save();
 	DEBUG_EXTRA("Depth-maps dense fused and filtered: %u depth-maps, %u depths, %u points (%d%%), %.2f hits in %.2f cached (%s)",
 		numDMapsFused, nDepths, pointcloud.points.size(), ROUND2INT((100.f*pointcloud.points.size())/nDepths),
 		static_cast<double>(totalNumImageNeighborsInCache) / numDMapsFused,

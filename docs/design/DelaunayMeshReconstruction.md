@@ -53,10 +53,6 @@ holes, and smooths.
   mass sits at 0.3-0.7, it shrinks every data-term capacity against the unit-vote calibration of
   the graph-cut constants and collapses the cut (§5). The library needs no switch for the
   weightless case — a point-cloud carrying no confidence votes 1 per view by construction.
-- **`--carve-rays-file`**: unfused high-confidence depth pixels replayed as free-space-only rays,
-  no vertex inserted (introduced by this effort) — feed it via
-  `DensifyPointCloud --export-unfused-file`; below the default-flip gate but never harmful, keep
-  as an opt-in evidence source, particularly for weakly-covered scenes.
 - **`--free-space-support`**: the long-standing upstream WSS classifier for weakly-supported
   surfaces (e.g. thin/textureless walls with few crossing rays); default off — it costs ~0.05
   F1 on the two dense object scenes tested (§5), so reach for it only on a genuinely
@@ -358,13 +354,26 @@ off.**
 Ignatius −0.146, Truck −0.043. **Library default corrected to 1.f**, matching the CLI's
 long-standing `--thickness-factor` default.
 
-**Carve-only rays** (`--carve-rays-file`, unfused high-confidence depth pixels replayed as
-free-space-only evidence). Best scene (Truck) +0.0033 under the pre-fix energy — below the
-+0.003-beyond-noise default-flip gate, and the rays cannot reach occluded webbing by construction
-(a ray that could reach the webbing region would have produced a fused point there), so the
-webbing gate (§4) now supersedes the purpose this was meant to serve. **Kept opt-in**, not
-re-benchmarked on the corrected metric (its prior A/B baseline also used different, older clouds
-than the current default pipeline).
+**Carve-only rays from unfused pixels** (`DensifyPointCloud --export-unfused-file` →
+`ReconstructMesh --carve-rays-file`). *Unfused pixels* are valid depth estimates fusion discards
+whole-cluster: they passed the per-pixel confidence gate but their cluster failed the keep-rule
+(`nMinPixelsFuse` ≥ 5 agreeing estimates, `nMinViewsFuse` ≥ 2 distinct views, or the
+free-space-violation guard on prior-rescued points). The mass is large and much of it is *good*:
+fusion admits only 48 % (Ignatius) / 56 % (Truck) / 30 % (Meetingroom) of the valid depths in the
+reference maps, and every scene discards 9-10 M pixels at confidence ≥ 0.7 — geometrically
+consistent depth that merely failed to gather cross-view corroboration. Because the *position* of
+such a pixel is exactly what fusion could not verify, the experiment consumed only its
+*free-space* evidence: the densifier exported the confident dropped pixels (conf ≥ 0.5, stride
+decimation to ≤ 8 M records) and the mesh stage walked each camera→point segment adding the
+distance-weighted α_vis like a real vertex's ray, inserting nothing and casting no s/t term.
+Result: best scene (Truck) +0.0033 under the pre-fix energy — below the +0.003-beyond-noise
+default-flip gate — and the rays cannot reach occluded webbing by construction (a ray that could
+reach the webbing region would have produced a fused point there), so the webbing gate (§4)
+supersedes the purpose this was built for. **Removed from code** (export, sidecar format and
+replay; it lives in git history) — the durable lesson is not the sidecar but the split it proved:
+position evidence and visibility evidence can be decoupled, a vertex-free ray walk costs
+1.6-3.3 us (§6), and the right place to recover the good unfused pixels is fusion itself (§8
+"Depth-maps as direct mesh input", and the fusion improvement plan).
 
 **Visibility-mass gate** (`--min-surface-evidence`). See §4 for the full mechanism and dose
 table. **Removed from code.**
@@ -422,15 +431,18 @@ noise of unit votes, §2). Void.
 - `PointCloud::Point` storage is `float`, which quantizes UTM-magnitude scenes to ~6cm — mesh-time
   rescale cannot repair geometry already destroyed by storage before triangulation runs. The open
   fix is **load-time centering** (§8), not a mesh-stage change.
-- The ray-walk accounting counters (bad-ends, WSS `t==0`/saturation rates) are the **regression
-  signal** for any future change to this energy — instrument first, judge by the counters, not
-  just the final F1.
+- The bad-end walk counter (surfaced as a `DEBUG_EXTRA` warning whenever non-zero) is the
+  **regression alarm** for the walk invariants the canonical rescale protects. The fuller
+  per-stage accounting (WSS `t==0`/saturation rates, step caps, walk tallies) served the closed
+  WSS investigation and was removed with it (git history) — re-instrument first, judge by
+  counters, when revisiting this energy.
 - `Mesh::SamplePoints` must use the **fixed-seed overload** in any benchmark; the legacy
   `random_device`-seeded default is noise-only and not reproducible.
 - **Mesh-stage cost scales with the vertex count, and memory is the binding limit**: measured
   consistently across three T&T scenes, peak RSS is ~1.95 kB per Delaunay vertex (~313 B per cell
   at 6.3-6.4 cells/vertex) and insertion costs 3.5-7.6 us per input point, of which
-  `--min-point-distance 1.5` keeps 48-65 % as vertices; a carve-only ray costs 1.6-3.3 us. A 10 M
+  `--min-point-distance 1.5` keeps 48-65 % as vertices; a vertex-free ray walk costs 1.6-3.3 us
+  (measured on the removed carve-replay path, §5). A 10 M
   point cloud therefore lands at 10-13 GB peak. Wall time is **superlinear** in points on the
   scenes with the most redundancy: Meetingroom at 3.2x the points cost 6.1x the reconstruction
   wall (triangulation 14.0->76.1 s, weighting 25.7->210.4 s, graph-cut 24.2->143.3 s). Any change
@@ -445,8 +457,9 @@ noise of unit votes, §2). Void.
 
 ## 7. Fixture appendix
 
-Fixtures A and B below back live regression tests in `apps/Tests/TestsMVS.cpp` (search
-`Fixture-A`/`Fixture-B`) and lock the cut topology of two hand-derived synthetic scenes — a
+Fixtures A and B below back live regression tests in `apps/Tests/TestsMVS.cpp`
+(`MeshBipyramidFixtureTest`/`MeshTetraInteriorPointFixtureTest`, run by `Tests.exe 0` since they
+need no dataset) and lock the cut topology of two hand-derived synthetic scenes — a
 regression that drops or relocates the orphaned `D_in` vote, or flips a `mirror_facet` arc, will
 fail these tests. Further hand-solvable fixture ideas (for the quality term, the free-space-support
 triple test, and the WSS enforcement arithmetic) were designed during this effort but never wired
@@ -458,15 +471,17 @@ Apply to both fixtures below:
 
 * Build the `Scene` in memory: `scene.pointcloud.points/pointViews/pointWeights` +
   `scene.images` with valid `Camera` (`camera.C`, `camera.P`, `imageData.width/height`,
-  `imageData.ID`), then call
-  `scene.ReconstructMesh(distInsert=0.f, bUseFreeSpaceSupport=false, bUseOnlyROI=false,
-   kSigma=<below>, kQual=0.f, ...)`.
+  `imageData.ID`), then call `scene.ReconstructMesh(params)` with a `ReconstructMeshParams`
+  carrying `distInsert=0.f`, `bUseFreeSpaceSupport=false`, `bUseOnlyROI=false`,
+  `kSigma=<below>`, `kQual=0.f`, `bAdaptiveSigma=false`, `bCanonicalRescale=false` and
+  `maxEdgeScale=0.f`; every reconstruction knob lives in that struct, there are no positional
+  arguments left.
   * `distInsert = 0` ⇒ the "insert all points" branch, no vertex merging.
   * `bUseFreeSpaceSupport = false` ⇒ the WSS block is skipped, so `t` is not multiplied.
   * `kQual = 0` ⇒ `q ≡ 0`, so arc capacity == `f` exactly.
-  * Pass an explicit `ReconstructMeshParams` with `bAdaptiveSigma=false`,
-    `bCanonicalRescale=false`, `maxEdgeScale=0` — both fixtures are hand-solved under the
-    single global sigma and the ungated extraction, and the shipped defaults differ.
+  * `bAdaptiveSigma=false`, `bCanonicalRescale=false`, `maxEdgeScale=0` — both fixtures are
+    hand-solved under the single global sigma and the ungated extraction, and the shipped
+    defaults differ.
 * `pointWeights` left empty ⇒ every `α_vis = 1`.
 * **Do not assume CGAL cell indices.** Identify cells by `delaunay.locate(<interior probe
   point>)` and facets by `cell->index(vertexHandleOf(X))`; identify vertices by
@@ -586,9 +601,10 @@ and nowhere else; all infinite cells are hard-stamped while the 4 finite cells a
   drops 44-70 %, and every scene throws away 9-10 M pixels at confidence ≥ 0.7. The dropped mass
   splits in two: everything below confidence 0.1 (the `1 - fNCCThresholdKeep` cut, 24-35 % of
   pixels) and, almost all of the remainder, geometrically consistent depth that simply failed to
-  cluster into `nMinPixelsFuse` ≥ 5 pixels. Insertion and ray-walking are already decoupled in the
-  code — the carve replay walks rays for points that are not vertices at all — so the shape of such
-  a change is decimated vertices plus dense rays, and the costs in §6 bound what it may insert.
+  cluster into `nMinPixelsFuse` ≥ 5 pixels. The removed carve-replay prototype (§5) proved that
+  insertion and ray-walking decouple cleanly — it walked rays for points that were not vertices at
+  all, at 1.6-3.3 us per ray — so the shape of such a change is decimated vertices plus dense
+  rays, and the costs in §6 bound what it may insert.
 - **Fusion re-baselining.** Not started. The bench's pre-#1292 reference clouds are stale
   artifacts, not a configuration: the confidence recalibration (`--postprocess-dmaps 4`) and the
   fusion prior rescue that separate them are today's defaults, so there is no setting to adopt,

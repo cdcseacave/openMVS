@@ -95,6 +95,14 @@ bool UnitTests()
 		VERBOSE("ERROR: MeshVertexColorsPLYTest failed!");
 		return false;
 	}
+	if (!MVS::MeshBipyramidFixtureTest()) {
+		VERBOSE("ERROR: MeshBipyramidFixtureTest failed!");
+		return false;
+	}
+	if (!MVS::MeshTetraInteriorPointFixtureTest()) {
+		VERBOSE("ERROR: MeshTetraInteriorPointFixtureTest failed!");
+		return false;
+	}
 	if (!MVS::MeshHalfMeshProcessingTest()) {
 		VERBOSE("ERROR: MeshHalfMeshProcessingTest failed!");
 		return false;

@@ -478,87 +478,40 @@ void fetchCellFacets(const delaunay_t& Tr, const std::vector<facet_t>& hullFacet
 }
 
 
-// aggregate ray-walk accounting; observed only, never fed back into the reconstruction
+// aggregate ray-walk accounting; observed only, never fed back into the reconstruction.
+// Every worker walks with its own instance, so the increments need no synchronization and no
+// two threads can share a cache line; the instances are folded into the caller's total once,
+// after the weighting loop has finished
 struct walk_stats_t {
-	uint64_t nWalksCam; // camera-side walks started
-	uint64_t nWalksEnd; // end-point-side walks started
 	uint64_t nSteps; // facet/edge/vertex steps accepted by intersect()
 	uint64_t nBadEnd; // intersect() gave up with the segment not consumed
-	uint64_t nBadEndCoplanar3; // ... on a facet coplanar with all three of its edges
-	uint64_t nBadEndDirFilter; // ... with at least one candidate rejected by the direction filter
 	uint64_t nCamRayDropped; // camera-side walk failed on its first step, the whole ray is discarded
 	uint64_t nCamWalkAborted; // camera-side walk did not end on its own vertex, so cell2Cam is wrong
 	uint64_t nEndWalkAborted; // end-point-side walk did not end on its own vertex, so cell2End is wrong
-	uint64_t nStepCapHit; // a walk went past kMaxWalkSteps steps
-	uint64_t nWssNullCell; // intersectFace() started from a cell2Cam/cell2End that was never cached
-	uint64_t nWssInfiniteCell; // intersectFace() returned an infinite cell, free-space support runs on it
-	uint64_t nWssHullExit; // intersectFace() stepped outside the convex hull
-	uint64_t nWssSkipped; // (vertex, view) pair dropped from the weakly supported surfaces classifier
-	uint64_t nWssFired; // classifier accepted the pair and reinforced the cell's t-edge
-	// the two verdicts below read the target cell's t-edge right after the per-firing multiply,
-	// so both count per firing (vertex, view) pair
-	uint64_t nWssNoopZeroT; // ... left the t-edge zero, so the reinforcement is a no-op
-	uint64_t nWssSaturated; // ... left the t-edge non-finite
-	uint64_t nWalksCarve; // carve-only ray walks started (no vertex, no unary term)
-	uint64_t nCarveRayDropped; // carve walk found no facet to cross, the whole ray is discarded
-	uint64_t nCarveWalkAborted; // carve walk stopped before the cell containing its point
-	uint64_t padCacheLine[8]; // keeps two neighbor slots of the pool below more than a cache-line apart
 
-	inline walk_stats_t& operator += (const walk_stats_t& r) {
-		nWalksCam += r.nWalksCam;
-		nWalksEnd += r.nWalksEnd;
-		nSteps += r.nSteps;
-		nBadEnd += r.nBadEnd;
-		nBadEndCoplanar3 += r.nBadEndCoplanar3;
-		nBadEndDirFilter += r.nBadEndDirFilter;
-		nCamRayDropped += r.nCamRayDropped;
-		nCamWalkAborted += r.nCamWalkAborted;
-		nEndWalkAborted += r.nEndWalkAborted;
-		nStepCapHit += r.nStepCapHit;
-		nWssNullCell += r.nWssNullCell;
-		nWssInfiniteCell += r.nWssInfiniteCell;
-		nWssHullExit += r.nWssHullExit;
-		nWssSkipped += r.nWssSkipped;
-		nWssFired += r.nWssFired;
-		nWssNoopZeroT += r.nWssNoopZeroT;
-		nWssSaturated += r.nWssSaturated;
-		nWalksCarve += r.nWalksCarve;
-		nCarveRayDropped += r.nCarveRayDropped;
-		nCarveWalkAborted += r.nCarveWalkAborted;
-		return *this;
+	// fold this worker's counts into the shared total, one atomic per field: the accounting must
+	// not serialize the walks, and an unnamed critical section is program-wide, not local to it
+	inline void AccumulateInto(walk_stats_t& total) const {
+		#ifdef DELAUNAY_USE_OPENMP
+		#pragma omp atomic
+		total.nSteps += nSteps;
+		#pragma omp atomic
+		total.nBadEnd += nBadEnd;
+		#pragma omp atomic
+		total.nCamRayDropped += nCamRayDropped;
+		#pragma omp atomic
+		total.nCamWalkAborted += nCamWalkAborted;
+		#pragma omp atomic
+		total.nEndWalkAborted += nEndWalkAborted;
+		#else
+		total.nSteps += nSteps;
+		total.nBadEnd += nBadEnd;
+		total.nCamRayDropped += nCamRayDropped;
+		total.nCamWalkAborted += nCamWalkAborted;
+		total.nEndWalkAborted += nEndWalkAborted;
+		#endif
 	}
 };
-// a legitimate walk crosses O(N^(1/3)) cells, so only walks far past this are worth flagging
-constexpr unsigned kMaxWalkSteps = 4096u;
-// one slot per worker thread, so the increments need no synchronization;
-// the slots are summed only after both weighting loops have completed.
-// The pool is process-wide and reset at the start of every reconstruction, so consecutive
-// reconstructions each report their own counts but two running at the same time would share
-// the slots: ReconstructMesh is reentrant across calls, not across concurrent callers
-static std::vector<walk_stats_t> g_walkStatsPool;
-static inline walk_stats_t& GetWalkStats() {
-	#ifdef DELAUNAY_USE_OPENMP
-	const size_t idx((size_t)omp_get_thread_num());
-	ASSERT(idx < g_walkStatsPool.size());
-	return g_walkStatsPool[idx];
-	#else
-	ASSERT(!g_walkStatsPool.empty());
-	return g_walkStatsPool.front();
-	#endif
-}
-static inline void ResetWalkStats() {
-	#ifdef DELAUNAY_USE_OPENMP
-	g_walkStatsPool.assign((size_t)omp_get_max_threads(), walk_stats_t());
-	#else
-	g_walkStatsPool.assign(1, walk_stats_t());
-	#endif
-}
-static inline walk_stats_t GetTotalWalkStats() {
-	walk_stats_t total{};
-	for (const walk_stats_t& stats: g_walkStatsPool)
-		total += stats;
-	return total;
-}
 
 
 // information about an intersection between a segment and a facet
@@ -668,8 +621,7 @@ int intersect(const triangle_t& t, const segment_t& s, int coplanar[3])
 //  in_facets [in] : vector of facets to check
 //  out_facets [out] : vector of facets to check at next step (can be in_facets)
 //  out_inter [out] : kind of intersection
-//  stats [in,out] : the calling thread's accounting slot, passed in because this runs once per
-//    walk step and looking the slot up here would cost an omp_get_thread_num() call each time
+//  stats [in,out] : the calling thread's own accounting, updated in place
 // return false if no intersection found and the end of the segment was not reached
 bool intersect(const delaunay_t& Tr, const segment_t& seg, const std::vector<facet_t>& in_facets, std::vector<facet_t>& out_facets, intersection_t& inter, walk_stats_t& stats)
 {
@@ -677,7 +629,6 @@ bool intersect(const delaunay_t& Tr, const segment_t& seg, const std::vector<fac
 	static const int facet_vertex_order[] = {2,1,3,2,2,3,0,2,0,3,1,0,0,1,2,0};
 	int coplanar[3];
 	const REAL prevDist(inter.dist);
-	bool bDirFiltered(false), bCoplanar3(false);
 	for (const facet_t& in_facet: in_facets) {
 		ASSERT(!Tr.is_infinite(in_facet));
 		const int nb_coplanar(intersect(Tr.triangle(in_facet), seg, coplanar));
@@ -685,14 +636,12 @@ bool intersect(const delaunay_t& Tr, const segment_t& seg, const std::vector<fac
 			if (nb_coplanar == 3) {
 				// coplanar with 3 edges = tangent: the segment travels in the facet's
 				// supporting plane, so no crossing distance exists; give up
-				bCoplanar3 = true;
 				break;
 			}
 			// skip this cell if the intersection is not in the desired direction
 			const REAL interDist(inter.ray.IntersectsDist(getFacetPlane(in_facet)));
 			ASSERT(ISFINITE(interDist)); // the exact test above says the segment straddles this plane
 			if ((interDist > prevDist) != inter.bigger) {
-				bDirFiltered = true;
 				continue;
 			}
 			// vertices of facet i: j = 4 * i, vertices = facet_vertex_order[j,j+1,j+2] negative orientation
@@ -788,10 +737,6 @@ bool intersect(const delaunay_t& Tr, const segment_t& seg, const std::vector<fac
 	}
 	// Bad end: no intersection found and we are not at the end of the segment (very rarely, but it happens)!
 	++stats.nBadEnd;
-	if (bCoplanar3)
-		++stats.nBadEndCoplanar3;
-	if (bDirFiltered)
-		++stats.nBadEndDirFilter;
 	out_facets.clear();
 	return false;
 }
@@ -811,10 +756,8 @@ bool intersectFace(const delaunay_t& Tr, const segment_t& seg, const std::vector
 			// the three faces in the neighbor cell different than the origin face
 			out_facets.clear();
 			inter.ncell = inter.facet.first->neighbor(inter.facet.second);
-			if (Tr.is_infinite(inter.ncell)) {
-				++GetWalkStats().nWssHullExit;
+			if (Tr.is_infinite(inter.ncell))
 				return false;
-			}
 			for (int i=0; i<4; ++i)
 				if (inter.ncell->neighbor(i) != inter.facet.first)
 					out_facets.push_back(facet_t(inter.ncell, i));
@@ -827,12 +770,9 @@ bool intersectFace(const delaunay_t& Tr, const segment_t& seg, const std::vector
 // same as above, but starts from a known vertex and incident cell
 inline bool intersectFace(const delaunay_t& Tr, const segment_t& seg, const vertex_handle_t& v, const cell_handle_t& cell, std::vector<facet_t>& out_facets, intersection_t& inter)
 {
-	if (cell == cell_handle_t()) {
-		++GetWalkStats().nWssNullCell;
+	if (cell == cell_handle_t())
 		return false;
-	}
 	if (Tr.is_infinite(cell)) {
-		++GetWalkStats().nWssInfiniteCell;
 		inter.ncell = inter.facet.first = cell;
 		return true;
 	}
@@ -855,55 +795,6 @@ edge_cap_t freeSpaceSupport(const delaunay_t& Tr, const std::vector<cell_info_t>
 	}
 	return wf;
 }
-
-// Carve-only rays: confident depth pixels no fused point kept, exported by
-// DepthMapsData::DenseFuseDepthMaps (see UnfusedPixel for the file layout). They carry free-space
-// evidence but no reliable surface position, so they are walked like the camera-point rays of the
-// real vertices and never inserted in the triangulation.
-typedef CLISTDEF0IDX(UnfusedPixel,uint64_t) CarveRayArr;
-
-// Load the carve-only rays, rejecting anything this scene cannot walk;
-// return false if the file is not readable, not a carve-rays file, truncated or references a
-// view the scene does not have
-bool loadCarveRays(const String& fileName, IIndex numImages, CarveRayArr& rays)
-{
-	File file(fileName, File::READ, File::OPEN);
-	if (!file.isOpen()) {
-		VERBOSE("error: cannot open carve-rays file '%s'", fileName.c_str());
-		return false;
-	}
-	UnfusedPixelHeader header;
-	if (file.read(&header, sizeof(header)) != sizeof(header) || !header.IsValid()) {
-		VERBOSE("error: '%s' is not a carve-rays file (version %u expected)", fileName.c_str(), UnfusedPixelHeader::VERSION);
-		return false;
-	}
-	// derive the record count bound from the file size by division, so a corrupt numRecords
-	// can not overflow the multiplication it would otherwise take to compute sizeRecords
-	const uint64_t sizeRecords((uint64_t)file.getSize()-sizeof(header));
-	if (sizeRecords%sizeof(UnfusedPixel) != 0 || header.numRecords != sizeRecords/sizeof(UnfusedPixel)) {
-		VERBOSE("error: carve-rays file '%s' is truncated (%llu records announced)", fileName.c_str(), (unsigned long long)header.numRecords);
-		return false;
-	}
-	rays.resize((CarveRayArr::IDX)header.numRecords);
-	if (sizeRecords > 0 && file.read(rays.data(), (size_t)sizeRecords) != (size_t)sizeRecords) {
-		VERBOSE("error: cannot read carve-rays file '%s'", fileName.c_str());
-		return false;
-	}
-	// the walk feeds every record to the exact predicates of the triangulation, so a record
-	// naming an unknown view or holding a non-finite position is a corrupt file, not a ray to skip
-	for (const UnfusedPixel& ray: rays) {
-		if (ray.idxView >= numImages) {
-			VERBOSE("error: carve-rays file '%s' references view %u, but the scene has %u images", fileName.c_str(), ray.idxView, numImages);
-			return false;
-		}
-		if (!ISFINITE(ray.X[0]) || !ISFINITE(ray.X[1]) || !ISFINITE(ray.X[2]) || !ISFINITE(ray.conf)) {
-			VERBOSE("error: carve-rays file '%s' holds a non-finite record", fileName.c_str());
-			return false;
-		}
-	}
-	return true;
-}
-
 
 // Fetch the triangle formed by the facet vertices,
 // making sure the facet orientation is kept (as in CGAL::Triangulation_3::triangle())
@@ -980,21 +871,22 @@ float computePlaneSphereAngle(const delaunay_t& Tr, const facet_t& facet)
 // Next, the score is computed for all the edges of the directed graph composed of points as vertices.
 // Finally, graph-cut algorithm is used to split the tetrahedrons in inside and outside,
 // and the surface is such extracted.
-bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bUseOnlyROI,
-							float kSigma, float kQual, float kb,
-							float kf, float kRel, float kAbs, float kOutl,
-							float kInf, const String& carveRaysFile,
-							const ReconstructMeshParams& params
-)
+bool Scene::ReconstructMesh(const ReconstructMeshParams& params)
 {
 	using namespace DELAUNAY;
 	ASSERT(!pointcloud.IsEmpty());
 	mesh.Release();
-
-	// load the carve-only rays before anything is built, so a corrupt file costs nothing
-	CarveRayArr carveRays;
-	if (!carveRaysFile.empty() && !loadCarveRays(carveRaysFile, images.size(), carveRays))
-		return false;
+	const float distInsert(params.distInsert);
+	const bool bUseFreeSpaceSupport(params.bUseFreeSpaceSupport);
+	bool bUseOnlyROI(params.bUseOnlyROI);
+	const float kSigma(params.kSigma);
+	const float kQual(params.kQual);
+	const float kb(params.kb);
+	const float kf(params.kf);
+	const float kRel(params.kRel);
+	const float kAbs(params.kAbs);
+	const float kOutl(params.kOutl);
+	const float kInf(params.kInf);
 
 	// create the Delaunay triangulation
 	delaunay_t delaunay;
@@ -1150,7 +1042,7 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 			return false;
 		}
 		// canonical rescale: everything from here on - the camera cells located below, both
-		// weighting loops, the carve replay and sigma itself - lives in the working space, and
+		// weighting loops and sigma itself - lives in the working space, and
 		// only the extracted mesh vertices are mapped back
 		if (params.bCanonicalRescale) {
 			rescale.Setup(medianEdge);
@@ -1187,8 +1079,9 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 	{
 		TD_TIMER_STARTD();
 
-		// ReconstructMesh can run more than once per process, so the accounting starts clean here
-		ResetWalkStats();
+		// accounting for the ray walks below, owned by this block: nothing outlives the call,
+		// so concurrent reconstructions each report their own counts
+		walk_stats_t walkStats{};
 		// scene coordinate magnitude, reported next to the ray-walk accounting below; measured in
 		// the working space, so both it and the L it is printed with describe the space the walks
 		// actually run in rather than the scene's own units
@@ -1289,12 +1182,14 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 		{
 		std::vector<facet_t> facets;
 		facets.reserve(kFacetsReserve);
+		walk_stats_t stats{};
 		#pragma omp for schedule(dynamic)
 		for (int64_t i=0; i<nVerts; ++i) {
 			const vertex_handle_t vi(vertexHandles[(size_t)i]);
 		#else
 		std::vector<facet_t> facets;
 		facets.reserve(kFacetsReserve);
+		walk_stats_t stats{};
 		for (int64_t i=0; i<nVerts; ++i) {
 			const vertex_handle_t vi(vertexHandles[(size_t)i]);
 		#endif
@@ -1309,7 +1204,6 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 			// end-cell offset below; both reduce to the global sigma when the arm is off
 			const float sigmaV(bAdaptiveSigma ? sigmaVert[(size_t)i] : sigma);
 			const float inv2SigmaSqV(bAdaptiveSigma ? 0.5f/(sigmaV*sigmaV) : inv2SigmaSq);
-			walk_stats_t& stats(GetWalkStats());
 			FOREACH(v, vert.views) {
 				const typename vert_info_t::view_t view(vert.views[v]);
 				const uint32_t imageID(view.idxView);
@@ -1325,15 +1219,11 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 				intersection_t inter(pt, Point3(vecCamPoint*invLenCamPoint));
 				// find faces intersected by the camera-point segment
 				const segment_t segCamPoint(MVS2CGAL(camC), p);
-				++stats.nWalksCam;
 				if (!intersect(delaunay, segCamPoint, camCell.facets, facets, inter, stats)) {
 					++stats.nCamRayDropped;
 					continue;
 				}
-				unsigned nWalkSteps(0);
 				do {
-					if (++nWalkSteps == kMaxWalkSteps)
-						++stats.nStepCapHit;
 					// assign score, weighted by the distance from the point to the intersection
 					const edge_cap_t w(alpha_vis*(1.f-EXP(-SQUARE((float)inter.dist)*inv2SigmaSqV)));
 					edge_cap_t& f(infoCells[inter.facet.first->info()].f[inter.facet.second]);
@@ -1364,11 +1254,7 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 				#pragma omp atomic
 				#endif
 				t += alpha_vis;
-				++stats.nWalksEnd;
-				nWalkSteps = 0;
 				while (intersect(delaunay, segEndPoint, facets, facets, inter, stats)) {
-					if (++nWalkSteps == kMaxWalkSteps)
-						++stats.nStepCapHit;
 					// assign score, weighted by the distance from the point to the intersection
 					const facet_t& mf(delaunay.mirror_facet(inter.facet));
 					const edge_cap_t w(alpha_vis*(1.f-EXP(-SQUARE((float)inter.dist)*inv2SigmaSqV)));
@@ -1391,15 +1277,14 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 			}
 			++progress;
 		}
+		stats.AccumulateInto(walkStats);
 		#ifdef DELAUNAY_USE_OPENMP
 		} // omp parallel
 		#endif
 		progress.close();
 		DEBUG_ULTIMATE("\tweighting completed in %s", TD_TIMER_GET_FMT().c_str());
 		}
-		// the carve pass below starts its walks from the same camera cells
-		if (carveRays.empty())
-			camCells.clear();
+		camCells.clear();
 
 		#ifdef DELAUNAY_WEAKSURF
 		// enforce t-edges for each point-camera pair with free-space support weights
@@ -1424,7 +1309,6 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 			const Point3f pt(CGAL2MVS<float>(p));
 			// same per-point uncertainty as the weighting loop, here sizing both search windows
 			const float sigmaV(bAdaptiveSigma ? sigmaVert[(size_t)i] : sigma);
-			walk_stats_t& stats(GetWalkStats());
 			FOREACH(v, vert.views) {
 				const uint32_t imageID(vert.views[(vert_info_t::view_vec_t::IDX)v]);
 				const Image& imageData = images[imageID];
@@ -1437,15 +1321,10 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 				const Point3f bgnPoint(pt-vecCamPoint*(invLenCamPoint*sigmaV*kf));
 				const segment_t segPointBgn(p, MVS2CGAL(bgnPoint));
 				intersection_t inter;
-				if (!intersectFace(delaunay, segPointBgn, vi, vert.viewsInfo[v].cell2Cam, facets, inter)) {
-					++stats.nWssSkipped;
+				if (!intersectFace(delaunay, segPointBgn, vi, vert.viewsInfo[v].cell2Cam, facets, inter))
 					continue;
-				}
 				edge_cap_t beta(0);
-				unsigned nWalkSteps(0);
 				do {
-					if (++nWalkSteps == kMaxWalkSteps)
-						++stats.nStepCapHit;
 					const edge_cap_t fs(freeSpaceSupport(delaunay, infoCells, inter.facet.first));
 					if (beta < fs)
 						beta = fs;
@@ -1453,15 +1332,10 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 				// find faces intersected by the point-endpoint segment
 				const Point3f endPoint(pt+vecCamPoint*(invLenCamPoint*sigmaV*kb));
 				const segment_t segPointEnd(p, MVS2CGAL(endPoint));
-				if (!intersectFace(delaunay, segPointEnd, vi, vert.viewsInfo[v].cell2End, facets, inter)) {
-					++stats.nWssSkipped;
+				if (!intersectFace(delaunay, segPointEnd, vi, vert.viewsInfo[v].cell2End, facets, inter))
 					continue;
-				}
 				edge_cap_t gammaMin(FLT_MAX), gammaMax(0);
-				nWalkSteps = 0;
 				do {
-					if (++nWalkSteps == kMaxWalkSteps)
-						++stats.nStepCapHit;
 					const edge_cap_t fs(freeSpaceSupport(delaunay, infoCells, inter.facet.first));
 					if (gammaMin > fs)
 						gammaMin = fs;
@@ -1474,7 +1348,6 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 				const edge_cap_t epsAbs(beta-gamma);
 				const edge_cap_t epsRel(gamma/beta);
 				if (epsRel < kRel && epsAbs > kAbs && gamma < kOutl) {
-					++stats.nWssFired;
 					// multiplied once per firing (vertex, view) pair; a zero t stays zero by
 					// design - enforcing on cells no visibility vote ever reached collapses
 					// thin structures, so the no-op is protective, not a defect
@@ -1483,14 +1356,6 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 					#pragma omp atomic
 					#endif
 					t *= epsAbs;
-					// t is only ever scaled while this loop runs, so neither verdict below
-					// depends on which of the concurrent updates of the same cell this read
-					// observes
-					const edge_cap_t tCur(t);
-					if (tCur == 0)
-						++stats.nWssNoopZeroT;
-					else if (!ISFINITE(tCur))
-						++stats.nWssSaturated;
 				}
 			}
 		}
@@ -1501,100 +1366,6 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 		}
 		#endif
 
-		// carve-only rays: replay the confident depth pixels fusion dropped as pure free-space
-		// evidence. Each ray walks the camera-point segment exactly like the loop above and adds the
-		// same distance-weighted alpha_vis to the crossed directed facets, but its point is not a
-		// vertex: nothing is inserted, no s/t unary term is cast and the walk ends in the cell that
-		// contains the point instead of on the point itself. Running after the two loops above leaves
-		// the weakly-supported-surfaces classifier reading the free-space field of the fused points
-		// alone, so its calibration -- and the A/B this pass exists for -- stays single-variable.
-		if (!carveRays.empty()) {
-			TD_TIMER_STARTD();
-			#ifdef DELAUNAY_USE_OPENMP
-			const int64_t nRays((int64_t)carveRays.size());
-			#pragma omp parallel
-			{
-			std::vector<facet_t> facets;
-			facets.reserve(kFacetsReserve);
-			#pragma omp for schedule(dynamic)
-			for (int64_t i=0; i<nRays; ++i) {
-				const UnfusedPixel& ray(carveRays[(CarveRayArr::IDX)i]);
-			#else
-			std::vector<facet_t> facets;
-			facets.reserve(kFacetsReserve);
-			for (const UnfusedPixel& ray: carveRays) {
-			#endif
-				walk_stats_t& stats(GetWalkStats());
-				const Image& imageData = images[ray.idxView];
-				const camera_cell_t& camCell = camCells[ray.idxView];
-				++stats.nWalksCarve;
-				// a discarded image has no camera cell to walk from
-				if (!imageData.IsValid() || camCell.facets.empty()) {
-					++stats.nCarveRayDropped;
-					continue;
-				}
-				const Point3 pt(rescale.ToWorking(Point3(ray.X[0], ray.X[1], ray.X[2])));
-				const point_t p(MVS2CGAL(pt));
-				const Camera& camera = imageData.camera;
-				const Point3 camC(rescale.ToWorking(camera.C));
-				const Point3 vecCamPoint(pt-camC);
-				const REAL lenCamPoint(norm(vecCamPoint));
-				if (lenCamPoint <= 0) {
-					++stats.nCarveRayDropped;
-					continue;
-				}
-				// the ray origin is the point, so the crossings are found at their distance to it,
-				// the distance the soft free-space weight below asks for
-				intersection_t inter(pt, Point3(vecCamPoint*(REAL(1)/lenCamPoint)));
-				const segment_t segCamPoint(MVS2CGAL(camC), p);
-				// intersectFace() is the walk of the t-edge loop: it steps through facet crossings
-				// only and stops on its own once no facet is left to cross -- which is exactly the
-				// cell containing the point -- or once the segment leaves the convex hull, so a walk
-				// with no vertex to land on needs no bad-end
-				if (!intersectFace(delaunay, segCamPoint, camCell.facets, facets, inter)) {
-					++stats.nCarveRayDropped;
-					continue;
-				}
-				unsigned nWalkSteps(0);
-				do {
-					if (++nWalkSteps == kMaxWalkSteps)
-						++stats.nStepCapHit;
-					// assign score, weighted by the distance from the point to the intersection
-					const REAL dist(inter.ray.IntersectsDist(getFacetPlane(inter.facet)));
-					ASSERT(ISFINITE(dist)); // the exact test inside intersectFace() says the segment straddles this plane
-					const edge_cap_t w(ray.conf*(1.f-EXP(-SQUARE((float)dist)*inv2SigmaSq)));
-					edge_cap_t& f(infoCells[inter.facet.first->info()].f[inter.facet.second]);
-					#ifdef DELAUNAY_USE_OPENMP
-					#pragma omp atomic
-					#endif
-					f += w;
-				} while (intersectFace(delaunay, segCamPoint, facets, facets, inter));
-				delaunay_t::Locate_type lt; int li, lj;
-				if (delaunay.is_infinite(inter.ncell) ||
-					delaunay.side_of_cell(p, inter.ncell, lt, li, lj) == CGAL::ON_UNBOUNDED_SIDE)
-					++stats.nCarveWalkAborted;
-			}
-			#ifdef DELAUNAY_USE_OPENMP
-			} // omp parallel
-			#endif
-			DEBUG_ULTIMATE("\tcarve-only rays completed in %s", TD_TIMER_GET_FMT().c_str());
-		}
-		camCells.clear();
-		carveRays.Release();
-
-		const walk_stats_t walkStats(GetTotalWalkStats());
-		DEBUG_ULTIMATE("\tray-walk accounting: M=%g L=%g | cam %llu (dropped %llu, aborted %llu), end %llu (aborted %llu), steps %llu, bad-ends %llu [coplanar3 %llu, dir-filter %llu], step-caps %llu | WSS: skipped %llu, null-cell %llu, infinite-cell %llu, hull-exit %llu, fired %llu (t==0 no-op %llu, saturated %llu) | carve %llu (dropped %llu, aborted %llu)",
-			sceneMagnitude, sigma/kSigma,
-			(unsigned long long)walkStats.nWalksCam, (unsigned long long)walkStats.nCamRayDropped, (unsigned long long)walkStats.nCamWalkAborted,
-			(unsigned long long)walkStats.nWalksEnd, (unsigned long long)walkStats.nEndWalkAborted,
-			(unsigned long long)walkStats.nSteps, (unsigned long long)walkStats.nBadEnd,
-			(unsigned long long)walkStats.nBadEndCoplanar3, (unsigned long long)walkStats.nBadEndDirFilter,
-			(unsigned long long)walkStats.nStepCapHit,
-			(unsigned long long)walkStats.nWssSkipped, (unsigned long long)walkStats.nWssNullCell, (unsigned long long)walkStats.nWssInfiniteCell,
-			(unsigned long long)walkStats.nWssHullExit, (unsigned long long)walkStats.nWssFired,
-			(unsigned long long)walkStats.nWssNoopZeroT, (unsigned long long)walkStats.nWssSaturated,
-			(unsigned long long)walkStats.nWalksCarve, (unsigned long long)walkStats.nCarveRayDropped,
-			(unsigned long long)walkStats.nCarveWalkAborted);
 		if (walkStats.nBadEnd)
 			DEBUG_EXTRA("warning: %llu ray-walks ended badly (%.4f%% of %llu steps), %llu rays dropped, %llu walks aborted (M=%g L=%g)",
 				(unsigned long long)walkStats.nBadEnd, 100.0*(double)walkStats.nBadEnd/(double)MAXF(walkStats.nSteps, uint64_t(1)),
@@ -1610,8 +1381,6 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 
 		// create graph
 		MaxFlow<cell_size_t,edge_cap_t> graph(delaunay.number_of_cells());
-		{
-		TD_TIMER_STARTD();
 		// set weights
 		constexpr edge_cap_t maxCap(3.402823466e+34f/*FLT_MAX*0.0001f*/);
 		for (delaunay_t::All_cells_iterator ci=delaunay.all_cells_begin(), ce=delaunay.all_cells_end(); ci!=ce; ++ci) {
@@ -1629,17 +1398,8 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 			}
 		}
 		infoCells.clear();
-		DEBUG_ULTIMATE("\tgraph construction completed in %s", TD_TIMER_GET_FMT().c_str());
-		}
 		// find graph-cut solution
-		float maxflow;
-		{
-		TD_TIMER_STARTD();
-		maxflow = graph.ComputeMaxFlow();
-		DEBUG_ULTIMATE("\tgraph-cut completed in %s", TD_TIMER_GET_FMT().c_str());
-		}
-		{
-		TD_TIMER_STARTD();
+		const float maxflow(graph.ComputeMaxFlow());
 		// extract surface formed by the facets between inside/outside cells
 		const size_t nEstimatedNumVerts(delaunay.number_of_vertices());
 		std::unordered_map<void*,Mesh::VIndex> mapVertices;
@@ -1710,8 +1470,6 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 		delaunay.clear();
 		if (params.maxEdgeScale > 0)
 			DEBUG_EXTRA("Unsupported surface facets removed: %u (longest edge > %g x median)", (unsigned)numUnsupportedFaces, params.maxEdgeScale);
-		DEBUG_ULTIMATE("\tsurface extraction completed in %s", TD_TIMER_GET_FMT().c_str());
-		}
 
 		DEBUG_EXTRA("Delaunay tetrahedras graph-cut completed (%g flow): %u vertices, %u faces (%s)", maxflow, mesh.vertices.GetSize(), mesh.faces.GetSize(), TD_TIMER_GET_FMT().c_str());
 	}
@@ -1719,8 +1477,11 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 	// fix non-manifold vertices and edges;
 	// a single pass is exhaustive: each vertex is split into one duplicate per incident
 	// connected component of faces (itself manifold by construction), and splitting never
-	// alters the incident-face set of any other vertex, so no vertex needs to be revisited
-	mesh.FixNonManifold();
+	// alters the incident-face set of any other vertex, so no vertex needs to be revisited.
+	// The cut can legitimately extract nothing, when no facet has its two cells on opposite
+	// sides, and FixNonManifold requires a mesh to work on, so skip it when there is none
+	if (!mesh.vertices.empty() && !mesh.faces.empty())
+		mesh.FixNonManifold();
 	return true;
 }
 /*----------------------------------------------------------------*/

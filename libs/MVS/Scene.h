@@ -148,12 +148,37 @@ public:
 	// Mesh reconstruction
 	// hard-constraint capacity of the cells containing a camera; not exposed by the apps
 	static constexpr float kInfCapacity = (float)(INT_MAX/8);
-	// reconstruction options beyond the numeric factors of ReconstructMesh; the defaults are
-	// the recommended configuration, each opt-out restoring the corresponding legacy behavior.
+	// every knob of ReconstructMesh; the defaults are the recommended configuration, each
+	// boolean opt-out restoring the corresponding legacy behavior.
 	// The defaults are set by the constructor instead of member initializers, so that the
 	// defaulted parameter of ReconstructMesh below can default-construct this type while the
 	// enclosing class is still incomplete (GCC and Clang reject the member-initializer form)
 	struct ReconstructMeshParams {
+		// minimum distance in pixels between the projections of two points for both to be
+		// inserted as vertices; 0 inserts every point, merging none
+		float distInsert;
+		// reconstruct weakly-represented surfaces by enforcing the t-edge of the end cell of
+		// every point whose free-space support marks it an interface point (kb..kOutl below)
+		bool bUseFreeSpaceSupport;
+		// triangulate only the points inside the scene ROI
+		bool bUseOnlyROI;
+		// multiplier on the global sigma, the surface thickness the visibility votes resolve
+		float kSigma;
+		// multiplier on the quality weight each cut facet adds to its arc capacity
+		float kQual;
+		// free-space-support search windows, in units of the point's sigma: kf towards the
+		// camera, where the support beta is the maximum crossed, and kb past the point, where
+		// the support gamma is the mean of the extremes crossed
+		float kb;
+		float kf;
+		// a point is an interface point, and its end cell has its t-edge multiplied by
+		// beta-gamma, when gamma/beta < kRel and beta-gamma > kAbs and gamma < kOutl
+		float kRel; // max 0.3
+		float kAbs; // min 500
+		float kOutl; // max 700
+		// hard-constraint source capacity of the cells holding a camera, which the cut must
+		// leave outside the surface
+		float kInf;
 		// per-vertex sigma in the three roles where sigma stands for the point's own positional
 		// uncertainty (soft-visibility exponent, end-cell offset, free-space-support windows):
 		// sigma_v = kSigma * median incident finite-Delaunay-edge length of the vertex, clamped
@@ -181,15 +206,11 @@ public:
 		// webbing from surface
 		float maxEdgeScale;
 		inline ReconstructMeshParams()
-			: bAdaptiveSigma(true), bCanonicalRescale(true), maxEdgeScale(4.f) {}
+			: distInsert(2.f), bUseFreeSpaceSupport(true), bUseOnlyROI(false),
+			  kSigma(1.f), kQual(1.f), kb(4.f), kf(3.f), kRel(0.1f), kAbs(1000.f), kOutl(400.f), kInf(kInfCapacity),
+			  bAdaptiveSigma(true), bCanonicalRescale(true), maxEdgeScale(4.f) {}
 	};
-	// carveRaysFile: optional sidecar of confident depth pixels fusion dropped (see UnfusedPixel),
-	// replayed as free-space rays that carve without inserting vertices (empty - disabled)
-	bool ReconstructMesh(float distInsert=2, bool bUseFreeSpaceSupport=true, bool bUseOnlyROI=false,
-						 float kSigma=1.f, float kQual=1.f, float kb=4.f,
-						 float kf=3.f, float kRel=0.1f/*max 0.3*/, float kAbs=1000.f/*min 500*/, float kOutl=400.f/*max 700.f*/,
-						 float kInf=kInfCapacity, const String& carveRaysFile=String(),
-						 const ReconstructMeshParams& params=ReconstructMeshParams());
+	bool ReconstructMesh(const ReconstructMeshParams& params=ReconstructMeshParams());
 
 	// Mesh refinement
 	bool RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsigned nMaxViews, float fDecimateMesh, unsigned nCloseHoles, unsigned nEnsureEdgeSize,
