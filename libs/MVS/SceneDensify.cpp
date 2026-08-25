@@ -2975,16 +2975,21 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 		// is how it reached the guard at all), so a rule stating only the minimums would call it
 		// recoverable under every hypothesis, extra == 0 included, and inflate every channel by the
 		// whole violation column. Stated in full, extra REAL support can lift a cluster over the
-		// minimums WITHOUT virtualSupport, which makes it non-rescued and puts it out of the guard's
-		// reach entirely -- that is precisely the mechanism by which C8/C9/C12 could rescue a
-		// violation-dropped cluster, and the only way such a cluster is counted here
+		// minimums WITHOUT virtualSupport, which makes it non-rescued and hands it to the other limit
+		// (nFuseViolationMaxAll, unguarded unless set) -- that is precisely the mechanism by which
+		// C8/C9/C12 could rescue a violation-dropped cluster, and the only way such a cluster is
+		// counted here
 		const bool guardOK(OPTDENSE::nFuseViolationMax < 0 || fusedViolViews.size() <= (unsigned)OPTDENSE::nFuseViolationMax);
+		const bool guardAllOK(OPTDENSE::nFuseViolationMaxAll < 0 || fusedViolViews.size() <= (unsigned)OPTDENSE::nFuseViolationMaxAll);
 		const auto WouldKeep = [&](float extra, unsigned numViews) -> bool {
 			const bool realOK((float)fusedPoints[0].size() + extra >= (float)OPTDENSE::nMinPixelsFuse &&
 				(float)numViews >= (float)nMinViewsFuse);
 			const bool virtOK((float)fusedPoints[0].size() + extra + virtualSupport >= (float)OPTDENSE::nMinPixelsFuse &&
 				(float)numViews + virtualSupport >= (float)nMinViewsFuse);
-			return realOK || (virtOK && guardOK);
+			// which of the two free-space guards the hypothetical cluster answers to is decided the way
+			// the keep-rule decides `rescued`: on the minimums met by real support alone. guardAllOK is
+			// true whenever nFuseViolationMaxAll is off, where this reads `realOK || (virtOK && guardOK)`
+			return realOK ? guardAllOK : (virtOK && guardOK);
 		};
 		const unsigned numCorrobViews(CountDistinctViews(fusedViews, clusterCorroborationViews, noViews));
 		fuseStats.AccountDroppedCluster(fusedPoints[0].size(),
@@ -3094,11 +3099,13 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 					// keep-rule at virtualSupport==0) is "rescued"; nFuseViolationMax additionally
 					// requires such a point to be seen from behind by at most that many DISTINCT views
 					// (fusedViolViews, populated above by the join gate). A NON-rescued point (already
-					// meeting both thresholds on real support alone) is never subject to this guard;
-					// nFuseViolationMax<0 disables it entirely.
+					// meeting both thresholds on real support alone) answers to the separate limit
+					// nFuseViolationMaxAll instead -- which is -1 by default, so it stays unguarded
+					// exactly as before. A negative limit disables the guard it belongs to.
 					const bool rescued = fusedPoints[0].size() < OPTDENSE::nMinPixelsFuse ||
 										  fusedViews.size() < nMinViewsFuse;
-					if (!rescued || OPTDENSE::nFuseViolationMax < 0 || fusedViolViews.size() <= (unsigned)OPTDENSE::nFuseViolationMax) {
+					const int nViolationMax(rescued ? OPTDENSE::nFuseViolationMax : OPTDENSE::nFuseViolationMaxAll);
+					if (nViolationMax < 0 || fusedViolViews.size() <= (unsigned)nViolationMax) {
 						// create the corresponding 3D point
 						pointcloud.points.emplace_back(
 							fusedPoints[0].GetMedian(),

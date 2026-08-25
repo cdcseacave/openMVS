@@ -156,8 +156,13 @@ extern MVS_API float fFusePriorWeight;
 // fFusePriorWeight's virtual support -- see DenseFuseDepthMaps), counted during fusion's own join
 // gate. -1 disables the guard: fully inert, byte-identical to fusion without it. Default 0 (strict)
 // rejects any rescued point contradicted by >=1 free-space ray; N allows <=N such violations.
-// Non-rescued points are never affected.
+// Non-rescued points are never affected: they answer to nFuseViolationMaxAll below.
 extern MVS_API int nFuseViolationMax;
+// the same FSV guard on the points nFuseViolationMax never reaches: those clearing both keep-rule
+// minimums on real support alone. -1 (default) leaves them unguarded, i.e. fusion behaves exactly as
+// it did before this option existed; 0 drops any such point contradicted by >=1 free-space ray, N
+// allows <=N violating views. The two limits are independent, one guard per point.
+extern MVS_API int nFuseViolationMaxAll;
 // DenseFuseDepthMaps: measure, alongside the fusion accounting, how much of the fusion loss the
 // structural candidates could recover -- corroboration by pixels an earlier cluster already
 // consumed, the pixels dropped clusters keep locked away, and a 4-neighbor re-probe of the joins the
