@@ -335,7 +335,39 @@ rows of the later slices replace them.
 
 ### S9 — Structural-loss instrumentation
 
-*Not yet run.*
+*Done 2026-08-25* (commit `0d441378`; measurement behind the config-only switch
+`Fuse Recoverable Stats=1`, off by default). The instrumented binary is **byte-identical** to the
+baseline on Ignatius and Truck with the switch on and off (`cmp` of the fused `.mvs`); with it on,
+fusion costs +30 % wall (Ignatius 66 s vs 51 s) — never use it for a timing row. Both accounting
+residuals read 0 on every scene.
+
+The observation is exact for every cluster the keep-rule drops: such a cluster never exceeded the
+minimums, so all of its probes were issued from below them, and the counters are only evaluated
+there (keepable clusters keep their hot early-outs). The hypothetical applies the keep-rule in
+full — real-support thresholds, or virtual-support thresholds plus the free-space-violation guard
+— so a violation-dropped cluster counts as recoverable only when the extra *real* support lifts it
+out of the guard's reach. Percentages below are of the scene's valid depths.
+
+| scene | dropped clusters (pixels) | corroboration | half-weight corroboration | released-pixel reuse (C8) | 4-neighbor re-probe (C12) | corroboration + re-probe |
+|---|---|---|---|---|---|---|
+| Barn | 40.3 M (51.3 M, 25.5 %) | 20.3 M (29.5 M, **14.7 %**) | 16.0 M (23.8 M, 11.9 %) | 3.35 M (5.9 M, 3.0 %) | 0.29 M (0.61 M, 0.3 %) | 20.4 M (29.6 M) |
+| Ignatius | 26.2 M (33.9 M, 25.6 %) | 14.4 M (21.1 M, **16.0 %**) | 12.1 M (18.0 M, 13.6 %) | 2.83 M (4.9 M, 3.7 %) | 0.25 M (0.54 M, 0.4 %) | 14.5 M (21.3 M) |
+| Meetingroom | 49.5 M (61.7 M, 35.2 %) | 19.0 M (28.6 M, **16.3 %**) | 12.8 M (20.4 M, 11.6 %) | 4.11 M (7.1 M, 4.0 %) | 0.29 M (0.65 M, 0.4 %) | 19.2 M (28.9 M) |
+| Truck | 20.0 M (25.8 M, 20.4 %) | 10.0 M (15.0 M, **11.8 %**) | 8.0 M (12.3 M, 9.8 %) | 1.57 M (2.9 M, 2.3 %) | 0.13 M (0.28 M, 0.2 %) | 10.0 M (15.1 M) |
+
+"X (Y, Z %)" = clusters the keep-rule would keep under that hypothesis (their real pixels, share of
+valid depths). Supporting rates: of the already-fused probes examined, 55 / 66 / 40 / 63 %
+(Barn / Ignatius / Meetingroom / Truck) pass the three join predicates against the current
+reference; of those, 18 / 27 / 16 / 22 % land on pixels of dropped clusters. Only 2.6–4.2 % of the
+no-depth probes and 5.6–11.7 % of the depth-disagreeing probes have an agreeing free 4-neighbor.
+`min-views` never binds alone on any scene (0 drops); the violation guard removes 0.12–0.25 %.
+
+**Verdict for S10.** Corroboration (C9) is the only structural channel above the plan's "a few
+percent of valid depths" bar — 12–16 % on every scene, with the precision risk the plan names
+(a corroboration-rescued cluster is often a near-duplicate of its neighbor). The 4-neighbor
+re-probe (C12) is closed by this measurement: 0.2–0.4 %, an order of magnitude below the bar, not
+built. Release-on-drop (C8) alone is 2–4 % — borderline, but it is cheap and already built as a
+config arm, so it is measured rather than argued. C10 is deferred to C9's result.
 
 ### S10 — Build the structural winners
 
