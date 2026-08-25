@@ -214,6 +214,30 @@ A fusion-only re-run needs the frozen flags **plus `--geometric-iters 0`**, whic
 fusion-only switch (`-1` exports disparity maps). `bench/run_fusion.py` bakes this in, snapshots
 every `.dmap`'s size+mtime before the run and aborts if any changed.
 
+### Memory — mandatory
+
+`DenseFuseDepthMaps` (`libs/MVS/SceneDensify.cpp`) keeps neighbor depth maps in a memory-bounded
+`DMapCache` whose budget is taken from free RAM at run time (`GetAvailableMemory` →
+`cacheDMaps.SetMaxMemory`, re-evaluated per chunk). When the budget is too small the binary logs
+`warning: not enough memory to cache depth-maps (2648MB needed, 2144MB available)` and the neighbor
+loop silently skips every neighbor whose map is not resident (`if (depthDataB.IsEmpty()) continue;`)
+— those neighbors are never probed for that reference image, and the fused cloud then depends on
+how much RAM happened to be free while it ran. Evidence: the same Barn `--fusion-prior-weight 4`
+re-fuse, same binary flags, same 410 frozen maps (identical valid-depth count 201,097,868 and
+identical low-confidence drop 50,013,586), gave 19,764,512 points at a 92 % cache hit rate (clean
+run, 14:19) vs. 19,937,081 points (+0.9 %, cloud F1 0.6502 → 0.6511) at a 90 % hit rate with two
+starvation warnings (15:58, run beside a mesh reconstruction and a T&T evaluation). Clean runs on
+this 32 GB machine all show 89–92 % hit rates; starved ones 53–90 %. A scan of all 95 arm logs
+found 9 sweep rows that ran starved (hit rate in parentheses): Barn reproj09 (79 %); Ignatius
+conf005 (58 %), conf015 (67 %), minpix3 (62 %), reproj11 (70 %); Meetingroom conf005 (53 %),
+conf015 (86 %); Truck minpix4 (88 %), violm1 (90 %). The base rows and every other sweep row are
+clean (the base arm reproduced its point counts exactly three times). **Rule**: a fusion arm must
+never run beside a mesh reconstruction or a T&T evaluation. `bench/run_fusion.py` now records
+`cache_warnings` / `cache_hit_pct` per row, waits for ≥ 10 GB free RAM before launching
+(`--min-free-gb`), marks starved rows with `*` in `--summary`, and `--rerun-starved` repeats them.
+The 9 starved rows are queued for re-run on a quiet machine; until then the verdicts that rest on
+them are provisional (flagged inline in § 4).
+
 ### Logging and residuals
 
 The `Fusion pixel accounting` / `Fusion probe accounting` / confidence-histogram lines are
@@ -249,7 +273,8 @@ for the downstream cost this plan can move:
   increase > 15 % escalates the candidate to § 5 (maintainer decision) instead of being proposed
   as a default, even if the cloud gate passes.
 - **Repeats**: 1 run suffices for a fusion-only quality row (byte-identical input); ≥ 3 runs and
-  medians for anything quoting wall time or memory.
+  medians for anything quoting wall time or memory — and only for rows with `cache_warnings = 0`
+  (see *Memory — mandatory*).
 - **Instrumentation**: both fusion accounting residuals `0`; report the per-channel drop table
   (low-conf / min-pixels / min-views / violation) for every arm, so a quality change is always
   explained by a channel change.
@@ -374,6 +399,8 @@ literals of `dc32ab8` (`libs/MVS/DepthMap.cpp`, `DensifyPointCloud.cpp`) plus it
 | 1.1 | +0.0027 | −0.0088 | +0.0027 | +0.0019 | **−0.0004** | −4.7…+4.4 % |
 | 1.0 | +0.0066 | +0.0043 | +0.0067 | +0.0046 | **+0.0055** | +5.9…+10.9 % |
 | 0.9 | +0.0128 | +0.0103 | +0.0141 | +0.0103 | **+0.0119** | +11.7…+27.7 % |
+| 0.8 | +0.0175 | +0.0116 | +0.0174 | +0.0117 | **+0.0146** | +14.4…+33.9 % |
+| 0.7 | +0.0205 | +0.0135 | +0.0196 | +0.0133 | **+0.0167** | +16.6…+41.3 % |
 
 Full P/R/F1 for 0.9 (`--fusion-reprojection-threshold 0.9`):
 
@@ -384,6 +411,9 @@ Full P/R/F1 for 0.9 (`--fusion-reprojection-threshold 0.9`):
 | Meetingroom | 0.5072 / 0.3838 / 0.4370 | 0.5250 / 0.3955 / **0.4511** | **+0.0141** | +0.0178 | +0.0117 | +11.7 % |
 | Truck | 0.6761 / 0.7644 / 0.7176 | 0.6840 / 0.7777 / **0.7279** | **+0.0103** | +0.0079 | +0.0133 | +27.7 % |
 
+*Provisional*: the Barn 0.9 row and the Ignatius 1.1 row ran dmap-cache starved (79 % / 70 % hit
+rate, § 3 *Memory*) and are queued for re-run; the 0.8 and 0.7 rows are clean.
+
 The curve is monotone through 0.9 — 0.9 beats 1.0 on every scene with P *and* R up on every scene
 (P +0.5…+1.8 pp, R +1.2…+2.2 pp) at +12…28 % points; 1.1 is a wash on the mean and loses on
 Ignatius (−0.0088, both P and R down). The reprojection-rejection counts grow with the tightening
@@ -391,9 +421,18 @@ while low-conf drop is untouched, i.e. the whole effect is cluster splitting: pr
 the reprojection test go base → 0.9 Barn 61.2 M → 90.4 M, Ignatius 32.5 M → 46.5 M, Meetingroom
 29.0 M → 43.6 M, Truck 41.7 M → 58.5 M.
 
-Consequence: **the 1.0 recommendation is a floor, not the optimum**; arms 0.8 and 0.7 are running
-on the same binary, and because 0.9 already crosses the +20 % points line on Ignatius and Truck,
-the best dose gets the mandatory mesh cost pairing (S7) before anything is proposed — *pending*.
+Full P/R/F1 for 0.7 (`--fusion-reprojection-threshold 0.7`):
+
+| scene | base P / R / F1 | 0.7 P / R / F1 | ΔF1 | ΔP | ΔR | points |
+|---|---|---|---|---|---|---|
+| Barn | 0.5746 / 0.7263 / 0.6416 | 0.5843 / 0.7638 / **0.6621** | **+0.0205** | +0.0097 | +0.0375 | +33.9 % |
+| Ignatius | 0.7081 / 0.8472 / 0.7714 | 0.7133 / 0.8724 / **0.7849** | **+0.0135** | +0.0052 | +0.0252 | +31.7 % |
+| Meetingroom | 0.5072 / 0.3838 / 0.4370 | 0.5348 / 0.3984 / **0.4566** | **+0.0196** | +0.0276 | +0.0146 | +16.6 % |
+| Truck | 0.6761 / 0.7644 / 0.7176 | 0.6856 / 0.7827 / **0.7309** | **+0.0133** | +0.0095 | +0.0183 | +41.3 % |
+
+Consequence: **the 1.0 recommendation is a floor, not the optimum**; the curve is still monotone
+at 0.7 (P and R up on every scene), 0.6 and 0.5 are queued, and the mesh pairing (S7) covers 0.9
+plus the best deeper dose.
 
 ### S4 — C3 + C4: rescue-strength sweep
 
@@ -423,6 +462,9 @@ Full P/R/F1 for weight 4:
 | 5 (default) | 0 | 0 | 0 | 0 | 0 (base) |
 | 4 | +0.0050 | +0.0057 | +0.0271 | −0.0076 | **+0.0076** |
 | 3 | −0.0155 | −0.0298 | +0.0380 | −0.0294 | **−0.0092** |
+
+*Provisional*: Truck minpix4 (88 % hit rate) and Ignatius minpix3 (62 %) ran starved — the Truck
+−0.0076 that fails the no-regression clause is re-measured before C4 is called.
 
 **C3 vs C4 dominance.** Prior4 beats minpix4 on every scene in F1 *and* P while adding fewer
 points (+37…60 % vs +40…79 %), and prior6 beats minpix3 the same way at ×2.4…4.4 vs ×2.5…4.6
@@ -462,12 +504,15 @@ Mean **−0.0040**.
 
 Mean **−0.0014**.
 
-Both fail. Channel explanation: at 0.05 Ignatius admits more low-confidence seeds (low-conf drop
+Both fail. *Provisional*: Ignatius and Meetingroom conf005 (58 % / 53 %) and conf015 (67 % / 86 %)
+all ran starved — exactly the cells the channel explanation was built on; C6 stays open until the
+re-run (§ 3 *Memory*). Channel explanation: at 0.05 Ignatius admits more low-confidence seeds
+(low-conf drop
 26.42 → 21.77 %) yet yields −6.7 % points, with seeds-already-fused up 61.6 M → 65.6 M — the extra
 seeds do not become points, they are absorbed into, and mis-place, clusters that already existed
 (P −1.5 pp, R −1.3 pp); at 0.15 the seed pool shrinks (−7.5 % points on Ignatius, R −1.2 pp). The
 default 0.1 sits at the optimum of this range on three scenes and is inert on the fourth;
-**C6 is closed**.
+**C6 is closed unless the re-run overturns it**.
 
 ### S5 — C5: free-space-violation arms
 
@@ -486,6 +531,9 @@ The guard matters — switching it off costs Truck −0.0035 (mean −0.0011) �
 inert (1: +0.0001, 2: −0.0003, all within the 0.0006 floor except Truck) and it only ever touches
 0.12–0.25 % of valid depths, so **keep 0**.
 
+*Provisional*: Truck violm1 (90 % hit rate, 1 warning) ran starved; the −0.0035 that makes the
+guard "worth keeping" is re-measured.
+
 **(ii)** applying the guard to all clusters (`Fuse Violation Max All`, S10 binary) runs in
 `bench/campaign_s10.sh` — *pending*.
 
@@ -495,7 +543,38 @@ inert (1: +0.0001, 2: −0.0003, all within the 0.0006 floor except Truck) and i
 
 ### S7 — Cost pairing
 
-*Not yet run.*
+**C3 pairing (`fFusePriorWeight` 4)** — measured 2026-08-25, `run_mesh.py --cloud-name prior4
+--variants baseline,mpd2 --score-raw`, plus the base cloud at `--min-point-distance 2.0`; wall
+times not quotable (the rows ran beside the fusion sweep and pagefile growth), memory is
+`peak_ws_mb`. Columns pair the cloud-stage lever (`fFusePriorWeight`) with its mesh-stage outcome
+(`--min-point-distance`): each cell chains base 1.5 → prior4 1.5 → prior4 2.0.
+
+| scene | raw+gated F1 | cleaned F1 | Delaunay verts | `peak_ws_mb` |
+|---|---|---|---|---|
+| Barn | 0.6225 → 0.6201 → 0.6180 | 0.6257 → 0.6213 → 0.6213 | 8,415,872 → 11,116,603 (×1.32) → 8,612,869 (×1.02) | 16,370 → 18,315 (×1.12) → 15,500 (×0.95) |
+| Ignatius | 0.7607 → 0.7655 → 0.7610 | 0.7528 → 0.7571 → 0.7548 | 4,574,777 → 6,260,488 (×1.37) → 4,614,061 (×1.01) | 8,883 → 11,702 (×1.32) → 9,026 (×1.02) |
+| Meetingroom | 0.4376 → 0.4371 → 0.4369 | 0.4398 → 0.4388 → 0.4394 | 5,942,233 → 8,612,660 (×1.45) → 6,823,526 (×1.15) | 11,602 → 16,290 (×1.40) → 13,230 (×1.14) |
+| Truck | 0.6544 → 0.6455 → 0.6381 | 0.6536 → 0.6439 → 0.6378 | 5,112,786 → 6,536,027 (×1.28) → 4,916,732 (×0.96) | 10,011 → 12,485 (×1.25) → 9,346 (×0.93) |
+
+**The base cloud itself at 2.0** (the cost of decision 5):
+
+| scene | raw F1 base 1.5 → base 2.0 | Δ | verts × | peak × |
+|---|---|---|---|---|
+| Barn | 0.6225 → 0.6206 | −0.0019 | ×0.80 | ×0.74 |
+| Ignatius | 0.7607 → 0.7560 | −0.0047 | ×0.75 | ×0.76 |
+| Meetingroom | 0.4376 → 0.4378 | +0.0002 | ×0.82 | ×0.80 |
+| Truck | 0.6544 → 0.6470 | −0.0074 | ×0.77 | ×0.77 |
+
+Mean **−0.0035**. `--min-point-distance 2.0` buys −23 % memory for −0.0035 mean raw F1, Truck
+−0.0074.
+
+**Verdict.** Prior weight 4's +0.0107 cloud gain becomes **−0.0018 mean raw-mesh F1** at 1.5
+(−0.0024 / +0.0048 / −0.0005 / −0.0089) with peak memory +12…40 % (three scenes over the +15 %
+clause) and verts +28…45 %; at equal cost (2.0) it is **−0.0053 mean** (−0.0045 / +0.0003 /
+−0.0007 / −0.0163). Truck fails the raw-F1 clause at both densities. **C3 rejected downstream;
+`fFusePriorWeight` stays 3.** Only Ignatius profits (+0.0048). Note that the Barn prior4 cloud in
+these rows is the mildly starved re-fuse (19,937,081 points, § 3 *Memory*); the verdict does not
+rest on Barn.
 
 ### S8 — Consolidation
 
@@ -556,14 +635,15 @@ corresponding slice produces.
 2. **`nOptimize` 4 → 8** (S6) — buys CPU users the whole #1292 quality jump at a CPU-pass cost —
    *pending*.
 3. **`fFusePriorWeight`** away from `3.0`, and/or **`nMinPixelsFuse`** away from `5` (S4) —
-   S4: `fFusePriorWeight` 4 is a conditional cloud pass (+0.0107 mean, P −1.3…−2.7 pp, +37…60 %
-   points) awaiting the S7 mesh pairing; `nMinPixelsFuse` is dominated by the prior weight at
-   every dose and is closed — *pending the S7 pairing*.
+   S4 + S7: `fFusePriorWeight` 4 passes the cloud gate (+0.0107) but the mesh rejects it (Truck raw
+   F1 −0.0089, peak memory +12…40 %); `nMinPixelsFuse` is dominated by the prior weight at every
+   dose — **no change recommended** (pending only the starved-row re-runs).
 4. **`nFuseViolationMax`** away from `0`, and whether the FSV guard should apply to non-rescued
    points (S5) — S5 (i): guard worth keeping, threshold inert, keep 0; (ii) *pending*.
 5. **`ReconstructMesh --min-point-distance` 1.5 → 2.0** (S7) — mesh-side; also resolves the
    CLI-vs-library (1.5 vs 2) mismatch recorded during the mesh effort's audit (git history) —
-   *pending*.
+   *pending*. S7 measured the base cloud at 2.0: −0.0035 mean raw F1 (Truck −0.0074) for −23 %
+   memory — a memory/quality trade, not a free win.
 6. **Re-freezing the canonical bench clouds** (S0b) — this rewrites the meaning of every
    historical `bench/out_mesh/results.csv` row and every `docs/design/DelaunayMeshReconstruction.md`
    table measured against them — *pending*.
@@ -602,3 +682,7 @@ corresponding slice produces.
    `fusedViews.size()` over all clusters including dropped ones, so the `points (%d%%)` figure it
    feeds is not a fusion yield. The `Fusion pixel accounting` line supersedes it; consider
    retiring or relabelling the older summary.
+7. **Fusion silently degrades under memory pressure**: `DenseFuseDepthMaps` skips neighbors it
+   could not cache and only warns. Should cache starvation be an error, should the loop block
+   until the map can be loaded, or should the cache stream maps instead of skipping? Until
+   decided, any fusion benchmark row is only valid with `cache_warnings = 0`.
