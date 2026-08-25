@@ -146,10 +146,71 @@ public:
 	void PointCloudFilter(int thRemove=-1);
 
 	// Mesh reconstruction
-	bool ReconstructMesh(float distInsert=2, bool bUseFreeSpaceSupport=true, bool bUseOnlyROI=false, unsigned nItersFixNonManifold=4,
-						 float kSigma=2.f, float kQual=1.f, float kb=4.f,
-						 float kf=3.f, float kRel=0.1f/*max 0.3*/, float kAbs=1000.f/*min 500*/, float kOutl=400.f/*max 700.f*/,
-						 float kInf=(float)(INT_MAX/8));
+	// hard-constraint capacity of the cells containing a camera; not exposed by the apps
+	static constexpr float kInfCapacity = (float)(INT_MAX/8);
+	// every knob of ReconstructMesh; the defaults are the recommended configuration, each
+	// boolean opt-out restoring the corresponding legacy behavior.
+	// The defaults are set by the constructor instead of member initializers, so that the
+	// defaulted parameter of ReconstructMesh below can default-construct this type while the
+	// enclosing class is still incomplete (GCC and Clang reject the member-initializer form)
+	struct ReconstructMeshParams {
+		// minimum distance in pixels between the projections of two points for both to be
+		// inserted as vertices; 0 inserts every point, merging none
+		float distInsert;
+		// reconstruct weakly-represented surfaces by enforcing the t-edge of the end cell of
+		// every point whose free-space support marks it an interface point (kb..kOutl below)
+		bool bUseFreeSpaceSupport;
+		// triangulate only the points inside the scene ROI
+		bool bUseOnlyROI;
+		// multiplier on the global sigma, the surface thickness the visibility votes resolve
+		float kSigma;
+		// multiplier on the quality weight each cut facet adds to its arc capacity
+		float kQual;
+		// free-space-support search windows, in units of the point's sigma: kf towards the
+		// camera, where the support beta is the maximum crossed, and kb past the point, where
+		// the support gamma is the mean of the extremes crossed
+		float kb;
+		float kf;
+		// a point is an interface point, and its end cell has its t-edge multiplied by
+		// beta-gamma, when gamma/beta < kRel and beta-gamma > kAbs and gamma < kOutl
+		float kRel; // max 0.3
+		float kAbs; // min 500
+		float kOutl; // max 700
+		// hard-constraint source capacity of the cells holding a camera, which the cut must
+		// leave outside the surface
+		float kInf;
+		// per-vertex sigma in the three roles where sigma stands for the point's own positional
+		// uncertainty (soft-visibility exponent, end-cell offset, free-space-support windows):
+		// sigma_v = kSigma * median incident finite-Delaunay-edge length of the vertex, clamped
+		// to [0.25, 4] x the global sigma, so a locally denser sample gets a tighter uncertainty;
+		// false = the single global sigma everywhere, the legacy behavior
+		bool bAdaptiveSigma;
+		// rescale the triangulation by a power of two so the median Delaunay edge lands near 1,
+		// where the ray-walk orientation predicate is calibrated: that predicate tests an
+		// unnormalized determinant growing as the cube of the edge length against a fixed
+		// absolute epsilon, so a scene whose median edge sits far below one unit collapses to
+		// COPLANAR at every walk step. The factor multiplies exactly in IEEE arithmetic and the
+		// kernel's exact predicates are scale-invariant, so the triangulation is scaled in place
+		// and the inverse applied at extraction; scenes whose median edge already falls inside
+		// [2^-10, 2^10] are left untouched. This repairs the predicate only - geometry already
+		// quantized away by the float storage of PointCloud::Point needs a load-time fix instead
+		bool bCanonicalRescale;
+		// drop extracted surface facets whose longest edge exceeds this multiple of the median
+		// cut-facet longest edge: every Delaunay vertex is an input point, so a facet can only
+		// stray far from the observed cloud by spanning it with long edges - the "webbing" a
+		// visibility mesh grows across occluded space (under vehicles, behind walls), surface
+		// no observation supports. A ratio of medians, so scene- and scale-independent;
+		// 0 disables the gate. Gating on the facet visibility vote mass instead does
+		// NOT work: most true surface facets are never crossed by any ray either (each ray
+		// needles through 1-2 facets of a vertex umbrella), so no mass threshold separates
+		// webbing from surface
+		float maxEdgeScale;
+		inline ReconstructMeshParams()
+			: distInsert(2.f), bUseFreeSpaceSupport(true), bUseOnlyROI(false),
+			  kSigma(1.f), kQual(1.f), kb(4.f), kf(3.f), kRel(0.1f), kAbs(1000.f), kOutl(400.f), kInf(kInfCapacity),
+			  bAdaptiveSigma(true), bCanonicalRescale(true), maxEdgeScale(4.f) {}
+	};
+	bool ReconstructMesh(const ReconstructMeshParams& params=ReconstructMeshParams());
 
 	// Mesh refinement
 	bool RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsigned nMaxViews, float fDecimateMesh, unsigned nCloseHoles, unsigned nEnsureEdgeSize,

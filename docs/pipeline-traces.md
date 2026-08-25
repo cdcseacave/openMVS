@@ -518,10 +518,10 @@ graph TD
     E1 --> F{bUseFreeSpaceSupport?}
     F -->|yes| G[Score edges: t-edge camera->hull kInf<br/>n-edge data terms kf/kRel/kAbs/kOutl]
     F -->|no| H[Score edges quality only]
-    G --> I[CGAL min-cut graph-cut<br/>source=free-space, sink=matter]
+    G --> I[IBFS min-cut graph-cut<br/>source=free-space, sink=matter]
     H --> I
-    I --> J[Extract surface from cut facets]
-    J --> K[Fix non-manifold: nItersFixNonManifold passes]
+    I --> J[Extract surface from cut facets<br/>webbing gate: drop facets with an edge > maxEdgeScale x median]
+    J --> K[Fix non-manifold: single exhaustive pass]
     K --> L[Mesh::Clean: CGAL decimation<br/>spurious removal, hole closing, smoothing]
     L --> M[scene.mesh populated]
 ```
@@ -531,8 +531,13 @@ graph TD
 **Step 1: Delaunay Tetrahedralization**
 - Uses CGAL `Delaunay_triangulation_3` with spatial sort for cache-friendly insertion
 - `distInsert` (default 2 pixels): point skipped if it projects within this distance of an already-inserted point in any of its views — avoids redundant tetrahedra
-- Stores per-vertex view information (`InsertViews()`)
-- `kSigma` (2): controls sigma for Gaussian weighting of edge distances
+- Stores per-vertex view information (`InsertViews()`); a vote carries that view's point
+  confidence when the cloud has one and 1 when it does not, and the app releases the confidence by
+  default (`--constant-weight 1`), so the votes are unit unless the operator opts in with 0
+- `kSigma` (1): scales the point uncertainty sigma used for Gaussian weighting of edge distances;
+  by default sigma is per-vertex, from the vertex's median incident Delaunay edge
+- An optional power-of-two canonical rescale (default on) keeps the median edge near 1, where the
+  ray-walk `orientation()` predicate's fixed epsilon is calibrated
 
 **Step 2: Free-Space Graph Scoring**
 - For each point-camera ray, marches through tetrahedra using CGAL `locate()` chain
@@ -541,9 +546,12 @@ graph TD
 - Edge weights: `kf` (quality), `kRel`/`kAbs` (relative/absolute outlier penalties), `kQual` (quality score)
 
 **Step 3: Graph-Cut**
-- CGAL `Alpha_shape` min-cut solver separates free-space (source) from matter (sink) tetrahedra
-- Cut facets form the extracted surface triangles
-- `nItersFixNonManifold` (4): iterative passes to fix non-manifold vertices/edges
+- IBFS min-cut solver (`libs/Math/IBFS`) separates free-space (source) from matter (sink) tetrahedra
+- Cut facets form the extracted surface triangles, minus those the webbing gate drops:
+  `maxEdgeScale` (4) x the median cut-facet longest edge, the gap-spanning surface no observation
+  supports
+- Non-manifold vertices and edges are repaired in a single exhaustive pass (splitting a vertex
+  never changes another vertex's incident faces, so no second pass can find more)
 
 **Step 4: Mesh Cleaning**
 - `Mesh::Clean()` — `libs/MVS/Mesh.cpp`

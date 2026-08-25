@@ -62,6 +62,7 @@ String strExportDepthMapsName;
 String strMaskPath;
 float fMaxSubsceneArea;
 float fSampleMesh;
+uint32_t nSampleMeshSeed;
 float fSampleMeshNeighbors;
 float fBorderROI;
 float fScaleROI;
@@ -171,6 +172,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("estimate-segmentation", boost::program_options::value(&OPT::nEstimateSegmentation)->default_value(0), "estimate segmentation of the dense point-cloud based on the image segmentation masks; num views to agree (0 - disabled, <0 - only segmentation)")
 		("sub-scene-area", boost::program_options::value(&OPT::fMaxSubsceneArea)->default_value(0.f), "split the scene in sub-scenes such that each sub-scene surface does not exceed the given maximum sampling area (0 - disabled)")
 		("sample-mesh", boost::program_options::value(&OPT::fSampleMesh)->default_value(0.f), "uniformly samples points on a mesh (0 - disabled, <0 - number of points, >0 - sample density per square unit)")
+		("sample-mesh-seed", boost::program_options::value(&OPT::nSampleMeshSeed)->default_value(NO_ID), "seed used to initialize the RNG for mesh sampling, for reproducible results (default - seed from a random device)")
 		("fusion-mode", boost::program_options::value(&OPT::nFusionMode)->default_value(0), "depth-maps fusion mode (-2 - fuse disparity-maps, -1 - export disparity-maps only, 0 - depth-maps & fusion, 1 - export depth-maps only)")
 		("fusion-filter", boost::program_options::value(&nFuseFilter)->default_value(2), "filter used to fuse the depth-maps (0 - merge, 1 - fuse, 2 - dense-fuse)")
 		("fusion-depth-diff-threshold,t", boost::program_options::value(&fDepthDiffThreshold)->default_value(0.01f), "maximum variance allowed for the depths during fusion")
@@ -322,9 +324,9 @@ int main(int argc, LPCTSTR* argv)
 		TD_TIMER_START();
 		PointCloud pointcloud;
 		if (OPT::fSampleMesh > 0)
-			scene.mesh.SamplePoints(OPT::fSampleMesh, 0, pointcloud);
+			scene.mesh.SamplePoints(OPT::fSampleMesh, 0, pointcloud, OPT::nSampleMeshSeed);
 		else
-			scene.mesh.SamplePoints(ROUND2INT<unsigned>(-OPT::fSampleMesh), pointcloud);
+			scene.mesh.SamplePoints(ROUND2INT<unsigned>(-OPT::fSampleMesh), pointcloud, OPT::nSampleMeshSeed);
 		VERBOSE("Sample mesh completed: %u points (%s)", pointcloud.GetSize(), TD_TIMER_GET_FMT().c_str());
 		pointcloud.Save(MAKE_PATH_SAFE(Util::getFileFullName(OPT::strOutputFileName))+_T(".ply"));
 		return EXIT_SUCCESS;
