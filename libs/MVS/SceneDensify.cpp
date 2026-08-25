@@ -2653,6 +2653,7 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 	// both on, and neither is touched when both are off
 	const bool bReleaseDropped(OPTDENSE::bFuseReleaseDropped);
 	const bool bTrackDropped(bRecoverableStats || bReleaseDropped);
+	const bool bSeedByConfidence(OPTDENSE::bFuseSeedByConfidence);
 	size_t nDepths(0);
 	FusionStats fuseStats;
 	fuseStats.bRecoverable = bRecoverableStats;
@@ -3037,6 +3038,46 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 			WouldKeep((float)clusterReprobe, CountDistinctViews(fusedViews, clusterReprobeViews, noViews)),
 			WouldKeep((float)(clusterCorroboration+clusterReprobe), CountDistinctViews(fusedViews, clusterCorroborationViews, clusterReprobeViews)));
 	};
+	// the order in which the seed loop below visits the pixels of one reference depth-map under
+	// OPTDENSE::bFuseSeedByConfidence: a counting sort into uniform bins over [0,1] read from the
+	// highest bin down, so that the strongest seeds claim their support first. O(pixels), no
+	// comparison sort, and stable, so raster order survives inside a bin. Every pixel of the map
+	// appears exactly once -- including the ones with no depth estimate, which the seed loop must
+	// still visit for the pixel accounting to be a partition
+	constexpr unsigned numSeedBins(64);
+	CLISTDEF0IDX(uint32_t,uint32_t) seedOrder; // pixel indices of the current map, reused across maps
+	const auto BuildSeedOrder = [&seedOrder](const DepthData& map) {
+		const int width(map.size.width), height(map.size.height);
+		// the lowest bin absorbs the pixels without a depth estimate and, with them, every pixel of a
+		// map that carries no confidence -- such a map is then visited in plain raster order. Same
+		// clamp and non-finite care as FusionStats::ConfBin, so a corrupted confidence cannot index
+		// outside the table
+		const auto SeedBin = [&map](int y, int x) -> unsigned {
+			if (map.confMap.empty() || map.depthMap(y,x) <= Depth(0))
+				return 0;
+			const float conf(map.confMap(y,x));
+			if (!ISFINITE(conf))
+				return 0;
+			const float bin(MINF(MAXF(conf, 0.f), 1.f)*(float)numSeedBins);
+			return MINF((unsigned)bin, numSeedBins-1);
+		};
+		uint32_t binOffset[numSeedBins] = {0};
+		for (int y=0; y<height; ++y)
+			for (int x=0; x<width; ++x)
+				++binOffset[SeedBin(y,x)];
+		// prefix sums taken from the highest bin down turn the counts into the start offset of each
+		// bin, which the scatter pass below then advances into the write position
+		uint32_t offset(0);
+		for (unsigned bin=numSeedBins; bin-- > 0; ) {
+			const uint32_t numBinPixels(binOffset[bin]);
+			binOffset[bin] = offset;
+			offset += numBinPixels;
+		}
+		seedOrder.Resize(offset); // keeps the allocation of the previous, equally sized maps
+		for (int y=0; y<height; ++y)
+			for (int x=0; x<width; ++x)
+				seedOrder[binOffset[SeedBin(y,x)]++] = (uint32_t)(y*width + x);
+	};
 	// optional intra-map geometric prior of the reference depth-map (recomputed per image): it grants
 	// fractional "virtual" view/pixel support so that an inlier lying on a locally coherent surface but
 	// confirmed by too few views/pixels is still kept (same prior used by AdjustConfidence); empty when off
@@ -3120,84 +3161,97 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 		}
 		// try to fuse each depth estimate
 		const size_t nNumPointsPrev(pointcloud.points.size());
-		for (int i=0; i<depthData.size.height; ++i) {
-			for (int j=0; j<depthData.size.width; ++j) {
-				FusePoint(idxImage, ImageRef(j,i), 0);
-				// the intra-map prior of the seed pixel (j,i) contributes fractional virtual support: a seed
-				// lying on a locally coherent surface partially satisfies the view and pixel minimums, so an
-				// inlier that fusion would otherwise drop for want of cross-view confirmation is recovered.
-				// the prior measures agreement with same-depth-map neighbors, which nMinPixelsFuse explicitly
-				// counts; the !fusedViews.empty() guard ensures at least the real seed exists so the prior can
-				// never fabricate a point out of nothing (when disabled, virtualSupport==0 => identical output)
-				const float virtualSupport(bUsePrior ? OPTDENSE::fFusePriorWeight * depthData.priorMap(i,j) : 0.f);
-				if (!fusedViews.empty() &&
-					(float)fusedPoints[0].size() + virtualSupport >= (float)OPTDENSE::nMinPixelsFuse &&
-					(float)fusedViews.size() + virtualSupport >= (float)nMinViewsFuse) {
-					// a point that passes ONLY thanks to virtualSupport (i.e. would have FAILED the
-					// keep-rule at virtualSupport==0) is "rescued"; nFuseViolationMax additionally
-					// requires such a point to be seen from behind by at most that many DISTINCT views
-					// (fusedViolViews, populated above by the join gate). A NON-rescued point (already
-					// meeting both thresholds on real support alone) answers to the separate limit
-					// nFuseViolationMaxAll instead -- which is -1 by default, so it stays unguarded
-					// exactly as before. A negative limit disables the guard it belongs to.
-					const bool rescued = fusedPoints[0].size() < OPTDENSE::nMinPixelsFuse ||
-										  fusedViews.size() < nMinViewsFuse;
-					const int nViolationMax(rescued ? OPTDENSE::nFuseViolationMax : OPTDENSE::nFuseViolationMaxAll);
-					if (nViolationMax < 0 || fusedViolViews.size() <= (unsigned)nViolationMax) {
-						// create the corresponding 3D point
-						pointcloud.points.emplace_back(
-							fusedPoints[0].GetMedian(),
-							fusedPoints[1].GetMedian(),
-							fusedPoints[2].GetMedian()
-						);
-						ASSERT(fusedViews.size() == fusedWeights.size());
-						PointCloud::WeightArr& weights = pointcloud.pointWeights.AddEmpty();
-						for (float weight: fusedWeights)
-							weights.push_back(weight);
-						pointcloud.pointViews.emplace_back(fusedViews);
-						if (bEstimateNormal)
-							pointcloud.normals.emplace_back(normalized(fusedNormal));
-						if (bEstimateColor)
-							pointcloud.colors.emplace_back((fusedColor/static_cast<float>(fusedPoints[0].size())).cast<uint8_t>());
-						fuseStats.AccountCluster(FusionStats::CLUSTER_KEPT, fusedPoints[0].size());
-						if (bRecoverableStats)
-							AccountClusterKept();
-					} else {
-						fuseStats.AccountCluster(FusionStats::CLUSTER_DROP_VIOLATION, fusedPoints[0].size());
-						DropClusterMembers();
-						if (bRecoverableStats)
-							AccountClusterDropped(virtualSupport);
-					}
-				} else if (!fusedViews.empty()) {
-					// the two minimums are conjunctive, so a cluster short on both is attributed
-					// to the pixel minimum, matching the order the keep-rule states them
-					const FusionStats::ClusterFate fate((float)fusedPoints[0].size() + virtualSupport < (float)OPTDENSE::nMinPixelsFuse ?
-						FusionStats::CLUSTER_DROP_MIN_PIXELS : FusionStats::CLUSTER_DROP_MIN_VIEWS);
-					fuseStats.AccountCluster(fate, fusedPoints[0].size());
+		// grow the cluster seeded at pixel (j,i), decide it with the keep-rule and reset the
+		// accumulators for the next seed; the two loops below differ only in the order they hand the
+		// pixels over, and both hand over every pixel of the map exactly once -- the pixel accounting
+		// is a partition of exactly these visits
+		const auto SeedPixel = [&](int i, int j) {
+			FusePoint(idxImage, ImageRef(j,i), 0);
+			// the intra-map prior of the seed pixel (j,i) contributes fractional virtual support: a seed
+			// lying on a locally coherent surface partially satisfies the view and pixel minimums, so an
+			// inlier that fusion would otherwise drop for want of cross-view confirmation is recovered.
+			// the prior measures agreement with same-depth-map neighbors, which nMinPixelsFuse explicitly
+			// counts; the !fusedViews.empty() guard ensures at least the real seed exists so the prior can
+			// never fabricate a point out of nothing (when disabled, virtualSupport==0 => identical output)
+			const float virtualSupport(bUsePrior ? OPTDENSE::fFusePriorWeight * depthData.priorMap(i,j) : 0.f);
+			if (!fusedViews.empty() &&
+				(float)fusedPoints[0].size() + virtualSupport >= (float)OPTDENSE::nMinPixelsFuse &&
+				(float)fusedViews.size() + virtualSupport >= (float)nMinViewsFuse) {
+				// a point that passes ONLY thanks to virtualSupport (i.e. would have FAILED the
+				// keep-rule at virtualSupport==0) is "rescued"; nFuseViolationMax additionally
+				// requires such a point to be seen from behind by at most that many DISTINCT views
+				// (fusedViolViews, populated above by the join gate). A NON-rescued point (already
+				// meeting both thresholds on real support alone) answers to the separate limit
+				// nFuseViolationMaxAll instead -- which is -1 by default, so it stays unguarded
+				// exactly as before. A negative limit disables the guard it belongs to.
+				const bool rescued = fusedPoints[0].size() < OPTDENSE::nMinPixelsFuse ||
+									  fusedViews.size() < nMinViewsFuse;
+				const int nViolationMax(rescued ? OPTDENSE::nFuseViolationMax : OPTDENSE::nFuseViolationMaxAll);
+				if (nViolationMax < 0 || fusedViolViews.size() <= (unsigned)nViolationMax) {
+					// create the corresponding 3D point
+					pointcloud.points.emplace_back(
+						fusedPoints[0].GetMedian(),
+						fusedPoints[1].GetMedian(),
+						fusedPoints[2].GetMedian()
+					);
+					ASSERT(fusedViews.size() == fusedWeights.size());
+					PointCloud::WeightArr& weights = pointcloud.pointWeights.AddEmpty();
+					for (float weight: fusedWeights)
+						weights.push_back(weight);
+					pointcloud.pointViews.emplace_back(fusedViews);
+					if (bEstimateNormal)
+						pointcloud.normals.emplace_back(normalized(fusedNormal));
+					if (bEstimateColor)
+						pointcloud.colors.emplace_back((fusedColor/static_cast<float>(fusedPoints[0].size())).cast<uint8_t>());
+					fuseStats.AccountCluster(FusionStats::CLUSTER_KEPT, fusedPoints[0].size());
+					if (bRecoverableStats)
+						AccountClusterKept();
+				} else {
+					fuseStats.AccountCluster(FusionStats::CLUSTER_DROP_VIOLATION, fusedPoints[0].size());
 					DropClusterMembers();
 					if (bRecoverableStats)
 						AccountClusterDropped(virtualSupport);
 				}
-				if (!fusedViews.empty()) {
-					nDepths += fusedViews.size();
-					fusedPoints[0].clear();
-					fusedPoints[1].clear();
-					fusedPoints[2].clear();
-					fusedViews.clear();
-					fusedWeights.clear();
-					fusedNormal = Point3d::ZERO;
-					fusedColor = Pixel32F::BLACK;
-					fusedViolViews.clear();
-					clusterMembers.clear();
-					clusterCorroboration = 0;
-					clusterCorroborationViews.clear();
-					clusterReprobe = 0;
-					clusterReprobeViews.clear();
-					clusterReclaim = 0;
-					clusterReclaimViews.clear();
-					clusterReclaimHits.clear();
-				}
+			} else if (!fusedViews.empty()) {
+				// the two minimums are conjunctive, so a cluster short on both is attributed
+				// to the pixel minimum, matching the order the keep-rule states them
+				const FusionStats::ClusterFate fate((float)fusedPoints[0].size() + virtualSupport < (float)OPTDENSE::nMinPixelsFuse ?
+					FusionStats::CLUSTER_DROP_MIN_PIXELS : FusionStats::CLUSTER_DROP_MIN_VIEWS);
+				fuseStats.AccountCluster(fate, fusedPoints[0].size());
+				DropClusterMembers();
+				if (bRecoverableStats)
+					AccountClusterDropped(virtualSupport);
 			}
+			if (!fusedViews.empty()) {
+				nDepths += fusedViews.size();
+				fusedPoints[0].clear();
+				fusedPoints[1].clear();
+				fusedPoints[2].clear();
+				fusedViews.clear();
+				fusedWeights.clear();
+				fusedNormal = Point3d::ZERO;
+				fusedColor = Pixel32F::BLACK;
+				fusedViolViews.clear();
+				clusterMembers.clear();
+				clusterCorroboration = 0;
+				clusterCorroborationViews.clear();
+				clusterReprobe = 0;
+				clusterReprobeViews.clear();
+				clusterReclaim = 0;
+				clusterReclaimViews.clear();
+				clusterReclaimHits.clear();
+			}
+		};
+		if (bSeedByConfidence) {
+			BuildSeedOrder(depthData);
+			ASSERT(seedOrder.size() == (uint32_t)(depthData.size.width*depthData.size.height));
+			const uint32_t width((uint32_t)depthData.size.width);
+			for (uint32_t idx: seedOrder)
+				SeedPixel((int)(idx/width), (int)(idx%width));
+		} else {
+			for (int i=0; i<depthData.size.height; ++i)
+				for (int j=0; j<depthData.size.width; ++j)
+					SeedPixel(i, j);
 		}
 		fusedDMaps[idxImage] = true;
 		ASSERT(pointcloud.points.size() == pointcloud.pointViews.size() && pointcloud.points.size() == pointcloud.pointWeights.size());

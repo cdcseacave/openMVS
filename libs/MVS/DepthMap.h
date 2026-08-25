@@ -176,6 +176,11 @@ extern MVS_API bool bFuseRecoverableStats;
 // form (a pixel may be consumed more than once, counted in the fusion accounting as reclaimed),
 // hence off by default: a measurement arm, not a quality default.
 extern MVS_API bool bFuseReleaseDropped;
+// DenseFuseDepthMaps: seed the clusters of each reference depth-map in descending confidence order
+// instead of raster order, so that a strong seed claims its support before a weak one can consume it
+// and the seed-to-cluster assignment stops being an accident of scanline layout. Every pixel is still
+// visited exactly once; only the order changes, hence the fused cloud changes -- off by default.
+extern MVS_API bool bFuseSeedByConfidence;
 extern MVS_API bool bEstimateConfidenceCUDA; // when CUDA estimation is used, run ADJUST_CONFIDENCE on the GPU integrated into the last geometric-consistency iteration (default); 0 forces the CPU version
 extern MVS_API unsigned nEstimationIters;
 extern MVS_API unsigned nEstimationGeometricIters;
