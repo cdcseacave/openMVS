@@ -120,7 +120,10 @@ bool MeshBipyramidFixtureTest()
 	sceneA.images.resize(1);
 	Image& cam0 = sceneA.images[0];
 	cam0.poseID = 0; cam0.ID = 0; cam0.width = cam0.height = 640;
-	cam0.camera = Camera(Matrix3x3(200,0,320, 0,200,240, 0,0,1), Matrix3x3(1,0,0, 0,1,0, 0,0,-1), Point3(0,0,1.5), true);
+	// R is a proper rotation (Rx(pi), det=+1), not the reflection diag(1,1,-1) that reads the same
+	// way here: both send the world -Z axis to the camera +Z axis, so the camera looks from above
+	// the z=0 plane towards E either way, but only the rotation passes Camera's validity check
+	cam0.camera = Camera(Matrix3x3(200,0,320, 0,200,240, 0,0,1), Matrix3x3(1,0,0, 0,-1,0, 0,0,-1), Point3(0,0,1.5), true);
 	// kSigma = 1/sqrt(10): the median squared finite edge length is 10 (6 edges at length^2=10
 	// vs 3 at length^2=3), so this makes sigma exactly 1.0, matching the appendix's derivation;
 	// the appendix hand-solves the fixture under the single global sigma and the ungated

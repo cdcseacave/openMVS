@@ -1477,8 +1477,11 @@ bool Scene::ReconstructMesh(const ReconstructMeshParams& params)
 	// fix non-manifold vertices and edges;
 	// a single pass is exhaustive: each vertex is split into one duplicate per incident
 	// connected component of faces (itself manifold by construction), and splitting never
-	// alters the incident-face set of any other vertex, so no vertex needs to be revisited
-	mesh.FixNonManifold();
+	// alters the incident-face set of any other vertex, so no vertex needs to be revisited.
+	// The cut can legitimately extract nothing, when no facet has its two cells on opposite
+	// sides, and FixNonManifold requires a mesh to work on, so skip it when there is none
+	if (!mesh.vertices.empty() && !mesh.faces.empty())
+		mesh.FixNonManifold();
 	return true;
 }
 /*----------------------------------------------------------------*/
