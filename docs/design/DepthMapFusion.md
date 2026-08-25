@@ -311,7 +311,43 @@ rows of the later slices replace them.
 
 ### S3 — C1: restore `fDepthReprojectionErrorThreshold` 1.2 → 1.0
 
-*Not yet run.*
+*Measured 2026-08-25* on the frozen `runConfAdj` dmaps (`--fusion-reprojection-threshold 1.0`,
+everything else at today's defaults, i.e. with #1292's recalibrated confidence and prior rescue
+active — the re-validation the June evidence needed):
+
+| scene | base P / R / F1 | 1.0 P / R / F1 | ΔF1 | ΔP | ΔR | points |
+|---|---|---|---|---|---|---|
+| Barn | 0.5746 / 0.7263 / 0.6416 | 0.5770 / 0.7394 / **0.6482** | **+0.0066** | +0.0024 | +0.0131 | +9.3 % |
+| Ignatius | 0.7081 / 0.8472 / 0.7714 | 0.7087 / 0.8566 / **0.7757** | **+0.0043** | +0.0006 | +0.0094 | +8.5 % |
+| Meetingroom | 0.5072 / 0.3838 / 0.4370 | 0.5130 / 0.3909 / **0.4437** | **+0.0067** | +0.0058 | +0.0071 | +5.9 % |
+| Truck | 0.6761 / 0.7644 / 0.7176 | 0.6790 / 0.7713 / **0.7222** | **+0.0046** | +0.0029 | +0.0069 | +10.9 % |
+
+Mean **+0.0055**, every scene positive, precision *and* recall up on every scene — the same
+Pareto signature the June measurement found (+0.0028…+0.0052 pre-#1292), slightly larger now.
+The channel table explains it: the `min-pixels` drop share barely moves (+0.5…+0.7 pp), so the
+tighter lateral tolerance is not starving clusters — it is splitting over-merged ones into
+distinct, better-placed points. **Cloud gate: passed.**
+
+Paired mesh rows (`run_mesh.py --cloud-name reproj10 --score-raw`, same protocol as S0):
+
+| scene | raw+gated F1 base → 1.0 | cleaned F1 base → 1.0 | Delaunay verts | `peak_ws_mb` |
+|---|---|---|---|---|
+| Barn | 0.6225 → 0.6221 (−0.0004) | 0.6257 → 0.6241 (−0.0016) | ×1.07 | ×1.02 |
+| Ignatius | 0.7607 → 0.7607 (0.0000) | 0.7528 → 0.7529 (+0.0001) | ×1.05 | ×1.03 |
+| Meetingroom | 0.4376 → 0.4377 (+0.0001) | 0.4398 → 0.4399 (+0.0001) | ×1.05 | ×1.05 |
+| Truck | 0.6544 → 0.6557 (+0.0013) | 0.6536 → 0.6549 (+0.0013) | ×1.07 | ×1.03 |
+
+**The mesh stage absorbs the whole cloud gain**: three scenes within the 0.0006 mesh noise floor,
+Truck +0.0013, nothing near the 0.003 escalation clause, memory +2–5 %. (The `recon_wall_s`
+column was taken while the fusion sweep ran on the same machine; it is re-measured solo in S7.)
+This is § 6 question 1 answered for this lever: a +0.005 cloud-F1 lever is invisible after
+Delaunay + graph-cut at this point density, so the case for the flip rests on the cloud — where
+the point cloud *is* the product — plus the fact that it costs nothing downstream.
+
+**Recommendation** (decision reserved, § 5 item 1): adopt 1.0 as the default — validated twice,
+on two confidence lineages, Pareto on every scene, neutral for the mesh. Implementation is the
+two literals of `dc32ab8` (`libs/MVS/DepthMap.cpp`, `DensifyPointCloud.cpp`) plus its
+`docs/fusion_reprojection_threshold.md`.
 
 ### S4 — C3 + C4: rescue-strength sweep
 
