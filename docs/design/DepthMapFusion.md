@@ -206,11 +206,22 @@ spread (Barn 3.6 %, Meetingroom 14 %, Ignatius 0.3 % across three June runs; fam
 therefore invalid — every fusion A/B in this campaign runs on frozen `.dmap` files, re-fusing the
 same bytes with one constant changed.
 
+Re-running the densifier's command line in a folder that already holds its `.dmap` set is **not**
+by itself a fusion-only run: the first pass does load the cached maps, but the geometric-consistency
+iterations (`--geometric-iters`, default 2) then re-estimate every map (`depthNNNN.geo.dmap`).
+A fusion-only re-run needs the frozen flags **plus `--geometric-iters 0`**, which loads the cached
+(final, geometric-consistent) maps and goes straight to fusion; `--fusion-mode` is not a
+fusion-only switch (`-1` exports disparity maps). `bench/run_fusion.py` bakes this in, snapshots
+every `.dmap`'s size+mtime before the run and aborts if any changed.
+
 ### Logging and residuals
 
-Run at `-v 3` (§ 1) so the `Fusion pixel accounting` / `Fusion probe accounting` /
-confidence-histogram lines land in the log. Both accounting residuals must read `0` on every
-arm — they are self-checking partitions.
+The `Fusion pixel accounting` / `Fusion probe accounting` / confidence-histogram lines are
+reported at `-v 2`, the level of the fusion summary line (they were `DEBUG_ULTIMATE` = `-v 3`
+when first committed, but `-v 3` also dumps every depth map as `depthNNNN.ply/.png/.conf.png`
+into the working folder — ~13 MB per map, ~5 GB per scene — so an accounting readable only there
+was unusable on a real dataset; lowered in the S9 commit). Both accounting residuals must read
+`0` on every arm — they are self-checking partitions.
 
 ### Noise floors
 
@@ -255,7 +266,40 @@ quality-at-equal-cost, not just quality-at-any-cost.
 
 ### S0 — Re-baseline the bench
 
-*Not yet run.*
+*Done 2026-08-25.* `<Scene>/runConfAdj/` (all four scenes, one build, one flag set, dmaps kept) is
+the canonical fusion baseline, tag `fusion-base`; the June `runMetashape` clouds stay frozen as the
+historical row. Three checks passed before any arm ran:
+
+1. **The HEAD binary reproduces the frozen clouds exactly.** A fusion-only re-fuse
+   (`--geometric-iters 0`, § 3) of each scene's dmaps returns the frozen point count to the point:
+   Barn 13,966,904 / Ignatius 9,424,360 / Meetingroom 8,801,700 / Truck 9,392,543. Fusion alone
+   takes 76 / 54 / 64 / 53 s.
+2. **Alignment frozen.** `<Scene>_final_transform.npy` written for all four scenes from that
+   re-fuse's ICP, so every later arm is scored in the same GT frame (the evaluator loads the file
+   and skips its ICP).
+3. **Cloud stage** (frozen alignment): Barn P 0.5746 / R 0.7263 / **F1 0.6416**; Ignatius
+   0.7081 / 0.8472 / **0.7714**; Meetingroom 0.5072 / 0.3838 / **0.4370**; Truck
+   0.6761 / 0.7644 / **0.7176** — Barn/Ignatius/Meetingroom within 0.0001 of the pre-freeze
+   bench rows, Truck's first `runConfAdj` number (+0.0020 over the superseded `runFusionStats`
+   cloud, a different densification).
+
+Mesh baseline (`run_mesh.py --work-subdir runConfAdj --variants baseline --score-raw`, python
+sampler, 10 M samples, seed 42), the reference for every paired mesh row that follows:
+
+| scene | cloud F1 | raw+gated P / R / **F1** | cleaned P / R / F1 | Delaunay verts | cells | `recon_wall_s` | `peak_ws_mb` |
+|---|---|---|---|---|---|---|---|
+| Barn | 0.6416 | 0.5994 / 0.6473 / **0.6225** | 0.6225 / 0.6288 / 0.6257 | 8.42 M | 52.8 M | 310 | 16,370 |
+| Ignatius | 0.7714 | 0.7511 / 0.7705 / **0.7607** | 0.7698 / 0.7365 / 0.7528 | 4.57 M | 28.6 M | 187 | 8,883 |
+| Meetingroom | 0.4370 | 0.5078 / 0.3845 / **0.4376** | 0.5280 / 0.3769 / 0.4398 | 5.94 M | 38.0 M | 213 | 11,602 |
+| Truck | 0.7176 | 0.6177 / 0.6958 / **0.6544** | 0.6321 / 0.6766 / 0.6536 | 5.11 M | 32.2 M | 208 | 10,011 |
+
+Meetingroom's mesh (raw and cleaned) sits above its own cloud; the other three meshes absorb
+0.011–0.063 of their cloud F1, Truck by far the most. The `recon_wall_s` column of this table was
+measured while a library build ran on the same machine; it is a reference for memory and vertex
+counts, and the timing rows are re-measured solo (≥ 3 runs, medians) wherever a candidate's cost
+is judged (S7). The plan's § 0 "Truck mesh regresses" and "Meetingroom ×6.1 wall" facts are not
+reproduced here — they compared two different clouds under the broken smoother; the paired mesh
+rows of the later slices replace them.
 
 ### S1 — Record the provenance finding (doc-only)
 
