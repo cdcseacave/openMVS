@@ -170,6 +170,12 @@ extern MVS_API int nFuseViolationMaxAll;
 // but it costs extra predicate evaluations on the rejection branches and a second per-pixel bit per
 // cached depth-map, hence off by default.
 extern MVS_API bool bFuseRecoverableStats;
+// DenseFuseDepthMaps: hand the pixels of a cluster the keep-rule dropped back to the pool, so that a
+// later seed or probe can still use them -- today a pixel is marked consumed for good, so one doomed
+// early cluster starves every later cluster that needed exactly those pixels. Changes which clusters
+// form (a pixel may be consumed more than once, counted in the fusion accounting as reclaimed),
+// hence off by default: a measurement arm, not a quality default.
+extern MVS_API bool bFuseReleaseDropped;
 extern MVS_API bool bEstimateConfidenceCUDA; // when CUDA estimation is used, run ADJUST_CONFIDENCE on the GPU integrated into the last geometric-consistency iteration (default); 0 forces the CPU version
 extern MVS_API unsigned nEstimationIters;
 extern MVS_API unsigned nEstimationGeometricIters;
