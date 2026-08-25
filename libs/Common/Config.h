@@ -292,7 +292,20 @@ __inline__ static void trap_instruction() { __asm__ volatile("brk #0"); }
 
 #ifdef _DEBUG
 
-#ifdef _MSC_VER
+#if defined(__CUDA_ARCH__)
+// Device-side form. __CUDA_ARCH__ is defined only while nvcc compiles the device side of a .cu
+// file -- never for an ordinary host translation unit, and never for the __host__ side of one --
+// so the host forms below stay in force everywhere else. Device code cannot call the primitives
+// they report and break with, so it uses CUDA's own assert instead: __assertfail() plus a trap,
+// with the message surfacing at the next cudaStreamSynchronize() or error check. This has to be
+// tested ahead of _MSC_VER, which nvcc defines as well while cl is the host compiler -- that is
+// why the device form that used to sit further down was never reached
+#include <cassert>
+#define SIMPLE_ASSERT(exp) assert(exp)
+#define ASSERT(exp, ...) assert(exp)
+#define TRACE(...)
+
+#elif defined(_MSC_VER)
 #define _DEBUGINFO
 #define _CRTDBG_MAP_ALLOC //enable this to show also the filename (DEBUG_NEW should also be defined in each file)
 #include <cstdlib>
@@ -310,18 +323,7 @@ __inline__ static void trap_instruction() { __asm__ volatile("brk #0"); }
 #define ASSERT(exp, ...) {if (!(exp)) {PRINT_ASSERT_MSG(exp, ##__VA_ARGS__); _ASSERT_BREAK();} ASSERT_ANALYSIS_ASSUME(exp);}
 #endif // _INC_CRTDBG
 #define TRACE(...) {TCHAR buffer[2048]; _sntprintf(buffer, 2048, __VA_ARGS__); OutputDebugString(buffer);}
-#elif defined(__CUDA_ARCH__)
-// __CUDA_ARCH__ is defined only while nvcc compiles the device side of a
-// .cu file -- never for ordinary host translation units, and never for the
-// __host__ side of a .cu file. CUDA implements
-// it natively for device code (__assertfail() + trap; the failure message
-// surfaces at the next cudaStreamSynchronize()/error check) and it already
-// compiles to nothing under NDEBUG, so this costs nothing in Release builds.
-#include <cassert>
-#define SIMPLE_ASSERT(exp) assert(exp)
-#define ASSERT(exp, ...) assert(exp)
-#define TRACE(...)
-#else // !_MSC_VER & !__CUDA_ARCH__
+#else // !_MSC_VER
 #include <assert.h>
 #define SIMPLE_ASSERT(exp) {if (!(exp)) _ASSERT_BREAK();}
 #define ASSERT(exp, ...) {if (!(exp)) {PRINT_ASSERT_MSG(exp, ##__VA_ARGS__); _ASSERT_BREAK();}}
