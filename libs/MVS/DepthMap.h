@@ -158,6 +158,13 @@ extern MVS_API float fFusePriorWeight;
 // rejects any rescued point contradicted by >=1 free-space ray; N allows <=N such violations.
 // Non-rescued points are never affected.
 extern MVS_API int nFuseViolationMax;
+// DenseFuseDepthMaps: measure, alongside the fusion accounting, how much of the fusion loss the
+// structural candidates could recover -- corroboration by pixels an earlier cluster already
+// consumed, the pixels dropped clusters keep locked away, and a 4-neighbor re-probe of the joins the
+// rounded projection misses. Measurement only: the fused point-cloud is byte-identical either way,
+// but it costs extra predicate evaluations on the rejection branches and a second per-pixel bit per
+// cached depth-map, hence off by default.
+extern MVS_API bool bFuseRecoverableStats;
 extern MVS_API bool bEstimateConfidenceCUDA; // when CUDA estimation is used, run ADJUST_CONFIDENCE on the GPU integrated into the last geometric-consistency iteration (default); 0 forces the CPU version
 extern MVS_API unsigned nEstimationIters;
 extern MVS_API unsigned nEstimationGeometricIters;
