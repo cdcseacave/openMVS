@@ -1455,13 +1455,18 @@ bool Scene::ReconstructMesh(const ReconstructMeshParams& params)
 		// numEdges x {uint32 u, uint32 v, float capUV, float capVU},
 		// numNodes x {float s, float t} in node-id order; solver stats written to <path>.meta
 		const char* const exportGraphPath(getenv("MVS_EXPORT_GRAPH"));
+		// plus <path>.cells: numNodes x {float x, y, z (centroid of the finite vertices), uint32 containerIndex}
 		struct GraphExportEdge { uint32_t u, v; float capUV, capVU; };
+		struct GraphExportCell { float x, y, z; uint32_t containerIndex; };
 		std::vector<GraphExportEdge> exportEdges;
 		std::vector<float> exportNodes;
+		std::vector<GraphExportCell> exportCells;
 		if (exportGraphPath) {
 			exportEdges.reserve(delaunay.number_of_facets());
 			exportNodes.resize((size_t)delaunay.number_of_cells()*2);
+			exportCells.resize(delaunay.number_of_cells());
 		}
+		uint32_t exportContainerIndex(0);
 		// set weights
 		constexpr edge_cap_t maxCap(3.402823466e+34f/*FLT_MAX*0.0001f*/);
 		for (delaunay_t::All_cells_iterator ci=delaunay.all_cells_begin(), ce=delaunay.all_cells_end(); ci!=ce; ++ci) {
@@ -1471,6 +1476,14 @@ bool Scene::ReconstructMesh(const ReconstructMeshParams& params)
 			if (exportGraphPath) {
 				exportNodes[(size_t)ciID*2] = ciInfo.s;
 				exportNodes[(size_t)ciID*2+1] = MINF(ciInfo.t, maxCap);
+				double c[3] = {0, 0, 0}; int nc(0);
+				for (int v=0; v<4; ++v) {
+					const vertex_handle_t vh(ci->vertex(v));
+					if (delaunay.is_infinite(vh)) continue;
+					const point_t& p(vh->point());
+					c[0] += p.x(); c[1] += p.y(); c[2] += p.z(); ++nc;
+				}
+				exportCells[ciID] = {(float)(c[0]/nc), (float)(c[1]/nc), (float)(c[2]/nc), exportContainerIndex++};
 			}
 			for (int i=0; i<4; ++i) {
 				const cell_handle_t cj(ci->neighbor(i));
@@ -1500,8 +1513,12 @@ bool Scene::ReconstructMesh(const ReconstructMeshParams& params)
 					(unsigned long long)numNodes, (unsigned long long)numEdges, exportGraphPath);
 			} else
 				DEBUG("error: can not create graph file '%s'", exportGraphPath);
+			File fileCells((String(exportGraphPath)+".cells").c_str(), File::WRITE, File::CREATE|File::TRUNCATE);
+			if (fileCells.isOpen())
+				fileCells.write(exportCells.data(), sizeof(GraphExportCell)*exportCells.size());
 			exportEdges.clear(); exportEdges.shrink_to_fit();
 			exportNodes.clear(); exportNodes.shrink_to_fit();
+			exportCells.clear(); exportCells.shrink_to_fit();
 		}
 		// find graph-cut solution
 		const float maxflow(graph.ComputeMaxFlow());

@@ -8,9 +8,11 @@
  * that cross-checks the solvers on random degree<=4 graphs.
  *
  * Usage:
- *   GraphCutBench <graph.gcut> [--solver tetra|ibfs] [--subgraph N] [--reorder] [--save out.gcut] [--repeat N] [--verify]
+ *   GraphCutBench <graph.gcut> [--solver tetra|ibfs] [--subgraph N] [--reorder MODE] [--locality] [--save out.gcut] [--repeat N] [--verify]
  *     --subgraph N  solve only the first N nodes (a spatially coherent prefix of the scene)
- *     --reorder     renumber the nodes in BFS order before solving (locality experiment)
+ *     --reorder M   renumber the nodes before solving (locality experiment): bfs, bfs-s, bfs-t, container,
+ *                   morton, hilbert (the last three need the <graph.gcut>.cells sidecar), random
+ *     --locality    print the distribution of |u-v| over the edges for the current numbering
  *     --save FILE   write the (subgraphed/reordered) graph in the same format
  *     --verify      check the cut-value certificate (cut capacity == max flow) and the
  *                   residual-graph optimality check of the solver
@@ -25,8 +27,7 @@
  *     pipeline's maxCap, wide dynamic range), terminal densities (sparse, 1/3, all), solver object
  *     reuse through Reset(), split AddNode() calls, 0- and 1-node graphs; every instance is checked
  *     with the cut certificate, the residual optimality check, the IBFS oracle and (small graphs)
- *     an exact double-precision Dinic; prints the aggregated TetraFlow operation counters when
- *     compiled with TETRAFLOW_STATS=1 (shows which code paths the run exercised)
+ *     an exact double-precision Dinic
  *   GraphCutBench --stress-iter K [--seed S]    print and re-run a single stress iteration
  *
  * Solver memory is roughly 200 B/node (IBFS) and 70 B/node (TetraFlow); the loaded graph is
@@ -34,6 +35,7 @@
  */
 
 #include <algorithm>
+#include <cfloat>
 #include <chrono>
 #include <cinttypes>
 #include <cmath>
@@ -93,6 +95,20 @@ struct Dump {
 	// non-mmap storage for synthetic graphs
 	std::vector<EdgeRec> ownEdges;
 	std::vector<NodeRec> ownNodes;
+	// optional <file>.cells sidecar: per node {float x,y,z; uint32 containerIndex}
+	struct CellRec { float x, y, z; uint32_t containerIndex; };
+	std::vector<CellRec> cells;
+
+	bool LoadCells(const char* path) {
+		const std::string cellsPath = std::string(path) + ".cells";
+		FILE* f = fopen(cellsPath.c_str(), "rb");
+		if (!f) return false;
+		cells.resize(numNodes);
+		const size_t got = fread(cells.data(), sizeof(CellRec), numNodes, f);
+		fclose(f);
+		if (got != numNodes) { fprintf(stderr, "warning: '%s' is truncated, ignored\n", cellsPath.c_str()); cells.clear(); return false; }
+		return true;
+	}
 
 	bool Load(const char* path) {
 		const int fd = open(path, O_RDONLY);
@@ -131,37 +147,141 @@ struct Dump {
 		numEdges = ownEdges.size();
 		edges = ownEdges.data();
 		nodes = ownNodes.data();
+		if (!cells.empty()) cells.resize(n);
 		if (map && map != MAP_FAILED) { munmap(map, mapSize); map = nullptr; }
 	}
 	// renumber the nodes in BFS order over the adjacency so that neighbors tend to be close
 	// in memory (experiment: locality of the pipeline's Delaunay cell order vs BFS order);
 	// edges are re-sorted by (u,v) to mimic the pipeline's per-cell emission order
-	void Reorder() {
-		std::vector<uint32_t> off(numNodes+1, 0);
+	// CSR adjacency of the undirected graph
+	void Adjacency(std::vector<uint32_t>& off, std::vector<uint32_t>& adj) const {
+		off.assign(numNodes+1, 0);
 		for (uint64_t e=0; e<numEdges; ++e) { ++off[edges[e].u+1]; ++off[edges[e].v+1]; }
 		for (uint64_t i=1; i<=numNodes; ++i) off[i] += off[i-1];
-		std::vector<uint32_t> adj(2*numEdges), fill(off.begin(), off.end()-1);
+		adj.resize(2*numEdges);
+		std::vector<uint32_t> fill(off.begin(), off.end()-1);
 		for (uint64_t e=0; e<numEdges; ++e) { adj[fill[edges[e].u]++] = edges[e].v; adj[fill[edges[e].v]++] = edges[e].u; }
-		std::vector<uint32_t> newId(numNodes, UINT32_MAX), order; order.reserve(numNodes);
-		for (uint32_t seed=0; seed<numNodes; ++seed) {
-			if (newId[seed] != UINT32_MAX) continue;
-			newId[seed] = (uint32_t)order.size(); order.push_back(seed);
-			for (size_t head=order.size()-1; head<order.size(); ++head) {
+	}
+	// BFS order over the adjacency; seeds: nodes in id order (seed==0), or first the nodes with s>0 (1) / t>0 (2)
+	void OrderBFS(std::vector<uint32_t>& newId, int seedMode) const {
+		std::vector<uint32_t> off, adj;
+		Adjacency(off, adj);
+		newId.assign(numNodes, UINT32_MAX);
+		std::vector<uint32_t> order; order.reserve(numNodes);
+		auto grow = [&](size_t from) {
+			for (size_t head=from; head<order.size(); ++head) {
 				const uint32_t x = order[head];
 				for (uint32_t k=off[x]; k<off[x+1]; ++k) {
 					const uint32_t y = adj[k];
 					if (newId[y] == UINT32_MAX) { newId[y] = (uint32_t)order.size(); order.push_back(y); }
 				}
 			}
+		};
+		if (seedMode) {
+			for (uint32_t i=0; i<numNodes; ++i)
+				if ((seedMode == 1 ? nodes[i].s : nodes[i].t) > 0) { newId[i] = (uint32_t)order.size(); order.push_back(i); }
+			grow(0);
 		}
+		for (uint32_t seed=0; seed<numNodes; ++seed) {
+			if (newId[seed] != UINT32_MAX) continue;
+			newId[seed] = (uint32_t)order.size(); order.push_back(seed);
+			grow(order.size()-1);
+		}
+	}
+	// Skilling, "Programming the Hilbert curve" (2004): coordinates -> transposed Hilbert index, b bits per axis
+	static void AxesToTranspose(uint32_t* X, int b, int n) {
+		uint32_t M = 1u << (b-1), P, Q, t;
+		for (Q = M; Q > 1; Q >>= 1) {
+			P = Q - 1;
+			for (int i=0; i<n; ++i)
+				if (X[i] & Q) X[0] ^= P;
+				else { t = (X[0]^X[i]) & P; X[0] ^= t; X[i] ^= t; }
+		}
+		for (int i=1; i<n; ++i) X[i] ^= X[i-1];
+		t = 0;
+		for (Q = M; Q > 1; Q >>= 1) if (X[n-1] & Q) t ^= Q-1;
+		for (int i=0; i<n; ++i) X[i] ^= t;
+	}
+	// space-filling-curve order of the cell centroids (hilbert: Hilbert curve, else Morton/Z-order), 21 bits per axis
+	bool OrderCurve(std::vector<uint32_t>& newId, bool hilbert) const {
+		if (cells.empty()) { fprintf(stderr, "error: no .cells sidecar (cell centroids) for the spatial order\n"); return false; }
+		float lo[3] = {FLT_MAX, FLT_MAX, FLT_MAX}, hi[3] = {-FLT_MAX, -FLT_MAX, -FLT_MAX};
+		for (const CellRec& c : cells) {
+			const float v[3] = {c.x, c.y, c.z};
+			for (int a=0; a<3; ++a) { lo[a] = std::min(lo[a], v[a]); hi[a] = std::max(hi[a], v[a]); }
+		}
+		const int b = 21;
+		const double scale = (double)((1u<<b)-1) / std::max({hi[0]-lo[0], hi[1]-lo[1], hi[2]-lo[2], 1e-30f});
+		std::vector<std::pair<uint64_t,uint32_t>> keys(numNodes);
+		for (uint32_t i=0; i<numNodes; ++i) {
+			uint32_t X[3] = { (uint32_t)((cells[i].x-lo[0])*scale), (uint32_t)((cells[i].y-lo[1])*scale), (uint32_t)((cells[i].z-lo[2])*scale) };
+			if (hilbert) AxesToTranspose(X, b, 3);
+			uint64_t key = 0;
+			for (int j=b-1; j>=0; --j)
+				for (int a=0; a<3; ++a)
+					key = (key<<1) | ((X[a]>>j)&1);
+			keys[i] = {key, i};
+		}
+		std::sort(keys.begin(), keys.end());
+		newId.resize(numNodes);
+		for (uint32_t k=0; k<numNodes; ++k) newId[keys[k].second] = k;
+		return true;
+	}
+	// apply a node permutation: newId[old] = new; edges are re-sorted by (u,v) to mimic the
+	// pipeline's per-cell emission order
+	void Permute(const std::vector<uint32_t>& newId) {
 		std::vector<NodeRec> nn(numNodes);
 		for (uint64_t i=0; i<numNodes; ++i) nn[newId[i]] = nodes[i];
 		std::vector<EdgeRec> ne(edges, edges+numEdges);
 		for (auto& e : ne) { e.u = newId[e.u]; e.v = newId[e.v]; if (e.u > e.v) { std::swap(e.u, e.v); std::swap(e.capUV, e.capVU); } }
 		std::sort(ne.begin(), ne.end(), [](const EdgeRec& a, const EdgeRec& b) { return a.u < b.u || (a.u == b.u && a.v < b.v); });
+		if (!cells.empty()) {
+			std::vector<CellRec> nc(numNodes);
+			for (uint64_t i=0; i<numNodes; ++i) nc[newId[i]] = cells[i];
+			cells.swap(nc);
+		}
 		ownNodes.swap(nn); ownEdges.swap(ne);
 		nodes = ownNodes.data(); edges = ownEdges.data();
 		if (map && map != MAP_FAILED) { munmap(map, mapSize); map = nullptr; }
+	}
+	// renumber the nodes: bfs (graph BFS from node 0, the pipeline's order), bfs-s / bfs-t (BFS seeded from
+	// all source-/sink-connected nodes), container (the Delaunay container order, i.e. the order before the
+	// BFS renumbering), morton / hilbert (space-filling curve over the cell centroids), random
+	bool Reorder(const std::string& mode) {
+		std::vector<uint32_t> newId;
+		if (mode == "bfs") OrderBFS(newId, 0);
+		else if (mode == "bfs-s") OrderBFS(newId, 1);
+		else if (mode == "bfs-t") OrderBFS(newId, 2);
+		else if (mode == "morton" || mode == "hilbert") { if (!OrderCurve(newId, mode == "hilbert")) return false; }
+		else if (mode == "container") {
+			if (cells.empty()) { fprintf(stderr, "error: no .cells sidecar for the container order\n"); return false; }
+			newId.resize(numNodes);
+			for (uint32_t i=0; i<numNodes; ++i) newId[i] = cells[i].containerIndex;
+		} else if (mode == "random") {
+			newId.resize(numNodes);
+			for (uint32_t i=0; i<numNodes; ++i) newId[i] = i;
+			std::mt19937 rng(12345);
+			std::shuffle(newId.begin(), newId.end(), rng);
+		} else if (mode == "none") return true;
+		else { fprintf(stderr, "error: unknown order '%s'\n", mode.c_str()); return false; }
+		Permute(newId);
+		return true;
+	}
+	// locality of the numbering: distribution of |u-v| over the edges, in node-line units (64 B)
+	void PrintLocality(const std::string& mode) const {
+		static const uint64_t bins[] = {1, 16, 1024, 32768, 262144, 2097152}; // 64B .. 128MB
+		uint64_t counts[7] = {0};
+		double sumLog = 0;
+		for (uint64_t e=0; e<numEdges; ++e) {
+			const uint64_t dist = edges[e].u > edges[e].v ? edges[e].u-edges[e].v : edges[e].v-edges[e].u;
+			int k = 0; while (k < 6 && dist > bins[k]) ++k;
+			++counts[k];
+			sumLog += std::log2((double)dist+1.0);
+		}
+		printf("LOCALITY order=%s edges=%" PRIu64 " meanLog2Dist=%.2f", mode.c_str(), numEdges, sumLog/(double)std::max<uint64_t>(numEdges,1));
+		static const char* names[] = {"<=1", "<=16(1KB)", "<=1K(64KB)", "<=32K(2MB)", "<=256K(16MB)", "<=2M(128MB)", ">2M"};
+		for (int k=0; k<7; ++k) printf(" %s=%.1f%%", names[k], 100.0*(double)counts[k]/(double)std::max<uint64_t>(numEdges,1));
+		printf("\n");
 	}
 	// write the (possibly reordered/subgraphed) graph in the same MVSGCUT1 format
 	bool Save(const char* path) const {
@@ -226,7 +346,7 @@ Result RunIBFS(const Dump& d, bool keepSides) {
 
 // reuse: solve with an existing solver object (Reset path) instead of a fresh one;
 // splitNodes: accumulate the terminal capacities through two AddNode() calls per node
-Result RunTetra(const Dump& d, bool keepSides, bool check, SEACAVE::TetraFlow* reuse = nullptr, bool splitNodes = false, SEACAVE::TetraFlow::Stats* stats = nullptr) {
+Result RunTetra(const Dump& d, bool keepSides, bool check, SEACAVE::TetraFlow* reuse = nullptr, bool splitNodes = false) {
 	Result r;
 	double t0 = Now();
 	SEACAVE::TetraFlow own;
@@ -258,15 +378,6 @@ Result RunTetra(const Dump& d, bool keepSides, bool check, SEACAVE::TetraFlow* r
 	if (check && !g.CheckMaxFlow()) {
 		fprintf(stderr, "FAIL: tetra max-flow certificate failed (augmenting path remains)\n");
 		exit(2);
-	}
-	if (stats) {
-		const SEACAVE::TetraFlow::Stats& st = g.GetStats();
-		stats->augmentations += st.augmentations; stats->walkBottleneckS += st.walkBottleneckS; stats->walkBottleneckT += st.walkBottleneckT;
-		stats->walkPushS += st.walkPushS; stats->walkPushT += st.walkPushT; stats->orphans += st.orphans; stats->orphansBucket += st.orphansBucket;
-		stats->arcScansGrowth += st.arcScansGrowth; stats->arcScansAdoption += st.arcScansAdoption; stats->growthPassesS += st.growthPassesS;
-		stats->growthPassesT += st.growthPassesT; stats->deficitPulls += st.deficitPulls; stats->deficitOrphans += st.deficitOrphans;
-		stats->conversions += st.conversions; stats->deficitFrees += st.deficitFrees; stats->endedOnS += st.endedOnS;
-		stats->boundExhaustions += st.boundExhaustions; stats->phantomFlow += st.phantomFlow;
 	}
 	return r;
 }
@@ -531,7 +642,7 @@ struct StressReport {
 	int firstIbfsCutMismatch = -1;
 };
 
-int StressOne(const StressOptions& opt, int iter, bool print, SEACAVE::TetraFlow& reuse, SEACAVE::TetraFlow::Stats& agg, StressReport& report) {
+int StressOne(const StressOptions& opt, int iter, bool print, SEACAVE::TetraFlow& reuse, StressReport& report) {
 	std::mt19937 rng(opt.seed + (uint32_t)iter*2654435761u);
 	Family fam = (Family)(rng()%(uint32_t)Family::Count);
 	const Caps caps = (Caps)(rng()%(uint32_t)Caps::Count);
@@ -559,7 +670,7 @@ int StressOne(const StressOptions& opt, int iter, bool print, SEACAVE::TetraFlow
 	}
 	// float solvers agree to rounding; the wide/huge regimes accumulate more absorption
 	const double tol = (caps == Caps::Int) ? 0.0 : (caps == Caps::Mixed ? 1e-5 : 1e-4);
-	const Result rt = RunTetra(d, true, true, useReuse ? &reuse : nullptr, split, &agg);
+	const Result rt = RunTetra(d, true, true, useReuse ? &reuse : nullptr, split);
 	bool ok = CheckClose(CutValue(d, rt.srcSide), rt.flow, std::max(tol, 1e-6), "tetra cut certificate");
 	if (rt.srcSide.size() != d.numNodes) ok = false;
 	if (!opt.skipIBFS && d.numNodes >= opt.ibfsMinNodes) {
@@ -588,24 +699,17 @@ int StressOne(const StressOptions& opt, int iter, bool print, SEACAVE::TetraFlow
 
 int Stress(const StressOptions& opt, int only) {
 	SEACAVE::TetraFlow reuse; // shared across iterations: exercises Reset() on a used object
-	SEACAVE::TetraFlow::Stats agg;
 	StressReport report;
 	if (only >= 0)
-		return StressOne(opt, only, true, reuse, agg, report);
+		return StressOne(opt, only, true, reuse, report);
 	for (int iter=0; iter<opt.iters; ++iter)
-		if (StressOne(opt, iter, false, reuse, agg, report))
+		if (StressOne(opt, iter, false, reuse, report))
 			return 1;
 	printf("stress OK: %d graphs (seed %u, <= %u nodes)%s%s\n", opt.iters, opt.seed, opt.maxNodes,
 		opt.skipIBFS ? "" : ", ibfs==tetra flow (>= ibfs-min-nodes)", opt.useDinic ? ", dinic==tetra flow (<= dinic-max-nodes)" : "");
 	if (report.ibfsCutMismatches)
 		printf("note: the ibfs reference reported a non-minimum cut on %" PRIu64 " graphs (first at iter %d; flow values still matched)\n",
 			report.ibfsCutMismatches, report.firstIbfsCutMismatch);
-	if (agg.augmentations)
-		printf("STATS aggregate: augs=%" PRIu64 " orphans=%" PRIu64 " orphansBucket=%" PRIu64 " growthS=%" PRIu64 " growthT=%" PRIu64
-			" deficitPulls=%" PRIu64 " deficitOrphans=%" PRIu64 " conversions=%" PRIu64 " deficitFrees=%" PRIu64
-			" boundExhaustions=%" PRIu64 " endedOnS=%" PRIu64 " phantomFlow=%.6g\n",
-			agg.augmentations, agg.orphans, agg.orphansBucket, agg.growthPassesS, agg.growthPassesT,
-			agg.deficitPulls, agg.deficitOrphans, agg.conversions, agg.deficitFrees, agg.boundExhaustions, agg.endedOnS, agg.phantomFlow);
 	return 0;
 }
 
@@ -618,7 +722,8 @@ int main(int argc, char** argv) {
 	std::string solver = "tetra";
 	int repeat = 1, selftestIter = -1, stressIter = -1;
 	uint64_t subgraph = 0;
-	bool verify = false, selftest = false, skipIBFS = false, reorder = false, stress = false;
+	bool verify = false, selftest = false, skipIBFS = false, stress = false, locality = false;
+	std::string reorder;
 	StressOptions stressOpt;
 	for (int i=1; i<argc; ++i) {
 		if (!strcmp(argv[i], "--solver") && i+1 < argc) solver = argv[++i];
@@ -637,7 +742,8 @@ int main(int argc, char** argv) {
 		else if (!strcmp(argv[i], "--selftest")) selftest = true;
 		else if (!strcmp(argv[i], "--selftest-iter") && i+1 < argc) { selftest = true; selftestIter = atoi(argv[++i]); }
 		else if (!strcmp(argv[i], "--skip-ibfs")) skipIBFS = true;
-		else if (!strcmp(argv[i], "--reorder")) reorder = true;
+		else if (!strcmp(argv[i], "--reorder") && i+1 < argc) reorder = argv[++i];
+		else if (!strcmp(argv[i], "--locality")) locality = true;
 		else if (!strcmp(argv[i], "--save") && i+1 < argc) save = argv[++i];
 		else if (!strcmp(argv[i], "--sides") && i+1 < argc) { sidesFile = argv[++i]; verify = true; }
 		else if (argv[i][0] != '-') file = argv[i];
@@ -650,7 +756,7 @@ int main(int argc, char** argv) {
 	if (selftest)
 		return SelfTest(selftestIter, skipIBFS);
 	if (!file) {
-		fprintf(stderr, "usage: GraphCutBench <graph.gcut> [--solver tetra|ibfs] [--subgraph N] [--reorder] [--save out.gcut] [--repeat N] [--verify] [--sides out.bin]\n"
+		fprintf(stderr, "usage: GraphCutBench <graph.gcut> [--solver tetra|ibfs] [--subgraph N] [--reorder MODE] [--locality] [--save out.gcut] [--repeat N] [--verify] [--sides out.bin]\n"
 			"       GraphCutBench --selftest [--skip-ibfs] | --selftest-iter K\n"
 			"       GraphCutBench --stress [--iters N] [--seed S] [--max-nodes N] [--skip-ibfs] [--no-dinic] [--ibfs-min-nodes N] [--dinic-max-nodes N] [--trace] | --stress-iter K\n");
 		return 1;
@@ -659,10 +765,13 @@ int main(int argc, char** argv) {
 	Dump d;
 	if (!d.Load(file))
 		return 1;
+	d.LoadCells(file);
 	if (subgraph > 0)
 		d.Subgraph(subgraph);
-	if (reorder)
-		d.Reorder();
+	if (!reorder.empty() && !d.Reorder(reorder))
+		return 1;
+	if (locality)
+		d.PrintLocality(reorder.empty() ? "none" : reorder);
 	if (save) {
 		if (!d.Save(save))
 			return 1;
