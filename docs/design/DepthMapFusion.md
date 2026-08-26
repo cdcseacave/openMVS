@@ -348,8 +348,51 @@ dmaps (Truck +0.0089 … Meetingroom +0.0538); removing it trades P +1.2…+4.2 
 −4.7…−9.1 pp and −38…−48 % points — the rescue is the recall engine of family B, and the second
 half of the S2 split is answered: #1292's gain is not the confidence recalibration alone.
 
-Arms (i)/(iii)/(iv) (raw-confidence dmaps, with and without rescue) and S6 run in the raw chain
-(`bench/campaign_raw.sh`, tag `fusion-s10`) — *pending*.
+**(iii) raw confidence + prior rescue** (`rawbase`, `--postprocess-dmaps 0` — raw photometric
+confidence, no confidence-adjust pass — prior rescue at its default weight 3)
+
+*Measured 2026-08-26* on `runConfAdjRaw`, an independent full re-densify of each scene (tag
+`fusion-s10`, `bench/campaign_raw.sh`), fused and scored against `base10`:
+
+| scene | F1 | ΔF1 vs base | ΔP (pp) | ΔR (pp) | points | admitted % |
+|---|---|---|---|---|---|---|
+| Barn | 0.6387 | **−0.0029** | −0.54 | +0.13 | +1.5 % | 50.32 % |
+| Ignatius | 0.7703 | **−0.0011** | −0.15 | −0.07 | +1.1 % | 48.61 % |
+| Meetingroom | 0.4358 | **−0.0012** | −1.28 | +0.58 | +3.5 % | 31.39 % |
+| Truck | 0.7161 | **−0.0015** | −0.28 | +0.04 | +1.0 % | 56.55 % |
+
+Mean **−0.0017**. `rawrefuse`, a fusion-only re-fuse of these same dmaps, reproduces `rawbase`
+exactly on all four scenes (identical F1/P/R/points) — the fusion-only re-fuse protocol holds on
+this dmap set too. The confidence-adjust pass is worth 0.001–0.003 cloud F1, almost entirely
+precision (R moves only −0.07…+0.58 pp, essentially flat), growing with scene difficulty: Ignatius
+0.0011 < Truck 0.0015 < Barn 0.0029 (Meetingroom's F1 delta, 0.0012, is out of that order, but it
+pays the largest precision cost, −1.28 pp). It is not the family-A→B jump.
+
+**(iv) raw confidence, no rescue** (`rawprior0`, `--fusion-prior-weight 0` on the same
+`runConfAdjRaw` dmaps) — family A's fusion rule (no confidence recalibration, no prior rescue) run
+against family B's estimation:
+
+| scene | F1 | ΔF1 vs base | ΔF1 vs `rawbase` | ΔF1 S2 (ii) (adjusted dmaps) | ΔP vs base (pp) | ΔR vs base (pp) | points vs base |
+|---|---|---|---|---|---|---|---|
+| Barn | 0.6110 | **−0.0306** | −0.0277 | −0.0280 | +1.10 | −8.75 | −37.9 % |
+| Ignatius | 0.7402 | **−0.0312** | −0.0301 | −0.0302 | +0.81 | −8.14 | −42.3 % |
+| Meetingroom | 0.3854 | **−0.0516** | −0.0504 | −0.0538 | +2.09 | −8.04 | −44.4 % |
+| Truck | 0.7062 | **−0.0114** | −0.0099 | −0.0089 | +1.76 | −4.52 | −36.2 % |
+
+Mean ΔF1 vs base **−0.0312**, vs `rawbase` **−0.0295** — close to the (ii) mean measured on the
+adjusted dmaps (**−0.0302**), and within 0.0034 of it scene by scene (Meetingroom the widest gap,
+Ignatius the closest at 0.0001). The prior-rescue term is worth almost the same, regardless of
+which confidence feeds it. This answers § 6 open question 3: the family-B precision drop is the
+rescue's own P/R trade, not outliers admitted by the recalibrated confidence — switching the rescue
+off restores precision by +0.8…+2.1 pp at a cost of −4.5…−8.8 pp recall — and it is a trade nobody
+should unwind, since F1 loses 0.010–0.052 depending on scene.
+
+CUDA PatchMatch is unseeded, so the `runConfAdjRaw` dmaps behind (iii) and (iv) are an independent
+estimation run, not byte-identical to the frozen `runConfAdj` set — part of the gap against
+`base10` in both tables above is estimation noise on top of the ablated channel (§ 3). Fusion wall
+time in these rows (`fus`) is not a solo measurement — other tooling ran concurrently — so no wall
+conclusion is drawn from it here. S6, the CPU-parity arm, shares this same raw-dmap chain (§ 4 S6);
+arm (i) — adjusted confidence with rescue — is `base10` itself and needs no separate row.
 
 ### S3 — C1: restore `fDepthReprojectionErrorThreshold` 1.2 → 1.0
 
@@ -550,7 +593,50 @@ the three settings. The clusters this extension would remove barely exist — ke
 
 ### S6 — C2: CPU parity measurement
 
-*Not yet run.*
+*Run 2026-08-26*, tag `fusion-s10`, arm `cpuadj`: `--gpu-device cpu --postprocess-dmaps 8
+--geometric-iters 0` on the same `runConfAdjRaw` dmaps used by S2 (iii)/(iv) — estimation is
+skipped (the dmaps already exist), so only the standalone confidence-recalibration sweep runs, on
+CPU, rewriting the dmaps in place, then fusion.
+
+| scene | F1 | ΔF1 vs base | ΔF1 vs `rawbase` | ΔP vs `rawbase` (pp) | points | admitted % |
+|---|---|---|---|---|---|---|
+| Barn | 0.6408 | −0.0008 | **+0.0021** | +0.39 | −1.1 % | 49.76 % |
+| Ignatius | 0.7716 | +0.0002 | **+0.0013** | +0.21 | −0.8 % | 48.03 % |
+| Meetingroom | 0.4366 | −0.0004 | **+0.0008** | +0.87 | −2.4 % | 30.42 % |
+| Truck | 0.7174 | −0.0002 | **+0.0013** | +0.26 | −0.7 % | 56.07 % |
+
+Mean ΔF1 vs base **−0.0003**; vs `rawbase` **+0.0014**. Against `base10` the standalone CPU sweep
+lands within −0.0008…+0.0002 on every scene (points +0.3…1.1 %); against its own raw dmaps
+(confound-free) it is a clean, all-precision win of +0.0008…+0.0021 (points −0.7…−2.4 %).
+
+**Cost.** The standalone sweep itself takes 4–5 s of wall per scene on this machine (summed thread
+time: Ignatius 263 maps / 87 s, Truck 251 / 95 s, Barn 410 / 118 s, Meetingroom 371 / 105 s — about
+280–290 ms per map, each logged "adjusted using 8 other images"). It caches every depth map in
+memory for the duration ("Adjust-confidence phase: caching all N depth-maps in memory"), estimated
+peak 4.0–6.5 GB; whole-run `PeakWorkingSetSize` is 4.9–7.8 GB.
+
+**Mechanism.** `--postprocess-dmaps` default `4` runs the adjust as the *integrated* epilogue of
+the last geometric iteration when the dmaps were estimated on CUDA (`AdjustConfidenceCUDA`,
+resident neighbor buffers reused from estimation, "costs almost nothing" per its own comment); `8`
+forces the *standalone* sweep (`DepthMapsData::AdjustConfidence(DepthData&, idxNeighbors)`), which
+is CPU-only — there is no standalone GPU variant, so a same-input GPU control does not exist. A
+`CONF_ADJUSTED` flag on each dmap guards against a double adjust. On Ignatius the standalone sweep
+reclassifies which pixels are admitted without changing how many: the raw dmaps drop 0.00 % of
+valid depths to low-confidence and 50.57 % to min-pixels; after the CPU adjust, 26.44 % low-
+confidence and 25.34 % min-pixels — a quarter of the valid depths change bucket — yet the admitted
+share barely moves (48.61 % → 48.03 %).
+
+**Confound.** S6 compares the standalone CPU sweep on an independently estimated (unseeded)
+raw-dmap set against the integrated GPU epilogue baked into `base10`'s own estimation run — the
+−0.0008…+0.0002-vs-`base10` gap therefore contains an estimation-noise term of unknown size. The
+confound-free statement is `cpuadj` vs `rawbase` (+0.0008…+0.0021, all P) against the GPU
+epilogue's own apparent value, `base10` − `rawbase` (+0.0011…+0.0029, all P, from S2 (iii)) — two
+independent estimates of the same effect, within 0.0008 of each other on every scene.
+
+**Verdict (decision 2).** `--postprocess-dmaps 8` gets a CPU user the GPU pipeline's confidence
+quality within −0.0008…+0.0002 cloud F1 on every scene for 4–5 s of wall and a dmap-sized memory
+peak — not proven exact parity (the confound above), but the two independent estimates of the
+adjust's value agree within 0.0008.
 
 ### S7 — Cost pairing
 
@@ -741,8 +827,11 @@ corresponding slice produces.
    deliberately dropped or lost, and whether `dense-cell-neighbors` holds anything else in the
    same state — *pending*. S3 dose curve says 1.0 is a floor; 0.9 gains +0.0119 mean at
    +12…28 % points, 0.8/0.7 and the mesh pairing pending.
-2. **`nOptimize` 4 → 8** (S6) — buys CPU users the whole #1292 quality jump at a CPU-pass cost —
-   *pending*.
+2. **`nOptimize` 4 → 8** (S6) — the standalone CPU sweep matches the integrated GPU epilogue within
+   −0.0008…+0.0002 cloud F1 on every scene for 4–5 s of wall and a 4.9–7.8 GB peak working set; two
+   independent estimates of the adjust's own value (`base10 − rawbase` and `cpuadj − rawbase`)
+   agree within 0.0008 on every scene, but the headline number is still confounded by an
+   independent raw-dmap estimation run (§ 4 S6) — evidence for parity, not proof of it.
 3. **`fFusePriorWeight`** away from `3.0`, and/or **`nMinPixelsFuse`** away from `5` (S4) —
    S4 + S7: `fFusePriorWeight` 4 passes the cloud gate (+0.0107) but the mesh rejects it (Truck raw
    F1 −0.0089, peak memory +12…40 %); `nMinPixelsFuse` is dominated by the prior weight at every
@@ -784,9 +873,40 @@ corresponding slice produces.
    prior-rescue admitting outliers — in which case `fFusePriorWeight 2` is the cloud-final answer
    its own doc string already suggests — or the unavoidable P/R trade of denser sampling? S2 + S4
    answer; until then it is the main reason not to push completeness harder.
+   **Answered (S2 (iv)).** It is the rescue's own P/R trade, not the recalibrated confidence
+   admitting outliers: turning the rescue off restores precision by +0.8…+2.1 pp at a cost of
+   −4.5…−8.8 pp recall on both the raw and the adjusted confidence lineage (mean ΔF1 −0.0295 raw
+   vs. −0.0302 adjusted, within 0.0034 scene by scene) — and it is a trade nobody should unwind,
+   since F1 loses 0.010–0.052 (§ 4 S2).
 4. **Estimation-side residual.** `ec13cab7` (parallel CUDA PatchMatch) and `69b25a37` (dmap codec
    / image cache / view-locality order) landed between the two builds. Presented as performance
    work; not verified numerically neutral. S2 arm (iv) is the falsification test.
+   **Tested, falsification fails.** Arm (iv) (`rawprior0`) reverts the two gates § 2 says #1292
+   moved — no confidence recalibration, no prior rescue — at the unchanged 1.2 reprojection
+   threshold and the same bench flags family A was densified with (`--resolution-level 1
+   --number-views 12 --estimate-roi 0 --crop-to-roi 0 --tower-mode 0`, verified in the Ignatius
+   and Truck `runMetashape` logs; builds `9a007b5`, June, and `e884035`, July), run against
+   today's estimation code. Compared against § 1's family-A cloud F1 per scene:
+
+   | scene | family-A F1 (§ 1) | arm (iv) F1 | residual |
+   |---|---|---|---|
+   | Barn | 0.5988 | 0.6110 | **+0.0122** |
+   | Ignatius | 0.7381 | 0.7402 | +0.0021 |
+   | Meetingroom | 0.3225 | 0.3854 | **+0.0629** |
+   | Truck | 0.7060 | 0.7062 | +0.0002 |
+
+   Ignatius and Truck fall inside the 0.003 tolerance; Barn (+0.0122) and Meetingroom (+0.0629, an
+   order of magnitude over) do not. The plan's own check — arm (iv) "should land near the family-A
+   point counts" — splits the same way: Ignatius 5.44 M vs 5.21 M and Truck 5.99 M vs 5.99 M
+   match, Barn 8.67 M vs 7.70 M (+13 %) and Meetingroom 4.89 M vs 3.11 M (+57 %) do not. The
+   falsification fails on two of four scenes, so the
+   estimation side is **not** shown to be numerically neutral. This measurement alone cannot
+   attribute the residual to a specific commit — any fusion-side change between the family-A
+   builds and today other than the two reverted gates is in it too — and it is entangled with
+   PatchMatch's own
+   run-to-run stochasticity (§ 3: unseeded, up to 14 % point-count spread on Meetingroom
+   specifically, across June runs on the pre-#1292 estimator) — a repeated raw-chain run would be
+   needed to separate the two. **Question stays open.**
 5. **`nMaxViewsFuse = 32` vs `--number-views 12`.** Fusion caps its neighbor set at
    `nMaxViewsFuse` while estimation used 12; family-A logs imply ~18.7 views per cluster, i.e.
    fusion reaches past the estimation neighborhood through the flood-fill. Whether that is
