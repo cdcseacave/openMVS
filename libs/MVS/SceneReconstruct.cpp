@@ -31,6 +31,7 @@
 
 #include "Common.h"
 #include "Scene.h"
+#include "../Math/TetraFlow.h"
 // Delaunay: mesh reconstruction
 #include <CGAL/Exact_predicates_inexact_constructions_kernel.h>
 #include <CGAL/Delaunay_triangulation_3.h>
@@ -55,14 +56,6 @@ using namespace MVS;
 // uncomment to enable reconstruction algorithm of weakly supported surfaces
 #define DELAUNAY_WEAKSURF
 
-// max-flow solver used by the graph-cut:
-//  - DELAUNAY_MAXFLOW_TETRA: TetraFlow, an implementation of the incremental breadth-first search
-//    max-flow on a data structure specialized for the fixed 4-neighbor topology of the
-//    tetrahedralization dual graph (one 64-byte node per cell): on multi-million-cell scenes
-//    ~1.7x faster than the reference IBFS with ~3x less solver memory
-//  - undefined: the Boost Boykov-Kolmogorov implementation (several times slower)
-#define DELAUNAY_MAXFLOW_TETRA
-
 #pragma push_macro("VERBOSE")
 #undef VERBOSE
 #define VERBOSE(...) LOG(lt, __VA_ARGS__)
@@ -71,180 +64,6 @@ using namespace MVS;
 // S T R U C T S ///////////////////////////////////////////////////
 
 DEFINE_LOG_NAME(lt, _T("ScnRecnt"));
-
-#if defined(DELAUNAY_MAXFLOW_TETRA)
-#include "../Math/TetraFlow.h"
-template <typename NType, typename VType>
-class MaxFlow
-{
-public:
-	// Type-Definitions
-	typedef NType node_type;
-	typedef VType value_type;
-	typedef SEACAVE::TetraFlow graph_type;
-
-public:
-	// allocate numNodes nodes with all capacities zero
-	void Reset(size_t numNodes) { graph.Reset(numNodes); }
-	// free all storage
-	void Release() { graph.Release(); }
-
-	// the capacities, accumulated in place while the weights are gathered (valid until ComputeMaxFlow):
-	// the arc leaving node n through slot i, the source capacity and the sink capacity of node n
-	inline value_type& EdgeCapacity(node_type n, unsigned i) { return graph.EdgeCapacity(static_cast<graph_type::NodeID>(n), i); }
-	inline value_type EdgeCapacity(node_type n, unsigned i) const { return graph.EdgeCapacity(static_cast<graph_type::NodeID>(n), i); }
-	inline value_type& SourceCapacity(node_type n) { return graph.SourceCapacity(static_cast<graph_type::NodeID>(n)); }
-	inline value_type& SinkCapacity(node_type n) { return graph.SinkCapacity(static_cast<graph_type::NodeID>(n)); }
-
-	// link slot i1 of node n1 with slot i2 of node n2; called once per edge, after its capacities are final
-	inline void LinkEdge(node_type n1, unsigned i1, node_type n2, unsigned i2) {
-		ASSERT(ISFINITE(EdgeCapacity(n1, i1)) && EdgeCapacity(n1, i1) >= 0 && ISFINITE(EdgeCapacity(n2, i2)) && EdgeCapacity(n2, i2) >= 0);
-		graph.LinkEdge(static_cast<graph_type::NodeID>(n1), i1, static_cast<graph_type::NodeID>(n2), i2);
-	}
-
-	// compute the maximum flow; the terminal capacities must be finite and non-negative
-	value_type ComputeMaxFlow() {
-		#ifndef _RELEASE
-		for (size_t n = 0; n < graph.GetNumNodes(); ++n)
-			ASSERT(ISFINITE(graph.SourceCapacity(static_cast<graph_type::NodeID>(n))) && graph.SourceCapacity(static_cast<graph_type::NodeID>(n)) >= 0 &&
-				   ISFINITE(graph.SinkCapacity(static_cast<graph_type::NodeID>(n))) && graph.SinkCapacity(static_cast<graph_type::NodeID>(n)) >= 0);
-		#endif
-		return static_cast<value_type>(graph.ComputeMaxFlow());
-	}
-
-	inline bool IsNodeOnSrcSide(node_type n) const {
-		return graph.IsNodeOnSrcSide(static_cast<graph_type::NodeID>(n));
-	}
-
-protected:
-	graph_type graph;
-};
-#else
-#include <boost/graph/graph_traits.hpp>
-#include <boost/graph/one_bit_color_map.hpp>
-#include <boost/property_map/property_map.hpp>
-#include <boost/graph/adjacency_list.hpp>
-#include <boost/graph/boykov_kolmogorov_max_flow.hpp>
-template <typename NType, typename VType>
-class MaxFlow
-{
-public:
-	// Type-Definitions
-	typedef NType node_type;
-	typedef VType value_type;
-	typedef boost::vecS out_edge_list_t;
-	typedef boost::vecS vertex_list_t;
-	typedef boost::adjacency_list_traits<out_edge_list_t, vertex_list_t, boost::directedS> graph_traits;
-	typedef typename graph_traits::edge_descriptor edge_descriptor;
-	typedef typename graph_traits::vertex_descriptor vertex_descriptor;
-	typedef typename graph_traits::vertices_size_type vertex_size_type;
-	struct Edge {
-		value_type capacity;
-		value_type residual;
-		edge_descriptor reverse;
-	};
-	typedef boost::adjacency_list<out_edge_list_t, vertex_list_t, boost::directedS, size_t, Edge> graph_type;
-	typedef typename boost::graph_traits<graph_type>::edge_iterator edge_iterator;
-	typedef typename boost::graph_traits<graph_type>::out_edge_iterator out_edge_iterator;
-
-	// per-node weights gathered before the graph is built
-	struct NodeInfo {
-		value_type f[4]; // capacity of the arc leaving the node through slot i
-		value_type s; // source capacity
-		value_type t; // sink capacity
-	};
-
-public:
-	// allocate numNodes nodes with all capacities zero
-	void Reset(size_t numNodes) {
-		graph = graph_type(numNodes+2);
-		S = node_type(numNodes); T = node_type(numNodes+1);
-		info.assign(numNodes, NodeInfo{});
-	}
-	// free all storage
-	void Release() {
-		graph = graph_type();
-		std::vector<boost::default_color_type>().swap(color);
-		std::vector<NodeInfo>().swap(info);
-	}
-
-	// the capacities, accumulated in place while the weights are gathered (valid until ComputeMaxFlow)
-	inline value_type& EdgeCapacity(node_type n, unsigned i) { return info[n].f[i]; }
-	inline value_type EdgeCapacity(node_type n, unsigned i) const { return info[n].f[i]; }
-	inline value_type& SourceCapacity(node_type n) { return info[n].s; }
-	inline value_type& SinkCapacity(node_type n) { return info[n].t; }
-
-	// link slot i1 of node n1 with slot i2 of node n2; called once per edge, after its capacities are final
-	void LinkEdge(node_type n1, unsigned i1, node_type n2, unsigned i2) {
-		AddEdge(n1, n2, info[n1].f[i1], info[n2].f[i2]);
-	}
-
-protected:
-	void AddNode(node_type n, value_type source, value_type sink) {
-		ASSERT(ISFINITE(source) && source >= 0 && ISFINITE(sink) && sink >= 0);
-		if (source > 0) {
-			edge_descriptor e(boost::add_edge(S, n, graph).first);
-			edge_descriptor er(boost::add_edge(n, S, graph).first);
-			graph[e].capacity = source;
-			graph[e].reverse = er;
-			graph[er].reverse = e;
-		}
-		if (sink > 0) {
-			edge_descriptor e(boost::add_edge(n, T, graph).first);
-			edge_descriptor er(boost::add_edge(T, n, graph).first);
-			graph[e].capacity = sink;
-			graph[e].reverse = er;
-			graph[er].reverse = e;
-		}
-	}
-
-	void AddEdge(node_type n1, node_type n2, value_type capacity, value_type reverseCapacity) {
-		ASSERT(ISFINITE(capacity) && capacity >= 0 && ISFINITE(reverseCapacity) && reverseCapacity >= 0);
-		edge_descriptor e(boost::add_edge(n1, n2, graph).first);
-		edge_descriptor er(boost::add_edge(n2, n1, graph).first);
-		graph[e].capacity = capacity;
-		graph[er].capacity = reverseCapacity;
-		graph[e].reverse = er;
-		graph[er].reverse = e;
-	}
-
-public:
-	value_type ComputeMaxFlow() {
-		for (node_type n = 0; n < node_type(info.size()); ++n)
-			AddNode(n, info[n].s, info[n].t);
-		std::vector<NodeInfo>().swap(info);
-		vertex_size_type n_verts(boost::num_vertices(graph));
-		color.resize(n_verts);
-		std::vector<edge_descriptor> pred(n_verts);
-		std::vector<vertex_size_type> dist(n_verts);
-		return boost::boykov_kolmogorov_max_flow(graph,
-			boost::get(&Edge::capacity, graph),
-			boost::get(&Edge::residual, graph),
-			boost::get(&Edge::reverse, graph),
-			&pred[0],
-			&color[0],
-			&dist[0],
-			boost::get(boost::vertex_index, graph),
-			S, T
-		);
-	}
-
-	inline bool IsNodeOnSrcSide(node_type n) const {
-		return (color[n] != boost::white_color);
-	}
-
-protected:
-	graph_type graph;
-	std::vector<boost::default_color_type> color;
-	std::vector<NodeInfo> info;
-	node_type S;
-	node_type T;
-};
-#endif
-/*----------------------------------------------------------------*/
-
-
-// S T R U C T S ///////////////////////////////////////////////////
 
 // construct the mesh out of the dense point-cloud using Delaunay tetrahedralization & graph-cut method
 // see "Exploiting Visibility Information in Surface Reconstruction to Preserve Weakly Supported Surfaces", Jancosek and Pajdla, 2015
@@ -317,10 +136,12 @@ struct vert_info_t {
 	}
 };
 
-// the graph-cut graph: one node per cell, arc slot i of a cell = its facet i (towards neighbor(i));
-// the visibility weights are accumulated directly in the solver's nodes, there is no separate per-cell
-// weight array (the solver's storage is the memory peak of the reconstruction, see ReconstructMesh)
-typedef MaxFlow<cell_size_t,edge_cap_t> maxflow_t;
+// the graph-cut graph: one solver node per cell (the node id is the cell id, arc slot i of a cell is
+// its facet i, towards neighbor(i)); the visibility weights are accumulated directly in the solver's
+// nodes, there is no separate per-cell weight array (the solver's storage is the memory peak of the
+// reconstruction, see ReconstructMesh)
+typedef SEACAVE::TetraFlow maxflow_t;
+static_assert(std::is_same<maxflow_t::NodeID,cell_size_t>::value && std::is_same<maxflow_t::Cap,edge_cap_t>::value, "the cell ids and weights are the solver's node ids and capacities");
 
 typedef CGAL::Triangulation_vertex_base_with_info_3<vert_info_t, kernel_t> vertex_base_t;
 typedef CGAL::Triangulation_cell_base_with_info_3<cell_size_t, kernel_t> cell_base_t;

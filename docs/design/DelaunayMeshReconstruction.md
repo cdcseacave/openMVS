@@ -354,9 +354,10 @@ pass instead of one per path). Solver only, on ball / room / Truck / Courthouse 
 The `ReconstructMesh` graph-cut stage: 1.9 / 11.9 / 31.4 s vs 2.6 / 17.5 / 42.2 s (ball / room /
 Courthouse), raw meshes byte-identical. The whole-process peak drops less than the solver does
 (3.4 vs 5.5 GiB on Courthouse) because the CGAL triangulation, ~1.9 GiB there, stays resident
-through the cut (3.1 GiB once the weights live in the solver nodes, see below). Verified under ASan/UBSan on ~900k random graphs against an exact reference solver and the
-cut certificates, and on the real graphs above (side sets byte-identical to IBFS);
-`apps/Tests/TestsMath.cpp` keeps a reference-checked unit test. Boost license, no third-party code.
+through the cut (3.1 GiB once the weights live in the solver nodes, see below). Verified under
+ASan/UBSan on ~900k random graphs against an exact reference solver and the cut certificates, and
+on the real graphs above (side sets byte-identical to IBFS); `apps/Tests/TestsMath.cpp` keeps a
+reference-checked unit test. Boost license, no third-party code.
 
 **Cell numbering.** The solver's node id is the cell id, so the order in which the cells are
 numbered decides the memory locality of the graph-cut and of the per-cell weights the ray-walks
@@ -386,27 +387,28 @@ vertexorder,container}-r*` and `graphcut-pointorder-*` under the dataset folders
 surface counts as any other numbering; equal-cost cut ties resolve by node order, so a handful of
 triangles differ.
 
-**Weights in the solver nodes (2026-08, branch `feature/graphcut4-nodeweights`).** The visibility
-weights were gathered in a 24-byte-per-cell array and copied into the solver at graph-build time,
-so the process peak was the build phase: triangulation + weights + solver nodes. The solver now
-offers a slot-addressed construction (`EdgeCapacity(n, slot)` / `SourceCapacity(n)` /
-`SinkCapacity(n)` accumulators, `LinkEdge(u, slotU, v, slotV)`, `Release()`), and the ray-walks
-accumulate straight into the nodes — slot i of a cell is its facet i, the free-space-support
-reads the same fields, the facet quality term and the sink clamp are applied by the linking pass
-that used to build the graph. The insertion buffers (points, indices) and the numbering keys are
-released before the solver is allocated, and the solver is released right after the cut with one
-side bit per cell kept for the extraction. Raw meshes byte-identical on ball / Truck / room /
-Courthouse. A/B against the same tree without it (same vertex-order numbering, best of 3,
-`graphcut-ab-{current,nodeweights}-r*`): peak RSS 0.35 -> 0.32 / 1.51 -> 1.37 / 1.23 -> 1.10 /
+**Weights in the solver nodes (2026-08).** The visibility weights were gathered in a
+24-byte-per-cell array and copied into the solver at graph-build time, so the process peak was the
+build phase: triangulation + weights + solver nodes. The solver now offers, beside the classic
+`AddNode`/`AddEdge` construction, a slot-addressed one (`EdgeCapacity(n, slot)` /
+`SourceCapacity(n)` / `SinkCapacity(n)` accumulators, `LinkEdge(u, slotU, v, slotV)`, `Release()`),
+and the ray-walks accumulate straight into the nodes — slot i of a cell is its facet i, the
+free-space-support reads the same fields, the facet quality term and the sink clamp are applied by
+the linking pass that used to build the graph. The insertion buffers (points, indices) and the
+numbering keys are released before the solver is allocated, and the solver is released right after
+the cut with one side bit per cell kept for the extraction. Raw meshes byte-identical on ball /
+Truck / room / Courthouse. A/B against the same tree without it (same vertex-order numbering, best
+of 3, `graphcut-ab-{current,nodeweights}-r*`): peak RSS 0.35 -> 0.32 / 1.51 -> 1.37 / 1.23 -> 1.10 /
 3.45 -> 3.12 GiB (-8..-10%; IBFS: 0.51 / — / 1.95 / 5.50 GiB, i.e. 1.6-1.8x), graph-cut stage
 1.9 -> 1.7 / 12.3 -> 10.9 / 11.7 -> 10.4 / 30.0 -> 27.0 s (-10%, the copy into the solver is gone),
 weighting unchanged within noise, whole run -1..-5%. The Courthouse profile now reads
 triangulation 1.94 + nodes 1.10 + 0.08 GiB through weighting and cut, 2.0 GiB during the
 extraction; what is left is the triangulation itself (CGAL cells and vertices are ~85% of the
-base). The classic `AddNode`/`AddEdge` construction is untouched in cost: the e1e8ee3 bench built
-against both headers gives the same peak and solve times within noise on the four exported graphs.
-About 200 lines: the solver API and its unit-test path, the facade (the Boost BK fallback keeps
-a private weight array behind the same interface) and the six accumulation sites.
+base). The classic construction is untouched in cost: a standalone benchmark built against both
+headers gives the same peak and solve times within noise on the four exported graphs
+(`graphcut-export/bench-oldapi-*.log`). `ReconstructMesh` calls `TetraFlow` directly; the `MaxFlow`
+facade and the Boost Boykov-Kolmogorov fallback behind it (several times slower, never selected)
+went with the weight array.
 
 **Free-space-support default-on.** Costs −0.048 (Ignatius) to −0.052 (Truck) at default constants
 even after every recalibration/semantics attempt above failed to rescue it. **Stays available**

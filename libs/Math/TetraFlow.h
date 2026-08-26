@@ -16,6 +16,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <limits>
 #include <memory>
 #include <vector>
 #if defined(__has_include)
@@ -41,11 +42,6 @@
 #define TETRAFLOW_PREFETCH(ptr) static_cast<void>(ptr)
 #endif
 #endif
-// look-ahead (in scan-list entries) of the node-line prefetch during growth
-#ifndef TETRAFLOW_PREFETCH_DIST
-#define TETRAFLOW_PREFETCH_DIST 4
-#endif
-
 // branch hints (no-ops on compilers without the builtin)
 #if defined(__GNUC__) || defined(__clang__)
 #define TETRAFLOW_LIKELY(cond) __builtin_expect(!!(cond), 1)
@@ -117,6 +113,7 @@ public:
 	void Reset(size_t numNodes) {
 		assert(numNodes <= MAX_NODES);
 		nodes.clear();
+		// reuse the buffer unless it is too small or wastefully large
 		if (nodes.capacity() < numNodes || nodes.capacity() > numNodes + numNodes/2) {
 			std::vector<Node>().swap(nodes);
 			nodes.reserve(numNodes);
@@ -147,7 +144,7 @@ public:
 	// accumulate terminal capacities of node n (may be called several times for the same node)
 	void AddNode(NodeID n, Cap capSource, Cap capSink) {
 		assert(n < nodes.size());
-		assert(capSource >= 0 && capSink >= 0);
+		assert(IsValidCap(capSource) && IsValidCap(capSink));
 		Node& node = nodes[n];
 		node.excess += capSource;  // holds the accumulated source capacity until ComputeMaxFlow()
 		node.capSink += capSink;   // aliases the (unused until then) prev link
@@ -157,7 +154,7 @@ public:
 	// called exactly once per edge; u != v; every node must end up with at most 4 edges
 	void AddEdge(NodeID u, NodeID v, Cap capUV, Cap capVU) {
 		assert(u < nodes.size() && v < nodes.size() && u != v);
-		assert(capUV >= 0 && capVU >= 0);
+		assert(IsValidCap(capUV) && IsValidCap(capVU));
 		Node& nu = nodes[u];
 		Node& nv = nodes[v];
 		assert(nu.fill != SLOT_MASK && nv.fill != SLOT_MASK);
@@ -167,11 +164,12 @@ public:
 		nv.head[iv] = u; nv.rcap[iv] = capVU; SetRev(nv, iv, iu); nv.fill |= Bit(iv);
 	}
 
-	// slot-addressed construction, the alternative to AddEdge() for callers that assign the slots
-	// themselves (e.g. slot i of a tetrahedron = its facet i): the capacities are accumulated in place
-	// through EdgeCapacity() / SourceCapacity() / SinkCapacity() and the edge is linked with LinkEdge()
-	// at any time before ComputeMaxFlow(), so that no separate per-node weight storage is needed
-	// while the weights are being gathered
+	// slot-addressed construction, the alternative to AddNode()/AddEdge() for callers that assign the
+	// slots themselves (e.g. slot i of a tetrahedron = its facet i): the capacities are accumulated in
+	// place through EdgeCapacity() / SourceCapacity() / SinkCapacity() and the edge is linked with
+	// LinkEdge() at any time before ComputeMaxFlow(), so that no separate per-node weight storage is
+	// needed while the weights are being gathered; every capacity must be finite and non-negative by
+	// the time ComputeMaxFlow() is called
 
 	// link slot iu of node u with slot iv of node v; called exactly once per edge; u != v;
 	// the capacities of the two arcs are whatever EdgeCapacity() accumulated (and keeps accumulating)
@@ -265,7 +263,7 @@ private:
 	using Slot = uint8_t;
 	static constexpr unsigned NUM_SLOTS = 4;
 	static constexpr Slot NO_SLOT = 0xFF;
-	static constexpr size_t PREFETCH_DIST = TETRAFLOW_PREFETCH_DIST; // scan-list look-ahead of the node-line prefetch
+	static constexpr size_t PREFETCH_DIST = 4; // scan-list look-ahead (in entries) of the node-line prefetch during growth
 
 	// one node = one cache line: the four arcs (residual capacity and neighbor id per slot) and the
 	// complete tree state, so that every step of a path walk touches a single line
@@ -298,6 +296,8 @@ private:
 	enum : uint8_t { LIST_NONE = 0, LIST_ORPHAN = 1, LIST_BUCKET = 2 };
 	using AugTs = uint16_t; // wraps around: harmless, it only feeds the unique-orphan heuristic
 
+	// finite and non-negative (false for NaN)
+	static constexpr bool IsValidCap(Cap c) noexcept { return c >= 0 && c <= std::numeric_limits<Cap>::max(); }
 	static constexpr uint8_t Bit(unsigned i) noexcept { return uint8_t(1u << i); }
 	static constexpr uint8_t SLOT_MASK = uint8_t((1u << NUM_SLOTS) - 1); // all slots linked
 	// lowest slot not linked yet (mask != SLOT_MASK)
@@ -361,7 +361,7 @@ private:
 	}
 
 	// fold the terminal capacities into the initial flow, create the tree roots, fill the unused slots
-	// with zero-capacity self-arcs and compute the reverse-residual bits
+	// with zero-capacity self-arcs and compute the reverse-residual bits (validating every capacity)
 	void Init() {
 		frontierS.clear();
 		frontierT.clear();
@@ -373,14 +373,17 @@ private:
 		for (size_t x = 0; x < numNodes; ++x) {
 			Node& node = nodeData[x];
 			for (unsigned i = 0; i < NUM_SLOTS; ++i) {
-				if (node.fill & Bit(i))
+				if (node.fill & Bit(i)) {
+					assert(IsValidCap(node.rcap[i]));
 					continue;
+				}
 				node.head[i] = NodeID(x);
 				node.rcap[i] = 0;
 				SetRev(node, i, i);
 			}
 			const Cap capSource = node.excess;
 			const Cap capSink = node.capSink;
+			assert(IsValidCap(capSource) && IsValidCap(capSink));
 			flow += double(std::min(capSource, capSink));
 			node.excess = capSource - capSink;
 			node.prev = NO_NODE;
@@ -607,7 +610,7 @@ private:
 			nx.children = 0;
 			// (c) a node of the deepest level is dropped: growth re-discovers it if it is reachable
 			if (lx == top) {
-				Release<S>(x, nx);
+				Free<S>(x, nx);
 				continue;
 			}
 			// (d) bucket mode: the relabeling is deferred to the three-pass procedure
@@ -640,7 +643,7 @@ private:
 				if (best + 1 == top)
 					Frontier<S>().push_back(x); // it must be scanned in the next growth pass
 			} else {
-				Release<S>(x, nx); // no way back into the tree
+				Free<S>(x, nx); // no way back into the tree
 			}
 		}
 		if (threePass)
@@ -675,7 +678,7 @@ private:
 						}
 					}
 					if (bestSlot == NO_SLOT) {
-						Release<S>(x, nx); // free (or, holding a deficit, converted into a T root)
+						Free<S>(x, nx); // free (or, holding a deficit, converted into a T root)
 						continue;
 					}
 					nx.parentSlot = Slot(bestSlot);
@@ -726,25 +729,20 @@ private:
 
 	// hook: the node x of tree S/T has just been attached to a parent
 	template <bool S>
-	void Attached(NodeID x, Node& nx) {
+	void Attached([[maybe_unused]] NodeID x, [[maybe_unused]] Node& nx) {
 		if constexpr (S) {
 			if (nx.deficit > 0)
 				DeficitAdd(x, nx.label); // the sweep must pull the deficit through the new arc
-		} else {
-			static_cast<void>(x);
-			static_cast<void>(nx);
 		}
 	}
 	// hook: the node x of tree S/T has no way back into its tree: it becomes free; an S node holding a
 	// deficit keeps it while free (until S re-adopts it or T reaches it) and is remembered
 	template <bool S>
-	void Release(NodeID x, Node& nx) {
+	void Free([[maybe_unused]] NodeID x, Node& nx) {
 		nx.label = 0;
 		if constexpr (S) {
 			if (nx.deficit > 0)
 				pendingFree.push_back(x);
-		} else {
-			static_cast<void>(x);
 		}
 	}
 

@@ -180,17 +180,18 @@ bool TestTetraFlow()
 					solver.LinkEdge(e.u, iu, e.v, iv);
 			}
 		} else {
-		for (uint32_t n = 0; n < numNodes; ++n) {
-			if (iter % 2) {
-				// the terminal capacities may be accumulated over several calls
-				const float s = g.capSource[n] * 0.5f, t = g.capSink[n] * 0.5f;
-				solver.AddNode(n, s, t);
-				solver.AddNode(n, g.capSource[n] - s, g.capSink[n] - t);
-			} else
-				solver.AddNode(n, g.capSource[n], g.capSink[n]);
-		}
-		for (const FlowTestEdge& e : g.edges)
-			solver.AddEdge(e.u, e.v, e.capUV, e.capVU);
+			// the classic construction: the capacities are given when the nodes and edges are added
+			for (uint32_t n = 0; n < numNodes; ++n) {
+				if (iter % 2) {
+					// the terminal capacities may be accumulated over several calls
+					const float s = g.capSource[n] * 0.5f, t = g.capSink[n] * 0.5f;
+					solver.AddNode(n, s, t);
+					solver.AddNode(n, g.capSource[n] - s, g.capSink[n] - t);
+				} else
+					solver.AddNode(n, g.capSource[n], g.capSink[n]);
+			}
+			for (const FlowTestEdge& e : g.edges)
+				solver.AddEdge(e.u, e.v, e.capUV, e.capVU);
 		}
 		const double flow = solver.ComputeMaxFlow();
 		if (!solver.CheckMaxFlow()) {
