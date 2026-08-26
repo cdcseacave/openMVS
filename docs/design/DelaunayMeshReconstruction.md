@@ -360,17 +360,31 @@ cut certificates, and on the real graphs above (side sets byte-identical to IBFS
 
 **Cell numbering.** The solver's node id is the cell id, so the order in which the cells are
 numbered decides the memory locality of the graph-cut and of the per-cell weights the ray-walks
-touch. Solve time on the four graphs above (best of 3): the CGAL container order is 12-16% slower
-than a breadth-first numbering over the cell adjacency, a random numbering 30-40% slower, and a
-Hilbert curve through the cell centroids is 0 / 9 / 5.5 / 5% faster than the breadth-first one
-(Morton: 3 / 7 / -0.5 / 5.5%). The curve puts 60% of the arcs within 1 KB of their node (BFS:
-17%), yet the gain stays modest because after the breadth-first numbering a growth pass already
-works out of the L2/L3 (Truck, `perf`: L1 misses -6%, dTLB misses -40%, IPC 0.58 -> 0.65); what
-remains is the dependent-load chains of the tree walks and the branchy adoption logic, which no
-numbering shortens. The pipeline numbers the cells along the Hilbert curve: graph-cut stage
-1.8 / 11.1 / 28.4 s on ball / room / Courthouse (-7 / -6 / -10% vs the breadth-first order), same
-flow and surface counts (equal-cost cut ties resolve by node order, so a handful of triangles
-differ).
+touch. Any numbering is valid; a spatially coherent one is an optional optimization worth ~5% of
+the graph-cut stage, so it has to be nearly free to compute. Solve time on the four graphs above
+(best of 3): the CGAL container order is 12-16% slower than a breadth-first numbering over the
+cell adjacency, a random numbering 30-40% slower, and a Hilbert curve through the cell centroids
+is 0 / 9 / 5.5 / 5% faster than the breadth-first one (Morton: 3 / 7 / -0.5 / 5.5%). The curve
+puts 63% of the arcs within 1 KB of their node (BFS: 17%, container: 17%), yet the gain stays
+modest because after the breadth-first numbering a growth pass already works out of the L2/L3
+(Truck, `perf`: L1 misses -6%, dTLB misses -40%, IPC 0.58 -> 0.65); what remains is the
+dependent-load chains of the tree walks and the branchy adoption logic, which no numbering
+shortens. The numbering is not free, though: sorting the cell centroids along the curve costs
+0.3 / 1.6 / 2.0 / 4.4 s on ball / room / Truck / Courthouse against a graph-cut gain of
+0.15 / 0.8 / 1.1 / 2.9 s (plus ~1 s of weighting on Courthouse), i.e. end-to-end the Hilbert
+numbering was a wash (-1% on Courthouse, noise elsewhere). Ordering the points does not solve it
+either: they are already inserted in CGAL's BRIO/Hilbert order (`spatial_sort`), but the cell
+container order comes out scattered anyway because every insertion reuses the slots of the cells
+it destroys; a pure Hilbert insertion order (no BRIO rounds) does improve the container order
+(graph-cut -7%) but slows the insertion itself by 12-15%, a net loss. What works is deriving the
+numbering from the insertion order without geometry: the vertex container is never compacted, so
+its order *is* the space-filling curve, and the cells are numbered by the last inserted of their
+vertices with a counting sort, O(cells + vertices) — 0.05 / 0.2 / 0.3 / 0.55 s, the same graph-cut
+time as the centroid sort (Truck 11.3 vs 11.2 s, room 10.85 vs 10.8-11.3 s, Courthouse 27.5 vs
+27.3 s) and the best end-to-end time of every numbering tried (`graphcut-nodeweights-{hilbert,
+vertexorder,container}-r*` and `graphcut-pointorder-*` under the dataset folders). Same flow and
+surface counts as any other numbering; equal-cost cut ties resolve by node order, so a handful of
+triangles differ.
 
 **Free-space-support default-on.** Costs −0.048 (Ignatius) to −0.052 (Truck) at default constants
 even after every recalibration/semantics attempt above failed to rescue it. **Stays available**

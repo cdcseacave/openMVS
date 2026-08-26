@@ -232,13 +232,14 @@ struct vert_info_t {
 	};
 	typedef SEACAVE::cList<view_t,const view_t&,0,4,uint32_t> view_vec_t;
 	view_vec_t views; // faces' weight from the cell outwards
+	vert_size_t idx; // insertion index (the cells are numbered by it, see ReconstructMesh)
 	#ifdef DELAUNAY_WEAKSURF
 	view_info_t* viewsInfo; // each view caches the two faces from the point towards the camera and the end (used only by the weakly supported surfaces)
-	inline vert_info_t() : viewsInfo(NULL) {}
+	inline vert_info_t() : idx(0), viewsInfo(NULL) {}
 	~vert_info_t();
 	void AllocateInfo();
 	#else
-	inline vert_info_t() {}
+	inline vert_info_t() : idx(0) {}
 	#endif
 	void InsertViews(const PointCloud& pc, PointCloud::Index idxPoint) {
 		const PointCloud::ViewArr& _views = pc.pointViews[idxPoint];
@@ -1009,85 +1010,38 @@ bool Scene::ReconstructMesh(const ReconstructMeshParams& params)
 		const size_t numNodes(delaunay.number_of_cells());
 		infoCells.resize(numNodes);
 		memset(&infoCells[0], 0, sizeof(cell_info_t)*numNodes);
-		// assign the cell ids along a Hilbert curve through the cell centroids, so that cells close in
-		// space get nearby ids: the per-cell arrays (weights, max-flow nodes) are then accessed with
-		// good locality by the ray-walks and the graph-cut (max-flow 12-16% faster than the container
-		// order and 5-9% faster than a breadth-first order over the cell adjacency on multi-million-cell
-		// scenes), at the cost of a transient 16-byte key per cell
+		// assign the cell ids: any numbering is valid (the solver only needs unique ids), but a
+		// spatially coherent one makes the per-cell solver nodes, which the ray-walks and the
+		// graph-cut access by id, cache-friendlier: this is optional and worth only ~5% of the
+		// graph-cut stage (and a similar share of the weighting), so it must stay cheap. The points
+		// were inserted in spatial (BRIO/Hilbert) order and the vertex container is never compacted,
+		// hence the vertex order is that curve: number the cells by the last inserted of their
+		// vertices with a counting sort, O(cells + vertices) and no geometry involved (the cells
+		// around a vertex end up contiguous and the vertices run along the curve). The cell
+		// container order itself is not usable: an insertion reuses the slots of the cells it
+		// destroys, which scatters the surviving cells (-7% graph-cut and, on large scenes, a much
+		// slower weighting); a Hilbert sort of the cell centroids gives the same graph-cut time but
+		// costs 5-10x more to compute
 		{
-			// bounding box of the finite vertices
-			double bmin[3] = {DBL_MAX, DBL_MAX, DBL_MAX}, bmax[3] = {-DBL_MAX, -DBL_MAX, -DBL_MAX};
-			for (delaunay_t::Finite_vertices_iterator vi=delaunay.finite_vertices_begin(), evi=delaunay.finite_vertices_end(); vi!=evi; ++vi) {
-				const point_t& p(vi->point());
-				const double c[3] = {p.x(), p.y(), p.z()};
-				for (int a=0; a<3; ++a) {
-					bmin[a] = MINF(bmin[a], c[a]);
-					bmax[a] = MAXF(bmax[a], c[a]);
-				}
-			}
-			// 21 bits per axis: the key fits in 63 bits
-			constexpr unsigned bits(21);
-			constexpr double maxCoord(double((1u<<bits)-1));
-			double scale[3];
-			for (int a=0; a<3; ++a)
-				scale[a] = bmax[a] > bmin[a] ? maxCoord/(bmax[a]-bmin[a]) : 0.0;
-			// Hilbert index of a grid point (Skilling, "Programming the Hilbert curve", 2004)
-			const auto hilbertKey = [](uint32_t X[3]) -> uint64_t {
-				const uint32_t M(1u<<(bits-1));
-				for (uint32_t Q=M; Q>1; Q>>=1) {
-					const uint32_t P(Q-1);
-					for (int a=0; a<3; ++a) {
-						if (X[a] & Q) {
-							X[0] ^= P;
-						} else {
-							const uint32_t t((X[0]^X[a]) & P);
-							X[0] ^= t; X[a] ^= t;
-						}
-					}
-				}
-				for (int a=1; a<3; ++a)
-					X[a] ^= X[a-1];
-				uint32_t t(0);
-				for (uint32_t Q=M; Q>1; Q>>=1)
-					if (X[2] & Q)
-						t ^= Q-1;
-				for (int a=0; a<3; ++a)
-					X[a] ^= t;
-				// interleave the bits of the transposed index, most significant first
-				uint64_t key(0);
-				for (int b=(int)bits-1; b>=0; --b)
-					for (int a=0; a<3; ++a)
-						key = (key<<1) | ((X[a]>>b)&1u);
-				return key;
-			};
-			struct CellKey {
-				uint64_t key;
-				cell_handle_t cell;
-			};
-			std::vector<CellKey> keys;
+			vert_size_t numVertices(0);
+			for (delaunay_t::All_vertices_iterator vi=delaunay.all_vertices_begin(), evi=delaunay.all_vertices_end(); vi!=evi; ++vi)
+				vi->info().idx = numVertices++;
+			std::vector<vert_size_t> keys;
 			keys.reserve(numNodes);
+			std::vector<cell_size_t> offsets(numVertices+1, 0);
 			for (delaunay_t::All_cells_iterator ci=delaunay.all_cells_begin(), eci=delaunay.all_cells_end(); ci!=eci; ++ci) {
-				// centroid of the finite vertices (an infinite cell sits at its finite facet)
-				double c[3] = {0, 0, 0};
-				int nc(0);
-				for (int v=0; v<4; ++v) {
-					const vertex_handle_t vh(ci->vertex(v));
-					if (delaunay.is_infinite(vh))
-						continue;
-					const point_t& p(vh->point());
-					c[0] += p.x(); c[1] += p.y(); c[2] += p.z();
-					++nc;
-				}
-				uint32_t X[3];
-				for (int a=0; a<3; ++a)
-					X[a] = (uint32_t)CLAMP((c[a]/nc-bmin[a])*scale[a], 0.0, maxCoord);
-				keys.push_back({hilbertKey(X), cell_handle_t(ci)});
+				vert_size_t key(0);
+				for (int v=0; v<4; ++v)
+					key = MAXF(key, ci->vertex(v)->info().idx);
+				keys.push_back(key);
+				++offsets[key+1];
 			}
-			std::sort(keys.begin(), keys.end(), [](const CellKey& a, const CellKey& b) { return a.key < b.key; });
-			cell_size_t nextID(0);
-			for (const CellKey& k: keys)
-				k.cell->info() = nextID++;
-			ASSERT(nextID == numNodes);
+			for (vert_size_t v=1; v<=numVertices; ++v)
+				offsets[v] += offsets[v-1];
+			cell_size_t k(0);
+			for (delaunay_t::All_cells_iterator ci=delaunay.all_cells_begin(), eci=delaunay.all_cells_end(); ci!=eci; ++ci)
+				ci->info() = offsets[keys[k++]]++;
+			ASSERT(k == numNodes && offsets[numVertices] == numNodes);
 		}
 		for (delaunay_t::All_cells_iterator ci=delaunay.all_cells_begin(), eci=delaunay.all_cells_end(); ci!=eci; ++ci) {
 			// skip the finite cells
