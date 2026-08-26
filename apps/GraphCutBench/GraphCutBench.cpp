@@ -8,14 +8,16 @@
  * that cross-checks the solvers on random degree<=4 graphs.
  *
  * Usage:
- *   GraphCutBench <graph.gcut> [--solver ibfs|gc4] [--subgraph N] [--reorder] [--repeat N] [--verify]
+ *   GraphCutBench <graph.gcut> [--solver tetra|ibfs] [--subgraph N] [--reorder] [--save out.gcut] [--repeat N] [--verify]
  *     --subgraph N  solve only the first N nodes (a spatially coherent prefix of the scene)
  *     --reorder     renumber the nodes in BFS order before solving (locality experiment)
- *     --verify      check the cut-value certificate (cut capacity == max flow)
- *   GraphCutBench --selftest [--skip-ibfs]      fuzz both solvers on random degree<=4 graphs
+ *     --save FILE   write the (subgraphed/reordered) graph in the same format
+ *     --verify      check the cut-value certificate (cut capacity == max flow) and the
+ *                   residual-graph optimality check of the solver
+ *   GraphCutBench --selftest [--skip-ibfs]      fuzz the solvers on random degree<=4 graphs
  *   GraphCutBench --selftest-iter K             print and re-run a single fuzz iteration
  *
- * Solver memory is roughly 200 B/node (IBFS) and 76 B/node (GC4); the loaded graph is
+ * Solver memory is roughly 200 B/node (IBFS) and 70 B/node (TetraFlow); the loaded graph is
  * mmap-ed and does not count towards the reported peak footprint.
  */
 
@@ -42,7 +44,7 @@
 #endif
 
 #include "../../libs/Math/IBFS/IBFS.h"
-#include "../../libs/Math/GraphCut4.h"
+#include "../../libs/Math/TetraFlow.h"
 
 namespace {
 
@@ -148,6 +150,18 @@ struct Dump {
 		nodes = ownNodes.data(); edges = ownEdges.data();
 		if (map && map != MAP_FAILED) { munmap(map, mapSize); map = nullptr; }
 	}
+	// write the (possibly reordered/subgraphed) graph in the same MVSGCUT1 format
+	bool Save(const char* path) const {
+		FILE* f = fopen(path, "wb");
+		if (!f) { fprintf(stderr, "error: can not create '%s'\n", path); return false; }
+		fwrite("MVSGCUT1", 1, 8, f);
+		fwrite(&numNodes, 8, 1, f);
+		fwrite(&numEdges, 8, 1, f);
+		fwrite(edges, sizeof(EdgeRec), numEdges, f);
+		fwrite(nodes, sizeof(NodeRec), numNodes, f);
+		fclose(f);
+		return true;
+	}
 	~Dump() { if (map && map != MAP_FAILED) munmap(map, mapSize); }
 };
 
@@ -197,37 +211,29 @@ Result RunIBFS(const Dump& d, bool keepSides) {
 	return r;
 }
 
-Result RunGC4(const Dump& d, bool keepSides, bool check) {
+Result RunTetra(const Dump& d, bool keepSides, bool check) {
 	Result r;
 	double t0 = Now();
-	GC4::Graph g;
-	g.initSize(d.numNodes);
+	SEACAVE::TetraFlow g(d.numNodes);
 	for (uint64_t i=0; i<d.numNodes; ++i)
-		g.addNode((uint32_t)i, d.nodes[i].s, d.nodes[i].t);
+		g.AddNode((uint32_t)i, d.nodes[i].s, d.nodes[i].t);
 	for (uint64_t e=0; e<d.numEdges; ++e) {
 		const EdgeRec& er = d.edges[e];
-		g.addEdge(er.u, er.v, er.capUV, er.capVU);
+		g.AddEdge(er.u, er.v, er.capUV, er.capVU);
 	}
 	double t1 = Now();
-	g.initGraph();
+	r.flow = g.ComputeMaxFlow(); // finalize + solve
 	double t2 = Now();
-	r.flow = (double)g.computeMaxFlow();
-	double t3 = Now();
-	r.buildTime = t1-t0; r.initTime = t2-t1; r.solveTime = t3-t2;
-	if (GC4_STATS) {
-		const GC4::Graph::Stats& st = g.getStats();
-		printf("STATS solver=gc4 augs=%llu pushes=%llu orphans=%llu growthArcs=%llu\n",
-			(unsigned long long)st.augs, (unsigned long long)st.pushes, (unsigned long long)st.orphans, (unsigned long long)st.growthArcs);
-	}
+	r.buildTime = t1-t0; r.initTime = 0; r.solveTime = t2-t1;
 	if (keepSides) r.srcSide.resize(d.numNodes);
 	for (uint64_t i=0; i<d.numNodes; ++i) {
-		const bool s = g.isNodeOnSrcSide((uint32_t)i);
+		const bool s = g.IsNodeOnSrcSide((uint32_t)i);
 		r.numSrcSide += s ? 1 : 0;
 		if (keepSides) r.srcSide[i] = s ? 1 : 0;
 	}
-	r.solverBytes = g.getMemoryBytes();
-	if (check && !g.checkMaxFlow()) {
-		fprintf(stderr, "FAIL: gc4 max-flow certificate failed (augmenting path remains)\n");
+	r.solverBytes = g.GetMemoryBytes();
+	if (check && !g.CheckMaxFlow()) {
+		fprintf(stderr, "FAIL: tetra max-flow certificate failed (augmenting path remains)\n");
 		exit(2);
 	}
 	return r;
@@ -298,13 +304,17 @@ int SelfTestOne(int iter, bool print, bool skipIBFS) {
 			printf("a %u %u %g %g\n", d.edges[e].u, d.edges[e].v, d.edges[e].capUV, d.edges[e].capVU);
 		fflush(stdout);
 	}
-	// gc4 first: its correctness is provable standalone through the certificates
-	const Result rg = RunGC4(d, true, true);
-	bool ok = CheckClose(CutValue(d, rg.srcSide), rg.flow, 1e-5, "gc4 cut certificate");
+	// tetra first: its correctness is provable standalone through the certificates
+	// (cut capacity == flow, and no augmenting path left in the residual graph)
+	const Result rt = RunTetra(d, true, true);
+	bool ok = CheckClose(CutValue(d, rt.srcSide), rt.flow, 1e-5, "tetra cut certificate");
 	if (!skipIBFS) {
+		// the reference implementation as an independent oracle for the flow value
 		const Result ri = RunIBFS(d, true);
-		ok = CheckClose(ri.flow, rg.flow, 1e-5, "flow ibfs/gc4") && ok;
+		ok = CheckClose(ri.flow, rt.flow, 1e-5, "flow ibfs/tetra") && ok;
 		ok = CheckClose(CutValue(d, ri.srcSide), ri.flow, 1e-5, "ibfs cut certificate") && ok;
+		if (ri.numSrcSide != rt.numSrcSide)
+			printf("note: iter %d srcside tetra=%" PRIu64 " ibfs=%" PRIu64 " (both cuts are minimum)\n", iter, rt.numSrcSide, ri.numSrcSide);
 	}
 	if (!ok)
 		fprintf(stderr, "FAIL at iter %d: n=%u e=%" PRIu64 "\n", iter, n, d.numEdges);
@@ -318,7 +328,7 @@ int SelfTest(int only, bool skipIBFS) {
 		if (SelfTestOne(iter, false, skipIBFS))
 			return 1;
 	printf("selftest OK: 800 random graphs%s, cut certificates hold\n",
-		skipIBFS ? " (gc4 only)" : ", ibfs==gc4 flow");
+		skipIBFS ? " (tetra only)" : ", ibfs==tetra flow");
 	return 0;
 }
 
@@ -326,7 +336,8 @@ int SelfTest(int only, bool skipIBFS) {
 
 int main(int argc, char** argv) {
 	const char* file = nullptr;
-	std::string solver = "gc4";
+	const char* save = nullptr;
+	std::string solver = "tetra";
 	int repeat = 1, selftestIter = -1;
 	uint64_t subgraph = 0;
 	bool verify = false, selftest = false, skipIBFS = false, reorder = false;
@@ -339,13 +350,14 @@ int main(int argc, char** argv) {
 		else if (!strcmp(argv[i], "--selftest-iter") && i+1 < argc) { selftest = true; selftestIter = atoi(argv[++i]); }
 		else if (!strcmp(argv[i], "--skip-ibfs")) skipIBFS = true;
 		else if (!strcmp(argv[i], "--reorder")) reorder = true;
+		else if (!strcmp(argv[i], "--save") && i+1 < argc) save = argv[++i];
 		else if (argv[i][0] != '-') file = argv[i];
 		else { fprintf(stderr, "unknown option '%s'\n", argv[i]); return 1; }
 	}
 	if (selftest)
 		return SelfTest(selftestIter, skipIBFS);
 	if (!file) {
-		fprintf(stderr, "usage: GraphCutBench <graph.gcut> [--solver ibfs|gc4] [--subgraph N] [--reorder] [--repeat N] [--verify] | --selftest\n");
+		fprintf(stderr, "usage: GraphCutBench <graph.gcut> [--solver tetra|ibfs] [--subgraph N] [--reorder] [--save out.gcut] [--repeat N] [--verify] | --selftest [--skip-ibfs] | --selftest-iter K\n");
 		return 1;
 	}
 
@@ -356,13 +368,18 @@ int main(int argc, char** argv) {
 		d.Subgraph(subgraph);
 	if (reorder)
 		d.Reorder();
-	printf("loaded '%s': %" PRIu64 " nodes, %" PRIu64 " edges (est. peak: ibfs %.0f MB, gc4 %.0f MB)\n",
-		file, d.numNodes, d.numEdges, 200.0*d.numNodes/1048576.0, 64.0*d.numNodes/1048576.0);
+	if (save) {
+		if (!d.Save(save))
+			return 1;
+		printf("saved '%s'\n", save);
+	}
+	printf("loaded '%s': %" PRIu64 " nodes, %" PRIu64 " edges (est. peak: tetra %.0f MB, ibfs %.0f MB)\n",
+		file, d.numNodes, d.numEdges, 70.0*d.numNodes/1048576.0, 200.0*d.numNodes/1048576.0);
 
 	for (int it=0; it<repeat; ++it) {
 		Result r;
-		if (solver == "ibfs") r = RunIBFS(d, verify);
-		else if (solver == "gc4") r = RunGC4(d, verify, verify);
+		if (solver == "tetra") r = RunTetra(d, verify, verify);
+		else if (solver == "ibfs") r = RunIBFS(d, verify);
 		else { fprintf(stderr, "unknown solver '%s'\n", solver.c_str()); return 1; }
 		if (verify && !CheckClose(CutValue(d, r.srcSide), r.flow, 1e-4, "cut certificate"))
 			return 2;

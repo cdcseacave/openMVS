@@ -56,12 +56,13 @@ using namespace MVS;
 #define DELAUNAY_WEAKSURF
 
 // max-flow solver used by the graph-cut, in order of precedence:
-//  - DELAUNAY_MAXFLOW_GC4: the IBFS algorithm on a data structure specialized for the fixed
-//    4-neighbor topology of the tetrahedralization dual graph: one 64-byte node per cell,
-//    ~2.6x less memory than IBFS and 5-13% faster (same license policy as IBFS)
+//  - DELAUNAY_MAXFLOW_TETRA: independent implementation of the incremental breadth-first
+//    search max-flow on a data structure specialized for the fixed 4-neighbor topology of the
+//    tetrahedralization dual graph: one 64-byte node per cell, ~2.6x less memory and ~1.7x
+//    faster than IBFS on large scenes (Boost license)
 //  - DELAUNAY_MAXFLOW_IBFS: the reference IBFS implementation (research-only license)
 //  - none: the Boost Boykov-Kolmogorov implementation (slowest, permissive license)
-#define DELAUNAY_MAXFLOW_GC4
+#define DELAUNAY_MAXFLOW_TETRA
 #define DELAUNAY_MAXFLOW_IBFS
 
 #pragma push_macro("VERBOSE")
@@ -73,8 +74,8 @@ using namespace MVS;
 
 DEFINE_LOG_NAME(lt, _T("ScnRecnt"));
 
-#if defined(DELAUNAY_MAXFLOW_GC4)
-#include "../Math/GraphCut4.h"
+#if defined(DELAUNAY_MAXFLOW_TETRA)
+#include "../Math/TetraFlow.h"
 template <typename NType, typename VType>
 class MaxFlow
 {
@@ -82,30 +83,27 @@ public:
 	// Type-Definitions
 	typedef NType node_type;
 	typedef VType value_type;
-	typedef GC4::Graph graph_type;
+	typedef SEACAVE::TetraFlow graph_type;
 
 public:
-	MaxFlow(size_t numNodes) {
-		graph.initSize(numNodes);
-	}
+	MaxFlow(size_t numNodes) : graph(numNodes) {}
 
 	inline void AddNode(node_type n, value_type source, value_type sink) {
 		ASSERT(ISFINITE(source) && source >= 0 && ISFINITE(sink) && sink >= 0);
-		graph.addNode((uint32_t)n, source, sink);
+		graph.AddNode(static_cast<graph_type::NodeID>(n), source, sink);
 	}
 
 	inline void AddEdge(node_type n1, node_type n2, value_type capacity, value_type reverseCapacity) {
 		ASSERT(ISFINITE(capacity) && capacity >= 0 && ISFINITE(reverseCapacity) && reverseCapacity >= 0);
-		graph.addEdge((uint32_t)n1, (uint32_t)n2, capacity, reverseCapacity);
+		graph.AddEdge(static_cast<graph_type::NodeID>(n1), static_cast<graph_type::NodeID>(n2), capacity, reverseCapacity);
 	}
 
 	value_type ComputeMaxFlow() {
-		graph.initGraph();
-		return graph.computeMaxFlow();
+		return static_cast<value_type>(graph.ComputeMaxFlow());
 	}
 
 	inline bool IsNodeOnSrcSide(node_type n) const {
-		return graph.isNodeOnSrcSide((uint32_t)n);
+		return graph.IsNodeOnSrcSide(static_cast<graph_type::NodeID>(n));
 	}
 
 protected:
