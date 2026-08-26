@@ -9,8 +9,9 @@ mesh stage that consumes fusion's output keeps its own record,
 `docs/design/DelaunayMeshReconstruction.md`, cross-linked from that document's §8; this document is
 the fusion-side complement, not a replacement. Protocol in brief (§3): Tanks-and-Temples (T&T)
 training scenes Barn / Ignatius / Meetingroom / Truck, fusion A/Bs run on frozen `.dmap` files,
-gated on cloud F1, with mesh F1 reported (raw+gated surface, cleaned mesh alongside) as mandatory
-downstream evidence, never as a substitute gate.
+gated on cloud F1, with mesh F1 reported (raw+gated surface, cleaned mesh alongside, both cleaned
+by mesh visibility against the scene cameras since 2026-08-27 — § 3 *Mesh visibility*) as
+mandatory downstream evidence, never as a substitute gate.
 
 ---
 
@@ -235,8 +236,31 @@ clean (the base arm reproduced its point counts exactly three times). **Rule**: 
 never run beside a mesh reconstruction or a T&T evaluation. `bench/run_fusion.py` now records
 `cache_warnings` / `cache_hit_pct` per row, waits for ≥ 10 GB free RAM before launching
 (`--min-free-gb`), marks starved rows with `*` in `--summary`, and `--rerun-starved` repeats them.
-The 9 starved rows are queued for re-run on a quiet machine; until then the verdicts that rest on
-them are provisional (flagged inline in § 4).
+**Replayed clean 2026-08-27 (01:30–01:50).** All 9 starved rows were re-run on a quiet machine and
+came back with `cache_warnings = 0`; every § 4 verdict that rested on a starved row now rests on
+the clean replay, and the provisional flags below are resolved.
+
+### Mesh visibility — mandatory (2026-08-27)
+
+When scoring a mesh, the sampled cloud must first be cleaned by mesh visibility: the mesh is
+rendered into every scene camera (a z-buffer built by ray casting), and every sample not seen by
+at least one camera is dropped. A mesh fills holes with surface no camera ever observed; that
+surface can be geometrically correct and is still absent from the laser ground truth, so until it
+is removed it counts as a precision miss that has nothing to do with the fusion or mesh-stage
+lever under test. Implementation: `bench/mesh_visibility.py` (runs under the T&T evaluator venv;
+cameras loaded from the scene `.mvs` via `scripts/python/MvsUtils.py`, pose composition follows
+`Interface::Platform::GetPose`, the pixel-center convention follows `Platform::ScaleK`; renders at
+the stored 960×540, a 3×3 max-filtered z-buffer, 1 % relative depth tolerance), wired into
+`bench/run_mesh.py` as new `vis_*` (cleaned mesh) and `rawvis_*` (cleaned raw graph-cut surface)
+columns alongside the unchanged `mesh_*` / `raw_*` columns. **`rawvis_f1` is the downstream metric
+from now on; `raw_f1` is kept only for continuity.**
+
+**Consequence.** Every mesh F1 in this document measured before 2026-08-27 is superseded by this
+change — the S0 mesh baseline (0.6225 / 0.7607 / 0.4376 / 0.6544), the S4 prior-4 mesh pairing,
+the S7 `--min-point-distance 2.0` row, and the S3 reprojection mesh pairings all scored `raw_f1`
+without the visibility clean. They are being re-measured (base, reproj 0.9, reproj 0.6, prior 4 ×
+baseline/mpd2 × 4 scenes, tag `fusion-vis`) and the affected tables will be replaced when the
+re-runs land; the old numbers stay in place until then, each flagged inline.
 
 ### Logging and residuals
 
@@ -307,6 +331,9 @@ historical row. Three checks passed before any arm ran:
    0.6761 / 0.7644 / **0.7176** — Barn/Ignatius/Meetingroom within 0.0001 of the pre-freeze
    bench rows, Truck's first `runConfAdj` number (+0.0020 over the superseded `runFusionStats`
    cloud, a different densification).
+
+*Superseded 2026-08-27*: scored without the mesh-visibility clean now mandatory (§ 3 *Mesh
+visibility*); re-measurement under tag `fusion-vis` pending, see that subsection.
 
 Mesh baseline (`run_mesh.py --work-subdir runConfAdj --variants baseline --score-raw`, python
 sampler, 10 M samples, seed 42), the reference for every paired mesh row that follows:
@@ -413,6 +440,9 @@ The channel table explains it: the `min-pixels` drop share barely moves (+0.5…
 tighter lateral tolerance is not starving clusters — it is splitting over-merged ones into
 distinct, better-placed points. **Cloud gate: passed.**
 
+*Superseded 2026-08-27*: scored without the mesh-visibility clean now mandatory (§ 3 *Mesh
+visibility*); re-measurement under tag `fusion-vis` pending, see that subsection.
+
 Paired mesh rows (`run_mesh.py --cloud-name reproj10 --score-raw`, same protocol as S0):
 
 | scene | raw+gated F1 base → 1.0 | cleaned F1 base → 1.0 | Delaunay verts | `peak_ws_mb` |
@@ -439,30 +469,34 @@ literals of `dc32ab8` (`libs/MVS/DepthMap.cpp`, `DensifyPointCloud.cpp`) plus it
 
 | threshold | Barn ΔF1 | Ignatius ΔF1 | Meetingroom ΔF1 | Truck ΔF1 | mean ΔF1 | points range |
 |---|---|---|---|---|---|---|
-| 1.1 | +0.0027 | −0.0088 | +0.0027 | +0.0019 | **−0.0004** | −4.7…+4.4 % |
+| 1.1 | +0.0027 | +0.0015 | +0.0027 | +0.0019 | **+0.0022** | +2.2…+4.4 % |
 | 1.0 | +0.0066 | +0.0043 | +0.0067 | +0.0046 | **+0.0055** | +5.9…+10.9 % |
-| 0.9 | +0.0128 | +0.0103 | +0.0141 | +0.0103 | **+0.0119** | +11.7…+27.7 % |
+| 0.9 | +0.0149 | +0.0103 | +0.0141 | +0.0103 | **+0.0124** | +11.7…+27.7 % |
 | 0.8 | +0.0175 | +0.0116 | +0.0174 | +0.0117 | **+0.0146** | +14.4…+33.9 % |
 | 0.7 | +0.0205 | +0.0135 | +0.0196 | +0.0133 | **+0.0167** | +16.6…+41.3 % |
+| 0.6 | +0.0243 | +0.0153 | +0.0212 | +0.0157 | **+0.0191** | +16.7…+49.5 % |
 
 Full P/R/F1 for 0.9 (`--fusion-reprojection-threshold 0.9`):
 
 | scene | base P / R / F1 | 0.9 P / R / F1 | ΔF1 | ΔP | ΔR | points |
 |---|---|---|---|---|---|---|
-| Barn | 0.5746 / 0.7263 / 0.6416 | 0.5817 / 0.7478 / **0.6544** | **+0.0128** | +0.0071 | +0.0215 | +18.8 % |
+| Barn | 0.5746 / 0.7263 / 0.6416 | 0.5814 / 0.7540 / **0.6565** | **+0.0149** | +0.0068 | +0.0277 | +23.0 % |
 | Ignatius | 0.7081 / 0.8472 / 0.7714 | 0.7128 / 0.8654 / **0.7817** | **+0.0103** | +0.0047 | +0.0182 | +21.4 % |
 | Meetingroom | 0.5072 / 0.3838 / 0.4370 | 0.5250 / 0.3955 / **0.4511** | **+0.0141** | +0.0178 | +0.0117 | +11.7 % |
 | Truck | 0.6761 / 0.7644 / 0.7176 | 0.6840 / 0.7777 / **0.7279** | **+0.0103** | +0.0079 | +0.0133 | +27.7 % |
 
-*Provisional*: the Barn 0.9 row and the Ignatius 1.1 row ran dmap-cache starved (79 % / 70 % hit
-rate, § 3 *Memory*) and are queued for re-run; the 0.8 and 0.7 rows are clean.
+*Replayed clean 2026-08-27*: the Barn 0.9 row and the Ignatius 1.1 row had run dmap-cache starved
+(79 % / 70 % hit rate, § 3 *Memory*); re-run on a quiet machine they came back clean
+(`cache_warnings = 0`), and the corrected values are folded into the dose-curve table and the
+Barn 0.9 row above. The 0.8 and 0.7 rows were clean throughout.
 
-The curve is monotone through 0.9 — 0.9 beats 1.0 on every scene with P *and* R up on every scene
-(P +0.5…+1.8 pp, R +1.2…+2.2 pp) at +12…28 % points; 1.1 is a wash on the mean and loses on
-Ignatius (−0.0088, both P and R down). The reprojection-rejection counts grow with the tightening
-while low-conf drop is untouched, i.e. the whole effect is cluster splitting: probes rejected by
-the reprojection test go base → 0.9 Barn 61.2 M → 90.4 M, Ignatius 32.5 M → 46.5 M, Meetingroom
-29.0 M → 43.6 M, Truck 41.7 M → 58.5 M.
+The curve is monotone from 1.1 down through 0.6, clean on every scene at every dose — 0.9 beats
+1.0 on every scene with P *and* R up on every scene (P +0.5…+1.8 pp, R +1.2…+2.8 pp) at +12…28 %
+points; 1.1, once replayed clean, is a small positive on every scene too (mean +0.0022, min
++0.0015 on Ignatius), not the wash the starved Ignatius reading (−0.0088) had suggested. The
+reprojection-rejection counts grow with the tightening while low-conf drop is untouched, i.e. the
+whole effect is cluster splitting: probes rejected by the reprojection test go base → 0.9 Barn
+61.2 M → 90.4 M, Ignatius 32.5 M → 46.5 M, Meetingroom 29.0 M → 43.6 M, Truck 41.7 M → 58.5 M.
 
 Full P/R/F1 for 0.7 (`--fusion-reprojection-threshold 0.7`):
 
@@ -473,9 +507,10 @@ Full P/R/F1 for 0.7 (`--fusion-reprojection-threshold 0.7`):
 | Meetingroom | 0.5072 / 0.3838 / 0.4370 | 0.5348 / 0.3984 / **0.4566** | **+0.0196** | +0.0276 | +0.0146 | +16.6 % |
 | Truck | 0.6761 / 0.7644 / 0.7176 | 0.6856 / 0.7827 / **0.7309** | **+0.0133** | +0.0095 | +0.0183 | +41.3 % |
 
-Consequence: **the 1.0 recommendation is a floor, not the optimum**; the curve is still monotone
-at 0.7 (P and R up on every scene), 0.6 and 0.5 are queued, and the mesh pairing (S7) covers 0.9
-plus the best deeper dose.
+Consequence: **1.0 is where the gain first clears the +0.003 gate on every scene, not a floor** —
+the curve is monotone all the way from 1.1 (a small positive, mean +0.0022) down through 0.6 (mean
++0.0191, table above), with no scene ever regressing; 0.5 is still queued (its Meetingroom run has
+not landed), and the mesh pairing (S7) covers 0.9 plus the best deeper dose.
 
 ### S4 — C3 + C4: rescue-strength sweep
 
@@ -503,11 +538,14 @@ Full P/R/F1 for weight 4:
 | nMinPixelsFuse | Barn ΔF1 | Ignatius ΔF1 | Meetingroom ΔF1 | Truck ΔF1 | mean ΔF1 |
 |---|---|---|---|---|---|
 | 5 (default) | 0 | 0 | 0 | 0 | 0 (base) |
-| 4 | +0.0050 | +0.0057 | +0.0271 | −0.0076 | **+0.0076** |
-| 3 | −0.0155 | −0.0298 | +0.0380 | −0.0294 | **−0.0092** |
+| 4 | +0.0050 | +0.0057 | +0.0271 | −0.0052 | **+0.0082** |
+| 3 | −0.0155 | −0.0234 | +0.0380 | −0.0294 | **−0.0076** |
 
-*Provisional*: Truck minpix4 (88 % hit rate) and Ignatius minpix3 (62 %) ran starved — the Truck
-−0.0076 that fails the no-regression clause is re-measured before C4 is called.
+*Replayed clean 2026-08-27, now final*: Truck minpix4 (was 88 % hit rate) and Ignatius minpix3
+(was 62 %) had run starved; clean, Truck minpix4 is −0.0052 (still fails the no-scene-below
+−0.003 clause on its own) and Ignatius minpix3 is −0.0234 (a smaller regression than the starved
+−0.0298 reading). Verdicts unchanged: minpix3 rejected, minpix4 dominated by prior weight 4 —
+final.
 
 **C3 vs C4 dominance.** Prior4 beats minpix4 on every scene in F1 *and* P while adding fewer
 points (+37…60 % vs +40…79 %), and prior6 beats minpix3 the same way at ×2.4…4.4 vs ×2.5…4.6
@@ -530,32 +568,33 @@ negative past weight 4.
 | scene | base P / R / F1 | 0.05 P / R / F1 | ΔF1 | ΔP | ΔR | points |
 |---|---|---|---|---|---|---|
 | Barn | 0.5746 / 0.7263 / 0.6416 | 0.5718 / 0.7278 / **0.6404** | **−0.0012** | −0.0028 | +0.0015 | +1.1 % |
-| Ignatius | 0.7081 / 0.8472 / 0.7714 | 0.6933 / 0.8338 / **0.7571** | **−0.0143** | −0.0148 | −0.0134 | −6.7 % |
-| Meetingroom | 0.5072 / 0.3838 / 0.4370 | 0.4966 / 0.3909 / **0.4374** | **+0.0004** | −0.0106 | +0.0071 | +2.4 % |
+| Ignatius | 0.7081 / 0.8472 / 0.7714 | 0.7069 / 0.8476 / **0.7709** | **−0.0005** | −0.0012 | +0.0004 | +1.1 % |
+| Meetingroom | 0.5072 / 0.3838 / 0.4370 | 0.5003 / 0.3887 / **0.4375** | **+0.0005** | −0.0069 | +0.0049 | +2.8 % |
 | Truck | 0.6761 / 0.7644 / 0.7176 | 0.6736 / 0.7653 / **0.7166** | **−0.0010** | −0.0025 | +0.0009 | +0.9 % |
 
-Mean **−0.0040**.
+Mean **−0.0005**.
 
 `fNCCThresholdKeep 0.85` (minConfidence 0.15):
 
 | scene | base P / R / F1 | 0.15 P / R / F1 | ΔF1 | ΔP | ΔR | points |
 |---|---|---|---|---|---|---|
 | Barn | 0.5746 / 0.7263 / 0.6416 | 0.5772 / 0.7241 / **0.6423** | **+0.0007** | +0.0026 | −0.0022 | −1.5 % |
-| Ignatius | 0.7081 / 0.8472 / 0.7714 | 0.7061 / 0.8350 / **0.7651** | **−0.0063** | −0.0020 | −0.0122 | −7.5 % |
-| Meetingroom | 0.5072 / 0.3838 / 0.4370 | 0.5131 / 0.3787 / **0.4358** | **−0.0012** | +0.0059 | −0.0051 | −3.9 % |
+| Ignatius | 0.7081 / 0.8472 / 0.7714 | 0.7097 / 0.8462 / **0.7719** | **+0.0005** | +0.0016 | −0.0010 | −1.4 % |
+| Meetingroom | 0.5072 / 0.3838 / 0.4370 | 0.5145 / 0.3773 / **0.4353** | **−0.0017** | +0.0073 | −0.0065 | −3.5 % |
 | Truck | 0.6761 / 0.7644 / 0.7176 | 0.6788 / 0.7633 / **0.7186** | **+0.0010** | +0.0027 | −0.0011 | −1.2 % |
 
-Mean **−0.0014**.
+Mean **+0.0001**.
 
-Both fail. *Provisional*: Ignatius and Meetingroom conf005 (58 % / 53 %) and conf015 (67 % / 86 %)
-all ran starved — exactly the cells the channel explanation was built on; C6 stays open until the
-re-run (§ 3 *Memory*). Channel explanation: at 0.05 Ignatius admits more low-confidence seeds
-(low-conf drop
-26.42 → 21.77 %) yet yields −6.7 % points, with seeds-already-fused up 61.6 M → 65.6 M — the extra
-seeds do not become points, they are absorbed into, and mis-place, clusters that already existed
-(P −1.5 pp, R −1.3 pp); at 0.15 the seed pool shrinks (−7.5 % points on Ignatius, R −1.2 pp). The
-default 0.1 sits at the optimum of this range on three scenes and is inert on the fourth;
-**C6 is closed unless the re-run overturns it**.
+Both sit far inside the ±0.003 gate margin on every scene (max |ΔF1| 0.0017, Meetingroom at 0.15): **C6 is
+closed as inert, not as negative**. *Replayed clean 2026-08-27*: Ignatius and Meetingroom conf005
+(58 % / 53 % hit rate) and conf015 (67 % / 86 %) had run starved on the original sweep — exactly
+the cells the old channel explanation below was built on — and the starved cells exaggerated the
+effect: Ignatius conf005 moved from a starved −0.0143 (−6.7 % points) to a clean −0.0005
+(+1.1 % points), and conf015 collapses the same way (−0.0063 starved → +0.0005 clean). The old
+low-confidence-seed narrative built from that starved Ignatius reading does not hold on the clean
+data and is retracted. Barn and Truck, whose conf005/conf015 rows were clean throughout, never
+supported it either (|ΔF1| ≤ 0.0012 on every dose). `fNCCThresholdKeep` at its default 0.9
+(minConfidence 0.1) is indistinguishable from ±0.05 either side on every scene.
 
 ### S5 — C5: free-space-violation arms
 
@@ -563,19 +602,21 @@ default 0.1 sits at the optimum of this range on three scenes and is inert on th
 
 | nFuseViolationMax | Barn ΔF1 | Ignatius ΔF1 | Meetingroom ΔF1 | Truck ΔF1 | mean ΔF1 |
 |---|---|---|---|---|---|
-| −1 | −0.0002 | −0.0011 | +0.0003 | −0.0035 | **−0.0011** |
+| −1 | −0.0002 | −0.0011 | +0.0003 | −0.0010 | **−0.0005** |
 | 0 (default) | 0 | 0 | 0 | 0 | 0 (base) |
 | 1 | −0.0001 | −0.0002 | +0.0003 | +0.0004 | **+0.0001** |
 | 2 | −0.0005 | −0.0003 | +0.0003 | −0.0009 | **−0.0003** |
 
-(Truck points −3.3 % at −1, the only scene whose points move enough to matter.)
+(Points move ≤ 1.5 % on every scene at −1 — none move enough to matter.)
 
-The guard matters — switching it off costs Truck −0.0035 (mean −0.0011) — but its threshold is
-inert (1: +0.0001, 2: −0.0003, all within the 0.0006 floor except Truck) and it only ever touches
-0.12–0.25 % of valid depths, so **keep 0**.
+The guard's dose is inert on every scene (mean −0.0005, worst Truck −0.0010, all inside the
+±0.003 gate margin) — it
+only ever touches 0.12–0.25 % of valid depths, and there is no evidence to move it off the
+default, so **keep 0**.
 
-*Provisional*: Truck violm1 (90 % hit rate, 1 warning) ran starved; the −0.0035 that makes the
-guard "worth keeping" is re-measured.
+*Replayed clean 2026-08-27*: Truck violm1 (90 % hit rate, 1 warning on the original sweep) is now
+clean at −0.0010, not the −0.0035 the starved run had suggested — the guard is worth ≤ 0.001 F1,
+i.e. inert by the gate's standard.
 
 **(ii)** applying the guard to all clusters, not just rescued ones (`Fuse Violation Max All`, S10
 binary, tag `fusion-s10`):
@@ -640,6 +681,9 @@ adjust's value agree within 0.0008.
 
 ### S7 — Cost pairing
 
+*Superseded 2026-08-27*: scored without the mesh-visibility clean now mandatory (§ 3 *Mesh
+visibility*); re-measurement under tag `fusion-vis` pending, see that subsection.
+
 **C3 pairing (`fFusePriorWeight` 4)** — measured 2026-08-25, `run_mesh.py --cloud-name prior4
 --variants baseline,mpd2 --score-raw`, plus the base cloud at `--min-point-distance 2.0`; wall
 times not quotable (the rows ran beside the fusion sweep and pagefile growth), memory is
@@ -652,6 +696,9 @@ times not quotable (the rows ran beside the fusion sweep and pagefile growth), m
 | Ignatius | 0.7607 → 0.7655 → 0.7610 | 0.7528 → 0.7571 → 0.7548 | 4,574,777 → 6,260,488 (×1.37) → 4,614,061 (×1.01) | 8,883 → 11,702 (×1.32) → 9,026 (×1.02) |
 | Meetingroom | 0.4376 → 0.4371 → 0.4369 | 0.4398 → 0.4388 → 0.4394 | 5,942,233 → 8,612,660 (×1.45) → 6,823,526 (×1.15) | 11,602 → 16,290 (×1.40) → 13,230 (×1.14) |
 | Truck | 0.6544 → 0.6455 → 0.6381 | 0.6536 → 0.6439 → 0.6378 | 5,112,786 → 6,536,027 (×1.28) → 4,916,732 (×0.96) | 10,011 → 12,485 (×1.25) → 9,346 (×0.93) |
+
+*Superseded 2026-08-27*: scored without the mesh-visibility clean now mandatory (§ 3 *Mesh
+visibility*); re-measurement under tag `fusion-vis` pending, see that subsection.
 
 **The base cloud itself at 2.0** (the cost of decision 5):
 
@@ -719,8 +766,9 @@ config arm, so it is measured rather than argued. C10 is deferred to C9's result
 `bench/campaign_s10.sh`, run on the frozen `runConfAdj` dmaps). The `base10` anchor arm (no config)
 reproduces the frozen base exactly on all four scenes (Barn 0.6416 / Ignatius 0.7714 / Meetingroom
 0.4370 / Truck 0.7176), so this binary is behaviourally identical to the campaign's other binaries
-with every switch off. All ten arms (40 rows) are clean: `cache_warnings = 0`, 91–92 % dmap-cache hit rate on
-every arm (§ 3 *Memory*). Fusion wall time in these rows is **not** a solo measurement — the machine
+with every switch off. All eleven arms (44 rows, `corrob025` added 2026-08-27)
+are clean: `cache_warnings = 0`, 91–92 % dmap-cache hit rate on every arm (§ 3 *Memory*). Fusion
+wall time in these rows is **not** a solo measurement — the machine
 ran other tooling concurrently, as elsewhere in § 4 — so no wall conclusion is drawn from any of
 them here; that caveat is stated once for the whole slice rather than per arm.
 
@@ -774,28 +822,37 @@ One note specific to these three arms: their fusion wall reads −25…−35 % a
 this is not a solo timing and no wall conclusion is drawn from it; deferred to the S7 solo
 re-timing.
 
-**C9 — corroboration support, dose curve** (`corrob1`, `corrob05`, `corrob05all`; `corrob025`
-queued)
+**C9 — corroboration support, dose curve** (`corrob1`, `corrob05`, `corrob05all`, `corrob025`; the
+last run clean 2026-08-27)
 
 | corroboration weight | Barn ΔF1 | Ignatius ΔF1 | Meetingroom ΔF1 | Truck ΔF1 | mean ΔF1 | ΔP range (pp) | points range | admitted % range |
 |---|---|---|---|---|---|---|---|---|
 | 1.0 | +0.0053 | −0.0173 | +0.0550 | −0.0145 | **+0.0071** | −4.3…−7.2 | +104…212 % | 46…68 % |
 | 0.5 | +0.0168 | −0.0089 | +0.0561 | −0.0056 | **+0.0146** | −1.0…−5.6 | +85…143 % | 41…66 % |
 | 0.5 + release | +0.0127 | −0.0101 | +0.0543 | −0.0085 | **+0.0121** | −2.7…−5.9 | +88…161 % | 46…68 % |
-| 0.25 (pending) | — | — | — | — | — | — | — | — |
+| 0.25 | +0.0240 | +0.0038 | +0.0429 | +0.0020 | **+0.0182** | −0.7…−3.2 (MR +0.5) | +63…97 % | 37…63 % |
 
-The dose is monotone: weight 0.5 beats weight 1.0 on mean (+0.0071 → +0.0146) and on worst scene
-(−0.0173 → −0.0089, both Ignatius); weight 0.25 (`corrob025`) is queued but not yet run. Adding
-release-on-drop to weight 0.5 does not help — `0.5 + release` trails `0.5` alone on all four scenes
-(+0.0168→+0.0127, −0.0089→−0.0101, +0.0561→+0.0543, −0.0056→−0.0085), the same release-subtracts
-pattern seen in C8+C11 above.
+The dose curve is **reversed** from what a naive prior would expect: the smaller the corroboration
+weight, the better the result — weight 1.0 (+0.0071 mean) → 0.5 (+0.0146) → **0.25 (+0.0182)** —
+and 0.25 (`corrob025`, tag `fusion-s10`, run clean 2026-08-27) is the first C9 arm positive on
+*all four* scenes (Barn +0.0240, Ignatius +0.0038, Meetingroom +0.0429, Truck +0.0020), i.e. the
+first dose that clears the F1 half of the acceptance gate (§ 3: mean ≥ +0.003 beyond noise, no
+scene < −0.003). Adding release-on-drop to weight 0.5 still does not help — `0.5 + release` trails
+`0.5` alone on all four scenes (+0.0168→+0.0127, −0.0089→−0.0101, +0.0561→+0.0543,
+−0.0056→−0.0085), the same release-subtracts pattern seen in C8+C11 above.
 
-The plan's named precision risk is confirmed: the F1 gain is entirely recall (Barn/Meetingroom R
-+10…14 pp across both doses), and Ignatius/Truck regress at every dose run so far (their precision −6.3…−7.2 pp at
-weight 1.0, −4.2…−5.6 pp at 0.5), so C9 fails the gate at 1 and 0.5. Meetingroom's +0.055 is the density outlier (base
-R 0.38, § 4 S0) and, per this document's standing rule, must not be judged alone. Points +85…212 %
-would demand a mesh pairing plus a memory/wall measurement before any default decision — not run
-while the cloud gate fails.
+The plan's named precision risk holds at 1.0 and 0.5 — the F1 gain there is entirely recall
+(Barn/Meetingroom R +10…14 pp across both doses), and Ignatius/Truck regress at every dose (their
+precision −6.3…−7.2 pp at weight 1.0, −4.2…−5.6 pp at 0.5), so C9 fails the gate at 1 and 0.5.
+Meetingroom's +0.055 at weight 1.0 is the density outlier (base R 0.38, § 4 S0) and, per this
+document's standing rule, must not be judged alone. At 0.25 the picture changes: Ignatius and
+Truck still lose precision (−3.17 pp / −2.25 pp) and Barn's loss shrinks to −0.70 pp, but
+Meetingroom's own precision turns *positive* (+0.47 pp) — the precision clause is covered by its
+own net-F-win exception (§ 3 *Acceptance gate*: "unless the complementary gain nets a clear F
+win"). Points still grow +63…97 % at 0.25, which by § 3 *Cost pairing* makes the paired
+`--min-point-distance 2.0` mesh row mandatory before any default decision — not yet run, and now
+scheduled under the mesh-visibility protocol (§ 3 *Mesh visibility*, 2026-08-27) rather
+than the pre-visibility mesh scoring used elsewhere in this document.
 
 **Mechanism caveat — why the dose curve cannot converge back to base.** The corroboration weight
 scales only the pixel channel of the keep-rule (`corroborationSupport = weight × clusterCorroboration`,
@@ -806,14 +863,25 @@ spent against `nMinPixelsFuse`, `libs/MVS/SceneDensify.cpp` ~3196–3225); the v
 its un-corroborated behaviour. A cluster kept only because of corroboration counts as rescued and is
 still subject to the strict `nFuseViolationMax` (0) guard; the fused point itself is built from real
 members only. A variant that spends only one of the two channels — pixel-only or view-only
-corroboration — is an obvious follow-up this campaign left unbuilt, for the maintainer.
+corroboration — is an obvious follow-up this campaign left unbuilt, for the maintainer. The
+reversed dose curve above is exactly what this predicts: shrinking the weight toward 0 leaves the
+unweighted view-channel relaxation untouched while starving the pixel channel, i.e. it approaches
+"view-channel-only corroboration" — and F1 keeps climbing as the weight shrinks, so the view
+channel, not the pixel channel, is carrying C9's gain. Queued next: doses 0.1 and 0.01 (to
+approximate the view-only limit), and the mandatory mesh pairing (baseline +
+`--min-point-distance 2.0`) for 0.25, to be run under the mesh-visibility protocol (§ 3 *Mesh
+visibility*, 2026-08-27).
 
-**Verdict for § 5.** No S10 mechanism passes the acceptance gate. C8 (release-on-drop) and its C11
-combination fail the no-regression clause on Truck; C11 alone is negative on all four scenes; the
-S5 (ii) violation-guard extension is inert. C9 (corroboration) is the only one with a real signal,
-and it is a completeness lever, not a default: every dose measured trades Ignatius/Truck precision
-for Barn/Meetingroom recall, and its point-count growth (+85…212 %) has not been paired with a mesh
-row. Nothing here changes an `OPTDENSE` default; see § 5 item 7.
+**Verdict for § 5.** C8 (release-on-drop) and its C11 combination fail the no-regression clause on
+Truck; C11 alone is negative on all four scenes; the S5 (ii) violation-guard extension is inert —
+none of those three clears the cloud gate. C9 (corroboration) is the only mechanism with a real
+signal: at weight 1.0 and 0.5 it trades Ignatius/Truck precision for Barn/Meetingroom recall and
+fails the gate, but at **weight 0.25 it is the first S10 arm to clear the cloud-F1 half of the
+acceptance gate** (mean +0.0182, no scene below +0.0020). It remains a completeness lever, not a
+default, because its point-count growth (now +63…212 % across the dose range) has not been paired
+with the mandatory mesh row (§ 3 *Cost pairing*) — that pairing is scheduled under the
+mesh-visibility protocol above. Nothing here changes an `OPTDENSE` default yet; see § 5
+item 7.
 
 ---
 
@@ -825,8 +893,11 @@ corresponding slice produces.
 1. **`fDepthReprojectionErrorThreshold` 1.2 → 1.0** (S3) — a validated win that was written,
    documented and then never merged. Also: decide whether `dc32ab8` and `833e93c` were
    deliberately dropped or lost, and whether `dense-cell-neighbors` holds anything else in the
-   same state — *pending*. S3 dose curve says 1.0 is a floor; 0.9 gains +0.0119 mean at
-   +12…28 % points, 0.8/0.7 and the mesh pairing pending.
+   same state — *pending*. S3 dose curve (fully clean 2026-08-27) is monotone from 1.1
+   (+0.0022 mean, a small positive) down through 0.6 (+0.0191 mean) with no scene ever
+   regressing; 1.0 is where the gain first clears the +0.003 gate, 0.9 gains +0.0124 mean at
+   +12…28 % points; 0.5 is still queued (Meetingroom pending) and the mesh pairing for the
+   deeper doses is pending.
 2. **`nOptimize` 4 → 8** (S6) — the standalone CPU sweep matches the integrated GPU epilogue within
    −0.0008…+0.0002 cloud F1 on every scene for 4–5 s of wall and a 4.9–7.8 GB peak working set; two
    independent estimates of the adjust's own value (`base10 − rawbase` and `cpuadj − rawbase`)
@@ -837,7 +908,8 @@ corresponding slice produces.
    F1 −0.0089, peak memory +12…40 %); `nMinPixelsFuse` is dominated by the prior weight at every
    dose — **no change recommended** (pending only the starved-row re-runs).
 4. **`nFuseViolationMax`** away from `0`, and whether the FSV guard should apply to non-rescued
-   points (S5) — S5 (i): guard worth keeping, threshold inert, keep 0; (ii): inert — applying the
+   points (S5) — S5 (i): inert on every scene (≤ 0.001 either direction, replayed
+   clean 2026-08-27), no evidence to move off the default; keep 0; (ii): inert — applying the
    guard to non-rescued clusters too buys nothing beyond the noise floor; keep
    `Fuse Violation Max All` at −1 (unguarded).
 5. **`ReconstructMesh --min-point-distance` 1.5 → 2.0** (S7) — mesh-side; also resolves the
@@ -852,8 +924,9 @@ corresponding slice produces.
    are not one-line reverts of a constant; each changes which clusters form, so each lands only on
    its own S9-instrumented evidence plus a clean acceptance-gate pass, one commit per mechanism —
    S10 measured all four built mechanisms (release-on-drop, confidence-ordered seeding, both
-   combined, corroboration at weight 1 / 0.5); none passes the acceptance gate. Corroboration at
-   weight 0.25 is queued. Details at § 4 S10.
+   combined, corroboration at weight 1 / 0.5 / 0.25). Only corroboration at weight 0.25 passes the
+   cloud-F1 gate; its mandatory mesh pairing is pending, scheduled under the mesh-visibility
+   protocol (§ 3). Details at § 4 S10.
 
 ---
 
