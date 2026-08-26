@@ -1401,7 +1401,7 @@ protected:
 			while (n--)
 				new(dst+n) TYPE(src[n]);
 		} else {
-			if (n == 0) return; // nothing to copy (and src may be null)
+			if (n == 0) return;
 			memcpy((void*)dst, (const void*)src, n*sizeof(TYPE));
 		}
 	}
@@ -1419,7 +1419,7 @@ protected:
 			while (n--)
 				dst[n] = std::move(src[n]);
 		} else {
-			if (n == 0) return; // nothing to copy (and src may be null)
+			if (n == 0) return;
 			memcpy((void*)dst, (const void*)src, n*sizeof(TYPE));
 		}
 	}
@@ -1432,7 +1432,7 @@ protected:
 				(src+i)->~TYPE();
 			}
 		} else {
-			if (n == 0) return; // nothing to copy (and src may be null)
+			if (n == 0) return;
 			memmove((void*)dst, (const void*)src, n*sizeof(TYPE));
 		}
 	}
@@ -1446,7 +1446,7 @@ protected:
 				(src+n)->~TYPE();
 			}
 		} else {
-			if (n == 0) return; // nothing to copy (and src may be null)
+			if (n == 0) return;
 			const size_t _size(sizeof(TYPE)*static_cast<size_t>(n));
 			if (bRestrict)
 				memcpy((void*)dst, (const void*)src, _size);
@@ -1464,7 +1464,7 @@ protected:
 				(src+n)->~TYPE();
 			}
 		} else {
-			if (n == 0) return; // nothing to copy (and src may be null)
+			if (n == 0) return;
 			const size_t _size(sizeof(TYPE)*static_cast<size_t>(n));
 			if (useConstruct == 1)
 				while (n--)
