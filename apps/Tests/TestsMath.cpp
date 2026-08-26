@@ -161,6 +161,25 @@ bool TestTetraFlow()
 		const bool integerCaps = (iter % 3) != 0;
 		const FlowTestGraph g = RandomFlowTestGraph(rng, numNodes, integerCaps);
 		solver.Reset(numNodes);
+		if (iter % 4 == 2) {
+			// the slot-addressed construction: the capacities are accumulated in place, before or after the edge is linked
+			for (uint32_t n = 0; n < numNodes; ++n) {
+				const float s = g.capSource[n] * 0.5f, t = g.capSink[n] * 0.5f;
+				solver.SourceCapacity(n) += s; solver.SourceCapacity(n) += g.capSource[n] - s;
+				solver.SinkCapacity(n) = t; solver.SinkCapacity(n) += g.capSink[n] - t;
+			}
+			std::vector<unsigned> nextSlot(numNodes, 0);
+			for (size_t k = 0; k < g.edges.size(); ++k) {
+				const FlowTestEdge& e = g.edges[k];
+				const unsigned iu = nextSlot[e.u]++, iv = nextSlot[e.v]++;
+				if (k % 2)
+					solver.LinkEdge(e.u, iu, e.v, iv);
+				solver.EdgeCapacity(e.u, iu) += e.capUV;
+				solver.EdgeCapacity(e.v, iv) += e.capVU;
+				if (!(k % 2))
+					solver.LinkEdge(e.u, iu, e.v, iv);
+			}
+		} else {
 		for (uint32_t n = 0; n < numNodes; ++n) {
 			if (iter % 2) {
 				// the terminal capacities may be accumulated over several calls
@@ -172,6 +191,7 @@ bool TestTetraFlow()
 		}
 		for (const FlowTestEdge& e : g.edges)
 			solver.AddEdge(e.u, e.v, e.capUV, e.capVU);
+		}
 		const double flow = solver.ComputeMaxFlow();
 		if (!solver.CheckMaxFlow()) {
 			VERBOSE("error: TetraFlow iteration %d: an augmenting path remains", iter);
@@ -191,6 +211,8 @@ bool TestTetraFlow()
 			VERBOSE("error: TetraFlow iteration %d: cut capacity %.9g differs from the max-flow %.9g", iter, cut, reference);
 			return false;
 		}
+		if (iter % 50 == 49)
+			solver.Release(); // exercises the reuse after a full release
 	}
 	return true;
 }

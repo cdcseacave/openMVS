@@ -84,19 +84,31 @@ public:
 	typedef SEACAVE::TetraFlow graph_type;
 
 public:
-	MaxFlow(size_t numNodes) : graph(numNodes) {}
+	// allocate numNodes nodes with all capacities zero
+	void Reset(size_t numNodes) { graph.Reset(numNodes); }
+	// free all storage
+	void Release() { graph.Release(); }
 
-	inline void AddNode(node_type n, value_type source, value_type sink) {
-		ASSERT(ISFINITE(source) && source >= 0 && ISFINITE(sink) && sink >= 0);
-		graph.AddNode(static_cast<graph_type::NodeID>(n), source, sink);
+	// the capacities, accumulated in place while the weights are gathered (valid until ComputeMaxFlow):
+	// the arc leaving node n through slot i, the source capacity and the sink capacity of node n
+	inline value_type& EdgeCapacity(node_type n, unsigned i) { return graph.EdgeCapacity(static_cast<graph_type::NodeID>(n), i); }
+	inline value_type EdgeCapacity(node_type n, unsigned i) const { return graph.EdgeCapacity(static_cast<graph_type::NodeID>(n), i); }
+	inline value_type& SourceCapacity(node_type n) { return graph.SourceCapacity(static_cast<graph_type::NodeID>(n)); }
+	inline value_type& SinkCapacity(node_type n) { return graph.SinkCapacity(static_cast<graph_type::NodeID>(n)); }
+
+	// link slot i1 of node n1 with slot i2 of node n2; called once per edge, after its capacities are final
+	inline void LinkEdge(node_type n1, unsigned i1, node_type n2, unsigned i2) {
+		ASSERT(ISFINITE(EdgeCapacity(n1, i1)) && EdgeCapacity(n1, i1) >= 0 && ISFINITE(EdgeCapacity(n2, i2)) && EdgeCapacity(n2, i2) >= 0);
+		graph.LinkEdge(static_cast<graph_type::NodeID>(n1), i1, static_cast<graph_type::NodeID>(n2), i2);
 	}
 
-	inline void AddEdge(node_type n1, node_type n2, value_type capacity, value_type reverseCapacity) {
-		ASSERT(ISFINITE(capacity) && capacity >= 0 && ISFINITE(reverseCapacity) && reverseCapacity >= 0);
-		graph.AddEdge(static_cast<graph_type::NodeID>(n1), static_cast<graph_type::NodeID>(n2), capacity, reverseCapacity);
-	}
-
+	// compute the maximum flow; the terminal capacities must be finite and non-negative
 	value_type ComputeMaxFlow() {
+		#ifndef _RELEASE
+		for (size_t n = 0; n < graph.GetNumNodes(); ++n)
+			ASSERT(ISFINITE(graph.SourceCapacity(static_cast<graph_type::NodeID>(n))) && graph.SourceCapacity(static_cast<graph_type::NodeID>(n)) >= 0 &&
+				   ISFINITE(graph.SinkCapacity(static_cast<graph_type::NodeID>(n))) && graph.SinkCapacity(static_cast<graph_type::NodeID>(n)) >= 0);
+		#endif
 		return static_cast<value_type>(graph.ComputeMaxFlow());
 	}
 
@@ -135,9 +147,39 @@ public:
 	typedef typename boost::graph_traits<graph_type>::edge_iterator edge_iterator;
 	typedef typename boost::graph_traits<graph_type>::out_edge_iterator out_edge_iterator;
 
-public:
-	MaxFlow(size_t numNodes) : graph(numNodes+2), S(node_type(numNodes)), T(node_type(numNodes+1)) {}
+	// per-node weights gathered before the graph is built
+	struct NodeInfo {
+		value_type f[4]; // capacity of the arc leaving the node through slot i
+		value_type s; // source capacity
+		value_type t; // sink capacity
+	};
 
+public:
+	// allocate numNodes nodes with all capacities zero
+	void Reset(size_t numNodes) {
+		graph = graph_type(numNodes+2);
+		S = node_type(numNodes); T = node_type(numNodes+1);
+		info.assign(numNodes, NodeInfo{});
+	}
+	// free all storage
+	void Release() {
+		graph = graph_type();
+		std::vector<boost::default_color_type>().swap(color);
+		std::vector<NodeInfo>().swap(info);
+	}
+
+	// the capacities, accumulated in place while the weights are gathered (valid until ComputeMaxFlow)
+	inline value_type& EdgeCapacity(node_type n, unsigned i) { return info[n].f[i]; }
+	inline value_type EdgeCapacity(node_type n, unsigned i) const { return info[n].f[i]; }
+	inline value_type& SourceCapacity(node_type n) { return info[n].s; }
+	inline value_type& SinkCapacity(node_type n) { return info[n].t; }
+
+	// link slot i1 of node n1 with slot i2 of node n2; called once per edge, after its capacities are final
+	void LinkEdge(node_type n1, unsigned i1, node_type n2, unsigned i2) {
+		AddEdge(n1, n2, info[n1].f[i1], info[n2].f[i2]);
+	}
+
+protected:
 	void AddNode(node_type n, value_type source, value_type sink) {
 		ASSERT(ISFINITE(source) && source >= 0 && ISFINITE(sink) && sink >= 0);
 		if (source > 0) {
@@ -166,7 +208,11 @@ public:
 		graph[er].reverse = e;
 	}
 
+public:
 	value_type ComputeMaxFlow() {
+		for (node_type n = 0; n < node_type(info.size()); ++n)
+			AddNode(n, info[n].s, info[n].t);
+		std::vector<NodeInfo>().swap(info);
 		vertex_size_type n_verts(boost::num_vertices(graph));
 		color.resize(n_verts);
 		std::vector<edge_descriptor> pred(n_verts);
@@ -190,8 +236,9 @@ public:
 protected:
 	graph_type graph;
 	std::vector<boost::default_color_type> color;
-	const node_type S;
-	const node_type T;
+	std::vector<NodeInfo> info;
+	node_type S;
+	node_type T;
 };
 #endif
 /*----------------------------------------------------------------*/
@@ -270,14 +317,10 @@ struct vert_info_t {
 	}
 };
 
-struct cell_info_t {
-	typedef edge_cap_t Type;
-	Type f[4]; // faces' weight from the cell outwards
-	Type s; // cell's weight towards s-source
-	Type t; // cell's weight towards t-sink
-	inline const Type* ptr() const { return f; }
-	inline Type* ptr() { return f; }
-};
+// the graph-cut graph: one node per cell, arc slot i of a cell = its facet i (towards neighbor(i));
+// the visibility weights are accumulated directly in the solver's nodes, there is no separate per-cell
+// weight array (the solver's storage is the memory peak of the reconstruction, see ReconstructMesh)
+typedef MaxFlow<cell_size_t,edge_cap_t> maxflow_t;
 
 typedef CGAL::Triangulation_vertex_base_with_info_3<vert_info_t, kernel_t> vertex_base_t;
 typedef CGAL::Triangulation_cell_base_with_info_3<cell_size_t, kernel_t> cell_base_t;
@@ -786,14 +829,14 @@ inline bool intersectFace(const delaunay_t& Tr, const segment_t& seg, const vert
 
 
 // Given a cell, compute the free-space support for it
-edge_cap_t freeSpaceSupport(const delaunay_t& Tr, const std::vector<cell_info_t>& infoCells, const cell_handle_t& cell)
+edge_cap_t freeSpaceSupport(const delaunay_t& Tr, const maxflow_t& graph, const cell_handle_t& cell)
 {
 	// sum up all 4 incoming weights
 	// (corresponding to the 4 facets of the neighbor cells)
 	edge_cap_t wf(0);
 	for (int i=0; i<4; ++i) {
 		const facet_t& mfacet(Tr.mirror_facet(facet_t(cell, i)));
-		wf += infoCells[mfacet.first->info()].f[mfacet.second];
+		wf += graph.EdgeCapacity(mfacet.first->info(), mfacet.second);
 	}
 	return wf;
 }
@@ -892,7 +935,7 @@ bool Scene::ReconstructMesh(const ReconstructMeshParams& params)
 
 	// create the Delaunay triangulation
 	delaunay_t delaunay;
-	std::vector<cell_info_t> infoCells;
+	maxflow_t graph;
 	std::vector<camera_cell_t> camCells;
 	std::vector<facet_t> hullFacets;
 	// median length over all finite Delaunay edges, measured once the triangulation is complete:
@@ -1000,6 +1043,11 @@ bool Scene::ReconstructMesh(const ReconstructMeshParams& params)
 		});
 		progress.close();
 		pointcloud.Release();
+		// release the insertion buffers now: the solver allocated below is the memory peak of the
+		// reconstruction and must not overlap them
+		const size_t numPoints(indices.size());
+		std::vector<point_t>().swap(vertices);
+		std::vector<std::ptrdiff_t>().swap(indices);
 		if (delaunay.dimension() < 3) {
 			VERBOSE("error: too few or degenerate points for Delaunay reconstruction (dimension %d)", delaunay.dimension());
 			return false;
@@ -1007,8 +1055,6 @@ bool Scene::ReconstructMesh(const ReconstructMeshParams& params)
 		// init cells weights and
 		// loop over all cells and store the finite facet of the infinite cells
 		const size_t numNodes(delaunay.number_of_cells());
-		infoCells.resize(numNodes);
-		memset(&infoCells[0], 0, sizeof(cell_info_t)*numNodes);
 		// assign the cell ids: any numbering is valid (the solver only needs unique ids), but a
 		// spatially coherent one makes the per-cell solver nodes, which the ray-walks and the
 		// graph-cut access by id, cache-friendlier: this is optional and worth only ~5% of the
@@ -1042,6 +1088,9 @@ bool Scene::ReconstructMesh(const ReconstructMeshParams& params)
 				ci->info() = offsets[keys[k++]]++;
 			ASSERT(k == numNodes && offsets[numVertices] == numNodes);
 		}
+		// allocate the graph (all weights zero) only now, after the insertion and numbering buffers
+		// are gone: the solver's storage is the memory peak of the reconstruction
+		graph.Reset(numNodes);
 		for (delaunay_t::All_cells_iterator ci=delaunay.all_cells_begin(), eci=delaunay.all_cells_end(); ci!=eci; ++ci) {
 			// skip the finite cells
 			if (!delaunay.is_infinite(ci))
@@ -1101,10 +1150,10 @@ bool Scene::ReconstructMesh(const ReconstructMeshParams& params)
 			fetchCellFacets<CGAL::POSITIVE>(delaunay, hullFacets, camCell.cell, imageData, rescale, camCell.facets);
 			// link all cells contained by the camera to the source
 			for (const facet_t& f: camCell.facets)
-				infoCells[f.first->info()].s = kInf;
+				graph.SourceCapacity(f.first->info()) = kInf;
 		}
 
-		DEBUG_EXTRA("Delaunay tetrahedralization completed: %u points -> %u vertices, %u (+%u) cells, %u (+%u) faces (%s)", indices.size(), delaunay.number_of_vertices(), delaunay.number_of_finite_cells(), delaunay.number_of_cells()-delaunay.number_of_finite_cells(), delaunay.number_of_finite_facets(), delaunay.number_of_facets()-delaunay.number_of_finite_facets(), TD_TIMER_GET_FMT().c_str());
+		DEBUG_EXTRA("Delaunay tetrahedralization completed: %u points -> %u vertices, %u (+%u) cells, %u (+%u) faces (%s)", numPoints, delaunay.number_of_vertices(), delaunay.number_of_finite_cells(), delaunay.number_of_cells()-delaunay.number_of_finite_cells(), delaunay.number_of_finite_facets(), delaunay.number_of_facets()-delaunay.number_of_finite_facets(), TD_TIMER_GET_FMT().c_str());
 	}
 
 	// for every camera-point ray intersect it with the tetrahedrons and
@@ -1259,7 +1308,7 @@ bool Scene::ReconstructMesh(const ReconstructMeshParams& params)
 				do {
 					// assign score, weighted by the distance from the point to the intersection
 					const edge_cap_t w(alpha_vis*(1.f-EXP(-SQUARE((float)inter.dist)*inv2SigmaSqV)));
-					edge_cap_t& f(infoCells[inter.facet.first->info()].f[inter.facet.second]);
+					edge_cap_t& f(graph.EdgeCapacity(inter.facet.first->info(), inter.facet.second));
 					#ifdef DELAUNAY_USE_OPENMP
 					#pragma omp atomic
 					#endif
@@ -1282,7 +1331,7 @@ bool Scene::ReconstructMesh(const ReconstructMeshParams& params)
 				const cell_handle_t endCell(delaunay.locate(segEndPoint.source(), vi->cell()));
 				ASSERT(endCell != cell_handle_t());
 				fetchCellFacets<CGAL::NEGATIVE>(delaunay, hullFacets, endCell, imageData, rescale, facets);
-				edge_cap_t& t(infoCells[endCell->info()].t);
+				edge_cap_t& t(graph.SinkCapacity(endCell->info()));
 				#ifdef DELAUNAY_USE_OPENMP
 				#pragma omp atomic
 				#endif
@@ -1291,7 +1340,7 @@ bool Scene::ReconstructMesh(const ReconstructMeshParams& params)
 					// assign score, weighted by the distance from the point to the intersection
 					const facet_t& mf(delaunay.mirror_facet(inter.facet));
 					const edge_cap_t w(alpha_vis*(1.f-EXP(-SQUARE((float)inter.dist)*inv2SigmaSqV)));
-					edge_cap_t& f(infoCells[mf.first->info()].f[mf.second]);
+					edge_cap_t& f(graph.EdgeCapacity(mf.first->info(), mf.second));
 					#ifdef DELAUNAY_USE_OPENMP
 					#pragma omp atomic
 					#endif
@@ -1358,7 +1407,7 @@ bool Scene::ReconstructMesh(const ReconstructMeshParams& params)
 					continue;
 				edge_cap_t beta(0);
 				do {
-					const edge_cap_t fs(freeSpaceSupport(delaunay, infoCells, inter.facet.first));
+					const edge_cap_t fs(freeSpaceSupport(delaunay, graph, inter.facet.first));
 					if (beta < fs)
 						beta = fs;
 				} while (intersectFace(delaunay, segPointBgn, facets, facets, inter));
@@ -1369,7 +1418,7 @@ bool Scene::ReconstructMesh(const ReconstructMeshParams& params)
 					continue;
 				edge_cap_t gammaMin(FLT_MAX), gammaMax(0);
 				do {
-					const edge_cap_t fs(freeSpaceSupport(delaunay, infoCells, inter.facet.first));
+					const edge_cap_t fs(freeSpaceSupport(delaunay, graph, inter.facet.first));
 					if (gammaMin > fs)
 						gammaMin = fs;
 					if (gammaMax < fs)
@@ -1384,7 +1433,7 @@ bool Scene::ReconstructMesh(const ReconstructMeshParams& params)
 					// multiplied once per firing (vertex, view) pair; a zero t stays zero by
 					// design - enforcing on cells no visibility vote ever reached collapses
 					// thin structures, so the no-op is protective, not a defect
-					edge_cap_t& t(infoCells[inter.ncell->info()].t);
+					edge_cap_t& t(graph.SinkCapacity(inter.ncell->info()));
 					#ifdef DELAUNAY_USE_OPENMP
 					#pragma omp atomic
 					#endif
@@ -1412,28 +1461,33 @@ bool Scene::ReconstructMesh(const ReconstructMeshParams& params)
 	{
 		TD_TIMER_STARTD();
 
-		// create graph
-		MaxFlow<cell_size_t,edge_cap_t> graph(delaunay.number_of_cells());
-		// set weights
+		// finalize the graph: clamp the sink capacities, add the facet quality term to the visibility
+		// weights and link the cells across every facet
 		constexpr edge_cap_t maxCap(3.402823466e+34f/*FLT_MAX*0.0001f*/);
 		for (delaunay_t::All_cells_iterator ci=delaunay.all_cells_begin(), ce=delaunay.all_cells_end(); ci!=ce; ++ci) {
 			const cell_size_t ciID(ci->info());
-			const cell_info_t& ciInfo(infoCells[ciID]);
-			graph.AddNode(ciID, ciInfo.s, MINF(ciInfo.t, maxCap));
+			edge_cap_t& t(graph.SinkCapacity(ciID));
+			if (t > maxCap)
+				t = maxCap;
 			for (int i=0; i<4; ++i) {
 				const cell_handle_t cj(ci->neighbor(i));
 				const cell_size_t cjID(cj->info());
 				if (cjID < ciID) continue;
-				const cell_info_t& cjInfo(infoCells[cjID]);
 				const int j(cj->index(ci));
 				const edge_cap_t q((1.f - MINF(computePlaneSphereAngle(delaunay, facet_t(ci,i)), computePlaneSphereAngle(delaunay, facet_t(cj,j))))*kQual);
-				graph.AddEdge(ciID, cjID, ciInfo.f[i]+q, cjInfo.f[j]+q);
+				graph.EdgeCapacity(ciID, i) += q;
+				graph.EdgeCapacity(cjID, j) += q;
+				graph.LinkEdge(ciID, i, cjID, j);
 			}
 		}
-		// release the cell weights before solving: they are not needed anymore and the solver is the memory peak
-		std::vector<cell_info_t>().swap(infoCells);
 		// find graph-cut solution
 		const float maxflow(graph.ComputeMaxFlow());
+		// keep only the side of each cell and release the solver: it is the memory peak of the
+		// reconstruction and the surface extraction needs only the sides
+		std::vector<bool> srcSide(delaunay.number_of_cells());
+		for (delaunay_t::All_cells_iterator ci=delaunay.all_cells_begin(), ce=delaunay.all_cells_end(); ci!=ce; ++ci)
+			srcSide[ci->info()] = graph.IsNodeOnSrcSide(ci->info());
+		graph.Release();
 		// extract surface formed by the facets between inside/outside cells
 		const size_t nEstimatedNumVerts(delaunay.number_of_vertices());
 		std::unordered_map<void*,Mesh::VIndex> mapVertices;
@@ -1464,7 +1518,7 @@ bool Scene::ReconstructMesh(const ReconstructMeshParams& params)
 					const cell_handle_t cj(ci->neighbor(i));
 					const cell_size_t cjID(cj->info());
 					if (ciID < cjID) continue;
-					if (graph.IsNodeOnSrcSide(ciID) == graph.IsNodeOnSrcSide(cjID)) continue;
+					if (srcSide[ciID] == srcSide[cjID]) continue;
 					edgesSq.Insert(maxFacetEdgeSq(ci, i));
 				}
 			}
@@ -1479,8 +1533,8 @@ bool Scene::ReconstructMesh(const ReconstructMeshParams& params)
 				const cell_handle_t cj(ci->neighbor(i));
 				const cell_size_t cjID(cj->info());
 				if (ciID < cjID) continue;
-				const bool ciType(graph.IsNodeOnSrcSide(ciID));
-				if (ciType == graph.IsNodeOnSrcSide(cjID)) continue;
+				const bool ciType(srcSide[ciID]);
+				if (ciType == srcSide[cjID]) continue;
 				if (params.maxEdgeScale > 0 && maxFacetEdgeSq(ci, i) > gateEdgeSq) {
 					++numUnsupportedFaces;
 					continue;

@@ -131,6 +131,19 @@ public:
 		ResetSolverState();
 	}
 
+	// free all storage (the object can be reused with Reset())
+	void Release() {
+		std::vector<Node>().swap(nodes);
+		std::vector<NodeID>().swap(frontierS);
+		std::vector<NodeID>().swap(frontierT);
+		std::vector<NodeID>().swap(scan);
+		std::vector<NodeID>().swap(bucketHead);
+		std::vector<NodeID>().swap(pathT);
+		std::vector<std::vector<NodeID>>().swap(deficitQueue);
+		std::vector<NodeID>().swap(pendingFree);
+		ResetSolverState();
+	}
+
 	// accumulate terminal capacities of node n (may be called several times for the same node)
 	void AddNode(NodeID n, Cap capSource, Cap capSink) {
 		assert(n < nodes.size());
@@ -147,12 +160,41 @@ public:
 		assert(capUV >= 0 && capVU >= 0);
 		Node& nu = nodes[u];
 		Node& nv = nodes[v];
-		assert(nu.fill < NUM_SLOTS && nv.fill < NUM_SLOTS);
-		const unsigned iu = nu.fill++;
-		const unsigned iv = nv.fill++;
-		nu.head[iu] = v; nu.rcap[iu] = capUV; SetRev(nu, iu, iv);
-		nv.head[iv] = u; nv.rcap[iv] = capVU; SetRev(nv, iv, iu);
+		assert(nu.fill != SLOT_MASK && nv.fill != SLOT_MASK);
+		const unsigned iu = FreeSlot(nu.fill);
+		const unsigned iv = FreeSlot(nv.fill);
+		nu.head[iu] = v; nu.rcap[iu] = capUV; SetRev(nu, iu, iv); nu.fill |= Bit(iu);
+		nv.head[iv] = u; nv.rcap[iv] = capVU; SetRev(nv, iv, iu); nv.fill |= Bit(iv);
 	}
+
+	// slot-addressed construction, the alternative to AddEdge() for callers that assign the slots
+	// themselves (e.g. slot i of a tetrahedron = its facet i): the capacities are accumulated in place
+	// through EdgeCapacity() / SourceCapacity() / SinkCapacity() and the edge is linked with LinkEdge()
+	// at any time before ComputeMaxFlow(), so that no separate per-node weight storage is needed
+	// while the weights are being gathered
+
+	// link slot iu of node u with slot iv of node v; called exactly once per edge; u != v;
+	// the capacities of the two arcs are whatever EdgeCapacity() accumulated (and keeps accumulating)
+	void LinkEdge(NodeID u, unsigned iu, NodeID v, unsigned iv) {
+		assert(u < nodes.size() && v < nodes.size() && u != v);
+		assert(iu < NUM_SLOTS && iv < NUM_SLOTS);
+		Node& nu = nodes[u];
+		Node& nv = nodes[v];
+		assert(!(nu.fill & Bit(iu)) && !(nv.fill & Bit(iv)));
+		nu.head[iu] = v; SetRev(nu, iu, iv); nu.fill |= Bit(iu);
+		nv.head[iv] = u; SetRev(nv, iv, iu); nv.fill |= Bit(iv);
+	}
+
+	// capacity of the arc leaving node n through slot i (construction only: zero after Reset(),
+	// assign or accumulate freely until ComputeMaxFlow(); an arc left unlinked is dropped by Init())
+	[[nodiscard]] Cap& EdgeCapacity(NodeID n, unsigned i) noexcept { assert(n < nodes.size() && i < NUM_SLOTS); return nodes[n].rcap[i]; }
+	[[nodiscard]] Cap EdgeCapacity(NodeID n, unsigned i) const noexcept { assert(n < nodes.size() && i < NUM_SLOTS); return nodes[n].rcap[i]; }
+	// source capacity of node n (construction only, same rules as EdgeCapacity())
+	[[nodiscard]] Cap& SourceCapacity(NodeID n) noexcept { assert(n < nodes.size()); return nodes[n].excess; }
+	[[nodiscard]] Cap SourceCapacity(NodeID n) const noexcept { assert(n < nodes.size()); return nodes[n].excess; }
+	// sink capacity of node n (construction only, same rules as EdgeCapacity())
+	[[nodiscard]] Cap& SinkCapacity(NodeID n) noexcept { assert(n < nodes.size()); return nodes[n].capSink; }
+	[[nodiscard]] Cap SinkCapacity(NodeID n) const noexcept { assert(n < nodes.size()); return nodes[n].capSink; }
 
 	// finalize the graph and compute the maximum flow; returns its value; call once
 	double ComputeMaxFlow() {
@@ -246,7 +288,7 @@ private:
 		uint8_t revSlots;         // 2 bits per slot: the slot of head[i] through which it sees this node back
 		uint8_t children;         // bit i set iff head[i] is a child of this node in its tree
 		union {
-			uint8_t fill;         // slots used so far by AddEdge (construction only)
+			uint8_t fill;         // bit i set iff slot i is linked (construction only)
 			uint8_t listState;    // debug-only: which intrusive list holds the node (LIST_NONE/LIST_ORPHAN/LIST_BUCKET)
 		};
 	};
@@ -257,6 +299,9 @@ private:
 	using AugTs = uint16_t; // wraps around: harmless, it only feeds the unique-orphan heuristic
 
 	static constexpr uint8_t Bit(unsigned i) noexcept { return uint8_t(1u << i); }
+	static constexpr uint8_t SLOT_MASK = uint8_t((1u << NUM_SLOTS) - 1); // all slots linked
+	// lowest slot not linked yet (mask != SLOT_MASK)
+	static unsigned FreeSlot(uint8_t mask) noexcept { unsigned i = 0; while (mask & Bit(i)) ++i; return i; }
 	// index of the lowest set bit of a non-zero mask
 	static unsigned LowestBit(unsigned mask) noexcept {
 		assert(mask != 0);
@@ -327,7 +372,9 @@ private:
 		Node* const nodeData = NodeData();
 		for (size_t x = 0; x < numNodes; ++x) {
 			Node& node = nodeData[x];
-			for (unsigned i = node.fill; i < NUM_SLOTS; ++i) {
+			for (unsigned i = 0; i < NUM_SLOTS; ++i) {
+				if (node.fill & Bit(i))
+					continue;
 				node.head[i] = NodeID(x);
 				node.rcap[i] = 0;
 				SetRev(node, i, i);
