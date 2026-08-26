@@ -428,6 +428,7 @@ private:
 		uniqOrphansS = uniqOrphansT = 0;
 		augTs = 0;
 		flow = 0;
+		stats = Stats();
 	}
 
 	// fold the terminal capacities into the initial flow, create the tree roots, fill the unused slots
