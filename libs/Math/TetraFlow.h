@@ -45,21 +45,6 @@
 #ifndef TETRAFLOW_PREFETCH_DIST
 #define TETRAFLOW_PREFETCH_DIST 4
 #endif
-// 1: batched source-side augmentation: the augmentations of a growth pass record deficits at their
-// S endpoint that one level-ordered sweep pulls down the tree afterwards; a deficit node that loses
-// its tree keeps the deficit while free until S re-adopts it or T reaches it (0: exact phase-1 walks)
-#ifndef TETRAFLOW_DEFICITS
-#define TETRAFLOW_DEFICITS 1
-#endif
-// 1 (with TETRAFLOW_DEFICITS): bound the amount committed at a bridge by a cached estimate of the
-// S-side bottleneck (the root's unclaimed source excess min'ed with every tree arc down to the node);
-// a node that has used up its estimate is scanned again after the deficits of the pass are settled
-#ifndef TETRAFLOW_DEFICIT_BOUND
-#define TETRAFLOW_DEFICIT_BOUND 0
-#endif
-#if TETRAFLOW_DEFICIT_BOUND && !TETRAFLOW_DEFICITS
-#error "TETRAFLOW_DEFICIT_BOUND requires TETRAFLOW_DEFICITS"
-#endif
 
 // branch hints (no-ops on compilers without the builtin)
 #if defined(__GNUC__) || defined(__clang__)
@@ -89,18 +74,6 @@
 #define TETRAFLOW_DEBUG(...)
 #endif
 
-// optional operation counters: define TETRAFLOW_STATS=1 to compile them in (zero cost otherwise)
-#ifndef TETRAFLOW_STATS
-#define TETRAFLOW_STATS 0
-#endif
-#if TETRAFLOW_STATS
-#define TETRAFLOW_STAT(counter) (++stats.counter)
-#define TETRAFLOW_STAT_ADD(counter, value) (stats.counter += (value))
-#else
-#define TETRAFLOW_STAT(counter) static_cast<void>(0)
-#define TETRAFLOW_STAT_ADD(counter, value) static_cast<void>(0)
-#endif
-
 
 namespace SEACAVE {
 
@@ -118,6 +91,13 @@ namespace SEACAVE {
 // grow one full level at a time; whenever a tree arc reaches a node of the other tree the augmenting
 // path is saturated and the orphaned sub-trees are re-attached (or relabeled deeper, or freed) by the
 // adoption procedure. The flow is maximum when one of the trees can no longer grow.
+//
+// The S side of the augmentations is settled in batches: an augmentation pushes the bottleneck on
+// the bridge and the T path right away and only records the amount as a deficit at its S endpoint;
+// one level-ordered sweep at the end of the growth pass pulls every deficit down the tree to the
+// source roots, so each S tree arc is traversed once per pass however many paths used it. A deficit
+// node that loses its tree keeps the deficit while free, until S re-adopts it or T reaches it (it
+// then becomes a sink root worth exactly the flow already pushed towards it).
 //
 // Every node occupies exactly one 64-byte cache line holding its four arcs and all its tree state.
 class TetraFlow
@@ -147,9 +127,7 @@ public:
 		frontierT.clear();
 		scan.clear();
 		bucketHead.clear();
-		#if TETRAFLOW_DEFICITS
 		deficitQueue.clear();
-		#endif
 		ResetSolverState();
 	}
 
@@ -188,13 +166,10 @@ public:
 				++levelT;
 				Grow<false>();
 			}
-			#if TETRAFLOW_DEFICITS
 			ResolveDeficits();
 			if (frontierT.empty())
 				ConvertPendingFree(); // T exhausted: the free deficit nodes become sinks, T may grow again
-			#endif
 			if (frontierS.empty() || frontierT.empty()) {
-				TETRAFLOW_STAT_ADD(endedOnS, frontierS.empty() ? 1 : 0);
 				break;
 			}
 			// grow next the tree that produced fewer unique orphans so far; alternate on a tie
@@ -222,16 +197,10 @@ public:
 	[[nodiscard]] size_t GetMemoryBytes() const noexcept {
 		size_t bytes = nodes.capacity() * sizeof(Node) +
 			(frontierS.capacity() + frontierT.capacity() + scan.capacity() + bucketHead.capacity() +
-			 pathS.capacity() + pathT.capacity()) * sizeof(NodeID);
-		#if TETRAFLOW_DEFICITS
+			 pathT.capacity() + pendingFree.capacity()) * sizeof(NodeID);
 		bytes += deficitQueue.capacity() * sizeof(std::vector<NodeID>);
-		bytes += pendingFree.capacity() * sizeof(NodeID);
-		#if TETRAFLOW_DEFICIT_BOUND
-		bytes += (cutS.capacity() + cutT.capacity()) * sizeof(NodeID);
-		#endif
 		for (const std::vector<NodeID>& level: deficitQueue)
 			bytes += level.capacity() * sizeof(NodeID);
-		#endif
 		return bytes;
 	}
 
@@ -263,29 +232,6 @@ public:
 		return true;
 	}
 
-	// operation counters, updated only when compiled with TETRAFLOW_STATS=1
-	struct Stats {
-		uint64_t augmentations = 0;    // augmenting paths saturated
-		uint64_t walkBottleneckS = 0;  // steps of the bottleneck walks on the S side
-		uint64_t walkBottleneckT = 0;  // steps of the bottleneck walks on the T side
-		uint64_t walkPushS = 0;        // steps of the push walks on the S side
-		uint64_t walkPushT = 0;        // steps of the push walks on the T side
-		uint64_t orphans = 0;          // orphans processed by adoption
-		uint64_t orphansBucket = 0;    // orphans that entered the three-pass buckets
-		uint64_t arcScansGrowth = 0;   // arcs examined by growth
-		uint64_t arcScansAdoption = 0; // arcs examined by adoption (including the three-pass procedure)
-		uint64_t growthPassesS = 0;    // growth passes on S
-		uint64_t growthPassesT = 0;    // growth passes on T
-		uint64_t deficitPulls = 0;     // steps of the deficit sweeps (TETRAFLOW_DEFICITS)
-		uint64_t deficitOrphans = 0;   // S orphans created by deficit pulls
-		uint64_t conversions = 0;      // S nodes converted into T roots while holding a deficit
-		uint64_t deficitFrees = 0;     // deficit nodes that lost their tree and wait free for S or T
-		uint64_t endedOnS = 0;         // 1 if the main loop ended because S could not grow (0: T)
-		uint64_t boundExhaustions = 0; // scans cut short by a node using up its bottleneck estimate (TETRAFLOW_DEFICIT_BOUND)
-		double phantomFlow = 0;        // total deficit converted into sink capacity
-	};
-	// the counters (all zero unless TETRAFLOW_STATS=1)
-	[[nodiscard]] const Stats& GetStats() const noexcept { return stats; }
 
 private:
 	using Slot = uint8_t;
@@ -305,21 +251,9 @@ private:
 			NodeID prev;          // link for the buckets
 			Cap capSink;          // accumulated sink capacity during construction (prev is unused until ComputeMaxFlow)
 		};
-		#if TETRAFLOW_DEFICIT_BOUND
-		union {
-			NodeID parent;        // T nodes: parent node id (== head[parentSlot], cached to shorten the walks)
-			Cap sBound;           // S nodes: estimate of the residual bottleneck on the path from the root, less what was committed
-		};
-		#else
 		NodeID parent;            // parent node id (== head[parentSlot], cached to shorten the walks)
-		#endif
-		#if TETRAFLOW_DEFICITS
 		Cap deficit;              // flow pushed towards the sink but not yet received from the parent (S nodes only)
 		uint16_t lastAugTs;       // timestamp of the last push phase in which the node was orphaned
-		#else
-		uint32_t lastAugTs;       // timestamp of the last push phase in which the node was orphaned
-		uint16_t pad;
-		#endif
 		Slot parentSlot;          // slot towards the parent, NO_SLOT for roots and free nodes
 		uint8_t isParentCurr;     // true if the slots before parentSlot are known useless as parent arcs at the current label
 		uint8_t revres;           // bit i set iff the reverse arc head[i] -> this node has residual capacity
@@ -334,11 +268,7 @@ private:
 	static_assert(alignof(Node) == 64, "a node must be cache-line aligned");
 
 	enum : uint8_t { LIST_NONE = 0, LIST_ORPHAN = 1, LIST_BUCKET = 2 };
-	#if TETRAFLOW_DEFICITS
 	using AugTs = uint16_t; // wraps around: harmless, it only feeds the unique-orphan heuristic
-	#else
-	using AugTs = uint32_t;
-	#endif
 
 	static constexpr uint8_t Bit(unsigned i) noexcept { return uint8_t(1u << i); }
 	// index of the lowest set bit of a non-zero mask
@@ -379,56 +309,24 @@ private:
 	static bool IsAttached(const Node& node) noexcept { return node.excess != 0 || node.parentSlot != NO_SLOT; }
 	// the parent of an attached node
 	static NodeID ParentOf(const Node& node) noexcept { return node.head[node.parentSlot]; }
-	#if TETRAFLOW_DEFICIT_BOUND
-	// what an S node may still commit at bridges: a root's source excess not yet claimed by its deficit,
-	// otherwise its cached path bottleneck estimate
-	static Cap BudgetOf(const Node& node) noexcept { return node.excess > 0 ? node.excess - node.deficit : node.sBound; }
-	#endif
-	// record the parent of the node being attached through the tree arc of residual arcCap from the
-	// parent (S with the bound: the path bottleneck estimate; otherwise the parent id)
-	template <bool S>
-	static void SetParent(Node& child, NodeID parent, const Node& parentNode, Cap arcCap) noexcept {
-		#if TETRAFLOW_DEFICIT_BOUND
-		if constexpr (S) {
-			child.sBound = std::min(BudgetOf(parentNode), arcCap);
-			static_cast<void>(parent);
-			return;
-		}
-		#endif
-		static_cast<void>(parentNode);
-		static_cast<void>(arcCap);
-		child.parent = parent;
-	}
-
 	template <bool S>
 	std::vector<NodeID>& Frontier() noexcept { if constexpr (S) return frontierS; else return frontierT; }
 	template <bool S>
 	Label Top() const noexcept { return S ? levelS : levelT; }
 	template <bool S>
 	uint64_t& UniqOrphans() noexcept { if constexpr (S) return uniqOrphansS; else return uniqOrphansT; }
-	#if TETRAFLOW_DEFICIT_BOUND
-	template <bool S>
-	std::vector<NodeID>& Cut() noexcept { if constexpr (S) return cutS; else return cutT; }
-	#endif
 
 	void ResetSolverState() noexcept {
 		orphanHead = orphanTail = NO_NODE;
 		bucketMaxLevel = 0;
-		#if TETRAFLOW_DEFICITS
 		for (std::vector<NodeID>& level: deficitQueue)
 			level.clear();
 		maxDeficitLevel = 0;
 		pendingFree.clear();
-		#if TETRAFLOW_DEFICIT_BOUND
-		cutS.clear();
-		cutT.clear();
-		#endif
-		#endif
 		levelS = levelT = 1;
 		uniqOrphansS = uniqOrphansT = 0;
 		augTs = 0;
 		flow = 0;
-		stats = Stats();
 	}
 
 	// fold the terminal capacities into the initial flow, create the tree roots, fill the unused slots
@@ -456,9 +354,7 @@ private:
 			node.next = NO_NODE;
 			node.parent = NO_NODE;
 			node.lastAugTs = 0;
-			#if TETRAFLOW_DEFICITS
 			node.deficit = 0;
-			#endif
 			node.parentSlot = NO_SLOT;
 			node.isParentCurr = 0;
 			node.children = 0;
@@ -490,10 +386,6 @@ private:
 		const Label top = Top<S>();
 		if (bucketHead.size() <= size_t(top))
 			bucketHead.resize(size_t(top) + 1, NO_NODE);
-		if constexpr (S)
-			TETRAFLOW_STAT(growthPassesS);
-		else
-			TETRAFLOW_STAT(growthPassesT);
 		const size_t numScan = scan.size();
 		for (size_t k = 0; k < numScan; ++k) {
 			if (k + PREFETCH_DIST < numScan)
@@ -505,20 +397,6 @@ private:
 			}
 			ScanNode<S>(scan[k], top);
 		}
-		#if TETRAFLOW_DEFICIT_BOUND
-		// nodes whose scan was cut short: settle the deficits (their estimates are refreshed, or they leave
-		// the level) and scan them again, until every node of the level is fully scanned
-		while (!Cut<S>().empty()) {
-			ResolveDeficits();
-			scan.swap(Cut<S>());
-			Cut<S>().clear();
-			for (NodeID x: scan)
-				ScanNode<S>(x, top);
-		}
-		#endif
-		#ifdef TETRAFLOW_CHECK_INVARIANTS
-		CheckInvariants();
-		#endif
 	}
 
 	// scan one node of level top-1 of tree S/T
@@ -530,48 +408,36 @@ private:
 			return; // stale entry: x was relabeled or freed since it was appended to the frontier
 		const Label labelChild = Sgn<S>(top);
 		for (unsigned i = 0; i < NUM_SLOTS; ++i) {
-			TETRAFLOW_STAT(arcScansGrowth);
 			while (Forward<S>(nx, i)) {
 				const NodeID y = nx.head[i];
 				Node& ny = nodes[y];
 				if (TETRAFLOW_LIKELY(ny.label == 0)) TETRAFLOW_LIKELY_BRANCH {
-					#if TETRAFLOW_DEFICITS
 					if constexpr (!S) {
 						if (ny.deficit > 0) {
 							ConvertToSink(y, ny); // a free node holding a deficit becomes a sink at this level
 							break;
 						}
 					}
-					#endif
 					// free node: it becomes a child of x at the new level
 					ny.label = labelChild;
 					ny.parentSlot = Slot(Rev(nx, i));
-					SetParent<S>(ny, x, nx, nx.rcap[i]);
+					ny.parent = x;
 					ny.isParentCurr = 0;
 					nx.children |= Bit(i);
 					Frontier<S>().push_back(y);
-					#if TETRAFLOW_DEFICITS
 					if constexpr (S) {
 						if (ny.deficit > 0)
 							DeficitAdd(y, ny.label); // the sweep pulls the deficit it carried while free
 					}
-					#endif
 					break;
 				}
 				if (Sgn<S>(ny.label) > 0)
 					break; // y is in the same tree
 				// y is in the other tree: augment along source -> ... -> x -> y -> ... -> sink
-				const bool exhausted = S ? Augment(x, i) : Augment(y, Rev(nx, i));
-				#if TETRAFLOW_DEFICIT_BOUND
-				if (exhausted) {
-					// the S endpoint has used up its estimate: scan x again once the deficits of the pass are settled
-					TETRAFLOW_STAT(boundExhaustions);
-					Cut<S>().push_back(x);
-					return;
-				}
-				#else
-				static_cast<void>(exhausted);
-				#endif
+				if constexpr (S)
+					Augment(x, i);
+				else
+					Augment(y, Rev(nx, i));
 				if (nx.label != labelScan)
 					return; // x left this level (it is in the frontier if it was relabeled to top)
 				// re-examine the same slot: y may still be in the other tree, or be free now
@@ -579,51 +445,15 @@ private:
 		}
 	}
 
-	// bottleneck of the augmenting path through the bridge x -> y (x in S, y in T) given the bridge
-	// residual d: walk from x up to its S root (tree arc parent -> n) and from y down to its T root (tree
-	// arc n -> parent); the two walks are independent dependent-load chains, so their steps are
-	// interleaved to let the cache misses overlap; both paths are recorded (leaf first, root last) so
-	// that the push walks iterate an array instead of re-chasing links
-	Cap Bottleneck(NodeID x, NodeID y, Cap d) {
-		const Node* ns = &nodes[x];
-		const Node* nt = &nodes[y];
-		Cap dS = d, dT = d;
-		pathS.clear();
-		pathT.clear();
-		pathS.push_back(x);
-		pathT.push_back(y);
-		auto stepS = [&]() {
-			TETRAFLOW_STAT(walkBottleneckS);
-			const Node& q = nodes[ns->parent];
-			dS = std::min(dS, q.rcap[Rev(*ns, ns->parentSlot)]);
-			pathS.push_back(ns->parent);
-			ns = &q;
-		};
-		auto stepT = [&]() {
-			TETRAFLOW_STAT(walkBottleneckT);
-			dT = std::min(dT, nt->rcap[nt->parentSlot]);
-			pathT.push_back(nt->parent);
-			nt = &nodes[nt->parent];
-		};
-		while (ns->excess == 0 && nt->excess == 0) {
-			stepS();
-			stepT();
-		}
-		while (ns->excess == 0)
-			stepS();
-		while (nt->excess == 0)
-			stepT();
-		dS = std::min(dS, ns->excess);  // residual source capacity of the S root
-		dT = std::min(dT, -nt->excess); // residual sink capacity of the T root
-		return std::min(dS, dT);
-	}
-	// bottleneck of the T side only (walk from y down to its T root, recording the path)
+	// bottleneck of the augmenting path on the T side given the bridge residual d: walk from y down to
+	// its T root (tree arc n -> parent), recording the path (leaf first, root last) so that the push
+	// walk iterates an array instead of re-chasing the links; the S side is settled later by the
+	// deficit sweep, so the bridge commits min(bridge, T bottleneck) and the source root is charged then
 	Cap BottleneckT(NodeID y, Cap d) {
 		const Node* nt = &nodes[y];
 		pathT.clear();
 		pathT.push_back(y);
 		while (nt->excess == 0) {
-			TETRAFLOW_STAT(walkBottleneckT);
 			d = std::min(d, nt->rcap[nt->parentSlot]);
 			pathT.push_back(nt->parent);
 			nt = &nodes[nt->parent];
@@ -631,28 +461,16 @@ private:
 		return std::min(d, -nt->excess); // residual sink capacity of the T root
 	}
 
-	// x in S, y = head[i] in T, rcap(x,i) > 0: push the bottleneck of the path source -> x -> y -> sink;
-	// returns true if x has used up its bottleneck estimate (TETRAFLOW_DEFICIT_BOUND)
-	bool Augment(NodeID x, unsigned i) {
+	// x in S, y = head[i] in T, rcap(x,i) > 0: push the bottleneck of the path x -> y -> ... -> sink
+	// on the bridge and the T path now, and record it as a deficit at x for the S side
+	void Augment(NodeID x, unsigned i) {
 		Node& nx = nodes[x];
 		const NodeID y = nx.head[i];
 		Node& ny = nodes[y];
 		const unsigned j = Rev(nx, i);
 		assert(nx.label > 0 && ny.label < 0 && nx.rcap[i] > 0);
 		assert(orphanHead == NO_NODE);
-		TETRAFLOW_STAT(augmentations);
-		bool budgetExhausted = false;
-		Cap d = nx.rcap[i];
-		#if TETRAFLOW_DEFICITS
-		d = BottleneckT(y, d);
-		#if TETRAFLOW_DEFICIT_BOUND
-		const Cap budget = BudgetOf(nx);
-		if (budget > 0 && budget < d)
-			d = budget; // commit no more than the S path is estimated to carry
-		#endif
-		#else
-		d = Bottleneck(x, y, d);
-		#endif
+		Cap d = BottleneckT(y, nx.rcap[i]);
 		assert(d > 0);
 		// push d on the bridge
 		nx.rcap[i] -= d;
@@ -664,62 +482,28 @@ private:
 			ny.revres &= uint8_t(~Bit(j));
 		// push on the T path and adopt the T orphans
 		++augTs;
-		Push<false>(pathT, d);
+		PushT(d);
 		Adopt<false>();
-		#if TETRAFLOW_DEFICITS
 		// the S side is settled by the deficit sweep at the end of the growth pass: x records what it pushed
 		if (nx.deficit == 0)
 			DeficitAdd(x, nx.label);
 		nx.deficit += d;
-		#if TETRAFLOW_DEFICIT_BOUND
-		if (nx.excess <= 0)
-			nx.sBound -= d;
-		budgetExhausted = BudgetOf(nx) <= 0;
-		#endif
-		#else
-		// then the same for S
-		++augTs;
-		Push<true>(pathS, d);
-		Adopt<true>();
-		flow += double(d);
-		#endif
 		assert(orphanHead == NO_NODE);
-		#ifdef TETRAFLOW_CHECK_INVARIANTS
-		CheckInvariants();
-		#endif
-		return budgetExhausted; // true: the S endpoint has used up its bottleneck estimate
 	}
 
-	// push d along the recorded tree path (leaf first, root last); saturated tree arcs detach their
-	// child, and a root that loses its terminal arc is detached too; the orphans are pushed to the
+	// push d along the recorded T path (leaf first, root last); a saturated tree arc detaches its
+	// child, and the root is detached too if it loses its terminal arc; the orphans are pushed to the
 	// front of the orphan list so that the one nearest the root is processed first
-	template <bool S>
-	void Push(const std::vector<NodeID>& path, Cap d) {
-		const size_t len = path.size();
+	void PushT(Cap d) {
+		const size_t len = pathT.size();
 		assert(len > 0);
-		for (size_t k = 0; k + 1 < len; ++k)
-			PushArc<S>(path[k], nodes[path[k]], nodes[path[k + 1]], d);
-		PushRoot<S>(path[len - 1], nodes[path[len - 1]], d);
-	}
-	// push d along the tree arc between n and its parent q
-	template <bool S>
-	void PushArc(NodeID n, Node& pn, Node& nq, Cap d) {
-		const unsigned p = pn.parentSlot;
-		const unsigned r = Rev(pn, p);
-		if constexpr (S) {
-			TETRAFLOW_STAT(walkPushS);
-			// tree arc q -> n is (q,r); n -> q gains residual
-			pn.rcap[p] += d;
-			nq.revres |= Bit(r);
-			nq.rcap[r] -= d;
-			if (nq.rcap[r] == 0) {
-				pn.revres &= uint8_t(~Bit(p));
-				nq.children &= uint8_t(~Bit(r));
-				OrphanPushFront(n);
-			}
-		} else {
-			TETRAFLOW_STAT(walkPushT);
+		for (size_t k = 0; k + 1 < len; ++k) {
 			// tree arc n -> q is (n,p); q -> n gains residual
+			const NodeID n = pathT[k];
+			Node& pn = nodes[n];
+			Node& nq = nodes[pathT[k + 1]];
+			const unsigned p = pn.parentSlot;
+			const unsigned r = Rev(pn, p);
 			nq.rcap[r] += d;
 			pn.revres |= Bit(p);
 			pn.rcap[p] -= d;
@@ -729,16 +513,12 @@ private:
 				OrphanPushFront(n);
 			}
 		}
-	}
-	// push d through the terminal arc of the root n
-	template <bool S>
-	void PushRoot(NodeID n, Node& pn, Cap d) {
-		if constexpr (S)
-			pn.excess -= d;
-		else
-			pn.excess += d;
-		if (pn.excess == 0)
-			OrphanPushFront(n); // the root lost its terminal arc
+		// the terminal arc of the root
+		const NodeID root = pathT[len - 1];
+		Node& pr = nodes[root];
+		pr.excess += d;
+		if (pr.excess == 0)
+			OrphanPushFront(root); // the root lost its terminal arc
 	}
 
 	// process the orphan list of tree S/T: re-attach every orphan to a parent of the same level if
@@ -755,7 +535,6 @@ private:
 				TETRAFLOW_PREFETCH(&nodes[orphanHead]);
 			Node& nx = nodes[x];
 			assert(nx.excess == 0);
-			TETRAFLOW_STAT(orphans);
 			++numOrphans;
 			if (nx.lastAugTs != AugTs(augTs)) {
 				nx.lastAugTs = AugTs(augTs);
@@ -766,11 +545,7 @@ private:
 				threePass = true;
 			const Label lx = Sgn<S>(nx.label);
 			assert(lx > 0 && lx <= top);
-			#if TETRAFLOW_DEFICITS
 			assert(lx == 1 || nx.parentSlot != NO_SLOT || !S); // converted T roots can be at any level
-			#else
-			assert(lx == 1 || nx.parentSlot != NO_SLOT);
-			#endif
 			// (a) look for a parent at the same level as before, starting from the current arc
 			const unsigned start = nx.isParentCurr ? nx.parentSlot : 0;
 			nx.isParentCurr = 1;
@@ -778,14 +553,13 @@ private:
 			if (lx != 1) { // roots have no possible parent
 				const Label want = Sgn<S>(lx - 1);
 				for (unsigned i = start; i < NUM_SLOTS; ++i) {
-					TETRAFLOW_STAT(arcScansAdoption);
 					if (!Backward<S>(nx, i))
 						continue;
 					const NodeID y = nx.head[i];
 					Node& ny = nodes[y];
 					if (ny.label == want) {
 						nx.parentSlot = Slot(i);
-						SetParent<S>(nx, y, ny, ny.rcap[Rev(nx, i)]);
+						nx.parent = y;
 						ny.children |= Bit(Rev(nx, i));
 						Attached<S>(x, nx);
 						break;
@@ -805,7 +579,6 @@ private:
 			}
 			// (d) bucket mode: the relabeling is deferred to the three-pass procedure
 			if (threePass) {
-				TETRAFLOW_STAT(orphansBucket);
 				nx.label = Sgn<S>(lx + 1);
 				BucketAdd(x);
 				continue;
@@ -814,7 +587,6 @@ private:
 			Label best = top;
 			unsigned bestSlot = NO_SLOT;
 			for (unsigned i = 0; i < NUM_SLOTS; ++i) {
-				TETRAFLOW_STAT(arcScansAdoption);
 				if (!Backward<S>(nx, i))
 					continue;
 				const Label ly = Sgn<S>(nodes[nx.head[i]].label);
@@ -829,7 +601,7 @@ private:
 				const NodeID y = nx.head[bestSlot];
 				nx.label = Sgn<S>(best + 1);
 				nx.parentSlot = Slot(bestSlot);
-				SetParent<S>(nx, y, nodes[y], nodes[y].rcap[Rev(nx, bestSlot)]);
+				nx.parent = y;
 				nodes[y].children |= Bit(Rev(nx, bestSlot));
 				Attached<S>(x, nx);
 				if (best + 1 == top)
@@ -858,7 +630,6 @@ private:
 					unsigned bestSlot = NO_SLOT;
 					const Label dest = L - 1;
 					for (unsigned i = 0; i < NUM_SLOTS; ++i) {
-						TETRAFLOW_STAT(arcScansAdoption);
 						if (!Backward<S>(nx, i))
 							continue;
 						const Node& ny = nodes[nx.head[i]];
@@ -875,7 +646,7 @@ private:
 						continue;
 					}
 					nx.parentSlot = Slot(bestSlot);
-					SetParent<S>(nx, nx.head[bestSlot], nodes[nx.head[bestSlot]], nodes[nx.head[bestSlot]].rcap[Rev(nx, bestSlot)]);
+					nx.parent = nx.head[bestSlot];
 					nx.label = Sgn<S>(best + 1);
 					if (best + 1 != L) {
 						assert(best + 1 > L);
@@ -887,27 +658,24 @@ private:
 				if (L != top) {
 					const Label childLabel = L + 1;
 					for (unsigned i = 0; i < NUM_SLOTS; ++i) {
-						TETRAFLOW_STAT(arcScansAdoption);
 						if (!Forward<S>(nx, i))
 							continue;
 						const NodeID y = nx.head[i];
 						Node& ny = nodes[y];
 						const Label ly = Sgn<S>(ny.label);
 						if (ly == 0 || ly > childLabel) {
-							#if TETRAFLOW_DEFICITS
 							if constexpr (!S) {
 								if (ly == 0 && ny.deficit > 0) {
 									ConvertToSink(y, ny); // a free node holding a deficit becomes a sink at the top level
 									continue;
 								}
 							}
-							#endif
 							// y is free, or a pending orphan in a deeper bucket (an attached node can never be deeper than L+1)
 							if (ly != 0)
 								BucketRemove(y);
 							ny.label = Sgn<S>(childLabel);
 							ny.parentSlot = Slot(Rev(nx, i));
-							SetParent<S>(ny, x, nx, nx.rcap[i]);
+							ny.parent = x;
 							BucketAdd(y);
 						}
 					}
@@ -926,40 +694,32 @@ private:
 	// hook: the node x of tree S/T has just been attached to a parent
 	template <bool S>
 	void Attached(NodeID x, Node& nx) {
-		#if TETRAFLOW_DEFICITS
 		if constexpr (S) {
 			if (nx.deficit > 0)
 				DeficitAdd(x, nx.label); // the sweep must pull the deficit through the new arc
-			return;
+		} else {
+			static_cast<void>(x);
+			static_cast<void>(nx);
 		}
-		#endif
-		static_cast<void>(x);
-		static_cast<void>(nx);
 	}
 	// hook: the node x of tree S/T has no way back into its tree: it becomes free; an S node holding a
 	// deficit keeps it while free (until S re-adopts it or T reaches it) and is remembered
 	template <bool S>
 	void Release(NodeID x, Node& nx) {
 		nx.label = 0;
-		#if TETRAFLOW_DEFICITS
 		if constexpr (S) {
-			if (nx.deficit > 0) {
-				TETRAFLOW_STAT(deficitFrees);
+			if (nx.deficit > 0)
 				pendingFree.push_back(x);
-			}
+		} else {
+			static_cast<void>(x);
 		}
-		#endif
-		static_cast<void>(x);
 	}
 
-	#if TETRAFLOW_DEFICITS
 	// a free node holding a deficit that T has reached (or that is left when T is exhausted) becomes a
 	// T root at T's current top level: the flow it pushed is still on the arcs, so its deficit is exactly
 	// the sink capacity that any S node reaching it later can fill (counted at the source root as usual)
 	void ConvertToSink(NodeID x, Node& nx) {
 		assert(nx.label == 0 && nx.deficit > 0 && nx.excess == 0 && nx.parentSlot == NO_SLOT && nx.children == 0);
-		TETRAFLOW_STAT(conversions);
-		TETRAFLOW_STAT_ADD(phantomFlow, double(nx.deficit));
 		nx.excess = -nx.deficit;
 		nx.deficit = 0;
 		nx.label = -levelT;
@@ -974,10 +734,6 @@ private:
 				ConvertToSink(x, nx);
 		}
 		pendingFree.clear();
-		#if TETRAFLOW_DEFICIT_BOUND
-		cutS.clear();
-		cutT.clear();
-		#endif
 	}
 	// queue x (an S node holding a deficit) for the sweep at level L
 	void DeficitAdd(NodeID x, Label L) {
@@ -1010,7 +766,6 @@ private:
 				DeficitAdd(x, nx.label); // relabeled meanwhile: process it at its real level
 				continue;
 			}
-			TETRAFLOW_STAT(deficitPulls);
 			if (nx.parentSlot == NO_SLOT) {
 				// an S root: consume source capacity
 				assert(nx.excess > 0);
@@ -1020,7 +775,6 @@ private:
 				flow += double(d);
 				if (nx.excess == 0) {
 					// terminal arc saturated: x is an orphan (adoption re-queues or converts a leftover deficit)
-					TETRAFLOW_STAT(deficitOrphans);
 					OrphanPushFront(x);
 					++augTs;
 					Adopt<true>();
@@ -1042,12 +796,8 @@ private:
 			if (nq.deficit == 0)
 				DeficitAdd(q, nq.label);
 			nq.deficit += d;
-			#if TETRAFLOW_DEFICIT_BOUND
-			nx.sBound = std::min(BudgetOf(nq), nq.rcap[r]); // refresh the estimate through the pulled arc
-			#endif
 			if (nq.rcap[r] == 0) {
 				// tree arc saturated: x is an orphan
-				TETRAFLOW_STAT(deficitOrphans);
 				nx.revres &= uint8_t(~Bit(p));
 				nq.children &= uint8_t(~Bit(r));
 				OrphanPushFront(x);
@@ -1060,7 +810,6 @@ private:
 			assert(node.label <= 0 || node.deficit == 0); // every tree deficit was drained (free nodes may keep one)
 		#endif
 	}
-	#endif
 
 	// orphan list: intrusive singly-linked through next, with head and tail
 	void OrphanPushFront(NodeID x) noexcept {
@@ -1138,65 +887,6 @@ private:
 		return x;
 	}
 
-	#ifdef TETRAFLOW_CHECK_INVARIANTS
-	// exhaustive O(N) consistency check of the tree state; valid between augmentations
-	void CheckInvariants() const {
-		assert(orphanHead == NO_NODE && orphanTail == NO_NODE);
-		assert(bucketMaxLevel == 0);
-		for (NodeID h: bucketHead)
-			assert(h == NO_NODE);
-		for (size_t x = 0; x < nodes.size(); ++x) {
-			const Node& nx = nodes[x];
-			assert(nx.listState == LIST_NONE);
-			for (unsigned i = 0; i < NUM_SLOTS; ++i) {
-				const Node& ny = nodes[nx.head[i]];
-				assert(nx.rcap[i] >= 0);
-				assert(ny.head[Rev(nx, i)] == x && Rev(ny, Rev(nx, i)) == i);
-				assert(((nx.revres >> i) & 1u) == (ny.rcap[Rev(nx, i)] > 0 ? 1u : 0u));
-			}
-			if (nx.label == 0) {
-				assert(nx.excess == 0 && nx.parentSlot == NO_SLOT && nx.children == 0);
-				continue;
-			}
-			const bool inS = nx.label > 0;
-			const Label lx = inS ? nx.label : -nx.label;
-			#if TETRAFLOW_DEFICITS
-			assert(inS || nx.deficit == 0); // only S nodes carry deficits
-			#endif
-			assert(lx <= (inS ? levelS : levelT));
-			if (nx.excess != 0) {
-				#if TETRAFLOW_DEFICITS
-				assert((nx.excess > 0) == inS && (lx == 1 || !inS) && nx.parentSlot == NO_SLOT); // converted T roots sit at any level
-				#else
-				assert((nx.excess > 0) == inS && lx == 1 && nx.parentSlot == NO_SLOT);
-				#endif
-			} else {
-				assert(nx.parentSlot < NUM_SLOTS);
-				#if TETRAFLOW_DEFICIT_BOUND
-				assert(inS || nx.parent == nx.head[nx.parentSlot]); // an S node's slot holds the bottleneck estimate
-				#else
-				assert(nx.parent == nx.head[nx.parentSlot]);
-				#endif
-				const Node& np = nodes[ParentOf(nx)];
-				assert(np.label == (inS ? nx.label - 1 : nx.label + 1));
-				assert((np.children >> Rev(nx, nx.parentSlot)) & 1u);
-				assert(inS ? np.rcap[Rev(nx, nx.parentSlot)] > 0 : nx.rcap[nx.parentSlot] > 0);
-			}
-			for (unsigned i = 0; i < NUM_SLOTS; ++i) {
-				const Node& ny = nodes[nx.head[i]];
-				if (nx.children & Bit(i))
-					assert(ParentOf(ny) == x && ny.parentSlot == Rev(nx, i) && ny.label == (inS ? nx.label + 1 : nx.label - 1));
-				// no shortcut: a residual arc away from the root cannot skip a level within a tree
-				const bool forward = inS ? nx.rcap[i] > 0 : ((nx.revres >> i) & 1u) != 0;
-				if (forward && (ny.label > 0) == inS && ny.label != 0)
-					assert((inS ? ny.label : -ny.label) <= lx + 1);
-				// scanned nodes have no residual arc towards a free node
-				if (forward && ny.label == 0)
-					assert(lx + 1 >= (inS ? levelS : levelT));
-			}
-		}
-	}
-	#endif
 
 private:
 	std::vector<Node> nodes;
@@ -1204,22 +894,16 @@ private:
 	std::vector<NodeID> frontierT;  // same for T
 	std::vector<NodeID> scan;       // the level being scanned by the current growth pass
 	std::vector<NodeID> bucketHead; // head of the bucket of each absolute label (three-pass adoption)
-	std::vector<NodeID> pathS, pathT; // the augmenting path recorded by the bottleneck walks
-	#if TETRAFLOW_DEFICITS
+	std::vector<NodeID> pathT;      // the T side of the augmenting path recorded by the bottleneck walk
 	std::vector<std::vector<NodeID>> deficitQueue; // S nodes holding a deficit, by level (may hold stale entries)
 	Label maxDeficitLevel = 0;                     // deepest possibly non-empty level of deficitQueue
 	std::vector<NodeID> pendingFree;               // free nodes holding a deficit (may hold stale entries)
-	#if TETRAFLOW_DEFICIT_BOUND
-	std::vector<NodeID> cutS, cutT;                // nodes whose scan was cut short by their budget (scanned again after settling)
-	#endif
-	#endif
 	NodeID orphanHead = NO_NODE, orphanTail = NO_NODE;
 	Label bucketMaxLevel = 0;       // deepest non-empty bucket
 	Label levelS = 1, levelT = 1;   // depth of the deepest level created so far in each tree
 	uint64_t uniqOrphansS = 0, uniqOrphansT = 0; // unique orphans produced by each tree (growth heuristic)
 	uint32_t augTs = 0;             // push-phase timestamp (incremented twice per augmentation)
 	double flow = 0;
-	Stats stats;
 };
 /*----------------------------------------------------------------*/
 

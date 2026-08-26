@@ -33,6 +33,7 @@
 #include "../../libs/MVS.h"
 #include "../../libs/Math/LeastAbsoluteDeviationSolver.h"
 #include "../../libs/Math/ConfidenceInterval.h"
+#include "TestsMath.h"
 #include "TestsSFM.h"
 #include "TestsMVS.h"
 
@@ -85,6 +86,10 @@ bool UnitTests()
 	}
 	if (!SEACAVE::TestConfidenceInterval()) {
 		VERBOSE("ERROR: TestConfidenceInterval failed!");
+		return false;
+	}
+	if (!SEACAVE::TestTetraFlow()) {
+		VERBOSE("ERROR: TestTetraFlow failed!");
 		return false;
 	}
 	if (Util::toString(L"\x00A9\U0001F600") != "\xC2\xA9\xF0\x9F\x98\x80") {

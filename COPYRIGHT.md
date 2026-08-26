@@ -36,11 +36,6 @@ This program includes works distributed under the terms of another license(s) an
     Copyright (c) Joachim Wuttke.
     Licensed under the [FreeBSD license](http://opensource.org/licenses/BSD-2-Clause).
 
-*   __ibfs__<br />
-    [http://www.cs.tau.ac.il/~sagihed/ibfs](http://www.cs.tau.ac.il/~sagihed/ibfs)
-    Copyright (c) Haim Kaplan and Sagi Hed.
-    This software can be used for research purposes only.
-
 *   __loopy-belief-propagation__<br />
     [https://github.com/nmoehrle/mvs-texturing](https://github.com/nmoehrle/mvs-texturing)
     Copyright (c) Michael Waechter.
