@@ -210,9 +210,13 @@ void IBFSGraph::initGraphFast()
 	taEnd = (tmpArcs+(arcEnd-arcs));
 	for (ta=tmpArcs; ta != taEnd; ta++) {
 		while (x->label <= (ta-tmpArcs)) x++;
+		// read the temp arc before writing: arcs overlaps tmpArcs, and for very
+		// small graphs (numEdges <= 1) the a->rCap store lands inside ta->rev
+		TmpArc *taRev = ta->rev;
+		EdgeCap cap = ta->cap;
 		a->head = (x-1);
-		a->rCap = ta->cap;
-		a->rev = arcs + (ta->rev-tmpArcs);
+		a->rCap = cap;
+		a->rev = arcs + (taRev-tmpArcs);
 		a++;
 	}
 
@@ -791,7 +795,7 @@ EdgeCap IBFSGraph::computeMaxFlow()
 		}
 	}
 	
-	return flow;
+	return (EdgeCap)flow;
 }
 
 

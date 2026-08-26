@@ -211,7 +211,7 @@ public:
 		return stats;
 	}
 	inline EdgeCap getFlow() {
-		return flow;
+		return (EdgeCap)flow;
 	}
 	inline size_t getNumNodes() {
 		return nodeEnd-nodes;
@@ -350,7 +350,7 @@ private:
 	Node	*nodes, *nodeEnd;
 	Arc		*arcs, *arcEnd;
 	int 	numNodes;
-	EdgeCap	flow;
+	double	flow; // accumulated in double: float32 loses small augmentations once large
 	unsigned short augTimestamp;
 	unsigned int uniqOrphansS, uniqOrphansT;
 	Node* orphanFirst;
