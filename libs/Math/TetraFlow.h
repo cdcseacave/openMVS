@@ -178,9 +178,6 @@ public:
 		return flow;
 	}
 
-	// value returned by ComputeMaxFlow()
-	[[nodiscard]] double GetFlow() const noexcept { return flow; }
-
 	// true if node n is on the source side of the minimum cut (valid after ComputeMaxFlow):
 	// if T could not grow it is exactly the set of nodes that can still reach the sink and everything
 	// else is on the source side; otherwise S is exactly the set of nodes reachable from the source
@@ -192,17 +189,6 @@ public:
 
 	// number of nodes
 	[[nodiscard]] size_t GetNumNodes() const noexcept { return nodes.size(); }
-
-	// bytes of heap memory currently owned by this object (nodes + auxiliary buffers, use capacities)
-	[[nodiscard]] size_t GetMemoryBytes() const noexcept {
-		size_t bytes = nodes.capacity() * sizeof(Node) +
-			(frontierS.capacity() + frontierT.capacity() + scan.capacity() + bucketHead.capacity() +
-			 pathT.capacity() + pendingFree.capacity()) * sizeof(NodeID);
-		bytes += deficitQueue.capacity() * sizeof(std::vector<NodeID>);
-		for (const std::vector<NodeID>& level: deficitQueue)
-			bytes += level.capacity() * sizeof(NodeID);
-		return bytes;
-	}
 
 	// optimality check for tests: breadth-first search from all nodes with residual source capacity
 	// over residual arcs must not reach a node with residual sink capacity; O(N)
