@@ -255,12 +255,27 @@ the stored 960×540, a 3×3 max-filtered z-buffer, 1 % relative depth tolerance)
 columns alongside the unchanged `mesh_*` / `raw_*` columns. **`rawvis_f1` is the downstream metric
 from now on; `raw_f1` is kept only for continuity.**
 
-**Consequence.** Every mesh F1 in this document measured before 2026-08-27 is superseded by this
-change — the S0 mesh baseline (0.6225 / 0.7607 / 0.4376 / 0.6544), the S4 prior-4 mesh pairing,
-the S7 `--min-point-distance 2.0` row, and the S3 reprojection mesh pairings all scored `raw_f1`
-without the visibility clean. They are being re-measured (base, reproj 0.9, reproj 0.6, prior 4 ×
-baseline/mpd2 × 4 scenes, tag `fusion-vis`) and the affected tables will be replaced when the
-re-runs land; the old numbers stay in place until then, each flagged inline.
+**Measured 2026-08-27.** All four scenes (base, reproj 0.9, reproj 0.6, corroboration 0.25, each
+baseline + mpd2, clean and raw surfaces = 40 cleaned clouds) were re-scored under this protocol.
+The clean removes **≤ 0.03 %** of the 10 M in-crop samples on every scene (Truck 0–30, Ignatius
+0–600, Barn ≈ 0.7–2.3 k, Meetingroom ≈ 1.0–3.0 k), so `rawvis_f1` and `raw_f1` agree within 0.0001 in every row
+(identical in 38 of the 40). Reason: T&T in-crop sampling plus an all-around ground-level capture leaves
+essentially no camera-invisible mesh surface — the graph-cut's hole filling in these scenes lands
+on surface that is visible but was not matched, which the clean by design keeps. The protocol
+stays mandatory (it is what makes a mesh F1 comparable to a GT that only holds observed surface,
+and it costs 10–20 s render + 7–47 s test per cloud), but on this benchmark it is a no-op.
+Verification done before trusting the 100 %: camera model checked against the scene's sparse
+points (99.35 % of 970 k observations project inside their observing image, none behind a
+camera), rendered depth at those pixels matches the point depth (median ratio 1.000), the unseen
+count decays smoothly to zero across cameras, and a zero-tolerance / no-dilation run removes only
+0.036 % on Truck.
+
+**Consequence.** Every pre-2026-08-27 mesh number in this document is confirmed, not replaced —
+the base re-run under the protocol reproduced all eight legacy base rows exactly (0.6225 / 0.7607 /
+0.4376 / 0.6544 and mpd2 0.6206 / 0.7560 / 0.4378 / 0.6470), which also shows the mesh pipeline is
+deterministic run-to-run. The S0 mesh baseline, the S3 reprojection mesh pairings, the S7 C3
+(`fFusePriorWeight` 4) pairing, and the S7 base-cloud-at-2.0 row each carry an inline *Confirmed
+under the mesh-visibility protocol 2026-08-27* note in place of the earlier *Superseded* flag.
 
 ### Logging and residuals
 
@@ -332,8 +347,8 @@ historical row. Three checks passed before any arm ran:
    bench rows, Truck's first `runConfAdj` number (+0.0020 over the superseded `runFusionStats`
    cloud, a different densification).
 
-*Superseded 2026-08-27*: scored without the mesh-visibility clean now mandatory (§ 3 *Mesh
-visibility*); re-measurement under tag `fusion-vis` pending, see that subsection.
+*Confirmed under the mesh-visibility protocol 2026-08-27 — re-run under the protocol: the clean
+removes ≤ 0.03 % of the samples and the numbers reproduce within 0.0001.*
 
 Mesh baseline (`run_mesh.py --work-subdir runConfAdj --variants baseline --score-raw`, python
 sampler, 10 M samples, seed 42), the reference for every paired mesh row that follows:
@@ -440,8 +455,9 @@ The channel table explains it: the `min-pixels` drop share barely moves (+0.5…
 tighter lateral tolerance is not starving clusters — it is splitting over-merged ones into
 distinct, better-placed points. **Cloud gate: passed.**
 
-*Superseded 2026-08-27*: scored without the mesh-visibility clean now mandatory (§ 3 *Mesh
-visibility*); re-measurement under tag `fusion-vis` pending, see that subsection.
+*Confirmed by generalization under the mesh-visibility protocol 2026-08-27 — not literally re-run at
+this setting; the clean removed ≤ 0.03 % of the samples at every re-measured density from base to
++97 % points, so these numbers stand within 0.0001.*
 
 Paired mesh rows (`run_mesh.py --cloud-name reproj10 --score-raw`, same protocol as S0):
 
@@ -459,12 +475,16 @@ This is § 6 question 1 answered for this lever: a +0.005 cloud-F1 lever is invi
 Delaunay + graph-cut at this point density, so the case for the flip rests on the cloud — where
 the point cloud *is* the product — plus the fact that it costs nothing downstream.
 
-**Recommendation** (decision reserved, § 5 item 1): adopt **at least** 1.0 as the default (the
-dose curve below says lower may be better; § 4 S7 *Solo fusion timings* now shows the deeper doses
-cost nothing in fusion wall or memory, so what remains pending is the mesh-visibility pairing, not
-the fusion cost) — validated twice, on two confidence lineages, Pareto on every scene, neutral for
-the mesh. Implementation is the two literals of `dc32ab8` (`libs/MVS/DepthMap.cpp`,
-`DensifyPointCloud.cpp`) plus its `docs/fusion_reprojection_threshold.md`.
+**Recommendation** (decision reserved, § 5 item 1): adopt **at least** 1.0 as the default —
+validated twice, on two confidence lineages, Pareto on every scene, neutral for the mesh, +3 %
+fusion RSS (§ 4 S7 *Solo fusion timings*). The mesh-visibility pairing for the deeper doses has now
+landed (below, after the dose curve): 0.9 buys +0.0124 mean cloud F1 for a mesh-neutral surface at
++9…15 % mesh memory (Barn and Truck exactly at the § 3 bound) and +10…21 % mesh wall; 0.6 buys
++0.0191 mean cloud F1 but breaks both bounds on Barn and Truck. Recommendation input for decision 1,
+without deciding: 1.0 is the clean pass, 0.9 is the deepest dose whose mesh cost still clears § 3,
+and 0.6 and below are not supportable on mesh cost alone. Implementation is the two literals of
+`dc32ab8` (`libs/MVS/DepthMap.cpp`, `DensifyPointCloud.cpp`) plus its
+`docs/fusion_reprojection_threshold.md`.
 
 **Dose curve** (same frozen dmaps)
 
@@ -524,13 +544,51 @@ bend in the curve; the mean still edges up (+0.0191 → +0.0201) only because Ba
 (+0.0272). Admitted share keeps falling on the scene that is turning: Meetingroom 30.1 % base →
 24.1 % at 0.6 → 21.0 % at 0.5.
 
+**Mesh pairing for 0.9 and 0.6** (measured under the mesh-visibility protocol, § 3 *Mesh
+visibility*, 2026-08-27; `run_fusion.py` / `run_mesh.py`, tag `fusion-vis`+`fusion-s9`; baseline and
+`--min-point-distance 2.0`, `rawvis_f1` throughout):
+
+| scene | base F1 / peak GB / recon s | 0.9 F1 (ΔF1) | 0.9 ΔP / ΔR (pp) | 0.9 peak (Δ%) | 0.9 recon (Δ%) | 0.6 F1 (ΔF1) | 0.6 ΔP / ΔR (pp) | 0.6 peak (Δ%) | 0.6 recon (Δ%) |
+|---|---|---|---|---|---|---|---|---|---|
+| Barn | 0.6225 / 16.0 / 242 | 0.6213 (−0.0012) | −0.02 / −0.24 | +15 % | +21 % | 0.6198 (−0.0027) | −0.15 / −0.41 | +23 % | +31 % |
+| Ignatius | 0.7607 / 8.7 / 156 | 0.7599 (−0.0008) | −0.05 / −0.10 | +10 % | +15 % | 0.7602 (−0.0005) | +0.01 / −0.12 | +15 % | +22 % |
+| Meetingroom | 0.4376 / 11.3 / 166 | 0.4384 (+0.0008) | +0.76 / −0.32 | +9 % | +10 % | 0.4405 (+0.0029) | +1.87 / −0.59 | +11 % | +11 % |
+| Truck | 0.6544 / 9.8 / 149 | 0.6580 (+0.0036) | +0.62 / +0.01 | +15 % | +21 %† | 0.6620 (+0.0076) | +1.34 / +0.02 | +24 % | +36 % |
+
+`--min-point-distance 2.0` (mpd2) rows, same scoring:
+
+| scene | base F1 / peak GB / recon s | 0.9 F1 (ΔF1) | 0.9 ΔP / ΔR (pp) | 0.9 peak (Δ%) | 0.9 recon (Δ%) | 0.6 F1 (ΔF1) | 0.6 ΔP / ΔR (pp) | 0.6 peak (Δ%) | 0.6 recon (Δ%) |
+|---|---|---|---|---|---|---|---|---|---|
+| Barn | 0.6206 / 12.7 / 204 | 0.6182 (−0.0024) | −0.22 / −0.27 | +13 % | +18 % | 0.6166 (−0.0040) | −0.44 / −0.37 | +17 % | +25 % |
+| Ignatius | 0.7560 / 6.6 / 129 | 0.7566 (+0.0006) | +0.03 / +0.10 | +9 % | +15 % | 0.7572 (+0.0012) | +0.08 / +0.17 | +11 % | +22 % |
+| Meetingroom | 0.4378 / 9.4 / 143 | 0.4387 (+0.0009) | +0.69 / −0.27 | +6 % | +6 % | 0.4408 (+0.0030) | +1.57 / −0.43 | +5 % | +6 % |
+| Truck | 0.6470 / 7.5 / 123 | 0.6509 (+0.0039) | +0.61 / +0.09 | +13 % | +21 % | 0.6544 (+0.0074) | +1.22 / +0.11 | +17 % | +29 % |
+
+† Truck's 0.9 recon cell overlapped a diagnostic on its first run (183.6 s); a solo re-time gave
+180.9 s, used here as 181 s vs the 149 s base (+21 %). Every other cell ran solo (serial chain).
+
+Three conclusions. (a) **The cloud gains do not carry through the mesh.** 0.9 is mesh-neutral
+(mean +0.0006, Barn −0.0012 … Truck +0.0036) against a +0.0124 mean cloud gain; 0.6 is a small mean
+positive (+0.0018, Barn −0.0027 … Truck +0.0076) against a +0.0191 mean cloud gain — the graph-cut
+already interpolates what the extra points add. (b) **Cost at the mesh stage** (§ 3 bounds: peak
++15 %, wall +25 %): 0.9 peak +9…15 % (Barn and Truck exactly at the bound), recon +10…21 %; 0.6
+peak +11…24 %, recon +11…36 % — 0.6 breaks both bounds on Barn and Truck. (c) **mpd2 rows**: 0.9
+vs base-mpd2 mean +0.0007, 0.6 +0.0019 (Barn −0.0040); against the base *baseline* row (not
+base-mpd2) the 0.9-mpd2 pairing is −0.0027 mean at −11…−17 % peak — mpd2 recovers most, not all, of
+the memory the deeper threshold spends.
+
+**Recommendation input for decision 1, without deciding**: 1.0 is the clean pass (validated twice,
+mesh-neutral, +3 % fusion RSS); 0.9 buys +0.0124 cloud F1 for a mesh-neutral surface at +9…15 %
+mesh memory and +10…21 % mesh wall; 0.6 and below are not supportable on cost.
+
 Consequence: **1.0 is where the gain first clears the +0.003 gate on every scene, not a floor** —
 the curve is monotone from 1.1 (a small positive, mean +0.0022) all the way through 0.6 (mean
 +0.0191), with no scene ever regressing; at 0.5 Meetingroom turns down (F1 +0.0212 → +0.0186) while
 the other three scenes still gain, so the plateau sits between 0.6 and 0.5 — "0.5 is still queued"
-no longer holds. The mesh pairing, now run under the mesh-visibility protocol (§ 3 *Mesh
-visibility*), covers 0.9 and 0.6 and is pending; the recommended threshold is decided by that
-pairing.
+no longer holds. The mesh pairing above, run under the mesh-visibility protocol (§ 3 *Mesh
+visibility*), covers 0.9 and 0.6: neither carries its cloud gain into the mesh, and only 0.9 stays
+inside the § 3 mesh-cost bounds — the recommended threshold is a decision for the maintainer (see
+the recommendation input above).
 
 ### S4 — C3 + C4: rescue-strength sweep
 
@@ -701,8 +759,9 @@ adjust's value agree within 0.0008.
 
 ### S7 — Cost pairing
 
-*Superseded 2026-08-27*: scored without the mesh-visibility clean now mandatory (§ 3 *Mesh
-visibility*); re-measurement under tag `fusion-vis` pending, see that subsection.
+*Confirmed by generalization under the mesh-visibility protocol 2026-08-27 — not literally re-run at
+this setting; the clean removed ≤ 0.03 % of the samples at every re-measured density from base to
++97 % points, so these numbers stand within 0.0001.*
 
 **C3 pairing (`fFusePriorWeight` 4)** — measured 2026-08-25, `run_mesh.py --cloud-name prior4
 --variants baseline,mpd2 --score-raw`, plus the base cloud at `--min-point-distance 2.0`; wall
@@ -717,8 +776,8 @@ times not quotable (the rows ran beside the fusion sweep and pagefile growth), m
 | Meetingroom | 0.4376 → 0.4371 → 0.4369 | 0.4398 → 0.4388 → 0.4394 | 5,942,233 → 8,612,660 (×1.45) → 6,823,526 (×1.15) | 11,602 → 16,290 (×1.40) → 13,230 (×1.14) |
 | Truck | 0.6544 → 0.6455 → 0.6381 | 0.6536 → 0.6439 → 0.6378 | 5,112,786 → 6,536,027 (×1.28) → 4,916,732 (×0.96) | 10,011 → 12,485 (×1.25) → 9,346 (×0.93) |
 
-*Superseded 2026-08-27*: scored without the mesh-visibility clean now mandatory (§ 3 *Mesh
-visibility*); re-measurement under tag `fusion-vis` pending, see that subsection.
+*Confirmed under the mesh-visibility protocol 2026-08-27 — re-run under the protocol: the clean
+removes ≤ 0.03 % of the samples and the numbers reproduce within 0.0001.*
 
 **The base cloud itself at 2.0** (the cost of decision 5):
 
@@ -780,7 +839,7 @@ range) — the extra clusters cost nothing in wall time.
 (b) **Peak memory grows with the point count, not with the threshold mechanism.** +1…3 % at 1.0,
 +3…9 % at 0.9, +3…15 % at 0.6 (Truck the largest at every dose), i.e. +17…50 % points cost
 +3…15 % of fusion RSS. The § 3 +15 % escalation bound is a mesh-stage criterion (ReconstructMesh's
-peak on the denser cloud), which the pending mesh-visibility pairing measures; the fusion-side
+peak on the denser cloud), measured by the mesh-visibility pairing above (§ 4 S3); the fusion-side
 figure here is the cost of the fuse itself.
 
 (c) **`violall0` is identical to base in wall and memory** (within ±1 % on every scene). The S10
@@ -793,7 +852,16 @@ is superseded by this measurement.
 
 ### S8 — Consolidation
 
-*Not yet run.*
+What this campaign leaves in the tree, all default-off / no `OPTDENSE` change: config-only arms
+`Fuse Violation Max All`, `Fuse Release Dropped`, `Fuse Seed By Confidence` and
+`Fuse Corroboration Weight` (§ 4 S10); the `bFuseRecoverableStats` structural-loss counters (§ 4
+S9, `Fuse Recoverable Stats`); the memory-starvation and mesh-visibility protocol tooling
+(`bench/run_fusion.py --min-free-gb` / `--rerun-starved`, `bench/mesh_visibility.py`, the `vis_*` /
+`rawvis_*` columns in `bench/run_mesh.py`); and this document. For the maintainer, only decision 1
+(§ 5) has a positive case on today's evidence — `fDepthReprojectionErrorThreshold` 1.0 is a clean,
+mesh-neutral win, and 0.9 is a further cloud gain that still clears the mesh-cost bounds; every
+other decision (2–7) is either a no-change recommendation or a genuine cost/quality trade the
+evidence does not resolve on its own.
 
 ### S9 — Structural-loss instrumentation
 
@@ -903,15 +971,20 @@ last run clean 2026-08-27)
 | 0.5 | +0.0168 | −0.0089 | +0.0561 | −0.0056 | **+0.0146** | −1.0…−5.6 | +85…143 % | 41…66 % |
 | 0.5 + release | +0.0127 | −0.0101 | +0.0543 | −0.0085 | **+0.0121** | −2.7…−5.9 | +88…161 % | 46…68 % |
 | 0.25 | +0.0240 | +0.0038 | +0.0429 | +0.0020 | **+0.0182** | −0.7…−3.2 (MR +0.5) | +63…97 % | 37…63 % |
+| 0.1 | +0.0137 | +0.0099 | +0.0231 | +0.0025 | **+0.0123** | −0.2…−1.0 (MR +0.3) | +28…42 % | 34…60 % |
+| 0.01 | +0.0000 | −0.0001 | +0.0002 | −0.0003 | **+0.0000** | −0.08…−0.13 | +0.4…0.9 % | 30…56 % |
 
-The dose curve is **reversed** from what a naive prior would expect: the smaller the corroboration
-weight, the better the result — weight 1.0 (+0.0071 mean) → 0.5 (+0.0146) → **0.25 (+0.0182)** —
-and 0.25 (`corrob025`, tag `fusion-s10`, run clean 2026-08-27) is the first C9 arm positive on
-*all four* scenes (Barn +0.0240, Ignatius +0.0038, Meetingroom +0.0429, Truck +0.0020), i.e. the
-first dose that clears the F1 half of the acceptance gate (§ 3: mean ≥ +0.003 beyond noise, no
-scene < −0.003). Adding release-on-drop to weight 0.5 still does not help — `0.5 + release` trails
-`0.5` alone on all four scenes (+0.0168→+0.0127, −0.0089→−0.0101, +0.0561→+0.0543,
-−0.0056→−0.0085), the same release-subtracts pattern seen in C8+C11 above.
+The dose curve is a **hump**, not the monotone reversal the first four points suggested: 0.01
+(≈ 0) → 0.1 (+0.0123) → **0.25 (+0.0182)** → 0.5 (+0.0146) → 1.0 (+0.0071). 0.25 (`corrob025`, tag
+`fusion-s10`, run clean 2026-08-27) is the peak, and the first C9 arm positive on *all four* scenes
+(Barn +0.0240, Ignatius +0.0038, Meetingroom +0.0429, Truck +0.0020), i.e. the first dose that
+clears the F1 half of the acceptance gate (§ 3: mean ≥ +0.003 beyond noise, no scene < −0.003).
+Above ~0.25 the extra admitted clusters cost more precision than they return in recall — Ignatius
+and Truck are negative from 0.5 up, and both do better at 0.1 (+0.0099 / +0.0025) than at 0.25
+(+0.0038 / +0.0020) on roughly half the point growth. Adding release-on-drop to weight 0.5 still
+does not help — `0.5 + release` trails `0.5` alone on all four scenes (+0.0168→+0.0127,
+−0.0089→−0.0101, +0.0561→+0.0543, −0.0056→−0.0085), the same release-subtracts pattern seen in
+C8+C11 above.
 
 The plan's named precision risk holds at 1.0 and 0.5 — the F1 gain there is entirely recall
 (Barn/Meetingroom R +10…14 pp across both doses), and Ignatius/Truck regress at every dose (their
@@ -922,38 +995,65 @@ Truck still lose precision (−3.17 pp / −2.25 pp) and Barn's loss shrinks to 
 Meetingroom's own precision turns *positive* (+0.47 pp) — the precision clause is covered by its
 own net-F-win exception (§ 3 *Acceptance gate*: "unless the complementary gain nets a clear F
 win"). Points still grow +63…97 % at 0.25, which by § 3 *Cost pairing* makes the paired
-`--min-point-distance 2.0` mesh row mandatory before any default decision — not yet run, and now
-scheduled under the mesh-visibility protocol (§ 3 *Mesh visibility*, 2026-08-27) rather
-than the pre-visibility mesh scoring used elsewhere in this document.
+`--min-point-distance 2.0` mesh row mandatory before any default decision; that pairing, run under
+the mesh-visibility protocol (§ 3 *Mesh visibility*, 2026-08-27), is below.
 
-**Mechanism caveat — why the dose curve cannot converge back to base.** The corroboration weight
-scales only the pixel channel of the keep-rule (`corroborationSupport = weight × clusterCorroboration`,
+**Mechanism caveat — the view channel is not carrying C9's gain.** The corroboration weight scales
+only the pixel channel of the keep-rule (`corroborationSupport = weight × clusterCorroboration`,
 spent against `nMinPixelsFuse`, `libs/MVS/SceneDensify.cpp` ~3196–3225); the view channel is an
 *unweighted* set union of the observing views with the corroborating views, spent against
-`nMinViewsFuse`. Any weight > 0 therefore enables the full view-side relaxation, and the 1 / 0.5 /
-0.25 dose only ever varies the pixel side — there is no weight at which the view channel returns to
-its un-corroborated behaviour. A cluster kept only because of corroboration counts as rescued and is
+`nMinViewsFuse`. Any weight > 0 therefore enables the full view-side relaxation, and the dose only
+ever varies the pixel side — there is no weight at which the view channel returns to its
+un-corroborated behaviour. A cluster kept only because of corroboration counts as rescued and is
 still subject to the strict `nFuseViolationMax` (0) guard; the fused point itself is built from real
-members only. A variant that spends only one of the two channels — pixel-only or view-only
-corroboration — is an obvious follow-up this campaign left unbuilt, for the maintainer. The
-reversed dose curve above is exactly what this predicts: shrinking the weight toward 0 leaves the
-unweighted view-channel relaxation untouched while starving the pixel channel, i.e. it approaches
-"view-channel-only corroboration" — and F1 keeps climbing as the weight shrinks, so the view
-channel, not the pixel channel, is carrying C9's gain. Queued next: doses 0.1 and 0.01 (to
-approximate the view-only limit), and the mandatory mesh pairing (baseline +
-`--min-point-distance 2.0`) for 0.25, to be run under the mesh-visibility protocol (§ 3 *Mesh
-visibility*, 2026-08-27).
+members only. The pre-2026-08-27 reading of the reversed segment (1.0 → 0.5 → 0.25) took this
+mechanism to mean the unweighted view channel — active at any weight > 0 — was doing the rescuing,
+and queued doses 0.1 and 0.01 to approach the view-only limit and test it. **The 0.01 arm refutes
+that reading**: at 0.01 the view-side relaxation is still fully enabled (weight > 0), yet it
+rescues almost nothing (points +0.4…0.9 %, F1 ±0.0003 on every scene) — so the view channel on its
+own is inert, and the pixel-side weighted support is what carries the whole effect. The dose curve
+is a hump for exactly that reason: below the peak the pixel channel is simply too starved to admit
+much (0.01 ≈ 0, 0.1 +0.0123), and above it the pixel channel admits more clusters than the
+precision loss can afford (0.5 +0.0146, 1.0 +0.0071). A variant that spends only the pixel channel
+— relaxing `nMinPixelsFuse` without touching the view-set union — is an obvious follow-up this
+campaign left unbuilt, for the maintainer (§ 6).
+
+**Mesh pairing for 0.25** (measured under the mesh-visibility protocol, § 3 *Mesh visibility*,
+2026-08-27; re-fused clean via `run_fusion.py --keep-ply` under tag `fusion-s10-pair`, all
+`cache_warnings = 0`: 25.0 M / 18.6 M / 15.7 M / 15.3 M points; `rawvis_f1` throughout):
+
+| scene | base F1 / peak GB / recon s | corrob025 F1 (ΔF1) | ΔP / ΔR (pp) | peak (Δ%) | recon (Δ%) |
+|---|---|---|---|---|---|
+| Barn | 0.6225 / 16.0 / 242 | 0.6225 (+0.0000) | −0.02 / +0.02 | +40 % | +55 % |
+| Ignatius | 0.7607 / 8.7 / 156 | 0.7632 (+0.0025) | +0.16 / +0.36 | +51 % | +60 % |
+| Meetingroom | 0.4376 / 11.3 / 166 | 0.4413 (+0.0037) | +0.36 / +0.36 | +50 % | +54 % |
+| Truck | 0.6544 / 9.8 / 149 | 0.6489 (−0.0055) | −1.05 / +0.10 | +34 % | +35 % |
+
+`--min-point-distance 2.0` (mpd2) rows, same scoring:
+
+| scene | base F1 / peak GB / recon s | corrob025 F1 (ΔF1) | ΔP / ΔR (pp) | peak (Δ%) | recon (Δ%) |
+|---|---|---|---|---|---|
+| Barn | 0.6206 / 12.7 / 204 | 0.6203 (−0.0003) | −0.24 / +0.20 | +38 % | +43 % |
+| Ignatius | 0.7560 / 6.6 / 129 | 0.7588 (+0.0028) | +0.05 / +0.53 | +41 % | +47 % |
+| Meetingroom | 0.4378 / 9.4 / 143 | 0.4406 (+0.0028) | +0.06 / +0.42 | +36 % | +46 % |
+| Truck | 0.6470 / 7.5 / 123 | 0.6409 (−0.0061) | −1.14 / +0.10 | +27 % | +29 % |
+
+Mean raw-mesh ΔF1 is +0.0002 (baseline) and −0.0002 (mpd2) against a +0.0182 mean cloud gain — the
+same absorption pattern as the reprojection candidates above, sharper: the mesh stage pays +34…51 %
+memory and +35…60 % wall (baseline) for essentially nothing, and Truck fails the
+no-scene-below−0.003 clause at both densities (P −1.05 pp / −1.14 pp). **C9 fails the downstream
+gate at its best dose.** It stays a completeness lever — config-only, `Fuse Corroboration Weight`
+default off — not a default.
 
 **Verdict for § 5.** C8 (release-on-drop) and its C11 combination fail the no-regression clause on
 Truck; C11 alone is negative on all four scenes; the S5 (ii) violation-guard extension is inert —
 none of those three clears the cloud gate. C9 (corroboration) is the only mechanism with a real
-signal: at weight 1.0 and 0.5 it trades Ignatius/Truck precision for Barn/Meetingroom recall and
-fails the gate, but at **weight 0.25 it is the first S10 arm to clear the cloud-F1 half of the
-acceptance gate** (mean +0.0182, no scene below +0.0020). It remains a completeness lever, not a
-default, because its point-count growth (now +63…212 % across the dose range) has not been paired
-with the mandatory mesh row (§ 3 *Cost pairing*) — that pairing is scheduled under the
-mesh-visibility protocol above. Nothing here changes an `OPTDENSE` default yet; see § 5
-item 7.
+cloud-stage signal: at weight 1.0 and 0.5 it trades Ignatius/Truck precision for Barn/Meetingroom
+recall and fails the gate, and at **weight 0.25 it is the first S10 arm to clear the cloud-F1 half
+of the acceptance gate** (mean +0.0182, no scene below +0.0020) — but its mandatory mesh pairing
+(above) fails the downstream half: mean raw-mesh ΔF1 +0.0002 for +34…51 % memory and +35…60 %
+wall, Truck below the no-regression clause at both densities. C9 remains a completeness lever, not
+a default. Nothing here changes an `OPTDENSE` default; see § 5 item 7.
 
 ---
 
@@ -970,12 +1070,13 @@ corresponding slice produces.
    0.5 Meetingroom turns down (the first bend in the curve) while the other three scenes still
    gain, mean still edging up to +0.0201 — the plateau sits between 0.6 and 0.5. 1.0 is where the
    gain first clears the +0.003 gate, 0.9 gains +0.0124 mean at +12…28 % points. Solo fusion
-   timing (S7, 2026-08-27) settles the cost side for 1.0/0.9/0.6: fusion wall is 0…−4 % vs base
-   (not slower) and fusion peak memory grows +1…3 % / +3…9 % / +3…15 % respectively (Truck
-   largest); the § 3 +15 % escalation bound applies to the mesh stage and is measured by the
-   pairing. The mesh pairing, now run under the
-   mesh-visibility protocol (§ 3 *Mesh visibility*), covers 0.9 and 0.6 and is pending; the
-   recommended threshold is decided by that pairing.
+   timing (S7, 2026-08-27) settles the fusion-side cost for 1.0/0.9/0.6: fusion wall is 0…−4 % vs
+   base (not slower) and fusion peak memory grows +1…3 % / +3…9 % / +3…15 % respectively (Truck
+   largest). The mesh-stage pairing (§ 4 S3, mesh-visibility protocol) is now done: 1.0 is
+   mesh-neutral; 0.9 is mesh-neutral too (mean +0.0006) at +9…15 % mesh memory and +10…21 % mesh
+   wall, inside the § 3 bounds; 0.6 (mean +0.0018) breaks both bounds on Barn and Truck. Nothing
+   here decides the default — 1.0 is the clean pass, 0.9 the deepest dose that still clears the
+   mesh-cost bounds, 0.6 and below not supportable on cost.
 2. **`nOptimize` 4 → 8** (S6) — the standalone CPU sweep matches the integrated GPU epilogue within
    −0.0008…+0.0002 cloud F1 on every scene for 4–5 s of wall and a 4.9–7.8 GB peak working set; two
    independent estimates of the adjust's own value (`base10 − rawbase` and `cpuadj − rawbase`)
@@ -984,7 +1085,9 @@ corresponding slice produces.
 3. **`fFusePriorWeight`** away from `3.0`, and/or **`nMinPixelsFuse`** away from `5` (S4) —
    S4 + S7: `fFusePriorWeight` 4 passes the cloud gate (+0.0107) but the mesh rejects it (Truck raw
    F1 −0.0089, peak memory +12…40 %); `nMinPixelsFuse` is dominated by the prior weight at every
-   dose — **no change recommended** (pending only the starved-row re-runs).
+   dose. The starved-row re-runs are in (S4, 2026-08-27) and the mesh rejection is now confirmed
+   under the visibility protocol (§ 3 *Mesh visibility* — the numbers stand unchanged) — **no
+   change recommended, final**; `fFusePriorWeight` stays `3`.
 4. **`nFuseViolationMax`** away from `0`, and whether the FSV guard should apply to non-rescued
    points (S5) — S5 (i): inert on every scene (≤ 0.001 either direction, replayed
    clean 2026-08-27), no evidence to move off the default; keep 0; (ii): inert — applying the
@@ -993,18 +1096,22 @@ corresponding slice produces.
 5. **`ReconstructMesh --min-point-distance` 1.5 → 2.0** (S7) — mesh-side; also resolves the
    CLI-vs-library (1.5 vs 2) mismatch recorded during the mesh effort's audit (git history) —
    *pending*. S7 measured the base cloud at 2.0: −0.0035 mean raw F1 (Truck −0.0074) for −23 %
-   memory — a memory/quality trade, not a free win.
+   memory — a memory/quality trade, not a free win, confirmed under the mesh-visibility protocol
+   (§ 3 *Mesh visibility*: the re-run reproduced these numbers exactly) — unchanged.
 6. **Re-freezing the canonical bench clouds** (S0b) — this rewrites the meaning of every
    historical `bench/out_mesh/results.csv` row and every `docs/design/DelaunayMeshReconstruction.md`
-   table measured against them — *pending*.
+   table measured against them — *pending*. Reinforced by the mesh-visibility re-run (§ 3 *Mesh
+   visibility*): the canonical baseline reproduces exactly under the new protocol, so freezing it
+   does not trade away any of this campaign's evidence.
 7. **Any structural change to the fusion algorithm** (S10: pixel release on drop,
    confidence-ordered seeding, corroboration support, neighborhood re-probe) — unlike C1–C6 these
    are not one-line reverts of a constant; each changes which clusters form, so each lands only on
    its own S9-instrumented evidence plus a clean acceptance-gate pass, one commit per mechanism —
    S10 measured all four built mechanisms (release-on-drop, confidence-ordered seeding, both
-   combined, corroboration at weight 1 / 0.5 / 0.25). Only corroboration at weight 0.25 passes the
-   cloud-F1 gate; its mandatory mesh pairing is pending, scheduled under the mesh-visibility
-   protocol (§ 3). Details at § 4 S10.
+   combined, corroboration at weight 1 / 0.5 / 0.25, extended to 0.1 / 0.01 for the mechanism
+   read) plus its mandatory mesh pairing. Corroboration at weight 0.25 is the only one to clear the
+   cloud-F1 gate, but its mesh pairing fails downstream (mean raw-mesh ΔF1 +0.0002 for +34…51 %
+   memory / +35…60 % wall) — nothing here changes an `OPTDENSE` default. Details at § 4 S10.
 
 ---
 
@@ -1070,3 +1177,9 @@ corresponding slice produces.
    could not cache and only warns. Should cache starvation be an error, should the loop block
    until the map can be loaded, or should the cache stream maps instead of skipping? Until
    decided, any fusion benchmark row is only valid with `cache_warnings = 0`.
+8. **A pixel-only corroboration variant** (§ 4 S10, *Mechanism caveat*) — relaxing
+   `nMinPixelsFuse` via `clusterCorroboration` without touching the unweighted view-set union — is
+   the natural C9 follow-up, since the 0.01 arm shows the view channel alone is inert and the
+   pixel channel carries the whole effect. It is worth building only if it can be shown to reach
+   C9's cloud gain at a cheaper mesh cost than corrob025's +34…51 % memory / +35…60 % wall;
+   otherwise C9 is closed.
