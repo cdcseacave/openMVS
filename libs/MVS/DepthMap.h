@@ -156,41 +156,8 @@ extern MVS_API float fFusePriorWeight;
 // fFusePriorWeight's virtual support -- see DenseFuseDepthMaps), counted during fusion's own join
 // gate. -1 disables the guard: fully inert, byte-identical to fusion without it. Default 0 (strict)
 // rejects any rescued point contradicted by >=1 free-space ray; N allows <=N such violations.
-// Non-rescued points are never affected: they answer to nFuseViolationMaxAll below.
+// Non-rescued points are never affected.
 extern MVS_API int nFuseViolationMax;
-// the same FSV guard on the points nFuseViolationMax never reaches: those clearing both keep-rule
-// minimums on real support alone. -1 (default) leaves them unguarded, i.e. fusion behaves exactly as
-// it did before this option existed; 0 drops any such point contradicted by >=1 free-space ray, N
-// allows <=N violating views. The two limits are independent, one guard per point.
-extern MVS_API int nFuseViolationMaxAll;
-// DenseFuseDepthMaps: measure, alongside the fusion accounting, how much of the fusion loss the
-// structural candidates could recover -- corroboration by pixels an earlier cluster already
-// consumed, the pixels dropped clusters keep locked away, and a 4-neighbor re-probe of the joins the
-// rounded projection misses. Measurement only: the fused point-cloud is byte-identical either way,
-// but it costs extra predicate evaluations on the rejection branches and a second per-pixel bit per
-// cached depth-map, hence off by default.
-extern MVS_API bool bFuseRecoverableStats;
-// DenseFuseDepthMaps: hand the pixels of a cluster the keep-rule dropped back to the pool, so that a
-// later seed or probe can still use them -- today a pixel is marked consumed for good, so one doomed
-// early cluster starves every later cluster that needed exactly those pixels. Changes which clusters
-// form (a pixel may be consumed more than once, counted in the fusion accounting as reclaimed),
-// hence off by default: a measurement arm, not a quality default.
-extern MVS_API bool bFuseReleaseDropped;
-// DenseFuseDepthMaps: seed the clusters of each reference depth-map in descending confidence order
-// instead of raster order, so that a strong seed claims its support before a weak one can consume it
-// and the seed-to-cluster assignment stops being an accident of scanline layout. Every pixel is still
-// visited exactly once; only the order changes, hence the fused cloud changes -- off by default.
-extern MVS_API bool bFuseSeedByConfidence;
-// DenseFuseDepthMaps: what a corroborating probe is worth in the keep-rule -- a probe landing on a
-// pixel an earlier cluster already consumed, whose depth, reprojection and normal agree with the
-// cluster's reference point, is an independently verified surface exactly where this cluster claims
-// one, evidence today's blind early-out discards. It buys this many pixels of support, and its view
-// counts as one more distinct view (a set union, never a sum); it never contributes its position,
-// view or weight to the fused point, which is still built from the real members alone. 0 (default)
-// discards it exactly as before, 1 counts it as a real pixel, 0.5 is the safer arm because such a
-// probe is often a near-duplicate of the neighbor cluster that consumed it. A cluster kept only
-// thanks to it counts as rescued, hence answers to nFuseViolationMax like a prior-rescued point.
-extern MVS_API float fFuseCorroborationWeight;
 extern MVS_API bool bEstimateConfidenceCUDA; // when CUDA estimation is used, run ADJUST_CONFIDENCE on the GPU integrated into the last geometric-consistency iteration (default); 0 forces the CPU version
 extern MVS_API unsigned nEstimationIters;
 extern MVS_API unsigned nEstimationGeometricIters;
