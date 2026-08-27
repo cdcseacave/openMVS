@@ -584,7 +584,8 @@ OpenMVS is a comprehensive photogrammetry library implementing a complete pipeli
   - Free-space graph scoring: marches rays through tetrahedra, adds `alpha_vis` weights, attenuated
     by the point's own uncertainty sigma — per-vertex from the median incident edge by default
   - Camera cells linked to source with weight `kInf`; edge weights: `kf`, `kRel`, `kAbs`, `kQual`
-  - IBFS min-cut (`libs/Math/IBFS`) separating free-space from matter
+  - TetraFlow min-cut (`libs/Math/TetraFlow.h`) separating free-space from matter: incremental
+    breadth-first search max-flow on one 64-byte node per cell (the dual graph is 4-regular)
   - Surface extraction drops cut facets whose longest edge exceeds `maxEdgeScale` x the median cut
     facet (the webbing gate, default 4)
   - Single-pass non-manifold repair, then the `Mesh::Clean()` pipeline
@@ -791,8 +792,8 @@ OpenMVS is a comprehensive photogrammetry library implementing a complete pipeli
 
 ### Graph Algorithms
 
-- **Files:** `libs/Math/IBFS/IBFS.h/.cpp`, `libs/Math/LBP.h`
-- **Algorithms:** IBFS (Incremental BFS) max-flow/min-cut for mesh graph-cut; Loopy Belief Propagation for energy minimization (texture face selection)
+- **Files:** `libs/Math/TetraFlow.h`, `libs/Math/LBP.h`
+- **Algorithms:** TetraFlow, an incremental breadth-first search max-flow/min-cut specialized for graphs with exactly four arcs per node (the Delaunay cell graph of the mesh graph-cut); Loopy Belief Propagation for energy minimization (texture face selection)
 
 ---
 

@@ -105,9 +105,9 @@ Key components:
 - **Similarity transform:** 7-DOF Sim(3), Umeyama estimation, rotation alignment
 - **Geodetic transforms:** WGS84 ↔ ECEF ↔ ENU for GPS
 - **Optimization:** ADMM L1 solver, Levenberg-Marquardt (LMFit)
-- **Graph algorithms:** IBFS max-flow/min-cut, Loopy Belief Propagation
+- **Graph algorithms:** TetraFlow max-flow/min-cut (`TetraFlow.h`, incremental BFS specialized for the 4-regular tetrahedralization dual graph), Loopy Belief Propagation
 
-File count: ~10 `.h`/`.cpp` files (plus `IBFS/` and `LMFit/` subdirectories)
+File count: ~11 `.h`/`.cpp` files (plus the `LMFit/` subdirectory)
 
 ### `libs/SFM/` — Structure-from-Motion
 

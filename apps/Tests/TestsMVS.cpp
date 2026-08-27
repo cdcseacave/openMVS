@@ -380,7 +380,7 @@ bool MeshHalfMeshProcessingTest()
 
 // Both fixtures below lock a cut topology that is partly decided by how the min-cut solver
 // assigns the cells carrying no terminal capacity (s == t == 0) -- each fixture's comment says
-// which part. Every solver this project has run agrees there (IBFS and Boost BK reconstruct
+// which part. Every solver this project has run agrees there (TetraFlow, IBFS and Boost BK reconstruct
 // byte-identical meshes), so the lock is stable; but a solver change that alters that convention
 // would fail these tests with no mesh regression behind it, so the failure says so rather than
 // leaving the next reader to rediscover it from the appendix
