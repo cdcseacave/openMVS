@@ -62,13 +62,6 @@
 #define TETRAFLOW_UNLIKELY_BRANCH
 #endif
 
-// debug-only statements (bookkeeping that exists only to feed assertions)
-#ifndef NDEBUG
-#define TETRAFLOW_DEBUG(...) __VA_ARGS__
-#else
-#define TETRAFLOW_DEBUG(...)
-#endif
-
 
 namespace SEACAVE {
 
@@ -845,7 +838,7 @@ private:
 	void OrphanPushFront(NodeID x) noexcept {
 		Node& node = nodes[x];
 		ASSERT(node.listState == LIST_NONE);
-		TETRAFLOW_DEBUG(node.listState = LIST_ORPHAN);
+		node.listState = LIST_ORPHAN;
 		node.next = orphanHead;
 		orphanHead = x;
 		if (orphanTail == NO_NODE)
@@ -854,7 +847,7 @@ private:
 	void OrphanPushBack(NodeID x) noexcept {
 		Node& node = nodes[x];
 		ASSERT(node.listState == LIST_NONE);
-		TETRAFLOW_DEBUG(node.listState = LIST_ORPHAN);
+		node.listState = LIST_ORPHAN;
 		node.next = NO_NODE;
 		if (orphanTail == NO_NODE)
 			orphanHead = x;
@@ -866,7 +859,7 @@ private:
 		const NodeID x = orphanHead;
 		Node& node = nodes[x];
 		ASSERT(node.listState == LIST_ORPHAN);
-		TETRAFLOW_DEBUG(node.listState = LIST_NONE);
+		node.listState = LIST_NONE;
 		orphanHead = node.next;
 		if (orphanHead == NO_NODE)
 			orphanTail = NO_NODE;
@@ -877,7 +870,7 @@ private:
 	void BucketAdd(NodeID x) noexcept {
 		Node& node = nodes[x];
 		ASSERT(node.listState == LIST_NONE);
-		TETRAFLOW_DEBUG(node.listState = LIST_BUCKET);
+		node.listState = LIST_BUCKET;
 		const Label L = std::abs(node.label);
 		ASSERT(L >= 2 && size_t(L) < bucketHead.size());
 		const NodeID head = bucketHead[L];
@@ -892,7 +885,7 @@ private:
 	void BucketRemove(NodeID x) noexcept {
 		Node& node = nodes[x];
 		ASSERT(node.listState == LIST_BUCKET);
-		TETRAFLOW_DEBUG(node.listState = LIST_NONE);
+		node.listState = LIST_NONE;
 		const Label L = std::abs(node.label);
 		ASSERT(L >= 2 && size_t(L) < bucketHead.size());
 		if (node.prev == NO_NODE) {
@@ -909,7 +902,7 @@ private:
 		if (x != NO_NODE) {
 			Node& node = nodes[x];
 			ASSERT(node.listState == LIST_BUCKET);
-			TETRAFLOW_DEBUG(node.listState = LIST_NONE);
+			node.listState = LIST_NONE;
 			bucketHead[L] = node.next;
 			if (node.next != NO_NODE)
 				nodes[node.next].prev = NO_NODE;
