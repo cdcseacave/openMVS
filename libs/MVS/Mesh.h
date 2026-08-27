@@ -287,11 +287,14 @@ public:
 protected:
 	bool LoadPLY(const String& fileName);
 	bool LoadOBJ(const String& fileName);
-	bool LoadGLTF(const String& fileName, bool bBinary=true);
+	// glTF vs GLB is decided by the file extension, as the format requires
+	bool LoadGLTF(const String& fileName);
 
 	bool SavePLY(const String& fileName, const cList<String>& comments=cList<String>(), bool bBinary=true, bool bTexLossless=true) const;
 	bool SaveOBJ(const String& fileName) const;
-	bool SaveGLTF(const String& fileName, bool bBinary=true) const;
+	// bTexLossless selects PNG over JPEG for the diffuse textures, which are
+	// written beside the file, same as SavePLY
+	bool SaveGLTF(const String& fileName, bool bBinary=true, bool bTexLossless=true) const;
 
 	#ifdef _USE_BOOST
 	// implement BOOST serialization

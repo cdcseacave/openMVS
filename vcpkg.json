@@ -45,6 +45,7 @@
     "poselib",
     "tiff",
     "tinyexif",
+    "tinygltf",
     "tinynpy",
     "zlib"
   ],

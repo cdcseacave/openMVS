@@ -46,6 +46,18 @@ static halfmesh::Mesh ImportMesh(const Mesh& mesh)
 	return halfMesh;
 }
 
+// Consuming import, for the in-place operations: every source array is freed
+// as soon as it has been copied, so a large mesh is never resident in both
+// representations at once. Only safe because each of those callers hands over
+// a mesh it then unconditionally overwrites through ExportMesh().
+static halfmesh::Mesh ImportMesh(Mesh&& mesh)
+{
+	halfmesh::Mesh halfMesh;
+	halfmesh::ConvertMesh(std::move(mesh), halfMesh);
+	halfMesh.faceNormals.clear();
+	return halfMesh;
+}
+
 // halfmesh's contract for the optional per-element arrays is "empty or exactly
 // sized"; drop whatever an operation left inconsistent with the new topology.
 static void SanitizeAttributes(halfmesh::Mesh& halfMesh)
@@ -110,7 +122,7 @@ unsigned Mesh::FixNonManifold(float magDisplacementDuplicateVertices, VertexIdxA
 	if (vertices.empty() || faces.empty())
 		return 0;
 	const DerivedData derived(*this);
-	halfmesh::Mesh halfMesh = ImportMesh(*this);
+	halfmesh::Mesh halfMesh = ImportMesh(std::move(*this));
 	std::vector<halfmesh::Mesh::VIndex> duplicated;
 	const unsigned count = halfMesh.FixNonManifold(
 		magDisplacementDuplicateVertices, duplicatedVertices ? &duplicated : NULL);
@@ -127,7 +139,7 @@ Mesh::FIndex Mesh::RemoveSpuriousComponents(float factor)
 	if (vertices.empty() || faces.empty() || factor <= 0.f)
 		return 0;
 	const DerivedData derived(*this);
-	halfmesh::Mesh halfMesh = ImportMesh(*this);
+	halfmesh::Mesh halfMesh = ImportMesh(std::move(*this));
 	const FIndex count = halfMesh.RemoveSpuriousComponents(factor);
 	ExportMesh(halfMesh, *this, derived);
 	return count;
@@ -138,7 +150,7 @@ Mesh::VIndex Mesh::RemoveSpikes(unsigned maxIterations)
 	if (vertices.empty() || maxIterations == 0)
 		return 0;
 	const DerivedData derived(*this);
-	halfmesh::Mesh halfMesh = ImportMesh(*this);
+	halfmesh::Mesh halfMesh = ImportMesh(std::move(*this));
 	const VIndex count = halfMesh.RemoveSpikes(maxIterations);
 	ExportMesh(halfMesh, *this, derived);
 	return count;
@@ -150,7 +162,7 @@ void Mesh::Simplify(float target, float minEdgeLength, float aggressiveness)
 		return;
 	ASSERT(target > 0.f);
 	const DerivedData derived(*this);
-	halfmesh::Mesh halfMesh = ImportMesh(*this);
+	halfmesh::Mesh halfMesh = ImportMesh(std::move(*this));
 	halfMesh.Simplify(target, minEdgeLength, aggressiveness);
 	ExportMesh(halfMesh, *this, derived);
 }
@@ -160,7 +172,7 @@ unsigned Mesh::CloseHoles(unsigned maxHoleEdges)
 	if (vertices.empty() || faces.empty() || maxHoleEdges == 0)
 		return 0;
 	const DerivedData derived(*this);
-	halfmesh::Mesh halfMesh = ImportMesh(*this);
+	halfmesh::Mesh halfMesh = ImportMesh(std::move(*this));
 	const unsigned count = halfMesh.CloseHoles(maxHoleEdges);
 	ExportMesh(halfMesh, *this, derived);
 	return count;
@@ -171,7 +183,7 @@ void Mesh::Smooth(int iterations)
 	if (vertices.empty() || faces.empty() || iterations <= 0)
 		return;
 	const DerivedData derived(*this);
-	halfmesh::Mesh halfMesh = ImportMesh(*this);
+	halfmesh::Mesh halfMesh = ImportMesh(std::move(*this));
 	halfMesh.SmoothTaubin(iterations);
 	ExportMesh(halfMesh, *this, derived);
 }
@@ -202,7 +214,7 @@ void Mesh::Clean(const CleanParams& params)
 	// the whole pipeline runs on a single halfmesh instance: one conversion in,
 	// one out, no matter how many stages are enabled
 	const DerivedData derived(*this);
-	halfmesh::Mesh halfMesh = ImportMesh(*this);
+	halfmesh::Mesh halfMesh = ImportMesh(std::move(*this));
 	if (params.spuriousFactor > 0.f)
 		halfMesh.RemoveSpuriousComponents(params.spuriousFactor);
 	if (params.removeSpikes)
@@ -232,7 +244,7 @@ unsigned Mesh::RemoveVerticesAndFill(VertexIdxArr& verticesRemove)
 	if (vertices.empty() || faces.empty() || verticesRemove.empty())
 		return 0;
 	const DerivedData derived(*this);
-	halfmesh::Mesh halfMesh = ImportMesh(*this);
+	halfmesh::Mesh halfMesh = ImportMesh(std::move(*this));
 	std::vector<halfmesh::Mesh::VIndex> removed(verticesRemove.begin(), verticesRemove.end());
 	const unsigned count = halfMesh.RemoveVerticesAndFill(std::move(removed));
 	ExportMesh(halfMesh, *this, derived);
@@ -244,7 +256,7 @@ Mesh::FIndex Mesh::RemoveDegenerateFaces(Type thArea)
 	if (faces.empty())
 		return 0;
 	const DerivedData derived(*this);
-	halfmesh::Mesh halfMesh = ImportMesh(*this);
+	halfmesh::Mesh halfMesh = ImportMesh(std::move(*this));
 	const FIndex count = halfMesh.RemoveDegenerateFaces(thArea);
 	ExportMesh(halfMesh, *this, derived);
 	return count;
@@ -255,7 +267,7 @@ Mesh::FIndex Mesh::RemoveDegenerateFaces(unsigned maxIterations, Type thArea)
 	if (faces.empty())
 		return 0;
 	const DerivedData derived(*this);
-	halfmesh::Mesh halfMesh = ImportMesh(*this);
+	halfmesh::Mesh halfMesh = ImportMesh(std::move(*this));
 	const FIndex count = halfMesh.RemoveDegenerateFaces(maxIterations, thArea);
 	ExportMesh(halfMesh, *this, derived);
 	return count;
@@ -266,7 +278,7 @@ Mesh::VIndex Mesh::RemoveDuplicatedVertices()
 	if (vertices.empty())
 		return 0;
 	const DerivedData derived(*this);
-	halfmesh::Mesh halfMesh = ImportMesh(*this);
+	halfmesh::Mesh halfMesh = ImportMesh(std::move(*this));
 	const VIndex count = halfMesh.RemoveDuplicateVertices();
 	ExportMesh(halfMesh, *this, derived);
 	return count;
@@ -277,8 +289,45 @@ Mesh::VIndex Mesh::RemoveUnreferencedVertices()
 	if (vertices.empty())
 		return 0;
 	const DerivedData derived(*this);
-	halfmesh::Mesh halfMesh = ImportMesh(*this);
+	halfmesh::Mesh halfMesh = ImportMesh(std::move(*this));
 	const VIndex count = halfMesh.RemoveUnreferencedVertices();
 	ExportMesh(halfMesh, *this, derived);
 	return count;
+}
+
+// glTF import/export. halfmesh owns the only tinygltf implementation in the
+// build (its TinyGLTFImpl.cpp), so this stage was already linking against it;
+// delegating the whole codec keeps the two sides of the round-trip together.
+// Both meshes hold faceTexcoords in absolute pixels, so the interop copy needs
+// no rescaling: halfmesh normalizes on write and un-normalizes on read, exactly
+// as FaceTexcoordsNormalize()/Unnormalize() used to here.
+//
+// glTF is y-up by specification. halfmesh states that in the file, as a rotation
+// on the root node rather than baked into the vertex buffer, and undoes it when
+// reading; the two matrices are signed permutations, so a mesh written here
+// reloads bit-identical. The one casualty is glTF this stage wrote before the
+// delegation: it carried no node transform, and nothing in such a file marks it
+// as z-up, so it now reads back rotated and has to be re-exported.
+bool Mesh::LoadGLTF(const String& fileName)
+{
+	ASSERT(!fileName.empty());
+	halfmesh::Mesh halfMesh;
+	if (!halfMesh.LoadGLTF(fileName))
+		return false;
+	// the loader flattens the node hierarchy into world space and concatenates
+	// every triangle primitive, so one mesh comes back however the file was split
+	halfmesh::ConvertMesh(std::move(halfMesh), *this);
+	return !faces.empty();
+}
+
+bool Mesh::SaveGLTF(const String& fileName, bool bBinary, bool bTexLossless) const
+{
+	ASSERT(!fileName.empty());
+	Util::ensureFolder(fileName);
+	halfmesh::Mesh halfMesh;
+	halfmesh::ConvertMesh(*this, halfMesh);
+	// textures are written beside the file rather than embedded, as before
+	return halfMesh.SaveGLTF(fileName, bBinary,
+		bTexLossless ? halfmesh::Mesh::ImageFormat::PNG : halfmesh::Mesh::ImageFormat::JPG,
+		false);
 }

@@ -388,7 +388,7 @@ Executables land in `make/bin/Debug/` or `make/bin/Release/`.
 | libjxl | optional | JPEG XL image format | IO |
 | TinyEXIF | bundled | EXIF metadata parsing | SFM |
 | TinyNPY | bundled | NumPy `.npz` file reading (ROMA2) | SFM |
-| tiny_gltf | bundled | glTF 2.0 binary/ASCII loading | IO |
+| tiny_gltf | vcpkg | glTF 2.0 binary/ASCII loading (implementation unit compiled by halfmesh) | MVS |
 | nlohmann/json | bundled | JSON parsing | IO |
 | TinyXML2 | bundled | XML parsing (Metashape interface) | IO |
 | BS::thread_pool | bundled | Lightweight task-based thread pool | Common |
@@ -478,7 +478,7 @@ CUDA kernels run on the GPU while the CPU pipeline continues. GPU synchronizatio
 |-----------|---------|-------------|
 | `.ply` | `libs/IO/PLY` | Point clouds and meshes (ASCII or binary LE/BE) |
 | `.obj` | `libs/IO/OBJ` | Mesh with MTL material library and separate texture images |
-| `.gltf` / `.glb` | `libs/IO/tiny_gltf.h` | Binary/ASCII 3D format with embedded textures |
+| `.gltf` / `.glb` | `libs/MVS/PointCloud.cpp` (point clouds), `libs/MVS/MeshHalfMesh.cpp` via halfmesh (meshes) | Binary/ASCII 3D format; textures written beside the file |
 
 ### Interface Formats (Import/Export)
 

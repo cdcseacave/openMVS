@@ -84,9 +84,9 @@ model.Load("mesh.obj");      // Loads .obj + .mtl + texture images
 model.Save("output.obj", 6); // 6 decimal places for vertex precision
 ```
 
-### glTF (`tiny_gltf.h`)
+### glTF (`tiny_gltf.h`, from vcpkg)
 
-Modern 3D format support via the third-party header-only `tiny_gltf` library. Supports both binary (`.glb`) and ASCII (`.gltf`) variants. Used by `Mesh::LoadGLTF()` / `Mesh::SaveGLTF()` and equivalent PointCloud methods.
+Modern 3D format support via the third-party header-only `tiny_gltf` library, whose single implementation unit is compiled by halfmesh. Supports both binary (`.glb`) and ASCII (`.gltf`) variants. `PointCloud::LoadGLTF()` / `SaveGLTF()` drive tinygltf directly; the mesh side delegates to halfmesh (see `MVS/MeshHalfMesh.cpp`), which puts the glTF z-up to y-up rotation on the root node and undoes it on load, making the round-trip an identity.
 
 ## Image Format System
 
@@ -167,7 +167,6 @@ mesh.SaveGLTF("model.glb", true);   // Binary glTF
 
 ## Third-Party Code
 
-- **`tiny_gltf.h`**: glTF 2.0 loader/writer (Syoyo Fujita, header-only, MIT license)
 - **`json.hpp`**: nlohmann JSON (header-only, MIT license)
 - **`TinyXML2.h/cpp`**: Lightweight XML parser
 
@@ -188,7 +187,6 @@ libs/IO/
 ├── ImageJXL.h/cpp      # JPEG XL format (optional)
 ├── ImageHEIF.h/cpp     # HEIF/HEIC format, read-only (optional)
 ├── ImageSCI.h/cpp      # Custom OpenMVS format
-├── tiny_gltf.h         # glTF loader (third-party, header-only)
 ├── json.hpp            # JSON library (third-party, header-only)
 ├── TinyXML2.h/cpp      # XML parser (third-party)
 └── CMakeLists.txt      # Build config with optional dependency detection

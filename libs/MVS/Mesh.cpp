@@ -31,8 +31,6 @@
 
 #include "Common.h"
 #include "Mesh.h"
-// GLTF: mesh import/export
-#include <tiny_gltf.h>
 
 using namespace MVS;
 
@@ -777,7 +775,7 @@ bool Mesh::Load(const String& fileName)
 		ret = LoadOBJ(fileName);
 	else
 	if (ext == _T(".gltf") || ext == _T(".glb"))
-		ret = LoadGLTF(fileName, ext == _T(".glb"));
+		ret = LoadGLTF(fileName);
 	else
 		ret = LoadPLY(fileName);
 	if (!ret)
@@ -949,94 +947,6 @@ bool Mesh::LoadOBJ(const String& fileName)
 		faceTexcoords.Swap(unnormFaceTexcoords);
 	}
 	return true;
-}
-// import the mesh as a GLTF file
-bool Mesh::LoadGLTF(const String& fileName, bool bBinary)
-{
-	ASSERT(!fileName.empty());
-	Release();
-
-	// load model
-	tinygltf::Model gltfModel; {
-		tinygltf::TinyGLTF loader;
-		std::string err, warn;
-		if (bBinary ?
-			!loader.LoadBinaryFromFile(&gltfModel, &err, &warn, fileName) :
-			!loader.LoadASCIIFromFile(&gltfModel, &err, &warn, fileName))
-			return false;
-		if (!err.empty()) {
-			VERBOSE("error: %s", err.c_str());
-			return false;
-		}
-		if (!warn.empty())
-			DEBUG("warning: %s", warn.c_str());
-	}
-
-	// check if the model contains any mesh
-	bool bHasMesh = false;
-	for (const tinygltf::Mesh& gltfMesh : gltfModel.meshes) {
-		for (const tinygltf::Primitive& gltfPrimitive : gltfMesh.primitives) {
-			if (gltfPrimitive.mode == TINYGLTF_MODE_TRIANGLES) {
-				bHasMesh = true;
-				break;
-			}
-		}
-		if (bHasMesh) break;
-	}
-	if (!bHasMesh)
-		return false;
-
-	// parse model
-	for (const tinygltf::Mesh& gltfMesh : gltfModel.meshes) {
-		for (const tinygltf::Primitive& gltfPrimitive : gltfMesh.primitives) {
-			if (gltfPrimitive.mode != TINYGLTF_MODE_TRIANGLES)
-				continue;
-			Mesh mesh;
-			// read vertices
-			{
-				const tinygltf::Accessor& gltfAccessor = gltfModel.accessors[gltfPrimitive.attributes.at("POSITION")];
-				if (gltfAccessor.type != TINYGLTF_TYPE_VEC3)
-					continue;
-				const tinygltf::BufferView& gltfBufferView = gltfModel.bufferViews[gltfAccessor.bufferView];
-				const tinygltf::Buffer& buffer = gltfModel.buffers[gltfBufferView.buffer];
-				const uint8_t* pData = buffer.data.data() + gltfBufferView.byteOffset + gltfAccessor.byteOffset;
-				mesh.vertices.resize((VIndex)gltfAccessor.count);
-				if (gltfAccessor.componentType == TINYGLTF_COMPONENT_TYPE_FLOAT) {
-					ASSERT(gltfBufferView.byteLength == sizeof(Vertex) * gltfAccessor.count);
-					memcpy(mesh.vertices.data(), pData, gltfBufferView.byteLength);
-				}
-				else if (gltfAccessor.componentType == TINYGLTF_COMPONENT_TYPE_DOUBLE) {
-					for (VIndex i = 0; i < gltfAccessor.count; ++i)
-						mesh.vertices[i] = ((const Point3d*)pData)[i];
-				}
-				else {
-					VERBOSE("error: unsupported vertices (component type)");
-					continue;
-				}
-			}
-			// read faces
-			{
-				const tinygltf::Accessor& gltfAccessor = gltfModel.accessors[gltfPrimitive.indices];
-				if (gltfAccessor.type != TINYGLTF_TYPE_SCALAR)
-					continue;
-				const tinygltf::BufferView& gltfBufferView = gltfModel.bufferViews[gltfAccessor.bufferView];
-				const tinygltf::Buffer& buffer = gltfModel.buffers[gltfBufferView.buffer];
-				const uint8_t* pData = buffer.data.data() + gltfBufferView.byteOffset + gltfAccessor.byteOffset;
-				mesh.faces.resize((FIndex)(gltfAccessor.count/3));
-				if (gltfAccessor.componentType == TINYGLTF_COMPONENT_TYPE_INT ||
-					gltfAccessor.componentType == TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT) {
-					ASSERT(gltfBufferView.byteLength == sizeof(uint32_t) * gltfAccessor.count);
-					memcpy(mesh.faces.data(), pData, gltfBufferView.byteLength);
-				}
-				else {
-					VERBOSE("error: unsupported faces (component type)");
-					continue;
-				}
-			}
-			Join(mesh);
-		}
-	}
-	return true;
 } // Load
 /*----------------------------------------------------------------*/
 
@@ -1052,7 +962,7 @@ bool Mesh::Save(const String& fileName, const cList<String>& comments, bool bBin
 		ret = SaveOBJ(fileName);
 	else
 	if (ext == _T(".gltf") || ext == _T(".glb"))
-		ret = SaveGLTF(fileName, ext == _T(".glb"));
+		ret = SaveGLTF(fileName, ext == _T(".glb"), bTexLossless);
 	else
 		ret = SavePLY(ext != _T(".ply") ? String(fileName+_T(".ply")) : fileName, comments, bBinary, bTexLossless);
 	if (!ret)
@@ -1204,189 +1114,6 @@ bool Mesh::SaveOBJ(const String& fileName) const
 	} while (++idxTexture < texturesDiffuse.size());
 
 	return model.Save(fileName);
-}
-// export the mesh as a GLTF file
-template <typename T>
-void ExtendBufferGLTF(const T* src, size_t size, tinygltf::Buffer& dst, size_t& byte_offset, size_t& byte_length) {
-	byte_offset = dst.data.size();
-	byte_length = sizeof(T) * size;
-	byte_length = ((byte_length + 3) / 4) * 4;
-	dst.data.resize(byte_offset + byte_length);
-	memcpy(&dst.data[byte_offset], &src[0], byte_length);
-}
-
-bool Mesh::SaveGLTF(const String& fileName, bool bBinary) const
-{
-	ASSERT(!fileName.empty());
-	Util::ensureFolder(fileName);
-
-	std::vector<Mesh> meshes;
-	if (texturesDiffuse.size() > 1) {
-		meshes = SplitMeshPerTextureBlob();
-		for (Mesh& mesh: meshes) {
-			Mesh convertedMesh;
-			mesh.ConvertTexturePerVertex(convertedMesh);
-			mesh.Swap(convertedMesh);
-		}
-	} else {
-		Mesh convertedMesh;
-		ConvertTexturePerVertex(convertedMesh);
-		meshes.emplace_back(std::move(convertedMesh));
-	}
-
-	// create GLTF model
-	tinygltf::Model gltfModel;
-	tinygltf::Scene gltfScene;
-	tinygltf::Mesh gltfMesh;
-	tinygltf::Buffer gltfBuffer;
-	gltfScene.name = "scene";
-	gltfMesh.name = "mesh";
-
-	for (size_t meshId = 0; meshId < meshes.size(); meshId++) {
-		const Mesh& mesh = meshes[meshId];
-		ASSERT(mesh.HasTextureCoordinatesPerVertex());
-		tinygltf::Primitive gltfPrimitive;
-		// setup vertices
-		{
-			STATIC_ASSERT(3 * sizeof(Vertex::Type) == sizeof(Vertex)); // VertexArr should be continuous
-			const Box box(GetAABB());
-			gltfPrimitive.attributes["POSITION"] = (int)gltfModel.accessors.size();
-			tinygltf::Accessor vertexPositionAccessor;
-			vertexPositionAccessor.name = "vertexPositionAccessor";
-			vertexPositionAccessor.bufferView = (int)gltfModel.bufferViews.size();
-			vertexPositionAccessor.type = TINYGLTF_TYPE_VEC3;
-			vertexPositionAccessor.componentType = TINYGLTF_COMPONENT_TYPE_FLOAT;
-			vertexPositionAccessor.count = mesh.vertices.size();
-			vertexPositionAccessor.minValues = {box.ptMin.x(), box.ptMin.y(), box.ptMin.z()};
-			vertexPositionAccessor.maxValues = {box.ptMax.x(), box.ptMax.y(), box.ptMax.z()};
-			gltfModel.accessors.emplace_back(std::move(vertexPositionAccessor));
-			// setup vertices buffer
-			tinygltf::BufferView vertexPositionBufferView;
-			vertexPositionBufferView.name = "vertexPositionBufferView";
-			vertexPositionBufferView.buffer = (int)gltfModel.buffers.size();
-			ExtendBufferGLTF(mesh.vertices.data(), mesh.vertices.size(), gltfBuffer,
-				vertexPositionBufferView.byteOffset, vertexPositionBufferView.byteLength);
-			gltfModel.bufferViews.emplace_back(std::move(vertexPositionBufferView));
-		}
-
-		// setup faces
-		{
-			STATIC_ASSERT(3 * sizeof(Face::Type) == sizeof(Face)); // FaceArr should be continuous
-			gltfPrimitive.indices = (int)gltfModel.accessors.size();
-			tinygltf::Accessor triangleAccessor;
-			triangleAccessor.name = "triangleAccessor";
-			triangleAccessor.bufferView = (int)gltfModel.bufferViews.size();
-			triangleAccessor.type = TINYGLTF_TYPE_SCALAR;
-			triangleAccessor.componentType = TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT;
-			triangleAccessor.count = mesh.faces.size() * 3;
-			gltfModel.accessors.emplace_back(std::move(triangleAccessor));
-			// setup triangles buffer
-			tinygltf::BufferView triangleBufferView;
-			triangleBufferView.name = "triangleBufferView";
-			triangleBufferView.buffer = (int)gltfModel.buffers.size();
-			ExtendBufferGLTF(mesh.faces.data(), mesh.faces.size(), gltfBuffer,
-				triangleBufferView.byteOffset, triangleBufferView.byteLength);
-			gltfModel.bufferViews.emplace_back(std::move(triangleBufferView));
-			gltfPrimitive.mode = TINYGLTF_MODE_TRIANGLES;
-		}
-
-		// setup material
-		gltfPrimitive.material = (int)gltfModel.materials.size();
-		tinygltf::Material gltfMaterial;
-		gltfMaterial.name = "material";
-		gltfMaterial.doubleSided = true;
-		if (mesh.HasTexture()) {
-			// setup texture
-			gltfMaterial.emissiveFactor = std::vector<double>{0,0,0};
-			gltfMaterial.pbrMetallicRoughness.baseColorTexture.index = (int)gltfModel.textures.size();
-			gltfMaterial.pbrMetallicRoughness.baseColorTexture.texCoord = 0;
-			gltfMaterial.pbrMetallicRoughness.baseColorFactor = std::vector<double>{1,1,1,1};
-			gltfMaterial.pbrMetallicRoughness.metallicFactor = 0;
-			gltfMaterial.pbrMetallicRoughness.roughnessFactor = 1;
-			gltfMaterial.extensions = {{"KHR_materials_unlit", {}}};
-			gltfModel.extensionsUsed = {"KHR_materials_unlit"};
-			// setup texture coordinates accessor
-			gltfPrimitive.attributes["TEXCOORD_0"] = (int)gltfModel.accessors.size();
-			tinygltf::Accessor vertexTexcoordAccessor;
-			vertexTexcoordAccessor.name = "vertexTexcoordAccessor";
-			vertexTexcoordAccessor.bufferView = (int)gltfModel.bufferViews.size();
-			vertexTexcoordAccessor.componentType = TINYGLTF_COMPONENT_TYPE_FLOAT;
-			vertexTexcoordAccessor.count = mesh.faceTexcoords.size();
-			vertexTexcoordAccessor.type = TINYGLTF_TYPE_VEC2;
-			gltfModel.accessors.emplace_back(std::move(vertexTexcoordAccessor));
-			// setup texture coordinates
-			STATIC_ASSERT(2 * sizeof(TexCoord::Type) == sizeof(TexCoord)); // TexCoordArr should be continuous
-			ASSERT(mesh.vertices.size() == mesh.faceTexcoords.size());
-			tinygltf::BufferView vertexTexcoordBufferView;
-			vertexTexcoordBufferView.name = "vertexTexcoordBufferView";
-			vertexTexcoordBufferView.buffer = (int)gltfModel.buffers.size();
-			TexCoordArr normFaceTexcoords;
-			mesh.FaceTexcoordsNormalize(normFaceTexcoords, false);
-			ExtendBufferGLTF(normFaceTexcoords.data(), normFaceTexcoords.size(), gltfBuffer,
-				vertexTexcoordBufferView.byteOffset, vertexTexcoordBufferView.byteLength);
-			gltfModel.bufferViews.emplace_back(std::move(vertexTexcoordBufferView));
-			// setup texture
-			tinygltf::Texture texture;
-			texture.name = "texture";
-			texture.source = (int)gltfModel.images.size();
-			texture.sampler = (int)gltfModel.samplers.size();
-			gltfModel.textures.emplace_back(std::move(texture));
-			// setup texture image
-			tinygltf::Image image;
-			image.name = Util::getFileFullName(fileName) + "_" + std::to_string(meshId).c_str();
-			image.width = mesh.texturesDiffuse[0].cols;
-			image.height = mesh.texturesDiffuse[0].rows;
-			image.component = 3;
-			image.bits = 8;
-			image.pixel_type = TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE;
-			image.mimeType = "image/png";
-			image.image.resize(mesh.texturesDiffuse[0].size().area() * 3);
-			mesh.texturesDiffuse[0].copyTo(cv::Mat(mesh.texturesDiffuse[0].size(), CV_8UC3, image.image.data()));
-			gltfModel.images.emplace_back(std::move(image));
-			// setup texture sampler
-			tinygltf::Sampler sampler;
-			sampler.name = "sampler";
-			sampler.minFilter = TINYGLTF_TEXTURE_FILTER_LINEAR;
-			sampler.magFilter = TINYGLTF_TEXTURE_FILTER_LINEAR;
-			sampler.wrapS = TINYGLTF_TEXTURE_WRAP_CLAMP_TO_EDGE;
-			sampler.wrapT = TINYGLTF_TEXTURE_WRAP_CLAMP_TO_EDGE;
-			gltfModel.samplers.emplace_back(std::move(sampler));
-		}
-		gltfModel.materials.emplace_back(std::move(gltfMaterial));
-		gltfModel.buffers.emplace_back(std::move(gltfBuffer));
-		gltfMesh.primitives.emplace_back(std::move(gltfPrimitive));
-	}
-
-	// setup scene node
-	gltfScene.nodes.emplace_back((int)gltfModel.nodes.size());
-	tinygltf::Node node;
-	node.name = "node";
-	node.mesh = (int)gltfModel.meshes.size();
-	gltfModel.nodes.emplace_back(std::move(node));
-	gltfModel.meshes.emplace_back(std::move(gltfMesh));
-	gltfModel.scenes.emplace_back(std::move(gltfScene));
-	gltfModel.asset.generator = "OpenMVS";
-	gltfModel.asset.version = "2.0";
-	gltfModel.defaultScene = 0;
-
-	// setup GLTF
-	struct Tools {
-		static bool WriteImageData(const std::string *basepath, const std::string *filename,
-			const tinygltf::Image *image, bool embedImages, const tinygltf::FsCallbacks *,
-			const tinygltf::URICallbacks *, std::string *outUri, void *) {
-			ASSERT(!embedImages);
-			*outUri = Util::isFullPath(filename->c_str()) ?
-				Util::getRelativePath(*basepath, *filename) : String(*filename);
-			String basePath(*basepath);
-			return SaveImage(
-				cv::Mat(image->height, image->width, CV_8UC3, const_cast<unsigned char*>(image->image.data())),
-				Util::ensureFolderSlash(basePath) + *outUri);
-		}
-	};
-	tinygltf::TinyGLTF gltf;
-	gltf.SetImageWriter(Tools::WriteImageData, NULL);
-	const bool bEmbedImages(false), bEmbedBuffers(true), bPrettyPrint(true);
-	return gltf.WriteGltfSceneToFile(&gltfModel, fileName, bEmbedImages, bEmbedBuffers, bPrettyPrint, bBinary);
 } // Save
 /*----------------------------------------------------------------*/
 
@@ -1429,7 +1156,6 @@ bool Mesh::Save(const VertexArr& vertices, const String& fileName, bool bBinary)
 }
 /*----------------------------------------------------------------*/
 
-/*----------------------------------------------------------------*/
 
 // subdivide mesh faces if its projection area
 // is bigger than the given number of pixels
@@ -1610,8 +1336,6 @@ void Mesh::Subdivide(const AreaArr& maxAreas, uint32_t maxArea)
 	for (const auto& s: mapSplits)
 		faces.RemoveAt(s.first);
 }
-/*----------------------------------------------------------------*/
-
 /*----------------------------------------------------------------*/
 
 

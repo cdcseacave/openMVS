@@ -328,11 +328,20 @@ bool MeshHalfMeshProcessingTest()
 		if (!tmpDir.IsValid())
 			return false;
 		const String fileName(tmpDir(_T("rebaked.glb")));
-		const String textureFileName(tmpDir(_T("rebaked_0.png")));
+		// halfmesh names a non-embedded diffuse image <stem>_diffuse<NN>, per blob
+		const String textureFileName(tmpDir(_T("rebaked_diffuse00.png")));
 		Mesh reloaded;
 		if (!rebakedGrid.Save(fileName) || !File::isFile(textureFileName) || !reloaded.Load(fileName) ||
 			reloaded.vertices.size() != rebakedGrid.vertices.size() || reloaded.faces.size() != rebakedGrid.faces.size()) {
 			VERBOSE("ERROR: HalfMesh bridge rebaked texture GLB export did not round-trip!");
+			return false;
+		}
+		// glTF files are y-up while both meshes are not, so halfmesh puts the rotation
+		// on the root node and undoes it on load; the round-trip must be an identity.
+		// Compare the box rather than the vertices: a seam split would renumber them.
+		const Mesh::Box box(rebakedGrid.GetAABB()), reloadedBox(reloaded.GetAABB());
+		if (!box.ptMin.isApprox(reloadedBox.ptMin) || !box.ptMax.isApprox(reloadedBox.ptMax)) {
+			VERBOSE("ERROR: HalfMesh bridge GLB round-trip did not preserve the orientation!");
 			return false;
 		}
 	}
