@@ -552,7 +552,7 @@ graph TD
     E1 --> F{bUseFreeSpaceSupport?}
     F -->|yes| G[Score edges: t-edge camera->hull kInf<br/>n-edge data terms kf/kRel/kAbs/kOutl]
     F -->|no| H[Score edges quality only]
-    G --> I[IBFS min-cut graph-cut<br/>source=free-space, sink=matter]
+    G --> I[TetraFlow min-cut graph-cut<br/>source=free-space, sink=matter]
     H --> I
     I --> J[Extract surface from cut facets<br/>webbing gate: drop facets with an edge > maxEdgeScale x median]
     J --> K[Fix non-manifold: single exhaustive pass]
@@ -583,7 +583,8 @@ graph TD
 
 **Step 3: Graph-Cut**
 
-- IBFS min-cut solver (`libs/Math/IBFS`) separates free-space (source) from matter (sink) tetrahedra
+- TetraFlow min-cut solver (`libs/Math/TetraFlow.h`, incremental breadth-first search max-flow on
+  one 64-byte node per cell) separates free-space (source) from matter (sink) tetrahedra
 - Cut facets form the extracted surface triangles, minus those the webbing gate drops:
   `maxEdgeScale` (4) x the median cut-facet longest edge, the gap-spanning surface no observation
   supports
