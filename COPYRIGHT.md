@@ -13,10 +13,6 @@ This program includes works distributed under the terms of another license(s) an
     Copyright (c) 2007 SEACAVE SRL.
     Licensed under a [Boost license](http://www.boost.org/users/license.html).
 
-*   __TetraFlow__<br />
-    Copyright (c) 2026 cDc@seacave.
-    Licensed under the [Boost Software License, Version 1.0](http://www.boost.org/LICENSE_1_0.txt).
-
 *   __histogram__<br />
     Copyright (c) Jansson Consulting & Pierre Moulon.
     Licensed under the [MPL2 license](http://opensource.org/licenses/MPL-2.0).
