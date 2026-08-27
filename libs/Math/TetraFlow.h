@@ -143,8 +143,9 @@ public:
 	// accumulate terminal capacities of node n (may be called several times for the same node)
 	void AddNode(NodeID n, Cap capSource, Cap capSink) {
 		ASSERT(n < nodes.size());
-		ASSERT(IsValidCap(capSource) && IsValidCap(capSink));
 		Node& node = nodes[n];
+		ASSERT(IsValidCapacitySum(node.excess, capSource));
+		ASSERT(IsValidCapacitySum(node.capSink, capSink));
 		node.excess += capSource;  // holds the accumulated source capacity until ComputeMaxFlow()
 		node.capSink += capSink;   // aliases the (unused until then) prev link
 	}
@@ -153,7 +154,7 @@ public:
 	// called exactly once per edge; u != v; every node must end up with at most 4 edges
 	void AddEdge(NodeID u, NodeID v, Cap capUV, Cap capVU) {
 		ASSERT(u < nodes.size() && v < nodes.size() && u != v);
-		ASSERT(IsValidCap(capUV) && IsValidCap(capVU));
+		ASSERT(IsValidCapacitySum(capUV, capVU));
 		Node& nu = nodes[u];
 		Node& nv = nodes[v];
 		ASSERT(nu.fill != SLOT_MASK && nv.fill != SLOT_MASK);
@@ -297,6 +298,10 @@ private:
 
 	// finite and non-negative (false for NaN)
 	static constexpr bool IsValidCap(Cap c) noexcept { return c >= 0 && c <= std::numeric_limits<Cap>::max(); }
+	static constexpr bool IsValidCapacitySum(Cap first, Cap second) noexcept {
+		return IsValidCap(first) && IsValidCap(second) &&
+			double(first) + double(second) <= double(std::numeric_limits<Cap>::max());
+	}
 	static constexpr uint8_t Bit(unsigned i) noexcept { return uint8_t(1u << i); }
 	static constexpr uint8_t SLOT_MASK = uint8_t((1u << NUM_SLOTS) - 1); // all slots linked
 	// lowest slot not linked yet (mask != SLOT_MASK)
@@ -359,9 +364,41 @@ private:
 		flow = 0;
 	}
 
+	// validate all construction data before changing it: paired residuals must remain representable
+	// when flow moves between directions, and a node's total incident residual capacity bounds the
+	// largest deficit that can collect there during a batched source-side augmentation
+	bool IsValidGraph() const noexcept {
+		for (size_t x = 0; x < nodes.size(); ++x) {
+			const Node& node = nodes[x];
+			if (!IsValidCap(node.excess) || !IsValidCap(node.capSink))
+				return false;
+			double incidentCapacity = 0;
+			for (unsigned i = 0; i < NUM_SLOTS; ++i) {
+				if (!(node.fill & Bit(i)))
+					continue;
+				const NodeID y = node.head[i];
+				if (y >= nodes.size() || y == x)
+					return false;
+				const unsigned j = Rev(node, i);
+				const Node& reverseNode = nodes[y];
+				if (!(reverseNode.fill & Bit(j)) || reverseNode.head[j] != x || Rev(reverseNode, j) != i)
+					return false;
+				const Cap cap = node.rcap[i];
+				const Cap reverseCap = reverseNode.rcap[j];
+				if (!IsValidCapacitySum(cap, reverseCap))
+					return false;
+				incidentCapacity += double(cap) + double(reverseCap);
+				if (incidentCapacity > double(std::numeric_limits<Cap>::max()))
+					return false;
+			}
+		}
+		return true;
+	}
+
 	// fold the terminal capacities into the initial flow, create the tree roots, fill the unused slots
 	// with zero-capacity self-arcs and compute the reverse-residual bits (validating every capacity)
 	void Init() {
+		ASSERT(IsValidGraph());
 		frontierS.clear();
 		frontierT.clear();
 		scan.clear();
