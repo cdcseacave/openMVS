@@ -3,14 +3,12 @@ if(VCPKG_TARGET_IS_WINDOWS)
 endif()
 
 # 0.3.0 carries the mesh-repair, rect-packing and selected-fill work that this
-# port used to apply as patches, so no patch is needed any more. It is not
-# tagged upstream yet: pin the branch head that declares it, and restore
-# REF "v${VERSION}" once the tag is published.
+# port used to apply as patches, so no patch is needed any more.
 vcpkg_from_github(
     OUT_SOURCE_PATH SOURCE_PATH
     REPO cdcseacave/halfmesh
-    REF e821c418752179b6a9ae822ae976477f654edda3
-    SHA512 17ee4d3b48108c46ccf051e19fc73c748c32dc525bf4550fdf8a6a89d82e19bdf87c3ff1930f15737a3df41bfb736407852721fe4c7a2a7178935c04dbc39916
+    REF "v${VERSION}"
+    SHA512 933613bf244352db9680f32bfb02c80fb756d4fcd09b084a5f37e13a82666fd6d6eacf0e5a0edb450056e119e4246e6e85bb58c59d14a3e45800717df4bfe999
     HEAD_REF develop
 )
 
