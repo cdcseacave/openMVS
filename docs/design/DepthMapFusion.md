@@ -460,10 +460,11 @@ Delaunay + graph-cut at this point density, so the case for the flip rests on th
 the point cloud *is* the product — plus the fact that it costs nothing downstream.
 
 **Recommendation** (decision reserved, § 5 item 1): adopt **at least** 1.0 as the default (the
-dose curve below says lower may be better; that part waits on S7) — validated twice, on two
-confidence lineages, Pareto on every scene, neutral for the mesh. Implementation is the two
-literals of `dc32ab8` (`libs/MVS/DepthMap.cpp`, `DensifyPointCloud.cpp`) plus its
-`docs/fusion_reprojection_threshold.md`.
+dose curve below says lower may be better; § 4 S7 *Solo fusion timings* now shows the deeper doses
+cost nothing in fusion wall or memory, so what remains pending is the mesh-visibility pairing, not
+the fusion cost) — validated twice, on two confidence lineages, Pareto on every scene, neutral for
+the mesh. Implementation is the two literals of `dc32ab8` (`libs/MVS/DepthMap.cpp`,
+`DensifyPointCloud.cpp`) plus its `docs/fusion_reprojection_threshold.md`.
 
 **Dose curve** (same frozen dmaps)
 
@@ -475,6 +476,7 @@ literals of `dc32ab8` (`libs/MVS/DepthMap.cpp`, `DensifyPointCloud.cpp`) plus it
 | 0.8 | +0.0175 | +0.0116 | +0.0174 | +0.0117 | **+0.0146** | +14.4…+33.9 % |
 | 0.7 | +0.0205 | +0.0135 | +0.0196 | +0.0133 | **+0.0167** | +16.6…+41.3 % |
 | 0.6 | +0.0243 | +0.0153 | +0.0212 | +0.0157 | **+0.0191** | +16.7…+49.5 % |
+| 0.5 | +0.0272 | +0.0163 | +0.0186 | +0.0184 | **+0.0201** | +9.5…+53.7 % |
 
 Full P/R/F1 for 0.9 (`--fusion-reprojection-threshold 0.9`):
 
@@ -507,10 +509,28 @@ Full P/R/F1 for 0.7 (`--fusion-reprojection-threshold 0.7`):
 | Meetingroom | 0.5072 / 0.3838 / 0.4370 | 0.5348 / 0.3984 / **0.4566** | **+0.0196** | +0.0276 | +0.0146 | +16.6 % |
 | Truck | 0.6761 / 0.7644 / 0.7176 | 0.6856 / 0.7827 / **0.7309** | **+0.0133** | +0.0095 | +0.0183 | +41.3 % |
 
+Full P/R/F1 for 0.6 (`--fusion-reprojection-threshold 0.6`):
+
+| scene | base P / R / F1 | 0.6 P / R / F1 | ΔF1 | ΔP | ΔR | points |
+|---|---|---|---|---|---|---|
+| Barn | 0.5746 / 0.7263 / 0.6416 | 0.5881 / 0.7675 / **0.6659** | **+0.0243** | +0.0135 | +0.0412 | +39.7 % |
+| Ignatius | 0.7081 / 0.8472 / 0.7714 | 0.7145 / 0.8752 / **0.7867** | **+0.0153** | +0.0064 | +0.0280 | +37.2 % |
+| Meetingroom | 0.5072 / 0.3838 / 0.4370 | 0.5431 / 0.3962 / **0.4582** | **+0.0212** | +0.0359 | +0.0124 | +16.7 % |
+| Truck | 0.6761 / 0.7644 / 0.7176 | 0.6886 / 0.7842 / **0.7333** | **+0.0157** | +0.0125 | +0.0198 | +49.5 % |
+
+At 0.5, precision keeps rising on every scene (+0.9…+5.2 pp) but Meetingroom's recall stalls
+(R +0.0007, points only +9.5 %) and its F1 falls back from +0.0212 at 0.6 to +0.0186 — the first
+bend in the curve; the mean still edges up (+0.0191 → +0.0201) only because Barn keeps gaining
+(+0.0272). Admitted share keeps falling on the scene that is turning: Meetingroom 30.1 % base →
+24.1 % at 0.6 → 21.0 % at 0.5.
+
 Consequence: **1.0 is where the gain first clears the +0.003 gate on every scene, not a floor** —
-the curve is monotone all the way from 1.1 (a small positive, mean +0.0022) down through 0.6 (mean
-+0.0191, table above), with no scene ever regressing; 0.5 is still queued (its Meetingroom run has
-not landed), and the mesh pairing (S7) covers 0.9 plus the best deeper dose.
+the curve is monotone from 1.1 (a small positive, mean +0.0022) all the way through 0.6 (mean
++0.0191), with no scene ever regressing; at 0.5 Meetingroom turns down (F1 +0.0212 → +0.0186) while
+the other three scenes still gain, so the plateau sits between 0.6 and 0.5 — "0.5 is still queued"
+no longer holds. The mesh pairing, now run under the mesh-visibility protocol (§ 3 *Mesh
+visibility*), covers 0.9 and 0.6 and is pending; the recommended threshold is decided by that
+pairing.
 
 ### S4 — C3 + C4: rescue-strength sweep
 
@@ -720,6 +740,57 @@ clause) and verts +28…45 %; at equal cost (2.0) it is **−0.0053 mean** (−0
 these rows is the mildly starved re-fuse (19,937,081 points, § 3 *Memory*); the verdict does not
 rest on Barn.
 
+**Solo fusion timings (2026-08-27)**
+
+Measured 2026-08-27 01:53–02:58 on the frozen `runConfAdj` dmaps, one process at a time on a quiet
+machine, fusion-only (`--geometric-iters 0`, no scoring): base10 (S10 binary, every switch off ≡
+base), `--fusion-reprojection-threshold` 1.0 / 0.9 / 0.6, and `Fuse Violation Max All=0`
+(`violall0`). 3 runs per arm (Ignatius base10, 4), medians; ranges are ±1 s throughout, stated once
+here rather than per row.
+
+| scene | arm | median wall s (Δ %) | peak WS GB (Δ %) |
+|---|---|---|---|
+| Barn | base10 | 71.2 (+0 %) | 7.89 (+0 %) |
+| Barn | reproj10 | 70.0 (−2 %) | 8.11 (+3 %) |
+| Barn | reproj09 | 69.4 (−3 %) | 8.42 (+7 %) |
+| Barn | reproj06 | 70.6 (−1 %) | 8.79 (+11 %) |
+| Barn | violall0 | 71.6 (+0 %) | 7.87 (−0 %) |
+| Ignatius | base10 | 50.3 (+0 %) | 5.17 (+0 %) |
+| Ignatius | reproj10 | 49.0 (−3 %) | 5.31 (+3 %) |
+| Ignatius | reproj09 | 48.6 (−4 %) | 5.51 (+7 %) |
+| Ignatius | reproj06 | 49.4 (−2 %) | 5.75 (+11 %) |
+| Ignatius | violall0 | 50.0 (−1 %) | 5.15 (−0 %) |
+| Meetingroom | base10 | 62.2 (+0 %) | 6.49 (+0 %) |
+| Meetingroom | reproj10 | 61.2 (−2 %) | 6.57 (+1 %) |
+| Meetingroom | reproj09 | 60.6 (−3 %) | 6.66 (+3 %) |
+| Meetingroom | reproj06 | 60.9 (−2 %) | 6.71 (+3 %) |
+| Meetingroom | violall0 | 61.9 (−1 %) | 6.46 (−0 %) |
+| Truck | base10 | 46.8 (+0 %) | 5.02 (+0 %) |
+| Truck | reproj10 | 46.3 (−1 %) | 5.19 (+3 %) |
+| Truck | reproj09 | 45.8 (−2 %) | 5.45 (+9 %) |
+| Truck | reproj06 | 46.8 (+0 %) | 5.78 (+15 %) |
+| Truck | violall0 | 46.7 (−0 %) | 5.00 (−0 %) |
+
+Four conclusions:
+
+(a) **Tightening the reprojection threshold is not slower.** 1.0 / 0.9 / 0.6 run 0…−4 % vs base on
+every scene (Truck's 0.6 arm ties base at +0 %, indistinguishable from the rest given the ±1 s
+range) — the extra clusters cost nothing in wall time.
+
+(b) **Peak memory grows with the point count, not with the threshold mechanism.** +1…3 % at 1.0,
++3…9 % at 0.9, +3…15 % at 0.6 (Truck the largest at every dose), i.e. +17…50 % points cost
++3…15 % of fusion RSS. The § 3 +15 % escalation bound is a mesh-stage criterion (ReconstructMesh's
+peak on the denser cloud), which the pending mesh-visibility pairing measures; the fusion-side
+figure here is the cost of the fuse itself.
+
+(c) **`violall0` is identical to base in wall and memory** (within ±1 % on every scene). The S10
+reading of −25…−35 % wall for the `Fuse Violation Max All` arms (§ 4 S10, S5 (ii) cross-ref) was
+load noise from the shared machine those rows ran on, not a `violall0` effect — that S10 sentence
+is superseded by this measurement.
+
+(d) **`base10` ≡ base** (§ 4 S10), so this table is also the reference timing for decision 1
+(§ 5 item 1): the reprojection-threshold candidates cost nothing to run solo.
+
 ### S8 — Consolidation
 
 *Not yet run.*
@@ -819,8 +890,9 @@ Same S10 binary and dmaps, `Fuse Violation Max All=0/1/2` — full per-scene tab
 § 4 S5 (ii): inert, mean −0.0001 / +0.0001 / +0.0001, points −0.1…−2.1 % across the three settings.
 One note specific to these three arms: their fusion wall reads −25…−35 % against `base10`, but
 `base10` itself ran on 2026-08-25 under the same shared-machine load as the rest of this table, so
-this is not a solo timing and no wall conclusion is drawn from it; deferred to the S7 solo
-re-timing.
+this is not a solo timing and no wall conclusion is drawn from it. **Resolved by the S7 solo
+re-timing** (§ 4 S7 *Solo fusion timings*, 2026-08-27): `violall0` sits within ±1 % of `base10` in
+both wall and peak working set — the −25…−35 % reading was load noise, not a `violall0` effect.
 
 **C9 — corroboration support, dose curve** (`corrob1`, `corrob05`, `corrob05all`, `corrob025`; the
 last run clean 2026-08-27)
@@ -894,10 +966,16 @@ corresponding slice produces.
    documented and then never merged. Also: decide whether `dc32ab8` and `833e93c` were
    deliberately dropped or lost, and whether `dense-cell-neighbors` holds anything else in the
    same state — *pending*. S3 dose curve (fully clean 2026-08-27) is monotone from 1.1
-   (+0.0022 mean, a small positive) down through 0.6 (+0.0191 mean) with no scene ever
-   regressing; 1.0 is where the gain first clears the +0.003 gate, 0.9 gains +0.0124 mean at
-   +12…28 % points; 0.5 is still queued (Meetingroom pending) and the mesh pairing for the
-   deeper doses is pending.
+   (+0.0022 mean, a small positive) through 0.6 (+0.0191 mean) with no scene ever regressing; at
+   0.5 Meetingroom turns down (the first bend in the curve) while the other three scenes still
+   gain, mean still edging up to +0.0201 — the plateau sits between 0.6 and 0.5. 1.0 is where the
+   gain first clears the +0.003 gate, 0.9 gains +0.0124 mean at +12…28 % points. Solo fusion
+   timing (S7, 2026-08-27) settles the cost side for 1.0/0.9/0.6: fusion wall is 0…−4 % vs base
+   (not slower) and fusion peak memory grows +1…3 % / +3…9 % / +3…15 % respectively (Truck
+   largest); the § 3 +15 % escalation bound applies to the mesh stage and is measured by the
+   pairing. The mesh pairing, now run under the
+   mesh-visibility protocol (§ 3 *Mesh visibility*), covers 0.9 and 0.6 and is pending; the
+   recommended threshold is decided by that pairing.
 2. **`nOptimize` 4 → 8** (S6) — the standalone CPU sweep matches the integrated GPU epilogue within
    −0.0008…+0.0002 cloud F1 on every scene for 4–5 s of wall and a 4.9–7.8 GB peak working set; two
    independent estimates of the adjust's own value (`base10 − rawbase` and `cpuadj − rawbase`)
