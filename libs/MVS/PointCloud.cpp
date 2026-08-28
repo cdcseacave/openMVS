@@ -33,6 +33,13 @@
 #include "PointCloud.h"
 #include "DepthMap.h"
 // GLTF: mesh import/export
+// tiny_gltf.h reads these two in class TinyGLTF's default member initializers, so
+// every TU including the header must agree with halfmesh, which sets them on its
+// own target but only as BUILD_INTERFACE. Its TINYGLTF_NOEXCEPTION/JSON_NOEXCEPTION
+// stay behind TINYGLTF_IMPLEMENTATION and must not be repeated here: the latter
+// would turn the exceptions of the json.hpp below into abort().
+#define TINYGLTF_NO_STB_IMAGE
+#define TINYGLTF_NO_STB_IMAGE_WRITE
 #include <tiny_gltf.h>
 #include "../IO/json.hpp"
 
@@ -510,6 +517,15 @@ Eigen::Matrix4d GLTFNodeLocalMatrix(const tinygltf::Node& node)
 	a.translate(t).rotate(q).scale(s);
 	return a.matrix();
 }
+
+// TINYGLTF_NO_STB_IMAGE leaves LoadImageData null and ParseImage rejects a null
+// callback, so any file carrying an image would fail to open; this reader looks
+// only at point primitives, so accept the image without decoding it.
+bool GLTFSkipImageData(tinygltf::Image*, const int, std::string*, std::string*,
+	int, int, const unsigned char*, int, void*)
+{
+	return true;
+}
 } // unnamed namespace
 
 // import the point-cloud as a GLTF file
@@ -521,6 +537,7 @@ bool PointCloud::LoadGLTF(const String& fileName, bool bBinary)
 	// load model
 	tinygltf::Model gltfModel; {
 		tinygltf::TinyGLTF loader;
+		loader.SetImageLoader(GLTFSkipImageData, NULL);
 		std::string err, warn;
 		if (bBinary ?
 			!loader.LoadBinaryFromFile(&gltfModel, &err, &warn, fileName) :
