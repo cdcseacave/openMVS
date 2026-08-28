@@ -658,7 +658,9 @@ OpenMVS is a comprehensive photogrammetry library implementing a complete pipeli
   - Optional 90-degree rotation for better area utilization
   - 85–95% occupancy typical
   - `nTextureSizeMultiple`: forces atlas dimensions to multiple of this value
-  - `maxTextureSize`: grows one page up to this cap, then switches to as many pages as needed
+  - `maxTextureSize`: grows one page up to this cap, then opens as many further pages as needed,
+    each estimated on its own leftovers - so a trailing page holding a handful of small patches
+    stays small instead of being allocated at the cap
 - **GPU Support:** No
 - **Threading:** Single
 - **Dependencies:** halfmesh, OpenCV

@@ -236,81 +236,88 @@ struct MeshTexture {
 			&& a.y+a.height <= b.y+b.height;
 	}
 
-	static int EstimateTextureSize(const PatchRectArr& patchRects, int multiple) {
+	// The generic packer works on bare rectangles, so patch identity never enters
+	// it; extract once per call site and index the placements back in lockstep.
+	static std::vector<cv::Rect> ExtractRects(const PatchRectArr& patchRects) {
 		std::vector<cv::Rect> rects;
 		rects.reserve(patchRects.size());
 		for (const PatchRect& patchRect : patchRects)
 			rects.emplace_back(patchRect.rect);
+		return rects;
+	}
+
+	static int EstimateTextureSize(const std::vector<cv::Rect>& rects, int multiple) {
 		return halfmesh::EstimateSquareTextureSize(rects, multiple);
 	}
 
-	// Pack one fixed-size texture page. The halfmesh result is indexed in lockstep
-	// with the input, so patch identity never enters the generic packer.
-	static PatchRectArr PackTexturePage(PatchRectArr& unpacked, int textureSize) {
-		std::vector<cv::Rect> rects;
-		rects.reserve(unpacked.size());
-		for (const PatchRect& patchRect : unpacked)
-			rects.emplace_back(patchRect.rect);
+	// Trial pack: do all these rectangles share one page of the given size?
+	static bool CanPackInOnePage(const std::vector<cv::Rect>& rects, int textureSize) {
 		halfmesh::RectPackParams params;
 		params.pageSize = cv::Size(textureSize, textureSize);
 		params.mode = halfmesh::RectPackMode::FixedSinglePage;
 		params.padding = 0;
 		params.allowRotation = true;
 		std::vector<halfmesh::RectPlacement> placements;
-		halfmesh::PackRectangles(rects, params, placements);
-		PatchRectArr placed;
-		PatchRectArr remaining;
-		placed.reserve(unpacked.size());
-		remaining.reserve(unpacked.size());
-		for (size_t i = 0; i < unpacked.size(); ++i) {
-			if (placements[i].packed)
-				placed.emplace_back(PatchRect{placements[i].rect, unpacked[i].patchIdx});
-			else
-				remaining.emplace_back(unpacked[i]);
-		}
-		unpacked = std::move(remaining);
-		return placed;
+		return halfmesh::PackRectangles(rects, params, placements).numPacked == rects.size();
 	}
 
 	struct PackedTexturePages {
-		cv::Size pageSize;
+		// one size per page: pages are estimated independently, so a trailing page
+		// holding a few leftovers stays as small as those leftovers need, instead
+		// of being allocated at the maximum like the rest
+		std::vector<cv::Size> pageSizes;
 		std::vector<PatchRectArr> pages;
 	};
 
-	// Apply OpenMVS's texture strategy inside HalfMesh: first grow and repack one
-	// square page; when a hard maximum is reached, switch to as many pages of
-	// that fixed maximum size as necessary.
+	// Apply OpenMVS's texture strategy through halfmesh's packer: grow one square
+	// page until it holds as much as it can, and when the hard maximum stops the
+	// growth, open another page estimated for whatever is left. Every page gets
+	// its own estimate, so nTextureSizeMultiple applies to all of them.
 	static PackedTexturePages PackTexturePages(
-		const PatchRectArr& patches, int initialTextureSize, int maxTextureSize)
+		const PatchRectArr& patches, int multiple, int maxTextureSize)
 	{
-		std::vector<cv::Rect> rects;
-		rects.reserve(patches.size());
-		for (const PatchRect& patch : patches)
-			rects.emplace_back(patch.rect);
-		halfmesh::RectPackParams params;
-		params.pageSize = cv::Size(initialTextureSize, initialTextureSize);
-		params.mode = halfmesh::RectPackMode::GrowSinglePage;
-		params.maxPageSize = maxTextureSize > 0
-			? cv::Size(maxTextureSize, maxTextureSize)
-			: cv::Size();
-		params.padding = 0;
-		params.allowRotation = true;
-		std::vector<halfmesh::RectPlacement> placements;
-		halfmesh::RectPackResult result(halfmesh::PackRectangles(rects, params, placements));
-		if (result.numPacked < patches.size() && maxTextureSize > 0) {
-			params.pageSize = cv::Size(maxTextureSize, maxTextureSize);
-			params.mode = halfmesh::RectPackMode::FixedMultiPage;
-			params.maxPageSize = cv::Size();
-			result = halfmesh::PackRectangles(rects, params, placements);
-		}
-		ASSERT(result.numPacked == patches.size());
 		PackedTexturePages packed;
-		packed.pageSize = result.pageSize;
-		packed.pages.resize(result.numPages);
-		for (size_t i = 0; i < patches.size(); ++i) {
-			ASSERT(placements[i].packed && placements[i].page < packed.pages.size());
-			packed.pages[placements[i].page].emplace_back(
-				PatchRect{placements[i].rect, patches[i].patchIdx});
+		PatchRectArr remaining(patches);
+		while (!remaining.empty()) {
+			const std::vector<cv::Rect> rects(ExtractRects(remaining));
+			int textureSize = EstimateTextureSize(rects, multiple);
+			if (maxTextureSize > 0)
+				textureSize = MINF(textureSize, maxTextureSize);
+			halfmesh::RectPackParams params;
+			params.pageSize = cv::Size(textureSize, textureSize);
+			params.mode = halfmesh::RectPackMode::GrowSinglePage;
+			params.maxPageSize = maxTextureSize > 0
+				? cv::Size(maxTextureSize, maxTextureSize)
+				: cv::Size();
+			params.padding = 0;
+			params.allowRotation = true;
+			std::vector<halfmesh::RectPlacement> placements;
+			const halfmesh::RectPackResult result(
+				halfmesh::PackRectangles(rects, params, placements));
+			// halfmesh reports what did not fit rather than silently enlarging the
+			// atlas past the cap, so leftovers are expected and open the next page.
+			PatchRectArr page, leftover;
+			page.reserve(result.numPacked);
+			leftover.reserve(remaining.size() - result.numPacked);
+			for (size_t i = 0; i < remaining.size(); ++i) {
+				if (placements[i].packed && placements[i].page == 0)
+					page.emplace_back(PatchRect{placements[i].rect, remaining[i].patchIdx});
+				else
+					leftover.emplace_back(remaining[i]);
+			}
+			// A page that took nothing cannot make progress, so this is where the
+			// loop has to stop rather than spin: it means one patch does not fit even
+			// a full-size page. Checked on what was actually taken, not on the
+			// reported count, so termination does not rest on GrowSinglePage
+			// emitting exactly one page.
+			if (page.empty()) {
+				DEBUG("error: %u texture patches do not fit a %dx%d page",
+					(unsigned)remaining.size(), textureSize, textureSize);
+				ABORT("the maximum texture size chosen cannot fit a patch");
+			}
+			packed.pageSizes.emplace_back(result.pageSize);
+			packed.pages.emplace_back(std::move(page));
+			remaining = std::move(leftover);
 		}
 		return packed;
 	}
@@ -2222,17 +2229,16 @@ static void SplitPatchesSpatially(
 		return approximations[a.patchIdx].centroid[sortAxis] < approximations[b.patchIdx].centroid[sortAxis];
 	});
 
-	// Trial pack: check if all rects fit at maxTextureSize
-	auto canFit = [&](const PatchRectArr& rects) -> bool {
-		PatchRectArr trial(rects);
-		MeshTexture::PackTexturePage(trial, maxTextureSize);
-		return trial.empty();
-	};
+	// The trial packs below only ever look at a prefix of the sorted list, so the
+	// bare rectangles are extracted once here and kept in lockstep with allRects;
+	// shrinking a trial is then a resize rather than a rebuild.
+	std::vector<cv::Rect> sortedRects(MeshTexture::ExtractRects(allRects));
+	std::vector<cv::Rect> trial;
 
 	// Greedily extract contiguous batches from the front of the sorted list
 	while (!allRects.empty()) {
 		// If all remaining patches fit in one texture, accept as the final group
-		if (MeshTexture::EstimateTextureSize(allRects, nTextureSizeMultiple) <= maxTextureSize) {
+		if (MeshTexture::EstimateTextureSize(sortedRects, nTextureSizeMultiple) <= maxTextureSize) {
 			spatialGroups.emplace_back(std::move(allRects));
 			break;
 		}
@@ -2250,12 +2256,13 @@ static void SplitPatchesSpatially(
 
 		// Verify the batch fits by trial packing; if not, shrink from the end
 		// (removing border patches) until packing succeeds
-		for (;;) {
-			PatchRectArr trial(allRects.begin(), allRects.begin() + batchEnd);
-			if (canFit(trial))
-				break;
+		// a lone patch is known to fit - GenerateTexture aborts up front on any
+		// patch larger than maxTextureSize - so stopping at one also terminates
+		trial.assign(sortedRects.begin(), sortedRects.begin() + batchEnd);
+		while (batchEnd > 1 && !MeshTexture::CanPackInOnePage(trial, maxTextureSize)) {
 			// shrink by ~10% from the spatial border; always keep at least 1
 			batchEnd = MAXF(1u, batchEnd * 9 / 10);
+			trial.resize(batchEnd);
 		}
 
 		// Extract the verified batch as a spatial group
@@ -2268,6 +2275,7 @@ static void SplitPatchesSpatially(
 			break;
 		}
 		allRects.erase(allRects.begin(), allRects.begin() + batchEnd);
+		sortedRects.erase(sortedRects.begin(), sortedRects.begin() + batchEnd);
 	}
 }
 #endif
@@ -2401,24 +2409,28 @@ void MeshTexture::GenerateTexture(bool bGlobalSeamLeveling, bool bLocalSeamLevel
 		#else
 		spatialGroups.emplace_back(std::move(fullUnplacedRects));
 		#endif
-		// append the unmapped-faces patch to the last spatial group for packing
+		// append the unmapped-faces patch to the last spatial group for packing;
+		// with no view-mapped patch at all there is no group yet to append it to
+		if (spatialGroups.empty())
+			spatialGroups.emplace_back();
 		spatialGroups.back().emplace_back(PatchRect{texturePatches.back().rect, numValidPatches});
 
 		// pack patches: one pack per texture file
 		std::vector<PatchRectArr> placedRects; {
 			for (const PatchRectArr& patches : spatialGroups) {
+				if (patches.empty())
+					continue;
 				TD_TIMER_STARTD();
-				int textureSize = EstimateTextureSize(patches, nTextureSizeMultiple);
-				if (maxTextureSize > 0)
-					textureSize = MINF(textureSize, maxTextureSize);
-				PackedTexturePages packed(PackTexturePages(patches, textureSize, maxTextureSize));
-				for (PatchRectArr& page : packed.pages) {
-					placedRects.emplace_back(std::move(page));
-					texturesDiffuse.emplace_back(packed.pageSize.height, packed.pageSize.width)
+				PackedTexturePages packed(PackTexturePages(patches, nTextureSizeMultiple, maxTextureSize));
+				ASSERT(packed.pages.size() == packed.pageSizes.size());
+				FOREACH(p, packed.pages) {
+					const cv::Size& pageSize = packed.pageSizes[p];
+					placedRects.emplace_back(std::move(packed.pages[p]));
+					texturesDiffuse.emplace_back(pageSize.height, pageSize.width)
 						.setTo(cv::Scalar(colEmpty.b, colEmpty.g, colEmpty.r));
 				}
 				DEBUG_ULTIMATE("\tpacking texture completed: %u patches, %u texture-size, %u textures (%s)",
-					(unsigned)patches.size(), (unsigned)packed.pageSize.width,
+					(unsigned)patches.size(), (unsigned)packed.pageSizes.front().width,
 					(unsigned)packed.pages.size(), TD_TIMER_GET_FMT().c_str());
 			}
 		}
