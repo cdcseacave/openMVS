@@ -1,10 +1,35 @@
 /*
 * MeshHalfMesh.cpp
 *
-* Copyright (c) 2026 SEACAVE
+* Copyright (c) 2014-2026 SEACAVE
 *
-* Generic mesh processing delegated to halfmesh.
+* Author(s):
+*
+*      cDc <cdc.seacave@gmail.com>
+*
+*
+* This program is free software: you can redistribute it and/or modify
+* it under the terms of the GNU Affero General Public License as published by
+* the Free Software Foundation, either version 3 of the License, or
+* (at your option) any later version.
+*
+* This program is distributed in the hope that it will be useful,
+* but WITHOUT ANY WARRANTY; without even the implied warranty of
+* MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+* GNU Affero General Public License for more details.
+*
+* You should have received a copy of the GNU Affero General Public License
+* along with this program.  If not, see <http://www.gnu.org/licenses/>.
+*
+*
+* Additional Terms:
+*
+*      You are required to preserve legal notices and author attributions in
+*      that material or in the Appropriate Legal Notices displayed by works
+*      containing it.
 */
+
+// Mesh methods whose implementation is delegated to the halfmesh library.
 
 #include "Common.h"
 #include "Mesh.h"
@@ -278,11 +303,13 @@ bool Mesh::TransferTexture(Mesh& mesh, unsigned borderSize, unsigned textureSize
 			// be scaled into the pixel space of the page about to be baked. Decide
 			// it from the coordinates rather than assuming, as this used to: a mesh
 			// carrying pixel-space UVs without an image would otherwise be scaled a
-			// second time and land entirely off the page.
-			bool normalized(true);
+			// second time and land entirely off the page. Read the largest magnitude
+			// so a negative coordinate does not pass for normalized; a map that wraps
+			// past 1 is indistinguishable from pixel space here and is left alone.
+			float maxCoord(0.f);
 			for (const halfmesh::Mesh::TexCoord& uv : target.faceTexcoords)
-				normalized = normalized && uv.x() <= 1.f && uv.y() <= 1.f;
-			if (normalized) {
+				maxCoord = MAXF(maxCoord, MAXF(ABS(uv.x()), ABS(uv.y())));
+			if (maxCoord <= 1.f + ZEROTOLERANCE<float>()) {
 				const float scale((float)targetPageSize);
 				for (halfmesh::Mesh::TexCoord& uv : target.faceTexcoords) {
 					uv.x() *= scale;

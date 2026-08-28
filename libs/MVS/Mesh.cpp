@@ -1955,7 +1955,7 @@ Mesh Mesh::SubMesh(const FaceIdxArr& chunk) const
 				mesh.faceTexcoords.emplace_back(tri[i]);
 		}
 	}
-	mesh.ListIncidentFaces();
+	// no ListIncidentFaces() here: both calls below build their own adjacency
 	mesh.RemoveUnreferencedVertices();
 	mesh.FixNonManifold();
 	return mesh;
