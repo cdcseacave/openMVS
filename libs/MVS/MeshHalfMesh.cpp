@@ -165,7 +165,10 @@ Mesh::FIndex Mesh::RemoveSpuriousComponents(float factor)
 
 Mesh::VIndex Mesh::RemoveSpikes(unsigned maxIterations)
 {
-	if (vertices.empty() || maxIterations == 0)
+	// a spike is a vertex incident to at most one face, so with no faces at all
+	// every vertex is one and the mesh would be emptied; guard on faces like the
+	// rest of these do, so a vertices-only mesh is left alone
+	if (vertices.empty() || faces.empty() || maxIterations == 0)
 		return 0;
 	const DerivedData derived(*this);
 	halfmesh::Mesh halfMesh = ImportMesh(std::move(*this));

@@ -685,9 +685,17 @@ bool PointCloud::LoadGLTF(const String& fileName, bool bBinary)
 					const Eigen::Vector4d p(instance.world * Eigen::Vector4d(points[i].x, points[i].y, points[i].z, 1.0));
 					points[i] = Point((Point::Type)p.x(), (Point::Type)p.y(), (Point::Type)p.z());
 				}
-				const Eigen::Matrix3d rotation(instance.world.topLeftCorner<3,3>());
+				// normals transform by the inverse-transpose of the linear part, not
+				// by the linear part itself: glTF allows a node to carry non-uniform
+				// scale, under which the two differ by more than the length the
+				// normalization below strips. They agree for the rotations this codec
+				// writes itself, so the round-trip is unaffected. A degenerate node has
+				// no inverse and no better answer than the linear part.
+				const Eigen::Matrix3d linear(instance.world.topLeftCorner<3,3>());
+				const Eigen::Matrix3d normalMatrix(ISZERO(linear.determinant())
+					? linear : Eigen::Matrix3d(linear.inverse().transpose()));
 				for (size_t i = firstNormal; i < normals.size(); ++i) {
-					const Eigen::Vector3d n(rotation * Eigen::Vector3d(normals[i].x, normals[i].y, normals[i].z));
+					const Eigen::Vector3d n(normalMatrix * Eigen::Vector3d(normals[i].x, normals[i].y, normals[i].z));
 					const double norm(n.norm());
 					if (norm > 0)
 						normals[i] = Normal((Normal::Type)(n.x()/norm), (Normal::Type)(n.y()/norm), (Normal::Type)(n.z()/norm));

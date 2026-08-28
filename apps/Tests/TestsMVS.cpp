@@ -170,6 +170,15 @@ bool MeshHalfMeshProcessingTest()
 		return false;
 	}
 
+	// every vertex of a faceless mesh is incident to no face and so qualifies as a
+	// spike; the bridge has to leave such a mesh alone rather than empty it
+	Mesh verticesOnly;
+	verticesOnly.vertices = {{0.f, 0.f, 0.f}, {1.f, 0.f, 0.f}, {0.f, 1.f, 0.f}};
+	if (verticesOnly.RemoveSpikes() != 0 || verticesOnly.vertices.size() != 3) {
+		VERBOSE("ERROR: HalfMesh bridge removed the vertices of a mesh that has no faces!");
+		return false;
+	}
+
 	// A geometry no-op must preserve authored attributes while leaving derived
 	// cache ownership unchanged.
 	mesh.faceTexcoords.resize(mesh.faces.size()*3);
