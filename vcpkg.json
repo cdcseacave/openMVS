@@ -25,6 +25,7 @@
       "default-features": false
     },
     "eigen3",
+    "halfmesh",
     {
       "name": "libheif",
       "default-features": false
@@ -44,6 +45,7 @@
     "poselib",
     "tiff",
     "tinyexif",
+    "tinygltf",
     "tinynpy",
     "zlib"
   ],

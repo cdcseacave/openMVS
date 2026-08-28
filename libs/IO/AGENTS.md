@@ -31,8 +31,8 @@ Wavefront OBJ with material library support.
 
 **Methods:** `Load(fileName)`, `Save(fileName, precision, texLossless)`, `AddGroup()`, `GetMaterial()`
 
-### glTF (`tiny_gltf.h`)
-Header-only third-party library for binary (.glb) and ASCII (.gltf) 3D format.
+### glTF (`tiny_gltf.h`, from vcpkg)
+Header-only third-party library for binary (.glb) and ASCII (.gltf) 3D format. Not vendored here - it comes from the `tinygltf` port, and halfmesh compiles the single `TINYGLTF_IMPLEMENTATION` unit.
 
 ## Image Format System
 
@@ -68,12 +68,11 @@ Factory pattern with format auto-detection by file extension.
 
 **PointCloud I/O:** `LoadPLY()`, `SavePLY(fileName, bViews, bLegacyTypes, bBinary)`, `LoadGLTF()`, `SaveGLTF()`
 
-**Mesh I/O:** `LoadPLY()`, `LoadOBJ()`, `LoadGLTF()`, `SavePLY(fileName, comments, bBinary, bTexLossless)`, `SaveOBJ()`, `SaveGLTF()`
+**Mesh I/O:** `LoadPLY()`, `LoadOBJ()`, `SavePLY(fileName, comments, bBinary, bTexLossless)`, `SaveOBJ()`. `Mesh::LoadGLTF()` / `Mesh::SaveGLTF(fileName, bBinary, bTexLossless)` are thin wrappers in `MVS/MeshHalfMesh.cpp` over halfmesh's codec, which owns the only `TINYGLTF_IMPLEMENTATION` in the build; only `PointCloud` still drives tinygltf directly.
 
 **Texture storage:** Embedded in PLY comments as `TextureFile <filename>`, saved separately as PNG/JPEG.
 
 ## Third-Party Components
-- `tiny_gltf.h` - glTF loader (header-only)
 - `json.hpp` - nlohmann JSON (header-only)
 - `TinyXML2.h/cpp` - XML parser
 

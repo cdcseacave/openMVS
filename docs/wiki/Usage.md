@@ -338,7 +338,7 @@ TransformScene scene_dense.mvs                     --convert 1 --export-type pot
 
 `glTF` is supported end-to-end for both **meshes** and **point clouds**, in both directions. Files with the `.gltf` extension are ASCII glTF (with binary buffers in sidecar files); `.glb` is the self-contained binary variant. Loading and saving auto-detect the extension and round-trip vertices, faces, vertex colors / normals (point clouds) and the diffuse texture map (textured meshes).
 
-- Library entry points: `MVS::Mesh::LoadGLTF` / `MVS::Mesh::SaveGLTF` and `MVS::PointCloud::LoadGLTF` / `MVS::PointCloud::SaveGLTF` ([`libs/MVS/Mesh.cpp`](https://github.com/cdcseacave/openMVS/blob/master/libs/MVS/Mesh.cpp), [`libs/MVS/PointCloud.cpp`](https://github.com/cdcseacave/openMVS/blob/master/libs/MVS/PointCloud.cpp)). Underlying serializer is the header-only `tiny_gltf` library.
+- Library entry points: `MVS::Mesh::LoadGLTF` / `MVS::Mesh::SaveGLTF` ([`libs/MVS/MeshHalfMesh.cpp`](https://github.com/cdcseacave/openMVS/blob/master/libs/MVS/MeshHalfMesh.cpp), delegating to halfmesh) and `MVS::PointCloud::LoadGLTF` / `MVS::PointCloud::SaveGLTF` ([`libs/MVS/PointCloud.cpp`](https://github.com/cdcseacave/openMVS/blob/master/libs/MVS/PointCloud.cpp)). Underlying serializer is the header-only `tiny_gltf` library.
 - App exposure: `TextureMesh --export-type glb|gltf`, `TransformScene --export-type glb|gltf`, and the `Viewer` (`File ▸ Export…`, or `--export-type` on the CLI). `ReconstructMesh` / `RefineMesh` also produce glTF when the output filename has a `.gltf` / `.glb` extension (the extension drives `Mesh::Save`'s format dispatch, regardless of `--export-type`).
 - Drag-and-drop and `Viewer -i scene.glb` are both supported for inspection.
 

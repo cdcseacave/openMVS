@@ -94,10 +94,20 @@ public:
 	bool pyReconstructMesh(const ReconstructMeshParams& params) {
 		return ReconstructMesh(params);
 	}
-	void pyCleanMesh(float fDecimate=1.f, float fRemoveSpurious=20.f, bool bRemoveSpikes=true, unsigned nCloseHoles=30, unsigned nSmoothMesh=2, float fEdgeLength=0.f, bool bCrop2ROI=false) {
+	// fDecimate is read by magnitude, like Mesh::CleanParams::simplifyTarget: a
+	// fraction in (0,1) keeps that share of the faces, a value above 1 is an
+	// absolute face count, 1 (or anything non-positive) disables the stage
+	void pyCleanMesh(float fDecimate=1.f, float fRemoveSpurious=20.f, bool bRemoveSpikes=true, unsigned nCloseHoles=30, unsigned nSmoothMesh=10, float fEdgeLength=0.f, bool bCrop2ROI=false) {
 		if (bCrop2ROI && IsBounded())
 			mesh.RemoveFacesOutside(obb);
-		mesh.Clean(fDecimate, fRemoveSpurious, bRemoveSpikes, nCloseHoles, nSmoothMesh, fEdgeLength);
+		MVS::Mesh::CleanParams params;
+		params.simplifyTarget = fDecimate;
+		params.spuriousFactor = fRemoveSpurious;
+		params.removeSpikes = bRemoveSpikes;
+		params.maxHoleEdges = nCloseHoles;
+		params.smoothIterations = (int)nSmoothMesh;
+		params.edgeLength = fEdgeLength;
+		mesh.Clean(params);
 	}
 	bool pyRefineMesh(unsigned nResolutionLevel=0, unsigned nEnsureEdgeSize=1, unsigned nMaxFaceArea=32, unsigned nScales=2, float fScaleStep=0.5f, float fRegularityWeight=0.2f) {
 		return RefineMesh(nResolutionLevel, 640/*nMinResolution*/, 8/*nMaxViews*/, 0.f/*fDecimateMesh*/, 30/*nCloseHoles*/, nEnsureEdgeSize,

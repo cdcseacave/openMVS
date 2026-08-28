@@ -39,6 +39,7 @@ namespace MVS {
 
 // test vertex-colored PLY export and geometry reload
 bool MeshVertexColorsPLYTest();
+bool MeshHalfMeshProcessingTest();
 
 // test the Delaunay mesh cut on the two hand-solved synthetic fixtures
 // (docs/design/DelaunayMeshReconstruction.md, Appendix)

@@ -21,11 +21,6 @@ This program includes works distributed under the terms of another license(s) an
     Copyright (c) Pierre Moulon.
     Licensed under the [MPL2 license](http://opensource.org/licenses/MPL-2.0).
 
-*   __rectangle-bin-packing__<br />
-    [http://clb.demon.fi/projects/rectangle-bin-packing](http://clb.demon.fi/projects/rectangle-bin-packing)
-    Copyright (c) Jukka Jylänki.
-    Released to Public Domain, do whatever you want with it.
-
 *   __ceres-solver__<br />
     [http://ceres-solver.org](http://ceres-solver.org)
     Copyright 2015 Google Inc. All rights reserved.
@@ -62,4 +57,9 @@ This program includes works distributed under the terms of another license(s) an
     [http://www.cgal.org](http://www.cgal.org)
     Copyright (c) 1995-2015 The CGAL Project. All rights reserved.
     Licensed under the [GPL](http://www.gnu.org/copyleft/gpl.html)/[LGPL license](http://www.gnu.org/copyleft/lesser.html).
+
+*   __halfmesh__<br />
+    [https://github.com/cdcseacave/halfmesh](https://github.com/cdcseacave/halfmesh)
+    Copyright (c) 2026 cDc.
+    Licensed under the [MIT license](http://opensource.org/licenses/MIT).
 

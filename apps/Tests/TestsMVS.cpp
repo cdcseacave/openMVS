@@ -32,6 +32,7 @@
 #include "../../libs/MVS.h"
 #include "Tests.h"
 #include "TestsMVS.h"
+#include <halfmesh/RectPacking.h>
 
 
 // D E F I N E S ///////////////////////////////////////////////////
@@ -69,6 +70,375 @@ bool MeshVertexColorsPLYTest()
 		FOREACH(idxVertex, mesh.vertices)
 			if (pointCloud.points[idxVertex] != mesh.vertices[idxVertex] || pointCloud.colors[idxVertex] != mesh.vertexColors[idxVertex])
 				return false;
+	}
+	PointCloud pointCloud;
+	pointCloud.points = {{0.f, 0.f, 0.f}, {1.f, 0.f, 0.f}, {0.f, 1.f, 0.f}};
+	pointCloud.colors = {Pixel8U::RED, Pixel8U::GREEN, Pixel8U::BLUE};
+	pointCloud.normals = {{0.f, 0.f, 1.f}, {0.f, 0.f, 1.f}, {0.f, 0.f, 1.f}};
+	const String fileName(tmpDir(_T("pointcloud.glb")));
+	PointCloud loaded;
+	if (!pointCloud.Save(fileName) || !loaded.Load(fileName) ||
+		loaded.points != pointCloud.points || loaded.colors != pointCloud.colors || loaded.normals != pointCloud.normals)
+		return false;
+	return true;
+}
+
+bool MeshHalfMeshProcessingTest()
+{
+	Mesh mesh;
+	mesh.vertices = {
+		{0.f, 0.f, 0.f}, {1.f, 0.f, 0.f}, {0.5f, 1.f, 0.f}, {0.5f, 0.5f, 1.f},
+		{2.f, 0.f, 0.f}, {3.f, 0.f, 0.f}
+	};
+	mesh.faces = {
+		{0, 2, 1}, {0, 1, 3}, {1, 2, 3}, {0, 3, 2},
+		{0, 1, 4}, {4, 1, 5}
+	};
+	mesh.vertexColors = {
+		Pixel8U::RED, Pixel8U::GREEN, Pixel8U::BLUE,
+		Pixel8U::WHITE, Pixel8U::CYAN, Pixel8U::GRAY
+	};
+	// Populate only the derived arrays a caller actually owns. The HalfMesh
+	// bridge must rebuild exactly these after topology changes and leave the
+	// other caches empty.
+	mesh.ListIncidentFaces();
+	mesh.ListIncidentVertices();
+	mesh.ComputeNormalFaces();
+	mesh.ComputeNormalVertices();
+	Mesh::CleanParams cleanParams;
+	cleanParams.removeSpikes = true;
+	mesh.Clean(cleanParams);
+	if (mesh.vertices.size() != 4 || mesh.faces.size() != 4 ||
+		mesh.vertexColors.size() != mesh.vertices.size() ||
+		mesh.vertexFaces.size() != mesh.vertices.size() ||
+		mesh.vertexVertices.size() != mesh.vertices.size() ||
+		mesh.faceNormals.size() != mesh.faces.size() ||
+		mesh.vertexNormals.size() != mesh.vertices.size() ||
+		!mesh.faceFaces.empty() || !mesh.vertexBoundary.empty()) {
+		VERBOSE("ERROR: HalfMesh bridge did not preserve attributes/derived-data ownership!");
+		return false;
+	}
+
+	Mesh nonManifold;
+	nonManifold.vertices = {
+		{0.f, 0.f, 0.f}, {1.f, 0.f, 0.f}, {0.f, 1.f, 0.f},
+		{-1.f, 0.f, 0.f}, {0.f, -1.f, 0.f}
+	};
+	nonManifold.faces = {{0, 1, 2}, {0, 3, 4}};
+	Mesh::VertexIdxArr duplicatedVertices;
+	if (nonManifold.FixNonManifold(0.f, &duplicatedVertices) != 1 ||
+		duplicatedVertices.size() != 1 || nonManifold.vertices.size() != 6) {
+		VERBOSE("ERROR: HalfMesh bridge did not split a non-manifold bow-tie vertex!");
+		return false;
+	}
+
+	Mesh duplicateGeometry;
+	duplicateGeometry.vertices = {
+		{0.f, 0.f, 0.f}, {1.f, 0.f, 0.f}, {0.f, 1.f, 0.f},
+		{0.f, 0.f, 0.f}, {2.f, 2.f, 2.f}
+	};
+	duplicateGeometry.faces = {{0, 1, 2}, {3, 2, 1}};
+	if (duplicateGeometry.RemoveDuplicatedVertices() != 1 || duplicateGeometry.vertices.size() != 4 ||
+		duplicateGeometry.RemoveUnreferencedVertices() != 1 || duplicateGeometry.vertices.size() != 3) {
+		VERBOSE("ERROR: HalfMesh bridge did not remove duplicate and unreferenced vertices!");
+		return false;
+	}
+
+	Mesh degenerateGeometry;
+	degenerateGeometry.vertices = {{0.f, 0.f, 0.f}, {1.f, 0.f, 0.f}, {0.f, 1.f, 0.f}};
+	degenerateGeometry.faces = {{0, 1, 2}, {0, 1, 1}};
+	if (degenerateGeometry.RemoveDegenerateFaces(0.f) != 1 || degenerateGeometry.faces.size() != 1) {
+		VERBOSE("ERROR: HalfMesh bridge did not remove a degenerate face!");
+		return false;
+	}
+
+	Mesh disconnected;
+	disconnected.vertices = {
+		{0.f, 0.f, 0.f}, {1.f, 0.f, 0.f}, {2.f, 0.f, 0.f},
+		{0.f, 1.f, 0.f}, {1.f, 1.f, 0.f}, {2.f, 1.f, 0.f},
+		{0.f, 2.f, 0.f}, {1.f, 2.f, 0.f}, {2.f, 2.f, 0.f},
+		{4.f, 0.f, 0.f}, {4.1f, 0.f, 0.f}, {4.f, 0.1f, 0.f}
+	};
+	disconnected.faces = {
+		{0, 4, 1}, {0, 3, 4}, {1, 5, 2}, {1, 4, 5},
+		{3, 7, 4}, {3, 6, 7}, {4, 8, 5}, {4, 7, 8},
+		{9, 10, 11}
+	};
+	if (disconnected.RemoveSpuriousComponents(1.5f) != 1 ||
+		disconnected.faces.size() != 8 || disconnected.vertices.size() != 9) {
+		VERBOSE("ERROR: HalfMesh bridge did not remove a spurious disconnected component!");
+		return false;
+	}
+
+	// every vertex of a faceless mesh is incident to no face and so qualifies as a
+	// spike; the bridge has to leave such a mesh alone rather than empty it
+	Mesh verticesOnly;
+	verticesOnly.vertices = {{0.f, 0.f, 0.f}, {1.f, 0.f, 0.f}, {0.f, 1.f, 0.f}};
+	if (verticesOnly.RemoveSpikes() != 0 || verticesOnly.vertices.size() != 3) {
+		VERBOSE("ERROR: HalfMesh bridge removed the vertices of a mesh that has no faces!");
+		return false;
+	}
+
+	// A geometry no-op must preserve authored attributes while leaving derived
+	// cache ownership unchanged.
+	mesh.faceTexcoords.resize(mesh.faces.size()*3);
+	FOREACH(idxTexcoord, mesh.faceTexcoords)
+		mesh.faceTexcoords[idxTexcoord] = Mesh::TexCoord((float)(idxTexcoord%3), (float)(idxTexcoord/3));
+	mesh.faceTexindices.resize(mesh.faces.size());
+	FOREACH(idxTexindex, mesh.faceTexindices)
+		mesh.faceTexindices[idxTexindex] = 0;
+	mesh.texturesDiffuse.emplace_back(1, 1);
+	mesh.texturesDiffuse.back()(0, 0) = Pixel8U::RED;
+	const Mesh::TexCoordArr faceTexcoords(mesh.faceTexcoords);
+	const Mesh::TexIndexArr faceTexindices(mesh.faceTexindices);
+	Mesh::CleanParams roundTripParams;
+	roundTripParams.finalize = false;
+	mesh.Clean(roundTripParams);
+	if (mesh.faceTexcoords != faceTexcoords || mesh.faceTexindices != faceTexindices ||
+		mesh.texturesDiffuse.size() != 1 || mesh.texturesDiffuse.front()(0, 0) != Pixel8U::RED) {
+		VERBOSE("ERROR: HalfMesh bridge did not preserve texture attributes on a no-op round trip!");
+		return false;
+	}
+
+	// Authored per-vertex normals are attribute data, not a derived cache: an
+	// operation that only renumbers vertices has to hand them back unchanged,
+	// while one that moves a vertex has to invalidate them so they are recomputed
+	// rather than returned stale.
+	Mesh authoredNormals;
+	authoredNormals.vertices = {
+		{0.f, 0.f, 0.f}, {1.f, 0.f, 0.f}, {0.f, 1.f, 0.f},
+		{0.f, 0.f, 0.f}, {2.f, 2.f, 2.f}
+	};
+	authoredNormals.faces = {{0, 1, 2}, {3, 2, 1}};
+	// tag each vertex with a normal no geometric computation would produce
+	FOREACH(idxVertex, authoredNormals.vertices)
+		authoredNormals.vertexNormals.emplace_back(0.f, 0.f, idxVertex+1.f);
+	if (authoredNormals.RemoveDuplicatedVertices() != 1 ||
+		authoredNormals.vertexNormals.size() != authoredNormals.vertices.size() ||
+		authoredNormals.vertexNormals[0].z != 1.f) {
+		VERBOSE("ERROR: HalfMesh bridge did not carry authored vertex normals through a vertex weld!");
+		return false;
+	}
+	{
+		// smoothing moves every vertex, so the authored values must not come back
+		Mesh movedNormals(authoredNormals);
+		movedNormals.Smooth(1);
+		if (movedNormals.vertexNormals.size() != movedNormals.vertices.size()) {
+			VERBOSE("ERROR: HalfMesh bridge did not rebuild vertex normals after smoothing!");
+			return false;
+		}
+		bool anyStale(false);
+		FOREACH(idxVertex, movedNormals.vertexNormals)
+			if (movedNormals.vertexNormals[idxVertex].z == idxVertex+1.f)
+				anyStale = true;
+		if (anyStale) {
+			VERBOSE("ERROR: HalfMesh bridge returned stale authored vertex normals after smoothing!");
+			return false;
+		}
+	}
+
+	// Refinement selects planar vertices in MVS, but removal and retriangulation
+	// are delegated to HalfMesh. Removing the top of an octahedron must close the
+	// resulting four-edge hole and leave a watertight surface.
+	Mesh octahedron;
+	octahedron.vertices = {
+		{0.f, 0.f, 1.f}, {0.f, 0.f, -1.f},
+		{1.f, 0.f, 0.f}, {0.f, 1.f, 0.f}, {-1.f, 0.f, 0.f}, {0.f, -1.f, 0.f}
+	};
+	octahedron.faces = {
+		{0, 2, 3}, {0, 3, 4}, {0, 4, 5}, {0, 5, 2},
+		{1, 3, 2}, {1, 4, 3}, {1, 5, 4}, {1, 2, 5}
+	};
+	Mesh::VertexIdxArr verticesRemove;
+	verticesRemove.emplace_back(0);
+	if (octahedron.RemoveVerticesAndFill(verticesRemove) != 1 || !octahedron.IsWatertight()) {
+		VERBOSE("ERROR: HalfMesh bridge did not fill the hole left by selected-vertex removal!");
+		return false;
+	}
+
+	Mesh grid;
+	grid.vertices = {
+		{0.f, 0.f, 0.f}, {1.f, 0.f, 0.f}, {2.f, 0.f, 0.f},
+		{0.f, 1.f, 0.f}, {1.f, 1.f, 0.f}, {2.f, 1.f, 0.f},
+		{0.f, 2.f, 0.f}, {1.f, 2.f, 0.f}, {2.f, 2.f, 0.f}
+	};
+	grid.faces = {
+		{0, 4, 1}, {0, 3, 4}, {1, 5, 2}, {1, 4, 5},
+		{3, 7, 4}, {3, 6, 7}, {4, 8, 5}, {4, 7, 8}
+	};
+	grid.Simplify(0.5f);
+	if (grid.faces.empty() || grid.faces.size() >= 8) {
+		VERBOSE("ERROR: HalfMesh bridge simplification did not reduce the mesh!");
+		return false;
+	}
+
+	Mesh openOctahedron(octahedron);
+	openOctahedron.faces.pop_back();
+	openOctahedron.faceTexcoords.resize(openOctahedron.faces.size()*3);
+	openOctahedron.faceTexindices.resize(openOctahedron.faces.size());
+	openOctahedron.texturesDiffuse.emplace_back(1, 1);
+	if (openOctahedron.CloseHoles(3) != 1 || !openOctahedron.IsWatertight() ||
+		!openOctahedron.faceTexcoords.empty() || !openOctahedron.faceTexindices.empty() ||
+		!openOctahedron.texturesDiffuse.empty()) {
+		VERBOSE("ERROR: HalfMesh bridge did not close a generic hole and invalidate texture data!");
+		return false;
+	}
+
+	Mesh smoothGrid;
+	smoothGrid.vertices = {
+		{0.f, 0.f, 0.f}, {1.f, 0.f, 0.f}, {2.f, 0.f, 0.f},
+		{0.f, 1.f, 0.f}, {1.f, 1.f, 1.f}, {2.f, 1.f, 0.f},
+		{0.f, 2.f, 0.f}, {1.f, 2.f, 0.f}, {2.f, 2.f, 0.f}
+	};
+	smoothGrid.faces = {
+		{0, 4, 1}, {0, 3, 4}, {1, 5, 2}, {1, 4, 5},
+		{3, 7, 4}, {3, 6, 7}, {4, 8, 5}, {4, 7, 8}
+	};
+	smoothGrid.Smooth(1);
+	if (smoothGrid.vertices[4].z == 1.f) {
+		VERBOSE("ERROR: HalfMesh bridge smoothing did not update vertex positions!");
+		return false;
+	}
+
+	Mesh remeshed;
+	remeshed.vertices = {{0.f, 0.f, 0.f}, {1.f, 0.f, 0.f}, {1.f, 1.f, 0.f}, {0.f, 1.f, 0.f}};
+	remeshed.faces = {{0, 1, 2}, {0, 2, 3}};
+	Mesh::CleanParams remeshParams;
+	remeshParams.edgeLength = 0.3f;
+	remeshParams.remeshIterations = 2;
+	remeshed.Clean(remeshParams);
+	if (remeshed.faces.size() <= 2 || remeshed.vertices.size() <= 4) {
+		VERBOSE("ERROR: HalfMesh bridge remeshing did not adapt mesh density!");
+		return false;
+	}
+
+	// a relative target edge length resolves against the mesh's own mean edge
+	Mesh relRemeshed;
+	relRemeshed.vertices = {{0.f, 0.f, 0.f}, {1.f, 0.f, 0.f}, {1.f, 1.f, 0.f}, {0.f, 1.f, 0.f}};
+	relRemeshed.faces = {{0, 1, 2}, {0, 2, 3}};
+	Mesh::CleanParams relRemeshParams;
+	relRemeshParams.edgeLength = -0.25f;
+	relRemeshParams.remeshIterations = 2;
+	relRemeshed.Clean(relRemeshParams);
+	if (relRemeshed.faces.size() <= 2 || relRemeshed.vertices.size() <= 4) {
+		VERBOSE("ERROR: HalfMesh bridge relative remeshing did not adapt mesh density!");
+		return false;
+	}
+
+	Mesh texturedGrid;
+	constexpr int gridCells = 4;
+	constexpr int sourceTextureSize = 16;
+	for (int y = 0; y <= gridCells; ++y)
+		for (int x = 0; x <= gridCells; ++x)
+			texturedGrid.vertices.emplace_back((float)x/gridCells, (float)y/gridCells, 0.f);
+	const auto VertexIndex = [](int x, int y) { return (Mesh::VIndex)(y*(gridCells+1)+x); };
+	const auto Texcoord = [](int x, int y) { return Mesh::TexCoord((float)(x*sourceTextureSize)/gridCells, (float)(y*sourceTextureSize)/gridCells); };
+	for (int y = 0; y < gridCells; ++y) {
+		for (int x = 0; x < gridCells; ++x) {
+			texturedGrid.faces.emplace_back(VertexIndex(x, y), VertexIndex(x+1, y), VertexIndex(x+1, y+1));
+			texturedGrid.faceTexcoords.emplace_back(Texcoord(x, y));
+			texturedGrid.faceTexcoords.emplace_back(Texcoord(x+1, y));
+			texturedGrid.faceTexcoords.emplace_back(Texcoord(x+1, y+1));
+			texturedGrid.faces.emplace_back(VertexIndex(x, y), VertexIndex(x+1, y+1), VertexIndex(x, y+1));
+			texturedGrid.faceTexcoords.emplace_back(Texcoord(x, y));
+			texturedGrid.faceTexcoords.emplace_back(Texcoord(x+1, y+1));
+			texturedGrid.faceTexcoords.emplace_back(Texcoord(x, y+1));
+		}
+	}
+	texturedGrid.texturesDiffuse.emplace_back(sourceTextureSize, sourceTextureSize);
+	for (int y = 0; y < sourceTextureSize; ++y)
+		for (int x = 0; x < sourceTextureSize; ++x)
+			texturedGrid.texturesDiffuse.front()(y, x) = Pixel8U::RED;
+	Mesh rebakedGrid(texturedGrid);
+	rebakedGrid.faceTexcoords.Release();
+	rebakedGrid.texturesDiffuse.clear();
+	if (!texturedGrid.TransferTexture(rebakedGrid, 1, 32) || !rebakedGrid.HasTexture() ||
+		rebakedGrid.faceTexcoords.size() != rebakedGrid.faces.size()*3 ||
+		rebakedGrid.texturesDiffuse.size() != 1 || rebakedGrid.texturesDiffuse.front().size() != cv::Size(32, 32)) {
+		VERBOSE("ERROR: HalfMesh bridge texture rebake did not produce a valid atlas!");
+		return false;
+	}
+	bool hasBakedTexel = false;
+	for (int y = 0; y < rebakedGrid.texturesDiffuse.front().rows && !hasBakedTexel; ++y)
+		for (int x = 0; x < rebakedGrid.texturesDiffuse.front().cols; ++x)
+			if (rebakedGrid.texturesDiffuse.front()(y, x) != Pixel8U::BLACK) {
+				hasBakedTexel = true;
+				break;
+			}
+	if (!hasBakedTexel) {
+		VERBOSE("ERROR: HalfMesh bridge texture rebake produced an empty atlas!");
+		return false;
+	}
+	{
+		// A face subset is expressed against the UV-map the target already carries:
+		// an index past its faces, or a target whose atlas would have to be generated
+		// from scratch, has to be reported instead of baking something else.
+		Mesh::FaceIdxArr outOfRangeSubset;
+		outOfRangeSubset.emplace_back(rebakedGrid.faces.size());
+		if (texturedGrid.TransferTexture(rebakedGrid, 1, 32, outOfRangeSubset)) {
+			VERBOSE("ERROR: HalfMesh bridge accepted an out-of-range texture-transfer face subset!");
+			return false;
+		}
+		Mesh unmappedGrid(texturedGrid);
+		unmappedGrid.faceTexcoords.Release();
+		unmappedGrid.texturesDiffuse.clear();
+		Mesh::FaceIdxArr faceSubset;
+		faceSubset.emplace_back(0);
+		if (texturedGrid.TransferTexture(unmappedGrid, 1, 32, faceSubset) || unmappedGrid.HasTexture()) {
+			VERBOSE("ERROR: HalfMesh bridge rebaked the whole mesh for a caller that asked for a face subset!");
+			return false;
+		}
+	}
+	{
+		const ScopedTempDir tmpDir(_T("MeshHalfMeshProcessingTest"));
+		if (!tmpDir.IsValid())
+			return false;
+		const String fileName(tmpDir(_T("rebaked.glb")));
+		// halfmesh names a non-embedded diffuse image <stem>_diffuse<NN>, per blob
+		const String textureFileName(tmpDir(_T("rebaked_diffuse00.png")));
+		Mesh reloaded;
+		if (!rebakedGrid.Save(fileName) || !File::isFile(textureFileName) || !reloaded.Load(fileName) ||
+			reloaded.vertices.size() != rebakedGrid.vertices.size() || reloaded.faces.size() != rebakedGrid.faces.size()) {
+			VERBOSE("ERROR: HalfMesh bridge rebaked texture GLB export did not round-trip!");
+			return false;
+		}
+		// glTF files are y-up while both meshes are not, so halfmesh puts the rotation
+		// on the root node and undoes it on load; the round-trip must be an identity.
+		// Compare the box rather than the vertices: a seam split would renumber them.
+		const Mesh::Box box(rebakedGrid.GetAABB()), reloadedBox(reloaded.GetAABB());
+		if (!box.ptMin.isApprox(reloadedBox.ptMin) || !box.ptMax.isApprox(reloadedBox.ptMax)) {
+			VERBOSE("ERROR: HalfMesh bridge GLB round-trip did not preserve the orientation!");
+			return false;
+		}
+	}
+
+	const std::vector<cv::Rect> rectangles = {{0, 0, 6, 4}, {0, 0, 6, 4}, {0, 0, 6, 4}};
+	halfmesh::RectPackParams packingParams;
+	packingParams.pageSize = cv::Size(8, 8);
+	packingParams.mode = halfmesh::RectPackMode::FixedMultiPage;
+	packingParams.padding = 0;
+	packingParams.allowRotation = true;
+	std::vector<halfmesh::RectPlacement> placements;
+	const halfmesh::RectPackResult packingResult(halfmesh::PackRectangles(rectangles, packingParams, placements));
+	if (packingResult.numPacked != rectangles.size() || packingResult.numPages != 2 ||
+		placements.size() != rectangles.size()) {
+		VERBOSE("ERROR: HalfMesh multi-page rectangle packing returned an invalid result!");
+		return false;
+	}
+	for (size_t i = 0; i < placements.size(); ++i) {
+		const halfmesh::RectPlacement& placement = placements[i];
+		if (!placement.packed || placement.page >= packingResult.numPages ||
+			placement.rect.x < 0 || placement.rect.y < 0 ||
+			placement.rect.br().x > packingResult.pageSize.width ||
+			placement.rect.br().y > packingResult.pageSize.height) {
+			VERBOSE("ERROR: HalfMesh rectangle packing placed a patch outside its page!");
+			return false;
+		}
+		for (size_t j = i+1; j < placements.size(); ++j)
+			if (placement.page == placements[j].page && (placement.rect & placements[j].rect).area() != 0) {
+				VERBOSE("ERROR: HalfMesh rectangle packing produced overlapping patches!");
+				return false;
+			}
 	}
 	return true;
 }
@@ -520,7 +890,13 @@ bool PipelineTest(bool forceCPU, bool verbose)
 	if (!MeshSamplePointsSeedTest(scene.mesh))
 		return false;
 	constexpr float decimate = 0.7f;
-	scene.mesh.Clean(decimate);
+	Mesh::CleanParams cleanParams;
+	cleanParams.simplifyTarget = decimate;
+	cleanParams.spuriousFactor = 10.f;
+	cleanParams.removeSpikes = true;
+	cleanParams.maxHoleEdges = 30;
+	cleanParams.smoothIterations = 2;
+	scene.mesh.Clean(cleanParams);
 	if (!ISINSIDE(scene.mesh.faces.size(), 28000u, 70000u)) {
 		VERBOSE("ERROR: TestDataset failed cleaning the mesh (%u faces)!", scene.mesh.faces.size());
 		return false;

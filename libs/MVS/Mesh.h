@@ -184,16 +184,37 @@ public:
 	void GetAdjVertices(VIndex, VertexIdxArr&) const;
 	void GetAdjVertexFaces(VIndex, VIndex, FaceIdxArr&) const;
 
+	// generic mesh processing, all delegated to the halfmesh library
 	unsigned FixNonManifold(float magDisplacementDuplicateVertices=0.01f, VertexIdxArr* duplicatedVertices=NULL);
-	void Clean(float fDecimate=0.7f, float fSpurious=10.f, bool bRemoveSpikes=true, unsigned nCloseHoles=30, unsigned nSmoothMesh=2, float fEdgeLength=0, bool bLastClean=true);
-
-	void EnsureEdgeSize(float minEdge=-0.5f, float maxEdge=-4.f, float collapseRatio=0.2, float degenerate_angle_deg=150, int mode=1, int max_iters=50);
+	FIndex RemoveSpuriousComponents(float factor); // remove long-edged faces and tiny components, relative to the mesh edge-length distribution
+	VIndex RemoveSpikes(unsigned maxIterations=100); // remove vertices incident to at most one face
+	void Simplify(float target, float minEdgeLength=0.f, float aggressiveness=0.f); // QEM decimation; target in (0,1) is a keep-fraction, >1 an absolute face count
+	unsigned CloseHoles(unsigned maxHoleEdges=30); // fill every hole spanned by at most this many boundary edges
+	// Taubin lambda|mu band-pass smoothing: volume preserving, but deliberately gentle
+	// per pass, so a useful dose is tens of iterations rather than the two or three a
+	// plain Laplacian needs (which shrinks the surface for the same noise removal)
+	void Smooth(int iterations=10);
+	// the whole pipeline above in one pass over a single halfmesh instance,
+	// applied in this declaration order
+	struct CleanParams {
+		float spuriousFactor{0.f}; // RemoveSpuriousComponents factor (0 - disabled)
+		bool removeSpikes{false};
+		unsigned maxSpikeIterations{100};
+		// Simplify target, read by magnitude: a fraction in (0,1) keeps that share
+		// of the faces, a value above 1 is an absolute face count clamped to the
+		// input (1 - disabled, and so is anything non-positive)
+		float simplifyTarget{1.f};
+		unsigned maxHoleEdges{0}; // CloseHoles limit (0 - disabled)
+		int smoothIterations{0}; // Smooth iterations (0 - disabled)
+		float edgeLength{0.f}; // isotropic remeshing target edge length: >0 absolute, <0 that multiple of the current mean edge length (0 - disabled)
+		int remeshIterations{3};
+		bool finalize{true}; // end with degenerate-face/unreferenced-vertex removal and non-manifold repair
+	};
+	void Clean(const CleanParams& params);
 
 	typedef cList<uint16_t,uint16_t,0,16,FIndex> AreaArr;
 	void Subdivide(const AreaArr& maxAreas, uint32_t maxArea);
-	void Decimate(VertexIdxArr& verticesRemove);
-	void CloseHole(VertexIdxArr& vertsLoop);
-	void CloseHoleQuality(VertexIdxArr& vertsLoop);
+	unsigned RemoveVerticesAndFill(const VertexIdxArr& verticesRemove); // remove the given vertices and span the holes their removal opens (no vertex is added)
 	FIndex RemoveDegenerateFaces(Type thArea=1e-10f);
 	FIndex RemoveDegenerateFaces(unsigned maxIterations, Type thArea=1e-10f);
 	void RemoveFacesOutside(const OBB3f&);
@@ -206,8 +227,8 @@ public:
 		if (!vertexColors.empty())
 			vertexColors.RemoveAt(idxV);
 	}
-	VIndex RemoveDuplicatedVertices(VertexIdxArr* duplicatedVertices=NULL);
-	VIndex RemoveUnreferencedVertices(bool bUpdateLists=false);
+	VIndex RemoveDuplicatedVertices();
+	VIndex RemoveUnreferencedVertices();
 	std::vector<Mesh> SplitMeshPerTextureBlob(FaceIdxArr* mapFaceSubsetIndices = NULL) const;
 	void ConvertTexturePerVertex(Mesh&) const;
 
@@ -250,7 +271,18 @@ public:
 	bool Split(FacesChunkArr&, float maxArea);
 	Mesh SubMesh(const FaceIdxArr& faces) const;
 
-	bool TransferTexture(Mesh& mesh, const FaceIdxArr& faceSubsetIndices={}, unsigned borderSize=3, unsigned textureSize=4096);
+	static constexpr unsigned DEFAULT_TEXTURE_BORDER = 3;
+	static constexpr unsigned DEFAULT_TEXTURE_SIZE = 4096;
+	// bake this mesh's texture onto the given aligned mesh: onto the UV-map that
+	// mesh already carries, or onto a freshly generated atlas when it has none.
+	// faceSubsetIndices optionally restricts the bake to those faces of the target,
+	// leaving the rest of its texture untouched; it is expressed against the layout
+	// the target already carries, so asking for a subset of a target whose atlas has
+	// to be generated fails instead of quietly rebaking the whole mesh.
+	// It comes last deliberately: cList's size constructor is implicit, so a
+	// subset parameter ahead of the sizes would silently turn TransferTexture(m,
+	// 1, 32) into a one-element garbage subset instead of a border and a size.
+	bool TransferTexture(Mesh& mesh, unsigned borderSize=DEFAULT_TEXTURE_BORDER, unsigned textureSize=DEFAULT_TEXTURE_SIZE, const FaceIdxArr& faceSubsetIndices={});
 
 	size_t GetMemorySize() const;
 
@@ -267,11 +299,14 @@ public:
 protected:
 	bool LoadPLY(const String& fileName);
 	bool LoadOBJ(const String& fileName);
-	bool LoadGLTF(const String& fileName, bool bBinary=true);
+	// glTF vs GLB is decided by the file extension, as the format requires
+	bool LoadGLTF(const String& fileName);
 
 	bool SavePLY(const String& fileName, const cList<String>& comments=cList<String>(), bool bBinary=true, bool bTexLossless=true) const;
 	bool SaveOBJ(const String& fileName) const;
-	bool SaveGLTF(const String& fileName, bool bBinary=true) const;
+	// bTexLossless selects PNG over JPEG for the diffuse textures, which are
+	// written beside the file, same as SavePLY
+	bool SaveGLTF(const String& fileName, bool bBinary=true, bool bTexLossless=true) const;
 
 	#ifdef _USE_BOOST
 	// implement BOOST serialization

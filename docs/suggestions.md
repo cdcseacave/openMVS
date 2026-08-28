@@ -536,9 +536,9 @@ The following five suggestions offer the highest impact relative to implementati
    - **Why:** Currently all faces get the same UV resolution regardless of their distance from the camera. Close-up faces are under-sampled; far faces are over-sampled.
    - **Risk:** Medium.
 
-### B21. Atlas Packing (`libs/MVS/AtlasPacker.h`)
+### B21. Atlas Packing (`halfmesh/RectPacking.h`)
 
-**Current Implementation:** Skyline with min-waste heuristic and 90-degree rotation. 85–95% occupancy.
+**Current Implementation:** Two-tier skyline (min-waste scan for large rects, height-sorted shelves for tiny ones) with 90-degree rotation. 85–95% occupancy.
 
 1. **MaxRects Hybrid for Small Patches** (Priority: Low | Complexity: Medium)
    - **What:** Use the MaxRects algorithm for small texture patches (< 32×32 pixels) where the skyline algorithm wastes space.

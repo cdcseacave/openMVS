@@ -486,6 +486,18 @@ void MeshRefine::ListFaceAreas(Mesh::AreaArr& maxAreas)
 void MeshRefine::SubdivideMesh(uint32_t maxArea, float fDecimate, unsigned nCloseHoles, unsigned nEnsureEdgeSize)
 {
 	Mesh::AreaArr maxAreas;
+	// remeshing to the midpoint of the [0.5x, 4x] mean-edge band the refinement
+	// wants is expressed as a negative (relative) target edge length, so it runs
+	// as the remesh stage of the same Clean pass instead of a second round trip
+	constexpr float fEnsureEdgeLength(-2.25f);
+	const auto cleanMesh = [&](float simplifyTarget, float edgeLength=0.f) {
+		Mesh::CleanParams params;
+		params.simplifyTarget = simplifyTarget;
+		params.maxHoleEdges = nCloseHoles;
+		params.edgeLength = edgeLength;
+		params.remeshIterations = 10;
+		scene.mesh.Clean(params);
+	};
 
 	// first decimate if necessary
 	const bool bNoDecimation(fDecimate >= 1.f);
@@ -493,14 +505,12 @@ void MeshRefine::SubdivideMesh(uint32_t maxArea, float fDecimate, unsigned nClos
 	if (!bNoDecimation) {
 		if (fDecimate > 0.f) {
 			// decimate to the desired resolution
-			scene.mesh.Clean(fDecimate, 0.f, false, nCloseHoles, 0u, 0.f);
+			cleanMesh(fDecimate);
 
 			#ifdef MESHOPT_ENSUREEDGESIZE
 			// make sure there are no edges too small or too long
-			if (nEnsureEdgeSize > 0 && bNoSimplification) {
-				scene.mesh.EnsureEdgeSize();
-				scene.mesh.Clean(1.f, 0.f, false, nCloseHoles, 0u, 0.f);
-			}
+			if (nEnsureEdgeSize > 0 && bNoSimplification)
+				cleanMesh(1.f, fEnsureEdgeLength);
 			#endif
 
 			// re-map vertex and camera faces
@@ -519,14 +529,12 @@ void MeshRefine::SubdivideMesh(uint32_t maxArea, float fDecimate, unsigned nClos
 				maxAreas.Empty();
 
 				// decimate to the auto detected resolution
-				scene.mesh.Clean(MAXF(0.1f, fMedianArea/fMaxArea), 0.f, false, nCloseHoles, 0u, 0.f);
+				cleanMesh(MAXF(0.1f, fMedianArea/fMaxArea));
 
 				#ifdef MESHOPT_ENSUREEDGESIZE
 				// make sure there are no edges too small or too long
-				if (nEnsureEdgeSize > 0 && bNoSimplification) {
-					scene.mesh.EnsureEdgeSize();
-					scene.mesh.Clean(1.f, 0.f, false, nCloseHoles, 0u, 0.f);
-				}
+				if (nEnsureEdgeSize > 0 && bNoSimplification)
+					cleanMesh(1.f, fEnsureEdgeLength);
 				#endif
 
 				// re-map vertex and camera faces
@@ -555,10 +563,7 @@ void MeshRefine::SubdivideMesh(uint32_t maxArea, float fDecimate, unsigned nClos
 	#if MESHOPT_ENSUREEDGESIZE==1
 	if ((nEnsureEdgeSize == 1 && !bNoDecimation) || nEnsureEdgeSize > 1)
 	#endif
-	{
-		scene.mesh.EnsureEdgeSize();
-		scene.mesh.Clean(1.f, 0.f, false, nCloseHoles, 0u, 0.f);
-	}
+		cleanMesh(1.f, fEnsureEdgeLength);
 	#endif
 
 	// re-map vertex and camera faces
@@ -1409,7 +1414,7 @@ bool Scene::RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsig
 					}
 					if (!vertexRemove.IsEmpty()) {
 						numVertsRemoved = vertexRemove.GetSize();
-						mesh.Decimate(vertexRemove);
+						mesh.RemoveVerticesAndFill(vertexRemove);
 						refine.ListVertexFacesPost();
 					}
 					refine.vertexDepth.Empty();
