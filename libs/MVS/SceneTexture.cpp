@@ -273,10 +273,9 @@ struct MeshTexture {
 	// page until it holds as much as it can, and when the hard maximum stops the
 	// growth, open another page estimated for whatever is left. Every page gets
 	// its own estimate, so nTextureSizeMultiple applies to all of them.
-	static PackedTexturePages PackTexturePages(
-		const PatchRectArr& patches, int multiple, int maxTextureSize)
+	static bool PackTexturePages(
+		const PatchRectArr& patches, int multiple, int maxTextureSize, PackedTexturePages& packed)
 	{
-		PackedTexturePages packed;
 		PatchRectArr remaining(patches);
 		while (!remaining.empty()) {
 			const std::vector<cv::Rect> rects(ExtractRects(remaining));
@@ -311,15 +310,15 @@ struct MeshTexture {
 			// reported count, so termination does not rest on GrowSinglePage
 			// emitting exactly one page.
 			if (page.empty()) {
-				DEBUG("error: %u texture patches do not fit a %dx%d page",
+				VERBOSE("error: the maximum texture size chosen cannot fit a patch: %u texture patches do not fit a %dx%d page",
 					(unsigned)remaining.size(), textureSize, textureSize);
-				ABORT("the maximum texture size chosen cannot fit a patch");
+				return false;
 			}
 			packed.pageSizes.emplace_back(result.pageSize);
 			packed.pages.emplace_back(std::move(page));
 			remaining = std::move(leftover);
 		}
-		return packed;
+		return true;
 	}
 
 	// used to optimize texture patches
@@ -428,7 +427,7 @@ public:
 	void CreateSeamVertices();
 	void GlobalSeamLeveling();
 	void LocalSeamLeveling();
-	void GenerateTexture(bool bGlobalSeamLeveling, bool bLocalSeamLeveling, unsigned nTextureSizeMultiple, Pixel8U colEmpty, float fSharpnessWeight, int maxTextureSize);
+	bool GenerateTexture(bool bGlobalSeamLeveling, bool bLocalSeamLeveling, unsigned nTextureSizeMultiple, Pixel8U colEmpty, float fSharpnessWeight, int maxTextureSize);
 
 	template <typename PIXEL>
 	static inline PIXEL RGB2YCBCR(const PIXEL& v) {
@@ -2256,7 +2255,7 @@ static void SplitPatchesSpatially(
 
 		// Verify the batch fits by trial packing; if not, shrink from the end
 		// (removing border patches) until packing succeeds
-		// a lone patch is known to fit - GenerateTexture aborts up front on any
+		// a lone patch is known to fit - GenerateTexture rejects up front any
 		// patch larger than maxTextureSize - so stopping at one also terminates
 		trial.assign(sortedRects.begin(), sortedRects.begin() + batchEnd);
 		while (batchEnd > 1 && !MeshTexture::CanPackInOnePage(trial, maxTextureSize)) {
@@ -2280,7 +2279,7 @@ static void SplitPatchesSpatially(
 }
 #endif
 
-void MeshTexture::GenerateTexture(bool bGlobalSeamLeveling, bool bLocalSeamLeveling, unsigned nTextureSizeMultiple, Pixel8U colEmpty, float fSharpnessWeight, int maxTextureSize)
+bool MeshTexture::GenerateTexture(bool bGlobalSeamLeveling, bool bLocalSeamLeveling, unsigned nTextureSizeMultiple, Pixel8U colEmpty, float fSharpnessWeight, int maxTextureSize)
 {
 	// project patches in the corresponding view and compute texture-coordinates and bounding-box
 	const int border(2);
@@ -2388,8 +2387,8 @@ void MeshTexture::GenerateTexture(bool bGlobalSeamLeveling, bool bLocalSeamLevel
 		PatchRectArr fullUnplacedRects(numValidPatches);
 		for (uint32_t i = 0; i < numValidPatches; ++i) {
 			if (maxTextureSize > 0 && (texturePatches[i].rect.width > maxTextureSize || texturePatches[i].rect.height > maxTextureSize)) {
-			    DEBUG("error: a patch of size %u x %u does not fit the texture", texturePatches[i].rect.width, texturePatches[i].rect.height);
-			    ABORT("the maximum texture size chosen cannot fit a patch");
+			    VERBOSE("error: the maximum texture size chosen cannot fit a patch: a patch of size %u x %u does not fit the texture", texturePatches[i].rect.width, texturePatches[i].rect.height);
+			    return false;
 			}
 			fullUnplacedRects[i] = {texturePatches[i].rect, i};
 		}
@@ -2421,7 +2420,9 @@ void MeshTexture::GenerateTexture(bool bGlobalSeamLeveling, bool bLocalSeamLevel
 				if (patches.empty())
 					continue;
 				TD_TIMER_STARTD();
-				PackedTexturePages packed(PackTexturePages(patches, nTextureSizeMultiple, maxTextureSize));
+				PackedTexturePages packed;
+				if (!PackTexturePages(patches, nTextureSizeMultiple, maxTextureSize, packed))
+					return false;
 				ASSERT(packed.pages.size() == packed.pageSizes.size());
 				FOREACH(p, packed.pages) {
 					const cv::Size& pageSize = packed.pageSizes[p];
@@ -2488,6 +2489,7 @@ void MeshTexture::GenerateTexture(bool bGlobalSeamLeveling, bool bLocalSeamLevel
 			}
 		}
 	}
+	return true;
 }
 
 // texture mesh
@@ -2511,7 +2513,8 @@ bool Scene::TextureMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsi
 	// generate the texture image and atlas
 	{
 		TD_TIMER_STARTD();
-		texture.GenerateTexture(bGlobalSeamLeveling, bLocalSeamLeveling, nTextureSizeMultiple, colEmpty, fSharpnessWeight, maxTextureSize);
+		if (!texture.GenerateTexture(bGlobalSeamLeveling, bLocalSeamLeveling, nTextureSizeMultiple, colEmpty, fSharpnessWeight, maxTextureSize))
+			return false;
 		DEBUG_EXTRA("Generating texture atlas and image completed: %u patches, %u image size, %u textures (%s)", texture.texturePatches.size(), mesh.texturesDiffuse[0].width(), mesh.texturesDiffuse.size(), TD_TIMER_GET_FMT().c_str());
 	}
 
