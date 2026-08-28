@@ -191,6 +191,43 @@ bool MeshHalfMeshProcessingTest()
 		return false;
 	}
 
+	// Authored per-vertex normals are attribute data, not a derived cache: an
+	// operation that only renumbers vertices has to hand them back unchanged,
+	// while one that moves a vertex has to invalidate them so they are recomputed
+	// rather than returned stale.
+	Mesh authoredNormals;
+	authoredNormals.vertices = {
+		{0.f, 0.f, 0.f}, {1.f, 0.f, 0.f}, {0.f, 1.f, 0.f},
+		{0.f, 0.f, 0.f}, {2.f, 2.f, 2.f}
+	};
+	authoredNormals.faces = {{0, 1, 2}, {3, 2, 1}};
+	// tag each vertex with a normal no geometric computation would produce
+	FOREACH(idxVertex, authoredNormals.vertices)
+		authoredNormals.vertexNormals.emplace_back(0.f, 0.f, idxVertex+1.f);
+	if (authoredNormals.RemoveDuplicatedVertices() != 1 ||
+		authoredNormals.vertexNormals.size() != authoredNormals.vertices.size() ||
+		authoredNormals.vertexNormals[0].z != 1.f) {
+		VERBOSE("ERROR: HalfMesh bridge did not carry authored vertex normals through a vertex weld!");
+		return false;
+	}
+	{
+		// smoothing moves every vertex, so the authored values must not come back
+		Mesh movedNormals(authoredNormals);
+		movedNormals.Smooth(1);
+		if (movedNormals.vertexNormals.size() != movedNormals.vertices.size()) {
+			VERBOSE("ERROR: HalfMesh bridge did not rebuild vertex normals after smoothing!");
+			return false;
+		}
+		bool anyStale(false);
+		FOREACH(idxVertex, movedNormals.vertexNormals)
+			if (movedNormals.vertexNormals[idxVertex].z == idxVertex+1.f)
+				anyStale = true;
+		if (anyStale) {
+			VERBOSE("ERROR: HalfMesh bridge returned stale authored vertex normals after smoothing!");
+			return false;
+		}
+	}
+
 	// Refinement selects planar vertices in MVS, but removal and retriangulation
 	// are delegated to HalfMesh. Removing the top of an octahedron must close the
 	// resulting four-edge hole and leave a watertight surface.

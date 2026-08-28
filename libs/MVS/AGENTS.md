@@ -70,7 +70,7 @@ class Mesh {
 };
 ```
 Key method (`MeshHalfMesh.cpp`, the bridge to the halfmesh library):
-- `Clean(CleanParams)`: spurious-component removal, spike removal, QEM decimation, hole closing, Taubin smoothing, isotropic remeshing, then a finalize pass (degenerate faces, unreferenced vertices, non-manifold repair) — every enabled stage running on ONE halfmesh instance, so the mesh is converted in and out exactly once per call. The same stages are also exposed individually (`RemoveSpuriousComponents`, `RemoveSpikes`, `Simplify`, `CloseHoles`, `Smooth`), each paying its own conversion, so prefer `Clean` when running more than one. OpenMVS adjacency/normal caches are rebuilt only when they existed before the operation.
+- `Clean(CleanParams)`: spurious-component removal, spike removal, QEM decimation, hole closing, Taubin smoothing, isotropic remeshing, then a finalize pass (degenerate faces, unreferenced vertices, non-manifold repair) — every enabled stage running on ONE halfmesh instance, so the mesh is converted in and out exactly once per call. The same stages are also exposed individually (`RemoveSpuriousComponents`, `RemoveSpikes`, `Simplify`, `CloseHoles`, `Smooth`), each paying its own conversion, so prefer `Clean` when running more than one. OpenMVS adjacency caches are rebuilt only when they existed before the operation. Authored per-vertex normals are carried across by halfmesh, which keeps them through the operations that only renumber vertices and drops them in the ones that move a vertex; only then are they recomputed, and only for a caller that had them.
 
 ### DepthData (`DepthMap.h`)
 Per-image depth estimation data:

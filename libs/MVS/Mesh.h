@@ -214,7 +214,7 @@ public:
 
 	typedef cList<uint16_t,uint16_t,0,16,FIndex> AreaArr;
 	void Subdivide(const AreaArr& maxAreas, uint32_t maxArea);
-	unsigned RemoveVerticesAndFill(VertexIdxArr& verticesRemove); // remove the given vertices and span the holes their removal opens (no vertex is added)
+	unsigned RemoveVerticesAndFill(const VertexIdxArr& verticesRemove); // remove the given vertices and span the holes their removal opens (no vertex is added)
 	FIndex RemoveDegenerateFaces(Type thArea=1e-10f);
 	FIndex RemoveDegenerateFaces(unsigned maxIterations, Type thArea=1e-10f);
 	void RemoveFacesOutside(const OBB3f&);
@@ -271,9 +271,16 @@ public:
 	bool Split(FacesChunkArr&, float maxArea);
 	Mesh SubMesh(const FaceIdxArr& faces) const;
 
-	// bake this mesh's texture onto the given aligned mesh, which gets a freshly
-	// generated UV atlas (any UV-map it carries is replaced)
-	bool TransferTexture(Mesh& mesh, unsigned borderSize=3, unsigned textureSize=4096);
+	static constexpr unsigned DEFAULT_TEXTURE_BORDER = 3;
+	static constexpr unsigned DEFAULT_TEXTURE_SIZE = 4096;
+	// bake this mesh's texture onto the given aligned mesh: onto the UV-map that
+	// mesh already carries, or onto a freshly generated atlas when it has none.
+	// faceSubsetIndices optionally restricts the bake to those faces of the target,
+	// leaving the rest of its texture untouched (needs an existing UV-map).
+	// It comes last deliberately: cList's size constructor is implicit, so a
+	// subset parameter ahead of the sizes would silently turn TransferTexture(m,
+	// 1, 32) into a one-element garbage subset instead of a border and a size.
+	bool TransferTexture(Mesh& mesh, unsigned borderSize=DEFAULT_TEXTURE_BORDER, unsigned textureSize=DEFAULT_TEXTURE_SIZE, const FaceIdxArr& faceSubsetIndices={});
 
 	size_t GetMemorySize() const;
 
