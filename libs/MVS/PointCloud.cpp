@@ -466,6 +466,52 @@ bool PointCloud::LoadPLY(const String& fileName)
 	return true;
 }
 
+namespace {
+// The z-up <-> y-up conversion this codec shares with halfmesh's glTF reader and
+// writer (halfmesh/src/MeshIO.cpp): the file is spec-conformant y-up, the buffer
+// stays z-up, and the rotation lives on the root node. Fixed, never a parameter -
+// a knob would let the two sides be configured into disagreement.
+// Maps (x, y, z) -> (x, -z, y).
+Eigen::Matrix4d GLTFYUpToZUp()
+{
+	Eigen::Matrix4d m(Eigen::Matrix4d::Zero());
+	m(0, 0) = 1;
+	m(1, 2) = -1;
+	m(2, 1) = 1;
+	m(3, 3) = 1;
+	return m;
+}
+// The inverse, as the column-major 16-element array a glTF node stores.
+// Maps (x, y, z) -> (x, z, -y).
+std::vector<double> GLTFZUpToYUpMatrix()
+{
+	return {1,0,0,0, 0,0,-1,0, 0,1,0,0, 0,0,0,1};
+}
+
+// Node local transform: explicit column-major matrix, or TRS composition.
+Eigen::Matrix4d GLTFNodeLocalMatrix(const tinygltf::Node& node)
+{
+	if (node.matrix.size() == 16) {
+		Eigen::Matrix4d m;
+		for (int col = 0; col < 4; ++col)
+			for (int row = 0; row < 4; ++row)
+				m(row, col) = node.matrix[col * 4 + row];
+		return m;
+	}
+	Eigen::Vector3d t(0, 0, 0), s(1, 1, 1);
+	Eigen::Quaterniond q(1, 0, 0, 0);
+	if (node.translation.size() == 3)
+		t = Eigen::Vector3d(node.translation[0], node.translation[1], node.translation[2]);
+	if (node.rotation.size() == 4) // glTF quaternion component order is (x, y, z, w)
+		q = Eigen::Quaterniond(node.rotation[3], node.rotation[0], node.rotation[1], node.rotation[2]);
+	if (node.scale.size() == 3)
+		s = Eigen::Vector3d(node.scale[0], node.scale[1], node.scale[2]);
+	Eigen::Affine3d a(Eigen::Affine3d::Identity());
+	a.translate(t).rotate(q).scale(s);
+	return a.matrix();
+}
+} // unnamed namespace
+
 // import the point-cloud as a GLTF file
 bool PointCloud::LoadGLTF(const String& fileName, bool bBinary)
 {
@@ -488,11 +534,51 @@ bool PointCloud::LoadGLTF(const String& fileName, bool bBinary)
 			DEBUG("warning: %s", warn.c_str());
 	}
 
+	// Flatten the node hierarchy into (mesh, world-matrix) instances, seeded with
+	// the y-up -> z-up conversion, mirroring halfmesh's glTF reader (src/MeshIO.cpp):
+	// glTF is y-up by specification and SaveGLTF states that with a matrix on the
+	// root node, so undoing it here makes save -> load an exact identity - both
+	// matrices are signed permutations. Ignoring the node transforms instead, as
+	// this used to, silently mis-orients every conformant file.
+	struct Instance {
+		int mesh;
+		Eigen::Matrix4d world;
+	};
+	std::vector<Instance> instances; {
+		std::vector<std::pair<int,Eigen::Matrix4d>> stack;
+		const int sceneIdx(gltfModel.defaultScene >= 0 ? gltfModel.defaultScene : 0);
+		if (!gltfModel.scenes.empty() && sceneIdx < (int)gltfModel.scenes.size())
+			for (int root : gltfModel.scenes[sceneIdx].nodes)
+				stack.emplace_back(root, GLTFYUpToZUp());
+		while (!stack.empty()) {
+			const int idxNode(stack.back().first);
+			const Eigen::Matrix4d parent(stack.back().second);
+			stack.pop_back();
+			if (idxNode < 0 || idxNode >= (int)gltfModel.nodes.size())
+				continue;
+			const tinygltf::Node& gltfNode = gltfModel.nodes[idxNode];
+			const Eigen::Matrix4d world(parent * GLTFNodeLocalMatrix(gltfNode));
+			if (gltfNode.mesh >= 0 && gltfNode.mesh < (int)gltfModel.meshes.size())
+				instances.emplace_back(Instance{gltfNode.mesh, world});
+			for (int child : gltfNode.children)
+				stack.emplace_back(child, world);
+		}
+		// no usable scene graph: every mesh is an identity-placed instance, still
+		// y-up because that is what the format specifies whether or not it says so
+		if (instances.empty())
+			for (size_t m = 0; m < gltfModel.meshes.size(); ++m)
+				instances.emplace_back(Instance{(int)m, GLTFYUpToZUp()});
+	}
+
 	// parse model
-	for (const tinygltf::Mesh& gltfMesh : gltfModel.meshes) {
+	for (const Instance& instance : instances) {
+		const tinygltf::Mesh& gltfMesh = gltfModel.meshes[instance.mesh];
 		for (const tinygltf::Primitive& gltfPrimitive : gltfMesh.primitives) {
 			if (gltfPrimitive.mode != TINYGLTF_MODE_POINTS)
 				continue;
+			// everything this primitive appends is placed by the instance transform
+			const size_t firstPoint(points.size());
+			const size_t firstNormal(normals.size());
 			// read vertices
 			{
 				const tinygltf::Accessor& gltfAccessor = gltfModel.accessors[gltfPrimitive.attributes.at("POSITION")];
@@ -589,6 +675,22 @@ bool PointCloud::LoadGLTF(const String& fileName, bool bBinary)
 						for (size_t i = 0; i < gltfAccessor.count; ++i)
 							normals[oldSize+i] = *(const Normal*)(pData + i * stride);
 					}
+				}
+			}
+			// place this instance in world space; the seed already folds in the
+			// y-up -> z-up conversion, so this is a no-op only for a file that
+			// carries neither a node transform nor a scene graph
+			if (!instance.world.isIdentity()) {
+				for (size_t i = firstPoint; i < points.size(); ++i) {
+					const Eigen::Vector4d p(instance.world * Eigen::Vector4d(points[i].x, points[i].y, points[i].z, 1.0));
+					points[i] = Point((Point::Type)p.x(), (Point::Type)p.y(), (Point::Type)p.z());
+				}
+				const Eigen::Matrix3d rotation(instance.world.topLeftCorner<3,3>());
+				for (size_t i = firstNormal; i < normals.size(); ++i) {
+					const Eigen::Vector3d n(rotation * Eigen::Vector3d(normals[i].x, normals[i].y, normals[i].z));
+					const double norm(n.norm());
+					if (norm > 0)
+						normals[i] = Normal((Normal::Type)(n.x()/norm), (Normal::Type)(n.y()/norm), (Normal::Type)(n.z()/norm));
 				}
 			}
 		}
@@ -771,6 +873,10 @@ bool PointCloud::SaveGLTF(const String& fileName, bool bBinary) const
 	tinygltf::Node gltfNode;
 	gltfNode.name = "node";
 	gltfNode.mesh = 0;
+	// declare the z-up -> y-up conversion on the root node instead of baking it
+	// into the buffer, so the file is spec-conformant y-up and LoadGLTF undoes it
+	// exactly; this matches what halfmesh writes for the mesh half of a scene
+	gltfNode.matrix = GLTFZUpToYUpMatrix();
 	gltfModel.nodes.emplace_back(std::move(gltfNode));
 	gltfScene.nodes.push_back(0);
 	gltfModel.scenes.emplace_back(std::move(gltfScene));

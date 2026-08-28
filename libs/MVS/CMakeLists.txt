@@ -6,6 +6,11 @@ if(CGAL_FOUND)
 	link_directories(${CGAL_LIBRARY_DIRS})
 endif()
 FIND_PACKAGE(halfmesh CONFIG REQUIRED)
+# PointCloud.cpp includes <tiny_gltf.h> directly (halfmesh owns the only
+# TINYGLTF_IMPLEMENTATION in the build, this side is declarations only). Ask for
+# the header explicitly rather than relying on halfmesh's exported include
+# directory happening to be the same vcpkg prefix.
+FIND_PATH(TINYGLTF_INCLUDE_DIR NAMES "tiny_gltf.h" REQUIRED)
 
 set(CERES_LIBS "")
 if(OpenMVS_USE_CERES)
@@ -54,7 +59,7 @@ cxx_library_with_type(MVS "Libs" "" "${cxx_default}"
 	${LIBRARY_FILES_C} ${LIBRARY_FILES_H}
 	${CUDA_LIBRARY_FILES_C} ${CUDA_LIBRARY_FILES_H}
 )
-TARGET_INCLUDE_DIRECTORIES(MVS PRIVATE "${CMAKE_SOURCE_DIR}/libs")
+TARGET_INCLUDE_DIRECTORIES(MVS PRIVATE "${CMAKE_SOURCE_DIR}/libs" "${TINYGLTF_INCLUDE_DIR}")
 
 # Metal backend: compile the .mm as Objective-C++ with ARC and skip the C++ PCH.
 # The Metal/Foundation frameworks are linked centrally via OpenMVS_EXTRA_LIBS
