@@ -361,6 +361,26 @@ bool MeshHalfMeshProcessingTest()
 		return false;
 	}
 	{
+		// A face subset is expressed against the UV-map the target already carries:
+		// an index past its faces, or a target whose atlas would have to be generated
+		// from scratch, has to be reported instead of baking something else.
+		Mesh::FaceIdxArr outOfRangeSubset;
+		outOfRangeSubset.emplace_back(rebakedGrid.faces.size());
+		if (texturedGrid.TransferTexture(rebakedGrid, 1, 32, outOfRangeSubset)) {
+			VERBOSE("ERROR: HalfMesh bridge accepted an out-of-range texture-transfer face subset!");
+			return false;
+		}
+		Mesh unmappedGrid(texturedGrid);
+		unmappedGrid.faceTexcoords.Release();
+		unmappedGrid.texturesDiffuse.clear();
+		Mesh::FaceIdxArr faceSubset;
+		faceSubset.emplace_back(0);
+		if (texturedGrid.TransferTexture(unmappedGrid, 1, 32, faceSubset) || unmappedGrid.HasTexture()) {
+			VERBOSE("ERROR: HalfMesh bridge rebaked the whole mesh for a caller that asked for a face subset!");
+			return false;
+		}
+	}
+	{
 		const ScopedTempDir tmpDir(_T("MeshHalfMeshProcessingTest"));
 		if (!tmpDir.IsValid())
 			return false;

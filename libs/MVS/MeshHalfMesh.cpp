@@ -210,6 +210,17 @@ bool Mesh::TransferTexture(Mesh& mesh, unsigned borderSize, unsigned textureSize
 {
 	if (!HasTexture() || faceTexcoords.size() != faces.size()*3 || faces.empty() || mesh.faces.empty())
 		return false;
+	// the subset indexes the target's faces and reaches here straight from a user
+	// file, so validate it before anything is converted: an out-of-range index
+	// means the caller paired the wrong indices with this mesh, which is worth
+	// reporting rather than silently dropping
+	for (FIndex idxFace : faceSubsetIndices) {
+		if (idxFace >= mesh.faces.size()) {
+			DEBUG("error: face subset index %u is out of range for the target mesh (%u faces)",
+				idxFace, mesh.faces.size());
+			return false;
+		}
+	}
 	const DerivedData derived(mesh);
 	// A target that already carries a UV-map gets baked onto that layout: an
 	// artist's atlas, or one an earlier tool fixed up, is exactly what a caller
@@ -235,9 +246,19 @@ bool Mesh::TransferTexture(Mesh& mesh, unsigned borderSize, unsigned textureSize
 			if (uniformSquare)
 				targetPageSize = page0.rows;
 			else
-				DEBUG("warning: target textures are not uniformly square (%dx%d, %u pages), generating a new UV-map instead",
-					page0.cols, page0.rows, (unsigned)mesh.texturesDiffuse.size());
+				// texturing sizes each atlas page from its own leftovers, so a mesh
+				// OpenMVS textured into more than one page usually lands here: the
+				// trailing page holds a handful of patches and is smaller than the rest
+				DEBUG("warning: the target's %u texture pages are not all the same square (the first is %dx%d), generating a new UV-map instead",
+					(unsigned)mesh.texturesDiffuse.size(), page0.cols, page0.rows);
 		}
+	}
+	// a face subset is expressed against the layout the target already carries, so
+	// it means nothing once that layout is thrown away: a caller that asked for a
+	// partial edit must not silently get the whole mesh rebaked instead
+	if (!faceSubsetIndices.empty() && targetPageSize <= 0) {
+		DEBUG("error: a face subset needs a target UV-map that can be baked onto, but this target needs a generated one");
+		return false;
 	}
 	// both imports copy: a bake that reports nothing has to leave the caller's
 	// target mesh exactly as it found it
@@ -270,16 +291,14 @@ bool Mesh::TransferTexture(Mesh& mesh, unsigned borderSize, unsigned textureSize
 		if (!faceSubsetIndices.empty()) {
 			faceMask.assign(target.faces.size(), false);
 			for (FIndex idxFace : faceSubsetIndices) {
-				ASSERT(idxFace < faceMask.size());
-				if (idxFace < faceMask.size())
-					faceMask[idxFace] = true;
+				ASSERT(idxFace < faceMask.size()); // range-checked against the target above
+				faceMask[idxFace] = true;
 			}
 			params.faceMask = &faceMask;
 		}
 		result = halfmesh::BakeOntoAtlas(source, target, params);
 	} else {
-		if (!faceSubsetIndices.empty())
-			DEBUG("warning: face subset ignored, the target mesh carries no per-face UV-map to bake onto");
+		ASSERT(faceSubsetIndices.empty()); // rejected above, there is no layout to express it against
 		result = halfmesh::RebakeTexture(source, target, params);
 	}
 	if (result.numPages == 0)

@@ -276,7 +276,9 @@ public:
 	// bake this mesh's texture onto the given aligned mesh: onto the UV-map that
 	// mesh already carries, or onto a freshly generated atlas when it has none.
 	// faceSubsetIndices optionally restricts the bake to those faces of the target,
-	// leaving the rest of its texture untouched (needs an existing UV-map).
+	// leaving the rest of its texture untouched; it is expressed against the layout
+	// the target already carries, so asking for a subset of a target whose atlas has
+	// to be generated fails instead of quietly rebaking the whole mesh.
 	// It comes last deliberately: cList's size constructor is implicit, so a
 	// subset parameter ahead of the sizes would silently turn TransferTexture(m,
 	// 1, 32) into a one-element garbage subset instead of a border and a size.
