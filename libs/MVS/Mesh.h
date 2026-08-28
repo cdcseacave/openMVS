@@ -200,7 +200,10 @@ public:
 		float spuriousFactor{0.f}; // RemoveSpuriousComponents factor (0 - disabled)
 		bool removeSpikes{false};
 		unsigned maxSpikeIterations{100};
-		float simplifyTarget{1.f}; // Simplify target (1 - disabled)
+		// Simplify target, read by magnitude: a fraction in (0,1) keeps that share
+		// of the faces, a value above 1 is an absolute face count clamped to the
+		// input (1 - disabled, and so is anything non-positive)
+		float simplifyTarget{1.f};
 		unsigned maxHoleEdges{0}; // CloseHoles limit (0 - disabled)
 		int smoothIterations{0}; // Smooth iterations (0 - disabled)
 		float edgeLength{0.f}; // isotropic remeshing target edge length: >0 absolute, <0 that multiple of the current mean edge length (0 - disabled)

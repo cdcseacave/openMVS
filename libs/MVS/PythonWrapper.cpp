@@ -94,6 +94,9 @@ public:
 	bool pyReconstructMesh(const ReconstructMeshParams& params) {
 		return ReconstructMesh(params);
 	}
+	// fDecimate is read by magnitude, like Mesh::CleanParams::simplifyTarget: a
+	// fraction in (0,1) keeps that share of the faces, a value above 1 is an
+	// absolute face count, 1 (or anything non-positive) disables the stage
 	void pyCleanMesh(float fDecimate=1.f, float fRemoveSpurious=20.f, bool bRemoveSpikes=true, unsigned nCloseHoles=30, unsigned nSmoothMesh=10, float fEdgeLength=0.f, bool bCrop2ROI=false) {
 		if (bCrop2ROI && IsBounded())
 			mesh.RemoveFacesOutside(obb);

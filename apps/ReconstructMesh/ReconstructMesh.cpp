@@ -472,7 +472,10 @@ int main(int argc, LPCTSTR* argv)
 			VERBOSE("Mesh trimmed to ROI: %u vertices and %u faces removed (%s)",
 				numVertices-scene.mesh.vertices.size(), numFaces-scene.mesh.faces.size(), TD_TIMER_GET_FMT().c_str());
 		}
-		const float fDecimate(OPT::nTargetFaceNum ? static_cast<float>(OPT::nTargetFaceNum) / scene.mesh.faces.size() : OPT::fDecimateMesh);
+		// simplifyTarget is read by magnitude: a fraction in (0,1) keeps that
+		// share of the faces, a value above 1 is an absolute face count (clamped
+		// to the input), so the target count goes through as-is
+		const float fDecimate(OPT::nTargetFaceNum ? static_cast<float>(OPT::nTargetFaceNum) : OPT::fDecimateMesh);
 		Mesh::CleanParams cleanParams;
 		cleanParams.simplifyTarget = fDecimate;
 		cleanParams.spuriousFactor = OPT::fRemoveSpurious;
