@@ -716,7 +716,7 @@ graph TD
 - `halfmesh::PackRectangles` — `halfmesh/RectPacking.h`, driven from `libs/MVS/SceneTexture.cpp`
 - Two-tier skyline bin-packing (min-waste scan for large patches, height-sorted shelves for tiny ones) with optional 90-degree rotation for better area utilization; every page stays open, so a later small patch can fill space an earlier large one left behind
 - `nTextureSizeMultiple`: forces atlas dimensions to multiple of this value
-- `maxTextureSize`: splits into multiple atlases if needed
+- `maxTextureSize`: grows one page up to this cap, then opens as many further pages as needed, each estimated on its own leftovers — so a trailing page holding a handful of small patches stays small instead of being allocated at the cap
 - Output: UV coordinates `mesh.faceTexcoords[]`, atlas size
 
 **Step 3: Global Seam Leveling**
