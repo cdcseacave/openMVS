@@ -42,6 +42,8 @@ namespace SFM {
  * @param trackStatus        Status per tracked point (1 = valid, 0 = invalid).
  * @param pair               ImagePair for both input tracked matches and output geometry + matches.
  * @param epipolarThreshold  Maximum distance to epipolar line for geometric match acceptance (pixels).
+ * @param threadIdx          Index of the calling thread, selecting its private descriptor matcher
+ *                           inside pairsMatcher; concurrent calls must pass distinct indices.
  * @return true if geometry was estimated (pair.E/F/relativePose); false if fallback was used.
  */
 SFM_API bool MatchFeaturesGeometric(
@@ -52,7 +54,8 @@ SFM_API bool MatchFeaturesGeometric(
 	const std::vector<Point2f>& trackedPoints2,
 	const std::vector<uchar>& trackStatus,
 	ImagePair& pair,
-	float epipolarThreshold = 2.f);
+	float epipolarThreshold = 2.f,
+	unsigned threadIdx = 0);
 /*----------------------------------------------------------------*/
 
 } // namespace SFM

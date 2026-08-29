@@ -272,12 +272,31 @@ void RegisterBindings()
 		.def_readwrite("import_poses_mode", &SFM::ImportConfig::importPosesMode)
 		.def_readwrite("frames_convention", &SFM::ImportConfig::framesConvention);
 
-	// SFM::ROMA2Config — semi-dense matching
+	// SFM::RetrievalRecipe — how the global retrieval descriptor is pooled
+	enum_<SFM::RetrievalRecipe>("RetrievalRecipe")
+		.value("FACETS", SFM::RetrievalRecipe::FACETS)
+		.value("LAYERS", SFM::RetrievalRecipe::LAYERS);
+
+	// SFM::ROMA2Config — in-process ROMAv2 retrieval and semi-dense matching
 	class_<SFM::ROMA2Config>("ROMA2Config")
-		.DEF_STR_RW("import_path", &SFM::ROMA2Config::importROMA2Path)
-		.def_readwrite("min_pair_weight", &SFM::ROMA2Config::minPairWeight)
+		.def_readwrite("enabled", &SFM::ROMA2Config::enabled)
+		.DEF_STR_RW("model_path", &SFM::ROMA2Config::modelPath)
+		.DEF_STR_RW("setting", &SFM::ROMA2Config::setting)
+		.DEF_STR_RW("provider", &SFM::ROMA2Config::provider)
+		.def_readwrite("use_retrieval", &SFM::ROMA2Config::useRetrieval)
+		.def_readwrite("use_matching", &SFM::ROMA2Config::useMatching)
+		.def_readwrite("retrieval_recipe", &SFM::ROMA2Config::retrievalRecipe)
+		.def_readwrite("retrieval_power", &SFM::ROMA2Config::retrievalPower)
+		.def_readwrite("min_confidence", &SFM::ROMA2Config::minConfidence)
+		.def_readwrite("min_erode_confidence", &SFM::ROMA2Config::minErodeConfidence)
+		.def_readwrite("erode_border", &SFM::ROMA2Config::erodeBorder)
 		.def_readwrite("epipolar_threshold", &SFM::ROMA2Config::epipolarThreshold)
-		.def_readwrite("erode_border", &SFM::ROMA2Config::erodeBorder);
+		.def_readwrite("slot_budget", &SFM::ROMA2Config::slotBudget)
+		.def_readwrite("max_replace_inliers", &SFM::ROMA2Config::maxReplaceInliers)
+		.def_readwrite("skip_healthy_inliers", &SFM::ROMA2Config::skipHealthyInliers)
+		.def_readwrite("feedback_max_replace_inliers", &SFM::ROMA2Config::feedbackMaxReplaceInliers)
+		.def_readwrite("feedback_skip_healthy_inliers", &SFM::ROMA2Config::feedbackSkipHealthyInliers)
+		.def_readwrite("use_gpu", &SFM::ROMA2Config::useGPU);
 
 	// SFM::ViewGraphCalibratorConfig — focal-length verification
 	class_<SFM::ViewGraphCalibratorConfig>("ViewGraphCalibratorConfig");

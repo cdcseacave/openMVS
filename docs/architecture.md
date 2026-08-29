@@ -388,7 +388,6 @@ Executables land in `make/bin/Debug/` or `make/bin/Release/`.
 | libtiff | optional | TIFF image format | IO |
 | libjxl | optional | JPEG XL image format | IO |
 | TinyEXIF | bundled | EXIF metadata parsing | SFM |
-| TinyNPY | bundled | NumPy `.npz` file reading (ROMA2) | SFM |
 | tiny_gltf | vcpkg | glTF 2.0 binary/ASCII loading (implementation unit compiled by halfmesh) | MVS |
 | nlohmann/json | bundled | JSON parsing | IO |
 | TinyXML2 | bundled | XML parsing (Metashape interface) | IO |

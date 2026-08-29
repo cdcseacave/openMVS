@@ -398,14 +398,6 @@ OpenMVS is a comprehensive photogrammetry library implementing a complete pipeli
 - **Threading:** Single
 - **Dependencies:** Common, IO
 
-### Import ROMA2
-
-- **Files:** `libs/SFM/ImportROMA2.h`, `libs/SFM/ImportROMA2.cpp`
-- **Algorithms:** Reads RoMa/ROMA2 robust optical matching `.npz` files; generates depth maps from learned matcher output
-- **GPU Support:** No
-- **Threading:** Single
-- **Dependencies:** Common, TinyNPY
-
 ### Pose I/O (Known Poses)
 
 - **Files:** `libs/SFM/PoseIO.h`, `libs/SFM/PoseIO.cpp`

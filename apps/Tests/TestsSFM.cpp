@@ -616,6 +616,112 @@ bool VocabularyTreeTest()
 	return true;
 }
 
+// ROMA2 warp helpers test: keypoint tracking through an identity warp, overlap gating,
+// confidence-map erosion and the store/replace policy of the guided pairs
+bool ROMA2WarpTrackingTest()
+{
+	TD_TIMER_START();
+
+	// two 640x480 images sharing a camera; an identity warp on a 160x160 grid maps A onto B
+	Scene scene;
+	const int width = 640, height = 480;
+	scene.cameras.emplace_back(new PinholeCamera(cv::Size(width, height),
+		REAL(600), REAL(600), REAL(width)/2, REAL(height)/2));
+	scene.images.emplace_back((IIndex)0, String("a.jpg"));
+	scene.images.emplace_back((IIndex)1, String("b.jpg"));
+	FOREACH(i, scene.images) {
+		scene.images[i].cameraID = 0;
+		scene.images[i].pCamera = scene.cameras[0];
+	}
+	Image& imgA = scene.images[0];
+	const Image& imgB = scene.images[1];
+	const int cells = 160;
+	Image32F2 warp(cells, cells);
+	Image32F overlap(cv::Size(cells, cells), 1.f);
+	for (int y = 0; y < cells; ++y)
+		for (int x = 0; x < cells; ++x) // grid (x,y) (align_corners=true) -> same pixel, normalized align_corners=false
+			warp(y, x) = Point2f(
+				((x*(width-1.f)/(cells-1)) + 0.5f)*2.f/width - 1.f,
+				((y*(height-1.f)/(cells-1)) + 0.5f)*2.f/height - 1.f);
+	std::mt19937 rng(7);
+	std::uniform_real_distribution<float> ux(8.f, 631.f), uy(8.f, 471.f);
+	for (unsigned i = 0; i < 500; ++i)
+		imgA.keypoints.emplace_back(ux(rng), uy(rng), 1.f);
+	std::vector<Point2f> trackedA, trackedB;
+	std::vector<uchar> status;
+	if (TrackKeypointsByWarp(imgA, imgB, warp, overlap, 0.3f, trackedA, trackedB, status) != imgA.keypoints.size()) {
+		VERBOSE("ROMA2WarpTrackingTest FAILED: not every keypoint tracked through the identity warp");
+		return false;
+	}
+	FOREACH(i, trackedA)
+		if (!status[i] || norm(trackedB[i] - trackedA[i]) > 1e-3f) {
+			VERBOSE("ROMA2WarpTrackingTest FAILED: keypoint %u moved %g px", i, norm(trackedB[i] - trackedA[i]));
+			return false;
+		}
+
+	// overlap gating: zero the left half of the grid -> keypoints left of the (bilinear) band are dropped
+	overlap.colRange(0, cells/2).setTo(0.f);
+	TrackKeypointsByWarp(imgA, imgB, warp, overlap, 0.3f, trackedA, trackedB, status);
+	FOREACH(i, status) {
+		const float x = imgA.keypoints[i].pt.x;
+		if ((x < 316.f && status[i]) || (x > 324.f && !status[i])) {
+			VERBOSE("ROMA2WarpTrackingTest FAILED: overlap gate at x=%g", x);
+			return false;
+		}
+	}
+
+	// erosion: a hole in a 0.5-confidence map zeroes cells within erodeBorder unless above minErodeConfidence
+	Image32F conf(cv::Size(cells, cells), 0.5f);
+	conf(80, 80) = 0.f;
+	conf(80, 84) = 0.95f;
+	ErodeConfidenceMap(conf, 8, 0.3f, 0.9f);
+	if (conf(80, 86) != 0.f || conf(80, 84) != 0.95f || conf(80, 100) != 0.5f) {
+		VERBOSE("ROMA2WarpTrackingTest FAILED: erosion");
+		return false;
+	}
+
+	// replacement policy: create, keep on tie, replace when larger, ceiling protects healthy pairs
+	std::unordered_map<PairIdx::PairIndex, IIndex> pairIndexMap;
+	bool bCreated;
+	ImagePair weak(0, 1);
+	weak.matches.resize(20);
+	weak.numFilteredInliers = 20;
+	if (!ApplyROMA2Pair(scene, pairIndexMap, std::move(weak), 0, bCreated) || !bCreated || scene.pairs.size() != 1) {
+		VERBOSE("ROMA2WarpTrackingTest FAILED: first pair not created");
+		return false;
+	}
+	if (scene.pairs[0].overlapRatio != 1.f || scene.pairs[0].overlapArea != 1.f) {
+		VERBOSE("ROMA2WarpTrackingTest FAILED: created pair not marked as covering the frame");
+		return false;
+	}
+	ImagePair tie(0, 1);
+	tie.matches.resize(20);
+	tie.numFilteredInliers = 20;
+	if (ApplyROMA2Pair(scene, pairIndexMap, std::move(tie), 0, bCreated)) {
+		VERBOSE("ROMA2WarpTrackingTest FAILED: tie replaced");
+		return false;
+	}
+	ImagePair strong(0, 1);
+	strong.matches.resize(200);
+	strong.numFilteredInliers = 200;
+	if (!ApplyROMA2Pair(scene, pairIndexMap, std::move(strong), 0, bCreated) || bCreated || scene.pairs.size() != 1 ||
+		scene.pairs[0].GetNumFilteredInliers() != 200) {
+		VERBOSE("ROMA2WarpTrackingTest FAILED: stronger pair not replacing in place");
+		return false;
+	}
+	ImagePair stronger(0, 1);
+	stronger.matches.resize(300);
+	stronger.numFilteredInliers = 300;
+	if (ApplyROMA2Pair(scene, pairIndexMap, std::move(stronger), 100, bCreated) ||
+		scene.pairs[0].GetNumFilteredInliers() != 200) {
+		VERBOSE("ROMA2WarpTrackingTest FAILED: ceiling");
+		return false;
+	}
+
+	VERBOSE("ROMA2WarpTrackingTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
 bool BAPinholeReprojectionJacobianTest()
 {
 	return PinholeReprojectionJacobianTest();

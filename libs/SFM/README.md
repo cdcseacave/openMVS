@@ -493,12 +493,13 @@ The log line it emits -- median and maximum camera-center delta, median and maxi
 | Module | Format | Direction |
 |--------|--------|-----------|
 | `ImportCOLMAP.h` | COLMAP binary | Import cameras, poses, tracks |
-| `ImportROMA2.h` | ROMA2 .npz | Import robust matches + depth |
 | `PoseIO.h` | OpenMVS pose CSV and Polycam-style frames.json | Import/export per-image intrinsics and poses |
 | `InterfaceMVS.h` | OpenMVS .mvs | Export to MVS pipeline |
 | Scene::ExportPLY | PLY | Export sparse point cloud |
 
 The pose CSV schema is `filename,fx,fy,cx,cy,qx,qy,qz,qw,Cx,Cy,Cz,score` per row. Both pose importers share the `PoseImportMode` selector: `POSES_INTRINSICS` applies the intrinsics (when the row/entry carries them, marking them trusted) *and* the rotation + camera center, `POSES` applies only the rotation + center, `POSITIONS` only the center. `ImportConfig::importPosesFile` dispatches on the file extension -- `.csv` to `ImportPosesCSV`, `.json` to `ImportFramesJSON`.
+
+ROMAv2 correspondences are not an external format: the dense warps are computed in-process and consumed through `MatchROMA2.h` (configuration) and `ROMA2Warp.h` (warp coordinate conventions, confidence erosion, keypoint tracking, guided-pair store/replace policy).
 
 ## Usage Examples
 
@@ -581,6 +582,8 @@ libs/SFM/
 ├── VocabularyTree.h/cpp                # Visual vocabulary for retrieval
 ├── PairsMatcher.h/cpp                  # Matching strategies
 ├── MatchGeometric.h/cpp                # RANSAC geometric verification
+├── MatchROMA2.h                        # In-process ROMAv2 configuration
+├── ROMA2Warp.h/cpp                     # ROMAv2 warp coordinates, erosion, keypoint tracking
 ├── PairsWeighting.h/cpp                # Composite pair quality scores
 │
 │ # Reconstruction
@@ -606,7 +609,6 @@ libs/SFM/
 │
 │ # External format support
 ├── ImportCOLMAP.h/cpp                  # COLMAP import
-├── ImportROMA2.h/cpp                   # ROMA2 match import
 ├── PoseIO.h/cpp                        # CSV/frames.json pose I/O + convention detection
 └── InterfaceMVS.h/cpp                  # MVS format export
 ```
@@ -625,7 +627,6 @@ libs/SFM/
 - **Ceres Solver** (required): Bundle adjustment
 - **PoseLib** (required): Pose estimation (E/F/H matrices, PnP)
 - **TinyEXIF** (required): EXIF metadata parsing
-- **TinyNPY** (required): NumPy .npz file I/O (ROMA2 support)
 - **OpenCV** (inherited): Feature detection, matching, image I/O
 - **Eigen3** (inherited): Linear algebra
 - **Boost** (inherited): Serialization

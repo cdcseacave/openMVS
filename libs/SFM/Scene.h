@@ -23,7 +23,7 @@
 #include "SceneCluster.h"
 #include "BundleAdjustment.h"
 #include "GlobalAlignment.h"
-#include "ImportROMA2.h"
+#include "MatchROMA2.h"
 #include "PoseIO.h"
 
 

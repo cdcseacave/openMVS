@@ -2,7 +2,6 @@
 
 # Additional SfM-specific packages (all available via vcpkg)
 FIND_PACKAGE(TinyEXIF CONFIG REQUIRED)
-FIND_PACKAGE(TinyNPY CONFIG REQUIRED)
 FIND_PACKAGE(PoseLib CONFIG REQUIRED)
 FIND_PACKAGE(Ceres CONFIG REQUIRED)
 
@@ -13,13 +12,6 @@ IF(TinyEXIF_FOUND)
 	LIST(APPEND SFM_EXTRA_LIBS TinyEXIF::TinyEXIF)
 ELSE()
 	MESSAGE(FATAL_ERROR "TinyEXIF not found. Install tinyexif via vcpkg (it's listed in vcpkg.json).")
-ENDIF()
-
-IF(TinyNPY_FOUND)
-	MESSAGE(STATUS "TinyNPY found via CMake config")
-	LIST(APPEND SFM_EXTRA_LIBS TinyNPY::TinyNPY)
-ELSE()
-	MESSAGE(FATAL_ERROR "TinyNPY not found. Install tinynpy via vcpkg (it's listed in vcpkg.json).")
 ENDIF()
 
 IF(PoseLib_FOUND)

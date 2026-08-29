@@ -159,6 +159,10 @@ poses exist the alignment takes precedence over GPS. Clustering is never involve
   weakest verified connectivity refill any leftover budget (2 pairs/image) from their next
   best-ranked first-round candidates
 - Lowe's ratio test, cross-check, FLANN (LSH/KDTree)
+- **ROMAv2 guidance** (`MatchROMA2.h` config, `ROMA2Warp.h` helpers): the dense warps are computed
+  in-process (no external files) and only guide the sparse matching - `TrackKeypointsByWarp` turns a
+  warp into tracked correspondences for `MatchFeaturesGeometric`, `ApplyROMA2Pair` stores the result
+  only when it beats the descriptor-verified pair
 - **Geometric verification**: RANSAC for E (calibrated) or F (uncalibrated), optional H
 - Threshold: `maxEpipolarError` (pixels), min inliers (default 50)
 
@@ -226,7 +230,6 @@ Joint refinement of focal length + distortion (k1, k2) with relative pose via Ce
 
 ## External Format Support
 - **COLMAP import** (`ImportCOLMAP.h`): Binary reconstruction, selective import
-- **ROMA2 import** (`ImportROMA2.h`): Robust optical matching .npz files
 - **frames.json import** (`PoseIO.h`): Polycam-style array of `{name, transform[16], params?}`;
   `transform` is a column-major 4x4 camera-to-world matrix, `params` an optional OPENCV intrinsics block
   (`w,h,fx,fy,cx,cy,k1,k2,p1,p2`) declared for its own resolution and rescaled to the image.
@@ -257,7 +260,7 @@ Joint refinement of focal length + distortion (k1, k2) with relative pose via Ce
 - `Scene::Release()` for manual cleanup
 
 ## Build & Dependencies
-- **Required**: Common, Math, IO, Ceres Solver, PoseLib, TinyEXIF, TinyNPY
+- **Required**: Common, Math, IO, Ceres Solver, PoseLib, TinyEXIF
 - **Optional**: SiftGPU (CUDA/OpenGL)
 - **Inherited**: Eigen3, OpenCV, Boost
 - **Precompiled header**: `Common.h`

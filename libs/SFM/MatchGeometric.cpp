@@ -23,7 +23,8 @@ bool SFM::MatchFeaturesGeometric(
 	const std::vector<Point2f>& trackedPoints2,
 	const std::vector<uchar>& trackStatus,
 	ImagePair& pair,
-	float epipolarThreshold)
+	float epipolarThreshold,
+	unsigned threadIdx)
 {
 	// Sanity check: keypoints1 correspond to trackedPoints1 by index
 	ASSERT(img1.keypoints.size() == trackedPoints1.size());
@@ -40,7 +41,7 @@ bool SFM::MatchFeaturesGeometric(
 	if (pair.matches.size() < pairsMatcher.GetConfig().minMatches) {
 		DEBUG("MatchFeaturesGeometric: insufficient tracked points (%zu) for F-matrix estimation", pair.matches.size());
 		// Fallback to descriptor-only matching
-		pairsMatcher.MatchFeatures(img1.descriptors, img2.descriptors, pair.matches);
+		pairsMatcher.MatchFeatures(img1.descriptors, img2.descriptors, pair.matches, threadIdx);
 		return false;
 	}
 	{
@@ -53,14 +54,14 @@ bool SFM::MatchFeaturesGeometric(
 		if (!pairsMatcher.GeometricFilter(img1Copy, img2Copy, pair)) {
 			DEBUG("MatchFeaturesGeometric: GeometricFilter failed, falling back to descriptor-only matching");
 			pair.matches.clear();
-			pairsMatcher.MatchFeatures(img1.descriptors, img2.descriptors, pair.matches);
+			pairsMatcher.MatchFeatures(img1.descriptors, img2.descriptors, pair.matches, threadIdx);
 			return false;
 		}
 	}
 	if (pair.GetNumFilteredInliers() < pairsMatcher.GetConfig().minMatches) {
 		DEBUG("MatchFeaturesGeometric: PoseLib estimation failed, falling back to descriptor-only matching");
 		pair.ResetMatches();
-		pairsMatcher.MatchFeatures(img1.descriptors, img2.descriptors, pair.matches);
+		pairsMatcher.MatchFeatures(img1.descriptors, img2.descriptors, pair.matches, threadIdx);
 		return false;
 	}
 	pair.ResetMatches();

@@ -77,7 +77,7 @@ The following five suggestions offer the highest impact relative to implementati
 - **What is missing:** The current `FeaturesExtractor` (`libs/SFM/FeaturesExtractor.h`) supports only classical detectors (AKAZE, ORB, SIFT, SiftGPU). No integration exists for learned feature extractors.
 - **Why it matters:** SuperPoint + LightGlue combinations consistently outperform classical features on benchmarks (HPatches, MegaDepth, ScanNet). For challenging reconstruction scenarios (indoor, low-texture, varying illumination), learned features can double the number of registered images. ALIKED (2023, CVPR) provides real-time performance competitive with SuperPoint. DeDoDe v2 (2024) provides state-of-the-art descriptor quality.
 - **State-of-the-art references:** SuperPoint (DeTone et al., 2018); ALIKED (Zhao et al., 2023, CVPR); DeDoDe v2 (Edstedt et al., 2024)
-- **Integration point:** New `FeatureType` enum entries in `FeaturesExtractor.h`. ONNX Runtime inference wrapper. The existing `ImportROMA2.h` already demonstrates external matcher integration as a pattern to follow.
+- **Integration point:** New `FeatureType` enum entries in `FeaturesExtractor.h`. ONNX Runtime inference wrapper, as the in-process ROMAv2 path (`MatchROMA2.h`, `ROMA2Warp.h`) does.
 - **Complexity:** Medium
 - **Priority:** High
 
@@ -86,7 +86,7 @@ The following five suggestions offer the highest impact relative to implementati
 - **What is missing:** Feature matching in `PairsMatcher.cpp` uses only classical approaches (FLANN LSH/KDTree, BFMatcher, SiftMatchGPU).
 - **Why it matters:** LightGlue (Lindenberger et al., 2023) achieves 2–3x more correct matches than ratio-test matching on wide-baseline pairs. LoFTR enables detector-free matching for textureless regions. MASt3R (Leroy et al., 2024) directly predicts 3D point maps.
 - **State-of-the-art references:** LightGlue (2023, ICCV); LoFTR (Sun et al., 2021, CVPR); MASt3R (Leroy et al., 2024, ECCV)
-- **Integration point:** Alternative to `PairsMatcher::MatchFeatures()`. `ImportROMA2` partially addresses this use case already.
+- **Integration point:** Alternative to `PairsMatcher::MatchFeatures()`. The in-process ROMAv2 warp guidance (`ROMA2Warp.h`) partially addresses this use case already.
 - **Complexity:** Medium-High
 - **Priority:** High
 

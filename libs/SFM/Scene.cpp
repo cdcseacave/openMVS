@@ -562,12 +562,6 @@ bool Scene::MatchPairs(const MatchConfig& config, const ROMA2Config& roma2Cfg, c
 {
 	PairsMatcher pairsMatcher(*this, config);
 
-	// Import matches from ROMA2 NPZ file
-	if (!roma2Cfg.importROMA2Path.empty() && ImportROMA2Matches(pairsMatcher, roma2Cfg) == 0) {
-		VERBOSE("error: failed to import from '%s'", roma2Cfg.importROMA2Path.c_str());
-		return false;
-	}
-
 	if (status.nState.isSet(Status::STATE::MATCHED)) {
 		VERBOSE("warning: pairs already matched, skipping");
 		pairsMatcher.ComputeRelativePoses();

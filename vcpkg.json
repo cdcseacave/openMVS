@@ -46,7 +46,6 @@
     "tiff",
     "tinyexif",
     "tinygltf",
-    "tinynpy",
     "zlib"
   ],
   "features": {

@@ -40,6 +40,11 @@ namespace SFM {
 // VocabularyTree save/load roundtrip test
 bool VocabularyTreeTest();
 
+// ROMA2 warp helpers test: keypoint tracking through an identity warp (the
+// pixel<->grid<->normalized coordinate conventions), overlap gating, confidence-map
+// erosion, and the store/replace-by-inlier-count policy of the guided pairs
+bool ROMA2WarpTrackingTest();
+
 // Test Bundle-Adjustment PinholeReprojectionErrorAnalytic Jacobians against AutoDiff
 bool BAPinholeReprojectionJacobianTest();
 

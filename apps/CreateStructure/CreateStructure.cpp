@@ -57,7 +57,6 @@ String strExportPoseQuality;
 String strImportOpenMVGDir;
 String strExportOpenMVGDir;
 String strExportPairsCSV;
-String strImportROMA2Path;
 String strCompareMVS;
 int matchMode;
 unsigned importPosesMode;
@@ -139,7 +138,6 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("import-openmvg-dir", boost::program_options::value<std::string>(&OPT::strImportOpenMVGDir), "import OpenMVG features from directory (optional)")
 		("export-openmvg-dir", boost::program_options::value<std::string>(&OPT::strExportOpenMVGDir), "export OpenMVG features to directory (optional)")
 		("export-pairs-csv", boost::program_options::value<std::string>(&OPT::strExportPairsCSV), "export image pairs to CSV file (optional)")
-		("import-roma2", boost::program_options::value<std::string>(&OPT::strImportROMA2Path), "import ROMA2 reconstruction from .npz files (folder or semicolon-separated list)")
 		("compare-mvs", boost::program_options::value<std::string>(&OPT::strCompareMVS), "compare reconstruction against ground-truth MVS file (optional)")
 		("max-features-per-cell", boost::program_options::value(&OPT::nMaxFeaturesPerCell)->default_value(3000), "maximum features per grid cell (3x3 grid)")
 		("min-features-per-cell", boost::program_options::value(&OPT::nMinFeaturesPerCell)->default_value(500), "minimum features per cell before adjusting sensitivity")
@@ -228,7 +226,6 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 	Util::ensureValidFolderPath(OPT::strImportOpenMVGDir);
 	Util::ensureValidFolderPath(OPT::strExportOpenMVGDir);
 	Util::ensureValidPath(OPT::strExportPairsCSV);
-	Util::ensureValidPath(OPT::strImportROMA2Path);
 	Util::ensureValidPath(OPT::strCompareMVS);
 
 	// Use max threads option if provided
@@ -273,7 +270,6 @@ int main(int argc, LPCTSTR* argv)
 	cfg.featuresCfg.minFeaturesPerCell = OPT::nMinFeaturesPerCell;
 	cfg.featuresCfg.importOpenMVGDir = OPT::strImportOpenMVGDir;
 	cfg.featuresCfg.exportOpenMVGDir = OPT::strExportOpenMVGDir;
-	cfg.roma2Cfg.importROMA2Path = OPT::strImportROMA2Path;
 	cfg.matchCfg.DefaultsForFeatureType(cfg.featuresCfg.detectorType);
 	cfg.matchCfg.mode = static_cast<MatchConfig::MatchMode>(OPT::matchMode);
 	cfg.matchCfg.matchSequenceOverlap = OPT::matchSequenceOverlap;
@@ -350,14 +346,6 @@ int main(int argc, LPCTSTR* argv)
 			return EXIT_FAILURE;
 		}
 	}
-	// Generate depth-maps from ROMA2 NPZ files
-	CLISTDEF2(String) depthMapFiles;
-	if (!OPT::strImportROMA2Path.empty() && ImportROMA2DepthMaps(scene, cfg.roma2Cfg, &depthMapFiles) == 0) {
-		VERBOSE("error: failed to generate depth-maps from '%s'", cfg.roma2Cfg.importROMA2Path.c_str());
-		return EXIT_FAILURE;
-	}
-	if (!depthMapFiles.empty())
-		UndistortDepthMaps(scene, depthMapFiles, OPT::undistortAlpha);
 	return EXIT_SUCCESS;
 }
 /*----------------------------------------------------------------*/

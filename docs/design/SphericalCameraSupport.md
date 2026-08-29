@@ -49,7 +49,7 @@ These sites construct a 3D ray via `Unproject(px).homogeneous()` and feed it int
 | A1 | [libs/SFM/Track.cpp:225](../../libs/SFM/Track.cpp#L225) | `ComputeTracksMeanReprojectionError` | **Caught by the regression test.** Metric-only; doesn't affect reconstruction correctness, but every existing test that logs angular reprojection error is wrong for spherical scenes. |
 | A2 | [libs/SFM/Track.cpp:278](../../libs/SFM/Track.cpp#L278) | `FilterTracks` | **Reconstruction-critical.** Uses the angular threshold to reject observations as outliers. For spherical scenes, back-hemisphere observations get discarded. |
 | A3 | [libs/SFM/View.h:158](../../libs/SFM/View.h#L158) | `View::Ray(x)` | Returns a world-space ray from a pixel. Only caller is `GlobalPositioning.cpp:301` which `normalized()`s the result anyway. Dead sibling `View::RayNormalized` at line 160 is zero-callers and can be deleted. |
-| A4 | [libs/SFM/ImportROMA2.cpp:599-600](../../libs/SFM/ImportROMA2.cpp#L599) | `ImportROMA2` depth computation | Uses ray cross-product for depth. Likely pinhole-focused import, but should still be fixed for consistency. |
+| A4 | *(site removed)* | ROMAv2 NPZ depth import | Used a ray cross-product for depth. The NPZ import was deleted when ROMAv2 moved in-process, so this site no longer exists. |
 
 ### Group B — Multi-line refactors (feed 2D into external solvers)
 These sites pass the 2D-form output into PoseLib or custom triangulators that expect pinhole-normalized-plane coordinates. Fixing requires switching to the bearing-vector solver variants and possibly adapting the downstream code. Out of Phase 2 scope — tracked for Phase 3.
@@ -171,7 +171,7 @@ No new API is needed — `Camera::UnprojectNormalized` already returns a 3D unit
 ## Implementation Order (updated after Phase 1)
 
 1. **Phase 1 — Write the failing test first.** ✅ Done. `ReconstructSphericalSyntheticTest` exists and fails on the angular reprojection assertion with a 90° mean error. It also uncovered that G2 is dead code.
-2. **Phase 2 — Close Group A (`.homogeneous()` single-line fixes).** Four sites: A1 `ComputeTracksMeanReprojectionError`, A2 `FilterTracks`, A3 `View::Ray`, A4 `ImportROMA2`. All replace `Unproject(px).homogeneous()` with `UnprojectNormalized(px)`. Each fix is presented to the user before editing. After all four, re-run `ReconstructSphericalSyntheticTest` — A1 should turn the test green.
+2. **Phase 2 — Close Group A (`.homogeneous()` single-line fixes).** Four sites: A1 `ComputeTracksMeanReprojectionError`, A2 `FilterTracks`, A3 `View::Ray`, A4 the ROMAv2 NPZ depth import (since removed). All replace `Unproject(px).homogeneous()` with `UnprojectNormalized(px)`. Each fix is presented to the user before editing. After all four, re-run `ReconstructSphericalSyntheticTest` — A1 should turn the test green.
 3. **Phase 3 — Close Group B (multi-line refactors).** StarInitializer, ImagePair, Resection, PairsMatcher — switch their PoseLib / solver input from 2D-normalized to 3D-bearing and verify with an expanded integration test. This is the biggest unit of work.
 4. **Phase 4 — Fix G3 (angular RANSAC).** Convert MatchGeometric thresholds per-camera.
 5. **Phase 5 — Cube-map bridge (G4).** Implement `CubeMapBridge.h/.cpp` + `CubeMapBridgeTest`. Wire into `InterfaceMVS` export path.

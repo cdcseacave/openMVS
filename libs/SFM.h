@@ -30,6 +30,8 @@
 #include "SFM/PairsMatcher.h"
 #include "SFM/PairsWeighting.h"
 #include "SFM/RelativePoseRefine.h"
+#include "SFM/MatchROMA2.h"
+#include "SFM/ROMA2Warp.h"
 
 // Track building and triangulation
 #include "SFM/Track.h"
@@ -51,7 +53,6 @@
 #include "SFM/InterfaceMVS.h"
 #include "SFM/PoseIO.h"
 #include "SFM/ImportCOLMAP.h"
-#include "SFM/ImportROMA2.h"
 
 // D E F I N E S ///////////////////////////////////////////////////
 

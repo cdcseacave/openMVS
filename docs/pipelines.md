@@ -843,7 +843,6 @@ graph TD
 3. Saves `.sfm` native format via `scene.Save()`
 4. Optional: exports camera poses CSV, image pairs CSV
 5. Optional: exports MVS format via `ExportMVS()` for downstream MVS processing (undistorts images, converts to `MVS::Interface` binary format)
-6. Optional: generates depth maps from ROMA2 NPZ files via `ImportROMA2DepthMaps()`
 
 ---
 
