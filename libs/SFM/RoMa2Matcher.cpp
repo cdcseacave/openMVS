@@ -76,7 +76,7 @@ AxisWeights ComputeAxisWeights(int in, int out)
 	const float scale = (float)in / (float)out;
 	const float support = scale >= 1.f ? 2.f * scale : 2.f;
 	const float invScale = scale >= 1.f ? 1.f / scale : 1.f;
-	w.maxTaps = (int)std::ceil(support) * 2 + 1;
+	w.maxTaps = MINF((int)std::ceil(support) * 2 + 1, in);
 	w.weights.assign((size_t)out * w.maxTaps, 0.f);
 	for (int i = 0; i < out; ++i) {
 		const float center = scale * (i + 0.5f);

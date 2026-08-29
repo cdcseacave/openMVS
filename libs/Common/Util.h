@@ -781,6 +781,8 @@ public:
 		if (str.empty())
 			return std::wstring();
 		const int len = MultiByteToWideChar(CP_UTF8, 0, str.c_str(), (int)str.length(), NULL, 0);
+		if (len <= 0)
+			return std::wstring(); // malformed input: report empty rather than touch wstr.front() on an empty buffer
 		std::wstring wstr((size_t)len, L'\0');
 		MultiByteToWideChar(CP_UTF8, 0, str.c_str(), (int)str.length(), &wstr.front(), len);
 		return wstr;

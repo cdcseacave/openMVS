@@ -97,28 +97,40 @@ void ORT_API_CALL OnnxLogCallback(void*, OrtLoggingLevel severity, const char* c
 	}
 }
 
-// ORT takes the model path as ORTCHAR_T*: wchar_t on Windows, char elsewhere
+// ORT takes the model path as ORTCHAR_T*: wchar_t on Windows, char elsewhere (openMVS
+// equates "Windows" with "built by MSVC", Types.h:12-14, so _MSC_VER is the right guard here)
 std::basic_string<ORTCHAR_T> ToOrtPath(const String& path)
 {
-	#ifdef _WIN32
+	#ifdef _MSC_VER
 	return Util::toWString(path); // UTF-8 -> UTF-16
 	#else
 	return std::basic_string<ORTCHAR_T>(path.begin(), path.end());
 	#endif
 }
 
-// Providers this binary was linked with, in preference order, filtered by the request
+// Providers this binary was linked with, in preference order, filtered by the request;
+// a specifically requested (non-AUTO) provider that is not available gets a warning before
+// silently falling through to CPU
 std::vector<OnnxProvider> ProviderCandidates(OnnxProvider requested)
 {
 	const std::vector<std::string> available(Ort::GetAvailableProviders());
 	const auto has = [&](const char* name) { return std::find(available.begin(), available.end(), name) != available.end(); };
 	std::vector<OnnxProvider> candidates;
-	if ((requested == OnnxProvider::AUTO || requested == OnnxProvider::CUDA) && has("CUDAExecutionProvider"))
-		candidates.push_back(OnnxProvider::CUDA);
-	if ((requested == OnnxProvider::AUTO || requested == OnnxProvider::COREML) && has("CoreMLExecutionProvider"))
-		candidates.push_back(OnnxProvider::COREML);
-	if ((requested == OnnxProvider::AUTO || requested == OnnxProvider::DML) && has("DmlExecutionProvider"))
-		candidates.push_back(OnnxProvider::DML);
+	if (has("CUDAExecutionProvider")) {
+		if (requested == OnnxProvider::AUTO || requested == OnnxProvider::CUDA)
+			candidates.push_back(OnnxProvider::CUDA);
+	} else if (requested == OnnxProvider::CUDA)
+		VERBOSE("warning: requested execution provider CUDA is not available in this build");
+	if (has("CoreMLExecutionProvider")) {
+		if (requested == OnnxProvider::AUTO || requested == OnnxProvider::COREML)
+			candidates.push_back(OnnxProvider::COREML);
+	} else if (requested == OnnxProvider::COREML)
+		VERBOSE("warning: requested execution provider CoreML is not available in this build");
+	if (has("DmlExecutionProvider")) {
+		if (requested == OnnxProvider::AUTO || requested == OnnxProvider::DML)
+			candidates.push_back(OnnxProvider::DML);
+	} else if (requested == OnnxProvider::DML)
+		VERBOSE("warning: requested execution provider DirectML is not available in this build");
 	if (requested == OnnxProvider::AUTO || requested == OnnxProvider::CPU || candidates.empty())
 		candidates.push_back(OnnxProvider::CPU);
 	return candidates;
@@ -141,8 +153,14 @@ void AppendProvider(Ort::SessionOptions& so, OnnxProvider provider, const OnnxMo
 		so.AppendExecutionProvider_CUDA_V2(*cudaOptions);
 		break; }
 	case OnnxProvider::COREML: {
-		// generic registration API (ORT >= 1.20): MLProgram format, all compute units
+		// generic registration API (ORT >= 1.20): MLProgram format, all compute units;
+		// option key names come from the CoreML EP header when it's available (macOS), else
+		// the (identical) string literals it documents for the generic AppendExecutionProvider
+		#ifdef _ORT_HAS_COREML_HEADER
+		std::unordered_map<std::string, std::string> coreml{{kCoremlProviderOption_ModelFormat, "MLProgram"}, {kCoremlProviderOption_MLComputeUnits, "ALL"}};
+		#else
 		std::unordered_map<std::string, std::string> coreml{{"ModelFormat", "MLProgram"}, {"MLComputeUnits", "ALL"}};
+		#endif
 		so.AppendExecutionProvider("CoreML", coreml);
 		break; }
 	case OnnxProvider::DML: {
@@ -179,11 +197,13 @@ bool ExpectShape(const std::vector<std::pair<std::string, std::vector<int64_t>>>
 
 OnnxProvider SFM::OnnxProviderFromString(const String& name)
 {
+	if (name == "auto") return OnnxProvider::AUTO;
 	if (name == "cuda") return OnnxProvider::CUDA;
 	if (name == "coreml") return OnnxProvider::COREML;
 	if (name == "dml") return OnnxProvider::DML;
 	if (name == "cpu") return OnnxProvider::CPU;
-	return OnnxProvider::AUTO; // "auto", empty, or anything unrecognized
+	VERBOSE("warning: unrecognized ONNX Runtime execution provider '%s', using auto", name.c_str());
+	return OnnxProvider::AUTO;
 }
 
 Ort::Env& SFM::OnnxEnv()
@@ -204,11 +224,18 @@ size_t OrtTensor::NumElements() const
 
 OrtTensor OrtTensor::Host(const std::vector<int64_t>& shape)
 {
+	ASSERT(!shape.empty());
 	OrtTensor t;
 	t.shape = shape;
-	t.host.assign(t.NumElements(), 0.f);
-	t.memInfo = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
-	t.value = Ort::Value::CreateTensor<float>(t.memInfo, t.host.data(), t.host.size(), shape.data(), shape.size()); // non-owning over host
+	try {
+		t.host.assign(t.NumElements(), 0.f);
+		t.memInfo = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
+		t.value = Ort::Value::CreateTensor<float>(t.memInfo, t.host.data(), t.host.size(), shape.data(), shape.size()); // non-owning over host
+	} catch (const std::exception& e) { // Ort::Exception or std::bad_alloc from the host vector
+		VERBOSE("error: can not allocate a host tensor of %s (%s)",
+			Util::formatBytes((int64_t)(t.NumElements() * sizeof(float))).c_str(), e.what());
+		return OrtTensor();
+	}
 	return t;
 }
 
@@ -245,26 +272,53 @@ bool OnnxModel::Load(const String& fileName, const Options& _options)
 		VERBOSE("error: can not load ONNX model '%s' on any execution provider", fileName.c_str());
 		return false;
 	}
-	// static I/O metadata; reject dynamic dims (static graphs only, like polycpp matcher.cpp:408-414)
-	Ort::AllocatorWithDefaultOptions allocator;
-	inputs.clear(); outputs.clear();
-	for (size_t i = 0; i < session.GetInputCount(); ++i)
-		inputs.emplace_back(session.GetInputNameAllocated(i, allocator).get(),
-			session.GetInputTypeInfo(i).GetTensorTypeAndShapeInfo().GetShape());
-	for (size_t i = 0; i < session.GetOutputCount(); ++i)
-		outputs.emplace_back(session.GetOutputNameAllocated(i, allocator).get(),
-			session.GetOutputTypeInfo(i).GetTensorTypeAndShapeInfo().GetShape());
-	for (const auto& io : inputs)
-		for (const int64_t d : io.second)
-			if (d < 0) { VERBOSE("error: dynamic dimension in input '%s' of '%s'", io.first.c_str(), fileName.c_str()); return false; }
-	for (const auto& io : outputs)
-		for (const int64_t d : io.second)
-			if (d < 0) { VERBOSE("error: dynamic dimension in output '%s' of '%s'", io.first.c_str(), fileName.c_str()); return false; }
-	if (IsOnDevice())
-		deviceAllocator = std::make_unique<Ort::Allocator>(session, Ort::MemoryInfo("Cuda", OrtArenaAllocator, options.deviceID, OrtMemTypeDefault));
-	binding = Ort::IoBinding(session);
+	// static I/O metadata; reject dynamic dims (static graphs only, like polycpp matcher.cpp:408-414);
+	// every ORT call below can throw (unlikely, but Load() is contracted to log and return
+	// false rather than let an exception escape), so the whole block is guarded and any
+	// failure resets the model back to the not-loaded state
+	try {
+		Ort::AllocatorWithDefaultOptions allocator;
+		inputs.clear(); outputs.clear();
+		for (size_t i = 0; i < session.GetInputCount(); ++i)
+			inputs.emplace_back(session.GetInputNameAllocated(i, allocator).get(),
+				session.GetInputTypeInfo(i).GetTensorTypeAndShapeInfo().GetShape());
+		for (size_t i = 0; i < session.GetOutputCount(); ++i)
+			outputs.emplace_back(session.GetOutputNameAllocated(i, allocator).get(),
+				session.GetOutputTypeInfo(i).GetTensorTypeAndShapeInfo().GetShape());
+		for (const auto& io : inputs)
+			for (const int64_t d : io.second)
+				if (d < 0) {
+					VERBOSE("error: dynamic dimension in input '%s' of '%s'", io.first.c_str(), fileName.c_str());
+					Reset();
+					return false;
+				}
+		for (const auto& io : outputs)
+			for (const int64_t d : io.second)
+				if (d < 0) {
+					VERBOSE("error: dynamic dimension in output '%s' of '%s'", io.first.c_str(), fileName.c_str());
+					Reset();
+					return false;
+				}
+		if (IsOnDevice())
+			deviceAllocator = std::make_unique<Ort::Allocator>(session, Ort::MemoryInfo("Cuda", OrtArenaAllocator, options.deviceID, OrtMemTypeDefault));
+		binding = Ort::IoBinding(session);
+	} catch (const Ort::Exception& e) {
+		VERBOSE("error: can not query ONNX model '%s' (%s)", fileName.c_str(), e.what());
+		Reset();
+		return false;
+	}
 	DEBUG("ONNX model '%s' loaded on %s", Util::getFileNameExt(fileName).c_str(), ProviderName(provider));
 	return true;
+}
+
+void OnnxModel::Reset()
+{
+	session = Ort::Session(nullptr);
+	binding = Ort::IoBinding(nullptr);
+	deviceAllocator.reset();
+	inputs.clear();
+	outputs.clear();
+	provider = OnnxProvider::CPU; // the class's own not-loaded default
 }
 
 bool OnnxModel::IsOnDevice() const
@@ -282,7 +336,8 @@ OrtTensor OnnxModel::MakeDeviceTensor(const std::vector<int64_t>& shape)
 	try {
 		t.value = Ort::Value::CreateTensor(*deviceAllocator, shape.data(), shape.size(), ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT); // owned by the session's CUDA arena
 	} catch (const Ort::Exception& e) {
-		VERBOSE("error: can not allocate a %u MB device tensor (%s)", (unsigned)((t.NumElements()*4)>>20), e.what());
+		VERBOSE("error: can not allocate a device tensor of %s (%s)",
+			Util::formatBytes((int64_t)(t.NumElements() * sizeof(float))).c_str(), e.what());
 		return OrtTensor();
 	}
 	return t;
@@ -298,16 +353,30 @@ bool OnnxModel::ExpectOutputShape(const String& name, const std::vector<int64_t>
 	return ExpectShape(outputs, name, shape, "output");
 }
 
-void OnnxModel::BindInput(const String& name, const OrtTensor& t)
+bool OnnxModel::BindInput(const String& name, const OrtTensor& t)
 {
-	ASSERT(ExpectInputShape(name, t.Shape()));
-	binding.BindInput(name.c_str(), t.Value()); // host inputs are copied by ORT
+	if (!ExpectInputShape(name, t.Shape())) // VERBOSEs the mismatch itself
+		return false;
+	try {
+		binding.BindInput(name.c_str(), t.Value()); // host inputs are copied by ORT
+	} catch (const Ort::Exception& e) {
+		VERBOSE("error: can not bind input '%s' (%s)", name.c_str(), e.what());
+		return false;
+	}
+	return true;
 }
 
-void OnnxModel::BindOutput(const String& name, OrtTensor& t)
+bool OnnxModel::BindOutput(const String& name, OrtTensor& t)
 {
-	ASSERT(ExpectOutputShape(name, t.Shape()));
-	binding.BindOutput(name.c_str(), t.Value()); // host output => ORT copies D2H in Run()
+	if (!ExpectOutputShape(name, t.Shape())) // VERBOSEs the mismatch itself
+		return false;
+	try {
+		binding.BindOutput(name.c_str(), t.Value()); // host output => ORT copies D2H in Run()
+	} catch (const Ort::Exception& e) {
+		VERBOSE("error: can not bind output '%s' (%s)", name.c_str(), e.what());
+		return false;
+	}
+	return true;
 }
 
 bool OnnxModel::Run()

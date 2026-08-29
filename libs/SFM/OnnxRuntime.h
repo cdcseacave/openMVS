@@ -27,6 +27,14 @@
 
 // I N C L U D E S /////////////////////////////////////////////////
 
+#include "Common.h" // SFM_API, String
+
+#include <cstdint>
+#include <memory>
+#include <string>
+#include <utility>
+#include <vector>
+
 #ifdef _USE_ONNXRUNTIME
 #include <onnxruntime_cxx_api.h>
 #endif
@@ -138,11 +146,18 @@ public:
 	bool ExpectOutputShape(const String& name, const std::vector<int64_t>& shape) const;
 
 	void ClearBindings();
-	void BindInput(const String& name, const OrtTensor& tensor);  // host tensors are copied to the device by ORT
-	void BindOutput(const String& name, OrtTensor& tensor);       // host tensor => ORT copies device->host in Run()
+	// false + VERBOSE on a shape mismatch (name unknown, or shape disagrees) or an ORT
+	// binding failure; callers may ignore the result (Run() still fails safely on a bad
+	// binding, this just gives an earlier, more specific diagnostic)
+	bool BindInput(const String& name, const OrtTensor& tensor);  // host tensors are copied to the device by ORT
+	bool BindOutput(const String& name, OrtTensor& tensor);       // host tensor => ORT copies device->host in Run()
 	bool Run();
 
 private:
+	// Reset to the not-loaded state; called on any failure path once the session itself
+	// has already been constructed, so IsLoaded() reliably reports false after a failed Load()
+	void Reset();
+
 	Options options;
 	OnnxProvider provider = OnnxProvider::CPU;
 	Ort::SessionOptions sessionOptions{nullptr};
