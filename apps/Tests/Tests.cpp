@@ -204,6 +204,8 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!SFM::ROMA2WarpTrackingTest())
 				return false;
+			if (!SFM::GlobalDescriptorsQueryTest())
+				return false;
 			if (!SFM::PipelineTest())
 				return false;
 			if (!SFM::GPSPriorPoseUncertaintyTest())

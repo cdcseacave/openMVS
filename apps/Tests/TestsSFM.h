@@ -45,6 +45,12 @@ bool VocabularyTreeTest();
 // erosion, and the store/replace-by-inlier-count policy of the guided pairs
 bool ROMA2WarpTrackingTest();
 
+// Global-descriptor retrieval test: cosine ranking of the per-image global descriptors and its
+// deterministic tie order, the PairsMatcher dispatch that ranks the candidate pairs through them
+// instead of the vocabulary tree, the rankings CSV export, the .sfm round-trip of the
+// descriptors, and the two host-side pooling recipes against the export script's fixtures
+bool GlobalDescriptorsQueryTest();
+
 // Test Bundle-Adjustment PinholeReprojectionErrorAnalytic Jacobians against AutoDiff
 bool BAPinholeReprojectionJacobianTest();
 

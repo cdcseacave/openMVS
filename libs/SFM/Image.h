@@ -47,6 +47,11 @@ public:
 	std::vector<cv::KeyPoint> keypoints;  // detected keypoints
 	cv::Mat descriptors;                  // feature descriptors (one row per keypoint)
 
+	// Optional 1xD CV_32F L2-normalized global retrieval descriptor of the whole image
+	// (GeM-pooled DINOv3 features from the ROMAv2 describe graph); empty unless the
+	// ROMAv2 retrieval pass ran, in which case it ranks the candidate pairs
+	cv::Mat globalDescriptor;
+
 	// Additional metadata
 	struct Metadata {
 		String name;               // optional descriptive name
@@ -74,6 +79,9 @@ public:
 
 	// Check if image has descriptors
 	inline bool HasDescriptors() const { return !descriptors.empty(); }
+
+	// Check if image has a global retrieval descriptor
+	inline bool HasGlobalDescriptor() const { return !globalDescriptor.empty(); }
 
 	// Load EXIF metadata and initialize view camera (does not decode pixels)
 	//  - defaultFocalRatio: default focal length to image width ratio if EXIF data is missing
@@ -136,6 +144,7 @@ public:
 		ar & metadata.orientation;
 		ar & keypoints;
 		ar & descriptors;
+		ar & globalDescriptor;
 	}
 	template<class Archive>
 	void load(Archive& ar, const unsigned int /*version*/) {
@@ -151,6 +160,7 @@ public:
 		ar & metadata.orientation;
 		ar & keypoints;
 		ar & descriptors;
+		ar & globalDescriptor;
 	}
 	BOOST_SERIALIZATION_SPLIT_MEMBER()
 	#endif

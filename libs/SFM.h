@@ -27,6 +27,7 @@
 
 // Image matching and pairing
 #include "SFM/VocabularyTree.h"
+#include "SFM/GlobalDescriptors.h"
 #include "SFM/PairsMatcher.h"
 #include "SFM/PairsWeighting.h"
 #include "SFM/RelativePoseRefine.h"

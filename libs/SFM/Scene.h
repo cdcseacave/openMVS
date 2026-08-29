@@ -174,7 +174,8 @@ public:
 			FEATURES_EXTRACTED = 1,
 			MATCHED = 2,
 			CALIBRATED = 4,
-			GEO_ALIGN = 8
+			GEO_ALIGN = 8,
+			GLOBAL_DESCRIPTORS = 16
 		};
 		Flags nState{STATE::EMPTY}; // current state (now type-safe with STATE enum)
 		FeatureType nFeaturesType{FeatureType::NONE}; // type of features extracted (0=none,1=AKAZE,2=ORB,3=SIFT)

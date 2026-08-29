@@ -29,6 +29,7 @@
 
 #include "Camera.h"
 #include "PairsWeighting.h"
+#include "MatchROMA2.h"
 
 
 // D E F I N E S ///////////////////////////////////////////////////
@@ -44,6 +45,8 @@ class SFM_API ImagePair;
 struct SFM_API DMatch;
 class SFM_API Scene;
 class SFM_API VocabularyTree;
+class SFM_API GlobalDescriptors;
+class SFM_API RoMa2Onnx;
 enum class FeatureType : uint8_t;
 
 /**
@@ -168,6 +171,28 @@ public:
 	// Returns number of pairs updated.
 	unsigned ComputeRelativePoses(bool onlyTrustedIntrinsics = true, bool onlyComputeIfMissing = true, const std::unordered_set<CameraPtr>& updatedCameras = {});
 
+	// Attach the in-process ROMAv2 model and its configuration; model may be NULL, which
+	// still enables the global-descriptor retrieval backend if the scene carries the
+	// descriptors (the model is only needed to compute them, not to rank with them)
+	void SetROMA2(RoMa2Onnx* model, const ROMA2Config& cfg);
+
+	// Return true if the candidate pairs are ranked by the ROMAv2 global descriptors
+	// instead of the vocabulary tree: retrieval enabled, the scene marked as described,
+	// and every image carrying a descriptor
+	bool UseGlobalDescriptors() const;
+
+	// Build the retrieval backend on demand (lazy initialization): the global-descriptor
+	// index when UseGlobalDescriptors(), the vocabulary tree otherwise.
+	// Returns false if neither backend could be built.
+	bool EnsureRetrievalIndex();
+
+	// Query the ranked list of the images most similar to the given one (as an index in the
+	// scene image array) from whichever retrieval backend EnsureRetrievalIndex built;
+	// the vocabulary tree includes the query image itself in its results, the
+	// global-descriptor index does not, so callers must skip self-matches.
+	// Returns an empty list if no backend is ready.
+	std::vector<std::pair<uint32_t, float>> QueryRetrieval(IIndex idx, unsigned maxResults) const;
+
 	// Build vocabulary tree on demand (lazy initialization)
 	void EnsureVocabularyTree();
 
@@ -233,6 +258,14 @@ private:
 
 	// Vocabulary tree for image retrieval (lazy initialization)
 	std::unique_ptr<VocabularyTree> vocabularyTree;
+
+	// Global-descriptor retrieval index, replacing the vocabulary tree as the ranking
+	// backend when the scene carries the ROMAv2 descriptors (lazy initialization)
+	std::unique_ptr<GlobalDescriptors> globalDescriptors;
+
+	// In-process ROMAv2 model and its configuration (NULL/defaults unless SetROMA2 was called)
+	RoMa2Onnx* roma2 = NULL;
+	ROMA2Config roma2Cfg;
 
 	// Symmetric fused retrieval score of every pair retrieved by the last
 	// CollectVocabularyPairs call, kept for CollectVerificationFeedbackPairs

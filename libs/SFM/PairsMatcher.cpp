@@ -28,6 +28,7 @@
 #include "FeaturesExtractor.h"
 #include "PairsWeighting.h"
 #include "VocabularyTree.h"
+#include "GlobalDescriptors.h"
 #include <PoseLib/poselib.h>
 
 #ifdef _USE_SIFTGPU
@@ -643,6 +644,54 @@ bool PairsMatcher::MatchPair(
 	return true;
 }
 
+void PairsMatcher::SetROMA2(RoMa2Onnx* model, const ROMA2Config& cfg)
+{
+	roma2 = model;
+	roma2Cfg = cfg;
+	// the ranking backend may change, so drop the index built for the previous configuration
+	globalDescriptors.reset();
+}
+
+bool PairsMatcher::UseGlobalDescriptors() const
+{
+	if (!roma2Cfg.useRetrieval || !scene.status.nState.isSet(Scene::Status::STATE::GLOBAL_DESCRIPTORS))
+		return false;
+	// a partially described scene would rank its images against incomparable backends
+	FOREACH(i, scene.images)
+		if (!scene.images[i].HasGlobalDescriptor())
+			return false;
+	return true;
+}
+
+bool PairsMatcher::EnsureRetrievalIndex()
+{
+	if (!UseGlobalDescriptors()) {
+		EnsureVocabularyTree();
+		return vocabularyTree && vocabularyTree->IsValid();
+	}
+	if (globalDescriptors)
+		return globalDescriptors->IsValid();
+	TD_TIMER_STARTD();
+	globalDescriptors = std::make_unique<GlobalDescriptors>();
+	if (!globalDescriptors->Build(scene)) {
+		VERBOSE("error: failed to build the global-descriptor retrieval index");
+		globalDescriptors.reset();
+		return false;
+	}
+	DEBUG("Global-descriptor retrieval index built from %u images (%d-D) in %s",
+	      scene.images.size(), globalDescriptors->Dim(), TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
+std::vector<std::pair<uint32_t, float>> PairsMatcher::QueryRetrieval(IIndex idx, unsigned maxResults) const
+{
+	if (globalDescriptors && globalDescriptors->IsValid())
+		return globalDescriptors->Query(idx, maxResults);
+	if (vocabularyTree && vocabularyTree->IsValid())
+		return vocabularyTree->Query(scene.images[idx], maxResults);
+	return {};
+}
+
 void PairsMatcher::EnsureVocabularyTree()
 {
 	if (vocabularyTree)
@@ -665,9 +714,8 @@ void PairsMatcher::EnsureVocabularyTree()
 PairIdxArr PairsMatcher::CollectVocabularyPairs(unsigned topK)
 {
 	PairIdxArr result;
-	// Ensure vocabulary tree is ready
-	EnsureVocabularyTree();
-	if (!vocabularyTree || !vocabularyTree->IsValid())
+	// Ensure the retrieval backend is ready (global descriptors if the scene carries them)
+	if (!EnsureRetrievalIndex())
 		return result;
 
 	TD_TIMER_STARTD();
@@ -687,7 +735,7 @@ PairIdxArr PairsMatcher::CollectVocabularyPairs(unsigned topK)
 	std::vector<IIndexArr> rankedPerImage(nImages); // candidate image indices, best first
 	scene.threadPool.detach_loop(0u, nImages, [&](IIndex i) {
 		const Image& img = scene.images[i];
-		const auto candidates = vocabularyTree->Query(img, queryDepth + 1);
+		const auto candidates = QueryRetrieval(i, queryDepth + 1);
 		IIndexArr& ranked = rankedPerImage[i];
 		ranked.reserve((IIndex)candidates.size());
 		for (const auto& kv : candidates) {
@@ -780,7 +828,8 @@ PairIdxArr PairsMatcher::CollectVocabularyPairs(unsigned topK)
 			}
 		}
 	}
-	DEBUG("Vocabulary-based matching: %u candidate pairs, %u mutual top-%u and %u connectivity bridges (%.2f/%u pairs/image) in %s",
+	DEBUG("%s-based matching: %u candidate pairs, %u mutual top-%u and %u connectivity bridges (%.2f/%u pairs/image) in %s",
+		UseGlobalDescriptors() ? _T("Global-descriptor") : _T("Vocabulary"),
 		result.size(), numMutualPairs, topK, result.size() - numMutualPairs,
 		(float)result.size() / nImages, config.maxPairsPerImage, TD_TIMER_GET_FMT().c_str());
 	// keep the fused retrieval scores for the verification-feedback round
@@ -1041,13 +1090,12 @@ PairIdxArr PairsMatcher::CollectKnownPosePairs(unsigned topK)
 			if (!scene.images[i].HasPose())
 				unposedImages.push_back(i);
 		PairIdxArr unposedCandidates;
-		EnsureVocabularyTree();
-		if (vocabularyTree && vocabularyTree->IsValid()) {
+		if (EnsureRetrievalIndex()) {
 			const unsigned queryDepth = (unsigned)MINF(requestedTopK, nImages - 1);
 			std::vector<PairIdxArr> pairsPerImage(unposedImages.size());
 			scene.threadPool.detach_loop(0u, unposedImages.size(), [&](IIndex u) {
 				const Image& img = scene.images[unposedImages[u]];
-				const auto candidates = vocabularyTree->Query(img, queryDepth + 1);
+				const auto candidates = QueryRetrieval(unposedImages[u], queryDepth + 1);
 				PairIdxArr& pairs = pairsPerImage[u];
 				pairs.reserve((IIndex)candidates.size());
 				for (const auto& kv : candidates)
@@ -1809,8 +1857,12 @@ unsigned PairsMatcher::Match()
 	MatchStats stats;
 	const auto MatchRound = [&](PairIdxArr& pairs, LPCTSTR progressCaption) {
 		// Pre-match the pairs if requested
-		// Pre-matching needs the vocabulary-tree descriptors, so it runs only when candidate
-		// collection built the tree (VOCABULARY, or KNOWN_POSES with unposed images).
+		// Pre-matching needs the vocabulary-tree top descriptors whatever backend ranked the
+		// candidates, so the tree is built here when the global descriptors did the ranking;
+		// otherwise it runs, as before, only when candidate collection built the tree
+		// (VOCABULARY, or KNOWN_POSES with unposed images).
+		if (config.preMatchThreshold > 0 && UseGlobalDescriptors())
+			EnsureVocabularyTree();
 		if (vocabularyTree) {
 			if (config.preMatchThreshold > 0)
 				PreMatch(pairs);

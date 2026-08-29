@@ -55,6 +55,30 @@ DEFINE_LOG_NAME(lt, _T("TestSFM "));
 
 namespace SFM {
 
+// Read count little-endian fp32 values from a raw binary fixture (the ROMA2 fixtures are
+// stored headerless so the always-on tests need no npy parser to read them)
+static bool ReadFloats(const String& fileName, size_t count, std::vector<float>& values)
+{
+	values.resize(count);
+	std::ifstream ifs(fileName.c_str(), std::ios::in | std::ios::binary);
+	if (!ifs.is_open() || !ifs.read((char*)values.data(), (std::streamsize)(count*sizeof(float)))) {
+		VERBOSE("error: cannot read %u floats from fixture '%s'", (unsigned)count, fileName.c_str());
+		return false;
+	}
+	return true;
+}
+
+// Largest absolute difference between two vectors (FLT_MAX if their sizes disagree)
+static float MaxAbsDiff(const std::vector<float>& a, const std::vector<float>& b)
+{
+	if (a.size() != b.size())
+		return FLT_MAX;
+	float maxDiff = 0.f;
+	for (size_t i = 0; i < a.size(); ++i)
+		maxDiff = MAXF(maxDiff, ABS(a[i] - b[i]));
+	return maxDiff;
+}
+
 #ifdef _IMAGE_HEIF
 // HEIF/HEIC integration at the SFM layer; see the declaration for the coverage list.
 // There are no HEIF-only fixtures: two of the four pipeline images are HEIC, so ReconstructTest
@@ -719,6 +743,122 @@ bool ROMA2WarpTrackingTest()
 	}
 
 	VERBOSE("ROMA2WarpTrackingTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
+// Global-descriptor retrieval test: cosine ranking of the per-image descriptors, its
+// deterministic tie order, the PairsMatcher dispatch that replaces the vocabulary tree with
+// it, the rankings CSV export, the .sfm round-trip of the descriptors, and the two host-side
+// pooling recipes against the export script's fixtures
+bool GlobalDescriptorsQueryTest()
+{
+	TD_TIMER_START();
+
+	// three clusters of four images, each cluster occupying its own eighth of the descriptor
+	Scene scene;
+	const int D = 64;
+	std::mt19937 rng(11);
+	std::normal_distribution<float> noise(0.f, 0.05f);
+	for (IIndex i = 0; i < 12; ++i) {
+		Image& img = scene.images.emplace_back(i, String::FormatString("%02u.jpg", i));
+		img.keypoints.resize(10);
+		img.descriptors = cv::Mat::zeros(10, 32, CV_8U); // PairsMatcher expects descriptors to exist
+		img.globalDescriptor.create(1, D, CV_32F);
+		for (int c = 0; c < D; ++c)
+			img.globalDescriptor.at<float>(c) = (c/8 == (int)(i/4) ? 1.f : 0.f) + noise(rng);
+		img.globalDescriptor /= cv::norm(img.globalDescriptor);
+	}
+	scene.status.nState.set(Scene::Status::STATE::GLOBAL_DESCRIPTORS);
+
+	// the top-3 neighbors of an image all belong to its own cluster
+	GlobalDescriptors index;
+	if (!index.Build(scene) || index.Dim() != D || index.Size() != 12) {
+		VERBOSE("GlobalDescriptorsQueryTest FAILED: build");
+		return false;
+	}
+	for (const auto& [id, score] : index.Query(5, 3)) {
+		if (id / 4 != 1 || id == 5) {
+			VERBOSE("GlobalDescriptorsQueryTest FAILED: image %u ranked for image 5", id);
+			return false;
+		}
+	}
+
+	// identical descriptors rank by ascending image ID, and two queries agree
+	scene.images[9].globalDescriptor = scene.images[8].globalDescriptor.clone();
+	scene.images[10].globalDescriptor = scene.images[8].globalDescriptor.clone();
+	GlobalDescriptors index2;
+	index2.Build(scene);
+	const auto tied = index2.Query(11, 3);
+	if (tied.size() != 3 || tied[0].first != 8 || tied[1].first != 9 || tied[2].first != 10 || index2.Query(11, 3) != tied) {
+		VERBOSE("GlobalDescriptorsQueryTest FAILED: tie order");
+		return false;
+	}
+
+	// the pair selection ranks through the global descriptors instead of the vocabulary tree,
+	// and still returns a connected view graph, joined by at most two cross-cluster bridges
+	MatchConfig matchCfg;
+	matchCfg.mode = MatchConfig::VOCABULARY;
+	matchCfg.maxPairsPerImage = 3;
+	PairsMatcher matcher(scene, matchCfg);
+	matcher.SetROMA2(NULL, ROMA2Config());
+	if (!matcher.UseGlobalDescriptors()) {
+		VERBOSE("GlobalDescriptorsQueryTest FAILED: backend");
+		return false;
+	}
+	const PairIdxArr pairs = matcher.CollectVocabularyPairs(2);
+	DisjointSet<IIndex> components(12);
+	unsigned numCross = 0;
+	for (const PairIdx& p : pairs) {
+		components.Union(p.i, p.j);
+		numCross += (p.i/4 != p.j/4);
+	}
+	for (IIndex i = 1; i < 12; ++i) {
+		if (components.Find(i) != components.Find(0)) {
+			VERBOSE("GlobalDescriptorsQueryTest FAILED: view graph split");
+			return false;
+		}
+	}
+	if (numCross > 2) {
+		VERBOSE("GlobalDescriptorsQueryTest FAILED: %u cross-cluster pairs", numCross);
+		return false;
+	}
+
+	// the rankings export and the .sfm round-trip of the descriptors
+	ScopedTempDir tmp("GlobalDescriptorsQueryTest");
+	if (!tmp.IsValid())
+		return false;
+	if (!ExportRetrievalRankingsCSV(scene, tmp("retrieval.csv"), 3))
+		return false;
+	if (!scene.Save(tmp("scene.sfm")))
+		return false;
+	Scene loaded;
+	if (!loaded.Load(tmp("scene.sfm")) || !loaded.images[3].HasGlobalDescriptor() ||
+		cv::norm(loaded.images[3].globalDescriptor - scene.images[3].globalDescriptor) > 1e-6) {
+		VERBOSE("GlobalDescriptorsQueryTest FAILED: serialization");
+		return false;
+	}
+
+	// the pooling recipes against the export script's fixture (seeded [1,2,3,3,8] tensor, pooled in Python double precision)
+	std::vector<float> input, expectedFacets, expectedLayers, descriptor;
+	if (!ReadFloats(MAKE_PATH("roma2/pool_input_2x3x3x8.bin"), 2*9*8, input) ||
+		!ReadFloats(MAKE_PATH("roma2/pool_facets_16.bin"), 16, expectedFacets) ||
+		!ReadFloats(MAKE_PATH("roma2/pool_layers_8.bin"), 8, expectedLayers))
+		return false;
+	PoolRetrievalDescriptor(input.data(), 2, 9, 8, RetrievalRecipe::FACETS, 0.3f, descriptor);
+	const float diffFacets = MaxAbsDiff(descriptor, expectedFacets);
+	if (descriptor.size() != 16 || diffFacets > 1e-6f) {
+		VERBOSE("GlobalDescriptorsQueryTest FAILED: facets recipe (max-abs %g)", diffFacets);
+		return false;
+	}
+	PoolRetrievalDescriptor(input.data(), 2, 9, 8, RetrievalRecipe::LAYERS, 0.f, descriptor);
+	const float diffLayers = MaxAbsDiff(descriptor, expectedLayers);
+	if (descriptor.size() != 8 || diffLayers > 1e-6f) {
+		VERBOSE("GlobalDescriptorsQueryTest FAILED: layers recipe (max-abs %g)", diffLayers);
+		return false;
+	}
+
+	VERBOSE("GlobalDescriptorsQueryTest PASSED: pooling matches the fixtures to %g (facets) and %g (layers) (%s)",
+		diffFacets, diffLayers, TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 

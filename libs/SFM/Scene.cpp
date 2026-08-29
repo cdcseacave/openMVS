@@ -35,7 +35,7 @@ using namespace SFM;
 #endif
 
 #define SFM_PROJECT_ID "SFM\0" // identifies the SFM project stream
-#define SFM_PROJECT_VERSION 0  // SFM project stream layout version (bump on any breaking header/serialization change)
+#define SFM_PROJECT_VERSION 1  // SFM project stream layout version (bump on any breaking header/serialization change)
 
 
 // S T R U C T S ///////////////////////////////////////////////////
@@ -267,7 +267,8 @@ bool Scene::Load(const String& fileName)
 	// load stream type (compression layer used by boost serialization)
 	uint32_t nType;
 	fs.read((char*)&nType, sizeof(uint32_t));
-	// load the stream layout version and reject files written by a newer, incompatible writer
+	// load the stream layout version and reject any file not written by this exact layout:
+	// the stream carries no per-class versions, so an older layout would silently desynchronize
 	uint32_t nVersion;
 	fs.read((char*)&nVersion, sizeof(uint32_t));
 	// skip reserved bytes
@@ -277,8 +278,8 @@ bool Scene::Load(const String& fileName)
 		VERBOSE("error: invalid SFM project header '%s'", fileName.c_str());
 		return false;
 	}
-	if (nVersion > SFM_PROJECT_VERSION) {
-		VERBOSE("error: unsupported SFM project version %u (this build supports up to %u) in '%s'",
+	if (nVersion != SFM_PROJECT_VERSION) {
+		VERBOSE("error: unsupported SFM project version %u (this build reads only version %u) in '%s'",
 			nVersion, (unsigned)SFM_PROJECT_VERSION, fileName.c_str());
 		return false;
 	}
