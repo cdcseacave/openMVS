@@ -295,7 +295,37 @@ IF(OpenMVS_USE_ONNXRUNTIME)
 	IF(ONNXRUNTIME_ROOT OR DEFINED ENV{ONNXRUNTIME_ROOT})
 		LIST(APPEND CMAKE_PREFIX_PATH "${ONNXRUNTIME_ROOT}" "$ENV{ONNXRUNTIME_ROOT}")
 	ENDIF()
-	FIND_PACKAGE(onnxruntime CONFIG QUIET) # vcpkg port and release tarball both ship lib/cmake/onnxruntime
+	# some prebuilt release tarballs ship a lib/cmake/onnxruntime config whose IMPORTED_LOCATION_<CONFIG>
+	# paths do not match the package's actual layout (e.g. ONNX Runtime 1.23.2's linux-x64-gpu tarball
+	# hardcodes lib64/ while the package only ships lib/); CMake's generated targets file verifies every
+	# referenced file exists and calls MESSAGE(FATAL_ERROR ...) if not, which QUIET cannot suppress and
+	# aborts the whole configure before FIND_PACKAGE can return -- so check the referenced files exist
+	# before calling it, and bypass it in favor of the manual fallback below if any is missing
+	SET(_ort_root "${ONNXRUNTIME_ROOT}")
+	IF(NOT _ort_root)
+		SET(_ort_root "$ENV{ONNXRUNTIME_ROOT}")
+	ENDIF()
+	SET(_ort_config_sane TRUE)
+	IF(_ort_root)
+		FILE(GLOB _ort_targets_files
+			"${_ort_root}/lib/cmake/onnxruntime/onnxruntimeTargets-*.cmake"
+			"${_ort_root}/lib64/cmake/onnxruntime/onnxruntimeTargets-*.cmake")
+		FOREACH(_ort_targets_file ${_ort_targets_files})
+			FILE(STRINGS "${_ort_targets_file}" _ort_location_lines REGEX "IMPORTED_LOCATION_[A-Za-z0-9_]+ ")
+			FOREACH(_ort_line ${_ort_location_lines})
+				STRING(REGEX REPLACE ".*\\$\\{_IMPORT_PREFIX\\}([^\"]*)\".*" "\\1" _ort_relpath "${_ort_line}")
+				IF(_ort_relpath AND NOT _ort_relpath STREQUAL "${_ort_line}" AND NOT EXISTS "${_ort_root}${_ort_relpath}")
+					SET(_ort_config_sane FALSE)
+					MESSAGE(STATUS "ONNX Runtime package config references a missing file: ${_ort_root}${_ort_relpath}")
+				ENDIF()
+			ENDFOREACH()
+		ENDFOREACH()
+	ENDIF()
+	IF(_ort_config_sane)
+		FIND_PACKAGE(onnxruntime CONFIG QUIET) # vcpkg port and release tarball both ship lib/cmake/onnxruntime
+	ELSE()
+		MESSAGE(STATUS "ONNX Runtime package config at ${_ort_root} has broken tarball metadata (see above); bypassing FIND_PACKAGE and using manual detection instead")
+	ENDIF()
 	IF(TARGET onnxruntime::onnxruntime)
 		# the release tarball's config advertises include/onnxruntime while its headers sit in include/: repair
 		GET_TARGET_PROPERTY(_ort_inc onnxruntime::onnxruntime INTERFACE_INCLUDE_DIRECTORIES)
@@ -326,8 +356,9 @@ IF(OpenMVS_USE_ONNXRUNTIME)
 		GET_TARGET_PROPERTY(_ort_lib onnxruntime::onnxruntime IMPORTED_LOCATION)
 		IF(NOT _ort_lib)
 			# multi-config imports (e.g. the release tarball's onnxruntimeConfig.cmake) only set a
-			# per-configuration IMPORTED_LOCATION_<CONFIG>, never the generic property
-			FOREACH(_ort_cfg RELEASE RELWITHDEBINFO MINSIZEREL DEBUG NONE)
+			# per-configuration IMPORTED_LOCATION_<CONFIG>, never the generic property; NOCONFIG is
+			# CMake's own suffix for a config-less import, NONE kept as a harmless extra fallback
+			FOREACH(_ort_cfg RELEASE RELWITHDEBINFO MINSIZEREL DEBUG NOCONFIG NONE)
 				GET_TARGET_PROPERTY(_ort_lib onnxruntime::onnxruntime IMPORTED_LOCATION_${_ort_cfg})
 				IF(_ort_lib)
 					BREAK()
@@ -337,6 +368,19 @@ IF(OpenMVS_USE_ONNXRUNTIME)
 		GET_FILENAME_COMPONENT(_ort_libdir "${_ort_lib}" DIRECTORY)
 		FILE(GLOB ONNXRUNTIME_RUNTIME_LIBS "${_ort_libdir}/*onnxruntime*${CMAKE_SHARED_LIBRARY_SUFFIX}*" "${_ort_libdir}/DirectML.dll")
 		INSTALL(FILES ${ONNXRUNTIME_RUNTIME_LIBS} DESTINATION "${INSTALL_BIN_DIR}")
+		# the copied runtime libs need an rpath to be found at run time; this runs before
+		# ADD_SUBDIRECTORY(libs)/ADD_SUBDIRECTORY(apps) below so every target created afterwards inherits
+		# it as the default INSTALL_RPATH/BUILD_RPATH (Windows needs no rpath: the DLLs must instead be
+		# copied next to the executables, e.g. a POST_BUILD step in apps/CreateStructure/CMakeLists.txt --
+		# out of scope for this task, which only touches the files the brief lists)
+		IF(APPLE)
+			LIST(APPEND CMAKE_INSTALL_RPATH "@executable_path" "${_ort_libdir}")
+		ELSEIF(UNIX)
+			LIST(APPEND CMAKE_INSTALL_RPATH "$ORIGIN" "${_ort_libdir}")
+		ENDIF()
+		IF(NOT WIN32)
+			LIST(APPEND CMAKE_BUILD_RPATH "${_ort_libdir}")
+		ENDIF()
 		MESSAGE(STATUS "ONNX Runtime found: in-process ROMA2 enabled")
 	ELSE()
 		MESSAGE(FATAL_ERROR "OpenMVS_USE_ONNXRUNTIME=ON but ONNX Runtime was not found (set ONNXRUNTIME_ROOT or use the vcpkg feature)")
