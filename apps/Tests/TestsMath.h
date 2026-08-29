@@ -1,7 +1,7 @@
 /*
- * TestsMVS.h
+ * TestsMath.h
  *
- * Copyright (c) 2014-2025 SEACAVE
+ * Copyright (c) 2014-2026 SEACAVE
  *
  * Author(s):
  *
@@ -35,19 +35,11 @@
 
 // S T R U C T S ///////////////////////////////////////////////////
 
-namespace MVS {
+namespace SEACAVE {
 
-// test vertex-colored PLY export and geometry reload
-bool MeshVertexColorsPLYTest();
-bool MeshHalfMeshProcessingTest();
-
-// test the Delaunay mesh cut on the two hand-solved synthetic fixtures
-// (docs/design/DelaunayMeshReconstruction.md, Appendix)
-bool MeshBipyramidFixtureTest();
-bool MeshTetraInteriorPointFixtureTest();
-
-// test MVS stages on a small sample dataset
-bool PipelineTest(bool forceCPU = false, bool verbose = false);
+// test the TetraFlow max-flow solver on random graphs with at most four arcs per node
+// against an exact reference solver and the min-cut certificate
+bool TestTetraFlow();
 /*----------------------------------------------------------------*/
 
-} // namespace MVS
+} // namespace SEACAVE

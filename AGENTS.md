@@ -191,6 +191,7 @@ window.Run(scene) →
 - **Eigen3**: Linear algebra (matrices, vectors)
 - **OpenCV**: Image processing and I/O
 - **CGAL**: Computational geometry
+- **halfmesh**: Half-edge mesh processing (see `libs/MVS/MeshHalfMesh.cpp`)
 - **Boost**: Serialization, program options, containers
 - **CUDA**: GPU acceleration (optional)
 - **GLFW/OpenGL**: Viewer rendering

@@ -584,7 +584,8 @@ OpenMVS is a comprehensive photogrammetry library implementing a complete pipeli
   - Free-space graph scoring: marches rays through tetrahedra, adds `alpha_vis` weights, attenuated
     by the point's own uncertainty sigma — per-vertex from the median incident edge by default
   - Camera cells linked to source with weight `kInf`; edge weights: `kf`, `kRel`, `kAbs`, `kQual`
-  - IBFS min-cut (`libs/Math/IBFS`) separating free-space from matter
+  - TetraFlow min-cut (`libs/Math/TetraFlow.h`) separating free-space from matter: incremental
+    breadth-first search max-flow on one 64-byte node per cell (the dual graph is 4-regular)
   - Surface extraction drops cut facets whose longest edge exceeds `maxEdgeScale` x the median cut
     facet (the webbing gate, default 4)
   - Single-pass non-manifold repair, then the `Mesh::Clean()` pipeline
@@ -648,16 +649,21 @@ OpenMVS is a comprehensive photogrammetry library implementing a complete pipeli
 
 ### Atlas Packer
 
-- **Files:** `libs/MVS/AtlasPacker.h`, `libs/MVS/AtlasPacker.cpp`
+- **Files:** `halfmesh/RectPacking.h` (library), driven from `libs/MVS/SceneTexture.cpp`
 - **Algorithms:**
-  - Skyline bin-packing with min-waste heuristic
+  - Two-tier skyline bin-packing with min-waste heuristic: a full min-waste scan for the large
+    patches, height-sorted shelves for the tiny ones, which keeps packing near-linear on the
+    100k+ patch atlases a dense scene produces
+  - Every page stays open, so a later small patch fills the space an earlier large one left
   - Optional 90-degree rotation for better area utilization
   - 85–95% occupancy typical
   - `nTextureSizeMultiple`: forces atlas dimensions to multiple of this value
-  - `maxTextureSize`: splits into multiple atlases if needed
+  - `maxTextureSize`: grows one page up to this cap, then opens as many further pages as needed,
+    each estimated on its own leftovers - so a trailing page holding a handful of small patches
+    stays small instead of being allocated at the cap
 - **GPU Support:** No
 - **Threading:** Single
-- **Dependencies:** Common
+- **Dependencies:** halfmesh, OpenCV
 
 ---
 
@@ -749,7 +755,7 @@ OpenMVS is a comprehensive photogrammetry library implementing a complete pipeli
 
 ### Third-Party Components
 
-- **Files:** `libs/IO/tiny_gltf.h`, `libs/IO/json.hpp`, `libs/IO/TinyXML2.h/.cpp`
+- **Files:** `libs/IO/json.hpp`, `libs/IO/TinyXML2.h/.cpp` (glTF comes from the vcpkg `tinygltf` port)
 - **Algorithms:** glTF 2.0 binary/ASCII loading (header-only), nlohmann JSON parsing (header-only), XML parsing
 
 ---
@@ -788,8 +794,8 @@ OpenMVS is a comprehensive photogrammetry library implementing a complete pipeli
 
 ### Graph Algorithms
 
-- **Files:** `libs/Math/IBFS/IBFS.h/.cpp`, `libs/Math/LBP.h`
-- **Algorithms:** IBFS (Incremental BFS) max-flow/min-cut for mesh graph-cut; Loopy Belief Propagation for energy minimization (texture face selection)
+- **Files:** `libs/Math/TetraFlow.h`, `libs/Math/LBP.h`
+- **Algorithms:** TetraFlow, an incremental breadth-first search max-flow/min-cut specialized for graphs with exactly four arcs per node (the Delaunay cell graph of the mesh graph-cut); Loopy Belief Propagation for energy minimization (texture face selection)
 
 ---
 

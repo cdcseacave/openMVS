@@ -76,8 +76,8 @@ Non-linear least-squares optimization with callback-based residual evaluation. U
 
 ## Graph Algorithms
 
-### Max-Flow / Min-Cut (`IBFS/IBFS.h/cpp`)
-Incremental Breadth-First Search (Goldberg et al.) for s-t min-cut problems. Used in graph cut-based mesh segmentation.
+### Max-Flow / Min-Cut (`TetraFlow.h`)
+`TetraFlow`: header-only Incremental Breadth-First Search max-flow (Goldberg et al., ESA 2011) specialized for graphs with exactly four arcs per node (the Delaunay cell graph of the mesh reconstruction): one 64-byte node per cell, 32-bit ids, batched source-side augmentation. API: `AddNode(n, capSource, capSink)`, `AddEdge(u, v, capUV, capVU)`, or the slot-addressed construction `EdgeCapacity(n, slot)` / `SourceCapacity(n)` / `SinkCapacity(n)` accumulators plus `LinkEdge(u, slotU, v, slotV)` (the mesh reconstruction accumulates its weights directly in the nodes); `ComputeMaxFlow()`, `IsNodeOnSrcSide(n)`, `Release()`; `CheckMaxFlow()` for tests. Boost license, no third-party code.
 
 ### Loopy Belief Propagation (`LBP.h`)
 Message-passing inference on graphical models for energy minimization over discrete labels. Supports OpenMP parallelization (`LBP_USE_OPENMP`).

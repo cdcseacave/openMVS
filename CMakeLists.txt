@@ -367,6 +367,20 @@ else()
 	MESSAGE(STATUS "Can't find OpenCV. Please specify OpenCV directory using OpenCV_DIR variable")
 endif()
 
+# vcpkg's ceres carries a bare `gflags` in the ceres target's INTERFACE_LINK_LIBRARIES
+# (leaked in through glog), yet its CeresConfig.cmake is generated with CERES_USES_GFLAGS
+# OFF and so never calls FIND_PACKAGE(gflags) itself. vcpkg's gflags cmake-wrapper forces
+# GFLAGS_USE_TARGET_NAMESPACE ON, so the package only ever defines gflags::gflags -- the
+# unqualified name matches no target and CMake hands it to the linker as a raw library,
+# gflags.lib. Only the release tree ships that name (debug ships gflags_debug.lib), so
+# every Debug link reaching ceres fails with LNK1104. Bind the bare name to the real
+# target here, above ADD_SUBDIRECTORY, so it is visible wherever the item gets resolved.
+FIND_PACKAGE(gflags CONFIG QUIET)
+if(TARGET gflags::gflags AND NOT TARGET gflags)
+	ADD_LIBRARY(gflags INTERFACE IMPORTED)
+	SET_TARGET_PROPERTIES(gflags PROPERTIES INTERFACE_LINK_LIBRARIES gflags::gflags)
+endif()
+
 LIST(REMOVE_DUPLICATES OpenMVS_EXTRA_LIBS)
 
 # Set defines

@@ -29,7 +29,7 @@ re-evaluated numbers; do not resurrect a pre-2026-08-21 number from git history 
 `ReconstructMesh` builds a Delaunay tetrahedralization of the input point cloud, accumulates a
 Labatut/Pons/Keriven visibility energy on its cells and facets (camera-to-point soft-visibility
 votes, a σ-shifted `D_in` unary, a β-skeleton quality term, and an optional free-space-support
-(WSS) classifier for weakly-observed surfaces), solves an s-t min-cut (IBFS), and extracts the
+(WSS) classifier for weakly-observed surfaces), solves an s-t min-cut (TetraFlow, §5), and extracts the
 cut boundary as the mesh surface. `Mesh::Clean` then removes long/spurious/spike faces, closes
 holes, and smooths.
 
@@ -205,11 +205,13 @@ hole-closing — costs exactly nothing (0.6986 → 0.6986). The two MCF smoothin
 the entire collapse, with a clean monotone dose-response, and the cleaned mesh loses 21% of its
 in-crop surface area to MCF shrinkage.
 
-**Fix**: `Mesh::Clean` now smooths with a classic per-vertex uniform-Laplacian relaxation
-(λ=0.5, `nSmooth` iterations, borders fixed, deterministic double-buffered update) — each vertex
-moves relative to its own one-ring scale, so the result is unit- and resolution-independent.
-Landed as commit `c6446c3c`; the webbing gate (§4) followed separately as `67c94292`. Post-fix,
-the shipped default
+**Fix**: `Mesh::Clean` smooths with a scale-free one-ring filter — each vertex moves relative to
+its own one-ring, so the result is unit- and resolution-independent. Landed as commit `c6446c3c`
+(uniform Laplacian, λ=0.5, borders fixed); the webbing gate (§4) followed separately as
+`67c94292`. The halfmesh migration later replaced that step with Taubin λ|μ band-pass smoothing
+(`SmoothTaubin`, λ=0.65 / μ=−0.69), which is scale-free in the same way but is a band-pass rather
+than a low-pass, so it removes high-frequency noise at ≈zero volume loss instead of shrinking the
+surface toward its one-ring centroids. Post-fix, the shipped default
 (smooth=2) lands at or above the raw mesh on both object scenes (Ignatius −0.0026 vs raw with
 precision up 0.699→0.718; Truck +0.018 vs raw) and clearly above the previously shipped result on
 all four scenes (Barn +0.035, Meetingroom +0.027, the latter now above its own input cloud).
@@ -339,9 +341,76 @@ semantics alternative was independently rejected above.
 **Solver swap, EIBFS vs the bundled IBFS.** Speed-neutral on the real 22.7M-node Truck graph:
 EIBFS-I-NR solve 27.1-27.7s vs IBFS 26.2-27.0s, interleaved runs. The stronger sibling (EIBFS-I)
 crashes at scale (access violation in `augmentExcesses`, reproducible, independent of index
-width). No license-clean *and* faster solver exists: the fastest candidates (EIBFS-I) carry the
-TAU "research purposes only" license, same restriction class as the in-tree IBFS; the only truly
-open alternative (Boost's Boykov-Kolmogorov) is the paper's slowest serial tier. **IBFS stays.**
+width). No license-clean *and* faster drop-in existed: the fastest candidates (EIBFS-I) carry the
+TAU "research purposes only" license, same restriction class as the then in-tree IBFS; the only
+truly open alternative (Boost's Boykov-Kolmogorov) is the paper's slowest serial tier.
+
+**Solver: TetraFlow replaces IBFS (2026-08).** What a drop-in could not deliver, specializing the
+data structure did: `libs/Math/TetraFlow.h` is an independent implementation of the same
+incremental breadth-first search algorithm (Goldberg et al., ESA 2011) for the 4-regular cell
+graph — one 64-byte node per cell holding its four arcs and its complete tree state, 32-bit ids,
+and batched settlement of the source side of the augmentations (one tree-arc traversal per growth
+pass instead of one per path). Solver only, on ball / room / Truck / Courthouse (1.5M / 6.5M /
+8.0M / 18.4M cells): solve 0.70 / 6.9 / 6.3 / 17.0 s vs IBFS 1.27+0.22 / 12.0+0.9 / 11.0+1.1 /
+27.0+2.6 s (solve + init), solver memory 99 / 423 / 530 / 1248 MB vs 293 / 1236 / 1518 / 3509 MB.
+The `ReconstructMesh` graph-cut stage: 1.9 / 11.9 / 31.4 s vs 2.6 / 17.5 / 42.2 s (ball / room /
+Courthouse), raw meshes byte-identical. The whole-process peak drops less than the solver does
+(3.4 vs 5.5 GiB on Courthouse) because the CGAL triangulation, ~1.9 GiB there, stays resident
+through the cut (3.1 GiB once the weights live in the solver nodes, see below). Verified under
+ASan/UBSan on ~900k random graphs against an exact reference solver and the cut certificates, and
+on the real graphs above (side sets byte-identical to IBFS); `apps/Tests/TestsMath.cpp` keeps a
+reference-checked unit test. Boost license, no third-party code.
+
+**Cell numbering.** The solver's node id is the cell id, so the order in which the cells are
+numbered decides the memory locality of the graph-cut and of the per-cell weights the ray-walks
+touch. Any numbering is valid; a spatially coherent one is an optional optimization worth ~5% of
+the graph-cut stage, so it has to be nearly free to compute. Solve time on the four graphs above
+(best of 3): the CGAL container order is 12-16% slower than a breadth-first numbering over the
+cell adjacency, a random numbering 30-40% slower, and a Hilbert curve through the cell centroids
+is 0 / 9 / 5.5 / 5% faster than the breadth-first one (Morton: 3 / 7 / -0.5 / 5.5%). The curve
+puts 63% of the arcs within 1 KB of their node (BFS: 17%, container: 17%), yet the gain stays
+modest because after the breadth-first numbering a growth pass already works out of the L2/L3
+(Truck, `perf`: L1 misses -6%, dTLB misses -40%, IPC 0.58 -> 0.65); what remains is the
+dependent-load chains of the tree walks and the branchy adoption logic, which no numbering
+shortens. The numbering is not free, though: sorting the cell centroids along the curve costs
+0.3 / 1.6 / 2.0 / 4.4 s on ball / room / Truck / Courthouse against a graph-cut gain of
+0.15 / 0.8 / 1.1 / 2.9 s (plus ~1 s of weighting on Courthouse), i.e. end-to-end the Hilbert
+numbering was a wash (-1% on Courthouse, noise elsewhere). Ordering the points does not solve it
+either: they are already inserted in CGAL's BRIO/Hilbert order (`spatial_sort`), but the cell
+container order comes out scattered anyway because every insertion reuses the slots of the cells
+it destroys; a pure Hilbert insertion order (no BRIO rounds) does improve the container order
+(graph-cut -7%) but slows the insertion itself by 12-15%, a net loss. What works is deriving the
+numbering from the insertion order without geometry: the vertex container is never compacted, so
+its order *is* the space-filling curve, and the cells are numbered by the last inserted of their
+vertices with a counting sort, O(cells + vertices) — 0.05 / 0.2 / 0.3 / 0.55 s, the same graph-cut
+time as the centroid sort (Truck 11.3 vs 11.2 s, room 10.85 vs 10.8-11.3 s, Courthouse 27.5 vs
+27.3 s) and the best end-to-end time of every numbering tried (`graphcut-nodeweights-{hilbert,
+vertexorder,container}-r*` and `graphcut-pointorder-*` under the dataset folders). Same flow and
+surface counts as any other numbering; equal-cost cut ties resolve by node order, so a handful of
+triangles differ.
+
+**Weights in the solver nodes (2026-08).** The visibility weights were gathered in a
+24-byte-per-cell array and copied into the solver at graph-build time, so the process peak was the
+build phase: triangulation + weights + solver nodes. The solver now offers, beside the classic
+`AddNode`/`AddEdge` construction, a slot-addressed one (`EdgeCapacity(n, slot)` /
+`SourceCapacity(n)` / `SinkCapacity(n)` accumulators, `LinkEdge(u, slotU, v, slotV)`, `Release()`),
+and the ray-walks accumulate straight into the nodes — slot i of a cell is its facet i, the
+free-space-support reads the same fields, the facet quality term and the sink clamp are applied by
+the linking pass that used to build the graph. The insertion buffers (points, indices) and the
+numbering keys are released before the solver is allocated, and the solver is released right after
+the cut with one side bit per cell kept for the extraction. Raw meshes byte-identical on ball /
+Truck / room / Courthouse. A/B against the same tree without it (same vertex-order numbering, best
+of 3, `graphcut-ab-{current,nodeweights}-r*`): peak RSS 0.35 -> 0.32 / 1.51 -> 1.37 / 1.23 -> 1.10 /
+3.45 -> 3.12 GiB (-8..-10%; IBFS: 0.51 / — / 1.95 / 5.50 GiB, i.e. 1.6-1.8x), graph-cut stage
+1.9 -> 1.7 / 12.3 -> 10.9 / 11.7 -> 10.4 / 30.0 -> 27.0 s (-10%, the copy into the solver is gone),
+weighting unchanged within noise, whole run -1..-5%. The Courthouse profile now reads
+triangulation 1.94 + nodes 1.10 + 0.08 GiB through weighting and cut, 2.0 GiB during the
+extraction; what is left is the triangulation itself (CGAL cells and vertices are ~85% of the
+base). The classic construction is untouched in cost: a standalone benchmark built against both
+headers gives the same peak and solve times within noise on the four exported graphs
+(`graphcut-export/bench-oldapi-*.log`). `ReconstructMesh` calls `TetraFlow` directly; the `MaxFlow`
+facade and the Boost Boykov-Kolmogorov fallback behind it (several times slower, never selected)
+went with the weight array.
 
 **Free-space-support default-on.** Costs −0.048 (Ignatius) to −0.052 (Truck) at default constants
 even after every recalibration/semantics attempt above failed to rescue it. **Stays available**
@@ -420,7 +489,7 @@ noise of unit votes, §2). Void.
 - **NaN passes the `maxCap` clamp** at `AddNode` (`std::min` returns its first argument when the
   comparison is false, so `MINF(NaN, maxCap)` is NaN, not `maxCap`) — the traced entry point is
   `normalized()` on a zero-area facet. Overflow to `+inf`, by contrast, *is* correctly clamped.
-  IBFS's arc-count arithmetic is `int` and overflows around 79M points.
+  TetraFlow addresses cells with 32-bit ids: the graph-cut is limited to 2^31-1 cells (~330M points).
 - Camera `D_out` is realized as hard `kInf` s-links on **every** frustum-visible hull-adjacent
   infinite cell, not just the sensor's own cell — on 360-degree or inward-facing captures this
   annihilates every `D_in` vote whose σ-shifted end cell exits the convex hull, which is why
@@ -615,5 +684,5 @@ and nowhere else; all infinite cells are hard-stamped while the 4 finite cells a
 - Other standing guardrails from the executed plan, still binding: confidence enters the
   visibility data term only — never `kQual`/circumsphere quality, camera hard constraints, or a
   second generic per-cell unary; no generic k-NN/smoothing prefilters by default (they erase thin
-  structure); don't replace IBFS without profiling first (§5's solver-swap entry is why); leave
+  structure); the max-flow solver is TetraFlow (§5's solver entries have the numbers); leave
   `RefineMesh` untouched; face count is not a completeness metric — score by F1 on ground truth.

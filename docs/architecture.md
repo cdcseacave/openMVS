@@ -89,7 +89,7 @@ Handles 3D geometry formats and image formats.
 Key components:
 - **PLY:** Full-featured polygon format (ASCII + binary LE/BE)
 - **OBJ:** Wavefront OBJ with MTL material libraries
-- **glTF:** Binary/ASCII 3D format via `tiny_gltf.h` (header-only)
+- **glTF:** not here — the codec moved to `libs/MVS/` (`MeshHalfMesh.cpp` via halfmesh for meshes, `PointCloud.cpp` for point clouds)
 - **Image formats:** BMP, TGA, DDS (always available); PNG, JPEG, TIFF, JpegXL (conditional on build flags); SCI (custom)
 - **Third-party:** `json.hpp` (nlohmann JSON), `TinyXML2` (XML)
 
@@ -105,9 +105,9 @@ Key components:
 - **Similarity transform:** 7-DOF Sim(3), Umeyama estimation, rotation alignment
 - **Geodetic transforms:** WGS84 ↔ ECEF ↔ ENU for GPS
 - **Optimization:** ADMM L1 solver, Levenberg-Marquardt (LMFit)
-- **Graph algorithms:** IBFS max-flow/min-cut, Loopy Belief Propagation
+- **Graph algorithms:** TetraFlow max-flow/min-cut (`TetraFlow.h`, incremental BFS specialized for the 4-regular tetrahedralization dual graph), Loopy Belief Propagation
 
-File count: ~10 `.h`/`.cpp` files (plus `IBFS/` and `LMFit/` subdirectories)
+File count: ~11 `.h`/`.cpp` files (plus the `LMFit/` subdirectory)
 
 ### `libs/SFM/` — Structure-from-Motion
 
@@ -371,7 +371,8 @@ Executables land in `make/bin/Debug/` or `make/bin/Release/`.
 | Eigen3 | 3.4+ | Linear algebra (matrices, vectors, decompositions) | Common, SFM, MVS |
 | OpenCV | 4.x | Image I/O, feature detection (AKAZE, ORB, SIFT), optical flow | Common, SFM, MVS |
 | Boost | 1.75+ | Serialization (`.mvs` format), program options, filesystem | MVS, all apps |
-| CGAL | 5.x | Delaunay tetrahedralization, min-cut, mesh cleaning | MVS |
+| CGAL | 5.x | Delaunay tetrahedralization, min-cut | MVS |
+| halfmesh | 0.3.0 | Half-edge mesh processing (cleaning, simplification, remeshing, hole closing, texture bake, rect packing, glTF codec) | MVS |
 | Ceres Solver | 2.x | Non-linear optimization (BA, focal estimation, positioning) | SFM, MVS |
 | PoseLib | latest | PnP solvers, E/F/H RANSAC, generalized absolute pose | SFM |
 | nanoflann | 1.5+ | KD-tree for KNN queries (normal estimation, outlier removal) | MVS |
@@ -388,7 +389,7 @@ Executables land in `make/bin/Debug/` or `make/bin/Release/`.
 | libjxl | optional | JPEG XL image format | IO |
 | TinyEXIF | bundled | EXIF metadata parsing | SFM |
 | TinyNPY | bundled | NumPy `.npz` file reading (ROMA2) | SFM |
-| tiny_gltf | bundled | glTF 2.0 binary/ASCII loading | IO |
+| tiny_gltf | vcpkg | glTF 2.0 binary/ASCII loading (implementation unit compiled by halfmesh) | MVS |
 | nlohmann/json | bundled | JSON parsing | IO |
 | TinyXML2 | bundled | XML parsing (Metashape interface) | IO |
 | BS::thread_pool | bundled | Lightweight task-based thread pool | Common |
@@ -478,7 +479,7 @@ CUDA kernels run on the GPU while the CPU pipeline continues. GPU synchronizatio
 |-----------|---------|-------------|
 | `.ply` | `libs/IO/PLY` | Point clouds and meshes (ASCII or binary LE/BE) |
 | `.obj` | `libs/IO/OBJ` | Mesh with MTL material library and separate texture images |
-| `.gltf` / `.glb` | `libs/IO/tiny_gltf.h` | Binary/ASCII 3D format with embedded textures |
+| `.gltf` / `.glb` | `libs/MVS/PointCloud.cpp` (point clouds), `libs/MVS/MeshHalfMesh.cpp` via halfmesh (meshes) | Binary/ASCII 3D format; textures written beside the file |
 
 ### Interface Formats (Import/Export)
 

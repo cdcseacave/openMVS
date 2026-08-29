@@ -69,8 +69,8 @@ class Mesh {
     Image8U3Arr texturesDiffuse;     // Texture atlases
 };
 ```
-Key method:
-- `Clean(fDecimate, fSpurious, bRemoveSpikes, nCloseHoles, nSmoothMesh, fEdgeLength, bLastClean)`: CGAL-based mesh cleaning — decimation, spurious component removal, spike removal, hole closing, smoothing, and edge-length enforcement.
+Key method (`MeshHalfMesh.cpp`, the bridge to the halfmesh library):
+- `Clean(CleanParams)`: spurious-component removal, spike removal, QEM decimation, hole closing, Taubin smoothing, isotropic remeshing, then a finalize pass (degenerate faces, unreferenced vertices, non-manifold repair) — every enabled stage running on ONE halfmesh instance, so the mesh is converted in and out exactly once per call. The same stages are also exposed individually (`RemoveSpuriousComponents`, `RemoveSpikes`, `Simplify`, `CloseHoles`, `Smooth`), each paying its own conversion, so prefer `Clean` when running more than one. OpenMVS adjacency caches are rebuilt only when they existed before the operation. Authored per-vertex normals are carried across by halfmesh, which keeps them through the operations that only renumber vertices and drops them in the ones that move a vertex; only then are they recomputed, and only for a caller that had them.
 
 ### DepthData (`DepthMap.h`)
 Per-image depth estimation data:
@@ -126,7 +126,7 @@ Key params: `nResolutionLevel`, `fDecimateMesh`, `nCloseHoles`, `fRegularityWeig
 ```cpp
 Scene::TextureMesh(nResolutionLevel, ...)
 ```
-Project faces to images -> compute blending weights -> spatial patch grouping -> atlas packing (`AtlasPacker`, skyline-based bin packing with rotation) -> global seam leveling -> local seam blending.
+Project faces to images -> compute blending weights -> spatial patch grouping -> atlas packing (`halfmesh::PackRectangles`, bounded multi-page skyline packing over `cv::Rect` with rotation) -> global seam leveling -> local seam blending.
 
 `Scene::ComputeVertexColors(...)` shares the same view selection, but instead of building an atlas it samples each vertex in the views texturing the faces around it and stores the weighted average in `mesh.vertexColors`; it releases each image as soon as its faces are consumed.
 

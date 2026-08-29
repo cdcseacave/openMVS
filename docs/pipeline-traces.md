@@ -518,11 +518,11 @@ graph TD
     E1 --> F{bUseFreeSpaceSupport?}
     F -->|yes| G[Score edges: t-edge camera->hull kInf<br/>n-edge data terms kf/kRel/kAbs/kOutl]
     F -->|no| H[Score edges quality only]
-    G --> I[IBFS min-cut graph-cut<br/>source=free-space, sink=matter]
+    G --> I[TetraFlow min-cut graph-cut<br/>source=free-space, sink=matter]
     H --> I
     I --> J[Extract surface from cut facets<br/>webbing gate: drop facets with an edge > maxEdgeScale x median]
     J --> K[Fix non-manifold: single exhaustive pass]
-    K --> L[Mesh::Clean: CGAL decimation<br/>spurious removal, hole closing, smoothing]
+    K --> L[Mesh::Clean: halfmesh QEM decimation<br/>spurious removal, hole closing, Taubin smoothing]
     L --> M[scene.mesh populated]
 ```
 
@@ -546,7 +546,8 @@ graph TD
 - Edge weights: `kf` (quality), `kRel`/`kAbs` (relative/absolute outlier penalties), `kQual` (quality score)
 
 **Step 3: Graph-Cut**
-- IBFS min-cut solver (`libs/Math/IBFS`) separates free-space (source) from matter (sink) tetrahedra
+- TetraFlow min-cut solver (`libs/Math/TetraFlow.h`, incremental breadth-first search max-flow on
+  one 64-byte node per cell) separates free-space (source) from matter (sink) tetrahedra
 - Cut facets form the extracted surface triangles, minus those the webbing gate drops:
   `maxEdgeScale` (4) x the median cut-facet longest edge, the gap-spanning surface no observation
   supports
@@ -554,8 +555,8 @@ graph TD
   never changes another vertex's incident faces, so no second pass can find more)
 
 **Step 4: Mesh Cleaning**
-- `Mesh::Clean()` — `libs/MVS/Mesh.cpp`
-- CGAL-based: decimation (fDecimate), spurious component removal (fSpurious), spike removal (bRemoveSpikes), hole closing (nCloseHoles), Laplacian smoothing (nSmoothMesh), edge-length enforcement (fEdgeLength)
+- `Mesh::Clean()` — `libs/MVS/MeshHalfMesh.cpp`, delegated to the halfmesh library
+- One pass over a single half-edge mesh: spurious-component removal (`fSpurious`), spike removal (`bRemoveSpikes`), QEM decimation (`fDecimate`), hole closing (`nCloseHoles`, a maximum hole size in boundary edges), Taubin band-pass smoothing (`nSmoothMesh`), isotropic remeshing (`fEdgeLength`), then degenerate-face / unreferenced-vertex removal and non-manifold repair
 
 ---
 
@@ -604,8 +605,8 @@ graph TD
 **Subdivision (`SubdivideMesh()`)**
 - `nMaxFaceArea`: subdivides faces larger than threshold
 - `fDecimateMesh`: decimates at first scale only
-- `nCloseHoles`: closes open boundaries
-- `nEnsureEdgeSize`: ensures edges within min/max length bounds
+- `nCloseHoles`: largest hole to close, in boundary edges
+- `nEnsureEdgeSize`: remeshes isotropically to 2.25x the mean edge length, as part of the same `Mesh::Clean` pass
 
 **Photo-consistency scoring (`ScoreMesh()`)**
 - Projects each face into all views that can see it (based on normal)
@@ -642,7 +643,7 @@ graph TD
     C2 --> C3[Spatial patch grouping:<br/>connected faces with same view = patch]
     C3 --> C4[Optional: virtual faces from minCommonCameras]
     C4 --> D[texture.GenerateTexture]
-    D --> D1[AtlasPacker: skyline bin-packing<br/>optional rotation for better fit]
+    D --> D1[halfmesh PackRectangles: skyline bin-packing<br/>optional rotation for better fit]
     D1 --> D2[Rasterize face UVs into atlas]
     D2 --> D3{bGlobalSeamLeveling?}
     D3 -->|yes| D4[Global seam leveling:<br/>solve linear system for mean color correction]
@@ -665,10 +666,10 @@ graph TD
 - Output: `texturePatches` — groups of faces sharing a view assignment
 
 **Step 2: Atlas Packing**
-- `AtlasPacker` — `libs/MVS/AtlasPacker.cpp`
-- Skyline bin-packing algorithm with optional 90-degree rotation for better area utilization
+- `halfmesh::PackRectangles` — `halfmesh/RectPacking.h`, driven from `libs/MVS/SceneTexture.cpp`
+- Two-tier skyline bin-packing (min-waste scan for large patches, height-sorted shelves for tiny ones) with optional 90-degree rotation for better area utilization; every page stays open, so a later small patch can fill space an earlier large one left behind
 - `nTextureSizeMultiple`: forces atlas dimensions to multiple of this value
-- `maxTextureSize`: splits into multiple atlases if needed
+- `maxTextureSize`: grows one page up to this cap, then opens as many further pages as needed, each estimated on its own leftovers — so a trailing page holding a handful of small patches stays small instead of being allocated at the cap
 - Output: UV coordinates `mesh.faceTexcoords[]`, atlas size
 
 **Step 3: Global Seam Leveling**

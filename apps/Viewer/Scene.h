@@ -132,7 +132,7 @@ public:
 		float removeSpurious{20.f};
 		bool removeSpikes{true};
 		unsigned closeHoles{30};
-		unsigned smoothSteps{2};
+		unsigned smoothSteps{10};
 		float edgeLength{0.f};
 		bool cropToROI{true};
 	};
