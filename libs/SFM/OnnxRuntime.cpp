@@ -56,18 +56,6 @@ DEFINE_LOG_NAME(lt, _T("ONNXRT  "));
 
 namespace {
 
-// Human-readable name of a provider, for log messages only
-const char* ProviderName(OnnxProvider provider)
-{
-	switch (provider) {
-	case OnnxProvider::CUDA: return "CUDA";
-	case OnnxProvider::COREML: return "CoreML";
-	case OnnxProvider::DML: return "DirectML";
-	case OnnxProvider::CPU: return "CPU";
-	default: return "AUTO";
-	}
-}
-
 // Format a shape like "[1,3,320,320]", for mismatch log messages only
 std::string ShapeToString(const std::vector<int64_t>& shape)
 {
@@ -195,6 +183,17 @@ bool ExpectShape(const std::vector<std::pair<std::string, std::vector<int64_t>>>
 
 } // namespace
 
+const char* SFM::OnnxProviderName(OnnxProvider provider)
+{
+	switch (provider) {
+	case OnnxProvider::CUDA: return "CUDA";
+	case OnnxProvider::COREML: return "CoreML";
+	case OnnxProvider::DML: return "DirectML";
+	case OnnxProvider::CPU: return "CPU";
+	default: return "AUTO";
+	}
+}
+
 OnnxProvider SFM::OnnxProviderFromString(const String& name)
 {
 	if (name == "auto") return OnnxProvider::AUTO;
@@ -266,7 +265,7 @@ bool OnnxModel::Load(const String& fileName, const Options& _options)
 			break;
 		} catch (const Ort::Exception& e) {
 			VERBOSE("warning: ONNX Runtime provider %s unavailable for '%s' (%s)",
-				ProviderName(candidate), Util::getFileNameExt(fileName).c_str(), e.what());
+				OnnxProviderName(candidate), Util::getFileNameExt(fileName).c_str(), e.what());
 		}
 	}
 	if (session == nullptr) {
@@ -308,7 +307,7 @@ bool OnnxModel::Load(const String& fileName, const Options& _options)
 		Reset();
 		return false;
 	}
-	DEBUG("ONNX model '%s' loaded on %s", Util::getFileNameExt(fileName).c_str(), ProviderName(provider));
+	DEBUG("ONNX model '%s' loaded on %s", Util::getFileNameExt(fileName).c_str(), OnnxProviderName(provider));
 	return true;
 }
 
@@ -355,6 +354,14 @@ bool OnnxModel::ExpectInputShape(const String& name, const std::vector<int64_t>&
 bool OnnxModel::ExpectOutputShape(const String& name, const std::vector<int64_t>& shape) const
 {
 	return ExpectShape(outputs, name, shape, "output");
+}
+
+const std::vector<int64_t>* OnnxModel::InputShape(const String& name) const
+{
+	for (const auto& entry : inputs)
+		if (entry.first == name.c_str())
+			return &entry.second;
+	return NULL;
 }
 
 bool OnnxModel::BindInput(const String& name, const OrtTensor& t)

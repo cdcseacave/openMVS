@@ -43,6 +43,7 @@
 #include "../../libs/SFM/SphereCubeMap.h"
 #include "../../libs/SFM/InterfaceMVS.h"
 #include "../../libs/MVS.h"
+#include "../../libs/IO/json.hpp"
 #include "Tests.h"
 #include <filesystem>
 
@@ -87,6 +88,156 @@ static float MaxAbsDiff(const std::vector<float>& a, const std::vector<float>& b
 		maxDiff = MAXF(maxDiff, ABS(a[i] - b[i]));
 	return maxDiff;
 }
+
+#ifdef _USE_ONNXRUNTIME
+// Read a numpy .npy array of little-endian fp32 in C order (header versions 1.0 and 2.0),
+// returning its values and its shape; every other layout (another dtype, another byte order,
+// Fortran order, a newer header version) is rejected with a message rather than misread.
+// Only the ROMA2 model reference dumps are stored this way -- the always-on fixtures are
+// headerless and read by ReadFloats above.
+static bool ReadNpy(const String& fileName, std::vector<float>& values, std::vector<int64_t>& shape)
+{
+	std::ifstream ifs(fileName.c_str(), std::ios::in | std::ios::binary);
+	if (!ifs.is_open()) {
+		VERBOSE("error: cannot open numpy file '%s'", fileName.c_str());
+		return false;
+	}
+	char magic[8];
+	if (!ifs.read(magic, 8) || memcmp(magic, "\x93NUMPY", 6) != 0 || (magic[6] != 1 && magic[6] != 2)) {
+		VERBOSE("error: '%s' is not a numpy 1.0/2.0 array", fileName.c_str());
+		return false;
+	}
+	// the header length is 2 bytes little-endian in version 1, 4 bytes in version 2
+	uint8_t rawLen[4];
+	const unsigned numLenBytes = (magic[6] == 1 ? 2u : 4u);
+	if (!ifs.read((char*)rawLen, numLenBytes)) {
+		VERBOSE("error: truncated numpy header in '%s'", fileName.c_str());
+		return false;
+	}
+	uint32_t headerLen = 0;
+	for (unsigned i = 0; i < numLenBytes; ++i)
+		headerLen |= (uint32_t)rawLen[i] << (8*i);
+	std::string header(headerLen, '\0');
+	if (headerLen == 0 || !ifs.read(&header[0], headerLen)) {
+		VERBOSE("error: truncated numpy header in '%s'", fileName.c_str());
+		return false;
+	}
+	if (header.find("'descr': '<f4'") == std::string::npos || header.find("'fortran_order': False") == std::string::npos) {
+		VERBOSE("error: numpy file '%s' is not little-endian fp32 in C order", fileName.c_str());
+		return false;
+	}
+	const size_t keyPos = header.find("'shape':");
+	const size_t begin = (keyPos == std::string::npos ? std::string::npos : header.find('(', keyPos));
+	const size_t end = (begin == std::string::npos ? std::string::npos : header.find(')', begin));
+	if (end == std::string::npos) {
+		VERBOSE("error: numpy file '%s' has no shape tuple", fileName.c_str());
+		return false;
+	}
+	shape.clear();
+	size_t count = 1;
+	for (size_t i = begin+1; i < end; ) {
+		while (i < end && (header[i] < '0' || header[i] > '9'))
+			++i;
+		if (i == end)
+			break;
+		int64_t dim = 0;
+		while (i < end && header[i] >= '0' && header[i] <= '9')
+			dim = dim*10 + (header[i++] - '0');
+		shape.push_back(dim);
+		count *= (size_t)dim;
+	}
+	values.resize(count);
+	if (count > 0 && !ifs.read((char*)values.data(), (std::streamsize)(count*sizeof(float)))) {
+		VERBOSE("error: cannot read %u floats from numpy file '%s'", (unsigned)count, fileName.c_str());
+		return false;
+	}
+	return true;
+}
+
+// Read a reference .npy expected to hold exactly count values; a different length is a
+// disagreement between the test and the shipped reference dump
+static bool ReadNpyExpect(const String& fileName, size_t count, std::vector<float>& values)
+{
+	std::vector<int64_t> shape;
+	if (!ReadNpy(fileName, values, shape))
+		return false;
+	if (values.size() != count) {
+		VERBOSE("error: numpy file '%s' holds %u values, expected %u",
+			fileName.c_str(), (unsigned)values.size(), (unsigned)count);
+		return false;
+	}
+	return true;
+}
+
+// Cosine similarity of two equally long float buffers, accumulated in double; 0 when either
+// buffer has zero norm, which never passes a parity bound
+static double CosineSimilarity(const float* a, const float* b, size_t count)
+{
+	double dot = 0, normA = 0, normB = 0;
+	for (size_t i = 0; i < count; ++i) {
+		dot += (double)a[i] * (double)b[i];
+		normA += (double)a[i] * (double)a[i];
+		normB += (double)b[i] * (double)b[i];
+	}
+	return (normA > 0 && normB > 0 ? dot/std::sqrt(normA*normB) : 0);
+}
+
+// Euclidean norm of a float buffer, accumulated in double
+static double VectorNorm(const float* v, size_t count)
+{
+	double sum = 0;
+	for (size_t i = 0; i < count; ++i)
+		sum += (double)v[i] * (double)v[i];
+	return std::sqrt(sum);
+}
+
+// Parity bounds shipped in a reference dump's parity.json; the defaults are the export
+// script's, kept for a dump written before a bound was recorded
+struct RoMa2ParityBounds {
+	double minCosine = 0.998;
+	double maxWarpErrorPx = 2.0;
+	double minAgreementPercent = 99.5;
+};
+
+static bool ReadParityBounds(const String& fileName, RoMa2ParityBounds& bounds)
+{
+	std::ifstream stream(fileName.c_str());
+	if (!stream.is_open()) {
+		VERBOSE("error: cannot open parity file '%s'", fileName.c_str());
+		return false;
+	}
+	const nlohmann::json data = nlohmann::json::parse(stream, nullptr, false);
+	if (data.is_discarded()) {
+		VERBOSE("error: cannot parse parity file '%s'", fileName.c_str());
+		return false;
+	}
+	const auto itBounds = data.find("bounds");
+	if (itBounds == data.end())
+		return true; // the export script's defaults stand
+	const auto ReadBound = [&itBounds](const char* key, double& value) {
+		const auto it = itBounds->find(key);
+		if (it != itBounds->end() && it->is_number())
+			value = it->get<double>();
+	};
+	ReadBound("min_cosine", bounds.minCosine);
+	ReadBound("max_warp_error_px", bounds.maxWarpErrorPx);
+	ReadBound("min_agreement_percent", bounds.minAgreementPercent);
+	return true;
+}
+
+// Linear-interpolated percentile of a sample set, as numpy.percentile computes it
+// (the reference judging of polyml's check_correspondences); the values are sorted in place
+static float Percentile(std::vector<float>& values, double percent)
+{
+	ASSERT(!values.empty() && percent >= 0 && percent <= 100);
+	std::sort(values.begin(), values.end());
+	const double pos = percent/100 * (double)(values.size()-1);
+	const size_t lo = (size_t)pos;
+	if (lo+1 >= values.size())
+		return values.back();
+	return (float)(values[lo] + (pos - (double)lo) * (values[lo+1] - values[lo]));
+}
+#endif // _USE_ONNXRUNTIME
 
 #ifdef _IMAGE_HEIF
 // HEIF/HEIC integration at the SFM layer; see the declaration for the coverage list.
@@ -922,6 +1073,245 @@ bool RoMa2PreprocessTest()
 		return false;
 	}
 	DEBUG_EXTRA("RoMa2PreprocessTest: max preprocessing error %g", maxErr);
+	return true;
+	#endif
+}
+
+#ifdef _USE_ONNXRUNTIME
+// One preset of RoMa2OnnxParityTest: the describe stage against real_<setting>_descriptor.reference
+// and the coarse-match stage against real_<setting>_match_coarse.reference, both driven end to end
+// from the reference's own source PNGs, judged by the bounds shipped in its parity.json
+static bool RoMa2OnnxParitySetting(const String& modelDir, const String& setting, const String& provider)
+{
+	String descDir(modelDir + "real_" + setting + "_descriptor.reference");
+	String matchDir(modelDir + "real_" + setting + "_match_coarse.reference");
+	Util::ensureFolderSlash(descDir);
+	Util::ensureFolderSlash(matchDir);
+	RoMa2ParityBounds bounds;
+	if (!ReadParityBounds(descDir + "parity.json", bounds))
+		return false;
+
+	RoMa2Onnx model;
+	if (!model.Load(modelDir, setting, provider)) {
+		VERBOSE("RoMa2OnnxParityTest FAILED: cannot load the '%s' model from '%s'", setting.c_str(), modelDir.c_str());
+		return false;
+	}
+	const RoMa2Manifest& manifest = model.Manifest();
+	const int S = model.ImageSize(), cells = model.WarpSize();
+	const unsigned numPatches = model.NumPatches();
+	const unsigned numSlices = (unsigned)model.LayersShape()[1], channels = (unsigned)model.LayersShape()[4];
+	const size_t numTensor = (size_t)numSlices * numPatches * channels;
+	DEBUG_EXTRA("RoMa2OnnxParityTest[%s]: %dx%d image, %u slices of %u patches x %u channels, %dx%d warp cells, provider %s",
+		setting.c_str(), S, S, numSlices, numPatches, channels, cells, cells, model.ProviderName().c_str());
+
+	// The CPU preprocessing of the reference's own source image reproduces the tensor the
+	// reference outputs were computed from. The bound is the fp32 noise floor of a 768x1024 ->
+	// SxS antialiased Keys resample, not RoMa2PreprocessTest's 1e-5: the shipped in_image.npy
+	// is itself up to 2.72e-5 away from an exact float64 evaluation of the very same filter
+	// (1.14e-5 at turbo, 3.6e-7 at fast, 2.72e-5 at base), because the widened antialiasing
+	// kernel has large negative lobes and cancels catastrophically on 0..255 samples -- so no
+	// fp32 implementation, however ordered, can reproduce it to 1e-5. 1e-4 still separates the
+	// right filter from every wrong one by more than an order of magnitude (plain bicubic A=-0.75
+	// resamples ~2e-3 differently, align_corners=true ~1e-2), and the exact-arithmetic agreement
+	// of the kernel itself stays pinned by RoMa2PreprocessTest's own 1e-5 fixture.
+	Image8U3 sourceA;
+	if (!sourceA.Load(descDir + "source_A.png")) {
+		VERBOSE("RoMa2OnnxParityTest FAILED: cannot read '%ssource_A.png'", descDir.c_str());
+		return false;
+	}
+	std::vector<float> planarA, reference;
+	if (!ReadNpyExpect(descDir + "in_image.npy", (size_t)3*S*S, reference))
+		return false;
+	PreprocessImageRoMa2(sourceA, S, planarA);
+	const float diffImage = MaxAbsDiff(planarA, reference);
+	if (diffImage > 1e-4f) {
+		VERBOSE("RoMa2OnnxParityTest[%s] FAILED: preprocessing differs from the reference by %g", setting.c_str(), diffImage);
+		return false;
+	}
+	DEBUG("RoMa2OnnxParityTest[%s]: max preprocessing difference from the reference %g", setting.c_str(), diffImage);
+
+	// the describe stage: the raw value facets and both pooled retrieval descriptors
+	OrtTensor layers(model.MakeLayers());
+	if (!layers.IsValid()) {
+		VERBOSE("RoMa2OnnxParityTest[%s] FAILED: cannot allocate the layers tensor", setting.c_str());
+		return false;
+	}
+	std::vector<float> facets;
+	{
+		TD_TIMER_STARTD();
+		if (!model.Describe(planarA.data(), layers, &facets)) {
+			VERBOSE("RoMa2OnnxParityTest[%s] FAILED: describe with the facets read-back", setting.c_str());
+			return false;
+		}
+		DEBUG_EXTRA("RoMa2OnnxParityTest[%s]: Describe (facets read back) %s", setting.c_str(), TD_TIMER_GET_FMT().c_str());
+	}
+	if (facets.size() != numTensor) {
+		VERBOSE("RoMa2OnnxParityTest[%s] FAILED: %u facet values, expected %u",
+			setting.c_str(), (unsigned)facets.size(), (unsigned)numTensor);
+		return false;
+	}
+	if (!ReadNpyExpect(descDir + "out_value_facets.npy", numTensor, reference))
+		return false;
+	const double cosFacets = CosineSimilarity(facets.data(), reference.data(), numTensor);
+	std::vector<float> pooled;
+	PoolRetrievalDescriptor(facets.data(), numSlices, numPatches, channels, RetrievalRecipe::FACETS, manifest.facetsPower, pooled);
+	if (pooled.size() != manifest.facetsDim || !ReadNpyExpect(descDir + "pooled_facets_A.npy", manifest.facetsDim, reference))
+		return false;
+	const double cosPooledFacets = CosineSimilarity(pooled.data(), reference.data(), pooled.size());
+	const double normPooledFacets = VectorNorm(pooled.data(), pooled.size());
+
+	// the same image described again into a host tensor, so the `layers` output itself and its
+	// pooled parity descriptor can be compared too (the device tensor above is never read back)
+	OrtTensor layersHost(OrtTensor::Host(model.LayersShape()));
+	{
+		TD_TIMER_STARTD();
+		if (!model.Describe(planarA.data(), layersHost, NULL)) {
+			VERBOSE("RoMa2OnnxParityTest[%s] FAILED: describe into a host tensor", setting.c_str());
+			return false;
+		}
+		DEBUG_EXTRA("RoMa2OnnxParityTest[%s]: Describe (layers on the host) %s", setting.c_str(), TD_TIMER_GET_FMT().c_str());
+	}
+	if (!ReadNpyExpect(descDir + "out_layers.npy", numTensor, reference))
+		return false;
+	const double cosLayers = CosineSimilarity(layersHost.HostData(), reference.data(), numTensor);
+	PoolRetrievalDescriptor(layersHost.HostData(), numSlices, numPatches, channels, RetrievalRecipe::LAYERS, 0.f, pooled);
+	if (pooled.size() != manifest.layersDim || !ReadNpyExpect(descDir + "pooled_layers_A.npy", manifest.layersDim, reference))
+		return false;
+	const double cosPooledLayers = CosineSimilarity(pooled.data(), reference.data(), pooled.size());
+	const double normPooledLayers = VectorNorm(pooled.data(), pooled.size());
+	DEBUG("RoMa2OnnxParityTest[%s]: cosine value_facets %.6f, layers %.6f, pooled facets %.6f (norm %.6f), pooled layers %.6f (norm %.6f)",
+		setting.c_str(), cosFacets, cosLayers, cosPooledFacets, normPooledFacets, cosPooledLayers, normPooledLayers);
+	if (cosFacets < bounds.minCosine || cosLayers < bounds.minCosine ||
+		cosPooledFacets < bounds.minCosine || cosPooledLayers < bounds.minCosine) {
+		VERBOSE("RoMa2OnnxParityTest[%s] FAILED: describe cosine below %g (value_facets %.6f, layers %.6f, pooled facets %.6f, pooled layers %.6f)",
+			setting.c_str(), bounds.minCosine, cosFacets, cosLayers, cosPooledFacets, cosPooledLayers);
+		return false;
+	}
+	if (ABS(normPooledFacets-1) > 1e-5 || ABS(normPooledLayers-1) > 1e-5) {
+		VERBOSE("RoMa2OnnxParityTest[%s] FAILED: pooled descriptors are not unit norm (%.6f facets, %.6f layers)",
+			setting.c_str(), normPooledFacets, normPooledLayers);
+		return false;
+	}
+
+	// the coarse-match stage, end to end: both sources preprocessed, described, and matched
+	RoMa2ParityBounds matchBounds;
+	if (!ReadParityBounds(matchDir + "parity.json", matchBounds))
+		return false;
+	Image8U3 sourceB;
+	if (!sourceA.Load(matchDir + "source_A.png") || !sourceB.Load(matchDir + "source_B.png")) {
+		VERBOSE("RoMa2OnnxParityTest FAILED: cannot read the match sources from '%s'", matchDir.c_str());
+		return false;
+	}
+	std::vector<float> planarB;
+	PreprocessImageRoMa2(sourceA, S, planarA);
+	PreprocessImageRoMa2(sourceB, S, planarB);
+	OrtTensor layersA(model.MakeLayers()), layersB(model.MakeLayers());
+	if (!model.Describe(planarA.data(), layersA, NULL) || !model.Describe(planarB.data(), layersB, NULL)) {
+		VERBOSE("RoMa2OnnxParityTest[%s] FAILED: describe of the match pair", setting.c_str());
+		return false;
+	}
+	Image32F2 warp;
+	Image32F overlap;
+	{
+		TD_TIMER_STARTD();
+		if (!model.MatchCoarse(layersA, layersB, warp, overlap)) {
+			VERBOSE("RoMa2OnnxParityTest[%s] FAILED: coarse match", setting.c_str());
+			return false;
+		}
+		// the only pair of the test, so this timing also carries the lazy match-graph load
+		DEBUG_EXTRA("RoMa2OnnxParityTest[%s]: MatchCoarse, match-graph load included, %s", setting.c_str(), TD_TIMER_GET_FMT().c_str());
+	}
+	if (warp.cols != cells || warp.rows != cells || overlap.cols != cells || overlap.rows != cells) {
+		VERBOSE("RoMa2OnnxParityTest[%s] FAILED: warp %dx%d, expected %dx%d", setting.c_str(), warp.cols, warp.rows, cells, cells);
+		return false;
+	}
+	std::vector<float> refWarp, refConfidence;
+	if (!ReadNpyExpect(matchDir + "out_warp.npy", (size_t)cells*cells*2, refWarp) ||
+		!ReadNpyExpect(matchDir + "out_confidence.npy", (size_t)cells*cells, refConfidence))
+		return false;
+	// polyml's check_correspondences in C++: the warp error in pixels of the SxS grid over the
+	// cells the reference calls overlapping, and the agreement of the overlap logit's sign
+	const cv::Size gridSize(S, S);
+	std::vector<float> errors;
+	errors.reserve((size_t)cells*cells);
+	unsigned numAgree = 0;
+	for (int r = 0; r < cells; ++r) {
+		for (int c = 0; c < cells; ++c) {
+			const int i = r*cells + c;
+			const float refLogit = refConfidence[i];
+			// sign(logit) == sign(refLogit), read off the sigmoid MatchCoarse already applied
+			if ((overlap(r, c) >= 0.5f) == (refLogit >= 0.f))
+				++numAgree;
+			if (1.f/(1.f + std::exp(-refLogit)) < 0.5f)
+				continue; // the reference calls this cell non-overlapping: its warp is unconstrained
+			const Point2f coord(DenormCoord(warp(r, c), gridSize));
+			const Point2f refCoord(DenormCoord(Point2f(refWarp[i*2], refWarp[i*2+1]), gridSize));
+			errors.push_back(std::sqrt(SQUARE(coord.x-refCoord.x) + SQUARE(coord.y-refCoord.y)));
+		}
+	}
+	if (errors.empty()) {
+		VERBOSE("RoMa2OnnxParityTest[%s] FAILED: the reference overlap gates every warp cell", setting.c_str());
+		return false;
+	}
+	const float p99 = Percentile(errors, 99);
+	const double agreement = 100. * numAgree / (double)(cells*cells);
+	DEBUG("RoMa2OnnxParityTest[%s]: warp error p99 %.4f px over %u/%d overlapping cells, logit sign agreement %.4f%%",
+		setting.c_str(), p99, (unsigned)errors.size(), cells*cells, agreement);
+	if (p99 > matchBounds.maxWarpErrorPx || agreement < matchBounds.minAgreementPercent) {
+		VERBOSE("RoMa2OnnxParityTest[%s] FAILED: warp error p99 %.4f px (bound %g), logit sign agreement %.4f%% (bound %g)",
+			setting.c_str(), p99, matchBounds.maxWarpErrorPx, agreement, matchBounds.minAgreementPercent);
+		return false;
+	}
+	VERBOSE("RoMa2OnnxParityTest[%s] passed on %s: cosine %.6f (facets) / %.6f (layers), pooled %.6f / %.6f, warp p99 %.4f px, agreement %.4f%%",
+		setting.c_str(), model.ProviderName().c_str(), cosFacets, cosLayers, cosPooledFacets, cosPooledLayers, p99, agreement);
+	return true;
+}
+#endif // _USE_ONNXRUNTIME
+
+// RoMa2 ONNX parity test: runs the exported descriptor and coarse-match graphs through
+// RoMa2Onnx and compares them to the Python reference dumps shipped with the models.
+// Configured by the environment (the Tests binary takes no options of its own):
+// OPENMVS_ROMA2_MODEL_PATH (unset => skipped), OPENMVS_ROMA2_PROVIDER (auto|cuda|coreml|dml|cpu),
+// OPENMVS_ROMA2_SETTING (unset => every preset with a reference dump under the model path)
+bool RoMa2OnnxParityTest()
+{
+	#ifndef _USE_ONNXRUNTIME
+	VERBOSE("RoMa2OnnxParityTest: skipped (built without ONNX Runtime)");
+	return true;
+	#else
+	if (!RoMa2Onnx::IsAvailable()) {
+		VERBOSE("RoMa2OnnxParityTest: skipped (no ONNX Runtime support in this build)");
+		return true;
+	}
+	const char* const envModelPath = getenv("OPENMVS_ROMA2_MODEL_PATH");
+	if (envModelPath == NULL || *envModelPath == 0) {
+		VERBOSE("RoMa2OnnxParityTest: skipped (OPENMVS_ROMA2_MODEL_PATH not set)");
+		return true;
+	}
+	TD_TIMER_STARTD();
+	String modelDir(envModelPath);
+	Util::ensureFolderSlash(modelDir);
+	const char* const envProvider = getenv("OPENMVS_ROMA2_PROVIDER");
+	const String provider(envProvider != NULL && *envProvider != 0 ? String(envProvider) : String("auto"));
+	// one setting if OPENMVS_ROMA2_SETTING names it, else every preset whose reference dump is shipped
+	const char* const envSetting = getenv("OPENMVS_ROMA2_SETTING");
+	std::vector<String> settings;
+	if (envSetting != NULL && *envSetting != 0) {
+		settings.emplace_back(envSetting);
+	} else {
+		for (const char* const knownSetting : {"turbo", "fast", "base"})
+			if (File::isFile(modelDir + "real_" + knownSetting + "_descriptor.reference/parity.json"))
+				settings.emplace_back(knownSetting);
+	}
+	if (settings.empty()) {
+		VERBOSE("RoMa2OnnxParityTest FAILED: no ROMA2 reference dump found under '%s'", modelDir.c_str());
+		return false;
+	}
+	for (const String& setting : settings)
+		if (!RoMa2OnnxParitySetting(modelDir, setting, provider))
+			return false;
+	VERBOSE("RoMa2OnnxParityTest PASSED: %u preset(s) match the reference dumps (%s)",
+		(unsigned)settings.size(), TD_TIMER_GET_FMT().c_str());
 	return true;
 	#endif
 }

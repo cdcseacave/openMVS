@@ -208,6 +208,8 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!SFM::RoMa2PreprocessTest())
 				return false;
+			if (!SFM::RoMa2OnnxParityTest())
+				return false;
 			if (!SFM::PipelineTest())
 				return false;
 			if (!SFM::GPSPriorPoseUncertaintyTest())

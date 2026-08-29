@@ -56,6 +56,13 @@ bool GlobalDescriptorsQueryTest();
 // F.interpolate(mode="bicubic", align_corners=False, antialias=True) to within 1e-5
 bool RoMa2PreprocessTest();
 
+// RoMa2 ONNX parity test: runs the exported descriptor and coarse-match graphs through
+// RoMa2Onnx and compares them to the Python reference dumps shipped with the models.
+// Skipped unless OPENMVS_ROMA2_MODEL_PATH points at an exported model folder;
+// OPENMVS_ROMA2_PROVIDER (auto|cuda|coreml|dml|cpu) and OPENMVS_ROMA2_SETTING (turbo|fast|base)
+// narrow the execution provider and the preset it exercises
+bool RoMa2OnnxParityTest();
+
 // Test Bundle-Adjustment PinholeReprojectionErrorAnalytic Jacobians against AutoDiff
 bool BAPinholeReprojectionJacobianTest();
 

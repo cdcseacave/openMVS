@@ -62,6 +62,9 @@ enum class OnnxProvider : uint8_t {
 // Parse the --roma2-provider option ("auto"|"cuda"|"coreml"|"dml"|"cpu"); anything else maps to AUTO
 SFM_API OnnxProvider OnnxProviderFromString(const String& name);
 
+// Human-readable name of a provider ("CUDA"|"CoreML"|"DirectML"|"CPU"|"AUTO"), for log messages only
+SFM_API const char* OnnxProviderName(OnnxProvider provider);
+
 // A single fp32, static-shape ONNX Runtime tensor: either host-owned (a std::vector<float>
 // wrapped in a non-owning CPU Ort::Value) or allocated from an OnnxModel's device arena
 // (Ort::Allocator over the session's execution provider) when that provider keeps tensors
@@ -144,6 +147,10 @@ public:
 	// listing both shapes; false if the name is not one of the model's inputs/outputs
 	bool ExpectInputShape(const String& name, const std::vector<int64_t>& shape) const;
 	bool ExpectOutputShape(const String& name, const std::vector<int64_t>& shape) const;
+
+	// Static shape of the named graph input, or NULL when the model has no such input;
+	// for callers that adapt to an optional input instead of requiring it
+	const std::vector<int64_t>* InputShape(const String& name) const;
 
 	void ClearBindings();
 	// false + VERBOSE on a shape mismatch (name unknown, or shape disagrees) or an ORT
