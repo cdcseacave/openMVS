@@ -1,9 +1,10 @@
 # Depth-Map Fusion
 
 Record of the August 2026 default-improvement campaign on `MVS::DepthMapsData::DenseFuseDepthMaps`
-(`libs/MVS/SceneDensify.cpp`, the `--fusion-filter 2` path). One default changed (§ 1); everything
-else that was tried is listed in § 3 with its verdict, so that it is not re-proposed. The mesh stage
-that consumes fusion's output keeps its own record in `DelaunayMeshReconstruction.md`.
+(`libs/MVS/SceneDensify.cpp`, the `--fusion-filter 2` path). One default changed and one opt-in
+option added (§ 1); everything else that was tried is listed in § 3 with its verdict, so that it is
+not re-proposed. The mesh stage that consumes fusion's output keeps its own record in
+`DelaunayMeshReconstruction.md`.
 
 ## 1. What changed
 
@@ -60,6 +61,28 @@ mean for +11…24 % memory and +11…36 % wall — over them. 1.0 is the clean p
 at no mesh cost; 0.9 is the deepest dose still inside the bounds, worth considering only where the
 point cloud is the product.
 
+**New option `--fusion-recycle-dropped` (default off).** `useMask` is permanent: a pixel a cluster
+consumed is never offered again, so a cluster the keep-rule then discards locks its pixels away from
+every later cluster that needed them. With the switch on, a dropped cluster hands its members back
+and a later seed or probe can still use them (`OPTDENSE::bFuseRecycleDropped`, one member list per
+cluster and one `unset` per member on a drop; nothing is recorded when it is off). It buys
+completeness with precision, measured on the same frozen dmaps at the new default:
+
+| scene | ΔF1 | ΔP (pp) | ΔR (pp) | points |
+|---|---|---|---|---|
+| Barn | +0.0017 | −1.64 | +3.32 | +22.2 % |
+| Ignatius | +0.0010 | −1.32 | +2.26 | +24.7 % |
+| Meetingroom | +0.0160 | −3.34 | +4.98 | +41.9 % |
+| Truck | −0.0040 | −1.86 | +1.56 | +16.6 % |
+
+Mean +0.0037, but Truck fails the no-scene-below−0.003 clause of § 2, which is why it is an opt-in
+and not a default. 12.7–27.4 M pixels come back per scene and fusion costs +30…80 % wall. The same
+shape was measured at the old 1.2 threshold (mean +0.0043, Truck −0.0039), so the trade does not
+move with the threshold. It addresses the case `--fusion-prior-weight` already speaks to: the dense
+point-cloud is the final output. When a mesh reconstruction follows, leave it off — the graph-cut
+interpolates what the extra points add, and every arm of this campaign that bought cloud F1 with
+point count was absorbed by the mesh (§ 3).
+
 ## 2. How it was measured
 
 - **Benchmark.** Tanks-and-Temples training scenes Barn / Ignatius / Meetingroom / Truck (410 /
@@ -104,8 +127,8 @@ measured, then removed again — none of it is in the tree.
 | the same free-space guard on non-rescued clusters, 0 / 1 / 2 allowed violations | within ±0.002 | inert |
 | confidence recalibration off (`--postprocess-dmaps 0`) | −0.0017 | the recalibration is worth 0.001–0.003, all precision — stays on |
 | `--postprocess-dmaps 8`, the standalone CPU recalibration, vs the integrated GPU pass | −0.0008 … +0.0002 | parity for CPU users (4–5 s, dmap-sized memory peak) — nothing to change |
-| release the pixels of a dropped cluster back to the pool for later seeds | +0.004 (Truck −0.004) | precision −1.3…−3.3 pp for +17…43 % points |
-| seed clusters in descending confidence order instead of raster order | −0.003, negative on every scene | also worsens the release arm when combined with it |
+| deny the prior rescue to any cluster that consumed a pixel recycled by `--fusion-recycle-dropped` (§ 1) | +0.0018 (Truck −0.0007) | the prior rescue is indeed where the recycle option’s precision loss sits — denying it cuts ΔP from −1.3…−3.3 to −0.3…−1.3 pp and removes the Truck regression — but it cuts the recall gain by the same factor (+0.4…+1.7 pp, +3…12 % points), so the mean drops to +0.0018. Recycled pixels pay their way only through the rescue: safe or strong, not both |
+| seed clusters in descending confidence order instead of raster order | −0.003, negative on every scene | also worsens the recycle arm when combined with it |
 | corroboration: probes landing on already-fused pixels that agree with the cluster count toward the keep-rule, weight 0.01 / 0.1 / 0.25 / 0.5 / 1 | 0 / +0.012 / **+0.018** / +0.015 / +0.007 | 0.25 passes the cloud gate (all scenes positive) at +63…97 % points; the mesh absorbs it: +0.0002 mean, Truck −0.0055, for +34…51 % mesh memory and +35…60 % mesh wall |
 | re-probe the 4-neighbours of a failed join | — | instrumentation showed 0.2–0.4 % of the valid depths recoverable; not built |
 | `ReconstructMesh --min-point-distance 2.0` (default 1.5) | raw-mesh −0.0035 (Truck −0.0074) | −23 % mesh memory — a trade, unchanged |
