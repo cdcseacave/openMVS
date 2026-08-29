@@ -242,6 +242,7 @@ OrtTensor OrtTensor::Host(const std::vector<int64_t>& shape)
 bool OnnxModel::Load(const String& fileName, const Options& _options)
 {
 	options = _options;
+	Reset(); // tear down any previous session (its device allocator first) before reloading
 	#ifdef _USE_CUDA
 	if (options.provider == OnnxProvider::AUTO && SEACAVE::CUDA::isCpuRequested(SEACAVE::CUDA::desiredDeviceIDs))
 		options.provider = OnnxProvider::CPU; // --gpu-device -2
@@ -302,7 +303,7 @@ bool OnnxModel::Load(const String& fileName, const Options& _options)
 		if (IsOnDevice())
 			deviceAllocator = std::make_unique<Ort::Allocator>(session, Ort::MemoryInfo("Cuda", OrtArenaAllocator, options.deviceID, OrtMemTypeDefault));
 		binding = Ort::IoBinding(session);
-	} catch (const Ort::Exception& e) {
+	} catch (const std::exception& e) { // Ort::Exception or std::bad_alloc from the metadata vectors
 		VERBOSE("error: can not query ONNX model '%s' (%s)", fileName.c_str(), e.what());
 		Reset();
 		return false;
@@ -313,9 +314,12 @@ bool OnnxModel::Load(const String& fileName, const Options& _options)
 
 void OnnxModel::Reset()
 {
-	session = Ort::Session(nullptr);
-	binding = Ort::IoBinding(nullptr);
+	// tear down in the reverse of the member declaration order (session, binding,
+	// deviceAllocator): the device allocator was created from the session and must be
+	// released before it, and the binding was created from the session too
 	deviceAllocator.reset();
+	binding = Ort::IoBinding(nullptr);
+	session = Ort::Session(nullptr);
 	inputs.clear();
 	outputs.clear();
 	provider = OnnxProvider::CPU; // the class's own not-loaded default
