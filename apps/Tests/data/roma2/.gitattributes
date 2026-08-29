@@ -1,0 +1,5 @@
+# Raw little-endian fp32 test vectors and a lossless PNG source. The two smallest .bin files happen to
+# hold no NUL byte, so git's own heuristic calls them text and a Windows checkout with core.autocrlf would
+# be free to rewrite an 0x0A inside a float. Never convert anything in here.
+*.bin -text
+*.png -text

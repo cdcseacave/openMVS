@@ -1,8 +1,10 @@
 """The torch side of the RoMa v2 export: the stage graphs, their tracing and the retrieval pooling.
 
-Kept apart from export.py (layout: polyml romav2/graphs.py) so that checking or describing a shipped graph
-needs only onnxruntime and numpy — the box that traces the model carries the training stack, the box that
-validates the result should not have to.
+Kept apart from export.py (layout: polyml romav2/graphs.py): everything that loads weights or builds a
+module lives here, so running a shipped graph and reading its numbers stays a job for onnxruntime and numpy.
+Two things in export.py do reach in and bring torch with them — the pooled-descriptor half of `check` and
+the model constants the manifest publishes — because a second copy of the retrieval recipe or of the layer
+indices is exactly the divergence the C++ side would inherit.
 """
 import contextlib
 import inspect
@@ -93,6 +95,75 @@ def _dino_backbone(f):
     raise RuntimeError("DINOv3 backbone not found under model.f")
 
 
+class MatchWrap(torch.nn.Module):
+    """(descriptors, images) -> (warp_AB, confidence_AB).
+
+    Reproduces RoMaV2.forward from the matcher onwards, for the single low-resolution stage the exported
+    settings use (no hr images, so the precision channels are never zeroed out and the stage loop runs
+    once) and without bidirectional matching. With coarse=True it returns the matcher head's own
+    prediction (a quarter of the input resolution, one confidence channel) instead of running the refiner
+    cascade that walks it up to the image resolution and adds the precision parameters.
+
+    The refined confidence carries the overlap logit and three entries of a precision matrix. Those three
+    are squares of network outputs accumulated across stages, so a small perturbation upstream moves them
+    a long way: in bf16 they hold a cosine of 0.86 against eager fp32 where the logit beside them holds
+    0.999. They are exported because they cost nothing to carry and a consumer may still want them, but
+    they are the reason an engine is judged on warp agreement rather than on a cosine over every output.
+    """
+
+    def __init__(self, model, coarse):
+        super().__init__()
+        self.m = model
+        self.coarse = coarse
+
+    def forward(self, descriptors_A, descriptors_B, img_A, img_B):
+        matcher_output = self.m.matcher(
+            [descriptors_A[:, 0], descriptors_A[:, 1]],
+            [descriptors_B[:, 0], descriptors_B[:, 1]],
+            img_A=img_A,
+            img_B=img_B,
+            bidirectional=False,
+        )
+        warp, confidence = matcher_output["warp_AB"], matcher_output["confidence_AB"]
+        if self.coarse:
+            return warp.clone(), confidence.clone()
+
+        from romav2.romav2 import _interpolate_warp_and_confidence
+
+        B, C, H, W = img_A.shape
+        scale_factor = torch.tensor((W / self.m.anchor_width, H / self.m.anchor_height), device=img_A.device)
+        refiner_features_A = self.m.refiner_features(img_A)
+        refiner_features_B = self.m.refiner_features(img_B)
+        for patch_size_str, refiner in self.m.refiners.items():
+            patch_size = int(patch_size_str)
+            warp, confidence = _interpolate_warp_and_confidence(
+                warp=warp, confidence=confidence, H=H, W=W, patch_size=patch_size, zero_out_precision=False
+            )
+            refined = refiner(
+                f_A=refiner_features_A[patch_size],
+                f_B=refiner_features_B[patch_size],
+                prev_warp=warp,
+                prev_confidence=confidence,
+                scale_factor=scale_factor,
+            )
+            warp, confidence = refined["warp"], refined["confidence"]
+        return warp.clone(), confidence.clone()
+
+
+# MatchWrap's refiner branch above is polyml's, kept so the two copies stay diffable, but openMVS exports
+# the coarse head alone and stage_graph refuses the rest with this. Three reasons, none of them a graph
+# detail: the refiners correlate locally through romav2's local_corr CUDA extension (the pure-torch
+# fallback traces, but as a different computation than the one that runs), their fine features come from a
+# VGG19-BN whose weights are a second checkpoint this export does not carry, and they resample with
+# grid_sample, which lands on ORT as an op whose accelerated coverage is uneven across providers. The
+# coarse head needs none of the three (verified: no GridSample node in the traced coarse graph), and its
+# 4 px/cell grid at base is what openMVS's warp-guided re-matching consumes.
+REFINER_NOT_EXPORTED = (
+    "the refiner cascade is out of scope for the openMVS export: it needs romav2's local_corr CUDA "
+    "extension (or a batched rewrite), the VGG19-BN fine-feature weights this export does not ship, and "
+    "grid_sample. Export the coarse head instead: --stage match --coarse")
+
+
 def to_fp32(model):
     """Strip the model's autocast so it traces as a plain fp32 graph (polyml graphs.py:112-131).
 
@@ -155,7 +226,7 @@ def _cache_rope(model):
         rope.forward = fwd
 
 
-def build_model(setting, checkpoint, roma2_repo, device="cuda", rope_cache=False):
+def build_model(setting, checkpoint, roma2_repo, device="cuda", rope_cache=False, fp32=True):
     """The fp32, eval, traceable RoMa v2 for `setting` (polyml graphs.py:134-139, local weights).
 
     The vendored RoMaV2 takes weights=<path> (src/romav2/romav2.py:92-119); the upstream fork (~/RoMaV2) has
@@ -166,6 +237,9 @@ def build_model(setting, checkpoint, roma2_repo, device="cuda", rope_cache=False
     rope_cache is off by default: it saves 0.9 MB of 978 MB at turbo and the two traced graphs agree only to
     ~3e-6 relative on value_facets, short of the 1e-6 the optimisation was gated on, so the shipped graph
     keeps the structure polyml traces.
+
+    fp32=False leaves the model exactly as the checkpoint ships it — bf16 weights under its own autocast —
+    which is not traceable but is what bf16_noise_floor measures the graphs' error against.
     """
     repo = Path(roma2_repo).expanduser()
     source = repo / "src"
@@ -186,11 +260,32 @@ def build_model(setting, checkpoint, roma2_repo, device="cuda", rope_cache=False
     assert list(model.cfg.descriptor.layer_idx) == LAYER_IDX, \
         f"the matcher head was trained on blocks {LAYER_IDX}, model asks for {model.cfg.descriptor.layer_idx}"
     model.apply_setting(setting)
-    model = to_fp32(model.to(device).eval())
+    model = model.to(device).eval()
+    if fp32:
+        model = to_fp32(model)
     _assert_masked_bias(model)
     if rope_cache:
         _cache_rope(model)
     return model
+
+
+def bf16_noise_floor(setting, checkpoint, roma2_repo, image, layers_fp32):
+    """How far the model's own bf16 autocast lands from the eager fp32 reference the graphs are judged on.
+
+    A graph is measured against eager fp32, but nobody runs this model in eager fp32 — RoMa's own inference
+    path is bf16 under autocast. So the interesting question about a cosine of 0.99999 is not whether it is
+    close to 1 but how it compares with the distance the model already moves when run the way it was
+    trained to run. That distance is this, and it is the floor: no runtime is more faithful to `layers` than
+    the model itself is.
+    """
+    model = build_model(setting, checkpoint, roma2_repo, fp32=False)
+    device = next(model.parameters()).device
+    with torch.no_grad():
+        layers = torch.stack(model.f(torch.as_tensor(np.asarray(image)).to(device)), dim=1)
+    actual = layers.float().cpu().numpy().astype(np.float64)
+    expected = np.asarray(layers_fp32, dtype=np.float64)
+    cosine = float(expected.ravel() @ actual.ravel() / (np.linalg.norm(expected) * np.linalg.norm(actual)))
+    return cosine, float(np.abs(expected - actual).max())
 
 
 def pool_retrieval(tensor, recipe="facets", power=0.3):
@@ -200,7 +295,7 @@ def pool_retrieval(tensor, recipe="facets", power=0.3):
     -> sign|d|^power -> L2, 2048-d. layers: GeM p=3 on slice 1 -> L2, 1024-d — the shipped recipe, kept as
     the parity gate. Accumulated in float64 because the cube inside GeM costs precision.
     """
-    t = torch.as_tensor(tensor, dtype=torch.float64)[0]                                 # [2, h, w, C]
+    t = torch.as_tensor(tensor).detach().to("cpu", torch.float64)[0]                    # [2, h, w, C]
     gem = lambda s: F.normalize(s.reshape(-1, s.shape[-1]).clamp(min=1e-6).pow(3).mean(0).pow(1 / 3), dim=0)
     if recipe == "layers":
         return gem(t[1]).float().numpy()
@@ -212,11 +307,20 @@ def stage_graph(model, stage, coarse, facet_blocks=FACET_BLOCKS):
     """The module to trace for `stage`, plus example inputs of the shapes it will be called with."""
     size = model.H_lr
     device = next(model.parameters()).device
+    img_A = torch.rand(1, 3, size, size, device=device)
     if stage == "descriptor":
-        return DescriptorWrap(model, facet_blocks).eval(), (torch.rand(1, 3, size, size, device=device),)
-    raise NotImplementedError(
-        f"--stage match{' --coarse' if coarse else ''} is not traced yet: the pair graph and its MatchWrap "
-        f"land with the matching stage")
+        return DescriptorWrap(model, facet_blocks).eval(), (img_A,)
+    if not coarse:
+        raise NotImplementedError(REFINER_NOT_EXPORTED)
+    # Descriptor-shaped inputs rather than the descriptor's actual output: the graph only needs shapes and
+    # dtypes to trace, and these same tensors become the graph's own parity inputs, so running the backbone
+    # first would only make the check depend on a second stage. parity.py feeds it real descriptors.
+    grid = size // PATCH
+    width = _dino_backbone(model.f).embed_dim      # 1024 for dinov3_vitl16, the contract's descriptor width
+    img_B = torch.rand(1, 3, size, size, device=device)
+    descriptors_A = torch.rand(1, 2, grid, grid, width, device=device)
+    descriptors_B = torch.rand(1, 2, grid, grid, width, device=device)
+    return MatchWrap(model, coarse).eval(), (descriptors_A, descriptors_B, img_A, img_B)
 
 
 def save_reference(directory, input_names, inputs, output_names, outputs):
@@ -260,6 +364,36 @@ def _check_descriptor(graph, img, layers, value_facets, tol=1e-4):
         print(f"  value_facets[:, {i}] == block {b} qkv(norm1(x))[..., 2C:]: max abs {error:.2e}", flush=True)
 
 
+def _check_coarse_match(model, warp, confidence, descriptors_A, descriptors_B, img_A, img_B,
+                        warp_tol=1e-4, confidence_tol=1e-3):
+    """Prove, before tracing, that MatchWrap's coarse output is the model's own coarse prediction.
+
+    MatchWrap calls model.matcher directly, so nothing in the wrap would notice if RoMaV2's coarse entry
+    point did something else on the way in or out — a sigmoid, a clone of a different key, a transpose. The
+    fork's coarse_cached_match is that entry point (romav2.py:358-383): it takes the cached per-image
+    features and returns exactly what openMVS wants a graph for, which makes it the reference this wrap has
+    to reproduce. It mutates frame["features"] in place, so it is given clones.
+
+    Only the ~/RoMaV2 fork carries the method; polyml's vendored copy predates it, and there the proof is
+    skipped rather than faked. Run it once per change with --roma2-repo ~/RoMaV2: the matcher, the head and
+    the DPT under them are byte-identical between the two checkouts.
+    """
+    reference = getattr(model, "coarse_cached_match", None)
+    if reference is None:
+        print("  coarse_cached_match absent from this romav2 checkout: coarse proof skipped "
+              "(run it with --roma2-repo ~/RoMaV2)", flush=True)
+        return
+    frame = lambda L, img: {"features": [L[:, 0].clone(), L[:, 1].clone()], "rescaled": img}
+    expected = reference(frame(descriptors_A, img_A), frame(descriptors_B, img_B))
+    warp_error = (warp - expected["warp_AB"]).abs().max().item()
+    confidence_error = (confidence - expected["confidence_AB"]).abs().max().item()
+    assert warp_error <= warp_tol, f"warp != coarse_cached_match's warp_AB: max abs {warp_error:.3e}"
+    assert confidence_error <= confidence_tol, \
+        f"confidence != coarse_cached_match's confidence_AB: max abs {confidence_error:.3e}"
+    print(f"  (warp, confidence) == model.coarse_cached_match: max abs {warp_error:.2e} / "
+          f"{confidence_error:.2e}", flush=True)
+
+
 def trace_to_onnx(out_path, reference_dir, stage, coarse, setting, checkpoint, roma2_repo, input_names,
                   output_names, exporter="dynamo", facet_blocks=FACET_BLOCKS, rope_cache=False):
     """Trace `stage` to fp32 ONNX and save the eager fp32 reference beside it. Returns the output count.
@@ -280,6 +414,8 @@ def trace_to_onnx(out_path, reference_dir, stage, coarse, setting, checkpoint, r
             eager = graph(*example_inputs)
             if stage == "descriptor":
                 _check_descriptor(graph, example_inputs[0], *eager)
+            elif coarse:
+                _check_coarse_match(model, *eager, *example_inputs)
             if exporter == "dynamo":
                 torch.onnx.export(graph, tuple(example_inputs), str(out_path), input_names=input_names,
                                   output_names=output_names, opset_version=18, dynamo=True,
@@ -294,7 +430,11 @@ def trace_to_onnx(out_path, reference_dir, stage, coarse, setting, checkpoint, r
                 onnx.save(inline, str(out_path), save_as_external_data=True, all_tensors_to_one_file=True,
                           location=external.name, size_threshold=1024)
     finally:
-        graph.close()   # the wrap's hooks, before the model is handed on or the process moves to a check
+        # the descriptor wrap's hooks, before the model is handed on or the process moves to a check;
+        # MatchWrap is polyml's verbatim and holds nothing to release, so it has no close()
+        close = getattr(graph, "close", None)
+        if close is not None:
+            close()
 
     onnx.checker.check_model(str(out_path), full_check=True)
     written = onnx.load(str(out_path), load_external_data=False)
