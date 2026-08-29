@@ -27,6 +27,8 @@
 
 // I N C L U D E S /////////////////////////////////////////////////
 
+#include "Common.h" // SFM_API, String
+
 
 // D E F I N E S ///////////////////////////////////////////////////
 
@@ -34,6 +36,10 @@
 // S T R U C T S ///////////////////////////////////////////////////
 
 namespace SFM {
+
+// Forward declarations
+class SFM_API Scene;
+class SFM_API RoMa2Onnx;
 
 // Recipe used to pool the per-image ROMAv2 descriptor graph outputs into one global
 // retrieval descriptor: FACETS pools the attention value facets (2048-d, default),
@@ -79,6 +85,17 @@ struct SFM_API ROMA2Config {
 	}
 };
 /*----------------------------------------------------------------*/
+
+// Run the ROMAv2 describe pass over every image of the scene: pipelines each image's load
+// and preprocessing on the thread pool while roma2.Describe() (which may only be driven from
+// one thread) runs on the calling thread, then pools the descriptor-graph output of every
+// successfully described image into its global retrieval descriptor (PoolRetrievalDescriptor,
+// config.retrievalRecipe) and stores it in Image::globalDescriptor. roma2 must already be
+// loaded (RoMa2Onnx::Load); this pass never touches the coarse-match graph.
+// Returns the number of images successfully described; a per-image load/describe failure is
+// logged individually and leaves that image's globalDescriptor empty, so a return value below
+// scene.images.size() is the caller's cue to treat the whole pass as failed.
+SFM_API unsigned ComputeGlobalDescriptorsROMA2(Scene& scene, RoMa2Onnx& roma2, const ROMA2Config& config);
 
 } // namespace SFM
 

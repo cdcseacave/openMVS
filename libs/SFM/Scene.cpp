@@ -21,6 +21,7 @@
 #include "SimilarityTransform.h"
 #include "InterfaceMVS.h"
 #include "ImportCOLMAP.h"
+#include "RoMa2Matcher.h"
 
 #include <TinyEXIF.h>
 
@@ -563,6 +564,24 @@ bool Scene::MatchPairs(const MatchConfig& config, const ROMA2Config& roma2Cfg, c
 {
 	PairsMatcher pairsMatcher(*this, config);
 
+	// In-process ROMA2: one loaded model serves the retrieval descriptors and the dense
+	// matching; it lives for this call only (design decision 7)
+	RoMa2Onnx roma2;
+	const bool useROMA2 = roma2Cfg.IsInProcessEnabled() && !status.nState.isSet(Status::STATE::MATCHED);
+	if (useROMA2) {
+		if (!RoMa2Onnx::IsAvailable()) {
+			VERBOSE("error: ROMA2 model '%s' requested, but this build has no ONNX Runtime support", roma2Cfg.ResolveModelPath().c_str());
+			return false;
+		}
+		if (!roma2.Load(roma2Cfg.ResolveModelPath(), roma2Cfg.setting, roma2Cfg.useGPU ? roma2Cfg.provider : String("cpu"))) {
+			VERBOSE("error: failed to load ROMA2 model '%s' (%s)", roma2Cfg.ResolveModelPath().c_str(), roma2Cfg.setting.c_str());
+			return false;
+		}
+		if (roma2Cfg.useRetrieval && !ComputeGlobalDescriptors(roma2, roma2Cfg))
+			return false;
+	}
+	pairsMatcher.SetROMA2(useROMA2 && roma2Cfg.useMatching ? &roma2 : NULL, roma2Cfg);
+
 	if (status.nState.isSet(Status::STATE::MATCHED)) {
 		VERBOSE("warning: pairs already matched, skipping");
 		pairsMatcher.ComputeRelativePoses();
@@ -583,6 +602,20 @@ bool Scene::MatchPairs(const MatchConfig& config, const ROMA2Config& roma2Cfg, c
 		if (!calibrator.GetUpdatedCameras().empty())
 			pairsMatcher.ComputeRelativePoses(true, false, calibrator.GetUpdatedCameras());
 	}
+	return true;
+}
+
+bool Scene::ComputeGlobalDescriptors(RoMa2Onnx& roma2, const ROMA2Config& config)
+{
+	if (status.nState.isSet(Status::STATE::GLOBAL_DESCRIPTORS))
+		return true;
+	// the retrieval index needs one row per image; Scene::Import already rejected unreadable
+	// images, so a miss here (a per-image load/describe failure) is a real failure
+	if (ComputeGlobalDescriptorsROMA2(*this, roma2, config) != images.size()) {
+		VERBOSE("error: failed to describe all %u images with the ROMA2 model", (unsigned)images.size());
+		return false;
+	}
+	status.nState.set(Status::STATE::GLOBAL_DESCRIPTORS);
 	return true;
 }
 

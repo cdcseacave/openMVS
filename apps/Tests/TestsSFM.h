@@ -63,6 +63,15 @@ bool RoMa2PreprocessTest();
 // narrow the execution provider and the preset it exercises
 bool RoMa2OnnxParityTest();
 
+// ROMA2 reconstruct test skeleton: describes every image of the bundled 4-image scene with the
+// in-process ROMAv2 model (Scene::MatchPairs, useMatching = false) and checks the per-image
+// global retrieval descriptor it stores, for both the FACETS (default, 2048-D) and LAYERS
+// (parity, 1024-D) recipes; ordinary EXHAUSTIVE geometric matching still connects every pair.
+// Task 9 finishes this skeleton with the dense-matching pass. Skipped unless
+// OPENMVS_ROMA2_MODEL_PATH points at an exported model folder; OPENMVS_ROMA2_PROVIDER and
+// OPENMVS_ROMA2_SETTING narrow the execution provider and the preset it exercises
+bool ROMA2ReconstructTest();
+
 // Test Bundle-Adjustment PinholeReprojectionErrorAnalytic Jacobians against AutoDiff
 bool BAPinholeReprojectionJacobianTest();
 

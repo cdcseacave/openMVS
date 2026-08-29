@@ -1360,6 +1360,124 @@ bool RoMa2OnnxParityTest()
 	#endif
 }
 
+#ifdef _USE_ONNXRUNTIME
+// One recipe of ROMA2ReconstructTest: import the bundled 4-image scene, extract AKAZE features,
+// then MatchPairs with the in-process ROMAv2 model describing every image (useMatching = false,
+// so the dense warps play no part yet -- Task 9 adds that pass on top of this skeleton) and
+// check the global retrieval descriptors it stores, plus that ordinary EXHAUSTIVE geometric
+// matching (unaffected by the describe pass) still connects every pair.
+static bool ROMA2ReconstructScene(const String& setting, const String& provider, RetrievalRecipe recipe, int expectedDim)
+{
+	Scene scene(2);
+
+	ImportConfig importCfg;
+	importCfg.focalLength = 900.f;
+	importCfg.k1 = 0.60f;
+	importCfg.k2 = -0.09f;
+	if (!scene.Import(MAKE_PATH("images"), importCfg)) {
+		VERBOSE("ROMA2ReconstructTest FAILED: Import failed");
+		return false;
+	}
+
+	FeatureExtractionConfig featuresCfg;
+	featuresCfg.detectorType = FeatureType::AKAZE;
+	featuresCfg.maxFeaturesPerCell = 900;
+	featuresCfg.minFeaturesPerCell = 400;
+	if (!scene.ExtractFeatures(featuresCfg)) {
+		VERBOSE("ROMA2ReconstructTest FAILED: ExtractFeatures failed");
+		return false;
+	}
+
+	MatchConfig matchCfg;
+	matchCfg.mode = MatchConfig::EXHAUSTIVE;
+	matchCfg.DefaultsForFeatureType(featuresCfg.detectorType);
+
+	ROMA2Config roma2Cfg;
+	roma2Cfg.enabled = true;
+	roma2Cfg.setting = setting;
+	roma2Cfg.provider = provider;
+	roma2Cfg.useMatching = false;
+	roma2Cfg.retrievalRecipe = recipe;
+	if (!scene.MatchPairs(matchCfg, roma2Cfg)) {
+		VERBOSE("ROMA2ReconstructTest FAILED: MatchPairs failed");
+		return false;
+	}
+
+	if (!scene.status.nState.isSet(Scene::Status::STATE::GLOBAL_DESCRIPTORS)) {
+		VERBOSE("ROMA2ReconstructTest FAILED: GLOBAL_DESCRIPTORS state not set");
+		return false;
+	}
+	FOREACH(i, scene.images) {
+		const Image& img = scene.images[i];
+		if (!img.HasGlobalDescriptor()) {
+			VERBOSE("ROMA2ReconstructTest FAILED: image %u has no global descriptor", img.ID);
+			return false;
+		}
+		if (img.globalDescriptor.rows != 1 || img.globalDescriptor.cols != expectedDim) {
+			VERBOSE("ROMA2ReconstructTest FAILED: image %u global descriptor is %dx%d, expected 1x%d",
+				img.ID, img.globalDescriptor.rows, img.globalDescriptor.cols, expectedDim);
+			return false;
+		}
+		const double descNorm = cv::norm(img.globalDescriptor, cv::NORM_L2);
+		if (ABS(descNorm - 1.0) > 1e-4) {
+			VERBOSE("ROMA2ReconstructTest FAILED: image %u global descriptor norm %.6f, expected 1", img.ID, descNorm);
+			return false;
+		}
+	}
+
+	// exhaustive matching of 4 images: all C(4,2)=6 candidate pairs, unaffected by the describe pass
+	if (scene.pairs.size() != 6) {
+		VERBOSE("ROMA2ReconstructTest FAILED: expected 6 geometrically matched pairs, got %u", (unsigned)scene.pairs.size());
+		return false;
+	}
+	DEBUG("ROMA2ReconstructTest[%s]: %u images described (%d-D, %s provider), %u pairs matched",
+		setting.c_str(), (unsigned)scene.images.size(), expectedDim, provider.c_str(), (unsigned)scene.pairs.size());
+	return true;
+}
+#endif // _USE_ONNXRUNTIME
+
+// ROMA2 reconstruct test skeleton: describes every image of the bundled 4-image scene with the
+// in-process ROMAv2 model and checks the per-image global retrieval descriptors it stores, on
+// top of the same import/AKAZE/EXHAUSTIVE pipeline as ReconstructTest -- first with the default
+// FACETS recipe (2048-D), then with the LAYERS (parity) recipe (1024-D) on a fresh scene.
+// Task 9 finishes this skeleton with the dense-matching pass (marker/replace assertions,
+// save/load round-trip, tracks/init/BA). Configured by the environment like RoMa2OnnxParityTest:
+// OPENMVS_ROMA2_MODEL_PATH (unset => skipped), OPENMVS_ROMA2_SETTING (default "turbo"),
+// OPENMVS_ROMA2_PROVIDER (default "auto")
+bool ROMA2ReconstructTest()
+{
+	#ifndef _USE_ONNXRUNTIME
+	VERBOSE("ROMA2ReconstructTest: skipped (built without ONNX Runtime)");
+	return true;
+	#else
+	if (!RoMa2Onnx::IsAvailable()) {
+		VERBOSE("ROMA2ReconstructTest: skipped (no ONNX Runtime support in this build)");
+		return true;
+	}
+	const char* const envModelPath = getenv("OPENMVS_ROMA2_MODEL_PATH");
+	if (envModelPath == NULL || *envModelPath == 0) {
+		VERBOSE("ROMA2ReconstructTest: skipped (OPENMVS_ROMA2_MODEL_PATH not set)");
+		return true;
+	}
+	TD_TIMER_STARTD();
+	const char* const envSetting = getenv("OPENMVS_ROMA2_SETTING");
+	const String setting(envSetting != NULL && *envSetting != 0 ? String(envSetting) : String("turbo"));
+	const char* const envProvider = getenv("OPENMVS_ROMA2_PROVIDER");
+	const String provider(envProvider != NULL && *envProvider != 0 ? String(envProvider) : String("auto"));
+
+	if (!ROMA2ReconstructScene(setting, provider, RetrievalRecipe::FACETS, 2048)) {
+		VERBOSE("ROMA2ReconstructTest FAILED: FACETS recipe");
+		return false;
+	}
+	if (!ROMA2ReconstructScene(setting, provider, RetrievalRecipe::LAYERS, 1024)) {
+		VERBOSE("ROMA2ReconstructTest FAILED: LAYERS recipe");
+		return false;
+	}
+	VERBOSE("ROMA2ReconstructTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
+	return true;
+	#endif
+}
+
 bool BAPinholeReprojectionJacobianTest()
 {
 	return PinholeReprojectionJacobianTest();

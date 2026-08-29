@@ -272,6 +272,16 @@ public:
 	bool MatchPairs(const MatchConfig& config, const ROMA2Config& roma2Cfg = ROMA2Config(), const ViewGraphCalibratorConfig& vgConfig = ViewGraphCalibratorConfig());
 
 	/**
+	 * @brief Describe every image with the in-process ROMAv2 model and pool the result into
+	 * each image's global retrieval descriptor (a no-op returning true if the scene is already
+	 * marked GLOBAL_DESCRIPTORS). Sets the flag only once every image was successfully described.
+	 * @param roma2 an already-loaded ROMAv2 model (RoMa2Onnx::Load)
+	 * @param config the in-process ROMAv2 configuration (retrieval recipe/power)
+	 * @return true if every image now carries a global descriptor
+	 */
+	bool ComputeGlobalDescriptors(RoMa2Onnx& roma2, const ROMA2Config& config);
+
+	/**
 	 * @brief Run a full reconstruction from a folder or semicolon-separated list
 	 * @param source Either a folder path (will scan images) or a list of image paths separated by ';'
 	 * @param config Reconstruction configuration
