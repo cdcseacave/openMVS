@@ -46,7 +46,6 @@ struct SFM_API DMatch;
 class SFM_API Scene;
 class SFM_API VocabularyTree;
 class SFM_API GlobalDescriptors;
-class SFM_API RoMa2Onnx;
 enum class FeatureType : uint8_t;
 
 /**

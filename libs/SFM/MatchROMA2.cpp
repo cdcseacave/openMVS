@@ -57,8 +57,8 @@ typedef std::vector<float> PlanarImage;
 // buffer the descriptor graph expects. Uses the working-orientation pixels (Image::LoadPixels
 // rotates portrait to landscape -- design decision 12), the same pixels the keypoints were
 // extracted from. Each image is touched by exactly one pool task, and by the calling thread
-// only after that task's future has resolved (see the prefetch ring in
-// ComputeGlobalDescriptorsROMA2 below), so no locking is needed on Image.
+// only after that task's future has resolved (PrefetchRing::Take, below), so no locking is
+// needed on Image.
 bool PrepareImageROMA2(Image& img, int size, PlanarImage& planar)
 {
 	const bool hadPixels = img.HasPixels();
@@ -69,6 +69,93 @@ bool PrepareImageROMA2(Image& img, int size, PlanarImage& planar)
 		img.ReleasePixels();
 	return true;
 }
+
+// Pipelines image load+preprocess on the thread pool while the calling thread runs the ONNX
+// Runtime call for the previously prepared slot (the SiftGPU bulk-driver pattern,
+// FeaturesExtractor.cpp:113-153, applied to ROMA2). Fixed-size ring of `capacity` planar
+// buffers: Submit(image) schedules a pool task writing into slot `image % capacity`; Take()
+// blocks on the oldest still-outstanding submission and returns whether it succeeded;
+// Planar(image) exposes the buffer that submission wrote (or failed to write) into.
+//
+// Ordering invariant callers must keep: Submit(image + capacity) may only be issued after
+// Take() has already consumed image's submission, since the two share slot
+// `image % capacity`. ComputeGlobalDescriptorsROMA2's loop keeps this by construction
+// (it always Take()s image i, and only then conditionally Submit()s i + capacity); Submit()
+// itself ASSERTs the ring never holds more outstanding submissions than slots, which is the
+// same invariant restated as a count and catches a caller that broke the ordering.
+// Task 9's dense-matching slot loader reuses this ring unchanged.
+//
+// The destructor waits on every outstanding future: without it, a throw unwinding through
+// Take()'s future::get() (RoMa2Onnx::Describe or a pool task itself can throw) would let
+// planars be destroyed while a pool task is still writing into it.
+class PrefetchRing
+{
+public:
+	PrefetchRing(Scene& _scene, unsigned capacity, int _size)
+		: scene(_scene), size(_size), planars(capacity) {}
+	PrefetchRing(const PrefetchRing&) = delete;
+	PrefetchRing& operator=(const PrefetchRing&) = delete;
+
+	~PrefetchRing() {
+		while (!pending.empty()) {
+			pending.front().wait(); // never get(): a destructor must not propagate an exception
+			pending.pop_front();
+		}
+	}
+
+	void Submit(IIndex image) {
+		ASSERT(pending.size() < planars.size()); // never more outstanding submissions than slots (see class comment)
+		pending.push_back(scene.threadPool.submit_task([this, image]() {
+			return PrepareImageROMA2(scene.images[image], size, planars[image % planars.size()]);
+		}));
+	}
+
+	bool Take() {
+		ASSERT(!pending.empty());
+		const bool prepared = pending.front().get();
+		pending.pop_front();
+		return prepared;
+	}
+
+	const PlanarImage& Planar(IIndex image) const { return planars[image % planars.size()]; }
+
+private:
+	Scene& scene;
+	int size;
+	std::vector<PlanarImage> planars;
+	std::deque<std::future<bool>> pending;
+};
+
+// Restores the describe pass's OpenCV thread count, log-console pause, and progress bar on
+// scope exit, including through an exception (they used to be plain statements reachable only
+// on the non-throwing path). Finish() runs the restoration immediately and is what the normal
+// path calls, right before the summary DEBUG line, so that line isn't swallowed by the paused
+// console; the destructor calls it too (idempotent) as the safety net for any exceptional exit.
+struct ScopedDescribeState
+{
+	Scene& scene;
+	Util::Progress progress;
+	bool bFinished = false;
+
+	ScopedDescribeState(Scene& _scene, IIndex nImages)
+		: scene(_scene), progress(_T("Describe images"), nImages)
+	{
+		cv::setNumThreads(1); // temporarily turn off multi-threading for OpenCV functions (the pool tasks are already parallel)
+		GET_LOGCONSOLE().Pause();
+	}
+	ScopedDescribeState(const ScopedDescribeState&) = delete;
+	ScopedDescribeState& operator=(const ScopedDescribeState&) = delete;
+	~ScopedDescribeState() { Finish(); }
+
+	void Finish() {
+		if (bFinished)
+			return;
+		bFinished = true;
+		GET_LOGCONSOLE().Play();
+		progress.close();
+		cv::setNumThreads(scene.nMaxThreads); // restore OpenCV threading
+	}
+};
 
 #endif // _USE_ONNXRUNTIME
 
@@ -84,38 +171,38 @@ unsigned SFM::ComputeGlobalDescriptorsROMA2(Scene& scene, RoMa2Onnx& roma2, cons
 	TD_TIMER_STARTD();
 	const IIndex nImages = (IIndex)scene.images.size();
 	const int size = roma2.ImageSize();
-	// pipelined like the SiftGPU bulk driver (FeaturesExtractor.cpp): pool tasks load+preprocess
-	// image i+k while the calling thread runs Describe(i) on the previously prefetched slot
 	const unsigned nPrefetch = MINF(2u*(unsigned)scene.threadPool.get_thread_count(), 8u);
-	cv::setNumThreads(1); // temporarily turn off multi-threading for OpenCV functions (the pool tasks are already parallel)
-	Util::Progress progress(_T("Describe images"), nImages);
-	GET_LOGCONSOLE().Pause();
 
-	std::vector<PlanarImage> planars(nPrefetch);
-	std::deque<std::future<bool>> prefetched;
-	const auto Prefetch = [&](IIndex i) {
-		prefetched.push_back(scene.threadPool.submit_task([&scene, &planars, i, size, nPrefetch]() {
-			return PrepareImageROMA2(scene.images[i], size, planars[i % nPrefetch]);
-		}));
-	};
+	// destruction order matters on every exit path (normal or exceptional): ring must destruct
+	// before state, so it is declared after state (reverse declaration order == destruction
+	// order) -- every pool task is drained before cv::setNumThreads/log console are restored
+	ScopedDescribeState state(scene, nImages);
+	PrefetchRing ring(scene, nPrefetch, size);
 	for (IIndex i = 0; i < MINF(nPrefetch, nImages); ++i)
-		Prefetch(i);
+		ring.Submit(i);
 
 	unsigned numDescribed = 0;
-	OrtTensor layers = roma2.MakeLayers(); // reused across every image (design decision 7: the describe pass keeps only the pooled vector, not the layers)
 	const bool bFacets = config.retrievalRecipe == RetrievalRecipe::FACETS;
-	OrtTensor layersHost;
-	if (!bFacets)
-		layersHost = OrtTensor::Host(roma2.LayersShape()); // the LAYERS (parity) recipe pools the `layers` output itself, so it must be read back to the host
+	// allocate only the tensor the active recipe actually reads: FACETS pools the host
+	// `facets' readback and leaves `layers` a device-resident scratch write target it never
+	// reads back; LAYERS pools `layers` itself, which must therefore be a host tensor
+	OrtTensor layers, layersHost;
+	if (bFacets)
+		layers = roma2.MakeLayers(); // reused across every image (design decision 7: the describe pass keeps only the pooled vector, not the layers)
+	else
+		layersHost = OrtTensor::Host(roma2.LayersShape());
+	if (!(bFacets ? layers : layersHost).IsValid()) {
+		VERBOSE("error: could not allocate the ROMA2 %s tensor", bFacets ? "layers" : "layers-host");
+		return 0;
+	}
 	const unsigned numSlices = (unsigned)roma2.LayersShape()[1];
 	const unsigned numChannels = (unsigned)roma2.LayersShape()[4];
 	std::vector<float> facets, descriptor;
-	for (IIndex i = 0; i < nImages; ++i, ++progress) {
+	for (IIndex i = 0; i < nImages; ++i, ++state.progress) {
 		// consume the slot this image was prefetched into before ever reusing it below
-		const bool prepared = prefetched.front().get();
-		prefetched.pop_front();
+		const bool prepared = ring.Take();
 		Image& img = scene.images[i];
-		if (prepared && roma2.Describe(planars[i % nPrefetch].data(), bFacets ? layers : layersHost, bFacets ? &facets : NULL)) {
+		if (prepared && roma2.Describe(ring.Planar(i).data(), bFacets ? layers : layersHost, bFacets ? &facets : NULL)) {
 			PoolRetrievalDescriptor(bFacets ? facets.data() : layersHost.HostData(), numSlices, roma2.NumPatches(), numChannels,
 				config.retrievalRecipe, config.retrievalPower, descriptor);
 			img.globalDescriptor = cv::Mat(1, (int)descriptor.size(), CV_32F, descriptor.data()).clone();
@@ -123,14 +210,11 @@ unsigned SFM::ComputeGlobalDescriptorsROMA2(Scene& scene, RoMa2Onnx& roma2, cons
 		} else {
 			VERBOSE("error: could not describe image %u '%s'", img.ID, img.fileName.c_str());
 		}
-		// only now may the slot this image just consumed be overwritten by a new prefetch
+		// only now may the slot this image just consumed be overwritten by a new submission
 		if (i + nPrefetch < nImages)
-			Prefetch(i + nPrefetch);
+			ring.Submit(i + nPrefetch);
 	}
-
-	GET_LOGCONSOLE().Play();
-	progress.close();
-	cv::setNumThreads(scene.nMaxThreads); // restore OpenCV threading
+	state.Finish(); // unpause the log console before the summary line below (see struct comment)
 
 	// descriptor may be empty (no image was ever successfully pooled): fall back to the
 	// manifest's declared dimension for the recipe so the summary line stays meaningful

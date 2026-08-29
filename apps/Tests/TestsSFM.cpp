@@ -1365,10 +1365,14 @@ bool RoMa2OnnxParityTest()
 // then MatchPairs with the in-process ROMAv2 model describing every image (useMatching = false,
 // so the dense warps play no part yet -- Task 9 adds that pass on top of this skeleton) and
 // check the global retrieval descriptors it stores, plus that ordinary EXHAUSTIVE geometric
-// matching (unaffected by the describe pass) still connects every pair.
-static bool ROMA2ReconstructScene(const String& setting, const String& provider, RetrievalRecipe recipe, int expectedDim)
+// matching (unaffected by the describe pass) still connects every pair. nThreads is varied by
+// the caller across the two recipe passes so that the describe pass's prefetch ring
+// (nPrefetch = MINF(2*nThreads, 8)) sometimes has fewer slots than images and therefore has to
+// reuse a slot mid-pass (nThreads=1 -> nPrefetch=2 < 4 images); the pairwise-distinctness check
+// below is what would actually catch a stale-buffer bug in that reused slot.
+static bool ROMA2ReconstructScene(unsigned nThreads, const String& setting, const String& provider, RetrievalRecipe recipe, int expectedDim)
 {
-	Scene scene(2);
+	Scene scene(nThreads);
 
 	ImportConfig importCfg;
 	importCfg.focalLength = 900.f;
@@ -1378,6 +1382,23 @@ static bool ROMA2ReconstructScene(const String& setting, const String& provider,
 		VERBOSE("ROMA2ReconstructTest FAILED: Import failed");
 		return false;
 	}
+	// two of the four bundled images are HEIC, which only libheif can decode (OpenCV has no
+	// HEIF codec), so a build without it enumerates just the two JPGs (ReconstructTest carries
+	// the same guard); every pair-count expectation below is expressed in terms of however
+	// many images were actually enumerated, so this test still asserts real numbers either way
+	#ifdef _IMAGE_HEIF
+	constexpr const char* reason = "";
+	constexpr IIndex expectedImages = 4;
+	#else
+	constexpr const char* reason = " (built without libheif, so the two HEIC images were skipped)";
+	constexpr IIndex expectedImages = 2;
+	#endif
+	if (scene.images.size() != expectedImages) {
+		VERBOSE("ROMA2ReconstructTest FAILED: Expected %u images, got %u%s", expectedImages, (unsigned)scene.images.size(), reason);
+		return false;
+	}
+	const IIndex nImages = (IIndex)scene.images.size();
+	const size_t expectedPairs = (size_t)nImages*(nImages-1)/2;
 
 	FeatureExtractionConfig featuresCfg;
 	featuresCfg.detectorType = FeatureType::AKAZE;
@@ -1425,13 +1446,35 @@ static bool ROMA2ReconstructScene(const String& setting, const String& provider,
 		}
 	}
 
-	// exhaustive matching of 4 images: all C(4,2)=6 candidate pairs, unaffected by the describe pass
-	if (scene.pairs.size() != 6) {
-		VERBOSE("ROMA2ReconstructTest FAILED: expected 6 geometrically matched pairs, got %u", (unsigned)scene.pairs.size());
+	// every image's descriptor must actually depend on its own pixels, not on whichever image
+	// last occupied a reused prefetch-ring slot: two images described from the same planar
+	// buffer would carry bit-for-bit (or near bit-for-bit) identical descriptors, i.e. cosine
+	// (== dot product, both unit-norm) essentially 1. The 4 bundled images are close-up shots
+	// of the same small scene (ReconstructTest reconstructs ~2000 shared tracks from them), so
+	// even genuinely distinct descriptors sit close to 1 by content similarity alone -- measured
+	// empirically at up to 0.999855 (FACETS) / 0.999413 (LAYERS) across both providers here, on
+	// this dataset. 0.9999 sits with clear margin above that measured ceiling and well below
+	// what a stale-buffer duplicate would produce, so it catches the bug this check exists for
+	// without being a source of flakiness on legitimately similar content.
+	for (IIndex i = 0; i < nImages; ++i) {
+		for (IIndex j = i + 1; j < nImages; ++j) {
+			const double cosine = scene.images[i].globalDescriptor.dot(scene.images[j].globalDescriptor);
+			if (cosine >= 0.9999) {
+				VERBOSE("ROMA2ReconstructTest FAILED: images %u and %u global descriptors are near-identical (cosine %.6f)",
+					scene.images[i].ID, scene.images[j].ID, cosine);
+				return false;
+			}
+		}
+	}
+
+	// exhaustive matching: all n*(n-1)/2 candidate pairs, unaffected by the describe pass
+	if (scene.pairs.size() != expectedPairs) {
+		VERBOSE("ROMA2ReconstructTest FAILED: expected %u geometrically matched pairs, got %u",
+			(unsigned)expectedPairs, (unsigned)scene.pairs.size());
 		return false;
 	}
-	DEBUG("ROMA2ReconstructTest[%s]: %u images described (%d-D, %s provider), %u pairs matched",
-		setting.c_str(), (unsigned)scene.images.size(), expectedDim, provider.c_str(), (unsigned)scene.pairs.size());
+	DEBUG("ROMA2ReconstructTest[%s]: %u images described (%d-D, %s provider, %u threads), %u pairs matched",
+		setting.c_str(), (unsigned)scene.images.size(), expectedDim, provider.c_str(), nThreads, (unsigned)scene.pairs.size());
 	return true;
 }
 #endif // _USE_ONNXRUNTIME
@@ -1465,11 +1508,14 @@ bool ROMA2ReconstructTest()
 	const char* const envProvider = getenv("OPENMVS_ROMA2_PROVIDER");
 	const String provider(envProvider != NULL && *envProvider != 0 ? String(envProvider) : String("auto"));
 
-	if (!ROMA2ReconstructScene(setting, provider, RetrievalRecipe::FACETS, 2048)) {
+	// two thread counts across the two recipes so the prefetch ring's slot-reuse path
+	// (nThreads=1 -> nPrefetch=2 < 4 images) is exercised at least once (see the function
+	// comment on ROMA2ReconstructScene)
+	if (!ROMA2ReconstructScene(2, setting, provider, RetrievalRecipe::FACETS, 2048)) {
 		VERBOSE("ROMA2ReconstructTest FAILED: FACETS recipe");
 		return false;
 	}
-	if (!ROMA2ReconstructScene(setting, provider, RetrievalRecipe::LAYERS, 1024)) {
+	if (!ROMA2ReconstructScene(1, setting, provider, RetrievalRecipe::LAYERS, 1024)) {
 		VERBOSE("ROMA2ReconstructTest FAILED: LAYERS recipe");
 		return false;
 	}

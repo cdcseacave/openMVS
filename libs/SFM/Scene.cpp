@@ -562,19 +562,30 @@ bool Scene::ExtractFeatures(const FeatureExtractionConfig& config)
 
 bool Scene::MatchPairs(const MatchConfig& config, const ROMA2Config& roma2Cfg, const ViewGraphCalibratorConfig& vgConfig)
 {
+	// In-process ROMA2: one loaded model serves the retrieval descriptors and the dense
+	// matching; it lives for this call only (design decision 7). Declared before
+	// pairsMatcher: anything holding a RoMa2Onnx* or a MakeLayers() tensor (pairsMatcher.SetROMA2
+	// below) must be destroyed before the model, so roma2 must outlive it and therefore be
+	// declared first (destructors run in reverse declaration order).
+	RoMa2Onnx roma2;
 	PairsMatcher pairsMatcher(*this, config);
 
-	// In-process ROMA2: one loaded model serves the retrieval descriptors and the dense
-	// matching; it lives for this call only (design decision 7)
-	RoMa2Onnx roma2;
+	const String modelPath(roma2Cfg.ResolveModelPath());
+	if (roma2Cfg.enabled && (roma2Cfg.useRetrieval || roma2Cfg.useMatching) && modelPath.empty()) {
+		// design decision 10: a requested-but-unavailable model is an error, never a silent
+		// fallback to the vocabulary tree (which is what IsInProcessEnabled() would otherwise
+		// quietly do, since an empty model path makes it return false)
+		VERBOSE("error: ROMA2 requested but no model path given (set --roma2-model or OPENMVS_ROMA2_MODEL_PATH)");
+		return false;
+	}
 	const bool useROMA2 = roma2Cfg.IsInProcessEnabled() && !status.nState.isSet(Status::STATE::MATCHED);
 	if (useROMA2) {
 		if (!RoMa2Onnx::IsAvailable()) {
-			VERBOSE("error: ROMA2 model '%s' requested, but this build has no ONNX Runtime support", roma2Cfg.ResolveModelPath().c_str());
+			VERBOSE("error: ROMA2 model '%s' requested, but this build has no ONNX Runtime support", modelPath.c_str());
 			return false;
 		}
-		if (!roma2.Load(roma2Cfg.ResolveModelPath(), roma2Cfg.setting, roma2Cfg.useGPU ? roma2Cfg.provider : String("cpu"))) {
-			VERBOSE("error: failed to load ROMA2 model '%s' (%s)", roma2Cfg.ResolveModelPath().c_str(), roma2Cfg.setting.c_str());
+		if (!roma2.Load(modelPath, roma2Cfg.setting, roma2Cfg.useGPU ? roma2Cfg.provider : String("cpu"))) {
+			VERBOSE("error: failed to load ROMA2 model '%s' (%s)", modelPath.c_str(), roma2Cfg.setting.c_str());
 			return false;
 		}
 		if (roma2Cfg.useRetrieval && !ComputeGlobalDescriptors(roma2, roma2Cfg))
@@ -609,6 +620,11 @@ bool Scene::ComputeGlobalDescriptors(RoMa2Onnx& roma2, const ROMA2Config& config
 {
 	if (status.nState.isSet(Status::STATE::GLOBAL_DESCRIPTORS))
 		return true;
+	if (images.empty()) {
+		// an empty scene would otherwise make "0 described == 0 images" vacuously true below
+		VERBOSE("error: no images to describe");
+		return false;
+	}
 	// the retrieval index needs one row per image; Scene::Import already rejected unreadable
 	// images, so a miss here (a per-image load/describe failure) is a real failure
 	if (ComputeGlobalDescriptorsROMA2(*this, roma2, config) != images.size()) {
