@@ -552,14 +552,77 @@ bool CImageTIFF::ReadData(void* pData, PIXELFORMAT dataFormat, Size nStride, Siz
 
 bool CImageTIFF::WriteHeader(PIXELFORMAT imageFormat, Size width, Size height, BYTE numLevels)
 {
-	//TODO: to implement the TIFF encoder
+	TIFF* tif = static_cast<TIFF*>(m_state);
+	if (!tif) {
+		tif = TIFFStreamOpen("WriteTIFF", (OSTREAM*)m_pStream);
+		if (!tif) {
+			LOG(LT_IMAGE, "error: unsupported TIFF image");
+			return false;
+		}
+	}
+	m_state = tif;
+
+	m_width = width;
+	m_height = height;
+	m_numLevels = numLevels;
+	m_format = imageFormat;
+
+	uint16 samplesPerPixel = 0;
+	switch (imageFormat) {
+	case PF_GRAY8:
+		m_stride = 1;
+		samplesPerPixel = 1;
+		break;
+	case PF_R8G8B8:
+	case PF_B8G8R8:
+		m_stride = 3;
+		samplesPerPixel = 3;
+		break;
+	case PF_R8G8B8A8:
+	case PF_A8R8G8B8:
+	case PF_B8G8R8A8:
+	case PF_A8B8G8R8:
+		m_stride = 4;
+		samplesPerPixel = 4;
+		break;
+	default:
+		LOG(LT_IMAGE, "error: unsupported TIFF image format");
+		return false;
+	}
+	m_lineWidth = m_width * m_stride;
+
+	TIFFSetField(tif, TIFFTAG_IMAGEWIDTH, m_width);
+	TIFFSetField(tif, TIFFTAG_IMAGELENGTH, m_height);
+	TIFFSetField(tif, TIFFTAG_SAMPLESPERPIXEL, samplesPerPixel);
+	TIFFSetField(tif, TIFFTAG_BITSPERSAMPLE, 8);
+	TIFFSetField(tif, TIFFTAG_PLANARCONFIG, PLANARCONFIG_CONTIG);
+	TIFFSetField(tif, TIFFTAG_PHOTOMETRIC, samplesPerPixel > 1 ? PHOTOMETRIC_RGB : PHOTOMETRIC_MINISBLACK);
+	TIFFSetField(tif, TIFFTAG_ORIENTATION, ORIENTATION_TOPLEFT);
+
 	return true;
 } // WriteHeader
 /*----------------------------------------------------------------*/
 
 bool CImageTIFF::WriteData(void* pData, PIXELFORMAT dataFormat, Size nStride, Size lineWidth)
 {
-	//TODO: to implement the TIFF encoder
+	TIFF* tif = static_cast<TIFF*>(m_state);
+	if (!tif)
+		return false;
+
+	if (dataFormat == m_format) {
+		for (Size j = 0; j < m_height; ++j, (BYTE*&)pData += lineWidth)
+			if (TIFFWriteScanline(tif, (BYTE*)pData, j) < 0)
+				return false;
+	} else {
+		CAutoPtrArr<BYTE> const buffer(new BYTE[m_lineWidth]);
+		for (Size j = 0; j < m_height; ++j, (BYTE*&)pData += lineWidth) {
+			if (!FilterFormat(buffer, m_format, m_stride, pData, dataFormat, nStride, m_width))
+				return false;
+			if (TIFFWriteScanline(tif, buffer, j) < 0)
+				return false;
+		}
+	}
+
 	return true;
 } // WriteData
 /*----------------------------------------------------------------*/
