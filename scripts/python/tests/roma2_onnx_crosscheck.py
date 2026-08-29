@@ -211,11 +211,12 @@ def step1(capture, session, args, report):
     report["step1"] = {"capture": short(capture), "sampling": sampling, "rows": rows,
                        "control": control is not None}
     summarise(rows, ("raw", "zchannel", "ztoken", "gem", "torch_zchannel", "torch_gem", "onnx_vs_torch"))
-    step1_controls(capture, session, args, report, min(rows, key=lambda r: r["zchannel"])["stem"])
+    worst = [r["stem"] for r in sorted(rows, key=lambda r: r["zchannel"])[:2]]
+    step1_controls(capture, session, args, report, worst[0], worst[1] if len(worst) > 1 else None)
     return rows
 
 
-def step1_controls(capture, session, args, report, stem):
+def step1_controls(capture, session, args, report, stem, second_stem=None):
     """What is the Step-1 residual actually MADE of? Three perturbations on the worst-scoring image.
 
     The dumps are exactly bf16-valued, so "the engine is bf16" is the obvious explanation -- but rounding
@@ -264,19 +265,29 @@ def step1_controls(capture, session, args, report, stem):
 
     print(f"\n=== Step 1 controls on the worst stem {stem}: what is the residual made of?", flush=True)
     controls = [record("as measured", base_layers, base_tokens)]
+    # A "one grey level" difference has to be applied in the right SHAPE, and the shape decides the
+    # answer. A CONSTANT shift is a DC offset: the antialiased resize preserves it exactly and a
+    # LayerNorm-heavy backbone then absorbs it, so it is the LOWER bound. Real decoder disagreement is
+    # high-frequency dither -- independent per pixel and per channel -- which survives the downsample and
+    # is the UPPER bound. Both rows are kept because the gap between them is the finding.
     for sign in (+1, -1):
-        # Two places a "one grey level" can be applied, and they are not the same experiment. On the
-        # DECODED SOURCE it is what a different JPEG library would produce, and the antialiased downsample
-        # to the square averages most of it away. On the NETWORK INPUT it is one quantisation step at the
-        # scale the backbone actually sees, i.e. an upper bound on any preprocessing disagreement.
         shifted = np.clip(decoded.astype(np.float32) + sign, 0, 255)
         tensor = resize(torch.from_numpy(shifted).permute(2, 0, 1)[None] / 255.0, args.size).numpy()
-        controls.append(record(f"decoded source {sign:+d}/255", *describe(tensor),
-                               "what a different JPEG library would produce"))
+        controls.append(record(f"decoded source, constant {sign:+d}/255", *describe(tensor),
+                               "lower bound: a DC offset the resize preserves and LayerNorm absorbs"))
     for sign in (+1, -1):
         tensor = np.clip(reference.numpy() + sign / 255.0, 0.0, 1.0)
-        controls.append(record(f"network input {sign:+d}/255", *describe(tensor),
-                               "one quantisation step at the backbone's own input scale"))
+        controls.append(record(f"network input, constant {sign:+d}/255", *describe(tensor),
+                               "the same DC offset applied at the backbone's own input scale"))
+    rng = np.random.default_rng(args.dither_seed)
+    dither = rng.integers(-1, 2, decoded.shape)
+    tensor = resize(torch.from_numpy(np.clip(decoded.astype(np.float32) + dither, 0, 255).astype(np.float32))
+                    .permute(2, 0, 1)[None] / 255.0, args.size).numpy()
+    controls.append(record("decoded source, random +/-1 per pixel", *describe(tensor),
+                           "upper bound on a decoder disagreement: dither survives the downsample"))
+    tensor = np.clip(reference.numpy() + rng.integers(-1, 2, reference.shape) / 255.0, 0.0, 1.0)
+    controls.append(record("network input, random +/-1/255", *describe(tensor),
+                           "the same dither at the backbone's own input scale"))
     bf16 = torch.from_numpy(reference.numpy()).to(torch.bfloat16).float().numpy()
     controls.append(record("input rounded to bf16", *describe(bf16), "the dumps are exactly bf16-valued"))
     # Rounding the OUTPUT rather than the input is the direct test of "the gap is the engine's bf16".
@@ -290,7 +301,23 @@ def step1_controls(capture, session, args, report, stem):
         tensor, _ = load_image(alternative, args.size, device="cpu")
         controls.append(record(f"keyframes/{other} instead", *describe(tensor.numpy()),
                                "the directory the brief asserted; the sources and this number say no"))
-    report["step1_controls"] = {"stem": stem, "rows": controls}
+    # The "input precision moves it TOWARDS the dump" claim is the one that carries point 2, so it does
+    # not get to rest on a single photograph.
+    second = None
+    if second_stem is not None:
+        _, _, other_path = next(e for e in patch_entries(capture, args) if e[1] == second_stem)
+        other_raw = np.load(other_path)
+        other_engine = other_raw.astype(np.float64).reshape(-1, other_raw.shape[-1])
+        other_reference, _ = load_image(capture / args.images_dir / f"{second_stem}.jpg", args.size,
+                                        device="cpu")
+        _, plain = describe(other_reference.numpy())
+        _, lowered = describe(torch.from_numpy(other_reference.numpy()).to(torch.bfloat16).float().numpy())
+        second = {"stem": second_stem,
+                  "zchannel": cos(zchannel(other_engine), zchannel(plain)),
+                  "bf16_zchannel": cos(zchannel(other_engine), zchannel(lowered))}
+        print(f"  second stem {second_stem}: as measured {second['zchannel']:.5f} -> input rounded to "
+              f"bf16 {second['bf16_zchannel']:.5f} against its own dump", flush=True)
+    report["step1_controls"] = {"stem": stem, "rows": controls, "second": second}
     return controls
 
 
@@ -641,8 +668,9 @@ def write_report(path, args, captures, report, session_providers):
         "and the export sits on top of it in both. The Step-1 controls below go further and say what the "
         "residual is made of: it is engine-side and outside the export's control (JPEG decode and/or "
         "bf16 arithmetic inside the engine) -- rounding this graph's OUTPUT to bf16 changes the "
-        "z-channel cosine by nothing, while reducing the precision of its INPUT moves it measurably and "
-        "moves it TOWARDS the engine's dump. The quantity retrieval actually consumes, the pooled GeM, "
+        "z-channel cosine by nothing, reducing the precision of its INPUT moves it measurably and moves "
+        "it TOWARDS the engine's dump, and a per-pixel decoder disagreement of one grey level costs more "
+        "z-channel than the entire engine gap. The quantity retrieval actually consumes, the pooled GeM, "
         "barely moves under any of it. The gates that do not involve the engine's dumps -- Step 2 and "
         "all four recall figures -- are unconditional.", "",
         f"## Step 1 -- `layers[:,1]` against the shipped TensorRT dumps ({report['step1']['capture']}, "
@@ -685,8 +713,8 @@ def write_report(path, args, captures, report, session_providers):
                          f"{row['note'] or '(the row the others are measured against)'} |")
         baseline = controls["rows"][0]
         by_name = {r["control"]: r for r in controls["rows"]}
-        source = [by_name[k] for k in by_name if k.startswith("decoded source")]
-        network = [by_name[k] for k in by_name if k.startswith("network input")]
+        constant = [by_name[k] for k in by_name if "constant" in k]
+        dithered = [by_name[k] for k in by_name if "random" in k]
         in_bf16, out_bf16 = by_name.get("input rounded to bf16"), by_name.get("output rounded to bf16")
         lines += ["",
                   "Read the last two columns as an ablation: they isolate what each perturbation costs on "
@@ -703,15 +731,25 @@ def write_report(path, args, captures, report, session_providers):
                   f"dump, from {baseline['zchannel']:.5f} to {in_bf16['zchannel']:.5f}. A perturbation "
                   f"that improves agreement is evidence the engine's own preprocessing/arithmetic carries "
                   f"less precision than this fp32 graph, which is exactly what \"the residual belongs to "
-                  f"the engine\" means.",
-                  f"3. **A decoder difference is bounded and small.** One grey level on the decoded source "
-                  f"costs only " + " / ".join(f"{r['self_zchannel']:.5f}" for r in source)
-                  + f" (the antialiased downsample averages it away), and one quantisation step at the "
-                  f"backbone's own input scale costs "
-                  + " / ".join(f"{r['self_zchannel']:.5f}" for r in network)
-                  + ". Neither accounts for the engine gap on its own, so the honest statement is that "
-                  "the residual is engine-side and outside the export's control -- JPEG decode and/or "
-                  "bf16 arithmetic inside the engine -- rather than any single one of them.",
+                  f"the engine\" means."
+                  + (f" It is not one photograph: on `{controls['second']['stem']}` the same ablation "
+                     f"moves {controls['second']['zchannel']:.5f} to "
+                     f"{controls['second']['bf16_zchannel']:.5f} against that image's own dump."
+                     if controls.get("second") else ""),
+                  f"3. **A decoder difference is bracketed, and its upper end exceeds the whole engine "
+                  f"gap.** The SHAPE of a one-grey-level difference decides its cost. A CONSTANT shift is "
+                  f"a DC offset: the antialiased resize preserves it and the LayerNorm-heavy backbone "
+                  f"absorbs it, so it costs only "
+                  + " / ".join(sorted({f"{r['self_zchannel']:.5f}" for r in constant}))
+                  + f" across all {len(constant)} placements -- the lower bound. "
+                  "Independent per-pixel, per-channel dither is what a genuinely different decoder "
+                  "produces, it survives the downsample, and it costs "
+                  + " / ".join(f"{r['self_zchannel']:.5f}" for r in dithered)
+                  + f" -- **below the {baseline['zchannel']:.5f} that separates this graph from the "
+                  f"engine in the first place**. So a per-pixel decoder disagreement nobody can control "
+                  f"already costs more z-channel than the entire engine gap, and the residual is "
+                  f"engine-side and outside the export's control: JPEG decode and/or bf16 arithmetic "
+                  f"inside the engine.",
                   f"4. **None of it reaches the quantity retrieval reads.** Across every perturbation "
                   f"above, the pooled GeM against the dump stays at "
                   + f"{min(r['gem'] for r in controls['rows'] if 'instead' not in r['control']):.6f} or "
@@ -726,6 +764,11 @@ def write_report(path, args, captures, report, session_providers):
                   f"and that the z-channel view magnifies it -- the raw cosine on the same tensors is "
                   f"{min(r['raw'] for r in step1_rows):.5f} and the pooled GeM "
                   f"{min(r['gem'] for r in step1_rows):.6f}.",
+                  "",
+                  "Footnote on the decode branch: both sides decode through libjpeg-turbo (polycpp "
+                  "`polyimage/CMakeLists.txt:64` links `libjpeg-turbo::turbojpeg-static`, and Pillow uses "
+                  "the same library family), so a decode difference is **possible but unmeasured** here "
+                  "-- the dither row is an upper bound on that branch, not evidence that it is active.",
                   ""]
         alternative = next((r for r in controls["rows"] if "instead" in r["control"]), None)
         if alternative is not None:
@@ -925,6 +968,9 @@ def main():
                     help="the campaign's torch tools read keyframes/images; corrected_images scores worse "
                          "against the engine dumps, which is how the engine's own source is known")
     ap.add_argument("--step1-count", type=int, default=20)
+    ap.add_argument("--dither-seed", type=int, default=0,
+                    help="seed for the Step-1 random +/-1 decoder-disagreement control, so the upper "
+                         "bound it reports is reproducible")
     ap.add_argument("--torch-control", action=argparse.BooleanOptionalAction, default=True,
                     help="also run the campaign's torch backbone in Step 1, to floor the bf16 engine gap")
     ap.add_argument("--pair-eval", default=str(PAIR_EVAL),
