@@ -241,7 +241,7 @@ OrtTensor OrtTensor::Host(const std::vector<int64_t>& shape)
 bool OnnxModel::Load(const String& fileName, const Options& _options)
 {
 	options = _options;
-	Reset(); // tear down any previous session (its device allocator first) before reloading
+	Unload(); // tear down any previous session (its device allocator first) before reloading
 	#ifdef _USE_CUDA
 	if (options.provider == OnnxProvider::AUTO && SEACAVE::CUDA::isCpuRequested(SEACAVE::CUDA::desiredDeviceIDs))
 		options.provider = OnnxProvider::CPU; // --gpu-device -2
@@ -289,14 +289,14 @@ bool OnnxModel::Load(const String& fileName, const Options& _options)
 			for (const int64_t d : io.second)
 				if (d < 0) {
 					VERBOSE("error: dynamic dimension in input '%s' of '%s'", io.first.c_str(), fileName.c_str());
-					Reset();
+					Unload();
 					return false;
 				}
 		for (const auto& io : outputs)
 			for (const int64_t d : io.second)
 				if (d < 0) {
 					VERBOSE("error: dynamic dimension in output '%s' of '%s'", io.first.c_str(), fileName.c_str());
-					Reset();
+					Unload();
 					return false;
 				}
 		if (IsOnDevice())
@@ -304,14 +304,14 @@ bool OnnxModel::Load(const String& fileName, const Options& _options)
 		binding = Ort::IoBinding(session);
 	} catch (const std::exception& e) { // Ort::Exception or std::bad_alloc from the metadata vectors
 		VERBOSE("error: can not query ONNX model '%s' (%s)", fileName.c_str(), e.what());
-		Reset();
+		Unload();
 		return false;
 	}
 	DEBUG("ONNX model '%s' loaded on %s", Util::getFileNameExt(fileName).c_str(), OnnxProviderName(provider));
 	return true;
 }
 
-void OnnxModel::Reset()
+void OnnxModel::Unload()
 {
 	// tear down in the reverse of the member declaration order (session, binding,
 	// deviceAllocator): the device allocator was created from the session and must be

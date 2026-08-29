@@ -160,11 +160,15 @@ public:
 	bool BindOutput(const String& name, OrtTensor& tensor);       // host tensor => ORT copies device->host in Run()
 	bool Run();
 
-private:
-	// Reset to the not-loaded state; called on any failure path once the session itself
-	// has already been constructed, so IsLoaded() reliably reports false after a failed Load()
-	void Reset();
+	// Release the session and everything derived from it, returning to the not-loaded state.
+	// Used on any failure path once the session itself has already been constructed, so
+	// IsLoaded() reliably reports false after a failed Load(). Callers that need to drop a
+	// loaded model must call this rather than move-assign an empty OnnxModel over it: member-wise
+	// assignment would release the session before the binding and the device allocator that were
+	// created from it, while this tears them down in the required reverse order.
+	void Unload();
 
+private:
 	Options options;
 	OnnxProvider provider = OnnxProvider::CPU;
 	Ort::SessionOptions sessionOptions{nullptr};

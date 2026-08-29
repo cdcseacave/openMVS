@@ -319,6 +319,8 @@ struct RoMa2Onnx::Impl
 	RoMa2Manifest manifest;
 	bool bMatchFailed = false; // a failed match-graph load is remembered, not retried per pair
 
+	// Load the manifest and the descriptor graph; the caller resets the whole Impl on failure
+	bool LoadDescriptor(const String& _modelDir, const String& setting, const String& providerName);
 	// Load the coarse-match graph on the first pair, on the provider the descriptor session got
 	bool EnsureMatch();
 };
@@ -341,21 +343,26 @@ bool RoMa2Onnx::Impl::EnsureMatch()
 		!match.ExpectOutputShape("confidence", {1, cells, cells, 1}) ||
 		match.Provider() != descriptor.Provider()) {
 		VERBOSE("error: can not load the RoMa2 coarse-match graph '%s'", manifest.matchFile.c_str());
+		match.Unload(); // a graph that got loaded but was rejected must not keep its ~0.46 GB resident
 		bMatchFailed = true;
 		return false;
 	}
 	// img_A/img_B are in the graph contract (polyml MatchWrap) but dead on the coarse graph
-	// (dpt.py:127-138 ignores them), so one shared image tensor is bound to both; its contents
-	// never reach an output, which is why the device arena's uninitialized memory is fine here
+	// (dpt.py:127-138 ignores them), so one shared image tensor is bound to both. It is a host
+	// tensor, zero-filled by construction and copied H2D by ORT inside Run: the coarse graph
+	// provably ignores it today, and a zero image keeps the outputs deterministic should a future
+	// export wire the images in. No tensor here lives in the match session's arena, which is what
+	// makes the Unload() calls on the failure paths safe.
 	if (match.InputShape("img_A") != NULL) {
 		const int64_t S(manifest.imageSize);
-		dummyImage = match.MakeDeviceTensor({1, 3, S, S});
+		dummyImage = OrtTensor::Host({1, 3, S, S});
 	}
 	warpHost = OrtTensor::Host({1, cells, cells, 2});
 	confidenceHost = OrtTensor::Host({1, cells, cells, 1});
 	if (!warpHost.IsValid() || !confidenceHost.IsValid() ||
 		(match.InputShape("img_A") != NULL && !dummyImage.IsValid())) {
 		VERBOSE("error: can not allocate the RoMa2 coarse-match tensors");
+		match.Unload();
 		bMatchFailed = true;
 		return false;
 	}
@@ -367,45 +374,56 @@ bool RoMa2Onnx::IsAvailable()
 	return true;
 }
 
-bool RoMa2Onnx::Load(const String& modelDir, const String& setting, const String& providerName)
+bool RoMa2Onnx::Impl::LoadDescriptor(const String& _modelDir, const String& setting, const String& providerName)
 {
-	impl.reset(new Impl); // a reload starts clean, releasing the tensors before their sessions
-	impl->modelDir = modelDir;
-	Util::ensureFolderSlash(impl->modelDir);
-	RoMa2Manifest& manifest = impl->manifest;
-	if (!manifest.Load(impl->modelDir + "roma_" + setting + ".json"))
+	modelDir = _modelDir;
+	Util::ensureFolderSlash(modelDir);
+	if (!manifest.Load(modelDir + "roma_" + setting + ".json"))
 		return false;
 	if (!IsSupportedManifest(manifest, setting)) {
 		VERBOSE("error: unsupported RoMa2 manifest for setting '%s'", setting.c_str());
 		return false;
 	}
 	for (const String& file : {manifest.descriptorFile, manifest.descriptorData, manifest.matchFile, manifest.matchData})
-		if (!file.empty() && !File::isFile(impl->modelDir + file)) {
+		if (!file.empty() && !File::isFile(modelDir + file)) {
 			VERBOSE("error: RoMa2 model file '%s' missing", file.c_str());
 			return false;
 		}
 	OnnxModel::Options options;
 	options.provider = OnnxProviderFromString(providerName);
-	if (!impl->descriptor.Load(impl->modelDir + manifest.descriptorFile, options))
+	if (!descriptor.Load(modelDir + manifest.descriptorFile, options))
 		return false;
-	if (impl->descriptor.Provider() == OnnxProvider::CPU)
+	if (descriptor.Provider() == OnnxProvider::CPU)
 		VERBOSE("warning: RoMa2 running on the CPU execution provider (seconds per image)");
 	const int64_t S(manifest.imageSize);
-	if (!impl->descriptor.ExpectInputShape("image", {1, 3, S, S}) ||
-		!impl->descriptor.ExpectOutputShape("layers", manifest.layersShape) ||
-		!impl->descriptor.ExpectOutputShape("value_facets", manifest.facetsShape))
+	if (!descriptor.ExpectInputShape("image", {1, 3, S, S}) ||
+		!descriptor.ExpectOutputShape("layers", manifest.layersShape) ||
+		!descriptor.ExpectOutputShape("value_facets", manifest.facetsShape))
 		return false;
-	impl->image = OrtTensor::Host({1, 3, S, S});
-	impl->facetsScratch = impl->descriptor.MakeDeviceTensor(manifest.facetsShape);
-	impl->facetsHost = OrtTensor::Host(manifest.facetsShape);
-	if (!impl->image.IsValid() || !impl->facetsScratch.IsValid() || !impl->facetsHost.IsValid()) {
+	image = OrtTensor::Host({1, 3, S, S});
+	facetsScratch = descriptor.MakeDeviceTensor(manifest.facetsShape);
+	facetsHost = OrtTensor::Host(manifest.facetsShape);
+	if (!image.IsValid() || !facetsScratch.IsValid() || !facetsHost.IsValid()) {
 		VERBOSE("error: can not allocate the RoMa2 descriptor tensors");
 		return false;
 	}
 	DEBUG("RoMa2 model '%s' ready on %s: %dx%d images, %ux%u descriptor grid, %dx%d warp cells",
-		setting.c_str(), ProviderName().c_str(), manifest.imageSize, manifest.imageSize,
+		setting.c_str(), OnnxProviderName(descriptor.Provider()), manifest.imageSize, manifest.imageSize,
 		(unsigned)manifest.layersShape[2], (unsigned)manifest.layersShape[3], manifest.warpSize, manifest.warpSize);
 	return true;
+}
+
+bool RoMa2Onnx::Load(const String& modelDir, const String& setting, const String& providerName)
+{
+	impl.reset(new Impl); // a reload starts clean, releasing the tensors before their sessions
+	if (impl->LoadDescriptor(modelDir, setting, providerName))
+		return true;
+	// after ANY failure the object is left unloaded, the invariant OnnxModel::Load keeps too:
+	// IsLoaded() must never report true while the tensors Describe() writes into are missing.
+	// Resetting the whole Impl also frees a descriptor session that did come up before a later
+	// check rejected it, and does so in the tensors-before-sessions order the member layout gives.
+	impl.reset(new Impl);
+	return false;
 }
 
 bool RoMa2Onnx::IsLoaded() const
@@ -420,7 +438,8 @@ String RoMa2Onnx::ProviderName() const
 
 OrtTensor RoMa2Onnx::MakeLayers()
 {
-	ASSERT(IsLoaded());
+	if (!IsLoaded())
+		return OrtTensor(); // an invalid tensor, not an empty-shape allocation
 	return impl->descriptor.MakeDeviceTensor(impl->manifest.layersShape);
 }
 

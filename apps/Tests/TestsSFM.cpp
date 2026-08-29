@@ -1078,31 +1078,26 @@ bool RoMa2PreprocessTest()
 }
 
 #ifdef _USE_ONNXRUNTIME
-// One preset of RoMa2OnnxParityTest: the describe stage against real_<setting>_descriptor.reference
-// and the coarse-match stage against real_<setting>_match_coarse.reference, both driven end to end
-// from the reference's own source PNGs, judged by the bounds shipped in its parity.json
-static bool RoMa2OnnxParitySetting(const String& modelDir, const String& setting, const String& provider)
+// The reference dump folder of one preset and stage, with its trailing path separator
+static String RoMa2ReferenceDir(const String& modelDir, const String& setting, const char* stage)
 {
-	String descDir(modelDir + "real_" + setting + "_descriptor.reference");
-	String matchDir(modelDir + "real_" + setting + "_match_coarse.reference");
-	Util::ensureFolderSlash(descDir);
-	Util::ensureFolderSlash(matchDir);
+	String dir(modelDir + "real_" + setting + "_" + stage + ".reference");
+	return Util::ensureFolderSlash(dir);
+}
+
+// The describe stage of one preset against real_<setting>_descriptor.reference: the CPU
+// preprocessing of the reference's own source image, the raw `value_facets` and `layers`
+// tensors, and both pooled retrieval descriptors, judged by the bounds in its parity.json
+static bool RoMa2OnnxParityDescribe(RoMa2Onnx& model, const String& descDir, const String& setting)
+{
 	RoMa2ParityBounds bounds;
 	if (!ReadParityBounds(descDir + "parity.json", bounds))
 		return false;
-
-	RoMa2Onnx model;
-	if (!model.Load(modelDir, setting, provider)) {
-		VERBOSE("RoMa2OnnxParityTest FAILED: cannot load the '%s' model from '%s'", setting.c_str(), modelDir.c_str());
-		return false;
-	}
 	const RoMa2Manifest& manifest = model.Manifest();
-	const int S = model.ImageSize(), cells = model.WarpSize();
+	const int S = model.ImageSize();
 	const unsigned numPatches = model.NumPatches();
 	const unsigned numSlices = (unsigned)model.LayersShape()[1], channels = (unsigned)model.LayersShape()[4];
 	const size_t numTensor = (size_t)numSlices * numPatches * channels;
-	DEBUG_EXTRA("RoMa2OnnxParityTest[%s]: %dx%d image, %u slices of %u patches x %u channels, %dx%d warp cells, provider %s",
-		setting.c_str(), S, S, numSlices, numPatches, channels, cells, cells, model.ProviderName().c_str());
 
 	// The CPU preprocessing of the reference's own source image reproduces the tensor the
 	// reference outputs were computed from. The bound is the fp32 noise floor of a 768x1024 ->
@@ -1116,7 +1111,7 @@ static bool RoMa2OnnxParitySetting(const String& modelDir, const String& setting
 	// of the kernel itself stays pinned by RoMa2PreprocessTest's own 1e-5 fixture.
 	Image8U3 sourceA;
 	if (!sourceA.Load(descDir + "source_A.png")) {
-		VERBOSE("RoMa2OnnxParityTest FAILED: cannot read '%ssource_A.png'", descDir.c_str());
+		VERBOSE("RoMa2OnnxParityTest[%s] FAILED: cannot read '%ssource_A.png'", setting.c_str(), descDir.c_str());
 		return false;
 	}
 	std::vector<float> planarA, reference;
@@ -1130,7 +1125,7 @@ static bool RoMa2OnnxParitySetting(const String& modelDir, const String& setting
 	}
 	DEBUG("RoMa2OnnxParityTest[%s]: max preprocessing difference from the reference %g", setting.c_str(), diffImage);
 
-	// the describe stage: the raw value facets and both pooled retrieval descriptors
+	// the raw value facets, read back from the device, and the FACETS retrieval descriptor pooled from them
 	OrtTensor layers(model.MakeLayers());
 	if (!layers.IsValid()) {
 		VERBOSE("RoMa2OnnxParityTest[%s] FAILED: cannot allocate the layers tensor", setting.c_str());
@@ -1155,7 +1150,12 @@ static bool RoMa2OnnxParitySetting(const String& modelDir, const String& setting
 	const double cosFacets = CosineSimilarity(facets.data(), reference.data(), numTensor);
 	std::vector<float> pooled;
 	PoolRetrievalDescriptor(facets.data(), numSlices, numPatches, channels, RetrievalRecipe::FACETS, manifest.facetsPower, pooled);
-	if (pooled.size() != manifest.facetsDim || !ReadNpyExpect(descDir + "pooled_facets_A.npy", manifest.facetsDim, reference))
+	if (pooled.size() != manifest.facetsDim) {
+		VERBOSE("RoMa2OnnxParityTest[%s] FAILED: the FACETS recipe pooled %u values, the manifest declares %u",
+			setting.c_str(), (unsigned)pooled.size(), manifest.facetsDim);
+		return false;
+	}
+	if (!ReadNpyExpect(descDir + "pooled_facets_A.npy", manifest.facetsDim, reference))
 		return false;
 	const double cosPooledFacets = CosineSimilarity(pooled.data(), reference.data(), pooled.size());
 	const double normPooledFacets = VectorNorm(pooled.data(), pooled.size());
@@ -1175,7 +1175,12 @@ static bool RoMa2OnnxParitySetting(const String& modelDir, const String& setting
 		return false;
 	const double cosLayers = CosineSimilarity(layersHost.HostData(), reference.data(), numTensor);
 	PoolRetrievalDescriptor(layersHost.HostData(), numSlices, numPatches, channels, RetrievalRecipe::LAYERS, 0.f, pooled);
-	if (pooled.size() != manifest.layersDim || !ReadNpyExpect(descDir + "pooled_layers_A.npy", manifest.layersDim, reference))
+	if (pooled.size() != manifest.layersDim) {
+		VERBOSE("RoMa2OnnxParityTest[%s] FAILED: the LAYERS recipe pooled %u values, the manifest declares %u",
+			setting.c_str(), (unsigned)pooled.size(), manifest.layersDim);
+		return false;
+	}
+	if (!ReadNpyExpect(descDir + "pooled_layers_A.npy", manifest.layersDim, reference))
 		return false;
 	const double cosPooledLayers = CosineSimilarity(pooled.data(), reference.data(), pooled.size());
 	const double normPooledLayers = VectorNorm(pooled.data(), pooled.size());
@@ -1192,20 +1197,33 @@ static bool RoMa2OnnxParitySetting(const String& modelDir, const String& setting
 			setting.c_str(), normPooledFacets, normPooledLayers);
 		return false;
 	}
+	VERBOSE("RoMa2OnnxParityTest[%s] describe passed on %s: cosine %.6f (value_facets) / %.6f (layers), pooled %.6f (facets) / %.6f (layers)",
+		setting.c_str(), model.ProviderName().c_str(), cosFacets, cosLayers, cosPooledFacets, cosPooledLayers);
+	return true;
+}
 
-	// the coarse-match stage, end to end: both sources preprocessed, described, and matched
-	RoMa2ParityBounds matchBounds;
-	if (!ReadParityBounds(matchDir + "parity.json", matchBounds))
+// The coarse-match stage of one preset against real_<setting>_match_coarse.reference, driven end
+// to end: both sources preprocessed, described, and matched, then judged as polyml's
+// check_correspondences does, by the bounds in that dump's own parity.json
+static bool RoMa2OnnxParityMatchCoarse(RoMa2Onnx& model, const String& matchDir, const String& setting)
+{
+	RoMa2ParityBounds bounds;
+	if (!ReadParityBounds(matchDir + "parity.json", bounds))
 		return false;
-	Image8U3 sourceB;
+	const int S = model.ImageSize(), cells = model.WarpSize();
+	Image8U3 sourceA, sourceB;
 	if (!sourceA.Load(matchDir + "source_A.png") || !sourceB.Load(matchDir + "source_B.png")) {
-		VERBOSE("RoMa2OnnxParityTest FAILED: cannot read the match sources from '%s'", matchDir.c_str());
+		VERBOSE("RoMa2OnnxParityTest[%s] FAILED: cannot read the match sources from '%s'", setting.c_str(), matchDir.c_str());
 		return false;
 	}
-	std::vector<float> planarB;
+	std::vector<float> planarA, planarB;
 	PreprocessImageRoMa2(sourceA, S, planarA);
 	PreprocessImageRoMa2(sourceB, S, planarB);
 	OrtTensor layersA(model.MakeLayers()), layersB(model.MakeLayers());
+	if (!layersA.IsValid() || !layersB.IsValid()) {
+		VERBOSE("RoMa2OnnxParityTest[%s] FAILED: cannot allocate the pair descriptor tensors", setting.c_str());
+		return false;
+	}
 	if (!model.Describe(planarA.data(), layersA, NULL) || !model.Describe(planarB.data(), layersB, NULL)) {
 		VERBOSE("RoMa2OnnxParityTest[%s] FAILED: describe of the match pair", setting.c_str());
 		return false;
@@ -1257,14 +1275,30 @@ static bool RoMa2OnnxParitySetting(const String& modelDir, const String& setting
 	const double agreement = 100. * numAgree / (double)(cells*cells);
 	DEBUG("RoMa2OnnxParityTest[%s]: warp error p99 %.4f px over %u/%d overlapping cells, logit sign agreement %.4f%%",
 		setting.c_str(), p99, (unsigned)errors.size(), cells*cells, agreement);
-	if (p99 > matchBounds.maxWarpErrorPx || agreement < matchBounds.minAgreementPercent) {
+	if (p99 > bounds.maxWarpErrorPx || agreement < bounds.minAgreementPercent) {
 		VERBOSE("RoMa2OnnxParityTest[%s] FAILED: warp error p99 %.4f px (bound %g), logit sign agreement %.4f%% (bound %g)",
-			setting.c_str(), p99, matchBounds.maxWarpErrorPx, agreement, matchBounds.minAgreementPercent);
+			setting.c_str(), p99, bounds.maxWarpErrorPx, agreement, bounds.minAgreementPercent);
 		return false;
 	}
-	VERBOSE("RoMa2OnnxParityTest[%s] passed on %s: cosine %.6f (facets) / %.6f (layers), pooled %.6f / %.6f, warp p99 %.4f px, agreement %.4f%%",
-		setting.c_str(), model.ProviderName().c_str(), cosFacets, cosLayers, cosPooledFacets, cosPooledLayers, p99, agreement);
+	VERBOSE("RoMa2OnnxParityTest[%s] match passed on %s: warp p99 %.4f px, agreement %.4f%%",
+		setting.c_str(), model.ProviderName().c_str(), p99, agreement);
 	return true;
+}
+
+// One preset of RoMa2OnnxParityTest: load the model, then run both stages against their own dumps
+static bool RoMa2OnnxParitySetting(const String& modelDir, const String& setting, const String& provider)
+{
+	RoMa2Onnx model;
+	if (!model.Load(modelDir, setting, provider)) {
+		VERBOSE("RoMa2OnnxParityTest[%s] FAILED: cannot load the model from '%s'", setting.c_str(), modelDir.c_str());
+		return false;
+	}
+	DEBUG_EXTRA("RoMa2OnnxParityTest[%s]: %dx%d image, %u slices of %u patches x %u channels, %dx%d warp cells, provider %s",
+		setting.c_str(), model.ImageSize(), model.ImageSize(), (unsigned)model.LayersShape()[1],
+		model.NumPatches(), (unsigned)model.LayersShape()[4], model.WarpSize(), model.WarpSize(),
+		model.ProviderName().c_str());
+	return RoMa2OnnxParityDescribe(model, RoMa2ReferenceDir(modelDir, setting, "descriptor"), setting) &&
+		RoMa2OnnxParityMatchCoarse(model, RoMa2ReferenceDir(modelDir, setting, "match_coarse"), setting);
 }
 #endif // _USE_ONNXRUNTIME
 
@@ -1300,16 +1334,26 @@ bool RoMa2OnnxParityTest()
 		settings.emplace_back(envSetting);
 	} else {
 		for (const char* const knownSetting : {"turbo", "fast", "base"})
-			if (File::isFile(modelDir + "real_" + knownSetting + "_descriptor.reference/parity.json"))
+			if (File::isFile(RoMa2ReferenceDir(modelDir, knownSetting, "descriptor") + "parity.json"))
 				settings.emplace_back(knownSetting);
 	}
 	if (settings.empty()) {
 		VERBOSE("RoMa2OnnxParityTest FAILED: no ROMA2 reference dump found under '%s'", modelDir.c_str());
 		return false;
 	}
+	// a failed Load() must leave the model unloaded, never half-built; an unknown setting has no
+	// manifest to open, the only Load() failure reachable without corrupting a shipped model file
+	DEBUG("RoMa2OnnxParityTest: the 'failed to open RoMa2 manifest' error below is an expected negative check");
+	RoMa2Onnx unloaded;
+	if (unloaded.Load(modelDir, "no-such-setting", provider) || unloaded.IsLoaded() || unloaded.MakeLayers().IsValid()) {
+		VERBOSE("RoMa2OnnxParityTest FAILED: a failed Load() did not leave the model unloaded");
+		return false;
+	}
 	for (const String& setting : settings)
-		if (!RoMa2OnnxParitySetting(modelDir, setting, provider))
+		if (!RoMa2OnnxParitySetting(modelDir, setting, provider)) {
+			VERBOSE("RoMa2OnnxParityTest FAILED: preset '%s'", setting.c_str());
 			return false;
+		}
 	VERBOSE("RoMa2OnnxParityTest PASSED: %u preset(s) match the reference dumps (%s)",
 		(unsigned)settings.size(), TD_TIMER_GET_FMT().c_str());
 	return true;

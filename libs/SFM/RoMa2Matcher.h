@@ -115,8 +115,11 @@ public:
 	inline const std::vector<int64_t>& LayersShape() const { return Manifest().layersShape; }
 	unsigned NumPatches() const; // G*G, the descriptor grid cells one image is described by
 
-	// One image's descriptor tensor, on the session device when the provider has device
-	// memory (a host tensor otherwise); invalid if the model is not loaded
+	// One image's descriptor tensor, on the session device when the provider has device memory
+	// (a host tensor otherwise). Lifetime, because the tensor may live in the descriptor session's
+	// device arena: every tensor MakeLayers() hands out must be destroyed before this RoMa2Onnx is,
+	// and a second Load() destroys the sessions, which dangles every tensor still outstanding from
+	// the first one. Returns an invalid tensor (IsValid() == false) when the model is not loaded.
 	OrtTensor MakeLayers();
 
 	// Run the descriptor graph on one preprocessed image (3*S*S floats, PreprocessImageRoMa2),
