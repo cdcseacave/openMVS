@@ -39,6 +39,7 @@
 #include "../../libs/SFM/SceneCluster.h"
 #include "../../libs/SFM/GlobalAlignment.h"
 #include "../../libs/SFM/MatchGeometric.h"
+#include "../../libs/SFM/RoMa2Matcher.h"
 #include "../../libs/SFM/SphereCubeMap.h"
 #include "../../libs/SFM/InterfaceMVS.h"
 #include "../../libs/MVS.h"
@@ -875,6 +876,54 @@ bool GlobalDescriptorsQueryTest()
 	VERBOSE("GlobalDescriptorsQueryTest PASSED: pooling matches the fixtures to %g (facets) and %g (layers) (%s)",
 		diffFacets, diffLayers, TD_TIMER_GET_FMT().c_str());
 	return true;
+}
+
+// RoMa2 CPU preprocessing test: a constant image maps to constant planes with the expected
+// R/G/B channel swap, and resampling a real fixture image reproduces torch's own
+// F.interpolate(mode="bicubic", align_corners=False, antialias=True) to within 1e-5 (fixture
+// generated on CPU by scripts/python/roma2/parity.py)
+bool RoMa2PreprocessTest()
+{
+	#ifndef _USE_ONNXRUNTIME
+	VERBOSE("RoMa2PreprocessTest: skipped (built without ONNX Runtime)");
+	return true;
+	#else
+	Image8U3 bgr(cv::Size(64, 48), Pixel8U(30, 20, 10)); // 64x48, TPixel(r,g,b): r=30 g=20 b=10
+	std::vector<float> planar;
+	const int S = 64;
+	PreprocessImageRoMa2(bgr, S, planar);
+	if (planar.size() != 3u*S*S) {
+		VERBOSE("RoMa2PreprocessTest FAILED: unexpected output size %u (expected %u)",
+			(unsigned)planar.size(), (unsigned)(3u*S*S));
+		return false;
+	}
+	const float* R = planar.data();
+	const float* G = R + S*S;
+	const float* B = G + S*S;
+	for (int i = 0; i < S*S; ++i) {
+		if (!ISEQUAL(R[i], 30.f/255.f, 1e-5f) || !ISEQUAL(G[i], 20.f/255.f, 1e-5f) || !ISEQUAL(B[i], 10.f/255.f, 1e-5f)) {
+			VERBOSE("RoMa2PreprocessTest FAILED: constant image");
+			return false;
+		}
+	}
+
+	Image8U3 source;
+	if (!source.Load(MAKE_PATH("roma2/preprocess_source.png"))) {
+		VERBOSE("RoMa2PreprocessTest FAILED: fixture missing");
+		return false;
+	}
+	std::vector<float> expected;
+	if (!ReadFloats(MAKE_PATH("roma2/preprocess_64.bin"), 3u*S*S, expected))
+		return false;
+	PreprocessImageRoMa2(source, S, planar);
+	const float maxErr = MaxAbsDiff(planar, expected);
+	if (maxErr > 1e-5f) {
+		VERBOSE("RoMa2PreprocessTest FAILED: max preprocessing error %g", maxErr);
+		return false;
+	}
+	DEBUG_EXTRA("RoMa2PreprocessTest: max preprocessing error %g", maxErr);
+	return true;
+	#endif
 }
 
 bool BAPinholeReprojectionJacobianTest()

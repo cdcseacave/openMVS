@@ -51,6 +51,11 @@ bool ROMA2WarpTrackingTest();
 // descriptors, and the two host-side pooling recipes against the export script's fixtures
 bool GlobalDescriptorsQueryTest();
 
+// RoMa2 CPU preprocessing test: a constant image maps to constant planes with the expected
+// R/G/B channel swap, and resampling a real fixture image reproduces torch's own
+// F.interpolate(mode="bicubic", align_corners=False, antialias=True) to within 1e-5
+bool RoMa2PreprocessTest();
+
 // Test Bundle-Adjustment PinholeReprojectionErrorAnalytic Jacobians against AutoDiff
 bool BAPinholeReprojectionJacobianTest();
 
