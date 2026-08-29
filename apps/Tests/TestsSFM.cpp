@@ -1361,23 +1361,78 @@ bool RoMa2OnnxParityTest()
 }
 
 #ifdef _USE_ONNXRUNTIME
-// One recipe of ROMA2ReconstructTest: import the bundled 4-image scene, extract AKAZE features,
-// then MatchPairs with the in-process ROMAv2 model describing every image (useMatching = false,
-// so the dense warps play no part yet -- Task 9 adds that pass on top of this skeleton) and
-// check the global retrieval descriptors it stores, plus that ordinary EXHAUSTIVE geometric
-// matching (unaffected by the describe pass) still connects every pair. nThreads is varied by
-// the caller across the two recipe passes so that the describe pass's prefetch ring
-// (nPrefetch = MINF(2*nThreads, 8)) sometimes has fewer slots than images and therefore has to
-// reuse a slot mid-pass (nThreads=1 -> nPrefetch=2 < 4 images); the pairwise-distinctness check
-// below is what would actually catch a stale-buffer bug in that reused slot.
-static bool ROMA2ReconstructScene(unsigned nThreads, const String& setting, const String& provider, RetrievalRecipe recipe, int expectedDim)
-{
-	Scene scene(nThreads);
+// The reconstruction stage of ReconstructTest (tracks, star initialization, colors and the
+// checks on what they produce), shared with ROMA2ReconstructTest so that both hold a matched
+// scene to exactly the same expectations; defined next to ReconstructTest itself
+static bool ReconstructMatchedScene(Scene& scene, const char* testName, unsigned minTracks, unsigned maxTracks, REAL maxDistortion);
 
+// One matched pair of a ROMA2ReconstructScene run, reduced to what the checks below compare:
+// which pair it is, how large its match set is, and whether it carries the marker ApplyROMA2Pair
+// writes on a pair the dense pass created (overlapRatio and overlapArea both 1: no other code
+// path ever writes overlapRatio, and ComputePairsWeights only fills in an overlapArea that is
+// still zero, so the marker survives the rest of PairsMatcher::Match)
+struct ROMA2PairSummary {
+	IIndex ID1, ID2;
+	unsigned numMatches, numFilteredInliers;
+	bool bMarked;
+
+	// order by pair identity alone: two runs of the same scene match the same pairs
+	bool operator<(const ROMA2PairSummary& r) const {
+		return ID1 != r.ID1 ? ID1 < r.ID1 : ID2 < r.ID2;
+	}
+	// the (ID1, ID2, numMatches, numFilteredInliers) tuple the determinism check compares
+	bool operator==(const ROMA2PairSummary& r) const {
+		return ID1 == r.ID1 && ID2 == r.ID2 && numMatches == r.numMatches && numFilteredInliers == r.numFilteredInliers;
+	}
+};
+typedef std::vector<ROMA2PairSummary> ROMA2PairSummaries;
+
+// The scene's pairs as those tuples, sorted so that two runs are comparable whatever order
+// they happened to store the pairs in
+static ROMA2PairSummaries SummarizePairs(const Scene& scene)
+{
+	ROMA2PairSummaries summaries;
+	summaries.reserve(scene.pairs.size());
+	for (const ImagePair& pair : scene.pairs)
+		summaries.push_back(ROMA2PairSummary{pair.ID1, pair.ID2, (unsigned)pair.matches.size(),
+			pair.GetNumFilteredInliers(), pair.overlapRatio == 1.f && pair.overlapArea == 1.f});
+	std::sort(summaries.begin(), summaries.end());
+	return summaries;
+}
+
+// One recipe of ROMA2ReconstructTest: import the bundled 4-image scene, extract AKAZE features,
+// then MatchPairs with the in-process ROMAv2 model describing every image and, when bUseMatching
+// is set, re-matching every candidate pair through its dense warp. Checks the global retrieval
+// descriptors the describe pass stores and that EXHAUSTIVE matching still connects and
+// geometrically verifies every pair, and hands the matched pairs back so the caller can compare
+// whole runs against each other. The caller varies nThreads and slotBudget so that both the
+// describe pass's prefetch ring (MINF(2*nThreads, 8) buffers) and the dense pass's slot pool
+// have to reuse a buffer/slot mid-pass at least once (nThreads=1 -> 2 buffers < 4 images;
+// slotBudget=2 -> 8 loads for the 6 pairs of 4 images, i.e. 4 reloads); the pairwise-distinctness
+// check below, and the pair checks, are what would catch a stale-buffer or stale-slot bug.
+// bViewGraphCalibration turns off the post-matching view-graph calibration, which the
+// determinism runs need off: it optimizes one focal length per camera and then recomputes every
+// relative pose from it, so its result depends on how Scene::Import grouped the images into
+// cameras -- and that grouping is not stable in this build (an intermittent EXIF sensor-size
+// parse of one of the two HEIC images yields inf/-inf and splits the shared camera in two).
+// With it off, the stored pairs are exactly what the matching produced.
+static bool ROMA2ReconstructScene(Scene& scene, const String& setting, const String& provider,
+	RetrievalRecipe recipe, int expectedDim, bool bUseMatching, unsigned slotBudget,
+	bool bViewGraphCalibration, ROMA2PairSummaries& pairSummaries)
+{
+	// the EXIF intrinsics as imported (720.51 px, no distortion), unlike ReconstructTest, which
+	// forces a deliberately wrong 900 px / k1=0.6 / k2=-0.09 and leans on the view-graph
+	// calibrator to recover them from the fundamental matrices. That recovery is exactly what
+	// warp-guided matching cannot feed: it keeps, per keypoint of A, the descriptor-best keypoint
+	// of B within 2 px of the epipolar line of the geometry the warp itself produced, so the
+	// stored correspondences are consistent with a whole family of F near that seed and the
+	// focal a calibrator extracts from them is wildly unstable (measured on these 4 images at
+	// turbo with the forced 900 px: 690 px from the descriptor matches, 133 px from the guided
+	// ones on the CPU provider, which then drags the bundle to f=315, and a rejected 34450 px
+	// estimate on CUDA). Nothing else in the pipeline reads a focal out of F,
+	// and with the imported intrinsics trusted the pairs carry a relative pose straight from
+	// matching, which is what the reconstruction stage below actually consumes.
 	ImportConfig importCfg;
-	importCfg.focalLength = 900.f;
-	importCfg.k1 = 0.60f;
-	importCfg.k2 = -0.09f;
 	if (!scene.Import(MAKE_PATH("images"), importCfg)) {
 		VERBOSE("ROMA2ReconstructTest FAILED: Import failed");
 		return false;
@@ -1412,12 +1467,14 @@ static bool ROMA2ReconstructScene(unsigned nThreads, const String& setting, cons
 	MatchConfig matchCfg;
 	matchCfg.mode = MatchConfig::EXHAUSTIVE;
 	matchCfg.DefaultsForFeatureType(featuresCfg.detectorType);
+	matchCfg.viewGraphCalibrationEnabled = bViewGraphCalibration;
 
 	ROMA2Config roma2Cfg;
 	roma2Cfg.enabled = true;
 	roma2Cfg.setting = setting;
 	roma2Cfg.provider = provider;
-	roma2Cfg.useMatching = false;
+	roma2Cfg.useMatching = bUseMatching;
+	roma2Cfg.slotBudget = slotBudget;
 	roma2Cfg.retrievalRecipe = recipe;
 	if (!scene.MatchPairs(matchCfg, roma2Cfg)) {
 		VERBOSE("ROMA2ReconstructTest FAILED: MatchPairs failed");
@@ -1449,44 +1506,62 @@ static bool ROMA2ReconstructScene(unsigned nThreads, const String& setting, cons
 	// every image's descriptor must actually depend on its own pixels, not on whichever image
 	// last occupied a reused prefetch-ring slot: two images described from the same planar
 	// buffer would carry bit-for-bit (or near bit-for-bit) identical descriptors, i.e. cosine
-	// (== dot product, both unit-norm) essentially 1. The 4 bundled images are close-up shots
-	// of the same small scene (ReconstructTest reconstructs ~2000 shared tracks from them), so
-	// even genuinely distinct descriptors sit close to 1 by content similarity alone -- measured
-	// empirically at up to 0.999855 (FACETS) / 0.999413 (LAYERS) across both providers here, on
-	// this dataset. 0.9999 sits with clear margin above that measured ceiling and well below
-	// what a stale-buffer duplicate would produce, so it catches the bug this check exists for
-	// without being a source of flakiness on legitimately similar content.
+	// (== dot product, both unit-norm) essentially 1: the graph is deterministic, so describing
+	// twice from one buffer returns the very same vector and the cosine lands within float
+	// rounding of exactly 1. The 4 bundled images are close-up shots of the same small scene
+	// (ReconstructTest reconstructs ~2000 shared tracks from them), so even genuinely distinct
+	// descriptors sit close to 1 by content similarity alone -- measured empirically at up to
+	// 0.999855 (turbo/FACETS), 0.999413 (turbo/LAYERS) and 0.999913 (base/FACETS) across both
+	// providers here, on this dataset. 1-1e-6 keeps two orders of magnitude of margin above that
+	// measured ceiling while still catching a duplicate, which cannot come out below 1-1e-7.
+	// The measured maximum is logged so every run carries the evidence for that margin.
+	double maxCosine = 0.0;
 	for (IIndex i = 0; i < nImages; ++i) {
 		for (IIndex j = i + 1; j < nImages; ++j) {
 			const double cosine = scene.images[i].globalDescriptor.dot(scene.images[j].globalDescriptor);
-			if (cosine >= 0.9999) {
-				VERBOSE("ROMA2ReconstructTest FAILED: images %u and %u global descriptors are near-identical (cosine %.6f)",
+			maxCosine = MAXF(maxCosine, cosine);
+			if (cosine >= 1.0 - 1e-6) {
+				VERBOSE("ROMA2ReconstructTest FAILED: images %u and %u global descriptors are near-identical (cosine %.8f)",
 					scene.images[i].ID, scene.images[j].ID, cosine);
 				return false;
 			}
 		}
 	}
 
-	// exhaustive matching: all n*(n-1)/2 candidate pairs, unaffected by the describe pass
+	// exhaustive matching: all n*(n-1)/2 candidate pairs, unaffected by the describe pass and
+	// still exactly that many after the dense pass, which can only replace one of those pairs
+	// or create one the descriptor matching failed on -- never propose a pair outside the
+	// candidate list it was handed
 	if (scene.pairs.size() != expectedPairs) {
 		VERBOSE("ROMA2ReconstructTest FAILED: expected %u geometrically matched pairs, got %u",
 			(unsigned)expectedPairs, (unsigned)scene.pairs.size());
 		return false;
 	}
-	DEBUG("ROMA2ReconstructTest[%s]: %u images described (%d-D, %s provider, %u threads), %u pairs matched",
-		setting.c_str(), (unsigned)scene.images.size(), expectedDim, provider.c_str(), nThreads, (unsigned)scene.pairs.size());
+	for (const ImagePair& pair : scene.pairs) {
+		if (!pair.HasGeometricVerification() || pair.GetNumFilteredInliers() < matchCfg.minMatches) {
+			VERBOSE("ROMA2ReconstructTest FAILED: pair (% 4u, % 4u) not geometrically verified (%u inliers, %s geometry)",
+				pair.ID1, pair.ID2, pair.GetNumFilteredInliers(), pair.HasGeometricVerification() ? "with" : "without");
+			return false;
+		}
+	}
+	pairSummaries = SummarizePairs(scene);
+	DEBUG("ROMA2ReconstructTest[%s]: %u images described (%d-D, %s provider, %u threads, max pairwise cosine %.8f), %u pairs matched (dense matching %s, %u slots)",
+		setting.c_str(), (unsigned)scene.images.size(), expectedDim, provider.c_str(), scene.nMaxThreads, maxCosine,
+		(unsigned)scene.pairs.size(), bUseMatching ? "on" : "off", slotBudget);
 	return true;
 }
 #endif // _USE_ONNXRUNTIME
 
-// ROMA2 reconstruct test skeleton: describes every image of the bundled 4-image scene with the
-// in-process ROMAv2 model and checks the per-image global retrieval descriptors it stores, on
-// top of the same import/AKAZE/EXHAUSTIVE pipeline as ReconstructTest -- first with the default
-// FACETS recipe (2048-D), then with the LAYERS (parity) recipe (1024-D) on a fresh scene.
-// Task 9 finishes this skeleton with the dense-matching pass (marker/replace assertions,
-// save/load round-trip, tracks/init/BA). Configured by the environment like RoMa2OnnxParityTest:
-// OPENMVS_ROMA2_MODEL_PATH (unset => skipped), OPENMVS_ROMA2_SETTING (default "turbo"),
-// OPENMVS_ROMA2_PROVIDER (default "auto")
+// ROMA2 reconstruct test: runs the whole import/AKAZE/EXHAUSTIVE pipeline of ReconstructTest
+// with the in-process ROMAv2 model attached, and checks both of its passes -- the describe pass
+// (per-image global retrieval descriptors, FACETS 2048-D and LAYERS 1024-D) and the dense
+// matching pass (every candidate pair re-matched through its warp). The dense pass is measured
+// against a baseline run of the very same configuration with it switched off, so what is
+// asserted is what the warps actually changed; the run is then repeated on a fresh scene to
+// prove determinism (design decision 11), round-tripped through Scene::Save/Load, and finished
+// with ReconstructTest's own reconstruction stage. Configured by the environment like
+// RoMa2OnnxParityTest: OPENMVS_ROMA2_MODEL_PATH (unset => skipped), OPENMVS_ROMA2_SETTING
+// (default "turbo"), OPENMVS_ROMA2_PROVIDER (default "auto")
 bool ROMA2ReconstructTest()
 {
 	#ifndef _USE_ONNXRUNTIME
@@ -1508,15 +1583,139 @@ bool ROMA2ReconstructTest()
 	const char* const envProvider = getenv("OPENMVS_ROMA2_PROVIDER");
 	const String provider(envProvider != NULL && *envProvider != 0 ? String(envProvider) : String("auto"));
 
-	// two thread counts across the two recipes so the prefetch ring's slot-reuse path
-	// (nThreads=1 -> nPrefetch=2 < 4 images) is exercised at least once (see the function
-	// comment on ROMA2ReconstructScene)
-	if (!ROMA2ReconstructScene(2, setting, provider, RetrievalRecipe::FACETS, 2048)) {
-		VERBOSE("ROMA2ReconstructTest FAILED: FACETS recipe");
-		return false;
+	// 1) baseline: the same run with the dense matching pass switched off, so that comparing it
+	// against the guided run below isolates exactly what the warps changed
+	ROMA2PairSummaries baseline;
+	{
+		Scene scene(2);
+		if (!ROMA2ReconstructScene(scene, setting, provider, RetrievalRecipe::FACETS, 2048, false, 64, true, baseline)) {
+			VERBOSE("ROMA2ReconstructTest FAILED: baseline run (dense matching off)");
+			return false;
+		}
 	}
-	if (!ROMA2ReconstructScene(1, setting, provider, RetrievalRecipe::LAYERS, 1024)) {
-		VERBOSE("ROMA2ReconstructTest FAILED: LAYERS recipe");
+
+	// 2) the same scene with the dense matching pass on
+	ROMA2PairSummaries guided;
+	{
+		Scene scene(2);
+		if (!ROMA2ReconstructScene(scene, setting, provider, RetrievalRecipe::FACETS, 2048, true, 64, true, guided)) {
+			VERBOSE("ROMA2ReconstructTest FAILED: FACETS recipe with dense matching");
+			return false;
+		}
+		// EXHAUSTIVE matching already stored every one of the n*(n-1)/2 candidate pairs, so here
+		// the dense pass can only replace, never create -- which is why the pair count checked in
+		// ROMA2ReconstructScene is still exactly n*(n-1)/2. A replaced pair carries no marker of
+		// its own, but ApplyROMA2Pair only replaces when the guided match set has strictly more
+		// filtered inliers than the stored one, so a replacement shows up as a pair that grew
+		// against the baseline. Either kind of change proves the pass ran and reached the scene.
+		if (baseline.size() != guided.size()) {
+			VERBOSE("ROMA2ReconstructTest FAILED: %u pairs with dense matching, %u without",
+				(unsigned)guided.size(), (unsigned)baseline.size());
+			return false;
+		}
+		unsigned numMarked = 0, numGrown = 0;
+		FOREACH(i, guided) {
+			if (guided[i].ID1 != baseline[i].ID1 || guided[i].ID2 != baseline[i].ID2) {
+				VERBOSE("ROMA2ReconstructTest FAILED: dense matching changed the pair set");
+				return false;
+			}
+			if (guided[i].bMarked)
+				++numMarked;
+			else if (guided[i].numFilteredInliers > baseline[i].numFilteredInliers)
+				++numGrown;
+		}
+		if (numMarked + numGrown == 0) {
+			VERBOSE("ROMA2ReconstructTest FAILED: the dense matching pass created or strengthened no pair"
+				" (see the 'ROMA2 dense matching' line above)");
+			return false;
+		}
+		DEBUG("ROMA2ReconstructTest: dense matching created %u and strengthened %u of the %u pairs",
+			numMarked, numGrown, (unsigned)guided.size());
+
+		// the global descriptors and the matched pairs survive a scene file round-trip
+		{
+			const ScopedTempDir tmpDir(_T("ROMA2ReconstructTest"));
+			if (!tmpDir.IsValid())
+				return false;
+			const String sfmPath(tmpDir(_T("roma2_matched.sfm")));
+			if (!scene.Save(sfmPath)) {
+				VERBOSE("ROMA2ReconstructTest FAILED: cannot save '%s'", sfmPath.c_str());
+				return false;
+			}
+			Scene loaded(2);
+			if (!loaded.Load(sfmPath)) {
+				VERBOSE("ROMA2ReconstructTest FAILED: cannot load back '%s'", sfmPath.c_str());
+				return false;
+			}
+			if (loaded.images.size() != scene.images.size() ||
+				!loaded.status.nState.isSet(Scene::Status::STATE::GLOBAL_DESCRIPTORS)) {
+				VERBOSE("ROMA2ReconstructTest FAILED: round-trip lost the images or the GLOBAL_DESCRIPTORS state");
+				return false;
+			}
+			FOREACH(i, loaded.images) {
+				const cv::Mat& saved = scene.images[i].globalDescriptor;
+				const cv::Mat& read = loaded.images[i].globalDescriptor;
+				if (read.size() != saved.size() || read.type() != saved.type() || cv::norm(read, saved, cv::NORM_INF) != 0.0) {
+					VERBOSE("ROMA2ReconstructTest FAILED: round-trip lost image %u's global descriptor", loaded.images[i].ID);
+					return false;
+				}
+			}
+			if (SummarizePairs(loaded) != guided) {
+				VERBOSE("ROMA2ReconstructTest FAILED: round-trip changed the matched pairs");
+				return false;
+			}
+		}
+
+		// the rest of the ReconstructTest flow still passes on the ROMA2-matched scene; it needs
+		// all four bundled images (the star initializer asks for three views per track), so it
+		// only runs in a build that can decode the two HEIC ones.
+		// ReconstructTest's expectations, except the residual-distortion ceiling: guided matching
+		// keeps, per keypoint of A, the descriptor-best keypoint of B within 2 px of the epipolar
+		// line of the geometry the warp itself produced, so the correspondences carry that warp's
+		// bias and the bundle absorbs it into the distortion coefficients of a scene that has
+		// none. Everything else lands where the descriptor-only run lands -- all 4 images
+		// calibrated, the focal recovered to within 14-19 px of the 700 px truth, ~2200-2350
+		// inlier tracks -- but the residual distortion measures 12.4 px (turbo, CUDA) / 14.0 px
+		// (turbo, CPU provider) / 2.0 px (base, CUDA) against the 1.5 px of ReconstructTest.
+		// 20 px keeps the check meaningful (a blown-up distortion is still caught) at the coarsest
+		// preset the test defaults to.
+		#ifdef _IMAGE_HEIF
+		if (!ReconstructMatchedScene(scene, "ROMA2ReconstructTest", 1500, 3000, 20))
+			return false;
+		#endif
+	}
+
+	// 3+4) determinism (design decision 11): the very same configuration run twice on two fresh
+	// scenes must store the very same pairs, the warps being applied serially in (ID1, ID2) order
+	// however the pool interleaved them. The configuration is deliberately the awkward one: the
+	// parity recipe on a single thread, with a slot pool too small to hold the scene, so that the
+	// describe pass reuses a prefetch buffer and the dense pass reloads evicted slots (see the
+	// ROMA2ReconstructScene comment) -- the paths where a stale buffer or slot would show up as a
+	// difference. The view-graph calibration is off here so that the comparison sees the matching
+	// alone (again, see ROMA2ReconstructScene).
+	ROMA2PairSummaries tightPool, repeated;
+	{
+		Scene scene(1);
+		if (!ROMA2ReconstructScene(scene, setting, provider, RetrievalRecipe::LAYERS, 1024, true, 2, false, tightPool)) {
+			VERBOSE("ROMA2ReconstructTest FAILED: LAYERS recipe with a 2-slot pool");
+			return false;
+		}
+	}
+	{
+		Scene scene(1);
+		if (!ROMA2ReconstructScene(scene, setting, provider, RetrievalRecipe::LAYERS, 1024, true, 2, false, repeated)) {
+			VERBOSE("ROMA2ReconstructTest FAILED: determinism run");
+			return false;
+		}
+	}
+	if (repeated != tightPool) {
+		VERBOSE("ROMA2ReconstructTest FAILED: two runs of the same configuration matched different pairs");
+		FOREACH(i, repeated)
+			if (i >= tightPool.size() || !(repeated[i] == tightPool[i]))
+				VERBOSE("  pair (% 4u, % 4u): %u matches / %u inliers, was (% 4u, % 4u): %u matches / %u inliers",
+					repeated[i].ID1, repeated[i].ID2, repeated[i].numMatches, repeated[i].numFilteredInliers,
+					i < tightPool.size() ? tightPool[i].ID1 : NO_ID, i < tightPool.size() ? tightPool[i].ID2 : NO_ID,
+					i < tightPool.size() ? tightPool[i].numMatches : 0, i < tightPool.size() ? tightPool[i].numFilteredInliers : 0);
 		return false;
 	}
 	VERBOSE("ROMA2ReconstructTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
@@ -4351,6 +4550,80 @@ bool TwoViewTest()
 	return true;
 }
 
+// Reconstruction stage of ReconstructTest: build the tracks of an already matched scene of the
+// four bundled images, initialize it, and check what that produced -- all images calibrated, the
+// forced intrinsics refined back to the truth, and a plausible number of inlier tracks.
+// Shared with ROMA2ReconstructTest, which runs it on the same scene matched through the ROMAv2
+// dense warps, so that both hold a matched scene to exactly the same expectations.
+// testName prefixes the messages; minTracks/maxTracks bound the expected inlier track count and
+// maxDistortion the residual lens distortion the refined intrinsics may still carry (in pixels).
+static bool ReconstructMatchedScene(Scene& scene, const char* testName, unsigned minTracks, unsigned maxTracks, REAL maxDistortion)
+{
+	// Build tracks
+	BuildTracks(scene);
+	VERBOSE("%s: Built %u tracks", testName, (unsigned)scene.tracks.size());
+
+	// Initialize with star initializer
+	StarInitConfig initCfg;
+	initCfg.minViews = 3;
+	if (!StarInitializer::Initialize(scene, initCfg)) {
+		VERBOSE("%s: StarInitializer::Initialize failed", testName);
+		return false;
+	}
+	VERBOSE("%s: Initialized scene with %u calibrated images", testName, (unsigned)scene.status.nCalibratedImages);
+
+	// Sample colors for tracks
+	if (!scene.SampleColors() || scene.colors.size() != scene.tracks.size()) {
+		VERBOSE("%s: SampleColors failed", testName);
+		return false;
+	}
+
+	// Test 1: All 4 images should be valid
+	unsigned numValidImages = 0;
+	for (const Image& img : scene.images) {
+		if (img.IsValid())
+			++numValidImages;
+	}
+	if (numValidImages != 4 || scene.status.nCalibratedImages != 4) {
+		VERBOSE("%s: Expected 4 valid images, got %u (%u)", testName, numValidImages, scene.status.nCalibratedImages);
+		return false;
+	}
+
+	// Test 2: Intrinsics should be close to f=700, k1=0, k2=0
+	if (scene.cameras.empty()) {
+		VERBOSE("%s: No cameras found", testName);
+		return false;
+	}
+	const PinholeCamera* cam = dynamic_cast<PinholeCamera*>(scene.cameras[0]);
+	if (!cam) {
+		VERBOSE("%s: Camera is not PinholeCamera", testName);
+		return false;
+	}
+	const REAL focal_error = ABS(cam->fx - 700.f);
+	const REAL k1_error = ABS(cam->k1 - 0.f);
+	const REAL k2_error = ABS(cam->k2 - 0.f);
+	const REAL max_distortion = cam->ComputeMaxDistortion();
+	VERBOSE("%s: Refined intrinsics: f=%.2f (err=%.2f), k1=%.4g (err=%.4g), k2=%.4g (err=%.4g), max_distortion=%.4g",
+	    testName, cam->fx, focal_error, cam->k1, k1_error, cam->k2, k2_error, max_distortion);
+	if (focal_error > 100.f) { // Allow 100 pixels error
+		VERBOSE("%s: focal length error too large (%.2f)", testName, focal_error);
+		return false;
+	}
+	if (max_distortion > maxDistortion) {
+		VERBOSE("%s: distortion error too large (k1_err=%.4g, k2_err=%.4g, max_distortion=%.4g > %.4g)",
+			testName, k1_error, k2_error, max_distortion, maxDistortion);
+		return false;
+	}
+
+	// Test 3: Should have ~2000 inlier tracks
+	VERBOSE("%s: Found %u inlier tracks (expected ~2000)", testName, scene.status.nTracks);
+	if (scene.status.nTracks < minTracks || scene.status.nTracks > maxTracks) {
+		VERBOSE("%s: number of inlier tracks out of range [%u, %u]", testName, minTracks, maxTracks);
+		return false;
+	}
+	return true;
+}
+
 // Reconstruction test: Import images, extract features, match pairs, build tracks, and initialize
 bool ReconstructTest(bool verbose)
 {
@@ -4414,73 +4687,14 @@ bool ReconstructTest(bool verbose)
 	}
 	#endif
 
-	// 4) Build tracks
-	BuildTracks(scene);
-	VERBOSE("ReconstructTest: Built %u tracks", (unsigned)scene.tracks.size());
-
 	#if 0
 	ReconstructionConfig reconCfg;
 	scene.ReconstructGlobal(reconCfg);
 	#endif
 
-	// 5) Initialize with star initializer
-	StarInitConfig initCfg;
-	initCfg.minViews = 3;
-	if (!StarInitializer::Initialize(scene, initCfg)) {
-		VERBOSE("ReconstructTest: StarInitializer::Initialize failed");
+	// 4-6) Build tracks, initialize, sample colors, and check the reconstruction
+	if (!ReconstructMatchedScene(scene, "ReconstructTest", 1500, 3000, 10)) // allow 10 pixels error in distortion
 		return false;
-	}
-	VERBOSE("ReconstructTest: Initialized scene with %u calibrated images", (unsigned)scene.status.nCalibratedImages);
-
-	// 6. Sample colors for tracks
-	if (!scene.SampleColors() || scene.colors.size() != scene.tracks.size()) {
-		VERBOSE("ReconstructTest: SampleColors failed");
-		return false;
-	}
-
-	// Test 1: All 4 images should be valid
-	unsigned numValidImages = 0;
-	for (const Image& img : scene.images) {
-		if (img.IsValid())
-			++numValidImages;
-	}
-	if (numValidImages != 4 || scene.status.nCalibratedImages != 4) {
-		VERBOSE("ReconstructTest: Expected 4 valid images, got %u (%u)", numValidImages, scene.status.nCalibratedImages);
-		return false;
-	}
-
-	// Test 2: Intrinsics should be close to f=700, k1=0, k2=0
-	if (scene.cameras.empty()) {
-		VERBOSE("ReconstructTest: No cameras found");
-		return false;
-	}
-	const PinholeCamera* cam = dynamic_cast<PinholeCamera*>(scene.cameras[0]);
-	if (!cam) {
-		VERBOSE("ReconstructTest: Camera is not PinholeCamera");
-		return false;
-	}
-	const REAL focal_error = ABS(cam->fx - 700.f);
-	const REAL k1_error = ABS(cam->k1 - 0.f);
-	const REAL k2_error = ABS(cam->k2 - 0.f);
-	const REAL max_distortion = cam->ComputeMaxDistortion();
-	VERBOSE("ReconstructTest: Refined intrinsics: f=%.2f (err=%.2f), k1=%.4g (err=%.4g), k2=%.4g (err=%.4g), max_distortion=%.4g",
-	    cam->fx, focal_error, cam->k1, k1_error, cam->k2, k2_error, max_distortion);
-	if (focal_error > 100.f) { // Allow 100 pixels error
-		VERBOSE("ReconstructTest: focal length error too large (%.2f)", focal_error);
-		return false;
-	}
-	if (max_distortion > 10) { // Allow 10 pixels error in distortion
-		VERBOSE("ReconstructTest: distortion error too large (k1_err=%.4g, k2_err=%.4g, max_distortion=%.4g)",
-			k1_error, k2_error, max_distortion);
-		return false;
-	}
-
-	// Test 3: Should have ~2000 inlier tracks
-	VERBOSE("ReconstructTest: Found %u inlier tracks (expected ~2000)", scene.status.nTracks);
-	if (scene.status.nTracks < 1500 || scene.status.nTracks > 3000) {
-		VERBOSE("ReconstructTest: number of inlier tracks out of range [1500, 3000]");
-		return false;
-	}
 
 	VERBOSE("ReconstructTest: All tests passed (%s)", TD_TIMER_GET_FMT().c_str());
 

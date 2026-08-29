@@ -124,6 +124,10 @@ public:
 	// Access configuration
 	const MatchConfig& GetConfig() const { return config; }
 
+	// Number of private descriptor matchers, one per thread of the scene thread pool:
+	// the valid range of every threadIdx argument taken by the matching entry points
+	unsigned GetNumMatchers() const { return (unsigned)matchers.size(); }
+
 	// Pre-match pairs using vocabulary tree top descriptors (filters weak pairs)
 	void PreMatch(PairIdxArr& pairsToMatch);
 
@@ -239,6 +243,7 @@ private:
 	struct MatchStats {
 		unsigned newPairs = 0;
 		unsigned updatedPairs = 0;
+		unsigned roma2Pairs = 0; // pairs the ROMA2 dense matching pass created or replaced
 		size_t numMatches = 0;
 		size_t numInliers = 0;
 		size_t numFilteredInliers = 0;

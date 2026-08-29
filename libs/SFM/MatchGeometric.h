@@ -43,7 +43,9 @@ namespace SFM {
  * @param pair               ImagePair for both input tracked matches and output geometry + matches.
  * @param epipolarThreshold  Maximum distance to epipolar line for geometric match acceptance (pixels).
  * @param threadIdx          Index of the calling thread, selecting its private descriptor matcher
- *                           inside pairsMatcher; concurrent calls must pass distinct indices.
+ *                           inside pairsMatcher; must be in [0, Scene::nMaxThreads), which is how
+ *                           many matchers PairsMatcher creates (PairsMatcher::GetNumMatchers()),
+ *                           and concurrent calls must pass distinct indices.
  * @return true if geometry was estimated (pair.E/F/relativePose); false if fallback was used.
  */
 SFM_API bool MatchFeaturesGeometric(

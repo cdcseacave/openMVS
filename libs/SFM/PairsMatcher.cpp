@@ -1858,7 +1858,13 @@ unsigned PairsMatcher::Match()
 	// Run a matching round: pre-match filter if requested, GPU-friendly ordering, then
 	// parallel feature matching and geometric verification of all the candidate pairs
 	MatchStats stats;
-	const auto MatchRound = [&](PairIdxArr& pairs, LPCTSTR progressCaption) {
+	const auto MatchRound = [&](PairIdxArr& pairs, LPCTSTR progressCaption, bool bFeedbackRound) {
+		// Snapshot the candidates before pre-matching prunes them from the list in place: the
+		// pairs pre-matching rejects for too few descriptor matches are exactly the ones a dense
+		// matcher exists for, so the ROMA2 pass below has to see the original list
+		PairIdxArr roma2Candidates;
+		if (roma2)
+			roma2Candidates = pairs;
 		// Pre-match the pairs if requested
 		// Pre-matching needs the vocabulary-tree top descriptors whatever backend ranked the
 		// candidates, so the tree is built here when the global descriptors did the ranking;
@@ -1874,7 +1880,15 @@ unsigned PairsMatcher::Match()
 		}
 		// Reorder pairs to minimize GPU transfers and improve load balancing
 		OptimizePairsOrder(pairs);
-		return MatchPairsBatch(pairs, progressCaption, stats);
+		if (!MatchPairsBatch(pairs, progressCaption, stats))
+			return false;
+		// Supplement the descriptor matches with the ROMAv2 dense warps: every candidate of this
+		// round is re-matched through its warp and replaces the stored pair when it is stronger
+		// (design decision 6). Runs before releaseDescriptors and ComputePairsWeights, both of
+		// which only happen once, after the last round.
+		if (roma2)
+			stats.roma2Pairs += MatchPairsROMA2(*this, *roma2, roma2Candidates, roma2Cfg, bFeedbackRound);
+		return true;
 	};
 	// Snapshot the candidate list before the round runs: PreMatch prunes rejected pairs from
 	// it in place (and they are not stored in scene.pairs either), so the feedback round must
@@ -1882,21 +1896,21 @@ unsigned PairsMatcher::Match()
 	PairIdxArr attemptedPairs;
 	if (verificationFeedback)
 		attemptedPairs = pairsToMatch;
-	if (!MatchRound(pairsToMatch, _T("Match image pairs")))
+	if (!MatchRound(pairsToMatch, _T("Match image pairs"), false))
 		return 0;
 
 	// Second round: spend the held-back pair budget on the pairs suggested by the
 	// geometrically verified matches of the first round
 	if (verificationFeedback) {
 		PairIdxArr feedbackPairs = CollectVerificationFeedbackPairs(attemptedPairs);
-		if (!feedbackPairs.empty() && !MatchRound(feedbackPairs, _T("Match feedback pairs")))
+		if (!feedbackPairs.empty() && !MatchRound(feedbackPairs, _T("Match feedback pairs"), true))
 			return 0;
 	}
 	fusedRetrievalScores.clear(); // only kept for the verification-feedback round
 
 	const unsigned numProcessedPairs = stats.newPairs + stats.updatedPairs;
-	DEBUG("Images matched: created %u/%u new/updated pairs (%u total from %u exhaustive),\n%u/%u/%u matches (%.2f/%.2f/%.2f per pair) in %s",
-		stats.newPairs, stats.updatedPairs, scene.pairs.size(), numExhaustivePairs, stats.numFilteredInliers, stats.numInliers, stats.numMatches,
+	DEBUG("Images matched: created %u/%u new/updated pairs, %u ROMA2 guided (%u total from %u exhaustive),\n%u/%u/%u matches (%.2f/%.2f/%.2f per pair) in %s",
+		stats.newPairs, stats.updatedPairs, stats.roma2Pairs, scene.pairs.size(), numExhaustivePairs, stats.numFilteredInliers, stats.numInliers, stats.numMatches,
 		numProcessedPairs ? static_cast<double>(stats.numFilteredInliers) / numProcessedPairs : 0.0,
 		numProcessedPairs ? static_cast<double>(stats.numInliers) / numProcessedPairs : 0.0,
 		numProcessedPairs ? static_cast<double>(stats.numMatches) / numProcessedPairs : 0.0,

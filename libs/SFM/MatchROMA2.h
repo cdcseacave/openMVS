@@ -40,6 +40,7 @@ namespace SFM {
 // Forward declarations
 class SFM_API Scene;
 class SFM_API RoMa2Onnx;
+class SFM_API PairsMatcher;
 
 // Recipe used to pool the per-image ROMAv2 descriptor graph outputs into one global
 // retrieval descriptor: FACETS pools the attention value facets (2048-d, default),
@@ -96,6 +97,23 @@ struct SFM_API ROMA2Config {
 // logged individually and leaves that image's globalDescriptor empty, so a return value below
 // scene.images.size() is the caller's cue to treat the whole pass as failed.
 SFM_API unsigned ComputeGlobalDescriptorsROMA2(Scene& scene, RoMa2Onnx& roma2, const ROMA2Config& config);
+/*----------------------------------------------------------------*/
+
+// Run the ROMAv2 dense matching pass over the given candidate pairs of an already
+// descriptor-matched scene: plans which image descriptors stay resident on the device (Belady
+// over the candidates in (ID1,ID2) order, at most config.slotBudget slots), then, on the
+// calling thread, loads and describes those slots and runs the coarse-match graph pair by
+// pair, while the thread pool turns each warp into a guided sparse re-match of that pair
+// (ErodeConfidenceMap, TrackKeypointsByWarp, MatchFeaturesGeometric). Guided results are
+// stored into the scene serially in (ID1,ID2) order (ApplyROMA2Pair), so what a pair replaces
+// never depends on the order the pool happened to finish in (design decision 11).
+// bFeedbackRound selects the per-round replace policy: the first round warps every candidate
+// and replaces whenever the guided set is larger, the verification-feedback round skips pairs
+// that are already healthy and only replaces the weakest ones (design decision 6).
+// roma2 must already be loaded (RoMa2Onnx::Load); a pair whose image could not be loaded,
+// described, or matched is dropped with a message, never matched against a stale slot.
+// Returns the number of scene pairs created plus replaced.
+SFM_API unsigned MatchPairsROMA2(PairsMatcher& pairsMatcher, RoMa2Onnx& roma2, const PairIdxArr& candidatePairs, const ROMA2Config& config, bool bFeedbackRound);
 
 } // namespace SFM
 

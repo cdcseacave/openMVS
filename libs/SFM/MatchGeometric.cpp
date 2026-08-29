@@ -27,6 +27,8 @@ bool SFM::MatchFeaturesGeometric(
 	unsigned threadIdx)
 {
 	// Sanity check: keypoints1 correspond to trackedPoints1 by index
+	// and the caller owns one of pairsMatcher's per-thread descriptor matchers
+	ASSERT(threadIdx < pairsMatcher.GetNumMatchers());
 	ASSERT(img1.keypoints.size() == trackedPoints1.size());
 	ASSERT(trackedPoints1.size() == trackedPoints2.size());
 	ASSERT(trackStatus.size() == trackedPoints1.size());

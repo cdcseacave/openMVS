@@ -98,12 +98,16 @@ size_t SFM::TrackKeypointsByWarp(
 		const cv::Point2f& kpA = imgA.keypoints[i].pt;
 		trackedA[i] = kpA;
 		const Point2f wkpA = CoordFromTo(kpA, imgA.GetSize(), warp.size());
-		const float ckpB = overlap.sample(wkpA);
+		// sampleSafe, not sample: a keypoint on the right/bottom border of A maps exactly onto the
+		// last warp column/row, where the bilinear interpolation of sample() reads the (zero-weighted)
+		// neighbour one past the end of the grid. Clamping that neighbour to the last cell leaves
+		// every interior sample bit-identical and only makes the border reads legal.
+		const float ckpB = overlap.sampleSafe(wkpA);
 		if (ckpB < minConfidence) {
 			trackStatus[i] = 0;
 			continue;
 		}
-		const Point2f nwkpB = warp.sample(wkpA);
+		const Point2f nwkpB = warp.sampleSafe(wkpA);
 		const Point2f kpB = DenormCoord(nwkpB, imgB.GetSize());
 		if (!Image8U::isInside(kpB, imgB.GetSize())) {
 			trackStatus[i] = 0;
