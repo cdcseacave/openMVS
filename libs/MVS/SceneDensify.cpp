@@ -2453,6 +2453,10 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 	const bool bEstimateNormal(true); // always estimate normals as they are needed for the fusion
 	size_t nDepths(0);
 	UseMaskArr arrUseMask(arrDepthData.size());
+	// read once: hand the pixels of a cluster the keep-rule drops back to the pool, so that a later
+	// seed or probe can use what a doomed cluster would otherwise lock away for good; with it off
+	// no member is recorded and every site below is dead
+	const bool bRecycleDropped(OPTDENSE::bFuseRecycleDropped);
 	const size_t nPointsEstimate(arrDepthData.size() * 9000); //TODO: better estimate number of points
 	pointcloud.points.reserve(nPointsEstimate);
 	pointcloud.pointViews.reserve(nPointsEstimate);
@@ -2489,6 +2493,11 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 	// keep-rule for points RESCUED by virtualSupport (see OPTDENSE::nFuseViolationMax); reset
 	// alongside fusedViews et al.
 	PointCloud::ViewArr fusedViolViews;
+	// the pixels the cluster currently being accumulated consumed, one entry per join: the list a
+	// DROPPED cluster walks to hand them back (bFuseRecycleDropped). In lockstep with fusedPoints,
+	// hence bounded by nMaxPointsFuse too, and reset alongside fusedViews et al.
+	struct MapPixel { IIndex ID; ImageRef x; };
+	CLISTDEFIDX(MapPixel,IIndex) clusterMembers;
 	const auto FusePoint = [&](IIndex ID, const ImageRef& x, unsigned fuseDepth) -> void {
 		const auto lambda = [&](IIndex ID, const ImageRef& x, unsigned fuseDepth, const auto& FusePointImpl) -> void {
 			const DepthData& depthData = arrDepthData[ID];
@@ -2545,6 +2554,8 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 			}
 			// set the current pixel as visited
 			useMask.set(x);
+			if (bRecycleDropped)
+				clusterMembers.push_back(MapPixel{ID, x});
 			// compute 3D location of the current depth
 			const PointCloud::Point X(image.camera.TransformPointI2W(Point3(REAL(x.x), REAL(x.y), REAL(depth))));
 			// accumulate statistics for fused point
@@ -2674,6 +2685,7 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 				// counts; the !fusedViews.empty() guard ensures at least the real seed exists so the prior can
 				// never fabricate a point out of nothing (when disabled, virtualSupport==0 => identical output)
 				const float virtualSupport(bUsePrior ? OPTDENSE::fFusePriorWeight * depthData.priorMap(i,j) : 0.f);
+				bool bClusterKept(false);
 				if (!fusedViews.empty() &&
 					(float)fusedPoints[0].size() + virtualSupport >= (float)OPTDENSE::nMinPixelsFuse &&
 					(float)fusedViews.size() + virtualSupport >= (float)nMinViewsFuse) {
@@ -2686,6 +2698,7 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 					const bool rescued = fusedPoints[0].size() < OPTDENSE::nMinPixelsFuse ||
 										  fusedViews.size() < nMinViewsFuse;
 					if (!rescued || OPTDENSE::nFuseViolationMax < 0 || fusedViolViews.size() <= (unsigned)OPTDENSE::nFuseViolationMax) {
+						bClusterKept = true;
 						// create the corresponding 3D point
 						pointcloud.points.emplace_back(
 							fusedPoints[0].GetMedian(),
@@ -2702,6 +2715,18 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 						if (bEstimateColor)
 							pointcloud.colors.emplace_back((fusedColor/static_cast<float>(fusedPoints[0].size())).cast<uint8_t>());
 					}
+				}
+				if (bRecycleDropped) {
+					// a DROPPED cluster hands its pixels back to the pool, so that a later cluster can
+					// use what this one would otherwise have locked away for good. A recycled pixel of
+					// this map that lies later in the seed order is seed-visited again -- intended: it
+					// then joins a different cluster or re-forms one, deterministically either way.
+					// A pixel can therefore be consumed more than once, so the fused-depth count
+					// reported below counts consumptions, not distinct depths
+					if (!bClusterKept)
+						for (const MapPixel& member: clusterMembers)
+							arrUseMask[member.ID].unset(member.x);
+					clusterMembers.clear();
 				}
 				if (!fusedViews.empty()) {
 					nDepths += fusedViews.size();

@@ -158,6 +158,13 @@ extern MVS_API float fFusePriorWeight;
 // rejects any rescued point contradicted by >=1 free-space ray; N allows <=N such violations.
 // Non-rescued points are never affected.
 extern MVS_API int nFuseViolationMax;
+// DenseFuseDepthMaps: hand the pixels of a cluster the keep-rule dropped back to the pool, so that a
+// later seed or probe can still use them -- a pixel is otherwise marked consumed for good, so one
+// doomed early cluster locks away every pixel a later cluster needed. A completeness-for-precision
+// trade (T&T: +17..42% points and +1.6..+5.0pp completeness for -1.3..-3.3pp precision), so it is
+// off by default: worth enabling when the dense point-cloud itself is the final output, not when a
+// mesh reconstruction follows (which interpolates the extra points anyway).
+extern MVS_API bool bFuseRecycleDropped;
 extern MVS_API bool bEstimateConfidenceCUDA; // when CUDA estimation is used, run ADJUST_CONFIDENCE on the GPU integrated into the last geometric-consistency iteration (default); 0 forces the CPU version
 extern MVS_API unsigned nEstimationIters;
 extern MVS_API unsigned nEstimationGeometricIters;
