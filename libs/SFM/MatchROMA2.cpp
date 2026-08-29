@@ -201,6 +201,20 @@ struct ScopedPoolDrain
 	~ScopedPoolDrain() { scene.threadPool.wait(); }
 };
 
+// Returns one permit of the in-flight semaphore on scope exit. MatchPairsROMA2's producer takes
+// a permit before it hands a warp to a consumer, so a consumer that left without returning one
+// (TrackKeypointsByWarp, MatchFeaturesGeometric and GeometricFilter can all throw) would starve
+// the producer permanently; this keeps the count balanced on every path out of the task.
+struct ScopedSemaphore
+{
+	Semaphore& semaphore;
+
+	explicit ScopedSemaphore(Semaphore& _semaphore) : semaphore(_semaphore) {}
+	ScopedSemaphore(const ScopedSemaphore&) = delete;
+	ScopedSemaphore& operator=(const ScopedSemaphore&) = delete;
+	~ScopedSemaphore() { semaphore.Signal(); }
+};
+
 // Which device slot each image of each pair is described into, and in which order the slots
 // are (re)loaded: one Step per pair, in the order MatchPairsROMA2 walks the pairs.
 struct SlotPlan {
@@ -452,6 +466,9 @@ unsigned SFM::MatchPairsROMA2(PairsMatcher& pairsMatcher, RoMa2Onnx& roma2, cons
 	// throw). Declared last, so that its destructor is the first one to run.
 	const ScopedPoolDrain drain(scene);
 	size_t nextLoad = 0, nextSubmit = 0;
+	// counted here and reported once in the summary below: an image the plan reloads several
+	// times would otherwise repeat its own failure line once per reload
+	unsigned numFailedLoads = 0, numFailedMatches = 0;
 	FOREACH(p, pairs) {
 		const PairIdx pair(pairs[p]);
 		const SlotPlan::Step& step = plan.steps[p];
@@ -463,13 +480,15 @@ unsigned SFM::MatchPairsROMA2(PairsMatcher& pairsMatcher, RoMa2Onnx& roma2, cons
 				ring.Submit(loads[nextSubmit++].image);
 			ASSERT(nextSubmit > nextLoad);
 			const PlanarImage* const planar = ring.Take();
-			const Image& img = scene.images[load.image];
 			slotImage[load.slot] = NO_ID;
 			// value_facets stays on the device: the matching pass never reads it back (design decision 4)
-			if (planar && roma2.Describe(planar->data(), slotLayers[load.slot], NULL))
+			if (planar && roma2.Describe(planar->data(), slotLayers[load.slot], NULL)) {
 				slotImage[load.slot] = load.image;
-			else
-				VERBOSE("error: could not describe image %u '%s'", img.ID, img.fileName.c_str());
+			} else {
+				++numFailedLoads;
+				DEBUG_EXTRA("error: could not describe image %u '%s'",
+					scene.images[load.image].ID, scene.images[load.image].fileName.c_str());
+			}
 			++nextLoad;
 		}
 		if (slotImage[step.slotA] != pair.i || slotImage[step.slotB] != pair.j) {
@@ -478,13 +497,15 @@ unsigned SFM::MatchPairsROMA2(PairsMatcher& pairsMatcher, RoMa2Onnx& roma2, cons
 		}
 		WarpMaps maps;
 		if (!roma2.MatchCoarse(slotLayers[step.slotA], slotLayers[step.slotB], maps.warp, maps.overlap)) {
-			VERBOSE("error: could not dense match pair (% 4u, % 4u)", pair.i, pair.j);
+			++numFailedMatches;
+			DEBUG_EXTRA("error: could not dense match pair (% 4u, % 4u)", pair.i, pair.j);
 			++state.progress;
 			continue;
 		}
 		ASSERT(maps.IsValid() && maps.warp.rows == roma2.WarpSize());
 		inFlight.Wait();
 		scene.threadPool.detach_task([&, p, pair, maps = std::move(maps)]() mutable {
+			const ScopedSemaphore released(inFlight); // returned however this task ends (see the struct)
 			const std::optional<size_t> threadIdx = BS::this_thread::get_index();
 			ASSERT(threadIdx && *threadIdx < pairsMatcher.GetNumMatchers());
 			const Image& imgA = scene.images[pair.i];
@@ -508,14 +529,17 @@ unsigned SFM::MatchPairsROMA2(PairsMatcher& pairsMatcher, RoMa2Onnx& roma2, cons
 				// beats a RANSAC-verified one -- neither a fair replace decision (design decision 6
 				// replaces only a strictly weaker pair) nor a pair the rest of the pipeline can
 				// consume. This refits the geometry to the final match set and splits its outliers
-				// off, exactly as MatchPair does, with the same fixed RANSAC seed.
-				(pairsMatcher.GetConfig().maxEpipolarError <= 0 || pairsMatcher.GeometricFilter(imgA, imgB, guided))) {
+				// off, exactly as MatchPair does, with the same fixed RANSAC seed. With the
+				// verification switched off the guided pair is held to the same size bar the
+				// descriptor path applies in that configuration (MatchPair, PairsMatcher.cpp:626).
+				(pairsMatcher.GetConfig().maxEpipolarError > 0 ?
+					pairsMatcher.GeometricFilter(imgA, imgB, guided) :
+					guided.GetNumMatches() >= pairsMatcher.GetConfig().minMatches)) {
 				ASSERT(!guided.matches.empty());
 				results[p] = std::move(guided);
 				++numGuided;
 			}
 			++state.progress;
-			inFlight.Signal();
 		});
 	}
 	scene.threadPool.wait();
@@ -532,9 +556,9 @@ unsigned SFM::MatchPairsROMA2(PairsMatcher& pairsMatcher, RoMa2Onnx& roma2, cons
 		if (ApplyROMA2Pair(scene, pairIndexMap, std::move(guided), maxReplace, bCreated))
 			++(bCreated ? numCreated : numReplaced);
 	}
-	DEBUG("ROMA2 dense matching (%s round): %u/%u pairs guided, %u created, %u replaced, %u skipped healthy; %u slots, %u loads, %u reloads (%s)",
+	DEBUG("ROMA2 dense matching (%s round): %u/%u pairs guided, %u created, %u replaced, %u skipped healthy, %u failed loads, %u failed matches; %u slots, %u loads, %u reloads (%s)",
 		bFeedbackRound ? "feedback" : "first", numGuided.load(), pairs.size(), numCreated, numReplaced, numSkippedHealthy,
-		plan.numSlots, (unsigned)plan.numLoads, (unsigned)plan.numReloads, TD_TIMER_GET_FMT().c_str());
+		numFailedLoads, numFailedMatches, plan.numSlots, (unsigned)plan.numLoads, (unsigned)plan.numReloads, TD_TIMER_GET_FMT().c_str());
 	return numCreated + numReplaced;
 #else // _USE_ONNXRUNTIME
 	// unreachable: RoMa2Onnx::IsAvailable() is false in this build, so Scene::MatchPairs never

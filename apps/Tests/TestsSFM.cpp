@@ -1511,10 +1511,11 @@ static bool ROMA2ReconstructScene(Scene& scene, const String& setting, const Str
 	// rounding of exactly 1. The 4 bundled images are close-up shots of the same small scene
 	// (ReconstructTest reconstructs ~2000 shared tracks from them), so even genuinely distinct
 	// descriptors sit close to 1 by content similarity alone -- measured empirically at up to
-	// 0.999855 (turbo/FACETS), 0.999413 (turbo/LAYERS) and 0.999913 (base/FACETS) across both
-	// providers here, on this dataset. 1-1e-6 keeps two orders of magnitude of margin above that
-	// measured ceiling while still catching a duplicate, which cannot come out below 1-1e-7.
-	// The measured maximum is logged so every run carries the evidence for that margin.
+	// 0.99985546 (turbo/FACETS), 0.99941337 (turbo/LAYERS) and 0.99994838 (base/FACETS) across
+	// both providers here, on this dataset. The worst of those sits 5.2e-5 below 1, so 1-1e-6
+	// leaves ~50x of margin above the measured ceiling while still catching a duplicate, which
+	// cannot come out below 1-1e-7. The measured maximum is logged so every run carries the
+	// evidence for that margin.
 	double maxCosine = 0.0;
 	for (IIndex i = 0; i < nImages; ++i) {
 		for (IIndex j = i + 1; j < nImages; ++j) {
@@ -1584,11 +1585,17 @@ bool ROMA2ReconstructTest()
 	const String provider(envProvider != NULL && *envProvider != 0 ? String(envProvider) : String("auto"));
 
 	// 1) baseline: the same run with the dense matching pass switched off, so that comparing it
-	// against the guided run below isolates exactly what the warps changed
+	// against the guided run below isolates exactly what the warps changed. Both runs keep the
+	// view-graph calibration off, like the determinism runs and for the same reason: it re-solves
+	// a focal per camera and then re-filters every pair's inliers through it (Scene.cpp:604-613),
+	// so the intermittent import camera split (see ROMA2ReconstructScene) would move inlier counts
+	// on its own -- and inlier counts are exactly what the "the dense pass changed something"
+	// assertion below reads. With it off, a pair that grew can only have grown because a warp
+	// replaced it.
 	ROMA2PairSummaries baseline;
 	{
 		Scene scene(2);
-		if (!ROMA2ReconstructScene(scene, setting, provider, RetrievalRecipe::FACETS, 2048, false, 64, true, baseline)) {
+		if (!ROMA2ReconstructScene(scene, setting, provider, RetrievalRecipe::FACETS, 2048, false, 64, false, baseline)) {
 			VERBOSE("ROMA2ReconstructTest FAILED: baseline run (dense matching off)");
 			return false;
 		}
@@ -1598,7 +1605,7 @@ bool ROMA2ReconstructTest()
 	ROMA2PairSummaries guided;
 	{
 		Scene scene(2);
-		if (!ROMA2ReconstructScene(scene, setting, provider, RetrievalRecipe::FACETS, 2048, true, 64, true, guided)) {
+		if (!ROMA2ReconstructScene(scene, setting, provider, RetrievalRecipe::FACETS, 2048, true, 64, false, guided)) {
 			VERBOSE("ROMA2ReconstructTest FAILED: FACETS recipe with dense matching");
 			return false;
 		}
@@ -1678,7 +1685,13 @@ bool ROMA2ReconstructTest()
 		// inlier tracks -- but the residual distortion measures 12.4 px (turbo, CUDA) / 14.0 px
 		// (turbo, CPU provider) / 2.0 px (base, CUDA) against the 1.5 px of ReconstructTest.
 		// 20 px keeps the check meaningful (a blown-up distortion is still caught) at the coarsest
-		// preset the test defaults to.
+		// preset the test defaults to, though at ~1.4x the worst measured value it is a guard rail
+		// rather than a tight bound.
+		// Note what the two checks mean here, which differs from ReconstructTest: the imported EXIF
+		// focal is 720.51 px, so the `focal_error > 100` bound is already satisfied before the
+		// bundle runs and this stage asserts that the guided scene keeps the focal stable, not
+		// that it recovers it -- recovery from a deliberately wrong 900 px is what ReconstructTest
+		// still tests, on the descriptor matches that can support it.
 		#ifdef _IMAGE_HEIF
 		if (!ReconstructMatchedScene(scene, "ROMA2ReconstructTest", 1500, 3000, 20))
 			return false;
