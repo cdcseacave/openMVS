@@ -50,6 +50,11 @@ if(OpenMVS_USE_SIFTGPU)
 	endif()
 endif()
 
+# Optional ONNX Runtime support (in-process ROMA2); detected in the top-level CMakeLists, define in ConfigLocal.h
+IF(_USE_ONNXRUNTIME)
+	LIST(APPEND SFM_EXTRA_LIBS onnxruntime::onnxruntime)
+ENDIF()
+
 # List sources files
 FILE(GLOB LIBRARY_FILES_C "*.cpp")
 FILE(GLOB LIBRARY_FILES_H "*.h" "*.inl")

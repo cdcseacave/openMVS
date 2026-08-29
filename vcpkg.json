@@ -78,6 +78,14 @@
         }
       ]
     },
+    "onnxruntime": {
+      "description": "ONNX Runtime inference (RoMa v2 dense matching, DINOv3 retrieval)",
+      "dependencies": [ "onnxruntime" ]
+    },
+    "onnxruntime-cuda": {
+      "description": "CUDA execution provider for ONNX Runtime (x64 Linux/Windows only; macOS uses the CoreML provider of the CPU package)",
+      "dependencies": [ { "name": "onnxruntime", "features": [ "cuda" ], "platform": "x64 & (linux | windows)" } ]
+    },
     "cuda": {
       "description": "CUDA support for OpenMVS",
       "dependencies": [

@@ -57,6 +57,9 @@
 // NVidia Cuda Runtime API
 #cmakedefine _USE_CUDA
 
+// ONNX Runtime inference (RoMa v2 dense matching, DINOv3 retrieval)
+#cmakedefine _USE_ONNXRUNTIME
+
 // Apple Metal compute backend
 #cmakedefine _USE_METAL
 
