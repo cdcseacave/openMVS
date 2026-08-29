@@ -12,8 +12,12 @@
 # judged on.
 #
 # Per setting: trace both stages, check the descriptor against its own traced reference, build the two real
-# references, check both stages against those, and write the manifest. There is no engine step — openMVS
-# consumes the ONNX through onnxruntime, and the graphs are the shipped artifact.
+# references, check both stages against those, run the two extra descriptor checks (the CPU execution
+# provider, and the model's own bf16 noise floor), and write the manifest. There is no engine step —
+# openMVS consumes the ONNX through onnxruntime, and the graphs are the shipped artifact.
+#
+# Everything is teed into $OUT_DIR/export.log, so a shipped model directory carries the log of the run that
+# produced it and re-running this script reproduces that log.
 set -euo pipefail
 
 SETTINGS="base fast turbo"
@@ -22,9 +26,10 @@ IMAGES=()
 OUT_DIR="."
 FIXTURES=""
 REPEAT=100
+CPU_REPEAT=5        # the CPU provider runs about a second per descriptor at base; 5 is enough to time it
 
 usage() {
-  sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
   exit "${1:-0}"
 }
 
@@ -59,6 +64,7 @@ ROMA2_PROJECT="${ROMA2_PROJECT:-$HOME/polyml/romav2}"
 ORT="${ROMA2_ORT:-onnxruntime-gpu==1.23.2}"
 run() { uv run --project "$ROMA2_PROJECT" --with "$ORT" python "$project/$1" "${@:2}"; }
 
+export_all() {
 echo "exporting into $OUT_DIR on $(nvidia-smi --query-gpu=name --format=csv,noheader | head -1)"
 
 failures=0
@@ -83,15 +89,30 @@ for setting in $SETTINGS; do
       run export.py check --onnx "$graph" --repeat "$REPEAT" || failures=$((failures + 1))
     fi
 
-    fixtures=""
+    fixtures=()
     if [ -n "$FIXTURES" ] && [ "$stage" = "descriptor" ]; then
-      fixtures="--fixtures $FIXTURES"
+      fixtures=(--fixtures "$FIXTURES")
     fi
     run parity.py "${IMAGES[0]}" "${IMAGES[1]}" --stage "$graph_stage" $coarse --setting "$setting" \
-        --out-dir "$reference" $fixtures
+        --out-dir "$reference" ${fixtures[@]+"${fixtures[@]}"}
     run export.py check --onnx "$graph" --reference "$reference" --repeat "$REPEAT" \
         || failures=$((failures + 1))
   done
+
+  # The two checks that are about context rather than about shipping: the CPU execution provider is the
+  # tolerance floor every non-CUDA platform sees (and the only provider some of them have), and the noise
+  # floor says how far the model's own bf16 autocast lands from the same eager fp32 reference — which is
+  # what makes a cosine of 0.999999 mean something.
+  descriptor="$OUT_DIR/roma_${setting}_descriptor_fp32.onnx"
+  descriptor_reference="$OUT_DIR/real_${setting}_descriptor.reference"
+  if [ -f "$descriptor" ] && [ -d "$descriptor_reference" ]; then
+    echo ""
+    echo "===== ${setting}/descriptor extra checks"
+    run export.py check --onnx "$descriptor" --reference "$descriptor_reference" \
+        --provider cpu --repeat "$CPU_REPEAT" || failures=$((failures + 1))
+    run export.py check --onnx "$descriptor" --reference "$descriptor_reference" \
+        --repeat 0 --noise-floor || failures=$((failures + 1))
+  fi
 
   echo ""
   echo "===== ${setting}/manifest"
@@ -103,6 +124,12 @@ echo "===== $OUT_DIR"
 ls -l "$OUT_DIR"/roma_*.onnx "$OUT_DIR"/roma_*.json | awk '{printf "%10.1f MB  %s\n", $5 / 1048576, $9}'
 if [ "$failures" -ne 0 ]; then
   echo "$failures stage(s) failed" >&2
-  exit 1
+  return 1
 fi
 echo "all stages checked"
+}
+
+# The log belongs to the model directory rather than to whoever ran the script: a shipped set of graphs
+# carries the checks that passed on it. PIPESTATUS, because tee is the process that exits last.
+export_all 2>&1 | tee "$OUT_DIR/export.log"
+exit "${PIPESTATUS[0]}"

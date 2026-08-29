@@ -53,12 +53,18 @@ def resize(image, size):
                                            antialias=True)
 
 
-def write_fixtures(directory, decoded_A, device="cuda"):
+def write_fixtures(directory, decoded_A):
     """The two always-on C++ fixtures: they pin the host-side halves of the contract without a model.
 
     Raw little-endian fp32, not npy, because the tests that read them run on every build and should not
     need a header parser to do it. The pooling fixture is a seeded random tensor rather than a slice of a
     real descriptor so that it stays 1 KB and stays reproducible from the seed alone.
+
+    Computed on the CPU, deliberately, unlike everything else here. These bytes are committed and are then
+    the expected value for every build on every machine, so they must be a property of the recipe and not
+    of whichever GPU happened to regenerate them: torch's own CUDA and CPU bicubic differ by ~2e-7 on this
+    crop, which is small but is a hardware fingerprint, and a fixture nobody without an A100 can reproduce
+    is not a fixture.
     """
     from PIL import Image
     from graphs import pool_retrieval
@@ -69,17 +75,17 @@ def write_fixtures(directory, decoded_A, device="cuda"):
     x0, y0 = (decoded_A.shape[1] - width) // 2, (decoded_A.shape[0] - height) // 2
     crop = decoded_A[y0:y0 + height, x0:x0 + width]
     Image.fromarray(crop).save(directory / "preprocess_source.png")
-    square = resize(torch.from_numpy(crop.astype(np.float32)).permute(2, 0, 1)[None].to(device) / 255.0,
-                    FIXTURE_SIZE)
-    square.float().cpu().numpy().astype("<f4").tofile(directory / f"preprocess_{FIXTURE_SIZE}.bin")
+    square = resize(torch.from_numpy(crop.astype(np.float32)).permute(2, 0, 1)[None] / 255.0, FIXTURE_SIZE)
+    square.numpy().astype("<f4").tofile(directory / f"preprocess_{FIXTURE_SIZE}.bin")
 
     pooled = torch.rand(FIXTURE_POOL_SHAPE, generator=torch.Generator().manual_seed(0))
-    pooled.numpy().astype("<f4").tofile(directory / "pool_input_2x3x3x8.bin")
+    shape = "x".join(str(dimension) for dimension in FIXTURE_POOL_SHAPE[1:])   # the batch dim is implied
+    pooled.numpy().astype("<f4").tofile(directory / f"pool_input_{shape}.bin")
     facets, layers = pool_retrieval(pooled, "facets"), pool_retrieval(pooled, "layers")
     facets.astype("<f4").tofile(directory / f"pool_facets_{facets.size}.bin")
     layers.astype("<f4").tofile(directory / f"pool_layers_{layers.size}.bin")
-    print(f"wrote {directory}/ fixtures: preprocess_source.png {width}x{height}, "
-          f"preprocess_{FIXTURE_SIZE}.bin {tuple(square.shape)}, pool_input_2x3x3x8.bin "
+    print(f"wrote {directory}/ fixtures (cpu): preprocess_source.png {width}x{height}, "
+          f"preprocess_{FIXTURE_SIZE}.bin {tuple(square.shape)}, pool_input_{shape}.bin "
           f"{FIXTURE_POOL_SHAPE} -> facets[{facets.size}] layers[{layers.size}]", flush=True)
 
 

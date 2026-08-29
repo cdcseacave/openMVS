@@ -365,7 +365,7 @@ def _check_descriptor(graph, img, layers, value_facets, tol=1e-4):
 
 
 def _check_coarse_match(model, warp, confidence, descriptors_A, descriptors_B, img_A, img_B,
-                        warp_tol=1e-4, confidence_tol=1e-3):
+                        roma2_repo=None, warp_tol=1e-4, confidence_tol=1e-3):
     """Prove, before tracing, that MatchWrap's coarse output is the model's own coarse prediction.
 
     MatchWrap calls model.matcher directly, so nothing in the wrap would notice if RoMaV2's coarse entry
@@ -380,8 +380,12 @@ def _check_coarse_match(model, warp, confidence, descriptors_A, descriptors_B, i
     """
     reference = getattr(model, "coarse_cached_match", None)
     if reference is None:
-        print("  coarse_cached_match absent from this romav2 checkout: coarse proof skipped "
-              "(run it with --roma2-repo ~/RoMaV2)", flush=True)
+        # Column 0, upper case, on stderr: a skipped gate has to be greppable in a log that is mostly
+        # torch's export chatter, or "the proof ran" and "the proof was not there" read the same.
+        print(f"WARNING: coarse pre-trace proof SKIPPED - RoMaV2.coarse_cached_match not in "
+              f"{roma2_repo or 'this romav2 checkout'}; the traced graph is UNPROVEN against the model's "
+              f"own coarse path. Re-run with --roma2-repo ~/RoMaV2 to exercise it.",
+              file=sys.stderr, flush=True)
         return
     frame = lambda L, img: {"features": [L[:, 0].clone(), L[:, 1].clone()], "rescaled": img}
     expected = reference(frame(descriptors_A, img_A), frame(descriptors_B, img_B))
@@ -415,7 +419,7 @@ def trace_to_onnx(out_path, reference_dir, stage, coarse, setting, checkpoint, r
             if stage == "descriptor":
                 _check_descriptor(graph, example_inputs[0], *eager)
             elif coarse:
-                _check_coarse_match(model, *eager, *example_inputs)
+                _check_coarse_match(model, *eager, *example_inputs, roma2_repo=roma2_repo)
             if exporter == "dynamo":
                 torch.onnx.export(graph, tuple(example_inputs), str(out_path), input_names=input_names,
                                   output_names=output_names, opset_version=18, dynamo=True,
