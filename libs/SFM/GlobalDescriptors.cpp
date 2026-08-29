@@ -119,8 +119,9 @@ bool GlobalDescriptors::Build(const Scene& scene)
 	imageIDs.resize(scene.images.size());
 	FOREACH(i, scene.images) {
 		const Image& img = scene.images[i];
-		if (!img.HasGlobalDescriptor() || img.globalDescriptor.cols != dim || img.globalDescriptor.type() != CV_32F) {
-			VERBOSE("error: image %u has no %d-D global descriptor", img.ID, dim);
+		if (!img.HasGlobalDescriptor() || img.globalDescriptor.rows != 1 ||
+			img.globalDescriptor.cols != dim || img.globalDescriptor.type() != CV_32F) {
+			VERBOSE("error: image %u has no 1x%d CV_32F global descriptor", img.ID, dim);
 			descriptors.resize(0, 0);
 			imageIDs.clear();
 			return false;
@@ -164,7 +165,7 @@ bool SFM::ExportRetrievalRankingsCSV(const Scene& scene, const String& fileName,
 		return false;
 	}
 	// the rows name both endpoints by image ID and by image-file stem
-	std::unordered_map<IIndex, IIndex> idxFromID;
+	std::unordered_map<IIndex, IIndex> idxFromID;   // image ID -> scene image index
 	idxFromID.reserve(scene.images.size());
 	FOREACH(i, scene.images)
 		idxFromID.emplace(scene.images[i].ID, i);
@@ -175,6 +176,8 @@ bool SFM::ExportRetrievalRankingsCSV(const Scene& scene, const String& fileName,
 		for (const auto& [imageID, similarity] : index.Query(i, maxRank)) {
 			const auto it = idxFromID.find(imageID);
 			ASSERT(it != idxFromID.end());
+			// idxA/idxB carry image IDs, as polycpp's retrieval_rankings.csv does; on an
+			// unfiltered scene those are also the positional indices in scene.images
 			ofs << scene.images[i].ID << "," << imageID << "," << similarity << ","
 				<< stemA << "," << Util::getFileName(scene.images[it->second].fileName) << "\n";
 			++numRows;

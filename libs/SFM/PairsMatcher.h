@@ -177,8 +177,8 @@ public:
 	void SetROMA2(RoMa2Onnx* model, const ROMA2Config& cfg);
 
 	// Return true if the candidate pairs are ranked by the ROMAv2 global descriptors
-	// instead of the vocabulary tree: retrieval enabled, the scene marked as described,
-	// and every image carrying a descriptor
+	// instead of the vocabulary tree: the model explicitly enabled and used for retrieval,
+	// the scene marked as described, and every image carrying a descriptor
 	bool UseGlobalDescriptors() const;
 
 	// Build the retrieval backend on demand (lazy initialization): the global-descriptor

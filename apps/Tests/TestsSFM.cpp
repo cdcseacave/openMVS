@@ -55,13 +55,21 @@ DEFINE_LOG_NAME(lt, _T("TestSFM "));
 
 namespace SFM {
 
-// Read count little-endian fp32 values from a raw binary fixture (the ROMA2 fixtures are
-// stored headerless so the always-on tests need no npy parser to read them)
+// Read exactly count fp32 values from a raw binary fixture, in the host byte order the
+// fixtures are written in (the ROMA2 fixtures are stored headerless, so the always-on tests
+// need no npy parser to read them); a file of any other size is a fixture/test disagreement
 static bool ReadFloats(const String& fileName, size_t count, std::vector<float>& values)
 {
 	values.resize(count);
-	std::ifstream ifs(fileName.c_str(), std::ios::in | std::ios::binary);
-	if (!ifs.is_open() || !ifs.read((char*)values.data(), (std::streamsize)(count*sizeof(float)))) {
+	const size_t expectedSize = count*sizeof(float);
+	std::ifstream ifs(fileName.c_str(), std::ios::in | std::ios::binary | std::ios::ate);
+	if (!ifs.is_open() || (size_t)ifs.tellg() != expectedSize) {
+		VERBOSE("error: fixture '%s' is not %u floats (%u bytes)",
+			fileName.c_str(), (unsigned)count, (unsigned)expectedSize);
+		return false;
+	}
+	ifs.seekg(0);
+	if (!ifs.read((char*)values.data(), (std::streamsize)expectedSize)) {
 		VERBOSE("error: cannot read %u floats from fixture '%s'", (unsigned)count, fileName.c_str());
 		return false;
 	}
@@ -800,7 +808,14 @@ bool GlobalDescriptorsQueryTest()
 	matchCfg.mode = MatchConfig::VOCABULARY;
 	matchCfg.maxPairsPerImage = 3;
 	PairsMatcher matcher(scene, matchCfg);
-	matcher.SetROMA2(NULL, ROMA2Config());
+	matcher.SetROMA2(NULL, ROMA2Config()); // ROMAv2 is an explicit opt-in, so the default config ranks with the tree
+	if (matcher.UseGlobalDescriptors()) {
+		VERBOSE("GlobalDescriptorsQueryTest FAILED: backend taken over without an explicit opt-in");
+		return false;
+	}
+	ROMA2Config roma2Cfg;
+	roma2Cfg.enabled = true; // retrieval-only: the descriptors are in the scene, no model needed
+	matcher.SetROMA2(NULL, roma2Cfg);
 	if (!matcher.UseGlobalDescriptors()) {
 		VERBOSE("GlobalDescriptorsQueryTest FAILED: backend");
 		return false;

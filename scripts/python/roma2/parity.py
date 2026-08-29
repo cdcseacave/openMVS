@@ -58,7 +58,11 @@ def write_fixtures(directory, decoded_A):
 
     Raw little-endian fp32, not npy, because the tests that read them run on every build and should not
     need a header parser to do it. The pooling fixture is a seeded random tensor rather than a slice of a
-    real descriptor so that it stays 1 KB and stays reproducible from the seed alone.
+    real descriptor so that it stays 1 KB and stays reproducible from the seed alone. It is drawn from
+    randn, not rand: a strictly positive tensor never reaches GeM's 1e-6 clamp, so the fixture would
+    pin PoolRetrievalDescriptor only on the path where the clamp is a no-op. (The signed-power branch
+    stays unreachable either way -- the clamp makes every pooled value positive by construction -- and
+    the sign is kept in both implementations only so the recipe reads like the request states it.)
 
     Computed on the CPU, deliberately, unlike everything else here. These bytes are committed and are then
     the expected value for every build on every machine, so they must be a property of the recipe and not
@@ -78,7 +82,7 @@ def write_fixtures(directory, decoded_A):
     square = resize(torch.from_numpy(crop.astype(np.float32)).permute(2, 0, 1)[None] / 255.0, FIXTURE_SIZE)
     square.numpy().astype("<f4").tofile(directory / f"preprocess_{FIXTURE_SIZE}.bin")
 
-    pooled = torch.rand(FIXTURE_POOL_SHAPE, generator=torch.Generator().manual_seed(0))
+    pooled = torch.randn(FIXTURE_POOL_SHAPE, generator=torch.Generator().manual_seed(0))
     shape = "x".join(str(dimension) for dimension in FIXTURE_POOL_SHAPE[1:])   # the batch dim is implied
     pooled.numpy().astype("<f4").tofile(directory / f"pool_input_{shape}.bin")
     facets, layers = pool_retrieval(pooled, "facets"), pool_retrieval(pooled, "layers")

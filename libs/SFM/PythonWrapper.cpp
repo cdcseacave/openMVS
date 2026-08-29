@@ -37,6 +37,7 @@
 // wrapper resolves SFM/MVS/Common symbols via their import libs.
 #include "Common.h"
 #include "Scene.h"
+#include "GlobalDescriptors.h"
 #include "InterfaceMVS.h"
 #ifndef BOOST_PYTHON_STATIC_LIB
 #define BOOST_PYTHON_STATIC_LIB
@@ -184,6 +185,12 @@ public:
 static bool ExportToMVSFile(const Scene& scene, const std::string& fileName,
                             const SFM::ExportMVSConfig& config = {}) {
 	return SFM::ExportMVS(MAKE_PATH_SAFE(fileName), scene, config);
+}
+
+// Export the global-descriptor retrieval rankings of a described scene to a CSV file.
+static bool ExportRetrievalRankingsCSVFile(const Scene& scene, const std::string& fileName,
+                                           unsigned maxRank = 50) {
+	return SFM::ExportRetrievalRankingsCSV(scene, MAKE_PATH_SAFE(fileName), maxRank);
 }
 
 
@@ -370,6 +377,10 @@ void RegisterBindings()
 	// Free function: convenience SFM->MVS bridge via .mvs file.
 	def("export_sfm_to_mvs", &ExportToMVSFile,
 			(arg("scene"), arg("file_path"), arg("config")=SFM::ExportMVSConfig()));
+
+	// Free function: the global-descriptor retrieval rankings of a described scene, as CSV.
+	def("export_retrieval_rankings_csv", &ExportRetrievalRankingsCSVFile,
+			(arg("scene"), arg("file_name"), arg("max_rank")=50u));
 }
 
 } // namespace pySFM

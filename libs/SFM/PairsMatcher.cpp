@@ -654,7 +654,10 @@ void PairsMatcher::SetROMA2(RoMa2Onnx* model, const ROMA2Config& cfg)
 
 bool PairsMatcher::UseGlobalDescriptors() const
 {
-	if (!roma2Cfg.useRetrieval || !scene.status.nState.isSet(Scene::Status::STATE::GLOBAL_DESCRIPTORS))
+	// the model is an explicit opt-in, so a scene described by an earlier run does not
+	// silently switch the ranking backend of every later run that leaves ROMAv2 off
+	if (!roma2Cfg.enabled || !roma2Cfg.useRetrieval ||
+		!scene.status.nState.isSet(Scene::Status::STATE::GLOBAL_DESCRIPTORS))
 		return false;
 	// a partially described scene would rank its images against incomparable backends
 	FOREACH(i, scene.images)
