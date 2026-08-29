@@ -47,15 +47,33 @@ class DescriptorWrap(torch.nn.Module):
         backbone = _dino_backbone(model.f)              # the DinoVisionTransformer under features.py's wrapper
         assert len(backbone.blocks) == 24 and backbone.n_storage_tokens == 4
         assert backbone.patch_size == PATCH, f"the contract's G = S/{PATCH} grid needs patch {PATCH}"
+        assert len(self.facet_blocks) == 2, \
+            f"value_facets is [1, 2, G, G, C], so it needs exactly two blocks, not {self.facet_blocks}"
+        assert all(0 <= b < len(backbone.blocks) for b in self.facet_blocks), \
+            f"facet blocks {self.facet_blocks} outside the backbone's 0..{len(backbone.blocks) - 1}"
         self.n_prefix = 1 + backbone.n_storage_tokens   # CLS + 4 registers (vision_transformer.py:308)
         self.taps = {}
-        for b in self.facet_blocks:                     # fused qkv Linear output [B, N, 3C] (hub attention.py:88)
-            backbone.blocks[b].attn.qkv.register_forward_hook(self._tap(b))
+        self.handles = [backbone.blocks[b].attn.qkv.register_forward_hook(self._tap(b))
+                        for b in self.facet_blocks]     # fused qkv output [B, N, 3C] (hub attention.py:88)
 
     def _tap(self, b):
         def hook(_module, _inputs, output):
             self.taps[b] = output
         return hook
+
+    def close(self):
+        """Unregister the qkv hooks. The model outlives the wrap — the match stage runs against the same
+        instance in the same process — so leaving them registered would keep taping tensors nothing reads."""
+        for handle in self.handles:
+            handle.remove()
+        self.handles.clear()
+        self.taps.clear()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exception):
+        self.close()
 
     def forward(self, img):
         self.taps.clear()
@@ -63,6 +81,7 @@ class DescriptorWrap(torch.nn.Module):
         B, h, w, C = f0.shape
         facets = [self.taps[b].reshape(B, -1, 3 * C)[:, self.n_prefix:, 2 * C:].reshape(B, h, w, C)
                   for b in self.facet_blocks]
+        self.taps.clear()                               # sliced already; do not pin the [1, N, 3C] captures
         return torch.stack((f0, f1), dim=1), torch.stack(facets, dim=1)
 
 
@@ -115,17 +134,17 @@ def _assert_masked_bias(model):
 
 
 def _cache_rope(model):
-    """Memoise the RoPE sin/cos per (H, W).
+    """Memoise the RoPE sin/cos per (H, W). Opt-in, off by default — see build_model.
 
     vision_transformer.py:276 and vit/__init__.py:207 recompute them inside the per-block loop, so an
     otherwise static graph carries one identical copy of the same constant per block. Memoising lets the
     exporter fold the whole family into one shared sin/cos pair: on turbo the descriptor graph goes from 332
     initializers and 1249 nodes to 312 and 1169, at the same accuracy against the eager reference (rms
-    1.8025e-04 against 1.8024e-04 on layers). Returns a function that clears the caches, since they pin
-    device tensors alive after a trace.
+    1.8025e-04 against 1.8024e-04 on layers). Each cache holds one small sin/cos pair (410 KB each at base)
+    for the life of the model, which is why this is not worth doing by default.
     """
-    caches = []
-    for rope in (model.f.rope_embed, model.matcher.mv_vit.rope_embed):
+    for name, rope in (("f", model.f.rope_embed), ("matcher.mv_vit", model.matcher.mv_vit.rope_embed)):
+        assert rope is not None, f"model.{name}.rope_embed is None (use_rope=False): nothing to memoise"
         cache, orig = {}, rope.forward
 
         def fwd(*, H, W, _orig=orig, _cache=cache):
@@ -134,20 +153,24 @@ def _cache_rope(model):
             return _cache[(H, W)]
 
         rope.forward = fwd
-        caches.append(cache)
-    return lambda: [cache.clear() for cache in caches]
 
 
-def build_model(setting, checkpoint, roma2_repo, device="cuda", rope_cache=True):
+def build_model(setting, checkpoint, roma2_repo, device="cuda", rope_cache=False):
     """The fp32, eval, traceable RoMa v2 for `setting` (polyml graphs.py:134-139, local weights).
 
     The vendored RoMaV2 takes weights=<path> (src/romav2/romav2.py:92-119); the upstream fork (~/RoMaV2) has
     no such argument, so there it is redirected through torch.hub.load_state_dict_from_url at the same file.
     A pull is never a fallback: everything downstream — the eager reference the graph is checked against
     included — is built from whatever weights land here, so a substitution would go unnoticed.
+
+    rope_cache is off by default: it saves 0.9 MB of 978 MB at turbo and the two traced graphs agree only to
+    ~3e-6 relative on value_facets, short of the 1e-6 the optimisation was gated on, so the shipped graph
+    keeps the structure polyml traces.
     """
     repo = Path(roma2_repo).expanduser()
-    sys.path.insert(0, str(repo / "src"))
+    source = repo / "src"
+    assert source.is_dir(), f"--roma2-repo {repo} has no src/: expected a RoMaV2 checkout"
+    sys.path.insert(0, str(source))
     torch.set_float32_matmul_precision("highest")   # romav2.forward() asserts this
     ckpt = Path(checkpoint).expanduser()
     assert ckpt.is_file(), f"checkpoint not found: {ckpt}"
@@ -238,7 +261,7 @@ def _check_descriptor(graph, img, layers, value_facets, tol=1e-4):
 
 
 def trace_to_onnx(out_path, reference_dir, stage, coarse, setting, checkpoint, roma2_repo, input_names,
-                  output_names, exporter="dynamo", facet_blocks=FACET_BLOCKS, rope_cache=True):
+                  output_names, exporter="dynamo", facet_blocks=FACET_BLOCKS, rope_cache=False):
     """Trace `stage` to fp32 ONNX and save the eager fp32 reference beside it. Returns the output count.
 
     The reference is eager fp32 whatever a consumer later runs the graph in, so a check measures the runtime
@@ -252,22 +275,26 @@ def trace_to_onnx(out_path, reference_dir, stage, coarse, setting, checkpoint, r
     graph, example_inputs = stage_graph(model, stage, coarse, facet_blocks)
 
     print(f"trace fp32 ONNX ({stage}{' coarse' if coarse else ''}) ...", flush=True)
-    with torch.no_grad():
-        eager = graph(*example_inputs)
-        if stage == "descriptor":
-            _check_descriptor(graph, example_inputs[0], *eager)
-        if exporter == "dynamo":
-            torch.onnx.export(graph, tuple(example_inputs), str(out_path), input_names=input_names,
-                              output_names=output_names, opset_version=18, dynamo=True, external_data=True)
-        else:   # fallback if the dynamo capture drops the hook-captured value_facets
-            torch.onnx.export(graph, tuple(example_inputs), str(out_path), input_names=input_names,
-                              output_names=output_names, opset_version=18, dynamo=False,
-                              do_constant_folding=True)
-            inline = onnx.load(str(out_path))   # the legacy exporter writes one file; split the weights out
-            external = Path(out_path).with_name(Path(out_path).name + ".data")
-            external.unlink(missing_ok=True)    # onnx.save appends to an external data file that exists
-            onnx.save(inline, str(out_path), save_as_external_data=True, all_tensors_to_one_file=True,
-                      location=external.name, size_threshold=1024)
+    try:
+        with torch.no_grad():
+            eager = graph(*example_inputs)
+            if stage == "descriptor":
+                _check_descriptor(graph, example_inputs[0], *eager)
+            if exporter == "dynamo":
+                torch.onnx.export(graph, tuple(example_inputs), str(out_path), input_names=input_names,
+                                  output_names=output_names, opset_version=18, dynamo=True,
+                                  external_data=True)
+            else:   # fallback if the dynamo capture drops the hook-captured value_facets
+                torch.onnx.export(graph, tuple(example_inputs), str(out_path), input_names=input_names,
+                                  output_names=output_names, opset_version=18, dynamo=False,
+                                  do_constant_folding=True)
+                inline = onnx.load(str(out_path))   # the legacy exporter writes one file; split the weights
+                external = Path(out_path).with_name(Path(out_path).name + ".data")
+                external.unlink(missing_ok=True)    # onnx.save appends to an external data file that exists
+                onnx.save(inline, str(out_path), save_as_external_data=True, all_tensors_to_one_file=True,
+                          location=external.name, size_threshold=1024)
+    finally:
+        graph.close()   # the wrap's hooks, before the model is handed on or the process moves to a check
 
     onnx.checker.check_model(str(out_path), full_check=True)
     written = onnx.load(str(out_path), load_external_data=False)

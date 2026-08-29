@@ -52,17 +52,22 @@ def graph_size(path):
     return sum(sibling.stat().st_size for sibling in path.parent.glob(path.name + "*"))
 
 
+def block_list(spec):
+    """argparse type for --value-facet-blocks: "15,20" -> [15, 20]."""
+    return [int(block) for block in spec.split(",")]
+
+
 def export_onnx(args):
     from graphs import FACET_BLOCKS, trace_to_onnx   # torch only enters here
 
     inputs, outputs = STAGE_IO[args.stage]
-    facet_blocks = [int(b) for b in args.value_facet_blocks.split(",")] if args.value_facet_blocks else FACET_BLOCKS
     out = onnx_path(args.out_dir, args.setting, args.stage, args.coarse, "fp32")
     out.parent.mkdir(parents=True, exist_ok=True)
     reference = reference_dir_for_onnx(out)
     produced = trace_to_onnx(out, reference, args.stage, args.coarse, args.setting, args.checkpoint,
                              args.roma2_repo, inputs, outputs, args.exporter,
-                             facet_blocks=facet_blocks, rope_cache=not args.no_rope_cache)
+                             facet_blocks=args.value_facet_blocks or FACET_BLOCKS,
+                             rope_cache=args.rope_cache)
     print(f"wrote {out} ({graph_size(out) / 1048576:.1f} MB including weights)", flush=True)
     print(f"wrote {reference}/ ({len(inputs)} inputs, {produced} eager fp32 outputs)", flush=True)
 
@@ -87,19 +92,26 @@ def main():
                     help="the RoMa v2 checkpoint to trace; a missing file is an error, never a pull")
     po.add_argument("--roma2-repo", default=DEFAULT_ROMA2_REPO,
                     help="checkout whose src/ provides the romav2 package")
-    po.add_argument("--value-facet-blocks",
-                    help="comma-separated 0-indexed backbone blocks the value_facets output taps "
+    po.add_argument("--value-facet-blocks", type=block_list,
+                    help="the two comma-separated 0-indexed backbone blocks the value_facets output taps "
                          "(default 15,20 — only a re-measurement should move these)")
     po.add_argument("--exporter", default="dynamo", choices=["dynamo", "torchscript"],
                     help="torchscript is the fallback if the dynamo capture drops the hook-captured facets")
-    po.add_argument("--no-rope-cache", action="store_true",
-                    help="recompute the RoPE sin/cos per block instead of memoising them per (H, W), which "
-                         "makes the graph carry one identical constant pair per block")
+    po.add_argument("--rope-cache", action="store_true",
+                    help="memoise the RoPE sin/cos per (H, W) instead of recomputing them per block, which "
+                         "lets the exporter fold them into one shared constant pair. Off by default: it "
+                         "saves 0.9 MB of 978 MB at turbo and moves value_facets by ~3e-6 relative")
 
     args = ap.parse_args()
-    if args.coarse and args.stage != "match":
-        ap.error("--coarse only applies to --stage match")
-    export_onnx(args)
+    if args.command == "onnx":
+        if args.coarse and args.stage != "match":
+            ap.error("--coarse only applies to --stage match")
+        if args.stage != "descriptor":
+            ap.error(f"--stage {args.stage} is not traced yet: the pair graph and its MatchWrap land with "
+                     f"the matching stage")
+        if args.value_facet_blocks and len(args.value_facet_blocks) != 2:
+            ap.error("--value-facet-blocks needs exactly two blocks: value_facets is [1, 2, G, G, C]")
+    {"onnx": export_onnx}[args.command](args)
 
 
 if __name__ == "__main__":
