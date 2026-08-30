@@ -246,6 +246,10 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 	Util::ensureValidFolderPath(OPT::strExportOpenMVGDir);
 	Util::ensureValidPath(OPT::strExportPairsCSV);
 	Util::ensureValidPath(OPT::strExportRetrievalCSV);
+	if (!OPT::strExportRetrievalCSV.empty() && (!OPT::bROMA2 || !OPT::bROMA2Retrieval)) {
+		LOG("error: --export-retrieval-csv needs --roma2 true and --roma2-retrieval true");
+		return false;
+	}
 	Util::ensureValidPath(OPT::strCompareMVS);
 	Util::ensureValidFolderPath(OPT::strROMA2Model);
 	if (OPT::bROMA2 && !RoMa2Onnx::IsAvailable()) {
@@ -261,9 +265,10 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		LOG("error: unknown ROMA2 execution provider '%s' (accepted: auto, cuda, coreml, dml, cpu)", OPT::strROMA2Provider.c_str());
 		return false;
 	}
-	if (OPT::bROMA2) {
-		// the library refuses this same condition inside Scene::MatchPairs (design decision 10);
-		// this early check just gives the hint before any feature extraction runs
+	if (OPT::bROMA2 && (OPT::bROMA2Retrieval || OPT::bROMA2Match)) {
+		// the library refuses this same condition inside Scene::MatchPairs (design decision 10),
+		// gated the same way (enabled && (useRetrieval || useMatching)), Scene.cpp:574; this early
+		// check just gives the hint before any feature extraction runs
 		ROMA2Config roma2Cfg;
 		roma2Cfg.modelPath = OPT::strROMA2Model;
 		if (roma2Cfg.ResolveModelPath().empty()) {
@@ -387,11 +392,11 @@ int main(int argc, LPCTSTR* argv)
 		VERBOSE("error: failed to export image pairs to CSV file %s", OPT::strExportPairsCSV.c_str());
 		return EXIT_FAILURE;
 	}
-	// Export global-descriptor retrieval rankings to CSV file
-	if (!OPT::strExportRetrievalCSV.empty() && !ExportRetrievalRankingsCSV(scene, MAKE_PATH_SAFE(OPT::strExportRetrievalCSV), 50)) {
-		VERBOSE("error: failed to export retrieval rankings to CSV file %s", OPT::strExportRetrievalCSV.c_str());
-		return EXIT_FAILURE;
-	}
+	// Export global-descriptor retrieval rankings to CSV file; this is an optional diagnostic (like
+	// the pose quality report above), so a failure to produce it must not abort the run and lose
+	// the primary outputs (the scene and the MVS export below)
+	if (!OPT::strExportRetrievalCSV.empty() && !ExportRetrievalRankingsCSV(scene, MAKE_PATH_SAFE(OPT::strExportRetrievalCSV), 50))
+		VERBOSE("warning: failed to export retrieval rankings to CSV file %s", OPT::strExportRetrievalCSV.c_str());
 	// Export MVS scene
 	if (!OPT::strOutputFileNameMVS.empty()) {
 		SFM::ExportMVSConfig cfg;
