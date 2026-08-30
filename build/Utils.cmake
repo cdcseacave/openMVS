@@ -642,7 +642,6 @@ macro(optimize_default_compiler_settings)
 		elseif(ENABLE_SSE)
 		  set(BUILD_EXTRA_FLAGS "${BUILD_EXTRA_FLAGS} /arch:SSE")
 		endif()
-		endif()
 	  endif()
 
 	  if(ENABLE_AVX)
