@@ -148,7 +148,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		return false;
 
 	// initialize optional options
-	Util::ensureValidFolderPath(OPT::strOutputFileName);
+	Util::ensureValidPath(OPT::strOutputFileName);
 	if (OPT::strOutputFileName.empty())
 		OPT::strOutputFileName = "scene" MVS_EXT;
 
