@@ -73,6 +73,8 @@ String strROMA2Setting;
 bool bROMA2Retrieval;
 bool bROMA2Match;
 unsigned nROMA2Slots;
+unsigned nROMA2SkipHealthy;
+unsigned nROMA2MaxReplace;
 String strROMA2RetrievalRecipe;
 String strROMA2Provider;
 float defaultFocalRatio;
@@ -164,6 +166,8 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("roma2-retrieval", boost::program_options::value<bool>(&OPT::bROMA2Retrieval)->default_value(true), "rank candidate pairs by the global descriptors instead of the vocabulary tree")
 		("roma2-match", boost::program_options::value<bool>(&OPT::bROMA2Match)->default_value(true), "dense-match every candidate pair and replace weaker descriptor matches")
 		("roma2-slots", boost::program_options::value(&OPT::nROMA2Slots)->default_value(64), "images kept resident on the device while dense matching (12.5 MB each at base)")
+		("roma2-skip-healthy", boost::program_options::value(&OPT::nROMA2SkipHealthy)->default_value(0), "round-1 dense matching: skip pairs that already have at least this many inliers (0 = warp every pair)")
+		("roma2-max-replace", boost::program_options::value(&OPT::nROMA2MaxReplace)->default_value(0), "round-1 dense matching: replace only pairs with fewer than this many inliers (0 = replace any weaker pair)")
 		("roma2-retrieval-recipe", boost::program_options::value<std::string>(&OPT::strROMA2RetrievalRecipe)->default_value("facets"), "global descriptor pooling: facets (value projections of blocks 15+20, 2048-D) or layers (GeM on the matcher's deepest layer, 1024-D, legacy)")
 		("roma2-provider", boost::program_options::value<std::string>(&OPT::strROMA2Provider)->default_value("auto"), "ONNX Runtime execution provider: auto (CUDA > CoreML > DirectML > CPU), cuda, coreml, dml or cpu")
 		("default-focal-ratio", boost::program_options::value(&OPT::defaultFocalRatio)->default_value(1.2f), "focal-length is set to ratio * max(width,height) for images with unknown focal-length")
@@ -331,6 +335,8 @@ int main(int argc, LPCTSTR* argv)
 	cfg.roma2Cfg.useRetrieval = OPT::bROMA2Retrieval;
 	cfg.roma2Cfg.useMatching = OPT::bROMA2Match;
 	cfg.roma2Cfg.slotBudget = OPT::nROMA2Slots;
+	cfg.roma2Cfg.skipHealthyInliers = OPT::nROMA2SkipHealthy;
+	cfg.roma2Cfg.maxReplaceInliers = OPT::nROMA2MaxReplace;
 	cfg.roma2Cfg.retrievalRecipe = (OPT::strROMA2RetrievalRecipe == "layers") ? RetrievalRecipe::LAYERS : RetrievalRecipe::FACETS;
 	cfg.roma2Cfg.provider = OPT::strROMA2Provider;
 	#ifdef _USE_CUDA

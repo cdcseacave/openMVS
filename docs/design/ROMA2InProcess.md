@@ -161,6 +161,11 @@ Design decision 6 (polycpp `ShouldReplaceROMA2Pair`, `pose_refine.cpp:506-509`,
 having ≥100 inliers and only replaces pairs with <15 (`feedbackSkipHealthyInliers=100`,
 `feedbackMaxReplaceInliers=15`).
 
+`--roma2-skip-healthy N` (default 0) and `--roma2-max-replace N` (default 0) expose the **round-1**
+half of that policy on the command line (`skipHealthyInliers` / `maxReplaceInliers`; the feedback
+round's 100/15 are not exposed), so `--roma2-skip-healthy 100 --roma2-max-replace 15` makes round 1
+fill only where descriptor matching is weak instead of warping and replacing every candidate.
+
 A guided pair only replaces or creates a scene pair when (`libs/SFM/MatchROMA2.cpp`,
 `ROMA2Warp.cpp:ApplyROMA2Pair`):
 
