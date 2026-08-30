@@ -11,15 +11,19 @@ reports, per capture:
                           engine emits bf16 and any fp32 consumer is bounded well below 100% here;
                           `CROSSCHECK.md` Step 3b measures that ceiling at 64.80% with the campaign's
                           own torch fp32 tensor, so a low number here says "bf16", not "wrong".
-  mean overlap            |top-K intersection| / K averaged over images -- the R14 gate (>= 95%).
-  top-10 Jaccard          the brief's Step-2 view of the same quantity at K = 10.
+  mean overlap            |top-K intersection| / K averaged over images -- the R14 gate (>= 95%)
+                          at its default K = 16 (`--top-k`).
+  Jaccard                 the brief's Step-2 view of the same quantity at K = 10 (`--jaccard-k`).
   Spearman                rank correlation over the pairs both top-50 lists contain, which sees the
                           ORDER of the tail the overlap percentages ignore.
   |dsim|                  absolute similarity difference on the pairs both lists contain, meaningful
                           only when the two sides pool the same recipe (the LAYERS arm).
 
-The top-K parsing and its tie-break are `roma2_onnx_crosscheck.engine_rankings`, so this script and
-the export's own cross-check read the engine's file identically.
+Both sides are read by the same `read_rankings` and truncated at the same K, under the tie-break
+`roma2_onnx_crosscheck.engine_rankings` uses -- descending similarity, ascending `idxB` -- so this
+script and the export's own cross-check rank the engine's file identically. That equivalence is
+checked against real data, not asserted: at the default K = 16 this script reproduces
+`CROSSCHECK.md` Step 3b's per-capture same-set and overlap percentages.
 
     python scripts/python/tests/compare_retrieval_rankings.py ~/megaloc-vs-dinov3-2026-08-28/captures.txt \
         --arm openmvs-roma2-20260830-roma2layers --out /tmp/compare.csv
@@ -33,12 +37,13 @@ from pathlib import Path
 
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from roma2_onnx_crosscheck import engine_rankings  # noqa: E402  (same directory)
-
 
 def read_rankings(path):
-    """{idxA: [(similarity, idxB)] descending} plus {idx: stem} if the file names its endpoints."""
+    """{idxA: [(similarity, idxB)] descending} plus {idx: stem} if the file names its endpoints.
+
+    The sort is `roma2_onnx_crosscheck.engine_rankings`' tie-break (descending similarity, then
+    ascending idxB), which is also `score_retrieval.py`'s, so the three agree on ties.
+    """
     ranked = defaultdict(list)
     stems = {}
     with Path(path).open() as handle:
@@ -70,14 +75,20 @@ def spearman(a, b):
     return float(np.corrcoef(ra, rb)[0, 1])
 
 
+def top_lists(ranked, k):
+    """{idxA: [idxB] * k} -- the first k of each already-sorted list."""
+    return {a: [b for _, b in values[:k]] for a, values in ranked.items()}
+
+
 def compare(engine_csv, mine_csv, images_csv, top_k, jaccard_k):
-    engine_top = engine_rankings(engine_csv)          # {idxA: [idxB] * 16}, the crosscheck's tie-break
     engine_full, _ = read_rankings(engine_csv)
     mine_full, mine_stems = read_rankings(mine_csv)
+    # BOTH sides truncated at the same K, so --top-k moves the numbers and not only the label
+    engine_top = top_lists(engine_full, top_k)
 
     # the two index spaces must be the same scene order or every number below is noise
     mismatched = []
-    if images_csv and mine_stems:
+    if images_csv and Path(images_csv).is_file() and mine_stems:
         engine_stems = read_engine_stems(images_csv)
         for idx, stem in sorted(mine_stems.items()):
             if idx in engine_stems and engine_stems[idx] != stem:
@@ -129,7 +140,8 @@ def main():
     ap.add_argument("--engine-run", default="roma2_power_2026-08-28")
     ap.add_argument("--engine-dump", default="selection_dump/round1",
                     help="dump directory under the engine run (round1 and oneround are identical)")
-    ap.add_argument("--top-k", type=int, default=16, help="the R14 gate's K")
+    ap.add_argument("--top-k", type=int, default=16,
+                    help="K for the set/order/overlap columns; the R14 gate is K = 16")
     ap.add_argument("--jaccard-k", type=int, default=10, help="the brief's Step-2 K")
     ap.add_argument("--min-overlap", type=float, default=95.0, help="the R14 gate, in percent")
     ap.add_argument("--out", type=Path, help="write the per-capture rows to this CSV (and .json)")
@@ -145,6 +157,10 @@ def main():
             continue
         if not (dump / "retrieval_rankings.csv").is_file():
             print(f"skip {capture.name[:8]}: no {dump}/retrieval_rankings.csv")
+            continue
+        if not (dump / "images.csv").is_file():
+            print(f"skip {capture.name[:8]}: no {dump}/images.csv, so the index spaces of the two "
+                  f"rankings cannot be checked against the image stems")
             continue
         row, mismatched = compare(dump / "retrieval_rankings.csv", mine_csv,
                                   dump / "images.csv", args.top_k, args.jaccard_k)
