@@ -139,6 +139,13 @@ bool TripletStarInitTest();
 bool HEIFMetadataTest();
 #endif
 
+// Import determinism: repeated Scene::Import of the bundled 2 JPG + 2 HEIC folder, with the
+// metadata loop running in parallel, must yield finite/positive focals, finite/non-negative
+// sensor sizes, and the very same per-image cameras and camera count every time; then the same
+// per-file read once more on a deliberately dirtied stack, which is what pins the metadata to
+// the file rather than to whatever the process did before it
+bool ImportMetadataDeterminismTest();
+
 // Pose-frame detection: recover both the camera-axes convention and, for EXIF-rotated images,
 // the in-plane rotation of an imported frames.json from the matched pairs
 bool FramesPoseFrameDetectionTest();

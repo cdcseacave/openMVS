@@ -170,6 +170,9 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 		} else if (std::atoi(argv[1]) == 1) {
 			// Run SFM smoke tests
+			// import is the pipeline's first stage, and every test below starts with one
+			if (!SFM::ImportMetadataDeterminismTest())
+				return false;
 			if (!SFM::TestSimilarityTransform())
 				return false;
 			if (!SFM::KnownPosesImportTest())

@@ -154,6 +154,13 @@ bool Image::LoadMetadata(float defaultFocalRatio)
 	// item, exposed by GetMetadataEXIF()) and fall back to the classic stream-based scan
 	// (JPEG/TIFF-style APP1 segment) used by every other format
 	TinyEXIF::EXIFInfo exif;
+	// TinyEXIF's default constructor initializes only 'Fields': every scalar member is left with
+	// whatever was on the stack, and parseFromEXIFSegment() -- unlike parseFrom(), which starts
+	// with a clear() -- fills in the tags the file carries and leaves the rest alone. So the
+	// container path below has to clear the record itself, or a file without, say, the
+	// focal-plane resolution tags reports whatever the previous work at this stack depth left
+	// there, and the intrinsics derived from it change from run to run.
+	exif.clear();
 	bool parsed = false, containerOriented = false;
 	std::vector<uint8_t> blob;
 	if (pImage->GetMetadataEXIF(blob)) {
@@ -244,6 +251,26 @@ bool Image::LoadMetadata(float defaultFocalRatio)
 				setFromFocalAndSensor = true;
 				trustIntrinsics = true;
 			}
+			// Nothing validates EXIF: a corrupt tag (a resolution of a denormal, a width that
+			// overflows the int cast above) arrives here as a number no camera can carry, and
+			// the sensor size in particular is never used in arithmetic afterwards, only as part
+			// of the key Scene::Import clusters cameras by -- so a non-finite one silently splits
+			// a shared camera instead of failing anything. The same test also catches merely
+			// incomplete metadata (a FocalPlaneYResolution without an X, say), which otherwise
+			// leaves half a sensor size behind for a focal that came from another source. Drop
+			// everything this branch derived and let the ladder fall through to the sources below.
+			if (!setFromFocalAndSensor || !ISFINITE(fx) || !ISFINITE(fy) ||
+				!ISFINITE(sensorWmm) || !ISFINITE(sensorHmm) || fx <= 0 || fy <= 0 ||
+				sensorWmm < 0 || sensorHmm < 0)
+			{
+				VERBOSE("warning: image '%s' has incomplete or unusable EXIF focal-plane metadata "
+					"(focal %g x %g px, sensor %g x %g mm); ignoring it",
+					Util::getFileName(fileName).c_str(), fx, fy, sensorWmm, sensorHmm);
+				fx = fy = 0;
+				sensorWmm = sensorHmm = 0;
+				setFromFocalAndSensor = false;
+				trustIntrinsics = false;
+			}
 		}
 		// F2: 35mm equivalent
 		if (!setFromFocalAndSensor && exif.LensInfo.FocalLengthIn35mm > 0.0) {
@@ -253,13 +280,26 @@ bool Image::LoadMetadata(float defaultFocalRatio)
 			//    Diagonal distance of image area on the image sensor of the DSC)
 			// see: https://en.wikipedia.org/wiki/35_mm_equivalent_focal_length
 			const REAL diagonal = SQRT(SQUARE((REAL)w) + SQUARE((REAL)h));
-			fx = fy = diagonal * exif.LensInfo.FocalLengthIn35mm / REAL(43.27);
-			trustIntrinsics = true;
+			const REAL focal = diagonal * exif.LensInfo.FocalLengthIn35mm / REAL(43.27);
+			if (ISFINITE(focal) && focal > 0) {
+				fx = fy = focal;
+				trustIntrinsics = true;
+			} else {
+				VERBOSE("warning: image '%s' has an unusable EXIF 35mm-equivalent focal length "
+					"(%g mm); ignoring it", Util::getFileName(fileName).c_str(), exif.LensInfo.FocalLengthIn35mm);
+			}
 		}
 		// F3: Calibration focal in pixels (if present)
 		if ((fx <= 0.f || fy <= 0.f) && exif.Calibration.FocalLength > 0.0) {
-			fx = fy = (REAL)exif.Calibration.FocalLength;
-			trustIntrinsics = true;
+			// the test above already rejects a NaN or negative calibration focal; infinity is
+			// what is left to catch
+			if (ISFINITE(exif.Calibration.FocalLength)) {
+				fx = fy = (REAL)exif.Calibration.FocalLength;
+				trustIntrinsics = true;
+			} else {
+				VERBOSE("warning: image '%s' has an unusable EXIF calibration focal length "
+					"(%g px); ignoring it", Util::getFileName(fileName).c_str(), exif.Calibration.FocalLength);
+			}
 		}
 	}
 	// F4: fallback

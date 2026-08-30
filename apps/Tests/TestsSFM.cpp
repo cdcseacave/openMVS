@@ -404,6 +404,233 @@ bool HEIFMetadataTest()
 #endif // _IMAGE_HEIF
 
 
+// Every field Scene::Import's camera clustering (step 2c) builds its key from, in one string, so
+// that two imports grouping the images differently show up as a plain textual difference naming
+// the image that moved.
+static String ImportCameraSignature(const Camera& camera)
+{
+	String signature = CameraTypeToString(camera.GetType()) +
+		String::FormatString("|%dx%d", camera.GetWidth(), camera.GetHeight());
+	if (camera.GetType() == CameraType::PINHOLE) {
+		const PinholeCamera& pinhole = static_cast<const PinholeCamera&>(camera);
+		signature += String::FormatString("|%.9g|%.9g|%.9g|%.9g", pinhole.fx, pinhole.fy, pinhole.cx, pinhole.cy);
+		signature += String::FormatString("|%.9g|%.9g|%.9g|%.9g|%.9g|%.9g", pinhole.k1, pinhole.k2, pinhole.k3, pinhole.p1, pinhole.p2, pinhole.k4);
+		signature += String::FormatString("|%.9g|%.9g", pinhole.k5, pinhole.k6);
+	}
+	signature += camera.TrustIntrinsics() ? "|trusted" : "|untrusted";
+	signature += "|" + camera.metadata.name + "|" + camera.metadata.model;
+	signature += String::FormatString("|%.9g|%.9g", camera.metadata.sensorWidth, camera.metadata.sensorHeight);
+	return signature;
+}
+
+// Everything Image::LoadMetadata derives from EXIF but does *not* put on the camera, in one
+// string. These are the fields that tell a cleared EXIF record from an uncleared one whatever
+// the focal ladder does with the focal-plane tags: TinyEXIF's clear() parks the geolocation at
+// DBL_MAX, which is the sentinel hasAltitude()/hasOrientation()/hasAccuracy() read, and zeroes
+// the exposure/ISO the caller copies out unconditionally -- so on a file that carries none of
+// those tags an uncleared record reports them as present, with whatever value was on the stack.
+static String ImportImageMetadataSignature(const SFM::Image& image)
+{
+	String signature = String::FormatString("rot %d|gps %d", (int)image.View::metadata.rotated,
+		(int)image.View::metadata.HasGPS());
+	signature += String::FormatString("|latlon %.9g,%.9g|alt %.9g", image.View::metadata.latitude,
+		image.View::metadata.longitude, image.View::metadata.altitude);
+	signature += String::FormatString("|acc %.9g,%.9g,%.9g", image.View::metadata.positionAccuracy,
+		image.View::metadata.positionAccuracyZ, image.View::metadata.rotationAccuracy);
+	signature += String::FormatString("|ypr %.9g,%.9g,%.9g", image.View::metadata.yawDeg,
+		image.View::metadata.pitchDeg, image.View::metadata.rollDeg);
+	signature += String::FormatString("|orient %u|iso %u|exp %.9g", (unsigned)image.metadata.orientation,
+		(unsigned)image.metadata.ISO, image.metadata.exposureTime);
+	signature += "|date " + image.metadata.dateTimeOriginal;
+	return signature;
+}
+
+// Fill the stack just below the caller with a repeating 8-byte pattern, so that the next call
+// made by the caller runs on known-dirty memory. An uninitialized read is invisible on a stack
+// that happens to still hold zeros -- the value picked up has to look like a *plausible* field
+// before the reader reacts to it -- which is exactly why the bug below only surfaced in a process
+// that had done a lot of other work first. Both patterns used here therefore read as a valid EXIF
+// FocalPlaneResolutionUnit code (2 = inch, 5 = um) taken as an integer, and as a small positive
+// denormal taken as a double -- neither of which is any sentinel TinyEXIF's clear() installs.
+// Out of line, and stored through a volatile array, on purpose: inlined, the slab would sit in
+// the caller's own frame, i.e. *above* everything the next call pushes, and the stores into a
+// buffer nobody reads would be dropped.
+// Note this cannot work under ASan with detect_stack_use_after_return=1: the slab is then placed
+// in a heap-allocated fake frame that the next call does not reuse, so the poisoned half of the
+// test passes vacuously -- a green run of it under that option is not evidence.
+#ifdef _MSC_VER
+#define TESTS_NOINLINE __declspec(noinline)
+#else
+#define TESTS_NOINLINE __attribute__((noinline))
+#endif
+static TESTS_NOINLINE void PoisonStackBelow(uint64_t pattern)
+{
+	constexpr size_t numWords = 8*1024; // 64 KB, far deeper than any metadata reader goes
+	uint64_t slab[numWords];
+	volatile uint64_t* const words = slab;
+	for (size_t i = 0; i < numWords; ++i)
+		words[i] = pattern;
+}
+
+// The EXIF ladder of Image::LoadMetadata must end in usable numbers whatever the file carries:
+// a non-finite or non-positive focal poisons every projection downstream, and a non-finite
+// sensor size stays invisible until it changes the camera key. 'context' names the read.
+static bool CheckImportedCameraValues(const Camera& camera, const String& fileName, const String& context)
+{
+	if (camera.GetType() == CameraType::PINHOLE) {
+		const PinholeCamera& pinhole = static_cast<const PinholeCamera&>(camera);
+		if (!ISFINITE(pinhole.fx) || !ISFINITE(pinhole.fy) || pinhole.fx <= 0 || pinhole.fy <= 0) {
+			VERBOSE("ERROR: ImportMetadataDeterminismTest: %s: image '%s' has an unusable focal length: fx %g, fy %g",
+				context.c_str(), Util::getFileName(fileName).c_str(), pinhole.fx, pinhole.fy);
+			return false;
+		}
+	}
+	if (!ISFINITE(camera.metadata.sensorWidth) || !ISFINITE(camera.metadata.sensorHeight) ||
+		camera.metadata.sensorWidth < 0 || camera.metadata.sensorHeight < 0)
+	{
+		VERBOSE("ERROR: ImportMetadataDeterminismTest: %s: image '%s' has an unusable sensor size: %g x %g mm",
+			context.c_str(), Util::getFileName(fileName).c_str(),
+			camera.metadata.sensorWidth, camera.metadata.sensorHeight);
+		return false;
+	}
+	return true;
+}
+
+// Import metadata determinism: Scene::Import reads every image's header and EXIF in step 2a and
+// then groups the images into shared cameras by an exact-match key in step 2c, so anything the
+// metadata reader picks up that does not come out of the file changes the *scene* rather than
+// failing the import. That is what happened to the two bundled HEICs: the container-EXIF path
+// left the EXIF fields the file does not carry uninitialized, and once the leftovers happened to
+// look like focal-plane resolutions the derived sensor size came out inf, split the camera the
+// four images otherwise share, and moved everything a later stage reads per camera (the
+// view-graph calibrator first). So this checks two things on the bundled 2 JPG + 2 HEIC folder:
+// repeated imports produce identical cameras, metadata and camera counts, and a single read
+// produces the same of all three even on a stack deliberately filled with plausible-looking
+// leftovers.
+bool ImportMetadataDeterminismTest()
+{
+	TD_TIMER_START();
+
+	// LoadMetadata reads headers and EXIF only, no pixels, so the whole loop stays well inside a
+	// second; it is the repetition that would catch anything drifting over a long-lived process
+	constexpr unsigned numIterations = 200;
+	constexpr unsigned numBundledImages = 4; // 2 JPG + 2 HEIC in apps/Tests/data/images
+	CLISTDEF2(String) referenceSignatures, referenceMetadata, referenceFileNames;
+	IIndex referenceNumCameras = 0;
+	for (unsigned iteration = 0; iteration < numIterations; ++iteration) {
+		// more than one thread, so the import loop really runs in parallel: Scene's constructor
+		// is what sizes the OpenMP team
+		Scene scene(4);
+		const ImportConfig importCfg;
+		if (!scene.Import(MAKE_PATH("images"), importCfg)) {
+			VERBOSE("ERROR: ImportMetadataDeterminismTest: Import failed at iteration %u", iteration);
+			return false;
+		}
+		CLISTDEF2(String) signatures, metadata;
+		FOREACH(idxImage, scene.images) {
+			const SFM::Image& image = scene.images[idxImage];
+			if (!image.HasCamera()) {
+				VERBOSE("ERROR: ImportMetadataDeterminismTest: iteration %u: image %u ('%s') has no camera",
+					iteration, idxImage, Util::getFileName(image.fileName).c_str());
+				return false;
+			}
+			const Camera& camera = *image.pCamera;
+			if (!CheckImportedCameraValues(camera, image.fileName, String::FormatString("iteration %u", iteration)))
+				return false;
+			signatures.emplace_back(ImportCameraSignature(camera));
+			metadata.emplace_back(ImportImageMetadataSignature(image));
+		}
+		if (iteration == 0) {
+			// a build that cannot read one of the formats, or a lost fixture, would otherwise
+			// make every comparison below trivially true
+			if (signatures.size() != numBundledImages) {
+				VERBOSE("ERROR: ImportMetadataDeterminismTest: imported %u images with a camera, expected %u",
+					(unsigned)signatures.size(), numBundledImages);
+				return false;
+			}
+			referenceSignatures = signatures;
+			referenceMetadata = metadata;
+			referenceNumCameras = scene.cameras.size();
+			FOREACH(idxImage, scene.images)
+				referenceFileNames.emplace_back(scene.images[idxImage].fileName);
+			continue;
+		}
+		if (signatures.size() != referenceSignatures.size()) {
+			VERBOSE("ERROR: ImportMetadataDeterminismTest: iteration %u imported %u images, iteration 0 imported %u",
+				iteration, (unsigned)signatures.size(), (unsigned)referenceSignatures.size());
+			return false;
+		}
+		FOREACH(idxImage, signatures) {
+			if (signatures[idxImage] != referenceSignatures[idxImage]) {
+				VERBOSE("ERROR: ImportMetadataDeterminismTest: iteration %u: image %u camera changed:\n  %s\n  %s (iteration 0)",
+					iteration, idxImage, signatures[idxImage].c_str(), referenceSignatures[idxImage].c_str());
+				return false;
+			}
+			if (metadata[idxImage] != referenceMetadata[idxImage]) {
+				VERBOSE("ERROR: ImportMetadataDeterminismTest: iteration %u: image %u metadata changed:\n  %s\n  %s (iteration 0)",
+					iteration, idxImage, metadata[idxImage].c_str(), referenceMetadata[idxImage].c_str());
+				return false;
+			}
+		}
+		if (scene.cameras.size() != referenceNumCameras) {
+			VERBOSE("ERROR: ImportMetadataDeterminismTest: iteration %u clustered %u cameras, iteration 0 clustered %u",
+				iteration, (unsigned)scene.cameras.size(), (unsigned)referenceNumCameras);
+			return false;
+		}
+	}
+
+	// The loop above only sees the leftovers the import itself keeps putting on the stack, which
+	// repeat; the original failure needed leftovers from *other* work, which is why it took a full
+	// pipeline run to show. So read each file's metadata once more on a stack deliberately filled
+	// with a plausible-looking pattern, twice with two different patterns: what a file yields must
+	// depend on the file alone, so both must reproduce what the imports above agreed on.
+	// Nothing may run between the poison and the read -- the reader's frames have to land on the
+	// pattern -- hence the bare call sequence below.
+	// Note which comparison is the load-bearing one here. The camera is *not*: the focal-plane
+	// guard in LoadMetadata drops a branch that derived nothing usable, so even with the record
+	// left uncleared the camera falls through to the 35mm-equivalent source and comes out
+	// byte-identical. It is the metadata signature -- the geolocation presence sentinels, the
+	// exposure/ISO copied out unconditionally -- that the guard does not and should not touch,
+	// and that therefore goes red the moment the clear() is dropped.
+	FOREACH(idxFile, referenceFileNames) {
+		const String& fileName = referenceFileNames[idxFile];
+		for (unsigned pattern = 0; pattern < 2; ++pattern) {
+			SFM::Image probe(idxFile, fileName);
+			PoisonStackBelow(pattern ? 0x0000000500000005ull : 0x0000000200000002ull);
+			if (!probe.LoadMetadata() || !probe.HasCamera()) {
+				VERBOSE("ERROR: ImportMetadataDeterminismTest: LoadMetadata failed for '%s' on a poisoned stack",
+					Util::getFileName(fileName).c_str());
+				return false;
+			}
+			if (!CheckImportedCameraValues(*probe.pCamera, fileName, String::FormatString("poisoned stack, pattern %u", pattern)))
+				return false;
+			// exact-match clustering means the shared camera carries the key of each image that
+			// joined it, so the imported signature is what a single read must reproduce
+			const String signature = ImportCameraSignature(*probe.pCamera);
+			if (signature != referenceSignatures[idxFile]) {
+				VERBOSE("ERROR: ImportMetadataDeterminismTest: '%s' read on a poisoned stack (pattern %u) "
+					"gives a different camera:\n  %s\n  %s (imported)", Util::getFileName(fileName).c_str(),
+					pattern, signature.c_str(), referenceSignatures[idxFile].c_str());
+				return false;
+			}
+			const String metadata = ImportImageMetadataSignature(probe);
+			if (metadata != referenceMetadata[idxFile]) {
+				VERBOSE("ERROR: ImportMetadataDeterminismTest: '%s' read on a poisoned stack (pattern %u) "
+					"gives different metadata:\n  %s\n  %s (imported)", Util::getFileName(fileName).c_str(),
+					pattern, metadata.c_str(), referenceMetadata[idxFile].c_str());
+				return false;
+			}
+		}
+	}
+
+	VERBOSE("ImportMetadataDeterminismTest: %u imports of %u images, %u cameras each (%s)",
+		numIterations, (unsigned)referenceSignatures.size(), (unsigned)referenceNumCameras,
+		TD_TIMER_GET_FMT().c_str());
+	return true;
+} // ImportMetadataDeterminismTest
+/*----------------------------------------------------------------*/
+
+
 // Pose-frame detection: a frames.json declares neither the camera axes it uses nor, for an
 // EXIF-rotated image, how much in-plane rotation separates its camera frame from the working
 // raster (1 quarter turn for the on-disk portrait raster, 2 for the sensor-native landscape one
@@ -1415,11 +1642,13 @@ static ROMA2PairSummaries SummarizePairs(const Scene& scene)
 // have to reuse a buffer/slot mid-pass at least once (nThreads=1 -> 2 buffers < 4 images;
 // slotBudget=2 -> 8 loads for the 6 pairs of 4 images, i.e. 4 reloads); the pairwise-distinctness
 // check below, and the pair checks, are what would catch a stale-buffer or stale-slot bug.
-// bViewGraphCalibration turns off the post-matching view-graph calibration, which the
-// determinism runs need off: it optimizes one focal length per camera and then recomputes every
-// relative pose from it, so its result depends on how Scene::Import grouped the images into
-// cameras -- and that grouping is not stable in this build (an intermittent EXIF sensor-size
-// parse of one of the two HEIC images yields inf/-inf and splits the shared camera in two).
+// bViewGraphCalibration turns off the post-matching view-graph calibration, which these runs
+// keep off: it optimizes one focal length per camera and then recomputes every relative pose from
+// it, so its result depends on how Scene::Import grouped the images into cameras, and that is one
+// more moving part between two runs that are compared pair by pair. (The grouping itself is now
+// stable: the intermittent EXIF sensor-size parse that used to yield inf/-inf on one of the two
+// HEIC images and split the shared camera was an uninitialized read in the container-EXIF path of
+// Image::LoadMetadata, fixed there and pinned by ImportMetadataDeterminismTest.)
 // With it off, the stored pairs are exactly what the matching produced.
 static bool ROMA2ReconstructScene(Scene& scene, const String& setting, const String& provider,
 	RetrievalRecipe recipe, int expectedDim, bool bUseMatching, unsigned slotBudget,
@@ -1593,10 +1822,12 @@ bool ROMA2ReconstructTest()
 	// against the guided run below isolates exactly what the warps changed. Both runs keep the
 	// view-graph calibration off, like the determinism runs and for the same reason: it re-solves
 	// a focal per camera and then re-filters every pair's inliers through it (Scene.cpp:604-613),
-	// so the intermittent import camera split (see ROMA2ReconstructScene) would move inlier counts
-	// on its own -- and inlier counts are exactly what the "the dense pass changed something"
-	// assertion below reads. With it off, a pair that grew can only have grown because a warp
-	// replaced it.
+	// so how the import grouped the images into cameras would move inlier counts on its own --
+	// and inlier counts are exactly what the "the dense pass changed something" assertion below
+	// reads. (The grouping no longer varies between runs: the intermittent import camera split
+	// that originally forced this choice was an uninitialized read in Image::LoadMetadata's
+	// container-EXIF path, fixed there and pinned by ImportMetadataDeterminismTest.) With the
+	// calibration off, a pair that grew can only have grown because a warp replaced it.
 	ROMA2PairSummaries baseline;
 	{
 		Scene scene(2);
