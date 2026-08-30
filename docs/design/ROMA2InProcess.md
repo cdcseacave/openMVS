@@ -39,6 +39,13 @@ validation captures when the intrinsics are self-calibrated (see Limitations, an
 | `--roma2-max-replace N` | `0` | round 1: replace only pairs below N inliers |
 | `--export-retrieval-csv F` | — | per-image retrieval rankings (needs `--roma2-retrieval`) |
 
+`--export-retrieval-csv` and `--export-pairs-csv` are both written by `Scene::Reconstruct()` right
+after pair matching (`ReconstructionConfig::exportRetrievalCSV`/`exportPairsCSV`), before any
+reconstruction step (largest-connected-component clustering, weak-image filtering, resection) can
+drop pairs or leave images unregistered — the CSVs describe the matched scene, not whatever
+reconstruction happened to keep. A failed export only logs a warning and never fails the
+reconstruction, whose primary output is the scene itself.
+
 No new `MatchMode`: everything downstream of pair ranking is backend-agnostic, and the
 VOCABULARY→EXHAUSTIVE small-scene remap and the KNOWN_POSES unposed-image fallback keep working
 unchanged. The in-process integration replaces the earlier NPZ-based ROMA2 import outright (deleted:

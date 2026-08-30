@@ -149,8 +149,8 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("known-poses-convention", boost::program_options::value<std::string>(&OPT::strKnownPosesConvention), "camera-axes convention of the poses in a frames.json: arkit|opencv (default: auto-detect)")
 		("import-openmvg-dir", boost::program_options::value<std::string>(&OPT::strImportOpenMVGDir), "import OpenMVG features from directory (optional)")
 		("export-openmvg-dir", boost::program_options::value<std::string>(&OPT::strExportOpenMVGDir), "export OpenMVG features to directory (optional)")
-		("export-pairs-csv", boost::program_options::value<std::string>(&OPT::strExportPairsCSV), "export image pairs to CSV file (optional)")
-		("export-retrieval-csv", boost::program_options::value<std::string>(&OPT::strExportRetrievalCSV), "export the per-image global-descriptor retrieval rankings to CSV file (optional)")
+		("export-pairs-csv", boost::program_options::value<std::string>(&OPT::strExportPairsCSV), "export image pairs to CSV file (written right after matching, before reconstruction) (optional)")
+		("export-retrieval-csv", boost::program_options::value<std::string>(&OPT::strExportRetrievalCSV), "export the per-image global-descriptor retrieval rankings to CSV file (written right after matching, before reconstruction) (optional)")
 		("compare-mvs", boost::program_options::value<std::string>(&OPT::strCompareMVS), "compare reconstruction against ground-truth MVS file (optional)")
 		("max-features-per-cell", boost::program_options::value(&OPT::nMaxFeaturesPerCell)->default_value(3000), "maximum features per grid cell (3x3 grid)")
 		("min-features-per-cell", boost::program_options::value(&OPT::nMinFeaturesPerCell)->default_value(500), "minimum features per cell before adjusting sensitivity")
@@ -348,6 +348,9 @@ int main(int argc, LPCTSTR* argv)
 	cfg.roma2Cfg.useGPU = !SEACAVE::CUDA::isCpuRequested(SEACAVE::CUDA::desiredDeviceIDs);
 	#endif
 	cfg.matchImagesOnly = OPT::matchImagesOnly;
+	// written by Scene::Reconstruct() right after pair matching (see ReconstructionConfig)
+	cfg.exportPairsCSV = OPT::strExportPairsCSV.empty() ? String() : MAKE_PATH_SAFE(OPT::strExportPairsCSV);
+	cfg.exportRetrievalCSV = OPT::strExportRetrievalCSV.empty() ? String() : MAKE_PATH_SAFE(OPT::strExportRetrievalCSV);
 	cfg.viewgraphCfg.maxTwoViewError = 0; // disable pair filtering after ViewGraph calibration
 	cfg.useGlobalSolver = OPT::bUseGlobalSolver;
 	cfg.thAlignGPS = OPT::thAlignGPS;
@@ -397,16 +400,9 @@ int main(int argc, LPCTSTR* argv)
 	// the run and lose the primary outputs (the scene and the MVS export below)
 	if (!OPT::strExportPoseQuality.empty() && !ExportPoseUncertaintyCSV(MAKE_PATH_SAFE(OPT::strExportPoseQuality), scene))
 		VERBOSE("warning: failed to export pose quality report to CSV file %s", OPT::strExportPoseQuality.c_str());
-	// Export image pairs to CSV file
-	if (!OPT::strExportPairsCSV.empty() && !PairsMatcher::ExportPairsCSV(scene, MAKE_PATH_SAFE(OPT::strExportPairsCSV), 3.f)) {
-		VERBOSE("error: failed to export image pairs to CSV file %s", OPT::strExportPairsCSV.c_str());
-		return EXIT_FAILURE;
-	}
-	// Export global-descriptor retrieval rankings to CSV file; this is an optional diagnostic (like
-	// the pose quality report above), so a failure to produce it must not abort the run and lose
-	// the primary outputs (the scene and the MVS export below)
-	if (!OPT::strExportRetrievalCSV.empty() && !ExportRetrievalRankingsCSV(scene, MAKE_PATH_SAFE(OPT::strExportRetrievalCSV), 50))
-		VERBOSE("warning: failed to export retrieval rankings to CSV file %s", OPT::strExportRetrievalCSV.c_str());
+	// note: --export-pairs-csv / --export-retrieval-csv are written by Scene::Reconstruct()
+	// right after pair matching (see ReconstructionConfig::exportPairsCSV/exportRetrievalCSV),
+	// not here, so they describe the matched scene rather than whatever reconstruction kept
 	// Export MVS scene
 	if (!OPT::strOutputFileNameMVS.empty()) {
 		SFM::ExportMVSConfig cfg;

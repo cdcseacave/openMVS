@@ -74,6 +74,11 @@ struct SFM_API ReconstructionConfig {
 	MatchConfig matchCfg;
 	bool matchImagesOnly{false}; // only match image pairs and save scene without reconstruction
 
+	// Diagnostics CSVs written right after pair matching, before any reconstruction step can
+	// drop images or pairs (empty = no export)
+	String exportPairsCSV;
+	String exportRetrievalCSV;
+
 	// View graph calibration parameters
 	ViewGraphCalibratorConfig viewgraphCfg;
 

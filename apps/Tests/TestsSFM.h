@@ -155,6 +155,11 @@ bool TwoViewTest();
 // Reconstruction test: Import images, extract features, match pairs, build tracks, and initialize
 bool ReconstructTest(bool verbose = false);
 
+// Task 1 (roma2-followups-20260830): --export-pairs-csv is written by Scene::Reconstruct()
+// right after pair matching, from both call sites (fresh import + match, and an already-matched
+// .sfm given back as source), before any reconstruction step can drop pairs
+bool ReconstructExportCSVTest();
+
 // Test function for rotation estimation
 bool RotationEstimatorTest();
 

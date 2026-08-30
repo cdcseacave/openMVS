@@ -4736,6 +4736,94 @@ bool ReconstructTest(bool verbose)
 	return true;
 }
 
+// Task 1 (roma2-followups-20260830): Scene::Reconstruct() must write the --export-pairs-csv /
+// --export-retrieval-csv diagnostics right after pair matching, before any later reconstruction
+// step (largest-connected-component clustering, weak-image filtering, resection) can drop pairs
+// or leave images unregistered. Runs match-images-only mode on the bundled 4-image scene (fast,
+// and it is exactly the scenario the two Scene::Reconstruct() export call sites cover):
+// (a) fresh import + match, right after MatchPairs() succeeds and before the matchImagesOnly
+//     early return;
+// (b) an already-matched .sfm given back as source, which takes the "scene already matched
+//     after import" early return that never calls MatchPairs() again.
+// This tiny scene never triggers SceneCluster::SplitScene (well under the default
+// 200-image cluster threshold) and match-images-only mode stops before any reconstruction step
+// runs, so scene.pairs is never touched after matching -- the exported CSV row count is checked
+// against scene.pairs.size() right after Reconstruct() returns, rather than against a count
+// captured separately right after matching.
+bool ReconstructExportCSVTest()
+{
+	TD_TIMER_START();
+	const ScopedTempDir tmpDir(_T("ReconstructExportCSVTest"));
+	if (!tmpDir.IsValid())
+		return false;
+
+	auto countCSVLines = [](const String& path) -> int {
+		std::ifstream ifs(path);
+		if (!ifs.is_open())
+			return -1;
+		int numLines = 0;
+		std::string line;
+		while (std::getline(ifs, line))
+			++numLines;
+		return numLines;
+	};
+
+	// (a) fresh import + match
+	Scene scene(2);
+	ReconstructionConfig cfg;
+	cfg.featuresCfg.detectorType = FeatureType::AKAZE;
+	cfg.featuresCfg.maxFeaturesPerCell = 900;
+	cfg.featuresCfg.minFeaturesPerCell = 400;
+	cfg.matchCfg.mode = MatchConfig::EXHAUSTIVE;
+	cfg.matchCfg.DefaultsForFeatureType(cfg.featuresCfg.detectorType);
+	cfg.matchImagesOnly = true;
+	const String pairsCsvA = tmpDir(_T("pairs_a.csv"));
+	cfg.exportPairsCSV = pairsCsvA;
+	if (!scene.Reconstruct(MAKE_PATH("images"), cfg)) {
+		VERBOSE("ReconstructExportCSVTest FAILED: Reconstruct (fresh import) failed");
+		return false;
+	}
+	if (scene.pairs.empty()) {
+		VERBOSE("ReconstructExportCSVTest FAILED: no pairs matched");
+		return false;
+	}
+	const int numLinesA = countCSVLines(pairsCsvA);
+	if (numLinesA != (int)scene.pairs.size() + 1) {
+		VERBOSE("ReconstructExportCSVTest FAILED: pairs CSV (a) has %d lines, expected %u matched pairs + 1 header",
+			numLinesA, (unsigned)scene.pairs.size());
+		return false;
+	}
+
+	// (b) an already-matched .sfm given as source must still export, from the early-return
+	// branch that never calls MatchPairs() again
+	const String sfmPath = tmpDir(_T("matched.sfm"));
+	if (!scene.Save(sfmPath)) {
+		VERBOSE("ReconstructExportCSVTest FAILED: cannot save matched scene '%s'", sfmPath.c_str());
+		return false;
+	}
+	Scene scene2(2);
+	ReconstructionConfig cfg2 = cfg;
+	const String pairsCsvB = tmpDir(_T("pairs_b.csv"));
+	cfg2.exportPairsCSV = pairsCsvB;
+	if (!scene2.Reconstruct(sfmPath, cfg2)) {
+		VERBOSE("ReconstructExportCSVTest FAILED: Reconstruct (already-matched .sfm source) failed");
+		return false;
+	}
+	if (!scene2.status.nState.isSet(Scene::Status::STATE::MATCHED)) {
+		VERBOSE("ReconstructExportCSVTest FAILED: reloaded scene is not MATCHED");
+		return false;
+	}
+	const int numLinesB = countCSVLines(pairsCsvB);
+	if (numLinesB != (int)scene2.pairs.size() + 1) {
+		VERBOSE("ReconstructExportCSVTest FAILED: pairs CSV (b) has %d lines, expected %u matched pairs + 1 header",
+			numLinesB, (unsigned)scene2.pairs.size());
+		return false;
+	}
+
+	VERBOSE("ReconstructExportCSVTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
 // Test function for rotation estimation
 bool RotationEstimatorTest()
 {

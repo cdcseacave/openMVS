@@ -16,6 +16,7 @@
 #include "Resection.h"
 #include "BundleAdjustment.h"
 #include "GlobalAlignment.h"
+#include "GlobalDescriptors.h"
 #include "GlobalRotationAveraging.h"
 #include "GlobalPositioning.h"
 #include "SimilarityTransform.h"
@@ -644,6 +645,26 @@ bool Scene::ComputeGlobalDescriptors(RoMa2Onnx& roma2, const ROMA2Config& config
 	return true;
 }
 
+namespace {
+// Export the pairs/retrieval-rankings CSV diagnostics of a matched scene
+// (ReconstructionConfig::exportPairsCSV / exportRetrievalCSV, when non-empty) right after
+// Scene::Reconstruct() finishes pair matching, before any later reconstruction step
+// (largest-connected-component clustering, weak-image filtering, resection) can drop pairs or
+// leave images unregistered. A failed export only logs a warning: both files are diagnostics and
+// must never cost the caller the reconstructed scene itself (ruling R-F1) -- not a member of
+// Scene since it has an implicit precondition (must run right after matching) that makes it
+// unsuitable as public API, and it has no callers outside Reconstruct().
+void ExportMatchingCSVs(const Scene& scene, const ReconstructionConfig& config)
+{
+	if (!config.exportPairsCSV.empty() &&
+		!PairsMatcher::ExportPairsCSV(scene, config.exportPairsCSV, config.minPairWeight))
+		VERBOSE("warning: failed to export image pairs to CSV file '%s'", config.exportPairsCSV.c_str());
+	if (!config.exportRetrievalCSV.empty() &&
+		!ExportRetrievalRankingsCSV(scene, config.exportRetrievalCSV, 50))
+		VERBOSE("warning: failed to export retrieval rankings to CSV file '%s'", config.exportRetrievalCSV.c_str());
+}
+} // namespace
+
 bool Scene::Reconstruct(const String& source, const ReconstructionConfig& config)
 {
 	TD_TIMER_START();
@@ -665,6 +686,7 @@ bool Scene::Reconstruct(const String& source, const ReconstructionConfig& config
 			// convention before the caller re-persists the scene (the loaded pairs are
 			// already matched, so the detection can run)
 			VERBOSE("warning: scene already matched after import");
+			ExportMatchingCSVs(*this, config);
 			if (config.HasKnownPoses() && !ResolveFramesConvention(*this,
 					config.importCfg.framesConvention, config.importCfg.importPosesFile))
 				return false;
@@ -684,6 +706,11 @@ bool Scene::Reconstruct(const String& source, const ReconstructionConfig& config
 	// Match image pairs
 	if (!MatchPairs(config.matchCfg, config.roma2Cfg, config.viewgraphCfg))
 		return false;
+
+	// export the pairs/retrieval-rankings CSV diagnostics right after matching, before any
+	// reconstruction step (clustering, weak-image filtering, resection) can drop pairs or
+	// leave images unregistered; covers both the match-images-only run and a full reconstruction
+	ExportMatchingCSVs(*this, config);
 
 	if (config.matchImagesOnly) {
 		// a frames.json imported with an AUTO convention must be resolved before the scene
