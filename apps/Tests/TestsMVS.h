@@ -46,6 +46,9 @@ bool MeshHalfMeshProcessingTest();
 bool MeshBipyramidFixtureTest();
 bool MeshTetraInteriorPointFixtureTest();
 
+// regression test for PlatformArr's cList growth/relocation ownership of Platform::name
+bool PlatformArrGrowOwnershipTest();
+
 // test MVS stages on a small sample dataset
 bool PipelineTest(bool forceCPU = false, bool verbose = false);
 /*----------------------------------------------------------------*/

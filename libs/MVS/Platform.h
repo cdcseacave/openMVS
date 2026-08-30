@@ -87,7 +87,15 @@ public:
 	}
 	#endif
 };
-typedef CLISTDEFIDX(Platform,uint32_t) PlatformArr;
+// NOTE: Platform owns a String (std::string) member, which is not trivially
+// relocatable: libstdc++'s short-string-optimization stores short/empty strings
+// inline and points the string's internal data pointer at its own address, so a
+// raw memcpy/memmove relocation (the useConstruct=1 policy used by CLISTDEFIDX,
+// see cList's _ArrayMoveConstruct in List.h) leaves the relocated copy's String
+// pointing at the old, already-freed buffer; freeing it later double-frees.
+// CLISTDEF2IDX (useConstruct=2) always move-constructs/destructs on grow/shrink,
+// which is required here, same as ImageArr (Image.h) for the same reason.
+typedef CLISTDEF2IDX(Platform,uint32_t) PlatformArr;
 /*----------------------------------------------------------------*/
 
 } // namespace MVS

@@ -603,6 +603,47 @@ bool MeshTetraInteriorPointFixtureTest()
 }
 /*----------------------------------------------------------------*/
 
+// Regression test for the PlatformArr growth/relocation ownership bug: PlatformArr (Platform.h)
+// used to relocate its Platform elements with a raw memcpy on grow (cList's useConstruct=1
+// policy), which is only safe for trivially relocatable types. Platform owns a String (a
+// std::string), and libstdc++'s small-string-optimization stores short/empty strings inline and
+// self-references the string's own address; a memcpy relocation leaves the copy's internal
+// pointer aimed at the just-freed old location. Add enough platforms, all left at the default
+// (empty) name -- exactly how InterfacePolycam builds one platform per image without ever
+// setting Platform::name -- to force several reallocations, then let the array destruct: before
+// the fix (CLISTDEF2IDX instead of CLISTDEFIDX in Platform.h) this double-frees and aborts the
+// process with "double free or corruption (out)", the same crash InterfacePolycam hit in
+// Scene::~Scene().
+bool PlatformArrGrowOwnershipTest()
+{
+	constexpr uint32_t numPlatforms(300);
+	PlatformArr platforms;
+	for (uint32_t i=0; i<numPlatforms; ++i) {
+		Platform& platform = platforms.AddEmpty();
+		Platform::Camera& camera = platform.cameras.AddEmpty();
+		camera.K = KMatrix::IDENTITY;
+		camera.R = RMatrix::IDENTITY;
+		camera.C = CMatrix::ZERO;
+		Platform::Pose& pose = platform.poses.AddEmpty();
+		pose.R = RMatrix::IDENTITY;
+		pose.C = CMatrix::ZERO;
+	}
+	if (platforms.GetSize() != numPlatforms) {
+		VERBOSE("ERROR: PlatformArrGrowOwnershipTest: wrong platform count!");
+		return false;
+	}
+	for (uint32_t i=0; i<numPlatforms; ++i) {
+		const Platform& platform = platforms[i];
+		if (!platform.name.empty() || platform.cameras.GetSize() != 1 || platform.poses.GetSize() != 1) {
+			VERBOSE("ERROR: PlatformArrGrowOwnershipTest: platform %u corrupted by array growth!", i);
+			return false;
+		}
+	}
+	// platforms destructs here, freeing every relocated Platform::name
+	return true;
+}
+/*----------------------------------------------------------------*/
+
 // Exercise ROI integration with the first point outside the ROI; this used to leave
 // default entries in the spatial-sort index and could reconstruct the wrong points.
 static bool ROIMeshReconstructionTest(Scene& scene)

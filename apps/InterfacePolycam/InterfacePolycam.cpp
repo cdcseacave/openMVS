@@ -289,7 +289,7 @@ bool ParseScene(Scene& scene, const String& scenePath)
 	scene.nCalibratedImages = 0;
 	if (numCorrectedFolders == 2) {
 		// corrected data
-		CLISTDEFIDX(String, IIndex) imagePaths;
+		CLISTDEF2IDX(String, IIndex) imagePaths;
 		for (const auto& file: std::filesystem::directory_iterator((scenePath + "corrected_images").c_str()))
 			imagePaths.emplace_back(file.path().string());
 		VERBOSE("Parsing corrected data: %u...", imagePaths.size());
@@ -308,7 +308,7 @@ bool ParseScene(Scene& scene, const String& scenePath)
 		}
 	} else {
 		// raw data
-		CLISTDEFIDX(String, IIndex) imagePaths;
+		CLISTDEF2IDX(String, IIndex) imagePaths;
 		for (const auto& file: std::filesystem::directory_iterator((scenePath + "images").c_str()))
 			imagePaths.emplace_back(file.path().string());
 		VERBOSE("Parsing raw data: %u...", imagePaths.size());
