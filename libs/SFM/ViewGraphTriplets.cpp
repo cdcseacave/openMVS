@@ -23,14 +23,16 @@ using namespace SFM;
 
 namespace {
 
-// Union-find over the nodes of the triplet graph G_T (its nodes are the triplets of the view
-// graph). Two triplets are adjacent iff they share an edge of the view graph, so the components
-// of G_T are obtained without ever materialising its edges: every triplet is merged with the
-// first triplet seen on each of its three edges, which links all triplets over that edge.
-class TripletUnionFind
+// Union-find over the *edges* of the view graph. The nodes of the triplet graph G_T are the
+// triplets and two of them are adjacent iff they share an edge, so unioning the three edges of
+// every triplet reproduces exactly the components of G_T -- carried on the edges, and therefore in
+// O(|E|) memory instead of the O(#triplets) a materialised triplet list would need. That matters:
+// ExportPairsCSV scores the graph on every --export-pairs-csv run, and an exhaustively matched
+// 1000-image scene has C(1000,3) ~ 1.7e8 triangles, some 2 GB of triplet records.
+class EdgeUnionFind
 {
 public:
-	explicit TripletUnionFind(size_t numTriplets) : parents(numTriplets) {
+	explicit EdgeUnionFind(size_t numEdges) : parents(numEdges) {
 		FOREACH(i, parents)
 			parents[i] = (uint32_t)i;
 	}
@@ -50,12 +52,7 @@ private:
 	std::vector<uint32_t> parents;
 };
 
-// One 3-cycle of the view graph, as the indices of its three edges.
-struct Triplet {
-	uint32_t edges[3];
-};
-
-// sentinel for "no such edge / no such triplet / no such component" in the index arrays below
+// sentinel for "no such edge / no such component" in the index arrays below
 constexpr uint32_t NO_INDEX = (uint32_t)-1;
 
 } // namespace
@@ -121,80 +118,91 @@ TripletScores SFM::ComputeTripletScores(const Scene& scene, float minScore)
 
 	// 3. Enumerate the triplets of G: for every edge (i,j) with i < j, the common neighbours
 	// k > j of i and j. The i < j < k ordering visits each triangle exactly once, from its
-	// lexicographically smallest edge. This pass is serial: on the densest capture measured here
-	// (377 images, 6241 pairs) it costs ~2 ms, far below the cost of the surrounding matching.
-	std::vector<Triplet> triplets;
-	for (uint32_t e = 0; e < numEdges; ++e) {
-		const IIndex i = edgeImages[e].i, j = edgeImages[e].j;
-		ASSERT(i < j, "ComputeTripletScores: edge images are not ordered");
-		const std::vector<Neighbor>& adjI = adjacency[i];
-		const std::vector<Neighbor>& adjJ = adjacency[j];
-		size_t a = 0, b = 0;
-		while (a < adjI.size() && b < adjJ.size()) {
-			if (adjI[a].image < adjJ[b].image) {
-				++a;
-			} else if (adjJ[b].image < adjI[a].image) {
-				++b;
-			} else {
-				if (adjI[a].image > j)
-					triplets.emplace_back(Triplet{{e, adjI[a].edge, adjJ[b].edge}});
-				++a; ++b;
+	// lexicographically smallest edge. The triplets are *streamed* to the visitor and never
+	// stored: the list alone would be Theta(#triplets), which a near-complete graph makes
+	// unaffordable, while everything below needs only O(|E|) state. The walk is serial: on the
+	// densest capture measured here (377 images, 6241 pairs, 44889 triplets) one pass costs a
+	// couple of milliseconds, far below the cost of the surrounding matching.
+	const auto ForEachTriplet = [&](const auto& visit) {
+		for (uint32_t e = 0; e < numEdges; ++e) {
+			const IIndex i = edgeImages[e].i, j = edgeImages[e].j;
+			ASSERT(i < j, "ComputeTripletScores: edge images are not ordered");
+			const std::vector<Neighbor>& adjI = adjacency[i];
+			const std::vector<Neighbor>& adjJ = adjacency[j];
+			size_t a = 0, b = 0;
+			while (a < adjI.size() && b < adjJ.size()) {
+				if (adjI[a].image < adjJ[b].image) {
+					++a;
+				} else if (adjJ[b].image < adjI[a].image) {
+					++b;
+				} else {
+					if (adjI[a].image > j)
+						visit(e, adjI[a].edge, adjJ[b].edge);
+					++a; ++b;
+				}
 			}
 		}
-	}
-	result.numTriplets = (unsigned)triplets.size();
-	if (triplets.empty())
-		return result;
+	};
 
-	// 4. Components of the triplet graph G_T, and the largest of them (Algorithm 1 step 2).
-	TripletUnionFind components(triplets.size());
-	std::vector<uint32_t> firstTripletOfEdge(numEdges, NO_INDEX);
-	FOREACH(t, triplets) {
-		for (uint32_t e : triplets[t].edges) {
-			if (firstTripletOfEdge[e] == NO_INDEX)
-				firstTripletOfEdge[e] = (uint32_t)t;
-			else
-				components.Union((uint32_t)t, firstTripletOfEdge[e]);
-		}
-	}
-	std::unordered_map<uint32_t, unsigned> sizeOfComponent;
-	FOREACH(t, triplets)
-		++sizeOfComponent[components.Find((uint32_t)t)];
-	result.numTripletComponents = (unsigned)sizeOfComponent.size();
+	// 4. Components of the triplet graph G_T, and the largest of them (Algorithm 1 step 2). The
+	// first streaming pass unions the three edges of every triplet -- two triplets sharing an edge
+	// therefore land in the same edge-component, which is exactly the adjacency G_T is built on --
+	// and counts the triplets each edge takes part in.
+	EdgeUnionFind components(numEdges);
+	std::vector<unsigned> numTripletsOfEdge(numEdges, 0);
+	ForEachTriplet([&](uint32_t e0, uint32_t e1, uint32_t e2) {
+		components.Union(e0, e1);
+		components.Union(e0, e2);
+		++numTripletsOfEdge[e0];
+		++numTripletsOfEdge[e1];
+		++numTripletsOfEdge[e2];
+		++result.numTriplets;
+	});
+	if (result.numTriplets == 0)
+		return result;
+	// every triplet contributes one to each of its three edges and all three share its component,
+	// so a component's triplet count is a third of what its edges carry; the factor is common to
+	// every component, so the maximum below is the same either way
+	std::unordered_map<uint32_t, unsigned> tripletsOfComponent;
+	for (uint32_t e = 0; e < numEdges; ++e)
+		if (numTripletsOfEdge[e] > 0)
+			tripletsOfComponent[components.Find(e)] += numTripletsOfEdge[e];
+	result.numTripletComponents = (unsigned)tripletsOfComponent.size();
 	uint32_t largestComponent = NO_INDEX;
 	unsigned largestComponentSize = 0;
-	for (const auto& component : sizeOfComponent) {
-		// ties break on the smaller root, which is the triplet found first: deterministic
+	for (const auto& component : tripletsOfComponent) {
+		// ties break on the smaller root, the first edge of the component: deterministic
 		if (component.second > largestComponentSize ||
 			(component.second == largestComponentSize && component.first < largestComponent)) {
 			largestComponent = component.first;
 			largestComponentSize = component.second;
 		}
 	}
+	// an edge of the largest component takes part in no triplet outside it (all three edges of a
+	// triplet share one component), so numTripletsOfEdge is already |trp(i,j)|, the mean's divisor
+	const auto IsScoredEdge = [&](uint32_t e) {
+		return numTripletsOfEdge[e] > 0 && components.Find(e) == largestComponent;
+	};
 
-	// 5. Score the edges of G_LCT (Algorithm 1 steps 4-8): one pass over the triplets of the
-	// largest component accumulates both the per-triplet maximum n_kl and the per-edge running
-	// mean of q^t_ij = n_ij / max_{(k,l) in t} n_kl.
+	// 5. Score the edges of G_LCT (Algorithm 1 steps 4-8): a second streaming pass over the
+	// triplets of the largest component accumulates the per-triplet maximum n_kl and the per-edge
+	// running sum of q^t_ij = n_ij / max_{(k,l) in t} n_kl.
 	std::vector<double> scoreSumOfEdge(numEdges, 0.0);
-	std::vector<unsigned> numTripletsOfEdge(numEdges, 0);
-	FOREACH(t, triplets) {
-		if (components.Find((uint32_t)t) != largestComponent)
-			continue;
-		const Triplet& triplet = triplets[t];
-		const unsigned maxInliers = MAXF3(edgeInliers[triplet.edges[0]],
-			edgeInliers[triplet.edges[1]], edgeInliers[triplet.edges[2]]);
+	ForEachTriplet([&](uint32_t e0, uint32_t e1, uint32_t e2) {
+		if (components.Find(e0) != largestComponent)
+			return;
+		const unsigned maxInliers = MAXF3(edgeInliers[e0], edgeInliers[e1], edgeInliers[e2]);
 		ASSERT(maxInliers > 0, "ComputeTripletScores: triplet with no inliers");
-		for (uint32_t e : triplet.edges) {
-			scoreSumOfEdge[e] += (double)edgeInliers[e] / (double)maxInliers;
-			++numTripletsOfEdge[e];
-		}
-	}
+		scoreSumOfEdge[e0] += (double)edgeInliers[e0] / (double)maxInliers;
+		scoreSumOfEdge[e1] += (double)edgeInliers[e1] / (double)maxInliers;
+		scoreSumOfEdge[e2] += (double)edgeInliers[e2] / (double)maxInliers;
+	});
 
 	// 6. |V| and d_max of G_LCT, and the adaptive threshold of Eqn. 3 (ruling R-F2: both are
 	// taken on G_LCT, the graph whose edges carry a score).
 	std::unordered_map<IIndex, unsigned> degreeOfNode;
 	for (uint32_t e = 0; e < numEdges; ++e) {
-		if (numTripletsOfEdge[e] == 0)
+		if (!IsScoredEdge(e))
 			continue;
 		result.maxDegree = MAXF(result.maxDegree, ++degreeOfNode[edgeImages[e].i]);
 		result.maxDegree = MAXF(result.maxDegree, ++degreeOfNode[edgeImages[e].j]);
@@ -208,7 +216,7 @@ TripletScores SFM::ComputeTripletScores(const Scene& scene, float minScore)
 	// 7. Spread the edge scores back onto the scene pairs
 	FOREACH(idxPair, scene.pairs) {
 		const uint32_t e = edgeOfScenePair[idxPair];
-		if (e == NO_INDEX || numTripletsOfEdge[e] == 0)
+		if (e == NO_INDEX || !IsScoredEdge(e))
 			continue;
 		result.scores[idxPair] = (float)(scoreSumOfEdge[e] / numTripletsOfEdge[e]);
 		++result.numScoredPairs;
@@ -223,21 +231,28 @@ unsigned SFM::FilterPairsByTriplets(Scene& scene, const TripletFilterConfig& con
 		return 0;
 	TD_TIMER_STARTD();
 	const TripletScores tripletScores = ComputeTripletScores(scene, config.minScore);
+	// compact in one forward pass -- moving every kept pair down and truncating once -- rather
+	// than erasing pair by pair: each erase shifts the whole tail, so on a graph where the filter
+	// removes most of the edges that would cost O(removed x kept) moves of a match-carrying pair
 	const unsigned numPairs = scene.pairs.size();
-	unsigned numUnscored = 0, numBelowTau = 0;
-	for (unsigned idxPair = 0, idxKept = 0; idxPair < numPairs; ++idxPair) {
+	unsigned numUnscored = 0, numBelowTau = 0, numKept = 0;
+	for (unsigned idxPair = 0; idxPair < numPairs; ++idxPair) {
 		const float score = tripletScores.scores[idxPair];
-		if (score >= tripletScores.tau) {
-			++idxKept;
+		if (score < tripletScores.tau) {
+			if (score < 0.f)
+				++numUnscored;
+			else
+				++numBelowTau;
 			continue;
 		}
-		if (score < 0.f)
-			++numUnscored;
-		else
-			++numBelowTau;
-		scene.pairs.RemoveAtMove(idxKept);
+		if (numKept != idxPair)
+			scene.pairs[numKept] = std::move(scene.pairs[idxPair]);
+		++numKept;
 	}
-	const unsigned numRemoved = numUnscored + numBelowTau;
+	const unsigned numRemoved = numPairs - numKept;
+	ASSERT(numRemoved == numUnscored + numBelowTau, "FilterPairsByTriplets: removal count mismatch");
+	if (numRemoved > 0)
+		scene.pairs.RemoveLast(numRemoved);
 	VERBOSE("Triplet filter: kept %u/%u pairs (tau %.3f from m %.2f; %u nodes, max degree %u; "
 		"%u triplets in %u components; %u pairs unscored, %u below tau)",
 		numPairs - numRemoved, numPairs, tripletScores.tau, config.minScore,

@@ -212,13 +212,19 @@ def read_pairs(path, stemToIndex):
 
 
 def read_campaign_min_cov(path):
-    """Join column of the campaign's pseudo-GT pair list: (a,b) -> its own min_cov."""
+    """Join column of the campaign's pseudo-GT pair list: (min,max) -> its own min_cov.
+
+    The key is normalised to (min,max) because the lookup is, and a pair list is under no
+    obligation to order its two columns - an ``a > b`` row keyed as written would silently never
+    be found.
+    """
     out = {}
     with open(path) as f:
         for row in csv.DictReader(line for line in f if not line.startswith("#")):
             if "min_cov" not in row:
                 sys.exit("error: '%s' has no min_cov column" % path)
-            out[(int(row["a"]), int(row["b"]))] = row["min_cov"]
+            a, b = int(row["a"]), int(row["b"])
+            out[(min(a, b), max(a, b))] = row["min_cov"]
     return out
 
 
@@ -311,6 +317,10 @@ def main():
                             ["%.4f" % angle, "%.6f" % dist, "%.4f" % ratio,
                              campaign.get((min(idA, idB), max(idA, idB)), ""), label])
 
+    if campaign:
+        joined = sum(1 for idA, idB in pairs if (min(idA, idB), max(idA, idB)) in campaign)
+        print("joined %d/%d pairs against the %d rows of '%s'"
+              % (joined, len(pairs), len(campaign), args.pairs_valid))
     print("%d keyframes, median consecutive baseline %.6f, mode %s" % (len(stems), baseline, mode))
     print("%d pairs labelled: %d plausible, %d implausible, %d ambiguous"
           % (len(pairs), numByLabel["plausible"], numByLabel["implausible"], numByLabel["ambiguous"]))
