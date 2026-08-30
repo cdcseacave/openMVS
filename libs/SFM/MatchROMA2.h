@@ -57,7 +57,12 @@ struct SFM_API ROMA2Config {
 	String setting = "base";               // model preset to load: turbo|fast|base
 	String provider = "auto";              // execution provider: auto|cuda|coreml|dml|cpu
 	bool useRetrieval = true;              // rank the candidate image pairs with the ROMAv2 global descriptors
-	bool useMatching = true;               // guide the sparse feature matching with the ROMAv2 dense warps
+	// guide the sparse feature matching with the ROMAv2 dense warps. EXPERIMENTAL, hence off by
+	// default: end-to-end validation showed it supplies far more inliers and pairs, but degrades
+	// pose accuracy when the intrinsics are self-calibrated (see docs/design/ROMA2InProcess.md,
+	// Limitations). Enable with --roma2-match true, preferably together with
+	// --roma2-skip-healthy 100 --roma2-max-replace 15, or with imported intrinsics
+	bool useMatching = false;
 	RetrievalRecipe retrievalRecipe = RetrievalRecipe::FACETS; // how to pool the global retrieval descriptor
 	float retrievalPower = 0.f;            // exponent of the signed power normalization of the retrieval descriptor (0 = the manifest's retrieval_recipes.facets.power)
 	float minConfidence = 0.3f;            // minimum warp confidence for a keypoint to be tracked

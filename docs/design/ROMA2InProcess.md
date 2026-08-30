@@ -17,6 +17,28 @@ CreateStructure --roma2 ...                    Scene::MatchPairs
                           OnnxRuntime.h/cpp)
 ```
 
+**What `--roma2 true` does by default:** the retrieval seam only. `--roma2-retrieval` defaults to
+**true**, `--roma2-match` to **false** — so a plain `--roma2 true` describes every image once, ranks
+the candidate pairs by the global descriptors instead of the vocabulary tree, and leaves the matching
+itself to SIFT/AKAZE/ORB. Dense matching is **experimental** and must be asked for
+(`--roma2-match true`): it supplies far more pairs and inliers, but degraded pose accuracy on 3 of 5
+validation captures when the intrinsics are self-calibrated (see Limitations, and prefer
+`--roma2-skip-healthy 100 --roma2-max-replace 15` or imported intrinsics with it).
+
+| Flag | Default | Effect |
+|---|---|---|
+| `--roma2` | `false` | master switch for the in-process model |
+| `--roma2-model DIR` | `$OPENMVS_ROMA2_MODEL_PATH` | exported graphs + manifest |
+| `--roma2-setting turbo\|fast\|base` | `base` | preset (320/512/640 px) |
+| `--roma2-provider auto\|cuda\|coreml\|dml\|cpu` | `auto` | execution provider; a named one is required, not preferred |
+| `--roma2-retrieval` | `true` | rank candidate pairs by the global descriptors |
+| `--roma2-retrieval-recipe facets\|layers` | `facets` | pooling recipe (2048-D default, 1024-D parity) |
+| `--roma2-match` | **`false`** | experimental: dense-match candidate pairs and replace weaker matches |
+| `--roma2-slots N` | `64` | image descriptors resident on the device while dense matching |
+| `--roma2-skip-healthy N` | `0` | round 1: skip pairs already at ≥ N inliers |
+| `--roma2-max-replace N` | `0` | round 1: replace only pairs below N inliers |
+| `--export-retrieval-csv F` | — | per-image retrieval rankings (needs `--roma2-retrieval`) |
+
 No new `MatchMode`: everything downstream of pair ranking is backend-agnostic, and the
 VOCABULARY→EXHAUSTIVE small-scene remap and the KNOWN_POSES unposed-image fallback keep working
 unchanged. The in-process integration replaces the earlier NPZ-based ROMA2 import outright (deleted:
@@ -73,7 +95,9 @@ descriptor-graph output into its global retrieval descriptor:
 
 - **FACETS** (default, 2048-D): per-slice GeM p=3 (clamp 1e-6, cube, mean over the G·G patches, cbrt,
   accumulated in double) on `value_facets` → L2 per slice → concat (2048) → L2 →
-  `sign(d)·|d|^0.3` (power normalization, `retrievalPower`) → L2.
+  `sign(d)·|d|^p` (power normalization) → L2, where `p` is the manifest's own
+  `retrieval_recipes.facets.power` (0.3 in the shipped exports). `ROMA2Config::retrievalPower`
+  defaults to `0`, meaning "whatever the model was exported with"; a positive value overrides it.
 - **LAYERS** (legacy/parity, 1024-D): GeM p=3 on `layers` slice 1 (block 17) → L2. Reproduces the
   shipped reference engine's own pooling.
 
@@ -125,7 +149,12 @@ tried:
 3. **DirectML** (Windows builds of ONNX Runtime that include it).
 4. **CPU** — always available; ~2-4 s/image at base, warned once.
 
-`--roma2-provider auto|cuda|coreml|dml|cpu` overrides the candidate list. Partial op support on
+`--roma2-provider auto|cuda|coreml|dml|cpu` overrides the candidate list, and a provider named
+explicitly is a **requirement, not a preference**: if it is not in `Ort::GetAvailableProviders()` or
+its session fails to construct, `OnnxModel::Load` returns false with an error naming it and the run
+stops, instead of quietly finishing on the CPU at seconds per image. Only `auto` walks the chain
+above and ends on CPU (with the one-time "running on the CPU execution provider" warning). Partial
+op support on
 CoreML/DML (falling back to CPU kernels for unsupported ops) is ONNX Runtime's own business and stays
 correct, only speed differs (unmeasured on this repo's captures — see Limitations). Each session's
 chosen provider is logged once when it loads (`"ONNX model '<name>' loaded on <provider>"`). CoreML/DML
@@ -226,8 +255,17 @@ CONFIG)`:
 Shared libraries are copied next to the installed binaries either way (vcpkg's applocal step does it
 for its own port; the tarball route does it explicitly via `install(FILES ...)` glob of
 `onnxruntime*.so*`/`.dylib`/`DirectML.dll`), with an `rpath`/`$ORIGIN` entry added on Linux/macOS before
-`libs`/`apps` are added so every target created afterwards inherits it (Windows instead needs the DLLs
-copied next to each executable). CPU-only builds still work through the CPU provider.
+`libs`/`apps` are added so every target created afterwards inherits it. CPU-only builds still work
+through the CPU provider.
+
+**Not implemented yet, tarball route on Windows:** Windows has no `rpath`, so `onnxruntime.dll` (and
+`DirectML.dll`) must sit next to the executable that loads it. vcpkg's applocal step does that
+automatically for its own port; the `ONNXRUNTIME_ROOT` route only `install(FILES ...)`s them into the
+install `bin/`, and adds **no** `POST_BUILD` copy next to the executables in the build tree — the
+`CMakeLists.txt` comment beside the `rpath` block says so explicitly. Until that step exists, running
+a tarball-provisioned Windows *build tree* needs the DLLs copied next to the binaries by hand or
+`ONNXRUNTIME_ROOT/lib` on `PATH`. Linux and macOS are unaffected (they get `$ORIGIN`/`@executable_path`
+plus the library directory).
 
 **Runtime-dependency risk**: on Linux, an `LD_LIBRARY_PATH` that puts a cu13 cuDNN ahead of the cu12
 libraries ONNX Runtime 1.23.2 needs makes the CUDA execution provider fail to construct and silently
@@ -247,7 +285,28 @@ build.
 | Descriptor session weights + arena | 1.22 GB + ≈0.5 GB |
 | Match session weights + arena (joint attention over 3200 tokens) | ≈0.46 GB + ≈1.0-1.2 GB |
 | Slot pool, 64 slots | 800 MiB |
-| **Total** | **≈4 GB** |
+| **Total (analytic floor)** | **≈4 GB** |
+
+Those are the tensors and weights the pipeline asks for. What the device actually holds is larger,
+because ONNX Runtime's CUDA arena grows on demand and never returns memory. Measured with
+`nvidia-smi --query-compute-apps` sampled at 2 s through a live `base` run with 64 slots (251 images,
+A100 40 GB; `VALIDATION-20260830.md` §5):
+
+| Stage | Device memory |
+|---|---|
+| SIFT extraction, before any ONNX session | ~1.0 GB |
+| Descriptor session up (retrieval only) | 2.6 GB |
+| Steady state through dense matching | 7.6 GB |
+| Peak, at the round-1 → feedback-round transition | 12.0 GB |
+
+So the analytic table is a **floor**, not a bound: budget from the measured column. Retrieval-only
+(`--roma2-match false`, the default) never opens the coarse-match session and stays at the 2.6 GB
+row — it runs comfortably on a 4 GB device at any slot count, `--roma2-slots` being a dense-matching
+knob only. Dense matching needs headroom for the 12.0 GB transition peak, so on a 16 GB device drop
+to `--roma2-slots 16` (200 MiB of slots instead of 800 MiB, at the cost of more re-describes — 34-55%
+of slot loads are already reloads at 64) and expect the arena, not the slots, to dominate; below
+~12 GB of free device memory, dense matching at `base` is not a good fit — use `--roma2-setting fast`
+or `turbo`, whose tensors are 8.0/3.1 MiB per slot.
 
 ## Measured Latencies (CUDA, fp32, median over 100 runs)
 
@@ -263,6 +322,15 @@ Source: `~/virginia/models/roma2-onnx/roma2onnx-20260829-facets1520/export.log`.
 
 ## Tests
 
+- **`ROMA2WarpTrackingTest`** (`apps/Tests/TestsSFM.cpp`) — always runs, no model needed: keypoint
+  tracking through a synthetic identity warp (the pixel↔grid↔normalised coordinate conventions of
+  `ROMA2Warp.h/cpp`), the confidence gate and the border erosion of the confidence map, and
+  `ApplyROMA2Pair`'s store/replace-by-inlier-count policy (including the `maxReplaceInliers` ceiling).
+- **`GlobalDescriptorsQueryTest`** — always runs, no model needed: the cosine ranking over
+  `Image::globalDescriptor` and its deterministic tie order, the `PairsMatcher::QueryRetrieval`
+  dispatch that ranks candidate pairs through the descriptors instead of the vocabulary tree, the
+  `--export-retrieval-csv` rankings export, the `.sfm` round-trip of the descriptors, and both
+  host-side pooling recipes against the export script's fixtures.
 - **`RoMa2PreprocessTest`** (`apps/Tests/TestsSFM.cpp`) — always runs; verifies
   `PreprocessImageRoMa2` (the bicubic-antialiased resize reproducing `F.interpolate` exactly) against
   a small synthetic fixture. Skipped only in an OFF build ("built without ONNX Runtime").
@@ -281,10 +349,31 @@ Source: `~/virginia/models/roma2-onnx/roma2onnx-20260829-facets1520/export.log`.
   baseline run with matching off), determinism (two runs with the same config match identical pairs),
   and `.sfm` round-trip of `globalDescriptor`.
 
-All three tests are coupled to the same production environment variable
+The three model-driven tests are coupled to the same production environment variable
 (`OPENMVS_ROMA2_MODEL_PATH`) used by `CreateStructure --roma2-model`'s default — there is no separate
 test-only model variable. In an OFF build (`-DOpenMVS_USE_ONNXRUNTIME=OFF`), all three report
-"skipped (built without ONNX Runtime)"/"no ONNX Runtime support in this build" and pass trivially.
+"skipped (built without ONNX Runtime)"/"no ONNX Runtime support in this build" and pass trivially,
+while the two always-on tests keep running (they exercise host-side code only).
+`RoMa2OnnxParityTest` additionally skips — loudly, with "no reference dumps under '<dir>', parity not
+checked" — when the model directory ships graphs but no `.reference/` dumps, since there is then
+nothing to compare; naming a preset through `OPENMVS_ROMA2_SETTING` still fails hard in that case,
+because the user then asked for a comparison that cannot be made.
+
+---
+
+## Compatibility (`.sfm` scene files)
+
+Storing the per-image global descriptor changed the SFM project stream layout, so
+`SFM_PROJECT_VERSION` (`libs/SFM/Scene.cpp`) went **0 → 1**. The loader accepts that exact version
+only, and refuses anything else outright:
+
+```
+error: unsupported SFM project version 0 (this build reads only version 1) in '<file>'
+```
+
+There is no converter and none is planned: `.sfm` files written by an earlier build must be
+regenerated by re-running the matching stage from the images (`CreateStructure -s <images> -o
+scene.sfm ...`). `.mvs` files are unaffected.
 
 ---
 
@@ -294,12 +383,52 @@ test-only model variable. In an OFF build (`-DOpenMVS_USE_ONNXRUNTIME=OFF`), all
   in-process warps — only descriptor/coarse-match are exported and consumed.
 - **CoreML/DML speed is unmeasured.** Correctness follows from ONNX Runtime's own provider contract,
   but no latency numbers exist yet for either provider on this repo's hardware.
-- **Self-calibration from warp-guided matches is weaker than from descriptor matches.** A guided match
-  set is self-consistent with the *coarse* warp's own geometry (a smooth, low-resolution field), so it
-  under-constrains focal length/distortion refinement in a way SIFT/AKAZE/ORB's independently-detected
-  keypoints do not. Supply intrinsics (EXIF or Polycam priors) when using `--roma2` rather than relying
-  on `--use-global-solver`/uncalibrated refinement alone; the effect is to be measured on real
-  captures against Polycam poses.
+- **Dense matching (`--roma2-match`) is experimental and off by default.** Measured end to end on five
+  Polycam captures against Polycam GT (`VALIDATION-20260830.md` §3/§4/§6), the dense arm buys a lot of
+  matching and loses on pose:
+  - *What it buys:* +57 % to +111 % geometrically verified pairs, and **2.8×–5.0× the median inlier
+    count** on the pairs both arms found (17×–82× more pairs improved than worsened). Non-temporal pair
+    recall against the pseudo-GT rises from 0.46–0.76 to 0.84–0.88.
+  - *What it costs:* measured **like-for-like** (alignment-free relative rotation, median over the
+    images both arms registered) it is better on 1 capture (−11 %), a wash on 1 (+2 %) and **worse on
+    3** (+9 %, +24 %, +85 %). The focal drifts **+1.2 to +6.2 px** (0.2–0.9 %) and only in this arm —
+    the retrieval-only control tracks the SIFT baseline to within 1 px everywhere, which attributes the
+    drift to the *replaced* warp-guided correspondences, not to the added pairs. Ceres reports
+    `Linear solver failure ... dense Cholesky` **257–1194 times per capture** against 8–56 for the SIFT
+    and retrieval-only arms, and reconstruction runs **15–18× longer** (one capture: ~18 min vs ~1 min).
+  - *And on a repetitive scene the view graph fragments:* on capture `32265651` the retrieval-proposed,
+    warp-verified pairs left the reconstruction on **146 of 377 images, out of 8 components**, where
+    SIFT kept 309. The fill-only experiment below keeps every pair the dense arm added and still
+    fragments (176/377, and a registered set *disjoint* from the first run's), which pins the
+    fragmentation on the **added pairs themselves**, not on the replacement of SIFT match sets.
+  - *Mitigations,* in order of how much they cost you:
+    1. **Retrieval-only** — the default (`--roma2-retrieval true --roma2-match false`). It was better
+       than or equal to SIFT on 4 of 5 captures, keeps the focal within 1 px of the SIFT arm, and costs
+       one describe pass.
+    2. **Fill-only dense matching** — `--roma2-match true --roma2-skip-healthy 100 --roma2-max-replace 15`
+       makes round 1 behave like the feedback round: warp only where descriptor matching is weak,
+       replace only the weakest pairs. This keeps **100 % of the pair-coverage gain** (identical pair
+       sets, identical recall), removes the focal drift entirely (back to the SIFT value on all four
+       captures tried), and cuts reconstruction time 2–4×. It does *not* close the pose gap
+       (+5.7 %/+20.7 %/+35.6 % on three of four) and does *not* fix the fragmentation, which is why it
+       is a knob and not the default (ruling R32).
+    3. **Known intrinsics** — importing intrinsics (EXIF, `--import-poses-mode 1`, Polycam priors)
+       removes the self-calibration failure mode the drift and the ill-conditioning come from. A guided
+       match set is self-consistent with the *coarse* warp's own geometry — a smooth, low-resolution
+       field — so it under-constrains focal/distortion refinement in a way independently-detected
+       SIFT/AKAZE/ORB keypoints do not.
+  - *Known follow-ups,* neither implemented here:
+    1. **A confident-overlap gate on created pairs.** Pair creation currently only asks that the guided
+       match set verify; nothing asks the warp's own confidence map how much of the two frames actually
+       overlaps. A gate there is the direct candidate fix for the fragmentation, since it is the created
+       pairs that cause it.
+    2. **A train-side cross-check in guided matching.** `MatchFeaturesGeometric`
+       (`libs/SFM/MatchGeometric.cpp:126-158`) is one-sided by construction: for each keypoint of A it
+       keeps the descriptor-best keypoint of B among those near the epipolar line / the tracked point,
+       subject to a ratio test *within that candidate set*. There is no reverse pass and no
+       mutual-consistency test, so several keypoints of A may legitimately claim the same keypoint of
+       B. A train-side cross-check (keep a match only when B's best is A's keypoint too) would raise
+       the precision of exactly the correspondences the bundle then has to absorb.
 - **The describe pass always runs when `--roma2-retrieval` is on**, even for `EXHAUSTIVE` or
   `SEQUENTIAL` matching where no retrieval ranking is needed for pair selection — the global
   descriptors are still computed and stored (`Image::globalDescriptor`), which costs the describe pass

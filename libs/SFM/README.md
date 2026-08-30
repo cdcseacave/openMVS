@@ -185,7 +185,7 @@ The matching pipeline:
 4. **Geometric verification**: RANSAC to estimate E (calibrated) or F (uncalibrated) matrix
 5. **Cheirality check**: Points must be in front of both cameras
 
-**RoMa v2 (optional, `CreateStructure --roma2`)**: an in-process ONNX Runtime deployment of RoMa v2 (a DINOv3 descriptor graph + a coarse-match graph, no refiner) can supplement — never replace — the classical matching above in two independent ways: `--roma2-retrieval` (default on) replaces the vocabulary tree as the per-image ranking source `PairsMatcher::QueryRetrieval` feeds to pair selection, pooling the descriptor graph's output into a global descriptor per image (`GlobalDescriptors.h`, FACETS 2048-D default or LAYERS 1024-D legacy); `--roma2-match` (default on) dense-matches every candidate pair through the coarse-match graph and turns each warp into a guided sparse re-match that replaces the descriptor match only when it has strictly more inliers. Needs an exported model (`--roma2-model DIR`, default `$OPENMVS_ROMA2_MODEL_PATH`) and a build with `-DOpenMVS_USE_ONNXRUNTIME=ON`. Flags: `--roma2`, `--roma2-model`, `--roma2-setting turbo|fast|base`, `--roma2-retrieval`, `--roma2-match`, `--roma2-slots N`, `--roma2-retrieval-recipe facets|layers`, `--roma2-provider auto|cuda|coreml|dml|cpu`, `--export-retrieval-csv`. See `docs/design/ROMA2InProcess.md` for the full design.
+**RoMa v2 (optional, `CreateStructure --roma2`)**: an in-process ONNX Runtime deployment of RoMa v2 (a DINOv3 descriptor graph + a coarse-match graph, no refiner) can supplement — never replace — the classical matching above in two independent ways: `--roma2-retrieval` (default on) replaces the vocabulary tree as the per-image ranking source `PairsMatcher::QueryRetrieval` feeds to pair selection, pooling the descriptor graph's output into a global descriptor per image (`GlobalDescriptors.h`, FACETS 2048-D default or LAYERS 1024-D legacy); `--roma2-match` (**default off, experimental**) dense-matches every candidate pair through the coarse-match graph and turns each warp into a guided sparse re-match that replaces the descriptor match only when it has strictly more inliers. End-to-end validation found the dense arm supplies 2.8-5x the median inliers and +57-111% verified pairs, but degrades like-for-like pose accuracy on 3 of 5 captures and drifts the self-calibrated focal, so it is opt-in: enable it with `--roma2-match true`, preferably together with `--roma2-skip-healthy 100 --roma2-max-replace 15` or with imported intrinsics. Needs an exported model (`--roma2-model DIR`, default `$OPENMVS_ROMA2_MODEL_PATH`) and a build with `-DOpenMVS_USE_ONNXRUNTIME=ON`. Flags: `--roma2`, `--roma2-model`, `--roma2-setting turbo|fast|base`, `--roma2-retrieval`, `--roma2-match`, `--roma2-slots N`, `--roma2-skip-healthy N`, `--roma2-max-replace N`, `--roma2-retrieval-recipe facets|layers`, `--roma2-provider auto|cuda|coreml|dml|cpu`, `--export-retrieval-csv`. See `docs/design/ROMA2InProcess.md` for the full design.
 
 #### 3. View Graph Calibration (`ViewGraphCalibrator.h`)
 
@@ -502,6 +502,15 @@ The log line it emits -- median and maximum camera-center delta, median and maxi
 The pose CSV schema is `filename,fx,fy,cx,cy,qx,qy,qz,qw,Cx,Cy,Cz,score` per row. Both pose importers share the `PoseImportMode` selector: `POSES_INTRINSICS` applies the intrinsics (when the row/entry carries them, marking them trusted) *and* the rotation + camera center, `POSES` applies only the rotation + center, `POSITIONS` only the center. `ImportConfig::importPosesFile` dispatches on the file extension -- `.csv` to `ImportPosesCSV`, `.json` to `ImportFramesJSON`.
 
 RoMa v2 correspondences are not an external format: the descriptor and coarse-match ONNX graphs run in-process through `OnnxRuntime.h` (the ONNX Runtime session/tensor wrapper, CUDA/CoreML/DirectML/CPU) and `RoMa2Matcher.h` (the two RoMa v2 sessions); the dense warps are turned into pooled global retrieval descriptors (`GlobalDescriptors.h`) and guided sparse re-matches configured and orchestrated by `MatchROMA2.h`, and consumed through `ROMA2Warp.h` (warp coordinate conventions, confidence erosion, keypoint tracking, guided-pair store/replace policy). See `docs/design/ROMA2InProcess.md` for the full design.
+
+### Scene-file compatibility (`.sfm`)
+
+The SFM project stream carries a layout version (`SFM_PROJECT_VERSION`, `Scene.cpp`) and
+`Scene::Load` accepts **that exact version only**. Storing the per-image RoMa v2 global descriptor
+bumped it **0 → 1**, so a `.sfm` written by an earlier build is refused with
+`error: unsupported SFM project version 0 (this build reads only version 1) in '<file>'`. There is no
+converter: regenerate the scene by re-running the matching stage from the images
+(`CreateStructure -s <images> -o scene.sfm ...`). `.mvs` files are unaffected.
 
 ## Usage Examples
 
