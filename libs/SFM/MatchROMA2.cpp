@@ -347,6 +347,10 @@ unsigned SFM::ComputeGlobalDescriptorsROMA2(Scene& scene, RoMa2Onnx& roma2, cons
 	}
 	const unsigned numSlices = (unsigned)roma2.LayersShape()[1];
 	const unsigned numChannels = (unsigned)roma2.LayersShape()[4];
+	// the exponent of the power normalization belongs to the exported recipe, so the manifest's
+	// own retrieval_recipes.facets.power is what the pooling uses unless the caller overrides it
+	// (config.retrievalPower defaults to 0, which means "whatever the model was exported with")
+	const float retrievalPower = config.retrievalPower > 0.f ? config.retrievalPower : roma2.Manifest().facetsPower;
 	std::vector<float> facets, descriptor;
 	for (IIndex i = 0; i < nImages; ++i, ++state.progress) {
 		// consume the buffer this image was prefetched into before ever reusing it below
@@ -354,7 +358,7 @@ unsigned SFM::ComputeGlobalDescriptorsROMA2(Scene& scene, RoMa2Onnx& roma2, cons
 		Image& img = scene.images[i];
 		if (planar && roma2.Describe(planar->data(), bFacets ? layers : layersHost, bFacets ? &facets : NULL)) {
 			PoolRetrievalDescriptor(bFacets ? facets.data() : layersHost.HostData(), numSlices, roma2.NumPatches(), numChannels,
-				config.retrievalRecipe, config.retrievalPower, descriptor);
+				config.retrievalRecipe, retrievalPower, descriptor);
 			img.globalDescriptor = cv::Mat(1, (int)descriptor.size(), CV_32F, descriptor.data()).clone();
 			++numDescribed;
 		} else {
@@ -395,6 +399,10 @@ unsigned SFM::MatchPairsROMA2(PairsMatcher& pairsMatcher, RoMa2Onnx& roma2, cons
 	TD_TIMER_STARTD();
 	Scene& scene = pairsMatcher.GetScene();
 	const IIndex nImages = (IIndex)scene.images.size();
+	// every candidate pair indexes scene.images directly (slot planning, loads, ApplyROMA2Pair's
+	// keys), so image IDs must be their own indices - the convention the whole matcher assumes
+	ASSERT(std::all_of(scene.images.begin(), scene.images.end(),
+		[&](const Image& img) { return img.ID == (IIndex)(&img - scene.images.begin()); }));
 	const unsigned nThreads = (unsigned)scene.threadPool.get_thread_count();
 	// per-round replace policy (design decision 6): the first round warps every candidate and
 	// replaces whenever the guided set is larger, while the verification-feedback round spends

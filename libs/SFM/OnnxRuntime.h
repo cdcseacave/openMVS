@@ -50,7 +50,9 @@ namespace SFM {
 #ifdef _USE_ONNXRUNTIME
 
 // Execution provider requested for/selected by an OnnxModel: AUTO tries CUDA, then CoreML,
-// then DirectML, then falls back to CPU, in that order, keeping the first one that loads
+// then DirectML, then falls back to CPU, in that order, keeping the first one that loads;
+// any other value is a hard requirement - the model loads on it or Load() fails, never on CPU
+// behind the caller's back
 enum class OnnxProvider : uint8_t {
 	AUTO = 0,
 	CUDA = 1,
@@ -126,8 +128,9 @@ public:
 	OnnxModel& operator=(OnnxModel&&) = default;
 	~OnnxModel() = default;
 
-	// Load the model, trying providers in preference order (or just the forced one from
-	// options.provider), logging the execution provider it ends up on; rejects a model with
+	// Load the model, trying providers in preference order for AUTO, or only the one
+	// options.provider names (an unavailable or failing one is then an error, not a fall back
+	// to CPU), logging the execution provider it ends up on; rejects a model with
 	// any dynamic (negative) input/output dimension. Lifetime: any OrtTensor made by
 	// MakeDeviceTensor must be destroyed before this OnnxModel is (see OrtTensor).
 	// (Two overloads rather than a defaulted `= Options()` argument: GCC rejects a nested

@@ -36,6 +36,13 @@ Everything the script computes goes under the capture it came from (`<capture>/<
 and `<capture>/<run>/variant_dumps/<arm>/`), cached, so a re-run costs no inference and no engine run.
 The verdict goes next to the graphs it judges.
 
+Every default below is one of THIS machine's campaign paths -- the export directory, the campaign
+`tools/`, its captures list and engine tables, the `roma2_pair_eval` binary, and the run/dump folder
+names inside a capture. Nothing is discovered and nothing has to exist anywhere else: every one of
+them is a command-line flag (`--export-dir`, `--tools`, `--captures`, `--engine-table`, `--pair-eval`,
+`--roma2`, `--run-name`, `--dump`, `--dump-name`, `--images-dir`, `--out`, `--scores`), so on another
+machine point them at the local copies instead of reproducing this layout.
+
     uv run --project ~/polyml/romav2 --with onnxruntime-gpu==1.23.2 --with transformers \
         python scripts/python/tests/roma2_onnx_crosscheck.py 2>&1 | tee <export-dir>/crosscheck.log
 """

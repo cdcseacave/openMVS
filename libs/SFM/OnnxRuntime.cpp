@@ -96,9 +96,11 @@ std::basic_string<ORTCHAR_T> ToOrtPath(const String& path)
 	#endif
 }
 
-// Providers this binary was linked with, in preference order, filtered by the request;
-// a specifically requested (non-AUTO) provider that is not available gets a warning before
-// silently falling through to CPU
+// Providers this binary was linked with, in preference order, filtered by the request.
+// AUTO walks the whole CUDA -> CoreML -> DirectML -> CPU chain and always ends on CPU, but an
+// explicitly requested provider is the ONLY candidate returned: if it is not available the list
+// comes back empty and OnnxModel::Load fails naming it, rather than silently running the model
+// on the CPU at seconds per image while the user believes their GPU is being used
 std::vector<OnnxProvider> ProviderCandidates(OnnxProvider requested)
 {
 	const std::vector<std::string> available(Ort::GetAvailableProviders());
@@ -108,18 +110,18 @@ std::vector<OnnxProvider> ProviderCandidates(OnnxProvider requested)
 		if (requested == OnnxProvider::AUTO || requested == OnnxProvider::CUDA)
 			candidates.push_back(OnnxProvider::CUDA);
 	} else if (requested == OnnxProvider::CUDA)
-		VERBOSE("warning: requested execution provider CUDA is not available in this build");
+		VERBOSE("error: requested execution provider CUDA is not available in this build");
 	if (has("CoreMLExecutionProvider")) {
 		if (requested == OnnxProvider::AUTO || requested == OnnxProvider::COREML)
 			candidates.push_back(OnnxProvider::COREML);
 	} else if (requested == OnnxProvider::COREML)
-		VERBOSE("warning: requested execution provider CoreML is not available in this build");
+		VERBOSE("error: requested execution provider CoreML is not available in this build");
 	if (has("DmlExecutionProvider")) {
 		if (requested == OnnxProvider::AUTO || requested == OnnxProvider::DML)
 			candidates.push_back(OnnxProvider::DML);
 	} else if (requested == OnnxProvider::DML)
-		VERBOSE("warning: requested execution provider DirectML is not available in this build");
-	if (requested == OnnxProvider::AUTO || requested == OnnxProvider::CPU || candidates.empty())
+		VERBOSE("error: requested execution provider DirectML is not available in this build");
+	if (requested == OnnxProvider::AUTO || requested == OnnxProvider::CPU)
 		candidates.push_back(OnnxProvider::CPU);
 	return candidates;
 }
@@ -173,7 +175,7 @@ bool ExpectShape(const std::vector<std::pair<std::string, std::vector<int64_t>>>
 			continue;
 		if (entry.second == shape)
 			return true;
-		VERBOSE("error: ONNX %s '%s' shape mismatch: expected %s, got %s",
+		VERBOSE("error: ONNX %s '%s' shape mismatch: model declares %s, caller expects %s",
 			kind, name.c_str(), ShapeToString(entry.second).c_str(), ShapeToString(shape).c_str());
 		return false;
 	}
@@ -269,7 +271,12 @@ bool OnnxModel::Load(const String& fileName, const Options& _options)
 		}
 	}
 	if (session == nullptr) {
-		VERBOSE("error: can not load ONNX model '%s' on any execution provider", fileName.c_str());
+		// an explicitly requested provider is never traded for another one (see ProviderCandidates)
+		if (options.provider != OnnxProvider::AUTO)
+			VERBOSE("error: can not load ONNX model '%s' on the requested %s execution provider",
+				fileName.c_str(), OnnxProviderName(options.provider));
+		else
+			VERBOSE("error: can not load ONNX model '%s' on any execution provider", fileName.c_str());
 		return false;
 	}
 	// static I/O metadata; reject dynamic dims (static graphs only, like polycpp matcher.cpp:408-414);

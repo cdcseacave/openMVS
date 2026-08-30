@@ -139,7 +139,11 @@ bool SFM::ApplyROMA2Pair(Scene& scene, std::unordered_map<PairIdx::PairIndex, II
 		bCreated = false;
 		return true;
 	}
-	pair.overlapRatio = pair.overlapArea = 1.f; // a dense-matched pair covers the frame (the old NPZ import set the same)
+	// overlapRatio/overlapArea stay at their reset value (0): a created pair is weighted exactly
+	// like any other pair, ComputePairsWeights computing its own overlap proxy for it. Stamping a
+	// full 1/1 overlap here (what the old NPZ import did) would survive PairsMatcher::Match --
+	// nothing else writes overlapRatio, and the weighting only fills in a still-zero overlapArea --
+	// and hand every dense-created pair a best-possible overlap score it was never measured to have
 	pairIndexMap.emplace(key, (IIndex)scene.pairs.size());
 	scene.pairs.emplace_back(std::move(pair));
 	bCreated = true;

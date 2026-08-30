@@ -584,12 +584,21 @@ bool Scene::MatchPairs(const MatchConfig& config, const ROMA2Config& roma2Cfg, c
 			VERBOSE("error: ROMA2 model '%s' requested, but this build has no ONNX Runtime support", modelPath.c_str());
 			return false;
 		}
-		if (!roma2.Load(modelPath, roma2Cfg.setting, roma2Cfg.useGPU ? roma2Cfg.provider : String("cpu"))) {
-			VERBOSE("error: failed to load ROMA2 model '%s' (%s)", modelPath.c_str(), roma2Cfg.setting.c_str());
-			return false;
+		// the ONNX sessions are only loaded when they still have something to produce: the dense
+		// warps, or global descriptors this scene does not carry yet. Retrieval alone over
+		// descriptors an earlier run already stored ranks the pairs straight from
+		// Image::globalDescriptor (PairsMatcher::QueryRetrieval) and never enters a session, so
+		// loading 1.2 GB of graph weights onto the device for it would buy nothing
+		if (roma2Cfg.useMatching || !status.nState.isSet(Status::STATE::GLOBAL_DESCRIPTORS)) {
+			if (!roma2.Load(modelPath, roma2Cfg.setting, roma2Cfg.useGPU ? roma2Cfg.provider : String("cpu"))) {
+				VERBOSE("error: failed to load ROMA2 model '%s' (%s)", modelPath.c_str(), roma2Cfg.setting.c_str());
+				return false;
+			}
+			if (roma2Cfg.useRetrieval && !ComputeGlobalDescriptors(roma2, roma2Cfg))
+				return false;
+		} else {
+			DEBUG("ROMA2 retrieval reuses the %u global descriptors stored in the scene; no model loaded", images.size());
 		}
-		if (roma2Cfg.useRetrieval && !ComputeGlobalDescriptors(roma2, roma2Cfg))
-			return false;
 	}
 	pairsMatcher.SetROMA2(useROMA2 && roma2Cfg.useMatching ? &roma2 : NULL, roma2Cfg);
 

@@ -618,8 +618,15 @@ bool PairsMatcher::MatchPair(
 		ASSERT(img1.ID < img2.ID);
 		pair.ID1 = img1.ID;
 		pair.ID2 = img2.ID;
-		// Match features using thread-local matcher
-		const static thread_local unsigned threadIdx = std::hash<std::thread::id>{}(std::this_thread::get_id()) % matchers.size();
+		// Match features using the matcher owned by this thread: matchers.size() is the pool's own
+		// thread count (both are scene.nMaxThreads), so the pool index is a collision-free slot,
+		// unlike the hashed thread id this used to fold into the same range.
+		// MatchPair is also called directly on the caller's thread (a single pair matched outside
+		// any pool, as the tests do); there is no pool index then, and that caller is the only
+		// user of the matchers, so slot 0 is free for it.
+		const std::optional<size_t> poolIdx = BS::this_thread::get_index();
+		ASSERT(!poolIdx || *poolIdx < matchers.size());
+		const unsigned threadIdx = poolIdx ? (unsigned)*poolIdx : 0u;
 		ASSERT(img1.descriptors.rows == (int)img1.keypoints.size());
 		ASSERT(img2.descriptors.rows == (int)img2.keypoints.size());
 		MatchFeatures(img1.descriptors, img2.descriptors, pair.matches, threadIdx);
@@ -1619,7 +1626,10 @@ void PairsMatcher::PreMatch(PairIdxArr& pairsToMatch)
 			++atomicNumRemoved;
 			return;
 		}
-		const static thread_local unsigned threadIdx = std::hash<std::thread::id>{}(std::this_thread::get_id()) % matchers.size();
+		// always a pool thread: this lambda only ever runs through detach_loop below
+		const std::optional<size_t> poolIdx = BS::this_thread::get_index();
+		ASSERT(poolIdx && *poolIdx < matchers.size());
+		const unsigned threadIdx = poolIdx ? (unsigned)*poolIdx : 0u;
 		std::vector<DMatch> matches;
 		MatchFeatures(desc1, desc2, matches, threadIdx);
 		if (matches.size() < config.preMatchThreshold) {

@@ -59,7 +59,7 @@ struct SFM_API ROMA2Config {
 	bool useRetrieval = true;              // rank the candidate image pairs with the ROMAv2 global descriptors
 	bool useMatching = true;               // guide the sparse feature matching with the ROMAv2 dense warps
 	RetrievalRecipe retrievalRecipe = RetrievalRecipe::FACETS; // how to pool the global retrieval descriptor
-	float retrievalPower = 0.3f;           // exponent of the signed power normalization of the retrieval descriptor
+	float retrievalPower = 0.f;            // exponent of the signed power normalization of the retrieval descriptor (0 = the manifest's retrieval_recipes.facets.power)
 	float minConfidence = 0.3f;            // minimum warp confidence for a keypoint to be tracked
 	float minErodeConfidence = 0.9f;       // confidence above which a cell survives the erosion of the confidence map
 	int erodeBorder = 8;                   // border size (in warp cells) to erode the confidence map (0 = disabled)

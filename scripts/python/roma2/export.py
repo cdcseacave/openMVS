@@ -21,8 +21,10 @@ and reuse the result.
 Three steps, and none of them optional. `onnx` traces a stage; `check` runs the traced graph under
 onnxruntime and judges it against the eager fp32 model — on cosine for the descriptor, on where the pair
 graph claims a correspondence for the matcher (see check_correspondences); `manifest` writes the
-roma_<setting>.json the C++ loader binds against, with a sha256 per file so a truncated .onnx.data is
-caught here rather than as an opaque ORT failure at scene time.
+roma_<setting>.json the C++ loader binds against, with a sha256 per file. Those checksums are
+provenance -- `export.py check` and whoever copies a model directory around verify them; the C++
+loader (`RoMa2Manifest::Load`) never reads them, so a truncated .onnx.data still surfaces at scene
+time as an opaque ONNX Runtime load failure, and `export.py check` is what attributes it.
 
 Run inside polyml's export project env:
   cd ~/polyml/romav2 && uv run --with 'onnxruntime-gpu==1.23.2' \\

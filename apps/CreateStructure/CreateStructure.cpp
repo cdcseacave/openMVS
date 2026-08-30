@@ -260,6 +260,10 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		LOG("error: --roma2 needs a build with ONNX Runtime (-DOpenMVS_USE_ONNXRUNTIME=ON)");
 		return false;
 	}
+	if (OPT::strROMA2Setting != "turbo" && OPT::strROMA2Setting != "fast" && OPT::strROMA2Setting != "base") {
+		LOG("error: unknown ROMA2 export preset '%s' (accepted: turbo, fast, base)", OPT::strROMA2Setting.c_str());
+		return false;
+	}
 	if (OPT::strROMA2RetrievalRecipe != "facets" && OPT::strROMA2RetrievalRecipe != "layers") {
 		LOG("error: unknown ROMA2 retrieval recipe '%s' (accepted: facets, layers)", OPT::strROMA2RetrievalRecipe.c_str());
 		return false;

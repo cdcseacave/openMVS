@@ -80,7 +80,9 @@ SFM_API size_t TrackKeypointsByWarp(
 // Store the given guided pair in the scene, either creating it or replacing the existing one:
 // pairIndexMap maps the pair key to its index in scene.pairs and is updated accordingly,
 // maxReplaceInliers is the inlier ceiling above which an existing pair is never replaced
-// (0 = no ceiling), and bCreated tells whether a new pair was appended.
+// (0 = no ceiling), and bCreated tells whether a new pair was appended. A created pair carries
+// no overlap of its own (overlapRatio/overlapArea stay 0), so ComputePairsWeights weights it
+// from the same proxy it uses for every other pair.
 // Returns true if the scene was modified (pair created or replaced).
 SFM_API bool ApplyROMA2Pair(
 	Scene& scene,
