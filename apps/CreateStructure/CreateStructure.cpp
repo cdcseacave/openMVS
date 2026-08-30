@@ -75,6 +75,8 @@ bool bROMA2Match;
 unsigned nROMA2Slots;
 unsigned nROMA2SkipHealthy;
 unsigned nROMA2MaxReplace;
+float fROMA2MinOverlap;
+bool bROMA2CrossCheck;
 String strROMA2RetrievalRecipe;
 String strROMA2Provider;
 float defaultFocalRatio;
@@ -168,6 +170,8 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("roma2-slots", boost::program_options::value(&OPT::nROMA2Slots)->default_value(64), "images kept resident on the device while dense matching (12.5 MB each at base)")
 		("roma2-skip-healthy", boost::program_options::value(&OPT::nROMA2SkipHealthy)->default_value(0), "round-1 dense matching: skip pairs that already have at least this many inliers (0 = warp every pair)")
 		("roma2-max-replace", boost::program_options::value(&OPT::nROMA2MaxReplace)->default_value(0), "round-1 dense matching: replace only pairs with fewer than this many inliers (0 = replace any weaker pair)")
+		("roma2-min-overlap", boost::program_options::value(&OPT::fROMA2MinOverlap)->default_value(0.f), "dense matching: create a pair the descriptor matcher did not verify only if this fraction of the warp is confidently overlapping (0 = off, 1 = create only on a fully confident warp)")
+		("roma2-cross-check", boost::program_options::value<bool>(&OPT::bROMA2CrossCheck)->default_value(false), "dense matching: keep a guided match only if no closer keypoint of the first image claims the same keypoint of the second")
 		("roma2-retrieval-recipe", boost::program_options::value<std::string>(&OPT::strROMA2RetrievalRecipe)->default_value("facets"), "global descriptor pooling: facets (value projections of blocks 15+20, 2048-D) or layers (GeM on the matcher's deepest layer, 1024-D, legacy)")
 		("roma2-provider", boost::program_options::value<std::string>(&OPT::strROMA2Provider)->default_value("auto"), "ONNX Runtime execution provider: auto (CUDA > CoreML > DirectML > CPU), cuda, coreml, dml or cpu")
 		("default-focal-ratio", boost::program_options::value(&OPT::defaultFocalRatio)->default_value(1.2f), "focal-length is set to ratio * max(width,height) for images with unknown focal-length")
@@ -273,6 +277,10 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		LOG("error: unknown ROMA2 execution provider '%s' (accepted: auto, cuda, coreml, dml, cpu)", OPT::strROMA2Provider.c_str());
 		return false;
 	}
+	if (OPT::fROMA2MinOverlap < 0.f || OPT::fROMA2MinOverlap > 1.f) {
+		LOG("error: --roma2-min-overlap is a fraction of the warp, it must be in [0,1] (got %g)", OPT::fROMA2MinOverlap);
+		return false;
+	}
 	if (OPT::bROMA2 && (OPT::bROMA2Retrieval || OPT::bROMA2Match)) {
 		// the library refuses this same condition inside Scene::MatchPairs (design decision 10),
 		// gated the same way (enabled && (useRetrieval || useMatching)), Scene.cpp:574; this early
@@ -341,6 +349,8 @@ int main(int argc, LPCTSTR* argv)
 	cfg.roma2Cfg.slotBudget = OPT::nROMA2Slots;
 	cfg.roma2Cfg.skipHealthyInliers = OPT::nROMA2SkipHealthy;
 	cfg.roma2Cfg.maxReplaceInliers = OPT::nROMA2MaxReplace;
+	cfg.roma2Cfg.minCreatedOverlap = OPT::fROMA2MinOverlap;
+	cfg.roma2Cfg.guidedCrossCheck = OPT::bROMA2CrossCheck;
 	cfg.roma2Cfg.retrievalRecipe = (OPT::strROMA2RetrievalRecipe == "layers") ? RetrievalRecipe::LAYERS : RetrievalRecipe::FACETS;
 	cfg.roma2Cfg.provider = OPT::strROMA2Provider;
 	#ifdef _USE_CUDA

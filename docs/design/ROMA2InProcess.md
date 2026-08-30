@@ -37,6 +37,8 @@ validation captures when the intrinsics are self-calibrated (see Limitations, an
 | `--roma2-slots N` | `64` | image descriptors resident on the device while dense matching |
 | `--roma2-skip-healthy N` | `0` | round 1: skip pairs already at ≥ N inliers |
 | `--roma2-max-replace N` | `0` | round 1: replace only pairs below N inliers |
+| `--roma2-min-overlap F` | **`0`** (off) | create a pair the descriptor matcher did not verify only if ≥ F of the warp is confidently overlapping |
+| `--roma2-cross-check B` | **`false`** | drop a guided match when a closer keypoint of A claims the same keypoint of B |
 | `--export-retrieval-csv F` | — | per-image retrieval rankings (needs `--roma2-retrieval`) |
 
 `--export-retrieval-csv` and `--export-pairs-csv` are both written by `Scene::Reconstruct()` right
@@ -184,7 +186,7 @@ each pair's guided re-match runs on the thread pool. The per-round log line repo
 
 ```
 ROMA2 slot plan: 6 pairs, 4 slots, 4 loads (0 reloads)
-ROMA2 dense matching (first round): 6/6 pairs guided, 0 created, 6 replaced, 0 skipped healthy, ...
+ROMA2 dense matching (first round): 6/6 pairs guided, 0 created, 6 replaced, 0 gated, 0 skipped healthy, ...
 ```
 
 ---
@@ -205,9 +207,20 @@ fill only where descriptor matching is weak instead of warping and replacing eve
 A guided pair only replaces or creates a scene pair when (`libs/SFM/MatchROMA2.cpp`,
 `ROMA2Warp.cpp:ApplyROMA2Pair`):
 
+0. the **confident-overlap gate** let it through: `--roma2-min-overlap F` (default 0 = off) refuses to
+   *create* a pair the descriptor matcher did not verify unless at least F of the warp's cells survive
+   the erosion with confidence ≥ `minConfidence`. Existence is read from the pass's `pairIndexMap`, so
+   a pair the descriptor matcher verified is never gated whatever the warp says, and the gate fires
+   before tracking and guided matching (the pair is counted in the summary line's `%u gated`).
+   `overlapRatio`/`overlapArea` of a created pair still stay 0 — a gate is not a weight;
 1. `MatchFeaturesGeometric` succeeded on the warp-tracked keypoints and produced a non-empty match set
    (a failed guide falls back to what descriptor matching already stored for that pair, which must
-   never be offered as a "replacement" for itself);
+   never be offered as a "replacement" for itself). With `--roma2-cross-check` (default **false**)
+   its forward selection is also **train-side cross-checked**: a match (i→j) survives only if, among
+   all keypoints of A whose selected candidate is j, i has the smallest descriptor distance (ties keep
+   the smaller queryIdx). The check is restricted to those forward candidate sets — no reverse
+   epipolar pass is run — and it is the only mode in which the single-candidate case gets its
+   descriptor distance computed at all, since a left-at-zero distance would win every collision;
 2. the guided set then **re-verifies** the same way the descriptor path does —
    `PairsMatcher::GeometricFilter` when epipolar verification is enabled, or the plain
    `minMatches` size bar otherwise — so an unverified guided count is never compared against a
@@ -407,7 +420,10 @@ scene.sfm ...`). `.mvs` files are unaffected.
     warp-verified pairs left the reconstruction on **146 of 377 images, out of 8 components**, where
     SIFT kept 309. The fill-only experiment below keeps every pair the dense arm added and still
     fragments (176/377, and a registered set *disjoint* from the first run's), which pins the
-    fragmentation on the **added pairs themselves**, not on the replacement of SIFT match sets.
+    fragmentation on the **added pairs themselves**, not on the replacement of SIFT match sets. The
+    confident-overlap gate below attacks exactly those pairs and does *not* fix it either: alone it
+    reaches 124/377, and together with the cross-check 192/377 — a spread that says more about how
+    unstable this capture's reconstruction is than about either knob.
   - *Mitigations,* in order of how much they cost you:
     1. **Retrieval-only** — the default (`--roma2-retrieval true --roma2-match false`). It was better
        than or equal to SIFT on 4 of 5 captures, keeps the focal within 1 px of the SIFT arm, and costs
@@ -425,18 +441,74 @@ scene.sfm ...`). `.mvs` files are unaffected.
        match set is self-consistent with the *coarse* warp's own geometry — a smooth, low-resolution
        field — so it under-constrains focal/distortion refinement in a way independently-detected
        SIFT/AKAZE/ORB keypoints do not.
-  - *Known follow-ups,* neither implemented here:
-    1. **A confident-overlap gate on created pairs.** Pair creation currently only asks that the guided
-       match set verify; nothing asks the warp's own confidence map how much of the two frames actually
-       overlaps. A gate there is the direct candidate fix for the fragmentation, since it is the created
-       pairs that cause it.
-    2. **A train-side cross-check in guided matching.** `MatchFeaturesGeometric`
-       (`libs/SFM/MatchGeometric.cpp:126-158`) is one-sided by construction: for each keypoint of A it
-       keeps the descriptor-best keypoint of B among those near the epipolar line / the tracked point,
-       subject to a ratio test *within that candidate set*. There is no reverse pass and no
-       mutual-consistency test, so several keypoints of A may legitimately claim the same keypoint of
-       B. A train-side cross-check (keep a match only when B's best is A's keypoint too) would raise
-       the precision of exactly the correspondences the bundle then has to absorb.
+  - *Both follow-ups are now implemented*, each behind its own knob, and each was measured **on its
+    own arm** against the pre-registered bar (follow-up campaign, 2026-08-30; run folders
+    `<capture>/openmvs-roma2-20260830-roma2{gate-only,cc,gate,gate-diag,gate-diag-nocc}/`). **Both
+    miss the bar and both stay off**, and both remain available as knobs:
+    1. **A confident-overlap gate on created pairs** — `--roma2-min-overlap F` /
+       `ROMA2Config::minCreatedOverlap` (default **0 = off**). A pair the descriptor matcher did not
+       verify is created out of nothing but the warp, so the gate asks the eroded confidence map what
+       fraction of the warp grid is confident (≥ `minConfidence`) and refuses to create the pair below
+       `F`. Existing pairs are never gated. `F = 0.05` was chosen on `32265651` as the **knee** of a
+       0.05–0.60 sweep over the 5774 created-pair attempts of a diagnostic pass, labelled against the
+       capture's own ARKit depth (`scripts/python/tests/pair_gt_labels.py`, coverage mode: a pair is
+       plausible when the optical axes agree to 90° *and* each frame sees ≥ 15 % of the other's valid
+       depth pixels, implausible below 3 %, ambiguous in between and excluded). No threshold in that
+       range met the pre-registered target of removing ≥ 90 % of the implausible created pairs while
+       keeping ≥ 80 % of the plausible ones; at the knee `F = 0.05` it removes **86.6 %** of the
+       implausible created pairs and keeps **86.3 %** of the plausible ones, and the confident-overlap
+       fraction is a good discriminator of the two (ROC AUC **0.933**)
+       (`openmvs-roma2-20260830-roma2gate-diag/GATE-SWEEP.md`).
+       What it buys, measured alone (`…-roma2gate-only/RESULTS.md`): on the control capture
+       `f7dbf861` it matches the plain dense arm and edges past it — **308 of 345** registered against
+       309, rotation mean 0.899° vs 0.988° and median 0.393° vs 0.382° (+2.9 %, inside the ruling's
+       +15 %), better position mean/median/max, a like-for-like alignment-free penalty of **+3.9 %**
+       against the plain arm's +9.5 %, Ceres `Linear solver failure` **157 vs 257** and matching
+       **389 s vs 588 s** — while creating 1163 pairs instead of 2205. On the repetitive `32265651`
+       it does **not** fix the fragmentation: **124 of 377** registered (30 components), *fewer* than
+       the plain dense arm's 146 and far from the **250** the ruling required, even though every
+       `--compare-mvs` statistic there improves too (rotation 1.445/1.105/6.407 vs 1.712/1.229/6.682,
+       like-for-like +7.4 % vs +23.7 %, 309 solver failures vs 452). That clause fails, so the default
+       stays **0** — but on a capture like `f7dbf861` the knob costs nothing and buys speed.
+       That 146 → 124 → 192 spread across three configurations of the same matcher (plain dense,
+       gate-only at 0.05, gate + cross-check at 0.20) is itself the finding: on this capture the
+       incremental reconstruction latches onto whichever self-consistent sub-graph it meets first, and
+       any change to the pair set moves it to a different one — the `roma2` and `roma2gate` arms
+       register **disjoint** image sets.
+    2. **A train-side cross-check in guided matching** — `--roma2-cross-check B` /
+       `ROMA2Config::guidedCrossCheck` (default **false**). `MatchFeaturesGeometric` is one-sided by
+       construction: for each keypoint of A it keeps the descriptor-best keypoint of B among those
+       near the epipolar line / the tracked point, subject to a ratio test *within that candidate
+       set*, so several keypoints of A may claim the same keypoint of B. With the check on, a match
+       (i→j) survives only if, among all keypoints of A whose selected candidate is j, i has the
+       smallest descriptor distance (ties keep the smaller queryIdx); no reverse epipolar pass is run.
+       A median pair loses **30.9 %** of its forward matches to such a collision — and removing them
+       costs **no inliers**: measured against an otherwise identical pass with the check off, the
+       verified inlier median per pair is **126 either way** on `32265651` (mean 221.9 vs 221.3,
+       7170 pairs vs 7174) and **158 vs 157** on `f7dbf861` (5221 pairs vs 5226), so the ruling's
+       inlier clause passes with a **0.0 % / +0.6 %** change. Measured alone
+       (`…-roma2cc/RESULTS.md`), every `--compare-mvs` rotation and position statistic improves on
+       both captures — `32265651` 1.304/0.982/4.143° and 0.0162/0.0122/0.0514 against
+       1.712/1.229/6.682° and 0.0189/0.0129/0.0669; `f7dbf861` 0.459/0.361/5.451° and
+       0.0109/0.0093/0.0448 against 0.988/0.382/25.517° and 0.0179/0.0102/0.3792, with the images over
+       10° falling from 9 to 0. **But it registers far fewer images**: **137 of 377** on `32265651`
+       (against 146) and **183 of 345** on `f7dbf861` (against 309), and on the latter its
+       **like-for-like alignment-free rotation is worse** — **+18.1 %** against the SIFT baseline where
+       the plain dense arm is +9.5 %.
+       Ruling R-F10 settles how those are weighed: *"The cross-check clause's 'neither capture's
+       `--compare-mvs` statistics worsen' is read over a comparable registered set — `--compare-mvs`
+       scores each arm only on the images it registered, so a 41 % smaller (183 vs 309) and easier
+       survivor set cannot be compared on those numbers; the one statistic that is comparable across
+       arms, the like-for-like alignment-free rotation the brief asked for, is worse on `f7dbf861`
+       (+18.1 % vs +9.5 % against sift). The clause fails on the control capture — default false,
+       `--roma2-cross-check true` stays available."* So the default is **false**, and the knob is
+       there for anyone who wants the higher-precision correspondences (it costs nothing at matching
+       time and no verified inliers).
+       *Footnote:* an earlier run of both changes together at `F = 0.20`
+       (`…-roma2gate/RESULTS.md`, kept as a record) reached 192/377 on `32265651` and 332/345 on
+       `f7dbf861` with the best like-for-like rotation of the whole campaign (**−2.1 %** against the
+       SIFT baseline); it is not what either default rests on, since it cannot separate the two
+       changes' contributions.
 - **The describe pass always runs when `--roma2-retrieval` is on**, even for `EXHAUSTIVE` or
   `SEQUENTIAL` matching where no retrieval ranking is needed for pair selection — the global
   descriptors are still computed and stored (`Image::globalDescriptor`), which costs the describe pass

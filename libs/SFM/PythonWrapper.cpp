@@ -303,6 +303,8 @@ void RegisterBindings()
 		.def_readwrite("skip_healthy_inliers", &SFM::ROMA2Config::skipHealthyInliers)
 		.def_readwrite("feedback_max_replace_inliers", &SFM::ROMA2Config::feedbackMaxReplaceInliers)
 		.def_readwrite("feedback_skip_healthy_inliers", &SFM::ROMA2Config::feedbackSkipHealthyInliers)
+		.def_readwrite("min_created_overlap", &SFM::ROMA2Config::minCreatedOverlap)
+		.def_readwrite("guided_cross_check", &SFM::ROMA2Config::guidedCrossCheck)
 		.def_readwrite("use_gpu", &SFM::ROMA2Config::useGPU);
 
 	// SFM::ViewGraphCalibratorConfig — focal-length verification

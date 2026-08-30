@@ -3123,6 +3123,163 @@ bool MatchGeometricSphericalTest()
 
 
 // ===============================================================================
+// MatchFeaturesGeometric train-side cross-check test: the forward selection is
+// one-sided, so several keypoints of image A may end up claiming the same keypoint
+// of image B. The fixture below stages exactly one such collision, where the wrong
+// claimant is also the one with the smaller queryIdx: without the cross-check both
+// matches are kept, and without the single-candidate distance both would sit at
+// distance 0 and the wrong (first) one would win the tie.
+// ===============================================================================
+bool GuidedCrossCheckTest()
+{
+	VERBOSE("\n=== GuidedCrossCheckTest: train-side cross-check of the guided matching ===");
+
+	// two pinhole views of a grid of points, the second camera translated along +X, so every
+	// epipolar line in image B is the image-A row of its keypoint and the disparity is constant
+	// along a row (one depth per row): the grid stays 55 px apart in B, well beyond the spatial
+	// search radius, which makes every candidate set a singleton and the collision below the
+	// only one in the pair
+	Scene scene;
+	const int width = 640, height = 480;
+	const REAL focal = 600, baseline = 0.25;
+	scene.cameras.emplace_back(new PinholeCamera(cv::Size(width, height),
+		focal, focal, REAL(width)/2, REAL(height)/2));
+	for (unsigned i = 0; i < 2; ++i) {
+		Pose3D pose;
+		pose.C = Point3(i == 0 ? REAL(0) : baseline, REAL(0), REAL(0));
+		pose.R = Matrix3x3::IDENTITY;
+		scene.images.emplace_back((IIndex)i, String(), pose, 0, scene.cameras[0]);
+	}
+	scene.status.nCalibratedImages = scene.images.size();
+	Image& img0 = scene.images[0];
+	Image& img1 = scene.images[1];
+	const unsigned numCols = 10, numRows = 7;
+	for (unsigned r = 0; r < numRows; ++r) {
+		const REAL z = REAL(3) + REAL(0.6)*r; // one depth per row keeps the row's disparity constant
+		for (unsigned c = 0; c < numCols; ++c) {
+			const REAL x = REAL(90 + 55*c), y = REAL(50 + 60*r);
+			const Point3 X((x - width/2)*z/focal, (y - height/2)*z/focal, z);
+			for (unsigned v = 0; v < 2; ++v) {
+				Image& img = scene.images[v];
+				const auto [proj, valid] = img.ProjectPoint(X);
+				if (!valid || !Image8U::isInside(proj, img.GetSize())) {
+					VERBOSE("GuidedCrossCheckTest FAILED: grid point (%u,%u) falls outside image %u", c, r, v);
+					return false;
+				}
+				img.keypoints.emplace_back(Cast<float>(proj), 0.f, 0.f, 10.f);
+			}
+		}
+	}
+	scene.status.nState.set(Scene::Status::STATE::FEATURES_EXTRACTED);
+	const unsigned numPoints = numCols*numRows;
+	ASSERT(img0.keypoints.size() == numPoints && img1.keypoints.size() == numPoints);
+
+	// the collision: the intruder keeps its own (row-mate) epipolar line but is told it tracks
+	// onto the victim's keypoint of B, and is given a descriptor 16 bits away from it, while the
+	// rightful claimant is 8 bits away. The intruder has the SMALLER queryIdx on purpose
+	const unsigned trueIdx = 2*numCols + 4, intruderIdx = 2*numCols + 1; // same row, hence same epipolar line
+	ASSERT(intruderIdx < trueIdx);
+	std::vector<Point2f> trackedPoints1(numPoints), trackedPoints2(numPoints);
+	std::vector<uchar> trackStatus(numPoints, 1);
+	for (unsigned i = 0; i < numPoints; ++i) {
+		trackedPoints1[i] = img0.keypoints[i].pt;
+		trackedPoints2[i] = img1.keypoints[i].pt;
+	}
+	trackedPoints2[intruderIdx] = img1.keypoints[trueIdx].pt;
+
+	// unique 256-bit binary descriptors, shared by the two views of the same point
+	const int descBytes = 32;
+	img0.descriptors.create((int)numPoints, descBytes, CV_8U);
+	img1.descriptors.create((int)numPoints, descBytes, CV_8U);
+	std::mt19937 descRng(0x5EACA7Eu);
+	for (unsigned i = 0; i < numPoints; ++i)
+		for (int b = 0; b < descBytes; ++b) {
+			const uint8_t byte = (uint8_t)(descRng() & 0xFF);
+			img0.descriptors.at<uint8_t>((int)i, b) = byte;
+			img1.descriptors.at<uint8_t>((int)i, b) = byte;
+		}
+	img0.descriptors.at<uint8_t>((int)trueIdx, 0) ^= 0xFF; // 8 bits from the victim's descriptor
+	for (int b = 0; b < descBytes; ++b)
+		img0.descriptors.at<uint8_t>((int)intruderIdx, b) = img1.descriptors.at<uint8_t>((int)trueIdx, b);
+	img0.descriptors.at<uint8_t>((int)intruderIdx, 0) ^= 0xFF; // 16 bits from the victim's descriptor
+	img0.descriptors.at<uint8_t>((int)intruderIdx, 1) ^= 0xFF;
+
+	MatchConfig matchCfg;
+	matchCfg.minMatches = 20;
+	matchCfg.maxEpipolarError = 4.f;
+	matchCfg.matchRatio = 0.9f;
+	matchCfg.descriptorsAreBinary = true;
+	matchCfg.minTriangulationAngle = 0.f;
+	matchCfg.reprojThreshold = 0.f;
+	matchCfg.epipoleFilterThreshold = 0.f;
+	PairsMatcher matcher(scene, matchCfg);
+
+	// counts the matches claiming the victim's keypoint of B, and the queryIdx of the last of them
+	const auto CountClaims = [&](const ImagePair& pair, unsigned& lastQueryIdx) {
+		unsigned numClaims = 0;
+		for (const DMatch& m : pair.matches)
+			if ((unsigned)m.trainIdx == trueIdx) {
+				++numClaims;
+				lastQueryIdx = (unsigned)m.queryIdx;
+			}
+		return numClaims;
+	};
+
+	// without the cross-check both claimants survive, and the count reports both of them
+	ImagePair pairOff(0, 1);
+	unsigned numSharedOff = 0;
+	if (!MatchFeaturesGeometric(matcher, img0, img1, trackedPoints1, trackedPoints2, trackStatus,
+			pairOff, 2.f, 0, false, &numSharedOff)) {
+		VERBOSE("GuidedCrossCheckTest FAILED: MatchFeaturesGeometric reported fallback (cross-check off)");
+		return false;
+	}
+	unsigned queryIdxOff = NO_ID;
+	const unsigned numClaimsOff = CountClaims(pairOff, queryIdxOff);
+	VERBOSE("GuidedCrossCheckTest: cross-check off -> %u matches, %u claim keypoint %u, %u shared-train",
+		(unsigned)pairOff.matches.size(), numClaimsOff, trueIdx, numSharedOff);
+	if (numClaimsOff != 2 || numSharedOff != 2) {
+		VERBOSE("GuidedCrossCheckTest FAILED: expected 2 claims and 2 shared-train with the cross-check off, got %u and %u",
+			numClaimsOff, numSharedOff);
+		return false;
+	}
+
+	// with it on only the closest claimant survives -- which is also the check that the
+	// single-candidate descriptor distance is computed: left at 0 both claimants would tie and
+	// the intruder, having the smaller queryIdx, would be the one kept
+	ImagePair pairOn(0, 1);
+	unsigned numSharedOn = 0;
+	if (!MatchFeaturesGeometric(matcher, img0, img1, trackedPoints1, trackedPoints2, trackStatus,
+			pairOn, 2.f, 0, true, &numSharedOn)) {
+		VERBOSE("GuidedCrossCheckTest FAILED: MatchFeaturesGeometric reported fallback (cross-check on)");
+		return false;
+	}
+	unsigned queryIdxOn = NO_ID;
+	const unsigned numClaimsOn = CountClaims(pairOn, queryIdxOn);
+	VERBOSE("GuidedCrossCheckTest: cross-check on -> %u matches, %u claim keypoint %u (queryIdx %u), %u shared-train",
+		(unsigned)pairOn.matches.size(), numClaimsOn, trueIdx, queryIdxOn, numSharedOn);
+	if (numClaimsOn != 1 || numSharedOn != 1) {
+		VERBOSE("GuidedCrossCheckTest FAILED: expected 1 claim and 1 shared-train with the cross-check on, got %u and %u",
+			numClaimsOn, numSharedOn);
+		return false;
+	}
+	if (queryIdxOn != trueIdx) {
+		VERBOSE("GuidedCrossCheckTest FAILED: the cross-check kept keypoint %u, not the closer %u"
+			" (the single-candidate descriptor distance was left at 0)", queryIdxOn, trueIdx);
+		return false;
+	}
+	if (pairOn.matches.size() + 1 != pairOff.matches.size()) {
+		VERBOSE("GuidedCrossCheckTest FAILED: the cross-check dropped %zu matches, expected exactly 1",
+			pairOff.matches.size() - pairOn.matches.size());
+		return false;
+	}
+
+	VERBOSE("GuidedCrossCheckTest PASSED");
+	return true;
+}
+/*----------------------------------------------------------------*/
+
+
+// ===============================================================================
 // Phase 5: Cube-map bridge tests
 // ===============================================================================
 

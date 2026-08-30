@@ -24,7 +24,9 @@ bool SFM::MatchFeaturesGeometric(
 	const std::vector<uchar>& trackStatus,
 	ImagePair& pair,
 	float epipolarThreshold,
-	unsigned threadIdx)
+	unsigned threadIdx,
+	bool crossCheck,
+	unsigned* numSharedTrain)
 {
 	// Sanity check: keypoints1 correspond to trackedPoints1 by index
 	// and the caller owns one of pairsMatcher's per-thread descriptor matchers
@@ -32,6 +34,11 @@ bool SFM::MatchFeaturesGeometric(
 	ASSERT(img1.keypoints.size() == trackedPoints1.size());
 	ASSERT(trackedPoints1.size() == trackedPoints2.size());
 	ASSERT(trackStatus.size() == trackedPoints1.size());
+
+	// no forward matches were selected yet, so no train-side collision can be reported by any
+	// path that returns before Step 2 (the descriptor-only fallbacks included)
+	if (numSharedTrain)
+		*numSharedTrain = 0;
 
 	pair.Reset();
 
@@ -88,11 +95,22 @@ bool SFM::MatchFeaturesGeometric(
 	const float matchRatio = pairsMatcher.GetConfig().matchRatio;
 	const int normType = pairsMatcher.GetConfig().descriptorsAreBinary ? cv::NORM_HAMMING : cv::NORM_L2;
 
+	// descriptor distances of the appended matches, parallel to pair.matches and filled only for
+	// the cross-check, which is what needs them: SFM::DMatch keeps just the two indices, the
+	// cv::DMatch distance is dropped on the way into pair.matches
+	std::vector<float> matchDistances;
+
 	// Descriptor-based winner selection shared between the F-based and E-based paths.
 	const auto SelectAndAppendBest = [&](std::vector<cv::DMatch>& candidates, size_t i) {
 		if (candidates.empty())
 			return;
 		if (candidates.size() == 1) {
+			// with the cross-check on this match may still have to win a train-side collision
+			// against another keypoint of A, and a left-at-zero distance would win every one of
+			// them; without it nothing reads the distance, so it is not even computed
+			if (crossCheck)
+				matchDistances.push_back((float)cv::norm(img1.descriptors.row((int)i),
+					img2.descriptors.row(candidates[0].trainIdx), normType));
 			pair.matches.push_back(candidates[0]);
 			return;
 		}
@@ -106,8 +124,11 @@ bool SFM::MatchFeaturesGeometric(
 				return a.distance < b.distance;
 			});
 		// Ratio test: best must be meaningfully better than second-best.
-		if (candidates[0].distance < matchRatio * candidates[1].distance)
+		if (candidates[0].distance < matchRatio * candidates[1].distance) {
+			if (crossCheck)
+				matchDistances.push_back(candidates[0].distance);
 			pair.matches.push_back(candidates[0]);
+		}
 	};
 
 	// Branch on pair.F availability. PairsMatcher::GeometricFilter only sets
@@ -218,6 +239,56 @@ bool SFM::MatchFeaturesGeometric(
 			SelectAndAppendBest(candidates, (size_t)i);
 		}
 	}
+
+	// Step 3: train-side cross-check, restricted to the forward candidate sets both branches above
+	// just built. Each keypoint of A contributed at most one match, picked among the keypoints of B
+	// near its epipolar line / tracked point, so nothing stops several keypoints of A from claiming
+	// the same keypoint of B. A match (i->j) survives only if, among all keypoints of A whose
+	// selected candidate is j, i has the smallest descriptor distance; ties keep the smaller
+	// queryIdx (the incumbent, since matches were appended in increasing queryIdx order). No reverse
+	// epipolar pass is run. The survivors are compacted in place, keeping that order, so the result
+	// does not depend on the map's iteration order.
+	if (crossCheck || numSharedTrain) {
+		ASSERT(!crossCheck || matchDistances.size() == pair.matches.size());
+		struct TrainClaim {
+			uint32_t best;  // index in pair.matches of the closest claimant so far
+			uint32_t count; // how many matches claim this trainIdx
+		};
+		std::unordered_map<uint32_t, TrainClaim> claims;
+		claims.reserve(pair.matches.size());
+		FOREACH(m, pair.matches) {
+			const auto inserted = claims.emplace(pair.matches[m].trainIdx, TrainClaim{(uint32_t)m, 1u});
+			if (inserted.second)
+				continue;
+			TrainClaim& claim = inserted.first->second;
+			++claim.count;
+			if (crossCheck && matchDistances[m] < matchDistances[claim.best])
+				claim.best = (uint32_t)m; // strictly closer wins, an equal distance keeps the incumbent
+		}
+		// how many matches the collisions cost: the losers with the check on, everybody sitting on a
+		// contested trainIdx with it off (a summation, hence independent of the iteration order)
+		unsigned numShared = 0;
+		for (const auto& claim : claims)
+			if (claim.second.count > 1)
+				numShared += crossCheck ? claim.second.count-1 : claim.second.count;
+		if (numSharedTrain)
+			*numSharedTrain = numShared;
+		if (crossCheck && numShared > 0) {
+			uint32_t numKept = 0;
+			FOREACH(m, pair.matches) {
+				const auto claim = claims.find(pair.matches[m].trainIdx);
+				ASSERT(claim != claims.end());
+				if (claim->second.best != m)
+					continue;
+				matchDistances[numKept] = matchDistances[m]; // kept parallel, nothing reads it past here
+				pair.matches[numKept++] = pair.matches[m];
+			}
+			ASSERT(numKept == claims.size());
+			pair.matches.resize(numKept);
+			matchDistances.resize(numKept);
+		}
+	}
+
 	if (pair.matches.size() < pairsMatcher.GetConfig().minMatches) {
 		pair.InvalidateMatches();
 		return false;

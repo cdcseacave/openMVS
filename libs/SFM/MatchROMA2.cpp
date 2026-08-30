@@ -460,6 +460,7 @@ unsigned SFM::MatchPairsROMA2(PairsMatcher& pairsMatcher, RoMa2Onnx& roma2, cons
 	// once (~300 KB each at base), one result slot per pair collects what the consumers produce.
 	std::vector<ImagePair> results(pairs.size());
 	std::atomic<unsigned> numGuided{0};
+	std::atomic<unsigned> numGated{0};
 	Semaphore inFlight(2*nThreads);
 	// the plan's load sequence, flattened into the order the ring prefetches images in
 	std::vector<SlotPlan::Load> loads;
@@ -467,6 +468,15 @@ unsigned SFM::MatchPairsROMA2(PairsMatcher& pairsMatcher, RoMa2Onnx& roma2, cons
 	for (const SlotPlan::Step& step : plan.steps)
 		for (const SlotPlan::Load& load : step.loads)
 			loads.push_back(load);
+	// whether the per-pair DEBUG_ULTIMATE line below will be emitted at all, and hence whether the
+	// two quantities only it and the gate consume are worth computing (loop invariants, and the
+	// verbosity does not change while a pass runs); declared here because the consumers read them
+	#if TD_VERBOSE == TD_VERBOSE_OFF
+	const bool bDiagnostic = false;
+	#else
+	const bool bDiagnostic = VERBOSITY_LEVEL > 2;
+	#endif
+	const bool bCountOverlap = bDiagnostic || config.minCreatedOverlap > 0;
 	ScopedPassState state(scene, _T("Dense match image pairs"), pairs.size());
 	PrefetchRing ring(scene, MINF(2u*nThreads, 8u), roma2.ImageSize());
 	// the detached consumers capture every local above by reference, so the pool must be drained
@@ -520,16 +530,49 @@ unsigned SFM::MatchPairsROMA2(PairsMatcher& pairsMatcher, RoMa2Onnx& roma2, cons
 			const Image& imgB = scene.images[pair.j];
 			if (config.erodeBorder > 0)
 				ErodeConfidenceMap(maps.overlap, config.erodeBorder, config.minConfidence, config.minErodeConfidence);
+			// confident-overlap gate: how much of the warp survived the erosion above, as a fraction
+			// of the whole warp grid. A pair the descriptor matcher could not verify is created out
+			// of nothing but this warp, so on a repetitive scene it is only as trustworthy as the
+			// area the warp is actually confident about (design note, Limitations); a pair that
+			// already exists is never gated, its replacement policy is unchanged. Existence is read
+			// from pairIndexMap, captured by reference and read-only for the whole pass: it is built
+			// in step 1 and only step 4 (after the pool is drained) inserts into it.
+			// The gate and the per-pair diagnostic are the only readers of that fraction, so on the
+			// default path (gate off, no DEBUG_ULTIMATE) it is not even counted -- which cannot
+			// change any result, the condition below being false whenever minCreatedOverlap is 0.
+			float overlapFraction = 0.f;
+			if (bCountOverlap) {
+				unsigned numConfident = 0;
+				for (int y = 0; y < maps.overlap.rows; ++y)
+					for (int x = 0; x < maps.overlap.cols; ++x)
+						if (maps.overlap(y, x) >= config.minConfidence)
+							++numConfident;
+				overlapFraction = (float)numConfident / (float)(maps.overlap.rows*maps.overlap.cols);
+			}
+			const bool bExisting = pairIndexMap.find(pair.idx) != pairIndexMap.end();
+			if (!bExisting && config.minCreatedOverlap > 0 && overlapFraction < config.minCreatedOverlap) {
+				++numGated;
+				DEBUG_ULTIMATE("ROMA2 pair (% 4u, % 4u): new, overlap %.3f, 0 tracked, 0 guided, 0 shared-train, gated",
+					pair.i, pair.j, overlapFraction);
+				++state.progress;
+				return;
+			}
 			std::vector<Point2f> trackedA, trackedB;
 			std::vector<uchar> trackStatus;
-			TrackKeypointsByWarp(imgA, imgB, maps.warp, maps.overlap, config.minConfidence, trackedA, trackedB, trackStatus);
+			const unsigned numTracked = (unsigned)TrackKeypointsByWarp(imgA, imgB, maps.warp, maps.overlap, config.minConfidence, trackedA, trackedB, trackStatus);
 			ImagePair guided(pair.i, pair.j);
 			// only a fully guided result may be kept: when the warp yields no usable geometry
 			// MatchFeaturesGeometric falls back to plain descriptor matching, which is exactly
 			// what MatchPairsBatch already stored for this pair (and geometrically verified),
 			// so such a fallback must never be offered as a replacement for it
-			if (MatchFeaturesGeometric(pairsMatcher, imgA, imgB, trackedA, trackedB, trackStatus,
-					guided, config.epipolarThreshold, (unsigned)*threadIdx) && !guided.matches.empty() &&
+			unsigned numSharedTrain = 0;
+			const bool bGuided = MatchFeaturesGeometric(pairsMatcher, imgA, imgB, trackedA, trackedB, trackStatus,
+				guided, config.epipolarThreshold, (unsigned)*threadIdx, config.guidedCrossCheck,
+				// only the diagnostic reads the count, so asking for it off the diagnostic path
+				// would build the collision map for nothing when the cross-check is off too
+				bDiagnostic ? &numSharedTrain : NULL);
+			const unsigned numMatches = guided.GetNumMatches();
+			if (bGuided && !guided.matches.empty() &&
 				// and it has to be verified the way MatchPairsBatch verifies the pair it may
 				// replace: MatchFeaturesGeometric leaves behind the geometry it estimated from the
 				// coarse tracked points together with every match it then selected along those
@@ -546,6 +589,11 @@ unsigned SFM::MatchPairsROMA2(PairsMatcher& pairsMatcher, RoMa2Onnx& roma2, cons
 				ASSERT(!guided.matches.empty());
 				results[p] = std::move(guided);
 				++numGuided;
+				DEBUG_ULTIMATE("ROMA2 pair (% 4u, % 4u): %s, overlap %.3f, %u tracked, %u guided, %u shared-train, kept",
+					pair.i, pair.j, bExisting ? "existing" : "new", overlapFraction, numTracked, numMatches, numSharedTrain);
+			} else {
+				DEBUG_ULTIMATE("ROMA2 pair (% 4u, % 4u): %s, overlap %.3f, %u tracked, %u guided, %u shared-train, rejected",
+					pair.i, pair.j, bExisting ? "existing" : "new", overlapFraction, numTracked, numMatches, numSharedTrain);
 			}
 			++state.progress;
 		});
@@ -564,8 +612,8 @@ unsigned SFM::MatchPairsROMA2(PairsMatcher& pairsMatcher, RoMa2Onnx& roma2, cons
 		if (ApplyROMA2Pair(scene, pairIndexMap, std::move(guided), maxReplace, bCreated))
 			++(bCreated ? numCreated : numReplaced);
 	}
-	DEBUG("ROMA2 dense matching (%s round): %u/%u pairs guided, %u created, %u replaced, %u skipped healthy, %u failed loads, %u failed matches; %u slots, %u loads, %u reloads (%s)",
-		bFeedbackRound ? "feedback" : "first", numGuided.load(), pairs.size(), numCreated, numReplaced, numSkippedHealthy,
+	DEBUG("ROMA2 dense matching (%s round): %u/%u pairs guided, %u created, %u replaced, %u gated, %u skipped healthy, %u failed loads, %u failed matches; %u slots, %u loads, %u reloads (%s)",
+		bFeedbackRound ? "feedback" : "first", numGuided.load(), pairs.size(), numCreated, numReplaced, numGated.load(), numSkippedHealthy,
 		numFailedLoads, numFailedMatches, plan.numSlots, (unsigned)plan.numLoads, (unsigned)plan.numReloads, TD_TIMER_GET_FMT().c_str());
 	return numCreated + numReplaced;
 #else // _USE_ONNXRUNTIME

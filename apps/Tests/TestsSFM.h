@@ -113,6 +113,12 @@ bool PairsMatcherSphericalTest();
 // (pure spherical pairs don't have a meaningful fundamental matrix).
 bool MatchGeometricSphericalTest();
 
+// Unit test for the train-side cross-check of MatchFeaturesGeometric: two keypoints
+// of image A are made to claim the same keypoint of image B, the wrong one carrying
+// the smaller queryIdx, so the test also pins down that the single-candidate
+// descriptor distance is computed instead of being left at 0.
+bool GuidedCrossCheckTest();
+
 // Phase 5 cube-map bridge tests: verify that SFM::ExportMVS can expand
 // every spherical source image into 6 (or 4) pinhole cube-map faces,
 // emit them as a rig platform in MVS::Interface format, and produce a

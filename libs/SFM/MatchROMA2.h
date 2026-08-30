@@ -74,6 +74,20 @@ struct SFM_API ROMA2Config {
 	unsigned skipHealthyInliers = 0;       // skip pairs already having at least this many inliers (0 = warp every pair)
 	unsigned feedbackMaxReplaceInliers = 15;  // maxReplaceInliers of the verification-feedback round
 	unsigned feedbackSkipHealthyInliers = 100; // skipHealthyInliers of the verification-feedback round
+	// minimum fraction of the warp's cells whose confidence is at least minConfidence, after the
+	// erosion, for a pair the descriptor matcher did not verify to be created out of the warp alone
+	// (0 = off). Pairs that already exist are never gated. On a repetitive scene the created pairs
+	// are what fragments the view graph, and this gate does not fix it: measured alone at 0.05 it
+	// left 32265651 on 124 of 377 registered images, against the 250 the follow-up campaign
+	// pre-registered as the bar for making it a default (docs/design/ROMA2InProcess.md, Limitations)
+	float minCreatedOverlap = 0.f;
+	// drop the guided matches that lose a train-side collision (MatchFeaturesGeometric). Off by the
+	// same ruling: measured alone it costs no verified inliers (median per pair 126 vs 126 and 158
+	// vs 157 on the two captures), but it also registers far fewer images (183 of 345 against 309 on
+	// f7dbf861), and on the only statistic comparable across two arms that registered different sets
+	// -- the alignment-free relative rotation -- it is worse there (+18.1% against the SIFT baseline,
+	// where the plain dense arm is +9.5%); see docs/design/ROMA2InProcess.md, Limitations
+	bool guidedCrossCheck = false;
 	bool useGPU = true;                    // allow the GPU execution providers (false forces the CPU provider)
 
 	// Return the folder holding the exported models: the explicit setting if given,
@@ -112,6 +126,9 @@ SFM_API unsigned ComputeGlobalDescriptorsROMA2(Scene& scene, RoMa2Onnx& roma2, c
 // (ErodeConfidenceMap, TrackKeypointsByWarp, MatchFeaturesGeometric). Guided results are
 // stored into the scene serially in (ID1,ID2) order (ApplyROMA2Pair), so what a pair replaces
 // never depends on the order the pool happened to finish in (design decision 11).
+// A pair the descriptor matcher did not verify is only created when the eroded confidence map
+// covers at least config.minCreatedOverlap of the warp grid (0 = off); existing pairs are never
+// gated. config.guidedCrossCheck selects the train-side cross-check of the guided re-match.
 // bFeedbackRound selects the per-round replace policy: the first round warps every candidate
 // and replaces whenever the guided set is larger, the verification-feedback round skips pairs
 // that are already healthy and only replaces the weakest ones (design decision 6).

@@ -46,6 +46,18 @@ namespace SFM {
  *                           inside pairsMatcher; must be in [0, Scene::nMaxThreads), which is how
  *                           many matchers PairsMatcher creates (PairsMatcher::GetNumMatchers()),
  *                           and concurrent calls must pass distinct indices.
+ * @param crossCheck         Drop the forward matches that lose a train-side collision. The check is
+ *                           restricted to the forward candidate sets - a match (i->j) survives only
+ *                           if, among all keypoints of A whose selected candidate is j, i has the
+ *                           smallest descriptor distance; ties keep the smaller queryIdx. No reverse
+ *                           epipolar pass is run. Only with the check on does the single-candidate
+ *                           case get its descriptor distance computed (it would otherwise stay 0 and
+ *                           win every collision); off, the forward selection is bit-identical to
+ *                           what it always was.
+ * @param numSharedTrain     Optional out: how many forward matches share their trainIdx with another
+ *                           match - the number the cross-check removed when it is on, the number of
+ *                           matches sitting on a contested trainIdx when it is off. Diagnostic only
+ *                           (ROMA2's per-pair DEBUG_ULTIMATE line); NULL skips the count.
  * @return true if geometry was estimated (pair.E/F/relativePose); false if fallback was used.
  */
 SFM_API bool MatchFeaturesGeometric(
@@ -57,7 +69,9 @@ SFM_API bool MatchFeaturesGeometric(
 	const std::vector<uchar>& trackStatus,
 	ImagePair& pair,
 	float epipolarThreshold = 2.f,
-	unsigned threadIdx = 0);
+	unsigned threadIdx = 0,
+	bool crossCheck = false,
+	unsigned* numSharedTrain = NULL);
 /*----------------------------------------------------------------*/
 
 } // namespace SFM
