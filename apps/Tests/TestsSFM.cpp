@@ -5212,6 +5212,179 @@ bool ReconstructExportCSVTest()
 	return true;
 }
 
+// Task 5 (roma2-followups-20260830): camera-triplet view-graph disambiguation
+// (Manam & Govindu, CVPR 2024), on the hand-computed graph of the task brief:
+//   nodes 0..7; (0,1)=100 (0,2)=100 (1,2)=70 (1,3)=50 (2,3)=40 (3,4)=30 (3,5)=20
+//   (5,6)=10 (6,7)=10 (5,7)=10 inliers.
+// Triplets A={0,1,2}, B={1,2,3} share edge (1,2); C={5,6,7} is an isolated node of the triplet
+// graph, so G_LCT = {A,B} with nodes {0,1,2,3} (|V|=4, d_max=3) and the five edges of A and B.
+bool TripletFilterTest()
+{
+	TD_TIMER_START();
+	constexpr float eps = 1e-6f;
+	struct PairSpec { IIndex idA, idB; int numInliers; bool verified; };
+	static const PairSpec pairSpecs[] = {
+		{0,1,100,true}, {0,2,100,true}, {1,2,70,true}, {1,3,50,true}, {2,3,40,true},
+		{3,4,30,true}, {3,5,20,true}, {5,6,10,true}, {6,7,10,true}, {5,7,10,true}
+	};
+	// the pairs carry an inlier count and a stand-in fundamental matrix only: the score reads
+	// nothing else off them, so neither images nor descriptors are needed (as ROMA2WarpTrackingTest
+	// builds its pairs)
+	const auto buildScene = [](Scene& scene, const PairSpec* specs, unsigned numPairs) {
+		scene.cameras.emplace_back(new PinholeCamera(cv::Size(640, 480), REAL(600), REAL(600), REAL(320), REAL(240)));
+		for (IIndex i = 0; i < 8; ++i) {
+			scene.images.emplace_back(i, String::FormatString("%u.jpg", i));
+			scene.images[i].cameraID = 0;
+			scene.images[i].pCamera = scene.cameras[0];
+		}
+		for (unsigned i = 0; i < numPairs; ++i) {
+			ImagePair pair(specs[i].idA, specs[i].idB);
+			pair.numFilteredInliers = specs[i].numInliers;
+			if (specs[i].verified)
+				pair.F = Matrix3x3::IDENTITY; // stands in for the geometric verification
+			scene.pairs.emplace_back(std::move(pair));
+		}
+	};
+	const auto keptPairs = [](const Scene& scene) {
+		std::set<std::pair<IIndex,IIndex>> kept;
+		for (const ImagePair& pair : scene.pairs)
+			kept.emplace(pair.ID1, pair.ID2);
+		return kept;
+	};
+
+	// (a) scores and statistics of the full graph
+	Scene scene;
+	buildScene(scene, pairSpecs, 10);
+	const TripletScores scores03 = ComputeTripletScores(scene, 0.3f);
+	if (scores03.numTriplets != 3 || scores03.numTripletComponents != 2 ||
+		scores03.numScoredPairs != 5 || scores03.numNodes != 4 || scores03.maxDegree != 3) {
+		VERBOSE("TripletFilterTest FAILED: statistics %u triplets in %u components, %u scored pairs, "
+			"%u nodes, max degree %u (expected 3, 2, 5, 4, 3)",
+			scores03.numTriplets, scores03.numTripletComponents, scores03.numScoredPairs,
+			scores03.numNodes, scores03.maxDegree);
+		return false;
+	}
+	const float expectedScores[] = {1.f, 1.f, 0.85f, 50.f/70.f, 40.f/70.f, -1.f, -1.f, -1.f, -1.f, -1.f};
+	FOREACH(i, scores03.scores) {
+		if (ABS(scores03.scores[i] - expectedScores[i]) > eps) {
+			VERBOSE("TripletFilterTest FAILED: pair %u (%u,%u) scored %g, expected %g",
+				i, scene.pairs[i].ID1, scene.pairs[i].ID2, scores03.scores[i], expectedScores[i]);
+			return false;
+		}
+	}
+	// tau = m*(1 - d_max/|V|) + d_max/|V| with d_max/|V| = 3/4
+	if (ABS(scores03.tau - 0.825f) > eps) {
+		VERBOSE("TripletFilterTest FAILED: tau %g for m=0.3, expected 0.825", scores03.tau);
+		return false;
+	}
+	const TripletScores scores06 = ComputeTripletScores(scene, 0.6f);
+	if (ABS(scores06.tau - 0.9f) > eps) {
+		VERBOSE("TripletFilterTest FAILED: tau %g for m=0.6, expected 0.9", scores06.tau);
+		return false;
+	}
+	FOREACH(i, scores06.scores) {
+		if (ABS(scores06.scores[i] - expectedScores[i]) > eps) {
+			VERBOSE("TripletFilterTest FAILED: the scores must not depend on m (pair %u: %g vs %g)",
+				i, scores06.scores[i], expectedScores[i]);
+			return false;
+		}
+	}
+
+	// (b) a duplicate pair collapses onto the same edge (weighted by the stronger of the two) and
+	// shares its score; a pair with no geometric verification, and a verified pair with no inlier,
+	// are never edges -- both of the two added here would close a new triangle if they were, so
+	// the triplet count staying at 3 is what proves they were left out
+	{
+		PairSpec specs[13];
+		memcpy(specs, pairSpecs, sizeof(pairSpecs));
+		specs[10] = PairSpec{0, 1, 10, true};   // duplicate of the (0,1) edge, weaker
+		specs[11] = PairSpec{0, 3, 25, false};  // inliers but no geometric verification
+		specs[12] = PairSpec{2, 4, 0, true};    // verified but no inlier
+		Scene sceneDup;
+		buildScene(sceneDup, specs, 13);
+		const TripletScores scoresDup = ComputeTripletScores(sceneDup, 0.3f);
+		if (scoresDup.numTriplets != 3 || scoresDup.numScoredPairs != 6 ||
+			scoresDup.numNodes != 4 || scoresDup.maxDegree != 3 ||
+			ABS(scoresDup.tau - 0.825f) > eps) {
+			VERBOSE("TripletFilterTest FAILED: a duplicate or a non-edge pair changed the graph "
+				"(%u triplets, %u scored, %u nodes, max degree %u, tau %g)",
+				scoresDup.numTriplets, scoresDup.numScoredPairs, scoresDup.numNodes,
+				scoresDup.maxDegree, scoresDup.tau);
+			return false;
+		}
+		if (ABS(scoresDup.scores[10] - scoresDup.scores[0]) > eps ||
+			scoresDup.scores[11] != -1.f || scoresDup.scores[12] != -1.f) {
+			VERBOSE("TripletFilterTest FAILED: duplicate scored %g against %g; the unverified pair "
+				"scored %g and the inlier-less pair %g (both must be unscored)",
+				scoresDup.scores[10], scoresDup.scores[0], scoresDup.scores[11], scoresDup.scores[12]);
+			return false;
+		}
+	}
+
+	// (c) the filter at m = 0.3 keeps only the three edges scoring at or above 0.825
+	TripletFilterConfig filterCfg;
+	filterCfg.enabled = true;
+	filterCfg.minScore = 0.3f;
+	if (FilterPairsByTriplets(scene, filterCfg) != 7 || scene.pairs.size() != 3) {
+		VERBOSE("TripletFilterTest FAILED: m=0.3 left %u pairs, expected 3", scene.pairs.size());
+		return false;
+	}
+	const std::set<std::pair<IIndex,IIndex>> expectedKept03{{0,1}, {0,2}, {1,2}};
+	if (keptPairs(scene) != expectedKept03) {
+		VERBOSE("TripletFilterTest FAILED: m=0.3 kept the wrong pairs");
+		return false;
+	}
+
+	// (d) the filter at m = 0.6 raises tau to 0.9 and keeps only the two edges scoring 1
+	Scene scene06;
+	buildScene(scene06, pairSpecs, 10);
+	filterCfg.minScore = 0.6f;
+	if (FilterPairsByTriplets(scene06, filterCfg) != 8 || scene06.pairs.size() != 2) {
+		VERBOSE("TripletFilterTest FAILED: m=0.6 left %u pairs, expected 2", scene06.pairs.size());
+		return false;
+	}
+	const std::set<std::pair<IIndex,IIndex>> expectedKept06{{0,1}, {0,2}};
+	if (keptPairs(scene06) != expectedKept06) {
+		VERBOSE("TripletFilterTest FAILED: m=0.6 kept the wrong pairs");
+		return false;
+	}
+
+	// (e) a graph with no triplet at all scores nothing, and the filter empties it
+	Scene scenePath;
+	static const PairSpec pathSpecs[] = {{0,1,100,true}, {1,2,70,true}, {2,3,40,true}};
+	buildScene(scenePath, pathSpecs, 3);
+	const TripletScores scoresPath = ComputeTripletScores(scenePath, 0.6f);
+	if (scoresPath.numTriplets != 0 || scoresPath.numTripletComponents != 0 ||
+		scoresPath.numScoredPairs != 0 || scoresPath.numNodes != 0 || scoresPath.maxDegree != 0 ||
+		ABS(scoresPath.tau - 0.6f) > eps) {
+		VERBOSE("TripletFilterTest FAILED: a triplet-free graph reported %u triplets, %u scored pairs, tau %g",
+			scoresPath.numTriplets, scoresPath.numScoredPairs, scoresPath.tau);
+		return false;
+	}
+	for (float score : scoresPath.scores) {
+		if (score != -1.f) {
+			VERBOSE("TripletFilterTest FAILED: a triplet-free graph scored a pair (%g)", score);
+			return false;
+		}
+	}
+	if (FilterPairsByTriplets(scenePath, filterCfg) != 3 || !scenePath.pairs.empty()) {
+		VERBOSE("TripletFilterTest FAILED: a triplet-free graph kept %u pairs, expected none", scenePath.pairs.size());
+		return false;
+	}
+
+	// (f) a disabled filter is a no-op
+	Scene sceneOff;
+	buildScene(sceneOff, pairSpecs, 10);
+	filterCfg.enabled = false;
+	if (FilterPairsByTriplets(sceneOff, filterCfg) != 0 || sceneOff.pairs.size() != 10) {
+		VERBOSE("TripletFilterTest FAILED: the disabled filter removed pairs (%u left)", sceneOff.pairs.size());
+		return false;
+	}
+
+	VERBOSE("TripletFilterTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
 // Test function for rotation estimation
 bool RotationEstimatorTest()
 {

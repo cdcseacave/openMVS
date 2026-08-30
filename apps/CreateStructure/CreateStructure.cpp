@@ -77,6 +77,8 @@ unsigned nROMA2SkipHealthy;
 unsigned nROMA2MaxReplace;
 float fROMA2MinOverlap;
 bool bROMA2CrossCheck;
+bool bFilterTriplets;
+float fTripletMinScore;
 String strROMA2RetrievalRecipe;
 String strROMA2Provider;
 float defaultFocalRatio;
@@ -154,6 +156,8 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("export-pairs-csv", boost::program_options::value<std::string>(&OPT::strExportPairsCSV), "export image pairs to CSV file (written right after matching, before reconstruction) (optional)")
 		("export-retrieval-csv", boost::program_options::value<std::string>(&OPT::strExportRetrievalCSV), "export the per-image global-descriptor retrieval rankings to CSV file (written right after matching, before reconstruction) (optional)")
 		("compare-mvs", boost::program_options::value<std::string>(&OPT::strCompareMVS), "compare reconstruction against ground-truth MVS file (optional)")
+		("filter-triplets", boost::program_options::value<bool>(&OPT::bFilterTriplets)->default_value(TripletFilterConfig().enabled), "disambiguate the matched view graph with the camera-triplet filter (Manam & Govindu, CVPR 2024): remove the pairs whose inlier count is systematically weak in the triangles they belong to, and the pairs in no triangle at all")
+		("triplet-min-score", boost::program_options::value(&OPT::fTripletMinScore)->default_value(TripletFilterConfig().minScore), "camera-triplet filter: minimum edge score m in (0,1), the aggressiveness of the removal (0.6 generic scenes, 0.9 highly ambiguous, 0.3 medium/small ambiguous)")
 		("max-features-per-cell", boost::program_options::value(&OPT::nMaxFeaturesPerCell)->default_value(3000), "maximum features per grid cell (3x3 grid)")
 		("min-features-per-cell", boost::program_options::value(&OPT::nMinFeaturesPerCell)->default_value(500), "minimum features per cell before adjusting sensitivity")
 		("match-mode", boost::program_options::value(&OPT::matchMode)->default_value(1), "match mode: -1=SKIP,0=EXHAUSTIVE,1=VOCABULARY,2=SEQUENTIAL,3=KNOWN_POSES")
@@ -259,6 +263,10 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		return false;
 	}
 	Util::ensureValidPath(OPT::strCompareMVS);
+	if (OPT::fTripletMinScore <= 0.f || OPT::fTripletMinScore >= 1.f) {
+		LOG("error: --triplet-min-score is the paper's minimum edge score m, it must be in (0,1) (got %g)", OPT::fTripletMinScore);
+		return false;
+	}
 	Util::ensureValidFolderPath(OPT::strROMA2Model);
 	if (OPT::bROMA2 && !RoMa2Onnx::IsAvailable()) {
 		LOG("error: --roma2 needs a build with ONNX Runtime (-DOpenMVS_USE_ONNXRUNTIME=ON)");
@@ -361,6 +369,9 @@ int main(int argc, LPCTSTR* argv)
 	// written by Scene::Reconstruct() right after pair matching (see ReconstructionConfig)
 	cfg.exportPairsCSV = OPT::strExportPairsCSV.empty() ? String() : MAKE_PATH_SAFE(OPT::strExportPairsCSV);
 	cfg.exportRetrievalCSV = OPT::strExportRetrievalCSV.empty() ? String() : MAKE_PATH_SAFE(OPT::strExportRetrievalCSV);
+	// applied by Scene::Reconstruct() right after those exports, so they still list every matched pair
+	cfg.tripletFilterCfg.enabled = OPT::bFilterTriplets;
+	cfg.tripletFilterCfg.minScore = OPT::fTripletMinScore;
 	cfg.viewgraphCfg.maxTwoViewError = 0; // disable pair filtering after ViewGraph calibration
 	cfg.useGlobalSolver = OPT::bUseGlobalSolver;
 	cfg.thAlignGPS = OPT::thAlignGPS;

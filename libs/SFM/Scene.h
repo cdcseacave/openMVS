@@ -24,6 +24,7 @@
 #include "BundleAdjustment.h"
 #include "GlobalAlignment.h"
 #include "MatchROMA2.h"
+#include "ViewGraphTriplets.h"
 #include "PoseIO.h"
 
 
@@ -78,6 +79,10 @@ struct SFM_API ReconstructionConfig {
 	// drop images or pairs (empty = no export)
 	String exportPairsCSV;
 	String exportRetrievalCSV;
+
+	// Triplet-based view-graph disambiguation, applied right after those CSVs are written, so
+	// they still describe the whole matched graph and carry the score of every pair
+	TripletFilterConfig tripletFilterCfg;
 
 	// View graph calibration parameters
 	ViewGraphCalibratorConfig viewgraphCfg;

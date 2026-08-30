@@ -193,6 +193,27 @@ static bool ExportRetrievalRankingsCSVFile(const Scene& scene, const std::string
 	return SFM::ExportRetrievalRankingsCSV(scene, MAKE_PATH_SAFE(fileName), maxRank);
 }
 
+// The camera-triplet disambiguation scores of a matched scene (ViewGraphTriplets.h), returned as
+// a dict so a caller can score a scene in-process without exporting a CSV first: "scores" holds
+// one float per scene pair, in scene.pairs order, with -1 marking an unscored pair; "tau" is the
+// threshold Eqn. 3 derives from the given minimum score m (the scores themselves do not depend
+// on m); the remaining entries are the graph statistics the filter's log line reports.
+static boost::python::dict ComputeTripletScoresDict(const Scene& scene, float minScore) {
+	const SFM::TripletScores tripletScores = SFM::ComputeTripletScores(scene, minScore);
+	boost::python::list scores;
+	for (float score : tripletScores.scores)
+		scores.append(score);
+	boost::python::dict out;
+	out["scores"] = scores;
+	out["tau"] = tripletScores.tau;
+	out["num_triplets"] = tripletScores.numTriplets;
+	out["num_triplet_components"] = tripletScores.numTripletComponents;
+	out["num_scored_pairs"] = tripletScores.numScoredPairs;
+	out["num_nodes"] = tripletScores.numNodes;
+	out["max_degree"] = tripletScores.maxDegree;
+	return out;
+}
+
 
 // SEACAVE::String <-> Python str converters.
 // SEACAVE::String publicly derives from std::string, but Boost.Python keys
@@ -307,6 +328,11 @@ void RegisterBindings()
 		.def_readwrite("guided_cross_check", &SFM::ROMA2Config::guidedCrossCheck)
 		.def_readwrite("use_gpu", &SFM::ROMA2Config::useGPU);
 
+	// SFM::TripletFilterConfig — camera-triplet view-graph disambiguation
+	class_<SFM::TripletFilterConfig>("TripletFilterConfig")
+		.def_readwrite("enabled", &SFM::TripletFilterConfig::enabled)
+		.def_readwrite("min_score", &SFM::TripletFilterConfig::minScore);
+
 	// SFM::ViewGraphCalibratorConfig — focal-length verification
 	class_<SFM::ViewGraphCalibratorConfig>("ViewGraphCalibratorConfig");
 
@@ -325,6 +351,7 @@ void RegisterBindings()
 		.def_readwrite("match_images_only", &SFM::ReconstructionConfig::matchImagesOnly)
 		.DEF_STR_RW("export_pairs_csv", &SFM::ReconstructionConfig::exportPairsCSV)
 		.DEF_STR_RW("export_retrieval_csv", &SFM::ReconstructionConfig::exportRetrievalCSV)
+		.def_readwrite("triplet_filter_cfg", &SFM::ReconstructionConfig::tripletFilterCfg)
 		.def_readwrite("viewgraph_cfg", &SFM::ReconstructionConfig::viewgraphCfg)
 		.def_readwrite("min_pair_weight", &SFM::ReconstructionConfig::minPairWeight)
 		.def_readwrite("max_reproj_error", &SFM::ReconstructionConfig::maxReprojError)
@@ -385,6 +412,10 @@ void RegisterBindings()
 	// Free function: the global-descriptor retrieval rankings of a described scene, as CSV.
 	def("export_retrieval_rankings_csv", &ExportRetrievalRankingsCSVFile,
 			(arg("scene"), arg("file_name"), arg("max_rank")=50u));
+
+	// Free function: the camera-triplet disambiguation scores of a matched scene.
+	def("compute_triplet_scores", &ComputeTripletScoresDict,
+			(arg("scene"), arg("min_score")=0.f));
 }
 
 } // namespace pySFM

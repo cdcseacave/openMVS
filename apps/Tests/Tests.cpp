@@ -249,6 +249,8 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!SFM::ReconstructExportCSVTest())
 				return false;
+			if (!SFM::TripletFilterTest())
+				return false;
 			// Hierarchical SFM tests - Phase 1: Scene Clustering
 			if (!SFM::SceneClusterSingleClusterTest())
 				return false;

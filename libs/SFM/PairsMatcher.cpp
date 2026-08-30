@@ -29,6 +29,7 @@
 #include "PairsWeighting.h"
 #include "VocabularyTree.h"
 #include "GlobalDescriptors.h"
+#include "ViewGraphTriplets.h"
 #include <PoseLib/poselib.h>
 
 #ifdef _USE_SIFTGPU
@@ -1995,8 +1996,13 @@ bool PairsMatcher::ExportPairsCSV(const Scene& scene, const String& fileName, fl
 		return false;
 	}
 	const String basePath = MAKE_PATH_FULL(WORKING_FOLDER_FULL, Util::getFilePath(fileName));
-	ofs << "ImageA,ImageB,NumMatches,Weight,WeightSpatial,WeightConnectivity,WeightTriplet,MeanRayAngle\n";
-	for (const ImagePair& pair : scene.pairs) {
+	// the triplet disambiguation score of every pair (ViewGraphTriplets.h); it does not depend on
+	// the minimum score m, only the threshold derived from it does, so the column is written once
+	// and can be re-thresholded by any consumer
+	const TripletScores tripletScores = ComputeTripletScores(scene, 0.f);
+	ofs << "ImageA,ImageB,NumMatches,Weight,WeightSpatial,WeightConnectivity,WeightTriplet,MeanRayAngle,TripletScore\n";
+	FOREACH(idxPair, scene.pairs) {
+		const ImagePair& pair = scene.pairs[idxPair];
 		const String relImageNameA = MAKE_PATH_REL(basePath, scene.images[pair.ID1].fileName);
 		const String relImageNameB = MAKE_PATH_REL(basePath, scene.images[pair.ID2].fileName);
 		ofs << relImageNameA << "," << relImageNameB << ","
@@ -2005,7 +2011,10 @@ bool PairsMatcher::ExportPairsCSV(const Scene& scene, const String& fileName, fl
 			<< pair.weightSpatial << ","
 			<< pair.weightConnectivity << ","
 			<< pair.weightTriplet << ","
-			<< R2D(pair.meanRayAngle) << "\n";
+			<< R2D(pair.meanRayAngle) << ",";
+		if (tripletScores.scores[idxPair] >= 0.f)
+			ofs << tripletScores.scores[idxPair]; // an unscored pair leaves the cell empty
+		ofs << "\n";
 	}
 	ofs.close();
 	VERBOSE("Exported %u pairs to '%s'",

@@ -173,6 +173,12 @@ bool ReconstructTest(bool verbose = false);
 // .sfm given back as source), before any reconstruction step can drop pairs
 bool ReconstructExportCSVTest();
 
+// Task 5 (roma2-followups-20260830): the camera-triplet view-graph disambiguation of
+// Manam & Govindu (CVPR 2024) on the brief's hand-computed 8-node graph -- scores, tau, the
+// graph statistics, the kept sets at m = 0.3 and 0.6, duplicate and unverified pairs, and a
+// graph with no triplet at all
+bool TripletFilterTest();
+
 // Test function for rotation estimation
 bool RotationEstimatorTest();
 

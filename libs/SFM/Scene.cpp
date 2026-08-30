@@ -663,6 +663,17 @@ void ExportMatchingCSVs(const Scene& scene, const ReconstructionConfig& config)
 		!ExportRetrievalRankingsCSV(scene, config.exportRetrievalCSV, 50))
 		VERBOSE("warning: failed to export retrieval rankings to CSV file '%s'", config.exportRetrievalCSV.c_str());
 }
+
+// Export the matching diagnostics of a freshly matched scene, then disambiguate its view graph
+// with the camera-triplet filter (ViewGraphTriplets.h, off unless the caller enables it). The
+// order is deliberate: the CSVs describe the whole matched graph and carry the triplet score of
+// every pair, including the pairs the filter is about to remove, so a run can be re-scored and
+// re-thresholded offline from its own export alone.
+void ExportMatchingCSVsAndFilterPairs(Scene& scene, const ReconstructionConfig& config)
+{
+	ExportMatchingCSVs(scene, config);
+	FilterPairsByTriplets(scene, config.tripletFilterCfg, config.matchCfg.weightingCfg);
+}
 } // namespace
 
 bool Scene::Reconstruct(const String& source, const ReconstructionConfig& config)
@@ -686,7 +697,7 @@ bool Scene::Reconstruct(const String& source, const ReconstructionConfig& config
 			// convention before the caller re-persists the scene (the loaded pairs are
 			// already matched, so the detection can run)
 			VERBOSE("warning: scene already matched after import");
-			ExportMatchingCSVs(*this, config);
+			ExportMatchingCSVsAndFilterPairs(*this, config);
 			if (config.HasKnownPoses() && !ResolveFramesConvention(*this,
 					config.importCfg.framesConvention, config.importCfg.importPosesFile))
 				return false;
@@ -709,8 +720,9 @@ bool Scene::Reconstruct(const String& source, const ReconstructionConfig& config
 
 	// export the pairs/retrieval-rankings CSV diagnostics right after matching, before any
 	// reconstruction step (clustering, weak-image filtering, resection) can drop pairs or
-	// leave images unregistered; covers both the match-images-only run and a full reconstruction
-	ExportMatchingCSVs(*this, config);
+	// leave images unregistered; covers both the match-images-only run and a full reconstruction,
+	// and is immediately followed by the (opt-in) triplet disambiguation of the view graph
+	ExportMatchingCSVsAndFilterPairs(*this, config);
 
 	if (config.matchImagesOnly) {
 		// a frames.json imported with an AUTO convention must be resolved before the scene
