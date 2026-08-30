@@ -142,10 +142,13 @@ def main():
                     help="dump directory under the engine run (round1 and oneround are identical)")
     ap.add_argument("--top-k", type=int, default=16,
                     help="K for the set/order/overlap columns; the R14 gate is K = 16")
-    ap.add_argument("--jaccard-k", type=int, default=10, help="the brief's Step-2 K")
+    ap.add_argument("--jaccard-k", type=int, default=10,
+                    help="the brief's Step-2 K (must not exceed --top-k: the lists are truncated at --top-k first)")
     ap.add_argument("--min-overlap", type=float, default=95.0, help="the R14 gate, in percent")
     ap.add_argument("--out", type=Path, help="write the per-capture rows to this CSV (and .json)")
     args = ap.parse_args()
+    if args.jaccard_k > args.top_k:
+        ap.error(f"--jaccard-k {args.jaccard_k} exceeds --top-k {args.top_k}: the lists are truncated at --top-k first")
 
     rows, failures = [], 0
     for line in args.captures.expanduser().read_text().split():

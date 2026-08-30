@@ -388,7 +388,7 @@ scene.sfm ...`). `.mvs` files are unaffected.
   matching and loses on pose:
   - *What it buys:* +57 % to +111 % geometrically verified pairs, and **2.8×–5.0× the median inlier
     count** on the pairs both arms found (17×–82× more pairs improved than worsened). Non-temporal pair
-    recall against the pseudo-GT rises from 0.46–0.76 to 0.84–0.88.
+    recall against the pseudo-GT rises from 0.46–0.76 to 0.76–0.88.
   - *What it costs:* measured **like-for-like** (alignment-free relative rotation, median over the
     images both arms registered) it is better on 1 capture (−11 %), a wash on 1 (+2 %) and **worse on
     3** (+9 %, +24 %, +85 %). The focal drifts **+1.2 to +6.2 px** (0.2–0.9 %) and only in this arm —
@@ -409,7 +409,8 @@ scene.sfm ...`). `.mvs` files are unaffected.
        makes round 1 behave like the feedback round: warp only where descriptor matching is weak,
        replace only the weakest pairs. This keeps **100 % of the pair-coverage gain** (identical pair
        sets, identical recall), removes the focal drift entirely (back to the SIFT value on all four
-       captures tried), and cuts reconstruction time 2–4×. It does *not* close the pose gap
+       captures tried), and cuts reconstruction time up to 3.5× where the replacement
+       volume was largest (1.05–3.5× over the four captures). It does *not* close the pose gap
        (+5.7 %/+20.7 %/+35.6 % on three of four) and does *not* fix the fragmentation, which is why it
        is a knob and not the default (ruling R32).
     3. **Known intrinsics** — importing intrinsics (EXIF, `--import-poses-mode 1`, Polycam priors)
