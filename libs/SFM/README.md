@@ -185,6 +185,8 @@ The matching pipeline:
 4. **Geometric verification**: RANSAC to estimate E (calibrated) or F (uncalibrated) matrix
 5. **Cheirality check**: Points must be in front of both cameras
 
+**RoMa v2 (optional, `CreateStructure --roma2`)**: an in-process ONNX Runtime deployment of RoMa v2 (a DINOv3 descriptor graph + a coarse-match graph, no refiner) can supplement -- never replace -- the classical matching above in two independent ways: `--roma2-retrieval` (default on) replaces the vocabulary tree as the per-image ranking source `PairsMatcher::QueryRetrieval` feeds to pair selection, pooling the descriptor graph's output into a global descriptor per image (`GlobalDescriptors.h`, FACETS 2048-D default or LAYERS 1024-D legacy); `--roma2-match` (default on) dense-matches every candidate pair through the coarse-match graph and turns each warp into a guided sparse re-match that replaces the descriptor match only when it has strictly more inliers. Needs an exported model (`--roma2-model DIR`, default `$OPENMVS_ROMA2_MODEL_PATH`) and a build with `-DOpenMVS_USE_ONNXRUNTIME=ON`. Flags: `--roma2`, `--roma2-model`, `--roma2-setting turbo|fast|base`, `--roma2-retrieval`, `--roma2-match`, `--roma2-slots N`, `--roma2-retrieval-recipe facets|layers`, `--roma2-provider auto|cuda|coreml|dml|cpu`, `--export-retrieval-csv`. See `docs/design/ROMA2InProcess.md` for the full design.
+
 #### 3. View Graph Calibration (`ViewGraphCalibrator.h`)
 
 If camera intrinsics aren't fully trusted (no EXIF or imprecise calibration), this stage estimates focal lengths globally across all image pairs using the Fetzer method.
@@ -499,7 +501,7 @@ The log line it emits -- median and maximum camera-center delta, median and maxi
 
 The pose CSV schema is `filename,fx,fy,cx,cy,qx,qy,qz,qw,Cx,Cy,Cz,score` per row. Both pose importers share the `PoseImportMode` selector: `POSES_INTRINSICS` applies the intrinsics (when the row/entry carries them, marking them trusted) *and* the rotation + camera center, `POSES` applies only the rotation + center, `POSITIONS` only the center. `ImportConfig::importPosesFile` dispatches on the file extension -- `.csv` to `ImportPosesCSV`, `.json` to `ImportFramesJSON`.
 
-ROMAv2 correspondences are not an external format: the dense warps are computed in-process and consumed through `MatchROMA2.h` (configuration) and `ROMA2Warp.h` (warp coordinate conventions, confidence erosion, keypoint tracking, guided-pair store/replace policy).
+RoMa v2 correspondences are not an external format: the descriptor and coarse-match ONNX graphs run in-process through `OnnxRuntime.h` (the ONNX Runtime session/tensor wrapper, CUDA/CoreML/DirectML/CPU) and `RoMa2Matcher.h` (the two RoMa v2 sessions); the dense warps are turned into pooled global retrieval descriptors (`GlobalDescriptors.h`) and guided sparse re-matches configured and orchestrated by `MatchROMA2.h`, and consumed through `ROMA2Warp.h` (warp coordinate conventions, confidence erosion, keypoint tracking, guided-pair store/replace policy). See `docs/design/ROMA2InProcess.md` for the full design.
 
 ## Usage Examples
 
@@ -580,10 +582,13 @@ libs/SFM/
 │ # Feature pipeline
 ├── FeaturesExtractor.h/cpp             # AKAZE/ORB/SIFT extraction
 ├── VocabularyTree.h/cpp                # Visual vocabulary for retrieval
+├── GlobalDescriptors.h/cpp             # RoMa v2 global-descriptor pooling + cosine retrieval index
 ├── PairsMatcher.h/cpp                  # Matching strategies
 ├── MatchGeometric.h/cpp                # RANSAC geometric verification
-├── MatchROMA2.h                        # In-process ROMAv2 configuration
-├── ROMA2Warp.h/cpp                     # ROMAv2 warp coordinates, erosion, keypoint tracking
+├── OnnxRuntime.h/cpp                   # ONNX Runtime session/tensor wrapper (CUDA/CoreML/DML/CPU)
+├── RoMa2Matcher.h/cpp                  # RoMa v2 ONNX graphs: describe + coarse-match sessions
+├── MatchROMA2.h/cpp                    # In-process RoMa v2 describe pass, dense-matching pass, config
+├── ROMA2Warp.h/cpp                     # RoMa v2 warp coordinates, erosion, keypoint tracking
 ├── PairsWeighting.h/cpp                # Composite pair quality scores
 │
 │ # Reconstruction

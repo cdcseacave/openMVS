@@ -169,6 +169,19 @@ OpenMVS is a comprehensive photogrammetry library implementing a complete pipeli
 - **Threading:** Single
 - **Dependencies:** Ceres Solver, PoseLib
 
+### RoMa v2 In-Process Retrieval and Dense Matching
+
+- **Files:** `libs/SFM/OnnxRuntime.h/cpp`, `libs/SFM/RoMa2Matcher.h/cpp`, `libs/SFM/MatchROMA2.h/cpp`, `libs/SFM/ROMA2Warp.h/cpp`, `libs/SFM/GlobalDescriptors.h/cpp`
+- **Algorithms:**
+  - Optional (`--roma2`, default off) in-process ONNX Runtime deployment of a RoMa v2 preset (turbo/fast/base): a DINOv3 descriptor graph + a coarse-match graph, no refiner
+  - **Retrieval** (`--roma2-retrieval`, default on): pools the descriptor graph's `value_facets`/`layers` output per image into a global descriptor (`PoolRetrievalDescriptor`, FACETS 2048-D default or LAYERS 1024-D legacy), replacing the vocabulary tree as the per-image ranking source pair selection consumes (`PairsMatcher::QueryRetrieval`) -- everything downstream (RRF, mutual top-K, bridging, verification feedback) is unchanged
+  - **Dense matching** (`--roma2-match`, default on): a Belady-scheduled slot pool keeps at most `--roma2-slots` (64 default) image descriptors resident, runs the coarse-match graph pair by pair, and turns each warp into a guided sparse re-match (confidence erosion, keypoint tracking, geometric verification) that replaces the classical descriptor match only when it has strictly more inliers -- RoMa v2 warps supplement, never replace, SIFT/AKAZE/ORB
+  - Execution-provider policy: CUDA > CoreML > DirectML > CPU, overridable with `--roma2-provider`
+- **Configuration:** `ROMA2Config` (`--roma2*` CLI flags on `CreateStructure`) -- `enabled`, `modelPath`/`$OPENMVS_ROMA2_MODEL_PATH`, `setting`, `provider`, `useRetrieval`, `useMatching`, `retrievalRecipe`, `slotBudget`, and separate replace-policy thresholds for the first and verification-feedback rounds
+- **GPU Support:** Yes (ONNX Runtime CUDA/CoreML/DirectML execution providers; CPU fallback always available)
+- **Threading:** All ONNX Runtime calls from one thread per `RoMa2Onnx` session; guided re-matching on `BS::light_thread_pool`
+- **Dependencies:** ONNX Runtime (`-DOpenMVS_USE_ONNXRUNTIME=ON`); see `docs/design/ROMA2InProcess.md`
+
 ---
 
 ## 4. SFM Track Building

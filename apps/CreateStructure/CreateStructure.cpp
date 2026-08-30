@@ -30,6 +30,7 @@
  */
 
 #include "../../libs/SFM.h"
+#include "../../libs/SFM/RoMa2Matcher.h" // RoMa2Onnx::IsAvailable()
 #include <boost/program_options.hpp>
 
 using namespace SFM;
@@ -57,6 +58,7 @@ String strExportPoseQuality;
 String strImportOpenMVGDir;
 String strExportOpenMVGDir;
 String strExportPairsCSV;
+String strExportRetrievalCSV;
 String strCompareMVS;
 int matchMode;
 unsigned importPosesMode;
@@ -65,6 +67,14 @@ unsigned maxPairsPerImage;
 bool matchVerificationFeedback;
 bool releaseDescriptors;
 bool matchImagesOnly;
+bool bROMA2;
+String strROMA2Model;
+String strROMA2Setting;
+bool bROMA2Retrieval;
+bool bROMA2Match;
+unsigned nROMA2Slots;
+String strROMA2RetrievalRecipe;
+String strROMA2Provider;
 float defaultFocalRatio;
 float focalLength;
 float k1;
@@ -138,6 +148,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("import-openmvg-dir", boost::program_options::value<std::string>(&OPT::strImportOpenMVGDir), "import OpenMVG features from directory (optional)")
 		("export-openmvg-dir", boost::program_options::value<std::string>(&OPT::strExportOpenMVGDir), "export OpenMVG features to directory (optional)")
 		("export-pairs-csv", boost::program_options::value<std::string>(&OPT::strExportPairsCSV), "export image pairs to CSV file (optional)")
+		("export-retrieval-csv", boost::program_options::value<std::string>(&OPT::strExportRetrievalCSV), "export the per-image global-descriptor retrieval rankings to CSV file (optional)")
 		("compare-mvs", boost::program_options::value<std::string>(&OPT::strCompareMVS), "compare reconstruction against ground-truth MVS file (optional)")
 		("max-features-per-cell", boost::program_options::value(&OPT::nMaxFeaturesPerCell)->default_value(3000), "maximum features per grid cell (3x3 grid)")
 		("min-features-per-cell", boost::program_options::value(&OPT::nMinFeaturesPerCell)->default_value(500), "minimum features per cell before adjusting sensitivity")
@@ -147,6 +158,14 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("match-verification-feedback", boost::program_options::value(&OPT::matchVerificationFeedback)->default_value(true), "hold back part of the matching budget and re-invest it in pairs suggested by the geometrically verified matches (vocabulary and pose-guided matching)")
 		("release-descriptors", boost::program_options::value(&OPT::releaseDescriptors)->default_value(true), "release descriptors after matching to save memory")
 		("match-images-only", boost::program_options::value(&OPT::matchImagesOnly)->default_value(false), "match only the image pairs and save the scene without reconstruction (release descriptors)")
+		("roma2", boost::program_options::value<bool>(&OPT::bROMA2)->default_value(false), "enable the in-process RoMa v2 model: DINOv3/GeM pair retrieval and dense matching (needs an exported model, see --roma2-model)")
+		("roma2-model", boost::program_options::value<std::string>(&OPT::strROMA2Model), "directory with the RoMa v2 ONNX graphs + manifest (default: $OPENMVS_ROMA2_MODEL_PATH)")
+		("roma2-setting", boost::program_options::value<std::string>(&OPT::strROMA2Setting)->default_value("base"), "RoMa v2 export preset: turbo (320px), fast (512px) or base (640px)")
+		("roma2-retrieval", boost::program_options::value<bool>(&OPT::bROMA2Retrieval)->default_value(true), "rank candidate pairs by the global descriptors instead of the vocabulary tree")
+		("roma2-match", boost::program_options::value<bool>(&OPT::bROMA2Match)->default_value(true), "dense-match every candidate pair and replace weaker descriptor matches")
+		("roma2-slots", boost::program_options::value(&OPT::nROMA2Slots)->default_value(64), "images kept resident on the device while dense matching (12.5 MB each at base)")
+		("roma2-retrieval-recipe", boost::program_options::value<std::string>(&OPT::strROMA2RetrievalRecipe)->default_value("facets"), "global descriptor pooling: facets (value projections of blocks 15+20, 2048-D) or layers (GeM on the matcher's deepest layer, 1024-D, legacy)")
+		("roma2-provider", boost::program_options::value<std::string>(&OPT::strROMA2Provider)->default_value("auto"), "ONNX Runtime execution provider: auto (CUDA > CoreML > DirectML > CPU), cuda, coreml, dml or cpu")
 		("default-focal-ratio", boost::program_options::value(&OPT::defaultFocalRatio)->default_value(1.2f), "focal-length is set to ratio * max(width,height) for images with unknown focal-length")
 		("focal-length,f", boost::program_options::value(&OPT::focalLength)->default_value(0.f), "force focal-length (in pixels) for specified images (0 = disabled)")
 		("k1", boost::program_options::value(&OPT::k1)->default_value(0.f), "force k1 distortion coefficient for specified images (0 = not used)")
@@ -226,7 +245,32 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 	Util::ensureValidFolderPath(OPT::strImportOpenMVGDir);
 	Util::ensureValidFolderPath(OPT::strExportOpenMVGDir);
 	Util::ensureValidPath(OPT::strExportPairsCSV);
+	Util::ensureValidPath(OPT::strExportRetrievalCSV);
 	Util::ensureValidPath(OPT::strCompareMVS);
+	Util::ensureValidFolderPath(OPT::strROMA2Model);
+	if (OPT::bROMA2 && !RoMa2Onnx::IsAvailable()) {
+		LOG("error: --roma2 needs a build with ONNX Runtime (-DOpenMVS_USE_ONNXRUNTIME=ON)");
+		return false;
+	}
+	if (OPT::strROMA2RetrievalRecipe != "facets" && OPT::strROMA2RetrievalRecipe != "layers") {
+		LOG("error: unknown ROMA2 retrieval recipe '%s' (accepted: facets, layers)", OPT::strROMA2RetrievalRecipe.c_str());
+		return false;
+	}
+	if (OPT::strROMA2Provider != "auto" && OPT::strROMA2Provider != "cuda" && OPT::strROMA2Provider != "coreml" &&
+		OPT::strROMA2Provider != "dml" && OPT::strROMA2Provider != "cpu") {
+		LOG("error: unknown ROMA2 execution provider '%s' (accepted: auto, cuda, coreml, dml, cpu)", OPT::strROMA2Provider.c_str());
+		return false;
+	}
+	if (OPT::bROMA2) {
+		// the library refuses this same condition inside Scene::MatchPairs (design decision 10);
+		// this early check just gives the hint before any feature extraction runs
+		ROMA2Config roma2Cfg;
+		roma2Cfg.modelPath = OPT::strROMA2Model;
+		if (roma2Cfg.ResolveModelPath().empty()) {
+			LOG("error: --roma2 needs a model (set --roma2-model or $OPENMVS_ROMA2_MODEL_PATH)");
+			return false;
+		}
+	}
 
 	// Use max threads option if provided
 	SEACAVE::Initialize(APPNAME, OPT::nMaxThreads, OPT::nProcessPriority);
@@ -276,8 +320,17 @@ int main(int argc, LPCTSTR* argv)
 	cfg.matchCfg.maxPairsPerImage = OPT::maxPairsPerImage;
 	cfg.matchCfg.verificationFeedback = OPT::matchVerificationFeedback;
 	cfg.matchCfg.releaseDescriptors = OPT::releaseDescriptors;
+	cfg.roma2Cfg.enabled = OPT::bROMA2;
+	cfg.roma2Cfg.modelPath = OPT::strROMA2Model;
+	cfg.roma2Cfg.setting = OPT::strROMA2Setting;
+	cfg.roma2Cfg.useRetrieval = OPT::bROMA2Retrieval;
+	cfg.roma2Cfg.useMatching = OPT::bROMA2Match;
+	cfg.roma2Cfg.slotBudget = OPT::nROMA2Slots;
+	cfg.roma2Cfg.retrievalRecipe = (OPT::strROMA2RetrievalRecipe == "layers") ? RetrievalRecipe::LAYERS : RetrievalRecipe::FACETS;
+	cfg.roma2Cfg.provider = OPT::strROMA2Provider;
 	#ifdef _USE_CUDA
 	cfg.matchCfg.useCUDA = cfg.featuresCfg.useCUDA = !SEACAVE::CUDA::isCpuRequested(SEACAVE::CUDA::desiredDeviceIDs);
+	cfg.roma2Cfg.useGPU = !SEACAVE::CUDA::isCpuRequested(SEACAVE::CUDA::desiredDeviceIDs);
 	#endif
 	cfg.matchImagesOnly = OPT::matchImagesOnly;
 	cfg.viewgraphCfg.maxTwoViewError = 0; // disable pair filtering after ViewGraph calibration
@@ -332,6 +385,11 @@ int main(int argc, LPCTSTR* argv)
 	// Export image pairs to CSV file
 	if (!OPT::strExportPairsCSV.empty() && !PairsMatcher::ExportPairsCSV(scene, MAKE_PATH_SAFE(OPT::strExportPairsCSV), 3.f)) {
 		VERBOSE("error: failed to export image pairs to CSV file %s", OPT::strExportPairsCSV.c_str());
+		return EXIT_FAILURE;
+	}
+	// Export global-descriptor retrieval rankings to CSV file
+	if (!OPT::strExportRetrievalCSV.empty() && !ExportRetrievalRankingsCSV(scene, MAKE_PATH_SAFE(OPT::strExportRetrievalCSV), 50)) {
+		VERBOSE("error: failed to export retrieval rankings to CSV file %s", OPT::strExportRetrievalCSV.c_str());
 		return EXIT_FAILURE;
 	}
 	// Export MVS scene

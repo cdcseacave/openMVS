@@ -113,7 +113,7 @@ File count: ~11 `.h`/`.cpp` files (plus the `LMFit/` subdirectory)
 
 Full SFM pipeline implementation supporting four reconstruction strategies (incremental, hierarchical, global, known-poses finetune).
 
-Key components: Feature extraction, pair matching, VocabularyTree image retrieval, pose-guided pair selection, geometric verification, track building, star initialization, incremental resection, bundle adjustment, global rotation/scale/translation averaging, scene clustering, global alignment, keyframe extraction, COLMAP/ROMA2/frames.json import, MVS export.
+Key components: Feature extraction, pair matching, VocabularyTree image retrieval, in-process RoMa v2 (ONNX Runtime) global-descriptor retrieval and dense-warp guided matching, pose-guided pair selection, geometric verification, track building, star initialization, incremental resection, bundle adjustment, global rotation/scale/translation averaging, scene clustering, global alignment, keyframe extraction, COLMAP/frames.json import, MVS export.
 
 File count: ~30 `.h`/`.cpp` files
 
