@@ -72,8 +72,10 @@ TripletScores SFM_API ComputeTripletScores(const Scene& scene, float minScore);
 // the filtered graph. Step 11 of the paper (extract the largest connected component of the
 // filtered graph) is deliberately not applied: openMVS selects components itself (SceneCluster).
 // A disabled config is a no-op. Returns the number of removed pairs.
+// The weighting config is not defaulted on purpose: re-weighting with anything other than the
+// config the run itself matched with would silently change gridSize/minInliers under the caller.
 unsigned SFM_API FilterPairsByTriplets(Scene& scene, const TripletFilterConfig& config,
-	const PairsWeightingConfig& weightingCfg = PairsWeightingConfig());
+	const PairsWeightingConfig& weightingCfg);
 
 } // namespace SFM
 

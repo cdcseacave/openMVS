@@ -7,8 +7,8 @@ structure ("doppelgangers"), retrieval false positives — from the matched view
 but the graph itself and **one integer per edge**: the epipolar inlier count. It reimplements
 S. M. Manam and V. M. Govindu, *Leveraging Camera Triplets for Efficient and Accurate
 Structure-from-Motion*, CVPR 2024, pp. 4959–4968 (Algorithm 1, Eqn. 3), from the paper alone — no
-code from the authors' MATLAB release or any third-party port. See `ViewGraphTriplets.{h,cpp}`,
-`triplet_disambiguation.py`, `TripletFilterTest`. **Off by default** — see *The default, and why*.
+code from the authors' MATLAB release or any port. See `ViewGraphTriplets.{h,cpp}`, the harness and
+`TripletFilterTest`. **Off by default** — see *The default, and why*.
 
 ## The algorithm
 
@@ -26,32 +26,31 @@ one inlier `n_ij = ImagePair::GetNumFilteredInliers()`.
    ambiguous, 0.3 medium/small ambiguous.
 4. **Selection.** Keep `(i,j)` iff `q_ij >= tau` (Theorem 1: this solves the paper's regularised
    edge-selection problem); unscored pairs are removed. The paper's step 11, extracting the largest
-   component of the filtered graph, is deliberately **not** applied — openMVS selects components
-   itself (`SceneCluster`).
+   component of the filtered graph, is **not** applied — `SceneCluster` already selects components.
 
 *Why it catches what the existing cycle test cannot.* `ImagePair::weightTriplet`
 (`PairsWeighting.cpp`) scores a pair by how many of its triangles close rotationally. A
 doppelganger's false edges are **mutually consistent** — the two near-identical façades form a
 self-consistent block whose cycles do close — so a rotation-cycle test is blind to them; the
-*inlier* asymmetry is what does not survive. Both scores are kept.
+*inlier* asymmetry is what does not. Both scores are kept.
 
 *Implementation.* Triangle enumeration by sorted-adjacency intersection over `i < j < k`; union-find
 over triplets keyed by the shared edge; one pass for the per-triplet maximum and the per-edge
-running mean. No external solver, no Boost graph, and **serial** — on the densest capture here
-(377 images, 6241 pairs, 44 889 triplets) it costs a few milliseconds. Duplicate pairs collapse onto
-one edge weighted by the strongest and share its score; a triangle-free graph scores nothing and the
-filter empties it.
+running mean. No external solver, no Boost graph, and **serial** — a few milliseconds on the densest
+capture here (377 images, 6241 pairs, 44 889 triplets). Duplicate pairs collapse onto one edge
+weighted by the strongest and share its score; a triangle-free graph scores nothing, and the filter
+then empties it.
 
 ## Where it runs, and the flags
 
 `Scene::Reconstruct` applies it **right after** the diagnostics export (`--export-pairs-csv` /
 `--export-retrieval-csv`) and before `matchImagesOnly` returns, from both call sites (after
 `MatchPairs`, and on the already-matched-`.sfm` early return). The CSV therefore always lists the
-*whole* matched graph, each pair's score in a trailing `TripletScore` column (empty = unscored), so
-a run can be re-scored offline from its own export; `ComputePairsWeights` then re-runs so the
-weights describe the filtered graph. One `VERBOSE` line reports everything: `Triplet filter: kept
-599/2078 pairs (tau 0.664 from m 0.60; 218 nodes, max degree 35; 8287 triplets in 4 components; 205
-pairs unscored, 1274 below tau)`.
+*whole* matched graph, each pair's score in a trailing `TripletScore` column (empty = unscored), so a
+run can be re-scored offline from its own export; `ComputePairsWeights` then re-runs (only if
+something was removed) so the weights describe the filtered graph. One `VERBOSE` line reports
+everything: `Triplet filter: kept 599/2078 pairs (tau 0.664 from m 0.60; 218 nodes, max degree 35;
+8287 triplets in 4 components; 205 pairs unscored, 1274 below tau)`.
 
 | Flag | Default | Effect |
 |---|---|---|
@@ -70,8 +69,7 @@ output, where **plausible** = true edge, **implausible** = false edge, **ambiguo
 
 ## Measurements
 
-Run folders live under the captures on the shared volume (never in the repo),
-`<capture>/openmvs-triplet-20260830-*`, driven by `.../polycam/normal/openmvs-triplet-20260830-tools/`.
+Run folders live under the captures on the shared volume (never in the repo), `<capture>/openmvs-triplet-20260830-*`, driven by `.../polycam/normal/openmvs-triplet-20260830-tools/`.
 **Parity:** 7 graphs (5 SIFT + 2 dense), 2078–6241 pairs, identical unscored sets, maximum absolute
 C++/Python difference **5.3e-7**. **Discrimination** vs the depth-derived labels (AUC over all
 labelled pairs with unscored ranked last / over the scored pairs alone):
@@ -88,12 +86,12 @@ labelled pairs with unscored ranked last / over the scored pairs alone):
 
 Precision among the kept pairs is 0.96–1.00 everywhere: what survives is almost purely true. The
 problem is recall — `tau` was calibrated on internet photo collections, where a true edge's inlier
-count varies far less than across a hand-held video capture's near/far, forward/sideways geometry —
-so `m = 0.6` discards **55–74 %** of the verified pairs, `m = 0.3` still 42–65 %.
+count varies far less than across a hand-held video capture's geometry — so `m = 0.6` discards
+**56–76 %** of the verified pairs and `m = 0.3` still 31–59 %.
 
 **Reconstruction effect.** Every arm reconstructs the *same* saved matched scene, so control and
-filtered differ only by `--filter-triplets`. Cells: *registered images (= the largest component
-here) [pairs kept] / components / `--compare-mvs` median rotation error*.
+filtered differ only by `--filter-triplets`. Cells: *registered images (= the largest component here)
+[pairs kept] / components / `--compare-mvs` median rotation error*.
 
 | capture (input pairs) | control | m = 0.6 | m = 0.3 |
 |---|---|---|---|
@@ -104,17 +102,16 @@ here) [pairs kept] / components / `--compare-mvs` median rotation error*.
 | `32265651` sift (3786) | **309** / 69 / 0.535° | 288 [1031] / 90 / 0.645° | 295 [1904] / 83 / 0.615° |
 | `32265651` dense (6241) | 131 / 23 / 0.970° | **368** [2409] / 10 / 0.706° | 340 [4054] / 38 / 0.800° |
 
-The one place the filter is a large **win** is the repetitive capture's *dense* graph, where the
-matcher's extra doppelganger edges are exactly what fragments the reconstruction: 368 of 377 images
-in one component against the control's 131 (124 for the Task-4 gate arm alone), and a better median
-rotation error. On the SIFT graphs it only ever costs images.
+The one large **win** is the repetitive capture's *dense* graph, where the matcher's extra
+doppelganger edges are what fragments the reconstruction: 368 of 377 images in one component against
+the control's 131 (124 for the Task-4 gate arm alone), and a better median rotation error.
 
 **Doppelgangers** (`.../datasets/doppelgangers/openmvs-triplet-20260830/`). `test_pairs.npy`: 4660
-labelled pairs, 16 scenes, 2330/2330. `reconstructions.tar.gz` (3 GB) was downloaded and holds
-**only** COLMAP reconstructions — no database with `two_view_geometries` — so there are no full view
-graphs to score and `n_sift_matches` is the edge weight; only 4 of 16 scenes reach 50 triangles from
-the labelled pairs alone (the other 12 — Sofia 26, Charlottenburg 19, Brno 12, the rest ≤ 7 — are
-**unscorable**: 0–15 pairs scored). The paper validated on *COLMAP* view graphs: a weak proxy.
+labelled pairs, 16 scenes, 2330/2330. `reconstructions.tar.gz` (3 GB) was downloaded and holds **only**
+COLMAP reconstructions — no database with `two_view_geometries` — so there are no full view graphs to
+score and `n_sift_matches` is the edge weight; only 4 of 16 scenes reach 50 triangles from the
+labelled pairs alone (the other 12 — Sofia 26, Charlottenburg 19, Brno 12, the rest ≤ 7 — are
+**unscorable**: 0–15 pairs scored), and the paper validated on *COLMAP* view graphs: a weak proxy.
 
 | scene | pairs | triplets | scored | AUC (all / scored) |
 |---|---|---|---|---|
@@ -142,9 +139,12 @@ dense-matched graph of a repetitive scene.
 * **Discarding the unscored pairs is what costs the images.** Step 1 drops every edge outside the
   largest triplet-graph component, and here those are mostly *true*: 426 of the 490 unscored
   labelled pairs on `3b43828e`, 415 of 441 on `32265651`. Keeping them, or scoring each component
-  separately, is worth measuring.
-* **Registered-image counts on `32265651` are not a stable ranking**: Task 4 found four matcher
-  configurations registering 146/124/137/192 images there with *disjoint* sets.
+  apart, is worth measuring.
+* **Auto-enabling is the obvious next step.** The filter is a large win exactly where the matched
+  graph is dense *and* fragments — 368 of 377 images in one component against the control's 131 on
+  the dense `32265651` graph — and a loss everywhere else; a rule reading the matched graph's own
+  statistics (triplet-graph density, component count) would beat a manual flag.
+* **Registered-image counts on `32265651` are not a stable ranking**: Task 4 found four matcher configurations registering 146/124/137/192 images there with *disjoint* sets.
 * **Not built here**, recorded as follow-ups: Kataria et al.'s ambiguity-aware track-length cue
   (AAM) and Wilson & Snavely's bipartite local clustering coefficient — both complementary to the
   inlier-ratio cue, both needing more than one integer per edge.

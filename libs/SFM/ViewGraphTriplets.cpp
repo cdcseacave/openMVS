@@ -74,9 +74,10 @@ TripletScores SFM::ComputeTripletScores(const Scene& scene, float minScore)
 		return result;
 
 	// 1. The edges of the view graph G: the geometrically verified pairs carrying at least one
-	// inlier. Two scene pairs listing the same image pair collapse onto one edge weighted by the
-	// strongest of them, and every such duplicate ends up with that edge's score, so a duplicate
-	// can never be kept while its twin is removed.
+	// inlier and joining two *different* images (a self-pair would otherwise fabricate triangles
+	// out of a single node). Two scene pairs listing the same image pair collapse onto one edge
+	// weighted by the strongest of them, and every such duplicate ends up with that edge's score,
+	// so a duplicate can never be kept while its twin is removed.
 	const IIndex numImages = scene.images.size();
 	std::unordered_map<PairIdx::PairIndex, uint32_t> edgeOfImagePair;
 	std::vector<uint32_t> edgeOfScenePair(scene.pairs.size(), NO_INDEX);
@@ -87,7 +88,7 @@ TripletScores SFM::ComputeTripletScores(const Scene& scene, float minScore)
 		const ImagePair& pair = scene.pairs[idxPair];
 		ASSERT(pair.ID1 < numImages && pair.ID2 < numImages, "ComputeTripletScores: pair references an unknown image");
 		const unsigned numInliers = pair.GetNumFilteredInliers();
-		if (!pair.HasGeometricVerification() || numInliers == 0)
+		if (!pair.HasGeometricVerification() || numInliers == 0 || pair.ID1 == pair.ID2)
 			continue;
 		const PairIdx imagePair(MakePairIdx(pair.ID1, pair.ID2));
 		const auto inserted = edgeOfImagePair.emplace(imagePair.idx, (uint32_t)edgeImages.size());
@@ -243,8 +244,10 @@ unsigned SFM::FilterPairsByTriplets(Scene& scene, const TripletFilterConfig& con
 		tripletScores.numNodes, tripletScores.maxDegree,
 		tripletScores.numTriplets, tripletScores.numTripletComponents, numUnscored, numBelowTau);
 	// the connectivity and cycle-consistency weights were computed on the unfiltered graph and
-	// the composite-weight order the reconstruction consumes is stale after the removals
-	ComputePairsWeights(scene, weightingCfg);
+	// the composite-weight order the reconstruction consumes is stale after the removals; a filter
+	// that removed nothing left both intact, so re-running would only cost time
+	if (numRemoved > 0)
+		ComputePairsWeights(scene, weightingCfg);
 	DEBUG("Filtered the view graph by camera triplets: %u pairs removed (%s)", numRemoved, TD_TIMER_GET_FMT().c_str());
 	return numRemoved;
 }

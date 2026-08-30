@@ -152,7 +152,9 @@ def compute_triplet_scores(pairs, min_score):
     #    triangle is emitted exactly once
     triplets = []
     for edge, (a, b) in enumerate(edge_nodes):
-        for c in adjacency[a] & adjacency[b]:
+        # sorted(): the triplet order, and with it the union-find roots and the largest-component
+        # tie-break, must not depend on Python's per-process set iteration order
+        for c in sorted(adjacency[a] & adjacency[b]):
             if c > b and c > a:
                 triplets.append((edge_of_key[(a, c) if a <= c else (c, a)],
                                  edge_of_key[(b, c) if b <= c else (c, b)],

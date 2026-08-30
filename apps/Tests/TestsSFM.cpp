@@ -5291,17 +5291,19 @@ bool TripletFilterTest()
 	}
 
 	// (b) a duplicate pair collapses onto the same edge (weighted by the stronger of the two) and
-	// shares its score; a pair with no geometric verification, and a verified pair with no inlier,
-	// are never edges -- both of the two added here would close a new triangle if they were, so
-	// the triplet count staying at 3 is what proves they were left out
+	// shares its score; a pair with no geometric verification, a verified pair with no inlier and
+	// a self-pair are never edges -- each of the three added here would close at least one new
+	// triangle if it were (the self-pair two, through node 3's neighbours 4 and 5), so the triplet
+	// count staying at 3 is what proves they were left out
 	{
-		PairSpec specs[13];
+		PairSpec specs[14];
 		memcpy(specs, pairSpecs, sizeof(pairSpecs));
 		specs[10] = PairSpec{0, 1, 10, true};   // duplicate of the (0,1) edge, weaker
 		specs[11] = PairSpec{0, 3, 25, false};  // inliers but no geometric verification
 		specs[12] = PairSpec{2, 4, 0, true};    // verified but no inlier
+		specs[13] = PairSpec{3, 3, 30, true};   // a self-pair joins no two images
 		Scene sceneDup;
-		buildScene(sceneDup, specs, 13);
+		buildScene(sceneDup, specs, 14);
 		const TripletScores scoresDup = ComputeTripletScores(sceneDup, 0.3f);
 		if (scoresDup.numTriplets != 3 || scoresDup.numScoredPairs != 6 ||
 			scoresDup.numNodes != 4 || scoresDup.maxDegree != 3 ||
@@ -5312,11 +5314,12 @@ bool TripletFilterTest()
 				scoresDup.maxDegree, scoresDup.tau);
 			return false;
 		}
-		if (ABS(scoresDup.scores[10] - scoresDup.scores[0]) > eps ||
-			scoresDup.scores[11] != -1.f || scoresDup.scores[12] != -1.f) {
+		if (ABS(scoresDup.scores[10] - scoresDup.scores[0]) > eps || scoresDup.scores[11] != -1.f ||
+			scoresDup.scores[12] != -1.f || scoresDup.scores[13] != -1.f) {
 			VERBOSE("TripletFilterTest FAILED: duplicate scored %g against %g; the unverified pair "
-				"scored %g and the inlier-less pair %g (both must be unscored)",
-				scoresDup.scores[10], scoresDup.scores[0], scoresDup.scores[11], scoresDup.scores[12]);
+				"scored %g, the inlier-less pair %g and the self-pair %g (all three must be unscored)",
+				scoresDup.scores[10], scoresDup.scores[0], scoresDup.scores[11],
+				scoresDup.scores[12], scoresDup.scores[13]);
 			return false;
 		}
 	}
@@ -5325,7 +5328,8 @@ bool TripletFilterTest()
 	TripletFilterConfig filterCfg;
 	filterCfg.enabled = true;
 	filterCfg.minScore = 0.3f;
-	if (FilterPairsByTriplets(scene, filterCfg) != 7 || scene.pairs.size() != 3) {
+	const PairsWeightingConfig weightingCfg; // defaults; FilterPairsByTriplets takes no default
+	if (FilterPairsByTriplets(scene, filterCfg, weightingCfg) != 7 || scene.pairs.size() != 3) {
 		VERBOSE("TripletFilterTest FAILED: m=0.3 left %u pairs, expected 3", scene.pairs.size());
 		return false;
 	}
@@ -5339,7 +5343,7 @@ bool TripletFilterTest()
 	Scene scene06;
 	buildScene(scene06, pairSpecs, 10);
 	filterCfg.minScore = 0.6f;
-	if (FilterPairsByTriplets(scene06, filterCfg) != 8 || scene06.pairs.size() != 2) {
+	if (FilterPairsByTriplets(scene06, filterCfg, weightingCfg) != 8 || scene06.pairs.size() != 2) {
 		VERBOSE("TripletFilterTest FAILED: m=0.6 left %u pairs, expected 2", scene06.pairs.size());
 		return false;
 	}
@@ -5367,7 +5371,7 @@ bool TripletFilterTest()
 			return false;
 		}
 	}
-	if (FilterPairsByTriplets(scenePath, filterCfg) != 3 || !scenePath.pairs.empty()) {
+	if (FilterPairsByTriplets(scenePath, filterCfg, weightingCfg) != 3 || !scenePath.pairs.empty()) {
 		VERBOSE("TripletFilterTest FAILED: a triplet-free graph kept %u pairs, expected none", scenePath.pairs.size());
 		return false;
 	}
@@ -5376,7 +5380,7 @@ bool TripletFilterTest()
 	Scene sceneOff;
 	buildScene(sceneOff, pairSpecs, 10);
 	filterCfg.enabled = false;
-	if (FilterPairsByTriplets(sceneOff, filterCfg) != 0 || sceneOff.pairs.size() != 10) {
+	if (FilterPairsByTriplets(sceneOff, filterCfg, weightingCfg) != 0 || sceneOff.pairs.size() != 10) {
 		VERBOSE("TripletFilterTest FAILED: the disabled filter removed pairs (%u left)", sceneOff.pairs.size());
 		return false;
 	}
