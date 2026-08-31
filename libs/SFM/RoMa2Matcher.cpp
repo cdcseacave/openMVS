@@ -311,9 +311,10 @@ bool IsSupportedManifest(const RoMa2Manifest& manifest, const String& setting)
 		manifest.layersShape[2] == manifest.imageSize/manifest.patch &&
 		manifest.layersShape[3] == manifest.layersShape[2] &&
 		manifest.layersDim == (unsigned)manifest.layersShape[4] &&
-		manifest.facetsDim == (unsigned)(manifest.layersShape[1]*manifest.layersShape[4]) &&
-		(manifest.retrievalShape.empty() ||
-			manifest.retrievalShape == std::vector<int64_t>{1, (int64_t)manifest.facetsDim});
+		manifest.facetsDim == (unsigned)(manifest.layersShape[1]*manifest.layersShape[4]);
+	// retrievalShape is not re-checked here: Load() already rejects any manifest where it declares
+	// something other than {1, facetsDim} (R16) -- a second check of the same fact, reachable only
+	// after Load() has already enforced it, can never be false and is worse than no check at all.
 }
 
 } // namespace

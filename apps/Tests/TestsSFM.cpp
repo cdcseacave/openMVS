@@ -1435,8 +1435,9 @@ static bool RoMa2OnnxParityDescribe(RoMa2Onnx& model, const String& descDir, con
 		return false;
 	const double cosPooledLayers = CosineSimilarity(pooled.data(), reference.data(), pooled.size());
 	const double normPooledLayers = VectorNorm(pooled.data(), pooled.size());
-	DEBUG("RoMa2OnnxParityTest[%s]: cosine value_facets %.6f, layers %.6f, pooled facets %.6f (norm %.6f), pooled layers %.6f (norm %.6f), retrieval %.8f",
-		setting.c_str(), cosFacets, cosLayers, cosPooledFacets, normPooledFacets, cosPooledLayers, normPooledLayers, cosRetrieval);
+	DEBUG("RoMa2OnnxParityTest[%s]: cosine value_facets %.6f, layers %.6f, pooled facets %.6f (norm %.6f), pooled layers %.6f (norm %.6f)%s",
+		setting.c_str(), cosFacets, cosLayers, cosPooledFacets, normPooledFacets, cosPooledLayers, normPooledLayers,
+		model.HasRetrieval() ? (String::FormatString(", retrieval %.8f", cosRetrieval)).c_str() : "");
 	if (cosFacets < bounds.minCosine || cosLayers < bounds.minCosine ||
 		cosPooledFacets < bounds.minCosine || cosPooledLayers < bounds.minCosine) {
 		VERBOSE("RoMa2OnnxParityTest[%s] FAILED: describe cosine below %g (value_facets %.6f, layers %.6f, pooled facets %.6f, pooled layers %.6f)",
