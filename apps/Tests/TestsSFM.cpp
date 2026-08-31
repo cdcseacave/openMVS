@@ -1372,11 +1372,13 @@ static bool RoMa2OnnxParityDescribe(RoMa2Onnx& model, const String& descDir, con
 	}
 
 	// the same image described again into a host tensor, so the `layers` output itself -- the
-	// device tensor above is never read back -- can be compared too
+	// device tensor above is never read back -- can be compared too; the retrieval readback is
+	// already checked above, so this call's copy of it is discarded, not reused
 	OrtTensor layersHost(OrtTensor::Host(model.LayersShape()));
+	std::vector<float> discardedRetrieval;
 	{
 		TD_TIMER_STARTD();
-		if (!model.Describe(planarA.data(), layersHost, NULL, retrieval)) {
+		if (!model.Describe(planarA.data(), layersHost, NULL, discardedRetrieval)) {
 			VERBOSE("RoMa2OnnxParityTest[%s] FAILED: describe into a host tensor", setting.c_str());
 			return false;
 		}

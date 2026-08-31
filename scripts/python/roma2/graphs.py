@@ -326,7 +326,9 @@ def _facets_retrieval(value_facets, power=FACETS_POWER):
 
 
 def pool_retrieval(tensor, recipe="facets", power=FACETS_POWER):
-    """The Python reference of the C++ PoolRetrievalDescriptor (EXPORT_REQUEST.md's recipe).
+    """The Python reference of the FACETS/LAYERS pooling recipes (EXPORT_REQUEST.md's design) --
+    what _facets_retrieval (the on-device graph pooling) and, until task 1b deleted it, the C++
+    PoolRetrievalDescriptor were both judged against.
 
     tensor is a [1, 2, h, w, C] numpy array or torch tensor. facets: per-slice GeM p=3 -> L2 -> concat -> L2
     -> sign|d|^power -> L2, 2048-d. layers: GeM p=3 on slice 1 -> L2, 1024-d — the shipped recipe, kept as

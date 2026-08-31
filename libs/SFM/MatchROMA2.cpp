@@ -313,7 +313,7 @@ SlotPlan MakeSlotPlan(const PairIdxArr& pairs, unsigned slotBudget, IIndex nImag
 
 // D E S C R I B E   P A S S //////////////////////////////////////////
 
-unsigned SFM::ComputeGlobalDescriptorsROMA2(Scene& scene, RoMa2Onnx& roma2, const ROMA2Config& config)
+unsigned SFM::ComputeGlobalDescriptorsROMA2(Scene& scene, RoMa2Onnx& roma2)
 {
 #ifdef _USE_ONNXRUNTIME
 	ASSERT(roma2.IsLoaded());

@@ -19,13 +19,13 @@ What openMVS adds to polyml's parity.py, all of it for the C++ side (Task 7's Ro
 this directory, and its always-on tests read --fixtures):
   source_A.png / source_B.png   the decoded RGB8 sources, losslessly, so the C++ preprocessing test starts
                                 from the same pixels rather than from its own JPEG decoder's
-  pooled_facets_{A,B}.npy       [2 * C] and [C]: the retrieval descriptors PoolRetrievalDescriptor has to
-  pooled_layers_{A,B}.npy       reproduce, for both images of the pair
+  pooled_facets_{A,B}.npy       [2 * C] and [C]: the FACETS/LAYERS pooling recipes (graphs.py's
+  pooled_layers_{A,B}.npy       pool_retrieval) compute for both images of the pair
   retrieval_{A,B}.npy           [2 * C]: the graph's own on-device FACETS pooling (_facets_retrieval) of
                                 the same forward pass -- Task 1's parity gate judges this against
                                 pooled_facets_{A,B}.npy, at a tighter bound than export.py check's default
   parity.json                   what the directory holds and the bounds it is judged under
-  --fixtures DIR                the two model-free fixtures the always-on C++ tests use, as raw fp32
+  --fixtures DIR                the one model-free fixture the always-on C++ tests use, as raw fp32
 """
 import argparse
 import json
@@ -38,7 +38,6 @@ from export import DEFAULT_CHECKPOINT, DEFAULT_ROMA2_REPO, SETTINGS, STAGE_IO
 
 FIXTURE_CROP = (97, 61)     # deliberately odd, so a C++ stride or row-padding bug cannot hide in it
 FIXTURE_SIZE = 64           # the square the crop is resized to: 3 * 64 * 64 * 4 = 48 KB
-FIXTURE_POOL_SHAPE = (1, 2, 3, 3, 8)
 
 
 def load_image(path, size, device="cuda"):
@@ -57,15 +56,13 @@ def resize(image, size):
 
 
 def write_fixtures(directory, decoded_A):
-    """The two always-on C++ fixtures: they pin the host-side halves of the contract without a model.
+    """The one always-on C++ fixture: pins the host-side preprocessing without a model.
 
-    Raw little-endian fp32, not npy, because the tests that read them run on every build and should not
-    need a header parser to do it. The pooling fixture is a seeded random tensor rather than a slice of a
-    real descriptor so that it stays 1 KB and stays reproducible from the seed alone. It is drawn from
-    randn, not rand: a strictly positive tensor never reaches GeM's 1e-6 clamp, so the fixture would
-    pin PoolRetrievalDescriptor only on the path where the clamp is a no-op. (The signed-power branch
-    stays unreachable either way -- the clamp makes every pooled value positive by construction -- and
-    the sign is kept in both implementations only so the recipe reads like the request states it.)
+    Raw little-endian fp32, not npy, because the test that reads it runs on every build and should
+    not need a header parser to do it. (This used to also write a seeded-random pooling fixture for
+    PoolRetrievalDescriptor's own unit test; that C++ function is gone -- the graph pools retrieval
+    on device now -- and task 1b deleted both the test and its fixtures, so this only writes what
+    RoMa2PreprocessTest still reads.)
 
     Computed on the CPU, deliberately, unlike everything else here. These bytes are committed and are then
     the expected value for every build on every machine, so they must be a property of the recipe and not
@@ -74,7 +71,6 @@ def write_fixtures(directory, decoded_A):
     is not a fixture.
     """
     from PIL import Image
-    from graphs import pool_retrieval
 
     directory = Path(directory).expanduser()
     directory.mkdir(parents=True, exist_ok=True)
@@ -84,16 +80,8 @@ def write_fixtures(directory, decoded_A):
     Image.fromarray(crop).save(directory / "preprocess_source.png")
     square = resize(torch.from_numpy(crop.astype(np.float32)).permute(2, 0, 1)[None] / 255.0, FIXTURE_SIZE)
     square.numpy().astype("<f4").tofile(directory / f"preprocess_{FIXTURE_SIZE}.bin")
-
-    pooled = torch.randn(FIXTURE_POOL_SHAPE, generator=torch.Generator().manual_seed(0))
-    shape = "x".join(str(dimension) for dimension in FIXTURE_POOL_SHAPE[1:])   # the batch dim is implied
-    pooled.numpy().astype("<f4").tofile(directory / f"pool_input_{shape}.bin")
-    facets, layers = pool_retrieval(pooled, "facets"), pool_retrieval(pooled, "layers")
-    facets.astype("<f4").tofile(directory / f"pool_facets_{facets.size}.bin")
-    layers.astype("<f4").tofile(directory / f"pool_layers_{layers.size}.bin")
     print(f"wrote {directory}/ fixtures (cpu): preprocess_source.png {width}x{height}, "
-          f"preprocess_{FIXTURE_SIZE}.bin {tuple(square.shape)}, pool_input_{shape}.bin "
-          f"{FIXTURE_POOL_SHAPE} -> facets[{facets.size}] layers[{layers.size}]", flush=True)
+          f"preprocess_{FIXTURE_SIZE}.bin {tuple(square.shape)}", flush=True)
 
 
 def main():

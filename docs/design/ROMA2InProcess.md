@@ -67,7 +67,7 @@ Per preset `S ∈ {320 (turbo), 512 (fast), 640 (base)}`, `G = S/16` patch grid,
 
 | File | Inputs | Outputs |
 |---|---|---|
-| `roma_<setting>_descriptor_fp32.onnx` (+`.onnx.data`) | `image` `[1,3,S,S]` f32, RGB planar, values in [0,1], un-normalised (ImageNet mean/std applied in-graph) | `layers` `[1,2,G,G,1024]` f32 channels-last (blocks 11+17, patch tokens only, unchanged from the shipped engine); `value_facets` `[1,2,G,G,1024]` f32 channels-last (V projections of blocks 15+20, before attention weighting/`o_proj`) |
+| `roma_<setting>_descriptor_fp32.onnx` (+`.onnx.data`) | `image` `[1,3,S,S]` f32, RGB planar, values in [0,1], un-normalised (ImageNet mean/std applied in-graph) | `layers` `[1,2,G,G,1024]` f32 channels-last (blocks 11+17, patch tokens only, unchanged from the shipped engine); `value_facets` `[1,2,G,G,1024]` f32 channels-last (V projections of blocks 15+20, before attention weighting/`o_proj`); `retrieval` `[1, facetsDim]` f32, the FACETS recipe pooled end to end on device (**mandatory** — a graph without it fails to load, see Retrieval Recipe below) |
 | `roma_<setting>_match_coarse_fp32.onnx` (+`.onnx.data`) | `descriptors_A`, `descriptors_B` `[1,2,G,G,1024]` f32; `img_A`, `img_B` `[1,3,S,S]` f32 (dead on the coarse graph, kept for contract compatibility with the published TensorRT graphs) | `warp` `[1,C,C,2]` f32, normalised (x,y) ∈ [-1,1] (align_corners=False); `confidence` `[1,C,C,1]` f32 raw overlap logit (sigmoid on host) |
 | `roma_<setting>.json` | openMVS manifest: `format_version`, `model`, `setting`, `image_size`, `patch`, `layers`, `value_facet_blocks`, `warp_size`, `confidence_channels`, `retrieval_recipes` (`facets`/`layers` dim + GeM params), `files`, `io` (shapes), `opset`, checksums | |
 
@@ -91,9 +91,13 @@ retrieval recipes is `EXPORT_REQUEST.md` (lives outside this repository, at
 `~/megaloc-vs-dinov3-2026-08-28/EXPORT_REQUEST.md`).
 
 Exported model sets live on the shared volume, one directory per export, e.g.
-`~/virginia/models/roma2-onnx/roma2onnx-20260829-facets1520/` (the export current as of this task) —
-referenced by `--roma2-model` or `$OPENMVS_ROMA2_MODEL_PATH`. The `.onnx` + `.onnx.data` + `.json` set
-is byte-portable across OSs (external data is resolved relative to the model path on every platform).
+`~/virginia/models/roma2-onnx/roma2onnx-20260831-retrieval/` (the export current as of this task,
+`format_version` 2, `retrieval` output present) — referenced by `--roma2-model` or
+`$OPENMVS_ROMA2_MODEL_PATH`. The `.onnx` + `.onnx.data` + `.json` set is byte-portable across OSs
+(external data is resolved relative to the model path on every platform).
+`~/virginia/models/roma2-onnx/roma2onnx-20260829-facets1520/` (`format_version` 1, no `retrieval`
+output) is the export this task's own change makes unsupported; kept, read-only, only as a fixed
+point for the load-time rejection.
 
 ---
 

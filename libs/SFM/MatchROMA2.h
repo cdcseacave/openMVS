@@ -104,7 +104,7 @@ struct SFM_API ROMA2Config {
 // Returns the number of images successfully described; a per-image load/describe failure is
 // logged individually and leaves that image's globalDescriptor empty, so a return value below
 // scene.images.size() is the caller's cue to treat the whole pass as failed.
-SFM_API unsigned ComputeGlobalDescriptorsROMA2(Scene& scene, RoMa2Onnx& roma2, const ROMA2Config& config);
+SFM_API unsigned ComputeGlobalDescriptorsROMA2(Scene& scene, RoMa2Onnx& roma2);
 /*----------------------------------------------------------------*/
 
 // Run the ROMAv2 dense matching pass over the given candidate pairs of an already

@@ -595,7 +595,7 @@ bool Scene::MatchPairs(const MatchConfig& config, const ROMA2Config& roma2Cfg, c
 				VERBOSE("error: failed to load ROMA2 model '%s' (%s)", modelPath.c_str(), roma2Cfg.setting.c_str());
 				return false;
 			}
-			if (roma2Cfg.useRetrieval && !ComputeGlobalDescriptors(roma2, roma2Cfg))
+			if (roma2Cfg.useRetrieval && !ComputeGlobalDescriptors(roma2))
 				return false;
 		} else {
 			DEBUG("ROMA2 retrieval reuses the %u global descriptors stored in the scene; no model loaded", images.size());
@@ -626,7 +626,7 @@ bool Scene::MatchPairs(const MatchConfig& config, const ROMA2Config& roma2Cfg, c
 	return true;
 }
 
-bool Scene::ComputeGlobalDescriptors(RoMa2Onnx& roma2, const ROMA2Config& config)
+bool Scene::ComputeGlobalDescriptors(RoMa2Onnx& roma2)
 {
 	if (status.nState.isSet(Status::STATE::GLOBAL_DESCRIPTORS))
 		return true;
@@ -637,7 +637,7 @@ bool Scene::ComputeGlobalDescriptors(RoMa2Onnx& roma2, const ROMA2Config& config
 	}
 	// the retrieval index needs one row per image; Scene::Import already rejected unreadable
 	// images, so a miss here (a per-image load/describe failure) is a real failure
-	if (ComputeGlobalDescriptorsROMA2(*this, roma2, config) != images.size()) {
+	if (ComputeGlobalDescriptorsROMA2(*this, roma2) != images.size()) {
 		VERBOSE("error: failed to describe all %u images with the ROMA2 model", (unsigned)images.size());
 		return false;
 	}

@@ -116,8 +116,12 @@ bool RoMa2Manifest::Load(const String& fileName)
 	if (!ReadJson(data, "format_version", fileName, formatVersion) ||
 		!ReadJsonString(data, "model", fileName, model))
 		return false;
-	if ((formatVersion != 1 && formatVersion != 2) || model != "roma2") {
-		VERBOSE("error: RoMa2 manifest '%s' is version %d of model '%s', expected version 1 or 2 of 'roma2'",
+	// format_version 1 predates the graph's on-device retrieval pooling (no 'retrieval' output,
+	// enforced below) and this build has no other way to compute one any more (task 1b deleted the
+	// CPU fallback), so it is rejected here, by name, rather than left to fail later on a missing key
+	if (formatVersion != 2 || model != "roma2") {
+		VERBOSE("error: RoMa2 manifest '%s' is version %d of model '%s', expected version 2 of 'roma2' "
+			"(version 1 is no longer supported: no on-device retrieval pooling)",
 			fileName.c_str(), formatVersion, model.c_str());
 		return false;
 	}
@@ -313,7 +317,8 @@ struct RoMa2Onnx::Impl
 	OnnxModel match;             // (descriptors_A, descriptors_B, img_A, img_B) -> (warp, confidence)
 	OrtTensor image;             // host input of the descriptor graph, copied H2D by ORT inside Run
 	OrtTensor facetsScratch;     // matching pass: value_facets stays on the device, never read back
-	OrtTensor facetsHost;        // retrieval pass: bound instead of the scratch so ORT copies it out
+	OrtTensor facetsHost;        // allocated lazily (Describe): no production caller reads value_facets
+	                             // back any more, only the parity test's independent check of that tensor
 	OrtTensor retrievalHost;     // every Describe() call binds `retrieval` here; ORT copies it out
 	OrtTensor dummyImage;        // the coarse graph's dead img_A/img_B input, shared by both
 	OrtTensor warpHost;          // host output: ORT copies the warp D2H inside Run
@@ -406,11 +411,13 @@ bool RoMa2Onnx::Impl::LoadDescriptor(const String& _modelDir, const String& sett
 		return false;
 	image = OrtTensor::Host({1, 3, S, S});
 	facetsScratch = descriptor.MakeDeviceTensor(manifest.facetsShape);
-	facetsHost = OrtTensor::Host(manifest.facetsShape);
+	// facetsHost (the raw value_facets readback, ~13 MB at base) is NOT allocated here: no
+	// production caller ever asks for it, only the parity test, so Describe() allocates it lazily
+	// on the first call that does -- a session nothing ever reads it back for never carries it.
 	// the graph's own on-device retrieval pooling, always read back (facetsDim host floats, small
 	// enough that every Describe() call pays for it, unlike the whole value_facets tensor above)
 	retrievalHost = OrtTensor::Host(manifest.retrievalShape);
-	if (!image.IsValid() || !facetsScratch.IsValid() || !facetsHost.IsValid() || !retrievalHost.IsValid()) {
+	if (!image.IsValid() || !facetsScratch.IsValid() || !retrievalHost.IsValid()) {
 		VERBOSE("error: can not allocate the RoMa2 descriptor tensors");
 		return false;
 	}
@@ -453,6 +460,13 @@ OrtTensor RoMa2Onnx::MakeLayers()
 bool RoMa2Onnx::Describe(const float* planarRgb, OrtTensor& layersOut, std::vector<float>* facetsOut, std::vector<float>& retrievalOut)
 {
 	ASSERT(IsLoaded() && layersOut.Shape() == impl->manifest.layersShape);
+	if (facetsOut != NULL && !impl->facetsHost.IsValid()) {
+		// lazily allocated on the first call that actually wants the raw value_facets readback
+		// (single-threaded per instance, so no race with a concurrent Describe() call)
+		impl->facetsHost = OrtTensor::Host(impl->manifest.facetsShape);
+		if (!impl->facetsHost.IsValid())
+			return false;
+	}
 	memcpy(impl->image.HostData(), planarRgb, sizeof(float)*3*(size_t)ImageSize()*ImageSize());
 	impl->descriptor.ClearBindings();
 	if (!impl->descriptor.BindInput("image", impl->image) ||

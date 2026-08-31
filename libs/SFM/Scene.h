@@ -286,10 +286,9 @@ public:
 	 * each image's global retrieval descriptor (a no-op returning true if the scene is already
 	 * marked GLOBAL_DESCRIPTORS). Sets the flag only once every image was successfully described.
 	 * @param roma2 an already-loaded ROMAv2 model (RoMa2Onnx::Load)
-	 * @param config the in-process ROMAv2 configuration (retrieval recipe/power)
 	 * @return true if every image now carries a global descriptor
 	 */
-	bool ComputeGlobalDescriptors(RoMa2Onnx& roma2, const ROMA2Config& config);
+	bool ComputeGlobalDescriptors(RoMa2Onnx& roma2);
 
 	/**
 	 * @brief Run a full reconstruction from a folder or semicolon-separated list

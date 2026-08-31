@@ -47,8 +47,8 @@ bool ROMA2WarpTrackingTest();
 
 // Global-descriptor retrieval test: cosine ranking of the per-image global descriptors and its
 // deterministic tie order, the PairsMatcher dispatch that ranks the candidate pairs through them
-// instead of the vocabulary tree, the rankings CSV export, the .sfm round-trip of the
-// descriptors, and the two host-side pooling recipes against the export script's fixtures
+// instead of the vocabulary tree, the rankings CSV export, and the .sfm round-trip of the
+// descriptors
 bool GlobalDescriptorsQueryTest();
 
 // RETRIEVAL match-mode test: candidate selection ranks purely by the global descriptors with
@@ -70,9 +70,9 @@ bool RoMa2PreprocessTest();
 bool RoMa2OnnxParityTest();
 
 // ROMA2 reconstruct test: runs the full in-process path on the bundled 4-image scene through
-// Scene::MatchPairs, four times. The per-image global retrieval descriptor is checked for both
-// the FACETS (default, 2048-D) and the LAYERS (parity, 1024-D) recipe, EXHAUSTIVE geometric
-// matching still connecting and verifying every pair; a run with the dense matching pass on is
+// Scene::MatchPairs, four times. The per-image global retrieval descriptor (2048-D, the graph's
+// own on-device pooling) is checked, EXHAUSTIVE geometric matching still connecting and verifying
+// every pair; a run with the dense matching pass on is
 // compared against a baseline run with it off (pairs created, i.e. present only in the guided
 // run, or strengthened by a warp), survives an .sfm round-trip of the descriptors and the pairs,
 // and then goes through ReconstructTest's own reconstruction stage; and two runs of one awkward
