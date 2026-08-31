@@ -112,8 +112,10 @@ bool GlobalDescriptors::Build(const Scene& scene)
 {
 	descriptors.resize(0, 0);
 	imageIDs.clear();
-	if (scene.images.size() < 2)
+	if (scene.images.size() < 2) {
+		VERBOSE("error: at least 2 images are needed to build a global-descriptor retrieval index (scene has %u)", scene.images.size());
 		return false;
+	}
 	const int dim = scene.images[0].globalDescriptor.cols;
 	descriptors.resize(scene.images.size(), dim);
 	imageIDs.resize(scene.images.size());

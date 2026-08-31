@@ -287,6 +287,12 @@ private:
 	// the only place either mode implements them. backendName only labels the DEBUG summary.
 	PairIdxArr CollectFusedRetrievalPairs(unsigned topK, LPCTSTR backendName);
 
+	// Mechanical construction shared by EnsureRetrievalIndex and EnsureGlobalDescriptorsIndex:
+	// allocates globalDescriptors and builds it from the scene, releasing it again on failure.
+	// Callers keep their own already-built check and their own error message; this only
+	// reports whether the build succeeded.
+	bool BuildGlobalDescriptorsIndex();
+
 	Scene& scene;
 	const MatchConfig config;
 
@@ -305,8 +311,8 @@ private:
 	ROMA2Config roma2Cfg;
 
 	// Symmetric fused retrieval score of every pair retrieved by the last
-	// CollectVocabularyPairs call, kept for CollectVerificationFeedbackPairs
-	// (released by Match once the matching rounds complete)
+	// CollectVocabularyPairs or CollectRetrievalPairs call, kept for
+	// CollectVerificationFeedbackPairs (released by Match once the matching rounds complete)
 	std::unordered_map<PairIdx::PairIndex, float> fusedRetrievalScores;
 };
 

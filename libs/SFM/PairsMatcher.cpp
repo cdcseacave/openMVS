@@ -674,6 +674,19 @@ bool PairsMatcher::UseGlobalDescriptors() const
 	return true;
 }
 
+bool PairsMatcher::BuildGlobalDescriptorsIndex()
+{
+	TD_TIMER_STARTD();
+	globalDescriptors = std::make_unique<GlobalDescriptors>();
+	if (!globalDescriptors->Build(scene)) {
+		globalDescriptors.reset();
+		return false;
+	}
+	DEBUG("Global-descriptor retrieval index built from %u images (%d-D) in %s",
+	      scene.images.size(), globalDescriptors->Dim(), TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
 bool PairsMatcher::EnsureRetrievalIndex()
 {
 	if (!UseGlobalDescriptors()) {
@@ -682,15 +695,10 @@ bool PairsMatcher::EnsureRetrievalIndex()
 	}
 	if (globalDescriptors)
 		return globalDescriptors->IsValid();
-	TD_TIMER_STARTD();
-	globalDescriptors = std::make_unique<GlobalDescriptors>();
-	if (!globalDescriptors->Build(scene)) {
+	if (!BuildGlobalDescriptorsIndex()) {
 		VERBOSE("error: failed to build the global-descriptor retrieval index");
-		globalDescriptors.reset();
 		return false;
 	}
-	DEBUG("Global-descriptor retrieval index built from %u images (%d-D) in %s",
-	      scene.images.size(), globalDescriptors->Dim(), TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 
@@ -701,17 +709,12 @@ bool PairsMatcher::EnsureGlobalDescriptorsIndex()
 	// is an error here rather than a silently different ranking algorithm (design decision 10)
 	if (globalDescriptors)
 		return globalDescriptors->IsValid();
-	TD_TIMER_STARTD();
-	globalDescriptors = std::make_unique<GlobalDescriptors>();
-	if (!globalDescriptors->Build(scene)) {
+	if (!BuildGlobalDescriptorsIndex()) {
 		// GlobalDescriptors::Build already named the offending image and the descriptor shape
 		// it expected; nothing to add here except that this mode will not fall back
 		VERBOSE("error: RETRIEVAL matching needs a global descriptor on every image (see above)");
-		globalDescriptors.reset();
 		return false;
 	}
-	DEBUG("Global-descriptor retrieval index built from %u images (%d-D) in %s",
-	      scene.images.size(), globalDescriptors->Dim(), TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 
