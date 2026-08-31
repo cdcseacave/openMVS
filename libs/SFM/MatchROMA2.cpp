@@ -28,7 +28,6 @@
 #include "MatchROMA2.h"
 #include "Scene.h"
 #include "RoMa2Matcher.h"
-#include "GlobalDescriptors.h"
 #include "PairsMatcher.h"
 #include "MatchGeometric.h"
 #include "ROMA2Warp.h"
@@ -332,43 +331,19 @@ unsigned SFM::ComputeGlobalDescriptorsROMA2(Scene& scene, RoMa2Onnx& roma2, cons
 		ring.Submit(i);
 
 	unsigned numDescribed = 0;
-	const bool bFacets = config.retrievalRecipe == RetrievalRecipe::FACETS;
-	// allocate only the tensor the active recipe actually reads: FACETS pools the host
-	// `facets' readback and leaves `layers` a device-resident scratch write target it never
-	// reads back; LAYERS pools `layers` itself, which must therefore be a host tensor
-	OrtTensor layers, layersHost;
-	if (bFacets)
-		layers = roma2.MakeLayers(); // reused across every image (design decision 7: the describe pass keeps only the pooled vector, not the layers)
-	else
-		layersHost = OrtTensor::Host(roma2.LayersShape());
-	if (!(bFacets ? layers : layersHost).IsValid()) {
-		VERBOSE("error: could not allocate the ROMA2 %s tensor", bFacets ? "layers" : "layers-host");
+	OrtTensor layers(roma2.MakeLayers()); // reused across every image (design decision 7: the describe pass keeps only the pooled vector, not the layers)
+	if (!layers.IsValid()) {
+		VERBOSE("error: could not allocate the ROMA2 layers tensor");
 		return 0;
 	}
-	const unsigned numSlices = (unsigned)roma2.LayersShape()[1];
-	const unsigned numChannels = (unsigned)roma2.LayersShape()[4];
-	// the exponent of the power normalization belongs to the exported recipe, so the manifest's
-	// own retrieval_recipes.facets.power is what the pooling uses unless the caller overrides it
-	// (config.retrievalPower defaults to 0, which means "whatever the model was exported with")
-	const float retrievalPower = config.retrievalPower > 0.f ? config.retrievalPower : roma2.Manifest().facetsPower;
-	// format_version 2: the graph pools FACETS on device (_facets_retrieval) and hands back the finished
-	// 2048-D descriptor directly, so the CPU PoolRetrievalDescriptor pass below is skipped entirely --
-	// but only when the caller asked for exactly the power the graph baked in, or the two would disagree.
-	// retrievalPower > 0.f matters on its own: PoolRetrievalDescriptor treats power <= 0 as "the signed
-	// power step is disabled" (GlobalDescriptors.cpp), a manifest is free to publish facetsPower == 0,
-	// and 0 == 0 would otherwise satisfy the equality conjunct while the graph still applies its baked-in
-	// power unconditionally -- the one case where the caller could silently get a different descriptor
-	const bool bGpuRetrieval = bFacets && roma2.HasRetrieval() && retrievalPower > 0.f && retrievalPower == roma2.Manifest().facetsPower;
-	std::vector<float> facets, descriptor;
+	std::vector<float> descriptor;
 	for (IIndex i = 0; i < nImages; ++i, ++state.progress) {
 		// consume the buffer this image was prefetched into before ever reusing it below
 		const PlanarImage* const planar = ring.Take();
 		Image& img = scene.images[i];
-		if (planar && roma2.Describe(planar->data(), bFacets ? layers : layersHost,
-				bGpuRetrieval ? NULL : (bFacets ? &facets : NULL), bGpuRetrieval ? &descriptor : NULL)) {
-			if (!bGpuRetrieval)
-				PoolRetrievalDescriptor(bFacets ? facets.data() : layersHost.HostData(), numSlices, roma2.NumPatches(), numChannels,
-					config.retrievalRecipe, retrievalPower, descriptor);
+		// the graph's own on-device retrieval pooling (RoMa2Onnx::Describe), read straight into
+		// descriptor -- the CPU pooling this pass used to fall back to is gone, one path remains
+		if (planar && roma2.Describe(planar->data(), layers, NULL, descriptor)) {
 			img.globalDescriptor = cv::Mat(1, (int)descriptor.size(), CV_32F, descriptor.data()).clone();
 			++numDescribed;
 		} else {
@@ -380,13 +355,11 @@ unsigned SFM::ComputeGlobalDescriptorsROMA2(Scene& scene, RoMa2Onnx& roma2, cons
 	}
 	state.Finish(); // unpause the log console before the summary line below (see struct comment)
 
-	// descriptor may be empty (no image was ever successfully pooled): fall back to the
-	// manifest's declared dimension for the recipe so the summary line stays meaningful
-	const unsigned descriptorDim = descriptor.empty() ?
-		(bFacets ? roma2.Manifest().facetsDim : roma2.Manifest().layersDim) : (unsigned)descriptor.size();
-	DEBUG("Global descriptors computed for %u/%u images (%s recipe, %u-D, %s provider, %s)",
-		numDescribed, (unsigned)nImages, bGpuRetrieval ? "value-facets(gpu)" : (bFacets ? "value-facets" : "layers"),
-		descriptorDim, roma2.ProviderName().c_str(), TD_TIMER_GET_FMT().c_str());
+	// descriptor may be empty (no image was ever successfully described): fall back to the
+	// manifest's declared dimension so the summary line stays meaningful
+	const unsigned descriptorDim = descriptor.empty() ? roma2.Manifest().facetsDim : (unsigned)descriptor.size();
+	DEBUG("Global descriptors computed for %u/%u images (%u-D, %s provider, %s)",
+		numDescribed, (unsigned)nImages, descriptorDim, roma2.ProviderName().c_str(), TD_TIMER_GET_FMT().c_str());
 	return numDescribed;
 #else // _USE_ONNXRUNTIME
 	// unreachable: RoMa2Onnx::IsAvailable() is false in this build, so Scene::MatchPairs never
@@ -497,6 +470,9 @@ unsigned SFM::MatchPairsROMA2(PairsMatcher& pairsMatcher, RoMa2Onnx& roma2, cons
 	// counted here and reported once in the summary below: an image the plan reloads several
 	// times would otherwise repeat its own failure line once per reload
 	unsigned numFailedLoads = 0, numFailedMatches = 0;
+	// Describe()'s retrieval readback is not optional, but the matching pass has no use for a
+	// retrieval descriptor: written and discarded every load, reused so the loop does not churn
+	std::vector<float> discardedRetrieval;
 	FOREACH(p, pairs) {
 		const PairIdx pair(pairs[p]);
 		const SlotPlan::Step& step = plan.steps[p];
@@ -510,7 +486,7 @@ unsigned SFM::MatchPairsROMA2(PairsMatcher& pairsMatcher, RoMa2Onnx& roma2, cons
 			const PlanarImage* const planar = ring.Take();
 			slotImage[load.slot] = NO_ID;
 			// value_facets stays on the device: the matching pass never reads it back (design decision 4)
-			if (planar && roma2.Describe(planar->data(), slotLayers[load.slot], NULL)) {
+			if (planar && roma2.Describe(planar->data(), slotLayers[load.slot], NULL, discardedRetrieval)) {
 				slotImage[load.slot] = load.image;
 			} else {
 				++numFailedLoads;

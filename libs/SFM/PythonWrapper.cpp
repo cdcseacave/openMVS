@@ -300,11 +300,6 @@ void RegisterBindings()
 		.def_readwrite("import_poses_mode", &SFM::ImportConfig::importPosesMode)
 		.def_readwrite("frames_convention", &SFM::ImportConfig::framesConvention);
 
-	// SFM::RetrievalRecipe — how the global retrieval descriptor is pooled
-	enum_<SFM::RetrievalRecipe>("RetrievalRecipe")
-		.value("FACETS", SFM::RetrievalRecipe::FACETS)
-		.value("LAYERS", SFM::RetrievalRecipe::LAYERS);
-
 	// SFM::ROMA2Config — in-process ROMAv2 retrieval and semi-dense matching
 	class_<SFM::ROMA2Config>("ROMA2Config")
 		.def_readwrite("enabled", &SFM::ROMA2Config::enabled)
@@ -313,8 +308,6 @@ void RegisterBindings()
 		.DEF_STR_RW("provider", &SFM::ROMA2Config::provider)
 		.def_readwrite("use_retrieval", &SFM::ROMA2Config::useRetrieval)
 		.def_readwrite("use_matching", &SFM::ROMA2Config::useMatching)
-		.def_readwrite("retrieval_recipe", &SFM::ROMA2Config::retrievalRecipe)
-		.def_readwrite("retrieval_power", &SFM::ROMA2Config::retrievalPower)
 		.def_readwrite("min_confidence", &SFM::ROMA2Config::minConfidence)
 		.def_readwrite("min_erode_confidence", &SFM::ROMA2Config::minErodeConfidence)
 		.def_readwrite("erode_border", &SFM::ROMA2Config::erodeBorder)

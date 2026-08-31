@@ -32,7 +32,6 @@ validation captures when the intrinsics are self-calibrated (see Limitations, an
 | `--roma2-setting turbo\|fast\|base` | `base` | preset (320/512/640 px) |
 | `--roma2-provider auto\|cuda\|coreml\|dml\|cpu` | `auto` | execution provider; a named one is required, not preferred |
 | `--roma2-retrieval` | `true` | rank candidate pairs by the global descriptors |
-| `--roma2-retrieval-recipe facets\|layers` | `facets` | pooling recipe (2048-D default, 1024-D parity) |
 | `--roma2-match` | **`false`** | experimental: dense-match candidate pairs and replace weaker matches |
 | `--roma2-slots N` | `64` | image descriptors resident on the device while dense matching |
 | `--roma2-skip-healthy N` | `0` | round 1: skip pairs already at ≥ N inliers |
@@ -56,7 +55,8 @@ unchanged. The in-process integration replaces the earlier NPZ-based ROMA2 impor
 Source: `libs/SFM/OnnxRuntime.h/cpp` (ONNX Runtime session/tensor wrapper), `libs/SFM/RoMa2Matcher.h/cpp`
 (the two RoMa v2 sessions), `libs/SFM/MatchROMA2.h/cpp` (describe pass, dense-matching pass,
 `ROMA2Config`), `libs/SFM/ROMA2Warp.h/cpp` (warp coordinates, confidence erosion, keypoint tracking,
-guided-pair store/replace), `libs/SFM/GlobalDescriptors.h/cpp` (retrieval pooling + cosine index). CLI:
+guided-pair store/replace), `libs/SFM/GlobalDescriptors.h/cpp` (cosine retrieval index over the
+graph-pooled descriptors). CLI:
 `apps/CreateStructure/CreateStructure.cpp` (`--roma2*`, `--export-retrieval-csv`).
 
 ---
@@ -97,33 +97,36 @@ is byte-portable across OSs (external data is resolved relative to the model pat
 
 ---
 
-## Retrieval Recipes
+## Retrieval Recipe
 
-`SFM::PoolRetrievalDescriptor` (`libs/SFM/GlobalDescriptors.h/cpp`) pools one image's
-descriptor-graph output into its global retrieval descriptor:
+The global retrieval descriptor (FACETS, 2048-D: per-slice GeM p=3 on `value_facets` → L2 per
+slice → concat → L2 → `sign(d)·|d|^p` power normalization → L2, `p` = the export's `FACETS_POWER`)
+is pooled end to end **on device**, inside the exported descriptor graph, and read back as the
+`retrieval` output (`RoMa2Onnx::Describe`, `libs/SFM/RoMa2Matcher.h/cpp`) -- one path, no
+runtime-configurable recipe or host-side pooling. A manifest that does not declare a `retrieval`
+output (`format_version` 1) is an unsupported model and fails loudly at load, naming the model
+directory and the missing output.
 
-- **FACETS** (default, 2048-D): per-slice GeM p=3 (clamp 1e-6, cube, mean over the G·G patches, cbrt,
-  accumulated in double) on `value_facets` → L2 per slice → concat (2048) → L2 →
-  `sign(d)·|d|^p` (power normalization) → L2, where `p` is the manifest's own
-  `retrieval_recipes.facets.power` (0.3 in the shipped exports). `ROMA2Config::retrievalPower`
-  defaults to `0`, meaning "whatever the model was exported with"; a positive value overrides it.
-- **LAYERS** (legacy/parity, 1024-D): GeM p=3 on `layers` slice 1 (block 17) → L2. Reproduces the
-  shipped reference engine's own pooling.
+An earlier revision of this branch pooled FACETS (and a legacy LAYERS recipe: GeM p=3 on `layers`
+slice 1) on the CPU (`SFM::PoolRetrievalDescriptor`); once the graph took over the pooling that CPU
+path was kept only long enough to compare its output against the graph's, then deleted along with
+the LAYERS recipe (task 1b of the matching redesign, 2026-08-31). The comparison it existed for
+lives on as `RoMa2OnnxParityDescribe`'s retrieval check (`apps/Tests/TestsSFM.cpp`), which reads the
+graph's `retrieval` output back and judges it against the independent Python `pool_retrieval`
+reference (`scripts/python/roma2/graphs.py`) at cosine ≥ 0.99999 -- the C++ GeM was matched to that
+reference to 6e-8 before the CPU path was retired.
 
-The C++ GeM was matched to the campaign's Python implementation to 6e-8.
-
-Measured against `~/virginia/models/roma2-onnx/roma2onnx-20260829-facets1520/CROSSCHECK.md`, seven
-LiDAR captures (the engine consumed `keyframes/images`, not `corrected_images`):
+Measured against `~/virginia/models/roma2-onnx/roma2onnx-20260829-facets1520/CROSSCHECK.md` (the
+pre-GPU-pooling export), seven LiDAR captures (the engine consumed `keyframes/images`, not
+`corrected_images`):
 
 | Measure | Value | Bound / reference |
 |---|---|---|
-| LAYERS pooled GeM cosine vs the shipped TensorRT dumps | ≥ 0.999966 | ≥ 0.999 |
 | FACETS `value_facets` cosine vs the campaign's torch taps (t15v/t20v) | ≥ 0.999990 (worst per-image) | ≥ 0.999 |
-| LAYERS recall@16 (non-temporal) | 0.6565 | shipped 0.656 ± 0.005 |
 | FACETS recall@16 (non-temporal) | 0.7955 | shipped 0.797 ± 0.01 |
 | Mean per-image top-16 overlap with the engine's own rankings | ≥ 97.6% (worst capture) | ≥ 95.0% |
 
-Both recall figures were also confirmed through the real selection engine (`roma2-pair-eval`), not
+The recall figure was also confirmed through the real selection engine (`roma2-pair-eval`), not
 only the numpy replay.
 
 ---

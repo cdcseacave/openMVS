@@ -55,8 +55,8 @@ SFM_API void PreprocessImageRoMa2(const Image8U3& bgr, int size, std::vector<flo
 /*----------------------------------------------------------------*/
 
 // One exported ROMAv2 preset, as described by its `roma_<setting>.json` manifest: which
-// graphs to load, the static shapes of their inputs/outputs, and the recipes the host-side
-// retrieval pooling follows. Everything the C++ needs to consume an export it did not produce.
+// graphs to load and the static shapes of their inputs/outputs. Everything the C++ needs to
+// consume an export it did not produce.
 struct SFM_API RoMa2Manifest
 {
 	String setting;                       // preset name: turbo|fast|base
@@ -66,12 +66,10 @@ struct SFM_API RoMa2Manifest
 	std::vector<int> valueFacetBlocks;    // backbone blocks the `value_facets` output taps
 	std::vector<int64_t> layersShape;     // [1,2,G,G,1024], the `layers` output shape
 	std::vector<int64_t> facetsShape;     // [1,2,G,G,1024], the `value_facets` output shape
-	std::vector<int64_t> retrievalShape;  // [1,2048], the `retrieval` output shape; empty on format_version 1
+	std::vector<int64_t> retrievalShape;  // [1, facetsDim], the `retrieval` output shape; Load() requires it
 	int warpSize = 0;                     // C: the coarse matcher's C x C warp grid
 	int confidenceChannels = 1;           // channels of the `confidence` output
-	unsigned facetsDim = 2048;            // dimension of the FACETS retrieval descriptor
-	unsigned layersDim = 1024;            // dimension of the LAYERS retrieval descriptor
-	float facetsPower = 0.3f;             // exponent of the FACETS signed power normalization
+	unsigned facetsDim = 2048;            // dimension of the retrieval descriptor the graph pools
 	int opset = 0;                        // ONNX opset the graphs were traced with
 	String descriptorFile, descriptorData; // descriptor graph and its external-data file
 	String matchFile, matchData;           // coarse-match graph and its external-data file
@@ -114,8 +112,6 @@ public:
 	inline int ImageSize() const { return Manifest().imageSize; }
 	inline int WarpSize() const { return Manifest().warpSize; }
 	inline const std::vector<int64_t>& LayersShape() const { return Manifest().layersShape; }
-	// format_version 2: the graph pools the FACETS recipe on device and emits it as `retrieval`
-	inline bool HasRetrieval() const { return !Manifest().retrievalShape.empty(); }
 	unsigned NumPatches() const; // G*G, the descriptor grid cells one image is described by
 
 	// One image's descriptor tensor, on the session device when the provider has device memory
@@ -126,13 +122,13 @@ public:
 	OrtTensor MakeLayers();
 
 	// Run the descriptor graph on one preprocessed image (3*S*S floats, PreprocessImageRoMa2),
-	// writing the `layers` output into layersOut (a MakeLayers()-shaped tensor). When facetsOut
-	// is not NULL the raw `value_facets` tensor is read back into it as 2*G*G*1024 host floats;
-	// only the retrieval pass asks for it on a format_version 1 model, the matching pass leaves it
-	// on the device. When retrievalOut is not NULL (HasRetrieval() only) the graph's own on-device
-	// FACETS pooling is read back into it instead, as facetsDim host floats -- ~400x less transfer
-	// than facetsOut for the same retrieval pass.
-	bool Describe(const float* planarRgb, OrtTensor& layersOut, std::vector<float>* facetsOut, std::vector<float>* retrievalOut = NULL);
+	// writing the `layers` output into layersOut (a MakeLayers()-shaped tensor) and the graph's
+	// own on-device retrieval pooling into retrievalOut, as facetsDim host floats -- the only way
+	// a caller gets a global retrieval descriptor; the transfer is small enough that every call
+	// pays for it. facetsOut stays optional: when not NULL the raw `value_facets` tensor is also
+	// read back, as 2*G*G*1024 host floats (~400x the transfer of retrievalOut) -- no production
+	// caller needs it, only the parity test's independent check of that tensor.
+	bool Describe(const float* planarRgb, OrtTensor& layersOut, std::vector<float>* facetsOut, std::vector<float>& retrievalOut);
 
 	// Run the coarse-match graph on two descriptor tensors, returning the C x C normalized warp
 	// (align_corners=false) into image B and the overlap probability (the graph's logit through a sigmoid)

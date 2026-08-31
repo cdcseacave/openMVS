@@ -182,15 +182,6 @@ static double CosineSimilarity(const float* a, const float* b, size_t count)
 	return (normA > 0 && normB > 0 ? dot/std::sqrt(normA*normB) : 0);
 }
 
-// Euclidean norm of a float buffer, accumulated in double
-static double VectorNorm(const float* v, size_t count)
-{
-	double sum = 0;
-	for (size_t i = 0; i < count; ++i)
-		sum += (double)v[i] * (double)v[i];
-	return std::sqrt(sum);
-}
-
 // Parity bounds shipped in a reference dump's parity.json; the defaults are the export
 // script's, kept for a dump written before a bound was recorded
 struct RoMa2ParityBounds {
@@ -1137,8 +1128,7 @@ bool ROMA2WarpTrackingTest()
 
 // Global-descriptor retrieval test: cosine ranking of the per-image descriptors, its
 // deterministic tie order, the PairsMatcher dispatch that replaces the vocabulary tree with
-// it, the rankings CSV export, the .sfm round-trip of the descriptors, and the two host-side
-// pooling recipes against the export script's fixtures
+// it, the rankings CSV export, and the .sfm round-trip of the descriptors
 bool GlobalDescriptorsQueryTest()
 {
 	TD_TIMER_START();
@@ -1234,27 +1224,7 @@ bool GlobalDescriptorsQueryTest()
 		return false;
 	}
 
-	// the pooling recipes against the export script's fixture (seeded [1,2,3,3,8] tensor, pooled in Python double precision)
-	std::vector<float> input, expectedFacets, expectedLayers, descriptor;
-	if (!ReadFloats(MAKE_PATH("roma2/pool_input_2x3x3x8.bin"), 2*9*8, input) ||
-		!ReadFloats(MAKE_PATH("roma2/pool_facets_16.bin"), 16, expectedFacets) ||
-		!ReadFloats(MAKE_PATH("roma2/pool_layers_8.bin"), 8, expectedLayers))
-		return false;
-	PoolRetrievalDescriptor(input.data(), 2, 9, 8, RetrievalRecipe::FACETS, 0.3f, descriptor);
-	const float diffFacets = MaxAbsDiff(descriptor, expectedFacets);
-	if (descriptor.size() != 16 || diffFacets > 1e-6f) {
-		VERBOSE("GlobalDescriptorsQueryTest FAILED: facets recipe (max-abs %g)", diffFacets);
-		return false;
-	}
-	PoolRetrievalDescriptor(input.data(), 2, 9, 8, RetrievalRecipe::LAYERS, 0.f, descriptor);
-	const float diffLayers = MaxAbsDiff(descriptor, expectedLayers);
-	if (descriptor.size() != 8 || diffLayers > 1e-6f) {
-		VERBOSE("GlobalDescriptorsQueryTest FAILED: layers recipe (max-abs %g)", diffLayers);
-		return false;
-	}
-
-	VERBOSE("GlobalDescriptorsQueryTest PASSED: pooling matches the fixtures to %g (facets) and %g (layers) (%s)",
-		diffFacets, diffLayers, TD_TIMER_GET_FMT().c_str());
+	VERBOSE("GlobalDescriptorsQueryTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 
@@ -1316,7 +1286,9 @@ static String RoMa2ReferenceDir(const String& modelDir, const String& setting, c
 
 // The describe stage of one preset against real_<setting>_descriptor.reference: the CPU
 // preprocessing of the reference's own source image, the raw `value_facets` and `layers`
-// tensors, and both pooled retrieval descriptors, judged by the bounds in its parity.json
+// tensors, and the graph's own on-device retrieval pooling, judged by the bounds in its
+// parity.json (value_facets/layers) and against the CPU pool_retrieval reference's own
+// pooled_facets_A.npy fixture at a tighter bar (retrieval)
 static bool RoMa2OnnxParityDescribe(RoMa2Onnx& model, const String& descDir, const String& setting)
 {
 	RoMa2ParityBounds bounds;
@@ -1354,7 +1326,7 @@ static bool RoMa2OnnxParityDescribe(RoMa2Onnx& model, const String& descDir, con
 	}
 	DEBUG("RoMa2OnnxParityTest[%s]: max preprocessing difference from the reference %g", setting.c_str(), diffImage);
 
-	// the raw value facets, read back from the device, and the FACETS retrieval descriptor pooled from them
+	// the raw value facets, read back from the device, and the graph's own on-device retrieval pooling
 	OrtTensor layers(model.MakeLayers());
 	if (!layers.IsValid()) {
 		VERBOSE("RoMa2OnnxParityTest[%s] FAILED: cannot allocate the layers tensor", setting.c_str());
@@ -1363,11 +1335,9 @@ static bool RoMa2OnnxParityDescribe(RoMa2Onnx& model, const String& descDir, con
 	std::vector<float> facets, retrieval;
 	{
 		TD_TIMER_STARTD();
-		// format_version 2 (Important 2, fix round 1): also read the graph's own on-device FACETS
-		// pooling back when the manifest has it, so this test exercises RoMa2Onnx::Describe's
-		// retrievalOut path -- the same call the GPU-retrieval describe pass in MatchROMA2.cpp makes --
-		// instead of only ever taking the CPU PoolRetrievalDescriptor path below
-		if (!model.Describe(planarA.data(), layers, &facets, model.HasRetrieval() ? &retrieval : NULL)) {
+		// this is the same call the describe pass in MatchROMA2.cpp makes (facetsOut NULL there):
+		// it exercises RoMa2Onnx::Describe's retrievalOut readback, which otherwise has no automated coverage
+		if (!model.Describe(planarA.data(), layers, &facets, retrieval)) {
 			VERBOSE("RoMa2OnnxParityTest[%s] FAILED: describe with the facets read-back", setting.c_str());
 			return false;
 		}
@@ -1381,42 +1351,32 @@ static bool RoMa2OnnxParityDescribe(RoMa2Onnx& model, const String& descDir, con
 	if (!ReadNpyExpect(descDir + "out_value_facets.npy", numTensor, reference))
 		return false;
 	const double cosFacets = CosineSimilarity(facets.data(), reference.data(), numTensor);
-	std::vector<float> pooled;
-	PoolRetrievalDescriptor(facets.data(), numSlices, numPatches, channels, RetrievalRecipe::FACETS, manifest.facetsPower, pooled);
-	if (pooled.size() != manifest.facetsDim) {
-		VERBOSE("RoMa2OnnxParityTest[%s] FAILED: the FACETS recipe pooled %u values, the manifest declares %u",
-			setting.c_str(), (unsigned)pooled.size(), manifest.facetsDim);
+
+	// the graph's own on-device retrieval pooling, judged against the CPU pool_retrieval reference's
+	// pooled_facets_A.npy fixture at Task 1's own tighter bar (export.py check's --retrieval-min-cosine
+	// default) rather than the looser bounds.minCosine below -- the parity gate Task 1 added because
+	// this readback path had no automated coverage otherwise; it must keep running now that the CPU
+	// pooling it used to also be judged against (PoolRetrievalDescriptor) is gone
+	if (retrieval.size() != manifest.facetsDim) {
+		VERBOSE("RoMa2OnnxParityTest[%s] FAILED: the graph's retrieval output has %u values, the manifest declares %u",
+			setting.c_str(), (unsigned)retrieval.size(), manifest.facetsDim);
 		return false;
 	}
 	if (!ReadNpyExpect(descDir + "pooled_facets_A.npy", manifest.facetsDim, reference))
 		return false;
-	const double cosPooledFacets = CosineSimilarity(pooled.data(), reference.data(), pooled.size());
-	const double normPooledFacets = VectorNorm(pooled.data(), pooled.size());
-
-	// format_version 2: the graph's own on-device pooling (retrieval), judged against the same
-	// pooled_facets_A.npy fixture -- `reference` still holds it -- at Task 1's own tighter bar
-	// (export.py check's --retrieval-min-cosine default) rather than the looser bounds.minCosine above
-	double cosRetrieval = 1.0;
-	if (model.HasRetrieval()) {
-		if (retrieval.size() != manifest.facetsDim) {
-			VERBOSE("RoMa2OnnxParityTest[%s] FAILED: the graph's retrieval output has %u values, the manifest declares %u",
-				setting.c_str(), (unsigned)retrieval.size(), manifest.facetsDim);
-			return false;
-		}
-		cosRetrieval = CosineSimilarity(retrieval.data(), reference.data(), retrieval.size());
-		if (cosRetrieval < 0.99999) {
-			VERBOSE("RoMa2OnnxParityTest[%s] FAILED: on-device retrieval cosine %.8f is below 0.99999 (vs pooled_facets_A.npy)",
-				setting.c_str(), cosRetrieval);
-			return false;
-		}
+	const double cosRetrieval = CosineSimilarity(retrieval.data(), reference.data(), retrieval.size());
+	if (cosRetrieval < 0.99999) {
+		VERBOSE("RoMa2OnnxParityTest[%s] FAILED: on-device retrieval cosine %.8f is below 0.99999 (vs pooled_facets_A.npy)",
+			setting.c_str(), cosRetrieval);
+		return false;
 	}
 
-	// the same image described again into a host tensor, so the `layers` output itself and its
-	// pooled parity descriptor can be compared too (the device tensor above is never read back)
+	// the same image described again into a host tensor, so the `layers` output itself -- the
+	// device tensor above is never read back -- can be compared too
 	OrtTensor layersHost(OrtTensor::Host(model.LayersShape()));
 	{
 		TD_TIMER_STARTD();
-		if (!model.Describe(planarA.data(), layersHost, NULL)) {
+		if (!model.Describe(planarA.data(), layersHost, NULL, retrieval)) {
 			VERBOSE("RoMa2OnnxParityTest[%s] FAILED: describe into a host tensor", setting.c_str());
 			return false;
 		}
@@ -1425,33 +1385,15 @@ static bool RoMa2OnnxParityDescribe(RoMa2Onnx& model, const String& descDir, con
 	if (!ReadNpyExpect(descDir + "out_layers.npy", numTensor, reference))
 		return false;
 	const double cosLayers = CosineSimilarity(layersHost.HostData(), reference.data(), numTensor);
-	PoolRetrievalDescriptor(layersHost.HostData(), numSlices, numPatches, channels, RetrievalRecipe::LAYERS, 0.f, pooled);
-	if (pooled.size() != manifest.layersDim) {
-		VERBOSE("RoMa2OnnxParityTest[%s] FAILED: the LAYERS recipe pooled %u values, the manifest declares %u",
-			setting.c_str(), (unsigned)pooled.size(), manifest.layersDim);
+	DEBUG("RoMa2OnnxParityTest[%s]: cosine value_facets %.6f, layers %.6f, retrieval %.8f",
+		setting.c_str(), cosFacets, cosLayers, cosRetrieval);
+	if (cosFacets < bounds.minCosine || cosLayers < bounds.minCosine) {
+		VERBOSE("RoMa2OnnxParityTest[%s] FAILED: describe cosine below %g (value_facets %.6f, layers %.6f)",
+			setting.c_str(), bounds.minCosine, cosFacets, cosLayers);
 		return false;
 	}
-	if (!ReadNpyExpect(descDir + "pooled_layers_A.npy", manifest.layersDim, reference))
-		return false;
-	const double cosPooledLayers = CosineSimilarity(pooled.data(), reference.data(), pooled.size());
-	const double normPooledLayers = VectorNorm(pooled.data(), pooled.size());
-	DEBUG("RoMa2OnnxParityTest[%s]: cosine value_facets %.6f, layers %.6f, pooled facets %.6f (norm %.6f), pooled layers %.6f (norm %.6f)%s",
-		setting.c_str(), cosFacets, cosLayers, cosPooledFacets, normPooledFacets, cosPooledLayers, normPooledLayers,
-		model.HasRetrieval() ? (String::FormatString(", retrieval %.8f", cosRetrieval)).c_str() : "");
-	if (cosFacets < bounds.minCosine || cosLayers < bounds.minCosine ||
-		cosPooledFacets < bounds.minCosine || cosPooledLayers < bounds.minCosine) {
-		VERBOSE("RoMa2OnnxParityTest[%s] FAILED: describe cosine below %g (value_facets %.6f, layers %.6f, pooled facets %.6f, pooled layers %.6f)",
-			setting.c_str(), bounds.minCosine, cosFacets, cosLayers, cosPooledFacets, cosPooledLayers);
-		return false;
-	}
-	if (ABS(normPooledFacets-1) > 1e-5 || ABS(normPooledLayers-1) > 1e-5) {
-		VERBOSE("RoMa2OnnxParityTest[%s] FAILED: pooled descriptors are not unit norm (%.6f facets, %.6f layers)",
-			setting.c_str(), normPooledFacets, normPooledLayers);
-		return false;
-	}
-	VERBOSE("RoMa2OnnxParityTest[%s] describe passed on %s: cosine %.6f (value_facets) / %.6f (layers), pooled %.6f (facets) / %.6f (layers)%s",
-		setting.c_str(), model.ProviderName().c_str(), cosFacets, cosLayers, cosPooledFacets, cosPooledLayers,
-		model.HasRetrieval() ? (String::FormatString(", retrieval %.8f", cosRetrieval)).c_str() : "");
+	VERBOSE("RoMa2OnnxParityTest[%s] describe passed on %s: cosine %.6f (value_facets) / %.6f (layers), retrieval %.8f",
+		setting.c_str(), model.ProviderName().c_str(), cosFacets, cosLayers, cosRetrieval);
 	return true;
 }
 
@@ -1477,7 +1419,9 @@ static bool RoMa2OnnxParityMatchCoarse(RoMa2Onnx& model, const String& matchDir,
 		VERBOSE("RoMa2OnnxParityTest[%s] FAILED: cannot allocate the pair descriptor tensors", setting.c_str());
 		return false;
 	}
-	if (!model.Describe(planarA.data(), layersA, NULL) || !model.Describe(planarB.data(), layersB, NULL)) {
+	std::vector<float> discardedRetrieval; // this stage matches, it never needs a retrieval descriptor
+	if (!model.Describe(planarA.data(), layersA, NULL, discardedRetrieval) ||
+		!model.Describe(planarB.data(), layersB, NULL, discardedRetrieval)) {
 		VERBOSE("RoMa2OnnxParityTest[%s] FAILED: describe of the match pair", setting.c_str());
 		return false;
 	}
@@ -1656,7 +1600,7 @@ static ROMA2PairSummaries SummarizePairs(const Scene& scene)
 	return summaries;
 }
 
-// One recipe of ROMA2ReconstructTest: import the bundled 4-image scene, extract AKAZE features,
+// One configuration of ROMA2ReconstructTest: import the bundled 4-image scene, extract AKAZE features,
 // then MatchPairs with the in-process ROMAv2 model describing every image and, when bUseMatching
 // is set, re-matching every candidate pair through its dense warp. Checks the global retrieval
 // descriptors the describe pass stores and that EXHAUSTIVE matching still connects and
@@ -1675,7 +1619,7 @@ static ROMA2PairSummaries SummarizePairs(const Scene& scene)
 // Image::LoadMetadata, fixed there and pinned by ImportMetadataDeterminismTest.)
 // With it off, the stored pairs are exactly what the matching produced.
 static bool ROMA2ReconstructScene(Scene& scene, const String& setting, const String& provider,
-	RetrievalRecipe recipe, int expectedDim, bool bUseMatching, unsigned slotBudget,
+	int expectedDim, bool bUseMatching, unsigned slotBudget,
 	bool bViewGraphCalibration, ROMA2PairSummaries& pairSummaries)
 {
 	// the EXIF intrinsics as imported (720.51 px, no distortion), unlike ReconstructTest, which
@@ -1733,7 +1677,6 @@ static bool ROMA2ReconstructScene(Scene& scene, const String& setting, const Str
 	roma2Cfg.provider = provider;
 	roma2Cfg.useMatching = bUseMatching;
 	roma2Cfg.slotBudget = slotBudget;
-	roma2Cfg.retrievalRecipe = recipe;
 	if (!scene.MatchPairs(matchCfg, roma2Cfg)) {
 		VERBOSE("ROMA2ReconstructTest FAILED: MatchPairs failed");
 		return false;
@@ -1769,8 +1712,8 @@ static bool ROMA2ReconstructScene(Scene& scene, const String& setting, const Str
 	// rounding of exactly 1. The 4 bundled images are close-up shots of the same small scene
 	// (ReconstructTest reconstructs ~2000 shared tracks from them), so even genuinely distinct
 	// descriptors sit close to 1 by content similarity alone -- measured empirically at up to
-	// 0.99985546 (turbo/FACETS), 0.99941337 (turbo/LAYERS) and 0.99994838 (base/FACETS) across
-	// both providers here, on this dataset. The worst of those sits 5.2e-5 below 1, so 1-1e-6
+	// 0.99985546 (turbo) and 0.99994838 (base) across both providers here, on this dataset.
+	// The worst of those sits 5.2e-5 below 1, so 1-1e-6
 	// leaves ~50x of margin above the measured ceiling while still catching a duplicate, which
 	// cannot come out below 1-1e-7. The measured maximum is logged so every run carries the
 	// evidence for that margin.
@@ -1813,8 +1756,8 @@ static bool ROMA2ReconstructScene(Scene& scene, const String& setting, const Str
 
 // ROMA2 reconstruct test: runs the whole import/AKAZE/EXHAUSTIVE pipeline of ReconstructTest
 // with the in-process ROMAv2 model attached, and checks both of its passes -- the describe pass
-// (per-image global retrieval descriptors, FACETS 2048-D and LAYERS 1024-D) and the dense
-// matching pass (every candidate pair re-matched through its warp). The dense pass is measured
+// (per-image global retrieval descriptors, 2048-D, the graph's own on-device pooling) and the
+// dense matching pass (every candidate pair re-matched through its warp). The dense pass is measured
 // against a baseline run of the very same configuration with it switched off, so what is
 // asserted is what the warps actually changed; the run is then repeated on a fresh scene to
 // prove determinism (design decision 11), round-tripped through Scene::Save/Load, and finished
@@ -1855,7 +1798,7 @@ bool ROMA2ReconstructTest()
 	ROMA2PairSummaries baseline;
 	{
 		Scene scene(2);
-		if (!ROMA2ReconstructScene(scene, setting, provider, RetrievalRecipe::FACETS, 2048, false, 64, false, baseline)) {
+		if (!ROMA2ReconstructScene(scene, setting, provider, 2048, false, 64, false, baseline)) {
 			VERBOSE("ROMA2ReconstructTest FAILED: baseline run (dense matching off)");
 			return false;
 		}
@@ -1865,8 +1808,8 @@ bool ROMA2ReconstructTest()
 	ROMA2PairSummaries guided;
 	{
 		Scene scene(2);
-		if (!ROMA2ReconstructScene(scene, setting, provider, RetrievalRecipe::FACETS, 2048, true, 64, false, guided)) {
-			VERBOSE("ROMA2ReconstructTest FAILED: FACETS recipe with dense matching");
+		if (!ROMA2ReconstructScene(scene, setting, provider, 2048, true, 64, false, guided)) {
+			VERBOSE("ROMA2ReconstructTest FAILED: dense matching");
 			return false;
 		}
 		// Neither kind of change is marked on the pair itself, so both are read off the two runs'
@@ -1964,23 +1907,23 @@ bool ROMA2ReconstructTest()
 
 	// 3+4) determinism (design decision 11): the very same configuration run twice on two fresh
 	// scenes must store the very same pairs, the warps being applied serially in (ID1, ID2) order
-	// however the pool interleaved them. The configuration is deliberately the awkward one: the
-	// parity recipe on a single thread, with a slot pool too small to hold the scene, so that the
-	// describe pass reuses a prefetch buffer and the dense pass reloads evicted slots (see the
+	// however the pool interleaved them. The configuration is deliberately the awkward one: a
+	// single thread, with a slot pool too small to hold the scene, so that the describe pass
+	// reuses a prefetch buffer and the dense pass reloads evicted slots (see the
 	// ROMA2ReconstructScene comment) -- the paths where a stale buffer or slot would show up as a
 	// difference. The view-graph calibration is off here so that the comparison sees the matching
 	// alone (again, see ROMA2ReconstructScene).
 	ROMA2PairSummaries tightPool, repeated;
 	{
 		Scene scene(1);
-		if (!ROMA2ReconstructScene(scene, setting, provider, RetrievalRecipe::LAYERS, 1024, true, 2, false, tightPool)) {
-			VERBOSE("ROMA2ReconstructTest FAILED: LAYERS recipe with a 2-slot pool");
+		if (!ROMA2ReconstructScene(scene, setting, provider, 2048, true, 2, false, tightPool)) {
+			VERBOSE("ROMA2ReconstructTest FAILED: 2-slot pool run");
 			return false;
 		}
 	}
 	{
 		Scene scene(1);
-		if (!ROMA2ReconstructScene(scene, setting, provider, RetrievalRecipe::LAYERS, 1024, true, 2, false, repeated)) {
+		if (!ROMA2ReconstructScene(scene, setting, provider, 2048, true, 2, false, repeated)) {
 			VERBOSE("ROMA2ReconstructTest FAILED: determinism run");
 			return false;
 		}

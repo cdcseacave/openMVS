@@ -28,7 +28,6 @@
 // I N C L U D E S /////////////////////////////////////////////////
 
 #include "Camera.h"
-#include "MatchROMA2.h"
 
 
 // D E F I N E S ///////////////////////////////////////////////////
@@ -40,23 +39,6 @@ namespace SFM {
 
 // Forward declarations
 class SFM_API Scene;
-
-// Pool one image's ROMAv2 descriptor-graph output into its global retrieval descriptor:
-// tensor is a [numSlices, numPatches, channels] channels-last fp32 buffer (the `value_facets`
-// or the `layers` output of the describe graph, batch dimension dropped), recipe selects
-// between the request's design (FACETS, numSlices*channels-d) and the shipped reference
-// (LAYERS, channels-d, pooled from the deepest slice only), and power is the exponent of the
-// signed power normalization FACETS ends with (<=0 or 1 disables it).
-// The result is L2-normalized and accumulated in double, matching the Python reference.
-SFM_API void PoolRetrievalDescriptor(
-	const float* tensor,
-	unsigned numSlices,
-	unsigned numPatches,
-	unsigned channels,
-	RetrievalRecipe recipe,
-	float power,
-	std::vector<float>& descriptor);
-/*----------------------------------------------------------------*/
 
 // Cosine retrieval index over the per-image global descriptors of a scene: the alternative
 // to the vocabulary tree as the source of the per-image ranked candidate lists the pair

@@ -79,7 +79,6 @@ float fROMA2MinOverlap;
 bool bROMA2CrossCheck;
 bool bFilterTriplets;
 float fTripletMinScore;
-String strROMA2RetrievalRecipe;
 String strROMA2Provider;
 float defaultFocalRatio;
 float focalLength;
@@ -176,7 +175,6 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("roma2-max-replace", boost::program_options::value(&OPT::nROMA2MaxReplace)->default_value(0), "round-1 dense matching: replace only pairs with fewer than this many inliers (0 = replace any weaker pair)")
 		("roma2-min-overlap", boost::program_options::value(&OPT::fROMA2MinOverlap)->default_value(0.f), "dense matching: create a pair the descriptor matcher did not verify only if this fraction of the warp is confidently overlapping (0 = off, 1 = create only on a fully confident warp)")
 		("roma2-cross-check", boost::program_options::value<bool>(&OPT::bROMA2CrossCheck)->default_value(false), "dense matching: keep a guided match only if no closer keypoint of the first image claims the same keypoint of the second")
-		("roma2-retrieval-recipe", boost::program_options::value<std::string>(&OPT::strROMA2RetrievalRecipe)->default_value("facets"), "global descriptor pooling: facets (value projections of blocks 15+20, 2048-D) or layers (GeM on the matcher's deepest layer, 1024-D, legacy)")
 		("roma2-provider", boost::program_options::value<std::string>(&OPT::strROMA2Provider)->default_value("auto"), "ONNX Runtime execution provider: auto (CUDA > CoreML > DirectML > CPU), cuda, coreml, dml or cpu")
 		("default-focal-ratio", boost::program_options::value(&OPT::defaultFocalRatio)->default_value(1.2f), "focal-length is set to ratio * max(width,height) for images with unknown focal-length")
 		("focal-length,f", boost::program_options::value(&OPT::focalLength)->default_value(0.f), "force focal-length (in pixels) for specified images (0 = disabled)")
@@ -276,10 +274,6 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		LOG("error: unknown ROMA2 export preset '%s' (accepted: turbo, fast, base)", OPT::strROMA2Setting.c_str());
 		return false;
 	}
-	if (OPT::strROMA2RetrievalRecipe != "facets" && OPT::strROMA2RetrievalRecipe != "layers") {
-		LOG("error: unknown ROMA2 retrieval recipe '%s' (accepted: facets, layers)", OPT::strROMA2RetrievalRecipe.c_str());
-		return false;
-	}
 	if (OPT::strROMA2Provider != "auto" && OPT::strROMA2Provider != "cuda" && OPT::strROMA2Provider != "coreml" &&
 		OPT::strROMA2Provider != "dml" && OPT::strROMA2Provider != "cpu") {
 		LOG("error: unknown ROMA2 execution provider '%s' (accepted: auto, cuda, coreml, dml, cpu)", OPT::strROMA2Provider.c_str());
@@ -359,7 +353,6 @@ int main(int argc, LPCTSTR* argv)
 	cfg.roma2Cfg.maxReplaceInliers = OPT::nROMA2MaxReplace;
 	cfg.roma2Cfg.minCreatedOverlap = OPT::fROMA2MinOverlap;
 	cfg.roma2Cfg.guidedCrossCheck = OPT::bROMA2CrossCheck;
-	cfg.roma2Cfg.retrievalRecipe = (OPT::strROMA2RetrievalRecipe == "layers") ? RetrievalRecipe::LAYERS : RetrievalRecipe::FACETS;
 	cfg.roma2Cfg.provider = OPT::strROMA2Provider;
 	#ifdef _USE_CUDA
 	cfg.matchCfg.useCUDA = cfg.featuresCfg.useCUDA = !SEACAVE::CUDA::isCpuRequested(SEACAVE::CUDA::desiredDeviceIDs);

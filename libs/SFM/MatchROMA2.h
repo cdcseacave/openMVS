@@ -42,14 +42,6 @@ class SFM_API Scene;
 class SFM_API RoMa2Onnx;
 class SFM_API PairsMatcher;
 
-// Recipe used to pool the per-image ROMAv2 descriptor graph outputs into one global
-// retrieval descriptor: FACETS pools the attention value facets (2048-d, default),
-// LAYERS pools the shipped `layers` output as the reference implementation does (1024-d)
-enum class RetrievalRecipe : uint8_t {
-	FACETS = 0,
-	LAYERS = 1
-};
-
 // Configuration of the in-process ROMAv2 (ONNX Runtime) retrieval and dense matching
 struct SFM_API ROMA2Config {
 	bool enabled = false;                  // enable the in-process ROMAv2 model (explicit opt-in)
@@ -63,8 +55,6 @@ struct SFM_API ROMA2Config {
 	// Limitations). Enable with --roma2-match true, preferably together with
 	// --roma2-skip-healthy 100 --roma2-max-replace 15, or with imported intrinsics
 	bool useMatching = false;
-	RetrievalRecipe retrievalRecipe = RetrievalRecipe::FACETS; // how to pool the global retrieval descriptor
-	float retrievalPower = 0.f;            // exponent of the signed power normalization of the retrieval descriptor (0 = the manifest's retrieval_recipes.facets.power)
 	float minConfidence = 0.3f;            // minimum warp confidence for a keypoint to be tracked
 	float minErodeConfidence = 0.9f;       // confidence above which a cell survives the erosion of the confidence map
 	int erodeBorder = 8;                   // border size (in warp cells) to erode the confidence map (0 = disabled)
@@ -108,10 +98,9 @@ struct SFM_API ROMA2Config {
 
 // Run the ROMAv2 describe pass over every image of the scene: pipelines each image's load
 // and preprocessing on the thread pool while roma2.Describe() (which may only be driven from
-// one thread) runs on the calling thread, then pools the descriptor-graph output of every
-// successfully described image into its global retrieval descriptor (PoolRetrievalDescriptor,
-// config.retrievalRecipe) and stores it in Image::globalDescriptor. roma2 must already be
-// loaded (RoMa2Onnx::Load); this pass never touches the coarse-match graph.
+// one thread) runs on the calling thread, then stores the descriptor graph's own on-device
+// retrieval pooling of every successfully described image in Image::globalDescriptor. roma2
+// must already be loaded (RoMa2Onnx::Load); this pass never touches the coarse-match graph.
 // Returns the number of images successfully described; a per-image load/describe failure is
 // logged individually and leaves that image's globalDescriptor empty, so a return value below
 // scene.images.size() is the caller's cue to treat the whole pass as failed.

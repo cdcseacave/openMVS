@@ -136,27 +136,13 @@ bool RoMa2Manifest::Load(const String& fileName)
 		VERBOSE("error: RoMa2 manifest '%s' has a non-positive image_size/patch/warp_size/confidence_channels", fileName.c_str());
 		return false;
 	}
-	// the retrieval recipes: only the GeM p=3 pooling of PoolRetrievalDescriptor is implemented,
-	// with LAYERS pooling the deepest of the two descriptor slices
+	// the retrieval recipe: the graph pools it end to end on device (GeM p=3 -> concat -> signed
+	// power -> L2, per the export's FACETS_POWER) and hands it back as the `retrieval` output, so
+	// this build only needs the recipe's declared dimension, to size and validate that tensor
 	const nlohmann::json* const recipes = JsonMember(data, "retrieval_recipes", fileName);
 	const nlohmann::json* const facetsRecipe = (recipes != NULL ? JsonMember(*recipes, "facets", fileName) : NULL);
-	const nlohmann::json* const layersRecipe = (recipes != NULL ? JsonMember(*recipes, "layers", fileName) : NULL);
-	if (facetsRecipe == NULL || layersRecipe == NULL)
+	if (facetsRecipe == NULL || !ReadJson(*facetsRecipe, "dim", fileName, facetsDim))
 		return false;
-	int facetsGemP = 0, layersGemP = 0, layersSlice = 0;
-	if (!ReadJson(*facetsRecipe, "dim", fileName, facetsDim) ||
-		!ReadJson(*facetsRecipe, "gem_p", fileName, facetsGemP) ||
-		!ReadJson(*facetsRecipe, "power", fileName, facetsPower) ||
-		!ReadJson(*layersRecipe, "dim", fileName, layersDim) ||
-		!ReadJson(*layersRecipe, "gem_p", fileName, layersGemP) ||
-		!ReadJson(*layersRecipe, "slice", fileName, layersSlice))
-		return false;
-	if (facetsGemP != 3 || layersGemP != 3 || layersSlice != 1) {
-		VERBOSE("error: RoMa2 manifest '%s' asks for retrieval recipes this build does not implement "
-			"(GeM p=%d/%d, layers slice %d; expected p=3 and slice 1)",
-			fileName.c_str(), facetsGemP, layersGemP, layersSlice);
-		return false;
-	}
 	const nlohmann::json* const files = JsonMember(data, "files", fileName);
 	if (files == NULL ||
 		!ReadJsonString(*files, "descriptor", fileName, descriptorFile) ||
@@ -189,20 +175,19 @@ bool RoMa2Manifest::Load(const String& fileName)
 		!ExpectManifestShape(*matchOutputs, "warp", fileName, {1, cells, cells, 2}) ||
 		!ExpectManifestShape(*matchOutputs, "confidence", fileName, {1, cells, cells, (int64_t)confidenceChannels}))
 		return false;
-	// format_version 2 adds a third descriptor output, `retrieval`: the FACETS recipe (GeM p=3 -> concat
-	// -> signed power -> L2) computed end to end on device, so a retrieval-only pass reads back facetsDim
-	// host floats instead of the whole value_facets tensor. Absent (retrievalShape stays empty) on version 1.
+	// the third descriptor output, `retrieval`: the FACETS recipe computed end to end on device, so a
+	// retrieval-only pass reads back facetsDim host floats instead of the whole value_facets tensor.
+	// Required, not format-version-gated: a manifest that does not declare it is an unsupported model,
+	// not a legacy one, and this is exactly the check that says so, naming the model directory (via
+	// fileName) and the missing 'retrieval' key (JsonMember's own error text, from ReadJson below).
 	// Read straight off the JSON rather than through ExpectManifestShape (which would discard the read
 	// value and hand back a hand-built {1, facetsDim} instead): retrievalShape's value must come from what
 	// the manifest actually declares, or IsSupportedManifest's own re-check of it below is tautological.
-	retrievalShape.clear();
-	if (formatVersion >= 2) {
-		if (!ReadJson(*descriptorOutputs, "retrieval", fileName, retrievalShape))
-			return false;
-		if (retrievalShape != std::vector<int64_t>{1, (int64_t)facetsDim}) {
-			VERBOSE("error: RoMa2 manifest '%s' declares a shape for '%s' that disagrees with its own sizes", fileName.c_str(), "retrieval");
-			return false;
-		}
+	if (!ReadJson(*descriptorOutputs, "retrieval", fileName, retrievalShape))
+		return false;
+	if (retrievalShape != std::vector<int64_t>{1, (int64_t)facetsDim}) {
+		VERBOSE("error: RoMa2 manifest '%s' declares a shape for '%s' that disagrees with its own sizes", fileName.c_str(), "retrieval");
+		return false;
 	}
 	return true;
 }
@@ -310,7 +295,6 @@ bool IsSupportedManifest(const RoMa2Manifest& manifest, const String& setting)
 		manifest.layersShape[0] == 1 && manifest.layersShape[1] == 2 &&
 		manifest.layersShape[2] == manifest.imageSize/manifest.patch &&
 		manifest.layersShape[3] == manifest.layersShape[2] &&
-		manifest.layersDim == (unsigned)manifest.layersShape[4] &&
 		manifest.facetsDim == (unsigned)(manifest.layersShape[1]*manifest.layersShape[4]);
 	// retrievalShape is not re-checked here: Load() already rejects any manifest where it declares
 	// something other than {1, facetsDim} (R16) -- a second check of the same fact, reachable only
@@ -330,8 +314,7 @@ struct RoMa2Onnx::Impl
 	OrtTensor image;             // host input of the descriptor graph, copied H2D by ORT inside Run
 	OrtTensor facetsScratch;     // matching pass: value_facets stays on the device, never read back
 	OrtTensor facetsHost;        // retrieval pass: bound instead of the scratch so ORT copies it out
-	OrtTensor retrievalScratch;  // format_version 2, non-retrieval Describe() calls: bound but never read
-	OrtTensor retrievalHost;     // format_version 2 retrieval pass: bound instead of the scratch so ORT copies it out
+	OrtTensor retrievalHost;     // every Describe() call binds `retrieval` here; ORT copies it out
 	OrtTensor dummyImage;        // the coarse graph's dead img_A/img_B input, shared by both
 	OrtTensor warpHost;          // host output: ORT copies the warp D2H inside Run
 	OrtTensor confidenceHost;    // host output: the raw overlap logit
@@ -418,26 +401,18 @@ bool RoMa2Onnx::Impl::LoadDescriptor(const String& _modelDir, const String& sett
 	const int64_t S(manifest.imageSize);
 	if (!descriptor.ExpectInputShape("image", {1, 3, S, S}) ||
 		!descriptor.ExpectOutputShape("layers", manifest.layersShape) ||
-		!descriptor.ExpectOutputShape("value_facets", manifest.facetsShape))
-		return false;
-	if (!manifest.retrievalShape.empty() && !descriptor.ExpectOutputShape("retrieval", manifest.retrievalShape))
+		!descriptor.ExpectOutputShape("value_facets", manifest.facetsShape) ||
+		!descriptor.ExpectOutputShape("retrieval", manifest.retrievalShape))
 		return false;
 	image = OrtTensor::Host({1, 3, S, S});
 	facetsScratch = descriptor.MakeDeviceTensor(manifest.facetsShape);
 	facetsHost = OrtTensor::Host(manifest.facetsShape);
-	if (!image.IsValid() || !facetsScratch.IsValid() || !facetsHost.IsValid()) {
+	// the graph's own on-device retrieval pooling, always read back (facetsDim host floats, small
+	// enough that every Describe() call pays for it, unlike the whole value_facets tensor above)
+	retrievalHost = OrtTensor::Host(manifest.retrievalShape);
+	if (!image.IsValid() || !facetsScratch.IsValid() || !facetsHost.IsValid() || !retrievalHost.IsValid()) {
 		VERBOSE("error: can not allocate the RoMa2 descriptor tensors");
 		return false;
-	}
-	if (!manifest.retrievalShape.empty()) {
-		// format_version 2: the graph's own on-device FACETS pooling, read back as facetsDim host
-		// floats instead of the whole value_facets tensor -- what the retrieval pass actually asks for
-		retrievalScratch = descriptor.MakeDeviceTensor(manifest.retrievalShape);
-		retrievalHost = OrtTensor::Host(manifest.retrievalShape);
-		if (!retrievalScratch.IsValid() || !retrievalHost.IsValid()) {
-			VERBOSE("error: can not allocate the RoMa2 retrieval tensors");
-			return false;
-		}
 	}
 	DEBUG("RoMa2 model '%s' ready on %s: %dx%d images, %ux%u descriptor grid, %dx%d warp cells",
 		setting.c_str(), OnnxProviderName(descriptor.Provider()), manifest.imageSize, manifest.imageSize,
@@ -475,28 +450,21 @@ OrtTensor RoMa2Onnx::MakeLayers()
 	return impl->descriptor.MakeDeviceTensor(impl->manifest.layersShape);
 }
 
-bool RoMa2Onnx::Describe(const float* planarRgb, OrtTensor& layersOut, std::vector<float>* facetsOut, std::vector<float>* retrievalOut)
+bool RoMa2Onnx::Describe(const float* planarRgb, OrtTensor& layersOut, std::vector<float>* facetsOut, std::vector<float>& retrievalOut)
 {
 	ASSERT(IsLoaded() && layersOut.Shape() == impl->manifest.layersShape);
-	ASSERT(retrievalOut == NULL || HasRetrieval()); // caller must check HasRetrieval() before asking for it
-	if (retrievalOut != NULL && !HasRetrieval())
-		return false; // release build: the ASSERT above compiles out, so this is what actually stops
-		              // an unallocated retrievalHost from degrading into a silently empty descriptor
 	memcpy(impl->image.HostData(), planarRgb, sizeof(float)*3*(size_t)ImageSize()*ImageSize());
 	impl->descriptor.ClearBindings();
 	if (!impl->descriptor.BindInput("image", impl->image) ||
 		!impl->descriptor.BindOutput("layers", layersOut) ||
-		!impl->descriptor.BindOutput("value_facets", facetsOut != NULL ? impl->facetsHost : impl->facetsScratch))
-		return false;
-	if (HasRetrieval() &&
-		!impl->descriptor.BindOutput("retrieval", retrievalOut != NULL ? impl->retrievalHost : impl->retrievalScratch))
+		!impl->descriptor.BindOutput("value_facets", facetsOut != NULL ? impl->facetsHost : impl->facetsScratch) ||
+		!impl->descriptor.BindOutput("retrieval", impl->retrievalHost))
 		return false;
 	if (!impl->descriptor.Run())
 		return false;
 	if (facetsOut != NULL)
 		facetsOut->assign(impl->facetsHost.HostData(), impl->facetsHost.HostData()+impl->facetsHost.NumElements());
-	if (retrievalOut != NULL)
-		retrievalOut->assign(impl->retrievalHost.HostData(), impl->retrievalHost.HostData()+impl->retrievalHost.NumElements());
+	retrievalOut.assign(impl->retrievalHost.HostData(), impl->retrievalHost.HostData()+impl->retrievalHost.NumElements());
 	return true;
 }
 
@@ -563,7 +531,7 @@ OrtTensor RoMa2Onnx::MakeLayers()
 	return OrtTensor();
 }
 
-bool RoMa2Onnx::Describe(const float*, OrtTensor&, std::vector<float>*, std::vector<float>*)
+bool RoMa2Onnx::Describe(const float*, OrtTensor&, std::vector<float>*, std::vector<float>&)
 {
 	ASSERT(false); // unreachable: Load() always fails, so no caller ever gets a loaded model
 	return false;
