@@ -5949,6 +5949,140 @@ bool PreMatchTest()
 	VERBOSE("PreMatchTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
 	return true;
 }
+
+// RETRIEVAL match-mode test: candidate selection ranks purely by the global descriptors with
+// no ROMAv2 opt-in needed (unlike VOCABULARY), agrees pair-for-pair with VOCABULARY once it is
+// opted into the same backend, a missing descriptor is a hard error rather than a vocabulary-
+// tree fallback, and the mode dispatches correctly end-to-end through Match()
+bool RetrievalModeTest()
+{
+	TD_TIMER_START();
+
+	// three clusters of four images, same construction as GlobalDescriptorsQueryTest
+	Scene scene;
+	const int D = 64;
+	std::mt19937 rng(31);
+	std::normal_distribution<float> noise(0.f, 0.05f);
+	for (IIndex i = 0; i < 12; ++i) {
+		Image& img = scene.images.emplace_back(i, String::FormatString("%02u.jpg", i));
+		img.keypoints.resize(10);
+		img.descriptors = cv::Mat::zeros(10, 32, CV_8U); // PairsMatcher expects descriptors to exist
+		img.globalDescriptor.create(1, D, CV_32F);
+		for (int c = 0; c < D; ++c)
+			img.globalDescriptor.at<float>(c) = (c/8 == (int)(i/4) ? 1.f : 0.f) + noise(rng);
+		img.globalDescriptor /= cv::norm(img.globalDescriptor);
+	}
+	scene.status.nState.set(Scene::Status::STATE::GLOBAL_DESCRIPTORS);
+
+	MatchConfig matchCfg;
+	matchCfg.mode = MatchConfig::RETRIEVAL;
+	matchCfg.maxPairsPerImage = 3;
+
+	// RETRIEVAL ranks by the descriptors without the ROMAv2 opt-in that VOCABULARY needs: the
+	// default ROMA2Config (enabled=false) leaves UseGlobalDescriptors() false, yet the mode
+	// still ranks correctly because it never consults that gate
+	PairsMatcher matcher(scene, matchCfg);
+	matcher.SetROMA2(NULL, ROMA2Config());
+	if (matcher.UseGlobalDescriptors()) {
+		VERBOSE("RetrievalModeTest FAILED: UseGlobalDescriptors should stay false without an explicit ROMA2 opt-in");
+		return false;
+	}
+	const PairIdxArr pairs = matcher.CollectRetrievalPairs(2);
+	if (pairs.empty()) {
+		VERBOSE("RetrievalModeTest FAILED: RETRIEVAL produced no pairs despite a fully described scene");
+		return false;
+	}
+	DisjointSet<IIndex> components(12);
+	unsigned numCross = 0;
+	for (const PairIdx& p : pairs) {
+		components.Union(p.i, p.j);
+		numCross += (p.i/4 != p.j/4);
+	}
+	for (IIndex i = 1; i < 12; ++i) {
+		if (components.Find(i) != components.Find(0)) {
+			VERBOSE("RetrievalModeTest FAILED: view graph split");
+			return false;
+		}
+	}
+	if (numCross > 2) {
+		VERBOSE("RetrievalModeTest FAILED: %u cross-cluster pairs", numCross);
+		return false;
+	}
+
+	// VOCABULARY, once opted into the same global-descriptor backend, selects the identical
+	// pair set on the identical scene: the fusion and the budget are properties of the ranking
+	// (CollectFusedRetrievalPairs), not of which mode called it
+	MatchConfig vocabCfg = matchCfg;
+	vocabCfg.mode = MatchConfig::VOCABULARY;
+	PairsMatcher vocabMatcher(scene, vocabCfg);
+	ROMA2Config roma2Cfg;
+	roma2Cfg.enabled = true; // retrieval-only opt-in, as in GlobalDescriptorsQueryTest
+	vocabMatcher.SetROMA2(NULL, roma2Cfg);
+	const PairIdxArr vocabPairs = vocabMatcher.CollectVocabularyPairs(2);
+	std::set<uint64_t> pairSet, vocabPairSet;
+	for (const PairIdx& p : pairs) pairSet.insert(p.idx);
+	for (const PairIdx& p : vocabPairs) vocabPairSet.insert(p.idx);
+	if (pairSet != vocabPairSet) {
+		VERBOSE("RetrievalModeTest FAILED: RETRIEVAL and opted-in VOCABULARY disagree on the identical descriptors (%u vs %u pairs)",
+			(unsigned)pairSet.size(), (unsigned)vocabPairSet.size());
+		return false;
+	}
+
+	// a scene missing a descriptor on one image is a hard, actionable error: no pairs, no
+	// crash — and, by construction (PairsMatcher::Match/EnsureGlobalDescriptorsIndex), no
+	// vocabulary tree or PreMatch ever runs to paper over it
+	Scene brokenScene;
+	for (IIndex i = 0; i < 4; ++i) {
+		Image& img = brokenScene.images.emplace_back(i, String::FormatString("%02u.jpg", i));
+		img.keypoints.resize(10);
+		img.descriptors = cv::Mat::zeros(10, 32, CV_8U);
+		if (i != 2) { // image 2 is missing its global descriptor
+			img.globalDescriptor.create(1, D, CV_32F);
+			img.globalDescriptor.setTo(1.f / std::sqrt((float)D));
+		}
+	}
+	PairsMatcher brokenMatcher(brokenScene, matchCfg);
+	brokenMatcher.SetROMA2(NULL, ROMA2Config());
+	if (!brokenMatcher.CollectRetrievalPairs(2).empty()) {
+		VERBOSE("RetrievalModeTest FAILED: a missing descriptor should error out, not silently produce pairs");
+		return false;
+	}
+
+	// end-to-end through Match(): a small circular-arrangement scene where every pair has real
+	// covisible matches (PairMatcherTest's setup), so whichever subset RETRIEVAL selects still
+	// matches for real; the budget is >= 10 so verification feedback also engages
+	Scene e2eScene;
+	SceneConfig scfg;
+	scfg.numImages = 5;
+	scfg.generateDescriptors = true;
+	scfg.numPoints = 100;
+	GenerateTestScene(e2eScene, scfg);
+	FOREACH(i, e2eScene.images) {
+		Image& img = e2eScene.images[i];
+		img.globalDescriptor.create(1, D, CV_32F);
+		for (int c = 0; c < D; ++c)
+			img.globalDescriptor.at<float>(c) = (c/8 == (int)(i/2) ? 1.f : 0.f) + noise(rng);
+		img.globalDescriptor /= cv::norm(img.globalDescriptor);
+	}
+	e2eScene.status.nState.set(Scene::Status::STATE::GLOBAL_DESCRIPTORS);
+	MatchConfig e2eCfg;
+	e2eCfg.mode = MatchConfig::RETRIEVAL;
+	e2eCfg.maxPairsPerImage = 20; // >= 10 so verification feedback engages
+	e2eCfg.maxEpipolarError = 0; // rely on descriptor matches only, as PairMatcherTest does
+	e2eCfg.minMatches = 10;
+	e2eCfg.matchDistance = FLT_MAX;
+	e2eCfg.descriptorsAreBinary = scfg.binaryDescriptors;
+	PairsMatcher e2eMatcher(e2eScene, e2eCfg);
+	const unsigned numMatched = e2eMatcher.Match();
+	if (numMatched == 0) {
+		VERBOSE("RetrievalModeTest FAILED: end-to-end RETRIEVAL match produced no pairs");
+		return false;
+	}
+
+	VERBOSE("RetrievalModeTest PASSED: %u candidate pairs (%u cross-cluster), %u end-to-end matched pairs (%s)",
+		(unsigned)pairs.size(), numCross, numMatched, TD_TIMER_GET_FMT().c_str());
+	return true;
+}
 /*----------------------------------------------------------------*/
 
 // ===============================================================================

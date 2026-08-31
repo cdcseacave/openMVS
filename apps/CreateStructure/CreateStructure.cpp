@@ -160,7 +160,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("triplet-min-score", boost::program_options::value(&OPT::fTripletMinScore)->default_value(TripletFilterConfig().minScore), "camera-triplet filter: minimum edge score m in (0,1), the aggressiveness of the removal (0.6 generic scenes, 0.9 highly ambiguous, 0.3 medium/small ambiguous)")
 		("max-features-per-cell", boost::program_options::value(&OPT::nMaxFeaturesPerCell)->default_value(3000), "maximum features per grid cell (3x3 grid)")
 		("min-features-per-cell", boost::program_options::value(&OPT::nMinFeaturesPerCell)->default_value(500), "minimum features per cell before adjusting sensitivity")
-		("match-mode", boost::program_options::value(&OPT::matchMode)->default_value(1), "match mode: -1=SKIP,0=EXHAUSTIVE,1=VOCABULARY,2=SEQUENTIAL,3=KNOWN_POSES")
+		("match-mode", boost::program_options::value(&OPT::matchMode)->default_value(1), "match mode: -1=SKIP,0=EXHAUSTIVE,1=VOCABULARY,2=SEQUENTIAL,3=KNOWN_POSES,4=RETRIEVAL")
 		("match-sequence-overlap", boost::program_options::value(&OPT::matchSequenceOverlap)->default_value(3), "sequence overlap for sequential matching")
 		("vocab-max-pairs", boost::program_options::value(&OPT::maxPairsPerImage)->default_value(50), "target pairs per image for vocabulary and pose-guided matching")
 		("match-verification-feedback", boost::program_options::value(&OPT::matchVerificationFeedback)->default_value(true), "hold back part of the matching budget and re-invest it in pairs suggested by the geometrically verified matches (vocabulary and pose-guided matching)")
@@ -242,8 +242,8 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		return false;
 	}
 	if (OPT::matchMode < static_cast<int>(MatchConfig::SKIP) ||
-		OPT::matchMode > static_cast<int>(MatchConfig::KNOWN_POSES)) {
-		LOG("error: unknown match mode %d (accepted: -1, 0, 1, 2, 3)", OPT::matchMode);
+		OPT::matchMode > static_cast<int>(MatchConfig::RETRIEVAL)) {
+		LOG("error: unknown match mode %d (accepted: -1, 0, 1, 2, 3, 4)", OPT::matchMode);
 		return false;
 	}
 	Util::ensureValidPath(OPT::strImportPosesFile);

@@ -213,6 +213,8 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!SFM::GlobalDescriptorsQueryTest())
 				return false;
+			if (!SFM::RetrievalModeTest())
+				return false;
 			if (!SFM::RoMa2PreprocessTest())
 				return false;
 			if (!SFM::RoMa2OnnxParityTest())

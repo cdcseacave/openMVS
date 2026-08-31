@@ -56,15 +56,21 @@ struct SFM_API MatchConfig
 	enum MatchMode {
 		SKIP = -1,
 		EXHAUSTIVE = 0,  // Match all O(N²) pairs (small scenes only)
-		VOCABULARY = 1,  // Use vocabulary tree retrieval (recommended)
+		VOCABULARY = 1,  // Use vocabulary tree retrieval (recommended); ranks by the global
+		                 // descriptors instead when the scene carries them and ROMAv2 retrieval
+		                 // is opted in (see PairsMatcher::UseGlobalDescriptors)
 		SEQUENTIAL = 2,  // Match consecutive images only (ordered sequences)
-		KNOWN_POSES = 3  // Select pairs from already-known camera poses
+		KNOWN_POSES = 3, // Select pairs from already-known camera poses
+		RETRIEVAL = 4    // Rank candidates by the DINOv3+GeM global descriptors only: no
+		                 // vocabulary tree is ever built, and an image missing its descriptor
+		                 // is an error, not a fallback (design decision 10). Appended rather
+		                 // than inserted so existing serialized/CLI mode values stay unchanged.
 	};
 
 	MatchMode mode = VOCABULARY;
 	unsigned maxDescriptorsPerImage = 2000; // Max descriptors per image for vocabulary tree
-	unsigned maxPairsPerImage = 50;     // Target pairs per image (VOCABULARY/KNOWN_POSES mode)
-	bool verificationFeedback = true;   // Two-round matching: hold back part of the pair budget and re-invest it in pairs suggested by the geometrically verified matches (VOCABULARY/KNOWN_POSES mode)
+	unsigned maxPairsPerImage = 50;     // Target pairs per image (VOCABULARY/KNOWN_POSES/RETRIEVAL mode)
+	bool verificationFeedback = true;   // Two-round matching: hold back part of the pair budget and re-invest it in pairs suggested by the geometrically verified matches (VOCABULARY/KNOWN_POSES/RETRIEVAL mode)
 	unsigned matchSequenceOverlap = 3;  // Number of subsequent images to match in SEQUENTIAL mode
 	unsigned preMatchThreshold = 0;     // Minimum number of matches in pre-matching step to keep the pair (0 = disabled)
 	float minFeatureDistance = 0.f;     // Minimum distance between matched features in pixels (0 = disabled)
@@ -189,6 +195,16 @@ public:
 	// Returns false if neither backend could be built.
 	bool EnsureRetrievalIndex();
 
+	// Build the global-descriptor index on demand, unconditionally (RETRIEVAL mode): unlike
+	// EnsureRetrievalIndex, this never builds nor falls back to the vocabulary tree — the
+	// backend is the DINOv3+GeM descriptors already stored on every Image, however they were
+	// produced (CPU pooling or the v2 ONNX graph; this call does not know or care which).
+	// A scene missing a descriptor on any image is a hard error naming that image (logged by
+	// GlobalDescriptors::Build), matching design decision 10: a requested-but-unavailable
+	// backend never silently degrades into a different one.
+	// Returns false if the index could not be built.
+	bool EnsureGlobalDescriptorsIndex();
+
 	// Query the ranked list of the images most similar to the given one (as an index in the
 	// scene image array) from whichever retrieval backend EnsureRetrievalIndex built;
 	// the vocabulary tree includes the query image itself in its results, the
@@ -207,6 +223,15 @@ public:
 	// Returns an empty array if the vocabulary tree cannot be built.
 	PairIdxArr CollectVocabularyPairs(unsigned topK);
 
+	// Build candidate pairs from the global-descriptor retrieval alone (RETRIEVAL mode): the
+	// same symmetric reciprocal-rank fusion and connectivity bridging as CollectVocabularyPairs
+	// (the fusion and the pair budget are properties of the ranking, not of the backend), but
+	// the index is built by EnsureGlobalDescriptorsIndex, so no vocabulary tree is ever built
+	// and a missing descriptor is a hard error rather than a fallback. topK is the per-image
+	// candidate-list length (see Match for how it maps to the configured pairs-per-image target).
+	// Returns an empty array if the global-descriptor index cannot be built.
+	PairIdxArr CollectRetrievalPairs(unsigned topK);
+
 	// Build candidate pairs from the known camera poses: reject the pairs whose optical axes
 	// diverge too much, score the remaining ones by baseline and viewing-direction agreement,
 	// and keep the pairs present in the candidate lists of both endpoints; every image also
@@ -221,8 +246,9 @@ public:
 	// Build additional candidate pairs from the geometrically verified pairs of the previous
 	// matching round (verification feedback), investing the part of the pair budget the first
 	// round did not spend: KNOWN_POSES closes the triangles of the verified pair graph
-	// (two images sharing verified neighbors likely overlap too), while VOCABULARY propagates
-	// each verified pair to the top retrieval candidates of its endpoints; the images with the
+	// (two images sharing verified neighbors likely overlap too), while VOCABULARY and
+	// RETRIEVAL both propagate each verified pair to the top retrieval candidates of its
+	// endpoints (feedback is orthogonal to which backend round 1 ranked with); the images with the
 	// weakest verified connectivity then refill the remaining budget from their next
 	// best-ranked candidates. attemptedPairs lists the already-matched candidates; only new
 	// pairs are returned, at most as many as left in the total budget maxPairsPerImage*N/2.
@@ -253,6 +279,13 @@ private:
 	// valid ones in the scene and accumulating the counters into stats.
 	// Returns false only on fatal initialization errors (e.g. GPU matcher setup).
 	bool MatchPairsBatch(const PairIdxArr& pairsToMatch, LPCTSTR progressCaption, MatchStats& stats);
+
+	// Shared core behind CollectVocabularyPairs and CollectRetrievalPairs: the symmetric
+	// reciprocal-rank fusion, mutual top-K agreement and connectivity bridging over whichever
+	// backend the caller already ensured (QueryRetrieval picks it up automatically); the
+	// fusion and the pair budget are properties of the ranking, not of the backend, so this is
+	// the only place either mode implements them. backendName only labels the DEBUG summary.
+	PairIdxArr CollectFusedRetrievalPairs(unsigned topK, LPCTSTR backendName);
 
 	Scene& scene;
 	const MatchConfig config;

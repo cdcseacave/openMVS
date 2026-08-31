@@ -694,6 +694,27 @@ bool PairsMatcher::EnsureRetrievalIndex()
 	return true;
 }
 
+bool PairsMatcher::EnsureGlobalDescriptorsIndex()
+{
+	// unlike EnsureRetrievalIndex, no UseGlobalDescriptors() opt-in gate and no vocabulary-tree
+	// fallback: RETRIEVAL mode is itself the explicit opt-in, and a scene not fully described
+	// is an error here rather than a silently different ranking algorithm (design decision 10)
+	if (globalDescriptors)
+		return globalDescriptors->IsValid();
+	TD_TIMER_STARTD();
+	globalDescriptors = std::make_unique<GlobalDescriptors>();
+	if (!globalDescriptors->Build(scene)) {
+		// GlobalDescriptors::Build already named the offending image and the descriptor shape
+		// it expected; nothing to add here except that this mode will not fall back
+		VERBOSE("error: RETRIEVAL matching needs a global descriptor on every image (see above)");
+		globalDescriptors.reset();
+		return false;
+	}
+	DEBUG("Global-descriptor retrieval index built from %u images (%d-D) in %s",
+	      scene.images.size(), globalDescriptors->Dim(), TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
 std::vector<std::pair<uint32_t, float>> PairsMatcher::QueryRetrieval(IIndex idx, unsigned maxResults) const
 {
 	if (globalDescriptors && globalDescriptors->IsValid())
@@ -724,11 +745,24 @@ void PairsMatcher::EnsureVocabularyTree()
 
 PairIdxArr PairsMatcher::CollectVocabularyPairs(unsigned topK)
 {
-	PairIdxArr result;
 	// Ensure the retrieval backend is ready (global descriptors if the scene carries them)
 	if (!EnsureRetrievalIndex())
-		return result;
+		return PairIdxArr();
+	return CollectFusedRetrievalPairs(topK, UseGlobalDescriptors() ? _T("Global-descriptor") : _T("Vocabulary"));
+}
 
+PairIdxArr PairsMatcher::CollectRetrievalPairs(unsigned topK)
+{
+	// RETRIEVAL mode: the global-descriptor index only, no vocabulary-tree fallback (design
+	// decision 10 — see EnsureGlobalDescriptorsIndex)
+	if (!EnsureGlobalDescriptorsIndex())
+		return PairIdxArr();
+	return CollectFusedRetrievalPairs(topK, _T("Global-descriptor"));
+}
+
+PairIdxArr PairsMatcher::CollectFusedRetrievalPairs(unsigned topK, LPCTSTR backendName)
+{
+	PairIdxArr result;
 	TD_TIMER_STARTD();
 
 	const IIndex nImages = scene.images.size();
@@ -840,7 +874,7 @@ PairIdxArr PairsMatcher::CollectVocabularyPairs(unsigned topK)
 		}
 	}
 	DEBUG("%s-based matching: %u candidate pairs, %u mutual top-%u and %u connectivity bridges (%.2f/%u pairs/image) in %s",
-		UseGlobalDescriptors() ? _T("Global-descriptor") : _T("Vocabulary"),
+		backendName,
 		result.size(), numMutualPairs, topK, result.size() - numMutualPairs,
 		(float)result.size() / nImages, config.maxPairsPerImage, TD_TIMER_GET_FMT().c_str());
 	// keep the fused retrieval scores for the verification-feedback round
@@ -1146,7 +1180,7 @@ PairIdxArr PairsMatcher::CollectKnownPosePairs(unsigned topK)
 PairIdxArr PairsMatcher::CollectVerificationFeedbackPairs(const PairIdxArr& attemptedPairs)
 {
 	PairIdxArr result;
-	ASSERT(config.mode == MatchConfig::VOCABULARY || config.mode == MatchConfig::KNOWN_POSES);
+	ASSERT(config.mode == MatchConfig::VOCABULARY || config.mode == MatchConfig::KNOWN_POSES || config.mode == MatchConfig::RETRIEVAL);
 	const bool poseGuided(config.mode == MatchConfig::KNOWN_POSES);
 	const IIndex nImages = scene.images.size();
 
@@ -1273,7 +1307,7 @@ PairIdxArr PairsMatcher::CollectVerificationFeedbackPairs(const PairIdxArr& atte
 		// a candidate retrieved high by one endpoint of a verified pair most likely overlaps
 		// the other endpoint too (the retrieval analogue of closing verified triangles)
 		if (fusedRetrievalScores.empty()) {
-			DEBUG("Verification-feedback matching: no retrieval scores kept from the vocabulary round");
+			DEBUG("Verification-feedback matching: no retrieval scores kept from the first round");
 			return result;
 		}
 		for (const auto& [pairIndex, score] : fusedRetrievalScores) {
@@ -1793,14 +1827,16 @@ unsigned PairsMatcher::Match()
 	// only for the selective modes, and only when the budget is large enough for the
 	// first-round verified graph to carry a useful signal
 	bool verificationFeedback = config.verificationFeedback && config.maxPairsPerImage >= 10 &&
-		(matchMode == MatchConfig::VOCABULARY || matchMode == MatchConfig::KNOWN_POSES);
+		(matchMode == MatchConfig::VOCABULARY || matchMode == MatchConfig::KNOWN_POSES || matchMode == MatchConfig::RETRIEVAL);
 	// Per-image candidate-list length for the selective modes: in single-round matching the
 	// list is inflated because the mutual-agreement rule is stricter than a one-sided top-K
 	// union (at the configured setting it then selects about the configured volume of pairs,
 	// just distributed by two-sided preference); with verification feedback the first round
 	// instead uses a deflated list (80% of the target, uninflated) and the second round
-	// fills the rest of the maxPairsPerImage*N/2 pair budget guided by the verified matches
-	const unsigned vocabularyTopK = verificationFeedback ?
+	// fills the rest of the maxPairsPerImage*N/2 pair budget guided by the verified matches.
+	// Shared by VOCABULARY and RETRIEVAL: the fusion and the budget are properties of the
+	// ranking (CollectFusedRetrievalPairs), not of which backend ranked the candidates.
+	const unsigned retrievalTopK = verificationFeedback ?
 		config.maxPairsPerImage*4/5 : config.maxPairsPerImage*8/5;
 	const unsigned knownPosesTopK = verificationFeedback ?
 		config.maxPairsPerImage*4/5 : config.maxPairsPerImage*4/3;
@@ -1822,9 +1858,20 @@ unsigned PairsMatcher::Match()
 	}
 	case MatchConfig::VOCABULARY: {
 		// Build vocabulary candidates from the tree retrieval ranking
-		pairsToMatch = CollectVocabularyPairs(vocabularyTopK);
+		pairsToMatch = CollectVocabularyPairs(retrievalTopK);
 		if (pairsToMatch.empty()) {
 			VERBOSE("error: vocabulary produced no new candidate pairs");
+			return 0;
+		}
+		break;
+	}
+	case MatchConfig::RETRIEVAL: {
+		// Build candidates from the global-descriptor retrieval alone: no vocabulary tree, no
+		// fallback (see CollectRetrievalPairs / EnsureGlobalDescriptorsIndex); a missing
+		// descriptor already logged a specific error naming the image
+		pairsToMatch = CollectRetrievalPairs(retrievalTopK);
+		if (pairsToMatch.empty()) {
+			VERBOSE("error: retrieval produced no candidate pairs (see the global-descriptor error above)");
 			return 0;
 		}
 		break;
@@ -1881,7 +1928,10 @@ unsigned PairsMatcher::Match()
 		// candidates, so the tree is built here when the global descriptors did the ranking;
 		// otherwise it runs, as before, only when candidate collection built the tree
 		// (VOCABULARY, or KNOWN_POSES with unposed images).
-		if (config.preMatchThreshold > 0 && UseGlobalDescriptors())
+		// RETRIEVAL is excluded on purpose: no vocabulary tree is ever built in this mode, so
+		// pre-matching (and the tree it needs) stays unreachable regardless of this setting
+		// (design decision 10 — a requested-but-unavailable backend never silently degrades).
+		if (matchMode != MatchConfig::RETRIEVAL && config.preMatchThreshold > 0 && UseGlobalDescriptors())
 			EnsureVocabularyTree();
 		if (vocabularyTree) {
 			if (config.preMatchThreshold > 0)

@@ -51,6 +51,12 @@ bool ROMA2WarpTrackingTest();
 // descriptors, and the two host-side pooling recipes against the export script's fixtures
 bool GlobalDescriptorsQueryTest();
 
+// RETRIEVAL match-mode test: candidate selection ranks purely by the global descriptors with
+// no ROMAv2 opt-in needed (unlike VOCABULARY), agrees pair-for-pair with VOCABULARY once it is
+// opted into the same backend, a missing descriptor is a hard error rather than a vocabulary-
+// tree fallback, and the mode dispatches correctly end-to-end through Match()
+bool RetrievalModeTest();
+
 // RoMa2 CPU preprocessing test: a constant image maps to constant planes with the expected
 // R/G/B channel swap, and resampling a real fixture image reproduces torch's own
 // F.interpolate(mode="bicubic", align_corners=False, antialias=True) to within 1e-5
