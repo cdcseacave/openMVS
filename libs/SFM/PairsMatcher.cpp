@@ -335,7 +335,38 @@ void PairsMatcher::MatchFeatures(
 	}
 }
 
+PairsMatcher::GeometryBranch PairsMatcher::SelectGeometryBranch(const MatchConfig& cfg, const Image& img1, const Image& img2)
+{
+	// Shared-focal F estimation for an uncalibrated pair that shares one pinhole camera
+	if (cfg.forceFundamentalWithFocal && img1.pCamera == img2.pCamera && img1.pCamera->GetType() == CameraType::PINHOLE)
+		return GeometryBranch::SHARED_FOCAL;
+	// Calibrated bearings: 5-DoF relative pose with the cheirality check
+	if (!cfg.forceFundamental && img1.TrustIntrinsics() && img2.TrustIntrinsics())
+		return GeometryBranch::ESSENTIAL;
+	// Everything else: 7-DoF fundamental matrix
+	return GeometryBranch::FUNDAMENTAL;
+}
+
+LPCTSTR PairsMatcher::GeometryBranchName(GeometryBranch branch)
+{
+	switch (branch) {
+	case GeometryBranch::SHARED_FOCAL: return _T("shared-focal");
+	case GeometryBranch::ESSENTIAL:    return _T("essential");
+	case GeometryBranch::FUNDAMENTAL:  return _T("fundamental");
+	}
+	return _T("unknown");
+}
+
 bool PairsMatcher::GeometricFilter(
+	const Image& img1,
+	const Image& img2,
+	ImagePair& pair) const
+{
+	return GeometricFilter(config, img1, img2, pair);
+}
+
+bool PairsMatcher::GeometricFilter(
+	const MatchConfig& cfg,
 	const Image& img1,
 	const Image& img2,
 	ImagePair& pair) const
@@ -348,20 +379,34 @@ bool PairsMatcher::GeometricFilter(
 		return false;
 	}
 	ASSERT(img1.HasCamera() && img2.HasCamera());
+	// minFeatureDistance drops matches while building the estimator's point list (FetchPoints, and
+	// the bearings loop of the calibrated branch), so the inlier mask RANSAC hands back is shorter
+	// than pair.matches and PartitionMatchesByMask's mask.size() == matches.size() precondition
+	// (ImagePair.cpp:164) no longer holds: in a Release build that mispartitions inliers silently.
+	// Nothing in this build sets the option (it is 0 everywhere, and no CLI reaches it), so this
+	// refuses an unsupported input by name instead of leaving the trap armed -- a dense sample of
+	// thousands of correspondences, many of them genuinely close together, would spring it far more
+	// readily than the descriptor path ever did.
+	if (cfg.minFeatureDistance > 0.f) {
+		VERBOSE("error: minFeatureDistance (%g px) is not supported by the geometric verification: "
+			"skipping matches there desynchronises the RANSAC inlier mask from the match list", cfg.minFeatureDistance);
+		pair.InvalidateMatches();
+		return false;
+	}
 
 	// Configure RANSAC options.
 	// PoseLib master: RelativePoseOptions wraps RansacOptions + BundleOptions and
 	// holds the inlier threshold (max_error) directly. The estimate_* free functions
 	// no longer take a separate BundleOptions parameter.
 	poselib::RelativePoseOptions opt;
-	opt.max_error = config.maxEpipolarError; // reprojection error threshold
+	opt.max_error = cfg.maxEpipolarError; // reprojection error threshold
 	opt.ransac.min_iterations = 100; // min iterations
 	opt.ransac.max_iterations = 10000; // max iterations
 	std::vector<char> inliers;
 
 	// Lambda to fetch matched points from the pair
 	const auto FetchPoints = [&]() {
-		const float minFeatureDistanceSq = SQUARE(config.minFeatureDistance);
+		const float minFeatureDistanceSq = SQUARE(cfg.minFeatureDistance);
 		std::vector<poselib::Point2D> pts1, pts2;
 		pts1.reserve(pair.matches.size());
 		pts2.reserve(pair.matches.size());
@@ -384,7 +429,7 @@ bool PairsMatcher::GeometricFilter(
 		const std::vector<char>& inliersMask,
 		size_t numInliers) -> bool
 	{
-		ASSERT(numInliers >= config.minMatches);
+		ASSERT(numInliers >= cfg.minMatches);
 		// Partition matches into inliers and outliers
 		pair.PartitionMatchesByMask(inliersMask, (int)numInliers);
 		// Fill relative pose
@@ -397,10 +442,10 @@ bool PairsMatcher::GeometricFilter(
 			// Compose F matrix from E and K matrices
 			pair.F = ImagePair::ComposeFundamentalMatrix(pair.E.value(), *pK1, *pK2);
 		}
-		if (config.IsMatchesFilterOn()) {
+		if (cfg.IsMatchesFilterOn()) {
 			// Further filter matches based on triangulation angle, reprojection error, epipole proximity
-			const unsigned numFilteredInliers = pair.FilterMatches(img1, img2, config.minTriangulationAngle, config.reprojThreshold, config.epipoleFilterThreshold);
-			if (numFilteredInliers < config.minMatches) {
+			const unsigned numFilteredInliers = pair.FilterMatches(img1, img2, cfg.minTriangulationAngle, cfg.reprojThreshold, cfg.epipoleFilterThreshold);
+			if (numFilteredInliers < cfg.minMatches) {
 				pair.InvalidateMatches();
 				return false;
 			}
@@ -408,9 +453,12 @@ bool PairsMatcher::GeometricFilter(
 		return true;
 	};
 
-	// Check if we should estimate focal length using shared-focal estimator
-	// This is for uncalibrated scenarios where both images use the same (unknown) focal length
-	if (config.forceFundamentalWithFocal && img1.pCamera == img2.pCamera && img1.pCamera->GetType() == CameraType::PINHOLE) {
+	// Dispatch on the one named branch decision (SelectGeometryBranch), so that a caller recording
+	// which geometry ran reads the same predicate the estimator obeys.
+	const GeometryBranch branch = SelectGeometryBranch(cfg, img1, img2);
+
+	// Shared-focal estimator: uncalibrated scenario where both images use the same unknown focal
+	if (branch == GeometryBranch::SHARED_FOCAL) {
 		const Camera& cam = *img1.pCamera;
 		KMatrix K = cam.GetK();
 		const Point2 pp(K(0,2), K(1,2)); // Principal point
@@ -421,7 +469,7 @@ bool PairsMatcher::GeometricFilter(
 		opt.real_focal_check = true;
 		poselib::RansacStats stats = poselib::estimate_shared_focal_relative_pose(
 			pts1, pts2, pp, opt, &plImagePair, &inliers);
-		if (stats.num_inliers < config.minMatches) {
+		if (stats.num_inliers < cfg.minMatches) {
 			pair.InvalidateMatches();
 			return false;
 		}
@@ -437,8 +485,8 @@ bool PairsMatcher::GeometricFilter(
 		return FinalizeRelative(plImagePair.pose, &K, &K, inliers, stats.num_inliers);
 	}
 
-	// Calibrated branch: if both cameras trust intrinsics, estimate relative pose
-	if (!config.forceFundamental && img1.TrustIntrinsics() && img2.TrustIntrinsics()) {
+	// Calibrated branch: both cameras trust their intrinsics, so estimate the relative pose
+	if (branch == GeometryBranch::ESSENTIAL) {
 		const Camera& cam1 = *img1.pCamera;
 		const Camera& cam2 = *img2.pCamera;
 		const KMatrix K1 = cam1.GetK();
@@ -461,7 +509,7 @@ bool PairsMatcher::GeometricFilter(
 		opt.max_error = 0.5 * (angle1 + angle2);
 
 		// Extract matched keypoints and convert directly to 3D unit bearing vectors
-		const float minFeatureDistanceSq = SQUARE(config.minFeatureDistance);
+		const float minFeatureDistanceSq = SQUARE(cfg.minFeatureDistance);
 		std::vector<poselib::Point3D> bearings1, bearings2;
 		bearings1.reserve(pair.matches.size());
 		bearings2.reserve(pair.matches.size());
@@ -490,7 +538,7 @@ bool PairsMatcher::GeometricFilter(
 			opt,
 			&plPose,
 			&inliers);
-		if (stats.num_inliers < config.minMatches) {
+		if (stats.num_inliers < cfg.minMatches) {
 			pair.InvalidateMatches();
 			return false;
 		}
@@ -515,7 +563,7 @@ bool PairsMatcher::GeometricFilter(
 		opt.ransac.score_initial_model = true;
 	}
 	poselib::RansacStats stats = poselib::estimate_fundamental(pts1, pts2, opt, &F, &inliers);
-	if (stats.num_inliers < config.minMatches) {
+	if (stats.num_inliers < cfg.minMatches) {
 		pair.InvalidateMatches();
 		return false;
 	}
@@ -526,7 +574,7 @@ bool PairsMatcher::GeometricFilter(
 
 	// Decompose F into E and relative pose if intrinsics are trusted
 	// note: if intrinsics are not accurate, the decomposition will result in very few filtered inliers
-	if (config.forceFundamentalDecomposition || (img1.TrustIntrinsics() && img2.TrustIntrinsics()))
+	if (cfg.forceFundamentalDecomposition || (img1.TrustIntrinsics() && img2.TrustIntrinsics()))
 		return DecomposeFundamentalToPose(img1, img2, pair);
 	return true;
 }
@@ -1844,6 +1892,10 @@ unsigned PairsMatcher::Match()
 	const unsigned knownPosesTopK = verificationFeedback ?
 		config.maxPairsPerImage*4/5 : config.maxPairsPerImage*4/3;
 
+	// the gate's records are per-Match() (a second call re-warps every candidate), so a repeated
+	// call must not append to the previous run's table
+	denseValidations.clear();
+
 	// Collect pairs to match based on selected mode
 	PairIdxArr pairsToMatch;
 	const unsigned numExhaustivePairs((nImages - 1) * nImages / 2);
@@ -2102,17 +2154,42 @@ bool PairsMatcher::ExportDenseValidationsCSV(const String& fileName) const
 		return false;
 	}
 	const String basePath = MAKE_PATH_FULL(WORKING_FOLDER_FULL, Util::getFilePath(fileName));
-	ofs << "ImageA,ImageB,NumSampled,NumInliers,InlierRatio,CoverageA,CoverageB,Validated\n";
+	// Every scalar the gate derived, for every candidate it judged -- accepted or rejected -- so
+	// that any threshold on any of them can be swept offline from one run. The point arrays are not
+	// here (they are released on a rejected pair), but nothing that a sweep needs is missing:
+	// GeometryBranch names which geometry actually ran, so an E-vs-F arm can never be misattributed.
+	ofs << "ImageA,ImageB,GeometryBranch,NumSampled,NumInliers,NumFilteredInliers,InlierRatio,"
+	       "FilteredInlierRatio,CoverageA,CoverageB,CoverageInlierA,CoverageInlierB,"
+	       "MeetsInlierCoverage,EpipolarNativePx,EpipolarFullResPx";
+	for (unsigned q = 0; q < DENSE_RESIDUAL_QUANTILES; ++q)
+		ofs << ",ResidualNativeP" << (unsigned)ROUND2INT(100.f*DENSE_RESIDUAL_PROBABILITIES[q]);
+	ofs << ",Validated\n";
 	unsigned numValidated = 0;
 	for (const DensePairValidation& val : denseValidations) {
+		// ValidatePairsROMA2 never hands over a record for a pair it did not judge, so both indices
+		// are real images here; a NO_ID would index scene.images out of range
+		ASSERT(val.ID1 < scene.images.size() && val.ID2 < scene.images.size());
 		ofs << MAKE_PATH_REL(basePath, scene.images[val.ID1].fileName) << ","
 			<< MAKE_PATH_REL(basePath, scene.images[val.ID2].fileName) << ","
+			<< GeometryBranchName((GeometryBranch)val.geometryBranch) << ","
 			<< val.numSampled << ","
 			<< val.numInliers << ","
+			<< val.numFilteredInliers << ","
 			<< val.inlierRatio << ","
+			<< val.filteredInlierRatio << ","
 			<< val.coverageA << ","
 			<< val.coverageB << ","
-			<< (val.bValidated ? 1 : 0) << "\n";
+			<< val.coverageInlierA << ","
+			<< val.coverageInlierB << ","
+			<< (val.bMeetsInlierCoverage ? 1 : 0) << ","
+			<< val.epipolarNativePx << ","
+			<< val.epipolarFullResPx;
+		for (unsigned q = 0; q < DENSE_RESIDUAL_QUANTILES; ++q) {
+			ofs << ",";
+			if (val.residualNative[q] >= 0.f)
+				ofs << val.residualNative[q]; // a pair with no fitted geometry leaves the cell empty
+		}
+		ofs << "," << (val.bValidated ? 1 : 0) << "\n";
 		if (val.bValidated)
 			++numValidated;
 	}

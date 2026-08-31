@@ -88,6 +88,25 @@ struct SFM_API ROMA2Config {
 	bool useValidation = false;
 	float minDenseInlierRatio = 0.8f;      // fraction of the dense sample a single geometry must explain
 	unsigned denseSampleSize = 2000;       // budget of the coverage-maximising warp sample (SampleWarpByCoverage)
+	// RANSAC epipolar threshold of the gate's fit, in **warp-native pixels**: the frame of the
+	// model's own square input (RoMa2Onnx::ImageSize, 640 at base), not the target image. It is
+	// converted per pair, from each pair's own resolution, in ValidatePairsROMA2. It has to be
+	// resolution-relative because the warp's precision is fixed in the network's frame while
+	// MatchConfig::maxEpipolarError is applied in full-resolution pixels: the descriptor path's
+	// 4 px is 2.9 native px on a 1024x768 capture but 1.8 on a 1955x1089 one, so a bare pixel
+	// setting silently measures image resolution as much as geometry. 0 = inherit
+	// MatchConfig::maxEpipolarError unconverted (the pre-conversion behaviour, kept only so a run
+	// can reproduce the descriptor path's own threshold exactly)
+	float validationEpipolarNativePx = 1.f;
+	// which geometry the gate fits: auto = whatever the cameras support (essential when both trust
+	// their intrinsics, fundamental otherwise), essential = require the calibrated 5-DoF branch and
+	// fail by name if the intrinsics are untrusted, fundamental = force the 7-DoF branch even with
+	// trusted intrinsics. The two are the arms of the E-vs-F comparison, so neither may be implicit
+	String validationGeometry = "auto";
+	// minimum min(coverageInlierA, coverageInlierB) recorded as met in the gate's table. RECORDED
+	// ONLY: the gate's accept/reject is minDenseInlierRatio alone, no complementary rejection rule
+	// being pre-registered, so this changes no verdict (0 = every pair meets it)
+	float minInlierCoverage = 0.f;
 	String exportValidationCSV;            // file the gate's per-candidate table is written to (empty = not written)
 	bool useGPU = true;                    // allow the GPU execution providers (false forces the CPU provider)
 
@@ -157,8 +176,11 @@ SFM_API unsigned MatchPairsROMA2(PairsMatcher& pairsMatcher, RoMa2Onnx& roma2, c
 // The device slots, prefetch pipeline and warp order are exactly MatchPairsROMA2's, so the two
 // passes cost the same per pair; unlike it, this pass needs no descriptors, only cameras.
 // `pairs` is filtered in place to the pairs that passed -- a rejected pair is dropped, never
-// demoted to ordinary descriptor matching -- and one record per warped candidate, accepted or not,
-// is appended to `validations` in the order the pairs were warped.
+// demoted to ordinary descriptor matching -- and one record per candidate the pass actually warped,
+// accepted or not, is appended to `validations` in the order the pairs were warped. A candidate
+// whose image could not be described, or whose warp the graph could not produce, contributes no
+// record at all: it was never judged, which is a different fact from being rejected, and the
+// summary line counts the two separately.
 // roma2 must already be loaded (RoMa2Onnx::Load); a pair whose image could not be loaded,
 // described or coarse-matched is dropped with a message, never judged against a stale slot.
 // Returns the number of pairs that passed the gate (== pairs.size() on return).

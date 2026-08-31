@@ -1178,12 +1178,31 @@ bool ROMA2CoverageSampleTest()
 			return false;
 		}
 
-	// the same draw twice: the sample must not depend on any traversal order
-	std::vector<Point2f> repeatA, repeatB;
-	float repeatCoverageA, repeatCoverageB;
+	// The same draw twice in one process: this proves the function is pure -- it carries no state
+	// between calls and reads no container whose iteration order could vary -- which is what the
+	// implementation has to guarantee. It is *not* a run-to-run reproducibility claim across
+	// binaries or machines; the sample is also a function of the warp the model produced, and
+	// nothing here exercises that. Re-drawing from a pre-filled output pair as well, since a
+	// caller reusing its buffers must get the same answer as one passing empty ones.
+	std::vector<Point2f> repeatA(7, Point2f(1.f, 2.f)), repeatB(3, Point2f(3.f, 4.f));
+	float repeatCoverageA = -1.f, repeatCoverageB = -1.f;
 	SampleWarpByCoverage(imgA, imgB, warp, overlap, 0.3f, budget, repeatA, repeatB, repeatCoverageA, repeatCoverageB);
 	if (repeatA != sampledA || repeatB != sampledB || repeatCoverageA != coverageA || repeatCoverageB != coverageB) {
-		VERBOSE("ROMA2CoverageSampleTest FAILED: the draw is not deterministic");
+		VERBOSE("ROMA2CoverageSampleTest FAILED: the draw is not a pure function of its inputs");
+		return false;
+	}
+
+	// budget boundary: the smallest sample --roma2-dense-sample accepts is 8, the estimator's own
+	// minimum. One bucket then covers the whole warp (isqrt(8) = 2, so 2x2 = 4 buckets), and the
+	// fill-up has to top the winners up to exactly 8 without ever exceeding the budget
+	if (SampleWarpByCoverage(imgA, imgB, warp, overlap, 0.3f, 8, sampledA, sampledB, coverageA, coverageB) != 8 ||
+		sampledA.size() != 8) {
+		VERBOSE("ROMA2CoverageSampleTest FAILED: %u samples drawn of the 8 budgeted", (unsigned)sampledA.size());
+		return false;
+	}
+	// and a budget of 1 degenerates to a single bucket, not to a division by zero
+	if (SampleWarpByCoverage(imgA, imgB, warp, overlap, 0.3f, 1, sampledA, sampledB, coverageA, coverageB) != 1) {
+		VERBOSE("ROMA2CoverageSampleTest FAILED: a budget of 1 drew %u samples", (unsigned)sampledA.size());
 		return false;
 	}
 
@@ -1207,6 +1226,41 @@ bool ROMA2CoverageSampleTest()
 	if (SampleWarpByCoverage(imgA, imgB, warp, overlap, 0.3f, budget, sampledA, sampledB, coverageA, coverageB) != 0 ||
 		!sampledA.empty() || coverageA != 0.f || coverageB != 0.f) {
 		VERBOSE("ROMA2CoverageSampleTest FAILED: an unconfident warp still produced a sample");
+		return false;
+	}
+
+	// inlier coverage: the same grid restricted to a subset of the sample, which is how the gate
+	// separates "the sample is spread" from "the geometry explains a spread part of it". A synthetic
+	// sample of known occupancy pins both readings: one point in the centre of each of the first 4x4
+	// grid cells of A, every one of them landing in the single central cell of B.
+	const float cell = 1.f/(float)(DENSE_COVERAGE_GRID*DENSE_COVERAGE_GRID);
+	std::vector<Point2f> setA, setB;
+	for (unsigned cy = 0; cy < 4; ++cy)
+		for (unsigned cx = 0; cx < 4; ++cx) {
+			setA.emplace_back(((float)cx + 0.5f)*(float)width/(float)DENSE_COVERAGE_GRID,
+			                  ((float)cy + 0.5f)*(float)height/(float)DENSE_COVERAGE_GRID);
+			setB.emplace_back((float)width*0.5f, (float)height*0.5f);
+		}
+	float fullA, fullB;
+	ComputeSampleCoverage(setA, setB, imgA.GetSize(), imgB.GetSize(), std::vector<uint32_t>(), fullA, fullB);
+	if (ABS(fullA - 16.f*cell) > 1e-6f || ABS(fullB - cell) > 1e-6f) {
+		VERBOSE("ROMA2CoverageSampleTest FAILED: whole-sample coverage %.5f/%.5f, expected %.5f/%.5f",
+			fullA, fullB, 16.f*cell, cell);
+		return false;
+	}
+	// four of those points, in four distinct cells of A: the subset must measure only itself
+	float inlierA, inlierB;
+	ComputeSampleCoverage(setA, setB, imgA.GetSize(), imgB.GetSize(), std::vector<uint32_t>{0, 1, 4, 5}, inlierA, inlierB);
+	if (ABS(inlierA - 4.f*cell) > 1e-6f || ABS(inlierB - cell) > 1e-6f) {
+		VERBOSE("ROMA2CoverageSampleTest FAILED: inlier-subset coverage %.5f/%.5f, expected %.5f/%.5f",
+			inlierA, inlierB, 4.f*cell, cell);
+		return false;
+	}
+	// and a one-point subset occupies exactly one cell of each image -- the degenerate case the
+	// gate's complementary test exists to catch
+	ComputeSampleCoverage(setA, setB, imgA.GetSize(), imgB.GetSize(), std::vector<uint32_t>{7}, inlierA, inlierB);
+	if (ABS(inlierA - cell) > 1e-6f || ABS(inlierB - cell) > 1e-6f) {
+		VERBOSE("ROMA2CoverageSampleTest FAILED: single-inlier coverage %.5f/%.5f, expected %.5f", inlierA, inlierB, cell);
 		return false;
 	}
 

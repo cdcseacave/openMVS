@@ -666,36 +666,117 @@ namespace {
 // confidence only, and one geometry either explains it or does not.
 // A sample too small for the estimator leaves the pair with no inliers at all (ratio 0, rejected):
 // a warp that cannot even offer minMatches confident, spread-out correspondences is no evidence.
-void ValidateOnePairROMA2(PairsMatcher& pairsMatcher, const Image& imgA, const Image& imgB,
-	const WarpMaps& maps, const ROMA2Config& config, DensePairValidation& val)
+//
+// What this reads of the two images: `pCamera` (the intrinsics, and TrustIntrinsics() through them),
+// the image size, and the warp. It does NOT read their poses -- the temporary copies are built with
+// an explicitly invalidated pose, so a scene that happens to carry a ground-truth solution cannot
+// leak it into the gate's geometry however the estimator later changes. That is the whole point of
+// the gate, so it is enforced structurally rather than trusted.
+// Scale from the model's own square input frame (RoMa2Onnx::ImageSize) to one image's full
+// resolution. The preprocessing resizes anisotropically into that square (PreprocessImageRoMa2
+// weights the two axes independently), so there is no single exact factor: the geometric mean
+// sqrt(W*H)/size is the isotropic summary of an anisotropic linear map -- the factor its areas
+// scale by -- and it is the right one for an isotropic distance threshold. On a 4:3 capture the
+// two axis factors differ by 1.33x, on 16:9 Truck by 1.79x, so taking the width alone would be a
+// materially different (and, on the wider image, much looser) threshold.
+inline float NativeToFullResScale(const Image& img, int nativeSize)
+{
+	ASSERT(nativeSize > 0 && img.HasCamera());
+	return SQRT((float)img.GetWidth() * (float)img.GetHeight()) / (float)nativeSize;
+}
+
+// Sampson epipolar residual of every correspondence under a fundamental matrix, in the pixels F is
+// expressed in; the quantiles at DENSE_RESIDUAL_PROBABILITIES are written to `quantiles`, scaled by
+// 1/scale so they come out in the warp's native frame. Nothing is written when there is nothing to
+// measure, leaving the record's negative sentinels in place.
+void ComputeResidualQuantiles(const Matrix3x3f& F, const std::vector<Point2f>& ptsA,
+	const std::vector<Point2f>& ptsB, float scale, float* quantiles)
+{
+	ASSERT(ptsA.size() == ptsB.size() && scale > 0.f);
+	if (ptsA.empty())
+		return;
+	std::vector<float> residuals(ptsA.size());
+	FOREACH(i, ptsA) {
+		const Point3f Fx1 = F * ptsA[i].homogeneous();
+		const Point3f Ftx2 = F.t() * ptsB[i].homogeneous();
+		const float numerator = ptsB[i].homogeneous().dot(Fx1);
+		const float denominatorSq = Fx1.x*Fx1.x + Fx1.y*Fx1.y + Ftx2.x*Ftx2.x + Ftx2.y*Ftx2.y;
+		residuals[i] = denominatorSq > FZERO_TOLERANCE ? ABS(numerator)/SQRT(denominatorSq) : FLT_MAX;
+	}
+	std::sort(residuals.begin(), residuals.end());
+	for (unsigned q = 0; q < DENSE_RESIDUAL_QUANTILES; ++q) {
+		const size_t idx = MINF((size_t)(DENSE_RESIDUAL_PROBABILITIES[q]*(float)(residuals.size()-1)), residuals.size()-1);
+		quantiles[q] = residuals[idx]/scale;
+	}
+}
+
+void ValidateOnePairROMA2(PairsMatcher& pairsMatcher, const MatchConfig& gateCfgTemplate,
+	const Image& imgA, const Image& imgB, const WarpMaps& maps, const ROMA2Config& config,
+	int nativeSize, DensePairValidation& val)
 {
 	SampleWarpByCoverage(imgA, imgB, maps.warp, maps.overlap, config.minConfidence,
 		config.denseSampleSize, val.pointsA, val.pointsB, val.coverageA, val.coverageB);
 	val.numSampled = (unsigned)val.pointsA.size();
+	// the epipolar threshold, converted from the warp's frame into this pair's own pixels: the
+	// warp's precision is fixed in the network's square input, so a threshold quoted there means
+	// the same thing on every dataset, while a threshold in target pixels does not
+	const float scale = 0.5f*(NativeToFullResScale(imgA, nativeSize) + NativeToFullResScale(imgB, nativeSize));
+	MatchConfig gateCfg(gateCfgTemplate);
+	if (config.validationEpipolarNativePx > 0.f) {
+		val.epipolarNativePx = config.validationEpipolarNativePx;
+		gateCfg.maxEpipolarError = config.validationEpipolarNativePx*scale;
+	} else {
+		// inheriting the matcher's threshold unconverted: record what it is worth natively, so the
+		// row still says what precision was actually demanded of the warp
+		val.epipolarNativePx = gateCfg.maxEpipolarError/scale;
+	}
+	val.epipolarFullResPx = gateCfg.maxEpipolarError;
 	// GeometricFilter needs 8 correspondences of its own, and a pair is not worth keeping below the
 	// same match bar every descriptor pair clears
-	if (val.numSampled < MAXF(pairsMatcher.GetConfig().minMatches, 8u))
+	if (val.numSampled < MAXF(gateCfg.minMatches, 8u))
 		return;
-	Image imgACopy(imgA.ID, imgA.fileName, reinterpret_cast<const Pose3D&>(imgA), imgA.cameraID, imgA.pCamera);
-	Image imgBCopy(imgB.ID, imgB.fileName, reinterpret_cast<const Pose3D&>(imgB), imgB.cameraID, imgB.pCamera);
+	Image imgACopy(imgA.ID, imgA.fileName, Pose3D(), imgA.cameraID, imgA.pCamera);
+	Image imgBCopy(imgB.ID, imgB.fileName, Pose3D(), imgB.cameraID, imgB.pCamera);
+	imgACopy.InvalidatePose(); // see the note above: the gate never sees a pose, only intrinsics
+	imgBCopy.InvalidatePose();
+	ASSERT(!imgACopy.HasPose() && !imgBCopy.HasPose());
 	imgACopy.keypoints = ConvertToKeypoints(val.pointsA);
 	imgBCopy.keypoints = ConvertToKeypoints(val.pointsB);
+	val.geometryBranch = (uint8_t)PairsMatcher::SelectGeometryBranch(gateCfg, imgACopy, imgBCopy);
 	ImagePair fit(val.ID1, val.ID2);
 	fit.matches.reserve(val.numSampled);
 	for (uint32_t i = 0; i < val.numSampled; ++i)
 		fit.matches.emplace_back(i, i);
-	if (!pairsMatcher.GeometricFilter(imgACopy, imgBCopy, fit))
+	if (!pairsMatcher.GeometricFilter(gateCfg, imgACopy, imgBCopy, fit))
 		return; // no single geometry explained enough of the sample to survive the estimator
-	// the surviving matches are the sample's inliers, and each still carries the sample index it
-	// was built from; FilterMatches may have reordered them, so sort back into sample order
-	val.inliers.reserve(fit.matches.size());
+	// The two inlier counts the estimator produces, and which one the gate thresholds.
+	// `fit.matches` is the RANSAC inlier set on every branch: PartitionMatchesByMask splits the
+	// outliers off, and the strict cheirality/angle/reprojection filter that follows on a branch
+	// with a relative pose only *reorders* matches (FilterMatches -> PartitionMatchesByMask with
+	// reorderOnly=true) and records its own smaller count. So GetNumInliers() means the same thing
+	// on the calibrated and the uncalibrated branch, which is why inlierRatio is built from it;
+	// GetNumFilteredInliers() is recorded beside it rather than substituted for it.
+	val.inliers.reserve(fit.GetNumInliers());
 	for (const DMatch& match : fit.matches)
 		val.inliers.push_back(match.queryIdx);
-	std::sort(val.inliers.begin(), val.inliers.end());
-	val.numInliers = (unsigned)val.inliers.size();
+	std::sort(val.inliers.begin(), val.inliers.end()); // FilterMatches may have reordered them
+	val.numInliers = fit.GetNumInliers();
+	val.numFilteredInliers = fit.GetNumFilteredInliers();
+	ASSERT(val.numInliers == (unsigned)val.inliers.size() && val.numFilteredInliers <= val.numInliers);
+	// spread of the inlier subset alone, on the same grid as the sample's own coverage: a sample
+	// spread over the overlap whose inliers huddle in one corner is what a ratio cannot see
+	ComputeSampleCoverage(val.pointsA, val.pointsB, imgA.GetSize(), imgB.GetSize(), val.inliers,
+		val.coverageInlierA, val.coverageInlierB);
 	val.relativePose = fit.relativePose;
 	val.E = fit.E;
 	val.F = fit.F;
+	// how precisely the fitted geometry actually explains the whole sample, not merely how much of
+	// it cleared the threshold. Measured as the pixel Sampson residual under F -- which both
+	// branches leave behind for a pinhole pair, the calibrated one composing it from its E -- so the
+	// two arms of the E-vs-F comparison are read on one scale, even though RANSAC scored them on
+	// two (pixels for F, radians for the calibrated bearings)
+	if (val.F.has_value())
+		ComputeResidualQuantiles(Cast<float>(val.F.value()), val.pointsA, val.pointsB, scale, val.residualNative);
 }
 
 } // namespace
@@ -730,7 +811,39 @@ unsigned SFM::ValidatePairsROMA2(PairsMatcher& pairsMatcher, RoMa2Onnx& roma2, P
 	}
 	candidates.Sort(); // (ID1,ID2): the slot plan's locality
 
-	// 2) the warp pass: one verdict per candidate, on the pool, over the same slot plan and
+	// 2) the gate's own estimator configuration: the matcher's, with the gate's epipolar threshold
+	// and the gate's E-vs-F choice substituted. A copy, never a mutation of the PairsMatcher's own
+	// config, so the descriptor path that shares this matcher is untouched. The two geometry arms
+	// have to be explicit -- an E-vs-F comparison whose branch depends on what an importer happened
+	// to mark trusted is not a comparison -- so `essential` is refused by name, up front, when the
+	// intrinsics cannot support it, rather than silently falling back to a fundamental fit.
+	// (the epipolar threshold is not set here: it converts from the warp's native frame into each
+	// pair's own resolution, so it is per pair, in ValidateOnePairROMA2)
+	MatchConfig gateCfg(pairsMatcher.GetConfig());
+	gateCfg.forceFundamentalWithFocal = false; // the shared-focal branch is neither of the two arms
+	if (config.validationGeometry == "fundamental") {
+		gateCfg.forceFundamental = true;
+	} else if (config.validationGeometry == "essential") {
+		gateCfg.forceFundamental = false;
+		for (const PairIdx& p : candidates)
+			for (const IIndex i : {p.i, p.j})
+				if (!scene.images[i].TrustIntrinsics()) {
+					VERBOSE("error: --roma2-gate-geometry essential needs trusted intrinsics on every image, "
+						"but image %u '%s' has none (import intrinsics, or ask for auto/fundamental)",
+						scene.images[i].ID, scene.images[i].fileName.c_str());
+					pairs.Empty();
+					return 0;
+				}
+	} else {
+		ASSERT(config.validationGeometry == "auto");
+	}
+	DEBUG_EXTRA("ROMA2 gate: %s geometry at %g %s-frame px epipolar error, %u-px warp frame, sample %u, ratio >= %g",
+		config.validationGeometry.c_str(),
+		config.validationEpipolarNativePx > 0.f ? config.validationEpipolarNativePx : gateCfg.maxEpipolarError,
+		config.validationEpipolarNativePx > 0.f ? "warp-native" : "full-resolution",
+		roma2.ImageSize(), config.denseSampleSize, config.minDenseInlierRatio);
+
+	// 3) the warp pass: one verdict per candidate, on the pool, over the same slot plan and
 	// prefetch pipeline the dense matching pass uses
 	DensePairValidationArr results(candidates.size());
 	std::atomic<unsigned> numValidated{0};
@@ -744,37 +857,63 @@ unsigned SFM::ValidatePairsROMA2(PairsMatcher& pairsMatcher, RoMa2Onnx& roma2, P
 			DensePairValidation& val = results[p];
 			val.ID1 = pair.i;
 			val.ID2 = pair.j;
-			ValidateOnePairROMA2(pairsMatcher, imgA, imgB, maps, config, val);
+			ValidateOnePairROMA2(pairsMatcher, gateCfg, imgA, imgB, maps, config, roma2.ImageSize(), val);
 			val.inlierRatio = val.numSampled ? (float)val.numInliers/(float)val.numSampled : 0.f;
+			val.filteredInlierRatio = val.numSampled ? (float)val.numFilteredInliers/(float)val.numSampled : 0.f;
+			// the verdict is the RANSAC inlier ratio alone this round. bMeetsInlierCoverage records
+			// the user's candidate complementary test without applying it: no rejection rule beyond
+			// the ratio is pre-registered, so none is enforced here
 			val.bValidated = val.inlierRatio >= config.minDenseInlierRatio;
+			val.bMeetsInlierCoverage = MINF(val.coverageInlierA, val.coverageInlierB) >= config.minInlierCoverage;
 			if (val.bValidated) {
 				++numValidated;
 			} else {
 				// a rejected pair is dropped, so nothing downstream will ever read its sample: give
-				// the memory back and keep only the counts the offline threshold sweep needs
+				// the point arrays back. Every scalar stays -- the counts, both ratios, all four
+				// coverages and the branch -- because the rejected rows are exactly the ones an
+				// offline threshold sweep needs and they survive in no other artifact of the run
 				val.pointsA = std::vector<Point2f>();
 				val.pointsB = std::vector<Point2f>();
 				val.inliers = std::vector<uint32_t>();
 			}
-			DEBUG_ULTIMATE("ROMA2 gate (% 4u, % 4u): %u sampled, %u inliers, ratio %.3f, coverage %.3f/%.3f, %s",
-				pair.i, pair.j, val.numSampled, val.numInliers, val.inlierRatio, val.coverageA, val.coverageB,
+			DEBUG_ULTIMATE("ROMA2 gate (% 4u, % 4u): %s, %u sampled, %u/%u inliers, ratio %.3f, "
+				"coverage %.3f/%.3f, inlier coverage %.3f/%.3f, %s",
+				pair.i, pair.j, PairsMatcher::GeometryBranchName((PairsMatcher::GeometryBranch)val.geometryBranch),
+				val.numSampled, val.numInliers, val.numFilteredInliers, val.inlierRatio,
+				val.coverageA, val.coverageB, val.coverageInlierA, val.coverageInlierB,
 				val.bValidated ? "validated" : "rejected");
 		}, stats))
 		return 0;
 
-	// 3) keep the pairs a single geometry explained; a rejected pair is dropped, never demoted to
+	// 4) keep the pairs a single geometry explained; a rejected pair is dropped, never demoted to
 	// ordinary descriptor matching (the campaign measures what a purely dense-gated pipeline does,
 	// rather than hiding the gate's mistakes behind a SIFT fallback)
 	PairIdxArr kept(0, candidates.size());
-	FOREACH(p, results)
-		if (results[p].bValidated)
+	unsigned numRejected = 0, numUnwarped = 0;
+	FOREACH(p, results) {
+		const DensePairValidation& val = results[p];
+		// a candidate whose image could not be described, or whose warp the coarse-match graph
+		// could not produce, never reached the consumer at all: its record is still default
+		// constructed, ID1 == ID2 == NO_ID, and appending it would hand every consumer -- the CSV
+		// export first -- an out-of-range image index. MatchPairsROMA2 keeps the same distinction by
+		// skipping an empty match set; the gate has to state it, because a rejected verdict and an
+		// absent verdict are different facts and the summary below reports them separately.
+		if (val.ID1 == NO_ID) {
+			ASSERT(val.ID2 == NO_ID && val.numSampled == 0 && !val.bValidated);
+			++numUnwarped;
+			continue;
+		}
+		if (val.bValidated)
 			kept.push_back(candidates[p]);
+		else
+			++numRejected;
+		validations.push_back(std::move(results[p]));
+	}
 	ASSERT(kept.size() == numValidated.load());
-	validations.insert(validations.end(),
-		std::make_move_iterator(results.begin()), std::make_move_iterator(results.end()));
+	ASSERT(numUnwarped == 0 || stats.numFailedLoads > 0 || stats.numFailedMatches > 0);
 	pairs = std::move(kept);
-	DEBUG("ROMA2 dense pair validation: %u/%u pairs validated, %u rejected, %u without cameras, %u failed loads, %u failed matches; %u slots, %u loads, %u reloads (%s)",
-		pairs.size(), candidates.size(), candidates.size()-pairs.size(), numUnusable,
+	DEBUG("ROMA2 dense pair validation: %u/%u pairs validated, %u rejected, %u never warped, %u without cameras, %u failed loads, %u failed matches; %u slots, %u loads, %u reloads (%s)",
+		pairs.size(), candidates.size(), numRejected, numUnwarped, numUnusable,
 		stats.numFailedLoads, stats.numFailedMatches, stats.numSlots, (unsigned)stats.numLoads, (unsigned)stats.numReloads, TD_TIMER_GET_FMT().c_str());
 	return pairs.size();
 #else // _USE_ONNXRUNTIME

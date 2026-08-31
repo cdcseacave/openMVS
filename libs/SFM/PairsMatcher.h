@@ -156,11 +156,31 @@ public:
 		std::vector<DMatch>& matches,
 		unsigned threadIdx = 0);
 
+	// Which geometry GeometricFilter estimates for a pair. Kept as one named decision so that a
+	// caller recording the branch and the estimator choosing it can never disagree.
+	enum class GeometryBranch : uint8_t {
+		SHARED_FOCAL = 0, // F with focal extraction: forceFundamentalWithFocal, one shared pinhole camera
+		ESSENTIAL    = 1, // 5-DoF calibrated bearings + cheirality: both cameras trust their intrinsics
+		FUNDAMENTAL  = 2, // 7-DoF F: anything else, including forceFundamental over trusted intrinsics
+	};
+	static GeometryBranch SelectGeometryBranch(const MatchConfig& cfg, const Image& img1, const Image& img2);
+	static LPCTSTR GeometryBranchName(GeometryBranch branch);
+
 	// Geometric verification with RANSAC
 	// If both cameras trust intrinsics, estimates calibrated relative pose
 	// and initializes pair.relativePose, pair.E and pair.F.
 	// Otherwise estimates fundamental matrix and sets pair.F.
 	bool GeometricFilter(
+		const Image& img1,
+		const Image& img2,
+		ImagePair& pair) const;
+
+	// Same, with an explicit configuration in place of the matcher's own: the dense two-view gate
+	// fits its geometry with its own epipolar threshold and its own E-vs-F choice, without
+	// perturbing what the descriptor path does with the same PairsMatcher. The three-argument
+	// overload above is exactly this one called with GetConfig().
+	bool GeometricFilter(
+		const MatchConfig& cfg,
 		const Image& img1,
 		const Image& img2,
 		ImagePair& pair) const;

@@ -143,8 +143,12 @@ size_t SFM::SampleWarpByCoverage(
 	const cv::Size sizeA(imgA.GetSize()), sizeB(imgB.GetSize());
 	// one bucket per unit of budget, laid out as a square grid over the warp: the winners of the
 	// buckets alone are then at most maxSamples, so the fill-up below only ever adds to a
-	// fully-spread core instead of having to trim it back
-	const int numBuckets = MAXF((int)SQRT((float)maxSamples), 1);
+	// fully-spread core instead of having to trim it back. Integer isqrt, not SQRT: a float square
+	// root that lands a hair below a perfect square on a different libm would silently shift the
+	// whole bucket grid, and with it every sample the gate draws
+	int numBuckets = 1;
+	while ((unsigned)(numBuckets+1)*(unsigned)(numBuckets+1) <= maxSamples)
+		++numBuckets;
 	struct Candidate {
 		float confidence;
 		Point2f ptA, ptB;
@@ -198,25 +202,50 @@ size_t SFM::SampleWarpByCoverage(
 	// hand the sample back in raster order (candidates were collected in it), independent of how
 	// much of it came from the buckets and how much from the confidence fill-up
 	std::sort(chosen.begin(), chosen.end());
-	// spread of the sample, as the fraction of a coarse grid over each image it occupies
-	std::vector<bool> gridA((size_t)DENSE_COVERAGE_GRID*DENSE_COVERAGE_GRID, false), gridB(gridA);
-	const auto MarkCell = [](std::vector<bool>& grid, const Point2f& pt, const cv::Size& size) {
-		const unsigned cx = MINF((unsigned)((float)DENSE_COVERAGE_GRID*pt.x/(float)size.width), DENSE_COVERAGE_GRID-1);
-		const unsigned cy = MINF((unsigned)((float)DENSE_COVERAGE_GRID*pt.y/(float)size.height), DENSE_COVERAGE_GRID-1);
-		grid[(size_t)cy*DENSE_COVERAGE_GRID + cx] = true;
-	};
 	sampledA.reserve(chosen.size());
 	sampledB.reserve(chosen.size());
 	for (const int idxCandidate : chosen) {
 		const Candidate& candidate = candidates[idxCandidate];
 		sampledA.push_back(candidate.ptA);
 		sampledB.push_back(candidate.ptB);
-		MarkCell(gridA, candidate.ptA, sizeA);
-		MarkCell(gridB, candidate.ptB, sizeB);
+	}
+	ComputeSampleCoverage(sampledA, sampledB, sizeA, sizeB, std::vector<uint32_t>(), coverageA, coverageB);
+	return sampledA.size();
+}
+/*----------------------------------------------------------------*/
+
+
+void SFM::ComputeSampleCoverage(
+	const std::vector<Point2f>& sampledA,
+	const std::vector<Point2f>& sampledB,
+	const cv::Size& sizeA,
+	const cv::Size& sizeB,
+	const std::vector<uint32_t>& indices,
+	float& coverageA,
+	float& coverageB)
+{
+	ASSERT(sampledA.size() == sampledB.size());
+	std::vector<bool> gridA((size_t)DENSE_COVERAGE_GRID*DENSE_COVERAGE_GRID, false), gridB(gridA);
+	const auto MarkCell = [](std::vector<bool>& grid, const Point2f& pt, const cv::Size& size) {
+		const unsigned cx = MINF((unsigned)MAXF(0.f, (float)DENSE_COVERAGE_GRID*pt.x/(float)size.width), DENSE_COVERAGE_GRID-1);
+		const unsigned cy = MINF((unsigned)MAXF(0.f, (float)DENSE_COVERAGE_GRID*pt.y/(float)size.height), DENSE_COVERAGE_GRID-1);
+		grid[(size_t)cy*DENSE_COVERAGE_GRID + cx] = true;
+	};
+	const auto MarkOne = [&](size_t i) {
+		MarkCell(gridA, sampledA[i], sizeA);
+		MarkCell(gridB, sampledB[i], sizeB);
+	};
+	if (indices.empty()) {
+		for (size_t i = 0; i < sampledA.size(); ++i)
+			MarkOne(i);
+	} else {
+		for (const uint32_t i : indices) {
+			ASSERT(i < sampledA.size());
+			MarkOne(i);
+		}
 	}
 	coverageA = (float)std::count(gridA.begin(), gridA.end(), true)/(float)gridA.size();
 	coverageB = (float)std::count(gridB.begin(), gridB.end(), true)/(float)gridB.size();
-	return sampledA.size();
 }
 /*----------------------------------------------------------------*/
 

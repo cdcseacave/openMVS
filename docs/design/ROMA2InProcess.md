@@ -216,11 +216,37 @@ It shares `MakeSlotPlan`, the prefetch ring and the warp ordering with the dense
 pass it needs no descriptors, only cameras. It is independent of `--roma2-match`: the gate decides
 which pairs exist, the dense matcher re-matches the ones that do.
 
-`--export-gate-csv` writes one row per warped candidate — accepted or rejected — as
-`ImageA,ImageB,NumSampled,NumInliers,InlierRatio,CoverageA,CoverageB,Validated`, so the threshold
-can be swept offline from a single run. It is the only artifact carrying the rejected pairs, which
-by construction reach no other output. `PairsMatcher::GetDenseValidations()` hands the same records
-(plus the fitted relative pose / E / F and the dense inlier set) to in-process consumers.
+**Geometry branch.** `PairsMatcher::SelectGeometryBranch` is the single definition of which
+geometry `GeometricFilter` fits — `SHARED_FOCAL`, `ESSENTIAL` (5-DoF calibrated bearings plus
+cheirality, taken when both cameras `TrustIntrinsics()`) or `FUNDAMENTAL` (7-DoF F) — and the gate
+records the branch each pair actually took. `--roma2-gate-geometry auto|essential|fundamental`
+forces the arm: `essential` fails the run by name when any image lacks trusted intrinsics rather
+than degrading to an F fit, so an E-vs-F comparison cannot silently run one arm twice.
+
+**Epipolar threshold, in warp-native pixels.** `--roma2-gate-epipolar-native-px` (default 1.0) is
+quoted in the frame of the model's own square input (`ImageSize`, 640 at base), not in target
+pixels, and is converted per pair by `sqrt(W*H)/ImageSize` — the geometric mean, because
+`PreprocessImageRoMa2` resizes anisotropically into that square, so no single factor is exact and
+the area factor is the right isotropic summary. The warp's precision is fixed in the network's
+frame while `MatchConfig::maxEpipolarError` is applied in full-resolution pixels, so a bare pixel
+threshold silently measures image resolution: the descriptor path's 4 px is 2.9 native px on a
+1024x768 capture and 1.8 on a 1955x1089 one. Both numbers are recorded per pair.
+
+`--export-gate-csv` writes one row per warped candidate — accepted or rejected — carrying every
+scalar the gate derived: the branch, `NumSampled`, both inlier counts and both ratios, sample
+coverage and inlier coverage in both images, the threshold in both frames, and the epipolar-residual
+quantiles of the whole sample under the fitted geometry (p50/p75/p90/p95/p99, native frame). The
+threshold itself cannot be swept offline — RANSAC's model depends on it — but the residual
+distribution under the model that *was* fitted is visible from one run. It is the only artifact
+carrying the rejected pairs, which by construction reach no other output.
+`PairsMatcher::GetDenseValidations()` hands the same records (plus the fitted relative pose / E / F
+and the dense inlier set) to in-process consumers.
+
+**What the gate reads of an image.** Its `pCamera` (intrinsics, and `TrustIntrinsics()` through
+them), its size, and the warp. Not its pose: the temporary `Image` copies the estimator sees are
+built with an explicitly invalidated pose, so a scene carrying a ground-truth solution cannot leak
+it into the gate's geometry. That is enforced structurally, not by convention, because a
+pose-contaminated fit is exactly the circularity the gate exists to escape.
 
 **Measured: the inlier ratio is the wrong decision variable** (2026-08-31, both 400-keyframe
 Polycam captures, 9078 and 7604 candidates, run folders

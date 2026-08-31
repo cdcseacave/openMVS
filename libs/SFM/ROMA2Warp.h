@@ -46,6 +46,14 @@ class SFM_API Scene;
 // reach a high fraction, coarse enough that a legitimately sparse but spread-out sample does
 constexpr unsigned DENSE_COVERAGE_GRID = 16;
 
+// Quantiles of the per-pair epipolar residual the dense two-view gate records, as probabilities.
+// The threshold cannot be swept offline the way a score can -- RANSAC's chosen model depends on it,
+// so every value costs its own run -- but the shape of the residual distribution under the model
+// that was fitted is visible from a single run, and it is what says whether right and wrong pairs
+// differ in precision at all
+constexpr unsigned DENSE_RESIDUAL_QUANTILES = 5;
+constexpr float DENSE_RESIDUAL_PROBABILITIES[DENSE_RESIDUAL_QUANTILES] = {0.50f, 0.75f, 0.90f, 0.95f, 0.99f};
+
 // Dense correspondence maps of an image pair as produced by the ROMAv2 coarse matcher:
 // one cell per warp grid position of the first image, holding where that cell lands in
 // the second image and how confident the model is that both images see it
@@ -67,16 +75,50 @@ struct SFM_API WarpMaps {
 // This is the gate's hand-off interface to whatever consumes dense-validated pairs.
 struct SFM_API DensePairValidation {
 	IIndex ID1 = NO_ID, ID2 = NO_ID;         // the pair, ID1 < ID2 (indices into Scene::images)
+	// The dense sample and its inlier subset. WARNING for consumers: these three arrays are
+	// released again on a pair the gate rejected (it is dropped, so nothing downstream can read
+	// them) -- never infer a size from them, always read numSampled/numInliers below, which
+	// survive. On a validated pair pointsA.size() == numSampled and inliers.size() == numInliers.
 	std::vector<Point2f> pointsA, pointsB;   // the dense sample: pixels of the working orientation of each image, index-parallel
 	std::vector<uint32_t> inliers;           // ascending indices into pointsA/pointsB the fitted geometry explains
-	std::optional<Pose3D> relativePose;      // relative pose ID1 -> ID2, when both cameras trust their intrinsics
+	std::optional<Pose3D> relativePose;      // relative pose ID1 -> ID2 (set by the ESSENTIAL branch, and by a decomposed FUNDAMENTAL fit)
 	std::optional<Matrix3x3> E;              // essential matrix, set together with relativePose
 	std::optional<Matrix3x3> F;              // fundamental matrix, when both cameras are pinhole
-	float coverageA = 0.f, coverageB = 0.f;  // fraction of a DENSE_COVERAGE_GRID^2 grid the sample occupies in each image
-	unsigned numSampled = 0;                 // size of the drawn sample (pointsA.size() while it is kept)
-	unsigned numInliers = 0;                 // size of the inlier set (inliers.size() while it is kept)
+	// Spread, on the same DENSE_COVERAGE_GRID^2 grid over each image: first of the whole drawn
+	// sample, then of its inlier subset alone. The pair is the diagnostic -- a sample spread over
+	// the overlap whose *inliers* huddle in one corner is a wrong pair that a ratio cannot see.
+	float coverageA = 0.f, coverageB = 0.f;
+	float coverageInlierA = 0.f, coverageInlierB = 0.f;
+	unsigned numSampled = 0;                 // size of the drawn sample
+	// Two inlier counts, because the estimator produces two and they differ per geometry branch:
+	// numInliers is the RANSAC inlier set of the fitted geometry (ImagePair::GetNumInliers), and is
+	// what inlierRatio and the gate's verdict are computed from, on every branch. numFiltered is
+	// the subset of those that also survive the cheirality / triangulation-angle / reprojection
+	// filter (ImagePair::GetNumFilteredInliers), which only runs where a relative pose exists -- so
+	// on a plain FUNDAMENTAL fit the two are equal, and on an ESSENTIAL fit numFiltered <= numInliers.
+	unsigned numInliers = 0;
+	unsigned numFilteredInliers = 0;
 	float inlierRatio = 0.f;                 // numInliers/numSampled, the quantity the gate thresholds
+	float filteredInlierRatio = 0.f;         // numFilteredInliers/numSampled, recorded only
+	uint8_t geometryBranch = 0;              // PairsMatcher::GeometryBranch the estimator actually took
+	// The epipolar threshold this pair was actually fitted with, in both frames it can be read in:
+	// the configured warp-native value (the model's own square input frame, RoMa2Onnx::ImageSize)
+	// and what that became in this pair's full-resolution pixels. Both are recorded per pair because
+	// the conversion depends on the images' resolution, so the same native setting is a different
+	// number of target pixels on every dataset -- exactly the confound that makes a bare pixel
+	// threshold unreadable across scenes.
+	float epipolarNativePx = 0.f;
+	float epipolarFullResPx = 0.f;
+	// Epipolar (Sampson) residual of the whole drawn sample under the fitted geometry, as quantiles
+	// in warp-native pixels, at DENSE_RESIDUAL_PROBABILITIES. Negative where there is nothing to
+	// measure: no geometry was fitted, or the fit produced no fundamental matrix (a spherical or
+	// mixed pair, where the residual is an angle rather than a pixel distance).
+	float residualNative[DENSE_RESIDUAL_QUANTILES] = {-1.f, -1.f, -1.f, -1.f, -1.f};
 	bool bValidated = false;                 // the verdict: inlierRatio >= ROMA2Config::minDenseInlierRatio
+	// whether min(coverageInlierA, coverageInlierB) >= ROMA2Config::minInlierCoverage. Recorded
+	// only: this round the gate's accept/reject is the ratio alone, and no complementary rejection
+	// rule is pre-registered
+	bool bMeetsInlierCoverage = false;
 };
 typedef std::vector<DensePairValidation> DensePairValidationArr;
 /*----------------------------------------------------------------*/
@@ -125,6 +167,21 @@ SFM_API size_t SampleWarpByCoverage(
 	unsigned maxSamples,
 	std::vector<Point2f>& sampledA,
 	std::vector<Point2f>& sampledB,
+	float& coverageA,
+	float& coverageB);
+
+// Fraction of a DENSE_COVERAGE_GRID^2 grid over each image that a warp sample occupies:
+// coverageA over sampledA in an image of sizeA, coverageB over sampledB in an image of sizeB.
+// `indices`, when non-empty, restricts the measurement to that subset of the sample (the gate
+// measures the whole sample and its inlier subset with the same call, so the two numbers are
+// comparable by construction). NOTE that an empty `indices` therefore means *the whole sample*,
+// not the empty subset: the coverage of an empty subset is 0 and needs no call.
+SFM_API void ComputeSampleCoverage(
+	const std::vector<Point2f>& sampledA,
+	const std::vector<Point2f>& sampledB,
+	const cv::Size& sizeA,
+	const cv::Size& sizeB,
+	const std::vector<uint32_t>& indices,
 	float& coverageA,
 	float& coverageB);
 
