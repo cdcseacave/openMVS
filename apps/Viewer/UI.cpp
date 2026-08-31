@@ -3212,9 +3212,9 @@ void UI::ShowRefineWorkflowWindow(Window& window) {
 		opts.alternatePair = (unsigned)alternatePair;
 	if (ImGui::IsItemHovered())
 		ImGui::SetTooltip("Which image pairs to use as reference during multi-view refinement:\n- Both references: Use all paired views (most accurate)\n- Alternate: Switch between left/right (balanced)\n- Left/Right only: Use only one reference (faster, less accurate)");
-	ImGui::DragFloat("Regularity Weight", &opts.regularityWeight, 0.05f, 0.f, 10.f, "%.2f");
+	ImGui::DragFloat("Regularity Weight", &opts.regularityWeight, 0.05f, 0.f, 1.f, "%.2f");
 	if (ImGui::IsItemHovered())
-		ImGui::SetTooltip("Weight for mesh regularity term.\nHigher values produce smoother surfaces, but may lose detail.\nLower values preserve sharp features, but can be noisy.");
+		ImGui::SetTooltip("Weight for mesh regularity term (at most 1: one full step must not amplify the Laplacian).\nHigher values produce smoother surfaces, but may lose detail.\nLower values preserve sharp features, but can be noisy.");
 	ImGui::DragFloat("Rigidity/Elasticity", &opts.rigidityElasticityRatio, 0.05f, 0.f, 1.f, "%.2f");
 	if (ImGui::IsItemHovered())
 		ImGui::SetTooltip("Balance between mesh rigidity and elasticity:\n- 0 = fully elastic (flexible deformation)\n- 1 = fully rigid (minimal deformation)\nAffects how much the mesh can deform.");
@@ -3223,9 +3223,9 @@ void UI::ShowRefineWorkflowWindow(Window& window) {
 	ImGui::DragFloat("Gradient Iterations", &iters, 1.f, 0.f, 200.f, "%.2f");
 	if (ImGui::IsItemHovered())
 		ImGui::SetTooltip("Number of iterations of gradient descent optimization.");
-	ImGui::DragFloat("Gradient Step", &gstep, 0.01f, 0.01f, 10.f, "%.2f");
+	ImGui::DragFloat("Gradient Step", &gstep, 0.01f, 0.01f, 1.f, "%.2f");
 	if (ImGui::IsItemHovered())
-		ImGui::SetTooltip("Step size for gradient descent optimization.\nLarger values converge faster, but may be unstable.\nSmaller values are more stable, but slower.");
+		ImGui::SetTooltip("Initial step of the optimizer, in pixels (at most 1).\nLarger values converge faster, but may be unstable.\nSmaller values are more stable, but slower.");
 	opts.gradientStep = iters + gstep*0.1f;
 	ImGui::DragFloat("Planar Vertex Ratio", &opts.planarVertexRatio, 0.01f, 0.f, 1.f, "%.2f");
 	if (ImGui::IsItemHovered())

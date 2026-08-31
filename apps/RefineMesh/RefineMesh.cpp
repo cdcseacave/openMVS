@@ -194,10 +194,20 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 	if (!OPT::strRefineConfigFileName.empty())
 		OPT::strRefineConfigFileName = MAKE_PATH_SAFE(OPT::strRefineConfigFileName);
 	OPTREFINE::init();
+	const bool bRefineConfigPresent(!OPT::strRefineConfigFileName.empty() && File::isFile(OPT::strRefineConfigFileName));
 	const bool bValidRefineConfig(OPTREFINE::oConfig.Load(OPT::strRefineConfigFileName));
 	OPTREFINE::update();
-	if (!bValidRefineConfig && !OPT::strRefineConfigFileName.empty())
+	if (!bValidRefineConfig && !OPT::strRefineConfigFileName.empty()) {
+		if (bRefineConfigPresent) {
+			// an existing file that fails to parse is user input with a defect: overwriting it
+			// with the defaults would both run settings the user did not ask for and destroy
+			// the evidence of what they did ask for
+			VERBOSE("error: refine configuration file '%s' exists but cannot be parsed; fix or remove it", OPT::strRefineConfigFileName.c_str());
+			return false;
+		}
+		// write a template holding the defaults for the user to edit
 		OPTREFINE::oConfig.Save(OPT::strRefineConfigFileName);
+	}
 	#if TD_VERBOSE != TD_VERBOSE_OFF
 	if (VERBOSITY_LEVEL > 2)
 		DEBUG_EXTRA("OPTREFINE: ignoreMaskLabel=%d photoTerm=%d photoNorm=%d imageGradient=%d boundaryMode=%d gateMeanDiff=%g gateVarRatio=%g optimizer=%d",
@@ -247,15 +257,32 @@ int main(int argc, LPCTSTR* argv)
 	}
 	TD_TIMER_START();
 	#ifdef _USE_CUDA
-	if (SEACAVE::CUDA::desiredDeviceIDs.empty() ||
-		!scene.RefineMeshCUDA(OPT::nResolutionLevel, OPT::nMinResolution, OPT::nMaxViews,
-							  OPT::fDecimateMesh, OPT::nCloseHoles, OPT::nEnsureEdgeSize,
-							  OPT::nMaxFaceArea,
-							  OPT::nScales, OPT::fScaleStep,
-							  OPT::nAlternatePair,
-							  OPT::fRegularityWeight,
-							  OPT::fRatioRigidityElasticity,
-							  OPT::fGradientStep))
+	bool bRefined(false);
+	if (!SEACAVE::CUDA::desiredDeviceIDs.empty()) {
+		// refinement mutates the mesh in place (decimation, subdivision, moved vertices), so a
+		// CUDA attempt that dies mid-run leaves neither the input nor a valid output behind;
+		// snapshot the input so the CPU fallback starts from what the user supplied instead of
+		// re-refining (and re-decimating) the half-refined wreck
+		Mesh::VertexArr backupVertices(scene.mesh.vertices);
+		Mesh::FaceArr backupFaces(scene.mesh.faces);
+		bRefined = scene.RefineMeshCUDA(OPT::nResolutionLevel, OPT::nMinResolution, OPT::nMaxViews,
+										OPT::fDecimateMesh, OPT::nCloseHoles, OPT::nEnsureEdgeSize,
+										OPT::nMaxFaceArea,
+										OPT::nScales, OPT::fScaleStep,
+										OPT::nAlternatePair,
+										OPT::fRegularityWeight,
+										OPT::fRatioRigidityElasticity,
+										OPT::fGradientStep);
+		// announce the fallback: it used to be silent, so a log reader could not tell a CPU
+		// rerun after a failed CUDA attempt from a run where the CPU path was chosen outright
+		if (!bRefined) {
+			VERBOSE("CUDA mesh refinement failed: falling back to the CPU implementation");
+			scene.mesh.Release();
+			scene.mesh.vertices.Swap(backupVertices);
+			scene.mesh.faces.Swap(backupFaces);
+		}
+	}
+	if (!bRefined)
 	#endif
 	if (!scene.RefineMesh(OPT::nResolutionLevel, OPT::nMinResolution, OPT::nMaxViews,
 						  OPT::fDecimateMesh, OPT::nCloseHoles, OPT::nEnsureEdgeSize,

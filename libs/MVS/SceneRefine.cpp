@@ -196,7 +196,7 @@ public:
 		const DepthMap& depthMapA, const FaceMap& faceMapA, const BaryMap& baryMapA, const Camera& cameraA,
 		const Camera& cameraB, const View& viewB,
 		const TImage<Real>& imageDZNCC, const BitMatrix& mask, GradArr& photoGrad, UnsignedArr& photoGradNorm, FloatArr& footprint, Real RegularizationScale,
-		TImage<Real>* debugSG = NULL); // WP2 parity diagnostic only: receives the per-pixel photometric scalar (see RefineDebug)
+		TImage<Real>* debugSG = NULL); // CPU/CUDA parity diagnostic only: receives the per-pixel photometric scalar (see RefineDebug)
 	static float ComputeSmoothnessGradient1(
 		const Mesh::VertexArr& vertices, const Mesh::VertexVerticesArr& vertexVertices, const BoolArr& vertexBoundary,
 		GradArr& smoothGrad1, VIndex idxStart, VIndex idxEnd);
@@ -674,11 +674,16 @@ double MeshRefine::ScoreMesh(double* gradients)
 		}
 	}
 
-	// S = sumRZ/sumR, the reliability-weighted mean of (1-ZNCC); degenerate only if no
-	// pair-direction contributed a single pixel, which ScoreMesh is not designed to run on
-	ASSERT(sumR > 0);
-	S = sumRZ/sumR;
-	ASSERT(S >= 0 && S <= 2);
+	// S = sumRZ/sumR, the reliability-weighted mean of (1-ZNCC). sumR == 0 means no
+	// pair-direction contributed a single masked pixel -- broken outside-world input (no
+	// pair overlap, bad poses), not an internal invariant, so it gets the runtime-validation
+	// treatment instead of an ASSERT alone (which would compile out in Release and feed the
+	// stepper NaN): S is left negative and the caller fails the refinement loudly
+	if (sumR > 0) {
+		S = sumRZ/sumR;
+		ASSERT(S >= 0 && S <= 2);
+	} else
+		S = -1.f;
 
 	// loop through all vertices and compute the smoothing score
 	scoreSmooth = 0;
@@ -724,7 +729,7 @@ double MeshRefine::ScoreMesh(double* gradients)
 				Cast<double>(smoothGrad2[v]*elasticity - smoothGrad1[v]*rigidity);
 	}
 
-	// WP2 parity diagnostic: dump the per-vertex terms this iteration combined,
+	// CPU/CUDA parity diagnostic: dump the per-vertex terms this iteration combined,
 	// right before they are gone (photoGrad/smoothGrad1/smoothGrad2 get
 	// overwritten next ScoreMesh() call); no-op unless OMVS_REFINE_DEBUG_DIR is set
 	if (!RefineDebug::Dir().empty()) {
@@ -1220,7 +1225,7 @@ void MeshRefine::ThProcessPair(uint32_t idxImageA, uint32_t idxImageB)
 	DEC_Image(Real, imageDZNCC);
 	const PairScore pairScore(ComputeLocalZNCC(imageA, *imageMeanA, *imageVarA, imageAB, imageMeanAB, imageVarAB, mask, imageZNCC, imageDZNCC));
 
-	// WP2 parity diagnostic: dump this pair's maps before the pooled buffers
+	// CPU/CUDA parity diagnostic: dump this pair's maps before the pooled buffers
 	// above get recycled; no-op unless OMVS_REFINE_DEBUG_DIR/_PAIR are both set
 	// and match this exact (A,B) direction
 	uint32_t dbgImageA, dbgImageB;
@@ -1269,7 +1274,7 @@ void MeshRefine::ThProcessPair(uint32_t idxImageA, uint32_t idxImageB)
 	}
 	ComputePhotometricGradient(faces, faceNormals, depthMapA, faceMapA, baryMapA, cameraA, cameraB, viewB, imageDZNCC, mask, _photoGrad, _photoGradNorm, _footprint, RegularizationScale, dbgPair ? &dbgSG : NULL);
 	if (dbgPair) {
-		// WP2 parity diagnostic, continued: the per-pixel photometric scalar each pixel
+		// CPU/CUDA parity diagnostic, continued: the per-pixel photometric scalar each pixel
 		// hands to its face's 3 vertices, and the raw face map of A (-1 where nothing was
 		// rasterised; NOT masked, so rasterisation and warp differences can be told apart)
 		Image32F faceF(mask.size());
@@ -1404,12 +1409,34 @@ bool Scene::RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsig
 	// exceed MeshRefineStep::StepMax, so the fractional part has a real valid range; a value outside
 	// it is a user error and is reported here, at the entry point every caller goes through, rather
 	// than reaching the optimizer as a step nothing would honour
-	if (fGradientStep != 0) {
+	if (fGradientStep == 0) {
+		// 0 selects the Ceres optimizer; without it compiled in, 0 used to fall through to the
+		// stepper with a zero initial step -- 3 accepted evaluations that move nothing, then a
+		// "converged" STOP: a silent no-op with a zero exit code. Refuse it loudly instead.
+		#ifndef MESHOPT_CERES
+		VERBOSE("error: --gradient-step 0 selects the Ceres optimizer, which this build does not include");
+		return false;
+		#endif
+	} else {
 		const float stepInit((fGradientStep-(float)FLOOR2INT(fGradientStep))*10.f);
 		if (stepInit <= 0 || stepInit > MeshRefineStep::StepMax) {
 			VERBOSE("error: --gradient-step %g asks for an initial step of %g px, outside (0, %g]:"
 				" pass N.s with a fractional part in (0, %g], for example 45.05 = 45 iterations at 0.5 px",
 				fGradientStep, stepInit, MeshRefineStep::StepMax, MeshRefineStep::StepMax*0.1f);
+			return false;
+		}
+		// the other externally controlled knobs the stepper relies on, validated here for the
+		// same reason: their ASSERT twins inside the stepper are contracts, not input checks,
+		// and compile out in Release
+		if (!(fRegularityWeight >= 0 && fRegularityWeight*MeshRefineStep::StepMax <= 1.f)) {
+			VERBOSE("error: --regularity-weight %g is outside [0, %g]: one full step of the"
+				" regularization term must not amplify the Laplacian it is applied to"
+				" (explicit-flow stability)",
+				fRegularityWeight, 1.f/MeshRefineStep::StepMax);
+			return false;
+		}
+		if (OPTREFINE::nOptimizer != 0 && OPTREFINE::nOptimizer != 1) {
+			VERBOSE("error: optimizer %d is not implemented (0 - bold, 1 - fixed)", OPTREFINE::nOptimizer);
 			return false;
 		}
 	}
@@ -1508,6 +1535,9 @@ bool Scene::RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsig
 			// mirrors of the stepper's own accept-only S references, kept only to print the
 			// relative-change column below (the stepper exposes no getter for them)
 			float logScoreRef(FLT_MAX), logScoreRefAlt(FLT_MAX);
+			// set when an evaluation finds the scene cannot be scored at all (S < 0, see
+			// ScoreMesh): both phase loops stop and the whole refinement fails
+			bool bScoreFailed(false);
 			GET_LOGCONSOLE().Pause();
 
 			// one energy evaluation, stepper decision and log line; phaseCap/allowPlanarHook let
@@ -1521,6 +1551,13 @@ bool Scene::RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsig
 				if (bAdaptMesh)
 					refine.vertexDepth.Resize(refine.vertices.GetSize());
 				refine.ScoreMesh(gradients.data());
+				if (refine.S < 0) {
+					// no image pair contributed a single pixel (see ScoreMesh): an expected,
+					// recoverable outside-world failure -- abort the refinement loudly
+					VERBOSE("error: no image pair overlap at scale %u: mesh refinement aborted", nScale);
+					bScoreFailed = true;
+					return MeshRefineStep::STOP;
+				}
 				VIndex numVertsRemoved(0);
 				if (bAdaptMesh) {
 					// remove planar vertices (small gradient and almost on the center of their surrounding patch)
@@ -1588,6 +1625,10 @@ bool Scene::RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsig
 				}
 				progress.close();
 			}
+			if (bScoreFailed) {
+				GET_LOGCONSOLE().Play();
+				return false;
+			}
 
 			// Phase B: pure elasticity, planar hook off. The legacy 70/30 iteration split is
 			// preserved against phase A's ACCEPTED count rather than its raw iteration budget,
@@ -1605,6 +1646,10 @@ bool Scene::RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsig
 						break;
 				}
 				progress.close();
+			}
+			if (bScoreFailed) {
+				GET_LOGCONSOLE().Play();
+				return false;
 			}
 
 			GET_LOGCONSOLE().Play();

@@ -61,7 +61,9 @@ namespace MVS {
 // eta trajectory, and the per-scale iteration count becomes a property of the surface rather than
 // of the units it was reconstructed in.
 //
-// Per iteration, with rho the rigidity-elasticity ratio and w the regularity weight:
+// Per iteration, with rho the rigidity-elasticity ratio and w the regularity weight (the
+// formulas below are the Terms::bounded == false path; a bounded arm delivers |photoGrad| <= 1
+// along the normal and substitutes photoGrad_v * s_v for P_v, with no kappa and no m):
 //
 //     gamma_v = |g_v| / s_v                        g_v = photoGrad_v / c_v
 //     m       = median gamma_v over seen vertices  (computed ONCE per scale, then held)
@@ -105,7 +107,7 @@ public:
 
 	enum Action {
 		APPLY, // the vertices were moved; evaluate the energy again
-		REJECT, // the step was undone (and halved); evaluate the energy again
+		REJECT, // half the previous step was undone (vertices sit at v_prev + stepPrev/2) and eta was halved; evaluate the energy again
 		STOP // converged, or out of rejects/budget: leave this scale
 	};
 

@@ -32,6 +32,7 @@
 #include "Common.h"
 #include "Scene.h"
 #include "SceneRefineCommon.h"
+#include "SceneRefineStep.h"
 
 using namespace MVS;
 
@@ -120,7 +121,14 @@ public:
 
 	void ComputeNormalFaces();
 
-	void ScoreMesh(float* gradients);
+	// downloads the raw per-vertex terms (BEFORE any combine) into the caller's host arrays,
+	// each numVertices long, and leaves the reliability-weighted score in S (S < 0 means no
+	// image pair contributed a single masked pixel -- see the sumR check below); the stepper
+	// (MeshRefineStep, SceneRefineStep.h) does the combining, not this function. Returns false
+	// (having already VERBOSE'd why) if a GPU->host download failed: a non-sticky copy failure
+	// is not caught by the caller's cuCtxSynchronize() check and would otherwise hand the
+	// stepper finite-looking garbage.
+	bool ScoreMesh(Point3f* photoGradOut, float* photoGradNormOut, float* footprintOut, Point3f* smoothGrad1Out, Point3f* smoothGrad2Out);
 
 	void ProjectMesh(
 		const CameraFaces& cameraFaces,
@@ -145,6 +153,11 @@ public:
 	unsigned nAlternatePair; // using an image pair alternatively as reference image (0 - both, 1 - alternate, 2 - only left, 3 - only right)
 	unsigned iteration; // current refinement iteration
 	unsigned nScale; // current refinement scale (0-based, coarsest first; RefineDebug export file naming only)
+
+	// reliability-weighted photo-consistency score (S = sumRZ/sumR): invariant to scene scale,
+	// contrast, resolution and pair count; set by ScoreMesh (see SceneRefineStep.h), read by the
+	// caller's stepper the same way the CPU reads MeshRefine::S
+	float S;
 
 	Scene& scene; // the mesh vertices and faces
 
@@ -173,6 +186,9 @@ public:
 	SEACAVE::CUDA::MemDevice photoGrad;
 	SEACAVE::CUDA::MemDevice photoGradNorm;
 	SEACAVE::CUDA::MemDevice photoGradPixels;
+	SEACAVE::CUDA::MemDevice footprint; // per-vertex scene units per pixel; 0 exactly where photoGradNorm == 0 (SceneRefineStep.h)
+	SEACAVE::CUDA::MemDevice sumR; // device scalar: Sum r, accumulated by kernelComputeImageDZNCC over one ScoreMesh() call
+	SEACAVE::CUDA::MemDevice sumRZ; // device scalar: Sum r*(1-ZNCC), same accumulation window as sumR
 	SEACAVE::CUDA::MemDevice debugSG; // WP2 parity diagnostic only: per-pixel photometric scalar, allocated when the RefineDebug pair matches
 	SEACAVE::CUDA::MemDevice vertexVerticesCont;
 	SEACAVE::CUDA::MemDevice vertexVerticesSizes;
@@ -336,6 +352,8 @@ bool MeshRefineCUDA::InitImages(float scale, float sigma)
 	reportCudaError(imageCov.Reset(sizeof(float)*area));
 	reportCudaError(imageZNCC.Reset(sizeof(float)*area));
 	reportCudaError(imageDZNCC.Reset(sizeof(float)*area));
+	reportCudaError(sumR.Reset(sizeof(float)));
+	reportCudaError(sumRZ.Reset(sizeof(float)));
 	// create surface object for projected image
 	{
 		cudaResourceDesc resDesc = {};
@@ -392,6 +410,7 @@ void MeshRefineCUDA::ListVertexFacesPost()
 	reportCudaError(photoGrad.Reset(sizeof(Point3f)*numVertices));
 	reportCudaError(photoGradNorm.Reset(sizeof(float)*numVertices));
 	reportCudaError(photoGradPixels.Reset(sizeof(float)*numVertices));
+	reportCudaError(footprint.Reset(sizeof(float)*numVertices));
 	reportCudaError(smoothGrad1.Reset(sizeof(Point3f)*numVertices));
 	reportCudaError(smoothGrad2.Reset(sizeof(Point3f)*numVertices));
 }
@@ -577,9 +596,21 @@ void MeshRefineCUDA::ComputeNormalFaces()
 
 
 // score mesh using photo-consistency
-// and compute vertices gradient using analytical method
-void MeshRefineCUDA::ScoreMesh(float* gradients)
+// and download the raw per-vertex terms (photoGrad/photoGradNorm/footprint/smoothGrad1/smoothGrad2)
+// the caller's stepper (MeshRefineStep, SceneRefineStep.h) combines into a step
+bool MeshRefineCUDA::ScoreMesh(Point3f* photoGradOut, float* photoGradNormOut, float* footprintOut, Point3f* smoothGrad1Out, Point3f* smoothGrad2Out)
 {
+	// every GPU->host download this function's callers depend on goes through this: reportCudaError
+	// alone only logs and keeps going, so a non-sticky copy failure (unlike a poisoned context,
+	// which cuCtxSynchronize() catches) would otherwise hand the stepper finite-looking garbage
+	const auto CheckDownload = [this](CUresult ret, const char* name) -> bool {
+		if (ret != CUDA_SUCCESS) {
+			VERBOSE("error: failed downloading %s from the GPU at scale %u, iteration %u", name, nScale, iteration);
+			return false;
+		}
+		return true;
+	};
+
 	// extract array of faces viewed by each camera
 	ListCameraFaces();
 
@@ -590,6 +621,9 @@ void MeshRefineCUDA::ScoreMesh(float* gradients)
 	const VIndex numVertices(scene.mesh.vertices.GetSize());
 	reportCudaError(cuMemsetD32(photoGrad, 0, numVertices*3));
 	reportCudaError(cuMemsetD32(photoGradNorm, 0, numVertices));
+	reportCudaError(cuMemsetD32(footprint, 0x7F7FFFFF, numVertices)); // FLT_MAX sentinel, resolved below
+	reportCudaError(cuMemsetD32(sumR, 0, 1));
+	reportCudaError(cuMemsetD32(sumRZ, 0, 1));
 
 	// for each pair of images, compute a photo-consistency score
 	// between the reference image and the pixels of the second image
@@ -615,33 +649,56 @@ void MeshRefineCUDA::ScoreMesh(float* gradients)
 		}
 	}
 
+	// resolve the footprint sentinel now that photoGradNorm holds its final per-vertex count
+	// (contract: footprint[v] > 0 exactly where photoGradNorm[v] > 0)
+	MVS::CUDA::LaunchUpdatePhotoGradNorm(
+		(float*)(CUdeviceptr)photoGradNorm, NULL,
+		(float*)(CUdeviceptr)footprint, numVertices, true);
+
+	// S = sumRZ/sumR, the reliability-weighted mean of (1-ZNCC). sumR == 0 means no pair-direction
+	// contributed a single masked pixel -- broken outside-world input (no pair overlap, bad
+	// poses), not an internal invariant, so it gets the runtime-validation treatment instead of
+	// an ASSERT alone (which would compile out in Release and feed the stepper NaN): S is left
+	// negative and the caller fails the refinement loudly, exactly like MeshRefine::ScoreMesh
+	float hSumR, hSumRZ;
+	if (!CheckDownload(reportCudaError(sumR.GetData(&hSumR, sizeof(float))), "sumR") ||
+		!CheckDownload(reportCudaError(sumRZ.GetData(&hSumRZ, sizeof(float))), "sumRZ"))
+		return false;
+	if (hSumR > 0) {
+		S = hSumRZ/hSumR;
+		ASSERT(S >= 0 && S <= 2);
+	} else {
+		S = -1.f;
+	}
+
 	// loop through all vertices and compute the smoothing score
 	ComputeSmoothnessGradient(numVertices);
 
-	// WP2 parity diagnostic: download the per-vertex terms before CombineGradients()
-	// overwrites photoGrad in-place with the combined result; no-op unless
-	// OMVS_REFINE_DEBUG_DIR is set
+	// ALWAYS download the raw per-vertex terms before any combine: CombineGradients() overwrites
+	// photoGrad in place, and on the hot path (no OMVS_REFINE_DEBUG_DIR) it is never called --
+	// the caller's stepper does the combining instead
+	if (!CheckDownload(reportCudaError(photoGrad.GetData(photoGradOut, sizeof(Point3f)*numVertices)), "photoGrad") ||
+		!CheckDownload(reportCudaError(photoGradNorm.GetData(photoGradNormOut, sizeof(float)*numVertices)), "photoGradNorm") ||
+		!CheckDownload(reportCudaError(footprint.GetData(footprintOut, sizeof(float)*numVertices)), "footprint") ||
+		!CheckDownload(reportCudaError(smoothGrad1.GetData(smoothGrad1Out, sizeof(Point3f)*numVertices)), "smoothGrad1") ||
+		!CheckDownload(reportCudaError(smoothGrad2.GetData(smoothGrad2Out, sizeof(Point3f)*numVertices)), "smoothGrad2"))
+		return false;
+
+	// WP2 parity diagnostic: combine and export on top of the raw terms just downloaded above;
+	// no-op unless OMVS_REFINE_DEBUG_DIR is set
 	if (!RefineDebug::Dir().empty()) {
-		Point3fArr pos(numVertices), photo(numVertices), smooth1(numVertices), smooth2(numVertices);
-		FloatArr photoNorm(numVertices);
+		Point3fArr pos(numVertices), combined(numVertices);
 		cList<uint8_t,uint8_t,0> boundary(numVertices);
 		reportCudaError(vertices.GetData(pos));
-		reportCudaError(photoGrad.GetData(photo));
-		reportCudaError(photoGradNorm.GetData(photoNorm));
-		reportCudaError(smoothGrad1.GetData(smooth1));
-		reportCudaError(smoothGrad2.GetData(smooth2));
 		reportCudaError(vertBoundary.GetData(boundary));
 		// set the final gradient as the combination of photometric and smoothness gradients
 		CombineGradients(numVertices);
-		reportCudaError(photoGrad.GetData(gradients, sizeof(Point3f)*numVertices));
+		reportCudaError(photoGrad.GetData(combined));
 		RefineDebug::ExportGradients(nScale, iteration, numVertices,
-			pos.Begin(), (const Point3f*)gradients, photo.Begin(), photoNorm.Begin(),
-			smooth1.Begin(), smooth2.Begin(), boundary.Begin());
-	} else {
-		// set the final gradient as the combination of photometric and smoothness gradients
-		CombineGradients(numVertices);
-		reportCudaError(photoGrad.GetData(gradients, sizeof(Point3f)*numVertices));
+			pos.Begin(), combined.Begin(), photoGradOut, photoGradNormOut,
+			smoothGrad1Out, smoothGrad2Out, boundary.Begin());
 	}
+	return true;
 }
 
 
@@ -819,6 +876,8 @@ void MeshRefineCUDA::ComputeLocalZNCC(cudaSurfaceObject_t surfImageA, cudaSurfac
 		(const uint8_t*)(CUdeviceptr)mask,
 		(float*)(CUdeviceptr)imageDZNCC,
 		surfImageA, surfImageProj,
+		(float*)(CUdeviceptr)sumR,
+		(float*)(CUdeviceptr)sumRZ,
 		size.width, size.height, HalfSize);
 }
 
@@ -848,6 +907,7 @@ void MeshRefineCUDA::ComputePhotometricGradient(const Camera& cameraA, const Cam
 		(const uint8_t*)(CUdeviceptr)mask,
 		(MVS::CUDA::Point3*)(CUdeviceptr)photoGrad,
 		(float*)(CUdeviceptr)photoGradPixels,
+		(float*)(CUdeviceptr)footprint,
 		dbgPair ? (float*)(CUdeviceptr)debugSG : NULL,
 		MakeCUDACamera(cameraA, size),
 		MakeCUDACamera(cameraB, views[idxImageB].size),
@@ -868,11 +928,13 @@ void MeshRefineCUDA::ComputePhotometricGradient(const Camera& cameraA, const Cam
 		RefineDebug::ExportPairMap(nScale, iteration, idxImageA, idxImageB, "face", faceF.getData(), size.width, size.height);
 		debugSG.Release();
 	}
-	// update photometric gradient norm for all visible vertices
+	// update photometric gradient norm for all visible vertices; the footprint sentinel is
+	// resolved separately, once, after every pair-direction of this ScoreMesh() has run (see
+	// kernelUpdatePhotoGradNorm)
 	MVS::CUDA::LaunchUpdatePhotoGradNorm(
 		(float*)(CUdeviceptr)photoGradNorm,
 		(const float*)(CUdeviceptr)photoGradPixels,
-		numVertices);
+		NULL, numVertices, false);
 	#if 0
 	// debug view
 	Point3fArr _photoGrad(numVertices);
@@ -950,6 +1012,41 @@ bool Scene::RefineMeshCUDA(unsigned nResolutionLevel, unsigned nMinResolution, u
 						   float fDecimateMesh, unsigned nCloseHoles, unsigned nEnsureEdgeSize, unsigned nMaxFaceArea,
 						   unsigned nScales, float fScaleStep, unsigned nAlternatePair, float fRegularityWeight, float fRatioRigidityElasticity, float fGradientStep)
 {
+	// "--gradient-step N.s" means N iterations per scale and s*10 pixels of initial step; same
+	// entry validation as the CPU path (Scene::RefineMesh, SceneRefine.cpp) every caller goes
+	// through, since the stepper (SceneRefineStep.h) is shared and never lets the step exceed
+	// MeshRefineStep::StepMax
+	if (fGradientStep == 0) {
+		// 0 selects the Ceres optimizer, which exists only on the CPU path; without this check 0
+		// used to fall through to the stepper with a zero initial step -- 3 accepted evaluations
+		// that move nothing, then a "converged" STOP: a silent no-op with a zero exit code. Refuse
+		// it loudly instead so the caller falls back to the CPU path, which handles it per build.
+		VERBOSE("error: --gradient-step 0 selects the Ceres optimizer, which the CUDA path does not include");
+		return false;
+	} else {
+		const float stepInit((fGradientStep-(float)FLOOR2INT(fGradientStep))*10.f);
+		if (stepInit <= 0 || stepInit > MeshRefineStep::StepMax) {
+			VERBOSE("error: --gradient-step %g asks for an initial step of %g px, outside (0, %g]:"
+				" pass N.s with a fractional part in (0, %g], for example 45.05 = 45 iterations at 0.5 px",
+				fGradientStep, stepInit, MeshRefineStep::StepMax, MeshRefineStep::StepMax*0.1f);
+			return false;
+		}
+		// the other externally controlled knobs the stepper relies on, validated here for the
+		// same reason: their ASSERT twins inside the stepper are contracts, not input checks,
+		// and compile out in Release
+		if (!(fRegularityWeight >= 0 && fRegularityWeight*MeshRefineStep::StepMax <= 1.f)) {
+			VERBOSE("error: --regularity-weight %g is outside [0, %g]: one full step of the"
+				" regularization term must not amplify the Laplacian it is applied to"
+				" (explicit-flow stability)",
+				fRegularityWeight, 1.f/MeshRefineStep::StepMax);
+			return false;
+		}
+		if (OPTREFINE::nOptimizer != 0 && OPTREFINE::nOptimizer != 1) {
+			VERBOSE("error: optimizer %d is not implemented (0 - bold, 1 - fixed)", OPTREFINE::nOptimizer);
+			return false;
+		}
+	}
+
 	bool bGeneratedPointcloud(false);
 	if (pointcloud.IsEmpty() && !ImagesHaveNeighbors()) {
 		SampleMeshWithVisibility();
@@ -986,50 +1083,136 @@ bool Scene::RefineMeshCUDA(unsigned nResolutionLevel, unsigned nMinResolution, u
 			mesh.Save(MAKE_PATH(String::FormatString("MeshRefine%u.ply", nScales-nScale-1)));
 		#endif
 
-		// loop a constant number of iterations and apply the gradient
-		int iters(25);
-		float gstep(0.05f);
-		if (fGradientStep > 1) {
-			iters = FLOOR2INT(fGradientStep);
-			gstep = (fGradientStep-(float)iters)*10;
-		}
-		iters = MAXF(iters/(int)(nScale+1),8);
-		const int iterStop(iters*7/10);
-		Eigen::Matrix<float,Eigen::Dynamic,3,Eigen::RowMajor> gradients(mesh.vertices.GetSize(),3);
-		Util::Progress progress(_T("Processed iterations"), iters);
+		// pixel-unit stepper (SceneRefineStep.h): fGradientStep is N.s, N the same per-scale
+		// iteration budget as before, s*10 the initial step in pixels; mirrors the CPU's
+		// Scene::RefineMesh loop (SceneRefine.cpp) minus the CPU-only planar-vertex hook (CUDA
+		// has no bAdaptMesh/vertexDepth machinery)
+		const int N(FLOOR2INT(fGradientStep));
+		const float eta0((fGradientStep-(float)N)*10.f);
+		const int cap(MAXF(N/(int)(nScale+1),8));
+		const bool bAlternating(nAlternatePair == 1);
+
+		MeshRefineStep stepper;
+		stepper.Reset(mesh.vertices.GetSize(), eta0, OPTREFINE::nOptimizer == 0);
+
+		// host-side landing buffers for the raw per-vertex terms ScoreMesh downloads every
+		// evaluation; unlike the CPU, CUDA has no mid-scale vertex removal, so these are sized
+		// once here instead of every ScoreMesh() call
+		const uint32_t numVertices(mesh.vertices.GetSize());
+		Point3fArr photoGrad(numVertices), smoothGrad1(numVertices), smoothGrad2(numVertices);
+		FloatArr photoGradNorm(numVertices), footprint(numVertices);
+
+		// mirrors of the stepper's own accept-only S references, kept only to print the
+		// relative-change column below (the stepper exposes no getter for them)
+		float logScoreRef(FLT_MAX), logScoreRefAlt(FLT_MAX);
+		bool bCudaFailed(false);
 		GET_LOGCONSOLE().Pause();
-		for (int iter=0; iter<iters; ++iter) {
-			refine.iteration = (unsigned)iter;
-			refine.nAlternatePair = (iter+1 < iters ? nAlternatePair : 0);
-			refine.ratioRigidityElasticity = (iter <= iterStop ? fRatioRigidityElasticity : 1.f);
-			// evaluate residuals and gradients
-			refine.ScoreMesh(gradients.data());
+
+		// one energy evaluation, stepper decision and log line; shared by both phases below,
+		// which differ only in the rho they pass in
+		const auto RunEvaluation = [&](float rho) -> MeshRefineStep::Action {
+			refine.iteration = stepper.GetNumEvaluated();
+			refine.nAlternatePair = nAlternatePair;
+			refine.ratioRigidityElasticity = rho;
+			const bool bScoreOK(refine.ScoreMesh(photoGrad.Begin(), photoGradNorm.Begin(), footprint.Begin(), smoothGrad1.Begin(), smoothGrad2.Begin()));
 			// a CUDA fault poisons the whole context: every later call fails, so without this the
 			// loop keeps "refining" a mesh nothing updates any more and still returns success --
 			// an illegal access in kernelImageMeshWarp did exactly that for an entire benchmark
 			// round, logging 85k errors and producing a half-refined mesh with a zero exit code.
 			// Giving up here lets the caller fall back to the CPU path, which produces a real mesh.
-			if (cuCtxSynchronize() != CUDA_SUCCESS) {
+			// A false bScoreOK is a D2H download failure ScoreMesh already VERBOSE'd, not a poisoned
+			// context, so it is folded into the same fail-fast branch without a second message.
+			if (!bScoreOK || cuCtxSynchronize() != CUDA_SUCCESS) {
 				GET_LOGCONSOLE().Play();
-				VERBOSE("error: CUDA mesh refinement failed at scale %u, iteration %d", nScale, iter+1);
-				return false;
+				if (bScoreOK)
+					VERBOSE("error: CUDA mesh refinement failed at scale %u, iteration %u", nScale, refine.iteration+1);
+				bCudaFailed = true;
+				return MeshRefineStep::STOP;
 			}
-			// apply gradients
-			float gv(0);
+			if (refine.S < 0) {
+				// no image pair contributed a single masked pixel (see ScoreMesh): an expected,
+				// recoverable outside-world failure -- abort the refinement loudly
+				VERBOSE("error: no image pair overlap at scale %u: mesh refinement aborted", nScale);
+				GET_LOGCONSOLE().Play();
+				bCudaFailed = true;
+				return MeshRefineStep::STOP;
+			}
+			#ifdef _DEBUG
+			// a non-finite gradient is a producer bug and must fire, not be silently skipped (the
+			// legacy loop's `if (!ISFINITE(grad)) continue;` is gone along with the legacy loop)
 			FOREACH(v, mesh.vertices) {
-				Vertex& vert = mesh.vertices[v];
-				const Point3f grad(gradients.row(v));
-				if (!ISFINITE(grad))
-					continue;
-				vert -= Vertex(grad*gstep);
-				gv += norm(grad);
+				ASSERT(ISFINITE(photoGrad[v]));
+				ASSERT(ISFINITE(photoGradNorm[v]));
+				ASSERT(ISFINITE(footprint[v]));
+				ASSERT(ISFINITE(smoothGrad1[v]));
+				ASSERT(ISFINITE(smoothGrad2[v]));
 			}
-			DEBUG_EXTRA("\t%2d. g: %.5f (%.3e - %.3e)\ts: %.3f", iter+1, gradients.norm(), gradients.norm()/mesh.vertices.GetSize(), gv/mesh.vertices.GetSize(), gstep);
-			gstep *= 0.98f;
-			progress.display(iter);
+			#endif
+
+			MeshRefineStep::Terms terms;
+			terms.photoGrad = photoGrad.Begin();
+			terms.photoCount = photoGradNorm.Begin();
+			terms.footprint = footprint.Begin();
+			terms.lap = smoothGrad1.Begin();
+			terms.bilap = smoothGrad2.Begin();
+			terms.S = refine.S;
+			terms.rigidity = rho;
+			terms.regularityWeight = refine.weightRegularity;
+			terms.numVertices = numVertices;
+			terms.bounded = false; // the sign-vote/tanh photo terms are not implemented yet
+			terms.alternating = bAlternating;
+
+			const unsigned evalIdx(stepper.GetNumEvaluated()); // 0-based, before Evaluate() consumes it
+			float& logReference = (bAlternating && (evalIdx&1)) ? logScoreRefAlt : logScoreRef;
+			const float relChange(logReference < FLT_MAX ? (terms.S-logReference)/logReference : 0.f);
+			const unsigned prevAccepted(stepper.GetNumAccepted());
+
+			MeshRefineStep::Stats stats;
+			const MeshRefineStep::Action action(stepper.Evaluate(terms, mesh.vertices, stats));
+			const bool accepted(stepper.GetNumAccepted() > prevAccepted);
+			if (accepted)
+				logReference = terms.S;
+
+			DEBUG_EXTRA("\t%2d. S: %.5f (%+.2e)\tstep: %.3fpx\tmed: %.3fpx\tv: %5u\t%s",
+				(int)stepper.GetNumEvaluated(), stats.S, relChange, stats.step, stats.medianPx, 0u, accepted ? "acc" : "rej");
+			return action;
+		};
+
+		// Phase A: caller's rigidity/elasticity ratio
+		{
+			Util::Progress progress(_T("Processed iterations"), cap);
+			for (int idx=0; idx<cap; ++idx) {
+				const MeshRefineStep::Action action(RunEvaluation(fRatioRigidityElasticity));
+				progress.display(idx+1);
+				if (action == MeshRefineStep::STOP)
+					break;
+			}
+			progress.close();
 		}
+		if (bCudaFailed)
+			return false;
+
+		// Phase B: pure elasticity. The legacy 70/30 iteration split is preserved against phase
+		// A's ACCEPTED count rather than its raw iteration budget, since a rejected evaluation
+		// consumes budget without buying any convergence; step and the S references carry over
+		// unchanged, only the stall counter is given a fresh start
+		const unsigned nA(stepper.GetNumAccepted());
+		const int capB(MAXF(3, 3*(int)nA/7));
+		stepper.ResetStall();
+		{
+			Util::Progress progress(_T("Processed iterations"), capB);
+			for (int idx=0; idx<capB; ++idx) {
+				const MeshRefineStep::Action action(RunEvaluation(1.f));
+				progress.display(idx+1);
+				if (action == MeshRefineStep::STOP)
+					break;
+			}
+			progress.close();
+		}
+		if (bCudaFailed)
+			return false;
+
 		GET_LOGCONSOLE().Play();
-		progress.close();
 
 		#if TD_VERBOSE != TD_VERBOSE_OFF
 		if (VERBOSITY_LEVEL > 2)

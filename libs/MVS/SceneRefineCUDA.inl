@@ -94,19 +94,20 @@ void LaunchComputeImageDZNCC(
 	const float* varA, const float* varB, const float* zncc,
 	const uint8_t* mask, float* dzncc,
 	cudaSurfaceObject_t surfImageA, cudaSurfaceObject_t surfImageProj,
+	float* sumR, float* sumRZ,
 	int width, int height, int halfSize);
 
 void LaunchComputePhotometricGradient(
 	const Point3u* faces, const Point3* normals,
 	const float* depthMap, const uint32_t* faceMap, const uint16_t* baryMap,
 	const float* dzncc, const uint8_t* mask,
-	Point3* photoGrad, float* photoGradPixels, float* sgMap,
+	Point3* photoGrad, float* photoGradPixels, float* footprint, float* sgMap,
 	const Camera& camA, const Camera& camB,
 	cudaTextureObject_t texGradXB, cudaTextureObject_t texGradYB, float regScale,
 	int width, int height);
 
 void LaunchUpdatePhotoGradNorm(
-	float* photoGradNorm, const float* photoGradPixels, uint32_t numVertices);
+	float* photoGradNorm, const float* photoGradPixels, float* footprint, uint32_t numVertices, bool finalPass);
 
 void LaunchComputeSmoothnessGradient(
 	const Point3* vertices, const uint32_t* vertVertices,

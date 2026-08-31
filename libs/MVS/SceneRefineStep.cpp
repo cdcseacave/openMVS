@@ -167,6 +167,10 @@ MeshRefineStep::Action MeshRefineStep::Evaluate(const Terms& terms, Mesh::Vertex
 		// that eta is a length in pixels instead of an opaque scene-unit factor
 		const Grad regular(terms.bilap[v]*terms.rigidity - terms.lap[v]*(1.f-terms.rigidity));
 		const Grad delta((photoDelta + regular*terms.regularityWeight)*-step);
+		// contract on the producers (ScoreMesh on either backend): every term is finite -- a
+		// non-finite delta would silently be "not applied" by the len > 0 test below and yet
+		// be stored for a later rejection's undo to subtract from a vertex that never moved
+		ASSERT(ISFINITE(delta));
 		stepPrev[v] = delta;
 		const float len(norm(delta));
 		if (len > 0) {

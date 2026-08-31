@@ -660,21 +660,171 @@ secondary item.
 
 ## 5. Candidate table (accepted arms)
 
-Pending Part A/B work packages; one row per arm, both backends, verdict per criterion, per the
-campaign's gate (Part 0, "Campaign matrix, budget, acceptance gate" section of the campaign plan).
+### ACCEPTED — arm 2, the pixel-unit bold-driver stepper with a proportional photometric step
+
+`OPTREFINE::nOptimizer = 0` (default), shipped as the CPU path's only optimizer; `SceneRefineStep.h`
+holds the equations and the single operating point. Measured 2026-08-31 09:19-10:23, CPU, L1, one run
+per scene (the derived gate allows n=1 at nf_mean 0.00028), tag `arm2-prop`, against the §4 baseline.
+
+| scene | `in_f1` | baseline `ref_vis_f1` | **arm 2** | **`d_base_vis_f1`** | `d_base_f1` | evals | wall | peak RSS |
+|---|---|---|---|---|---|---|---|---|
+| Ignatius | 0.7427 | 0.6490 | 0.6557 | **+0.0067** | +0.0065 | 67 → 33 | 1.06x | 1.01x |
+| Truck | 0.6606 | 0.6235 | 0.6586 | **+0.0351** | +0.0351 | 67 → 14 | **0.37x** | 1.00x |
+| Barn | 0.6310 | 0.6531 | 0.6547 | **+0.0016** | +0.0015 | 67 → 33 | 0.81x | 1.00x |
+| Meetingroom | 0.4026 | 0.4033 | 0.4118 | **+0.0085** | +0.0082 | 67 → 32 | 2.12x (see below) | 1.00x |
+| **T&T mean** | | | | **+0.0130** | +0.0128 | | pooled median **0.93x** | max 1.015x |
+| fountain-P11 (EPFL) | 0.3338 | 0.3197 | 0.3310 | **+0.0113** | +0.0113 | 67 → 60 | 1.01x | 0.98x |
+| Herz-Jesu-P8 (EPFL) | 0.4743 | 0.4231 | 0.4418 | **+0.0187** | +0.0184 | 67 → 34 | 0.87x | 1.02x |
+
+**Verdict: PASSES every criterion of the §3 gate.** (1) mean `d_base_vis_f1` +0.0130 ≥ +0.002;
+(2) no scene below −0.002 — the *minimum* is +0.0016, i.e. every scene improved; (3) uncleaned
+`d_base_f1` ≥ −0.003 everywhere (min +0.0015); (4) pooled median wall 0.93x ≤ 1.25x and peak RSS
+1.015x ≤ 1.15x; (5) `rc_refine` 0 and `backend_mismatch` 0 on every cell, with the schedule change
+declared (that is the arm). It is the first arm in this campaign to move the primary metric at all,
+and it does so on **6 of 6 scenes including the two mesh-GT diagnostic scenes it was not tuned on**.
+
+Two results worth separating from the headline. **Truck is the largest single gain (+0.0351) at 14
+evaluations and 0.37x the wall** — and it changes the baseline's sign: refinement used to *lose*
+0.0371 against its own coarse mesh there (§4) and now lands within 0.002 of it, so most of the gain
+is a loss that stopped happening. **Ignatius keeps a large negative `d_in` (−0.0873 against −0.0938)**:
+the decimation-driven structural loss identified in §4 is untouched by the optimizer, exactly as that
+analysis predicted — this arm fixes convergence, not mesh density.
+
+**Meetingroom's 2.12x wall is not established as a property of the arm.** Per *evaluation* at the
+fine scale the other three scenes agree closely — Ignatius 9.6 → 10.3 s, Truck 9.8 → 10.6 s, Barn
+18.2 → 19.8 s, i.e. **+7 to +9 %**, which is what the extra per-vertex stepper work and 1-3 % more
+faces predict — while Meetingroom reads 15.0 → 40.9 s (+173 %) on 4 % more faces. That cell ran
+09:46-10:17, when five other agents were working on this machine; a 7 GB-working-set cell is exactly
+what contention distorts (the same hazard recorded for the fusion campaign: never measure wall time
+beside other jobs). The number is kept here as measured, flagged, and re-measured solo before it is
+quoted; the pooled-median criterion passes with or without it.
+
+The arm also **redistributes its budget from the coarse scale to the fine one**: the legacy schedule
+spent a fixed 45 + 22 evaluations, while the stepper converges the coarse scale in 6-8 and spends the
+rest where the surface detail is (Ignatius 6+27, Truck 6+8, Barn 8+25, Meetingroom 6+26). That is the
+intended behaviour of a convergence-driven stop rule, and it is why the arm can be both better and
+faster.
 
 ## 6. Failed and rejected ideas
 
-Pending — mechanism, numbers, why, and code status per rejected candidate, recorded with the same
-discipline as `DelaunayMeshReconstruction.md` §5 ("Failed and rejected ideas — do not retry without
-new evidence") and `DepthMapFusion.md` §4 ("Tried and rejected"): every entry benchmarked, then
-removed from the tree, with the numbers that killed it kept here so it is not re-proposed.
+**Do not retry without new evidence.** Every entry below was benchmarked with the §2 protocol and
+judged against the §3 gate; the numbers that killed it are kept here so it is not re-proposed. Code
+status is given per entry — losers are removed from the tree, not left behind a switch.
+
+### 6.1 Arm 1 — per-vertex normalised, unit-clamped photometric direction (REJECTED, −0.0215)
+
+The design as originally planned: `d_v = g_v/(kappa*m*s_v)` clamped to `|d_v| <= 1`, so every vertex
+moves at most `eta` px along its own gradient direction. Measured CPU, L1, 4 T&T scenes:
+
+| scene | baseline | arm 1 | `d_base` | arm 1b (stop rule fixed) | `d_base` |
+|---|---|---|---|---|---|
+| Ignatius | 0.6490 | 0.6679 | +0.0189 | 0.6685 | +0.0195 |
+| Truck | 0.6235 | 0.5808 | **−0.0427** | 0.5822 | −0.0413 |
+| Barn | 0.6531 | 0.6290 | **−0.0241** | 0.6287 | −0.0244 |
+| Meetingroom | 0.4033 | 0.3654 | **−0.0379** | 0.3661 | −0.0372 |
+| **mean** | | | **−0.0215** | | **−0.0209** |
+
+**Mechanism (established by elimination, four controls):** dividing each vertex's direction by its
+own footprint and then clipping the tail flattens the gradient distribution — every vertex past the
+clamp moves the same `eta` px however much larger its gradient is — so low-confidence vertices get
+the same authority as high-confidence ones. The fix that ships (§5) keeps `kappa*m` as a **global**
+conversion factor and drops the clamp. The four controls, each refuting a different hypothesis:
+
+| # | hypothesis | control | verdict |
+|---|---|---|---|
+| 1 | "it just refines less" | legacy optimizer at 30 evaluations | refuted: opposite sign on 3 of 4 scenes |
+| 2 | "it stops too early" | stop rule decoupled from `eta` (arm 1b) | refuted: +50-70 % evaluations, ΔF1 ≤ 0.0014 |
+| 3 | "`S`-rejection blocks smoothness" | bold driver off (`nOptimizer=1`) | refuted: worse, −0.0641 on Truck |
+| 4 | "photometric/regularisation imbalance" | `w` 0.2 → 0.02 | refuted: worse on both scenes tested |
+
+Code status: replaced in `MeshRefineStep::Evaluate`; the header documents why the normalisation must
+stay global so it is not reintroduced.
+
+### 6.2 Regularity-weight retuning as a rescue for arm 1 (REJECTED)
+
+Truck bracket at fixed arm 1: `w` = 0.02 / 0.2 / 0.5 / 1.0 → F1 0.5730 / 0.5822 / 0.5884 / 0.5982,
+monotone up to the `StepMax*w <= 1` stability limit, and still below the legacy optimizer's 0.6235 at
+`w = 0.2`. Extrapolated, arm 1 did best with its photometric term suppressed entirely — a verdict on
+the formulation, not a tuning result. `fRegularityWeight` keeps its 0.2 default.
+
+### 6.3 "Just run fewer legacy iterations" as a speed arm (REJECTED)
+
+Legacy optimizer at `--gradient-step 20.05` (30 evaluations instead of 67): mean `d_base` −0.0015 at
+2.06x faster — but Ignatius −0.0203, far outside the §3 speed route's ±0.002 per-scene tolerance. Not
+shippable; recorded because it is the obvious cheap alternative to a real optimizer and it does not
+work.
+
+### 6.4 Fixed-step control arm (`OPTREFINE::nOptimizer = 1`) (KEPT AS A CONTROL, NOT A DEFAULT)
+
+Never rejects, never grows or shrinks the step. On arm 1 it was clearly worse (Truck 0.5594 vs
+0.5822, Barn 0.6107 vs 0.6287), which is what exonerated the bold driver. Retained as the only
+alternative arm because it answers "does the accept/reject machinery matter?" in one flag; every
+other planned arm (rprop, adam, bb) is unimplemented and now **rejected at the entry point** rather
+than silently collapsing onto this one.
+
+### 6.5 Plan premises refuted during implementation
+
+- **"`ComputeLocalZNCC` has no zero guard → inf/NaN on flat patches."** False: `ComputeLocalVariance`
+  already floors both variances at 1e-4 unconditionally, so `varA*varB >= 1e-8`. No guard was added;
+  the invariant is asserted at the point of division instead.
+- **"`vertexDepth` is dead, remove it."** False: it is the live input to the planar-vertex removal
+  pass (`fThPlanarVertex`), and it is a different quantity from the new per-vertex `footprint`
+  (whole-image `avgDepth` min vs per-vertex `depth/focal`). Kept.
+- **"CUDA's 10-px border is needed."** False: it was leftover over-conservatism; both backends now
+  share `Refine::Border = HalfSize = 3`.
 
 ## 7. Durable constraints and limitations
 
-Pending.
+1. **Refinement cannot repair mesh density.** The `--decimate 0` (auto) step reduces the coarse mesh
+   to the working face budget *before* any photo-consistency iteration — 5-10x on the T&T scenes at
+   L1, 15x on fountain — and no optimizer recovers what that removes. Ignatius keeps `d_in` ≈ −0.087
+   even with the accepted arm (§5). A decimation-policy candidate is a separate, still-open item
+   (§8); judging an optimizer by `d_in` rather than `d_base` measures mostly this.
+2. **`Refine::DepthConstBias = 0.05` is in scene units.** The CPU has always behaved this way and it
+   is now shared with CUDA rather than changed, but it is the one remaining scale-dependent constant
+   in the visibility test, and it is why the H7 scale test still cannot pass on the shipped defaults
+   (§4). The scale-free replacement is planned as Part A WP3.
+3. **Neither backend is bit-reproducible run to run.** CUDA accumulates `photoGrad` with float
+   `atomicAdd` (order varies); the CPU sums per-pair contributions under a lock in completion order.
+   The trajectory is chaotic at the vertex level — 1e-7 at iteration 0 grows to 6.7e-4 by iteration
+   44 — so every F1 carries a run-to-run term, quantified as the §3 noise floor (0.0001-0.0009).
+   Fixed-point accumulation would remove the CUDA half and is queued, not done.
+4. **Wall-time cells must run alone.** A 7-10 GB working-set refine cell measured beside other jobs
+   reads high by a large factor (§5, Meetingroom). The harness enforces one cell at a time via
+   `bench/out_refine/.lock`, but nothing stops *other* processes; a wall number measured next to a
+   build or another agent is not evidence.
+5. **`S` is photometric only.** The regulariser can raise it near convergence, producing rejections
+   and an early stop — the intended end of a scale, not a defect. Adding the smoothness energy to `S`
+   would break its dimensionless [0,2] range and its scale invariance.
+6. **The parity diagnostic is a bug finder, not a gate.** fp32 texture-unit bilinear weights and
+   atomic ordering keep the two backends ~1-2 % apart per vertex at the tail; chasing that residue
+   further has no measured payoff. Large disagreements are bugs (six were found this way); small ones
+   are the documented approximations.
 
 ## 8. Open items
+
+**CURRENT STATUS (2026-08-31, read this first; everything below the arm-2 blocks is the
+chronological log, oldest last).** Part 0 complete. Part A WP0–WP2 complete (CPU/CUDA parity reached
+and reviewed; six CUDA deviations found and fixed). Part B B0/B1/B2/B4 complete: both backends run
+the shared pixel-unit stepper, and **arm 2 is accepted (§5)**. The branch's own remaining work, in
+the order the plan puts it:
+
+1. **Part A WP3** — scale-free grazing-aware visibility. `Refine::DepthConstBias = 0.05` is the last
+   scene-unit constant in the pipeline and the reason the H7 scale test still fails on the shipped
+   defaults (§4, §7.2).
+2. **Part A WP4/WP5/WP6/WP7/WP8** — masked window statistics + rejection gates, per-view keep masks,
+   the bounded/vote photometric term (the `Terms::bounded` path the stepper already supports),
+   the derivative stencil A/B, boundary vertices.
+3. **Part B B5/B6** — the Ceres arm on a consistent cost/gradient pair, and the per-vertex arms
+   (rprop/adam/bb). Both are now *rejected at the entry point* rather than silently falling back, so
+   implementing one means removing its rejection.
+4. **Decimation policy** — the largest single effect in the baseline table and untouched by any
+   optimizer (§7.1): `--decimate 0` (auto) removes 5–15x of the coarse mesh before the first
+   photometric iteration, and Ignatius still carries `d_in` ≈ −0.087 with the accepted arm.
+5. **Confirmation cells** — re-measure Meetingroom's wall solo (§5), and re-run one CPU cell on the
+   final binary to confirm the post-10:30 validation fixes did not disturb the numbers.
+6. **Queued small items** — fixed-point `photoGrad` atomics for CUDA determinism (§7.3); the
+   `vertexDepth` → `footprint` migration of the planar-vertex hook.
 
 **ARM 2 (proportional pixel step) IMPLEMENTED 2026-08-31 09:15 — the reformulation the
 four-controls table pointed at.** `MeshRefineStep::Evaluate` no longer normalizes per vertex: the
@@ -689,8 +839,24 @@ bold driver, `S`, phases, planar hook, `--gradient-step` mapping — is unchange
 work than under arm 1 — the unclamped first 0.55 px step overshoots (S 0.0704 → 0.0922, +31 %,
 rejected twice) before settling, then S falls monotonically across accepted evaluations to 0.0665;
 55 evaluations against the legacy 67 and arm 1's 24, wall 1.97 s vs the legacy pin's 1.72 s.
-6-scene CPU cells (4 T&T gate + fountain/Herz-Jesu, tag `arm2-prop`) running; verdict below when
-they land.
+
+**ARM 2 PASSES THE GATE — the campaign's first accepted arm (2026-08-31 10:23).** Mean
+`d_base_vis_f1` **+0.0130** over the 4 T&T scenes with **no scene below +0.0016**, and it also gains
+on both EPFL mesh-GT scenes it was not tuned on (fountain +0.0113, Herz-Jesu +0.0187) — 6 of 6
+positive, at a pooled median **0.93x** the wall and 1.015x peak RSS. Full table, per-criterion
+verdict and the two caveats (Meetingroom's contended wall measurement; Ignatius's untouched
+structural `d_in`) are in §5. The one-line mechanism: **restoring proportionality to `g_v` while
+keeping the pixel unit turns a −0.0215 regression into a +0.0130 gain**, which is the four-controls
+table's prediction confirmed — every other component of the design (bold driver, `S`, phases, stop
+rule) was already right, and the per-vertex normalisation was the whole defect.
+
+The measurement's provenance, stated for the record: the numbers come from the RelWithDebInfo binary
+built at 09:14 carrying B0 + B1 + arm 2 + the CUDA/CPU border fixes. The silent-failure and
+comment fixes applied after 10:30 (entry validation for `--regularity-weight`/`nOptimizer`/Ceres-less
+`--gradient-step 0`, the `sumR == 0` runtime failure, export error reporting, the mesh snapshot
+before a CUDA attempt, Viewer slider ranges) are all validation and error-path changes that cannot
+alter a run whose inputs are valid, so the table stands; a confirmation cell on the final binary is
+listed in the open items below.
 
 **ROOT CAUSE FOUND AND FIXED 2026-08-31 00:20 (the bug described below).** `compute-sanitizer
 memcheck` reproduced it on the real trajectory and named it outright:
@@ -916,7 +1082,8 @@ surface, 4.5x faster, which is the parity campaign's payoff and is unaffected by
 Caveat on arm 1 that remains either way: it also carries the `IsDepthSimilar` overflow fix, which is
 exactly equivalent to the old test on every finite projection but is not separated by an experiment.
 
-**Status 2026-08-30 22:40 (read this first; the bullets below are the chronological log):**
+**Status 2026-08-30 22:40 (historical — superseded by the arm-2 block at the top of this section;
+the bullets below are the chronological log):**
 Part 0 complete. Part A WP0–WP2 landed and reviewed: the CUDA backend now reproduces the CPU's
 per-vertex gradient on `Tiny` to cosine 1.000000 / rel-RMS 0.0008 (WP2 table at the end of this
 section); six CUDA deviations were found and fixed on the way (image-gradient stencil,
@@ -929,7 +1096,8 @@ property; fixed-point accumulation is the cheap fix, queued). Binaries pinned at
 `bench/bin_refine_wp1/` (see its `MANIFEST.txt`); with that pin `Tiny` L0 runs **67 iterations over
 2 scales on both backends** (CPU 1.72 s, CUDA 0.813 s).
 
-**End of session 2026-08-31 03:50 — where Part B stands.** B0 landed (CPU producers `S` and
+**End of session 2026-08-31 03:50 (historical — the "next steps" listed here were done the
+following morning; see the arm-2 block at the top of this section).** B0 landed (CPU producers `S` and
 per-vertex `footprint`; the plan's variance-guard premise refuted). B1 landed (stepper +
 `--gradient-step` re-interpretation + `bold`/`fixed` arms + dual-format log parser). **The CUDA
 backend was found to be crashing on every real scene and is now fixed and verified** (0 faults in 9

@@ -63,7 +63,7 @@ DEFVAR_OPTREFINE_int32(nImageGradient, "Image Gradient", "image derivative stenc
 DEFVAR_OPTREFINE_int32(nBoundaryMode, "Boundary Mode", "boundary vertex handling (0 - legacy, 1 - freeze, 2 - rim Laplacian)", "0")
 DEFVAR_OPTREFINE_float(fGateMeanDiff, "Gate Mean Diff", "reject a pixel pair whose local mean differs by more than this (0 - disabled)", "0.4")
 DEFVAR_OPTREFINE_float(fGateVarRatio, "Gate Var Ratio", "reject a pixel pair whose local variance ratio exceeds this (0 - disabled)", "8.0")
-DEFVAR_OPTREFINE_int32(nOptimizer, "Optimizer", "vertex position optimizer (0 - bold, 1 - fixed, 2 - rprop, 3 - adam, 4 - bb, 5 - ceres)", "0")
+DEFVAR_OPTREFINE_int32(nOptimizer, "Optimizer", "vertex position optimizer (0 - bold, 1 - fixed)", "0")
 
 } // namespace MVS
 
@@ -176,8 +176,11 @@ bool RefineDebug::Pair(uint32_t& idxImageA, uint32_t& idxImageB)
 	static const std::pair<uint32_t,uint32_t> pair = [] {
 		uint32_t a(NO_ID), b(NO_ID);
 		const char* env = getenv("OMVS_REFINE_DEBUG_PAIR");
-		if (env && sscanf(env, "%u,%u", &a, &b) != 2)
+		if (env && sscanf(env, "%u,%u", &a, &b) != 2) {
+			// a set-but-malformed request must not silently disable the export it asked for
+			VERBOSE("error: OMVS_REFINE_DEBUG_PAIR '%s' does not parse as A,B: pair export disabled", env);
 			a = b = NO_ID;
+		}
 		return std::make_pair(a, b);
 	}();
 	if (pair.first == NO_ID)
@@ -198,12 +201,16 @@ void RefineDebug::ExportGradients(unsigned nScale, unsigned iter, uint32_t numVe
 	ASSERT(numVertices > 0 && pos && combined && photo && photoNorm && smooth1 && smooth2 && boundary);
 	const String fileName(Dir()+String::FormatString("refine_grad_s%u_i%u.ply", nScale, iter));
 	PLY ply;
-	if (!ply.write(fileName, 1, gradElemNames, PLY::BINARY_LE))
+	if (!ply.write(fileName, 1, gradElemNames, PLY::BINARY_LE)) {
+		VERBOSE("error: failed to export '%s'", fileName.c_str());
 		return;
+	}
 	ply.describe_property(gradElemNames[0], (int)SizeOfArray(gradProps), gradProps);
 	ply.element_count(gradElemNames[0], (int)numVertices);
-	if (!ply.header_complete())
+	if (!ply.header_complete()) {
+		VERBOSE("error: failed to export '%s'", fileName.c_str());
 		return;
+	}
 	ply.put_element_setup(gradElemNames[0]);
 	GradPlyVertex v;
 	for (uint32_t i=0; i<numVertices; ++i) {
@@ -225,11 +232,19 @@ static void WritePFM(const String& fileName, const float* data, int width, int h
 {
 	ASSERT(data && width > 0 && height > 0);
 	std::ofstream f(fileName.c_str(), std::ios::binary);
-	if (!f.is_open())
+	if (!f.is_open()) {
+		VERBOSE("error: failed to export '%s'", fileName.c_str());
 		return;
+	}
 	f << "Pf\n" << width << ' ' << height << "\n-1.0\n";
 	for (int r=height-1; r>=0; --r)
 		f.write((const char*)(data+(size_t)r*width), sizeof(float)*width);
+	// a truncated map (disk full) must not pass as evidence: the consumer is the parity
+	// harness comparing the two backends, and a plausible-looking partial file is worse
+	// than a missing one
+	f.flush();
+	if (!f.good())
+		VERBOSE("error: failed to export '%s' completely", fileName.c_str());
 }
 
 void RefineDebug::ExportPairMap(unsigned nScale, unsigned iter, uint32_t idxImageA, uint32_t idxImageB,
@@ -250,6 +265,8 @@ void RefineDebug::ExportPairMask(unsigned nScale, unsigned iter, uint32_t idxIma
 	uint8_t* pDst = img.getData();
 	for (size_t i=0, n=(size_t)width*height; i<n; ++i)
 		pDst[i] = mask[i] ? 255 : 0;
-	img.Save(Dir()+String::FormatString("pair_%u_%u_s%u_i%u_mask.png", idxImageA, idxImageB, nScale, iter));
+	const String fileName(Dir()+String::FormatString("pair_%u_%u_s%u_i%u_mask.png", idxImageA, idxImageB, nScale, iter));
+	if (!img.Save(fileName))
+		VERBOSE("error: failed to export '%s'", fileName.c_str());
 }
 /*----------------------------------------------------------------*/

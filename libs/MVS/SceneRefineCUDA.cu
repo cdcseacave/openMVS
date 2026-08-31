@@ -430,7 +430,9 @@ __global__ void kernelComputeImageZNCC(
 }
 
 
-// 8. ComputeImageDZNCC — 2D
+// 8. ComputeImageDZNCC — 2D, plus a block-reduced accumulation of the reliability sums
+// (sumR = Sum r, sumRZ = Sum r*(1-ZNCC)) ScoreMesh downloads to compute S = sumRZ/sumR
+// (MeshRefineStep, SceneRefineStep.h), over exactly the masked pixels that feed dzncc below
 __global__ void kernelComputeImageDZNCC(
 	const float* __restrict__ meanA,
 	const float* __restrict__ meanB,
@@ -441,27 +443,59 @@ __global__ void kernelComputeImageDZNCC(
 	float* __restrict__ dzncc,
 	cudaSurfaceObject_t surfImageA,
 	cudaSurfaceObject_t surfImageProj,
+	float* __restrict__ sumR,
+	float* __restrict__ sumRZ,
 	int width, int height, int halfSize)
 {
 	const int x = blockIdx.x * blockDim.x + threadIdx.x;
 	const int y = blockIdx.y * blockDim.y + threadIdx.y;
-	if (x >= width || y >= height) return;
 
-	const int pixIdx = y * width + x;
-	if (x < halfSize || y < halfSize || x >= width - halfSize || y >= height - halfSize || mask[pixIdx] != 1) {
-		dzncc[pixIdx] = 0.f;
-		return;
+	// per-thread contribution to this block's reliability sums; stays 0 for every pixel outside
+	// the image (grid is rounded up to the block size), outside the valid border, or unmasked --
+	// exactly the pixels the CPU's ScoreMesh S skips; no early "return" here so every thread in
+	// the block, in or out of bounds, reaches the reduction below
+	float contribR(0.f), contribRZ(0.f);
+	if (x < width && y < height) {
+		const int pixIdx = y * width + x;
+		if (x < halfSize || y < halfSize || x >= width - halfSize || y >= height - halfSize || mask[pixIdx] != 1) {
+			dzncc[pixIdx] = 0.f;
+		} else {
+			// pointwise form, matching CPU ComputeLocalZNCC (SceneRefine.cpp); the windowed/box-averaged
+			// variant the CPU used to carry behind an "#else" was deleted, so both backends keep one formula
+			const float pixA = readSurfFloat(surfImageA, x, y);
+			const float pixB = readSurfFloat(surfImageProj, x, y);
+			const float vA = varA[pixIdx], vB = varB[pixIdx];
+			const float invSqrtVarAVarB = 1.f / sqrtf(vA * vB);
+			const float ZNCC = zncc[pixIdx];
+			const float ZNCCinvVarB = ZNCC / vB;
+			const float dZ = (pixA - meanA[pixIdx]) * invSqrtVarAVarB - (pixB - meanB[pixIdx]) * ZNCCinvVarB;
+			const float r = Refine::ZnccReliability(vA, vB);
+
+			dzncc[pixIdx] = -r * dZ;
+			contribR = r;
+			contribRZ = r * (1.f - ZNCC);
+		}
 	}
 
-	// pointwise form, matching CPU ComputeLocalZNCC (SceneRefine.cpp); the windowed/box-averaged
-	// variant the CPU used to carry behind an "#else" was deleted, so both backends keep one formula
-	const float pixA = readSurfFloat(surfImageA, x, y);
-	const float pixB = readSurfFloat(surfImageProj, x, y);
-	const float invSqrtVarAVarB = 1.f / sqrtf(varA[pixIdx] * varB[pixIdx]);
-	const float ZNCCinvVarB = zncc[pixIdx] / varB[pixIdx];
-	const float dZ = (pixA - meanA[pixIdx]) * invSqrtVarAVarB - (pixB - meanB[pixIdx]) * ZNCCinvVarB;
-
-	dzncc[pixIdx] = -Refine::ZnccReliability(varA[pixIdx], varB[pixIdx]) * dZ;
+	// shared-memory block reduction, one atomicAdd per block per accumulator (not one per pixel);
+	// sized for the 16x16 block LaunchComputeImageDZNCC always launches
+	__shared__ float sSumR[256];
+	__shared__ float sSumRZ[256];
+	const int tid = threadIdx.y * blockDim.x + threadIdx.x;
+	sSumR[tid] = contribR;
+	sSumRZ[tid] = contribRZ;
+	__syncthreads();
+	for (int stride = (blockDim.x * blockDim.y) >> 1; stride > 0; stride >>= 1) {
+		if (tid < stride) {
+			sSumR[tid] += sSumR[tid + stride];
+			sSumRZ[tid] += sSumRZ[tid + stride];
+		}
+		__syncthreads();
+	}
+	if (tid == 0) {
+		atomicAdd(sumR, sSumR[0]);
+		atomicAdd(sumRZ, sSumRZ[0]);
+	}
 }
 
 
@@ -476,6 +510,7 @@ __global__ void kernelComputePhotometricGradient(
 	const uint8_t* __restrict__ mask,
 	Point3* __restrict__ photoGrad,
 	float* __restrict__ photoGradPixels,
+	float* __restrict__ footprint, // per-vertex scene-units-per-pixel, atomic-min'ed across every contributing pixel of every pair-direction
 	float* __restrict__ sgMap, // WP2 parity diagnostic: per-pixel scalar handed to the 3 vertices (CPU's sg); NULL in production
 	Camera camA,
 	Camera camB,
@@ -559,17 +594,40 @@ __global__ void kernelComputePhotometricGradient(
 	atomicAdd(&photoGradPixels[face.x()], 1.f);
 	atomicAdd(&photoGradPixels[face.y()], 1.f);
 	atomicAdd(&photoGradPixels[face.z()], 1.f);
+
+	// per-vertex footprint at camera A, scene units per pixel (Camera::GetFootprintWorld =
+	// depth/focalLength): min over every contributing pixel of every pair-direction, matching
+	// the CPU's min-of-mins (MeshRefine::ComputePhotometricGradient/ThProcessPair). footprint
+	// values are strictly positive floats, so the standard int-punned atomicMin is a correct float min.
+	const float footprintPix = depth / camA.model.f.x();
+	atomicMin((int*)&footprint[face.x()], __float_as_int(footprintPix));
+	atomicMin((int*)&footprint[face.y()], __float_as_int(footprintPix));
+	atomicMin((int*)&footprint[face.z()], __float_as_int(footprintPix));
 }
 
 
-// 10. UpdatePhotoGradNorm — 1D
+// 10. UpdatePhotoGradNorm — 1D. Two roles, selected by finalPass: per pair-direction
+// (finalPass=false) it increments the persistent pair-direction count exactly like the CPU's
+// `photoGradNorm[idxVert] += 1.f;`; once, after every pair-direction of this ScoreMesh() has run
+// (finalPass=true, photoGradPixels unused/NULL) it resolves the footprint sentinel now that
+// photoGradNorm holds its final value (contract: footprint[v] > 0 exactly where
+// photoGradNorm[v] > 0, matches CPU ScoreMesh). Folding the resolve into an earlier
+// per-pair-direction call would race the still-running atomicMin's in
+// kernelComputePhotometricGradient for a vertex a later pair-direction is the first to touch.
 __global__ void kernelUpdatePhotoGradNorm(
 	float* __restrict__ photoGradNorm,
 	const float* __restrict__ photoGradPixels,
-	uint32_t numVertices)
+	float* __restrict__ footprint,
+	uint32_t numVertices,
+	bool finalPass)
 {
 	const int tid = blockIdx.x * blockDim.x + threadIdx.x;
 	if (tid >= (int)numVertices) return;
+	if (finalPass) {
+		if (photoGradNorm[tid] == 0.f)
+			footprint[tid] = 0.f;
+		return;
+	}
 	if (photoGradPixels[tid] > 0.f)
 		photoGradNorm[tid] += 1.f;
 }
@@ -757,18 +815,19 @@ void LaunchComputeImageZNCC(const float* imageCov, const float* imageVarA, const
 
 void LaunchComputeImageDZNCC(
 	const float* meanA, const float* meanB, const float* varA, const float* varB, const float* zncc,
-	const uint8_t* mask, float* dzncc, cudaSurfaceObject_t surfImageA, cudaSurfaceObject_t surfImageProj, int width, int height, int halfSize)
+	const uint8_t* mask, float* dzncc, cudaSurfaceObject_t surfImageA, cudaSurfaceObject_t surfImageProj,
+	float* sumR, float* sumRZ, int width, int height, int halfSize)
 {
 	const dim3 block(16, 16);
 	const dim3 grid((width + block.x - 1) / block.x, (height + block.y - 1) / block.y);
-	kernelComputeImageDZNCC<<<grid, block>>>(meanA, meanB, varA, varB, zncc, mask, dzncc, surfImageA, surfImageProj, width, height, halfSize);
+	kernelComputeImageDZNCC<<<grid, block>>>(meanA, meanB, varA, varB, zncc, mask, dzncc, surfImageA, surfImageProj, sumR, sumRZ, width, height, halfSize);
 }
 
 void LaunchComputePhotometricGradient(
 	const Point3u* faces, const Point3* normals,
 	const float* depthMap, const uint32_t* faceMap, const uint16_t* baryMap,
 	const float* dzncc, const uint8_t* mask,
-	Point3* photoGrad, float* photoGradPixels, float* sgMap,
+	Point3* photoGrad, float* photoGradPixels, float* footprint, float* sgMap,
 	const Camera& camA, const Camera& camB,
 	cudaTextureObject_t texGradXB, cudaTextureObject_t texGradYB, float regScale, int width, int height)
 {
@@ -776,14 +835,14 @@ void LaunchComputePhotometricGradient(
 	const dim3 grid((width + block.x - 1) / block.x, (height + block.y - 1) / block.y);
 	kernelComputePhotometricGradient<<<grid, block>>>(
 		faces, normals, depthMap, faceMap, baryMap, dzncc, mask,
-		photoGrad, photoGradPixels, sgMap, camA, camB, texGradXB, texGradYB, regScale, width, height);
+		photoGrad, photoGradPixels, footprint, sgMap, camA, camB, texGradXB, texGradYB, regScale, width, height);
 }
 
-void LaunchUpdatePhotoGradNorm(float* photoGradNorm, const float* photoGradPixels, uint32_t numVertices)
+void LaunchUpdatePhotoGradNorm(float* photoGradNorm, const float* photoGradPixels, float* footprint, uint32_t numVertices, bool finalPass)
 {
 	const int blockSize = 256;
 	const int numBlocks = ((int)numVertices + blockSize - 1) / blockSize;
-	kernelUpdatePhotoGradNorm<<<numBlocks, blockSize>>>(photoGradNorm, photoGradPixels, numVertices);
+	kernelUpdatePhotoGradNorm<<<numBlocks, blockSize>>>(photoGradNorm, photoGradPixels, footprint, numVertices, finalPass);
 }
 
 void LaunchComputeSmoothnessGradient(

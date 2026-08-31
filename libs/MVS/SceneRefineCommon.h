@@ -108,8 +108,10 @@ REFINE_HD inline float ZnccReliability(float varA, float varB)
 DECOPT_SPACE(OPTREFINE)
 
 namespace OPTREFINE {
-// configuration variables (nothing reads these yet; later refine work
-// packages consume them -- this is only the mechanism, mirroring OPTDENSE)
+// configuration variables, mirroring OPTDENSE. nImageGradient (the derivative
+// stencil in ComputeRefineImageGradient) and nOptimizer (the stepper arm in
+// Scene::RefineMesh) are consumed; the rest are declared, staged mechanism
+// for later refine work to read
 extern MVS_API int nIgnoreMaskLabel; // label id used during ignore mask filter (<0 - disabled)
 extern MVS_API int nPhotoTerm; // photo-consistency term formulation (0 - magnitude, 1 - sign vote, 2 - tanh)
 extern MVS_API int nPhotoNorm; // photo-consistency gradient normalization (0 - pair count, 1 - confidence-weighted pixel sum)
@@ -117,7 +119,7 @@ extern MVS_API int nImageGradient; // image derivative stencil (0 - 3x5 separabl
 extern MVS_API int nBoundaryMode; // boundary vertex handling (0 - legacy, 1 - freeze, 2 - rim Laplacian)
 extern MVS_API float fGateMeanDiff; // reject a pixel pair whose local mean differs by more than this (0 - disabled)
 extern MVS_API float fGateVarRatio; // reject a pixel pair whose local variance ratio exceeds this (0 - disabled)
-extern MVS_API int nOptimizer; // vertex position optimizer (0 - bold, 1 - fixed, 2 - rprop, 3 - adam, 4 - bb, 5 - ceres)
+extern MVS_API int nOptimizer; // vertex position optimizer (0 - bold, 1 - fixed; further arms are rejected at the RefineMesh entry until implemented)
 } // namespace OPTREFINE
 
 // load, gray-convert, blur and resize one refine image at the given scale;
@@ -137,7 +139,7 @@ MVS_API bool PrepareRefineImage(Image& imageData, const PlatformArr& platforms,
 MVS_API void ComputeRefineImageGradient(const Image32F& gray, Image32F& gradX, Image32F& gradY);
 
 
-// CPU/CUDA parity diagnostic (Part A WP2): export per-vertex gradients and
+// CPU/CUDA parity diagnostic: export per-vertex gradients and
 // per-pixel pair maps to disk so a Python harness (bench/refine_parity.py)
 // can compare the two backends on the identical frozen mesh. Entirely
 // env-var gated -- no public RefineMesh option -- and the only place in the

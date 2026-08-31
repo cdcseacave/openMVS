@@ -41,6 +41,10 @@ namespace MVS {
 bool MeshVertexColorsPLYTest();
 bool MeshHalfMeshProcessingTest();
 
+// test the pixel-unit bold-driver optimizer (SceneRefineStep.h) against hand-built Terms
+// arrays: no images, no scene, milliseconds to run
+bool MeshRefineStepTest();
+
 // test the Delaunay mesh cut on the two hand-solved synthetic fixtures
 // (docs/design/DelaunayMeshReconstruction.md, Appendix)
 bool MeshBipyramidFixtureTest();
