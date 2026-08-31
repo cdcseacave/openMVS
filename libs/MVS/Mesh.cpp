@@ -1190,6 +1190,7 @@ void Mesh::Subdivide(const AreaArr& maxAreas, uint32_t maxArea)
 	FacetCountMap mapFaces; mapFaces.reserve(12*3);
 	vertices.Reserve(vertices.size()*2);
 	faces.Reserve(faces.size()*3);
+	const FIndex numFacesOld(faces.size());
 	const uint32_t maxAreaTh(2*maxArea);
 	FOREACH(f, maxAreas) {
 		const AreaArr::Type area(maxAreas[f]);
@@ -1331,8 +1332,12 @@ void Mesh::Subdivide(const AreaArr& maxAreas, uint32_t maxArea)
 		}
 	}
 
-	// remove all faces that split
-	ASSERT(faces.size()-(faces.capacity()/3)/*initial size*/ > mapSplits.size());
+	// remove all faces that split; RemoveAt() swaps the last face into the freed slot,
+	// which is only safe while every face swapped in is a NEW one (index >= numFacesOld),
+	// i.e. while more faces were added than are removed - guaranteed by the >= 2 new faces
+	// per split face (the old form derived the initial size from capacity()/3, which is
+	// wrong as soon as the array was shrunk before the call, e.g. by decimation)
+	ASSERT(mapSplits.empty() || faces.size()-numFacesOld > mapSplits.size());
 	for (const auto& s: mapSplits)
 		faces.RemoveAt(s.first);
 }

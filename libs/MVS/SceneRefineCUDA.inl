@@ -46,13 +46,19 @@ namespace CUDA {
 
 // Launcher function declarations for all mesh refinement CUDA kernels
 
+// rasterizer, per visible face, launched twice: resolve=false does an atomicMin of the
+// (depth, position-in-faceIDs) key into projKey (one 64-bit word per pixel, pre-filled with
+// ~0ull); resolve=true lets the thread holding each pixel's winning key write depth/face/bary
+// (faceMap pre-filled with NO_ID). LaunchResolveProjection then zeroes the uncovered pixels
+// (0 / NO_ID / 0) and, in Debug, asserts every covered pixel received its payload.
 void LaunchProjectMesh(
 	const Point3* vertices, const Point3u* faces, const uint32_t* faceIDs,
-	float* depthMap, uint32_t* faceMap, uint16_t* baryMap,
-	const Camera& camera, uint32_t numFacesView);
+	unsigned long long* projKey, float* depthMap, uint32_t* faceMap, uint16_t* baryMap,
+	const Camera& camera, uint32_t numFacesView, bool resolve);
 
-void LaunchCrossCheckProjection(
-	float* depthMap, uint32_t* faceMap, int width, int height);
+void LaunchResolveProjection(
+	const uint32_t* faceIDs, const unsigned long long* projKey,
+	float* depthMap, uint32_t* faceMap, uint16_t* baryMap, int width, int height);
 
 void LaunchImageMeshWarp(
 	const float* depthMapA, const float* depthMapB, uint8_t* mask,
@@ -94,9 +100,9 @@ void LaunchComputePhotometricGradient(
 	const Point3u* faces, const Point3* normals,
 	const float* depthMap, const uint32_t* faceMap, const uint16_t* baryMap,
 	const float* dzncc, const uint8_t* mask,
-	Point3* photoGrad, float* photoGradPixels,
+	Point3* photoGrad, float* photoGradPixels, float* sgMap,
 	const Camera& camA, const Camera& camB,
-	cudaTextureObject_t texImageB, float regScale,
+	cudaTextureObject_t texGradXB, cudaTextureObject_t texGradYB, float regScale,
 	int width, int height);
 
 void LaunchUpdatePhotoGradNorm(
@@ -105,7 +111,7 @@ void LaunchUpdatePhotoGradNorm(
 void LaunchComputeSmoothnessGradient(
 	const Point3* vertices, const uint32_t* vertVertices,
 	const uint32_t* vertSizes, const uint32_t* vertPointers,
-	Point3* smoothGrad, uint32_t numVertices, uint8_t mode);
+	const uint8_t* vertBoundary, Point3* smoothGrad, uint32_t numVertices, uint8_t mode);
 
 void LaunchCombineGradients(
 	Point3* photoGrad, const float* photoGradNorm,

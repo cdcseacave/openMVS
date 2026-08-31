@@ -31,6 +31,7 @@
 
 #include "Common.h"
 #include "Scene.h"
+#include "SceneRefineCommon.h"
 
 using namespace MVS;
 
@@ -61,6 +62,7 @@ static MVS::CUDA::Camera MakeCUDACamera(const Camera& camera, const Image8U::Siz
 		size.width, size.height);
 }
 
+
 // S T R U C T S ///////////////////////////////////////////////////
 
 typedef Mesh::Vertex Vertex;
@@ -76,8 +78,10 @@ public:
 	// store necessary data about a view
 	struct View {
 		Image32F imageHost; // store temporarily the image pixels
+		Image32F imageGradHost[2]; // store temporarily the image x/y derivatives
 		Image8U::Size size;
-		SEACAVE::CUDA::ArrayRT16F image;
+		SEACAVE::CUDA::ArrayRT32F image; // float like the CPU's View::image (was half-float; see readSurfFloat in the .cu)
+		SEACAVE::CUDA::ArrayRT32F imageGrad[2]; // x/y derivatives (ComputeRefineImageGradient), sampled by the photometric kernel; kept in float like the CPU's View::imageGrad (half-float cannot hold the sub-6e-5 values a derivative stencil produces on flat regions)
 		SEACAVE::CUDA::MemDevice depthMap;
 		SEACAVE::CUDA::MemDevice faceMap;
 		SEACAVE::CUDA::MemDevice baryMap;
@@ -87,7 +91,14 @@ public:
 	// GPU texture/surface objects per view
 	struct ViewGPU {
 		cudaTextureObject_t texObj = 0;   // LINEAR filter for bilinear sampling
+		cudaTextureObject_t texGrad[2] = {0, 0}; // x/y derivative textures, same filtering
 		cudaSurfaceObject_t surfObj = 0;  // surface for direct read/write
+		void Release() {
+			if (texObj) { cudaDestroyTextureObject(texObj); texObj = 0; }
+			for (cudaTextureObject_t& tex: texGrad)
+				if (tex) { cudaDestroyTextureObject(tex); tex = 0; }
+			if (surfObj) { cudaDestroySurfaceObject(surfObj); surfObj = 0; }
+		}
 	};
 
 
@@ -133,6 +144,7 @@ public:
 	const unsigned nMinResolution; // how many times to scale down the images before mesh optimization
 	unsigned nAlternatePair; // using an image pair alternatively as reference image (0 - both, 1 - alternate, 2 - only left, 3 - only right)
 	unsigned iteration; // current refinement iteration
+	unsigned nScale; // current refinement scale (0-based, coarsest first; RefineDebug export file naming only)
 
 	Scene& scene; // the mesh vertices and faces
 
@@ -145,13 +157,14 @@ public:
 	cudaSurfaceObject_t surfImageProjObj = 0; // surface for projected image (imageAB)
 
 	SEACAVE::CUDA::MemDevice vertices;
-	SEACAVE::CUDA::MemDevice vertexVertices;
 	SEACAVE::CUDA::MemDevice faces;
 	SEACAVE::CUDA::MemDevice faceNormals;
 	SEACAVE::CUDA::MemDevice mask;
+	SEACAVE::CUDA::MemDevice projKey; // rasterizer scratch, one (depth,face) 64-bit key per pixel of the largest view
+	size_t projKeyPixels = 0; // pixels projKey was allocated for (ProjectMesh asserts every view fits)
 	SEACAVE::CUDA::MemDevice imageMeanA;
 	SEACAVE::CUDA::MemDevice imageVarA;
-	SEACAVE::CUDA::ArrayRT16F imageAB;
+	SEACAVE::CUDA::ArrayRT32F imageAB; // warped image B in A, float like the CPU's imageAB
 	SEACAVE::CUDA::MemDevice imageMeanAB;
 	SEACAVE::CUDA::MemDevice imageVarAB;
 	SEACAVE::CUDA::MemDevice imageCov;
@@ -160,13 +173,15 @@ public:
 	SEACAVE::CUDA::MemDevice photoGrad;
 	SEACAVE::CUDA::MemDevice photoGradNorm;
 	SEACAVE::CUDA::MemDevice photoGradPixels;
+	SEACAVE::CUDA::MemDevice debugSG; // WP2 parity diagnostic only: per-pixel photometric scalar, allocated when the RefineDebug pair matches
 	SEACAVE::CUDA::MemDevice vertexVerticesCont;
 	SEACAVE::CUDA::MemDevice vertexVerticesSizes;
 	SEACAVE::CUDA::MemDevice vertexVerticesPointers;
+	SEACAVE::CUDA::MemDevice vertBoundary; // per-vertex 0/1 boundary flag (shared valence/boundary split, see ListVertexFacesPost())
 	SEACAVE::CUDA::MemDevice smoothGrad1;
 	SEACAVE::CUDA::MemDevice smoothGrad2;
 
-	enum { HalfSize = 2 }; // half window size used to compute ZNCC
+	enum { HalfSize = Refine::HalfSize }; // half window size used to compute ZNCC (shared with CPU, SceneRefineCommon.h)
 };
 
 MeshRefineCUDA::MeshRefineCUDA(Scene& _scene, unsigned _nAlternatePair, float _weightRegularity, float _ratioRigidityElasticity, unsigned _nResolutionLevel, unsigned _nMinResolution, unsigned nMaxViews)
@@ -205,10 +220,8 @@ MeshRefineCUDA::MeshRefineCUDA(Scene& _scene, unsigned _nAlternatePair, float _w
 }
 MeshRefineCUDA::~MeshRefineCUDA()
 {
-	for (auto& v : viewGPU) {
-		if (v.texObj) cudaDestroyTextureObject(v.texObj);
-		if (v.surfObj) cudaDestroySurfaceObject(v.surfObj);
-	}
+	for (auto& v : viewGPU)
+		v.Release();
 	if (surfImageProjObj) cudaDestroySurfaceObject(surfImageProjObj);
 	scene.mesh.ReleaseExtra();
 }
@@ -242,9 +255,9 @@ bool MeshRefineCUDA::InitImages(float scale, float sigma)
 		if (!imageData.IsValid())
 			continue;
 		// load and init image
-		unsigned level(nResolutionLevel);
-		const unsigned imageSize(imageData.RecomputeMaxResolution(level, nMinResolution));
-		if ((imageData.image.empty() || MAXF(imageData.width,imageData.height) != imageSize) && !imageData.ReloadImage(imageSize)) {
+		View& view = views[idxImage];
+		Image32F& img = view.imageHost;
+		if (!PrepareRefineImage(imageData, scene.platforms, nResolutionLevel, nMinResolution, scale, sigma, img)) {
 			#ifdef MESHCUDAOPT_USE_OPENMP
 			bAbort = true;
 			#pragma omp flush (bAbort)
@@ -253,17 +266,7 @@ bool MeshRefineCUDA::InitImages(float scale, float sigma)
 			return false;
 			#endif
 		}
-		View& view = views[idxImage];
-		Image32F& img = view.imageHost;
-		imageData.image.toGray(img, cv::COLOR_BGR2GRAY, true);
-		imageData.image.release();
-		if (sigma > 0)
-			cv::GaussianBlur(img, img, cv::Size(), sigma);
-		if (scale < 1.0) {
-			cv::resize(img, img, cv::Size(), scale, scale, cv::INTER_AREA);
-			imageData.width = img.width(); imageData.height = img.height();
-		}
-		imageData.UpdateCamera(scene.platforms);
+		ComputeRefineImageGradient(img, view.imageGradHost[0], view.imageGradHost[1]);
 	}
 	#ifdef MESHCUDAOPT_USE_OPENMP
 	if (bAbort)
@@ -272,12 +275,22 @@ bool MeshRefineCUDA::InitImages(float scale, float sigma)
 	// init GPU memory
 	Image8U::Size maxSize(0,0);
 	// destroy old texture/surface objects before recreating
-	for (auto& v : viewGPU) {
-		if (v.texObj) { cudaDestroyTextureObject(v.texObj); v.texObj = 0; }
-		if (v.surfObj) { cudaDestroySurfaceObject(v.surfObj); v.surfObj = 0; }
-	}
+	for (auto& v : viewGPU)
+		v.Release();
 	if (surfImageProjObj) { cudaDestroySurfaceObject(surfImageProjObj); surfImageProjObj = 0; }
 	viewGPU.resize(views.GetSize());
+	// texture object with bilinear filtering over a 2D array (element-type reads: 16F and 32F arrays both fetch as float)
+	const auto createTexture = [](const auto& array, cudaTextureObject_t& tex) {
+		cudaResourceDesc resDesc = {};
+		resDesc.resType = cudaResourceTypeArray;
+		resDesc.res.array.array = (cudaArray_t)(CUarray)array;
+		cudaTextureDesc texDesc = {};
+		texDesc.filterMode = cudaFilterModeLinear;
+		texDesc.addressMode[0] = cudaAddressModeClamp;
+		texDesc.addressMode[1] = cudaAddressModeClamp;
+		texDesc.readMode = cudaReadModeElementType;
+		cudaCreateTextureObject(&tex, &resDesc, &texDesc, nullptr);
+	};
 	FOREACH(idxImage, views) {
 		View& view = views[idxImage];
 		if (view.imageHost.empty())
@@ -285,8 +298,15 @@ bool MeshRefineCUDA::InitImages(float scale, float sigma)
 		Image8U::Size& size(view.size);
 		size = view.imageHost.size();
 		reportCudaError(view.image.Reset(size, CUDA_ARRAY3D_SURFACE_LDST));
-		reportCudaError(view.image.SetData(cvtImage<float,hfloat>(view.imageHost)));
+		reportCudaError(view.image.SetData(view.imageHost));
 		view.imageHost.release();
+		for (int i=0; i<2; ++i) {
+			ASSERT(view.imageGradHost[i].size() == size);
+			reportCudaError(view.imageGrad[i].Reset(size, CUDA_ARRAY3D_SURFACE_LDST));
+			reportCudaError(view.imageGrad[i].SetData(view.imageGradHost[i]));
+			view.imageGradHost[i].release();
+			createTexture(view.imageGrad[i], viewGPU[idxImage].texGrad[i]);
+		}
 		const size_t area((size_t)size.area());
 		reportCudaError(view.depthMap.Reset(sizeof(float)*area));
 		reportCudaError(view.faceMap.Reset(sizeof(FIndex)*area));
@@ -302,15 +322,12 @@ bool MeshRefineCUDA::InitImages(float scale, float sigma)
 		// surface object
 		cudaCreateSurfaceObject(&viewGPU[idxImage].surfObj, &resDesc);
 		// texture object with bilinear filtering
-		cudaTextureDesc texDesc = {};
-		texDesc.filterMode = cudaFilterModeLinear;
-		texDesc.addressMode[0] = cudaAddressModeClamp;
-		texDesc.addressMode[1] = cudaAddressModeClamp;
-		texDesc.readMode = cudaReadModeElementType;
-		cudaCreateTextureObject(&viewGPU[idxImage].texObj, &resDesc, &texDesc, nullptr);
+		createTexture(view.image, viewGPU[idxImage].texObj);
 	}
 	const size_t area(maxSize.area());
 	reportCudaError(mask.Reset(sizeof(uint8_t)*area));
+	reportCudaError(projKey.Reset(sizeof(uint64_t)*area));
+	projKeyPixels = area;
 	reportCudaError(imageMeanA.Reset(sizeof(float)*area));
 	reportCudaError(imageVarA.Reset(sizeof(float)*area));
 	reportCudaError(imageAB.Reset(maxSize, CUDA_ARRAY3D_SURFACE_LDST));
@@ -327,6 +344,7 @@ bool MeshRefineCUDA::InitImages(float scale, float sigma)
 		cudaCreateSurfaceObject(&surfImageProjObj, &resDesc);
 	}
 	iteration = 0;
+	nScale = 0;
 	return true;
 }
 
@@ -343,28 +361,33 @@ void MeshRefineCUDA::ListVertexFacesPost()
 	scene.mesh.ListIncidentVertices();
 	scene.mesh.ListBoundaryVertices();
 	ASSERT(!scene.mesh.vertices.IsEmpty() && scene.mesh.vertices.GetSize() == scene.mesh.vertexVertices.GetSize());
-	// set vertex vertices
-	reportCudaError(vertexVertices.Reset(scene.mesh.vertexVertices));
-	// list adjacent vertices for each vertex
+	// list adjacent vertices for each vertex, uploading the TRUE valence for every vertex
+	// (boundary or not) plus a separate per-vertex boundary flag: kernelComputeSmoothnessGradient
+	// zeroes a boundary vertex's OWN gradient using vertBoundary[], exactly like CPU
+	// MeshRefine::ComputeSmoothnessGradient1/2, but still needs every OTHER vertex's
+	// valence-weighted sum to see a boundary neighbour's true valence -- matching that code's
+	// unconditional vertexVertices[idxVert].GetSize(). Previously this
+	// zeroed vertSizes[] for boundary vertices to short-circuit their own gradient, which also
+	// corrupted every interior neighbour's 1/vertSizes[ni] weight term (divide by zero -> +inf ->
+	// that neighbour's smoothGrad2 collapsed to 0 instead of including the boundary contribution).
 	const size_t numVertices(scene.mesh.vertices.GetSize());
 	Unsigned32Arr _vertexVerticesCont(0, numVertices*6);
 	Unsigned32Arr _vertexVerticesSizes(0, numVertices);
 	Unsigned32Arr _vertexVerticesPointers(0, numVertices);
+	Unsigned8Arr _vertexBoundary(0, numVertices);
 	uint32_t lastPosition(0);
 	FOREACH(idxV, scene.mesh.vertices) {
-		if (scene.mesh.vertexBoundary[idxV]) {
-			_vertexVerticesSizes.Insert(0);
-			_vertexVerticesPointers.Insert(lastPosition);
-			continue;
-		}
 		const Mesh::VertexIdxArr& verts = scene.mesh.vertexVertices[idxV];
+		ASSERT(!verts.IsEmpty()); // true valence must be > 0 for every vertex
 		_vertexVerticesCont.Join(verts.GetData(), verts.GetSize());
 		_vertexVerticesSizes.Insert(verts.GetSize());
 		_vertexVerticesPointers.Insert(lastPosition); lastPosition += verts.GetSize();
+		_vertexBoundary.Insert(scene.mesh.vertexBoundary[idxV] ? 1 : 0);
 	}
 	reportCudaError(vertexVerticesCont.Reset(_vertexVerticesCont));
 	reportCudaError(vertexVerticesSizes.Reset(_vertexVerticesSizes));
 	reportCudaError(vertexVerticesPointers.Reset(_vertexVerticesPointers));
+	reportCudaError(vertBoundary.Reset(_vertexBoundary));
 	// init memory
 	reportCudaError(photoGrad.Reset(sizeof(Point3f)*numVertices));
 	reportCudaError(photoGradNorm.Reset(sizeof(float)*numVertices));
@@ -595,9 +618,30 @@ void MeshRefineCUDA::ScoreMesh(float* gradients)
 	// loop through all vertices and compute the smoothing score
 	ComputeSmoothnessGradient(numVertices);
 
-	// set the final gradient as the combination of photometric and smoothness gradients
-	CombineGradients(numVertices);
-	reportCudaError(photoGrad.GetData(gradients, sizeof(Point3f)*numVertices));
+	// WP2 parity diagnostic: download the per-vertex terms before CombineGradients()
+	// overwrites photoGrad in-place with the combined result; no-op unless
+	// OMVS_REFINE_DEBUG_DIR is set
+	if (!RefineDebug::Dir().empty()) {
+		Point3fArr pos(numVertices), photo(numVertices), smooth1(numVertices), smooth2(numVertices);
+		FloatArr photoNorm(numVertices);
+		cList<uint8_t,uint8_t,0> boundary(numVertices);
+		reportCudaError(vertices.GetData(pos));
+		reportCudaError(photoGrad.GetData(photo));
+		reportCudaError(photoGradNorm.GetData(photoNorm));
+		reportCudaError(smoothGrad1.GetData(smooth1));
+		reportCudaError(smoothGrad2.GetData(smooth2));
+		reportCudaError(vertBoundary.GetData(boundary));
+		// set the final gradient as the combination of photometric and smoothness gradients
+		CombineGradients(numVertices);
+		reportCudaError(photoGrad.GetData(gradients, sizeof(Point3f)*numVertices));
+		RefineDebug::ExportGradients(nScale, iteration, numVertices,
+			pos.Begin(), (const Point3f*)gradients, photo.Begin(), photoNorm.Begin(),
+			smooth1.Begin(), smooth2.Begin(), boundary.Begin());
+	} else {
+		// set the final gradient as the combination of photometric and smoothness gradients
+		CombineGradients(numVertices);
+		reportCudaError(photoGrad.GetData(gradients, sizeof(Point3f)*numVertices));
+	}
 }
 
 
@@ -607,28 +651,41 @@ void MeshRefineCUDA::ProjectMesh(
 	const Camera& camera, const Image8U::Size& size, uint32_t idxImage)
 {
 	View& view = views[idxImage];
-	// init depth-map and face-map (matching CPU's RasterMesh::Clear())
-	reportCudaError(cuMemsetD32(view.depthMap, CastF2I(FLT_MAX).i, size.area()));
-	reportCudaError(cuMemsetD32(view.faceMap, NO_ID, size.area()));
+	ASSERT(projKey.IsValid() && (size_t)size.area() <= projKeyPixels);
+	// pass 1 needs every pixel key at "no face yet" = ~0ull (larger than any real (depth,face) key)
+	reportCudaError(cuMemsetD32(projKey, 0xFFFFFFFFu, 2*(size_t)size.area()));
 	// fetch only the faces viewed by this camera
 	Mesh::FaceIdxArr faceIDsView(0, (FIndex)cameraFaces.size());
 	for (auto idxFace : cameraFaces)
 		faceIDsView.Insert(idxFace);
-	// project mesh
+	// project mesh: pass 1 elects per pixel the nearest face (first in cameraFaces order on a
+	// depth tie, the CPU's rule), pass 2 lets the winner write its payload, then the uncovered
+	// pixels are cleared (both maps are preset so no pixel can carry this view's previous
+	// iteration forward: faceMap to NO_ID, which the Debug check in the last kernel would
+	// otherwise let a stale id satisfy, and depthMap to 0, so that a pixel missing its payload
+	// reads as uncovered downstream instead of pairing a stale depth with a NO_ID face)
 	SEACAVE::CUDA::MemDevice devFaceIDs(faceIDsView);
-	MVS::CUDA::LaunchProjectMesh(
-		(const MVS::CUDA::Point3*)(CUdeviceptr)vertices,
-		(const MVS::CUDA::Point3u*)(CUdeviceptr)faces,
+	const MVS::CUDA::Camera cudaCamera(MakeCUDACamera(camera, size));
+	reportCudaError(cuMemsetD32(view.faceMap, NO_ID, size.area()));
+	reportCudaError(cuMemsetD32(view.depthMap, 0, size.area()));
+	for (int pass=0; pass<2; ++pass)
+		MVS::CUDA::LaunchProjectMesh(
+			(const MVS::CUDA::Point3*)(CUdeviceptr)vertices,
+			(const MVS::CUDA::Point3u*)(CUdeviceptr)faces,
+			(const uint32_t*)(CUdeviceptr)devFaceIDs,
+			(unsigned long long*)(CUdeviceptr)projKey,
+			(float*)(CUdeviceptr)view.depthMap,
+			(uint32_t*)(CUdeviceptr)view.faceMap,
+			(uint16_t*)(CUdeviceptr)view.baryMap,
+			cudaCamera,
+			faceIDsView.GetSize(),
+			pass == 1);
+	MVS::CUDA::LaunchResolveProjection(
 		(const uint32_t*)(CUdeviceptr)devFaceIDs,
+		(const unsigned long long*)(CUdeviceptr)projKey,
 		(float*)(CUdeviceptr)view.depthMap,
 		(uint32_t*)(CUdeviceptr)view.faceMap,
 		(uint16_t*)(CUdeviceptr)view.baryMap,
-		MakeCUDACamera(camera, size),
-		faceIDsView.GetSize());
-	// cross-check valid depth and face index
-	MVS::CUDA::LaunchCrossCheckProjection(
-		(float*)(CUdeviceptr)view.depthMap,
-		(uint32_t*)(CUdeviceptr)view.faceMap,
 		size.width, size.height);
 	#if 0
 	// debug view
@@ -659,6 +716,37 @@ void MeshRefineCUDA::ProcessPair(uint32_t idxImageA, uint32_t idxImageB)
 	ComputeLocalVariance(surfImageProjObj, sizeA, imageMeanAB, imageVarAB);
 	ComputeLocalVariance(viewGPU[idxImageA].surfObj, sizeA, imageMeanA, imageVarA);
 	ComputeLocalZNCC(viewGPU[idxImageA].surfObj, surfImageProjObj, sizeA);
+
+	// WP2 parity diagnostic: download this pair's maps from the persistent
+	// device buffers above; no-op unless OMVS_REFINE_DEBUG_DIR/_PAIR are both
+	// set and match this exact (A,B) direction
+	uint32_t dbgImageA, dbgImageB;
+	if (!RefineDebug::Dir().empty() && RefineDebug::Pair(dbgImageA, dbgImageB) &&
+		dbgImageA == idxImageA && dbgImageB == idxImageB)
+	{
+		const int width(sizeA.width), height(sizeA.height);
+		Image32F imgA(sizeA), imgAB(sizeA);
+		Image8U _mask(sizeA);
+		Image32F _varA(sizeA), _varAB(sizeA), _zncc(sizeA), _dzncc(sizeA);
+		reportCudaError(views[idxImageA].image.GetData(imgA));
+		reportCudaError(imageAB.GetData(imgAB));
+		reportCudaError(mask.GetData(_mask));
+		reportCudaError(imageVarA.GetData(_varA));
+		reportCudaError(imageVarAB.GetData(_varAB));
+		reportCudaError(imageZNCC.GetData(_zncc));
+		reportCudaError(imageDZNCC.GetData(_dzncc));
+		Image32F conf(sizeA);
+		for (int r=0; r<height; ++r)
+			for (int c=0; c<width; ++c)
+				conf(r,c) = _mask(r,c) ? Refine::ZnccReliability(_varA(r,c), _varAB(r,c)) : 0.f;
+		RefineDebug::ExportPairMap(nScale, iteration, idxImageA, idxImageB, "imageA", imgA.getData(), width, height);
+		RefineDebug::ExportPairMap(nScale, iteration, idxImageA, idxImageB, "imageAB", imgAB.getData(), width, height);
+		RefineDebug::ExportPairMap(nScale, iteration, idxImageA, idxImageB, "zncc", _zncc.getData(), width, height);
+		RefineDebug::ExportPairMap(nScale, iteration, idxImageA, idxImageB, "dzncc", _dzncc.getData(), width, height);
+		RefineDebug::ExportPairMap(nScale, iteration, idxImageA, idxImageB, "conf", conf.getData(), width, height);
+		RefineDebug::ExportPairMask(nScale, iteration, idxImageA, idxImageB, _mask.getData(), width, height);
+	}
+
 	const float RegularizationScale((float)((REAL)(imageDataA.avgDepth*imageDataB.avgDepth)/(cameraA.GetFocalLength()*cameraB.GetFocalLength())));
 	ComputePhotometricGradient(cameraA, cameraB, sizeA, idxImageA, idxImageB, scene.mesh.vertices.GetSize(), RegularizationScale);
 }
@@ -675,18 +763,10 @@ void MeshRefineCUDA::ImageMeshWarp(
 		(const float*)(CUdeviceptr)views[idxImageB].depthMap,
 		(uint8_t*)(CUdeviceptr)mask,
 		MakeCUDACamera(cameraA, size),
-		MakeCUDACamera(cameraB, size),
+		MakeCUDACamera(cameraB, views[idxImageB].size),
 		viewGPU[idxImageB].texObj,
 		viewGPU[idxImageA].surfObj,
 		surfImageProjObj);
-	#if 0
-	// debug view
-	Image16F _imageAB(size);
-	Image8U _mask(size);
-	imageAB.GetData(_imageAB);
-	mask.GetData(_mask);
-	Image32F __imageAB(cvtImage<hfloat,float>(_imageAB));
-	#endif
 }
 
 // compute local variance for each image pixel
@@ -740,13 +820,6 @@ void MeshRefineCUDA::ComputeLocalZNCC(cudaSurfaceObject_t surfImageA, cudaSurfac
 		(float*)(CUdeviceptr)imageDZNCC,
 		surfImageA, surfImageProj,
 		size.width, size.height, HalfSize);
-	#if 0
-	// debug view
-	Image32F _imageZNCC(size);
-	Image32F _imageDZNCC(size);
-	imageZNCC.GetData(_imageZNCC);
-	imageDZNCC.GetData(_imageDZNCC);
-	#endif
 }
 
 // compute the photometric gradient for all vertices seen by an image pair
@@ -755,6 +828,16 @@ void MeshRefineCUDA::ComputePhotometricGradient(const Camera& cameraA, const Cam
 {
 	// compute photometric gradient for all visible vertices
 	reportCudaError(cuMemsetD32(photoGradPixels, 0, numVertices));
+	// WP2 parity diagnostic: per-pixel photometric scalar (the CPU's sg) + face id, same
+	// gating as the pair-map block in ProcessPair(); no-op unless the debug pair matches
+	uint32_t dbgImageA, dbgImageB;
+	const bool dbgPair(!RefineDebug::Dir().empty() && RefineDebug::Pair(dbgImageA, dbgImageB) &&
+		dbgImageA == idxImageA && dbgImageB == idxImageB);
+	const size_t area((size_t)size.area());
+	if (dbgPair) {
+		reportCudaError(debugSG.Reset(sizeof(float)*area));
+		reportCudaError(cuMemsetD32(debugSG, 0, area));
+	}
 	MVS::CUDA::LaunchComputePhotometricGradient(
 		(const MVS::CUDA::Point3u*)(CUdeviceptr)faces,
 		(const MVS::CUDA::Point3*)(CUdeviceptr)faceNormals,
@@ -765,11 +848,26 @@ void MeshRefineCUDA::ComputePhotometricGradient(const Camera& cameraA, const Cam
 		(const uint8_t*)(CUdeviceptr)mask,
 		(MVS::CUDA::Point3*)(CUdeviceptr)photoGrad,
 		(float*)(CUdeviceptr)photoGradPixels,
+		dbgPair ? (float*)(CUdeviceptr)debugSG : NULL,
 		MakeCUDACamera(cameraA, size),
-		MakeCUDACamera(cameraB, size),
-		viewGPU[idxImageB].texObj,
+		MakeCUDACamera(cameraB, views[idxImageB].size),
+		viewGPU[idxImageB].texGrad[0], viewGPU[idxImageB].texGrad[1],
 		RegularizationScale,
 		size.width, size.height);
+	if (dbgPair) {
+		// the raw face map of A (-1 where nothing was rasterised; NOT masked, so rasterisation
+		// and warp differences can be told apart), same as the CPU export
+		Image32F sg(size), faceF(size);
+		TImage<uint32_t> faceMap(size);
+		reportCudaError(debugSG.GetData(sg.getData(), sizeof(float)*area));
+		reportCudaError(views[idxImageA].faceMap.GetData(faceMap.getData(), sizeof(uint32_t)*area));
+		for (int r=0; r<size.height; ++r)
+			for (int c=0; c<size.width; ++c)
+				faceF(r,c) = faceMap(r,c) == NO_ID ? -1.f : (float)faceMap(r,c);
+		RefineDebug::ExportPairMap(nScale, iteration, idxImageA, idxImageB, "sg", sg.getData(), size.width, size.height);
+		RefineDebug::ExportPairMap(nScale, iteration, idxImageA, idxImageB, "face", faceF.getData(), size.width, size.height);
+		debugSG.Release();
+	}
 	// update photometric gradient norm for all visible vertices
 	MVS::CUDA::LaunchUpdatePhotoGradNorm(
 		(float*)(CUdeviceptr)photoGradNorm,
@@ -794,6 +892,7 @@ void MeshRefineCUDA::ComputeSmoothnessGradient(uint32_t numVertices)
 		(const uint32_t*)(CUdeviceptr)vertexVerticesCont,
 		(const uint32_t*)(CUdeviceptr)vertexVerticesSizes,
 		(const uint32_t*)(CUdeviceptr)vertexVerticesPointers,
+		(const uint8_t*)(CUdeviceptr)vertBoundary,
 		(MVS::CUDA::Point3*)(CUdeviceptr)smoothGrad1,
 		numVertices, uint8_t(0));
 	MVS::CUDA::LaunchComputeSmoothnessGradient(
@@ -801,6 +900,7 @@ void MeshRefineCUDA::ComputeSmoothnessGradient(uint32_t numVertices)
 		(const uint32_t*)(CUdeviceptr)vertexVerticesCont,
 		(const uint32_t*)(CUdeviceptr)vertexVerticesSizes,
 		(const uint32_t*)(CUdeviceptr)vertexVerticesPointers,
+		(const uint8_t*)(CUdeviceptr)vertBoundary,
 		(MVS::CUDA::Point3*)(CUdeviceptr)smoothGrad2,
 		numVertices, uint8_t(1));
 	#if 0
@@ -870,6 +970,7 @@ bool Scene::RefineMeshCUDA(unsigned nResolutionLevel, unsigned nMinResolution, u
 		DEBUG_ULTIMATE("Refine mesh at: %.2f image scale", scale);
 		if (!refine.InitImages(scale, 0.12f*step+0.2f))
 			return false;
+		refine.nScale = nScale;
 
 		// extract array of triangles incident to each vertex
 		refine.ListVertexFacesPre();
@@ -903,6 +1004,16 @@ bool Scene::RefineMeshCUDA(unsigned nResolutionLevel, unsigned nMinResolution, u
 			refine.ratioRigidityElasticity = (iter <= iterStop ? fRatioRigidityElasticity : 1.f);
 			// evaluate residuals and gradients
 			refine.ScoreMesh(gradients.data());
+			// a CUDA fault poisons the whole context: every later call fails, so without this the
+			// loop keeps "refining" a mesh nothing updates any more and still returns success --
+			// an illegal access in kernelImageMeshWarp did exactly that for an entire benchmark
+			// round, logging 85k errors and producing a half-refined mesh with a zero exit code.
+			// Giving up here lets the caller fall back to the CPU path, which produces a real mesh.
+			if (cuCtxSynchronize() != CUDA_SUCCESS) {
+				GET_LOGCONSOLE().Play();
+				VERBOSE("error: CUDA mesh refinement failed at scale %u, iteration %d", nScale, iter+1);
+				return false;
+			}
 			// apply gradients
 			float gv(0);
 			FOREACH(v, mesh.vertices) {

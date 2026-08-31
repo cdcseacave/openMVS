@@ -31,6 +31,7 @@
 
 #include "../../libs/MVS/Common.h"
 #include "../../libs/MVS/Scene.h"
+#include "../../libs/MVS/SceneRefineCommon.h"
 #include <boost/program_options.hpp>
 
 using namespace MVS;
@@ -68,6 +69,7 @@ unsigned nArchiveType;
 int nProcessPriority;
 unsigned nMaxThreads;
 String strExportType;
+String strRefineConfigFileName;
 String strConfigFileName;
 boost::program_options::variables_map vm;
 } // namespace OPT
@@ -130,9 +132,10 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("alternate-pair", boost::program_options::value(&OPT::nAlternatePair)->default_value(0), "refine mesh using an image pair alternatively as reference (0 - both, 1 - alternate, 2 - only left, 3 - only right)")
 		("regularity-weight", boost::program_options::value(&OPT::fRegularityWeight)->default_value(0.2f), "scalar regularity weight to balance between photo-consistency and regularization terms during mesh optimization")
 		("rigidity-elasticity-ratio", boost::program_options::value(&OPT::fRatioRigidityElasticity)->default_value(0.9f), "scalar ratio used to compute the regularity gradient as a combination of rigidity and elasticity")
-		("gradient-step", boost::program_options::value(&OPT::fGradientStep)->default_value(45.05f), "gradient step to be used instead (0 - auto)")
+		("gradient-step", boost::program_options::value(&OPT::fGradientStep)->default_value(45.05f), "max iterations and initial step in pixels (N.s: N iterations, sx10 px; 0 - Ceres)")
 		("planar-vertex-ratio", boost::program_options::value(&OPT::fPlanarVertexRatio)->default_value(0.f), "threshold used to remove vertices on planar patches (0 - disabled)")
 		("reduce-memory", boost::program_options::value(&OPT::nReduceMemory)->default_value(1), "recompute some data in order to reduce memory requirements")
+		("refine-config-file", boost::program_options::value<std::string>(&OPT::strRefineConfigFileName), "optional configuration file for the refiner (overwritten by the command line options)")
 		;
 
 	boost::program_options::options_description cmdline_options;
@@ -186,6 +189,21 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		OPT::strMeshFileName = Util::getFileFullName(OPT::strInputFileName) + _T(".ply");
 	if (OPT::strOutputFileName.empty())
 		OPT::strOutputFileName = Util::getFileFullName(OPT::strInputFileName) + _T("_refine.mvs");
+
+	// init refine options
+	if (!OPT::strRefineConfigFileName.empty())
+		OPT::strRefineConfigFileName = MAKE_PATH_SAFE(OPT::strRefineConfigFileName);
+	OPTREFINE::init();
+	const bool bValidRefineConfig(OPTREFINE::oConfig.Load(OPT::strRefineConfigFileName));
+	OPTREFINE::update();
+	if (!bValidRefineConfig && !OPT::strRefineConfigFileName.empty())
+		OPTREFINE::oConfig.Save(OPT::strRefineConfigFileName);
+	#if TD_VERBOSE != TD_VERBOSE_OFF
+	if (VERBOSITY_LEVEL > 2)
+		DEBUG_EXTRA("OPTREFINE: ignoreMaskLabel=%d photoTerm=%d photoNorm=%d imageGradient=%d boundaryMode=%d gateMeanDiff=%g gateVarRatio=%g optimizer=%d",
+			OPTREFINE::nIgnoreMaskLabel, OPTREFINE::nPhotoTerm, OPTREFINE::nPhotoNorm, OPTREFINE::nImageGradient,
+			OPTREFINE::nBoundaryMode, OPTREFINE::fGateMeanDiff, OPTREFINE::fGateVarRatio, OPTREFINE::nOptimizer);
+	#endif
 
 	MVS::Initialize(APPNAME, OPT::nMaxThreads, OPT::nProcessPriority);
 	return true;

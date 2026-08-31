@@ -31,6 +31,8 @@
 
 #include "Common.h"
 #include "Scene.h"
+#include "SceneRefineCommon.h"
+#include "SceneRefineStep.h"
 
 using namespace MVS;
 
@@ -40,10 +42,6 @@ using namespace MVS;
 // uncomment to ensure edge size and improve vertex valence
 // (should enable more stable flow)
 #define MESHOPT_ENSUREEDGESIZE 1 // 0 - at all resolution
-
-// uncomment to use constant z-buffer bias
-// (should be enough, as the numerical error does not depend on the depth)
-#define MESHOPT_DEPTHCONSTBIAS 0.05f
 
 // uncomment to enable memory pool
 // (should reduce the allocation times for frequent used images)
@@ -117,7 +115,26 @@ public:
 			faceMap.memset((uint8_t)NO_ID);
 			baryMap.memset(0);
 		}
+		// accept any vertex in front of the camera and let RasterizeTriangleBary (CULL=true by
+		// default, Types.h/.inl) clip the triangle to the image; the inherited
+		// TRasterMeshBase::ProjectVertex additionally requires the projected point to be inside a
+		// hardcoded 3px border, which drops the WHOLE face -- including its valid interior pixels
+		// -- the moment any single one of its 3 vertices is within that border of (or outside) the
+		// image edge. Border rejection now happens per-pixel in Raster() below instead.
+		inline bool ProjectVertex(const Point3f& pt, int v, Triangle& t) {
+			t.ptc[v] = camera.TransformPointW2C(Cast<REAL>(pt));
+			if (t.ptc[v].z <= 0)
+				return false;
+			t.pti[v] = camera.TransformPointC2I(t.ptc[v]);
+			return true;
+		}
 		void Raster(const ImageRef& pt, const Triangle& t, const Point3f& bary) {
+			// RasterizeTriangleBary only clips to the image itself; since ProjectVertex above no
+			// longer enforces a per-vertex border, enforce the shared Refine::Border margin here,
+			// per-pixel (same margin the per-pixel window-statistics code requires elsewhere)
+			if (pt.x < Refine::Border || pt.y < Refine::Border ||
+				pt.x >= depthMap.cols-Refine::Border || pt.y >= depthMap.rows-Refine::Border)
+				return;
 			const Point3f pbary(PerspectiveCorrectBarycentricCoordinates(t, bary));
 			const Depth z(ComputeDepth(t, pbary));
 			ASSERT(z > Depth(0));
@@ -164,7 +181,13 @@ public:
 	static void ComputeLocalVariance(
 		const Image32F& image, const BitMatrix& mask,
 		TImage<Real>& imageMean, TImage<Real>& imageVar);
-	static float ComputeLocalZNCC(
+	// the two sums one pair-direction contributes to the reliability-weighted score S:
+	// sumRZ over its masked pixels, and the weight sum sumR that normalizes it
+	struct PairScore {
+		float sumRZ; // Sum r*(1-ZNCC)
+		float sumR; // Sum r
+	};
+	static PairScore ComputeLocalZNCC(
 		const Image32F& imageA, const TImage<Real>& imageMeanA, const TImage<Real>& imageVarA,
 		const Image32F& imageB, const TImage<Real>& imageMeanB, const TImage<Real>& imageVarB,
 		const BitMatrix& mask, TImage<Real>& imageZNCC, TImage<Real>& imageDZNCC);
@@ -172,7 +195,8 @@ public:
 		const Mesh::FaceArr& faces, const Mesh::NormalArr& normals,
 		const DepthMap& depthMapA, const FaceMap& faceMapA, const BaryMap& baryMapA, const Camera& cameraA,
 		const Camera& cameraB, const View& viewB,
-		const TImage<Real>& imageDZNCC, const BitMatrix& mask, GradArr& photoGrad, UnsignedArr& photoGradNorm, Real RegularizationScale);
+		const TImage<Real>& imageDZNCC, const BitMatrix& mask, GradArr& photoGrad, UnsignedArr& photoGradNorm, FloatArr& footprint, Real RegularizationScale,
+		TImage<Real>* debugSG = NULL); // WP2 parity diagnostic only: receives the per-pixel photometric scalar (see RefineDebug)
 	static float ComputeSmoothnessGradient1(
 		const Mesh::VertexArr& vertices, const Mesh::VertexVerticesArr& vertexVertices, const BoolArr& vertexBoundary,
 		GradArr& smoothGrad1, VIndex idxStart, VIndex idxEnd);
@@ -203,6 +227,7 @@ public:
 	const unsigned nReduceMemory; // recompute image mean and variance in order to reduce memory requirements
 	unsigned nAlternatePair; // using an image pair alternatively as reference image (0 - both, 1 - alternate, 2 - only left, 3 - only right)
 	unsigned iteration; // current refinement iteration
+	unsigned nScale; // current refinement scale (0-based, coarsest first; RefineDebug export file naming only)
 
 	Scene& scene; // the mesh vertices and faces
 
@@ -211,9 +236,23 @@ public:
 	float scoreSmooth;
 	GradArr photoGrad;
 	FloatArr photoGradNorm;
-	FloatArr vertexDepth;
+	FloatArr vertexDepth; // per-pair-direction min-seen avgDepth; feeds only the planar-vertex
+	                      // removal pass in Scene::RefineMesh (fThPlanarVertex) -- unrelated to
+	                      // footprint below, which is a real per-vertex depth/focal-length ratio
 	GradArr smoothGrad1;
 	GradArr smoothGrad2;
+
+	// reliability-weighted photo-consistency score (S = sumRZ/sumR): invariant to scene scale,
+	// contrast, resolution and pair count, unlike scorePhoto which is weighted by
+	// RegularizationScale and summed rather than averaged; sumR/sumRZ accumulate the reliability
+	// weight r and r*(1-ZNCC) over every pixel that contributes to a pair-direction's score
+	float sumR;
+	float sumRZ;
+	float S;
+	// per-vertex footprint, scene units per pixel: min over pair-directions of the camera-A
+	// depth/focal-length ratio at the current scale; 0 for a vertex no pair-direction saw, so
+	// footprint[v] > 0 exactly where photoGradNorm[v] (c_v) > 0
+	FloatArr footprint;
 
 	// valid after ListCameraFaces()
 	Mesh::NormalArr& faceNormals; // normals corresponding to each face
@@ -236,7 +275,7 @@ public:
 	static CriticalSection cs; // mutex
 	static Semaphore sem; // signal job end
 
-	enum { HalfSize = 3 }; // half window size used to compute ZNCC
+	enum { HalfSize = Refine::HalfSize }; // half window size used to compute ZNCC (shared with CUDA, SceneRefineCommon.h)
 };
 
 // call with empty parameter to get an unused image;
@@ -397,6 +436,7 @@ bool MeshRefine::InitImages(Real scale, Real sigma)
 		events.AddEvent(new EVTInitImage(idxImage, scale, sigma));
 	WaitThreadWorkers(images.GetSize());
 	iteration = 0;
+	nScale = 0;
 	return true;
 }
 
@@ -592,10 +632,14 @@ double MeshRefine::ScoreMesh(double* gradients)
 	// between the reference image and the pixels of the second image
 	// projected in the reference image through the mesh surface
 	scorePhoto = 0;
+	sumR = 0;
+	sumRZ = 0;
 	photoGrad.Resize(vertices.GetSize());
 	photoGrad.Memset(0);
 	photoGradNorm.Resize(vertices.GetSize());
 	photoGradNorm.Memset(0);
+	footprint.Resize(vertices.GetSize());
+	footprint.MemsetValue(FLT_MAX); // sentinel, resolved to 0 for unseen vertices once every pair-direction has run
 	if (!vertexDepth.IsEmpty()) {
 		ASSERT(vertexDepth.GetSize() == vertices.GetSize());
 		vertexDepth.MemsetValue(FLT_MAX);
@@ -619,6 +663,22 @@ double MeshRefine::ScoreMesh(double* gradients)
 		}
 	}
 	WaitThreadWorkers(nAlternatePair ? pairs.GetSize() : pairs.GetSize()*2);
+
+	// resolve the footprint sentinel: a vertex no pair-direction saw keeps the documented 0
+	// (contract: footprint[v] > 0 exactly where photoGradNorm[v] > 0)
+	FOREACH(v, footprint) {
+		if (photoGradNorm[v] > 0) {
+			ASSERT(footprint[v] > 0 && footprint[v] < FLT_MAX);
+		} else {
+			footprint[v] = 0;
+		}
+	}
+
+	// S = sumRZ/sumR, the reliability-weighted mean of (1-ZNCC); degenerate only if no
+	// pair-direction contributed a single pixel, which ScoreMesh is not designed to run on
+	ASSERT(sumR > 0);
+	S = sumRZ/sumR;
+	ASSERT(S >= 0 && S <= 2);
 
 	// loop through all vertices and compute the smoothing score
 	scoreSmooth = 0;
@@ -663,6 +723,22 @@ double MeshRefine::ScoreMesh(double* gradients)
 				Cast<double>(photoGrad[v]/photoGradNorm[v] + smoothGrad2[v]*elasticity - smoothGrad1[v]*rigidity) :
 				Cast<double>(smoothGrad2[v]*elasticity - smoothGrad1[v]*rigidity);
 	}
+
+	// WP2 parity diagnostic: dump the per-vertex terms this iteration combined,
+	// right before they are gone (photoGrad/smoothGrad1/smoothGrad2 get
+	// overwritten next ScoreMesh() call); no-op unless OMVS_REFINE_DEBUG_DIR is set
+	if (!RefineDebug::Dir().empty()) {
+		GradArr combined(vertices.GetSize());
+		FOREACH(v, vertices)
+			combined[v] = Cast<float>(((const Point3d*)gradients)[v]);
+		cList<uint8_t,uint8_t,0> boundary(vertices.GetSize());
+		FOREACH(v, vertices)
+			boundary[v] = vertexBoundary[v] ? 1 : 0;
+		RefineDebug::ExportGradients(nScale, iteration, vertices.GetSize(),
+			vertices.Begin(), combined.Begin(), photoGrad.Begin(), photoGradNorm.Begin(),
+			smoothGrad1.Begin(), smoothGrad2.Begin(), boundary.Begin());
+	}
+
 	return (nAlternatePair ? 0.2f : 0.1f)*scorePhoto + 0.01f*scoreSmooth;
 }
 
@@ -712,18 +788,30 @@ T MeshRefine::ProjectVertex(const TP* P, const TX* X, T* x, TJ* jacobian)
 // check if any of the depths surrounding the given coordinate is similar to the given value
 bool MeshRefine::IsDepthSimilar(const DepthMap& depthMap, const Point2f& pt, Depth z)
 {
+	// the whole 2x2 neighbourhood read below must be inside the shared Refine::Border margin,
+	// tested as a single block (same rule as CUDA's kernelImageMeshWarp); the old per-corner
+	// isInsideWithBorder<int,3>(ir) test independently skipped a failing corner instead of
+	// rejecting the whole block, so its effective margin was 1px short of the intended 3px.
+	// The range test is in FLOAT, before FLOOR2INT: the caller projects a point whose depth in the
+	// other camera can be positive but arbitrarily small, so pt can be far outside any int range,
+	// and converting first then testing "tl.x+1 >= cols-Border" overflows and wrongly passes.
+	// Border and the sizes being integers, this is exactly the floor-based test it replaces, and it
+	// also rejects a non-finite pt. The identical hole in the CUDA twin indexed a depth map 3.4 GB
+	// out of bounds; here it only read whatever heap followed the depth map, which is why it went
+	// unnoticed for years.
+	if (!(pt.x >= (float)Refine::Border && pt.y >= (float)Refine::Border &&
+		  pt.x < (float)(depthMap.cols-Refine::Border-1) && pt.y < (float)(depthMap.rows-Refine::Border-1)))
+		return false;
 	const ImageRef tl(FLOOR2INT(pt));
+	ASSERT(tl.x >= Refine::Border && tl.y >= Refine::Border &&
+		   tl.x+1 < depthMap.cols-Refine::Border && tl.y+1 < depthMap.rows-Refine::Border);
 	for (int x=0; x<2; ++x) {
 		for (int y=0; y<2; ++y) {
 			const ImageRef ir(tl.x+x, tl.y+y);
-			if (!depthMap.isInsideWithBorder<int,3>(ir))
-				continue;
 			const Depth& depth = depthMap(ir);
-			#ifndef MESHOPT_DEPTHCONSTBIAS
-			if (depth <= 0 || ABS(depth-z) > z*0.01f /*!IsDepthSimilar(depth, z, 0.01f)*/)
-			#else
-			if (depth <= 0 || depth+MESHOPT_DEPTHCONSTBIAS < z)
-			#endif
+			// occlusion test only (shared Refine::DepthConstBias, same rule as kernelImageMeshWarp);
+			// the symmetric 1 % test that used to sit behind an #ifndef here was never compiled in
+			if (depth <= 0 || depth+Refine::DepthConstBias < z)
 				continue;
 			return true;
 		}
@@ -828,7 +916,7 @@ void MeshRefine::ComputeLocalVariance(const Image32F& image, const BitMatrix& ma
 }
 
 // compute local ZNCC and its gradient for each image pixel
-float MeshRefine::ComputeLocalZNCC(
+MeshRefine::PairScore MeshRefine::ComputeLocalZNCC(
 	const Image32F& imageA, const TImage<Real>& imageMeanA, const TImage<Real>& imageVarA,
 	const Image32F& imageB, const TImage<Real>& imageMeanB, const TImage<Real>& imageVarB,
 	const BitMatrix& mask, TImage<Real>& imageZNCC, TImage<Real>& imageDZNCC)
@@ -859,6 +947,9 @@ float MeshRefine::ComputeLocalZNCC(
 				imageABSum(r+HalfSize+1, c-HalfSize  ) -
 				imageABSum(r-HalfSize,   c+HalfSize+1) +
 				imageABSum(r-HalfSize,   c-HalfSize  ) ) * (1.0/(double)n));
+			// ComputeLocalVariance floors both variances at 1e-4, so this can never be a divide
+			// by zero or a denormal -- assert the producer's contract instead of guarding here
+			ASSERT(imageVarA(r,c) > 0 && imageVarB(r,c) > 0);
 			const Real invSqrtVAVB(Real(1)/SQRT(imageVarA(r,c)*imageVarB(r,c)));
 			imageZNCC(r,c) = (cv - imageMeanA(r,c)*imageMeanB(r,c)) * invSqrtVAVB;
 			imageInvSqrtVAVB(r,c) = invSqrtVAVB;
@@ -866,45 +957,23 @@ float MeshRefine::ComputeLocalZNCC(
 	}
 	DST_Image(imageABSum);
 	imageDZNCC.memset(0);
+	Real sumR(0);
 	for (int r=HalfSize; r<RowsEnd; ++r) {
 		for (int c=HalfSize; c<ColsEnd; ++c) {
 			if (!mask(r,c))
 				continue;
-			#if 1
 			const Real ZNCC(imageZNCC(r,c));
 			const Real invSqrtVAVB(imageInvSqrtVAVB(r,c));
 			const Real ZNCCinvVB(ZNCC/imageVarB(r,c));
 			const Real dZNCC((Real)imageA(r,c)*invSqrtVAVB - (Real)imageB(r,c)*ZNCCinvVB + imageMeanB(r,c)*ZNCCinvVB - imageMeanA(r,c)*invSqrtVAVB);
-			#else
-			Real sumA(0), sumB(0), sumC(0);
-			int n(0);
-			for (int i=-HalfSize; i<=HalfSize; ++i) {
-				const int rw(r+i);
-				for (int j=-HalfSize; j<=HalfSize; ++j) {
-					const int cw(c+j);
-					if (!mask(rw,cw))
-						continue;
-					const Real invSqrtVAVB(imageInvSqrtVAVB(rw,cw));
-					const Real ZNCCinvVB(imageZNCC(rw,cw)/imageVarB(rw,cw));
-					sumA += invSqrtVAVB;
-					sumB -= ZNCCinvVB;
-					sumC += imageMeanB(rw,cw)*ZNCCinvVB - imageMeanA(rw,cw)*invSqrtVAVB;
-					++n;
-				}
-			}
-			if (n == 0)
-				continue;
-			const Real dZNCC((sumA*imageA(r,c) + sumB*imageB(r,c) + sumC)/(Real)n);
-			const Real ZNCC(imageZNCC(r,c));
-			#endif
-			const Real minVAVB(MINF(imageVarA(r,c),imageVarB(r,c)));
-			const Real ReliabilityFactor(minVAVB/(minVAVB+Real(0.0015)));
+			const Real ReliabilityFactor(Refine::ZnccReliability(imageVarA(r,c), imageVarB(r,c)));
 			imageDZNCC(r,c) = -ReliabilityFactor*dZNCC;
 			score += (float)(ReliabilityFactor*(Real(1)-ZNCC));
+			sumR += ReliabilityFactor;
 		}
 	}
 	DST_Image(imageInvSqrtVAVB);
-	return score;
+	return PairScore{score, (float)sumR};
 }
 
 // compute the photometric gradient for all vertices seen by an image pair
@@ -912,9 +981,11 @@ void MeshRefine::ComputePhotometricGradient(
 	const Mesh::FaceArr& faces, const Mesh::NormalArr& normals,
 	const DepthMap& depthMapA, const FaceMap& faceMapA, const BaryMap& baryMapA, const Camera& cameraA,
 	const Camera& cameraB, const View& viewB,
-	const TImage<Real>& imageDZNCC, const BitMatrix& mask, GradArr& photoGrad, UnsignedArr& photoGradNorm, Real RegularizationScale)
+	const TImage<Real>& imageDZNCC, const BitMatrix& mask, GradArr& photoGrad, UnsignedArr& photoGradNorm, FloatArr& footprint, Real RegularizationScale,
+	TImage<Real>* debugSG)
 {
 	ASSERT(faces.GetSize() == normals.GetSize() && !faces.IsEmpty());
+	ASSERT(debugSG == NULL || debugSG->size() == mask.size());
 	ASSERT(depthMapA.size() == mask.size() && faceMapA.size() == mask.size() && baryMapA.size() == mask.size() && imageDZNCC.size() == mask.size() && !mask.empty());
 	ASSERT(viewB.image.size() == viewB.imageGrad.size() && !viewB.image.empty());
 	const int RowsEnd(mask.rows-HalfSize);
@@ -925,6 +996,7 @@ void MeshRefine::ComputePhotometricGradient(
 	Point2f xB;
 	photoGrad.Memset(0);
 	photoGradNorm.Memset(0);
+	footprint.MemsetValue(FLT_MAX); // sentinel; ThProcessPair only min-merges the vertices this direction actually saw
 	for (int r=HalfSize; r<RowsEnd; ++r) {
 		for (int c=HalfSize; c<ColsEnd; ++c) {
 			if (!mask(r,c))
@@ -941,6 +1013,8 @@ void MeshRefine::ComputePhotometricGradient(
 			#endif
 			const Depth depthA(depthMapA(r,c));
 			ASSERT(depthA > 0);
+			// scene units per pixel at this vertex, camera A, current scale (Camera::GetFootprintWorld)
+			const Real f(cameraA.GetFootprintWorld(depthA));
 			const Point3 X(rayA*REAL(depthA)+cameraA.C);
 			// project point in second image and
 			// projection Jacobian matrix in the second image of the 3D point on the surface
@@ -951,6 +1025,8 @@ void MeshRefine::ComputePhotometricGradient(
 			// compute gradient scale
 			const Real dZNCC(imageDZNCC(r,c));
 			const Real sg((gB*(xJac*(const TMatrix<Real,3,1>&)dA))(0)*dZNCC*RegularizationScale/Nd);
+			if (debugSG)
+				(*debugSG)(r,c) = sg;
 			// add gradient to the three vertices
 			const Face& face(faces[idxFace]);
 			const Point3f& b(baryMapA(r,c));
@@ -959,6 +1035,8 @@ void MeshRefine::ComputePhotometricGradient(
 				const VIndex idxVert(face[v]);
 				photoGrad[idxVert] += g;
 				++photoGradNorm[idxVert];
+				if (f < footprint[idxVert])
+					footprint[idxVert] = f;
 			}
 		}
 	}
@@ -1077,40 +1155,17 @@ void MeshRefine::ThInitImage(uint32_t idxImage, Real scale, Real sigma)
 	if (!imageData.IsValid())
 		return;
 	// load and init image
-	unsigned level(nResolutionLevel);
-	const unsigned imageSize(imageData.RecomputeMaxResolution(level, nMinResolution));
-	if ((imageData.image.empty() || MAXF(imageData.width,imageData.height) != imageSize) && !imageData.ReloadImage(imageSize))
-		ABORT("can not load image");
 	View& view = views[idxImage];
 	Image32F& img = view.image;
-	imageData.image.toGray(img, cv::COLOR_BGR2GRAY, true);
-	imageData.image.release();
-	if (sigma > 0)
-		cv::GaussianBlur(img, img, cv::Size(), sigma);
-	if (scale < 1.0) {
-		cv::resize(img, img, cv::Size(), scale, scale, cv::INTER_AREA);
-		imageData.width = img.width(); imageData.height = img.height();
-	}
-	imageData.UpdateCamera(scene.platforms);
+	if (!PrepareRefineImage(imageData, scene.platforms, nResolutionLevel, nMinResolution, scale, sigma, img))
+		ABORT("can not load image");
 	if (!nReduceMemory) {
 		// compute image mean and variance
 		ComputeLocalVariance(img, BitMatrix(img.size(), 0xFF), view.imageMean, view.imageVar);
 	}
-	// compute image gradient
-	typedef View::Grad::Type GradType;
-	TImage<GradType> grad[2];
-	#if 0
-	cv::Sobel(img, grad[0], cv::DataType<GradType>::type, 1, 0, 3, 1.0/8.0);
-	cv::Sobel(img, grad[1], cv::DataType<GradType>::type, 0, 1, 3, 1.0/8.0);
-	#elif 1
-	const TMatrix<GradType,3,5> kernel(CreateDerivativeKernel3x5());
-	cv::filter2D(img, grad[0], cv::DataType<GradType>::type, kernel);
-	cv::filter2D(img, grad[1], cv::DataType<GradType>::type, kernel.t());
-	#else
-	const TMatrix<GradType,5,7> kernel(CreateDerivativeKernel5x7());
-	cv::filter2D(img, grad[0], cv::DataType<GradType>::type, kernel);
-	cv::filter2D(img, grad[1], cv::DataType<GradType>::type, kernel.t());
-	#endif
+	// compute image gradient (the same estimator on both backends)
+	Image32F grad[2];
+	ComputeRefineImageGradient(img, grad[0], grad[1]);
 	cv::merge(grad, 2, view.imageGrad);
 }
 void MeshRefine::ThProjectMesh(uint32_t idxImage, const Mesh::FaceIdxArr& cameraFaces)
@@ -1163,7 +1218,35 @@ void MeshRefine::ThProcessPair(uint32_t idxImageA, uint32_t idxImageB)
 	ComputeLocalVariance(imageAB, mask, imageMeanAB, imageVarAB);
 	DEC_Image(Real, imageZNCC);
 	DEC_Image(Real, imageDZNCC);
-	const float score(ComputeLocalZNCC(imageA, *imageMeanA, *imageVarA, imageAB, imageMeanAB, imageVarAB, mask, imageZNCC, imageDZNCC));
+	const PairScore pairScore(ComputeLocalZNCC(imageA, *imageMeanA, *imageVarA, imageAB, imageMeanAB, imageVarAB, mask, imageZNCC, imageDZNCC));
+
+	// WP2 parity diagnostic: dump this pair's maps before the pooled buffers
+	// above get recycled; no-op unless OMVS_REFINE_DEBUG_DIR/_PAIR are both set
+	// and match this exact (A,B) direction
+	uint32_t dbgImageA, dbgImageB;
+	const bool dbgPair(!RefineDebug::Dir().empty() && RefineDebug::Pair(dbgImageA, dbgImageB) &&
+		dbgImageA == idxImageA && dbgImageB == idxImageB);
+	if (dbgPair) {
+		DEC_Image(Real, conf);
+		conf.create(mask.size());
+		conf.memset(0);
+		for (int r=0; r<mask.rows; ++r)
+			for (int c=0; c<mask.cols; ++c)
+				if (mask(r,c))
+					conf(r,c) = Refine::ZnccReliability((*imageVarA)(r,c), imageVarAB(r,c));
+		Image8U maskU8(mask.rows, mask.cols);
+		for (int r=0; r<mask.rows; ++r)
+			for (int c=0; c<mask.cols; ++c)
+				maskU8(r,c) = mask(r,c) ? 1 : 0;
+		RefineDebug::ExportPairMap(nScale, iteration, idxImageA, idxImageB, "imageA", imageA.getData(), imageA.width(), imageA.height());
+		RefineDebug::ExportPairMap(nScale, iteration, idxImageA, idxImageB, "imageAB", imageAB.getData(), imageAB.width(), imageAB.height());
+		RefineDebug::ExportPairMap(nScale, iteration, idxImageA, idxImageB, "zncc", imageZNCC.getData(), imageZNCC.width(), imageZNCC.height());
+		RefineDebug::ExportPairMap(nScale, iteration, idxImageA, idxImageB, "dzncc", imageDZNCC.getData(), imageDZNCC.width(), imageDZNCC.height());
+		RefineDebug::ExportPairMap(nScale, iteration, idxImageA, idxImageB, "conf", conf.getData(), conf.width(), conf.height());
+		RefineDebug::ExportPairMask(nScale, iteration, idxImageA, idxImageB, maskU8.getData(), maskU8.width(), maskU8.height());
+		DST_Image(conf);
+	}
+
 	#ifdef MESHOPT_TYPEPOOL
 	DST_Image(imageZNCC);
 	DST_Image(imageVarAB);
@@ -1177,8 +1260,25 @@ void MeshRefine::ThProcessPair(uint32_t idxImageA, uint32_t idxImageB)
 	// compute field gradient
 	GradArr _photoGrad(photoGrad.GetSize());
 	UnsignedArr _photoGradNorm(photoGrad.GetSize());
+	FloatArr _footprint(photoGrad.GetSize());
 	const Real RegularizationScale((Real)((REAL)(imageDataA.avgDepth*imageDataB.avgDepth)/(cameraA.GetFocalLength()*cameraB.GetFocalLength())));
-	ComputePhotometricGradient(faces, faceNormals, depthMapA, faceMapA, baryMapA, cameraA, cameraB, viewB, imageDZNCC, mask, _photoGrad, _photoGradNorm, RegularizationScale);
+	TImage<Real> dbgSG;
+	if (dbgPair) {
+		dbgSG.create(mask.size());
+		dbgSG.memset(0);
+	}
+	ComputePhotometricGradient(faces, faceNormals, depthMapA, faceMapA, baryMapA, cameraA, cameraB, viewB, imageDZNCC, mask, _photoGrad, _photoGradNorm, _footprint, RegularizationScale, dbgPair ? &dbgSG : NULL);
+	if (dbgPair) {
+		// WP2 parity diagnostic, continued: the per-pixel photometric scalar each pixel
+		// hands to its face's 3 vertices, and the raw face map of A (-1 where nothing was
+		// rasterised; NOT masked, so rasterisation and warp differences can be told apart)
+		Image32F faceF(mask.size());
+		for (int r=0; r<mask.rows; ++r)
+			for (int c=0; c<mask.cols; ++c)
+				faceF(r,c) = faceMapA(r,c) == NO_ID ? -1.f : (float)faceMapA(r,c);
+		RefineDebug::ExportPairMap(nScale, iteration, idxImageA, idxImageB, "sg", dbgSG.getData(), dbgSG.width(), dbgSG.height());
+		RefineDebug::ExportPairMap(nScale, iteration, idxImageA, idxImageB, "face", faceF.getData(), faceF.width(), faceF.height());
+	}
 	DST_Image(imageDZNCC);
 	DST_BitMatrix(mask);
 	Lock l(cs);
@@ -1187,6 +1287,8 @@ void MeshRefine::ThProcessPair(uint32_t idxImageA, uint32_t idxImageB)
 			if (_photoGradNorm[i] > 0) {
 				photoGrad[i] += _photoGrad[i];
 				photoGradNorm[i] += 1.f;
+				if (_footprint[i] < footprint[i])
+					footprint[i] = _footprint[i];
 			}
 		}
 	} else {
@@ -1195,12 +1297,17 @@ void MeshRefine::ThProcessPair(uint32_t idxImageA, uint32_t idxImageB)
 			if (_photoGradNorm[i] > 0) {
 				photoGrad[i] += _photoGrad[i];
 				photoGradNorm[i] += 1.f;
+				if (_footprint[i] < footprint[i])
+					footprint[i] = _footprint[i];
 				if (vertexDepth[i] > depth)
 					vertexDepth[i] = depth;
 			}
 		}
 	}
-	scorePhoto += (float)RegularizationScale*score;
+	// raw (unscaled by RegularizationScale) reliability sums for S = sumRZ/sumR (ScoreMesh)
+	sumR += pairScore.sumR;
+	sumRZ += pairScore.sumRZ;
+	scorePhoto += (float)RegularizationScale*pairScore.sumRZ;
 }
 void MeshRefine::ThSmoothVertices1(VIndex idxStart, VIndex idxEnd)
 {
@@ -1292,6 +1399,21 @@ bool Scene::RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsig
 					   unsigned nScales, float fScaleStep,
 					   unsigned nAlternatePair, float fRegularityWeight, float fRatioRigidityElasticity, float fGradientStep, float fThPlanarVertex, unsigned nReduceMemory)
 {
+	// "--gradient-step N.s" means N iterations per scale and s*10 pixels of initial step (0 selects
+	// the Ceres arm where it is built in). The stepper measures its step in pixels and never lets it
+	// exceed MeshRefineStep::StepMax, so the fractional part has a real valid range; a value outside
+	// it is a user error and is reported here, at the entry point every caller goes through, rather
+	// than reaching the optimizer as a step nothing would honour
+	if (fGradientStep != 0) {
+		const float stepInit((fGradientStep-(float)FLOOR2INT(fGradientStep))*10.f);
+		if (stepInit <= 0 || stepInit > MeshRefineStep::StepMax) {
+			VERBOSE("error: --gradient-step %g asks for an initial step of %g px, outside (0, %g]:"
+				" pass N.s with a fractional part in (0, %g], for example 45.05 = 45 iterations at 0.5 px",
+				fGradientStep, stepInit, MeshRefineStep::StepMax, MeshRefineStep::StepMax*0.1f);
+			return false;
+		}
+	}
+
 	bool bGeneratedPointcloud(false);
 	if (pointcloud.IsEmpty() && !ImagesHaveNeighbors()) {
 		SampleMeshWithVisibility();
@@ -1312,6 +1434,7 @@ bool Scene::RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsig
 		DEBUG_ULTIMATE("Refine mesh at: %.2f image scale", scale);
 		if (!refine.InitImages(scale, Real(0.12)*step+Real(0.2)))
 			return false;
+		refine.nScale = nScale;
 
 		// extract array of triangles incident to each vertex
 		refine.ListVertexFacesPre();
@@ -1370,41 +1493,42 @@ bool Scene::RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsig
 		} else
 		#endif // MESHOPT_CERES
 		{
-			// loop a constant number of iterations and apply the gradient
-			int iters(75);
-			double gstep(0.4);
-			if (fGradientStep > 1) {
-				iters = FLOOR2INT(fGradientStep);
-				gstep = (fGradientStep-(float)iters)*10;
-			}
-			iters = MAXF(iters/(int)(nScale+1),8);
-			const int iterStop(iters*7/10);
-			const int iterStart(fThPlanarVertex > 0 ? iters*4/10 : INT_MAX);
+			// pixel-unit stepper (SceneRefineStep.h): fGradientStep is N.s, N the same per-scale
+			// iteration budget as before, s*10 the initial step in pixels
+			const int N(FLOOR2INT(fGradientStep));
+			const float eta0((fGradientStep-(float)N)*10.f);
+			const int cap(MAXF(N/(int)(nScale+1),8));
+			const bool bAlternating(nAlternatePair == 1);
+			const bool bPlanarHook(fThPlanarVertex > 0);
+
+			MeshRefineStep stepper;
+			stepper.Reset(refine.vertices.GetSize(), eta0, OPTREFINE::nOptimizer == 0);
+
 			Eigen::Matrix<double,Eigen::Dynamic,3,Eigen::RowMajor> gradients(refine.vertices.GetSize(),3);
-			Util::Progress progress(_T("Processed iterations"), iters);
+			// mirrors of the stepper's own accept-only S references, kept only to print the
+			// relative-change column below (the stepper exposes no getter for them)
+			float logScoreRef(FLT_MAX), logScoreRefAlt(FLT_MAX);
 			GET_LOGCONSOLE().Pause();
-			for (int iter=0; iter<iters; ++iter) {
-				refine.iteration = (unsigned)iter;
-				refine.nAlternatePair = (iter+1 < iters ? nAlternatePair : 0);
-				refine.ratioRigidityElasticity = (iter <= iterStop ? fRatioRigidityElasticity : 1.f);
-				const bool bAdaptMesh(iter >= iterStart && (iter-iterStart)%3 == 0 && iters-iter > 5);
-				// evaluate residuals and gradients
+
+			// one energy evaluation, stepper decision and log line; phaseCap/allowPlanarHook let
+			// the same body serve both phases below
+			const auto RunEvaluation = [&](Real rho, bool allowPlanarHook, int idx, int phaseCap) -> MeshRefineStep::Action {
+				refine.iteration = stepper.GetNumEvaluated();
+				refine.nAlternatePair = nAlternatePair;
+				refine.ratioRigidityElasticity = rho;
+				const unsigned numAcceptedSoFar(stepper.GetNumAccepted());
+				const bool bAdaptMesh(allowPlanarHook && numAcceptedSoFar >= 4 && (numAcceptedSoFar-4)%3 == 0 && phaseCap-idx > 5);
 				if (bAdaptMesh)
 					refine.vertexDepth.Resize(refine.vertices.GetSize());
-				const double cost = refine.ScoreMesh(gradients.data());
-				double gv(0);
+				refine.ScoreMesh(gradients.data());
 				VIndex numVertsRemoved(0);
 				if (bAdaptMesh) {
-					// apply gradients and
 					// remove planar vertices (small gradient and almost on the center of their surrounding patch)
 					ASSERT(refine.vertexDepth.GetSize() == refine.vertices.GetSize());
 					Mesh::VertexIdxArr vertexRemove;
 					FOREACH(v, refine.vertices) {
-						Vertex& vert = refine.vertices[v];
 						const Point3d grad(gradients.row(v));
-						vert -= Cast<Vertex::Type>(grad*gstep);
 						const double gn(norm(grad));
-						gv += gn;
 						const float depth(refine.vertexDepth[v]);
 						if (depth < FLT_MAX) {
 							const float th(depth*fThPlanarVertex);
@@ -1416,23 +1540,74 @@ bool Scene::RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsig
 						numVertsRemoved = vertexRemove.GetSize();
 						mesh.RemoveVerticesAndFill(vertexRemove);
 						refine.ListVertexFacesPost();
+						// the surface changed under the stepper: its undo buffer and its S no
+						// longer describe the same vertices, so the next evaluation cannot be
+						// rejected against the S just measured
+						stepper.TopologyChanged(refine.vertices.GetSize());
 					}
 					refine.vertexDepth.Empty();
-				} else {
-					// apply gradients
-					FOREACH(v, refine.vertices) {
-						Vertex& vert = refine.vertices[v];
-						const Point3d grad(gradients.row(v));
-						vert -= Cast<Vertex::Type>(grad*gstep);
-						gv += norm(grad);
-					}
 				}
-				DEBUG_EXTRA("\t%2d. f: %.5f (%.4e)\tg: %.5f (%.4e - %.4e)\ts: %.3f\tv: %5u", iter+1, cost, cost/refine.vertices.GetSize(), gradients.norm(), gradients.norm()/refine.vertices.GetSize(), gv/refine.vertices.GetSize(), gstep, numVertsRemoved);
-				gstep *= 0.98;
-				progress.display(iter);
+
+				MeshRefineStep::Terms terms;
+				terms.photoGrad = refine.photoGrad.Begin();
+				terms.photoCount = refine.photoGradNorm.Begin();
+				terms.footprint = refine.footprint.Begin();
+				terms.lap = refine.smoothGrad1.Begin();
+				terms.bilap = refine.smoothGrad2.Begin();
+				terms.S = refine.S;
+				terms.rigidity = rho;
+				terms.regularityWeight = refine.weightRegularity;
+				terms.numVertices = refine.vertices.GetSize();
+				terms.bounded = false; // the sign-vote/tanh photo terms are not implemented yet
+				terms.alternating = bAlternating;
+
+				const unsigned evalIdx(stepper.GetNumEvaluated()); // 0-based, before Evaluate() consumes it
+				float& logReference = (bAlternating && (evalIdx&1)) ? logScoreRefAlt : logScoreRef;
+				const float relChange(logReference < FLT_MAX ? (terms.S-logReference)/logReference : 0.f);
+				const unsigned prevAccepted(stepper.GetNumAccepted());
+
+				MeshRefineStep::Stats stats;
+				const MeshRefineStep::Action action(stepper.Evaluate(terms, refine.vertices, stats));
+				const bool accepted(stepper.GetNumAccepted() > prevAccepted);
+				if (accepted)
+					logReference = terms.S;
+
+				DEBUG_EXTRA("\t%2d. S: %.5f (%+.2e)\tstep: %.3fpx\tmed: %.3fpx\tv: %5u\t%s",
+					(int)stepper.GetNumEvaluated(), stats.S, relChange, stats.step, stats.medianPx, numVertsRemoved, accepted ? "acc" : "rej");
+				return action;
+			};
+
+			// Phase A: caller's rigidity/elasticity ratio, with the optional planar-vertex hook
+			{
+				Util::Progress progress(_T("Processed iterations"), cap);
+				for (int idx=0; idx<cap; ++idx) {
+					const MeshRefineStep::Action action(RunEvaluation(fRatioRigidityElasticity, bPlanarHook, idx, cap));
+					progress.display(idx+1);
+					if (action == MeshRefineStep::STOP)
+						break;
+				}
+				progress.close();
 			}
+
+			// Phase B: pure elasticity, planar hook off. The legacy 70/30 iteration split is
+			// preserved against phase A's ACCEPTED count rather than its raw iteration budget,
+			// since a rejected evaluation consumes budget without buying any convergence; step and
+			// the S references carry over unchanged, only the stall counter is given a fresh start
+			const unsigned nA(stepper.GetNumAccepted());
+			const int capB(MAXF(3, 3*(int)nA/7));
+			stepper.ResetStall();
+			{
+				Util::Progress progress(_T("Processed iterations"), capB);
+				for (int idx=0; idx<capB; ++idx) {
+					const MeshRefineStep::Action action(RunEvaluation(Real(1), false, idx, capB));
+					progress.display(idx+1);
+					if (action == MeshRefineStep::STOP)
+						break;
+				}
+				progress.close();
+			}
+
 			GET_LOGCONSOLE().Play();
-			progress.close();
 		}
 
 		#if TD_VERBOSE != TD_VERBOSE_OFF
