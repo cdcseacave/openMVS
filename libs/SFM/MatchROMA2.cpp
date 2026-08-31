@@ -306,6 +306,122 @@ SlotPlan MakeSlotPlan(const PairIdxArr& pairs, unsigned slotBudget, IIndex nImag
 	return plan;
 }
 
+// What one warp pass cost, for its caller's summary line
+struct WarpPassStats {
+	unsigned numSlots = 0;               // device slots the plan used
+	size_t numLoads = 0, numReloads = 0; // describe calls it cost, and how many were reloads
+	unsigned numFailedLoads = 0;         // images that could not be loaded or described
+	unsigned numFailedMatches = 0;       // pairs the coarse-match graph could not warp
+};
+
+// One pair's warp, handed to a pool thread: the pair's index in the pass's list, its images, the
+// warp itself (the task owns it) and the index of the private descriptor matcher it may use.
+typedef std::function<void(size_t idxPair, const PairIdx& pair, WarpMaps& maps, unsigned threadIdx)> WarpConsumer;
+
+// Drive the ROMAv2 coarse-match graph over the given pairs, handing each pair's warp to the thread
+// pool: plan the device slots (Belady over the pairs in (ID1,ID2) order), pipeline the image
+// load+preprocess on the pool while this thread runs Describe and MatchCoarse, and detach one
+// `consume` task per warped pair. The pairs must already be filtered to the ones worth a warp and
+// sorted in (ID1,ID2) order -- the slot plan's locality, and the order results are applied in.
+// The semaphore bounds how many warps are alive at once (~300 KB each at base). Every pool task is
+// drained, and the OpenCV thread count, log console and progress bar restored, on every exit path
+// including an exceptional one (Describe, MatchCoarse and the consumers can all throw).
+// Both passes share this because they differ only in what they do with a warp: the gate judges the
+// pair, the dense matcher re-matches it.
+// Returns false only when the device slot pool could not be allocated (nothing was warped).
+bool ForEachWarpROMA2(PairsMatcher& pairsMatcher, RoMa2Onnx& roma2, const PairIdxArr& pairs,
+	unsigned slotBudget, LPCTSTR progressCaption, const WarpConsumer& consume, WarpPassStats& stats)
+{
+	ASSERT(!pairs.empty() && std::is_sorted(pairs.begin(), pairs.end()));
+	Scene& scene = pairsMatcher.GetScene();
+	const unsigned nThreads = (unsigned)scene.threadPool.get_thread_count();
+
+	// device slots: every descriptor tensor is allocated up front, so a pool that does not fit is a
+	// clean early return instead of a failure halfway through the pass. They are locals (never
+	// members of the PairsMatcher): a tensor from the descriptor session's device arena must be
+	// destroyed before the RoMa2Onnx that owns it (see RoMa2Onnx::MakeLayers).
+	const SlotPlan plan(MakeSlotPlan(pairs, slotBudget, (IIndex)scene.images.size()));
+	std::vector<OrtTensor> slotLayers(plan.numSlots);
+	for (OrtTensor& layers : slotLayers) {
+		layers = roma2.MakeLayers();
+		if (!layers.IsValid()) {
+			VERBOSE("error: ROMA2 slot pool: could not allocate the %u descriptor slots the plan needs (lower --roma2-slots)", plan.numSlots);
+			return false;
+		}
+	}
+	IIndexArr slotImage(plan.numSlots);
+	slotImage.Memset(0xFF); // NO_ID: slot empty or its load failed; a pair reading it is dropped, never matched against a stale image
+	stats.numSlots = plan.numSlots;
+	stats.numLoads = plan.numLoads;
+	stats.numReloads = plan.numReloads;
+	DEBUG_EXTRA("ROMA2 slot plan: %u pairs, %u slots, %u loads (%u reloads)",
+		pairs.size(), plan.numSlots, (unsigned)plan.numLoads, (unsigned)plan.numReloads);
+
+	Semaphore inFlight(2*nThreads);
+	// the plan's load sequence, flattened into the order the ring prefetches images in
+	std::vector<SlotPlan::Load> loads;
+	loads.reserve(plan.numLoads);
+	for (const SlotPlan::Step& step : plan.steps)
+		for (const SlotPlan::Load& load : step.loads)
+			loads.push_back(load);
+	ScopedPassState state(scene, progressCaption, pairs.size());
+	PrefetchRing ring(scene, MINF(2u*nThreads, 8u), roma2.ImageSize());
+	// the detached consumers capture every local above by reference, so the pool must be drained
+	// before any of them dies -- on the exceptional path too. Declared last, so that its
+	// destructor is the first one to run.
+	const ScopedPoolDrain drain(scene);
+	size_t nextLoad = 0, nextSubmit = 0;
+	// Describe()'s retrieval readback is not optional, but neither warp pass has a use for a
+	// retrieval descriptor: written and discarded every load, reused so the loop does not churn
+	std::vector<float> discardedRetrieval;
+	FOREACH(p, pairs) {
+		const PairIdx pair(pairs[p]);
+		const SlotPlan::Step& step = plan.steps[p];
+		for (const SlotPlan::Load& load : step.loads) {
+			ASSERT(nextLoad < loads.size() && loads[nextLoad].image == load.image && loads[nextLoad].slot == load.slot);
+			// keep the prefetch window as full as the ring allows; the load about to be taken is
+			// always submittable, since when it is the next submission the ring holds nothing
+			while (nextSubmit < loads.size() && ring.CanSubmit(loads[nextSubmit].image))
+				ring.Submit(loads[nextSubmit++].image);
+			ASSERT(nextSubmit > nextLoad);
+			const PlanarImage* const planar = ring.Take();
+			slotImage[load.slot] = NO_ID;
+			// value_facets stays on the device: neither warp pass reads it back (design decision 4)
+			if (planar && roma2.Describe(planar->data(), slotLayers[load.slot], NULL, discardedRetrieval)) {
+				slotImage[load.slot] = load.image;
+			} else {
+				++stats.numFailedLoads;
+				DEBUG_EXTRA("error: could not describe image %u '%s'",
+					scene.images[load.image].ID, scene.images[load.image].fileName.c_str());
+			}
+			++nextLoad;
+		}
+		if (slotImage[step.slotA] != pair.i || slotImage[step.slotB] != pair.j) {
+			++state.progress; // a load failed: drop the pair rather than match it against a stale slot
+			continue;
+		}
+		WarpMaps maps;
+		if (!roma2.MatchCoarse(slotLayers[step.slotA], slotLayers[step.slotB], maps.warp, maps.overlap)) {
+			++stats.numFailedMatches;
+			DEBUG_EXTRA("error: could not dense match pair (% 4u, % 4u)", pair.i, pair.j);
+			++state.progress;
+			continue;
+		}
+		ASSERT(maps.IsValid() && maps.warp.rows == roma2.WarpSize());
+		inFlight.Wait();
+		scene.threadPool.detach_task([&, p, pair, maps = std::move(maps)]() mutable {
+			const ScopedSemaphore released(inFlight); // returned however this task ends (see the struct)
+			const std::optional<size_t> threadIdx = BS::this_thread::get_index();
+			ASSERT(threadIdx && *threadIdx < pairsMatcher.GetNumMatchers());
+			consume(p, pair, maps, (unsigned)*threadIdx);
+			++state.progress;
+		});
+	}
+	scene.threadPool.wait();
+	state.Finish(); // unpause the log console before the caller's summary line (see the struct comment)
+	return true;
+}
+
 #endif // _USE_ONNXRUNTIME
 
 } // namespace
@@ -381,12 +497,10 @@ unsigned SFM::MatchPairsROMA2(PairsMatcher& pairsMatcher, RoMa2Onnx& roma2, cons
 		return 0;
 	TD_TIMER_STARTD();
 	Scene& scene = pairsMatcher.GetScene();
-	const IIndex nImages = (IIndex)scene.images.size();
 	// every candidate pair indexes scene.images directly (slot planning, loads, ApplyROMA2Pair's
 	// keys), so image IDs must be their own indices - the convention the whole matcher assumes
 	ASSERT(std::all_of(scene.images.begin(), scene.images.end(),
 		[&](const Image& img) { return img.ID == (IIndex)(&img - scene.images.begin()); }));
-	const unsigned nThreads = (unsigned)scene.threadPool.get_thread_count();
 	// per-round replace policy (design decision 6): the first round warps every candidate and
 	// replaces whenever the guided set is larger, while the verification-feedback round spends
 	// its warps only on the pairs that are still weak, and replaces only the weakest of them
@@ -420,37 +534,12 @@ unsigned SFM::MatchPairsROMA2(PairsMatcher& pairsMatcher, RoMa2Onnx& roma2, cons
 		return 0;
 	pairs.Sort(); // (ID1,ID2): the slot plan's locality, and the order the results are applied in
 
-	// 2) device slots: every descriptor tensor is allocated up front, so a pool that does not
-	// fit is a clean early return instead of a failure halfway through the pass. They are locals
-	// (never members of the PairsMatcher): a tensor from the descriptor session's device arena
-	// must be destroyed before the RoMa2Onnx that owns it (see RoMa2Onnx::MakeLayers).
-	const SlotPlan plan(MakeSlotPlan(pairs, config.slotBudget, nImages));
-	std::vector<OrtTensor> slotLayers(plan.numSlots);
-	for (OrtTensor& layers : slotLayers) {
-		layers = roma2.MakeLayers();
-		if (!layers.IsValid()) {
-			VERBOSE("error: ROMA2 slot pool: could not allocate the %u descriptor slots the plan needs (lower --roma2-slots)", plan.numSlots);
-			return 0;
-		}
-	}
-	IIndexArr slotImage(plan.numSlots);
-	slotImage.Memset(0xFF); // NO_ID: slot empty or its load failed; a pair reading it is dropped, never matched against a stale image
-	DEBUG_EXTRA("ROMA2 slot plan: %u pairs, %u slots, %u loads (%u reloads)",
-		pairs.size(), plan.numSlots, (unsigned)plan.numLoads, (unsigned)plan.numReloads);
-
-	// 3) producer (this thread: prefetch dispatch, Describe, MatchCoarse) and consumers (the
-	// pool: erode, track, guided re-match). The semaphore bounds how many warps are alive at
-	// once (~300 KB each at base), one result slot per pair collects what the consumers produce.
+	// 2) the warp pass: the shared driver plans the device slots, pipelines the image loads and
+	// coarse-matches the pairs on this thread, while the pool turns each warp into a guided sparse
+	// re-match of its pair. One result slot per pair collects what the consumers produce.
 	std::vector<ImagePair> results(pairs.size());
 	std::atomic<unsigned> numGuided{0};
 	std::atomic<unsigned> numGated{0};
-	Semaphore inFlight(2*nThreads);
-	// the plan's load sequence, flattened into the order the ring prefetches images in
-	std::vector<SlotPlan::Load> loads;
-	loads.reserve(plan.numLoads);
-	for (const SlotPlan::Step& step : plan.steps)
-		for (const SlotPlan::Load& load : step.loads)
-			loads.push_back(load);
 	// whether the per-pair DEBUG_ULTIMATE line below will be emitted at all, and hence whether the
 	// two quantities only it and the gate consume are worth computing (loop invariants, and the
 	// verbosity does not change while a pass runs); declared here because the consumers read them
@@ -460,58 +549,9 @@ unsigned SFM::MatchPairsROMA2(PairsMatcher& pairsMatcher, RoMa2Onnx& roma2, cons
 	const bool bDiagnostic = VERBOSITY_LEVEL > 2;
 	#endif
 	const bool bCountOverlap = bDiagnostic || config.minCreatedOverlap > 0;
-	ScopedPassState state(scene, _T("Dense match image pairs"), pairs.size());
-	PrefetchRing ring(scene, MINF(2u*nThreads, 8u), roma2.ImageSize());
-	// the detached consumers capture every local above by reference, so the pool must be drained
-	// before any of them dies -- on the exceptional path too (Describe and MatchCoarse can
-	// throw). Declared last, so that its destructor is the first one to run.
-	const ScopedPoolDrain drain(scene);
-	size_t nextLoad = 0, nextSubmit = 0;
-	// counted here and reported once in the summary below: an image the plan reloads several
-	// times would otherwise repeat its own failure line once per reload
-	unsigned numFailedLoads = 0, numFailedMatches = 0;
-	// Describe()'s retrieval readback is not optional, but the matching pass has no use for a
-	// retrieval descriptor: written and discarded every load, reused so the loop does not churn
-	std::vector<float> discardedRetrieval;
-	FOREACH(p, pairs) {
-		const PairIdx pair(pairs[p]);
-		const SlotPlan::Step& step = plan.steps[p];
-		for (const SlotPlan::Load& load : step.loads) {
-			ASSERT(nextLoad < loads.size() && loads[nextLoad].image == load.image && loads[nextLoad].slot == load.slot);
-			// keep the prefetch window as full as the ring allows; the load about to be taken is
-			// always submittable, since when it is the next submission the ring holds nothing
-			while (nextSubmit < loads.size() && ring.CanSubmit(loads[nextSubmit].image))
-				ring.Submit(loads[nextSubmit++].image);
-			ASSERT(nextSubmit > nextLoad);
-			const PlanarImage* const planar = ring.Take();
-			slotImage[load.slot] = NO_ID;
-			// value_facets stays on the device: the matching pass never reads it back (design decision 4)
-			if (planar && roma2.Describe(planar->data(), slotLayers[load.slot], NULL, discardedRetrieval)) {
-				slotImage[load.slot] = load.image;
-			} else {
-				++numFailedLoads;
-				DEBUG_EXTRA("error: could not describe image %u '%s'",
-					scene.images[load.image].ID, scene.images[load.image].fileName.c_str());
-			}
-			++nextLoad;
-		}
-		if (slotImage[step.slotA] != pair.i || slotImage[step.slotB] != pair.j) {
-			++state.progress; // a load failed: drop the pair rather than match it against a stale slot
-			continue;
-		}
-		WarpMaps maps;
-		if (!roma2.MatchCoarse(slotLayers[step.slotA], slotLayers[step.slotB], maps.warp, maps.overlap)) {
-			++numFailedMatches;
-			DEBUG_EXTRA("error: could not dense match pair (% 4u, % 4u)", pair.i, pair.j);
-			++state.progress;
-			continue;
-		}
-		ASSERT(maps.IsValid() && maps.warp.rows == roma2.WarpSize());
-		inFlight.Wait();
-		scene.threadPool.detach_task([&, p, pair, maps = std::move(maps)]() mutable {
-			const ScopedSemaphore released(inFlight); // returned however this task ends (see the struct)
-			const std::optional<size_t> threadIdx = BS::this_thread::get_index();
-			ASSERT(threadIdx && *threadIdx < pairsMatcher.GetNumMatchers());
+	WarpPassStats stats;
+	if (!ForEachWarpROMA2(pairsMatcher, roma2, pairs, config.slotBudget, _T("Dense match image pairs"),
+		[&](size_t p, const PairIdx& pair, WarpMaps& maps, unsigned threadIdx) {
 			const Image& imgA = scene.images[pair.i];
 			const Image& imgB = scene.images[pair.j];
 			if (config.erodeBorder > 0)
@@ -540,7 +580,6 @@ unsigned SFM::MatchPairsROMA2(PairsMatcher& pairsMatcher, RoMa2Onnx& roma2, cons
 				++numGated;
 				DEBUG_ULTIMATE("ROMA2 pair (% 4u, % 4u): new, overlap %.3f, 0 tracked, 0 guided, 0 shared-train, gated",
 					pair.i, pair.j, overlapFraction);
-				++state.progress;
 				return;
 			}
 			std::vector<Point2f> trackedA, trackedB;
@@ -553,7 +592,7 @@ unsigned SFM::MatchPairsROMA2(PairsMatcher& pairsMatcher, RoMa2Onnx& roma2, cons
 			// so such a fallback must never be offered as a replacement for it
 			unsigned numSharedTrain = 0;
 			const bool bGuided = MatchFeaturesGeometric(pairsMatcher, imgA, imgB, trackedA, trackedB, trackStatus,
-				guided, config.epipolarThreshold, (unsigned)*threadIdx, config.guidedCrossCheck,
+				guided, config.epipolarThreshold, threadIdx, config.guidedCrossCheck,
 				// only the diagnostic reads the count, so asking for it off the diagnostic path
 				// would build the collision map for nothing when the cross-check is off too
 				bDiagnostic ? &numSharedTrain : NULL);
@@ -581,13 +620,10 @@ unsigned SFM::MatchPairsROMA2(PairsMatcher& pairsMatcher, RoMa2Onnx& roma2, cons
 				DEBUG_ULTIMATE("ROMA2 pair (% 4u, % 4u): %s, overlap %.3f, %u tracked, %u guided, %u shared-train, rejected",
 					pair.i, pair.j, bExisting ? "existing" : "new", overlapFraction, numTracked, numMatches, numSharedTrain);
 			}
-			++state.progress;
-		});
-	}
-	scene.threadPool.wait();
-	state.Finish(); // unpause the log console before the summary line below (see struct comment)
+		}, stats))
+		return 0;
 
-	// 4) serial, in-order apply: which of two near-tied match sets wins depends on what the
+	// 3) serial, in-order apply: which of two near-tied match sets wins depends on what the
 	// scene already holds, so the outcome must not depend on the order the pool finished in
 	unsigned numCreated = 0, numReplaced = 0;
 	FOREACH(p, results) {
@@ -600,8 +636,147 @@ unsigned SFM::MatchPairsROMA2(PairsMatcher& pairsMatcher, RoMa2Onnx& roma2, cons
 	}
 	DEBUG("ROMA2 dense matching (%s round): %u/%u pairs guided, %u created, %u replaced, %u gated, %u skipped healthy, %u failed loads, %u failed matches; %u slots, %u loads, %u reloads (%s)",
 		bFeedbackRound ? "feedback" : "first", numGuided.load(), pairs.size(), numCreated, numReplaced, numGated.load(), numSkippedHealthy,
-		numFailedLoads, numFailedMatches, plan.numSlots, (unsigned)plan.numLoads, (unsigned)plan.numReloads, TD_TIMER_GET_FMT().c_str());
+		stats.numFailedLoads, stats.numFailedMatches, stats.numSlots, (unsigned)stats.numLoads, (unsigned)stats.numReloads, TD_TIMER_GET_FMT().c_str());
 	return numCreated + numReplaced;
+#else // _USE_ONNXRUNTIME
+	// unreachable: RoMa2Onnx::IsAvailable() is false in this build, so Scene::MatchPairs never
+	// loads a model and PairsMatcher::Match never calls here
+	ASSERT(false);
+	return 0;
+#endif // _USE_ONNXRUNTIME
+}
+/*----------------------------------------------------------------*/
+
+
+// D E N S E   V A L I D A T I O N   P A S S //////////////////////////
+
+#ifdef _USE_ONNXRUNTIME
+
+namespace {
+
+// Judge one candidate pair on its warp alone: draw the coverage-maximising sample, fit one geometry
+// to the whole of it and record which of its correspondences that geometry explains. Fills
+// everything of `val` but the ratio and the verdict, which its caller derives.
+// The sample is fitted through the same estimator the descriptor path uses, on temporary Image
+// copies whose keypoints are the dense points -- the MatchFeaturesGeometric precedent, so no second
+// estimator has to exist. What is deliberately *not* replayed from there is its epipolar
+// pre-selection: MatchFeaturesGeometric estimates a geometry from the warp's own tracked points and
+// then keeps the descriptor matches lying on those epipolar lines, which largely confirms whatever
+// the warp asserted. Here the sample is exactly what the warp claims, chosen for spread and
+// confidence only, and one geometry either explains it or does not.
+// A sample too small for the estimator leaves the pair with no inliers at all (ratio 0, rejected):
+// a warp that cannot even offer minMatches confident, spread-out correspondences is no evidence.
+void ValidateOnePairROMA2(PairsMatcher& pairsMatcher, const Image& imgA, const Image& imgB,
+	const WarpMaps& maps, const ROMA2Config& config, DensePairValidation& val)
+{
+	SampleWarpByCoverage(imgA, imgB, maps.warp, maps.overlap, config.minConfidence,
+		config.denseSampleSize, val.pointsA, val.pointsB, val.coverageA, val.coverageB);
+	val.numSampled = (unsigned)val.pointsA.size();
+	// GeometricFilter needs 8 correspondences of its own, and a pair is not worth keeping below the
+	// same match bar every descriptor pair clears
+	if (val.numSampled < MAXF(pairsMatcher.GetConfig().minMatches, 8u))
+		return;
+	Image imgACopy(imgA.ID, imgA.fileName, reinterpret_cast<const Pose3D&>(imgA), imgA.cameraID, imgA.pCamera);
+	Image imgBCopy(imgB.ID, imgB.fileName, reinterpret_cast<const Pose3D&>(imgB), imgB.cameraID, imgB.pCamera);
+	imgACopy.keypoints = ConvertToKeypoints(val.pointsA);
+	imgBCopy.keypoints = ConvertToKeypoints(val.pointsB);
+	ImagePair fit(val.ID1, val.ID2);
+	fit.matches.reserve(val.numSampled);
+	for (uint32_t i = 0; i < val.numSampled; ++i)
+		fit.matches.emplace_back(i, i);
+	if (!pairsMatcher.GeometricFilter(imgACopy, imgBCopy, fit))
+		return; // no single geometry explained enough of the sample to survive the estimator
+	// the surviving matches are the sample's inliers, and each still carries the sample index it
+	// was built from; FilterMatches may have reordered them, so sort back into sample order
+	val.inliers.reserve(fit.matches.size());
+	for (const DMatch& match : fit.matches)
+		val.inliers.push_back(match.queryIdx);
+	std::sort(val.inliers.begin(), val.inliers.end());
+	val.numInliers = (unsigned)val.inliers.size();
+	val.relativePose = fit.relativePose;
+	val.E = fit.E;
+	val.F = fit.F;
+}
+
+} // namespace
+
+#endif // _USE_ONNXRUNTIME
+
+unsigned SFM::ValidatePairsROMA2(PairsMatcher& pairsMatcher, RoMa2Onnx& roma2, PairIdxArr& pairs, const ROMA2Config& config, DensePairValidationArr& validations)
+{
+#ifdef _USE_ONNXRUNTIME
+	ASSERT(roma2.IsLoaded());
+	if (pairs.empty())
+		return 0;
+	TD_TIMER_STARTD();
+	Scene& scene = pairsMatcher.GetScene();
+	// every candidate pair indexes scene.images directly (slot planning, loads), so image IDs must
+	// be their own indices - the convention the whole matcher assumes
+	ASSERT(std::all_of(scene.images.begin(), scene.images.end(),
+		[&](const Image& img) { return img.ID == (IIndex)(&img - scene.images.begin()); }));
+
+	// 1) the candidates the gate can judge. Unlike the dense matching pass this needs no
+	// descriptors -- it runs before any descriptor matching and reads nothing but the warp -- but
+	// it does need both cameras, since the geometry is fitted in their bearings
+	PairIdxArr candidates(0, pairs.size());
+	for (const PairIdx& p : pairs)
+		if (scene.images[p.i].HasCamera() && scene.images[p.j].HasCamera())
+			candidates.push_back(p);
+	const unsigned numUnusable = pairs.size() - candidates.size();
+	if (candidates.empty()) {
+		pairs.Empty();
+		VERBOSE("warning: ROMA2 dense pair validation: none of the %u candidate pairs has cameras on both images", numUnusable);
+		return 0;
+	}
+	candidates.Sort(); // (ID1,ID2): the slot plan's locality
+
+	// 2) the warp pass: one verdict per candidate, on the pool, over the same slot plan and
+	// prefetch pipeline the dense matching pass uses
+	DensePairValidationArr results(candidates.size());
+	std::atomic<unsigned> numValidated{0};
+	WarpPassStats stats;
+	if (!ForEachWarpROMA2(pairsMatcher, roma2, candidates, config.slotBudget, _T("Validate image pairs"),
+		[&](size_t p, const PairIdx& pair, WarpMaps& maps, unsigned /*threadIdx*/) {
+			const Image& imgA = scene.images[pair.i];
+			const Image& imgB = scene.images[pair.j];
+			if (config.erodeBorder > 0)
+				ErodeConfidenceMap(maps.overlap, config.erodeBorder, config.minConfidence, config.minErodeConfidence);
+			DensePairValidation& val = results[p];
+			val.ID1 = pair.i;
+			val.ID2 = pair.j;
+			ValidateOnePairROMA2(pairsMatcher, imgA, imgB, maps, config, val);
+			val.inlierRatio = val.numSampled ? (float)val.numInliers/(float)val.numSampled : 0.f;
+			val.bValidated = val.inlierRatio >= config.minDenseInlierRatio;
+			if (val.bValidated) {
+				++numValidated;
+			} else {
+				// a rejected pair is dropped, so nothing downstream will ever read its sample: give
+				// the memory back and keep only the counts the offline threshold sweep needs
+				val.pointsA = std::vector<Point2f>();
+				val.pointsB = std::vector<Point2f>();
+				val.inliers = std::vector<uint32_t>();
+			}
+			DEBUG_ULTIMATE("ROMA2 gate (% 4u, % 4u): %u sampled, %u inliers, ratio %.3f, coverage %.3f/%.3f, %s",
+				pair.i, pair.j, val.numSampled, val.numInliers, val.inlierRatio, val.coverageA, val.coverageB,
+				val.bValidated ? "validated" : "rejected");
+		}, stats))
+		return 0;
+
+	// 3) keep the pairs a single geometry explained; a rejected pair is dropped, never demoted to
+	// ordinary descriptor matching (the campaign measures what a purely dense-gated pipeline does,
+	// rather than hiding the gate's mistakes behind a SIFT fallback)
+	PairIdxArr kept(0, candidates.size());
+	FOREACH(p, results)
+		if (results[p].bValidated)
+			kept.push_back(candidates[p]);
+	ASSERT(kept.size() == numValidated.load());
+	validations.insert(validations.end(),
+		std::make_move_iterator(results.begin()), std::make_move_iterator(results.end()));
+	pairs = std::move(kept);
+	DEBUG("ROMA2 dense pair validation: %u/%u pairs validated, %u rejected, %u without cameras, %u failed loads, %u failed matches; %u slots, %u loads, %u reloads (%s)",
+		pairs.size(), candidates.size(), candidates.size()-pairs.size(), numUnusable,
+		stats.numFailedLoads, stats.numFailedMatches, stats.numSlots, (unsigned)stats.numLoads, (unsigned)stats.numReloads, TD_TIMER_GET_FMT().c_str());
+	return pairs.size();
 #else // _USE_ONNXRUNTIME
 	// unreachable: RoMa2Onnx::IsAvailable() is false in this build, so Scene::MatchPairs never
 	// loads a model and PairsMatcher::Match never calls here

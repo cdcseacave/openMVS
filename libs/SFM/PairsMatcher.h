@@ -264,6 +264,20 @@ public:
 	// Export image pairs to a CSV file
 	static bool ExportPairsCSV(const Scene& scene, const String& fileName, float minWeight = 0.f);
 
+	// The dense two-view gate's record of every candidate pair the last Match() warped, accepted or
+	// rejected, in the order the matching rounds warped them (empty unless the gate ran, i.e.
+	// unless ROMA2Config::useValidation). This is the gate's hand-off: the validated pairs' relative
+	// pose / fundamental matrix, their dense inlier set, the coverage achieved in both images and
+	// the sample and inlier counts, for whatever consumes dense-validated pairs.
+	const DensePairValidationArr& GetDenseValidations() const { return denseValidations; }
+
+	// Export the dense two-view gate's per-candidate table to a CSV file: the inlier ratio, the raw
+	// inlier and sample counts and the achieved coverage of every candidate, accepted or rejected,
+	// so the gate's threshold can be swept offline from a single run instead of re-running per
+	// threshold. Image names are relative to the file's folder, as in ExportPairsCSV, so the table
+	// joins straight onto the campaign's pair-label CSVs.
+	bool ExportDenseValidationsCSV(const String& fileName) const;
+
 private:
 	// Counters accumulated by MatchPairsBatch across matching rounds
 	struct MatchStats {
@@ -309,6 +323,10 @@ private:
 	// In-process ROMAv2 model and its configuration (NULL/defaults unless SetROMA2 was called)
 	RoMa2Onnx* roma2 = NULL;
 	ROMA2Config roma2Cfg;
+
+	// One record per candidate pair the dense two-view gate warped, accumulated across the matching
+	// rounds of Match() (see GetDenseValidations)
+	DensePairValidationArr denseValidations;
 
 	// Symmetric fused retrieval score of every pair retrieved by the last
 	// CollectVocabularyPairs or CollectRetrievalPairs call, kept for

@@ -1920,11 +1920,21 @@ unsigned PairsMatcher::Match()
 	// parallel feature matching and geometric verification of all the candidate pairs
 	MatchStats stats;
 	const auto MatchRound = [&](PairIdxArr& pairs, LPCTSTR progressCaption, bool bFeedbackRound) {
+		// Dense two-view gate (opt-in): before any descriptor matching, warp every candidate of this
+		// round and drop the ones a single geometry cannot explain to roma2Cfg.minDenseInlierRatio
+		// of a coverage-maximising sample of the warp. A rejected pair is dropped, not demoted: it
+		// does not fall through to ordinary descriptor matching. The gate is independent of the
+		// dense matcher below - it judges which pairs exist, that one re-matches the ones that do
+		if (roma2 && roma2Cfg.useValidation) {
+			ValidatePairsROMA2(*this, *roma2, pairs, roma2Cfg, denseValidations);
+			if (pairs.empty())
+				return true; // every candidate of this round was rejected; nothing left to match
+		}
 		// Snapshot the candidates before pre-matching prunes them from the list in place: the
 		// pairs pre-matching rejects for too few descriptor matches are exactly the ones a dense
 		// matcher exists for, so the ROMA2 pass below has to see the original list
 		PairIdxArr roma2Candidates;
-		if (roma2)
+		if (roma2 && roma2Cfg.useMatching)
 			roma2Candidates = pairs;
 		// Pre-match the pairs if requested
 		// Pre-matching needs the vocabulary-tree top descriptors whatever backend ranked the
@@ -1950,7 +1960,7 @@ unsigned PairsMatcher::Match()
 		// round is re-matched through its warp and replaces the stored pair when it is stronger
 		// (design decision 6). Runs before releaseDescriptors and ComputePairsWeights, both of
 		// which only happen once, after the last round.
-		if (roma2)
+		if (roma2 && roma2Cfg.useMatching)
 			stats.roma2Pairs += MatchPairsROMA2(*this, *roma2, roma2Candidates, roma2Cfg, bFeedbackRound);
 		return true;
 	};
@@ -1971,6 +1981,13 @@ unsigned PairsMatcher::Match()
 			return 0;
 	}
 	fusedRetrievalScores.clear(); // only kept for the verification-feedback round
+
+	// the gate's per-candidate table, written here rather than after the reconstruction: the pairs
+	// it rejected are in no other artifact of this run (they were dropped, not stored), and this is
+	// the file the threshold is swept from. A failed export only warns: it is a diagnostic and must
+	// never cost the caller the matched scene (ruling R-F1)
+	if (!roma2Cfg.exportValidationCSV.empty() && !ExportDenseValidationsCSV(roma2Cfg.exportValidationCSV))
+		VERBOSE("warning: failed to export the dense pair validations to CSV file '%s'", roma2Cfg.exportValidationCSV.c_str());
 
 	const unsigned numProcessedPairs = stats.newPairs + stats.updatedPairs;
 	DEBUG("Images matched: created %u/%u new/updated pairs, %u ROMA2 guided (%u total from %u exhaustive),\n%u/%u/%u matches (%.2f/%.2f/%.2f per pair) in %s",
@@ -2072,6 +2089,36 @@ bool PairsMatcher::ExportPairsCSV(const Scene& scene, const String& fileName, fl
 	ofs.close();
 	VERBOSE("Exported %u pairs to '%s'",
 		(unsigned)scene.pairs.size(), fileName.c_str());
+	return true;
+}
+/*----------------------------------------------------------------*/
+
+
+bool PairsMatcher::ExportDenseValidationsCSV(const String& fileName) const
+{
+	std::ofstream ofs(fileName);
+	if (!ofs.is_open()) {
+		VERBOSE("error: cannot open file '%s' for writing", fileName.c_str());
+		return false;
+	}
+	const String basePath = MAKE_PATH_FULL(WORKING_FOLDER_FULL, Util::getFilePath(fileName));
+	ofs << "ImageA,ImageB,NumSampled,NumInliers,InlierRatio,CoverageA,CoverageB,Validated\n";
+	unsigned numValidated = 0;
+	for (const DensePairValidation& val : denseValidations) {
+		ofs << MAKE_PATH_REL(basePath, scene.images[val.ID1].fileName) << ","
+			<< MAKE_PATH_REL(basePath, scene.images[val.ID2].fileName) << ","
+			<< val.numSampled << ","
+			<< val.numInliers << ","
+			<< val.inlierRatio << ","
+			<< val.coverageA << ","
+			<< val.coverageB << ","
+			<< (val.bValidated ? 1 : 0) << "\n";
+		if (val.bValidated)
+			++numValidated;
+	}
+	ofs.close();
+	VERBOSE("Exported %u dense pair validations (%u validated) to '%s'",
+		(unsigned)denseValidations.size(), numValidated, fileName.c_str());
 	return true;
 }
 /*----------------------------------------------------------------*/

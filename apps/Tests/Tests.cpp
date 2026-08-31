@@ -211,6 +211,8 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!SFM::ROMA2WarpTrackingTest())
 				return false;
+			if (!SFM::ROMA2CoverageSampleTest())
+				return false;
 			if (!SFM::GlobalDescriptorsQueryTest())
 				return false;
 			if (!SFM::RetrievalModeTest())

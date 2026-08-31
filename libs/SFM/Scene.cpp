@@ -572,7 +572,7 @@ bool Scene::MatchPairs(const MatchConfig& config, const ROMA2Config& roma2Cfg, c
 	PairsMatcher pairsMatcher(*this, config);
 
 	const String modelPath(roma2Cfg.ResolveModelPath());
-	if (roma2Cfg.enabled && (roma2Cfg.useRetrieval || roma2Cfg.useMatching) && modelPath.empty()) {
+	if (roma2Cfg.enabled && (roma2Cfg.useRetrieval || roma2Cfg.useMatching || roma2Cfg.useValidation) && modelPath.empty()) {
 		// design decision 10: a requested-but-unavailable model is an error, never a silent
 		// fallback to the vocabulary tree (which is what IsInProcessEnabled() would otherwise
 		// quietly do, since an empty model path makes it return false)
@@ -586,11 +586,12 @@ bool Scene::MatchPairs(const MatchConfig& config, const ROMA2Config& roma2Cfg, c
 			return false;
 		}
 		// the ONNX sessions are only loaded when they still have something to produce: the dense
-		// warps, or global descriptors this scene does not carry yet. Retrieval alone over
-		// descriptors an earlier run already stored ranks the pairs straight from
-		// Image::globalDescriptor (PairsMatcher::QueryRetrieval) and never enters a session, so
-		// loading 1.2 GB of graph weights onto the device for it would buy nothing
-		if (roma2Cfg.useMatching || !status.nState.isSet(Status::STATE::GLOBAL_DESCRIPTORS)) {
+		// warps (the dense matching pass, the dense two-view gate), or global descriptors this
+		// scene does not carry yet. Retrieval alone over descriptors an earlier run already stored
+		// ranks the pairs straight from Image::globalDescriptor (PairsMatcher::QueryRetrieval) and
+		// never enters a session, so loading 1.2 GB of graph weights onto the device for it would
+		// buy nothing
+		if (roma2Cfg.NeedsWarps() || !status.nState.isSet(Status::STATE::GLOBAL_DESCRIPTORS)) {
 			if (!roma2.Load(modelPath, roma2Cfg.setting, roma2Cfg.useGPU ? roma2Cfg.provider : String("cpu"))) {
 				VERBOSE("error: failed to load ROMA2 model '%s' (%s)", modelPath.c_str(), roma2Cfg.setting.c_str());
 				return false;
@@ -601,7 +602,7 @@ bool Scene::MatchPairs(const MatchConfig& config, const ROMA2Config& roma2Cfg, c
 			DEBUG("ROMA2 retrieval reuses the %u global descriptors stored in the scene; no model loaded", images.size());
 		}
 	}
-	pairsMatcher.SetROMA2(useROMA2 && roma2Cfg.useMatching ? &roma2 : NULL, roma2Cfg);
+	pairsMatcher.SetROMA2(useROMA2 && roma2Cfg.NeedsWarps() ? &roma2 : NULL, roma2Cfg);
 
 	if (status.nState.isSet(Status::STATE::MATCHED)) {
 		VERBOSE("warning: pairs already matched, skipping");

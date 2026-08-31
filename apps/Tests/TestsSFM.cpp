@@ -1126,6 +1126,94 @@ bool ROMA2WarpTrackingTest()
 	return true;
 }
 
+// Coverage-maximising warp sampling (the dense two-view gate's step 1): the budget, the spread the
+// bucket stratification buys over a plain top-confidence selection, the reported coverage of a
+// sample that really does sit in one corner, and the determinism of the whole draw
+bool ROMA2CoverageSampleTest()
+{
+	TD_TIMER_START();
+
+	// two 640x480 images and the identity warp of ROMA2WarpTrackingTest, so every sampled point of
+	// A must come back unmoved in B and the two coverages have to agree
+	Scene scene;
+	const int width = 640, height = 480;
+	scene.cameras.emplace_back(new PinholeCamera(cv::Size(width, height),
+		REAL(600), REAL(600), REAL(width)/2, REAL(height)/2));
+	scene.images.emplace_back((IIndex)0, String("a.jpg"));
+	scene.images.emplace_back((IIndex)1, String("b.jpg"));
+	FOREACH(i, scene.images) {
+		scene.images[i].cameraID = 0;
+		scene.images[i].pCamera = scene.cameras[0];
+	}
+	const Image& imgA = scene.images[0];
+	const Image& imgB = scene.images[1];
+	const int cells = 160;
+	Image32F2 warp(cells, cells);
+	for (int y = 0; y < cells; ++y)
+		for (int x = 0; x < cells; ++x)
+			warp(y, x) = Point2f(
+				((x*(width-1.f)/(cells-1)) + 0.5f)*2.f/width - 1.f,
+				((y*(height-1.f)/(cells-1)) + 0.5f)*2.f/height - 1.f);
+	const unsigned budget = 2000;
+	std::vector<Point2f> sampledA, sampledB;
+	float coverageA, coverageB;
+
+	// a 60x60-cell corner at full confidence, the rest merely confident enough: a plain
+	// descending-confidence draw would spend the whole budget inside that corner (3600 cells for a
+	// budget of 2000), the bucket stratification must instead spread the sample over the whole warp
+	Image32F overlap(cv::Size(cells, cells), 0.6f);
+	overlap(cv::Rect(0, 0, 60, 60)).setTo(1.f);
+	if (SampleWarpByCoverage(imgA, imgB, warp, overlap, 0.3f, budget, sampledA, sampledB, coverageA, coverageB) != budget ||
+		sampledA.size() != budget || sampledB.size() != budget) {
+		VERBOSE("ROMA2CoverageSampleTest FAILED: %u samples drawn of the %u budgeted", (unsigned)sampledA.size(), budget);
+		return false;
+	}
+	if (coverageA < 0.99f || coverageB < 0.99f) {
+		VERBOSE("ROMA2CoverageSampleTest FAILED: the stratified sample only covers %.3f/%.3f of the two images", coverageA, coverageB);
+		return false;
+	}
+	FOREACH(i, sampledA)
+		if (!Image8U::isInside(sampledB[i], imgB.GetSize()) || norm(sampledB[i] - sampledA[i]) > 1e-3f) {
+			VERBOSE("ROMA2CoverageSampleTest FAILED: sample %u moved %g px through the identity warp", i, norm(sampledB[i] - sampledA[i]));
+			return false;
+		}
+
+	// the same draw twice: the sample must not depend on any traversal order
+	std::vector<Point2f> repeatA, repeatB;
+	float repeatCoverageA, repeatCoverageB;
+	SampleWarpByCoverage(imgA, imgB, warp, overlap, 0.3f, budget, repeatA, repeatB, repeatCoverageA, repeatCoverageB);
+	if (repeatA != sampledA || repeatB != sampledB || repeatCoverageA != coverageA || repeatCoverageB != coverageB) {
+		VERBOSE("ROMA2CoverageSampleTest FAILED: the draw is not deterministic");
+		return false;
+	}
+
+	// a warp confident in one corner only (kept off the very border, where the round trip through
+	// the normalized warp coordinates can put a cell a hundredth of a pixel outside the second
+	// image and TrackKeypointsByWarp's own inside test drops it): every eligible cell fits in the
+	// budget, and the reported coverage has to show that the sample really does sit in that corner
+	overlap.setTo(0.f);
+	overlap(cv::Rect(2, 2, 40, 40)).setTo(1.f);
+	if (SampleWarpByCoverage(imgA, imgB, warp, overlap, 0.3f, budget, sampledA, sampledB, coverageA, coverageB) != 40*40) {
+		VERBOSE("ROMA2CoverageSampleTest FAILED: %u samples drawn of the 1600 confident cells", (unsigned)sampledA.size());
+		return false;
+	}
+	if (coverageA > 0.15f || coverageA < 0.05f || ABS(coverageB-coverageA) > 0.01f) {
+		VERBOSE("ROMA2CoverageSampleTest FAILED: a corner-only sample reports %.3f/%.3f coverage", coverageA, coverageB);
+		return false;
+	}
+
+	// a warp confident nowhere: no sample, no coverage, and no estimator ever sees the pair
+	overlap.setTo(0.f);
+	if (SampleWarpByCoverage(imgA, imgB, warp, overlap, 0.3f, budget, sampledA, sampledB, coverageA, coverageB) != 0 ||
+		!sampledA.empty() || coverageA != 0.f || coverageB != 0.f) {
+		VERBOSE("ROMA2CoverageSampleTest FAILED: an unconfident warp still produced a sample");
+		return false;
+	}
+
+	VERBOSE("ROMA2CoverageSampleTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
 // Global-descriptor retrieval test: cosine ranking of the per-image descriptors, its
 // deterministic tie order, the PairsMatcher dispatch that replaces the vocabulary tree with
 // it, the rankings CSV export, and the .sfm round-trip of the descriptors

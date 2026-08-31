@@ -28,6 +28,7 @@
 // I N C L U D E S /////////////////////////////////////////////////
 
 #include "Common.h" // SFM_API, String
+#include "ROMA2Warp.h" // DensePairValidationArr
 
 
 // D E F I N E S ///////////////////////////////////////////////////
@@ -78,6 +79,16 @@ struct SFM_API ROMA2Config {
 	// -- the alignment-free relative rotation -- it is worse there (+18.1% against the SIFT baseline,
 	// where the plain dense arm is +9.5%); see docs/design/ROMA2InProcess.md, Limitations
 	bool guidedCrossCheck = false;
+	// dense two-view pair validation gate, running before any descriptor matching on the pairs the
+	// match mode selected: each candidate is warped, a coverage-maximising sample of the warp is
+	// drawn, one geometry is fitted to that whole sample without any epipolar pre-selection, and
+	// the pair is kept only if the fit explains at least minDenseInlierRatio of it. A rejected pair
+	// is dropped, not demoted -- it does not fall through to descriptor matching. Opt-in and
+	// independent of useMatching: the gate judges pairs, the dense matcher re-matches them
+	bool useValidation = false;
+	float minDenseInlierRatio = 0.8f;      // fraction of the dense sample a single geometry must explain
+	unsigned denseSampleSize = 2000;       // budget of the coverage-maximising warp sample (SampleWarpByCoverage)
+	String exportValidationCSV;            // file the gate's per-candidate table is written to (empty = not written)
 	bool useGPU = true;                    // allow the GPU execution providers (false forces the CPU provider)
 
 	// Return the folder holding the exported models: the explicit setting if given,
@@ -91,7 +102,14 @@ struct SFM_API ROMA2Config {
 
 	// Return true if the in-process ROMAv2 model is enabled, used by at least one pass, and locatable
 	inline bool IsInProcessEnabled() const {
-		return enabled && (useRetrieval || useMatching) && !ResolveModelPath().empty();
+		return enabled && (useRetrieval || useMatching || useValidation) && !ResolveModelPath().empty();
+	}
+
+	// Return true if a pass needs the coarse-match graph itself (the warps), and not merely the
+	// global descriptors: the ONNX sessions have to be loaded for those, descriptors alone may
+	// already be stored in the scene
+	inline bool NeedsWarps() const {
+		return useMatching || useValidation;
 	}
 };
 /*----------------------------------------------------------------*/
@@ -125,6 +143,26 @@ SFM_API unsigned ComputeGlobalDescriptorsROMA2(Scene& scene, RoMa2Onnx& roma2);
 // described, or matched is dropped with a message, never matched against a stale slot.
 // Returns the number of scene pairs created plus replaced.
 SFM_API unsigned MatchPairsROMA2(PairsMatcher& pairsMatcher, RoMa2Onnx& roma2, const PairIdxArr& candidatePairs, const ROMA2Config& config, bool bFeedbackRound);
+/*----------------------------------------------------------------*/
+
+// Dense two-view pair validation gate: run the ROMAv2 warp over the given candidate pairs -- the
+// ones the match mode selected, before any descriptor matching -- and keep only those a single
+// geometry explains. Per pair: erode the confidence map, draw a coverage-maximising sample of the
+// warp (SampleWarpByCoverage, config.denseSampleSize points), then fit one geometry to that whole
+// sample through PairsMatcher::GeometricFilter on temporary Image copies whose keypoints are the
+// dense points (the MatchFeaturesGeometric precedent, so no second estimator exists). Nothing is
+// pre-selected along the epipolar lines of a geometry the warp itself supplied, which is what makes
+// the verdict independent of the warp's own claim; the pair passes when the fit explains at least
+// config.minDenseInlierRatio of the sample.
+// The device slots, prefetch pipeline and warp order are exactly MatchPairsROMA2's, so the two
+// passes cost the same per pair; unlike it, this pass needs no descriptors, only cameras.
+// `pairs` is filtered in place to the pairs that passed -- a rejected pair is dropped, never
+// demoted to ordinary descriptor matching -- and one record per warped candidate, accepted or not,
+// is appended to `validations` in the order the pairs were warped.
+// roma2 must already be loaded (RoMa2Onnx::Load); a pair whose image could not be loaded,
+// described or coarse-matched is dropped with a message, never judged against a stale slot.
+// Returns the number of pairs that passed the gate (== pairs.size() on return).
+SFM_API unsigned ValidatePairsROMA2(PairsMatcher& pairsMatcher, RoMa2Onnx& roma2, PairIdxArr& pairs, const ROMA2Config& config, DensePairValidationArr& validations);
 
 } // namespace SFM
 

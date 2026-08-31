@@ -122,6 +122,105 @@ size_t SFM::TrackKeypointsByWarp(
 /*----------------------------------------------------------------*/
 
 
+size_t SFM::SampleWarpByCoverage(
+	const Image& imgA,
+	const Image& imgB,
+	const Image32F2& warp,
+	const Image32F& overlap,
+	float minConfidence,
+	unsigned maxSamples,
+	std::vector<Point2f>& sampledA,
+	std::vector<Point2f>& sampledB,
+	float& coverageA,
+	float& coverageB)
+{
+	ASSERT(!warp.empty() && warp.size() == overlap.size());
+	sampledA.clear();
+	sampledB.clear();
+	coverageA = coverageB = 0.f;
+	if (maxSamples == 0)
+		return 0;
+	const cv::Size sizeA(imgA.GetSize()), sizeB(imgB.GetSize());
+	// one bucket per unit of budget, laid out as a square grid over the warp: the winners of the
+	// buckets alone are then at most maxSamples, so the fill-up below only ever adds to a
+	// fully-spread core instead of having to trim it back
+	const int numBuckets = MAXF((int)SQRT((float)maxSamples), 1);
+	struct Candidate {
+		float confidence;
+		Point2f ptA, ptB;
+	};
+	std::vector<Candidate> candidates;
+	std::vector<int> bucketBest((size_t)numBuckets*numBuckets, -1); // most confident candidate of each bucket
+	for (int y = 0; y < overlap.rows; ++y) {
+		for (int x = 0; x < overlap.cols; ++x) {
+			const float confidence = overlap(y, x);
+			if (confidence < minConfidence)
+				continue;
+			const Point2f ptB(DenormCoord(warp(y, x), sizeB));
+			if (!Image8U::isInside(ptB, sizeB))
+				continue; // the warp sends this cell outside the second image
+			const int idxCandidate = (int)candidates.size();
+			candidates.push_back(Candidate{confidence,
+				CoordFromTo(Point2f((float)x, (float)y), overlap.size(), sizeA), ptB});
+			int& best = bucketBest[(size_t)(y*numBuckets/overlap.rows)*numBuckets + x*numBuckets/overlap.cols];
+			if (best < 0 || confidence > candidates[best].confidence)
+				best = idxCandidate; // strictly more confident wins, so a tie keeps the first cell in raster order
+		}
+	}
+	if (candidates.empty())
+		return 0;
+	// the bucket winners are the sample's coverage core; the rest of the budget goes to the most
+	// confident of the remaining cells, ties broken by raster order so the sample is deterministic
+	std::vector<bool> taken(candidates.size(), false);
+	std::vector<int> chosen;
+	chosen.reserve(MINF((size_t)maxSamples, candidates.size()));
+	for (const int idxCandidate : bucketBest) {
+		if (idxCandidate < 0)
+			continue;
+		taken[idxCandidate] = true;
+		chosen.push_back(idxCandidate);
+	}
+	ASSERT(chosen.size() <= maxSamples);
+	if (chosen.size() < maxSamples && chosen.size() < candidates.size()) {
+		std::vector<int> rest;
+		rest.reserve(candidates.size() - chosen.size());
+		for (size_t i = 0; i < candidates.size(); ++i)
+			if (!taken[i])
+				rest.push_back((int)i);
+		const size_t numFill = MINF((size_t)maxSamples - chosen.size(), rest.size());
+		std::partial_sort(rest.begin(), rest.begin()+numFill, rest.end(),
+			[&candidates](int a, int b) {
+				return candidates[a].confidence > candidates[b].confidence ||
+					(candidates[a].confidence == candidates[b].confidence && a < b);
+			});
+		chosen.insert(chosen.end(), rest.begin(), rest.begin()+numFill);
+	}
+	// hand the sample back in raster order (candidates were collected in it), independent of how
+	// much of it came from the buckets and how much from the confidence fill-up
+	std::sort(chosen.begin(), chosen.end());
+	// spread of the sample, as the fraction of a coarse grid over each image it occupies
+	std::vector<bool> gridA((size_t)DENSE_COVERAGE_GRID*DENSE_COVERAGE_GRID, false), gridB(gridA);
+	const auto MarkCell = [](std::vector<bool>& grid, const Point2f& pt, const cv::Size& size) {
+		const unsigned cx = MINF((unsigned)((float)DENSE_COVERAGE_GRID*pt.x/(float)size.width), DENSE_COVERAGE_GRID-1);
+		const unsigned cy = MINF((unsigned)((float)DENSE_COVERAGE_GRID*pt.y/(float)size.height), DENSE_COVERAGE_GRID-1);
+		grid[(size_t)cy*DENSE_COVERAGE_GRID + cx] = true;
+	};
+	sampledA.reserve(chosen.size());
+	sampledB.reserve(chosen.size());
+	for (const int idxCandidate : chosen) {
+		const Candidate& candidate = candidates[idxCandidate];
+		sampledA.push_back(candidate.ptA);
+		sampledB.push_back(candidate.ptB);
+		MarkCell(gridA, candidate.ptA, sizeA);
+		MarkCell(gridB, candidate.ptB, sizeB);
+	}
+	coverageA = (float)std::count(gridA.begin(), gridA.end(), true)/(float)gridA.size();
+	coverageB = (float)std::count(gridB.begin(), gridB.end(), true)/(float)gridB.size();
+	return sampledA.size();
+}
+/*----------------------------------------------------------------*/
+
+
 bool SFM::ApplyROMA2Pair(Scene& scene, std::unordered_map<PairIdx::PairIndex, IIndex>& pairIndexMap, ImagePair&& pair, unsigned maxReplaceInliers, bool& bCreated)
 {
 	ASSERT(pair.ID1 < pair.ID2 && !pair.matches.empty());

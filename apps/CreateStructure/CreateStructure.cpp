@@ -77,6 +77,10 @@ unsigned nROMA2SkipHealthy;
 unsigned nROMA2MaxReplace;
 float fROMA2MinOverlap;
 bool bROMA2CrossCheck;
+bool bROMA2Validate;
+float fROMA2MinDenseRatio;
+unsigned nROMA2DenseSample;
+String strExportGateCSV;
 bool bFilterTriplets;
 float fTripletMinScore;
 String strROMA2Provider;
@@ -175,6 +179,10 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("roma2-max-replace", boost::program_options::value(&OPT::nROMA2MaxReplace)->default_value(0), "round-1 dense matching: replace only pairs with fewer than this many inliers (0 = replace any weaker pair)")
 		("roma2-min-overlap", boost::program_options::value(&OPT::fROMA2MinOverlap)->default_value(0.f), "dense matching: create a pair the descriptor matcher did not verify only if this fraction of the warp is confidently overlapping (0 = off, 1 = create only on a fully confident warp)")
 		("roma2-cross-check", boost::program_options::value<bool>(&OPT::bROMA2CrossCheck)->default_value(false), "dense matching: keep a guided match only if no closer keypoint of the first image claims the same keypoint of the second")
+		("roma2-validate", boost::program_options::value<bool>(&OPT::bROMA2Validate)->default_value(false), "dense two-view gate: before descriptor matching, warp every candidate pair and drop the ones a single geometry cannot explain (a rejected pair is dropped, not descriptor-matched)")
+		("roma2-min-dense-ratio", boost::program_options::value(&OPT::fROMA2MinDenseRatio)->default_value(0.8f), "dense two-view gate: fraction of the dense warp sample one geometry must explain for the pair to be kept")
+		("roma2-dense-sample", boost::program_options::value(&OPT::nROMA2DenseSample)->default_value(2000), "dense two-view gate: size of the coverage-maximising sample drawn from each warp")
+		("export-gate-csv", boost::program_options::value<std::string>(&OPT::strExportGateCSV), "export the dense two-view gate's per-candidate table (ratio, sample and inlier counts, coverage) to a CSV file, so its threshold can be swept offline; needs --roma2-validate true (optional)")
 		("roma2-provider", boost::program_options::value<std::string>(&OPT::strROMA2Provider)->default_value("auto"), "ONNX Runtime execution provider: auto (CUDA > CoreML > DirectML > CPU), cuda, coreml, dml or cpu")
 		("default-focal-ratio", boost::program_options::value(&OPT::defaultFocalRatio)->default_value(1.2f), "focal-length is set to ratio * max(width,height) for images with unknown focal-length")
 		("focal-length,f", boost::program_options::value(&OPT::focalLength)->default_value(0.f), "force focal-length (in pixels) for specified images (0 = disabled)")
@@ -283,7 +291,24 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		LOG("error: --roma2-min-overlap is a fraction of the warp, it must be in [0,1] (got %g)", OPT::fROMA2MinOverlap);
 		return false;
 	}
-	if (OPT::bROMA2 && (OPT::bROMA2Retrieval || OPT::bROMA2Match)) {
+	if (OPT::fROMA2MinDenseRatio <= 0.f || OPT::fROMA2MinDenseRatio > 1.f) {
+		LOG("error: --roma2-min-dense-ratio is a fraction of the dense sample, it must be in (0,1] (got %g)", OPT::fROMA2MinDenseRatio);
+		return false;
+	}
+	if (OPT::nROMA2DenseSample < 8) {
+		LOG("error: --roma2-dense-sample must be at least the 8 correspondences the estimator needs (got %u)", OPT::nROMA2DenseSample);
+		return false;
+	}
+	if (OPT::bROMA2Validate && !OPT::bROMA2) {
+		LOG("error: --roma2-validate needs --roma2 true (the gate is the ROMAv2 warp)");
+		return false;
+	}
+	Util::ensureValidPath(OPT::strExportGateCSV);
+	if (!OPT::strExportGateCSV.empty() && !OPT::bROMA2Validate) {
+		LOG("error: --export-gate-csv needs --roma2-validate true");
+		return false;
+	}
+	if (OPT::bROMA2 && (OPT::bROMA2Retrieval || OPT::bROMA2Match || OPT::bROMA2Validate)) {
 		// the library refuses this same condition inside Scene::MatchPairs (design decision 10),
 		// gated the same way (enabled && (useRetrieval || useMatching)), Scene.cpp:574; this early
 		// check just gives the hint before any feature extraction runs
@@ -353,6 +378,12 @@ int main(int argc, LPCTSTR* argv)
 	cfg.roma2Cfg.maxReplaceInliers = OPT::nROMA2MaxReplace;
 	cfg.roma2Cfg.minCreatedOverlap = OPT::fROMA2MinOverlap;
 	cfg.roma2Cfg.guidedCrossCheck = OPT::bROMA2CrossCheck;
+	cfg.roma2Cfg.useValidation = OPT::bROMA2Validate;
+	cfg.roma2Cfg.minDenseInlierRatio = OPT::fROMA2MinDenseRatio;
+	cfg.roma2Cfg.denseSampleSize = OPT::nROMA2DenseSample;
+	// written by PairsMatcher::Match() itself, right after the matching rounds: the pairs the gate
+	// rejected appear in no other artifact of the run
+	cfg.roma2Cfg.exportValidationCSV = OPT::strExportGateCSV.empty() ? String() : MAKE_PATH_SAFE(OPT::strExportGateCSV);
 	cfg.roma2Cfg.provider = OPT::strROMA2Provider;
 	#ifdef _USE_CUDA
 	cfg.matchCfg.useCUDA = cfg.featuresCfg.useCUDA = !SEACAVE::CUDA::isCpuRequested(SEACAVE::CUDA::desiredDeviceIDs);

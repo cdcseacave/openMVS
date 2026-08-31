@@ -45,6 +45,12 @@ bool VocabularyTreeTest();
 // erosion, and the store/replace-by-inlier-count policy of the guided pairs
 bool ROMA2WarpTrackingTest();
 
+// Coverage-maximising warp sampling (step 1 of the dense two-view gate, Task 3 of
+// roma2-matching-redesign-20260831): the sample budget, the spread the bucket stratification buys
+// over a plain top-confidence selection, the coverage a genuinely one-sided sample reports, and the
+// determinism of the draw
+bool ROMA2CoverageSampleTest();
+
 // Global-descriptor retrieval test: cosine ranking of the per-image global descriptors and its
 // deterministic tie order, the PairsMatcher dispatch that ranks the candidate pairs through them
 // instead of the vocabulary tree, the rankings CSV export, and the .sfm round-trip of the
