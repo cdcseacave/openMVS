@@ -690,20 +690,70 @@ is a loss that stopped happening. **Ignatius keeps a large negative `d_in` (−0
 the decimation-driven structural loss identified in §4 is untouched by the optimizer, exactly as that
 analysis predicted — this arm fixes convergence, not mesh density.
 
-**Meetingroom's 2.12x wall is not established as a property of the arm.** Per *evaluation* at the
-fine scale the other three scenes agree closely — Ignatius 9.6 → 10.3 s, Truck 9.8 → 10.6 s, Barn
-18.2 → 19.8 s, i.e. **+7 to +9 %**, which is what the extra per-vertex stepper work and 1-3 % more
-faces predict — while Meetingroom reads 15.0 → 40.9 s (+173 %) on 4 % more faces. That cell ran
-09:46-10:17, when five other agents were working on this machine; a 7 GB-working-set cell is exactly
-what contention distorts (the same hazard recorded for the fusion campaign: never measure wall time
-beside other jobs). The number is kept here as measured, flagged, and re-measured solo before it is
-quoted; the pooled-median criterion passes with or without it.
+**Meetingroom's 2.12x wall was measurement contention, now confirmed and corrected.** Per
+*evaluation* at the fine scale the other three scenes agreed closely — Ignatius 9.6 → 10.3 s, Truck
+9.8 → 10.6 s, Barn 18.2 → 19.8 s, i.e. **+7 to +9 %**, what the extra per-vertex stepper work and
+1-3 % more faces predict — while Meetingroom read 15.0 → 40.9 s (+173 %) on 4 % more faces. That cell
+ran 09:46-10:17 with five other agents working on this machine. **Re-measured solo on the final
+binary (tag `arm2-confirm`, 12:09): 479 s against the baseline's 573 s = 0.84x**, in line with the
+other three scenes, and `ref_vis_f1` 0.4110 against the contended cell's 0.4118 — inside the noise
+floor. The same cell doubles as the **binary-equivalence check**: the post-10:30 validation and
+error-path fixes did not move the numbers, so the §5 table stands as measured. Corrected pooled
+median wall: **0.81x**. (Recorded in §7.4 as a standing rule: a wall time measured beside other jobs
+is not evidence.)
 
 The arm also **redistributes its budget from the coarse scale to the fine one**: the legacy schedule
 spent a fixed 45 + 22 evaluations, while the stepper converges the coarse scale in 6-8 and spends the
 rest where the surface detail is (Ignatius 6+27, Truck 6+8, Barn 8+25, Meetingroom 6+26). That is the
 intended behaviour of a convergence-driven stop rule, and it is why the arm can be both better and
 faster.
+
+### CUDA backend on the same stepper (B2) — equivalent surface, 2.5-4.7x faster
+
+Measured on the same binary and protocol, tag `arm2-cuda`, one run per scene, machine otherwise idle:
+
+| scene | CPU baseline | **CPU new** | **CUDA new** | CUDA − CPU | speedup | peak RSS |
+|---|---|---|---|---|---|---|
+| Ignatius | 0.6487 / 381 s / 67 | 0.6557 / 383 s / 33 | 0.6555 / **85 s** / 31 | −0.0002 | **4.5x** | 0.49x |
+| Truck | 0.6235 / 406 s / 67 | 0.6586 / 151 s / 14 | 0.6587 / **60 s** / 14 | +0.0001 | **2.5x** | 0.81x |
+| Barn | 0.6531 / 809 s / 67 | 0.6547 / 646 s / 33 | 0.6542 / **179 s** / 34 | −0.0005 | **3.6x** | 0.87x |
+| Meetingroom | 0.4033 / 573 s / 67 | 0.4110 / 479 s / 31 | 0.4108 / **102 s** / 32 | −0.0002 | **4.7x** | 0.41x |
+| fountain-P11 | 0.3197 / 41 s / 67 | 0.3310 / 45 s / 60 | 0.3300 / **14 s** / 55 | −0.0010 | 3.3x | 0.43x |
+| Herz-Jesu-P8 | 0.4234 / 28 s / 67 | 0.4418 / 24 s / 34 | 0.4420 / **8 s** / 34 | +0.0003 | 3.0x | 0.32x |
+
+CUDA's T&T mean `d_base_vis_f1` is **+0.0126** against the CPU's +0.0130. **The two backends agree to
+0.0005 on the acceptance set and 0.0010 overall, and take the same number of evaluations to get there**
+(33/31, 14/14, 33/34, 31/32, 34/34) — they make the same accept/reject decisions on the same surface,
+which is the parity campaign's payoff stated as an end-to-end result rather than a gradient cosine.
+Host peak RSS drops to 0.32-0.87x because the maps and images live on the device. The residual
+±0.001 is the documented fp/atomic difference (§7.3, §7.6), not a disagreement worth chasing.
+
+### Caveat that does NOT clear: the oracle diagnostic (gate criterion 6 of the plan)
+
+The plan's gate also asked that the fountain oracle recovery not regress. It does regress on mean
+distance while improving on the threshold metric, and both halves belong in the record:
+
+| oracle spec | metric | baseline | **arm 2** | verdict |
+|---|---|---|---|---|
+| `standard` | mean dist to GT | 0.01163 | **0.01637** | worse |
+| | `recovery_pct` | −99.6 % | **−181.0 %** | **worse** |
+| | `ref_vis_f1` at τ | 0.4163 | **0.4344** | better (+0.018) |
+| `gt-fixedpoint` | mean dist to GT | 0.01127 | **0.01187** | worse |
+| | `recovery_pct` | −1851 % | **−1955 %** | **worse** |
+| | `ref_vis_f1` at τ | 0.4129 | **0.4765** | better (+0.064) |
+
+**Reading:** arm 2 puts *more* surface within τ (F at τ up substantially, +0.064 starting from the
+GT itself) while the *mean* distance — a tail-sensitive statistic — gets worse. It also runs 88-89
+evaluations on these degraded-GT inputs against 33-60 on the real scenes, i.e. the stop rule does not
+fire early there, so the photometric term is applied for longer. Since §4 established that on
+fountain the photometric term itself moves the surface away from the truth, running a *better step
+rule* on a *still-wrong descent direction* buys threshold accuracy and costs tail accuracy — exactly
+the shape observed. **The campaign's stated target from §4 — "make the truth a fixed point" — is
+therefore NOT met by this arm, and was never in its power to meet:** arm 2 changes only how far to
+step, not which way. The direction is Part A WP6 (bounded/vote photometric term), and the density
+loss is the decimation policy (§7.1); both are open (§8). The arm is accepted on the §3 gate, which
+is the campaign's codified acceptance criterion on real inputs, with this diagnostic recorded
+against it.
 
 ## 6. Failed and rejected ideas
 
@@ -806,7 +856,9 @@ than silently collapsing onto this one.
 **CURRENT STATUS (2026-08-31, read this first; everything below the arm-2 blocks is the
 chronological log, oldest last).** Part 0 complete. Part A WP0–WP2 complete (CPU/CUDA parity reached
 and reviewed; six CUDA deviations found and fixed). Part B B0/B1/B2/B4 complete: both backends run
-the shared pixel-unit stepper, and **arm 2 is accepted (§5)**. The branch's own remaining work, in
+the shared pixel-unit stepper, and **arm 2 is accepted (§5)** — mean `d_base_vis_f1` +0.0130 (CPU) /
++0.0126 (CUDA) with no scene regressing, the two backends agreeing to 0.0005 on the acceptance set,
+and CUDA 2.5-4.7x faster than the CPU at 0.32-0.87x the host RSS. The branch's own remaining work, in
 the order the plan puts it:
 
 1. **Part A WP3** — scale-free grazing-aware visibility. `Refine::DepthConstBias = 0.05` is the last
@@ -821,10 +873,17 @@ the order the plan puts it:
 4. **Decimation policy** — the largest single effect in the baseline table and untouched by any
    optimizer (§7.1): `--decimate 0` (auto) removes 5–15x of the coarse mesh before the first
    photometric iteration, and Ignatius still carries `d_in` ≈ −0.087 with the accepted arm.
-5. **Confirmation cells** — re-measure Meetingroom's wall solo (§5), and re-run one CPU cell on the
-   final binary to confirm the post-10:30 validation fixes did not disturb the numbers.
+5. **The oracle regression (§5, last table)** — arm 2 makes the fountain oracle's mean-distance
+   recovery worse (−99.6 % → −181 % on `standard`, −1851 % → −1955 % on `gt-fixedpoint`) while
+   improving F at τ on both. The optimizer cannot fix this by construction; it is evidence for
+   items 1/2/4 above and the number to re-measure after WP6 lands. Both cells were re-run on the
+   final binary, so the comparison is like-for-like.
 6. **Queued small items** — fixed-point `photoGrad` atomics for CUDA determinism (§7.3); the
    `vertexDepth` → `footprint` migration of the planar-vertex hook.
+
+Done since the arm-2 blocks below were written: the Meetingroom wall was re-measured solo (0.84x,
+contention confirmed) and doubles as the final-binary confirmation cell; the CUDA backend was
+measured on all six GT scenes (§5).
 
 **ARM 2 (proportional pixel step) IMPLEMENTED 2026-08-31 09:15 — the reformulation the
 four-controls table pointed at.** `MeshRefineStep::Evaluate` no longer normalizes per vertex: the
