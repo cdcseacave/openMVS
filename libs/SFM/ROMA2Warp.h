@@ -146,17 +146,35 @@ SFM_API size_t TrackKeypointsByWarp(
 	std::vector<Point2f>& trackedB,
 	std::vector<uchar>& trackStatus);
 
-// Draw a coverage-maximising sample of confident correspondences out of an (already eroded) warp:
-// the warp grid is stratified into floor(sqrt(maxSamples))^2 buckets, the most confident cell of
-// every bucket is taken first -- so the sample's core is spread over the whole confident overlap
-// rather than over its best-scoring corner -- and the rest of the budget is filled by descending
-// confidence. Only cells at least minConfidence confident whose warped point lands inside imgB are
-// eligible; the bucket count is derived from the budget so the winners alone can never exceed it.
+// Draw a spatially uniform sample of confident correspondences out of an (already eroded) warp.
+// A cell is eligible when it is at least minConfidence confident and its warped point lands inside
+// imgB; let E be how many of the grid's T cells are. If E <= maxSamples the whole confident overlap
+// is taken. Otherwise the warp grid is stratified into n x n buckets over the WHOLE image, with
+//    n = min(warpSize, ceil(sqrt(maxSamples * T / E))),
+// and the most confident cell of each bucket is taken -- one per bucket, and nothing else.
+//
+// The T/E factor is what makes the draw uniform under partial overlap, and it is the whole point of
+// the design. A pair never overlaps completely, so with a fixed sqrt(maxSamples) grid most buckets
+// hold no eligible cell at all, and topping the budget up by descending confidence -- which an
+// earlier version of this function did -- could only draw those extra points from inside the
+// overlap, since that is the only place eligible cells exist. At 40% overlap that turned a
+// nominally stratified draw into ~1226 of 2000 points crammed into the same 40% of the frame, and a
+// sample crammed into a sub-area is locally smooth, which one geometry then fits almost exactly.
+// Over-binning instead of topping up keeps the winners spread across the whole frame; the count of
+// occupied buckets lands near maxSamples on its own, which is why there is no fill-up step.
+//
+// So maxSamples is a TARGET, not a cap: the returned sample is smaller when the confident overlap is
+// small (which is the informative outcome -- the sample size now tracks the overlap instead of
+// sitting at the budget regardless), and may exceed it slightly when the eligible cells are spread
+// more evenly than a random scatter. Callers must therefore read the returned count, and must cope
+// with a sample too small for whatever they do next.
+//
 // sampledA/sampledB come out in warp-grid raster order and are index-parallel, in the pixels of the
 // working orientation of imgA/imgB (the pixels the keypoints live in, TrackKeypointsByWarp's
 // convention). coverageA/coverageB receive the fraction of a DENSE_COVERAGE_GRID^2 grid over each
-// image that the sample occupies -- a sample covering only part of the overlap must be visible as
-// such, since a two-view verdict drawn from it rests on the spread.
+// image that the sample occupies; because the draw is now uniform over the whole frame rather than
+// weighted toward wherever confidence is highest, that fraction is a fair proxy for the true
+// overlap area, and a pair whose overlap is a corner of the frame must read as such.
 // Returns the number of sampled correspondences.
 SFM_API size_t SampleWarpByCoverage(
 	const Image& imgA,

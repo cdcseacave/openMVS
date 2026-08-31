@@ -1158,18 +1158,17 @@ bool ROMA2CoverageSampleTest()
 	std::vector<Point2f> sampledA, sampledB;
 	float coverageA, coverageB;
 
-	// a 60x60-cell corner at full confidence, the rest merely confident enough: a plain
-	// descending-confidence draw would spend the whole budget inside that corner (3600 cells for a
-	// budget of 2000), the bucket stratification must instead spread the sample over the whole warp
+	// full overlap: every cell eligible, so the bucket grid is ceil(sqrt(budget)) = 45 on a side and
+	// the sample lands at the budget, spread over the whole frame
 	Image32F overlap(cv::Size(cells, cells), 0.6f);
-	overlap(cv::Rect(0, 0, 60, 60)).setTo(1.f);
-	if (SampleWarpByCoverage(imgA, imgB, warp, overlap, 0.3f, budget, sampledA, sampledB, coverageA, coverageB) != budget ||
-		sampledA.size() != budget || sampledB.size() != budget) {
-		VERBOSE("ROMA2CoverageSampleTest FAILED: %u samples drawn of the %u budgeted", (unsigned)sampledA.size(), budget);
+	const size_t numFull = SampleWarpByCoverage(imgA, imgB, warp, overlap, 0.3f, budget, sampledA, sampledB, coverageA, coverageB);
+	if (numFull < budget*9/10 || numFull > budget*11/10) {
+		VERBOSE("ROMA2CoverageSampleTest FAILED: full overlap drew %u samples, expected about the %u budgeted",
+			(unsigned)numFull, budget);
 		return false;
 	}
 	if (coverageA < 0.99f || coverageB < 0.99f) {
-		VERBOSE("ROMA2CoverageSampleTest FAILED: the stratified sample only covers %.3f/%.3f of the two images", coverageA, coverageB);
+		VERBOSE("ROMA2CoverageSampleTest FAILED: a fully overlapping sample covers only %.3f/%.3f of the two images", coverageA, coverageB);
 		return false;
 	}
 	FOREACH(i, sampledA)
@@ -1178,7 +1177,40 @@ bool ROMA2CoverageSampleTest()
 			return false;
 		}
 
-	// The same draw twice in one process: this proves the function is pure -- it carries no state
+	// PARTIAL OVERLAP, the case the over-binning exists for: a 100x100-cell region of a 160x160 grid
+	// is eligible, E/T = 0.39, so the bucket grid has to grow to ceil(sqrt(2000/0.39)) = 72 a side and
+	// the occupied buckets must still number about the budget. The old fixed-45 grid plus a
+	// descending-confidence fill-up would have hit the budget exactly while cramming ~1200 of those
+	// points into the eligible region; what must NOT happen now is a sample at the budget drawn from
+	// a fraction of the frame.
+	overlap.setTo(0.f);
+	overlap(cv::Rect(2, 2, 100, 100)).setTo(0.6f);
+	const size_t numPartial = SampleWarpByCoverage(imgA, imgB, warp, overlap, 0.3f, budget, sampledA, sampledB, coverageA, coverageB);
+	if (numPartial < budget*3/4 || numPartial > budget*5/4) {
+		VERBOSE("ROMA2CoverageSampleTest FAILED: a 39%%-overlap warp drew %u samples, expected near the %u budgeted",
+			(unsigned)numPartial, budget);
+		return false;
+	}
+	// and the sample must report the overlap it actually came from, not the whole frame: the eligible
+	// region spans about 100/160 of each image side, so about (0.63)^2 = 0.4 of the coverage grid
+	if (coverageA < 0.3f || coverageA > 0.5f || ABS(coverageB-coverageA) > 0.02f) {
+		VERBOSE("ROMA2CoverageSampleTest FAILED: a 39%%-overlap sample reports %.3f/%.3f coverage, expected about 0.4",
+			coverageA, coverageB);
+		return false;
+	}
+	// the draw must be uniform *within* that region, not piled onto its most confident part: raise a
+	// 20x20-cell corner of it to full confidence and the sample must barely move
+	overlap(cv::Rect(2, 2, 20, 20)).setTo(1.f);
+	std::vector<Point2f> skewA, skewB;
+	float skewCoverageA, skewCoverageB;
+	const size_t numSkew = SampleWarpByCoverage(imgA, imgB, warp, overlap, 0.3f, budget, skewA, skewB, skewCoverageA, skewCoverageB);
+	if (numSkew != numPartial || ABS(skewCoverageA-coverageA) > 0.02f) {
+		VERBOSE("ROMA2CoverageSampleTest FAILED: a confidence hot-spot moved the draw from %u samples at %.3f coverage to %u at %.3f",
+			(unsigned)numPartial, coverageA, (unsigned)numSkew, skewCoverageA);
+		return false;
+	}
+
+	// the same draw twice in one process: this proves the function is pure -- it carries no state
 	// between calls and reads no container whose iteration order could vary -- which is what the
 	// implementation has to guarantee. It is *not* a run-to-run reproducibility claim across
 	// binaries or machines; the sample is also a function of the warp the model produced, and
@@ -1187,29 +1219,33 @@ bool ROMA2CoverageSampleTest()
 	std::vector<Point2f> repeatA(7, Point2f(1.f, 2.f)), repeatB(3, Point2f(3.f, 4.f));
 	float repeatCoverageA = -1.f, repeatCoverageB = -1.f;
 	SampleWarpByCoverage(imgA, imgB, warp, overlap, 0.3f, budget, repeatA, repeatB, repeatCoverageA, repeatCoverageB);
-	if (repeatA != sampledA || repeatB != sampledB || repeatCoverageA != coverageA || repeatCoverageB != coverageB) {
+	if (repeatA != skewA || repeatB != skewB || repeatCoverageA != skewCoverageA || repeatCoverageB != skewCoverageB) {
 		VERBOSE("ROMA2CoverageSampleTest FAILED: the draw is not a pure function of its inputs");
 		return false;
 	}
 
 	// budget boundary: the smallest sample --roma2-dense-sample accepts is 8, the estimator's own
-	// minimum. One bucket then covers the whole warp (isqrt(8) = 2, so 2x2 = 4 buckets), and the
-	// fill-up has to top the winners up to exactly 8 without ever exceeding the budget
-	if (SampleWarpByCoverage(imgA, imgB, warp, overlap, 0.3f, 8, sampledA, sampledB, coverageA, coverageB) != 8 ||
-		sampledA.size() != 8) {
-		VERBOSE("ROMA2CoverageSampleTest FAILED: %u samples drawn of the 8 budgeted", (unsigned)sampledA.size());
+	// minimum. maxSamples is a target rather than a cap now (there is no fill-up to trim against),
+	// and at a budget this small the bucket grid is only a few cells on a side, so quantisation
+	// dominates: what must hold is that the draw stays small, stays non-empty, and terminates
+	const size_t numTiny = SampleWarpByCoverage(imgA, imgB, warp, overlap, 0.3f, 8, sampledA, sampledB, coverageA, coverageB);
+	if (numTiny == 0 || numTiny > 64 || sampledA.size() != numTiny) {
+		VERBOSE("ROMA2CoverageSampleTest FAILED: a budget of 8 drew %u samples", (unsigned)numTiny);
 		return false;
 	}
-	// and a budget of 1 degenerates to a single bucket, not to a division by zero
-	if (SampleWarpByCoverage(imgA, imgB, warp, overlap, 0.3f, 1, sampledA, sampledB, coverageA, coverageB) != 1) {
-		VERBOSE("ROMA2CoverageSampleTest FAILED: a budget of 1 drew %u samples", (unsigned)sampledA.size());
+	// and a budget of 1 degenerates to a 2x2 bucket grid over the whole warp (n is still scaled by
+	// the inverse overlap fraction), not to a division by zero or an empty draw
+	const size_t numOne = SampleWarpByCoverage(imgA, imgB, warp, overlap, 0.3f, 1, sampledA, sampledB, coverageA, coverageB);
+	if (numOne == 0 || numOne > 8) {
+		VERBOSE("ROMA2CoverageSampleTest FAILED: a budget of 1 drew %u samples", (unsigned)numOne);
 		return false;
 	}
 
 	// a warp confident in one corner only (kept off the very border, where the round trip through
 	// the normalized warp coordinates can put a cell a hundredth of a pixel outside the second
-	// image and TrackKeypointsByWarp's own inside test drops it): every eligible cell fits in the
-	// budget, and the reported coverage has to show that the sample really does sit in that corner
+	// image and TrackKeypointsByWarp's own inside test drops it): E <= budget, so the whole confident
+	// overlap is taken unstratified, the sample is SMALLER than the budget, and the reported coverage
+	// has to show that it really does sit in that corner
 	overlap.setTo(0.f);
 	overlap(cv::Rect(2, 2, 40, 40)).setTo(1.f);
 	if (SampleWarpByCoverage(imgA, imgB, warp, overlap, 0.3f, budget, sampledA, sampledB, coverageA, coverageB) != 40*40) {

@@ -69,6 +69,26 @@ SFM_API bool ExportDepthDataRaw(const String& fileName, const String& imageFileN
  */
 SFM_API bool ImportMVS(const String& fileName, Scene& scene, bool loadColors=true);
 
+/**
+ * @brief Import ONLY the camera intrinsics of a .mvs project into an already-imported scene
+ * Every image of `scene` is matched by file-name stem against the .mvs image list and takes that
+ * entry's camera, marked as trusted (ImportMVS marks every camera it reads trusted). Nothing else
+ * of the .mvs is applied: no pose, no point cloud, no tracks, no colors. That is the whole point --
+ * it exists so a scene can be given a reference solution's *calibration* without also being given
+ * its geometry, which a measurement that judges geometry must never see.
+ * A working image with no entry of the same stem, or whose resolution disagrees with its entry's,
+ * is a hard error naming the image: silently leaving it on a guessed EXIF focal would produce a
+ * scene where some cameras are trusted and some are not, which is the one state the calibrated
+ * estimator branch must never be selected from. Extra .mvs entries the scene does not use are
+ * reported and ignored, so a subset of the images can be run.
+ * Call before the camera de-duplication of Scene::Import, so identical per-image intrinsics still
+ * collapse into one shared camera.
+ * @param scene scene whose images receive the intrinsics (poses and structure are left untouched)
+ * @param fileName input .mvs file path
+ * @return true if every image of the scene was given trusted intrinsics
+ */
+SFM_API bool ImportIntrinsicsMVS(Scene& scene, const String& fileName);
+
 // Configuration bundle for ExportMVS. All fields have sane defaults so the
 // common case is just `SFM::ExportMVS(path, scene)`. Individual knobs can
 // be overridden with designated initializers, e.g.

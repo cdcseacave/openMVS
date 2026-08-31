@@ -384,6 +384,49 @@ bool SFM::ImportMVS(const String& fileName, Scene& scene, bool loadColors)
 		fileName.c_str(), TD_TIMER_GET_FMT().c_str());
 	return true;
 } // ImportMVS
+/*----------------------------------------------------------------*/
+
+
+bool SFM::ImportIntrinsicsMVS(Scene& scene, const String& fileName)
+{
+	TD_TIMER_STARTD();
+	// the .mvs is read into a throwaway scene and only its cameras are looked at; its poses and
+	// point cloud die with it, so there is no path by which they could reach the caller's scene
+	Scene reference;
+	if (!ImportMVS(fileName, reference, false))
+		return false;
+	std::unordered_map<String, const Image*> stemToImage;
+	stemToImage.reserve(reference.images.size());
+	for (const Image& img : reference.images)
+		if (img.HasCamera())
+			stemToImage.emplace(Util::getFileName(img.fileName), &img);
+	unsigned numUsed = 0;
+	for (Image& img : scene.images) {
+		const auto it = stemToImage.find(Util::getFileName(img.fileName));
+		if (it == stemToImage.end()) {
+			VERBOSE("error: no camera for image %u '%s' in the intrinsics file '%s'",
+				img.ID, img.fileName.c_str(), fileName.c_str());
+			return false;
+		}
+		const Camera& refCamera = *it->second->pCamera;
+		if (img.HasCamera() && (img.GetWidth() != refCamera.GetWidth() || img.GetHeight() != refCamera.GetHeight())) {
+			VERBOSE("error: image %u '%s' is %dx%d but its entry in '%s' is %dx%d",
+				img.ID, img.fileName.c_str(), img.GetWidth(), img.GetHeight(),
+				fileName.c_str(), refCamera.GetWidth(), refCamera.GetHeight());
+			return false;
+		}
+		// before Scene::Import's de-duplication every image still owns its camera outright
+		ASSERT(img.cameraID == NO_ID);
+		SAFE_DELETE(img.pCamera);
+		img.pCamera = refCamera.Clone(); // carries trustIntrinsics, set by ImportMVS for every camera
+		ASSERT(img.pCamera->TrustIntrinsics());
+		++numUsed;
+	}
+	DEBUG("Imported trusted intrinsics for %u images from '%s' (%u of its %u entries unused; no pose or structure read) (%s)",
+		numUsed, Util::getFileName(fileName).c_str(),
+		(unsigned)reference.images.size()-numUsed, (unsigned)reference.images.size(), TD_TIMER_GET_FMT().c_str());
+	return true;
+}
 
 
 // ------------------------------------------------------------------

@@ -391,6 +391,14 @@ bool Scene::Import(const String& source, const ImportConfig& config)
 			!ImportPoses(*this, config.importPosesFile, config.importPosesMode, config.framesConvention))
 			return false;
 
+		// 2b') Replace the guessed EXIF intrinsics with the trusted ones of a reference .mvs, if
+		// configured. Like the pose import above it runs before the de-duplication below, so identical
+		// per-image intrinsics still collapse into one shared camera. Only the intrinsics are read --
+		// see ImportIntrinsicsMVS -- so a scene can be calibrated from a reference solution without
+		// being handed that solution's geometry
+		if (!config.importIntrinsicsMVS.empty() && !ImportIntrinsicsMVS(*this, config.importIntrinsicsMVS))
+			return false;
+
 		// 2c) Cluster identical cameras (exact match) and assign shared cameras
 		std::unordered_map<String, IIndex> camKeyToID;
 		auto cameraKey = [](const Camera* cam)->String {

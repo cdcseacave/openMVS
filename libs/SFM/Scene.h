@@ -45,6 +45,7 @@ struct SFM_API ImportConfig {
 	float k1 = 0.f;                  // force k1 distortion coefficient (0 = not used)
 	float k2 = 0.f;                  // force k2 distortion coefficient (0 = not used)
 	String imageIndicesStr;          // image indices to apply forced parameters (empty = all images)
+	String importIntrinsicsMVS;      // take the camera intrinsics (only) from this .mvs, marked trusted; empty = disabled
 	String importPosesFile;          // import camera poses from file (.csv or .json); empty = disabled
 	PoseImportMode importPosesMode = PoseImportMode::NONE; // what to import from the poses file (see PoseImportMode)
 	// camera-axes convention of a frames.json poses file (ignored for .csv);

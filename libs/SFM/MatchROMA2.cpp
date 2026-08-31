@@ -695,14 +695,47 @@ void ComputeResidualQuantiles(const Matrix3x3f& F, const std::vector<Point2f>& p
 	ASSERT(ptsA.size() == ptsB.size() && scale > 0.f);
 	if (ptsA.empty())
 		return;
-	std::vector<float> residuals(ptsA.size());
+	// Normalize F first. The Sampson residual is invariant to the scale of F -- numerator and
+	// denominator both carry it -- but the degeneracy test below is not, and the two branches hand
+	// back F on wildly different scales: PoseLib's fundamental estimator returns a pixel-scaled F,
+	// while the calibrated branch composes F = K2^-T E K1^-1, whose entries are ~1e-6 for a focal of
+	// ~1e3. Testing that F's raw denominator against a fixed FZERO_TOLERANCE therefore called *every*
+	// correspondence of an ESSENTIAL fit degenerate. With ||F||_F = 1 the denominator is O(|x|^2) for
+	// any well-conditioned point on either branch, and the test again means what it says.
+	float normFSq = 0.f;
+	for (int k = 0; k < 9; ++k)
+		normFSq += F.val[k]*F.val[k];
+	// exact zero only: a scale threshold here would reintroduce the very bug this normalization
+	// removes, since ||F||^2 is ~1e-11 for a composed K2^-T E K1^-1 and ~1 for a pixel-scaled F
+	if (!(normFSq > 0.f))
+		return; // F is the zero matrix (or NaN): nothing to measure against
+	const Matrix3x3f Fn = F * (1.f/SQRT(normFSq));
+	// A correspondence exactly on the epipole has a vanishing denominator and no measurable
+	// residual; it is left out of the sample rather than saturated, which would drag the upper
+	// quantiles to infinity. The test is against zero and nothing else, in double precision: the
+	// Sampson ratio is invariant to the scale of F, but the denominator is not, and a composed
+	// K2^-T E K1^-1 is dominated by its (2,2) entry, leaving the two components that enter the
+	// denominator around 1e-6 of it. Any fixed tolerance on that sum -- FZERO_TOLERANCE included --
+	// therefore rejects every correspondence of a perfectly good calibrated fit.
+	std::vector<float> residuals;
+	residuals.reserve(ptsA.size());
 	FOREACH(i, ptsA) {
-		const Point3f Fx1 = F * ptsA[i].homogeneous();
-		const Point3f Ftx2 = F.t() * ptsB[i].homogeneous();
-		const float numerator = ptsB[i].homogeneous().dot(Fx1);
-		const float denominatorSq = Fx1.x*Fx1.x + Fx1.y*Fx1.y + Ftx2.x*Ftx2.x + Ftx2.y*Ftx2.y;
-		residuals[i] = denominatorSq > FZERO_TOLERANCE ? ABS(numerator)/SQRT(denominatorSq) : FLT_MAX;
+		const Point3d x1(ptsA[i].x, ptsA[i].y, 1.0), x2(ptsB[i].x, ptsB[i].y, 1.0);
+		const Point3d Fx1(
+			(double)Fn(0,0)*x1.x + (double)Fn(0,1)*x1.y + (double)Fn(0,2),
+			(double)Fn(1,0)*x1.x + (double)Fn(1,1)*x1.y + (double)Fn(1,2),
+			(double)Fn(2,0)*x1.x + (double)Fn(2,1)*x1.y + (double)Fn(2,2));
+		const Point3d Ftx2(
+			(double)Fn(0,0)*x2.x + (double)Fn(1,0)*x2.y + (double)Fn(2,0),
+			(double)Fn(0,1)*x2.x + (double)Fn(1,1)*x2.y + (double)Fn(2,1),
+			(double)Fn(0,2)*x2.x + (double)Fn(1,2)*x2.y + (double)Fn(2,2));
+		const double denominatorSq = Fx1.x*Fx1.x + Fx1.y*Fx1.y + Ftx2.x*Ftx2.x + Ftx2.y*Ftx2.y;
+		if (!(denominatorSq > 0.0))
+			continue;
+		residuals.push_back((float)(ABS(x2.dot(Fx1))/sqrt(denominatorSq)));
 	}
+	if (residuals.empty())
+		return; // every correspondence degenerate: leave the record's sentinels, do not invent a number
 	std::sort(residuals.begin(), residuals.end());
 	for (unsigned q = 0; q < DENSE_RESIDUAL_QUANTILES; ++q) {
 		const size_t idx = MINF((size_t)(DENSE_RESIDUAL_PROBABILITIES[q]*(float)(residuals.size()-1)), residuals.size()-1);

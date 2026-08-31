@@ -141,20 +141,15 @@ size_t SFM::SampleWarpByCoverage(
 	if (maxSamples == 0)
 		return 0;
 	const cv::Size sizeA(imgA.GetSize()), sizeB(imgB.GetSize());
-	// one bucket per unit of budget, laid out as a square grid over the warp: the winners of the
-	// buckets alone are then at most maxSamples, so the fill-up below only ever adds to a
-	// fully-spread core instead of having to trim it back. Integer isqrt, not SQRT: a float square
-	// root that lands a hair below a perfect square on a different libm would silently shift the
-	// whole bucket grid, and with it every sample the gate draws
-	int numBuckets = 1;
-	while ((unsigned)(numBuckets+1)*(unsigned)(numBuckets+1) <= maxSamples)
-		++numBuckets;
 	struct Candidate {
 		float confidence;
+		int cell;        // y*cols + x of the warp grid, so the sample keeps raster order
 		Point2f ptA, ptB;
 	};
+	// pass 1: every eligible cell. Their count is what the bucket grid below is sized from, so it
+	// has to be known before a single bucket exists
 	std::vector<Candidate> candidates;
-	std::vector<int> bucketBest((size_t)numBuckets*numBuckets, -1); // most confident candidate of each bucket
+	candidates.reserve((size_t)overlap.rows*overlap.cols/4);
 	for (int y = 0; y < overlap.rows; ++y) {
 		for (int x = 0; x < overlap.cols; ++x) {
 			const float confidence = overlap(y, x);
@@ -163,45 +158,46 @@ size_t SFM::SampleWarpByCoverage(
 			const Point2f ptB(DenormCoord(warp(y, x), sizeB));
 			if (!Image8U::isInside(ptB, sizeB))
 				continue; // the warp sends this cell outside the second image
-			const int idxCandidate = (int)candidates.size();
-			candidates.push_back(Candidate{confidence,
+			candidates.push_back(Candidate{confidence, y*overlap.cols + x,
 				CoordFromTo(Point2f((float)x, (float)y), overlap.size(), sizeA), ptB});
-			int& best = bucketBest[(size_t)(y*numBuckets/overlap.rows)*numBuckets + x*numBuckets/overlap.cols];
-			if (best < 0 || confidence > candidates[best].confidence)
-				best = idxCandidate; // strictly more confident wins, so a tie keeps the first cell in raster order
 		}
 	}
 	if (candidates.empty())
 		return 0;
-	// the bucket winners are the sample's coverage core; the rest of the budget goes to the most
-	// confident of the remaining cells, ties broken by raster order so the sample is deterministic
-	std::vector<bool> taken(candidates.size(), false);
+
 	std::vector<int> chosen;
-	chosen.reserve(MINF((size_t)maxSamples, candidates.size()));
-	for (const int idxCandidate : bucketBest) {
-		if (idxCandidate < 0)
-			continue;
-		taken[idxCandidate] = true;
-		chosen.push_back(idxCandidate);
+	if (candidates.size() <= maxSamples) {
+		// the confident overlap already fits in the budget: there is nothing to select, and any
+		// stratification would only be able to throw points away
+		chosen.resize(candidates.size());
+		std::iota(chosen.begin(), chosen.end(), 0);
+	} else {
+		// pass 2: one winner per bucket of an n x n grid over the whole warp, with n scaled up by the
+		// inverse overlap fraction (see the header) so that the buckets which do hold an eligible cell
+		// number about maxSamples. Integer arithmetic throughout -- n is the smallest value with
+		// n^2 * E >= maxSamples * T, which is ceil(sqrt(maxSamples*T/E)) without a libm square root
+		// that could land a hair off a perfect square and shift the whole grid on a different platform.
+		// Capped at the warp side: beyond one bucket per cell there is nothing left to gain.
+		const uint64_t target = (uint64_t)maxSamples*(uint64_t)overlap.rows*(uint64_t)overlap.cols;
+		int numBuckets = 1;
+		while (numBuckets < overlap.cols &&
+			(uint64_t)numBuckets*(uint64_t)numBuckets*(uint64_t)candidates.size() < target)
+			++numBuckets;
+		std::vector<int> bucketBest((size_t)numBuckets*numBuckets, -1);
+		FOREACH(i, candidates) {
+			const Candidate& candidate = candidates[i];
+			const int x = candidate.cell % overlap.cols, y = candidate.cell / overlap.cols;
+			int& best = bucketBest[(size_t)(y*numBuckets/overlap.rows)*numBuckets + x*numBuckets/overlap.cols];
+			if (best < 0 || candidate.confidence > candidates[best].confidence)
+				best = (int)i; // strictly more confident wins, so a tie keeps the first cell in raster order
+		}
+		chosen.reserve(MINF(bucketBest.size(), candidates.size()));
+		for (const int idxCandidate : bucketBest)
+			if (idxCandidate >= 0)
+				chosen.push_back(idxCandidate);
+		// hand the sample back in raster order, independent of the bucket traversal above
+		std::sort(chosen.begin(), chosen.end());
 	}
-	ASSERT(chosen.size() <= maxSamples);
-	if (chosen.size() < maxSamples && chosen.size() < candidates.size()) {
-		std::vector<int> rest;
-		rest.reserve(candidates.size() - chosen.size());
-		for (size_t i = 0; i < candidates.size(); ++i)
-			if (!taken[i])
-				rest.push_back((int)i);
-		const size_t numFill = MINF((size_t)maxSamples - chosen.size(), rest.size());
-		std::partial_sort(rest.begin(), rest.begin()+numFill, rest.end(),
-			[&candidates](int a, int b) {
-				return candidates[a].confidence > candidates[b].confidence ||
-					(candidates[a].confidence == candidates[b].confidence && a < b);
-			});
-		chosen.insert(chosen.end(), rest.begin(), rest.begin()+numFill);
-	}
-	// hand the sample back in raster order (candidates were collected in it), independent of how
-	// much of it came from the buckets and how much from the confidence fill-up
-	std::sort(chosen.begin(), chosen.end());
 	sampledA.reserve(chosen.size());
 	sampledB.reserve(chosen.size());
 	for (const int idxCandidate : chosen) {
