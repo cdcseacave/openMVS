@@ -210,9 +210,15 @@ bool Resection::RegisterImages()
 			++n;
 			DEBUG_EXTRA("\tImage %u registered: %u/%u correspondences (%u/%u images, %.2f%% avg inliers ratio)",
 				nextID, numInliers, numPoints, scene.status.nCalibratedImages+registeredCount, scene.images.size(), avgInliersRatio.GetAverage() * 100.f);
-			if ((config.fullBAEvery[nBA] > 0 && sinceFullBA >= config.fullBAEvery[nBA]) || (config.avgInliersRatioForceBA > 0.f && avgInliersRatio.GetAverage() < config.avgInliersRatioForceBA)) {
-				// Full BA every N registered images
-				TriangulateTracks(scene, false, config.maxReprojError, config.minAngleThreshold);
+			if ((config.fullBAEvery[nBA] > 0 && sinceFullBA >= config.fullBAEvery[nBA]) ||
+				(config.avgInliersRatioForceBA > 0.f && sinceFullBA >= config.minImagesForceBA && avgInliersRatio.GetAverage() < config.avgInliersRatioForceBA)) {
+				// Full BA every N registered images;
+				// filter first so the observations of the images registered since the last filtering enter the
+				// inlier prefix the BA iterates, then re-triangulate only the tracks left without a valid
+				// position (real outliers and never-triangulated tracks): a track that merely gained a newly
+				// valid view keeps the position the previous BA refined instead of being reset to a linear solve
+				FilterTracks(scene, config.maxReprojError, config.minAngleThreshold, config.multDepthNear, config.multDepthFar);
+				TriangulateTracks(scene, true, config.maxReprojError, config.minAngleThreshold);
 				if (config.minRefineExtIntrs > 0 && scene.status.nCalibratedImages + registeredCount >= config.minRefineExtIntrs)
 					config.fullBAConfig.RefineExtendedIntrinsics();
 				BundleAdjustment::Adjust(scene, config.fullBAConfig);
