@@ -353,8 +353,12 @@ unsigned SFM::ComputeGlobalDescriptorsROMA2(Scene& scene, RoMa2Onnx& roma2, cons
 	const float retrievalPower = config.retrievalPower > 0.f ? config.retrievalPower : roma2.Manifest().facetsPower;
 	// format_version 2: the graph pools FACETS on device (_facets_retrieval) and hands back the finished
 	// 2048-D descriptor directly, so the CPU PoolRetrievalDescriptor pass below is skipped entirely --
-	// but only when the caller asked for exactly the power the graph baked in, or the two would disagree
-	const bool bGpuRetrieval = bFacets && roma2.HasRetrieval() && retrievalPower == roma2.Manifest().facetsPower;
+	// but only when the caller asked for exactly the power the graph baked in, or the two would disagree.
+	// retrievalPower > 0.f matters on its own: PoolRetrievalDescriptor treats power <= 0 as "the signed
+	// power step is disabled" (GlobalDescriptors.cpp), a manifest is free to publish facetsPower == 0,
+	// and 0 == 0 would otherwise satisfy the equality conjunct while the graph still applies its baked-in
+	// power unconditionally -- the one case where the caller could silently get a different descriptor
+	const bool bGpuRetrieval = bFacets && roma2.HasRetrieval() && retrievalPower > 0.f && retrievalPower == roma2.Manifest().facetsPower;
 	std::vector<float> facets, descriptor;
 	for (IIndex i = 0; i < nImages; ++i, ++state.progress) {
 		// consume the buffer this image was prefetched into before ever reusing it below

@@ -58,17 +58,19 @@ STAGE_IO = {
 }
 
 FORMAT_VERSION = 2    # roma_<setting>.json's schema version, read by RoMa2Manifest::Load: version 2 adds
-                       # io.descriptor.outputs.retrieval (the FACETS recipe pooled on device, graphs.py
-                       # _facets_retrieval); version 1 (no retrieval output) stays readable by the C++
-                       # loader for models already exported, which keep pooling on the CPU
+                      # io.descriptor.outputs.retrieval (the FACETS recipe pooled on device, graphs.py
+                      # _facets_retrieval); version 1 (no retrieval output) stays readable by the C++
+                      # loader for models already exported, which keep pooling on the CPU
 
 WARMUP_RUNS = 10      # discarded before timing: the first executions carry allocation and clock ramp
 
 # What the manifest publishes about the two retrieval recipes graphs.pool_retrieval implements and the C++
 # PoolRetrievalDescriptor reproduces, so that neither side carries a constant the other could change under
 # it. The dimensions are not here: they are read off the graph, which cannot be wrong about its own width.
+# FACETS_POWER itself is graphs.FACETS_POWER, imported where it's used (write_manifest) rather than
+# redefined here: it is also what the traced graph bakes in (graphs._facets_retrieval), so a second copy
+# here would be exactly the drifting constant this comment says neither side may carry.
 GEM_P = 3             # the GeM exponent, pool_retrieval's .pow(3) ... .pow(1 / 3)
-FACETS_POWER = 0.3    # pool_retrieval's default power, the request's sign(d)|d|^0.3
 LAYERS_SLICE = 1      # the layer the shipped GeM recipe pools: slice 1 of layers, i.e. block 17
 
 # CUDA first with CPU behind it, which is what the C++ runtime does; TF32 on, which is ORT's own default and
@@ -213,7 +215,15 @@ def check_onnx(args):
     produced, worst_cosine = {}, 1.0
     for name, host in zip(names, values):
         produced[name] = host
-        expected = np.load(reference / f"out_{name}.npy").astype(np.float64)
+        expected_path = reference / f"out_{name}.npy"
+        if not expected_path.is_file():
+            # exactly the situation this task creates: a v1-era reference directory (traced before
+            # the graph gained `retrieval`) checked against a v2 graph -- name the stale directory
+            # rather than a bare FileNotFoundError, same as the "which half is missing" case below
+            raise SystemExit(f"FAILED: {reference} has no '{expected_path.name}': this looks like a "
+                             f"reference directory traced before this graph gained a '{name}' output; "
+                             f"rebuild it (parity.py or export.py onnx) before checking against it")
+        expected = np.load(expected_path).astype(np.float64)
         actual = host.astype(np.float64)
         cosine = float(expected.ravel() @ actual.ravel()
                        / (np.linalg.norm(expected) * np.linalg.norm(actual)))
@@ -388,7 +398,7 @@ def write_manifest(args):
     fail on a mismatch instead of overwriting one.
     """
     import onnx
-    from graphs import LAYER_IDX, PATCH
+    from graphs import FACETS_POWER, LAYER_IDX, PATCH
 
     out_dir = Path(args.out_dir).expanduser().resolve()
     size = SETTINGS[args.setting]

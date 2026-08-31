@@ -59,20 +59,20 @@ SFM_API void PreprocessImageRoMa2(const Image8U3& bgr, int size, std::vector<flo
 // retrieval pooling follows. Everything the C++ needs to consume an export it did not produce.
 struct SFM_API RoMa2Manifest
 {
-	String setting;                    // preset name: turbo|fast|base
-	int imageSize = 0;                 // S: the graphs take S x S images
-	int patch = 16;                    // backbone patch size (S/patch = G, the descriptor grid)
-	std::vector<int> layers;           // backbone blocks the `layers` output stacks
-	std::vector<int> valueFacetBlocks; // backbone blocks the `value_facets` output taps
-	std::vector<int64_t> layersShape;  // [1,2,G,G,1024], the `layers` output shape
-	std::vector<int64_t> facetsShape;  // [1,2,G,G,1024], the `value_facets` output shape
-	std::vector<int64_t> retrievalShape; // [1,2048], the `retrieval` output shape; empty on format_version 1
-	int warpSize = 0;                  // C: the coarse matcher's C x C warp grid
-	int confidenceChannels = 1;        // channels of the `confidence` output
-	unsigned facetsDim = 2048;         // dimension of the FACETS retrieval descriptor
-	unsigned layersDim = 1024;         // dimension of the LAYERS retrieval descriptor
-	float facetsPower = 0.3f;          // exponent of the FACETS signed power normalization
-	int opset = 0;                     // ONNX opset the graphs were traced with
+	String setting;                       // preset name: turbo|fast|base
+	int imageSize = 0;                    // S: the graphs take S x S images
+	int patch = 16;                       // backbone patch size (S/patch = G, the descriptor grid)
+	std::vector<int> layers;              // backbone blocks the `layers` output stacks
+	std::vector<int> valueFacetBlocks;    // backbone blocks the `value_facets` output taps
+	std::vector<int64_t> layersShape;     // [1,2,G,G,1024], the `layers` output shape
+	std::vector<int64_t> facetsShape;     // [1,2,G,G,1024], the `value_facets` output shape
+	std::vector<int64_t> retrievalShape;  // [1,2048], the `retrieval` output shape; empty on format_version 1
+	int warpSize = 0;                     // C: the coarse matcher's C x C warp grid
+	int confidenceChannels = 1;           // channels of the `confidence` output
+	unsigned facetsDim = 2048;            // dimension of the FACETS retrieval descriptor
+	unsigned layersDim = 1024;            // dimension of the LAYERS retrieval descriptor
+	float facetsPower = 0.3f;             // exponent of the FACETS signed power normalization
+	int opset = 0;                        // ONNX opset the graphs were traced with
 	String descriptorFile, descriptorData; // descriptor graph and its external-data file
 	String matchFile, matchData;           // coarse-match graph and its external-data file
 

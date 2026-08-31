@@ -174,7 +174,10 @@ def main():
                   | {f"pooled_{name}": [vector.size] for name, vector in pooled.items()}
                   | {f"retrieval_{side}": [vector.size] for side, vector in retrieval_vectors.items()},
         # polyml's, the bounds export.py check defaults to and the ones the C++ test judges under.
-        "bounds": {"min_cosine": 0.998, "max_warp_error_px": 2.0, "min_agreement_percent": 99.5},
+        # retrieval_min_cosine is Task 1's own gate (export.py check's --retrieval-min-cosine default),
+        # judging retrieval_{A,B}.npy against pooled_facets_{A,B}.npy -- tighter than min_cosine above.
+        "bounds": {"min_cosine": 0.998, "max_warp_error_px": 2.0, "min_agreement_percent": 99.5,
+                   "retrieval_min_cosine": 0.99999},
     }, indent=2) + "\n")
 
     if args.fixtures:

@@ -192,11 +192,17 @@ bool RoMa2Manifest::Load(const String& fileName)
 	// format_version 2 adds a third descriptor output, `retrieval`: the FACETS recipe (GeM p=3 -> concat
 	// -> signed power -> L2) computed end to end on device, so a retrieval-only pass reads back facetsDim
 	// host floats instead of the whole value_facets tensor. Absent (retrievalShape stays empty) on version 1.
+	// Read straight off the JSON rather than through ExpectManifestShape (which would discard the read
+	// value and hand back a hand-built {1, facetsDim} instead): retrievalShape's value must come from what
+	// the manifest actually declares, or IsSupportedManifest's own re-check of it below is tautological.
 	retrievalShape.clear();
 	if (formatVersion >= 2) {
-		if (!ExpectManifestShape(*descriptorOutputs, "retrieval", fileName, {1, (int64_t)facetsDim}))
+		if (!ReadJson(*descriptorOutputs, "retrieval", fileName, retrievalShape))
 			return false;
-		retrievalShape.assign({1, (int64_t)facetsDim});
+		if (retrievalShape != std::vector<int64_t>{1, (int64_t)facetsDim}) {
+			VERBOSE("error: RoMa2 manifest '%s' declares a shape for '%s' that disagrees with its own sizes", fileName.c_str(), "retrieval");
+			return false;
+		}
 	}
 	return true;
 }
@@ -318,16 +324,16 @@ bool IsSupportedManifest(const RoMa2Manifest& manifest, const String& setting)
 // that arena, which is the lifetime rule OrtTensor documents.
 struct RoMa2Onnx::Impl
 {
-	OnnxModel descriptor;      // image -> (layers, value_facets)
-	OnnxModel match;           // (descriptors_A, descriptors_B, img_A, img_B) -> (warp, confidence)
-	OrtTensor image;           // host input of the descriptor graph, copied H2D by ORT inside Run
-	OrtTensor facetsScratch;   // matching pass: value_facets stays on the device, never read back
-	OrtTensor facetsHost;      // retrieval pass: bound instead of the scratch so ORT copies it out
-	OrtTensor retrievalScratch; // format_version 2, non-retrieval Describe() calls: bound but never read
-	OrtTensor retrievalHost;    // format_version 2 retrieval pass: bound instead of the scratch so ORT copies it out
-	OrtTensor dummyImage;      // the coarse graph's dead img_A/img_B input, shared by both
-	OrtTensor warpHost;        // host output: ORT copies the warp D2H inside Run
-	OrtTensor confidenceHost;  // host output: the raw overlap logit
+	OnnxModel descriptor;        // image -> (layers, value_facets)
+	OnnxModel match;             // (descriptors_A, descriptors_B, img_A, img_B) -> (warp, confidence)
+	OrtTensor image;             // host input of the descriptor graph, copied H2D by ORT inside Run
+	OrtTensor facetsScratch;     // matching pass: value_facets stays on the device, never read back
+	OrtTensor facetsHost;        // retrieval pass: bound instead of the scratch so ORT copies it out
+	OrtTensor retrievalScratch;  // format_version 2, non-retrieval Describe() calls: bound but never read
+	OrtTensor retrievalHost;     // format_version 2 retrieval pass: bound instead of the scratch so ORT copies it out
+	OrtTensor dummyImage;        // the coarse graph's dead img_A/img_B input, shared by both
+	OrtTensor warpHost;          // host output: ORT copies the warp D2H inside Run
+	OrtTensor confidenceHost;    // host output: the raw overlap logit
 	String modelDir;
 	RoMa2Manifest manifest;
 	bool bMatchFailed = false; // a failed match-graph load is remembered, not retried per pair
@@ -472,6 +478,9 @@ bool RoMa2Onnx::Describe(const float* planarRgb, OrtTensor& layersOut, std::vect
 {
 	ASSERT(IsLoaded() && layersOut.Shape() == impl->manifest.layersShape);
 	ASSERT(retrievalOut == NULL || HasRetrieval()); // caller must check HasRetrieval() before asking for it
+	if (retrievalOut != NULL && !HasRetrieval())
+		return false; // release build: the ASSERT above compiles out, so this is what actually stops
+		              // an unallocated retrievalHost from degrading into a silently empty descriptor
 	memcpy(impl->image.HostData(), planarRgb, sizeof(float)*3*(size_t)ImageSize()*ImageSize());
 	impl->descriptor.ClearBindings();
 	if (!impl->descriptor.BindInput("image", impl->image) ||

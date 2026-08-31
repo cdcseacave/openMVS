@@ -1360,10 +1360,14 @@ static bool RoMa2OnnxParityDescribe(RoMa2Onnx& model, const String& descDir, con
 		VERBOSE("RoMa2OnnxParityTest[%s] FAILED: cannot allocate the layers tensor", setting.c_str());
 		return false;
 	}
-	std::vector<float> facets;
+	std::vector<float> facets, retrieval;
 	{
 		TD_TIMER_STARTD();
-		if (!model.Describe(planarA.data(), layers, &facets)) {
+		// format_version 2 (Important 2, fix round 1): also read the graph's own on-device FACETS
+		// pooling back when the manifest has it, so this test exercises RoMa2Onnx::Describe's
+		// retrievalOut path -- the same call the GPU-retrieval describe pass in MatchROMA2.cpp makes --
+		// instead of only ever taking the CPU PoolRetrievalDescriptor path below
+		if (!model.Describe(planarA.data(), layers, &facets, model.HasRetrieval() ? &retrieval : NULL)) {
 			VERBOSE("RoMa2OnnxParityTest[%s] FAILED: describe with the facets read-back", setting.c_str());
 			return false;
 		}
@@ -1389,6 +1393,24 @@ static bool RoMa2OnnxParityDescribe(RoMa2Onnx& model, const String& descDir, con
 	const double cosPooledFacets = CosineSimilarity(pooled.data(), reference.data(), pooled.size());
 	const double normPooledFacets = VectorNorm(pooled.data(), pooled.size());
 
+	// format_version 2: the graph's own on-device pooling (retrieval), judged against the same
+	// pooled_facets_A.npy fixture -- `reference` still holds it -- at Task 1's own tighter bar
+	// (export.py check's --retrieval-min-cosine default) rather than the looser bounds.minCosine above
+	double cosRetrieval = 1.0;
+	if (model.HasRetrieval()) {
+		if (retrieval.size() != manifest.facetsDim) {
+			VERBOSE("RoMa2OnnxParityTest[%s] FAILED: the graph's retrieval output has %u values, the manifest declares %u",
+				setting.c_str(), (unsigned)retrieval.size(), manifest.facetsDim);
+			return false;
+		}
+		cosRetrieval = CosineSimilarity(retrieval.data(), reference.data(), retrieval.size());
+		if (cosRetrieval < 0.99999) {
+			VERBOSE("RoMa2OnnxParityTest[%s] FAILED: on-device retrieval cosine %.8f is below 0.99999 (vs pooled_facets_A.npy)",
+				setting.c_str(), cosRetrieval);
+			return false;
+		}
+	}
+
 	// the same image described again into a host tensor, so the `layers` output itself and its
 	// pooled parity descriptor can be compared too (the device tensor above is never read back)
 	OrtTensor layersHost(OrtTensor::Host(model.LayersShape()));
@@ -1413,8 +1435,8 @@ static bool RoMa2OnnxParityDescribe(RoMa2Onnx& model, const String& descDir, con
 		return false;
 	const double cosPooledLayers = CosineSimilarity(pooled.data(), reference.data(), pooled.size());
 	const double normPooledLayers = VectorNorm(pooled.data(), pooled.size());
-	DEBUG("RoMa2OnnxParityTest[%s]: cosine value_facets %.6f, layers %.6f, pooled facets %.6f (norm %.6f), pooled layers %.6f (norm %.6f)",
-		setting.c_str(), cosFacets, cosLayers, cosPooledFacets, normPooledFacets, cosPooledLayers, normPooledLayers);
+	DEBUG("RoMa2OnnxParityTest[%s]: cosine value_facets %.6f, layers %.6f, pooled facets %.6f (norm %.6f), pooled layers %.6f (norm %.6f), retrieval %.8f",
+		setting.c_str(), cosFacets, cosLayers, cosPooledFacets, normPooledFacets, cosPooledLayers, normPooledLayers, cosRetrieval);
 	if (cosFacets < bounds.minCosine || cosLayers < bounds.minCosine ||
 		cosPooledFacets < bounds.minCosine || cosPooledLayers < bounds.minCosine) {
 		VERBOSE("RoMa2OnnxParityTest[%s] FAILED: describe cosine below %g (value_facets %.6f, layers %.6f, pooled facets %.6f, pooled layers %.6f)",
@@ -1426,8 +1448,9 @@ static bool RoMa2OnnxParityDescribe(RoMa2Onnx& model, const String& descDir, con
 			setting.c_str(), normPooledFacets, normPooledLayers);
 		return false;
 	}
-	VERBOSE("RoMa2OnnxParityTest[%s] describe passed on %s: cosine %.6f (value_facets) / %.6f (layers), pooled %.6f (facets) / %.6f (layers)",
-		setting.c_str(), model.ProviderName().c_str(), cosFacets, cosLayers, cosPooledFacets, cosPooledLayers);
+	VERBOSE("RoMa2OnnxParityTest[%s] describe passed on %s: cosine %.6f (value_facets) / %.6f (layers), pooled %.6f (facets) / %.6f (layers)%s",
+		setting.c_str(), model.ProviderName().c_str(), cosFacets, cosLayers, cosPooledFacets, cosPooledLayers,
+		model.HasRetrieval() ? (String::FormatString(", retrieval %.8f", cosRetrieval)).c_str() : "");
 	return true;
 }
 

@@ -18,6 +18,9 @@ import torch.nn.functional as F
 PATCH = 16
 LAYER_IDX = [11, 17]            # features.py:87-89, 0-based blocks; final norm applied; CLS+4 registers dropped
 FACET_BLOCKS = [15, 20]         # EXPORT_REQUEST.md: v_proj of blocks 15 and 20 (0-indexed), in that order
+FACETS_POWER = 0.3              # the request's sign(d)|d|^0.3; the one symbol both _facets_retrieval (what
+                                 # the traced graph bakes in) and pool_retrieval (the CPU reference, and what
+                                 # export.py's manifest publishes) read power from, so the two can't drift
 
 
 class DescriptorWrap(torch.nn.Module):
@@ -44,7 +47,7 @@ class DescriptorWrap(torch.nn.Module):
     Reading a hook's capture back out of self.taps makes torch.onnx.export warn that "the tensor attributes
     self.taps[...] were assigned during export" and suggest register_buffer. It is benign for a graph traced
     once at a fixed shape — the captures are graph values, not state carried between calls — and the audit
-    that both outputs reach the graph plus _check_descriptor cover what the warning is pointing at.
+    that all three outputs reach the graph plus _check_descriptor cover what the warning is pointing at.
     """
 
     def __init__(self, model, facet_blocks=FACET_BLOCKS):
@@ -294,15 +297,21 @@ def bf16_noise_floor(setting, checkpoint, roma2_repo, image, layers_fp32):
     return cosine, float(np.abs(expected - actual).max())
 
 
-def _facets_retrieval(value_facets, power=0.3):
+def _facets_retrieval(value_facets, power=FACETS_POWER):
     """The FACETS recipe (GeM p=3 -> L2 per slice -> concat -> L2 -> signed power -> L2), as plain tensor
     ops DescriptorWrap traces into the graph, so ORT computes the pooled 2048-d retrieval descriptor on
     device instead of PoolRetrievalDescriptor doing it on the CPU (GlobalDescriptors.cpp).
 
-    Bit for bit pool_retrieval("facets")'s recipe, including the double-precision accumulation (the cube
+    The same recipe as pool_retrieval("facets"), including the double-precision accumulation (the cube
     inside GeM costs precision) -- but without pool_retrieval's .detach().to("cpu", ...) numpy bridge,
     which is for the CPU-side reference and would either trace as a spurious device-transfer node or not
-    trace at all. Kept next to pool_retrieval on purpose: this is a second copy of the same recipe, and
+    trace at all. Not bit-identical to it, though: this stays in float64 for the whole chain (clamp
+    through the final normalize) and casts to float32 exactly once, at the very end -- the same precision
+    profile pool_retrieval itself has, so the two agree to ~1e-6 (ONNX Runtime's own kernels reduce over a
+    different memory layout than eager PyTorch and round differently in the last bits). Both of them are
+    more precise than the C++ PoolRetrievalDescriptor this graph replaces, which rounds to float32 three
+    times over the same recipe (once per GemSlice, once at the concat normalize, once at the power
+    normalize). Kept next to pool_retrieval on purpose: this is a second copy of the same recipe, and
     _check_descriptor asserts the two agree (cosine >= 0.99999) on every real forward pass before a graph
     is ever traced, so the two are not free to drift apart silently.
 
@@ -316,7 +325,7 @@ def _facets_retrieval(value_facets, power=0.3):
     return F.normalize(powered, dim=-1).float()
 
 
-def pool_retrieval(tensor, recipe="facets", power=0.3):
+def pool_retrieval(tensor, recipe="facets", power=FACETS_POWER):
     """The Python reference of the C++ PoolRetrievalDescriptor (EXPORT_REQUEST.md's recipe).
 
     tensor is a [1, 2, h, w, C] numpy array or torch tensor. facets: per-slice GeM p=3 -> L2 -> concat -> L2
@@ -370,7 +379,9 @@ def _check_descriptor(graph, img, layers, value_facets, retrieval, tol=1e-4, ret
     tap on the wrong block, the wrong third of qkv or the wrong token offset fails here instead of shipping.
     `retrieval` is judged against pool_retrieval("facets") of this same value_facets: the two are separate
     implementations of one recipe (_facets_retrieval's docstring), and this is what keeps them from
-    drifting apart -- at the same cosine bar the exported graph is later held to against the C++ reference.
+    drifting apart -- at the same cosine bar export.py's own check gate later holds the traced graph to
+    against this same Python reference (not the C++ one; the C++ side is checked separately, from its own
+    saved copy of this fixture, in RoMa2OnnxParityDescribe).
     """
     backbone = _dino_backbone(graph.m.f)
     block_input = {}
