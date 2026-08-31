@@ -6,7 +6,9 @@ romav2/{graphs,export}.py):
   roma_<setting>_descriptor_fp32.onnx    image[1,3,S,S] (RGB planar, [0,1]) -> layers[1,2,S/16,S/16,1024]
                                          (norm(block 11), norm(block 17)),
                                          value_facets[1,2,S/16,S/16,1024] (v_proj of blocks 15 and 20,
-                                         patch tokens, before attention)
+                                         patch tokens, before attention),
+                                         retrieval[1,2048] (value_facets pooled by the FACETS recipe --
+                                         graphs.py _facets_retrieval -- on device)
   roma_<setting>_match_coarse_fp32.onnx  (descriptors_A, descriptors_B, img_A, img_B)
                                          -> warp[1,S/4,S/4,2], confidence[1,S/4,S/4,1]
 
@@ -51,11 +53,14 @@ DEFAULT_CHECKPOINT = "~/.cache/torch/hub/checkpoints/romav2.0.1.pt"   # == Polyc
 DEFAULT_ROMA2_REPO = "~/polyml/romav2"                # the vendored RoMaV2; ~/RoMaV2 (upstream) also works
 
 STAGE_IO = {
-    "descriptor": (["image"], ["layers", "value_facets"]),
+    "descriptor": (["image"], ["layers", "value_facets", "retrieval"]),
     "match": (["descriptors_A", "descriptors_B", "img_A", "img_B"], ["warp", "confidence"]),
 }
 
-FORMAT_VERSION = 1    # roma_<setting>.json's schema version, read by RoMa2Manifest::Load
+FORMAT_VERSION = 2    # roma_<setting>.json's schema version, read by RoMa2Manifest::Load: version 2 adds
+                       # io.descriptor.outputs.retrieval (the FACETS recipe pooled on device, graphs.py
+                       # _facets_retrieval); version 1 (no retrieval output) stays readable by the C++
+                       # loader for models already exported, which keep pooling on the CPU
 
 WARMUP_RUNS = 10      # discarded before timing: the first executions carry allocation and clock ramp
 
@@ -250,6 +255,20 @@ def check_onnx(args):
             if cosine < args.min_cosine:
                 raise SystemExit(f"FAILED: pooled {recipe} descriptor cosine {cosine:.6f} is below "
                                  f"--min-cosine {args.min_cosine}")
+        if "retrieval" in produced:
+            # format_version 2: the graph pools FACETS on device (graphs.py _facets_retrieval), so this is
+            # judged directly against PoolRetrievalDescriptor's own Python reference rather than against a
+            # second pooling of value_facets -- what a retrieval-only pass actually ships to openMVS, at
+            # the tight bound Task 1's parity gate sets rather than the raw-tensor --min-cosine above.
+            want = pool_retrieval(np.load(reference / "out_value_facets.npy"), "facets")
+            got = produced["retrieval"].astype(np.float64).reshape(-1)
+            got = got / np.linalg.norm(got)   # defensive: the graph already emits a unit vector
+            cosine = float(got @ want)
+            print(f"retrieval (on-device FACETS pooling): cosine {cosine:.8f}  max abs err "
+                  f"{np.abs(got - want).max():.2e}", flush=True)
+            if cosine < args.retrieval_min_cosine:
+                raise SystemExit(f"FAILED: retrieval cosine {cosine:.8f} is below "
+                                 f"--retrieval-min-cosine {args.retrieval_min_cosine}")
         print(f"OK: worst cosine {worst_cosine:.6f}", flush=True)
 
 
@@ -392,7 +411,8 @@ def write_manifest(args):
     width = io["descriptor"]["outputs"]["layers"][-1]
     expected = {
         "descriptor": ({"image": [1, 3, size, size]},
-                       {"layers": [1, 2, grid, grid, width], "value_facets": [1, 2, grid, grid, width]}),
+                       {"layers": [1, 2, grid, grid, width], "value_facets": [1, 2, grid, grid, width],
+                        "retrieval": [1, 2 * width]}),
         "match_coarse": ({"descriptors_A": [1, 2, grid, grid, width],
                           "descriptors_B": [1, 2, grid, grid, width],
                           "img_A": [1, 3, size, size], "img_B": [1, 3, size, size]},
@@ -508,6 +528,12 @@ def main():
     pk.add_argument("--min-cosine", type=float, default=0.998,
                     help="descriptor only: fail below this, on the raw outputs and on the pooled "
                          "descriptors, or on any non-finite output")
+    # Task 1's own gate, tighter than --min-cosine: format_version 2 only, judges the graph's on-device
+    # retrieval output directly against PoolRetrievalDescriptor's Python reference (pool_retrieval).
+    pk.add_argument("--retrieval-min-cosine", type=float, default=0.99999,
+                    help="descriptor only, format_version 2 graphs: fail if the graph's own 'retrieval' "
+                         "output falls below this cosine against pool_retrieval('facets') of the "
+                         "reference value_facets")
     # polyml's bounds, which carry roughly 4x margin over what its bf16 engines measure: warp p99 reaches
     # 0.35 px on the coarse stage there, and agreement stays above 99.88%.
     pk.add_argument("--max-warp-error", type=float, default=2.0,

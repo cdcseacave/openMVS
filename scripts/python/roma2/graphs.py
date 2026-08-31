@@ -21,7 +21,7 @@ FACET_BLOCKS = [15, 20]         # EXPORT_REQUEST.md: v_proj of blocks 15 and 20 
 
 
 class DescriptorWrap(torch.nn.Module):
-    """img -> (layers, value_facets), the two tensors the descriptor stage of the contract emits.
+    """img -> (layers, value_facets, retrieval), the three tensors the descriptor stage of the contract emits.
 
     `layers` is the DINOv3 layers the matcher consumes (model.f, i.e. features.py's wrapped_forward with
     autocast stripped by to_fp32), stacked along dim 1. The layers come out of the backbone as token slices
@@ -35,6 +35,11 @@ class DescriptorWrap(torch.nn.Module):
     v_proj(norm1(x)) with heads concatenated in their natural order, taken before attention weighting and
     before o_proj. The projections are computed anyway; the hook only keeps them alive to an output. CLS and
     the 4 register tokens are dropped and the result is laid out [1, 2, h, w, 1024], like layers.
+
+    `retrieval` is `value_facets` pooled into the FACETS global descriptor (_facets_retrieval) inside the
+    graph, so a caller that only wants retrieval never reads value_facets back off the device: 2048 host
+    floats land instead of 2*h*w*1024. It exists alongside value_facets, not instead of it — a v1 consumer
+    that pools on the CPU still gets the raw facets it always did.
 
     Reading a hook's capture back out of self.taps makes torch.onnx.export warn that "the tensor attributes
     self.taps[...] were assigned during export" and suggest register_buffer. It is benign for a graph traced
@@ -84,7 +89,8 @@ class DescriptorWrap(torch.nn.Module):
         facets = [self.taps[b].reshape(B, -1, 3 * C)[:, self.n_prefix:, 2 * C:].reshape(B, h, w, C)
                   for b in self.facet_blocks]
         self.taps.clear()                               # sliced already; do not pin the [1, N, 3C] captures
-        return torch.stack((f0, f1), dim=1), torch.stack(facets, dim=1)
+        value_facets = torch.stack(facets, dim=1)
+        return torch.stack((f0, f1), dim=1), value_facets, _facets_retrieval(value_facets)
 
 
 def _dino_backbone(f):
@@ -288,6 +294,28 @@ def bf16_noise_floor(setting, checkpoint, roma2_repo, image, layers_fp32):
     return cosine, float(np.abs(expected - actual).max())
 
 
+def _facets_retrieval(value_facets, power=0.3):
+    """The FACETS recipe (GeM p=3 -> L2 per slice -> concat -> L2 -> signed power -> L2), as plain tensor
+    ops DescriptorWrap traces into the graph, so ORT computes the pooled 2048-d retrieval descriptor on
+    device instead of PoolRetrievalDescriptor doing it on the CPU (GlobalDescriptors.cpp).
+
+    Bit for bit pool_retrieval("facets")'s recipe, including the double-precision accumulation (the cube
+    inside GeM costs precision) -- but without pool_retrieval's .detach().to("cpu", ...) numpy bridge,
+    which is for the CPU-side reference and would either trace as a spurious device-transfer node or not
+    trace at all. Kept next to pool_retrieval on purpose: this is a second copy of the same recipe, and
+    _check_descriptor asserts the two agree (cosine >= 0.99999) on every real forward pass before a graph
+    is ever traced, so the two are not free to drift apart silently.
+
+    value_facets is [1, S, h, w, C] (the tensor the `value_facets` output emits, S=2); returns [1, S*C].
+    """
+    B, S, h, w, C = value_facets.shape
+    t = value_facets.reshape(B, S, h * w, C).double()
+    gem = F.normalize(t.clamp(min=1e-6).pow(3).mean(dim=2).pow(1 / 3), dim=-1)   # [B, S, C]: per-slice GeM + L2
+    d = F.normalize(gem.reshape(B, S * C), dim=-1)
+    powered = torch.sign(d) * d.abs().pow(power)
+    return F.normalize(powered, dim=-1).float()
+
+
 def pool_retrieval(tensor, recipe="facets", power=0.3):
     """The Python reference of the C++ PoolRetrievalDescriptor (EXPORT_REQUEST.md's recipe).
 
@@ -334,12 +362,15 @@ def save_reference(directory, input_names, inputs, output_names, outputs):
     return directory
 
 
-def _check_descriptor(graph, img, layers, value_facets, tol=1e-4):
-    """Prove, before tracing, that the two descriptor outputs are the ones the contract names.
+def _check_descriptor(graph, img, layers, value_facets, retrieval, tol=1e-4, retrieval_min_cosine=0.99999):
+    """Prove, before tracing, that the three descriptor outputs are the ones the contract names.
 
     `layers` has to be what polyml's DescriptorWrap already emits, because the matcher head binds it. The
     facets are recomputed from an independently captured block input rather than trusted to the hook, so a
     tap on the wrong block, the wrong third of qkv or the wrong token offset fails here instead of shipping.
+    `retrieval` is judged against pool_retrieval("facets") of this same value_facets: the two are separate
+    implementations of one recipe (_facets_retrieval's docstring), and this is what keeps them from
+    drifting apart -- at the same cosine bar the exported graph is later held to against the C++ reference.
     """
     backbone = _dino_backbone(graph.m.f)
     block_input = {}
@@ -362,6 +393,14 @@ def _check_descriptor(graph, img, layers, value_facets, tol=1e-4):
         error = (v.reshape(expected.shape) - expected).abs().max().item()
         assert error <= tol, f"value_facets[:, {i}] != v_proj(norm1(x)) of block {b}: max abs {error:.3e}"
         print(f"  value_facets[:, {i}] == block {b} qkv(norm1(x))[..., 2C:]: max abs {error:.2e}", flush=True)
+
+    expected_retrieval = torch.as_tensor(pool_retrieval(value_facets, "facets")).double()  # pool_retrieval forces CPU
+    actual_retrieval = retrieval.double().reshape(-1).cpu()
+    cosine = (expected_retrieval @ actual_retrieval
+             / (expected_retrieval.norm() * actual_retrieval.norm())).item()
+    assert cosine >= retrieval_min_cosine, \
+        f"retrieval != pool_retrieval(value_facets, 'facets'): cosine {cosine:.8f}"
+    print(f"  retrieval == pool_retrieval(value_facets, 'facets'): cosine {cosine:.8f}", flush=True)
 
 
 def _check_coarse_match(model, warp, confidence, descriptors_A, descriptors_B, img_A, img_B,

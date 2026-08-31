@@ -66,6 +66,7 @@ struct SFM_API RoMa2Manifest
 	std::vector<int> valueFacetBlocks; // backbone blocks the `value_facets` output taps
 	std::vector<int64_t> layersShape;  // [1,2,G,G,1024], the `layers` output shape
 	std::vector<int64_t> facetsShape;  // [1,2,G,G,1024], the `value_facets` output shape
+	std::vector<int64_t> retrievalShape; // [1,2048], the `retrieval` output shape; empty on format_version 1
 	int warpSize = 0;                  // C: the coarse matcher's C x C warp grid
 	int confidenceChannels = 1;        // channels of the `confidence` output
 	unsigned facetsDim = 2048;         // dimension of the FACETS retrieval descriptor
@@ -113,6 +114,8 @@ public:
 	inline int ImageSize() const { return Manifest().imageSize; }
 	inline int WarpSize() const { return Manifest().warpSize; }
 	inline const std::vector<int64_t>& LayersShape() const { return Manifest().layersShape; }
+	// format_version 2: the graph pools the FACETS recipe on device and emits it as `retrieval`
+	inline bool HasRetrieval() const { return !Manifest().retrievalShape.empty(); }
 	unsigned NumPatches() const; // G*G, the descriptor grid cells one image is described by
 
 	// One image's descriptor tensor, on the session device when the provider has device memory
@@ -125,8 +128,11 @@ public:
 	// Run the descriptor graph on one preprocessed image (3*S*S floats, PreprocessImageRoMa2),
 	// writing the `layers` output into layersOut (a MakeLayers()-shaped tensor). When facetsOut
 	// is not NULL the raw `value_facets` tensor is read back into it as 2*G*G*1024 host floats;
-	// only the retrieval pass asks for it, the matching pass leaves it on the device.
-	bool Describe(const float* planarRgb, OrtTensor& layersOut, std::vector<float>* facetsOut);
+	// only the retrieval pass asks for it on a format_version 1 model, the matching pass leaves it
+	// on the device. When retrievalOut is not NULL (HasRetrieval() only) the graph's own on-device
+	// FACETS pooling is read back into it instead, as facetsDim host floats -- ~400x less transfer
+	// than facetsOut for the same retrieval pass.
+	bool Describe(const float* planarRgb, OrtTensor& layersOut, std::vector<float>* facetsOut, std::vector<float>* retrievalOut = NULL);
 
 	// Run the coarse-match graph on two descriptor tensors, returning the C x C normalized warp
 	// (align_corners=false) into image B and the overlap probability (the graph's logit through a sigmoid)

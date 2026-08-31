@@ -351,14 +351,20 @@ unsigned SFM::ComputeGlobalDescriptorsROMA2(Scene& scene, RoMa2Onnx& roma2, cons
 	// own retrieval_recipes.facets.power is what the pooling uses unless the caller overrides it
 	// (config.retrievalPower defaults to 0, which means "whatever the model was exported with")
 	const float retrievalPower = config.retrievalPower > 0.f ? config.retrievalPower : roma2.Manifest().facetsPower;
+	// format_version 2: the graph pools FACETS on device (_facets_retrieval) and hands back the finished
+	// 2048-D descriptor directly, so the CPU PoolRetrievalDescriptor pass below is skipped entirely --
+	// but only when the caller asked for exactly the power the graph baked in, or the two would disagree
+	const bool bGpuRetrieval = bFacets && roma2.HasRetrieval() && retrievalPower == roma2.Manifest().facetsPower;
 	std::vector<float> facets, descriptor;
 	for (IIndex i = 0; i < nImages; ++i, ++state.progress) {
 		// consume the buffer this image was prefetched into before ever reusing it below
 		const PlanarImage* const planar = ring.Take();
 		Image& img = scene.images[i];
-		if (planar && roma2.Describe(planar->data(), bFacets ? layers : layersHost, bFacets ? &facets : NULL)) {
-			PoolRetrievalDescriptor(bFacets ? facets.data() : layersHost.HostData(), numSlices, roma2.NumPatches(), numChannels,
-				config.retrievalRecipe, retrievalPower, descriptor);
+		if (planar && roma2.Describe(planar->data(), bFacets ? layers : layersHost,
+				bGpuRetrieval ? NULL : (bFacets ? &facets : NULL), bGpuRetrieval ? &descriptor : NULL)) {
+			if (!bGpuRetrieval)
+				PoolRetrievalDescriptor(bFacets ? facets.data() : layersHost.HostData(), numSlices, roma2.NumPatches(), numChannels,
+					config.retrievalRecipe, retrievalPower, descriptor);
 			img.globalDescriptor = cv::Mat(1, (int)descriptor.size(), CV_32F, descriptor.data()).clone();
 			++numDescribed;
 		} else {
@@ -375,8 +381,8 @@ unsigned SFM::ComputeGlobalDescriptorsROMA2(Scene& scene, RoMa2Onnx& roma2, cons
 	const unsigned descriptorDim = descriptor.empty() ?
 		(bFacets ? roma2.Manifest().facetsDim : roma2.Manifest().layersDim) : (unsigned)descriptor.size();
 	DEBUG("Global descriptors computed for %u/%u images (%s recipe, %u-D, %s provider, %s)",
-		numDescribed, (unsigned)nImages, bFacets ? "value-facets" : "layers", descriptorDim,
-		roma2.ProviderName().c_str(), TD_TIMER_GET_FMT().c_str());
+		numDescribed, (unsigned)nImages, bGpuRetrieval ? "value-facets(gpu)" : (bFacets ? "value-facets" : "layers"),
+		descriptorDim, roma2.ProviderName().c_str(), TD_TIMER_GET_FMT().c_str());
 	return numDescribed;
 #else // _USE_ONNXRUNTIME
 	// unreachable: RoMa2Onnx::IsAvailable() is false in this build, so Scene::MatchPairs never

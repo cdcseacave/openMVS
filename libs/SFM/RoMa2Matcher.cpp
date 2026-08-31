@@ -116,8 +116,8 @@ bool RoMa2Manifest::Load(const String& fileName)
 	if (!ReadJson(data, "format_version", fileName, formatVersion) ||
 		!ReadJsonString(data, "model", fileName, model))
 		return false;
-	if (formatVersion != 1 || model != "roma2") {
-		VERBOSE("error: RoMa2 manifest '%s' is version %d of model '%s', expected version 1 of 'roma2'",
+	if ((formatVersion != 1 && formatVersion != 2) || model != "roma2") {
+		VERBOSE("error: RoMa2 manifest '%s' is version %d of model '%s', expected version 1 or 2 of 'roma2'",
 			fileName.c_str(), formatVersion, model.c_str());
 		return false;
 	}
@@ -189,6 +189,15 @@ bool RoMa2Manifest::Load(const String& fileName)
 		!ExpectManifestShape(*matchOutputs, "warp", fileName, {1, cells, cells, 2}) ||
 		!ExpectManifestShape(*matchOutputs, "confidence", fileName, {1, cells, cells, (int64_t)confidenceChannels}))
 		return false;
+	// format_version 2 adds a third descriptor output, `retrieval`: the FACETS recipe (GeM p=3 -> concat
+	// -> signed power -> L2) computed end to end on device, so a retrieval-only pass reads back facetsDim
+	// host floats instead of the whole value_facets tensor. Absent (retrievalShape stays empty) on version 1.
+	retrievalShape.clear();
+	if (formatVersion >= 2) {
+		if (!ExpectManifestShape(*descriptorOutputs, "retrieval", fileName, {1, (int64_t)facetsDim}))
+			return false;
+		retrievalShape.assign({1, (int64_t)facetsDim});
+	}
 	return true;
 }
 /*----------------------------------------------------------------*/
@@ -296,7 +305,9 @@ bool IsSupportedManifest(const RoMa2Manifest& manifest, const String& setting)
 		manifest.layersShape[2] == manifest.imageSize/manifest.patch &&
 		manifest.layersShape[3] == manifest.layersShape[2] &&
 		manifest.layersDim == (unsigned)manifest.layersShape[4] &&
-		manifest.facetsDim == (unsigned)(manifest.layersShape[1]*manifest.layersShape[4]);
+		manifest.facetsDim == (unsigned)(manifest.layersShape[1]*manifest.layersShape[4]) &&
+		(manifest.retrievalShape.empty() ||
+			manifest.retrievalShape == std::vector<int64_t>{1, (int64_t)manifest.facetsDim});
 }
 
 } // namespace
@@ -312,6 +323,8 @@ struct RoMa2Onnx::Impl
 	OrtTensor image;           // host input of the descriptor graph, copied H2D by ORT inside Run
 	OrtTensor facetsScratch;   // matching pass: value_facets stays on the device, never read back
 	OrtTensor facetsHost;      // retrieval pass: bound instead of the scratch so ORT copies it out
+	OrtTensor retrievalScratch; // format_version 2, non-retrieval Describe() calls: bound but never read
+	OrtTensor retrievalHost;    // format_version 2 retrieval pass: bound instead of the scratch so ORT copies it out
 	OrtTensor dummyImage;      // the coarse graph's dead img_A/img_B input, shared by both
 	OrtTensor warpHost;        // host output: ORT copies the warp D2H inside Run
 	OrtTensor confidenceHost;  // host output: the raw overlap logit
@@ -400,12 +413,24 @@ bool RoMa2Onnx::Impl::LoadDescriptor(const String& _modelDir, const String& sett
 		!descriptor.ExpectOutputShape("layers", manifest.layersShape) ||
 		!descriptor.ExpectOutputShape("value_facets", manifest.facetsShape))
 		return false;
+	if (!manifest.retrievalShape.empty() && !descriptor.ExpectOutputShape("retrieval", manifest.retrievalShape))
+		return false;
 	image = OrtTensor::Host({1, 3, S, S});
 	facetsScratch = descriptor.MakeDeviceTensor(manifest.facetsShape);
 	facetsHost = OrtTensor::Host(manifest.facetsShape);
 	if (!image.IsValid() || !facetsScratch.IsValid() || !facetsHost.IsValid()) {
 		VERBOSE("error: can not allocate the RoMa2 descriptor tensors");
 		return false;
+	}
+	if (!manifest.retrievalShape.empty()) {
+		// format_version 2: the graph's own on-device FACETS pooling, read back as facetsDim host
+		// floats instead of the whole value_facets tensor -- what the retrieval pass actually asks for
+		retrievalScratch = descriptor.MakeDeviceTensor(manifest.retrievalShape);
+		retrievalHost = OrtTensor::Host(manifest.retrievalShape);
+		if (!retrievalScratch.IsValid() || !retrievalHost.IsValid()) {
+			VERBOSE("error: can not allocate the RoMa2 retrieval tensors");
+			return false;
+		}
 	}
 	DEBUG("RoMa2 model '%s' ready on %s: %dx%d images, %ux%u descriptor grid, %dx%d warp cells",
 		setting.c_str(), OnnxProviderName(descriptor.Provider()), manifest.imageSize, manifest.imageSize,
@@ -443,19 +468,25 @@ OrtTensor RoMa2Onnx::MakeLayers()
 	return impl->descriptor.MakeDeviceTensor(impl->manifest.layersShape);
 }
 
-bool RoMa2Onnx::Describe(const float* planarRgb, OrtTensor& layersOut, std::vector<float>* facetsOut)
+bool RoMa2Onnx::Describe(const float* planarRgb, OrtTensor& layersOut, std::vector<float>* facetsOut, std::vector<float>* retrievalOut)
 {
 	ASSERT(IsLoaded() && layersOut.Shape() == impl->manifest.layersShape);
+	ASSERT(retrievalOut == NULL || HasRetrieval()); // caller must check HasRetrieval() before asking for it
 	memcpy(impl->image.HostData(), planarRgb, sizeof(float)*3*(size_t)ImageSize()*ImageSize());
 	impl->descriptor.ClearBindings();
 	if (!impl->descriptor.BindInput("image", impl->image) ||
 		!impl->descriptor.BindOutput("layers", layersOut) ||
 		!impl->descriptor.BindOutput("value_facets", facetsOut != NULL ? impl->facetsHost : impl->facetsScratch))
 		return false;
+	if (HasRetrieval() &&
+		!impl->descriptor.BindOutput("retrieval", retrievalOut != NULL ? impl->retrievalHost : impl->retrievalScratch))
+		return false;
 	if (!impl->descriptor.Run())
 		return false;
 	if (facetsOut != NULL)
 		facetsOut->assign(impl->facetsHost.HostData(), impl->facetsHost.HostData()+impl->facetsHost.NumElements());
+	if (retrievalOut != NULL)
+		retrievalOut->assign(impl->retrievalHost.HostData(), impl->retrievalHost.HostData()+impl->retrievalHost.NumElements());
 	return true;
 }
 
@@ -522,7 +553,7 @@ OrtTensor RoMa2Onnx::MakeLayers()
 	return OrtTensor();
 }
 
-bool RoMa2Onnx::Describe(const float*, OrtTensor&, std::vector<float>*)
+bool RoMa2Onnx::Describe(const float*, OrtTensor&, std::vector<float>*, std::vector<float>*)
 {
 	ASSERT(false); // unreachable: Load() always fails, so no caller ever gets a loaded model
 	return false;

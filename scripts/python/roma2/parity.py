@@ -21,6 +21,9 @@ this directory, and its always-on tests read --fixtures):
                                 from the same pixels rather than from its own JPEG decoder's
   pooled_facets_{A,B}.npy       [2 * C] and [C]: the retrieval descriptors PoolRetrievalDescriptor has to
   pooled_layers_{A,B}.npy       reproduce, for both images of the pair
+  retrieval_{A,B}.npy           [2 * C]: the graph's own on-device FACETS pooling (_facets_retrieval) of
+                                the same forward pass -- Task 1's parity gate judges this against
+                                pooled_facets_{A,B}.npy, at a tighter bound than export.py check's default
   parity.json                   what the directory holds and the bounds it is judged under
   --fixtures DIR                the two model-free fixtures the always-on C++ tests use, as raw fp32
 """
@@ -124,7 +127,7 @@ def main():
 
     input_names, output_names = STAGE_IO[args.stage]
     with DescriptorWrap(model, args.value_facet_blocks or FACET_BLOCKS).eval() as descriptor, torch.no_grad():
-        descriptors_A, descriptors_B = descriptor(img_A), descriptor(img_B)   # (layers, value_facets) each
+        descriptors_A, descriptors_B = descriptor(img_A), descriptor(img_B)   # (layers, value_facets, retrieval) each
         if args.stage == "descriptor":
             inputs, eager = (img_A,), descriptors_A
         else:
@@ -142,14 +145,21 @@ def main():
     # the stage above ran, so nothing here can disagree with what was written beside it.
     from PIL import Image
 
-    pooled = {}
-    for side, decoded, (layers, facets) in (("A", decoded_A, descriptors_A), ("B", decoded_B, descriptors_B)):
+    pooled, retrieval_vectors = {}, {}
+    for side, decoded, (layers, facets, retrieval) in (("A", decoded_A, descriptors_A), ("B", decoded_B, descriptors_B)):
         Image.fromarray(decoded).save(directory / f"source_{side}.png")
         for recipe, tensor in (("facets", facets), ("layers", layers)):
             vector = pool_retrieval(tensor, recipe)
             np.save(directory / f"pooled_{recipe}_{side}.npy", vector)
             pooled[f"{recipe}_{side}"] = vector
             print(f"pooled_{recipe}_{side}: [{vector.size}] norm {np.linalg.norm(vector):.6f}", flush=True)
+        # the graph's own on-device FACETS pooling (_facets_retrieval), on this same real forward pass --
+        # Task 1's parity gate against pooled_facets_{side} (the CPU PoolRetrievalDescriptor reference)
+        vector = retrieval.detach().cpu().numpy().reshape(-1)
+        np.save(directory / f"retrieval_{side}.npy", vector)
+        retrieval_vectors[side] = vector
+        cosine = float(vector.astype(np.float64) @ pooled[f"facets_{side}"].astype(np.float64))
+        print(f"retrieval_{side}: [{vector.size}] cosine vs pooled_facets_{side} {cosine:.8f}", flush=True)
 
     (directory / "parity.json").write_text(json.dumps({
         "format_version": 1,
@@ -161,7 +171,8 @@ def main():
         "value_facet_blocks": list(args.value_facet_blocks or FACET_BLOCKS),
         "shapes": {f"in_{name}": list(tensor.shape) for name, tensor in zip(input_names, inputs)}
                   | {f"out_{name}": list(tensor.shape) for name, tensor in zip(output_names, eager_tensors)}
-                  | {f"pooled_{name}": [vector.size] for name, vector in pooled.items()},
+                  | {f"pooled_{name}": [vector.size] for name, vector in pooled.items()}
+                  | {f"retrieval_{side}": [vector.size] for side, vector in retrieval_vectors.items()},
         # polyml's, the bounds export.py check defaults to and the ones the C++ test judges under.
         "bounds": {"min_cosine": 0.998, "max_warp_error_px": 2.0, "min_agreement_percent": 99.5},
     }, indent=2) + "\n")
