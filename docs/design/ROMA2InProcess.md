@@ -198,6 +198,48 @@ ROMA2 dense matching (first round): 6/6 pairs guided, 0 created, 6 replaced, 0 g
 
 ---
 
+## Dense Two-View Gate (`--roma2-validate`, off by default)
+
+`ValidatePairsROMA2` (`libs/SFM/MatchROMA2.cpp`) runs **before** descriptor matching, on the pairs
+the match mode selected, and drops the ones a single geometry cannot explain. Per pair: erode the
+confidence map, draw a coverage-maximising sample of the warp (`SampleWarpByCoverage`,
+`--roma2-dense-sample`, default 2000 — the warp grid is stratified into `floor(sqrt(budget))^2`
+buckets, the most confident cell of each is taken first, and the rest of the budget is filled by
+descending confidence), then fit one geometry to that whole sample through
+`PairsMatcher::GeometricFilter` on temporary `Image` copies whose keypoints are the dense points
+(the `MatchFeaturesGeometric` precedent, so no second estimator exists). The pair passes when the
+fit explains at least `--roma2-min-dense-ratio` (default 0.8) of the sample. **A rejected pair is
+dropped, not demoted** — it does not fall through to descriptor matching.
+
+It shares `MakeSlotPlan`, the prefetch ring and the warp ordering with the dense matching pass
+(`ForEachWarpROMA2`), so it costs the same per pair (~23 pair/s at base on an A100); unlike that
+pass it needs no descriptors, only cameras. It is independent of `--roma2-match`: the gate decides
+which pairs exist, the dense matcher re-matches the ones that do.
+
+`--export-gate-csv` writes one row per warped candidate — accepted or rejected — as
+`ImageA,ImageB,NumSampled,NumInliers,InlierRatio,CoverageA,CoverageB,Validated`, so the threshold
+can be swept offline from a single run. It is the only artifact carrying the rejected pairs, which
+by construction reach no other output. `PairsMatcher::GetDenseValidations()` hands the same records
+(plus the fitted relative pose / E / F and the dense inlier set) to in-process consumers.
+
+**Measured: the inlier ratio is the wrong decision variable** (2026-08-31, both 400-keyframe
+Polycam captures, 9078 and 7604 candidates, run folders
+`<capture>/openmvs-densegate-20260831-retrieval-gate/`). ROC AUC of the ratio as a pair-validity
+predictor is 0.844 / 0.907 against the ARKit depth labels and 0.765 / 0.795 against Doppelgangers++,
+but restricted to the candidates whose eroded warp offered a sample at all it falls to 0.677 / 0.627
+and 0.733 / 0.603 — most of the separation is the pairs whose warp had no confident cell (ratio 0 by
+construction), which is a coverage signal, not a coherence one. At the 0.8 bar, 70–87 % of the pairs
+either reference calls wrong and whose warp yields a sample are still explained to ≥ 80 % by one
+geometry (their median ratio 0.957–0.995, against 0.998–1.000 for the good pairs). A wrong warp is
+*not* coherent only in patches. The coverage the same pass measures separates far better
+(min-coverage AUC 0.984 / 0.988 and 0.793 / 0.852; median 0.023–0.062 on wrong pairs against
+0.312–0.324 on good ones), as does the raw inlier count. Both captures are self-calibrated
+(`0 trusted intrinsics`), so the fit is the 7-DoF fundamental branch of `GeometricFilter`, which is
+the leading explanation for how permissive it is. The gate therefore ships **off**, and no threshold
+is proposed for it.
+
+---
+
 ## Per-Round Replace Policy
 
 Design decision 6 (polycpp `ShouldReplaceROMA2Pair`, `pose_refine.cpp:506-509`,
