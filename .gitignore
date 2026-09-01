@@ -42,3 +42,8 @@ make*/
 build-*/
 bench*/
 __pycache__/
+
+# Test-suite outputs: apps/Tests writes these beside its tracked inputs
+apps/Tests/data/depth*.png
+apps/Tests/data/depth*.ply
+apps/Tests/data/reconstruct_test.*
