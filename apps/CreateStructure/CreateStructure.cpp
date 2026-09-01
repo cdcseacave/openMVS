@@ -79,12 +79,8 @@ unsigned nROMA2MaxReplace;
 float fROMA2MinOverlap;
 bool bROMA2CrossCheck;
 bool bROMA2Validate;
-float fROMA2MinDenseRatio;
 unsigned nROMA2DenseSample;
-float fROMA2GateEpipolarError;
-String strROMA2GateGeometry;
 float fROMA2MinInlierCoverage;
-String strExportGateCSV;
 bool bFilterTriplets;
 float fTripletMinScore;
 String strROMA2Provider;
@@ -185,12 +181,8 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("roma2-min-overlap", boost::program_options::value(&OPT::fROMA2MinOverlap)->default_value(0.f), "dense matching: create a pair the descriptor matcher did not verify only if this fraction of the warp is confidently overlapping (0 = off, 1 = create only on a fully confident warp)")
 		("roma2-cross-check", boost::program_options::value<bool>(&OPT::bROMA2CrossCheck)->default_value(false), "dense matching: keep a guided match only if no closer keypoint of the first image claims the same keypoint of the second")
 		("roma2-validate", boost::program_options::value<bool>(&OPT::bROMA2Validate)->default_value(false), "dense two-view gate: before descriptor matching, warp every candidate pair and drop the ones a single geometry cannot explain (a rejected pair is dropped, not descriptor-matched)")
-		("roma2-min-dense-ratio", boost::program_options::value(&OPT::fROMA2MinDenseRatio)->default_value(0.8f), "dense two-view gate: fraction of the dense warp sample one geometry must explain for the pair to be kept")
 		("roma2-dense-sample", boost::program_options::value(&OPT::nROMA2DenseSample)->default_value(2000), "dense two-view gate: size of the coverage-maximising sample drawn from each warp")
-		("roma2-gate-epipolar-native-px", boost::program_options::value(&OPT::fROMA2GateEpipolarError)->default_value(1.f), "dense two-view gate: RANSAC epipolar error of the gate's fit, in WARP-NATIVE pixels - the model's own square input frame (640 px at base), NOT target-image pixels; converted per pair from each pair's resolution, so one setting means the same precision on every dataset (0 = inherit the matcher's target-pixel threshold unconverted)")
-		("roma2-gate-geometry", boost::program_options::value<std::string>(&OPT::strROMA2GateGeometry)->default_value("auto"), "dense two-view gate: which geometry to fit - auto (essential where the intrinsics are trusted, fundamental otherwise), essential (force the calibrated 5-DoF branch, error out without trusted intrinsics) or fundamental (force the 7-DoF branch)")
-		("roma2-min-inlier-coverage", boost::program_options::value(&OPT::fROMA2MinInlierCoverage)->default_value(0.f), "dense two-view gate: coverage of the inlier subset recorded as met in the gate CSV; diagnostic only, it rejects nothing")
-		("export-gate-csv", boost::program_options::value<std::string>(&OPT::strExportGateCSV), "export the dense two-view gate's per-candidate table (ratio, sample and inlier counts, coverage) to a CSV file, so its threshold can be swept offline; needs --roma2-validate true (optional)")
+		("roma2-min-inlier-coverage", boost::program_options::value(&OPT::fROMA2MinInlierCoverage)->default_value(0.25f), "dense two-view gate: fraction of both images the fit's inlier subset must still cover for the pair to be kept (0 keeps every pair)")
 		("roma2-provider", boost::program_options::value<std::string>(&OPT::strROMA2Provider)->default_value("auto"), "ONNX Runtime execution provider: auto (CUDA > CoreML > DirectML > CPU), cuda, coreml, dml or cpu")
 		("default-focal-ratio", boost::program_options::value(&OPT::defaultFocalRatio)->default_value(1.2f), "focal-length is set to ratio * max(width,height) for images with unknown focal-length")
 		("focal-length,f", boost::program_options::value(&OPT::focalLength)->default_value(0.f), "force focal-length (in pixels) for specified images (0 = disabled)")
@@ -300,10 +292,6 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		LOG("error: --roma2-min-overlap is a fraction of the warp, it must be in [0,1] (got %g)", OPT::fROMA2MinOverlap);
 		return false;
 	}
-	if (OPT::fROMA2MinDenseRatio <= 0.f || OPT::fROMA2MinDenseRatio > 1.f) {
-		LOG("error: --roma2-min-dense-ratio is a fraction of the dense sample, it must be in (0,1] (got %g)", OPT::fROMA2MinDenseRatio);
-		return false;
-	}
 	if (OPT::nROMA2DenseSample < 8) {
 		LOG("error: --roma2-dense-sample must be at least the 8 correspondences the estimator needs (got %u)", OPT::nROMA2DenseSample);
 		return false;
@@ -312,21 +300,8 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		LOG("error: --roma2-validate needs --roma2 true (the gate is the ROMAv2 warp)");
 		return false;
 	}
-	if (OPT::fROMA2GateEpipolarError < 0.f) {
-		LOG("error: --roma2-gate-epipolar-native-px is an error in warp-native pixels, it cannot be negative (got %g)", OPT::fROMA2GateEpipolarError);
-		return false;
-	}
-	if (OPT::strROMA2GateGeometry != "auto" && OPT::strROMA2GateGeometry != "essential" && OPT::strROMA2GateGeometry != "fundamental") {
-		LOG("error: unknown --roma2-gate-geometry '%s' (accepted: auto, essential, fundamental)", OPT::strROMA2GateGeometry.c_str());
-		return false;
-	}
 	if (OPT::fROMA2MinInlierCoverage < 0.f || OPT::fROMA2MinInlierCoverage > 1.f) {
 		LOG("error: --roma2-min-inlier-coverage is a fraction of a coarse grid, it must be in [0,1] (got %g)", OPT::fROMA2MinInlierCoverage);
-		return false;
-	}
-	Util::ensureValidPath(OPT::strExportGateCSV);
-	if (!OPT::strExportGateCSV.empty() && !OPT::bROMA2Validate) {
-		LOG("error: --export-gate-csv needs --roma2-validate true");
 		return false;
 	}
 	if (OPT::bROMA2 && (OPT::bROMA2Retrieval || OPT::bROMA2Match || OPT::bROMA2Validate)) {
@@ -401,14 +376,8 @@ int main(int argc, LPCTSTR* argv)
 	cfg.roma2Cfg.minCreatedOverlap = OPT::fROMA2MinOverlap;
 	cfg.roma2Cfg.guidedCrossCheck = OPT::bROMA2CrossCheck;
 	cfg.roma2Cfg.useValidation = OPT::bROMA2Validate;
-	cfg.roma2Cfg.minDenseInlierRatio = OPT::fROMA2MinDenseRatio;
 	cfg.roma2Cfg.denseSampleSize = OPT::nROMA2DenseSample;
-	cfg.roma2Cfg.validationEpipolarNativePx = OPT::fROMA2GateEpipolarError;
-	cfg.roma2Cfg.validationGeometry = OPT::strROMA2GateGeometry;
 	cfg.roma2Cfg.minInlierCoverage = OPT::fROMA2MinInlierCoverage;
-	// written by PairsMatcher::Match() itself, right after the matching rounds: the pairs the gate
-	// rejected appear in no other artifact of the run
-	cfg.roma2Cfg.exportValidationCSV = OPT::strExportGateCSV.empty() ? String() : MAKE_PATH_SAFE(OPT::strExportGateCSV);
 	cfg.roma2Cfg.provider = OPT::strROMA2Provider;
 	#ifdef _USE_CUDA
 	cfg.matchCfg.useCUDA = cfg.featuresCfg.useCUDA = !SEACAVE::CUDA::isCpuRequested(SEACAVE::CUDA::desiredDeviceIDs);

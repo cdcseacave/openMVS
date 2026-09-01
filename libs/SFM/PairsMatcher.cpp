@@ -357,16 +357,8 @@ LPCTSTR PairsMatcher::GeometryBranchName(GeometryBranch branch)
 	return _T("unknown");
 }
 
-bool PairsMatcher::GeometricFilter(
-	const Image& img1,
-	const Image& img2,
-	ImagePair& pair) const
-{
-	return GeometricFilter(config, img1, img2, pair);
-}
 
 bool PairsMatcher::GeometricFilter(
-	const MatchConfig& cfg,
 	const Image& img1,
 	const Image& img2,
 	ImagePair& pair) const
@@ -387,9 +379,9 @@ bool PairsMatcher::GeometricFilter(
 	// refuses an unsupported input by name instead of leaving the trap armed -- a dense sample of
 	// thousands of correspondences, many of them genuinely close together, would spring it far more
 	// readily than the descriptor path ever did.
-	if (cfg.minFeatureDistance > 0.f) {
+	if (config.minFeatureDistance > 0.f) {
 		VERBOSE("error: minFeatureDistance (%g px) is not supported by the geometric verification: "
-			"skipping matches there desynchronises the RANSAC inlier mask from the match list", cfg.minFeatureDistance);
+			"skipping matches there desynchronises the RANSAC inlier mask from the match list", config.minFeatureDistance);
 		pair.InvalidateMatches();
 		return false;
 	}
@@ -399,14 +391,14 @@ bool PairsMatcher::GeometricFilter(
 	// holds the inlier threshold (max_error) directly. The estimate_* free functions
 	// no longer take a separate BundleOptions parameter.
 	poselib::RelativePoseOptions opt;
-	opt.max_error = cfg.maxEpipolarError; // reprojection error threshold
+	opt.max_error = config.maxEpipolarError; // reprojection error threshold
 	opt.ransac.min_iterations = 100; // min iterations
 	opt.ransac.max_iterations = 10000; // max iterations
 	std::vector<char> inliers;
 
 	// Lambda to fetch matched points from the pair
 	const auto FetchPoints = [&]() {
-		const float minFeatureDistanceSq = SQUARE(cfg.minFeatureDistance);
+		const float minFeatureDistanceSq = SQUARE(config.minFeatureDistance);
 		std::vector<poselib::Point2D> pts1, pts2;
 		pts1.reserve(pair.matches.size());
 		pts2.reserve(pair.matches.size());
@@ -429,7 +421,7 @@ bool PairsMatcher::GeometricFilter(
 		const std::vector<char>& inliersMask,
 		size_t numInliers) -> bool
 	{
-		ASSERT(numInliers >= cfg.minMatches);
+		ASSERT(numInliers >= config.minMatches);
 		// Partition matches into inliers and outliers
 		pair.PartitionMatchesByMask(inliersMask, (int)numInliers);
 		// Fill relative pose
@@ -442,10 +434,10 @@ bool PairsMatcher::GeometricFilter(
 			// Compose F matrix from E and K matrices
 			pair.F = ImagePair::ComposeFundamentalMatrix(pair.E.value(), *pK1, *pK2);
 		}
-		if (cfg.IsMatchesFilterOn()) {
+		if (config.IsMatchesFilterOn()) {
 			// Further filter matches based on triangulation angle, reprojection error, epipole proximity
-			const unsigned numFilteredInliers = pair.FilterMatches(img1, img2, cfg.minTriangulationAngle, cfg.reprojThreshold, cfg.epipoleFilterThreshold);
-			if (numFilteredInliers < cfg.minMatches) {
+			const unsigned numFilteredInliers = pair.FilterMatches(img1, img2, config.minTriangulationAngle, config.reprojThreshold, config.epipoleFilterThreshold);
+			if (numFilteredInliers < config.minMatches) {
 				pair.InvalidateMatches();
 				return false;
 			}
@@ -455,7 +447,7 @@ bool PairsMatcher::GeometricFilter(
 
 	// Dispatch on the one named branch decision (SelectGeometryBranch), so that a caller recording
 	// which geometry ran reads the same predicate the estimator obeys.
-	const GeometryBranch branch = SelectGeometryBranch(cfg, img1, img2);
+	const GeometryBranch branch = SelectGeometryBranch(config, img1, img2);
 
 	// Shared-focal estimator: uncalibrated scenario where both images use the same unknown focal
 	if (branch == GeometryBranch::SHARED_FOCAL) {
@@ -469,7 +461,7 @@ bool PairsMatcher::GeometricFilter(
 		opt.real_focal_check = true;
 		poselib::RansacStats stats = poselib::estimate_shared_focal_relative_pose(
 			pts1, pts2, pp, opt, &plImagePair, &inliers);
-		if (stats.num_inliers < cfg.minMatches) {
+		if (stats.num_inliers < config.minMatches) {
 			pair.InvalidateMatches();
 			return false;
 		}
@@ -509,7 +501,7 @@ bool PairsMatcher::GeometricFilter(
 		opt.max_error = 0.5 * (angle1 + angle2);
 
 		// Extract matched keypoints and convert directly to 3D unit bearing vectors
-		const float minFeatureDistanceSq = SQUARE(cfg.minFeatureDistance);
+		const float minFeatureDistanceSq = SQUARE(config.minFeatureDistance);
 		std::vector<poselib::Point3D> bearings1, bearings2;
 		bearings1.reserve(pair.matches.size());
 		bearings2.reserve(pair.matches.size());
@@ -538,7 +530,7 @@ bool PairsMatcher::GeometricFilter(
 			opt,
 			&plPose,
 			&inliers);
-		if (stats.num_inliers < cfg.minMatches) {
+		if (stats.num_inliers < config.minMatches) {
 			pair.InvalidateMatches();
 			return false;
 		}
@@ -563,7 +555,7 @@ bool PairsMatcher::GeometricFilter(
 		opt.ransac.score_initial_model = true;
 	}
 	poselib::RansacStats stats = poselib::estimate_fundamental(pts1, pts2, opt, &F, &inliers);
-	if (stats.num_inliers < cfg.minMatches) {
+	if (stats.num_inliers < config.minMatches) {
 		pair.InvalidateMatches();
 		return false;
 	}
@@ -574,7 +566,7 @@ bool PairsMatcher::GeometricFilter(
 
 	// Decompose F into E and relative pose if intrinsics are trusted
 	// note: if intrinsics are not accurate, the decomposition will result in very few filtered inliers
-	if (cfg.forceFundamentalDecomposition || (img1.TrustIntrinsics() && img2.TrustIntrinsics()))
+	if (config.forceFundamentalDecomposition || (img1.TrustIntrinsics() && img2.TrustIntrinsics()))
 		return DecomposeFundamentalToPose(img1, img2, pair);
 	return true;
 }
@@ -1892,10 +1884,6 @@ unsigned PairsMatcher::Match()
 	const unsigned knownPosesTopK = verificationFeedback ?
 		config.maxPairsPerImage*4/5 : config.maxPairsPerImage*4/3;
 
-	// the gate's records are per-Match() (a second call re-warps every candidate), so a repeated
-	// call must not append to the previous run's table
-	denseValidations.clear();
-
 	// Collect pairs to match based on selected mode
 	PairIdxArr pairsToMatch;
 	const unsigned numExhaustivePairs((nImages - 1) * nImages / 2);
@@ -1973,12 +1961,13 @@ unsigned PairsMatcher::Match()
 	MatchStats stats;
 	const auto MatchRound = [&](PairIdxArr& pairs, LPCTSTR progressCaption, bool bFeedbackRound) {
 		// Dense two-view gate (opt-in): before any descriptor matching, warp every candidate of this
-		// round and drop the ones a single geometry cannot explain to roma2Cfg.minDenseInlierRatio
+		// round and drop the ones whose fitted geometry leaves less than
+		// roma2Cfg.minInlierCoverage of either image covered by its inliers
 		// of a coverage-maximising sample of the warp. A rejected pair is dropped, not demoted: it
 		// does not fall through to ordinary descriptor matching. The gate is independent of the
 		// dense matcher below - it judges which pairs exist, that one re-matches the ones that do
 		if (roma2 && roma2Cfg.useValidation) {
-			ValidatePairsROMA2(*this, *roma2, pairs, roma2Cfg, denseValidations);
+			ValidatePairsROMA2(*this, *roma2, pairs, roma2Cfg);
 			if (pairs.empty())
 				return true; // every candidate of this round was rejected; nothing left to match
 		}
@@ -2033,13 +2022,6 @@ unsigned PairsMatcher::Match()
 			return 0;
 	}
 	fusedRetrievalScores.clear(); // only kept for the verification-feedback round
-
-	// the gate's per-candidate table, written here rather than after the reconstruction: the pairs
-	// it rejected are in no other artifact of this run (they were dropped, not stored), and this is
-	// the file the threshold is swept from. A failed export only warns: it is a diagnostic and must
-	// never cost the caller the matched scene (ruling R-F1)
-	if (!roma2Cfg.exportValidationCSV.empty() && !ExportDenseValidationsCSV(roma2Cfg.exportValidationCSV))
-		VERBOSE("warning: failed to export the dense pair validations to CSV file '%s'", roma2Cfg.exportValidationCSV.c_str());
 
 	const unsigned numProcessedPairs = stats.newPairs + stats.updatedPairs;
 	DEBUG("Images matched: created %u/%u new/updated pairs, %u ROMA2 guided (%u total from %u exhaustive),\n%u/%u/%u matches (%.2f/%.2f/%.2f per pair) in %s",
@@ -2141,61 +2123,6 @@ bool PairsMatcher::ExportPairsCSV(const Scene& scene, const String& fileName, fl
 	ofs.close();
 	VERBOSE("Exported %u pairs to '%s'",
 		(unsigned)scene.pairs.size(), fileName.c_str());
-	return true;
-}
-/*----------------------------------------------------------------*/
-
-
-bool PairsMatcher::ExportDenseValidationsCSV(const String& fileName) const
-{
-	std::ofstream ofs(fileName);
-	if (!ofs.is_open()) {
-		VERBOSE("error: cannot open file '%s' for writing", fileName.c_str());
-		return false;
-	}
-	const String basePath = MAKE_PATH_FULL(WORKING_FOLDER_FULL, Util::getFilePath(fileName));
-	// Every scalar the gate derived, for every candidate it judged -- accepted or rejected -- so
-	// that any threshold on any of them can be swept offline from one run. The point arrays are not
-	// here (they are released on a rejected pair), but nothing that a sweep needs is missing:
-	// GeometryBranch names which geometry actually ran, so an E-vs-F arm can never be misattributed.
-	ofs << "ImageA,ImageB,GeometryBranch,NumSampled,NumInliers,NumFilteredInliers,InlierRatio,"
-	       "FilteredInlierRatio,CoverageA,CoverageB,CoverageInlierA,CoverageInlierB,"
-	       "MeetsInlierCoverage,EpipolarNativePx,EpipolarFullResPx";
-	for (unsigned q = 0; q < DENSE_RESIDUAL_QUANTILES; ++q)
-		ofs << ",ResidualNativeP" << (unsigned)ROUND2INT(100.f*DENSE_RESIDUAL_PROBABILITIES[q]);
-	ofs << ",Validated\n";
-	unsigned numValidated = 0;
-	for (const DensePairValidation& val : denseValidations) {
-		// ValidatePairsROMA2 never hands over a record for a pair it did not judge, so both indices
-		// are real images here; a NO_ID would index scene.images out of range
-		ASSERT(val.ID1 < scene.images.size() && val.ID2 < scene.images.size());
-		ofs << MAKE_PATH_REL(basePath, scene.images[val.ID1].fileName) << ","
-			<< MAKE_PATH_REL(basePath, scene.images[val.ID2].fileName) << ","
-			<< GeometryBranchName((GeometryBranch)val.geometryBranch) << ","
-			<< val.numSampled << ","
-			<< val.numInliers << ","
-			<< val.numFilteredInliers << ","
-			<< val.inlierRatio << ","
-			<< val.filteredInlierRatio << ","
-			<< val.coverageA << ","
-			<< val.coverageB << ","
-			<< val.coverageInlierA << ","
-			<< val.coverageInlierB << ","
-			<< (val.bMeetsInlierCoverage ? 1 : 0) << ","
-			<< val.epipolarNativePx << ","
-			<< val.epipolarFullResPx;
-		for (unsigned q = 0; q < DENSE_RESIDUAL_QUANTILES; ++q) {
-			ofs << ",";
-			if (val.residualNative[q] >= 0.f)
-				ofs << val.residualNative[q]; // a pair with no fitted geometry leaves the cell empty
-		}
-		ofs << "," << (val.bValidated ? 1 : 0) << "\n";
-		if (val.bValidated)
-			++numValidated;
-	}
-	ofs.close();
-	VERBOSE("Exported %u dense pair validations (%u validated) to '%s'",
-		(unsigned)denseValidations.size(), numValidated, fileName.c_str());
 	return true;
 }
 /*----------------------------------------------------------------*/

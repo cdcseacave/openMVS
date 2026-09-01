@@ -28,7 +28,6 @@
 // I N C L U D E S /////////////////////////////////////////////////
 
 #include "Common.h" // SFM_API, String
-#include "ROMA2Warp.h" // DensePairValidationArr
 
 
 // D E F I N E S ///////////////////////////////////////////////////
@@ -82,32 +81,22 @@ struct SFM_API ROMA2Config {
 	// dense two-view pair validation gate, running before any descriptor matching on the pairs the
 	// match mode selected: each candidate is warped, a coverage-maximising sample of the warp is
 	// drawn, one geometry is fitted to that whole sample without any epipolar pre-selection, and
-	// the pair is kept only if the fit explains at least minDenseInlierRatio of it. A rejected pair
-	// is dropped, not demoted -- it does not fall through to descriptor matching. Opt-in and
-	// independent of useMatching: the gate judges pairs, the dense matcher re-matches them
+	// the pair is kept only if the fit's inlier subset still covers enough of both images
+	// (minInlierCoverage). A rejected pair is dropped, not demoted -- it does not fall through to
+	// descriptor matching. Opt-in and independent of useMatching: the gate judges pairs, the dense
+	// matcher re-matches them
 	bool useValidation = false;
-	float minDenseInlierRatio = 0.8f;      // fraction of the dense sample a single geometry must explain
 	unsigned denseSampleSize = 2000;       // budget of the coverage-maximising warp sample (SampleWarpByCoverage)
-	// RANSAC epipolar threshold of the gate's fit, in **warp-native pixels**: the frame of the
-	// model's own square input (RoMa2Onnx::ImageSize, 640 at base), not the target image. It is
-	// converted per pair, from each pair's own resolution, in ValidatePairsROMA2. It has to be
-	// resolution-relative because the warp's precision is fixed in the network's frame while
-	// MatchConfig::maxEpipolarError is applied in full-resolution pixels: the descriptor path's
-	// 4 px is 2.9 native px on a 1024x768 capture but 1.8 on a 1955x1089 one, so a bare pixel
-	// setting silently measures image resolution as much as geometry. 0 = inherit
-	// MatchConfig::maxEpipolarError unconverted (the pre-conversion behaviour, kept only so a run
-	// can reproduce the descriptor path's own threshold exactly)
-	float validationEpipolarNativePx = 1.f;
-	// which geometry the gate fits: auto = whatever the cameras support (essential when both trust
-	// their intrinsics, fundamental otherwise), essential = require the calibrated 5-DoF branch and
-	// fail by name if the intrinsics are untrusted, fundamental = force the 7-DoF branch even with
-	// trusted intrinsics. The two are the arms of the E-vs-F comparison, so neither may be implicit
-	String validationGeometry = "auto";
-	// minimum min(coverageInlierA, coverageInlierB) recorded as met in the gate's table. RECORDED
-	// ONLY: the gate's accept/reject is minDenseInlierRatio alone, no complementary rejection rule
-	// being pre-registered, so this changes no verdict (0 = every pair meets it)
-	float minInlierCoverage = 0.f;
-	String exportValidationCSV;            // file the gate's per-candidate table is written to (empty = not written)
+	// the gate's whole accept/reject rule: keep the pair when min(coverageInlierA, coverageInlierB)
+	// reaches this fraction of the coarse coverage grid. It replaced the RANSAC inlier ratio the
+	// gate first shipped with, rather than complementing it. Measured over four Truck arms plus
+	// Meetingroom and Courthouse, the ratio separated true from false pairs barely above chance
+	// (restricted-population AUC 0.55-0.70) and cost recall outright -- at 0.5 warp-native px it
+	// rejected 89% of the true pairs it was shown -- while coverage alone leaks 0.00-0.15% of
+	// normal false pairs at 90-99% recall on all three scenes. Pairs that see different instances
+	// of a repeated structure are NOT this gate's job; the triplet view-graph filter handles those.
+	// See docs/design/ROMA2InProcess.md. 0 disables rejection: every pair passes
+	float minInlierCoverage = 0.25f;
 	bool useGPU = true;                    // allow the GPU execution providers (false forces the CPU provider)
 
 	// Return the folder holding the exported models: the explicit setting if given,
@@ -171,20 +160,23 @@ SFM_API unsigned MatchPairsROMA2(PairsMatcher& pairsMatcher, RoMa2Onnx& roma2, c
 // sample through PairsMatcher::GeometricFilter on temporary Image copies whose keypoints are the
 // dense points (the MatchFeaturesGeometric precedent, so no second estimator exists). Nothing is
 // pre-selected along the epipolar lines of a geometry the warp itself supplied, which is what makes
-// the verdict independent of the warp's own claim; the pair passes when the fit explains at least
-// config.minDenseInlierRatio of the sample.
+// the verdict independent of the warp's own claim; the pair passes when the fit's inliers still
+// cover config.minInlierCoverage of both images.
+// The fit is the matcher's own: GeometricFilter is called with the PairsMatcher's configuration, so
+// which geometry runs is PairsMatcher::SelectGeometryBranch's decision from what the two images
+// actually carry (calibrated bearings where both trust their intrinsics, F otherwise) and the
+// epipolar threshold is MatchConfig::maxEpipolarError, the same precision the descriptor path
+// demands. The gate holds no threshold and no branch choice of its own.
 // The device slots, prefetch pipeline and warp order are exactly MatchPairsROMA2's, so the two
 // passes cost the same per pair; unlike it, this pass needs no descriptors, only cameras.
 // `pairs` is filtered in place to the pairs that passed -- a rejected pair is dropped, never
-// demoted to ordinary descriptor matching -- and one record per candidate the pass actually warped,
-// accepted or not, is appended to `validations` in the order the pairs were warped. A candidate
-// whose image could not be described, or whose warp the graph could not produce, contributes no
-// record at all: it was never judged, which is a different fact from being rejected, and the
-// summary line counts the two separately.
+// demoted to ordinary descriptor matching. A candidate whose image could not be described, or whose
+// warp the graph could not produce, was never judged at all, which is a different fact from being
+// rejected, and the summary line counts the two separately.
 // roma2 must already be loaded (RoMa2Onnx::Load); a pair whose image could not be loaded,
 // described or coarse-matched is dropped with a message, never judged against a stale slot.
 // Returns the number of pairs that passed the gate (== pairs.size() on return).
-SFM_API unsigned ValidatePairsROMA2(PairsMatcher& pairsMatcher, RoMa2Onnx& roma2, PairIdxArr& pairs, const ROMA2Config& config, DensePairValidationArr& validations);
+SFM_API unsigned ValidatePairsROMA2(PairsMatcher& pairsMatcher, RoMa2Onnx& roma2, PairIdxArr& pairs, const ROMA2Config& config);
 
 } // namespace SFM
 

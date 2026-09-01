@@ -612,21 +612,6 @@ bool Scene::MatchPairs(const MatchConfig& config, const ROMA2Config& roma2Cfg, c
 	}
 	pairsMatcher.SetROMA2(useROMA2 && roma2Cfg.NeedsWarps() ? &roma2 : NULL, roma2Cfg);
 
-	// design decision 10 applied to the gate's geometry arm: `essential` names the calibrated 5-DoF
-	// branch, which is unreachable unless both cameras of every pair trust their intrinsics. Fail
-	// the run by name here rather than let the gate reject every candidate for a reason no artifact
-	// records -- an E-vs-F comparison that silently ran neither arm is worse than no run at all.
-	// ValidatePairsROMA2 repeats the check over its own candidates (it must not fit the wrong
-	// branch however it is called); this one is what turns it into a failed run.
-	if (useROMA2 && roma2Cfg.useValidation && roma2Cfg.validationGeometry == "essential") {
-		for (const Image& img : images)
-			if (!img.HasCamera() || !img.TrustIntrinsics()) {
-				VERBOSE("error: --roma2-gate-geometry essential needs trusted intrinsics on every image, "
-					"but image %u '%s' has none", img.ID, img.fileName.c_str());
-				return false;
-			}
-	}
-
 	if (status.nState.isSet(Status::STATE::MATCHED)) {
 		VERBOSE("warning: pairs already matched, skipping");
 		pairsMatcher.ComputeRelativePoses();

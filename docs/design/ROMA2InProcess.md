@@ -203,44 +203,51 @@ ROMA2 dense matching (first round): 6/6 pairs guided, 0 created, 6 replaced, 0 g
 `ValidatePairsROMA2` (`libs/SFM/MatchROMA2.cpp`) runs **before** descriptor matching, on the pairs
 the match mode selected, and drops the ones a single geometry cannot explain. Per pair: erode the
 confidence map, draw a coverage-maximising sample of the warp (`SampleWarpByCoverage`,
-`--roma2-dense-sample`, default 2000 — the warp grid is stratified into `floor(sqrt(budget))^2`
-buckets, the most confident cell of each is taken first, and the rest of the budget is filled by
-descending confidence), then fit one geometry to that whole sample through
-`PairsMatcher::GeometricFilter` on temporary `Image` copies whose keypoints are the dense points
-(the `MatchFeaturesGeometric` precedent, so no second estimator exists). The pair passes when the
-fit explains at least `--roma2-min-dense-ratio` (default 0.8) of the sample. **A rejected pair is
+`--roma2-dense-sample`, default 2000 — buckets are laid over the *whole* warp at a resolution
+scaled up by the inverse eligible fraction, so that the buckets which do hold an eligible cell
+number about the budget, and the most confident cell of each is taken; there is no fill-up, so a
+pair with little overlap yields proportionally fewer points instead of crowding the budget into a
+corner), then fit one geometry to that whole sample through `PairsMatcher::GeometricFilter` on
+temporary `Image` copies whose keypoints are the dense points (the `MatchFeaturesGeometric`
+precedent, so no second estimator exists). The pair passes when the fit's inlier subset still
+covers at least `--roma2-min-inlier-coverage` (default 0.25) of *both* images. **A rejected pair is
 dropped, not demoted** — it does not fall through to descriptor matching.
+
+The gate originally thresholded the RANSAC inlier ratio (`--roma2-min-dense-ratio`, default 0.8).
+That option is gone: measured across four Truck arms plus Meetingroom and Courthouse, the ratio
+separated true from false pairs barely above chance once restricted to pairs the estimator actually
+ran on (AUC 0.55–0.70), and it cost recall outright — at 0.5 warp-native px it rejected 89% of the
+true pairs it was shown, while the same coverage threshold on the same run kept 98%. Inlier
+coverage alone leaks 0.00–0.20% of normal false pairs at 90–99% recall on all three scenes.
+
+Pairs that see *different instances of a repeated structure* (doppelgängers) are **not** this
+gate's responsibility — coverage cannot separate them, and on Courthouse every non-co-visible pair
+carrying 1000+ verified two-view inliers passes it. The triplet-based view-graph filter handles
+those.
 
 It shares `MakeSlotPlan`, the prefetch ring and the warp ordering with the dense matching pass
 (`ForEachWarpROMA2`), so it costs the same per pair (~23 pair/s at base on an A100); unlike that
 pass it needs no descriptors, only cameras. It is independent of `--roma2-match`: the gate decides
 which pairs exist, the dense matcher re-matches the ones that do.
 
-**Geometry branch.** `PairsMatcher::SelectGeometryBranch` is the single definition of which
-geometry `GeometricFilter` fits — `SHARED_FOCAL`, `ESSENTIAL` (5-DoF calibrated bearings plus
-cheirality, taken when both cameras `TrustIntrinsics()`) or `FUNDAMENTAL` (7-DoF F) — and the gate
-records the branch each pair actually took. `--roma2-gate-geometry auto|essential|fundamental`
-forces the arm: `essential` fails the run by name when any image lacks trusted intrinsics rather
-than degrading to an F fit, so an E-vs-F comparison cannot silently run one arm twice.
+**The fit is the matcher's own — the gate holds no estimator settings.** `GeometricFilter` is called
+with the `PairsMatcher`'s configuration, so `PairsMatcher::SelectGeometryBranch` picks the geometry
+from what the two images actually carry — `ESSENTIAL` (5-DoF calibrated bearings plus cheirality,
+where both cameras `TrustIntrinsics()`), `SHARED_FOCAL`, or `FUNDAMENTAL` (7-DoF F) — and the
+epipolar threshold is `MatchConfig::maxEpipolarError`, the same precision the descriptor path
+demands. Neither is worth a gate-specific setting, which is a measured result rather than an
+assumption: run as both a forced-F and a forced-E arm at two thresholds a factor of 2.9 apart, the
+gate's recall and leak barely moved (table below), so both branches and the whole threshold band
+work. `SelectGeometryBranch` remains one named decision so that a caller logging the branch and the
+estimator choosing it cannot disagree.
 
-**Epipolar threshold, in warp-native pixels.** `--roma2-gate-epipolar-native-px` (default 1.0) is
-quoted in the frame of the model's own square input (`ImageSize`, 640 at base), not in target
-pixels, and is converted per pair by `sqrt(W*H)/ImageSize` — the geometric mean, because
-`PreprocessImageRoMa2` resizes anisotropically into that square, so no single factor is exact and
-the area factor is the right isotropic summary. The warp's precision is fixed in the network's
-frame while `MatchConfig::maxEpipolarError` is applied in full-resolution pixels, so a bare pixel
-threshold silently measures image resolution: the descriptor path's 4 px is 2.9 native px on a
-1024x768 capture and 1.8 on a 1955x1089 one. Both numbers are recorded per pair.
-
-`--export-gate-csv` writes one row per warped candidate — accepted or rejected — carrying every
-scalar the gate derived: the branch, `NumSampled`, both inlier counts and both ratios, sample
-coverage and inlier coverage in both images, the threshold in both frames, and the epipolar-residual
-quantiles of the whole sample under the fitted geometry (p50/p75/p90/p95/p99, native frame). The
-threshold itself cannot be swept offline — RANSAC's model depends on it — but the residual
-distribution under the model that *was* fitted is visible from one run. It is the only artifact
-carrying the rejected pairs, which by construction reach no other output.
-`PairsMatcher::GetDenseValidations()` hands the same records (plus the fitted relative pose / E / F
-and the dense inlier set) to in-process consumers.
+Why the default threshold is safe rather than lucky: the warp's precision is fixed in the network's
+own square input frame (`ImageSize`, 640 at base) while `maxEpipolarError` is applied in
+full-resolution pixels, so the same 4 px is a *different* demand on the warp per dataset —
+2.9 warp-native px on a 1024x768 capture, 1.8 on a 1955x1089 one (converting by `sqrt(W*H)/ImageSize`,
+the geometric mean, because `PreprocessImageRoMa2` resizes anisotropically into that square).
+Measuring at 1.0 and 2.89 native px therefore brackets what 4 target px means across ordinary
+capture resolutions, and the verdict is stable across that whole bracket.
 
 **What the gate reads of an image.** Its `pCamera` (intrinsics, and `TrustIntrinsics()` through
 them), its size, and the warp. Not its pose: the temporary `Image` copies the estimator sees are
@@ -261,8 +268,48 @@ geometry (their median ratio 0.957–0.995, against 0.998–1.000 for the good p
 (min-coverage AUC 0.984 / 0.988 and 0.793 / 0.852; median 0.023–0.062 on wrong pairs against
 0.312–0.324 on good ones), as does the raw inlier count. Both captures are self-calibrated
 (`0 trusted intrinsics`), so the fit is the 7-DoF fundamental branch of `GeometricFilter`, which is
-the leading explanation for how permissive it is. The gate therefore ships **off**, and no threshold
-is proposed for it.
+the leading explanation for how permissive it is.
+
+**Measured: inlier coverage at 0.25, on the population the gate is actually for** (2026-09-01,
+Tanks-and-Temples Truck / Meetingroom / Courthouse, run folders
+`<scene>/openmvs-densegate-2026090{1,1}-gate-{f,e}-native{1.0,2.89}/`, pseudo-GT from the COLMAP
+reference reconstruction: a pair is co-visible when it shares >300 verified tracks, and separately
+when the two frusta overlap by pose).
+
+The measurement only became readable once the negatives were **partitioned** rather than pooled. Four
+disjoint negative populations behave completely differently, and the earlier aggregates that lumped
+them together read as a 10–14% "false-pair leak" that was almost entirely the *ambiguous* bucket —
+pairs whose poses say the frusta see the same surface while the tracks found no support (occlusion
+through a building body is the likely cause of most). Split out:
+
+| population | definition | in scope |
+|---|---|---|
+| positives | shares >300 verified tracks | yes — recall |
+| ambiguous | no shared tracks, but poses overlap | no — the label contradicts itself |
+| aliased | no co-visibility, yet ≥30 independently verified two-view inliers | no — triplet filter |
+| **normal false** | no shared surface and no appearance match | **yes — what the gate is for** |
+
+Recall and normal-false leak at `minInlierCoverage = 0.25`:
+
+| scene | branch, threshold | recall | normal-false leak |
+|---|---|---|---|
+| Truck | F, 1.0 native px | 98.99% | 0.00% (0/9688) |
+| Truck | E, 1.0 native px | 99.23% | 0.00% |
+| Truck | F, 2.89 native px | 99.31% | 0.04% (4/9688) |
+| Truck | E, 2.89 native px | 99.48% | 0.20% (19/9688) |
+| Meetingroom | F, 1.0 native px | 99.94% | 0.19% |
+| Courthouse | F, 1.0 native px | 98.30% | 0.10% |
+
+Two further guards worth reusing. First, an **aliasing-strength ladder** — bucketing non-co-visible
+pairs by how many two-view inliers an independent matcher verified on them — is the cheap check that
+a negative population actually contains the failure mode under test. Truck's tail tops out at 222
+inliers, so Truck *cannot* test doppelgängers at all, and an early "rejects 100% of confusable pairs"
+result taken from it was an artifact of that. Courthouse, whose tail reaches 2308, overturned it:
+the leak there rises 3.3% → 28.8% → 35.5% → 37.9% → **100%** across strength buckets from 30–99 up
+to 1000+ verified inliers. That is the triplet filter's problem, not this gate's, but it is only
+visible on a scene that has the structure. Second, scene choice should follow the ladder rather
+than intuition: Barn scored 8× Truck on Doppelgangers++ yet has Truck's tail shape (48 pairs ≥100,
+one ≥200), so running it would have cost ~68 min of GPU and answered nothing.
 
 ---
 
