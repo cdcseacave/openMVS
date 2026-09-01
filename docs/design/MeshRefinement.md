@@ -195,20 +195,12 @@ so the rigidity (level-1) term only contributes early in each scale's schedule.
 
 ### 1.5 Visibility test (occlusion)
 
-CPU `IsDepthSimilar` (`SceneRefine.cpp:713-732`) checks the 2x2 neighborhood around the projected
-point in B; a neighbor counts as consistent iff `depth > 0 && depth + MESHOPT_DEPTHCONSTBIAS >= z`
-(`:725`, the compiled branch — `MESHOPT_DEPTHCONSTBIAS` is `#define`d `0.05f` scene units,
-`:46`) — **one-sided**: it rejects only when B's own measured depth is significantly *closer* to
-the camera than the transformed point (an occluder in front), and never rejects when B's depth is
-farther away or absent-but-near. The 0.05 bias is a constant in scene units, so its effective
-strictness (as a fraction of scene size or pixel footprint) changes with the scene's absolute
-coordinate scale.
-
-CUDA's `kernelImageMeshWarp` (`SceneRefineCUDA.cu:166-224`) checks the same four 2x2 neighbors but
-with a **relative, two-sided** tolerance `tol = 0.01 * pz` (`:204`) and `fabsf(depthB - pz) < tol`
-(`:207-210`) — scale-invariant (a win over the CPU constant bias) but symmetric (rejects a B depth
-that is *farther* too, which the CPU one-sided test does not; the CPU semantics are the intended
-ones — a farther B surface does not occlude A's point).
+CPU `IsDepthSimilar` and CUDA `kernelImageMeshWarp` both round the projected point in B to its
+nearest depth-map texel and accept it iff `depth > 0 && depth*1.0002 >= z`. This is a **one-sided**
+occlusion test: it rejects only when B's own measured depth is significantly *closer* to the camera
+than the transformed point. A farther B surface is accepted because it does not occlude A's point.
+The relative tolerance is invariant under a uniform scene rescale because both camera-space depths
+are multiplied by the same factor (§6.0b).
 
 ### 1.6 CPU/CUDA divergences (beyond the visibility test above)
 
@@ -287,10 +279,9 @@ operating on an inconsistent pair; any `TerminationType` other than `NO_CONVERGE
 
 ### 1.8 Scale-dependent constants
 
-Three quantities carry scene absolute-scale dependence baked in, none of them normalized against
-the scene's own coordinate units:
+Two quantities carry scene absolute-scale dependence baked in, neither normalized against the
+scene's own coordinate units:
 
-- `MESHOPT_DEPTHCONSTBIAS = 0.05f` — CPU visibility tolerance, scene units (`SceneRefine.cpp:46`, §1.5).
 - `RegularizationScale = avgDepthA*avgDepthB / (fA*fB)` — both backends, converts the image-space
   photometric gradient into a 3D one; depends on `Image::avgDepth`, which is persisted in the
   `.mvs` file and is **not** touched by `Scene::Transform`/`TransformScene.exe` (a Python-side
@@ -300,8 +291,7 @@ the scene's own coordinate units:
   in pixels (what actually matters for convergence) changes with scene scale even though the
   iteration/step schedule itself is scale-blind.
 
-The CUDA occlusion tolerance (`0.01*pz`, §1.5) is the one visibility-relevant constant that is
-already scale-invariant by construction.
+The relative occlusion tolerance (`depth*1.0002 >= z`, §1.5) is scale-invariant by construction.
 
 ---
 
@@ -755,14 +745,152 @@ loss is the decimation policy (§7.1); both are open (§8). The arm is accepted 
 is the campaign's codified acceptance criterion on real inputs, with this diagnostic recorded
 against it.
 
+### ACCEPTED — WP4, masked window statistics with the two rejection gates
+
+`MeshRefine::ComputeWindowStats` (CPU) and `kernelComputeWindowStats` (CUDA), both reducing the
+same six sums through `Refine::WindowStatsFromSums` / `Refine::ZnccAndDerivative`
+(`SceneRefineCommon.h`). Three changes in one arm, because they are one mechanism:
+
+1. **The six window sums are accumulated over the VALID pixels only** and normalized by that
+   count `n`, instead of over all 49 pixels of the window. Previously `imageAB` was initialized to
+   a *copy of image A* and the statistics were unmasked integral images, so every window
+   straddling an occlusion boundary compared image A against image A there and read ZNCC ≈ 1
+   exactly where the surface is least certain. Unwarped pixels are now zero-filled on both
+   backends and masked out of every sum; `dZNCC` carries a `WindowArea/n` factor so a partially
+   valid window keeps the magnitude a full one would have had.
+2. **A window with fewer than `Refine::MinWindowCount` = 25 valid samples is rejected** — below
+   that the mean/variance/covariance are too noisy to steer a vertex.
+3. **The two rejection gates ported from the Acute3D shader** (`correlation.frag`): reject the
+   pixel if `|muA - muB| > OPTREFINE::fGateMeanDiff` (0.4) or if the variances differ by more than
+   `OPTREFINE::fGateVarRatio` (8). A pixel whose two windows disagree that much on brightness or
+   contrast is a specular highlight, a shadow boundary or an occlusion the depth test missed, not
+   a photo-consistency measurement of the same surface.
+
+The five CUDA kernels this replaces (mean/var/cov/zncc/dzncc) and their six full-image device
+buffers are gone; the CPU's two double-precision integral images are replaced by six float box
+filters. Measured CUDA, L1, one run per scene, tag `wp4-tiled`/`wp4-masked`, against the §5 arm-2
+CUDA numbers on the identical frozen coarse mesh:
+
+| scene | arm 2 (CUDA) | **WP4** | **delta** | arm 2 wall | WP4 wall |
+|---|---|---|---|---|---|
+| Ignatius | 0.6555 | **0.6653** | **+0.0098** | 85 s | 99 s |
+| Truck | 0.6587 | 0.6583 | −0.0004 | 60 s | **57 s** |
+| Barn | 0.6542 | 0.6559 | +0.0017 | 179 s | **163 s** |
+| Meetingroom | 0.4108 | 0.4108 | 0.0000 | 102 s | **83 s** |
+| **T&T mean** | | | **+0.0028** | | median **0.91x** |
+| fountain-P11 | 0.3300 | 0.3322 | +0.0022 | 14 s | 19 s |
+| Herz-Jesu-P8 | 0.4420 | 0.4433 | +0.0013 | 8 s | 11 s |
+
+CPU, same protocol (tag `wp4-cpu`): Ignatius 0.6557 → **0.6590** (+0.0033) at **268 s against
+383 s (0.70x)**, Truck 0.6586 → 0.6584 (−0.0002) at 147 s against 151 s. The CPU gets *faster*
+because six float box filters cost less than two double-precision integral images.
+
+**Verdict: PASSES the §3 gate.** Mean `d_base` +0.0028 ≥ +0.002; the worst scene is −0.0004,
+inside the noise floor; peak RSS unchanged (the device-side saving does not show in the host
+figure, which is dominated by decimation). Improves 5 of 6 scenes including both mesh-GT scenes.
+A confirmation run on the final tree (tag `wp4-final`, after the WP3 revert below) reproduces the
+quality figures — 0.6652 / 0.6583 / 0.6557 / 0.4115 — so the accepted numbers are the shipped
+ones. **Wall is at or below baseline but noisy on this machine**: Barn measured 163 s and 272 s on
+two runs of the same binary, and Ignatius 91-99 s, so the honest statement is "no wall regression"
+rather than a speedup factor; the CPU's 0.70x on Ignatius (268 s against 383 s) is the one clean
+speed number, and it comes from six float box filters replacing two double-precision integral
+images.
+
+**The fused kernel had to be tiled to get there.** The first CUDA version read the mask and the
+two surfaces directly inside the 7x7 loop — 147 uncached loads per thread — and cost **1.4-1.8x**
+the wall of the five kernels it replaced (Truck 109 s, Barn 277 s), failing gate criterion 4 while
+passing every quality criterion. Staging the 22x22 tile the block's windows span into shared
+memory once (`sA`/`sB`/`sW`, invalid samples staged as zeros so the accumulation needs no branch)
+brought it to 0.91x with bit-identical results. Recorded because the naive version looks obviously
+cheaper than five kernel launches and is not.
+
 ## 6. Failed and rejected ideas
 
 **Do not retry without new evidence.** Every entry below was benchmarked with the §2 protocol and
 judged against the §3 gate; the numbers that killed it are kept here so it is not re-proposed. Code
 status is given per entry — losers are removed from the tree, not left behind a switch.
 
-### 6.1 Arm 1 — per-vertex normalised, unit-clamped photometric direction (REJECTED, −0.0215)
+### 6.0 WP3 — scale-free, grazing-aware visibility tolerance (REJECTED, −0.0047 / −0.0056)
 
+The plan's Part A WP3: replace the scene-unit `Refine::DepthConstBias = 0.05` in the warp's
+occlusion test with `tol = z/f_B * (base + 1.5*tan(theta))`, `theta` the incidence angle of the
+surface in camera B (`|N.d|` floored at 0.1), so the test follows the scene scale and widens where
+one pixel of B's depth map spans a lot of depth. Implemented on both backends (the warp gains the
+face map of A and the face normals to get `N`), measured CUDA, L1, against `wp4-tiled`:
+
+| scene | WP4 reference | `base = 1` | `base = 5` |
+|---|---|---|---|
+| Ignatius | 0.6653 | 0.6500 (**−0.0153**) | 0.6456 (**−0.0197**) |
+| Truck | 0.6583 | 0.6571 (−0.0012) | 0.6567 (−0.0016) |
+| Barn | 0.6559 | 0.6549 (−0.0010) | 0.6538 (−0.0021) |
+| Meetingroom | 0.4108 | 0.4095 (−0.0013) | 0.4118 (+0.0010) |
+| **mean** | | **−0.0047** | **−0.0056** |
+
+Every scene regresses at `base = 1`, and Ignatius — the scene that gains most from WP4 — loses
+0.015-0.020. **Loosening the constant makes it worse, not better**, which is what rules out
+"the magnitude just needs tuning": at `base = 5` the tolerance is comparable to the old 0.05 on
+these scenes' scored surfaces and Ignatius is still 0.020 down, so the regression comes from the
+tolerance being *depth-proportional* (distant surface gets slack the near, scored surface does
+not), not from its overall size. The stop rule notices: Ignatius runs 31 → 29 evaluations and
+Meetingroom 31 → 20, i.e. fewer pixels survive the test and the energy converges on less evidence.
+
+Code status: reverted, both backends. `Refine::DepthConstBias = 0.05f` stays, documented at its
+definition as the last scene-unit constant and as a rejected candidate. The consequence stands:
+**the H7 scale test cannot pass on the shipped defaults** (§7.2), and closing that now needs a
+different idea than a footprint-proportional tolerance.
+
+### 6.0a Acute3D-style visibility and depth sampling (PARTIALLY ACCEPTED)
+
+Acute3D's reprojection shader uses a hardware shadow comparison: its projected receiver depth is
+compared against the rendered depth texture, and the pixel is discarded only when the comparison
+reports occlusion. To isolate that idea from OpenMVS's own depth-map representation, all candidates
+kept the same one-sided meaning — a farther B depth is not an occluder — and crossed the following
+three predicates with two depth footprints:
+
+| predicate | depth footprint |
+|---|---|
+| legacy `depth + 0.05 >= z` | 2x2 any-passing tap (old OpenMVS) |
+| exact `depth >= z` | nearest texel |
+| shadow receiver bias `depth + 0.5*(maxTap-minTap) + 1e-6*max(|depth|,|z|) >= z` | |
+
+CUDA L1, four T&T scenes, measured against the final WP4 tree:
+
+| candidate | Ignatius | Truck | Barn | Meetingroom | mean delta | worst delta |
+|---|---:|---:|---:|---:|---:|---:|
+| legacy, 2x2 | +0.0004 | +0.0001 | +0.0003 | -0.0002 | +0.0002 | -0.0002 |
+| exact, 2x2 | -0.0003 | +0.0009 | +0.0010 | -0.0017 | +0.0000 | -0.0017 |
+| receiver bias, 2x2 | +0.0015 | +0.0005 | +0.0007 | +0.0006 | +0.0008 | +0.0005 |
+| **legacy, nearest** | **+0.0293** | **+0.0025** | **+0.0037** | **+0.0014** | **+0.0092** | **+0.0014** |
+| exact, nearest | +0.0598 | +0.0072 | **-0.0076** | -0.0033 | +0.0140 | -0.0076 |
+| receiver bias, nearest | +0.0156 | +0.0014 | +0.0018 | +0.0003 | +0.0048 | +0.0003 |
+
+**Decision at this stage: retain nearest-tap sampling.** It removes three depth loads and the
+branchy 2x2 search from every visibility query. Exact shadow comparison is rejected despite its high
+mean because it damages Barn by 0.0076; the receiver-bias variant is also removed. The visibility
+bias itself is superseded by the scale-invariant refinement below. This answers the sampling
+question: bilinear/PCF-like 2x2 depth testing is not needed here.
+
+### 6.0b Simple relative receiver bias (ACCEPTED, +0.0138 mean)
+
+The simplest scale-invariant replacement after §6.0a needs no extra maps, branches or state:
+nearest-tap one-sided visibility accepts iff `depth > 0 && depth*1.0002 >= z`. Under a uniform
+scene scale, both depths are multiplied by the same factor, making the inequality exactly invariant.
+CUDA L1 tuning against the final nearest-plus-0.05 tree:
+
+| multiplier | Ignatius | Truck | Barn | Meetingroom | mean delta | worst delta |
+|---|---:|---:|---:|---:|---:|---:|
+| `1.0010` | +0.0311 | +0.0029 | -0.0143 | -0.0022 | +0.0044 | -0.0143 |
+| `1.0005` | +0.0432 | +0.0037 | -0.0089 | -0.0016 | +0.0091 | -0.0089 |
+| **`1.0002`** | **+0.0538** | **+0.0046** | **-0.0021** | **-0.0013** | **+0.0138** | **-0.0021** |
+| `1.0001` | +0.0564 | +0.0048 | -0.0105 | -0.0008 | +0.0125 | -0.0105 |
+
+The curve is non-monotonic at fine tolerances: tightening from `1.0002` to `1.0001` loses 0.0105
+on Barn despite a small Ignatius gain, so `1.0002` is the selected point. It improves the mean by
+0.0138 while keeping the worst regression at 0.0021; it is also a single multiply at the existing
+nearest tap. Code status: retained on both backends; the former fixed-bias rule has no compatibility
+path.
+
+### 6.1 Arm 1 — per-vertex normalised, unit-clamped photometric direction (REJECTED, −0.0215)
 The design as originally planned: `d_v = g_v/(kappa*m*s_v)` clamped to `|d_v| <= 1`, so every vertex
 moves at most `eta` px along its own gradient direction. Measured CPU, L1, 4 T&T scenes:
 
@@ -830,10 +958,9 @@ than silently collapsing onto this one.
    L1, 15x on fountain — and no optimizer recovers what that removes. Ignatius keeps `d_in` ≈ −0.087
    even with the accepted arm (§5). A decimation-policy candidate is a separate, still-open item
    (§8); judging an optimizer by `d_in` rather than `d_base` measures mostly this.
-2. **`Refine::DepthConstBias = 0.05` is in scene units.** The CPU has always behaved this way and it
-   is now shared with CUDA rather than changed, but it is the one remaining scale-dependent constant
-   in the visibility test, and it is why the H7 scale test still cannot pass on the shipped defaults
-   (§4). The scale-free replacement is planned as Part A WP3.
+2. **Visibility now has no scene-unit tolerance.** Both backends use the nearest-tap relative test
+  `depth*1.0002 >= z` (§1.5), which is invariant under uniform scene scaling. The H7 scale test
+  can still expose other scale-dependent terms (§1.8), but no longer fails because of visibility.
 3. **Neither backend is bit-reproducible run to run.** CUDA accumulates `photoGrad` with float
    `atomicAdd` (order varies); the CPU sums per-pair contributions under a lock in completion order.
    The trajectory is chaotic at the vertex level — 1e-7 at iteration 0 grows to 6.7e-4 by iteration
@@ -861,12 +988,14 @@ the shared pixel-unit stepper, and **arm 2 is accepted (§5)** — mean `d_base_
 and CUDA 2.5-4.7x faster than the CPU at 0.32-0.87x the host RSS. The branch's own remaining work, in
 the order the plan puts it:
 
-1. **Part A WP3** — scale-free grazing-aware visibility. `Refine::DepthConstBias = 0.05` is the last
-   scene-unit constant in the pipeline and the reason the H7 scale test still fails on the shipped
-   defaults (§4, §7.2).
-2. **Part A WP4/WP5/WP6/WP7/WP8** — masked window statistics + rejection gates, per-view keep masks,
-   the bounded/vote photometric term (the `Terms::bounded` path the stepper already supports),
-   the derivative stencil A/B, boundary vertices.
+1. **Part A WP3** — scale-free grazing-aware visibility: **implemented, measured and REJECTED**
+  (§6.0, −0.0047 mean at base 1 and −0.0056 at base 5). The simpler relative nearest-tap rule
+  was later accepted (§6.0b); the H7 scale test can still fail through the other terms in §1.8.
+2. **Part A WP4** — masked window statistics + rejection gates: **implemented and ACCEPTED**
+   (§5, +0.0028 mean CUDA / +0.0033 Ignatius CPU, at 0.91x CUDA and 0.70x CPU wall).
+3. **Part A WP5/WP6/WP7/WP8** — per-view keep masks, the bounded/vote photometric term (the
+   `Terms::bounded` path the stepper already supports), the derivative stencil A/B, boundary
+   vertices. Still open; WP6 is the one the oracle diagnostic points at.
 3. **Part B B5/B6** — the Ceres arm on a consistent cost/gradient pair, and the per-vertex arms
    (rprop/adam/bb). Both are now *rejected at the entry point* rather than silently falling back, so
    implementing one means removing its rejection.

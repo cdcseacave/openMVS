@@ -64,38 +64,17 @@ void LaunchImageMeshWarp(
 	const float* depthMapA, const float* depthMapB, uint8_t* mask,
 	const Camera& camA, const Camera& camB,
 	cudaTextureObject_t texImageB,
-	cudaSurfaceObject_t surfImageA,
 	cudaSurfaceObject_t surfImageProj);
 
-void LaunchComputeImageMean(
-	const uint8_t* mask, float* imageMean,
-	cudaSurfaceObject_t surfImage,
-	int width, int height, int halfSize);
-
-void LaunchComputeImageVar(
-	const float* imageMean, const uint8_t* mask, float* imageVar,
-	cudaSurfaceObject_t surfImage,
-	int width, int height, int halfSize);
-
-void LaunchComputeImageCov(
-	const float* imageMeanA, const float* imageMeanB,
-	const uint8_t* mask, float* imageCov,
-	cudaSurfaceObject_t surfImageA,
-	cudaSurfaceObject_t surfImageProj,
-	int width, int height, int halfSize);
-
-void LaunchComputeImageZNCC(
-	const float* imageCov, const float* imageVarA, const float* imageVarB,
-	const uint8_t* mask, float* imageZNCC,
-	int width, int height, int halfSize);
-
-void LaunchComputeImageDZNCC(
-	const float* meanA, const float* meanB,
-	const float* varA, const float* varB, const float* zncc,
-	const uint8_t* mask, float* dzncc,
+// masked window statistics, rejection gates, ZNCC and its derivative in one pass; maskOut is a
+// SECOND mask buffer (the window loops still read mask), pruned of the pixels whose window held
+// fewer than Refine::MinWindowCount valid samples or that failed a gate -- every consumer
+// downstream reads maskOut. zncc/conf are the parity diagnostic's optional outputs (NULL in
+// production); sumR/sumRZ are the device scalars ScoreMesh reduces into S.
+void LaunchComputeWindowStats(
+	const uint8_t* mask, uint8_t* maskOut, float* dzncc, float* zncc, float* conf,
 	cudaSurfaceObject_t surfImageA, cudaSurfaceObject_t surfImageProj,
-	float* sumR, float* sumRZ,
-	int width, int height, int halfSize);
+	float* sumR, float* sumRZ, float gateMeanDiff, float gateVarRatio, int width, int height);
 
 void LaunchComputePhotometricGradient(
 	const Point3u* faces, const Point3* normals,

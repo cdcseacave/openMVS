@@ -79,14 +79,15 @@ namespace Refine {
 // what each one sees (CUDA used to run its own HalfSize=2, i.e. 5x5)
 constexpr int HalfSize = 3;
 constexpr int Border = HalfSize;
+constexpr int WindowSize = HalfSize*2+1;
+constexpr int WindowArea = WindowSize*WindowSize;
 
-// warp depth test (MeshRefine::IsDepthSimilar / kernelImageMeshWarp): a pixel of A warped into
-// B is kept iff one of the 4 depth-map pixels around its projection is valid and not more than
-// this far IN FRONT of the point (depth + DepthConstBias >= z): an occlusion test only, points
-// behind the surface B sees are accepted. Scene units, the value the CPU has always used
-// (MESHOPT_DEPTHCONSTBIAS); CUDA used to run a symmetric 1 % relative test, the CPU's dead
-// branch, and rejected ~100 grazing pixels per pair that the CPU keeps.
-constexpr float DepthConstBias = 0.05f;
+// the window statistics below are accumulated over the VALID (successfully warped) pixels of
+// the window only, so a pixel next to an occlusion boundary is described by the few pixels that
+// really matched instead of by whatever the unwarped ones happened to hold; below this many
+// valid samples the mean/variance/covariance are too noisy to steer a vertex and the centre
+// pixel is rejected outright
+constexpr int MinWindowCount = 25;
 
 // ZNCC reliability weight: down-weights the photometric gradient/score at
 // pixels whose local window is low-texture (low variance on either side);
@@ -98,6 +99,58 @@ REFINE_HD inline float ZnccReliability(float varA, float varB)
 {
 	const float minVar(varA < varB ? varA : varB);
 	return minVar/(minVar+0.0015f);
+}
+
+// local window statistics of the reference image A and the warped image B at one pixel,
+// reduced from the six masked sums of the window; see WindowStatsFromSums()
+struct WindowStats {
+	float muA, muB; // window means
+	float varA, varB; // window variances, floored at 1e-4
+	float cov; // window covariance
+};
+
+// reduce the six masked window sums to means/variances/covariance and apply the two rejection
+// gates ported from the Acute3D shader (correlation.frag): a pixel whose two windows disagree
+// on brightness by more than gateMeanDiff, or whose variances differ by more than a factor of
+// gateVarRatio, is not a photo-consistency measurement of the same surface -- it is a specular
+// highlight, a shadow boundary or a partial occlusion the depth test did not catch -- and
+// steering a vertex with its (large, confidently wrong) gradient is worse than not steering it.
+// n is the number of valid samples, sA/sB/sAA/sBB/sAB their masked sums; gates <= 0 disable.
+// Returns false if the pixel must be rejected, in which case stats are left undefined.
+REFINE_HD inline bool WindowStatsFromSums(float n, float sA, float sB, float sAA, float sBB, float sAB,
+	float gateMeanDiff, float gateVarRatio, WindowStats& s)
+{
+	if (n < (float)MinWindowCount)
+		return false;
+	const float invN(1.f/n);
+	s.muA = sA*invN;
+	s.muB = sB*invN;
+	const float vA(sAA*invN - s.muA*s.muA), vB(sBB*invN - s.muB*s.muB);
+	s.varA = vA > 1e-4f ? vA : 1e-4f;
+	s.varB = vB > 1e-4f ? vB : 1e-4f;
+	const float meanDiff(s.muA > s.muB ? s.muA-s.muB : s.muB-s.muA);
+	if (gateMeanDiff > 0.f && meanDiff > gateMeanDiff)
+		return false;
+	if (gateVarRatio > 0.f && (s.varA > gateVarRatio*s.varB || s.varB > gateVarRatio*s.varA))
+		return false;
+	s.cov = sAB*invN - s.muA*s.muB;
+	return true;
+}
+
+// per-pixel ZNCC, the photometric gradient scale (derivative of the reliability-weighted ZNCC
+// with respect to the warped pixel value, negated as the optimizer minimizes 1-ZNCC) and the
+// reliability weight, from the window statistics and the two centre pixel values.
+// The WindowArea/n factor restores the magnitude a full window would have produced, so a
+// partially valid window is not silently down-weighted on top of already being rejected below
+// MinWindowCount; it is exactly 1 when every pixel of the window is valid.
+REFINE_HD inline void ZnccAndDerivative(const WindowStats& s, float n, float pixA, float pixB,
+	float& zncc, float& dzncc, float& conf)
+{
+	const float invSqrtVAVB(1.f/sqrtf(s.varA*s.varB));
+	zncc = s.cov*invSqrtVAVB;
+	const float dZ((pixA-s.muA)*invSqrtVAVB - zncc*(pixB-s.muB)/s.varB);
+	conf = ZnccReliability(s.varA, s.varB);
+	dzncc = -conf*dZ*((float)WindowArea/n);
 }
 
 } // namespace Refine

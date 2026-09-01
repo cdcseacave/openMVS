@@ -247,7 +247,6 @@ __global__ void kernelImageMeshWarp(
 	Camera camA,
 	Camera camB,
 	cudaTextureObject_t texImageB,
-	cudaSurfaceObject_t surfImageA,
 	cudaSurfaceObject_t surfImageProj)
 {
 	const int x = blockIdx.x * blockDim.x + threadIdx.x;
@@ -255,12 +254,10 @@ __global__ void kernelImageMeshWarp(
 	if (x >= camA.size.x() || y >= camA.size.y()) return;
 
 	const int pixIdx = y * camA.size.x() + x;
-	// default to A's own pixel: the CPU copies imageA into imageAB before warping (ThProcessPair),
-	// so the 7x7 window statistics next to a mask edge see A's values where B could not be warped
+	// invalid pixels stay 0: kernelComputeWindowStats masks them out of every window sum, so their
+	// value is never read -- the CPU's imageAB is zero-filled for the same reason
 	float convergePix = 0.f;
 	uint8_t convergeMask = 0;
-
-	surf2Dread(&convergePix, surfImageA, x * (int)sizeof(float), y);
 
 	const float depthA = depthMapA[pixIdx];
 	if (depthA > 0.f) {
@@ -291,19 +288,9 @@ __global__ void kernelImageMeshWarp(
 					ixB + 1 < camB.size.x() - Refine::Border && iyB + 1 < camB.size.y() - Refine::Border);
 				const int widthB = camB.size.x();
 				const int idxB = iyB * widthB + ixB;
-
-				// the CPU's IsDepthSimilar (SceneRefine.cpp): the point is kept iff one of the 4
-				// depths around its projection is valid and not more than Refine::DepthConstBias
-				// in FRONT of it -- an occlusion test; a surface behind the point is accepted.
-				// This used to be a symmetric 1 % relative test (the CPU's dead #ifndef branch),
-				// which rejected ~100 grazing pixels per pair on Tiny that the CPU keeps and gave
-				// 10 vertices a 5-10x smaller photometric gradient than the CPU's.
-				bool consistent = false;
-				for (int k=0; k<4 && !consistent; ++k) {
-					const float depthB = depthMapB[idxB + (k & 1) + (k >> 1) * widthB];
-					if (depthB > 0.f && depthB + Refine::DepthConstBias >= pz)
-						consistent = true;
-				}
+				const int k((xB-ixB >= 0.5f ? 1 : 0) + (yB-iyB >= 0.5f ? 2 : 0));
+				const float depthB(depthMapB[idxB + (k & 1) + (k >> 1) * widthB]);
+				const bool consistent(depthB > 0.f && depthB*1.0002f >= pz);
 
 				if (consistent) {
 					// +0.5: tex2D with non-normalised coords + linear filtering samples texel
@@ -321,164 +308,91 @@ __global__ void kernelImageMeshWarp(
 }
 
 
-// 4. ComputeImageMean — 2D
-__global__ void kernelComputeImageMean(
+// 4. ComputeWindowStats — 2D, one thread per pixel: the six MASKED window sums, the two
+// rejection gates, ZNCC, its derivative and this pair-direction's reliability sums, all in one
+// pass over the 7x7 window. Replaces the former five kernels (mean/var/cov/zncc/dzncc) and the
+// six full-image buffers they exchanged. Only successfully warped pixels enter the sums, so a
+// window straddling an occlusion boundary is described by the pixels that actually matched
+// instead of by image A's own values (the old unmasked statistics drove ZNCC towards 1 exactly
+// there). Writes maskOut rather than editing mask in place: the window loop of a neighbouring
+// thread is still reading mask.
+__global__ void kernelComputeWindowStats(
 	const uint8_t* __restrict__ mask,
-	float* __restrict__ imageMean,
-	cudaSurfaceObject_t surfImage,
-	int width, int height, int halfSize)
-{
-	const int x = blockIdx.x * blockDim.x + threadIdx.x;
-	const int y = blockIdx.y * blockDim.y + threadIdx.y;
-	if (x >= width || y >= height) return;
-
-	const int pixIdx = y * width + x;
-	if (x < halfSize || y < halfSize || x >= width - halfSize || y >= height - halfSize || mask[pixIdx] != 1) {
-		imageMean[pixIdx] = 0.f;
-		return;
-	}
-
-	const float windowArea = (float)(2 * halfSize + 1) * (float)(2 * halfSize + 1);
-	float sum = 0.f;
-	for (int dy = -halfSize; dy <= halfSize; ++dy)
-		for (int dx = -halfSize; dx <= halfSize; ++dx)
-			sum += readSurfFloat(surfImage, x + dx, y + dy);
-	imageMean[pixIdx] = sum / windowArea;
-}
-
-
-// 5. ComputeImageVar — 2D
-__global__ void kernelComputeImageVar(
-	const float* __restrict__ imageMean,
-	const uint8_t* __restrict__ mask,
-	float* __restrict__ imageVar,
-	cudaSurfaceObject_t surfImage,
-	int width, int height, int halfSize)
-{
-	const int x = blockIdx.x * blockDim.x + threadIdx.x;
-	const int y = blockIdx.y * blockDim.y + threadIdx.y;
-	if (x >= width || y >= height) return;
-
-	const int pixIdx = y * width + x;
-	if (x < halfSize || y < halfSize || x >= width - halfSize || y >= height - halfSize || mask[pixIdx] != 1) {
-		imageVar[pixIdx] = 0.f;
-		return;
-	}
-
-	const float windowArea = (float)(2 * halfSize + 1) * (float)(2 * halfSize + 1);
-	const float mean = imageMean[pixIdx];
-	float sum = 0.f;
-	for (int dy = -halfSize; dy <= halfSize; ++dy) {
-		for (int dx = -halfSize; dx <= halfSize; ++dx) {
-			const float diff = readSurfFloat(surfImage, x + dx, y + dy) - mean;
-			sum += diff * diff;
-		}
-	}
-	imageVar[pixIdx] = fmaxf(sum / windowArea, 1e-4f);
-}
-
-
-// 6. ComputeImageCov — 2D
-__global__ void kernelComputeImageCov(
-	const float* __restrict__ imageMeanA,
-	const float* __restrict__ imageMeanB,
-	const uint8_t* __restrict__ mask,
-	float* __restrict__ imageCov,
-	cudaSurfaceObject_t surfImageA,
-	cudaSurfaceObject_t surfImageProj,
-	int width, int height, int halfSize)
-{
-	const int x = blockIdx.x * blockDim.x + threadIdx.x;
-	const int y = blockIdx.y * blockDim.y + threadIdx.y;
-	if (x >= width || y >= height) return;
-
-	const int pixIdx = y * width + x;
-	if (x < halfSize || y < halfSize || x >= width - halfSize || y >= height - halfSize || mask[pixIdx] != 1) {
-		imageCov[pixIdx] = 0.f;
-		return;
-	}
-
-	const float windowArea = (float)(2 * halfSize + 1) * (float)(2 * halfSize + 1);
-	const float meanA = imageMeanA[pixIdx], meanB = imageMeanB[pixIdx];
-	float sum = 0.f;
-	for (int dy = -halfSize; dy <= halfSize; ++dy)
-		for (int dx = -halfSize; dx <= halfSize; ++dx)
-			sum += (readSurfFloat(surfImageA, x+dx, y+dy) - meanA) * (readSurfFloat(surfImageProj, x+dx, y+dy) - meanB);
-	imageCov[pixIdx] = sum / windowArea;
-}
-
-
-// 7. ComputeImageZNCC — 2D
-__global__ void kernelComputeImageZNCC(
-	const float* __restrict__ imageCov,
-	const float* __restrict__ imageVarA,
-	const float* __restrict__ imageVarB,
-	const uint8_t* __restrict__ mask,
-	float* __restrict__ imageZNCC,
-	int width, int height, int halfSize)
-{
-	const int x = blockIdx.x * blockDim.x + threadIdx.x;
-	const int y = blockIdx.y * blockDim.y + threadIdx.y;
-	if (x >= width || y >= height) return;
-
-	const int pixIdx = y * width + x;
-	if (x < halfSize || y < halfSize || x >= width - halfSize || y >= height - halfSize || mask[pixIdx] != 1) {
-		imageZNCC[pixIdx] = 0.f;
-		return;
-	}
-	imageZNCC[pixIdx] = imageCov[pixIdx] / sqrtf(imageVarA[pixIdx] * imageVarB[pixIdx]);
-}
-
-
-// 8. ComputeImageDZNCC — 2D, plus a block-reduced accumulation of the reliability sums
-// (sumR = Sum r, sumRZ = Sum r*(1-ZNCC)) ScoreMesh downloads to compute S = sumRZ/sumR
-// (MeshRefineStep, SceneRefineStep.h), over exactly the masked pixels that feed dzncc below
-__global__ void kernelComputeImageDZNCC(
-	const float* __restrict__ meanA,
-	const float* __restrict__ meanB,
-	const float* __restrict__ varA,
-	const float* __restrict__ varB,
-	const float* __restrict__ zncc,
-	const uint8_t* __restrict__ mask,
+	uint8_t* __restrict__ maskOut,
 	float* __restrict__ dzncc,
+	float* __restrict__ znccOut, // parity diagnostic only, may be NULL
+	float* __restrict__ confOut, // parity diagnostic only, may be NULL
 	cudaSurfaceObject_t surfImageA,
 	cudaSurfaceObject_t surfImageProj,
 	float* __restrict__ sumR,
 	float* __restrict__ sumRZ,
-	int width, int height, int halfSize)
+	float gateMeanDiff, float gateVarRatio,
+	int width, int height)
 {
 	const int x = blockIdx.x * blockDim.x + threadIdx.x;
 	const int y = blockIdx.y * blockDim.y + threadIdx.y;
 
+	// the 7x7 windows of the 16x16 threads of a block overlap heavily, so the (image A, warped
+	// image B, mask) triple of the 22x22 tile they span is staged in shared memory once instead
+	// of being re-read 49 times per thread from global/surface memory -- the naive version cost
+	// 1.4-1.8x the wall of the five separate kernels this one replaces
+	constexpr int Block = 16;
+	constexpr int Tile = Block + 2*Refine::HalfSize;
+	__shared__ float sA[Tile*Tile], sB[Tile*Tile], sW[Tile*Tile];
+	const int x0 = blockIdx.x * Block - Refine::HalfSize;
+	const int y0 = blockIdx.y * Block - Refine::HalfSize;
+	for (int i = threadIdx.y * Block + threadIdx.x; i < Tile*Tile; i += Block*Block) {
+		const int gx = x0 + i % Tile, gy = y0 + i / Tile;
+		float a(0.f), b(0.f), w(0.f);
+		// invalid samples are staged as zeros so the accumulation below needs no branch: they
+		// contribute nothing to any of the six sums, which is exactly what masking them means
+		if (gx >= 0 && gy >= 0 && gx < width && gy < height && mask[gy * width + gx] == 1) {
+			a = readSurfFloat(surfImageA, gx, gy);
+			b = readSurfFloat(surfImageProj, gx, gy);
+			w = 1.f;
+		}
+		sA[i] = a; sB[i] = b; sW[i] = w;
+	}
+	__syncthreads();
+
 	// per-thread contribution to this block's reliability sums; stays 0 for every pixel outside
-	// the image (grid is rounded up to the block size), outside the valid border, or unmasked --
-	// exactly the pixels the CPU's ScoreMesh S skips; no early "return" here so every thread in
-	// the block, in or out of bounds, reaches the reduction below
+	// the image (the grid is rounded up to the block size), outside the valid border, unmasked or
+	// gated -- exactly the pixels the CPU's ScoreMesh S skips; no early "return" here so every
+	// thread in the block reaches the reduction below
 	float contribR(0.f), contribRZ(0.f);
 	if (x < width && y < height) {
 		const int pixIdx = y * width + x;
-		if (x < halfSize || y < halfSize || x >= width - halfSize || y >= height - halfSize || mask[pixIdx] != 1) {
-			dzncc[pixIdx] = 0.f;
-		} else {
-			// pointwise form, matching CPU ComputeLocalZNCC (SceneRefine.cpp); the windowed/box-averaged
-			// variant the CPU used to carry behind an "#else" was deleted, so both backends keep one formula
-			const float pixA = readSurfFloat(surfImageA, x, y);
-			const float pixB = readSurfFloat(surfImageProj, x, y);
-			const float vA = varA[pixIdx], vB = varB[pixIdx];
-			const float invSqrtVarAVarB = 1.f / sqrtf(vA * vB);
-			const float ZNCC = zncc[pixIdx];
-			const float ZNCCinvVarB = ZNCC / vB;
-			const float dZ = (pixA - meanA[pixIdx]) * invSqrtVarAVarB - (pixB - meanB[pixIdx]) * ZNCCinvVarB;
-			const float r = Refine::ZnccReliability(vA, vB);
-
-			dzncc[pixIdx] = -r * dZ;
-			contribR = r;
-			contribRZ = r * (1.f - ZNCC);
+		float dz(0.f), zn(0.f), cf(0.f);
+		uint8_t valid(0);
+		if (x >= Refine::HalfSize && y >= Refine::HalfSize &&
+			x < width - Refine::HalfSize && y < height - Refine::HalfSize && mask[pixIdx] == 1)
+		{
+			const int centre = (threadIdx.y + Refine::HalfSize) * Tile + threadIdx.x + Refine::HalfSize;
+			float n(0.f), sumA(0.f), sumB(0.f), sumAA(0.f), sumBB(0.f), sumAB(0.f);
+			for (int dy = -Refine::HalfSize; dy <= Refine::HalfSize; ++dy) {
+				const int row = centre + dy*Tile;
+				for (int dx = -Refine::HalfSize; dx <= Refine::HalfSize; ++dx) {
+					const int t = row + dx;
+					const float a = sA[t], b = sB[t];
+					n += sW[t]; sumA += a; sumB += b; sumAA += a*a; sumBB += b*b; sumAB += a*b;
+				}
+			}
+			Refine::WindowStats s;
+			if (Refine::WindowStatsFromSums(n, sumA, sumB, sumAA, sumBB, sumAB, gateMeanDiff, gateVarRatio, s)) {
+				Refine::ZnccAndDerivative(s, n, sA[centre], sB[centre], zn, dz, cf);
+				valid = 1;
+				contribR = cf;
+				contribRZ = cf * (1.f - zn);
+			}
 		}
+		dzncc[pixIdx] = dz;
+		maskOut[pixIdx] = valid;
+		if (znccOut) znccOut[pixIdx] = zn;
+		if (confOut) confOut[pixIdx] = cf;
 	}
 
 	// shared-memory block reduction, one atomicAdd per block per accumulator (not one per pixel);
-	// sized for the 16x16 block LaunchComputeImageDZNCC always launches
+	// sized for the 16x16 block LaunchComputeWindowStats always launches
 	__shared__ float sSumR[256];
 	__shared__ float sSumRZ[256];
 	const int tid = threadIdx.y * blockDim.x + threadIdx.x;
@@ -776,51 +690,23 @@ void LaunchResolveProjection(
 void LaunchImageMeshWarp(
 	const float* depthMapA, const float* depthMapB, uint8_t* mask,
 	const Camera& camA, const Camera& camB,
-	cudaTextureObject_t texImageB, cudaSurfaceObject_t surfImageA, cudaSurfaceObject_t surfImageProj)
+	cudaTextureObject_t texImageB,
+	cudaSurfaceObject_t surfImageProj)
 {
 	const dim3 block(16, 16);
 	const dim3 grid((camA.size.x() + block.x - 1) / block.x, (camA.size.y() + block.y - 1) / block.y);
-	kernelImageMeshWarp<<<grid, block>>>(depthMapA, depthMapB, mask, camA, camB, texImageB, surfImageA, surfImageProj);
+	kernelImageMeshWarp<<<grid, block>>>(depthMapA, depthMapB, mask, camA, camB, texImageB, surfImageProj);
 }
 
-void LaunchComputeImageMean(const uint8_t* mask, float* imageMean, cudaSurfaceObject_t surfImage, int width, int height, int halfSize)
+void LaunchComputeWindowStats(
+	const uint8_t* mask, uint8_t* maskOut, float* dzncc, float* zncc, float* conf,
+	cudaSurfaceObject_t surfImageA, cudaSurfaceObject_t surfImageProj,
+	float* sumR, float* sumRZ, float gateMeanDiff, float gateVarRatio, int width, int height)
 {
 	const dim3 block(16, 16);
 	const dim3 grid((width + block.x - 1) / block.x, (height + block.y - 1) / block.y);
-	kernelComputeImageMean<<<grid, block>>>(mask, imageMean, surfImage, width, height, halfSize);
-}
-
-void LaunchComputeImageVar(const float* imageMean, const uint8_t* mask, float* imageVar, cudaSurfaceObject_t surfImage, int width, int height, int halfSize)
-{
-	const dim3 block(16, 16);
-	const dim3 grid((width + block.x - 1) / block.x, (height + block.y - 1) / block.y);
-	kernelComputeImageVar<<<grid, block>>>(imageMean, mask, imageVar, surfImage, width, height, halfSize);
-}
-
-void LaunchComputeImageCov(
-	const float* imageMeanA, const float* imageMeanB, const uint8_t* mask, float* imageCov,
-	cudaSurfaceObject_t surfImageA, cudaSurfaceObject_t surfImageProj, int width, int height, int halfSize)
-{
-	const dim3 block(16, 16);
-	const dim3 grid((width + block.x - 1) / block.x, (height + block.y - 1) / block.y);
-	kernelComputeImageCov<<<grid, block>>>(imageMeanA, imageMeanB, mask, imageCov, surfImageA, surfImageProj, width, height, halfSize);
-}
-
-void LaunchComputeImageZNCC(const float* imageCov, const float* imageVarA, const float* imageVarB, const uint8_t* mask, float* imageZNCC, int width, int height, int halfSize)
-{
-	const dim3 block(16, 16);
-	const dim3 grid((width + block.x - 1) / block.x, (height + block.y - 1) / block.y);
-	kernelComputeImageZNCC<<<grid, block>>>(imageCov, imageVarA, imageVarB, mask, imageZNCC, width, height, halfSize);
-}
-
-void LaunchComputeImageDZNCC(
-	const float* meanA, const float* meanB, const float* varA, const float* varB, const float* zncc,
-	const uint8_t* mask, float* dzncc, cudaSurfaceObject_t surfImageA, cudaSurfaceObject_t surfImageProj,
-	float* sumR, float* sumRZ, int width, int height, int halfSize)
-{
-	const dim3 block(16, 16);
-	const dim3 grid((width + block.x - 1) / block.x, (height + block.y - 1) / block.y);
-	kernelComputeImageDZNCC<<<grid, block>>>(meanA, meanB, varA, varB, zncc, mask, dzncc, surfImageA, surfImageProj, sumR, sumRZ, width, height, halfSize);
+	kernelComputeWindowStats<<<grid, block>>>(mask, maskOut, dzncc, zncc, conf,
+		surfImageA, surfImageProj, sumR, sumRZ, gateMeanDiff, gateVarRatio, width, height);
 }
 
 void LaunchComputePhotometricGradient(

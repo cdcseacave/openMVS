@@ -94,8 +94,6 @@ public:
 		typedef TImage<Grad> ImageGrad;
 		Image32F image; // image pixels
 		ImageGrad imageGrad; // image pixel gradients
-		TImage<Real> imageMean; // image pixels mean
-		TImage<Real> imageVar; // image pixels variance
 		FaceMap faceMap; // remember for each pixel what face projects there
 		DepthMap depthMap; // depth-map
 		BaryMap baryMap; // barycentric coordinates
@@ -149,7 +147,7 @@ public:
 
 
 public:
-	MeshRefine(Scene& _scene, unsigned _nReduceMemory, unsigned _nAlternatePair=true, Real _weightRegularity=1.5f, Real _ratioRigidityElasticity=0.8f, unsigned _nResolutionLevel=0, unsigned _nMinResolution=640, unsigned nMaxViews=8, unsigned nMaxThreads=1);
+	MeshRefine(Scene& _scene, unsigned _nAlternatePair=true, Real _weightRegularity=1.5f, Real _ratioRigidityElasticity=0.8f, unsigned _nResolutionLevel=0, unsigned _nMinResolution=640, unsigned nMaxViews=8, unsigned nMaxThreads=1);
 	~MeshRefine();
 
 	bool IsValid() const { return !pairs.IsEmpty(); }
@@ -178,19 +176,19 @@ public:
 		const DepthMap& depthMapA, const Camera& cameraA,
 		const DepthMap& depthMapB, const Camera& cameraB,
 		const Image32F& imageB, Image32F& imageA, BitMatrix& mask);
-	static void ComputeLocalVariance(
-		const Image32F& image, const BitMatrix& mask,
-		TImage<Real>& imageMean, TImage<Real>& imageVar);
 	// the two sums one pair-direction contributes to the reliability-weighted score S:
 	// sumRZ over its masked pixels, and the weight sum sumR that normalizes it
 	struct PairScore {
 		float sumRZ; // Sum r*(1-ZNCC)
 		float sumR; // Sum r
 	};
-	static PairScore ComputeLocalZNCC(
-		const Image32F& imageA, const TImage<Real>& imageMeanA, const TImage<Real>& imageVarA,
-		const Image32F& imageB, const TImage<Real>& imageMeanB, const TImage<Real>& imageVarB,
-		const BitMatrix& mask, TImage<Real>& imageZNCC, TImage<Real>& imageDZNCC);
+	// masked local window statistics of A and of B-warped-into-A, and from them the per-pixel
+	// photometric gradient scale; pixels whose window holds too few valid samples or that fail a
+	// rejection gate are REMOVED FROM THE MASK, which is therefore in/out and stays the single
+	// validity source for everything downstream
+	static PairScore ComputeWindowStats(
+		const Image32F& imageA, const Image32F& imageB, BitMatrix& mask,
+		TImage<Real>& imageDZNCC, TImage<Real>* imageZNCC = NULL, TImage<Real>* imageConf = NULL);
 	static void ComputePhotometricGradient(
 		const Mesh::FaceArr& faces, const Mesh::NormalArr& normals,
 		const DepthMap& depthMapA, const FaceMap& faceMapA, const BaryMap& baryMapA, const Camera& cameraA,
@@ -224,7 +222,6 @@ public:
 	Real ratioRigidityElasticity; // a scalar ratio used to compute the regularity gradient as a combination of rigidity and elasticity
 	const unsigned nResolutionLevel; // how many times to scale down the images before mesh optimization
 	const unsigned nMinResolution; // how many times to scale down the images before mesh optimization
-	const unsigned nReduceMemory; // recompute image mean and variance in order to reduce memory requirements
 	unsigned nAlternatePair; // using an image pair alternatively as reference image (0 - both, 1 - alternate, 2 - only left, 3 - only right)
 	unsigned iteration; // current refinement iteration
 	unsigned nScale; // current refinement scale (0-based, coarsest first; RefineDebug export file naming only)
@@ -381,13 +378,12 @@ SEACAVE::cList<SEACAVE::Thread> MeshRefine::threads;
 CriticalSection MeshRefine::cs;
 Semaphore MeshRefine::sem;
 
-MeshRefine::MeshRefine(Scene& _scene, unsigned _nReduceMemory, unsigned _nAlternatePair, Real _weightRegularity, Real _ratioRigidityElasticity, unsigned _nResolutionLevel, unsigned _nMinResolution, unsigned nMaxViews, unsigned nMaxThreads)
+MeshRefine::MeshRefine(Scene& _scene, unsigned _nAlternatePair, Real _weightRegularity, Real _ratioRigidityElasticity, unsigned _nResolutionLevel, unsigned _nMinResolution, unsigned nMaxViews, unsigned nMaxThreads)
 	:
 	weightRegularity(_weightRegularity),
 	ratioRigidityElasticity(_ratioRigidityElasticity),
 	nResolutionLevel(_nResolutionLevel),
 	nMinResolution(_nMinResolution),
-	nReduceMemory(_nReduceMemory),
 	nAlternatePair(_nAlternatePair),
 	scene(_scene),
 	faceNormals(_scene.mesh.faceNormals),
@@ -790,7 +786,7 @@ T MeshRefine::ProjectVertex(const TP* P, const TX* X, T* x, TJ* jacobian)
 }
 
 
-// check if any of the depths surrounding the given coordinate is similar to the given value
+// check whether the nearest depth-map texel to the projected coordinate is not an occluder
 bool MeshRefine::IsDepthSimilar(const DepthMap& depthMap, const Point2f& pt, Depth z)
 {
 	// the whole 2x2 neighbourhood read below must be inside the shared Refine::Border margin,
@@ -810,18 +806,10 @@ bool MeshRefine::IsDepthSimilar(const DepthMap& depthMap, const Point2f& pt, Dep
 	const ImageRef tl(FLOOR2INT(pt));
 	ASSERT(tl.x >= Refine::Border && tl.y >= Refine::Border &&
 		   tl.x+1 < depthMap.cols-Refine::Border && tl.y+1 < depthMap.rows-Refine::Border);
-	for (int x=0; x<2; ++x) {
-		for (int y=0; y<2; ++y) {
-			const ImageRef ir(tl.x+x, tl.y+y);
-			const Depth& depth = depthMap(ir);
-			// occlusion test only (shared Refine::DepthConstBias, same rule as kernelImageMeshWarp);
-			// the symmetric 1 % test that used to sit behind an #ifndef here was never compiled in
-			if (depth <= 0 || depth+Refine::DepthConstBias < z)
-				continue;
-			return true;
-		}
-	}
-	return false;
+	const ImageRef ir(FLOOR2INT(pt+Point2f(0.5f,0.5f)));
+	ASSERT(ir.x >= tl.x && ir.x <= tl.x+1 && ir.y >= tl.y && ir.y <= tl.y+1);
+	const Depth& depth(depthMap(ir));
+	return depth > 0 && depth*1.0002f >= z;
 }
 
 // project mesh to the given camera plane
@@ -875,110 +863,70 @@ void MeshRefine::ImageMeshWarp(
 	}
 }
 
-// compute local variance for each image pixel
-void MeshRefine::ComputeLocalVariance(const Image32F& image, const BitMatrix& mask, TImage<Real>& imageMean, TImage<Real>& imageVar)
-{
-	ASSERT(image.size() == mask.size());
-	imageMean.create(image.size());
-	imageVar.create(image.size());
-	imageMean.memset(0);
-	imageVar.memset(0);
-	const int RowsEnd(image.rows-HalfSize);
-	const int ColsEnd(image.cols-HalfSize);
-	const int n(SQUARE(HalfSize*2+1));
-	DEC_Image(double, imageSum);
-	DEC_Image(double, imageSumSq);
-	#if CV_MAJOR_VERSION > 2
-	cv::integral(image, imageSum, imageSumSq, CV_64F, CV_64F);
-	#else
-	cv::integral(image, imageSum, imageSumSq, CV_64F);
-	#endif
-	for (int r=HalfSize; r<RowsEnd; ++r) {
-		for (int c=HalfSize; c<ColsEnd; ++c) {
-			if (!mask(r,c))
-				continue;
-			imageMean(r,c) = (Real)((
-				imageSum(r+HalfSize+1, c+HalfSize+1) -
-				imageSum(r+HalfSize+1, c-HalfSize  ) -
-				imageSum(r-HalfSize,   c+HalfSize+1) +
-				imageSum(r-HalfSize,   c-HalfSize  ) ) * (1.0/(double)n));
-		}
-	}
-	DST_Image(imageSum);
-	for (int r=HalfSize; r<RowsEnd; ++r) {
-		for (int c=HalfSize; c<ColsEnd; ++c) {
-			if (!mask(r,c))
-				continue;
-			const Real sumSq = (Real)((
-				imageSumSq(r+HalfSize+1, c+HalfSize+1) -
-				imageSumSq(r+HalfSize+1, c-HalfSize  ) -
-				imageSumSq(r-HalfSize,   c+HalfSize+1) +
-				imageSumSq(r-HalfSize,   c-HalfSize  ) ) * (1.0/(double)n));
-			imageVar(r,c) = MAXF(sumSq-SQUARE(imageMean(r,c)), Real(0.0001));
-		}
-	}
-	DST_Image(imageSumSq);
-}
-
-// compute local ZNCC and its gradient for each image pixel
-MeshRefine::PairScore MeshRefine::ComputeLocalZNCC(
-	const Image32F& imageA, const TImage<Real>& imageMeanA, const TImage<Real>& imageVarA,
-	const Image32F& imageB, const TImage<Real>& imageMeanB, const TImage<Real>& imageVarB,
-	const BitMatrix& mask, TImage<Real>& imageZNCC, TImage<Real>& imageDZNCC)
+// compute masked local window statistics and the per-pixel photometric gradient scale
+MeshRefine::PairScore MeshRefine::ComputeWindowStats(
+	const Image32F& imageA, const Image32F& imageB, BitMatrix& mask,
+	TImage<Real>& imageDZNCC, TImage<Real>* imageZNCC, TImage<Real>* imageConf)
 {
 	ASSERT(imageA.size() == mask.size() && imageB.size() == mask.size() && !mask.empty());
-	float score(0);
-	imageZNCC.create(mask.size());
 	imageDZNCC.create(mask.size());
+	imageDZNCC.memset(0);
+	if (imageZNCC) { imageZNCC->create(mask.size()); imageZNCC->memset(0); }
+	if (imageConf) { imageConf->create(mask.size()); imageConf->memset(0); }
+	// the six window sums, each accumulated over the VALID pixels only: the products are zeroed
+	// wherever the warp failed, so an unwarped pixel contributes nothing instead of contributing
+	// image A's own value (which is what the old imageA.copyTo(imageAB) + unmasked integral
+	// images did, driving ZNCC towards 1 exactly at the occlusion boundaries that need it least)
+	DEC_Image(float, m);
+	DEC_Image(float, pA); DEC_Image(float, pB);
+	DEC_Image(float, pAA); DEC_Image(float, pBB); DEC_Image(float, pAB);
+	m.create(mask.size());
+	for (int r=0; r<mask.rows; ++r)
+		for (int c=0; c<mask.cols; ++c)
+			m(r,c) = mask(r,c) ? 1.f : 0.f;
+	cv::multiply(imageA, m, pA);
+	cv::multiply(imageB, m, pB);
+	cv::multiply(pA, imageA, pAA);
+	cv::multiply(pB, imageB, pBB);
+	cv::multiply(pA, imageB, pAB);
+	const cv::Size ksize(Refine::WindowSize, Refine::WindowSize);
+	const cv::Point anchor(-1,-1);
+	// every pixel visited below is at least HalfSize from the image edge, so the border mode
+	// never actually contributes; normalize=false gives the raw window sums
+	cv::boxFilter(m, m, -1, ksize, anchor, false, cv::BORDER_CONSTANT);
+	cv::boxFilter(pA, pA, -1, ksize, anchor, false, cv::BORDER_CONSTANT);
+	cv::boxFilter(pB, pB, -1, ksize, anchor, false, cv::BORDER_CONSTANT);
+	cv::boxFilter(pAA, pAA, -1, ksize, anchor, false, cv::BORDER_CONSTANT);
+	cv::boxFilter(pBB, pBB, -1, ksize, anchor, false, cv::BORDER_CONSTANT);
+	cv::boxFilter(pAB, pAB, -1, ksize, anchor, false, cv::BORDER_CONSTANT);
 	const int RowsEnd(mask.rows-HalfSize);
 	const int ColsEnd(mask.cols-HalfSize);
-	const int n(SQUARE(HalfSize*2+1));
-	imageZNCC.memset(0);
-	DEC_Image(double, imageABSum);
-	{
-		DEC_Image(float, imageAB);
-		cv::multiply(imageA, imageB, imageAB);
-		cv::integral(imageAB, imageABSum, CV_64F);
-		DST_Image(imageAB);
-	}
-	DEC_Image(Real, imageInvSqrtVAVB);
-	imageInvSqrtVAVB.create(mask.size());
-	for (int r=HalfSize; r<RowsEnd; ++r) {
-		for (int c=HalfSize; c<ColsEnd; ++c) {
-			if (!mask(r, c))
-				continue;
-			const Real cv = (Real)((
-				imageABSum(r+HalfSize+1, c+HalfSize+1) -
-				imageABSum(r+HalfSize+1, c-HalfSize  ) -
-				imageABSum(r-HalfSize,   c+HalfSize+1) +
-				imageABSum(r-HalfSize,   c-HalfSize  ) ) * (1.0/(double)n));
-			// ComputeLocalVariance floors both variances at 1e-4, so this can never be a divide
-			// by zero or a denormal -- assert the producer's contract instead of guarding here
-			ASSERT(imageVarA(r,c) > 0 && imageVarB(r,c) > 0);
-			const Real invSqrtVAVB(Real(1)/SQRT(imageVarA(r,c)*imageVarB(r,c)));
-			imageZNCC(r,c) = (cv - imageMeanA(r,c)*imageMeanB(r,c)) * invSqrtVAVB;
-			imageInvSqrtVAVB(r,c) = invSqrtVAVB;
-		}
-	}
-	DST_Image(imageABSum);
-	imageDZNCC.memset(0);
-	Real sumR(0);
+	const float gateMeanDiff(OPTREFINE::fGateMeanDiff);
+	const float gateVarRatio(OPTREFINE::fGateVarRatio);
+	float sumRZ(0), sumR(0);
 	for (int r=HalfSize; r<RowsEnd; ++r) {
 		for (int c=HalfSize; c<ColsEnd; ++c) {
 			if (!mask(r,c))
 				continue;
-			const Real ZNCC(imageZNCC(r,c));
-			const Real invSqrtVAVB(imageInvSqrtVAVB(r,c));
-			const Real ZNCCinvVB(ZNCC/imageVarB(r,c));
-			const Real dZNCC((Real)imageA(r,c)*invSqrtVAVB - (Real)imageB(r,c)*ZNCCinvVB + imageMeanB(r,c)*ZNCCinvVB - imageMeanA(r,c)*invSqrtVAVB);
-			const Real ReliabilityFactor(Refine::ZnccReliability(imageVarA(r,c), imageVarB(r,c)));
-			imageDZNCC(r,c) = -ReliabilityFactor*dZNCC;
-			score += (float)(ReliabilityFactor*(Real(1)-ZNCC));
-			sumR += ReliabilityFactor;
+			const float n(m(r,c));
+			Refine::WindowStats s;
+			if (!Refine::WindowStatsFromSums(n, pA(r,c), pB(r,c), pAA(r,c), pBB(r,c), pAB(r,c), gateMeanDiff, gateVarRatio, s)) {
+				mask.unset(r,c);
+				continue;
+			}
+			float zncc, dzncc, conf;
+			Refine::ZnccAndDerivative(s, n, imageA(r,c), imageB(r,c), zncc, dzncc, conf);
+			imageDZNCC(r,c) = dzncc;
+			if (imageZNCC) (*imageZNCC)(r,c) = zncc;
+			if (imageConf) (*imageConf)(r,c) = conf;
+			sumRZ += conf*(1.f-zncc);
+			sumR += conf;
 		}
 	}
-	DST_Image(imageInvSqrtVAVB);
-	return PairScore{score, (float)sumR};
+	DST_Image(m);
+	DST_Image(pA); DST_Image(pB);
+	DST_Image(pAA); DST_Image(pBB); DST_Image(pAB);
+	return PairScore{sumRZ, sumR};
 }
 
 // compute the photometric gradient for all vertices seen by an image pair
@@ -1164,10 +1112,6 @@ void MeshRefine::ThInitImage(uint32_t idxImage, Real scale, Real sigma)
 	Image32F& img = view.image;
 	if (!PrepareRefineImage(imageData, scene.platforms, nResolutionLevel, nMinResolution, scale, sigma, img))
 		ABORT("can not load image");
-	if (!nReduceMemory) {
-		// compute image mean and variance
-		ComputeLocalVariance(img, BitMatrix(img.size(), 0xFF), view.imageMean, view.imageVar);
-	}
 	// compute image gradient (the same estimator on both backends)
 	Image32F grad[2];
 	ComputeRefineImageGradient(img, grad[0], grad[1]);
@@ -1204,41 +1148,27 @@ void MeshRefine::ThProcessPair(uint32_t idxImageA, uint32_t idxImageB)
 	// warp imageB to imageA using the mesh
 	DEC_BitMatrix(mask);
 	DEC_Image(float, imageAB);
-	imageA.copyTo(imageAB);
+	imageAB.create(imageA.size());
+	// invalid pixels stay 0: ComputeWindowStats masks them out of every window sum, so their
+	// value is never read -- unlike the old imageA.copyTo(imageAB), which made an unwarped pixel
+	// look like a perfect match to its own window
+	imageAB.memset(0);
 	ImageMeshWarp(depthMapA, cameraA, depthMapB, cameraB, imageB, imageAB, mask);
-	// compute ZNCC and its gradient
-	const TImage<Real> *imageMeanA, *imageVarA;
-	if (nReduceMemory) {
-		DEC_Image(Real, _imageMeanA);
-		DEC_Image(Real, _imageVarA);
-		ComputeLocalVariance(viewA.image, mask, _imageMeanA, _imageVarA);
-		imageMeanA = &_imageMeanA;
-		imageVarA = &_imageVarA;
-	} else {
-		imageMeanA = &viewA.imageMean;
-		imageVarA = &viewA.imageVar;
-	}
-	DEC_Image(Real, imageMeanAB);
-	DEC_Image(Real, imageVarAB);
-	ComputeLocalVariance(imageAB, mask, imageMeanAB, imageVarAB);
-	DEC_Image(Real, imageZNCC);
+	// compute the masked window statistics, the rejection gates and the ZNCC derivative
+	// (this also prunes the mask, which every consumer below therefore reads after the call)
+	uint32_t dbgImageA, dbgImageB;
+	const bool dbgPair(!RefineDebug::Dir().empty() && RefineDebug::Pair(dbgImageA, dbgImageB) &&
+		dbgImageA == idxImageA && dbgImageB == idxImageB);
 	DEC_Image(Real, imageDZNCC);
-	const PairScore pairScore(ComputeLocalZNCC(imageA, *imageMeanA, *imageVarA, imageAB, imageMeanAB, imageVarAB, mask, imageZNCC, imageDZNCC));
+	DEC_Image(Real, imageZNCC);
+	DEC_Image(Real, conf);
+	const PairScore pairScore(ComputeWindowStats(imageA, imageAB, mask, imageDZNCC,
+		dbgPair ? &imageZNCC : NULL, dbgPair ? &conf : NULL));
 
 	// CPU/CUDA parity diagnostic: dump this pair's maps before the pooled buffers
 	// above get recycled; no-op unless OMVS_REFINE_DEBUG_DIR/_PAIR are both set
 	// and match this exact (A,B) direction
-	uint32_t dbgImageA, dbgImageB;
-	const bool dbgPair(!RefineDebug::Dir().empty() && RefineDebug::Pair(dbgImageA, dbgImageB) &&
-		dbgImageA == idxImageA && dbgImageB == idxImageB);
 	if (dbgPair) {
-		DEC_Image(Real, conf);
-		conf.create(mask.size());
-		conf.memset(0);
-		for (int r=0; r<mask.rows; ++r)
-			for (int c=0; c<mask.cols; ++c)
-				if (mask(r,c))
-					conf(r,c) = Refine::ZnccReliability((*imageVarA)(r,c), imageVarAB(r,c));
 		Image8U maskU8(mask.rows, mask.cols);
 		for (int r=0; r<mask.rows; ++r)
 			for (int c=0; c<mask.cols; ++c)
@@ -1249,17 +1179,11 @@ void MeshRefine::ThProcessPair(uint32_t idxImageA, uint32_t idxImageB)
 		RefineDebug::ExportPairMap(nScale, iteration, idxImageA, idxImageB, "dzncc", imageDZNCC.getData(), imageDZNCC.width(), imageDZNCC.height());
 		RefineDebug::ExportPairMap(nScale, iteration, idxImageA, idxImageB, "conf", conf.getData(), conf.width(), conf.height());
 		RefineDebug::ExportPairMask(nScale, iteration, idxImageA, idxImageB, maskU8.getData(), maskU8.width(), maskU8.height());
-		DST_Image(conf);
 	}
 
 	#ifdef MESHOPT_TYPEPOOL
+	DST_Image(conf);
 	DST_Image(imageZNCC);
-	DST_Image(imageVarAB);
-	DST_Image(imageMeanAB);
-	if (nReduceMemory) {
-		DST_Image(*((TImage<Real>*)imageMeanA));
-		DST_Image(*((TImage<Real>*)imageVarA));
-	}
 	DST_Image(imageAB);
 	#endif
 	// compute field gradient
@@ -1399,10 +1323,12 @@ protected:
 
 // optimize mesh using photo-consistency
 // fThPlanarVertex - threshold used to remove vertices on planar patches (percentage of the minimum depth, 0 - disable)
+// nReduceMemory - obsolete: the window statistics are now always computed per pair over that
+//   pair's own mask, so there is no per-view mean/variance cache left to trade memory against
 bool Scene::RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsigned nMaxViews,
 					   float fDecimateMesh, unsigned nCloseHoles, unsigned nEnsureEdgeSize, unsigned nMaxFaceArea,
 					   unsigned nScales, float fScaleStep,
-					   unsigned nAlternatePair, float fRegularityWeight, float fRatioRigidityElasticity, float fGradientStep, float fThPlanarVertex, unsigned nReduceMemory)
+					   unsigned nAlternatePair, float fRegularityWeight, float fRatioRigidityElasticity, float fGradientStep, float fThPlanarVertex, unsigned /*nReduceMemory*/)
 {
 	// "--gradient-step N.s" means N iterations per scale and s*10 pixels of initial step (0 selects
 	// the Ceres arm where it is built in). The stepper measures its step in pixels and never lets it
@@ -1447,7 +1373,7 @@ bool Scene::RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsig
 		bGeneratedPointcloud = true;
 	}
 
-	MeshRefine refine(*this, nReduceMemory, nAlternatePair, fRegularityWeight, fRatioRigidityElasticity, nResolutionLevel, nMinResolution, nMaxViews, nMaxThreads);
+	MeshRefine refine(*this, nAlternatePair, fRegularityWeight, fRatioRigidityElasticity, nResolutionLevel, nMinResolution, nMaxViews, nMaxThreads);
 	if (bGeneratedPointcloud)
 		pointcloud.Release();
 	if (!refine.IsValid())

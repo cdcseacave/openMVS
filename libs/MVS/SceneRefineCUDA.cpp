@@ -137,9 +137,7 @@ public:
 	void ImageMeshWarp(
 		const Camera& cameraA, const Camera& cameraB, const Image8U::Size& size,
 		uint32_t idxImageA, uint32_t idxImageB);
-	void ComputeLocalVariance(cudaSurfaceObject_t surfImage, const Image8U::Size& size,
-		SEACAVE::CUDA::MemDevice& imageMean, SEACAVE::CUDA::MemDevice& imageVar);
-	void ComputeLocalZNCC(cudaSurfaceObject_t surfImageA, cudaSurfaceObject_t surfImageProj, const Image8U::Size& size);
+	void ComputeWindowStats(cudaSurfaceObject_t surfImageA, cudaSurfaceObject_t surfImageProj, const Image8U::Size& size, bool exportMaps);
 	void ComputePhotometricGradient(const Camera& cameraA, const Camera& cameraB, const Image8U::Size& size,
 		uint32_t idxImageA, uint32_t idxImageB, uint32_t numVertices, float RegularizationScale);
 	void ComputeSmoothnessGradient(uint32_t numVertices);
@@ -172,16 +170,13 @@ public:
 	SEACAVE::CUDA::MemDevice vertices;
 	SEACAVE::CUDA::MemDevice faces;
 	SEACAVE::CUDA::MemDevice faceNormals;
-	SEACAVE::CUDA::MemDevice mask;
+	SEACAVE::CUDA::MemDevice mask; // warp validity, the window-sum input
+	SEACAVE::CUDA::MemDevice maskStats; // mask pruned by MinWindowCount and the rejection gates; what every consumer after ComputeWindowStats reads
 	SEACAVE::CUDA::MemDevice projKey; // rasterizer scratch, one (depth,face) 64-bit key per pixel of the largest view
 	size_t projKeyPixels = 0; // pixels projKey was allocated for (ProjectMesh asserts every view fits)
-	SEACAVE::CUDA::MemDevice imageMeanA;
-	SEACAVE::CUDA::MemDevice imageVarA;
 	SEACAVE::CUDA::ArrayRT32F imageAB; // warped image B in A, float like the CPU's imageAB
-	SEACAVE::CUDA::MemDevice imageMeanAB;
-	SEACAVE::CUDA::MemDevice imageVarAB;
-	SEACAVE::CUDA::MemDevice imageCov;
-	SEACAVE::CUDA::MemDevice imageZNCC;
+	SEACAVE::CUDA::MemDevice imageZNCC; // parity diagnostic only, written when the RefineDebug pair matches
+	SEACAVE::CUDA::MemDevice imageConf; // parity diagnostic only, written when the RefineDebug pair matches
 	SEACAVE::CUDA::MemDevice imageDZNCC;
 	SEACAVE::CUDA::MemDevice photoGrad;
 	SEACAVE::CUDA::MemDevice photoGradNorm;
@@ -342,16 +337,15 @@ bool MeshRefineCUDA::InitImages(float scale, float sigma)
 	}
 	const size_t area(maxSize.area());
 	reportCudaError(mask.Reset(sizeof(uint8_t)*area));
+	reportCudaError(maskStats.Reset(sizeof(uint8_t)*area));
 	reportCudaError(projKey.Reset(sizeof(uint64_t)*area));
 	projKeyPixels = area;
-	reportCudaError(imageMeanA.Reset(sizeof(float)*area));
-	reportCudaError(imageVarA.Reset(sizeof(float)*area));
 	reportCudaError(imageAB.Reset(maxSize, CUDA_ARRAY3D_SURFACE_LDST));
-	reportCudaError(imageMeanAB.Reset(sizeof(float)*area));
-	reportCudaError(imageVarAB.Reset(sizeof(float)*area));
-	reportCudaError(imageCov.Reset(sizeof(float)*area));
-	reportCudaError(imageZNCC.Reset(sizeof(float)*area));
 	reportCudaError(imageDZNCC.Reset(sizeof(float)*area));
+	if (!RefineDebug::Dir().empty()) {
+		reportCudaError(imageZNCC.Reset(sizeof(float)*area));
+		reportCudaError(imageConf.Reset(sizeof(float)*area));
+	}
 	reportCudaError(sumR.Reset(sizeof(float)));
 	reportCudaError(sumRZ.Reset(sizeof(float)));
 	// create surface object for projected image
@@ -769,38 +763,31 @@ void MeshRefineCUDA::ProcessPair(uint32_t idxImageA, uint32_t idxImageB)
 	const Camera& cameraB = imageDataB.camera;
 	// warp imageB to imageA using the mesh
 	ImageMeshWarp(cameraA, cameraB, sizeA, idxImageA, idxImageB);
-	// init vertex textures
-	ComputeLocalVariance(surfImageProjObj, sizeA, imageMeanAB, imageVarAB);
-	ComputeLocalVariance(viewGPU[idxImageA].surfObj, sizeA, imageMeanA, imageVarA);
-	ComputeLocalZNCC(viewGPU[idxImageA].surfObj, surfImageProjObj, sizeA);
+	// masked window statistics, rejection gates, ZNCC and its derivative; prunes mask into maskStats
+	uint32_t dbgImageA, dbgImageB;
+	const bool dbgPair(!RefineDebug::Dir().empty() && RefineDebug::Pair(dbgImageA, dbgImageB) &&
+		dbgImageA == idxImageA && dbgImageB == idxImageB);
+	ComputeWindowStats(viewGPU[idxImageA].surfObj, surfImageProjObj, sizeA, dbgPair);
 
 	// WP2 parity diagnostic: download this pair's maps from the persistent
 	// device buffers above; no-op unless OMVS_REFINE_DEBUG_DIR/_PAIR are both
 	// set and match this exact (A,B) direction
-	uint32_t dbgImageA, dbgImageB;
-	if (!RefineDebug::Dir().empty() && RefineDebug::Pair(dbgImageA, dbgImageB) &&
-		dbgImageA == idxImageA && dbgImageB == idxImageB)
-	{
+	if (dbgPair) {
 		const int width(sizeA.width), height(sizeA.height);
 		Image32F imgA(sizeA), imgAB(sizeA);
 		Image8U _mask(sizeA);
-		Image32F _varA(sizeA), _varAB(sizeA), _zncc(sizeA), _dzncc(sizeA);
+		Image32F _zncc(sizeA), _dzncc(sizeA), _conf(sizeA);
 		reportCudaError(views[idxImageA].image.GetData(imgA));
 		reportCudaError(imageAB.GetData(imgAB));
-		reportCudaError(mask.GetData(_mask));
-		reportCudaError(imageVarA.GetData(_varA));
-		reportCudaError(imageVarAB.GetData(_varAB));
+		reportCudaError(maskStats.GetData(_mask));
 		reportCudaError(imageZNCC.GetData(_zncc));
+		reportCudaError(imageConf.GetData(_conf));
 		reportCudaError(imageDZNCC.GetData(_dzncc));
-		Image32F conf(sizeA);
-		for (int r=0; r<height; ++r)
-			for (int c=0; c<width; ++c)
-				conf(r,c) = _mask(r,c) ? Refine::ZnccReliability(_varA(r,c), _varAB(r,c)) : 0.f;
 		RefineDebug::ExportPairMap(nScale, iteration, idxImageA, idxImageB, "imageA", imgA.getData(), width, height);
 		RefineDebug::ExportPairMap(nScale, iteration, idxImageA, idxImageB, "imageAB", imgAB.getData(), width, height);
 		RefineDebug::ExportPairMap(nScale, iteration, idxImageA, idxImageB, "zncc", _zncc.getData(), width, height);
 		RefineDebug::ExportPairMap(nScale, iteration, idxImageA, idxImageB, "dzncc", _dzncc.getData(), width, height);
-		RefineDebug::ExportPairMap(nScale, iteration, idxImageA, idxImageB, "conf", conf.getData(), width, height);
+		RefineDebug::ExportPairMap(nScale, iteration, idxImageA, idxImageB, "conf", _conf.getData(), width, height);
 		RefineDebug::ExportPairMask(nScale, iteration, idxImageA, idxImageB, _mask.getData(), width, height);
 	}
 
@@ -822,63 +809,23 @@ void MeshRefineCUDA::ImageMeshWarp(
 		MakeCUDACamera(cameraA, size),
 		MakeCUDACamera(cameraB, views[idxImageB].size),
 		viewGPU[idxImageB].texObj,
-		viewGPU[idxImageA].surfObj,
 		surfImageProjObj);
 }
 
-// compute local variance for each image pixel
-void MeshRefineCUDA::ComputeLocalVariance(cudaSurfaceObject_t surfImage, const Image8U::Size& size,
-	SEACAVE::CUDA::MemDevice& imageMean, SEACAVE::CUDA::MemDevice& imageVar)
+// masked window statistics, rejection gates, ZNCC and its per-pixel derivative, in one kernel
+void MeshRefineCUDA::ComputeWindowStats(cudaSurfaceObject_t surfImageA, cudaSurfaceObject_t surfImageProj, const Image8U::Size& size, bool exportMaps)
 {
-	MVS::CUDA::LaunchComputeImageMean(
+	MVS::CUDA::LaunchComputeWindowStats(
 		(const uint8_t*)(CUdeviceptr)mask,
-		(float*)(CUdeviceptr)imageMean,
-		surfImage,
-		size.width, size.height, HalfSize);
-	MVS::CUDA::LaunchComputeImageVar(
-		(const float*)(CUdeviceptr)imageMean,
-		(const uint8_t*)(CUdeviceptr)mask,
-		(float*)(CUdeviceptr)imageVar,
-		surfImage,
-		size.width, size.height, HalfSize);
-	#if 0
-	// debug view
-	Image32F mean(size);
-	Image32F var(size);
-	imageMean.GetData(mean);
-	imageVar.GetData(var);
-	#endif
-}
-
-// compute local ZNCC and its gradient for each image pixel
-void MeshRefineCUDA::ComputeLocalZNCC(cudaSurfaceObject_t surfImageA, cudaSurfaceObject_t surfImageProj, const Image8U::Size& size)
-{
-	MVS::CUDA::LaunchComputeImageCov(
-		(const float*)(CUdeviceptr)imageMeanA,
-		(const float*)(CUdeviceptr)imageMeanAB,
-		(const uint8_t*)(CUdeviceptr)mask,
-		(float*)(CUdeviceptr)imageCov,
-		surfImageA, surfImageProj,
-		size.width, size.height, HalfSize);
-	MVS::CUDA::LaunchComputeImageZNCC(
-		(const float*)(CUdeviceptr)imageCov,
-		(const float*)(CUdeviceptr)imageVarA,
-		(const float*)(CUdeviceptr)imageVarAB,
-		(const uint8_t*)(CUdeviceptr)mask,
-		(float*)(CUdeviceptr)imageZNCC,
-		size.width, size.height, HalfSize);
-	MVS::CUDA::LaunchComputeImageDZNCC(
-		(const float*)(CUdeviceptr)imageMeanA,
-		(const float*)(CUdeviceptr)imageMeanAB,
-		(const float*)(CUdeviceptr)imageVarA,
-		(const float*)(CUdeviceptr)imageVarAB,
-		(const float*)(CUdeviceptr)imageZNCC,
-		(const uint8_t*)(CUdeviceptr)mask,
+		(uint8_t*)(CUdeviceptr)maskStats,
 		(float*)(CUdeviceptr)imageDZNCC,
+		exportMaps ? (float*)(CUdeviceptr)imageZNCC : NULL,
+		exportMaps ? (float*)(CUdeviceptr)imageConf : NULL,
 		surfImageA, surfImageProj,
 		(float*)(CUdeviceptr)sumR,
 		(float*)(CUdeviceptr)sumRZ,
-		size.width, size.height, HalfSize);
+		OPTREFINE::fGateMeanDiff, OPTREFINE::fGateVarRatio,
+		size.width, size.height);
 }
 
 // compute the photometric gradient for all vertices seen by an image pair
@@ -904,7 +851,7 @@ void MeshRefineCUDA::ComputePhotometricGradient(const Camera& cameraA, const Cam
 		(const uint32_t*)(CUdeviceptr)views[idxImageA].faceMap,
 		(const uint16_t*)(CUdeviceptr)views[idxImageA].baryMap,
 		(const float*)(CUdeviceptr)imageDZNCC,
-		(const uint8_t*)(CUdeviceptr)mask,
+		(const uint8_t*)(CUdeviceptr)maskStats,
 		(MVS::CUDA::Point3*)(CUdeviceptr)photoGrad,
 		(float*)(CUdeviceptr)photoGradPixels,
 		(float*)(CUdeviceptr)footprint,
