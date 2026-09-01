@@ -1506,26 +1506,44 @@ void PairsMatcher::FilterRedundantKeypoints()
 		const uint32_t numDescribedBefore = img.NumDescribedKeypoints();
 
 		// survivor[k] is the keypoint index old index k collapses onto, itself for a keypoint that
-		// is kept. Sort a segment by position -> response*size (the existing comparator) and group
-		// the runs it creates: consecutive keypoints within 0.1px (IsDuplicate) are one run, and its
-		// highest response*size member is every member's survivor -- the existing leader-based
-		// grouping, unchanged, just run once per segment instead of once over the whole array.
+		// is kept. Sort a segment by position and group the runs it creates: consecutive keypoints
+		// within 0.1px (IsDuplicate) are one run, and its highest response*size member is every
+		// member's survivor -- the leader-based grouping, run once per segment instead of once over
+		// the whole array.
 		std::vector<uint32_t> survivor(numKPs, NO_ID);
 		const auto DedupSegment = [&](uint32_t begin, uint32_t end) {
 			std::vector<uint32_t> order(end - begin);
 			std::iota(order.begin(), order.end(), begin);
+			// The comparator MUST remain a strict weak ordering: std::sort's precondition is that
+			// its "equivalent" relation is transitive, and violating it is undefined behaviour --
+			// libstdc++'s insertion sort can then run off the end of the range, not merely return an
+			// unspecified order. This is why the comparator is pure lexicographic position (and the
+			// index, so exactly coincident keypoints still order deterministically) with no
+			// duplicate-aware branch: "within 0.1px" is NOT transitive -- (0,0) ~ (0.08,0) and
+			// (0.08,0) ~ (0.16,0) while (0,0) !~ (0.16,0) -- so a comparator that switches to a
+			// response*size comparison for near-coincident pairs can report a < b, b < c and c < a
+			// on such a triple, and a dense warp draw makes near-coincident samples the rule. The
+			// response*size preference lives in the grouping pass below instead, where the rescan
+			// picks each run's best member outright; for any input on which the old duplicate-aware
+			// comparator was well defined (duplicate groups cleanly separated) the runs formed here
+			// and the survivors chosen from them are identical.
 			std::sort(order.begin(), order.end(), [&](uint32_t a, uint32_t b) {
 				const cv::KeyPoint& ka = img.keypoints[a];
 				const cv::KeyPoint& kb = img.keypoints[b];
-				if (!IsDuplicate(ka, kb)) return ka.pt.x < kb.pt.x || (ka.pt.x == kb.pt.x && ka.pt.y < kb.pt.y);
-				return ka.response*ka.size > kb.response*kb.size; // larger response*size first
+				if (ka.pt.x != kb.pt.x) return ka.pt.x < kb.pt.x;
+				if (ka.pt.y != kb.pt.y) return ka.pt.y < kb.pt.y;
+				return a < b;
 			});
 			for (size_t j = 0; j < order.size(); ) {
 				const size_t jFirst = j;
 				const uint32_t firstIdx = order[j];
 				const cv::KeyPoint& firstKP = img.keypoints[firstIdx];
-				// gather the duplicates: they appear immediately after because of the sort
+				// gather the duplicates: within 0.1px of the run's leader they are adjacent in
+				// position order, so the run is the maximal following stretch that IsDuplicate it
 				while (++j < order.size() && IsDuplicate(img.keypoints[order[j]], firstKP));
+				// and the run's most confident member is the survivor of all of it: this rescan is
+				// where the response*size preference lives, so the sort above does not have to
+				// encode it (and must not -- see the strict-weak-ordering note on the comparator)
 				uint32_t bestIdx = firstIdx;
 				for (size_t k = jFirst + 1; k < j; ++k) {
 					const uint32_t idx = order[k];

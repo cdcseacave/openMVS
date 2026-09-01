@@ -1789,6 +1789,81 @@ bool DenseKeypointBoundaryTest()
 		}
 	}
 
+	// The keypoint dedup comparator must be a strict weak ordering. "Within 0.1px" is NOT transitive,
+	// so a comparator that arbitrates near-coincident pairs by response*size instead of by position
+	// can report a < b, b < c and c < a -- undefined behaviour in std::sort, not merely an unspecified
+	// order. Each segment below is exactly that intransitive triple, at 0.08px spacing: a ~ b and
+	// b ~ c while a !~ c, and the MIDDLE point is the most confident, so the duplicate-aware
+	// comparator's cycle was b < a (duplicates, response), b < c (duplicates, response) and a < c
+	// (not duplicates, position) -- an order that sorts the triple b, a, c and lets the leader-based
+	// grouping swallow all three into one run, collapsing a keypoint pair that is 0.16px apart. Pure
+	// position order has no cycle: the run is the leader plus what is within 0.1px OF THE LEADER, so
+	// the triple splits into {a,b} keeping b, and {c}. Repeated to check the outcome is the same on
+	// every run of the same input, which an order-dependent comparator cannot promise.
+	{
+		for (unsigned rep = 0; rep < 4; ++rep) {
+			Scene triScene;
+			Image& triImg = triScene.images.emplace_back(0u, String("tri.jpg"));
+			// described triple at y = 10, dense triple at y = 100, both with the middle one strongest
+			triImg.keypoints.emplace_back(0.00f, 10.f, 4.f, -1.f, 0.01f);
+			triImg.keypoints.emplace_back(0.08f, 10.f, 4.f, -1.f, 0.03f);
+			triImg.keypoints.emplace_back(0.16f, 10.f, 4.f, -1.f, 0.02f);
+			triImg.CloseDescribedKeypoints();
+			triImg.keypoints.push_back(Image::MakeDenseKeypoint(Point2f(0.00f, 100.f), 0.5f, 6.f));
+			triImg.keypoints.push_back(Image::MakeDenseKeypoint(Point2f(0.08f, 100.f), 0.9f, 6.f));
+			triImg.keypoints.push_back(Image::MakeDenseKeypoint(Point2f(0.16f, 100.f), 0.7f, 6.f));
+			// the far image's keypoints are all distinct and carry identical response/size, so a
+			// duplicate-match group is an exact weight tie and the stable order keeps the earlier one
+			Image& triOther = triScene.images.emplace_back(1u, String("tri2.jpg"));
+			for (unsigned k = 0; k < 6; ++k)
+				triOther.keypoints.emplace_back(1000.f + 10.f * (float)k, 1000.f, 4.f, -1.f, 0.05f);
+			triOther.CloseDescribedKeypoints();
+			ImagePair& triPair = triScene.pairs.emplace_back(0u, 1u);
+			for (uint32_t k = 0; k < 6; ++k)
+				triPair.matches.emplace_back(k, k);
+			triPair.numFilteredInliers = 3;
+			triPair.numDenseInliers = 3;
+			MatchConfig triCfg;
+			triCfg.minMatches = 1;
+			PairsMatcher(triScene, triCfg).FilterRedundantKeypoints();
+			// two survivors per segment: the run's most confident member and the point 0.16px out,
+			// which is a duplicate of neither survivor. Under the intransitive comparator the whole
+			// triple sorted into a single run and only one survivor per segment came out.
+			if (triImg.keypoints.size() != 4 || triImg.NumDescribedKeypoints() != 2 || triImg.NumDenseKeypoints() != 2) {
+				VERBOSE("DenseKeypointBoundaryTest FAILED: intransitive triple (rep %u) left %u keypoints with boundary %u, expected 4 and 2",
+					rep, (unsigned)triImg.keypoints.size(), triImg.NumDescribedKeypoints());
+				return false;
+			}
+			const float expectedX[4] = {0.08f, 0.16f, 0.08f, 0.16f};
+			const float expectedY[4] = {10.f, 10.f, 100.f, 100.f};
+			const float expectedResponse[4] = {0.03f, 0.02f, 0.9f, 0.7f};
+			for (unsigned f = 0; f < 4; ++f) {
+				if (ABS(triImg.keypoints[f].pt.x - expectedX[f]) > 1e-5f ||
+					triImg.keypoints[f].pt.y != expectedY[f] ||
+					ABS(triImg.keypoints[f].response - expectedResponse[f]) > 1e-5f) {
+					VERBOSE("DenseKeypointBoundaryTest FAILED: intransitive triple (rep %u) keypoint %u is (%g, %g) response %g",
+						rep, f, triImg.keypoints[f].pt.x, triImg.keypoints[f].pt.y, triImg.keypoints[f].response);
+					return false;
+				}
+			}
+			// the partition follows the runs: in each segment the two matches that remapped onto the
+			// run's survivor collapse to the earlier one, so both counts drop by exactly one
+			if (triPair.matches.size() != 4 || triPair.numFilteredInliers != 2 || triPair.numDenseInliers != 2) {
+				VERBOSE("DenseKeypointBoundaryTest FAILED: intransitive triple (rep %u) partition is %u matches, %d sparse, %d dense",
+					rep, (unsigned)triPair.matches.size(), triPair.numFilteredInliers, triPair.numDenseInliers);
+				return false;
+			}
+			const uint32_t expectedTrain[4] = {0, 2, 3, 5};
+			for (uint32_t m = 0; m < 4; ++m) {
+				if (triPair.matches[m].queryIdx != m || triPair.matches[m].trainIdx != expectedTrain[m]) {
+					VERBOSE("DenseKeypointBoundaryTest FAILED: intransitive triple (rep %u) match %u is (%u, %u), expected (%u, %u)",
+						rep, m, triPair.matches[m].queryIdx, triPair.matches[m].trainIdx, m, expectedTrain[m]);
+					return false;
+				}
+			}
+		}
+	}
+
 	VERBOSE("DenseKeypointBoundaryTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
 	return true;
 }
