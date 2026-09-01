@@ -313,6 +313,82 @@ one ≥200), so running it would have cost ~68 min of GPU and answered nothing.
 
 ---
 
+## Dense Supplementation (`--roma2-supplement`, off by default)
+
+A pair the gate validated and the guided pass then verified, but which still ends up with few
+correspondences, contributes almost nothing to the reconstruction and often drops out of it. Dense
+supplementation adds ROMAv2 dense correspondences **alongside** that pair's sparse matches, so a
+weakly-textured pair contributes structure instead.
+
+It runs inside `MatchPairsROMA2`, on the warp that pass already has, and needs both
+`--roma2-validate` and `--roma2-match`: the gate is what makes "validated" mean anything, and the
+guided pass is where the warp is, so there is no third warp pass. The trigger is read off the
+geometry the gate handed the guided pass — non-NULL exactly for a pair the gate judged and kept — so
+with the gate off nothing is supplemented by construction rather than by a second check that could
+disagree with the first. A pair is supplemented when it carries fewer than
+`--roma2-supplement-max-inliers` (default 500) verified correspondences **or** its confidently
+overlapping fraction of the warp is below `--roma2-supplement-min-overlap` (default 0.3); either is
+enough, because they catch different failures.
+
+The sample is the same coverage-maximising draw the gate uses (`SampleWarpByCoverage`,
+`--roma2-dense-sample`), capped at `--roma2-supplement-max-per-pair` (default 2000) by keeping the
+most confident points — `SampleWarpByCoverage` treats its budget as a *target* whose occupied-bucket
+count can run several times over it, so the cap is what makes the appended set bounded. It is
+deliberately **not** filtered again against the pair's fitted geometry: the gate already fit one
+geometry to a sample of this same warp and required its inlier subset to cover both images, so a
+second pass over the same evidence would confirm rather than test it. What bounds a wrong supplement
+is the gate upstream, `ROMA2Config::minConfidence` on the warp, `FilterTracks`' reprojection bar, and the
+bundle-adjustment down-weighting below.
+
+**Keypoints beyond descriptors.** `AppendDenseMatches` (`ROMA2Warp.cpp`) puts each dense point at the
+end of `Image::keypoints`, past the described prefix, with no new keypoint structure:
+`keypoints.size() >= Image::NumDescribedKeypoints() == descriptors.rows`, and
+`Image::IsDenseKeypoint(idx)` is the whole test. The boundary is a **stored, serialized count**, not
+`descriptors.rows`, because the descriptors are released before `FilterRedundantKeypoints` runs — it
+cannot remap descriptor rows, which is why it only runs there — and long before bundle adjustment, so
+a derived boundary would report every keypoint as dense in exactly the two places that need it. The
+matches join the pair's *filtered-inlier prefix* rather than the end of `matches`, since `BuildTracks`
+reads only that prefix. The append is serial, in the pass's `(ID1,ID2)` order, because the keypoint
+indices it hands out depend on what the two images already carry.
+
+**Cross-pair identity is exact-position reuse, not proximity fusion.** There is no fusion radius:
+the warp is sampled from a low-resolution disparity field, so averaging two nearby samples compounds
+their error. What is reused is the identity `FilterRedundantKeypoints` already computes — two points
+at the same position within its 0.1 px tolerance are one point, and it *keeps a survivor* rather than
+averaging, so it adds no positional error. Because the draw comes from a deterministic stratified
+grid, two pairs sharing an image often sample the same cell, which is how a dense-only track reaches
+more than two views. Duplicate resolution is **described-wins**, stated explicitly against the stored
+count: a dense point coinciding with a described keypoint collapses onto the described one, which
+carries the descriptor and the sub-pixel position; between two dense points the higher warp
+confidence wins. The survivors of an image carrying dense keypoints keep their original relative
+order so the described prefix stays a prefix, and the stored count moves through the same remap.
+`BuildTracks` reports the dense track-length histogram: a histogram sitting entirely at 2 means the
+reuse never fired, which is itself a finding — and is the expected output under
+`--release-descriptors false`, where the keypoint filter does not run at all.
+
+**Dense observations are down-weighted in bundle adjustment** by `--ba-dense-weight`: a dense
+keypoint's position was sampled from a low-resolution warp, a described one's is sub-pixel at full
+resolution, and the two are not equally precise measurements. The weight follows the *keypoint*, not
+the match that created it — after described-wins dedup an observation created by a dense match can
+reference a described keypoint, and it then takes full weight. It models measurement precision only;
+a wrong correspondence is the robust loss's and `FilterTracks`' job. **The 0.25 default is
+provisional and was not measured**: it is `k = 2` in the `1/k^2` a ratio of robust sigmas implies,
+picked at the mild end so that a wrong provisional value errs toward the pre-existing behaviour
+rather than toward discarding the dense signal. The value that belongs there is the robust sigma of
+dense versus described reprojection residuals on a ground-truth capture.
+
+**Scale.** A supplemented pair costs up to `--roma2-supplement-max-per-pair` keypoints in *each* of
+its two images, plus about one track per correspondence. `sizeof(cv::KeyPoint)` is 28 bytes, but the
+keypoints are the small part: `BuildTracks` builds a union-find slot, a per-root image map, a
+`std::map` node and a `Track` over every one of them, which analytically works out around 0.25 KB per
+appended keypoint at peak. At the documented 500-image / 30-pairs-per-image scene with a fifth of
+pairs supplemented, an uncapped draw is ~10 M appended keypoints — ~0.3 GB of `cv::KeyPoint` and on
+the order of 2.5–3 GB once the track bookkeeping is counted. Start a wide arm at
+`--roma2-supplement-max-per-pair 500` and raise it once the contamination-by-track-length numbers
+are in.
+
+---
+
 ## Per-Round Replace Policy
 
 Design decision 6 (polycpp `ShouldReplaceROMA2Pair`, `pose_refine.cpp:506-509`,
@@ -467,7 +543,17 @@ Source: `~/virginia/models/roma2-onnx/roma2onnx-20260829-facets1520/export.log`.
 - **`ROMA2WarpTrackingTest`** (`apps/Tests/TestsSFM.cpp`) — always runs, no model needed: keypoint
   tracking through a synthetic identity warp (the pixel↔grid↔normalised coordinate conventions of
   `ROMA2Warp.h/cpp`), the confidence gate and the border erosion of the confidence map, and
-  `ApplyROMA2Pair`'s store/replace-by-inlier-count policy (including the `maxReplaceInliers` ceiling).
+  `ApplyROMA2Pair`'s store/replace-by-inlier-count policy (including the `maxReplaceInliers` ceiling),
+  and `AppendDenseMatches` — the appended keypoints landing past each image's described prefix with
+  the warp-cell size and confidence convention, the appended matches landing *inside* the pair's
+  filtered-inlier prefix (the only part `BuildTracks` reads), and a second append on the same images
+  leaving the boundary where the first one put it.
+- **`DenseKeypointBoundaryTest`** (`apps/Tests/TestsSFM.cpp`) — always runs, no model needed: the
+  stored described-keypoint count surviving a descriptor release and an `.sfm` round-trip of an image
+  whose `keypoints.size() > descriptors.rows`, `SelectTopKeypoints` staying inside the prefix, and
+  `PairsMatcher::FilterRedundantKeypoints` moving the boundary through the same remap it applies to
+  the indices — a removal *inside* the prefix shrinks it, described-wins keeps a described keypoint
+  from losing to a coincident dense one, and the more confident of two coincident dense ones survives.
 - **`GlobalDescriptorsQueryTest`** — always runs, no model needed: the cosine ranking over
   `Image::globalDescriptor` and its deterministic tie order, the `PairsMatcher::QueryRetrieval`
   dispatch that ranks candidate pairs through the descriptors instead of the vocabulary tree, the
@@ -495,7 +581,7 @@ The three model-driven tests are coupled to the same production environment vari
 (`OPENMVS_ROMA2_MODEL_PATH`) used by `CreateStructure --roma2-model`'s default — there is no separate
 test-only model variable. In an OFF build (`-DOpenMVS_USE_ONNXRUNTIME=OFF`), all three report
 "skipped (built without ONNX Runtime)"/"no ONNX Runtime support in this build" and pass trivially,
-while the two always-on tests keep running (they exercise host-side code only).
+while the always-on tests keep running (they exercise host-side code only).
 `RoMa2OnnxParityTest` additionally skips — loudly, with "no reference dumps under '<dir>', parity not
 checked" — when the model directory ships graphs but no `.reference/` dumps, since there is then
 nothing to compare; naming a preset through `OPENMVS_ROMA2_SETTING` still fails hard in that case,
@@ -505,12 +591,14 @@ because the user then asked for a comparison that cannot be made.
 
 ## Compatibility (`.sfm` scene files)
 
-Storing the per-image global descriptor changed the SFM project stream layout, so
-`SFM_PROJECT_VERSION` (`libs/SFM/Scene.cpp`) went **0 → 1**. The loader accepts that exact version
-only, and refuses anything else outright:
+`SFM_PROJECT_VERSION` (`libs/SFM/Scene.cpp`) is at **2**. It went 0 → 1 for the per-image global
+descriptor and 1 → 2 for `Image`'s described-keypoint count, which had to be stored rather than
+derived (see Dense Supplementation) — a derived value is exactly the silent misclassification the
+stored count exists to prevent, so there is no "if version < 2 then derive it" branch. The loader
+accepts the current version only, and refuses anything else outright:
 
 ```
-error: unsupported SFM project version 0 (this build reads only version 1) in '<file>'
+error: unsupported SFM project version 1 (this build reads only version 2) in '<file>'
 ```
 
 There is no converter and none is planned: `.sfm` files written by an earlier build must be
