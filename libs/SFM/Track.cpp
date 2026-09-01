@@ -93,7 +93,11 @@ void SFM::BuildTracks(Scene& scene, float minPairWeight)
 		// match at all and dense supplementation would silently do nothing.
 		const uint32_t offset1 = featureOffsets[pair.ID1];
 		const uint32_t offset2 = featureOffsets[pair.ID2];
-		FOREACHRAW(i, pair.GetNumTrackFormingMatches()) {
+		// clamped by the array itself: the loop dereferences matches[i] and only inspects the
+		// DMatch on the next line, so a count that outran `matches` would be read out of bounds
+		// before either assertion below could look at it (ImagePair's accessors assert the
+		// arithmetic in Debug; this keeps release builds in range too)
+		FOREACHRAW(i, MINF(pair.GetNumTrackFormingMatches(), (unsigned)pair.matches.size())) {
 			const DMatch& m = pair.matches[i];
 			ASSERT(m.queryIdx < scene.images[pair.ID1].keypoints.size());
 			ASSERT(m.trainIdx < scene.images[pair.ID2].keypoints.size());
@@ -200,8 +204,9 @@ void SFM::BuildTracks(Scene& scene, float minPairWeight)
 		}
 		const Image& img1 = scene.images[pair.ID1];
 		const Image& img2 = scene.images[pair.ID2];
-		// exactly the matches step 2 above dereferences, so the bound must be the same one
-		FOREACHRAW(i, pair.GetNumTrackFormingMatches()) {
+		// exactly the matches step 2 above dereferences, so the bound must be the same one --
+		// clamped by the array for the same reason it is there
+		FOREACHRAW(i, MINF(pair.GetNumTrackFormingMatches(), (unsigned)pair.matches.size())) {
 			const DMatch& m = pair.matches[i];
 			if (static_cast<uint32_t>(m.queryIdx) >= img1.keypoints.size() ||
 				static_cast<uint32_t>(m.trainIdx) >= img2.keypoints.size()) {

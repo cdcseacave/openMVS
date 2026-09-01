@@ -173,11 +173,32 @@ public:
 		return numFilteredInliers >= 0 ? (unsigned)numFilteredInliers : GetNumInliers();
 	}
 	// Number of dense (ROMAv2 warp) supplement matches, the second segment of `matches`
-	unsigned GetNumDenseInliers() const { return (unsigned)numDenseInliers; }
+	unsigned GetNumDenseInliers() const {
+		// The partition must describe ranges of `matches` that exist. Asserted at the READER rather
+		// than only at the writers that maintain it, because the four union consumers (BuildTracks
+		// steps 2 and 4, both GlobalAlignment union-finds) evaluate `matches[i]` for
+		// i < GetNumTrackFormingMatches() and only look at the DMatch's contents on the next line:
+		// an over-long dense count is an out-of-bounds read that happens before any of their own
+		// bounds tests can see it. There are eight writers of the two counts today, and this catches
+		// a ninth that grows one or shrinks `matches` without pairing the two.
+		ASSERT(numDenseInliers >= 0 && (numFilteredInliers < 0 ? numDenseInliers == 0 :
+			(size_t)numFilteredInliers + (size_t)numDenseInliers <= matches.size()));
+		return (unsigned)numDenseInliers;
+	}
 	// The TRACK-FORMING set: the sparse inliers plus the dense supplement, i.e. the leading
 	// `matches` prefix BuildTracks unions. Everything past it are matches the strict filter
-	// deliberately rejected and must never form a track.
+	// deliberately rejected and must never form a track. Inherits both accessors' assertions.
 	unsigned GetNumTrackFormingMatches() const { return GetNumFilteredInliers() + GetNumDenseInliers(); }
+
+	// Debug-only invariant check on the `matches` partition: no match in the sparse segment
+	// [0, GetNumFilteredInliers()) may have a dense (ROMAv2 warp) endpoint, since a descriptor match
+	// is described at both ends on every path that produces one and the keypoint filter's
+	// described-wins rule never moves a described keypoint onto a dense one. Compiled out of release
+	// builds. Deliberately ONE-DIRECTIONAL: the converse is false by design, because
+	// FilterRedundantKeypoints' step 3 maintains the dense segment by position and leaves a
+	// supplement match whose *both* endpoints collapsed onto described survivors inside it, while
+	// FilterMatches classifies that same shape as sparse.
+	void CheckSparseSegmentIsDescribed(const Image& img1, const Image& img2) const;
 
 	// Compute composite weight from components:
 	// W = numInliers * cbrt(weightSpatial * weightConnectivity * (0.5 + weightTriplet))

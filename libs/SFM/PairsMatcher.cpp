@@ -1744,25 +1744,48 @@ void PairsMatcher::FilterRedundantKeypoints()
 					while (++j < order.size() && getIndex(data[order[j]]) == firstIndex);
 					if (j - start == 1)
 						continue;
-					// Multiple matches with same index - keep the one with the fewest dense
-					// endpoints, then the best combined weight. Described-wins again, and again
-					// stated explicitly rather than arranged through response*size: a described
-					// correspondence measured at sub-pixel accuracy must not lose the keypoint
-					// it shares to a warp sample. With no dense keypoints in the scene every
-					// count below is 0 and this is the plain weight comparison it has always been.
+					// Multiple matches with same index - keep the one that is track-forming first,
+					// then the one with the fewest dense endpoints, then the best combined weight.
+					//
+					// TRACK-FORMING FIRST, because the segment a candidate sits in outranks what
+					// kind of keypoints it joins: a match past the track-forming bound is a RANSAC
+					// inlier the strict cheirality/angle/reprojection filter deliberately rejected,
+					// so keeping it costs a track-forming observation and gains nothing -- the
+					// survivor would sit in the reject segment and never be unioned. Reachable on
+					// any supplemented pair with both rejects and a cross-pruned dense endpoint,
+					// i.e. the normal case once cross-pair dense reuse fires: a reject described at
+					// both ends (0 dense endpoints) would otherwise outrank a supplement match whose
+					// query endpoint collapsed onto a described survivor (1 dense endpoint).
+					// Then DESCRIBED-WINS among track-forming candidates, stated explicitly rather
+					// than arranged through response*size: a described correspondence measured at
+					// sub-pixel accuracy must not lose the keypoint it shares to a warp sample.
+					// With no dense keypoints in the scene every count below is 0 and, since a
+					// partition-less vector has no bounds either, this is the plain weight
+					// comparison it has always been.
 					const auto NumDenseEnds = [&](const DMatch& m) {
 						return (unsigned)img1.IsDenseKeypoint(m.queryIdx) + (unsigned)img2.IsDenseKeypoint(m.trainIdx);
 					};
+					// `bounds` are positions in `data` as it stands now (the compaction that
+					// rewrites them runs after this loop), and `order` holds those positions, so
+					// this is exact rather than an estimate
+					const auto IsReject = [&bounds](size_t pos) {
+						return !bounds.empty() && pos >= bounds.back() ? 1u : 0u;
+					};
 					size_t bestPos = start;
+					unsigned bestReject = IsReject(order[start]);
 					unsigned bestDense = NumDenseEnds(first);
 					float bestWeight = Image::ComputeKeypointWeight(img1.keypoints[first.queryIdx]) *
 					                   Image::ComputeKeypointWeight(img2.keypoints[first.trainIdx]);
 					for (size_t m = start + 1; m < j; ++m) {
 						const DMatch& candidate = data[order[m]];
+						const unsigned reject = IsReject(order[m]);
 						const unsigned numDense = NumDenseEnds(candidate);
 						const float weight = Image::ComputeKeypointWeight(img1.keypoints[candidate.queryIdx]) *
 						                     Image::ComputeKeypointWeight(img2.keypoints[candidate.trainIdx]);
-						if (numDense < bestDense || (numDense == bestDense && weight > bestWeight)) {
+						if (reject < bestReject ||
+							(reject == bestReject && (numDense < bestDense ||
+							 (numDense == bestDense && weight > bestWeight)))) {
+							bestReject = reject;
 							bestDense = numDense;
 							bestWeight = weight;
 							bestPos = m;
@@ -1822,6 +1845,10 @@ void PairsMatcher::FilterRedundantKeypoints()
 			pair.numFilteredInliers = (int)bounds[0];
 			pair.numDenseInliers = (int)(bounds[1] - bounds[0]);
 		}
+		// this is the second of the two sites that maintain the partition (FilterMatches is the
+		// other), and the one the F1/F2 failure modes went through: a dense match drifting into the
+		// sparse count. Debug-only, one-directional -- see the declaration.
+		pair.CheckSparseSegmentIsDescribed(img1, img2);
 	});
 	scene.threadPool.wait();
 

@@ -1575,10 +1575,14 @@ bool DenseKeypointBoundaryTest()
 		im.keypoints.push_back(Image::MakeDenseKeypoint(Point2f(15.f, 15.f), 0.7f, 6.f));
 	}
 	ImagePair& filterPair = filterScene.pairs.emplace_back(0u, 1u);
-	// one match per keypoint index, so the remap of every keypoint is observable through it
+	// one match per keypoint index, so the remap of every keypoint is observable through it, and the
+	// partition is the one AppendDenseMatches leaves behind: the five described matches are the
+	// sparse segment, the five dense ones the supplement (a dense match inside the sparse count is
+	// the drift ImagePair::CheckSparseSegmentIsDescribed asserts against)
 	for (uint32_t k = 0; k < 10; ++k)
 		filterPair.matches.emplace_back(k, k);
-	filterPair.numFilteredInliers = 10;
+	filterPair.numFilteredInliers = 5;
+	filterPair.numDenseInliers = 5;
 	MatchConfig filterCfg;
 	filterCfg.minMatches = 1;
 	PairsMatcher(filterScene, filterCfg).FilterRedundantKeypoints();
@@ -1861,6 +1865,49 @@ bool DenseKeypointBoundaryTest()
 					return false;
 				}
 			}
+		}
+	}
+
+	// The duplicate-match filter's winner selection must know which segment a candidate sits in.
+	// Described-wins is right when the rival forms tracks; when the rival is a match the strict
+	// cheirality/angle/reprojection filter deliberately REJECTED, keeping it costs a track-forming
+	// observation and gains nothing, because the survivor then sits past the track-forming boundary
+	// and is never unioned. Here a dense supplement match whose query endpoint was cross-pruned onto
+	// a described survivor (1 dense endpoint) shares its remapped queryIdx with a reject described at
+	// both ends (0 dense endpoints), which on (NumDenseEnds, weight) alone would win.
+	{
+		Scene segScene;
+		Image& sA = segScene.images.emplace_back(0u, String("segA.jpg"));
+		sA.keypoints.emplace_back(10.f, 10.f, 4.f, -1.f, 0.05f); // described: the reject's endpoint
+		sA.keypoints.emplace_back(50.f, 50.f, 4.f, -1.f, 0.05f); // described: the sparse inlier's
+		sA.CloseDescribedKeypoints();
+		// dense, coincident with described 0, so the cross-segment prune reuses that keypoint and
+		// the supplement match below ends up sharing queryIdx with the reject
+		sA.keypoints.push_back(Image::MakeDenseKeypoint(Point2f(10.f, 10.f), 0.9f, 6.f));
+		Image& sB = segScene.images.emplace_back(1u, String("segB.jpg"));
+		sB.keypoints.emplace_back(100.f, 100.f, 4.f, -1.f, 0.05f); // the sparse inlier's endpoint
+		sB.keypoints.emplace_back(110.f, 110.f, 4.f, -1.f, 0.05f); // the reject's endpoint
+		sB.CloseDescribedKeypoints();
+		sB.keypoints.push_back(Image::MakeDenseKeypoint(Point2f(200.f, 200.f), 0.9f, 6.f));
+		ImagePair& segPair = segScene.pairs.emplace_back(0u, 1u);
+		segPair.matches.emplace_back(1, 0); // sparse inlier
+		segPair.matches.emplace_back(2, 2); // dense supplement, query endpoint about to be pruned
+		segPair.matches.emplace_back(0, 1); // strict-filter reject
+		segPair.numFilteredInliers = 1;
+		segPair.numDenseInliers = 1;
+		MatchConfig segCfg;
+		segCfg.minMatches = 1;
+		PairsMatcher(segScene, segCfg).FilterRedundantKeypoints();
+		// the supplement match survives the group and stays track-forming; the reject is the one
+		// dropped, since it could never have formed a track
+		if (segPair.matches.size() != 2 || segPair.numFilteredInliers != 1 || segPair.numDenseInliers != 1 ||
+			segPair.matches[1].queryIdx != 0 || segPair.matches[1].trainIdx != 2) {
+			VERBOSE("DenseKeypointBoundaryTest FAILED: the duplicate-match filter kept the strict-filter reject over "
+				"the dense supplement (%u matches, %d sparse, %d dense, second match (%u, %u))",
+				(unsigned)segPair.matches.size(), segPair.numFilteredInliers, segPair.numDenseInliers,
+				segPair.matches.size() > 1 ? segPair.matches[1].queryIdx : 0u,
+				segPair.matches.size() > 1 ? segPair.matches[1].trainIdx : 0u);
+			return false;
 		}
 	}
 

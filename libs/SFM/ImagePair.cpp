@@ -208,6 +208,22 @@ std::pair<std::vector<Point2f>, std::vector<Point2f>> ImagePair::GetMatchedPoint
 	return std::make_pair(pts1, pts2);
 }
 
+void ImagePair::CheckSparseSegmentIsDescribed(const Image& img1, const Image& img2) const
+{
+	#ifndef _RELEASE
+	if (numFilteredInliers < 0) {
+		ASSERT(numDenseInliers == 0); // no partition claimed, so no segment to check
+		return;
+	}
+	ASSERT((size_t)numFilteredInliers + (size_t)numDenseInliers <= matches.size());
+	for (int i = 0; i < numFilteredInliers; ++i) {
+		const DMatch& m = matches[i];
+		ASSERT(!img1.IsDenseKeypoint(m.queryIdx) && !img2.IsDenseKeypoint(m.trainIdx),
+			"a dense supplement match drifted into the pair's descriptor evidence");
+	}
+	#endif
+}
+
 unsigned ImagePair::FilterMatches(const Image& img1, const Image& img2, float minAngle, float reprojThreshold, float epipoleThresh)
 {
 	if (!relativePose.has_value() || matches.empty())
@@ -341,6 +357,7 @@ unsigned ImagePair::FilterMatches(const Image& img1, const Image& img2, float mi
 		numDenseInliers = (int)(matches.begin() + numFilteredInliers - denseBegin);
 		numFilteredInliers -= numDenseInliers;
 	}
+	CheckSparseSegmentIsDescribed(img1, img2);
 	// the sparse count, i.e. exactly what GetNumFilteredInliers() will report: every caller compares
 	// this against config.minMatches, which is a descriptor-evidence bar and must stay one
 	return (unsigned)numFilteredInliers;
