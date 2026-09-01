@@ -37,7 +37,7 @@ using namespace SFM;
 #endif
 
 #define SFM_PROJECT_ID "SFM\0" // identifies the SFM project stream
-#define SFM_PROJECT_VERSION 3  // SFM project stream layout version (bump on any breaking header/serialization change)
+#define SFM_PROJECT_VERSION 1  // SFM project stream layout version (bump on any breaking header/serialization change)
 
 
 // S T R U C T S ///////////////////////////////////////////////////
