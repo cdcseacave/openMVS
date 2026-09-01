@@ -458,8 +458,14 @@ unsigned ImagePair::CheckEpipolarInliers(const Image& img1, const Image& img2, f
 	if (matches.empty())
 		return 0;
 
-	// Extract matched points from keypoints; allInliers because every branch below checks all of
-	// `matches` against its geometry and fills a mask.size() == matches.size() mask
+	// Extract matched points from keypoints; allInliers because the contract of this method is all of
+	// `matches`: it returns a count and fills an inlierMask sized matches.size(). The helpers below
+	// iterate FOREACH(i, pts1) and write only mask[i] within that range, so the previous default
+	// prefix was never an out-of-bounds read -- it SILENTLY TRUNCATED the check to the sparse
+	// segment on any partitioned pair, leaving the dense supplement and the strict filter's rejects
+	// marked outlier in the mask without ever having been tested against the geometry. So the
+	// returned count and the mask now cover all three segments; every caller compares the result
+	// against GetNumInliers(), i.e. already asks for the untruncated answer.
 	auto [pts1, pts2] = GetMatchedPoints(img1, img2, true);
 
 	// Prepare output mask

@@ -409,6 +409,22 @@ of the partition, so an unreferenced one becomes a singleton union-find root tha
 code — the alternative is reference-counting keypoints per pair, for memory a bounded draw already
 caps.
 
+**A re-verification holds a supplemented pair to the descriptor bar alone, so a focal update can drop
+it whole.** `FilterMatches` returns the sparse count and its three callers invalidate the pair below
+`minMatches`, which is right — that bar is a descriptor-evidence bar — but it means a pair that ended
+matching with 55 sparse and 900 dense matches and comes out of a `ViewGraphCalibrator` focal update
+with 48 sparse loses all 948, orphaning its dense keypoints in both images by the mechanism above at
+900× the scale. Before supplementation the same call returned ~948 and the pair survived.
+
+**A re-verification can also *raise* a supplemented pair's descriptor evidence.** The two sites that
+maintain the partition classify a fully-collapsed supplement match — one whose *both* endpoints were
+cross-pruned onto coincident described survivors — differently, by design: `FilterRedundantKeypoints`'
+step 3 maintains the dense segment by **position** and leaves it there, while `FilterMatches`
+re-derives the segment by **predicate** and calls it sparse, on the grounds that it now measures a
+sub-pixel described position at both ends. So a pair reported at 55 sparse / 897 dense can come out of
+a focal update at 58 / 894. This is also why `ImagePair::CheckSparseSegmentIsDescribed` asserts only
+that no match in the sparse segment has a dense endpoint, and not the converse.
+
 **Cross-pair identity is exact-position reuse, not proximity fusion.** There is no fusion radius:
 the warp is sampled from a low-resolution disparity field, so averaging two nearby samples compounds
 their error. What is reused is the identity `FilterRedundantKeypoints` already computes — two points

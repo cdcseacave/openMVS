@@ -89,7 +89,9 @@ public:
 	// Overlap metrics
 	float overlapRatio;       // ratio of tracked/matched features
 	float overlapArea;        // overlap area computed from homography (0-1)
-	float meanRayAngle;       // median angle between viewing rays of inlier matches in radians (pseudo-baseline)
+	float meanRayAngle;       // median angle between viewing rays of the SPARSE inlier matches in radians
+	                          // (pseudo-baseline); the dense supplement is excluded because this feeds
+	                          // ComputeIntrinsicWeight, i.e. it is part of the pair's authority
 
 	// Composite weighting scores
 	float weightSpatial;      // Intrinsic: geometric spread/conditioning (0-1)
@@ -243,6 +245,10 @@ public:
 	// Rebuilds the whole partition and returns the SPARSE count, i.e. what GetNumFilteredInliers()
 	// reports afterwards -- callers compare it against a minimum-matches bar, which is a
 	// descriptor-evidence bar. The surviving dense supplement is re-derived into its own segment.
+	// (Or matches.size(), unchanged, on the early return when there is no relative pose to filter
+	// against; such a pair carries no dense segment either.)
+	// meanRayAngle is updated from the SPARSE matches only, for the same reason the count is sparse:
+	// it feeds ComputeIntrinsicWeight through ComputeAngleBaselineWeight.
 	unsigned FilterMatches(
 		const Image& img1,
 		const Image& img2,
@@ -253,6 +259,9 @@ public:
 	// Check inliers based on epipolar constraint; returns number of inliers
 	//  - threshold: inlier distance threshold in pixels (for fundamental/essential) or symmetric transfer error (for homography)
 	//  - forceEpipolarType: -1=auto, 0=relativePose, 1=E, 2=F, 3=H
+	// The count and inlierMask cover ALL of `matches` -- the dense supplement and the strict filter's
+	// rejects included -- which is what the mask's matches.size() length always promised; on a
+	// partitioned pair this used to be truncated to the sparse segment.
 	unsigned CheckEpipolarInliers(const Image& img1, const Image& img2, float threshold = 3.f, int forceEpipolarType = -1,
 		cv::InputOutputArray inlierMask = cv::noArray()) const;
 
