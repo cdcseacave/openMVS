@@ -207,9 +207,13 @@ bool SFM::ImportCOLMAP(const String& fileName, Scene& scene,
 			img.pCamera = scene.cameras[cam_idx];
 		}
 
-		// Store keypoints (overwrite existing if necessary)
-		if (num_features > 0)
+		// Store keypoints (overwrite existing if necessary), dropping the descriptors and the
+		// described-keypoint boundary with them: both describe the array being replaced, and a
+		// boundary outliving its keypoints is a count larger than the array it indexes
+		if (num_features > 0) {
+			img.ReleaseFeatures();
 			img.keypoints = std::move(keypoints);
+		}
 
 		// Store pose if available
 		if (importPoses && has_pose) {
