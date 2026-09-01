@@ -68,9 +68,10 @@ SFM_API Point2f DenormCoord(const Point2f& normCoord, const cv::Size& size);
 // Erode confidence map if requested (helps remove outliers near edges)
 SFM_API void ErodeConfidenceMap(Image32F& imgConfidence, int erodeBorder, float minConfidence, float minErodeConfidence);
 
-// Track the keypoints of imgA into imgB through the given warp and overlap maps;
-// trackedA/trackedB/trackStatus are resized to the number of keypoints of imgA and
-// trackedB is only written where trackStatus is 1.
+// Track the DESCRIBED keypoints of imgA into imgB through the given warp and overlap maps;
+// trackedA/trackedB/trackStatus are resized to imgA.NumDescribedKeypoints() -- the dense keypoints
+// an earlier supplemented pair appended carry no descriptor, so there is nothing for a guided
+// descriptor re-match to do with them -- and trackedB is only written where trackStatus is 1.
 // Returns the number of tracked keypoints.
 SFM_API size_t TrackKeypointsByWarp(
 	const Image& imgA,

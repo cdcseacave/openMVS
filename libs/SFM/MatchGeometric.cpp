@@ -29,10 +29,14 @@ bool SFM::MatchFeaturesGeometric(
 	bool crossCheck,
 	unsigned* numSharedTrain)
 {
-	// Sanity check: keypoints1 correspond to trackedPoints1 by index
-	// and the caller owns one of pairsMatcher's per-thread descriptor matchers
+	// Sanity check: the described keypoints of img1 correspond to trackedPoints1 by index
+	// (TrackKeypointsByWarp walks that same prefix, and only those keypoints have a descriptor
+	// row for the ratio test below to compare) and the caller owns one of pairsMatcher's
+	// per-thread descriptor matchers
 	ASSERT(threadIdx < pairsMatcher.GetNumMatchers());
-	ASSERT(img1.keypoints.size() == trackedPoints1.size());
+	const uint32_t numDescribed1 = img1.NumDescribedKeypoints();
+	const uint32_t numDescribed2 = img2.NumDescribedKeypoints();
+	ASSERT(numDescribed1 == trackedPoints1.size());
 	ASSERT(trackedPoints1.size() == trackedPoints2.size());
 	ASSERT(trackStatus.size() == trackedPoints1.size());
 
@@ -94,9 +98,13 @@ bool SFM::MatchFeaturesGeometric(
 	const float spatialThreshold = MAXF(10.f, epipolarThreshold * 6.f);
 
 	// Build a 2D octree over keypoints2 for fast spatial neighbor queries around trackedPoints2.
+	// Restricted to img2's described prefix, and so are every candidate scan and brute-force
+	// fallback below: a candidate's trainIdx is used to read img2.descriptors.row(), which only
+	// exists for a described keypoint. The octree returns indices into the array it was built
+	// from, so a prefix-sized array keeps them keypoint indices.
 	typedef CLISTDEF0(Point2f::EVec) Point2fs;
-	Point2fs kpts2(img2.keypoints.size());
-	FOREACH(i, img2.keypoints) {
+	Point2fs kpts2(numDescribed2);
+	for (uint32_t i = 0; i < numDescribed2; ++i) {
 		const cv::KeyPoint& keypoint = img2.keypoints[i];
 		kpts2[i] = Point2f::EVec(keypoint.pt.x, keypoint.pt.y);
 	}
@@ -155,7 +163,7 @@ bool SFM::MatchFeaturesGeometric(
 	// separate preserves zero-regression on all pinhole tests.
 	if (pair.F.has_value()) {
 		const Matrix3x3f F = pair.F.value();
-		FOREACH(i, img1.keypoints) {
+		for (uint32_t i = 0; i < numDescribed1; ++i) {
 			const Point2f& pt1 = img1.keypoints[i].pt;
 
 			// Compute epipolar line in image2: L = F * pt1
@@ -183,8 +191,8 @@ bool SFM::MatchFeaturesGeometric(
 					TestCandidate(idx);
 			} else {
 				PBruteForceFallback:
-				// fallback: scan all keypoints2 and use only epipolar constraint
-				FOREACH(j, img2.keypoints)
+				// fallback: scan all described keypoints2 and use only epipolar constraint
+				for (uint32_t j = 0; j < numDescribed2; ++j)
 					TestCandidate(j);
 			}
 			SelectAndAppendBest(candidates, (size_t)i);
@@ -205,14 +213,14 @@ bool SFM::MatchFeaturesGeometric(
 		// Each bearing costs a single Unproject call, and we reuse them across
 		// many candidate probes (up to #img2_keypoints per img1 keypoint in the
 		// brute-force case), so hoisting them out of the inner loop is a real win.
-		std::vector<Eigen::Vector3d> bearings1(img1.keypoints.size());
-		std::vector<Eigen::Vector3d> bearings2(img2.keypoints.size());
-		FOREACH(i, img1.keypoints)
+		std::vector<Eigen::Vector3d> bearings1(numDescribed1);
+		std::vector<Eigen::Vector3d> bearings2(numDescribed2);
+		for (uint32_t i = 0; i < numDescribed1; ++i)
 			bearings1[i] = img1.pCamera->UnprojectNormalized(Cast<REAL>(img1.keypoints[i].pt));
-		FOREACH(i, img2.keypoints)
+		for (uint32_t i = 0; i < numDescribed2; ++i)
 			bearings2[i] = img2.pCamera->UnprojectNormalized(Cast<REAL>(img2.keypoints[i].pt));
 
-		FOREACH(i, img1.keypoints) {
+		for (uint32_t i = 0; i < numDescribed1; ++i) {
 			const Eigen::Vector3d& b1 = bearings1[i];
 			const Eigen::Vector3d Eb1 = E * b1;
 			// Sampson (x,y)-subspace term from the "left" bearing — constant across
@@ -243,8 +251,8 @@ bool SFM::MatchFeaturesGeometric(
 					TestCandidate(idx);
 			} else {
 				SBruteForceFallback:
-				// fallback: scan all keypoints2 and use only epipolar constraint
-				FOREACH(j, img2.keypoints)
+				// fallback: scan all described keypoints2 and use only epipolar constraint
+				for (uint32_t j = 0; j < numDescribed2; ++j)
 					TestCandidate(j);
 			}
 			SelectAndAppendBest(candidates, (size_t)i);

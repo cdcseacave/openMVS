@@ -88,8 +88,12 @@ size_t SFM::TrackKeypointsByWarp(
 	std::vector<uchar>& trackStatus)
 {
 	ASSERT(!warp.empty() && warp.size() == overlap.size());
-	// Track keypoints from A to B using warp and overlap maps
-	const size_t numKp = imgA.keypoints.size();
+	// Track keypoints from A to B using warp and overlap maps.
+	// The described prefix only: the tracked points guide a descriptor re-match, and a dense
+	// keypoint appended by an earlier supplemented pair has no descriptor to match with. Tracking
+	// it would also break the index-parallel contract MatchFeaturesGeometric asserts, since it
+	// walks the same prefix.
+	const size_t numKp = imgA.NumDescribedKeypoints();
 	trackedA.resize(numKp);
 	trackedB.resize(numKp);
 	trackStatus.resize(numKp);

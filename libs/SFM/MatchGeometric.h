@@ -36,11 +36,17 @@ namespace SFM {
  * - Other config settings (minTriangulationAngle, reprojThreshold, epipoleFilterThreshold)
  *   are applied during geometric verification.
  *
+ * Only the DESCRIBED prefix of either image takes part: both the query scan and the candidate
+ * search (octree and brute-force fallback) run over NumDescribedKeypoints(), because every match
+ * this function selects is decided by a descriptor row, which a dense keypoint appended by an
+ * earlier supplemented pair does not have.
+ *
  * @param pairsMatcher        PairsMatcher instance with config and descriptor matching.
  * @param img1               Image 1 (provides keypoints, descriptors, camera).
  * @param img2               Image 2 (provides keypoints, descriptors, camera).
- * @param trackedPoints1     Tracked pixel positions in image 1 (same order as keypoints1).
- * @param trackedPoints2     Expected pixel positions in image 2 (same order as keypoints1).
+ * @param trackedPoints1     Tracked pixel positions in image 1 (same order and size as img1's
+ *                           described keypoint prefix -- TrackKeypointsByWarp's own convention).
+ * @param trackedPoints2     Expected pixel positions in image 2 (same order as trackedPoints1).
  * @param trackStatus        Status per tracked point (1 = valid, 0 = invalid). Also gates the
  *                           "insufficient tracked points" floor below, whether or not a geometry
  *                           is supplied: the tracked points are Step 2's spatial-disc centres, so
