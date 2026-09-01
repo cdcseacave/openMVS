@@ -801,11 +801,11 @@ void GlobalAlignment::MergeSingleScene(Scene& subScene, const IIndexArr& localTo
 			dstImg.R = srcImg.R;
 			dstImg.C = srcImg.C;
 		}
-		// Move keypoints/descriptors back from sub-scene to global scene
-		if (srcImg.HasFeatures() && !dstImg.HasFeatures()) {
-			dstImg.keypoints = std::move(srcImg.keypoints);
-			dstImg.descriptors = std::move(srcImg.descriptors);
-		}
+		// Move keypoints/descriptors back from sub-scene to global scene, described-keypoint
+		// boundary included: without it the dense keypoints the sub-scene carried would come back
+		// indistinguishable from the described ones
+		if (srcImg.HasFeatures() && !dstImg.HasFeatures())
+			dstImg.MoveFeaturesFrom(srcImg);
 	}
 
 	// Remap and merge image-pairs from local sub-scene into global scene.

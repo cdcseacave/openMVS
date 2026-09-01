@@ -1122,6 +1122,69 @@ bool ROMA2WarpTrackingTest()
 		return false;
 	}
 
+	// dense supplementation (AppendDenseMatches): the appended keypoints land past each image's
+	// described prefix, while the appended matches land INSIDE the pair's filtered-inlier prefix,
+	// which is the only part of `matches` BuildTracks reads -- appending them past it would leave
+	// the whole supplement inert
+	{
+		Scene denseScene;
+		denseScene.cameras.emplace_back(new PinholeCamera(cv::Size(width, height),
+			REAL(600), REAL(600), REAL(width)/2, REAL(height)/2));
+		for (IIndex k = 0; k < 2; ++k) {
+			Image& im = denseScene.images.emplace_back(k, String::FormatString("%u.jpg", k));
+			im.cameraID = 0;
+			im.pCamera = denseScene.cameras[0];
+			im.keypoints.resize(10, cv::KeyPoint(1.f, 1.f, 3.f));
+		}
+		ImagePair& pair = denseScene.pairs.emplace_back(0u, 1u);
+		for (uint32_t k = 0; k < 8; ++k)
+			pair.matches.emplace_back(k, k);
+		pair.numFilteredInliers = 5; // matches 5..7 are inliers the strict filter then rejected
+		const std::vector<Point2f> ptsA{Point2f(100.f, 100.f), Point2f(200.f, 200.f)};
+		const std::vector<Point2f> ptsB{Point2f(110.f, 100.f), Point2f(210.f, 200.f)};
+		const std::vector<float> confidences{0.7f, 0.9f};
+		if (AppendDenseMatches(denseScene, pair, ptsA, ptsB, confidences, cv::Size(cells, cells)) != 2) {
+			VERBOSE("ROMA2WarpTrackingTest FAILED: dense supplement not appended");
+			return false;
+		}
+		const float cellSize = MAXF((float)width/(float)cells, (float)height/(float)cells);
+		for (IIndex k = 0; k < 2; ++k) {
+			const Image& im = denseScene.images[k];
+			if (im.keypoints.size() != 12 || im.NumDescribedKeypoints() != 10 || im.NumDenseKeypoints() != 2 ||
+				im.IsDenseKeypoint(9) || !im.IsDenseKeypoint(10)) {
+				VERBOSE("ROMA2WarpTrackingTest FAILED: image %u has %u keypoints with boundary %u",
+					k, (unsigned)im.keypoints.size(), im.NumDescribedKeypoints());
+				return false;
+			}
+			if (im.keypoints[10].response != 0.7f || im.keypoints[11].response != 0.9f ||
+				im.keypoints[10].size != cellSize) {
+				VERBOSE("ROMA2WarpTrackingTest FAILED: image %u dense keypoint response %g / size %g, expected size %g",
+					k, im.keypoints[10].response, im.keypoints[10].size, cellSize);
+				return false;
+			}
+		}
+		if (denseScene.images[0].keypoints[10].pt != cv::Point2f(100.f, 100.f) ||
+			denseScene.images[1].keypoints[10].pt != cv::Point2f(110.f, 100.f)) {
+			VERBOSE("ROMA2WarpTrackingTest FAILED: dense keypoint positions");
+			return false;
+		}
+		// the two dense matches sit at 5 and 6, the strict-filter rejects moved after them, and the
+		// filtered-inlier count grew by exactly the supplement
+		if (pair.matches.size() != 10 || pair.numFilteredInliers != 7 ||
+			pair.matches[5].queryIdx != 10 || pair.matches[5].trainIdx != 10 ||
+			pair.matches[6].queryIdx != 11 || pair.matches[7].queryIdx != 5) {
+			VERBOSE("ROMA2WarpTrackingTest FAILED: dense matches not inserted at the filtered-inlier boundary (%u matches, %d filtered)",
+				(unsigned)pair.matches.size(), pair.numFilteredInliers);
+			return false;
+		}
+		// a second supplemented pair on the same images appends past the first one's dense keypoints
+		if (AppendDenseMatches(denseScene, pair, ptsA, ptsB, confidences, cv::Size(cells, cells)) != 2 ||
+			denseScene.images[0].NumDescribedKeypoints() != 10 || denseScene.images[0].NumDenseKeypoints() != 4) {
+			VERBOSE("ROMA2WarpTrackingTest FAILED: a second append moved the described boundary");
+			return false;
+		}
+	}
+
 	VERBOSE("ROMA2WarpTrackingTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
 	return true;
 }

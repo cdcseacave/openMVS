@@ -97,6 +97,27 @@ struct SFM_API ROMA2Config {
 	// of a repeated structure are NOT this gate's job; the triplet view-graph filter handles those.
 	// See docs/design/ROMA2InProcess.md. 0 disables rejection: every pair passes
 	float minInlierCoverage = 0.25f;
+	// dense supplementation: on a pair the gate validated and the guided pass then verified, add
+	// dense correspondences drawn from that pair's own warp ALONGSIDE its sparse matches, as
+	// keypoints appended past each image's described prefix. It exists for the weakly-textured
+	// pairs a descriptor matcher can only find a handful of correspondences on: they contribute
+	// structure instead of dropping out. Needs both useValidation and useMatching -- the gate is
+	// what makes "validated" mean anything, and the guided pass is where the warp already is, so
+	// no third warp pass exists. Opt-in, like every other pass here
+	bool useSupplement = false;
+	// what counts as a pair weak enough to supplement: fewer verified inliers than this, OR a
+	// confident warp overlap (the same fraction minCreatedOverlap gates on) below
+	// supplementMinOverlap. Either one is enough; they catch different failures -- too few
+	// correspondences on a well-overlapping pair, and a pair whose overlap is small to begin with
+	unsigned supplementMaxInliers = 500;
+	float supplementMinOverlap = 0.3f;
+	// ceiling on the dense matches appended to one pair, applied by keeping the most confident ones
+	// (0 = no ceiling). SampleWarpByCoverage treats denseSampleSize -- which is also the sample
+	// budget here -- as a TARGET whose occupied-bucket count can reach several times the budget on a
+	// scattered overlap, so this is what makes the appended set actually bounded, and what bounds
+	// the scene-wide keypoint growth a wide arm has to pay for: a supplemented pair costs this many
+	// keypoints in EACH of its two images, plus one track each
+	unsigned supplementMaxPerPair = 2000;
 	bool useGPU = true;                    // allow the GPU execution providers (false forces the CPU provider)
 
 	// Return the folder holding the exported models: the explicit setting if given,
@@ -147,6 +168,13 @@ SFM_API unsigned ComputeGlobalDescriptorsROMA2(Scene& scene, RoMa2Onnx& roma2);
 // bFeedbackRound selects the per-round replace policy: the first round warps every candidate
 // and replaces whenever the guided set is larger, the verification-feedback round skips pairs
 // that are already healthy and only replaces the weakest ones (design decision 6).
+// With config.useSupplement, a stored pair the dense gate had validated and this pass then verified,
+// but which still carries fewer than config.supplementMaxInliers correspondences or less than
+// config.supplementMinOverlap confident overlap, additionally gets a coverage-maximising sample of
+// its own warp appended alongside its sparse matches (AppendDenseMatches): dense keypoints past each
+// image's described prefix, capped at config.supplementMaxPerPair per pair. Drawn on the pool but
+// appended in the same serial (ID1,ID2) pass as the results, since the keypoint indices an append
+// hands out depend on what the two images already carry.
 // roma2 must already be loaded (RoMa2Onnx::Load); a pair whose image could not be loaded,
 // described, or matched is dropped with a message, never matched against a stale slot.
 // Returns the number of scene pairs created plus replaced.

@@ -151,6 +151,38 @@ void SFM::BuildTracks(Scene& scene, float minPairWeight)
 	    scene.tracks.size(), globalID, numPairsProcessed,
 	    numObservations / (float)MAXF(scene.tracks.size(), 1u), TD_TIMER_GET_FMT().c_str());
 
+	// Dense track-length histogram, on a scene that was dense-supplemented. Reported as a
+	// distribution rather than summarized as a mean in either direction: a length above 2 is the
+	// product of the exact-position reuse PairsMatcher::FilterRedundantKeypoints performs between
+	// pairs sharing an image, so a histogram sitting entirely at 2 means that reuse never fired,
+	// which is itself a finding (and the expected output with --release-descriptors false, where the
+	// filter does not run at all). A track is dense-only when every one of its observations is a
+	// dense keypoint, mixed when it carries both kinds.
+	if (std::any_of(scene.images.begin(), scene.images.end(), [](const Image& img) { return img.HasDenseKeypoints(); })) {
+		unsigned hist[5] = {0, 0, 0, 0, 0}; // dense-only lengths 2, 3, 4, 5-9, 10+
+		unsigned numDenseOnly = 0, numMixed = 0;
+		size_t numDenseObservations = 0;
+		for (const Track& track : scene.tracks) {
+			unsigned numDense = 0;
+			for (const Observation& obs : track.observations)
+				numDense += scene.images[obs.imageID].IsDenseKeypoint(obs.featureID);
+			numDenseObservations += numDense;
+			if (numDense == 0)
+				continue;
+			if (numDense < track.observations.size()) {
+				++numMixed;
+				continue;
+			}
+			++numDenseOnly;
+			const size_t length = track.observations.size();
+			++hist[length <= 4 ? length - 2 : (length <= 9 ? 3 : 4)];
+		}
+		DEBUG("Dense track lengths: %u at 2, %u at 3, %u at 4, %u at 5-9, %u at 10+ "
+			"(%u dense-only tracks, %u mixed, %zu dense observations of %u)",
+			hist[0], hist[1], hist[2], hist[3], hist[4], numDenseOnly, numMixed,
+			numDenseObservations, numObservations);
+	}
+
 	#ifndef _RELEASE
 	VERBOSE("Performing additional track consistency checks...");
 	// Temporary safety check: ensure match indices are within keypoints bounds

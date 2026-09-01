@@ -148,6 +148,29 @@ SFM_API void ComputeSampleCoverage(
 	float& coverageA,
 	float& coverageB);
 
+// Append one pair's dense (ROMAv2 warp) correspondences to the scene, alongside the sparse matches
+// the pair already carries. Each correspondence becomes one keypoint at the end of each image's
+// keypoint array -- past its described prefix, which is closed here if it was still open -- and one
+// match between the two. pointsA/pointsB/confidences are index-parallel and in the pixels of the
+// working orientation of each image (SampleWarpByCoverage's convention); warpSize is the warp grid
+// the sample was drawn on, which fixes the size of the appended keypoints (Image::MakeDenseKeypoint).
+//
+// The matches join the pair's filtered-inlier prefix rather than the end of `matches`: BuildTracks
+// only reads the first GetNumFilteredInliers() matches, so a match appended past that prefix would
+// form no track at all and the whole supplement would be silently inert.
+//
+// Callers must invoke this serially and in a fixed pair order: the keypoint indices it hands out
+// depend on how many keypoints the two images already carry, so a parallel or completion-ordered
+// append would give a different labelling run to run.
+// Returns the number of matches added.
+SFM_API unsigned AppendDenseMatches(
+	Scene& scene,
+	ImagePair& pair,
+	const std::vector<Point2f>& pointsA,
+	const std::vector<Point2f>& pointsB,
+	const std::vector<float>& confidences,
+	const cv::Size& warpSize);
+
 // Store the given guided pair in the scene, either creating it or replacing the existing one:
 // pairIndexMap maps the pair key to its index in scene.pairs and is updated accordingly,
 // maxReplaceInliers is the inlier ceiling above which an existing pair is never replaced

@@ -250,6 +250,49 @@ void SFM::ComputeSampleCoverage(
 /*----------------------------------------------------------------*/
 
 
+unsigned SFM::AppendDenseMatches(Scene& scene, ImagePair& pair,
+	const std::vector<Point2f>& pointsA, const std::vector<Point2f>& pointsB,
+	const std::vector<float>& confidences, const cv::Size& warpSize)
+{
+	ASSERT(pointsA.size() == pointsB.size() && pointsA.size() == confidences.size());
+	ASSERT(warpSize.width > 0 && warpSize.height > 0);
+	if (pointsA.empty())
+		return 0;
+	Image& imgA = scene.images[pair.ID1];
+	Image& imgB = scene.images[pair.ID2];
+	// the scale the positions were sampled at: the pixel footprint of one warp cell in each image
+	const auto WarpCellSize = [&warpSize](const Image& img) {
+		return MAXF((float)img.GetWidth()/(float)warpSize.width, (float)img.GetHeight()/(float)warpSize.height);
+	};
+	const float cellSizeA = WarpCellSize(imgA);
+	const float cellSizeB = WarpCellSize(imgB);
+	// the described prefix of each image ends where it stands now; a second supplemented pair on
+	// the same image finds the boundary already closed and appends past the dense keypoints the
+	// first one left, which is what lets FilterRedundantKeypoints reuse a coinciding one
+	imgA.CloseDescribedKeypoints();
+	imgB.CloseDescribedKeypoints();
+	const uint32_t baseA = (uint32_t)imgA.keypoints.size();
+	const uint32_t baseB = (uint32_t)imgB.keypoints.size();
+	std::vector<DMatch> dense;
+	dense.reserve(pointsA.size());
+	for (uint32_t i = 0; i < (uint32_t)pointsA.size(); ++i) {
+		imgA.keypoints.push_back(Image::MakeDenseKeypoint(pointsA[i], confidences[i], cellSizeA));
+		imgB.keypoints.push_back(Image::MakeDenseKeypoint(pointsB[i], confidences[i], cellSizeB));
+		dense.emplace_back(baseA + i, baseB + i);
+	}
+	// into the filtered-inlier prefix, not the end: what sits between numFilteredInliers and
+	// matches.size() are the RANSAC inliers the strict filter then rejected, and BuildTracks reads
+	// neither them nor anything after them
+	const size_t at = pair.numFilteredInliers >= 0 ? (size_t)pair.numFilteredInliers : pair.matches.size();
+	ASSERT(at <= pair.matches.size());
+	pair.matches.insert(pair.matches.begin() + at, dense.begin(), dense.end());
+	if (pair.numFilteredInliers >= 0)
+		pair.numFilteredInliers += (int)dense.size();
+	return (unsigned)dense.size();
+}
+/*----------------------------------------------------------------*/
+
+
 bool SFM::ApplyROMA2Pair(Scene& scene, std::unordered_map<PairIdx::PairIndex, IIndex>& pairIndexMap, ImagePair&& pair, unsigned maxReplaceInliers, bool& bCreated)
 {
 	ASSERT(pair.ID1 < pair.ID2 && !pair.matches.empty());

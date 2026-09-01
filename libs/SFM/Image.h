@@ -132,6 +132,16 @@ public:
 		descriptors.release();
 		numDescribedKeypoints = NO_ID;
 	}
+	// Take over src's features, leaving it with none (the sub-scene extract/merge hand-off).
+	// The three travel together and must: keypoints arriving without their boundary would report
+	// every dense keypoint as described, and a boundary left behind on an image whose keypoints
+	// are gone is a count larger than the array it indexes.
+	inline void MoveFeaturesFrom(Image& src) {
+		keypoints = std::move(src.keypoints);
+		descriptors = std::move(src.descriptors);
+		numDescribedKeypoints = src.numDescribedKeypoints;
+		src.ReleaseFeatures();
+	}
 
 	// Check if image has a global retrieval descriptor
 	inline bool HasGlobalDescriptor() const { return !globalDescriptor.empty(); }

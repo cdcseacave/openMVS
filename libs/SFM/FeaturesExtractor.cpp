@@ -284,7 +284,10 @@ private:
 			}
 			selected.JoinRemove(cells);
 		}
-		// Store keypoints and descriptors
+		// Store keypoints and descriptors, replacing whatever the image carried, boundary included:
+		// unlike the CPU path this one is entered directly from ExtractImage's SiftGPU dispatch,
+		// so it is the only place that can clear a stale boundary here
+		img.ReleaseFeatures();
 		img.keypoints.resize(selected.size());
 		img.descriptors.create((int)selected.size(), 128, CV_8U);
 		FOREACH(k, selected) {

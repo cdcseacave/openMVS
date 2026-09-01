@@ -80,6 +80,10 @@ bool bROMA2CrossCheck;
 bool bROMA2Validate;
 unsigned nROMA2DenseSample;
 float fROMA2MinInlierCoverage;
+bool bROMA2Supplement;
+unsigned nROMA2SupplementMaxInliers;
+float fROMA2SupplementMinOverlap;
+unsigned nROMA2SupplementMaxPerPair;
 bool bFilterTriplets;
 float fTripletMinScore;
 String strROMA2Provider;
@@ -181,6 +185,10 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("roma2-validate", boost::program_options::value<bool>(&OPT::bROMA2Validate)->default_value(false), "dense two-view gate: before descriptor matching, warp every candidate pair and drop the ones a single geometry cannot explain (a rejected pair is dropped, not descriptor-matched)")
 		("roma2-dense-sample", boost::program_options::value(&OPT::nROMA2DenseSample)->default_value(2000), "dense two-view gate: size of the coverage-maximising sample drawn from each warp")
 		("roma2-min-inlier-coverage", boost::program_options::value(&OPT::fROMA2MinInlierCoverage)->default_value(0.25f), "dense two-view gate: fraction of both images the fit's inlier subset must still cover for the pair to be kept (0 keeps every pair)")
+		("roma2-supplement", boost::program_options::value<bool>(&OPT::bROMA2Supplement)->default_value(false), "dense supplementation: add dense warp correspondences alongside the sparse matches of a validated pair that is still weak, so a weakly-textured pair contributes structure instead of dropping out (needs --roma2-validate true --roma2-match true)")
+		("roma2-supplement-max-inliers", boost::program_options::value(&OPT::nROMA2SupplementMaxInliers)->default_value(500), "dense supplementation: supplement a pair carrying fewer than this many verified correspondences")
+		("roma2-supplement-min-overlap", boost::program_options::value(&OPT::fROMA2SupplementMinOverlap)->default_value(0.3f), "dense supplementation: or one whose confidently overlapping fraction of the warp is below this")
+		("roma2-supplement-max-per-pair", boost::program_options::value(&OPT::nROMA2SupplementMaxPerPair)->default_value(2000), "dense supplementation: ceiling on the dense matches added to one pair, keeping the most confident ones (0 = no ceiling); each one costs a keypoint in both images plus a track")
 		("roma2-provider", boost::program_options::value<std::string>(&OPT::strROMA2Provider)->default_value("auto"), "ONNX Runtime execution provider: auto (CUDA > CoreML > DirectML > CPU), cuda, coreml, dml or cpu")
 		("default-focal-ratio", boost::program_options::value(&OPT::defaultFocalRatio)->default_value(1.2f), "focal-length is set to ratio * max(width,height) for images with unknown focal-length")
 		("focal-length,f", boost::program_options::value(&OPT::focalLength)->default_value(0.f), "force focal-length (in pixels) for specified images (0 = disabled)")
@@ -297,6 +305,15 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		LOG("error: --roma2-validate needs --roma2 true (the gate is the ROMAv2 warp)");
 		return false;
 	}
+	if (OPT::bROMA2Supplement && (!OPT::bROMA2Validate || !OPT::bROMA2Match)) {
+		LOG("error: --roma2-supplement needs --roma2-validate true (only a validated pair is supplemented)"
+			" and --roma2-match true (the guided pass is where the warp already is)");
+		return false;
+	}
+	if (OPT::fROMA2SupplementMinOverlap < 0.f || OPT::fROMA2SupplementMinOverlap > 1.f) {
+		LOG("error: --roma2-supplement-min-overlap is a fraction of the warp, it must be in [0,1] (got %g)", OPT::fROMA2SupplementMinOverlap);
+		return false;
+	}
 	if (OPT::fROMA2MinInlierCoverage < 0.f || OPT::fROMA2MinInlierCoverage > 1.f) {
 		LOG("error: --roma2-min-inlier-coverage is a fraction of a coarse grid, it must be in [0,1] (got %g)", OPT::fROMA2MinInlierCoverage);
 		return false;
@@ -374,6 +391,10 @@ int main(int argc, LPCTSTR* argv)
 	cfg.roma2Cfg.useValidation = OPT::bROMA2Validate;
 	cfg.roma2Cfg.denseSampleSize = OPT::nROMA2DenseSample;
 	cfg.roma2Cfg.minInlierCoverage = OPT::fROMA2MinInlierCoverage;
+	cfg.roma2Cfg.useSupplement = OPT::bROMA2Supplement;
+	cfg.roma2Cfg.supplementMaxInliers = OPT::nROMA2SupplementMaxInliers;
+	cfg.roma2Cfg.supplementMinOverlap = OPT::fROMA2SupplementMinOverlap;
+	cfg.roma2Cfg.supplementMaxPerPair = OPT::nROMA2SupplementMaxPerPair;
 	cfg.roma2Cfg.provider = OPT::strROMA2Provider;
 	#ifdef _USE_CUDA
 	cfg.matchCfg.useCUDA = cfg.featuresCfg.useCUDA = !SEACAVE::CUDA::isCpuRequested(SEACAVE::CUDA::desiredDeviceIDs);

@@ -210,9 +210,10 @@ Scene SceneCluster::ExtractSubScene(
 		subImg.ID = subScene.images.size();
 		subImg.cameraID = localCamID;
 		subImg.pCamera = subScene.cameras[localCamID];
-		// Move expensive data from global to sub-scene to save memory
-		subImg.keypoints = std::move(img.keypoints);
-		subImg.descriptors = std::move(img.descriptors);
+		// Move expensive data from global to sub-scene to save memory, described-keypoint boundary
+		// included: it indexes the keypoint array, so it has to follow it rather than stay behind
+		// on an image that no longer has one
+		subImg.MoveFeaturesFrom(img);
 		subScene.images.emplace_back(std::move(subImg));
 	}
 
