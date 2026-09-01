@@ -340,6 +340,37 @@ size_t SFM::SampleWarpComplementary(
 /*----------------------------------------------------------------*/
 
 
+size_t SFM::SampleWarpComplementary(
+	const Image& imgA,
+	const Image& imgB,
+	const Image32F2& warp,
+	const Image32F& overlap,
+	float minConfidence,
+	unsigned maxSamples,
+	const ImagePair& pair,
+	std::vector<Point2f>& sampledA,
+	std::vector<Point2f>& sampledB,
+	std::vector<float>& confidences)
+{
+	// the pair's sparse evidence, in imgA's pixels -- see the header for why each of the three
+	// choices made here (the segment, the index side, the image) is the one that makes the draw
+	// complement anything
+	ASSERT(pair.GetNumDenseInliers() == 0); // a pair is supplemented once, before it has a dense segment
+	const unsigned numSparse = pair.GetNumFilteredInliers();
+	std::vector<Point2f> occupiedA;
+	occupiedA.reserve(numSparse);
+	for (unsigned m = 0; m < numSparse; ++m) {
+		// the sparse segment is described at both ends on every path that produces it
+		// (ImagePair::CheckSparseSegmentIsDescribed), so this index is inside imgA's described prefix
+		ASSERT((size_t)pair.matches[m].queryIdx < imgA.NumDescribedKeypoints());
+		occupiedA.push_back(imgA.keypoints[pair.matches[m].queryIdx].pt);
+	}
+	return SampleWarpComplementary(imgA, imgB, warp, overlap, minConfidence, maxSamples,
+		occupiedA, sampledA, sampledB, confidences);
+}
+/*----------------------------------------------------------------*/
+
+
 void SFM::ComputeSampleCoverage(
 	const std::vector<Point2f>& sampledA,
 	const std::vector<Point2f>& sampledB,

@@ -169,6 +169,31 @@ SFM_API size_t SampleWarpComplementary(
 	std::vector<Point2f>& sampledB,
 	std::vector<float>& confidences);
 
+// Same draw, taking the occupied positions from `pair` itself: the image-A keypoint positions of
+// its verified SPARSE inliers. This is the form a supplemented pair actually uses, and it exists as
+// its own entry point because the gather is where a silent frame or segment mistake would live --
+// three choices, each with a plausible-looking wrong answer that still compiles and still returns a
+// supplement, only one that complements anything:
+//   - the SPARSE segment `matches[0, GetNumFilteredInliers())`, which is the pair's descriptor
+//     evidence -- not GetNumTrackFormingMatches(), whose second half is an earlier supplement, and
+//     not the whole of `matches`, whose tail is what the strict filter REJECTED and which must
+//     therefore stay open for the dense draw;
+//   - `queryIdx`, the imgA index of a match (AppendDenseMatches emits `(baseA+i, baseB+i)`);
+//   - imgA's keypoints, because the warp grid lives in imgA's frame (see the note above).
+// `pair` must be the verified pair of imgA/imgB in that order (pair.ID1 -> imgA), and must carry no
+// dense segment yet.
+SFM_API size_t SampleWarpComplementary(
+	const Image& imgA,
+	const Image& imgB,
+	const Image32F2& warp,
+	const Image32F& overlap,
+	float minConfidence,
+	unsigned maxSamples,
+	const ImagePair& pair,
+	std::vector<Point2f>& sampledA,
+	std::vector<Point2f>& sampledB,
+	std::vector<float>& confidences);
+
 // Fraction of a DENSE_COVERAGE_GRID^2 grid over each image that a warp sample occupies:
 // coverageA over sampledA in an image of sizeA, coverageB over sampledB in an image of sizeB.
 // `indices`, when non-empty, restricts the measurement to that subset of the sample (the gate

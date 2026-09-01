@@ -450,18 +450,11 @@ void DrawDenseSupplement(const Image& imgA, const Image& imgB, const WarpMaps& m
 	const unsigned denseBudget = config.SupplementDenseBudget(numVerified);
 	if (denseBudget == 0)
 		return; // the pair is already at (or past) its total: nothing left to draw
-	// where the pair's sparse evidence already sits, in imgA's pixels: the draw strikes out every
-	// bucket one of these falls in. The sparse segment is `matches[0, GetNumFilteredInliers())`
-	// (the dense segment does not exist yet on this pair) and is described at both ends, so every
-	// queryIdx indexes imgA's described prefix.
-	std::vector<Point2f> sparseA;
-	sparseA.reserve(numVerified);
-	for (unsigned m = 0; m < numVerified; ++m) {
-		ASSERT((size_t)guided.matches[m].queryIdx < imgA.NumDescribedKeypoints());
-		sparseA.push_back(imgA.keypoints[guided.matches[m].queryIdx].pt);
-	}
+	// the pair overload gathers the occupied positions off `guided` itself -- which segment, which
+	// index side and which image that gather reads is where a silent mistake would sit, so it lives
+	// in ROMA2Warp.cpp next to the draw it feeds, where a test can reach it
 	SampleWarpComplementary(imgA, imgB, maps.warp, maps.overlap, config.minConfidence,
-		denseBudget, sparseA, supplement.pointsA, supplement.pointsB, supplement.confidences);
+		denseBudget, guided, supplement.pointsA, supplement.pointsB, supplement.confidences);
 	ASSERT(config.supplementTotalMatches == 0 ||
 		numVerified + supplement.pointsA.size() <= config.supplementTotalMatches);
 }

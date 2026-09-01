@@ -1662,6 +1662,82 @@ bool ROMA2SupplementDrawTest()
 		return false;
 	}
 
+	// 5) THE GATHER, through the entry point a supplemented pair actually uses. Everything above
+	// hands the draw a ready-made list of occupied positions, so the one step that decides WHICH
+	// points those are -- the pair's sparse segment, queryIdx, image A -- goes untested, and every
+	// wrong answer to it still compiles and still returns a plausible-looking supplement that
+	// complements nothing. The fixture makes each wrong answer land somewhere visibly different:
+	// image A carries the sparse cluster at indices [0, 400) and a bottom-right cluster at
+	// [400, 800) that the strict-filter rejects reference; image B carries a top-right cluster at
+	// [0, 400); and every sparse match is (m, 400+m), so queryIdx and trainIdx can never be
+	// confused for one another and neither index can run out of range (which would abort on the
+	// gather's own assertion instead of failing a check).
+	overlap.setTo(0.6f);
+	std::vector<Point2f> rejectA, otherB;
+	for (int cy = 120; cy < 160; cy += 2)
+		for (int cx = 120; cx < 160; cx += 2)
+			rejectA.push_back(CellToPixel(cx, cy));
+	for (int cy = 0; cy < 40; cy += 2)
+		for (int cx = 120; cx < 160; cx += 2)
+			otherB.push_back(CellToPixel(cx, cy));
+	ASSERT(rejectA.size() == numSparse && otherB.size() == numSparse);
+	Image& mutA = scene.images[0];
+	Image& mutB = scene.images[1];
+	for (const Point2f& pt : sparseA)
+		mutA.keypoints.emplace_back(pt.x, pt.y, 4.f, -1.f, 0.05f);
+	for (const Point2f& pt : rejectA)
+		mutA.keypoints.emplace_back(pt.x, pt.y, 4.f, -1.f, 0.05f);
+	for (const Point2f& pt : otherB)
+		mutB.keypoints.emplace_back(pt.x, pt.y, 4.f, -1.f, 0.05f);
+	for (const Point2f& pt : rejectA)
+		mutB.keypoints.emplace_back(pt.x, pt.y, 4.f, -1.f, 0.05f);
+	ImagePair gatherPair(0, 1);
+	for (unsigned m = 0; m < numSparse; ++m)
+		gatherPair.matches.emplace_back(m, numSparse + m); // sparse inlier: imgA cluster -> imgB cluster
+	for (unsigned k = 0; k < numSparse; ++k)
+		gatherPair.matches.emplace_back(numSparse + k, k); // RANSAC inlier the strict filter rejected
+	gatherPair.numFilteredInliers = (int)numSparse;
+	gatherPair.numDenseInliers = 0;
+	std::vector<Point2f> expectedA, expectedB, gatherA, gatherB;
+	std::vector<float> expectedC, gatherC;
+	SampleWarpComplementary(imgA, imgB, warp, overlap, 0.3f, denseBudget, sparseA, expectedA, expectedB, expectedC);
+	const size_t numGather = SampleWarpComplementary(imgA, imgB, warp, overlap, 0.3f, denseBudget,
+		gatherPair, gatherA, gatherB, gatherC);
+	if (gatherA != expectedA || gatherB != expectedB || gatherC != expectedC) {
+		VERBOSE("ROMA2SupplementDrawTest FAILED: the draw off the pair (%u points) differs from the same draw off that "
+			"pair's sparse image-A positions (%u points) -- the gather reads the wrong segment, index side or image",
+			(unsigned)numGather, (unsigned)expectedA.size());
+		return false;
+	}
+	// the same statement region by region, so a failure names the wrong answer rather than only
+	// reporting a mismatch: the strict-filter rejects' region and image B's own keypoint region are
+	// NOT the pair's sparse evidence, so the draw has to reach into both of them
+	std::vector<bool> rejectBuckets((size_t)numBuckets*numBuckets, false), otherBBuckets(rejectBuckets);
+	for (const Point2f& pt : rejectA)
+		rejectBuckets[PixelToBucket(pt, numBuckets)] = true;
+	for (const Point2f& pt : otherB)
+		otherBBuckets[PixelToBucket(pt, numBuckets)] = true;
+	unsigned numInRejects = 0, numInOtherB = 0;
+	FOREACH(i, gatherA) {
+		const size_t bucket = PixelToBucket(gatherA[i], numBuckets);
+		if (rejectBuckets[bucket])
+			++numInRejects;
+		if (otherBBuckets[bucket])
+			++numInOtherB;
+		// while the sparse cluster's own buckets stay empty, now measured through the pair
+		if (occupied[bucket]) {
+			VERBOSE("ROMA2SupplementDrawTest FAILED: the draw off the pair put point %u at (%.1f, %.1f) into a bucket "
+				"the pair's sparse inliers hold", i, gatherA[i].x, gatherA[i].y);
+			return false;
+		}
+	}
+	if (numInRejects == 0 || numInOtherB == 0) {
+		VERBOSE("ROMA2SupplementDrawTest FAILED: the draw reached the strict-filter rejects' region with %u points and "
+			"image B's keypoint region with %u, expected both non-empty -- the gather ran past the sparse segment, or read image B",
+			numInRejects, numInOtherB);
+		return false;
+	}
+
 	VERBOSE("ROMA2SupplementDrawTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
 	return true;
 }
