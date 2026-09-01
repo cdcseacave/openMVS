@@ -131,6 +131,17 @@ bool MatchGeometricSphericalTest();
 // descriptor distance is computed instead of being left at 0.
 bool GuidedCrossCheckTest();
 
+// Unit test for MatchFeaturesGeometric's caller-supplied geometry: with only 7 of 70 tracked
+// points -- enough to clear the "insufficient tracked points" floor but one short of
+// GeometricFilter's own minimum of 8 correspondences -- the estimating path must fall back and
+// return false, while the supplied-geometry path must skip the estimation entirely and return
+// true with real guided matches on the same input.
+bool SuppliedGeometrySkipsEstimationTest();
+
+// Parity test: on a healthy pair, supplying the exact geometry the estimator itself produced
+// must guide at least as many matches as the estimating path does on the same tracked points.
+bool SuppliedGeometryParityTest();
+
 // Phase 5 cube-map bridge tests: verify that SFM::ExportMVS can expand
 // every spherical source image into 6 (or 4) pinhole cube-map faces,
 // emit them as a rig platform in MVS::Interface format, and produce a

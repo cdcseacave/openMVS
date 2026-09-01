@@ -23,6 +23,7 @@ bool SFM::MatchFeaturesGeometric(
 	const std::vector<Point2f>& trackedPoints2,
 	const std::vector<uchar>& trackStatus,
 	ImagePair& pair,
+	const PairsMatcher::ValidatedGeometry* validatedGeometry,
 	float epipolarThreshold,
 	unsigned threadIdx,
 	bool crossCheck,
@@ -42,8 +43,11 @@ bool SFM::MatchFeaturesGeometric(
 
 	pair.Reset();
 
-	// Step 1: Estimate relative pose / F from tracked points
-	// Initialize pair with tracked points as initial matches
+	// Step 1: the geometry Step 2 guides on -- either a caller-supplied, already-checked fit
+	// (validatedGeometry), or one estimated here from the tracked points, exactly as before.
+	// Initialize pair with tracked points as initial matches. This floor stays even when a
+	// geometry is supplied: the tracked points are also Step 2's spatial-disc centres, so a pair
+	// that tracked almost nothing has no guidance to give whatever geometry it was handed.
 	for (size_t i = 0; i < trackStatus.size(); ++i)
 		if (trackStatus[i])
 			pair.matches.emplace_back((uint32_t)i, (uint32_t)i);
@@ -53,7 +57,14 @@ bool SFM::MatchFeaturesGeometric(
 		pairsMatcher.MatchFeatures(img1.descriptors, img2.descriptors, pair.matches, threadIdx);
 		return false;
 	}
-	{
+	if (validatedGeometry) {
+		// The caller already fitted and RANSAC-checked this pair's geometry (the dense two-view
+		// gate); skip GeometricFilter and both of its fallbacks entirely -- that per-pair
+		// estimation is exactly what supplying a geometry removes -- and hand Step 2 what
+		// GeometricFilter would otherwise have set.
+		pair.F = validatedGeometry->F;
+		pair.E = validatedGeometry->E;
+	} else {
 		// Make copies to avoid modifying original images
 		Image img1Copy(img1.ID, img1.fileName, reinterpret_cast<const Pose3D&>(img1), img1.cameraID, img1.pCamera);
 		Image img2Copy(img2.ID, img2.fileName, reinterpret_cast<const Pose3D&>(img2), img2.cameraID, img2.pCamera);
@@ -66,12 +77,12 @@ bool SFM::MatchFeaturesGeometric(
 			pairsMatcher.MatchFeatures(img1.descriptors, img2.descriptors, pair.matches, threadIdx);
 			return false;
 		}
-	}
-	if (pair.GetNumFilteredInliers() < pairsMatcher.GetConfig().minMatches) {
-		DEBUG("MatchFeaturesGeometric: PoseLib estimation failed, falling back to descriptor-only matching");
-		pair.ResetMatches();
-		pairsMatcher.MatchFeatures(img1.descriptors, img2.descriptors, pair.matches, threadIdx);
-		return false;
+		if (pair.GetNumFilteredInliers() < pairsMatcher.GetConfig().minMatches) {
+			DEBUG("MatchFeaturesGeometric: PoseLib estimation failed, falling back to descriptor-only matching");
+			pair.ResetMatches();
+			pairsMatcher.MatchFeatures(img1.descriptors, img2.descriptors, pair.matches, threadIdx);
+			return false;
+		}
 	}
 	pair.ResetMatches();
 

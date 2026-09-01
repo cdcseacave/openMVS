@@ -237,6 +237,10 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!SFM::GuidedCrossCheckTest())
 				return false;
+			if (!SFM::SuppliedGeometrySkipsEstimationTest())
+				return false;
+			if (!SFM::SuppliedGeometryParityTest())
+				return false;
 			if (!SFM::CubeMapFaceRenderTest())
 				return false;
 			if (!SFM::CubeMapBridgeGeometryTest())

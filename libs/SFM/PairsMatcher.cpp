@@ -1852,6 +1852,17 @@ bool PairsMatcher::MatchPairsBatch(const PairIdxArr& pairsToMatch, LPCTSTR progr
 	return true;
 }
 
+void PairsMatcher::SetValidatedGeometry(PairIdx::PairIndex idx, const ValidatedGeometry& geometry)
+{
+	validatedGeometries[idx] = geometry;
+}
+
+const PairsMatcher::ValidatedGeometry* PairsMatcher::FindValidatedGeometry(PairIdx::PairIndex idx) const
+{
+	const auto it = validatedGeometries.find(idx);
+	return it != validatedGeometries.end() ? &it->second : NULL;
+}
+
 unsigned PairsMatcher::Match()
 {
 	const IIndex nImages = scene.images.size();
@@ -2022,6 +2033,7 @@ unsigned PairsMatcher::Match()
 			return 0;
 	}
 	fusedRetrievalScores.clear(); // only kept for the verification-feedback round
+	validatedGeometries.clear(); // only kept for the ROMA2 guided pass of this Match() call
 
 	const unsigned numProcessedPairs = stats.newPairs + stats.updatedPairs;
 	DEBUG("Images matched: created %u/%u new/updated pairs, %u ROMA2 guided (%u total from %u exhaustive),\n%u/%u/%u matches (%.2f/%.2f/%.2f per pair) in %s",

@@ -183,6 +183,24 @@ public:
 		ImagePair& pair
 	) const;
 
+	// Geometry the dense two-view gate (ValidatePairsROMA2, MatchROMA2.cpp) already fitted and
+	// RANSAC-checked for a pair before any descriptor matching ran: F and/or E, whichever
+	// GeometricFilter set for the branch SelectGeometryBranch picked (never both empty on a pair
+	// the gate validated). Carries only what MatchFeaturesGeometric's Step 2 reads off an
+	// ImagePair for its epipolar band -- not the sample, not the inliers, not the coverages,
+	// which stay internal to the gate.
+	struct ValidatedGeometry {
+		std::optional<Matrix3x3> F;
+		std::optional<Matrix3x3> E;
+	};
+
+	// Record (ValidatePairsROMA2) or look up (the ROMA2 guided pass, through
+	// MatchFeaturesGeometric) the validated geometry of one pair. Keyed and cleared like
+	// fusedRetrievalScores below: filled while Match()'s rounds run, cleared once they're done.
+	// FindValidatedGeometry returns NULL for a pair the gate never validated.
+	void SetValidatedGeometry(PairIdx::PairIndex idx, const ValidatedGeometry& geometry);
+	const ValidatedGeometry* FindValidatedGeometry(PairIdx::PairIndex idx) const;
+
 	// Recompute relative-pose for all image pairs, or only for those marked as needing update.
 	//  - updatedCameras: if non-empty, only pairs involving these cameras are updated.
 	//  - onlyTrustedIntrinsics: if true, only updates pairs where both cameras have trusted intrinsics.
@@ -324,6 +342,11 @@ private:
 	// CollectVocabularyPairs or CollectRetrievalPairs call, kept for
 	// CollectVerificationFeedbackPairs (released by Match once the matching rounds complete)
 	std::unordered_map<PairIdx::PairIndex, float> fusedRetrievalScores;
+
+	// Geometry the dense two-view gate validated for a pair (SetValidatedGeometry), read back by
+	// the ROMA2 guided pass (FindValidatedGeometry) so MatchFeaturesGeometric does not re-estimate
+	// a pair the gate already checked; released the same way as fusedRetrievalScores above
+	std::unordered_map<PairIdx::PairIndex, ValidatedGeometry> validatedGeometries;
 };
 
 /*----------------------------------------------------------------*/

@@ -3263,7 +3263,7 @@ bool MatchGeometricSphericalTest()
 
 	ImagePair pair(0, 1);
 	const bool geometryEstimated = MatchFeaturesGeometric(
-		matcher, img0, img1, trackedPoints1, trackedPoints2, trackStatus, pair, 2.f);
+		matcher, img0, img1, trackedPoints1, trackedPoints2, trackStatus, pair, NULL, 2.f);
 
 	if (!geometryEstimated) {
 		VERBOSE("MatchGeometricSphericalTest FAILED: MatchFeaturesGeometric reported fallback (no geometry estimated)");
@@ -3440,7 +3440,7 @@ bool GuidedCrossCheckTest()
 	ImagePair pairOff(0, 1);
 	unsigned numSharedOff = 0;
 	if (!MatchFeaturesGeometric(matcher, img0, img1, trackedPoints1, trackedPoints2, trackStatus,
-			pairOff, 2.f, 0, false, &numSharedOff)) {
+			pairOff, NULL, 2.f, 0, false, &numSharedOff)) {
 		VERBOSE("GuidedCrossCheckTest FAILED: MatchFeaturesGeometric reported fallback (cross-check off)");
 		return false;
 	}
@@ -3460,7 +3460,7 @@ bool GuidedCrossCheckTest()
 	ImagePair pairOn(0, 1);
 	unsigned numSharedOn = 0;
 	if (!MatchFeaturesGeometric(matcher, img0, img1, trackedPoints1, trackedPoints2, trackStatus,
-			pairOn, 2.f, 0, true, &numSharedOn)) {
+			pairOn, NULL, 2.f, 0, true, &numSharedOn)) {
 		VERBOSE("GuidedCrossCheckTest FAILED: MatchFeaturesGeometric reported fallback (cross-check on)");
 		return false;
 	}
@@ -3485,6 +3485,259 @@ bool GuidedCrossCheckTest()
 	}
 
 	VERBOSE("GuidedCrossCheckTest PASSED");
+	return true;
+}
+/*----------------------------------------------------------------*/
+
+
+// ===============================================================================
+// MatchFeaturesGeometric supplied-geometry test: proves the caller's already-checked
+// geometry is genuinely used, and the per-pair estimator genuinely skipped. Only 7 of the
+// 70 grid points below are marked tracked -- enough to clear MatchFeaturesGeometric's own
+// "insufficient tracked points" floor (which stays in effect whether or not a geometry is
+// supplied) but one short of GeometricFilter's own hard minimum of 8 correspondences, so the
+// estimating path cannot even attempt a fit and must fall back to descriptor-only matching
+// (return false). With the identical 7 tracked points but a supplied geometry, Step 1's
+// estimation is skipped entirely and Step 2 runs on that geometry instead, so the call must
+// return true with real guided matches -- proving both that the supplied geometry is used and
+// that the estimator is not.
+// ===============================================================================
+bool SuppliedGeometrySkipsEstimationTest()
+{
+	VERBOSE("\n=== SuppliedGeometrySkipsEstimationTest: caller-supplied geometry bypasses estimation ===");
+
+	// same two-pinhole-camera rig as GuidedCrossCheckTest: baseline along X, identity rotation,
+	// so every epipolar line in image B is the image-A row of its keypoint
+	Scene scene;
+	const int width = 640, height = 480;
+	const REAL focal = 600, baseline = 0.25;
+	scene.cameras.emplace_back(new PinholeCamera(cv::Size(width, height),
+		focal, focal, REAL(width)/2, REAL(height)/2));
+	for (unsigned i = 0; i < 2; ++i) {
+		Pose3D pose;
+		pose.C = Point3(i == 0 ? REAL(0) : baseline, REAL(0), REAL(0));
+		pose.R = Matrix3x3::IDENTITY;
+		scene.images.emplace_back((IIndex)i, String(), pose, 0, scene.cameras[0]);
+	}
+	scene.status.nCalibratedImages = scene.images.size();
+	Image& img0 = scene.images[0];
+	Image& img1 = scene.images[1];
+	const unsigned numCols = 10, numRows = 7;
+	for (unsigned r = 0; r < numRows; ++r) {
+		const REAL z = REAL(3) + REAL(0.6)*r;
+		for (unsigned c = 0; c < numCols; ++c) {
+			const REAL x = REAL(90 + 55*c), y = REAL(50 + 60*r);
+			const Point3 X((x - width/2)*z/focal, (y - height/2)*z/focal, z);
+			for (unsigned v = 0; v < 2; ++v) {
+				Image& img = scene.images[v];
+				const auto [proj, valid] = img.ProjectPoint(X);
+				if (!valid || !Image8U::isInside(proj, img.GetSize())) {
+					VERBOSE("SuppliedGeometrySkipsEstimationTest FAILED: grid point (%u,%u) falls outside image %u", c, r, v);
+					return false;
+				}
+				img.keypoints.emplace_back(Cast<float>(proj), 0.f, 0.f, 10.f);
+			}
+		}
+	}
+	scene.status.nState.set(Scene::Status::STATE::FEATURES_EXTRACTED);
+	const unsigned numPoints = numCols*numRows;
+	ASSERT(img0.keypoints.size() == numPoints && img1.keypoints.size() == numPoints);
+
+	// unique 256-bit binary descriptors, shared by the two views of the same point, so the
+	// ratio test always prefers the true correspondence over any other candidate on the line
+	const int descBytes = 32;
+	img0.descriptors.create((int)numPoints, descBytes, CV_8U);
+	img1.descriptors.create((int)numPoints, descBytes, CV_8U);
+	std::mt19937 descRng(0x5EAC0DEu);
+	for (unsigned i = 0; i < numPoints; ++i)
+		for (int b = 0; b < descBytes; ++b) {
+			const uint8_t byte = (uint8_t)(descRng() & 0xFF);
+			img0.descriptors.at<uint8_t>((int)i, b) = byte;
+			img1.descriptors.at<uint8_t>((int)i, b) = byte;
+		}
+
+	MatchConfig matchCfg;
+	const unsigned numTracked = 7; // one short of GeometricFilter's own >= 8 correspondences
+	matchCfg.minMatches = numTracked; // clears MatchFeaturesGeometric's tracked-point floor exactly
+	matchCfg.maxEpipolarError = 4.f;
+	matchCfg.matchRatio = 0.9f;
+	matchCfg.descriptorsAreBinary = true;
+	matchCfg.minTriangulationAngle = 0.f;
+	matchCfg.reprojThreshold = 0.f;
+	matchCfg.epipoleFilterThreshold = 0.f;
+	PairsMatcher matcher(scene, matchCfg);
+
+	// the geometry the dense gate would have handed over: fitted from the full, healthy
+	// correspondence (img0.keypoints[i] <-> img1.keypoints[i] for every i), independent of
+	// however many points are marked tracked below
+	ImagePair truthFit(0, 1);
+	truthFit.matches.reserve(numPoints);
+	for (unsigned i = 0; i < numPoints; ++i)
+		truthFit.matches.emplace_back(i, i);
+	if (!matcher.GeometricFilter(img0, img1, truthFit)) {
+		VERBOSE("SuppliedGeometrySkipsEstimationTest FAILED: could not fit the ground-truth geometry");
+		return false;
+	}
+	const PairsMatcher::ValidatedGeometry validated{truthFit.F, truthFit.E};
+
+	// only the first 7 points are tracked; the rest carry trackStatus 0 (Step 2 still scans
+	// every keypoint of img1 for them, it just cannot restrict the search to a spatial disc)
+	std::vector<Point2f> trackedPoints1(numPoints), trackedPoints2(numPoints);
+	std::vector<uchar> trackStatus(numPoints, 0);
+	for (unsigned i = 0; i < numPoints; ++i) {
+		trackedPoints1[i] = img0.keypoints[i].pt;
+		trackedPoints2[i] = img1.keypoints[i].pt;
+	}
+	for (unsigned i = 0; i < numTracked; ++i)
+		trackStatus[i] = 1;
+
+	// estimating path: the same 7 tracked points, no supplied geometry -- GeometricFilter's own
+	// "< 8 correspondences" floor rejects it outright, so this must fall back and return false
+	ImagePair pairEstimated(0, 1);
+	const bool estimatedOk = MatchFeaturesGeometric(matcher, img0, img1, trackedPoints1, trackedPoints2, trackStatus,
+		pairEstimated, NULL, 4.f, 0, false, NULL);
+	if (estimatedOk) {
+		VERBOSE("SuppliedGeometrySkipsEstimationTest FAILED: the estimating path unexpectedly succeeded with only %u tracked points", numTracked);
+		return false;
+	}
+
+	// supplied-geometry path: identical inputs, but the caller hands in the already-checked
+	// geometry -- Step 1's estimation is skipped, so the guided pass must run and succeed
+	ImagePair pairSupplied(0, 1);
+	const bool suppliedOk = MatchFeaturesGeometric(matcher, img0, img1, trackedPoints1, trackedPoints2, trackStatus,
+		pairSupplied, &validated, 4.f, 0, false, NULL);
+	if (!suppliedOk) {
+		VERBOSE("SuppliedGeometrySkipsEstimationTest FAILED: the supplied-geometry path reported no geometry available");
+		return false;
+	}
+	if (pairSupplied.matches.empty()) {
+		VERBOSE("SuppliedGeometrySkipsEstimationTest FAILED: the supplied-geometry path produced no guided matches");
+		return false;
+	}
+	// every kept match must land on the true correspondence (unique per-point descriptors): the
+	// epipolar band it walked came from the supplied geometry, since the estimating path above
+	// just proved no geometry could have been fitted from the 7 tracked points
+	for (const DMatch& m : pairSupplied.matches) {
+		if (m.queryIdx != m.trainIdx) {
+			VERBOSE("SuppliedGeometrySkipsEstimationTest FAILED: guided match (%u,%u) is not the true correspondence",
+				m.queryIdx, m.trainIdx);
+			return false;
+		}
+	}
+	VERBOSE("SuppliedGeometrySkipsEstimationTest: %zu guided matches from the supplied geometry", pairSupplied.matches.size());
+
+	VERBOSE("SuppliedGeometrySkipsEstimationTest PASSED");
+	return true;
+}
+/*----------------------------------------------------------------*/
+
+
+// ===============================================================================
+// MatchFeaturesGeometric supplied-geometry parity test: on a healthy pair, handing in the
+// geometry the estimator would itself have produced must guide at least as many matches as
+// the estimating path does -- Step 2 (epipolar band + spatial disc) runs identically either
+// way, so nothing about the caller-supplied path may cost matches on a pair the estimator
+// already handles well.
+// ===============================================================================
+bool SuppliedGeometryParityTest()
+{
+	VERBOSE("\n=== SuppliedGeometryParityTest: supplied geometry matches the estimating path ===");
+
+	Scene scene;
+	const int width = 640, height = 480;
+	const REAL focal = 600, baseline = 0.25;
+	scene.cameras.emplace_back(new PinholeCamera(cv::Size(width, height),
+		focal, focal, REAL(width)/2, REAL(height)/2));
+	for (unsigned i = 0; i < 2; ++i) {
+		Pose3D pose;
+		pose.C = Point3(i == 0 ? REAL(0) : baseline, REAL(0), REAL(0));
+		pose.R = Matrix3x3::IDENTITY;
+		scene.images.emplace_back((IIndex)i, String(), pose, 0, scene.cameras[0]);
+	}
+	scene.status.nCalibratedImages = scene.images.size();
+	Image& img0 = scene.images[0];
+	Image& img1 = scene.images[1];
+	const unsigned numCols = 10, numRows = 7;
+	for (unsigned r = 0; r < numRows; ++r) {
+		const REAL z = REAL(3) + REAL(0.6)*r;
+		for (unsigned c = 0; c < numCols; ++c) {
+			const REAL x = REAL(90 + 55*c), y = REAL(50 + 60*r);
+			const Point3 X((x - width/2)*z/focal, (y - height/2)*z/focal, z);
+			for (unsigned v = 0; v < 2; ++v) {
+				Image& img = scene.images[v];
+				const auto [proj, valid] = img.ProjectPoint(X);
+				if (!valid || !Image8U::isInside(proj, img.GetSize())) {
+					VERBOSE("SuppliedGeometryParityTest FAILED: grid point (%u,%u) falls outside image %u", c, r, v);
+					return false;
+				}
+				img.keypoints.emplace_back(Cast<float>(proj), 0.f, 0.f, 10.f);
+			}
+		}
+	}
+	scene.status.nState.set(Scene::Status::STATE::FEATURES_EXTRACTED);
+	const unsigned numPoints = numCols*numRows;
+	ASSERT(img0.keypoints.size() == numPoints && img1.keypoints.size() == numPoints);
+
+	const int descBytes = 32;
+	img0.descriptors.create((int)numPoints, descBytes, CV_8U);
+	img1.descriptors.create((int)numPoints, descBytes, CV_8U);
+	std::mt19937 descRng(0x5EACA71u);
+	for (unsigned i = 0; i < numPoints; ++i)
+		for (int b = 0; b < descBytes; ++b) {
+			const uint8_t byte = (uint8_t)(descRng() & 0xFF);
+			img0.descriptors.at<uint8_t>((int)i, b) = byte;
+			img1.descriptors.at<uint8_t>((int)i, b) = byte;
+		}
+
+	MatchConfig matchCfg;
+	matchCfg.minMatches = 20;
+	matchCfg.maxEpipolarError = 4.f;
+	matchCfg.matchRatio = 0.9f;
+	matchCfg.descriptorsAreBinary = true;
+	matchCfg.minTriangulationAngle = 0.f;
+	matchCfg.reprojThreshold = 0.f;
+	matchCfg.epipoleFilterThreshold = 0.f;
+	PairsMatcher matcher(scene, matchCfg);
+
+	std::vector<Point2f> trackedPoints1(numPoints), trackedPoints2(numPoints);
+	std::vector<uchar> trackStatus(numPoints, 1);
+	for (unsigned i = 0; i < numPoints; ++i) {
+		trackedPoints1[i] = img0.keypoints[i].pt;
+		trackedPoints2[i] = img1.keypoints[i].pt;
+	}
+
+	// estimating path: the baseline this task must not regress
+	ImagePair pairEstimating(0, 1);
+	const bool estimatedOk = MatchFeaturesGeometric(matcher, img0, img1, trackedPoints1, trackedPoints2, trackStatus,
+		pairEstimating, NULL, 4.f, 0, false, NULL);
+	if (!estimatedOk) {
+		VERBOSE("SuppliedGeometryParityTest FAILED: the estimating path reported no geometry on a healthy pair");
+		return false;
+	}
+	if (!pairEstimating.F.has_value()) {
+		VERBOSE("SuppliedGeometryParityTest FAILED: the estimating path produced no F");
+		return false;
+	}
+
+	// supply exactly what the estimator itself just produced
+	const PairsMatcher::ValidatedGeometry equalGeometry{pairEstimating.F, pairEstimating.E};
+	ImagePair pairSupplied(0, 1);
+	const bool suppliedOk = MatchFeaturesGeometric(matcher, img0, img1, trackedPoints1, trackedPoints2, trackStatus,
+		pairSupplied, &equalGeometry, 4.f, 0, false, NULL);
+	if (!suppliedOk) {
+		VERBOSE("SuppliedGeometryParityTest FAILED: the supplied-geometry path reported no geometry");
+		return false;
+	}
+
+	VERBOSE("SuppliedGeometryParityTest: estimating %zu matches, supplied %zu matches",
+		pairEstimating.matches.size(), pairSupplied.matches.size());
+	if (pairSupplied.matches.size() < pairEstimating.matches.size()) {
+		VERBOSE("SuppliedGeometryParityTest FAILED: supplied-geometry path matched fewer (%zu) than the estimating path (%zu)",
+			pairSupplied.matches.size(), pairEstimating.matches.size());
+		return false;
+	}
+
+	VERBOSE("SuppliedGeometryParityTest PASSED");
 	return true;
 }
 /*----------------------------------------------------------------*/

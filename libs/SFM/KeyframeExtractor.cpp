@@ -358,7 +358,8 @@ public:
 			prevImg,
 			currImg,
 			trackedPrevPts, trackedCurrPts, trackedStatus,
-			pair);
+			pair,
+			NULL); // no gate-validated geometry for keyframe pairs: always estimated here
 		pair.overlapRatio = overlapRatio;
 		pair.overlapArea = overlapArea;
 		if (!pair.matches.empty()) {

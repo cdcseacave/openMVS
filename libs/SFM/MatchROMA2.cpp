@@ -591,8 +591,14 @@ unsigned SFM::MatchPairsROMA2(PairsMatcher& pairsMatcher, RoMa2Onnx& roma2, cons
 			// what MatchPairsBatch already stored for this pair (and geometrically verified),
 			// so such a fallback must never be offered as a replacement for it
 			unsigned numSharedTrain = 0;
+			// the dense two-view gate (ValidatePairsROMA2) already fit and RANSAC-checked this
+			// pair's geometry when it ran (--roma2-validate); if it did, hand it to the guided
+			// pass instead of letting it re-estimate a fresh one from the coarse tracked points
+			// above. A read-only lookup: ValidatePairsROMA2 finished writing before this round's
+			// pool tasks started, so there is no concurrent writer to race with here.
+			const PairsMatcher::ValidatedGeometry* const validatedGeometry = pairsMatcher.FindValidatedGeometry(pair.idx);
 			const bool bGuided = MatchFeaturesGeometric(pairsMatcher, imgA, imgB, trackedA, trackedB, trackStatus,
-				guided, config.epipolarThreshold, threadIdx, config.guidedCrossCheck,
+				guided, validatedGeometry, config.epipolarThreshold, threadIdx, config.guidedCrossCheck,
 				// only the diagnostic reads the count, so asking for it off the diagnostic path
 				// would build the collision map for nothing when the cross-check is off too
 				bDiagnostic ? &numSharedTrain : NULL);
@@ -665,6 +671,11 @@ struct DensePairValidation {
 	IIndex ID1 = NO_ID, ID2 = NO_ID;         // the pair, ID1 < ID2 (indices into Scene::images)
 	std::vector<Point2f> pointsA, pointsB;   // the dense sample: pixels of the working orientation of each image, index-parallel
 	std::vector<uint32_t> inliers;           // ascending indices into pointsA/pointsB the fitted geometry explains
+	// The fit's geometry -- F and/or E, whichever GeometricFilter set for the branch taken --
+	// copied out here because the fit itself (a local of ValidateOnePairROMA2) does not outlive
+	// this record. ValidatePairsROMA2 (step 4, below) hands these to
+	// PairsMatcher::SetValidatedGeometry for a validated pair, for the ROMA2 guided pass to reuse.
+	std::optional<Matrix3x3> F, E;
 	// Spread, on the same DENSE_COVERAGE_GRID^2 grid over each image: first of the whole drawn
 	// sample, then of its inlier subset alone. The pair is the diagnostic -- a sample spread over
 	// the overlap whose *inliers* huddle in one corner is a wrong pair that an inlier count cannot see.
@@ -724,6 +735,10 @@ void ValidateOnePairROMA2(PairsMatcher& pairsMatcher, const Image& imgA, const I
 		fit.matches.emplace_back(i, i);
 	if (!pairsMatcher.GeometricFilter(imgACopy, imgBCopy, fit))
 		return; // no single geometry explained enough of the sample to survive the estimator
+	// copy the fit's geometry out now: `fit` is a local of this function, so this is the only
+	// point where it is still alive to read
+	val.F = fit.F;
+	val.E = fit.E;
 	// `fit.matches` is the RANSAC inlier set on every branch: PartitionMatchesByMask splits the
 	// outliers off, and the strict cheirality/angle/reprojection filter that follows on a branch
 	// with a relative pose only *reorders* matches (FilterMatches -> PartitionMatchesByMask with
@@ -836,10 +851,16 @@ unsigned SFM::ValidatePairsROMA2(PairsMatcher& pairsMatcher, RoMa2Onnx& roma2, P
 			++numUnwarped;
 			continue;
 		}
-		if (val.bValidated)
+		if (val.bValidated) {
 			kept.push_back(candidates[p]);
-		else
+			// hand the fit's geometry to the ROMA2 guided pass (MatchPairsROMA2 ->
+			// MatchFeaturesGeometric), so a pair the gate already checked is not re-estimated
+			// from the coarse tracked points; serial and in-order, like this whole step, so no
+			// concurrent writer of validatedGeometries needs a lock
+			pairsMatcher.SetValidatedGeometry(candidates[p].idx, PairsMatcher::ValidatedGeometry{val.F, val.E});
+		} else {
 			++numRejected;
+		}
 	}
 	ASSERT(kept.size() == numValidated.load());
 	ASSERT(numUnwarped == 0 || stats.numFailedLoads > 0 || stats.numFailedMatches > 0);
