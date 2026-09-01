@@ -506,16 +506,39 @@ inline void AddPinholeIntrinsics(std::unordered_map<const Camera*, DoubleArr>& i
 	ExtractPinholeIntrinsics(static_cast<const PinholeCamera*>(img.pCamera), it.first->second.data());
 }
 
-// Pick the (possibly confidence-scaled) loss for a keypoint observation. Returns false if the
-// keypoint is below the confidence threshold and the observation should be skipped.
-inline bool SelectReprojectionLoss(const BAConfig& config, const cv::KeyPoint& kp,
-	ceres::LossFunction* baseLoss, ceres::LossFunction*& outLoss) {
+// Pick the (possibly confidence-scaled) loss for the observation of keypoint featureID of img.
+// Sets bDense for the caller's summary. Returns false if the keypoint is below the confidence
+// threshold and the observation should be skipped.
+//
+// A dense (descriptor-less) keypoint's residual is scaled by config.denseObservationWeight: its
+// position was sampled from a low-resolution warp, while a described keypoint's is sub-pixel at
+// full resolution, so the two are not equally precise measurements and BA must not weight them
+// alike. The weight follows the KEYPOINT, not the match that created it -- after the described-wins
+// dedup of PairsMatcher::FilterRedundantKeypoints an observation created by a dense match can
+// reference a described keypoint, and its measured position is then the sub-pixel one, so it takes
+// full weight. This models measurement precision only: a wrong correspondence is the robust loss's
+// and FilterTracks' job, and charging it here as well would model the same thing twice.
+//
+// PROVISIONAL DEFAULT (BAConfig::denseObservationWeight = 0.25). It was NOT measured. The value
+// that belongs here is 1/k^2, where k is the ratio of the robust sigma of dense to described
+// reprojection residuals on a ground-truth capture; 0.25 is k = 2, which is the mild end of what
+// the warp's own sampling scale implies (a 640-px warp frame over a multi-megapixel image puts one
+// warp cell across several pixels, against sub-pixel detector localization -- k = 4, weight 0.0625,
+// is just as plausible). It is deliberately the mild end: a provisional value that is wrong then
+// errs toward the behaviour before this weight existed rather than toward discarding the dense
+// signal. Sweep it with --ba-dense-weight and replace this default with the measured one.
+inline bool SelectReprojectionLoss(const BAConfig& config, const Image& img, uint32_t featureID,
+	ceres::LossFunction* baseLoss, ceres::LossFunction*& outLoss, bool& bDense) {
 	outLoss = baseLoss;
-	if (!config.useKeypointConfidence)
-		return true;
-	const double weight = Image::ComputeKeypointPrecision(kp, config.minKeypointResponse);
-	if (weight <= 0.0)
-		return false; // skip low-confidence keypoint
+	double weight = 1.0;
+	if (config.useKeypointConfidence) {
+		weight = Image::ComputeKeypointPrecision(img.keypoints[featureID], config.minKeypointResponse);
+		if (weight <= 0.0)
+			return false; // skip low-confidence keypoint
+	}
+	bDense = img.IsDenseKeypoint(featureID);
+	if (bDense)
+		weight *= config.denseObservationWeight;
 	if (weight != 1.0)
 		outLoss = new ceres::ScaledLoss(baseLoss, weight, ceres::DO_NOT_TAKE_OWNERSHIP);
 	return true;
@@ -654,6 +677,7 @@ bool BundleAdjustment::Adjust()
 	// Add reprojection residuals
 	uint32_t numReprojResiduals = 0;
 	uint32_t numSkippedLowConfidence = 0;
+	uint32_t numDenseResiduals = 0;
 	numReprojResidualsPerImage.resize(scene.images.size());
 	numReprojResidualsPerImage.Memset(0);
 	for (Track& track : scene.tracks) {
@@ -665,17 +689,19 @@ bool BundleAdjustment::Adjust()
 			if (!img.IsValid())
 				continue;
 			ASSERT(obs.featureID < img.keypoints.size());
-			const cv::KeyPoint& kp = img.keypoints[obs.featureID];
-			// Compute weight from keypoint response / size (if enabled)
+			// Compute weight from keypoint response / size (if enabled), down-weighted on a dense
+			// keypoint (whose position came from the warp, not from the detector)
 			ceres::LossFunction* residual_loss_function;
-			if (!SelectReprojectionLoss(config, kp, loss_function, residual_loss_function)) {
+			bool bDense = false;
+			if (!SelectReprojectionLoss(config, img, obs.featureID, loss_function, residual_loss_function, bDense)) {
 				++numSkippedLowConfidence;
 				continue; // skip low-confidence keypoints
 			}
-			AddReprojectionResidual(problem, residual_loss_function, img, kp,
+			AddReprojectionResidual(problem, residual_loss_function, img, img.keypoints[obs.featureID],
 				poseParams.data() + imgID * 7, track.position.ptr(), intrinsicParams);
 			++numReprojResidualsPerImage[imgID];
 			++numReprojResiduals;
+			numDenseResiduals += bDense;
 		}
 	}
 	if (config.useKeypointConfidence) {
@@ -683,6 +709,10 @@ bool BundleAdjustment::Adjust()
 		    numReprojResiduals, numSkippedLowConfidence);
 	} else {
 		DEBUG_EXTRA("Created %u reprojection residuals", numReprojResiduals);
+	}
+	if (numDenseResiduals > 0) {
+		DEBUG("Bundle adjustment: %u/%u reprojection residuals are on dense keypoints, weighted %g",
+			numDenseResiduals, numReprojResiduals, config.denseObservationWeight);
 	}
 
 	// Set intrinsic parameter constraints (if refining intrinsics)
@@ -1040,12 +1070,13 @@ bool BundleAdjustment::AdjustLocal(
 				continue;
 			const Image& img = scene.images[imgID];
 			ASSERT(obs.featureID < img.keypoints.size());
-			const cv::KeyPoint& kp = img.keypoints[obs.featureID];
-			// Compute weight from keypoint response / size (if enabled)
+			// Compute weight from keypoint response / size (if enabled), down-weighted on a dense
+			// keypoint (whose position came from the warp, not from the detector)
 			ceres::LossFunction* residual_loss_function;
-			if (!SelectReprojectionLoss(config, kp, loss_function, residual_loss_function))
+			bool bDense = false;
+			if (!SelectReprojectionLoss(config, img, obs.featureID, loss_function, residual_loss_function, bDense))
 				continue; // skip low-confidence keypoints
-			AddReprojectionResidual(problem, residual_loss_function, img, kp,
+			AddReprojectionResidual(problem, residual_loss_function, img, img.keypoints[obs.featureID],
 				poseParams.data() + imgID * 7, track.position.ptr(), intrinsicParams);
 			++numReprojResidualsPerImage[imgID];
 			++numReprojResiduals;

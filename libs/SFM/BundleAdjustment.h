@@ -53,6 +53,16 @@ struct SFM_API BAConfig
 	bool useKeypointConfidence = false; // Weight observations by keypoint response and size
 	float minKeypointResponse = 0.001f; // Minimum keypoint response to include in BA (0 = include all)
 
+	// Loss weight of a reprojection residual on a DENSE (descriptor-less) keypoint, relative to
+	// the 1.0 a described one carries: a dense keypoint's position is sampled from a
+	// low-resolution warp, a described keypoint's is sub-pixel at full resolution, and BA must not
+	// treat the two as equally precise. It is a measurement-precision weight, not a fifth gate
+	// threshold, and it follows the KEYPOINT rather than the match that created it (see
+	// SelectReprojectionLoss). 1 = no down-weighting.
+	// The default is PROVISIONAL and was NOT measured -- see BundleAdjustment.cpp for how it was
+	// picked and what has to replace it.
+	double denseObservationWeight = 0.25;
+
 	// Solver parameters
 	unsigned maxIterations = 100;    // Maximum solver iterations
 	float robustThreshold = 2.f;     // Huber loss threshold (pixels, 0 = disabled)

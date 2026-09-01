@@ -103,6 +103,7 @@ String strUndistortExt;
 float thAlignGPS;
 double gpsPositionWeight;
 double gpsPositionWeightZ;
+double baDenseWeight;
 unsigned nMaxThreads;
 int nArchiveType;
 int nProcessPriority;
@@ -204,6 +205,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("align-gps-threshold", boost::program_options::value<float>(&OPT::thAlignGPS)->default_value(5.f), "maximum distance in meters for aligning GPS positions to reconstruction poses (0 = disabled)")
 		("gps-position-weight", boost::program_options::value(&OPT::gpsPositionWeight)->default_value(0.0), "horizontal weight of the GPS position priors used to refine the geo-aligned reconstruction (0 = disabled)")
 		("gps-position-weight-z", boost::program_options::value(&OPT::gpsPositionWeightZ)->default_value(0.0), "vertical weight of the GPS position priors used to refine the geo-aligned reconstruction (0 = disabled)")
+		("ba-dense-weight", boost::program_options::value(&OPT::baDenseWeight)->default_value(0.25), "bundle adjustment: loss weight of a reprojection residual on a dense (warp-sampled) keypoint, relative to the 1.0 a described one carries (1 = no down-weighting); PROVISIONAL default, see BundleAdjustment.cpp")
 		;
 
 	boost::program_options::options_description cmdline_options;
@@ -412,6 +414,7 @@ int main(int argc, LPCTSTR* argv)
 	cfg.thAlignGPS = OPT::thAlignGPS;
 	cfg.baConfig.gpsPositionWeight = OPT::gpsPositionWeight;
 	cfg.baConfig.gpsPositionWeightZ = OPT::gpsPositionWeightZ;
+	cfg.baConfig.denseObservationWeight = OPT::baDenseWeight;
 	cfg.estimatePoseUncertainty = !OPT::strExportPoseQuality.empty();
 	cfg.extractColors = OPT::bExtractColors;
 	cfg.clusterCfg.maxViewsPerCluster = OPT::maxViewsPerCluster;

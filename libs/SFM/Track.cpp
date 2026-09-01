@@ -281,6 +281,10 @@ std::pair<float, float> SFM::FilterTracks(Scene& scene,
 	MeanStdMinMax<REAL> trackCompletenessStats;
 	double sumAngularError = 0.0, sumPixelError = 0.0;
 	uint32_t numInlierTracks = 0, numInlierErrors = 0;
+	// A down-weighted dense observation still faces this same reprojection bar, so it may be
+	// filtered at a different rate than a described one. Counted here, and reported below when the
+	// scene carries any, so that rate is visible rather than moving silently.
+	uint32_t numDenseKept = 0, numDenseDropped = 0, numDescribedKept = 0, numDescribedDropped = 0;
 	FloatArr dists(0, MAXF(scene.status.nTracks, 100u));
 	for (Track& track : scene.tracks) {
 		track.numInliers = 0;
@@ -304,8 +308,12 @@ std::pair<float, float> SFM::FilterTracks(Scene& scene,
 			const Point3 observedRay = img.pCamera->UnprojectNormalized(Cast<REAL>(kp.pt));
 			const REAL cosAngularError = ComputeAngle(observedRay.ptr(), Xcam.ptr());
 			const REAL minCosAngularError = COS(img.pCamera->PixelErrorToAngular(maxReprojErrorPixels));
-			if (cosAngularError < minCosAngularError)
+			const bool bDense = img.IsDenseKeypoint(obs.featureID);
+			if (cosAngularError < minCosAngularError) {
+				++(bDense ? numDenseDropped : numDescribedDropped);
 				continue; // outlier or behind the camera observation
+			}
+			++(bDense ? numDenseKept : numDescribedKept);
 			// Accepted — compute projection for pixel-error stats (well-defined now: cheirality passed above)
 			const Point2 projected = img.pCamera->Project(Xcam).first;
 			const float pixelError = norm(Cast<float>(projected) - kp.pt);
@@ -378,6 +386,16 @@ std::pair<float, float> SFM::FilterTracks(Scene& scene,
 	}
 	DEBUG_EXTRA("Tracks filtered: %u/%u inliers, mean reprojection error %.2f pixels (%.2f th), angular %.2g deg, %.2f views/track (completeness: %.2f mean, %.2f stddev)",
 		numInlierTracks, scene.tracks.size(), avgPixel, maxReprojErrorPixels, avgAngular, numInlierErrors / (double)MAXF(numInlierTracks, 1u), trackCompletenessStats.GetMean()*100, trackCompletenessStats.GetStdDev()*100);
+	// the dense/described split of what this bar dropped: the two rates are what says whether the
+	// dense observations are being filtered harder than the sparse ones at the same threshold
+	if (numDenseKept + numDenseDropped > 0) {
+		DEBUG("Observations filtered: %u/%u dense dropped (%.1f%%), %u/%u described dropped (%.1f%%)",
+			numDenseDropped, numDenseKept + numDenseDropped,
+			100.0 * numDenseDropped / (double)(numDenseKept + numDenseDropped),
+			numDescribedDropped, numDescribedKept + numDescribedDropped,
+			numDescribedKept + numDescribedDropped > 0 ?
+				100.0 * numDescribedDropped / (double)(numDescribedKept + numDescribedDropped) : 0.0);
+	}
 	return std::make_pair(avgPixel, avgAngular);
 }
 
