@@ -134,8 +134,48 @@ namespace {
 struct WarpCandidate {
 	float confidence;
 	int cell;        // y*cols + x of the warp grid, so the sample keeps raster order
+	int priority;    // lattice priority of the cell, the bucket winner rule (see WarpCellLatticePriority)
 	Point2f ptA, ptB;
 };
+
+// PAIR-INDEPENDENT priority of a warp cell: the largest k for which both cell coordinates are
+// multiples of 2^k, so cells on a coarse dyadic lattice outrank cells on a finer one and (0,0)
+// outranks everything. Depends on the cell alone -- not on this pair's confidences, not on its
+// bucket grid -- which is the whole point:
+//   The bucket grid is sized per draw (WarpBucketGridSide), so two pairs sharing image A stratify
+//   the SAME region of A on grids of different pitch and phase. Picking the most confident cell in
+//   each bucket then puts the two draws' A-side points a few cells apart, and the exact-position
+//   dedup downstream (FilterRedundantKeypoints, 0.1 px) sees two distinct keypoints where one
+//   surface point was sampled twice. A lattice priority makes any two buckets that cover a common
+//   region agree on which cell of it to take whenever both find it eligible, so those samples land
+//   on the same pixel of A and dedup chains them into one track across pairs.
+//   Chaining is through the A SIDE ONLY: the B-side position is whatever the warp maps that cell to,
+//   a float that two pairs have no reason to agree on. So a chain grows along the images that play
+//   the A role of their pairs, and stops naturally wherever the confident overlaps stop coinciding.
+// Confidence remains the ELIGIBILITY test (the eroded minConfidence bar in CollectWarpCandidates),
+// it is simply no longer the ranking: every candidate cell is one the warp is confident about, and
+// among those the choice may as well be the one that two pairs can both make.
+inline int WarpCellLatticePriority(int x, int y)
+{
+	// trailing zeros of x, with 0 divisible by every power of two (so it never loses a comparison);
+	// the warp grid is a few hundred cells wide, so the loop runs at most ~9 times
+	const auto TrailingZeros = [](int v) {
+		if (v == 0)
+			return 31;
+		int k = 0;
+		while ((v & 1) == 0) { v >>= 1; ++k; }
+		return k;
+	};
+	return MINF(TrailingZeros(x), TrailingZeros(y));
+}
+
+// The ONE bucket winner rule, shared by every warp draw: higher lattice priority wins, and a tie
+// keeps the candidate seen first. Both draws walk their candidates in warp-grid raster order, so
+// "first" is raster order, and the rule is a pure function of the cell coordinates.
+inline bool WarpCandidateBeats(const WarpCandidate& candidate, const WarpCandidate& best)
+{
+	return candidate.priority > best.priority;
+}
 
 // Pass 1 of every warp draw: every eligible cell, in raster order. Their count is what the bucket
 // grid is sized from, so it has to be known before a single bucket exists.
@@ -153,6 +193,7 @@ void CollectWarpCandidates(const cv::Size& sizeA, const cv::Size& sizeB, const I
 			if (!Image8U::isInside(ptB, sizeB))
 				continue; // the warp sends this cell outside the second image
 			candidates.push_back(WarpCandidate{confidence, y*overlap.cols + x,
+				WarpCellLatticePriority(x, y),
 				CoordFromTo(Point2f((float)x, (float)y), overlap.size(), sizeA), ptB});
 		}
 	}
@@ -222,8 +263,8 @@ size_t SFM::SampleWarpByCoverage(
 		FOREACH(i, candidates) {
 			const WarpCandidate& candidate = candidates[i];
 			int& best = bucketBest[WarpCellBucket(candidate.cell, overlap, numBuckets)];
-			if (best < 0 || candidate.confidence > candidates[best].confidence)
-				best = (int)i; // strictly more confident wins, so a tie keeps the first cell in raster order
+			if (best < 0 || WarpCandidateBeats(candidate, candidates[best]))
+				best = (int)i; // the one winner rule: lattice priority, ties to raster order
 		}
 		chosen.reserve(MINF(bucketBest.size(), candidates.size()));
 		for (const int idxCandidate : bucketBest)
@@ -245,6 +286,32 @@ size_t SFM::SampleWarpByCoverage(
 /*----------------------------------------------------------------*/
 
 
+void SFM::ThinSampleEvenly(
+	std::vector<Point2f>& sampledA,
+	std::vector<Point2f>& sampledB,
+	std::vector<float>& confidences,
+	unsigned maxSamples)
+{
+	ASSERT(sampledA.size() == sampledB.size() && sampledA.size() == confidences.size());
+	const size_t numSamples = sampledA.size();
+	if (numSamples <= maxSamples)
+		return;
+	// an even stride through the sample's own order, which is the warp raster order every draw
+	// hands back: strictly increasing (numSamples > maxSamples), so the survivors keep that order
+	// and the keypoint indices an append hands out stay reproducible
+	for (size_t i = 0; i < maxSamples; ++i) {
+		const size_t src = i*numSamples/maxSamples;
+		sampledA[i] = sampledA[src];
+		sampledB[i] = sampledB[src];
+		confidences[i] = confidences[src];
+	}
+	sampledA.resize(maxSamples);
+	sampledB.resize(maxSamples);
+	confidences.resize(maxSamples);
+}
+/*----------------------------------------------------------------*/
+
+
 size_t SFM::SampleWarpComplementary(
 	const Image& imgA,
 	const Image& imgB,
@@ -255,7 +322,8 @@ size_t SFM::SampleWarpComplementary(
 	const std::vector<Point2f>& occupiedA,
 	std::vector<Point2f>& sampledA,
 	std::vector<Point2f>& sampledB,
-	std::vector<float>& confidences)
+	std::vector<float>& confidences,
+	WarpDrawCoverage* coverage)
 {
 	ASSERT(!warp.empty() && warp.size() == overlap.size());
 	// cleared before any early return: the draw is a pure function of its inputs, so a caller
@@ -263,6 +331,8 @@ size_t SFM::SampleWarpComplementary(
 	sampledA.clear();
 	sampledB.clear();
 	confidences.clear();
+	if (coverage)
+		*coverage = WarpDrawCoverage();
 	if (maxSamples == 0)
 		return 0;
 	const cv::Size sizeA(imgA.GetSize()), sizeB(imgB.GetSize());
@@ -295,35 +365,39 @@ size_t SFM::SampleWarpComplementary(
 	// one winner per UNOCCUPIED bucket. An occupied bucket contributes nothing rather than a
 	// reduced quota: "up to" a budget is a ceiling, not a target that has to be filled, and the
 	// point of the draw is the part of the frame the sparse matches left empty.
+	// The same pass censuses the buckets (WarpDrawCoverage): which of them hold an eligible cell at
+	// all -- the pair's valid disparity area on this grid -- and how many of THOSE the caller's own
+	// correspondences already occupy. Counted here rather than by a second sweep because this loop
+	// is the only place both facts are known per bucket, and counted over the eligible cells alone
+	// so that an occupied position outside the valid area (possible: occupancy is rounded to the
+	// nearest cell and a sparse inlier may sit where the warp is not confident) cannot report more
+	// covered area than there is.
+	std::vector<bool> hasCandidate((size_t)numBuckets*numBuckets, false);
+	unsigned numConfidentBuckets = 0, numOccupiedBuckets = 0;
 	std::vector<int> bucketBest((size_t)numBuckets*numBuckets, -1);
 	FOREACH(i, candidates) {
 		const WarpCandidate& candidate = candidates[i];
 		const size_t bucket = WarpCellBucket(candidate.cell, overlap, numBuckets);
+		if (!hasCandidate[bucket]) {
+			hasCandidate[bucket] = true;
+			++numConfidentBuckets;
+			if (occupied[bucket])
+				++numOccupiedBuckets;
+		}
 		if (occupied[bucket])
 			continue;
 		int& best = bucketBest[bucket];
-		if (best < 0 || candidate.confidence > candidates[best].confidence)
-			best = (int)i; // strictly more confident wins, so a tie keeps the first cell in raster order
+		if (best < 0 || WarpCandidateBeats(candidate, candidates[best]))
+			best = (int)i; // the one winner rule: lattice priority, ties to raster order
 	}
+	if (coverage)
+		*coverage = WarpDrawCoverage{numConfidentBuckets, numOccupiedBuckets, numBuckets};
 	std::vector<int> chosen;
 	chosen.reserve(MINF(bucketBest.size(), candidates.size()));
 	for (const int idxCandidate : bucketBest)
 		if (idxCandidate >= 0)
 			chosen.push_back(idxCandidate);
 	std::sort(chosen.begin(), chosen.end()); // raster order, independent of the bucket traversal above
-	if (chosen.size() > maxSamples) {
-		// the occupied-bucket count is bounded by min(E, n^2) and not by maxSamples (see
-		// SampleWarpByCoverage's header), so a draw can still come out over its budget. Thin it by
-		// an even stride through the raster order, never by confidence: a confidence sort would
-		// undo the whole stratification by re-clustering the survivors wherever the warp happens
-		// to be most certain, which is exactly the texture the sparse matcher already found.
-		const size_t numChosen = chosen.size();
-		std::vector<int> thinned;
-		thinned.reserve(maxSamples);
-		for (size_t i = 0; i < maxSamples; ++i)
-			thinned.push_back(chosen[i*numChosen/maxSamples]); // strictly increasing, numChosen > maxSamples
-		chosen.swap(thinned);
-	}
 	sampledA.reserve(chosen.size());
 	sampledB.reserve(chosen.size());
 	confidences.reserve(chosen.size());
@@ -335,6 +409,9 @@ size_t SFM::SampleWarpComplementary(
 		// the two differ by rounding, and this one is what the winner was actually chosen on
 		confidences.push_back(candidate.confidence);
 	}
+	// the unoccupied-bucket count is bounded by min(E, n^2) and not by maxSamples (see
+	// SampleWarpByCoverage's header), so a draw can still come out over its budget
+	ThinSampleEvenly(sampledA, sampledB, confidences, maxSamples);
 	return sampledA.size();
 }
 /*----------------------------------------------------------------*/
@@ -350,7 +427,8 @@ size_t SFM::SampleWarpComplementary(
 	const ImagePair& pair,
 	std::vector<Point2f>& sampledA,
 	std::vector<Point2f>& sampledB,
-	std::vector<float>& confidences)
+	std::vector<float>& confidences,
+	WarpDrawCoverage* coverage)
 {
 	// the pair's sparse evidence, in imgA's pixels -- see the header for why each of the three
 	// choices made here (the segment, the index side, the image) is the one that makes the draw
@@ -366,7 +444,7 @@ size_t SFM::SampleWarpComplementary(
 		occupiedA.push_back(imgA.keypoints[pair.matches[m].queryIdx].pt);
 	}
 	return SampleWarpComplementary(imgA, imgB, warp, overlap, minConfidence, maxSamples,
-		occupiedA, sampledA, sampledB, confidences);
+		occupiedA, sampledA, sampledB, confidences, coverage);
 }
 /*----------------------------------------------------------------*/
 

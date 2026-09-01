@@ -88,7 +88,13 @@ SFM_API size_t TrackKeypointsByWarp(
 // imgB; let E be how many of the grid's T cells are. If E <= maxSamples the whole confident overlap
 // is taken. Otherwise the warp grid is stratified into n x n buckets over the WHOLE image, with
 //    n = min(warpSize, ceil(sqrt(maxSamples * T / E))),
-// and the most confident cell of each bucket is taken -- one per bucket, and nothing else.
+// and ONE cell of each bucket is taken -- one per bucket, and nothing else. Which one is the shared
+// winner rule of every warp draw (ROMA2Warp.cpp, WarpCellLatticePriority): the eligible cell with
+// the highest pair-independent lattice priority, i.e. the one whose grid coordinates are both
+// divisible by the largest power of two, ties going to raster order. Confidence is the eligibility
+// test, not the ranking -- a rule that reads this pair's confidences would pick a different cell of
+// the same region for the next pair, and the cross-pair keypoint identity the supplement's tracks
+// are built on needs the two to agree (see WarpCellLatticePriority for the full argument).
 //
 // The T/E factor is what makes the draw uniform under partial overlap, and it is the whole point of
 // the design. A pair never overlaps completely, so with a fixed sqrt(maxSamples) grid most buckets
@@ -133,12 +139,47 @@ SFM_API size_t SampleWarpByCoverage(
 	float& coverageA,
 	float& coverageB);
 
+// Bucket census of one complementary draw: how much of the pair's VALID DISPARITY AREA -- the part
+// of the warp the confidence map (after the erosion) admits and the warp sends inside the second
+// image, which is exactly the area the dense two-view gate judged the pair on -- the correspondences
+// the caller already has do cover.
+// Measured on the draw's own n x n bucket grid, the fine one, so a region the sparse matcher covered
+// sparsely still reads as largely uncovered: `numConfidentBuckets` are the buckets holding at least
+// one eligible warp cell, `numOccupiedBuckets` those of them an `occupiedA` position also lands in.
+// Coverage() is their ratio, and 1 - Coverage() is the share of the valid area still to be filled --
+// what the caller sizes the dense budget from (MatchROMA2.cpp, DrawDenseSupplement).
+struct SFM_API WarpDrawCoverage {
+	unsigned numConfidentBuckets = 0; // buckets holding at least one eligible (confident, in-frame) warp cell
+	unsigned numOccupiedBuckets = 0;  // ...of those, the ones an already-held correspondence occupies
+	int numBuckets = 0;               // side n of the n x n grid the census was taken on
+	// Occupied share of the valid disparity area, in [0,1]. A warp with no eligible cell at all has
+	// no valid area to cover, and reads as 0 (uncovered) rather than as fully covered: the draw
+	// returns nothing on it either way, so the two differ only in what the caller logs.
+	inline float Coverage() const {
+		return numConfidentBuckets > 0 ? (float)numOccupiedBuckets/(float)numConfidentBuckets : 0.f;
+	}
+};
+
+// Thin an index-parallel warp sample down to at most maxSamples correspondences by an even stride
+// through its order, in place. Never by confidence: a confidence sort would re-cluster the survivors
+// onto the warp's most certain region, which is the textured region the sparse matcher already
+// covered, and undo the stratification the draw exists for. A sample already within the budget is
+// left exactly as it is, and a zero budget empties it.
+// Shared by SampleWarpComplementary (which caps its own draw with it) and by the caller that thins a
+// full draw to a budget only the finished draw's coverage could tell it (DrawDenseSupplement), so
+// the two can never thin differently.
+SFM_API void ThinSampleEvenly(
+	std::vector<Point2f>& sampledA,
+	std::vector<Point2f>& sampledB,
+	std::vector<float>& confidences,
+	unsigned maxSamples);
+
 // Draw a sample of confident correspondences out of an (already eroded) warp that COMPLEMENTS
 // correspondences the caller already has: the dense supplement of a weak pair, drawn so that the
 // union of the pair's verified sparse matches and this sample is spread as evenly as the warp
-// allows. Same eligibility rule and same n x n bucket stratification as SampleWarpByCoverage, with
-// n sized from maxSamples -- this draw's budget, i.e. what is left of the pair's total after its
-// sparse matches -- so the grid coarsens as the sparse evidence grows, and with two differences:
+// allows. Same eligibility rule, same n x n bucket stratification and the same in-bucket winner rule
+// as SampleWarpByCoverage, with n sized from maxSamples -- this draw's budget, i.e. the total the
+// supplemented pair is drawn against -- and with two differences:
 //
 //  - `occupiedA` are positions in imgA's pixels (its verified sparse inliers) whose buckets are
 //    struck out of the draw entirely. An occupied bucket yields NO dense point: "up to" a budget
@@ -147,14 +188,16 @@ SFM_API size_t SampleWarpByCoverage(
 //    grid lives in, and the only one where a keypoint position and a warp cell are directly
 //    comparable; on a genuine pair the warp carries that density over to B.
 //  - maxSamples is a real CAP here, not only the target it is for the gate: a pair has a match
-//    budget, so a draw whose occupied-bucket count still runs over it is thinned by an even stride
-//    through the raster order. Never by confidence -- that would re-cluster the survivors onto the
-//    warp's most certain region, which is the textured region the sparse matcher already covered.
+//    budget, so a draw whose unoccupied-bucket count still runs over it is thinned by an even stride
+//    through the raster order (ThinSampleEvenly).
 //
 // sampledA/sampledB/confidences are index-parallel and in warp-grid raster order (the order
 // AppendDenseMatches needs to hand out reproducible keypoint indices), sampledA/sampledB in the
 // pixels of the working orientation of imgA/imgB, and confidences carrying each winning cell's own
 // overlap value -- the value it was selected on -- for Image::MakeDenseKeypoint.
+// `coverage`, when given, receives the bucket census of THIS draw (see WarpDrawCoverage): the
+// caller's own share of the valid disparity area, measured on the grid the draw just used and
+// before any thinning, which is the only point where both numbers exist.
 // The draw is a pure function of its inputs: same inputs, same output, on any thread.
 // Returns the number of sampled correspondences (<= maxSamples).
 SFM_API size_t SampleWarpComplementary(
@@ -167,7 +210,8 @@ SFM_API size_t SampleWarpComplementary(
 	const std::vector<Point2f>& occupiedA,
 	std::vector<Point2f>& sampledA,
 	std::vector<Point2f>& sampledB,
-	std::vector<float>& confidences);
+	std::vector<float>& confidences,
+	WarpDrawCoverage* coverage = NULL);
 
 // Same draw, taking the occupied positions from `pair` itself: the image-A keypoint positions of
 // its verified SPARSE inliers. This is the form a supplemented pair actually uses, and it exists as
@@ -181,7 +225,9 @@ SFM_API size_t SampleWarpComplementary(
 //   - `queryIdx`, the imgA index of a match (AppendDenseMatches emits `(baseA+i, baseB+i)`);
 //   - imgA's keypoints, because the warp grid lives in imgA's frame (see the note above).
 // `pair` must be the verified pair of imgA/imgB in that order (pair.ID1 -> imgA), and must carry no
-// dense segment yet.
+// dense segment yet. A pair with no sparse inliers at all (the dense-only pair of a validated pair
+// whose guided SIFT pass failed) occupies nothing, so its census reads coverage 0 and its draw is
+// the whole valid area -- which is the point.
 SFM_API size_t SampleWarpComplementary(
 	const Image& imgA,
 	const Image& imgB,
@@ -192,7 +238,8 @@ SFM_API size_t SampleWarpComplementary(
 	const ImagePair& pair,
 	std::vector<Point2f>& sampledA,
 	std::vector<Point2f>& sampledB,
-	std::vector<float>& confidences);
+	std::vector<float>& confidences,
+	WarpDrawCoverage* coverage = NULL);
 
 // Fraction of a DENSE_COVERAGE_GRID^2 grid over each image that a warp sample occupies:
 // coverageA over sampledA in an image of sizeA, coverageB over sampledB in an image of sizeB.

@@ -1526,8 +1526,9 @@ bool ROMA2SupplementDrawTest()
 	Image32F overlap(cv::Size(cells, cells), 0.6f);
 	std::vector<Point2f> denseA, denseB;
 	std::vector<float> confidences;
+	WarpDrawCoverage census;
 	const size_t numDense = SampleWarpComplementary(imgA, imgB, warp, overlap, 0.3f, denseBudget,
-		sparseA, denseA, denseB, confidences);
+		sparseA, denseA, denseB, confidences, &census);
 	if (numDense == 0 || denseB.size() != numDense || confidences.size() != numDense) {
 		VERBOSE("ROMA2SupplementDrawTest FAILED: the draw returned %u points with %u/%u index-parallel arrays",
 			(unsigned)numDense, (unsigned)denseB.size(), (unsigned)confidences.size());
@@ -1555,6 +1556,27 @@ bool ROMA2SupplementDrawTest()
 	if (numDense != numExpected) {
 		VERBOSE("ROMA2SupplementDrawTest FAILED: %u dense points for the %u unoccupied buckets of the %dx%d grid that hold a candidate",
 			(unsigned)numDense, (unsigned)numExpected, numBuckets, numBuckets);
+		return false;
+	}
+	// THE CENSUS the infusion decision is taken on: the valid disparity area on this same grid, and
+	// the share of it the pair's sparse matches already hold. Counted over the buckets that hold an
+	// ELIGIBLE cell, so a sparse inlier sitting where the warp is not confident cannot report more
+	// covered area than exists -- the coverage has to stay in [0,1] for a budget to be derived from it
+	size_t numConfidentBuckets = 0, numOccupiedBuckets = 0;
+	FOREACH(b, hasCandidate)
+		if (hasCandidate[b]) {
+			++numConfidentBuckets;
+			if (occupied[b])
+				++numOccupiedBuckets;
+		}
+	if (census.numBuckets != numBuckets ||
+		census.numConfidentBuckets != numConfidentBuckets || census.numOccupiedBuckets != numOccupiedBuckets ||
+		ABS(census.Coverage() - (float)numOccupiedBuckets/(float)numConfidentBuckets) > 1e-6f ||
+		census.numConfidentBuckets != numOccupiedBuckets + numExpected) {
+		VERBOSE("ROMA2SupplementDrawTest FAILED: the draw censused %u/%u buckets on a %dx%d grid (coverage %.4f), "
+			"expected %u/%u on %dx%d and confident == occupied + drawn",
+			census.numOccupiedBuckets, census.numConfidentBuckets, census.numBuckets, census.numBuckets, census.Coverage(),
+			(unsigned)numOccupiedBuckets, (unsigned)numConfidentBuckets, numBuckets, numBuckets);
 		return false;
 	}
 	// the pair ends at or below its TOTAL, which is the whole point of the renamed budget
@@ -1735,6 +1757,141 @@ bool ROMA2SupplementDrawTest()
 		VERBOSE("ROMA2SupplementDrawTest FAILED: the draw reached the strict-filter rejects' region with %u points and "
 			"image B's keypoint region with %u, expected both non-empty -- the gather ran past the sparse segment, or read image B",
 			numInRejects, numInOtherB);
+		return false;
+	}
+
+	// 6) CONFIDENCE IS THE ELIGIBILITY TEST, NOT THE RANKING. Two warps confident over the same
+	// region with OPPOSITE confidence ramps must produce the very same draw: the winner of a bucket
+	// is its highest-lattice-priority eligible cell, which depends on the cell coordinates alone.
+	// This is what makes two pairs sharing image A able to agree on a point at all.
+	Image32F rampUp(cv::Size(cells, cells), 0.f), rampDown(cv::Size(cells, cells), 0.f);
+	for (int y = 0; y < 120; ++y)
+		for (int x = 0; x < 120; ++x) {
+			rampUp(y, x) = 0.35f + 0.6f*(float)(x + y)/(float)(2*cells);
+			rampDown(y, x) = 0.95f - 0.6f*(float)(x + y)/(float)(2*cells);
+		}
+	std::vector<Point2f> upA, upB, downA, downB;
+	std::vector<float> upC, downC;
+	const std::vector<Point2f> noneOccupied;
+	SampleWarpComplementary(imgA, imgB, warp, rampUp, 0.3f, 900, noneOccupied, upA, upB, upC);
+	SampleWarpComplementary(imgA, imgB, warp, rampDown, 0.3f, 900, noneOccupied, downA, downB, downC);
+	if (upA.empty() || upA != downA || upB != downB) {
+		VERBOSE("ROMA2SupplementDrawTest FAILED: opposite confidence ramps over one region drew %u and %u points "
+			"at different positions -- confidence is still ranking the bucket winners",
+			(unsigned)upA.size(), (unsigned)downA.size());
+		return false;
+	}
+	// ...while each point still carries ITS OWN cell's confidence, which is what MakeDenseKeypoint stamps
+	if (upC == downC) {
+		VERBOSE("ROMA2SupplementDrawTest FAILED: the two ramps stamped identical confidences on the same cells");
+		return false;
+	}
+
+	// 7) CROSS-PAIR COINCIDENCE, the reason for the lattice rule. Two pairs sharing image A, with
+	// partially overlapping confident regions and budgets that give them DIFFERENT bucket grids: in
+	// the region both cover, the A-side positions they draw must land on the same pixels, exactly,
+	// so that the keypoint dedup downstream (FilterRedundantKeypoints, 0.1 px) can chain them into
+	// one track. Confidence cannot deliver that -- the two pairs have different warps -- which is why
+	// the winner rule is pair-independent.
+	Image32F overlapAB(cv::Size(cells, cells), 0.f), overlapAC(cv::Size(cells, cells), 0.f);
+	for (int y = 0; y < 120; ++y)
+		for (int x = 0; x < 120; ++x)
+			overlapAB(y, x) = 0.35f + 0.6f*(float)(x + y)/(float)(2*cells);
+	for (int y = 40; y < cells; ++y)
+		for (int x = 40; x < cells; ++x)
+			overlapAC(y, x) = 0.95f - 0.6f*(float)(x + y)/(float)(2*cells);
+	std::vector<Point2f> abA, abB, acA, acB;
+	std::vector<float> abC, acC;
+	const size_t numAB = SampleWarpComplementary(imgA, imgB, warp, overlapAB, 0.3f, 900, noneOccupied, abA, abB, abC);
+	const size_t numAC = SampleWarpComplementary(imgA, imgB, warp, overlapAC, 0.3f, 1500, noneOccupied, acA, acB, acC);
+	const int numBucketsAB = BucketGridSide(CountEligible(overlapAB), 900);
+	const int numBucketsAC = BucketGridSide(CountEligible(overlapAC), 1500);
+	if (numAB == 0 || numAC == 0 || numBucketsAB == numBucketsAC) {
+		VERBOSE("ROMA2SupplementDrawTest FAILED: the two pairs drew %u/%u points on %dx%d and %dx%d grids -- "
+			"the fixture must give them different grids for the coincidence to mean anything",
+			(unsigned)numAB, (unsigned)numAC, numBucketsAB, numBucketsAB, numBucketsAC, numBucketsAC);
+		return false;
+	}
+	// the cells both warps are confident about: [40, 120) on both axes, in pixels of A
+	const Point2f commonLo(CellToPixel(40, 40)), commonHi(CellToPixel(119, 119));
+	const auto InCommon = [&](const Point2f& pt) {
+		return pt.x >= commonLo.x - 1e-3f && pt.x <= commonHi.x + 1e-3f &&
+			pt.y >= commonLo.y - 1e-3f && pt.y <= commonHi.y + 1e-3f;
+	};
+	std::set<std::pair<float, float>> commonAC;
+	unsigned numCommonAC = 0;
+	for (const Point2f& pt : acA)
+		if (InCommon(pt)) {
+			commonAC.emplace(pt.x, pt.y);
+			++numCommonAC;
+		}
+	unsigned numCommonAB = 0, numCoincident = 0;
+	for (const Point2f& pt : abA)
+		if (InCommon(pt)) {
+			++numCommonAB;
+			// EXACT equality, not a tolerance: the dedup downstream keys on position, and two draws
+			// that agree only to within a pixel would leave two keypoints where one point was sampled
+			if (commonAC.find(std::make_pair(pt.x, pt.y)) != commonAC.end())
+				++numCoincident;
+		}
+	const unsigned numCommonMin = MINF(numCommonAB, numCommonAC);
+	if (numCommonMin == 0 || numCoincident*5 < numCommonMin*2) {
+		VERBOSE("ROMA2SupplementDrawTest FAILED: only %u of the %u/%u points the two pairs drew in their common "
+			"region coincide exactly, expected at least two fifths -- the draws are not chaining across pairs",
+			numCoincident, numCommonAB, numCommonAC, numCommonMin);
+		return false;
+	}
+	// still one winner per bucket on each pair's own grid, and still deterministic
+	std::vector<int> hitsAB((size_t)numBucketsAB*numBucketsAB, 0), hitsAC((size_t)numBucketsAC*numBucketsAC, 0);
+	for (const Point2f& pt : abA)
+		++hitsAB[PixelToBucket(pt, numBucketsAB)];
+	for (const Point2f& pt : acA)
+		++hitsAC[PixelToBucket(pt, numBucketsAC)];
+	FOREACH(b, hitsAB)
+		if (hitsAB[b] > 1) {
+			VERBOSE("ROMA2SupplementDrawTest FAILED: bucket %u of the first pair holds %d points, expected at most 1", (unsigned)b, hitsAB[b]);
+			return false;
+		}
+	FOREACH(b, hitsAC)
+		if (hitsAC[b] > 1) {
+			VERBOSE("ROMA2SupplementDrawTest FAILED: bucket %u of the second pair holds %d points, expected at most 1", (unsigned)b, hitsAC[b]);
+			return false;
+		}
+	std::vector<Point2f> repeatAC_A, repeatAC_B;
+	std::vector<float> repeatAC_C;
+	SampleWarpComplementary(imgA, imgB, warp, overlapAC, 0.3f, 1500, noneOccupied, repeatAC_A, repeatAC_B, repeatAC_C);
+	if (repeatAC_A != acA || repeatAC_B != acB || repeatAC_C != acC) {
+		VERBOSE("ROMA2SupplementDrawTest FAILED: the lattice draw is not a pure function of its inputs");
+		return false;
+	}
+
+	// 8) THE EVEN THINNING, as its own entry point: the draw caps itself with it, and the infusion
+	// thins a full draw to a budget only the finished draw's coverage could name, so the two must
+	// thin identically. An even stride keeps the order, keeps the first point, and spans the sample.
+	std::vector<Point2f> thinA(acA), thinB(acB);
+	std::vector<float> thinC(acC);
+	const unsigned thinTo = (unsigned)(acA.size()/3);
+	ThinSampleEvenly(thinA, thinB, thinC, thinTo);
+	if (thinA.size() != thinTo || thinB.size() != thinTo || thinC.size() != thinTo || !(thinA[0] == acA[0])) {
+		VERBOSE("ROMA2SupplementDrawTest FAILED: thinning %u points to %u kept %u", (unsigned)acA.size(), thinTo, (unsigned)thinA.size());
+		return false;
+	}
+	size_t src = 0;
+	FOREACH(i, thinA) {
+		while (src < acA.size() && !(acA[src] == thinA[i]))
+			++src;
+		if (src == acA.size() || !(acB[src] == thinB[i]) || acC[src] != thinC[i]) {
+			VERBOSE("ROMA2SupplementDrawTest FAILED: the thinned sample is not an order-preserving index-parallel subsequence of the draw at %u", i);
+			return false;
+		}
+	}
+	// asked for at least what it holds, a sample comes back untouched; asked for nothing, it empties
+	std::vector<Point2f> keepA(acA), keepB(acB);
+	std::vector<float> keepC(acC);
+	ThinSampleEvenly(keepA, keepB, keepC, (unsigned)acA.size() + 10);
+	ThinSampleEvenly(thinA, thinB, thinC, 0);
+	if (keepA != acA || keepB != acB || keepC != acC || !thinA.empty() || !thinB.empty() || !thinC.empty()) {
+		VERBOSE("ROMA2SupplementDrawTest FAILED: thinning to a budget above the sample size, or to zero, did not behave");
 		return false;
 	}
 
