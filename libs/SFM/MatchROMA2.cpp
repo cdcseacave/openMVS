@@ -430,10 +430,13 @@ struct DenseSupplement {
 	std::vector<float> confidences;
 };
 
-// Draw one pair's dense supplement out of its (already eroded) warp: the same coverage-maximising
-// sample the gate draws, with the warp's own confidence carried per point so the appended keypoints
-// can state the scale and the quality they were sampled at, and capped to supplementMaxPerPair by
-// keeping the most confident points.
+// Draw one pair's dense supplement out of its (already eroded) warp, to COMPLEMENT the sparse
+// matches that pair already carries rather than to repeat them: `guided` is the verified pair, and
+// the draw is budgeted and placed against its sparse inliers so that the two together come to at
+// most config.supplementTotalMatches, spread as evenly over the confident overlap as the warp
+// allows (SampleWarpComplementary). A pair already at that many sparse inliers -- reachable, since
+// a low warp overlap triggers supplementation on its own -- gets nothing at all: the budget is a
+// total, and "up to" a total is satisfied by already being there.
 // Nothing is filtered here against the pair's fitted geometry, deliberately: the gate already fit
 // one geometry to a sample of this same warp and required its inlier subset to still cover both
 // images, so a second pass over the same evidence would re-confirm rather than test it. What bounds
@@ -441,45 +444,26 @@ struct DenseSupplement {
 // minConfidence on the warp, FilterTracks' reprojection bar downstream, and the bundle-adjustment
 // down-weighting every dense observation carries.
 void DrawDenseSupplement(const Image& imgA, const Image& imgB, const WarpMaps& maps,
-	const ROMA2Config& config, DenseSupplement& supplement)
+	const ROMA2Config& config, const ImagePair& guided, DenseSupplement& supplement)
 {
-	float coverageA, coverageB; // the draw's own spread: the gate consumes it, this pass does not
-	SampleWarpByCoverage(imgA, imgB, maps.warp, maps.overlap, config.minConfidence,
-		config.denseSampleSize, supplement.pointsA, supplement.pointsB, coverageA, coverageB);
-	const size_t numSampled = supplement.pointsA.size();
-	if (numSampled == 0)
-		return;
-	// the confidence of every drawn point, read back off the grid cell it came from:
-	// SampleWarpByCoverage maps a cell to imgA's pixels through CoordFromTo, which is linear and
-	// so is its inverse
-	supplement.confidences.resize(numSampled);
-	for (size_t i = 0; i < numSampled; ++i)
-		supplement.confidences[i] = maps.overlap.sampleSafe(
-			CoordFromTo(supplement.pointsA[i], imgA.GetSize(), maps.overlap.size()));
-	if (config.supplementMaxPerPair == 0 || numSampled <= config.supplementMaxPerPair)
-		return;
-	// over the ceiling: keep the most confident points, ties broken by index so the selection is
-	// deterministic, then put them back in the raster order the draw produced so what is appended
-	// does not depend on how the selection sorted
-	std::vector<uint32_t> kept(numSampled);
-	std::iota(kept.begin(), kept.end(), 0u);
-	std::partial_sort(kept.begin(), kept.begin() + config.supplementMaxPerPair, kept.end(),
-		[&supplement](uint32_t a, uint32_t b) {
-			const float ca = supplement.confidences[a], cb = supplement.confidences[b];
-			return ca > cb || (ca == cb && a < b);
-		});
-	kept.resize(config.supplementMaxPerPair);
-	std::sort(kept.begin(), kept.end());
-	DenseSupplement capped;
-	capped.pointsA.reserve(kept.size());
-	capped.pointsB.reserve(kept.size());
-	capped.confidences.reserve(kept.size());
-	for (const uint32_t i : kept) {
-		capped.pointsA.push_back(supplement.pointsA[i]);
-		capped.pointsB.push_back(supplement.pointsB[i]);
-		capped.confidences.push_back(supplement.confidences[i]);
+	const unsigned numVerified = guided.GetNumFilteredInliers();
+	const unsigned denseBudget = config.SupplementDenseBudget(numVerified);
+	if (denseBudget == 0)
+		return; // the pair is already at (or past) its total: nothing left to draw
+	// where the pair's sparse evidence already sits, in imgA's pixels: the draw strikes out every
+	// bucket one of these falls in. The sparse segment is `matches[0, GetNumFilteredInliers())`
+	// (the dense segment does not exist yet on this pair) and is described at both ends, so every
+	// queryIdx indexes imgA's described prefix.
+	std::vector<Point2f> sparseA;
+	sparseA.reserve(numVerified);
+	for (unsigned m = 0; m < numVerified; ++m) {
+		ASSERT((size_t)guided.matches[m].queryIdx < imgA.NumDescribedKeypoints());
+		sparseA.push_back(imgA.keypoints[guided.matches[m].queryIdx].pt);
 	}
-	supplement = std::move(capped);
+	SampleWarpComplementary(imgA, imgB, maps.warp, maps.overlap, config.minConfidence,
+		denseBudget, sparseA, supplement.pointsA, supplement.pointsB, supplement.confidences);
+	ASSERT(config.supplementTotalMatches == 0 ||
+		numVerified + supplement.pointsA.size() <= config.supplementTotalMatches);
 }
 
 #endif // _USE_ONNXRUNTIME
@@ -684,9 +668,10 @@ unsigned SFM::MatchPairsROMA2(PairsMatcher& pairsMatcher, RoMa2Onnx& roma2, cons
 					guided.GetNumMatches() >= pairsMatcher.GetConfig().minMatches)) {
 				ASSERT(!guided.matches.empty());
 				// Dense supplementation: a pair the gate validated and this pass has just verified,
-				// but that still carries few correspondences or little confident overlap, gets the
-				// dense sample of its own warp appended alongside its sparse matches -- so a weakly
-				// textured pair contributes structure instead of dropping out.
+				// but that still carries few correspondences or little confident overlap, gets a
+				// dense sample of its own warp appended alongside its sparse matches -- drawn only
+				// where those sparse matches are not, so a weakly textured pair contributes
+				// structure where it has none instead of dropping out.
 				// Only a VALIDATED pair: validatedGeometry is non-NULL exactly when the gate judged
 				// this pair and kept it, which is what makes "validated" mean anything here. With the
 				// gate off there is no such verdict, and nothing is supplemented -- by construction,
@@ -696,7 +681,7 @@ unsigned SFM::MatchPairsROMA2(PairsMatcher& pairsMatcher, RoMa2Onnx& roma2, cons
 				const unsigned numVerified = guided.GetNumFilteredInliers();
 				if (config.useSupplement && validatedGeometry != NULL &&
 					(numVerified < config.supplementMaxInliers || overlapFraction < config.supplementMinOverlap))
-					DrawDenseSupplement(imgA, imgB, maps, config, supplements[p]);
+					DrawDenseSupplement(imgA, imgB, maps, config, guided, supplements[p]);
 				results[p] = std::move(guided);
 				++numGuided;
 				DEBUG_ULTIMATE("ROMA2 pair (% 4u, % 4u): %s, overlap %.3f, %u tracked, %u guided, %u shared-train, %u verified, %u dense, kept",
@@ -740,8 +725,8 @@ unsigned SFM::MatchPairsROMA2(PairsMatcher& pairsMatcher, RoMa2Onnx& roma2, cons
 	if (config.useSupplement) {
 		// the appended keypoint count is what the scale of a wide arm is judged on: a supplemented
 		// pair costs this many keypoints in each of its two images, plus one track each
-		DEBUG("ROMA2 dense supplementation: %u/%u stored pairs supplemented with %zu dense matches (%zu appended keypoints, cap %u/pair)",
-			numSupplemented, numCreated + numReplaced, numDenseMatches, 2*numDenseMatches, config.supplementMaxPerPair);
+		DEBUG("ROMA2 dense supplementation: %u/%u stored pairs supplemented with %zu dense matches (%zu appended keypoints, %u matches/pair sparse and dense together)",
+			numSupplemented, numCreated + numReplaced, numDenseMatches, 2*numDenseMatches, config.supplementTotalMatches);
 	}
 	return numCreated + numReplaced;
 #else // _USE_ONNXRUNTIME

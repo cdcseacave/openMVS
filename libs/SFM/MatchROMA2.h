@@ -111,14 +111,25 @@ struct SFM_API ROMA2Config {
 	// correspondences on a well-overlapping pair, and a pair whose overlap is small to begin with
 	unsigned supplementMaxInliers = 500;
 	float supplementMinOverlap = 0.3f;
-	// ceiling on the dense matches appended to one pair, applied by keeping the most confident ones
-	// (0 = no ceiling). SampleWarpByCoverage treats denseSampleSize -- which is also the sample
-	// budget here -- as a TARGET whose occupied-bucket count can reach several times the budget on a
-	// scattered overlap, so this is what makes the appended set actually bounded, and what bounds
-	// the scene-wide keypoint growth a wide arm has to pay for: a supplemented pair costs this many
-	// keypoints in EACH of its two images, plus one track each
-	unsigned supplementMaxPerPair = 2000;
+	// TOTAL correspondences a supplemented pair should end up with, sparse and dense together: the
+	// dense draw of a pair gets the budget supplementTotalMatches - GetNumFilteredInliers(),
+	// clamped at 0, and a pair triggered by its overlap alone that already carries that many sparse
+	// inliers is left alone. This is also what bounds the scene-wide keypoint growth a wide arm has
+	// to pay for, since a dense match costs a keypoint in EACH of the two images plus one track.
+	// 0 = no total budget, in which case the draw is bounded by denseSampleSize alone
+	unsigned supplementTotalMatches = 2000;
 	bool useGPU = true;                    // allow the GPU execution providers (false forces the CPU provider)
+
+	// How many dense correspondences a pair already carrying numSparse verified sparse inliers may
+	// still be given: what is left of the total, clamped at 0. A pair at or past its total gets
+	// nothing -- "up to N total" is satisfied by already being there, and a pair supplemented for a
+	// small overlap can perfectly well be there. With no total budget the draw falls back to its
+	// own sample size, the way the gate's draw is bounded.
+	inline unsigned SupplementDenseBudget(unsigned numSparse) const {
+		if (supplementTotalMatches == 0)
+			return denseSampleSize;
+		return numSparse < supplementTotalMatches ? supplementTotalMatches - numSparse : 0u;
+	}
 
 	// Return the folder holding the exported models: the explicit setting if given,
 	// else the OPENMVS_ROMA2_MODEL_PATH environment variable, else empty
@@ -170,9 +181,10 @@ SFM_API unsigned ComputeGlobalDescriptorsROMA2(Scene& scene, RoMa2Onnx& roma2);
 // that are already healthy and only replaces the weakest ones (design decision 6).
 // With config.useSupplement, a stored pair the dense gate had validated and this pass then verified,
 // but which still carries fewer than config.supplementMaxInliers correspondences or less than
-// config.supplementMinOverlap confident overlap, additionally gets a coverage-maximising sample of
-// its own warp appended alongside its sparse matches (AppendDenseMatches): dense keypoints past each
-// image's described prefix, capped at config.supplementMaxPerPair per pair. Drawn on the pool but
+// config.supplementMinOverlap confident overlap, additionally gets a sample of its own warp appended
+// alongside its sparse matches (AppendDenseMatches): dense keypoints past each image's described
+// prefix, drawn where those sparse matches are NOT (SampleWarpComplementary) and budgeted so that
+// sparse and dense together come to at most config.supplementTotalMatches. Drawn on the pool but
 // appended in the same serial (ID1,ID2) pass as the results, since the keypoint indices an append
 // hands out depend on what the two images already carry.
 // roma2 must already be loaded (RoMa2Onnx::Load); a pair whose image could not be loaded,

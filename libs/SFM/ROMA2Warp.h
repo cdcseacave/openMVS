@@ -133,6 +133,42 @@ SFM_API size_t SampleWarpByCoverage(
 	float& coverageA,
 	float& coverageB);
 
+// Draw a sample of confident correspondences out of an (already eroded) warp that COMPLEMENTS
+// correspondences the caller already has: the dense supplement of a weak pair, drawn so that the
+// union of the pair's verified sparse matches and this sample is spread as evenly as the warp
+// allows. Same eligibility rule and same n x n bucket stratification as SampleWarpByCoverage, with
+// n sized from maxSamples -- this draw's budget, i.e. what is left of the pair's total after its
+// sparse matches -- so the grid coarsens as the sparse evidence grows, and with two differences:
+//
+//  - `occupiedA` are positions in imgA's pixels (its verified sparse inliers) whose buckets are
+//    struck out of the draw entirely. An occupied bucket yields NO dense point: "up to" a budget
+//    is a ceiling, not a quota to fill, and a bucket the sparse matcher already covered is exactly
+//    where a dense point adds nothing. Occupancy is read in A's frame alone -- the frame the warp
+//    grid lives in, and the only one where a keypoint position and a warp cell are directly
+//    comparable; on a genuine pair the warp carries that density over to B.
+//  - maxSamples is a real CAP here, not only the target it is for the gate: a pair has a match
+//    budget, so a draw whose occupied-bucket count still runs over it is thinned by an even stride
+//    through the raster order. Never by confidence -- that would re-cluster the survivors onto the
+//    warp's most certain region, which is the textured region the sparse matcher already covered.
+//
+// sampledA/sampledB/confidences are index-parallel and in warp-grid raster order (the order
+// AppendDenseMatches needs to hand out reproducible keypoint indices), sampledA/sampledB in the
+// pixels of the working orientation of imgA/imgB, and confidences carrying each winning cell's own
+// overlap value -- the value it was selected on -- for Image::MakeDenseKeypoint.
+// The draw is a pure function of its inputs: same inputs, same output, on any thread.
+// Returns the number of sampled correspondences (<= maxSamples).
+SFM_API size_t SampleWarpComplementary(
+	const Image& imgA,
+	const Image& imgB,
+	const Image32F2& warp,
+	const Image32F& overlap,
+	float minConfidence,
+	unsigned maxSamples,
+	const std::vector<Point2f>& occupiedA,
+	std::vector<Point2f>& sampledA,
+	std::vector<Point2f>& sampledB,
+	std::vector<float>& confidences);
+
 // Fraction of a DENSE_COVERAGE_GRID^2 grid over each image that a warp sample occupies:
 // coverageA over sampledA in an image of sizeA, coverageB over sampledB in an image of sizeB.
 // `indices`, when non-empty, restricts the measurement to that subset of the sample (the gate

@@ -126,6 +126,65 @@ size_t SFM::TrackKeypointsByWarp(
 /*----------------------------------------------------------------*/
 
 
+namespace {
+
+// One warp cell a draw may pick: a correspondence both the confidence map and the warp admit.
+// `cell` is what keeps a sample in warp-grid raster order, which is in turn what makes the
+// keypoint indices an append hands out reproducible (AppendDenseMatches).
+struct WarpCandidate {
+	float confidence;
+	int cell;        // y*cols + x of the warp grid, so the sample keeps raster order
+	Point2f ptA, ptB;
+};
+
+// Pass 1 of every warp draw: every eligible cell, in raster order. Their count is what the bucket
+// grid is sized from, so it has to be known before a single bucket exists.
+void CollectWarpCandidates(const cv::Size& sizeA, const cv::Size& sizeB, const Image32F2& warp,
+	const Image32F& overlap, float minConfidence, std::vector<WarpCandidate>& candidates)
+{
+	candidates.clear();
+	candidates.reserve((size_t)overlap.rows*overlap.cols/4);
+	for (int y = 0; y < overlap.rows; ++y) {
+		for (int x = 0; x < overlap.cols; ++x) {
+			const float confidence = overlap(y, x);
+			if (confidence < minConfidence)
+				continue;
+			const Point2f ptB(DenormCoord(warp(y, x), sizeB));
+			if (!Image8U::isInside(ptB, sizeB))
+				continue; // the warp sends this cell outside the second image
+			candidates.push_back(WarpCandidate{confidence, y*overlap.cols + x,
+				CoordFromTo(Point2f((float)x, (float)y), overlap.size(), sizeA), ptB});
+		}
+	}
+}
+
+// Side n of the n x n bucket grid a warp draw stratifies on, scaled up by the inverse overlap
+// fraction (see SampleWarpByCoverage's header for why) so that the buckets which do hold an
+// eligible cell number about maxSamples. Integer arithmetic throughout -- n is the smallest value
+// with n^2 * E >= maxSamples * T, which is ceil(sqrt(maxSamples*T/E)) without a libm square root
+// that could land a hair off a perfect square and shift the whole grid on a different platform.
+// Capped at the warp side: beyond one bucket per cell there is nothing left to gain.
+int WarpBucketGridSide(const Image32F& overlap, size_t numCandidates, unsigned maxSamples)
+{
+	ASSERT(numCandidates > 0);
+	const uint64_t target = (uint64_t)maxSamples*(uint64_t)overlap.rows*(uint64_t)overlap.cols;
+	int numBuckets = 1;
+	while (numBuckets < overlap.cols &&
+		(uint64_t)numBuckets*(uint64_t)numBuckets*(uint64_t)numCandidates < target)
+		++numBuckets;
+	return numBuckets;
+}
+
+// The bucket a warp grid cell falls in, on a numBuckets x numBuckets grid over the WHOLE warp
+inline size_t WarpCellBucket(int cell, const Image32F& overlap, int numBuckets)
+{
+	const int x = cell % overlap.cols, y = cell / overlap.cols;
+	return (size_t)(y*numBuckets/overlap.rows)*numBuckets + x*numBuckets/overlap.cols;
+}
+
+} // namespace
+
+
 size_t SFM::SampleWarpByCoverage(
 	const Image& imgA,
 	const Image& imgB,
@@ -145,27 +204,8 @@ size_t SFM::SampleWarpByCoverage(
 	if (maxSamples == 0)
 		return 0;
 	const cv::Size sizeA(imgA.GetSize()), sizeB(imgB.GetSize());
-	struct Candidate {
-		float confidence;
-		int cell;        // y*cols + x of the warp grid, so the sample keeps raster order
-		Point2f ptA, ptB;
-	};
-	// pass 1: every eligible cell. Their count is what the bucket grid below is sized from, so it
-	// has to be known before a single bucket exists
-	std::vector<Candidate> candidates;
-	candidates.reserve((size_t)overlap.rows*overlap.cols/4);
-	for (int y = 0; y < overlap.rows; ++y) {
-		for (int x = 0; x < overlap.cols; ++x) {
-			const float confidence = overlap(y, x);
-			if (confidence < minConfidence)
-				continue;
-			const Point2f ptB(DenormCoord(warp(y, x), sizeB));
-			if (!Image8U::isInside(ptB, sizeB))
-				continue; // the warp sends this cell outside the second image
-			candidates.push_back(Candidate{confidence, y*overlap.cols + x,
-				CoordFromTo(Point2f((float)x, (float)y), overlap.size(), sizeA), ptB});
-		}
-	}
+	std::vector<WarpCandidate> candidates;
+	CollectWarpCandidates(sizeA, sizeB, warp, overlap, minConfidence, candidates);
 	if (candidates.empty())
 		return 0;
 
@@ -176,22 +216,12 @@ size_t SFM::SampleWarpByCoverage(
 		chosen.resize(candidates.size());
 		std::iota(chosen.begin(), chosen.end(), 0);
 	} else {
-		// pass 2: one winner per bucket of an n x n grid over the whole warp, with n scaled up by the
-		// inverse overlap fraction (see the header) so that the buckets which do hold an eligible cell
-		// number about maxSamples. Integer arithmetic throughout -- n is the smallest value with
-		// n^2 * E >= maxSamples * T, which is ceil(sqrt(maxSamples*T/E)) without a libm square root
-		// that could land a hair off a perfect square and shift the whole grid on a different platform.
-		// Capped at the warp side: beyond one bucket per cell there is nothing left to gain.
-		const uint64_t target = (uint64_t)maxSamples*(uint64_t)overlap.rows*(uint64_t)overlap.cols;
-		int numBuckets = 1;
-		while (numBuckets < overlap.cols &&
-			(uint64_t)numBuckets*(uint64_t)numBuckets*(uint64_t)candidates.size() < target)
-			++numBuckets;
+		// pass 2: one winner per bucket of the n x n grid over the whole warp
+		const int numBuckets = WarpBucketGridSide(overlap, candidates.size(), maxSamples);
 		std::vector<int> bucketBest((size_t)numBuckets*numBuckets, -1);
 		FOREACH(i, candidates) {
-			const Candidate& candidate = candidates[i];
-			const int x = candidate.cell % overlap.cols, y = candidate.cell / overlap.cols;
-			int& best = bucketBest[(size_t)(y*numBuckets/overlap.rows)*numBuckets + x*numBuckets/overlap.cols];
+			const WarpCandidate& candidate = candidates[i];
+			int& best = bucketBest[WarpCellBucket(candidate.cell, overlap, numBuckets)];
 			if (best < 0 || candidate.confidence > candidates[best].confidence)
 				best = (int)i; // strictly more confident wins, so a tie keeps the first cell in raster order
 		}
@@ -205,11 +235,106 @@ size_t SFM::SampleWarpByCoverage(
 	sampledA.reserve(chosen.size());
 	sampledB.reserve(chosen.size());
 	for (const int idxCandidate : chosen) {
-		const Candidate& candidate = candidates[idxCandidate];
+		const WarpCandidate& candidate = candidates[idxCandidate];
 		sampledA.push_back(candidate.ptA);
 		sampledB.push_back(candidate.ptB);
 	}
 	ComputeSampleCoverage(sampledA, sampledB, sizeA, sizeB, std::vector<uint32_t>(), coverageA, coverageB);
+	return sampledA.size();
+}
+/*----------------------------------------------------------------*/
+
+
+size_t SFM::SampleWarpComplementary(
+	const Image& imgA,
+	const Image& imgB,
+	const Image32F2& warp,
+	const Image32F& overlap,
+	float minConfidence,
+	unsigned maxSamples,
+	const std::vector<Point2f>& occupiedA,
+	std::vector<Point2f>& sampledA,
+	std::vector<Point2f>& sampledB,
+	std::vector<float>& confidences)
+{
+	ASSERT(!warp.empty() && warp.size() == overlap.size());
+	// cleared before any early return: the draw is a pure function of its inputs, so a caller
+	// reusing its buffers must get exactly what a caller passing empty ones gets
+	sampledA.clear();
+	sampledB.clear();
+	confidences.clear();
+	if (maxSamples == 0)
+		return 0;
+	const cv::Size sizeA(imgA.GetSize()), sizeB(imgB.GetSize());
+	std::vector<WarpCandidate> candidates;
+	CollectWarpCandidates(sizeA, sizeB, warp, overlap, minConfidence, candidates);
+	if (candidates.empty())
+		return 0;
+	// the grid is sized for THIS draw's budget, which is what makes the sample complementary in
+	// scale as well as in position: a pair whose sparse matches already fill most of its budget
+	// asks for few dense points and gets a coarse grid, one that has almost none asks for many and
+	// gets a fine one
+	const int numBuckets = WarpBucketGridSide(overlap, candidates.size(), maxSamples);
+	// every bucket an already-verified correspondence sits in is out of the draw. Occupancy is
+	// measured in image A only, deliberately: the warp grid lives in A's frame, so that is the one
+	// frame where a sparse keypoint position and a warp cell are directly comparable. On a genuine
+	// pair -- the only kind that reaches here, the gate having validated it -- the warp is close
+	// enough to a diffeomorphism that the B-side density mirrors A's through it, so a second grid
+	// in B (which would also need a B->A back-map the coarse warp does not carry) would mark the
+	// same buckets.
+	std::vector<bool> occupied((size_t)numBuckets*numBuckets, false);
+	for (const Point2f& pt : occupiedA) {
+		// inverse of the cell -> imgA pixel map the draw itself uses: CoordFromTo is linear and
+		// carries no half-pixel term, so its inverse carries none either. Rounded to the nearest
+		// cell, and clamped because a keypoint may sit on the very border of A.
+		const Point2f cell(CoordFromTo(pt, sizeA, overlap.size()));
+		const int x = MINF(MAXF(ROUND2INT(cell.x), 0), overlap.cols-1);
+		const int y = MINF(MAXF(ROUND2INT(cell.y), 0), overlap.rows-1);
+		occupied[WarpCellBucket(y*overlap.cols + x, overlap, numBuckets)] = true;
+	}
+	// one winner per UNOCCUPIED bucket. An occupied bucket contributes nothing rather than a
+	// reduced quota: "up to" a budget is a ceiling, not a target that has to be filled, and the
+	// point of the draw is the part of the frame the sparse matches left empty.
+	std::vector<int> bucketBest((size_t)numBuckets*numBuckets, -1);
+	FOREACH(i, candidates) {
+		const WarpCandidate& candidate = candidates[i];
+		const size_t bucket = WarpCellBucket(candidate.cell, overlap, numBuckets);
+		if (occupied[bucket])
+			continue;
+		int& best = bucketBest[bucket];
+		if (best < 0 || candidate.confidence > candidates[best].confidence)
+			best = (int)i; // strictly more confident wins, so a tie keeps the first cell in raster order
+	}
+	std::vector<int> chosen;
+	chosen.reserve(MINF(bucketBest.size(), candidates.size()));
+	for (const int idxCandidate : bucketBest)
+		if (idxCandidate >= 0)
+			chosen.push_back(idxCandidate);
+	std::sort(chosen.begin(), chosen.end()); // raster order, independent of the bucket traversal above
+	if (chosen.size() > maxSamples) {
+		// the occupied-bucket count is bounded by min(E, n^2) and not by maxSamples (see
+		// SampleWarpByCoverage's header), so a draw can still come out over its budget. Thin it by
+		// an even stride through the raster order, never by confidence: a confidence sort would
+		// undo the whole stratification by re-clustering the survivors wherever the warp happens
+		// to be most certain, which is exactly the texture the sparse matcher already found.
+		const size_t numChosen = chosen.size();
+		std::vector<int> thinned;
+		thinned.reserve(maxSamples);
+		for (size_t i = 0; i < maxSamples; ++i)
+			thinned.push_back(chosen[i*numChosen/maxSamples]); // strictly increasing, numChosen > maxSamples
+		chosen.swap(thinned);
+	}
+	sampledA.reserve(chosen.size());
+	sampledB.reserve(chosen.size());
+	confidences.reserve(chosen.size());
+	for (const int idxCandidate : chosen) {
+		const WarpCandidate& candidate = candidates[idxCandidate];
+		sampledA.push_back(candidate.ptA);
+		sampledB.push_back(candidate.ptB);
+		// the cell's own confidence, not a bilinear read-back of the map at the point it produced:
+		// the two differ by rounding, and this one is what the winner was actually chosen on
+		confidences.push_back(candidate.confidence);
+	}
 	return sampledA.size();
 }
 /*----------------------------------------------------------------*/

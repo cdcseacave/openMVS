@@ -317,8 +317,9 @@ one ≥200), so running it would have cost ~68 min of GPU and answered nothing.
 
 A pair the gate validated and the guided pass then verified, but which still ends up with few
 correspondences, contributes almost nothing to the reconstruction and often drops out of it. Dense
-supplementation adds ROMAv2 dense correspondences **alongside** that pair's sparse matches, so a
-weakly-textured pair contributes structure instead.
+supplementation adds ROMAv2 dense correspondences **alongside** that pair's sparse matches, in the
+parts of the confident overlap those matches left empty, so a weakly-textured pair contributes
+structure where it has none instead.
 
 It runs inside `MatchPairsROMA2`, on the warp that pass already has, and needs both
 `--roma2-validate` and `--roma2-match`: the gate is what makes "validated" mean anything, and the
@@ -330,11 +331,36 @@ disagree with the first. A pair is supplemented when it carries fewer than
 overlapping fraction of the warp is below `--roma2-supplement-min-overlap` (default 0.3); either is
 enough, because they catch different failures.
 
-The sample is the same coverage-maximising draw the gate uses (`SampleWarpByCoverage`,
-`--roma2-dense-sample`), capped at `--roma2-supplement-max-per-pair` (default 2000) by keeping the
-most confident points — `SampleWarpByCoverage` treats its budget as a *target* whose occupied-bucket
-count can run several times over it, so the cap is what makes the appended set bounded. It is
-deliberately **not** filtered again against the pair's fitted geometry: the gate already fit one
+**The draw complements the sparse matches, it does not repeat them.** The supplement has its own
+draw, `SampleWarpComplementary` (`ROMA2Warp.cpp`) — the gate keeps `SampleWarpByCoverage`, which must
+stay blind to descriptors because its job is to *test* the warp. Three things separate the two:
+
+1. **A total budget.** `--roma2-supplement-total-matches` (default 2000) is what a supplemented pair
+   should carry *sparse and dense together*, so the dense budget of a pair is
+   `total − GetNumFilteredInliers()`, clamped at 0. A pair triggered by its overlap alone that
+   already carries that many verified sparse inliers therefore gets **nothing**: "up to ~2000 total"
+   is satisfied by already being there. `0` means no total budget, and the draw is then bounded by
+   `--roma2-dense-sample` alone.
+2. **Occupied buckets are struck out.** The pair's verified sparse inliers are mapped, by their
+   image-A keypoint positions, into the same n×n bucket grid the draw stratifies on, and every
+   bucket one of them lands in yields no dense point at all. Occupancy is read in A's frame alone:
+   the warp grid lives in A's frame, so that is the one frame where a keypoint position and a warp
+   cell are directly comparable, and on a genuine pair — the only kind that reaches here — the warp
+   carries that density over to B. A second grid in B would also need a B→A back-map the coarse warp
+   does not carry.
+3. **Over-budget thinning preserves the spread.** n is sized from the *dense* budget over the
+   eligible cells, so the grid coarsens as the sparse evidence grows; when the surviving winners
+   still run over the budget (the occupied-bucket count is bounded by `min(E, n²)`, not by the
+   budget) they are thinned by an even stride through the warp raster order. Never by confidence —
+   a confidence sort would re-cluster the survivors onto the warp's most certain region, which is
+   the textured region the sparse matcher already covered, and undo the whole stratification.
+
+The result is that the union of the pair's sparse inliers and its appended dense matches is spread as
+evenly as the warp allows, at about `--roma2-supplement-total-matches` correspondences. Each drawn
+point carries its winning cell's own confidence — the value it was selected on, not a bilinear
+read-back of the map — which is what `Image::MakeDenseKeypoint` stamps as the point's response.
+
+The draw is deliberately **not** filtered again against the pair's fitted geometry: the gate already fit one
 geometry to a sample of this same warp and required its inlier subset to cover both images, so a
 second pass over the same evidence would confirm rather than test it. What bounds a wrong supplement
 is the gate upstream, `ROMA2Config::minConfidence` on the warp, `FilterTracks`' reprojection bar, and the
@@ -461,15 +487,15 @@ the flat weight only when the confidence term is off, and **the `--ba-dense-weig
 branch still owes must be made with `useKeypointConfidence` off** or it fits a quantity that already
 contains the factor being fitted.
 
-**Scale.** A supplemented pair costs up to `--roma2-supplement-max-per-pair` keypoints in *each* of
-its two images, plus about one track per correspondence. `sizeof(cv::KeyPoint)` is 28 bytes, but the
-keypoints are the small part: `BuildTracks` builds a union-find slot, a per-root image map, a
-`std::map` node and a `Track` over every one of them, which analytically works out around 0.25 KB per
-appended keypoint at peak. At the documented 500-image / 30-pairs-per-image scene with a fifth of
-pairs supplemented, an uncapped draw is ~10 M appended keypoints — ~0.3 GB of `cv::KeyPoint` and on
-the order of 2.5–3 GB once the track bookkeeping is counted. Start a wide arm at
-`--roma2-supplement-max-per-pair 500` and raise it once the contamination-by-track-length numbers
-are in.
+**Scale.** A supplemented pair costs up to `--roma2-supplement-total-matches` keypoints in *each* of
+its two images — fewer, by exactly its sparse inlier count — plus about one track per dense
+correspondence. `sizeof(cv::KeyPoint)` is 28 bytes, but the keypoints are the small part:
+`BuildTracks` builds a union-find slot, a per-root image map, a `std::map` node and a `Track` over
+every one of them, which analytically works out around 0.25 KB per appended keypoint at peak. At the
+documented 500-image / 30-pairs-per-image scene with a fifth of pairs supplemented, a draw with no
+total budget is ~10 M appended keypoints — ~0.3 GB of `cv::KeyPoint` and on the order of 2.5–3 GB
+once the track bookkeeping is counted. Start a wide arm at `--roma2-supplement-total-matches 500` and
+raise it once the contamination-by-track-length numbers are in.
 
 ---
 
@@ -632,6 +658,13 @@ Source: `~/virginia/models/roma2-onnx/roma2onnx-20260829-facets1520/export.log`.
   the warp-cell size and confidence convention, the appended matches landing *inside* the pair's
   filtered-inlier prefix (the only part `BuildTracks` reads), and a second append on the same images
   leaving the boundary where the first one put it.
+- **`ROMA2SupplementDrawTest`** (`apps/Tests/TestsSFM.cpp`) — always runs, no model needed: the
+  complementary supplement draw on a synthetic warp with the sparse inliers clustered in one corner.
+  No dense point lands in a bucket those inliers hold, one does land in every *other* bucket that has
+  a candidate, sparse + dense stays inside the total (and a pair already at the total asks for
+  nothing), an over-budget draw thinned by an even stride still hits all four quadrants where a
+  confidence sort collapses onto one, the sample stays in warp raster order, and the draw is a pure
+  function of its inputs.
 - **`DenseKeypointBoundaryTest`** (`apps/Tests/TestsSFM.cpp`) — always runs, no model needed: the
   stored described-keypoint count surviving a descriptor release and an `.sfm` round-trip of an image
   whose `keypoints.size() > descriptors.rows`, `SelectTopKeypoints` staying inside the prefix, and
