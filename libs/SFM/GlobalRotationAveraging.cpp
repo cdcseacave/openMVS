@@ -72,7 +72,7 @@ bool GlobalRotationEstimator::EstimateRotations(Scene& scene, unsigned* pNumFilt
 	for (const ImagePair& pair : scene.pairs) {
 		if (!pair.relativePose.has_value() || !pair.HasValidWeight())
 			continue;
-		const float weight = options.useWeight ? pair.GetCompositeWeight() : (float)pair.GetNumFilteredInliers();
+		const float weight = options.useWeight ? pair.GetCompositeWeight() : (float)pair.GetNumWeightedInliers();
 		rotationPairs.emplace_back(pair.ID1, pair.ID2, pair.relativePose->R, weight);
 	}
 	if (rotationPairs.empty()) {

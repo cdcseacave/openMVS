@@ -313,52 +313,125 @@ one ≥200), so running it would have cost ~68 min of GPU and answered nothing.
 
 ---
 
-## Dense Supplementation (`--roma2-supplement`, off by default)
+## Dense Infusion (`--roma2-supplement`, off by default)
 
-A pair the gate validated and the guided pass then verified, but which still ends up with few
-correspondences, contributes almost nothing to the reconstruction and often drops out of it. Dense
-supplementation adds ROMAv2 dense correspondences **alongside** that pair's sparse matches, in the
-parts of the confident overlap those matches left empty, so a weakly-textured pair contributes
-structure where it has none instead.
+A pair the gate validated but whose descriptor matching is thin — too few correspondences, all of
+them in one textured corner, or none that survive geometric verification at all — contributes
+almost nothing to the reconstruction and often drops out of it. Dense infusion adds ROMAv2 dense
+correspondences **alongside** whatever sparse matches that pair has, in the parts of the confident
+overlap those matches left empty, so a weakly-textured pair contributes structure where it has none
+instead.
 
 It runs inside `MatchPairsROMA2`, on the warp that pass already has, and needs both
 `--roma2-validate` and `--roma2-match`: the gate is what makes "validated" mean anything, and the
 guided pass is where the warp is, so there is no third warp pass. The trigger is read off the
 geometry the gate handed the guided pass — non-NULL exactly for a pair the gate judged and kept — so
-with the gate off nothing is supplemented by construction rather than by a second check that could
-disagree with the first. A pair is supplemented when it carries fewer than
-`--roma2-supplement-max-inliers` (default 500) verified correspondences **or** its confidently
-overlapping fraction of the warp is below `--roma2-supplement-min-overlap` (default 0.3); either is
-enough, because they catch different failures.
+with the gate off nothing is infused by construction rather than by a second check that could
+disagree with the first.
+
+**The decision is taken right after the guided SIFT pass and its geometric filter**, while the pair's
+warp and the draw that would complement it are both still at hand — not inside the branch where the
+SIFT pass survived, which is where it first shipped and which silently excluded the pairs the feature
+exists for. It reads ONE quantity:
+
+> **SIFT coverage of the valid disparity area.** `coverage = occupied / confident` over the
+> complementary draw's own (fine) bucket grid: `confident` counts the buckets holding at least one
+> confident, in-frame warp cell — the RoMa2 valid-disparity area the gate judged the pair on — and
+> `occupied` counts those of them a verified SIFT inlier lands in (image-A frame). A pair whose SIFT
+> pass failed covers nothing, so its coverage is 0.
+
+Coverage, and not the two quantities the first version used. The inlier *count* says nothing about
+where those inliers are: a pair with 2000 of them piled into one textured corner has an overlap whose
+remainder is exactly what a dense draw is for. The warp's *confident fraction* says nothing about the
+sparse matches at all — it is a property of the warp, and the old "overlap < 0.3" clause read it as
+if it were a property of the matching.
+
+```
+infuse  <=>  the SIFT pass failed the geometric filter
+             OR verified sparse inliers < --roma2-supplement-max-inliers   (default 500)
+             OR coverage < --roma2-supplement-min-coverage                 (default 0.3)
+budget   =   round(--roma2-supplement-total-matches * (1 - coverage))      (default total 2000)
+```
+
+The budget is the share of the total proportional to the part of the valid area still empty — the
+part the draw can actually fill. `0` as the total keeps its meaning: no total cap, the draw bounded
+by `--roma2-dense-sample` alone.
 
 **The draw complements the sparse matches, it does not repeat them.** The supplement has its own
 draw, `SampleWarpComplementary` (`ROMA2Warp.cpp`) — the gate keeps `SampleWarpByCoverage`, which must
 stay blind to descriptors because its job is to *test* the warp. Three things separate the two:
 
-1. **A total budget.** `--roma2-supplement-total-matches` (default 2000) is what a supplemented pair
-   should carry *sparse and dense together*, so the dense budget of a pair is
-   `total − GetNumFilteredInliers()`, clamped at 0. A pair triggered by its overlap alone that
-   already carries that many verified sparse inliers therefore gets **nothing**: "up to ~2000 total"
-   is satisfied by already being there. `0` means no total budget, and the draw is then bounded by
-   `--roma2-dense-sample` alone.
-2. **Occupied buckets are struck out.** The pair's verified sparse inliers are mapped, by their
+1. **Occupied buckets are struck out.** The pair's verified sparse inliers are mapped, by their
    image-A keypoint positions, into the same n×n bucket grid the draw stratifies on, and every
    bucket one of them lands in yields no dense point at all. Occupancy is read in A's frame alone:
    the warp grid lives in A's frame, so that is the one frame where a keypoint position and a warp
    cell are directly comparable, and on a genuine pair — the only kind that reaches here — the warp
    carries that density over to B. A second grid in B would also need a B→A back-map the coarse warp
    does not carry.
-3. **Over-budget thinning preserves the spread.** n is sized from the *dense* budget over the
-   eligible cells, so the grid coarsens as the sparse evidence grows; when the surviving winners
-   still run over the budget (the occupied-bucket count is bounded by `min(E, n²)`, not by the
-   budget) they are thinned by an even stride through the warp raster order. Never by confidence —
-   a confidence sort would re-cluster the survivors onto the warp's most certain region, which is
-   the textured region the sparse matcher already covered, and undo the whole stratification.
+2. **The grid is sized from the TOTAL, not from the budget.** n comes from
+   `--roma2-supplement-total-matches` over the eligible cells, so one bucket stands for about one of
+   the total correspondences — which is what makes the bucket census a *share of the valid area* and
+   not a circular definition, since the budget it produces cannot also size the grid it is measured
+   on. The draw takes one point per unoccupied confident bucket and is then thinned to the budget.
+3. **Thinning preserves the spread.** An even stride through the warp raster order
+   (`ThinSampleEvenly`, shared by the draw's own cap and by the caller thinning to the budget).
+   Never by confidence — a confidence sort would re-cluster the survivors onto the warp's most
+   certain region, which is the textured region the sparse matcher already covered, and undo the
+   whole stratification.
 
-The result is that the union of the pair's sparse inliers and its appended dense matches is spread as
-evenly as the warp allows, at about `--roma2-supplement-total-matches` correspondences. Each drawn
-point carries its winning cell's own confidence — the value it was selected on, not a bilinear
-read-back of the map — which is what `Image::MakeDenseKeypoint` stamps as the point's response.
+**The in-bucket winner is a pair-independent lattice priority**, not the most confident cell:
+`priority(x, y)` is the largest k for which both warp-cell coordinates are multiples of 2ᵏ, ties
+going to raster order, and confidence stays the *eligibility* test (the eroded `minConfidence` bar).
+The bucket grid is adaptive, so two pairs sharing image A stratify the same region of A on grids of
+different pitch and phase; ranking by each pair's own confidences then puts their A-side points a few
+cells apart, and the exact-position keypoint dedup below sees two keypoints where one surface point
+was sampled twice. A lattice priority makes any two buckets covering a common region agree on the
+cell whenever both find it eligible, so those samples land on the same pixel of A and chain into one
+track. The rule is shared with `SampleWarpByCoverage` — one winner rule, not two. **Chaining is
+through the A side only**: the B-side position is whatever the warp maps that cell to, a float two
+pairs have no reason to agree on, so a chain grows along the images that play the A role of their
+pairs and stops naturally wherever the confident overlaps stop coinciding. Expect chains of about
+three, not long tracks.
+
+Each drawn point carries its winning cell's own confidence — the value read where it was selected,
+not a bilinear read-back of the map — which is what `Image::MakeDenseKeypoint` stamps as the point's
+response.
+
+**A validated pair whose SIFT pass failed is kept as a DENSE-ONLY pair.** Zero sparse inliers, the
+gate's F/E and its relative pose as the pair's geometry, and the whole total as its draw (it covers
+nothing, so `1 - coverage` is 1). Dropping it would drop exactly the textureless pairs the feature
+exists for. Such a result may only **create**: it carries no descriptor evidence, so it can never be
+the fair winner of a replace test against a pair that has some — if the pair already exists, the
+existing one is kept and the dense-only result is counted and reported instead
+(`ApplyROMA2Pair(..., bCreateOnly)`, and the pass's summary line). Its partition is
+`numFilteredInliers == 0`, `numDenseInliers == N`, which `FilterMatches`' re-partition accepts.
+
+**The relative pose after infusion.** An infused pair can hold two independent fits of one geometry:
+the SIFT pose, fitted on its verified sparse inliers, and the gate's dense pose, fitted on its ~2000
+spread warp samples (`PairsMatcher::ValidatedGeometry::relativePose`, present only on a branch that
+produces a pose — `ESSENTIAL` and `SHARED_FOCAL` do, `FUNDAMENTAL` does not). The pair keeps the SIFT
+pose, which is the more accurate one **when the two agree** (sub-pixel correspondences, even without
+coverage), unless they differ substantially — rotation angle of `R_sift * R_dense^T` over
+`--roma2-supplement-pose-max-rot` (2°) **or** angle between the unit translation directions over
+`--roma2-supplement-pose-max-trans` (10°) — and then it takes the dense pose, which rests on evidence
+spread over the whole overlap. Taking the dense pose takes the gate's F and E with it: they are one
+fit, and a pair holding one fit's pose next to another fit's matrices would describe two geometries
+as one. With no dense pose the policy is inert.
+
+Both thresholds are **educated first guesses**, to be fitted on pseudo-GT. Every infused pair emits
+one record at `-v 3`, into the working-folder log:
+
+```
+ROMA2 pose check pair 12 37, sparse 118, coverage 0.2043, dense 1591, dR 0.8312 deg, dt 3.2077 deg,
+  choice sparse, qs(w x y z) ts(x y z), qd(w x y z) td(x y z)
+```
+
+fixed prefix, fixed field order, `nan` for a missing pose, one line per infused pair — so the two
+thresholds can be swept offline against a scene's COLMAP relative poses without re-running the
+matcher. `--roma2-supplement-refit-pose` (off) replaces the choice with a single re-estimate on all
+of the pair's correspondences, sparse and dense together, through the matcher's own estimator (same
+branch, same threshold); it is a hypothesis the sweep has to confirm before it can be a default, and
+a refit on a draw that came from one of the two poses is not independent evidence about it.
 
 The draw is deliberately **not** filtered again against the pair's fitted geometry: the gate already fit one
 geometry to a sample of this same warp and required its inlier subset to cover both images, so a
@@ -387,33 +460,51 @@ what the two images already carry.
                                                            -- not track-forming
 ```
 
-`GetNumFilteredInliers()` is the **first segment only**, and every view-graph weight and gate reads it:
-`ComputeIntrinsicWeight`'s grid-occupancy spread, `GetCompositeWeight`'s
-inlier factor and its 1000 cap, `ComputePairsWeights`' connectivity normalisation, rotation-averaging
-and star-initializer edge strength, `ViewGraphCalibrator`'s two "enough inliers to trust this F"
-guards, `BuildTracks`' `minPairWeight` cut, the feedback round's `feedbackSkipHealthyInliers` skip and
-`ApplyROMA2Pair`'s replace test. The median triangulation angle `FilterMatches` stores in
-`meanRayAngle` is sparse for the same reason: `ComputeIntrinsicWeight` multiplies
-`ComputeAngleBaselineWeight(meanRayAngle)` into `weightSpatial`, so a supplement spread over the whole
-overlap would move the weight — in either direction, since the weight peaks at 15°.
-Supplementation is opt-in and *additive*, so it must not re-rank the
-view graph — and the sample is a coverage-maximising stratified draw, which would drive the spatial
-weight to its maximum and saturate the inlier cap by construction. With the count sparse-only, all of
-those keep their pre-supplement behaviour with no per-consumer discount factor anywhere.
+`GetNumFilteredInliers()` is the **first segment only**: the pair's DESCRIPTOR evidence. What the
+view graph ranks on is `GetNumWeightedInliers()` — `sparse + w × dense`, rounded, with `w` the dense
+observation weight — because a dense-only pair is a pair, not a zero. **There is one notion of pair
+evidence and one accessor for it**, and it is what `GetCompositeWeight`'s inlier factor (under its
+1000 cap), `ComputePairsWeights`' connectivity normalisation, the triplet filter's edge strength,
+`StarInitializer`'s degree and candidate ranking, rotation averaging's unweighted fallback,
+`ViewGraphCalibrator`'s two "enough inliers to trust this F" guards, `GlobalAlignment`'s
+`minCommonTracks` bar, the feedback round's `feedbackSkipHealthyInliers` skip and `ApplyROMA2Pair`'s
+replace test all read.
 
-**The one exception is a validity floor, not a magnitude: `ComputeIntrinsicWeight`'s
-`minInliers` bar reads `GetNumTrackFormingMatches()`.** The floor asks "does this pair carry enough
-verified correspondence to be considered at all", and a gate-validated supplemented pair does — the
-dense two-view gate is stronger evidence about the pair's geometry than its sparse count is. It has to
-be split from the magnitude because returning 0 there zeroes `weightSpatial`, hence
-`GetCompositeWeight()`, hence `BuildTracks`' `minPairWeight` cut: a supplemented pair whose sparse
+`w` has **one definition** (`SFM::DENSE_OBSERVATION_WEIGHT`, `ImagePair.h`), shared by
+`BAConfig::denseObservationWeight` and `PairsWeightingConfig::denseObservationWeight` and driven by
+the single `--ba-dense-weight` option: the same statement about measurement precision cannot have two
+values. The discounted count is *stored* on the pair (`ImagePair::weightedInliers`, written by
+`ComputePairsWeights`, serialized with the other weights) because `GetCompositeWeight()` and its
+callers have no access to a configuration, and a second hard-coded copy of the weight would be a
+second answer. Before the weighting pass has run, the accessor answers with the sparse count — the
+pre-supplement answer, which is what the matcher-internal readers always used.
+
+The remaining sparse-only readers are the ones that genuinely mean "descriptor evidence": the
+estimation bars inside `MatchFeaturesGeometric`/`GeometricFilter`/`MatchPair` (which run on pairs that
+have no dense segment yet, and whose `minMatches` is a bar on descriptor matching), the supplement's
+own occupancy gather and its `--roma2-supplement-max-inliers` trigger, and the diagnostics that report
+what the descriptor matcher verified (the pairs CSV, `SceneAnalyzeSFM`, `BuildTracks`' skip counters
+and its pose-consistency check, the per-pass statistics).
+
+Each term of `weightSpatial` reads the segment its question is about. The **area** score runs over the
+track-forming matches, supplement included: coverage asks where the pair has correspondences, and a
+dense draw covers what it was drawn over — a dense-only pair would otherwise score no area, hence no
+weight, and be cut from the graph it was deliberately kept in. The median triangulation angle
+`FilterMatches` stores in `meanRayAngle` stays **sparse**: the supplement is a stratified draw over
+the whole overlap while the descriptor correspondences are clustered, so including it moves the angle
+term either way (the weight peaks at 15°), and a pair with no sparse matches reads the neutral 1,
+which is the honest answer for a baseline no sub-pixel correspondence ever measured.
+
+**The validity floor reads `GetNumTrackFormingMatches()`**, undiscounted. It asks "does this pair
+carry enough verified correspondence to be considered at all", and a gate-validated infused pair does.
+It has to be split from the magnitude because returning 0 there zeroes `weightSpatial`, hence
+`GetCompositeWeight()`, hence `BuildTracks`' `minPairWeight` cut: an infused pair whose sparse
 segment dips under 15 — normal once cross-pair dense reuse and the duplicate-match filter have run on
-a pair supplemented at 60 sparse inliers — would contribute **zero** tracks, sparse or dense, and the
-feature would be silently inert on exactly the weak pairs it exists to serve. Every magnitude term
-stays sparse, so such a pair still competes honestly and one that then falls under `minPairWeight` on
-magnitude alone is a correct drop. The alternatives were rejected: exempting supplemented pairs from
-`minPairWeight` hides a real drop, and giving the gate a weight the view graph does not rank on gives
-the pair two different authorities.
+a pair infused at 60 sparse inliers — would contribute **zero** tracks, sparse or dense, and the
+feature would be silently inert on exactly the weak pairs it exists to serve. One that then falls
+under `minPairWeight` on the discounted magnitude is a correct drop. The alternatives were rejected:
+exempting infused pairs from `minPairWeight` hides a real drop, and giving the gate a weight the view
+graph does not rank on gives the pair two different authorities.
 
 What forms tracks is the union of the first two segments, `GetNumTrackFormingMatches()`, and that is
 what bounds `BuildTracks`' union-find (and `GlobalAlignment`'s cross-sub-scene equivalent). The
@@ -487,9 +578,10 @@ the flat weight only when the confidence term is off, and **the `--ba-dense-weig
 branch still owes must be made with `useKeypointConfidence` off** or it fits a quantity that already
 contains the factor being fitted.
 
-**Scale.** A supplemented pair costs up to `--roma2-supplement-total-matches` keypoints in *each* of
-its two images — fewer, by exactly its sparse inlier count — plus about one track per dense
-correspondence. `sizeof(cv::KeyPoint)` is 28 bytes, but the keypoints are the small part:
+**Scale.** An infused pair costs up to `--roma2-supplement-total-matches` keypoints in *each* of
+its two images — fewer, in proportion to the share of its valid disparity area the sparse matches
+already cover — plus about one track per dense correspondence, less whatever the cross-pair lattice
+coincidence chains together. `sizeof(cv::KeyPoint)` is 28 bytes, but the keypoints are the small part:
 `BuildTracks` builds a union-find slot, a per-root image map, a `std::map` node and a `Track` over
 every one of them, which analytically works out around 0.25 KB per appended keypoint at peak. At the
 documented 500-image / 30-pairs-per-image scene with a fifth of pairs supplemented, a draw with no
@@ -659,12 +751,23 @@ Source: `~/virginia/models/roma2-onnx/roma2onnx-20260829-facets1520/export.log`.
   filtered-inlier prefix (the only part `BuildTracks` reads), and a second append on the same images
   leaving the boundary where the first one put it.
 - **`ROMA2SupplementDrawTest`** (`apps/Tests/TestsSFM.cpp`) — always runs, no model needed: the
-  complementary supplement draw on a synthetic warp with the sparse inliers clustered in one corner.
-  No dense point lands in a bucket those inliers hold, one does land in every *other* bucket that has
-  a candidate, sparse + dense stays inside the total (and a pair already at the total asks for
-  nothing), an over-budget draw thinned by an even stride still hits all four quadrants where a
-  confidence sort collapses onto one, the sample stays in warp raster order, and the draw is a pure
-  function of its inputs.
+  complementary draw on a synthetic warp with the sparse inliers clustered in one corner. No dense
+  point lands in a bucket those inliers hold, one does land in every *other* bucket that has a
+  candidate, the bucket census matches an independent count of the same grid and the budget it buys
+  keeps the draw inside the total, an over-budget draw thinned by an even stride still hits all four
+  quadrants, two opposite confidence ramps over one region draw exactly the same points (confidence
+  is eligibility, not ranking), two pairs sharing image A on different bucket grids land their A-side
+  points on the same pixels wherever both cover and both are confident, the sample stays in warp
+  raster order, and the draw is a pure function of its inputs.
+- **`ROMA2DenseInfusionTest`** (`apps/Tests/TestsSFM.cpp`) — always runs, no model needed: the
+  infusion decision and the pose choice. A validated pair whose SIFT pass failed is infused at the
+  whole total and becomes a dense-only pair that keeps the gate's geometry, partitions as 0 sparse /
+  N dense, carries a positive composite weight and forms tracks in `BuildTracks`; a strong but
+  clustered pair (past `--roma2-supplement-max-inliers`, under `--roma2-supplement-min-coverage`) is
+  infused with `round(total × (1 − coverage))` points, none of them in a bucket its inliers hold; a
+  strong pair spread over the valid area gets nothing; and the pose choice keeps the SIFT pose while
+  both angles are inside their thresholds, takes the dense pose once either is not, and falls back
+  correctly when one of the two poses does not exist.
 - **`DenseKeypointBoundaryTest`** (`apps/Tests/TestsSFM.cpp`) — always runs, no model needed: the
   stored described-keypoint count surviving a descriptor release and an `.sfm` round-trip of an image
   whose `keypoints.size() > descriptors.rows`, `SelectTopKeypoints` staying inside the prefix, and
@@ -718,7 +821,7 @@ error: unsupported SFM project version 2 (this build reads only version 1) in '<
 ```
 
 In particular there is no "derive the keypoint boundary when the stream does not carry it" branch:
-the boundary had to be *stored* rather than derived (see Dense Supplementation), and a derived value
+the boundary had to be *stored* rather than derived (see Dense Infusion), and a derived value
 is exactly the silent misclassification the stored count exists to prevent.
 
 There is no converter and none is planned: a `.sfm` written by any other layout is regenerated by

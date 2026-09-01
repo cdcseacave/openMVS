@@ -536,14 +536,19 @@ unsigned SFM::AppendDenseMatches(Scene& scene, ImagePair& pair,
 /*----------------------------------------------------------------*/
 
 
-bool SFM::ApplyROMA2Pair(Scene& scene, std::unordered_map<PairIdx::PairIndex, IIndex>& pairIndexMap, ImagePair&& pair, unsigned maxReplaceInliers, bool& bCreated)
+bool SFM::ApplyROMA2Pair(Scene& scene, std::unordered_map<PairIdx::PairIndex, IIndex>& pairIndexMap, ImagePair&& pair, unsigned maxReplaceInliers, bool& bCreated, bool bCreateOnly)
 {
-	ASSERT(pair.ID1 < pair.ID2 && !pair.matches.empty());
+	ASSERT(pair.ID1 < pair.ID2 && (!pair.matches.empty() || bCreateOnly));
 	const PairIdx::PairIndex key = PairIdx(pair.ID1, pair.ID2).idx;
 	const auto it = pairIndexMap.find(key);
 	if (it != pairIndexMap.end()) {
 		ImagePair& scenePair = scene.pairs[it->second];
-		const unsigned existingInliers = scenePair.GetNumFilteredInliers();
+		const unsigned existingInliers = scenePair.GetNumWeightedInliers();
+		if (bCreateOnly) {
+			// a dense-only candidate: the existing pair keeps its place, whatever the two counts say
+			DEBUG_ULTIMATE("ROMA2 pair (% 4u, % 4u) kept: %u existing inliers vs a dense-only candidate", pair.ID1, pair.ID2, existingInliers);
+			return false;
+		}
 		// polycpp ShouldReplaceROMA2Pair (import_roma2.hpp:39-45): strictly more inliers, and the existing pair below the ceiling
 		if (pair.GetNumFilteredInliers() <= existingInliers || (maxReplaceInliers > 0 && existingInliers >= maxReplaceInliers)) {
 			DEBUG_ULTIMATE("ROMA2 pair (% 4u, % 4u) kept: %u existing vs %u guided inliers", pair.ID1, pair.ID2, existingInliers, pair.GetNumFilteredInliers());

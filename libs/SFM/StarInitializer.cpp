@@ -28,8 +28,11 @@ IIndex StarInitializer::SelectReferenceView(const Scene& scene)
 	for (const ImagePair& pair : scene.pairs) {
 		if (!pair.relativePose.has_value() || !pair.HasValidWeight())
 			continue;
-		degree[pair.ID1] += pair.GetNumFilteredInliers();
-		degree[pair.ID2] += pair.GetNumFilteredInliers();
+		// the pair's inlier evidence, dense supplement discounted and included: a dense-only pair is
+		// a real connection of both its images, and the star initializer must see the same graph the
+		// weights that let it through were computed on
+		degree[pair.ID1] += pair.GetNumWeightedInliers();
+		degree[pair.ID2] += pair.GetNumWeightedInliers();
 	}
 
 	// Find view with max degree
@@ -307,7 +310,7 @@ bool StarInitializer::Initialize(
 		// Absolute: target pose relative to source (which is identity)
 		// If source is ID2, we need inverse transform
 		Pose3D pose(sourceID == pair.ID1 ? pair.relativePose.value() : pair.relativePose->Inverse());
-		candidates.push_back({targetID, pair.GetNumFilteredInliers(), pose});
+		candidates.push_back({targetID, pair.GetNumWeightedInliers(), pose});
 	}
 	if (candidates.size() < config.minViews-1) {
 		VERBOSE("error: insufficient initial views (%u < %u)",

@@ -82,8 +82,11 @@ unsigned nROMA2DenseSample;
 float fROMA2MinInlierCoverage;
 bool bROMA2Supplement;
 unsigned nROMA2SupplementMaxInliers;
-float fROMA2SupplementMinOverlap;
+float fROMA2SupplementMinCoverage;
 unsigned nROMA2SupplementTotalMatches;
+float fROMA2SupplementPoseMaxRot;
+float fROMA2SupplementPoseMaxTrans;
+bool bROMA2SupplementRefitPose;
 bool bFilterTriplets;
 float fTripletMinScore;
 String strROMA2Provider;
@@ -188,8 +191,11 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("roma2-min-inlier-coverage", boost::program_options::value(&OPT::fROMA2MinInlierCoverage)->default_value(0.25f), "dense two-view gate: fraction of both images the fit's inlier subset must still cover for the pair to be kept (0 keeps every pair)")
 		("roma2-supplement", boost::program_options::value<bool>(&OPT::bROMA2Supplement)->default_value(false), "dense supplementation: add dense warp correspondences alongside the sparse matches of a validated pair that is still weak, in the parts of the overlap those matches leave empty, so a weakly-textured pair contributes structure instead of dropping out (needs --roma2-validate true --roma2-match true)")
 		("roma2-supplement-max-inliers", boost::program_options::value(&OPT::nROMA2SupplementMaxInliers)->default_value(500), "dense supplementation: supplement a pair carrying fewer than this many verified correspondences")
-		("roma2-supplement-min-overlap", boost::program_options::value(&OPT::fROMA2SupplementMinOverlap)->default_value(0.3f), "dense supplementation: or one whose confidently overlapping fraction of the warp is below this")
-		("roma2-supplement-total-matches", boost::program_options::value(&OPT::nROMA2SupplementTotalMatches)->default_value(2000), "dense supplementation: correspondences a supplemented pair should end up with, sparse and dense TOGETHER -- the dense draw gets what is left after the pair's verified sparse inliers, placed only where those are not, so a pair already at this many gets nothing (0 = no total budget, the draw is then bounded by --roma2-dense-sample alone); each dense match costs a keypoint in both images plus a track")
+		("roma2-supplement-min-coverage", boost::program_options::value(&OPT::fROMA2SupplementMinCoverage)->default_value(0.3f), "dense supplementation: or one whose verified sparse inliers cover less than this fraction of the valid disparity area (the part of the warp the gate judged the pair on), however many of them there are")
+		("roma2-supplement-total-matches", boost::program_options::value(&OPT::nROMA2SupplementTotalMatches)->default_value(2000), "dense supplementation: correspondences a supplemented pair is drawn against, sparse and dense TOGETHER -- the dense draw gets the share of this proportional to the part of the valid disparity area the sparse inliers do NOT cover, placed only there (0 = no total budget, the draw is then bounded by --roma2-dense-sample alone); each dense match costs a keypoint in both images plus a track")
+		("roma2-supplement-pose-max-rot", boost::program_options::value(&OPT::fROMA2SupplementPoseMaxRot)->default_value(2.f), "dense supplementation: an infused pair takes the gate's dense relative pose instead of the one fitted on its sparse inliers when the two rotations differ by more than this many degrees")
+		("roma2-supplement-pose-max-trans", boost::program_options::value(&OPT::fROMA2SupplementPoseMaxTrans)->default_value(10.f), "dense supplementation: ...or when the two translation directions differ by more than this many degrees")
+		("roma2-supplement-refit-pose", boost::program_options::value<bool>(&OPT::bROMA2SupplementRefitPose)->default_value(false), "dense supplementation: instead of choosing between the two poses, re-estimate one on all of the pair's correspondences, sparse and dense together")
 		("roma2-provider", boost::program_options::value<std::string>(&OPT::strROMA2Provider)->default_value("auto"), "ONNX Runtime execution provider: auto (CUDA > CoreML > DirectML > CPU), cuda, coreml, dml or cpu")
 		("default-focal-ratio", boost::program_options::value(&OPT::defaultFocalRatio)->default_value(1.2f), "focal-length is set to ratio * max(width,height) for images with unknown focal-length")
 		("focal-length,f", boost::program_options::value(&OPT::focalLength)->default_value(0.f), "force focal-length (in pixels) for specified images (0 = disabled)")
@@ -205,7 +211,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("align-gps-threshold", boost::program_options::value<float>(&OPT::thAlignGPS)->default_value(5.f), "maximum distance in meters for aligning GPS positions to reconstruction poses (0 = disabled)")
 		("gps-position-weight", boost::program_options::value(&OPT::gpsPositionWeight)->default_value(0.0), "horizontal weight of the GPS position priors used to refine the geo-aligned reconstruction (0 = disabled)")
 		("gps-position-weight-z", boost::program_options::value(&OPT::gpsPositionWeightZ)->default_value(0.0), "vertical weight of the GPS position priors used to refine the geo-aligned reconstruction (0 = disabled)")
-		("ba-dense-weight", boost::program_options::value(&OPT::baDenseWeight)->default_value(0.25), "bundle adjustment: loss weight of a reprojection residual on a dense (warp-sampled) keypoint, relative to the 1.0 a described one carries (1 = no down-weighting); PROVISIONAL default, see BundleAdjustment.cpp")
+		("ba-dense-weight", boost::program_options::value(&OPT::baDenseWeight)->default_value(SFM::DENSE_OBSERVATION_WEIGHT), "bundle adjustment: loss weight of a reprojection residual on a dense (warp-sampled) keypoint, and the evidence one dense match is worth in the view graph, relative to the 1.0 a described one carries (1 = no down-weighting); PROVISIONAL default, see BundleAdjustment.cpp")
 		;
 
 	boost::program_options::options_description cmdline_options;
@@ -312,8 +318,8 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 			" and --roma2-match true (the guided pass is where the warp already is)");
 		return false;
 	}
-	if (OPT::fROMA2SupplementMinOverlap < 0.f || OPT::fROMA2SupplementMinOverlap > 1.f) {
-		LOG("error: --roma2-supplement-min-overlap is a fraction of the warp, it must be in [0,1] (got %g)", OPT::fROMA2SupplementMinOverlap);
+	if (OPT::fROMA2SupplementMinCoverage < 0.f || OPT::fROMA2SupplementMinCoverage > 1.f) {
+		LOG("error: --roma2-supplement-min-coverage is a fraction of the valid disparity area, it must be in [0,1] (got %g)", OPT::fROMA2SupplementMinCoverage);
 		return false;
 	}
 	if (OPT::fROMA2MinInlierCoverage < 0.f || OPT::fROMA2MinInlierCoverage > 1.f) {
@@ -395,8 +401,11 @@ int main(int argc, LPCTSTR* argv)
 	cfg.roma2Cfg.minInlierCoverage = OPT::fROMA2MinInlierCoverage;
 	cfg.roma2Cfg.useSupplement = OPT::bROMA2Supplement;
 	cfg.roma2Cfg.supplementMaxInliers = OPT::nROMA2SupplementMaxInliers;
-	cfg.roma2Cfg.supplementMinOverlap = OPT::fROMA2SupplementMinOverlap;
+	cfg.roma2Cfg.supplementMinCoverage = OPT::fROMA2SupplementMinCoverage;
 	cfg.roma2Cfg.supplementTotalMatches = OPT::nROMA2SupplementTotalMatches;
+	cfg.roma2Cfg.supplementPoseMaxRotationDeg = OPT::fROMA2SupplementPoseMaxRot;
+	cfg.roma2Cfg.supplementPoseMaxTranslationDeg = OPT::fROMA2SupplementPoseMaxTrans;
+	cfg.roma2Cfg.supplementRefitPose = OPT::bROMA2SupplementRefitPose;
 	cfg.roma2Cfg.provider = OPT::strROMA2Provider;
 	#ifdef _USE_CUDA
 	cfg.matchCfg.useCUDA = cfg.featuresCfg.useCUDA = !SEACAVE::CUDA::isCpuRequested(SEACAVE::CUDA::desiredDeviceIDs);
@@ -414,7 +423,10 @@ int main(int argc, LPCTSTR* argv)
 	cfg.thAlignGPS = OPT::thAlignGPS;
 	cfg.baConfig.gpsPositionWeight = OPT::gpsPositionWeight;
 	cfg.baConfig.gpsPositionWeightZ = OPT::gpsPositionWeightZ;
+	// one option, both consumers of the dense observation weight: the reprojection residual's weight
+	// in bundle adjustment and the view-graph evidence one dense match is worth
 	cfg.baConfig.denseObservationWeight = OPT::baDenseWeight;
+	cfg.matchCfg.weightingCfg.denseObservationWeight = (float)OPT::baDenseWeight;
 	cfg.estimatePoseUncertainty = !OPT::strExportPoseQuality.empty();
 	cfg.extractColors = OPT::bExtractColors;
 	cfg.clusterCfg.maxViewsPerCluster = OPT::maxViewsPerCluster;

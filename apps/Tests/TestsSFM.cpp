@@ -1516,13 +1516,11 @@ bool ROMA2SupplementDrawTest()
 		for (int cx = 0; cx < 40; cx += 2)
 			sparseA.push_back(CellToPixel(cx, cy));
 	const unsigned numSparse = (unsigned)sparseA.size();
-	ROMA2Config config; // supplementTotalMatches 2000, denseSampleSize 2000
-	const unsigned denseBudget = config.SupplementDenseBudget(numSparse);
-	if (denseBudget != config.supplementTotalMatches - numSparse) {
-		VERBOSE("ROMA2SupplementDrawTest FAILED: %u sparse inliers of a %u total leave a dense budget of %u, expected %u",
-			numSparse, config.supplementTotalMatches, denseBudget, config.supplementTotalMatches - numSparse);
-		return false;
-	}
+	ROMA2Config config; // supplementTotalMatches 2000, denseSampleSize 2000, minCoverage 0.3
+	// the draw is made at the pair's full TOTAL, not at a budget derived from its sparse count: the
+	// grid that total gives is the one the coverage census is taken on (one bucket ~ one of the
+	// total correspondences), and the budget that coverage buys is applied by thinning afterwards
+	const unsigned denseBudget = config.supplementTotalMatches;
 	Image32F overlap(cv::Size(cells, cells), 0.6f);
 	std::vector<Point2f> denseA, denseB;
 	std::vector<float> confidences;
@@ -1579,10 +1577,16 @@ bool ROMA2SupplementDrawTest()
 			(unsigned)numOccupiedBuckets, (unsigned)numConfidentBuckets, numBuckets, numBuckets);
 		return false;
 	}
-	// the pair ends at or below its TOTAL, which is the whole point of the renamed budget
-	if (numDense > denseBudget || (size_t)numSparse + numDense > config.supplementTotalMatches) {
-		VERBOSE("ROMA2SupplementDrawTest FAILED: %u sparse + %u dense exceeds the total of %u (dense budget %u)",
-			numSparse, (unsigned)numDense, config.supplementTotalMatches, denseBudget);
+	// THE BUDGET the census buys: the share of the total proportional to the uncovered part of the
+	// valid disparity area, and the draw thinned to it stays inside the total
+	const unsigned expectedBudget = (unsigned)ROUND2INT((float)config.supplementTotalMatches*(1.f - census.Coverage()));
+	std::vector<Point2f> budgetA(denseA), budgetB(denseB);
+	std::vector<float> budgetC(confidences);
+	ThinSampleEvenly(budgetA, budgetB, budgetC, expectedBudget);
+	if (numDense > denseBudget || budgetA.size() > expectedBudget ||
+		budgetA.size() > config.supplementTotalMatches) {
+		VERBOSE("ROMA2SupplementDrawTest FAILED: a %.4f-covered pair drew %u points and kept %u of a %u budget, total %u",
+			census.Coverage(), (unsigned)numDense, (unsigned)budgetA.size(), expectedBudget, config.supplementTotalMatches);
 		return false;
 	}
 	FOREACH(i, denseA) {
@@ -1604,29 +1608,25 @@ bool ROMA2SupplementDrawTest()
 			return false;
 		}
 
-	// 2) THE BUDGET IS A TOTAL. A pair already carrying the whole total gets nothing at all -- and
-	// it is reachable, since a small confident overlap triggers supplementation on its own, whatever
-	// the inlier count. A draw asked for nothing must also produce nothing, output buffers included.
-	if (config.SupplementDenseBudget(config.supplementTotalMatches) != 0 ||
-		config.SupplementDenseBudget(config.supplementTotalMatches + 500) != 0) {
-		VERBOSE("ROMA2SupplementDrawTest FAILED: a pair already at %u sparse inliers still asks for a dense budget",
-			config.supplementTotalMatches);
-		return false;
+	// 2) THE BUDGET IS THE UNCOVERED SHARE OF THE TOTAL. A fully covered pair buys nothing, a pair
+	// covering nothing buys the whole total, and in between the budget is linear in the coverage --
+	// so a pair with plenty of inliers piled in one corner is still infused over the remainder.
+	// A draw asked for nothing must produce nothing, output buffers included.
+	struct { float coverage; unsigned budget; } budgetCases[] = {
+		{0.f, config.supplementTotalMatches}, {1.f, 0u}, {0.25f, 1500u}, {0.9f, 200u}};
+	for (const auto& budgetCase : budgetCases) {
+		const unsigned budget = (unsigned)ROUND2INT((float)config.supplementTotalMatches*(1.f - budgetCase.coverage));
+		if (budget != budgetCase.budget) {
+			VERBOSE("ROMA2SupplementDrawTest FAILED: coverage %.2f of a %u total buys %u dense matches, expected %u",
+				budgetCase.coverage, config.supplementTotalMatches, budget, budgetCase.budget);
+			return false;
+		}
 	}
 	std::vector<Point2f> zeroA(3, Point2f(1.f, 2.f)), zeroB(5, Point2f(3.f, 4.f));
 	std::vector<float> zeroC(7, 0.5f);
 	if (SampleWarpComplementary(imgA, imgB, warp, overlap, 0.3f, 0, sparseA, zeroA, zeroB, zeroC) != 0 ||
 		!zeroA.empty() || !zeroB.empty() || !zeroC.empty()) {
 		VERBOSE("ROMA2SupplementDrawTest FAILED: a zero dense budget still drew %u points", (unsigned)zeroA.size());
-		return false;
-	}
-	// no total budget is the one case where the sparse count does not enter into it: the draw falls
-	// back to its own sample size, the way the gate's draw is bounded
-	ROMA2Config uncapped;
-	uncapped.supplementTotalMatches = 0;
-	if (uncapped.SupplementDenseBudget(5000) != uncapped.denseSampleSize) {
-		VERBOSE("ROMA2SupplementDrawTest FAILED: with no total budget the draw asked for %u, expected the %u-point sample size",
-			uncapped.SupplementDenseBudget(5000), uncapped.denseSampleSize);
 		return false;
 	}
 
@@ -1896,6 +1896,258 @@ bool ROMA2SupplementDrawTest()
 	}
 
 	VERBOSE("ROMA2SupplementDrawTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
+// The DENSE INFUSION DECISION, taken right after a pair's guided SIFT pass and its geometric
+// filter (DrawDenseSupplement) plus the relative-pose choice that follows it (SelectInfusedPose).
+// Four cases, each of which the previous rule -- "few inliers OR small confident warp overlap, for
+// a budget of total - inliers" -- got wrong:
+//  (a) a validated pair whose SIFT pass FAILED: covered nothing, so it is infused at the whole
+//      total and kept as a dense-only pair carrying the gate's geometry. The old rule never saw it:
+//      the decision sat inside the branch where the SIFT pass survived.
+//  (b) a STRONG but CLUSTERED pair (>= supplementMaxInliers inliers, all in one corner): infused,
+//      because coverage -- not the inlier count, and not the warp's confident fraction -- is what
+//      says the rest of the overlap is empty. Budget round(total * (1 - coverage)), drawn only in
+//      buckets the sparse inliers do not hold.
+//  (c) a strong pair whose inliers are SPREAD over the valid area: nothing at all.
+//  (d) the pose choice: the SIFT pose while the two agree, the gate's dense pose once either angle
+//      disagrees substantially, the gate's alone on a pair with no sparse inliers.
+// And the consequence requirement 6 turns on: a dense-only pair carries a positive composite weight
+// and forms tracks, instead of weighing 0 and being cut by BuildTracks' minPairWeight.
+bool ROMA2DenseInfusionTest()
+{
+	TD_TIMER_START();
+
+	// the identity-warp two-image fixture of ROMA2SupplementDrawTest: a point of A comes back
+	// unmoved in B, so every check reads in A's frame alone
+	const int width = 640, height = 480, cells = 160;
+	Image32F2 warp(cells, cells);
+	for (int y = 0; y < cells; ++y)
+		for (int x = 0; x < cells; ++x)
+			warp(y, x) = Point2f(
+				((x*(width-1.f)/(cells-1)) + 0.5f)*2.f/width - 1.f,
+				((y*(height-1.f)/(cells-1)) + 0.5f)*2.f/height - 1.f);
+	const Image32F overlap(cv::Size(cells, cells), 0.6f); // the whole warp is the valid disparity area
+	const auto CellToPixel = [&](int cx, int cy) {
+		return Point2f((float)cx*(width-1.f)/(float)(cells-1), (float)cy*(height-1.f)/(float)(cells-1));
+	};
+	// the documented bucket grid of a draw budgeted at `budget` over a fully eligible warp, and the
+	// bucket a pixel of A falls in, both restated independently of the implementation
+	const auto BucketGridSide = [&](unsigned budget) {
+		return MINF((int)std::ceil(std::sqrt((double)budget)), cells);
+	};
+	const auto PixelToBucket = [&](const Point2f& pt, int numBuckets) {
+		const int cx = MINF(MAXF(ROUND2INT(pt.x*(float)(cells-1)/(width-1.f)), 0), cells-1);
+		const int cy = MINF(MAXF(ROUND2INT(pt.y*(float)(cells-1)/(height-1.f)), 0), cells-1);
+		return (size_t)(cy*numBuckets/cells)*numBuckets + cx*numBuckets/cells;
+	};
+	// a two-image scene whose pair carries `sparseCells` sparse inliers at those cells of A
+	const auto BuildScene = [&](Scene& scene, const std::vector<std::pair<int,int>>& sparseCells) -> ImagePair& {
+		scene.cameras.emplace_back(new PinholeCamera(cv::Size(width, height),
+			REAL(600), REAL(600), REAL(width)/2, REAL(height)/2));
+		for (IIndex k = 0; k < 2; ++k) {
+			scene.images.emplace_back(k, String::FormatString("inf%u.jpg", k));
+			scene.images[k].cameraID = 0;
+			scene.images[k].pCamera = scene.cameras[0];
+		}
+		for (const auto& [cx, cy] : sparseCells) {
+			const Point2f pt = CellToPixel(cx, cy);
+			scene.images[0].keypoints.emplace_back(pt.x, pt.y, 4.f, -1.f, 0.05f);
+			scene.images[1].keypoints.emplace_back(pt.x, pt.y, 4.f, -1.f, 0.05f);
+		}
+		for (Image& img : scene.images)
+			img.CloseDescribedKeypoints();
+		ImagePair& pair = scene.pairs.emplace_back(0u, 1u);
+		for (uint32_t m = 0; m < (uint32_t)sparseCells.size(); ++m)
+			pair.matches.emplace_back(m, m);
+		pair.numFilteredInliers = (int)sparseCells.size();
+		pair.numDenseInliers = 0;
+		return pair;
+	};
+	ROMA2Config config; // total 2000, maxInliers 500, minCoverage 0.3
+	// the census the decision reads, recomputed here from the warp itself: every bucket of the grid
+	// holds an eligible cell (the warp is confident everywhere and the identity maps it inside B),
+	// so the confident buckets are the whole grid and the occupied ones are those the sparse
+	// inliers land in
+	const int numBuckets = BucketGridSide(config.supplementTotalMatches);
+	const auto Census = [&](const std::vector<std::pair<int,int>>& sparseCells) {
+		std::vector<bool> occupied((size_t)numBuckets*numBuckets, false);
+		for (const auto& [cx, cy] : sparseCells)
+			occupied[PixelToBucket(CellToPixel(cx, cy), numBuckets)] = true;
+		return occupied;
+	};
+
+	// (a) A VALIDATED PAIR WHOSE SIFT PASS FAILED: no sparse inliers, so nothing is occupied, the
+	// coverage is 0 and the budget is the whole total.
+	{
+		Scene scene;
+		ImagePair& pair = BuildScene(scene, {});
+		// the geometry the guided pass copies onto a dense-only pair: the gate's, whole
+		Pose3D gatePose;
+		gatePose.R = Matrix3x3::IDENTITY;
+		gatePose.SetT(Point3(1.0, 0.0, 0.0));
+		pair.relativePose = gatePose;
+		pair.E = ImagePair::ComposeEssentialMatrix(gatePose);
+		DenseSupplement supplement;
+		if (!DrawDenseSupplement(scene.images[0], scene.images[1], warp, overlap, config, pair, supplement)) {
+			VERBOSE("ROMA2DenseInfusionTest FAILED: a validated pair whose SIFT pass failed was not infused");
+			return false;
+		}
+		if (supplement.coverage != 0.f || supplement.budget != config.supplementTotalMatches ||
+			supplement.pointsA.size() != config.supplementTotalMatches) {
+			VERBOSE("ROMA2DenseInfusionTest FAILED: a pair with no sparse inliers has coverage %.4f and a budget of %u "
+				"(%u points), expected 0 coverage and the whole %u total",
+				supplement.coverage, supplement.budget, (unsigned)supplement.pointsA.size(), config.supplementTotalMatches);
+			return false;
+		}
+		// stored the way the pass stores it: the dense matches are the pair's whole match set, so
+		// the partition is 0 sparse / N dense -- the invariant every consumer of the segments reads
+		const unsigned numAppended = AppendDenseMatches(scene, pair, supplement.pointsA, supplement.pointsB,
+			supplement.confidences, cv::Size(cells, cells));
+		if (numAppended != supplement.pointsA.size() || pair.GetNumFilteredInliers() != 0 ||
+			pair.GetNumDenseInliers() != numAppended || pair.GetNumTrackFormingMatches() != numAppended) {
+			VERBOSE("ROMA2DenseInfusionTest FAILED: a dense-only pair partitions as %u sparse / %u dense of %u appended",
+				pair.GetNumFilteredInliers(), pair.GetNumDenseInliers(), numAppended);
+			return false;
+		}
+		if (!pair.relativePose.has_value() || !pair.E.has_value() ||
+			norm(pair.relativePose->R - gatePose.R) > 1e-9 || norm(pair.relativePose->GetT() - gatePose.GetT()) > 1e-9) {
+			VERBOSE("ROMA2DenseInfusionTest FAILED: the dense-only pair did not keep the gate's geometry");
+			return false;
+		}
+		// ...and it is a first-class member of the view graph: a positive composite weight, above
+		// the default minPairWeight, and tracks out of BuildTracks
+		ComputePairsWeights(scene);
+		if (!pair.HasValidWeight() || pair.GetNumWeightedInliers() == 0 || pair.GetCompositeWeight() <= 3.f) {
+			VERBOSE("ROMA2DenseInfusionTest FAILED: the dense-only pair weighs %.3f (%u weighted inliers, %.3f spatial, "
+				"%.3f connectivity) -- it is cut by BuildTracks' minPairWeight",
+				pair.GetCompositeWeight(), pair.GetNumWeightedInliers(), pair.weightSpatial, pair.weightConnectivity);
+			return false;
+		}
+		BuildTracks(scene, 3.f);
+		if (scene.tracks.size() != numAppended) {
+			VERBOSE("ROMA2DenseInfusionTest FAILED: the dense-only pair formed %u tracks of %u dense matches",
+				(unsigned)scene.tracks.size(), numAppended);
+			return false;
+		}
+	}
+
+	// (b) STRONG BUT CLUSTERED: 625 verified inliers -- past supplementMaxInliers, so the old
+	// inlier-count trigger would have left this pair alone -- packed into the top-left corner. The
+	// coverage of the valid disparity area is what sees the empty remainder.
+	std::vector<std::pair<int,int>> clustered;
+	for (int cy = 0; cy < 50; cy += 2)
+		for (int cx = 0; cx < 50; cx += 2)
+			clustered.emplace_back(cx, cy);
+	{
+		Scene scene;
+		ImagePair& pair = BuildScene(scene, clustered);
+		const std::vector<bool> occupied = Census(clustered);
+		const unsigned numOccupied = (unsigned)std::count(occupied.begin(), occupied.end(), true);
+		const float expectedCoverage = (float)numOccupied/(float)(numBuckets*numBuckets);
+		const unsigned expectedBudget = (unsigned)ROUND2INT((float)config.supplementTotalMatches*(1.f - expectedCoverage));
+		if (pair.GetNumFilteredInliers() < config.supplementMaxInliers || expectedCoverage >= config.supplementMinCoverage) {
+			VERBOSE("ROMA2DenseInfusionTest FAILED: the fixture is not strong-but-clustered (%u inliers, %.4f coverage)",
+				pair.GetNumFilteredInliers(), expectedCoverage);
+			return false;
+		}
+		DenseSupplement supplement;
+		if (!DrawDenseSupplement(scene.images[0], scene.images[1], warp, overlap, config, pair, supplement)) {
+			VERBOSE("ROMA2DenseInfusionTest FAILED: a pair with %u inliers covering %.4f of its valid disparity area "
+				"was not infused", pair.GetNumFilteredInliers(), expectedCoverage);
+			return false;
+		}
+		if (ABS(supplement.coverage - expectedCoverage) > 1e-6f || supplement.budget != expectedBudget ||
+			supplement.pointsA.size() != expectedBudget) {
+			VERBOSE("ROMA2DenseInfusionTest FAILED: coverage %.4f (expected %.4f) bought %u points of a %u budget, expected %u",
+				supplement.coverage, expectedCoverage, (unsigned)supplement.pointsA.size(), supplement.budget, expectedBudget);
+			return false;
+		}
+		// and every one of them outside the buckets the sparse inliers already hold
+		FOREACH(i, supplement.pointsA)
+			if (occupied[PixelToBucket(supplement.pointsA[i], numBuckets)]) {
+				VERBOSE("ROMA2DenseInfusionTest FAILED: infused point %u at (%.1f, %.1f) sits in a bucket the pair's "
+					"sparse inliers hold", i, supplement.pointsA[i].x, supplement.pointsA[i].y);
+				return false;
+			}
+	}
+
+	// (c) STRONG AND SPREAD: the same inlier count, spread over the whole valid area, is left alone.
+	{
+		std::vector<std::pair<int,int>> spread;
+		for (int cy = 0; cy < cells; cy += 5)
+			for (int cx = 0; cx < cells; cx += 5)
+				spread.emplace_back(cx, cy);
+		Scene scene;
+		ImagePair& pair = BuildScene(scene, spread);
+		const std::vector<bool> occupied = Census(spread);
+		const float expectedCoverage = (float)std::count(occupied.begin(), occupied.end(), true)/(float)(numBuckets*numBuckets);
+		if (pair.GetNumFilteredInliers() < config.supplementMaxInliers || expectedCoverage < config.supplementMinCoverage) {
+			VERBOSE("ROMA2DenseInfusionTest FAILED: the fixture is not strong-and-spread (%u inliers, %.4f coverage)",
+				pair.GetNumFilteredInliers(), expectedCoverage);
+			return false;
+		}
+		DenseSupplement supplement;
+		if (DrawDenseSupplement(scene.images[0], scene.images[1], warp, overlap, config, pair, supplement) ||
+			!supplement.pointsA.empty() || !supplement.pointsB.empty() || !supplement.confidences.empty() ||
+			supplement.budget != 0) {
+			VERBOSE("ROMA2DenseInfusionTest FAILED: a pair with %u inliers covering %.4f of its valid disparity area "
+				"was infused with %u points", pair.GetNumFilteredInliers(), expectedCoverage,
+				(unsigned)supplement.pointsA.size());
+			return false;
+		}
+	}
+
+	// (d) THE POSE CHOICE. The SIFT pose is kept while the two fits agree and dropped for the gate's
+	// once either angle disagrees substantially; a pair with no sparse inliers has only the gate's.
+	{
+		Pose3D densePose;
+		densePose.R = Matrix3x3::IDENTITY;
+		densePose.SetT(Point3(1.0, 0.0, 0.0));
+		const auto MakePose = [](REAL rotationDeg, REAL translationDeg) {
+			Pose3D pose;
+			pose.R = RMatrix(Point3(0.0, 1.0, 0.0), D2R(rotationDeg)); // about Y, so the angle is exactly this
+			pose.SetT(Point3(COS(D2R(translationDeg)), SIN(D2R(translationDeg)), 0.0));
+			return pose;
+		};
+		struct Case { REAL rotationDeg, translationDeg; InfusedPoseChoice choice; } cases[] = {
+			{0.0, 0.0, InfusedPoseChoice::SPARSE},   // identical fits
+			{1.5, 8.0, InfusedPoseChoice::SPARSE},   // both inside their thresholds (2 deg, 10 deg)
+			{3.0, 0.0, InfusedPoseChoice::DENSE},    // the rotations disagree
+			{0.0, 25.0, InfusedPoseChoice::DENSE},   // the translation directions do
+			{5.0, 30.0, InfusedPoseChoice::DENSE},   // both
+		};
+		for (const Case& c : cases) {
+			float rotationDeg = -1.f, translationDeg = -1.f;
+			const Pose3D sparsePose = MakePose(c.rotationDeg, c.translationDeg);
+			const InfusedPoseChoice choice = SelectInfusedPose(sparsePose, densePose, 800, config, rotationDeg, translationDeg);
+			if (choice != c.choice || ABS(rotationDeg - (float)c.rotationDeg) > 1e-3f ||
+				ABS(translationDeg - (float)c.translationDeg) > 1e-3f) {
+				VERBOSE("ROMA2DenseInfusionTest FAILED: poses %g deg / %g deg apart measured %.4f/%.4f and chose %s, expected %s",
+					c.rotationDeg, c.translationDeg, rotationDeg, translationDeg,
+					InfusedPoseChoiceName(choice), InfusedPoseChoiceName(c.choice));
+				return false;
+			}
+		}
+		// a pair with no sparse inliers, and a gate branch that fitted no pose at all
+		float rotationDeg = -1.f, translationDeg = -1.f;
+		if (SelectInfusedPose(std::optional<Pose3D>(), densePose, 0, config, rotationDeg, translationDeg) != InfusedPoseChoice::DENSE_ONLY ||
+			SelectInfusedPose(MakePose(30.0, 40.0), std::optional<Pose3D>(), 800, config, rotationDeg, translationDeg) != InfusedPoseChoice::SPARSE ||
+			SelectInfusedPose(std::optional<Pose3D>(), std::optional<Pose3D>(), 800, config, rotationDeg, translationDeg) != InfusedPoseChoice::NONE) {
+			VERBOSE("ROMA2DenseInfusionTest FAILED: the pose choice mishandles a missing pose");
+			return false;
+		}
+		// the thresholds are configuration, not constants
+		ROMA2Config strict = config;
+		strict.supplementPoseMaxRotationDeg = 0.5f;
+		if (SelectInfusedPose(MakePose(1.5, 8.0), densePose, 800, strict, rotationDeg, translationDeg) != InfusedPoseChoice::DENSE) {
+			VERBOSE("ROMA2DenseInfusionTest FAILED: a 1.5 deg rotation difference passed a 0.5 deg threshold");
+			return false;
+		}
+	}
+
+	VERBOSE("ROMA2DenseInfusionTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 
@@ -2378,16 +2630,20 @@ bool DenseKeypointBoundaryTest()
 	return true;
 }
 
-// A dense supplement match forms tracks and does not vote on its pair's authority -- but it must
-// also not be able to make the pair worthless. This checks both halves on one supplemented pair:
-//  - MAGNITUDE, sparse: FilterMatches' meanRayAngle is the median over the SPARSE matches only,
+// A dense supplement match is evidence about its pair, discounted for the precision of a
+// warp-sampled position -- not full evidence, and not none. This checks each term of the weight on
+// one supplemented pair, since each reads a different segment for a different reason:
+//  - the ANGLE term, sparse: FilterMatches' meanRayAngle is the median over the SPARSE matches only,
 //    because ComputeIntrinsicWeight multiplies ComputeAngleBaselineWeight(meanRayAngle) into
 //    weightSpatial, and the supplement is a coverage-maximising draw whose triangulation angles are
-//    nothing like the clustered descriptor correspondences'. weightSpatial must come out as the
-//    product of the sparse grid occupancy and the sparse angle score, with the supplement in neither.
-//  - VALIDITY FLOOR, track-forming: ComputeIntrinsicWeight's minimum-support bar returns 0 below it,
-//    which zeroes weightSpatial, hence GetCompositeWeight(), hence BuildTracks' minPairWeight cut --
-//    so a floor read from the sparse count alone makes a supplemented pair contribute NO tracks at
+//    nothing like the clustered descriptor correspondences'.
+//  - the AREA term, track-forming: coverage asks where the pair has correspondences, and a dense
+//    draw covers what it was drawn over. A dense-only pair would otherwise score no area at all.
+//  - the MAGNITUDE, discounted: sparse + w x dense (GetNumWeightedInliers), so a stratified draw
+//    cannot re-rank the view graph by sheer count.
+//  - the VALIDITY FLOOR, track-forming: ComputeIntrinsicWeight's minimum-support bar returns 0 below
+//    it, which zeroes weightSpatial, hence GetCompositeWeight(), hence BuildTracks' minPairWeight cut
+//    -- so a floor read from the sparse count alone makes a supplemented pair contribute NO tracks at
 //    all, sparse or dense, on exactly the weak pairs supplementation exists to serve.
 bool SupplementEvidenceIsolationTest()
 {
@@ -2475,14 +2731,36 @@ bool SupplementEvidenceIsolationTest()
 			"and 15 dense matches -- the validity floor is reading the sparse count, so this pair contributes no tracks");
 		return false;
 	}
-	// and the magnitude is still purely sparse: the 5 sparse matches occupy 5 of the 10x10 cells in
-	// each image, so areaScore is 0.05 exactly, times the sparse angle score. Were either factor
-	// reading the union, the 15 clustered dense matches would move it.
-	const float expectedSpatial = 0.05f * ImagePair::ComputeAngleBaselineWeight(R2D(pair.meanRayAngle));
-	if (ABS(weighted.weightSpatial - expectedSpatial) > 1e-5f) {
-		VERBOSE("SupplementEvidenceIsolationTest FAILED: weightSpatial is %.6f, expected %.6f (0.05 sparse grid "
-			"occupancy x sparse angle score) -- a magnitude term is reading the dense supplement",
-			weighted.weightSpatial, expectedSpatial);
+	// The AREA score runs over the TRACK-FORMING matches, supplement included: it asks where the
+	// pair has correspondences, and the supplement covers what it was drawn over. Recomputed here
+	// from the projections themselves -- the 5 sparse points occupy 5 of the 10x10 cells of each
+	// image and the 15 clustered dense ones add a few more -- so the check states the rule rather
+	// than a number, and asserts the union really is larger than the sparse count alone.
+	const auto Occupancy = [](const Image& img, unsigned numPoints) {
+		std::vector<bool> grid(100, false);
+		for (unsigned k = 0; k < numPoints; ++k) {
+			const cv::Point2f& p = img.keypoints[k].pt;
+			grid[MINF((int)(p.y/(float)img.GetHeight()*10.f), 9)*10 + MINF((int)(p.x/(float)img.GetWidth()*10.f), 9)] = true;
+		}
+		return (unsigned)std::count(grid.begin(), grid.end(), true);
+	};
+	const unsigned occupiedTrackForming = MINF(Occupancy(scene.images[0], 20), Occupancy(scene.images[1], 20));
+	const unsigned occupiedSparse = MINF(Occupancy(scene.images[0], 5), Occupancy(scene.images[1], 5));
+	const float expectedSpatial = (float)occupiedTrackForming/100.f * ImagePair::ComputeAngleBaselineWeight(R2D(pair.meanRayAngle));
+	if (occupiedTrackForming <= occupiedSparse || ABS(weighted.weightSpatial - expectedSpatial) > 1e-5f) {
+		VERBOSE("SupplementEvidenceIsolationTest FAILED: weightSpatial is %.6f, expected %.6f (%u/100 track-forming grid "
+			"occupancy, against %u/100 sparse, x the sparse angle score)",
+			weighted.weightSpatial, expectedSpatial, occupiedTrackForming, occupiedSparse);
+		return false;
+	}
+	// The MAGNITUDE the area score multiplies is where the supplement is discounted instead of
+	// ignored: the pair's evidence is 5 sparse + 0.25 x 15 dense = 8.75, so a coverage-maximising
+	// draw cannot re-rank the graph by sheer count, and a dense-only pair is still not a zero.
+	if (ABS(weighted.weightedInliers - 8.75f) > 1e-5f || weighted.GetNumWeightedInliers() != 9 ||
+		weighted.GetNumFilteredInliers() != 5) {
+		VERBOSE("SupplementEvidenceIsolationTest FAILED: the pair's evidence is %.4f (%u rounded) with %u sparse, "
+			"expected 5 + 0.25 x 15 = 8.75 (9)",
+			weighted.weightedInliers, weighted.GetNumWeightedInliers(), weighted.GetNumFilteredInliers());
 		return false;
 	}
 

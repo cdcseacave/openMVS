@@ -11,7 +11,7 @@
 
 // I N C L U D E S /////////////////////////////////////////////////
 
-#include "Camera.h"
+#include "ImagePair.h" // DENSE_OBSERVATION_WEIGHT, the one definition of the dense discount
 
 
 // D E F I N E S ///////////////////////////////////////////////////
@@ -61,6 +61,12 @@ struct SFM_API PairsWeightingConfig
     float sigmaInlierPerMatches = 0.6f; // expected inlier vs. number of matches ratio (0.6 - AKAZE/ORB, 0.77 - SIFT)
     float tripletSaturation = 5.f; // saturation point for triplet weighting
     float maxAngleTripletDegrees = 5.f; // maximum allowed rotation error (degrees) for triplet consistency
+    // What one DENSE (ROMAv2 warp sampled) match is worth as pair evidence, relative to the 1.0 a
+    // descriptor match carries: this pass is the one that holds it, and it writes the discounted
+    // count every view-graph consumer then reads off the pair (ImagePair::GetNumWeightedInliers).
+    // Same quantity as BAConfig::denseObservationWeight -- a dense position is sampled from a
+    // low-resolution warp -- and the same single definition, so the two cannot drift apart.
+    float denseObservationWeight = (float)DENSE_OBSERVATION_WEIGHT;
 };
 void SFM_API ComputePairsWeights(Scene& scene, const PairsWeightingConfig& config = PairsWeightingConfig(), IIndexArr* pComponents = NULL);
 

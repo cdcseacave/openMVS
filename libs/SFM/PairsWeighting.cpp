@@ -33,22 +33,25 @@ float ComputeIntrinsicWeight(ImagePair& pair, const Image& img1, const Image& im
 	if (!pair.HasMatches())
 		return 0.f;
 
-	// The VALIDITY FLOOR, split from the magnitude below. It asks "does this pair carry enough
-	// verified correspondence to be considered at all", and for that the track-forming set is the
-	// right quantity: a gate-validated dense supplement is stronger evidence about the pair's
-	// geometry than its sparse count is, and returning 0 here zeroes weightSpatial, hence
-	// GetCompositeWeight(), hence BuildTracks' minPairWeight cut -- so a supplemented pair whose
-	// sparse segment dips below the floor would contribute NO tracks at all, sparse or dense, and
-	// dense supplementation would go silently inert on exactly the weak pairs it exists to serve.
-	// Every MAGNITUDE term stays sparse: the grid-occupancy areaScore below (GetMatchedPoints'
-	// default prefix), the angle term (FilterMatches accumulates it over sparse matches only) and
-	// GetCompositeWeight's inlier factor with its 1000 cap. So a supplemented pair still competes on
-	// its descriptor evidence honestly and cannot re-rank the view graph; it just is not hard-zeroed
-	// by a floor its dense evidence satisfies. One that then still falls under minPairWeight on
-	// magnitude alone is a correct drop, not a silent one.
+	// The VALIDITY FLOOR: does this pair carry enough verified correspondence to be considered at
+	// all. The track-forming set is the right quantity -- a gate-validated dense supplement is
+	// evidence about the pair's geometry -- and returning 0 here zeroes weightSpatial, hence
+	// GetCompositeWeight(), hence BuildTracks' minPairWeight cut, so an infused pair whose sparse
+	// segment dips below the floor would contribute NO tracks at all, sparse or dense, and the
+	// infusion would go silently inert on exactly the weak pairs it exists to serve.
 	if (pair.GetNumTrackFormingMatches() < minInliers)
 		return 0.f; // minimal support needed
-	const auto [points1, points2] = pair.GetMatchedPoints(img1, img2);
+	// The AREA SCORE runs over the track-forming matches, dense supplement included: it measures
+	// where this pair has correspondences, and a dense draw covers the frame it was drawn over
+	// whether or not that counts as descriptor evidence. A dense-only pair (no sparse matches at
+	// all) would otherwise score 0 area, hence 0 weight, and be cut from the view graph it was
+	// deliberately kept in. The MAGNITUDE the score multiplies is discounted instead, in
+	// GetNumWeightedInliers: a dense match counts w, not 1, so a coverage-maximising draw cannot
+	// re-rank the graph by sheer count.
+	// The angle term below stays sparse (FilterMatches accumulates it over sparse matches only) and
+	// reads a neutral 1 when there is none, which is the honest answer for a pair whose baseline no
+	// sub-pixel correspondence ever measured.
+	const auto [points1, points2] = pair.GetTrackFormingPoints(img1, img2);
 
 	// Grid Coverage Score (N_eff)
 	// Divide each view into gridSize x gridSize cells:
@@ -106,6 +109,13 @@ void SFM::ComputePairsWeights(Scene& scene, const PairsWeightingConfig& config, 
 	#else
 	for (ImagePair& pair : scene.pairs) {
 	#endif
+		// the pair's inlier evidence, which this pass is the one holder of the dense discount for:
+		// written before any weight reads it, since the connectivity step below and every consumer
+		// of GetCompositeWeight() downstream are exactly its readers. A pair with no matches at all
+		// carries no partition to read a dense count out of (the weight below is 0 for it anyway),
+		// so it keeps the "never computed" value and the accessor answers from its counts alone.
+		pair.weightedInliers = pair.HasMatches() ?
+			(float)pair.GetNumFilteredInliers() + config.denseObservationWeight*(float)pair.GetNumDenseInliers() : -1.f;
 		pair.weightSpatial = ComputeIntrinsicWeight(pair, scene.images[pair.ID1], scene.images[pair.ID2], config.gridSize, config.minInliers);
 	}
 
@@ -202,7 +212,7 @@ void SFM::ComputePairsWeights(Scene& scene, const PairsWeightingConfig& config, 
 	for (const ImagePair& pair : scene.pairs) {
 		if (pair.weightSpatial <= 0.f)
 			continue; // skip if no matches
-		const unsigned w = pair.GetNumFilteredInliers();
+		const unsigned w = pair.GetNumWeightedInliers();
 		ASSERT(w > 0, "ComputePairsWeights: non-positive intrinsic weight in connectivity computation");
 		if (w > maxNodeWeight[pair.ID1]) maxNodeWeight[pair.ID1] = w;
 		if (w > maxNodeWeight[pair.ID2]) maxNodeWeight[pair.ID2] = w;
@@ -219,7 +229,7 @@ void SFM::ComputePairsWeights(Scene& scene, const PairsWeightingConfig& config, 
 		pair.weightConnectivity = 0.f;
 		if (pair.weightSpatial <= 0.f)
 			continue;
-		const float w = (float)pair.GetNumFilteredInliers();
+		const float w = (float)pair.GetNumWeightedInliers();
 		const float max1 = (float)maxNodeWeight[pair.ID1];
 		const float max2 = (float)maxNodeWeight[pair.ID2];
 		pair.weightConnectivity = MINF(SQRT((w * w) / (max1 * max2)), 1.f);

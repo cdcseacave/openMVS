@@ -422,41 +422,115 @@ bool ForEachWarpROMA2(PairsMatcher& pairsMatcher, RoMa2Onnx& roma2, const PairId
 	return true;
 }
 
-// One pair's dense supplement: the correspondences drawn from that pair's own warp, to be appended
-// alongside its sparse matches. Index-parallel, in the pixels of the working orientation of each
-// image (SampleWarpByCoverage's convention). Empty on a pair that was not supplemented.
-struct DenseSupplement {
-	std::vector<Point2f> pointsA, pointsB;
-	std::vector<float> confidences;
-};
-
-// Draw one pair's dense supplement out of its (already eroded) warp, to COMPLEMENT the sparse
-// matches that pair already carries rather than to repeat them: `guided` is the verified pair, and
-// the draw is budgeted and placed against its sparse inliers so that the two together come to at
-// most config.supplementTotalMatches, spread as evenly over the confident overlap as the warp
-// allows (SampleWarpComplementary). A pair already at that many sparse inliers -- reachable, since
-// a low warp overlap triggers supplementation on its own -- gets nothing at all: the budget is a
-// total, and "up to" a total is satisfied by already being there.
-// Nothing is filtered here against the pair's fitted geometry, deliberately: the gate already fit
-// one geometry to a sample of this same warp and required its inlier subset to still cover both
-// images, so a second pass over the same evidence would re-confirm rather than test it. What bounds
-// a wrong supplement is the gate upstream (a pair it rejected never reaches this pass at all),
-// minConfidence on the warp, FilterTracks' reprojection bar downstream, and the bundle-adjustment
-// down-weighting every dense observation carries.
-void DrawDenseSupplement(const Image& imgA, const Image& imgB, const WarpMaps& maps,
-	const ROMA2Config& config, const ImagePair& guided, DenseSupplement& supplement)
+// Re-estimate one relative pose on ALL of an infused pair's correspondences, sparse and dense
+// together (ROMA2Config::supplementRefitPose). The matcher's own estimator on temporary Image copies
+// whose keypoints are those correspondences -- the ValidateOnePairROMA2 precedent, so the branch and
+// the threshold are the ones the descriptor path uses and no second estimator exists. The copies
+// carry no pose, for the same reason the gate's do not: a scene that happens to hold a ground-truth
+// solution must not be able to leak it into a fitted geometry.
+// The dense keypoints do not exist in the images yet (they are appended serially, after this pass),
+// which is why the refit runs off the drawn positions rather than off the stored pair.
+bool RefitInfusedPose(PairsMatcher& pairsMatcher, const Image& imgA, const Image& imgB,
+	const ImagePair& guided, const DenseSupplement& supplement, Pose3D& refitted)
 {
-	const unsigned numVerified = guided.GetNumFilteredInliers();
-	const unsigned denseBudget = config.SupplementDenseBudget(numVerified);
-	if (denseBudget == 0)
-		return; // the pair is already at (or past) its total: nothing left to draw
-	// the pair overload gathers the occupied positions off `guided` itself -- which segment, which
-	// index side and which image that gather reads is where a silent mistake would sit, so it lives
-	// in ROMA2Warp.cpp next to the draw it feeds, where a test can reach it
-	SampleWarpComplementary(imgA, imgB, maps.warp, maps.overlap, config.minConfidence,
-		denseBudget, guided, supplement.pointsA, supplement.pointsB, supplement.confidences);
-	ASSERT(config.supplementTotalMatches == 0 ||
-		numVerified + supplement.pointsA.size() <= config.supplementTotalMatches);
+	const unsigned numSparse = guided.GetNumFilteredInliers();
+	const size_t numTotal = (size_t)numSparse + supplement.pointsA.size();
+	if (numTotal < MAXF(pairsMatcher.GetConfig().minMatches, 8u))
+		return false;
+	std::vector<Point2f> pointsA, pointsB;
+	pointsA.reserve(numTotal);
+	pointsB.reserve(numTotal);
+	for (unsigned m = 0; m < numSparse; ++m) {
+		pointsA.push_back(imgA.keypoints[guided.matches[m].queryIdx].pt);
+		pointsB.push_back(imgB.keypoints[guided.matches[m].trainIdx].pt);
+	}
+	pointsA.insert(pointsA.end(), supplement.pointsA.begin(), supplement.pointsA.end());
+	pointsB.insert(pointsB.end(), supplement.pointsB.begin(), supplement.pointsB.end());
+	Image imgACopy(imgA.ID, imgA.fileName, Pose3D(), imgA.cameraID, imgA.pCamera);
+	Image imgBCopy(imgB.ID, imgB.fileName, Pose3D(), imgB.cameraID, imgB.pCamera);
+	imgACopy.InvalidatePose();
+	imgBCopy.InvalidatePose();
+	imgACopy.keypoints = ConvertToKeypoints(pointsA);
+	imgBCopy.keypoints = ConvertToKeypoints(pointsB);
+	ImagePair fit(guided.ID1, guided.ID2);
+	fit.matches.reserve(numTotal);
+	for (uint32_t i = 0; i < (uint32_t)numTotal; ++i)
+		fit.matches.emplace_back(i, i);
+	if (!pairsMatcher.GeometricFilter(imgACopy, imgBCopy, fit) || !fit.relativePose.has_value())
+		return false;
+	refitted = *fit.relativePose;
+	return true;
+}
+
+// The relative pose an infused pair ends up with, and the record of how it was chosen.
+// Two poses may exist for a pair: the SIFT pose the guided pass fitted on its verified sparse
+// inliers, and the gate's dense pose fitted on its ~denseSampleSize spread warp samples. The SIFT
+// pose is the more accurate one WHEN THE TWO AGREE -- sub-pixel correspondences, even with poor
+// coverage -- so the pair keeps it unless the two disagree substantially, and then it takes the
+// dense pose, which rests on evidence spread over the whole overlap. A dense-only pair has no SIFT
+// pose to compare and simply carries the gate's. With no dense pose (the FUNDAMENTAL branch fits
+// none) the policy is inert.
+// Taking "the dense pose" takes the gate's F and E with it: they are one fit, and a pair holding
+// one fit's pose next to another fit's matrices would describe two geometries as one.
+// Emits the per-pair record every infused pair contributes to the offline threshold sweep (Task 6):
+// one DEBUG line, fixed prefix, fixed field order, `nan` where a pose is missing.
+void ChooseInfusedPose(PairsMatcher& pairsMatcher, const Image& imgA, const Image& imgB,
+	const ROMA2Config& config, const PairsMatcher::ValidatedGeometry& validated,
+	const DenseSupplement& supplement, ImagePair& pair)
+{
+	const unsigned numSparse = pair.GetNumFilteredInliers();
+	const std::optional<Pose3D> sparsePose = pair.relativePose; // as the guided pass's own fit left it
+	const std::optional<Pose3D>& densePose = validated.relativePose;
+	float rotationDeg = 0.f, translationDeg = 0.f;
+	InfusedPoseChoice choice = SelectInfusedPose(sparsePose, densePose, numSparse, config, rotationDeg, translationDeg);
+	Pose3D refitted;
+	if (config.supplementRefitPose && RefitInfusedPose(pairsMatcher, imgA, imgB, pair, supplement, refitted)) {
+		// one pose fitted on everything the pair carries, instead of a choice between two. The two
+		// angles are still recorded: they are what the offline sweep needs, whichever pose was kept
+		pair.relativePose = refitted;
+		pair.E = ImagePair::ComposeEssentialMatrix(refitted);
+		choice = InfusedPoseChoice::REFIT;
+	} else if (choice == InfusedPoseChoice::DENSE) {
+		// the gate's fit, whole: its pose next to another fit's matrices would be two geometries
+		// described as one
+		pair.relativePose = densePose;
+		pair.F = validated.F;
+		pair.E = validated.E;
+	}
+	// DENSE_ONLY needs no assignment: the pair was built out of the gate's geometry to begin with
+	// the record: one line per infused pair, fixed prefix and field order, greppable out of the
+	// working-folder log of a Release run at -v 3. It is what the pseudo-GT sweep of the two
+	// thresholds is run on, so it carries both poses whether or not they were used.
+	#if TD_VERBOSE != TD_VERBOSE_OFF
+	const double qnan = std::numeric_limits<double>::quiet_NaN();
+	double qs[4] = {qnan, qnan, qnan, qnan}, ts[3] = {qnan, qnan, qnan};
+	double qd[4] = {qnan, qnan, qnan, qnan}, td[3] = {qnan, qnan, qnan};
+	const auto PoseFields = [](const std::optional<Pose3D>& pose, double* q, double* t) {
+		if (!pose.has_value())
+			return;
+		double params[7]; // quaternion (w x y z) + centre, of which only the quaternion is read
+		Pose3DToQuaternionAndCenter(*pose, params);
+		for (int k = 0; k < 4; ++k)
+			q[k] = params[k];
+		const Point3 translation = pose->GetT();
+		const REAL n = norm(translation);
+		if (n > ZEROTOLERANCE<REAL>()) {
+			// the direction alone: a relative pose has no scale to record
+			t[0] = translation.x/n;
+			t[1] = translation.y/n;
+			t[2] = translation.z/n;
+		}
+	};
+	PoseFields(sparsePose, qs, ts);
+	PoseFields(densePose, qd, td);
+	DEBUG("ROMA2 pose check pair %u %u, sparse %u, coverage %.4f, dense %u, dR %.4f deg, dt %.4f deg, "
+		"choice %s, qs(%.6f %.6f %.6f %.6f) ts(%.6f %.6f %.6f), qd(%.6f %.6f %.6f %.6f) td(%.6f %.6f %.6f)",
+		pair.ID1, pair.ID2, numSparse, supplement.coverage, (unsigned)supplement.pointsA.size(),
+		rotationDeg, translationDeg, InfusedPoseChoiceName(choice),
+		qs[0], qs[1], qs[2], qs[3], ts[0], ts[1], ts[2],
+		qd[0], qd[1], qd[2], qd[3], td[0], td[1], td[2]);
+	#endif
+	(void)choice; // the record is the only reader, and it compiles out of a non-verbose build
 }
 
 #endif // _USE_ONNXRUNTIME
@@ -526,6 +600,111 @@ unsigned SFM::ComputeGlobalDescriptorsROMA2(Scene& scene, RoMa2Onnx& roma2)
 
 // D E N S E   M A T C H I N G   P A S S //////////////////////////////
 
+// Decide whether to infuse dense correspondences into one pair, and draw them if so -- immediately
+// after that pair's guided SIFT pass and its geometric filter, while its warp and the draw that
+// would complement it are both still at hand. `guided` is the pair as the SIFT pass left it: its
+// verified sparse inliers if it survived, no matches at all if it failed (a dense-only pair).
+// Returns true when the pair is infused, and then `supplement` holds the draw.
+//
+// The decision reads ONE quantity, the pair's SIFT COVERAGE OF ITS VALID DISPARITY AREA. The
+// complementary draw's own bucket census gives it (WarpDrawCoverage): confident buckets are the
+// area the gate judged this pair on, occupied ones are those a verified SIFT inlier landed in, and
+// their ratio is what fraction of the evidence the descriptor matcher actually claimed. It is not
+// the confident fraction of the warp (which says nothing about the sparse matches) and not the
+// inlier count (which says nothing about where they are): a pair with 2000 inliers all in one
+// textured corner has a large uncovered overlap, and that remainder is the whole point.
+//   infuse  <=>  the SIFT pass failed, OR verified inliers < supplementMaxInliers,
+//                OR coverage < supplementMinCoverage
+//   budget  =    round(supplementTotalMatches * (1 - coverage))
+// The draw itself is made at the FULL total, one point per unoccupied confident bucket -- that is
+// what defines the grid the coverage is measured on, so it cannot be sized from the budget it is
+// about to produce -- and is then thinned to the budget by the draw's own even stride.
+// A zero total keeps its meaning: no total cap, the draw bounded by denseSampleSize alone.
+//
+// Nothing is filtered here against the pair's fitted geometry, deliberately: the gate already fit
+// one geometry to a sample of this same warp and required its inlier subset to still cover both
+// images, so a second pass over the same evidence would re-confirm rather than test it. What bounds
+// a wrong supplement is the gate upstream (a pair it rejected never reaches this pass at all),
+// minConfidence on the warp, FilterTracks' reprojection bar downstream, and the bundle-adjustment
+// down-weighting every dense observation carries.
+bool SFM::DrawDenseSupplement(const Image& imgA, const Image& imgB, const Image32F2& warp, const Image32F& overlap,
+	const ROMA2Config& config, const ImagePair& guided, DenseSupplement& supplement)
+{
+	// the grid the coverage is measured on: the total the pair is drawn against, so that "one
+	// bucket" is about one of the total correspondences and the coverage is a share of THAT area
+	const unsigned drawTarget = config.supplementTotalMatches > 0 ?
+		config.supplementTotalMatches : config.denseSampleSize;
+	// the pair overload gathers the occupied positions off `guided` itself -- which segment, which
+	// index side and which image that gather reads is where a silent mistake would sit, so it lives
+	// in ROMA2Warp.cpp next to the draw it feeds, where a test can reach it. A failed SIFT pass
+	// carries no sparse inlier, so it occupies nothing and its census reads coverage 0.
+	WarpDrawCoverage census;
+	SampleWarpComplementary(imgA, imgB, warp, overlap, config.minConfidence,
+		drawTarget, guided, supplement.pointsA, supplement.pointsB, supplement.confidences, &census);
+	supplement.coverage = census.Coverage();
+	const unsigned numVerified = guided.GetNumFilteredInliers();
+	if (numVerified >= config.supplementMaxInliers && supplement.coverage >= config.supplementMinCoverage) {
+		// enough descriptor evidence, spread over enough of the overlap: nothing to infuse. The
+		// draw is discarded rather than kept -- it was made to measure the coverage, which is the
+		// one number that can say this
+		supplement = DenseSupplement();
+		return false;
+	}
+	supplement.budget = config.supplementTotalMatches == 0 ? (unsigned)supplement.pointsA.size() :
+		(unsigned)ROUND2INT((float)config.supplementTotalMatches * (1.f - supplement.coverage));
+	ThinSampleEvenly(supplement.pointsA, supplement.pointsB, supplement.confidences, supplement.budget);
+	ASSERT(config.supplementTotalMatches == 0 ||
+		supplement.pointsA.size() <= config.supplementTotalMatches);
+	return true;
+}
+
+// The rotation and unit-translation angles between two relative poses, in degrees: the angle of
+// R1 * R2^T, and the angle between the two translation directions. Both in ImagePair::relativePose's
+// own convention, which is the only convention either pose is ever expressed in.
+void SFM::RelativePoseDifference(const Pose3D& pose1, const Pose3D& pose2, float& rotationDeg, float& translationDeg)
+{
+	rotationDeg = (float)R2D(ACOS(ComputeAngle(pose1.R, pose2.R)));
+	const Point3 t1 = pose1.GetT(), t2 = pose2.GetT();
+	const REAL n1 = norm(t1), n2 = norm(t2);
+	// a degenerate (zero) translation has no direction to compare; report the full 180 degrees
+	// rather than a silent 0, so a pose that cannot be checked never passes the check by default
+	translationDeg = (n1 > ZEROTOLERANCE<REAL>() && n2 > ZEROTOLERANCE<REAL>()) ?
+		(float)R2D(ACOS(CLAMP((t1/n1).dot(t2/n2), REAL(-1), REAL(1)))) : 180.f;
+}
+
+InfusedPoseChoice SFM::SelectInfusedPose(const std::optional<Pose3D>& sparsePose, const std::optional<Pose3D>& densePose,
+	unsigned numSparse, const ROMA2Config& config, float& rotationDeg, float& translationDeg)
+{
+	rotationDeg = translationDeg = std::numeric_limits<float>::quiet_NaN();
+	if (numSparse == 0)
+		return InfusedPoseChoice::DENSE_ONLY; // no SIFT pose to compare: the pair is the gate's
+	if (!sparsePose.has_value())
+		return InfusedPoseChoice::NONE;
+	if (!densePose.has_value())
+		return InfusedPoseChoice::SPARSE; // the gate's branch fitted no pose, so there is no choice
+	RelativePoseDifference(*sparsePose, *densePose, rotationDeg, translationDeg);
+	// either angle over its threshold is a substantial disagreement: the two are independent
+	// statements about the same geometry, so one of them being far off is enough to distrust the
+	// one built on the smaller, more clustered evidence
+	return (rotationDeg > config.supplementPoseMaxRotationDeg ||
+		translationDeg > config.supplementPoseMaxTranslationDeg) ?
+		InfusedPoseChoice::DENSE : InfusedPoseChoice::SPARSE;
+}
+
+LPCTSTR SFM::InfusedPoseChoiceName(InfusedPoseChoice choice)
+{
+	switch (choice) {
+	case InfusedPoseChoice::NONE:       return _T("none");
+	case InfusedPoseChoice::SPARSE:     return _T("sparse");
+	case InfusedPoseChoice::DENSE:      return _T("dense");
+	case InfusedPoseChoice::DENSE_ONLY: return _T("dense-only");
+	case InfusedPoseChoice::REFIT:      return _T("refit");
+	}
+	return _T("unknown");
+}
+/*----------------------------------------------------------------*/
+
+
 unsigned SFM::MatchPairsROMA2(PairsMatcher& pairsMatcher, RoMa2Onnx& roma2, const PairIdxArr& candidatePairs, const ROMA2Config& config, bool bFeedbackRound)
 {
 #ifdef _USE_ONNXRUNTIME
@@ -560,7 +739,7 @@ unsigned SFM::MatchPairsROMA2(PairsMatcher& pairsMatcher, RoMa2Onnx& roma2, cons
 			continue;
 		if (skipHealthy > 0) {
 			const auto it = pairIndexMap.find(p.idx);
-			if (it != pairIndexMap.end() && scene.pairs[it->second].GetNumFilteredInliers() >= skipHealthy) {
+			if (it != pairIndexMap.end() && scene.pairs[it->second].GetNumWeightedInliers() >= skipHealthy) {
 				++numSkippedHealthy;
 				continue;
 			}
@@ -581,6 +760,12 @@ unsigned SFM::MatchPairsROMA2(PairsMatcher& pairsMatcher, RoMa2Onnx& roma2, cons
 	std::vector<DenseSupplement> supplements(pairs.size());
 	std::atomic<unsigned> numGuided{0};
 	std::atomic<unsigned> numGated{0};
+	// validated pairs whose guided SIFT pass failed and that this pass therefore proposes as
+	// dense-only results (created, never a replacement -- see step 3), and those it does not
+	// propose because the pair already exists with descriptor evidence a dense-only result
+	// cannot beat
+	std::atomic<unsigned> numDenseOnly{0};
+	std::atomic<unsigned> numDenseOnlySkippedExisting{0};
 	// whether the per-pair DEBUG_ULTIMATE line below will be emitted at all, and hence whether the
 	// two quantities only it and the gate consume are worth computing (loop invariants, and the
 	// verbosity does not change while a pass runs); declared here because the consumers read them
@@ -589,8 +774,7 @@ unsigned SFM::MatchPairsROMA2(PairsMatcher& pairsMatcher, RoMa2Onnx& roma2, cons
 	#else
 	const bool bDiagnostic = VERBOSITY_LEVEL > 2;
 	#endif
-	// the dense supplementation trigger reads the same fraction, so it is a third consumer of it
-	const bool bCountOverlap = bDiagnostic || config.minCreatedOverlap > 0 || config.useSupplement;
+	const bool bCountOverlap = bDiagnostic || config.minCreatedOverlap > 0;
 	WarpPassStats stats;
 	if (!ForEachWarpROMA2(pairsMatcher, roma2, pairs, config.slotBudget, _T("Dense match image pairs"),
 		[&](size_t p, const PairIdx& pair, WarpMaps& maps, unsigned threadIdx) {
@@ -660,26 +844,58 @@ unsigned SFM::MatchPairsROMA2(PairsMatcher& pairsMatcher, RoMa2Onnx& roma2, cons
 					pairsMatcher.GeometricFilter(imgA, imgB, guided) :
 					guided.GetNumMatches() >= pairsMatcher.GetConfig().minMatches)) {
 				ASSERT(!guided.matches.empty());
-				// Dense supplementation: a pair the gate validated and this pass has just verified,
-				// but that still carries few correspondences or little confident overlap, gets a
-				// dense sample of its own warp appended alongside its sparse matches -- drawn only
-				// where those sparse matches are not, so a weakly textured pair contributes
-				// structure where it has none instead of dropping out.
+				// DENSE INFUSION, decided here: right after the guided SIFT pass and the geometric
+				// filter above, while this pair's warp and the draw that would complement its sparse
+				// matches are both still at hand. A pair the gate validated but whose descriptor
+				// evidence is thin -- too few inliers, or enough of them but covering little of the
+				// valid disparity area -- gets dense correspondences of its own warp appended
+				// alongside them, drawn only where they are not, so a weakly textured pair
+				// contributes structure where it has none instead of dropping out.
 				// Only a VALIDATED pair: validatedGeometry is non-NULL exactly when the gate judged
 				// this pair and kept it, which is what makes "validated" mean anything here. With the
-				// gate off there is no such verdict, and nothing is supplemented -- by construction,
-				// not by a second check that could disagree with the first.
+				// gate off there is no such verdict, and nothing is infused -- by construction, not
+				// by a second check that could disagree with the first.
 				// Drawn here, on the pool, and appended in step 3, serially: the keypoint indices an
 				// append hands out depend on what the two images already carry.
 				const unsigned numVerified = guided.GetNumFilteredInliers();
 				if (config.useSupplement && validatedGeometry != NULL &&
-					(numVerified < config.supplementMaxInliers || overlapFraction < config.supplementMinOverlap))
-					DrawDenseSupplement(imgA, imgB, maps, config, guided, supplements[p]);
+					DrawDenseSupplement(imgA, imgB, maps.warp, maps.overlap, config, guided, supplements[p]))
+					ChooseInfusedPose(pairsMatcher, imgA, imgB, config, *validatedGeometry, supplements[p], guided);
 				results[p] = std::move(guided);
 				++numGuided;
-				DEBUG_ULTIMATE("ROMA2 pair (% 4u, % 4u): %s, overlap %.3f, %u tracked, %u guided, %u shared-train, %u verified, %u dense, kept",
+				DEBUG_ULTIMATE("ROMA2 pair (% 4u, % 4u): %s, overlap %.3f, %u tracked, %u guided, %u shared-train, %u verified, %.3f coverage, %u dense, kept",
 					pair.i, pair.j, bExisting ? "existing" : "new", overlapFraction, numTracked, numMatches, numSharedTrain,
-					numVerified, (unsigned)supplements[p].pointsA.size());
+					numVerified, supplements[p].coverage, (unsigned)supplements[p].pointsA.size());
+			} else if (config.useSupplement && validatedGeometry != NULL) {
+				// A DENSE-ONLY PAIR: the gate validated this pair on its warp alone and the guided
+				// SIFT pass then failed on it -- which is the textureless case the whole infusion
+				// exists for, so dropping it here would drop exactly the pairs it is meant to save.
+				// It is kept with no sparse inliers at all, the gate's own geometry, and the full
+				// draw (nothing occupied, so coverage 0 buys the whole total). Step 3 may only
+				// CREATE from it: a pair that already exists carries descriptor evidence this one
+				// does not, and must not lose to it.
+				ImagePair denseOnly(pair.i, pair.j);
+				denseOnly.F = validatedGeometry->F;
+				denseOnly.E = validatedGeometry->E;
+				denseOnly.relativePose = validatedGeometry->relativePose;
+				if (!bExisting && DrawDenseSupplement(imgA, imgB, maps.warp, maps.overlap, config, denseOnly, supplements[p])) {
+					ChooseInfusedPose(pairsMatcher, imgA, imgB, config, *validatedGeometry, supplements[p], denseOnly);
+					results[p] = std::move(denseOnly);
+					++numDenseOnly;
+					DEBUG_ULTIMATE("ROMA2 pair (% 4u, % 4u): new, overlap %.3f, %u tracked, %u guided, %u shared-train, 0 verified, %u dense, dense-only",
+						pair.i, pair.j, overlapFraction, numTracked, numMatches, numSharedTrain,
+						(unsigned)supplements[p].pointsA.size());
+				} else {
+					// an existing pair keeps its descriptor evidence rather than being handed a
+					// dense-only result it can only lose by, and a warp that offers no draw at all
+					// leaves nothing to keep the pair on
+					DEBUG_ULTIMATE("ROMA2 pair (% 4u, % 4u): %s, overlap %.3f, %u tracked, %u guided, %u shared-train, rejected (no dense-only: %s)",
+						pair.i, pair.j, bExisting ? "existing" : "new", overlapFraction, numTracked, numMatches, numSharedTrain,
+						bExisting ? "pair exists" : "empty draw");
+					if (bExisting)
+						++numDenseOnlySkippedExisting;
+					supplements[p] = DenseSupplement();
+				}
 			} else {
 				DEBUG_ULTIMATE("ROMA2 pair (% 4u, % 4u): %s, overlap %.3f, %u tracked, %u guided, %u shared-train, rejected",
 					pair.i, pair.j, bExisting ? "existing" : "new", overlapFraction, numTracked, numMatches, numSharedTrain);
@@ -689,16 +905,24 @@ unsigned SFM::MatchPairsROMA2(PairsMatcher& pairsMatcher, RoMa2Onnx& roma2, cons
 
 	// 3) serial, in-order apply: which of two near-tied match sets wins depends on what the
 	// scene already holds, so the outcome must not depend on the order the pool finished in
-	unsigned numCreated = 0, numReplaced = 0, numSupplemented = 0;
+	unsigned numCreated = 0, numReplaced = 0, numSupplemented = 0, numDenseOnlyKept = 0;
 	size_t numDenseMatches = 0;
 	FOREACH(p, results) {
 		ImagePair& guided = results[p];
-		if (guided.matches.empty())
+		// a slot with neither sparse matches nor an infusion produced nothing at all; one with an
+		// infusion but no sparse matches is a DENSE-ONLY result, which is a pair, not an absence
+		const bool bDenseOnly = guided.matches.empty();
+		if (bDenseOnly && supplements[p].pointsA.empty())
 			continue;
+		ASSERT(guided.ID1 != NO_ID && guided.ID2 != NO_ID);
 		bool bCreated;
-		if (!ApplyROMA2Pair(scene, pairIndexMap, std::move(guided), maxReplace, bCreated))
+		// a dense-only result may only CREATE: it carries no descriptor evidence, so it can never be
+		// the fair winner of a replace test against a pair that does
+		if (!ApplyROMA2Pair(scene, pairIndexMap, std::move(guided), maxReplace, bCreated, bDenseOnly))
 			continue;
 		++(bCreated ? numCreated : numReplaced);
+		if (bDenseOnly)
+			++numDenseOnlyKept;
 		// and only now the dense supplement of the pair that was actually stored: a guided set the
 		// replace policy turned down is not in the scene, so appending its dense keypoints would
 		// grow both images for a pair that references none of them
@@ -716,10 +940,12 @@ unsigned SFM::MatchPairsROMA2(PairsMatcher& pairsMatcher, RoMa2Onnx& roma2, cons
 		bFeedbackRound ? "feedback" : "first", numGuided.load(), pairs.size(), numCreated, numReplaced, numGated.load(), numSkippedHealthy,
 		stats.numFailedLoads, stats.numFailedMatches, stats.numSlots, (unsigned)stats.numLoads, (unsigned)stats.numReloads, TD_TIMER_GET_FMT().c_str());
 	if (config.useSupplement) {
-		// the appended keypoint count is what the scale of a wide arm is judged on: a supplemented
+		// the appended keypoint count is what the scale of a wide arm is judged on: an infused
 		// pair costs this many keypoints in each of its two images, plus one track each
-		DEBUG("ROMA2 dense supplementation: %u/%u stored pairs supplemented with %zu dense matches (%zu appended keypoints, %u matches/pair sparse and dense together)",
-			numSupplemented, numCreated + numReplaced, numDenseMatches, 2*numDenseMatches, config.supplementTotalMatches);
+		DEBUG("ROMA2 dense infusion: %u/%u stored pairs infused with %zu dense matches (%zu appended keypoints, %u matches/pair sparse and dense together); "
+			"%u dense-only pairs kept of %u proposed, %u not proposed (pair exists)",
+			numSupplemented, numCreated + numReplaced, numDenseMatches, 2*numDenseMatches, config.supplementTotalMatches,
+			numDenseOnlyKept, numDenseOnly.load(), numDenseOnlySkippedExisting.load());
 	}
 	return numCreated + numReplaced;
 #else // _USE_ONNXRUNTIME

@@ -81,10 +81,11 @@ void SFM::BuildTracks(Scene& scene, float minPairWeight)
 	// Ideally the pairs are pre-filtered to only include inlier matches
 	// and sorted by weight (most reliable first) to maximize track quality.
 	unsigned numPairsProcessed = 0;
-	// A supplemented pair that still loses on sparse magnitude is a correct drop -- the dense draw
-	// is a coverage fill-in, not a weight booster, so minPairWeight must keep judging it on
-	// GetNumFilteredInliers() alone. But correct-and-uncounted is how the last silent defect stayed
-	// silent, so split the skip count by supplemented vs not rather than reporting one number.
+	// An infused pair is judged on the same composite weight as every other pair, its dense matches
+	// counted at the dense observation weight (GetNumWeightedInliers) rather than at 1 or at 0: a
+	// coverage fill-in is evidence, but not sub-pixel evidence. One that still falls under
+	// minPairWeight is a correct drop -- but correct-and-uncounted is how the last silent defect
+	// stayed silent, so split the skip count by supplemented vs not rather than reporting one number.
 	unsigned numPairsSkippedWeightSupplemented = 0, numPairsSkippedWeightNotSupplemented = 0;
 	for (const ImagePair& pair : scene.pairs) {
 		if (!pair.HasMatches())

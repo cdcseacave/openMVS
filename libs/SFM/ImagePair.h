@@ -47,6 +47,18 @@ struct SFM_API DMatch
 	#endif
 };
 
+// Loss weight of an observation on a DENSE (ROMAv2 warp sampled, descriptor-less) keypoint relative
+// to the 1.0 a described one carries: a dense position is sampled from a low-resolution warp, a
+// described one is sub-pixel at full resolution, and nothing may treat the two as equally precise.
+// Defined ONCE, here, because two independent consumers need the same number and a second copy of it
+// would be a second answer: BAConfig::denseObservationWeight (the reprojection residual's weight) and
+// PairsWeightingConfig::denseObservationWeight (the view-graph evidence a dense match is worth,
+// ImagePair::GetNumWeightedInliers). Both are settable, and CreateStructure drives both from the one
+// --ba-dense-weight option.
+// PROVISIONAL and NOT measured -- see BundleAdjustment.cpp for how it was picked and what has to
+// replace it.
+constexpr double DENSE_OBSERVATION_WEIGHT = 0.25;
+
 // ImagePair stores data for two images: matches, relative pose, etc.
 class SFM_API ImagePair
 {
@@ -67,10 +79,12 @@ public:
 	//                                                             of the pair's authority
 	//   [numFilteredInliers+numDenseInliers, matches.size())       RANSAC inliers the strict filter
 	//                                                             rejected -- not track-forming
-	// GetNumFilteredInliers() is the first segment only: every view-graph weight and gate reads it as
-	// "how much geometrically verified correspondence evidence does this pair have", and the dense
-	// supplement is a coverage-maximising draw that must not re-rank the graph. What forms tracks is
-	// the union of the first two, GetNumTrackFormingMatches().
+	// GetNumFilteredInliers() is the first segment only: the pair's DESCRIPTOR evidence, which is what
+	// the estimation bars (minMatches, the strict filter's own return) and the diagnostics that report
+	// "how many correspondences did the descriptor matcher verify" mean. What the view graph ranks on
+	// is GetNumWeightedInliers(), sparse + w * dense: the supplement is real evidence about the pair,
+	// discounted for the precision of a warp-sampled position rather than ignored. What forms tracks
+	// is the union of the first two segments, GetNumTrackFormingMatches().
 	int numFilteredInliers; // number of inliers after filtering (cheirality, angle, epipole), as the first N of `matches`
 	int numDenseInliers;    // number of dense supplement matches, stored right after those
 
@@ -97,17 +111,28 @@ public:
 	float weightSpatial;      // Intrinsic: geometric spread/conditioning (0-1)
 	float weightConnectivity; // Extrinsic: local connectivity strength (0-1)
 	float weightTriplet;      // Extrinsic: cycle consistency support (0-1)
+	// The pair's INLIER EVIDENCE as everything that ranks the view graph reads it (through
+	// GetNumWeightedInliers): its sparse inliers plus its dense supplement discounted by the dense
+	// observation weight, sparse + w * dense. Written by ComputePairsWeights, the one pass that
+	// holds that weight (PairsWeightingConfig::denseObservationWeight, DENSE_OBSERVATION_WEIGHT
+	// above); -1 until it has run, and the accessor then answers with the sparse count -- which is
+	// the pre-supplement answer, and is what every consumer running before the weighting pass (the
+	// matcher's own replace and skip tests) has always used. Cleared with the matches it describes.
+	// Stored rather than computed on the fly because GetCompositeWeight() and its ~15 callers have
+	// no access to a configuration, and a second hard-coded copy of the weight would be a second
+	// answer to a question that must have one.
+	float weightedInliers;
 
 public:
 	ImagePair()
 		: ID1(NO_ID), ID2(NO_ID), numFilteredInliers(-1), numDenseInliers(0),
 		  overlapRatio(0.f), overlapArea(0.f), meanRayAngle(0.f),
-		  weightSpatial(0.f), weightConnectivity(0.f), weightTriplet(0.f) {}
+		  weightSpatial(0.f), weightConnectivity(0.f), weightTriplet(0.f), weightedInliers(-1.f) {}
 
 	ImagePair(IIndex _ID1, IIndex _ID2)
 		: ID1(_ID1), ID2(_ID2), numFilteredInliers(-1), numDenseInliers(0),
 		  overlapRatio(0.f), overlapArea(0.f), meanRayAngle(0.f),
-		  weightSpatial(0.f), weightConnectivity(0.f), weightTriplet(0.f)
+		  weightSpatial(0.f), weightConnectivity(0.f), weightTriplet(0.f), weightedInliers(-1.f)
 	{
 		if (ID1 > ID2)
 			std::swap(ID1, ID2);
@@ -124,6 +149,7 @@ public:
 		outlierMatches = std::vector<DMatch>();
 		numFilteredInliers = -1;
 		numDenseInliers = 0;
+		weightedInliers = -1.f; // it describes matches that no longer exist
 	}
 	// Reset inlier matches by merging all matches back
 	void ResetInlierMatches() {
@@ -131,6 +157,7 @@ public:
 		outlierMatches = std::vector<DMatch>();
 		numFilteredInliers = -1;
 		numDenseInliers = 0;
+		weightedInliers = -1.f; // the partition it counted is gone
 	}
 	// Reset geometric data
 	void ResetGeometry() {
@@ -144,12 +171,14 @@ public:
 		weightSpatial = 0.f;
 		weightConnectivity = 0.f;
 		weightTriplet = 0.f;
+		weightedInliers = -1.f;
 	}
 
 	// Invalidate pair matches setting them all as outliers
 	void InvalidateMatches() {
 		numFilteredInliers = -1;
 		numDenseInliers = 0;
+		weightedInliers = -1.f;
 		if (matches.empty())
 			return;
 		outlierMatches.insert(outlierMatches.end(), matches.begin(), matches.end());
@@ -191,6 +220,19 @@ public:
 	// `matches` prefix BuildTracks unions. Everything past it are matches the strict filter
 	// deliberately rejected and must never form a track. Inherits both accessors' assertions.
 	unsigned GetNumTrackFormingMatches() const { return GetNumFilteredInliers() + GetNumDenseInliers(); }
+	// THE PAIR'S INLIER EVIDENCE, and the one notion of it: sparse + w * dense, rounded, with w the
+	// dense observation weight (see `weightedInliers`). Everything that ranks or gates the view graph
+	// on "how much correspondence evidence does this pair have" reads this -- the composite weight,
+	// the connectivity normalisation, the triplet edge strength, the star initializer's degree and
+	// candidate ranking, the calibrator's trust bars, the matcher's own replace and skip tests -- so
+	// that a dense-only pair (no sparse inliers at all) is a first-class member of the graph rather
+	// than a zero. The sparse count itself stays available for the two things that genuinely mean
+	// "descriptor evidence": the diagnostics that report it, and the estimation bars that predate any
+	// supplement.
+	// Before the weighting pass has run it answers with the sparse count, which is what it always was.
+	unsigned GetNumWeightedInliers() const {
+		return weightedInliers >= 0.f ? ROUND2INT<unsigned>(weightedInliers) : GetNumFilteredInliers();
+	}
 
 	// Debug-only invariant check on the `matches` partition: no match in the sparse segment
 	// [0, GetNumFilteredInliers()) may have a dense (ROMAv2 warp) endpoint, since a descriptor match
@@ -210,7 +252,7 @@ public:
 	// from the track graph; the geometric mean preserves the ordering while keeping the weight
 	// commensurate with the inlier evidence.
 	inline float GetCompositeWeight() const {
-		const unsigned nCappedInliers = MINF(GetNumFilteredInliers(), 1000u); // cap inliers to avoid excessive weight
+		const unsigned nCappedInliers = MINF(GetNumWeightedInliers(), 1000u); // cap inliers to avoid excessive weight
 		const float wQuality = weightSpatial * weightConnectivity * (0.5f + weightTriplet);
 		return nCappedInliers * CBRT(wQuality);
 	}
@@ -237,6 +279,13 @@ public:
 	//  - allMatches: if true, returns all matched points (inliers + outliers)
 	std::pair<std::vector<Point2f>, std::vector<Point2f>> GetMatchedPoints(
 		const Image& img1, const Image& img2, bool allInliers = false, bool allMatches = false) const;
+
+	// The points of the TRACK-FORMING prefix: the sparse inliers plus the dense supplement, i.e.
+	// exactly the matches BuildTracks unions, and nothing the strict filter rejected. What a
+	// question about the pair's spatial COVERAGE has to be asked over -- a dense supplement covers
+	// the frame it was drawn over whether or not it counts as descriptor evidence.
+	std::pair<std::vector<Point2f>, std::vector<Point2f>> GetTrackFormingPoints(
+		const Image& img1, const Image& img2) const;
 
 	// Filter matches using cheirality, triangulation angle, and epipole distance constraints
 	// minAngle: minimum triangulation angle in degrees
@@ -302,7 +351,7 @@ public:
 		ar & matches & outlierMatches;
 		ar & numFilteredInliers & numDenseInliers;
 		ar & overlapRatio & overlapArea & meanRayAngle;
-		ar & weightSpatial & weightConnectivity & weightTriplet;
+		ar & weightSpatial & weightConnectivity & weightTriplet & weightedInliers;
 
 		// Serialize std::optional fields
 		const bool hasRelativePose = relativePose.has_value();
@@ -332,7 +381,11 @@ public:
 		ar & matches & outlierMatches;
 		ar & numFilteredInliers & numDenseInliers;
 		ar & overlapRatio & overlapArea & meanRayAngle;
-		ar & weightSpatial & weightConnectivity & weightTriplet;
+		// weightedInliers travels with the three weights it belongs to: the reconstruction path that
+		// loads an already-matched scene does not re-run ComputePairsWeights, so a derived value left
+		// out of the stream would come back as "never computed" and silently drop every pair's dense
+		// evidence from the view graph
+		ar & weightSpatial & weightConnectivity & weightTriplet & weightedInliers;
 
 		// Deserialize std::optional fields
 		bool hasRelativePose;

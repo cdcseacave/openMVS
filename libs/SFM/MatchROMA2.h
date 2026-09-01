@@ -27,7 +27,7 @@
 
 // I N C L U D E S /////////////////////////////////////////////////
 
-#include "Common.h" // SFM_API, String
+#include "ImagePair.h" // the pair the infusion decision is taken on, and Pose3D through it
 
 
 // D E F I N E S ///////////////////////////////////////////////////
@@ -39,6 +39,7 @@ namespace SFM {
 
 // Forward declarations
 class SFM_API Scene;
+class SFM_API Image;
 class SFM_API RoMa2Onnx;
 class SFM_API PairsMatcher;
 
@@ -105,31 +106,43 @@ struct SFM_API ROMA2Config {
 	// what makes "validated" mean anything, and the guided pass is where the warp already is, so
 	// no third warp pass exists. Opt-in, like every other pass here
 	bool useSupplement = false;
-	// what counts as a pair weak enough to supplement: fewer verified inliers than this, OR a
-	// confident warp overlap (the same fraction minCreatedOverlap gates on) below
-	// supplementMinOverlap. Either one is enough; they catch different failures -- too few
-	// correspondences on a well-overlapping pair, and a pair whose overlap is small to begin with
+	// what counts as a pair weak enough to infuse, decided right after the guided pass and its
+	// geometric filter: the SIFT pass failed that filter, OR it left fewer verified inliers than
+	// supplementMaxInliers, OR its coverage of the pair's valid disparity area is below
+	// supplementMinCoverage. Any one is enough; they catch different failures -- no descriptor
+	// evidence at all, too little of it, and enough of it but all in one textured corner of an
+	// overlap whose remainder is exactly what the dense draw is for.
+	// Coverage is measured on the complementary draw's own (fine) bucket grid: the buckets holding a
+	// confident warp cell are the valid disparity area the gate judged, and the ones a verified SIFT
+	// inlier lands in are what the sparse matcher covered (WarpDrawCoverage). A failed SIFT pass
+	// covers nothing, so its coverage is 0.
 	unsigned supplementMaxInliers = 500;
-	float supplementMinOverlap = 0.3f;
-	// TOTAL correspondences a supplemented pair should end up with, sparse and dense together: the
-	// dense draw of a pair gets the budget supplementTotalMatches - GetNumFilteredInliers(),
-	// clamped at 0, and a pair triggered by its overlap alone that already carries that many sparse
-	// inliers is left alone. This is also what bounds the scene-wide keypoint growth a wide arm has
-	// to pay for, since a dense match costs a keypoint in EACH of the two images plus one track.
+	float supplementMinCoverage = 0.3f;
+	// TOTAL correspondences a supplemented pair is drawn against, sparse and dense together. The
+	// dense budget is round(supplementTotalMatches * (1 - coverage)): the share of the total
+	// proportional to the part of the valid disparity area the sparse matches left empty, which is
+	// the part the draw can fill. This is also what bounds the scene-wide keypoint growth a wide arm
+	// has to pay for, since a dense match costs a keypoint in EACH of the two images plus one track.
 	// 0 = no total budget, in which case the draw is bounded by denseSampleSize alone
 	unsigned supplementTotalMatches = 2000;
+	// Relative-pose choice on an infused pair that has both a SIFT pose (fitted on its verified
+	// sparse inliers) and the gate's dense pose (fitted on its spread warp sample): the pair keeps
+	// the SIFT pose -- the more accurate one when the two agree, sub-pixel even without coverage --
+	// unless the two differ substantially, and then it takes the dense one. "Substantially" is
+	// either angle over its threshold: the rotation angle of R_sift * R_dense^T, or the angle
+	// between the two unit translation directions.
+	// EDUCATED FIRST GUESSES, to be fitted on pseudo-GT: every infused pair emits both poses and
+	// both angles at -v 3 ("ROMA2 pose check"), so the two can be swept offline against COLMAP
+	// relative poses without re-running the matcher.
+	float supplementPoseMaxRotationDeg = 2.f;
+	float supplementPoseMaxTranslationDeg = 10.f;
+	// Instead of choosing between the two poses, re-estimate one on all of the pair's
+	// correspondences, sparse and dense together, with the matcher's own estimator (same branch,
+	// same threshold). Off: it is a hypothesis the pseudo-GT sweep has to confirm before it can be
+	// a default, and a refit on a draw that came from one of the two poses is not independent
+	// evidence about it.
+	bool supplementRefitPose = false;
 	bool useGPU = true;                    // allow the GPU execution providers (false forces the CPU provider)
-
-	// How many dense correspondences a pair already carrying numSparse verified sparse inliers may
-	// still be given: what is left of the total, clamped at 0. A pair at or past its total gets
-	// nothing -- "up to N total" is satisfied by already being there, and a pair supplemented for a
-	// small overlap can perfectly well be there. With no total budget the draw falls back to its
-	// own sample size, the way the gate's draw is bounded.
-	inline unsigned SupplementDenseBudget(unsigned numSparse) const {
-		if (supplementTotalMatches == 0)
-			return denseSampleSize;
-		return numSparse < supplementTotalMatches ? supplementTotalMatches - numSparse : 0u;
-	}
 
 	// Return the folder holding the exported models: the explicit setting if given,
 	// else the OPENMVS_ROMA2_MODEL_PATH environment variable, else empty
@@ -165,6 +178,67 @@ struct SFM_API ROMA2Config {
 SFM_API unsigned ComputeGlobalDescriptorsROMA2(Scene& scene, RoMa2Onnx& roma2);
 /*----------------------------------------------------------------*/
 
+// One pair's dense infusion: the correspondences drawn from that pair's own warp, to be appended
+// alongside whatever sparse matches it has. Index-parallel, in the pixels of the working orientation
+// of each image (SampleWarpByCoverage's convention). Empty on a pair that was not infused.
+struct SFM_API DenseSupplement {
+	std::vector<Point2f> pointsA, pointsB;
+	std::vector<float> confidences;
+	// what the decision was taken on, for the per-pair record: the pair's SIFT coverage of its valid
+	// disparity area (0 on a pair whose guided SIFT pass failed) and the budget that coverage bought
+	float coverage = 0.f;
+	unsigned budget = 0;
+};
+
+// Decide whether to infuse dense correspondences into one pair, and draw them if so. See the
+// implementation for the rule; in short, a gate-validated pair is infused when its guided SIFT pass
+// failed, or left fewer than config.supplementMaxInliers verified inliers, or covered less than
+// config.supplementMinCoverage of the pair's valid disparity area, and the budget is the share of
+// config.supplementTotalMatches proportional to the uncovered remainder.
+// `guided` is the pair as the SIFT pass left it -- its verified sparse inliers, or no matches at all
+// on a pair kept dense-only -- and must carry no dense segment yet.
+// Returns true when the pair is infused, and then `supplement` holds the draw.
+SFM_API bool DrawDenseSupplement(
+	const Image& imgA,
+	const Image& imgB,
+	const Image32F2& warp,
+	const Image32F& overlap,
+	const ROMA2Config& config,
+	const ImagePair& guided,
+	DenseSupplement& supplement);
+
+// The rotation and unit-translation angles between two relative poses, in degrees: the angle of
+// R1 * R2^T, and the angle between the two translation directions, both in ImagePair::relativePose's
+// own convention.
+SFM_API void RelativePoseDifference(const Pose3D& pose1, const Pose3D& pose2, float& rotationDeg, float& translationDeg);
+
+// Which relative pose an infused pair ends up carrying (MatchPairsROMA2, and the "ROMA2 pose check"
+// record it emits per infused pair).
+enum class InfusedPoseChoice : uint8_t {
+	NONE = 0,   // neither fit produced a pose
+	SPARSE,     // the pose fitted on the pair's verified sparse inliers, which agrees with the gate's
+	DENSE,      // the gate's pose, fitted on its spread warp sample: the two disagreed substantially
+	DENSE_ONLY, // the pair has no sparse inliers, so it is the gate's pose or nothing
+	REFIT,      // one pose re-estimated on sparse and dense together (ROMA2Config::supplementRefitPose)
+};
+SFM_API LPCTSTR InfusedPoseChoiceName(InfusedPoseChoice choice);
+
+// The pose choice of an infused pair, as a rule with no side effects: the SIFT pose is the more
+// accurate one WHEN THE TWO AGREE (sub-pixel correspondences, even with poor coverage), so the pair
+// keeps it unless the two differ substantially -- either angle over its threshold
+// (config.supplementPoseMaxRotationDeg, config.supplementPoseMaxTranslationDeg) -- and then it takes
+// the dense pose, which rests on evidence spread over the whole overlap. `rotationDeg` and
+// `translationDeg` receive the two angles, or NaN when there is no pair of poses to compare.
+// REFIT is never returned here: it is the caller's own decision, taken when the refit succeeds.
+SFM_API InfusedPoseChoice SelectInfusedPose(
+	const std::optional<Pose3D>& sparsePose,
+	const std::optional<Pose3D>& densePose,
+	unsigned numSparse,
+	const ROMA2Config& config,
+	float& rotationDeg,
+	float& translationDeg);
+/*----------------------------------------------------------------*/
+
 // Run the ROMAv2 dense matching pass over the given candidate pairs of an already
 // descriptor-matched scene: plans which image descriptors stay resident on the device (Belady
 // over the candidates in (ID1,ID2) order, at most config.slotBudget slots), then, on the
@@ -179,14 +253,18 @@ SFM_API unsigned ComputeGlobalDescriptorsROMA2(Scene& scene, RoMa2Onnx& roma2);
 // bFeedbackRound selects the per-round replace policy: the first round warps every candidate
 // and replaces whenever the guided set is larger, the verification-feedback round skips pairs
 // that are already healthy and only replaces the weakest ones (design decision 6).
-// With config.useSupplement, a stored pair the dense gate had validated and this pass then verified,
-// but which still carries fewer than config.supplementMaxInliers correspondences or less than
-// config.supplementMinOverlap confident overlap, additionally gets a sample of its own warp appended
-// alongside its sparse matches (AppendDenseMatches): dense keypoints past each image's described
-// prefix, drawn where those sparse matches are NOT (SampleWarpComplementary) and budgeted so that
-// sparse and dense together come to at most config.supplementTotalMatches. Drawn on the pool but
-// appended in the same serial (ID1,ID2) pass as the results, since the keypoint indices an append
-// hands out depend on what the two images already carry.
+// With config.useSupplement, the pass decides right after the guided matching of a gate-validated
+// pair and its geometric filter -- while that pair's warp and its own complementary draw are still
+// at hand -- whether to infuse dense correspondences into it (see ROMA2Config::supplementMaxInliers
+// for the rule and the budget). Infused matches are dense keypoints appended past each image's
+// described prefix, drawn only where the pair's verified sparse matches are NOT
+// (SampleWarpComplementary, AppendDenseMatches). Drawn on the pool but appended in the same serial
+// (ID1,ID2) pass as the results, since the keypoint indices an append hands out depend on what the
+// two images already carry.
+// A validated pair whose guided SIFT pass FAILED is kept as a dense-only pair -- zero sparse
+// inliers, the gate's F/E and relative pose as its geometry, the whole draw -- instead of being
+// dropped. Such a result may only CREATE a pair: an existing pair carries sparse evidence a
+// dense-only one does not, and never loses to it.
 // roma2 must already be loaded (RoMa2Onnx::Load); a pair whose image could not be loaded,
 // described, or matched is dropped with a message, never matched against a stale slot.
 // Returns the number of scene pairs created plus replaced.

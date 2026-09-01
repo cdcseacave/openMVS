@@ -215,6 +215,8 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!SFM::ROMA2SupplementDrawTest())
 				return false;
+			if (!SFM::ROMA2DenseInfusionTest())
+				return false;
 			if (!SFM::DenseKeypointBoundaryTest())
 				return false;
 			if (!SFM::SupplementEvidenceIsolationTest())

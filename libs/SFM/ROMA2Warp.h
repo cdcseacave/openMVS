@@ -287,13 +287,20 @@ SFM_API unsigned AppendDenseMatches(
 // (0 = no ceiling), and bCreated tells whether a new pair was appended. A created pair carries
 // no overlap of its own (overlapRatio/overlapArea stay 0), so ComputePairsWeights weights it
 // from the same proxy it uses for every other pair.
+// bCreateOnly refuses to replace at all -- if the pair already exists the existing one is kept and
+// this returns false. It is how a DENSE-ONLY pair is stored (a validated pair whose guided SIFT pass
+// failed, carrying no sparse matches yet and no descriptor evidence ever): the replace test compares
+// descriptor evidence, and a candidate that has none by construction must not be allowed to take the
+// place of a pair that has some. It is also the one mode that accepts a pair with no matches at all,
+// since the dense matches of such a pair are appended (AppendDenseMatches) only after it is stored.
 // Returns true if the scene was modified (pair created or replaced).
 SFM_API bool ApplyROMA2Pair(
 	Scene& scene,
 	std::unordered_map<PairIdx::PairIndex, IIndex>& pairIndexMap,
 	ImagePair&& pair,
 	unsigned maxReplaceInliers,
-	bool& bCreated);
+	bool& bCreated,
+	bool bCreateOnly = false);
 /*----------------------------------------------------------------*/
 
 } // namespace SFM

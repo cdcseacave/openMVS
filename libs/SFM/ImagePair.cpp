@@ -208,6 +208,22 @@ std::pair<std::vector<Point2f>, std::vector<Point2f>> ImagePair::GetMatchedPoint
 	return std::make_pair(pts1, pts2);
 }
 
+std::pair<std::vector<Point2f>, std::vector<Point2f>> ImagePair::GetTrackFormingPoints(const Image& img1, const Image& img2) const
+{
+	std::vector<Point2f> pts1, pts2;
+	// clamped by the array itself, like BuildTracks' own union loop: the counts are asserted in
+	// Debug, and a release build must still stay in range
+	const unsigned numTrackForming = MINF(GetNumTrackFormingMatches(), (unsigned)matches.size());
+	pts1.reserve(numTrackForming);
+	pts2.reserve(numTrackForming);
+	for (unsigned i = 0; i < numTrackForming; ++i) {
+		const DMatch& m = matches[i];
+		pts1.push_back(img1.keypoints[m.queryIdx].pt);
+		pts2.push_back(img2.keypoints[m.trainIdx].pt);
+	}
+	return std::make_pair(pts1, pts2);
+}
+
 void ImagePair::CheckSparseSegmentIsDescribed(const Image& img1, const Image& img2) const
 {
 	#ifndef _RELEASE

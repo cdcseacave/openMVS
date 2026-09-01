@@ -238,7 +238,7 @@ bool GlobalAlignment::EstimateRelativePoses(
 	std::unordered_map<PairIdx, CLISTDEF0IDX(PairLink, uint32_t)> linksByScenePair;
 	linksByScenePair.reserve(numSubScenes * 2);
 	for (const ImagePair& pair : scene.pairs) {
-		if (pair.GetNumFilteredInliers() < config.minCommonTracks)
+		if (pair.GetNumWeightedInliers() < config.minCommonTracks)
 			continue;
 		auto it1 = globalToLocal.find(pair.ID1);
 		auto it2 = globalToLocal.find(pair.ID2);

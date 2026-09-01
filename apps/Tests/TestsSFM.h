@@ -56,6 +56,7 @@ bool ROMA2CoverageSampleTest();
 // budget that counts sparse and dense together, thinned when over budget by an even stride rather
 // than by confidence, and deterministic
 bool ROMA2SupplementDrawTest();
+bool ROMA2DenseInfusionTest();
 
 // The described/dense keypoint boundary: an image whose keypoints.size() > descriptors.rows keeps
 // its stored described-keypoint count across a descriptor release and an .sfm round-trip, the

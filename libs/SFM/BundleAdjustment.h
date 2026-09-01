@@ -10,7 +10,7 @@
 
 // I N C L U D E S /////////////////////////////////////////////////
 
-#include "Camera.h"
+#include "ImagePair.h" // DENSE_OBSERVATION_WEIGHT, shared with the view-graph weighting
 
 
 // D E F I N E S ///////////////////////////////////////////////////
@@ -66,7 +66,9 @@ struct SFM_API BAConfig
 	// only one of the two may apply.
 	// The default is PROVISIONAL and was NOT measured -- see BundleAdjustment.cpp for how it was
 	// picked and what has to replace it. Measure it with useKeypointConfidence OFF.
-	double denseObservationWeight = 0.25;
+	// Shares its definition with the view-graph evidence a dense match is worth
+	// (PairsWeightingConfig::denseObservationWeight): one quantity, one number.
+	double denseObservationWeight = DENSE_OBSERVATION_WEIGHT;
 
 	// Solver parameters
 	unsigned maxIterations = 100;    // Maximum solver iterations

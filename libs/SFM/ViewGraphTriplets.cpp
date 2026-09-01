@@ -84,7 +84,7 @@ TripletScores SFM::ComputeTripletScores(const Scene& scene, float minScore)
 	FOREACH(idxPair, scene.pairs) {
 		const ImagePair& pair = scene.pairs[idxPair];
 		ASSERT(pair.ID1 < numImages && pair.ID2 < numImages, "ComputeTripletScores: pair references an unknown image");
-		const unsigned numInliers = pair.GetNumFilteredInliers();
+		const unsigned numInliers = pair.GetNumWeightedInliers(); // n_ij: the pair's evidence, dense included
 		if (!pair.HasGeometricVerification() || numInliers == 0 || pair.ID1 == pair.ID2)
 			continue;
 		const PairIdx imagePair(MakePairIdx(pair.ID1, pair.ID2));
