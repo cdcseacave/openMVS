@@ -98,13 +98,6 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		return false;
 	}
 
-	// initialize the log file
-	OPEN_LOGFILE(MAKE_PATH(APPNAME _T("-") + Util::getUniqueName(0) + _T(".log")).c_str());
-
-	// print application details: version and command line
-	Util::LogBuild();
-	LOG(_T("Command line: ") APPNAME _T("%s"), Util::CommandLineToString(argc, argv).c_str());
-
 	// validate input
 	Util::ensureValidPath(OPT::strProject);
 	if (OPT::vm.count("help") || OPT::strProject.empty()) {
@@ -113,7 +106,25 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 			LOG("error: project file is required");
 		return false;
 	}
+
+	// Resolve the project path and the output directory (--out, or the project's own directory)
+	// before opening the log file. This tool's binding constraint is to write nowhere but its
+	// output directory; MAKE_PATH()/WORKING_FOLDER (the CreateStructure pattern this was copied
+	// from) resolves against the process cwd instead, so the natural invocation
+	// (`cd <dataset-dir> && SceneAnalyzeSFM scene.sfm`) would drop the log there rather than
+	// beside the CSVs. OPT::strProject/strOutDir are overwritten with their resolved form so main()
+	// reuses these instead of re-resolving them.
+	OPT::strProject = MAKE_PATH_SAFE(OPT::strProject);
+	OPT::strOutDir = OPT::strOutDir.empty() ? Util::getFilePath(OPT::strProject) : MAKE_PATH_SAFE(OPT::strOutDir);
 	Util::ensureValidFolderPath(OPT::strOutDir);
+	Util::ensureFolder(OPT::strOutDir);
+
+	// initialize the log file inside the resolved output directory, not WORKING_FOLDER
+	OPEN_LOGFILE((OPT::strOutDir + APPNAME _T("-") + Util::getUniqueName(0) + _T(".log")).c_str());
+
+	// print application details: version and command line
+	Util::LogBuild();
+	LOG(_T("Command line: ") APPNAME _T("%s"), Util::CommandLineToString(argc, argv).c_str());
 
 	SEACAVE::Initialize(APPNAME);
 	return true;
@@ -288,24 +299,20 @@ int main(int argc, LPCTSTR* argv)
 
 	TD_TIMER_START();
 
-	// Load the project read-only; no pipeline stage runs, nothing is written back to it
-	const String projectPath(MAKE_PATH_SAFE(OPT::strProject));
+	// Load the project read-only; no pipeline stage runs, nothing is written back to it.
+	// OPT::strProject/strOutDir were already resolved (and strOutDir's folder ensured to exist)
+	// by Initialize(), before it opened the log file inside strOutDir.
 	Scene scene(1);
-	if (!scene.Load(projectPath)) {
-		VERBOSE("error: cannot load project '%s'", projectPath.c_str());
+	if (!scene.Load(OPT::strProject)) {
+		VERBOSE("error: cannot load project '%s'", OPT::strProject.c_str());
 		return EXIT_FAILURE;
 	}
 
-	// Default output directory is the project's own directory
-	String outDir(OPT::strOutDir.empty() ? Util::getFilePath(projectPath) : MAKE_PATH_SAFE(OPT::strOutDir));
-	Util::ensureValidFolderPath(outDir);
-	Util::ensureFolder(outDir);
-
 	bool ok = true;
-	ok &= ExportTracksCSV(scene, outDir + _T("tracks.csv"));
-	ok &= ExportObservationsCSV(scene, outDir + _T("observations.csv"));
-	ok &= ExportPairsCSV(scene, outDir + _T("pairs.csv"));
-	ok &= ExportImagesCSV(scene, outDir + _T("images.csv"));
+	ok &= ExportTracksCSV(scene, OPT::strOutDir + _T("tracks.csv"));
+	ok &= ExportObservationsCSV(scene, OPT::strOutDir + _T("observations.csv"));
+	ok &= ExportPairsCSV(scene, OPT::strOutDir + _T("pairs.csv"));
+	ok &= ExportImagesCSV(scene, OPT::strOutDir + _T("images.csv"));
 	if (!ok)
 		return EXIT_FAILURE;
 
