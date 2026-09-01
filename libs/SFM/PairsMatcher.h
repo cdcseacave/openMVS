@@ -286,7 +286,15 @@ public:
 	// with secondary ordering by descriptor cost (descending) for better thread pool load balancing
 	void OptimizePairsOrder(PairIdxArr& pairsToMatch);
 
-	// Filter redundant keypoints (same position) and remap matches
+	// Filter redundant keypoints (same position, within 0.1 px) and remap matches.
+	// Runs over dense keypoints too, which is where a dense point appended by two different pairs
+	// of the same image becomes one reused point and its track can exceed two views. Duplicate
+	// resolution is described-wins: a dense keypoint coinciding with a described one collapses onto
+	// the described one, never the reverse, so the described prefix survives structurally; between
+	// two dense points the higher warp confidence wins. The surviving keypoints of an image
+	// carrying dense ones keep their original relative order and its stored described-keypoint
+	// count moves through the same remap, since a removal inside the prefix shrinks the boundary.
+	// Only callable once the descriptors are released: it cannot remap descriptor rows.
 	void FilterRedundantKeypoints();
 
 	// Export image pairs to a CSV file

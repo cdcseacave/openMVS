@@ -1486,6 +1486,7 @@ void PairsMatcher::FilterRedundantKeypoints()
 
 	// 1. Identify redundant keypoints per image
 	std::atomic<size_t> atomicNumRemoved{0};
+	std::atomic<size_t> atomicNumRemovedDense{0};
 	std::atomic<size_t> atomicNumTotal{0};
 	scene.threadPool.detach_loop(0u, numImages, [&](IIndex i) {
 		Image& img = scene.images[i];
@@ -1501,32 +1502,66 @@ void PairsMatcher::FilterRedundantKeypoints()
 			if (!IsDuplicate(ka, kb)) return ka.pt.x < kb.pt.x || (ka.pt.x == kb.pt.x && ka.pt.y < kb.pt.y);
 			return ka.response*ka.size > kb.response*kb.size; // larger response*size first
 		});
-		// Identify duplicates
+		// Identify duplicates: survivor[k] is the keypoint index old index k collapses onto,
+		// itself for a keypoint that is kept
+		std::vector<uint32_t> survivor(numKPs, NO_ID);
+		atomicNumTotal += numKPs;
+		for (size_t j = 0; j < numKPs; ) {
+			const size_t jFirst = j;
+			const uint32_t firstIdx = idxs[j];
+			const cv::KeyPoint& firstKP = img.keypoints[firstIdx];
+			// gather the duplicates: they appear immediately after because of the sort
+			while (++j < numKPs && IsDuplicate(img.keypoints[idxs[j]], firstKP));
+			// Described-wins: a dense keypoint that coincides with a described one is that described
+			// keypoint reused, never the other way round -- the described one carries the descriptor
+			// and the sub-pixel position, and a dense keypoint cannot be promoted into the described
+			// prefix at all. Stated explicitly against the stored count instead of arranged through
+			// response*size, which would depend on the detector's response range and break silently
+			// when it shifts. Between two keypoints of the same kind the sort's own ranking stands,
+			// which for two dense points is the higher warp confidence (Image::MakeDenseKeypoint
+			// puts it in the response, over a size that is the same for both).
+			// The rescan only runs when the group's leader is dense, so an image without dense
+			// keypoints keeps exactly the survivor the sort placed first, as before.
+			uint32_t bestIdx = firstIdx;
+			if (img.IsDenseKeypoint(bestIdx)) {
+				for (size_t k = jFirst + 1; k < j; ++k) {
+					const uint32_t idx = idxs[k];
+					if (img.IsDenseKeypoint(idx))
+						continue;
+					const cv::KeyPoint& kp = img.keypoints[idx];
+					const cv::KeyPoint& best = img.keypoints[bestIdx];
+					if (img.IsDenseKeypoint(bestIdx) || kp.response*kp.size > best.response*best.size)
+						bestIdx = idx;
+				}
+			}
+			for (size_t k = jFirst; k < j; ++k)
+				survivor[idxs[k]] = bestIdx;
+		}
+		// Compact the survivors and build the old -> new index remap.
+		// Order: an image carrying dense keypoints keeps its survivors in their original relative
+		// order, which is what keeps the described keypoints a leading prefix -- the sort above is
+		// by position, and compacting in it would interleave described and dense keypoints and
+		// leave no boundary to store. An image without dense keypoints has no prefix to protect and
+		// keeps the position order this filter has always emitted, so the keypoint indices every
+		// track downstream of it is labelled by do not move.
 		Unsigned32Arr& remap = remaps[i];
+		remap.assign(numKPs, NO_ID);
 		std::vector<cv::KeyPoint> newKeypoints;
 		newKeypoints.reserve(numKPs);
-		atomicNumTotal += numKPs;
-		// We need to map old indices to new indices
-		// Initialize remap with invalid value
-		remap.assign(numKPs, NO_ID);
-		for (size_t j = 0; j < numKPs; ) {
-			const uint32_t bestIdx = idxs[j];
-			const cv::KeyPoint& bestKP = img.keypoints[bestIdx];
-			// This keypoint is kept
-			const uint32_t newIdx = (uint32_t)newKeypoints.size();
-			newKeypoints.push_back(bestKP);
-			remap[bestIdx] = newIdx;
-			// Skip all duplicates (they appear immediately after because of sort)
-			while (++j < numKPs) {
-				const uint32_t otherIdx = idxs[j];
-				const cv::KeyPoint& otherKP = img.keypoints[otherIdx];
-				// Check equality
-				if (!IsDuplicate(otherKP, bestKP))
-					break;
-				// Map duplicate to the kept keypoint
-				remap[otherIdx] = newIdx;
-			}
+		const bool bHasDense = img.HasDenseKeypoints();
+		uint32_t numDescribed = 0;
+		for (size_t k = 0; k < numKPs; ++k) {
+			const uint32_t oldIdx = bHasDense ? (uint32_t)k : idxs[k];
+			if (survivor[oldIdx] != oldIdx)
+				continue;
+			remap[oldIdx] = (uint32_t)newKeypoints.size();
+			if (!img.IsDenseKeypoint(oldIdx))
+				++numDescribed;
+			newKeypoints.push_back(img.keypoints[oldIdx]);
 		}
+		for (uint32_t k = 0; k < (uint32_t)numKPs; ++k)
+			if (survivor[k] != k)
+				remap[k] = remap[survivor[k]];
 		if (newKeypoints.size() == numKPs) {
 			// Clear remap to indicate no changes needed for this image
 			remap.clear();
@@ -1534,7 +1569,16 @@ void PairsMatcher::FilterRedundantKeypoints()
 		}
 		// Update keypoints
 		ASSERT(img.descriptors.empty());
+		const size_t numDenseBefore = bHasDense ? numKPs - img.NumDescribedKeypoints() : 0;
 		img.keypoints = std::move(newKeypoints);
+		// and move the boundary through the same removal: described-wins plus the original-order
+		// compaction above put the surviving described keypoints back at the front, so their count
+		// is the new boundary. A stale count here would misclassify keypoints in exactly the silent
+		// way the stored boundary exists to prevent.
+		if (bHasDense) {
+			img.SetNumDescribedKeypoints(numDescribed);
+			atomicNumRemovedDense += numDenseBefore - img.NumDenseKeypoints();
+		}
 		atomicNumRemoved += (numKPs - img.keypoints.size());
 	});
 	scene.threadPool.wait();
@@ -1617,14 +1661,25 @@ void PairsMatcher::FilterRedundantKeypoints()
 					if (j - start == 1) {
 						filtered.push_back(first);
 					} else {
-						// Multiple matches with same index - keep best by combined weight
+						// Multiple matches with same index - keep the one with the fewest dense
+						// endpoints, then the best combined weight. Described-wins again, and again
+						// stated explicitly rather than arranged through response*size: a described
+						// correspondence measured at sub-pixel accuracy must not lose the keypoint
+						// it shares to a warp sample. With no dense keypoints in the scene every
+						// count below is 0 and this is the plain weight comparison it has always been.
+						const auto NumDenseEnds = [&](const DMatch& m) {
+							return (unsigned)img1.IsDenseKeypoint(m.queryIdx) + (unsigned)img2.IsDenseKeypoint(m.trainIdx);
+						};
 						size_t bestIdx = start;
+						unsigned bestDense = NumDenseEnds(first);
 						float bestWeight = Image::ComputeKeypointWeight(img1.keypoints[first.queryIdx]) *
 						                   Image::ComputeKeypointWeight(img2.keypoints[first.trainIdx]);
 						for (size_t m = start + 1; m < j; ++m) {
+							const unsigned numDense = NumDenseEnds(data[m]);
 							const float weight = Image::ComputeKeypointWeight(img1.keypoints[data[m].queryIdx]) *
 							                     Image::ComputeKeypointWeight(img2.keypoints[data[m].trainIdx]);
-							if (weight > bestWeight) {
+							if (numDense < bestDense || (numDense == bestDense && weight > bestWeight)) {
+								bestDense = numDense;
 								bestWeight = weight;
 								bestIdx = m;
 							}
@@ -1660,8 +1715,11 @@ void PairsMatcher::FilterRedundantKeypoints()
 	scene.threadPool.wait();
 
 	const size_t numDuplicateMatches = atomicNumDuplicateMatches.load();
-	VERBOSE("Filtered %u redundant keypoints from %u total keypoints, removed %u duplicate matches (%s)",
-		numRemoved, numTotal, numDuplicateMatches, TD_TIMER_GET_FMT().c_str());
+	const size_t numRemovedDense = atomicNumRemovedDense.load();
+	// the dense count is what says whether the cross-pair reuse of exact-position dense samples is
+	// firing at all: it is the only mechanism that can give a dense track more than two views
+	VERBOSE("Filtered %u redundant keypoints (%u dense) from %u total keypoints, removed %u duplicate matches (%s)",
+		numRemoved, numRemovedDense, numTotal, numDuplicateMatches, TD_TIMER_GET_FMT().c_str());
 }
 
 void PairsMatcher::PreMatch(PairIdxArr& pairsToMatch)
