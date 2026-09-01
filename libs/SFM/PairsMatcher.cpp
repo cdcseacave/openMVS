@@ -1484,7 +1484,14 @@ void PairsMatcher::FilterRedundantKeypoints()
 		return normSq(ka.pt - kb.pt) < maxDistSq;
 	};
 
-	// 1. Identify redundant keypoints per image
+	// 1. Identify redundant keypoints per image. Two segments -- the described prefix
+	// [0, NumDescribedKeypoints()) and the dense suffix past it -- are sorted and deduplicated
+	// independently, then merged by a one-directional cross-segment prune. A segment never mixes
+	// kinds, so its own dedup pass needs no notion of "kind" at all: the described prefix staying a
+	// leading, contiguous run of the compacted array is then structural, not a property the
+	// compaction has to arrange by choosing an order. With no dense keypoints the second segment is
+	// empty, the cross-prune has nothing to do, and this is exactly the single-segment filter that
+	// predates dense supplementation.
 	std::atomic<size_t> atomicNumRemoved{0};
 	std::atomic<size_t> atomicNumRemovedDense{0};
 	std::atomic<size_t> atomicNumTotal{0};
@@ -1493,71 +1500,114 @@ void PairsMatcher::FilterRedundantKeypoints()
 		const size_t numKPs = img.keypoints.size();
 		if (numKPs == 0)
 			return;
-		// Sort keypoints by position -> response -> size
-		std::vector<uint32_t> idxs(numKPs);
-		std::iota(idxs.begin(), idxs.end(), 0);
-		std::sort(idxs.begin(), idxs.end(), [&](uint32_t a, uint32_t b) {
-			const cv::KeyPoint& ka = img.keypoints[a];
-			const cv::KeyPoint& kb = img.keypoints[b];
-			if (!IsDuplicate(ka, kb)) return ka.pt.x < kb.pt.x || (ka.pt.x == kb.pt.x && ka.pt.y < kb.pt.y);
-			return ka.response*ka.size > kb.response*kb.size; // larger response*size first
-		});
-		// Identify duplicates: survivor[k] is the keypoint index old index k collapses onto,
-		// itself for a keypoint that is kept
-		std::vector<uint32_t> survivor(numKPs, NO_ID);
+		ASSERT(img.descriptors.empty());
 		atomicNumTotal += numKPs;
-		for (size_t j = 0; j < numKPs; ) {
-			const size_t jFirst = j;
-			const uint32_t firstIdx = idxs[j];
-			const cv::KeyPoint& firstKP = img.keypoints[firstIdx];
-			// gather the duplicates: they appear immediately after because of the sort
-			while (++j < numKPs && IsDuplicate(img.keypoints[idxs[j]], firstKP));
-			// Described-wins: a dense keypoint that coincides with a described one is that described
-			// keypoint reused, never the other way round -- the described one carries the descriptor
-			// and the sub-pixel position, and a dense keypoint cannot be promoted into the described
-			// prefix at all. Stated explicitly against the stored count instead of arranged through
-			// response*size, which would depend on the detector's response range and break silently
-			// when it shifts. Between two keypoints of the same kind the sort's own ranking stands,
-			// which for two dense points is the higher warp confidence (Image::MakeDenseKeypoint
-			// puts it in the response, over a size that is the same for both).
-			// The rescan only runs when the group's leader is dense, so an image without dense
-			// keypoints keeps exactly the survivor the sort placed first, as before.
-			uint32_t bestIdx = firstIdx;
-			if (img.IsDenseKeypoint(bestIdx)) {
+		const bool bHasDense = img.HasDenseKeypoints();
+		const uint32_t numDescribedBefore = img.NumDescribedKeypoints();
+
+		// survivor[k] is the keypoint index old index k collapses onto, itself for a keypoint that
+		// is kept. Sort a segment by position -> response*size (the existing comparator) and group
+		// the runs it creates: consecutive keypoints within 0.1px (IsDuplicate) are one run, and its
+		// highest response*size member is every member's survivor -- the existing leader-based
+		// grouping, unchanged, just run once per segment instead of once over the whole array.
+		std::vector<uint32_t> survivor(numKPs, NO_ID);
+		const auto DedupSegment = [&](uint32_t begin, uint32_t end) {
+			std::vector<uint32_t> order(end - begin);
+			std::iota(order.begin(), order.end(), begin);
+			std::sort(order.begin(), order.end(), [&](uint32_t a, uint32_t b) {
+				const cv::KeyPoint& ka = img.keypoints[a];
+				const cv::KeyPoint& kb = img.keypoints[b];
+				if (!IsDuplicate(ka, kb)) return ka.pt.x < kb.pt.x || (ka.pt.x == kb.pt.x && ka.pt.y < kb.pt.y);
+				return ka.response*ka.size > kb.response*kb.size; // larger response*size first
+			});
+			for (size_t j = 0; j < order.size(); ) {
+				const size_t jFirst = j;
+				const uint32_t firstIdx = order[j];
+				const cv::KeyPoint& firstKP = img.keypoints[firstIdx];
+				// gather the duplicates: they appear immediately after because of the sort
+				while (++j < order.size() && IsDuplicate(img.keypoints[order[j]], firstKP));
+				uint32_t bestIdx = firstIdx;
 				for (size_t k = jFirst + 1; k < j; ++k) {
-					const uint32_t idx = idxs[k];
-					if (img.IsDenseKeypoint(idx))
-						continue;
+					const uint32_t idx = order[k];
 					const cv::KeyPoint& kp = img.keypoints[idx];
 					const cv::KeyPoint& best = img.keypoints[bestIdx];
-					if (img.IsDenseKeypoint(bestIdx) || kp.response*kp.size > best.response*best.size)
+					if (kp.response*kp.size > best.response*best.size)
 						bestIdx = idx;
 				}
+				for (size_t k = jFirst; k < j; ++k)
+					survivor[order[k]] = bestIdx;
 			}
-			for (size_t k = jFirst; k < j; ++k)
-				survivor[idxs[k]] = bestIdx;
+			return order;
+		};
+		const std::vector<uint32_t> describedOrder = DedupSegment(0, numDescribedBefore);
+		const std::vector<uint32_t> denseOrder = DedupSegment(numDescribedBefore, (uint32_t)numKPs);
+
+		// The position-ordered survivors of each segment: what the cross-segment prune walks below,
+		// and, past that, exactly the compaction order of each half of the output.
+		std::vector<uint32_t> describedSurvivors, denseSurvivors;
+		describedSurvivors.reserve(describedOrder.size());
+		for (const uint32_t idx : describedOrder)
+			if (survivor[idx] == idx)
+				describedSurvivors.push_back(idx);
+		denseSurvivors.reserve(denseOrder.size());
+		for (const uint32_t idx : denseOrder)
+			if (survivor[idx] == idx)
+				denseSurvivors.push_back(idx);
+
+		// Cross-segment prune, one-directional: a dense survivor that is IsDuplicate of a described
+		// survivor is that described keypoint reused, never the other way round -- the described one
+		// carries the descriptor and the sub-pixel position, and a dense keypoint cannot be promoted
+		// into the described prefix at all. Only dense entries are ever removed here, so the described
+		// segment is untouched by this pass. Both lists are already in position order, so this is a
+		// linear merge with a small window, not a search: the described pointer only ever advances,
+		// past a described survivor too far left of the current dense one to still be within 0.1px.
+		{
+			size_t descPtr = 0;
+			for (const uint32_t denseIdx : denseSurvivors) {
+				const cv::KeyPoint& dkp = img.keypoints[denseIdx];
+				while (descPtr < describedSurvivors.size() &&
+					   img.keypoints[describedSurvivors[descPtr]].pt.x < dkp.pt.x - 0.1f)
+					++descPtr;
+				for (size_t k = descPtr; k < describedSurvivors.size(); ++k) {
+					const uint32_t describedIdx = describedSurvivors[k];
+					const cv::KeyPoint& skp = img.keypoints[describedIdx];
+					if (skp.pt.x > dkp.pt.x + 0.1f)
+						break; // past the window that could still be within 0.1px
+					if (IsDuplicate(skp, dkp)) {
+						survivor[denseIdx] = describedIdx;
+						break;
+					}
+				}
+			}
 		}
-		// Compact the survivors and build the old -> new index remap.
-		// Order: an image carrying dense keypoints keeps its survivors in their original relative
-		// order, which is what keeps the described keypoints a leading prefix -- the sort above is
-		// by position, and compacting in it would interleave described and dense keypoints and
-		// leave no boundary to store. An image without dense keypoints has no prefix to protect and
-		// keeps the position order this filter has always emitted, so the keypoint indices every
-		// track downstream of it is labelled by do not move.
+		// The prune above can leave a two-hop chain: a dense duplicate pointing at its intra-segment
+		// leader, that leader itself just reused into a described survivor. Flatten it to one hop --
+		// every original index's survivor must be a final survivor directly, since the remap fixup
+		// below is a single dereference (remap[survivor[k]]), not a chase. Only the dense segment
+		// can have gained a second hop here; a described leader is never reassigned past this point.
+		for (uint32_t k = numDescribedBefore; k < (uint32_t)numKPs; ++k) {
+			const uint32_t s = survivor[k];
+			if (s != k && survivor[s] != s)
+				survivor[k] = survivor[s];
+		}
+
+		// Compact described survivors first, then dense survivors, no gap between them: the new
+		// boundary is the number of surviving described keypoints, counted directly rather than
+		// derived from a remap.
 		Unsigned32Arr& remap = remaps[i];
 		remap.assign(numKPs, NO_ID);
 		std::vector<cv::KeyPoint> newKeypoints;
 		newKeypoints.reserve(numKPs);
-		const bool bHasDense = img.HasDenseKeypoints();
-		uint32_t numDescribed = 0;
-		for (size_t k = 0; k < numKPs; ++k) {
-			const uint32_t oldIdx = bHasDense ? (uint32_t)k : idxs[k];
-			if (survivor[oldIdx] != oldIdx)
-				continue;
-			remap[oldIdx] = (uint32_t)newKeypoints.size();
-			if (!img.IsDenseKeypoint(oldIdx))
-				++numDescribed;
-			newKeypoints.push_back(img.keypoints[oldIdx]);
+		for (const uint32_t idx : describedSurvivors) {
+			remap[idx] = (uint32_t)newKeypoints.size();
+			newKeypoints.push_back(img.keypoints[idx]);
+		}
+		const uint32_t numDescribed = (uint32_t)newKeypoints.size();
+		for (const uint32_t idx : denseSurvivors) {
+			if (survivor[idx] != idx)
+				continue; // cross-pruned above: reused the described keypoint it duplicates
+			remap[idx] = (uint32_t)newKeypoints.size();
+			newKeypoints.push_back(img.keypoints[idx]);
 		}
 		for (uint32_t k = 0; k < (uint32_t)numKPs; ++k)
 			if (survivor[k] != k)
@@ -1568,13 +1618,13 @@ void PairsMatcher::FilterRedundantKeypoints()
 			return;
 		}
 		// Update keypoints
-		ASSERT(img.descriptors.empty());
-		const size_t numDenseBefore = bHasDense ? numKPs - img.NumDescribedKeypoints() : 0;
+		const size_t numDenseBefore = numKPs - numDescribedBefore;
 		img.keypoints = std::move(newKeypoints);
-		// and move the boundary through the same removal: described-wins plus the original-order
-		// compaction above put the surviving described keypoints back at the front, so their count
-		// is the new boundary. A stale count here would misclassify keypoints in exactly the silent
-		// way the stored boundary exists to prevent.
+		// and move the boundary through the same removal: the two-segment compaction above always
+		// puts the surviving described keypoints at the front, so their count is the new boundary. A
+		// stale count here would misclassify keypoints in exactly the silent way the stored boundary
+		// exists to prevent. Only meaningful for an image that ever carried dense keypoints --
+		// numDescribedKeypoints must stay NO_ID for one that never did.
 		if (bHasDense) {
 			img.SetNumDescribedKeypoints(numDescribed);
 			atomicNumRemovedDense += numDenseBefore - img.NumDenseKeypoints();

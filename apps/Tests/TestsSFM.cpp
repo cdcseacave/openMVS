@@ -1505,12 +1505,52 @@ bool DenseKeypointBoundaryTest()
 		return false;
 	}
 
+	// A described-only image (no dense keypoints at all) must reach exactly the survivors and the
+	// order the filter emitted before dense supplementation existed: the dense segment is empty, the
+	// cross-segment prune has nothing to do, and the described segment is the whole array -- same
+	// comparator, same leader-based grouping, same survivor, same position-order compaction as
+	// before the two-segment split existed. No special case is needed to make that true.
+	{
+		Scene noDenseScene;
+		Image& im = noDenseScene.images.emplace_back(0u, String("nodense.jpg"));
+		// unsorted on purpose, with one duplicate pair (30,30 twice; the higher response*size wins)
+		im.keypoints.emplace_back(40.f, 40.f, 4.f, -1.f, 0.05f);
+		im.keypoints.emplace_back(10.f, 10.f, 4.f, -1.f, 0.05f);
+		im.keypoints.emplace_back(30.f, 30.f, 4.f, -1.f, 0.01f);
+		im.keypoints.emplace_back(20.f, 20.f, 4.f, -1.f, 0.05f);
+		im.keypoints.emplace_back(30.f, 30.f, 4.f, -1.f, 0.05f);
+		MatchConfig noDenseCfg;
+		noDenseCfg.minMatches = 1;
+		PairsMatcher(noDenseScene, noDenseCfg).FilterRedundantKeypoints();
+		if (im.HasDenseKeypoints() || im.keypoints.size() != 4 || im.NumDescribedKeypoints() != 4) {
+			VERBOSE("DenseKeypointBoundaryTest FAILED: a described-only image must stay described-only after the filter");
+			return false;
+		}
+		const float expectedNoDenseX[4] = {10.f, 20.f, 30.f, 40.f};
+		for (uint32_t f = 0; f < 4; ++f) {
+			// the invariant, checked directly rather than only by count: nothing below the boundary is
+			// ever a dense keypoint when there never was one
+			if (im.keypoints[f].pt.x != expectedNoDenseX[f] || im.IsDenseKeypoint(f)) {
+				VERBOSE("DenseKeypointBoundaryTest FAILED: described-only filter order at %u: x=%g",
+					f, im.keypoints[f].pt.x);
+				return false;
+			}
+		}
+		if (im.keypoints[2].response != 0.05f) {
+			VERBOSE("DenseKeypointBoundaryTest FAILED: described-only filter kept the weaker duplicate");
+			return false;
+		}
+	}
+
 	// FilterRedundantKeypoints must move the boundary through the same remap it applies to the
 	// keypoint indices. Two images, each with 5 described keypoints of which two coincide (the
-	// removal *inside* the prefix that shrinks the boundary), plus 4 dense keypoints of which one
-	// sits exactly on a described keypoint (described-wins) and two on each other (the higher warp
-	// confidence wins). A stale boundary here would silently reclassify the surviving described
-	// keypoints that shifted down into it as dense.
+	// removal *inside* the prefix that shrinks the boundary), plus 5 dense keypoints of which one
+	// sits exactly on a described keypoint (described-wins), two coincide with each other (the higher
+	// warp confidence wins), and one is a standalone dense point positioned *before* several described
+	// survivors (x=15, against described survivors at 10/20/30/40) -- it must still land in the dense
+	// suffix, and its position must still order it against the other dense survivors on its own,
+	// independently of the described segment. A stale boundary here would silently reclassify the
+	// surviving described keypoints that shifted down into it as dense.
 	Scene filterScene;
 	for (IIndex k = 0; k < 2; ++k) {
 		Image& im = filterScene.images.emplace_back(k, String::FormatString("%u.jpg", k));
@@ -1522,32 +1562,39 @@ bool DenseKeypointBoundaryTest()
 		im.keypoints.emplace_back(40.f, 40.f, 4.f, -1.f, 0.05f);
 		im.CloseDescribedKeypoints();
 		// dense: 5 lands on the described keypoint 3, 6 and 7 coincide (7 is the more confident),
-		// 8 is on its own
+		// 8 is on its own, 9 is on its own and positioned before the described segment's tail
 		im.keypoints.push_back(Image::MakeDenseKeypoint(Point2f(30.f, 30.f), 0.9f, 6.f));
 		im.keypoints.push_back(Image::MakeDenseKeypoint(Point2f(50.f, 50.f), 0.4f, 6.f));
 		im.keypoints.push_back(Image::MakeDenseKeypoint(Point2f(50.f, 50.f), 0.95f, 6.f));
 		im.keypoints.push_back(Image::MakeDenseKeypoint(Point2f(60.f, 60.f), 0.9f, 6.f));
+		im.keypoints.push_back(Image::MakeDenseKeypoint(Point2f(15.f, 15.f), 0.7f, 6.f));
 	}
 	ImagePair& filterPair = filterScene.pairs.emplace_back(0u, 1u);
 	// one match per keypoint index, so the remap of every keypoint is observable through it
-	for (uint32_t k = 0; k < 9; ++k)
+	for (uint32_t k = 0; k < 10; ++k)
 		filterPair.matches.emplace_back(k, k);
-	filterPair.numFilteredInliers = 9;
+	filterPair.numFilteredInliers = 10;
 	MatchConfig filterCfg;
 	filterCfg.minMatches = 1;
 	PairsMatcher(filterScene, filterCfg).FilterRedundantKeypoints();
 	for (IIndex k = 0; k < 2; ++k) {
 		const Image& im = filterScene.images[k];
-		// 9 keypoints, 3 removed (the duplicated described one, the dense one on a described
-		// keypoint, the weaker of the two coincident dense ones)
-		if (im.keypoints.size() != 6 || im.NumDescribedKeypoints() != 4 || im.NumDenseKeypoints() != 2) {
-			VERBOSE("DenseKeypointBoundaryTest FAILED: image %u kept %u keypoints with boundary %u, expected 6 and 4",
+		// 10 keypoints, 3 removed (the duplicated described one, the dense one on a described
+		// keypoint, the weaker of the two coincident dense ones); the standalone dense point at x=15
+		// is not a duplicate of anything and survives
+		if (im.keypoints.size() != 7 || im.NumDescribedKeypoints() != 4 || im.NumDenseKeypoints() != 3) {
+			VERBOSE("DenseKeypointBoundaryTest FAILED: image %u kept %u keypoints with boundary %u, expected 7 and 4",
 				k, (unsigned)im.keypoints.size(), im.NumDescribedKeypoints());
 			return false;
 		}
-		// the described survivors are still the leading prefix, in their original relative order
-		const float expectedX[6] = {10.f, 20.f, 30.f, 40.f, 50.f, 60.f};
-		for (uint32_t f = 0; f < 6; ++f) {
+		// the described survivors are still the leading prefix, in position order; the dense survivors
+		// follow, in *their own* position order -- x=15 sorts before x=50/x=60 among dense survivors
+		// even though it is less than every described survivor from index 1 on, because the two segments
+		// are compacted independently rather than merged into one global position order. The invariant
+		// is checked directly at every index, not just by count: below the boundary is never dense,
+		// at or above it always is.
+		const float expectedX[7] = {10.f, 20.f, 30.f, 40.f, 15.f, 50.f, 60.f};
+		for (uint32_t f = 0; f < 7; ++f) {
 			if (im.keypoints[f].pt.x != expectedX[f] || im.IsDenseKeypoint(f) != (f >= 4)) {
 				VERBOSE("DenseKeypointBoundaryTest FAILED: image %u keypoint %u at x=%g, dense=%d",
 					k, f, im.keypoints[f].pt.x, (int)im.IsDenseKeypoint(f));
@@ -1560,10 +1607,49 @@ bool DenseKeypointBoundaryTest()
 			VERBOSE("DenseKeypointBoundaryTest FAILED: image %u lost a described keypoint to a dense one", k);
 			return false;
 		}
-		// between two dense points the more confident one survives
-		if (im.keypoints[4].response != 0.95f) {
-			VERBOSE("DenseKeypointBoundaryTest FAILED: image %u kept the less confident dense keypoint (%g)",
+		// the standalone dense point survives unmodified, ahead of the other dense survivors
+		if (im.keypoints[4].response != 0.7f) {
+			VERBOSE("DenseKeypointBoundaryTest FAILED: image %u lost the standalone dense keypoint at x=15 (%g)",
 				k, im.keypoints[4].response);
+			return false;
+		}
+		// between two dense points the more confident one survives
+		if (im.keypoints[5].response != 0.95f) {
+			VERBOSE("DenseKeypointBoundaryTest FAILED: image %u kept the less confident dense keypoint (%g)",
+				k, im.keypoints[5].response);
+			return false;
+		}
+	}
+
+	// The match-level described-wins rule (NumDenseEnds in the duplicate-match filter) must actually
+	// decide something: two matches that remap onto the same queryIdx, where one's trainIdx is
+	// described and the other's is dense. Image A carries two described keypoints at the same
+	// position (one match to each), which the keypoint filter collapses onto a single survivor, so
+	// both matches end up sharing that queryIdx; image B carries one described and one dense
+	// keypoint, untouched by the filter, so the two matches keep pointing at different kinds of
+	// endpoint in B. On weight alone the dense endpoint would win -- ComputeKeypointWeight rates a
+	// dense point's high, saturated confidence and large warp-cell size well above a modest SIFT
+	// response at a small size -- so if this case passes, the rule is doing real work, not agreeing
+	// with what the weight comparison would have done anyway.
+	{
+		Scene weightScene;
+		Image& wA = weightScene.images.emplace_back(0u, String("wA.jpg"));
+		wA.keypoints.emplace_back(5.f, 5.f, 3.f, -1.f, 0.05f);
+		wA.keypoints.emplace_back(5.f, 5.f, 3.f, -1.f, 0.01f);
+		Image& wB = weightScene.images.emplace_back(1u, String("wB.jpg"));
+		wB.keypoints.emplace_back(50.f, 50.f, 3.f, -1.f, 0.02f); // described, modest response/size
+		wB.CloseDescribedKeypoints();
+		wB.keypoints.push_back(Image::MakeDenseKeypoint(Point2f(60.f, 60.f), 0.9f, 6.f)); // dense, high weight
+		ImagePair& weightPair = weightScene.pairs.emplace_back(0u, 1u);
+		weightPair.matches.emplace_back(0, 0); // A's first duplicate -> B's described keypoint
+		weightPair.matches.emplace_back(1, 1); // A's second duplicate -> B's dense keypoint
+		weightPair.numFilteredInliers = 2;
+		MatchConfig weightCfg;
+		weightCfg.minMatches = 1;
+		PairsMatcher(weightScene, weightCfg).FilterRedundantKeypoints();
+		if (weightPair.matches.size() != 1 || weightPair.matches[0].trainIdx != 0) {
+			VERBOSE("DenseKeypointBoundaryTest FAILED: match-level described-wins rule did not keep the described endpoint (%u matches left, trainIdx %d)",
+				(unsigned)weightPair.matches.size(), weightPair.matches.empty() ? -1 : weightPair.matches[0].trainIdx);
 			return false;
 		}
 	}
