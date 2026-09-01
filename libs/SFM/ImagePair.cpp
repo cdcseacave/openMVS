@@ -334,6 +334,21 @@ unsigned ImagePair::FilterMatches(const Image& img1, const Image& img2, float mi
 	// than borrowing the supplement's, which is the same "no descriptor evidence" answer every other
 	// weight term gives on it.
 	meanRayAngle = cosAngles.empty() ? 0.f : ACOS(cosAngles.GetMedian());
+	// The stable_partition below re-derives the dense segment from `mask`'s surviving inliers by
+	// re-evaluating HasDenseEnd, which is the one documented false negative of this re-derivation
+	// (docs/design/ROMA2InProcess.md): a supplement match whose BOTH endpoints collapsed onto
+	// coincident described keypoints now reads as sparse. Measuring the size of that disclosed gap
+	// was an explicit condition of accepting the re-derivation, so count it here -- before
+	// PartitionMatchesByMask reorders `matches` and the old dense range
+	// [numFilteredInliers, numFilteredInliers+numDenseInliers) stops describing anything.
+	unsigned numSupplementReclassifiedSparse = 0;
+	if (bHasDenseKeypoints && numFilteredInliers >= 0 && numDenseInliers > 0) {
+		const unsigned oldDenseBegin = MINF((unsigned)numFilteredInliers, (unsigned)matches.size());
+		const unsigned oldDenseEnd = MINF(oldDenseBegin + (unsigned)numDenseInliers, (unsigned)matches.size());
+		for (unsigned i = oldDenseBegin; i < oldDenseEnd; ++i)
+			if (mask[i] && !HasDenseEnd(matches[i]))
+				++numSupplementReclassifiedSparse;
+	}
 	// Partition matches by inlier mask
 	numFilteredInliers = (int)PartitionMatchesByMask(mask, (int)numInliers, true);
 	// PartitionMatchesByMask reorders `matches`, so a dense segment recorded before this call no
@@ -356,6 +371,9 @@ unsigned ImagePair::FilterMatches(const Image& img1, const Image& img2, float mi
 			[&HasDenseEnd](const DMatch& m) { return !HasDenseEnd(m); });
 		numDenseInliers = (int)(matches.begin() + numFilteredInliers - denseBegin);
 		numFilteredInliers -= numDenseInliers;
+		if (numSupplementReclassifiedSparse > 0)
+			DEBUG("FilterMatches: %u dense supplement match(es) re-classified as sparse in pair (%u, %u)",
+				numSupplementReclassifiedSparse, ID1, ID2);
 	}
 	CheckSparseSegmentIsDescribed(img1, img2);
 	// the sparse count, i.e. exactly what GetNumFilteredInliers() will report: every caller compares

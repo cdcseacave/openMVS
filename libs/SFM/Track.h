@@ -129,6 +129,20 @@ SFM_API void BuildTracks(Scene& scene, float minPairWeight = 0);
 SFM_API std::pair<float, float> ComputeTracksMeanReprojectionError(Scene& scene);
 
 /**
+ * @brief Pixel reprojection error of an already camera-space point against an observed keypoint,
+ * using the observing camera's projection model. This is the exact formula FilterTracks uses when
+ * it accumulates its pixel-error statistics for a kept observation; exposed as its own function so
+ * any other reader of a track (e.g. an offline per-observation dump) computes the identical number
+ * instead of re-deriving it.
+ * @param camera the observing camera (current intrinsics)
+ * @param Xcam the track position already transformed into this camera's frame (Image::TransformPointW2C)
+ * @param kpPt the observed keypoint's pixel position
+ * @return pixel error and whether the projection is valid (false = behind the camera / degenerate;
+ *         the error is then undefined and must not be used)
+ */
+SFM_API std::pair<float, bool> ComputeReprojectionErrorPixels(const Camera& camera, const Point3& Xcam, const Point2f& kpPt);
+
+/**
  * @brief Filter tracks based on various criteria
  *
  * Reprojection error is always evaluated in the angular domain — the pixel threshold is

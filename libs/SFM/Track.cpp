@@ -81,11 +81,18 @@ void SFM::BuildTracks(Scene& scene, float minPairWeight)
 	// Ideally the pairs are pre-filtered to only include inlier matches
 	// and sorted by weight (most reliable first) to maximize track quality.
 	unsigned numPairsProcessed = 0;
+	// A supplemented pair that still loses on sparse magnitude is a correct drop -- the dense draw
+	// is a coverage fill-in, not a weight booster, so minPairWeight must keep judging it on
+	// GetNumFilteredInliers() alone. But correct-and-uncounted is how the last silent defect stayed
+	// silent, so split the skip count by supplemented vs not rather than reporting one number.
+	unsigned numPairsSkippedWeightSupplemented = 0, numPairsSkippedWeightNotSupplemented = 0;
 	for (const ImagePair& pair : scene.pairs) {
 		if (!pair.HasMatches())
 			continue;
-		if (minPairWeight >= 0 && pair.GetCompositeWeight() <= minPairWeight)
+		if (minPairWeight >= 0 && pair.GetCompositeWeight() <= minPairWeight) {
+			++(pair.GetNumDenseInliers() > 0 ? numPairsSkippedWeightSupplemented : numPairsSkippedWeightNotSupplemented);
 			continue;
+		}
 		// Only the track-forming matches contribute to tracks: the pair's verified sparse inliers
 		// plus its dense supplement, and nothing past them -- what follows are RANSAC inliers the
 		// strict filter deliberately rejected. Not GetNumFilteredInliers(), which is the sparse
@@ -125,6 +132,8 @@ void SFM::BuildTracks(Scene& scene, float minPairWeight)
 		}
 		++numPairsProcessed;
 	}
+	DEBUG("Pairs skipped below minPairWeight %g: %u supplemented, %u not supplemented",
+		minPairWeight, numPairsSkippedWeightSupplemented, numPairsSkippedWeightNotSupplemented);
 
 	// 3. Group observations by track representative
 	// Map: rootGlobalID -> list of observations
@@ -241,6 +250,14 @@ void SFM::BuildTracks(Scene& scene, float minPairWeight)
 }
 
 
+std::pair<float, bool> SFM::ComputeReprojectionErrorPixels(const Camera& camera, const Point3& Xcam, const Point2f& kpPt)
+{
+	const auto [projected, valid] = camera.Project(Xcam);
+	if (!valid)
+		return std::make_pair(0.f, false);
+	return std::make_pair((float)norm(projected - Cast<REAL>(kpPt)), true);
+}
+
 std::pair<float, float> SFM::ComputeTracksMeanReprojectionError(Scene& scene)
 {
 	// Compute average reprojection errors
@@ -324,9 +341,9 @@ std::pair<float, float> SFM::FilterTracks(Scene& scene,
 				continue; // outlier or behind the camera observation
 			}
 			++(bDense ? numDenseKept : numDescribedKept);
-			// Accepted — compute projection for pixel-error stats (well-defined now: cheirality passed above)
-			const Point2 projected = img.pCamera->Project(Xcam).first;
-			const float pixelError = norm(Cast<float>(projected) - kp.pt);
+			// Accepted — pixel-error stats, via the shared helper (well-defined now: cheirality passed above)
+			const auto [pixelError, projValid] = ComputeReprojectionErrorPixels(*img.pCamera, Xcam, kp.pt);
+			ASSERT(projValid);
 			// Move inlier to the front of the observation list
 			if (track.numInliers < obsIdx)
 				std::swap(track.observations[track.numInliers], track.observations[obsIdx]);
