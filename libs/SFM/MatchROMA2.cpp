@@ -749,11 +749,14 @@ struct DensePairValidation {
 	IIndex ID1 = NO_ID, ID2 = NO_ID;         // the pair, ID1 < ID2 (indices into Scene::images)
 	std::vector<Point2f> pointsA, pointsB;   // the dense sample: pixels of the working orientation of each image, index-parallel
 	std::vector<uint32_t> inliers;           // ascending indices into pointsA/pointsB the fitted geometry explains
-	// The fit's geometry -- F and/or E, whichever GeometricFilter set for the branch taken --
-	// copied out here because the fit itself (a local of ValidateOnePairROMA2) does not outlive
-	// this record. ValidatePairsROMA2 (step 4, below) hands these to
-	// PairsMatcher::SetValidatedGeometry for a validated pair, for the ROMA2 guided pass to reuse.
+	// The fit's geometry -- F and/or E, whichever GeometricFilter set for the branch taken, and the
+	// relative pose the branch produced (none on FUNDAMENTAL) -- copied out here because the fit
+	// itself (a local of ValidateOnePairROMA2) does not outlive this record. ValidatePairsROMA2
+	// (step 4, below) hands these to PairsMatcher::SetValidatedGeometry for a validated pair, for
+	// the ROMA2 guided pass to reuse: as the epipolar band it guides on, as the geometry of a
+	// dense-only pair, and as the dense half of the sparse-vs-dense relative-pose comparison.
 	std::optional<Matrix3x3> F, E;
+	std::optional<Pose3D> relativePose;
 	// Spread, on the same DENSE_COVERAGE_GRID^2 grid over each image: first of the whole drawn
 	// sample, then of its inlier subset alone. The pair is the diagnostic -- a sample spread over
 	// the overlap whose *inliers* huddle in one corner is a wrong pair that an inlier count cannot see.
@@ -814,9 +817,12 @@ void ValidateOnePairROMA2(PairsMatcher& pairsMatcher, const Image& imgA, const I
 	if (!pairsMatcher.GeometricFilter(imgACopy, imgBCopy, fit))
 		return; // no single geometry explained enough of the sample to survive the estimator
 	// copy the fit's geometry out now: `fit` is a local of this function, so this is the only
-	// point where it is still alive to read
+	// point where it is still alive to read. The pose comes along with F/E because the three are
+	// one fit: a consumer that took the pose from here and the matrices from elsewhere would be
+	// describing two different geometries as one.
 	val.F = fit.F;
 	val.E = fit.E;
+	val.relativePose = fit.relativePose;
 	// `fit.matches` is the RANSAC inlier set on every branch: PartitionMatchesByMask splits the
 	// outliers off, and the strict cheirality/angle/reprojection filter that follows on a branch
 	// with a relative pose only *reorders* matches (FilterMatches -> PartitionMatchesByMask with
@@ -935,7 +941,7 @@ unsigned SFM::ValidatePairsROMA2(PairsMatcher& pairsMatcher, RoMa2Onnx& roma2, P
 			// MatchFeaturesGeometric), so a pair the gate already checked is not re-estimated
 			// from the coarse tracked points; serial and in-order, like this whole step, so no
 			// concurrent writer of validatedGeometries needs a lock
-			pairsMatcher.SetValidatedGeometry(candidates[p].idx, PairsMatcher::ValidatedGeometry{val.F, val.E});
+			pairsMatcher.SetValidatedGeometry(candidates[p].idx, PairsMatcher::ValidatedGeometry{val.F, val.E, val.relativePose});
 		} else {
 			++numRejected;
 		}

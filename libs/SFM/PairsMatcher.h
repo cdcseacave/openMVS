@@ -28,6 +28,7 @@
 // I N C L U D E S /////////////////////////////////////////////////
 
 #include "Camera.h"
+#include "Pose.h" // ValidatedGeometry carries the gate's relative pose
 #include "PairsWeighting.h"
 #include "MatchROMA2.h"
 
@@ -186,12 +187,19 @@ public:
 	// Geometry the dense two-view gate (ValidatePairsROMA2, MatchROMA2.cpp) already fitted and
 	// RANSAC-checked for a pair before any descriptor matching ran: F and/or E, whichever
 	// GeometricFilter set for the branch SelectGeometryBranch picked (never both empty on a pair
-	// the gate validated). Carries only what MatchFeaturesGeometric's Step 2 reads off an
-	// ImagePair for its epipolar band -- not the sample, not the inliers, not the coverages,
-	// which stay internal to the gate.
+	// the gate validated), plus the relative pose that same fit produced. Carries what
+	// MatchFeaturesGeometric's Step 2 reads off an ImagePair for its epipolar band and what the
+	// dense infusion needs to give a pair the gate's own geometry -- not the sample, not the
+	// inliers, not the coverages, which stay internal to the gate.
 	struct ValidatedGeometry {
 		std::optional<Matrix3x3> F;
 		std::optional<Matrix3x3> E;
+		// The gate's own relative pose, fitted on its ~denseSampleSize spread warp samples. Present
+		// only on a branch that produces one (ESSENTIAL and SHARED_FOCAL both do, FUNDAMENTAL does
+		// not), so a consumer must handle its absence rather than assume the gate always has a pose:
+		// it is the dense-only pair's whole extrinsic evidence and the second half of the
+		// sparse-vs-dense pose comparison (ROMA2Config::supplementPoseMaxRotationDeg).
+		std::optional<Pose3D> relativePose;
 	};
 
 	// Record (ValidatePairsROMA2) or look up (the ROMA2 guided pass, through
