@@ -362,14 +362,32 @@ what the two images already carry.
 ```
 
 `GetNumFilteredInliers()` is the **first segment only**, and every view-graph weight and gate reads it:
-`ComputeIntrinsicWeight`'s grid-occupancy spread and minimum-support bar, `GetCompositeWeight`'s
+`ComputeIntrinsicWeight`'s grid-occupancy spread, `GetCompositeWeight`'s
 inlier factor and its 1000 cap, `ComputePairsWeights`' connectivity normalisation, rotation-averaging
 and star-initializer edge strength, `ViewGraphCalibrator`'s two "enough inliers to trust this F"
 guards, `BuildTracks`' `minPairWeight` cut, the feedback round's `feedbackSkipHealthyInliers` skip and
-`ApplyROMA2Pair`'s replace test. Supplementation is opt-in and *additive*, so it must not re-rank the
+`ApplyROMA2Pair`'s replace test. The median triangulation angle `FilterMatches` stores in
+`meanRayAngle` is sparse for the same reason: `ComputeIntrinsicWeight` multiplies
+`ComputeAngleBaselineWeight(meanRayAngle)` into `weightSpatial`, so a supplement spread over the whole
+overlap would move the weight — in either direction, since the weight peaks at 15°.
+Supplementation is opt-in and *additive*, so it must not re-rank the
 view graph — and the sample is a coverage-maximising stratified draw, which would drive the spatial
 weight to its maximum and saturate the inlier cap by construction. With the count sparse-only, all of
 those keep their pre-supplement behaviour with no per-consumer discount factor anywhere.
+
+**The one exception is a validity floor, not a magnitude: `ComputeIntrinsicWeight`'s
+`minInliers` bar reads `GetNumTrackFormingMatches()`.** The floor asks "does this pair carry enough
+verified correspondence to be considered at all", and a gate-validated supplemented pair does — the
+dense two-view gate is stronger evidence about the pair's geometry than its sparse count is. It has to
+be split from the magnitude because returning 0 there zeroes `weightSpatial`, hence
+`GetCompositeWeight()`, hence `BuildTracks`' `minPairWeight` cut: a supplemented pair whose sparse
+segment dips under 15 — normal once cross-pair dense reuse and the duplicate-match filter have run on
+a pair supplemented at 60 sparse inliers — would contribute **zero** tracks, sparse or dense, and the
+feature would be silently inert on exactly the weak pairs it exists to serve. Every magnitude term
+stays sparse, so such a pair still competes honestly and one that then falls under `minPairWeight` on
+magnitude alone is a correct drop. The alternatives were rejected: exempting supplemented pairs from
+`minPairWeight` hides a real drop, and giving the gate a weight the view graph does not rank on gives
+the pair two different authorities.
 
 What forms tracks is the union of the first two segments, `GetNumTrackFormingMatches()`, and that is
 what bounds `BuildTracks`' union-find (and `GlobalAlignment`'s cross-sub-scene equivalent). The

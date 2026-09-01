@@ -215,6 +215,8 @@ int main(int argc, LPCTSTR* argv)
 				return false;
 			if (!SFM::DenseKeypointBoundaryTest())
 				return false;
+			if (!SFM::SupplementEvidenceIsolationTest())
+				return false;
 			if (!SFM::GlobalDescriptorsQueryTest())
 				return false;
 			if (!SFM::RetrievalModeTest())

@@ -1868,6 +1868,118 @@ bool DenseKeypointBoundaryTest()
 	return true;
 }
 
+// A dense supplement match forms tracks and does not vote on its pair's authority -- but it must
+// also not be able to make the pair worthless. This checks both halves on one supplemented pair:
+//  - MAGNITUDE, sparse: FilterMatches' meanRayAngle is the median over the SPARSE matches only,
+//    because ComputeIntrinsicWeight multiplies ComputeAngleBaselineWeight(meanRayAngle) into
+//    weightSpatial, and the supplement is a coverage-maximising draw whose triangulation angles are
+//    nothing like the clustered descriptor correspondences'. weightSpatial must come out as the
+//    product of the sparse grid occupancy and the sparse angle score, with the supplement in neither.
+//  - VALIDITY FLOOR, track-forming: ComputeIntrinsicWeight's minimum-support bar returns 0 below it,
+//    which zeroes weightSpatial, hence GetCompositeWeight(), hence BuildTracks' minPairWeight cut --
+//    so a floor read from the sparse count alone makes a supplemented pair contribute NO tracks at
+//    all, sparse or dense, on exactly the weak pairs supplementation exists to serve.
+bool SupplementEvidenceIsolationTest()
+{
+	TD_TIMER_START();
+
+	// two pinhole cameras 1 unit apart along X, both looking down +Z
+	Scene scene;
+	scene.cameras.emplace_back(new PinholeCamera(cv::Size(640, 480), 500, 500, 319.5, 239.5));
+	const Point3 camCenters[2] = {Point3(-0.5, 0.0, 0.0), Point3(0.5, 0.0, 0.0)};
+	for (unsigned k = 0; k < 2; ++k) {
+		Pose3D pose;
+		pose.C = camCenters[k];
+		pose.R = Matrix3x3::IDENTITY;
+		scene.images.emplace_back((IIndex)k, String::FormatString("sup%u.jpg", k), pose, 0, scene.cameras[0]);
+	}
+	scene.status.nCalibratedImages = scene.images.size();
+
+	// the descriptor evidence: 5 far points (Z = 10), spread across the frame, so their
+	// triangulation angle is ~5 deg and their grid occupancy is 5 cells in each image
+	std::vector<Point3> sparsePts, densePts;
+	for (unsigned k = 0; k < 5; ++k)
+		sparsePts.emplace_back(REAL(k) * 2.0 - 4.0, REAL(k) * 0.8 - 1.6, 10.0);
+	// the supplement: 15 near points (Z = 1) clustered in the middle of the overlap, i.e. a ten
+	// times larger triangulation angle (~53 deg) and three quarters of the accepted matches, so a
+	// median taken over all of them lands nowhere near the sparse one
+	for (unsigned k = 0; k < 15; ++k)
+		densePts.emplace_back(REAL(k) * 0.014 - 0.098, REAL(k) * 0.014 - 0.098, 1.0);
+
+	for (unsigned k = 0; k < 2; ++k) {
+		Image& img = scene.images[k];
+		for (const Point3& X : sparsePts) {
+			const auto [proj, valid] = img.ProjectPoint(X);
+			if (!valid || !Image8U::isInside(proj, img.GetSize())) {
+				VERBOSE("SupplementEvidenceIsolationTest FAILED: sparse point outside image %u", k);
+				return false;
+			}
+			img.keypoints.emplace_back(Cast<float>(proj), 4.f, -1.f, 0.05f);
+		}
+		img.CloseDescribedKeypoints();
+		for (const Point3& X : densePts) {
+			const auto [proj, valid] = img.ProjectPoint(X);
+			if (!valid || !Image8U::isInside(proj, img.GetSize())) {
+				VERBOSE("SupplementEvidenceIsolationTest FAILED: dense point outside image %u", k);
+				return false;
+			}
+			img.keypoints.push_back(Image::MakeDenseKeypoint(Cast<float>(proj), 0.9f, 6.f));
+		}
+	}
+	ImagePair& pair = scene.pairs.emplace_back(0u, 1u);
+	pair.relativePose = scene.images[1] / scene.images[0];
+	for (uint32_t k = 0; k < (uint32_t)(sparsePts.size() + densePts.size()); ++k)
+		pair.matches.emplace_back(k, k);
+
+	// the median cosine over the SPARSE matches, derived here from the 3D points rather than from
+	// the code under test: FloatArr::GetMedian of an odd count is the middle element after
+	// nth_element, i.e. the 3rd smallest of the 5 cosines, and the cosine is monotone in the angle
+	std::vector<REAL> sparseCos;
+	for (const Point3& X : sparsePts) {
+		const Point3 V1 = X - camCenters[0], V2 = X - camCenters[1];
+		sparseCos.push_back(V1.dot(V2) / (norm(V1) * norm(V2)));
+	}
+	std::sort(sparseCos.begin(), sparseCos.end());
+	const REAL expectedAngle = ACOS(sparseCos[sparseCos.size() >> 1]);
+
+	const unsigned numSparse = pair.FilterMatches(scene.images[0], scene.images[1], 0.5f, 6.f, 0.f);
+	if (numSparse != 5 || pair.GetNumFilteredInliers() != 5 || pair.GetNumDenseInliers() != 15 ||
+		pair.GetNumTrackFormingMatches() != 20) {
+		VERBOSE("SupplementEvidenceIsolationTest FAILED: partition after FilterMatches is %u sparse, %u dense (returned %u)",
+			pair.GetNumFilteredInliers(), pair.GetNumDenseInliers(), numSparse);
+		return false;
+	}
+	if (ABS(REAL(pair.meanRayAngle) - expectedAngle) > 1e-3) {
+		VERBOSE("SupplementEvidenceIsolationTest FAILED: meanRayAngle is %.4f deg, the sparse median is %.4f deg "
+			"-- the dense supplement is voting on the pair's angle statistic",
+			R2D(pair.meanRayAngle), R2D(expectedAngle));
+		return false;
+	}
+
+	// The floor: 5 sparse matches are under the default minInliers = 15, 20 track-forming ones are
+	// not, so the pair must come out with a non-zero weight instead of being hard-zeroed.
+	ComputePairsWeights(scene);
+	const ImagePair& weighted = *scene.FindPair(0, 1);
+	if (weighted.weightSpatial <= 0.f) {
+		VERBOSE("SupplementEvidenceIsolationTest FAILED: weightSpatial is 0 on a supplemented pair with 5 sparse "
+			"and 15 dense matches -- the validity floor is reading the sparse count, so this pair contributes no tracks");
+		return false;
+	}
+	// and the magnitude is still purely sparse: the 5 sparse matches occupy 5 of the 10x10 cells in
+	// each image, so areaScore is 0.05 exactly, times the sparse angle score. Were either factor
+	// reading the union, the 15 clustered dense matches would move it.
+	const float expectedSpatial = 0.05f * ImagePair::ComputeAngleBaselineWeight(R2D(pair.meanRayAngle));
+	if (ABS(weighted.weightSpatial - expectedSpatial) > 1e-5f) {
+		VERBOSE("SupplementEvidenceIsolationTest FAILED: weightSpatial is %.6f, expected %.6f (0.05 sparse grid "
+			"occupancy x sparse angle score) -- a magnitude term is reading the dense supplement",
+			weighted.weightSpatial, expectedSpatial);
+		return false;
+	}
+
+	VERBOSE("SupplementEvidenceIsolationTest PASSED (%s)", TD_TIMER_GET_FMT().c_str());
+	return true;
+}
+
 // Global-descriptor retrieval test: cosine ranking of the per-image descriptors, its
 // deterministic tie order, the PairsMatcher dispatch that replaces the vocabulary tree with
 // it, the rankings CSV export, and the .sfm round-trip of the descriptors

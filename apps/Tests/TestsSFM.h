@@ -57,6 +57,12 @@ bool ROMA2CoverageSampleTest();
 // it applies to the keypoint indices
 bool DenseKeypointBoundaryTest();
 
+// Dense supplementation must be additive: on a supplemented pair, FilterMatches' meanRayAngle and
+// ComputeIntrinsicWeight's grid occupancy stay sparse (the supplement must not re-rank the view
+// graph), while the minimum-support floor that decides whether the pair counts at all reads the
+// track-forming set (the supplement must not be able to void itself)
+bool SupplementEvidenceIsolationTest();
+
 // Global-descriptor retrieval test: cosine ranking of the per-image global descriptors and its
 // deterministic tie order, the PairsMatcher dispatch that ranks the candidate pairs through them
 // instead of the vocabulary tree, the rankings CSV export, and the .sfm round-trip of the

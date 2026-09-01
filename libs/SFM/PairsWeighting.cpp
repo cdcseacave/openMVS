@@ -33,8 +33,20 @@ float ComputeIntrinsicWeight(ImagePair& pair, const Image& img1, const Image& im
 	if (!pair.HasMatches())
 		return 0.f;
 
-	// Collect points, use filtered inliers if available
-	if (pair.GetNumFilteredInliers() < minInliers)
+	// The VALIDITY FLOOR, split from the magnitude below. It asks "does this pair carry enough
+	// verified correspondence to be considered at all", and for that the track-forming set is the
+	// right quantity: a gate-validated dense supplement is stronger evidence about the pair's
+	// geometry than its sparse count is, and returning 0 here zeroes weightSpatial, hence
+	// GetCompositeWeight(), hence BuildTracks' minPairWeight cut -- so a supplemented pair whose
+	// sparse segment dips below the floor would contribute NO tracks at all, sparse or dense, and
+	// dense supplementation would go silently inert on exactly the weak pairs it exists to serve.
+	// Every MAGNITUDE term stays sparse: the grid-occupancy areaScore below (GetMatchedPoints'
+	// default prefix), the angle term (FilterMatches accumulates it over sparse matches only) and
+	// GetCompositeWeight's inlier factor with its 1000 cap. So a supplemented pair still competes on
+	// its descriptor evidence honestly and cannot re-rank the view graph; it just is not hard-zeroed
+	// by a floor its dense evidence satisfies. One that then still falls under minPairWeight on
+	// magnitude alone is a correct drop, not a silent one.
+	if (pair.GetNumTrackFormingMatches() < minInliers)
 		return 0.f; // minimal support needed
 	const auto [points1, points2] = pair.GetMatchedPoints(img1, img2);
 

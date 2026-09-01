@@ -243,13 +243,28 @@ unsigned ImagePair::FilterMatches(const Image& img1, const Image& img2, float mi
 
 	// Filter matches
 	const REAL maxCosAngle = COS(D2R(REAL(minAngle)));
-	// allInliers: the loop below tests every element of `matches`, so the point arrays must cover
-	// all of it -- the default prefix stops at GetNumFilteredInliers(), which is short of
-	// matches.size() on any pair that already carries a partition (a dense supplement, or the
-	// rejects of an earlier strict-filter pass)
+	// allInliers: the loop below tests every element of `matches` and indexes the arrays by that
+	// same position, so they must span the whole vector. The default prefix stops at
+	// GetNumFilteredInliers(), which is short of matches.size() on any pair carrying a partition (a
+	// dense supplement, or the rejects of an earlier strict-filter pass). In-tree every caller
+	// arrives after a ResetInlierMatches()/ResetMatches(), i.e. with numFilteredInliers == -1 and
+	// the default already spanning `matches`, so this is the contract stated explicitly rather than
+	// a live bug fix -- but the method is SFM_API and the next caller need not arrive that way.
 	const auto [pts1, pts2] = GetMatchedPoints(img1, img2, true);
+	// A match with a dense (ROMAv2 warp) endpoint is a supplement match: track-forming, but no
+	// evidence of the pair's authority, so it must not vote on any per-pair statistic the view graph
+	// ranks on. meanRayAngle below is exactly such a statistic -- ComputeIntrinsicWeight multiplies
+	// ComputeAngleBaselineWeight(meanRayAngle) into weightSpatial -- and the supplement is a
+	// coverage-maximising stratified draw spread over the whole overlap while the descriptor
+	// correspondences are clustered, so including it moves the median triangulation angle (either
+	// way: the weight peaks at 15 degrees) and re-ranks the graph. Hence cosAngles takes sparse
+	// matches only. The same predicate re-derives the dense segment after the partition below.
+	const bool bHasDenseKeypoints = img1.HasDenseKeypoints() || img2.HasDenseKeypoints();
+	const auto HasDenseEnd = [&img1, &img2](const DMatch& m) {
+		return img1.IsDenseKeypoint(m.queryIdx) || img2.IsDenseKeypoint(m.trainIdx);
+	};
 	std::vector<char> mask(matches.size(), 0);
-	FloatArr cosAngles(0, matches.size()); // per-inlier ray-angle cosines
+	FloatArr cosAngles(0, matches.size()); // per-inlier ray-angle cosines, sparse matches only
 	unsigned numInliers = 0;
 	FOREACH(i, matches) {
 		// Observed unit bearings (works for both pinhole and spherical)
@@ -290,14 +305,18 @@ unsigned ImagePair::FilterMatches(const Image& img1, const Image& img2, float mi
 		if (minAngle > 0 && cosAngle > maxCosAngle)
 			continue;
 		// Accepted as inlier
-		cosAngles.push_back((float)cosAngle);
+		if (!bHasDenseKeypoints || !HasDenseEnd(matches[i]))
+			cosAngles.push_back((float)cosAngle); // descriptor evidence only, see above
 		mask[i] = 1;
 		++numInliers;
 	}
 
-	// Update ray angle with the median of per-inlier angles: cosine is monotone in the angle,
+	// Update ray angle with the median of per-inlier SPARSE angles: cosine is monotone in the angle,
 	// so the median cosine maps exactly to the median angle, and a robust order statistic keeps
-	// mismatch-contaminated or badly triangulated matches from skewing the pair statistic
+	// mismatch-contaminated or badly triangulated matches from skewing the pair statistic. A
+	// supplemented pair whose sparse segment was emptied by the filter keeps no angle at all rather
+	// than borrowing the supplement's, which is the same "no descriptor evidence" answer every other
+	// weight term gives on it.
 	meanRayAngle = cosAngles.empty() ? 0.f : ACOS(cosAngles.GetMedian());
 	// Partition matches by inlier mask
 	numFilteredInliers = (int)PartitionMatchesByMask(mask, (int)numInliers, true);
@@ -311,10 +330,12 @@ unsigned ImagePair::FilterMatches(const Image& img1, const Image& img2, float mi
 	// moves a described keypoint onto a dense one. The converse is not exact: a supplement match
 	// whose *both* endpoints collapsed onto coincident described keypoints reads as sparse here, and
 	// then it measures a sub-pixel described position at both ends, so counting it as such is fair.
-	if (img1.HasDenseKeypoints() || img2.HasDenseKeypoints()) {
-		const auto HasDenseEnd = [&img1, &img2](const DMatch& m) {
-			return img1.IsDenseKeypoint(m.queryIdx) || img2.IsDenseKeypoint(m.trainIdx);
-		};
+	// That is also where this site and FilterRedundantKeypoints' step 3 deliberately disagree: step 3
+	// maintains the segment by POSITION and leaves such a match in the dense segment, this one
+	// classifies it by PREDICATE and calls it sparse, so re-verifying a supplemented pair can raise
+	// its descriptor evidence by the number of fully-collapsed supplement matches. It is also why the
+	// invariant checked at the end of this function is one-directional.
+	if (bHasDenseKeypoints) {
 		const auto denseBegin = std::stable_partition(matches.begin(), matches.begin() + numFilteredInliers,
 			[&HasDenseEnd](const DMatch& m) { return !HasDenseEnd(m); });
 		numDenseInliers = (int)(matches.begin() + numFilteredInliers - denseBegin);
